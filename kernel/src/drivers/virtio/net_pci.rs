@@ -233,6 +233,10 @@ static mut PCI_TX_BUFFERS: [TxBuffer; PCI_TX_POOL_SIZE] = [EMPTY_PCI_TX_BUFFER; 
 static PCI_TX_SLOT_IN_FLIGHT: [AtomicBool; PCI_TX_POOL_SIZE] =
     [const { AtomicBool::new(false) }; PCI_TX_POOL_SIZE];
 static PCI_TX_AVAIL_HEAD: AtomicU16 = AtomicU16::new(0);
+static RX_REARM_SAMPLE_SEQ: AtomicU64 = AtomicU64::new(0);
+static RX_REARM_SAMPLES: [AtomicU64; 4] = [const { AtomicU64::new(0) }; 4];
+static RX_SOFTIRQ_ENTRY_SAMPLE: AtomicU64 = AtomicU64::new(0);
+static RX_SOFTIRQ_EXIT_SAMPLE: AtomicU64 = AtomicU64::new(0);
 
 /// HHDM base for physical-to-virtual translation
 const HHDM_BASE: u64 = 0xFFFF_0000_0000_0000;
@@ -287,6 +291,10 @@ pub struct NetPciDiagSnapshot {
     pub rx_ring1: u16,
     pub rx_ring2: u16,
     pub rx_ring3: u16,
+    pub rx_rearm_sample_seq: u64,
+    pub rx_rearm_samples: [u64; 4],
+    pub rx_softirq_entry_sample: u64,
+    pub rx_softirq_exit_sample: u64,
 }
 
 pub struct ManualGicv2mDiagSnapshot {
@@ -1125,25 +1133,75 @@ pub fn handle_interrupt() {
     crate::tracing::providers::counters::NET_PCI_IRQ_RAISED_NETRX.increment();
 }
 
+fn publish_rx_callback_flag() {
+    fence(Ordering::SeqCst);
+    #[cfg(target_arch = "aarch64")]
+    unsafe {
+        core::arch::asm!("dsb sy", options(nostack, preserves_flags));
+    }
+}
+
+fn rx_queue_sample(raced: bool) -> u64 {
+    unsafe {
+        let q = &raw const PCI_RX_QUEUE;
+        let state_ptr = &raw const NET_PCI_STATE;
+        let used_idx = read_volatile(&(*q).used.idx) as u64;
+        let avail_flags = read_volatile(&(*q).avail.flags) as u64;
+        let last_used = (*state_ptr)
+            .as_ref()
+            .map(|s| s.rx_last_used_idx)
+            .unwrap_or(0xffff) as u64;
+
+        used_idx | (last_used << 16) | (avail_flags << 32) | ((raced as u64) << 48)
+    }
+}
+
+fn record_rearm_sample(raced: bool) {
+    let sample = rx_queue_sample(raced);
+    let seq = RX_REARM_SAMPLE_SEQ.fetch_add(1, Ordering::Relaxed);
+    RX_REARM_SAMPLES[(seq as usize) & 3].store(sample, Ordering::Relaxed);
+}
+
+pub fn record_rx_softirq_entry_snapshot() {
+    RX_SOFTIRQ_ENTRY_SAMPLE.store(rx_queue_sample(false), Ordering::Relaxed);
+}
+
+pub fn record_rx_softirq_exit_snapshot() {
+    RX_SOFTIRQ_EXIT_SAMPLE.store(rx_queue_sample(false), Ordering::Relaxed);
+}
+
+pub fn rx_used_pending() -> bool {
+    unsafe {
+        let q = &raw const PCI_RX_QUEUE;
+        let state_ptr = &raw const NET_PCI_STATE;
+        match (*state_ptr).as_ref() {
+            Some(s) => read_volatile(&(*q).used.idx) != s.rx_last_used_idx,
+            None => false,
+        }
+    }
+}
+
 /// Re-enable RX callbacks and report whether work arrived during completion.
 ///
 /// Called by the NetRx softirq after a budgeted poll returns Drained.
 /// Follows Linux's virtqueue_enable_cb_prepare/virtqueue_poll shape:
 /// 1. Clear VRING_AVAIL_F_NO_INTERRUPT to re-enable callbacks.
 /// 2. Publish that clear before reading used.idx.
-/// 3. If used.idx advanced beyond rx_last_used_idx, the caller re-raises NetRx.
+/// 3. If used.idx advanced beyond rx_last_used_idx, suppress callbacks again
+///    before the caller immediately drains the raced entries.
 pub fn reenable_and_check_race() -> bool {
     if NET_PCI_IRQ.load(Ordering::Relaxed) == 0 {
         return false;
     }
+    crate::tracing::providers::net_rx::count_rearm_check();
 
     unsafe {
         let q = &raw mut PCI_RX_QUEUE;
         write_volatile(&mut (*q).avail.flags, 0);
-        fence(Ordering::SeqCst);
+        publish_rx_callback_flag();
     }
 
-    unsafe {
+    let raced = unsafe {
         let q = &raw const PCI_RX_QUEUE;
         let state_ptr = &raw const NET_PCI_STATE;
         let used_idx = read_volatile(&(*q).used.idx);
@@ -1151,7 +1209,21 @@ pub fn reenable_and_check_race() -> bool {
             Some(s) => used_idx != s.rx_last_used_idx,
             None => false,
         }
+    };
+
+    if raced {
+        crate::tracing::providers::net_rx::count_rearm_race();
+        unsafe {
+            let q = &raw mut PCI_RX_QUEUE;
+            write_volatile(&mut (*q).avail.flags, VRING_AVAIL_F_NO_INTERRUPT);
+            publish_rx_callback_flag();
+        }
+    } else {
+        crate::tracing::providers::net_rx::count_rearm_armed();
     }
+    record_rearm_sample(raced);
+
+    raced
 }
 
 /// Diagnostic: dump RX queue state for debugging MSI-X issues.
@@ -1250,6 +1322,15 @@ pub fn diag_snapshot() -> Option<NetPciDiagSnapshot> {
             rx_ring1,
             rx_ring2,
             rx_ring3,
+            rx_rearm_sample_seq: RX_REARM_SAMPLE_SEQ.load(Ordering::Relaxed),
+            rx_rearm_samples: [
+                RX_REARM_SAMPLES[0].load(Ordering::Relaxed),
+                RX_REARM_SAMPLES[1].load(Ordering::Relaxed),
+                RX_REARM_SAMPLES[2].load(Ordering::Relaxed),
+                RX_REARM_SAMPLES[3].load(Ordering::Relaxed),
+            ],
+            rx_softirq_entry_sample: RX_SOFTIRQ_ENTRY_SAMPLE.load(Ordering::Relaxed),
+            rx_softirq_exit_sample: RX_SOFTIRQ_EXIT_SAMPLE.load(Ordering::Relaxed),
         })
     }
 }

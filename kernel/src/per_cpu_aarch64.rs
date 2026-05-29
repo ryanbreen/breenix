@@ -7,7 +7,7 @@
 //! delegates most operations directly to the HAL layer since the task
 //! and scheduling subsystems are not yet ported to ARM64.
 
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 // Import HAL per-CPU operations
 use crate::arch_impl::current::percpu as hal_percpu;
@@ -105,6 +105,7 @@ static mut ALL_CPU_DATA: [PerCpuData; crate::arch_impl::aarch64::constants::MAX_
 
 /// Flag to indicate whether per-CPU data is initialized
 static PER_CPU_INITIALIZED: AtomicBool = AtomicBool::new(false);
+static EARLY_SOFTIRQ_PENDING: AtomicU32 = AtomicU32::new(0);
 
 /// Check if per-CPU data has been initialized
 pub fn is_initialized() -> bool {
@@ -135,6 +136,16 @@ pub fn init() {
 
     // Mark per-CPU data as initialized
     PER_CPU_INITIALIZED.store(true, Ordering::Release);
+    let early_pending = EARLY_SOFTIRQ_PENDING.swap(0, Ordering::AcqRel);
+    if early_pending != 0 {
+        for nr in 0..32 {
+            if (early_pending & (1 << nr)) != 0 {
+                unsafe {
+                    hal_percpu::Aarch64PerCpu::raise_softirq(nr);
+                }
+            }
+        }
+    }
     log::info!("Per-CPU data marked as initialized");
 }
 
@@ -362,6 +373,7 @@ pub fn softirq_pending() -> u32 {
 pub fn raise_softirq(nr: u32) {
     debug_assert!(nr < 32, "Invalid softirq number");
     if !PER_CPU_INITIALIZED.load(Ordering::Acquire) {
+        EARLY_SOFTIRQ_PENDING.fetch_or(1 << nr, Ordering::Release);
         return;
     }
     unsafe {

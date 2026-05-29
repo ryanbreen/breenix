@@ -386,6 +386,43 @@ fn append_net_pci_diag(output: &mut String) {
         "NET_PCI_RX_RING_HEADS: {},{},{},{}\n",
         net.rx_ring0, net.rx_ring1, net.rx_ring2, net.rx_ring3
     ));
+    output.push_str(&format!(
+        "NET_RX_PROCESSING_HELD: {}\n",
+        crate::net::rx_processing_held() as u8
+    ));
+    output.push_str(&format!(
+        "NET_RX_PENDING_WHILE_PROCESSING: {}\n",
+        crate::net::rx_pending_while_processing() as u8
+    ));
+    output.push_str(&format!(
+        "NET_PCI_RX_REARM_SAMPLE_SEQ: {}\n",
+        net.rx_rearm_sample_seq
+    ));
+    for (idx, sample) in net.rx_rearm_samples.iter().enumerate() {
+        append_rx_sample(output, &format!("NET_PCI_RX_REARM_SAMPLE{}", idx), *sample);
+    }
+    append_rx_sample(
+        output,
+        "NET_PCI_RX_SOFTIRQ_ENTRY_SAMPLE",
+        net.rx_softirq_entry_sample,
+    );
+    append_rx_sample(
+        output,
+        "NET_PCI_RX_SOFTIRQ_EXIT_SAMPLE",
+        net.rx_softirq_exit_sample,
+    );
+}
+
+#[cfg(target_arch = "aarch64")]
+fn append_rx_sample(output: &mut String, name: &str, sample: u64) {
+    let used_idx = sample & 0xffff;
+    let last_used = (sample >> 16) & 0xffff;
+    let avail_flags = (sample >> 32) & 0xffff;
+    let raced = (sample >> 48) & 1;
+    output.push_str(&format!(
+        "{}: used_idx={} last_used_idx={} avail_flags={:#x} raced={}\n",
+        name, used_idx, last_used, avail_flags, raced
+    ));
 }
 
 /// Generate content for /proc/trace/providers

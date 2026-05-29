@@ -70,6 +70,9 @@ pub(crate) fn irq_restore(_: u64) {}
 /// when interrupt-driven NetRx preempts another RX processing context.
 #[cfg(target_arch = "aarch64")]
 static RX_PROCESSING: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+#[cfg(target_arch = "aarch64")]
+static RX_PENDING_WHILE_PROCESSING: core::sync::atomic::AtomicBool =
+    core::sync::atomic::AtomicBool::new(false);
 
 // Logging macros that work on both architectures
 #[cfg(target_arch = "x86_64")]
@@ -259,24 +262,55 @@ pub fn drain_loopback_queue() {
 /// device callbacks and raises NetRx; this handler drains a bounded packet
 /// budget and either re-enables callbacks or re-raises NetRx for more work.
 fn net_rx_softirq_handler(_softirq: SoftirqType) {
-    let outcome = process_rx_budgeted(64);
-    if outcome == PollOutcome::BudgetExhausted {
-        crate::tracing::providers::counters::NET_RX_BUDGET_EXHAUSTED.increment();
+    crate::tracing::providers::net_rx::count_softirq_entry();
+    #[cfg(target_arch = "aarch64")]
+    if net_pci::is_initialized() {
+        net_pci::record_rx_softirq_entry_snapshot();
+    }
+
+    loop {
+        let outcome = process_rx_budgeted(64);
+        if outcome == PollOutcome::BudgetExhausted {
+            crate::tracing::providers::counters::NET_RX_BUDGET_EXHAUSTED.increment();
+        }
+
+        #[cfg(target_arch = "aarch64")]
+        if net_pci::is_initialized() {
+            match outcome {
+                PollOutcome::Drained => {
+                    if net_pci::reenable_and_check_race() {
+                        continue;
+                    }
+                }
+                PollOutcome::BudgetExhausted => {
+                    crate::task::softirqd::raise_softirq(SoftirqType::NetRx);
+                }
+                PollOutcome::InProgress => {}
+            }
+        }
+
+        #[cfg(target_arch = "aarch64")]
+        if !net_pci::is_initialized() && outcome == PollOutcome::BudgetExhausted {
+            crate::task::softirqd::raise_softirq(SoftirqType::NetRx);
+        }
+
+        #[cfg(not(target_arch = "aarch64"))]
+        match outcome {
+            PollOutcome::Drained => {}
+            PollOutcome::BudgetExhausted => {
+                crate::task::softirqd::raise_softirq(SoftirqType::NetRx);
+            }
+            PollOutcome::InProgress => {}
+        }
+
+        break;
     }
 
     #[cfg(target_arch = "aarch64")]
     if net_pci::is_initialized() {
-        match outcome {
-            PollOutcome::Drained => {
-                if net_pci::reenable_and_check_race() {
-                    crate::task::softirqd::raise_softirq(SoftirqType::NetRx);
-                }
-            }
-            PollOutcome::BudgetExhausted => {
-                crate::task::softirqd::raise_softirq(SoftirqType::NetRx);
-            }
-        }
+        net_pci::record_rx_softirq_exit_snapshot();
     }
+    crate::tracing::providers::net_rx::count_softirq_exit();
 }
 
 /// Re-register the network softirq handler.
@@ -445,7 +479,10 @@ fn init_common() {
             // Enable MSI-X SPI at GIC now that init has completed.
             net_pci::enable_msi_spi();
             let bootstrap_outcome = process_rx_budgeted(64);
-            if bootstrap_outcome == PollOutcome::BudgetExhausted {
+            if matches!(
+                bootstrap_outcome,
+                PollOutcome::BudgetExhausted | PollOutcome::InProgress
+            ) {
                 crate::task::softirqd::raise_softirq(SoftirqType::NetRx);
             }
         } else {
@@ -457,7 +494,18 @@ fn init_common() {
         // if softirqd has not run its first NetRx dispatch yet. The softirq
         // raise remains as a redundant path for any RX state already present.
         if net_pci::is_initialized() {
-            let _ = net_pci::reenable_and_check_race();
+            for _ in 0..8 {
+                if !net_pci::reenable_and_check_race() {
+                    break;
+                }
+                match process_rx_budgeted(64) {
+                    PollOutcome::Drained => {}
+                    PollOutcome::BudgetExhausted | PollOutcome::InProgress => {
+                        crate::task::softirqd::raise_softirq(SoftirqType::NetRx);
+                        break;
+                    }
+                }
+            }
             net_log!("NET: synchronously cleared virtio callback suppression");
         }
         crate::task::softirqd::raise_softirq(SoftirqType::NetRx);
@@ -479,6 +527,7 @@ pub fn config() -> NetConfig {
 pub enum PollOutcome {
     Drained,
     BudgetExhausted,
+    InProgress,
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -528,6 +577,18 @@ pub fn process_rx() {
     let _ = process_rx_budgeted(u32::MAX);
 }
 
+#[cfg(target_arch = "aarch64")]
+pub fn rx_processing_held() -> bool {
+    use core::sync::atomic::Ordering;
+    RX_PROCESSING.load(Ordering::Acquire)
+}
+
+#[cfg(target_arch = "aarch64")]
+pub fn rx_pending_while_processing() -> bool {
+    use core::sync::atomic::Ordering;
+    RX_PENDING_WHILE_PROCESSING.load(Ordering::Acquire)
+}
+
 /// Process incoming packets up to `budget` frames.
 #[cfg(target_arch = "aarch64")]
 pub fn process_rx_budgeted(budget: u32) -> PollOutcome {
@@ -538,7 +599,9 @@ pub fn process_rx_budgeted(budget: u32) -> PollOutcome {
         .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
         .is_err()
     {
-        return PollOutcome::Drained;
+        RX_PENDING_WHILE_PROCESSING.store(true, Ordering::Release);
+        crate::tracing::providers::net_rx::count_reentrant_skip();
+        return PollOutcome::InProgress;
     }
 
     reclaim_driver_tx_completed();
@@ -548,17 +611,25 @@ pub fn process_rx_budgeted(budget: u32) -> PollOutcome {
 
     // Try PCI driver first (Parallels), then e1000 (VMware), then MMIO (QEMU)
     if net_pci::is_initialized() {
-        let mut processed = false;
-        while remaining > 0 {
-            let Some(data) = net_pci::receive() else {
+        loop {
+            let mut processed = false;
+            while remaining > 0 {
+                let Some(data) = net_pci::receive() else {
+                    break;
+                };
+                process_packet(data);
+                processed = true;
+                remaining -= 1;
+            }
+            if processed {
+                net_pci::recycle_rx_buffers();
+            }
+            if remaining == 0
+                || (!RX_PENDING_WHILE_PROCESSING.swap(false, Ordering::AcqRel)
+                    && !net_pci::rx_used_pending())
+            {
                 break;
-            };
-            process_packet(data);
-            processed = true;
-            remaining -= 1;
-        }
-        if processed {
-            net_pci::recycle_rx_buffers();
+            }
         }
     } else if e1000::is_initialized() {
         let mut buffer = [0u8; 2048];
@@ -601,6 +672,7 @@ pub fn process_rx_budgeted(budget: u32) -> PollOutcome {
     // returns, regardless of whether we processed packets or bailed on re-entrancy.
     // This avoids re-enabling from multiple code paths.
 
+    crate::tracing::providers::net_rx::count_guard_release();
     RX_PROCESSING.store(false, Ordering::Release);
     outcome
 }
