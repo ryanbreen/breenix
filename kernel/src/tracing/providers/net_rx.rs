@@ -50,6 +50,47 @@ pub static NET_RX_ETHERTYPE_OTHER_TOTAL: TraceCounter = TraceCounter::new(
     "Network RX non-ARP EtherType frames",
 );
 
+/// NetRx softirq handler entries.
+#[no_mangle]
+pub static NET_RX_SOFTIRQ_ENTRY_TOTAL: TraceCounter =
+    TraceCounter::new("NET_RX_SOFTIRQ_ENTRY_TOTAL", "NetRx softirq entries");
+
+/// NetRx softirq handler exits.
+#[no_mangle]
+pub static NET_RX_SOFTIRQ_EXIT_TOTAL: TraceCounter =
+    TraceCounter::new("NET_RX_SOFTIRQ_EXIT_TOTAL", "NetRx softirq exits");
+
+/// NetRx drains skipped because another drain owns RX_PROCESSING.
+#[no_mangle]
+pub static NET_RX_REENTRANT_SKIP_TOTAL: TraceCounter = TraceCounter::new(
+    "NET_RX_REENTRANT_SKIP_TOTAL",
+    "NetRx drains skipped by RX_PROCESSING guard",
+);
+
+/// RX guard releases after a completed drain.
+#[no_mangle]
+pub static NET_RX_GUARD_RELEASE_TOTAL: TraceCounter =
+    TraceCounter::new("NET_RX_GUARD_RELEASE_TOTAL", "RX_PROCESSING guard releases");
+
+/// RX callback re-arm checks.
+#[no_mangle]
+pub static NET_RX_REARM_CHECK_TOTAL: TraceCounter =
+    TraceCounter::new("NET_RX_REARM_CHECK_TOTAL", "VirtIO-net RX re-arm checks");
+
+/// RX callback re-arm checks that found pending used entries.
+#[no_mangle]
+pub static NET_RX_REARM_RACE_TOTAL: TraceCounter = TraceCounter::new(
+    "NET_RX_REARM_RACE_TOTAL",
+    "VirtIO-net RX re-arm checks with pending used entries",
+);
+
+/// RX callback re-arm checks that left callbacks enabled.
+#[no_mangle]
+pub static NET_RX_REARM_ARMED_TOTAL: TraceCounter = TraceCounter::new(
+    "NET_RX_REARM_ARMED_TOTAL",
+    "VirtIO-net RX re-arm checks leaving callbacks enabled",
+);
+
 /// Register network RX provider and counters.
 pub fn init() {
     register_provider(&NET_RX_PROVIDER);
@@ -58,6 +99,13 @@ pub fn init() {
     register_counter(&NET_RX_FRAME_TOTAL);
     register_counter(&NET_RX_ARP_TOTAL);
     register_counter(&NET_RX_ETHERTYPE_OTHER_TOTAL);
+    register_counter(&NET_RX_SOFTIRQ_ENTRY_TOTAL);
+    register_counter(&NET_RX_SOFTIRQ_EXIT_TOTAL);
+    register_counter(&NET_RX_REENTRANT_SKIP_TOTAL);
+    register_counter(&NET_RX_GUARD_RELEASE_TOTAL);
+    register_counter(&NET_RX_REARM_CHECK_TOTAL);
+    register_counter(&NET_RX_REARM_RACE_TOTAL);
+    register_counter(&NET_RX_REARM_ARMED_TOTAL);
 }
 
 #[inline(always)]
@@ -83,4 +131,39 @@ pub fn count_arp() {
 #[inline(always)]
 pub fn count_ethertype_other() {
     crate::trace_count!(NET_RX_ETHERTYPE_OTHER_TOTAL);
+}
+
+#[inline(always)]
+pub fn count_softirq_entry() {
+    crate::trace_count!(NET_RX_SOFTIRQ_ENTRY_TOTAL);
+}
+
+#[inline(always)]
+pub fn count_softirq_exit() {
+    crate::trace_count!(NET_RX_SOFTIRQ_EXIT_TOTAL);
+}
+
+#[inline(always)]
+pub fn count_reentrant_skip() {
+    crate::trace_count!(NET_RX_REENTRANT_SKIP_TOTAL);
+}
+
+#[inline(always)]
+pub fn count_guard_release() {
+    crate::trace_count!(NET_RX_GUARD_RELEASE_TOTAL);
+}
+
+#[inline(always)]
+pub fn count_rearm_check() {
+    crate::trace_count!(NET_RX_REARM_CHECK_TOTAL);
+}
+
+#[inline(always)]
+pub fn count_rearm_race() {
+    crate::trace_count!(NET_RX_REARM_RACE_TOTAL);
+}
+
+#[inline(always)]
+pub fn count_rearm_armed() {
+    crate::trace_count!(NET_RX_REARM_ARMED_TOTAL);
 }

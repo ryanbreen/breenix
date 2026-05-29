@@ -141,6 +141,11 @@ pub static NET_RX_BUDGET_EXHAUSTED: TraceCounter =
 pub static NET_PCI_IRQ_RAISED_NETRX: TraceCounter =
     TraceCounter::new("NET_PCI_IRQ_RAISED_NETRX", "PCI net IRQ raised NetRx");
 
+/// GIC acknowledgements for VirtIO-net's GICv2m MSI-X SPI 55.
+#[no_mangle]
+pub static GIC_SPI55_ACK_TOTAL: TraceCounter =
+    TraceCounter::new("GIC_SPI55_ACK_TOTAL", "GIC acknowledged SPI 55");
+
 // =============================================================================
 // Boot Test Counters (BTRT feature)
 // =============================================================================
@@ -198,6 +203,7 @@ pub fn init() {
     register_counter(&GPU_PARTIAL_UPLOADS);
     register_counter(&NET_RX_BUDGET_EXHAUSTED);
     register_counter(&NET_PCI_IRQ_RAISED_NETRX);
+    register_counter(&GIC_SPI55_ACK_TOTAL);
 
     #[cfg(feature = "btrt")]
     {
@@ -232,6 +238,12 @@ pub fn count_syscall() {
 #[inline(always)]
 pub fn count_irq() {
     IRQ_TOTAL.increment();
+}
+
+/// Increment the GIC SPI 55 acknowledgement counter.
+#[inline(always)]
+pub fn count_gic_spi55_ack() {
+    crate::trace_count!(GIC_SPI55_ACK_TOTAL);
 }
 
 /// Increment the context switch counter.

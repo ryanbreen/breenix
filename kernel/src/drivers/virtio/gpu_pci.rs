@@ -1505,6 +1505,7 @@ fn setup_gpu_msi(pci_dev: &crate::drivers::pci::Device) -> GpuMsiConfig {
 
         pci_dev.configure_msix_entry(msix_cap, GPU_MSIX_CONFIG_VECTOR, msi_address, config_spi);
         pci_dev.configure_msix_entry(msix_cap, GPU_MSIX_QUEUE_VECTOR, msi_address, queue_spi);
+        trace_gpu_msix_programming(pci_dev, msix_cap, msi_address, table_size);
 
         gic::configure_spi_edge_triggered(config_spi);
         gic::configure_spi_edge_triggered(queue_spi);
@@ -1537,6 +1538,51 @@ fn setup_gpu_msi(pci_dev: &crate::drivers::pci::Device) -> GpuMsiConfig {
         "[virtio-gpu-pci] MSI-X capability not found; interrupt completion unavailable"
     );
     GpuMsiConfig::NONE
+}
+
+#[cfg(target_arch = "aarch64")]
+fn trace_gpu_msix_programming(
+    pci_dev: &crate::drivers::pci::Device,
+    msix_cap: u8,
+    doorbell: u64,
+    table_size: u16,
+) {
+    let (bar_index, table_offset) = pci_dev.msix_table_location(msix_cap);
+    crate::serial_println!(
+        "[virtio-gpu-pci] MSI-X diag: cap={:#x} table_bar={} table_off={:#x} doorbell={:#x} vectors={}",
+        msix_cap,
+        bar_index,
+        table_offset,
+        doorbell,
+        table_size
+    );
+
+    if bar_index as usize >= pci_dev.bars.len() || !pci_dev.bars[bar_index as usize].is_valid() {
+        crate::serial_println!(
+            "[virtio-gpu-pci] MSI-X diag: invalid table BAR {}",
+            bar_index
+        );
+        return;
+    }
+
+    let bar_base = pci_dev.bars[bar_index as usize].address;
+    let virt_base = crate::arch_impl::aarch64::constants::HHDM_BASE + bar_base;
+    let entries_to_dump = core::cmp::min(table_size, 2);
+    for vector in 0..entries_to_dump {
+        let entry_addr = virt_base + table_offset as u64 + (vector as u64 * 16);
+        let addr_lo = unsafe { core::ptr::read_volatile(entry_addr as *const u32) };
+        let addr_hi = unsafe { core::ptr::read_volatile((entry_addr + 4) as *const u32) };
+        let data = unsafe { core::ptr::read_volatile((entry_addr + 8) as *const u32) };
+        let vector_ctrl = unsafe { core::ptr::read_volatile((entry_addr + 12) as *const u32) };
+        crate::serial_println!(
+            "[virtio-gpu-pci] MSI-X entry{}: addr_hi={:#x} addr_lo={:#x} data={:#x} vector_ctrl={:#x}",
+            vector,
+            addr_hi,
+            addr_lo,
+            data,
+            vector_ctrl
+        );
+    }
 }
 
 /// Handle GPU virtqueue MSI-X interrupt — called from exception.rs IRQ dispatch.

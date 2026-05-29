@@ -223,11 +223,206 @@ pub fn generate_counters() -> String {
         output.push('\n');
     }
 
+    #[cfg(target_arch = "aarch64")]
+    append_gicv2m_diag(&mut output);
+    #[cfg(target_arch = "aarch64")]
+    append_net_pci_diag(&mut output);
+
     if count == 0 {
         output.push_str("# (no counters registered)\n");
     }
 
     output
+}
+
+#[cfg(target_arch = "aarch64")]
+fn append_gicv2m_diag(output: &mut String) {
+    let Some(irq) = crate::drivers::virtio::net_pci::get_irq() else {
+        return;
+    };
+
+    if let Some(frame) = crate::platform_config::gicv2m_diag_snapshot() {
+        output.push_str(&format!("GICV2M_BASE_PHYS: {:#x}\n", frame.base_phys));
+        output.push_str(&format!(
+            "GICV2M_DOORBELL_PHYS: {:#x}\n",
+            frame.doorbell_phys
+        ));
+        output.push_str(&format!("GICV2M_MSI_TYPER: {:#x}\n", frame.msi_typer));
+        output.push_str(&format!("GICV2M_SPI_BASE: {}\n", frame.spi_base));
+        output.push_str(&format!("GICV2M_SPI_COUNT: {}\n", frame.spi_count));
+        output.push_str(&format!("GICV2M_NEXT_INDEX: {}\n", frame.next_index));
+    }
+
+    append_spi_diag(output, "GIC_SPI54", 54);
+    append_spi_diag(output, "GIC_SPI55", irq);
+
+    let manual = crate::drivers::virtio::net_pci::manual_gicv2m_diag_snapshot();
+    output.push_str(&format!("MANUAL_GICV2M_TEST_DONE: {}\n", manual.done as u8));
+    output.push_str(&format!("MANUAL_GICV2M_TEST_IRQ: {}\n", manual.irq));
+    output.push_str(&format!(
+        "MANUAL_GICV2M_TEST_DOORBELL: {:#x}\n",
+        manual.doorbell_phys
+    ));
+    output.push_str(&format!(
+        "MANUAL_GICV2M_TEST_BEFORE_PEND: {:#x}\n",
+        manual.before_pend
+    ));
+    output.push_str(&format!(
+        "MANUAL_GICV2M_TEST_AFTER_WRITE_PEND: {:#x}\n",
+        manual.after_write_pend
+    ));
+    output.push_str(&format!(
+        "MANUAL_GICV2M_TEST_AFTER_WAIT_PEND: {:#x}\n",
+        manual.after_wait_pend
+    ));
+    output.push_str(&format!(
+        "MANUAL_GICV2M_TEST_ACK_BEFORE: {}\n",
+        manual.ack_before
+    ));
+    output.push_str(&format!(
+        "MANUAL_GICV2M_TEST_ACK_AFTER: {}\n",
+        manual.ack_after
+    ));
+    output.push_str(&format!(
+        "MANUAL_GICV2M_TEST_MSI_BEFORE: {}\n",
+        manual.msi_before
+    ));
+    output.push_str(&format!(
+        "MANUAL_GICV2M_TEST_MSI_AFTER: {}\n",
+        manual.msi_after
+    ));
+}
+
+#[cfg(target_arch = "aarch64")]
+fn append_spi_diag(output: &mut String, prefix: &str, irq: u32) {
+    if let Some(spi) = crate::arch_impl::aarch64::gic::spi_diag_snapshot(irq) {
+        output.push_str(&format!("{}_IRQ: {}\n", prefix, spi.irq));
+        output.push_str(&format!("{}_VERSION: {}\n", prefix, spi.version));
+        output.push_str(&format!(
+            "{}_ISENABLER_BIT: {:#x}\n",
+            prefix, spi.isenabler_bit
+        ));
+        output.push_str(&format!("{}_ISPENDR_BIT: {:#x}\n", prefix, spi.ispendr_bit));
+        output.push_str(&format!(
+            "{}_ISACTIVER_BIT: {:#x}\n",
+            prefix, spi.isactiver_bit
+        ));
+        output.push_str(&format!("{}_IGROUPR_BIT: {:#x}\n", prefix, spi.igroupr_bit));
+        output.push_str(&format!("{}_PRIORITY: {:#x}\n", prefix, spi.priority));
+        output.push_str(&format!("{}_ICFGR_REG: {:#x}\n", prefix, spi.icfgr_reg));
+        output.push_str(&format!("{}_IROUTER: {:#x}\n", prefix, spi.irouter));
+        output.push_str(&format!(
+            "{}_ITARGETSR_BYTE: {:#x}\n",
+            prefix, spi.itargetsr_byte
+        ));
+        output.push_str(&format!("{}_GICD_CTLR: {:#x}\n", prefix, spi.gicd_ctlr));
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+fn append_net_pci_diag(output: &mut String) {
+    let Some(net) = crate::drivers::virtio::net_pci::diag_snapshot() else {
+        return;
+    };
+
+    output.push_str(&format!(
+        "NET_PCI_DEVICE_STATUS: {:#x}\n",
+        net.device_status
+    ));
+    output.push_str(&format!("NET_PCI_ISR_STATUS: {:#x}\n", net.isr_status));
+    output.push_str(&format!(
+        "NET_PCI_DEVICE_FEATURES: {:#x}\n",
+        net.device_features
+    ));
+    output.push_str(&format!(
+        "NET_PCI_GUEST_FEATURES: {:#x}\n",
+        net.guest_features
+    ));
+    output.push_str(&format!("NET_PCI_RX_QUEUE_PFN: {:#x}\n", net.rx_queue_pfn));
+    output.push_str(&format!("NET_PCI_TX_QUEUE_PFN: {:#x}\n", net.tx_queue_pfn));
+    output.push_str(&format!("NET_PCI_RX_QUEUE_SIZE: {}\n", net.rx_queue_size));
+    output.push_str(&format!("NET_PCI_TX_QUEUE_SIZE: {}\n", net.tx_queue_size));
+    output.push_str(&format!("NET_PCI_RX_QUEUE_ALIGN: {}\n", net.rx_queue_align));
+    output.push_str(&format!(
+        "NET_PCI_RX_QUEUE_VECTOR: {:#x}\n",
+        net.rx_queue_vector
+    ));
+    output.push_str(&format!(
+        "NET_PCI_TX_QUEUE_VECTOR: {:#x}\n",
+        net.tx_queue_vector
+    ));
+    output.push_str(&format!(
+        "NET_PCI_RX_AVAIL_FLAGS: {:#x}\n",
+        net.rx_avail_flags
+    ));
+    output.push_str(&format!("NET_PCI_RX_AVAIL_IDX: {}\n", net.rx_avail_idx));
+    output.push_str(&format!(
+        "NET_PCI_RX_USED_FLAGS: {:#x}\n",
+        net.rx_used_flags
+    ));
+    output.push_str(&format!("NET_PCI_RX_USED_IDX: {}\n", net.rx_used_idx));
+    output.push_str(&format!(
+        "NET_PCI_RX_LAST_USED_IDX: {}\n",
+        net.rx_last_used_idx
+    ));
+    output.push_str(&format!("NET_PCI_RX_POSTED_GAP: {}\n", net.rx_posted_gap));
+    output.push_str(&format!(
+        "NET_PCI_RX_DESC0: addr={:#x} len={} flags={:#x}\n",
+        net.rx_desc0_addr, net.rx_desc0_len, net.rx_desc0_flags
+    ));
+    output.push_str(&format!(
+        "NET_PCI_RX_DESC1: addr={:#x} len={} flags={:#x}\n",
+        net.rx_desc1_addr, net.rx_desc1_len, net.rx_desc1_flags
+    ));
+    output.push_str(&format!(
+        "NET_PCI_RX_DESC2: addr={:#x} len={} flags={:#x}\n",
+        net.rx_desc2_addr, net.rx_desc2_len, net.rx_desc2_flags
+    ));
+    output.push_str(&format!(
+        "NET_PCI_RX_DESC3: addr={:#x} len={} flags={:#x}\n",
+        net.rx_desc3_addr, net.rx_desc3_len, net.rx_desc3_flags
+    ));
+    output.push_str(&format!(
+        "NET_PCI_RX_RING_HEADS: {},{},{},{}\n",
+        net.rx_ring0, net.rx_ring1, net.rx_ring2, net.rx_ring3
+    ));
+    output.push_str(&format!(
+        "NET_RX_PROCESSING_HELD: {}\n",
+        crate::net::rx_processing_held() as u8
+    ));
+    output.push_str(&format!(
+        "NET_RX_PENDING_WHILE_PROCESSING: {}\n",
+        crate::net::rx_pending_while_processing() as u8
+    ));
+    output.push_str(&format!(
+        "NET_PCI_RX_REARM_SAMPLE_SEQ: {}\n",
+        net.rx_rearm_sample_seq
+    ));
+    for (idx, sample) in net.rx_rearm_samples.iter().enumerate() {
+        append_rx_sample(output, &format!("NET_PCI_RX_REARM_SAMPLE{}", idx), *sample);
+    }
+    append_rx_sample(
+        output,
+        "NET_PCI_RX_SOFTIRQ_ENTRY_SAMPLE",
+        net.rx_softirq_entry_sample,
+    );
+    append_rx_sample(
+        output,
+        "NET_PCI_RX_SOFTIRQ_EXIT_SAMPLE",
+        net.rx_softirq_exit_sample,
+    );
+}
+
+#[cfg(target_arch = "aarch64")]
+fn append_rx_sample(output: &mut String, name: &str, sample: u64) {
+    let used_idx = sample & 0xffff;
+    let last_used = (sample >> 16) & 0xffff;
+    let avail_flags = (sample >> 32) & 0xffff;
+    let raced = (sample >> 48) & 1;
+    output.push_str(&format!(
+        "{}: used_idx={} last_used_idx={} avail_flags={:#x} raced={}\n",
+        name, used_idx, last_used, avail_flags, raced
+    ));
 }
 
 /// Generate content for /proc/trace/providers

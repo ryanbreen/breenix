@@ -639,6 +639,14 @@ impl InterruptController for Gicv2 {
 /// Returns the interrupt ID, or None if spurious (1023).
 #[inline]
 pub fn acknowledge_irq() -> Option<u32> {
+    #[inline(always)]
+    fn valid_ack(irq_id: u32) -> Option<u32> {
+        if irq_id == 55 {
+            crate::tracing::providers::counters::count_gic_spi55_ack();
+        }
+        Some(irq_id)
+    }
+
     let version = ACTIVE_GIC_VERSION.load(Ordering::Relaxed);
     if version >= 3 {
         if USE_GROUP0.load(Ordering::Relaxed) && DS_ENABLED.load(Ordering::Relaxed) {
@@ -651,7 +659,7 @@ pub fn acknowledge_irq() -> Option<u32> {
             let id0 = (iar0 & 0xFFFFFF) as u32;
             if id0 <= MAX_VALID_IRQ {
                 LAST_ACK_GROUP.store(0, Ordering::Relaxed); // Group 0
-                return Some(id0);
+                return valid_ack(id0);
             }
             // Fall through to try IAR1
             let iar1: u64;
@@ -661,7 +669,7 @@ pub fn acknowledge_irq() -> Option<u32> {
             let id1 = (iar1 & 0xFFFFFF) as u32;
             if id1 <= MAX_VALID_IRQ {
                 LAST_ACK_GROUP.store(1, Ordering::Relaxed); // Group 1
-                return Some(id1);
+                return valid_ack(id1);
             }
             None
         } else {
@@ -675,7 +683,7 @@ pub fn acknowledge_irq() -> Option<u32> {
                 None
             } else {
                 LAST_ACK_GROUP.store(1, Ordering::Relaxed);
-                Some(irq_id)
+                valid_ack(irq_id)
             }
         }
     } else {
@@ -685,7 +693,7 @@ pub fn acknowledge_irq() -> Option<u32> {
         if irq_id > MAX_VALID_IRQ {
             None
         } else {
-            Some(irq_id)
+            valid_ack(irq_id)
         }
     }
 }
@@ -867,6 +875,91 @@ pub fn is_spi_level_triggered(irq: u32) -> bool {
     let current = gicd_read(GICD_ICFGR + (reg_index as usize * 4));
 
     (current & (0b10 << field)) == 0
+}
+
+/// Snapshot GICD state for an SPI after boot-time programming.
+pub fn spi_diag_registers(irq: u32) -> Option<(u32, u32, u32, u32, u64)> {
+    if irq < 32 {
+        return None;
+    }
+
+    let reg_index = irq / 32;
+    let bit = irq % 32;
+    let cfg_reg_index = irq / 16;
+    let version = ACTIVE_GIC_VERSION.load(Ordering::Relaxed);
+    let isenabler = gicd_read(GICD_ISENABLER + (reg_index as usize * 4)) & (1 << bit);
+    let ispendr = gicd_read(GICD_ISPENDR + (reg_index as usize * 4)) & (1 << bit);
+    let isactiver = gicd_read(GICD_ISACTIVER + (reg_index as usize * 4)) & (1 << bit);
+    let icfgr = gicd_read(GICD_ICFGR + (cfg_reg_index as usize * 4));
+    let irouter = if version >= 3 {
+        gicd_read(GICD_IROUTER + (irq as usize * 8)) as u64
+            | ((gicd_read(GICD_IROUTER + (irq as usize * 8) + 4) as u64) << 32)
+    } else {
+        0
+    };
+
+    Some((isenabler, ispendr, isactiver, icfgr, irouter))
+}
+
+/// Full diagnostic snapshot for an SPI. Intended for non-hot-path procfs
+/// sampling while investigating MSI delivery.
+pub struct SpiDiagSnapshot {
+    pub irq: u32,
+    pub version: u32,
+    pub isenabler_bit: u32,
+    pub ispendr_bit: u32,
+    pub isactiver_bit: u32,
+    pub igroupr_bit: u32,
+    pub priority: u32,
+    pub icfgr_reg: u32,
+    pub irouter: u64,
+    pub itargetsr_byte: u32,
+    pub gicd_ctlr: u32,
+}
+
+pub fn spi_diag_snapshot(irq: u32) -> Option<SpiDiagSnapshot> {
+    if irq < 32 {
+        return None;
+    }
+
+    let reg_index = irq / 32;
+    let bit = irq % 32;
+    let cfg_reg_index = irq / 16;
+    let priority_reg_index = irq / 4;
+    let priority_shift = (irq % 4) * 8;
+    let target_reg = irq / 4;
+    let target_shift = (irq % 4) * 8;
+    let version = ACTIVE_GIC_VERSION.load(Ordering::Relaxed) as u32;
+    let isenabler = gicd_read(GICD_ISENABLER + (reg_index as usize * 4)) & (1 << bit);
+    let ispendr = gicd_read(GICD_ISPENDR + (reg_index as usize * 4)) & (1 << bit);
+    let isactiver = gicd_read(GICD_ISACTIVER + (reg_index as usize * 4)) & (1 << bit);
+    let igroupr = gicd_read(GICD_IGROUPR + (reg_index as usize * 4)) & (1 << bit);
+    let ipriorityr = gicd_read(GICD_IPRIORITYR + (priority_reg_index as usize * 4));
+    let priority = (ipriorityr >> priority_shift) & 0xff;
+    let icfgr = gicd_read(GICD_ICFGR + (cfg_reg_index as usize * 4));
+    let irouter = if version >= 3 {
+        gicd_read(GICD_IROUTER + (irq as usize * 8)) as u64
+            | ((gicd_read(GICD_IROUTER + (irq as usize * 8) + 4) as u64) << 32)
+    } else {
+        0
+    };
+    let itargetsr = gicd_read(GICD_ITARGETSR + (target_reg as usize * 4));
+    let itargetsr_byte = (itargetsr >> target_shift) & 0xff;
+    let gicd_ctlr = gicd_read(GICD_CTLR);
+
+    Some(SpiDiagSnapshot {
+        irq,
+        version,
+        isenabler_bit: isenabler,
+        ispendr_bit: ispendr,
+        isactiver_bit: isactiver,
+        igroupr_bit: igroupr,
+        priority,
+        icfgr_reg: icfgr,
+        irouter,
+        itargetsr_byte,
+        gicd_ctlr,
+    })
 }
 
 /// Enable an SPI in the GIC distributor (GICD_ISENABLER).
@@ -1321,7 +1414,6 @@ fn refresh_gicr_rdist_map(max_cpus: usize) {
             break;
         }
     }
-
 }
 
 /// Build the Linux-style redistributor map.
@@ -1604,12 +1696,7 @@ fn init_gicv3_cpu_interface() {
         core::arch::asm!("mrs {}, icc_ctlr_el1", out(reg) ctlr_readback, options(nomem, nostack));
         core::arch::asm!("mrs {}, icc_pmr_el1", out(reg) pmr_readback, options(nomem, nostack));
         core::arch::asm!("mrs {}, icc_igrpen1_el1", out(reg) igrpen1_readback, options(nomem, nostack));
-        core::hint::black_box((
-            sre_readback,
-            ctlr_readback,
-            pmr_readback,
-            igrpen1_readback,
-        ));
+        core::hint::black_box((sre_readback, ctlr_readback, pmr_readback, igrpen1_readback));
     }
 }
 

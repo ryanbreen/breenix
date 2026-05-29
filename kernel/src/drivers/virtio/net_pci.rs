@@ -17,7 +17,7 @@
 
 use crate::drivers::pci;
 use core::ptr::{read_volatile, write_volatile};
-use core::sync::atomic::{fence, AtomicBool, AtomicU16, AtomicU32, Ordering};
+use core::sync::atomic::{fence, AtomicBool, AtomicU16, AtomicU32, AtomicU64, Ordering};
 
 // Legacy VirtIO PCI register offsets (from BAR0)
 const REG_DEVICE_FEATURES: usize = 0x00;
@@ -229,11 +229,14 @@ static mut PCI_RX_BUFFER_3: RxBuffer = RxBuffer {
     data: [0; MAX_PACKET_SIZE],
 };
 
-static mut PCI_TX_BUFFERS: [TxBuffer; PCI_TX_POOL_SIZE] =
-    [EMPTY_PCI_TX_BUFFER; PCI_TX_POOL_SIZE];
+static mut PCI_TX_BUFFERS: [TxBuffer; PCI_TX_POOL_SIZE] = [EMPTY_PCI_TX_BUFFER; PCI_TX_POOL_SIZE];
 static PCI_TX_SLOT_IN_FLIGHT: [AtomicBool; PCI_TX_POOL_SIZE] =
     [const { AtomicBool::new(false) }; PCI_TX_POOL_SIZE];
 static PCI_TX_AVAIL_HEAD: AtomicU16 = AtomicU16::new(0);
+static RX_REARM_SAMPLE_SEQ: AtomicU64 = AtomicU64::new(0);
+static RX_REARM_SAMPLES: [AtomicU64; 4] = [const { AtomicU64::new(0) }; 4];
+static RX_SOFTIRQ_ENTRY_SAMPLE: AtomicU64 = AtomicU64::new(0);
+static RX_SOFTIRQ_EXIT_SAMPLE: AtomicU64 = AtomicU64::new(0);
 
 /// HHDM base for physical-to-virtual translation
 const HHDM_BASE: u64 = 0xFFFF_0000_0000_0000;
@@ -243,14 +246,84 @@ struct NetPciState {
     /// BAR0 virtual address (HHDM-mapped)
     bar0_virt: u64,
     mac: [u8; 6],
+    device_features: u32,
+    guest_features: u32,
+    rx_queue_pfn: u32,
+    tx_queue_pfn: u32,
+    rx_queue_size: u16,
+    tx_queue_size: u16,
     rx_last_used_idx: u16,
     tx_last_used_idx: u16,
+}
+
+/// Non-hot-path virtio-net queue/register diagnostics for procfs snapshots.
+pub struct NetPciDiagSnapshot {
+    pub device_status: u8,
+    pub isr_status: u8,
+    pub device_features: u32,
+    pub guest_features: u32,
+    pub rx_queue_pfn: u32,
+    pub tx_queue_pfn: u32,
+    pub rx_queue_size: u16,
+    pub tx_queue_size: u16,
+    pub rx_queue_align: u32,
+    pub rx_queue_vector: u16,
+    pub tx_queue_vector: u16,
+    pub rx_avail_flags: u16,
+    pub rx_avail_idx: u16,
+    pub rx_used_flags: u16,
+    pub rx_used_idx: u16,
+    pub rx_last_used_idx: u16,
+    pub rx_posted_gap: u16,
+    pub rx_desc0_addr: u64,
+    pub rx_desc0_len: u32,
+    pub rx_desc0_flags: u16,
+    pub rx_desc1_addr: u64,
+    pub rx_desc1_len: u32,
+    pub rx_desc1_flags: u16,
+    pub rx_desc2_addr: u64,
+    pub rx_desc2_len: u32,
+    pub rx_desc2_flags: u16,
+    pub rx_desc3_addr: u64,
+    pub rx_desc3_len: u32,
+    pub rx_desc3_flags: u16,
+    pub rx_ring0: u16,
+    pub rx_ring1: u16,
+    pub rx_ring2: u16,
+    pub rx_ring3: u16,
+    pub rx_rearm_sample_seq: u64,
+    pub rx_rearm_samples: [u64; 4],
+    pub rx_softirq_entry_sample: u64,
+    pub rx_softirq_exit_sample: u64,
+}
+
+pub struct ManualGicv2mDiagSnapshot {
+    pub done: bool,
+    pub irq: u32,
+    pub doorbell_phys: u64,
+    pub before_pend: u32,
+    pub after_write_pend: u32,
+    pub after_wait_pend: u32,
+    pub ack_before: u64,
+    pub ack_after: u64,
+    pub msi_before: u32,
+    pub msi_after: u32,
 }
 
 static mut NET_PCI_STATE: Option<NetPciState> = None;
 static DEVICE_INITIALIZED: AtomicBool = AtomicBool::new(false);
 static NET_PCI_IRQ: AtomicU32 = AtomicU32::new(0);
 static NET_PCI_MSI_COUNT: AtomicU32 = AtomicU32::new(0);
+static MANUAL_GICV2M_TEST_DONE: AtomicBool = AtomicBool::new(false);
+static MANUAL_GICV2M_TEST_IRQ: AtomicU32 = AtomicU32::new(0);
+static MANUAL_GICV2M_TEST_DOORBELL: AtomicU64 = AtomicU64::new(0);
+static MANUAL_GICV2M_TEST_BEFORE_PEND: AtomicU32 = AtomicU32::new(0);
+static MANUAL_GICV2M_TEST_AFTER_WRITE_PEND: AtomicU32 = AtomicU32::new(0);
+static MANUAL_GICV2M_TEST_AFTER_WAIT_PEND: AtomicU32 = AtomicU32::new(0);
+static MANUAL_GICV2M_TEST_ACK_BEFORE: AtomicU64 = AtomicU64::new(0);
+static MANUAL_GICV2M_TEST_ACK_AFTER: AtomicU64 = AtomicU64::new(0);
+static MANUAL_GICV2M_TEST_MSI_BEFORE: AtomicU32 = AtomicU32::new(0);
+static MANUAL_GICV2M_TEST_MSI_AFTER: AtomicU32 = AtomicU32::new(0);
 
 // Legacy register access helpers
 #[inline(always)]
@@ -303,6 +376,64 @@ pub fn get_irq() -> Option<u32> {
 const MSIX_CONFIG_VECTOR: usize = 0x14;
 const MSIX_QUEUE_VECTOR: usize = 0x16;
 
+fn log_rx_queue_activation_readback(stage: &str, bar0_virt: u64) {
+    reg_write_u16(bar0_virt, REG_QUEUE_SELECT, 0);
+    let pfn = reg_read_u32(bar0_virt, REG_QUEUE_PFN);
+    let size = reg_read_u16(bar0_virt, REG_QUEUE_SIZE);
+    let vector = reg_read_u16(bar0_virt, MSIX_QUEUE_VECTOR);
+    let status = reg_read_u8(bar0_virt, REG_DEVICE_STATUS);
+    let isr = reg_read_u8(bar0_virt, REG_ISR_STATUS);
+    let (avail_flags, avail_idx, used_idx) = unsafe {
+        let q = &raw const PCI_RX_QUEUE;
+        (
+            read_volatile(&(*q).avail.flags),
+            read_volatile(&(*q).avail.idx),
+            read_volatile(&(*q).used.idx),
+        )
+    };
+
+    crate::serial_println!(
+        "[virtio-net-pci] RX queue activation stage={} transport=legacy pfn={:#x} size={} vector={:#x} status={:#x} isr={:#x} avail_flags={:#x} avail_idx={} used_idx={}",
+        stage,
+        pfn,
+        size,
+        vector,
+        status,
+        isr,
+        avail_flags,
+        avail_idx,
+        used_idx
+    );
+}
+
+fn log_rx_init_window(stage: &str, bar0_virt: u64) {
+    reg_write_u16(bar0_virt, REG_QUEUE_SELECT, 0);
+    let pfn = reg_read_u32(bar0_virt, REG_QUEUE_PFN);
+    let vector = reg_read_u16(bar0_virt, MSIX_QUEUE_VECTOR);
+    let status = reg_read_u8(bar0_virt, REG_DEVICE_STATUS);
+    let (avail_flags, avail_idx, used_flags, used_idx) = unsafe {
+        let q = &raw const PCI_RX_QUEUE;
+        (
+            read_volatile(&(*q).avail.flags),
+            read_volatile(&(*q).avail.idx),
+            read_volatile(&(*q).used.flags),
+            read_volatile(&(*q).used.idx),
+        )
+    };
+
+    crate::serial_println!(
+        "[virtio-net-pci] RX init window stage={} pfn={:#x} vector={:#x} status={:#x} avail_flags={:#x} avail_idx={} used_flags={:#x} used_idx={}",
+        stage,
+        pfn,
+        vector,
+        status,
+        avail_flags,
+        avail_idx,
+        used_flags,
+        used_idx
+    );
+}
+
 /// Resolve a GICv2m doorbell address. Returns the MSI_SETSPI_NS physical address.
 fn resolve_gicv2m_doorbell() -> Option<u64> {
     const PARALLELS_GICV2M_BASE: u64 = 0x0225_0000;
@@ -317,8 +448,65 @@ fn resolve_gicv2m_doorbell() -> Option<u64> {
     Some(base + 0x40)
 }
 
+#[cfg(target_arch = "aarch64")]
+fn trace_msix_programming(
+    pci_dev: &crate::drivers::pci::Device,
+    msix_cap: u8,
+    doorbell: u64,
+    spi: u32,
+    table_size: u16,
+    cfg_rb: u16,
+    rx_rb: u16,
+) {
+    let (bar_index, table_offset) = pci_dev.msix_table_location(msix_cap);
+    let msg_ctrl =
+        pci::pci_read_config_word(pci_dev.bus, pci_dev.device, pci_dev.function, msix_cap + 2);
+    let command = pci::pci_read_config_word(pci_dev.bus, pci_dev.device, pci_dev.function, 0x04);
+
+    crate::serial_println!(
+        "[virtio-net-pci] MSI-X diag: cap={:#x} table_bar={} table_off={:#x} doorbell={:#x} spi={} vectors={} msg_ctrl={:#x} command={:#x} cfg_vec={:#x} rx_vec={:#x}",
+        msix_cap,
+        bar_index,
+        table_offset,
+        doorbell,
+        spi,
+        table_size,
+        msg_ctrl,
+        command,
+        cfg_rb,
+        rx_rb
+    );
+
+    if bar_index as usize >= pci_dev.bars.len() || !pci_dev.bars[bar_index as usize].is_valid() {
+        crate::serial_println!(
+            "[virtio-net-pci] MSI-X diag: invalid table BAR {}",
+            bar_index
+        );
+        return;
+    }
+
+    let bar_base = pci_dev.bars[bar_index as usize].address;
+    let virt_base = crate::arch_impl::aarch64::constants::HHDM_BASE + bar_base;
+    let entries_to_dump = core::cmp::min(table_size, 3);
+    for vector in 0..entries_to_dump {
+        let entry_addr = virt_base + table_offset as u64 + (vector as u64 * 16);
+        let addr_lo = unsafe { read_volatile(entry_addr as *const u32) };
+        let addr_hi = unsafe { read_volatile((entry_addr + 4) as *const u32) };
+        let data = unsafe { read_volatile((entry_addr + 8) as *const u32) };
+        let vector_ctrl = unsafe { read_volatile((entry_addr + 12) as *const u32) };
+        crate::serial_println!(
+            "[virtio-net-pci] MSI-X entry{}: addr_hi={:#x} addr_lo={:#x} data={:#x} vector_ctrl={:#x}",
+            vector,
+            addr_hi,
+            addr_lo,
+            data,
+            vector_ctrl
+        );
+    }
+}
+
 /// Set up PCI MSI or MSI-X delivery for the VirtIO network device through GICv2m.
-fn setup_net_pci_msi(pci_dev: &crate::drivers::pci::Device) {
+fn setup_net_pci_msi(pci_dev: &crate::drivers::pci::Device, bar0_virt: u64) {
     use crate::arch_impl::aarch64::gic;
 
     pci_dev.dump_capabilities();
@@ -397,17 +585,6 @@ fn setup_net_pci_msi(pci_dev: &crate::drivers::pci::Device) {
     pci_dev.disable_intx();
 
     // Assign VirtIO-level MSI-X vectors.
-    let bar0_virt = unsafe {
-        let ptr = &raw const NET_PCI_STATE;
-        match (*ptr).as_ref() {
-            Some(s) => s.bar0_virt,
-            None => {
-                crate::serial_println!("[virtio-net-pci] MSI-X: device state not available");
-                return;
-            }
-        }
-    };
-
     // Config change → no interrupt (0xFFFF). Avoids spurious config-change
     // MSIs that could cause an interrupt storm unrelated to packet RX.
     reg_write_u16(bar0_virt, MSIX_CONFIG_VECTOR, 0xFFFF);
@@ -427,6 +604,9 @@ fn setup_net_pci_msi(pci_dev: &crate::drivers::pci::Device) {
         cfg_rb,
         rx_rb
     );
+    log_rx_queue_activation_readback("after_msix_vector", bar0_virt);
+    #[cfg(target_arch = "aarch64")]
+    trace_msix_programming(pci_dev, msix_cap, doorbell, spi, table_size, cfg_rb, rx_rb);
 
     // Only RX vector must succeed; config vector is intentionally 0xFFFF
     if rx_rb == 0xFFFF {
@@ -553,32 +733,45 @@ pub fn init() -> Result<(), &'static str> {
     );
 
     // Set up RX queue (queue 0)
-    setup_legacy_queue(bar0_virt, 0, &raw const PCI_RX_QUEUE as u64)?;
+    let (rx_queue_size, rx_queue_pfn) =
+        setup_legacy_queue(bar0_virt, 0, &raw const PCI_RX_QUEUE as u64)?;
+    log_rx_queue_activation_readback("after_rx_pfn", bar0_virt);
 
     // Set up TX queue (queue 1)
-    setup_legacy_queue(bar0_virt, 1, &raw const PCI_TX_QUEUE as u64)?;
+    let (tx_queue_size, tx_queue_pfn) =
+        setup_legacy_queue(bar0_virt, 1, &raw const PCI_TX_QUEUE as u64)?;
     reset_tx_slots();
 
-    // DRIVER_OK
-    let cur_status = reg_read_u8(bar0_virt, REG_DEVICE_STATUS);
-    reg_write_u8(bar0_virt, REG_DEVICE_STATUS, cur_status | STATUS_DRIVER_OK);
-
-    // Store state
     unsafe {
         let ptr = &raw mut NET_PCI_STATE;
         *ptr = Some(NetPciState {
             bar0_virt,
             mac,
+            device_features,
+            guest_features,
+            rx_queue_pfn,
+            tx_queue_pfn,
+            rx_queue_size,
+            tx_queue_size,
             rx_last_used_idx: 0,
             tx_last_used_idx: 0,
         });
     }
 
+    setup_net_pci_msi(pci_dev, bar0_virt);
+
+    // DRIVER_OK
+    let cur_status = reg_read_u8(bar0_virt, REG_DEVICE_STATUS);
+    log_rx_init_window("before_driver_ok", bar0_virt);
+    reg_write_u8(bar0_virt, REG_DEVICE_STATUS, cur_status | STATUS_DRIVER_OK);
+    log_rx_init_window("after_driver_ok", bar0_virt);
+    log_rx_queue_activation_readback("after_driver_ok", bar0_virt);
+
     // Post initial RX buffers
     post_rx_buffers()?;
+    log_rx_queue_activation_readback("after_rx_notify", bar0_virt);
 
     DEVICE_INITIALIZED.store(true, Ordering::Release);
-    setup_net_pci_msi(pci_dev);
     crate::serial_println!("[virtio-net-pci] Network device initialized successfully");
     Ok(())
 }
@@ -587,7 +780,7 @@ fn setup_legacy_queue(
     bar0_virt: u64,
     queue_idx: u16,
     queue_virt_addr: u64,
-) -> Result<(), &'static str> {
+) -> Result<(u16, u32), &'static str> {
     // Select queue
     reg_write_u16(bar0_virt, REG_QUEUE_SELECT, queue_idx);
 
@@ -615,6 +808,9 @@ fn setup_legacy_queue(
         (*q).used.flags = 0;
         (*q).used.idx = 0;
     }
+    if queue_idx == 0 {
+        log_rx_init_window("after_rx_ring_zero", bar0_virt);
+    }
 
     // Legacy VirtIO: set queue PFN (physical page frame number)
     let queue_phys = virt_to_phys(queue_virt_addr);
@@ -627,8 +823,11 @@ fn setup_legacy_queue(
         queue_pfn,
         queue_phys
     );
+    if queue_idx == 0 {
+        log_rx_init_window("after_rx_pfn_window", bar0_virt);
+    }
 
-    Ok(())
+    Ok((queue_max, queue_pfn))
 }
 
 fn reset_tx_slots() {
@@ -702,15 +901,44 @@ fn post_rx_buffers() -> Result<(), &'static str> {
             };
 
             (*q).avail.ring[i] = i as u16;
+            match i {
+                0 => log_rx_init_window("after_rx_desc0", state.bar0_virt),
+                1 => log_rx_init_window("after_rx_desc1", state.bar0_virt),
+                2 => log_rx_init_window("after_rx_desc2", state.bar0_virt),
+                3 => log_rx_init_window("after_rx_desc3", state.bar0_virt),
+                _ => {}
+            }
         }
 
+        write_volatile(&mut (*q).avail.flags, 0);
         fence(Ordering::SeqCst);
+        log_rx_init_window("before_rx_avail_idx", state.bar0_virt);
         (*q).avail.idx = 4;
         fence(Ordering::SeqCst);
+        #[cfg(target_arch = "aarch64")]
+        unsafe {
+            core::arch::asm!("dsb sy", options(nostack, preserves_flags));
+        }
+        log_rx_init_window("after_rx_avail_idx", state.bar0_virt);
     }
 
     // Notify device about RX queue (queue 0)
+    log_rx_init_window("before_rx_notify", state.bar0_virt);
     reg_write_u16(state.bar0_virt, REG_QUEUE_NOTIFY, 0);
+    log_rx_init_window("after_rx_notify_window", state.bar0_virt);
+
+    for _ in 0..10_000 {
+        let used_idx = unsafe {
+            let q = &raw const PCI_RX_QUEUE;
+            read_volatile(&(*q).used.idx)
+        };
+        if used_idx != 0 {
+            log_rx_init_window("first_used_advance", state.bar0_virt);
+            return Ok(());
+        }
+        core::hint::spin_loop();
+    }
+    log_rx_init_window("first_used_not_observed", state.bar0_virt);
 
     Ok(())
 }
@@ -905,25 +1133,75 @@ pub fn handle_interrupt() {
     crate::tracing::providers::counters::NET_PCI_IRQ_RAISED_NETRX.increment();
 }
 
+fn publish_rx_callback_flag() {
+    fence(Ordering::SeqCst);
+    #[cfg(target_arch = "aarch64")]
+    unsafe {
+        core::arch::asm!("dsb sy", options(nostack, preserves_flags));
+    }
+}
+
+fn rx_queue_sample(raced: bool) -> u64 {
+    unsafe {
+        let q = &raw const PCI_RX_QUEUE;
+        let state_ptr = &raw const NET_PCI_STATE;
+        let used_idx = read_volatile(&(*q).used.idx) as u64;
+        let avail_flags = read_volatile(&(*q).avail.flags) as u64;
+        let last_used = (*state_ptr)
+            .as_ref()
+            .map(|s| s.rx_last_used_idx)
+            .unwrap_or(0xffff) as u64;
+
+        used_idx | (last_used << 16) | (avail_flags << 32) | ((raced as u64) << 48)
+    }
+}
+
+fn record_rearm_sample(raced: bool) {
+    let sample = rx_queue_sample(raced);
+    let seq = RX_REARM_SAMPLE_SEQ.fetch_add(1, Ordering::Relaxed);
+    RX_REARM_SAMPLES[(seq as usize) & 3].store(sample, Ordering::Relaxed);
+}
+
+pub fn record_rx_softirq_entry_snapshot() {
+    RX_SOFTIRQ_ENTRY_SAMPLE.store(rx_queue_sample(false), Ordering::Relaxed);
+}
+
+pub fn record_rx_softirq_exit_snapshot() {
+    RX_SOFTIRQ_EXIT_SAMPLE.store(rx_queue_sample(false), Ordering::Relaxed);
+}
+
+pub fn rx_used_pending() -> bool {
+    unsafe {
+        let q = &raw const PCI_RX_QUEUE;
+        let state_ptr = &raw const NET_PCI_STATE;
+        match (*state_ptr).as_ref() {
+            Some(s) => read_volatile(&(*q).used.idx) != s.rx_last_used_idx,
+            None => false,
+        }
+    }
+}
+
 /// Re-enable RX callbacks and report whether work arrived during completion.
 ///
 /// Called by the NetRx softirq after a budgeted poll returns Drained.
 /// Follows Linux's virtqueue_enable_cb_prepare/virtqueue_poll shape:
 /// 1. Clear VRING_AVAIL_F_NO_INTERRUPT to re-enable callbacks.
 /// 2. Publish that clear before reading used.idx.
-/// 3. If used.idx advanced beyond rx_last_used_idx, the caller re-raises NetRx.
+/// 3. If used.idx advanced beyond rx_last_used_idx, suppress callbacks again
+///    before the caller immediately drains the raced entries.
 pub fn reenable_and_check_race() -> bool {
     if NET_PCI_IRQ.load(Ordering::Relaxed) == 0 {
         return false;
     }
+    crate::tracing::providers::net_rx::count_rearm_check();
 
     unsafe {
         let q = &raw mut PCI_RX_QUEUE;
         write_volatile(&mut (*q).avail.flags, 0);
-        fence(Ordering::SeqCst);
+        publish_rx_callback_flag();
     }
 
-    unsafe {
+    let raced = unsafe {
         let q = &raw const PCI_RX_QUEUE;
         let state_ptr = &raw const NET_PCI_STATE;
         let used_idx = read_volatile(&(*q).used.idx);
@@ -931,7 +1209,21 @@ pub fn reenable_and_check_race() -> bool {
             Some(s) => used_idx != s.rx_last_used_idx,
             None => false,
         }
+    };
+
+    if raced {
+        crate::tracing::providers::net_rx::count_rearm_race();
+        unsafe {
+            let q = &raw mut PCI_RX_QUEUE;
+            write_volatile(&mut (*q).avail.flags, VRING_AVAIL_F_NO_INTERRUPT);
+            publish_rx_callback_flag();
+        }
+    } else {
+        crate::tracing::providers::net_rx::count_rearm_armed();
     }
+    record_rearm_sample(raced);
+
+    raced
 }
 
 /// Diagnostic: dump RX queue state for debugging MSI-X issues.
@@ -963,6 +1255,178 @@ pub fn dump_rx_state() {
     );
 }
 
+/// Snapshot RX queue and legacy transport state for `/proc/trace/counters`.
+///
+/// Reading the legacy ISR register clears it; this is intentionally only used
+/// from low-frequency diagnostics after traffic has been driven.
+pub fn diag_snapshot() -> Option<NetPciDiagSnapshot> {
+    let state = unsafe {
+        let ptr = &raw const NET_PCI_STATE;
+        (*ptr).as_ref()?
+    };
+
+    let device_status = reg_read_u8(state.bar0_virt, REG_DEVICE_STATUS);
+    let isr_status = reg_read_u8(state.bar0_virt, REG_ISR_STATUS);
+
+    reg_write_u16(state.bar0_virt, REG_QUEUE_SELECT, 0);
+    let rx_queue_vector = reg_read_u16(state.bar0_virt, MSIX_QUEUE_VECTOR);
+    reg_write_u16(state.bar0_virt, REG_QUEUE_SELECT, 1);
+    let tx_queue_vector = reg_read_u16(state.bar0_virt, MSIX_QUEUE_VECTOR);
+
+    unsafe {
+        let q = &raw const PCI_RX_QUEUE;
+        let rx_avail_flags = read_volatile(&(*q).avail.flags);
+        let rx_avail_idx = read_volatile(&(*q).avail.idx);
+        let rx_used_flags = read_volatile(&(*q).used.flags);
+        let rx_used_idx = read_volatile(&(*q).used.idx);
+        let rx_desc0 = read_volatile(&(*q).desc[0]);
+        let rx_desc1 = read_volatile(&(*q).desc[1]);
+        let rx_desc2 = read_volatile(&(*q).desc[2]);
+        let rx_desc3 = read_volatile(&(*q).desc[3]);
+        let rx_ring0 = read_volatile(&(*q).avail.ring[0]);
+        let rx_ring1 = read_volatile(&(*q).avail.ring[1]);
+        let rx_ring2 = read_volatile(&(*q).avail.ring[2]);
+        let rx_ring3 = read_volatile(&(*q).avail.ring[3]);
+
+        Some(NetPciDiagSnapshot {
+            device_status,
+            isr_status,
+            device_features: state.device_features,
+            guest_features: state.guest_features,
+            rx_queue_pfn: state.rx_queue_pfn,
+            tx_queue_pfn: state.tx_queue_pfn,
+            rx_queue_size: state.rx_queue_size,
+            tx_queue_size: state.tx_queue_size,
+            rx_queue_align: 4096,
+            rx_queue_vector,
+            tx_queue_vector,
+            rx_avail_flags,
+            rx_avail_idx,
+            rx_used_flags,
+            rx_used_idx,
+            rx_last_used_idx: state.rx_last_used_idx,
+            rx_posted_gap: rx_avail_idx.wrapping_sub(state.rx_last_used_idx),
+            rx_desc0_addr: rx_desc0.addr,
+            rx_desc0_len: rx_desc0.len,
+            rx_desc0_flags: rx_desc0.flags,
+            rx_desc1_addr: rx_desc1.addr,
+            rx_desc1_len: rx_desc1.len,
+            rx_desc1_flags: rx_desc1.flags,
+            rx_desc2_addr: rx_desc2.addr,
+            rx_desc2_len: rx_desc2.len,
+            rx_desc2_flags: rx_desc2.flags,
+            rx_desc3_addr: rx_desc3.addr,
+            rx_desc3_len: rx_desc3.len,
+            rx_desc3_flags: rx_desc3.flags,
+            rx_ring0,
+            rx_ring1,
+            rx_ring2,
+            rx_ring3,
+            rx_rearm_sample_seq: RX_REARM_SAMPLE_SEQ.load(Ordering::Relaxed),
+            rx_rearm_samples: [
+                RX_REARM_SAMPLES[0].load(Ordering::Relaxed),
+                RX_REARM_SAMPLES[1].load(Ordering::Relaxed),
+                RX_REARM_SAMPLES[2].load(Ordering::Relaxed),
+                RX_REARM_SAMPLES[3].load(Ordering::Relaxed),
+            ],
+            rx_softirq_entry_sample: RX_SOFTIRQ_ENTRY_SAMPLE.load(Ordering::Relaxed),
+            rx_softirq_exit_sample: RX_SOFTIRQ_EXIT_SAMPLE.load(Ordering::Relaxed),
+        })
+    }
+}
+
+pub fn manual_gicv2m_diag_snapshot() -> ManualGicv2mDiagSnapshot {
+    ManualGicv2mDiagSnapshot {
+        done: MANUAL_GICV2M_TEST_DONE.load(Ordering::Acquire),
+        irq: MANUAL_GICV2M_TEST_IRQ.load(Ordering::Relaxed),
+        doorbell_phys: MANUAL_GICV2M_TEST_DOORBELL.load(Ordering::Relaxed),
+        before_pend: MANUAL_GICV2M_TEST_BEFORE_PEND.load(Ordering::Relaxed),
+        after_write_pend: MANUAL_GICV2M_TEST_AFTER_WRITE_PEND.load(Ordering::Relaxed),
+        after_wait_pend: MANUAL_GICV2M_TEST_AFTER_WAIT_PEND.load(Ordering::Relaxed),
+        ack_before: MANUAL_GICV2M_TEST_ACK_BEFORE.load(Ordering::Relaxed),
+        ack_after: MANUAL_GICV2M_TEST_ACK_AFTER.load(Ordering::Relaxed),
+        msi_before: MANUAL_GICV2M_TEST_MSI_BEFORE.load(Ordering::Relaxed),
+        msi_after: MANUAL_GICV2M_TEST_MSI_AFTER.load(Ordering::Relaxed),
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+fn spi55_pending_bit(irq: u32) -> u32 {
+    crate::arch_impl::aarch64::gic::spi_diag_snapshot(irq)
+        .map(|spi| spi.ispendr_bit)
+        .unwrap_or(0)
+}
+
+#[cfg(target_arch = "aarch64")]
+fn run_manual_gicv2m_doorbell_test(irq: u32) {
+    use crate::arch_impl::aarch64::gic;
+    use crate::tracing::providers::counters::GIC_SPI55_ACK_TOTAL;
+
+    if MANUAL_GICV2M_TEST_DONE
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        gic::enable_spi(irq);
+        return;
+    }
+
+    MANUAL_GICV2M_TEST_IRQ.store(irq, Ordering::Relaxed);
+    let doorbell = match resolve_gicv2m_doorbell() {
+        Some(doorbell) => doorbell,
+        None => {
+            gic::enable_spi(irq);
+            crate::serial_println!(
+                "[virtio-net-pci] manual-gicv2m-test irq={} no-doorbell",
+                irq
+            );
+            return;
+        }
+    };
+    MANUAL_GICV2M_TEST_DOORBELL.store(doorbell, Ordering::Relaxed);
+
+    let ack_before = GIC_SPI55_ACK_TOTAL.aggregate();
+    let msi_before = NET_PCI_MSI_COUNT.load(Ordering::Relaxed);
+    let before_pend = spi55_pending_bit(irq);
+
+    unsafe {
+        let doorbell_virt =
+            (crate::arch_impl::aarch64::constants::HHDM_BASE + doorbell) as *mut u32;
+        write_volatile(doorbell_virt, 0x37);
+        core::arch::asm!("dsb sy", options(nostack, preserves_flags));
+        core::arch::asm!("isb", options(nostack, preserves_flags));
+    }
+
+    let after_write_pend = spi55_pending_bit(irq);
+    gic::enable_spi(irq);
+    for _ in 0..100_000 {
+        core::hint::spin_loop();
+    }
+    let after_wait_pend = spi55_pending_bit(irq);
+    let ack_after = GIC_SPI55_ACK_TOTAL.aggregate();
+    let msi_after = NET_PCI_MSI_COUNT.load(Ordering::Relaxed);
+
+    MANUAL_GICV2M_TEST_BEFORE_PEND.store(before_pend, Ordering::Relaxed);
+    MANUAL_GICV2M_TEST_AFTER_WRITE_PEND.store(after_write_pend, Ordering::Relaxed);
+    MANUAL_GICV2M_TEST_AFTER_WAIT_PEND.store(after_wait_pend, Ordering::Relaxed);
+    MANUAL_GICV2M_TEST_ACK_BEFORE.store(ack_before, Ordering::Relaxed);
+    MANUAL_GICV2M_TEST_ACK_AFTER.store(ack_after, Ordering::Relaxed);
+    MANUAL_GICV2M_TEST_MSI_BEFORE.store(msi_before, Ordering::Relaxed);
+    MANUAL_GICV2M_TEST_MSI_AFTER.store(msi_after, Ordering::Relaxed);
+
+    crate::serial_println!(
+        "[virtio-net-pci] manual-gicv2m-test irq={} doorbell={:#x} before_pend={:#x} after_write_pend={:#x} after_wait_pend={:#x} ack_before={} ack_after={} msi_before={} msi_after={}",
+        irq,
+        doorbell,
+        before_pend,
+        after_write_pend,
+        after_wait_pend,
+        ack_before,
+        ack_after,
+        msi_before,
+        msi_after
+    );
+}
+
 /// Enable the MSI-X SPI at the GIC after init polling is complete.
 ///
 /// During init, the ARP/ICMP polling loop processes RX via timer-based softirq.
@@ -986,8 +1450,34 @@ pub fn enable_msi_spi() {
     }
 
     gic::clear_spi_pending(irq);
+    #[cfg(target_arch = "aarch64")]
+    run_manual_gicv2m_doorbell_test(irq);
+    #[cfg(not(target_arch = "aarch64"))]
     gic::enable_spi(irq);
     crate::serial_println!("[virtio-net-pci] MSI-X SPI {} enabled (post-init)", irq);
+    crate::serial_println!(
+        "[virtio-net-pci] MSI-X GIC enable diag: spi={} last_irq={} cpu={} gicv={} affinity={:#x} router_rb={:#x} isenabler_rb={:#x} retries={} outcome={}",
+        irq,
+        gic::LAST_ENABLE_SPI_IRQ.load(Ordering::Relaxed),
+        gic::LAST_ENABLE_SPI_CPU.load(Ordering::Relaxed),
+        gic::LAST_ENABLE_SPI_GIC_VERSION.load(Ordering::Relaxed),
+        gic::LAST_ENABLE_SPI_AFFINITY_WRITTEN.load(Ordering::Relaxed),
+        gic::LAST_ENABLE_SPI_IROUTER_READBACK.load(Ordering::Relaxed),
+        gic::LAST_ENABLE_SPI_ISENABLER_READBACK.load(Ordering::Relaxed),
+        gic::LAST_ENABLE_SPI_RETRY_COUNT.load(Ordering::Relaxed),
+        gic::LAST_ENABLE_SPI_OUTCOME.load(Ordering::Relaxed)
+    );
+    if let Some((isenabler, ispendr, isactiver, icfgr, irouter)) = gic::spi_diag_registers(irq) {
+        crate::serial_println!(
+            "[virtio-net-pci] MSI-X GIC state: spi={} isenabler_bit={:#x} ispendr_bit={:#x} isactiver_bit={:#x} icfgr_reg={:#x} irouter={:#x}",
+            irq,
+            isenabler,
+            ispendr,
+            isactiver,
+            icfgr,
+            irouter
+        );
+    }
 }
 
 /// Whether the PCI net device is initialized
