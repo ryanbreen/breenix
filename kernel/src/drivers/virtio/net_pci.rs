@@ -498,7 +498,7 @@ fn trace_msix_programming(
 }
 
 /// Set up PCI MSI or MSI-X delivery for the VirtIO network device through GICv2m.
-fn setup_net_pci_msi(pci_dev: &crate::drivers::pci::Device) {
+fn setup_net_pci_msi(pci_dev: &crate::drivers::pci::Device, bar0_virt: u64) {
     use crate::arch_impl::aarch64::gic;
 
     pci_dev.dump_capabilities();
@@ -577,17 +577,6 @@ fn setup_net_pci_msi(pci_dev: &crate::drivers::pci::Device) {
     pci_dev.disable_intx();
 
     // Assign VirtIO-level MSI-X vectors.
-    let bar0_virt = unsafe {
-        let ptr = &raw const NET_PCI_STATE;
-        match (*ptr).as_ref() {
-            Some(s) => s.bar0_virt,
-            None => {
-                crate::serial_println!("[virtio-net-pci] MSI-X: device state not available");
-                return;
-            }
-        }
-    };
-
     // Config change → no interrupt (0xFFFF). Avoids spurious config-change
     // MSIs that could cause an interrupt storm unrelated to packet RX.
     reg_write_u16(bar0_virt, MSIX_CONFIG_VECTOR, 0xFFFF);
@@ -745,14 +734,6 @@ pub fn init() -> Result<(), &'static str> {
         setup_legacy_queue(bar0_virt, 1, &raw const PCI_TX_QUEUE as u64)?;
     reset_tx_slots();
 
-    // DRIVER_OK
-    let cur_status = reg_read_u8(bar0_virt, REG_DEVICE_STATUS);
-    log_rx_init_window("before_driver_ok", bar0_virt);
-    reg_write_u8(bar0_virt, REG_DEVICE_STATUS, cur_status | STATUS_DRIVER_OK);
-    log_rx_init_window("after_driver_ok", bar0_virt);
-    log_rx_queue_activation_readback("after_driver_ok", bar0_virt);
-
-    // Store state
     unsafe {
         let ptr = &raw mut NET_PCI_STATE;
         *ptr = Some(NetPciState {
@@ -769,12 +750,20 @@ pub fn init() -> Result<(), &'static str> {
         });
     }
 
+    setup_net_pci_msi(pci_dev, bar0_virt);
+
+    // DRIVER_OK
+    let cur_status = reg_read_u8(bar0_virt, REG_DEVICE_STATUS);
+    log_rx_init_window("before_driver_ok", bar0_virt);
+    reg_write_u8(bar0_virt, REG_DEVICE_STATUS, cur_status | STATUS_DRIVER_OK);
+    log_rx_init_window("after_driver_ok", bar0_virt);
+    log_rx_queue_activation_readback("after_driver_ok", bar0_virt);
+
     // Post initial RX buffers
     post_rx_buffers()?;
     log_rx_queue_activation_readback("after_rx_notify", bar0_virt);
 
     DEVICE_INITIALIZED.store(true, Ordering::Release);
-    setup_net_pci_msi(pci_dev);
     crate::serial_println!("[virtio-net-pci] Network device initialized successfully");
     Ok(())
 }
@@ -913,10 +902,15 @@ fn post_rx_buffers() -> Result<(), &'static str> {
             }
         }
 
+        write_volatile(&mut (*q).avail.flags, 0);
         fence(Ordering::SeqCst);
         log_rx_init_window("before_rx_avail_idx", state.bar0_virt);
         (*q).avail.idx = 4;
         fence(Ordering::SeqCst);
+        #[cfg(target_arch = "aarch64")]
+        unsafe {
+            core::arch::asm!("dsb sy", options(nostack, preserves_flags));
+        }
         log_rx_init_window("after_rx_avail_idx", state.bar0_virt);
     }
 

@@ -444,6 +444,10 @@ fn init_common() {
         if net_pci::is_initialized() {
             // Enable MSI-X SPI at GIC now that init has completed.
             net_pci::enable_msi_spi();
+            let bootstrap_outcome = process_rx_budgeted(64);
+            if bootstrap_outcome == PollOutcome::BudgetExhausted {
+                crate::task::softirqd::raise_softirq(SoftirqType::NetRx);
+            }
         } else {
             net_mmio::enable_net_irq();
         }
@@ -623,7 +627,6 @@ fn process_packet(data: &[u8]) {
                 }
             }
             ethernet::ETHERTYPE_IPV4 => {
-                crate::tracing::providers::net_rx::count_ethertype_other();
                 if let Some(ip_packet) = ipv4::Ipv4Packet::parse(frame.payload) {
                     ipv4::handle_ipv4(&frame, &ip_packet);
                 }
