@@ -317,6 +317,63 @@ fn resolve_gicv2m_doorbell() -> Option<u64> {
     Some(base + 0x40)
 }
 
+#[cfg(target_arch = "aarch64")]
+fn trace_msix_programming(
+    pci_dev: &crate::drivers::pci::Device,
+    msix_cap: u8,
+    doorbell: u64,
+    spi: u32,
+    table_size: u16,
+    cfg_rb: u16,
+    rx_rb: u16,
+) {
+    let (bar_index, table_offset) = pci_dev.msix_table_location(msix_cap);
+    let msg_ctrl =
+        pci::pci_read_config_word(pci_dev.bus, pci_dev.device, pci_dev.function, msix_cap + 2);
+    let command = pci::pci_read_config_word(pci_dev.bus, pci_dev.device, pci_dev.function, 0x04);
+
+    crate::serial_println!(
+        "[virtio-net-pci] MSI-X diag: cap={:#x} table_bar={} table_off={:#x} doorbell={:#x} spi={} vectors={} msg_ctrl={:#x} command={:#x} cfg_vec={:#x} rx_vec={:#x}",
+        msix_cap,
+        bar_index,
+        table_offset,
+        doorbell,
+        spi,
+        table_size,
+        msg_ctrl,
+        command,
+        cfg_rb,
+        rx_rb
+    );
+
+    if bar_index as usize >= pci_dev.bars.len() || !pci_dev.bars[bar_index as usize].is_valid() {
+        crate::serial_println!(
+            "[virtio-net-pci] MSI-X diag: invalid table BAR {}",
+            bar_index
+        );
+        return;
+    }
+
+    let bar_base = pci_dev.bars[bar_index as usize].address;
+    let virt_base = crate::arch_impl::aarch64::constants::HHDM_BASE + bar_base;
+    let entries_to_dump = core::cmp::min(table_size, 3);
+    for vector in 0..entries_to_dump {
+        let entry_addr = virt_base + table_offset as u64 + (vector as u64 * 16);
+        let addr_lo = unsafe { read_volatile(entry_addr as *const u32) };
+        let addr_hi = unsafe { read_volatile((entry_addr + 4) as *const u32) };
+        let data = unsafe { read_volatile((entry_addr + 8) as *const u32) };
+        let vector_ctrl = unsafe { read_volatile((entry_addr + 12) as *const u32) };
+        crate::serial_println!(
+            "[virtio-net-pci] MSI-X entry{}: addr_hi={:#x} addr_lo={:#x} data={:#x} vector_ctrl={:#x}",
+            vector,
+            addr_hi,
+            addr_lo,
+            data,
+            vector_ctrl
+        );
+    }
+}
+
 /// Set up PCI MSI or MSI-X delivery for the VirtIO network device through GICv2m.
 fn setup_net_pci_msi(pci_dev: &crate::drivers::pci::Device) {
     use crate::arch_impl::aarch64::gic;
@@ -427,6 +484,8 @@ fn setup_net_pci_msi(pci_dev: &crate::drivers::pci::Device) {
         cfg_rb,
         rx_rb
     );
+    #[cfg(target_arch = "aarch64")]
+    trace_msix_programming(pci_dev, msix_cap, doorbell, spi, table_size, cfg_rb, rx_rb);
 
     // Only RX vector must succeed; config vector is intentionally 0xFFFF
     if rx_rb == 0xFFFF {
@@ -988,6 +1047,29 @@ pub fn enable_msi_spi() {
     gic::clear_spi_pending(irq);
     gic::enable_spi(irq);
     crate::serial_println!("[virtio-net-pci] MSI-X SPI {} enabled (post-init)", irq);
+    crate::serial_println!(
+        "[virtio-net-pci] MSI-X GIC enable diag: spi={} last_irq={} cpu={} gicv={} affinity={:#x} router_rb={:#x} isenabler_rb={:#x} retries={} outcome={}",
+        irq,
+        gic::LAST_ENABLE_SPI_IRQ.load(Ordering::Relaxed),
+        gic::LAST_ENABLE_SPI_CPU.load(Ordering::Relaxed),
+        gic::LAST_ENABLE_SPI_GIC_VERSION.load(Ordering::Relaxed),
+        gic::LAST_ENABLE_SPI_AFFINITY_WRITTEN.load(Ordering::Relaxed),
+        gic::LAST_ENABLE_SPI_IROUTER_READBACK.load(Ordering::Relaxed),
+        gic::LAST_ENABLE_SPI_ISENABLER_READBACK.load(Ordering::Relaxed),
+        gic::LAST_ENABLE_SPI_RETRY_COUNT.load(Ordering::Relaxed),
+        gic::LAST_ENABLE_SPI_OUTCOME.load(Ordering::Relaxed)
+    );
+    if let Some((isenabler, ispendr, isactiver, icfgr, irouter)) = gic::spi_diag_registers(irq) {
+        crate::serial_println!(
+            "[virtio-net-pci] MSI-X GIC state: spi={} isenabler_bit={:#x} ispendr_bit={:#x} isactiver_bit={:#x} icfgr_reg={:#x} irouter={:#x}",
+            irq,
+            isenabler,
+            ispendr,
+            isactiver,
+            icfgr,
+            irouter
+        );
+    }
 }
 
 /// Whether the PCI net device is initialized

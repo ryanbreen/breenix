@@ -13,6 +13,7 @@ const NET_RX_COUNTER_PREFIXES: &[&str] = &[
     "NET_RX_ARP_TOTAL:",
     "NET_RX_ETHERTYPE_OTHER_TOTAL:",
     "NET_PCI_IRQ_RAISED_NETRX:",
+    "GIC_SPI55_ACK_TOTAL:",
 ];
 
 fn monotonic_ms() -> u64 {
