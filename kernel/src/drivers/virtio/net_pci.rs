@@ -17,7 +17,7 @@
 
 use crate::drivers::pci;
 use core::ptr::{read_volatile, write_volatile};
-use core::sync::atomic::{fence, AtomicBool, AtomicU16, AtomicU32, Ordering};
+use core::sync::atomic::{fence, AtomicBool, AtomicU16, AtomicU32, AtomicU64, Ordering};
 
 // Legacy VirtIO PCI register offsets (from BAR0)
 const REG_DEVICE_FEATURES: usize = 0x00;
@@ -289,10 +289,33 @@ pub struct NetPciDiagSnapshot {
     pub rx_ring3: u16,
 }
 
+pub struct ManualGicv2mDiagSnapshot {
+    pub done: bool,
+    pub irq: u32,
+    pub doorbell_phys: u64,
+    pub before_pend: u32,
+    pub after_write_pend: u32,
+    pub after_wait_pend: u32,
+    pub ack_before: u64,
+    pub ack_after: u64,
+    pub msi_before: u32,
+    pub msi_after: u32,
+}
+
 static mut NET_PCI_STATE: Option<NetPciState> = None;
 static DEVICE_INITIALIZED: AtomicBool = AtomicBool::new(false);
 static NET_PCI_IRQ: AtomicU32 = AtomicU32::new(0);
 static NET_PCI_MSI_COUNT: AtomicU32 = AtomicU32::new(0);
+static MANUAL_GICV2M_TEST_DONE: AtomicBool = AtomicBool::new(false);
+static MANUAL_GICV2M_TEST_IRQ: AtomicU32 = AtomicU32::new(0);
+static MANUAL_GICV2M_TEST_DOORBELL: AtomicU64 = AtomicU64::new(0);
+static MANUAL_GICV2M_TEST_BEFORE_PEND: AtomicU32 = AtomicU32::new(0);
+static MANUAL_GICV2M_TEST_AFTER_WRITE_PEND: AtomicU32 = AtomicU32::new(0);
+static MANUAL_GICV2M_TEST_AFTER_WAIT_PEND: AtomicU32 = AtomicU32::new(0);
+static MANUAL_GICV2M_TEST_ACK_BEFORE: AtomicU64 = AtomicU64::new(0);
+static MANUAL_GICV2M_TEST_ACK_AFTER: AtomicU64 = AtomicU64::new(0);
+static MANUAL_GICV2M_TEST_MSI_BEFORE: AtomicU32 = AtomicU32::new(0);
+static MANUAL_GICV2M_TEST_MSI_AFTER: AtomicU32 = AtomicU32::new(0);
 
 // Legacy register access helpers
 #[inline(always)]
@@ -1177,6 +1200,98 @@ pub fn diag_snapshot() -> Option<NetPciDiagSnapshot> {
     }
 }
 
+pub fn manual_gicv2m_diag_snapshot() -> ManualGicv2mDiagSnapshot {
+    ManualGicv2mDiagSnapshot {
+        done: MANUAL_GICV2M_TEST_DONE.load(Ordering::Acquire),
+        irq: MANUAL_GICV2M_TEST_IRQ.load(Ordering::Relaxed),
+        doorbell_phys: MANUAL_GICV2M_TEST_DOORBELL.load(Ordering::Relaxed),
+        before_pend: MANUAL_GICV2M_TEST_BEFORE_PEND.load(Ordering::Relaxed),
+        after_write_pend: MANUAL_GICV2M_TEST_AFTER_WRITE_PEND.load(Ordering::Relaxed),
+        after_wait_pend: MANUAL_GICV2M_TEST_AFTER_WAIT_PEND.load(Ordering::Relaxed),
+        ack_before: MANUAL_GICV2M_TEST_ACK_BEFORE.load(Ordering::Relaxed),
+        ack_after: MANUAL_GICV2M_TEST_ACK_AFTER.load(Ordering::Relaxed),
+        msi_before: MANUAL_GICV2M_TEST_MSI_BEFORE.load(Ordering::Relaxed),
+        msi_after: MANUAL_GICV2M_TEST_MSI_AFTER.load(Ordering::Relaxed),
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+fn spi55_pending_bit(irq: u32) -> u32 {
+    crate::arch_impl::aarch64::gic::spi_diag_snapshot(irq)
+        .map(|spi| spi.ispendr_bit)
+        .unwrap_or(0)
+}
+
+#[cfg(target_arch = "aarch64")]
+fn run_manual_gicv2m_doorbell_test(irq: u32) {
+    use crate::arch_impl::aarch64::gic;
+    use crate::tracing::providers::counters::GIC_SPI55_ACK_TOTAL;
+
+    if MANUAL_GICV2M_TEST_DONE
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        gic::enable_spi(irq);
+        return;
+    }
+
+    MANUAL_GICV2M_TEST_IRQ.store(irq, Ordering::Relaxed);
+    let doorbell = match resolve_gicv2m_doorbell() {
+        Some(doorbell) => doorbell,
+        None => {
+            gic::enable_spi(irq);
+            crate::serial_println!(
+                "[virtio-net-pci] manual-gicv2m-test irq={} no-doorbell",
+                irq
+            );
+            return;
+        }
+    };
+    MANUAL_GICV2M_TEST_DOORBELL.store(doorbell, Ordering::Relaxed);
+
+    let ack_before = GIC_SPI55_ACK_TOTAL.aggregate();
+    let msi_before = NET_PCI_MSI_COUNT.load(Ordering::Relaxed);
+    let before_pend = spi55_pending_bit(irq);
+
+    unsafe {
+        let doorbell_virt =
+            (crate::arch_impl::aarch64::constants::HHDM_BASE + doorbell) as *mut u32;
+        write_volatile(doorbell_virt, 0x37);
+        core::arch::asm!("dsb sy", options(nostack, preserves_flags));
+        core::arch::asm!("isb", options(nostack, preserves_flags));
+    }
+
+    let after_write_pend = spi55_pending_bit(irq);
+    gic::enable_spi(irq);
+    for _ in 0..100_000 {
+        core::hint::spin_loop();
+    }
+    let after_wait_pend = spi55_pending_bit(irq);
+    let ack_after = GIC_SPI55_ACK_TOTAL.aggregate();
+    let msi_after = NET_PCI_MSI_COUNT.load(Ordering::Relaxed);
+
+    MANUAL_GICV2M_TEST_BEFORE_PEND.store(before_pend, Ordering::Relaxed);
+    MANUAL_GICV2M_TEST_AFTER_WRITE_PEND.store(after_write_pend, Ordering::Relaxed);
+    MANUAL_GICV2M_TEST_AFTER_WAIT_PEND.store(after_wait_pend, Ordering::Relaxed);
+    MANUAL_GICV2M_TEST_ACK_BEFORE.store(ack_before, Ordering::Relaxed);
+    MANUAL_GICV2M_TEST_ACK_AFTER.store(ack_after, Ordering::Relaxed);
+    MANUAL_GICV2M_TEST_MSI_BEFORE.store(msi_before, Ordering::Relaxed);
+    MANUAL_GICV2M_TEST_MSI_AFTER.store(msi_after, Ordering::Relaxed);
+
+    crate::serial_println!(
+        "[virtio-net-pci] manual-gicv2m-test irq={} doorbell={:#x} before_pend={:#x} after_write_pend={:#x} after_wait_pend={:#x} ack_before={} ack_after={} msi_before={} msi_after={}",
+        irq,
+        doorbell,
+        before_pend,
+        after_write_pend,
+        after_wait_pend,
+        ack_before,
+        ack_after,
+        msi_before,
+        msi_after
+    );
+}
+
 /// Enable the MSI-X SPI at the GIC after init polling is complete.
 ///
 /// During init, the ARP/ICMP polling loop processes RX via timer-based softirq.
@@ -1200,6 +1315,9 @@ pub fn enable_msi_spi() {
     }
 
     gic::clear_spi_pending(irq);
+    #[cfg(target_arch = "aarch64")]
+    run_manual_gicv2m_doorbell_test(irq);
+    #[cfg(not(target_arch = "aarch64"))]
     gic::enable_spi(irq);
     crate::serial_println!("[virtio-net-pci] MSI-X SPI {} enabled (post-init)", irq);
     crate::serial_println!(

@@ -253,27 +253,69 @@ fn append_gicv2m_diag(output: &mut String) {
         output.push_str(&format!("GICV2M_NEXT_INDEX: {}\n", frame.next_index));
     }
 
+    append_spi_diag(output, "GIC_SPI54", 54);
+    append_spi_diag(output, "GIC_SPI55", irq);
+
+    let manual = crate::drivers::virtio::net_pci::manual_gicv2m_diag_snapshot();
+    output.push_str(&format!("MANUAL_GICV2M_TEST_DONE: {}\n", manual.done as u8));
+    output.push_str(&format!("MANUAL_GICV2M_TEST_IRQ: {}\n", manual.irq));
+    output.push_str(&format!(
+        "MANUAL_GICV2M_TEST_DOORBELL: {:#x}\n",
+        manual.doorbell_phys
+    ));
+    output.push_str(&format!(
+        "MANUAL_GICV2M_TEST_BEFORE_PEND: {:#x}\n",
+        manual.before_pend
+    ));
+    output.push_str(&format!(
+        "MANUAL_GICV2M_TEST_AFTER_WRITE_PEND: {:#x}\n",
+        manual.after_write_pend
+    ));
+    output.push_str(&format!(
+        "MANUAL_GICV2M_TEST_AFTER_WAIT_PEND: {:#x}\n",
+        manual.after_wait_pend
+    ));
+    output.push_str(&format!(
+        "MANUAL_GICV2M_TEST_ACK_BEFORE: {}\n",
+        manual.ack_before
+    ));
+    output.push_str(&format!(
+        "MANUAL_GICV2M_TEST_ACK_AFTER: {}\n",
+        manual.ack_after
+    ));
+    output.push_str(&format!(
+        "MANUAL_GICV2M_TEST_MSI_BEFORE: {}\n",
+        manual.msi_before
+    ));
+    output.push_str(&format!(
+        "MANUAL_GICV2M_TEST_MSI_AFTER: {}\n",
+        manual.msi_after
+    ));
+}
+
+#[cfg(target_arch = "aarch64")]
+fn append_spi_diag(output: &mut String, prefix: &str, irq: u32) {
     if let Some(spi) = crate::arch_impl::aarch64::gic::spi_diag_snapshot(irq) {
-        output.push_str(&format!("GIC_SPI55_IRQ: {}\n", spi.irq));
-        output.push_str(&format!("GIC_SPI55_VERSION: {}\n", spi.version));
+        output.push_str(&format!("{}_IRQ: {}\n", prefix, spi.irq));
+        output.push_str(&format!("{}_VERSION: {}\n", prefix, spi.version));
         output.push_str(&format!(
-            "GIC_SPI55_ISENABLER_BIT: {:#x}\n",
-            spi.isenabler_bit
+            "{}_ISENABLER_BIT: {:#x}\n",
+            prefix, spi.isenabler_bit
         ));
-        output.push_str(&format!("GIC_SPI55_ISPENDR_BIT: {:#x}\n", spi.ispendr_bit));
+        output.push_str(&format!("{}_ISPENDR_BIT: {:#x}\n", prefix, spi.ispendr_bit));
         output.push_str(&format!(
-            "GIC_SPI55_ISACTIVER_BIT: {:#x}\n",
-            spi.isactiver_bit
+            "{}_ISACTIVER_BIT: {:#x}\n",
+            prefix, spi.isactiver_bit
         ));
-        output.push_str(&format!("GIC_SPI55_IGROUPR_BIT: {:#x}\n", spi.igroupr_bit));
-        output.push_str(&format!("GIC_SPI55_PRIORITY: {:#x}\n", spi.priority));
-        output.push_str(&format!("GIC_SPI55_ICFGR_REG: {:#x}\n", spi.icfgr_reg));
-        output.push_str(&format!("GIC_SPI55_IROUTER: {:#x}\n", spi.irouter));
+        output.push_str(&format!("{}_IGROUPR_BIT: {:#x}\n", prefix, spi.igroupr_bit));
+        output.push_str(&format!("{}_PRIORITY: {:#x}\n", prefix, spi.priority));
+        output.push_str(&format!("{}_ICFGR_REG: {:#x}\n", prefix, spi.icfgr_reg));
+        output.push_str(&format!("{}_IROUTER: {:#x}\n", prefix, spi.irouter));
         output.push_str(&format!(
-            "GIC_SPI55_ITARGETSR_BYTE: {:#x}\n",
-            spi.itargetsr_byte
+            "{}_ITARGETSR_BYTE: {:#x}\n",
+            prefix, spi.itargetsr_byte
         ));
-        output.push_str(&format!("GIC_SPI55_GICD_CTLR: {:#x}\n", spi.gicd_ctlr));
+        output.push_str(&format!("{}_GICD_CTLR: {:#x}\n", prefix, spi.gicd_ctlr));
     }
 }
 
