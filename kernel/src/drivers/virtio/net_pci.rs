@@ -398,6 +398,34 @@ fn log_rx_queue_activation_readback(stage: &str, bar0_virt: u64) {
     );
 }
 
+fn log_rx_init_window(stage: &str, bar0_virt: u64) {
+    reg_write_u16(bar0_virt, REG_QUEUE_SELECT, 0);
+    let pfn = reg_read_u32(bar0_virt, REG_QUEUE_PFN);
+    let vector = reg_read_u16(bar0_virt, MSIX_QUEUE_VECTOR);
+    let status = reg_read_u8(bar0_virt, REG_DEVICE_STATUS);
+    let (avail_flags, avail_idx, used_flags, used_idx) = unsafe {
+        let q = &raw const PCI_RX_QUEUE;
+        (
+            read_volatile(&(*q).avail.flags),
+            read_volatile(&(*q).avail.idx),
+            read_volatile(&(*q).used.flags),
+            read_volatile(&(*q).used.idx),
+        )
+    };
+
+    crate::serial_println!(
+        "[virtio-net-pci] RX init window stage={} pfn={:#x} vector={:#x} status={:#x} avail_flags={:#x} avail_idx={} used_flags={:#x} used_idx={}",
+        stage,
+        pfn,
+        vector,
+        status,
+        avail_flags,
+        avail_idx,
+        used_flags,
+        used_idx
+    );
+}
+
 /// Resolve a GICv2m doorbell address. Returns the MSI_SETSPI_NS physical address.
 fn resolve_gicv2m_doorbell() -> Option<u64> {
     const PARALLELS_GICV2M_BASE: u64 = 0x0225_0000;
@@ -719,7 +747,9 @@ pub fn init() -> Result<(), &'static str> {
 
     // DRIVER_OK
     let cur_status = reg_read_u8(bar0_virt, REG_DEVICE_STATUS);
+    log_rx_init_window("before_driver_ok", bar0_virt);
     reg_write_u8(bar0_virt, REG_DEVICE_STATUS, cur_status | STATUS_DRIVER_OK);
+    log_rx_init_window("after_driver_ok", bar0_virt);
     log_rx_queue_activation_readback("after_driver_ok", bar0_virt);
 
     // Store state
@@ -781,6 +811,9 @@ fn setup_legacy_queue(
         (*q).used.flags = 0;
         (*q).used.idx = 0;
     }
+    if queue_idx == 0 {
+        log_rx_init_window("after_rx_ring_zero", bar0_virt);
+    }
 
     // Legacy VirtIO: set queue PFN (physical page frame number)
     let queue_phys = virt_to_phys(queue_virt_addr);
@@ -793,6 +826,9 @@ fn setup_legacy_queue(
         queue_pfn,
         queue_phys
     );
+    if queue_idx == 0 {
+        log_rx_init_window("after_rx_pfn_window", bar0_virt);
+    }
 
     Ok((queue_max, queue_pfn))
 }
@@ -868,15 +904,39 @@ fn post_rx_buffers() -> Result<(), &'static str> {
             };
 
             (*q).avail.ring[i] = i as u16;
+            match i {
+                0 => log_rx_init_window("after_rx_desc0", state.bar0_virt),
+                1 => log_rx_init_window("after_rx_desc1", state.bar0_virt),
+                2 => log_rx_init_window("after_rx_desc2", state.bar0_virt),
+                3 => log_rx_init_window("after_rx_desc3", state.bar0_virt),
+                _ => {}
+            }
         }
 
         fence(Ordering::SeqCst);
+        log_rx_init_window("before_rx_avail_idx", state.bar0_virt);
         (*q).avail.idx = 4;
         fence(Ordering::SeqCst);
+        log_rx_init_window("after_rx_avail_idx", state.bar0_virt);
     }
 
     // Notify device about RX queue (queue 0)
+    log_rx_init_window("before_rx_notify", state.bar0_virt);
     reg_write_u16(state.bar0_virt, REG_QUEUE_NOTIFY, 0);
+    log_rx_init_window("after_rx_notify_window", state.bar0_virt);
+
+    for _ in 0..10_000 {
+        let used_idx = unsafe {
+            let q = &raw const PCI_RX_QUEUE;
+            read_volatile(&(*q).used.idx)
+        };
+        if used_idx != 0 {
+            log_rx_init_window("first_used_advance", state.bar0_virt);
+            return Ok(());
+        }
+        core::hint::spin_loop();
+    }
+    log_rx_init_window("first_used_not_observed", state.bar0_virt);
 
     Ok(())
 }
