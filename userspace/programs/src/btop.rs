@@ -199,6 +199,8 @@ struct ProcInfo {
     state: [u8; 16],
     state_len: usize,
     cpu_ticks: u64,
+    cpu_sample_ticks: u64,
+    cpu_online: u64,
     vm_heap_kb: u64,
     vm_stack_kb: u64,
     vm_code_kb: u64,
@@ -214,6 +216,8 @@ impl ProcInfo {
             state: [0; 16],
             state_len: 0,
             cpu_ticks: 0,
+            cpu_sample_ticks: 0,
+            cpu_online: 1,
             vm_heap_kb: 0,
             vm_stack_kb: 0,
             vm_code_kb: 0,
@@ -223,6 +227,13 @@ impl ProcInfo {
     fn total_mem_kb(&self) -> u64 {
         self.vm_code_kb + self.vm_heap_kb + self.vm_stack_kb
     }
+}
+
+#[derive(Clone, Copy)]
+struct ProcTickSample {
+    pid: u64,
+    cpu_ticks: u64,
+    sample_ticks: u64,
 }
 
 /// Parse /proc/<pid>/status into a ProcInfo
@@ -249,7 +260,7 @@ fn parse_proc_status(pid: u64) -> Option<ProcInfo> {
 
     let path_str = core::str::from_utf8(&path_buf[..pos]).ok()?;
 
-    let mut buf = [0u8; 512];
+    let mut buf = [0u8; 768];
     let n = read_procfs(path_str, &mut buf);
     if n == 0 {
         return None;
@@ -276,6 +287,8 @@ fn parse_proc_status(pid: u64) -> Option<ProcInfo> {
 
     // Parse CpuTicks
     info.cpu_ticks = parse_value(content, b"CpuTicks:");
+    info.cpu_sample_ticks = parse_value(content, b"CpuSampleTicks:");
+    info.cpu_online = parse_value(content, b"CpuOnline:").max(1);
 
     // Parse memory
     info.vm_code_kb = parse_value(content, b"VmCode:");
@@ -430,8 +443,7 @@ fn main() {
     let _ = libbreenix::time::sleep_ms(500);
 
     // Previous tick counts for CPU% delta computation
-    let mut prev_ticks: Vec<(u64, u64)> = Vec::new(); // (pid, ticks)
-    let mut prev_global_ticks: u64 = 0;
+    let mut prev_ticks: Vec<ProcTickSample> = Vec::new();
     let mut prev_gpu_bytes: u64 = 0;
     let mut prev_gpu_full: u64 = 0;
     let mut prev_gpu_partial: u64 = 0;
@@ -471,7 +483,6 @@ fn main() {
         let syscalls = parse_value(stat, b"syscalls");
         let interrupts = parse_value(stat, b"interrupts");
         let ctx_switches = parse_value(stat, b"context_switches");
-        let global_ticks = parse_value(stat, b"global_ticks");
         let forks = parse_value(stat, b"forks");
         let execs = parse_value(stat, b"execs");
         let cow_faults = parse_value(stat, b"cow_faults");
@@ -504,18 +515,19 @@ fn main() {
             }
         }
 
-        // Compute CPU% deltas using global_ticks (same clock as per-process ticks).
-        // global_ticks is incremented only by CPU 0, matching the scale of per-process
-        // cpu_ticks_total which uses get_ticks() deltas. This gives htop-style
-        // percentages: 100% = one full CPU.
-        let tick_delta = global_ticks.saturating_sub(prev_global_ticks);
+        // Compute CPU% deltas against the procfs CPU sample clock captured with
+        // each PID. 100% means one full CPU; multi-threaded processes can reach
+        // cpu_online * 100%, but blocked sleepers should remain at 0%.
         let mut cpu_pcts: Vec<(u64, u64)> = Vec::new(); // (pid, pct*10 for 1 decimal)
         for proc in &procs {
-            let prev = prev_ticks.iter().find(|(p, _)| *p == proc.pid);
-            let prev_t = prev.map(|(_, t)| *t).unwrap_or(0);
-            let delta = proc.cpu_ticks.saturating_sub(prev_t);
+            let prev = prev_ticks.iter().find(|sample| sample.pid == proc.pid);
+            let prev_cpu_ticks = prev.map(|sample| sample.cpu_ticks).unwrap_or(0);
+            let prev_sample_ticks = prev.map(|sample| sample.sample_ticks).unwrap_or(0);
+            let delta = proc.cpu_ticks.saturating_sub(prev_cpu_ticks);
+            let tick_delta = proc.cpu_sample_ticks.saturating_sub(prev_sample_ticks);
+            let max_pct10 = proc.cpu_online.saturating_mul(1000);
             let pct10 = if tick_delta > 0 {
-                (delta * 1000) / tick_delta
+                ((delta * 1000) / tick_delta).min(max_pct10)
             } else {
                 0
             };
@@ -525,9 +537,12 @@ fn main() {
         // Save current ticks for next iteration
         prev_ticks.clear();
         for proc in &procs {
-            prev_ticks.push((proc.pid, proc.cpu_ticks));
+            prev_ticks.push(ProcTickSample {
+                pid: proc.pid,
+                cpu_ticks: proc.cpu_ticks,
+                sample_ticks: proc.cpu_sample_ticks,
+            });
         }
-        prev_global_ticks = global_ticks;
 
         // ── Render ───────────────────────────────────────────────────────
 
