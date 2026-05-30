@@ -170,6 +170,30 @@ pub static VIRTGPU_WAIT_COMPLETION_EXIT_TOTAL: TraceCounter = TraceCounter::new(
 );
 
 #[no_mangle]
+pub static VIRTGPU_COMPOSITOR_PRESENT_SUBMITTED_TOTAL: TraceCounter = TraceCounter::new(
+    "VIRTGPU_COMPOSITOR_PRESENT_SUBMITTED_TOTAL",
+    "BWM SUBMIT_3D compositor presents submitted",
+);
+
+#[no_mangle]
+pub static VIRTGPU_COMPOSITOR_PRESENT_COMPLETED_TOTAL: TraceCounter = TraceCounter::new(
+    "VIRTGPU_COMPOSITOR_PRESENT_COMPLETED_TOTAL",
+    "BWM SUBMIT_3D compositor presents completed",
+);
+
+#[no_mangle]
+pub static VIRTGPU_COMPOSITOR_PRESENT_INFLIGHT_GT1_TOTAL: TraceCounter = TraceCounter::new(
+    "VIRTGPU_COMPOSITOR_PRESENT_INFLIGHT_GT1_TOTAL",
+    "BWM compositor present attempts rejected because one present was already in flight",
+);
+
+#[no_mangle]
+pub static VIRTGPU_COMPOSITOR_CLIENT_WAITERS_RELEASED_TOTAL: TraceCounter = TraceCounter::new(
+    "VIRTGPU_COMPOSITOR_CLIENT_WAITERS_RELEASED_TOTAL",
+    "Client Window::present waiters released after compositor present completion",
+);
+
+#[no_mangle]
 pub static VIRTGPU_LAST_COMPLETION_MS: AtomicU64 = AtomicU64::new(0);
 
 #[no_mangle]
@@ -317,6 +341,10 @@ pub fn init() {
     register_counter(&VIRTGPU_SUBMIT_3D_EXIT_TOTAL);
     register_counter(&VIRTGPU_WAIT_COMPLETION_ENTER_TOTAL);
     register_counter(&VIRTGPU_WAIT_COMPLETION_EXIT_TOTAL);
+    register_counter(&VIRTGPU_COMPOSITOR_PRESENT_SUBMITTED_TOTAL);
+    register_counter(&VIRTGPU_COMPOSITOR_PRESENT_COMPLETED_TOTAL);
+    register_counter(&VIRTGPU_COMPOSITOR_PRESENT_INFLIGHT_GT1_TOTAL);
+    register_counter(&VIRTGPU_COMPOSITOR_CLIENT_WAITERS_RELEASED_TOTAL);
     register_counter(&VIRTGPU_R2_CREATE);
     register_counter(&VIRTGPU_R2_ATTACH_BACKING);
     register_counter(&VIRTGPU_R2_CTX_ATTACH);
@@ -503,6 +531,28 @@ pub fn trace_wait_completion_exit(cmd_type: u32, resource_id: u32, path: u8, ok:
         flags,
         payload
     );
+}
+
+#[inline(always)]
+pub fn trace_compositor_present_submitted() {
+    crate::trace_count!(VIRTGPU_COMPOSITOR_PRESENT_SUBMITTED_TOTAL);
+}
+
+#[inline(always)]
+pub fn trace_compositor_present_completed() {
+    crate::trace_count!(VIRTGPU_COMPOSITOR_PRESENT_COMPLETED_TOTAL);
+}
+
+#[inline(always)]
+pub fn trace_compositor_present_inflight_gt1() {
+    crate::trace_count!(VIRTGPU_COMPOSITOR_PRESENT_INFLIGHT_GT1_TOTAL);
+}
+
+#[inline(always)]
+pub fn trace_compositor_client_waiters_released(count: u64) {
+    if count > 0 {
+        VIRTGPU_COMPOSITOR_CLIENT_WAITERS_RELEASED_TOTAL.add(count);
+    }
 }
 
 #[inline(always)]
