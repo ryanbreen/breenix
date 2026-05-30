@@ -7,6 +7,7 @@
 use super::keys;
 use super::packet::PacketIo;
 use super::{SshBuf, SshError};
+use super::{SSH_MSG_DEBUG, SSH_MSG_EXT_INFO, SSH_MSG_IGNORE};
 use super::{SSH_MSG_SERVICE_ACCEPT, SSH_MSG_SERVICE_REQUEST};
 use super::{SSH_MSG_USERAUTH_FAILURE, SSH_MSG_USERAUTH_REQUEST, SSH_MSG_USERAUTH_SUCCESS};
 
@@ -188,7 +189,7 @@ pub fn client_request_service(io: &mut PacketIo) -> Result<(), SshError> {
     SshBuf::put_string(&mut req, b"ssh-userauth");
     io.send_packet(&req).map_err(|_| SshError::Io)?;
 
-    let reply = io.recv_packet().map_err(|_| SshError::Io)?;
+    let reply = recv_client_reply(io)?;
     if reply.is_empty() || reply[0] != SSH_MSG_SERVICE_ACCEPT {
         return Err(SshError::Protocol("service request rejected"));
     }
@@ -211,7 +212,7 @@ pub fn client_auth_password(
     SshBuf::put_string(&mut req, password.as_bytes());
     io.send_packet(&req).map_err(|_| SshError::Io)?;
 
-    let reply = io.recv_packet().map_err(|_| SshError::Io)?;
+    let reply = recv_client_reply(io)?;
     if reply.is_empty() {
         return Err(SshError::Protocol("empty auth response"));
     }
@@ -220,5 +221,18 @@ pub fn client_auth_password(
         SSH_MSG_USERAUTH_SUCCESS => Ok(()),
         SSH_MSG_USERAUTH_FAILURE => Err(SshError::Auth),
         _ => Err(SshError::Protocol("unexpected auth response")),
+    }
+}
+
+fn recv_client_reply(io: &mut PacketIo) -> Result<Vec<u8>, SshError> {
+    loop {
+        let reply = io.recv_packet().map_err(|_| SshError::Io)?;
+        if reply.is_empty() {
+            return Ok(reply);
+        }
+        match reply[0] {
+            SSH_MSG_IGNORE | SSH_MSG_DEBUG | SSH_MSG_EXT_INFO => continue,
+            _ => return Ok(reply),
+        }
     }
 }
