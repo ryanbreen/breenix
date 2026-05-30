@@ -433,6 +433,7 @@ pub fn sys_write(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
             // Write to established TCP connection
             match crate::net::tcp::tcp_send(&conn_id, &buffer) {
                 Ok(n) => {
+                    crate::net::drain_loopback_queue();
                     log::debug!("sys_write: Wrote {} bytes to TCP connection", n);
                     SyscallResult::Ok(n as u64)
                 }
@@ -1191,18 +1192,12 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                 (fd_entry.status_flags & crate::ipc::fd::status_flags::O_NONBLOCK) != 0;
             drop(manager_guard);
 
-            // Drain loopback queue for localhost connections (127.x.x.x, own IP).
-            crate::net::drain_loopback_queue();
-
             let mut user_buf = alloc::vec![0u8; count as usize];
 
             // Read loop (may block if O_NONBLOCK not set)
             loop {
                 // Register as waiter FIRST to avoid race condition
                 crate::net::tcp::tcp_register_recv_waiter(&conn_id, thread_id);
-
-                // Drain loopback queue in case data arrived
-                crate::net::drain_loopback_queue();
 
                 // Try to receive
                 match crate::net::tcp::tcp_recv(&conn_id, &mut user_buf) {
@@ -1315,9 +1310,6 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
 
                 // Unregister from wait queue (will re-register at top of loop)
                 crate::net::tcp::tcp_unregister_recv_waiter(&conn_id, thread_id);
-
-                // Drain loopback again before retrying
-                crate::net::drain_loopback_queue();
             }
         }
         FdKind::PtyMaster(pty_num) => {

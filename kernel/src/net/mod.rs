@@ -231,27 +231,40 @@ struct LoopbackPacket {
 
 static LOOPBACK_QUEUE: Mutex<Vec<LoopbackPacket>> = Mutex::new(Vec::new());
 
-/// Drain the loopback queue, delivering any pending packets
-/// Called after syscalls release their locks to avoid deadlock
+/// Drain the loopback queue, delivering any pending packets.
+///
+/// Called after syscalls release their locks to avoid deadlock. TCP loopback
+/// can enqueue deferred replies (SYN+ACK, ACK) while delivering an earlier
+/// packet, so drain bounded rounds until the local packet chain is quiescent.
 pub fn drain_loopback_queue() {
-    // Take all packets from the queue
-    let packets: Vec<LoopbackPacket> = {
-        let mut queue = LOOPBACK_QUEUE.lock();
-        core::mem::take(&mut *queue)
-    };
+    const MAX_DRAIN_ROUNDS: usize = 16;
 
-    // Deliver each packet
-    for packet in packets {
-        if let Some(parsed_ip) = ipv4::Ipv4Packet::parse(&packet.data) {
-            let src_mac = get_mac_address().unwrap_or([0; 6]);
-            let dummy_frame = ethernet::EthernetFrame {
-                src_mac,
-                dst_mac: src_mac,
-                ethertype: ethernet::ETHERTYPE_IPV4,
-                payload: &packet.data,
-            };
-            ipv4::handle_ipv4(&dummy_frame, &parsed_ip);
+    for _ in 0..MAX_DRAIN_ROUNDS {
+        // Take all packets from the queue
+        let packets: Vec<LoopbackPacket> = {
+            let mut queue = LOOPBACK_QUEUE.lock();
+            core::mem::take(&mut *queue)
+        };
+
+        if packets.is_empty() {
+            break;
         }
+
+        // Deliver each packet
+        for packet in packets {
+            if let Some(parsed_ip) = ipv4::Ipv4Packet::parse(&packet.data) {
+                let src_mac = get_mac_address().unwrap_or([0; 6]);
+                let dummy_frame = ethernet::EthernetFrame {
+                    src_mac,
+                    dst_mac: src_mac,
+                    ethertype: ethernet::ETHERTYPE_IPV4,
+                    payload: &packet.data,
+                };
+                ipv4::handle_ipv4(&dummy_frame, &parsed_ip);
+            }
+        }
+
+        tcp::drain_deferred_tx();
     }
 }
 

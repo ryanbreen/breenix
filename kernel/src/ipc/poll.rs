@@ -107,13 +107,13 @@ pub fn poll_fd(fd_entry: &FileDescriptor, events: i16) -> i16 {
                 revents |= events::POLLERR;
             }
         }
-        FdKind::UdpSocket(_socket) => {
-            // For UDP sockets: we don't implement poll properly yet
-            // Just mark as always writable for now
+        FdKind::UdpSocket(socket) => {
+            if (events & events::POLLIN) != 0 && socket.lock().has_data() {
+                revents |= events::POLLIN;
+            }
             if (events & events::POLLOUT) != 0 {
                 revents |= events::POLLOUT;
             }
-            // TODO: Check socket RX queue for POLLIN
         }
         FdKind::RegularFile(_file) => {
             // Regular files are always readable/writable (for now)

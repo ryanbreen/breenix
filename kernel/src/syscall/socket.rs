@@ -520,8 +520,8 @@ pub fn sys_sendto(
 ///    This path runs in softirq context and wakes blocked threads.
 ///
 /// 2. **Loopback path**: `sendto()` → `drain_loopback_queue()` → `enqueue_packet()`
-///    This path runs synchronously in syscall context. We call `drain_loopback_queue()`
-///    at the start of recvfrom and after blocking to ensure loopback packets are delivered.
+///    This path runs synchronously in sender syscall context after locks are released,
+///    so receivers can block on socket waiters and wake on delivery.
 ///
 /// # Spurious Wakeups
 ///
@@ -543,10 +543,6 @@ pub fn sys_recvfrom(
         buf_ptr,
         len
     );
-
-    // Drain loopback queue for packets sent to ourselves (127.x.x.x, own IP).
-    // Hardware-received packets arrive via interrupt → softirq → process_rx().
-    crate::net::drain_loopback_queue();
 
     // Validate buffer pointer
     if buf_ptr == 0 {
@@ -606,9 +602,6 @@ pub fn sys_recvfrom(
         Cpu::without_interrupts(|| {
             socket_ref.lock().register_waiter(thread_id);
         });
-
-        // Drain loopback queue again in case packets arrived
-        crate::net::drain_loopback_queue();
 
         // Try to receive a packet
         // CRITICAL: Must disable interrupts to prevent deadlock with softirq.
@@ -783,10 +776,7 @@ pub fn sys_recvfrom(
             socket_ref.lock().unregister_waiter(thread_id);
         });
 
-        // Drain loopback again before retrying
-        crate::net::drain_loopback_queue();
-
-        // Loop back to try receiving again - we should have data now
+        // Loop back to try receiving again after a delivery wake or spurious wakeup.
     }
 }
 
@@ -927,9 +917,6 @@ enum ListenerType {
 pub fn sys_accept(fd: u64, addr_ptr: u64, addrlen_ptr: u64) -> SyscallResult {
     log::debug!("sys_accept: fd={}", fd);
 
-    // Drain loopback queue for localhost connections (127.x.x.x, own IP).
-    crate::net::drain_loopback_queue();
-
     // Get current thread ID for blocking
     let thread_id = match crate::per_cpu::current_thread() {
         Some(thread) => thread.id,
@@ -998,9 +985,6 @@ fn sys_accept_tcp(
     loop {
         // Register as waiter FIRST to avoid race condition
         crate::net::tcp::tcp_register_accept_waiter(port, thread_id);
-
-        // Drain loopback queue in case connections arrived
-        crate::net::drain_loopback_queue();
 
         // Try to accept a pending connection
         if let Some(conn_id) = crate::net::tcp::tcp_accept(port) {
@@ -1114,13 +1098,7 @@ fn sys_accept_tcp(
                 return SyscallResult::Err(e as u64);
             }
 
-            // Drain loopback queue - essential for single-threaded tests where
-            // no other thread processes packets. This may wake other threads'
-            // connections but that's OK - they'll re-check and re-block if needed.
-            crate::net::drain_loopback_queue();
-
-            // Check if we were woken by the drain (e.g., SYN arrived and woke us)
-            // IMPORTANT: Check BEFORE HLT to avoid unnecessary waiting
+            // Check if we were woken by TCP delivery before sleeping again.
             let still_blocked = crate::task::scheduler::with_scheduler(|sched| {
                 if let Some(thread) = sched.current_thread_mut() {
                     thread.state == crate::task::thread::ThreadState::Blocked
@@ -1153,9 +1131,6 @@ fn sys_accept_tcp(
 
         // Unregister from wait queue (will re-register at top of loop)
         crate::net::tcp::tcp_unregister_accept_waiter(port, thread_id);
-
-        // Drain loopback again before retrying
-        crate::net::drain_loopback_queue();
     }
 }
 
@@ -1473,6 +1448,11 @@ fn sys_connect_tcp(fd: u64, addr_ptr: u64, addrlen: u64) -> SyscallResult {
         // manager_guard dropped here
     };
 
+    // Deliver any loopback SYN/SYN+ACK/ACK chain now that PROCESS_MANAGER is
+    // released. The connection waiter below should sleep until TCP wakes it,
+    // not poll-drain localhost packets from the receive side.
+    crate::net::drain_loopback_queue();
+
     // For non-blocking sockets, return EINPROGRESS immediately
     // The connection is in progress but not yet established
     if is_nonblocking {
@@ -1512,14 +1492,9 @@ fn sys_connect_tcp(fd: u64, addr_ptr: u64, addrlen: u64) -> SyscallResult {
         // Register as waiter FIRST to avoid race condition
         crate::net::tcp::tcp_register_recv_waiter(&conn_id, thread_id);
 
-        // Drain loopback queue for localhost connections
-        crate::net::drain_loopback_queue();
-
         // Check if connected
         if crate::net::tcp::tcp_is_established(&conn_id) {
             crate::net::tcp::tcp_unregister_recv_waiter(&conn_id, thread_id);
-            // Drain loopback one more time to deliver the ACK to the server
-            crate::net::drain_loopback_queue();
             log::info!(
                 "TCP connect: thread={} - Connection established, returning success",
                 thread_id
@@ -1603,13 +1578,7 @@ fn sys_connect_tcp(fd: u64, addr_ptr: u64, addrlen: u64) -> SyscallResult {
                 return SyscallResult::Err(e as u64);
             }
 
-            // Drain loopback queue - essential for single-threaded tests where
-            // no other thread processes packets. This may wake other threads'
-            // connections but that's OK - they'll re-check and re-block if needed.
-            crate::net::drain_loopback_queue();
-
-            // Check if we were woken by the drain (e.g., SYN+ACK arrived and woke us)
-            // IMPORTANT: Check BEFORE HLT to avoid unnecessary waiting
+            // Check if we were woken by TCP delivery before sleeping again.
             let still_blocked = crate::task::scheduler::with_scheduler(|sched| {
                 if let Some(thread) = sched.current_thread_mut() {
                     thread.state == crate::task::thread::ThreadState::Blocked
@@ -1645,9 +1614,6 @@ fn sys_connect_tcp(fd: u64, addr_ptr: u64, addrlen: u64) -> SyscallResult {
 
         // Unregister from wait queue (will re-register at top of loop)
         crate::net::tcp::tcp_unregister_recv_waiter(&conn_id, thread_id);
-
-        // Drain loopback again before retrying
-        crate::net::drain_loopback_queue();
 
         log::info!(
             "TCP connect: thread={} looping back to check connection",

@@ -44,7 +44,11 @@ pub fn drain_deferred_tx() {
     };
 
     for pkt in packets {
-        let result = if let Some(mac) = pkt.dst_mac {
+        let config = super::config();
+        let is_loopback = pkt.dst_ip == config.ip_addr || pkt.dst_ip[0] == 127;
+        let result = if is_loopback {
+            super::send_ipv4(pkt.dst_ip, PROTOCOL_TCP, &pkt.tcp_segment)
+        } else if let Some(mac) = pkt.dst_mac {
             // Send directly to the known MAC (bypasses ARP, which can't work
             // during process_rx since the re-entrancy guard is held).
             let ip_packet = super::ipv4::Ipv4Packet::build(
