@@ -140,8 +140,7 @@ impl UdpSocket {
         }
     }
 
-    /// Check if there are packets available to receive (part of API)
-    #[allow(dead_code)]
+    /// Check if there are packets available to receive.
     pub fn has_data(&self) -> bool {
         !self.rx_queue.lock().is_empty()
     }
