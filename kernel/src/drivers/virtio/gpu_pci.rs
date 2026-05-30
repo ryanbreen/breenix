@@ -545,6 +545,88 @@ struct Pci3dCmdBuffer {
 }
 static mut PCI_3D_CMD_BUF: Pci3dCmdBuffer = Pci3dCmdBuffer { data: [0; 16384] };
 
+/// Per-command DMA storage for VirtIO GPU controlq submissions.
+///
+/// Linux allocates a `virtio_gpu_vbuffer` per command and keeps its header,
+/// optional outgoing payload, and response storage alive until the used-ring
+/// completion arrives. The active VirGL present path mirrors that model so a
+/// SUBMIT_3D payload can never overwrite a later control header.
+struct PciOwnedDmaBuffer {
+    ptr: *mut u8,
+    len: usize,
+    layout: alloc::alloc::Layout,
+}
+
+impl PciOwnedDmaBuffer {
+    fn new(len: usize) -> Result<Self, &'static str> {
+        let alloc_len = len.max(1);
+        let layout = alloc::alloc::Layout::from_size_align(alloc_len, 4096)
+            .map_err(|_| "gpu vbuffer: invalid layout")?;
+        let ptr = unsafe { alloc::alloc::alloc_zeroed(layout) };
+        if ptr.is_null() {
+            return Err("gpu vbuffer: allocation failed");
+        }
+        Ok(Self {
+            ptr,
+            len: alloc_len,
+            layout,
+        })
+    }
+
+    fn phys(&self) -> u64 {
+        virt_to_phys(self.ptr as u64)
+    }
+
+    fn write_value<T>(&mut self, value: &T) -> Result<(), &'static str> {
+        let size = core::mem::size_of::<T>();
+        if size > self.len {
+            return Err("gpu vbuffer: command too large");
+        }
+        unsafe {
+            core::ptr::copy_nonoverlapping(value as *const T as *const u8, self.ptr, size);
+        }
+        Ok(())
+    }
+
+    fn write_bytes(&mut self, src: *const u8, len: usize) -> Result<(), &'static str> {
+        if len > self.len {
+            return Err("gpu vbuffer: payload too large");
+        }
+        if len != 0 {
+            unsafe {
+                core::ptr::copy_nonoverlapping(src, self.ptr, len);
+            }
+        }
+        Ok(())
+    }
+
+    fn clean(&self, len: usize) {
+        dma_cache_clean(self.ptr as *const u8, len.min(self.len));
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    fn invalidate(&self, len: usize) {
+        unsafe {
+            for off in (0..len.min(self.len)).step_by(64) {
+                core::arch::asm!("dc civac, {}", in(reg) self.ptr.add(off) as usize, options(nostack));
+            }
+            core::arch::asm!("dsb sy", options(nostack, preserves_flags));
+            core::arch::asm!("isb", options(nostack, preserves_flags));
+        }
+    }
+
+    #[cfg(not(target_arch = "aarch64"))]
+    fn invalidate(&self, _len: usize) {}
+}
+
+impl Drop for PciOwnedDmaBuffer {
+    fn drop(&mut self) {
+        unsafe {
+            alloc::alloc::dealloc(self.ptr, self.layout);
+        }
+    }
+}
+
 // Default framebuffer dimensions (Parallels: set_scanout configures display mode)
 // 1728x1080 matches the QEMU resolution for consistent performance comparison.
 const DEFAULT_FB_WIDTH: u32 = 1728;
@@ -883,25 +965,53 @@ fn upload_window_texture(
 
     let win_bytes = (width as usize) * (height as usize) * 4;
     let copy_len = win_bytes.min(total_size).min(backing_len);
+    let (tex_width, tex_height) = unsafe { WIN_TEX_DIMS[slot] };
+    let dst_stride = (tex_width as usize) * 4;
+    let src_stride = (width as usize) * 4;
+    let row_bytes = src_stride.min(dst_stride);
+    let rows = (height as usize)
+        .min(tex_height as usize)
+        .min(copy_len / src_stride.max(1));
 
-    // Copy scattered pages to contiguous backing.
-    // page_phys_addrs contains PHYSICAL addresses — convert to kernel virtual.
-    let mut copied = 0usize;
-    for &page_phys in page_phys_addrs {
-        if copied >= copy_len {
-            break;
+    // Copy scattered MAP_SHARED pages into the texture backing using the backing
+    // resource's real row pitch. The pool resources are preallocated at
+    // MIN_FB_WIDTH x MIN_FB_HEIGHT; packing a smaller window contiguously but
+    // advertising a narrower stride makes Parallels reject some transfers.
+    for row in 0..rows {
+        let mut copied_in_row = 0usize;
+        let src_row_start = row * src_stride;
+        while copied_in_row < row_bytes {
+            let src_off = src_row_start + copied_in_row;
+            let page_idx = src_off / 4096;
+            if page_idx >= page_phys_addrs.len() {
+                break;
+            }
+            let page_off = src_off % 4096;
+            let chunk = (4096 - page_off).min(row_bytes - copied_in_row);
+            let virt = phys_to_kern_virt(page_phys_addrs[page_idx]);
+            unsafe {
+                core::ptr::copy_nonoverlapping(
+                    (virt as *const u8).add(page_off),
+                    backing_ptr.add(row * dst_stride + copied_in_row),
+                    chunk,
+                );
+            }
+            copied_in_row += chunk;
         }
-        let chunk = 4096usize.min(copy_len - copied);
-        let virt = phys_to_kern_virt(page_phys);
-        unsafe {
-            core::ptr::copy_nonoverlapping(virt as *const u8, backing_ptr.add(copied), chunk);
-        }
-        copied += chunk;
     }
 
     let res_id = RESOURCE_WIN_TEX_BASE + slot as u32;
-    dma_cache_clean(backing_ptr, copy_len);
-    with_device_state(|state| transfer_to_host_3d(state, res_id, 0, 0, width, height, width * 4))
+    let clean_len = rows
+        .saturating_sub(1)
+        .saturating_mul(dst_stride)
+        .saturating_add(row_bytes)
+        .min(backing_len);
+    if clean_len > 0 {
+        dma_cache_clean(backing_ptr, clean_len);
+    }
+    with_device_state(|state| {
+        transfer_to_host_3d(state, res_id, 0, 0, width, height, tex_width * 4)
+    })
 }
 
 /// Allocate and initialize the compositor texture resource for GPU compositing.
@@ -2331,6 +2441,28 @@ fn send_command(
     resp_phys: u64,
     resp_len: u32,
 ) -> Result<(), &'static str> {
+    let (cmd_type, resource_id) = virtgpu_decode_pci_cmd();
+    let _used_len = send_command_with_trace(
+        state,
+        cmd_phys,
+        cmd_len,
+        resp_phys,
+        resp_len,
+        cmd_type,
+        resource_id,
+    )?;
+    Ok(())
+}
+
+fn send_command_with_trace(
+    state: &mut GpuPciDeviceState,
+    cmd_phys: u64,
+    cmd_len: u32,
+    resp_phys: u64,
+    resp_len: u32,
+    cmd_type: u32,
+    resource_id: u32,
+) -> Result<u32, &'static str> {
     drain_stale_ctrlq_completions(state);
     let previous_used_idx = state.last_used_idx;
     prepare_ctrlq_completion_wait(previous_used_idx)?;
@@ -2388,19 +2520,17 @@ fn send_command(
     enable_ctrlq_interrupts();
 
     // Signal that we're waiting for a completion, then notify device
-    let (cmd_type, resource_id) = virtgpu_decode_pci_cmd();
     virtgpu_trace_flush_pre_notify(cmd_type, resource_id);
     virtgpu::trace_q_notify(0, virtgpu_trace_used_idx());
     virtgpu::trace_wait_completion_enter(cmd_type, resource_id, virtgpu::WAIT_PATH_2DESC);
     state.device.notify_queue_fast(0);
-    let _used_len = wait_for_ctrlq_completion(
+    wait_for_ctrlq_completion(
         state,
         previous_used_idx,
         cmd_type,
         resource_id,
         virtgpu::WAIT_PATH_2DESC,
-    )?;
-    Ok(())
+    )
 }
 
 /// Send a command using a 3-descriptor chain (Linux format):
@@ -2419,10 +2549,6 @@ fn send_command_3desc(
     let (cmd_type, resource_id) = virtgpu_decode_3desc_command(hdr_phys);
     virtgpu_trace_submission(cmd_type, resource_id);
 
-    drain_stale_ctrlq_completions(state);
-    let previous_used_idx = state.last_used_idx;
-    prepare_ctrlq_completion_wait(previous_used_idx)?;
-
     let resp_phys = virt_to_phys(&raw const PCI_RESP_BUF as u64);
     let resp_len = core::mem::size_of::<VirtioGpuCtrlHdr>() as u32;
 
@@ -2434,6 +2560,38 @@ fn send_command_3desc(
         core::ptr::write_volatile(&mut hdr.type_, 0xDEADBEEF);
         dma_cache_clean(&raw const PCI_RESP_BUF as *const u8, 64);
     }
+
+    let (used_len, resp_type) = send_command_3desc_with_trace(
+        state,
+        hdr_phys,
+        hdr_len,
+        payload_phys,
+        payload_len,
+        resp_phys,
+        resp_len,
+        &raw const PCI_RESP_BUF as *const u8,
+        cmd_type,
+        resource_id,
+    )?;
+
+    Ok((used_len, resp_type))
+}
+
+fn send_command_3desc_with_trace(
+    state: &mut GpuPciDeviceState,
+    hdr_phys: u64,
+    hdr_len: u32,
+    payload_phys: u64,
+    payload_len: u32,
+    resp_phys: u64,
+    resp_len: u32,
+    resp_virt: *const u8,
+    cmd_type: u32,
+    resource_id: u32,
+) -> Result<(u32, u32), &'static str> {
+    drain_stale_ctrlq_completions(state);
+    let previous_used_idx = state.last_used_idx;
+    prepare_ctrlq_completion_wait(previous_used_idx)?;
 
     unsafe {
         let q = &raw mut PCI_CTRL_QUEUE;
@@ -2506,14 +2664,13 @@ fn send_command_3desc(
     // Invalidate response cache
     #[cfg(target_arch = "aarch64")]
     unsafe {
-        let r = &raw const PCI_RESP_BUF as usize;
+        let r = resp_virt as usize;
         core::arch::asm!("dc civac, {}", in(reg) r, options(nostack));
         core::arch::asm!("dsb sy", options(nostack, preserves_flags));
     }
 
     let resp_type = unsafe {
-        let p = &raw const PCI_RESP_BUF;
-        let h = &*((*p).data.as_ptr() as *const VirtioGpuCtrlHdr);
+        let h = &*(resp_virt as *const VirtioGpuCtrlHdr);
         core::ptr::read_volatile(&h.type_)
     };
 
@@ -2604,6 +2761,189 @@ fn send_command_expect_ok(state: &mut GpuPciDeviceState, cmd_len: u32) -> Result
         return Err("GPU PCI command failed");
     }
     Ok(())
+}
+
+fn send_owned_command_expect_ok<T>(
+    state: &mut GpuPciDeviceState,
+    command: &T,
+) -> Result<VirtioGpuCtrlHdr, &'static str> {
+    let cmd_len = core::mem::size_of::<T>();
+    let resp_len = core::mem::size_of::<VirtioGpuCtrlHdr>();
+    let mut cmd_buf = PciOwnedDmaBuffer::new(cmd_len)?;
+    let mut resp_buf = PciOwnedDmaBuffer::new(resp_len)?;
+
+    cmd_buf.write_bytes(command as *const T as *const u8, cmd_len)?;
+    let poison = VirtioGpuCtrlHdr {
+        type_: 0xDEADBEEF,
+        flags: 0xDEADBEEF,
+        fence_id: 0,
+        ctx_id: 0,
+        padding: 0,
+    };
+    resp_buf.write_value(&poison)?;
+
+    let (cmd_type, resource_id) = virtgpu_decode_command(cmd_buf.ptr as *const u8);
+    virtgpu_trace_submission(cmd_type, resource_id);
+    cmd_buf.clean(cmd_len);
+    resp_buf.clean(resp_len);
+
+    let _used_len = send_command_with_trace(
+        state,
+        cmd_buf.phys(),
+        cmd_len as u32,
+        resp_buf.phys(),
+        resp_len as u32,
+        cmd_type,
+        resource_id,
+    )?;
+
+    resp_buf.invalidate(resp_len);
+    let resp = unsafe { core::ptr::read_volatile(resp_buf.ptr as *const VirtioGpuCtrlHdr) };
+    virtgpu::trace_response(resp.type_);
+    virtgpu_note_resource2_response(cmd_type, resource_id, resp.type_);
+
+    if resp.type_ != cmd::RESP_OK_NODATA {
+        crate::tracing::output::trace_dump_latest(256);
+        crate::tracing::output::trace_dump_counters();
+        crate::serial_println!("[virtio-gpu-pci] owned cmd={:#x} FAILED: resp_type={:#x} flags={:#x} fence={} (poison=0xDEADBEEF means no device response)",
+            cmd_type, resp.type_, resp.flags, resp.fence_id);
+        return Err("GPU PCI command failed");
+    }
+
+    Ok(resp)
+}
+
+fn send_owned_transfer_to_host_3d_expect_ok(
+    state: &mut GpuPciDeviceState,
+    box_x: u32,
+    box_y: u32,
+    box_w: u32,
+    box_h: u32,
+    offset: u64,
+    resource_id: u32,
+    stride: u32,
+) -> Result<VirtioGpuCtrlHdr, &'static str> {
+    let cmd_len = core::mem::size_of::<VirtioGpuTransferHost3d>();
+    let resp_len = core::mem::size_of::<VirtioGpuCtrlHdr>();
+    let cmd_buf = PciOwnedDmaBuffer::new(cmd_len)?;
+    let mut resp_buf = PciOwnedDmaBuffer::new(resp_len)?;
+
+    unsafe {
+        let cmd = cmd_buf.ptr as *mut VirtioGpuTransferHost3d;
+        core::ptr::write_volatile(
+            &mut (*cmd).hdr,
+            VirtioGpuCtrlHdr {
+                type_: cmd::TRANSFER_TO_HOST_3D,
+                flags: 0,
+                fence_id: 0,
+                ctx_id: VIRGL_CTX_ID,
+                padding: 0,
+            },
+        );
+        core::ptr::write_volatile(&mut (*cmd).box_x, box_x);
+        core::ptr::write_volatile(&mut (*cmd).box_y, box_y);
+        core::ptr::write_volatile(&mut (*cmd).box_z, 0);
+        core::ptr::write_volatile(&mut (*cmd).box_w, box_w);
+        core::ptr::write_volatile(&mut (*cmd).box_h, box_h);
+        core::ptr::write_volatile(&mut (*cmd).box_d, 1);
+        core::ptr::write_volatile(&mut (*cmd).offset, offset);
+        core::ptr::write_volatile(&mut (*cmd).resource_id, resource_id);
+        core::ptr::write_volatile(&mut (*cmd).level, 0);
+        core::ptr::write_volatile(&mut (*cmd).stride, stride);
+        core::ptr::write_volatile(&mut (*cmd).layer_stride, 0);
+    }
+
+    let poison = VirtioGpuCtrlHdr {
+        type_: 0xDEADBEEF,
+        flags: 0xDEADBEEF,
+        fence_id: 0,
+        ctx_id: 0,
+        padding: 0,
+    };
+    resp_buf.write_value(&poison)?;
+
+    let cmd_type = cmd::TRANSFER_TO_HOST_3D;
+    virtgpu_trace_submission(cmd_type, resource_id);
+    cmd_buf.clean(cmd_len);
+    resp_buf.clean(resp_len);
+
+    let _used_len = send_command_with_trace(
+        state,
+        cmd_buf.phys(),
+        cmd_len as u32,
+        resp_buf.phys(),
+        resp_len as u32,
+        cmd_type,
+        resource_id,
+    )?;
+
+    resp_buf.invalidate(resp_len);
+    let resp = unsafe { core::ptr::read_volatile(resp_buf.ptr as *const VirtioGpuCtrlHdr) };
+    virtgpu::trace_response(resp.type_);
+    virtgpu_note_resource2_response(cmd_type, resource_id, resp.type_);
+
+    if resp.type_ != cmd::RESP_OK_NODATA {
+        crate::tracing::output::trace_dump_latest(256);
+        crate::tracing::output::trace_dump_counters();
+        crate::serial_println!("[virtio-gpu-pci] owned transfer cmd FAILED: resp_type={:#x} flags={:#x} fence={} (poison=0xDEADBEEF means no device response)",
+            resp.type_, resp.flags, resp.fence_id);
+        return Err("GPU PCI command failed");
+    }
+
+    Ok(resp)
+}
+
+fn send_owned_3desc_command(
+    state: &mut GpuPciDeviceState,
+    header: &VirtioGpuCmdSubmit,
+    payload: &[u32],
+) -> Result<(u32, VirtioGpuCtrlHdr), &'static str> {
+    let hdr_len = core::mem::size_of::<VirtioGpuCmdSubmit>();
+    let payload_len = payload.len() * core::mem::size_of::<u32>();
+    let resp_len = core::mem::size_of::<VirtioGpuCtrlHdr>();
+
+    let mut hdr_buf = PciOwnedDmaBuffer::new(hdr_len)?;
+    let mut payload_buf = PciOwnedDmaBuffer::new(payload_len)?;
+    let mut resp_buf = PciOwnedDmaBuffer::new(resp_len)?;
+
+    hdr_buf.write_bytes(header as *const VirtioGpuCmdSubmit as *const u8, hdr_len)?;
+    payload_buf.write_bytes(payload.as_ptr() as *const u8, payload_len)?;
+    let poison = VirtioGpuCtrlHdr {
+        type_: 0xDEADBEEF,
+        flags: 0xDEADBEEF,
+        fence_id: 0,
+        ctx_id: 0,
+        padding: 0,
+    };
+    resp_buf.write_value(&poison)?;
+
+    let (cmd_type, resource_id) = virtgpu_decode_command(hdr_buf.ptr as *const u8);
+    virtgpu_trace_submission(cmd_type, resource_id);
+    hdr_buf.clean(hdr_len);
+    payload_buf.clean(payload_len);
+    resp_buf.clean(resp_len);
+
+    let (used_len, resp_type) = send_command_3desc_with_trace(
+        state,
+        hdr_buf.phys(),
+        hdr_len as u32,
+        payload_buf.phys(),
+        payload_len as u32,
+        resp_buf.phys(),
+        resp_len as u32,
+        resp_buf.ptr as *const u8,
+        cmd_type,
+        resource_id,
+    )?;
+
+    resp_buf.invalidate(resp_len);
+    let resp = unsafe { core::ptr::read_volatile(resp_buf.ptr as *const VirtioGpuCtrlHdr) };
+    if resp.type_ != resp_type {
+        virtgpu::trace_response(resp.type_);
+        virtgpu_note_resource2_response(cmd_type, resource_id, resp.type_);
+    }
+
+    Ok((used_len, resp))
 }
 
 // =============================================================================
@@ -3482,37 +3822,32 @@ fn resource_flush_3d(
         resource_id,
         resource_id != RESOURCE_3D_ID,
     );
-    unsafe {
-        let cmd_ptr = &raw mut PCI_CMD_BUF;
-        let cmd = &mut *((*cmd_ptr).data.as_mut_ptr() as *mut VirtioGpuResourceFlush);
-        *cmd = VirtioGpuResourceFlush {
-            hdr: VirtioGpuCtrlHdr {
-                type_: cmd::RESOURCE_FLUSH,
-                flags: 0,
-                fence_id: 0,
-                ctx_id: 0,
-                padding: 0,
-            },
-            r_x: 0,
-            r_y: 0,
-            r_width: state.width,
-            r_height: state.height,
-            resource_id,
+    let command = VirtioGpuResourceFlush {
+        hdr: VirtioGpuCtrlHdr {
+            type_: cmd::RESOURCE_FLUSH,
+            flags: 0,
+            fence_id: 0,
+            ctx_id: 0,
             padding: 0,
-        };
-        core::ptr::write_volatile(core::ptr::addr_of_mut!((*cmd).resource_id), resource_id);
-        let readback = core::ptr::read_volatile(core::ptr::addr_of!((*cmd).resource_id));
-        if readback != resource_id {
-            virtgpu::trace_flush_readback_mismatch(resource_id, readback);
-        }
-        core::sync::atomic::compiler_fence(Ordering::Release);
+        },
+        r_x: 0,
+        r_y: 0,
+        r_width: state.width,
+        r_height: state.height,
+        resource_id,
+        padding: 0,
+    };
+    let readback = core::ptr::addr_of!(command.resource_id);
+    let readback = unsafe { core::ptr::read_volatile(readback) };
+    if readback != resource_id {
+        virtgpu::trace_flush_readback_mismatch(resource_id, readback);
     }
+    core::sync::atomic::compiler_fence(Ordering::Release);
     hex_dump_cmd_buf(
         "RESOURCE_FLUSH",
         core::mem::size_of::<VirtioGpuResourceFlush>(),
     );
-    let result =
-        send_command_expect_ok(state, core::mem::size_of::<VirtioGpuResourceFlush>() as u32);
+    let result = send_owned_command_expect_ok(state, &command).map(|_| ());
     virtgpu::trace_flush_exit(
         virtgpu::FLUSH_HELPER_3D,
         caller_tag,
@@ -3539,31 +3874,6 @@ fn transfer_to_host_3d(
 
     // NOTE: TRANSFER_TO/FROM_HOST_3D uses unfenced commands (flags=0).
     // SUBMIT_3D uses VIRTIO_GPU_FLAG_FENCE (required for VirGL execution).
-
-    unsafe {
-        let cmd_ptr = &raw mut PCI_CMD_BUF;
-        let cmd = &mut *((*cmd_ptr).data.as_mut_ptr() as *mut VirtioGpuTransferHost3d);
-        *cmd = VirtioGpuTransferHost3d {
-            hdr: VirtioGpuCtrlHdr {
-                type_: cmd::TRANSFER_TO_HOST_3D,
-                flags: 0,
-                fence_id: 0,
-                ctx_id: VIRGL_CTX_ID, // resource is attached to this context
-                padding: 0,
-            },
-            box_x: x,
-            box_y: y,
-            box_z: 0,
-            box_w: w,
-            box_h: h,
-            box_d: 1,
-            offset,
-            resource_id,
-            level: 0,
-            stride,
-            layer_stride: 0,
-        };
-    }
 
     // Flush the backing buffer from CPU cache to physical RAM before DMA read.
     // Without this, the hypervisor reads stale zeros instead of our pixel data.
@@ -3598,10 +3908,8 @@ fn transfer_to_host_3d(
         "TRANSFER_TO_HOST_3D",
         core::mem::size_of::<VirtioGpuTransferHost3d>(),
     );
-    send_command_expect_ok(
-        state,
-        core::mem::size_of::<VirtioGpuTransferHost3d>() as u32,
-    )
+    send_owned_transfer_to_host_3d_expect_ok(state, x, y, w, h, offset, resource_id, stride)
+        .map(|_| ())
 }
 
 /// Transfer a 3D resource from host texture to guest backing (readback/download).
@@ -3687,10 +3995,8 @@ fn transfer_from_host_3d(
 ///   Desc 1: VirGL command payload (N bytes, readable)
 ///   Desc 2: Response (24 bytes, writable)
 ///
-/// The header and payload are written contiguously to PCI_3D_CMD_BUF but sent
-/// as separate descriptors. The device reads the header from desc[0] (exactly
-/// sizeof(VirtioGpuCmdSubmit) = 32 bytes) and the VirGL command data from
-/// desc[1]. This matches how the Linux virtio-gpu driver sends SUBMIT_3D.
+/// The header and payload use separate owned DMA buffers, matching Linux's
+/// `virtio_gpu_vbuffer` lifetime: both remain stable until used-ring completion.
 /// Result of a VirGL 3D command submission.
 struct SubmitResult {
     /// The fence ID we requested
@@ -3705,57 +4011,27 @@ fn virgl_submit_3d_cmd(
     cmds: &[u32],
 ) -> Result<SubmitResult, &'static str> {
     let payload_bytes = cmds.len() * 4;
-    let hdr_size = core::mem::size_of::<VirtioGpuCmdSubmit>();
-    let total_cmd_len = hdr_size + payload_bytes;
-
-    if total_cmd_len > 16384 {
-        return Err("VirGL command buffer too large");
-    }
-
     let submit_id = state.next_fence_id;
     state.next_fence_id += 1;
     virtgpu::trace_submit_3d_enter(submit_id, cmds.len() as u32);
 
-    // Write header + payload contiguously to PCI_3D_CMD_BUF.
-    // Descriptors will point to different offsets within this buffer.
-    unsafe {
-        let buf_ptr = &raw mut PCI_3D_CMD_BUF;
-        let base = (*buf_ptr).data.as_mut_ptr();
-
-        let hdr = &mut *(base as *mut VirtioGpuCmdSubmit);
-        *hdr = VirtioGpuCmdSubmit {
-            hdr: VirtioGpuCtrlHdr {
-                type_: cmd::SUBMIT_3D,
-                flags: VIRTIO_GPU_FLAG_FENCE,
-                fence_id: submit_id,
-                ctx_id,
-                padding: 0,
-            },
-            size: payload_bytes as u32,
-            _padding: 0,
-        };
-
-        let payload_dst = base.add(hdr_size) as *mut u32;
-        core::ptr::copy_nonoverlapping(cmds.as_ptr(), payload_dst, cmds.len());
-    }
+    let header = VirtioGpuCmdSubmit {
+        hdr: VirtioGpuCtrlHdr {
+            type_: cmd::SUBMIT_3D,
+            flags: VIRTIO_GPU_FLAG_FENCE,
+            fence_id: submit_id,
+            ctx_id,
+            padding: 0,
+        },
+        size: payload_bytes as u32,
+        _padding: 0,
+    };
 
     // Hex dump VirGL payload for byte comparison with Linux reference
     hex_dump_virgl_payload("SUBMIT_3D_PAYLOAD", cmds.len());
 
-    // Flush the combined buffer from CPU cache
-    dma_cache_clean(&raw const PCI_3D_CMD_BUF as *const u8, total_cmd_len);
-
-    let hdr_phys = virt_to_phys(&raw const PCI_3D_CMD_BUF as u64);
-    let payload_phys = hdr_phys + hdr_size as u64;
-
     // 3-descriptor chain: header (readable) + payload (readable) + response (writable)
-    let (used_len, resp_type) = match send_command_3desc(
-        state,
-        hdr_phys,
-        hdr_size as u32,
-        payload_phys,
-        payload_bytes as u32,
-    ) {
+    let (used_len, resp) = match send_owned_3desc_command(state, &header, cmds) {
         Ok(result) => result,
         Err(e) => {
             virtgpu::trace_submit_3d_exit(submit_id, 0xffff, false);
@@ -3763,15 +4039,9 @@ fn virgl_submit_3d_cmd(
         }
     };
 
-    // Read response flags and fence_id
-    let (resp_flags, resp_fence) = unsafe {
-        let p = &raw const PCI_RESP_BUF;
-        let h = &*((*p).data.as_ptr() as *const VirtioGpuCtrlHdr);
-        (
-            core::ptr::read_volatile(&h.flags),
-            core::ptr::read_volatile(&h.fence_id),
-        )
-    };
+    let resp_type = resp.type_;
+    let resp_flags = resp.flags;
+    let resp_fence = resp.fence_id;
 
     if resp_type != cmd::RESP_OK_NODATA {
         virtgpu::trace_submit_3d_exit(submit_id, resp_type, false);
@@ -3819,56 +4089,31 @@ fn virgl_fence_sync(
 
     let payload = cmdbuf.as_slice();
     let payload_bytes = payload.len() * 4;
-    let hdr_size = core::mem::size_of::<VirtioGpuCmdSubmit>();
 
     let fence_id = state.next_fence_id;
     state.next_fence_id += 1;
 
-    unsafe {
-        let buf_ptr = &raw mut PCI_3D_CMD_BUF;
-        let base = (*buf_ptr).data.as_mut_ptr();
+    let header = VirtioGpuCmdSubmit {
+        hdr: VirtioGpuCtrlHdr {
+            type_: cmd::SUBMIT_3D,
+            flags: VIRTIO_GPU_FLAG_FENCE,
+            fence_id,
+            ctx_id: VIRGL_CTX_ID,
+            padding: 0,
+        },
+        size: payload_bytes as u32,
+        _padding: 0,
+    };
 
-        let hdr = &mut *(base as *mut VirtioGpuCmdSubmit);
-        *hdr = VirtioGpuCmdSubmit {
-            hdr: VirtioGpuCtrlHdr {
-                type_: cmd::SUBMIT_3D,
-                flags: VIRTIO_GPU_FLAG_FENCE,
-                fence_id,
-                ctx_id: VIRGL_CTX_ID,
-                padding: 0,
-            },
-            size: payload_bytes as u32,
-            _padding: 0,
-        };
-
-        let payload_dst = base.add(hdr_size) as *mut u32;
-        core::ptr::copy_nonoverlapping(payload.as_ptr(), payload_dst, payload.len());
-    }
-
-    let total_len = hdr_size + payload_bytes;
-    dma_cache_clean(&raw const PCI_3D_CMD_BUF as *const u8, total_len);
-
-    let hdr_phys = virt_to_phys(&raw const PCI_3D_CMD_BUF as u64);
-    let payload_phys = hdr_phys + hdr_size as u64;
-
-    let (_used_len, resp_type) = send_command_3desc(
-        state,
-        hdr_phys,
-        hdr_size as u32,
-        payload_phys,
-        payload_bytes as u32,
-    )?;
+    let (_used_len, resp) = send_owned_3desc_command(state, &header, payload)?;
+    let resp_type = resp.type_;
 
     if resp_type != cmd::RESP_OK_NODATA {
         crate::serial_println!("[virgl] fence_sync: NOP failed resp={:#x}", resp_type);
         return Err("fence sync NOP rejected");
     }
 
-    let resp_fence = unsafe {
-        let resp_ptr = &raw const PCI_RESP_BUF;
-        let hdr = &*((*resp_ptr).data.as_ptr() as *const VirtioGpuCtrlHdr);
-        core::ptr::read_volatile(&hdr.fence_id)
-    };
+    let resp_fence = resp.fence_id;
 
     if resp_fence >= target_fence_id {
         Ok(())
@@ -3882,27 +4127,23 @@ fn set_scanout_resource(
     state: &mut GpuPciDeviceState,
     resource_id: u32,
 ) -> Result<(), &'static str> {
-    unsafe {
-        let cmd_ptr = &raw mut PCI_CMD_BUF;
-        let cmd = &mut *((*cmd_ptr).data.as_mut_ptr() as *mut VirtioGpuSetScanout);
-        *cmd = VirtioGpuSetScanout {
-            hdr: VirtioGpuCtrlHdr {
-                type_: cmd::SET_SCANOUT,
-                flags: 0,
-                fence_id: 0,
-                ctx_id: 0,
-                padding: 0,
-            },
-            r_x: 0,
-            r_y: 0,
-            r_width: state.width,
-            r_height: state.height,
-            scanout_id: 0,
-            resource_id,
-        };
-    }
+    let command = VirtioGpuSetScanout {
+        hdr: VirtioGpuCtrlHdr {
+            type_: cmd::SET_SCANOUT,
+            flags: 0,
+            fence_id: 0,
+            ctx_id: 0,
+            padding: 0,
+        },
+        r_x: 0,
+        r_y: 0,
+        r_width: state.width,
+        r_height: state.height,
+        scanout_id: 0,
+        resource_id,
+    };
     hex_dump_cmd_buf("SET_SCANOUT", core::mem::size_of::<VirtioGpuSetScanout>());
-    send_command_expect_ok(state, core::mem::size_of::<VirtioGpuSetScanout>() as u32)
+    send_owned_command_expect_ok(state, &command).map(|_| ())
 }
 
 // =============================================================================
@@ -4452,35 +4693,27 @@ pub fn virgl_composite_frame(pixels: &[u32], width: u32, height: u32) -> Result<
     with_device_state(|state| {
         // Need to send the transfer command manually since transfer_to_host_3d
         // skips cache clean for RESOURCE_3D_ID (we already did it above)
-        let offset = 0u64;
-        unsafe {
-            let cmd_ptr = &raw mut PCI_CMD_BUF;
-            let cmd = &mut *((*cmd_ptr).data.as_mut_ptr() as *mut VirtioGpuTransferHost3d);
-            *cmd = VirtioGpuTransferHost3d {
-                hdr: VirtioGpuCtrlHdr {
-                    type_: cmd::TRANSFER_TO_HOST_3D,
-                    flags: 0,
-                    fence_id: 0,
-                    ctx_id: VIRGL_CTX_ID,
-                    padding: 0,
-                },
-                box_x: 0,
-                box_y: 0,
-                box_z: 0,
-                box_w: copy_w,
-                box_h: copy_h,
-                box_d: 1,
-                offset,
-                resource_id: RESOURCE_3D_ID,
-                level: 0,
-                stride: display_w * 4,
-                layer_stride: 0,
-            };
-        }
-        send_command_expect_ok(
-            state,
-            core::mem::size_of::<VirtioGpuTransferHost3d>() as u32,
-        )
+        let command = VirtioGpuTransferHost3d {
+            hdr: VirtioGpuCtrlHdr {
+                type_: cmd::TRANSFER_TO_HOST_3D,
+                flags: 0,
+                fence_id: 0,
+                ctx_id: VIRGL_CTX_ID,
+                padding: 0,
+            },
+            box_x: 0,
+            box_y: 0,
+            box_z: 0,
+            box_w: copy_w,
+            box_h: copy_h,
+            box_d: 1,
+            offset: 0,
+            resource_id: RESOURCE_3D_ID,
+            level: 0,
+            stride: display_w * 4,
+            layer_stride: 0,
+        };
+        send_owned_command_expect_ok(state, &command).map(|_| ())
     })?;
 
     // SET_SCANOUT + RESOURCE_FLUSH
@@ -4841,7 +5074,7 @@ fn virgl_composite_single_quad(
         |cmdbuf: &mut CommandBuffer, verts: &[u32; 32], vb_off: &mut u32, di: &mut u32| {
             cmdbuf.resource_inline_write(RESOURCE_VB_ID, *vb_off, 128, verts);
             cmdbuf.set_vertex_buffers(&[(32, 0, RESOURCE_VB_ID)]);
-            cmdbuf.draw_vbo(*di, 4, pipe::PRIM_TRIANGLE_FAN, 3);
+            cmdbuf.draw_vbo(*di, 4, pipe::PRIM_TRIANGLE_FAN, *di + 3);
             *vb_off += 128;
             *di += 4;
         };
