@@ -18,6 +18,12 @@ use super::*;
 /// Algorithms offered by BSSH.
 // ext-info-s tells clients we'll send SSH_MSG_EXT_INFO after NEWKEYS (RFC 8308)
 pub const KEX_ALGORITHMS: &str = "mlkem768x25519-sha256,curve25519-sha256,ext-info-s";
+/// Algorithms offered by the BSSH client.
+///
+/// Keep this in sync with the client-side key exchange implementation. The
+/// client currently implements Curve25519 only; advertising ML-KEM here causes
+/// OpenSSH servers to negotiate a hybrid exchange that the client cannot speak.
+pub const CLIENT_KEX_ALGORITHMS: &str = "curve25519-sha256,ext-info-c";
 pub const HOST_KEY_ALGORITHMS: &str = "rsa-sha2-256,ssh-rsa";
 pub const CIPHERS: &str = "aes128-ctr";
 pub const MACS: &str = "hmac-sha2-256";
@@ -45,6 +51,15 @@ impl KexState {
 
 /// Build a KEXINIT message payload.
 pub fn build_kexinit(rng: &mut Csprng) -> Vec<u8> {
+    build_kexinit_with_algorithms(rng, KEX_ALGORITHMS)
+}
+
+/// Build a client-side KEXINIT message payload.
+pub fn build_client_kexinit(rng: &mut Csprng) -> Vec<u8> {
+    build_kexinit_with_algorithms(rng, CLIENT_KEX_ALGORITHMS)
+}
+
+fn build_kexinit_with_algorithms(rng: &mut Csprng, kex_algorithms: &str) -> Vec<u8> {
     let mut payload = Vec::with_capacity(256);
 
     // Message type
@@ -56,7 +71,7 @@ pub fn build_kexinit(rng: &mut Csprng) -> Vec<u8> {
     payload.extend_from_slice(&cookie);
 
     // Algorithm name-lists (10 of them)
-    SshBuf::put_string(&mut payload, KEX_ALGORITHMS.as_bytes());
+    SshBuf::put_string(&mut payload, kex_algorithms.as_bytes());
     SshBuf::put_string(&mut payload, HOST_KEY_ALGORITHMS.as_bytes());
     SshBuf::put_string(&mut payload, CIPHERS.as_bytes()); // encryption C->S
     SshBuf::put_string(&mut payload, CIPHERS.as_bytes()); // encryption S->C

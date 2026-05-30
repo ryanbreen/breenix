@@ -67,7 +67,11 @@ fn main() {
 
     // SSH handshake + auth
     if let Err(e) = session.handshake(username, password) {
-        eprintln!("bssh: handshake failed: {:?}", e);
+        if matches!(e, libbreenix::ssh::SshError::Auth) {
+            eprintln!("bssh: authentication failed");
+        } else {
+            eprintln!("bssh: handshake failed: {:?}", e);
+        }
         std::process::exit(1);
     }
     println!("bssh: authenticated as '{}'", username);

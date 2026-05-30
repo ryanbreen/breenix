@@ -367,7 +367,7 @@ impl ClientSession {
 
         // 2. Key exchange
         let mut rng = Csprng::new();
-        let my_kexinit = kex::build_kexinit(&mut rng);
+        let my_kexinit = kex::build_client_kexinit(&mut rng);
         self.kex.my_kexinit = my_kexinit.clone();
         self.io.send_packet(&my_kexinit).map_err(|_| SshError::Io)?;
 
