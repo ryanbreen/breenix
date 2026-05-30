@@ -68,11 +68,12 @@ run_single_test() {
     local EXT2_WRITABLE="$OUTPUT_DIR/ext2-writable.img"
     cp "$EXT2_DISK" "$EXT2_WRITABLE"
 
-    # Run QEMU with 20s timeout
+    # Run QEMU with 20s timeout.
+    # Breenix ARM64 expects a GICv3 CPU interface, matching Parallels.
     # Always include GPU, keyboard, and network so kernel VirtIO enumeration finds them
     # Use writable disk copy (no readonly=on) to allow filesystem writes
     timeout 20 qemu-system-aarch64 \
-        -M virt -cpu cortex-a72 -m 512 -smp 4 \
+        -M virt,gic-version=3 -cpu cortex-a72 -m 512 -smp 4 \
         -kernel "$KERNEL" \
         -display none -no-reboot \
         -device virtio-gpu-device \
