@@ -15,6 +15,7 @@ use libbreenix::types::Fd;
 use std::sync::Mutex;
 
 static FRAME_BUFFER: Mutex<Option<Vec<u8>>> = Mutex::new(None);
+const REFRESH_INTERVAL_MS: u64 = 1000;
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -215,6 +216,41 @@ fn flush_frame() {
     let frame = FRAME_BUFFER.lock().ok().and_then(|mut frame| frame.take());
     if let Some(buf) = frame {
         write_all(&buf);
+    }
+}
+
+fn monotonic_ms() -> Option<u64> {
+    libbreenix::time::now_monotonic()
+        .ok()
+        .map(|ts| ts.tv_sec as u64 * 1000 + ts.tv_nsec as u64 / 1_000_000)
+}
+
+fn sleep_ms_blocking(ms: u64) {
+    let ts = libbreenix::types::Timespec {
+        tv_sec: (ms / 1000) as i64,
+        tv_nsec: ((ms % 1000) * 1_000_000) as i64,
+    };
+    let _ = libbreenix::time::nanosleep(&ts);
+}
+
+fn wait_until_ms(deadline_ms: u64) {
+    let Some(mut now_ms) = monotonic_ms() else {
+        sleep_ms_blocking(REFRESH_INTERVAL_MS);
+        return;
+    };
+
+    while now_ms < deadline_ms {
+        let remaining_ms = deadline_ms - now_ms;
+        sleep_ms_blocking(remaining_ms.min(REFRESH_INTERVAL_MS));
+        match monotonic_ms() {
+            Some(next_ms) => {
+                if next_ms <= now_ms {
+                    let _ = libbreenix::process::yield_now();
+                }
+                now_ms = next_ms;
+            }
+            None => break,
+        }
     }
 }
 
@@ -510,8 +546,13 @@ fn main() {
     let mut prev_gpu_partial: u64 = 0;
     let mut prev_cpu_ticks: Vec<CpuTicks> = Vec::new();
     let mut first_frame = true;
+    let mut next_refresh_ms = monotonic_ms().unwrap_or(0);
 
     loop {
+        wait_until_ms(next_refresh_ms);
+        let frame_start_ms = monotonic_ms().unwrap_or(next_refresh_ms);
+        next_refresh_ms = frame_start_ms.saturating_add(REFRESH_INTERVAL_MS);
+
         // ── Gather Data ──────────────────────────────────────────────────
 
         // Uptime
@@ -815,8 +856,5 @@ fn main() {
         emit_line_break();
         emit_str("\x1b[J");
         flush_frame();
-
-        // Sleep 1 second before next refresh
-        let _ = libbreenix::time::sleep_ms(1000);
     }
 }
