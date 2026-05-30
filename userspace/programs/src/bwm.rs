@@ -1245,10 +1245,11 @@ fn blit_window_contents(vram: &mut [u32], screen_w: usize, screen_h: usize, wind
                     continue;
                 }
 
-                let ox0 = occ.content_x();
-                let oy0 = occ.content_y();
-                let ox1 = ox0 + occ.content_width() as i32;
-                let oy1 = oy0 + occ.content_height() as i32;
+                // Occlude lower window content against the full upper window,
+                // including titlebar, borders, and shadow. The client content
+                // rect starts below the chrome, so using only content bounds
+                // lets lower content overpaint upper chrome at overlaps.
+                let (ox0, oy0, ox1, oy1) = occ.bounds();
                 if py as i32 >= oy1 || (py as i32) < oy0 {
                     continue;
                 }
