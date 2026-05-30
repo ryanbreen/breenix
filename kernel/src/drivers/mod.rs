@@ -384,7 +384,15 @@ pub fn run_post_init_self_tests() {
     use crate::serial_println;
 
     serial_println!("[drivers] Running post-init self-tests...");
-    if let Err(e) = virtio::block_mmio::test_read() {
-        serial_println!("[drivers] VirtIO block test failed: {}", e);
+    if virtio::block_mmio::is_initialized() {
+        if let Err(e) = virtio::block_mmio::test_read() {
+            serial_println!("[drivers] VirtIO block test failed: {}", e);
+        }
+    } else if crate::platform_config::is_parallels() {
+        serial_println!(
+            "[drivers] VirtIO block self-test skipped: no VirtIO MMIO block device on Parallels; using AHCI"
+        );
+    } else {
+        serial_println!("[drivers] VirtIO block self-test skipped: no VirtIO MMIO block device");
     }
 }

@@ -456,6 +456,11 @@ fn virt_to_phys(addr: u64) -> u64 {
 /// Number of initialized block devices
 static DEVICE_COUNT: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
 
+/// Return true when at least one VirtIO MMIO block device initialized.
+pub fn is_initialized() -> bool {
+    DEVICE_COUNT.load(core::sync::atomic::Ordering::Acquire) > 0
+}
+
 /// Initialize all VirtIO block devices
 pub fn init() -> Result<(), &'static str> {
     crate::serial_println!("[virtio-blk] Searching for block devices...");
