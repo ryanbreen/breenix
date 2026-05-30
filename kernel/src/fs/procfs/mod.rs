@@ -791,17 +791,15 @@ fn generate_stat() -> String {
     let mut out = String::with_capacity(512);
 
     // Per-CPU lines: "cpuN <timer_ticks> <idle_ticks>"
-    #[cfg(target_arch = "aarch64")]
-    let num_cpus = crate::arch_impl::aarch64::smp::cpus_online() as usize;
-    #[cfg(not(target_arch = "aarch64"))]
-    let num_cpus = 1usize;
-    let num_cpus = if num_cpus == 0 { 1 } else { num_cpus };
+    let num_cpus = procfs_online_cpus();
 
     for cpu in 0..num_cpus {
         let ticks = TIMER_TICK_TOTAL.get_cpu(cpu);
         let idle = IDLE_TICK_TOTAL.get_cpu(cpu);
         let _ = write!(out, "cpu{} {} {}\n", cpu, ticks, idle);
     }
+
+    let (cpu_online, cpu_sample_ticks, cpu_capacity_ticks) = procfs_cpu_accounting_ticks();
 
     // Aggregate counters (existing format, backwards compatible)
     let _ = write!(
@@ -811,6 +809,9 @@ fn generate_stat() -> String {
          context_switches {}\n\
          timer_ticks {}\n\
          global_ticks {}\n\
+         cpu_online {}\n\
+         cpu_sample_ticks {}\n\
+         cpu_capacity_ticks {}\n\
          forks {}\n\
          execs {}\n\
          cow_faults {}\n\
@@ -822,6 +823,9 @@ fn generate_stat() -> String {
         CTX_SWITCH_TOTAL.aggregate(),
         TIMER_TICK_TOTAL.aggregate(),
         crate::time::get_ticks(),
+        cpu_online,
+        cpu_sample_ticks,
+        cpu_capacity_ticks,
         FORK_TOTAL.aggregate(),
         EXEC_TOTAL.aggregate(),
         COW_FAULT_TOTAL.aggregate(),
@@ -838,6 +842,29 @@ fn generate_stat() -> String {
         );
     }
     out
+}
+
+fn procfs_online_cpus() -> usize {
+    #[cfg(target_arch = "aarch64")]
+    let num_cpus = crate::arch_impl::aarch64::smp::cpus_online() as usize;
+    #[cfg(not(target_arch = "aarch64"))]
+    let num_cpus = 1usize;
+
+    if num_cpus == 0 {
+        1
+    } else {
+        num_cpus
+    }
+}
+
+fn procfs_cpu_accounting_ticks() -> (usize, u64, u64) {
+    use crate::tracing::providers::counters::TIMER_TICK_TOTAL;
+
+    let cpu_online = procfs_online_cpus();
+    let capacity_ticks = TIMER_TICK_TOTAL.aggregate();
+    let sample_ticks = capacity_ticks / cpu_online as u64;
+
+    (cpu_online, sample_ticks, capacity_ticks)
 }
 
 /// Generate /proc/cowinfo content (copy-on-write statistics)
@@ -1002,6 +1029,7 @@ fn generate_pid_status(pid: u64) -> String {
             .map(|&(_, t)| t)
             .sum::<u64>()
     };
+    let (cpu_online, cpu_sample_ticks, cpu_capacity_ticks) = procfs_cpu_accounting_ticks();
 
     let manager_guard = crate::process::manager();
     let manager = match manager_guard.as_ref() {
@@ -1057,7 +1085,10 @@ fn generate_pid_status(pid: u64) -> String {
          VmCode:\t{} kB\n\
          VmHeap:\t{} kB\n\
          VmStack:\t{} kB\n\
-         CpuTicks:\t{}\n",
+         CpuTicks:\t{}\n\
+         CpuSampleTicks:\t{}\n\
+         CpuCapacityTicks:\t{}\n\
+         CpuOnline:\t{}\n",
         process.name,
         pid,
         ppid,
@@ -1068,5 +1099,8 @@ fn generate_pid_status(pid: u64) -> String {
         vm_heap_kb,
         vm_stack_kb,
         cpu_ticks,
+        cpu_sample_ticks,
+        cpu_capacity_ticks,
+        cpu_online,
     )
 }
