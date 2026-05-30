@@ -236,6 +236,7 @@ struct ProcInfo {
     state_len: usize,
     cpu_ticks: u64,
     cpu_sample_ticks: u64,
+    cpu_capacity_ticks: u64,
     cpu_online: u64,
     vm_heap_kb: u64,
     vm_stack_kb: u64,
@@ -253,6 +254,7 @@ impl ProcInfo {
             state_len: 0,
             cpu_ticks: 0,
             cpu_sample_ticks: 0,
+            cpu_capacity_ticks: 0,
             cpu_online: 1,
             vm_heap_kb: 0,
             vm_stack_kb: 0,
@@ -262,6 +264,14 @@ impl ProcInfo {
 
     fn total_mem_kb(&self) -> u64 {
         self.vm_code_kb + self.vm_heap_kb + self.vm_stack_kb
+    }
+
+    fn cpu_denominator_ticks(&self) -> u64 {
+        if self.cpu_capacity_ticks > 0 {
+            self.cpu_capacity_ticks
+        } else {
+            self.cpu_sample_ticks
+        }
     }
 }
 
@@ -324,6 +334,7 @@ fn parse_proc_status(pid: u64) -> Option<ProcInfo> {
     // Parse CpuTicks
     info.cpu_ticks = parse_value(content, b"CpuTicks:");
     info.cpu_sample_ticks = parse_value(content, b"CpuSampleTicks:");
+    info.cpu_capacity_ticks = parse_value(content, b"CpuCapacityTicks:");
     info.cpu_online = parse_value(content, b"CpuOnline:").max(1);
 
     // Parse memory
@@ -368,8 +379,13 @@ fn parse_cpu_ticks(content: &[u8]) -> Vec<CpuTicks> {
     let mut cpus = Vec::new();
     let mut i = 0;
     while i + 3 < content.len() {
-        // Look for lines starting with "cpu"
-        if content[i] == b'c' && content[i + 1] == b'p' && content[i + 2] == b'u' {
+        // Look for per-CPU lines only ("cpu0", "cpu1", ...), not aggregate
+        // metadata like "cpu_online" or "cpu_capacity_ticks".
+        if content[i] == b'c'
+            && content[i + 1] == b'p'
+            && content[i + 2] == b'u'
+            && content[i + 3].is_ascii_digit()
+        {
             let mut j = i + 3;
             // Skip CPU number digit(s)
             while j < content.len() && content[j] >= b'0' && content[j] <= b'9' {
@@ -561,16 +577,17 @@ fn main() {
             }
         }
 
-        // Compute CPU% deltas against the procfs CPU sample clock captured with
-        // each PID. 100% means one full CPU; multi-threaded processes can reach
-        // cpu_online * 100%, but blocked sleepers should remain at 0%.
+        // Compute CPU% deltas against the aggregate procfs CPU capacity clock.
+        // The denominator must sum all online CPUs; using one CPU's elapsed
+        // ticks inflates every process on SMP systems.
         let mut cpu_pcts: Vec<(u64, u64)> = Vec::new(); // (pid, pct*10 for 1 decimal)
         for proc in &procs {
             let prev = prev_ticks.iter().find(|sample| sample.pid == proc.pid);
             let prev_cpu_ticks = prev.map(|sample| sample.cpu_ticks).unwrap_or(0);
             let prev_sample_ticks = prev.map(|sample| sample.sample_ticks).unwrap_or(0);
             let delta = proc.cpu_ticks.saturating_sub(prev_cpu_ticks);
-            let tick_delta = proc.cpu_sample_ticks.saturating_sub(prev_sample_ticks);
+            let sample_ticks = proc.cpu_denominator_ticks();
+            let tick_delta = sample_ticks.saturating_sub(prev_sample_ticks);
             let max_pct10 = proc.cpu_online.saturating_mul(1000);
             let pct10 = if tick_delta > 0 {
                 ((delta * 1000) / tick_delta).min(max_pct10)
@@ -586,7 +603,7 @@ fn main() {
             prev_ticks.push(ProcTickSample {
                 pid: proc.pid,
                 cpu_ticks: proc.cpu_ticks,
-                sample_ticks: proc.cpu_sample_ticks,
+                sample_ticks: proc.cpu_denominator_ticks(),
             });
         }
 
