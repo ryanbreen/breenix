@@ -495,6 +495,20 @@ fn load_segment_into_page_table(
             if let Some(existing_phys_addr) = page_table.translate_page(page.start_address()) {
                 use x86_64::structures::paging::PhysFrame;
                 let existing_frame = PhysFrame::containing_address(existing_phys_addr);
+                if let Some((_, existing_flags)) = page_table.get_page_info(page) {
+                    let mut merged_flags = existing_flags | flags;
+
+                    // x86 NX is restrictive: if any overlapping segment is executable, the
+                    // shared page must be executable. This handles ELF layouts where a
+                    // page contains the tail of one segment and the head of the next.
+                    if !flags.contains(PageTableFlags::NO_EXECUTE) {
+                        merged_flags.remove(PageTableFlags::NO_EXECUTE);
+                    }
+
+                    if merged_flags != existing_flags {
+                        page_table.update_page_flags(page, merged_flags)?;
+                    }
+                }
                 (existing_frame, true)
             } else {
                 // Page not mapped yet, allocate a new frame
