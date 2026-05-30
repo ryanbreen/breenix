@@ -110,21 +110,6 @@ fn sqrt_approx(x: f32) -> f32 {
     (s + x / s) * 0.5
 }
 
-fn atan2_approx(y: f32, x: f32) -> f32 {
-    let pi: f32 = 3.14159265;
-    if x == 0.0 && y == 0.0 { return 0.0; }
-    let ax = abs_f32(x);
-    let ay = abs_f32(y);
-    let mn = if ax < ay { ax } else { ay };
-    let mx = if ax > ay { ax } else { ay };
-    let a = mn / mx;
-    let s = a * a;
-    let r = ((-0.0464964749 * s + 0.15931422) * s - 0.327622764) * s * a + a;
-    let r = if ay > ax { pi * 0.5 - r } else { r };
-    let r = if x < 0.0 { pi - r } else { r };
-    if y < 0.0 { -r } else { r }
-}
-
 fn sdf_rounded_rect(px: f32, py: f32, cx: f32, cy: f32, hw: f32, hh: f32, r: f32) -> f32 {
     let dx = abs_f32(px - cx) - (hw - r);
     let dy = abs_f32(py - cy) - (hh - r);
@@ -228,6 +213,31 @@ fn gradient_color(pos: f32) -> u32 {
     lerp_color(STOPS[seg], STOPS[seg + 1], frac_int)
 }
 
+fn border_perimeter_pos(px: f32, py: f32, lx: i32, ly: i32, lw: i32, lh: i32) -> f32 {
+    let left = lx as f32;
+    let top = ly as f32;
+    let right = (lx + lw - 1) as f32;
+    let bottom = (ly + lh - 1) as f32;
+
+    let dist_top = abs_f32(py - top);
+    let dist_right = abs_f32(right - px);
+    let dist_bottom = abs_f32(bottom - py);
+    let dist_left = abs_f32(px - left);
+
+    let perimeter = ((lw.max(1) + lh.max(1)) * 2) as f32;
+    let distance = if dist_top <= dist_right && dist_top <= dist_bottom && dist_top <= dist_left {
+        px - left
+    } else if dist_right <= dist_bottom && dist_right <= dist_left {
+        lw as f32 + (py - top)
+    } else if dist_bottom <= dist_left {
+        lw as f32 + lh as f32 + (right - px)
+    } else {
+        lw as f32 + lh as f32 + lw as f32 + (bottom - py)
+    };
+
+    fmod_pos(distance / perimeter, 1.0)
+}
+
 fn color_to_bgra(c: Color) -> u32 {
     c.b as u32 | ((c.g as u32) << 8) | ((c.r as u32) << 16) | 0xFF000000
 }
@@ -285,7 +295,6 @@ fn draw_sinuous_border(
     buf: &mut [u32], buf_w: usize, buf_h: usize,
     lx: i32, ly: i32, lw: i32, lh: i32, frame: u32,
 ) {
-    let pi: f32 = 3.14159265;
     let bw = BORDER_WIDTH;
     let outer_r = CORNER_RADIUS;
     let inner_r = INNER_RADIUS;
@@ -330,12 +339,8 @@ fn draw_sinuous_border(
                 let alpha = outer_a * inner_a;
                 if alpha <= 0.0 { continue; }
 
-                // Conic angle → gradient position → rotate
-                let angle = atan2_approx(fpx - cx, -(fpy - cy));
-                let pos = (angle + pi) / (2.0 * pi);
-                // 3 copies of the gradient around the circle so bright
-                // arcs appear on every side simultaneously.
-                let phase = fmod_pos(pos * 3.0 - rotation, 1.0);
+                let pos = border_perimeter_pos(fpx, fpy, lx, ly, lw, lh);
+                let phase = fmod_pos(pos - rotation, 1.0);
                 let color = gradient_color(phase);
 
                 let idx = py as usize * buf_w + px as usize;
@@ -444,14 +449,15 @@ fn render_pixels(
     // Translucent background (corners outside rounded border show through)
     render_background(raw, w, h, state.frame_count);
 
-    // Animated conic-gradient border at the exact window edge
-    let bw = BORDER_WIDTH as i32;
-    draw_sinuous_border(raw, w, h, 0, 0, w as i32, h as i32, state.frame_count);
-
     // Panel body (inside the border, with matching inner corner radius)
+    let bw = BORDER_WIDTH as i32;
     let panel_bg = color_to_bgra(PANEL_BG);
     draw_rounded_rect_u32(raw, w, h,
         bw, bw, w as i32 - 2 * bw, h as i32 - 2 * bw, panel_bg, INNER_RADIUS as i32);
+
+    // Animated border at the exact window edge. Draw after the body so the
+    // moving highlight is not covered by the inner panel fill.
+    draw_sinuous_border(raw, w, h, 0, 0, w as i32, h as i32, state.frame_count);
 
     // Search field border (1px)
     let search_border = color_to_bgra(SEARCH_BORDER);
@@ -710,6 +716,17 @@ fn main() {
 
     let mut state = LauncherState::new();
     let start_ms = clock_ms();
+    let mut frame_pixels = vec![0u32; w * h];
+    let mut frame_fb = unsafe {
+        FrameBuf::from_raw(
+            frame_pixels.as_mut_ptr() as *mut u8,
+            w,
+            h,
+            w * 4,
+            4,
+            true,
+        )
+    };
 
     loop {
         // Poll events
@@ -829,22 +846,22 @@ fn main() {
             }
         }
 
-        // Advance animation state
-        state.frame_count = state.frame_count.wrapping_add(1);
-        state.cursor_blink = state.cursor_blink.wrapping_add(1);
+        let elapsed_ms = clock_ms().saturating_sub(start_ms);
+        state.frame_count = (elapsed_ms.saturating_mul(60) / 1000) as u32;
+        state.cursor_blink = (elapsed_ms / 16) as u32;
 
-        // Render — two phases to avoid aliasing the pixel buffer
-        // Phase 1: raw u32 pixel ops (background, panel, border, highlights)
+        // Render into private memory, then publish one complete frame.
         {
-            let fb = win.framebuf();
-            let ptr = fb.raw_ptr() as *mut u32;
+            let ptr = frame_fb.raw_ptr() as *mut u32;
             let raw = unsafe { core::slice::from_raw_parts_mut(ptr, w * h) };
             render_pixels(raw, w, h, &state, &mut ttf_font, font_size);
         }
-        // Phase 2: FrameBuf-based text rendering (TTF with bitmap fallback)
+        render_text(&mut frame_fb, w, h, &state, &mut ttf_font, font_size);
         {
             let fb = win.framebuf();
-            render_text(fb, w, h, &state, &mut ttf_font, font_size);
+            let ptr = fb.raw_ptr() as *mut u32;
+            let dst = unsafe { core::slice::from_raw_parts_mut(ptr, w * h) };
+            dst.copy_from_slice(&frame_pixels);
         }
         let _ = win.present();
 
