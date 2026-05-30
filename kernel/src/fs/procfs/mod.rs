@@ -1030,6 +1030,7 @@ fn generate_pid_status(pid: u64) -> String {
             .sum::<u64>()
     };
     let (cpu_online, cpu_sample_ticks, cpu_capacity_ticks) = procfs_cpu_accounting_ticks();
+    let scheduler_state = crate::task::scheduler::get_process_display_state(pid);
 
     let manager_guard = crate::process::manager();
     let manager = match manager_guard.as_ref() {
@@ -1042,13 +1043,13 @@ fn generate_pid_status(pid: u64) -> String {
         None => return format!("Process {} not found\n", pid),
     };
 
-    let state_str = match process.state {
+    let state_str = scheduler_state.unwrap_or(match process.state {
         ProcessState::Creating => "Creating",
         ProcessState::Ready => "Ready",
         ProcessState::Running => "Running",
         ProcessState::Blocked => "Blocked",
         ProcessState::Terminated(_) => "Terminated",
-    };
+    });
 
     let ppid = match process.parent {
         Some(parent) => parent.as_u64(),

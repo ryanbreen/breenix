@@ -12,6 +12,9 @@
 
 use libbreenix::io;
 use libbreenix::types::Fd;
+use std::sync::Mutex;
+
+static FRAME_BUFFER: Mutex<Option<Vec<u8>>> = Mutex::new(None);
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -52,7 +55,9 @@ fn parse_value(content: &[u8], key: &[u8]) -> u64 {
             // Parse number
             let mut val: u64 = 0;
             while j < content.len() && content[j] >= b'0' && content[j] <= b'9' {
-                val = val.saturating_mul(10).saturating_add((content[j] - b'0') as u64);
+                val = val
+                    .saturating_mul(10)
+                    .saturating_add((content[j] - b'0') as u64);
                 j += 1;
             }
             return val;
@@ -139,7 +144,13 @@ fn format_number(n: u64, buf: &mut [u8]) -> usize {
 
 /// Write an ANSI string to stdout
 fn emit(s: &[u8]) {
-    let _ = io::write(Fd::from_raw(1), s);
+    if let Ok(mut frame) = FRAME_BUFFER.try_lock() {
+        if let Some(buf) = frame.as_mut() {
+            buf.extend_from_slice(s);
+            return;
+        }
+    }
+    write_all(s);
 }
 
 /// Write a string to stdout
@@ -147,6 +158,18 @@ fn emit_str(s: &str) {
     emit(s.as_bytes());
 }
 
+fn emit_line_break() {
+    emit_str("\n\x1b[2K");
+}
+
+fn write_all(mut buf: &[u8]) {
+    while !buf.is_empty() {
+        match io::write(Fd::from_raw(1), buf) {
+            Ok(0) | Err(_) => break,
+            Ok(n) => buf = &buf[n..],
+        }
+    }
+}
 
 /// Write a u64 number to a buffer, return length
 fn write_num(buf: &mut [u8], n: u64) -> usize {
@@ -180,6 +203,19 @@ fn emit_formatted_num(n: u64) {
     let mut buf = [0u8; 30];
     let len = format_number(n, &mut buf);
     emit(&buf[..len]);
+}
+
+fn begin_frame() {
+    if let Ok(mut frame) = FRAME_BUFFER.lock() {
+        *frame = Some(Vec::with_capacity(8192));
+    }
+}
+
+fn flush_frame() {
+    let frame = FRAME_BUFFER.lock().ok().and_then(|mut frame| frame.take());
+    if let Some(buf) = frame {
+        write_all(&buf);
+    }
 }
 
 /// Per-CPU tick data parsed from /proc/stat
@@ -346,7 +382,9 @@ fn parse_cpu_ticks(content: &[u8]) -> Vec<CpuTicks> {
             // Parse total ticks
             let mut total: u64 = 0;
             while j < content.len() && content[j] >= b'0' && content[j] <= b'9' {
-                total = total.saturating_mul(10).saturating_add((content[j] - b'0') as u64);
+                total = total
+                    .saturating_mul(10)
+                    .saturating_add((content[j] - b'0') as u64);
                 j += 1;
             }
             // Skip whitespace
@@ -356,7 +394,9 @@ fn parse_cpu_ticks(content: &[u8]) -> Vec<CpuTicks> {
             // Parse idle ticks
             let mut idle: u64 = 0;
             while j < content.len() && content[j] >= b'0' && content[j] <= b'9' {
-                idle = idle.saturating_mul(10).saturating_add((content[j] - b'0') as u64);
+                idle = idle
+                    .saturating_mul(10)
+                    .saturating_add((content[j] - b'0') as u64);
                 j += 1;
             }
             cpus.push(CpuTicks { total, idle });
@@ -394,10 +434,15 @@ fn draw_cpu_bar(cpu_id: usize, pct: u64) {
         }
     }
     emit_str("\x1b[0m] ");
-    if pct < 10 { emit_str(" "); }
-    if pct < 100 { emit_str(" "); }
+    if pct < 10 {
+        emit_str(" ");
+    }
+    if pct < 100 {
+        emit_str(" ");
+    }
     emit_num(pct);
-    emit_str("%\n");
+    emit_str("%");
+    emit_line_break();
 }
 
 /// Draw a memory usage bar
@@ -448,6 +493,7 @@ fn main() {
     let mut prev_gpu_full: u64 = 0;
     let mut prev_gpu_partial: u64 = 0;
     let mut prev_cpu_ticks: Vec<CpuTicks> = Vec::new();
+    let mut first_frame = true;
 
     loop {
         // ── Gather Data ──────────────────────────────────────────────────
@@ -546,8 +592,15 @@ fn main() {
 
         // ── Render ───────────────────────────────────────────────────────
 
-        // Clear screen and home cursor
-        emit_str("\x1b[2J\x1b[H");
+        begin_frame();
+
+        if first_frame {
+            emit_str("\x1b[2J\x1b[H");
+            first_frame = false;
+        } else {
+            emit_str("\x1b[H");
+        }
+        emit_str("\x1b[2K");
 
         // Header
         emit_str("\x1b[1;36mbtop\x1b[0m - Breenix System Monitor");
@@ -559,12 +612,17 @@ fn main() {
         let secs = up_secs % 60;
         emit_num(hours);
         emit_str(":");
-        if mins < 10 { emit_str("0"); }
+        if mins < 10 {
+            emit_str("0");
+        }
         emit_num(mins);
         emit_str(":");
-        if secs < 10 { emit_str("0"); }
+        if secs < 10 {
+            emit_str("0");
+        }
         emit_num(secs);
-        emit_str("\n\n");
+        emit_line_break();
+        emit_line_break();
 
         // Per-CPU utilization bars
         for (i, &pct) in cpu_pct_list.iter().enumerate() {
@@ -573,11 +631,14 @@ fn main() {
 
         // Memory bar
         draw_memory_bar(used_kb, total_kb);
-        emit_str("\n\n");
+        emit_line_break();
+        emit_line_break();
 
         // Process table header
-        emit_str("\x1b[1m  PID  PPID  STATE        CPU%     MEM     NAME\x1b[0m\n");
-        emit_str(" ---- ----- ---------- ------ -------- ----------------\n");
+        emit_str("\x1b[1m  PID  PPID  STATE        CPU%     MEM     NAME\x1b[0m");
+        emit_line_break();
+        emit_str(" ---- ----- ---------- ------ -------- ----------------");
+        emit_line_break();
 
         // Sort by CPU% descending
         // Simple insertion sort since we have few processes
@@ -587,8 +648,16 @@ fn main() {
             while j > 0 {
                 let a = sorted_indices[j];
                 let b = sorted_indices[j - 1];
-                let pct_a = cpu_pcts.iter().find(|(p, _)| *p == procs[a].pid).map(|(_, p)| *p).unwrap_or(0);
-                let pct_b = cpu_pcts.iter().find(|(p, _)| *p == procs[b].pid).map(|(_, p)| *p).unwrap_or(0);
+                let pct_a = cpu_pcts
+                    .iter()
+                    .find(|(p, _)| *p == procs[a].pid)
+                    .map(|(_, p)| *p)
+                    .unwrap_or(0);
+                let pct_b = cpu_pcts
+                    .iter()
+                    .find(|(p, _)| *p == procs[b].pid)
+                    .map(|(_, p)| *p)
+                    .unwrap_or(0);
                 if pct_a > pct_b {
                     sorted_indices.swap(j, j - 1);
                     j -= 1;
@@ -607,7 +676,11 @@ fn main() {
                 continue;
             }
 
-            let pct10 = cpu_pcts.iter().find(|(p, _)| *p == proc.pid).map(|(_, p)| *p).unwrap_or(0);
+            let pct10 = cpu_pcts
+                .iter()
+                .find(|(p, _)| *p == proc.pid)
+                .map(|(_, p)| *p)
+                .unwrap_or(0);
 
             // Color based on state
             if state_bytes == b"Running" {
@@ -618,16 +691,24 @@ fn main() {
 
             // PID (right-aligned in 5 chars)
             emit_str("  ");
-            if proc.pid < 10 { emit_str("   "); }
-            else if proc.pid < 100 { emit_str("  "); }
-            else if proc.pid < 1000 { emit_str(" "); }
+            if proc.pid < 10 {
+                emit_str("   ");
+            } else if proc.pid < 100 {
+                emit_str("  ");
+            } else if proc.pid < 1000 {
+                emit_str(" ");
+            }
             emit_num(proc.pid);
 
             // PPID
             emit_str("  ");
-            if proc.ppid < 10 { emit_str("   "); }
-            else if proc.ppid < 100 { emit_str("  "); }
-            else if proc.ppid < 1000 { emit_str(" "); }
+            if proc.ppid < 10 {
+                emit_str("   ");
+            } else if proc.ppid < 100 {
+                emit_str("  ");
+            } else if proc.ppid < 1000 {
+                emit_str(" ");
+            }
             emit_num(proc.ppid);
 
             // State (padded to 10 chars)
@@ -641,8 +722,11 @@ fn main() {
             emit_str(" ");
             let pct_int = pct10 / 10;
             let pct_frac = pct10 % 10;
-            if pct_int < 10 { emit_str("  "); }
-            else if pct_int < 100 { emit_str(" "); }
+            if pct_int < 10 {
+                emit_str("  ");
+            } else if pct_int < 100 {
+                emit_str(" ");
+            }
             emit_num(pct_int);
             emit_str(".");
             emit_num(pct_frac);
@@ -651,11 +735,17 @@ fn main() {
             // Memory
             emit_str("  ");
             let mem = proc.total_mem_kb();
-            if mem < 10 { emit_str("     "); }
-            else if mem < 100 { emit_str("    "); }
-            else if mem < 1000 { emit_str("   "); }
-            else if mem < 10000 { emit_str("  "); }
-            else if mem < 100000 { emit_str(" "); }
+            if mem < 10 {
+                emit_str("     ");
+            } else if mem < 100 {
+                emit_str("    ");
+            } else if mem < 1000 {
+                emit_str("   ");
+            } else if mem < 10000 {
+                emit_str("  ");
+            } else if mem < 100000 {
+                emit_str(" ");
+            }
             emit_num(mem);
             emit_str(" kB");
 
@@ -663,25 +753,26 @@ fn main() {
             emit_str("  ");
             emit(&proc.name[..proc.name_len]);
 
-            emit_str("\x1b[0m\n");
+            emit_str("\x1b[0m");
+            emit_line_break();
         }
 
         // Footer with kernel counters
-        emit_str("\n");
+        emit_line_break();
         emit_str("  Syscalls: ");
         emit_formatted_num(syscalls);
         emit_str("  |  IRQs: ");
         emit_formatted_num(interrupts);
         emit_str("  |  Ctx Sw: ");
         emit_formatted_num(ctx_switches);
-        emit_str("\n");
+        emit_line_break();
         emit_str("  Forks: ");
         emit_formatted_num(forks);
         emit_str("       |  Execs: ");
         emit_formatted_num(execs);
         emit_str("    |  CoW: ");
         emit_formatted_num(cow_faults);
-        emit_str("\n");
+        emit_line_break();
 
         // GPU compositor stats (delta per second)
         let gpu_bytes_delta = gpu_bytes.saturating_sub(prev_gpu_bytes);
@@ -704,7 +795,9 @@ fn main() {
             emit_formatted_num(gpu_bytes_delta / 1024);
             emit_str(" KB/s");
         }
-        emit_str("\n");
+        emit_line_break();
+        emit_str("\x1b[J");
+        flush_frame();
 
         // Sleep 1 second before next refresh
         let _ = libbreenix::time::sleep_ms(1000);
