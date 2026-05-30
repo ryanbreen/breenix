@@ -2140,6 +2140,14 @@ fn get_bos_descriptor(state: &XhciState, slot_id: u8) -> Result<(), &'static str
     Ok(())
 }
 
+fn should_skip_bos_descriptor(vendor_id: u16, product_id: u16, device_class: u8) -> bool {
+    // Parallels virtual HID devices advertise SuperSpeed but do not complete
+    // the optional BOS descriptor request under native xHCI init. The BOS data
+    // is not consumed before HID configuration; previously we paid a 5s timeout
+    // per HID slot and ignored the result.
+    vendor_id == 0x203a && matches!(product_id, 0xfffb | 0xfffc) && device_class == 0x00
+}
+
 /// Get the configuration descriptor (and all subordinate descriptors) from a USB device.
 fn get_config_descriptor(
     state: &XhciState,
@@ -4157,23 +4165,31 @@ fn scan_ports(state: &mut XhciState) -> Result<(), &'static str> {
         if let Err(_) = get_device_descriptor(state, slot_id, &mut desc_buf) {
             continue;
         }
-        {
+        let (device_vid, device_pid, device_class) = {
             let dd = unsafe { &*(desc_buf.as_ptr() as *const DeviceDescriptor) };
             let vid = dd.id_vendor;
             let pid = dd.id_product;
+            let class = dd.b_device_class;
+            let sub_class = dd.b_device_sub_class;
+            let protocol = dd.b_device_protocol;
             crate::serial_println!(
                 "[xhci] slot{}: vid={:#06x} pid={:#06x} class={:#04x}/{:#04x}/{:#04x}",
                 slot_id,
                 vid,
                 pid,
-                dd.b_device_class,
-                dd.b_device_sub_class,
-                dd.b_device_protocol
+                class,
+                sub_class,
+                protocol
             );
-        }
+            (vid, pid, class)
+        };
 
         // Step 4: BOS descriptor
-        if let Err(_) = get_bos_descriptor(state, slot_id) {}
+        if should_skip_bos_descriptor(device_vid, device_pid, device_class) {
+            xhci_trace_note(slot_id, "skip_bos_parallels_hid");
+        } else {
+            let _ = get_bos_descriptor(state, slot_id);
+        }
 
         // Get Configuration Descriptor
         let mut config_buf = [0u8; 256];
