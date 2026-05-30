@@ -916,9 +916,7 @@ fn post_rx_buffers() -> Result<(), &'static str> {
         (*q).avail.idx = 4;
         fence(Ordering::SeqCst);
         #[cfg(target_arch = "aarch64")]
-        unsafe {
-            core::arch::asm!("dsb sy", options(nostack, preserves_flags));
-        }
+        core::arch::asm!("dsb sy", options(nostack, preserves_flags));
         log_rx_init_window("after_rx_avail_idx", state.bar0_virt);
     }
 
