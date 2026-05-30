@@ -1738,6 +1738,8 @@ impl Scheduler {
                 thread.wake_time_ns = Some(wake_time_ns);
                 thread.blocked_in_syscall = true;
             }
+            #[cfg(target_arch = "aarch64")]
+            set_cpu_idle(Self::current_cpu_id(), true);
             // Insert into timer heap for O(1) expiry detection
             self.timer_heap.push(Reverse((wake_time_ns, current_id)));
             for q in self.per_cpu_queues.iter_mut() {
@@ -2554,7 +2556,9 @@ pub fn get_process_cpu_ticks() -> alloc::vec::Vec<(u64, u64)> {
                         t.owner_pid.map(|pid| {
                             let mut ticks = t.cpu_ticks_total;
                             // If thread is currently running, add in-flight ticks
-                            if t.state == super::thread::ThreadState::Running {
+                            if t.state == super::thread::ThreadState::Running
+                                && !t.blocked_in_syscall
+                            {
                                 ticks += now.wrapping_sub(t.run_start_ticks);
                             }
                             (pid, ticks)
@@ -2564,6 +2568,49 @@ pub fn get_process_cpu_ticks() -> alloc::vec::Vec<(u64, u64)> {
             }
         }
         alloc::vec::Vec::new()
+    })
+}
+
+/// Get a process display state from its scheduler-owned threads.
+///
+/// The process manager's coarse state can remain Ready while all of the
+/// process's threads are blocked in syscalls. Procfs consumers such as btop
+/// need the thread-level runtime state to avoid presenting sleepers as CPU-bound.
+pub fn get_process_display_state(owner_pid: u64) -> Option<&'static str> {
+    without_interrupts(|| {
+        let scheduler_lock = SCHEDULER.try_lock()?;
+        let scheduler = scheduler_lock.as_ref()?;
+
+        let mut saw_ready = false;
+        let mut saw_blocked = false;
+        let mut saw_terminated = false;
+
+        for thread in scheduler
+            .threads
+            .iter()
+            .filter(|thread| thread.owner_pid == Some(owner_pid))
+        {
+            match thread.state {
+                super::thread::ThreadState::Running => return Some("Running"),
+                super::thread::ThreadState::Ready => saw_ready = true,
+                super::thread::ThreadState::Blocked
+                | super::thread::ThreadState::BlockedOnSignal
+                | super::thread::ThreadState::BlockedOnChildExit
+                | super::thread::ThreadState::BlockedOnTimer
+                | super::thread::ThreadState::BlockedOnIO => saw_blocked = true,
+                super::thread::ThreadState::Terminated => saw_terminated = true,
+            }
+        }
+
+        if saw_ready {
+            Some("Ready")
+        } else if saw_blocked {
+            Some("Blocked")
+        } else if saw_terminated {
+            Some("Terminated")
+        } else {
+            None
+        }
     })
 }
 
