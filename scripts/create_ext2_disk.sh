@@ -173,6 +173,15 @@ if [[ "$(uname)" == "Darwin" ]]; then
             echo "  Installed $cbin_count C binaries in /usr/local/cbin"
             echo "  Installed $test_count test binaries in /usr/local/test/bin"
 
+            # Prefer the native Breenix ls over the BusyBox applet. The
+            # BusyBox ARM64 build currently faults in its libc path under bsh.
+            if [ -f /mnt/ext2/bin/bls ]; then
+                rm -f /mnt/ext2/bin/ls
+                cp /mnt/ext2/bin/bls /mnt/ext2/bin/ls
+                chmod 755 /mnt/ext2/bin/ls
+                echo "  Installed native Breenix ls as /bin/ls"
+            fi
+
             # Create /etc with passwd and group for musl getpwuid/getgrgid
             mkdir -p /mnt/ext2/etc
             cat > /mnt/ext2/etc/passwd << PASSWD
@@ -440,6 +449,15 @@ else
     echo "  Installed $cbin_count C binaries in /usr/local/cbin"
     echo "  Installed $test_count test binaries in /usr/local/test/bin"
 
+    # Prefer the native Breenix ls over the BusyBox applet. The BusyBox ARM64
+    # build currently faults in its libc path under bsh.
+    if [ -f "$MOUNT_DIR/bin/bls" ]; then
+        rm -f "$MOUNT_DIR/bin/ls"
+        cp "$MOUNT_DIR/bin/bls" "$MOUNT_DIR/bin/ls"
+        chmod 755 "$MOUNT_DIR/bin/ls"
+        echo "  Installed native Breenix ls as /bin/ls"
+    fi
+
     # Create /etc with passwd and group for musl getpwuid/getgrgid
     mkdir -p "$MOUNT_DIR/etc"
     cat > "$MOUNT_DIR/etc/passwd" << PASSWD
@@ -613,7 +631,8 @@ if [[ -f "$OUTPUT_FILE" ]]; then
     echo ""
     echo "Contents:"
     echo "  /bin/busybox - BusyBox multi-call binary"
-    echo "  /bin/{cat,ls,head,...} - BusyBox hardlinks"
+    echo "  /bin/ls - native Breenix ls"
+    echo "  /bin/{cat,head,tail,...} - BusyBox hardlinks"
     echo "  /sbin/{true,false} - BusyBox hardlinks"
     echo "  /bin/* - Other userspace binaries (demos)"
     echo "  /usr/local/test/bin/* - Test binaries (*_test, test_*)"
