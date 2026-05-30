@@ -4,6 +4,8 @@
 //! layers into a complete SSH server or client session.
 
 use crate::crypto::rand::Csprng;
+use crate::errno::Errno;
+use crate::error::Error;
 use crate::types::Fd;
 
 use super::auth;
@@ -70,9 +72,9 @@ impl ServerSession {
         self.client_version = match self.io.read_line() {
             Ok(v) => v,
             Err(e) => {
-                // Use println since this is userspace
-                println!("bsshd: read_line FAILED: {:?}", e);
-                return Err(SshError::Io);
+                let err = ssh_io_error(e);
+                println!("bsshd: read_line failed: {:?}", err);
+                return Err(err);
             }
         };
         println!("bsshd: client version: '{}'", self.client_version);
@@ -101,9 +103,7 @@ impl ServerSession {
         let mut rng = Csprng::new();
         let my_kexinit = kex::build_kexinit(&mut rng);
         self.kex.my_kexinit = my_kexinit.clone();
-        self.io
-            .send_packet(&my_kexinit)
-            .map_err(|_| SshError::Io)?;
+        self.io.send_packet(&my_kexinit).map_err(|_| SshError::Io)?;
 
         // Receive client's KEXINIT
         let peer_kexinit = self.io.recv_packet().map_err(|_| SshError::Io)?;
@@ -118,19 +118,29 @@ impl ServerSession {
         // Dispatch: hybrid C_INIT is 1216 bytes, X25519 Q_C is 32 bytes
         let c_init_len = if kex_init.len() > 5 {
             u32::from_be_bytes([kex_init[1], kex_init[2], kex_init[3], kex_init[4]]) as usize
-        } else { 0 };
+        } else {
+            0
+        };
 
         let (exchange_hash, shared_secret) = if c_init_len == 1216 {
             println!("bsshd: KEX mlkem768x25519-sha256 (post-quantum)");
             kex::server_kex_hybrid(
-                &mut self.io, &self.host_key, &mut self.kex,
-                &self.client_version, BSSH_VERSION, &kex_init,
+                &mut self.io,
+                &self.host_key,
+                &mut self.kex,
+                &self.client_version,
+                BSSH_VERSION,
+                &kex_init,
             )?
         } else {
             println!("bsshd: KEX curve25519-sha256");
             kex::server_kex_ecdh(
-                &mut self.io, &self.host_key, &mut self.kex,
-                &self.client_version, BSSH_VERSION, &kex_init,
+                &mut self.io,
+                &self.host_key,
+                &mut self.kex,
+                &self.client_version,
+                BSSH_VERSION,
+                &kex_init,
             )?
         };
 
@@ -297,8 +307,7 @@ impl ServerSession {
             SSH_MSG_CHANNEL_REQUEST => {
                 // Handle window-change during session
                 if let Some(ref mut ch) = self.channel {
-                    let _ =
-                        channel::server_handle_channel_request(&mut self.io, &msg, ch);
+                    let _ = channel::server_handle_channel_request(&mut self.io, &msg, ch);
                 }
                 Ok(None)
             }
@@ -317,6 +326,13 @@ impl ServerSession {
     /// Get the underlying packet I/O (for advanced use).
     pub fn io(&mut self) -> &mut PacketIo {
         &mut self.io
+    }
+}
+
+fn ssh_io_error(err: Error) -> SshError {
+    match err {
+        Error::Os(Errno::ECONNRESET | Errno::EPIPE) => SshError::Disconnected,
+        _ => SshError::Io,
     }
 }
 
@@ -342,9 +358,7 @@ impl ClientSession {
     /// Perform the full SSH handshake and authentication.
     pub fn handshake(&mut self, username: &str, password: &str) -> Result<(), SshError> {
         // 1. Version exchange
-        self.io
-            .write_line(BSSH_VERSION)
-            .map_err(|_| SshError::Io)?;
+        self.io.write_line(BSSH_VERSION).map_err(|_| SshError::Io)?;
         self.server_version = self.io.read_line().map_err(|_| SshError::Io)?;
 
         if !self.server_version.starts_with("SSH-2.0-") {
@@ -355,9 +369,7 @@ impl ClientSession {
         let mut rng = Csprng::new();
         let my_kexinit = kex::build_kexinit(&mut rng);
         self.kex.my_kexinit = my_kexinit.clone();
-        self.io
-            .send_packet(&my_kexinit)
-            .map_err(|_| SshError::Io)?;
+        self.io.send_packet(&my_kexinit).map_err(|_| SshError::Io)?;
 
         // Receive server's KEXINIT
         let peer_kexinit = self.io.recv_packet().map_err(|_| SshError::Io)?;
@@ -387,8 +399,7 @@ impl ClientSession {
 
         // Install cipher
         let session_id = self.kex.session_id.as_ref().unwrap();
-        let (cipher_c2s, cipher_s2c) =
-            kex::derive_keys(&shared_secret, &exchange_hash, session_id);
+        let (cipher_c2s, cipher_s2c) = kex::derive_keys(&shared_secret, &exchange_hash, session_id);
 
         self.io.set_cipher_send(cipher_c2s); // client→server = our send
         self.io.set_cipher_recv(cipher_s2c); // server→client = our recv

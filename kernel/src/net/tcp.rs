@@ -546,26 +546,6 @@ pub fn handle_tcp(ip: &Ipv4Packet, data: &[u8]) {
         }
     };
 
-    // Log only SYN/RST/FIN TCP packets for SSH (skip normal ACK/data chatter)
-    if (header.dst_port == 2222 || header.src_port == 2222)
-        && (header.flags.syn || header.flags.rst || header.flags.fin)
-    {
-        crate::serial_println!(
-            "[TCP] {}.{}.{}.{}:{} -> port {} flags={}{}{}{}{}",
-            ip.src_ip[0],
-            ip.src_ip[1],
-            ip.src_ip[2],
-            ip.src_ip[3],
-            header.src_port,
-            header.dst_port,
-            if header.flags.syn { "S" } else { "" },
-            if header.flags.ack { "A" } else { "" },
-            if header.flags.fin { "F" } else { "" },
-            if header.flags.rst { "R" } else { "" },
-            if header.flags.psh { "P" } else { "" }
-        );
-    }
-
     let config = super::config();
     let conn_id = ConnectionId {
         local_ip: config.ip_addr,
@@ -682,8 +662,55 @@ fn handle_tcp_for_connection(
                     conn.state = TcpState::Established;
                     conn.send_unack = header.ack_num;
                     log::info!("TCP: Connection established (server)");
+
+                    if !payload.is_empty() && header.seq_num == conn.recv_next {
+                        conn.rx_buffer.extend(payload);
+                        conn.recv_next = conn.recv_next.wrapping_add(payload.len() as u32);
+                        send_tcp_packet(
+                            config,
+                            conn.id.remote_ip,
+                            conn.id.local_port,
+                            conn.id.remote_port,
+                            conn.send_next,
+                            conn.recv_next,
+                            TcpFlags::ack(),
+                            conn.recv_window,
+                            &[],
+                        );
+                    }
+
+                    if header.flags.fin
+                        && header.seq_num.wrapping_add(payload.len() as u32) == conn.recv_next
+                    {
+                        conn.recv_next = conn.recv_next.wrapping_add(1);
+                        conn.state = TcpState::CloseWait;
+                        send_tcp_packet(
+                            config,
+                            conn.id.remote_ip,
+                            conn.id.local_port,
+                            conn.id.remote_port,
+                            conn.send_next,
+                            conn.recv_next,
+                            TcpFlags::ack(),
+                            conn.recv_window,
+                            &[],
+                        );
+                    }
+
                     wake_connection_waiters(conn);
                 }
+            } else if header.flags.syn && !header.flags.ack {
+                send_tcp_packet(
+                    config,
+                    conn.id.remote_ip,
+                    conn.id.local_port,
+                    conn.id.remote_port,
+                    conn.send_initial,
+                    header.seq_num.wrapping_add(1),
+                    TcpFlags::syn_ack(),
+                    conn.recv_window,
+                    &[],
+                );
             } else if header.flags.rst {
                 conn.state = TcpState::Closed;
                 wake_connection_waiters(conn);
@@ -910,6 +937,27 @@ fn handle_syn_for_listener(
     header: &TcpHeader,
     config: &super::NetConfig,
 ) {
+    if let Some(pending) = listener
+        .pending
+        .iter()
+        .find(|p| p.remote_ip == src_ip && p.remote_port == header.src_port)
+    {
+        let syn_ack = build_tcp_packet_with_checksum(
+            config.ip_addr,
+            src_ip,
+            listener.local_port,
+            header.src_port,
+            pending.send_initial,
+            header.seq_num.wrapping_add(1),
+            TcpFlags::syn_ack(),
+            65535,
+            &[],
+        );
+        let src_mac = super::current_packet_src_mac();
+        queue_deferred_tx_with_mac(src_ip, Some(src_mac), syn_ack);
+        return;
+    }
+
     if listener.pending.len() >= listener.backlog {
         log::warn!(
             "TCP: Backlog full, sending RST for port {}",

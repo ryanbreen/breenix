@@ -60,7 +60,7 @@ impl PacketIo {
         while offset < buf.len() {
             let n = socket::recv(self.fd, &mut buf[offset..])?;
             if n == 0 {
-                return Err(Error::Os(Errno::EIO));
+                return Err(Error::Os(Errno::ECONNRESET));
             }
             offset += n;
         }
@@ -224,4 +224,3 @@ impl PacketIo {
         self.fd
     }
 }
-
