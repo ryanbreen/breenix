@@ -3,7 +3,7 @@
 //! Implements the POSIX PTY syscalls: posix_openpt, grantpt, unlockpt, ptsname
 
 use super::errno::ENOTTY;
-use super::userptr::validate_user_buffer;
+use super::userptr::{copy_to_user, validate_user_buffer};
 use super::SyscallResult;
 use crate::ipc::fd::{flags, FdKind, FileDescriptor};
 use crate::process::manager;
@@ -274,7 +274,10 @@ pub fn sys_ptsname(fd: u64, buf: u64, buflen: u64) -> SyscallResult {
         return SyscallResult::Err(e);
     }
 
-    // Get current process
+    // Get current process and validate the fd while holding the process-manager
+    // lock, but do not copy to userspace until after the lock is dropped.
+    // A ptsname() buffer can live on a CoW stack after fork(); writing it while
+    // holding the PM lock can deadlock the CoW fault handler.
     let thread_id = match crate::task::scheduler::current_thread_id() {
         Some(id) => id,
         None => {
@@ -282,73 +285,68 @@ pub fn sys_ptsname(fd: u64, buf: u64, buflen: u64) -> SyscallResult {
             return SyscallResult::Err(3); // ESRCH
         }
     };
-    let manager_guard = manager();
-    let process = match &*manager_guard {
-        Some(manager) => match manager.find_process_by_thread(thread_id) {
-            Some((_pid, p)) => p,
+    let pty_num = {
+        let manager_guard = manager();
+        let process = match &*manager_guard {
+            Some(manager) => match manager.find_process_by_thread(thread_id) {
+                Some((_pid, p)) => p,
+                None => {
+                    log::error!("sys_ptsname: Process not found for thread {}", thread_id);
+                    return SyscallResult::Err(3); // ESRCH
+                }
+            },
             None => {
-                log::error!("sys_ptsname: Process not found for thread {}", thread_id);
+                log::error!("sys_ptsname: Process manager not initialized");
                 return SyscallResult::Err(3); // ESRCH
             }
-        },
-        None => {
-            log::error!("sys_ptsname: Process manager not initialized");
-            return SyscallResult::Err(3); // ESRCH
-        }
-    };
+        };
 
-    // Get fd entry
-    let fd_entry = match process.fd_table.get(fd_i32) {
-        Some(entry) => entry,
-        None => {
-            log::error!("sys_ptsname: Bad file descriptor {}", fd_i32);
-            return SyscallResult::Err(9); // EBADF
-        }
-    };
-
-    // Verify it's a PTY master and get the slave path
-    match &fd_entry.kind {
-        FdKind::PtyMaster(pty_num) => {
-            // Get the PTY pair
-            match pty::get(*pty_num) {
-                Some(pair) => {
-                    let path = pair.slave_path();
-                    let path_bytes = path.as_bytes();
-
-                    // Check if buffer is large enough (need space for null terminator)
-                    if path_bytes.len() + 1 > buflen as usize {
-                        log::error!(
-                            "sys_ptsname: buffer too small ({} < {})",
-                            buflen,
-                            path_bytes.len() + 1
-                        );
-                        return SyscallResult::Err(34); // ERANGE
-                    }
-
-                    // Copy path to user buffer
-                    let buf_ptr = buf as *mut u8;
-                    unsafe {
-                        core::ptr::copy_nonoverlapping(
-                            path_bytes.as_ptr(),
-                            buf_ptr,
-                            path_bytes.len(),
-                        );
-                        // Write null terminator
-                        core::ptr::write_volatile(buf_ptr.add(path_bytes.len()), 0);
-                    }
-
-                    log::debug!("sys_ptsname: fd {} -> '{}' (pty {})", fd_i32, path, pty_num);
-                    SyscallResult::Ok(0)
+        match process.fd_table.get(fd_i32) {
+            Some(entry) => match &entry.kind {
+                FdKind::PtyMaster(pty_num) => *pty_num,
+                _ => {
+                    log::error!("sys_ptsname: fd {} is not a PTY master", fd_i32);
+                    return SyscallResult::Err(ENOTTY as u64);
                 }
-                None => {
-                    log::error!("sys_ptsname: PTY {} not found", pty_num);
-                    SyscallResult::Err(5) // EIO
-                }
+            },
+            None => {
+                log::error!("sys_ptsname: Bad file descriptor {}", fd_i32);
+                return SyscallResult::Err(9); // EBADF
             }
         }
-        _ => {
-            log::error!("sys_ptsname: fd {} is not a PTY master", fd_i32);
-            SyscallResult::Err(ENOTTY as u64)
+    };
+
+    let pair = match pty::get(pty_num) {
+        Some(pair) => pair,
+        None => {
+            log::error!("sys_ptsname: PTY {} not found", pty_num);
+            return SyscallResult::Err(5); // EIO
+        }
+    };
+    let path = pair.slave_path();
+    let path_bytes = path.as_bytes();
+
+    // Check if buffer is large enough (need space for null terminator)
+    if path_bytes.len() + 1 > buflen as usize {
+        log::error!(
+            "sys_ptsname: buffer too small ({} < {})",
+            buflen,
+            path_bytes.len() + 1
+        );
+        return SyscallResult::Err(34); // ERANGE
+    }
+
+    let buf_ptr = buf as *mut u8;
+    for (idx, byte) in path_bytes.iter().copied().enumerate() {
+        if let Err(errno) = copy_to_user(buf_ptr.wrapping_add(idx), &byte) {
+            return SyscallResult::Err(errno);
         }
     }
+    let nul = 0u8;
+    if let Err(errno) = copy_to_user(buf_ptr.wrapping_add(path_bytes.len()), &nul) {
+        return SyscallResult::Err(errno);
+    }
+
+    log::debug!("sys_ptsname: fd {} -> '{}' (pty {})", fd_i32, path, pty_num);
+    SyscallResult::Ok(0)
 }
