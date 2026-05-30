@@ -103,6 +103,46 @@ fn relax_gpu_lock_wait() {
 /// buffers and virtqueue state.
 static GPU_PCI_LOCK: GpuPciLock = GpuPciLock::new();
 static VIRTGPU_CMD_SEQ: AtomicU32 = AtomicU32::new(0);
+static COMPOSITOR_PRESENT_NEXT_ID: AtomicU64 = AtomicU64::new(1);
+static COMPOSITOR_PRESENT_IN_FLIGHT: AtomicU32 = AtomicU32::new(0);
+
+struct CompositorPresentToken {
+    id: u64,
+    active: bool,
+}
+
+impl CompositorPresentToken {
+    fn begin() -> Result<Self, &'static str> {
+        let previous = COMPOSITOR_PRESENT_IN_FLIGHT.fetch_add(1, Ordering::AcqRel);
+        if previous != 0 {
+            COMPOSITOR_PRESENT_IN_FLIGHT.fetch_sub(1, Ordering::AcqRel);
+            virtgpu::trace_compositor_present_inflight_gt1();
+            return Err("compositor present already in flight");
+        }
+
+        let id = COMPOSITOR_PRESENT_NEXT_ID.fetch_add(1, Ordering::Relaxed);
+        virtgpu::trace_compositor_present_submitted();
+        Ok(Self { id, active: true })
+    }
+
+    fn id(&self) -> u64 {
+        self.id
+    }
+
+    fn complete(mut self) {
+        virtgpu::trace_compositor_present_completed();
+        self.active = false;
+        COMPOSITOR_PRESENT_IN_FLIGHT.store(0, Ordering::Release);
+    }
+}
+
+impl Drop for CompositorPresentToken {
+    fn drop(&mut self) {
+        if self.active {
+            COMPOSITOR_PRESENT_IN_FLIGHT.store(0, Ordering::Release);
+        }
+    }
+}
 
 // =============================================================================
 // VirtIO GPU Protocol (same as gpu_mmio.rs)
@@ -5059,15 +5099,24 @@ fn virgl_composite_single_quad(
         );
     }
 
-    let _fence_id = virgl_submit(cmdbuf.as_slice())?;
-    with_device_state(|state| set_scanout_resource(state, RESOURCE_3D_ID))?;
-    with_device_state(|state| {
+    let present = CompositorPresentToken::begin()?;
+    if present.id() == 0 {
+        return Err("invalid compositor present token");
+    }
+
+    let flush_result = with_device_state(|state| {
+        virgl_submit_sync_locked(state, cmdbuf.as_slice())?;
+        set_scanout_resource(state, RESOURCE_3D_ID)?;
         resource_flush_3d(
             state,
             RESOURCE_3D_ID,
             virtgpu::FLUSH_CALLER_VIRGL_COMPOSITE_SINGLE_QUAD,
         )
-    })
+    });
+    if flush_result.is_ok() {
+        present.complete();
+    }
+    flush_result
 }
 
 /// Multi-window GPU compositor.
@@ -5381,7 +5430,14 @@ pub fn virgl_submit(cmds: &[u32]) -> Result<u64, &'static str> {
 /// (FLAG_FENCE means the device waited for GPU completion), skip the
 /// extra fence verification command entirely.
 pub fn virgl_submit_sync(cmds: &[u32]) -> Result<(), &'static str> {
-    let result = with_device_state(|state| virgl_submit_3d_cmd(state, VIRGL_CTX_ID, cmds))?;
+    with_device_state(|state| virgl_submit_sync_locked(state, cmds))
+}
+
+fn virgl_submit_sync_locked(
+    state: &mut GpuPciDeviceState,
+    cmds: &[u32],
+) -> Result<(), &'static str> {
+    let result = virgl_submit_3d_cmd(state, VIRGL_CTX_ID, cmds)?;
 
     // Fast path: the device response already confirmed our fence completed.
     // With VIRTIO_GPU_FLAG_FENCE, Parallels waits for GPU completion before
@@ -5392,7 +5448,7 @@ pub fn virgl_submit_sync(cmds: &[u32]) -> Result<(), &'static str> {
 
     // Slow path: fence not yet confirmed; issue one interrupt-completed NOP
     // and fail if the host still does not report the target fence.
-    with_device_state(|state| virgl_fence_sync(state, result.submit_id))
+    virgl_fence_sync(state, result.submit_id)
 }
 
 /// Copy 3D framebuffer backing (heap RAM) → BAR0 (display memory).

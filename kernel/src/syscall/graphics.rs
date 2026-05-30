@@ -184,6 +184,42 @@ fn wake_presented_client_frames() {
 }
 
 #[cfg(target_arch = "aarch64")]
+fn release_presented_window_frames(
+    windows: &[WindowCompositeInfo],
+) -> [Option<u64>; MAX_WINDOW_BUFFERS] {
+    let mut threads_to_wake: [Option<u64>; MAX_WINDOW_BUFFERS] = [None; MAX_WINDOW_BUFFERS];
+    let mut wake_count = 0usize;
+
+    {
+        let mut reg = WINDOW_REGISTRY.lock();
+        for win in windows.iter().filter(|win| win.dirty) {
+            let Some(buf) = reg.find_mut(win.buffer_id) else {
+                continue;
+            };
+
+            if buf.generation != win.generation {
+                continue;
+            }
+
+            buf.last_uploaded_gen = win.generation;
+            if wake_count < MAX_WINDOW_BUFFERS {
+                threads_to_wake[wake_count] = buf.waiting_thread_id.take();
+                wake_count += 1;
+            }
+        }
+    }
+
+    crate::tracing::providers::virtgpu::trace_compositor_client_waiters_released(
+        threads_to_wake
+            .iter()
+            .filter(|thread_id| thread_id.is_some())
+            .count() as u64,
+    );
+
+    threads_to_wake
+}
+
+#[cfg(target_arch = "aarch64")]
 fn compositor_ready_bits(last_registry_gen: u64, prev_mouse: u64) -> (u64, u64, u64) {
     use core::sync::atomic::Ordering;
 
@@ -1319,10 +1355,6 @@ fn handle_compositor_wait(cmd: &FbDrawCmd) -> SyscallResult {
     let prev_mouse = COMPOSITOR_LAST_MOUSE.load(Ordering::Relaxed);
 
     loop {
-        // WHY: repair the read-but-not-released wedge captured in
-        // turn3-wedge-snapshot.md before BWM sleeps on the compositor latch.
-        wake_presented_client_frames();
-
         let (ready, cur_reg_gen, mouse_packed) =
             compositor_ready_bits(last_registry_gen, prev_mouse);
         if ready != 0 {
@@ -1477,13 +1509,12 @@ fn handle_composite_windows(desc_ptr: u64) -> SyscallResult {
         None
     };
 
-    // Collect window info and waiting thread IDs under lock, then release.
+    // Collect window info under lock, then release. Dirty generations are
+    // advanced only after the GPU present path returns successfully.
     // Also lazy-initialize VirGL textures for windows that don't have them yet.
-    let mut threads_to_wake: [Option<u64>; MAX_WINDOW_BUFFERS] = [None; MAX_WINDOW_BUFFERS];
     let windows: alloc::vec::Vec<WindowCompositeInfo> = {
         let mut reg = WINDOW_REGISTRY.lock();
         let mut result = alloc::vec::Vec::new();
-        let mut win_idx = 0usize;
         for slot in reg.buffers.iter_mut() {
             if let Some(ref mut buf) = slot {
                 if !buf.registered {
@@ -1527,6 +1558,7 @@ fn handle_composite_windows(desc_ptr: u64) -> SyscallResult {
                 }
 
                 result.push(WindowCompositeInfo {
+                    buffer_id: buf.id,
                     virgl_resource_id: buf.virgl_resource_id,
                     virgl_initialized: buf.virgl_initialized,
                     width: buf.width,
@@ -1540,15 +1572,8 @@ fn handle_composite_windows(desc_ptr: u64) -> SyscallResult {
                     title_len: buf.title_len,
                     title: buf.title,
                     chromeless,
+                    generation: buf.generation,
                 });
-
-                if dirty {
-                    buf.last_uploaded_gen = buf.generation;
-                    if win_idx < MAX_WINDOW_BUFFERS {
-                        threads_to_wake[win_idx] = buf.waiting_thread_id.take();
-                    }
-                }
-                win_idx += 1;
             }
         }
         // Sort by z_order so GPU draws back-to-front (lower z = drawn first).
@@ -1596,6 +1621,12 @@ fn handle_composite_windows(desc_ptr: u64) -> SyscallResult {
         }
     };
 
+    let threads_to_wake = if matches!(result, SyscallResult::Ok(0)) {
+        release_presented_window_frames(&windows)
+    } else {
+        [None; MAX_WINDOW_BUFFERS]
+    };
+
     // Wake blocked clients after GPU work completes (frame pacing back-pressure).
     // This must happen OUTSIDE the WINDOW_REGISTRY lock.
     if threads_to_wake.iter().any(|tid| tid.is_some()) {
@@ -1608,6 +1639,7 @@ fn handle_composite_windows(desc_ptr: u64) -> SyscallResult {
 /// Info about a window to be composited, extracted from the registry.
 #[cfg(target_arch = "aarch64")]
 pub struct WindowCompositeInfo {
+    pub buffer_id: u32,
     pub virgl_resource_id: u32,
     pub virgl_initialized: bool,
     pub width: u32,
@@ -1621,6 +1653,7 @@ pub struct WindowCompositeInfo {
     pub title_len: usize,
     pub title: [u8; MAX_TITLE_LEN],
     pub chromeless: bool,
+    pub generation: u64,
 }
 
 /// Handle create_window_buffer: allocate physical pages for a window pixel buffer,

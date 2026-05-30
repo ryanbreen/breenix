@@ -93,15 +93,6 @@ const CLOSE_BTN_TEXT: Color = Color::rgb(255, 255, 255);
 const MINIMIZE_BTN_BG: Color = Color::rgb(80, 85, 100);
 const MINIMIZE_BTN_TEXT: Color = Color::rgb(255, 255, 255);
 
-#[cfg(target_arch = "aarch64")]
-const SOFTWARE_CURSOR_W: usize = 16;
-#[cfg(target_arch = "aarch64")]
-const SOFTWARE_CURSOR_H: usize = 16;
-#[cfg(target_arch = "aarch64")]
-const SOFTWARE_CURSOR_WHITE: u32 = 0x00ff_ffff;
-#[cfg(target_arch = "aarch64")]
-const SOFTWARE_CURSOR_BLACK: u32 = 0x0001_0101;
-
 // ─── Input Parser ────────────────────────────────────────────────────────────
 // Parses stdin bytes (keyboard input) into InputEvents that BWM can either
 // handle internally (F-key focus switching) or route to the focused client
@@ -584,12 +575,6 @@ struct Window {
     /// Chromeless windows have no title bar, border, or chrome buttons.
     /// Detected by title prefix \x01.
     chromeless: bool,
-    #[cfg(target_arch = "aarch64")]
-    mapped_pixels: Option<*const u32>,
-    #[cfg(target_arch = "aarch64")]
-    mapped_width: usize,
-    #[cfg(target_arch = "aarch64")]
-    mapped_height: usize,
 }
 
 impl Window {
@@ -1135,11 +1120,6 @@ fn discover_windows(
 
         let order = *next_order;
         *next_order += 1;
-        #[cfg(target_arch = "aarch64")]
-        let (mapped_pixels, mapped_width, mapped_height) = match graphics::map_window_buffer(info.buffer_id) {
-            Ok((ptr, w, h)) => (Some(ptr), w as usize, h as usize),
-            Err(_) => (None, 0, 0),
-        };
         windows.push(Window {
             x: win_x, y: win_y, width: win_w, height: win_h,
             title, title_len, window_id: info.buffer_id,
@@ -1147,12 +1127,6 @@ fn discover_windows(
             minimized: false,
             creation_order: order,
             chromeless,
-            #[cfg(target_arch = "aarch64")]
-            mapped_pixels,
-            #[cfg(target_arch = "aarch64")]
-            mapped_width,
-            #[cfg(target_arch = "aarch64")]
-            mapped_height,
         });
         added = true;
     }
@@ -1182,214 +1156,6 @@ fn redraw_all_windows(fb: &mut FrameBuf, windows: &[Window], focused_win: usize,
         draw_window_frame(fb, &windows[i], i == focused_win, ui_font);
     }
     draw_appbar(fb, windows, focused_win, ui_font);
-}
-
-#[cfg(target_arch = "aarch64")]
-fn blit_window_contents(vram: &mut [u32], screen_w: usize, screen_h: usize, windows: &[Window]) {
-    for (idx, win) in windows.iter().enumerate() {
-        if win.minimized {
-            continue;
-        }
-        let Some(ptr) = win.mapped_pixels else {
-            continue;
-        };
-
-        let src_w = win.mapped_width.min(win.content_width());
-        let src_h = win.mapped_height.min(win.content_height());
-        if src_w == 0 || src_h == 0 {
-            continue;
-        }
-
-        let dst_x = win.content_x();
-        let dst_y = win.content_y();
-        if dst_x < 0 || dst_y < 0 {
-            continue;
-        }
-        let dst_x = dst_x as usize;
-        let dst_y = dst_y as usize;
-        if dst_x >= screen_w || dst_y >= screen_h {
-            continue;
-        }
-        let copy_w = src_w.min(screen_w - dst_x);
-        let copy_h = src_h.min(screen_h - dst_y);
-        let src = unsafe { core::slice::from_raw_parts(ptr, win.mapped_width * win.mapped_height) };
-
-        let _ = graphics::check_window_dirty(win.window_id);
-
-        let has_occluders = windows[idx + 1..].iter().any(|occ| {
-            !occ.minimized
-                && occ.mapped_pixels.is_some()
-                && occ.content_width() > 0
-                && occ.content_height() > 0
-        });
-        if !has_occluders {
-            for row in 0..copy_h {
-                let src_start = row * win.mapped_width;
-                let dst_start = (dst_y + row) * screen_w + dst_x;
-                vram[dst_start..dst_start + copy_w].copy_from_slice(&src[src_start..src_start + copy_w]);
-            }
-            continue;
-        }
-
-        for row in 0..copy_h {
-            let py = dst_y + row;
-
-            // Port of 34a6c51e lines 438-461: start with the full row span,
-            // then subtract columns covered by higher-z window content.
-            let mut spans = [(0usize, 0usize); 8];
-            let mut n_spans = 1;
-            spans[0] = (dst_x, dst_x + copy_w);
-
-            for occ in &windows[idx + 1..] {
-                if occ.minimized || occ.mapped_pixels.is_none() {
-                    continue;
-                }
-
-                // Occlude lower window content against the full upper window,
-                // including titlebar, borders, and shadow. The client content
-                // rect starts below the chrome, so using only content bounds
-                // lets lower content overpaint upper chrome at overlaps.
-                let (ox0, oy0, ox1, oy1) = occ.bounds();
-                if py as i32 >= oy1 || (py as i32) < oy0 {
-                    continue;
-                }
-
-                let os = ox0.max(0) as usize;
-                let oe = ox1.max(0) as usize;
-                let mut new_spans = [(0usize, 0usize); 8];
-                let mut nc = 0;
-                for &(sx, ex) in spans[..n_spans].iter() {
-                    if sx >= ex {
-                        continue;
-                    }
-                    if oe <= sx || os >= ex {
-                        if nc < 8 {
-                            new_spans[nc] = (sx, ex);
-                            nc += 1;
-                        }
-                    } else {
-                        if sx < os && nc < 8 {
-                            new_spans[nc] = (sx, os);
-                            nc += 1;
-                        }
-                        if ex > oe && nc < 8 {
-                            new_spans[nc] = (oe, ex);
-                            nc += 1;
-                        }
-                    }
-                }
-                spans = new_spans;
-                n_spans = nc;
-            }
-
-            let src_row = row * win.mapped_width;
-            for &(sx, ex) in spans[..n_spans].iter() {
-                if sx >= ex {
-                    continue;
-                }
-                let count = ex - sx;
-                let src_start = src_row + (sx - dst_x);
-                let dst_start = py * screen_w + sx;
-                vram[dst_start..dst_start + count].copy_from_slice(&src[src_start..src_start + count]);
-            }
-        }
-    }
-}
-
-#[cfg(target_arch = "aarch64")]
-fn software_cursor_hotspot(shape: u32) -> (i32, i32) {
-    if shape == graphics::cursor_shape::ARROW {
-        (0, 0)
-    } else {
-        (8, 8)
-    }
-}
-
-#[cfg(target_arch = "aarch64")]
-fn cursor_body_pixel(shape: u32, row: i32, col: i32) -> bool {
-    match shape {
-        graphics::cursor_shape::RESIZE_NS => {
-            (col == 7 && (3..=12).contains(&row))
-                || (row <= 3 && (col - 7).abs() <= 3 - row)
-                || (row >= 12 && (col - 7).abs() <= row - 12)
-        }
-        graphics::cursor_shape::RESIZE_EW => {
-            (row == 7 && (3..=12).contains(&col))
-                || (col <= 3 && (row - 7).abs() <= 3 - col)
-                || (col >= 12 && (row - 7).abs() <= col - 12)
-        }
-        graphics::cursor_shape::RESIZE_NWSE => {
-            ((2..=13).contains(&row) && (col == row || col == row + 1))
-                || (row <= 4 && col <= 4 && row + col <= 5)
-                || (row >= 11 && col >= 11 && row + col >= 25)
-        }
-        graphics::cursor_shape::RESIZE_NESW => {
-            ((2..=13).contains(&row) && (col == 15 - row || col == 14 - row))
-                || (row <= 4 && col >= 11 && col - row >= 11)
-                || (row >= 11 && col <= 4 && row - col >= 11)
-        }
-        _ => {
-            (row <= 9 && col >= 1 && col < row)
-                || (row == 10 && (1..=5).contains(&col))
-                || (row == 11 && ((1..=3).contains(&col) || (4..=5).contains(&col)))
-                || (row == 12 && (4..=6).contains(&col))
-                || ((13..=14).contains(&row) && (5..=6).contains(&col))
-        }
-    }
-}
-
-#[cfg(target_arch = "aarch64")]
-fn cursor_pixel(shape: u32, row: usize, col: usize) -> u32 {
-    let row = row as i32;
-    let col = col as i32;
-    if cursor_body_pixel(shape, row, col) {
-        return SOFTWARE_CURSOR_WHITE;
-    }
-
-    for dy in -1..=1 {
-        for dx in -1..=1 {
-            if dx == 0 && dy == 0 {
-                continue;
-            }
-            if cursor_body_pixel(shape, row + dy, col + dx) {
-                return SOFTWARE_CURSOR_BLACK;
-            }
-        }
-    }
-
-    0
-}
-
-#[cfg(target_arch = "aarch64")]
-fn draw_software_cursor(
-    vram: &mut [u32],
-    screen_w: usize,
-    screen_h: usize,
-    mouse_x: i32,
-    mouse_y: i32,
-    shape: u32,
-) {
-    let shape = shape.min(graphics::cursor_shape::RESIZE_NESW);
-    let (hot_x, hot_y) = software_cursor_hotspot(shape);
-    let base_x = mouse_x - hot_x;
-    let base_y = mouse_y - hot_y;
-
-    for row in 0..SOFTWARE_CURSOR_H {
-        let y = base_y + row as i32;
-        if y < 0 || y >= screen_h as i32 {
-            continue;
-        }
-        for col in 0..SOFTWARE_CURSOR_W {
-            let x = base_x + col as i32;
-            if x < 0 || x >= screen_w as i32 {
-                continue;
-            }
-            let pixel = cursor_pixel(shape, row, col);
-            if pixel != 0 {
-                vram[y as usize * screen_w + x as usize] = pixel;
-            }
-        }
-    }
 }
 
 fn restore_full_background(vram: &mut [u32], fb: &mut FrameBuf, bg: &[u32]) {
@@ -1713,21 +1479,25 @@ fn main() {
     #[cfg(not(target_arch = "aarch64"))]
     hotkey_mgr.load_config("/etc/hotkeys.conf");
 
-    // Initial composite. On ARM64 Parallels, the op16 SUBMIT_3D compositor path
-    // times out after bwm takes over scanout, so present the CPU-composited
-    // desktop through the proven direct VirGL blit path.
+    // Initial composite. ARM64 uses the same op16 SUBMIT_3D compositor path as
+    // steady-state frames so presentation is gated by the GPU present fence.
     #[cfg(target_arch = "aarch64")]
     {
-        let _ = direct_mapped;
-        draw_software_cursor(
-            composite_buf,
-            screen_w,
-            screen_h,
-            mouse_x,
-            mouse_y,
-            active_cursor_shape,
-        );
-        let _ = graphics::virgl_composite(composite_buf, screen_w as u32, screen_h as u32);
+        if direct_mapped {
+            let _ = graphics::virgl_composite_windows_rect(
+                &[],
+                0,
+                0,
+                1,
+                0,
+                0,
+                screen_w as u32,
+                screen_h as u32,
+            );
+        } else {
+            let _ =
+                graphics::virgl_composite_windows(composite_buf, screen_w as u32, screen_h as u32, true);
+        }
     }
     #[cfg(not(target_arch = "aarch64"))]
     {
@@ -2271,29 +2041,33 @@ fn main() {
         #[cfg(target_arch = "aarch64")]
         {
             if full_redraw || content_dirty || windows_dirty || mouse_moved_this_frame || cursor_dirty {
-                let _dirty_rect_snapshot = (dirty_x0, dirty_y0, dirty_x1, dirty_y1);
-                if mouse_moved_this_frame || cursor_dirty {
-                    compose_full_redraw(
-                        composite_buf,
-                        &mut fb,
-                        &mut shadow_fb,
-                        &bg_cache,
-                        &windows,
-                        focused_win,
-                        &clock_text,
-                        &mut ui_font,
+                let (cbuf, cw, ch): (&[u32], u32, u32) = if direct_mapped {
+                    (&[], 0, 0)
+                } else {
+                    (&composite_buf, screen_w as u32, screen_h as u32)
+                };
+                if full_redraw {
+                    let _ = graphics::virgl_composite_windows_rect(
+                        cbuf,
+                        cw,
+                        ch,
+                        1,
+                        0,
+                        0,
+                        screen_w as u32,
+                        screen_h as u32,
                     );
+                } else if content_dirty {
+                    let sw = screen_w as i32;
+                    let sh = screen_h as i32;
+                    let dx = dirty_x0.max(0) as u32;
+                    let dy = dirty_y0.max(0) as u32;
+                    let dw = (dirty_x1.min(sw) - dirty_x0.max(0)).max(0) as u32;
+                    let dh = (dirty_y1.min(sh) - dirty_y0.max(0)).max(0) as u32;
+                    let _ = graphics::virgl_composite_windows_rect(cbuf, cw, ch, 2, dx, dy, dw, dh);
+                } else if windows_dirty || mouse_moved_this_frame || cursor_dirty {
+                    let _ = graphics::virgl_composite_windows_rect(cbuf, cw, ch, 0, 0, 0, 0, 0);
                 }
-                blit_window_contents(composite_buf, screen_w, screen_h, &windows);
-                draw_software_cursor(
-                    composite_buf,
-                    screen_w,
-                    screen_h,
-                    mouse_x,
-                    mouse_y,
-                    active_cursor_shape,
-                );
-                let _ = graphics::virgl_composite(composite_buf, screen_w as u32, screen_h as u32);
                 full_redraw = false;
                 content_dirty = false;
                 windows_dirty = false;
