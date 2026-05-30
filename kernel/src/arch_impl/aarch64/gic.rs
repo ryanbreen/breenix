@@ -102,15 +102,31 @@ fn probe_and_validate_gicr() -> bool {
 
     // Candidate addresses to try in order:
     //   1. Whatever the UEFI loader reported (may be wrong on M5 Max)
-    //   2. Known Parallels GICR on M3 Max
-    //   3. Common alternative addresses seen on real Apple Silicon under Parallels
-    let candidates: &[usize] = &[
+    //   2. QEMU virt GICv3 redistributor base (from its device tree)
+    //   3. Known Parallels GICR fallbacks
+    //
+    // Probe order matters because reads from absent device space can return
+    // zero instead of faulting on some QEMU mappings. Prefer QEMU's known
+    // redistributor base before Parallels fallbacks on the QEMU platform.
+    let qemu_candidates: &[usize] = &[
+        reported_base,
+        0x080A_0000, // QEMU virt GICv3 redistributor
+        0x0250_0000, // Parallels M3 Max
+        0x0260_0000, // potential M5 Max offset
+        0x0200_0000, // the base that causes the crash (wrong, but keep to log)
+    ];
+    let platform_candidates: &[usize] = &[
         reported_base,
         0x0250_0000, // Parallels M3 Max
         0x0260_0000, // potential M5 Max offset
         0x0200_0000, // the base that causes the crash (wrong, but keep to log)
-        0x080A_0000, // another common GICR location
+        0x080A_0000, // QEMU virt GICv3 redistributor
     ];
+    let candidates = if crate::platform_config::is_qemu() {
+        qemu_candidates
+    } else {
+        platform_candidates
+    };
 
     for &base in candidates {
         if base == 0 {
@@ -253,6 +269,7 @@ static LAST_ACK_GROUP: AtomicU32 = AtomicU32::new(0);
 
 /// Peripheral ID Register 2 (contains GIC architecture version)
 const GICD_PIDR2: usize = 0xFE8;
+const GICD_PIDR2_GICV3: usize = 0xFFE8;
 
 // =============================================================================
 // Register Access Helpers
@@ -470,12 +487,17 @@ pub fn init_cpu_interface_secondary() {
 impl Gicv2 {
     /// Detect the GIC architecture version by reading GICD_PIDR2.
     ///
-    /// The GICD base address (0x0800_0000) is present on both GICv2 and GICv3
-    /// on QEMU virt, so this read is safe regardless of GIC version.
+    /// GICv2 exposes peripheral ID registers in the legacy 4KB distributor
+    /// window; GICv3 uses the 64KB distributor window and exposes PIDR2 near
+    /// the end of that window.
     /// Returns the architecture version (2, 3, or 4).
     fn detect_version() -> u8 {
-        let pidr2 = gicd_read(GICD_PIDR2);
-        ((pidr2 >> 4) & 0xF) as u8
+        let legacy_version = (gicd_read(GICD_PIDR2) >> 4) & 0xF;
+        if legacy_version != 0 {
+            return legacy_version as u8;
+        }
+
+        ((gicd_read(GICD_PIDR2_GICV3) >> 4) & 0xF) as u8
     }
 }
 
