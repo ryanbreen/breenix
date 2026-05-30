@@ -71,7 +71,10 @@ use kernel::test_framework;
     not(any(
         feature = "kthread_test_only",
         feature = "kthread_stress_test",
-        feature = "workqueue_test_only"
+        feature = "workqueue_test_only",
+        feature = "dns_test_only",
+        feature = "blocking_recv_test",
+        feature = "nonblock_eagain_test"
     ))
 ))]
 use kernel::{clock_gettime_test, time_test};
@@ -771,10 +774,13 @@ fn dns_test_only_main() -> ! {
 
     log::info!("=== DNS_TEST_ONLY: Starting minimal DNS test ===");
 
+    // Disk-backed test binaries require VirtIO block IRQ completions.
+    x86_64::instructions::interrupts::enable();
+    serial_println!("DNS_TEST_ONLY: Loading dns_test binary");
+    let elf = userspace_test::get_test_binary("dns_test");
+
     // Create dns_test process
     x86_64::instructions::interrupts::without_interrupts(|| {
-        serial_println!("DNS_TEST_ONLY: Loading dns_test binary");
-        let elf = userspace_test::get_test_binary("dns_test");
         match process::create_user_process(String::from("dns_test"), &elf) {
             Ok(pid) => {
                 log::info!(
@@ -820,24 +826,29 @@ fn blocking_recv_test_main() -> ! {
 
     log::info!("=== BLOCKING_RECV_TEST: Starting minimal blocking recv test ===");
 
+    // Disk-backed test binaries require VirtIO block IRQ completions.
+    x86_64::instructions::interrupts::enable();
+    serial_println!("BLOCKING_RECV_TEST: Loading blocking_recv_test binary");
+    let elf = match userspace_test::load_test_binary_from_disk("blocking_recv_test") {
+        Ok(elf) => elf,
+        Err(e) => {
+            log::error!(
+                "BLOCKING_RECV_TEST: Failed to load blocking_recv_test: {}",
+                e
+            );
+            unsafe {
+                use x86_64::instructions::port::Port;
+                let mut port = Port::new(0xf4);
+                port.write(0x01u32);
+            }
+            loop {
+                x86_64::instructions::hlt();
+            }
+        }
+    };
+
     // Create blocking_recv_test process
     x86_64::instructions::interrupts::without_interrupts(|| {
-        serial_println!("BLOCKING_RECV_TEST: Loading blocking_recv_test binary");
-        let elf = match userspace_test::load_test_binary_from_disk("blocking_recv_test") {
-            Ok(elf) => elf,
-            Err(e) => {
-                log::error!(
-                    "BLOCKING_RECV_TEST: Failed to load blocking_recv_test: {}",
-                    e
-                );
-                unsafe {
-                    use x86_64::instructions::port::Port;
-                    let mut port = Port::new(0xf4);
-                    port.write(0x01u32);
-                }
-                return;
-            }
-        };
         match process::create_user_process(String::from("blocking_recv_test"), &elf) {
             Ok(pid) => {
                 log::info!(
@@ -883,24 +894,29 @@ fn nonblock_eagain_test_main() -> ! {
 
     log::info!("=== NONBLOCK_EAGAIN_TEST: Starting minimal nonblock EAGAIN test ===");
 
+    // Disk-backed test binaries require VirtIO block IRQ completions.
+    x86_64::instructions::interrupts::enable();
+    serial_println!("NONBLOCK_EAGAIN_TEST: Loading nonblock_eagain_test binary");
+    let elf = match userspace_test::load_test_binary_from_disk("nonblock_eagain_test") {
+        Ok(elf) => elf,
+        Err(e) => {
+            log::error!(
+                "NONBLOCK_EAGAIN_TEST: Failed to load nonblock_eagain_test: {}",
+                e
+            );
+            unsafe {
+                use x86_64::instructions::port::Port;
+                let mut port = Port::new(0xf4);
+                port.write(0x01u32);
+            }
+            loop {
+                x86_64::instructions::hlt();
+            }
+        }
+    };
+
     // Create nonblock_eagain_test process
     x86_64::instructions::interrupts::without_interrupts(|| {
-        serial_println!("NONBLOCK_EAGAIN_TEST: Loading nonblock_eagain_test binary");
-        let elf = match userspace_test::load_test_binary_from_disk("nonblock_eagain_test") {
-            Ok(elf) => elf,
-            Err(e) => {
-                log::error!(
-                    "NONBLOCK_EAGAIN_TEST: Failed to load nonblock_eagain_test: {}",
-                    e
-                );
-                unsafe {
-                    use x86_64::instructions::port::Port;
-                    let mut port = Port::new(0xf4);
-                    port.write(0x01u32);
-                }
-                return;
-            }
-        };
         match process::create_user_process(String::from("nonblock_eagain_test"), &elf) {
             Ok(pid) => {
                 log::info!(
