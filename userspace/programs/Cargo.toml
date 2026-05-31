@@ -147,6 +147,10 @@ name = "select_test"
 path = "src/select_test.rs"
 
 [[bin]]
+name = "epoll_test"
+path = "src/epoll_test.rs"
+
+[[bin]]
 name = "nonblock_test"
 path = "src/nonblock_test.rs"
 

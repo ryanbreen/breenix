@@ -214,7 +214,11 @@ pub fn sys_epoll_ctl(epfd: i32, op: i32, fd: i32, event_ptr: u64) -> SyscallResu
         }
     }
 
-    // Read the event structure from userspace (not needed for DEL)
+    // Drop manager guard before any faultable user copy or EPOLL_INSTANCES access.
+    drop(manager_guard);
+
+    // Read the event structure from userspace after dropping the process-manager
+    // lock. A userspace page fault here may need that lock.
     let (events, data) = if op != EPOLL_CTL_DEL {
         if event_ptr == 0 {
             return SyscallResult::Err(errno::EFAULT as u64);
@@ -228,9 +232,6 @@ pub fn sys_epoll_ctl(epfd: i32, op: i32, fd: i32, event_ptr: u64) -> SyscallResu
     } else {
         (0, 0)
     };
-
-    // Drop manager guard before accessing EPOLL_INSTANCES to avoid lock ordering issues
-    drop(manager_guard);
 
     let result = match op {
         EPOLL_CTL_ADD => with_instance(epoll_id, |inst| inst.add(fd, events, data)),
@@ -364,10 +365,10 @@ pub fn sys_epoll_pwait(
         // If events are ready, copy to userspace and return
         if !ready_events.is_empty() {
             let count = ready_events.len();
-            unsafe {
-                let dst = events_ptr as *mut EpollEvent;
-                for (i, event) in ready_events.iter().enumerate() {
-                    core::ptr::write(dst.add(i), *event);
+            let dst = events_ptr as *mut EpollEvent;
+            for (i, event) in ready_events.iter().enumerate() {
+                if let Err(errno) = super::userptr::copy_to_user(dst.wrapping_add(i), event) {
+                    return SyscallResult::Err(errno);
                 }
             }
             return SyscallResult::Ok(count as u64);

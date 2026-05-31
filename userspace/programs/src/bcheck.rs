@@ -68,6 +68,7 @@ fn make_tests() -> Vec<TestDef> {
         (b"/usr/local/test/bin/pipe2_test\0",        "pipe2",            "ipc"),
         (b"/usr/local/test/bin/dup_test\0",          "dup",              "ipc"),
         (b"/usr/local/test/bin/fcntl_test\0",        "fcntl",            "ipc"),
+        (b"/usr/local/test/bin/epoll_test\0",        "epoll",            "ipc"),
         // Process
         (b"/usr/local/test/bin/fork_test\0",         "fork",             "proc"),
         (b"/usr/local/test/bin/waitpid_test\0",      "waitpid",          "proc"),
