@@ -173,6 +173,41 @@ fn record_ready_site(tid: u64, site: u64) {
     }
 }
 
+#[cfg(target_arch = "aarch64")]
+const TRACE_SCHED_DIAG_ENTER: u16 = 1;
+#[cfg(target_arch = "aarch64")]
+const TRACE_SCHED_DIAG_CURRENT_READY: u16 = 2;
+#[cfg(target_arch = "aarch64")]
+const TRACE_SCHED_DIAG_PICK: u16 = 3;
+#[cfg(target_arch = "aarch64")]
+const TRACE_SCHED_DIAG_RETURN: u16 = 4;
+#[cfg(target_arch = "aarch64")]
+const TRACE_SCHED_DIAG_RETURN_NONE: u16 = 5;
+const TRACE_SCHED_DIAG_WAKE_TIMER_CURRENT: u16 = 6;
+const TRACE_SCHED_DIAG_WAKE_TIMER_ENQUEUE: u16 = 7;
+const TRACE_SCHED_DIAG_WAKE_TIMER_DEFERRED: u16 = 8;
+const TRACE_SCHED_DIAG_WAKE_TIMER_ALREADY_QUEUED: u16 = 9;
+
+#[cfg(target_arch = "aarch64")]
+#[inline(always)]
+fn trace_sched_diag(stage: u16, tid: u64, old_id: u64, new_id: u64, flags: u32) {
+    crate::tracing::record_event(
+        crate::tracing::TraceEventType::SCHED_DIAG_STAGE,
+        0,
+        ((stage as u32) << 16) | ((tid as u32) & 0xFFFF),
+    );
+    crate::tracing::record_event(
+        crate::tracing::TraceEventType::SCHED_DIAG_TID_PAIR,
+        0,
+        (((old_id as u32) & 0xFFFF) << 16) | ((new_id as u32) & 0xFFFF),
+    );
+    crate::tracing::record_event(crate::tracing::TraceEventType::SCHED_DIAG_FLAGS, 0, flags);
+}
+
+#[cfg(not(target_arch = "aarch64"))]
+#[inline(always)]
+fn trace_sched_diag(_stage: u16, _tid: u64, _old_id: u64, _new_id: u64, _flags: u32) {}
+
 pub fn emit_wake_attribution_counters() {
     crate::serial_println!(
         "[wake-attrib] schedule={} unblock={} isr_unblock={} wake_io={} signal={} child={} timer={}",
@@ -1063,6 +1098,17 @@ impl Scheduler {
         let current_is_idle =
             self.cpu_state[cpu].current_thread == Some(self.cpu_state[cpu].idle_thread);
         set_cpu_idle(cpu, current_is_idle);
+        let current_thread = self.cpu_state[cpu].current_thread.unwrap_or(0);
+        let previous_thread = self.cpu_state[cpu].previous_thread.unwrap_or(0);
+        trace_sched_diag(
+            TRACE_SCHED_DIAG_ENTER,
+            current_thread,
+            current_thread,
+            0,
+            ((previous_thread as u32) << 16)
+                | ((current_is_idle as u32) << 1)
+                | self.ready_queue_length() as u32,
+        );
 
         // Drain lock-free ISR wakeup buffers — ISRs (AHCI, etc.) push thread IDs
         // here via isr_unblock_for_io() to avoid spinning on SCHEDULER from ISR
@@ -1125,6 +1171,15 @@ impl Scheduler {
                         ENQUEUE_ALREADY_QUEUED_OK.fetch_add(1, Ordering::Relaxed);
                     }
                 }
+                trace_sched_diag(
+                    TRACE_SCHED_DIAG_CURRENT_READY,
+                    current_id,
+                    current_id,
+                    0,
+                    ((should_requeue_old as u32) << 31)
+                        | ((in_queue as u32) << 30)
+                        | self.ready_queue_length() as u32,
+                );
                 // NOTE: We intentionally do NOT push to any queue here.
                 // The caller will do so after saving context via requeue_thread_after_save().
             }
@@ -1161,6 +1216,14 @@ impl Scheduler {
             }
             break self.cpu_state[current_cpu].idle_thread;
         };
+
+        trace_sched_diag(
+            TRACE_SCHED_DIAG_PICK,
+            next_thread_id,
+            self.cpu_state[current_cpu].current_thread.unwrap_or(0),
+            next_thread_id,
+            self.ready_queue_length() as u32,
+        );
 
         // Handle same-thread cases
         let any_other_queued = self.per_cpu_queues.iter().any(|q| !q.is_empty());
@@ -1208,6 +1271,13 @@ impl Scheduler {
                     if let Some(t) = self.get_thread_mut(next_thread_id) {
                         t.set_running();
                     }
+                    trace_sched_diag(
+                        TRACE_SCHED_DIAG_RETURN_NONE,
+                        next_thread_id,
+                        next_thread_id,
+                        next_thread_id,
+                        self.ready_queue_length() as u32,
+                    );
                     return None;
                 }
                 // For non-userspace same-thread-alone: switch to idle.
@@ -1219,6 +1289,13 @@ impl Scheduler {
                 next_thread_id = self.cpu_state[current_cpu].idle_thread;
                 crate::per_cpu_aarch64::set_need_resched(true);
             } else {
+                trace_sched_diag(
+                    TRACE_SCHED_DIAG_RETURN_NONE,
+                    next_thread_id,
+                    next_thread_id,
+                    next_thread_id,
+                    self.ready_queue_length() as u32,
+                );
                 return None;
             }
         }
@@ -1251,6 +1328,15 @@ impl Scheduler {
         let is_switching_to_idle = next_thread_id == self.cpu_state[current_cpu].idle_thread;
         set_cpu_idle(current_cpu, is_switching_to_idle);
 
+        trace_sched_diag(
+            TRACE_SCHED_DIAG_RETURN,
+            next_thread_id,
+            old_thread_id,
+            next_thread_id,
+            ((should_requeue_old as u32) << 31)
+                | ((is_switching_to_idle as u32) << 30)
+                | self.ready_queue_length() as u32,
+        );
         Some((old_thread_id, next_thread_id, should_requeue_old))
     }
 
@@ -2074,6 +2160,14 @@ impl Scheduler {
                     if !was_blocked_on_io {
                         thread.blocked_in_syscall = false;
                     }
+                    trace_sched_diag(
+                        TRACE_SCHED_DIAG_WAKE_TIMER_CURRENT,
+                        tid,
+                        tid,
+                        0,
+                        ((was_blocked_on_io as u32) << 31)
+                            | self.ready_queue_length() as u32,
+                    );
                 }
                 continue;
             }
@@ -2105,11 +2199,36 @@ impl Scheduler {
 
                 if !in_deferred_requeue && !is_idle && !already_queued {
                     let target = self.find_target_cpu_for_wakeup(tid);
+                    trace_sched_diag(
+                        TRACE_SCHED_DIAG_WAKE_TIMER_ENQUEUE,
+                        tid,
+                        tid,
+                        target as u64,
+                        ((was_blocked_on_io as u32) << 31)
+                            | ((target as u32 & 0xF) << 16)
+                            | self.ready_queue_length() as u32,
+                    );
                     self.per_cpu_queues[target].push_back(tid);
                     ENQUEUE_SAME_LOCK_OK.fetch_add(1, Ordering::Relaxed);
                 } else if in_deferred_requeue {
+                    trace_sched_diag(
+                        TRACE_SCHED_DIAG_WAKE_TIMER_DEFERRED,
+                        tid,
+                        tid,
+                        0,
+                        ((was_blocked_on_io as u32) << 31)
+                            | self.ready_queue_length() as u32,
+                    );
                     ENQUEUE_DEFERRED.fetch_add(1, Ordering::Relaxed);
                 } else if already_queued {
+                    trace_sched_diag(
+                        TRACE_SCHED_DIAG_WAKE_TIMER_ALREADY_QUEUED,
+                        tid,
+                        tid,
+                        0,
+                        ((was_blocked_on_io as u32) << 31)
+                            | self.ready_queue_length() as u32,
+                    );
                     ENQUEUE_ALREADY_QUEUED_OK.fetch_add(1, Ordering::Relaxed);
                 }
             }

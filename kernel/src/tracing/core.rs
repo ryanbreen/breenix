@@ -235,6 +235,18 @@ impl TraceEventType {
     pub const DEFER_REQUEUE_ELR: u16 = 0xFF3B;
     pub const DEFER_REQUEUE_X30: u16 = 0xFF3C;
     pub const DEFER_REQUEUE_FLAGS: u16 = 0xFF3D;
+    pub const CTX_DIAG_STAGE: u16 = 0xFF3E;
+    pub const CTX_DIAG_TID_PAIR: u16 = 0xFF3F;
+    pub const CTX_DIAG_FRAME_ELR: u16 = 0xFF40;
+    pub const CTX_DIAG_FRAME_X30: u16 = 0xFF41;
+    pub const CTX_DIAG_THREAD_ELR: u16 = 0xFF42;
+    pub const CTX_DIAG_THREAD_X30: u16 = 0xFF43;
+    pub const CTX_DIAG_SP: u16 = 0xFF44;
+    pub const CTX_DIAG_FLAGS: u16 = 0xFF45;
+    pub const SCHED_DIAG_STAGE: u16 = 0xFF46;
+    pub const SCHED_DIAG_TID_PAIR: u16 = 0xFF47;
+    pub const SCHED_DIAG_FLAGS: u16 = 0xFF48;
+    pub const FATAL_CPU_TRACE_MARKER: u16 = 0xFF49;
 }
 
 // =============================================================================

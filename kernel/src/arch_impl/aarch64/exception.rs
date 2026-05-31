@@ -573,6 +573,22 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                         });
                     }
 
+                    if frame_ref.elr < 0x1000 {
+                        let cpu_id =
+                            crate::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id() as usize;
+                        crate::tracing::record_event(
+                            crate::tracing::TraceEventType::FATAL_CPU_TRACE_MARKER,
+                            0,
+                            frame_ref.elr as u32,
+                        );
+                        crate::tracing::record_event(
+                            crate::tracing::TraceEventType::FATAL_CPU_TRACE_MARKER,
+                            1,
+                            frame_ref.x30 as u32,
+                        );
+                        crate::tracing::output::dump_buffer(cpu_id);
+                    }
+
                     dump_fatal_postmortem_once("INSTRUCTION_ABORT");
                 }
 
