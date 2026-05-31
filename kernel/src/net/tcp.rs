@@ -526,11 +526,32 @@ pub static TCP_LISTENERS: Mutex<BTreeMap<u16, ListenSocket>> = Mutex::new(BTreeM
 /// Sequence number generator (simple counter, should be more random in production)
 static SEQ_COUNTER: Mutex<u32> = Mutex::new(0x12345678);
 
+fn with_tcp_connections<R>(f: impl FnOnce(&mut BTreeMap<ConnectionId, TcpConnection>) -> R) -> R {
+    let saved = super::irq_save();
+    let mut connections = TCP_CONNECTIONS.lock();
+    let result = f(&mut connections);
+    drop(connections);
+    super::irq_restore(saved);
+    result
+}
+
+fn with_tcp_listeners<R>(f: impl FnOnce(&mut BTreeMap<u16, ListenSocket>) -> R) -> R {
+    let saved = super::irq_save();
+    let mut listeners = TCP_LISTENERS.lock();
+    let result = f(&mut listeners);
+    drop(listeners);
+    super::irq_restore(saved);
+    result
+}
+
 /// Generate a new initial sequence number
 pub fn generate_isn() -> u32 {
+    let saved = super::irq_save();
     let mut counter = SEQ_COUNTER.lock();
     let isn = *counter;
     *counter = counter.wrapping_add(64000); // Increment by a large amount
+    drop(counter);
+    super::irq_restore(saved);
     isn
 }
 
@@ -559,17 +580,19 @@ pub fn handle_tcp(ip: &Ipv4Packet, data: &[u8]) {
     };
 
     // First, check for an existing connection
-    {
-        let mut connections = TCP_CONNECTIONS.lock();
+    if with_tcp_connections(|connections| {
         if let Some(conn) = connections.get_mut(&conn_id) {
             handle_tcp_for_connection(conn, &header, payload, &config);
-            return;
+            true
+        } else {
+            false
         }
+    }) {
+        return;
     }
 
     // No existing connection - check for listening socket
-    {
-        let mut listeners = TCP_LISTENERS.lock();
+    if with_tcp_listeners(|listeners| {
         if let Some(listener) = listeners.get_mut(&header.dst_port) {
             if header.flags.syn && !header.flags.ack {
                 // SYN received on listening socket - add to pending queue
@@ -602,8 +625,12 @@ pub fn handle_tcp(ip: &Ipv4Packet, data: &[u8]) {
             } else {
                 log::debug!("TCP: Ignoring packet on listening socket");
             }
-            return;
+            true
+        } else {
+            false
         }
+    }) {
+        return;
     }
 
     // No connection and no listener - send RST
@@ -1087,12 +1114,16 @@ pub fn tcp_connect(
     let conn = TcpConnection::new_outgoing(conn_id, isn, owner_pid);
 
     // Add connection to table
-    {
-        let mut connections = TCP_CONNECTIONS.lock();
+    let inserted = with_tcp_connections(|connections| {
         if connections.contains_key(&conn_id) {
-            return Err("Connection already exists");
+            false
+        } else {
+            connections.insert(conn_id, conn);
+            true
         }
-        connections.insert(conn_id, conn);
+    });
+    if !inserted {
+        return Err("Connection already exists");
     }
 
     // Send SYN
@@ -1128,23 +1159,28 @@ pub fn tcp_listen(
 ) -> Result<(), &'static str> {
     let config = super::config();
 
-    let mut listeners = TCP_LISTENERS.lock();
-    if listeners.contains_key(&local_port) {
+    let inserted = with_tcp_listeners(|listeners| {
+        if listeners.contains_key(&local_port) {
+            return false;
+        }
+
+        listeners.insert(
+            local_port,
+            ListenSocket {
+                local_ip: config.ip_addr,
+                local_port,
+                backlog,
+                pending: VecDeque::new(),
+                owner_pid,
+                waiting_threads: Mutex::new(Vec::new()),
+                ref_count: core::sync::atomic::AtomicUsize::new(1),
+            },
+        );
+        true
+    });
+    if !inserted {
         return Err("Port already in use");
     }
-
-    listeners.insert(
-        local_port,
-        ListenSocket {
-            local_ip: config.ip_addr,
-            local_port,
-            backlog,
-            pending: VecDeque::new(),
-            owner_pid,
-            waiting_threads: Mutex::new(Vec::new()),
-            ref_count: core::sync::atomic::AtomicUsize::new(1),
-        },
-    );
 
     log::info!(
         "TCP: Listening on port {} (backlog={})",
@@ -1159,11 +1195,11 @@ pub fn tcp_listen(
 pub fn tcp_accept(local_port: u16) -> Option<ConnectionId> {
     let config = super::config();
 
-    let pending = {
-        let mut listeners = TCP_LISTENERS.lock();
-        let listener = listeners.get_mut(&local_port)?;
-        listener.pending.pop_front()?
-    };
+    let pending = with_tcp_listeners(|listeners| {
+        listeners
+            .get_mut(&local_port)
+            .and_then(|listener| listener.pending.pop_front())
+    })?;
 
     let conn_id = ConnectionId {
         local_ip: config.ip_addr,
@@ -1173,10 +1209,8 @@ pub fn tcp_accept(local_port: u16) -> Option<ConnectionId> {
     };
 
     // Get owner PID from listener
-    let owner_pid = {
-        let listeners = TCP_LISTENERS.lock();
-        listeners.get(&local_port)?.owner_pid
-    };
+    let owner_pid =
+        with_tcp_listeners(|listeners| listeners.get(&local_port).map(|l| l.owner_pid))?;
 
     // Create connection - state depends on whether ACK was already received
     let mut conn = TcpConnection::new_outgoing(conn_id, pending.send_initial, owner_pid);
@@ -1209,8 +1243,9 @@ pub fn tcp_accept(local_port: u16) -> Option<ConnectionId> {
         );
     }
 
-    let mut connections = TCP_CONNECTIONS.lock();
-    connections.insert(conn_id, conn);
+    with_tcp_connections(|connections| {
+        connections.insert(conn_id, conn);
+    });
 
     log::debug!(
         "TCP: Accepted connection from {}.{}.{}.{}:{}",
@@ -1237,15 +1272,11 @@ pub fn tcp_send(conn_id: &ConnectionId, data: &[u8]) -> Result<usize, &'static s
         tcp_register_recv_waiter(conn_id, thread_id);
 
         for _ in 0..20 {
-            let state = {
-                let connections = TCP_CONNECTIONS.lock();
-                match connections.get(conn_id) {
-                    Some(c) => c.state,
-                    None => {
-                        tcp_unregister_recv_waiter(conn_id, thread_id);
-                        return Err("Connection not found");
-                    }
-                }
+            let state =
+                with_tcp_connections(|connections| connections.get(conn_id).map(|c| c.state));
+            let Some(state) = state else {
+                tcp_unregister_recv_waiter(conn_id, thread_id);
+                return Err("Connection not found");
             };
 
             if matches!(state, TcpState::Established | TcpState::CloseWait) {
@@ -1262,7 +1293,7 @@ pub fn tcp_send(conn_id: &ConnectionId, data: &[u8]) -> Result<usize, &'static s
 
             // Block until the softirq handler wakes us on state change.
             crate::task::scheduler::with_scheduler(|sched| {
-                sched.block_current();
+                sched.block_current_for_io();
             });
             crate::task::scheduler::yield_current();
         }
@@ -1270,10 +1301,51 @@ pub fn tcp_send(conn_id: &ConnectionId, data: &[u8]) -> Result<usize, &'static s
         tcp_unregister_recv_waiter(conn_id, thread_id);
     }
 
-    let mut connections = TCP_CONNECTIONS.lock();
-    let conn = match connections.get_mut(conn_id) {
-        Some(c) => c,
-        None => {
+    with_tcp_connections(|connections| {
+        let conn = match connections.get_mut(conn_id) {
+            Some(c) => c,
+            None => {
+                return Err("Connection not found");
+            }
+        };
+
+        if conn.send_shutdown {
+            return Err("Connection shutdown for writing");
+        }
+
+        if !matches!(conn.state, TcpState::Established | TcpState::CloseWait) {
+            crate::serial_println!(
+                "[tcp_send] FAIL: state={:?} after wait (local={}:{}, remote={}:{})",
+                conn.state,
+                conn.id.local_ip[3],
+                conn.id.local_port,
+                conn.id.remote_ip[3],
+                conn.id.remote_port
+            );
+            return Err("Connection not established");
+        }
+
+        // For simplicity, send all data in one segment (up to MSS)
+        let send_len = data.len().min(conn.mss as usize);
+
+        send_tcp_packet(
+            &config,
+            conn.id.remote_ip,
+            conn.id.local_port,
+            conn.id.remote_port,
+            conn.send_next,
+            conn.recv_next,
+            TcpFlags::ack_psh(),
+            conn.recv_window,
+            &data[..send_len],
+        );
+
+        conn.send_next = conn.send_next.wrapping_add(send_len as u32);
+
+        Ok(send_len)
+    })
+    .map_err(|e| {
+        if e == "Connection not found" {
             log::warn!(
                 "tcp_send: Connection not found (local={}:{}, remote={}:{})",
                 conn_id.local_ip[3],
@@ -1281,77 +1353,41 @@ pub fn tcp_send(conn_id: &ConnectionId, data: &[u8]) -> Result<usize, &'static s
                 conn_id.remote_ip[3],
                 conn_id.remote_port
             );
-            return Err("Connection not found");
+        } else if e == "Connection shutdown for writing" {
+            log::warn!("tcp_send: Connection shutdown for writing");
         }
-    };
-
-    if conn.send_shutdown {
-        log::warn!(
-            "tcp_send: Connection shutdown for writing (state={:?})",
-            conn.state
-        );
-        return Err("Connection shutdown for writing");
-    }
-
-    if !matches!(conn.state, TcpState::Established | TcpState::CloseWait) {
-        crate::serial_println!(
-            "[tcp_send] FAIL: state={:?} after wait (local={}:{}, remote={}:{})",
-            conn.state,
-            conn.id.local_ip[3],
-            conn.id.local_port,
-            conn.id.remote_ip[3],
-            conn.id.remote_port
-        );
-        return Err("Connection not established");
-    }
-
-    // For simplicity, send all data in one segment (up to MSS)
-    let send_len = data.len().min(conn.mss as usize);
-
-    send_tcp_packet(
-        &config,
-        conn.id.remote_ip,
-        conn.id.local_port,
-        conn.id.remote_port,
-        conn.send_next,
-        conn.recv_next,
-        TcpFlags::ack_psh(),
-        conn.recv_window,
-        &data[..send_len],
-    );
-
-    conn.send_next = conn.send_next.wrapping_add(send_len as u32);
-
-    Ok(send_len)
+        e
+    })
 }
 
 /// Receive data from a connection
 pub fn tcp_recv(conn_id: &ConnectionId, buf: &mut [u8]) -> Result<usize, &'static str> {
-    let mut connections = TCP_CONNECTIONS.lock();
-    let conn = connections.get_mut(conn_id).ok_or("Connection not found")?;
+    with_tcp_connections(|connections| {
+        let conn = connections.get_mut(conn_id).ok_or("Connection not found")?;
 
-    // Check recv_shutdown flag - if set, return EOF immediately
-    if conn.recv_shutdown {
-        return Ok(0); // EOF - user called SHUT_RD
-    }
-
-    if conn.rx_buffer.is_empty() {
-        // Return EOF if connection is closing/closed
-        if matches!(
-            conn.state,
-            TcpState::CloseWait | TcpState::Closed | TcpState::TimeWait
-        ) {
-            return Ok(0); // EOF
+        // Check recv_shutdown flag - if set, return EOF immediately
+        if conn.recv_shutdown {
+            return Ok(0); // EOF - user called SHUT_RD
         }
-        return Err("No data available");
-    }
 
-    let read_len = buf.len().min(conn.rx_buffer.len());
-    for i in 0..read_len {
-        buf[i] = conn.rx_buffer.pop_front().unwrap();
-    }
+        if conn.rx_buffer.is_empty() {
+            // Return EOF if connection is closing/closed
+            if matches!(
+                conn.state,
+                TcpState::CloseWait | TcpState::Closed | TcpState::TimeWait
+            ) {
+                return Ok(0); // EOF
+            }
+            return Err("No data available");
+        }
 
-    Ok(read_len)
+        let read_len = buf.len().min(conn.rx_buffer.len());
+        for slot in buf.iter_mut().take(read_len) {
+            *slot = conn.rx_buffer.pop_front().unwrap();
+        }
+
+        Ok(read_len)
+    })
 }
 
 /// Check if a connection is established (or was established before remote close)
@@ -1367,22 +1403,22 @@ pub fn tcp_recv(conn_id: &ConnectionId, buf: &mut [u8]) -> Result<usize, &'stati
 /// - SynReceived: Server still completing handshake
 /// - Closed/Listen: Not connected
 pub fn tcp_is_established(conn_id: &ConnectionId) -> bool {
-    let connections = TCP_CONNECTIONS.lock();
-    if let Some(conn) = connections.get(conn_id) {
-        // Connection is "established" for connect() purposes if handshake completed.
-        // This includes states where one or both sides have initiated close.
-        let is_connected = matches!(
-            conn.state,
-            TcpState::Established
-                | TcpState::CloseWait
-                | TcpState::FinWait1
-                | TcpState::FinWait2
-                | TcpState::Closing
-                | TcpState::LastAck
-                | TcpState::TimeWait
-        );
-        if !is_connected {
-            log::debug!(
+    with_tcp_connections(|connections| {
+        if let Some(conn) = connections.get(conn_id) {
+            // Connection is "established" for connect() purposes if handshake completed.
+            // This includes states where one or both sides have initiated close.
+            let is_connected = matches!(
+                conn.state,
+                TcpState::Established
+                    | TcpState::CloseWait
+                    | TcpState::FinWait1
+                    | TcpState::FinWait2
+                    | TcpState::Closing
+                    | TcpState::LastAck
+                    | TcpState::TimeWait
+            );
+            if !is_connected {
+                log::debug!(
                 "TCP_IS_ESTABLISHED: conn_id={{local={}:{}, remote={}:{}}} found but state={:?}",
                 conn_id.local_ip[3],
                 conn_id.local_port,
@@ -1390,39 +1426,41 @@ pub fn tcp_is_established(conn_id: &ConnectionId) -> bool {
                 conn_id.remote_port,
                 conn.state
             );
-        }
-        is_connected
-    } else {
-        // Log the conn_id we're looking for and what's actually in the map
-        log::warn!(
-            "TCP_IS_ESTABLISHED: conn_id={{local={}:{}, remote={}:{}}} NOT FOUND (total connections: {})",
-            conn_id.local_ip[3], conn_id.local_port,
-            conn_id.remote_ip[3], conn_id.remote_port,
-            connections.len()
-        );
-        // Also log what connections DO exist for debugging
-        for (k, v) in connections.iter() {
+            }
+            is_connected
+        } else {
+            // Log the conn_id we're looking for and what's actually in the map
             log::warn!(
-                "  existing: local={}:{}, remote={}:{}, state={:?}",
-                k.local_ip[3],
-                k.local_port,
-                k.remote_ip[3],
-                k.remote_port,
-                v.state
+                "TCP_IS_ESTABLISHED: conn_id={{local={}:{}, remote={}:{}}} NOT FOUND (total connections: {})",
+                conn_id.local_ip[3], conn_id.local_port,
+                conn_id.remote_ip[3], conn_id.remote_port,
+                connections.len()
             );
+            // Also log what connections DO exist for debugging
+            for (k, v) in connections.iter() {
+                log::warn!(
+                    "  existing: local={}:{}, remote={}:{}, state={:?}",
+                    k.local_ip[3],
+                    k.local_port,
+                    k.remote_ip[3],
+                    k.remote_port,
+                    v.state
+                );
+            }
+            false
         }
-        false
-    }
+    })
 }
 
 /// Check if a connection failed (reset or closed during handshake)
 pub fn tcp_is_failed(conn_id: &ConnectionId) -> bool {
-    let connections = TCP_CONNECTIONS.lock();
-    if let Some(conn) = connections.get(conn_id) {
-        matches!(conn.state, TcpState::Closed | TcpState::TimeWait)
-    } else {
-        true // Connection not found = failed
-    }
+    with_tcp_connections(|connections| {
+        if let Some(conn) = connections.get(conn_id) {
+            matches!(conn.state, TcpState::Closed | TcpState::TimeWait)
+        } else {
+            true // Connection not found = failed
+        }
+    })
 }
 
 /// Shutdown part of a full-duplex connection
@@ -1431,15 +1469,81 @@ pub fn tcp_is_failed(conn_id: &ConnectionId) -> bool {
 pub fn tcp_shutdown(conn_id: &ConnectionId, shut_rd: bool, shut_wr: bool) {
     let config = super::config();
 
-    let mut connections = TCP_CONNECTIONS.lock();
-    if let Some(conn) = connections.get_mut(conn_id) {
-        if shut_rd {
-            conn.recv_shutdown = true;
+    with_tcp_connections(|connections| {
+        if let Some(conn) = connections.get_mut(conn_id) {
+            if shut_rd {
+                conn.recv_shutdown = true;
+            }
+            if shut_wr && !conn.send_shutdown {
+                conn.send_shutdown = true;
+                // Send FIN to signal we're done sending
+                if conn.state == TcpState::Established {
+                    send_tcp_packet(
+                        &config,
+                        conn.id.remote_ip,
+                        conn.id.local_port,
+                        conn.id.remote_port,
+                        conn.send_next,
+                        conn.recv_next,
+                        TcpFlags::fin_ack(),
+                        conn.recv_window,
+                        &[],
+                    );
+                    conn.send_next = conn.send_next.wrapping_add(1);
+                    conn.state = TcpState::FinWait1;
+                }
+            }
         }
-        if shut_wr && !conn.send_shutdown {
-            conn.send_shutdown = true;
-            // Send FIN to signal we're done sending
-            if conn.state == TcpState::Established {
+    });
+}
+
+/// Increment reference count on a TCP connection (called during fork)
+pub fn tcp_add_ref(conn_id: &ConnectionId) {
+    with_tcp_connections(|connections| {
+        if let Some(conn) = connections.get(conn_id) {
+            conn.refcount
+                .fetch_add(1, core::sync::atomic::Ordering::SeqCst);
+        }
+    });
+}
+
+/// Close a connection (decrement refcount, only actually close when last reference dropped)
+pub fn tcp_close(conn_id: &ConnectionId) -> Result<(), &'static str> {
+    let config = super::config();
+
+    with_tcp_connections(|connections| {
+        let conn = connections.get_mut(conn_id).ok_or("Connection not found")?;
+
+        // Decrement reference count
+        let old_count = conn
+            .refcount
+            .fetch_sub(1, core::sync::atomic::Ordering::SeqCst);
+
+        // Only actually close when last reference is dropped
+        if old_count > 1 {
+            return Ok(());
+        }
+
+        // Last reference - actually close the connection
+        match conn.state {
+            TcpState::Established => {
+                // Send FIN
+                send_tcp_packet(
+                    &config,
+                    conn.id.remote_ip,
+                    conn.id.local_port,
+                    conn.id.remote_port,
+                    conn.send_next,
+                    conn.recv_next,
+                    TcpFlags::fin_ack(),
+                    conn.recv_window,
+                    &[],
+                );
+                conn.send_next = conn.send_next.wrapping_add(1); // FIN consumes sequence
+                conn.state = TcpState::FinWait1;
+            }
+            TcpState::CloseWait => {
+                // Send FIN
                 send_tcp_packet(
                     &config,
                     conn.id.remote_ip,
@@ -1452,99 +1556,36 @@ pub fn tcp_shutdown(conn_id: &ConnectionId, shut_rd: bool, shut_wr: bool) {
                     &[],
                 );
                 conn.send_next = conn.send_next.wrapping_add(1);
-                conn.state = TcpState::FinWait1;
+                conn.state = TcpState::LastAck;
+            }
+            TcpState::Closed => {
+                // Already closed, remove from table
+                connections.remove(conn_id);
+            }
+            _ => {
+                // Other states - just mark as closed
+                conn.state = TcpState::Closed;
             }
         }
-    }
-}
 
-/// Increment reference count on a TCP connection (called during fork)
-pub fn tcp_add_ref(conn_id: &ConnectionId) {
-    let connections = TCP_CONNECTIONS.lock();
-    if let Some(conn) = connections.get(conn_id) {
-        conn.refcount
-            .fetch_add(1, core::sync::atomic::Ordering::SeqCst);
-    }
-}
-
-/// Close a connection (decrement refcount, only actually close when last reference dropped)
-pub fn tcp_close(conn_id: &ConnectionId) -> Result<(), &'static str> {
-    let config = super::config();
-
-    let mut connections = TCP_CONNECTIONS.lock();
-    let conn = connections.get_mut(conn_id).ok_or("Connection not found")?;
-
-    // Decrement reference count
-    let old_count = conn
-        .refcount
-        .fetch_sub(1, core::sync::atomic::Ordering::SeqCst);
-
-    // Only actually close when last reference is dropped
-    if old_count > 1 {
-        return Ok(());
-    }
-
-    // Last reference - actually close the connection
-    match conn.state {
-        TcpState::Established => {
-            // Send FIN
-            send_tcp_packet(
-                &config,
-                conn.id.remote_ip,
-                conn.id.local_port,
-                conn.id.remote_port,
-                conn.send_next,
-                conn.recv_next,
-                TcpFlags::fin_ack(),
-                conn.recv_window,
-                &[],
-            );
-            conn.send_next = conn.send_next.wrapping_add(1); // FIN consumes sequence
-            conn.state = TcpState::FinWait1;
-        }
-        TcpState::CloseWait => {
-            // Send FIN
-            send_tcp_packet(
-                &config,
-                conn.id.remote_ip,
-                conn.id.local_port,
-                conn.id.remote_port,
-                conn.send_next,
-                conn.recv_next,
-                TcpFlags::fin_ack(),
-                conn.recv_window,
-                &[],
-            );
-            conn.send_next = conn.send_next.wrapping_add(1);
-            conn.state = TcpState::LastAck;
-        }
-        TcpState::Closed => {
-            // Already closed, remove from table
-            connections.remove(conn_id);
-        }
-        _ => {
-            // Other states - just mark as closed
-            conn.state = TcpState::Closed;
-        }
-    }
-
-    Ok(())
+        Ok(())
+    })
 }
 
 /// Check if there's a pending connection to accept
 pub fn tcp_has_pending(local_port: u16) -> bool {
-    let listeners = TCP_LISTENERS.lock();
-    listeners
-        .get(&local_port)
-        .map(|l| !l.pending.is_empty())
-        .unwrap_or(false)
+    with_tcp_listeners(|listeners| {
+        listeners
+            .get(&local_port)
+            .map(|l| !l.pending.is_empty())
+            .unwrap_or(false)
+    })
 }
 
 /// Get connection state for debugging and introspection
 #[allow(dead_code)] // Part of TCP debugging API
 pub fn tcp_get_state(conn_id: &ConnectionId) -> Option<TcpState> {
-    let connections = TCP_CONNECTIONS.lock();
-    connections.get(conn_id).map(|c| c.state)
+    with_tcp_connections(|connections| connections.get(conn_id).map(|c| c.state))
 }
 
 // ============================================================================
@@ -1553,57 +1594,62 @@ pub fn tcp_get_state(conn_id: &ConnectionId) -> Option<TcpState> {
 
 /// Register a thread as waiting for incoming connections on a listening socket (accept)
 pub fn tcp_register_accept_waiter(local_port: u16, thread_id: u64) {
-    let listeners = TCP_LISTENERS.lock();
-    if let Some(listener) = listeners.get(&local_port) {
-        let mut waiting = listener.waiting_threads.lock();
-        if !waiting.contains(&thread_id) {
-            waiting.push(thread_id);
-            log::trace!(
-                "TCP: Thread {} registered as accept waiter on port {}",
-                thread_id,
-                local_port
-            );
+    with_tcp_listeners(|listeners| {
+        if let Some(listener) = listeners.get(&local_port) {
+            let mut waiting = listener.waiting_threads.lock();
+            if !waiting.contains(&thread_id) {
+                waiting.push(thread_id);
+                log::trace!(
+                    "TCP: Thread {} registered as accept waiter on port {}",
+                    thread_id,
+                    local_port
+                );
+            }
         }
-    }
+    });
 }
 
 /// Unregister a thread from waiting for incoming connections
 pub fn tcp_unregister_accept_waiter(local_port: u16, thread_id: u64) {
-    let listeners = TCP_LISTENERS.lock();
-    if let Some(listener) = listeners.get(&local_port) {
-        let mut waiting = listener.waiting_threads.lock();
-        waiting.retain(|&id| id != thread_id);
-    }
+    with_tcp_listeners(|listeners| {
+        if let Some(listener) = listeners.get(&local_port) {
+            let mut waiting = listener.waiting_threads.lock();
+            waiting.retain(|&id| id != thread_id);
+        }
+    });
 }
 
 /// Register a thread as waiting for data/state change on a connection (recv/connect)
 pub fn tcp_register_recv_waiter(conn_id: &ConnectionId, thread_id: u64) {
-    let connections = TCP_CONNECTIONS.lock();
-    if let Some(conn) = connections.get(conn_id) {
-        let mut waiting = conn.waiting_threads.lock();
-        if !waiting.contains(&thread_id) {
-            waiting.push(thread_id);
-            log::trace!("TCP: Thread {} registered as recv waiter", thread_id);
+    with_tcp_connections(|connections| {
+        if let Some(conn) = connections.get(conn_id) {
+            let mut waiting = conn.waiting_threads.lock();
+            if !waiting.contains(&thread_id) {
+                waiting.push(thread_id);
+                log::trace!("TCP: Thread {} registered as recv waiter", thread_id);
+            }
         }
-    }
+    });
 }
 
 /// Unregister a thread from waiting for data on a connection
 pub fn tcp_unregister_recv_waiter(conn_id: &ConnectionId, thread_id: u64) {
-    let connections = TCP_CONNECTIONS.lock();
-    if let Some(conn) = connections.get(conn_id) {
-        let mut waiting = conn.waiting_threads.lock();
-        waiting.retain(|&id| id != thread_id);
-    }
+    with_tcp_connections(|connections| {
+        if let Some(conn) = connections.get(conn_id) {
+            let mut waiting = conn.waiting_threads.lock();
+            waiting.retain(|&id| id != thread_id);
+        }
+    });
 }
 
 /// Check if a connection has data available for recv
 pub fn tcp_has_data(conn_id: &ConnectionId) -> bool {
-    let connections = TCP_CONNECTIONS.lock();
-    connections
-        .get(conn_id)
-        .map(|c| !c.rx_buffer.is_empty())
-        .unwrap_or(false)
+    with_tcp_connections(|connections| {
+        connections
+            .get(conn_id)
+            .map(|c| !c.rx_buffer.is_empty())
+            .unwrap_or(false)
+    })
 }
 
 /// Wake all threads waiting on a listening socket (called when SYN arrives)
@@ -1614,12 +1660,7 @@ fn wake_accept_waiters(listener: &ListenSocket) {
     };
 
     if !readers.is_empty() {
-        crate::task::scheduler::with_scheduler(|sched| {
-            for thread_id in &readers {
-                sched.unblock(*thread_id);
-            }
-        });
-        crate::task::scheduler::set_need_resched();
+        wake_waiting_threads(&readers);
         log::debug!("TCP: Woke {} accept waiters", readers.len());
     }
 }
@@ -1632,55 +1673,69 @@ fn wake_connection_waiters(conn: &TcpConnection) {
     };
 
     if !readers.is_empty() {
-        crate::task::scheduler::with_scheduler(|sched| {
-            for thread_id in &readers {
-                sched.unblock(*thread_id);
-            }
-        });
-        crate::task::scheduler::set_need_resched();
+        wake_waiting_threads(&readers);
         log::debug!("TCP: Woke {} connection waiters", readers.len());
     }
 }
 
+fn wake_waiting_threads(readers: &[u64]) {
+    #[cfg(target_arch = "aarch64")]
+    if crate::per_cpu::in_interrupt() {
+        for thread_id in readers {
+            crate::task::scheduler::isr_unblock_for_io(*thread_id);
+        }
+        return;
+    }
+
+    crate::task::scheduler::with_scheduler(|sched| {
+        for thread_id in readers {
+            sched.unblock(*thread_id);
+        }
+    });
+    crate::task::scheduler::set_need_resched();
+}
+
 /// Increment the reference count for a TCP listener (called when fd is duplicated via fork)
 pub fn tcp_listener_ref_inc(port: u16) {
-    let listeners = TCP_LISTENERS.lock();
-    if let Some(listener) = listeners.get(&port) {
-        let old = listener
-            .ref_count
-            .fetch_add(1, core::sync::atomic::Ordering::SeqCst);
-        log::debug!(
-            "TCP: Listener port {} ref_count {} -> {}",
-            port,
-            old,
-            old + 1
-        );
-    }
+    with_tcp_listeners(|listeners| {
+        if let Some(listener) = listeners.get(&port) {
+            let old = listener
+                .ref_count
+                .fetch_add(1, core::sync::atomic::Ordering::SeqCst);
+            log::debug!(
+                "TCP: Listener port {} ref_count {} -> {}",
+                port,
+                old,
+                old + 1
+            );
+        }
+    });
 }
 
 /// Decrement the reference count for a TCP listener and remove if it reaches 0
 /// Returns true if the listener was removed, false otherwise
 pub fn tcp_listener_ref_dec(port: u16) -> bool {
-    let mut listeners = TCP_LISTENERS.lock();
-    if let Some(listener) = listeners.get(&port) {
-        let old = listener
-            .ref_count
-            .fetch_sub(1, core::sync::atomic::Ordering::SeqCst);
-        log::debug!(
-            "TCP: Listener port {} ref_count {} -> {}",
-            port,
-            old,
-            old - 1
-        );
-        if old == 1 {
-            // Reference count reached 0, remove the listener
-            listeners.remove(&port);
-            log::info!(
-                "TCP: Removed listener on port {} (ref_count reached 0)",
-                port
+    with_tcp_listeners(|listeners| {
+        if let Some(listener) = listeners.get(&port) {
+            let old = listener
+                .ref_count
+                .fetch_sub(1, core::sync::atomic::Ordering::SeqCst);
+            log::debug!(
+                "TCP: Listener port {} ref_count {} -> {}",
+                port,
+                old,
+                old - 1
             );
-            return true;
+            if old == 1 {
+                // Reference count reached 0, remove the listener
+                listeners.remove(&port);
+                log::info!(
+                    "TCP: Removed listener on port {} (ref_count reached 0)",
+                    port
+                );
+                return true;
+            }
         }
-    }
-    false
+        false
+    })
 }
