@@ -266,6 +266,9 @@ pub fn event_type_name(event_type: u16) -> &'static str {
         TraceEventType::SCHED_PICK => "SCHED_PICK",
         TraceEventType::SCHED_RESCHED => "SCHED_RESCHED",
         TraceEventType::SCHED_PREEMPT => "SCHED_PREEMPT",
+        TraceEventType::SCHED_WAKE_CURRENT => "SCHED_WAKE_CURRENT",
+        TraceEventType::SCHED_RESCHED_IPI_SEND => "SCHED_RESCHED_IPI_SEND",
+        TraceEventType::SCHED_RESCHED_IPI_RECV => "SCHED_RESCHED_IPI_RECV",
 
         // Syscall events (0x03xx)
         TraceEventType::SYSCALL_ENTRY => "SYSCALL_ENTRY",
@@ -385,6 +388,9 @@ fn payload_description(event_type: u16) -> &'static str {
         TraceEventType::SCHED_PICK => "tid",
         TraceEventType::SCHED_RESCHED => "0",
         TraceEventType::SCHED_PREEMPT => "0",
+        TraceEventType::SCHED_WAKE_CURRENT => "target_cpu<<16|tid",
+        TraceEventType::SCHED_RESCHED_IPI_SEND => "target_cpu<<16|source_cpu",
+        TraceEventType::SCHED_RESCHED_IPI_RECV => "irq_id",
         TraceEventType::SYSCALL_ENTRY => "syscall_nr",
         TraceEventType::SYSCALL_EXIT => "result",
         TraceEventType::PAGE_FAULT => "error_code",

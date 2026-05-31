@@ -1367,6 +1367,12 @@ impl Scheduler {
                 // same stack, leading to context corruption and crashes (ELR=0x0).
                 // The CPU running the thread will detect the state change (Blocked
                 // → Ready) when its WFI loop checks the thread state after waking.
+                #[cfg(target_arch = "aarch64")]
+                let current_cpu = (0..MAX_CPUS)
+                    .find(|&cpu| self.cpu_state[cpu].current_thread == Some(thread_id));
+                #[cfg(target_arch = "aarch64")]
+                let is_current_on_any_cpu = current_cpu.is_some();
+                #[cfg(not(target_arch = "aarch64"))]
                 let is_current_on_any_cpu =
                     (0..MAX_CPUS).any(|cpu| self.cpu_state[cpu].current_thread == Some(thread_id));
 
@@ -1401,11 +1407,25 @@ impl Scheduler {
                     self.send_resched_ipi();
                 } else if is_current_on_any_cpu || is_in_deferred {
                     ENQUEUE_DEFERRED.fetch_add(1, Ordering::Relaxed);
+                    #[cfg(target_arch = "aarch64")]
+                    if let Some(target) = current_cpu {
+                        self.trace_wake_current(thread_id, target);
+                        self.send_resched_ipi_to_cpu(target);
+                    }
                 } else if already_queued {
                     ENQUEUE_ALREADY_QUEUED_OK.fetch_add(1, Ordering::Relaxed);
                 }
             }
         }
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    fn trace_wake_current(&self, thread_id: u64, target_cpu: usize) {
+        crate::tracing::record_event(
+            crate::tracing::TraceEventType::SCHED_WAKE_CURRENT,
+            0,
+            (((target_cpu as u32) & 0xFFFF) << 16) | ((thread_id as u32) & 0xFFFF),
+        );
     }
 
     /// Send reschedule IPIs (SGI 0) to all idle CPUs.
@@ -1457,6 +1477,12 @@ impl Scheduler {
         if target_cpu >= MAX_CPUS || target_cpu >= smp::cpus_online() as usize {
             return;
         }
+
+        crate::tracing::record_event(
+            crate::tracing::TraceEventType::SCHED_RESCHED_IPI_SEND,
+            0,
+            (((target_cpu as u32) & 0xFFFF) << 16) | ((Self::current_cpu_id() as u32) & 0xFFFF),
+        );
 
         crate::arch_impl::aarch64::gic::send_sgi(
             crate::arch_impl::aarch64::constants::SGI_RESCHEDULE as u8,
@@ -1833,10 +1859,16 @@ impl Scheduler {
 
     fn unblock_for_io_attributed(&mut self, tid: u64, from_isr_buffer: bool) {
         let wake = self.wake_io_thread_locked(tid, from_isr_buffer);
-        if wake.enqueued_target.is_some() {
-            #[cfg(target_arch = "aarch64")]
-            self.send_resched_ipi();
+        #[cfg(target_arch = "aarch64")]
+        if let Some(target) = wake.current_cpu {
+            self.trace_wake_current(tid, target);
         }
+        #[cfg(target_arch = "aarch64")]
+        if let Some(target) = wake.resched_target() {
+            self.send_resched_ipi_to_cpu(target);
+        }
+        #[cfg(not(target_arch = "aarch64"))]
+        let _ = wake.resched_target();
     }
 
     /// Immediate task-context waitqueue wake.
@@ -1846,6 +1878,10 @@ impl Scheduler {
     /// transition before the waitqueue wake returns.
     pub fn wake_waitqueue_thread(&mut self, tid: u64) {
         let wake = self.wake_io_thread_locked(tid, false);
+        #[cfg(target_arch = "aarch64")]
+        if let Some(target) = wake.current_cpu {
+            self.trace_wake_current(tid, target);
+        }
         #[cfg(target_arch = "aarch64")]
         if let Some(target) = wake.resched_target() {
             self.send_resched_ipi_to_cpu(target);
@@ -2214,8 +2250,8 @@ impl Scheduler {
             .unwrap_or(false);
         let is_queued = self.per_cpu_queues.iter().any(|q| q.contains(&previous));
         let is_current = (0..MAX_CPUS).any(|c| self.cpu_state[c].current_thread == Some(previous));
-        let is_other_deferred = (0..MAX_CPUS)
-            .any(|c| c != cpu && self.cpu_state[c].previous_thread == Some(previous));
+        let is_other_deferred =
+            (0..MAX_CPUS).any(|c| c != cpu && self.cpu_state[c].previous_thread == Some(previous));
 
         if is_ready && !is_idle && !is_queued && !is_current && !is_other_deferred {
             self.per_cpu_queues[cpu].push_back(previous);

@@ -149,6 +149,9 @@ impl TraceEventType {
     pub const SCHED_PICK: u16 = 0x0200;
     pub const SCHED_RESCHED: u16 = 0x0201;
     pub const SCHED_PREEMPT: u16 = 0x0202;
+    pub const SCHED_WAKE_CURRENT: u16 = 0x0203;
+    pub const SCHED_RESCHED_IPI_SEND: u16 = 0x0204;
+    pub const SCHED_RESCHED_IPI_RECV: u16 = 0x0205;
     pub const SCHED_QUEUE_STATE: u16 = 0x0012;
 
     // Syscall events (0x03xx)

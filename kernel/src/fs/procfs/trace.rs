@@ -60,6 +60,18 @@ pub fn generate_events() -> String {
         (TraceEventType::SCHED_PICK, "scheduler pick"),
         (TraceEventType::SCHED_RESCHED, "reschedule"),
         (TraceEventType::SCHED_PREEMPT, "preemption"),
+        (
+            TraceEventType::SCHED_WAKE_CURRENT,
+            "wake thread current on another CPU",
+        ),
+        (
+            TraceEventType::SCHED_RESCHED_IPI_SEND,
+            "reschedule IPI send",
+        ),
+        (
+            TraceEventType::SCHED_RESCHED_IPI_RECV,
+            "reschedule IPI receive",
+        ),
         // Syscall events (0x03xx)
         (TraceEventType::SYSCALL_ENTRY, "syscall entry"),
         (TraceEventType::SYSCALL_EXIT, "syscall exit"),
