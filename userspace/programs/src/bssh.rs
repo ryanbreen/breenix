@@ -2,15 +2,15 @@
 //!
 //! Connects to a remote SSH server and opens an interactive shell session.
 //!
-//! Usage: bssh <host> [port] [username] [password|--publickey|--publickey-wrong] [--smoke] [--exec command]
+//! Usage: bssh [user@]<host> [port] [username] [password|--publickey|--publickey-wrong] [--smoke] [--exec command]
 //!   Default port: 22
 //!   Default username: root
-//!   Default password: (prompted)
+//!   Default password: breenix
 
 use libbreenix::fs;
 use libbreenix::io;
 use libbreenix::socket::{SockAddrIn, TcpStream};
-use libbreenix::ssh::keys::ServerHostKeyInfo;
+use libbreenix::ssh::keys::{RsaIdentity, ServerHostKeyInfo};
 use libbreenix::ssh::transport::{ClientAuthMethod, ClientSession};
 use libbreenix::termios;
 use libbreenix::types::Fd;
@@ -27,6 +27,7 @@ struct Options {
     port: u16,
     username: String,
     auth_choice: AuthChoice,
+    identity_path: Option<String>,
     smoke: bool,
     exec_command: Option<String>,
     known_hosts_path: String,
@@ -79,9 +80,17 @@ fn main() {
     let known_host_id = known_host_id(&opts.host, opts.port, opts.host_key_alias.as_deref());
 
     // SSH handshake + auth
-    let auth_method = match &opts.auth_choice {
-        AuthChoice::Password(password) => ClientAuthMethod::Password(password),
-        AuthChoice::PublicKey { wrong_key } => ClientAuthMethod::PublicKey {
+    let identity = match opts.identity_path.as_deref() {
+        Some(path) => Some(load_identity(path)),
+        None => None,
+    };
+
+    let auth_method = match (&opts.auth_choice, identity.as_ref()) {
+        (AuthChoice::Password(password), _) => ClientAuthMethod::Password(password),
+        (AuthChoice::PublicKey { .. }, Some(identity)) => {
+            ClientAuthMethod::PublicKeyIdentity(identity)
+        }
+        (AuthChoice::PublicKey { wrong_key }, None) => ClientAuthMethod::PublicKey {
             wrong_key: *wrong_key,
         },
     };
@@ -206,7 +215,7 @@ fn main() {
 
 fn usage() {
     eprintln!(
-        "Usage: bssh <host> [port] [username] [password|--publickey|--publickey-wrong] [--known-hosts path] [--host-key-alias id] [--smoke] [--exec command]"
+        "Usage: bssh [user@]<host> [port] [username] [password|--publickey|--publickey-wrong] [--identity path] [--user name] [--password password] [--known-hosts path] [--host-key-alias id] [--smoke] [--exec command]"
     );
 }
 
@@ -215,7 +224,12 @@ fn parse_options(args: &[String]) -> Result<Options, String> {
         return Err("bssh: missing host".to_string());
     }
 
-    let host = args[1].clone();
+    let (host, username_from_host) = match args[1].split_once('@') {
+        Some((user, host)) if !user.is_empty() && !host.is_empty() => {
+            (host.to_string(), Some(user.to_string()))
+        }
+        _ => (args[1].clone(), None),
+    };
     let mut idx = 2;
 
     let port = if let Some(arg) = args.get(idx) {
@@ -238,12 +252,13 @@ fn parse_options(args: &[String]) -> Result<Options, String> {
             idx += 1;
             arg.clone()
         } else {
-            "root".to_string()
+            username_from_host.unwrap_or_else(|| "root".to_string())
         }
     } else {
-        "root".to_string()
+        username_from_host.unwrap_or_else(|| "root".to_string())
     };
 
+    let mut username = username;
     let mut auth_choice = AuthChoice::Password("breenix".to_string());
     if let Some(arg) = args.get(idx) {
         if arg == "--publickey" || arg == "publickey" {
@@ -262,6 +277,7 @@ fn parse_options(args: &[String]) -> Result<Options, String> {
     let mut exec_command = None;
     let mut known_hosts_path = DEFAULT_KNOWN_HOSTS.to_string();
     let mut host_key_alias = None;
+    let mut identity_path = None;
 
     while idx < args.len() {
         match args[idx].as_str() {
@@ -276,6 +292,28 @@ fn parse_options(args: &[String]) -> Result<Options, String> {
             "--publickey-wrong" | "publickey-wrong" => {
                 auth_choice = AuthChoice::PublicKey { wrong_key: true };
                 idx += 1;
+            }
+            "--identity" => {
+                let path = args
+                    .get(idx + 1)
+                    .ok_or_else(|| "bssh: --identity requires a path".to_string())?;
+                identity_path = Some(path.clone());
+                auth_choice = AuthChoice::PublicKey { wrong_key: false };
+                idx += 2;
+            }
+            "--user" => {
+                let user = args
+                    .get(idx + 1)
+                    .ok_or_else(|| "bssh: --user requires a username".to_string())?;
+                username = user.clone();
+                idx += 2;
+            }
+            "--password" => {
+                let password = args
+                    .get(idx + 1)
+                    .ok_or_else(|| "bssh: --password requires a password".to_string())?;
+                auth_choice = AuthChoice::Password(password.clone());
+                idx += 2;
             }
             "--known-hosts" => {
                 let path = args
@@ -310,11 +348,30 @@ fn parse_options(args: &[String]) -> Result<Options, String> {
         port,
         username,
         auth_choice,
+        identity_path,
         smoke,
         exec_command,
         known_hosts_path,
         host_key_alias,
     })
+}
+
+fn load_identity(path: &str) -> RsaIdentity {
+    let pem = match read_file(path) {
+        Some(pem) => pem,
+        None => {
+            eprintln!("bssh: failed to read identity '{}'", path);
+            std::process::exit(1);
+        }
+    };
+
+    match RsaIdentity::from_pkcs1_pem(&pem) {
+        Ok(identity) => identity,
+        Err(e) => {
+            eprintln!("bssh: failed to parse identity '{}': {}", path, e);
+            std::process::exit(1);
+        }
+    }
 }
 
 fn known_host_id(host: &str, port: u16, alias: Option<&str>) -> String {

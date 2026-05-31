@@ -171,6 +171,50 @@ impl HostKey {
     }
 }
 
+/// Caller-supplied RSA identity for SSH publickey client authentication.
+pub struct RsaIdentity {
+    key: RsaPrivateKey,
+}
+
+impl RsaIdentity {
+    /// Load an unencrypted PKCS#1 PEM RSA private key.
+    pub fn from_pkcs1_pem(pem: &str) -> Result<Self, &'static str> {
+        let der = decode_pem_block(
+            pem,
+            "-----BEGIN RSA PRIVATE KEY-----",
+            "-----END RSA PRIVATE KEY-----",
+        )?;
+        let (n, e, d) = parse_pkcs1_rsa_private_key(&der)?;
+        Ok(Self {
+            key: RsaPrivateKey {
+                n: BigNum::from_be_bytes(n),
+                e: BigNum::from_be_bytes(e),
+                d: BigNum::from_be_bytes(d),
+            },
+        })
+    }
+
+    /// Encode this identity's public key in SSH wire format.
+    pub fn public_key_blob(&self) -> Vec<u8> {
+        let mut blob = Vec::with_capacity(4 + 7 + 4 + 4 + 4 + 384);
+        SshBuf::put_string(&mut blob, b"ssh-rsa");
+        SshBuf::put_mpint(&mut blob, &self.key.e.to_be_bytes());
+        SshBuf::put_mpint(&mut blob, &self.key.n.to_be_bytes());
+        blob
+    }
+
+    /// Sign data with rsa-sha2-256, returning an SSH signature blob.
+    pub fn sign(&self, data: &[u8]) -> Vec<u8> {
+        let hash = sha256(data);
+        let sig_bytes = rsa_sign_pkcs1_sha256(&self.key, &hash);
+
+        let mut sig = Vec::with_capacity(4 + 12 + 4 + sig_bytes.len());
+        SshBuf::put_string(&mut sig, b"rsa-sha2-256");
+        SshBuf::put_string(&mut sig, &sig_bytes);
+        sig
+    }
+}
+
 /// Server host-key identity observed during client key exchange.
 #[derive(Debug, Clone)]
 pub struct ServerHostKeyInfo {
@@ -255,6 +299,164 @@ pub fn embedded_client_public_key_blob() -> Vec<u8> {
 /// Sign publickey-auth data with the embedded bssh client identity.
 pub fn sign_with_embedded_client_key(data: &[u8]) -> Vec<u8> {
     HostKey::load().sign(data)
+}
+
+fn decode_pem_block(
+    pem: &str,
+    begin_marker: &str,
+    end_marker: &str,
+) -> Result<Vec<u8>, &'static str> {
+    let begin = pem.find(begin_marker).ok_or("missing PEM begin marker")?;
+    let body_start = begin + begin_marker.len();
+    let end = pem[body_start..]
+        .find(end_marker)
+        .ok_or("missing PEM end marker")?
+        + body_start;
+
+    let mut b64 = Vec::new();
+    for byte in pem[body_start..end].bytes() {
+        if byte == b'\r' || byte == b'\n' || byte == b'\t' || byte == b' ' {
+            continue;
+        }
+        b64.push(byte);
+    }
+
+    base64_decode(&b64)
+}
+
+fn base64_decode(input: &[u8]) -> Result<Vec<u8>, &'static str> {
+    let mut out = Vec::with_capacity(input.len() * 3 / 4);
+    let mut chunk = [0u8; 4];
+    let mut chunk_len = 0usize;
+
+    for &byte in input {
+        let value = match byte {
+            b'A'..=b'Z' => byte - b'A',
+            b'a'..=b'z' => byte - b'a' + 26,
+            b'0'..=b'9' => byte - b'0' + 52,
+            b'+' => 62,
+            b'/' => 63,
+            b'=' => 64,
+            _ => return Err("invalid base64 character"),
+        };
+
+        chunk[chunk_len] = value;
+        chunk_len += 1;
+        if chunk_len != 4 {
+            continue;
+        }
+
+        if chunk[0] == 64 || chunk[1] == 64 {
+            return Err("invalid base64 padding");
+        }
+
+        out.push((chunk[0] << 2) | (chunk[1] >> 4));
+        if chunk[2] != 64 {
+            out.push((chunk[1] << 4) | (chunk[2] >> 2));
+        }
+        if chunk[3] != 64 {
+            out.push((chunk[2] << 6) | chunk[3]);
+        }
+
+        chunk_len = 0;
+    }
+
+    if chunk_len != 0 {
+        return Err("truncated base64 data");
+    }
+
+    Ok(out)
+}
+
+fn parse_pkcs1_rsa_private_key(der: &[u8]) -> Result<(&[u8], &[u8], &[u8]), &'static str> {
+    let mut reader = DerReader::new(der);
+    let seq = reader.read_constructed(0x30)?;
+    if !reader.is_empty() {
+        return Err("trailing data after private key");
+    }
+
+    let mut seq_reader = DerReader::new(seq);
+    let _version = seq_reader.read_integer()?;
+    let n = seq_reader.read_integer()?;
+    let e = seq_reader.read_integer()?;
+    let d = seq_reader.read_integer()?;
+    Ok((n, e, d))
+}
+
+struct DerReader<'a> {
+    data: &'a [u8],
+    pos: usize,
+}
+
+impl<'a> DerReader<'a> {
+    fn new(data: &'a [u8]) -> Self {
+        Self { data, pos: 0 }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.pos == self.data.len()
+    }
+
+    fn read_constructed(&mut self, tag: u8) -> Result<&'a [u8], &'static str> {
+        self.read_tlv(tag)
+    }
+
+    fn read_integer(&mut self) -> Result<&'a [u8], &'static str> {
+        let value = self.read_tlv(0x02)?;
+        Ok(strip_der_integer_prefix(value))
+    }
+
+    fn read_tlv(&mut self, expected_tag: u8) -> Result<&'a [u8], &'static str> {
+        if self.pos >= self.data.len() {
+            return Err("unexpected end of DER");
+        }
+        let tag = self.data[self.pos];
+        self.pos += 1;
+        if tag != expected_tag {
+            return Err("unexpected DER tag");
+        }
+
+        let len = self.read_len()?;
+        if self.pos + len > self.data.len() {
+            return Err("DER length exceeds input");
+        }
+        let start = self.pos;
+        self.pos += len;
+        Ok(&self.data[start..start + len])
+    }
+
+    fn read_len(&mut self) -> Result<usize, &'static str> {
+        if self.pos >= self.data.len() {
+            return Err("missing DER length");
+        }
+        let first = self.data[self.pos];
+        self.pos += 1;
+
+        if first & 0x80 == 0 {
+            return Ok(first as usize);
+        }
+
+        let count = (first & 0x7f) as usize;
+        if count == 0 || count > core::mem::size_of::<usize>() || self.pos + count > self.data.len()
+        {
+            return Err("invalid DER length");
+        }
+
+        let mut len = 0usize;
+        for _ in 0..count {
+            len = (len << 8) | self.data[self.pos] as usize;
+            self.pos += 1;
+        }
+        Ok(len)
+    }
+}
+
+fn strip_der_integer_prefix(value: &[u8]) -> &[u8] {
+    if value.len() > 1 && value[0] == 0 {
+        &value[1..]
+    } else {
+        value
+    }
 }
 
 /// Parse an SSH RSA public key blob and extract the public key components.
