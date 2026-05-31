@@ -88,6 +88,7 @@ if [[ "$(uname)" == "Darwin" ]]; then
         -v "$PROJECT_ROOT/fonts:/fonts:ro" \
         -e "OUTPUT_FILENAME=$OUTPUT_FILENAME" \
         -e "BREENIX_WAIT_STRESS=${BREENIX_WAIT_STRESS:-0}" \
+        -e "BREENIX_BSSH_AUTORUN=${BREENIX_BSSH_AUTORUN:-0}" \
         alpine:latest \
         sh -c '
             set -e
@@ -220,6 +221,10 @@ BSHRC
             if [ "${BREENIX_WAIT_STRESS:-0}" = "1" ]; then
                 touch /mnt/ext2/etc/wait_stress.enabled
                 echo "  Enabled wait_stress init gate"
+            fi
+            if [ "${BREENIX_BSSH_AUTORUN:-0}" = "1" ]; then
+                touch /mnt/ext2/etc/bssh_autorun.enabled
+                echo "  Enabled bssh autorun init gate"
             fi
 
             # Create /home for user data (Gus Kit saves, etc.)
@@ -496,6 +501,10 @@ BSHRC
     if [ "${BREENIX_WAIT_STRESS:-0}" = "1" ]; then
         touch "$MOUNT_DIR/etc/wait_stress.enabled"
         echo "  Enabled wait_stress init gate"
+    fi
+    if [ "${BREENIX_BSSH_AUTORUN:-0}" = "1" ]; then
+        touch "$MOUNT_DIR/etc/bssh_autorun.enabled"
+        echo "  Enabled bssh autorun init gate"
     fi
 
     # Create /home for user data (Gus Kit saves, etc.)

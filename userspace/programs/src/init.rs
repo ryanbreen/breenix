@@ -19,6 +19,8 @@ fn main() {
     start_bsshd();
     #[cfg(target_arch = "aarch64")]
     start_bounce();
+    #[cfg(target_arch = "aarch64")]
+    run_bssh_autorun_if_enabled();
 
     // Reap zombies forever
     let mut status: i32 = 0;
@@ -69,6 +71,69 @@ fn run_wait_stress_if_enabled() {
         }
         Err(e) => {
             print!("[init] Warning: failed to start wait_stress: {}\n", e);
+        }
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+fn run_bssh_autorun_if_enabled() {
+    let build_enabled = option_env!("BREENIX_BSSH_AUTORUN") == Some("1");
+    if !build_enabled || fs::access("/etc/bssh_autorun.enabled", fs::F_OK).is_err() {
+        return;
+    }
+
+    print!("[init] bssh autorun enabled by build environment and /etc gate\n");
+
+    let ts = libbreenix::types::Timespec {
+        tv_sec: 15,
+        tv_nsec: 0,
+    };
+    let _ = libbreenix::time::nanosleep(&ts);
+
+    run_bssh_exec_autorun("10.0.1.210");
+    run_bssh_exec_autorun("10.211.55.2");
+}
+
+#[cfg(target_arch = "aarch64")]
+fn run_bssh_exec_autorun(host: &str) {
+    let path = b"/bin/bssh\0";
+    let arg0 = b"bssh\0";
+    let port = b"22\0";
+    let user = b"wrb\0";
+    let auth = b"--publickey\0";
+    let exec = b"--exec\0";
+    let command = b"uname\0";
+
+    let mut host_buf = [0u8; 32];
+    let host_bytes = host.as_bytes();
+    if host_bytes.len() + 1 > host_buf.len() {
+        print!("[init] bssh autorun host too long: {}\n", host);
+        return;
+    }
+    host_buf[..host_bytes.len()].copy_from_slice(host_bytes);
+
+    let argv = [
+        arg0.as_ptr(),
+        host_buf.as_ptr(),
+        port.as_ptr(),
+        user.as_ptr(),
+        auth.as_ptr(),
+        exec.as_ptr(),
+        command.as_ptr(),
+        core::ptr::null(),
+    ];
+
+    print!("[init] bssh autorun starting host={}\n", host);
+    match spawnv(path, argv.as_ptr()) {
+        Ok(child_pid) => {
+            print!(
+                "[init] bssh autorun spawned host={} pid={}\n",
+                host,
+                child_pid.raw()
+            );
+        }
+        Err(e) => {
+            print!("[init] Warning: failed to start bssh autorun: {}\n", e);
         }
     }
 }

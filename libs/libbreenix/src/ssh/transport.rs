@@ -16,8 +16,8 @@ use super::packet::PacketIo;
 use super::{SshBuf, SshError, BSSH_VERSION};
 use super::{
     SSH_MSG_CHANNEL_CLOSE, SSH_MSG_CHANNEL_DATA, SSH_MSG_CHANNEL_EOF, SSH_MSG_CHANNEL_OPEN,
-    SSH_MSG_CHANNEL_REQUEST, SSH_MSG_CHANNEL_WINDOW_ADJUST, SSH_MSG_DISCONNECT,
-    SSH_MSG_GLOBAL_REQUEST, SSH_MSG_IGNORE, SSH_MSG_KEXINIT, SSH_MSG_NEWKEYS,
+    SSH_MSG_CHANNEL_REQUEST, SSH_MSG_CHANNEL_SUCCESS, SSH_MSG_CHANNEL_WINDOW_ADJUST,
+    SSH_MSG_DISCONNECT, SSH_MSG_GLOBAL_REQUEST, SSH_MSG_IGNORE, SSH_MSG_KEXINIT, SSH_MSG_NEWKEYS,
     SSH_MSG_UNIMPLEMENTED,
 };
 
@@ -342,6 +342,7 @@ pub struct ClientSession {
     kex: KexState,
     server_version: String,
     channel: Option<Channel>,
+    exit_status: Option<i32>,
 }
 
 /// Authentication method for SSH client handshakes.
@@ -358,6 +359,7 @@ impl ClientSession {
             kex: KexState::new(),
             server_version: String::new(),
             channel: None,
+            exit_status: None,
         }
     }
 
@@ -447,6 +449,17 @@ impl ClientSession {
         Ok(())
     }
 
+    /// Open a session channel and execute a command.
+    pub fn open_exec(&mut self, command: &str) -> Result<(), SshError> {
+        let ch = channel::client_open_session(&mut self.io)?;
+        self.channel = Some(ch);
+
+        let ch = self.channel.as_ref().unwrap();
+        channel::client_request_exec(&mut self.io, ch, command)?;
+
+        Ok(())
+    }
+
     /// Send data on the channel.
     pub fn send_data(&mut self, data: &[u8]) -> Result<(), SshError> {
         if let Some(ref mut ch) = self.channel {
@@ -488,11 +501,46 @@ impl ClientSession {
                 }
                 Ok(None)
             }
-            SSH_MSG_CHANNEL_EOF | SSH_MSG_CHANNEL_CLOSE => Err(SshError::Disconnected),
+            SSH_MSG_CHANNEL_EOF => {
+                if let Some(ref mut ch) = self.channel {
+                    ch.eof_received = true;
+                }
+                Ok(None)
+            }
+            SSH_MSG_CHANNEL_CLOSE => Err(SshError::Disconnected),
             SSH_MSG_DISCONNECT => Err(SshError::Disconnected),
             SSH_MSG_IGNORE | SSH_MSG_UNIMPLEMENTED => Ok(None),
+            SSH_MSG_CHANNEL_REQUEST => {
+                let mut pos = 1;
+                let _recipient = SshBuf::get_u32(&msg, &mut pos);
+                let request_type = SshBuf::get_string(&msg, &mut pos)
+                    .ok_or(SshError::Protocol("bad channel request type"))?;
+                let want_reply = SshBuf::get_bool(&msg, &mut pos)
+                    .ok_or(SshError::Protocol("bad channel request want_reply"))?;
+
+                if request_type == b"exit-status" {
+                    let status = SshBuf::get_u32(&msg, &mut pos)
+                        .ok_or(SshError::Protocol("bad exit-status"))?;
+                    self.exit_status = Some(status as i32);
+                }
+
+                if want_reply {
+                    if let Some(ref ch) = self.channel {
+                        let mut reply = Vec::with_capacity(5);
+                        reply.push(SSH_MSG_CHANNEL_SUCCESS);
+                        SshBuf::put_u32(&mut reply, ch.remote_id);
+                        self.io.send_packet(&reply).map_err(|_| SshError::Io)?;
+                    }
+                }
+                Ok(None)
+            }
             _ => Ok(None),
         }
+    }
+
+    /// Last exit status reported by the remote exec channel.
+    pub fn exit_status(&self) -> Option<i32> {
+        self.exit_status
     }
 
     /// Close the session.
