@@ -1214,7 +1214,7 @@ fn clear_inline_schedule_state(thread: &mut Thread) {
 #[inline(always)]
 fn take_inline_ret_dispatch_info(
     thread: &mut Thread,
-) -> Option<(*mut u8, *const CpuContext, u64, Option<crate::task::thread::VirtAddr>, u64, u64, u64)>
+) -> Option<(*mut u8, *const CpuContext, u64, Option<crate::task::thread::VirtAddr>, u64, u64, u64, u64)>
 {
     if !thread.has_started || !thread.saved_by_inline_schedule {
         return None;
@@ -1229,6 +1229,7 @@ fn take_inline_ret_dispatch_info(
     thread.context.elr_el1 = resume_pc;
     let kst = thread.kernel_stack_top;
     let sp_el0 = thread.context.sp_el0;
+    let tpidr_el0 = thread.context.tpidr_el0;
     let resume_sp = thread.context.sp;
     let resume_lr_slot = unsafe { core::ptr::read_volatile((resume_sp + 0x20) as *const u64) };
     clear_inline_schedule_state(thread);
@@ -1238,6 +1239,7 @@ fn take_inline_ret_dispatch_info(
         resume_pc,
         kst,
         sp_el0,
+        tpidr_el0,
         resume_sp,
         resume_lr_slot,
     ))
@@ -1247,7 +1249,7 @@ fn take_inline_ret_dispatch_info(
 fn inline_ret_dispatch_info_if_ready(
     sched: &mut Scheduler,
     thread_id: u64,
-) -> Option<(*mut u8, *const CpuContext, u64, Option<crate::task::thread::VirtAddr>, u64, u64, u64)>
+) -> Option<(*mut u8, *const CpuContext, u64, Option<crate::task::thread::VirtAddr>, u64, u64, u64, u64)>
 {
     const KERNEL_VIRT_BASE: u64 = 0xFFFF_0000_0000_0000;
 
@@ -1862,9 +1864,14 @@ fn setup_first_entry_inline(thread: &mut Thread, frame: &mut Aarch64ExceptionFra
     frame.x29 = 0;
     frame.x30 = 0;
 
-    // Clear TPIDR_EL0 - musl will set it during __init_tls
+    // Restore initial userspace TLS pointer. Subsequent context switches use
+    // the same field, so first entry must not zero it.
     unsafe {
-        core::arch::asm!("msr tpidr_el0, xzr", options(nomem, nostack));
+        core::arch::asm!(
+            "msr tpidr_el0, {}",
+            in(reg) thread.context.tpidr_el0,
+            options(nomem, nostack)
+        );
     }
 }
 
@@ -2614,7 +2621,7 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
         None
     };
 
-    if let Some((thread_ptr, ctx_ptr, resume_pc, kst, sp_el0, resume_sp, resume_lr_slot)) =
+    if let Some((thread_ptr, ctx_ptr, resume_pc, kst, sp_el0, tpidr_el0, resume_sp, resume_lr_slot)) =
         ret_dispatch_info
     {
         crate::tracing::record_event(
@@ -2643,6 +2650,13 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
                     options(nomem, nostack)
                 );
             }
+        }
+        unsafe {
+            core::arch::asm!(
+                "msr tpidr_el0, {}",
+                in(reg) tpidr_el0,
+                options(nomem, nostack)
+            );
         }
         unsafe {
             Aarch64PerCpu::set_dispatch_elr(resume_pc);
@@ -2826,7 +2840,7 @@ extern "C" fn inline_schedule_trampoline() -> ! {
         None
     };
 
-    if let Some((thread_ptr, ctx_ptr, resume_pc, kst, sp_el0, resume_sp, resume_lr_slot)) =
+    if let Some((thread_ptr, ctx_ptr, resume_pc, kst, sp_el0, tpidr_el0, resume_sp, resume_lr_slot)) =
         ret_dispatch_info
     {
         cpu0_breadcrumb(cpu_id, 35); // taking ret-based dispatch
@@ -2859,6 +2873,13 @@ extern "C" fn inline_schedule_trampoline() -> ! {
                     options(nomem, nostack)
                 );
             }
+        }
+        unsafe {
+            core::arch::asm!(
+                "msr tpidr_el0, {}",
+                in(reg) tpidr_el0,
+                options(nomem, nostack)
+            );
         }
 
         unsafe {
