@@ -6,6 +6,7 @@
 //! Usage: bsshd [port]
 //!   Default port: 2222
 
+use libbreenix::fs;
 use libbreenix::io;
 use libbreenix::process;
 use libbreenix::pty;
@@ -108,6 +109,13 @@ fn handle_connection(fd: Fd) {
         }
     };
 
+    if let Some(command) = session.take_exec_command() {
+        let status = run_exec_command(&mut session, &command);
+        let _ = session.send_exit_status(status);
+        session.close();
+        return;
+    }
+
     // Allocate PTY if requested
     let (master_fd, slave_path) = if pty_requested {
         match pty::openpty() {
@@ -142,10 +150,7 @@ fn handle_connection(fd: Fd) {
                 // Open the slave PTY
                 let path_bytes = pty::slave_path_bytes(&slave_path);
                 let path_str = core::str::from_utf8(path_bytes).unwrap_or("/dev/pts/0");
-                let slave_fd = match libbreenix::fs::open(
-                    path_str,
-                    libbreenix::fs::O_RDWR,
-                ) {
+                let slave_fd = match libbreenix::fs::open(path_str, libbreenix::fs::O_RDWR) {
                     Ok(fd) => fd,
                     Err(_) => process::exit(1),
                 };
@@ -153,8 +158,8 @@ fn handle_connection(fd: Fd) {
                 // Set PTY to translate \n → \r\n (ONLCR) for SSH terminals
                 let mut tio: libbreenix::termios::Termios = unsafe { core::mem::zeroed() };
                 let _ = libbreenix::termios::tcgetattr(slave_fd, &mut tio);
-                tio.c_oflag |= libbreenix::termios::oflag::OPOST
-                    | libbreenix::termios::oflag::ONLCR;
+                tio.c_oflag |=
+                    libbreenix::termios::oflag::OPOST | libbreenix::termios::oflag::ONLCR;
                 tio.c_iflag |= libbreenix::termios::iflag::ICRNL;
                 let _ = libbreenix::termios::tcsetattr(slave_fd, 0, &tio);
 
@@ -178,7 +183,11 @@ fn handle_connection(fd: Fd) {
         }
         Ok(process::ForkResult::Parent(child_pid)) => {
             // Parent: shuttle data between SSH channel and PTY master
-            println!("bsshd: shell started (pid {}) for user '{}'", child_pid.raw(), username);
+            println!(
+                "bsshd: shell started (pid {}) for user '{}'",
+                child_pid.raw(),
+                username
+            );
             data_shuttle(&mut session, master_fd);
             println!("bsshd: session ended for user '{}'", username);
 
@@ -193,6 +202,127 @@ fn handle_connection(fd: Fd) {
     }
 
     session.close();
+}
+
+fn run_exec_command(session: &mut ServerSession, command: &str) -> i32 {
+    println!("bsshd: exec request '{}'", command);
+
+    let mut last_status = 0;
+    for part in command.split("&&") {
+        let part = part.trim();
+        if part.is_empty() {
+            continue;
+        }
+
+        last_status = run_single_exec_command(session, part);
+        if last_status != 0 {
+            break;
+        }
+    }
+
+    last_status
+}
+
+fn run_single_exec_command(session: &mut ServerSession, command: &str) -> i32 {
+    let args: Vec<&str> = command.split_whitespace().collect();
+    if args.is_empty() {
+        return 0;
+    }
+
+    let Some(path) = resolve_exec_path(args[0]) else {
+        let msg = format!("{}: command not found\n", args[0]);
+        let _ = session.send_data(msg.as_bytes());
+        return 127;
+    };
+
+    let (read_fd, write_fd) = match io::pipe() {
+        Ok(pipe) => pipe,
+        Err(e) => {
+            let msg = format!("bsshd: pipe failed: {:?}\n", e);
+            let _ = session.send_data(msg.as_bytes());
+            return 1;
+        }
+    };
+
+    match process::fork() {
+        Ok(process::ForkResult::Child) => {
+            let _ = io::close(read_fd);
+            let _ = io::dup2(write_fd, Fd::from_raw(1));
+            let _ = io::dup2(write_fd, Fd::from_raw(2));
+            if write_fd.raw() > 2 {
+                let _ = io::close(write_fd);
+            }
+
+            let path_c = c_string(&path);
+            let arg_storage: Vec<Vec<u8>> = args.iter().map(|arg| c_string(arg)).collect();
+            let mut argv: Vec<*const u8> = arg_storage.iter().map(|arg| arg.as_ptr()).collect();
+            argv.push(core::ptr::null());
+            let _ = process::execv(&path_c, argv.as_ptr());
+            process::exit(127);
+        }
+        Ok(process::ForkResult::Parent(child_pid)) => {
+            let _ = io::close(write_fd);
+            let mut buf = [0u8; 4096];
+            loop {
+                match io::read(read_fd, &mut buf) {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        if session.send_data(&buf[..n]).is_err() {
+                            break;
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+            let _ = io::close(read_fd);
+
+            let mut status = 0i32;
+            match process::waitpid(child_pid.raw() as i32, &mut status as *mut i32, 0) {
+                Ok(_) if process::wifexited(status) => process::wexitstatus(status),
+                Ok(_) if process::wifsignaled(status) => 128 + process::wtermsig(status),
+                Ok(_) => 1,
+                Err(_) => 1,
+            }
+        }
+        Err(e) => {
+            let _ = io::close(read_fd);
+            let _ = io::close(write_fd);
+            let msg = format!("bsshd: fork failed: {:?}\n", e);
+            let _ = session.send_data(msg.as_bytes());
+            1
+        }
+    }
+}
+
+fn resolve_exec_path(command: &str) -> Option<String> {
+    if command.contains('/') {
+        return executable_path(command);
+    }
+
+    let candidates = [
+        format!("/bin/{}", command),
+        format!("/sbin/{}", command),
+        format!("/usr/local/cbin/{}", command),
+        format!("/usr/local/cbin/{}_musl_test", command),
+    ];
+
+    candidates
+        .iter()
+        .find_map(|candidate| executable_path(candidate))
+}
+
+fn executable_path(path: &str) -> Option<String> {
+    fs::access(path, fs::X_OK).ok().map(|_| path.to_string())
+}
+
+fn c_string(value: &str) -> Vec<u8> {
+    let mut bytes: Vec<u8> = value
+        .as_bytes()
+        .iter()
+        .map(|byte| if *byte == 0 { b'?' } else { *byte })
+        .collect();
+    bytes.push(0);
+    bytes
 }
 
 /// Shuttle data between the SSH channel and the PTY master fd.

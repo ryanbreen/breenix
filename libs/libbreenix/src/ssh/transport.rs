@@ -257,6 +257,28 @@ impl ServerSession {
         }
     }
 
+    /// Take the command supplied by an SSH "exec" request, if any.
+    pub fn take_exec_command(&mut self) -> Option<String> {
+        self.channel
+            .as_mut()
+            .and_then(|channel| channel.exec_command.take())
+    }
+
+    /// Report an exec command's exit status to the SSH client.
+    pub fn send_exit_status(&mut self, status: i32) -> Result<(), SshError> {
+        if let Some(ref ch) = self.channel {
+            let mut msg = Vec::with_capacity(24);
+            msg.push(SSH_MSG_CHANNEL_REQUEST);
+            SshBuf::put_u32(&mut msg, ch.remote_id);
+            SshBuf::put_string(&mut msg, b"exit-status");
+            SshBuf::put_bool(&mut msg, false);
+            SshBuf::put_u32(&mut msg, status.max(0) as u32);
+            self.io.send_packet(&msg).map_err(|_| SshError::Io)
+        } else {
+            Err(SshError::ChannelNotFound)
+        }
+    }
+
     /// Receive a message from the client.
     ///
     /// Returns Some(data) for channel data, None for non-data messages
