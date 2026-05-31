@@ -181,7 +181,9 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
         CPU0_LAST_SYNC_ESR.store(esr, Ordering::Relaxed);
         CPU0_LAST_SYNC_FAR.store(far, Ordering::Relaxed);
         let elr: u64;
-        unsafe { core::arch::asm!("mrs {}, elr_el1", out(reg) elr, options(nomem, nostack)); }
+        unsafe {
+            core::arch::asm!("mrs {}, elr_el1", out(reg) elr, options(nomem, nostack));
+        }
         CPU0_LAST_SYNC_ELR.store(elr, Ordering::Relaxed);
     }
 
@@ -936,7 +938,11 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                                 raw_uart_str(" owner_pid=");
                                 raw_uart_dec(thread.owner_pid);
                                 raw_uart_str(" bis=");
-                                raw_uart_char(if thread.blocked_in_syscall { b'1' } else { b'0' });
+                                raw_uart_char(if thread.blocked_in_syscall {
+                                    b'1'
+                                } else {
+                                    b'0'
+                                });
                                 raw_uart_str(" saved_elr=");
                                 raw_uart_hex(thread.elr_el1);
                                 raw_uart_str(" saved_x30=");
@@ -1215,6 +1221,11 @@ fn dispatch_irq_action(irq_id: u32, frame: *const Aarch64ExceptionFrame) {
         0..=15 => {
             if irq_id == constants::SGI_RESCHEDULE {
                 // IPI reschedule: another CPU unblocked a thread and wants us to pick it up
+                crate::tracing::record_event(
+                    crate::tracing::TraceEventType::SCHED_RESCHED_IPI_RECV,
+                    0,
+                    irq_id,
+                );
                 crate::per_cpu_aarch64::set_need_resched(true);
             } else if irq_id == constants::SGI_TIMER_REARM {
                 // IPI timer re-arm: another CPU detected our timer is dead
@@ -1348,11 +1359,7 @@ pub extern "C" fn handle_irq(frame: *const Aarch64ExceptionFrame) {
             interrupted_context_had_irqs_unmasked(frame) && !gic::is_spi_level_triggered(irq_id);
         if reopen_nested_irq_window {
             unsafe {
-                core::arch::asm!(
-                    "msr daifclr, #3",
-                    "isb",
-                    options(nomem, nostack)
-                );
+                core::arch::asm!("msr daifclr, #3", "isb", options(nomem, nostack));
             }
         }
 
@@ -1360,11 +1367,7 @@ pub extern "C" fn handle_irq(frame: *const Aarch64ExceptionFrame) {
 
         if reopen_nested_irq_window {
             unsafe {
-                core::arch::asm!(
-                    "msr daifset, #3",
-                    "isb",
-                    options(nomem, nostack)
-                );
+                core::arch::asm!("msr daifset, #3", "isb", options(nomem, nostack));
             }
         }
 
