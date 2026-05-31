@@ -6,8 +6,9 @@ use super::packet::PacketIo;
 use super::{SshBuf, SshError};
 use super::{
     SSH_MSG_CHANNEL_CLOSE, SSH_MSG_CHANNEL_DATA, SSH_MSG_CHANNEL_EOF, SSH_MSG_CHANNEL_FAILURE,
-    SSH_MSG_CHANNEL_OPEN, SSH_MSG_CHANNEL_OPEN_CONFIRMATION, SSH_MSG_CHANNEL_REQUEST,
-    SSH_MSG_CHANNEL_SUCCESS, SSH_MSG_CHANNEL_WINDOW_ADJUST,
+    SSH_MSG_CHANNEL_OPEN, SSH_MSG_CHANNEL_OPEN_CONFIRMATION, SSH_MSG_CHANNEL_OPEN_FAILURE,
+    SSH_MSG_CHANNEL_REQUEST, SSH_MSG_CHANNEL_SUCCESS, SSH_MSG_CHANNEL_WINDOW_ADJUST, SSH_MSG_DEBUG,
+    SSH_MSG_EXT_INFO, SSH_MSG_GLOBAL_REQUEST, SSH_MSG_IGNORE, SSH_MSG_REQUEST_FAILURE,
 };
 
 /// Default initial window size (1 MB).
@@ -64,14 +65,13 @@ pub fn server_handle_channel_open(
     local_id: u32,
 ) -> Result<Channel, SshError> {
     let mut pos = 1; // skip message type
-    let channel_type = SshBuf::get_string(msg, &mut pos)
-        .ok_or(SshError::Protocol("bad channel type"))?;
-    let sender_channel = SshBuf::get_u32(msg, &mut pos)
-        .ok_or(SshError::Protocol("bad sender channel"))?;
-    let initial_window = SshBuf::get_u32(msg, &mut pos)
-        .ok_or(SshError::Protocol("bad initial window"))?;
-    let max_packet = SshBuf::get_u32(msg, &mut pos)
-        .ok_or(SshError::Protocol("bad max packet"))?;
+    let channel_type =
+        SshBuf::get_string(msg, &mut pos).ok_or(SshError::Protocol("bad channel type"))?;
+    let sender_channel =
+        SshBuf::get_u32(msg, &mut pos).ok_or(SshError::Protocol("bad sender channel"))?;
+    let initial_window =
+        SshBuf::get_u32(msg, &mut pos).ok_or(SshError::Protocol("bad initial window"))?;
+    let max_packet = SshBuf::get_u32(msg, &mut pos).ok_or(SshError::Protocol("bad max packet"))?;
 
     if channel_type != b"session" {
         // Send channel open failure
@@ -109,12 +109,11 @@ pub fn server_handle_channel_request(
     channel: &mut Channel,
 ) -> Result<String, SshError> {
     let mut pos = 1;
-    let _recipient = SshBuf::get_u32(msg, &mut pos)
-        .ok_or(SshError::Protocol("bad channel id in request"))?;
-    let request_type = SshBuf::get_string(msg, &mut pos)
-        .ok_or(SshError::Protocol("bad request type"))?;
-    let want_reply = SshBuf::get_bool(msg, &mut pos)
-        .ok_or(SshError::Protocol("bad want_reply"))?;
+    let _recipient =
+        SshBuf::get_u32(msg, &mut pos).ok_or(SshError::Protocol("bad channel id in request"))?;
+    let request_type =
+        SshBuf::get_string(msg, &mut pos).ok_or(SshError::Protocol("bad request type"))?;
+    let want_reply = SshBuf::get_bool(msg, &mut pos).ok_or(SshError::Protocol("bad want_reply"))?;
 
     let req_name = String::from_utf8_lossy(request_type).into_owned();
 
@@ -253,15 +252,21 @@ pub fn client_open_session(io: &mut PacketIo) -> Result<Channel, SshError> {
     io.send_packet(&msg).map_err(|_| SshError::Io)?;
 
     // Wait for confirmation
-    let reply = io.recv_packet().map_err(|_| SshError::Io)?;
-    if reply.is_empty() || reply[0] != SSH_MSG_CHANNEL_OPEN_CONFIRMATION {
+    let reply = recv_client_control_packet(io)?;
+    if reply.is_empty() {
+        return Err(SshError::Protocol("empty channel open response"));
+    }
+    if reply[0] == SSH_MSG_CHANNEL_OPEN_FAILURE {
+        return Err(SshError::Protocol("channel open rejected"));
+    }
+    if reply[0] != SSH_MSG_CHANNEL_OPEN_CONFIRMATION {
         return Err(SshError::Protocol("channel open failed"));
     }
 
     let mut pos = 1;
     let _recipient = SshBuf::get_u32(&reply, &mut pos);
-    let sender = SshBuf::get_u32(&reply, &mut pos)
-        .ok_or(SshError::Protocol("bad channel confirmation"))?;
+    let sender =
+        SshBuf::get_u32(&reply, &mut pos).ok_or(SshError::Protocol("bad channel confirmation"))?;
     let initial_window = SshBuf::get_u32(&reply, &mut pos).unwrap_or(INITIAL_WINDOW_SIZE);
     let max_packet = SshBuf::get_u32(&reply, &mut pos).unwrap_or(MAX_PACKET_SIZE);
 
@@ -289,7 +294,7 @@ pub fn client_request_pty(
     SshBuf::put_string(&mut msg, &[]); // terminal modes (empty)
     io.send_packet(&msg).map_err(|_| SshError::Io)?;
 
-    let reply = io.recv_packet().map_err(|_| SshError::Io)?;
+    let reply = recv_client_control_packet(io)?;
     if reply.is_empty() || reply[0] != SSH_MSG_CHANNEL_SUCCESS {
         return Err(SshError::Protocol("pty request failed"));
     }
@@ -306,9 +311,65 @@ pub fn client_request_shell(io: &mut PacketIo, channel: &Channel) -> Result<(), 
     SshBuf::put_bool(&mut msg, true); // want reply
     io.send_packet(&msg).map_err(|_| SshError::Io)?;
 
-    let reply = io.recv_packet().map_err(|_| SshError::Io)?;
+    let reply = recv_client_control_packet(io)?;
     if reply.is_empty() || reply[0] != SSH_MSG_CHANNEL_SUCCESS {
         return Err(SshError::Protocol("shell request failed"));
+    }
+
+    Ok(())
+}
+
+/// Request execution of a command (client side).
+pub fn client_request_exec(
+    io: &mut PacketIo,
+    channel: &Channel,
+    command: &str,
+) -> Result<(), SshError> {
+    let mut msg = Vec::with_capacity(24 + command.len());
+    msg.push(SSH_MSG_CHANNEL_REQUEST);
+    SshBuf::put_u32(&mut msg, channel.remote_id);
+    SshBuf::put_string(&mut msg, b"exec");
+    SshBuf::put_bool(&mut msg, true); // want reply
+    SshBuf::put_string(&mut msg, command.as_bytes());
+    io.send_packet(&msg).map_err(|_| SshError::Io)?;
+
+    let reply = recv_client_control_packet(io)?;
+    if reply.is_empty() || reply[0] != SSH_MSG_CHANNEL_SUCCESS {
+        return Err(SshError::Protocol("exec request failed"));
+    }
+
+    Ok(())
+}
+
+fn recv_client_control_packet(io: &mut PacketIo) -> Result<Vec<u8>, SshError> {
+    loop {
+        let msg = io.recv_packet().map_err(|_| SshError::Io)?;
+        if msg.is_empty() {
+            return Ok(msg);
+        }
+
+        match msg[0] {
+            SSH_MSG_IGNORE | SSH_MSG_DEBUG | SSH_MSG_EXT_INFO => continue,
+            SSH_MSG_CHANNEL_WINDOW_ADJUST => continue,
+            SSH_MSG_GLOBAL_REQUEST => {
+                handle_client_global_request(io, &msg)?;
+                continue;
+            }
+            _ => return Ok(msg),
+        }
+    }
+}
+
+fn handle_client_global_request(io: &mut PacketIo, msg: &[u8]) -> Result<(), SshError> {
+    let mut pos = 1;
+    let _request_name =
+        SshBuf::get_string(msg, &mut pos).ok_or(SshError::Protocol("bad global request name"))?;
+    let want_reply = SshBuf::get_bool(msg, &mut pos)
+        .ok_or(SshError::Protocol("bad global request want_reply"))?;
+
+    if want_reply {
+        io.send_packet(&[SSH_MSG_REQUEST_FAILURE])
+            .map_err(|_| SshError::Io)?;
     }
 
     Ok(())

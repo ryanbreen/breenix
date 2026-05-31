@@ -2,7 +2,7 @@
 //!
 //! Connects to a remote SSH server and opens an interactive shell session.
 //!
-//! Usage: bssh <host> [port] [username] [password|--publickey|--publickey-wrong] [--smoke]
+//! Usage: bssh <host> [port] [username] [password|--publickey|--publickey-wrong] [--smoke] [--exec command]
 //!   Default port: 22
 //!   Default username: root
 //!   Default password: (prompted)
@@ -26,19 +26,18 @@ fn main() {
     }
 
     let host = &args[1];
-    let port: u16 = args
-        .get(2)
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(22);
-    let username = args
-        .get(3)
-        .map(|s| s.as_str())
-        .unwrap_or("root");
-    let auth_arg = args
-        .get(4)
-        .map(|s| s.as_str())
-        .unwrap_or("breenix");
+    let port: u16 = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(22);
+    let username = args.get(3).map(|s| s.as_str()).unwrap_or("root");
+    let auth_arg = args.get(4).map(|s| s.as_str()).unwrap_or("breenix");
     let smoke = args.iter().any(|arg| arg == "--smoke");
+    let exec_command = args.iter().position(|arg| arg == "--exec").and_then(|idx| {
+        let parts = args.get(idx + 1..)?;
+        if parts.is_empty() {
+            None
+        } else {
+            Some(parts.join(" "))
+        }
+    });
     let auth_choice = match auth_arg {
         "--publickey" | "publickey" => AuthChoice::PublicKey { wrong_key: false },
         "--publickey-wrong" | "publickey-wrong" => AuthChoice::PublicKey { wrong_key: true },
@@ -60,8 +59,10 @@ fn main() {
         }
     };
 
-    println!("bssh: connecting to {}.{}.{}.{}:{}",
-        addr_bytes[0], addr_bytes[1], addr_bytes[2], addr_bytes[3], port);
+    println!(
+        "bssh: connecting to {}.{}.{}.{}:{}",
+        addr_bytes[0], addr_bytes[1], addr_bytes[2], addr_bytes[3], port
+    );
 
     // Connect
     let addr = SockAddrIn::new(addr_bytes, port);
@@ -90,6 +91,19 @@ fn main() {
         std::process::exit(1);
     }
     println!("bssh: authenticated as '{}'", username);
+
+    if let Some(command) = exec_command {
+        if let Err(e) = session.open_exec(&command) {
+            eprintln!("bssh: exec request failed: {:?}", e);
+            std::process::exit(1);
+        }
+
+        println!("BSSH_EXEC_BEGIN host={} command={}", host, command);
+        let rc = drain_exec_output(&mut session);
+        println!("BSSH_EXEC_END host={} rc={}", host, rc);
+        session.close();
+        std::process::exit(rc);
+    }
 
     // Open channel + PTY + shell
     if let Err(e) = session.open_shell() {
@@ -181,6 +195,50 @@ fn main() {
     }
 
     session.close();
+}
+
+fn drain_exec_output(session: &mut ClientSession) -> i32 {
+    let stdout_fd = Fd::from_raw(1);
+    let ssh_fd = session.io().fd();
+    let mut idle_ticks = 0u32;
+
+    loop {
+        let mut fds = [io::PollFd::new(ssh_fd, io::poll_events::POLLIN)];
+        match io::poll(&mut fds, 100) {
+            Ok(0) => {
+                idle_ticks += 1;
+                if idle_ticks >= 300 {
+                    eprintln!("bssh: exec timed out waiting for remote output/close");
+                    return 124;
+                }
+                continue;
+            }
+            Ok(_) => {
+                idle_ticks = 0;
+            }
+            Err(_) => return 1,
+        }
+
+        if fds[0].revents & io::poll_events::POLLIN != 0 {
+            match session.recv_data() {
+                Ok(Some(data)) => {
+                    let _ = io::write(stdout_fd, &data);
+                }
+                Ok(None) => {}
+                Err(libbreenix::ssh::SshError::Disconnected) => {
+                    return session.exit_status().unwrap_or(0);
+                }
+                Err(e) => {
+                    eprintln!("bssh: exec receive failed: {:?}", e);
+                    return 1;
+                }
+            }
+        }
+
+        if fds[0].revents & io::poll_events::POLLHUP != 0 {
+            return session.exit_status().unwrap_or(0);
+        }
+    }
 }
 
 /// Parse an IPv4 address string into 4 bytes.
