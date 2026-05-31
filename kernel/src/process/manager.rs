@@ -42,6 +42,37 @@ pub struct ProcessManager {
 }
 
 impl ProcessManager {
+    #[cfg(target_arch = "aarch64")]
+    fn map_initial_arm64_tls(
+        page_table: &mut ProcessPageTable,
+        tls_base: VirtAddr,
+    ) -> Result<VirtAddr, &'static str> {
+        use crate::memory::arch_stub::{Page, PageTableFlags, Size4KiB};
+
+        const TLS_PAGE_SIZE: usize = 4096;
+        const TLS_TP_OFFSET: u64 = 0x800;
+
+        let tls_page = Page::<Size4KiB>::containing_address(tls_base);
+        let frame = crate::memory::frame_allocator::allocate_frame()
+            .ok_or("Failed to allocate frame for ARM64 TLS")?;
+
+        let phys_offset = crate::memory::physical_memory_offset();
+        let kernel_virt = phys_offset + frame.start_address().as_u64();
+        unsafe {
+            core::ptr::write_bytes(kernel_virt.as_mut_ptr::<u8>(), 0, TLS_PAGE_SIZE);
+        }
+
+        page_table.map_page(
+            tls_page,
+            frame,
+            PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::USER_ACCESSIBLE,
+        )?;
+
+        Ok(VirtAddr::new(
+            tls_page.start_address().as_u64() + TLS_TP_OFFSET,
+        ))
+    }
+
     /// Create a new process manager
     pub fn new() -> Self {
         ProcessManager {
@@ -439,7 +470,7 @@ impl ProcessManager {
         crate::serial_println!(
             "manager.create_process [ARM64]: Mapping user stack into process page table"
         );
-        if let Some(ref mut page_table) = process.page_table {
+        let initial_tpidr_el0 = if let Some(ref mut page_table) = process.page_table {
             crate::serial_println!(
                 "manager.create_process [ARM64]: map_user_stack_to_process user_bottom={:#x} user_top={:#x} phys_bottom={:#x}",
                 user_stack_bottom,
@@ -469,14 +500,17 @@ impl ProcessManager {
             crate::serial_println!(
                 "manager.create_process [ARM64]: User stack mapped successfully"
             );
+
+            Self::map_initial_arm64_tls(page_table, VirtAddr::new(user_stack_top))?
         } else {
             return Err("Process page table not available for stack mapping");
-        }
+        };
 
         // Create the main thread with USERSPACE stack top
         crate::serial_println!("manager.create_process [ARM64]: Creating main thread");
         let user_stack_top_vaddr = VirtAddr::new(user_stack_top);
-        let thread = self.create_main_thread(&mut process, user_stack_top_vaddr)?;
+        let thread =
+            self.create_main_thread(&mut process, user_stack_top_vaddr, initial_tpidr_el0)?;
         crate::serial_println!("manager.create_process [ARM64]: Main thread created");
         process.set_main_thread(thread);
         crate::serial_println!("manager.create_process [ARM64]: Main thread set on process");
@@ -621,7 +655,7 @@ impl ProcessManager {
         process.stack = Some(Box::new(kernel_stack));
 
         // Map the physical stack frames into the process page table
-        if let Some(ref mut page_table) = process.page_table {
+        let initial_tpidr_el0 = if let Some(ref mut page_table) = process.page_table {
             crate::memory::process_memory::map_user_stack_to_process_with_phys(
                 page_table,
                 VirtAddr::new(user_stack_bottom),
@@ -635,9 +669,11 @@ impl ProcessManager {
                 );
                 "Failed to map user stack in process page table"
             })?;
+
+            Self::map_initial_arm64_tls(page_table, VirtAddr::new(user_stack_top))?
         } else {
             return Err("Process page table not available for stack mapping");
-        }
+        };
 
         // Set up argc/argv/envp/auxv on the stack following Linux ABI
         // The stack is now mapped, so we can write to it via physical addresses
@@ -673,6 +709,7 @@ impl ProcessManager {
             &mut process,
             VirtAddr::new(user_stack_top),
             VirtAddr::new(initial_sp),
+            initial_tpidr_el0,
         )?;
         process.set_main_thread(thread);
 
@@ -843,12 +880,10 @@ impl ProcessManager {
         &mut self,
         process: &mut Process,
         stack_top: VirtAddr,
+        initial_tpidr_el0: VirtAddr,
     ) -> Result<Thread, &'static str> {
         // Allocate a globally unique thread ID
         let thread_id = crate::task::thread::allocate_thread_id();
-
-        // For ARM64, use a simple TLS placeholder (TLS not yet fully implemented)
-        let actual_tls_block = VirtAddr::new(0x10000 + thread_id * 0x1000);
 
         // Calculate stack bottom (stack grows down)
         const USER_STACK_SIZE: usize = 64 * 1024;
@@ -878,11 +913,12 @@ impl ProcessManager {
         // We set up a minimal argc=0, argv=NULL frame so the SP is within the
         // mapped region, matching what the Linux ABI expects at process start.
         let initial_sp = VirtAddr::new((stack_top.as_u64() - 16) & !0xF);
-        let context = crate::task::thread::CpuContext::new(
+        let mut context = crate::task::thread::CpuContext::new(
             process.entry_point,
             initial_sp,
             crate::task::thread::ThreadPrivilege::User,
         );
+        context.tpidr_el0 = initial_tpidr_el0.as_u64();
 
         let thread = Thread {
             id: thread_id,
@@ -893,7 +929,7 @@ impl ProcessManager {
             stack_bottom,
             kernel_stack_top: Some(kernel_stack_top),
             kernel_stack_allocation: None, // Kernel stack for userspace thread not managed here
-            tls_block: actual_tls_block,
+            tls_block: initial_tpidr_el0,
             priority: 128,
             time_slice: 10,
             entry_point: None,
@@ -929,12 +965,10 @@ impl ProcessManager {
         process: &mut Process,
         stack_top: VirtAddr,
         initial_sp: VirtAddr,
+        initial_tpidr_el0: VirtAddr,
     ) -> Result<Thread, &'static str> {
         // Allocate a globally unique thread ID
         let thread_id = crate::task::thread::allocate_thread_id();
-
-        // For ARM64, use a simple TLS placeholder (TLS not yet fully implemented)
-        let actual_tls_block = VirtAddr::new(0x10000 + thread_id * 0x1000);
 
         // Calculate stack bottom (stack grows down)
         const USER_STACK_SIZE: usize = 64 * 1024;
@@ -962,11 +996,12 @@ impl ProcessManager {
             initial_sp.as_u64() & 0xF == 0,
             "initial_sp must be 16-byte aligned"
         );
-        let context = crate::task::thread::CpuContext::new(
+        let mut context = crate::task::thread::CpuContext::new(
             process.entry_point,
             initial_sp,
             crate::task::thread::ThreadPrivilege::User,
         );
+        context.tpidr_el0 = initial_tpidr_el0.as_u64();
 
         let thread = Thread {
             id: thread_id,
@@ -977,7 +1012,7 @@ impl ProcessManager {
             stack_bottom,
             kernel_stack_top: Some(kernel_stack_top),
             kernel_stack_allocation: None,
-            tls_block: actual_tls_block,
+            tls_block: initial_tpidr_el0,
             priority: 128,
             time_slice: 10,
             entry_point: None,
@@ -3015,6 +3050,7 @@ impl ProcessManager {
                     | PageTableFlags::USER_ACCESSIBLE,
             )?;
         }
+        let initial_tpidr_el0 = Self::map_initial_arm64_tls(new_page_table.as_mut(), stack_top)?;
 
         let default_env: [&[u8]; 5] = [
             b"PATH=/bin:/sbin:/usr/local/cbin\0",
@@ -3085,6 +3121,7 @@ impl ProcessManager {
             thread.context.elr_el1 = new_entry_point;
             thread.context.sp_el0 = aligned_stack;
             thread.context.spsr_el1 = 0x0;
+            thread.context.tpidr_el0 = initial_tpidr_el0.as_u64();
 
             thread.context.x0 = 0;
             thread.context.x19 = 0;
@@ -3102,6 +3139,7 @@ impl ProcessManager {
 
             thread.stack_top = stack_top;
             thread.stack_bottom = stack_bottom;
+            thread.tls_block = initial_tpidr_el0;
             thread.kernel_stack_top = preserved_kernel_stack_top;
             thread.state = crate::task::thread::ThreadState::Ready;
 
@@ -3118,11 +3156,13 @@ impl ProcessManager {
             let st = thread.stack_top;
             let sb = thread.stack_bottom;
             let kst = thread.kernel_stack_top;
+            let tls = thread.tls_block;
             crate::task::scheduler::with_thread_mut(thread_id, |sched_thread| {
                 sched_thread.context = ctx;
                 sched_thread.stack_top = st;
                 sched_thread.stack_bottom = sb;
                 sched_thread.kernel_stack_top = kst;
+                sched_thread.tls_block = tls;
                 sched_thread.state = crate::task::thread::ThreadState::Ready;
             });
         }
@@ -3306,6 +3346,7 @@ impl ProcessManager {
                     | PageTableFlags::USER_ACCESSIBLE,
             )?;
         }
+        let initial_tpidr_el0 = Self::map_initial_arm64_tls(new_page_table.as_mut(), stack_top)?;
 
         // For now, we'll use a dummy stack object since we manually mapped the stack
         let new_stack = crate::memory::stack::allocate_stack_with_privilege(
@@ -3369,6 +3410,7 @@ impl ProcessManager {
             thread.context.elr_el1 = new_entry_point; // Entry point (PC on return)
             thread.context.sp_el0 = aligned_stack; // User stack pointer
             thread.context.spsr_el1 = 0x0; // EL0t mode with interrupts enabled
+            thread.context.tpidr_el0 = initial_tpidr_el0.as_u64();
 
             // Clear all general-purpose registers for security
             thread.context.x0 = 0;
@@ -3387,6 +3429,7 @@ impl ProcessManager {
 
             thread.stack_top = stack_top;
             thread.stack_bottom = stack_bottom;
+            thread.tls_block = initial_tpidr_el0;
 
             // Restore the preserved kernel stack
             thread.kernel_stack_top = preserved_kernel_stack_top;
@@ -3405,11 +3448,13 @@ impl ProcessManager {
             let st = thread.stack_top;
             let sb = thread.stack_bottom;
             let kst = thread.kernel_stack_top;
+            let tls = thread.tls_block;
             crate::task::scheduler::with_thread_mut(thread_id, |sched_thread| {
                 sched_thread.context = ctx;
                 sched_thread.stack_top = st;
                 sched_thread.stack_bottom = sb;
                 sched_thread.kernel_stack_top = kst;
+                sched_thread.tls_block = tls;
                 sched_thread.state = crate::task::thread::ThreadState::Ready;
             });
         }
