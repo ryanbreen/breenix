@@ -60,6 +60,17 @@ const TRACE_KERNEL_RESUME_IRQ_SCHEDULE_FROM_KERNEL: u16 = 1;
 pub(crate) const TRACE_KERNEL_RESUME_IRQ_INLINE_TRAMPOLINE: u16 = 2;
 pub(crate) const TRACE_KERNEL_RESUME_IRQ_RESCHED_TAIL: u16 = 3;
 const TRACE_RESCHED_TAIL_BEFORE_RETURN: u16 = 2;
+const TRACE_CTX_DIAG_SAVE_KERNEL: u16 = 1;
+const TRACE_CTX_DIAG_RESTORE_KERNEL_PRE: u16 = 2;
+const TRACE_CTX_DIAG_RESTORE_KERNEL_POST: u16 = 3;
+const TRACE_CTX_DIAG_TAKE_INLINE_RET: u16 = 4;
+const TRACE_CTX_DIAG_RET_DISPATCH_IRQ: u16 = 5;
+const TRACE_CTX_DIAG_RET_DISPATCH_INLINE: u16 = 6;
+const TRACE_CTX_DIAG_DEFER_EARLY_DRAIN: u16 = 7;
+const TRACE_CTX_DIAG_DEFER_MAIN_DRAIN: u16 = 8;
+const TRACE_CTX_DIAG_DEFER_STORE: u16 = 9;
+const TRACE_CTX_DIAG_DEFER_EVICT: u16 = 10;
+const TRACE_CTX_DIAG_RET_TO_KERNEL_CONTEXT: u16 = 11;
 
 #[inline]
 fn dispatch_spsr(spsr: u64) -> u64 {
@@ -110,6 +121,64 @@ fn trace_ctx_publish(thread: &Thread, stage: u16) {
         crate::tracing::TraceEventType::CTX_PUBLISH_AUX,
         0,
         thread.inline_schedule_saved_sp as u32,
+    );
+}
+
+#[inline(always)]
+fn trace_ctx_diag(
+    stage: u16,
+    tid: u64,
+    old_id: u64,
+    new_id: u64,
+    frame_elr: u64,
+    frame_x30: u64,
+    thread_elr: u64,
+    thread_x30: u64,
+    sp: u64,
+    previous_thread: u64,
+    saved_by_inline_schedule: bool,
+) {
+    let tid16 = (tid as u32) & 0xFFFF;
+    let old16 = (old_id as u32) & 0xFFFF;
+    let new16 = (new_id as u32) & 0xFFFF;
+    let prev16 = (previous_thread as u32) & 0xFFFF;
+    let flags = (saved_by_inline_schedule as u32) | (prev16 << 16);
+
+    crate::tracing::record_event(
+        crate::tracing::TraceEventType::CTX_DIAG_STAGE,
+        0,
+        ((stage as u32) << 16) | tid16,
+    );
+    crate::tracing::record_event(
+        crate::tracing::TraceEventType::CTX_DIAG_TID_PAIR,
+        0,
+        (old16 << 16) | new16,
+    );
+    crate::tracing::record_event(
+        crate::tracing::TraceEventType::CTX_DIAG_FRAME_ELR,
+        0,
+        frame_elr as u32,
+    );
+    crate::tracing::record_event(
+        crate::tracing::TraceEventType::CTX_DIAG_FRAME_X30,
+        0,
+        frame_x30 as u32,
+    );
+    crate::tracing::record_event(
+        crate::tracing::TraceEventType::CTX_DIAG_THREAD_ELR,
+        0,
+        thread_elr as u32,
+    );
+    crate::tracing::record_event(
+        crate::tracing::TraceEventType::CTX_DIAG_THREAD_X30,
+        0,
+        thread_x30 as u32,
+    );
+    crate::tracing::record_event(crate::tracing::TraceEventType::CTX_DIAG_SP, 0, sp as u32);
+    crate::tracing::record_event(
+        crate::tracing::TraceEventType::CTX_DIAG_FLAGS,
+        0,
+        flags,
     );
 }
 
@@ -1226,12 +1295,26 @@ fn take_inline_ret_dispatch_info(
     // it must resume at the safe post-inline-switch return target, not a
     // mid-function ELR that may require stale volatile registers.
     let resume_pc = thread.context.x30;
+    let saved_by_inline_schedule = thread.saved_by_inline_schedule;
     thread.context.elr_el1 = resume_pc;
     let kst = thread.kernel_stack_top;
     let sp_el0 = thread.context.sp_el0;
     let tpidr_el0 = thread.context.tpidr_el0;
     let resume_sp = thread.context.sp;
     let resume_lr_slot = unsafe { core::ptr::read_volatile((resume_sp + 0x20) as *const u64) };
+    trace_ctx_diag(
+        TRACE_CTX_DIAG_TAKE_INLINE_RET,
+        thread.id(),
+        0,
+        0,
+        resume_pc,
+        resume_lr_slot,
+        thread.context.elr_el1,
+        thread.context.x30,
+        resume_sp,
+        0,
+        saved_by_inline_schedule,
+    );
     clear_inline_schedule_state(thread);
     Some((
         thread_ptr,
@@ -1470,6 +1553,7 @@ fn save_kernel_context_inline(thread: &mut Thread, frame: &Aarch64ExceptionFrame
     // Save program counter and processor state
     thread.context.elr_el1 = frame.elr;
     thread.context.spsr_el1 = kernel_dispatch_spsr(frame.spsr);
+    let saved_by_inline_schedule = thread.saved_by_inline_schedule;
 
     if thread.saved_by_inline_schedule
         && thread.inline_schedule_saved_sp != 0
@@ -1530,6 +1614,19 @@ fn save_kernel_context_inline(thread: &mut Thread, frame: &Aarch64ExceptionFrame
     thread.context.tpidr_el0 = tpidr;
     cache_thread_ttbr0(thread);
     trace_ctx_publish(thread, TRACE_CTX_PUBLISH_SAVE_KERNEL);
+    trace_ctx_diag(
+        TRACE_CTX_DIAG_SAVE_KERNEL,
+        thread.id(),
+        0,
+        0,
+        frame.elr,
+        frame.x30,
+        thread.context.elr_el1,
+        thread.context.x30,
+        thread.context.sp,
+        0,
+        saved_by_inline_schedule,
+    );
 
     if thread.owner_pid.is_some() && thread.blocked_in_syscall {
         if !thread_kernel_stack_contains(thread, thread.context.sp) {
@@ -1616,6 +1713,19 @@ fn restore_kernel_context_inline(
         // Resume: elr_el1 must be in kernel space or zero (handled below)
         is_kernel_addr(thread.context.elr_el1) || thread.context.elr_el1 == 0
     };
+    trace_ctx_diag(
+        TRACE_CTX_DIAG_RESTORE_KERNEL_PRE,
+        thread_id,
+        0,
+        0,
+        frame.elr,
+        frame.x30,
+        thread.context.elr_el1,
+        thread.context.x30,
+        thread.context.sp,
+        0,
+        thread.saved_by_inline_schedule,
+    );
 
     if !elr_valid {
         raw_uart_str("\n!!! BUG: invalid context for kernel dispatch tid=");
@@ -1728,6 +1838,19 @@ fn restore_kernel_context_inline(
         Aarch64PerCpu::set_user_rsp_scratch(thread.context.sp);
     }
     trace_eret_resume(thread);
+    trace_ctx_diag(
+        TRACE_CTX_DIAG_RESTORE_KERNEL_POST,
+        thread_id,
+        0,
+        0,
+        frame.elr,
+        frame.x30,
+        thread.context.elr_el1,
+        thread.context.x30,
+        thread.context.sp,
+        0,
+        thread.saved_by_inline_schedule,
+    );
 
     // CRITICAL: Restore SP_EL0 for userspace threads blocked in syscalls.
     if thread.context.sp_el0 != 0 {
@@ -2356,6 +2479,22 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
                 0,
                 deferred_thread,
             );
+            let previous_thread = sched.cpu_state[cpu_id].previous_thread.unwrap_or(0);
+            if let Some(thread) = deferred_thread {
+                trace_ctx_diag(
+                    TRACE_CTX_DIAG_DEFER_EARLY_DRAIN,
+                    deferred_tid,
+                    previous_thread,
+                    0,
+                    0,
+                    0,
+                    thread.context.elr_el1,
+                    thread.context.x30,
+                    thread.context.sp,
+                    previous_thread,
+                    thread.saved_by_inline_schedule,
+                );
+            }
             sched.cpu_state[cpu_id].previous_thread = None;
             sched.requeue_thread_after_save(deferred_tid);
         }
@@ -2457,6 +2596,22 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
                 0,
                 deferred_thread,
             );
+            let previous_thread = sched.cpu_state[cpu_id].previous_thread.unwrap_or(0);
+            if let Some(thread) = deferred_thread {
+                trace_ctx_diag(
+                    TRACE_CTX_DIAG_DEFER_MAIN_DRAIN,
+                    deferred_tid,
+                    previous_thread,
+                    0,
+                    0,
+                    0,
+                    thread.context.elr_el1,
+                    thread.context.x30,
+                    thread.context.sp,
+                    previous_thread,
+                    thread.saved_by_inline_schedule,
+                );
+            }
         }
         sched.requeue_thread_after_save(deferred_tid);
     }
@@ -2591,6 +2746,21 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
         let previous = DEFERRED_REQUEUE[cpu_id].swap(old_id, Ordering::AcqRel);
         let old_thread = sched.get_thread(old_id);
         trace_defer_requeue(TRACE_DEFER_REQUEUE_STORE, old_id, previous, old_thread);
+        if let Some(thread) = old_thread {
+            trace_ctx_diag(
+                TRACE_CTX_DIAG_DEFER_STORE,
+                old_id,
+                old_id,
+                new_id,
+                frame.elr,
+                frame.x30,
+                thread.context.elr_el1,
+                thread.context.x30,
+                thread.context.sp,
+                previous,
+                thread.saved_by_inline_schedule,
+            );
+        }
         if previous != 0 {
             // A previously deferred requeue is being evicted before it was processed.
             // This means two rapid context switches happened on the same CPU without an
@@ -2603,6 +2773,21 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
                 old_id,
                 previous_thread,
             );
+            if let Some(thread) = previous_thread {
+                trace_ctx_diag(
+                    TRACE_CTX_DIAG_DEFER_EVICT,
+                    previous,
+                    old_id,
+                    new_id,
+                    frame.elr,
+                    frame.x30,
+                    thread.context.elr_el1,
+                    thread.context.x30,
+                    thread.context.sp,
+                    old_id,
+                    thread.saved_by_inline_schedule,
+                );
+            }
             raw_uart_str("[DEFER_EVICT] cpu=");
             raw_uart_dec(cpu_id as u64);
             raw_uart_str(" evicted=");
@@ -2624,6 +2809,21 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
     if let Some((thread_ptr, ctx_ptr, resume_pc, kst, sp_el0, tpidr_el0, resume_sp, resume_lr_slot)) =
         ret_dispatch_info
     {
+        let previous_thread = sched.cpu_state[cpu_id].previous_thread.unwrap_or(0);
+        trace_ctx_diag(
+            TRACE_CTX_DIAG_RET_DISPATCH_IRQ,
+            new_id,
+            old_id,
+            new_id,
+            resume_pc,
+            resume_lr_slot,
+            resume_pc,
+            resume_lr_slot,
+            resume_sp,
+            previous_thread,
+            true,
+        );
+        trace_ctx_diag(TRACE_CTX_DIAG_RET_TO_KERNEL_CONTEXT, new_id, old_id, new_id, resume_pc, resume_lr_slot, resume_pc, resume_lr_slot, resume_sp, previous_thread, true);
         crate::tracing::record_event(
             crate::tracing::TraceEventType::RET_DISPATCH_SP,
             0,
@@ -2843,6 +3043,21 @@ extern "C" fn inline_schedule_trampoline() -> ! {
     if let Some((thread_ptr, ctx_ptr, resume_pc, kst, sp_el0, tpidr_el0, resume_sp, resume_lr_slot)) =
         ret_dispatch_info
     {
+        let previous_thread = sched.cpu_state[cpu_id].previous_thread.unwrap_or(0);
+        trace_ctx_diag(
+            TRACE_CTX_DIAG_RET_DISPATCH_INLINE,
+            new_id,
+            old_id,
+            new_id,
+            resume_pc,
+            resume_lr_slot,
+            resume_pc,
+            resume_lr_slot,
+            resume_sp,
+            previous_thread,
+            true,
+        );
+        trace_ctx_diag(TRACE_CTX_DIAG_RET_TO_KERNEL_CONTEXT, new_id, old_id, new_id, resume_pc, resume_lr_slot, resume_pc, resume_lr_slot, resume_sp, previous_thread, true);
         cpu0_breadcrumb(cpu_id, 35); // taking ret-based dispatch
         // ret-based dispatch: restore callee-saved regs + SP, branch to
         // resume_pc (= elr_el1). No ERET, no SPSR, no DAIF from the thread.

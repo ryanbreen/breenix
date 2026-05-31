@@ -15,6 +15,8 @@ fn main() {
 
     #[cfg(target_arch = "aarch64")]
     run_wait_stress_if_enabled();
+    #[cfg(target_arch = "aarch64")]
+    run_trace_diag_probe_if_enabled();
     run_boot_script();
     start_bsshd();
     #[cfg(target_arch = "aarch64")]
@@ -42,6 +44,34 @@ fn main() {
                 };
                 let _ = libbreenix::time::nanosleep(&ts);
             }
+        }
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+fn run_trace_diag_probe_if_enabled() {
+    if option_env!("BREENIX_TRACE_DIAG_EARLY") != Some("1") {
+        return;
+    }
+
+    print!("[init] trace diag early probe enabled; running btrace\n");
+    let path = b"/bin/btrace\0";
+    let arg0 = b"btrace\0";
+    let argv = [arg0.as_ptr(), core::ptr::null()];
+
+    match spawnv(path, argv.as_ptr()) {
+        Ok(child_pid) => {
+            let mut status = 0i32;
+            let _ = waitpid(child_pid.raw() as i32, &mut status as *mut i32, 0);
+            let exit_code = (status >> 8) & 0xFF;
+            print!(
+                "[init] trace diag early probe exited pid={} code={}\n",
+                child_pid.raw(),
+                exit_code
+            );
+        }
+        Err(e) => {
+            print!("[init] Warning: failed to start trace diag probe: {}\n", e);
         }
     }
 }
