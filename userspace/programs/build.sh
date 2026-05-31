@@ -127,6 +127,7 @@ STD_BINARIES=(
     "fcntl_test"
     "poll_test"
     "select_test"
+    "epoll_test"
     "nonblock_test"
     "brk_test"
     "signal_handler_test"
