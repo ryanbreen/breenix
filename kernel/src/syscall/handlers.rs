@@ -138,27 +138,31 @@ pub fn sys_exit(exit_code: i32) -> SyscallResult {
         log::debug!("sys_exit: Current thread ID from scheduler: {}", thread_id);
         crate::tracing::providers::process::trace_thread_exit(thread_id as u16, exit_code as u16);
 
-        // Handle clear_child_tid for clone threads (CLONE_CHILD_CLEARTID)
-        // Write 0 to the tid address and futex-wake any joiners
-        {
+        // Handle clear_child_tid for clone threads (CLONE_CHILD_CLEARTID).
+        // Snapshot under PROCESS_MANAGER, then write to userspace after the
+        // lock is dropped because the tid address may reference a CoW page.
+        let clear_child_tid = {
             let manager_guard = crate::process::manager();
             if let Some(ref manager) = *manager_guard {
                 if let Some((_pid, process)) = manager.find_process_by_thread(thread_id) {
                     if let Some(tid_addr) = process.clear_child_tid {
                         let tg_id = process.thread_group_id.unwrap_or(_pid.as_u64());
-                        // Write 0 to the tid address
-                        unsafe {
-                            let ptr = tid_addr as *mut u32;
-                            if !ptr.is_null() && tid_addr < 0x7FFF_FFFF_FFFF {
-                                core::ptr::write_volatile(ptr, 0);
-                            }
-                        }
-                        // Futex-wake any threads waiting on this address
-                        drop(manager_guard);
-                        super::futex::futex_wake_for_thread_group(tg_id, tid_addr, u32::MAX);
+                        Some((tg_id, tid_addr))
+                    } else {
+                        None
                     }
+                } else {
+                    None
                 }
+            } else {
+                None
             }
+        };
+
+        if let Some((tg_id, tid_addr)) = clear_child_tid {
+            let zero = 0u32;
+            let _ = super::userptr::copy_to_user(tid_addr as *mut u32, &zero);
+            super::futex::futex_wake_for_thread_group(tg_id, tid_addr, u32::MAX);
         }
 
         // Handle thread exit through ProcessScheduler
