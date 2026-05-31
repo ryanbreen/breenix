@@ -7,7 +7,10 @@
 //! - Host key fingerprint for client-side known_hosts verification
 
 use crate::crypto::bignum::BigNum;
-use crate::crypto::rsa::{rsa_sign_pkcs1_sha256, rsa_verify_pkcs1_sha256, rsa_verify_pkcs1_sha512, RsaPrivateKey, RsaPublicKey};
+use crate::crypto::rsa::{
+    rsa_sign_pkcs1_sha256, rsa_verify_pkcs1_sha256, rsa_verify_pkcs1_sha512, RsaPrivateKey,
+    RsaPublicKey,
+};
 use crate::crypto::sha256::sha256;
 use crate::crypto::sha512::sha512;
 
@@ -168,6 +171,48 @@ impl HostKey {
     }
 }
 
+/// Server host-key identity observed during client key exchange.
+#[derive(Debug, Clone)]
+pub struct ServerHostKeyInfo {
+    /// Raw SSH public-key blob from KEX_ECDH_REPLY.
+    pub key_blob: Vec<u8>,
+    /// Key type stored inside the key blob, e.g. "ssh-rsa".
+    pub key_type: String,
+    /// Signature/host-key algorithm used in KEX, e.g. "rsa-sha2-256".
+    pub algorithm: String,
+    /// SHA-256 fingerprint of `key_blob`.
+    pub fingerprint: [u8; 32],
+}
+
+impl ServerHostKeyInfo {
+    pub fn from_parts(key_blob: Vec<u8>, signature_blob: &[u8]) -> Option<Self> {
+        let key_type = key_type_from_blob(&key_blob)?;
+        let algorithm = signature_algorithm(signature_blob)?;
+        let fingerprint = sha256(&key_blob);
+
+        Some(Self {
+            key_blob,
+            key_type,
+            algorithm,
+            fingerprint,
+        })
+    }
+}
+
+/// Parse the key type string from an SSH public-key blob.
+pub fn key_type_from_blob(blob: &[u8]) -> Option<String> {
+    let mut pos = 0;
+    let key_type = SshBuf::get_string(blob, &mut pos)?;
+    Some(String::from_utf8_lossy(key_type).into_owned())
+}
+
+/// Parse the algorithm string from an SSH signature blob.
+pub fn signature_algorithm(signature_blob: &[u8]) -> Option<String> {
+    let mut pos = 0;
+    let algorithm = SshBuf::get_string(signature_blob, &mut pos)?;
+    Some(String::from_utf8_lossy(algorithm).into_owned())
+}
+
 // ==========================================================================
 // Authorized key operations
 // ==========================================================================
@@ -237,11 +282,7 @@ pub fn parse_rsa_pubkey_blob(blob: &[u8]) -> Option<RsaPublicKey> {
 ///
 /// The signature is in SSH wire format: string algorithm || string sig_blob
 /// The data is hashed with SHA-256 before PKCS#1 v1.5 verification.
-pub fn verify_rsa_signature(
-    pubkey_blob: &[u8],
-    signature_blob: &[u8],
-    data: &[u8],
-) -> bool {
+pub fn verify_rsa_signature(pubkey_blob: &[u8], signature_blob: &[u8], data: &[u8]) -> bool {
     // Parse the public key
     let pubkey = match parse_rsa_pubkey_blob(pubkey_blob) {
         Some(k) => k,

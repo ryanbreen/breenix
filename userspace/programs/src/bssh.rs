@@ -7,52 +7,52 @@
 //!   Default username: root
 //!   Default password: (prompted)
 
+use libbreenix::fs;
 use libbreenix::io;
 use libbreenix::socket::{SockAddrIn, TcpStream};
+use libbreenix::ssh::keys::ServerHostKeyInfo;
 use libbreenix::ssh::transport::{ClientAuthMethod, ClientSession};
 use libbreenix::termios;
 use libbreenix::types::Fd;
 
-enum AuthChoice<'a> {
-    Password(&'a str),
+const DEFAULT_KNOWN_HOSTS: &str = "/tmp/bssh_known_hosts";
+
+enum AuthChoice {
+    Password(String),
     PublicKey { wrong_key: bool },
+}
+
+struct Options {
+    host: String,
+    port: u16,
+    username: String,
+    auth_choice: AuthChoice,
+    smoke: bool,
+    exec_command: Option<String>,
+    known_hosts_path: String,
+    host_key_alias: Option<String>,
 }
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
-    if args.len() < 2 {
-        eprintln!("Usage: bssh <host> [port] [username] [password|--publickey|--publickey-wrong] [--smoke]");
-        std::process::exit(1);
-    }
-
-    let host = &args[1];
-    let port: u16 = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(22);
-    let username = args.get(3).map(|s| s.as_str()).unwrap_or("root");
-    let auth_arg = args.get(4).map(|s| s.as_str()).unwrap_or("breenix");
-    let smoke = args.iter().any(|arg| arg == "--smoke");
-    let exec_command = args.iter().position(|arg| arg == "--exec").and_then(|idx| {
-        let parts = args.get(idx + 1..)?;
-        if parts.is_empty() {
-            None
-        } else {
-            Some(parts.join(" "))
+    let opts = match parse_options(&args) {
+        Ok(opts) => opts,
+        Err(message) => {
+            eprintln!("{}", message);
+            usage();
+            std::process::exit(1);
         }
-    });
-    let auth_choice = match auth_arg {
-        "--publickey" | "publickey" => AuthChoice::PublicKey { wrong_key: false },
-        "--publickey-wrong" | "publickey-wrong" => AuthChoice::PublicKey { wrong_key: true },
-        password => AuthChoice::Password(password),
     };
 
     // Parse host as IPv4 address
-    let addr_bytes = match parse_ipv4(host) {
+    let addr_bytes = match parse_ipv4(&opts.host) {
         Some(b) => b,
         None => {
             // Try DNS resolution
-            match libbreenix::dns::resolve_auto(host) {
+            match libbreenix::dns::resolve_auto(&opts.host) {
                 Ok(result) => result.addr,
                 Err(e) => {
-                    eprintln!("bssh: cannot resolve '{}': {:?}", host, e);
+                    eprintln!("bssh: cannot resolve '{}': {:?}", opts.host, e);
                     std::process::exit(1);
                 }
             }
@@ -61,11 +61,11 @@ fn main() {
 
     println!(
         "bssh: connecting to {}.{}.{}.{}:{}",
-        addr_bytes[0], addr_bytes[1], addr_bytes[2], addr_bytes[3], port
+        addr_bytes[0], addr_bytes[1], addr_bytes[2], addr_bytes[3], opts.port
     );
 
     // Connect
-    let addr = SockAddrIn::new(addr_bytes, port);
+    let addr = SockAddrIn::new(addr_bytes, opts.port);
     let stream = match TcpStream::connect(&addr) {
         Ok(s) => s,
         Err(e) => {
@@ -76,13 +76,20 @@ fn main() {
 
     let fd = stream.into_raw_fd();
     let mut session = ClientSession::new(fd);
+    let known_host_id = known_host_id(&opts.host, opts.port, opts.host_key_alias.as_deref());
 
     // SSH handshake + auth
-    let auth_method = match auth_choice {
+    let auth_method = match &opts.auth_choice {
         AuthChoice::Password(password) => ClientAuthMethod::Password(password),
-        AuthChoice::PublicKey { wrong_key } => ClientAuthMethod::PublicKey { wrong_key },
+        AuthChoice::PublicKey { wrong_key } => ClientAuthMethod::PublicKey {
+            wrong_key: *wrong_key,
+        },
     };
-    if let Err(e) = session.handshake_with_auth(username, auth_method) {
+    if let Err(e) =
+        session.handshake_with_auth_and_host_key(&opts.username, auth_method, |host_key| {
+            verify_or_pin_known_host(&opts.known_hosts_path, &known_host_id, host_key)
+        })
+    {
         if matches!(e, libbreenix::ssh::SshError::Auth) {
             eprintln!("bssh: authentication failed");
         } else {
@@ -90,17 +97,17 @@ fn main() {
         }
         std::process::exit(1);
     }
-    println!("bssh: authenticated as '{}'", username);
+    println!("bssh: authenticated as '{}'", opts.username);
 
-    if let Some(command) = exec_command {
+    if let Some(command) = opts.exec_command {
         if let Err(e) = session.open_exec(&command) {
             eprintln!("bssh: exec request failed: {:?}", e);
             std::process::exit(1);
         }
 
-        println!("BSSH_EXEC_BEGIN host={} command={}", host, command);
+        println!("BSSH_EXEC_BEGIN host={} command={}", opts.host, command);
         let rc = drain_exec_output(&mut session);
-        println!("BSSH_EXEC_END host={} rc={}", host, rc);
+        println!("BSSH_EXEC_END host={} rc={}", opts.host, rc);
         session.close();
         std::process::exit(rc);
     }
@@ -111,7 +118,7 @@ fn main() {
         std::process::exit(1);
     }
     println!("bssh: shell opened");
-    if smoke {
+    if opts.smoke {
         println!("bssh: smoke success");
         session.close();
         std::process::exit(0);
@@ -195,6 +202,250 @@ fn main() {
     }
 
     session.close();
+}
+
+fn usage() {
+    eprintln!(
+        "Usage: bssh <host> [port] [username] [password|--publickey|--publickey-wrong] [--known-hosts path] [--host-key-alias id] [--smoke] [--exec command]"
+    );
+}
+
+fn parse_options(args: &[String]) -> Result<Options, String> {
+    if args.len() < 2 {
+        return Err("bssh: missing host".to_string());
+    }
+
+    let host = args[1].clone();
+    let mut idx = 2;
+
+    let port = if let Some(arg) = args.get(idx) {
+        if !arg.starts_with("--") {
+            if let Ok(port) = arg.parse::<u16>() {
+                idx += 1;
+                port
+            } else {
+                22
+            }
+        } else {
+            22
+        }
+    } else {
+        22
+    };
+
+    let username = if let Some(arg) = args.get(idx) {
+        if !arg.starts_with("--") {
+            idx += 1;
+            arg.clone()
+        } else {
+            "root".to_string()
+        }
+    } else {
+        "root".to_string()
+    };
+
+    let mut auth_choice = AuthChoice::Password("breenix".to_string());
+    if let Some(arg) = args.get(idx) {
+        if arg == "--publickey" || arg == "publickey" {
+            auth_choice = AuthChoice::PublicKey { wrong_key: false };
+            idx += 1;
+        } else if arg == "--publickey-wrong" || arg == "publickey-wrong" {
+            auth_choice = AuthChoice::PublicKey { wrong_key: true };
+            idx += 1;
+        } else if !arg.starts_with("--") {
+            auth_choice = AuthChoice::Password(arg.clone());
+            idx += 1;
+        }
+    }
+
+    let mut smoke = false;
+    let mut exec_command = None;
+    let mut known_hosts_path = DEFAULT_KNOWN_HOSTS.to_string();
+    let mut host_key_alias = None;
+
+    while idx < args.len() {
+        match args[idx].as_str() {
+            "--smoke" => {
+                smoke = true;
+                idx += 1;
+            }
+            "--publickey" | "publickey" => {
+                auth_choice = AuthChoice::PublicKey { wrong_key: false };
+                idx += 1;
+            }
+            "--publickey-wrong" | "publickey-wrong" => {
+                auth_choice = AuthChoice::PublicKey { wrong_key: true };
+                idx += 1;
+            }
+            "--known-hosts" => {
+                let path = args
+                    .get(idx + 1)
+                    .ok_or_else(|| "bssh: --known-hosts requires a path".to_string())?;
+                known_hosts_path = path.clone();
+                idx += 2;
+            }
+            "--host-key-alias" => {
+                let alias = args
+                    .get(idx + 1)
+                    .ok_or_else(|| "bssh: --host-key-alias requires an id".to_string())?;
+                host_key_alias = Some(alias.clone());
+                idx += 2;
+            }
+            "--exec" => {
+                let parts = args
+                    .get(idx + 1..)
+                    .ok_or_else(|| "bssh: --exec requires a command".to_string())?;
+                if parts.is_empty() {
+                    return Err("bssh: --exec requires a command".to_string());
+                }
+                exec_command = Some(parts.join(" "));
+                break;
+            }
+            other => return Err(format!("bssh: unknown option '{}'", other)),
+        }
+    }
+
+    Ok(Options {
+        host,
+        port,
+        username,
+        auth_choice,
+        smoke,
+        exec_command,
+        known_hosts_path,
+        host_key_alias,
+    })
+}
+
+fn known_host_id(host: &str, port: u16, alias: Option<&str>) -> String {
+    if let Some(alias) = alias {
+        return alias.to_string();
+    }
+
+    format!("[{}]:{}", host, port)
+}
+
+fn verify_or_pin_known_host(
+    path: &str,
+    host_id: &str,
+    host_key: &ServerHostKeyInfo,
+) -> Result<(), libbreenix::ssh::SshError> {
+    let fingerprint = fingerprint_hex(&host_key.fingerprint);
+
+    if let Some(entry) = find_known_host(path, host_id) {
+        if entry.key_type == host_key.key_type && entry.fingerprint == host_key.fingerprint {
+            return Ok(());
+        }
+
+        eprintln!(
+            "bssh: host key verification failed for {}: expected {} SHA256:{}, got {} SHA256:{}",
+            host_id,
+            entry.key_type,
+            fingerprint_hex(&entry.fingerprint),
+            host_key.key_type,
+            fingerprint
+        );
+        return Err(libbreenix::ssh::SshError::Protocol(
+            "host key verification failed",
+        ));
+    }
+
+    let line = format!(
+        "{} {} SHA256:{} {}\n",
+        host_id, host_key.key_type, fingerprint, host_key.algorithm
+    );
+    let fd = match fs::open_with_mode(path, fs::O_WRONLY | fs::O_CREAT | fs::O_APPEND, 0o644) {
+        Ok(fd) => fd,
+        Err(e) => {
+            eprintln!("bssh: failed to open known_hosts '{}': {:?}", path, e);
+            return Err(libbreenix::ssh::SshError::Io);
+        }
+    };
+
+    let result = fs::write(fd, line.as_bytes());
+    let _ = fs::close(fd);
+    if let Err(e) = result {
+        eprintln!("bssh: failed to write known_hosts '{}': {:?}", path, e);
+        return Err(libbreenix::ssh::SshError::Io);
+    }
+
+    println!(
+        "bssh: pinned host key {} algorithm={} fingerprint=SHA256:{}",
+        host_id, host_key.algorithm, fingerprint
+    );
+    Ok(())
+}
+
+struct KnownHostEntry {
+    key_type: String,
+    fingerprint: [u8; 32],
+}
+
+fn find_known_host(path: &str, host_id: &str) -> Option<KnownHostEntry> {
+    let content = read_file(path)?;
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+
+        let mut parts = trimmed.split_whitespace();
+        let hosts = parts.next()?;
+        let key_type = parts.next()?;
+        let fingerprint = parts.next()?;
+
+        if hosts.split(',').any(|candidate| candidate == host_id) {
+            let fingerprint = parse_fingerprint(fingerprint)?;
+            return Some(KnownHostEntry {
+                key_type: key_type.to_string(),
+                fingerprint,
+            });
+        }
+    }
+
+    None
+}
+
+fn read_file(path: &str) -> Option<String> {
+    let fd = fs::open(path, fs::O_RDONLY).ok()?;
+    let mut bytes = Vec::new();
+    let mut buf = [0u8; 512];
+    loop {
+        match fs::read(fd, &mut buf) {
+            Ok(0) => break,
+            Ok(n) => bytes.extend_from_slice(&buf[..n]),
+            Err(_) => {
+                let _ = fs::close(fd);
+                return None;
+            }
+        }
+    }
+    let _ = fs::close(fd);
+    String::from_utf8(bytes).ok()
+}
+
+fn parse_fingerprint(value: &str) -> Option<[u8; 32]> {
+    let hex = value.strip_prefix("SHA256:")?;
+    if hex.len() != 64 {
+        return None;
+    }
+
+    let mut out = [0u8; 32];
+    for i in 0..32 {
+        let byte = u8::from_str_radix(&hex[i * 2..i * 2 + 2], 16).ok()?;
+        out[i] = byte;
+    }
+    Some(out)
+}
+
+fn fingerprint_hex(fingerprint: &[u8; 32]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(64);
+    for byte in fingerprint {
+        out.push(HEX[(byte >> 4) as usize] as char);
+        out.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    out
 }
 
 fn drain_exec_output(session: &mut ClientSession) -> i32 {

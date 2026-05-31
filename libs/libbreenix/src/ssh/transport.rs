@@ -11,7 +11,7 @@ use crate::types::Fd;
 use super::auth;
 use super::channel::{self, Channel};
 use super::kex::{self, KexState};
-use super::keys::HostKey;
+use super::keys::{HostKey, ServerHostKeyInfo};
 use super::packet::PacketIo;
 use super::{SshBuf, SshError, BSSH_VERSION};
 use super::{
@@ -396,6 +396,19 @@ impl ClientSession {
         username: &str,
         auth_method: ClientAuthMethod<'_>,
     ) -> Result<(), SshError> {
+        self.handshake_with_auth_and_host_key(username, auth_method, |_| Ok(()))
+    }
+
+    /// Perform the full SSH handshake with caller-supplied host-key verification.
+    pub fn handshake_with_auth_and_host_key<F>(
+        &mut self,
+        username: &str,
+        auth_method: ClientAuthMethod<'_>,
+        verify_host_key: F,
+    ) -> Result<(), SshError>
+    where
+        F: FnOnce(&ServerHostKeyInfo) -> Result<(), SshError>,
+    {
         // 1. Version exchange
         self.io.write_line(BSSH_VERSION).map_err(|_| SshError::Io)?;
         self.server_version = self.io.read_line().map_err(|_| SshError::Io)?;
@@ -418,12 +431,13 @@ impl ClientSession {
         self.kex.peer_kexinit = peer_kexinit;
 
         // Perform client-side DH
-        let (exchange_hash, shared_secret, _host_key_blob) = kex::client_kex_ecdh(
+        let (exchange_hash, shared_secret, host_key) = kex::client_kex_ecdh(
             &mut self.io,
             &mut self.kex,
             BSSH_VERSION,
             &self.server_version,
         )?;
+        verify_host_key(&host_key)?;
 
         // Receive server's NEWKEYS
         let newkeys = self.io.recv_packet().map_err(|_| SshError::Io)?;
