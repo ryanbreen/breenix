@@ -2,8 +2,9 @@
 
 ## Current state
 
-`bssh --publickey` currently uses the compiled-in Breenix RSA keypair as its
-SSH user-authentication identity.
+`bssh --identity <path>` uses a caller-supplied RSA identity for SSH
+user-authentication. The older `bssh --publickey` path still uses the
+compiled-in Breenix RSA keypair as a development/test fallback.
 
 The key flow is:
 
@@ -15,23 +16,24 @@ The key flow is:
 - `libs/libbreenix/src/ssh/keys.rs` implements both helpers by loading
   `HostKey::load()`, whose private exponent is compiled from `HOST_KEY_D`.
 
-That means the current publickey identity is not a private user identity. It is
-repository key material and must not be authorized for login to real external
-accounts.
+That fallback identity is not a private user identity. It is repository key
+material and must not be authorized for login to real external accounts.
 
 ## Required production fix
 
-`bssh` should support a caller-supplied client identity, for example:
+Use a caller-supplied client identity for real hosts:
 
 ```text
-bssh user@host --identity /path/to/id_rsa --publickey
+bssh user@host --identity /path/to/id_rsa
 ```
 
-The client should parse an OpenSSH-compatible private key or a constrained
-Breenix key format from the filesystem, derive the matching public key blob,
-and sign USERAUTH data with that private key. The embedded repo key can remain
-only as a local development/test identity, and `bssh` should label it as such in
-the CLI.
+The first implemented identity format is unencrypted PKCS#1 PEM RSA. Generate
+compatible proof keys with:
 
-Until that exists, real-host publickey proofs must not rely on adding the
-embedded Breenix key to a real account's `authorized_keys`.
+```text
+ssh-keygen -t rsa -b 3072 -m PEM -f id_rsa -N ''
+```
+
+Future work can add OpenSSH private-key format parsing and encrypted-key
+passphrases. Real-host publickey proofs must not rely on adding the embedded
+Breenix key to a real account's `authorized_keys`.

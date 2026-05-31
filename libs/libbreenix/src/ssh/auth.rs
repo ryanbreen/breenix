@@ -314,14 +314,41 @@ pub fn client_auth_publickey(
     session_id: &[u8],
     wrong_key: bool,
 ) -> Result<(), SshError> {
-    let algo = b"rsa-sha2-256";
     let mut key_blob = keys::embedded_client_public_key_blob();
     if wrong_key {
         if let Some(last) = key_blob.last_mut() {
             *last ^= 0x01;
         }
     }
+    client_auth_publickey_with_signer(io, username, session_id, key_blob, |data| {
+        keys::sign_with_embedded_client_key(data)
+    })
+}
 
+/// Authenticate with the SSH publickey method using a caller-supplied identity.
+pub fn client_auth_publickey_identity(
+    io: &mut PacketIo,
+    username: &str,
+    session_id: &[u8],
+    identity: &keys::RsaIdentity,
+) -> Result<(), SshError> {
+    let key_blob = identity.public_key_blob();
+    client_auth_publickey_with_signer(io, username, session_id, key_blob, |data| {
+        identity.sign(data)
+    })
+}
+
+fn client_auth_publickey_with_signer<F>(
+    io: &mut PacketIo,
+    username: &str,
+    session_id: &[u8],
+    key_blob: Vec<u8>,
+    sign: F,
+) -> Result<(), SshError>
+where
+    F: FnOnce(&[u8]) -> Vec<u8>,
+{
+    let algo = b"rsa-sha2-256";
     println!(
         "bssh: userauth request method=publickey user='{}' algo={} has_signature=false key_blob_len={}",
         username,
@@ -374,7 +401,7 @@ pub fn client_auth_publickey(
     SshBuf::put_bool(&mut signed_data, true);
     SshBuf::put_string(&mut signed_data, algo);
     SshBuf::put_string(&mut signed_data, &key_blob);
-    let signature = keys::sign_with_embedded_client_key(&signed_data);
+    let signature = sign(&signed_data);
 
     println!(
         "bssh: userauth request method=publickey user='{}' algo={} has_signature=true signature_len={}",

@@ -11,7 +11,7 @@ use crate::types::Fd;
 use super::auth;
 use super::channel::{self, Channel};
 use super::kex::{self, KexState};
-use super::keys::{HostKey, ServerHostKeyInfo};
+use super::keys::{HostKey, RsaIdentity, ServerHostKeyInfo};
 use super::packet::PacketIo;
 use super::{SshBuf, SshError, BSSH_VERSION};
 use super::{
@@ -371,6 +371,7 @@ pub struct ClientSession {
 pub enum ClientAuthMethod<'a> {
     Password(&'a str),
     PublicKey { wrong_key: bool },
+    PublicKeyIdentity(&'a RsaIdentity),
 }
 
 impl ClientSession {
@@ -465,6 +466,9 @@ impl ClientSession {
             }
             ClientAuthMethod::PublicKey { wrong_key } => {
                 auth::client_auth_publickey(&mut self.io, username, session_id, wrong_key)?;
+            }
+            ClientAuthMethod::PublicKeyIdentity(identity) => {
+                auth::client_auth_publickey_identity(&mut self.io, username, session_id, identity)?;
             }
         }
 
