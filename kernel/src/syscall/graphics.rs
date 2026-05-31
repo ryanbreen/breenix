@@ -2055,10 +2055,12 @@ fn handle_resize_window_buffer(cmd: &FbDrawCmd) -> SyscallResult {
         new_addr
     );
 
-    // Write new mmap address to userspace
+    // Write new mmap address to userspace after dropping PROCESS_MANAGER;
+    // out_ptr may reference a CoW page.
+    drop(manager_guard);
     if out_ptr != 0 && out_ptr < USER_SPACE_MAX {
-        unsafe {
-            core::ptr::write(out_ptr as *mut u64, new_addr);
+        if crate::syscall::userptr::copy_to_user(out_ptr as *mut u64, &new_addr).is_err() {
+            return SyscallResult::Err(super::ErrorCode::Fault as u64);
         }
     }
 
@@ -2160,9 +2162,11 @@ fn handle_map_window_buffer(cmd: &FbDrawCmd) -> SyscallResult {
         num_pages
     );
 
-    // Write mapped address to userspace
-    unsafe {
-        core::ptr::write(out_ptr as *mut u64, new_addr);
+    // Write mapped address to userspace after dropping PROCESS_MANAGER;
+    // out_ptr may reference a CoW page.
+    drop(manager_guard);
+    if crate::syscall::userptr::copy_to_user(out_ptr as *mut u64, &new_addr).is_err() {
+        return SyscallResult::Err(super::ErrorCode::Fault as u64);
     }
 
     // Return packed dimensions
@@ -2263,9 +2267,11 @@ fn handle_map_compositor_texture(cmd: &FbDrawCmd) -> SyscallResult {
         new_addr, tex_w, tex_h, num_pages, crate::graphics::compositor_backend()
     );
 
-    // Write mapped address to userspace
-    unsafe {
-        core::ptr::write(out_ptr as *mut u64, new_addr);
+    // Write mapped address to userspace after dropping PROCESS_MANAGER;
+    // out_ptr may reference a CoW page.
+    drop(manager_guard);
+    if crate::syscall::userptr::copy_to_user(out_ptr as *mut u64, &new_addr).is_err() {
+        return SyscallResult::Err(super::ErrorCode::Fault as u64);
     }
 
     // Return packed dimensions

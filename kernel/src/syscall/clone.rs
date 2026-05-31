@@ -219,15 +219,13 @@ pub fn sys_clone(
         child_process.clear_child_tid = Some(child_tidptr);
     }
 
-    // Write child TID to child_tidptr (CLONE_CHILD_SETTID)
-    if flags & CLONE_CHILD_SETTID != 0 && child_tidptr != 0 {
-        unsafe {
-            let ptr = child_tidptr as *mut u32;
-            if !ptr.is_null() && (child_tidptr as usize) < 0x7FFF_FFFF_FFFF {
-                core::ptr::write_volatile(ptr, child_thread_id as u32);
-            }
-        }
-    }
+    // Write child TID to child_tidptr (CLONE_CHILD_SETTID), but only after
+    // PROCESS_MANAGER is dropped. The pointer may reference a CoW page.
+    let child_tid_write = if flags & CLONE_CHILD_SETTID != 0 && child_tidptr != 0 {
+        Some((child_tidptr as *mut u32, child_thread_id as u32))
+    } else {
+        None
+    };
 
     // Write child TID to parent's tidptr (CLONE_PARENT_SETTID)
     // (handled by caller since we return the tid)
@@ -255,6 +253,10 @@ pub fn sys_clone(
     };
 
     drop(manager_guard);
+
+    if let Some((ptr, tid)) = child_tid_write {
+        let _ = super::userptr::copy_to_user(ptr, &tid);
+    }
 
     // Add thread to scheduler
     if let Some(thread_box) = scheduler_thread {
