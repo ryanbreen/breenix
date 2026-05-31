@@ -98,8 +98,7 @@ pub fn server_authenticate(
 
             // Check if this key is in our authorized_keys
             if !keys::is_authorized_key(key_blob) {
-                println!("bsshd: key NOT in authorized_keys (expected {} bytes)",
-                    keys::authorized_key_blob_len());
+                println!("bsshd: key NOT in authorized_keys");
                 send_auth_failure(io, false)?;
                 continue;
             }
@@ -221,6 +220,84 @@ pub fn client_auth_password(
         SSH_MSG_USERAUTH_SUCCESS => Ok(()),
         SSH_MSG_USERAUTH_FAILURE => Err(SshError::Auth),
         _ => Err(SshError::Protocol("unexpected auth response")),
+    }
+}
+
+/// Authenticate with the SSH publickey method using the embedded bssh key.
+pub fn client_auth_publickey(
+    io: &mut PacketIo,
+    username: &str,
+    session_id: &[u8],
+    wrong_key: bool,
+) -> Result<(), SshError> {
+    let algo = b"rsa-sha2-256";
+    let mut key_blob = keys::embedded_client_public_key_blob();
+    if wrong_key {
+        if let Some(last) = key_blob.last_mut() {
+            *last ^= 0x01;
+        }
+    }
+
+    let mut query = Vec::with_capacity(128 + key_blob.len());
+    query.push(SSH_MSG_USERAUTH_REQUEST);
+    SshBuf::put_string(&mut query, username.as_bytes());
+    SshBuf::put_string(&mut query, b"ssh-connection");
+    SshBuf::put_string(&mut query, b"publickey");
+    SshBuf::put_bool(&mut query, false);
+    SshBuf::put_string(&mut query, algo);
+    SshBuf::put_string(&mut query, &key_blob);
+    io.send_packet(&query).map_err(|_| SshError::Io)?;
+
+    let reply = recv_client_reply(io)?;
+    if reply.is_empty() {
+        return Err(SshError::Protocol("empty publickey query response"));
+    }
+    match reply[0] {
+        SSH_MSG_USERAUTH_PK_OK => {}
+        SSH_MSG_USERAUTH_FAILURE => return Err(SshError::Auth),
+        _ => return Err(SshError::Protocol("unexpected publickey query response")),
+    }
+
+    let mut pos = 1;
+    let accepted_algo = SshBuf::get_string(&reply, &mut pos)
+        .ok_or(SshError::Protocol("bad publickey pk_ok algorithm"))?;
+    let accepted_key = SshBuf::get_string(&reply, &mut pos)
+        .ok_or(SshError::Protocol("bad publickey pk_ok key"))?;
+    if accepted_algo != algo || accepted_key != key_blob.as_slice() {
+        return Err(SshError::Protocol("publickey pk_ok mismatch"));
+    }
+
+    let mut signed_data = Vec::with_capacity(128 + session_id.len() + key_blob.len());
+    SshBuf::put_string(&mut signed_data, session_id);
+    signed_data.push(SSH_MSG_USERAUTH_REQUEST);
+    SshBuf::put_string(&mut signed_data, username.as_bytes());
+    SshBuf::put_string(&mut signed_data, b"ssh-connection");
+    SshBuf::put_string(&mut signed_data, b"publickey");
+    SshBuf::put_bool(&mut signed_data, true);
+    SshBuf::put_string(&mut signed_data, algo);
+    SshBuf::put_string(&mut signed_data, &key_blob);
+    let signature = keys::sign_with_embedded_client_key(&signed_data);
+
+    let mut req = Vec::with_capacity(128 + key_blob.len() + signature.len());
+    req.push(SSH_MSG_USERAUTH_REQUEST);
+    SshBuf::put_string(&mut req, username.as_bytes());
+    SshBuf::put_string(&mut req, b"ssh-connection");
+    SshBuf::put_string(&mut req, b"publickey");
+    SshBuf::put_bool(&mut req, true);
+    SshBuf::put_string(&mut req, algo);
+    SshBuf::put_string(&mut req, &key_blob);
+    SshBuf::put_string(&mut req, &signature);
+    io.send_packet(&req).map_err(|_| SshError::Io)?;
+
+    let reply = recv_client_reply(io)?;
+    if reply.is_empty() {
+        return Err(SshError::Protocol("empty publickey auth response"));
+    }
+
+    match reply[0] {
+        SSH_MSG_USERAUTH_SUCCESS => Ok(()),
+        SSH_MSG_USERAUTH_FAILURE => Err(SshError::Auth),
+        _ => Err(SshError::Protocol("unexpected publickey auth response")),
     }
 }
 

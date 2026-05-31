@@ -182,15 +182,34 @@ pub fn authorized_key_blob_len() -> usize {
 /// Compares the raw SSH key blob byte-for-byte against the embedded
 /// authorized keys list.
 pub fn is_authorized_key(key_blob: &[u8]) -> bool {
-    // Constant-time comparison to prevent timing side-channels
-    if key_blob.len() != AUTHORIZED_KEY_BLOB.len() {
+    if ct_eq(key_blob, &AUTHORIZED_KEY_BLOB) {
+        return true;
+    }
+
+    let client_key_blob = embedded_client_public_key_blob();
+    ct_eq(key_blob, &client_key_blob)
+}
+
+fn ct_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
         return false;
     }
+
     let mut diff = 0u8;
-    for i in 0..key_blob.len() {
-        diff |= key_blob[i] ^ AUTHORIZED_KEY_BLOB[i];
+    for i in 0..a.len() {
+        diff |= a[i] ^ b[i];
     }
     diff == 0
+}
+
+/// Public key blob for the embedded bssh client identity.
+pub fn embedded_client_public_key_blob() -> Vec<u8> {
+    HostKey::load().public_key_blob()
+}
+
+/// Sign publickey-auth data with the embedded bssh client identity.
+pub fn sign_with_embedded_client_key(data: &[u8]) -> Vec<u8> {
+    HostKey::load().sign(data)
 }
 
 /// Parse an SSH RSA public key blob and extract the public key components.

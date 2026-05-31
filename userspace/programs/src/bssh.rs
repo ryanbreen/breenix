@@ -2,21 +2,26 @@
 //!
 //! Connects to a remote SSH server and opens an interactive shell session.
 //!
-//! Usage: bssh <host> [port] [username] [password]
+//! Usage: bssh <host> [port] [username] [password|--publickey|--publickey-wrong] [--smoke]
 //!   Default port: 22
 //!   Default username: root
 //!   Default password: (prompted)
 
 use libbreenix::io;
 use libbreenix::socket::{SockAddrIn, TcpStream};
-use libbreenix::ssh::transport::ClientSession;
+use libbreenix::ssh::transport::{ClientAuthMethod, ClientSession};
 use libbreenix::termios;
 use libbreenix::types::Fd;
+
+enum AuthChoice<'a> {
+    Password(&'a str),
+    PublicKey { wrong_key: bool },
+}
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 2 {
-        eprintln!("Usage: bssh <host> [port] [username] [password]");
+        eprintln!("Usage: bssh <host> [port] [username] [password|--publickey|--publickey-wrong] [--smoke]");
         std::process::exit(1);
     }
 
@@ -29,10 +34,16 @@ fn main() {
         .get(3)
         .map(|s| s.as_str())
         .unwrap_or("root");
-    let password = args
+    let auth_arg = args
         .get(4)
         .map(|s| s.as_str())
         .unwrap_or("breenix");
+    let smoke = args.iter().any(|arg| arg == "--smoke");
+    let auth_choice = match auth_arg {
+        "--publickey" | "publickey" => AuthChoice::PublicKey { wrong_key: false },
+        "--publickey-wrong" | "publickey-wrong" => AuthChoice::PublicKey { wrong_key: true },
+        password => AuthChoice::Password(password),
+    };
 
     // Parse host as IPv4 address
     let addr_bytes = match parse_ipv4(host) {
@@ -66,7 +77,11 @@ fn main() {
     let mut session = ClientSession::new(fd);
 
     // SSH handshake + auth
-    if let Err(e) = session.handshake(username, password) {
+    let auth_method = match auth_choice {
+        AuthChoice::Password(password) => ClientAuthMethod::Password(password),
+        AuthChoice::PublicKey { wrong_key } => ClientAuthMethod::PublicKey { wrong_key },
+    };
+    if let Err(e) = session.handshake_with_auth(username, auth_method) {
         if matches!(e, libbreenix::ssh::SshError::Auth) {
             eprintln!("bssh: authentication failed");
         } else {
@@ -80,6 +95,12 @@ fn main() {
     if let Err(e) = session.open_shell() {
         eprintln!("bssh: shell request failed: {:?}", e);
         std::process::exit(1);
+    }
+    println!("bssh: shell opened");
+    if smoke {
+        println!("bssh: smoke success");
+        session.close();
+        std::process::exit(0);
     }
 
     // Put local terminal in raw mode
