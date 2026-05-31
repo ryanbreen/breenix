@@ -492,51 +492,73 @@ pub fn sys_sigaction(sig: i32, new_act: u64, old_act: u64, sigsetsize: u64) -> S
         }
     };
 
-    let mut manager_guard = manager();
-    let manager = match manager_guard.as_mut() {
-        Some(m) => m,
-        None => {
-            log::error!("sys_sigaction: process manager not initialized");
-            return SyscallResult::Err(3); // ESRCH
-        }
-    };
-
-    let (_, process) = match manager.find_process_by_thread_mut(current_thread_id) {
-        Some(p) => p,
-        None => {
-            log::error!(
-                "sys_sigaction: process not found for thread {}",
-                current_thread_id
-            );
-            return SyscallResult::Err(3); // ESRCH
-        }
-    };
-
-    // Save old action if requested
-    if old_act != 0 {
-        let old_action = process.signals.get_handler(sig);
-        // Write the old action to userspace (with validation)
-        let ptr = old_act as *mut SignalAction;
-        if let Err(errno) = copy_to_user(ptr, old_action) {
-            return SyscallResult::Err(errno);
-        }
-    }
-
-    // Set new action if provided
-    if new_act != 0 {
-        // Read the new action from userspace (with validation)
+    let sanitized_action = if new_act != 0 {
         let ptr = new_act as *const SignalAction;
         let new_action = match copy_from_user(ptr) {
             Ok(action) => action,
             Err(errno) => return SyscallResult::Err(errno),
         };
 
-        // Sanitize the mask - cannot block SIGKILL or SIGSTOP
-        let sanitized_action = SignalAction {
+        Some(SignalAction {
             handler: new_action.handler,
             mask: new_action.mask & !UNCATCHABLE_SIGNALS,
             flags: new_action.flags,
             restorer: new_action.restorer,
+        })
+    } else {
+        None
+    };
+
+    if old_act != 0 {
+        let old_action = {
+            let manager_guard = manager();
+            let manager = match manager_guard.as_ref() {
+                Some(m) => m,
+                None => {
+                    log::error!("sys_sigaction: process manager not initialized");
+                    return SyscallResult::Err(3); // ESRCH
+                }
+            };
+
+            let (_, process) = match manager.find_process_by_thread(current_thread_id) {
+                Some(p) => p,
+                None => {
+                    log::error!(
+                        "sys_sigaction: process not found for thread {}",
+                        current_thread_id
+                    );
+                    return SyscallResult::Err(3); // ESRCH
+                }
+            };
+
+            *process.signals.get_handler(sig)
+        };
+
+        let ptr = old_act as *mut SignalAction;
+        if let Err(errno) = copy_to_user(ptr, &old_action) {
+            return SyscallResult::Err(errno);
+        }
+    }
+
+    if let Some(sanitized_action) = sanitized_action {
+        let mut manager_guard = manager();
+        let manager = match manager_guard.as_mut() {
+            Some(m) => m,
+            None => {
+                log::error!("sys_sigaction: process manager not initialized");
+                return SyscallResult::Err(3); // ESRCH
+            }
+        };
+
+        let (_, process) = match manager.find_process_by_thread_mut(current_thread_id) {
+            Some(p) => p,
+            None => {
+                log::error!(
+                    "sys_sigaction: process not found for thread {}",
+                    current_thread_id
+                );
+                return SyscallResult::Err(3); // ESRCH
+            }
         };
 
         process.signals.set_handler(sig, sanitized_action);
@@ -590,40 +612,66 @@ pub fn sys_sigprocmask(how: i32, new_set: u64, old_set: u64, sigsetsize: u64) ->
         }
     };
 
-    let mut manager_guard = manager();
-    let manager = match manager_guard.as_mut() {
-        Some(m) => m,
-        None => {
-            log::error!("sys_sigprocmask: process manager not initialized");
-            return SyscallResult::Err(3); // ESRCH
-        }
+    let new_mask = if new_set != 0 {
+        let ptr = new_set as *const u64;
+        Some(match copy_from_user(ptr) {
+            Ok(mask) => mask,
+            Err(errno) => return SyscallResult::Err(errno),
+        })
+    } else {
+        None
     };
 
-    let (_, process) = match manager.find_process_by_thread_mut(current_thread_id) {
-        Some(p) => p,
-        None => {
-            log::error!(
-                "sys_sigprocmask: process not found for thread {}",
-                current_thread_id
-            );
-            return SyscallResult::Err(3); // ESRCH
-        }
-    };
-
-    // Save old mask if requested
     if old_set != 0 {
+        let old_mask = {
+            let manager_guard = manager();
+            let manager = match manager_guard.as_ref() {
+                Some(m) => m,
+                None => {
+                    log::error!("sys_sigprocmask: process manager not initialized");
+                    return SyscallResult::Err(3); // ESRCH
+                }
+            };
+
+            let (_, process) = match manager.find_process_by_thread(current_thread_id) {
+                Some(p) => p,
+                None => {
+                    log::error!(
+                        "sys_sigprocmask: process not found for thread {}",
+                        current_thread_id
+                    );
+                    return SyscallResult::Err(3); // ESRCH
+                }
+            };
+
+            process.signals.blocked
+        };
+
         let ptr = old_set as *mut u64;
-        if let Err(errno) = copy_to_user(ptr, &process.signals.blocked) {
+        if let Err(errno) = copy_to_user(ptr, &old_mask) {
             return SyscallResult::Err(errno);
         }
     }
 
-    // Modify mask if new_set is provided
-    if new_set != 0 {
-        let ptr = new_set as *const u64;
-        let set = match copy_from_user(ptr) {
-            Ok(mask) => mask,
-            Err(errno) => return SyscallResult::Err(errno),
+    if let Some(set) = new_mask {
+        let mut manager_guard = manager();
+        let manager = match manager_guard.as_mut() {
+            Some(m) => m,
+            None => {
+                log::error!("sys_sigprocmask: process manager not initialized");
+                return SyscallResult::Err(3); // ESRCH
+            }
+        };
+
+        let (_, process) = match manager.find_process_by_thread_mut(current_thread_id) {
+            Some(p) => p,
+            None => {
+                log::error!(
+                    "sys_sigprocmask: process not found for thread {}",
+                    current_thread_id
+                );
+                return SyscallResult::Err(3); // ESRCH
+            }
         };
 
         match how {
@@ -1083,75 +1131,80 @@ pub fn sys_sigaltstack(ss: u64, old_ss: u64) -> SyscallResult {
         }
     };
 
-    let mut manager_guard = manager();
-    let manager_ref = match manager_guard.as_mut() {
-        Some(m) => m,
-        None => {
-            log::error!("sys_sigaltstack: process manager not initialized");
-            return SyscallResult::Err(3); // ESRCH
-        }
+    let new_stack = if ss != 0 {
+        let ptr = ss as *const StackT;
+        Some(match copy_from_user(ptr) {
+            Ok(s) => s,
+            Err(errno) => return SyscallResult::Err(errno),
+        })
+    } else {
+        None
     };
 
-    let (_, process) = match manager_ref.find_process_by_thread_mut(current_thread_id) {
-        Some(p) => p,
-        None => {
-            log::error!(
-                "sys_sigaltstack: process not found for thread {}",
-                current_thread_id
-            );
-            return SyscallResult::Err(3); // ESRCH
-        }
-    };
-
-    // If old_ss is provided, copy current alt stack info to it
-    if old_ss != 0 {
-        let alt = &process.signals.alt_stack;
-        let current_stack = StackT {
-            ss_sp: alt.base,
-            ss_flags: if alt.on_stack {
-                SS_ONSTACK as i32
-            } else if alt.flags & SS_DISABLE != 0 {
-                SS_DISABLE as i32
-            } else {
-                0
-            },
-            _pad: 0,
-            ss_size: alt.size,
+    let (current_stack, on_alt_stack) = {
+        let manager_guard = manager();
+        let manager_ref = match manager_guard.as_ref() {
+            Some(m) => m,
+            None => {
+                log::error!("sys_sigaltstack: process manager not initialized");
+                return SyscallResult::Err(3); // ESRCH
+            }
         };
 
+        let (_, process) = match manager_ref.find_process_by_thread(current_thread_id) {
+            Some(p) => p,
+            None => {
+                log::error!(
+                    "sys_sigaltstack: process not found for thread {}",
+                    current_thread_id
+                );
+                return SyscallResult::Err(3); // ESRCH
+            }
+        };
+
+        let alt = &process.signals.alt_stack;
+        (
+            StackT {
+                ss_sp: alt.base,
+                ss_flags: if alt.on_stack {
+                    SS_ONSTACK as i32
+                } else if alt.flags & SS_DISABLE != 0 {
+                    SS_DISABLE as i32
+                } else {
+                    0
+                },
+                _pad: 0,
+                ss_size: alt.size,
+            },
+            alt.on_stack,
+        )
+    };
+
+    if old_ss != 0 {
         let ptr = old_ss as *mut StackT;
         if let Err(errno) = copy_to_user(ptr, &current_stack) {
             return SyscallResult::Err(errno);
         }
     }
 
-    // If ss is provided, set new alt stack
-    if ss != 0 {
-        // Cannot change while executing on the alternate stack
-        if process.signals.alt_stack.on_stack {
+    if let Some(new_stack) = new_stack {
+        if on_alt_stack {
             log::warn!("sys_sigaltstack: cannot change while on alternate stack");
             return SyscallResult::Err(1); // EPERM
         }
 
-        // Read the new stack configuration from userspace
-        let ptr = ss as *const StackT;
-        let new_stack = match copy_from_user(ptr) {
-            Ok(s) => s,
-            Err(errno) => return SyscallResult::Err(errno),
-        };
-
         // Check if disabling the alternate stack
-        if (new_stack.ss_flags as u32 & SS_DISABLE) != 0 {
-            process.signals.alt_stack = crate::signal::types::AltStack {
-                base: 0,
-                size: 0,
-                flags: SS_DISABLE,
-                on_stack: false,
-            };
+        let next_alt_stack = if (new_stack.ss_flags as u32 & SS_DISABLE) != 0 {
             log::debug!(
                 "sigaltstack: disabled alternate stack for thread {}",
                 current_thread_id
             );
+            crate::signal::types::AltStack {
+                base: 0,
+                size: 0,
+                flags: SS_DISABLE,
+                on_stack: false,
+            }
         } else {
             // Validate the new stack configuration
             // ss_sp must not be NULL
@@ -1190,20 +1243,41 @@ pub fn sys_sigaltstack(ss: u64, old_ss: u64) -> SyscallResult {
                 return SyscallResult::Err(14); // EFAULT
             }
 
-            // Set the new alternate stack
-            process.signals.alt_stack = crate::signal::types::AltStack {
-                base: new_stack.ss_sp,
-                size: new_stack.ss_size,
-                flags: 0, // Enabled (not SS_DISABLE)
-                on_stack: false,
-            };
             log::debug!(
                 "sigaltstack: set alternate stack for thread {}: base={:#x}, size={}",
                 current_thread_id,
                 new_stack.ss_sp,
                 new_stack.ss_size
             );
-        }
+            crate::signal::types::AltStack {
+                base: new_stack.ss_sp,
+                size: new_stack.ss_size,
+                flags: 0, // Enabled (not SS_DISABLE)
+                on_stack: false,
+            }
+        };
+
+        let mut manager_guard = manager();
+        let manager_ref = match manager_guard.as_mut() {
+            Some(m) => m,
+            None => {
+                log::error!("sys_sigaltstack: process manager not initialized");
+                return SyscallResult::Err(3); // ESRCH
+            }
+        };
+
+        let (_, process) = match manager_ref.find_process_by_thread_mut(current_thread_id) {
+            Some(p) => p,
+            None => {
+                log::error!(
+                    "sys_sigaltstack: process not found for thread {}",
+                    current_thread_id
+                );
+                return SyscallResult::Err(3); // ESRCH
+            }
+        };
+
+        process.signals.alt_stack = next_alt_stack;
     }
 
     SyscallResult::Ok(0)
@@ -1547,28 +1621,29 @@ pub fn sys_getitimer(which: i32, curr_value: u64) -> SyscallResult {
         }
     };
 
-    let manager_guard = manager();
-    let manager_ref = match manager_guard.as_ref() {
-        Some(m) => m,
-        None => {
-            log::error!("sys_getitimer: process manager not initialized");
-            return SyscallResult::Err(3); // ESRCH
-        }
-    };
+    let value = {
+        let manager_guard = manager();
+        let manager_ref = match manager_guard.as_ref() {
+            Some(m) => m,
+            None => {
+                log::error!("sys_getitimer: process manager not initialized");
+                return SyscallResult::Err(3); // ESRCH
+            }
+        };
 
-    let (_, process) = match manager_ref.find_process_by_thread(current_thread_id) {
-        Some(p) => p,
-        None => {
-            log::error!(
-                "sys_getitimer: process not found for thread {}",
-                current_thread_id
-            );
-            return SyscallResult::Err(3); // ESRCH
-        }
-    };
+        let (_, process) = match manager_ref.find_process_by_thread(current_thread_id) {
+            Some(p) => p,
+            None => {
+                log::error!(
+                    "sys_getitimer: process not found for thread {}",
+                    current_thread_id
+                );
+                return SyscallResult::Err(3); // ESRCH
+            }
+        };
 
-    // Get current timer value
-    let value = process.itimers.real.get_value();
+        process.itimers.real.get_value()
+    };
 
     // Write to userspace
     if curr_value != 0 {
@@ -1628,27 +1703,6 @@ pub fn sys_setitimer(which: i32, new_value: u64, old_value: u64) -> SyscallResul
         }
     };
 
-    let mut manager_guard = manager();
-    let manager_ref = match manager_guard.as_mut() {
-        Some(m) => m,
-        None => {
-            log::error!("sys_setitimer: process manager not initialized");
-            return SyscallResult::Err(3); // ESRCH
-        }
-    };
-
-    let (pid, process) = match manager_ref.find_process_by_thread_mut(current_thread_id) {
-        Some(p) => p,
-        None => {
-            log::error!(
-                "sys_setitimer: process not found for thread {}",
-                current_thread_id
-            );
-            return SyscallResult::Err(3); // ESRCH
-        }
-    };
-
-    // Read new value from userspace (if provided)
     let new_itimerval = if new_value != 0 {
         let ptr = new_value as *const Itimerval;
         match copy_from_user(ptr) {
@@ -1659,7 +1713,6 @@ pub fn sys_setitimer(which: i32, new_value: u64, old_value: u64) -> SyscallResul
         None
     };
 
-    // Validate timer values if provided
     if let Some(ref val) = new_itimerval {
         // tv_usec must be < 1,000,000
         if val.it_value.tv_usec >= 1_000_000 || val.it_value.tv_usec < 0 {
@@ -1683,29 +1736,53 @@ pub fn sys_setitimer(which: i32, new_value: u64, old_value: u64) -> SyscallResul
         }
     }
 
-    // Get old value before modifying
-    let old_itimerval = process.itimers.real.get_value();
+    let old_itimerval = {
+        let mut manager_guard = manager();
+        let manager_ref = match manager_guard.as_mut() {
+            Some(m) => m,
+            None => {
+                log::error!("sys_setitimer: process manager not initialized");
+                return SyscallResult::Err(3); // ESRCH
+            }
+        };
 
-    // Set new value if provided
-    if let Some(new_val) = new_itimerval {
-        process.itimers.real.set_value(&new_val);
+        let (pid, process) = match manager_ref.find_process_by_thread_mut(current_thread_id) {
+            Some(p) => p,
+            None => {
+                log::error!(
+                    "sys_setitimer: process not found for thread {}",
+                    current_thread_id
+                );
+                return SyscallResult::Err(3); // ESRCH
+            }
+        };
 
-        if new_val.it_value.is_zero() {
-            log::debug!(
-                "sys_setitimer: disabled ITIMER_REAL for process {}",
-                pid.as_u64()
-            );
-        } else {
-            log::debug!(
-                "sys_setitimer: set ITIMER_REAL for process {}: value={}.{:06}s, interval={}.{:06}s",
-                pid.as_u64(),
-                new_val.it_value.tv_sec,
-                new_val.it_value.tv_usec,
-                new_val.it_interval.tv_sec,
-                new_val.it_interval.tv_usec
-            );
+        // Get old value before modifying
+        let old_itimerval = process.itimers.real.get_value();
+
+        // Set new value if provided
+        if let Some(new_val) = new_itimerval {
+            process.itimers.real.set_value(&new_val);
+
+            if new_val.it_value.is_zero() {
+                log::debug!(
+                    "sys_setitimer: disabled ITIMER_REAL for process {}",
+                    pid.as_u64()
+                );
+            } else {
+                log::debug!(
+                    "sys_setitimer: set ITIMER_REAL for process {}: value={}.{:06}s, interval={}.{:06}s",
+                    pid.as_u64(),
+                    new_val.it_value.tv_sec,
+                    new_val.it_value.tv_usec,
+                    new_val.it_interval.tv_sec,
+                    new_val.it_interval.tv_usec
+                );
+            }
         }
-    }
+
+        old_itimerval
+    };
 
     // Write old value to userspace (if requested)
     if old_value != 0 {
