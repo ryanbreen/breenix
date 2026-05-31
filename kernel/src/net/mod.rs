@@ -221,6 +221,8 @@ static NET_CONFIG: Mutex<NetConfig> = Mutex::new(DEFAULT_CONFIG);
 /// Maximum number of packets to queue in loopback queue
 /// Prevents unbounded memory growth if drain_loopback_queue() is not called
 const MAX_LOOPBACK_QUEUE_SIZE: usize = 32;
+const MAX_ARP_PENDING_QUEUE_SIZE: usize = 16;
+const ARP_PENDING_TTL_MS: u64 = 5_000;
 
 /// Loopback packet queue for deferred delivery
 /// Packets sent to our own IP are queued here and delivered after the sender releases locks
@@ -230,6 +232,96 @@ struct LoopbackPacket {
 }
 
 static LOOPBACK_QUEUE: Mutex<Vec<LoopbackPacket>> = Mutex::new(Vec::new());
+
+/// IPv4 packets waiting for ARP resolution of their next hop.
+struct PendingArpPacket {
+    next_hop: [u8; 4],
+    queued_at_ms: u64,
+    ip_packet: Vec<u8>,
+}
+
+static ARP_PENDING_QUEUE: Mutex<Vec<PendingArpPacket>> = Mutex::new(Vec::new());
+
+fn enqueue_arp_pending_packet(next_hop: [u8; 4], ip_packet: Vec<u8>) {
+    let now_ms = crate::time::get_monotonic_time();
+    let saved = irq_save();
+    let mut queue = ARP_PENDING_QUEUE.lock();
+
+    let cutoff_ms = now_ms.saturating_sub(ARP_PENDING_TTL_MS);
+    queue.retain(|packet| packet.queued_at_ms >= cutoff_ms);
+    if queue.len() >= MAX_ARP_PENDING_QUEUE_SIZE {
+        queue.remove(0);
+    }
+    queue.push(PendingArpPacket {
+        next_hop,
+        queued_at_ms: now_ms,
+        ip_packet,
+    });
+
+    drop(queue);
+    irq_restore(saved);
+}
+
+/// Send packets queued while `next_hop` was unresolved.
+///
+/// Called from ARP RX processing after the cache has been updated. The pending
+/// queue is also touched by thread-context TX, so the lock is IRQ-masked to
+/// avoid the same-CPU softirq re-entry deadlock class fixed for TCP locks.
+pub(crate) fn flush_arp_pending_packets(next_hop: &[u8; 4], mac: &[u8; 6]) {
+    let now_ms = crate::time::get_monotonic_time();
+    let packets = {
+        let saved = irq_save();
+        let mut queue = ARP_PENDING_QUEUE.lock();
+        let packets = core::mem::take(&mut *queue);
+        drop(queue);
+        irq_restore(saved);
+        packets
+    };
+
+    if packets.is_empty() {
+        return;
+    }
+
+    let cutoff_ms = now_ms.saturating_sub(ARP_PENDING_TTL_MS);
+    let mut remaining = Vec::new();
+    for packet in packets {
+        if packet.queued_at_ms < cutoff_ms {
+            continue;
+        }
+
+        if packet.next_hop == *next_hop {
+            let _ = send_ethernet(mac, ethernet::ETHERTYPE_IPV4, &packet.ip_packet);
+        } else {
+            remaining.push(packet);
+        }
+    }
+
+    if remaining.is_empty() {
+        return;
+    }
+
+    let saved = irq_save();
+    let mut queue = ARP_PENDING_QUEUE.lock();
+    for packet in remaining {
+        if queue.len() >= MAX_ARP_PENDING_QUEUE_SIZE {
+            let mut oldest_idx = 0;
+            for (idx, queued) in queue.iter().enumerate().skip(1) {
+                if queued.queued_at_ms < queue[oldest_idx].queued_at_ms {
+                    oldest_idx = idx;
+                }
+            }
+
+            if queue[oldest_idx].queued_at_ms <= packet.queued_at_ms {
+                queue.remove(oldest_idx);
+            } else {
+                continue;
+            }
+        }
+        queue.push(packet);
+    }
+    drop(queue);
+    irq_restore(saved);
+}
 
 /// Drain the loopback queue, delivering any pending packets.
 ///
@@ -773,9 +865,12 @@ pub fn send_ipv4(dst_ip: [u8; 4], protocol: u8, payload: &[u8]) -> Result<(), &'
     let dst_mac = match arp::lookup(&next_hop) {
         Some(mac) => mac,
         None => {
+            let ip_packet = ipv4::Ipv4Packet::build(config.ip_addr, dst_ip, protocol, payload);
+            enqueue_arp_pending_packet(next_hop, ip_packet);
+
             // ARP resolution is asynchronous: request the next-hop MAC and let
-            // IRQ-driven NetRx populate the cache. Callers should retry on
-            // ArpMiss; higher layers can rely on normal retransmission.
+            // IRQ-driven NetRx populate the cache. The ARP handler flushes
+            // packets queued above once the next-hop MAC is known.
             net_log!(
                 "NET: ARP cache miss for {}.{}.{}.{}, sending ARP request",
                 next_hop[0],

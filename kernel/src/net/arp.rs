@@ -173,6 +173,7 @@ pub fn handle_arp(eth_frame: &EthernetFrame, arp: &ArpPacket) {
 
     // Always learn from ARP packets (update cache with sender info)
     update_cache(&arp.sender_ip, &arp.sender_mac);
+    super::flush_arp_pending_packets(&arp.sender_ip, &arp.sender_mac);
 
     // Check if this ARP is for us
     if arp.target_ip != config.ip_addr {
