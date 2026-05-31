@@ -9,10 +9,16 @@ use super::packet::PacketIo;
 use super::{SshBuf, SshError};
 use super::{SSH_MSG_DEBUG, SSH_MSG_EXT_INFO, SSH_MSG_IGNORE};
 use super::{SSH_MSG_SERVICE_ACCEPT, SSH_MSG_SERVICE_REQUEST};
-use super::{SSH_MSG_USERAUTH_FAILURE, SSH_MSG_USERAUTH_REQUEST, SSH_MSG_USERAUTH_SUCCESS};
+use super::{
+    SSH_MSG_USERAUTH_BANNER, SSH_MSG_USERAUTH_FAILURE, SSH_MSG_USERAUTH_REQUEST,
+    SSH_MSG_USERAUTH_SUCCESS,
+};
 
 /// SSH_MSG_USERAUTH_PK_OK (RFC 4252 §7)
 const SSH_MSG_USERAUTH_PK_OK: u8 = 60;
+/// SSH_MSG_USERAUTH_INFO_REQUEST / INFO_RESPONSE (RFC 4256 §3)
+const SSH_MSG_USERAUTH_INFO_REQUEST: u8 = 60;
+const SSH_MSG_USERAUTH_INFO_RESPONSE: u8 = 61;
 
 /// Handle the "ssh-userauth" service request (server side).
 ///
@@ -22,7 +28,9 @@ pub fn server_accept_service(io: &mut PacketIo) -> Result<(), SshError> {
     let msg = loop {
         let pkt = io.recv_packet().map_err(|_| SshError::Io)?;
         if pkt.is_empty() {
-            return Err(SshError::Protocol("empty packet waiting for SERVICE_REQUEST"));
+            return Err(SshError::Protocol(
+                "empty packet waiting for SERVICE_REQUEST",
+            ));
         }
         // Skip informational messages that arrive before SERVICE_REQUEST
         match pkt[0] {
@@ -35,8 +43,8 @@ pub fn server_accept_service(io: &mut PacketIo) -> Result<(), SshError> {
     }
 
     let mut pos = 1;
-    let service = SshBuf::get_string(&msg, &mut pos)
-        .ok_or(SshError::Protocol("bad SERVICE_REQUEST"))?;
+    let service =
+        SshBuf::get_string(&msg, &mut pos).ok_or(SshError::Protocol("bad SERVICE_REQUEST"))?;
 
     if service != b"ssh-userauth" {
         return Err(SshError::Protocol("unknown service requested"));
@@ -57,10 +65,7 @@ pub fn server_accept_service(io: &mut PacketIo) -> Result<(), SshError> {
 /// 2. **password** — accepts password "breenix" (development fallback)
 ///
 /// The `session_id` is required for public key signature verification.
-pub fn server_authenticate(
-    io: &mut PacketIo,
-    session_id: &[u8],
-) -> Result<String, SshError> {
+pub fn server_authenticate(io: &mut PacketIo, session_id: &[u8]) -> Result<String, SshError> {
     loop {
         let msg = io.recv_packet().map_err(|_| SshError::Io)?;
         if msg.is_empty() {
@@ -72,12 +77,11 @@ pub fn server_authenticate(
         }
 
         let mut pos = 1;
-        let username = SshBuf::get_string(&msg, &mut pos)
-            .ok_or(SshError::Protocol("bad username"))?;
-        let service = SshBuf::get_string(&msg, &mut pos)
-            .ok_or(SshError::Protocol("bad service"))?;
-        let method = SshBuf::get_string(&msg, &mut pos)
-            .ok_or(SshError::Protocol("bad method"))?;
+        let username =
+            SshBuf::get_string(&msg, &mut pos).ok_or(SshError::Protocol("bad username"))?;
+        let service =
+            SshBuf::get_string(&msg, &mut pos).ok_or(SshError::Protocol("bad service"))?;
+        let method = SshBuf::get_string(&msg, &mut pos).ok_or(SshError::Protocol("bad method"))?;
 
         if service != b"ssh-connection" {
             return Err(SshError::Protocol("unsupported service"));
@@ -93,8 +97,12 @@ pub fn server_authenticate(
             let key_blob = SshBuf::get_string(&msg, &mut pos)
                 .ok_or(SshError::Protocol("bad publickey blob"))?;
 
-            println!("bsshd: pubkey auth: algo={} blob_len={} has_sig={}",
-                String::from_utf8_lossy(algo), key_blob.len(), has_signature);
+            println!(
+                "bsshd: pubkey auth: algo={} blob_len={} has_sig={}",
+                String::from_utf8_lossy(algo),
+                key_blob.len(),
+                has_signature
+            );
 
             // Check if this key is in our authorized_keys
             if !keys::is_authorized_key(key_blob) {
@@ -202,6 +210,8 @@ pub fn client_auth_password(
     username: &str,
     password: &str,
 ) -> Result<(), SshError> {
+    println!("bssh: userauth request method=password user='{}'", username);
+
     let mut req = Vec::with_capacity(64);
     req.push(SSH_MSG_USERAUTH_REQUEST);
     SshBuf::put_string(&mut req, username.as_bytes());
@@ -218,9 +228,83 @@ pub fn client_auth_password(
 
     match reply[0] {
         SSH_MSG_USERAUTH_SUCCESS => Ok(()),
-        SSH_MSG_USERAUTH_FAILURE => Err(SshError::Auth),
+        SSH_MSG_USERAUTH_FAILURE => {
+            let failure = parse_auth_failure(&reply)?;
+            println!(
+                "bssh: userauth failure methods='{}' partial={}",
+                failure.methods, failure.partial_success
+            );
+            if failure.method_allowed("keyboard-interactive") {
+                println!("bssh: retrying auth with keyboard-interactive");
+                client_auth_keyboard_interactive(io, username, password)
+            } else {
+                Err(SshError::Auth)
+            }
+        }
         _ => Err(SshError::Protocol("unexpected auth response")),
     }
+}
+
+/// Authenticate with keyboard-interactive using the supplied password for prompts.
+pub fn client_auth_keyboard_interactive(
+    io: &mut PacketIo,
+    username: &str,
+    password: &str,
+) -> Result<(), SshError> {
+    println!(
+        "bssh: userauth request method=keyboard-interactive user='{}'",
+        username
+    );
+
+    let mut req = Vec::with_capacity(96);
+    req.push(SSH_MSG_USERAUTH_REQUEST);
+    SshBuf::put_string(&mut req, username.as_bytes());
+    SshBuf::put_string(&mut req, b"ssh-connection");
+    SshBuf::put_string(&mut req, b"keyboard-interactive");
+    SshBuf::put_string(&mut req, b"");
+    SshBuf::put_string(&mut req, b"");
+    io.send_packet(&req).map_err(|_| SshError::Io)?;
+
+    for _ in 0..8 {
+        let reply = recv_client_reply(io)?;
+        if reply.is_empty() {
+            return Err(SshError::Protocol("empty keyboard-interactive response"));
+        }
+
+        match reply[0] {
+            SSH_MSG_USERAUTH_SUCCESS => return Ok(()),
+            SSH_MSG_USERAUTH_FAILURE => {
+                let failure = parse_auth_failure(&reply)?;
+                println!(
+                    "bssh: userauth failure methods='{}' partial={}",
+                    failure.methods, failure.partial_success
+                );
+                return Err(SshError::Auth);
+            }
+            SSH_MSG_USERAUTH_INFO_REQUEST => {
+                let prompt_count = parse_keyboard_interactive_request(&reply)?;
+                println!(
+                    "bssh: keyboard-interactive info-request prompts={}",
+                    prompt_count
+                );
+
+                let mut response = Vec::with_capacity(16 + password.len() * prompt_count);
+                response.push(SSH_MSG_USERAUTH_INFO_RESPONSE);
+                SshBuf::put_u32(&mut response, prompt_count as u32);
+                for _ in 0..prompt_count {
+                    SshBuf::put_string(&mut response, password.as_bytes());
+                }
+                io.send_packet(&response).map_err(|_| SshError::Io)?;
+            }
+            _ => {
+                return Err(SshError::Protocol(
+                    "unexpected keyboard-interactive response",
+                ))
+            }
+        }
+    }
+
+    Err(SshError::Protocol("too many keyboard-interactive rounds"))
 }
 
 /// Authenticate with the SSH publickey method using the embedded bssh key.
@@ -238,6 +322,13 @@ pub fn client_auth_publickey(
         }
     }
 
+    println!(
+        "bssh: userauth request method=publickey user='{}' algo={} has_signature=false key_blob_len={}",
+        username,
+        String::from_utf8_lossy(algo),
+        key_blob.len()
+    );
+
     let mut query = Vec::with_capacity(128 + key_blob.len());
     query.push(SSH_MSG_USERAUTH_REQUEST);
     SshBuf::put_string(&mut query, username.as_bytes());
@@ -254,7 +345,14 @@ pub fn client_auth_publickey(
     }
     match reply[0] {
         SSH_MSG_USERAUTH_PK_OK => {}
-        SSH_MSG_USERAUTH_FAILURE => return Err(SshError::Auth),
+        SSH_MSG_USERAUTH_FAILURE => {
+            let failure = parse_auth_failure(&reply)?;
+            println!(
+                "bssh: userauth failure methods='{}' partial={}",
+                failure.methods, failure.partial_success
+            );
+            return Err(SshError::Auth);
+        }
         _ => return Err(SshError::Protocol("unexpected publickey query response")),
     }
 
@@ -278,6 +376,13 @@ pub fn client_auth_publickey(
     SshBuf::put_string(&mut signed_data, &key_blob);
     let signature = keys::sign_with_embedded_client_key(&signed_data);
 
+    println!(
+        "bssh: userauth request method=publickey user='{}' algo={} has_signature=true signature_len={}",
+        username,
+        String::from_utf8_lossy(algo),
+        signature.len()
+    );
+
     let mut req = Vec::with_capacity(128 + key_blob.len() + signature.len());
     req.push(SSH_MSG_USERAUTH_REQUEST);
     SshBuf::put_string(&mut req, username.as_bytes());
@@ -296,9 +401,61 @@ pub fn client_auth_publickey(
 
     match reply[0] {
         SSH_MSG_USERAUTH_SUCCESS => Ok(()),
-        SSH_MSG_USERAUTH_FAILURE => Err(SshError::Auth),
+        SSH_MSG_USERAUTH_FAILURE => {
+            let failure = parse_auth_failure(&reply)?;
+            println!(
+                "bssh: userauth failure methods='{}' partial={}",
+                failure.methods, failure.partial_success
+            );
+            Err(SshError::Auth)
+        }
         _ => Err(SshError::Protocol("unexpected publickey auth response")),
     }
+}
+
+struct AuthFailure {
+    methods: String,
+    partial_success: bool,
+}
+
+impl AuthFailure {
+    fn method_allowed(&self, method: &str) -> bool {
+        self.methods.split(',').any(|candidate| candidate == method)
+    }
+}
+
+fn parse_auth_failure(reply: &[u8]) -> Result<AuthFailure, SshError> {
+    let mut pos = 1;
+    let methods = SshBuf::get_string(reply, &mut pos)
+        .ok_or(SshError::Protocol("bad userauth failure methods"))?;
+    let partial_success = SshBuf::get_bool(reply, &mut pos)
+        .ok_or(SshError::Protocol("bad userauth failure partial flag"))?;
+    Ok(AuthFailure {
+        methods: String::from_utf8_lossy(methods).into_owned(),
+        partial_success,
+    })
+}
+
+fn parse_keyboard_interactive_request(reply: &[u8]) -> Result<usize, SshError> {
+    let mut pos = 1;
+    let _name = SshBuf::get_string(reply, &mut pos)
+        .ok_or(SshError::Protocol("bad keyboard-interactive name"))?;
+    let _instruction = SshBuf::get_string(reply, &mut pos)
+        .ok_or(SshError::Protocol("bad keyboard-interactive instruction"))?;
+    let _language = SshBuf::get_string(reply, &mut pos)
+        .ok_or(SshError::Protocol("bad keyboard-interactive language"))?;
+    let prompt_count = SshBuf::get_u32(reply, &mut pos)
+        .ok_or(SshError::Protocol("bad keyboard-interactive prompt count"))?
+        as usize;
+
+    for _ in 0..prompt_count {
+        let _prompt = SshBuf::get_string(reply, &mut pos)
+            .ok_or(SshError::Protocol("bad keyboard-interactive prompt"))?;
+        let _echo = SshBuf::get_bool(reply, &mut pos)
+            .ok_or(SshError::Protocol("bad keyboard-interactive echo flag"))?;
+    }
+
+    Ok(prompt_count)
 }
 
 fn recv_client_reply(io: &mut PacketIo) -> Result<Vec<u8>, SshError> {
@@ -308,7 +465,7 @@ fn recv_client_reply(io: &mut PacketIo) -> Result<Vec<u8>, SshError> {
             return Ok(reply);
         }
         match reply[0] {
-            SSH_MSG_IGNORE | SSH_MSG_DEBUG | SSH_MSG_EXT_INFO => continue,
+            SSH_MSG_IGNORE | SSH_MSG_DEBUG | SSH_MSG_EXT_INFO | SSH_MSG_USERAUTH_BANNER => continue,
             _ => return Ok(reply),
         }
     }

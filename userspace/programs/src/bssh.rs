@@ -2,10 +2,10 @@
 //!
 //! Connects to a remote SSH server and opens an interactive shell session.
 //!
-//! Usage: bssh <host> [port] [username] [password|--publickey|--publickey-wrong] [--smoke] [--exec command]
+//! Usage: bssh [user@]<host> [port] [username] [password|--publickey|--publickey-wrong] [--smoke] [--exec command]
 //!   Default port: 22
 //!   Default username: root
-//!   Default password: (prompted)
+//!   Default password: breenix
 
 use libbreenix::fs;
 use libbreenix::io;
@@ -206,7 +206,7 @@ fn main() {
 
 fn usage() {
     eprintln!(
-        "Usage: bssh <host> [port] [username] [password|--publickey|--publickey-wrong] [--known-hosts path] [--host-key-alias id] [--smoke] [--exec command]"
+        "Usage: bssh [user@]<host> [port] [username] [password|--publickey|--publickey-wrong] [--user name] [--password password] [--known-hosts path] [--host-key-alias id] [--smoke] [--exec command]"
     );
 }
 
@@ -215,7 +215,12 @@ fn parse_options(args: &[String]) -> Result<Options, String> {
         return Err("bssh: missing host".to_string());
     }
 
-    let host = args[1].clone();
+    let (host, username_from_host) = match args[1].split_once('@') {
+        Some((user, host)) if !user.is_empty() && !host.is_empty() => {
+            (host.to_string(), Some(user.to_string()))
+        }
+        _ => (args[1].clone(), None),
+    };
     let mut idx = 2;
 
     let port = if let Some(arg) = args.get(idx) {
@@ -238,12 +243,13 @@ fn parse_options(args: &[String]) -> Result<Options, String> {
             idx += 1;
             arg.clone()
         } else {
-            "root".to_string()
+            username_from_host.unwrap_or_else(|| "root".to_string())
         }
     } else {
-        "root".to_string()
+        username_from_host.unwrap_or_else(|| "root".to_string())
     };
 
+    let mut username = username;
     let mut auth_choice = AuthChoice::Password("breenix".to_string());
     if let Some(arg) = args.get(idx) {
         if arg == "--publickey" || arg == "publickey" {
@@ -276,6 +282,20 @@ fn parse_options(args: &[String]) -> Result<Options, String> {
             "--publickey-wrong" | "publickey-wrong" => {
                 auth_choice = AuthChoice::PublicKey { wrong_key: true };
                 idx += 1;
+            }
+            "--user" => {
+                let user = args
+                    .get(idx + 1)
+                    .ok_or_else(|| "bssh: --user requires a username".to_string())?;
+                username = user.clone();
+                idx += 2;
+            }
+            "--password" => {
+                let password = args
+                    .get(idx + 1)
+                    .ok_or_else(|| "bssh: --password requires a password".to_string())?;
+                auth_choice = AuthChoice::Password(password.clone());
+                idx += 2;
             }
             "--known-hosts" => {
                 let path = args
