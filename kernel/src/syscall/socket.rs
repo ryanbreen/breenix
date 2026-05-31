@@ -30,6 +30,16 @@ fn reset_quantum() {
     crate::arch_impl::aarch64::timer_interrupt::reset_quantum();
 }
 
+fn close_fds_for_thread(thread_id: u64, fds: [i32; 2]) {
+    let mut manager_guard = crate::process::manager();
+    if let Some(ref mut manager) = *manager_guard {
+        if let Some((_pid, process)) = manager.find_process_by_thread_mut(thread_id) {
+            let _ = process.fd_table.close(fds[0]);
+            let _ = process.fd_table.close(fds[1]);
+        }
+    }
+}
+
 /// Test hook to verify reset_quantum wiring on ARM64.
 #[cfg(feature = "boot_tests")]
 pub fn test_reset_quantum_hook() {
@@ -169,6 +179,11 @@ pub fn sys_socket(domain: u64, sock_type: u64, _protocol: u64) -> SyscallResult 
 ///
 /// Returns: 0 on success, negative errno on error
 pub fn sys_bind(fd: u64, addr_ptr: u64, addrlen: u64) -> SyscallResult {
+    enum BindAddress {
+        Inet(SockAddrIn),
+        Unix(alloc::vec::Vec<u8>),
+    }
+
     // Validate address pointer
     if addr_ptr == 0 {
         return SyscallResult::Err(EFAULT as u64);
@@ -183,6 +198,56 @@ pub fn sys_bind(fd: u64, addr_ptr: u64, addrlen: u64) -> SyscallResult {
     let family = unsafe {
         let family_bytes = core::slice::from_raw_parts(addr_ptr as *const u8, 2);
         u16::from_ne_bytes([family_bytes[0], family_bytes[1]])
+    };
+
+    let bind_addr = match family {
+        AF_INET => {
+            // Validate address length for IPv4
+            if addrlen < 16 {
+                return SyscallResult::Err(EINVAL as u64);
+            }
+
+            // Read full IPv4 address from userspace
+            let addr = unsafe {
+                let addr_bytes = core::slice::from_raw_parts(addr_ptr as *const u8, 16);
+                match SockAddrIn::from_bytes(addr_bytes) {
+                    Some(a) => a,
+                    None => return SyscallResult::Err(EINVAL as u64),
+                }
+            };
+
+            BindAddress::Inet(addr)
+        }
+        AF_UNIX => {
+            // Validate address length for Unix (need at least family + 1 byte path)
+            if addrlen < 3 {
+                return SyscallResult::Err(EINVAL as u64);
+            }
+
+            // Read Unix socket address from userspace
+            let addr = unsafe {
+                let addr_len = (addrlen as usize).min(110); // family (2) + path (108)
+                let addr_bytes = core::slice::from_raw_parts(addr_ptr as *const u8, addr_len);
+                match SockAddrUn::from_bytes(addr_bytes) {
+                    Some(a) => a,
+                    None => return SyscallResult::Err(EINVAL as u64),
+                }
+            };
+
+            // For now, only support abstract sockets (path starts with '\0')
+            if !addr.is_abstract() {
+                log::debug!(
+                    "sys_bind: Only abstract Unix sockets supported (path must start with \\0)"
+                );
+                return SyscallResult::Err(EINVAL as u64);
+            }
+
+            BindAddress::Unix(addr.path_bytes().to_vec())
+        }
+        _ => {
+            log::debug!("sys_bind: unsupported address family {}", family);
+            return SyscallResult::Err(EAFNOSUPPORT as u64);
+        }
     };
 
     // Get current thread and process
@@ -220,22 +285,8 @@ pub fn sys_bind(fd: u64, addr_ptr: u64, addrlen: u64) -> SyscallResult {
     };
 
     // Handle bind based on address family
-    match family {
-        AF_INET => {
-            // Validate address length for IPv4
-            if addrlen < 16 {
-                return SyscallResult::Err(EINVAL as u64);
-            }
-
-            // Read full IPv4 address from userspace
-            let addr = unsafe {
-                let addr_bytes = core::slice::from_raw_parts(addr_ptr as *const u8, 16);
-                match SockAddrIn::from_bytes(addr_bytes) {
-                    Some(a) => a,
-                    None => return SyscallResult::Err(EINVAL as u64),
-                }
-            };
-
+    match bind_addr {
+        BindAddress::Inet(addr) => {
             // Handle bind based on socket type
             match &fd_entry.kind {
                 FdKind::UdpSocket(s) => {
@@ -285,33 +336,7 @@ pub fn sys_bind(fd: u64, addr_ptr: u64, addrlen: u64) -> SyscallResult {
                 _ => SyscallResult::Err(ENOTSOCK as u64),
             }
         }
-        AF_UNIX => {
-            // Validate address length for Unix (need at least family + 1 byte path)
-            if addrlen < 3 {
-                return SyscallResult::Err(EINVAL as u64);
-            }
-
-            // Read Unix socket address from userspace
-            let addr = unsafe {
-                let addr_len = (addrlen as usize).min(110); // family (2) + path (108)
-                let addr_bytes = core::slice::from_raw_parts(addr_ptr as *const u8, addr_len);
-                match SockAddrUn::from_bytes(addr_bytes) {
-                    Some(a) => a,
-                    None => return SyscallResult::Err(EINVAL as u64),
-                }
-            };
-
-            // For now, only support abstract sockets (path starts with '\0')
-            if !addr.is_abstract() {
-                log::debug!(
-                    "sys_bind: Only abstract Unix sockets supported (path must start with \\0)"
-                );
-                return SyscallResult::Err(EINVAL as u64);
-            }
-
-            // Get the path bytes
-            let path = addr.path_bytes().to_vec();
-
+        BindAddress::Unix(path) => {
             // Handle bind based on socket type
             match &fd_entry.kind {
                 FdKind::UnixSocket(s) => {
@@ -336,10 +361,6 @@ pub fn sys_bind(fd: u64, addr_ptr: u64, addrlen: u64) -> SyscallResult {
                     SyscallResult::Err(EINVAL as u64)
                 }
             }
-        }
-        _ => {
-            log::debug!("sys_bind: unsupported address family {}", family);
-            SyscallResult::Err(EAFNOSUPPORT as u64)
         }
     }
 }
@@ -1854,78 +1875,81 @@ pub fn sys_socketpair(domain: u64, sock_type: u64, protocol: u64, sv_ptr: u64) -
         }
     };
 
-    let mut manager_guard = crate::process::manager();
-    let manager = match *manager_guard {
-        Some(ref mut m) => m,
-        None => {
-            log::error!("sys_socketpair: No process manager!");
-            return SyscallResult::Err(ErrorCode::NoSuchProcess as u64);
-        }
+    // Validate pointer is in valid userspace range (code/data, mmap, or stack)
+    if !crate::memory::layout::is_valid_user_address(sv_ptr) {
+        return SyscallResult::Err(EFAULT as u64);
+    }
+
+    let sv: [i32; 2] = {
+        let mut manager_guard = crate::process::manager();
+        let manager = match *manager_guard {
+            Some(ref mut m) => m,
+            None => {
+                log::error!("sys_socketpair: No process manager!");
+                return SyscallResult::Err(ErrorCode::NoSuchProcess as u64);
+            }
+        };
+
+        let (_pid, process) = match manager.find_process_by_thread_mut(current_thread_id) {
+            Some(p) => p,
+            None => {
+                log::error!(
+                    "sys_socketpair: No process found for thread_id={}",
+                    current_thread_id
+                );
+                return SyscallResult::Err(ErrorCode::NoSuchProcess as u64);
+            }
+        };
+
+        // Create the socket pair
+        let (socket_a, socket_b) = UnixStreamSocket::new_pair(nonblocking);
+
+        // Create file descriptor entries with appropriate flags
+        let fd_flags = if cloexec { flags::FD_CLOEXEC } else { 0 };
+        let fd_status_flags = if nonblocking {
+            status_flags::O_NONBLOCK
+        } else {
+            0
+        };
+
+        let fd_entry_a =
+            FileDescriptor::with_flags(FdKind::UnixStream(socket_a), fd_flags, fd_status_flags);
+        let fd_entry_b =
+            FileDescriptor::with_flags(FdKind::UnixStream(socket_b), fd_flags, fd_status_flags);
+
+        // Allocate file descriptors
+        let fd_a = match process.fd_table.alloc_with_entry(fd_entry_a) {
+            Ok(fd) => fd,
+            Err(e) => {
+                log::error!("sys_socketpair: Failed to allocate fd_a: {}", e);
+                return SyscallResult::Err(e as u64);
+            }
+        };
+
+        let fd_b = match process.fd_table.alloc_with_entry(fd_entry_b) {
+            Ok(fd) => fd,
+            Err(e) => {
+                // Clean up fd_a on failure
+                let _ = process.fd_table.close(fd_a);
+                log::error!("sys_socketpair: Failed to allocate fd_b: {}", e);
+                return SyscallResult::Err(e as u64);
+            }
+        };
+
+        [fd_a, fd_b]
     };
 
-    let (_pid, process) = match manager.find_process_by_thread_mut(current_thread_id) {
-        Some(p) => p,
-        None => {
-            log::error!(
-                "sys_socketpair: No process found for thread_id={}",
-                current_thread_id
-            );
-            return SyscallResult::Err(ErrorCode::NoSuchProcess as u64);
-        }
-    };
-
-    // Create the socket pair
-    let (socket_a, socket_b) = UnixStreamSocket::new_pair(nonblocking);
-
-    // Create file descriptor entries with appropriate flags
-    let fd_flags = if cloexec { flags::FD_CLOEXEC } else { 0 };
-    let fd_status_flags = if nonblocking {
-        status_flags::O_NONBLOCK
-    } else {
-        0
-    };
-
-    let fd_entry_a =
-        FileDescriptor::with_flags(FdKind::UnixStream(socket_a), fd_flags, fd_status_flags);
-    let fd_entry_b =
-        FileDescriptor::with_flags(FdKind::UnixStream(socket_b), fd_flags, fd_status_flags);
-
-    // Allocate file descriptors
-    let fd_a = match process.fd_table.alloc_with_entry(fd_entry_a) {
-        Ok(fd) => fd,
-        Err(e) => {
-            log::error!("sys_socketpair: Failed to allocate fd_a: {}", e);
-            return SyscallResult::Err(e as u64);
-        }
-    };
-
-    let fd_b = match process.fd_table.alloc_with_entry(fd_entry_b) {
-        Ok(fd) => fd,
-        Err(e) => {
-            // Clean up fd_a on failure
-            let _ = process.fd_table.close(fd_a);
-            log::error!("sys_socketpair: Failed to allocate fd_b: {}", e);
-            return SyscallResult::Err(e as u64);
-        }
-    };
-
-    // Write the file descriptors to userspace sv[0], sv[1]
-    let sv: [i32; 2] = [fd_a, fd_b];
-    unsafe {
-        let sv_user = sv_ptr as *mut [i32; 2];
-        // Validate pointer is in valid userspace range (code/data, mmap, or stack)
-        if !crate::memory::layout::is_valid_user_address(sv_ptr) {
-            let _ = process.fd_table.close(fd_a);
-            let _ = process.fd_table.close(fd_b);
-            return SyscallResult::Err(EFAULT as u64);
-        }
-        core::ptr::write_volatile(sv_user, sv);
+    // Write the file descriptors to userspace sv[0], sv[1] after dropping
+    // PROCESS_MANAGER; sv may point at a CoW page.
+    if let Err(errno) = super::userptr::copy_to_user(sv_ptr as *mut [i32; 2], &sv) {
+        close_fds_for_thread(current_thread_id, sv);
+        return SyscallResult::Err(errno);
     }
 
     log::info!(
         "sys_socketpair: Created Unix socket pair sv=[{}, {}] nonblocking={} cloexec={}",
-        fd_a,
-        fd_b,
+        sv[0],
+        sv[1],
         nonblocking,
         cloexec
     );

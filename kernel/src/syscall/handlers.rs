@@ -1151,8 +1151,10 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
         }
         FdKind::Device(device_type) => {
             // Read from devfs device (/dev/null, /dev/zero, /dev/console, /dev/tty)
+            let device_type = *device_type;
+            drop(manager_guard);
             let mut user_buf = alloc::vec![0u8; count as usize];
-            match crate::fs::devfs::device_read(*device_type, &mut user_buf) {
+            match crate::fs::devfs::device_read(device_type, &mut user_buf) {
                 Ok(n) => {
                     if n > 0 {
                         // Copy to userspace
@@ -1664,8 +1666,10 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
             position,
         } => {
             // Read from procfs virtual file
-            let bytes = content.as_bytes();
+            let content = content.clone();
             let pos = *position;
+            drop(manager_guard);
+            let bytes = content.as_bytes();
             if pos >= bytes.len() {
                 return SyscallResult::Ok(0);
             }
@@ -1677,7 +1681,6 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                 }
             }
             // Update position - re-acquire the manager lock
-            drop(manager_guard);
             let mut mg = crate::process::manager();
             if let Some(manager) = &mut *mg {
                 if let Some((_pid, process)) = manager.find_process_by_thread_mut(thread_id) {

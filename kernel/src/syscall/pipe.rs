@@ -8,6 +8,16 @@ use crate::ipc::fd::{flags, status_flags, FileDescriptor};
 use crate::ipc::{create_pipe, FdKind};
 use crate::process::manager;
 
+fn close_pipe_fds_for_thread(thread_id: u64, pipefd: [i32; 2]) {
+    let mut manager_guard = manager();
+    if let Some(manager) = &mut *manager_guard {
+        if let Some((_pid, process)) = manager.find_process_by_thread_mut(thread_id) {
+            let _ = process.fd_table.close(pipefd[0]);
+            let _ = process.fd_table.close(pipefd[1]);
+        }
+    }
+}
+
 /// sys_pipe - Create a pipe
 ///
 /// Creates a unidirectional data channel that can be used for inter-process communication.
@@ -39,57 +49,59 @@ pub fn sys_pipe(pipefd_ptr: u64) -> SyscallResult {
             return SyscallResult::Err(3); // ESRCH
         }
     };
-    let mut manager_guard = manager();
-    let process = match &mut *manager_guard {
-        Some(manager) => match manager.find_process_by_thread_mut(thread_id) {
-            Some((_pid, p)) => p,
+    let pipefd: [i32; 2] = {
+        let mut manager_guard = manager();
+        let process = match &mut *manager_guard {
+            Some(manager) => match manager.find_process_by_thread_mut(thread_id) {
+                Some((_pid, p)) => p,
+                None => {
+                    log::error!("sys_pipe: Process not found for thread {}", thread_id);
+                    return SyscallResult::Err(3); // ESRCH
+                }
+            },
             None => {
-                log::error!("sys_pipe: Process not found for thread {}", thread_id);
+                log::error!("sys_pipe: Process manager not initialized");
                 return SyscallResult::Err(3); // ESRCH
             }
-        },
-        None => {
-            log::error!("sys_pipe: Process manager not initialized");
-            return SyscallResult::Err(3); // ESRCH
-        }
-    };
+        };
 
-    // Create the pipe buffer (shared between read and write ends)
-    let (read_buffer, write_buffer) = create_pipe();
+        // Create the pipe buffer (shared between read and write ends)
+        let (read_buffer, write_buffer) = create_pipe();
 
-    // Allocate file descriptors for both ends
-    let read_fd = match process.fd_table.alloc(FdKind::PipeRead(read_buffer)) {
-        Ok(fd) => fd,
-        Err(e) => {
-            log::error!("sys_pipe: Failed to allocate read fd: {}", e);
-            return SyscallResult::Err(e as u64);
-        }
-    };
+        // Allocate file descriptors for both ends
+        let read_fd = match process.fd_table.alloc(FdKind::PipeRead(read_buffer)) {
+            Ok(fd) => fd,
+            Err(e) => {
+                log::error!("sys_pipe: Failed to allocate read fd: {}", e);
+                return SyscallResult::Err(e as u64);
+            }
+        };
 
-    let write_fd = match process.fd_table.alloc(FdKind::PipeWrite(write_buffer)) {
-        Ok(fd) => fd,
-        Err(e) => {
-            // Clean up read fd on failure
-            let _ = process.fd_table.close(read_fd);
-            log::error!("sys_pipe: Failed to allocate write fd: {}", e);
-            return SyscallResult::Err(e as u64);
-        }
+        let write_fd = match process.fd_table.alloc(FdKind::PipeWrite(write_buffer)) {
+            Ok(fd) => fd,
+            Err(e) => {
+                // Clean up read fd on failure
+                let _ = process.fd_table.close(read_fd);
+                log::error!("sys_pipe: Failed to allocate write fd: {}", e);
+                return SyscallResult::Err(e as u64);
+            }
+        };
+
+        [read_fd, write_fd]
     };
 
     // Write the file descriptors to user space
-    let pipefd: [i32; 2] = [read_fd, write_fd];
     if let Err(e) = copy_to_user(pipefd_ptr as *mut [i32; 2], &pipefd) {
         // Clean up on failure
-        let _ = process.fd_table.close(read_fd);
-        let _ = process.fd_table.close(write_fd);
+        close_pipe_fds_for_thread(thread_id, pipefd);
         log::error!("sys_pipe: Failed to copy fds to user: {}", e);
         return SyscallResult::Err(14); // EFAULT
     }
 
     log::info!(
         "sys_pipe: Created pipe with read_fd={}, write_fd={}",
-        read_fd,
-        write_fd
+        pipefd[0],
+        pipefd[1]
     );
 
     SyscallResult::Ok(0)
@@ -325,24 +337,6 @@ pub fn sys_pipe2(pipefd_ptr: u64, pipe_flags: u64) -> SyscallResult {
             return SyscallResult::Err(3); // ESRCH
         }
     };
-    let mut manager_guard = manager();
-    let process = match &mut *manager_guard {
-        Some(manager) => match manager.find_process_by_thread_mut(thread_id) {
-            Some((_pid, p)) => p,
-            None => {
-                log::error!("sys_pipe2: Process not found for thread {}", thread_id);
-                return SyscallResult::Err(3); // ESRCH
-            }
-        },
-        None => {
-            log::error!("sys_pipe2: Process manager not initialized");
-            return SyscallResult::Err(3); // ESRCH
-        }
-    };
-
-    // Create the pipe buffer (shared between read and write ends)
-    let (read_buffer, write_buffer) = create_pipe();
-
     // Determine fd_flags and status_flags based on pipe_flags argument
     let fd_flags = if (flags_u32 & status_flags::O_CLOEXEC) != 0 {
         flags::FD_CLOEXEC
@@ -355,45 +349,65 @@ pub fn sys_pipe2(pipefd_ptr: u64, pipe_flags: u64) -> SyscallResult {
         0
     };
 
-    // Create file descriptors with the appropriate flags
-    let read_fd_entry =
-        FileDescriptor::with_flags(FdKind::PipeRead(read_buffer), fd_flags, status_flags_val);
-    let write_fd_entry =
-        FileDescriptor::with_flags(FdKind::PipeWrite(write_buffer), fd_flags, status_flags_val);
+    let pipefd: [i32; 2] = {
+        let mut manager_guard = manager();
+        let process = match &mut *manager_guard {
+            Some(manager) => match manager.find_process_by_thread_mut(thread_id) {
+                Some((_pid, p)) => p,
+                None => {
+                    log::error!("sys_pipe2: Process not found for thread {}", thread_id);
+                    return SyscallResult::Err(3); // ESRCH
+                }
+            },
+            None => {
+                log::error!("sys_pipe2: Process manager not initialized");
+                return SyscallResult::Err(3); // ESRCH
+            }
+        };
 
-    // Allocate file descriptors for both ends using alloc_with_entry
-    let read_fd = match process.fd_table.alloc_with_entry(read_fd_entry.clone()) {
-        Ok(fd) => fd,
-        Err(e) => {
-            log::error!("sys_pipe2: Failed to allocate read fd: {}", e);
-            return SyscallResult::Err(e as u64);
-        }
-    };
+        // Create the pipe buffer (shared between read and write ends)
+        let (read_buffer, write_buffer) = create_pipe();
 
-    let write_fd = match process.fd_table.alloc_with_entry(write_fd_entry.clone()) {
-        Ok(fd) => fd,
-        Err(e) => {
-            // Clean up read fd on failure
-            let _ = process.fd_table.close(read_fd);
-            log::error!("sys_pipe2: Failed to allocate write fd: {}", e);
-            return SyscallResult::Err(e as u64);
-        }
+        // Create file descriptors with the appropriate flags
+        let read_fd_entry =
+            FileDescriptor::with_flags(FdKind::PipeRead(read_buffer), fd_flags, status_flags_val);
+        let write_fd_entry =
+            FileDescriptor::with_flags(FdKind::PipeWrite(write_buffer), fd_flags, status_flags_val);
+
+        // Allocate file descriptors for both ends using alloc_with_entry
+        let read_fd = match process.fd_table.alloc_with_entry(read_fd_entry) {
+            Ok(fd) => fd,
+            Err(e) => {
+                log::error!("sys_pipe2: Failed to allocate read fd: {}", e);
+                return SyscallResult::Err(e as u64);
+            }
+        };
+
+        let write_fd = match process.fd_table.alloc_with_entry(write_fd_entry) {
+            Ok(fd) => fd,
+            Err(e) => {
+                // Clean up read fd on failure
+                let _ = process.fd_table.close(read_fd);
+                log::error!("sys_pipe2: Failed to allocate write fd: {}", e);
+                return SyscallResult::Err(e as u64);
+            }
+        };
+
+        [read_fd, write_fd]
     };
 
     // Write the file descriptors to user space
-    let pipefd: [i32; 2] = [read_fd, write_fd];
     if let Err(e) = copy_to_user(pipefd_ptr as *mut [i32; 2], &pipefd) {
         // Clean up on failure
-        let _ = process.fd_table.close(read_fd);
-        let _ = process.fd_table.close(write_fd);
+        close_pipe_fds_for_thread(thread_id, pipefd);
         log::error!("sys_pipe2: Failed to copy fds to user: {}", e);
         return SyscallResult::Err(14); // EFAULT
     }
 
     log::info!(
         "sys_pipe2: Created pipe with read_fd={}, write_fd={}, flags={:#x}",
-        read_fd,
-        write_fd,
+        pipefd[0],
+        pipefd[1],
         flags_u32
     );
 

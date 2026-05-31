@@ -3195,23 +3195,27 @@ pub fn sys_getcwd(buf: u64, size: u64) -> SyscallResult {
         }
     };
 
-    let manager_guard = crate::process::manager();
-    let process = match &*manager_guard {
-        Some(manager) => match manager.find_process_by_thread(thread_id) {
-            Some((_, p)) => p,
+    // Copy the CWD while holding PROCESS_MANAGER, then drop it before writing
+    // to userspace. The destination may be a CoW page, and the CoW handler
+    // also needs PROCESS_MANAGER.
+    let cwd = {
+        let manager_guard = crate::process::manager();
+        let process = match &*manager_guard {
+            Some(manager) => match manager.find_process_by_thread(thread_id) {
+                Some((_, p)) => p,
+                None => {
+                    log::error!("sys_getcwd: Process not found for thread {}", thread_id);
+                    return SyscallResult::Err(3); // ESRCH
+                }
+            },
             None => {
-                log::error!("sys_getcwd: Process not found for thread {}", thread_id);
+                log::error!("sys_getcwd: Process manager not initialized");
                 return SyscallResult::Err(3); // ESRCH
             }
-        },
-        None => {
-            log::error!("sys_getcwd: Process manager not initialized");
-            return SyscallResult::Err(3); // ESRCH
-        }
-    };
+        };
 
-    // Get the cwd from the process
-    let cwd = &process.cwd;
+        process.cwd.clone()
+    };
     let cwd_bytes = cwd.as_bytes();
     let required_size = cwd_bytes.len() + 1; // +1 for null terminator
 
