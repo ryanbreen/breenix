@@ -10,7 +10,7 @@ use crate::crypto::sha256::sha256;
 use crate::crypto::x25519::{x25519, x25519_basepoint};
 
 use super::cipher::SshCipher;
-use super::keys::HostKey;
+use super::keys::{HostKey, ServerHostKeyInfo};
 use super::packet::PacketIo;
 use super::SshBuf;
 use super::*;
@@ -259,7 +259,7 @@ pub fn client_kex_ecdh(
     kex: &mut KexState,
     client_version: &str,
     server_version: &str,
-) -> Result<(Vec<u8>, Vec<u8>, Vec<u8>), SshError> {
+) -> Result<(Vec<u8>, Vec<u8>, ServerHostKeyInfo), SshError> {
     // Generate client's ephemeral key pair
     let mut rng = Csprng::new();
     let mut client_secret = [0u8; 32];
@@ -322,7 +322,10 @@ pub fn client_kex_ecdh(
         return Err(SshError::Protocol("host key signature verification failed"));
     }
 
-    Ok((h, shared_secret.to_vec(), host_key_blob))
+    let host_key = ServerHostKeyInfo::from_parts(host_key_blob, signature)
+        .ok_or(SshError::Protocol("bad server host key identity"))?;
+
+    Ok((h, shared_secret.to_vec(), host_key))
 }
 
 /// Compute the exchange hash H per RFC 8731.
