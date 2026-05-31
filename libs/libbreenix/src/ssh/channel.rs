@@ -37,6 +37,8 @@ pub struct Channel {
     pub pty_term: Option<String>,
     /// PTY dimensions (cols, rows).
     pub pty_size: (u32, u32),
+    /// Command from an SSH "exec" request, if this is a non-interactive session.
+    pub exec_command: Option<String>,
 }
 
 impl Channel {
@@ -52,6 +54,7 @@ impl Channel {
             closed: false,
             pty_term: None,
             pty_size: (80, 24),
+            exec_command: None,
         }
     }
 }
@@ -130,7 +133,15 @@ pub fn server_handle_channel_request(
                 send_channel_success(io, channel)?;
             }
         }
-        b"shell" | b"exec" => {
+        b"shell" => {
+            if want_reply {
+                send_channel_success(io, channel)?;
+            }
+        }
+        b"exec" => {
+            let command =
+                SshBuf::get_string(msg, &mut pos).ok_or(SshError::Protocol("bad exec command"))?;
+            channel.exec_command = Some(String::from_utf8_lossy(command).into_owned());
             if want_reply {
                 send_channel_success(io, channel)?;
             }
