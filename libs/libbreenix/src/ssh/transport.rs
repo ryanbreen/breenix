@@ -344,6 +344,12 @@ pub struct ClientSession {
     channel: Option<Channel>,
 }
 
+/// Authentication method for SSH client handshakes.
+pub enum ClientAuthMethod<'a> {
+    Password(&'a str),
+    PublicKey { wrong_key: bool },
+}
+
 impl ClientSession {
     /// Create a new client session from a connected TCP socket fd.
     pub fn new(fd: Fd) -> Self {
@@ -357,6 +363,15 @@ impl ClientSession {
 
     /// Perform the full SSH handshake and authentication.
     pub fn handshake(&mut self, username: &str, password: &str) -> Result<(), SshError> {
+        self.handshake_with_auth(username, ClientAuthMethod::Password(password))
+    }
+
+    /// Perform the full SSH handshake with a selected authentication method.
+    pub fn handshake_with_auth(
+        &mut self,
+        username: &str,
+        auth_method: ClientAuthMethod<'_>,
+    ) -> Result<(), SshError> {
         // 1. Version exchange
         self.io.write_line(BSSH_VERSION).map_err(|_| SshError::Io)?;
         self.server_version = self.io.read_line().map_err(|_| SshError::Io)?;
@@ -406,7 +421,14 @@ impl ClientSession {
 
         // 3. Authentication
         auth::client_request_service(&mut self.io)?;
-        auth::client_auth_password(&mut self.io, username, password)?;
+        match auth_method {
+            ClientAuthMethod::Password(password) => {
+                auth::client_auth_password(&mut self.io, username, password)?;
+            }
+            ClientAuthMethod::PublicKey { wrong_key } => {
+                auth::client_auth_publickey(&mut self.io, username, session_id, wrong_key)?;
+            }
+        }
 
         Ok(())
     }
