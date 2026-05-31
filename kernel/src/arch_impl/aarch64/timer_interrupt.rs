@@ -188,8 +188,8 @@ static RESET_QUANTUM_CALL_COUNT: AtomicU64 = AtomicU64::new(0);
 // serial using lock-free raw_serial_str(). Fires once per stall, resets when
 // context switches resume.
 
-/// Threshold in timer ticks before declaring a soft lockup (5 seconds at 200 Hz)
-const LOCKUP_THRESHOLD_TICKS: u64 = 200 * 5;
+/// Threshold in CPU0-local timer ticks before declaring a soft lockup.
+const LOCKUP_THRESHOLD_TICKS: u64 = TARGET_TIMER_HZ * 5;
 
 /// Last observed context switch count (CPU 0 only)
 static WATCHDOG_LAST_CTX_SWITCH: AtomicU64 = AtomicU64::new(0);
@@ -197,7 +197,7 @@ static WATCHDOG_LAST_CTX_SWITCH: AtomicU64 = AtomicU64::new(0);
 /// Last observed syscall count (CPU 0 only, tracks system liveness)
 static WATCHDOG_LAST_SYSCALL: AtomicU64 = AtomicU64::new(0);
 
-/// Timer tick when progress was last observed (ctx switch OR syscall)
+/// CPU0-local timer tick when progress was last observed (ctx switch OR syscall)
 static WATCHDOG_LAST_PROGRESS_TICK: AtomicU64 = AtomicU64::new(0);
 
 /// Whether we've already reported a lockup (avoid spamming serial)
@@ -749,7 +749,8 @@ pub extern "C" fn timer_interrupt_handler(frame: *const Aarch64ExceptionFrame) {
 
     // CPU 0 only: soft lockup detector
     if cpu_id == 0 {
-        check_soft_lockup(_count);
+        let cpu0_tick = TIMER_TICK_COUNT[0].load(Ordering::Relaxed);
+        check_soft_lockup(cpu0_tick);
     }
 
     // CPU 0 only: record heartbeat as trace event (lock-free, ~5 instructions)
@@ -1000,12 +1001,12 @@ fn print_hex_u64(val: u64) {
 /// Check for soft lockup (CPU 0 only, called from timer interrupt).
 ///
 /// Compares the current context switch count against the last observed value.
-/// If no context switches have occurred for LOCKUP_THRESHOLD_TICKS timer
-/// interrupts (~5 seconds), checks whether this is a real stall:
+/// If no context switches or syscalls have occurred for
+/// LOCKUP_THRESHOLD_TICKS CPU0-local timer interrupts (~5 seconds), reports
+/// the stall with scheduler/process state:
 /// - If the scheduler lock is held → likely deadlock, report immediately
-/// - If the ready queue is empty → single runnable thread, not a lockup
 /// - If the ready queue has threads → scheduler is stuck, report
-fn check_soft_lockup(current_tick: u64) {
+fn check_soft_lockup(cpu0_tick: u64) {
     let ctx_count = crate::task::scheduler::context_switch_count();
     let last_ctx = WATCHDOG_LAST_CTX_SWITCH.load(Ordering::Relaxed);
 
@@ -1025,7 +1026,7 @@ fn check_soft_lockup(current_tick: u64) {
 
     if ctx_progressed || syscall_progressed {
         // System is making progress — update baseline
-        WATCHDOG_LAST_PROGRESS_TICK.store(current_tick, Ordering::Relaxed);
+        WATCHDOG_LAST_PROGRESS_TICK.store(cpu0_tick, Ordering::Relaxed);
         WATCHDOG_REPORTED.store(false, Ordering::Relaxed);
         return;
     }
@@ -1034,11 +1035,11 @@ fn check_soft_lockup(current_tick: u64) {
     let stall_start = WATCHDOG_LAST_PROGRESS_TICK.load(Ordering::Relaxed);
     if stall_start == 0 {
         // Not yet initialized
-        WATCHDOG_LAST_PROGRESS_TICK.store(current_tick, Ordering::Relaxed);
+        WATCHDOG_LAST_PROGRESS_TICK.store(cpu0_tick, Ordering::Relaxed);
         return;
     }
 
-    let stall_ticks = current_tick.wrapping_sub(stall_start);
+    let stall_ticks = cpu0_tick.wrapping_sub(stall_start);
     if stall_ticks >= LOCKUP_THRESHOLD_TICKS && !WATCHDOG_REPORTED.load(Ordering::Relaxed) {
         // Always report stall — even if ready_queue is empty, userspace threads
         // might be stuck in BlockedOnTimer/Blocked state without being woken.
