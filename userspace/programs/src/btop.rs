@@ -579,6 +579,17 @@ fn main() {
         let free_kb = parse_value(meminfo, b"MemFree:");
         let used_kb = total_kb.saturating_sub(free_kb);
 
+        // Process list. Read per-process ticks before /proc/stat so the
+        // aggregate CPU capacity snapshot below is at least as new as every
+        // process sample in this frame.
+        let pids = get_pids();
+        let mut procs: Vec<ProcInfo> = Vec::new();
+        for &pid in &pids {
+            if let Some(info) = parse_proc_status(pid) {
+                procs.push(info);
+            }
+        }
+
         // Kernel counters
         let mut stat_buf = [0u8; 1024];
         let stat_n = read_procfs("/proc/stat", &mut stat_buf);
@@ -592,6 +603,8 @@ fn main() {
         let gpu_bytes = parse_value(stat, b"gpu_bytes");
         let gpu_full = parse_value(stat, b"gpu_full");
         let gpu_partial = parse_value(stat, b"gpu_partial");
+        let snapshot_cpu_capacity_ticks = parse_value(stat, b"cpu_capacity_ticks");
+        let snapshot_cpu_online = parse_value(stat, b"cpu_online").max(1);
 
         // Per-CPU ticks
         let cpu_ticks = parse_cpu_ticks(stat);
@@ -609,27 +622,27 @@ fn main() {
         }
         prev_cpu_ticks = cpu_ticks;
 
-        // Process list
-        let pids = get_pids();
-        let mut procs: Vec<ProcInfo> = Vec::new();
-        for &pid in &pids {
-            if let Some(info) = parse_proc_status(pid) {
-                procs.push(info);
-            }
-        }
-
-        // Compute CPU% deltas against the aggregate procfs CPU capacity clock.
-        // The denominator must sum all online CPUs; using one CPU's elapsed
-        // ticks inflates every process on SMP systems.
+        // Compute CPU% deltas against one coherent aggregate procfs CPU capacity
+        // clock snapshot. The denominator must sum all online CPUs; using one
+        // CPU's elapsed ticks inflates every process on SMP systems.
         let mut cpu_pcts: Vec<(u64, u64)> = Vec::new(); // (pid, pct*10 for 1 decimal)
         for proc in &procs {
             let prev = prev_ticks.iter().find(|sample| sample.pid == proc.pid);
             let prev_cpu_ticks = prev.map(|sample| sample.cpu_ticks).unwrap_or(0);
             let prev_sample_ticks = prev.map(|sample| sample.sample_ticks).unwrap_or(0);
             let delta = proc.cpu_ticks.saturating_sub(prev_cpu_ticks);
-            let sample_ticks = proc.cpu_denominator_ticks();
+            let sample_ticks = if snapshot_cpu_capacity_ticks > 0 {
+                snapshot_cpu_capacity_ticks
+            } else {
+                proc.cpu_denominator_ticks()
+            };
             let tick_delta = sample_ticks.saturating_sub(prev_sample_ticks);
-            let max_pct10 = proc.cpu_online.saturating_mul(1000);
+            let cpu_online = if snapshot_cpu_capacity_ticks > 0 {
+                snapshot_cpu_online
+            } else {
+                proc.cpu_online
+            };
+            let max_pct10 = cpu_online.saturating_mul(1000);
             let pct10 = if tick_delta > 0 {
                 ((delta * 1000) / tick_delta).min(max_pct10)
             } else {
@@ -641,10 +654,15 @@ fn main() {
         // Save current ticks for next iteration
         prev_ticks.clear();
         for proc in &procs {
+            let sample_ticks = if snapshot_cpu_capacity_ticks > 0 {
+                snapshot_cpu_capacity_ticks
+            } else {
+                proc.cpu_denominator_ticks()
+            };
             prev_ticks.push(ProcTickSample {
                 pid: proc.pid,
                 cpu_ticks: proc.cpu_ticks,
-                sample_ticks: proc.cpu_denominator_ticks(),
+                sample_ticks,
             });
         }
 
