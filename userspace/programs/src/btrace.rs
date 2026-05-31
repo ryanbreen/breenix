@@ -7,6 +7,7 @@
 //! Reads:
 //!   /proc/uptime         — system uptime
 //!   /proc/stat           — syscalls, interrupts, context switches, etc.
+//!   /proc/trace/buffer   — kernel trace ring, summarized for diagnostic events
 //!   /proc/xhci/trace     — xHCI hardware trace buffer
 //!
 //! Output format:
@@ -67,6 +68,40 @@ fn parse_uptime(data: &[u8]) -> (u64, u64) {
     } else {
         (first.parse().unwrap_or(0), 0)
     }
+}
+
+struct TraceDiagSummary<'a> {
+    ctx_diag: u64,
+    sched_diag: u64,
+    first_ctx: Option<&'a str>,
+    first_sched: Option<&'a str>,
+}
+
+fn parse_trace_diag(data: &[u8]) -> TraceDiagSummary<'_> {
+    let text = core::str::from_utf8(data).unwrap_or("");
+    let mut summary = TraceDiagSummary {
+        ctx_diag: 0,
+        sched_diag: 0,
+        first_ctx: None,
+        first_sched: None,
+    };
+
+    for line in text.lines() {
+        if line.contains("CTX_DIAG") {
+            summary.ctx_diag += 1;
+            if summary.first_ctx.is_none() {
+                summary.first_ctx = Some(line);
+            }
+        }
+        if line.contains("SCHED_DIAG") {
+            summary.sched_diag += 1;
+            if summary.first_sched.is_none() {
+                summary.first_sched = Some(line);
+            }
+        }
+    }
+
+    summary
 }
 
 /// Completion code to human-readable name.
@@ -265,6 +300,7 @@ fn main() {
     // Read procfs files
     let uptime_data = read_procfs("/proc/uptime");
     let stat_data = read_procfs("/proc/stat");
+    let trace_data = read_procfs("/proc/trace/buffer");
     let xhci_data = read_procfs("/proc/xhci/trace");
 
     // Parse uptime
@@ -280,6 +316,7 @@ fn main() {
     let cow = parse_stat_value(stat_str, "cow_faults");
 
     // Parse xHCI trace
+    let trace_diag = parse_trace_diag(&trace_data);
     let xhci = parse_xhci_trace(&xhci_data);
 
     // Print compact summary
@@ -288,6 +325,16 @@ fn main() {
         "sys={} irq={} ctx={} fork={} exec={} cow={}\n",
         syscalls, irqs, ctx, forks, execs, cow,
     );
+    print!(
+        "trace_diag: CTX_DIAG={} SCHED_DIAG={}\n",
+        trace_diag.ctx_diag, trace_diag.sched_diag,
+    );
+    if let Some(line) = trace_diag.first_ctx {
+        print!("trace_diag:first_ctx={}\n", line);
+    }
+    if let Some(line) = trace_diag.first_sched {
+        print!("trace_diag:first_sched={}\n", line);
+    }
 
     if xhci.total_records > 0 {
         print!(
@@ -304,9 +351,12 @@ fn main() {
         );
         print!(
             "xhci: poll={} evt={} xe={} rst={} qsrc={} fcc={}\n",
-            xhci.poll_count, xhci.event_count,
-            xhci.consumed_xfer_enum, xhci.endpoint_resets,
-            xhci.first_queue_src, xhci.first_xfer_cc,
+            xhci.poll_count,
+            xhci.event_count,
+            xhci.consumed_xfer_enum,
+            xhci.endpoint_resets,
+            xhci.first_queue_src,
+            xhci.first_xfer_cc,
         );
         // Dump raw XHCI_DIAG section for new diagnostic fields
         let xhci_text = core::str::from_utf8(&xhci_data).unwrap_or("");
@@ -319,7 +369,8 @@ fn main() {
             if line.starts_with("=== XHCI_DIAG_END ===") {
                 break;
             }
-            if in_diag && !line.starts_with("poll_count")
+            if in_diag
+                && !line.starts_with("poll_count")
                 && !line.starts_with("event_count")
                 && !line.starts_with("consumed_xfer")
                 && !line.starts_with("first_xfer_cc ")
