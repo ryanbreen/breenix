@@ -1894,29 +1894,50 @@ impl Scheduler {
         let mut wake = IoWakeResult::default();
         if let Some(thread) = self.get_thread_mut(tid) {
             let mut published_ready = false;
-            let should_queue = if thread.state == ThreadState::BlockedOnIO {
-                thread.set_ready();
-                WAKE_SITE_WAKE_IO_LOCKED.fetch_add(1, Ordering::Relaxed);
-                record_ready_site(
-                    tid,
-                    if from_isr_buffer {
-                        READY_SITE_WAKE_IO_ISR_DRAIN
-                    } else {
-                        READY_SITE_WAKE_IO_LOCKED
-                    },
-                );
-                published_ready = true;
-                thread.wake_time_ns = None;
-                // Do NOT clear blocked_in_syscall here — the wait_timeout
-                // caller manages it after detecting the wakeup.
-                true
-            } else {
-                // If the completion wakeup was deferred through the lock-free
-                // ISR buffer, the thread may already have been marked Ready by
-                // another path before the buffer is drained. As long as it is
-                // still blocked in the syscall, it still needs a ready-queue
-                // insertion to resume and observe `done=token`.
-                thread.state == ThreadState::Ready && thread.blocked_in_syscall
+            let should_queue = match thread.state {
+                ThreadState::BlockedOnIO => {
+                    thread.set_ready();
+                    WAKE_SITE_WAKE_IO_LOCKED.fetch_add(1, Ordering::Relaxed);
+                    record_ready_site(
+                        tid,
+                        if from_isr_buffer {
+                            READY_SITE_WAKE_IO_ISR_DRAIN
+                        } else {
+                            READY_SITE_WAKE_IO_LOCKED
+                        },
+                    );
+                    published_ready = true;
+                    thread.wake_time_ns = None;
+                    // Do NOT clear blocked_in_syscall here — the wait_timeout
+                    // caller manages it after detecting the wakeup.
+                    true
+                }
+                ThreadState::Blocked => {
+                    thread.set_ready();
+                    WAKE_SITE_WAKE_IO_LOCKED.fetch_add(1, Ordering::Relaxed);
+                    record_ready_site(
+                        tid,
+                        if from_isr_buffer {
+                            READY_SITE_WAKE_IO_ISR_DRAIN
+                        } else {
+                            READY_SITE_WAKE_IO_LOCKED
+                        },
+                    );
+                    published_ready = true;
+                    thread.wake_time_ns = None;
+                    // Legacy TCP socket waits still use plain Blocked and
+                    // expect the generic unblock semantics.
+                    thread.blocked_in_syscall = false;
+                    true
+                }
+                _ => {
+                    // If the completion wakeup was deferred through the lock-free
+                    // ISR buffer, the thread may already have been marked Ready by
+                    // another path before the buffer is drained. As long as it is
+                    // still blocked in the syscall, it still needs a ready-queue
+                    // insertion to resume and observe `done=token`.
+                    thread.state == ThreadState::Ready && thread.blocked_in_syscall
+                }
             };
 
             if should_queue {
