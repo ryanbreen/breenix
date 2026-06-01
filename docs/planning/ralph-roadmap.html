@@ -12,6 +12,7 @@
   h2{font-size:15px;margin:26px 0 10px;padding-bottom:6px;border-bottom:1px solid var(--border);text-transform:uppercase;letter-spacing:.3px;color:var(--muted)}
   .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:10px}
   .card{background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:12px 14px}
+  .card.live{border-color:var(--amber);box-shadow:0 0 0 1px rgba(210,153,34,.25)}
   .card h3{margin:0 0 6px;font-size:14px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
   .card p{margin:6px 0 0;font-size:13px} .card .meta{margin-top:8px;color:var(--muted);font-size:12px}
   .badge{display:inline-block;font-size:11px;font-weight:600;padding:1px 7px;border-radius:10px;border:1px solid transparent}
@@ -28,39 +29,52 @@
   .summary div{background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:8px 14px;min-width:84px;text-align:center}
   .summary .n{font-size:20px;font-weight:700} .summary .l{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.4px}
   code{background:#1f2630;padding:1px 5px;border-radius:4px;font-size:12px} .note{color:var(--muted);font-size:12px;margin-top:6px}
+  .live-banner{background:rgba(210,153,34,.10);border:1px solid rgba(210,153,34,.35);border-radius:8px;padding:10px 14px;margin:0 0 16px;font-size:13px}
 </style>
 </head>
 <body>
   <h1>Breenix Roadmap — Backlog</h1>
-  <p class="sub">Canonical orchestrator backlog (maintained by Claude). <b>Last updated 2026-06-01.</b> ARM64 / Parallels focus. Refreshed at merge milestones (not per-turn — per-turn churn caused the prior revert). Per-turn execution detail lives in the Ralph <code>inbox.md</code>; version-tracked copy in-repo at <code>docs/planning/ralph-roadmap.html</code>.</p>
+  <p class="sub">Canonical orchestrator backlog (maintained by Claude). <b>Last updated 2026-06-01 — refreshed every workflow round &amp; finding (not just merges).</b> ARM64 / Parallels focus. Live per-turn detail in the Ralph <code>inbox.md</code> + <code>/workflows</code>; in-repo at <code>docs/planning/ralph-roadmap.html</code>.</p>
+
+  <div class="live-banner">🔴 <b>Operator-reported (2026-06-01):</b> launching the <b>terminal via launcher → picker → terminal locked up the whole VM</b>. Folded into the active #404 root-cause as the <b>primary real-world repro</b> — leading hypothesis is the same SMP fresh-process spawn-dispatch class (wrong page-table root on a freshly-spawned child), to be confirmed or refuted with evidence. <b>Fix forward, no bisect.</b><br><br>🔎 <b>Active (TURN 350):</b> root-causing the <b>#404 residual post-spawn crash</b> — narrowed to a <b>TTBR0 / page-table-root mismatch</b> on the SMP spawn path: a freshly-spawned child's text address translates through the wrong page-table root to a <i>sibling</i> process's memory, so it executes the sibling's data as code (<code>EC=0</code> fault). Prime suspect is the gold-master <code>context_switch.rs</code> dispatch fallback. PR #404 is <b>held, not merged</b> (the original "fixed" proof was a false pass). <b>No gold-master file has been touched;</b> if the fix lands there it comes to you as a signoff proposal first.</div>
 
   <div class="summary">
     <div><div class="n" style="color:var(--green)">12</div><div class="l">Shipped (session)</div></div>
-    <div><div class="n" style="color:var(--amber)">1</div><div class="l">In&nbsp;progress</div></div>
+    <div><div class="n" style="color:var(--amber)">2</div><div class="l">In&nbsp;progress</div></div>
     <div><div class="n" style="color:var(--blue)">3</div><div class="l">Queued</div></div>
     <div><div class="n" style="color:var(--red)">8</div><div class="l">Signoff-gated</div></div>
   </div>
 
-  <h2>🚧 In progress</h2>
+  <h2>🚧 In progress — fresh-process spawn-dispatch root-cause (unified)</h2>
   <div class="grid">
-    <div class="card">
-      <h3>#404 residual post-spawn crash — root-cause <span class="badge b-prog">re-verify failed</span> <span class="arch">ARM64 · Parallels</span></h3>
-      <p>The user-stack frame-aliasing lockup fix (<a href="https://github.com/ryanbreen/breenix/pull/404">PR #404</a>) <b>reduces but does not eliminate</b> the fault: a clean re-verify on current main faulted <b>1 of 2 stress boots</b> with a post-spawn <code>UNHANDLED_EC → PANIC</code> on the freshly spawned child (PID 5) after exec.</p>
-      <p class="note"><b>Key finding:</b> the prior "assertion-fired 3/3, 0 crashes" proof was contaminated by an <b>SMP-serial byte-interleaving</b> blind spot — naive <code>FATAL</code>/<code>PANIC</code> line-grep reads 0; you must de-interleave the two CPU streams to see <code>[FATAL] bug=UNHANDLED_EC</code>. The fault sits near the stack/spawn path → may overlap the <a href="https://github.com/ryanbreen/breenix/pull/406">#406</a> kstack-reuse area. PR #404 <b>held, not merged</b>. Next: de-interleave + root-cause; a gold-master file may be required → operator signoff first. beads <code>breenix-oia</code> family adjacent.</p>
+    <div class="card live">
+      <h3>launcher → picker → terminal full-VM lockup <span class="badge b-prog">operator repro · investigating</span> <span class="arch">ARM64 · Parallels · SMP</span></h3>
+      <p>Operator (2026-06-01) launched the terminal through the launcher → picker → terminal chain and the <b>entire VM locked up</b>. <b>Fix forward — no bisect</b> (likely an intermittent defect that could predate any single commit).</p>
+      <p class="note"><b>Leading hypothesis:</b> the same SMP fresh-process spawn-dispatch defect as #404 below — launching the terminal spawns a fresh child process under a live multi-process SMP system, exactly the path where the wrong page-table root gets installed. A wrong root could surface as a clean fault (#404) <i>or</i> as a fault-storm / dispatch hang (full lockup). <b>Not yet proven the same</b> — the investigation reproduces the operator's exact chain, captures the de-interleaved serial + trace ring at the lockup, and confirms or refutes the shared cause before fixing forward.</p>
+      <p class="meta">Primary verification target: the launcher → picker → terminal chain must launch repeatedly without lockup. Gold-master fixes (e.g. <code>context_switch.rs</code>) come to the operator as a signoff proposal first.</p>
+    </div>
+    <div class="card live">
+      <h3>#404 residual post-spawn crash <span class="badge b-prog">TURN 350 · TTBR0 mismatch</span> <span class="arch">ARM64 · Parallels · SMP</span></h3>
+      <p>The user-stack frame-aliasing fix (<a href="https://github.com/ryanbreen/breenix/pull/404">PR #404</a>) <b>reduces but does not eliminate</b> the fault — ~4 of 6 fresh stress boots still crash. <b>PR held, not merged.</b></p>
+      <p class="note"><b>Root cause (narrowed, TURN 349):</b> a freshly-spawned child (bsshd, PID 5) takes <code>EC=0x0</code> at EL0 on its <i>own valid</i> text address <code>0x4000460c</code>. The <code>SPSR</code> is <b>legal</b> — so this is <i>not</i> a corrupted exception frame. The live fault-time page-table root translates that text address to <b>PID 2 (wait_stress)'s physical frame</b>, so the child executes a <i>sibling's</i> read-only data as instructions → undefined-instruction fault. Page tables are <b>correct at load time</b> (each process's text frame verified <code>live==expected</code>); the bug is the <b>page-table root (TTBR0) installed when the fresh child is dispatched</b>, often on a remote CPU.</p>
+      <p class="note"><b>Prime suspect (not yet proven):</b> the gold-master <code>context_switch.rs</code> inline-ret dispatch — under <code>PROCESS_MANAGER</code> lock contention (<code>PmLockBusy</code>) it falls back to the thread's <code>cached_ttbr0</code>, which for a fresh child can hold a <i>sibling's</i> root. Fits the SMP / ~4-of-6 probabilistic pattern. <b>Falsified with evidence:</b> illegal-SPSR / exec-state, stale I-cache, kstack reuse, frame double-free, load-time ELF aliasing, reuse of bsshd's own text frame.</p>
+      <p class="note"><b>Why the prior "fix" looked proven:</b> the original "assertion-fired 3/3, 0 crashes" result was a <b>false pass</b> — the two SMP serial streams are <b>byte-interleaved</b>, so <code>FATAL</code>/<code>PANIC</code> line-greps read 0 unless you de-interleave. Verification now always de-interleaves.</p>
+      <p class="note"><b>Now (TURN 350):</b> prove the discriminator — is the fault root PID-5's <i>own</i> table (⇒ a post-load page-table-entry bug in NON-prohibited code: <code>manager.rs</code> / <code>elf.rs</code> / pt allocator ⇒ direct PR) or a <i>sibling's</i> root (⇒ TTBR0 dispatch mismatch in gold-master <code>context_switch.rs</code> ⇒ precise <b>signoff proposal</b>, no edit without your go)?</p>
+      <p class="meta">PR merges only after ≥4-6 fresh <i>de-interleaved</i> crash-free stock-init WAIT_STRESS boots. Rounds: <code>wf_2c11eaa2-3e1</code> → <code>wf_fa1c5e4f-941</code>. Live detail: <code>/workflows</code> + inbox.md TURN 345+.</p>
     </div>
   </div>
 
   <h2>📋 Queued — non-gold-master (ARM64)</h2>
   <div class="grid">
     <div class="card"><h3>SOFT_LOCKUP_VIRGL Parallels failure class <span class="badge b-p1">P1</span> <span class="arch">ARM64 · Parallels</span></h3><p>Investigate + classify the <code>SOFT_LOCKUP_VIRGL</code> failure class on Parallels. beads <code>breenix-ha9</code>.</p></div>
-    <div class="card"><h3>F15 — ARM64 AHCI timeout corridor after GICR discovery <span class="badge b-p1">P1</span> <span class="arch">ARM64</span></h3><p>Remaining AHCI timeout corridor after GICR discovery; verify whether the fix is storage-driver-only (non-gold-master) or touches <code>gic.rs</code> → signoff. beads <code>breenix-xk8</code>.</p></div>
+    <div class="card"><h3>F15 — ARM64 AHCI timeout corridor after GICR discovery <span class="badge b-p1">P1</span> <span class="arch">ARM64</span></h3><p>Remaining AHCI timeout corridor after GICR discovery; verify storage-driver-only (non-gold-master) vs <code>gic.rs</code> (signoff). beads <code>breenix-xk8</code>.</p></div>
     <div class="card"><h3>bsshd SSH exit-status / close for exec <span class="badge b-p2">P2</span> <span class="arch">ARM64</span></h3><p>bsshd should send SSH exit-status + channel close for exec requests. beads <code>breenix-72x</code>.</p></div>
   </div>
 
   <h2>🔒 Signoff-gated — gold-master / CPU0 cluster (awaiting operator)</h2>
   <div class="grid">
-    <div class="card"><h3>CPU0 timer-death + scheduler cluster <span class="badge b-block">signoff</span> <span class="arch">ARM64 · Parallels</span></h3><p>CPU0 vtimer death on Parallels + remote-wake / resched scheduling. Fixes live in frozen gold-master <code>timer_interrupt.rs</code> / <code>gic.rs</code> / <code>context_switch.rs</code> → need operator signoff (this cluster burned ~a week before; investigate-only without go). beads <code>oia, 9f1, cb7, 6f4, e43, k16, eh4</code>.</p></div>
-    <div class="card"><h3>BusyBox applet DATA_ABORT — ARM64 musl TLS <span class="badge b-block">signoff</span> <span class="arch">ARM64</span></h3><p>BusyBox applet faults on the ARM64 musl TLS path (errno read from a zero <code>TPIDR_EL0</code>). User-facing symptom already fixed (native <code>bls</code> as <code>/bin/ls</code>); the principled TLS fix touches gold-master context-switch → signoff. beads <code>breenix-b7u</code>.</p></div>
+    <div class="card"><h3>CPU0 timer-death + scheduler cluster <span class="badge b-block">signoff</span> <span class="arch">ARM64 · Parallels</span></h3><p>CPU0 vtimer death on Parallels + remote-wake / resched scheduling. Fixes live in frozen gold-master <code>timer_interrupt.rs</code> / <code>gic.rs</code> / <code>context_switch.rs</code> → need operator signoff (this cluster burned ~a week before). beads <code>oia, 9f1, cb7, 6f4, e43, k16, eh4</code>.</p></div>
+    <div class="card"><h3>BusyBox applet DATA_ABORT — ARM64 musl TLS <span class="badge b-block">signoff</span> <span class="arch">ARM64</span></h3><p>BusyBox applet faults on the ARM64 musl TLS path (errno from a zero <code>TPIDR_EL0</code>). User-facing symptom fixed (native <code>bls</code> as <code>/bin/ls</code>); principled TLS fix touches gold-master context-switch → signoff. beads <code>breenix-b7u</code>.</p></div>
   </div>
 
   <h2>⏸ Deprioritized — x86_64 (future)</h2>
@@ -78,7 +92,7 @@
     <div class="card"><h3>NB-1 — CPU%-accounting fix <span class="badge b-done">merged</span></h3><p><a href="https://github.com/ryanbreen/breenix/pull/396">PR #396</a> · core-aware denominator + single-snapshot sampling (the 189% was an accounting artifact, not a real burn).</p></div>
     <div class="card"><h3>bssh client + host-auth suite <span class="badge b-done">merged</span></h3><p>client channel <a href="https://github.com/ryanbreen/breenix/pull/397">#397</a>, publickey <a href="https://github.com/ryanbreen/breenix/pull/398">#398</a>, known-hosts verify <a href="https://github.com/ryanbreen/breenix/pull/399">#399</a>, host-auth <a href="https://github.com/ryanbreen/breenix/pull/403">#403</a>.</p></div>
     <div class="card"><h3>net RX stall + ARP pending queue <span class="badge b-done">merged</span></h3><p><a href="https://github.com/ryanbreen/breenix/pull/400">#400</a> net-rx-stall fix, <a href="https://github.com/ryanbreen/breenix/pull/401">#401</a> ARP pending queue.</p></div>
-    <div class="card"><h3>crash-trace instrumentation <span class="badge b-done">merged</span></h3><p><a href="https://github.com/ryanbreen/breenix/pull/402">PR #402</a> · trace-ring crash diagnostics.</p></div>
+    <div class="card"><h3>crash-trace instrumentation + roadmap refresh <span class="badge b-done">merged</span></h3><p><a href="https://github.com/ryanbreen/breenix/pull/402">#402</a> trace-ring crash diagnostics; <a href="https://github.com/ryanbreen/breenix/pull/408">#408</a> roadmap brought current.</p></div>
   </div>
 
   <h2>✅ Resolved without a fix (closed with evidence)</h2>
