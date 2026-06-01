@@ -1747,20 +1747,20 @@ impl ProcessManager {
         let child_tls_block = VirtAddr::new(0x10000 + child_thread_id * 0x1000);
 
         // Allocate a kernel stack for the child thread
-        let child_kernel_stack_top =
+        let (child_kernel_stack_top, child_kernel_stack_allocation) =
             if parent_thread.privilege == crate::task::thread::ThreadPrivilege::User {
                 let kernel_stack = crate::memory::kernel_stack::allocate_kernel_stack()
                     .map_err(|_e| "Failed to allocate kernel stack for child thread")?;
                 let kernel_stack_top = kernel_stack.top();
 
-                // Store the kernel stack (leak for now - TODO: proper cleanup)
-                Box::leak(Box::new(kernel_stack));
-
-                kernel_stack_top
+                (kernel_stack_top, Some(kernel_stack))
             } else {
-                parent_thread
-                    .kernel_stack_top
-                    .unwrap_or(parent_thread.stack_top)
+                (
+                    parent_thread
+                        .kernel_stack_top
+                        .unwrap_or(parent_thread.stack_top),
+                    None,
+                )
             };
 
         // Create the child's main thread
@@ -1778,6 +1778,7 @@ impl ProcessManager {
         // Set the ID, kernel stack, and owner PID
         child_thread.id = child_thread_id;
         child_thread.kernel_stack_top = Some(child_kernel_stack_top);
+        child_thread.kernel_stack_allocation = child_kernel_stack_allocation;
         child_thread.owner_pid = Some(child_pid.as_u64());
 
         child_thread.context = parent_context.clone();

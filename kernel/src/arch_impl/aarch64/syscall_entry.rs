@@ -940,6 +940,10 @@ fn sys_fork_aarch64(frame: &Aarch64ExceptionFrame) -> u64 {
     }; // PM lock dropped, interrupts restored
     crate::serial_aarch64::raw_serial_char(b'2'); // Fork phase 1 done, PM lock dropped
 
+    // Reclaim scheduler-owned kernel stacks from fully retired fork children before
+    // consuming another slot from the finite ARM64 kernel stack pool.
+    crate::task::scheduler::reclaim_terminated_threads();
+
     // Create child page table OUTSIDE PM lock (heap allocation safe — interrupts enabled)
     crate::serial_aarch64::raw_serial_char(b'3'); // Fork: allocating page table
     let child_page_table = match crate::memory::process_memory::ProcessPageTable::new() {
@@ -962,10 +966,14 @@ fn sys_fork_aarch64(frame: &Aarch64ExceptionFrame) -> u64 {
     match fork_result {
         Ok(child_pid) => {
             // Extract child thread info while still under PM lock (no logging!)
-            let child_info = if let Some(ref manager) = *manager_guard {
-                manager
-                    .get_process(child_pid)
-                    .and_then(|p| p.main_thread.as_ref().map(|t| (t.id, t.clone())))
+            let child_info = if let Some(ref mut manager) = *manager_guard {
+                manager.get_process_mut(child_pid).and_then(|p| {
+                    p.main_thread.as_mut().map(|t| {
+                        let mut scheduler_thread = t.clone();
+                        scheduler_thread.kernel_stack_allocation = t.kernel_stack_allocation.take();
+                        (t.id, scheduler_thread)
+                    })
+                })
             } else {
                 None
             };

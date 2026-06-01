@@ -7,16 +7,19 @@
 use crate::memory::arch_stub::VirtAddr;
 #[cfg(target_arch = "x86_64")]
 use crate::memory::frame_allocator::allocate_frame;
+#[cfg(target_arch = "x86_64")]
 use spin::Mutex;
 #[cfg(target_arch = "x86_64")]
 use x86_64::{structures::paging::PageTableFlags, VirtAddr};
 
 /// Base address for kernel stack allocation
+#[cfg(target_arch = "x86_64")]
 const KERNEL_STACK_BASE: u64 = 0xffffc900_0000_0000;
 
 /// End address for kernel stack allocation (128 MiB total space)
 /// Increased to 128 MiB to support 512KB stacks (kernel stacks are leaked,
 /// not freed, so we need enough slots for all processes created during tests)
+#[cfg(target_arch = "x86_64")]
 const KERNEL_STACK_END: u64 = 0xffffc900_0800_0000;
 
 /// Size of each kernel stack (512 KiB)
@@ -26,21 +29,27 @@ const KERNEL_STACK_END: u64 = 0xffffc900_0800_0000;
 /// → write_char_to_framebuffer → split_screen → font rendering
 /// This path can use 300KB+ of stack when combined with interrupt frame overhead
 /// and nested help command processing with terminal output formatting.
+#[cfg(target_arch = "x86_64")]
 const KERNEL_STACK_SIZE: u64 = 512 * 1024;
 
 /// Size of guard page (4 KiB)
+#[cfg(target_arch = "x86_64")]
 const GUARD_PAGE_SIZE: u64 = 4 * 1024;
 
 /// Total size per stack slot (stack + guard)
+#[cfg(target_arch = "x86_64")]
 const STACK_SLOT_SIZE: u64 = KERNEL_STACK_SIZE + GUARD_PAGE_SIZE;
 
 /// Maximum number of kernel stacks
+#[cfg(target_arch = "x86_64")]
 const MAX_KERNEL_STACKS: usize =
     ((KERNEL_STACK_END - KERNEL_STACK_BASE) / STACK_SLOT_SIZE) as usize;
 
 /// Bitmap to track allocated stacks (1 bit per stack)
 /// Using u64 array for efficient bit operations
+#[cfg(target_arch = "x86_64")]
 const BITMAP_SIZE: usize = (MAX_KERNEL_STACKS + 63) / 64;
+#[cfg(target_arch = "x86_64")]
 static STACK_BITMAP: Mutex<[u64; BITMAP_SIZE]> = Mutex::new([0; BITMAP_SIZE]);
 
 /// A kernel stack allocation
@@ -66,6 +75,7 @@ impl KernelStack {
     }
 
     /// Get the guard page address
+    #[cfg(target_arch = "x86_64")]
     #[allow(dead_code)]
     pub fn guard_page(&self) -> VirtAddr {
         VirtAddr::new(self.bottom.as_u64() - GUARD_PAGE_SIZE)
@@ -74,13 +84,22 @@ impl KernelStack {
 
 impl Drop for KernelStack {
     fn drop(&mut self) {
-        // Mark the stack as free in the bitmap
-        let mut bitmap = STACK_BITMAP.lock();
-        let word_index = self.index / 64;
-        let bit_index = self.index % 64;
-        bitmap[word_index] &= !(1u64 << bit_index);
+        #[cfg(target_arch = "aarch64")]
+        {
+            aarch64::free_kernel_stack(self.index);
+            return;
+        }
 
-        log::trace!("Freed kernel stack slot {}", self.index);
+        #[cfg(target_arch = "x86_64")]
+        {
+            // Mark the stack as free in the bitmap
+            let mut bitmap = STACK_BITMAP.lock();
+            let word_index = self.index / 64;
+            let bit_index = self.index % 64;
+            bitmap[word_index] &= !(1u64 << bit_index);
+
+            log::trace!("Freed kernel stack slot {}", self.index);
+        }
     }
 }
 
@@ -207,7 +226,7 @@ pub fn init() {
 #[cfg(target_arch = "aarch64")]
 mod aarch64 {
     use super::VirtAddr;
-    use core::sync::atomic::{AtomicU64, Ordering};
+    use spin::Mutex;
 
     /// ARM64 kernel stack base (in high-half direct map)
     /// Physical range: 0x5420_0000 .. 0x5620_0000 (32MB for kernel stacks)
@@ -231,12 +250,17 @@ mod aarch64 {
     /// Total slot size (stack + guard)
     const ARM64_STACK_SLOT_SIZE: u64 = ARM64_KERNEL_STACK_SIZE + ARM64_GUARD_PAGE_SIZE;
 
-    /// Next available stack slot (atomic bump allocator)
-    static NEXT_STACK_SLOT: AtomicU64 = AtomicU64::new(ARM64_KERNEL_STACK_BASE);
+    /// Bitmap to track allocated ARM64 stacks.
+    const ARM64_MAX_KERNEL_STACKS: usize =
+        ((ARM64_KERNEL_STACK_END - ARM64_KERNEL_STACK_BASE) / ARM64_STACK_SLOT_SIZE) as usize;
+    const ARM64_BITMAP_SIZE: usize = (ARM64_MAX_KERNEL_STACKS + 63) / 64;
+    static ARM64_STACK_BITMAP: Mutex<[u64; ARM64_BITMAP_SIZE]> = Mutex::new([0; ARM64_BITMAP_SIZE]);
 
     /// A kernel stack allocation for ARM64
     #[derive(Debug)]
     pub struct Aarch64KernelStack {
+        /// Index in the bitmap
+        pub index: usize,
         /// Bottom of the stack (lowest address, above guard page)
         pub bottom: VirtAddr,
         /// Top of the stack (highest address)
@@ -252,16 +276,39 @@ mod aarch64 {
 
     /// Allocate a kernel stack for ARM64
     ///
-    /// Uses a simple bump allocator in the high-half direct map region.
-    /// Stacks are not freed (leaked) - this is acceptable for the
-    /// current single-process test workload.
+    /// Uses a bitmap over a reserved high-half direct map region so fork-heavy
+    /// userspace workloads can reuse stacks after waitpid reaps children.
     pub fn allocate_kernel_stack() -> Result<Aarch64KernelStack, &'static str> {
-        let slot_base = NEXT_STACK_SLOT.fetch_add(ARM64_STACK_SLOT_SIZE, Ordering::SeqCst);
+        let mut bitmap = ARM64_STACK_BITMAP.lock();
 
-        if slot_base + ARM64_STACK_SLOT_SIZE > ARM64_KERNEL_STACK_END {
-            return Err("ARM64 kernel stack pool exhausted");
+        let mut slot_index = None;
+        for (word_idx, word) in bitmap.iter_mut().enumerate() {
+            if *word == u64::MAX {
+                continue;
+            }
+
+            for bit_idx in 0..64 {
+                let global_idx = word_idx * 64 + bit_idx;
+                if global_idx >= ARM64_MAX_KERNEL_STACKS {
+                    break;
+                }
+
+                if (*word & (1u64 << bit_idx)) == 0 {
+                    *word |= 1u64 << bit_idx;
+                    slot_index = Some(global_idx);
+                    break;
+                }
+            }
+
+            if slot_index.is_some() {
+                break;
+            }
         }
 
+        let index = slot_index.ok_or("ARM64 kernel stack pool exhausted")?;
+        drop(bitmap);
+
+        let slot_base = ARM64_KERNEL_STACK_BASE + (index as u64 * ARM64_STACK_SLOT_SIZE);
         let stack_bottom = VirtAddr::new(slot_base + ARM64_GUARD_PAGE_SIZE);
         let stack_top = VirtAddr::new(slot_base + ARM64_STACK_SLOT_SIZE);
 
@@ -272,9 +319,21 @@ mod aarch64 {
         );
 
         Ok(Aarch64KernelStack {
+            index,
             bottom: stack_bottom,
             top: stack_top,
         })
+    }
+
+    pub fn free_kernel_stack(index: usize) {
+        if index >= ARM64_MAX_KERNEL_STACKS {
+            return;
+        }
+
+        let mut bitmap = ARM64_STACK_BITMAP.lock();
+        let word_index = index / 64;
+        let bit_index = index % 64;
+        bitmap[word_index] &= !(1u64 << bit_index);
     }
 
     /// Initialize the ARM64 kernel stack allocator
@@ -315,7 +374,7 @@ pub fn allocate_kernel_stack() -> Result<KernelStack, &'static str> {
     let aarch64_stack = allocate_kernel_stack_aarch64()?;
     // Convert to KernelStack format for API compatibility
     Ok(KernelStack {
-        index: 0, // Not used for ARM64
+        index: aarch64_stack.index,
         bottom: aarch64_stack.bottom,
         top: aarch64_stack.top,
     })
