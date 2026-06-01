@@ -1298,7 +1298,11 @@ fn sys_exec_aarch64(
                 }
                 Err(e) => {
                     log::error!("sys_exec_aarch64: Failed to exec process: {}", e);
-                    (-12_i64) as u64
+                    if e == "exec blocked while CLONE_VM sibling shares old address space" {
+                        (-11_i64) as u64 // -EAGAIN
+                    } else {
+                        (-12_i64) as u64 // -ENOMEM
+                    }
                 }
             }
         } else {

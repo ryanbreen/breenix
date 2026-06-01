@@ -43,6 +43,40 @@ pub struct ProcessManager {
 
 impl ProcessManager {
     #[cfg(target_arch = "aarch64")]
+    fn find_live_clone_vm_sibling_holding_cr3(
+        &self,
+        pid: ProcessId,
+        thread_group_id: u64,
+        old_cr3: u64,
+    ) -> Option<(ProcessId, u64)> {
+        self.processes
+            .iter()
+            .find_map(|(&candidate_pid, candidate)| {
+                if candidate_pid == pid || candidate.is_terminated() {
+                    return None;
+                }
+
+                let candidate_thread_group_id = candidate.thread_group_id?;
+                if candidate_thread_group_id != thread_group_id {
+                    return None;
+                }
+
+                if candidate.inherited_cr3 != Some(old_cr3) {
+                    return None;
+                }
+
+                if let Some(thread) = candidate.main_thread.as_ref() {
+                    if thread.state == crate::task::thread::ThreadState::Terminated {
+                        return None;
+                    }
+                    Some((candidate_pid, thread.id))
+                } else {
+                    Some((candidate_pid, 0))
+                }
+            })
+    }
+
+    #[cfg(target_arch = "aarch64")]
     fn map_initial_arm64_tls(
         page_table: &mut ProcessPageTable,
         tls_base: VirtAddr,
@@ -2969,16 +3003,37 @@ impl ProcessManager {
         // a use-after-free on exec failure: if any subsequent operation fails, the Err return
         // would drop the old Box<ProcessPageTable>, freeing physical memory while TTBR0_EL1
         // still points to it. The old page table is taken later, after all fallible ops succeed.
-        let thread_id = {
-            let process = self.processes.get_mut(&pid).ok_or("Process not found")?;
-            // Drain any pending old page tables from previous exec() calls.
-            process.drain_old_page_tables();
+        let (thread_id, old_cr3, thread_group_id) = {
+            let process = self.processes.get(&pid).ok_or("Process not found")?;
+            let old_cr3 = process.cr3_value();
+            let thread_group_id = process.thread_group_id.unwrap_or(pid.as_u64());
             let main_thread = process
                 .main_thread
                 .as_ref()
                 .ok_or("Process has no main thread")?;
-            main_thread.id
+            (main_thread.id, old_cr3, thread_group_id)
         };
+
+        if let Some(old_cr3) = old_cr3 {
+            if let Some((sibling_pid, sibling_thread_id)) =
+                self.find_live_clone_vm_sibling_holding_cr3(pid, thread_group_id, old_cr3)
+            {
+                log::warn!(
+                    "exec_process_with_argv [ARM64]: rejecting exec for PID {} while CLONE_VM sibling PID {} thread {} still holds inherited CR3 {:#x}",
+                    pid.as_u64(),
+                    sibling_pid.as_u64(),
+                    sibling_thread_id,
+                    old_cr3
+                );
+                return Err("exec blocked while CLONE_VM sibling shares old address space");
+            }
+        }
+
+        {
+            let process = self.processes.get_mut(&pid).ok_or("Process not found")?;
+            // Drain any pending old page tables from previous exec() calls.
+            process.drain_old_page_tables();
+        }
 
         log::info!(
             "exec_process_with_argv [ARM64]: Preserving thread ID {} for process {}",

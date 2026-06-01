@@ -180,6 +180,7 @@ STD_BINARIES=(
     "argv_test"
     "job_table_test"
     "test_mmap"
+    "clonevm_exec_test"
     "stdin_test"
     "true_test"
     "false_test"

@@ -79,6 +79,10 @@ name = "clock_gettime_test"
 path = "src/clock_gettime_test.rs"
 
 [[bin]]
+name = "clonevm_exec_test"
+path = "src/clonevm_exec_test.rs"
+
+[[bin]]
 name = "file_read_test"
 path = "src/file_read_test.rs"
 
