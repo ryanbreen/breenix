@@ -187,17 +187,16 @@ pub unsafe fn load_elf_kernel_space(data: &[u8]) -> Result<LoadedElf, &'static s
     }
 
     // All segments loaded — now invalidate the entire instruction cache.
-    // We must use ic iallu (invalidate ALL) rather than per-line ic ivau because
-    // on Apple Silicon the VIPT i-cache has index bits [14:12] that extend beyond
-    // the 4KB page offset. ic ivau with the HHDM virtual address may not
-    // invalidate the i-cache set used by the user virtual address when those
-    // index bits differ. ic iallu is heavier but guaranteed correct.
+    // Use inner-shareable broadcast invalidation: a freshly loaded process can
+    // be scheduled on a remote CPU immediately after publication, and that CPU
+    // must not fetch stale fixed-VA userspace .text lines.
     #[cfg(target_arch = "aarch64")]
     unsafe {
         core::arch::asm!(
-            "ic iallu", // Invalidate ALL instruction cache to PoU
-            "dsb ish",  // Ensure completion
-            "isb",      // Synchronize instruction stream
+            "dsb ish",   // Ensure all data cache cleans are visible
+            "ic ialluis", // Invalidate all Inner Shareable I-cache to PoU
+            "dsb ish",   // Ensure i-cache invalidation completes
+            "isb",       // Synchronize instruction stream
             options(nostack, preserves_flags)
         );
     }
@@ -368,15 +367,14 @@ pub fn load_elf_into_page_table(
 
     // All segments loaded — invalidate the entire instruction cache.
     // Data was written through HHDM (TTBR1) but will be fetched through TTBR0
-    // (user VA). ic iallu is required because per-line ic ivau with HHDM
-    // addresses doesn't reliably invalidate user VA cache sets on Apple Silicon
-    // where the VIPT i-cache index extends beyond the page offset.
+    // (user VA). Use inner-shareable broadcast invalidation so a remote CPU
+    // woken by send_resched_ipi cannot fetch stale fixed-VA userspace .text.
     unsafe {
         core::arch::asm!(
-            "dsb ish",  // Ensure all data cache cleans are visible
-            "ic iallu", // Invalidate ALL instruction cache to PoU
-            "dsb ish",  // Ensure i-cache invalidation completes
-            "isb",      // Synchronize instruction stream
+            "dsb ish",   // Ensure all data cache cleans are visible
+            "ic ialluis", // Invalidate all Inner Shareable I-cache to PoU
+            "dsb ish",   // Ensure i-cache invalidation completes
+            "isb",       // Synchronize instruction stream
             options(nostack, preserves_flags)
         );
     }
@@ -576,7 +574,7 @@ fn load_segment_into_page_table(
                 }
                 core::arch::asm!("dsb ish", options(nostack, preserves_flags));
                 // NOTE: i-cache invalidation is deferred to after all segments
-                // are loaded (ic iallu in load_elf_into_page_table). Per-line
+                // are loaded (ic ialluis in load_elf_into_page_table). Per-line
                 // ic ivau with HHDM addresses doesn't reliably invalidate
                 // user VA cache sets on Apple Silicon where the VIPT i-cache
                 // index extends beyond the page offset (bits [14:12] differ
