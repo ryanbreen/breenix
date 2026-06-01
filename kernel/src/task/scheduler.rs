@@ -760,6 +760,35 @@ impl Scheduler {
         let _ = (thread_id, thread_name, is_user);
     }
 
+    /// Drop terminated threads that are no longer referenced by any CPU state.
+    ///
+    /// ARM64 userspace kernel stacks are owned by scheduler threads because the
+    /// scheduler clone can outlive the process-table copy until it has fully
+    /// disappeared from CPU current/previous slots.
+    #[cfg(target_arch = "aarch64")]
+    pub fn reclaim_terminated_threads(&mut self) {
+        for queue in self.per_cpu_queues.iter_mut() {
+            queue.retain(|&thread_id| {
+                self.threads.iter().any(|thread| {
+                    thread.id() == thread_id && thread.state != ThreadState::Terminated
+                })
+            });
+        }
+
+        self.threads.retain(|thread| {
+            if thread.state != ThreadState::Terminated {
+                return true;
+            }
+
+            let thread_id = thread.id();
+            (0..MAX_CPUS).any(|cpu| {
+                self.cpu_state[cpu].current_thread == Some(thread_id)
+                    || self.cpu_state[cpu].previous_thread == Some(thread_id)
+                    || self.cpu_state[cpu].idle_thread == thread_id
+            })
+        });
+    }
+
     /// Add a thread as the current running thread without scheduling.
     ///
     /// Used when manually starting the first userspace thread (init process).
@@ -2165,8 +2194,7 @@ impl Scheduler {
                         tid,
                         tid,
                         0,
-                        ((was_blocked_on_io as u32) << 31)
-                            | self.ready_queue_length() as u32,
+                        ((was_blocked_on_io as u32) << 31) | self.ready_queue_length() as u32,
                     );
                 }
                 continue;
@@ -2216,8 +2244,7 @@ impl Scheduler {
                         tid,
                         tid,
                         0,
-                        ((was_blocked_on_io as u32) << 31)
-                            | self.ready_queue_length() as u32,
+                        ((was_blocked_on_io as u32) << 31) | self.ready_queue_length() as u32,
                     );
                     ENQUEUE_DEFERRED.fetch_add(1, Ordering::Relaxed);
                 } else if already_queued {
@@ -2226,8 +2253,7 @@ impl Scheduler {
                         tid,
                         tid,
                         0,
-                        ((was_blocked_on_io as u32) << 31)
-                            | self.ready_queue_length() as u32,
+                        ((was_blocked_on_io as u32) << 31) | self.ready_queue_length() as u32,
                     );
                     ENQUEUE_ALREADY_QUEUED_OK.fetch_add(1, Ordering::Relaxed);
                 }
@@ -2512,6 +2538,16 @@ pub fn spawn_front(thread: Box<Thread>) {
             }
         } else {
             panic!("Scheduler not initialized");
+        }
+    });
+}
+
+#[cfg(target_arch = "aarch64")]
+pub fn reclaim_terminated_threads() {
+    without_interrupts(|| {
+        let mut scheduler_lock = SCHEDULER.lock();
+        if let Some(scheduler) = scheduler_lock.as_mut() {
+            scheduler.reclaim_terminated_threads();
         }
     });
 }
