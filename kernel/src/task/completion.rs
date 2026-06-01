@@ -88,8 +88,16 @@ fn trace_wait_timeout_stage(stage: u16) {
         }
     };
 
-    crate::tracing::record_event_2(crate::tracing::TraceEventType::WAIT_TIMEOUT_STAGE, stage, tid);
-    crate::tracing::record_event(crate::tracing::TraceEventType::WAIT_TIMEOUT_SP, 0, sp as u32);
+    crate::tracing::record_event_2(
+        crate::tracing::TraceEventType::WAIT_TIMEOUT_STAGE,
+        stage,
+        tid,
+    );
+    crate::tracing::record_event(
+        crate::tracing::TraceEventType::WAIT_TIMEOUT_SP,
+        0,
+        sp as u32,
+    );
     crate::tracing::record_event(
         crate::tracing::TraceEventType::WAIT_TIMEOUT_X30,
         0,
@@ -177,6 +185,27 @@ impl Completion {
     /// Falls back to spin-polling when the scheduler is not yet running
     /// (detected by `with_scheduler` returning None).
     pub fn wait_timeout(&self, expected_token: u32, timeout_ns: u64) -> Result<bool, i32> {
+        self.wait_timeout_inner(expected_token, timeout_ns, true)
+    }
+
+    /// Wait for completion without returning early for pending signals.
+    ///
+    /// Hardware commands that have already been issued must use this form when
+    /// abandoning the wait would leave shared device slots or DMA buffers live.
+    pub fn wait_timeout_uninterruptible(
+        &self,
+        expected_token: u32,
+        timeout_ns: u64,
+    ) -> Result<bool, i32> {
+        self.wait_timeout_inner(expected_token, timeout_ns, false)
+    }
+
+    fn wait_timeout_inner(
+        &self,
+        expected_token: u32,
+        timeout_ns: u64,
+        interruptible: bool,
+    ) -> Result<bool, i32> {
         // Fast path: already done (e.g., very fast device, or spurious call).
         if self.done.load(Ordering::Acquire) == expected_token {
             let in_syscall = syscall_sleep_path_available();
@@ -269,7 +298,7 @@ impl Completion {
                     return Ok(true);
                 }
 
-                if crate::syscall::check_signals_for_eintr().is_some() {
+                if interruptible && crate::syscall::check_signals_for_eintr().is_some() {
                     self.waiter.store(0, Ordering::Release);
                     clear_blocked_in_syscall_current();
                     return Err(EINTR);
@@ -283,7 +312,7 @@ impl Completion {
                 crate::per_cpu::preempt_enable();
 
                 loop {
-                    if crate::syscall::check_signals_for_eintr().is_some() {
+                    if interruptible && crate::syscall::check_signals_for_eintr().is_some() {
                         self.waiter.store(0, Ordering::Release);
                         clear_blocked_in_syscall_current();
                         restore_syscall_preempt_state();
@@ -343,7 +372,7 @@ impl Completion {
                         return Ok(true);
                     }
 
-                    if crate::syscall::check_signals_for_eintr().is_some() {
+                    if interruptible && crate::syscall::check_signals_for_eintr().is_some() {
                         self.waiter.store(0, Ordering::Release);
                         restore_syscall_preempt_state();
                         return Err(EINTR);
