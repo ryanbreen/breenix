@@ -136,6 +136,127 @@ fn dump_fatal_postmortem_once(label: &str) {
     crate::tracing::dump_all_buffers();
 }
 
+fn dump_unhandled_ec_state(frame: &Aarch64ExceptionFrame, esr: u64, far: u64) {
+    use crate::arch_impl::aarch64::context_switch::{raw_uart_dec, raw_uart_hex, raw_uart_str};
+
+    let mut sp_el0: u64;
+    let mut ttbr0: u64;
+    unsafe {
+        core::arch::asm!("mrs {}, sp_el0", out(reg) sp_el0, options(nomem, nostack));
+        core::arch::asm!("mrs {}, ttbr0_el1", out(reg) ttbr0, options(nomem, nostack));
+    }
+
+    raw_uart_str("[UNHANDLED_EC_STATE] esr=");
+    raw_uart_hex(esr);
+    raw_uart_str(" ec=");
+    raw_uart_hex((esr >> 26) & 0x3f);
+    raw_uart_str(" il=");
+    raw_uart_dec((esr >> 25) & 0x1);
+    raw_uart_str(" iss=");
+    raw_uart_hex(esr & 0x01ff_ffff);
+    raw_uart_str(" far=");
+    raw_uart_hex(far);
+    raw_uart_str(" elr=");
+    raw_uart_hex(frame.elr);
+    raw_uart_str(" spsr=");
+    raw_uart_hex(frame.spsr);
+    raw_uart_str(" spsr_il=");
+    raw_uart_dec((frame.spsr >> 20) & 0x1);
+    raw_uart_str(" spsr_m=");
+    raw_uart_hex(frame.spsr & 0x1f);
+    raw_uart_str(" spsr_daif=");
+    raw_uart_hex((frame.spsr >> 6) & 0xf);
+    raw_uart_str(" sp_el0=");
+    raw_uart_hex(sp_el0);
+    raw_uart_str(" ttbr0=");
+    raw_uart_hex(ttbr0);
+    raw_uart_str("\n");
+
+    dump_user_instruction_word(frame.elr, ttbr0);
+}
+
+fn dump_user_instruction_word(va: u64, ttbr0: u64) {
+    use crate::arch_impl::aarch64::context_switch::{raw_uart_hex, raw_uart_str};
+
+    const DESC_VALID: u64 = 1 << 0;
+    const DESC_ADDR_MASK: u64 = 0x0000_FFFF_FFFF_F000;
+
+    let base = ttbr0 & DESC_ADDR_MASK;
+    let phys_offset = crate::memory::physical_memory_offset().as_u64();
+    let l0_idx = ((va >> 39) & 0x1ff) as usize;
+    let l1_idx = ((va >> 30) & 0x1ff) as usize;
+    let l2_idx = ((va >> 21) & 0x1ff) as usize;
+    let l3_idx = ((va >> 12) & 0x1ff) as usize;
+
+    unsafe {
+        let l0 = (phys_offset + base) as *const u64;
+        let l0e = core::ptr::read_volatile(l0.add(l0_idx));
+        if l0e & DESC_VALID == 0 {
+            raw_uart_str("[UNHANDLED_EC_BYTES] l0_invalid entry=");
+            raw_uart_hex(l0e);
+            raw_uart_str("\n");
+            return;
+        }
+
+        let l1 = (phys_offset + (l0e & DESC_ADDR_MASK)) as *const u64;
+        let l1e = core::ptr::read_volatile(l1.add(l1_idx));
+        if l1e & DESC_VALID == 0 {
+            raw_uart_str("[UNHANDLED_EC_BYTES] l1_invalid l0e=");
+            raw_uart_hex(l0e);
+            raw_uart_str(" l1e=");
+            raw_uart_hex(l1e);
+            raw_uart_str("\n");
+            return;
+        }
+
+        let l2 = (phys_offset + (l1e & DESC_ADDR_MASK)) as *const u64;
+        let l2e = core::ptr::read_volatile(l2.add(l2_idx));
+        if l2e & DESC_VALID == 0 {
+            raw_uart_str("[UNHANDLED_EC_BYTES] l2_invalid l0e=");
+            raw_uart_hex(l0e);
+            raw_uart_str(" l1e=");
+            raw_uart_hex(l1e);
+            raw_uart_str(" l2e=");
+            raw_uart_hex(l2e);
+            raw_uart_str("\n");
+            return;
+        }
+
+        let l3 = (phys_offset + (l2e & DESC_ADDR_MASK)) as *const u64;
+        let l3e = core::ptr::read_volatile(l3.add(l3_idx));
+        if l3e & DESC_VALID == 0 {
+            raw_uart_str("[UNHANDLED_EC_BYTES] l3_invalid l0e=");
+            raw_uart_hex(l0e);
+            raw_uart_str(" l1e=");
+            raw_uart_hex(l1e);
+            raw_uart_str(" l2e=");
+            raw_uart_hex(l2e);
+            raw_uart_str(" l3e=");
+            raw_uart_hex(l3e);
+            raw_uart_str("\n");
+            return;
+        }
+
+        let phys = (l3e & DESC_ADDR_MASK) + (va & 0xfff);
+        let word = core::ptr::read_volatile((phys_offset + phys) as *const u32);
+        raw_uart_str("[UNHANDLED_EC_BYTES] va=");
+        raw_uart_hex(va);
+        raw_uart_str(" phys=");
+        raw_uart_hex(phys);
+        raw_uart_str(" word=");
+        raw_uart_hex(word as u64);
+        raw_uart_str(" l0e=");
+        raw_uart_hex(l0e);
+        raw_uart_str(" l1e=");
+        raw_uart_hex(l1e);
+        raw_uart_str(" l2e=");
+        raw_uart_hex(l2e);
+        raw_uart_str(" l3e=");
+        raw_uart_hex(l3e);
+        raw_uart_str("\n");
+    }
+}
+
 /// ARM64 syscall result type (mirrors x86_64 version)
 #[derive(Debug)]
 pub enum SyscallResult {
@@ -1029,6 +1150,7 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                 raw_uart_hex(frame_ref.elr);
                 raw_uart_str("\n");
             }
+            dump_unhandled_ec_state(frame_ref, esr, far);
             dump_fatal_postmortem_once("UNHANDLED_EC");
             // Redirect to idle instead of hanging — allows system to recover.
             // CRITICAL: Set frame values BEFORE switch_to_idle_best_effort()
