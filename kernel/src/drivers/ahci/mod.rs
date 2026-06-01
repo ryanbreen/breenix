@@ -781,7 +781,8 @@ fn wait_cmd_slot0(token: CmdToken) -> Result<(), &'static str> {
         // lock, preventing a race with complete() from the ISR.
         // ============================================================
         const TIMEOUT_NS: u64 = 5_000_000_000; // 5 s — Linux default
-        let wait_result = AHCI_COMPLETIONS[port][0].wait_timeout(cmd_num, TIMEOUT_NS);
+        let wait_result =
+            AHCI_COMPLETIONS[port][0].wait_timeout_uninterruptible(cmd_num, TIMEOUT_NS);
         match wait_result {
             Ok(true) => {
                 let tfd = port_read(abar, port, PORT_TFD);
@@ -795,10 +796,7 @@ fn wait_cmd_slot0(token: CmdToken) -> Result<(), &'static str> {
                 return Err("AHCI: command timeout");
             }
             Err(_eintr) => {
-                // Signal arrived while waiting; PORT_CI may still be set.
-                // The next call will hit the error-recovery path if the HBA
-                // is still busy.
-                return Err("AHCI: interrupted");
+                return Err("AHCI: command wait failed");
             }
         }
     } else {

@@ -5,9 +5,9 @@
 
 #[cfg(target_arch = "aarch64")]
 use libbreenix::fs;
-use libbreenix::process::{getpid, spawn, waitpid};
 #[cfg(target_arch = "aarch64")]
-use libbreenix::process::{spawnv, yield_now};
+use libbreenix::process::spawnv;
+use libbreenix::process::{getpid, spawn, waitpid};
 
 fn main() {
     let pid = getpid().map(|p| p.raw()).unwrap_or(0);
@@ -17,8 +17,8 @@ fn main() {
     run_wait_stress_if_enabled();
     #[cfg(target_arch = "aarch64")]
     run_trace_diag_probe_if_enabled();
-    run_boot_script();
     start_bsshd();
+    run_boot_script();
     #[cfg(target_arch = "aarch64")]
     start_bounce();
     #[cfg(target_arch = "aarch64")]
@@ -171,13 +171,9 @@ fn run_bssh_exec_autorun(host: &str) {
 fn run_boot_script() {
     #[cfg(target_arch = "aarch64")]
     {
-        // ARM64 Parallels boots from AHCI. Loading the large bsh ELF during the
-        // early single-CPU boot window can stall before init.js runs, so mirror
-        // the boot script's service sequence directly from init. Start bwm
-        // before network services so the compositor replaces the kernel VirGL
-        // proof clear within the Parallels validation window. Start the
-        // heartbeat first so scheduler liveness is visible even if BWM wedges
-        // immediately after spawn.
+        // ARM64 Parallels boots from AHCI. Mirror the boot script's service
+        // sequence directly from init so the standard desktop services are
+        // always started even before bsh runs init.js.
         const SERVICES: &[&[u8]] = &[
             b"/bin/heartbeat\0",
             b"/bin/xhci_counters\0",
@@ -188,12 +184,6 @@ fn run_boot_script() {
             if let Err(e) = spawn(path) {
                 print!("[init] Warning: failed to spawn service: {}\n", e);
             }
-            let _ = yield_now();
-            let ts = libbreenix::types::Timespec {
-                tv_sec: 0,
-                tv_nsec: 75_000_000,
-            };
-            let _ = libbreenix::time::nanosleep(&ts);
         }
         print!("[init] Boot script completed\n");
         return;
@@ -220,15 +210,6 @@ fn run_boot_script() {
 
 #[cfg(target_arch = "aarch64")]
 fn start_bounce() {
-    // Start the animated GUI demo last. It continuously presents frames, so
-    // keeping it after the early service execs avoids overlapping AHCI-backed
-    // ELF reads with active compositor traffic.
-    let _ = yield_now();
-    let ts = libbreenix::types::Timespec {
-        tv_sec: 0,
-        tv_nsec: 75_000_000,
-    };
-    let _ = libbreenix::time::nanosleep(&ts);
     match spawn(b"/bin/bounce\0") {
         Ok(child_pid) => {
             print!("[init] bounce started (PID {})\n", child_pid.raw());
@@ -240,8 +221,6 @@ fn start_bounce() {
 }
 
 fn start_bsshd() {
-    // Start bsshd after the boot script to avoid overlapping early exec reads
-    // against the AHCI-backed ext2 root during initial userspace bring-up.
     match spawn(b"/bin/bsshd\0") {
         Ok(child_pid) => {
             print!("[init] bsshd started (PID {})\n", child_pid.raw());
