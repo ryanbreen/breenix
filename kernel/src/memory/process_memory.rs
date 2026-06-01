@@ -2319,20 +2319,29 @@ pub fn map_user_stack_to_process_with_phys(
     process_page_table: &mut ProcessPageTable,
     user_stack_bottom: VirtAddr,
     user_stack_top: VirtAddr,
-    phys_bottom: u64,
+    physical_frames: &[u64],
 ) -> Result<(), &'static str> {
     use crate::memory::arch_stub::{Page, PageTableFlags, PhysAddr, PhysFrame, Size4KiB};
 
     let stack_size = user_stack_top.as_u64() - user_stack_bottom.as_u64();
-    let num_pages = stack_size / 4096;
+    let num_pages = (stack_size / 4096) as usize;
+
+    if physical_frames.len() != num_pages {
+        log::error!(
+            "Stack frame count mismatch: stack pages={} physical_frames={}",
+            num_pages,
+            physical_frames.len()
+        );
+        return Err("Stack frame count mismatch");
+    }
 
     let flags =
         PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::USER_ACCESSIBLE;
 
-    for i in 0..num_pages {
-        let page_offset = i * 4096;
+    for (i, frame_phys) in physical_frames.iter().copied().enumerate() {
+        let page_offset = (i as u64) * 4096;
         let user_vaddr = VirtAddr::new(user_stack_bottom.as_u64() + page_offset);
-        let phys_addr = PhysAddr::new(phys_bottom + page_offset);
+        let phys_addr = PhysAddr::new(frame_phys);
         let page = Page::<Size4KiB>::containing_address(user_vaddr);
         let frame = PhysFrame::<Size4KiB>::containing_address(phys_addr);
 
