@@ -32,58 +32,63 @@
 </head>
 <body>
   <h1>Breenix Roadmap — Backlog</h1>
-  <p class="sub">Canonical orchestrator backlog (maintained by Claude). <b>Last updated 2026-05-30 06:35.</b> Shipped + in flight + queued. Per-turn execution detail lives in the Ralph <code>inbox.md</code>; version-tracked copy in-repo at <code>docs/planning/ralph-roadmap.html</code>.</p>
+  <p class="sub">Canonical orchestrator backlog (maintained by Claude). <b>Last updated 2026-06-01.</b> ARM64 / Parallels focus. Refreshed at merge milestones (not per-turn — per-turn churn caused the prior revert). Per-turn execution detail lives in the Ralph <code>inbox.md</code>; version-tracked copy in-repo at <code>docs/planning/ralph-roadmap.html</code>.</p>
 
   <div class="summary">
-    <div><div class="n" style="color:var(--green)">7</div><div class="l">Shipped</div></div>
+    <div><div class="n" style="color:var(--green)">12</div><div class="l">Shipped (session)</div></div>
     <div><div class="n" style="color:var(--amber)">1</div><div class="l">In&nbsp;progress</div></div>
-    <div><div class="n" style="color:var(--blue)">6</div><div class="l">Queued</div></div>
-    <div><div class="n" style="color:var(--gray)">1</div><div class="l">Parked</div></div>
+    <div><div class="n" style="color:var(--blue)">3</div><div class="l">Queued</div></div>
+    <div><div class="n" style="color:var(--red)">8</div><div class="l">Signoff-gated</div></div>
   </div>
 
   <h2>🚧 In progress</h2>
   <div class="grid">
     <div class="card">
-      <h3>E5-1 — execv child returns to kernel RIP under Ring 3 <span class="badge b-block">attempt reverted · unproven</span> <span class="arch">x86_64</span></h3>
-      <p>Blocked-in-syscall thread mid-<code>execv</code> is timer-preempted; its saved <b>kernel</b> frame is later restored under Ring-3 selectors → err <code>0x15</code> instruction-fetch fault at the saved kernel RIP.</p>
-      <p class="note"><b>Turn 28 (2026-05-30):</b> selector-only privilege-conditional restore built clean but could not be proven (GDB timed out pre-userspace; boot-stages stalled at ARP stage-22). A broader candidate (kernel-frame restore + CR3 switch) reached userspace and cleared the original 0x15 signature, but <b>panicked on a new fault</b> (<code>0x100003006a8</code>, PML4[2] process-manager data). All code <b>reverted</b> — no fix retained, nothing merged. <b>New understanding:</b> not a selector swap — a process/thread context-sync bug (how <code>process.main_thread</code> vs scheduler <code>Thread</code> diverge/reuse across blocked-in-syscall wake/restore). Proof also gated on NB-2 (ARP stage-22).</p>
-      <p class="meta">operator-approved Tier-2 edit · beads <code>breenix-ql2</code></p>
+      <h3>#404 residual post-spawn crash — root-cause <span class="badge b-prog">re-verify failed</span> <span class="arch">ARM64 · Parallels</span></h3>
+      <p>The user-stack frame-aliasing lockup fix (<a href="https://github.com/ryanbreen/breenix/pull/404">PR #404</a>) <b>reduces but does not eliminate</b> the fault: a clean re-verify on current main faulted <b>1 of 2 stress boots</b> with a post-spawn <code>UNHANDLED_EC → PANIC</code> on the freshly spawned child (PID 5) after exec.</p>
+      <p class="note"><b>Key finding:</b> the prior "assertion-fired 3/3, 0 crashes" proof was contaminated by an <b>SMP-serial byte-interleaving</b> blind spot — naive <code>FATAL</code>/<code>PANIC</code> line-grep reads 0; you must de-interleave the two CPU streams to see <code>[FATAL] bug=UNHANDLED_EC</code>. The fault sits near the stack/spawn path → may overlap the <a href="https://github.com/ryanbreen/breenix/pull/406">#406</a> kstack-reuse area. PR #404 <b>held, not merged</b>. Next: de-interleave + root-cause; a gold-master file may be required → operator signoff first. beads <code>breenix-oia</code> family adjacent.</p>
     </div>
   </div>
 
-  <h2>📋 Queued backlog</h2>
+  <h2>📋 Queued — non-gold-master (ARM64)</h2>
   <div class="grid">
-    <div class="card">
-      <h3>NB-1 — CPU%-accounting bug + real 2-core burn <span class="badge b-p0">P0</span> <span class="arch">ARM64 · Parallels</span></h3>
-      <p><b>Investigated 2026-05-30 (code hypothesis):</b> heartbeat's sleep path is <i>correct</i> (<code>nanosleep</code> genuinely blocks — not a busy-loop). The <b>189.9% is an accounting artifact.</b></p>
-      <p class="meta"><b>NB-1a (confirmed by code):</b> btop's % = per-process ticks (summed across cores/threads per-PID) ÷ <code>global_ticks</code>, but <code>global_ticks</code> increments only on CPU0 → blows past 100%. Sites: <code>btop.rs:511-518</code>, <code>timer_interrupt.rs:734-737</code>, <code>procfs/mod.rs:998-1003</code>. Fix: core-aware denominator + single-snapshot sampling. <b>NB-1b (runtime-confirm):</b> which process truly pins CPU0+CPU2 — GDB PC-sample; SMP double-scheduling ruled out (guards + gold-master CPU0 alarm intact).</p>
-    </div>
-    <div class="card">
-      <h3>NB-2 — ARP stage-22 boot-stages stall <span class="badge b-p0">P0</span> <span class="arch">x86_64</span></h3>
-      <p>Boot-stages hangs at <code>[22/252] ARP reply received</code> — net RX reply not delivered on QEMU x86_64. Blocks the E5-1 boot-stages proof; likely a net RX interrupt/descriptor issue.</p>
-    </div>
-    <div class="card"><h3>NB-3 — <code>ls</code> hangs in bsh <span class="badge b-p1">P1</span> <span class="arch">ARM64</span></h3><p><code>ls</code> still hangs in the bsh shell.</p></div>
-    <div class="card"><h3>NB-4 — Window clipping on overlap <span class="badge b-p1">P1</span> <span class="arch">ARM64 · BWM</span></h3><p>Overlapping windows clip in the BWM / VirGL compositor occlusion path.</p></div>
-    <div class="card"><h3>NB-5 — Cornflower-blue ~30s boot hang <span class="badge b-p1">P1</span> <span class="arch">ARM64 · Parallels</span></h3><p>Screen stays cornflower blue ~30s before first composited frame on Parallels boot. First-paint / boot-latency investigation.</p></div>
-    <div class="card"><h3>NB-6 — virtio-blk self-test fails <span class="badge b-p2">P2</span> <span class="arch">ARM64 · Parallels</span></h3><p><code>VirtIO block test failed: Block device not initialized</code>; falls back to AHCI for ext2 root.</p></div>
+    <div class="card"><h3>SOFT_LOCKUP_VIRGL Parallels failure class <span class="badge b-p1">P1</span> <span class="arch">ARM64 · Parallels</span></h3><p>Investigate + classify the <code>SOFT_LOCKUP_VIRGL</code> failure class on Parallels. beads <code>breenix-ha9</code>.</p></div>
+    <div class="card"><h3>F15 — ARM64 AHCI timeout corridor after GICR discovery <span class="badge b-p1">P1</span> <span class="arch">ARM64</span></h3><p>Remaining AHCI timeout corridor after GICR discovery; verify whether the fix is storage-driver-only (non-gold-master) or touches <code>gic.rs</code> → signoff. beads <code>breenix-xk8</code>.</p></div>
+    <div class="card"><h3>bsshd SSH exit-status / close for exec <span class="badge b-p2">P2</span> <span class="arch">ARM64</span></h3><p>bsshd should send SSH exit-status + channel close for exec requests. beads <code>breenix-72x</code>.</p></div>
   </div>
 
-  <h2>⏸ Parked — awaiting operator</h2>
+  <h2>🔒 Signoff-gated — gold-master / CPU0 cluster (awaiting operator)</h2>
   <div class="grid">
-    <div class="card"><h3>CPU0 timer death <span class="badge b-parked">parked</span> <span class="arch">ARM64 · Parallels</span></h3><p>CPU0 vtimer stops ~6 ticks into boot on Parallels; registers verified correct; diagnostics built. Separate Ralph; awaiting operator decision since 2026-05-26.</p></div>
+    <div class="card"><h3>CPU0 timer-death + scheduler cluster <span class="badge b-block">signoff</span> <span class="arch">ARM64 · Parallels</span></h3><p>CPU0 vtimer death on Parallels + remote-wake / resched scheduling. Fixes live in frozen gold-master <code>timer_interrupt.rs</code> / <code>gic.rs</code> / <code>context_switch.rs</code> → need operator signoff (this cluster burned ~a week before; investigate-only without go). beads <code>oia, 9f1, cb7, 6f4, e43, k16, eh4</code>.</p></div>
+    <div class="card"><h3>BusyBox applet DATA_ABORT — ARM64 musl TLS <span class="badge b-block">signoff</span> <span class="arch">ARM64</span></h3><p>BusyBox applet faults on the ARM64 musl TLS path (errno read from a zero <code>TPIDR_EL0</code>). User-facing symptom already fixed (native <code>bls</code> as <code>/bin/ls</code>); the principled TLS fix touches gold-master context-switch → signoff. beads <code>breenix-b7u</code>.</p></div>
   </div>
 
-  <h2>✅ Shipped (merged to main)</h2>
+  <h2>⏸ Deprioritized — x86_64 (future)</h2>
   <div class="grid">
-    <div class="card"><h3>E5-2 — net RX MSI-X completion <span class="badge b-done">merged</span></h3><p><a href="https://github.com/ryanbreen/breenix/pull/365">PR #365</a></p></div>
-    <div class="card"><h3>B-3 — interrupt/IO fix <span class="badge b-done">merged</span></h3><p><a href="https://github.com/ryanbreen/breenix/pull/366">PR #366</a></p></div>
-    <div class="card"><h3>B-4 — interrupt/IO fix <span class="badge b-done">merged</span></h3><p><a href="https://github.com/ryanbreen/breenix/pull/368">PR #368</a></p></div>
-    <div class="card"><h3>#367 — defensive ELF PT_LOAD perm merge <span class="badge b-done">merged</span></h3><p><a href="https://github.com/ryanbreen/breenix/pull/367">PR #367</a></p></div>
-    <div class="card"><h3>E3 — runtime-polling gate <span class="badge b-done">closed</span></h3><p>Polling-elimination gate satisfied.</p></div>
-    <div class="card"><h3>Roadmap docs consolidation <span class="badge b-done">merged</span></h3><p><a href="https://github.com/ryanbreen/breenix/pull/370">#370</a>, <a href="https://github.com/ryanbreen/breenix/pull/371">#371</a>, <a href="https://github.com/ryanbreen/breenix/pull/372">#372</a></p></div>
-    <div class="card"><h3>B-1 / B-2 — ARM64 DATA_ABORT <span class="badge b-done">non-repro</span></h3><p>Not reproducible across 3 healthy boots; opportunistic capture only.</p></div>
+    <div class="card"><h3>E5-1 — execv child returns to kernel RIP under Ring 3 <span class="badge b-parked">x86 future</span> <span class="arch">x86_64</span></h3><p>Process/thread context-sync bug on blocked-in-syscall wake/restore mid-<code>execv</code>. ARM64-focus → deprioritized. beads <code>breenix-ql2</code>.</p></div>
+    <div class="card"><h3>NB-2 — ARP stage-22 boot-stages stall <span class="badge b-parked">x86 future</span> <span class="arch">x86_64</span></h3><p>x86 boot-stages hang at <code>[22/252] ARP reply received</code>; ARM64-focus → deprioritized (x86 boot-stages is not used as a gate).</p></div>
   </div>
 
-  <p class="note" style="margin-top:24px">Legend: <span class="badge b-p0">P0</span> urgent · <span class="badge b-p1">P1</span> · <span class="badge b-p2">P2</span> · <span class="arch">arch</span>. NB-* = surfaced by operator 2026-05-30.</p>
+  <h2>✅ Shipped — merged to main (this session)</h2>
+  <div class="grid">
+    <div class="card"><h3>oi6 — ARM64 multi-window virtio-gpu marshalling <span class="badge b-done">merged</span></h3><p>The real "window clipping". <a href="https://github.com/ryanbreen/breenix/pull/382">PR #382</a> · re-verified clean on a fresh multi-window boot (0 VIRTGPU_FAIL).</p></div>
+    <div class="card"><h3>244 — ARM64 kstack reuse / bsshd inbound recv EIO <span class="badge b-done">merged</span></h3><p><a href="https://github.com/ryanbreen/breenix/pull/406">PR #406</a> · bitmap kstack reuse + Drop-free (leaked fork-child stacks exhausted the pool at ~90 conns); 50/50 inbound SSH with real host-key verify.</p></div>
+    <div class="card"><h3>4yu — ARM64 AHCI uninterruptible exec-reads <span class="badge b-done">merged</span></h3><p><a href="https://github.com/ryanbreen/breenix/pull/405">PR #405</a> · AHCI slot-0 waits made uninterruptible (SIGCHLD→EINTR was abandoning in-flight DMA); F19 serialization workaround relaxed.</p></div>
+    <div class="card"><h3>45i — ARM64 CLONE_VM → exec use-after-free <span class="badge b-done">merged</span></h3><p><a href="https://github.com/ryanbreen/breenix/pull/407">PR #407</a> · exec returns EAGAIN while a live CLONE_VM sibling still holds the old CR3 (scoped stopgap; full sibling-teardown later).</p></div>
+    <div class="card"><h3>NB-1 — CPU%-accounting fix <span class="badge b-done">merged</span></h3><p><a href="https://github.com/ryanbreen/breenix/pull/396">PR #396</a> · core-aware denominator + single-snapshot sampling (the 189% was an accounting artifact, not a real burn).</p></div>
+    <div class="card"><h3>bssh client + host-auth suite <span class="badge b-done">merged</span></h3><p>client channel <a href="https://github.com/ryanbreen/breenix/pull/397">#397</a>, publickey <a href="https://github.com/ryanbreen/breenix/pull/398">#398</a>, known-hosts verify <a href="https://github.com/ryanbreen/breenix/pull/399">#399</a>, host-auth <a href="https://github.com/ryanbreen/breenix/pull/403">#403</a>.</p></div>
+    <div class="card"><h3>net RX stall + ARP pending queue <span class="badge b-done">merged</span></h3><p><a href="https://github.com/ryanbreen/breenix/pull/400">#400</a> net-rx-stall fix, <a href="https://github.com/ryanbreen/breenix/pull/401">#401</a> ARP pending queue.</p></div>
+    <div class="card"><h3>crash-trace instrumentation <span class="badge b-done">merged</span></h3><p><a href="https://github.com/ryanbreen/breenix/pull/402">PR #402</a> · trace-ring crash diagnostics.</p></div>
+  </div>
+
+  <h2>✅ Resolved without a fix (closed with evidence)</h2>
+  <div class="grid">
+    <div class="card"><h3>0wf — BWM spawn-wedge <span class="badge b-done">dismissed</span></h3><p>6/6 fresh boots reached bwm <code>create_process_with_argv ENTRY</code> + full ELF load — harness/classification noise, not a real wedge. beads closed.</p></div>
+    <div class="card"><h3>c5d — ARM64 BWM GPU compositor for animated windows <span class="badge b-done">already fixed</span></h3><p>Live counters: <code>SUBMIT_3D</code> climbs ~154/s under Bounce while CPU full-frame composite stays flat — already GPU-composited by merged <a href="https://github.com/ryanbreen/breenix/pull/381">#381</a>. beads closed.</p></div>
+    <div class="card"><h3>NB-3 — <code>ls</code> hang in bsh <span class="badge b-done">fixed</span></h3><p>Native <code>bls</code> installed as <code>/bin/ls</code> (the BusyBox applet musl-TLS fault is tracked separately as <code>b7u</code>).</p></div>
+    <div class="card"><h3>NB-4 — window clipping <span class="badge b-done">= oi6</span></h3><p>Resolved as the oi6 multi-window virtio-gpu fix (<a href="https://github.com/ryanbreen/breenix/pull/382">#382</a>).</p></div>
+  </div>
+
+  <p class="note" style="margin-top:24px">Legend: <span class="badge b-p0">P0</span> · <span class="badge b-p1">P1</span> · <span class="badge b-p2">P2</span> · <span class="badge b-block">signoff</span> = gold-master / operator-gated · <span class="arch">arch</span>. Gold-master frozen files (edits require operator signoff): <code>context_switch.rs</code>, <code>timer_interrupt.rs</code>, <code>gic.rs</code>.</p>
 </body>
 </html>
