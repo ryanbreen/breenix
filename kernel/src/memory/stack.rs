@@ -32,6 +32,9 @@ pub struct GuardedStack {
     /// Privilege level of the stack
     #[allow(dead_code)]
     privilege: ThreadPrivilege,
+    /// Physical frames backing each stack page, in ascending virtual-page order.
+    #[cfg(target_arch = "aarch64")]
+    physical_frames: alloc::vec::Vec<u64>,
 }
 
 impl GuardedStack {
@@ -87,6 +90,8 @@ impl GuardedStack {
             stack_top,
             stack_size,
             privilege,
+            #[cfg(target_arch = "aarch64")]
+            physical_frames: alloc::vec::Vec::new(),
         })
     }
 
@@ -126,6 +131,11 @@ impl GuardedStack {
     /// Get the size of the usable stack area
     pub fn size(&self) -> usize {
         self.stack_size
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    pub fn physical_frames(&self) -> &[u64] {
+        &self.physical_frames
     }
 
     /// Find free virtual address space for stack allocation
@@ -327,19 +337,12 @@ pub fn allocate_stack_with_privilege(
 
     // Allocate physical frames for the stack
     // We track all frames and verify they're contiguous
-    let mut first_frame_phys: Option<u64> = None;
-    let mut prev_frame_phys: Option<u64> = None;
+    let mut frames = alloc::vec::Vec::with_capacity(stack_pages);
 
-    for i in 0..stack_pages {
+    for _ in 0..stack_pages {
         let frame = allocate_frame().ok_or("out of memory for stack")?;
         let phys = frame.start_address().as_u64();
-
-        if i == 0 {
-            first_frame_phys = Some(phys);
-        }
-        // Note: We don't log non-contiguous frames here - just accept them
-        // For simple stacks this works fine even if frames aren't contiguous
-        prev_frame_phys = Some(phys);
+        frames.push(phys);
 
         // Zero the frame via HHDM
         let virt = HHDM_BASE + phys;
@@ -348,8 +351,18 @@ pub fn allocate_stack_with_privilege(
         }
     }
 
-    let stack_phys = first_frame_phys.ok_or("no frames allocated")?;
-    let last_frame_phys = prev_frame_phys.ok_or("no frames allocated")?;
+    let stack_phys = *frames.first().ok_or("no frames allocated")?;
+    let last_frame_phys = *frames.last().ok_or("no frames allocated")?;
+
+    let contiguous = frames
+        .windows(2)
+        .all(|pair| pair[1] == pair[0].saturating_add(4096));
+    if !contiguous {
+        crate::serial_println!(
+            "ARM64 stack allocator: non-contiguous physical frames: {:x?}",
+            frames
+        );
+    }
 
     // Calculate virtual addresses via HHDM
     // Layout: [guard page][stack pages...]
@@ -364,6 +377,7 @@ pub fn allocate_stack_with_privilege(
         stack_top,
         stack_size: size,
         privilege,
+        physical_frames: frames,
     })
 }
 
