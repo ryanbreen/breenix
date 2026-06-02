@@ -338,8 +338,19 @@ BASE_LINE="$(serial_lines)"
 log "serial line baseline: $BASE_LINE"
 
 log "injecting double-Super (prefix=$SUPER_PREFIX code=$SUPER_CODE gap=${INTER_TAP_MS}ms)"
+INJ_T0="$(python3 -c 'import time;print(int(time.time()*1000))' 2>/dev/null || echo 0)"
 "$INJECT" doubletap "$SUPER_CODE" "$INTER_TAP_MS" "$SUPER_PREFIX" \
     || finish_fail "inject doubletap failed (key injection error — see 'Host prerequisites & known limitations' in README)"
+INJ_T1="$(python3 -c 'import time;print(int(time.time()*1000))' 2>/dev/null || echo 0)"
+INJ_MS=$(( INJ_T1 - INJ_T0 ))
+# The bwm double-tap window is 400ms. If the two taps span much more than that
+# (e.g. a CPU-throttled / overloaded host making prlctl send-key-event slow),
+# they register as two single taps and the launcher never opens. Surface it so a
+# "launcher did not open" failure is diagnosable as timing vs. key-never-arrived.
+log "double-tap injection wall-time: ${INJ_MS}ms (window=400ms; >~350ms => taps likely missed the window — host too slow; do NOT throttle these runs)"
+if [[ "$INJ_MS" -gt 350 ]]; then
+    log "WARNING: injection (${INJ_MS}ms) likely exceeded the 400ms double-tap window — a no-launcher result below is most likely a timing miss, not a Breenix bug"
+fi
 
 sleep "$(ms_to_s "$(awk "BEGIN{printf \"%d\", $POST_SUPER_WAIT*1000}")")"
 
