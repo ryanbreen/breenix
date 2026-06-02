@@ -1348,13 +1348,6 @@ fn inline_ret_dispatch_info_if_ready(
                         switch_ttbr0_if_needed(thread_id);
                         true
                     }
-                    TtbrResult::PmLockBusy if thread.cached_ttbr0 != 0 => {
-                        unsafe {
-                            Aarch64PerCpu::set_next_cr3(thread.cached_ttbr0);
-                        }
-                        switch_ttbr0_if_needed(thread_id);
-                        true
-                    }
                     TtbrResult::PmLockBusy | TtbrResult::ProcessGone => false,
                 }
             } else {
@@ -2183,19 +2176,9 @@ fn dispatch_thread_locked(
         // Must succeed BEFORE restoring context — if TTBR0 setup fails,
         // redirect to idle (same pattern as regular userspace threads).
         if (blocked_in_syscall || is_in_kernel_mode) && !is_kernel {
-            let cached_ttbr0 = sched
-                .get_thread(thread_id)
-                .map(|thread| thread.cached_ttbr0)
-                .unwrap_or(0);
             let ttbr_result = set_next_ttbr0_for_thread(thread_id);
             match ttbr_result {
                 TtbrResult::Ok => {
-                    switch_ttbr0_if_needed(thread_id);
-                }
-                TtbrResult::PmLockBusy if cached_ttbr0 != 0 => {
-                    unsafe {
-                        Aarch64PerCpu::set_next_cr3(cached_ttbr0);
-                    }
                     switch_ttbr0_if_needed(thread_id);
                 }
                 TtbrResult::PmLockBusy => {
@@ -2352,19 +2335,9 @@ fn dispatch_thread_locked(
         // If PM lock is contended, redirect to idle and requeue. The thread
         // will be rescheduled on the next timer tick (~5ms). Spinning here
         // wastes CPU cycles that other threads need for fork/exec to complete.
-        let cached_ttbr0 = sched
-            .get_thread(thread_id)
-            .map(|thread| thread.cached_ttbr0)
-            .unwrap_or(0);
         let ttbr_result = set_next_ttbr0_for_thread(thread_id);
         match ttbr_result {
             TtbrResult::Ok => {
-                switch_ttbr0_if_needed(thread_id);
-            }
-            TtbrResult::PmLockBusy if cached_ttbr0 != 0 => {
-                unsafe {
-                    Aarch64PerCpu::set_next_cr3(cached_ttbr0);
-                }
                 switch_ttbr0_if_needed(thread_id);
             }
             TtbrResult::PmLockBusy => {
