@@ -409,7 +409,11 @@ if tail_since | grep -qF -- "$LAUNCHER_MARKER"; then
 else
     capture_evidence "no-launcher"
     tail_since > "$SERIAL_EXCERPT" || true
-    finish_fail "launcher did not open after double-Super (no '$LAUNCHER_MARKER')"
+    # Distinguish a real kernel crash from a dropped double-tap (honest reporting).
+    if tail_since | grep -qE '\[UNHANDLED_EC\]|\[FATAL_POSTMORTEM\]|kernel panic'; then
+        finish_fail "KERNEL FAULT before launcher opened: $(tail_since | grep -E '\[UNHANDLED_EC\]|\[FATAL_POSTMORTEM\]' | head -1) — real Breenix crash, NOT a harness/injection issue"
+    fi
+    finish_fail "launcher did not open after double-Super (no '$LAUNCHER_MARKER') — double-tap not registered by bwm (likely BWM/HID input intermittency; injection was batched + dispatcher-timed)"
 fi
 
 # =============================================================================
@@ -446,6 +450,13 @@ tail_since | grep -qF -- "$BTERM_SHELL_MARKER"  && SAW_BTERM_SHELL=1
 if [[ "$SAW_BTERM_CONFIG" -eq 1 && "$SAW_BTERM_SHELL" -eq 1 ]]; then
     log "terminal launched + loaded: saw '$BTERM_CONFIG_MARKER' AND '$BTERM_SHELL_MARKER'"
     finish_pass
+fi
+
+# A kernel fault during the Enter->fork/exec->bterm path (e.g. EC=0xe Illegal
+# Execution State on a secondary CPU) presents as "launcher opened, bterm never
+# came up". Detect + report it distinctly from a benign no-launch.
+if tail_since | grep -qE '\[UNHANDLED_EC\]|\[FATAL_POSTMORTEM\]|kernel panic'; then
+    finish_fail "KERNEL FAULT during terminal launch: $(tail_since | grep -E '\[UNHANDLED_EC\]|\[FATAL_POSTMORTEM\]' | head -1) — real Breenix crash on the bterm fork/exec path (clone-exec/TTBR0 territory), NOT a harness/timing issue"
 fi
 
 if [[ "$SAW_BTERM_CONFIG" -eq 1 ]]; then
