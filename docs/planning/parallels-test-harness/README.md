@@ -99,8 +99,12 @@ scripts/parallels/launcher-smoke.sh [--no-build] [--keep-vm] \
 The script:
 
 - launches `run.sh --parallels` in the background (killed on exit),
-- polls serial for the readiness marker,
-- resolves the running VM name (`prlctl list -a | grep breenix-`),
+- polls serial for the readiness marker, **only trusting it once the serial log
+  is the fresh one this boot created** (inode differs from any leftover
+  prior-run log) so a stale marker can't be mistaken for readiness,
+- resolves the VM name authoritatively from `run.sh`'s own `VM:     breenix-<epoch>`
+  stdout line (falling back to `prlctl list -a | grep breenix-`), so a leftover
+  stuck `breenix-*` VM can never be selected by mistake,
 - waits VirGL warmup, then injects double-Super and Enter,
 - writes an evidence dir at
   `logs/parallels-launcher-test/run-<YYYYmmdd-HHMMSS>/` containing the serial

@@ -93,6 +93,12 @@ RUN_PID=""
 VM_NAME=""
 FINAL_REASON=""
 CAFFEINATE_PID=""
+# Inode of any pre-existing (stale, prior-run) serial log, captured before we
+# launch run.sh. run.sh `rm -f`s the log and recreates it fresh on boot, which
+# changes the inode; we refuse to trust any marker until the inode differs (or
+# the file is gone), so a leftover prior-run marker can never be mis-read as
+# readiness for THIS boot.
+STALE_SERIAL_INODE=""
 
 log() { printf '[smoke %s] %s\n' "$(date +%H:%M:%S)" "$*" >&2; }
 
@@ -167,6 +173,19 @@ capture_evidence() {
 
 ms_to_s() { awk "BEGIN{printf \"%.3f\", ${1}/1000}"; }
 
+# Current inode of the serial log, or empty if it does not exist.
+serial_inode() { [[ -e "$SERIAL_LOG" ]] && stat -f '%i' "$SERIAL_LOG" 2>/dev/null || true; }
+
+# True only once the serial log is the FRESH one run.sh created for this boot:
+# either the stale file is gone, or its inode changed since we captured it.
+serial_is_fresh() {
+    local cur
+    cur="$(serial_inode)"
+    [[ -z "$cur" ]] && return 1                 # not (re)created yet
+    [[ -z "$STALE_SERIAL_INODE" ]] && return 0  # no stale file existed at all
+    [[ "$cur" != "$STALE_SERIAL_INODE" ]]
+}
+
 # =============================================================================
 # Preflight
 # =============================================================================
@@ -224,6 +243,14 @@ fi
 # (a) Launch run.sh --parallels in the BACKGROUND. run.sh tails serial forever,
 #     so it must be backgrounded; we kill it in cleanup.
 # =============================================================================
+# Snapshot the inode of any leftover serial log from a previous run BEFORE we
+# launch run.sh, so the readiness poll can tell "fresh log from this boot" apart
+# from "stale log that already contains a prior run's readiness marker".
+STALE_SERIAL_INODE="$(serial_inode)"
+if [[ -n "$STALE_SERIAL_INODE" ]]; then
+    log "stale serial log present (inode $STALE_SERIAL_INODE); will wait for run.sh to recreate it"
+fi
+
 RUN_ARGS=(--parallels)
 [[ "$NO_BUILD" -eq 1 ]] && RUN_ARGS+=(--no-build)
 log "launching: $RUN_SH ${RUN_ARGS[*]} (background)"
@@ -245,7 +272,9 @@ while :; do
     if ! kill -0 "$RUN_PID" 2>/dev/null; then
         finish_fail "run.sh exited before readiness (see $RUN_LOG)"
     fi
-    if [[ -f "$SERIAL_LOG" ]] && grep -qF -- "$READY_MARKER" "$SERIAL_LOG"; then
+    # Only trust the marker once the serial log is the fresh one run.sh created
+    # for THIS boot — never a leftover prior-run log that may already contain it.
+    if serial_is_fresh && grep -qF -- "$READY_MARKER" "$SERIAL_LOG"; then
         READY=1
         break
     fi
@@ -255,11 +284,22 @@ done
 log "readiness marker seen"
 
 # =============================================================================
-# (c) Resolve the running VM name (breenix-<epoch>) created by this run.sh.
+# (c) Resolve the VM name (breenix-<epoch>) created by THIS run.sh.
+#
+# Authoritative source: run.sh prints `VM:     breenix-<epoch>` to its stdout
+# (captured in RUN_LOG) AFTER it has created and started that exact VM. Reading
+# it from RUN_LOG is immune to leftover/stuck breenix-* VMs that run.sh failed
+# to delete. Fall back to the prlctl-list heuristic only if RUN_LOG has no such
+# line (e.g. run.sh output format changed).
 # =============================================================================
-VM_NAME="$(prlctl list -a 2>/dev/null | grep -o 'breenix-[0-9]\+' | tail -1 || true)"
-[[ -n "$VM_NAME" ]] || finish_fail "could not resolve a running breenix-* VM via prlctl list -a"
-log "resolved VM: $VM_NAME"
+VM_NAME="$(grep -oE 'breenix-[0-9]+' "$RUN_LOG" 2>/dev/null | tail -1 || true)"
+if [[ -n "$VM_NAME" ]]; then
+    log "resolved VM from run.sh output: $VM_NAME"
+else
+    VM_NAME="$(prlctl list -a 2>/dev/null | grep -o 'breenix-[0-9]\+' | tail -1 || true)"
+    [[ -n "$VM_NAME" ]] || finish_fail "could not resolve a breenix-* VM (no name in $RUN_LOG, none via prlctl list -a)"
+    log "resolved VM via prlctl fallback: $VM_NAME"
+fi
 export VM="$VM_NAME"
 
 # =============================================================================
