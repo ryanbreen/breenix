@@ -279,6 +279,15 @@ case "$LOCK_CHECK_RC" in
         ;;
 esac
 
+# Serial-only guard: these runs MUST be serial. run.sh kills any existing breenix
+# VM before creating its own, so an overlapping run would destroy an in-flight VM
+# (and two VMs would fight the dispatcher). Refuse to start if one is already up.
+EXISTING_VM="$(prlctl list 2>/dev/null | awk '/breenix-/{print $NF}' | head -1 || true)"
+if [[ -n "$EXISTING_VM" ]]; then
+    echo "RESULT: FAIL: a Breenix VM ($EXISTING_VM) is already running — launcher-smoke runs must be SERIAL (one VM at a time). Stop it (prlctl stop $EXISTING_VM --kill) and retry."
+    exit 1
+fi
+
 # Keep the display awake for the duration of the (long) run so the screen
 # never auto-locks/sleeps mid-injection. Best-effort: a missing caffeinate
 # must not abort the run. Killed in cleanup.
