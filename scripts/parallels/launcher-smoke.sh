@@ -5,8 +5,12 @@
 # Flow under test:
 #   boot (run.sh --parallels) -> BWM ready -> double-tap SUPER opens the launcher
 #   (/bin/blauncher, pre-selecting APPS[0] = "Terminal") -> Enter launches the
-#   terminal (/bin/bterm). PASS requires REAL serial evidence that bterm spawned
-#   AND emitted its config line — never "launcher opened" alone.
+#   terminal (/bin/bterm). PASS requires REAL serial evidence that bterm started
+#   (its own '[bterm] config:' line) AND became functional (spawned its child
+#   shell, '[bterm] spawned child pid=') — never "launcher opened" alone.
+#   NB: blauncher launches bterm via fork+execv, which does NOT emit the kernel's
+#   "[spawn] path='...'" line — so we validate bterm's OWN startup logs, which are
+#   stronger proof (the binary actually ran and initialized) than a spawn record.
 #
 # Usage:
 #   scripts/parallels/launcher-smoke.sh [--no-build] [--keep-vm]
@@ -23,15 +27,24 @@ set -euo pipefail
 
 # =============================================================================
 # INJECTION METHOD CONFIG — tune the trigger in ONE place.
-# Super = PS/2 set-1 extended scancode 0xE0 0x5B => prefix 224 (0xE0), code 91 (0x5B).
-# A "tap" = press/release of the code (wrapped by the extended prefix).
-# A "double-tap" = two taps within 400 ms; we use INTER_TAP_MS gap + ~40 ms hold.
-# If the proven trigger ever changes (different key, non-extended, etc.), edit
-# THESE values (and ENTER_CODE) — nothing else in this script needs to change.
+#
+# The launcher opens on a double-tap of the SUPER modifier. Breenix's USB-HID
+# layer (kernel/src/drivers/usb/hid.rs) maps the Left-CTRL bit to SUPER, so
+# injecting a plain Left-Ctrl tap registers as Super in the guest — this is
+# literally why the operator calls it the "double control key", and it is the
+# exact key Parallels delivers.
+#
+# We deliberately do NOT use the 0xE0 0x5B (left-GUI) extended scancode: Parallels
+# Desktop 26.3.3 rejects a bare `--scancode 91` ("Invalid scan code sequence: 5B")
+# and offers no way to send the extended pair as separate --scancode calls. Plain
+# (non-extended) scancodes like Left-Ctrl (29) are accepted and map to SUPER.
+#
+# A "tap" = press/release of the code. A "double-tap" = two taps within 400 ms
+# (INTER_TAP_MS gap + ~40 ms hold). To change the trigger, edit THESE values.
 # =============================================================================
-SUPER_PREFIX=224       # 0xE0 extended prefix
-SUPER_CODE=91          # 0x5B left-GUI / Super
-INTER_TAP_MS=150       # gap between the two Super taps (must be < 400 ms)
+SUPER_PREFIX=          # none — Left-Ctrl is a basic, non-extended scancode
+SUPER_CODE=29          # 0x1D Left-Ctrl; Breenix maps the Ctrl HID bit to SUPER
+INTER_TAP_MS=150       # gap between the two taps (must be < 400 ms)
 ENTER_CODE=28          # Enter / Return
 
 # =============================================================================
@@ -39,11 +52,11 @@ ENTER_CODE=28          # Enter / Return
 # =============================================================================
 READY_MARKER='[bwm] hotkeys: using built-in defaults for early boot'
 LAUNCHER_MARKER="[spawn] path='/bin/blauncher'"
-BTERM_SPAWN_MARKER="[spawn] path='/bin/bterm'"
-BTERM_CONFIG_MARKER='[bterm] config:'
+BTERM_CONFIG_MARKER='[bterm] config:'            # bterm started + read its config
+BTERM_SHELL_MARKER='[bterm] spawned child pid='  # bterm launched its child shell
 WARMUP_SECS=60         # VirGL warmup after readiness marker
 POST_SUPER_WAIT=1.5    # settle after double-Super before grepping for launcher
-POST_ENTER_WAIT=2      # settle after Enter before grepping for bterm
+POST_ENTER_WAIT=3      # settle after Enter before grepping for bterm
 FILTER_TEXT='term'     # typed when --type-filter is set (Terminal stays index 0)
 
 # =============================================================================
@@ -208,9 +221,15 @@ command -v prlctl >/dev/null 2>&1 || finish_fail "prlctl not found on PATH"
 # =============================================================================
 LOCK_CHECK_RC=2
 if command -v python3 >/dev/null 2>&1; then
-    python3 -c "import Quartz,sys; d=Quartz.CGSessionCopyCurrentDictionary(); sys.exit(0 if (d and d.get('CGSSessionScreenIsLocked')) else 1)" \
-        >/dev/null 2>&1
-    LOCK_CHECK_RC=$?
+    # Run the probe as an if-condition: it exits 1 when UNLOCKED (the normal,
+    # required state), and a bare non-zero command would trip `set -e` before we
+    # could read $?. As a condition, `set -e` is exempt and the else-branch sees
+    # the real exit code. 0 = LOCKED, 1 = UNLOCKED, other = probe errored.
+    if python3 -c "import Quartz,sys; d=Quartz.CGSessionCopyCurrentDictionary(); sys.exit(0 if (d and d.get('CGSSessionScreenIsLocked')) else 1)" >/dev/null 2>&1; then
+        LOCK_CHECK_RC=0
+    else
+        LOCK_CHECK_RC=$?
+    fi
 else
     log "WARNING: python3 not found; skipping macOS lock check (proceeding)"
 fi
@@ -357,23 +376,24 @@ capture_evidence "post-enter"
 tail_since > "$SERIAL_EXCERPT" || true
 
 # =============================================================================
-# (g)/(h) Honest oracle: PASS requires BOTH the bterm spawn line AND the bterm
-#         config line. Launcher-only is an explicit FAIL.
+# (g)/(h) Honest oracle: PASS requires BOTH bterm's own startup config line AND
+#         its child-shell spawn line — i.e. the terminal launched AND loaded a
+#         working shell. Launcher-only, or a half-initialized bterm, is a FAIL.
 # =============================================================================
-SAW_BTERM_SPAWN=0
 SAW_BTERM_CONFIG=0
-tail_since | grep -qF -- "$BTERM_SPAWN_MARKER" && SAW_BTERM_SPAWN=1
+SAW_BTERM_SHELL=0
 tail_since | grep -qF -- "$BTERM_CONFIG_MARKER" && SAW_BTERM_CONFIG=1
+tail_since | grep -qF -- "$BTERM_SHELL_MARKER"  && SAW_BTERM_SHELL=1
 
-if [[ "$SAW_BTERM_SPAWN" -eq 1 && "$SAW_BTERM_CONFIG" -eq 1 ]]; then
-    log "terminal launched: saw '$BTERM_SPAWN_MARKER' AND '$BTERM_CONFIG_MARKER'"
+if [[ "$SAW_BTERM_CONFIG" -eq 1 && "$SAW_BTERM_SHELL" -eq 1 ]]; then
+    log "terminal launched + loaded: saw '$BTERM_CONFIG_MARKER' AND '$BTERM_SHELL_MARKER'"
     finish_pass
 fi
 
-if [[ "$SAW_BTERM_SPAWN" -eq 1 ]]; then
-    finish_fail "bterm spawned but no '$BTERM_CONFIG_MARKER' (terminal did not initialize)"
-elif [[ "$SAW_BTERM_CONFIG" -eq 1 ]]; then
-    finish_fail "saw '$BTERM_CONFIG_MARKER' but no '$BTERM_SPAWN_MARKER' (inconsistent evidence)"
+if [[ "$SAW_BTERM_CONFIG" -eq 1 ]]; then
+    finish_fail "bterm started ('$BTERM_CONFIG_MARKER') but did not spawn its shell ('$BTERM_SHELL_MARKER') — terminal did not finish loading"
+elif [[ "$SAW_BTERM_SHELL" -eq 1 ]]; then
+    finish_fail "saw '$BTERM_SHELL_MARKER' but no '$BTERM_CONFIG_MARKER' (inconsistent evidence)"
 else
-    finish_fail "launcher opened but terminal did not launch (no '$BTERM_SPAWN_MARKER' after Enter)"
+    finish_fail "launcher opened but terminal did not launch (no '$BTERM_CONFIG_MARKER' after Enter)"
 fi
