@@ -64,15 +64,17 @@ FILTER_TEXT='term'     # typed when --type-filter is set (Terminal stays index 0
 # =============================================================================
 NO_BUILD=0
 KEEP_VM=0
-OVERALL_TIMEOUT=900
+OVERALL_TIMEOUT=1200
 TYPE_FILTER=0
+NO_BACKGROUND=0
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --no-build)    NO_BUILD=1 ;;
-        --keep-vm)     KEEP_VM=1 ;;
-        --type-filter) TYPE_FILTER=1 ;;
-        --timeout)     OVERALL_TIMEOUT="${2:?--timeout needs a value}"; shift ;;
+        --no-build)      NO_BUILD=1 ;;
+        --keep-vm)       KEEP_VM=1 ;;
+        --type-filter)   TYPE_FILTER=1 ;;
+        --no-background) NO_BACKGROUND=1 ;;
+        --timeout)       OVERALL_TIMEOUT="${2:?--timeout needs a value}"; shift ;;
         -h|--help)
             grep '^#' "$0" | sed 's/^# \{0,1\}//'
             exit 0
@@ -106,6 +108,7 @@ RUN_PID=""
 VM_NAME=""
 FINAL_REASON=""
 CAFFEINATE_PID=""
+VM_PROC_PID=""
 # Inode of any pre-existing (stale, prior-run) serial log, captured before we
 # launch run.sh. run.sh `rm -f`s the log and recreates it fresh on boot, which
 # changes the inode; we refuse to trust any marker until the inode differs (or
@@ -182,6 +185,35 @@ capture_evidence() {
             >/dev/null 2>>"$EVIDENCE_DIR/capture.log" || \
             log "capture ($label) failed (non-fatal); see capture.log"
     fi
+}
+
+# CPU-relief strategy (the operator uses this Mac during runs): keep the VM at
+# LOW priority (renice 20) through the long boot/warmup/idle phases so it yields
+# CPU to the operator's foreground apps under contention — but RESTORE it to
+# normal priority for the brief, timing-sensitive double-tap injection window.
+#
+# We use renice ONLY (no `taskpolicy -b`): banishing the VM to efficiency cores
+# starved the guest so hard it could not consume the two taps inside bwm's 400ms
+# double-tap window (observed 1876ms => launcher never opened). renice keeps the
+# VM on the performance cores at low priority (polite under contention) and is
+# cleanly reversible, so the injection window stays responsive. No sudo needed.
+background_vm_proc() {
+    [[ "$NO_BACKGROUND" -eq 1 ]] && return 0
+    local pid
+    pid="$(pgrep -f 'prl_vm_app.*--vm-name breenix-' 2>/dev/null | head -1 || true)"
+    [[ -z "$pid" ]] && return 1
+    VM_PROC_PID="$pid"
+    renice 20 -p "$pid" >/dev/null 2>&1 || true
+    log "lowered Breenix VM pid=$pid to nice 20 — yields CPU to your foreground apps under contention (stays on perf cores so injection stays responsive)"
+    return 0
+}
+
+# Restore the VM to normal priority for the timing-sensitive injection window.
+foreground_vm_proc() {
+    [[ "$NO_BACKGROUND" -eq 1 ]] && return 0
+    [[ -z "$VM_PROC_PID" ]] && return 0
+    renice 0 -p "$VM_PROC_PID" >/dev/null 2>&1 || true
+    log "restored Breenix VM pid=$VM_PROC_PID to nice 0 for the double-tap injection window"
 }
 
 ms_to_s() { awk "BEGIN{printf \"%.3f\", ${1}/1000}"; }
@@ -283,6 +315,7 @@ log "run.sh pid=$RUN_PID, log=$RUN_LOG"
 # =============================================================================
 log "waiting for readiness marker: $READY_MARKER"
 READY=0
+BG_DONE=0
 while :; do
     if [[ "$(remaining_budget)" -le "$WARMUP_SECS" ]]; then
         log "timed out waiting for readiness marker"
@@ -291,6 +324,9 @@ while :; do
     if ! kill -0 "$RUN_PID" 2>/dev/null; then
         finish_fail "run.sh exited before readiness (see $RUN_LOG)"
     fi
+    # As soon as the VM process exists, drop it to background priority so it does
+    # not fight the operator's foreground apps for CPU (injection stays foreground).
+    if [[ "$BG_DONE" -eq 0 ]] && background_vm_proc; then BG_DONE=1; fi
     # Only trust the marker once the serial log is the fresh one run.sh created
     # for THIS boot — never a leftover prior-run log that may already contain it.
     if serial_is_fresh && grep -qF -- "$READY_MARKER" "$SERIAL_LOG"; then
@@ -334,6 +370,9 @@ capture_evidence "pre-trigger"
 # =============================================================================
 serial_lines() { [[ -f "$SERIAL_LOG" ]] && wc -l <"$SERIAL_LOG" | tr -d ' ' || echo 0; }
 
+# Restore full VM priority for the timing-sensitive injection + launch window
+# (it ran low-priority through the long boot/warmup for CPU relief).
+foreground_vm_proc
 BASE_LINE="$(serial_lines)"
 log "serial line baseline: $BASE_LINE"
 
