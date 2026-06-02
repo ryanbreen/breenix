@@ -6,6 +6,11 @@
 # delivers them to the guest. Extended keys (cursor keys, GUI/Super, etc.) use a
 # 0xE0 (224) prefix byte that is sent as its own press/release around the code.
 #
+# Each command is delivered as ONE `prlctl send-key-event -j` batch (events read
+# from stdin), so inter-event delays are applied precisely by the Parallels
+# dispatcher — essential for the timing-sensitive double-tap on a loaded host,
+# where 4 separate prlctl spawns would otherwise blow bwm's 400ms window.
+#
 # The VM name is read from $VM (env) or, if unset, the first positional arg
 # *only* for the rare case where a caller wants `inject.sh <vm> tap ...`. The
 # normal form is `VM=breenix-123 inject.sh <command> ...`.
@@ -58,48 +63,42 @@ if [[ -z "${VM:-}" ]]; then
     exit 2
 fi
 
-# ---- low-level primitives ---------------------------------------------------
-ms_to_s() { awk "BEGIN{printf \"%.3f\", ${1}/1000}"; }
+# ---- low-level primitives (single batched -j call) --------------------------
+# Every command's key events are sent as ONE `prlctl send-key-event -j` batch
+# read from stdin. This is the critical design point: a double-tap is 4 events
+# that must land inside bwm's 400ms window, and 4 SEPARATE prlctl spawns take
+# ~1.9s on a loaded host (window blown). As one batch, the inter-event DELAYS are
+# applied by the Parallels dispatcher with precise timing, independent of host
+# load — so the double-tap always lands in-window regardless of prlctl's
+# process-spawn latency.
 
-press()   { prlctl send-key-event "$VM" --scancode "$1" --event press   >/dev/null 2>&1; }
-release() { prlctl send-key-event "$VM" --scancode "$1" --event release >/dev/null 2>&1; }
+# Send a JSON event array (built by the helpers below) as one -j batch via stdin.
+send_json() { printf '%s' "$1" | prlctl send-key-event "$VM" -j >/dev/null 2>&1; }
 
-# Tap a (possibly extended) key.
-#   $1 code, $2 hold_ms (optional), $3 extended-prefix (optional, e.g. 224)
-tap() {
-    local code="$1"
-    local hold_ms="${2:-$HOLD_MS}"
-    local ext="${3:-}"
-    if [[ -n "$ext" ]]; then press "$ext"; sleep "$(ms_to_s "$PREFIX_MS")"; fi
-    press "$code"
-    sleep "$(ms_to_s "$hold_ms")"
-    release "$code"
-    if [[ -n "$ext" ]]; then sleep "$(ms_to_s "$PREFIX_MS")"; release "$ext"; fi
+# Emit the JSON event objects for one (possibly extended) tap: press, hold, release.
+#   $1 code, $2 hold_ms, $3 extended-prefix (optional, e.g. 224 for 0xE0)
+tap_events() {
+    local code="$1" hold="$2" ext="${3:-}" pre="" post=""
+    if [[ -n "$ext" ]]; then
+        pre="{\"scancode\":$ext,\"event\":\"press\"},{\"delay\":$PREFIX_MS},"
+        post=",{\"delay\":$PREFIX_MS},{\"scancode\":$ext,\"event\":\"release\"}"
+    fi
+    printf '%s{"scancode":%s,"event":"press"},{"delay":%s},{"scancode":%s,"event":"release"}%s' \
+        "$pre" "$code" "$hold" "$code" "$post"
 }
 
-# Two clean taps separated by gap_ms.
-#   $1 code, $2 gap_ms, $3 extended-prefix (optional)
+# Single tap.  $1 code, $2 hold_ms (optional), $3 ext-prefix (optional)
+tap() { send_json "[$(tap_events "$1" "${2:-$HOLD_MS}" "${3:-}")]"; }
+
+# Two clean taps separated by gap_ms, sent atomically in ONE batch (the dispatcher
+# spaces them by gap_ms). $1 code, $2 gap_ms, $3 ext-prefix (optional)
 doubletap() {
-    local code="$1"
-    local gap_ms="${2:-150}"
-    local ext="${3:-}"
-    tap "$code" "$HOLD_MS" "$ext"
-    sleep "$(ms_to_s "$gap_ms")"
-    tap "$code" "$HOLD_MS" "$ext"
+    local code="$1" gap="${2:-150}" ext="${3:-}"
+    send_json "[$(tap_events "$code" "$HOLD_MS" "$ext"),{\"delay\":$gap},$(tap_events "$code" "$HOLD_MS" "$ext")]"
 }
 
-# Press, hold for hold_ms, release (extended-aware).
-#   $1 code, $2 hold_ms, $3 extended-prefix (optional)
-hold() {
-    local code="$1"
-    local hold_ms="${2:-100}"
-    local ext="${3:-}"
-    if [[ -n "$ext" ]]; then press "$ext"; sleep "$(ms_to_s "$PREFIX_MS")"; fi
-    press "$code"
-    sleep "$(ms_to_s "$hold_ms")"
-    release "$code"
-    if [[ -n "$ext" ]]; then sleep "$(ms_to_s "$PREFIX_MS")"; release "$ext"; fi
-}
+# Press, hold for hold_ms, release.  $1 code, $2 hold_ms, $3 ext-prefix (optional)
+hold() { send_json "[$(tap_events "$1" "${2:-100}" "${3:-}")]"; }
 
 # PS/2 set-1 scancodes for printable characters we support in `type`.
 declare -A SC=(
@@ -110,18 +109,21 @@ declare -A SC=(
   [' ']=57
 )
 
+# Type a string as ONE -j batch: press+release each char, spaced by TYPE_GAP_MS.
 type_str() {
-    local s="$1" i ch code
+    local s="$1" i ch code parts=""
     for (( i=0; i<${#s}; i++ )); do
         ch="${s:$i:1}"
         code="${SC[$ch]:-}"
         if [[ -n "$code" ]]; then
-            tap "$code"
-            sleep "$(ms_to_s "$TYPE_GAP_MS")"
+            [[ -n "$parts" ]] && parts+=","
+            parts+="$(tap_events "$code" "$HOLD_MS"),{\"delay\":$TYPE_GAP_MS}"
         else
             echo "inject.sh: skipping unsupported character '$ch'" >&2
         fi
     done
+    [[ -z "$parts" ]] && return 0
+    send_json "[$parts]"
 }
 
 # ---- dispatch ---------------------------------------------------------------
