@@ -50,7 +50,11 @@ ENTER_CODE=28          # Enter / Return
 # =============================================================================
 # Other tunables
 # =============================================================================
-READY_MARKER='[bwm] hotkeys: using built-in defaults for early boot'
+# Interleave-robust readiness: concurrent serial writers (telnetd, etc.) can split
+# a one-shot marker mid-line, so match EITHER the hotkeys-defaults line OR the
+# recurring [bwm-fps] compositing line (printed ~180x/s once the desktop is live,
+# so a clean, un-interleaved instance appears within milliseconds). Used with grep -aE.
+READY_MARKER='bwm-fps|hotkeys: using built-in defaults'
 LAUNCHER_MARKER="[spawn] path='/bin/blauncher'"
 BTERM_CONFIG_MARKER='[bterm] config:'            # bterm started + read its config
 BTERM_SHELL_MARKER='[bterm] spawned child pid='  # bterm launched its child shell
@@ -338,7 +342,7 @@ while :; do
     if [[ "$BG_DONE" -eq 0 ]] && background_vm_proc; then BG_DONE=1; fi
     # Only trust the marker once the serial log is the fresh one run.sh created
     # for THIS boot — never a leftover prior-run log that may already contain it.
-    if serial_is_fresh && grep -qF -- "$READY_MARKER" "$SERIAL_LOG"; then
+    if serial_is_fresh && grep -qaE -- "$READY_MARKER" "$SERIAL_LOG"; then
         READY=1
         break
     fi
