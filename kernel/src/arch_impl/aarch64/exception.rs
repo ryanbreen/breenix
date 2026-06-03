@@ -1028,6 +1028,113 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                 raw_uart_str(" ELR=");
                 raw_uart_hex(frame_ref.elr);
                 raw_uart_str("\n");
+
+                // Full fatal register dump. EC=0xe (Illegal Execution State) means
+                // an ERET restored an illegal PSTATE — we MUST see SPSR/ESR/FAR plus
+                // the GP registers to confirm which stale ELR/SPSR was restored.
+                // This is the fatal park path (interrupts already masked above), so
+                // a full dump is appropriate; uses the same lock-free raw_uart path
+                // as the [UNHANDLED_EC] line.
+                // SP at crash time = frame address + 272 (exception frame size),
+                // matching the convention used by the other fatal handlers.
+                let sp_at_crash = frame_ref as *const _ as u64 + 272;
+                raw_uart_str("[FATAL_REGS] cpu=");
+                raw_uart_dec(cpu_id as u64);
+                raw_uart_str(" spsr=");
+                raw_uart_hex(frame_ref.spsr);
+                raw_uart_str(" esr=");
+                raw_uart_hex(esr);
+                raw_uart_str(" far=");
+                raw_uart_hex(far);
+                raw_uart_str(" elr=");
+                raw_uart_hex(frame_ref.elr);
+                raw_uart_str(" sp=");
+                raw_uart_hex(sp_at_crash);
+                raw_uart_str("\n  x0=");
+                raw_uart_hex(frame_ref.x0);
+                raw_uart_str(" x1=");
+                raw_uart_hex(frame_ref.x1);
+                raw_uart_str(" x2=");
+                raw_uart_hex(frame_ref.x2);
+                raw_uart_str(" x3=");
+                raw_uart_hex(frame_ref.x3);
+                raw_uart_str("\n  x4=");
+                raw_uart_hex(frame_ref.x4);
+                raw_uart_str(" x5=");
+                raw_uart_hex(frame_ref.x5);
+                raw_uart_str(" x6=");
+                raw_uart_hex(frame_ref.x6);
+                raw_uart_str(" x7=");
+                raw_uart_hex(frame_ref.x7);
+                raw_uart_str("\n  x8=");
+                raw_uart_hex(frame_ref.x8);
+                raw_uart_str(" x9=");
+                raw_uart_hex(frame_ref.x9);
+                raw_uart_str(" x10=");
+                raw_uart_hex(frame_ref.x10);
+                raw_uart_str(" x11=");
+                raw_uart_hex(frame_ref.x11);
+                raw_uart_str("\n  x12=");
+                raw_uart_hex(frame_ref.x12);
+                raw_uart_str(" x13=");
+                raw_uart_hex(frame_ref.x13);
+                raw_uart_str(" x14=");
+                raw_uart_hex(frame_ref.x14);
+                raw_uart_str(" x15=");
+                raw_uart_hex(frame_ref.x15);
+                raw_uart_str("\n  x16=");
+                raw_uart_hex(frame_ref.x16);
+                raw_uart_str(" x17=");
+                raw_uart_hex(frame_ref.x17);
+                raw_uart_str(" x18=");
+                raw_uart_hex(frame_ref.x18);
+                raw_uart_str(" x19=");
+                raw_uart_hex(frame_ref.x19);
+                raw_uart_str("\n  x20=");
+                raw_uart_hex(frame_ref.x20);
+                raw_uart_str(" x21=");
+                raw_uart_hex(frame_ref.x21);
+                raw_uart_str(" x22=");
+                raw_uart_hex(frame_ref.x22);
+                raw_uart_str(" x23=");
+                raw_uart_hex(frame_ref.x23);
+                raw_uart_str("\n  x24=");
+                raw_uart_hex(frame_ref.x24);
+                raw_uart_str(" x25=");
+                raw_uart_hex(frame_ref.x25);
+                raw_uart_str(" x26=");
+                raw_uart_hex(frame_ref.x26);
+                raw_uart_str(" x27=");
+                raw_uart_hex(frame_ref.x27);
+                raw_uart_str("\n  x28=");
+                raw_uart_hex(frame_ref.x28);
+                raw_uart_str(" x29=");
+                raw_uart_hex(frame_ref.x29);
+                raw_uart_str(" x30=");
+                raw_uart_hex(frame_ref.x30);
+                raw_uart_str("\n");
+
+                // Optional [FATAL_THREAD]: the currently-dispatched thread's
+                // saved_by_inline_schedule flag and saved context.elr_el1. Read via
+                // try_dump_state() (SCHEDULER.try_lock — returns None instead of
+                // blocking, so it can NEVER deadlock; documented interrupt-safe) and
+                // is already used by the PC_ALIGN fatal handler above. We only read
+                // the current thread's entry.
+                if let Some(tid) = crate::task::scheduler::current_thread_id() {
+                    if let Some(dump) = crate::task::scheduler::try_dump_state() {
+                        if let Some(thread) = dump.threads.iter().find(|t| t.id == tid) {
+                            raw_uart_str("[FATAL_THREAD] tid=");
+                            raw_uart_dec(tid);
+                            raw_uart_str(" saved_by_inline_schedule=");
+                            raw_uart_dec(if thread.saved_by_inline_schedule { 1 } else { 0 });
+                            raw_uart_str(" ctx_elr_el1=");
+                            raw_uart_hex(thread.elr_el1);
+                            raw_uart_str("\n");
+                        }
+                    } else {
+                        raw_uart_str("[FATAL_THREAD] scheduler lock busy; thread state skipped\n");
+                    }
+                }
             }
             dump_fatal_postmortem_once("UNHANDLED_EC");
             // Redirect to idle instead of hanging — allows system to recover.
