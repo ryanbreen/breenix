@@ -396,12 +396,26 @@ impl HotkeyManager {
     /// Called every frame with the current modifier bitmask and whether a
     /// non-modifier key was pressed this frame. Returns an action if a
     /// hotkey matched.
-    fn update(&mut self, current_mods: u8, key_pressed: Option<u8>) -> Option<HotkeyAction> {
+    ///
+    /// `super_taps` is the count of Super press-edges latched in the kernel HID
+    /// path since the previous frame (op=31, read-and-clear). Because the latch
+    /// captures every 0→1 SUPER transition the instant the HID report arrives,
+    /// it recovers taps whose entire ~30ms high window fell between two bursty
+    /// compositor-wait polls — which the level-based edge detection would miss.
+    /// SUPER tap counting is driven exclusively by this latch so each physical
+    /// press is counted exactly once (no double-count vs. release detection).
+    fn update(
+        &mut self,
+        current_mods: u8,
+        key_pressed: Option<u8>,
+        super_taps: u32,
+    ) -> Option<HotkeyAction> {
         if self.cooldown > 0 {
             self.cooldown -= 1;
         }
 
-        // Track if any non-modifier key was pressed while modifiers are held
+        // Track if any non-modifier key was pressed while modifiers are held.
+        // A combo (modifier + key) must NOT trigger the no-key double-tap launcher.
         if key_pressed.is_some() && current_mods != 0 {
             self.combo_used = true;
         }
@@ -424,26 +438,78 @@ impl HotkeyManager {
             }
         }
 
-        // Detect modifier-only transitions for multi-tap detection
-        // Check each modifier bit for press/release edges
-        for &mod_bit in &[modifier::SUPER, modifier::ALT, modifier::CTRL, modifier::SHIFT] {
+        // ── Super multi-tap detection driven by the kernel press-edge latch ──
+        // Each latched press-edge is one physical tap. If the press arrived while
+        // a combo was in progress (a non-modifier key was held with Super), the
+        // tap is treated as dirty and resets the sequence rather than counting.
+        if super_taps > 0 {
+            for _ in 0..super_taps {
+                if self.combo_used {
+                    // Combo in progress: this Super press is part of a combo, not
+                    // a clean tap. Reset the tap sequence; do not fire the launcher.
+                    self.tap_count = 0;
+                    self.tap_release_ns = 0;
+                    continue;
+                }
+
+                self.tap_modifier = modifier::SUPER;
+
+                let now_ns = match libbreenix::time::now_monotonic() {
+                    Ok(ts) => ts.tv_sec as u64 * 1_000_000_000 + ts.tv_nsec as u64,
+                    Err(_) => 0,
+                };
+
+                // Count this tap; continue a sequence only if the previous tap
+                // was within the 400ms window, otherwise start a fresh sequence.
+                if self.tap_count > 0
+                    && now_ns.saturating_sub(self.tap_release_ns) < 400_000_000
+                {
+                    self.tap_count += 1;
+                } else {
+                    self.tap_count = 1;
+                }
+                self.tap_release_ns = now_ns;
+
+                // Fire the matching multi-tap binding (e.g. double-tap Super).
+                if self.cooldown == 0 {
+                    for binding in &self.bindings {
+                        if binding.key == 0
+                            && binding.modifiers == modifier::SUPER
+                            && binding.taps == self.tap_count
+                        {
+                            self.cooldown = 30;
+                            self.tap_count = 0;
+                            self.tap_release_ns = 0;
+                            return Some(binding.action.clone());
+                        }
+                    }
+                }
+            }
+        }
+
+        // Reset combo tracking when Super is fully released so the next clean
+        // tap sequence isn't suppressed by a stale combo flag.
+        let super_was = (prev & modifier::SUPER) != 0;
+        let super_now = (current_mods & modifier::SUPER) != 0;
+        if !super_now && super_was {
+            self.combo_used = false;
+        }
+
+        // ── Multi-tap detection for ALT / CTRL / SHIFT via level edges ──
+        // (Super is handled above by the latch.) These modifiers are not affected
+        // by the launcher drop bug; keep their existing release-edge behavior.
+        for &mod_bit in &[modifier::ALT, modifier::CTRL, modifier::SHIFT] {
             let was = (prev & mod_bit) != 0;
             let now = (current_mods & mod_bit) != 0;
 
             if now && !was {
-                // Modifier just pressed
-                if mod_bit == self.tap_modifier {
-                    // Same modifier as we're tracking — continue counting
-                } else {
-                    // Different modifier — reset
+                if mod_bit != self.tap_modifier {
                     self.tap_modifier = mod_bit;
                     self.tap_count = 0;
                 }
                 self.combo_used = false;
             } else if !now && was {
-                // Modifier just released
                 if mod_bit == self.tap_modifier && !self.combo_used {
-                    // Clean release (no other keys pressed during hold)
                     let now_ns = match libbreenix::time::now_monotonic() {
                         Ok(ts) => ts.tv_sec as u64 * 1_000_000_000 + ts.tv_nsec as u64,
                         Err(_) => 0,
@@ -456,7 +522,6 @@ impl HotkeyManager {
                     }
                     self.tap_release_ns = now_ns;
 
-                    // Check for multi-tap bindings
                     if self.cooldown == 0 {
                         for binding in &self.bindings {
                             if binding.key == 0
@@ -470,12 +535,9 @@ impl HotkeyManager {
                             }
                         }
                     }
-                } else {
-                    // Dirty release (combo was used) — reset
-                    if mod_bit == self.tap_modifier {
-                        self.tap_count = 0;
-                        self.tap_release_ns = 0;
-                    }
+                } else if mod_bit == self.tap_modifier {
+                    self.tap_count = 0;
+                    self.tap_release_ns = 0;
                 }
             }
         }
@@ -489,6 +551,38 @@ fn trim(s: &[u8]) -> &[u8] {
     let start = s.iter().position(|&b| b != b' ' && b != b'\t' && b != b'\r').unwrap_or(s.len());
     let end = s.iter().rposition(|&b| b != b' ' && b != b'\t' && b != b'\r').map(|i| i + 1).unwrap_or(start);
     &s[start..end]
+}
+
+/// Read-and-clear the kernel's latched count of Super press-edges (FBDRAW op=31).
+///
+/// The kernel HID path increments a lock-free atomic on every 0→1 SUPER
+/// transition the instant the report arrives, so a tap whose high window fell
+/// entirely between two compositor-wait polls is still counted. This drains
+/// that latch so missed taps reach the double-tap detector.
+#[cfg(target_arch = "aarch64")]
+fn take_super_tap_count() -> u32 {
+    use libbreenix::graphics::FbDrawCmd;
+    use libbreenix::syscall::nr;
+    let cmd = FbDrawCmd {
+        op: 31,
+        p1: 0,
+        p2: 0,
+        p3: 0,
+        p4: 0,
+        color: 0,
+    };
+    let ret =
+        unsafe { libbreenix::raw::syscall1(nr::FBDRAW, &cmd as *const FbDrawCmd as u64) as i64 };
+    if ret < 0 {
+        0
+    } else {
+        ret as u32
+    }
+}
+
+#[cfg(not(target_arch = "aarch64"))]
+fn take_super_tap_count() -> u32 {
+    0
 }
 
 // ─── Resize Edge ────────────────────────────────────────────────────────────
@@ -1538,8 +1632,13 @@ fn main() {
         };
 
         // ── 0b. Poll modifier state and check hotkeys ──
+        // Drain the kernel's latched Super press-edge count (op=31) every frame
+        // — including frames where compositor_wait was skipped — so a tap that
+        // completed between polls is fed into double-tap detection and the
+        // keyboard-ready latch can't busy-loop compositor_wait.
+        let super_taps = take_super_tap_count();
         let current_mods = graphics::poll_modifier_state() as u8;
-        if let Some(action) = hotkey_mgr.update(current_mods, None) {
+        if let Some(action) = hotkey_mgr.update(current_mods, None, super_taps) {
             match &action {
                 HotkeyAction::FocusNext => {
                     if !windows.is_empty() {
