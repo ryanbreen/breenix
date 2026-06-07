@@ -469,18 +469,6 @@ impl ProcessManager {
             "Failed to allocate user stack"
         })?;
 
-        // The kernel_stack.top() is an HHDM address - extract physical address
-        let kernel_stack_top = kernel_stack.top().as_u64();
-        let hhdm_base = crate::arch_impl::aarch64::constants::HHDM_BASE;
-        let stack_phys_top = kernel_stack_top - hhdm_base;
-        let stack_phys_bottom = stack_phys_top - USER_STACK_SIZE as u64;
-
-        crate::serial_println!(
-            "manager.create_process [ARM64]: Stack physical range {:#x}-{:#x}",
-            stack_phys_bottom,
-            stack_phys_top
-        );
-
         // Calculate userspace stack addresses
         // Stack grows down, so stack_top is the highest address
         let user_stack_top = USER_STACK_REGION_START;
@@ -496,9 +484,6 @@ impl ProcessManager {
         process.user_stack_top = user_stack_top;
         process.user_stack_bottom = user_stack_bottom;
 
-        // Store the kernel-accessible stack (for potential kernel access later)
-        process.stack = Some(Box::new(kernel_stack));
-
         // Map the physical stack frames into the process page table at USERSPACE addresses
         log::debug!("ARM64: Mapping user stack pages into process page table...");
         crate::serial_println!(
@@ -506,10 +491,10 @@ impl ProcessManager {
         );
         let initial_tpidr_el0 = if let Some(ref mut page_table) = process.page_table {
             crate::serial_println!(
-                "manager.create_process [ARM64]: map_user_stack_to_process user_bottom={:#x} user_top={:#x} phys_bottom={:#x}",
+                "manager.create_process [ARM64]: map_user_stack_to_process user_bottom={:#x} user_top={:#x} frames={}",
                 user_stack_bottom,
                 user_stack_top,
-                stack_phys_bottom
+                kernel_stack.physical_frames().len()
             );
 
             // Map physical frames to userspace addresses
@@ -517,7 +502,7 @@ impl ProcessManager {
                 page_table,
                 VirtAddr::new(user_stack_bottom),
                 VirtAddr::new(user_stack_top),
-                stack_phys_bottom,
+                kernel_stack.physical_frames(),
             )
             .map_err(|e| {
                 crate::serial_println!(
@@ -539,6 +524,9 @@ impl ProcessManager {
         } else {
             return Err("Process page table not available for stack mapping");
         };
+
+        // Store the kernel-accessible stack (for potential kernel access later)
+        process.stack = Some(Box::new(kernel_stack));
 
         // Create the main thread with USERSPACE stack top
         crate::serial_println!("manager.create_process [ARM64]: Creating main thread");
@@ -667,12 +655,6 @@ impl ProcessManager {
             stack::allocate_stack_with_privilege(USER_STACK_SIZE, StackPrivilege::User)
                 .map_err(|_| "Failed to allocate user stack")?;
 
-        // Extract physical address from HHDM address
-        let kernel_stack_top = kernel_stack.top().as_u64();
-        let hhdm_base = crate::arch_impl::aarch64::constants::HHDM_BASE;
-        let stack_phys_top = kernel_stack_top - hhdm_base;
-        let stack_phys_bottom = stack_phys_top - USER_STACK_SIZE as u64;
-
         // Calculate userspace stack addresses
         let user_stack_top = USER_STACK_REGION_START;
         let user_stack_bottom = user_stack_top - USER_STACK_SIZE as u64;
@@ -686,7 +668,6 @@ impl ProcessManager {
         process.memory_usage.stack_size = USER_STACK_SIZE;
         process.user_stack_top = user_stack_top;
         process.user_stack_bottom = user_stack_bottom;
-        process.stack = Some(Box::new(kernel_stack));
 
         // Map the physical stack frames into the process page table
         let initial_tpidr_el0 = if let Some(ref mut page_table) = process.page_table {
@@ -694,7 +675,7 @@ impl ProcessManager {
                 page_table,
                 VirtAddr::new(user_stack_bottom),
                 VirtAddr::new(user_stack_top),
-                stack_phys_bottom,
+                kernel_stack.physical_frames(),
             )
             .map_err(|e| {
                 log::error!(
@@ -708,6 +689,8 @@ impl ProcessManager {
         } else {
             return Err("Process page table not available for stack mapping");
         };
+
+        process.stack = Some(Box::new(kernel_stack));
 
         // Set up argc/argv/envp/auxv on the stack following Linux ABI
         // The stack is now mapped, so we can write to it via physical addresses
