@@ -17,9 +17,19 @@
 #                                       [--timeout SECS] [--type-filter]
 #                                       [--max-inject-retries N]
 #
+# Before the real test gesture, a keyboard-delivery HANDSHAKE injects one
+# inert probe key and confirms it reached the guest (via the userspace
+# heartbeat's periodic `kbd_nonzero=<N>` serial line) — this detects the
+# sticky per-VM-instance host-side input wedge (Parallels dispatcher
+# `[CUsbKeyboard] monitor not ready`) BEFORE it can masquerade as a Breenix
+# test failure. See the "(d.5) Keyboard-delivery HANDSHAKE" section below.
+#
 # Final stdout line is EXACTLY one of:
-#   RESULT: PASS                      (exit 0)
-#   RESULT: FAIL: <reason>            (exit 1)
+#   RESULT: PASS                                    (exit 0)
+#   RESULT: FAIL: <reason>                          (exit 1)
+#   RESULT: ENV: HOST_INPUT_WEDGE <reason>          (exit 2) — handshake
+#     failed (probe key never observed in guest); Breenix was NOT exercised.
+#     Never used to reclassify a genuine post-handshake FAIL.
 #
 # Callers must run this un-sandboxed (a wrapper passes dangerouslyDisableSandbox);
 # this script contains no sandbox logic.
@@ -74,6 +84,21 @@ WARMUP_SECS=60         # VirGL warmup after readiness marker
 POST_SUPER_WAIT=1.5    # settle after double-Super before grepping for launcher
 POST_ENTER_WAIT=3      # settle after Enter before grepping for bterm
 FILTER_TEXT='term'     # typed when --type-filter is set (Terminal stays index 0)
+
+# Keyboard-delivery HANDSHAKE (runs after warmup, BEFORE the double-tap test
+# gesture). Detects the sticky per-VM-instance host-side input wedge
+# (Parallels dispatcher logs `[CUsbKeyboard] monitor not ready` in lockstep
+# with injections) that silently drops `prlctl send-key-event` deliveries on
+# ~13-20% of runs -- retrying into the SAME VM instance has never recovered
+# from this (20/20 historical failures). PROBE_CODE=44 is the PS/2 set-1
+# scancode for 'z': a plain letter key that carries NO modifier bits, so it
+# (a) cannot match ANY bwm hotkey binding (every built-in binding requires
+# ALT or SUPER) and (b) cannot increment the SUPER_TAP_COUNT latch at all
+# (different HID report byte entirely) -- it is structurally incapable of
+# contaminating the double-tap gesture that follows, independent of timing.
+HANDSHAKE_PROBE_CODE=44
+HANDSHAKE_TIMEOUT_SECS=10
+HANDSHAKE_POLL_INTERVAL=1
 
 # =============================================================================
 # Argument parsing
@@ -210,6 +235,28 @@ finish_fail() {
     log "result: FAIL: $FINAL_REASON (inject_retries=$INJECT_RETRIES)"
     echo "RESULT: FAIL: $FINAL_REASON"
     exit 1
+}
+
+# Emit the distinct ENV: HOST_INPUT_WEDGE verdict and exit 2. ONLY used when
+# the pre-gesture keyboard-delivery HANDSHAKE fails (the probe key was never
+# observed in the guest) -- i.e. Breenix was never exercised, the Parallels
+# dispatcher for THIS VM instance is wedged host-side. This must NEVER be used
+# to reclassify a post-handshake miss/FAIL: once the handshake succeeds, any
+# later miss (double-tap or Enter) is strong evidence of a real guest-side
+# bug and stays a genuine RESULT: FAIL.
+finish_env() {
+    FINAL_REASON="$1"
+    {
+        echo "RESULT: ENV: HOST_INPUT_WEDGE $FINAL_REASON"
+        echo "vm=$VM_NAME"
+        echo "type_filter=$TYPE_FILTER"
+        echo "inject_retries=$INJECT_RETRIES"
+        echo "evidence_dir=$EVIDENCE_DIR"
+        echo "elapsed_s=$(( $(date +%s) - START_EPOCH ))"
+    } > "$RESULT_FILE"
+    log "result: ENV: HOST_INPUT_WEDGE: $FINAL_REASON"
+    echo "RESULT: ENV: HOST_INPUT_WEDGE $FINAL_REASON"
+    exit 2
 }
 
 remaining_budget() {
@@ -493,6 +540,113 @@ export VM="$VM_NAME"
 log "VirGL warmup: sleeping ${WARMUP_SECS}s"
 sleep "$WARMUP_SECS"
 capture_evidence "pre-trigger"
+
+# =============================================================================
+# (d.5) Keyboard-delivery HANDSHAKE.
+#
+# PROBE SIGNAL: userspace heartbeat (spawned as a boot service) prints a
+# `kbd_nonzero=<N>` field on every ~1s tick, sourced from
+# kernel/src/drivers/usb/hid.rs::NONZERO_KBD_COUNT via /proc/xhci/counters --
+# a monotonic count of non-empty USB-HID keyboard reports the kernel has
+# actually processed. This is a genuine guest-observable signal: it only
+# advances once a real HID report reaches process_keyboard_report(), so an
+# increase proves the injected key crossed the full host->virtual-xHCI->
+# guest-HID-stack path, not merely that `prlctl send-key-event` returned rc=0
+# (dispatcher-side "success" is exactly what the sticky wedge falsifies).
+#
+# We baseline kbd_nonzero, inject ONE tap of a modifier-free letter key
+# (scancode $HANDSHAKE_PROBE_CODE = 'z'), then poll for up to
+# $HANDSHAKE_TIMEOUT_SECS for the counter to increase. Success -> proceed to
+# the real test gesture. Failure -> the probe never arrived: classify the
+# whole run as ENV: HOST_INPUT_WEDGE (Breenix was NOT exercised) rather than
+# spending the injection-retry budget and reporting a misleading FAIL.
+#
+# HONESTY BOUNDARY: this ENV verdict is used ONLY for a failed handshake.
+# Once the handshake succeeds, the probe is retired -- any later miss on the
+# real double-tap/Enter gesture stays a genuine RESULT: FAIL (delivered but
+# ignored is evidence of a real guest-side bug, never downgraded to ENV).
+# =============================================================================
+last_kbd_nonzero() {
+    grep -aoE 'kbd_nonzero=[0-9]+' "$SERIAL_LOG" 2>/dev/null | tail -1 | cut -d= -f2 || true
+}
+
+log "keyboard-delivery handshake: probing with an inert tap (code=$HANDSHAKE_PROBE_CODE, no modifiers) before the test gesture"
+HANDSHAKE_BASELINE="$(last_kbd_nonzero)"
+[[ -z "$HANDSHAKE_BASELINE" ]] && HANDSHAKE_BASELINE=0
+log "handshake baseline kbd_nonzero=$HANDSHAKE_BASELINE"
+
+foreground_vm_proc
+"$INJECT" tap "$HANDSHAKE_PROBE_CODE" \
+    || finish_fail "handshake probe injection failed (key injection error — see 'Host prerequisites & known limitations' in README)"
+
+HANDSHAKE_OK=0
+HANDSHAKE_DEADLINE=$(( $(date +%s) + HANDSHAKE_TIMEOUT_SECS ))
+while [[ "$(date +%s)" -lt "$HANDSHAKE_DEADLINE" ]]; do
+    # A kernel fault during the handshake window is a real Breenix crash, NOT
+    # a host-input-delivery question -- classify it as a genuine FAIL (same
+    # precedence rule as everywhere else KERNEL_FAULT_REGEX is checked),
+    # never silently swallowed into an ENV verdict below.
+    if grep -qaE -- "$KERNEL_FAULT_REGEX" "$SERIAL_LOG" 2>/dev/null; then
+        finish_fail "KERNEL FAULT during keyboard-delivery handshake: $(grep -aE -- "$KERNEL_FAULT_REGEX" "$SERIAL_LOG" | head -1) — real Breenix crash, NOT a harness/injection issue"
+    fi
+    HANDSHAKE_CUR="$(last_kbd_nonzero)"
+    [[ -z "$HANDSHAKE_CUR" ]] && HANDSHAKE_CUR=0
+    if [[ "$HANDSHAKE_CUR" -gt "$HANDSHAKE_BASELINE" ]]; then
+        HANDSHAKE_OK=1
+        log "handshake OK: kbd_nonzero $HANDSHAKE_BASELINE -> $HANDSHAKE_CUR (probe key arrived in guest)"
+        break
+    fi
+    sleep "$HANDSHAKE_POLL_INTERVAL"
+done
+
+if [[ "$HANDSHAKE_OK" -ne 1 ]]; then
+    # WEDGE CLASSIFICATION: capture the same evidence classes as a normal
+    # injection miss (dispatcher log + guest serial) plus an explicit grep for
+    # the known sticky-wedge signature, then finish with the distinct ENV
+    # verdict (exit 2). Never used to reclassify a post-handshake FAIL.
+    WEDGE_DIAG="$EVIDENCE_DIR/handshake-wedge-diag.txt"
+    PVM_LOG="$HOME/Parallels/${VM_NAME}.pvm/parallels.log"
+    {
+        echo "=== keyboard-delivery handshake FAILED (probe never observed in guest) ==="
+        echo "wall_clock: $(date '+%Y-%m-%d %H:%M:%S %z')"
+        echo "vm: $VM_NAME"
+        echo "baseline kbd_nonzero=$HANDSHAKE_BASELINE, waited ${HANDSHAKE_TIMEOUT_SECS}s, no increase observed"
+        echo
+        echo "=== Parallels dispatcher log grep: CUsbKeyboard / not ready ==="
+        if [[ -f "$PVM_LOG" ]]; then
+            grep -aE 'CUsbKeyboard|not ready' "$PVM_LOG" 2>/dev/null | tail -n 60 || echo "(no matching lines)"
+        else
+            echo "(dispatcher log not found at $PVM_LOG)"
+        fi
+        echo
+        echo "=== Parallels dispatcher log tail (last 120 lines) ==="
+        if [[ -f "$PVM_LOG" ]]; then
+            tail -n 120 "$PVM_LOG" 2>/dev/null || echo "(failed to read dispatcher log)"
+        else
+            echo "(dispatcher log not found at $PVM_LOG)"
+        fi
+        echo
+        echo "=== guest serial tail (last 60 lines) ==="
+        tail -n 60 "$SERIAL_LOG" 2>/dev/null || echo "(failed to read guest serial log)"
+        echo
+        echo "=== inject-dispatcher-errors.txt ==="
+        if [[ -s "${INJECT_DIAG_FILE:-}" ]]; then
+            cat "$INJECT_DIAG_FILE"
+        else
+            echo "(empty — prlctl reported rc=0/no stderr for the probe injection)"
+        fi
+    } > "$WEDGE_DIAG" 2>&1 || true
+    log "captured handshake wedge diagnostics -> $WEDGE_DIAG"
+    capture_evidence "handshake-wedge"
+
+    finish_env "keyboard-delivery handshake failed — probe key never observed in guest (kbd_nonzero stayed at $HANDSHAKE_BASELINE for ${HANDSHAKE_TIMEOUT_SECS}s); see $WEDGE_DIAG. Breenix was NOT exercised; this VM instance's Parallels dispatcher is wedged (sticky per-instance host-side USB-HID drop, historically unrecoverable by retry into the same VM) — do not retry into this VM, start a fresh one."
+fi
+
+# Let the probe's own report settle out before the timing-sensitive
+# double-tap. Not required for correctness (the probe scancode carries no
+# modifier bits and cannot contribute to SUPER_TAP_COUNT at all — see the
+# handshake comment above) but keeps the evidence timeline clean.
+sleep 1
 
 # =============================================================================
 # (e) Record the serial line count, inject double-Super, then look for the
