@@ -451,12 +451,19 @@ if [ "$PARALLELS" = true ]; then
                 done
             ) &
             LOGMON_PID=$!
-            trap "kill $LOGMON_PID 2>/dev/null" EXIT
+            # Clean up LOGMON on any exit path, including signals from a dying
+            # parent (Ralph / Claude Code). Without HUP/TERM/INT handlers, a
+            # reparented bash can sit blocked on the foreground tail forever.
+            trap '[ -n "${LOGMON_PID:-}" ] && kill "$LOGMON_PID" 2>/dev/null; exit 0' EXIT HUP INT TERM
         fi
 
-        # Wait a moment for the VM to start producing output, then tail
+        # Wait a moment for the VM to start producing output, then tail.
+        # exec so this bash is replaced by tail — when tail dies for any reason
+        # (SIGPIPE from a closed stdout, SIGTERM, SIGHUP), the PID is just gone
+        # and no zombie bash is left behind. The trap above runs before exec.
         sleep 1
-        tail -f "$SERIAL_LOG"
+        [ -n "${LOGMON_PID:-}" ] && trap - EXIT  # clear EXIT trap; exec discards it anyway
+        exec tail -f "$SERIAL_LOG"
     fi
 
     exit 0
@@ -729,10 +736,15 @@ VMXEOF
         fi
     ) &
     LOGMON_PID=$!
-    trap "kill $LOGMON_PID 2>/dev/null" EXIT
+    # Catch signals from a dying parent (Ralph / Claude Code) so we don't leak
+    # this script as a reparented zombie when the foreground tail's pipe dies.
+    trap '[ -n "${LOGMON_PID:-}" ] && kill "$LOGMON_PID" 2>/dev/null; exit 0' EXIT HUP INT TERM
 
     sleep 1
-    tail -f "$SERIAL_LOG"
+    # exec so this bash is replaced by tail — when tail dies, the PID is gone
+    # with no zombie bash left behind.
+    trap - EXIT
+    exec tail -f "$SERIAL_LOG"
 
     exit 0
 fi

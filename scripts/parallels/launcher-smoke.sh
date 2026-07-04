@@ -15,6 +15,7 @@
 # Usage:
 #   scripts/parallels/launcher-smoke.sh [--no-build] [--keep-vm]
 #                                       [--timeout SECS] [--type-filter]
+#                                       [--max-inject-retries N]
 #
 # Final stdout line is EXACTLY one of:
 #   RESULT: PASS                      (exit 0)
@@ -56,6 +57,12 @@ ENTER_CODE=28          # Enter / Return
 # so a clean, un-interleaved instance appears within milliseconds). Used with grep -aE.
 READY_MARKER='bwm-fps|hotkeys: using built-in defaults'
 LAUNCHER_MARKER="[spawn] path='/bin/blauncher'"
+# GPU-init abort fast-fail: if virtio-gpu init fails (e.g. an ATTACH_BACKING
+# rejected with resp_type=0x1205 INVALID_PARAMETER), BWM correctly refuses to run
+# without compositing and the display stays black forever — waiting out the full
+# timeout just wastes ~20 minutes on a run that can never pass. Checked during the
+# readiness poll (below), not only after injection.
+GPU_ABORT_REGEX='\[bwm\] ERROR|GPU compositing required|VirtIO GPU \(PCI\) init failed|cmd=0x[0-9a-f]+ FAILED: resp_type=0x'
 BTERM_CONFIG_MARKER='[bterm] config:'            # bterm started + read its config
 BTERM_SHELL_MARKER='[bterm] spawned child pid='  # bterm launched its child shell
 WARMUP_SECS=60         # VirGL warmup after readiness marker
@@ -71,6 +78,12 @@ KEEP_VM=0
 OVERALL_TIMEOUT=1200
 TYPE_FILTER=0
 NO_BACKGROUND=0
+# Diagnostic injection-retry budget. A double-tap that fails to open the launcher
+# WITHOUT a kernel crash is treated as a host-side injection-delivery miss (the -j
+# batch not reaching the guest's virtual USB HID); we capture WHY it missed and
+# re-inject up to this many times to recover the run. Set to 0 to disable retries
+# (revert to fail-on-first-miss) for a pure miss-rate measurement.
+MAX_INJECT_RETRIES=3
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -79,6 +92,7 @@ while [[ $# -gt 0 ]]; do
         --type-filter)   TYPE_FILTER=1 ;;
         --no-background) NO_BACKGROUND=1 ;;
         --timeout)       OVERALL_TIMEOUT="${2:?--timeout needs a value}"; shift ;;
+        --max-inject-retries) MAX_INJECT_RETRIES="${2:?--max-inject-retries needs a value}"; shift ;;
         -h|--help)
             grep '^#' "$0" | sed 's/^# \{0,1\}//'
             exit 0
@@ -113,6 +127,10 @@ VM_NAME=""
 FINAL_REASON=""
 CAFFEINATE_PID=""
 VM_PROC_PID=""
+# Number of diagnostic re-injections it took to open the launcher (0 = opened on
+# the first double-tap). Surfaced in result.txt + the final log line so a recovered
+# run is never silently reported as identical to a first-try success.
+INJECT_RETRIES=0
 # Inode of any pre-existing (stale, prior-run) serial log, captured before we
 # launch run.sh. run.sh `rm -f`s the log and recreates it fresh on boot, which
 # changes the inode; we refuse to trust any marker until the inode differs (or
@@ -153,9 +171,11 @@ finish_pass() {
         echo "RESULT: PASS"
         echo "vm=$VM_NAME"
         echo "type_filter=$TYPE_FILTER"
+        echo "inject_retries=$INJECT_RETRIES"
         echo "evidence_dir=$EVIDENCE_DIR"
         echo "elapsed_s=$(( $(date +%s) - START_EPOCH ))"
     } > "$RESULT_FILE"
+    log "result: PASS (inject_retries=$INJECT_RETRIES)"
     echo "RESULT: PASS"
     exit 0
 }
@@ -165,9 +185,11 @@ finish_fail() {
         echo "RESULT: FAIL: $FINAL_REASON"
         echo "vm=$VM_NAME"
         echo "type_filter=$TYPE_FILTER"
+        echo "inject_retries=$INJECT_RETRIES"
         echo "evidence_dir=$EVIDENCE_DIR"
         echo "elapsed_s=$(( $(date +%s) - START_EPOCH ))"
     } > "$RESULT_FILE"
+    log "result: FAIL: $FINAL_REASON (inject_retries=$INJECT_RETRIES)"
     echo "RESULT: FAIL: $FINAL_REASON"
     exit 1
 }
@@ -189,6 +211,41 @@ capture_evidence() {
             >/dev/null 2>>"$EVIDENCE_DIR/capture.log" || \
             log "capture ($label) failed (non-fatal); see capture.log"
     fi
+}
+
+# Capture injection-miss diagnostics into the evidence dir so a launcher that
+# never opened (with NO kernel crash) can be root-caused offline. The goal is to
+# distinguish a HOST-SIDE delivery miss (the `prlctl send-key-event -j` batch never
+# reached the guest's virtual USB HID) from a GUEST-SIDE miss (the keys arrived but
+# bwm didn't register the double-tap inside its 400ms window):
+#   - Parallels dispatcher log tail: shows whether send-key-event was delivered or
+#     dropped host-side.
+#   - guest serial tail (post-injection window): shows whether ANY HID/key activity
+#     reached the guest at all.
+# Best-effort; never fatal. $1 = attempt number (1-based) for the filename.
+capture_miss_diag() {
+    local attempt="$1"
+    local diag="$EVIDENCE_DIR/miss-${attempt}-diag.txt"
+    local pvm_log="$HOME/Parallels/${VM_NAME}.pvm/parallels.log"
+    {
+        echo "=== injection-miss diagnostic (attempt $attempt) ==="
+        echo "wall_clock: $(date '+%Y-%m-%d %H:%M:%S %z')"
+        echo "vm: $VM_NAME"
+        echo "base_line: $BASE_LINE (serial line count just before this injection)"
+        echo
+        echo "=== Parallels dispatcher log tail: $pvm_log ==="
+        echo "    (look for whether send-key-event was delivered vs dropped host-side)"
+        if [[ -f "$pvm_log" ]]; then
+            tail -n 120 "$pvm_log" 2>/dev/null || echo "(failed to read dispatcher log)"
+        else
+            echo "(dispatcher log not found at $pvm_log)"
+        fi
+        echo
+        echo "=== guest serial tail since injection (lines after BASE_LINE=$BASE_LINE) ==="
+        echo "    (look for whether ANY HID/key activity reached the guest)"
+        tail_since 2>/dev/null || echo "(failed to read guest serial tail)"
+    } > "$diag" 2>&1 || true
+    log "captured injection-miss diagnostics -> $diag"
 }
 
 # CPU-relief strategy (the operator uses this Mac during runs): keep the VM at
@@ -342,9 +399,19 @@ while :; do
     if [[ "$BG_DONE" -eq 0 ]] && background_vm_proc; then BG_DONE=1; fi
     # Only trust the marker once the serial log is the fresh one run.sh created
     # for THIS boot — never a leftover prior-run log that may already contain it.
-    if serial_is_fresh && grep -qaE -- "$READY_MARKER" "$SERIAL_LOG"; then
-        READY=1
-        break
+    if serial_is_fresh; then
+        if grep -qaE -- "$READY_MARKER" "$SERIAL_LOG"; then
+            READY=1
+            break
+        fi
+        # Fast-fail on a GPU-init abort instead of waiting out the full timeout —
+        # mirrors the KERNEL FAULT fast-path below (post-injection). A GPU-init
+        # abort here means the display can never come up, so there is no point
+        # continuing to poll for readiness.
+        if grep -qaE -- "$GPU_ABORT_REGEX" "$SERIAL_LOG"; then
+            GPU_ABORT_LINE="$(grep -aE -- "$GPU_ABORT_REGEX" "$SERIAL_LOG" | head -1)"
+            finish_fail "GPU_INIT_ABORT: $GPU_ABORT_LINE"
+        fi
     fi
     sleep 3
 done
@@ -414,10 +481,55 @@ else
     capture_evidence "no-launcher"
     tail_since > "$SERIAL_EXCERPT" || true
     # Distinguish a real kernel crash from a dropped double-tap (honest reporting).
+    # A KERNEL CRASH IS THE SIGNAL WE WANT — never retry over it. The retry below
+    # only fires on the no-crash, no-launcher case (a missed double-tap), and exists
+    # to capture WHY the injection missed so the host-side delivery bug can be
+    # root-caused — NOT to silently paper over the miss (it is logged + counted).
     if tail_since | grep -qE '\[UNHANDLED_EC\]|\[FATAL_POSTMORTEM\]|kernel panic'; then
         finish_fail "KERNEL FAULT before launcher opened: $(tail_since | grep -E '\[UNHANDLED_EC\]|\[FATAL_POSTMORTEM\]' | head -1) — real Breenix crash, NOT a harness/injection issue"
     fi
-    finish_fail "launcher did not open after double-Super (no '$LAUNCHER_MARKER') — double-tap not registered by bwm (likely BWM/HID input intermittency; injection was batched + dispatcher-timed)"
+
+    # No crash + no launcher = a missed double-tap (host-side delivery miss or a
+    # guest-side double-tap-window miss). Capture diagnostics and re-inject, bounded
+    # by MAX_INJECT_RETRIES. Re-injecting is SAFE from the launcher toggle hazard:
+    # the launcher provably did NOT open (no '$LAUNCHER_MARKER' / no [spawn] blauncher),
+    # so a fresh double-Super OPENS it rather than toggling an already-open launcher
+    # shut. We do NOT advance BASE_LINE between attempts: the launcher marker is the
+    # single success oracle for the whole window, so re-checking tail_since from the
+    # same baseline correctly catches a marker emitted by any attempt.
+    LAUNCHER_OPENED=0
+    while [[ "$INJECT_RETRIES" -lt "$MAX_INJECT_RETRIES" ]]; do
+        # Capture WHY this attempt missed BEFORE re-injecting (so each miss has its
+        # own diagnostic snapshot). Attempt number is the count of injections so far:
+        # the first double-tap = attempt 1, then each retry increments.
+        capture_miss_diag "$(( INJECT_RETRIES + 1 ))"
+
+        INJECT_RETRIES=$(( INJECT_RETRIES + 1 ))
+        log "launcher not open after double-Super (attempt $INJECT_RETRIES) — captured miss diag; re-injecting"
+
+        foreground_vm_proc
+        "$INJECT" doubletap "$SUPER_CODE" "$INTER_TAP_MS" "$SUPER_PREFIX" \
+            || finish_fail "inject doubletap (retry $INJECT_RETRIES) failed (key injection error — see 'Host prerequisites & known limitations' in README)"
+        sleep "$(ms_to_s "$(awk "BEGIN{printf \"%d\", $POST_SUPER_WAIT*1000}")")"
+
+        # Re-check from the original baseline; a crash on a retry still hard-fails.
+        if tail_since | grep -qE '\[UNHANDLED_EC\]|\[FATAL_POSTMORTEM\]|kernel panic'; then
+            tail_since > "$SERIAL_EXCERPT" || true
+            finish_fail "KERNEL FAULT before launcher opened (during inject retry $INJECT_RETRIES): $(tail_since | grep -E '\[UNHANDLED_EC\]|\[FATAL_POSTMORTEM\]' | head -1) — real Breenix crash, NOT a harness/injection issue"
+        fi
+        if tail_since | grep -qF -- "$LAUNCHER_MARKER"; then
+            LAUNCHER_OPENED=1
+            log "launcher opened on inject retry $INJECT_RETRIES (saw $LAUNCHER_MARKER) — recovered run; inject_retries=$INJECT_RETRIES"
+            break
+        fi
+    done
+
+    if [[ "$LAUNCHER_OPENED" -eq 0 ]]; then
+        # Capture a final miss diagnostic for the last (failing) attempt too.
+        capture_miss_diag "$(( INJECT_RETRIES + 1 ))"
+        tail_since > "$SERIAL_EXCERPT" || true
+        finish_fail "launcher did not open after double-Super + $INJECT_RETRIES retries (persistent injection miss; diag in miss-*.txt) — double-tap not reaching/registering (host-side -j delivery miss or BWM/HID window miss)"
+    fi
 fi
 
 # =============================================================================
