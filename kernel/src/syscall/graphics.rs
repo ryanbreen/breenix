@@ -240,6 +240,12 @@ fn compositor_ready_bits(last_registry_gen: u64, prev_mouse: u64) -> (u64, u64, 
     if cur_reg_gen != last_registry_gen {
         ready |= 4;
     }
+    // Keyboard readiness: a latched Super press-edge (captured at HID-report
+    // time) means a hotkey tap may have completed between polls. Surface it so
+    // compositor_wait returns and BWM drains the latch instead of re-blocking.
+    if crate::drivers::usb::hid::has_pending_super_tap() {
+        ready |= 8;
+    }
 
     (ready, cur_reg_gen, mouse_packed)
 }
@@ -1328,6 +1334,14 @@ fn handle_virgl_op(cmd: &FbDrawCmd) -> SyscallResult {
         30 => {
             // F32c waitqueue stress stats.
             handle_wait_stress_stats(cmd)
+        }
+        31 => {
+            // TakeSuperTapCount: read-and-clear the latched count of Super
+            // press-edges captured at HID-report time. Lets BWM recover taps
+            // that completed (press+release) between two compositor polls so
+            // a correctly-delivered double-tap-Super is never dropped.
+            let count = crate::drivers::usb::hid::take_super_tap_count();
+            SyscallResult::Ok(count as u64)
         }
         _ => {
             crate::serial_println!("[virgl-op] UNKNOWN op={}", cmd.op);

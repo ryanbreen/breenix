@@ -1,0 +1,814 @@
+#!/usr/bin/env bash
+#
+# launcher-smoke.sh — ONE full launcher->terminal smoke run on a fresh Parallels VM.
+#
+# Flow under test:
+#   boot (run.sh --parallels) -> BWM ready -> double-tap SUPER opens the launcher
+#   (/bin/blauncher, pre-selecting APPS[0] = "Terminal") -> Enter launches the
+#   terminal (/bin/bterm). PASS requires REAL serial evidence that bterm started
+#   (its own '[bterm] config:' line) AND became functional (spawned its child
+#   shell, '[bterm] spawned child pid=') — never "launcher opened" alone.
+#   NB: blauncher launches bterm via fork+execv, which does NOT emit the kernel's
+#   "[spawn] path='...'" line — so we validate bterm's OWN startup logs, which are
+#   stronger proof (the binary actually ran and initialized) than a spawn record.
+#
+# Usage:
+#   scripts/parallels/launcher-smoke.sh [--no-build] [--keep-vm]
+#                                       [--timeout SECS] [--type-filter]
+#                                       [--max-inject-retries N]
+#
+# Before the real test gesture, a keyboard-delivery HANDSHAKE injects one
+# inert probe key and confirms it reached the guest (via the userspace
+# heartbeat's periodic `kbd_nonzero=<N>` serial line) — this detects the
+# sticky per-VM-instance host-side input wedge (Parallels dispatcher
+# `[CUsbKeyboard] monitor not ready`) BEFORE it can masquerade as a Breenix
+# test failure. See the "(d.5) Keyboard-delivery HANDSHAKE" section below.
+#
+# Final stdout line is EXACTLY one of:
+#   RESULT: PASS                                    (exit 0)
+#   RESULT: FAIL: <reason>                          (exit 1)
+#   RESULT: ENV: HOST_INPUT_WEDGE <reason>          (exit 2) — handshake
+#     failed (probe key never observed in guest); Breenix was NOT exercised.
+#     Never used to reclassify a genuine post-handshake FAIL.
+#
+# Callers must run this un-sandboxed (a wrapper passes dangerouslyDisableSandbox);
+# this script contains no sandbox logic.
+#
+set -euo pipefail
+
+# =============================================================================
+# INJECTION METHOD CONFIG — tune the trigger in ONE place.
+#
+# The launcher opens on a double-tap of the SUPER modifier. Breenix's USB-HID
+# layer (kernel/src/drivers/usb/hid.rs) maps the Left-CTRL bit to SUPER, so
+# injecting a plain Left-Ctrl tap registers as Super in the guest — this is
+# literally why the operator calls it the "double control key", and it is the
+# exact key Parallels delivers.
+#
+# We deliberately do NOT use the 0xE0 0x5B (left-GUI) extended scancode: Parallels
+# Desktop 26.3.3 rejects a bare `--scancode 91` ("Invalid scan code sequence: 5B")
+# and offers no way to send the extended pair as separate --scancode calls. Plain
+# (non-extended) scancodes like Left-Ctrl (29) are accepted and map to SUPER.
+#
+# A "tap" = press/release of the code. A "double-tap" = two taps within 400 ms
+# (INTER_TAP_MS gap + ~40 ms hold). To change the trigger, edit THESE values.
+# =============================================================================
+SUPER_PREFIX=          # none — Left-Ctrl is a basic, non-extended scancode
+SUPER_CODE=29          # 0x1D Left-Ctrl; Breenix maps the Ctrl HID bit to SUPER
+INTER_TAP_MS=150       # gap between the two taps (must be < 400 ms)
+ENTER_CODE=28          # Enter / Return
+
+# =============================================================================
+# Other tunables
+# =============================================================================
+# Interleave-robust readiness: concurrent serial writers (telnetd, etc.) can split
+# a one-shot marker mid-line, so match EITHER the hotkeys-defaults line OR the
+# recurring [bwm-fps] compositing line (printed ~180x/s once the desktop is live,
+# so a clean, un-interleaved instance appears within milliseconds). Used with grep -aE.
+READY_MARKER='bwm-fps|hotkeys: using built-in defaults'
+LAUNCHER_MARKER="[spawn] path='/bin/blauncher'"
+# GPU-init abort fast-fail: if virtio-gpu init fails (e.g. an ATTACH_BACKING
+# rejected with resp_type=0x1205 INVALID_PARAMETER), BWM correctly refuses to run
+# without compositing and the display stays black forever — waiting out the full
+# timeout just wastes ~20 minutes on a run that can never pass. Checked during the
+# readiness poll (below), not only after injection.
+GPU_ABORT_REGEX='\[bwm\] ERROR|GPU compositing required|VirtIO GPU \(PCI\) init failed|cmd=0x[0-9a-f]+ FAILED: resp_type=0x'
+BTERM_CONFIG_MARKER='[bterm] config:'            # bterm started + read its config
+BTERM_SHELL_MARKER='[bterm] spawned child pid='  # bterm launched its child shell
+# Kernel-fault detection regex, used EVERYWHERE a serial window is classified
+# (readiness poll, inject-retry loop, and the final PASS/FAIL oracle). A fault
+# always takes precedence over any success marker matched in the same window —
+# never weaken this, only strengthen it (e.g. adding new fatal markers here).
+KERNEL_FAULT_REGEX='\[UNHANDLED_EC\]|\[FATAL_POSTMORTEM\]|\[FATAL_REGS\]|kernel panic'
+WARMUP_SECS=60         # VirGL warmup after readiness marker
+POST_SUPER_WAIT=1.5    # settle after double-Super before grepping for launcher
+POST_ENTER_WAIT=3      # settle after Enter before grepping for bterm
+FILTER_TEXT='term'     # typed when --type-filter is set (Terminal stays index 0)
+
+# Keyboard-delivery HANDSHAKE (runs after warmup, BEFORE the double-tap test
+# gesture). Detects the sticky per-VM-instance host-side input wedge
+# (Parallels dispatcher logs `[CUsbKeyboard] monitor not ready` in lockstep
+# with injections) that silently drops `prlctl send-key-event` deliveries on
+# ~13-20% of runs -- retrying into the SAME VM instance has never recovered
+# from this (20/20 historical failures). PROBE_CODE=44 is the PS/2 set-1
+# scancode for 'z': a plain letter key that carries NO modifier bits, so it
+# (a) cannot match ANY bwm hotkey binding (every built-in binding requires
+# ALT or SUPER) and (b) cannot increment the SUPER_TAP_COUNT latch at all
+# (different HID report byte entirely) -- it is structurally incapable of
+# contaminating the double-tap gesture that follows, independent of timing.
+HANDSHAKE_PROBE_CODE=44
+HANDSHAKE_TIMEOUT_SECS=10
+HANDSHAKE_POLL_INTERVAL=1
+
+# =============================================================================
+# Argument parsing
+# =============================================================================
+NO_BUILD=0
+KEEP_VM=0
+OVERALL_TIMEOUT=1200
+TYPE_FILTER=0
+NO_BACKGROUND=0
+# Diagnostic injection-retry budget. A double-tap that fails to open the launcher
+# WITHOUT a kernel crash is treated as a host-side injection-delivery miss (the -j
+# batch not reaching the guest's virtual USB HID); we capture WHY it missed and
+# re-inject up to this many times to recover the run. Set to 0 to disable retries
+# (revert to fail-on-first-miss) for a pure miss-rate measurement.
+MAX_INJECT_RETRIES=3
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --no-build)      NO_BUILD=1 ;;
+        --keep-vm)       KEEP_VM=1 ;;
+        --type-filter)   TYPE_FILTER=1 ;;
+        --no-background) NO_BACKGROUND=1 ;;
+        --timeout)       OVERALL_TIMEOUT="${2:?--timeout needs a value}"; shift ;;
+        --max-inject-retries) MAX_INJECT_RETRIES="${2:?--max-inject-retries needs a value}"; shift ;;
+        -h|--help)
+            grep '^#' "$0" | sed 's/^# \{0,1\}//'
+            exit 0
+            ;;
+        *) echo "launcher-smoke.sh: unknown flag: $1" >&2; exit 2 ;;
+    esac
+    shift
+done
+
+# =============================================================================
+# Paths
+# =============================================================================
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+BREENIX_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+SERIAL_LOG="/tmp/breenix-parallels-serial.log"
+INJECT="$SCRIPT_DIR/inject.sh"
+CAPTURE="$SCRIPT_DIR/capture-display.sh"
+RUN_SH="$BREENIX_ROOT/run.sh"
+
+RUN_TS="$(date +%Y%m%d-%H%M%S)"
+EVIDENCE_DIR="$BREENIX_ROOT/logs/parallels-launcher-test/run-$RUN_TS"
+mkdir -p "$EVIDENCE_DIR"
+RESULT_FILE="$EVIDENCE_DIR/result.txt"
+SERIAL_EXCERPT="$EVIDENCE_DIR/serial-excerpt.txt"
+RUN_LOG="$EVIDENCE_DIR/run-sh.log"
+SMOKE_LOG="$EVIDENCE_DIR/smoke-log.txt"
+
+# Persist this script's own log()/stderr stream (including the INJ_MS
+# wall-time lines) into the evidence dir, in addition to still printing it to
+# the real stderr -- so a run inspected after the fact has the harness's own
+# narration (not just run-sh.log / serial-excerpt.txt) alongside it.
+exec 2> >(tee -a "$SMOKE_LOG" >&2)
+
+# inject.sh appends here (never overwrites) whenever the underlying `prlctl
+# send-key-event -j` call returns nonzero or emits any stderr -- see inject.sh's
+# send_json() and the "HARNESS UPGRADES" note in its header. Exported so every
+# `$INJECT` invocation below (doubletap, retries, type, enter) picks it up.
+export INJECT_DIAG_FILE="$EVIDENCE_DIR/inject-dispatcher-errors.txt"
+
+START_EPOCH="$(date +%s)"
+
+# State carried into cleanup / final report.
+RUN_PID=""
+VM_NAME=""
+FINAL_REASON=""
+CAFFEINATE_PID=""
+VM_PROC_PID=""
+# Number of diagnostic re-injections it took to open the launcher (0 = opened on
+# the first double-tap). Surfaced in result.txt + the final log line so a recovered
+# run is never silently reported as identical to a first-try success.
+INJECT_RETRIES=0
+# Inode of any pre-existing (stale, prior-run) serial log, captured before we
+# launch run.sh. run.sh `rm -f`s the log and recreates it fresh on boot, which
+# changes the inode; we refuse to trust any marker until the inode differs (or
+# the file is gone), so a leftover prior-run marker can never be mis-read as
+# readiness for THIS boot.
+STALE_SERIAL_INODE=""
+
+log() { printf '[smoke %s] %s\n' "$(date +%H:%M:%S)" "$*" >&2; }
+
+# =============================================================================
+# Cleanup trap — always kill the backgrounded run.sh; stop the VM unless --keep-vm.
+# =============================================================================
+cleanup() {
+    local rc=$?
+    if [[ -n "$RUN_PID" ]] && kill -0 "$RUN_PID" 2>/dev/null; then
+        log "cleanup: killing run.sh pid $RUN_PID"
+        kill "$RUN_PID" 2>/dev/null || true
+        # run.sh spawns children (tail -f); reap the process group best-effort.
+        pkill -P "$RUN_PID" 2>/dev/null || true
+    fi
+    if [[ -n "$CAFFEINATE_PID" ]] && kill -0 "$CAFFEINATE_PID" 2>/dev/null; then
+        log "cleanup: killing caffeinate pid $CAFFEINATE_PID"
+        kill "$CAFFEINATE_PID" 2>/dev/null || true
+    fi
+    if [[ "$KEEP_VM" -eq 0 && -n "$VM_NAME" ]]; then
+        log "cleanup: stopping VM $VM_NAME"
+        prlctl stop "$VM_NAME" --kill >/dev/null 2>&1 || true
+    elif [[ -n "$VM_NAME" ]]; then
+        log "cleanup: --keep-vm set, leaving $VM_NAME running"
+    fi
+    return "$rc"
+}
+trap cleanup EXIT
+
+# Emit the single canonical RESULT line and exit. Also persists result.txt.
+finish_pass() {
+    {
+        echo "RESULT: PASS"
+        echo "vm=$VM_NAME"
+        echo "type_filter=$TYPE_FILTER"
+        echo "inject_retries=$INJECT_RETRIES"
+        echo "evidence_dir=$EVIDENCE_DIR"
+        echo "elapsed_s=$(( $(date +%s) - START_EPOCH ))"
+    } > "$RESULT_FILE"
+    log "result: PASS (inject_retries=$INJECT_RETRIES)"
+    echo "RESULT: PASS"
+    exit 0
+}
+finish_fail() {
+    FINAL_REASON="$1"
+    {
+        echo "RESULT: FAIL: $FINAL_REASON"
+        echo "vm=$VM_NAME"
+        echo "type_filter=$TYPE_FILTER"
+        echo "inject_retries=$INJECT_RETRIES"
+        echo "evidence_dir=$EVIDENCE_DIR"
+        echo "elapsed_s=$(( $(date +%s) - START_EPOCH ))"
+    } > "$RESULT_FILE"
+    log "result: FAIL: $FINAL_REASON (inject_retries=$INJECT_RETRIES)"
+    echo "RESULT: FAIL: $FINAL_REASON"
+    exit 1
+}
+
+# Emit the distinct ENV: HOST_INPUT_WEDGE verdict and exit 2. ONLY used when
+# the pre-gesture keyboard-delivery HANDSHAKE fails (the probe key was never
+# observed in the guest) -- i.e. Breenix was never exercised, the Parallels
+# dispatcher for THIS VM instance is wedged host-side. This must NEVER be used
+# to reclassify a post-handshake miss/FAIL: once the handshake succeeds, any
+# later miss (double-tap or Enter) is strong evidence of a real guest-side
+# bug and stays a genuine RESULT: FAIL.
+finish_env() {
+    FINAL_REASON="$1"
+    {
+        echo "RESULT: ENV: HOST_INPUT_WEDGE $FINAL_REASON"
+        echo "vm=$VM_NAME"
+        echo "type_filter=$TYPE_FILTER"
+        echo "inject_retries=$INJECT_RETRIES"
+        echo "evidence_dir=$EVIDENCE_DIR"
+        echo "elapsed_s=$(( $(date +%s) - START_EPOCH ))"
+    } > "$RESULT_FILE"
+    log "result: ENV: HOST_INPUT_WEDGE: $FINAL_REASON"
+    echo "RESULT: ENV: HOST_INPUT_WEDGE $FINAL_REASON"
+    exit 2
+}
+
+remaining_budget() {
+    local now elapsed
+    now="$(date +%s)"
+    elapsed=$(( now - START_EPOCH ))
+    echo $(( OVERALL_TIMEOUT - elapsed ))
+}
+
+# Capture a screenshot into the evidence dir (best-effort; never fatal).
+capture_evidence() {
+    local label="$1"
+    if [[ -x "$CAPTURE" && -n "$VM_NAME" ]]; then
+        log "capturing display ($label)"
+        BREENIX_CAPTURE_RETRY_SCHEDULE="5 15 30" \
+            "$CAPTURE" "$VM_NAME" "$EVIDENCE_DIR/display-$label.png" \
+            >/dev/null 2>>"$EVIDENCE_DIR/capture.log" || \
+            log "capture ($label) failed (non-fatal); see capture.log"
+    fi
+}
+
+# Capture injection-miss diagnostics into the evidence dir so a launcher that
+# never opened (with NO kernel crash) can be root-caused offline. The goal is to
+# distinguish a HOST-SIDE delivery miss (the `prlctl send-key-event -j` batch never
+# reached the guest's virtual USB HID) from a GUEST-SIDE miss (the keys arrived but
+# bwm didn't register the double-tap inside its 400ms window):
+#   - Parallels dispatcher log tail: shows whether send-key-event was delivered or
+#     dropped host-side.
+#   - guest serial tail (post-injection window): shows whether ANY HID/key activity
+#     reached the guest at all.
+# Best-effort; never fatal. $1 = attempt number (1-based) for the filename.
+capture_miss_diag() {
+    local attempt="$1"
+    local diag="$EVIDENCE_DIR/miss-${attempt}-diag.txt"
+    local pvm_log="$HOME/Parallels/${VM_NAME}.pvm/parallels.log"
+    {
+        echo "=== injection-miss diagnostic (attempt $attempt) ==="
+        echo "wall_clock: $(date '+%Y-%m-%d %H:%M:%S %z')"
+        echo "vm: $VM_NAME"
+        echo "base_line: $BASE_LINE (serial line count just before this injection)"
+        echo
+        echo "=== Parallels dispatcher log tail: $pvm_log ==="
+        echo "    (look for whether send-key-event was delivered vs dropped host-side)"
+        if [[ -f "$pvm_log" ]]; then
+            tail -n 120 "$pvm_log" 2>/dev/null || echo "(failed to read dispatcher log)"
+        else
+            echo "(dispatcher log not found at $pvm_log)"
+        fi
+        echo
+        echo "=== guest serial tail since injection (lines after BASE_LINE=$BASE_LINE) ==="
+        echo "    (look for whether ANY HID/key activity reached the guest)"
+        tail_since 2>/dev/null || echo "(failed to read guest serial tail)"
+    } > "$diag" 2>&1 || true
+    log "captured injection-miss diagnostics -> $diag"
+}
+
+# Capture post-Enter diagnostics into the evidence dir, mirroring
+# capture_miss_diag() above, for the case where Enter was injected but bterm's
+# own '[bterm] config:' marker never appeared -- i.e. we cannot tell (without
+# this) whether the Enter key never reached the guest (host-side dispatcher
+# drop) or it reached the guest but bterm failed/never started (guest-side).
+# Same two evidence sources as capture_miss_diag(): the Parallels dispatcher
+# log tail (delivered vs dropped host-side) and the guest serial tail since
+# BASE_LINE. Best-effort; never fatal.
+capture_post_enter_diag() {
+    local diag="$EVIDENCE_DIR/post-enter-diag.txt"
+    local pvm_log="$HOME/Parallels/${VM_NAME}.pvm/parallels.log"
+    {
+        echo "=== post-Enter diagnostic ('$BTERM_CONFIG_MARKER' not seen) ==="
+        echo "wall_clock: $(date '+%Y-%m-%d %H:%M:%S %z')"
+        echo "vm: $VM_NAME"
+        echo "base_line: $BASE_LINE (serial line count just before the double-tap injection)"
+        echo
+        echo "=== Parallels dispatcher log tail: $pvm_log ==="
+        echo "    (look for whether the Enter send-key-event was delivered vs dropped host-side)"
+        if [[ -f "$pvm_log" ]]; then
+            tail -n 120 "$pvm_log" 2>/dev/null || echo "(failed to read dispatcher log)"
+        else
+            echo "(dispatcher log not found at $pvm_log)"
+        fi
+        echo
+        echo "=== guest serial tail since injection (lines after BASE_LINE=$BASE_LINE) ==="
+        echo "    (look for whether ANY key activity / bterm startup reached the guest)"
+        tail_since 2>/dev/null || echo "(failed to read guest serial tail)"
+    } > "$diag" 2>&1 || true
+    log "captured post-Enter diagnostics -> $diag"
+}
+
+# CPU-relief strategy (the operator uses this Mac during runs): keep the VM at
+# LOW priority (renice 20) through the long boot/warmup/idle phases so it yields
+# CPU to the operator's foreground apps under contention — but RESTORE it to
+# normal priority for the brief, timing-sensitive double-tap injection window.
+#
+# We use renice ONLY (no `taskpolicy -b`): banishing the VM to efficiency cores
+# starved the guest so hard it could not consume the two taps inside bwm's 400ms
+# double-tap window (observed 1876ms => launcher never opened). renice keeps the
+# VM on the performance cores at low priority (polite under contention) and is
+# cleanly reversible, so the injection window stays responsive. No sudo needed.
+background_vm_proc() {
+    [[ "$NO_BACKGROUND" -eq 1 ]] && return 0
+    local pid
+    pid="$(pgrep -f 'prl_vm_app.*--vm-name breenix-' 2>/dev/null | head -1 || true)"
+    [[ -z "$pid" ]] && return 1
+    VM_PROC_PID="$pid"
+    renice 20 -p "$pid" >/dev/null 2>&1 || true
+    log "lowered Breenix VM pid=$pid to nice 20 — yields CPU to your foreground apps under contention (stays on perf cores so injection stays responsive)"
+    return 0
+}
+
+# Restore the VM to normal priority for the timing-sensitive injection window.
+foreground_vm_proc() {
+    [[ "$NO_BACKGROUND" -eq 1 ]] && return 0
+    [[ -z "$VM_PROC_PID" ]] && return 0
+    renice 0 -p "$VM_PROC_PID" >/dev/null 2>&1 || true
+    log "restored Breenix VM pid=$VM_PROC_PID to nice 0 for the double-tap injection window"
+}
+
+ms_to_s() { awk "BEGIN{printf \"%.3f\", ${1}/1000}"; }
+
+# Current inode of the serial log, or empty if it does not exist.
+serial_inode() { [[ -e "$SERIAL_LOG" ]] && stat -f '%i' "$SERIAL_LOG" 2>/dev/null || true; }
+
+# True only once the serial log is the FRESH one run.sh created for this boot:
+# either the stale file is gone, or its inode changed since we captured it.
+serial_is_fresh() {
+    local cur
+    cur="$(serial_inode)"
+    [[ -z "$cur" ]] && return 1                 # not (re)created yet
+    [[ -z "$STALE_SERIAL_INODE" ]] && return 0  # no stale file existed at all
+    [[ "$cur" != "$STALE_SERIAL_INODE" ]]
+}
+
+# =============================================================================
+# Preflight
+# =============================================================================
+[[ -x "$INJECT" ]]  || finish_fail "missing/non-executable inject helper at $INJECT"
+[[ -x "$RUN_SH" ]]  || finish_fail "missing/non-executable run.sh at $RUN_SH"
+command -v prlctl >/dev/null 2>&1 || finish_fail "prlctl not found on PATH"
+
+# =============================================================================
+# Locked-screen preflight + caffeinate keep-alive.
+#
+# Hard requirement: macOS must NOT be locked. When the console is locked,
+# Parallels detaches the VM window and silently drops every injected
+# keystroke (send-key-event returns rc=0 but the key never reaches the guest).
+# This is NOT a TCC/permissions issue — injection goes through the virtual
+# xHCI HID via prl_disp_service, not macOS CGEvent — so there is no
+# non-interactive bypass. We therefore refuse to run on a locked Mac.
+#
+# The lock check must never crash the run on its own (missing python/Quartz,
+# headless CI, etc.): if the check itself errors, we warn and proceed.
+# =============================================================================
+LOCK_CHECK_RC=2
+if command -v python3 >/dev/null 2>&1; then
+    # Run the probe as an if-condition: it exits 1 when UNLOCKED (the normal,
+    # required state), and a bare non-zero command would trip `set -e` before we
+    # could read $?. As a condition, `set -e` is exempt and the else-branch sees
+    # the real exit code. 0 = LOCKED, 1 = UNLOCKED, other = probe errored.
+    if python3 -c "import Quartz,sys; d=Quartz.CGSessionCopyCurrentDictionary(); sys.exit(0 if (d and d.get('CGSSessionScreenIsLocked')) else 1)" >/dev/null 2>&1; then
+        LOCK_CHECK_RC=0
+    else
+        LOCK_CHECK_RC=$?
+    fi
+else
+    log "WARNING: python3 not found; skipping macOS lock check (proceeding)"
+fi
+
+case "$LOCK_CHECK_RC" in
+    0)
+        echo "RESULT: FAIL: macOS screen is locked — Parallels drops injected keyboard input with no presented console. Unlock the Mac at the console, run 'caffeinate -d &', then retry."
+        exit 1
+        ;;
+    1)
+        log "lock check: macOS screen is unlocked"
+        ;;
+    *)
+        log "WARNING: lock check failed to run (no Quartz / errored); proceeding without it"
+        ;;
+esac
+
+# Serial-only guard: these runs MUST be serial. run.sh kills any existing breenix
+# VM before creating its own, so an overlapping run would destroy an in-flight VM
+# (and two VMs would fight the dispatcher). Refuse to start if one is already up.
+EXISTING_VM="$(prlctl list 2>/dev/null | awk '/breenix-/{print $NF}' | head -1 || true)"
+if [[ -n "$EXISTING_VM" ]]; then
+    echo "RESULT: FAIL: a Breenix VM ($EXISTING_VM) is already running — launcher-smoke runs must be SERIAL (one VM at a time). Stop it (prlctl stop $EXISTING_VM --kill) and retry."
+    exit 1
+fi
+
+# Keep the display awake for the duration of the (long) run so the screen
+# never auto-locks/sleeps mid-injection. Best-effort: a missing caffeinate
+# must not abort the run. Killed in cleanup.
+if command -v caffeinate >/dev/null 2>&1; then
+    caffeinate -d &
+    CAFFEINATE_PID=$!
+    log "started caffeinate -d (pid $CAFFEINATE_PID) to keep the display awake"
+else
+    log "WARNING: caffeinate not found; display may sleep/lock during a long run"
+fi
+
+# =============================================================================
+# (a) Launch run.sh --parallels in the BACKGROUND. run.sh tails serial forever,
+#     so it must be backgrounded; we kill it in cleanup.
+# =============================================================================
+# Snapshot the inode of any leftover serial log from a previous run BEFORE we
+# launch run.sh, so the readiness poll can tell "fresh log from this boot" apart
+# from "stale log that already contains a prior run's readiness marker".
+STALE_SERIAL_INODE="$(serial_inode)"
+if [[ -n "$STALE_SERIAL_INODE" ]]; then
+    log "stale serial log present (inode $STALE_SERIAL_INODE); will wait for run.sh to recreate it"
+fi
+
+RUN_ARGS=(--parallels)
+[[ "$NO_BUILD" -eq 1 ]] && RUN_ARGS+=(--no-build)
+log "launching: $RUN_SH ${RUN_ARGS[*]} (background)"
+nohup "$RUN_SH" "${RUN_ARGS[@]}" >"$RUN_LOG" 2>&1 &
+RUN_PID=$!
+log "run.sh pid=$RUN_PID, log=$RUN_LOG"
+
+# =============================================================================
+# (b) Poll the serial log for the readiness marker, bounded by the overall timeout.
+#     run.sh removes the serial log fresh on boot, so any match is from THIS boot.
+# =============================================================================
+log "waiting for readiness marker: $READY_MARKER"
+READY=0
+BG_DONE=0
+while :; do
+    if [[ "$(remaining_budget)" -le "$WARMUP_SECS" ]]; then
+        log "timed out waiting for readiness marker"
+        break
+    fi
+    if ! kill -0 "$RUN_PID" 2>/dev/null; then
+        finish_fail "run.sh exited before readiness (see $RUN_LOG)"
+    fi
+    # As soon as the VM process exists, drop it to background priority so it does
+    # not fight the operator's foreground apps for CPU (injection stays foreground).
+    if [[ "$BG_DONE" -eq 0 ]] && background_vm_proc; then BG_DONE=1; fi
+    # Only trust the marker once the serial log is the fresh one run.sh created
+    # for THIS boot — never a leftover prior-run log that may already contain it.
+    if serial_is_fresh; then
+        if grep -qaE -- "$READY_MARKER" "$SERIAL_LOG"; then
+            READY=1
+            break
+        fi
+        # Fast-fail on a GPU-init abort instead of waiting out the full timeout —
+        # mirrors the KERNEL FAULT fast-path below (post-injection). A GPU-init
+        # abort here means the display can never come up, so there is no point
+        # continuing to poll for readiness.
+        if grep -qaE -- "$GPU_ABORT_REGEX" "$SERIAL_LOG"; then
+            GPU_ABORT_LINE="$(grep -aE -- "$GPU_ABORT_REGEX" "$SERIAL_LOG" | head -1)"
+            finish_fail "GPU_INIT_ABORT: $GPU_ABORT_LINE"
+        fi
+    fi
+    sleep 3
+done
+[[ "$READY" -eq 1 ]] || finish_fail "readiness marker not seen within timeout ($READY_MARKER)"
+log "readiness marker seen"
+
+# =============================================================================
+# (c) Resolve the VM name (breenix-<epoch>) created by THIS run.sh.
+#
+# Authoritative source: run.sh prints `VM:     breenix-<epoch>` to its stdout
+# (captured in RUN_LOG) AFTER it has created and started that exact VM. Reading
+# it from RUN_LOG is immune to leftover/stuck breenix-* VMs that run.sh failed
+# to delete. Fall back to the prlctl-list heuristic only if RUN_LOG has no such
+# line (e.g. run.sh output format changed).
+# =============================================================================
+VM_NAME="$(grep -oE 'breenix-[0-9]+' "$RUN_LOG" 2>/dev/null | tail -1 || true)"
+if [[ -n "$VM_NAME" ]]; then
+    log "resolved VM from run.sh output: $VM_NAME"
+else
+    VM_NAME="$(prlctl list -a 2>/dev/null | grep -o 'breenix-[0-9]\+' | tail -1 || true)"
+    [[ -n "$VM_NAME" ]] || finish_fail "could not resolve a breenix-* VM (no name in $RUN_LOG, none via prlctl list -a)"
+    log "resolved VM via prlctl fallback: $VM_NAME"
+fi
+export VM="$VM_NAME"
+
+# =============================================================================
+# (d) VirGL warmup.
+# =============================================================================
+log "VirGL warmup: sleeping ${WARMUP_SECS}s"
+sleep "$WARMUP_SECS"
+capture_evidence "pre-trigger"
+
+# =============================================================================
+# (d.5) Keyboard-delivery HANDSHAKE.
+#
+# PROBE SIGNAL: userspace heartbeat (spawned as a boot service) prints a
+# `kbd_nonzero=<N>` field on every ~1s tick, sourced from
+# kernel/src/drivers/usb/hid.rs::NONZERO_KBD_COUNT via /proc/xhci/counters --
+# a monotonic count of non-empty USB-HID keyboard reports the kernel has
+# actually processed. This is a genuine guest-observable signal: it only
+# advances once a real HID report reaches process_keyboard_report(), so an
+# increase proves the injected key crossed the full host->virtual-xHCI->
+# guest-HID-stack path, not merely that `prlctl send-key-event` returned rc=0
+# (dispatcher-side "success" is exactly what the sticky wedge falsifies).
+#
+# We baseline kbd_nonzero, inject ONE tap of a modifier-free letter key
+# (scancode $HANDSHAKE_PROBE_CODE = 'z'), then poll for up to
+# $HANDSHAKE_TIMEOUT_SECS for the counter to increase. Success -> proceed to
+# the real test gesture. Failure -> the probe never arrived: classify the
+# whole run as ENV: HOST_INPUT_WEDGE (Breenix was NOT exercised) rather than
+# spending the injection-retry budget and reporting a misleading FAIL.
+#
+# HONESTY BOUNDARY: this ENV verdict is used ONLY for a failed handshake.
+# Once the handshake succeeds, the probe is retired -- any later miss on the
+# real double-tap/Enter gesture stays a genuine RESULT: FAIL (delivered but
+# ignored is evidence of a real guest-side bug, never downgraded to ENV).
+# =============================================================================
+last_kbd_nonzero() {
+    grep -aoE 'kbd_nonzero=[0-9]+' "$SERIAL_LOG" 2>/dev/null | tail -1 | cut -d= -f2 || true
+}
+
+log "keyboard-delivery handshake: probing with an inert tap (code=$HANDSHAKE_PROBE_CODE, no modifiers) before the test gesture"
+HANDSHAKE_BASELINE="$(last_kbd_nonzero)"
+[[ -z "$HANDSHAKE_BASELINE" ]] && HANDSHAKE_BASELINE=0
+log "handshake baseline kbd_nonzero=$HANDSHAKE_BASELINE"
+
+foreground_vm_proc
+"$INJECT" tap "$HANDSHAKE_PROBE_CODE" \
+    || finish_fail "handshake probe injection failed (key injection error — see 'Host prerequisites & known limitations' in README)"
+
+HANDSHAKE_OK=0
+HANDSHAKE_DEADLINE=$(( $(date +%s) + HANDSHAKE_TIMEOUT_SECS ))
+while [[ "$(date +%s)" -lt "$HANDSHAKE_DEADLINE" ]]; do
+    # A kernel fault during the handshake window is a real Breenix crash, NOT
+    # a host-input-delivery question -- classify it as a genuine FAIL (same
+    # precedence rule as everywhere else KERNEL_FAULT_REGEX is checked),
+    # never silently swallowed into an ENV verdict below.
+    if grep -qaE -- "$KERNEL_FAULT_REGEX" "$SERIAL_LOG" 2>/dev/null; then
+        finish_fail "KERNEL FAULT during keyboard-delivery handshake: $(grep -aE -- "$KERNEL_FAULT_REGEX" "$SERIAL_LOG" | head -1) — real Breenix crash, NOT a harness/injection issue"
+    fi
+    HANDSHAKE_CUR="$(last_kbd_nonzero)"
+    [[ -z "$HANDSHAKE_CUR" ]] && HANDSHAKE_CUR=0
+    if [[ "$HANDSHAKE_CUR" -gt "$HANDSHAKE_BASELINE" ]]; then
+        HANDSHAKE_OK=1
+        log "handshake OK: kbd_nonzero $HANDSHAKE_BASELINE -> $HANDSHAKE_CUR (probe key arrived in guest)"
+        break
+    fi
+    sleep "$HANDSHAKE_POLL_INTERVAL"
+done
+
+if [[ "$HANDSHAKE_OK" -ne 1 ]]; then
+    # WEDGE CLASSIFICATION: capture the same evidence classes as a normal
+    # injection miss (dispatcher log + guest serial) plus an explicit grep for
+    # the known sticky-wedge signature, then finish with the distinct ENV
+    # verdict (exit 2) -- BUT ONLY if that signature (or an explicit
+    # send-key-event error) is actually present. A guest-side Breenix HID
+    # regression produces the exact same symptom (probe never observed) and
+    # must NOT be laundered into an ENV verdict just because the probe missed.
+    # Never used to reclassify a post-handshake FAIL.
+    WEDGE_DIAG="$EVIDENCE_DIR/handshake-wedge-diag.txt"
+    PVM_LOG="$HOME/Parallels/${VM_NAME}.pvm/parallels.log"
+    WEDGE_SIGNATURE=""
+    if [[ -f "$PVM_LOG" ]]; then
+        WEDGE_SIGNATURE="$(grep -a 'CUsbKeyboard' "$PVM_LOG" 2>/dev/null | tail -n 60 || true)"
+    fi
+    {
+        echo "=== keyboard-delivery handshake FAILED (probe never observed in guest) ==="
+        echo "wall_clock: $(date '+%Y-%m-%d %H:%M:%S %z')"
+        echo "vm: $VM_NAME"
+        echo "baseline kbd_nonzero=$HANDSHAKE_BASELINE, waited ${HANDSHAKE_TIMEOUT_SECS}s, no increase observed"
+        echo
+        echo "=== Parallels dispatcher log grep: CUsbKeyboard ==="
+        if [[ -f "$PVM_LOG" ]]; then
+            [[ -n "$WEDGE_SIGNATURE" ]] && echo "$WEDGE_SIGNATURE" || echo "(no matching lines)"
+        else
+            echo "(dispatcher log not found at $PVM_LOG)"
+        fi
+        echo
+        echo "=== Parallels dispatcher log tail (last 120 lines) ==="
+        if [[ -f "$PVM_LOG" ]]; then
+            tail -n 120 "$PVM_LOG" 2>/dev/null || echo "(failed to read dispatcher log)"
+        else
+            echo "(dispatcher log not found at $PVM_LOG)"
+        fi
+        echo
+        echo "=== guest serial tail (last 60 lines) ==="
+        tail -n 60 "$SERIAL_LOG" 2>/dev/null || echo "(failed to read guest serial log)"
+        echo
+        echo "=== inject-dispatcher-errors.txt ==="
+        if [[ -s "${INJECT_DIAG_FILE:-}" ]]; then
+            cat "$INJECT_DIAG_FILE"
+        else
+            echo "(empty — prlctl reported rc=0/no stderr for the probe injection)"
+        fi
+    } > "$WEDGE_DIAG" 2>&1 || true
+    log "captured handshake wedge diagnostics -> $WEDGE_DIAG"
+    capture_evidence "handshake-wedge"
+
+    # Positive-evidence gate: only declare ENV: HOST_INPUT_WEDGE when the
+    # sticky-wedge signature was actually found in the dispatcher log, or an
+    # explicit send-key-event error was recorded. Absence of the signature
+    # (including a missing/unreadable dispatcher log) is ambiguous -- it is
+    # equally consistent with a guest-side Breenix HID/procfs/heartbeat
+    # regression -- so it must FAIL honestly rather than being labeled ENV.
+    if [[ -n "$WEDGE_SIGNATURE" || -s "${INJECT_DIAG_FILE:-}" ]]; then
+        finish_env "keyboard-delivery handshake failed — probe key never observed in guest (kbd_nonzero stayed at $HANDSHAKE_BASELINE for ${HANDSHAKE_TIMEOUT_SECS}s); see $WEDGE_DIAG. Breenix was NOT exercised; this VM instance's Parallels dispatcher is wedged (sticky per-instance host-side USB-HID drop, historically unrecoverable by retry into the same VM) — do not retry into this VM, start a fresh one."
+    else
+        finish_fail "HANDSHAKE_NO_DELIVERY_EVIDENCE_AMBIGUOUS (probe not observed in guest; no positive host-wedge signature — possible guest HID/procfs/heartbeat regression); kbd_nonzero stayed at $HANDSHAKE_BASELINE for ${HANDSHAKE_TIMEOUT_SECS}s; see $WEDGE_DIAG"
+    fi
+fi
+
+# Let the probe's own report settle out before the timing-sensitive
+# double-tap. Not required for correctness (the probe scancode carries no
+# modifier bits and cannot contribute to SUPER_TAP_COUNT at all — see the
+# handshake comment above) but keeps the evidence timeline clean.
+sleep 1
+
+# =============================================================================
+# (e) Record the serial line count, inject double-Super, then look for the
+#     launcher marker in the tail since that line.
+# =============================================================================
+serial_lines() { [[ -f "$SERIAL_LOG" ]] && wc -l <"$SERIAL_LOG" | tr -d ' ' || echo 0; }
+
+# Restore full VM priority for the timing-sensitive injection + launch window
+# (it ran low-priority through the long boot/warmup for CPU relief).
+foreground_vm_proc
+BASE_LINE="$(serial_lines)"
+log "serial line baseline: $BASE_LINE"
+
+log "injecting double-Super (prefix=$SUPER_PREFIX code=$SUPER_CODE gap=${INTER_TAP_MS}ms)"
+INJ_T0="$(python3 -c 'import time;print(int(time.time()*1000))' 2>/dev/null || echo 0)"
+"$INJECT" doubletap "$SUPER_CODE" "$INTER_TAP_MS" "$SUPER_PREFIX" \
+    || finish_fail "inject doubletap failed (key injection error — see 'Host prerequisites & known limitations' in README)"
+INJ_T1="$(python3 -c 'import time;print(int(time.time()*1000))' 2>/dev/null || echo 0)"
+INJ_MS=$(( INJ_T1 - INJ_T0 ))
+# The double-tap is sent as a SINGLE `prlctl send-key-event -j` batch, so the
+# inter-tap spacing (INTER_TAP_MS) is applied by the dispatcher precisely and is
+# INDEPENDENT of this wall-time. INJ_MS is just prlctl's one-call overhead — it
+# can be large under host load WITHOUT affecting whether the taps land in bwm's
+# 400ms window. (Pre-batching, 4 separate prlctl spawns made INJ_MS == the tap
+# spacing and blew the window on a loaded host; batching fixed that.)
+log "double-tap injected as one -j batch; prlctl wall-time ${INJ_MS}ms (inter-tap spacing dispatcher-controlled at ${INTER_TAP_MS}ms, load-independent)"
+
+sleep "$(ms_to_s "$(awk "BEGIN{printf \"%d\", $POST_SUPER_WAIT*1000}")")"
+
+# Grep only the lines appended since BASE_LINE.
+tail_since() { [[ -f "$SERIAL_LOG" ]] && tail -n +"$(( BASE_LINE + 1 ))" "$SERIAL_LOG" || true; }
+
+if tail_since | grep -qF -- "$LAUNCHER_MARKER"; then
+    log "launcher opened (saw $LAUNCHER_MARKER)"
+else
+    capture_evidence "no-launcher"
+    tail_since > "$SERIAL_EXCERPT" || true
+    # Distinguish a real kernel crash from a dropped double-tap (honest reporting).
+    # A KERNEL CRASH IS THE SIGNAL WE WANT — never retry over it. The retry below
+    # only fires on the no-crash, no-launcher case (a missed double-tap), and exists
+    # to capture WHY the injection missed so the host-side delivery bug can be
+    # root-caused — NOT to silently paper over the miss (it is logged + counted).
+    if tail_since | grep -qE -- "$KERNEL_FAULT_REGEX"; then
+        finish_fail "KERNEL FAULT before launcher opened: $(tail_since | grep -E -- "$KERNEL_FAULT_REGEX" | head -1) — real Breenix crash, NOT a harness/injection issue"
+    fi
+
+    # No crash + no launcher = a missed double-tap (host-side delivery miss or a
+    # guest-side double-tap-window miss). Capture diagnostics and re-inject, bounded
+    # by MAX_INJECT_RETRIES. Re-injecting is SAFE from the launcher toggle hazard:
+    # the launcher provably did NOT open (no '$LAUNCHER_MARKER' / no [spawn] blauncher),
+    # so a fresh double-Super OPENS it rather than toggling an already-open launcher
+    # shut. We do NOT advance BASE_LINE between attempts: the launcher marker is the
+    # single success oracle for the whole window, so re-checking tail_since from the
+    # same baseline correctly catches a marker emitted by any attempt.
+    LAUNCHER_OPENED=0
+    while [[ "$INJECT_RETRIES" -lt "$MAX_INJECT_RETRIES" ]]; do
+        # Capture WHY this attempt missed BEFORE re-injecting (so each miss has its
+        # own diagnostic snapshot). Attempt number is the count of injections so far:
+        # the first double-tap = attempt 1, then each retry increments.
+        capture_miss_diag "$(( INJECT_RETRIES + 1 ))"
+
+        INJECT_RETRIES=$(( INJECT_RETRIES + 1 ))
+        log "launcher not open after double-Super (attempt $INJECT_RETRIES) — captured miss diag; re-injecting"
+
+        foreground_vm_proc
+        "$INJECT" doubletap "$SUPER_CODE" "$INTER_TAP_MS" "$SUPER_PREFIX" \
+            || finish_fail "inject doubletap (retry $INJECT_RETRIES) failed (key injection error — see 'Host prerequisites & known limitations' in README)"
+        sleep "$(ms_to_s "$(awk "BEGIN{printf \"%d\", $POST_SUPER_WAIT*1000}")")"
+
+        # Re-check from the original baseline; a crash on a retry still hard-fails.
+        if tail_since | grep -qE -- "$KERNEL_FAULT_REGEX"; then
+            tail_since > "$SERIAL_EXCERPT" || true
+            finish_fail "KERNEL FAULT before launcher opened (during inject retry $INJECT_RETRIES): $(tail_since | grep -E -- "$KERNEL_FAULT_REGEX" | head -1) — real Breenix crash, NOT a harness/injection issue"
+        fi
+        if tail_since | grep -qF -- "$LAUNCHER_MARKER"; then
+            LAUNCHER_OPENED=1
+            log "launcher opened on inject retry $INJECT_RETRIES (saw $LAUNCHER_MARKER) — recovered run; inject_retries=$INJECT_RETRIES"
+            break
+        fi
+    done
+
+    if [[ "$LAUNCHER_OPENED" -eq 0 ]]; then
+        # Capture a final miss diagnostic for the last (failing) attempt too.
+        capture_miss_diag "$(( INJECT_RETRIES + 1 ))"
+        tail_since > "$SERIAL_EXCERPT" || true
+        finish_fail "launcher did not open after double-Super + $INJECT_RETRIES retries (persistent injection miss; diag in miss-*.txt) — double-tap not reaching/registering (host-side -j delivery miss or BWM/HID window miss)"
+    fi
+fi
+
+# =============================================================================
+# (f) Optionally type the filter, then Enter; look for the bterm oracles.
+#     Terminal is APPS[0] so it stays selected whether or not we filter.
+# =============================================================================
+if [[ "$TYPE_FILTER" -eq 1 ]]; then
+    log "typing filter text '$FILTER_TEXT'"
+    "$INJECT" type "$FILTER_TEXT" \
+        || finish_fail "inject type '$FILTER_TEXT' failed (key injection error)"
+    sleep 0.5
+fi
+
+log "pressing Enter (code=$ENTER_CODE)"
+"$INJECT" key "$ENTER_CODE" \
+    || finish_fail "inject Enter failed (key injection error)"
+
+sleep "$POST_ENTER_WAIT"
+capture_evidence "post-enter"
+
+# Save the full tail-since excerpt as evidence regardless of outcome.
+tail_since > "$SERIAL_EXCERPT" || true
+
+# =============================================================================
+# (g)/(h) Honest oracle: PASS requires BOTH bterm's own startup config line AND
+#         its child-shell spawn line — i.e. the terminal launched AND loaded a
+#         working shell. Launcher-only, or a half-initialized bterm, is a FAIL.
+#
+# KERNEL-FAULT CHECK MUST TAKE PRECEDENCE OVER THE PASS CHECK. A fault can land
+# in the SAME polling window as a successful-looking bterm launch (e.g. bterm
+# starts, then a secondary CPU takes an EC=0x0 exception a moment later) — if
+# the PASS check ran first, that fault would be silently swallowed and the run
+# misreported as PASS. So the fault grep runs FIRST, unconditionally, on every
+# classification of this window, before we even look at the bterm markers.
+# This is a strengthening of PASS criteria, never a weakening: a fault means
+# FAIL regardless of what else matched.
+# =============================================================================
+if tail_since | grep -qE -- "$KERNEL_FAULT_REGEX"; then
+    finish_fail "KERNEL FAULT during terminal launch: $(tail_since | grep -E -- "$KERNEL_FAULT_REGEX" | head -1) — real Breenix crash on the bterm fork/exec path (clone-exec/TTBR0 territory), NOT a harness/timing issue"
+fi
+
+SAW_BTERM_CONFIG=0
+SAW_BTERM_SHELL=0
+tail_since | grep -qF -- "$BTERM_CONFIG_MARKER" && SAW_BTERM_CONFIG=1
+tail_since | grep -qF -- "$BTERM_SHELL_MARKER"  && SAW_BTERM_SHELL=1
+
+if [[ "$SAW_BTERM_CONFIG" -eq 1 && "$SAW_BTERM_SHELL" -eq 1 ]]; then
+    log "terminal launched + loaded: saw '$BTERM_CONFIG_MARKER' AND '$BTERM_SHELL_MARKER'"
+    finish_pass
+fi
+
+if [[ "$SAW_BTERM_CONFIG" -eq 1 ]]; then
+    finish_fail "bterm started ('$BTERM_CONFIG_MARKER') but did not spawn its shell ('$BTERM_SHELL_MARKER') — terminal did not finish loading"
+elif [[ "$SAW_BTERM_SHELL" -eq 1 ]]; then
+    capture_post_enter_diag
+    finish_fail "saw '$BTERM_SHELL_MARKER' but no '$BTERM_CONFIG_MARKER' (inconsistent evidence)"
+else
+    capture_post_enter_diag
+    finish_fail "launcher opened but terminal did not launch (no '$BTERM_CONFIG_MARKER' after Enter)"
+fi

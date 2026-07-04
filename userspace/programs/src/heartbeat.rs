@@ -6,6 +6,7 @@ use libbreenix::process::gettid;
 use libbreenix::time::{now_monotonic, sleep_ms};
 
 const COUNTER_PATH: &str = "/proc/trace/counters";
+const XHCI_COUNTER_PATH: &str = "/proc/xhci/counters";
 const NET_RX_COUNTER_PREFIXES: &[&str] = &[
     "NET_RX_MSI_TOTAL:",
     "NET_RX_RING_DRAIN_TOTAL:",
@@ -92,6 +93,30 @@ const NET_RX_COUNTER_PREFIXES: &[&str] = &[
     "MANUAL_GICV2M_TEST_MSI_AFTER:",
 ];
 
+/// Read the KBD_NONZERO_TOTAL counter from /proc/xhci/counters.
+///
+/// This is a guest-observable, monotonic count of non-empty USB-HID
+/// keyboard reports (kernel/src/drivers/usb/hid.rs::NONZERO_KBD_COUNT). The
+/// Parallels launcher-smoke test harness's keyboard-delivery handshake
+/// baselines this value, injects a single inert probe key, and polls for it
+/// to increase -- proving the injected key actually reached the guest's HID
+/// stack before running the real (timing-sensitive) test gesture. Printed
+/// every heartbeat tick (~1/s) so the handshake's poll latency is bounded by
+/// this cadence, not by the 10s/20s dump_net_rx_counters() schedule.
+fn read_kbd_nonzero_total() -> Option<u64> {
+    let fd = fs::open(XHCI_COUNTER_PATH, O_RDONLY).ok()?;
+    let mut buf = [0u8; 512];
+    let n = io::read(fd, &mut buf).ok()?;
+    let _ = io::close(fd);
+    let text = core::str::from_utf8(&buf[..n]).ok()?;
+    for line in text.lines() {
+        if let Some(rest) = line.strip_prefix("KBD_NONZERO_TOTAL=") {
+            return rest.trim().parse::<u64>().ok();
+        }
+    }
+    None
+}
+
 fn monotonic_ms() -> u64 {
     now_monotonic()
         .map(|ts| ts.tv_sec as u64 * 1000 + ts.tv_nsec as u64 / 1_000_000)
@@ -138,7 +163,11 @@ fn main() {
 
     loop {
         let uptime_ms = monotonic_ms();
-        print!("[heartbeat] tid={} uptime_ms={}\n", tid, uptime_ms);
+        let kbd_nonzero = read_kbd_nonzero_total().unwrap_or(0);
+        print!(
+            "[heartbeat] tid={} uptime_ms={} kbd_nonzero={}\n",
+            tid, uptime_ms, kbd_nonzero
+        );
         if uptime_ms >= next_dump_ms && sample <= 10 {
             dump_net_rx_counters(sample);
             sample += 1;

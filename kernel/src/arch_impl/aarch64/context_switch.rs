@@ -842,6 +842,431 @@ static LAST_DEFER_REQUEUE_ELR: CacheLineAligned<[AtomicU64; 8]> =
 static LAST_DEFER_REQUEUE_X30: CacheLineAligned<[AtomicU64; 8]> =
     CacheLineAligned([const { AtomicU64::new(0) }; 8]);
 
+// ─────────────────────────────────────────────────────────────────────────
+// SAVE-SKEW detection (diagnostic for the launcher-spawn EC=0x0 / EC=0xe crash)
+//
+// Confirmed proximate cause (docs/planning/aarch64-launcher-spawn-crash/ROOT_CAUSE.md):
+// idle_loop_arm64's live register file gets saved into a NON-idle thread's
+// Thread.context, which is later ERETed into .bss → EC=0x0 / EC=0xe.
+//
+// This per-CPU, last-wins slot records the bad save AT SAVE TIME so the next
+// crash's postmortem (exception.rs [SAVE_SKEW]) can distinguish the two
+// candidate upstream writers:
+//   (1) cpu_state/old_id skew — old_id (save target) != cpu_state.current_thread,
+//       i.e. the save target names a different thread than cpu_state believes
+//       is current on this CPU.
+//   (2) reused fork kstack — the exception frame sits in the bitmap-backed
+//       reusable kstack region (commit 04c9655a), so a stale idle/scheduler
+//       frame was read back as the thread's context.
+//
+// Strictly lock-free atomics; written only on the (rare) bad-save condition.
+// NOT the trace ring (which saturates), NOT log/serial.
+//
+// SAVE_SKEW_SEEN[cpu] != 0 marks a captured record for this CPU.
+static SAVE_SKEW_SEEN: [AtomicU64; crate::arch_impl::aarch64::constants::MAX_CPUS] =
+    [const { AtomicU64::new(0) }; crate::arch_impl::aarch64::constants::MAX_CPUS];
+static SAVE_SKEW_OLD_ID: [AtomicU64; crate::arch_impl::aarch64::constants::MAX_CPUS] =
+    [const { AtomicU64::new(0) }; crate::arch_impl::aarch64::constants::MAX_CPUS];
+static SAVE_SKEW_IS_OLD_IDLE: [AtomicU64; crate::arch_impl::aarch64::constants::MAX_CPUS] =
+    [const { AtomicU64::new(0) }; crate::arch_impl::aarch64::constants::MAX_CPUS];
+static SAVE_SKEW_CPU_STATE_TID: [AtomicU64; crate::arch_impl::aarch64::constants::MAX_CPUS] =
+    [const { AtomicU64::new(0) }; crate::arch_impl::aarch64::constants::MAX_CPUS];
+static SAVE_SKEW_FRAME_ELR: [AtomicU64; crate::arch_impl::aarch64::constants::MAX_CPUS] =
+    [const { AtomicU64::new(0) }; crate::arch_impl::aarch64::constants::MAX_CPUS];
+static SAVE_SKEW_FRAME_SP: [AtomicU64; crate::arch_impl::aarch64::constants::MAX_CPUS] =
+    [const { AtomicU64::new(0) }; crate::arch_impl::aarch64::constants::MAX_CPUS];
+static SAVE_SKEW_SP_REUSED: [AtomicU64; crate::arch_impl::aarch64::constants::MAX_CPUS] =
+    [const { AtomicU64::new(0) }; crate::arch_impl::aarch64::constants::MAX_CPUS];
+// frame.x26 / frame.x19 at save time. x26 is idle's post-`bl schedule_from_kernel`
+// return address (invariant fingerprint of idle's register file even when the save
+// happens INSIDE schedule_from_kernel, outside the idle-loop PC window); x19 is
+// idle's `&DEFERRED_REQUEUE`. Captured so the postmortem can prove the saved frame
+// was idle's register state independent of frame.elr.
+static SAVE_SKEW_FRAME_X26: [AtomicU64; crate::arch_impl::aarch64::constants::MAX_CPUS] =
+    [const { AtomicU64::new(0) }; crate::arch_impl::aarch64::constants::MAX_CPUS];
+static SAVE_SKEW_FRAME_X19: [AtomicU64; crate::arch_impl::aarch64::constants::MAX_CPUS] =
+    [const { AtomicU64::new(0) }; crate::arch_impl::aarch64::constants::MAX_CPUS];
+
+/// True if `elr` points into idle's live register file as identified by the
+/// crash postmortem: either inside the `idle_loop_arm64` code window, or equal
+/// to `&WAKE_SITE_SCHEDULE` (the value the postmortem decoded the fault PC to —
+/// idle's `x21`). Cheap: two compares plus an address-of, no locks/allocation.
+#[inline(always)]
+fn elr_is_idle_register_file(elr: u64) -> bool {
+    let idle_addr = idle_loop_arm64 as *const () as u64;
+    // Generous window over the idle loop body (it is well under this size).
+    const IDLE_LOOP_SPAN: u64 = 0x400;
+    if elr >= idle_addr && elr < idle_addr.wrapping_add(IDLE_LOOP_SPAN) {
+        return true;
+    }
+    let wake_site = &crate::task::scheduler::WAKE_SITE_SCHEDULE as *const _ as u64;
+    elr == wake_site
+}
+
+/// Broadened, PC-window-independent test for "this exception frame holds idle's
+/// live register file." The narrow `elr_is_idle_register_file` only fires when
+/// `frame.elr` lands inside the idle-loop body or equals `&WAKE_SITE_SCHEDULE`.
+/// But run-20260603-075301 proved idle can be saved while executing INSIDE
+/// `schedule_from_kernel` (elr ≈ schedule_from_kernel+0xfc0), outside that
+/// window — there the narrow detector stayed silent. These invariant fingerprints
+/// identify idle's register file regardless of where idle's PC happens to be:
+///   - `frame.x26 ∈ [idle_loop_arm64, idle_loop_arm64 + IDLE_X26_SPAN)` — idle's
+///     return address after `bl schedule_from_kernel` (the captured crash had
+///     x26 = idle_loop_arm64+0x278), OR
+///   - `frame.x19 == &DEFERRED_REQUEUE` — idle's live `x19`, OR
+///   - the per-CPU current-thread pointer resolves to the idle thread, OR
+///   - the original narrow `elr` test (don't lose the loop-window case).
+/// Cheap: address-of + compares, no locks/allocation. `current_is_idle` is passed
+/// in by the caller (which already holds the scheduler lock) to avoid re-resolving.
+#[inline(always)]
+fn frame_is_idle_register_file(frame: &Aarch64ExceptionFrame, current_is_idle: bool) -> bool {
+    if elr_is_idle_register_file(frame.elr) {
+        return true;
+    }
+    let idle_addr = idle_loop_arm64 as *const () as u64;
+    // Window over idle's body up to and past the `bl schedule_from_kernel` return
+    // site (observed return addr was idle_loop_arm64+0x278; +0x644 keeps margin).
+    const IDLE_X26_SPAN: u64 = 0x644;
+    if frame.x26 >= idle_addr && frame.x26 < idle_addr.wrapping_add(IDLE_X26_SPAN) {
+        return true;
+    }
+    let deferred_requeue = &DEFERRED_REQUEUE as *const _ as u64;
+    if frame.x19 == deferred_requeue {
+        return true;
+    }
+    current_is_idle
+}
+
+/// Record a bad save (idle's register file being saved into a non-idle thread's
+/// context) into this CPU's last-wins SAVE_SKEW slot. Lock-free; only the cheap
+/// atomic stores below run, and only when the caller has already confirmed the
+/// bad-save condition.
+#[inline(always)]
+#[allow(clippy::too_many_arguments)]
+fn record_save_skew(
+    cpu_id: usize,
+    old_id: u64,
+    is_old_idle: bool,
+    cpu_state_tid: u64,
+    frame_elr: u64,
+    frame_sp: u64,
+    frame_x26: u64,
+    frame_x19: u64,
+) {
+    if cpu_id >= crate::arch_impl::aarch64::constants::MAX_CPUS {
+        return;
+    }
+    let sp_reused = crate::memory::kernel_stack::is_in_reused_kstack_region_aarch64(frame_sp);
+    SAVE_SKEW_OLD_ID[cpu_id].store(old_id, Ordering::Relaxed);
+    SAVE_SKEW_IS_OLD_IDLE[cpu_id].store(is_old_idle as u64, Ordering::Relaxed);
+    SAVE_SKEW_CPU_STATE_TID[cpu_id].store(cpu_state_tid, Ordering::Relaxed);
+    SAVE_SKEW_FRAME_ELR[cpu_id].store(frame_elr, Ordering::Relaxed);
+    SAVE_SKEW_FRAME_SP[cpu_id].store(frame_sp, Ordering::Relaxed);
+    SAVE_SKEW_SP_REUSED[cpu_id].store(sp_reused as u64, Ordering::Relaxed);
+    SAVE_SKEW_FRAME_X26[cpu_id].store(frame_x26, Ordering::Relaxed);
+    SAVE_SKEW_FRAME_X19[cpu_id].store(frame_x19, Ordering::Relaxed);
+    // Publish last (release) so a reader that sees SEEN!=0 also sees the fields.
+    SAVE_SKEW_SEEN[cpu_id].store(1, Ordering::Release);
+}
+
+/// Read-side accessor for the SAVE_SKEW slot, used by the fatal postmortem in
+/// exception.rs. Returns None if no bad save was recorded on this CPU.
+/// Fields: (old_id, is_old_idle, cpu_state_tid, frame_elr, frame_sp, sp_reused,
+/// frame_x26, frame_x19).
+pub fn save_skew_snapshot(cpu_id: usize) -> Option<(u64, u64, u64, u64, u64, u64, u64, u64)> {
+    if cpu_id >= crate::arch_impl::aarch64::constants::MAX_CPUS {
+        return None;
+    }
+    if SAVE_SKEW_SEEN[cpu_id].load(Ordering::Acquire) == 0 {
+        return None;
+    }
+    Some((
+        SAVE_SKEW_OLD_ID[cpu_id].load(Ordering::Relaxed),
+        SAVE_SKEW_IS_OLD_IDLE[cpu_id].load(Ordering::Relaxed),
+        SAVE_SKEW_CPU_STATE_TID[cpu_id].load(Ordering::Relaxed),
+        SAVE_SKEW_FRAME_ELR[cpu_id].load(Ordering::Relaxed),
+        SAVE_SKEW_FRAME_SP[cpu_id].load(Ordering::Relaxed),
+        SAVE_SKEW_SP_REUSED[cpu_id].load(Ordering::Relaxed),
+        SAVE_SKEW_FRAME_X26[cpu_id].load(Ordering::Relaxed),
+        SAVE_SKEW_FRAME_X19[cpu_id].load(Ordering::Relaxed),
+    ))
+}
+
+/// All-CPU [SAVE_SKEW] postmortem readout, modeled on
+/// `dump_defer_requeue_snapshots`. The single-CPU `save_skew_snapshot` reader
+/// only ever inspected the FAULTING cpu's slot, but `record_save_skew` is
+/// genuinely per-CPU: the bad save can (and, per run-20260704-093554's
+/// DEFER_SNAP evidence, plausibly does) happen on a peer CPU that isn't the
+/// one that later dispatches the corrupted context and faults. Looping over
+/// every slot here closes that diagnostic gap so a future repro can show
+/// which CPU's `record_save_skew` actually fired, if any.
+pub fn dump_all_save_skew_snapshots() {
+    let mut any_recorded = false;
+    for cpu_id in 0..crate::arch_impl::aarch64::constants::MAX_CPUS {
+        if let Some((
+            old_id,
+            is_old_idle,
+            cpu_state_tid,
+            frame_elr,
+            frame_sp,
+            sp_reused,
+            frame_x26,
+            frame_x19,
+        )) = save_skew_snapshot(cpu_id)
+        {
+            any_recorded = true;
+            raw_uart_str("[SAVE_SKEW] cpu=");
+            raw_uart_dec(cpu_id as u64);
+            raw_uart_str(" old_id=");
+            raw_uart_dec(old_id);
+            raw_uart_str(" is_old_idle=");
+            raw_uart_dec(is_old_idle);
+            raw_uart_str(" cpu_state_tid=");
+            raw_uart_dec(cpu_state_tid);
+            raw_uart_str(" frame_elr=");
+            raw_uart_hex(frame_elr);
+            raw_uart_str(" frame_sp=");
+            raw_uart_hex(frame_sp);
+            raw_uart_str(" sp_reused=");
+            raw_uart_dec(sp_reused);
+            raw_uart_str(" frame_x26=");
+            raw_uart_hex(frame_x26);
+            raw_uart_str(" frame_x19=");
+            raw_uart_hex(frame_x19);
+            raw_uart_str("\n");
+        }
+    }
+    if !any_recorded {
+        raw_uart_str("[SAVE_SKEW] none recorded on any cpu\n");
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// DISPATCH_MISMATCH detection (diagnostic only, no behavior change)
+//
+// Confirms/refutes the "frame was never rebuilt from context" half of the
+// launcher-spawn EC=0x0/EC=0xe stale-frame hypothesis
+// (docs/planning/aarch64-launcher-spawn-crash/ROOT_CAUSE.md): if a frame is
+// about to be consumed for ERET or ret-based kernel resume but its elr
+// diverges from the dispatched thread's authoritative `context.elr_el1`, the
+// frame was not (fully) rebuilt from context before consumption -- exactly
+// the mechanism by which a stale idle/scheduler frame physically resident on
+// a reused kstack slot could reach ERET/branch instead of the thread's real
+// saved state. Placed in the RUST callers only, per the gold-master
+// constraints on aarch64_enter_exception_frame / idle_loop_arm64 / the EL0
+// dispatch site (see CLAUDE.md's frozen-region table and
+// docs/planning/cpu0-user-guard-autopsy/README.md) -- never inside those
+// regions. Strictly lock-free atomics, last-wins per CPU; record-and-continue
+// only, no behavior change.
+static DISPATCH_MISMATCH_SEEN: [AtomicU64; crate::arch_impl::aarch64::constants::MAX_CPUS] =
+    [const { AtomicU64::new(0) }; crate::arch_impl::aarch64::constants::MAX_CPUS];
+static DISPATCH_MISMATCH_TID: [AtomicU64; crate::arch_impl::aarch64::constants::MAX_CPUS] =
+    [const { AtomicU64::new(0) }; crate::arch_impl::aarch64::constants::MAX_CPUS];
+static DISPATCH_MISMATCH_FRAME_ELR: [AtomicU64; crate::arch_impl::aarch64::constants::MAX_CPUS] =
+    [const { AtomicU64::new(0) }; crate::arch_impl::aarch64::constants::MAX_CPUS];
+static DISPATCH_MISMATCH_CTX_ELR: [AtomicU64; crate::arch_impl::aarch64::constants::MAX_CPUS] =
+    [const { AtomicU64::new(0) }; crate::arch_impl::aarch64::constants::MAX_CPUS];
+static DISPATCH_MISMATCH_SP: [AtomicU64; crate::arch_impl::aarch64::constants::MAX_CPUS] =
+    [const { AtomicU64::new(0) }; crate::arch_impl::aarch64::constants::MAX_CPUS];
+
+/// Record a dispatch-time elr mismatch into this CPU's last-wins slot.
+/// No-op (and no atomic stores at all) when `frame_elr == ctx_elr` -- the
+/// overwhelmingly common, correct case. Lock-free; safe to call from inside
+/// the scheduler lock hold.
+#[inline(always)]
+fn record_dispatch_mismatch_if_needed(cpu_id: usize, tid: u64, frame_elr: u64, ctx_elr: u64, sp: u64) {
+    if frame_elr == ctx_elr {
+        return;
+    }
+    if cpu_id >= crate::arch_impl::aarch64::constants::MAX_CPUS {
+        return;
+    }
+    DISPATCH_MISMATCH_TID[cpu_id].store(tid, Ordering::Relaxed);
+    DISPATCH_MISMATCH_FRAME_ELR[cpu_id].store(frame_elr, Ordering::Relaxed);
+    DISPATCH_MISMATCH_CTX_ELR[cpu_id].store(ctx_elr, Ordering::Relaxed);
+    DISPATCH_MISMATCH_SP[cpu_id].store(sp, Ordering::Relaxed);
+    // Publish last (release) so a reader that sees SEEN!=0 also sees the fields.
+    DISPATCH_MISMATCH_SEEN[cpu_id].store(1, Ordering::Release);
+}
+
+/// Read-side accessor for the DISPATCH_MISMATCH slot. Returns None if no
+/// mismatch was recorded on this CPU. Fields: (tid, frame_elr, ctx_elr, sp).
+pub fn dispatch_mismatch_snapshot(cpu_id: usize) -> Option<(u64, u64, u64, u64)> {
+    if cpu_id >= crate::arch_impl::aarch64::constants::MAX_CPUS {
+        return None;
+    }
+    if DISPATCH_MISMATCH_SEEN[cpu_id].load(Ordering::Acquire) == 0 {
+        return None;
+    }
+    Some((
+        DISPATCH_MISMATCH_TID[cpu_id].load(Ordering::Relaxed),
+        DISPATCH_MISMATCH_FRAME_ELR[cpu_id].load(Ordering::Relaxed),
+        DISPATCH_MISMATCH_CTX_ELR[cpu_id].load(Ordering::Relaxed),
+        DISPATCH_MISMATCH_SP[cpu_id].load(Ordering::Relaxed),
+    ))
+}
+
+/// All-CPU [DISPATCH_MISMATCH] postmortem readout, modeled on
+/// `dump_all_save_skew_snapshots` / `dump_defer_requeue_snapshots`.
+pub fn dump_all_dispatch_mismatch_snapshots() {
+    let mut any_recorded = false;
+    for cpu_id in 0..crate::arch_impl::aarch64::constants::MAX_CPUS {
+        if let Some((tid, frame_elr, ctx_elr, sp)) = dispatch_mismatch_snapshot(cpu_id) {
+            any_recorded = true;
+            raw_uart_str("[DISPATCH_MISMATCH] cpu=");
+            raw_uart_dec(cpu_id as u64);
+            raw_uart_str(" tid=");
+            raw_uart_dec(tid);
+            raw_uart_str(" frame_elr=");
+            raw_uart_hex(frame_elr);
+            raw_uart_str(" ctx_elr=");
+            raw_uart_hex(ctx_elr);
+            raw_uart_str(" sp=");
+            raw_uart_hex(sp);
+            raw_uart_str("\n");
+        }
+    }
+    if !any_recorded {
+        raw_uart_str("[DISPATCH_MISMATCH] none recorded on any cpu\n");
+    }
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// ERET_ANOMALY detection (diagnostic only, no behavior change)
+//
+// DISPATCH_MISMATCH (above) fires when the frame is finalized inside
+// `dispatch_thread_locked` and its elr already diverges from the thread's
+// authoritative `context.elr_el1` at that instant. ERET_ANOMALY is a second,
+// independent check taken at the two ERET *consumer* sites themselves --
+// right after `dispatch_thread_locked` returns and right before the frame
+// is handed to `aarch64_enter_exception_frame` -- so it can also catch a
+// frame that was fine when finalized but got clobbered afterward (e.g. by a
+// nested exception reusing the same stack-local frame storage), or that
+// carries idle's live register-file fingerprint per
+// `frame_is_idle_register_file` even when its elr happens to equal the
+// dispatched thread's context.elr_el1. Placed in the RUST callers only, per
+// the gold-master constraints on aarch64_enter_exception_frame /
+// idle_loop_arm64 / the EL0 dispatch site (CLAUDE.md's frozen-region table,
+// docs/planning/cpu0-user-guard-autopsy/README.md) -- never inside those
+// regions. Strictly lock-free atomics, last-wins per CPU; record-and-
+// continue only, no behavior change.
+static ERET_ANOMALY_SEEN: [AtomicU64; crate::arch_impl::aarch64::constants::MAX_CPUS] =
+    [const { AtomicU64::new(0) }; crate::arch_impl::aarch64::constants::MAX_CPUS];
+static ERET_ANOMALY_TID: [AtomicU64; crate::arch_impl::aarch64::constants::MAX_CPUS] =
+    [const { AtomicU64::new(0) }; crate::arch_impl::aarch64::constants::MAX_CPUS];
+static ERET_ANOMALY_FRAME_ELR: [AtomicU64; crate::arch_impl::aarch64::constants::MAX_CPUS] =
+    [const { AtomicU64::new(0) }; crate::arch_impl::aarch64::constants::MAX_CPUS];
+static ERET_ANOMALY_CTX_ELR: [AtomicU64; crate::arch_impl::aarch64::constants::MAX_CPUS] =
+    [const { AtomicU64::new(0) }; crate::arch_impl::aarch64::constants::MAX_CPUS];
+static ERET_ANOMALY_X26: [AtomicU64; crate::arch_impl::aarch64::constants::MAX_CPUS] =
+    [const { AtomicU64::new(0) }; crate::arch_impl::aarch64::constants::MAX_CPUS];
+static ERET_ANOMALY_SPSR: [AtomicU64; crate::arch_impl::aarch64::constants::MAX_CPUS] =
+    [const { AtomicU64::new(0) }; crate::arch_impl::aarch64::constants::MAX_CPUS];
+
+/// OWNER-TID CANARY: the tid `dispatch_thread_locked` last *finalized* a
+/// frame for, on this CPU. Stamped at the same two finalize points as
+/// `record_dispatch_mismatch_if_needed` (kernel-context-restore and
+/// userspace-dispatch branches). A parallel per-CPU atomic rather than a
+/// field inside `Aarch64ExceptionFrame` itself -- the frame's layout is
+/// consumed by the frozen assembly in `aarch64_enter_exception_frame` at
+/// fixed offsets, so adding a live field there would require re-deriving
+/// every offset used by that gold-master code. Read (not written) by the
+/// ERET_ANOMALY consumer sites so the postmortem can show whether the tid
+/// about to be ERET'd/resumed actually matches the last tid a frame was
+/// finalized for on this CPU, or whether an intervening dispatch path
+/// (idle redirect, TTBR busy/gone, restore-failed) skipped finalization
+/// and left this canary stale.
+static LAST_DISPATCHED_TID: [AtomicU64; crate::arch_impl::aarch64::constants::MAX_CPUS] =
+    [const { AtomicU64::new(0) }; crate::arch_impl::aarch64::constants::MAX_CPUS];
+
+/// Stamp the OWNER-TID CANARY for this CPU. Called from `dispatch_thread_locked`
+/// at its two frame-finalize points. Lock-free; safe to call from inside the
+/// scheduler lock hold.
+#[inline(always)]
+fn stamp_last_dispatched_tid(cpu_id: usize, tid: u64) {
+    if cpu_id >= crate::arch_impl::aarch64::constants::MAX_CPUS {
+        return;
+    }
+    LAST_DISPATCHED_TID[cpu_id].store(tid, Ordering::Release);
+}
+
+/// Record an ERET-consumer-site frame anomaly into this CPU's last-wins
+/// ERET_ANOMALY slot. Lock-free; safe to call from inside the scheduler
+/// lock hold (both consumer sites call this while still holding it).
+#[inline(always)]
+fn record_eret_frame_anomaly(
+    cpu_id: usize,
+    tid: u64,
+    frame_elr: u64,
+    ctx_elr: u64,
+    frame_x26: u64,
+    frame_spsr: u64,
+) {
+    if cpu_id >= crate::arch_impl::aarch64::constants::MAX_CPUS {
+        return;
+    }
+    ERET_ANOMALY_TID[cpu_id].store(tid, Ordering::Relaxed);
+    ERET_ANOMALY_FRAME_ELR[cpu_id].store(frame_elr, Ordering::Relaxed);
+    ERET_ANOMALY_CTX_ELR[cpu_id].store(ctx_elr, Ordering::Relaxed);
+    ERET_ANOMALY_X26[cpu_id].store(frame_x26, Ordering::Relaxed);
+    ERET_ANOMALY_SPSR[cpu_id].store(frame_spsr, Ordering::Relaxed);
+    // Publish last (release) so a reader that sees SEEN!=0 also sees the fields.
+    ERET_ANOMALY_SEEN[cpu_id].store(1, Ordering::Release);
+}
+
+/// Read-side accessor for the ERET_ANOMALY slot. Returns None if no anomaly
+/// was recorded on this CPU. Fields: (tid, frame_elr, ctx_elr, x26, spsr).
+pub fn eret_frame_anomaly_snapshot(cpu_id: usize) -> Option<(u64, u64, u64, u64, u64)> {
+    if cpu_id >= crate::arch_impl::aarch64::constants::MAX_CPUS {
+        return None;
+    }
+    if ERET_ANOMALY_SEEN[cpu_id].load(Ordering::Acquire) == 0 {
+        return None;
+    }
+    Some((
+        ERET_ANOMALY_TID[cpu_id].load(Ordering::Relaxed),
+        ERET_ANOMALY_FRAME_ELR[cpu_id].load(Ordering::Relaxed),
+        ERET_ANOMALY_CTX_ELR[cpu_id].load(Ordering::Relaxed),
+        ERET_ANOMALY_X26[cpu_id].load(Ordering::Relaxed),
+        ERET_ANOMALY_SPSR[cpu_id].load(Ordering::Relaxed),
+    ))
+}
+
+/// All-CPU [ERET_ANOMALY] postmortem readout, modeled on
+/// `dump_all_dispatch_mismatch_snapshots`. Also prints the current
+/// OWNER-TID CANARY value for each CPU that has an anomaly recorded --
+/// this is a LIVE read (the canary is not part of the last-wins anomaly
+/// snapshot itself), so it reflects whichever tid `dispatch_thread_locked`
+/// most recently finalized a frame for on that CPU, which may have moved
+/// on since the anomaly was recorded.
+pub fn dump_all_eret_frame_anomaly_snapshots() {
+    let mut any_recorded = false;
+    for cpu_id in 0..crate::arch_impl::aarch64::constants::MAX_CPUS {
+        if let Some((tid, frame_elr, ctx_elr, x26, spsr)) = eret_frame_anomaly_snapshot(cpu_id) {
+            any_recorded = true;
+            let owner_tid = LAST_DISPATCHED_TID[cpu_id].load(Ordering::Acquire);
+            raw_uart_str("[ERET_ANOMALY] cpu=");
+            raw_uart_dec(cpu_id as u64);
+            raw_uart_str(" tid=");
+            raw_uart_dec(tid);
+            raw_uart_str(" frame_elr=");
+            raw_uart_hex(frame_elr);
+            raw_uart_str(" ctx_elr=");
+            raw_uart_hex(ctx_elr);
+            raw_uart_str(" x26=");
+            raw_uart_hex(x26);
+            raw_uart_str(" spsr=");
+            raw_uart_hex(spsr);
+            raw_uart_str(" owner_tid_canary=");
+            raw_uart_dec(owner_tid);
+            raw_uart_str("\n");
+        }
+    }
+    if !any_recorded {
+        raw_uart_str("[ERET_ANOMALY] none recorded on any cpu\n");
+    }
+}
+
 struct InlineScheduleState {
     scheduler_ptr: AtomicUsize,
     old_thread_id: AtomicU64,
@@ -2225,6 +2650,24 @@ fn dispatch_thread_locked(
             .map(|thread| restore_kernel_context_inline(thread, frame, thread_id))
             .unwrap_or(false);
 
+        // DISPATCH_MISMATCH check: right where the frame is finalized for
+        // this dispatch. restore_kernel_context_inline always sets
+        // frame.elr = thread.context.elr_el1 on success, so this is a
+        // diagnostic invariant check (record-and-continue only), not a gate.
+        if restore_ok {
+            if let Some(thread) = sched.get_thread(thread_id) {
+                record_dispatch_mismatch_if_needed(
+                    cpu_id,
+                    thread_id,
+                    frame.elr,
+                    thread.context.elr_el1,
+                    thread.context.sp,
+                );
+            }
+            // OWNER-TID CANARY: the frame was just finalized for thread_id.
+            stamp_last_dispatched_tid(cpu_id, thread_id);
+        }
+
         if !restore_ok {
             // Context was corrupt or thread not found. Terminate the thread
             // and redirect to idle. CRITICAL: We must update cpu_state here,
@@ -2330,6 +2773,23 @@ fn dispatch_thread_locked(
                 return;
             }
         }
+
+        // DISPATCH_MISMATCH check: right where the frame is finalized for
+        // this userspace dispatch (both the first-entry and resume sub-paths
+        // above always set frame.elr = thread.context.elr_el1 on success), so
+        // this is a diagnostic invariant check (record-and-continue only),
+        // not a gate.
+        if let Some(thread) = sched.get_thread(thread_id) {
+            record_dispatch_mismatch_if_needed(
+                cpu_id,
+                thread_id,
+                frame.elr,
+                thread.context.elr_el1,
+                thread.context.sp,
+            );
+        }
+        // OWNER-TID CANARY: the frame was just finalized for thread_id.
+        stamp_last_dispatched_tid(cpu_id, thread_id);
 
         // Set TTBR0 target for this thread's process address space.
         // If PM lock is contended, redirect to idle and requeue. The thread
@@ -2674,6 +3134,58 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
 
     // 6. Save old thread context (INLINE — no lock acquisition)
     let is_old_idle = sched.is_idle_thread_inner(old_id);
+
+    // SAVE-SKEW detection (diagnostic only — see ROOT_CAUSE.md / the SAVE_SKEW
+    // statics above). This is the single gate that dominates BOTH save writers
+    // (`save_userspace_context_inline` and `save_kernel_context_inline` are both
+    // reached only through the `from_el0` block immediately below, never from any
+    // other call site), so broadening it here covers both writers exactly once
+    // per switch with full access to sched / cpu_id / old_id / cpu_state.
+    //
+    // If the frame we are about to save IS idle's live register file — detected
+    // by the PC-window-INDEPENDENT `frame_is_idle_register_file` (idle's x26 return
+    // addr, idle's x19 == &DEFERRED_REQUEUE, the per-CPU current-thread pointer
+    // resolving to idle, OR the original narrow elr test) — but the save target
+    // old_id is a NON-idle thread, we are about to write idle's regs into a
+    // userspace thread's context: the confirmed proximate cause of the
+    // launcher-spawn EC=0x0/EC=0xe crash. Record it for the fatal postmortem.
+    // Cheap: a few compares guarded by the rare bad-save condition; only then do
+    // the atomic stores. No locks, no allocation, no logging.
+    //
+    // The widened test fixes run-20260603-075301 going SILENT: idle was saved
+    // while executing inside `schedule_from_kernel` (elr ≈ schedule_from_kernel
+    // +0xfc0), outside the narrow idle-loop elr window, so the old `frame.elr`-only
+    // detector missed it. x26 (idle's post-`bl schedule_from_kernel` return addr)
+    // and x19 (&DEFERRED_REQUEUE) are invariant regardless of idle's PC.
+    // Cheap short-circuit FIRST: the healthy common case (old thread is not
+    // idle, which is nearly always true) must pay ~nothing here. All detector
+    // work -- including resolving the per-CPU current-thread pointer -- lives
+    // behind this guard now, not ahead of it.
+    if !is_old_idle {
+        let current_is_idle = {
+            let tp = Aarch64PerCpu::current_thread_ptr();
+            if tp.is_null() {
+                false
+            } else {
+                let real_tid = unsafe { (*(tp as *const Thread)).id() };
+                sched.is_idle_thread_inner(real_tid)
+            }
+        };
+        if frame_is_idle_register_file(frame, current_is_idle) {
+            let cpu_state_tid = sched.cpu_state[cpu_id].current_thread.unwrap_or(0);
+            record_save_skew(
+                cpu_id,
+                old_id,
+                is_old_idle,
+                cpu_state_tid,
+                frame.elr,
+                frame as *const _ as u64,
+                frame.x26,
+                frame.x19,
+            );
+        }
+    }
+
     if from_el0 {
         if !is_old_idle {
             if let Some(old_thread) = sched.get_thread_mut(old_id) {
@@ -2834,6 +3346,20 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
         unsafe {
             Aarch64PerCpu::set_dispatch_elr(resume_pc);
         }
+        // DISPATCH_MISMATCH check: right before the frame/context is
+        // consumed for ret-based kernel resume. take_inline_ret_dispatch_info
+        // always sets thread.context.elr_el1 = resume_pc before returning
+        // ctx_ptr, so this is a diagnostic invariant check (record-and-
+        // continue only), not a gate. Read while the scheduler lock is still
+        // held (before drop(guard) below) so ctx_ptr's target is guaranteed
+        // live and unmodified concurrently.
+        record_dispatch_mismatch_if_needed(
+            cpu_id,
+            new_id,
+            resume_pc,
+            unsafe { (*ctx_ptr).elr_el1 },
+            resume_sp,
+        );
         drop(guard);
         crate::arch_impl::aarch64::timer_interrupt::reset_quantum();
         crate::arch_impl::aarch64::timer_interrupt::rearm_timer();
@@ -2856,6 +3382,21 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
         trace_eret_dispatch(trace_tid, TRACE_ERET_DISPATCH_PRE, frame);
     }
     dispatch_thread_locked(sched, new_id, frame, cpu_id);
+    // ERET_ANOMALY check: immediately after dispatch_thread_locked returns
+    // and before the frame is consumed (this function's caller ERETs it via
+    // the timer-IRQ return path). Record-and-continue only, no gate. Idle
+    // dispatches are routine (every tick that finds no runnable work) and
+    // would otherwise spam this last-wins slot with uninteresting entries,
+    // so they're excluded here; site 2 (inline_schedule_trampoline) already
+    // sits after its own is-idle noreturn branch and doesn't need this guard.
+    if !is_idle {
+        if let Some(thread) = sched.get_thread(new_id) {
+            let ctx_elr = thread.context.elr_el1;
+            if frame.elr != ctx_elr || frame_is_idle_register_file(frame, false) {
+                record_eret_frame_anomaly(cpu_id, new_id, frame.elr, ctx_elr, frame.x26, frame.spsr);
+            }
+        }
+    }
     if let Some(trace_tid) = trace_eret_tid {
         trace_eret_dispatch(trace_tid, TRACE_ERET_DISPATCH_POST, frame);
     }
@@ -3079,6 +3620,22 @@ extern "C" fn inline_schedule_trampoline() -> ! {
         crate::arch_impl::aarch64::timer_interrupt::rearm_timer();
 
         cpu0_breadcrumb(cpu_id, 36); // before aarch64_ret_to_kernel_context
+        // DISPATCH_MISMATCH check: right before the frame/context is
+        // consumed for ret-based kernel resume (inline-schedule trampoline
+        // path). take_inline_ret_dispatch_info always sets
+        // thread.context.elr_el1 = resume_pc before returning ctx_ptr, so
+        // this is a diagnostic invariant check (record-and-continue only),
+        // not a gate. The scheduler lock was already released above via
+        // force_unlock_scheduler(), but ctx_ptr still points at this
+        // thread's live, exclusively-owned CpuContext (no other CPU can be
+        // dispatching this same thread concurrently), so the read is safe.
+        record_dispatch_mismatch_if_needed(
+            cpu_id,
+            new_id,
+            resume_pc,
+            unsafe { (*ctx_ptr).elr_el1 },
+            resume_sp,
+        );
         unsafe {
             aarch64_ret_to_kernel_context(ctx_ptr, resume_pc);
         }
@@ -3104,6 +3661,15 @@ extern "C" fn inline_schedule_trampoline() -> ! {
         trace_eret_dispatch(trace_tid, TRACE_ERET_DISPATCH_PRE, &frame);
     }
     dispatch_thread_locked(sched, new_id, frame, cpu_id);
+    // ERET_ANOMALY snapshot: capture the dispatched thread's context.elr_el1
+    // here, while the scheduler lock is still held (force_unlock_scheduler()
+    // below releases it before this frame is handed off for ERET). The
+    // actual anomaly comparison runs later using only this snapshot + the
+    // frame -- NOT a fresh sched.get_thread(new_id) call after unlock, which
+    // would be an unsynchronized iteration of the shared threads Vec that
+    // could race a concurrent spawn/reap on a peer CPU (realloc/element-shift
+    // -> data race/UAF).
+    let eret_anomaly_ctx_elr = sched.get_thread(new_id).map(|thread| thread.context.elr_el1);
     if let Some(trace_tid) = trace_eret_tid {
         trace_eret_dispatch(trace_tid, TRACE_ERET_DISPATCH_POST, &frame);
     }
@@ -3174,6 +3740,18 @@ extern "C" fn inline_schedule_trampoline() -> ! {
         }
     }
 
+    // ERET_ANOMALY check: right before the frame is handed to
+    // aarch64_enter_exception_frame for ERET. The scheduler lock was
+    // already released above via force_unlock_scheduler(); this check uses
+    // the ctx_elr snapshot taken above (while the lock was still held)
+    // rather than re-reading sched.get_thread(new_id) here -- reading the
+    // shared threads Vec after unlock is not synchronized against a
+    // concurrent spawn/reap on a peer CPU. Record-and-continue only, no gate.
+    if let Some(ctx_elr) = eret_anomaly_ctx_elr {
+        if frame.elr != ctx_elr || frame_is_idle_register_file(&frame, false) {
+            record_eret_frame_anomaly(cpu_id, new_id, frame.elr, ctx_elr, frame.x26, frame.spsr);
+        }
+    }
     cpu0_breadcrumb(cpu_id, 43); // before aarch64_enter_exception_frame (non-idle ERET)
     unsafe {
         aarch64_enter_exception_frame(frame as *const Aarch64ExceptionFrame);

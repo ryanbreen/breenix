@@ -37,6 +37,13 @@ static CAPS_LOCK_ACTIVE: AtomicBool = AtomicBool::new(false);
 
 /// Super/GUI key state tracking (exposed to userspace via poll_modifier_state)
 static SUPER_PRESSED: AtomicBool = AtomicBool::new(false);
+/// Latched count of Super press-edges (0→1 transitions) since last read.
+/// Incremented on the rising edge of SUPER the instant the HID report arrives,
+/// regardless of when the compositor polls. Cleared atomically by
+/// take_super_tap_count(). This ensures a fast tap whose ~30ms high window
+/// falls entirely between two bursty compositor-wait polls is never lost —
+/// mirroring the MOUSE_BUTTONS_PRESSED latch pattern.
+static SUPER_TAP_COUNT: AtomicU32 = AtomicU32::new(0);
 /// Alt key state tracking
 static ALT_PRESSED: AtomicBool = AtomicBool::new(false);
 
@@ -224,7 +231,16 @@ pub fn process_keyboard_report(report: &[u8]) {
         || (modifiers & 0x10) != 0
         || (modifiers & 0x08) != 0
         || (modifiers & 0x80) != 0;
-    SUPER_PRESSED.store(super_now, Ordering::Relaxed);
+    // Latch every rising edge of SUPER so a tap that completes (press+release)
+    // entirely between two compositor polls is still counted exactly once.
+    let was_super = SUPER_PRESSED.swap(super_now, Ordering::Relaxed);
+    if super_now && !was_super {
+        SUPER_TAP_COUNT.fetch_add(1, Ordering::Relaxed);
+        // Wake the compositor (same proven lock-free path the mouse latch uses)
+        // so a Super tap triggers the hotkey check with low latency even when no
+        // window is dirty and the mouse is idle.
+        crate::syscall::graphics::wake_compositor_if_waiting();
+    }
 
     // Track Alt key state (bits 2/6)
     let alt = (modifiers & 0x04) != 0 || (modifiers & 0x40) != 0;
@@ -474,6 +490,25 @@ pub fn poll_modifier_state() -> u32 {
         state |= 8;
     }
     state
+}
+
+/// Consume the latched count of Super press-edges since the last call.
+///
+/// Returns the number of 0→1 SUPER transitions captured at HID-report time and
+/// resets the latch to 0. Used by BWM's double-tap detection so taps that arrive
+/// between compositor-wait polls are not dropped. This complements (does not
+/// replace) the level-based poll_modifier_state used for modifier+key combos.
+pub fn take_super_tap_count() -> u32 {
+    SUPER_TAP_COUNT.swap(0, Ordering::Relaxed)
+}
+
+/// Check for pending latched Super press-edges (non-consuming peek).
+///
+/// Used by compositor_ready_bits so a Super tap that completed between polls
+/// makes compositor_wait return (rather than re-blocking) and BWM gets a chance
+/// to drain the tap count. Mirrors has_pending_press() for the mouse latch.
+pub fn has_pending_super_tap() -> bool {
+    SUPER_TAP_COUNT.load(Ordering::Relaxed) != 0
 }
 
 /// Get current mouse position in screen coordinates.

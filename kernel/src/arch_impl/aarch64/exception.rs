@@ -1028,6 +1028,158 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                 raw_uart_str(" ELR=");
                 raw_uart_hex(frame_ref.elr);
                 raw_uart_str("\n");
+
+                // Full fatal register dump. EC=0xe (Illegal Execution State) means
+                // an ERET restored an illegal PSTATE — we MUST see SPSR/ESR/FAR plus
+                // the GP registers to confirm which stale ELR/SPSR was restored.
+                // This is the fatal park path (interrupts already masked above), so
+                // a full dump is appropriate; uses the same lock-free raw_uart path
+                // as the [UNHANDLED_EC] line.
+                // SP at crash time = frame address + 272 (exception frame size),
+                // matching the convention used by the other fatal handlers.
+                let sp_at_crash = frame_ref as *const _ as u64 + 272;
+                raw_uart_str("[FATAL_REGS] cpu=");
+                raw_uart_dec(cpu_id as u64);
+                raw_uart_str(" spsr=");
+                raw_uart_hex(frame_ref.spsr);
+                raw_uart_str(" esr=");
+                raw_uart_hex(esr);
+                raw_uart_str(" far=");
+                raw_uart_hex(far);
+                raw_uart_str(" elr=");
+                raw_uart_hex(frame_ref.elr);
+                raw_uart_str(" sp=");
+                raw_uart_hex(sp_at_crash);
+                raw_uart_str("\n  x0=");
+                raw_uart_hex(frame_ref.x0);
+                raw_uart_str(" x1=");
+                raw_uart_hex(frame_ref.x1);
+                raw_uart_str(" x2=");
+                raw_uart_hex(frame_ref.x2);
+                raw_uart_str(" x3=");
+                raw_uart_hex(frame_ref.x3);
+                raw_uart_str("\n  x4=");
+                raw_uart_hex(frame_ref.x4);
+                raw_uart_str(" x5=");
+                raw_uart_hex(frame_ref.x5);
+                raw_uart_str(" x6=");
+                raw_uart_hex(frame_ref.x6);
+                raw_uart_str(" x7=");
+                raw_uart_hex(frame_ref.x7);
+                raw_uart_str("\n  x8=");
+                raw_uart_hex(frame_ref.x8);
+                raw_uart_str(" x9=");
+                raw_uart_hex(frame_ref.x9);
+                raw_uart_str(" x10=");
+                raw_uart_hex(frame_ref.x10);
+                raw_uart_str(" x11=");
+                raw_uart_hex(frame_ref.x11);
+                raw_uart_str("\n  x12=");
+                raw_uart_hex(frame_ref.x12);
+                raw_uart_str(" x13=");
+                raw_uart_hex(frame_ref.x13);
+                raw_uart_str(" x14=");
+                raw_uart_hex(frame_ref.x14);
+                raw_uart_str(" x15=");
+                raw_uart_hex(frame_ref.x15);
+                raw_uart_str("\n  x16=");
+                raw_uart_hex(frame_ref.x16);
+                raw_uart_str(" x17=");
+                raw_uart_hex(frame_ref.x17);
+                raw_uart_str(" x18=");
+                raw_uart_hex(frame_ref.x18);
+                raw_uart_str(" x19=");
+                raw_uart_hex(frame_ref.x19);
+                raw_uart_str("\n  x20=");
+                raw_uart_hex(frame_ref.x20);
+                raw_uart_str(" x21=");
+                raw_uart_hex(frame_ref.x21);
+                raw_uart_str(" x22=");
+                raw_uart_hex(frame_ref.x22);
+                raw_uart_str(" x23=");
+                raw_uart_hex(frame_ref.x23);
+                raw_uart_str("\n  x24=");
+                raw_uart_hex(frame_ref.x24);
+                raw_uart_str(" x25=");
+                raw_uart_hex(frame_ref.x25);
+                raw_uart_str(" x26=");
+                raw_uart_hex(frame_ref.x26);
+                raw_uart_str(" x27=");
+                raw_uart_hex(frame_ref.x27);
+                raw_uart_str("\n  x28=");
+                raw_uart_hex(frame_ref.x28);
+                raw_uart_str(" x29=");
+                raw_uart_hex(frame_ref.x29);
+                raw_uart_str(" x30=");
+                raw_uart_hex(frame_ref.x30);
+                raw_uart_str("\n");
+
+                // Optional [FATAL_THREAD]: the currently-dispatched thread's
+                // saved_by_inline_schedule flag and saved context.elr_el1. Read via
+                // try_dump_state() (SCHEDULER.try_lock — returns None instead of
+                // blocking, so it can NEVER deadlock; documented interrupt-safe) and
+                // is already used by the PC_ALIGN fatal handler above. We only read
+                // the current thread's entry.
+                if let Some(tid) = crate::task::scheduler::current_thread_id() {
+                    if let Some(dump) = crate::task::scheduler::try_dump_state() {
+                        if let Some(thread) = dump.threads.iter().find(|t| t.id == tid) {
+                            raw_uart_str("[FATAL_THREAD] tid=");
+                            raw_uart_dec(tid);
+                            raw_uart_str(" saved_by_inline_schedule=");
+                            raw_uart_dec(if thread.saved_by_inline_schedule { 1 } else { 0 });
+                            raw_uart_str(" ctx_elr_el1=");
+                            raw_uart_hex(thread.elr_el1);
+                            raw_uart_str("\n");
+                        }
+                    } else {
+                        raw_uart_str("[FATAL_THREAD] scheduler lock busy; thread state skipped\n");
+                    }
+                }
+
+                // [SAVE_SKEW]: lock-free per-CPU record from the context-save path
+                // (context_switch.rs). Present iff the save site detected idle's
+                // register file being saved into a NON-idle thread's context — the
+                // confirmed proximate cause of this EC=0x0/EC=0xe crash. The fields
+                // distinguish the two candidate upstream writers:
+                //   - old_id != cpu_state_tid  ⇒ cpu_state/old_id skew (candidate 1):
+                //       the save target names a different thread than cpu_state
+                //       believes is current on this CPU.
+                //   - old_id == cpu_state_tid AND frame_x26 ∈ idle-loop range (or
+                //     frame_x19 == &DEFERRED_REQUEUE) ⇒ KSTACK-pool aliasing
+                //     (candidate 2): the frame on THIS thread's stack is actually
+                //     idle's register file; frame_sp / sp_reused tell whether it
+                //     sits in the reused fork-kstack region.
+                // All-CPU readout: the single faulting cpu_id's slot is not
+                // sufficient (see dump_all_save_skew_snapshots doc comment) —
+                // the bad save can happen on a peer CPU that never faults.
+                crate::arch_impl::aarch64::context_switch::dump_all_save_skew_snapshots();
+
+                // [DISPATCH_MISMATCH]: lock-free per-CPU record from the
+                // dispatch-finalization path (context_switch.rs). Present iff
+                // a frame's elr diverged from its thread's authoritative
+                // context.elr_el1 at the moment the frame was about to be
+                // consumed for ERET or ret-based kernel resume — i.e. the
+                // frame was never (fully) rebuilt from context, which is
+                // exactly the "stale frame" hazard this crash traces back to.
+                // Diagnostic only, all-CPU (mirrors SAVE_SKEW above).
+                crate::arch_impl::aarch64::context_switch::dump_all_dispatch_mismatch_snapshots();
+
+                // [ERET_ANOMALY]: lock-free per-CPU record taken at the two
+                // ERET *consumer* sites (context_switch.rs) — right after
+                // dispatch_thread_locked returns and right before the frame
+                // is handed to aarch64_enter_exception_frame/aarch64_ret_to_
+                // kernel_context. Present iff, at that later point, the
+                // frame's elr still diverges from the thread's context.elr_el1
+                // OR the frame carries idle's live register-file fingerprint
+                // (frame_is_idle_register_file). Complements DISPATCH_MISMATCH
+                // by also catching post-finalize clobbers. Each printed line
+                // also carries the OWNER-TID CANARY (owner_tid_canary): the
+                // tid dispatch_thread_locked most recently *finalized* a frame
+                // for on that CPU, which can reveal a stale canary if an
+                // intervening dispatch path skipped finalization entirely.
+                // Diagnostic only, all-CPU (mirrors SAVE_SKEW/DISPATCH_MISMATCH
+                // above).
+                crate::arch_impl::aarch64::context_switch::dump_all_eret_frame_anomaly_snapshots();
             }
             dump_fatal_postmortem_once("UNHANDLED_EC");
             // Redirect to idle instead of hanging — allows system to recover.
