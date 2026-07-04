@@ -695,14 +695,40 @@ static VIRGL_ENABLED: AtomicBool = AtomicBool::new(false);
 /// path keeps working until userspace explicitly opts into VirGL.
 static VIRGL_SCANOUT_ACTIVE: AtomicBool = AtomicBool::new(false);
 
-#[repr(C, align(4096))]
-struct PciFramebuffer {
-    pixels: [u8; FB_SIZE],
-}
+/// Pointer to heap-allocated 2D framebuffer backing (page-aligned, DMA-safe).
+/// Initialized by `init_2d_framebuffer()` during GPU init, before
+/// `create_resource()`/`attach_backing()`.
+///
+/// CRITICAL: This backing is heap-allocated (not BSS), mirroring the 3D
+/// framebuffer fix below. BSS memory on Parallels overlaps with the boot
+/// stack region, causing DMA (RESOURCE_ATTACH_BACKING) to silently fail with
+/// resp_type=0x1205 INVALID_PARAMETER. Heap allocation ensures the backing is
+/// in DMA-safe physical memory.
+static mut PCI_FB_PTR: *mut u8 = core::ptr::null_mut();
+/// Actual size of the 2D framebuffer backing in bytes.
+static mut PCI_FB_LEN: usize = 0;
 
-static mut PCI_FRAMEBUFFER: PciFramebuffer = PciFramebuffer {
-    pixels: [0; FB_SIZE],
-};
+/// Allocate the 2D framebuffer backing on the heap with page alignment.
+/// Must be called before `create_resource()`/`attach_backing()`, once the
+/// chosen resolution (state.width/height) is known.
+fn init_2d_framebuffer(width: u32, height: u32) {
+    let size = (width as usize) * (height as usize) * BYTES_PER_PIXEL;
+    let layout =
+        alloc::alloc::Layout::from_size_align(size, 4096).expect("invalid 2D framebuffer layout");
+    unsafe {
+        let ptr = alloc::alloc::alloc_zeroed(layout);
+        assert!(!ptr.is_null(), "failed to allocate 2D framebuffer backing");
+        PCI_FB_PTR = ptr;
+        PCI_FB_LEN = size;
+    }
+    let phys = virt_to_phys(unsafe { PCI_FB_PTR } as u64);
+    crate::serial_println!(
+        "[virtio-gpu-pci] 2D framebuffer backing: heap ptr={:#x}, phys={:#x}, size={}",
+        unsafe { PCI_FB_PTR } as u64,
+        phys,
+        size
+    );
+}
 
 /// Separate backing for 3D resource — NOT shared with the 2D resource.
 /// Linux's Mesa/virgl creates independent GEM buffers for each resource.
@@ -2127,6 +2153,9 @@ pub fn init() -> Result<(), &'static str> {
         }
     }
 
+    // Allocate the heap-backed 2D framebuffer now that the resolution is known.
+    init_2d_framebuffer(use_width, use_height);
+
     // Always create 2D resource to establish display mode.
     // Without a 2D resource, Parallels shows the "no video signal" watermark.
     // The 2D resource + SET_SCANOUT "registers" the display dimensions.
@@ -3198,7 +3227,8 @@ fn attach_backing() -> Result<(), &'static str> {
     with_device_state(|state| {
         let fb_len = framebuffer_len(state)?;
         let resource_id = state.resource_id;
-        let fb_ptr = &raw const PCI_FRAMEBUFFER as *const u8;
+        let fb_ptr = unsafe { PCI_FB_PTR } as *const u8;
+        assert!(!fb_ptr.is_null(), "2D framebuffer backing not initialized");
         virgl_attach_backing_paged(state, resource_id, fb_ptr, fb_len)
     })
 }
@@ -3576,7 +3606,12 @@ fn virgl_attach_backing_paged(
         return Err("attach_backing: failed to allocate entries array");
     }
 
-    // Fill each entry with a sequential 4KB page
+    // Fill each entry with a sequential 4KB page.
+    //
+    // Each entry's physical address is computed via a per-page virt_to_phys()
+    // call (rather than fb_base_phys + page_offset) so that non-contiguous
+    // backings are handled correctly. virt_to_phys() is a cheap HHDM-offset
+    // subtraction, so this adds negligible cost even for large framebuffers.
     unsafe {
         let entries =
             core::slice::from_raw_parts_mut(entries_ptr as *mut VirtioGpuMemEntry, nr_pages);
@@ -3587,8 +3622,9 @@ fn virgl_attach_backing_paged(
             } else {
                 (actual_len - page_offset) as u32
             };
+            let page_phys = virt_to_phys(backing_ptr as u64 + page_offset as u64);
             entries[i] = VirtioGpuMemEntry {
-                addr: fb_base_phys + page_offset as u64,
+                addr: page_phys,
                 length: page_len,
                 padding: 0,
             };
@@ -4170,7 +4206,7 @@ pub fn flush_rect(x: u32, y: u32, width: u32, height: u32) -> Result<(), &'stati
 /// Used in GOP hybrid mode where pixels are already in BAR0 (the display
 /// scanout memory). The RESOURCE_FLUSH tells Parallels which region changed
 /// so it can update the host window, without the overhead of a DMA transfer
-/// from PCI_FRAMEBUFFER (which isn't used in hybrid mode).
+/// from the heap-backed 2D framebuffer (which isn't used in hybrid mode).
 pub fn resource_flush_only(x: u32, y: u32, width: u32, height: u32) -> Result<(), &'static str> {
     with_device_state(|state| {
         fence(Ordering::SeqCst);
@@ -4202,15 +4238,16 @@ pub fn dimensions() -> Option<(u32, u32)> {
     }
 }
 
-/// Get a mutable reference to the PCI_FRAMEBUFFER pixels.
+/// Get a mutable reference to the heap-backed 2D framebuffer pixels.
 #[allow(dead_code)]
 pub fn framebuffer() -> Option<&'static mut [u8]> {
     unsafe {
         let ptr = &raw mut GPU_PCI_STATE;
-        if let Some(state) = (*ptr).as_ref() {
-            let len = framebuffer_len(state).ok()?;
-            let fb_ptr = &raw mut PCI_FRAMEBUFFER;
-            Some(&mut (&mut (*fb_ptr).pixels)[..len])
+        if (*ptr).as_ref().is_some() {
+            if PCI_FB_PTR.is_null() {
+                return None;
+            }
+            Some(core::slice::from_raw_parts_mut(PCI_FB_PTR, PCI_FB_LEN))
         } else {
             None
         }
