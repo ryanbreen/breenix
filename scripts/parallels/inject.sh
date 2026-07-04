@@ -73,7 +73,39 @@ fi
 # process-spawn latency.
 
 # Send a JSON event array (built by the helpers below) as one -j batch via stdin.
-send_json() { printf '%s' "$1" | prlctl send-key-event "$VM" -j >/dev/null 2>&1; }
+#
+# The underlying `prlctl send-key-event -j` exit code and stderr are NO LONGER
+# silently discarded (previously >/dev/null 2>&1 threw both away). A genuine
+# host-side dispatcher failure (nonzero exit and/or any stderr text) is now:
+#   1. printed to inject.sh's own stderr with a distinguishing
+#      `[inject.sh] prlctl send-key-event FAILED` tag, and
+#   2. appended to $INJECT_DIAG_FILE, if the caller has set/exported it (e.g.
+#      launcher-smoke.sh points this at its evidence dir) --
+# so a real dispatcher failure is never indistinguishable from a
+# silently-ignored (rc=0, empty stderr) delivery miss that the caller's own
+# retry/miss-diag logic already handles separately.
+send_json() {
+    local payload="$1" rc=0 err
+    err="$(printf '%s' "$payload" | prlctl send-key-event "$VM" -j 2>&1 1>/dev/null)" || rc=$?
+    if [[ "$rc" -ne 0 || -n "$err" ]]; then
+        {
+            echo "[inject.sh] prlctl send-key-event FAILED rc=$rc"
+            echo "[inject.sh] stderr: ${err:-<empty>}"
+            echo "[inject.sh] payload: $payload"
+        } >&2
+        if [[ -n "${INJECT_DIAG_FILE:-}" ]]; then
+            {
+                echo "=== inject.sh prlctl send-key-event failure: $(date '+%Y-%m-%d %H:%M:%S %z') ==="
+                echo "vm: $VM"
+                echo "rc: $rc"
+                echo "stderr: ${err:-<empty>}"
+                echo "payload: $payload"
+                echo
+            } >> "$INJECT_DIAG_FILE" 2>/dev/null || true
+        fi
+    fi
+    return "$rc"
+}
 
 # Emit the JSON event objects for one (possibly extended) tap: press, hold, release.
 #   $1 code, $2 hold_ms, $3 extended-prefix (optional, e.g. 224 for 0xE0)

@@ -123,6 +123,19 @@ mkdir -p "$EVIDENCE_DIR"
 RESULT_FILE="$EVIDENCE_DIR/result.txt"
 SERIAL_EXCERPT="$EVIDENCE_DIR/serial-excerpt.txt"
 RUN_LOG="$EVIDENCE_DIR/run-sh.log"
+SMOKE_LOG="$EVIDENCE_DIR/smoke-log.txt"
+
+# Persist this script's own log()/stderr stream (including the INJ_MS
+# wall-time lines) into the evidence dir, in addition to still printing it to
+# the real stderr -- so a run inspected after the fact has the harness's own
+# narration (not just run-sh.log / serial-excerpt.txt) alongside it.
+exec 2> >(tee -a "$SMOKE_LOG" >&2)
+
+# inject.sh appends here (never overwrites) whenever the underlying `prlctl
+# send-key-event -j` call returns nonzero or emits any stderr -- see inject.sh's
+# send_json() and the "HARNESS UPGRADES" note in its header. Exported so every
+# `$INJECT` invocation below (doubletap, retries, type, enter) picks it up.
+export INJECT_DIAG_FILE="$EVIDENCE_DIR/inject-dispatcher-errors.txt"
 
 START_EPOCH="$(date +%s)"
 
@@ -251,6 +264,38 @@ capture_miss_diag() {
         tail_since 2>/dev/null || echo "(failed to read guest serial tail)"
     } > "$diag" 2>&1 || true
     log "captured injection-miss diagnostics -> $diag"
+}
+
+# Capture post-Enter diagnostics into the evidence dir, mirroring
+# capture_miss_diag() above, for the case where Enter was injected but bterm's
+# own '[bterm] config:' marker never appeared -- i.e. we cannot tell (without
+# this) whether the Enter key never reached the guest (host-side dispatcher
+# drop) or it reached the guest but bterm failed/never started (guest-side).
+# Same two evidence sources as capture_miss_diag(): the Parallels dispatcher
+# log tail (delivered vs dropped host-side) and the guest serial tail since
+# BASE_LINE. Best-effort; never fatal.
+capture_post_enter_diag() {
+    local diag="$EVIDENCE_DIR/post-enter-diag.txt"
+    local pvm_log="$HOME/Parallels/${VM_NAME}.pvm/parallels.log"
+    {
+        echo "=== post-Enter diagnostic ('$BTERM_CONFIG_MARKER' not seen) ==="
+        echo "wall_clock: $(date '+%Y-%m-%d %H:%M:%S %z')"
+        echo "vm: $VM_NAME"
+        echo "base_line: $BASE_LINE (serial line count just before the double-tap injection)"
+        echo
+        echo "=== Parallels dispatcher log tail: $pvm_log ==="
+        echo "    (look for whether the Enter send-key-event was delivered vs dropped host-side)"
+        if [[ -f "$pvm_log" ]]; then
+            tail -n 120 "$pvm_log" 2>/dev/null || echo "(failed to read dispatcher log)"
+        else
+            echo "(dispatcher log not found at $pvm_log)"
+        fi
+        echo
+        echo "=== guest serial tail since injection (lines after BASE_LINE=$BASE_LINE) ==="
+        echo "    (look for whether ANY key activity / bterm startup reached the guest)"
+        tail_since 2>/dev/null || echo "(failed to read guest serial tail)"
+    } > "$diag" 2>&1 || true
+    log "captured post-Enter diagnostics -> $diag"
 }
 
 # CPU-relief strategy (the operator uses this Mac during runs): keep the VM at
@@ -589,7 +634,9 @@ fi
 if [[ "$SAW_BTERM_CONFIG" -eq 1 ]]; then
     finish_fail "bterm started ('$BTERM_CONFIG_MARKER') but did not spawn its shell ('$BTERM_SHELL_MARKER') — terminal did not finish loading"
 elif [[ "$SAW_BTERM_SHELL" -eq 1 ]]; then
+    capture_post_enter_diag
     finish_fail "saw '$BTERM_SHELL_MARKER' but no '$BTERM_CONFIG_MARKER' (inconsistent evidence)"
 else
+    capture_post_enter_diag
     finish_fail "launcher opened but terminal did not launch (no '$BTERM_CONFIG_MARKER' after Enter)"
 fi
