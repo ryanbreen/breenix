@@ -535,6 +535,37 @@ fi
 export VM="$VM_NAME"
 
 # =============================================================================
+# (c.5) USB mouse-enumeration assertion.
+#
+# xHCI enumeration completes during kernel boot, well before BWM emits the
+# readiness marker, so start_hid_polling()'s summary line is already in the
+# serial log by now. Extract mouse=slotN from it: if N==0, the mouse's
+# EnableSlot/AddressDevice sequence never got a slot (even after the bounded
+# in-kernel retry added for exactly this failure mode) -- the pointer is dead
+# for the whole session. This is a real device-bring-up failure and must FAIL
+# honestly rather than let the run limp forward into the launcher/bterm
+# phases pretending input is healthy. Always copy the line into the evidence
+# dir regardless of outcome (pass or fail) for offline inspection.
+# =============================================================================
+HID_POLL_MARKER='[xhci] start_hid_polling:'
+HID_POLL_LINE="$(grep -aF -- "$HID_POLL_MARKER" "$SERIAL_LOG" 2>/dev/null | tail -1 || true)"
+echo "$HID_POLL_LINE" > "$EVIDENCE_DIR/hid-poll-line.txt"
+
+if [[ -z "$HID_POLL_LINE" ]]; then
+    finish_fail "USB_MOUSE_ENUM: no '$HID_POLL_MARKER' line found in serial log (start_hid_polling never ran or was not reached)"
+fi
+
+MOUSE_SLOT="$(printf '%s\n' "$HID_POLL_LINE" | grep -oE 'mouse=slot[0-9]+' | grep -oE '[0-9]+' || true)"
+if [[ -z "$MOUSE_SLOT" || "$MOUSE_SLOT" -eq 0 ]]; then
+    # Pull any retry-exhaustion evidence from the kernel's own EnableSlot
+    # retry logging so the FAIL message is directly actionable.
+    ENUM_RETRY_EVIDENCE="$(grep -aE 'EnableSlot retry|EnableSlot failed|EnableSlot/AddressDevice failed after retries' "$SERIAL_LOG" 2>/dev/null | tail -5 || true)"
+    [[ -n "$ENUM_RETRY_EVIDENCE" ]] && echo "$ENUM_RETRY_EVIDENCE" >> "$EVIDENCE_DIR/hid-poll-line.txt"
+    finish_fail "USB_MOUSE_ENUM: mouse never enumerated a slot (mouse=slot${MOUSE_SLOT:-?}): $HID_POLL_LINE"
+fi
+log "USB mouse enumerated: slot $MOUSE_SLOT ($HID_POLL_LINE)"
+
+# =============================================================================
 # (d) VirGL warmup.
 # =============================================================================
 log "VirGL warmup: sleeping ${WARMUP_SECS}s"
