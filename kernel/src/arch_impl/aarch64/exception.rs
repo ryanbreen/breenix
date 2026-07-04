@@ -1163,6 +1163,23 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                 // exactly the "stale frame" hazard this crash traces back to.
                 // Diagnostic only, all-CPU (mirrors SAVE_SKEW above).
                 crate::arch_impl::aarch64::context_switch::dump_all_dispatch_mismatch_snapshots();
+
+                // [ERET_ANOMALY]: lock-free per-CPU record taken at the two
+                // ERET *consumer* sites (context_switch.rs) — right after
+                // dispatch_thread_locked returns and right before the frame
+                // is handed to aarch64_enter_exception_frame/aarch64_ret_to_
+                // kernel_context. Present iff, at that later point, the
+                // frame's elr still diverges from the thread's context.elr_el1
+                // OR the frame carries idle's live register-file fingerprint
+                // (frame_is_idle_register_file). Complements DISPATCH_MISMATCH
+                // by also catching post-finalize clobbers. Each printed line
+                // also carries the OWNER-TID CANARY (owner_tid_canary): the
+                // tid dispatch_thread_locked most recently *finalized* a frame
+                // for on that CPU, which can reveal a stale canary if an
+                // intervening dispatch path skipped finalization entirely.
+                // Diagnostic only, all-CPU (mirrors SAVE_SKEW/DISPATCH_MISMATCH
+                // above).
+                crate::arch_impl::aarch64::context_switch::dump_all_eret_frame_anomaly_snapshots();
             }
             dump_fatal_postmortem_once("UNHANDLED_EC");
             // Redirect to idle instead of hanging — allows system to recover.
