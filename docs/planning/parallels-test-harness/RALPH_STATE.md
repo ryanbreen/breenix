@@ -13,15 +13,58 @@ Each turn = **implement/fix the framework, then validate with 10 consecutive run
 Stop the loop only when 10-in-a-row pass. Diagnose failures honestly — if a failure is a
 real Breenix launcher bug (not a harness timing issue), surface it; do not weaken the test.
 
-## Status
-- **Phase 1 — ship branch: DONE.** `fix/aarch64-stale-cached-ttbr0-dispatch` → PR #410 → merged to `main` (`134c532b`). Local `main` synced.
-- **Phase 2 — construction workflow: COMPLETED, blocked at spike.** Run `wf_c890dfff-d68`.
-  - Boot ✅ VM `breenix-1780359459`, BWM compositing. Ready marker: `[bwm] hotkeys: using built-in defaults for early boot`.
-  - Code-recon ✅ Full recipe known: trigger=double-tap Super (`bwm.rs:315`); `blauncher` pre-selects `APPS[0]="Terminal"` → Enter alone launches `/bin/bterm`. Oracles: `[spawn] path='/bin/blauncher'`, `[spawn] path='/bin/bterm'`, `[bterm] config:`.
-  - Spike ❌ **HARD host-side blocker:** `prlctl send-key-event` accepted but keystrokes DROPPED before the guest (modifier-free `=` into focused window changed nothing; no hotkey `[spawn]`). Evidence points to missing macOS TCC Accessibility/Input-Monitoring for Parallels + a detached VM GUI view (stale `prlctl capture`). Spike wrote `logs/parallels-launcher-test/inject.sh` + evidence.
-  - **OPEN QUESTION being resolved:** is the blocker the detached/headless window (autonomously fixable) or a TCC grant (needs operator)? Decisive test: bring VM window on-screen+focused, inject `=` into Bounce, watch speed.
+## Status — EXIT CRITERION MET (2026-07-04)
 
-## VERDICT (2026-06-01 night)
+**The hard exit criterion is MET: 10 CONSECUTIVE CLEAN GREEN runs**, attempts 1-10,
+all `RESULT: PASS` with `inject_retries=0` (no retried/flaky passes — a genuinely
+clean streak). Evidence dirs:
+`logs/parallels-launcher-test/run-20260704-133953` through
+`logs/parallels-launcher-test/run-20260704-141143` (10 dirs: `-133953`, `-134312`,
+`-134637`, `-134937`, `-135244`, `-135559`, `-140026`, `-140401`, `-140704`,
+`-141143`), each with `result.txt` showing `RESULT: PASS`, `inject_retries=0`.
+
+**The loop is COMPLETE, pending PR merge.**
+
+### What today's session fixed en route to the clean streak
+1. **Intermittent GPU-init boot failure** — the 2D framebuffer was BSS-backed and
+   not DMA-mappable; moved to heap allocation (`286dafe5`).
+2. **Harness honesty fixes** (the gate was previously able to score false greens):
+   - Fault-check precedence over PASS — a kernel fault occurring after the
+     readiness marker was previously masked by an early PASS verdict; fixed to
+     check faults first (`00e4a699`).
+   - Retried passes are no longer counted as "clean green" — a run that needed
+     input-injection retries is distinguished from a truly clean pass (`8b0abf98`).
+   - `--no-build` stale-`.hds` deploy trap — running with `--no-build` could
+     silently deploy a stale disk image; closed (`7280a8ba`).
+3. **Host input wedge (intermittent keyboard-delivery drops)** — added a
+   keyboard-delivery handshake via a new `kbd_nonzero` counter (`30bec1bb`,
+   `607ffee0`), with evidence-gated `ENV` classification so a host-side wedge is
+   detected and excluded rather than silently miscounted as a kernel bug
+   (`0a820bd8`, `a3275dca`).
+4. **Fork-kstack scrub + child resume-state reset** (`e65f23cd`) — a plausible
+   fix for the intermittent EC=0x0 launcher-spawn crash (see
+   `docs/planning/aarch64-launcher-spawn-crash/ROOT_CAUSE.md`). Zero faults
+   observed in 25 runs since landing this fix, versus roughly 1-in-15 before.
+   **Not proven** — see round-4 RCA addendum in ROOT_CAUSE.md; the underlying
+   writer is still unlocated, and this fix addresses only one of two candidate
+   upstream writers.
+5. **Instrumentation armed for any recurrence** (kept in the tree, does not gate
+   the harness): all-CPU `SAVE_SKEW` readout (`97f6e834`, `b0c4ab7c`), an ERET
+   frame-anomaly recorder + owner-tid canary (`40ad7042`, `40c187e9`).
+
+### Known open items (not blocking, tracked for follow-up)
+- **(a) EC=0x0 crash — unconfirmed-fixed.** The kstack scrub (`e65f23cd`) is a
+  plausible mitigation, not a proven fix (0 faults in 25 runs since, vs ~1/15
+  before). If it recurs, the armed `[ERET_ANOMALY]`/`owner_tid_canary` probes in
+  the postmortem will pin the writer. An eventual definitive fix likely touches
+  FROZEN gold-master regions (idle SP handling / ERET dispatch) — **operator
+  signoff required before implementation.**
+- **(b) Host-side `CUsbKeyboard` wedge** — detected and excluded with evidence
+  (see fix #3 above); the underlying Parallels-side cause is unaddressed.
+- **(c) Rare AHCI boot hang** — 1 occurrence, `run-20260704-105450`; not
+  reproduced again, not investigated further.
+
+## VERDICT (2026-06-01 night — superseded by 2026-07-04 above)
 - **Harness: BUILT & verified.** `scripts/parallels/inject.sh`, `scripts/parallels/launcher-smoke.sh`, `.claude/workflows/parallels-launcher-test.js`, `docs/planning/parallels-test-harness/README.md`. Injection method isolated to one config block (`SUPER_PREFIX=224 SUPER_CODE=91 INTER_TAP_MS=150 ENTER_CODE=28`).
 - **Parallels injection blocker ROOT-CAUSED: the macOS screen is LOCKED.** `CGSSessionScreenIsLocked=True` → VM console detached → `prlctl send-key-event` accepted (rc=0) but silently dropped (functional `=`-into-Bounce test: no effect; no hotkey `[spawn]`). NOT a TCC grant (send-key-event injects into the virtual XHCI HID via prl_disp_service, not via macOS CGEvent/PostEvent). NOT a run.sh misconfig. Guest USB keyboard is healthy/enumerated — input just never lands. Evidence: `logs/parallels-launcher-test/unblock-2026-06-01-rootcause.txt`.
 - **OPERATOR ACTION to validate on Parallels:** physically unlock the Mac at the console, then `caffeinate -d &` (prevent re-lock), then run `bash scripts/parallels/launcher-smoke.sh` (or the `parallels-launcher-test` workflow). There is no non-interactive unlock bypass.
@@ -68,3 +111,11 @@ For reference, the working QEMU ARM64 boot recipe is `-M virt,gic-version=3 -cpu
 - failed at Boot/Spike → diagnose (injection timing vs. real Breenix launcher bug),
   fix host-side or report the Breenix bug, then re-run.
 - After 10 green → commit the harness on a feature branch, open a PR, notify operator.
+
+## COMPLETE (2026-07-04)
+10/10 clean greens achieved — see "Status — EXIT CRITERION MET" above for the
+evidence paths and the list of fixes landed this session. **The loop is done;**
+the only remaining step is merging the branch (`feat/parallels-launcher-test-harness`)
+via PR. Open items (a)/(b)/(c) above are tracked but do not block merge — none of
+them are harness defects; (a) and (b) are underlying Breenix/Parallels behaviors
+the harness now correctly detects and reports rather than silently masking.

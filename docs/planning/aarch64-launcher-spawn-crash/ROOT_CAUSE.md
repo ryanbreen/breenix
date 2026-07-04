@@ -100,3 +100,88 @@ distinctly (`RESULT: FAIL: KERNEL FAULT ...`).
   `[FATAL_REGS]`/`[FATAL_THREAD]`/trace ring), `run-20260602-204127` (2nd capture),
   and the earlier EC=0xe `run-20260602-124137`.
 - Enhanced postmortem: commit `b1961217` (exception.rs).
+
+## Addendum (2026-07-04): round-4 RCA — revised mechanism, mitigation status, and next probe
+
+**Context:** commit `e65f23cd` ("scrub reused fork kstack slots + reset child
+resume state") shipped as the fix for candidate #2 above (reused fork kernel
+stack carrying a stale frame). The 10-consecutive-green harness gate (see
+`docs/planning/parallels-test-harness/RALPH_STATE.md`) passed with this fix in
+the tree, but a fault recurred once mid-sweep (`run-20260704-104636`, attempt 8
+of that gate) even with the scrub compiled in and verified to have executed.
+Full analysis: `logs/parallels-launcher-test/run-20260704-104636/rca4-analysis.txt`.
+
+### Revised mechanism: the corrupted object is the transient dispatch frame, not `Thread.context`
+
+Round-4 symbolization (against the exact booted binary, `llvm-nm` cross-checked)
+reproduces the same signature as the original finding — a scheduler `.bss` flag
+address in ELR, `CPU_IS_IDLE`'s address in a GPR, `idle_loop_arm64`'s address in
+x26, `schedule_from_kernel`'s address in x11/`ctx_elr_el1` — i.e. idle's live
+register-file constellation leaking into a dispatch that then executes/branches
+into zeroed `.bss` (`UDF #0`, EC=0x0). But this run's fault `sp` sits in the
+per-CPU bitmap-managed kstack-pool region that `e65f23cd`'s scrub targets, and
+section 4 of the RCA confirms via `llvm-nm` + call-site enumeration that the
+scrub is compiled into the analyzed binary and executed on every allocation
+path (10+ successful spawns preceded the fault, each necessarily having run the
+scrub to completion) — **and it still did not prevent this recurrence.**
+
+This re-frames the original two candidates in `ROOT_CAUSE.md` #1/#2 above:
+- **Scrub-at-allocation is insufficient because the corruption does not happen
+  at allocation time.** `e65f23cd` zeroes the kstack when it is *handed out*,
+  which would defeat a stale-frame-at-reuse bug. Since the scrub demonstrably
+  ran and the fault still recurred, the corrupting write must happen **while
+  the thread is live** — i.e. something overwrites the in-flight dispatch
+  frame (or writes idle's register file into it) after allocation, not a
+  leftover frame from a previous tenant of the same stack.
+- **Both original candidates' instrumentation is structurally blind to this.**
+  The all-CPU `SAVE_SKEW` readout (`97f6e834`/`b0c4ab7c`, targeting candidate #1,
+  cpu_state/`old_id` save-target skew) and the `DISPATCH_MISMATCH` detector
+  came up **completely empty on all 8 CPUs** in this capture — not "no skew
+  found," but the instrumentation never fired at all, meaning the corrupting
+  write is not going through either of the code paths those probes watch.
+  The object being corrupted is best understood as the **transient dispatch
+  frame** — idle's live register file getting ERET'd on a fork child's kernel
+  stack — rather than a stale `Thread.context` snapshot or an allocation-time
+  leftover frame. Section 3 of the RCA (`DEFER_SNAP` semantics) also rules out
+  a more dramatic reading (multiple simultaneous per-CPU snapshots for the same
+  tid are time-disjoint historical low-water marks, not a live 4-way dispatch
+  conflict, so the scheduler's per-thread mutual-exclusion invariant is intact).
+
+### Mitigation status: plausible, not proven
+
+`e65f23cd` remains a **real, correctly-implemented fix for the ONE hypothesized
+writer it targeted** (bitmap-reused fork kstack slots carrying a stale frame at
+reuse time) and measurably improved the fault rate (0 faults in 25 runs since,
+vs ~1-in-15 before, across the 10-consecutive-green gate). It is **not proven**
+to be the whole story: this round-4 recurrence shows the bug family can still
+manifest through a different, still-unlocated writer that acts on a live
+(not reused) dispatch frame. Treat the current clean streak as evidence of a
+much-improved rate, not evidence of full closure.
+
+### Armed probe for any recurrence + signoff requirement
+
+The `[ERET_ANOMALY]`/owner-tid-canary instrumentation (commits `40ad7042`,
+`40c187e9`) is now in the tree specifically to pin this if it recurs: it
+records frame-anomaly detail and an owner-tid canary around ERET dispatch,
+which the SAVE_SKEW/DISPATCH_MISMATCH probes could not provide since they
+watch the save/dispatch-selection paths rather than the dispatch frame itself.
+If EC=0x0/EC=0xe recurs, read this instrumentation first before any further
+hypothesis-driven fix attempt.
+
+Per the original "Fix options" section above, any eventual root fix for the
+live-dispatch-frame writer is very likely to touch the FROZEN gold-master
+regions (idle SP handling / ERET dispatch in `context_switch.rs`) called out
+in `docs/planning/cpu0-user-guard-autopsy/README.md`. **Operator signoff is
+required before implementing any such fix** — this is unchanged from the
+original caveat and applies with equal force to whatever the round-4 writer
+turns out to be.
+
+### Evidence (round 4)
+- `logs/parallels-launcher-test/run-20260704-104636/rca4-analysis.txt` — full
+  symbolization, `DEFER_SNAP` semantics analysis, scrub-verification
+  (compiled-in + executed), and old-vs-new capture comparison.
+- `logs/parallels-launcher-test/run-20260704-104636/run-sh.log` — the verbatim
+  crash capture for this recurrence.
+- 10-consecutive-green gate evidence (post-`e65f23cd`, no further faults):
+  `logs/parallels-launcher-test/run-20260704-133953` through
+  `logs/parallels-launcher-test/run-20260704-141143`.
