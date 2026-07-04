@@ -3183,33 +3183,23 @@ struct PciAttachBackingCmd {
     entry: VirtioGpuMemEntry,
 }
 
+/// Attach backing memory for the 2D framebuffer resource.
+///
+/// Uses per-4KB-page scatter-gather entries via `virgl_attach_backing_paged`,
+/// matching every other RESOURCE_ATTACH_BACKING call in this driver (VirGL
+/// textures, cursor, dimmer, MAP_SHARED window buffers). This used to send a
+/// SINGLE ~4.9MB entry — the last single-entry attach in the driver — which the
+/// device intermittently rejects with resp_type=0x1205 INVALID_PARAMETER,
+/// aborting GPU init (BWM then correctly refuses to run without compositing and
+/// the display stays black). Per-page attach has a 100% success rate elsewhere
+/// in this driver; there is nothing special about the 2D resource that should
+/// need a different (and less reliable) attach strategy.
 fn attach_backing() -> Result<(), &'static str> {
     with_device_state(|state| {
-        let fb_len = framebuffer_len(state)? as u32;
-        let fb_addr = virt_to_phys(&raw const PCI_FRAMEBUFFER as u64);
-        unsafe {
-            let cmd_ptr = &raw mut PCI_CMD_BUF;
-            let cmd = &mut *((*cmd_ptr).data.as_mut_ptr() as *mut PciAttachBackingCmd);
-            *cmd = PciAttachBackingCmd {
-                cmd: VirtioGpuResourceAttachBacking {
-                    hdr: VirtioGpuCtrlHdr {
-                        type_: cmd::RESOURCE_ATTACH_BACKING,
-                        flags: 0,
-                        fence_id: 0,
-                        ctx_id: 0,
-                        padding: 0,
-                    },
-                    resource_id: state.resource_id,
-                    nr_entries: 1,
-                },
-                entry: VirtioGpuMemEntry {
-                    addr: fb_addr,
-                    length: fb_len,
-                    padding: 0,
-                },
-            };
-        }
-        send_command_expect_ok(state, core::mem::size_of::<PciAttachBackingCmd>() as u32)
+        let fb_len = framebuffer_len(state)?;
+        let resource_id = state.resource_id;
+        let fb_ptr = &raw const PCI_FRAMEBUFFER as *const u8;
+        virgl_attach_backing_paged(state, resource_id, fb_ptr, fb_len)
     })
 }
 
