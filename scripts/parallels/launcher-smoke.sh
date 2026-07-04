@@ -603,9 +603,17 @@ if [[ "$HANDSHAKE_OK" -ne 1 ]]; then
     # WEDGE CLASSIFICATION: capture the same evidence classes as a normal
     # injection miss (dispatcher log + guest serial) plus an explicit grep for
     # the known sticky-wedge signature, then finish with the distinct ENV
-    # verdict (exit 2). Never used to reclassify a post-handshake FAIL.
+    # verdict (exit 2) -- BUT ONLY if that signature (or an explicit
+    # send-key-event error) is actually present. A guest-side Breenix HID
+    # regression produces the exact same symptom (probe never observed) and
+    # must NOT be laundered into an ENV verdict just because the probe missed.
+    # Never used to reclassify a post-handshake FAIL.
     WEDGE_DIAG="$EVIDENCE_DIR/handshake-wedge-diag.txt"
     PVM_LOG="$HOME/Parallels/${VM_NAME}.pvm/parallels.log"
+    WEDGE_SIGNATURE=""
+    if [[ -f "$PVM_LOG" ]]; then
+        WEDGE_SIGNATURE="$(grep -aE 'CUsbKeyboard|not ready' "$PVM_LOG" 2>/dev/null | tail -n 60 || true)"
+    fi
     {
         echo "=== keyboard-delivery handshake FAILED (probe never observed in guest) ==="
         echo "wall_clock: $(date '+%Y-%m-%d %H:%M:%S %z')"
@@ -614,7 +622,7 @@ if [[ "$HANDSHAKE_OK" -ne 1 ]]; then
         echo
         echo "=== Parallels dispatcher log grep: CUsbKeyboard / not ready ==="
         if [[ -f "$PVM_LOG" ]]; then
-            grep -aE 'CUsbKeyboard|not ready' "$PVM_LOG" 2>/dev/null | tail -n 60 || echo "(no matching lines)"
+            [[ -n "$WEDGE_SIGNATURE" ]] && echo "$WEDGE_SIGNATURE" || echo "(no matching lines)"
         else
             echo "(dispatcher log not found at $PVM_LOG)"
         fi
@@ -639,7 +647,17 @@ if [[ "$HANDSHAKE_OK" -ne 1 ]]; then
     log "captured handshake wedge diagnostics -> $WEDGE_DIAG"
     capture_evidence "handshake-wedge"
 
-    finish_env "keyboard-delivery handshake failed — probe key never observed in guest (kbd_nonzero stayed at $HANDSHAKE_BASELINE for ${HANDSHAKE_TIMEOUT_SECS}s); see $WEDGE_DIAG. Breenix was NOT exercised; this VM instance's Parallels dispatcher is wedged (sticky per-instance host-side USB-HID drop, historically unrecoverable by retry into the same VM) — do not retry into this VM, start a fresh one."
+    # Positive-evidence gate: only declare ENV: HOST_INPUT_WEDGE when the
+    # sticky-wedge signature was actually found in the dispatcher log, or an
+    # explicit send-key-event error was recorded. Absence of the signature
+    # (including a missing/unreadable dispatcher log) is ambiguous -- it is
+    # equally consistent with a guest-side Breenix HID/procfs/heartbeat
+    # regression -- so it must FAIL honestly rather than being labeled ENV.
+    if [[ -n "$WEDGE_SIGNATURE" || -s "${INJECT_DIAG_FILE:-}" ]]; then
+        finish_env "keyboard-delivery handshake failed — probe key never observed in guest (kbd_nonzero stayed at $HANDSHAKE_BASELINE for ${HANDSHAKE_TIMEOUT_SECS}s); see $WEDGE_DIAG. Breenix was NOT exercised; this VM instance's Parallels dispatcher is wedged (sticky per-instance host-side USB-HID drop, historically unrecoverable by retry into the same VM) — do not retry into this VM, start a fresh one."
+    else
+        finish_fail "HANDSHAKE_NO_DELIVERY_EVIDENCE_AMBIGUOUS (probe not observed in guest; no positive host-wedge signature — possible guest HID/procfs/heartbeat regression); kbd_nonzero stayed at $HANDSHAKE_BASELINE for ${HANDSHAKE_TIMEOUT_SECS}s; see $WEDGE_DIAG"
+    fi
 fi
 
 # Let the probe's own report settle out before the timing-sensitive
