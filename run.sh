@@ -206,35 +206,37 @@ if [ "$PARALLELS" = true ]; then
         fi
     done
 
+    LOADER_EFI="$BREENIX_ROOT/target/aarch64-unknown-uefi/release/parallels-loader.efi"
+    KERNEL_ELF="$BREENIX_ROOT/target/aarch64-breenix/release/kernel-aarch64"
+
     if [ "$NO_BUILD" = true ]; then
-        echo "Skipping builds (--no-build)"
-        if [ ! -d "$HDD_DIR" ]; then
-            echo "ERROR: No Parallels disk found at $HDD_DIR"
-            echo "Run without --no-build first to create it."
+        echo "Skipping compilation (--no-build)"
+        if [ ! -f "$LOADER_EFI" ] || [ ! -f "$KERNEL_ELF" ]; then
+            echo "ERROR: No prebuilt loader/kernel found:"
+            echo "  loader: $LOADER_EFI"
+            echo "  kernel: $KERNEL_ELF"
+            echo "Run without --no-build first to build them."
             exit 1
         fi
     else
         # Clean build caches if --clean was specified
         if [ "$CLEAN" = true ]; then
-            echo "[0/6] Cleaning build caches..."
+            echo "[0/4] Cleaning build caches..."
             cargo clean -p kernel 2>/dev/null || true
             cargo clean -p parallels-loader 2>/dev/null || true
         fi
 
         # Build the UEFI loader
-        echo "[1/6] Building UEFI loader..."
+        echo "[1/4] Building UEFI loader..."
         cargo build --release --target aarch64-unknown-uefi -p parallels-loader
 
         # Build the kernel
         echo ""
-        echo "[2/6] Building kernel..."
+        echo "[2/4] Building kernel..."
         cargo build --release --target aarch64-breenix.json \
             -Z build-std=core,alloc \
             -Z build-std-features=compiler-builtins-mem \
             -p kernel --bin kernel-aarch64
-
-        LOADER_EFI="$BREENIX_ROOT/target/aarch64-unknown-uefi/release/parallels-loader.efi"
-        KERNEL_ELF="$BREENIX_ROOT/target/aarch64-breenix/release/kernel-aarch64"
 
         if [ ! -f "$LOADER_EFI" ]; then
             echo "ERROR: UEFI loader not found at $LOADER_EFI"
@@ -247,7 +249,7 @@ if [ "$PARALLELS" = true ]; then
 
         # Build userspace binaries and create ext2 data disk
         echo ""
-        echo "[3/6] Building userspace binaries (aarch64)..."
+        echo "[3/4] Building userspace binaries (aarch64)..."
         if "$BREENIX_ROOT/userspace/programs/build.sh" --arch aarch64; then
             echo "  Userspace build successful"
         else
@@ -256,14 +258,46 @@ if [ "$PARALLELS" = true ]; then
         fi
 
         echo ""
-        echo "[4/6] Creating ext2 data disk image..."
+        echo "[4/4] Creating ext2 data disk image..."
         if ! "$BREENIX_ROOT/scripts/create_ext2_disk.sh" --arch aarch64; then
             echo "  WARNING: ext2 disk creation failed (Docker may not be running)"
             echo "  Continuing without ext2 disk"
         fi
+    fi
+
+    # -------------------------------------------------------------------
+    # Deploy/package step: wraps the loader+kernel into the FAT32 ESP,
+    # converts to a raw disk, and copies it into the Parallels .hdd.
+    #
+    # --no-build only skips COMPILATION above — it must NOT skip this
+    # deploy step whenever a newer prebuilt image exists than what's
+    # currently on disk, otherwise Parallels silently boots a stale .hds
+    # (this voided a validation run: a freshly built kernel was never
+    # copied in because --no-build short-circuited the whole pipeline).
+    # Skip ONLY when --no-build is set AND the existing .hds is already
+    # at least as new as both source artifacts.
+    # -------------------------------------------------------------------
+    EXISTING_HDS=""
+    if [ -d "$HDD_DIR" ]; then
+        EXISTING_HDS=$(find "$HDD_DIR" -name "*.hds" 2>/dev/null | head -1)
+    fi
+
+    DEPLOY_NEEDED=true
+    if [ "$NO_BUILD" = true ] && [ -n "$EXISTING_HDS" ] && [ -f "$EXISTING_HDS" ] \
+        && [ ! "$KERNEL_ELF" -nt "$EXISTING_HDS" ] && [ ! "$LOADER_EFI" -nt "$EXISTING_HDS" ]; then
+        DEPLOY_NEEDED=false
+    fi
+
+    if [ "$DEPLOY_NEEDED" = false ]; then
+        echo "Existing Parallels disk ($EXISTING_HDS) already up to date with loader/kernel; skipping repackage"
+        HDS_FILE="$EXISTING_HDS"
+    else
+        if [ "$NO_BUILD" = true ]; then
+            echo "--no-build: deploying newer prebuilt image (loader/kernel newer than deployed .hds, or none found)"
+        fi
 
         echo ""
-        echo "[5/6] Creating FAT32 EFI disk image..."
+        echo "Creating FAT32 EFI disk image..."
         mkdir -p "$PARALLELS_DIR"
 
         # Create GPT+FAT32 disk image using hdiutil (native macOS, no mtools needed)
@@ -290,7 +324,7 @@ if [ "$PARALLELS" = true ]; then
 
         # Convert DMG to raw disk image
         echo ""
-        echo "[6/6] Creating Parallels disks..."
+        echo "Creating Parallels disks..."
         RAW_IMG="$PARALLELS_DIR/efi-raw.img"
         rm -f "$RAW_IMG" "${RAW_IMG}.cdr"
         hdiutil convert "$DMG_PATH" -format UDTO -o "$RAW_IMG" >/dev/null 2>&1
