@@ -336,6 +336,16 @@ mod aarch64 {
         bitmap[word_index] &= !(1u64 << bit_index);
     }
 
+    /// True if `addr` lies within the bitmap-backed reusable kernel-stack region.
+    ///
+    /// Lock-free range check (no bitmap access). Used by the SAVE_SKEW crash
+    /// diagnostic to flag whether a saved exception frame sits on a reused fork
+    /// kernel stack (commit 04c9655a), one of the two candidate upstream writers
+    /// of the launcher-spawn context-corruption crash.
+    pub fn is_in_reused_kstack_region(addr: u64) -> bool {
+        addr >= ARM64_KERNEL_STACK_BASE && addr < ARM64_KERNEL_STACK_END
+    }
+
     /// Initialize the ARM64 kernel stack allocator
     pub fn init() {
         let total_slots =
@@ -365,7 +375,7 @@ mod aarch64 {
 #[cfg(target_arch = "aarch64")]
 pub use aarch64::{
     allocate_kernel_stack as allocate_kernel_stack_aarch64, init as init_aarch64,
-    Aarch64KernelStack,
+    is_in_reused_kstack_region as is_in_reused_kstack_region_aarch64, Aarch64KernelStack,
 };
 
 /// ARM64: Use the aarch64-specific allocator

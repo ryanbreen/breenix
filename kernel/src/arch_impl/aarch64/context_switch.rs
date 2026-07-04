@@ -842,6 +842,156 @@ static LAST_DEFER_REQUEUE_ELR: CacheLineAligned<[AtomicU64; 8]> =
 static LAST_DEFER_REQUEUE_X30: CacheLineAligned<[AtomicU64; 8]> =
     CacheLineAligned([const { AtomicU64::new(0) }; 8]);
 
+// ─────────────────────────────────────────────────────────────────────────
+// SAVE-SKEW detection (diagnostic for the launcher-spawn EC=0x0 / EC=0xe crash)
+//
+// Confirmed proximate cause (docs/planning/aarch64-launcher-spawn-crash/ROOT_CAUSE.md):
+// idle_loop_arm64's live register file gets saved into a NON-idle thread's
+// Thread.context, which is later ERETed into .bss → EC=0x0 / EC=0xe.
+//
+// This per-CPU, last-wins slot records the bad save AT SAVE TIME so the next
+// crash's postmortem (exception.rs [SAVE_SKEW]) can distinguish the two
+// candidate upstream writers:
+//   (1) cpu_state/old_id skew — old_id (save target) != cpu_state.current_thread,
+//       i.e. the save target names a different thread than cpu_state believes
+//       is current on this CPU.
+//   (2) reused fork kstack — the exception frame sits in the bitmap-backed
+//       reusable kstack region (commit 04c9655a), so a stale idle/scheduler
+//       frame was read back as the thread's context.
+//
+// Strictly lock-free atomics; written only on the (rare) bad-save condition.
+// NOT the trace ring (which saturates), NOT log/serial.
+//
+// SAVE_SKEW_SEEN[cpu] != 0 marks a captured record for this CPU.
+static SAVE_SKEW_SEEN: [AtomicU64; crate::arch_impl::aarch64::constants::MAX_CPUS] =
+    [const { AtomicU64::new(0) }; crate::arch_impl::aarch64::constants::MAX_CPUS];
+static SAVE_SKEW_OLD_ID: [AtomicU64; crate::arch_impl::aarch64::constants::MAX_CPUS] =
+    [const { AtomicU64::new(0) }; crate::arch_impl::aarch64::constants::MAX_CPUS];
+static SAVE_SKEW_IS_OLD_IDLE: [AtomicU64; crate::arch_impl::aarch64::constants::MAX_CPUS] =
+    [const { AtomicU64::new(0) }; crate::arch_impl::aarch64::constants::MAX_CPUS];
+static SAVE_SKEW_CPU_STATE_TID: [AtomicU64; crate::arch_impl::aarch64::constants::MAX_CPUS] =
+    [const { AtomicU64::new(0) }; crate::arch_impl::aarch64::constants::MAX_CPUS];
+static SAVE_SKEW_FRAME_ELR: [AtomicU64; crate::arch_impl::aarch64::constants::MAX_CPUS] =
+    [const { AtomicU64::new(0) }; crate::arch_impl::aarch64::constants::MAX_CPUS];
+static SAVE_SKEW_FRAME_SP: [AtomicU64; crate::arch_impl::aarch64::constants::MAX_CPUS] =
+    [const { AtomicU64::new(0) }; crate::arch_impl::aarch64::constants::MAX_CPUS];
+static SAVE_SKEW_SP_REUSED: [AtomicU64; crate::arch_impl::aarch64::constants::MAX_CPUS] =
+    [const { AtomicU64::new(0) }; crate::arch_impl::aarch64::constants::MAX_CPUS];
+// frame.x26 / frame.x19 at save time. x26 is idle's post-`bl schedule_from_kernel`
+// return address (invariant fingerprint of idle's register file even when the save
+// happens INSIDE schedule_from_kernel, outside the idle-loop PC window); x19 is
+// idle's `&DEFERRED_REQUEUE`. Captured so the postmortem can prove the saved frame
+// was idle's register state independent of frame.elr.
+static SAVE_SKEW_FRAME_X26: [AtomicU64; crate::arch_impl::aarch64::constants::MAX_CPUS] =
+    [const { AtomicU64::new(0) }; crate::arch_impl::aarch64::constants::MAX_CPUS];
+static SAVE_SKEW_FRAME_X19: [AtomicU64; crate::arch_impl::aarch64::constants::MAX_CPUS] =
+    [const { AtomicU64::new(0) }; crate::arch_impl::aarch64::constants::MAX_CPUS];
+
+/// True if `elr` points into idle's live register file as identified by the
+/// crash postmortem: either inside the `idle_loop_arm64` code window, or equal
+/// to `&WAKE_SITE_SCHEDULE` (the value the postmortem decoded the fault PC to —
+/// idle's `x21`). Cheap: two compares plus an address-of, no locks/allocation.
+#[inline(always)]
+fn elr_is_idle_register_file(elr: u64) -> bool {
+    let idle_addr = idle_loop_arm64 as *const () as u64;
+    // Generous window over the idle loop body (it is well under this size).
+    const IDLE_LOOP_SPAN: u64 = 0x400;
+    if elr >= idle_addr && elr < idle_addr.wrapping_add(IDLE_LOOP_SPAN) {
+        return true;
+    }
+    let wake_site = &crate::task::scheduler::WAKE_SITE_SCHEDULE as *const _ as u64;
+    elr == wake_site
+}
+
+/// Broadened, PC-window-independent test for "this exception frame holds idle's
+/// live register file." The narrow `elr_is_idle_register_file` only fires when
+/// `frame.elr` lands inside the idle-loop body or equals `&WAKE_SITE_SCHEDULE`.
+/// But run-20260603-075301 proved idle can be saved while executing INSIDE
+/// `schedule_from_kernel` (elr ≈ schedule_from_kernel+0xfc0), outside that
+/// window — there the narrow detector stayed silent. These invariant fingerprints
+/// identify idle's register file regardless of where idle's PC happens to be:
+///   - `frame.x26 ∈ [idle_loop_arm64, idle_loop_arm64 + IDLE_X26_SPAN)` — idle's
+///     return address after `bl schedule_from_kernel` (the captured crash had
+///     x26 = idle_loop_arm64+0x278), OR
+///   - `frame.x19 == &DEFERRED_REQUEUE` — idle's live `x19`, OR
+///   - the per-CPU current-thread pointer resolves to the idle thread, OR
+///   - the original narrow `elr` test (don't lose the loop-window case).
+/// Cheap: address-of + compares, no locks/allocation. `current_is_idle` is passed
+/// in by the caller (which already holds the scheduler lock) to avoid re-resolving.
+#[inline(always)]
+fn frame_is_idle_register_file(frame: &Aarch64ExceptionFrame, current_is_idle: bool) -> bool {
+    if elr_is_idle_register_file(frame.elr) {
+        return true;
+    }
+    let idle_addr = idle_loop_arm64 as *const () as u64;
+    // Window over idle's body up to and past the `bl schedule_from_kernel` return
+    // site (observed return addr was idle_loop_arm64+0x278; +0x644 keeps margin).
+    const IDLE_X26_SPAN: u64 = 0x644;
+    if frame.x26 >= idle_addr && frame.x26 < idle_addr.wrapping_add(IDLE_X26_SPAN) {
+        return true;
+    }
+    let deferred_requeue = &DEFERRED_REQUEUE as *const _ as u64;
+    if frame.x19 == deferred_requeue {
+        return true;
+    }
+    current_is_idle
+}
+
+/// Record a bad save (idle's register file being saved into a non-idle thread's
+/// context) into this CPU's last-wins SAVE_SKEW slot. Lock-free; only the cheap
+/// atomic stores below run, and only when the caller has already confirmed the
+/// bad-save condition.
+#[inline(always)]
+#[allow(clippy::too_many_arguments)]
+fn record_save_skew(
+    cpu_id: usize,
+    old_id: u64,
+    is_old_idle: bool,
+    cpu_state_tid: u64,
+    frame_elr: u64,
+    frame_sp: u64,
+    frame_x26: u64,
+    frame_x19: u64,
+) {
+    if cpu_id >= crate::arch_impl::aarch64::constants::MAX_CPUS {
+        return;
+    }
+    let sp_reused = crate::memory::kernel_stack::is_in_reused_kstack_region_aarch64(frame_sp);
+    SAVE_SKEW_OLD_ID[cpu_id].store(old_id, Ordering::Relaxed);
+    SAVE_SKEW_IS_OLD_IDLE[cpu_id].store(is_old_idle as u64, Ordering::Relaxed);
+    SAVE_SKEW_CPU_STATE_TID[cpu_id].store(cpu_state_tid, Ordering::Relaxed);
+    SAVE_SKEW_FRAME_ELR[cpu_id].store(frame_elr, Ordering::Relaxed);
+    SAVE_SKEW_FRAME_SP[cpu_id].store(frame_sp, Ordering::Relaxed);
+    SAVE_SKEW_SP_REUSED[cpu_id].store(sp_reused as u64, Ordering::Relaxed);
+    SAVE_SKEW_FRAME_X26[cpu_id].store(frame_x26, Ordering::Relaxed);
+    SAVE_SKEW_FRAME_X19[cpu_id].store(frame_x19, Ordering::Relaxed);
+    // Publish last (release) so a reader that sees SEEN!=0 also sees the fields.
+    SAVE_SKEW_SEEN[cpu_id].store(1, Ordering::Release);
+}
+
+/// Read-side accessor for the SAVE_SKEW slot, used by the fatal postmortem in
+/// exception.rs. Returns None if no bad save was recorded on this CPU.
+/// Fields: (old_id, is_old_idle, cpu_state_tid, frame_elr, frame_sp, sp_reused,
+/// frame_x26, frame_x19).
+pub fn save_skew_snapshot(cpu_id: usize) -> Option<(u64, u64, u64, u64, u64, u64, u64, u64)> {
+    if cpu_id >= crate::arch_impl::aarch64::constants::MAX_CPUS {
+        return None;
+    }
+    if SAVE_SKEW_SEEN[cpu_id].load(Ordering::Acquire) == 0 {
+        return None;
+    }
+    Some((
+        SAVE_SKEW_OLD_ID[cpu_id].load(Ordering::Relaxed),
+        SAVE_SKEW_IS_OLD_IDLE[cpu_id].load(Ordering::Relaxed),
+        SAVE_SKEW_CPU_STATE_TID[cpu_id].load(Ordering::Relaxed),
+        SAVE_SKEW_FRAME_ELR[cpu_id].load(Ordering::Relaxed),
+        SAVE_SKEW_FRAME_SP[cpu_id].load(Ordering::Relaxed),
+        SAVE_SKEW_SP_REUSED[cpu_id].load(Ordering::Relaxed),
+        SAVE_SKEW_FRAME_X26[cpu_id].load(Ordering::Relaxed),
+        SAVE_SKEW_FRAME_X19[cpu_id].load(Ordering::Relaxed),
+    ))
+}
+
 struct InlineScheduleState {
     scheduler_ptr: AtomicUsize,
     old_thread_id: AtomicU64,
@@ -2674,6 +2824,58 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
 
     // 6. Save old thread context (INLINE — no lock acquisition)
     let is_old_idle = sched.is_idle_thread_inner(old_id);
+
+    // SAVE-SKEW detection (diagnostic only — see ROOT_CAUSE.md / the SAVE_SKEW
+    // statics above). This is the single gate that dominates BOTH save writers
+    // (`save_userspace_context_inline` and `save_kernel_context_inline` are both
+    // reached only through the `from_el0` block immediately below, never from any
+    // other call site), so broadening it here covers both writers exactly once
+    // per switch with full access to sched / cpu_id / old_id / cpu_state.
+    //
+    // If the frame we are about to save IS idle's live register file — detected
+    // by the PC-window-INDEPENDENT `frame_is_idle_register_file` (idle's x26 return
+    // addr, idle's x19 == &DEFERRED_REQUEUE, the per-CPU current-thread pointer
+    // resolving to idle, OR the original narrow elr test) — but the save target
+    // old_id is a NON-idle thread, we are about to write idle's regs into a
+    // userspace thread's context: the confirmed proximate cause of the
+    // launcher-spawn EC=0x0/EC=0xe crash. Record it for the fatal postmortem.
+    // Cheap: a few compares guarded by the rare bad-save condition; only then do
+    // the atomic stores. No locks, no allocation, no logging.
+    //
+    // The widened test fixes run-20260603-075301 going SILENT: idle was saved
+    // while executing inside `schedule_from_kernel` (elr ≈ schedule_from_kernel
+    // +0xfc0), outside the narrow idle-loop elr window, so the old `frame.elr`-only
+    // detector missed it. x26 (idle's post-`bl schedule_from_kernel` return addr)
+    // and x19 (&DEFERRED_REQUEUE) are invariant regardless of idle's PC.
+    // Cheap short-circuit FIRST: the healthy common case (old thread is not
+    // idle, which is nearly always true) must pay ~nothing here. All detector
+    // work -- including resolving the per-CPU current-thread pointer -- lives
+    // behind this guard now, not ahead of it.
+    if !is_old_idle {
+        let current_is_idle = {
+            let tp = Aarch64PerCpu::current_thread_ptr();
+            if tp.is_null() {
+                false
+            } else {
+                let real_tid = unsafe { (*(tp as *const Thread)).id() };
+                sched.is_idle_thread_inner(real_tid)
+            }
+        };
+        if frame_is_idle_register_file(frame, current_is_idle) {
+            let cpu_state_tid = sched.cpu_state[cpu_id].current_thread.unwrap_or(0);
+            record_save_skew(
+                cpu_id,
+                old_id,
+                is_old_idle,
+                cpu_state_tid,
+                frame.elr,
+                frame as *const _ as u64,
+                frame.x26,
+                frame.x19,
+            );
+        }
+    }
+
     if from_el0 {
         if !is_old_idle {
             if let Some(old_thread) = sched.get_thread_mut(old_id) {
