@@ -312,6 +312,34 @@ mod aarch64 {
         let stack_bottom = VirtAddr::new(slot_base + ARM64_GUARD_PAGE_SIZE);
         let stack_top = VirtAddr::new(slot_base + ARM64_STACK_SLOT_SIZE);
 
+        // ROOT FIX (launcher-spawn EC=0x0/EC=0xe crash,
+        // docs/planning/aarch64-launcher-spawn-crash/ROOT_CAUSE.md): scrub the
+        // ENTIRE slot on every allocation, not just on first use. A bitmap-
+        // reused slot (commit 04c9655a) can still hold a stale exception or
+        // scheduler frame physically resident from its previous occupant
+        // (e.g. an idle/schedule_from_kernel frame near the top of the
+        // stack). If a later ret-based kernel resume
+        // (aarch64_ret_to_kernel_context / schedule_from_kernel) is ever
+        // dispatched onto this slot before that region has been overwritten
+        // by the new owner's own execution, it can read that stale data
+        // instead of state rebuilt from the fresh Thread.context, landing on
+        // idle's leftover register file (elr = &WAKE_SITE_SCHEDULE, i.e.
+        // __bss_start) and either UDF-faulting at 0x0 (EC=0x0) or ERETing
+        // with an illegal SPSR (EC=0xe). Zeroing here removes the stale data
+        // unconditionally, for every consumer, regardless of dispatch path.
+        //
+        // SAFETY: `stack_bottom..stack_top` is HHDM-mapped, present, writable
+        // physical memory for the entire lifetime of the bitmap pool (see
+        // ARM64_KERNEL_STACK_BASE/END above) -- true whether this slot is
+        // brand new or reused, so writing zeros here is always valid.
+        unsafe {
+            core::ptr::write_bytes(
+                stack_bottom.as_mut_ptr::<u8>(),
+                0,
+                ARM64_KERNEL_STACK_SIZE as usize,
+            );
+        }
+
         log::debug!(
             "ARM64 kernel stack allocated: {:#x}-{:#x}",
             stack_bottom.as_u64(),

@@ -1825,12 +1825,34 @@ impl ProcessManager {
         // CRITICAL: Set has_started=true for forked children
         child_thread.has_started = true;
 
+        // ROOT FIX (launcher-spawn EC=0x0/EC=0xe crash,
+        // docs/planning/aarch64-launcher-spawn-crash/ROOT_CAUSE.md): explicitly
+        // (re-)establish the child's kernel-resume invariant rather than
+        // relying implicitly on Thread::new's defaults. The child must NEVER
+        // be eligible for the ret-based inline-schedule resume path
+        // (aarch64_ret_to_kernel_context) on its first dispatch — it has no
+        // suspended schedule_from_kernel() call to resume into, and treating
+        // its freshly-reused kernel stack as if it did is exactly the
+        // stale-frame hazard this crash traces back to. Thread::new already
+        // defaults these to false/0 (verified), but they are set again here,
+        // AFTER the `context = parent_context.clone()` above and BEFORE first
+        // dispatch, so the invariant holds regardless of future changes to
+        // either constructor.
+        child_thread.saved_by_inline_schedule = false;
+        child_thread.inline_schedule_caller_lr = 0;
+        child_thread.inline_schedule_saved_sp = 0;
+
         // CoW fork: Child uses the same stack virtual addresses as the parent.
         // The stack pages are CoW-shared, so the child's SP = parent's SP.
         // No stack copy needed - CoW will handle it on first write.
         child_thread.context.sp_el0 = parent_context.sp_el0;
 
-        // Set the kernel stack pointer for exception handling
+        // Set the kernel stack pointer to the TOP of the child's (freshly
+        // scrubbed, see kernel_stack.rs) kernel stack. This is a clean,
+        // context-authoritative frame top, not a mid-stack resume point —
+        // first dispatch for this thread is always the userspace ERET path
+        // (dispatch_thread_locked, has_started=true -> restore_userspace_context_inline),
+        // never the ret-based kernel resume path.
         child_thread.context.sp = child_kernel_stack_top.as_u64();
 
         // CRUCIAL: Set the child's return value to 0 in X0
