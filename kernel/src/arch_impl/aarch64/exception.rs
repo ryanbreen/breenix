@@ -1149,39 +1149,20 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                 //     (candidate 2): the frame on THIS thread's stack is actually
                 //     idle's register file; frame_sp / sp_reused tell whether it
                 //     sits in the reused fork-kstack region.
-                if let Some((
-                    old_id,
-                    is_old_idle,
-                    cpu_state_tid,
-                    frame_elr,
-                    frame_sp,
-                    sp_reused,
-                    frame_x26,
-                    frame_x19,
-                )) = crate::arch_impl::aarch64::context_switch::save_skew_snapshot(cpu_id as usize)
-                {
-                    raw_uart_str("[SAVE_SKEW] cpu=");
-                    raw_uart_dec(cpu_id as u64);
-                    raw_uart_str(" old_id=");
-                    raw_uart_dec(old_id);
-                    raw_uart_str(" is_old_idle=");
-                    raw_uart_dec(is_old_idle);
-                    raw_uart_str(" cpu_state_tid=");
-                    raw_uart_dec(cpu_state_tid);
-                    raw_uart_str(" frame_elr=");
-                    raw_uart_hex(frame_elr);
-                    raw_uart_str(" frame_sp=");
-                    raw_uart_hex(frame_sp);
-                    raw_uart_str(" sp_reused=");
-                    raw_uart_dec(sp_reused);
-                    raw_uart_str(" frame_x26=");
-                    raw_uart_hex(frame_x26);
-                    raw_uart_str(" frame_x19=");
-                    raw_uart_hex(frame_x19);
-                    raw_uart_str("\n");
-                } else {
-                    raw_uart_str("[SAVE_SKEW] none recorded on this cpu\n");
-                }
+                // All-CPU readout: the single faulting cpu_id's slot is not
+                // sufficient (see dump_all_save_skew_snapshots doc comment) —
+                // the bad save can happen on a peer CPU that never faults.
+                crate::arch_impl::aarch64::context_switch::dump_all_save_skew_snapshots();
+
+                // [DISPATCH_MISMATCH]: lock-free per-CPU record from the
+                // dispatch-finalization path (context_switch.rs). Present iff
+                // a frame's elr diverged from its thread's authoritative
+                // context.elr_el1 at the moment the frame was about to be
+                // consumed for ERET or ret-based kernel resume — i.e. the
+                // frame was never (fully) rebuilt from context, which is
+                // exactly the "stale frame" hazard this crash traces back to.
+                // Diagnostic only, all-CPU (mirrors SAVE_SKEW above).
+                crate::arch_impl::aarch64::context_switch::dump_all_dispatch_mismatch_snapshots();
             }
             dump_fatal_postmortem_once("UNHANDLED_EC");
             // Redirect to idle instead of hanging — allows system to recover.
