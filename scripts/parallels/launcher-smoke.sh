@@ -612,7 +612,7 @@ if [[ "$HANDSHAKE_OK" -ne 1 ]]; then
     PVM_LOG="$HOME/Parallels/${VM_NAME}.pvm/parallels.log"
     WEDGE_SIGNATURE=""
     if [[ -f "$PVM_LOG" ]]; then
-        WEDGE_SIGNATURE="$(grep -aE 'CUsbKeyboard|not ready' "$PVM_LOG" 2>/dev/null | tail -n 60 || true)"
+        WEDGE_SIGNATURE="$(grep -a 'CUsbKeyboard' "$PVM_LOG" 2>/dev/null | tail -n 60 || true)"
     fi
     {
         echo "=== keyboard-delivery handshake FAILED (probe never observed in guest) ==="
@@ -620,7 +620,7 @@ if [[ "$HANDSHAKE_OK" -ne 1 ]]; then
         echo "vm: $VM_NAME"
         echo "baseline kbd_nonzero=$HANDSHAKE_BASELINE, waited ${HANDSHAKE_TIMEOUT_SECS}s, no increase observed"
         echo
-        echo "=== Parallels dispatcher log grep: CUsbKeyboard / not ready ==="
+        echo "=== Parallels dispatcher log grep: CUsbKeyboard ==="
         if [[ -f "$PVM_LOG" ]]; then
             [[ -n "$WEDGE_SIGNATURE" ]] && echo "$WEDGE_SIGNATURE" || echo "(no matching lines)"
         else
