@@ -65,6 +65,11 @@ LAUNCHER_MARKER="[spawn] path='/bin/blauncher'"
 GPU_ABORT_REGEX='\[bwm\] ERROR|GPU compositing required|VirtIO GPU \(PCI\) init failed|cmd=0x[0-9a-f]+ FAILED: resp_type=0x'
 BTERM_CONFIG_MARKER='[bterm] config:'            # bterm started + read its config
 BTERM_SHELL_MARKER='[bterm] spawned child pid='  # bterm launched its child shell
+# Kernel-fault detection regex, used EVERYWHERE a serial window is classified
+# (readiness poll, inject-retry loop, and the final PASS/FAIL oracle). A fault
+# always takes precedence over any success marker matched in the same window —
+# never weaken this, only strengthen it (e.g. adding new fatal markers here).
+KERNEL_FAULT_REGEX='\[UNHANDLED_EC\]|\[FATAL_POSTMORTEM\]|\[FATAL_REGS\]|kernel panic'
 WARMUP_SECS=60         # VirGL warmup after readiness marker
 POST_SUPER_WAIT=1.5    # settle after double-Super before grepping for launcher
 POST_ENTER_WAIT=3      # settle after Enter before grepping for bterm
@@ -485,8 +490,8 @@ else
     # only fires on the no-crash, no-launcher case (a missed double-tap), and exists
     # to capture WHY the injection missed so the host-side delivery bug can be
     # root-caused — NOT to silently paper over the miss (it is logged + counted).
-    if tail_since | grep -qE '\[UNHANDLED_EC\]|\[FATAL_POSTMORTEM\]|kernel panic'; then
-        finish_fail "KERNEL FAULT before launcher opened: $(tail_since | grep -E '\[UNHANDLED_EC\]|\[FATAL_POSTMORTEM\]' | head -1) — real Breenix crash, NOT a harness/injection issue"
+    if tail_since | grep -qE -- "$KERNEL_FAULT_REGEX"; then
+        finish_fail "KERNEL FAULT before launcher opened: $(tail_since | grep -E -- "$KERNEL_FAULT_REGEX" | head -1) — real Breenix crash, NOT a harness/injection issue"
     fi
 
     # No crash + no launcher = a missed double-tap (host-side delivery miss or a
@@ -513,9 +518,9 @@ else
         sleep "$(ms_to_s "$(awk "BEGIN{printf \"%d\", $POST_SUPER_WAIT*1000}")")"
 
         # Re-check from the original baseline; a crash on a retry still hard-fails.
-        if tail_since | grep -qE '\[UNHANDLED_EC\]|\[FATAL_POSTMORTEM\]|kernel panic'; then
+        if tail_since | grep -qE -- "$KERNEL_FAULT_REGEX"; then
             tail_since > "$SERIAL_EXCERPT" || true
-            finish_fail "KERNEL FAULT before launcher opened (during inject retry $INJECT_RETRIES): $(tail_since | grep -E '\[UNHANDLED_EC\]|\[FATAL_POSTMORTEM\]' | head -1) — real Breenix crash, NOT a harness/injection issue"
+            finish_fail "KERNEL FAULT before launcher opened (during inject retry $INJECT_RETRIES): $(tail_since | grep -E -- "$KERNEL_FAULT_REGEX" | head -1) — real Breenix crash, NOT a harness/injection issue"
         fi
         if tail_since | grep -qF -- "$LAUNCHER_MARKER"; then
             LAUNCHER_OPENED=1
@@ -557,7 +562,20 @@ tail_since > "$SERIAL_EXCERPT" || true
 # (g)/(h) Honest oracle: PASS requires BOTH bterm's own startup config line AND
 #         its child-shell spawn line — i.e. the terminal launched AND loaded a
 #         working shell. Launcher-only, or a half-initialized bterm, is a FAIL.
+#
+# KERNEL-FAULT CHECK MUST TAKE PRECEDENCE OVER THE PASS CHECK. A fault can land
+# in the SAME polling window as a successful-looking bterm launch (e.g. bterm
+# starts, then a secondary CPU takes an EC=0x0 exception a moment later) — if
+# the PASS check ran first, that fault would be silently swallowed and the run
+# misreported as PASS. So the fault grep runs FIRST, unconditionally, on every
+# classification of this window, before we even look at the bterm markers.
+# This is a strengthening of PASS criteria, never a weakening: a fault means
+# FAIL regardless of what else matched.
 # =============================================================================
+if tail_since | grep -qE -- "$KERNEL_FAULT_REGEX"; then
+    finish_fail "KERNEL FAULT during terminal launch: $(tail_since | grep -E -- "$KERNEL_FAULT_REGEX" | head -1) — real Breenix crash on the bterm fork/exec path (clone-exec/TTBR0 territory), NOT a harness/timing issue"
+fi
+
 SAW_BTERM_CONFIG=0
 SAW_BTERM_SHELL=0
 tail_since | grep -qF -- "$BTERM_CONFIG_MARKER" && SAW_BTERM_CONFIG=1
@@ -566,13 +584,6 @@ tail_since | grep -qF -- "$BTERM_SHELL_MARKER"  && SAW_BTERM_SHELL=1
 if [[ "$SAW_BTERM_CONFIG" -eq 1 && "$SAW_BTERM_SHELL" -eq 1 ]]; then
     log "terminal launched + loaded: saw '$BTERM_CONFIG_MARKER' AND '$BTERM_SHELL_MARKER'"
     finish_pass
-fi
-
-# A kernel fault during the Enter->fork/exec->bterm path (e.g. EC=0xe Illegal
-# Execution State on a secondary CPU) presents as "launcher opened, bterm never
-# came up". Detect + report it distinctly from a benign no-launch.
-if tail_since | grep -qE '\[UNHANDLED_EC\]|\[FATAL_POSTMORTEM\]|kernel panic'; then
-    finish_fail "KERNEL FAULT during terminal launch: $(tail_since | grep -E '\[UNHANDLED_EC\]|\[FATAL_POSTMORTEM\]' | head -1) — real Breenix crash on the bterm fork/exec path (clone-exec/TTBR0 territory), NOT a harness/timing issue"
 fi
 
 if [[ "$SAW_BTERM_CONFIG" -eq 1 ]]; then
