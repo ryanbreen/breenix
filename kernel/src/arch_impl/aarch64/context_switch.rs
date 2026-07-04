@@ -3384,11 +3384,17 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
     dispatch_thread_locked(sched, new_id, frame, cpu_id);
     // ERET_ANOMALY check: immediately after dispatch_thread_locked returns
     // and before the frame is consumed (this function's caller ERETs it via
-    // the timer-IRQ return path). Record-and-continue only, no gate.
-    if let Some(thread) = sched.get_thread(new_id) {
-        let ctx_elr = thread.context.elr_el1;
-        if frame.elr != ctx_elr || frame_is_idle_register_file(frame, false) {
-            record_eret_frame_anomaly(cpu_id, new_id, frame.elr, ctx_elr, frame.x26, frame.spsr);
+    // the timer-IRQ return path). Record-and-continue only, no gate. Idle
+    // dispatches are routine (every tick that finds no runnable work) and
+    // would otherwise spam this last-wins slot with uninteresting entries,
+    // so they're excluded here; site 2 (inline_schedule_trampoline) already
+    // sits after its own is-idle noreturn branch and doesn't need this guard.
+    if !is_idle {
+        if let Some(thread) = sched.get_thread(new_id) {
+            let ctx_elr = thread.context.elr_el1;
+            if frame.elr != ctx_elr || frame_is_idle_register_file(frame, false) {
+                record_eret_frame_anomaly(cpu_id, new_id, frame.elr, ctx_elr, frame.x26, frame.spsr);
+            }
         }
     }
     if let Some(trace_tid) = trace_eret_tid {
@@ -3655,6 +3661,15 @@ extern "C" fn inline_schedule_trampoline() -> ! {
         trace_eret_dispatch(trace_tid, TRACE_ERET_DISPATCH_PRE, &frame);
     }
     dispatch_thread_locked(sched, new_id, frame, cpu_id);
+    // ERET_ANOMALY snapshot: capture the dispatched thread's context.elr_el1
+    // here, while the scheduler lock is still held (force_unlock_scheduler()
+    // below releases it before this frame is handed off for ERET). The
+    // actual anomaly comparison runs later using only this snapshot + the
+    // frame -- NOT a fresh sched.get_thread(new_id) call after unlock, which
+    // would be an unsynchronized iteration of the shared threads Vec that
+    // could race a concurrent spawn/reap on a peer CPU (realloc/element-shift
+    // -> data race/UAF).
+    let eret_anomaly_ctx_elr = sched.get_thread(new_id).map(|thread| thread.context.elr_el1);
     if let Some(trace_tid) = trace_eret_tid {
         trace_eret_dispatch(trace_tid, TRACE_ERET_DISPATCH_POST, &frame);
     }
@@ -3727,13 +3742,12 @@ extern "C" fn inline_schedule_trampoline() -> ! {
 
     // ERET_ANOMALY check: right before the frame is handed to
     // aarch64_enter_exception_frame for ERET. The scheduler lock was
-    // already released above via force_unlock_scheduler(), but this
-    // thread's CpuContext is still exclusively owned (no other CPU can be
-    // dispatching this same thread concurrently), so the read is safe --
-    // same reasoning as the ret-based DISPATCH_MISMATCH check above.
-    // Record-and-continue only, no gate.
-    if let Some(thread) = sched.get_thread(new_id) {
-        let ctx_elr = thread.context.elr_el1;
+    // already released above via force_unlock_scheduler(); this check uses
+    // the ctx_elr snapshot taken above (while the lock was still held)
+    // rather than re-reading sched.get_thread(new_id) here -- reading the
+    // shared threads Vec after unlock is not synchronized against a
+    // concurrent spawn/reap on a peer CPU. Record-and-continue only, no gate.
+    if let Some(ctx_elr) = eret_anomaly_ctx_elr {
         if frame.elr != ctx_elr || frame_is_idle_register_file(&frame, false) {
             record_eret_frame_anomaly(cpu_id, new_id, frame.elr, ctx_elr, frame.x26, frame.spsr);
         }
