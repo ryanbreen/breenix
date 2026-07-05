@@ -1180,6 +1180,19 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                 // Diagnostic only, all-CPU (mirrors SAVE_SKEW/DISPATCH_MISMATCH
                 // above).
                 crate::arch_impl::aarch64::context_switch::dump_all_eret_frame_anomaly_snapshots();
+
+                // [INLINE_SAVE_SKEW]: lock-free per-CPU record from the
+                // inline-schedule (cooperative-yield) save path in
+                // schedule_from_kernel (context_switch.rs) -- the OTHER save
+                // writer, distinct from the exception-frame save path that
+                // SAVE_SKEW covers. Present iff idle was actually executing
+                // on this CPU but the scheduling decision picked a non-idle
+                // `old_id` as the save target, i.e. the imminent
+                // aarch64_inline_schedule_switch asm save was about to write
+                // idle's live register file into that non-idle thread's
+                // context. Diagnostic only, all-CPU (mirrors SAVE_SKEW /
+                // ERET_ANOMALY above).
+                crate::arch_impl::aarch64::context_switch::dump_all_inline_save_skew_snapshots();
             }
             dump_fatal_postmortem_once("UNHANDLED_EC");
             // Redirect to idle instead of hanging — allows system to recover.

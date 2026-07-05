@@ -1042,6 +1042,85 @@ pub fn dump_all_save_skew_snapshots() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────
+// INLINE_SAVE_SKEW detection (diagnostic only, no behavior change)
+//
+// SAVE_SKEW (above) instruments `save_userspace_context_inline` /
+// `save_kernel_context_inline`, the two save writers reached from the
+// exception-frame (`check_need_resched_and_switch_arm64`) path. Those are NOT
+// the only place a thread's context gets saved: `schedule_from_kernel`'s
+// cooperative-yield / inline-schedule path saves the outgoing thread's
+// callee-saved registers via the `aarch64_inline_schedule_switch` asm helper
+// (x19-x30 + sp, stored directly into `Thread.context` at fixed offsets) with
+// no SAVE_SKEW-style gate at all. This probe closes that gap: it fires when
+// idle was the thread actually executing on entry to `schedule_from_kernel`
+// (`entered_idle_executing`) but the scheduling decision picked a NON-idle
+// `old_id` as the save target -- i.e. the imminent asm save is about to write
+// idle's live register file into a non-idle thread's context, the same
+// mechanism documented in ROOT_CAUSE.md's cpu_state/old_id skew candidate.
+//
+// Strictly lock-free atomics; written only on the (rare) bad-save condition.
+// Record-and-continue only -- no logging in the save path itself, no lock
+// acquisition, no behavior change.
+static INLINE_SAVE_SKEW_SEEN: [AtomicU64; crate::arch_impl::aarch64::constants::MAX_CPUS] =
+    [const { AtomicU64::new(0) }; crate::arch_impl::aarch64::constants::MAX_CPUS];
+static INLINE_SAVE_SKEW_OLD_ID: [AtomicU64; crate::arch_impl::aarch64::constants::MAX_CPUS] =
+    [const { AtomicU64::new(0) }; crate::arch_impl::aarch64::constants::MAX_CPUS];
+static INLINE_SAVE_SKEW_SP: [AtomicU64; crate::arch_impl::aarch64::constants::MAX_CPUS] =
+    [const { AtomicU64::new(0) }; crate::arch_impl::aarch64::constants::MAX_CPUS];
+
+/// Record a bad inline-schedule save (idle executing, but the save target is
+/// a non-idle thread) into this CPU's last-wins INLINE_SAVE_SKEW slot.
+/// Lock-free; only the cheap atomic stores below run, and only when the
+/// caller has already confirmed the bad-save condition.
+#[inline(always)]
+fn record_inline_save_skew(cpu_id: usize, old_id: u64, sp: u64) {
+    if cpu_id >= crate::arch_impl::aarch64::constants::MAX_CPUS {
+        return;
+    }
+    INLINE_SAVE_SKEW_OLD_ID[cpu_id].store(old_id, Ordering::Relaxed);
+    INLINE_SAVE_SKEW_SP[cpu_id].store(sp, Ordering::Relaxed);
+    // Publish last (release) so a reader that sees SEEN!=0 also sees the fields.
+    INLINE_SAVE_SKEW_SEEN[cpu_id].store(1, Ordering::Release);
+}
+
+/// Read-side accessor for the INLINE_SAVE_SKEW slot, used by the fatal
+/// postmortem in exception.rs. Returns None if no bad inline-schedule save
+/// was recorded on this CPU. Fields: (old_id, sp).
+pub fn inline_save_skew_snapshot(cpu_id: usize) -> Option<(u64, u64)> {
+    if cpu_id >= crate::arch_impl::aarch64::constants::MAX_CPUS {
+        return None;
+    }
+    if INLINE_SAVE_SKEW_SEEN[cpu_id].load(Ordering::Acquire) == 0 {
+        return None;
+    }
+    Some((
+        INLINE_SAVE_SKEW_OLD_ID[cpu_id].load(Ordering::Relaxed),
+        INLINE_SAVE_SKEW_SP[cpu_id].load(Ordering::Relaxed),
+    ))
+}
+
+/// All-CPU [INLINE_SAVE_SKEW] postmortem readout, modeled on
+/// `dump_all_save_skew_snapshots`.
+pub fn dump_all_inline_save_skew_snapshots() {
+    let mut any_recorded = false;
+    for cpu_id in 0..crate::arch_impl::aarch64::constants::MAX_CPUS {
+        if let Some((old_id, sp)) = inline_save_skew_snapshot(cpu_id) {
+            any_recorded = true;
+            raw_uart_str("[INLINE_SAVE_SKEW] cpu=");
+            raw_uart_dec(cpu_id as u64);
+            raw_uart_str(" old_id=");
+            raw_uart_dec(old_id);
+            raw_uart_str(" sp=");
+            raw_uart_hex(sp);
+            raw_uart_str("\n");
+        }
+    }
+    if !any_recorded {
+        raw_uart_str("[INLINE_SAVE_SKEW] none recorded on any cpu\n");
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────
 // DISPATCH_MISMATCH detection (diagnostic only, no behavior change)
 //
 // Confirms/refutes the "frame was never rebuilt from context" half of the
@@ -3868,6 +3947,27 @@ pub fn schedule_from_kernel() {
         new_id as u16,
     );
     crate::task::scheduler::increment_context_switch_count();
+
+    // INLINE_SAVE_SKEW probe (record-and-continue, no behavior change): the
+    // upcoming `aarch64_inline_schedule_switch` call below performs the
+    // uninstrumented x19-x30+sp save for this (the inline-schedule /
+    // cooperative-yield) path -- a save writer that neither SAVE_SKEW nor
+    // ERET_ANOMALY instruments (those cover the exception-frame save/dispatch
+    // paths only). If idle was the thread actually executing when this
+    // function was entered (`entered_idle_executing`, captured above, valid
+    // throughout since interrupts stay disabled) but the save target `old_id`
+    // is NON-idle, the imminent asm save is about to write idle's live
+    // register file into a non-idle thread's context -- the same bug family
+    // as SAVE_SKEW/ERET_ANOMALY, caught here at this other writer instead.
+    // Lock-free, last-wins per CPU. See dump_all_inline_save_skew_snapshots
+    // for the postmortem readout.
+    if entered_idle_executing && !sched.is_idle_thread_inner(old_id) {
+        let probe_sp: u64;
+        unsafe {
+            core::arch::asm!("mov {}, sp", out(reg) probe_sp, options(nomem, nostack, preserves_flags));
+        }
+        record_inline_save_skew(cpu_id, old_id, probe_sp);
+    }
 
     let old_context_ptr = match sched.get_thread_mut(old_id) {
         Some(old_thread) => {
