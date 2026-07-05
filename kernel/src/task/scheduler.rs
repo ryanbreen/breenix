@@ -537,6 +537,10 @@ const MAX_CPUS: usize = 1;
 ///   4 = register_idle_thread
 ///   5 = init_with_current / Scheduler::new
 ///   6 = set_current_thread / add_thread_as_current
+///   7 = fix_stale_current_thread_when_idle_executing (schedule_from_kernel
+///       idle path -- corrects a stale non-idle current_thread while idle is
+///       the thread actually executing, before it can be used as a save
+///       target; see ROOT_CAUSE.md's cpu_state/old_id skew candidate)
 #[cfg(target_arch = "aarch64")]
 const HISTORY_SIZE: usize = 8;
 #[cfg(target_arch = "aarch64")]
@@ -2397,6 +2401,40 @@ impl Scheduler {
         if current == Some(idle) && real_tid != idle {
             record_cpu_state_change(cpu, 1, idle, real_tid);
             self.cpu_state[cpu].current_thread = Some(real_tid);
+        }
+    }
+
+    /// Fix stale cpu_state where it names a non-idle thread as current while
+    /// idle is actually the thread executing (i.e. `current_thread_ptr` is
+    /// NULL, the per-CPU fast-path marker for "idle is running").
+    ///
+    /// This is the inverse of `fix_stale_idle_cpu_state` above: that function
+    /// corrects "cpu_state says idle, but a real thread is running"; this one
+    /// corrects "cpu_state says a real (non-idle) thread, but idle is what's
+    /// actually running" -- e.g. after an idle dispatch that branched directly
+    /// into `idle_loop_arm64` without updating `cpu_state.current_thread`,
+    /// followed by a timer IRQ re-entering `schedule_from_kernel` while idle
+    /// is executing but `cpu_state[cpu].current_thread` still names whatever
+    /// thread was current before that redirect.
+    ///
+    /// Without this correction, the stale non-idle `current_thread` would be
+    /// read straight through as `old_id` (the save target) by the scheduling
+    /// decision that follows, and idle's live register file would be written
+    /// into that unrelated (still-alive) thread's context -- the confirmed
+    /// "idle register file leaking into a non-idle thread's dispatch frame"
+    /// mechanism behind the ERET_ANOMALY / EC=0x0 crash family (see
+    /// docs/planning/aarch64-launcher-spawn-crash/ROOT_CAUSE.md, candidate #1:
+    /// "cpu_state / `old_id` save-target skew"). Callers must invoke this
+    /// BEFORE the scheduling decision (`schedule_deferred_requeue`) runs.
+    #[cfg(target_arch = "aarch64")]
+    pub fn fix_stale_current_thread_when_idle_executing(&mut self) {
+        let cpu = Self::current_cpu_id();
+        let idle = self.cpu_state[cpu].idle_thread;
+        if let Some(current) = self.cpu_state[cpu].current_thread {
+            if current != idle {
+                record_cpu_state_change(cpu, 7, current, idle);
+                self.cpu_state[cpu].current_thread = Some(idle);
+            }
         }
     }
 

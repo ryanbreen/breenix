@@ -3813,9 +3813,26 @@ pub fn schedule_from_kernel() {
     }
 
     let real_thread_ptr = Aarch64PerCpu::current_thread_ptr();
+    // Captured once here, before the scheduling decision below: whether idle
+    // is the thread actually executing on this CPU right now. Interrupts are
+    // disabled for the remainder of this function (see disable_interrupts()
+    // above), so this stays accurate through the save-path INLINE_SAVE_SKEW
+    // check further down.
+    let entered_idle_executing = real_thread_ptr.is_null();
     if !real_thread_ptr.is_null() {
         let real_tid = unsafe { &*(real_thread_ptr as *const Thread) }.id();
         sched.fix_stale_idle_cpu_state(real_tid);
+    } else {
+        // current_thread_ptr is NULL: idle is the thread actually executing
+        // on this CPU. If cpu_state.current_thread still names a non-idle
+        // thread (stale from before an idle redirect that skipped updating
+        // cpu_state), correct it to idle now -- BEFORE
+        // schedule_deferred_requeue() below reads current_thread as the save
+        // target. Otherwise idle's live register file would be saved into
+        // that stale, unrelated non-idle thread's context. See
+        // Scheduler::fix_stale_current_thread_when_idle_executing and
+        // docs/planning/aarch64-launcher-spawn-crash/ROOT_CAUSE.md.
+        sched.fix_stale_current_thread_when_idle_executing();
     }
 
     let schedule_result = sched.schedule_deferred_requeue();
