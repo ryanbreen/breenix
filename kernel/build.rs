@@ -15,9 +15,16 @@ fn main() {
         (ts.subsec_nanos() >> 16) & 0xFFFF
     );
     println!("cargo:rustc-env=BREENIX_BUILD_ID={}", build_id);
-    // Rerun whenever xhci.rs changes (we always `touch` it before building,
-    // so the build ID is always fresh for each deploy cycle).
-    println!("cargo:rerun-if-changed=src/drivers/usb/xhci.rs");
+    // Rerun whenever ANY kernel source file changes, so BUILD_ID always
+    // reflects the actual build and never lies about staleness.
+    //
+    // NOTE: emitting any `cargo:rerun-if-changed` disables cargo's default
+    // "rerun if anything in the package changed" behavior, so without this
+    // directive BUILD_ID only re-stamped on the few files explicitly listed
+    // below (e.g. xhci.rs) -- a stale BUILD_ID silently misled a validation
+    // run once. Cargo recursively watches the whole tree when given a
+    // directory path, so this restores honest "any source change" coverage.
+    println!("cargo:rerun-if-changed=src");
 
     // Get absolute paths from Cargo environment
     let out_dir = env::var("OUT_DIR").unwrap();
