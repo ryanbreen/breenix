@@ -1154,6 +1154,20 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                 // the bad save can happen on a peer CPU that never faults.
                 crate::arch_impl::aarch64::context_switch::dump_all_save_skew_snapshots();
 
+                // [cpu_state_history]: per-CPU (setter_id, old->new) write-history
+                // ring for cpu_state[cpu].current_thread (scheduler.rs setter-id
+                // table above dump_cpu_state_history). Names which of the known
+                // writers (commit_cpu_state_after_save, switch_to_idle,
+                // switch_to_idle_best_effort, register_idle_thread,
+                // init_with_current, set_current_thread,
+                // fix_stale_current_thread_when_idle_executing) last touched
+                // cpu_state on each implicated CPU. Dumped for the faulting
+                // CPU plus every other CPU whose SAVE_SKEW slot fired (see
+                // dump_cpu_state_history_postmortem doc comment). Lock-free
+                // (atomics only, no locks) and record-only -- no behavior
+                // change.
+                crate::task::scheduler::dump_cpu_state_history_postmortem(cpu_id as usize);
+
                 // [DISPATCH_MISMATCH]: lock-free per-CPU record from the
                 // dispatch-finalization path (context_switch.rs). Present iff
                 // a frame's elr diverged from its thread's authoritative

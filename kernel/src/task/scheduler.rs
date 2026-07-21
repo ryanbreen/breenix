@@ -572,7 +572,6 @@ fn record_cpu_state_change(cpu: usize, setter_id: u64, old_val: u64, new_val: u6
 
 /// Dump the cpu_state change history for a CPU (debug utility).
 #[cfg(target_arch = "aarch64")]
-#[allow(dead_code)]
 pub fn dump_cpu_state_history(cpu: usize) {
     use crate::arch_impl::aarch64::context_switch::{raw_uart_dec, raw_uart_str};
     if cpu >= MAX_CPUS {
@@ -611,6 +610,26 @@ pub fn dump_cpu_state_history(cpu: usize) {
         raw_uart_str("->");
         raw_uart_dec(new);
         raw_uart_str("\n");
+    }
+}
+
+/// Dump the cpu_state change history for the aarch64 UNHANDLED_EC fatal
+/// postmortem (exception.rs): the faulting CPU, plus every OTHER CPU whose
+/// SAVE_SKEW slot fired (queried via `save_skew_snapshot`, the same read-side
+/// accessor `dump_all_save_skew_snapshots` uses) since a bad save recorded on
+/// a peer CPU is exactly the case this history is needed to explain. Kept as
+/// its own function (rather than inlined at the call site) so the call site
+/// in exception.rs stays a single line. Lock-free (atomics only, no locks)
+/// and record-only -- no behavior change.
+#[cfg(target_arch = "aarch64")]
+pub fn dump_cpu_state_history_postmortem(faulting_cpu: usize) {
+    dump_cpu_state_history(faulting_cpu);
+    for other_cpu in 0..MAX_CPUS {
+        if other_cpu != faulting_cpu
+            && crate::arch_impl::aarch64::context_switch::save_skew_snapshot(other_cpu).is_some()
+        {
+            dump_cpu_state_history(other_cpu);
+        }
     }
 }
 
