@@ -30,6 +30,35 @@ pub static CPU0_LAST_SYNC_ELR: AtomicU64 = AtomicU64::new(0);
 static PC_ALIGN_VERBOSE_CAPTURED: AtomicBool = AtomicBool::new(false);
 static FATAL_POSTMORTEM_CAPTURED: [AtomicBool; 8] = [const { AtomicBool::new(false) }; 8];
 static EL1_UNHANDLED_FAULT_LATCHED: [AtomicBool; 8] = [const { AtomicBool::new(false) }; 8];
+static FATAL_POSTMORTEM_UART_LOCK: AtomicBool = AtomicBool::new(false);
+
+struct FatalPostmortemUartGuard {
+    acquired: bool,
+}
+
+impl Drop for FatalPostmortemUartGuard {
+    fn drop(&mut self) {
+        if self.acquired {
+            FATAL_POSTMORTEM_UART_LOCK.store(false, Ordering::Release);
+        }
+    }
+}
+
+#[cold]
+#[inline(never)]
+fn acquire_fatal_postmortem_uart() -> FatalPostmortemUartGuard {
+    const MAX_SPINS: usize = 1_000_000;
+    for _ in 0..MAX_SPINS {
+        if FATAL_POSTMORTEM_UART_LOCK
+            .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_ok()
+        {
+            return FatalPostmortemUartGuard { acquired: true };
+        }
+        core::hint::spin_loop();
+    }
+    FatalPostmortemUartGuard { acquired: false }
+}
 
 struct El1FirstFaultEvidence {
     instruction_word: Option<u32>,
@@ -204,7 +233,9 @@ fn handle_unhandled_el1_exception(frame: &Aarch64ExceptionFrame, ec: u32, esr: u
             .is_ok();
     if first_fault {
         let evidence = capture_el1_first_fault_evidence(frame.elr);
+        let fatal_uart_guard = acquire_fatal_postmortem_uart();
         dump_el1_first_fault(frame, ec, esr, far, cpu_id, &evidence);
+        drop(fatal_uart_guard);
     }
 
     loop {
@@ -318,6 +349,8 @@ fn dump_fatal_postmortem_once(label: &str) {
     crate::arch_impl::aarch64::context_switch::dump_defer_requeue_snapshots();
     raw_uart_str("\n  Trace buffers:\n");
     crate::tracing::dump_all_buffers();
+    raw_uart_str("\n  Idle redirect histories:\n");
+    crate::arch_impl::aarch64::context_switch::dump_all_idle_redirect_histories();
 }
 
 /// ARM64 syscall result type (mirrors x86_64 version)
@@ -428,6 +461,11 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
 
             // Check if from userspace (EL0) - SPSR[3:0] indicates source EL
             let from_el0 = (frame_ref.spsr & 0xF) == 0;
+            let fatal_uart_guard = if from_el0 {
+                None
+            } else {
+                Some(acquire_fatal_postmortem_uart())
+            };
             let ttbr0: u64;
             unsafe {
                 core::arch::asm!("mrs {}, ttbr0_el1", out(reg) ttbr0, options(nomem, nostack));
@@ -673,6 +711,7 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
             }
             defer_current_user_thread_sigsegv_exit("[DATA_ABORT]");
             dump_fatal_postmortem_once("DATA_ABORT");
+            drop(fatal_uart_guard);
 
             // Mark scheduler thread as terminated (best effort)
             terminate_current_scheduler_thread();
@@ -694,6 +733,11 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
             let frame_ref = unsafe { &mut *frame };
             let ifsc = (iss & 0x3F) as u16;
             let from_el0 = (frame_ref.spsr & 0xF) == 0;
+            let fatal_uart_guard = if from_el0 {
+                None
+            } else {
+                Some(acquire_fatal_postmortem_uart())
+            };
 
             let ttbr0: u64;
             unsafe {
@@ -978,6 +1022,7 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                     raw_uart_str("\n");
                 }
             }
+            drop(fatal_uart_guard);
 
             if from_el0 {
                 // From userspace - terminate the process with SIGSEGV
@@ -1388,10 +1433,8 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                 // writer, distinct from the exception-frame save path that
                 // SAVE_SKEW covers. Present iff idle was actually executing
                 // on this CPU but the scheduling decision picked a non-idle
-                // `old_id` as the save target, i.e. the imminent
-                // aarch64_inline_schedule_switch asm save was about to write
-                // idle's live register file into that non-idle thread's
-                // context. Diagnostic only, all-CPU (mirrors SAVE_SKEW /
+                // `old_id` with the opposite idle/non-idle class, in either
+                // direction. Diagnostic only, all-CPU (mirrors SAVE_SKEW /
                 // ERET_ANOMALY above).
                 crate::arch_impl::aarch64::context_switch::dump_all_inline_save_skew_snapshots();
             }

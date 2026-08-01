@@ -535,14 +535,22 @@ const MAX_CPUS: usize = 1;
 ///   2 = switch_to_idle
 ///   3 = switch_to_idle_best_effort
 ///   4 = register_idle_thread
-///   5 = init_with_current / Scheduler::new
-///   6 = set_current_thread / add_thread_as_current
+///   5 = init_with_current
+///   6 = Scheduler::set_current_thread
 ///   7 = fix_stale_current_thread_when_idle_executing (schedule_from_kernel
 ///       idle path -- corrects a stale non-idle current_thread while idle is
 ///       the thread actually executing, before it can be used as a save
 ///       target; see ROOT_CAUSE.md's cpu_state/old_id skew candidate)
+///   8 = fix_stale_idle_cpu_state
+///   9 = fix_exception_cleanup_cpu_state
+///  10 = dispatch_thread_locked (kernel TTBR_PM_LOCK_BUSY redirect)
+///  11 = dispatch_thread_locked (kernel PROCESS_GONE redirect)
+///  12 = dispatch_thread_locked (kernel RESTORE_FAILED redirect)
+///  13 = dispatch_thread_locked (EL0 bad-context redirect)
+///  14 = dispatch_thread_locked (EL0 TTBR_PM_LOCK_BUSY redirect)
+///  15 = dispatch_thread_locked (EL0 PROCESS_GONE redirect)
 #[cfg(target_arch = "aarch64")]
-const HISTORY_SIZE: usize = 8;
+const HISTORY_SIZE: usize = 256;
 #[cfg(target_arch = "aarch64")]
 static CPU_STATE_HISTORY: [[core::sync::atomic::AtomicU64; HISTORY_SIZE * 3]; MAX_CPUS] = {
     const INIT_ENTRY: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
@@ -558,7 +566,13 @@ static CPU_STATE_HISTORY_IDX: [core::sync::atomic::AtomicU64; MAX_CPUS] = {
 
 /// Record a cpu_state change for diagnostics (circular buffer).
 #[cfg(target_arch = "aarch64")]
-fn record_cpu_state_change(cpu: usize, setter_id: u64, old_val: u64, new_val: u64) {
+#[inline(never)]
+pub(crate) fn record_cpu_state_change(
+    cpu: usize,
+    setter_id: u64,
+    old_val: u64,
+    new_val: u64,
+) {
     if cpu < MAX_CPUS {
         let idx =
             CPU_STATE_HISTORY_IDX[cpu].fetch_add(1, core::sync::atomic::Ordering::Relaxed) as usize;
@@ -741,6 +755,8 @@ impl Scheduler {
         let idle_id = idle_thread.id();
         self.threads.push(idle_thread);
         self.cpu_state[cpu_id].idle_thread = idle_id;
+        let old_val = self.cpu_state[cpu_id].current_thread.unwrap_or(0xDEAD);
+        record_cpu_state_change(cpu_id, 4, old_val, idle_id);
         self.cpu_state[cpu_id].current_thread = Some(idle_id);
     }
 
@@ -2378,6 +2394,12 @@ impl Scheduler {
     /// Set the current thread (used by spawn mechanism)
     #[allow(dead_code)]
     pub fn set_current_thread(&mut self, thread_id: u64) {
+        #[cfg(target_arch = "aarch64")]
+        {
+            let cpu = Self::current_cpu_id();
+            let old_val = self.cpu_state[cpu].current_thread.unwrap_or(0xDEAD);
+            record_cpu_state_change(cpu, 6, old_val, thread_id);
+        }
         self.cpu_state[Self::current_cpu_id()].current_thread = Some(thread_id);
     }
 
@@ -2418,7 +2440,7 @@ impl Scheduler {
         let current = self.cpu_state[cpu].current_thread;
         let idle = self.cpu_state[cpu].idle_thread;
         if current == Some(idle) && real_tid != idle {
-            record_cpu_state_change(cpu, 1, idle, real_tid);
+            record_cpu_state_change(cpu, 8, idle, real_tid);
             self.cpu_state[cpu].current_thread = Some(real_tid);
         }
     }
@@ -2498,7 +2520,7 @@ impl Scheduler {
         let idle = self.cpu_state[cpu].idle_thread;
         let current = self.cpu_state[cpu].current_thread.unwrap_or(0xDEAD);
         if current != idle {
-            record_cpu_state_change(cpu, 3, current, idle);
+            record_cpu_state_change(cpu, 9, current, idle);
             self.cpu_state[cpu].current_thread = Some(idle);
         }
         self.resolve_exception_cleanup_previous_thread(cpu);
@@ -2524,6 +2546,11 @@ pub fn init_with_current(current_thread: Box<Thread>) {
 
     // Create scheduler with current thread as both idle and current
     let mut scheduler = Scheduler::new(current_thread);
+    #[cfg(target_arch = "aarch64")]
+    {
+        let old_val = scheduler.cpu_state[0].current_thread.unwrap_or(0xDEAD);
+        record_cpu_state_change(0, 5, old_val, thread_id);
+    }
     scheduler.cpu_state[0].current_thread = Some(thread_id);
 
     *scheduler_lock = Some(scheduler);
