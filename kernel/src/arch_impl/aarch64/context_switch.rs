@@ -1867,6 +1867,15 @@ fn scheduler_stack_top(cpu_id: usize) -> u64 {
 }
 
 #[inline(always)]
+fn idle_dispatch_stack(cpu_id: usize, preferred: u64) -> u64 {
+    if preferred == 0 {
+        scheduler_stack_top(cpu_id)
+    } else {
+        preferred
+    }
+}
+
+#[inline(always)]
 fn thread_kernel_stack_contains(thread: &Thread, sp: u64) -> bool {
     let Some(kst) = thread.kernel_stack_top else {
         return false;
@@ -3776,6 +3785,7 @@ extern "C" fn inline_schedule_trampoline() -> ! {
             idle_sp
         })
         .unwrap_or_else(|| scheduler_stack_top(cpu_id));
+        let idle_sp = idle_dispatch_stack(cpu_id, idle_sp);
 
         unsafe {
             Aarch64PerCpu::set_user_rsp_scratch(idle_sp);
@@ -4009,7 +4019,7 @@ extern "C" fn inline_schedule_trampoline() -> ! {
         inline_schedule_breadcrumb(cpu_id, INLINE_BC_IDLE_RET_BRANCH, 0);
         cpu0_breadcrumb(cpu_id, 45); // ret-based idle dispatch (NOT ERET)
         let idle_addr = crate::arch_impl::aarch64::idle_loop_arm64 as *const () as u64;
-        let idle_sp = Aarch64PerCpu::kernel_stack_top();
+        let idle_sp = idle_dispatch_stack(cpu_id, Aarch64PerCpu::kernel_stack_top());
         unsafe {
             core::arch::asm!(
                 "mov sp, {stack}",
