@@ -1042,6 +1042,242 @@ pub fn dump_all_save_skew_snapshots() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────
+// IDLE_REDIRECT history (diagnostic only, no behavior change)
+
+#[derive(Clone, Copy)]
+#[repr(u64)]
+enum IdleRedirectReason {
+    IdleDispatch = 1,
+    ThreadMissing = 2,
+    ThreadTerminated = 3,
+    KernelTtbrPmLockBusy = 4,
+    KernelProcessGone = 5,
+    KernelRestoreFailed = 6,
+    UserBadContext = 7,
+    UserTtbrPmLockBusy = 8,
+    UserProcessGone = 9,
+}
+
+impl IdleRedirectReason {
+    fn from_code(code: u64) -> Option<Self> {
+        match code {
+            1 => Some(Self::IdleDispatch),
+            2 => Some(Self::ThreadMissing),
+            3 => Some(Self::ThreadTerminated),
+            4 => Some(Self::KernelTtbrPmLockBusy),
+            5 => Some(Self::KernelProcessGone),
+            6 => Some(Self::KernelRestoreFailed),
+            7 => Some(Self::UserBadContext),
+            8 => Some(Self::UserTtbrPmLockBusy),
+            9 => Some(Self::UserProcessGone),
+            _ => None,
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::IdleDispatch => "IDLE_DISPATCH",
+            Self::ThreadMissing => "THREAD_MISSING",
+            Self::ThreadTerminated => "THREAD_TERMINATED",
+            Self::KernelTtbrPmLockBusy => "KERNEL_TTBR_PM_LOCK_BUSY",
+            Self::KernelProcessGone => "KERNEL_PROCESS_GONE",
+            Self::KernelRestoreFailed => "KERNEL_RESTORE_FAILED",
+            Self::UserBadContext => "USER_BAD_CONTEXT",
+            Self::UserTtbrPmLockBusy => "USER_TTBR_PM_LOCK_BUSY",
+            Self::UserProcessGone => "USER_PROCESS_GONE",
+        }
+    }
+}
+
+const IDLE_REDIRECT_HISTORY_SIZE: usize = 64;
+const IDLE_REDIRECT_FIELDS: usize = 4;
+static IDLE_REDIRECT_HISTORY: [[AtomicU64; IDLE_REDIRECT_HISTORY_SIZE * IDLE_REDIRECT_FIELDS];
+    crate::arch_impl::aarch64::constants::MAX_CPUS] = {
+    const INIT_FIELD: AtomicU64 = AtomicU64::new(0);
+    const INIT_CPU: [AtomicU64; IDLE_REDIRECT_HISTORY_SIZE * IDLE_REDIRECT_FIELDS] =
+        [INIT_FIELD; IDLE_REDIRECT_HISTORY_SIZE * IDLE_REDIRECT_FIELDS];
+    [INIT_CPU; crate::arch_impl::aarch64::constants::MAX_CPUS]
+};
+static IDLE_REDIRECT_HISTORY_IDX: [AtomicU64;
+    crate::arch_impl::aarch64::constants::MAX_CPUS] =
+    [const { AtomicU64::new(0) }; crate::arch_impl::aarch64::constants::MAX_CPUS];
+
+#[inline(never)]
+fn record_idle_redirect(
+    sched: &Scheduler,
+    cpu_id: usize,
+    reason: IdleRedirectReason,
+    current_before: u64,
+) {
+    if cpu_id >= crate::arch_impl::aarch64::constants::MAX_CPUS {
+        return;
+    }
+    let idle_thread = sched.cpu_state[cpu_id].idle_thread;
+    let current_after = sched.cpu_state[cpu_id].current_thread.unwrap_or(0xDEAD);
+    let index = IDLE_REDIRECT_HISTORY_IDX[cpu_id].fetch_add(1, Ordering::Relaxed) as usize;
+    let base = (index % IDLE_REDIRECT_HISTORY_SIZE) * IDLE_REDIRECT_FIELDS;
+    IDLE_REDIRECT_HISTORY[cpu_id][base].store(reason as u64, Ordering::Relaxed);
+    IDLE_REDIRECT_HISTORY[cpu_id][base + 1].store(idle_thread, Ordering::Relaxed);
+    IDLE_REDIRECT_HISTORY[cpu_id][base + 2].store(current_before, Ordering::Relaxed);
+    IDLE_REDIRECT_HISTORY[cpu_id][base + 3].store(current_after, Ordering::Relaxed);
+}
+
+/// Dump the bounded, per-CPU setup_idle_return_locked event history.
+pub fn dump_all_idle_redirect_histories() {
+    for cpu_id in 0..crate::arch_impl::aarch64::constants::MAX_CPUS {
+        let total = IDLE_REDIRECT_HISTORY_IDX[cpu_id].load(Ordering::Relaxed) as usize;
+        let count = total.min(IDLE_REDIRECT_HISTORY_SIZE);
+        if count == 0 {
+            continue;
+        }
+        let start = total.saturating_sub(IDLE_REDIRECT_HISTORY_SIZE);
+        raw_uart_str("[IDLE_REDIRECT_HISTORY] cpu=");
+        raw_uart_dec(cpu_id as u64);
+        raw_uart_str(" last=");
+        raw_uart_dec(count as u64);
+        raw_uart_str(" total=");
+        raw_uart_dec(total as u64);
+        raw_uart_str("\n");
+        for index in start..total {
+            let base = (index % IDLE_REDIRECT_HISTORY_SIZE) * IDLE_REDIRECT_FIELDS;
+            let reason_code = IDLE_REDIRECT_HISTORY[cpu_id][base].load(Ordering::Relaxed);
+            let idle_thread = IDLE_REDIRECT_HISTORY[cpu_id][base + 1].load(Ordering::Relaxed);
+            let current_before = IDLE_REDIRECT_HISTORY[cpu_id][base + 2].load(Ordering::Relaxed);
+            let current_after = IDLE_REDIRECT_HISTORY[cpu_id][base + 3].load(Ordering::Relaxed);
+            raw_uart_str("  [");
+            raw_uart_dec(index as u64);
+            raw_uart_str("] reason=");
+            raw_uart_dec(reason_code);
+            if let Some(reason) = IdleRedirectReason::from_code(reason_code) {
+                raw_uart_str("(");
+                raw_uart_str(reason.label());
+                raw_uart_str(")");
+            }
+            raw_uart_str(" idle_thread=");
+            raw_uart_dec(idle_thread);
+            raw_uart_str(" current_thread=");
+            raw_uart_dec(current_before);
+            raw_uart_str("->");
+            raw_uart_dec(current_after);
+            raw_uart_str("\n");
+        }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// INLINE_SAVE_SKEW detection (diagnostic only, no behavior change)
+//
+// SAVE_SKEW (above) instruments `save_userspace_context_inline` /
+// `save_kernel_context_inline`, the two save writers reached from the
+// exception-frame (`check_need_resched_and_switch_arm64`) path. Those are NOT
+// the only place a thread's context gets saved: `schedule_from_kernel`'s
+// cooperative-yield / inline-schedule path saves the outgoing thread's
+// callee-saved registers via the `aarch64_inline_schedule_switch` asm helper
+// (x19-x30 + sp, stored directly into `Thread.context` at fixed offsets) with
+// no SAVE_SKEW-style gate at all. This probe closes that gap in both
+// directions: idle registers targeting a non-idle thread, and non-idle
+// registers targeting an idle thread.
+//
+// Strictly lock-free atomics; written only on the (rare) bad-save condition.
+// Record-and-continue only -- no logging in the save path itself, no lock
+// acquisition, no behavior change.
+#[derive(Clone, Copy)]
+#[repr(usize)]
+enum InlineSaveSkewDirection {
+    IdleIntoNonIdle = 0,
+    NonIdleIntoIdle = 1,
+}
+
+impl InlineSaveSkewDirection {
+    const ALL: [Self; 2] = [Self::IdleIntoNonIdle, Self::NonIdleIntoIdle];
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::IdleIntoNonIdle => "idle_into_non_idle",
+            Self::NonIdleIntoIdle => "non_idle_into_idle",
+        }
+    }
+}
+
+const INLINE_SAVE_SKEW_SLOTS: usize =
+    crate::arch_impl::aarch64::constants::MAX_CPUS * InlineSaveSkewDirection::ALL.len();
+static INLINE_SAVE_SKEW_SEEN: [AtomicU64; INLINE_SAVE_SKEW_SLOTS] =
+    [const { AtomicU64::new(0) }; INLINE_SAVE_SKEW_SLOTS];
+static INLINE_SAVE_SKEW_OLD_ID: [AtomicU64; INLINE_SAVE_SKEW_SLOTS] =
+    [const { AtomicU64::new(0) }; INLINE_SAVE_SKEW_SLOTS];
+static INLINE_SAVE_SKEW_SP: [AtomicU64; INLINE_SAVE_SKEW_SLOTS] =
+    [const { AtomicU64::new(0) }; INLINE_SAVE_SKEW_SLOTS];
+
+fn inline_save_skew_slot(cpu_id: usize, direction: InlineSaveSkewDirection) -> usize {
+    cpu_id * InlineSaveSkewDirection::ALL.len() + direction as usize
+}
+
+/// Record a bad inline-schedule save into this CPU/direction's last-wins slot.
+/// Lock-free; only the cheap atomic stores below run, and only when the
+/// caller has already confirmed the bad-save condition.
+#[inline(always)]
+fn record_inline_save_skew(
+    cpu_id: usize,
+    direction: InlineSaveSkewDirection,
+    old_id: u64,
+    sp: u64,
+) {
+    if cpu_id >= crate::arch_impl::aarch64::constants::MAX_CPUS {
+        return;
+    }
+    let slot = inline_save_skew_slot(cpu_id, direction);
+    INLINE_SAVE_SKEW_OLD_ID[slot].store(old_id, Ordering::Relaxed);
+    INLINE_SAVE_SKEW_SP[slot].store(sp, Ordering::Relaxed);
+    // Publish last (release) so a reader that sees SEEN!=0 also sees the fields.
+    INLINE_SAVE_SKEW_SEEN[slot].store(1, Ordering::Release);
+}
+
+/// Read-side accessor for the INLINE_SAVE_SKEW slot, used by the fatal
+/// postmortem in exception.rs. Returns None if no bad inline-schedule save in
+/// this direction was recorded on this CPU. Fields: (old_id, sp).
+fn inline_save_skew_snapshot(
+    cpu_id: usize,
+    direction: InlineSaveSkewDirection,
+) -> Option<(u64, u64)> {
+    if cpu_id >= crate::arch_impl::aarch64::constants::MAX_CPUS {
+        return None;
+    }
+    let slot = inline_save_skew_slot(cpu_id, direction);
+    if INLINE_SAVE_SKEW_SEEN[slot].load(Ordering::Acquire) == 0 {
+        return None;
+    }
+    Some((
+        INLINE_SAVE_SKEW_OLD_ID[slot].load(Ordering::Relaxed),
+        INLINE_SAVE_SKEW_SP[slot].load(Ordering::Relaxed),
+    ))
+}
+
+/// All-CPU [INLINE_SAVE_SKEW] postmortem readout, modeled on
+/// `dump_all_save_skew_snapshots`.
+pub fn dump_all_inline_save_skew_snapshots() {
+    let mut any_recorded = false;
+    for cpu_id in 0..crate::arch_impl::aarch64::constants::MAX_CPUS {
+        for direction in InlineSaveSkewDirection::ALL {
+            if let Some((old_id, sp)) = inline_save_skew_snapshot(cpu_id, direction) {
+                any_recorded = true;
+                raw_uart_str("[INLINE_SAVE_SKEW] cpu=");
+                raw_uart_dec(cpu_id as u64);
+                raw_uart_str(" direction=");
+                raw_uart_str(direction.label());
+                raw_uart_str(" old_id=");
+                raw_uart_dec(old_id);
+                raw_uart_str(" sp=");
+                raw_uart_hex(sp);
+                raw_uart_str("\n");
+            }
+        }
+    }
+    if !any_recorded {
+        raw_uart_str("[INLINE_SAVE_SKEW] none recorded on any cpu\n");
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────
 // DISPATCH_MISMATCH detection (diagnostic only, no behavior change)
 //
 // Confirms/refutes the "frame was never rebuilt from context" half of the
@@ -2450,7 +2686,8 @@ fn setup_idle_return_locked(
     sched: &mut Scheduler,
     frame: &mut Aarch64ExceptionFrame,
     cpu_id: usize,
-) {
+) -> u64 {
+    let current_before = sched.cpu_state[cpu_id].current_thread.unwrap_or(0xDEAD);
     // Set frame ELR and SPSR to safe values FIRST
     let idle_addr = idle_loop_arm64 as *const () as u64;
     frame.elr = idle_addr;
@@ -2505,6 +2742,7 @@ fn setup_idle_return_locked(
         Aarch64PerCpu::set_current_thread_ptr(core::ptr::null_mut());
         Aarch64PerCpu::clear_preempt_active();
     }
+    current_before
 }
 
 /// Dispatch an idle thread — called inside scheduler lock hold.
@@ -2522,7 +2760,8 @@ fn dispatch_idle_locked(
     frame: &mut Aarch64ExceptionFrame,
     cpu_id: usize,
 ) {
-    setup_idle_return_locked(sched, frame, cpu_id);
+    let current_before = setup_idle_return_locked(sched, frame, cpu_id);
+    record_idle_redirect(sched, cpu_id, IdleRedirectReason::IdleDispatch, current_before);
 }
 
 /// Dispatch a non-idle thread — called inside scheduler lock hold.
@@ -2562,7 +2801,13 @@ fn dispatch_thread_locked(
             Some(info) => info,
             None => {
                 trace_dispatch_redirect(thread_id, TRACE_REDIRECT_THREAD_MISSING);
-                setup_idle_return_locked(sched, frame, cpu_id);
+                let current_before = setup_idle_return_locked(sched, frame, cpu_id);
+                record_idle_redirect(
+                    sched,
+                    cpu_id,
+                    IdleRedirectReason::ThreadMissing,
+                    current_before,
+                );
                 return;
             }
         };
@@ -2570,7 +2815,13 @@ fn dispatch_thread_locked(
     // DEFENSE: Verify thread is not terminated before dispatch.
     if state == ThreadState::Terminated {
         trace_dispatch_redirect(thread_id, TRACE_REDIRECT_THREAD_TERMINATED);
-        setup_idle_return_locked(sched, frame, cpu_id);
+        let current_before = setup_idle_return_locked(sched, frame, cpu_id);
+        record_idle_redirect(
+            sched,
+            cpu_id,
+            IdleRedirectReason::ThreadTerminated,
+            current_before,
+        );
         return;
     }
 
@@ -2616,9 +2867,17 @@ fn dispatch_thread_locked(
                     if let Some(thread) = sched.get_thread_mut(thread_id) {
                         thread.state = ThreadState::Ready;
                     }
-                    setup_idle_return_locked(sched, frame, cpu_id);
+                    let current_before = setup_idle_return_locked(sched, frame, cpu_id);
                     let idle_id = sched.cpu_state[cpu_id].idle_thread;
+                    let old_val = sched.cpu_state[cpu_id].current_thread.unwrap_or(0xDEAD);
+                    crate::task::scheduler::record_cpu_state_change(cpu_id, 10, old_val, idle_id);
                     sched.cpu_state[cpu_id].current_thread = Some(idle_id);
+                    record_idle_redirect(
+                        sched,
+                        cpu_id,
+                        IdleRedirectReason::KernelTtbrPmLockBusy,
+                        current_before,
+                    );
                     sched.requeue_thread_after_save(thread_id);
                     sched.set_need_resched_inner();
                     return;
@@ -2637,9 +2896,17 @@ fn dispatch_thread_locked(
                     if let Some(thread) = sched.get_thread_mut(thread_id) {
                         thread.state = ThreadState::Terminated;
                     }
-                    setup_idle_return_locked(sched, frame, cpu_id);
+                    let current_before = setup_idle_return_locked(sched, frame, cpu_id);
                     let idle_id = sched.cpu_state[cpu_id].idle_thread;
+                    let old_val = sched.cpu_state[cpu_id].current_thread.unwrap_or(0xDEAD);
+                    crate::task::scheduler::record_cpu_state_change(cpu_id, 11, old_val, idle_id);
                     sched.cpu_state[cpu_id].current_thread = Some(idle_id);
+                    record_idle_redirect(
+                        sched,
+                        cpu_id,
+                        IdleRedirectReason::KernelProcessGone,
+                        current_before,
+                    );
                     return;
                 }
             }
@@ -2677,9 +2944,17 @@ fn dispatch_thread_locked(
             if let Some(thread) = sched.get_thread_mut(thread_id) {
                 thread.state = ThreadState::Terminated;
             }
-            setup_idle_return_locked(sched, frame, cpu_id);
+            let current_before = setup_idle_return_locked(sched, frame, cpu_id);
             let idle_id = sched.cpu_state[cpu_id].idle_thread;
+            let old_val = sched.cpu_state[cpu_id].current_thread.unwrap_or(0xDEAD);
+            crate::task::scheduler::record_cpu_state_change(cpu_id, 12, old_val, idle_id);
             sched.cpu_state[cpu_id].current_thread = Some(idle_id);
+            record_idle_redirect(
+                sched,
+                cpu_id,
+                IdleRedirectReason::KernelRestoreFailed,
+                current_before,
+            );
             return;
         }
     } else {
@@ -2767,9 +3042,17 @@ fn dispatch_thread_locked(
                 if let Some(thread) = sched.get_thread_mut(thread_id) {
                     thread.state = ThreadState::Terminated;
                 }
-                setup_idle_return_locked(sched, frame, cpu_id);
+                let current_before = setup_idle_return_locked(sched, frame, cpu_id);
                 let idle_id = sched.cpu_state[cpu_id].idle_thread;
+                let old_val = sched.cpu_state[cpu_id].current_thread.unwrap_or(0xDEAD);
+                crate::task::scheduler::record_cpu_state_change(cpu_id, 13, old_val, idle_id);
                 sched.cpu_state[cpu_id].current_thread = Some(idle_id);
+                record_idle_redirect(
+                    sched,
+                    cpu_id,
+                    IdleRedirectReason::UserBadContext,
+                    current_before,
+                );
                 return;
             }
         }
@@ -2809,9 +3092,17 @@ fn dispatch_thread_locked(
                 if let Some(thread) = sched.get_thread_mut(thread_id) {
                     thread.state = ThreadState::Ready;
                 }
-                setup_idle_return_locked(sched, frame, cpu_id);
+                let current_before = setup_idle_return_locked(sched, frame, cpu_id);
                 let idle_id = sched.cpu_state[cpu_id].idle_thread;
+                let old_val = sched.cpu_state[cpu_id].current_thread.unwrap_or(0xDEAD);
+                crate::task::scheduler::record_cpu_state_change(cpu_id, 14, old_val, idle_id);
                 sched.cpu_state[cpu_id].current_thread = Some(idle_id);
+                record_idle_redirect(
+                    sched,
+                    cpu_id,
+                    IdleRedirectReason::UserTtbrPmLockBusy,
+                    current_before,
+                );
                 sched.requeue_thread_after_save(thread_id);
                 sched.set_need_resched_inner();
                 return;
@@ -2829,9 +3120,17 @@ fn dispatch_thread_locked(
                 if let Some(thread) = sched.get_thread_mut(thread_id) {
                     thread.state = ThreadState::Terminated;
                 }
-                setup_idle_return_locked(sched, frame, cpu_id);
+                let current_before = setup_idle_return_locked(sched, frame, cpu_id);
                 let idle_id = sched.cpu_state[cpu_id].idle_thread;
+                let old_val = sched.cpu_state[cpu_id].current_thread.unwrap_or(0xDEAD);
+                crate::task::scheduler::record_cpu_state_change(cpu_id, 15, old_val, idle_id);
                 sched.cpu_state[cpu_id].current_thread = Some(idle_id);
+                record_idle_redirect(
+                    sched,
+                    cpu_id,
+                    IdleRedirectReason::UserProcessGone,
+                    current_before,
+                );
                 return;
             }
         }
@@ -3813,9 +4112,26 @@ pub fn schedule_from_kernel() {
     }
 
     let real_thread_ptr = Aarch64PerCpu::current_thread_ptr();
+    // Captured once here, before the scheduling decision below: whether idle
+    // is the thread actually executing on this CPU right now. Interrupts are
+    // disabled for the remainder of this function (see disable_interrupts()
+    // above), so this stays accurate through the save-path INLINE_SAVE_SKEW
+    // check further down.
+    let entered_idle_executing = real_thread_ptr.is_null();
     if !real_thread_ptr.is_null() {
         let real_tid = unsafe { &*(real_thread_ptr as *const Thread) }.id();
         sched.fix_stale_idle_cpu_state(real_tid);
+    } else {
+        // current_thread_ptr is NULL: idle is the thread actually executing
+        // on this CPU. If cpu_state.current_thread still names a non-idle
+        // thread (stale from before an idle redirect that skipped updating
+        // cpu_state), correct it to idle now -- BEFORE
+        // schedule_deferred_requeue() below reads current_thread as the save
+        // target. Otherwise idle's live register file would be saved into
+        // that stale, unrelated non-idle thread's context. See
+        // Scheduler::fix_stale_current_thread_when_idle_executing and
+        // docs/planning/aarch64-launcher-spawn-crash/ROOT_CAUSE.md.
+        sched.fix_stale_current_thread_when_idle_executing();
     }
 
     let schedule_result = sched.schedule_deferred_requeue();
@@ -3851,6 +4167,33 @@ pub fn schedule_from_kernel() {
         new_id as u16,
     );
     crate::task::scheduler::increment_context_switch_count();
+
+    // INLINE_SAVE_SKEW probe (record-and-continue, no behavior change): the
+    // upcoming `aarch64_inline_schedule_switch` call below performs the
+    // uninstrumented x19-x30+sp save for this (the inline-schedule /
+    // cooperative-yield) path -- a save writer that neither SAVE_SKEW nor
+    // ERET_ANOMALY instruments (those cover the exception-frame save/dispatch
+    // paths only). If idle was the thread actually executing when this
+    // function was entered (`entered_idle_executing`, captured above, valid
+    // throughout since interrupts stay disabled) and the save target `old_id`
+    // disagrees about whether idle is running, the imminent asm save targets
+    // the wrong context class. Each direction has its own last-wins slot so
+    // one cannot overwrite evidence of the other direction.
+    let old_is_idle = sched.is_idle_thread_inner(old_id);
+    let inline_save_skew_direction = if entered_idle_executing && !old_is_idle {
+        Some(InlineSaveSkewDirection::IdleIntoNonIdle)
+    } else if !entered_idle_executing && old_is_idle {
+        Some(InlineSaveSkewDirection::NonIdleIntoIdle)
+    } else {
+        None
+    };
+    if let Some(direction) = inline_save_skew_direction {
+        let probe_sp: u64;
+        unsafe {
+            core::arch::asm!("mov {}, sp", out(reg) probe_sp, options(nomem, nostack, preserves_flags));
+        }
+        record_inline_save_skew(cpu_id, direction, old_id, probe_sp);
+    }
 
     let old_context_ptr = match sched.get_thread_mut(old_id) {
         Some(old_thread) => {

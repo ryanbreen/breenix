@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ["cfg(never)", "cfg(feature, values(\"particle_animation\", \"xhci_linux_harness\"))"] }
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(never)", "cfg(feature, values(\"ec0_fault_inject\", \"particle_animation\", \"xhci_linux_harness\"))"] }
 
 [[bin]]
 name = "kernel"
@@ -40,6 +40,7 @@ test_page_fault = []
 test_userspace = []
 test_all_exceptions = []
 external_test_bins = []
+ec0_fault_inject = []  # Inject one EL1 UDF on CPU 0 after about 10 seconds
 vmnet = []  # Use vmnet network config (192.168.64.x) instead of SLIRP (10.0.2.x)
 interactive = ["testing"]  # Boot into init_shell instead of running automated tests
 

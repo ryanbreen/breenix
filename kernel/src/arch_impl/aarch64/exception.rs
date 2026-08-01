@@ -29,6 +29,245 @@ pub static CPU0_LAST_SYNC_FAR: AtomicU64 = AtomicU64::new(0);
 pub static CPU0_LAST_SYNC_ELR: AtomicU64 = AtomicU64::new(0);
 static PC_ALIGN_VERBOSE_CAPTURED: AtomicBool = AtomicBool::new(false);
 static FATAL_POSTMORTEM_CAPTURED: [AtomicBool; 8] = [const { AtomicBool::new(false) }; 8];
+static EL1_UNHANDLED_FAULT_LATCHED: [AtomicBool; 8] = [const { AtomicBool::new(false) }; 8];
+static FATAL_POSTMORTEM_UART_LOCK: AtomicBool = AtomicBool::new(false);
+
+struct FatalPostmortemUartGuard {
+    acquired: bool,
+}
+
+impl Drop for FatalPostmortemUartGuard {
+    fn drop(&mut self) {
+        if self.acquired {
+            FATAL_POSTMORTEM_UART_LOCK.store(false, Ordering::Release);
+        }
+    }
+}
+
+#[cold]
+#[inline(never)]
+fn acquire_fatal_postmortem_uart() -> FatalPostmortemUartGuard {
+    let start: u64;
+    let frequency: u64;
+    unsafe {
+        core::arch::asm!(
+            "mrs {start}, cntvct_el0",
+            "mrs {frequency}, cntfrq_el0",
+            start = out(reg) start,
+            frequency = out(reg) frequency,
+            options(nomem, nostack, preserves_flags),
+        );
+    }
+    let deadline = start.saturating_add(frequency / 4);
+
+    loop {
+        if FATAL_POSTMORTEM_UART_LOCK
+            .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_ok()
+        {
+            return FatalPostmortemUartGuard { acquired: true };
+        }
+
+        let now: u64;
+        unsafe {
+            core::arch::asm!(
+                "mrs {}, cntvct_el0",
+                out(reg) now,
+                options(nomem, nostack, preserves_flags),
+            );
+        }
+        if now >= deadline {
+            return FatalPostmortemUartGuard { acquired: false };
+        }
+        core::hint::spin_loop();
+    }
+}
+
+struct El1FirstFaultEvidence {
+    instruction_word: Option<u32>,
+    tpidr_el1: u64,
+    mpidr_el1: u64,
+    sctlr_el1: u64,
+    vbar_el1: u64,
+    ttbr1_el1: u64,
+    tcr_el1: u64,
+    cntvct_el0: u64,
+}
+
+#[cold]
+#[inline(never)]
+fn capture_el1_first_fault_evidence(elr: u64) -> El1FirstFaultEvidence {
+    extern "C" {
+        static __kernel_virt_start: u8;
+        static __bss_start: u8;
+    }
+
+    // The linker script does not export an __etext symbol. __bss_start is the
+    // first existing upper-bound symbol after .text/.rodata/.data, so it keeps
+    // the volatile read inside the mapped high-half kernel image.
+    let kernel_image_text_floor = core::ptr::addr_of!(__kernel_virt_start) as u64;
+    let kernel_image_upper = core::ptr::addr_of!(__bss_start) as u64;
+    let instruction_word = if elr >= kernel_image_text_floor
+        && elr <= kernel_image_upper.saturating_sub(core::mem::size_of::<u32>() as u64)
+        && elr & 0x3 == 0
+    {
+        Some(unsafe { core::ptr::read_volatile(elr as *const u32) })
+    } else {
+        None
+    };
+
+    let tpidr_el1: u64;
+    let mpidr_el1: u64;
+    let sctlr_el1: u64;
+    let vbar_el1: u64;
+    let ttbr1_el1: u64;
+    let tcr_el1: u64;
+    let cntvct_el0: u64;
+    unsafe {
+        core::arch::asm!(
+            "mrs {tpidr}, tpidr_el1",
+            "mrs {mpidr}, mpidr_el1",
+            "mrs {sctlr}, sctlr_el1",
+            "mrs {vbar}, vbar_el1",
+            "mrs {ttbr1}, ttbr1_el1",
+            "mrs {tcr}, tcr_el1",
+            "mrs {cntvct}, cntvct_el0",
+            tpidr = out(reg) tpidr_el1,
+            mpidr = out(reg) mpidr_el1,
+            sctlr = out(reg) sctlr_el1,
+            vbar = out(reg) vbar_el1,
+            ttbr1 = out(reg) ttbr1_el1,
+            tcr = out(reg) tcr_el1,
+            cntvct = out(reg) cntvct_el0,
+            options(nomem, nostack, preserves_flags),
+        );
+    }
+
+    El1FirstFaultEvidence {
+        instruction_word,
+        tpidr_el1,
+        mpidr_el1,
+        sctlr_el1,
+        vbar_el1,
+        ttbr1_el1,
+        tcr_el1,
+        cntvct_el0,
+    }
+}
+
+#[cold]
+#[inline(never)]
+fn raw_uart_hex_u32(value: u32) {
+    use crate::arch_impl::aarch64::context_switch::{raw_uart_char, raw_uart_str};
+
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    raw_uart_str("0x");
+    for shift in (0..32).step_by(4).rev() {
+        raw_uart_char(HEX[((value >> shift) & 0xF) as usize]);
+    }
+}
+
+#[cold]
+#[inline(never)]
+fn dump_el1_first_fault(
+    frame: &Aarch64ExceptionFrame,
+    ec: u32,
+    esr: u64,
+    far: u64,
+    cpu_id: usize,
+    evidence: &El1FirstFaultEvidence,
+) {
+    use crate::arch_impl::aarch64::context_switch::{raw_uart_dec, raw_uart_hex, raw_uart_str};
+
+    raw_uart_str("[UNHANDLED_EC] cpu=");
+    raw_uart_dec(cpu_id as u64);
+    raw_uart_str(" EC=");
+    raw_uart_hex(ec as u64);
+    raw_uart_str(" ELR=");
+    raw_uart_hex(frame.elr);
+    raw_uart_str("\n[EL1_FIRST_FAULT] instruction_word=");
+    if let Some(word) = evidence.instruction_word {
+        raw_uart_hex_u32(word);
+    } else {
+        raw_uart_str("unavailable");
+    }
+    raw_uart_str(" tpidr_el1=");
+    raw_uart_hex(evidence.tpidr_el1);
+    raw_uart_str(" mpidr_el1=");
+    raw_uart_hex(evidence.mpidr_el1);
+    raw_uart_str("\n  sctlr_el1=");
+    raw_uart_hex(evidence.sctlr_el1);
+    raw_uart_str(" vbar_el1=");
+    raw_uart_hex(evidence.vbar_el1);
+    raw_uart_str(" ttbr1_el1=");
+    raw_uart_hex(evidence.ttbr1_el1);
+    raw_uart_str("\n  tcr_el1=");
+    raw_uart_hex(evidence.tcr_el1);
+    raw_uart_str(" cntvct_el0=");
+    raw_uart_hex(evidence.cntvct_el0);
+    raw_uart_str("\n");
+
+    let sp_at_crash = frame as *const _ as u64 + 272;
+    raw_uart_str("[FATAL_REGS] cpu=");
+    raw_uart_dec(cpu_id as u64);
+    raw_uart_str(" spsr=");
+    raw_uart_hex(frame.spsr);
+    raw_uart_str(" esr=");
+    raw_uart_hex(esr);
+    raw_uart_str(" far=");
+    raw_uart_hex(far);
+    raw_uart_str(" elr=");
+    raw_uart_hex(frame.elr);
+    raw_uart_str(" sp=");
+    raw_uart_hex(sp_at_crash);
+
+    let registers = unsafe { core::slice::from_raw_parts(&frame.x0 as *const u64, 31) };
+    for (register, value) in registers.iter().enumerate() {
+        if register % 4 == 0 {
+            raw_uart_str("\n  ");
+        } else {
+            raw_uart_str(" ");
+        }
+        raw_uart_str("x");
+        raw_uart_dec(register as u64);
+        raw_uart_str("=");
+        raw_uart_hex(*value);
+    }
+    raw_uart_str("\n");
+
+    crate::arch_impl::aarch64::context_switch::dump_all_save_skew_snapshots();
+    crate::task::scheduler::dump_cpu_state_history_postmortem(cpu_id);
+    crate::arch_impl::aarch64::context_switch::dump_all_dispatch_mismatch_snapshots();
+    crate::arch_impl::aarch64::context_switch::dump_all_eret_frame_anomaly_snapshots();
+    crate::arch_impl::aarch64::context_switch::dump_all_inline_save_skew_snapshots();
+    dump_fatal_postmortem_once("UNHANDLED_EC");
+}
+
+#[cold]
+#[inline(never)]
+fn handle_unhandled_el1_exception(frame: &Aarch64ExceptionFrame, ec: u32, esr: u64, far: u64) -> ! {
+    unsafe {
+        core::arch::asm!("msr daifset, #0xf", options(nomem, nostack));
+    }
+
+    let cpu_id = crate::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id() as usize;
+    let first_fault = cpu_id < EL1_UNHANDLED_FAULT_LATCHED.len()
+        && EL1_UNHANDLED_FAULT_LATCHED[cpu_id]
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok();
+    if first_fault {
+        let evidence = capture_el1_first_fault_evidence(frame.elr);
+        let fatal_uart_guard = acquire_fatal_postmortem_uart();
+        dump_el1_first_fault(frame, ec, esr, far, cpu_id, &evidence);
+        drop(fatal_uart_guard);
+    }
+
+    loop {
+        unsafe {
+            core::arch::asm!("wfi", options(nomem, nostack));
+        }
+    }
+}
 
 /// Set the per-CPU idle/boot stack in `user_rsp_scratch` so the assembly ERET
 /// path restores SP to a safe stack when redirecting to idle_loop_arm64.
@@ -134,6 +373,8 @@ fn dump_fatal_postmortem_once(label: &str) {
     crate::arch_impl::aarch64::context_switch::dump_defer_requeue_snapshots();
     raw_uart_str("\n  Trace buffers:\n");
     crate::tracing::dump_all_buffers();
+    raw_uart_str("\n  Idle redirect histories:\n");
+    crate::arch_impl::aarch64::context_switch::dump_all_idle_redirect_histories();
 }
 
 /// ARM64 syscall result type (mirrors x86_64 version)
@@ -244,6 +485,11 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
 
             // Check if from userspace (EL0) - SPSR[3:0] indicates source EL
             let from_el0 = (frame_ref.spsr & 0xF) == 0;
+            let fatal_uart_guard = if from_el0 {
+                None
+            } else {
+                Some(acquire_fatal_postmortem_uart())
+            };
             let ttbr0: u64;
             unsafe {
                 core::arch::asm!("mrs {}, ttbr0_el1", out(reg) ttbr0, options(nomem, nostack));
@@ -489,6 +735,7 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
             }
             defer_current_user_thread_sigsegv_exit("[DATA_ABORT]");
             dump_fatal_postmortem_once("DATA_ABORT");
+            drop(fatal_uart_guard);
 
             // Mark scheduler thread as terminated (best effort)
             terminate_current_scheduler_thread();
@@ -510,6 +757,11 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
             let frame_ref = unsafe { &mut *frame };
             let ifsc = (iss & 0x3F) as u16;
             let from_el0 = (frame_ref.spsr & 0xF) == 0;
+            let fatal_uart_guard = if from_el0 {
+                None
+            } else {
+                Some(acquire_fatal_postmortem_uart())
+            };
 
             let ttbr0: u64;
             unsafe {
@@ -794,6 +1046,7 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                     raw_uart_str("\n");
                 }
             }
+            drop(fatal_uart_guard);
 
             if from_el0 {
                 // From userspace - terminate the process with SIGSEGV
@@ -1006,6 +1259,9 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
         }
 
         _ => {
+            if unsafe { (*frame).spsr & 0xF } != 0 {
+                handle_unhandled_el1_exception(unsafe { &*frame }, ec, esr, far);
+            }
             // Mask all interrupts to prevent cascading exceptions on SMP
             // (timer IRQs cause context switches that schedule more threads
             // onto this CPU, each hitting the same unhandled exception)
@@ -1013,6 +1269,7 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                 core::arch::asm!("msr daifset, #0xf", options(nomem, nostack));
             }
             let frame_ref = unsafe { &mut *frame };
+            let fatal_uart_guard = acquire_fatal_postmortem_uart();
             // Use lock-free raw UART — serial_println! acquires a spinlock that may be
             // held by another CPU, causing deadlock when this exception fires during a
             // context switch that already holds the scheduler lock.
@@ -1154,6 +1411,20 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                 // the bad save can happen on a peer CPU that never faults.
                 crate::arch_impl::aarch64::context_switch::dump_all_save_skew_snapshots();
 
+                // [cpu_state_history]: per-CPU (setter_id, old->new) write-history
+                // ring for cpu_state[cpu].current_thread (scheduler.rs setter-id
+                // table above dump_cpu_state_history). Names which of the known
+                // writers (commit_cpu_state_after_save, switch_to_idle,
+                // switch_to_idle_best_effort, register_idle_thread,
+                // init_with_current, set_current_thread,
+                // fix_stale_current_thread_when_idle_executing) last touched
+                // cpu_state on each implicated CPU. Dumped for the faulting
+                // CPU plus every other CPU whose SAVE_SKEW slot fired (see
+                // dump_cpu_state_history_postmortem doc comment). Lock-free
+                // (atomics only, no locks) and record-only -- no behavior
+                // change.
+                crate::task::scheduler::dump_cpu_state_history_postmortem(cpu_id as usize);
+
                 // [DISPATCH_MISMATCH]: lock-free per-CPU record from the
                 // dispatch-finalization path (context_switch.rs). Present iff
                 // a frame's elr diverged from its thread's authoritative
@@ -1180,8 +1451,20 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                 // Diagnostic only, all-CPU (mirrors SAVE_SKEW/DISPATCH_MISMATCH
                 // above).
                 crate::arch_impl::aarch64::context_switch::dump_all_eret_frame_anomaly_snapshots();
+
+                // [INLINE_SAVE_SKEW]: lock-free per-CPU record from the
+                // inline-schedule (cooperative-yield) save path in
+                // schedule_from_kernel (context_switch.rs) -- the OTHER save
+                // writer, distinct from the exception-frame save path that
+                // SAVE_SKEW covers. Present iff idle was actually executing
+                // on this CPU but the scheduling decision picked a non-idle
+                // `old_id` with the opposite idle/non-idle class, in either
+                // direction. Diagnostic only, all-CPU (mirrors SAVE_SKEW /
+                // ERET_ANOMALY above).
+                crate::arch_impl::aarch64::context_switch::dump_all_inline_save_skew_snapshots();
             }
             dump_fatal_postmortem_once("UNHANDLED_EC");
+            drop(fatal_uart_guard);
             // Redirect to idle instead of hanging — allows system to recover.
             // CRITICAL: Set frame values BEFORE switch_to_idle_best_effort()
             frame_ref.elr = crate::arch_impl::aarch64::idle_loop_arm64 as *const () as u64;

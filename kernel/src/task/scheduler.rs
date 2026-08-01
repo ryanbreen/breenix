@@ -535,10 +535,25 @@ const MAX_CPUS: usize = 1;
 ///   2 = switch_to_idle
 ///   3 = switch_to_idle_best_effort
 ///   4 = register_idle_thread
-///   5 = init_with_current / Scheduler::new
-///   6 = set_current_thread / add_thread_as_current
+///   5 = init_with_current
+///   6 = Scheduler::set_current_thread
+///   7 = fix_stale_current_thread_when_idle_executing (schedule_from_kernel
+///       idle path -- corrects a stale non-idle current_thread while idle is
+///       the thread actually executing, before it can be used as a save
+///       target; see ROOT_CAUSE.md's cpu_state/old_id skew candidate)
+///   8 = fix_stale_idle_cpu_state
+///   9 = fix_exception_cleanup_cpu_state
+///  10 = dispatch_thread_locked (kernel TTBR_PM_LOCK_BUSY redirect)
+///  11 = dispatch_thread_locked (kernel PROCESS_GONE redirect)
+///  12 = dispatch_thread_locked (kernel RESTORE_FAILED redirect)
+///  13 = dispatch_thread_locked (EL0 bad-context redirect)
+///  14 = dispatch_thread_locked (EL0 TTBR_PM_LOCK_BUSY redirect)
+///  15 = dispatch_thread_locked (EL0 PROCESS_GONE redirect)
+///  16 = Scheduler::add_thread_as_current
+///  17 = Scheduler::terminate_current (new_thread = 0xDEAD means None)
+///  18 = Scheduler::new (initial CPU 0 idle thread)
 #[cfg(target_arch = "aarch64")]
-const HISTORY_SIZE: usize = 8;
+const HISTORY_SIZE: usize = 256;
 #[cfg(target_arch = "aarch64")]
 static CPU_STATE_HISTORY: [[core::sync::atomic::AtomicU64; HISTORY_SIZE * 3]; MAX_CPUS] = {
     const INIT_ENTRY: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
@@ -552,9 +567,99 @@ static CPU_STATE_HISTORY_IDX: [core::sync::atomic::AtomicU64; MAX_CPUS] = {
     [INIT; MAX_CPUS]
 };
 
+#[cfg(all(target_arch = "aarch64", feature = "ec0_fault_inject"))]
+static EC0_FAULT_INJECT_TID: AtomicU64 = AtomicU64::new(0);
+#[cfg(all(target_arch = "aarch64", feature = "ec0_fault_inject"))]
+static EC0_FAULT_INJECT_DEADLINE: AtomicU64 = AtomicU64::new(0);
+
+#[cfg(all(target_arch = "aarch64", feature = "ec0_fault_inject"))]
+#[inline(never)]
+fn retain_ec0_fault_inject_on_cpu0(
+    queue: &mut VecDeque<u64>,
+    thread_id: u64,
+    current_cpu: usize,
+) -> bool {
+    if current_cpu == 0 || EC0_FAULT_INJECT_TID.load(Ordering::Acquire) != thread_id {
+        return false;
+    }
+    queue.push_front(thread_id);
+    true
+}
+
+#[cfg(all(target_arch = "aarch64", feature = "ec0_fault_inject"))]
+#[cold]
+#[inline(never)]
+extern "C" fn ec0_fault_inject_thread(_arg: u64) -> ! {
+    let deadline = EC0_FAULT_INJECT_DEADLINE.load(Ordering::Acquire);
+    loop {
+        let now: u64;
+        unsafe {
+            core::arch::asm!(
+                "mrs {}, cntvct_el0",
+                out(reg) now,
+                options(nomem, nostack, preserves_flags),
+            );
+        }
+        if now >= deadline {
+            break;
+        }
+        unsafe {
+            core::arch::asm!("wfi", options(nomem, nostack));
+        }
+    }
+
+    if current_cpu_id_raw() != 0 {
+        loop {
+            unsafe {
+                core::arch::asm!("wfi", options(nomem, nostack));
+            }
+        }
+    }
+
+    unsafe {
+        core::arch::asm!("udf #0x1234", options(noreturn));
+    }
+}
+
+#[cfg(all(target_arch = "aarch64", feature = "ec0_fault_inject"))]
+#[cold]
+#[inline(never)]
+fn install_ec0_fault_inject_thread(scheduler: &mut Scheduler) {
+    let start: u64;
+    let frequency: u64;
+    unsafe {
+        core::arch::asm!(
+            "mrs {start}, cntvct_el0",
+            "mrs {frequency}, cntfrq_el0",
+            start = out(reg) start,
+            frequency = out(reg) frequency,
+            options(nomem, nostack, preserves_flags),
+        );
+    }
+    let deadline = start.saturating_add(frequency.saturating_mul(10));
+    EC0_FAULT_INJECT_DEADLINE.store(deadline, Ordering::Release);
+
+    let thread = Thread::new_kernel(
+        alloc::string::String::from("ec0_fault_inject/0"),
+        ec0_fault_inject_thread,
+        0,
+    )
+    .unwrap_or_else(|error| panic!("failed to create EC0 fault injector: {}", error));
+    let thread_id = thread.id();
+    EC0_FAULT_INJECT_TID.store(thread_id, Ordering::Release);
+    scheduler.threads.push(Box::new(thread));
+    scheduler.per_cpu_queues[0].push_back(thread_id);
+}
+
 /// Record a cpu_state change for diagnostics (circular buffer).
 #[cfg(target_arch = "aarch64")]
-fn record_cpu_state_change(cpu: usize, setter_id: u64, old_val: u64, new_val: u64) {
+#[inline(never)]
+pub(crate) fn record_cpu_state_change(
+    cpu: usize,
+    setter_id: u64,
+    old_val: u64,
+    new_val: u64,
+) {
     if cpu < MAX_CPUS {
         let idx =
             CPU_STATE_HISTORY_IDX[cpu].fetch_add(1, core::sync::atomic::Ordering::Relaxed) as usize;
@@ -568,7 +673,6 @@ fn record_cpu_state_change(cpu: usize, setter_id: u64, old_val: u64, new_val: u6
 
 /// Dump the cpu_state change history for a CPU (debug utility).
 #[cfg(target_arch = "aarch64")]
-#[allow(dead_code)]
 pub fn dump_cpu_state_history(cpu: usize) {
     use crate::arch_impl::aarch64::context_switch::{raw_uart_dec, raw_uart_str};
     if cpu >= MAX_CPUS {
@@ -607,6 +711,26 @@ pub fn dump_cpu_state_history(cpu: usize) {
         raw_uart_str("->");
         raw_uart_dec(new);
         raw_uart_str("\n");
+    }
+}
+
+/// Dump the cpu_state change history for the aarch64 UNHANDLED_EC fatal
+/// postmortem (exception.rs): the faulting CPU, plus every OTHER CPU whose
+/// SAVE_SKEW slot fired (queried via `save_skew_snapshot`, the same read-side
+/// accessor `dump_all_save_skew_snapshots` uses) since a bad save recorded on
+/// a peer CPU is exactly the case this history is needed to explain. Kept as
+/// its own function (rather than inlined at the call site) so the call site
+/// in exception.rs stays a single line. Lock-free (atomics only, no locks)
+/// and record-only -- no behavior change.
+#[cfg(target_arch = "aarch64")]
+pub fn dump_cpu_state_history_postmortem(faulting_cpu: usize) {
+    dump_cpu_state_history(faulting_cpu);
+    for other_cpu in 0..MAX_CPUS {
+        if other_cpu != faulting_cpu
+            && crate::arch_impl::aarch64::context_switch::save_skew_snapshot(other_cpu).is_some()
+        {
+            dump_cpu_state_history(other_cpu);
+        }
     }
 }
 
@@ -663,6 +787,11 @@ impl Scheduler {
             previous_thread: None,
         };
         let mut cpu_state = [EMPTY_STATE; MAX_CPUS];
+        #[cfg(target_arch = "aarch64")]
+        {
+            let old_val = cpu_state[0].current_thread.unwrap_or(0xDEAD);
+            record_cpu_state_change(0, 18, old_val, idle_id);
+        }
         cpu_state[0] = CpuSchedulerState {
             current_thread: Some(idle_id),
             idle_thread: idle_id,
@@ -718,6 +847,8 @@ impl Scheduler {
         let idle_id = idle_thread.id();
         self.threads.push(idle_thread);
         self.cpu_state[cpu_id].idle_thread = idle_id;
+        let old_val = self.cpu_state[cpu_id].current_thread.unwrap_or(0xDEAD);
+        record_cpu_state_change(cpu_id, 4, old_val, idle_id);
         self.cpu_state[cpu_id].current_thread = Some(idle_id);
     }
 
@@ -803,7 +934,13 @@ impl Scheduler {
         thread.state = ThreadState::Running;
         thread.has_started = true;
         self.threads.push(thread);
-        self.cpu_state[Self::current_cpu_id()].current_thread = Some(thread_id);
+        let cpu = Self::current_cpu_id();
+        #[cfg(target_arch = "aarch64")]
+        {
+            let old_val = self.cpu_state[cpu].current_thread.unwrap_or(0xDEAD);
+            record_cpu_state_change(cpu, 16, old_val, thread_id);
+        }
+        self.cpu_state[cpu].current_thread = Some(thread_id);
         // CRITICAL: Only log on x86_64 to avoid deadlock on ARM64
         #[cfg(target_arch = "x86_64")]
         log_serial_println!(
@@ -958,6 +1095,14 @@ impl Scheduler {
                     continue;
                 }
                 while let Some(n) = self.per_cpu_queues[steal_cpu].pop_front() {
+                    #[cfg(all(target_arch = "aarch64", feature = "ec0_fault_inject"))]
+                    if retain_ec0_fault_inject_on_cpu0(
+                        &mut self.per_cpu_queues[steal_cpu],
+                        n,
+                        current_cpu,
+                    ) {
+                        break;
+                    }
                     if let Some(thread) = self.get_thread(n) {
                         if thread.state == ThreadState::Terminated {
                             continue;
@@ -986,6 +1131,8 @@ impl Scheduler {
             // Pop from local queue first; fall back to any CPU
             next_thread_id = {
                 let mut found = None;
+                #[cfg(all(target_arch = "aarch64", feature = "ec0_fault_inject"))]
+                let mut retained_injector = false;
                 if let Some(n) = self.per_cpu_queues[current_cpu].pop_front() {
                     found = Some(n);
                 } else {
@@ -994,8 +1141,32 @@ impl Scheduler {
                             continue;
                         }
                         if let Some(n) = self.per_cpu_queues[steal_cpu].pop_front() {
+                            #[cfg(all(target_arch = "aarch64", feature = "ec0_fault_inject"))]
+                            if retain_ec0_fault_inject_on_cpu0(
+                                &mut self.per_cpu_queues[steal_cpu],
+                                n,
+                                current_cpu,
+                            ) {
+                                retained_injector = true;
+                                continue;
+                            }
                             found = Some(n);
                             break;
+                        }
+                    }
+                }
+                #[cfg(all(target_arch = "aarch64", feature = "ec0_fault_inject"))]
+                if found.is_none() && retained_injector {
+                    // The injector remains on its CPU 0 queue. If no later peer is
+                    // stealable, remove the queued duplicate of the already-running
+                    // current thread and keep running that thread on this CPU.
+                    if let Some(position) = self.per_cpu_queues[current_cpu]
+                        .iter()
+                        .position(|&id| id == next_thread_id)
+                    {
+                        if let Some(current_id) = self.per_cpu_queues[current_cpu].remove(position)
+                        {
+                            found = Some(current_id);
                         }
                     }
                 }
@@ -1235,6 +1406,14 @@ impl Scheduler {
                     continue;
                 }
                 while let Some(n) = self.per_cpu_queues[steal_cpu].pop_front() {
+                    #[cfg(all(target_arch = "aarch64", feature = "ec0_fault_inject"))]
+                    if retain_ec0_fault_inject_on_cpu0(
+                        &mut self.per_cpu_queues[steal_cpu],
+                        n,
+                        current_cpu,
+                    ) {
+                        break;
+                    }
                     if let Some(thread) = self.get_thread(n) {
                         if thread.state == ThreadState::Terminated {
                             continue;
@@ -1272,6 +1451,14 @@ impl Scheduler {
                             continue;
                         }
                         if let Some(n) = self.per_cpu_queues[steal_cpu].pop_front() {
+                            #[cfg(all(target_arch = "aarch64", feature = "ec0_fault_inject"))]
+                            if retain_ec0_fault_inject_on_cpu0(
+                                &mut self.per_cpu_queues[steal_cpu],
+                                n,
+                                current_cpu,
+                            ) {
+                                continue;
+                            }
                             found = Some(n);
                             break;
                         }
@@ -2268,7 +2455,13 @@ impl Scheduler {
             current.set_terminated();
             // Don't put back in ready queue
         }
-        self.cpu_state[Self::current_cpu_id()].current_thread = None;
+        let cpu = Self::current_cpu_id();
+        #[cfg(target_arch = "aarch64")]
+        {
+            let old_val = self.cpu_state[cpu].current_thread.unwrap_or(0xDEAD);
+            record_cpu_state_change(cpu, 17, old_val, 0xDEAD);
+        }
+        self.cpu_state[cpu].current_thread = None;
     }
 
     /// Check if scheduler has any runnable threads
@@ -2355,6 +2548,12 @@ impl Scheduler {
     /// Set the current thread (used by spawn mechanism)
     #[allow(dead_code)]
     pub fn set_current_thread(&mut self, thread_id: u64) {
+        #[cfg(target_arch = "aarch64")]
+        {
+            let cpu = Self::current_cpu_id();
+            let old_val = self.cpu_state[cpu].current_thread.unwrap_or(0xDEAD);
+            record_cpu_state_change(cpu, 6, old_val, thread_id);
+        }
         self.cpu_state[Self::current_cpu_id()].current_thread = Some(thread_id);
     }
 
@@ -2395,8 +2594,42 @@ impl Scheduler {
         let current = self.cpu_state[cpu].current_thread;
         let idle = self.cpu_state[cpu].idle_thread;
         if current == Some(idle) && real_tid != idle {
-            record_cpu_state_change(cpu, 1, idle, real_tid);
+            record_cpu_state_change(cpu, 8, idle, real_tid);
             self.cpu_state[cpu].current_thread = Some(real_tid);
+        }
+    }
+
+    /// Fix stale cpu_state where it names a non-idle thread as current while
+    /// idle is actually the thread executing (i.e. `current_thread_ptr` is
+    /// NULL, the per-CPU fast-path marker for "idle is running").
+    ///
+    /// This is the inverse of `fix_stale_idle_cpu_state` above: that function
+    /// corrects "cpu_state says idle, but a real thread is running"; this one
+    /// corrects "cpu_state says a real (non-idle) thread, but idle is what's
+    /// actually running" -- e.g. after an idle dispatch that branched directly
+    /// into `idle_loop_arm64` without updating `cpu_state.current_thread`,
+    /// followed by a timer IRQ re-entering `schedule_from_kernel` while idle
+    /// is executing but `cpu_state[cpu].current_thread` still names whatever
+    /// thread was current before that redirect.
+    ///
+    /// Without this correction, the stale non-idle `current_thread` would be
+    /// read straight through as `old_id` (the save target) by the scheduling
+    /// decision that follows, and idle's live register file would be written
+    /// into that unrelated (still-alive) thread's context -- the confirmed
+    /// "idle register file leaking into a non-idle thread's dispatch frame"
+    /// mechanism behind the ERET_ANOMALY / EC=0x0 crash family (see
+    /// docs/planning/aarch64-launcher-spawn-crash/ROOT_CAUSE.md, candidate #1:
+    /// "cpu_state / `old_id` save-target skew"). Callers must invoke this
+    /// BEFORE the scheduling decision (`schedule_deferred_requeue`) runs.
+    #[cfg(target_arch = "aarch64")]
+    pub fn fix_stale_current_thread_when_idle_executing(&mut self) {
+        let cpu = Self::current_cpu_id();
+        let idle = self.cpu_state[cpu].idle_thread;
+        if let Some(current) = self.cpu_state[cpu].current_thread {
+            if current != idle {
+                record_cpu_state_change(cpu, 7, current, idle);
+                self.cpu_state[cpu].current_thread = Some(idle);
+            }
         }
     }
 
@@ -2441,7 +2674,7 @@ impl Scheduler {
         let idle = self.cpu_state[cpu].idle_thread;
         let current = self.cpu_state[cpu].current_thread.unwrap_or(0xDEAD);
         if current != idle {
-            record_cpu_state_change(cpu, 3, current, idle);
+            record_cpu_state_change(cpu, 9, current, idle);
             self.cpu_state[cpu].current_thread = Some(idle);
         }
         self.resolve_exception_cleanup_previous_thread(cpu);
@@ -2467,6 +2700,13 @@ pub fn init_with_current(current_thread: Box<Thread>) {
 
     // Create scheduler with current thread as both idle and current
     let mut scheduler = Scheduler::new(current_thread);
+    #[cfg(all(target_arch = "aarch64", feature = "ec0_fault_inject"))]
+    install_ec0_fault_inject_thread(&mut scheduler);
+    #[cfg(target_arch = "aarch64")]
+    {
+        let old_val = scheduler.cpu_state[0].current_thread.unwrap_or(0xDEAD);
+        record_cpu_state_change(0, 5, old_val, thread_id);
+    }
     scheduler.cpu_state[0].current_thread = Some(thread_id);
 
     *scheduler_lock = Some(scheduler);
