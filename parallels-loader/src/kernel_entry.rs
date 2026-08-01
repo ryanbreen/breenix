@@ -23,7 +23,7 @@ pub fn jump_to_kernel(
     kernel_entry: u64,
     hw_config: &HardwareConfig,
     page_table_storage: &mut PageTableStorage,
-    pt_config: &PageTableConfig,
+    pt_config: &PageTableConfig<'_>,
 ) -> ! {
     let (ttbr0, ttbr1) = page_tables::build_page_tables(page_table_storage, pt_config);
     let hw_config_ptr = hw_config as *const HardwareConfig as u64;

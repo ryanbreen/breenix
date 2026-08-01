@@ -295,6 +295,7 @@ fn main() -> Status {
         } else {
             0
         },
+        kernel_segments: loaded_kernel.load_segments(),
     };
 
     // --- xHCI: DisconnectController DISABLED ---

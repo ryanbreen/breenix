@@ -21,9 +21,28 @@ const EI_CLASS_64: u8 = 2;
 const EI_DATA_LSB: u8 = 1;
 const EM_AARCH64: u16 = 183;
 const PT_LOAD: u32 = 1;
+pub const PF_X: u32 = 1 << 0;
+pub const PF_W: u32 = 1 << 1;
 const SHT_SYMTAB: u32 = 2;
 const SHT_STRTAB: u32 = 3;
 const STT_FUNC: u8 = 2;
+const MAX_LOAD_SEGMENTS: usize = 16;
+
+/// Physical extent and ELF permissions for one loaded kernel segment.
+#[derive(Clone, Copy)]
+pub struct KernelLoadSegment {
+    pub phys_start: u64,
+    pub phys_end: u64,
+    pub flags: u32,
+}
+
+impl KernelLoadSegment {
+    const EMPTY: Self = Self {
+        phys_start: 0,
+        phys_end: 0,
+        flags: 0,
+    };
+}
 
 /// Result of loading the kernel.
 pub struct LoadedKernel {
@@ -35,6 +54,15 @@ pub struct LoadedKernel {
     pub load_base: u64,
     /// Highest physical address used by kernel (for memory layout).
     pub load_end: u64,
+    load_segments: [KernelLoadSegment; MAX_LOAD_SEGMENTS],
+    load_segment_count: usize,
+}
+
+impl LoadedKernel {
+    /// PT_LOAD extents used to assign final kernel page-table permissions.
+    pub fn load_segments(&self) -> &[KernelLoadSegment] {
+        &self.load_segments[..self.load_segment_count]
+    }
 }
 
 /// Load the kernel ELF from the ESP filesystem.
@@ -138,6 +166,8 @@ fn parse_and_load_elf(elf: &[u8], ram_base_offset: u64) -> Result<LoadedKernel, 
     let mut load_base = u64::MAX;
     let mut load_end = 0u64;
     let mut vaddr_to_paddr_offset: i64 = 0;
+    let mut load_segments = [KernelLoadSegment::EMPTY; MAX_LOAD_SEGMENTS];
+    let mut load_segment_count = 0usize;
 
     for i in 0..e_phnum {
         let ph_offset = e_phoff + i * e_phentsize;
@@ -160,6 +190,18 @@ fn parse_and_load_elf(elf: &[u8], ram_base_offset: u64) -> Result<LoadedKernel, 
         // Relocate physical address for platforms where RAM doesn't start
         // at the linker script's expected 0x40000000 (e.g., VMware at 0x80000000)
         let relocated_paddr = p_paddr + ram_base_offset;
+
+        if p_memsz > 0 {
+            if load_segment_count == MAX_LOAD_SEGMENTS {
+                return Err("Too many kernel PT_LOAD segments");
+            }
+            load_segments[load_segment_count] = KernelLoadSegment {
+                phys_start: relocated_paddr,
+                phys_end: relocated_paddr + p_memsz as u64,
+                flags: p_flags,
+            };
+            load_segment_count += 1;
+        }
 
         // Determine UEFI memory type based on segment flags:
         // PF_X (0x1) = executable → LOADER_CODE (ensures hypervisor maps as executable)
@@ -279,6 +321,8 @@ fn parse_and_load_elf(elf: &[u8], ram_base_offset: u64) -> Result<LoadedKernel, 
         elf_entry: e_entry,
         load_base,
         load_end,
+        load_segments,
+        load_segment_count,
     })
 }
 

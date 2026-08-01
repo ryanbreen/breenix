@@ -8,6 +8,8 @@
 /// device regions and for VMware's split kernel/device address space.
 use core::ptr;
 
+use crate::kernel_load::{KernelLoadSegment, PF_W, PF_X};
+
 /// HHDM base address matching the kernel's expectation.
 const HHDM_BASE: u64 = 0xFFFF_0000_0000_0000;
 
@@ -41,6 +43,7 @@ mod attr {
     /// Access permissions
     pub const AP_RW_EL1: u64 = 0 << 6; // EL1 read/write
     pub const AP_RW_ALL: u64 = 1 << 6; // EL1+EL0 read/write
+    pub const AP_RO_EL1: u64 = 0b10 << 6; // EL1 read-only
 
     /// Execute-never bits
     pub const UXN: u64 = 1 << 54; // Unprivileged execute never
@@ -50,7 +53,18 @@ mod attr {
     pub const NORMAL_BLOCK: u64 = VALID | BLOCK | ATTR_IDX_NORMAL | AF | ISH | AP_RW_EL1;
 
     /// Normal Non-Cacheable block: for DMA buffers (no cache coherency needed)
-    pub const NC_BLOCK: u64 = VALID | BLOCK | ATTR_IDX_NC | AF | ISH | AP_RW_EL1;
+    pub const NC_BLOCK: u64 = VALID | BLOCK | ATTR_IDX_NC | AF | ISH | AP_RW_EL1 | UXN | PXN;
+
+    /// Kernel text: EL1 read-only + executable, inaccessible to EL0 execution.
+    pub const KERNEL_TEXT_BLOCK: u64 = VALID | BLOCK | ATTR_IDX_NORMAL | AF | ISH | AP_RO_EL1 | UXN;
+
+    /// Kernel read-only data: EL1 read-only and execute-never at both ELs.
+    pub const KERNEL_RODATA_BLOCK: u64 =
+        VALID | BLOCK | ATTR_IDX_NORMAL | AF | ISH | AP_RO_EL1 | UXN | PXN;
+
+    /// Kernel writable data: EL1 read/write and execute-never at both ELs.
+    pub const KERNEL_DATA_BLOCK: u64 =
+        VALID | BLOCK | ATTR_IDX_NORMAL | AF | ISH | AP_RW_EL1 | UXN | PXN;
 
     /// Device memory block: non-cacheable, outer shareable, execute-never
     pub const DEVICE_BLOCK: u64 =
@@ -113,11 +127,12 @@ pub const ECAM_REMAP_VA: u64 = 0x2000_0000;
 /// L1 (TTBR0): 1 (covers 512GB)
 /// L1 (TTBR1): 1 (covers 512GB)
 /// L2 (for device regions): 2 (for 0x00000000-0x3FFFFFFF)
-/// L2 (for L1[1] on VMware): 2 (for 0x40000000-0x7FFFFFFF)
+/// L2 (for L1[1] RAM): 2 (for 0x40000000-0x7FFFFFFF)
+/// L2 (for L1[2] RAM): 2 (for 0x80000000-0xBFFFFFFF)
 const MAX_PAGE_TABLES: usize = 12;
 
 /// Configuration for platform-specific page table setup.
-pub struct PageTableConfig {
+pub struct PageTableConfig<'a> {
     /// Offset to add to kernel VA to get the actual IPA.
     /// 0 on QEMU/Parallels, 0x40000000 on VMware.
     pub ram_base_offset: u64,
@@ -133,6 +148,8 @@ pub struct PageTableConfig {
     pub gicr_ipa: u64,
     /// GIC Redistributor region size in bytes.
     pub gicr_size: u64,
+    /// Loaded ELF segments used to apply W^X to the kernel image.
+    pub kernel_segments: &'a [KernelLoadSegment],
 }
 
 /// Page table storage. Allocated in the loader's BSS.
@@ -164,6 +181,44 @@ impl PageTableStorage {
     }
 }
 
+/// Return the W^X attributes required by any kernel segment overlapping a
+/// 2MB block. The linker keeps unlike-permission segments in separate blocks;
+/// assert that invariant here so a future linker change cannot silently
+/// reintroduce writable text or executable data.
+fn kernel_block_attr(block_phys: u64, segments: &[KernelLoadSegment]) -> Option<u64> {
+    let block_end = block_phys + NC_DMA_SIZE;
+    let mut selected = None;
+
+    for segment in segments {
+        if segment.phys_start >= block_end || segment.phys_end <= block_phys {
+            continue;
+        }
+
+        assert!(
+            segment.flags & (PF_W | PF_X) != (PF_W | PF_X),
+            "kernel ELF contains a writable+executable PT_LOAD segment"
+        );
+
+        let segment_attr = if segment.flags & PF_X != 0 {
+            attr::KERNEL_TEXT_BLOCK
+        } else if segment.flags & PF_W != 0 {
+            attr::KERNEL_DATA_BLOCK
+        } else {
+            attr::KERNEL_RODATA_BLOCK
+        };
+
+        if let Some(previous) = selected {
+            assert!(
+                previous == segment_attr,
+                "kernel ELF permission boundary is not 2MB aligned"
+            );
+        }
+        selected = Some(segment_attr);
+    }
+
+    selected
+}
+
 /// Build page tables for the kernel.
 ///
 /// Returns (ttbr0_phys, ttbr1_phys) - the physical addresses of the
@@ -178,8 +233,12 @@ impl PageTableStorage {
 ///
 ///   HHDM (TTBR1):
 ///     0xFFFF_0000_0000_0000 + phys = virt for all of the above
-pub fn build_page_tables(storage: &mut PageTableStorage, config: &PageTableConfig) -> (u64, u64) {
+pub fn build_page_tables(
+    storage: &mut PageTableStorage,
+    config: &PageTableConfig<'_>,
+) -> (u64, u64) {
     let ram_base_offset = config.ram_base_offset;
+    let relocated_nc_dma_base = NC_DMA_BASE + ram_base_offset;
 
     // Allocate L0 tables
     let ttbr0_l0 = storage.alloc_table();
@@ -295,8 +354,13 @@ pub fn build_page_tables(storage: &mut PageTableStorage, config: &PageTableConfi
                 // VA 0x40000000-0x5FFFFFFF: kernel code/data/BSS/heap/DMA
                 // Remap to IPA = VA + offset (e.g., 0x80000000+)
                 let ipa = va + ram_base_offset;
-                write_entry(ttbr0_l2_ram, i, ipa | attr::NORMAL_BLOCK);
-                write_entry(ttbr1_l2_ram, i, ipa | attr::NORMAL_BLOCK);
+                let block_attr = if ipa == relocated_nc_dma_base {
+                    attr::NC_BLOCK
+                } else {
+                    kernel_block_attr(ipa, config.kernel_segments).unwrap_or(attr::NORMAL_BLOCK)
+                };
+                write_entry(ttbr0_l2_ram, i, ipa | block_attr);
+                write_entry(ttbr1_l2_ram, i, ipa | block_attr);
             } else if i >= fb_l2_start && i < fb_l2_end {
                 // Framebuffer: identity map with NC for write-combining
                 write_entry(ttbr0_l2_ram, i, va | attr::NC_BLOCK);
@@ -327,17 +391,31 @@ pub fn build_page_tables(storage: &mut PageTableStorage, config: &PageTableConfi
             let block_attr = if i == NC_L2_IDX {
                 attr::NC_BLOCK
             } else {
-                attr::NORMAL_BLOCK
+                kernel_block_attr(phys, config.kernel_segments).unwrap_or(attr::NORMAL_BLOCK)
             };
             write_entry(ttbr0_l2_ram, i as usize, phys | block_attr);
             write_entry(ttbr1_l2_ram, i as usize, phys | block_attr);
         }
     }
 
-    // L1[2] = VA 0x80000000-0xBFFFFFFF → IPA 0x80000000 (always identity)
-    // On QEMU: second GB of RAM. On VMware: first GB of actual RAM.
-    write_entry(ttbr0_l1, 2, 0x8000_0000 | attr::NORMAL_BLOCK);
-    write_entry(ttbr1_l1, 2, 0x8000_0000 | attr::NORMAL_BLOCK);
+    // L1[2] = VA 0x80000000-0xBFFFFFFF → IPA 0x80000000 (always identity).
+    // Use L2 blocks because VMware relocates the kernel image into this range;
+    // every identity/HHDM alias of that image must carry the same W^X bits.
+    let ttbr0_l2_ram2 = storage.alloc_table();
+    let ttbr1_l2_ram2 = storage.alloc_table();
+    write_entry(ttbr0_l1, 2, ttbr0_l2_ram2 | attr::TABLE_DESC);
+    write_entry(ttbr1_l1, 2, ttbr1_l2_ram2 | attr::TABLE_DESC);
+
+    for i in 0..512u64 {
+        let phys = 0x8000_0000 + i * NC_DMA_SIZE;
+        let block_attr = if phys == relocated_nc_dma_base {
+            attr::NC_BLOCK
+        } else {
+            kernel_block_attr(phys, config.kernel_segments).unwrap_or(attr::NORMAL_BLOCK)
+        };
+        write_entry(ttbr0_l2_ram2, i as usize, phys | block_attr);
+        write_entry(ttbr1_l2_ram2, i as usize, phys | block_attr);
+    }
 
     // L1[3] = VA 0xC0000000-0xFFFFFFFF → IPA 0xC0000000 (always identity)
     // Required for VMware Fusion: UEFI firmware places the loader at ~0xFBCExxxx.
