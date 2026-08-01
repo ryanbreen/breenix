@@ -549,6 +549,9 @@ const MAX_CPUS: usize = 1;
 ///  13 = dispatch_thread_locked (EL0 bad-context redirect)
 ///  14 = dispatch_thread_locked (EL0 TTBR_PM_LOCK_BUSY redirect)
 ///  15 = dispatch_thread_locked (EL0 PROCESS_GONE redirect)
+///  16 = Scheduler::add_thread_as_current
+///  17 = Scheduler::terminate_current (new_thread = 0xDEAD means None)
+///  18 = Scheduler::new (initial CPU 0 idle thread)
 #[cfg(target_arch = "aarch64")]
 const HISTORY_SIZE: usize = 256;
 #[cfg(target_arch = "aarch64")]
@@ -614,7 +617,7 @@ extern "C" fn ec0_fault_inject_thread(_arg: u64) -> ! {
     }
 
     unsafe {
-        core::arch::asm!("udf #0", options(noreturn));
+        core::arch::asm!("udf #0x1234", options(noreturn));
     }
 }
 
@@ -784,6 +787,11 @@ impl Scheduler {
             previous_thread: None,
         };
         let mut cpu_state = [EMPTY_STATE; MAX_CPUS];
+        #[cfg(target_arch = "aarch64")]
+        {
+            let old_val = cpu_state[0].current_thread.unwrap_or(0xDEAD);
+            record_cpu_state_change(0, 18, old_val, idle_id);
+        }
         cpu_state[0] = CpuSchedulerState {
             current_thread: Some(idle_id),
             idle_thread: idle_id,
@@ -926,7 +934,13 @@ impl Scheduler {
         thread.state = ThreadState::Running;
         thread.has_started = true;
         self.threads.push(thread);
-        self.cpu_state[Self::current_cpu_id()].current_thread = Some(thread_id);
+        let cpu = Self::current_cpu_id();
+        #[cfg(target_arch = "aarch64")]
+        {
+            let old_val = self.cpu_state[cpu].current_thread.unwrap_or(0xDEAD);
+            record_cpu_state_change(cpu, 16, old_val, thread_id);
+        }
+        self.cpu_state[cpu].current_thread = Some(thread_id);
         // CRITICAL: Only log on x86_64 to avoid deadlock on ARM64
         #[cfg(target_arch = "x86_64")]
         log_serial_println!(
@@ -1117,6 +1131,8 @@ impl Scheduler {
             // Pop from local queue first; fall back to any CPU
             next_thread_id = {
                 let mut found = None;
+                #[cfg(all(target_arch = "aarch64", feature = "ec0_fault_inject"))]
+                let mut retained_injector = false;
                 if let Some(n) = self.per_cpu_queues[current_cpu].pop_front() {
                     found = Some(n);
                 } else {
@@ -1131,10 +1147,26 @@ impl Scheduler {
                                 n,
                                 current_cpu,
                             ) {
+                                retained_injector = true;
                                 continue;
                             }
                             found = Some(n);
                             break;
+                        }
+                    }
+                }
+                #[cfg(all(target_arch = "aarch64", feature = "ec0_fault_inject"))]
+                if found.is_none() && retained_injector {
+                    // The injector remains on its CPU 0 queue. If no later peer is
+                    // stealable, remove the queued duplicate of the already-running
+                    // current thread and keep running that thread on this CPU.
+                    if let Some(position) = self.per_cpu_queues[current_cpu]
+                        .iter()
+                        .position(|&id| id == next_thread_id)
+                    {
+                        if let Some(current_id) = self.per_cpu_queues[current_cpu].remove(position)
+                        {
+                            found = Some(current_id);
                         }
                     }
                 }
@@ -2423,7 +2455,13 @@ impl Scheduler {
             current.set_terminated();
             // Don't put back in ready queue
         }
-        self.cpu_state[Self::current_cpu_id()].current_thread = None;
+        let cpu = Self::current_cpu_id();
+        #[cfg(target_arch = "aarch64")]
+        {
+            let old_val = self.cpu_state[cpu].current_thread.unwrap_or(0xDEAD);
+            record_cpu_state_change(cpu, 17, old_val, 0xDEAD);
+        }
+        self.cpu_state[cpu].current_thread = None;
     }
 
     /// Check if scheduler has any runnable threads

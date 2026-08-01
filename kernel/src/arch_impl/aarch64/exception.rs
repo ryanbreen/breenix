@@ -47,17 +47,40 @@ impl Drop for FatalPostmortemUartGuard {
 #[cold]
 #[inline(never)]
 fn acquire_fatal_postmortem_uart() -> FatalPostmortemUartGuard {
-    const MAX_SPINS: usize = 1_000_000;
-    for _ in 0..MAX_SPINS {
+    let start: u64;
+    let frequency: u64;
+    unsafe {
+        core::arch::asm!(
+            "mrs {start}, cntvct_el0",
+            "mrs {frequency}, cntfrq_el0",
+            start = out(reg) start,
+            frequency = out(reg) frequency,
+            options(nomem, nostack, preserves_flags),
+        );
+    }
+    let deadline = start.saturating_add(frequency / 4);
+
+    loop {
         if FATAL_POSTMORTEM_UART_LOCK
             .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
             .is_ok()
         {
             return FatalPostmortemUartGuard { acquired: true };
         }
+
+        let now: u64;
+        unsafe {
+            core::arch::asm!(
+                "mrs {}, cntvct_el0",
+                out(reg) now,
+                options(nomem, nostack, preserves_flags),
+            );
+        }
+        if now >= deadline {
+            return FatalPostmortemUartGuard { acquired: false };
+        }
         core::hint::spin_loop();
     }
-    FatalPostmortemUartGuard { acquired: false }
 }
 
 struct El1FirstFaultEvidence {
@@ -75,15 +98,16 @@ struct El1FirstFaultEvidence {
 #[inline(never)]
 fn capture_el1_first_fault_evidence(elr: u64) -> El1FirstFaultEvidence {
     extern "C" {
+        static __kernel_virt_start: u8;
         static __bss_start: u8;
     }
 
     // The linker script does not export an __etext symbol. __bss_start is the
     // first existing upper-bound symbol after .text/.rodata/.data, so it keeps
     // the volatile read inside the mapped high-half kernel image.
-    const KERNEL_IMAGE_TEXT_FLOOR: u64 = 0xFFFF_0000_4008_0000;
+    let kernel_image_text_floor = core::ptr::addr_of!(__kernel_virt_start) as u64;
     let kernel_image_upper = core::ptr::addr_of!(__bss_start) as u64;
-    let instruction_word = if elr >= KERNEL_IMAGE_TEXT_FLOOR
+    let instruction_word = if elr >= kernel_image_text_floor
         && elr <= kernel_image_upper.saturating_sub(core::mem::size_of::<u32>() as u64)
         && elr & 0x3 == 0
     {
@@ -1245,6 +1269,7 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                 core::arch::asm!("msr daifset, #0xf", options(nomem, nostack));
             }
             let frame_ref = unsafe { &mut *frame };
+            let fatal_uart_guard = acquire_fatal_postmortem_uart();
             // Use lock-free raw UART — serial_println! acquires a spinlock that may be
             // held by another CPU, causing deadlock when this exception fires during a
             // context switch that already holds the scheduler lock.
@@ -1439,6 +1464,7 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                 crate::arch_impl::aarch64::context_switch::dump_all_inline_save_skew_snapshots();
             }
             dump_fatal_postmortem_once("UNHANDLED_EC");
+            drop(fatal_uart_guard);
             // Redirect to idle instead of hanging — allows system to recover.
             // CRITICAL: Set frame values BEFORE switch_to_idle_best_effort()
             frame_ref.elr = crate::arch_impl::aarch64::idle_loop_arm64 as *const () as u64;

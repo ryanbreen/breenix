@@ -1104,18 +1104,20 @@ static IDLE_REDIRECT_HISTORY_IDX: [AtomicU64;
 
 #[inline(never)]
 fn record_idle_redirect(
+    sched: &Scheduler,
     cpu_id: usize,
     reason: IdleRedirectReason,
     current_before: u64,
-    current_after: u64,
 ) {
     if cpu_id >= crate::arch_impl::aarch64::constants::MAX_CPUS {
         return;
     }
+    let idle_thread = sched.cpu_state[cpu_id].idle_thread;
+    let current_after = sched.cpu_state[cpu_id].current_thread.unwrap_or(0xDEAD);
     let index = IDLE_REDIRECT_HISTORY_IDX[cpu_id].fetch_add(1, Ordering::Relaxed) as usize;
     let base = (index % IDLE_REDIRECT_HISTORY_SIZE) * IDLE_REDIRECT_FIELDS;
     IDLE_REDIRECT_HISTORY[cpu_id][base].store(reason as u64, Ordering::Relaxed);
-    IDLE_REDIRECT_HISTORY[cpu_id][base + 1].store(cpu_id as u64, Ordering::Relaxed);
+    IDLE_REDIRECT_HISTORY[cpu_id][base + 1].store(idle_thread, Ordering::Relaxed);
     IDLE_REDIRECT_HISTORY[cpu_id][base + 2].store(current_before, Ordering::Relaxed);
     IDLE_REDIRECT_HISTORY[cpu_id][base + 3].store(current_after, Ordering::Relaxed);
 }
@@ -1138,14 +1140,10 @@ pub fn dump_all_idle_redirect_histories() {
         raw_uart_str("\n");
         for index in start..total {
             let base = (index % IDLE_REDIRECT_HISTORY_SIZE) * IDLE_REDIRECT_FIELDS;
-            let reason_code =
-                IDLE_REDIRECT_HISTORY[cpu_id][base].load(Ordering::Relaxed);
-            let recorded_cpu =
-                IDLE_REDIRECT_HISTORY[cpu_id][base + 1].load(Ordering::Relaxed);
-            let current_before =
-                IDLE_REDIRECT_HISTORY[cpu_id][base + 2].load(Ordering::Relaxed);
-            let current_after =
-                IDLE_REDIRECT_HISTORY[cpu_id][base + 3].load(Ordering::Relaxed);
+            let reason_code = IDLE_REDIRECT_HISTORY[cpu_id][base].load(Ordering::Relaxed);
+            let idle_thread = IDLE_REDIRECT_HISTORY[cpu_id][base + 1].load(Ordering::Relaxed);
+            let current_before = IDLE_REDIRECT_HISTORY[cpu_id][base + 2].load(Ordering::Relaxed);
+            let current_after = IDLE_REDIRECT_HISTORY[cpu_id][base + 3].load(Ordering::Relaxed);
             raw_uart_str("  [");
             raw_uart_dec(index as u64);
             raw_uart_str("] reason=");
@@ -1155,8 +1153,8 @@ pub fn dump_all_idle_redirect_histories() {
                 raw_uart_str(reason.label());
                 raw_uart_str(")");
             }
-            raw_uart_str(" cpu=");
-            raw_uart_dec(recorded_cpu);
+            raw_uart_str(" idle_thread=");
+            raw_uart_dec(idle_thread);
             raw_uart_str(" current_thread=");
             raw_uart_dec(current_before);
             raw_uart_str("->");
@@ -2688,8 +2686,7 @@ fn setup_idle_return_locked(
     sched: &mut Scheduler,
     frame: &mut Aarch64ExceptionFrame,
     cpu_id: usize,
-    reason: IdleRedirectReason,
-) {
+) -> u64 {
     let current_before = sched.cpu_state[cpu_id].current_thread.unwrap_or(0xDEAD);
     // Set frame ELR and SPSR to safe values FIRST
     let idle_addr = idle_loop_arm64 as *const () as u64;
@@ -2745,8 +2742,7 @@ fn setup_idle_return_locked(
         Aarch64PerCpu::set_current_thread_ptr(core::ptr::null_mut());
         Aarch64PerCpu::clear_preempt_active();
     }
-    let current_after = sched.cpu_state[cpu_id].current_thread.unwrap_or(0xDEAD);
-    record_idle_redirect(cpu_id, reason, current_before, current_after);
+    current_before
 }
 
 /// Dispatch an idle thread — called inside scheduler lock hold.
@@ -2764,7 +2760,8 @@ fn dispatch_idle_locked(
     frame: &mut Aarch64ExceptionFrame,
     cpu_id: usize,
 ) {
-    setup_idle_return_locked(sched, frame, cpu_id, IdleRedirectReason::IdleDispatch);
+    let current_before = setup_idle_return_locked(sched, frame, cpu_id);
+    record_idle_redirect(sched, cpu_id, IdleRedirectReason::IdleDispatch, current_before);
 }
 
 /// Dispatch a non-idle thread — called inside scheduler lock hold.
@@ -2804,11 +2801,12 @@ fn dispatch_thread_locked(
             Some(info) => info,
             None => {
                 trace_dispatch_redirect(thread_id, TRACE_REDIRECT_THREAD_MISSING);
-                setup_idle_return_locked(
+                let current_before = setup_idle_return_locked(sched, frame, cpu_id);
+                record_idle_redirect(
                     sched,
-                    frame,
                     cpu_id,
                     IdleRedirectReason::ThreadMissing,
+                    current_before,
                 );
                 return;
             }
@@ -2817,11 +2815,12 @@ fn dispatch_thread_locked(
     // DEFENSE: Verify thread is not terminated before dispatch.
     if state == ThreadState::Terminated {
         trace_dispatch_redirect(thread_id, TRACE_REDIRECT_THREAD_TERMINATED);
-        setup_idle_return_locked(
+        let current_before = setup_idle_return_locked(sched, frame, cpu_id);
+        record_idle_redirect(
             sched,
-            frame,
             cpu_id,
             IdleRedirectReason::ThreadTerminated,
+            current_before,
         );
         return;
     }
@@ -2868,18 +2867,17 @@ fn dispatch_thread_locked(
                     if let Some(thread) = sched.get_thread_mut(thread_id) {
                         thread.state = ThreadState::Ready;
                     }
-                    setup_idle_return_locked(
-                        sched,
-                        frame,
-                        cpu_id,
-                        IdleRedirectReason::KernelTtbrPmLockBusy,
-                    );
+                    let current_before = setup_idle_return_locked(sched, frame, cpu_id);
                     let idle_id = sched.cpu_state[cpu_id].idle_thread;
                     let old_val = sched.cpu_state[cpu_id].current_thread.unwrap_or(0xDEAD);
-                    crate::task::scheduler::record_cpu_state_change(
-                        cpu_id, 10, old_val, idle_id,
-                    );
+                    crate::task::scheduler::record_cpu_state_change(cpu_id, 10, old_val, idle_id);
                     sched.cpu_state[cpu_id].current_thread = Some(idle_id);
+                    record_idle_redirect(
+                        sched,
+                        cpu_id,
+                        IdleRedirectReason::KernelTtbrPmLockBusy,
+                        current_before,
+                    );
                     sched.requeue_thread_after_save(thread_id);
                     sched.set_need_resched_inner();
                     return;
@@ -2898,18 +2896,17 @@ fn dispatch_thread_locked(
                     if let Some(thread) = sched.get_thread_mut(thread_id) {
                         thread.state = ThreadState::Terminated;
                     }
-                    setup_idle_return_locked(
-                        sched,
-                        frame,
-                        cpu_id,
-                        IdleRedirectReason::KernelProcessGone,
-                    );
+                    let current_before = setup_idle_return_locked(sched, frame, cpu_id);
                     let idle_id = sched.cpu_state[cpu_id].idle_thread;
                     let old_val = sched.cpu_state[cpu_id].current_thread.unwrap_or(0xDEAD);
-                    crate::task::scheduler::record_cpu_state_change(
-                        cpu_id, 11, old_val, idle_id,
-                    );
+                    crate::task::scheduler::record_cpu_state_change(cpu_id, 11, old_val, idle_id);
                     sched.cpu_state[cpu_id].current_thread = Some(idle_id);
+                    record_idle_redirect(
+                        sched,
+                        cpu_id,
+                        IdleRedirectReason::KernelProcessGone,
+                        current_before,
+                    );
                     return;
                 }
             }
@@ -2947,16 +2944,17 @@ fn dispatch_thread_locked(
             if let Some(thread) = sched.get_thread_mut(thread_id) {
                 thread.state = ThreadState::Terminated;
             }
-            setup_idle_return_locked(
-                sched,
-                frame,
-                cpu_id,
-                IdleRedirectReason::KernelRestoreFailed,
-            );
+            let current_before = setup_idle_return_locked(sched, frame, cpu_id);
             let idle_id = sched.cpu_state[cpu_id].idle_thread;
             let old_val = sched.cpu_state[cpu_id].current_thread.unwrap_or(0xDEAD);
             crate::task::scheduler::record_cpu_state_change(cpu_id, 12, old_val, idle_id);
             sched.cpu_state[cpu_id].current_thread = Some(idle_id);
+            record_idle_redirect(
+                sched,
+                cpu_id,
+                IdleRedirectReason::KernelRestoreFailed,
+                current_before,
+            );
             return;
         }
     } else {
@@ -3044,16 +3042,17 @@ fn dispatch_thread_locked(
                 if let Some(thread) = sched.get_thread_mut(thread_id) {
                     thread.state = ThreadState::Terminated;
                 }
-                setup_idle_return_locked(
-                    sched,
-                    frame,
-                    cpu_id,
-                    IdleRedirectReason::UserBadContext,
-                );
+                let current_before = setup_idle_return_locked(sched, frame, cpu_id);
                 let idle_id = sched.cpu_state[cpu_id].idle_thread;
                 let old_val = sched.cpu_state[cpu_id].current_thread.unwrap_or(0xDEAD);
                 crate::task::scheduler::record_cpu_state_change(cpu_id, 13, old_val, idle_id);
                 sched.cpu_state[cpu_id].current_thread = Some(idle_id);
+                record_idle_redirect(
+                    sched,
+                    cpu_id,
+                    IdleRedirectReason::UserBadContext,
+                    current_before,
+                );
                 return;
             }
         }
@@ -3093,16 +3092,17 @@ fn dispatch_thread_locked(
                 if let Some(thread) = sched.get_thread_mut(thread_id) {
                     thread.state = ThreadState::Ready;
                 }
-                setup_idle_return_locked(
-                    sched,
-                    frame,
-                    cpu_id,
-                    IdleRedirectReason::UserTtbrPmLockBusy,
-                );
+                let current_before = setup_idle_return_locked(sched, frame, cpu_id);
                 let idle_id = sched.cpu_state[cpu_id].idle_thread;
                 let old_val = sched.cpu_state[cpu_id].current_thread.unwrap_or(0xDEAD);
                 crate::task::scheduler::record_cpu_state_change(cpu_id, 14, old_val, idle_id);
                 sched.cpu_state[cpu_id].current_thread = Some(idle_id);
+                record_idle_redirect(
+                    sched,
+                    cpu_id,
+                    IdleRedirectReason::UserTtbrPmLockBusy,
+                    current_before,
+                );
                 sched.requeue_thread_after_save(thread_id);
                 sched.set_need_resched_inner();
                 return;
@@ -3120,16 +3120,17 @@ fn dispatch_thread_locked(
                 if let Some(thread) = sched.get_thread_mut(thread_id) {
                     thread.state = ThreadState::Terminated;
                 }
-                setup_idle_return_locked(
-                    sched,
-                    frame,
-                    cpu_id,
-                    IdleRedirectReason::UserProcessGone,
-                );
+                let current_before = setup_idle_return_locked(sched, frame, cpu_id);
                 let idle_id = sched.cpu_state[cpu_id].idle_thread;
                 let old_val = sched.cpu_state[cpu_id].current_thread.unwrap_or(0xDEAD);
                 crate::task::scheduler::record_cpu_state_change(cpu_id, 15, old_val, idle_id);
                 sched.cpu_state[cpu_id].current_thread = Some(idle_id);
+                record_idle_redirect(
+                    sched,
+                    cpu_id,
+                    IdleRedirectReason::UserProcessGone,
+                    current_before,
+                );
                 return;
             }
         }
