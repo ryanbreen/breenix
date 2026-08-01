@@ -17,6 +17,7 @@ ENTRY(_start)
 KERNEL_PHYS_BASE = 0x40080000;
 KERNEL_VIRT_BASE = 0xFFFF000000000000; /* HHDM base */
 VMLINUX_OFFSET   = KERNEL_VIRT_BASE;
+L2_BLOCK_SIZE    = 2M;
 
 SECTIONS
 {
@@ -24,6 +25,7 @@ SECTIONS
     . = KERNEL_PHYS_BASE;
 
     /* Boot code must come first - contains _start */
+    __boot_text_start = .;
     .text.boot : ALIGN(4K) {
         KEEP(*(.text.boot))
     }
@@ -34,18 +36,26 @@ SECTIONS
         KEEP(*(.text.vectors.boot))
     }
 
+    /* The initial page tables use 2MB L2 blocks. Keep writable boot BSS
+     * out of the block that contains the pre-MMU executable code. */
+    . = ALIGN(L2_BLOCK_SIZE);
+    __boot_text_block_end = .;
+
     /* Boot-time BSS (low, includes boot stack + early tables) */
-    .bss.boot (NOLOAD) : ALIGN(16) {
+    .bss.boot (NOLOAD) : ALIGN(4K) {
         __boot_bss_start = .;
         *(.bss.boot .bss.boot.*)
         __boot_bss_end = .;
     }
 
+    . = ALIGN(L2_BLOCK_SIZE);
     __kernel_phys_start = .;
 
     /* Switch to higher-half VMA for the main kernel (direct map) */
     . = KERNEL_VIRT_BASE + .;
     __kernel_virt_start = .;
+    __kernel_text_start = .;
+    __kernel_text_phys_start = __kernel_text_start - VMLINUX_OFFSET;
 
     /* Runtime exception vector table (high) - MUST be 2KB aligned */
     . = ALIGN(2K);
@@ -59,14 +69,24 @@ SECTIONS
         *(.text .text.*)
     }
 
+    /* Separate executable text from non-executable read-only data at the
+     * L2-block granularity used by both boot paths. */
+    . = ALIGN(L2_BLOCK_SIZE);
+    __kernel_text_end = .;
+    __kernel_text_phys_end = __kernel_text_end - VMLINUX_OFFSET;
+
     /* Read-only data */
-    . = ALIGN(4K);
+    __kernel_rodata_start = .;
     .rodata : AT(ADDR(.rodata) - VMLINUX_OFFSET) {
         *(.rodata .rodata.*)
     }
 
+    . = ALIGN(L2_BLOCK_SIZE);
+    __kernel_rodata_end = .;
+    __kernel_rodata_phys_end = __kernel_rodata_end - VMLINUX_OFFSET;
+
     /* Initialized data */
-    . = ALIGN(4K);
+    __kernel_writable_start = .;
     .data : AT(ADDR(.data) - VMLINUX_OFFSET) {
         *(.data .data.*)
     }
@@ -87,6 +107,22 @@ SECTIONS
         . = . + 65536;  /* Reserve 64KB for stack */
         __stack_top = .;
     }
+
+    __kernel_writable_end = .;
+    __kernel_writable_phys_end = __kernel_writable_end - VMLINUX_OFFSET;
+
+    ASSERT((__boot_text_block_end & (L2_BLOCK_SIZE - 1)) == 0,
+           "boot text W^X boundary must be 2MB aligned")
+    ASSERT((__kernel_text_phys_start & (L2_BLOCK_SIZE - 1)) == 0,
+           "kernel text start must be 2MB aligned")
+    ASSERT((__kernel_text_phys_end & (L2_BLOCK_SIZE - 1)) == 0,
+           "kernel text W^X boundary must be 2MB aligned")
+    ASSERT((__kernel_rodata_phys_end & (L2_BLOCK_SIZE - 1)) == 0,
+           "kernel rodata W^X boundary must be 2MB aligned")
+    ASSERT((__kernel_writable_start & (L2_BLOCK_SIZE - 1)) == 0,
+           "kernel writable start must be 2MB aligned")
+    ASSERT(__kernel_writable_phys_end <= 0x50000000,
+           "kernel writable image overlaps the fixed DMA region")
 
     /* DMA buffers - placed in Non-Cacheable region at physical 0x50000000.
      * The loader maps this 2MB block with MAIR index 2 (NC) so the xHC
