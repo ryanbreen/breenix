@@ -433,8 +433,8 @@ lower_el_sync_dispatch:
     mrs x16, esr_el1
     lsr x17, x16, #26          // Extract EC field (bits [31:26])
     cmp x17, #0x15              // EC 0x15 = SVC instruction from AArch64
-    b.eq syscall_entry_from_el0
-    b sync_exception_handler
+    b.ne sync_exception_handler
+    b syscall_entry_from_el0
 
 sync_exception_handler:
     // Save all registers
