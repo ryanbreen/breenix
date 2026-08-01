@@ -4100,47 +4100,77 @@ fn scan_ports(state: &mut XhciState) -> Result<(), &'static str> {
         ms_pass!(M_PORT_DET);
 
         // --- M6: SLOT_ENABLE ---
+        //
+        // Bounded retry: a slow virtual device (e.g. Parallels' emulated mouse
+        // on port 1) can transiently time out its EnableSlot command completion.
+        // A single timeout used to abandon the port for the entire session —
+        // mouse_slot stayed 0, start_hid_polling's guards skipped the mouse
+        // interrupt transfer, and the pointer was dead for the whole run.
+        //
+        // Retry the full EnableSlot -> AddressDevice sequence (not just
+        // EnableSlot alone) up to SLOT_ENABLE_MAX_ATTEMPTS times, since a slow
+        // device may need a full warm-up round rather than just a second
+        // EnableSlot. Only abandon the port after retries are exhausted.
+        const SLOT_ENABLE_MAX_ATTEMPTS: u8 = 3;
+        const SLOT_ENABLE_RETRY_DELAY_MS: u32 = 20;
         ms_begin!(M_SLOT_EN);
-        // Enable Slot for this device
-        let slot_id = match enable_slot(state) {
-            Ok(id) => {
-                crate::serial_println!("[xhci] port {} EnableSlot -> slot {}", port_id, id);
+        let mut slot_id: u8 = 0;
+        let mut addressed = false;
+        'slot_attempt: for attempt in 1..=SLOT_ENABLE_MAX_ATTEMPTS {
+            if attempt > 1 {
+                crate::serial_println!(
+                    "[xhci] port {} EnableSlot retry {}/{}",
+                    port_id,
+                    attempt,
+                    SLOT_ENABLE_MAX_ATTEMPTS
+                );
+                delay_ms(SLOT_ENABLE_RETRY_DELAY_MS);
+            }
+
+            let id = match enable_slot(state) {
+                Ok(id) if id != 0 => id,
+                Ok(_) => {
+                    crate::serial_println!("[xhci] port {} EnableSlot returned 0", port_id);
+                    continue 'slot_attempt;
+                }
+                Err(e) => {
+                    crate::serial_println!("[xhci] port {} EnableSlot failed: {}", port_id, e);
+                    continue 'slot_attempt;
+                }
+            };
+            crate::serial_println!("[xhci] port {} EnableSlot -> slot {}", port_id, id);
+
+            // --- M7: DEVICE_ADDRESS ---
+            ms_kv!(
+                M_ADDR_DEV,
+                "port={} speed={} slot={}",
+                port_id,
+                (read32(portsc_addr) >> 10) & 0xF,
                 id
+            );
+            ms_begin!(M_ADDR_DEV);
+            // Address Device (port numbers are 1-based)
+            match address_device(state, id, port_id) {
+                Ok(()) => {
+                    crate::serial_println!("[xhci] port {} AddressDevice OK (slot {})", port_id, id);
+                    ms_pass!(M_ADDR_DEV);
+                    slot_id = id;
+                    addressed = true;
+                    break 'slot_attempt;
+                }
+                Err(e) => {
+                    crate::serial_println!("[xhci] port {} AddressDevice failed: {}", port_id, e);
+                }
             }
-            Err(e) => {
-                crate::serial_println!("[xhci] port {} EnableSlot failed: {}", port_id, e);
-                ms_fail!(M_SLOT_EN, "EnableSlot returned error");
-                continue;
-            }
-        };
-        if slot_id == 0 {
-            crate::serial_println!("[xhci] port {} EnableSlot returned 0", port_id);
+        }
+
+        if !addressed {
+            ms_fail!(M_SLOT_EN, "EnableSlot/AddressDevice failed after retries");
             continue;
         }
         ms_pass!(M_SLOT_EN);
 
         slots_used += 1;
-
-        // --- M7: DEVICE_ADDRESS ---
-        ms_kv!(
-            M_ADDR_DEV,
-            "port={} speed={} slot={}",
-            port_id,
-            (read32(portsc_addr) >> 10) & 0xF,
-            slot_id
-        );
-        ms_begin!(M_ADDR_DEV);
-        // Address Device (port numbers are 1-based)
-        if let Err(e) = address_device(state, slot_id, port_id) {
-            crate::serial_println!("[xhci] port {} AddressDevice failed: {}", port_id, e);
-            continue;
-        }
-        crate::serial_println!(
-            "[xhci] port {} AddressDevice OK (slot {})",
-            port_id,
-            slot_id
-        );
-        ms_pass!(M_ADDR_DEV);
 
         // Linux USB 3.0 enumeration sequence (from ftrace):
         //   1. GET_DESCRIPTOR(Device, 8)   — first 8 bytes for maxpkt0
