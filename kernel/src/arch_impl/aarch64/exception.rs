@@ -29,6 +29,190 @@ pub static CPU0_LAST_SYNC_FAR: AtomicU64 = AtomicU64::new(0);
 pub static CPU0_LAST_SYNC_ELR: AtomicU64 = AtomicU64::new(0);
 static PC_ALIGN_VERBOSE_CAPTURED: AtomicBool = AtomicBool::new(false);
 static FATAL_POSTMORTEM_CAPTURED: [AtomicBool; 8] = [const { AtomicBool::new(false) }; 8];
+static EL1_UNHANDLED_FAULT_LATCHED: [AtomicBool; 8] = [const { AtomicBool::new(false) }; 8];
+
+struct El1FirstFaultEvidence {
+    instruction_word: Option<u32>,
+    tpidr_el1: u64,
+    mpidr_el1: u64,
+    sctlr_el1: u64,
+    vbar_el1: u64,
+    ttbr1_el1: u64,
+    tcr_el1: u64,
+    cntvct_el0: u64,
+}
+
+#[cold]
+#[inline(never)]
+fn capture_el1_first_fault_evidence(elr: u64) -> El1FirstFaultEvidence {
+    extern "C" {
+        static __bss_start: u8;
+    }
+
+    // The linker script does not export an __etext symbol. __bss_start is the
+    // first existing upper-bound symbol after .text/.rodata/.data, so it keeps
+    // the volatile read inside the mapped high-half kernel image.
+    const KERNEL_IMAGE_TEXT_FLOOR: u64 = 0xFFFF_0000_4008_0000;
+    let kernel_image_upper = core::ptr::addr_of!(__bss_start) as u64;
+    let instruction_word = if elr >= KERNEL_IMAGE_TEXT_FLOOR
+        && elr <= kernel_image_upper.saturating_sub(core::mem::size_of::<u32>() as u64)
+        && elr & 0x3 == 0
+    {
+        Some(unsafe { core::ptr::read_volatile(elr as *const u32) })
+    } else {
+        None
+    };
+
+    let tpidr_el1: u64;
+    let mpidr_el1: u64;
+    let sctlr_el1: u64;
+    let vbar_el1: u64;
+    let ttbr1_el1: u64;
+    let tcr_el1: u64;
+    let cntvct_el0: u64;
+    unsafe {
+        core::arch::asm!(
+            "mrs {tpidr}, tpidr_el1",
+            "mrs {mpidr}, mpidr_el1",
+            "mrs {sctlr}, sctlr_el1",
+            "mrs {vbar}, vbar_el1",
+            "mrs {ttbr1}, ttbr1_el1",
+            "mrs {tcr}, tcr_el1",
+            "mrs {cntvct}, cntvct_el0",
+            tpidr = out(reg) tpidr_el1,
+            mpidr = out(reg) mpidr_el1,
+            sctlr = out(reg) sctlr_el1,
+            vbar = out(reg) vbar_el1,
+            ttbr1 = out(reg) ttbr1_el1,
+            tcr = out(reg) tcr_el1,
+            cntvct = out(reg) cntvct_el0,
+            options(nomem, nostack, preserves_flags),
+        );
+    }
+
+    El1FirstFaultEvidence {
+        instruction_word,
+        tpidr_el1,
+        mpidr_el1,
+        sctlr_el1,
+        vbar_el1,
+        ttbr1_el1,
+        tcr_el1,
+        cntvct_el0,
+    }
+}
+
+#[cold]
+#[inline(never)]
+fn raw_uart_hex_u32(value: u32) {
+    use crate::arch_impl::aarch64::context_switch::{raw_uart_char, raw_uart_str};
+
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    raw_uart_str("0x");
+    for shift in (0..32).step_by(4).rev() {
+        raw_uart_char(HEX[((value >> shift) & 0xF) as usize]);
+    }
+}
+
+#[cold]
+#[inline(never)]
+fn dump_el1_first_fault(
+    frame: &Aarch64ExceptionFrame,
+    ec: u32,
+    esr: u64,
+    far: u64,
+    cpu_id: usize,
+    evidence: &El1FirstFaultEvidence,
+) {
+    use crate::arch_impl::aarch64::context_switch::{raw_uart_dec, raw_uart_hex, raw_uart_str};
+
+    raw_uart_str("[UNHANDLED_EC] cpu=");
+    raw_uart_dec(cpu_id as u64);
+    raw_uart_str(" EC=");
+    raw_uart_hex(ec as u64);
+    raw_uart_str(" ELR=");
+    raw_uart_hex(frame.elr);
+    raw_uart_str("\n[EL1_FIRST_FAULT] instruction_word=");
+    if let Some(word) = evidence.instruction_word {
+        raw_uart_hex_u32(word);
+    } else {
+        raw_uart_str("unavailable");
+    }
+    raw_uart_str(" tpidr_el1=");
+    raw_uart_hex(evidence.tpidr_el1);
+    raw_uart_str(" mpidr_el1=");
+    raw_uart_hex(evidence.mpidr_el1);
+    raw_uart_str("\n  sctlr_el1=");
+    raw_uart_hex(evidence.sctlr_el1);
+    raw_uart_str(" vbar_el1=");
+    raw_uart_hex(evidence.vbar_el1);
+    raw_uart_str(" ttbr1_el1=");
+    raw_uart_hex(evidence.ttbr1_el1);
+    raw_uart_str("\n  tcr_el1=");
+    raw_uart_hex(evidence.tcr_el1);
+    raw_uart_str(" cntvct_el0=");
+    raw_uart_hex(evidence.cntvct_el0);
+    raw_uart_str("\n");
+
+    let sp_at_crash = frame as *const _ as u64 + 272;
+    raw_uart_str("[FATAL_REGS] cpu=");
+    raw_uart_dec(cpu_id as u64);
+    raw_uart_str(" spsr=");
+    raw_uart_hex(frame.spsr);
+    raw_uart_str(" esr=");
+    raw_uart_hex(esr);
+    raw_uart_str(" far=");
+    raw_uart_hex(far);
+    raw_uart_str(" elr=");
+    raw_uart_hex(frame.elr);
+    raw_uart_str(" sp=");
+    raw_uart_hex(sp_at_crash);
+
+    let registers = unsafe { core::slice::from_raw_parts(&frame.x0 as *const u64, 31) };
+    for (register, value) in registers.iter().enumerate() {
+        if register % 4 == 0 {
+            raw_uart_str("\n  ");
+        } else {
+            raw_uart_str(" ");
+        }
+        raw_uart_str("x");
+        raw_uart_dec(register as u64);
+        raw_uart_str("=");
+        raw_uart_hex(*value);
+    }
+    raw_uart_str("\n");
+
+    crate::arch_impl::aarch64::context_switch::dump_all_save_skew_snapshots();
+    crate::task::scheduler::dump_cpu_state_history_postmortem(cpu_id);
+    crate::arch_impl::aarch64::context_switch::dump_all_dispatch_mismatch_snapshots();
+    crate::arch_impl::aarch64::context_switch::dump_all_eret_frame_anomaly_snapshots();
+    crate::arch_impl::aarch64::context_switch::dump_all_inline_save_skew_snapshots();
+    dump_fatal_postmortem_once("UNHANDLED_EC");
+}
+
+#[cold]
+#[inline(never)]
+fn handle_unhandled_el1_exception(frame: &Aarch64ExceptionFrame, ec: u32, esr: u64, far: u64) -> ! {
+    unsafe {
+        core::arch::asm!("msr daifset, #0xf", options(nomem, nostack));
+    }
+
+    let cpu_id = crate::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id() as usize;
+    let first_fault = cpu_id < EL1_UNHANDLED_FAULT_LATCHED.len()
+        && EL1_UNHANDLED_FAULT_LATCHED[cpu_id]
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok();
+    if first_fault {
+        let evidence = capture_el1_first_fault_evidence(frame.elr);
+        dump_el1_first_fault(frame, ec, esr, far, cpu_id, &evidence);
+    }
+
+    loop {
+        unsafe {
+            core::arch::asm!("wfi", options(nomem, nostack));
+        }
+    }
+}
 
 /// Set the per-CPU idle/boot stack in `user_rsp_scratch` so the assembly ERET
 /// path restores SP to a safe stack when redirecting to idle_loop_arm64.
@@ -1006,6 +1190,9 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
         }
 
         _ => {
+            if unsafe { (*frame).spsr & 0xF } != 0 {
+                handle_unhandled_el1_exception(unsafe { &*frame }, ec, esr, far);
+            }
             // Mask all interrupts to prevent cascading exceptions on SMP
             // (timer IRQs cause context switches that schedule more threads
             // onto this CPU, each hitting the same unhandled exception)
