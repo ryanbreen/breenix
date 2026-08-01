@@ -564,6 +564,90 @@ static CPU_STATE_HISTORY_IDX: [core::sync::atomic::AtomicU64; MAX_CPUS] = {
     [INIT; MAX_CPUS]
 };
 
+#[cfg(all(target_arch = "aarch64", feature = "ec0_fault_inject"))]
+static EC0_FAULT_INJECT_TID: AtomicU64 = AtomicU64::new(0);
+#[cfg(all(target_arch = "aarch64", feature = "ec0_fault_inject"))]
+static EC0_FAULT_INJECT_DEADLINE: AtomicU64 = AtomicU64::new(0);
+
+#[cfg(all(target_arch = "aarch64", feature = "ec0_fault_inject"))]
+#[inline(never)]
+fn retain_ec0_fault_inject_on_cpu0(
+    queue: &mut VecDeque<u64>,
+    thread_id: u64,
+    current_cpu: usize,
+) -> bool {
+    if current_cpu == 0 || EC0_FAULT_INJECT_TID.load(Ordering::Acquire) != thread_id {
+        return false;
+    }
+    queue.push_front(thread_id);
+    true
+}
+
+#[cfg(all(target_arch = "aarch64", feature = "ec0_fault_inject"))]
+#[cold]
+#[inline(never)]
+extern "C" fn ec0_fault_inject_thread(_arg: u64) -> ! {
+    let deadline = EC0_FAULT_INJECT_DEADLINE.load(Ordering::Acquire);
+    loop {
+        let now: u64;
+        unsafe {
+            core::arch::asm!(
+                "mrs {}, cntvct_el0",
+                out(reg) now,
+                options(nomem, nostack, preserves_flags),
+            );
+        }
+        if now >= deadline {
+            break;
+        }
+        unsafe {
+            core::arch::asm!("wfi", options(nomem, nostack));
+        }
+    }
+
+    if current_cpu_id_raw() != 0 {
+        loop {
+            unsafe {
+                core::arch::asm!("wfi", options(nomem, nostack));
+            }
+        }
+    }
+
+    unsafe {
+        core::arch::asm!("udf #0", options(noreturn));
+    }
+}
+
+#[cfg(all(target_arch = "aarch64", feature = "ec0_fault_inject"))]
+#[cold]
+#[inline(never)]
+fn install_ec0_fault_inject_thread(scheduler: &mut Scheduler) {
+    let start: u64;
+    let frequency: u64;
+    unsafe {
+        core::arch::asm!(
+            "mrs {start}, cntvct_el0",
+            "mrs {frequency}, cntfrq_el0",
+            start = out(reg) start,
+            frequency = out(reg) frequency,
+            options(nomem, nostack, preserves_flags),
+        );
+    }
+    let deadline = start.saturating_add(frequency.saturating_mul(10));
+    EC0_FAULT_INJECT_DEADLINE.store(deadline, Ordering::Release);
+
+    let thread = Thread::new_kernel(
+        alloc::string::String::from("ec0_fault_inject/0"),
+        ec0_fault_inject_thread,
+        0,
+    )
+    .unwrap_or_else(|error| panic!("failed to create EC0 fault injector: {}", error));
+    let thread_id = thread.id();
+    EC0_FAULT_INJECT_TID.store(thread_id, Ordering::Release);
+    scheduler.threads.push(Box::new(thread));
+    scheduler.per_cpu_queues[0].push_back(thread_id);
+}
+
 /// Record a cpu_state change for diagnostics (circular buffer).
 #[cfg(target_arch = "aarch64")]
 #[inline(never)]
@@ -997,6 +1081,14 @@ impl Scheduler {
                     continue;
                 }
                 while let Some(n) = self.per_cpu_queues[steal_cpu].pop_front() {
+                    #[cfg(all(target_arch = "aarch64", feature = "ec0_fault_inject"))]
+                    if retain_ec0_fault_inject_on_cpu0(
+                        &mut self.per_cpu_queues[steal_cpu],
+                        n,
+                        current_cpu,
+                    ) {
+                        break;
+                    }
                     if let Some(thread) = self.get_thread(n) {
                         if thread.state == ThreadState::Terminated {
                             continue;
@@ -1033,6 +1125,14 @@ impl Scheduler {
                             continue;
                         }
                         if let Some(n) = self.per_cpu_queues[steal_cpu].pop_front() {
+                            #[cfg(all(target_arch = "aarch64", feature = "ec0_fault_inject"))]
+                            if retain_ec0_fault_inject_on_cpu0(
+                                &mut self.per_cpu_queues[steal_cpu],
+                                n,
+                                current_cpu,
+                            ) {
+                                continue;
+                            }
                             found = Some(n);
                             break;
                         }
@@ -1274,6 +1374,14 @@ impl Scheduler {
                     continue;
                 }
                 while let Some(n) = self.per_cpu_queues[steal_cpu].pop_front() {
+                    #[cfg(all(target_arch = "aarch64", feature = "ec0_fault_inject"))]
+                    if retain_ec0_fault_inject_on_cpu0(
+                        &mut self.per_cpu_queues[steal_cpu],
+                        n,
+                        current_cpu,
+                    ) {
+                        break;
+                    }
                     if let Some(thread) = self.get_thread(n) {
                         if thread.state == ThreadState::Terminated {
                             continue;
@@ -1311,6 +1419,14 @@ impl Scheduler {
                             continue;
                         }
                         if let Some(n) = self.per_cpu_queues[steal_cpu].pop_front() {
+                            #[cfg(all(target_arch = "aarch64", feature = "ec0_fault_inject"))]
+                            if retain_ec0_fault_inject_on_cpu0(
+                                &mut self.per_cpu_queues[steal_cpu],
+                                n,
+                                current_cpu,
+                            ) {
+                                continue;
+                            }
                             found = Some(n);
                             break;
                         }
@@ -2546,6 +2662,8 @@ pub fn init_with_current(current_thread: Box<Thread>) {
 
     // Create scheduler with current thread as both idle and current
     let mut scheduler = Scheduler::new(current_thread);
+    #[cfg(all(target_arch = "aarch64", feature = "ec0_fault_inject"))]
+    install_ec0_fault_inject_thread(&mut scheduler);
     #[cfg(target_arch = "aarch64")]
     {
         let old_val = scheduler.cpu_state[0].current_thread.unwrap_or(0xDEAD);
