@@ -282,9 +282,8 @@ fn handle_unhandled_el1_exception(frame: &Aarch64ExceptionFrame, ec: u32, esr: u
 fn set_idle_stack_for_eret() {
     use crate::arch_impl::aarch64::percpu::Aarch64PerCpu;
 
-    let cpu_id = Aarch64PerCpu::cpu_id() as u64;
-    let stack_base = super::constants::percpu_stack_region_base();
-    let idle_stack = stack_base + (cpu_id + 1) * 0x20_0000;
+    let cpu_id = Aarch64PerCpu::cpu_id() as usize;
+    let idle_stack = super::constants::percpu_kernel_stack_top(cpu_id);
     unsafe {
         Aarch64PerCpu::set_user_rsp_scratch(idle_stack);
         Aarch64PerCpu::set_kernel_stack_top(idle_stack);
@@ -377,6 +376,16 @@ fn dump_fatal_postmortem_once(label: &str) {
     crate::arch_impl::aarch64::context_switch::dump_all_idle_redirect_histories();
     raw_uart_str("\n  Stack pivot alias histories:\n");
     crate::arch_impl::aarch64::context_switch::dump_stack_pivot_alias_history();
+    raw_uart_str("\n  Stack-half boundary canaries:\n");
+    for canary_cpu in 0..super::constants::MAX_CPUS {
+        raw_uart_str("    cpu=");
+        raw_uart_dec(canary_cpu as u64);
+        raw_uart_str(" intact=");
+        raw_uart_dec(
+            super::constants::percpu_stack_boundary_canary_is_intact(canary_cpu) as u64,
+        );
+        raw_uart_str("\n");
+    }
 }
 
 #[inline(never)]

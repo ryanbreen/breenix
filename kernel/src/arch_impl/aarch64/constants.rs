@@ -210,6 +210,18 @@ pub const PERCPU_STACK_STRIDE: u64 = 0x20_0000;
 pub const PERCPU_SCHED_STACK_SIZE: u64 = 0x10_0000;
 
 const _: () = assert!(KERNEL_STACK_SIZE as u64 <= PERCPU_SCHED_STACK_SIZE);
+const _: () = assert!(PERCPU_SCHED_STACK_SIZE + KERNEL_STACK_SIZE as u64 <= PERCPU_STACK_STRIDE);
+const _: () = assert!(PERCPU_STACK_STRIDE - PERCPU_SCHED_STACK_SIZE >= KERNEL_STACK_SIZE as u64);
+// For adjacent slots, percpu_kernel_stack_top(cpu) equals
+// percpu_sched_stack_bottom(cpu + 1), so one slot never extends into the next.
+// A positive stride also keeps every slot's top distinct from its neighbors.
+const _: () = assert!(PERCPU_STACK_STRIDE > 0);
+
+/// Debug-only sentinel at the scheduler/idle stack-half boundary.
+///
+/// This is an overrun detector, not an unmapped guard page: it is checked only
+/// while recording a fatal postmortem.
+pub const PERCPU_STACK_BOUNDARY_CANARY: u64 = 0x4252_4545_4E49_5853;
 
 /// Guard page size between stacks.
 pub const STACK_GUARD_SIZE: usize = PAGE_SIZE;
@@ -265,6 +277,26 @@ pub fn percpu_sched_stack_top(cpu: usize) -> u64 {
 #[inline]
 pub fn percpu_sched_stack_bottom(cpu: usize) -> u64 {
     percpu_stack_region_base() + cpu as u64 * PERCPU_STACK_STRIDE
+}
+
+/// Write each stack-half boundary sentinel once, before scheduler/SMP startup.
+pub fn initialize_percpu_stack_boundary_canaries() {
+    for cpu in 0..MAX_CPUS {
+        unsafe {
+            core::ptr::write_volatile(
+                percpu_sched_stack_top(cpu) as *mut u64,
+                PERCPU_STACK_BOUNDARY_CANARY,
+            );
+        }
+    }
+}
+
+/// Read a boundary sentinel for fatal-postmortem diagnostics only.
+pub fn percpu_stack_boundary_canary_is_intact(cpu: usize) -> bool {
+    unsafe {
+        core::ptr::read_volatile(percpu_sched_stack_top(cpu) as *const u64)
+            == PERCPU_STACK_BOUNDARY_CANARY
+    }
 }
 
 /// Legacy constant for compile-time contexts (diagnostics). Uses the default

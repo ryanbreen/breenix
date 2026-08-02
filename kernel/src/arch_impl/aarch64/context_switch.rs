@@ -2816,10 +2816,7 @@ fn setup_idle_return_locked(
     let idle_stack = sched
         .get_thread(idle_id)
         .and_then(|t| t.kernel_stack_top.map(|v| v.as_u64()))
-        .unwrap_or_else(|| {
-            let cpu_id64 = cpu_id as u64;
-            super::constants::percpu_stack_region_base() + (cpu_id64 + 1) * 0x20_0000
-        });
+        .unwrap_or_else(|| super::constants::percpu_kernel_stack_top(cpu_id));
 
     // Clear all general purpose registers for clean state
     frame.x0 = 0;
@@ -4429,10 +4426,8 @@ fn setup_idle_return_arm64(frame: &mut Aarch64ExceptionFrame) {
     })
     .flatten()
     .unwrap_or_else(|| {
-        let cpu_id = Aarch64PerCpu::cpu_id() as u64;
-        let boot_stack_top =
-            super::constants::percpu_stack_region_base() + (cpu_id + 1) * 0x20_0000;
-        boot_stack_top
+        let cpu_id = Aarch64PerCpu::cpu_id() as usize;
+        super::constants::percpu_kernel_stack_top(cpu_id)
     });
 
     // Clear all general purpose registers for clean state

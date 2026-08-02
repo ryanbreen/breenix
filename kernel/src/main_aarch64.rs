@@ -430,6 +430,10 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
     // Breadcrumb: 'S' = serial initialized
     kernel::serial_aarch64::raw_serial_char(b'S');
 
+    // Install debug-only sentinels between the scheduler and idle/exception
+    // halves before either scheduler startup or secondary-CPU bring-up.
+    kernel::arch_impl::aarch64::constants::initialize_percpu_stack_boundary_canaries();
+
     // Initialize the /proc/kmsg log buffer early so ALL serial output is captured
     kernel::log_buffer::init();
 
