@@ -1972,15 +1972,17 @@ fn idle_dispatch_stack(cpu_id: usize, preferred: u64) -> u64 {
 
 #[inline(always)]
 fn thread_kernel_stack_contains(thread: &Thread, sp: u64) -> bool {
+    debug_assert_ne!(
+        thread.privilege,
+        ThreadPrivilege::Kernel,
+        "process-owned blocked threads must use user privilege"
+    );
     let Some(kst) = thread.kernel_stack_top else {
         return false;
     };
     let top = kst.as_u64();
-    let bottom = if thread.privilege == ThreadPrivilege::Kernel {
-        thread.stack_bottom.as_u64()
-    } else {
-        top.saturating_sub(crate::arch_impl::aarch64::constants::KERNEL_STACK_SIZE as u64)
-    };
+    let bottom =
+        top.saturating_sub(crate::arch_impl::aarch64::constants::KERNEL_STACK_SIZE as u64);
     sp >= bottom && sp <= top
 }
 
