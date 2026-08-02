@@ -210,12 +210,10 @@ pub const PERCPU_STACK_STRIDE: u64 = 0x20_0000;
 pub const PERCPU_SCHED_STACK_SIZE: u64 = 0x10_0000;
 
 const _: () = assert!(KERNEL_STACK_SIZE as u64 <= PERCPU_SCHED_STACK_SIZE);
+// The lower scheduler half plus the upper idle/exception stack must fit in one
+// stride. This also proves that one slot's upper stack cannot extend past
+// percpu_kernel_stack_top(cpu) into the next slot.
 const _: () = assert!(PERCPU_SCHED_STACK_SIZE + KERNEL_STACK_SIZE as u64 <= PERCPU_STACK_STRIDE);
-const _: () = assert!(PERCPU_STACK_STRIDE - PERCPU_SCHED_STACK_SIZE >= KERNEL_STACK_SIZE as u64);
-// For adjacent slots, percpu_kernel_stack_top(cpu) equals
-// percpu_sched_stack_bottom(cpu + 1), so one slot never extends into the next.
-// A positive stride also keeps every slot's top distinct from its neighbors.
-const _: () = assert!(PERCPU_STACK_STRIDE > 0);
 
 /// Debug-only sentinel at the scheduler/idle stack-half boundary.
 ///
@@ -273,13 +271,12 @@ pub fn percpu_sched_stack_top(cpu: usize) -> u64 {
     percpu_kernel_stack_bottom(cpu)
 }
 
-/// Bottom of the lower, scheduler-owned half of a per-CPU stack slot.
-#[inline]
-pub fn percpu_sched_stack_bottom(cpu: usize) -> u64 {
-    percpu_stack_region_base() + cpu as u64 * PERCPU_STACK_STRIDE
-}
-
 /// Write each stack-half boundary sentinel once, before scheduler/SMP startup.
+///
+/// AArch64 stacks grow downward. The word at the half boundary can therefore
+/// detect the upper idle/exception stack reaching down into the boundary. It
+/// cannot detect a scheduler-stack overrun toward higher addresses: normal
+/// stack growth never approaches the boundary from the lower half.
 pub fn initialize_percpu_stack_boundary_canaries() {
     for cpu in 0..MAX_CPUS {
         unsafe {
@@ -291,7 +288,8 @@ pub fn initialize_percpu_stack_boundary_canaries() {
     }
 }
 
-/// Read a boundary sentinel for fatal-postmortem diagnostics only.
+/// Read the upper idle/exception-half downward-overrun sentinel for fatal
+/// postmortem diagnostics only; this is not a bidirectional stack guard.
 pub fn percpu_stack_boundary_canary_is_intact(cpu: usize) -> bool {
     unsafe {
         core::ptr::read_volatile(percpu_sched_stack_top(cpu) as *const u64)
