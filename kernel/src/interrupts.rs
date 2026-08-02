@@ -1426,7 +1426,7 @@ extern "x86-interrupt" fn page_fault_handler(
                         pid.as_u64(),
                         cr3
                     );
-                    pm.exit_process(pid, -11); // SIGSEGV exit code
+                    let _ = pm.exit_process(pid, -11); // SIGSEGV exit code
                 } else {
                     log::error!(
                         "Could not find process with CR3={:#x} - cannot terminate",
@@ -1732,7 +1732,7 @@ extern "x86-interrupt" fn general_protection_fault_handler(
                     pid.as_u64(),
                     cr3
                 );
-                pm.exit_process(pid, -11); // SIGSEGV exit code
+                let _ = pm.exit_process(pid, -11); // SIGSEGV exit code
             } else {
                 log::error!(
                     "Could not find process with CR3={:#x} - cannot terminate",

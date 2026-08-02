@@ -2,6 +2,15 @@
 
 const TTBR0_ROOT_MASK: u64 = !0xFFFF_0000_0000_0FFF;
 
+#[inline(always)]
+fn read_ttbr0_el1() -> u64 {
+    let ttbr0: u64;
+    unsafe {
+        core::arch::asm!("mrs {}, ttbr0_el1", out(reg) ttbr0, options(nomem, nostack));
+    }
+    ttbr0
+}
+
 /// Return the kernel TTBR0 root, falling back to the boot identity table before
 /// per-CPU state has been populated.
 #[inline(always)]
@@ -40,11 +49,29 @@ pub fn switch_ttbr0_to_kernel() {
 /// reinstalling it. This must complete before publishing deferred exit work.
 #[inline(always)]
 pub fn quiesce_ttbr0_for_exit() {
-    switch_ttbr0_to_kernel();
+    if read_ttbr0_el1() != kernel_ttbr0() {
+        switch_ttbr0_to_kernel();
+    }
     unsafe {
         super::percpu::Aarch64PerCpu::set_saved_process_cr3(0);
         super::percpu::Aarch64PerCpu::set_next_cr3(0);
     }
+}
+
+/// Return whether this CPU's hardware TTBR0 or either return shadow retains
+/// `root_phys`. Process exit uses this local ownership check before clearing
+/// the CPU's return state; exiting an unrelated PID must not clobber it.
+pub fn current_cpu_retains_ttbr0_root(root_phys: u64) -> bool {
+    let root_phys = root_phys & TTBR0_ROOT_MASK;
+    if root_phys == 0 {
+        return false;
+    }
+
+    let saved_process_ttbr0 = super::percpu::Aarch64PerCpu::saved_process_cr3();
+    let next_ttbr0 = super::percpu::Aarch64PerCpu::next_cr3();
+    read_ttbr0_el1() & TTBR0_ROOT_MASK == root_phys
+        || saved_process_ttbr0 & TTBR0_ROOT_MASK == root_phys
+        || next_ttbr0 & TTBR0_ROOT_MASK == root_phys
 }
 
 /// Return whether any online CPU still retains `root_phys` in a TTBR0 shadow.
@@ -55,6 +82,12 @@ pub fn is_ttbr0_root_live(root_phys: u64) -> bool {
     let root_phys = root_phys & TTBR0_ROOT_MASK;
     if root_phys == 0 {
         return false;
+    }
+
+    // The local register is directly observable. Remote CPUs are represented
+    // by shadows that are kept live until their hardware switch completes.
+    if read_ttbr0_el1() & TTBR0_ROOT_MASK == root_phys {
+        return true;
     }
 
     (0..super::constants::MAX_CPUS).any(|cpu_id| {

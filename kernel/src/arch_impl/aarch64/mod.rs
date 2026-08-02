@@ -55,7 +55,8 @@ pub use syscall_entry::{is_el0_confirmed, syscall_return_to_userspace_aarch64};
 #[allow(unused_imports)]
 pub use timer::Aarch64Timer;
 pub use ttbr0::{
-    is_ttbr0_root_live, kernel_ttbr0, quiesce_ttbr0_for_exit, switch_ttbr0_to_kernel,
+    current_cpu_retains_ttbr0_root, is_ttbr0_root_live, kernel_ttbr0,
+    quiesce_ttbr0_for_exit, switch_ttbr0_to_kernel,
 };
 
 // Re-export interrupt control functions for convenient access

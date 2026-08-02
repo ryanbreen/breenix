@@ -317,15 +317,18 @@ impl Process {
     /// a system-wide hang on ARM64 SMP where logging, pipe wakeups, and scheduler
     /// calls inside close_all_fds create lock ordering violations with the serial
     /// output lock and framebuffer lock while all CPUs have interrupts disabled.
-    pub fn terminate_minimal(&mut self, exit_code: i32) {
+    /// Returns false when the process was already terminated, so callers must not
+    /// repeat cleanup that decrements CoW references.
+    pub fn terminate_minimal(&mut self, exit_code: i32) -> bool {
         if matches!(self.state, ProcessState::Terminated(_)) {
-            return;
+            return false;
         }
         self.state = ProcessState::Terminated(exit_code);
         self.exit_code = Some(exit_code);
         if let Some(ref mut thread) = self.main_thread {
             thread.set_terminated();
         }
+        true
     }
 
     /// Extract all file descriptor entries for deferred cleanup outside PM lock.

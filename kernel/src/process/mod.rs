@@ -260,11 +260,18 @@ pub fn exit_current(exit_code: i32) {
 
     if let Some(pid) = current_pid() {
         log::debug!("Current PID is {}", pid.as_u64());
-        if let Some(ref mut manager) = *manager() {
-            manager.exit_process(pid, exit_code);
-        } else {
-            log::error!("Process manager not available!");
+        let cleanup = {
+            let mut manager_guard = manager();
+            manager_guard
+                .as_mut()
+                .and_then(|manager| manager.exit_process(pid, exit_code))
+        };
+        #[cfg(target_arch = "aarch64")]
+        if let Some(entries) = cleanup {
+            crate::task::process_task::finish_extracted_process_exit(pid, entries);
         }
+        #[cfg(not(target_arch = "aarch64"))]
+        let _ = cleanup;
     } else {
         log::error!("No current PID set!");
     }

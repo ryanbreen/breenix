@@ -291,7 +291,8 @@ fn set_idle_stack_for_eret() {
         Aarch64PerCpu::set_kernel_stack_top(idle_stack);
         let kernel_ttbr0 = super::kernel_ttbr0();
         Aarch64PerCpu::set_next_cr3(kernel_ttbr0);
-        Aarch64PerCpu::set_saved_process_cr3(0);
+        // Keep the prior root visible to teardown until the ERET dispatcher has
+        // installed kernel_ttbr0 and replaced the saved shadow.
         Aarch64PerCpu::set_current_thread_ptr(core::ptr::null_mut());
         Aarch64PerCpu::clear_preempt_active();
     }
@@ -757,6 +758,7 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                 // Find and terminate the process
                 let mut terminated = false;
                 let mut already_terminated = false;
+                let mut exit_cleanup = None;
                 crate::process::with_process_manager(|pm| {
                     if let Some((pid, _process)) = pm.find_process_by_cr3_mut(page_table_phys) {
                         if _process.is_terminated() {
@@ -767,12 +769,17 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                             pid.as_u64() as u16,
                             (-11i16) as u16,
                         );
-                        pm.exit_process(pid, -11); // SIGSEGV exit code
-                        terminated = true;
+                        if let Some(entries) = pm.exit_process(pid, -11) {
+                            exit_cleanup = Some((pid, entries));
+                            terminated = true;
+                        }
                     } else {
                         // trace_data_abort already captured the fault
                     }
                 });
+                if let Some((pid, entries)) = exit_cleanup {
+                    crate::task::process_task::finish_extracted_process_exit(pid, entries);
+                }
 
                 if terminated || already_terminated {
                     // CRITICAL: Mark the scheduler's thread as Terminated BEFORE
@@ -1118,6 +1125,7 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                 let mut terminated = false;
                 let mut already_terminated = false;
                 let mut killed_pid: u64 = 0;
+                let mut exit_cleanup = None;
                 crate::process::with_process_manager(|pm| {
                     if let Some((pid, _process)) = pm.find_process_by_cr3_mut(page_table_phys) {
                         if _process.is_terminated() {
@@ -1129,10 +1137,15 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                             pid.as_u64() as u16,
                             (-11i16) as u16,
                         );
-                        pm.exit_process(pid, -11); // SIGSEGV
-                        terminated = true;
+                        if let Some(entries) = pm.exit_process(pid, -11) {
+                            exit_cleanup = Some((pid, entries));
+                            terminated = true;
+                        }
                     }
                 });
+                if let Some((pid, entries)) = exit_cleanup {
+                    crate::task::process_task::finish_extracted_process_exit(pid, entries);
+                }
                 // Lock-free diagnostic AFTER releasing process manager lock
                 if terminated {
                     use crate::arch_impl::aarch64::context_switch::{raw_uart_dec, raw_uart_str};
@@ -1205,13 +1218,19 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                 }
                 let page_table_phys = ttbr0 & !0xFFFF_0000_0000_0FFF;
                 super::switch_ttbr0_to_kernel();
+                let mut exit_cleanup = None;
                 crate::process::with_process_manager(|pm| {
                     if let Some((pid, process)) = pm.find_process_by_cr3_mut(page_table_phys) {
                         if !process.is_terminated() {
-                            pm.exit_process(pid, -11);
+                            if let Some(entries) = pm.exit_process(pid, -11) {
+                                exit_cleanup = Some((pid, entries));
+                            }
                         }
                     }
                 });
+                if let Some((pid, entries)) = exit_cleanup {
+                    crate::task::process_task::finish_extracted_process_exit(pid, entries);
+                }
                 terminate_current_scheduler_thread();
             }
             // CRITICAL: Set frame values BEFORE switch_to_idle_best_effort()
@@ -1302,13 +1321,19 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                 }
                 let page_table_phys = ttbr0 & !0xFFFF_0000_0000_0FFF;
                 super::switch_ttbr0_to_kernel();
+                let mut exit_cleanup = None;
                 crate::process::with_process_manager(|pm| {
                     if let Some((pid, process)) = pm.find_process_by_cr3_mut(page_table_phys) {
                         if !process.is_terminated() {
-                            pm.exit_process(pid, -11);
+                            if let Some(entries) = pm.exit_process(pid, -11) {
+                                exit_cleanup = Some((pid, entries));
+                            }
                         }
                     }
                 });
+                if let Some((pid, entries)) = exit_cleanup {
+                    crate::task::process_task::finish_extracted_process_exit(pid, entries);
+                }
                 terminate_current_scheduler_thread();
             }
             // CRITICAL: Set frame values BEFORE switch_to_idle_best_effort()

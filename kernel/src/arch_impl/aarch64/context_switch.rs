@@ -2966,7 +2966,8 @@ fn setup_idle_return_locked(
             kernel_ttbr0 = 0x4200_0000;
         }
         Aarch64PerCpu::set_next_cr3(kernel_ttbr0);
-        Aarch64PerCpu::set_saved_process_cr3(0);
+        // Keep the old root visible until switch_ttbr0_if_needed() has changed
+        // TTBR0_EL1 and published the kernel root into the saved shadow.
         Aarch64PerCpu::set_current_thread_ptr(core::ptr::null_mut());
         Aarch64PerCpu::clear_preempt_active();
     }
@@ -4760,13 +4761,12 @@ fn switch_ttbr0_if_needed(_thread_id: u64) {
                 options(nomem, nostack)
             );
         }
-
-        unsafe {
-            Aarch64PerCpu::set_saved_process_cr3(next_ttbr0);
-        }
     }
 
     unsafe {
+        // Publish the hardware value before clearing the pending shadow. This
+        // also covers the current_ttbr0 == next_ttbr0 case.
+        Aarch64PerCpu::set_saved_process_cr3(next_ttbr0);
         Aarch64PerCpu::set_next_cr3(0);
     }
 }

@@ -1117,11 +1117,37 @@ impl ProcessManager {
 
     /// Exit a process with the given exit code
     #[allow(dead_code)]
-    pub fn exit_process(&mut self, pid: ProcessId, exit_code: i32) {
+    pub fn exit_process(
+        &mut self,
+        pid: ProcessId,
+        exit_code: i32,
+    ) -> Option<alloc::vec::Vec<(usize, crate::ipc::fd::FileDescriptor)>> {
         // Get parent PID before we borrow the process mutably
         let parent_pid = self.processes.get(&pid).and_then(|p| p.parent);
+        #[cfg(target_arch = "aarch64")]
+        let fd_entries;
+        #[cfg(not(target_arch = "aarch64"))]
+        let fd_entries = alloc::vec::Vec::new();
 
         if let Some(process) = self.processes.get_mut(&pid) {
+            // Preserve Process::terminate()'s one-shot cleanup contract even on
+            // AArch64, where cleanup is split into lock-held and lock-free phases.
+            if process.is_terminated() {
+                return None;
+            }
+
+            #[cfg(target_arch = "aarch64")]
+            let local_cpu_retains_root = process.page_table.as_ref().is_some_and(|page_table| {
+                crate::arch_impl::aarch64::current_cpu_retains_ttbr0_root(
+                    page_table.level_4_frame().start_address().as_u64(),
+                )
+            });
+            #[cfg(target_arch = "aarch64")]
+            if local_cpu_retains_root {
+                crate::arch_impl::aarch64::quiesce_ttbr0_for_exit();
+            }
+
+            #[cfg(not(target_arch = "aarch64"))]
             log::info!(
                 "Process {} (PID {}) exiting with code {}",
                 process.name,
@@ -1129,10 +1155,20 @@ impl ProcessManager {
                 exit_code
             );
 
-            // Drain any pending old page tables from previous exec() calls
-            process.drain_old_page_tables();
-
-            process.terminate(exit_code);
+            #[cfg(target_arch = "aarch64")]
+            {
+                if !process.terminate_minimal(exit_code) {
+                    return None;
+                }
+                fd_entries = process.take_fd_entries();
+                crate::task::process_task::defer_process_resources(process);
+            }
+            #[cfg(not(target_arch = "aarch64"))]
+            {
+                // Drain any pending old page tables from previous exec() calls
+                process.drain_old_page_tables();
+                process.terminate(exit_code);
+            }
 
             // Remove from ready queue
             self.ready_queue.retain(|&p| p != pid);
@@ -1142,16 +1178,17 @@ impl ProcessManager {
                 self.current_pid = None;
             }
 
-            // Free heavy resources immediately rather than waiting for waitpid reap.
-            // CoW refcounts were already decremented by terminate() -> cleanup_cow_frames(),
-            // so it's safe to drop the page table now.
-            process.page_table.take();
-            process.stack.take();
-            process.pending_old_page_tables.clear();
-
-            // Clean up window buffers so the compositor stops reading freed pages
-            #[cfg(target_arch = "aarch64")]
-            crate::syscall::graphics::cleanup_windows_for_pid(pid.as_u64());
+            #[cfg(not(target_arch = "aarch64"))]
+            {
+                // Free heavy resources immediately rather than waiting for waitpid reap.
+                // CoW refcounts were already decremented by terminate() -> cleanup_cow_frames(),
+                // so it's safe to drop the page table now.
+                process.page_table.take();
+                process.stack.take();
+                process.pending_old_page_tables.clear();
+            }
+        } else {
+            return None;
         }
 
         // Reparent children to init (PID 1)
@@ -1183,6 +1220,7 @@ impl ProcessManager {
             if let Some(parent_process) = self.processes.get_mut(&parent_pid) {
                 use crate::signal::constants::SIGCHLD;
                 parent_process.signals.set_pending(SIGCHLD);
+                #[cfg(not(target_arch = "aarch64"))]
                 log::debug!(
                     "Sent SIGCHLD to parent process {} for child {} exit",
                     parent_pid.as_u64(),
@@ -1190,6 +1228,8 @@ impl ProcessManager {
                 );
             }
         }
+
+        Some(fd_entries)
     }
 
     /// Get the next ready process to run

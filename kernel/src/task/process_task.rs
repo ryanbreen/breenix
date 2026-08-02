@@ -97,6 +97,22 @@ impl PendingProcessReclaim {
 static PENDING_PROCESS_RECLAIMS: spin::Mutex<alloc::vec::Vec<PendingProcessReclaim>> =
     spin::Mutex::new(alloc::vec::Vec::new());
 
+#[cfg(target_arch = "aarch64")]
+const MAX_PENDING_PROCESS_RECLAIMS: usize = 256;
+
+/// Current deferred-address-space queue depth, exposed for postmortem diagnostics.
+#[cfg(target_arch = "aarch64")]
+pub static PENDING_PROCESS_RECLAIM_DEPTH: AtomicU64 = AtomicU64::new(0);
+
+/// Number of non-empty sweeps that found no root safe to reclaim.
+#[cfg(target_arch = "aarch64")]
+pub static PENDING_PROCESS_RECLAIM_BLOCKED_SWEEPS: AtomicU64 = AtomicU64::new(0);
+
+/// Number of attempts to exceed the hard deferred-address-space queue cap.
+#[cfg(target_arch = "aarch64")]
+pub static PENDING_PROCESS_RECLAIM_CAPACITY_FAILURES: AtomicU64 = AtomicU64::new(0);
+
+#[cfg(not(target_arch = "aarch64"))]
 fn release_process_resources(process: &mut crate::process::Process) {
     process.cleanup_cow_frames();
     process.drain_old_page_tables();
@@ -106,32 +122,35 @@ fn release_process_resources(process: &mut crate::process::Process) {
 }
 
 #[cfg(target_arch = "aarch64")]
-fn defer_live_process_resources(
-    process: &mut crate::process::Process,
-) -> Option<PendingProcessReclaim> {
-    let root_is_live = process
-        .page_table
-        .iter()
-        .chain(process.pending_old_page_tables.iter())
-        .any(|page_table| {
-            crate::arch_impl::aarch64::is_ttbr0_root_live(
-                page_table.level_4_frame().start_address().as_u64(),
-            )
+pub(crate) fn defer_process_resources(process: &mut crate::process::Process) {
+    let page_table = process.page_table.take();
+    let old_page_tables = core::mem::take(&mut process.pending_old_page_tables);
+    if page_table.is_some() || !old_page_tables.is_empty() {
+        enqueue_process_reclaim(PendingProcessReclaim {
+            page_table,
+            old_page_tables,
+            after_epoch: scheduler::retirement_grace_target(),
         });
-    if !root_is_live {
-        return None;
     }
 
-    Some(PendingProcessReclaim {
-        page_table: process.page_table.take(),
-        old_page_tables: core::mem::take(&mut process.pending_old_page_tables),
-        after_epoch: scheduler::retirement_grace_target(),
-    })
+    // This early drop is safe only while GuardedStack::drop remains a no-op
+    // stub that does not unmap or free stack frames. If that Drop implementation
+    // starts releasing frames, the stack must move into PendingProcessReclaim so
+    // a peer CPU retaining this process root cannot observe freed memory.
+    drop(process.stack.take());
 }
 
 #[cfg(target_arch = "aarch64")]
 fn enqueue_process_reclaim(reclaim: PendingProcessReclaim) {
-    crate::arch_without_interrupts(|| PENDING_PROCESS_RECLAIMS.lock().push(reclaim));
+    crate::arch_without_interrupts(|| {
+        let mut pending = PENDING_PROCESS_RECLAIMS.lock();
+        if pending.len() >= MAX_PENDING_PROCESS_RECLAIMS {
+            PENDING_PROCESS_RECLAIM_CAPACITY_FAILURES.fetch_add(1, Ordering::Relaxed);
+            panic!("pending process reclaim queue exhausted");
+        }
+        pending.push(reclaim);
+        PENDING_PROCESS_RECLAIM_DEPTH.store(pending.len() as u64, Ordering::Relaxed);
+    });
 }
 
 /// Close extracted file descriptor entries outside the PM lock.
@@ -142,7 +161,7 @@ fn enqueue_process_reclaim(reclaim: PendingProcessReclaim) {
 /// PTY refcounting, TCP close, etc.
 ///
 /// CRITICAL: No PM lock is held when this runs.
-fn close_extracted_fds(entries: alloc::vec::Vec<(usize, FileDescriptor)>) {
+pub(crate) fn close_extracted_fds(entries: alloc::vec::Vec<(usize, FileDescriptor)>) {
     use crate::ipc::FdKind;
 
     for (_fd, fd_entry) in entries {
@@ -190,6 +209,16 @@ fn close_extracted_fds(entries: alloc::vec::Vec<(usize, FileDescriptor)>) {
     }
 }
 
+/// Complete the lock-free phase of an AArch64 process exit.
+#[cfg(target_arch = "aarch64")]
+pub(crate) fn finish_extracted_process_exit(
+    pid: ProcessId,
+    entries: alloc::vec::Vec<(usize, FileDescriptor)>,
+) {
+    close_extracted_fds(entries);
+    crate::syscall::graphics::cleanup_windows_for_pid(pid.as_u64());
+}
+
 /// Integration functions for scheduling processes as tasks
 pub struct ProcessScheduler;
 
@@ -218,15 +247,12 @@ impl ProcessScheduler {
                     let children = core::mem::take(&mut process.children);
 
                     // Mark terminated and extract FDs without closing them
-                    process.terminate_minimal(exit_code);
+                    if !process.terminate_minimal(exit_code) {
+                        return;
+                    }
                     let fd_entries = process.take_fd_entries();
                     #[cfg(target_arch = "aarch64")]
-                    if let Some(reclaim) = defer_live_process_resources(process) {
-                        enqueue_process_reclaim(reclaim);
-                        drop(process.stack.take());
-                    } else {
-                        release_process_resources(process);
-                    }
+                    defer_process_resources(process);
                     #[cfg(not(target_arch = "aarch64"))]
                     release_process_resources(process);
 
@@ -272,11 +298,10 @@ impl ProcessScheduler {
         // Phase 2: No PM lock — safe to do pipe wakeups, scheduler calls, logging
         if let Some((pid, process_name, fd_entries, parent_tid)) = phase1_result {
             // Close FDs outside PM lock (pipe close_write wakes readers, etc.)
-            close_extracted_fds(fd_entries);
-
-            // Clean up window buffers so the compositor stops reading freed pages
             #[cfg(target_arch = "aarch64")]
-            crate::syscall::graphics::cleanup_windows_for_pid(pid.as_u64());
+            finish_extracted_process_exit(pid, fd_entries);
+            #[cfg(not(target_arch = "aarch64"))]
+            close_extracted_fds(fd_entries);
 
             // Wake parent thread if blocked on waitpid or pause()
             if let Some(parent_tid) = parent_tid {
@@ -347,7 +372,12 @@ pub fn reclaim_deferred_process_resources() {
                 scheduler::retirement_grace_elapsed(&reclaim.after_epoch)
                     && !reclaim.root_is_live()
             });
-            ready.map(|index| pending.swap_remove(index))
+            if ready.is_none() && !pending.is_empty() {
+                PENDING_PROCESS_RECLAIM_BLOCKED_SWEEPS.fetch_add(1, Ordering::Relaxed);
+            }
+            let reclaim = ready.map(|index| pending.swap_remove(index));
+            PENDING_PROCESS_RECLAIM_DEPTH.store(pending.len() as u64, Ordering::Relaxed);
+            reclaim
         });
 
         match reclaim {

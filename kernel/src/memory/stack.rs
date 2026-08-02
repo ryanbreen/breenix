@@ -263,8 +263,7 @@ impl GuardedStack {
 
 impl Drop for GuardedStack {
     fn drop(&mut self) {
-        // TODO: Implement proper cleanup (unmap pages, deallocate frames)
-        log::debug!("GuardedStack dropped (cleanup not yet implemented)");
+        // TODO: Implement proper cleanup (unmap pages, deallocate frames).
     }
 }
 
