@@ -361,13 +361,12 @@ syscall_entry_from_el0:
     ldr x1, [x0, #64]           /* next_cr3 offset = 64 */
     cbz x1, .Lrestore_saved_ttbr
 
-    /* Clear next_cr3 BEFORE switching (avoid accessing after switch) */
-    str xzr, [x0, #64]
-
-    /* Perform TTBR0 switch with full TLB invalidation */
+    /* Switch TTBR0, then publish the installed root before clearing its lease */
     dsb ishst
     msr ttbr0_el1, x1
     isb
+    str x1, [x0, #80]           /* saved_process_cr3 = installed root */
+    str xzr, [x0, #64]          /* clear next_cr3 last */
     tlbi vmalle1is
     dsb ish
     isb
@@ -463,11 +462,12 @@ syscall_return_to_userspace_aarch64:
     ldr x10, [x9, #64]          /* next_cr3 offset = 64 */
     cbz x10, .Lfirst_entry_restore_ttbr
 
-    /* Clear next_cr3 and switch with full TLB invalidation */
-    str xzr, [x9, #64]
+    /* Switch TTBR0, then publish the installed root before clearing its lease */
     dsb ishst
     msr ttbr0_el1, x10
     isb
+    str x10, [x9, #80]          /* saved_process_cr3 = installed root */
+    str xzr, [x9, #64]          /* clear next_cr3 last */
     tlbi vmalle1is
     dsb ish
     isb
