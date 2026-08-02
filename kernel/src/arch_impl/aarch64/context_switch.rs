@@ -780,6 +780,7 @@ extern "C" {
 }
 
 const _: () = assert!(core::mem::offset_of!(CpuContext, x19) == 152);
+const _: () = assert!(core::mem::offset_of!(CpuContext, x29) == 232);
 const _: () = assert!(core::mem::offset_of!(CpuContext, x30) == 240);
 const _: () = assert!(core::mem::offset_of!(CpuContext, sp) == 248);
 const _: () = assert!(core::mem::offset_of!(Aarch64ExceptionFrame, x16) == 128);
@@ -4721,28 +4722,6 @@ pub extern "C" fn idle_loop_arm64() -> ! {
 
         let _ = idle_enter_scheduler_if_needed();
     }
-}
-
-/// Perform a context switch between two threads using the low-level
-/// assembly switch_context function.
-#[allow(dead_code)]
-pub unsafe fn perform_context_switch(old_context: &mut CpuContext, new_context: &CpuContext) {
-    super::context::switch_context(
-        old_context as *mut CpuContext,
-        new_context as *const CpuContext,
-    );
-}
-
-/// Switch to a new thread for the first time (doesn't save current context).
-#[allow(dead_code)]
-pub unsafe fn switch_to_new_thread(context: &CpuContext) -> ! {
-    super::context::switch_to_thread(context as *const CpuContext)
-}
-
-/// Switch to userspace using ERET.
-#[allow(dead_code)]
-pub unsafe fn switch_to_user(context: &CpuContext) -> ! {
-    super::context::switch_to_user(context as *const CpuContext)
 }
 
 // =============================================================================
