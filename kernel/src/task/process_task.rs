@@ -66,7 +66,7 @@ struct PendingProcessReclaim {
     old_page_tables: alloc::vec::Vec<
         alloc::boxed::Box<crate::memory::process_memory::ProcessPageTable>,
     >,
-    after_epoch: [u64; crate::arch_impl::aarch64::constants::MAX_CPUS],
+    retirement: scheduler::RetirementFence,
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -125,7 +125,7 @@ fn defer_live_process_resources(
     Some(PendingProcessReclaim {
         page_table: process.page_table.take(),
         old_page_tables: core::mem::take(&mut process.pending_old_page_tables),
-        after_epoch: scheduler::retirement_grace_target(),
+        retirement: scheduler::RetirementFence::capture(),
     })
 }
 
@@ -344,7 +344,7 @@ pub fn reclaim_deferred_process_resources() {
         let reclaim = crate::arch_without_interrupts(|| {
             let mut pending = PENDING_PROCESS_RECLAIMS.lock();
             let ready = pending.iter().position(|reclaim| {
-                scheduler::retirement_grace_elapsed(&reclaim.after_epoch)
+                scheduler::RetirementSnapshot::acquire(&reclaim.retirement).is_some()
                     && !reclaim.root_is_live()
             });
             ready.map(|index| pending.swap_remove(index))

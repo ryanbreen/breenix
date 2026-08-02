@@ -543,28 +543,56 @@ static SCHEDULING_EPOCHS: [AtomicU64; MAX_CPUS] =
 #[derive(Clone, Copy)]
 struct RetirementGrace {
     thread_id: u64,
-    after_epoch: [u64; MAX_CPUS],
+    fence: RetirementFence,
 }
 
 #[cfg(target_arch = "aarch64")]
-pub(crate) fn retirement_grace_target() -> [u64; MAX_CPUS] {
-    let mut target = [0; MAX_CPUS];
-    for cpu_id in 0..MAX_CPUS {
-        if crate::arch_impl::aarch64::smp::is_cpu_online(cpu_id) {
-            target[cpu_id] = SCHEDULING_EPOCHS[cpu_id]
-                .load(Ordering::Acquire)
-                .saturating_add(2);
+#[derive(Clone, Copy)]
+pub(crate) struct RetirementFence {
+    epochs: [u64; MAX_CPUS],
+    online_mask: u32,
+}
+
+#[cfg(target_arch = "aarch64")]
+impl RetirementFence {
+    pub(crate) fn capture() -> Self {
+        debug_assert!(crate::arch_impl::aarch64::smp::is_cpu_online(0));
+
+        let mut epochs = [0; MAX_CPUS];
+        let mut online_mask = 0u32;
+        for cpu_id in 0..MAX_CPUS {
+            if crate::arch_impl::aarch64::smp::is_cpu_online(cpu_id) {
+                online_mask |= 1 << cpu_id;
+                epochs[cpu_id] = SCHEDULING_EPOCHS[cpu_id]
+                    .load(Ordering::Acquire)
+                    .saturating_add(2);
+            }
+        }
+        Self {
+            epochs,
+            online_mask,
         }
     }
-    target
 }
 
 #[cfg(target_arch = "aarch64")]
-pub(crate) fn retirement_grace_elapsed(target: &[u64; MAX_CPUS]) -> bool {
-    (0..MAX_CPUS).all(|cpu_id| {
-        target[cpu_id] == 0
-            || SCHEDULING_EPOCHS[cpu_id].load(Ordering::Acquire) >= target[cpu_id]
-    })
+pub(crate) struct RetirementSnapshot(());
+
+#[cfg(target_arch = "aarch64")]
+impl RetirementSnapshot {
+    pub(crate) fn acquire(retirement: &RetirementFence) -> Option<Self> {
+        let mut elapsed = retirement.online_mask != 0;
+        for cpu_id in 0..MAX_CPUS {
+            if retirement.online_mask & (1 << cpu_id) != 0
+                && SCHEDULING_EPOCHS[cpu_id].load(Ordering::Acquire)
+                    < retirement.epochs[cpu_id]
+            {
+                elapsed = false;
+            }
+        }
+        core::sync::atomic::fence(Ordering::Acquire);
+        elapsed.then_some(Self(()))
+    }
 }
 
 /// Record a scheduler entry for the current CPU.
@@ -974,7 +1002,7 @@ impl Scheduler {
             {
                 self.retirement_grace.push(RetirementGrace {
                     thread_id,
-                    after_epoch: retirement_grace_target(),
+                    fence: RetirementFence::capture(),
                 });
             }
         }
@@ -991,18 +1019,20 @@ impl Scheduler {
                 return true;
             }
 
+            let retirement_snapshot = graces
+                .iter()
+                .find(|grace| grace.thread_id == thread.id())
+                .and_then(|grace| RetirementSnapshot::acquire(&grace.fence));
+            let Some(_retirement_snapshot) = retirement_snapshot else {
+                return true;
+            };
             let stack_is_live = thread
                 .kernel_stack_top
                 .map(|top| {
                     crate::memory::kernel_stack::is_kernel_stack_slot_live(top.as_u64())
                 })
                 .unwrap_or(false);
-            let grace_elapsed = graces
-                .iter()
-                .find(|grace| grace.thread_id == thread.id())
-                .map(|grace| retirement_grace_elapsed(&grace.after_epoch))
-                .unwrap_or(false);
-            if stack_is_live || !grace_elapsed {
+            if stack_is_live {
                 return true;
             }
 
