@@ -991,16 +991,16 @@ impl Scheduler {
                 return true;
             }
 
+            let grace_elapsed = graces
+                .iter()
+                .find(|grace| grace.thread_id == thread.id())
+                .map(|grace| retirement_grace_elapsed(&grace.after_epoch))
+                .unwrap_or(false);
             let stack_is_live = thread
                 .kernel_stack_top
                 .map(|top| {
                     crate::memory::kernel_stack::is_kernel_stack_slot_live(top.as_u64())
                 })
-                .unwrap_or(false);
-            let grace_elapsed = graces
-                .iter()
-                .find(|grace| grace.thread_id == thread.id())
-                .map(|grace| retirement_grace_elapsed(&grace.after_epoch))
                 .unwrap_or(false);
             if stack_is_live || !grace_elapsed {
                 return true;
