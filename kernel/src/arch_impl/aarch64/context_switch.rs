@@ -3895,28 +3895,24 @@ extern "C" fn inline_schedule_trampoline() -> ! {
             crate::task::scheduler::force_unlock_scheduler();
         }
 
-        let idle_sp_candidate = crate::task::scheduler::with_scheduler(|sched| {
+        let idle_sp = crate::task::scheduler::with_scheduler(|sched| {
             let idle_id = sched.cpu_state[cpu_id].idle_thread;
-            sched
+            let candidate = sched
                 .get_thread(idle_id)
                 .and_then(|thread| thread.kernel_stack_top.map(|stack| stack.as_u64()))
-                .unwrap_or_else(|| super::constants::percpu_kernel_stack_top(cpu_id))
-        });
-        let idle_sp = idle_dispatch_stack(
-            cpu_id,
-            idle_sp_candidate
-                .unwrap_or_else(|| super::constants::percpu_kernel_stack_top(cpu_id)),
-        );
+                .unwrap_or_else(|| super::constants::percpu_kernel_stack_top(cpu_id));
+            let idle_sp = idle_dispatch_stack(cpu_id, candidate);
 
-        // Persist the exact normalized stack value used by the live pivot.  Use
-        // the current idle ID from this lock hold, never either stale handoff ID.
-        // with_scheduler returns None only when the scheduler object itself is
-        // absent; in that case there is no persisted idle Thread to update.
-        let _ = crate::task::scheduler::with_scheduler(|sched| {
-            let idle_id = sched.cpu_state[cpu_id].idle_thread;
+            // Persist the exact normalized stack value used by the live pivot.
+            // Use the current idle ID from this lock hold, never either stale
+            // handoff ID.
             reset_idle_continuation_locked(sched, idle_id, idle_sp);
             sched.fix_exception_cleanup_cpu_state();
-        });
+            idle_sp
+        })
+        // with_scheduler returns None only when the scheduler object itself is
+        // absent; in that case there is no persisted idle Thread to update.
+        .unwrap_or_else(|| super::constants::percpu_kernel_stack_top(cpu_id));
 
         unsafe {
             Aarch64PerCpu::set_user_rsp_scratch(idle_sp);
