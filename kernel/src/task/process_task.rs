@@ -60,6 +60,80 @@ static DEFERRED_FAULT_EXIT_BUFFERS: [DeferredFaultExitBuffer; 8] =
 static DEFERRED_FAULT_EXIT_BUFFERS: [DeferredFaultExitBuffer; 1] =
     [const { DeferredFaultExitBuffer::new() }];
 
+#[cfg(target_arch = "aarch64")]
+struct PendingProcessReclaim {
+    page_table: Option<alloc::boxed::Box<crate::memory::process_memory::ProcessPageTable>>,
+    old_page_tables: alloc::vec::Vec<
+        alloc::boxed::Box<crate::memory::process_memory::ProcessPageTable>,
+    >,
+    after_epoch: [u64; crate::arch_impl::aarch64::constants::MAX_CPUS],
+}
+
+#[cfg(target_arch = "aarch64")]
+impl PendingProcessReclaim {
+    fn root_is_live(&self) -> bool {
+        self.page_table
+            .iter()
+            .chain(self.old_page_tables.iter())
+            .any(|page_table| {
+                crate::arch_impl::aarch64::is_ttbr0_root_live(
+                    page_table.level_4_frame().start_address().as_u64(),
+                )
+            })
+    }
+
+    fn reclaim(mut self) {
+        if let Some(page_table) = self.page_table.as_ref() {
+            crate::process::process::cleanup_cow_page_table(page_table);
+        }
+        for old_page_table in self.old_page_tables.drain(..) {
+            old_page_table.cleanup_for_exec();
+        }
+        drop(self.page_table.take());
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+static PENDING_PROCESS_RECLAIMS: spin::Mutex<alloc::vec::Vec<PendingProcessReclaim>> =
+    spin::Mutex::new(alloc::vec::Vec::new());
+
+fn release_process_resources(process: &mut crate::process::Process) {
+    process.cleanup_cow_frames();
+    process.drain_old_page_tables();
+    drop(process.page_table.take());
+    drop(process.stack.take());
+    process.pending_old_page_tables.clear();
+}
+
+#[cfg(target_arch = "aarch64")]
+fn defer_live_process_resources(
+    process: &mut crate::process::Process,
+) -> Option<PendingProcessReclaim> {
+    let root_is_live = process
+        .page_table
+        .iter()
+        .chain(process.pending_old_page_tables.iter())
+        .any(|page_table| {
+            crate::arch_impl::aarch64::is_ttbr0_root_live(
+                page_table.level_4_frame().start_address().as_u64(),
+            )
+        });
+    if !root_is_live {
+        return None;
+    }
+
+    Some(PendingProcessReclaim {
+        page_table: process.page_table.take(),
+        old_page_tables: core::mem::take(&mut process.pending_old_page_tables),
+        after_epoch: scheduler::retirement_grace_target(),
+    })
+}
+
+#[cfg(target_arch = "aarch64")]
+fn enqueue_process_reclaim(reclaim: PendingProcessReclaim) {
+    crate::arch_without_interrupts(|| PENDING_PROCESS_RECLAIMS.lock().push(reclaim));
+}
+
 /// Close extracted file descriptor entries outside the PM lock.
 ///
 /// This performs the same cleanup as Process::close_all_fds() but operates on
@@ -146,14 +220,15 @@ impl ProcessScheduler {
                     // Mark terminated and extract FDs without closing them
                     process.terminate_minimal(exit_code);
                     let fd_entries = process.take_fd_entries();
-                    // CoW cleanup is fast (no logging, no locks besides frame allocator)
-                    process.cleanup_cow_frames();
-                    process.drain_old_page_tables();
-
-                    // Free heavy resources immediately (CoW refcounts already decremented)
-                    process.page_table.take();
-                    process.stack.take();
-                    process.pending_old_page_tables.clear();
+                    #[cfg(target_arch = "aarch64")]
+                    if let Some(reclaim) = defer_live_process_resources(process) {
+                        enqueue_process_reclaim(reclaim);
+                        drop(process.stack.take());
+                    } else {
+                        release_process_resources(process);
+                    }
+                    #[cfg(not(target_arch = "aarch64"))]
+                    release_process_resources(process);
 
                     #[cfg(feature = "btrt")]
                     crate::test_framework::btrt::on_process_exit(pid.as_u64(), exit_code);
@@ -259,6 +334,26 @@ pub fn drain_deferred_fault_sigsegv_exits() {
     }
     for tid in tids {
         ProcessScheduler::handle_thread_exit(tid, -11);
+    }
+}
+
+/// Reclaim process frames whose cross-CPU TTBR0 retention has quiesced.
+#[cfg(target_arch = "aarch64")]
+pub fn reclaim_deferred_process_resources() {
+    loop {
+        let reclaim = crate::arch_without_interrupts(|| {
+            let mut pending = PENDING_PROCESS_RECLAIMS.lock();
+            let ready = pending.iter().position(|reclaim| {
+                scheduler::retirement_grace_elapsed(&reclaim.after_epoch)
+                    && !reclaim.root_is_live()
+            });
+            ready.map(|index| pending.swap_remove(index))
+        });
+
+        match reclaim {
+            Some(reclaim) => reclaim.reclaim(),
+            None => break,
+        }
     }
 }
 

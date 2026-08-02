@@ -320,6 +320,11 @@ fn terminate_current_scheduler_thread() {
 fn defer_current_user_thread_sigsegv_exit(label: &str, frame_addr: u64) {
     use crate::arch_impl::aarch64::context_switch::{raw_uart_dec, raw_uart_str};
 
+    // Publish the deferred exit only after this CPU has left the retiring root
+    // and cleared both assembly return shadows. A peer CPU may drain the queue
+    // immediately after publication.
+    super::quiesce_ttbr0_for_exit();
+
     let stack_owner =
         crate::arch_impl::aarch64::context_switch::last_dispatched_tid_for_stack_address(
             frame_addr,
@@ -800,7 +805,6 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
             drop(fatal_uart_guard);
 
             // Mark scheduler thread as terminated (best effort)
-            super::switch_ttbr0_to_kernel();
             terminate_current_scheduler_thread();
             crate::task::scheduler::set_need_resched();
 
@@ -1160,7 +1164,6 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                 raw_uart_str("[INSTRUCTION_ABORT] deferring process cleanup\n");
             }
             defer_current_user_thread_sigsegv_exit("[INSTRUCTION_ABORT]", frame as u64);
-            super::switch_ttbr0_to_kernel();
             terminate_current_scheduler_thread();
             crate::task::scheduler::set_need_resched();
             frame_ref.elr = crate::arch_impl::aarch64::idle_loop_arm64 as *const () as u64;

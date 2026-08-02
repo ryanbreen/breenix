@@ -3451,9 +3451,9 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
         return;
     }
 
-    // Reaching a fresh exception-return scheduling entry with PREEMPT_ACTIVE
-    // clear proves any prior exception-return handoff on this CPU completed.
-    // Terminated-stack reclamation requires one such epoch on every online CPU.
+    // This entry proves an earlier handoff completed, but the current handoff
+    // may still be using its old stack. Reclamation therefore requires two
+    // bumps: this one plus a subsequent exception's scheduling entry.
     crate::task::scheduler::note_scheduling_epoch(cpu_id_early);
 
     // Read deferred requeue atomically (lock-free).

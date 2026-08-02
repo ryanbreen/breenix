@@ -179,6 +179,26 @@ pub fn live_stack_snapshot(cpu_id: usize) -> Option<(u64, u64)> {
     Some((kernel_stack_top, user_rsp_scratch))
 }
 
+/// Snapshot the per-CPU TTBR0 shadows that can retain a userspace root.
+///
+/// Exception-return assembly also reads and writes these fields, so use
+/// volatile loads rather than borrowing the shared per-CPU object. Callers
+/// combine this conservative snapshot with a scheduling-epoch grace period
+/// before returning frames reachable from a retired root to the allocator.
+pub fn ttbr0_shadow_snapshot(cpu_id: usize) -> Option<(u64, u64)> {
+    if cpu_id >= crate::arch_impl::aarch64::constants::MAX_CPUS {
+        return None;
+    }
+
+    let cpu_data = unsafe { &raw const ALL_CPU_DATA[cpu_id] };
+    let saved_process_ttbr0 = unsafe {
+        core::ptr::read_volatile(core::ptr::addr_of!((*cpu_data).saved_process_ttbr0))
+    };
+    let next_ttbr0 =
+        unsafe { core::ptr::read_volatile(core::ptr::addr_of!((*cpu_data).next_ttbr0)) };
+    Some((saved_process_ttbr0, next_ttbr0))
+}
+
 /// Check if per-CPU data has been initialized
 pub fn is_initialized() -> bool {
     PER_CPU_INITIALIZED.load(Ordering::Acquire)

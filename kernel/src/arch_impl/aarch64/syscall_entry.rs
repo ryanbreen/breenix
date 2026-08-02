@@ -927,8 +927,9 @@ fn sys_fork_aarch64(frame: &Aarch64ExceptionFrame) -> u64 {
     }; // PM lock dropped, interrupts restored
     crate::serial_aarch64::raw_serial_char(b'2'); // Fork phase 1 done, PM lock dropped
 
-    // Reclaim scheduler-owned kernel stacks from fully retired fork children before
-    // consuming another slot from the finite ARM64 kernel stack pool.
+    // Reclaim quiesced process frames and scheduler-owned kernel stacks before
+    // consuming more of either finite allocator pool.
+    crate::task::process_task::reclaim_deferred_process_resources();
     crate::task::scheduler::reclaim_terminated_threads();
 
     // Create child page table OUTSIDE PM lock (heap allocation safe — interrupts enabled)

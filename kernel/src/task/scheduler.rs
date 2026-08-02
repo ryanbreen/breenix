@@ -528,12 +528,13 @@ const MAX_CPUS: usize = 8;
 #[cfg(not(target_arch = "aarch64"))]
 const MAX_CPUS: usize = 1;
 
-/// Completed scheduler-entry epochs per online AArch64 CPU.
+/// Scheduler-entry epochs per online AArch64 CPU.
 ///
-/// A terminated thread records a target one greater than every online CPU's
-/// current value. Reclamation therefore waits until every CPU has re-entered
-/// the scheduler after termination, in addition to passing the live-stack
-/// exclusion check.
+/// A retiring resource records a target two greater than every online CPU's
+/// current value. The first bump may be recorded by a handoff that is already
+/// in flight on the retiring stack. Requiring a second bump proves that CPU
+/// entered the scheduler through a later exception, which can only happen
+/// after the in-flight exception return and its old-stack restore completed.
 #[cfg(target_arch = "aarch64")]
 static SCHEDULING_EPOCHS: [AtomicU64; MAX_CPUS] =
     [const { AtomicU64::new(0) }; MAX_CPUS];
@@ -546,27 +547,30 @@ struct RetirementGrace {
 }
 
 #[cfg(target_arch = "aarch64")]
-fn retirement_grace_target() -> [u64; MAX_CPUS] {
+pub(crate) fn retirement_grace_target() -> [u64; MAX_CPUS] {
     let mut target = [0; MAX_CPUS];
     for cpu_id in 0..MAX_CPUS {
         if crate::arch_impl::aarch64::smp::is_cpu_online(cpu_id) {
             target[cpu_id] = SCHEDULING_EPOCHS[cpu_id]
                 .load(Ordering::Acquire)
-                .saturating_add(1);
+                .saturating_add(2);
         }
     }
     target
 }
 
 #[cfg(target_arch = "aarch64")]
-fn retirement_grace_elapsed(target: &[u64; MAX_CPUS]) -> bool {
+pub(crate) fn retirement_grace_elapsed(target: &[u64; MAX_CPUS]) -> bool {
     (0..MAX_CPUS).all(|cpu_id| {
         target[cpu_id] == 0
             || SCHEDULING_EPOCHS[cpu_id].load(Ordering::Acquire) >= target[cpu_id]
     })
 }
 
-/// Record one post-handoff scheduler entry for the current CPU.
+/// Record a scheduler entry for the current CPU.
+///
+/// A single entry does not prove the handoff active at that entry has finished;
+/// reclamation targets require a second, subsequent entry on every online CPU.
 #[cfg(target_arch = "aarch64")]
 pub fn note_scheduling_epoch(cpu_id: usize) {
     if cpu_id < MAX_CPUS {
