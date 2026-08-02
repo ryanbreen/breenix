@@ -30,6 +30,16 @@ const DAIF_ALL_IMM: u32 = 0xF; // D, A, I, F
 
 pub struct Aarch64Cpu;
 
+struct DaifRestoreGuard(u64);
+
+impl Drop for DaifRestoreGuard {
+    fn drop(&mut self) {
+        unsafe {
+            core::arch::asm!("msr daif, {}", in(reg) self.0, options(nomem, nostack));
+        }
+    }
+}
+
 impl CpuOps for Aarch64Cpu {
     /// Enable IRQ and FIQ interrupts by clearing the I and F bits in DAIF.
     ///
@@ -110,13 +120,13 @@ impl CpuOps for Aarch64Cpu {
             core::arch::asm!("msr daifset, #3", options(nomem, nostack));
         }
 
+        let restore_guard = DaifRestoreGuard(daif);
+
         // Execute the closure
         let result = f();
 
-        // Restore previous DAIF state exactly
-        unsafe {
-            core::arch::asm!("msr daif, {}", in(reg) daif, options(nomem, nostack));
-        }
+        // Restore previous DAIF state exactly before returning the result.
+        drop(restore_guard);
 
         result
     }

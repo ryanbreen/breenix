@@ -28,12 +28,15 @@ pub const HEAP_SIZE: u64 = 64 * 1024 * 1024;
 
 /// IRQ-safe wrapper around the kernel's free-list allocator.
 ///
-/// On AArch64, every hold of the inner heap mutex masks IRQ and FIQ and restores
-/// the exact prior DAIF state after the heap operation.  The scheduler may grow
-/// or drop a queue while holding its mutex, so scheduler -> heap is an existing
-/// lock-order edge.  Masking interrupts here prevents a task that already owns
-/// the heap mutex from being interrupted and adding the reverse heap -> scheduler
-/// edge on exception return.
+/// On both architectures, every hold of the inner heap mutex masks local
+/// interrupts and restores the exact prior interrupt state after the heap
+/// operation.  AArch64 masks IRQ and FIQ in DAIF; x86_64 masks the local IF flag
+/// via `arch_without_interrupts`, which delegates to
+/// `x86_64::instructions::interrupts::without_interrupts`, around the identical
+/// inner allocator call.  The scheduler may grow or drop a queue while holding
+/// its mutex, so scheduler -> heap is an existing lock-order edge.  Masking
+/// interrupts here prevents a task that already owns the heap mutex from being
+/// interrupted and adding the reverse heap -> scheduler edge on exception return.
 ///
 /// Keep the masked region limited to one inner heap operation.  In particular,
 /// never acquire another lock, allocate, or format output while the inner heap
@@ -51,15 +54,7 @@ impl IrqSafeLockedHeap {
 
     #[inline(always)]
     fn with_inner<R>(&self, operation: impl FnOnce(&LockedHeap) -> R) -> R {
-        #[cfg(target_arch = "aarch64")]
-        {
-            crate::arch_impl::aarch64::cpu::without_interrupts(|| operation(&self.inner))
-        }
-
-        #[cfg(target_arch = "x86_64")]
-        {
-            operation(&self.inner)
-        }
+        crate::arch_without_interrupts(|| operation(&self.inner))
     }
 
     unsafe fn init(&self, heap_bottom: *mut u8, heap_size: usize) {
@@ -83,7 +78,8 @@ unsafe impl GlobalAlloc for IrqSafeLockedHeap {
     unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
         let ptr = unsafe { self.alloc(layout) };
         if !ptr.is_null() {
-            // Zeroing does not touch allocator metadata, so do it after DAIF is restored.
+            // Zeroing does not touch allocator metadata, so do it after interrupt
+            // state is restored.
             unsafe {
                 ptr.write_bytes(0, layout.size());
             }
