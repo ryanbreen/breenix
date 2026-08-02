@@ -36,7 +36,6 @@ pub use constants::*;
 #[allow(unused_imports)]
 pub use context_switch::{
     check_need_resched_and_switch_arm64, create_saved_regs_from_frame, idle_loop_arm64,
-    perform_context_switch, switch_to_new_thread, switch_to_user,
 };
 #[allow(unused_imports)]
 pub use cpu::Aarch64Cpu;

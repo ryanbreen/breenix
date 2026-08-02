@@ -17,6 +17,7 @@ ENTRY(_start)
 KERNEL_PHYS_BASE = 0x40080000;
 KERNEL_VIRT_BASE = 0xFFFF000000000000; /* HHDM base */
 VMLINUX_OFFSET   = KERNEL_VIRT_BASE;
+L2_BLOCK_SIZE    = 2M;
 
 SECTIONS
 {
@@ -24,6 +25,7 @@ SECTIONS
     . = KERNEL_PHYS_BASE;
 
     /* Boot code must come first - contains _start */
+    __boot_text_start = .;
     .text.boot : ALIGN(4K) {
         KEEP(*(.text.boot))
     }
@@ -34,18 +36,26 @@ SECTIONS
         KEEP(*(.text.vectors.boot))
     }
 
+    /* The initial page tables use 2MB L2 blocks. Keep writable boot BSS
+     * out of the block that contains the pre-MMU executable code. */
+    . = ALIGN(L2_BLOCK_SIZE);
+    __boot_text_block_end = .;
+
     /* Boot-time BSS (low, includes boot stack + early tables) */
-    .bss.boot (NOLOAD) : ALIGN(16) {
+    .bss.boot (NOLOAD) : ALIGN(4K) {
         __boot_bss_start = .;
         *(.bss.boot .bss.boot.*)
         __boot_bss_end = .;
     }
 
+    . = ALIGN(L2_BLOCK_SIZE);
     __kernel_phys_start = .;
 
     /* Switch to higher-half VMA for the main kernel (direct map) */
     . = KERNEL_VIRT_BASE + .;
     __kernel_virt_start = .;
+    __kernel_text_start = .;
+    __kernel_text_phys_start = __kernel_text_start - VMLINUX_OFFSET;
 
     /* Runtime exception vector table (high) - MUST be 2KB aligned */
     . = ALIGN(2K);
@@ -57,18 +67,40 @@ SECTIONS
     . = ALIGN(4K);
     .text : AT(ADDR(.text) - VMLINUX_OFFSET) {
         *(.text .text.*)
+        *(.init .init.*)
+        *(.fini .fini.*)
+        *(.plt .plt.* .iplt)
     }
+
+    /* Separate executable text from non-executable read-only data at the
+     * L2-block granularity used by both boot paths. */
+    . = ALIGN(L2_BLOCK_SIZE);
+    __kernel_text_end = .;
+    __kernel_text_phys_end = __kernel_text_end - VMLINUX_OFFSET;
 
     /* Read-only data */
-    . = ALIGN(4K);
+    __kernel_rodata_start = .;
     .rodata : AT(ADDR(.rodata) - VMLINUX_OFFSET) {
         *(.rodata .rodata.*)
+        *(.srodata .srodata.*)
+        *(.gcc_except_table .gcc_except_table.*)
+        *(.ARM.extab* .ARM.exidx*)
     }
 
+    . = ALIGN(L2_BLOCK_SIZE);
+    __kernel_rodata_end = .;
+    __kernel_rodata_phys_end = __kernel_rodata_end - VMLINUX_OFFSET;
+
     /* Initialized data */
-    . = ALIGN(4K);
+    __kernel_writable_start = .;
     .data : AT(ADDR(.data) - VMLINUX_OFFSET) {
         *(.data .data.*)
+        *(.sdata .sdata.*)
+        *(.got .got.* .igot .igot.*)
+        *(.preinit_array .preinit_array.*)
+        *(.init_array .init_array.*)
+        *(.fini_array .fini_array.*)
+        *(.tdata .tdata.*)
     }
 
     /* BSS - zero initialized */
@@ -76,6 +108,8 @@ SECTIONS
     __bss_start = .;
     .bss (NOLOAD) : AT(ADDR(.bss) - VMLINUX_OFFSET) {
         *(.bss .bss.*)
+        *(.sbss .sbss.*)
+        *(.tbss .tbss.*)
         *(COMMON)
     }
     __bss_end = .;
@@ -87,6 +121,22 @@ SECTIONS
         . = . + 65536;  /* Reserve 64KB for stack */
         __stack_top = .;
     }
+
+    __kernel_writable_end = .;
+    __kernel_writable_phys_end = __kernel_writable_end - VMLINUX_OFFSET;
+
+    ASSERT((__boot_text_block_end & (L2_BLOCK_SIZE - 1)) == 0,
+           "boot text W^X boundary must be 2MB aligned")
+    ASSERT((__kernel_text_phys_start & (L2_BLOCK_SIZE - 1)) == 0,
+           "kernel text start must be 2MB aligned")
+    ASSERT((__kernel_text_phys_end & (L2_BLOCK_SIZE - 1)) == 0,
+           "kernel text W^X boundary must be 2MB aligned")
+    ASSERT((__kernel_rodata_phys_end & (L2_BLOCK_SIZE - 1)) == 0,
+           "kernel rodata W^X boundary must be 2MB aligned")
+    ASSERT((__kernel_writable_start & (L2_BLOCK_SIZE - 1)) == 0,
+           "kernel writable start must be 2MB aligned")
+    ASSERT(__kernel_writable_phys_end <= 0x50000000,
+           "kernel writable image overlaps the fixed DMA region")
 
     /* DMA buffers - placed in Non-Cacheable region at physical 0x50000000.
      * The loader maps this 2MB block with MAIR index 2 (NC) so the xHC
@@ -104,6 +154,13 @@ SECTIONS
         *(.note*)
         *(.eh_frame*)
     }
+
+    /* LLD synthesizes these non-allocated metadata tables. Name them
+     * explicitly so --orphan-handling=error remains strict for input
+     * sections without rejecting the linker's own symbol/string tables. */
+    .symtab 0 : { *(.symtab) }
+    .strtab 0 : { *(.strtab) }
+    .shstrtab 0 : { *(.shstrtab) }
 
     _end = .;
 }

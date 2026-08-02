@@ -295,6 +295,9 @@ fn main() -> Status {
         } else {
             0
         },
+        kernel_segments: loaded_kernel.load_segments(),
+        uart_base_phys: config.uart_base_phys,
+        uart_type: config.uart_type,
     };
 
     // --- xHCI: DisconnectController DISABLED ---

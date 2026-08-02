@@ -201,6 +201,26 @@ pub const PREEMPT_ACTIVE: u32 = 1 << PREEMPT_ACTIVE_BIT;
 /// Increased to 512KB to handle deep call stacks.
 pub const KERNEL_STACK_SIZE: usize = 512 * 1024;
 
+/// Physical/virtual spacing between adjacent per-CPU stack slots.
+///
+/// This value is part of the boot.S stack layout contract and must not change.
+pub const PERCPU_STACK_STRIDE: u64 = 0x20_0000;
+
+/// Size of the lower, scheduler-owned half of each per-CPU stack slot.
+pub const PERCPU_SCHED_STACK_SIZE: u64 = 0x10_0000;
+
+const _: () = assert!(KERNEL_STACK_SIZE as u64 <= PERCPU_SCHED_STACK_SIZE);
+// The lower scheduler half plus the upper idle/exception stack must fit in one
+// stride. This also proves that one slot's upper stack cannot extend past
+// percpu_kernel_stack_top(cpu) into the next slot.
+const _: () = assert!(PERCPU_SCHED_STACK_SIZE + KERNEL_STACK_SIZE as u64 <= PERCPU_STACK_STRIDE);
+
+/// Debug-only sentinel at the scheduler/idle stack-half boundary.
+///
+/// This is an overrun detector, not an unmapped guard page: it is checked only
+/// while recording a fatal postmortem.
+pub const PERCPU_STACK_BOUNDARY_CANARY: u64 = 0x4252_4545_4E49_5853;
+
 /// Guard page size between stacks.
 pub const STACK_GUARD_SIZE: usize = PAGE_SIZE;
 
@@ -230,6 +250,53 @@ pub fn percpu_stack_region_base() -> u64 {
     HHDM_BASE + 0x4300_0000 + crate::platform_config::ram_base_offset()
 }
 
+/// Top of the upper, idle/exception-owned half of a per-CPU stack slot.
+///
+/// This is intentionally the same address boot.S has always installed as the
+/// per-CPU kernel stack top.
+#[inline]
+pub fn percpu_kernel_stack_top(cpu: usize) -> u64 {
+    percpu_stack_region_base() + (cpu as u64 + 1) * PERCPU_STACK_STRIDE
+}
+
+/// Bottom of the upper, idle/exception-owned half of a per-CPU stack slot.
+#[inline]
+pub fn percpu_kernel_stack_bottom(cpu: usize) -> u64 {
+    percpu_stack_region_base() + cpu as u64 * PERCPU_STACK_STRIDE + PERCPU_SCHED_STACK_SIZE
+}
+
+/// Top of the lower, scheduler-owned half of a per-CPU stack slot.
+#[inline]
+pub fn percpu_sched_stack_top(cpu: usize) -> u64 {
+    percpu_kernel_stack_bottom(cpu)
+}
+
+/// Write each stack-half boundary sentinel once, before scheduler/SMP startup.
+///
+/// AArch64 stacks grow downward. The word at the half boundary can therefore
+/// detect the upper idle/exception stack reaching down into the boundary. It
+/// cannot detect a scheduler-stack overrun toward higher addresses: normal
+/// stack growth never approaches the boundary from the lower half.
+pub fn initialize_percpu_stack_boundary_canaries() {
+    for cpu in 0..MAX_CPUS {
+        unsafe {
+            core::ptr::write_volatile(
+                percpu_sched_stack_top(cpu) as *mut u64,
+                PERCPU_STACK_BOUNDARY_CANARY,
+            );
+        }
+    }
+}
+
+/// Read the upper idle/exception-half downward-overrun sentinel for fatal
+/// postmortem diagnostics only; this is not a bidirectional stack guard.
+pub fn percpu_stack_boundary_canary_is_intact(cpu: usize) -> bool {
+    unsafe {
+        core::ptr::read_volatile(percpu_sched_stack_top(cpu) as *const u64)
+            == PERCPU_STACK_BOUNDARY_CANARY
+    }
+}
+
 /// Legacy constant for compile-time contexts (diagnostics). Uses the default
 /// QEMU/Parallels base. Runtime code should use percpu_stack_region_base().
 pub const PERCPU_STACK_REGION_BASE_DEFAULT: u64 = HHDM_BASE + 0x4300_0000;
@@ -241,4 +308,4 @@ pub const MAX_CPUS: usize = 8;
 
 /// Total size of per-CPU stack region (ARM64).
 /// 8 CPUs * 2MB stride = 16MB
-pub const PERCPU_STACK_REGION_SIZE: usize = MAX_CPUS * 2 * 1024 * 1024;
+pub const PERCPU_STACK_REGION_SIZE: usize = MAX_CPUS * PERCPU_STACK_STRIDE as usize;

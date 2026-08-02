@@ -104,6 +104,7 @@ fn main() {
     if target.contains("aarch64") {
         println!("cargo:rustc-link-arg=-Tkernel/src/arch_impl/aarch64/linker.ld");
         println!("cargo:rustc-link-arg=--fix-cortex-a53-843419");
+        println!("cargo:rustc-link-arg=--orphan-handling=error");
     }
 
     // Build the Linux C-based xHCI harness when the feature is enabled.

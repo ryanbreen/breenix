@@ -282,9 +282,8 @@ fn handle_unhandled_el1_exception(frame: &Aarch64ExceptionFrame, ec: u32, esr: u
 fn set_idle_stack_for_eret() {
     use crate::arch_impl::aarch64::percpu::Aarch64PerCpu;
 
-    let cpu_id = Aarch64PerCpu::cpu_id() as u64;
-    let stack_base = super::constants::percpu_stack_region_base();
-    let idle_stack = stack_base + (cpu_id + 1) * 0x20_0000;
+    let cpu_id = Aarch64PerCpu::cpu_id() as usize;
+    let idle_stack = super::constants::percpu_kernel_stack_top(cpu_id);
     unsafe {
         Aarch64PerCpu::set_user_rsp_scratch(idle_stack);
         Aarch64PerCpu::set_kernel_stack_top(idle_stack);
@@ -375,6 +374,45 @@ fn dump_fatal_postmortem_once(label: &str) {
     crate::tracing::dump_all_buffers();
     raw_uart_str("\n  Idle redirect histories:\n");
     crate::arch_impl::aarch64::context_switch::dump_all_idle_redirect_histories();
+    raw_uart_str("\n  Stack pivot alias histories:\n");
+    crate::arch_impl::aarch64::context_switch::dump_stack_pivot_alias_history();
+    raw_uart_str("\n  Stack-half boundary canaries:\n");
+    for canary_cpu in 0..super::constants::MAX_CPUS {
+        raw_uart_str("    cpu=");
+        raw_uart_dec(canary_cpu as u64);
+        raw_uart_str(" intact=");
+        raw_uart_dec(
+            super::constants::percpu_stack_boundary_canary_is_intact(canary_cpu) as u64,
+        );
+        raw_uart_str("\n");
+    }
+}
+
+#[inline(never)]
+fn dump_stack_classification(frame_addr: u64) {
+    use crate::arch_impl::aarch64::context_switch::{raw_uart_dec, raw_uart_str};
+
+    let stack_base = super::constants::percpu_stack_region_base();
+    let stack_end = stack_base + super::constants::PERCPU_STACK_REGION_SIZE as u64;
+    const HHDM_BASE_DIAG: u64 = 0xFFFF_0000_0000_0000;
+    const KSTACK_BASE: u64 = HHDM_BASE_DIAG + 0x5200_0000;
+    const KSTACK_END: u64 = HHDM_BASE_DIAG + 0x5400_0000;
+
+    if frame_addr >= stack_base && frame_addr < stack_end {
+        let offset_from_base = frame_addr - stack_base;
+        let cpu_id = offset_from_base / super::constants::PERCPU_STACK_STRIDE;
+        let offset_in_slot = offset_from_base % super::constants::PERCPU_STACK_STRIDE;
+        if offset_in_slot < super::constants::PERCPU_SCHED_STACK_SIZE {
+            raw_uart_str("\n  STACK=sched_cpu");
+        } else {
+            raw_uart_str("\n  STACK=boot_cpu");
+        }
+        raw_uart_dec(cpu_id);
+    } else if frame_addr >= KSTACK_BASE && frame_addr < KSTACK_END {
+        raw_uart_str("\n  STACK=alloc_kstack");
+    } else {
+        raw_uart_str("\n  STACK=unknown");
+    }
 }
 
 /// ARM64 syscall result type (mirrors x86_64 version)
@@ -592,21 +630,7 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
 
                     // Classify which stack region the frame is on
                     let frame_addr = frame as u64;
-                    let boot_stack_base = super::constants::percpu_stack_region_base();
-                    let boot_stack_end = boot_stack_base + 0x0100_0000;
-                    const HHDM_BASE_DIAG: u64 = 0xFFFF_0000_0000_0000;
-                    const KSTACK_BASE: u64 = HHDM_BASE_DIAG + 0x5200_0000;
-                    const KSTACK_END: u64 = HHDM_BASE_DIAG + 0x5400_0000;
-                    if frame_addr >= boot_stack_base && frame_addr < boot_stack_end {
-                        raw_uart_str("\n  STACK=boot_cpu");
-                        let offset_from_base = frame_addr - boot_stack_base;
-                        let boot_cpu = offset_from_base / 0x20_0000;
-                        raw_uart_dec(boot_cpu);
-                    } else if frame_addr >= KSTACK_BASE && frame_addr < KSTACK_END {
-                        raw_uart_str("\n  STACK=alloc_kstack");
-                    } else {
-                        raw_uart_str("\n  STACK=unknown");
-                    }
+                    dump_stack_classification(frame_addr);
                 }
                 raw_uart_str("\n");
             }
@@ -1004,20 +1028,12 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                     // Stack classification
                     let frame_addr = frame_ref as *const _ as u64;
                     let boot_stack_base = super::constants::percpu_stack_region_base();
-                    let boot_stack_end = boot_stack_base + 0x0100_0000;
+                    let boot_stack_end =
+                        boot_stack_base + super::constants::PERCPU_STACK_REGION_SIZE as u64;
                     const HHDM_BASE_DIAG: u64 = 0xFFFF_0000_0000_0000;
                     const KSTACK_BASE: u64 = HHDM_BASE_DIAG + 0x5200_0000;
                     const KSTACK_END: u64 = HHDM_BASE_DIAG + 0x5400_0000;
-                    if frame_addr >= boot_stack_base && frame_addr < boot_stack_end {
-                        raw_uart_str("\n  STACK=boot_cpu");
-                        let offset_from_base = frame_addr - boot_stack_base;
-                        let boot_cpu = offset_from_base / 0x20_0000;
-                        raw_uart_dec(boot_cpu);
-                    } else if frame_addr >= KSTACK_BASE && frame_addr < KSTACK_END {
-                        raw_uart_str("\n  STACK=alloc_kstack");
-                    } else {
-                        raw_uart_str("\n  STACK=unknown");
-                    }
+                    dump_stack_classification(frame_addr);
 
                     // DISPATCH TRACE: last 8 dispatches on this CPU
                     raw_uart_str("\n  DISPATCH_TRACE cpu=");

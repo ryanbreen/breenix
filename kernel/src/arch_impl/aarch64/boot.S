@@ -29,15 +29,20 @@
 .equ DESC_ATTR_DEVICE,  (0 << 2)
 .equ DESC_ATTR_NORMAL,  (1 << 2)
 .equ DESC_AP_KERNEL,    (0 << 6)       // EL1 RW, EL0 no access
+.equ DESC_AP_KERNEL_RO, (0b10 << 6)    // EL1 RO, EL0 no access
 .equ DESC_PXN,          (1 << 53)
 .equ DESC_UXN,          (1 << 54)
 
 .equ BLOCK_FLAGS_DEVICE, (DESC_BLOCK | DESC_AF | DESC_SH_NONE | DESC_AP_KERNEL | DESC_ATTR_DEVICE | DESC_PXN | DESC_UXN)
 .equ BLOCK_FLAGS_NORMAL, (DESC_BLOCK | DESC_AF | DESC_SH_INNER | DESC_AP_KERNEL | DESC_ATTR_NORMAL)
+.equ BLOCK_FLAGS_NORMAL_NX, (BLOCK_FLAGS_NORMAL | DESC_PXN | DESC_UXN)
+.equ BLOCK_FLAGS_KERNEL_TEXT,   (DESC_BLOCK | DESC_AF | DESC_SH_INNER | DESC_AP_KERNEL_RO | DESC_ATTR_NORMAL | DESC_UXN)
+.equ BLOCK_FLAGS_KERNEL_RODATA, (DESC_BLOCK | DESC_AF | DESC_SH_INNER | DESC_AP_KERNEL_RO | DESC_ATTR_NORMAL | DESC_PXN | DESC_UXN)
+.equ BLOCK_FLAGS_KERNEL_DATA,   (DESC_BLOCK | DESC_AF | DESC_SH_INNER | DESC_AP_KERNEL | DESC_ATTR_NORMAL | DESC_PXN | DESC_UXN)
 
 // Non-Cacheable block flags for DMA buffers (MAIR index 2 = 0x44)
 .equ DESC_ATTR_NC,       (2 << 2)
-.equ BLOCK_FLAGS_NC,     (DESC_BLOCK | DESC_AF | DESC_SH_INNER | DESC_AP_KERNEL | DESC_ATTR_NC)
+.equ BLOCK_FLAGS_NC,     (DESC_BLOCK | DESC_AF | DESC_SH_INNER | DESC_AP_KERNEL | DESC_ATTR_NC | DESC_PXN | DESC_UXN)
 
 // DMA NC region: 2MB block at physical 0x5000_0000
 // L2 index = (0x50000000 - 0x40000000) / 0x200000 = 128
@@ -370,6 +375,8 @@ setup_mmu:
     ldr x0, =ttbr1_l0
     msr ttbr1_el1, x0
     dsb ishst
+    tlbi vmalle1
+    dsb ish
     isb
 
     // Enable MMU
@@ -396,18 +403,42 @@ zero_table_loop:
     ret
 
 // Fill L2 table at x0 with 512 x 2MB block entries for 0x4000_0000 - 0x7FFF_FFFF.
-// Entry NC_L2_INDEX (index 128 = physical 0x5000_0000) gets BLOCK_FLAGS_NC.
-// All other entries get BLOCK_FLAGS_NORMAL.
+// Kernel image blocks receive section-specific W^X permissions. Entry
+// NC_L2_INDEX (physical 0x5000_0000) is writable, non-cacheable, and XN.
 fill_l2_ram:
     mov x1, #0                // i = 0
     ldr x3, =0x40000000       // base physical address
-    ldr x4, =BLOCK_FLAGS_NORMAL
+    ldr x4, =BLOCK_FLAGS_NORMAL_NX
     ldr x5, =BLOCK_FLAGS_NC
+    ldr x8, =BLOCK_FLAGS_KERNEL_TEXT
+    ldr x9, =BLOCK_FLAGS_KERNEL_RODATA
+    ldr x10, =BLOCK_FLAGS_KERNEL_DATA
+    ldr x11, =__boot_text_block_end
+    ldr x12, =__kernel_text_phys_start
+    ldr x13, =__kernel_text_phys_end
+    ldr x14, =__kernel_rodata_phys_end
+    ldr x15, =__kernel_writable_phys_end
 fill_l2_loop:
     lsl x6, x1, #21           // offset = i * 2MB (0x200000)
     add x6, x6, x3            // phys = 0x40000000 + offset
+
+    // Defaults outside the kernel image are writable normal memory with PXN+UXN.
+    // Apply increasingly specific kernel ranges without adding
+    // conditional branches to this CONDBR19-sensitive assembly file.
+    mov x7, x4
+    cmp x6, x15
+    csel x7, x10, x7, lo      // boot BSS + .data/.bss/stack: EL1 RW, PXN+UXN
+    cmp x6, x14
+    csel x7, x9, x7, lo       // .rodata: EL1 RO, PXN+UXN
+    cmp x6, x13
+    csel x7, x8, x7, lo       // runtime .text: EL1 RO, executable, UXN
+    cmp x6, x12
+    csel x7, x10, x7, lo      // low boot BSS between the two text ranges
+    cmp x6, x11
+    csel x7, x8, x7, lo       // low boot .text: EL1 RO, executable, UXN
+
     cmp x1, #NC_L2_INDEX
-    csel x7, x5, x4, eq       // flags = NC if i==128, else Normal
+    csel x7, x5, x7, eq       // .dma: writable NC, PXN+UXN
     orr x6, x6, x7            // entry = phys | flags
     str x6, [x0, x1, lsl #3]  // L2[i] = entry
     add x1, x1, #1
@@ -433,8 +464,8 @@ lower_el_sync_dispatch:
     mrs x16, esr_el1
     lsr x17, x16, #26          // Extract EC field (bits [31:26])
     cmp x17, #0x15              // EC 0x15 = SVC instruction from AArch64
-    b.eq syscall_entry_from_el0
-    b sync_exception_handler
+    b.ne sync_exception_handler
+    b syscall_entry_from_el0
 
 sync_exception_handler:
     // Save all registers

@@ -780,6 +780,7 @@ extern "C" {
 }
 
 const _: () = assert!(core::mem::offset_of!(CpuContext, x19) == 152);
+const _: () = assert!(core::mem::offset_of!(CpuContext, x29) == 232);
 const _: () = assert!(core::mem::offset_of!(CpuContext, x30) == 240);
 const _: () = assert!(core::mem::offset_of!(CpuContext, sp) == 248);
 const _: () = assert!(core::mem::offset_of!(Aarch64ExceptionFrame, x16) == 128);
@@ -1042,7 +1043,12 @@ pub fn dump_all_save_skew_snapshots() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────
-// IDLE_REDIRECT history (diagnostic only, no behavior change)
+// IDLE_REDIRECT history
+//
+// Every event is recorded after setup_idle_return_locked has committed
+// cpu_state.current_thread to the per-CPU idle thread. The reason identifies
+// the redirect path; current_before -> current_after records that committed
+// transition. There is no uncommitted/omitted helper outcome.
 
 #[derive(Clone, Copy)]
 #[repr(u64)]
@@ -1159,6 +1165,90 @@ pub fn dump_all_idle_redirect_histories() {
             raw_uart_dec(current_before);
             raw_uart_str("->");
             raw_uart_dec(current_after);
+            raw_uart_str("\n");
+        }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Stack-pivot alias guard
+//
+// Every scheduler/idle SP pivot checks whether the current SP is already in
+// the destination stack's live range. The clean path is two comparisons. A
+// violation is record-only: capture it in a bounded per-CPU ring and emit one
+// raw-UART line per CPU, without changing control flow.
+
+const STACK_PIVOT_HISTORY_SIZE: usize = 16;
+const STACK_PIVOT_HISTORY_FIELDS: usize = 3;
+static STACK_PIVOT_HISTORY: [[AtomicU64; STACK_PIVOT_HISTORY_SIZE * STACK_PIVOT_HISTORY_FIELDS];
+    crate::arch_impl::aarch64::constants::MAX_CPUS] = {
+    const INIT_FIELD: AtomicU64 = AtomicU64::new(0);
+    const INIT_CPU: [AtomicU64; STACK_PIVOT_HISTORY_SIZE * STACK_PIVOT_HISTORY_FIELDS] =
+        [INIT_FIELD; STACK_PIVOT_HISTORY_SIZE * STACK_PIVOT_HISTORY_FIELDS];
+    [INIT_CPU; crate::arch_impl::aarch64::constants::MAX_CPUS]
+};
+static STACK_PIVOT_HISTORY_IDX: [AtomicU64;
+    crate::arch_impl::aarch64::constants::MAX_CPUS] =
+    [const { AtomicU64::new(0) }; crate::arch_impl::aarch64::constants::MAX_CPUS];
+static STACK_PIVOT_ALIAS_REPORTED: [AtomicBool;
+    crate::arch_impl::aarch64::constants::MAX_CPUS] =
+    [const { AtomicBool::new(false) }; crate::arch_impl::aarch64::constants::MAX_CPUS];
+
+#[inline(always)]
+fn assert_pivot_free(cpu: usize, dest_top: u64, cur_sp: u64, site: u8) {
+    if cpu >= crate::arch_impl::aarch64::constants::MAX_CPUS {
+        return;
+    }
+    let dest_bottom =
+        dest_top.saturating_sub(crate::arch_impl::aarch64::constants::PERCPU_SCHED_STACK_SIZE);
+    if cur_sp < dest_bottom || cur_sp > dest_top {
+        return;
+    }
+
+    let index = STACK_PIVOT_HISTORY_IDX[cpu].fetch_add(1, Ordering::Relaxed) as usize;
+    let base = (index % STACK_PIVOT_HISTORY_SIZE) * STACK_PIVOT_HISTORY_FIELDS;
+    STACK_PIVOT_HISTORY[cpu][base].store(site as u64, Ordering::Relaxed);
+    STACK_PIVOT_HISTORY[cpu][base + 1].store(dest_top, Ordering::Relaxed);
+    STACK_PIVOT_HISTORY[cpu][base + 2].store(cur_sp, Ordering::Relaxed);
+
+    if !STACK_PIVOT_ALIAS_REPORTED[cpu].swap(true, Ordering::AcqRel) {
+        raw_uart_str("[STACK_PIVOT_ALIAS] cpu=");
+        raw_uart_dec(cpu as u64);
+        raw_uart_str(" site=");
+        raw_uart_dec(site as u64);
+        raw_uart_str(" dest_top=");
+        raw_uart_hex(dest_top);
+        raw_uart_str(" cur_sp=");
+        raw_uart_hex(cur_sp);
+        raw_uart_str("\n");
+    }
+}
+
+pub fn dump_stack_pivot_alias_history() {
+    for cpu in 0..crate::arch_impl::aarch64::constants::MAX_CPUS {
+        let total = STACK_PIVOT_HISTORY_IDX[cpu].load(Ordering::Relaxed) as usize;
+        let count = total.min(STACK_PIVOT_HISTORY_SIZE);
+        if count == 0 {
+            continue;
+        }
+        let start = total.saturating_sub(STACK_PIVOT_HISTORY_SIZE);
+        raw_uart_str("[STACK_PIVOT_ALIAS_HISTORY] cpu=");
+        raw_uart_dec(cpu as u64);
+        raw_uart_str(" last=");
+        raw_uart_dec(count as u64);
+        raw_uart_str(" total=");
+        raw_uart_dec(total as u64);
+        raw_uart_str("\n");
+        for index in start..total {
+            let base = (index % STACK_PIVOT_HISTORY_SIZE) * STACK_PIVOT_HISTORY_FIELDS;
+            raw_uart_str("  [");
+            raw_uart_dec(index as u64);
+            raw_uart_str("] site=");
+            raw_uart_dec(STACK_PIVOT_HISTORY[cpu][base].load(Ordering::Relaxed));
+            raw_uart_str(" dest_top=");
+            raw_uart_hex(STACK_PIVOT_HISTORY[cpu][base + 1].load(Ordering::Relaxed));
+            raw_uart_str(" cur_sp=");
+            raw_uart_hex(STACK_PIVOT_HISTORY[cpu][base + 2].load(Ordering::Relaxed));
             raw_uart_str("\n");
         }
     }
@@ -1838,6 +1928,15 @@ fn read_daif() -> u64 {
 }
 
 #[inline(always)]
+fn read_current_sp() -> u64 {
+    let sp: u64;
+    unsafe {
+        core::arch::asm!("mov {}, sp", out(reg) sp, options(nomem, nostack, preserves_flags));
+    }
+    sp
+}
+
+#[inline(always)]
 fn read_sp_el0() -> u64 {
     let sp_el0: u64;
     unsafe {
@@ -1857,17 +1956,33 @@ fn read_tpidr_el0() -> u64 {
 
 #[inline(always)]
 fn scheduler_stack_top(cpu_id: usize) -> u64 {
-    const STACK_SIZE: u64 = 0x20_0000;
-    super::constants::percpu_stack_region_base() + ((cpu_id as u64) + 1) * STACK_SIZE
+    let top = super::constants::percpu_sched_stack_top(cpu_id);
+    debug_assert_ne!(top, super::constants::percpu_kernel_stack_top(cpu_id));
+    top
+}
+
+#[inline(always)]
+fn idle_dispatch_stack(cpu_id: usize, preferred: u64) -> u64 {
+    if preferred == 0 {
+        super::constants::percpu_kernel_stack_top(cpu_id)
+    } else {
+        preferred
+    }
 }
 
 #[inline(always)]
 fn thread_kernel_stack_contains(thread: &Thread, sp: u64) -> bool {
+    debug_assert_ne!(
+        thread.privilege,
+        ThreadPrivilege::Kernel,
+        "process-owned blocked threads must use user privilege"
+    );
     let Some(kst) = thread.kernel_stack_top else {
         return false;
     };
     let top = kst.as_u64();
-    let bottom = top.saturating_sub(crate::arch_impl::aarch64::constants::KERNEL_STACK_SIZE as u64);
+    let bottom =
+        top.saturating_sub(crate::arch_impl::aarch64::constants::KERNEL_STACK_SIZE as u64);
     sp >= bottom && sp <= top
 }
 
@@ -2688,20 +2803,22 @@ fn setup_idle_return_locked(
     cpu_id: usize,
 ) -> u64 {
     let current_before = sched.cpu_state[cpu_id].current_thread.unwrap_or(0xDEAD);
+    let idle_id = sched.cpu_state[cpu_id].idle_thread;
+    if current_before != idle_id {
+        crate::task::scheduler::record_cpu_state_change(cpu_id, 19, current_before, idle_id);
+    }
+    sched.cpu_state[cpu_id].current_thread = Some(idle_id);
+
     // Set frame ELR and SPSR to safe values FIRST
     let idle_addr = idle_loop_arm64 as *const () as u64;
     frame.elr = idle_addr;
     frame.spsr = 0x5; // EL1h with interrupts enabled
 
     // Get idle thread's kernel stack
-    let idle_id = sched.cpu_state[cpu_id].idle_thread;
     let idle_stack = sched
         .get_thread(idle_id)
         .and_then(|t| t.kernel_stack_top.map(|v| v.as_u64()))
-        .unwrap_or_else(|| {
-            let cpu_id64 = cpu_id as u64;
-            super::constants::percpu_stack_region_base() + (cpu_id64 + 1) * 0x20_0000
-        });
+        .unwrap_or_else(|| super::constants::percpu_kernel_stack_top(cpu_id));
 
     // Clear all general purpose registers for clean state
     frame.x0 = 0;
@@ -2743,6 +2860,26 @@ fn setup_idle_return_locked(
         Aarch64PerCpu::clear_preempt_active();
     }
     current_before
+}
+
+#[inline(always)]
+fn reset_idle_continuation_locked(sched: &mut Scheduler, new_id: u64, idle_sp: u64) {
+    // The null-trampoline fallback may observe stale handoff IDs after it
+    // discovers there is no scheduler pointer to consume.  Only the thread
+    // actually being restarted as idle may have its continuation replaced.
+    if !sched.is_idle_thread_inner(new_id) {
+        return;
+    }
+
+    if let Some(thread) = sched.get_thread_mut(new_id) {
+        let idle_addr = idle_loop_arm64 as *const () as u64;
+        thread.saved_by_inline_schedule = false;
+        thread.inline_schedule_saved_sp = 0;
+        thread.inline_schedule_caller_lr = 0;
+        thread.context.sp = idle_sp;
+        thread.context.elr_el1 = idle_addr;
+        thread.context.x30 = idle_addr;
+    }
 }
 
 /// Dispatch an idle thread — called inside scheduler lock hold.
@@ -2868,10 +3005,6 @@ fn dispatch_thread_locked(
                         thread.state = ThreadState::Ready;
                     }
                     let current_before = setup_idle_return_locked(sched, frame, cpu_id);
-                    let idle_id = sched.cpu_state[cpu_id].idle_thread;
-                    let old_val = sched.cpu_state[cpu_id].current_thread.unwrap_or(0xDEAD);
-                    crate::task::scheduler::record_cpu_state_change(cpu_id, 10, old_val, idle_id);
-                    sched.cpu_state[cpu_id].current_thread = Some(idle_id);
                     record_idle_redirect(
                         sched,
                         cpu_id,
@@ -2897,10 +3030,6 @@ fn dispatch_thread_locked(
                         thread.state = ThreadState::Terminated;
                     }
                     let current_before = setup_idle_return_locked(sched, frame, cpu_id);
-                    let idle_id = sched.cpu_state[cpu_id].idle_thread;
-                    let old_val = sched.cpu_state[cpu_id].current_thread.unwrap_or(0xDEAD);
-                    crate::task::scheduler::record_cpu_state_change(cpu_id, 11, old_val, idle_id);
-                    sched.cpu_state[cpu_id].current_thread = Some(idle_id);
                     record_idle_redirect(
                         sched,
                         cpu_id,
@@ -2945,10 +3074,6 @@ fn dispatch_thread_locked(
                 thread.state = ThreadState::Terminated;
             }
             let current_before = setup_idle_return_locked(sched, frame, cpu_id);
-            let idle_id = sched.cpu_state[cpu_id].idle_thread;
-            let old_val = sched.cpu_state[cpu_id].current_thread.unwrap_or(0xDEAD);
-            crate::task::scheduler::record_cpu_state_change(cpu_id, 12, old_val, idle_id);
-            sched.cpu_state[cpu_id].current_thread = Some(idle_id);
             record_idle_redirect(
                 sched,
                 cpu_id,
@@ -3043,10 +3168,6 @@ fn dispatch_thread_locked(
                     thread.state = ThreadState::Terminated;
                 }
                 let current_before = setup_idle_return_locked(sched, frame, cpu_id);
-                let idle_id = sched.cpu_state[cpu_id].idle_thread;
-                let old_val = sched.cpu_state[cpu_id].current_thread.unwrap_or(0xDEAD);
-                crate::task::scheduler::record_cpu_state_change(cpu_id, 13, old_val, idle_id);
-                sched.cpu_state[cpu_id].current_thread = Some(idle_id);
                 record_idle_redirect(
                     sched,
                     cpu_id,
@@ -3093,10 +3214,6 @@ fn dispatch_thread_locked(
                     thread.state = ThreadState::Ready;
                 }
                 let current_before = setup_idle_return_locked(sched, frame, cpu_id);
-                let idle_id = sched.cpu_state[cpu_id].idle_thread;
-                let old_val = sched.cpu_state[cpu_id].current_thread.unwrap_or(0xDEAD);
-                crate::task::scheduler::record_cpu_state_change(cpu_id, 14, old_val, idle_id);
-                sched.cpu_state[cpu_id].current_thread = Some(idle_id);
                 record_idle_redirect(
                     sched,
                     cpu_id,
@@ -3121,10 +3238,6 @@ fn dispatch_thread_locked(
                     thread.state = ThreadState::Terminated;
                 }
                 let current_before = setup_idle_return_locked(sched, frame, cpu_id);
-                let idle_id = sched.cpu_state[cpu_id].idle_thread;
-                let old_val = sched.cpu_state[cpu_id].current_thread.unwrap_or(0xDEAD);
-                crate::task::scheduler::record_cpu_state_change(cpu_id, 15, old_val, idle_id);
-                sched.cpu_state[cpu_id].current_thread = Some(idle_id);
                 record_idle_redirect(
                     sched,
                     cpu_id,
@@ -3782,16 +3895,28 @@ extern "C" fn inline_schedule_trampoline() -> ! {
             crate::task::scheduler::force_unlock_scheduler();
         }
 
-        let idle_sp = crate::task::scheduler::with_scheduler(|sched| {
+        let idle_sp_candidate = crate::task::scheduler::with_scheduler(|sched| {
             let idle_id = sched.cpu_state[cpu_id].idle_thread;
-            let idle_sp = sched
+            sched
                 .get_thread(idle_id)
                 .and_then(|thread| thread.kernel_stack_top.map(|stack| stack.as_u64()))
-                .unwrap_or_else(|| scheduler_stack_top(cpu_id));
+                .unwrap_or_else(|| super::constants::percpu_kernel_stack_top(cpu_id))
+        });
+        let idle_sp = idle_dispatch_stack(
+            cpu_id,
+            idle_sp_candidate
+                .unwrap_or_else(|| super::constants::percpu_kernel_stack_top(cpu_id)),
+        );
+
+        // Persist the exact normalized stack value used by the live pivot.  Use
+        // the current idle ID from this lock hold, never either stale handoff ID.
+        // with_scheduler returns None only when the scheduler object itself is
+        // absent; in that case there is no persisted idle Thread to update.
+        let _ = crate::task::scheduler::with_scheduler(|sched| {
+            let idle_id = sched.cpu_state[cpu_id].idle_thread;
+            reset_idle_continuation_locked(sched, idle_id, idle_sp);
             sched.fix_exception_cleanup_cpu_state();
-            idle_sp
-        })
-        .unwrap_or_else(|| scheduler_stack_top(cpu_id));
+        });
 
         unsafe {
             Aarch64PerCpu::set_user_rsp_scratch(idle_sp);
@@ -3806,6 +3931,7 @@ extern "C" fn inline_schedule_trampoline() -> ! {
 
         inline_schedule_breadcrumb(cpu_id, INLINE_BC_IDLE_RET_BRANCH, 1);
         let idle_addr = crate::arch_impl::aarch64::idle_loop_arm64 as *const () as u64;
+        assert_pivot_free(cpu_id, idle_sp, read_current_sp(), 3);
         unsafe {
             core::arch::asm!(
                 "mov sp, {stack}",
@@ -4002,6 +4128,17 @@ extern "C" fn inline_schedule_trampoline() -> ! {
     unsafe {
         Aarch64PerCpu::set_dispatch_elr(frame.elr);
         Aarch64PerCpu::set_dispatch_spsr(frame.spsr);
+    }
+
+    let fresh_idle_sp = if is_idle {
+        let idle_sp = idle_dispatch_stack(cpu_id, Aarch64PerCpu::kernel_stack_top());
+        reset_idle_continuation_locked(sched, new_id, idle_sp);
+        idle_sp
+    } else {
+        0
+    };
+
+    unsafe {
         inline_schedule_breadcrumb(cpu_id, INLINE_BC_FORCE_UNLOCK_ERET, is_idle as u16);
         crate::task::scheduler::force_unlock_scheduler();
     }
@@ -4025,7 +4162,8 @@ extern "C" fn inline_schedule_trampoline() -> ! {
         inline_schedule_breadcrumb(cpu_id, INLINE_BC_IDLE_RET_BRANCH, 0);
         cpu0_breadcrumb(cpu_id, 45); // ret-based idle dispatch (NOT ERET)
         let idle_addr = crate::arch_impl::aarch64::idle_loop_arm64 as *const () as u64;
-        let idle_sp = Aarch64PerCpu::kernel_stack_top();
+        let idle_sp = fresh_idle_sp;
+        assert_pivot_free(cpu_id, idle_sp, read_current_sp(), 2);
         unsafe {
             core::arch::asm!(
                 "mov sp, {stack}",
@@ -4238,10 +4376,13 @@ pub fn schedule_from_kernel() {
 
     let _ = spin::MutexGuard::leak(guard);
 
+    let scheduler_top = scheduler_stack_top(cpu_id);
+    assert_pivot_free(cpu_id, scheduler_top, read_current_sp(), 1);
+
     unsafe {
         aarch64_inline_schedule_switch(
             old_context_ptr,
-            scheduler_stack_top(cpu_id),
+            scheduler_top,
             inline_schedule_trampoline,
         );
     }
@@ -4297,10 +4438,8 @@ fn setup_idle_return_arm64(frame: &mut Aarch64ExceptionFrame) {
     })
     .flatten()
     .unwrap_or_else(|| {
-        let cpu_id = Aarch64PerCpu::cpu_id() as u64;
-        let boot_stack_top =
-            super::constants::percpu_stack_region_base() + (cpu_id + 1) * 0x20_0000;
-        boot_stack_top
+        let cpu_id = Aarch64PerCpu::cpu_id() as usize;
+        super::constants::percpu_kernel_stack_top(cpu_id)
     });
 
     // Clear all general purpose registers for clean state
@@ -4599,28 +4738,6 @@ pub extern "C" fn idle_loop_arm64() -> ! {
 
         let _ = idle_enter_scheduler_if_needed();
     }
-}
-
-/// Perform a context switch between two threads using the low-level
-/// assembly switch_context function.
-#[allow(dead_code)]
-pub unsafe fn perform_context_switch(old_context: &mut CpuContext, new_context: &CpuContext) {
-    super::context::switch_context(
-        old_context as *mut CpuContext,
-        new_context as *const CpuContext,
-    );
-}
-
-/// Switch to a new thread for the first time (doesn't save current context).
-#[allow(dead_code)]
-pub unsafe fn switch_to_new_thread(context: &CpuContext) -> ! {
-    super::context::switch_to_thread(context as *const CpuContext)
-}
-
-/// Switch to userspace using ERET.
-#[allow(dead_code)]
-pub unsafe fn switch_to_user(context: &CpuContext) -> ! {
-    super::context::switch_to_user(context as *const CpuContext)
 }
 
 // =============================================================================

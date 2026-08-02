@@ -543,15 +543,11 @@ const MAX_CPUS: usize = 1;
 ///       target; see ROOT_CAUSE.md's cpu_state/old_id skew candidate)
 ///   8 = fix_stale_idle_cpu_state
 ///   9 = fix_exception_cleanup_cpu_state
-///  10 = dispatch_thread_locked (kernel TTBR_PM_LOCK_BUSY redirect)
-///  11 = dispatch_thread_locked (kernel PROCESS_GONE redirect)
-///  12 = dispatch_thread_locked (kernel RESTORE_FAILED redirect)
-///  13 = dispatch_thread_locked (EL0 bad-context redirect)
-///  14 = dispatch_thread_locked (EL0 TTBR_PM_LOCK_BUSY redirect)
-///  15 = dispatch_thread_locked (EL0 PROCESS_GONE redirect)
+/// 10-15 = retired path-specific dispatch_thread_locked idle-redirect setters
 ///  16 = Scheduler::add_thread_as_current
 ///  17 = Scheduler::terminate_current (new_thread = 0xDEAD means None)
 ///  18 = Scheduler::new (initial CPU 0 idle thread)
+///  19 = setup_idle_return_locked (every exception-frame redirect to idle)
 #[cfg(target_arch = "aarch64")]
 const HISTORY_SIZE: usize = 256;
 #[cfg(target_arch = "aarch64")]

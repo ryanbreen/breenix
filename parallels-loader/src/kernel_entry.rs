@@ -23,7 +23,7 @@ pub fn jump_to_kernel(
     kernel_entry: u64,
     hw_config: &HardwareConfig,
     page_table_storage: &mut PageTableStorage,
-    pt_config: &PageTableConfig,
+    pt_config: &PageTableConfig<'_>,
 ) -> ! {
     let (ttbr0, ttbr1) = page_tables::build_page_tables(page_table_storage, pt_config);
     let hw_config_ptr = hw_config as *const HardwareConfig as u64;
@@ -61,7 +61,7 @@ pub fn jump_to_kernel(
 ///   x2 = kernel entry point physical address
 ///   x3 = HardwareConfig pointer (physical, identity-mapped)
 #[inline(never)]
-unsafe fn switch_and_jump(ttbr0: u64, ttbr1: u64, entry: u64, hw_config_ptr: u64) -> ! {
+pub(crate) unsafe fn switch_and_jump(ttbr0: u64, ttbr1: u64, entry: u64, hw_config_ptr: u64) -> ! {
     // Get the address of our exception vector table (defined in global_asm! below).
     extern "C" {
         static loader_exception_vectors: u8;

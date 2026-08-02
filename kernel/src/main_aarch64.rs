@@ -430,6 +430,10 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
     // Breadcrumb: 'S' = serial initialized
     kernel::serial_aarch64::raw_serial_char(b'S');
 
+    // Install debug-only sentinels between the scheduler and idle/exception
+    // halves before either scheduler startup or secondary-CPU bring-up.
+    kernel::arch_impl::aarch64::constants::initialize_percpu_stack_boundary_canaries();
+
     // Initialize the /proc/kmsg log buffer early so ALL serial output is captured
     kernel::log_buffer::init();
 
@@ -1354,11 +1358,13 @@ fn init_scheduler() {
     const HHDM_BASE: u64 = 0xFFFF_0000_0000_0000;
     let (boot_stack_top, boot_stack_bottom) =
         if kernel::platform_config::is_qemu() || kernel::platform_config::is_vmware() {
-            let stack_base = kernel::arch_impl::aarch64::constants::percpu_stack_region_base();
-            const STACK_SIZE: u64 = 0x20_0000; // 2MB per CPU
             (
-                VirtAddr::new(stack_base + STACK_SIZE),
-                VirtAddr::new(stack_base),
+                VirtAddr::new(
+                    kernel::arch_impl::aarch64::constants::percpu_kernel_stack_top(0),
+                ),
+                VirtAddr::new(
+                    kernel::arch_impl::aarch64::constants::percpu_kernel_stack_bottom(0),
+                ),
             )
         } else {
             // Parallels: UEFI loader stack at 0x42000000 (phys), now at HHDM
