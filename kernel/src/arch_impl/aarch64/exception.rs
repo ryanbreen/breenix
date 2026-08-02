@@ -375,6 +375,8 @@ fn dump_fatal_postmortem_once(label: &str) {
     crate::tracing::dump_all_buffers();
     raw_uart_str("\n  Idle redirect histories:\n");
     crate::arch_impl::aarch64::context_switch::dump_all_idle_redirect_histories();
+    raw_uart_str("\n  Stack pivot alias histories:\n");
+    crate::arch_impl::aarch64::context_switch::dump_stack_pivot_alias_history();
 }
 
 #[inline(never)]
