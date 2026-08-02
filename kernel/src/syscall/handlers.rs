@@ -2757,10 +2757,10 @@ pub fn sys_waitpid(pid: i64, status_ptr: u64, options: u32) -> SyscallResult {
     };
 
     // Find current process
-    let mut manager_guard = crate::process::manager();
-    let (current_pid, current_process) = match &mut *manager_guard {
-        Some(manager) => match manager.find_process_by_thread_mut(thread_id) {
-            Some((pid, process)) => (pid, process),
+    let manager_guard = crate::process::manager();
+    let (current_pid, child_count) = match &*manager_guard {
+        Some(manager) => match manager.find_process_by_thread(thread_id) {
+            Some((pid, _process)) => (pid, manager.child_count(pid)),
             None => {
                 log::error!("sys_waitpid: Thread {} not in any process", thread_id);
                 return SyscallResult::Err(super::errno::EINVAL as u64);
@@ -2775,11 +2775,11 @@ pub fn sys_waitpid(pid: i64, status_ptr: u64, options: u32) -> SyscallResult {
     log::debug!(
         "sys_waitpid: Current process PID={}, has {} children",
         current_pid.as_u64(),
-        current_process.children.len()
+        child_count
     );
 
     // Check for children
-    if current_process.children.is_empty() {
+    if child_count == 0 {
         log::debug!("sys_waitpid: No children - returning ECHILD");
         return SyscallResult::Err(super::errno::ECHILD as u64);
     }
@@ -2791,7 +2791,10 @@ pub fn sys_waitpid(pid: i64, status_ptr: u64, options: u32) -> SyscallResult {
             let target_pid = crate::process::ProcessId::new(p as u64);
 
             // Check if target is actually our child
-            if !current_process.children.contains(&target_pid) {
+            if !manager_guard
+                .as_ref()
+                .is_some_and(|manager| manager.is_child_of(current_pid, target_pid))
+            {
                 log::debug!(
                     "sys_waitpid: PID {} is not a child of {}",
                     p,
@@ -2800,8 +2803,6 @@ pub fn sys_waitpid(pid: i64, status_ptr: u64, options: u32) -> SyscallResult {
                 return SyscallResult::Err(super::errno::ECHILD as u64);
             }
 
-            // We need to drop the mutable borrow to check child state
-            let children_copy: Vec<_> = current_process.children.clone();
             drop(manager_guard);
 
             // Check if the specific child is already terminated
@@ -2824,7 +2825,7 @@ pub fn sys_waitpid(pid: i64, status_ptr: u64, options: u32) -> SyscallResult {
             };
 
             if let Some((child_pid, exit_code)) = child_terminated {
-                return complete_wait(child_pid, exit_code, status_ptr, &children_copy);
+                return complete_wait(child_pid, exit_code, status_ptr);
             }
 
             // Child exists but not terminated
@@ -2855,12 +2856,7 @@ pub fn sys_waitpid(pid: i64, status_ptr: u64, options: u32) -> SyscallResult {
                                     thread.set_ready();
                                 }
                             });
-                            return complete_wait(
-                                target_pid,
-                                exit_code,
-                                status_ptr,
-                                &children_copy,
-                            );
+                            return complete_wait(target_pid, exit_code, status_ptr);
                         }
                     }
                 }
@@ -2898,12 +2894,7 @@ pub fn sys_waitpid(pid: i64, status_ptr: u64, options: u32) -> SyscallResult {
                         if let crate::process::ProcessState::Terminated(exit_code) = child.state {
                             drop(manager_guard);
                             crate::per_cpu::preempt_disable();
-                            return complete_wait(
-                                target_pid,
-                                exit_code,
-                                status_ptr,
-                                &children_copy,
-                            );
+                            return complete_wait(target_pid, exit_code, status_ptr);
                         }
                     }
                 }
@@ -2912,31 +2903,20 @@ pub fn sys_waitpid(pid: i64, status_ptr: u64, options: u32) -> SyscallResult {
 
         // pid == -1: Wait for any child
         -1 => {
-            let children_copy: Vec<_> = current_process.children.clone();
             drop(manager_guard);
 
             // Check if any child is already terminated
             let terminated_child = {
                 let manager_guard = crate::process::manager();
                 if let Some(ref manager) = *manager_guard {
-                    let mut result = None;
-                    for &child_pid in &children_copy {
-                        if let Some(child) = manager.get_process(child_pid) {
-                            if let crate::process::ProcessState::Terminated(exit_code) = child.state
-                            {
-                                result = Some((child_pid, exit_code));
-                                break;
-                            }
-                        }
-                    }
-                    result
+                    manager.find_terminated_child(current_pid)
                 } else {
                     None
                 }
             };
 
             if let Some((child_pid, exit_code)) = terminated_child {
-                return complete_wait(child_pid, exit_code, status_ptr, &children_copy);
+                return complete_wait(child_pid, exit_code, status_ptr);
             }
 
             // No terminated children yet
@@ -2954,25 +2934,17 @@ pub fn sys_waitpid(pid: i64, status_ptr: u64, options: u32) -> SyscallResult {
             {
                 let mg = crate::process::manager();
                 if let Some(ref manager) = *mg {
-                    for &child_pid in &children_copy {
-                        if let Some(child) = manager.get_process(child_pid) {
-                            if let crate::process::ProcessState::Terminated(exit_code) = child.state
-                            {
-                                drop(mg);
-                                crate::task::scheduler::with_scheduler(|sched| {
-                                    if let Some(thread) = sched.current_thread_mut() {
-                                        thread.blocked_in_syscall = false;
-                                        thread.set_ready();
-                                    }
-                                });
-                                return complete_wait(
-                                    child_pid,
-                                    exit_code,
-                                    status_ptr,
-                                    &children_copy,
-                                );
+                    if let Some((child_pid, exit_code)) =
+                        manager.find_terminated_child(current_pid)
+                    {
+                        drop(mg);
+                        crate::task::scheduler::with_scheduler(|sched| {
+                            if let Some(thread) = sched.current_thread_mut() {
+                                thread.blocked_in_syscall = false;
+                                thread.set_ready();
                             }
-                        }
+                        });
+                        return complete_wait(child_pid, exit_code, status_ptr);
                     }
                 }
             }
@@ -3005,20 +2977,12 @@ pub fn sys_waitpid(pid: i64, status_ptr: u64, options: u32) -> SyscallResult {
                 // After being rescheduled, check if any child terminated
                 let manager_guard = crate::process::manager();
                 if let Some(ref manager) = *manager_guard {
-                    for &child_pid in &children_copy {
-                        if let Some(child) = manager.get_process(child_pid) {
-                            if let crate::process::ProcessState::Terminated(exit_code) = child.state
-                            {
-                                drop(manager_guard);
-                                crate::per_cpu::preempt_disable();
-                                return complete_wait(
-                                    child_pid,
-                                    exit_code,
-                                    status_ptr,
-                                    &children_copy,
-                                );
-                            }
-                        }
+                    if let Some((child_pid, exit_code)) =
+                        manager.find_terminated_child(current_pid)
+                    {
+                        drop(manager_guard);
+                        crate::per_cpu::preempt_disable();
+                        return complete_wait(child_pid, exit_code, status_ptr);
                     }
                 }
             }
@@ -3033,12 +2997,11 @@ pub fn sys_waitpid(pid: i64, status_ptr: u64, options: u32) -> SyscallResult {
 }
 
 /// Helper function to complete a wait operation
-/// Writes the status and removes the child from parent's children list
+/// Writes the status and marks the child row reaped.
 fn complete_wait(
     child_pid: crate::process::ProcessId,
     exit_code: i32,
     status_ptr: u64,
-    _children: &[crate::process::ProcessId],
 ) -> SyscallResult {
     // Encode exit status in wstatus format.
     // The wstatus encoding distinguishes between:
@@ -3087,17 +3050,10 @@ fn complete_wait(
         }
     }
 
-    // Remove child from parent's children list and reap from process table
-    if let Some(thread_id) = crate::task::scheduler::current_thread_id() {
+    // Reap the child row; parentage is represented solely by child.parent.
+    if crate::task::scheduler::current_thread_id().is_some() {
         let mut manager_guard = crate::process::manager();
         if let Some(ref mut manager) = *manager_guard {
-            if let Some((_parent_pid, parent)) = manager.find_process_by_thread_mut(thread_id) {
-                parent.children.retain(|&id| id != child_pid);
-                log::debug!(
-                    "complete_wait: Removed child {} from parent's children list",
-                    child_pid.as_u64()
-                );
-            }
             manager.remove_process(child_pid);
             log::debug!(
                 "complete_wait: Reaped process {} from process table",

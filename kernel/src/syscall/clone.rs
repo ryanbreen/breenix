@@ -236,11 +236,6 @@ pub fn sys_clone(
     // Add child to process manager
     manager.insert_process(child_pid, child_process);
 
-    // Add child process as parent's child
-    if let Some(parent) = manager.get_process_mut(parent_pid) {
-        parent.children.push(child_pid);
-    }
-
     // Get the thread from the newly inserted process to add to scheduler
     let scheduler_thread = if let Some(process) = manager.get_process_mut(child_pid) {
         if let Some(ref thread) = process.main_thread {

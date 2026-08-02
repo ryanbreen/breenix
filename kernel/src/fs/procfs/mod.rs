@@ -1057,11 +1057,11 @@ fn generate_pid_status(pid: u64) -> String {
     };
 
     // Format children list
-    let children_str = if process.children.is_empty() {
+    let child_pids: Vec<_> = manager.child_pids(process.id).collect();
+    let children_str = if child_pids.is_empty() {
         String::new()
     } else {
-        let child_strs: Vec<String> = process
-            .children
+        let child_strs: Vec<String> = child_pids
             .iter()
             .map(|c| format!("{}", c.as_u64()))
             .collect();

@@ -215,8 +215,6 @@ impl ProcessScheduler {
                 if let Some((pid, process)) = manager.find_process_by_thread_mut(thread_id) {
                     let parent_pid = process.parent;
                     let process_name = process.name.clone();
-                    let children = core::mem::take(&mut process.children);
-
                     // Mark terminated and extract FDs without closing them
                     process.terminate_minimal(exit_code);
                     let fd_entries = process.take_fd_entries();
@@ -246,19 +244,7 @@ impl ProcessScheduler {
                         None
                     };
 
-                    // Reparent children to init (PID 1)
-                    if !children.is_empty() {
-                        use crate::process::ProcessId;
-                        let init_pid = ProcessId::new(1);
-                        for &child_pid in &children {
-                            if let Some(child) = manager.get_process_mut(child_pid) {
-                                child.parent = Some(init_pid);
-                            }
-                        }
-                        if let Some(init) = manager.get_process_mut(init_pid) {
-                            init.children.extend(children.iter());
-                        }
-                    }
+                    manager.reparent_children(pid, ProcessId::new(1));
 
                     Some((pid, process_name, fd_entries, parent_tid))
                 } else {

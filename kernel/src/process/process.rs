@@ -110,9 +110,6 @@ pub struct Process {
     /// Parent process ID (if any)
     pub parent: Option<ProcessId>,
 
-    /// Child processes
-    pub children: Vec<ProcessId>,
-
     /// Exit code (if terminated)
     pub exit_code: Option<i32>,
 
@@ -222,7 +219,6 @@ impl Process {
             main_thread: None,
             threads: Vec::new(),
             parent: None,
-            children: Vec::new(),
             exit_code: None,
             memory_usage: MemoryUsage::default(),
             stack: None,
@@ -514,18 +510,6 @@ impl Process {
     /// Check if process is terminated
     pub fn is_terminated(&self) -> bool {
         matches!(self.state, ProcessState::Terminated(_))
-    }
-
-    /// Add a child process
-    #[allow(dead_code)]
-    pub fn add_child(&mut self, child_id: ProcessId) {
-        self.children.push(child_id);
-    }
-
-    /// Remove a child process
-    #[allow(dead_code)]
-    pub fn remove_child(&mut self, child_id: ProcessId) {
-        self.children.retain(|&id| id != child_id);
     }
 
     /// Get the process ID

@@ -16,7 +16,7 @@ use x86_64::VirtAddr;
 #[cfg(not(target_arch = "x86_64"))]
 use crate::memory::arch_stub::VirtAddr;
 
-use super::{Process, ProcessId};
+use super::{Process, ProcessId, ProcessState};
 #[cfg(target_arch = "x86_64")]
 use crate::elf;
 use crate::memory::process_memory::ProcessPageTable;
@@ -800,11 +800,6 @@ impl ProcessManager {
             child.cwd = parent_cwd;
         }
 
-        // Add child to parent's children list
-        if let Some(parent) = self.processes.get_mut(&parent_pid) {
-            parent.children.push(child_pid);
-        }
-
         crate::serial_println!(
             "[spawn] Created child PID {} for parent PID {}",
             child_pid.as_u64(),
@@ -1154,26 +1149,13 @@ impl ProcessManager {
             crate::syscall::graphics::cleanup_windows_for_pid(pid.as_u64());
         }
 
-        // Reparent children to init (PID 1)
+        // Reparent children to init (PID 1). Process.parent is authoritative;
+        // there is no separately maintained children mirror.
         let init_pid = ProcessId::new(1);
         if pid != init_pid {
-            let children: Vec<ProcessId> = self
-                .processes
-                .get(&pid)
-                .map(|p| p.children.clone())
-                .unwrap_or_default();
-
-            if !children.is_empty() {
-                for &child_pid in &children {
-                    if let Some(child) = self.processes.get_mut(&child_pid) {
-                        child.parent = Some(init_pid);
-                    }
-                }
-                if let Some(init) = self.processes.get_mut(&init_pid) {
-                    init.children.extend(children.iter());
-                }
-                if let Some(exiting) = self.processes.get_mut(&pid) {
-                    exiting.children.clear();
+            for child in self.processes.values_mut() {
+                if child.parent == Some(pid) {
+                    child.parent = Some(init_pid);
                 }
             }
         }
@@ -1236,6 +1218,43 @@ impl ProcessManager {
     /// Iterate over all processes (for diagnostics)
     pub fn iter_processes(&self) -> impl Iterator<Item = (ProcessId, &Process)> {
         self.processes.iter().map(|(pid, p)| (*pid, p))
+    }
+
+    /// Enumerate child rows from the authoritative parent field.
+    pub fn child_pids(&self, parent: ProcessId) -> impl Iterator<Item = ProcessId> + '_ {
+        self.processes
+            .iter()
+            .filter_map(move |(pid, process)| (process.parent == Some(parent)).then_some(*pid))
+    }
+
+    pub fn child_count(&self, parent: ProcessId) -> usize {
+        self.child_pids(parent).count()
+    }
+
+    pub fn is_child_of(&self, parent: ProcessId, child: ProcessId) -> bool {
+        self.processes
+            .get(&child)
+            .is_some_and(|process| process.parent == Some(parent))
+    }
+
+    pub fn find_terminated_child(&self, parent: ProcessId) -> Option<(ProcessId, i32)> {
+        self.processes.iter().find_map(|(pid, process)| {
+            if process.parent != Some(parent) {
+                return None;
+            }
+            match process.state {
+                ProcessState::Terminated(exit_code) => Some((*pid, exit_code)),
+                _ => None,
+            }
+        })
+    }
+
+    pub(crate) fn reparent_children(&mut self, parent: ProcessId, new_parent: ProcessId) {
+        for process in self.processes.values_mut() {
+            if process.parent == Some(parent) {
+                process.parent = Some(new_parent);
+            }
+        }
     }
 
     /// Remove a process from the ready queue
@@ -1882,11 +1901,6 @@ impl ProcessManager {
             return Err("Parent process not found during state copy");
         }
 
-        // Add the child to the parent's children list
-        if let Some(parent) = self.processes.get_mut(&parent_pid) {
-            parent.children.push(child_pid);
-        }
-
         // Insert the child process into the process table
         self.processes.insert(child_pid, child_process);
 
@@ -2104,11 +2118,6 @@ impl ProcessManager {
                 parent_pid.as_u64()
             );
             return Err("Parent process not found during state copy");
-        }
-
-        // Add the child to the parent's children list
-        if let Some(parent) = self.processes.get_mut(&parent_pid) {
-            parent.children.push(child_pid);
         }
 
         // Insert the child process into the process table
@@ -2377,11 +2386,6 @@ impl ProcessManager {
 
             // Set the child thread as the main thread of the child process
             child_process.set_main_thread(child_thread);
-
-            // Add child to parent's children list
-            if let Some(parent) = self.processes.get_mut(&parent_pid) {
-                parent.add_child(child_pid);
-            }
 
             // Add the child process to the process table
             self.processes.insert(child_pid, child_process);
