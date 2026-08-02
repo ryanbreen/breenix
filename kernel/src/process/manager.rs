@@ -272,7 +272,9 @@ impl ProcessManager {
 
         // Create the process
         crate::serial_println!("manager.create_process: Creating Process struct");
-        let mut process = Process::new(pid, name.clone(), loaded_elf.entry_point);
+        let grave = crate::task::reclaim::ProcessGrave::try_new(pid)
+            .ok_or("Failed to allocate process grave")?;
+        let mut process = Process::new(pid, name.clone(), loaded_elf.entry_point, grave);
         process.page_table = Some(page_table);
 
         // Initialize heap tracking - heap starts at end of loaded segments (page aligned)
@@ -432,7 +434,9 @@ impl ProcessManager {
         // Create the process
         crate::serial_println!("manager.create_process [ARM64]: Creating Process struct");
         let entry_point = VirtAddr::new(loaded_elf.entry_point);
-        let mut process = Process::new(pid, name.clone(), entry_point);
+        let grave = crate::task::reclaim::ProcessGrave::try_new(pid)
+            .ok_or("Failed to allocate process grave")?;
+        let mut process = Process::new(pid, name.clone(), entry_point, grave);
         process.page_table = Some(page_table);
 
         // Initialize heap tracking - heap starts at end of loaded segments (page aligned)
@@ -645,7 +649,9 @@ impl ProcessManager {
 
         // Create the process
         let entry_point = VirtAddr::new(loaded_elf.entry_point);
-        let mut process = Process::new(pid, name.clone(), entry_point);
+        let grave = crate::task::reclaim::ProcessGrave::try_new(pid)
+            .ok_or("Failed to allocate process grave")?;
+        let mut process = Process::new(pid, name.clone(), entry_point, grave);
         process.page_table = Some(page_table);
 
         // Initialize heap tracking
@@ -1433,7 +1439,10 @@ impl ProcessManager {
         let child_name = format!("{}_child_{}", parent_name, child_pid.as_u64());
 
         // Create the child process with the same entry point
-        let mut child_process = Process::new(child_pid, child_name.clone(), parent_entry_point);
+        let grave = crate::task::reclaim::ProcessGrave::try_new(child_pid)
+            .ok_or("Failed to allocate child process grave")?;
+        let mut child_process =
+            Process::new(child_pid, child_name.clone(), parent_entry_point, grave);
         child_process.parent = Some(parent_pid);
         // POSIX: Child inherits parent's process group, session, and working directory
         child_process.pgid = parent_pgid;
@@ -1575,7 +1584,10 @@ impl ProcessManager {
         let child_name = format!("{}_child_{}", parent_name, child_pid.as_u64());
 
         // Create the child process with the same entry point
-        let mut child_process = Process::new(child_pid, child_name.clone(), parent_entry_point);
+        let grave = crate::task::reclaim::ProcessGrave::try_new(child_pid)
+            .ok_or("Failed to allocate child process grave")?;
+        let mut child_process =
+            Process::new(child_pid, child_name.clone(), parent_entry_point, grave);
         child_process.parent = Some(parent_pid);
         // POSIX: Child inherits parent's process group, session, and working directory
         child_process.pgid = parent_pgid;
@@ -1715,7 +1727,10 @@ impl ProcessManager {
         let child_name = format!("{}_child_{}", parent_name, child_pid.as_u64());
 
         // Create the child process with the same entry point
-        let mut child_process = Process::new(child_pid, child_name.clone(), parent_entry_point);
+        let grave = crate::task::reclaim::ProcessGrave::try_new(child_pid)
+            .ok_or("Failed to allocate child process grave")?;
+        let mut child_process =
+            Process::new(child_pid, child_name.clone(), parent_entry_point, grave);
         child_process.parent = Some(parent_pid);
         // POSIX: Child inherits parent's process group, session, and working directory
         child_process.pgid = parent_pgid;
@@ -2178,7 +2193,10 @@ impl ProcessManager {
         let parent_cwd = parent.cwd.clone();
 
         // Create the child process with the same entry point
-        let mut child_process = Process::new(child_pid, child_name.clone(), parent.entry_point);
+        let grave = crate::task::reclaim::ProcessGrave::try_new(child_pid)
+            .ok_or("Failed to allocate child process grave")?;
+        let mut child_process =
+            Process::new(child_pid, child_name.clone(), parent.entry_point, grave);
         child_process.parent = Some(parent_pid);
         // POSIX: Child inherits parent's process group, session, and working directory
         child_process.pgid = parent_pgid;

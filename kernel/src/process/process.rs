@@ -122,6 +122,9 @@ pub struct Process {
     /// Per-process page table
     pub page_table: Option<Box<ProcessPageTable>>,
 
+    /// Preallocated receiver for heavy resources at the exit commit point.
+    pub grave: Option<Box<crate::task::reclaim::ProcessGrave>>,
+
     /// Heap start address (page-aligned, set from ELF segments_end)
     pub heap_start: u64,
 
@@ -197,7 +200,12 @@ pub struct MemoryUsage {
 
 impl Process {
     /// Create a new process
-    pub fn new(id: ProcessId, name: String, entry_point: VirtAddr) -> Self {
+    pub fn new(
+        id: ProcessId,
+        name: String,
+        entry_point: VirtAddr,
+        grave: Box<crate::task::reclaim::ProcessGrave>,
+    ) -> Self {
         Process {
             id,
             // By default, a process's pgid equals its pid (process is its own group leader)
@@ -223,6 +231,7 @@ impl Process {
             memory_usage: MemoryUsage::default(),
             stack: None,
             page_table: None,
+            grave: Some(grave),
             heap_start: 0,
             heap_end: 0,
             vmas: alloc::vec::Vec::new(),

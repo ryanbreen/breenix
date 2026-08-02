@@ -39,6 +39,7 @@ pub mod workqueue_tests;
 pub mod process_context;
 // process_task uses architecture-independent types (ProcessId, scheduler, Thread)
 pub mod process_task;
+pub mod reclaim;
 // spawn.rs provides thread spawning functionality for both architectures
 // Uses architecture-specific cfg guards internally for VirtAddr, ELF loading, and TLS
 pub mod spawn;

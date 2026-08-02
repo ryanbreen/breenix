@@ -199,10 +199,15 @@ pub fn sys_clone(
     #[cfg(not(target_arch = "x86_64"))]
     let entry_point = crate::memory::arch_stub::VirtAddr::new(fn_ptr);
 
+    let grave = match crate::task::reclaim::ProcessGrave::try_new(child_pid) {
+        Some(grave) => grave,
+        None => return SyscallResult::Err(super::errno::ENOMEM as u64),
+    };
     let mut child_process = Process::new(
         child_pid,
         alloc::format!("thread-{}", child_pid.as_u64()),
         entry_point,
+        grave,
     );
     child_process.parent = Some(parent_pid);
     child_process.state = crate::process::process::ProcessState::Ready;

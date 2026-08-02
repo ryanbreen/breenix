@@ -548,13 +548,20 @@ struct RetirementGrace {
 
 #[cfg(target_arch = "aarch64")]
 #[derive(Clone, Copy)]
-pub(crate) struct RetirementFence {
+pub struct RetirementFence {
     epochs: [u64; MAX_CPUS],
     online_mask: u32,
 }
 
 #[cfg(target_arch = "aarch64")]
 impl RetirementFence {
+    pub(crate) const fn invalid() -> Self {
+        Self {
+            epochs: [0; MAX_CPUS],
+            online_mask: 0,
+        }
+    }
+
     pub(crate) fn capture() -> Self {
         debug_assert!(crate::arch_impl::aarch64::smp::is_cpu_online(0));
 
