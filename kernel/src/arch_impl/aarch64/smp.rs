@@ -322,9 +322,7 @@ pub extern "C" fn secondary_cpu_entry_rust(cpu_id: u64) -> ! {
     // then adds KERNEL_VIRT_BASE after enabling MMU.
     // This value is critical: when a user thread runs on this CPU and an
     // exception occurs, the kernel needs to switch to this stack.
-    let stack_base = super::constants::percpu_stack_region_base();
-    const STACK_SIZE: u64 = 0x20_0000; // 2MB per CPU
-    let kernel_stack_top = stack_base + (cpu_id + 1) * STACK_SIZE;
+    let kernel_stack_top = super::constants::percpu_kernel_stack_top(cpu_id as usize);
     crate::per_cpu_aarch64::set_kernel_stack_top(kernel_stack_top);
 
     // Initialize GIC CPU interface (GICC registers are banked per-CPU)
@@ -365,10 +363,8 @@ fn create_and_register_idle_thread(cpu_id: usize) {
     use alloc::format;
 
     // Boot stack addresses — must match boot.S layout.
-    let stack_base = super::constants::percpu_stack_region_base();
-    const STACK_SIZE: u64 = 0x20_0000; // 2MB per CPU
-    let boot_stack_top = VirtAddr::new(stack_base + ((cpu_id as u64) + 1) * STACK_SIZE);
-    let boot_stack_bottom = VirtAddr::new(stack_base + (cpu_id as u64) * STACK_SIZE);
+    let boot_stack_top = VirtAddr::new(super::constants::percpu_kernel_stack_top(cpu_id));
+    let boot_stack_bottom = VirtAddr::new(super::constants::percpu_kernel_stack_bottom(cpu_id));
     let dummy_tls = VirtAddr::zero();
 
     let mut idle_task = Box::new(Thread::new(

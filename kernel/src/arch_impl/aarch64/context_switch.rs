@@ -1862,14 +1862,15 @@ fn read_tpidr_el0() -> u64 {
 
 #[inline(always)]
 fn scheduler_stack_top(cpu_id: usize) -> u64 {
-    const STACK_SIZE: u64 = 0x20_0000;
-    super::constants::percpu_stack_region_base() + ((cpu_id as u64) + 1) * STACK_SIZE
+    let top = super::constants::percpu_sched_stack_top(cpu_id);
+    debug_assert_ne!(top, super::constants::percpu_kernel_stack_top(cpu_id));
+    top
 }
 
 #[inline(always)]
 fn idle_dispatch_stack(cpu_id: usize, preferred: u64) -> u64 {
     if preferred == 0 {
-        scheduler_stack_top(cpu_id)
+        super::constants::percpu_kernel_stack_top(cpu_id)
     } else {
         preferred
     }
@@ -1881,7 +1882,11 @@ fn thread_kernel_stack_contains(thread: &Thread, sp: u64) -> bool {
         return false;
     };
     let top = kst.as_u64();
-    let bottom = top.saturating_sub(crate::arch_impl::aarch64::constants::KERNEL_STACK_SIZE as u64);
+    let bottom = if thread.privilege == ThreadPrivilege::Kernel {
+        thread.stack_bottom.as_u64()
+    } else {
+        top.saturating_sub(crate::arch_impl::aarch64::constants::KERNEL_STACK_SIZE as u64)
+    };
     sp >= bottom && sp <= top
 }
 
