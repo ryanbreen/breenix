@@ -315,13 +315,12 @@ fn result_to_u64(result: crate::syscall::SyscallResult) -> u64 {
 
 /// ARM64-specific exit implementation.
 ///
-/// This is separate from the shared dispatcher because ARM64 needs to:
-/// 1. Use `wfi` (not `hlt`) when no more userspace threads remain
-/// 2. Inline the exit logic since `handlers::sys_exit` is x86_64-only
+/// This is separate from the shared dispatcher because ARM64 needs to pivot
+/// through its per-CPU scheduler stack before publishing `Terminated`.
 ///
-/// CRITICAL: This function must NEVER return. After terminating the thread,
-/// it enters a WFI loop. The timer interrupt will fire and context-switch
-/// to another thread; the terminated thread will never be re-scheduled.
+/// CRITICAL: This function must NEVER return. The final inline scheduler
+/// handoff switches away explicitly; the terminated thread is never eligible
+/// to be re-scheduled.
 /// If this function returned, the userspace exit() caller (e.g., musl's
 /// `for(;;) __syscall(SYS_exit, ec)` loop) would re-enter exit, causing
 /// double-terminate and double-decrement of COW page refcounts.
@@ -366,17 +365,22 @@ fn sys_exit_aarch64(exit_code: i32) -> u64 {
             crate::serial_println!("[syscall] exit({}) thread={}", exit_code, thread_id);
         }
 
+        // Leave the retiring userspace address space before process teardown
+        // drops its page-table root. Clear both assembly return shadows so no
+        // later return path can reinstall that retired root.
+        super::switch_ttbr0_to_kernel();
+        unsafe {
+            Aarch64PerCpu::set_saved_process_cr3(0);
+            Aarch64PerCpu::set_next_cr3(0);
+        }
+
         crate::task::process_task::ProcessScheduler::handle_thread_exit(thread_id, exit_code);
 
-        crate::task::scheduler::with_scheduler(|scheduler| {
-            if let Some(thread) = scheduler.current_thread_mut() {
-                thread.set_terminated();
-            }
-        });
-
         let has_other_userspace_threads =
-            crate::task::scheduler::with_scheduler(|sched| sched.has_userspace_threads())
-                .unwrap_or(false);
+            crate::task::scheduler::with_scheduler(|sched| {
+                sched.has_userspace_threads_other_than(thread_id)
+            })
+            .unwrap_or(false);
 
         if !has_other_userspace_threads {
             crate::serial_println!();
@@ -386,31 +390,14 @@ fn sys_exit_aarch64(exit_code: i32) -> u64 {
             crate::serial_println!("========================================");
             crate::serial_println!();
         }
+
+        // This call first pivots to the neutral per-CPU scheduler stack. Its
+        // trampoline marks this thread Terminated only after that pivot and
+        // immediately dispatches a successor.
+        super::context_switch::schedule_terminated_from_exit(thread_id);
     }
 
-    // Re-enable preemption (balances the preempt_disable in rust_syscall_handler_aarch64)
-    // so timer interrupts can trigger context-switch to another thread.
-    Aarch64PerCpu::preempt_enable();
-
-    // NEVER return to userspace. The thread is terminated; wait for the timer
-    // interrupt to context-switch away. The scheduler will not re-schedule a
-    // terminated thread, so this loop runs at most until the next timer tick.
-    //
-    // CRITICAL: Must unmask IRQ before WFI. The syscall entry assembly masks IRQ
-    // (daifset #0x2) and we never return to the assembly epilogue (which would
-    // call check_need_resched_and_switch_arm64 and restore interrupt state via
-    // ERET). Without unmasking IRQ here, the timer interrupt is pending but never
-    // handled — this CPU becomes permanently stuck, unable to process deferred
-    // thread requeues or context-switch to other threads.
-    loop {
-        unsafe {
-            core::arch::asm!(
-                "msr daifclr, #3", // Unmask IRQ+FIQ so timer interrupt can fire
-                "wfi",             // Wait for interrupt — timer will context-switch us away
-                options(nomem, nostack)
-            );
-        }
-    }
+    panic!("AArch64 sys_exit invoked without a current scheduler thread");
 }
 
 /// Dispatch a syscall to the appropriate handler using the resolved SyscallNumber.
@@ -1193,6 +1180,13 @@ fn sys_exec_aarch64(
         if let Some(ref mut manager) = *manager_guard {
             // Trace: calling exec_process_with_argv (process manager)
             super::trace::trace_exec(b'M');
+
+            // The manager may take the old process root after its final
+            // fallible setup step. Install the shared kernel TTBR0 first so
+            // exec cannot retire the root currently active on this CPU. On an
+            // error, the unchanged saved_process_cr3 restores the old root in
+            // the normal syscall epilogue.
+            super::switch_ttbr0_to_kernel();
 
             match manager.exec_process_with_argv(
                 current_pid,

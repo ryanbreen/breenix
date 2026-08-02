@@ -159,6 +159,26 @@ pub fn eret_guard_record(cpu_id: usize) -> Option<(u64, u64, u64)> {
     Some((source, elr, spsr))
 }
 
+/// Snapshot the two per-CPU pointers that can keep a kernel-stack slot live.
+///
+/// These fields are also read and written by exception-return assembly, so use
+/// volatile loads rather than borrowing the shared per-CPU object. Callers use
+/// this only as a conservative reclamation/allocator exclusion check.
+pub fn live_stack_snapshot(cpu_id: usize) -> Option<(u64, u64)> {
+    if cpu_id >= crate::arch_impl::aarch64::constants::MAX_CPUS {
+        return None;
+    }
+
+    let cpu_data = unsafe { &raw const ALL_CPU_DATA[cpu_id] };
+    let kernel_stack_top = unsafe {
+        core::ptr::read_volatile(core::ptr::addr_of!((*cpu_data).kernel_stack_top))
+    };
+    let user_rsp_scratch = unsafe {
+        core::ptr::read_volatile(core::ptr::addr_of!((*cpu_data).user_sp_scratch))
+    };
+    Some((kernel_stack_top, user_rsp_scratch))
+}
+
 /// Check if per-CPU data has been initialized
 pub fn is_initialized() -> bool {
     PER_CPU_INITIALIZED.load(Ordering::Acquire)

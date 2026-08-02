@@ -1742,6 +1742,19 @@ static INLINE_SCHEDULE_STATE: [InlineScheduleState;
     },
 ];
 
+struct ExitScheduleState {
+    scheduler_ptr: AtomicUsize,
+    thread_id: AtomicU64,
+}
+
+static EXIT_SCHEDULE_STATE: [ExitScheduleState; crate::arch_impl::aarch64::constants::MAX_CPUS] =
+    [const {
+        ExitScheduleState {
+            scheduler_ptr: AtomicUsize::new(0),
+            thread_id: AtomicU64::new(0),
+        }
+    }; crate::arch_impl::aarch64::constants::MAX_CPUS];
+
 const INLINE_SCHEDULE_BREADCRUMB_CPUS: usize = crate::arch_impl::aarch64::constants::MAX_CPUS;
 const INLINE_SCHEDULE_BREADCRUMB_SLOTS: usize = 16;
 const INLINE_BC_TRAMPOLINE_ENTRY: u8 = 0x30;
@@ -3438,6 +3451,11 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
         return;
     }
 
+    // Reaching a fresh exception-return scheduling entry with PREEMPT_ACTIVE
+    // clear proves any prior exception-return handoff on this CPU completed.
+    // Terminated-stack reclamation requires one such epoch on every online CPU.
+    crate::task::scheduler::note_scheduling_epoch(cpu_id_early);
+
     // Read deferred requeue atomically (lock-free).
     // CRITICAL: This must happen BEFORE the preempt_count early return below.
     // When IRQs are enabled during syscalls (daifclr #3 in syscall_entry.S),
@@ -4009,6 +4027,95 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
     if let Some(trace_tid) = trace_eret_tid {
         trace_resched_tail(TRACE_RESCHED_TAIL_BEFORE_RETURN, trace_tid);
     }
+}
+
+/// Final scheduler handoff for an exiting AArch64 thread.
+///
+/// The inline switch saves the outgoing context and changes SP to the per-CPU
+/// scheduler stack before entering `exit_schedule_trampoline`. Only that
+/// neutral-stack trampoline is allowed to publish `Terminated`.
+pub fn schedule_terminated_from_exit(thread_id: u64) -> ! {
+    unsafe {
+        crate::arch_impl::aarch64::cpu::disable_interrupts();
+    }
+    // Balance rust_syscall_handler_aarch64's preempt_disable only after IRQs
+    // are masked, leaving no interrupt window between enabling preemption and
+    // the final stack pivot.
+    Aarch64PerCpu::preempt_enable();
+
+    let cpu_id = Aarch64PerCpu::cpu_id() as usize;
+    let mut guard = crate::task::scheduler::lock_for_context_switch();
+    let sched = guard
+        .as_mut()
+        .expect("scheduler unavailable during AArch64 exit handoff");
+    let old_context_ptr = sched
+        .get_thread_mut(thread_id)
+        .map(|thread| &mut thread.context as *mut CpuContext)
+        .expect("exiting AArch64 thread missing from scheduler");
+
+    EXIT_SCHEDULE_STATE[cpu_id]
+        .scheduler_ptr
+        .store(sched as *mut Scheduler as usize, Ordering::Relaxed);
+    EXIT_SCHEDULE_STATE[cpu_id]
+        .thread_id
+        .store(thread_id, Ordering::Release);
+
+    let _ = spin::MutexGuard::leak(guard);
+    let scheduler_top = scheduler_stack_top(cpu_id);
+    assert_pivot_free(cpu_id, scheduler_top, read_current_sp(), 4);
+
+    unsafe {
+        aarch64_inline_schedule_switch(old_context_ptr, scheduler_top, exit_schedule_trampoline);
+    }
+
+    panic!("terminated AArch64 thread was dispatched after final exit handoff");
+}
+
+extern "C" fn exit_schedule_trampoline() -> ! {
+    let cpu_id = Aarch64PerCpu::cpu_id() as usize;
+    let state = &EXIT_SCHEDULE_STATE[cpu_id];
+    let sched_ptr = state.scheduler_ptr.swap(0, Ordering::Acquire) as *mut Scheduler;
+    let thread_id = state.thread_id.swap(0, Ordering::Relaxed);
+    assert!(!sched_ptr.is_null(), "missing AArch64 exit scheduler state");
+
+    // The assembly caller has already executed `mov sp, scheduler_stack_top`.
+    // Publishing Terminated here makes "terminated while still on its own
+    // kernel stack" unrepresentable on the syscall-exit path.
+    let sched = unsafe { &mut *sched_ptr };
+    sched
+        .get_thread_mut(thread_id)
+        .expect("exiting AArch64 thread disappeared before stack pivot")
+        .set_terminated();
+    sched.remove_from_ready_queue(thread_id);
+
+    let (old_id, new_id, should_requeue_old) = sched
+        .schedule_deferred_requeue()
+        .expect("AArch64 exit handoff found no idle or runnable successor");
+    assert_eq!(
+        old_id, thread_id,
+        "AArch64 exit handoff saved the wrong thread"
+    );
+    assert_ne!(
+        new_id, thread_id,
+        "terminated AArch64 thread selected again"
+    );
+    debug_assert!(!should_requeue_old);
+
+    INLINE_SCHEDULE_STATE[cpu_id]
+        .scheduler_ptr
+        .store(sched_ptr as usize, Ordering::Relaxed);
+    INLINE_SCHEDULE_STATE[cpu_id]
+        .old_thread_id
+        .store(old_id, Ordering::Relaxed);
+    INLINE_SCHEDULE_STATE[cpu_id]
+        .new_thread_id
+        .store(new_id, Ordering::Relaxed);
+    INLINE_SCHEDULE_STATE[cpu_id]
+        .should_requeue_old
+        .store(false, Ordering::Relaxed);
+    crate::task::scheduler::increment_context_switch_count();
+
+    inline_schedule_trampoline()
 }
 
 extern "C" fn inline_schedule_trampoline() -> ! {

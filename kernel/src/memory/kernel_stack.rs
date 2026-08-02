@@ -274,6 +274,28 @@ mod aarch64 {
         }
     }
 
+    /// True when an online CPU still names or has a resume SP inside this slot.
+    ///
+    /// A userspace return normally stores the slot top in `user_rsp_scratch`,
+    /// while a suspended EL1 continuation may store an interior SP. Treat both
+    /// forms as live so neither reclamation nor allocation can race the final
+    /// architectural handoff off the old stack.
+    pub(crate) fn is_kernel_stack_slot_live(stack_top: u64) -> bool {
+        let stack_bottom = stack_top.saturating_sub(ARM64_KERNEL_STACK_SIZE);
+        (0..crate::arch_impl::aarch64::constants::MAX_CPUS).any(|cpu_id| {
+            if !crate::arch_impl::aarch64::smp::is_cpu_online(cpu_id) {
+                return false;
+            }
+            let Some((live_top, live_resume_sp)) =
+                crate::per_cpu_aarch64::live_stack_snapshot(cpu_id)
+            else {
+                return false;
+            };
+            live_top == stack_top
+                || (live_resume_sp >= stack_bottom && live_resume_sp <= stack_top)
+        })
+    }
+
     /// Allocate a kernel stack for ARM64
     ///
     /// Uses a bitmap over a reserved high-half direct map region so fork-heavy
@@ -311,6 +333,14 @@ mod aarch64 {
         let slot_base = ARM64_KERNEL_STACK_BASE + (index as u64 * ARM64_STACK_SLOT_SIZE);
         let stack_bottom = VirtAddr::new(slot_base + ARM64_GUARD_PAGE_SIZE);
         let stack_top = VirtAddr::new(slot_base + ARM64_STACK_SLOT_SIZE);
+
+        debug_assert!(
+            !is_kernel_stack_slot_live(stack_top.as_u64()),
+            "ARM64 kernel-stack allocator selected live slot {} ({:#x}-{:#x})",
+            index,
+            stack_bottom.as_u64(),
+            stack_top.as_u64()
+        );
 
         // ROOT FIX (launcher-spawn EC=0x0/EC=0xe crash,
         // docs/planning/aarch64-launcher-spawn-crash/ROOT_CAUSE.md): scrub the
@@ -408,8 +438,8 @@ pub use aarch64::{
 
 #[cfg(target_arch = "aarch64")]
 pub(crate) use aarch64::{
-    ARM64_KERNEL_STACK_BASE, ARM64_KERNEL_STACK_END, ARM64_MAX_KERNEL_STACKS,
-    ARM64_STACK_SLOT_SIZE,
+    is_kernel_stack_slot_live, ARM64_KERNEL_STACK_BASE, ARM64_KERNEL_STACK_END,
+    ARM64_MAX_KERNEL_STACKS, ARM64_STACK_SLOT_SIZE,
 };
 
 /// ARM64: Use the aarch64-specific allocator

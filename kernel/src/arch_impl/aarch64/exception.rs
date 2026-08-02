@@ -289,39 +289,11 @@ fn set_idle_stack_for_eret() {
     unsafe {
         Aarch64PerCpu::set_user_rsp_scratch(idle_stack);
         Aarch64PerCpu::set_kernel_stack_top(idle_stack);
-        let mut kernel_ttbr0 = Aarch64PerCpu::kernel_cr3();
-        if kernel_ttbr0 == 0 {
-            kernel_ttbr0 = 0x4200_0000;
-        }
+        let kernel_ttbr0 = super::kernel_ttbr0();
         Aarch64PerCpu::set_next_cr3(kernel_ttbr0);
         Aarch64PerCpu::set_saved_process_cr3(0);
         Aarch64PerCpu::set_current_thread_ptr(core::ptr::null_mut());
         Aarch64PerCpu::clear_preempt_active();
-    }
-}
-
-/// Switch TTBR0 to the kernel page table and flush the TLB.
-///
-/// This ensures we don't return to userspace with a stale/terminated address space.
-#[inline(always)]
-fn switch_ttbr0_to_kernel() {
-    let mut kernel_ttbr0 = crate::per_cpu_aarch64::get_kernel_cr3();
-    if kernel_ttbr0 == 0 {
-        // Fallback to boot TTBR0 table if per-CPU kernel TTBR0 is unavailable.
-        kernel_ttbr0 = 0x4200_0000;
-    }
-
-    unsafe {
-        core::arch::asm!(
-            "dsb ishst",
-            "msr ttbr0_el1, {}",
-            "isb",
-            "tlbi vmalle1is",
-            "dsb ish",
-            "isb",
-            in(reg) kernel_ttbr0,
-            options(nomem, nostack)
-        );
     }
 }
 
@@ -773,6 +745,10 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                 // Get current TTBR0 to find the process
                 let page_table_phys = ttbr0 & !0xFFFF_0000_0000_0FFF;
 
+                // The process exit below can retire this root. Leave it before
+                // acquiring the process manager and freeing any resources.
+                super::switch_ttbr0_to_kernel();
+
                 // Find and terminate the process
                 let mut terminated = false;
                 let mut already_terminated = false;
@@ -799,7 +775,6 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                     // the thread is Ready/Running and will re-dispatch it on
                     // another CPU, causing ERET to a freed address space.
                     terminate_current_scheduler_thread();
-                    switch_ttbr0_to_kernel();
                     crate::task::scheduler::set_need_resched();
 
                     // CRITICAL: Set frame values BEFORE switch_to_idle() —
@@ -825,8 +800,8 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
             drop(fatal_uart_guard);
 
             // Mark scheduler thread as terminated (best effort)
+            super::switch_ttbr0_to_kernel();
             terminate_current_scheduler_thread();
-            switch_ttbr0_to_kernel();
             crate::task::scheduler::set_need_resched();
 
             // CRITICAL: Set frame values BEFORE switch_to_idle_best_effort() —
@@ -1132,6 +1107,10 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                 // From userspace - terminate the process with SIGSEGV
                 let page_table_phys = ttbr0 & !0xFFFF_0000_0000_0FFF;
 
+                // Install the kernel root before pm.exit_process can retire
+                // the faulting userspace root.
+                super::switch_ttbr0_to_kernel();
+
                 let mut terminated = false;
                 let mut already_terminated = false;
                 let mut killed_pid: u64 = 0;
@@ -1160,7 +1139,6 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
 
                 if terminated || already_terminated {
                     terminate_current_scheduler_thread();
-                    switch_ttbr0_to_kernel();
                     crate::task::scheduler::set_need_resched();
                     // CRITICAL: Set frame values BEFORE switch_to_idle()
                     frame_ref.elr = crate::arch_impl::aarch64::idle_loop_arm64 as *const () as u64;
@@ -1182,8 +1160,8 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                 raw_uart_str("[INSTRUCTION_ABORT] deferring process cleanup\n");
             }
             defer_current_user_thread_sigsegv_exit("[INSTRUCTION_ABORT]", frame as u64);
+            super::switch_ttbr0_to_kernel();
             terminate_current_scheduler_thread();
-            switch_ttbr0_to_kernel();
             crate::task::scheduler::set_need_resched();
             frame_ref.elr = crate::arch_impl::aarch64::idle_loop_arm64 as *const () as u64;
             frame_ref.spsr = 0x5; // EL1h, DAIF clear (interrupts enabled)
@@ -1223,6 +1201,7 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                     core::arch::asm!("mrs {}, ttbr0_el1", out(reg) ttbr0, options(nomem, nostack));
                 }
                 let page_table_phys = ttbr0 & !0xFFFF_0000_0000_0FFF;
+                super::switch_ttbr0_to_kernel();
                 crate::process::with_process_manager(|pm| {
                     if let Some((pid, process)) = pm.find_process_by_cr3_mut(page_table_phys) {
                         if !process.is_terminated() {
@@ -1231,7 +1210,6 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                     }
                 });
                 terminate_current_scheduler_thread();
-                switch_ttbr0_to_kernel();
             }
             // CRITICAL: Set frame values BEFORE switch_to_idle_best_effort()
             frame_ref.elr = crate::arch_impl::aarch64::idle_loop_arm64 as *const () as u64;
@@ -1320,6 +1298,7 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                     core::arch::asm!("mrs {}, ttbr0_el1", out(reg) ttbr0, options(nomem, nostack));
                 }
                 let page_table_phys = ttbr0 & !0xFFFF_0000_0000_0FFF;
+                super::switch_ttbr0_to_kernel();
                 crate::process::with_process_manager(|pm| {
                     if let Some((pid, process)) = pm.find_process_by_cr3_mut(page_table_phys) {
                         if !process.is_terminated() {
@@ -1328,7 +1307,6 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                     }
                 });
                 terminate_current_scheduler_thread();
-                switch_ttbr0_to_kernel();
             }
             // CRITICAL: Set frame values BEFORE switch_to_idle_best_effort()
             frame_ref.elr = crate::arch_impl::aarch64::idle_loop_arm64 as *const () as u64;

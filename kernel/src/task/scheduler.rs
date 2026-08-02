@@ -528,6 +528,52 @@ const MAX_CPUS: usize = 8;
 #[cfg(not(target_arch = "aarch64"))]
 const MAX_CPUS: usize = 1;
 
+/// Completed scheduler-entry epochs per online AArch64 CPU.
+///
+/// A terminated thread records a target one greater than every online CPU's
+/// current value. Reclamation therefore waits until every CPU has re-entered
+/// the scheduler after termination, in addition to passing the live-stack
+/// exclusion check.
+#[cfg(target_arch = "aarch64")]
+static SCHEDULING_EPOCHS: [AtomicU64; MAX_CPUS] =
+    [const { AtomicU64::new(0) }; MAX_CPUS];
+
+#[cfg(target_arch = "aarch64")]
+#[derive(Clone, Copy)]
+struct RetirementGrace {
+    thread_id: u64,
+    after_epoch: [u64; MAX_CPUS],
+}
+
+#[cfg(target_arch = "aarch64")]
+fn retirement_grace_target() -> [u64; MAX_CPUS] {
+    let mut target = [0; MAX_CPUS];
+    for cpu_id in 0..MAX_CPUS {
+        if crate::arch_impl::aarch64::smp::is_cpu_online(cpu_id) {
+            target[cpu_id] = SCHEDULING_EPOCHS[cpu_id]
+                .load(Ordering::Acquire)
+                .saturating_add(1);
+        }
+    }
+    target
+}
+
+#[cfg(target_arch = "aarch64")]
+fn retirement_grace_elapsed(target: &[u64; MAX_CPUS]) -> bool {
+    (0..MAX_CPUS).all(|cpu_id| {
+        target[cpu_id] == 0
+            || SCHEDULING_EPOCHS[cpu_id].load(Ordering::Acquire) >= target[cpu_id]
+    })
+}
+
+/// Record one post-handoff scheduler entry for the current CPU.
+#[cfg(target_arch = "aarch64")]
+pub fn note_scheduling_epoch(cpu_id: usize) {
+    if cpu_id < MAX_CPUS {
+        SCHEDULING_EPOCHS[cpu_id].fetch_add(1, Ordering::Release);
+    }
+}
+
 /// DIAGNOSTIC: Circular buffer tracking last N cpu_state changes per CPU.
 /// Each entry: (setter_id, old_thread, new_thread)
 /// Setter IDs:
@@ -769,6 +815,10 @@ pub struct Scheduler {
     /// Stale entries (threads already woken by ISR or terminated) are harmless —
     /// wake_expired_timers validates each entry before acting on it.
     timer_heap: BinaryHeap<Reverse<(u64, u64)>>,
+
+    /// Per-thread all-CPU grace targets for AArch64 stack reclamation.
+    #[cfg(target_arch = "aarch64")]
+    retirement_grace: alloc::vec::Vec<RetirementGrace>,
 }
 
 impl Scheduler {
@@ -811,6 +861,8 @@ impl Scheduler {
             per_cpu_queues,
             cpu_state,
             timer_heap: BinaryHeap::new(),
+            #[cfg(target_arch = "aarch64")]
+            retirement_grace: alloc::vec::Vec::new(),
         };
 
         scheduler
@@ -887,7 +939,7 @@ impl Scheduler {
         let _ = (thread_id, thread_name, is_user);
     }
 
-    /// Drop terminated threads that are no longer referenced by any CPU state.
+    /// Drop terminated threads only after their stack is architecturally dead.
     ///
     /// ARM64 userspace kernel stacks are owned by scheduler threads because the
     /// scheduler clone can outlive the process-table copy until it has fully
@@ -902,18 +954,59 @@ impl Scheduler {
             });
         }
 
+        let terminated_ids: alloc::vec::Vec<u64> = self
+            .threads
+            .iter()
+            .filter(|thread| thread.state == ThreadState::Terminated)
+            .map(|thread| thread.id())
+            .collect();
+        self.retirement_grace
+            .retain(|grace| terminated_ids.contains(&grace.thread_id));
+        for thread_id in terminated_ids.iter().copied() {
+            if !self
+                .retirement_grace
+                .iter()
+                .any(|grace| grace.thread_id == thread_id)
+            {
+                self.retirement_grace.push(RetirementGrace {
+                    thread_id,
+                    after_epoch: retirement_grace_target(),
+                });
+            }
+        }
+
+        let idle_ids: alloc::vec::Vec<u64> = self
+            .cpu_state
+            .iter()
+            .map(|state| state.idle_thread)
+            .collect();
+        let graces = &self.retirement_grace;
+        let mut reclaimed_ids = alloc::vec::Vec::new();
         self.threads.retain(|thread| {
-            if thread.state != ThreadState::Terminated {
+            if thread.state != ThreadState::Terminated || idle_ids.contains(&thread.id()) {
                 return true;
             }
 
-            let thread_id = thread.id();
-            (0..MAX_CPUS).any(|cpu| {
-                self.cpu_state[cpu].current_thread == Some(thread_id)
-                    || self.cpu_state[cpu].previous_thread == Some(thread_id)
-                    || self.cpu_state[cpu].idle_thread == thread_id
-            })
+            let stack_is_live = thread
+                .kernel_stack_top
+                .map(|top| {
+                    crate::memory::kernel_stack::is_kernel_stack_slot_live(top.as_u64())
+                })
+                .unwrap_or(false);
+            let grace_elapsed = graces
+                .iter()
+                .find(|grace| grace.thread_id == thread.id())
+                .map(|grace| retirement_grace_elapsed(&grace.after_epoch))
+                .unwrap_or(false);
+            if stack_is_live || !grace_elapsed {
+                return true;
+            }
+
+            reclaimed_ids.push(thread.id());
+            false
         });
+        self.retirement_grace
+            .retain(|grace| !reclaimed_ids.contains(&grace.thread_id));
     }
 
     /// Add a thread as the current running thread without scheduling.
@@ -2477,6 +2570,20 @@ impl Scheduler {
             !self.cpu_state.iter().any(|cs| cs.idle_thread == t.id())
                 && t.privilege == super::thread::ThreadPrivilege::User
                 && t.state != super::thread::ThreadState::Terminated
+        })
+    }
+
+    /// Check for a live userspace thread other than the one completing exit.
+    #[cfg(target_arch = "aarch64")]
+    pub fn has_userspace_threads_other_than(&self, exiting_thread_id: u64) -> bool {
+        self.threads.iter().any(|thread| {
+            thread.id() != exiting_thread_id
+                && !self
+                    .cpu_state
+                    .iter()
+                    .any(|state| state.idle_thread == thread.id())
+                && thread.privilege == super::thread::ThreadPrivilege::User
+                && thread.state != ThreadState::Terminated
         })
     }
 
