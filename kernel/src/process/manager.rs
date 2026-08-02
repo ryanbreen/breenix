@@ -1137,11 +1137,18 @@ impl ProcessManager {
             }
 
             #[cfg(target_arch = "aarch64")]
-            let local_cpu_retains_root = process.page_table.as_ref().is_some_and(|page_table| {
-                crate::arch_impl::aarch64::current_cpu_retains_ttbr0_root(
-                    page_table.level_4_frame().start_address().as_u64(),
-                )
+            let local_cpu_runs_process = process.main_thread.as_ref().is_some_and(|thread| {
+                let cpu_id = crate::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id() as usize;
+                crate::arch_impl::aarch64::context_switch::last_dispatched_tid(cpu_id)
+                    == Some(thread.id)
             });
+            #[cfg(target_arch = "aarch64")]
+            let local_cpu_retains_root = local_cpu_runs_process
+                && process.page_table.as_ref().is_some_and(|page_table| {
+                    crate::arch_impl::aarch64::current_cpu_retains_ttbr0_root(
+                        page_table.level_4_frame().start_address().as_u64(),
+                    )
+                });
             #[cfg(target_arch = "aarch64")]
             if local_cpu_retains_root {
                 crate::arch_impl::aarch64::quiesce_ttbr0_for_exit();
