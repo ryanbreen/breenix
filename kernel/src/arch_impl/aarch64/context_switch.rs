@@ -2865,6 +2865,13 @@ fn setup_idle_return_locked(
 
 #[inline(always)]
 fn reset_idle_continuation_locked(sched: &mut Scheduler, new_id: u64, idle_sp: u64) {
+    // The null-trampoline fallback may observe stale handoff IDs after it
+    // discovers there is no scheduler pointer to consume.  Only the thread
+    // actually being restarted as idle may have its continuation replaced.
+    if !sched.is_idle_thread_inner(new_id) {
+        return;
+    }
+
     if let Some(thread) = sched.get_thread_mut(new_id) {
         let idle_addr = idle_loop_arm64 as *const () as u64;
         thread.saved_by_inline_schedule = false;
