@@ -577,6 +577,7 @@ fn switch_to_thread(
         let saved_context_from_scheduler =
             scheduler::with_thread_mut(thread_id, |thread| thread.saved_userspace_context.clone())
                 .flatten();
+        let mut signal_termination_info = None;
 
         // Get the process page table and thread context
         let guard_option = process_manager_guard.or_else(|| crate::process::try_manager());
@@ -705,26 +706,12 @@ fn switch_to_thread(
 
                         // Handle signal result
                         match signal_result {
-                            crate::signal::delivery::SignalDeliveryResult::Terminated(n) => {
+                            crate::signal::delivery::SignalDeliveryResult::Terminated(notification) => {
                                 log::info!("Signal terminated process, thread {}", thread_id);
-                                // Process was terminated - notify parent after releasing locks
-                                // We need to return from this function and let the locks drop naturally
-                                // but first save the notification data
-                                // We have the notification info but can't call notify while holding locks.
-                                // The notification will be handled by the timer interrupt when it
-                                // eventually switches to the parent process, because:
-                                // 1. The child is now marked as terminated
-                                // 2. When the parent's waitpid resumes, it will find the terminated child
-                                // 3. The scheduler will see the parent is unblocked
-                                // However, this path is rare (signal terminating a process whose parent
-                                // is blocked in waitpid *at the exact same time*).
-                                // The parent notification happens in the other code paths.
-                                log::debug!(
-                                    "Signal termination in blocked_in_syscall path: parent {} will be notified when resumed",
-                                    n.parent_pid.as_u64()
-                                );
-                                // Just return - RAII will release the locks
-                                return;
+                                crate::task::scheduler::set_need_resched();
+                                signal_termination_info = Some(notification);
+                                setup_idle_return(interrupt_frame);
+                                crate::task::scheduler::switch_to_idle();
                             }
                             crate::signal::delivery::SignalDeliveryResult::Delivered => {
                                 log::info!("Signal delivered to thread {}", thread_id);
@@ -803,7 +790,8 @@ fn switch_to_thread(
                     }
 
                     // Set up CR3 for the process's page table
-                    if let Some(cr3_value) = process.cr3_value() {
+                    if signal_termination_info.is_none() {
+                        if let Some(cr3_value) = process.cr3_value() {
                         unsafe {
                             // Tell timer_entry.asm to switch CR3 before IRETQ
                             crate::per_cpu::set_next_cr3(cr3_value);
@@ -821,6 +809,7 @@ fn switch_to_thread(
                             thread_id,
                             pid.as_u64()
                         );
+                        }
                     }
                 }
             }
@@ -836,6 +825,10 @@ fn switch_to_thread(
             // Note: Scheduler state was already updated (current_thread, TSS.RSP0)
             // but we must NOT return with broken interrupt frame
             return;
+        }
+
+        if let Some(notification) = signal_termination_info {
+            crate::signal::delivery::notify_parent_of_termination_deferred(&notification);
         }
     } else {
         // Restore userspace thread context
@@ -1002,6 +995,8 @@ fn restore_userspace_thread_context(
 
     // Track if signal termination happened (for parent notification after borrow ends)
     let mut signal_termination_info: Option<crate::signal::delivery::ParentNotification> = None;
+    let mut bad_address_pid = None;
+    let mut exit_receipt = None;
 
     if let Some(mut manager_guard) = guard_option {
         if let Some(ref mut manager) = *manager_guard {
@@ -1018,7 +1013,7 @@ fn restore_userspace_thread_context(
                             // Terminate the process and switch to idle.
                             raw_serial_str("<BADADDR>");
                             thread.set_terminated();
-                            process.terminate(-11); // SIGSEGV equivalent
+                            bad_address_pid = Some(pid);
                             crate::task::scheduler::with_thread_mut(thread_id, |sched_thread| {
                                 sched_thread.set_terminated();
                             });
@@ -1133,11 +1128,18 @@ fn restore_userspace_thread_context(
                 }
             }
 
+            if let Some(pid) = bad_address_pid {
+                exit_receipt = Some(manager.retire_process(pid, -11));
+            }
+
             // Now process borrow has ended - notify parent if signal terminated a child
             // Drop manager guard first to avoid deadlock when notifying parent
             drop(manager_guard);
             if let Some(notification) = signal_termination_info {
                 crate::signal::delivery::notify_parent_of_termination_deferred(&notification);
+            }
+            if let Some(receipt) = exit_receipt {
+                receipt.complete();
             }
         }
     } else {

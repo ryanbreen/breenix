@@ -484,6 +484,7 @@ pub fn try_dump_state() -> Option<SchedulerDumpInfo> {
                     ThreadState::BlockedOnChildExit => 4,
                     ThreadState::BlockedOnTimer => 5,
                     ThreadState::BlockedOnIO => 7,
+                    ThreadState::ExitPending => 8,
                     ThreadState::Terminated => 6,
                 },
                 blocked_in_syscall: t.blocked_in_syscall,
@@ -539,18 +540,22 @@ const MAX_CPUS: usize = 1;
 static SCHEDULING_EPOCHS: [AtomicU64; MAX_CPUS] =
     [const { AtomicU64::new(0) }; MAX_CPUS];
 
-#[cfg(target_arch = "aarch64")]
 #[derive(Clone, Copy)]
-struct RetirementGrace {
-    thread_id: u64,
-    fence: RetirementFence,
-}
-
 #[cfg(target_arch = "aarch64")]
-#[derive(Clone, Copy)]
 pub struct RetirementFence {
     epochs: [u64; MAX_CPUS],
     online_mask: u32,
+}
+
+#[derive(Clone, Copy)]
+#[cfg(not(target_arch = "aarch64"))]
+pub struct RetirementFence;
+
+#[cfg(not(target_arch = "aarch64"))]
+impl RetirementFence {
+    pub(crate) const fn capture() -> Self {
+        Self
+    }
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -580,10 +585,14 @@ impl RetirementFence {
             online_mask,
         }
     }
+
+    pub(crate) fn online_mask(&self) -> u32 {
+        self.online_mask
+    }
 }
 
 #[cfg(target_arch = "aarch64")]
-pub(crate) struct RetirementSnapshot(());
+pub struct RetirementSnapshot(());
 
 #[cfg(target_arch = "aarch64")]
 impl RetirementSnapshot {
@@ -600,6 +609,20 @@ impl RetirementSnapshot {
         core::sync::atomic::fence(Ordering::Acquire);
         elapsed.then_some(Self(()))
     }
+}
+
+#[cfg(target_arch = "aarch64")]
+pub(crate) fn cached_ttbr0_holder(
+    _snapshot: &RetirementSnapshot,
+    root_phys: u64,
+) -> Option<u64> {
+    const ROOT_MASK: u64 = !0xFFFF_0000_0000_0FFF;
+    with_scheduler(|scheduler| {
+        scheduler.threads.iter().find_map(|thread| {
+            (thread.cached_ttbr0 & ROOT_MASK == (root_phys & ROOT_MASK)).then_some(thread.id())
+        })
+    })
+    .flatten()
 }
 
 /// Record a scheduler entry for the current CPU.
@@ -855,9 +878,6 @@ pub struct Scheduler {
     /// wake_expired_timers validates each entry before acting on it.
     timer_heap: BinaryHeap<Reverse<(u64, u64)>>,
 
-    /// Per-thread all-CPU grace targets for AArch64 stack reclamation.
-    #[cfg(target_arch = "aarch64")]
-    retirement_grace: alloc::vec::Vec<RetirementGrace>,
 }
 
 impl Scheduler {
@@ -900,8 +920,6 @@ impl Scheduler {
             per_cpu_queues,
             cpu_state,
             timer_heap: BinaryHeap::new(),
-            #[cfg(target_arch = "aarch64")]
-            retirement_grace: alloc::vec::Vec::new(),
         };
 
         scheduler
@@ -978,76 +996,73 @@ impl Scheduler {
         let _ = (thread_id, thread_name, is_user);
     }
 
-    /// Drop terminated threads only after their stack is architecturally dead.
-    ///
-    /// ARM64 userspace kernel stacks are owned by scheduler threads because the
-    /// scheduler clone can outlive the process-table copy until it has fully
-    /// disappeared from CPU current/previous slots.
+    /// Mark an exiting thread non-runnable without claiming its kernel stack.
     #[cfg(target_arch = "aarch64")]
-    pub fn reclaim_terminated_threads(&mut self) {
+    pub(crate) fn request_exit_pending(&mut self, thread_id: u64) -> bool {
+        let Some(thread) = self.get_thread_mut(thread_id) else {
+            return false;
+        };
+        if thread.state == ThreadState::Terminated {
+            return true;
+        }
+        thread.set_exit_pending();
+        thread.retirement_fence = Some(RetirementFence::capture());
         for queue in self.per_cpu_queues.iter_mut() {
-            queue.retain(|&thread_id| {
-                self.threads.iter().any(|thread| {
-                    thread.id() == thread_id && thread.state != ThreadState::Terminated
-                })
-            });
+            queue.retain(|queued| *queued != thread_id);
         }
+        true
+    }
 
-        let terminated_ids: alloc::vec::Vec<u64> = self
-            .threads
-            .iter()
-            .filter(|thread| thread.state == ThreadState::Terminated)
-            .map(|thread| thread.id())
-            .collect();
-        self.retirement_grace
-            .retain(|grace| terminated_ids.contains(&grace.thread_id));
-        for thread_id in terminated_ids.iter().copied() {
-            if !self
-                .retirement_grace
-                .iter()
-                .any(|grace| grace.thread_id == thread_id)
+    /// Complete the off-stack edge after an ordered retirement observation.
+    #[cfg(target_arch = "aarch64")]
+    pub(crate) fn finalize_exit_pending(
+        &mut self,
+        thread_id: u64,
+        _snapshot: &RetirementSnapshot,
+    ) -> bool {
+        let Some(thread) = self.get_thread_mut(thread_id) else {
+            return false;
+        };
+        if thread.state != ThreadState::ExitPending {
+            return false;
+        }
+        if thread
+            .kernel_stack_top
+            .is_some_and(|top| crate::memory::kernel_stack::is_kernel_stack_slot_live(top.as_u64()))
+        {
+            return false;
+        }
+        thread.set_terminated();
+        true
+    }
+
+    /// Detach one reclaimable thread without allocating; the caller drops it.
+    #[cfg(target_arch = "aarch64")]
+    pub(crate) fn detach_reclaimable_thread(&mut self) -> Option<Box<Thread>> {
+        let index = self.threads.iter().position(|thread| {
+            if thread.state != ThreadState::Terminated
+                || self
+                    .cpu_state
+                    .iter()
+                    .any(|state| state.idle_thread == thread.id())
             {
-                self.retirement_grace.push(RetirementGrace {
-                    thread_id,
-                    fence: RetirementFence::capture(),
-                });
+                return false;
             }
-        }
-
-        let idle_ids: alloc::vec::Vec<u64> = self
-            .cpu_state
-            .iter()
-            .map(|state| state.idle_thread)
-            .collect();
-        let graces = &self.retirement_grace;
-        let mut reclaimed_ids = alloc::vec::Vec::new();
-        self.threads.retain(|thread| {
-            if thread.state != ThreadState::Terminated || idle_ids.contains(&thread.id()) {
-                return true;
-            }
-
-            let retirement_snapshot = graces
-                .iter()
-                .find(|grace| grace.thread_id == thread.id())
-                .and_then(|grace| RetirementSnapshot::acquire(&grace.fence));
-            let Some(_retirement_snapshot) = retirement_snapshot else {
-                return true;
+            let Some(fence) = thread.retirement_fence.as_ref() else {
+                return false;
             };
-            let stack_is_live = thread
-                .kernel_stack_top
-                .map(|top| {
-                    crate::memory::kernel_stack::is_kernel_stack_slot_live(top.as_u64())
-                })
-                .unwrap_or(false);
-            if stack_is_live {
-                return true;
-            }
-
-            reclaimed_ids.push(thread.id());
-            false
-        });
-        self.retirement_grace
-            .retain(|grace| !reclaimed_ids.contains(&grace.thread_id));
+            let Some(_snapshot) = RetirementSnapshot::acquire(fence) else {
+                return false;
+            };
+            !thread.kernel_stack_top.is_some_and(|top| {
+                crate::memory::kernel_stack::is_kernel_stack_slot_live(top.as_u64())
+            })
+        })?;
+        let thread_id = self.threads[index].id();
+        for queue in self.per_cpu_queues.iter_mut() {
+            queue.retain(|queued| *queued != thread_id);
+        }
+        Some(self.threads.swap_remove(index))
     }
 
     /// Add a thread as the current running thread without scheduling.
@@ -1153,7 +1168,10 @@ impl Scheduler {
                 // Check the state and determine what to do
                 let (is_terminated, is_blocked, published_ready) =
                     if let Some(current) = self.get_thread_mut(current_id) {
-                        let was_terminated = current.state == ThreadState::Terminated;
+                        let was_terminated = matches!(
+                            current.state,
+                            ThreadState::ExitPending | ThreadState::Terminated
+                        );
                         // Check for any blocked state
                         let was_blocked = current.state == ThreadState::Blocked
                             || current.state == ThreadState::BlockedOnSignal
@@ -1213,7 +1231,10 @@ impl Scheduler {
             // Try local queue first
             while let Some(n) = self.per_cpu_queues[current_cpu].pop_front() {
                 if let Some(thread) = self.get_thread(n) {
-                    if thread.state == ThreadState::Terminated {
+                    if matches!(
+                        thread.state,
+                        ThreadState::ExitPending | ThreadState::Terminated
+                    ) {
                         continue;
                     }
                 }
@@ -1234,7 +1255,10 @@ impl Scheduler {
                         break;
                     }
                     if let Some(thread) = self.get_thread(n) {
-                        if thread.state == ThreadState::Terminated {
+                        if matches!(
+                            thread.state,
+                            ThreadState::ExitPending | ThreadState::Terminated
+                        ) {
                             continue;
                         }
                     }
@@ -1467,7 +1491,10 @@ impl Scheduler {
             if current_id != self.cpu_state[Self::current_cpu_id()].idle_thread {
                 let (is_terminated, is_blocked) = if let Some(current) = self.get_thread(current_id)
                 {
-                    let was_terminated = current.state == ThreadState::Terminated;
+                    let was_terminated = matches!(
+                        current.state,
+                        ThreadState::ExitPending | ThreadState::Terminated
+                    );
                     let was_blocked = current.state == ThreadState::Blocked
                         || current.state == ThreadState::BlockedOnSignal
                         || current.state == ThreadState::BlockedOnChildExit
@@ -1524,7 +1551,10 @@ impl Scheduler {
             // Try local queue
             while let Some(n) = self.per_cpu_queues[current_cpu].pop_front() {
                 if let Some(thread) = self.get_thread(n) {
-                    if thread.state == ThreadState::Terminated {
+                    if matches!(
+                        thread.state,
+                        ThreadState::ExitPending | ThreadState::Terminated
+                    ) {
                         continue;
                     }
                 }
@@ -1545,7 +1575,10 @@ impl Scheduler {
                         break;
                     }
                     if let Some(thread) = self.get_thread(n) {
-                        if thread.state == ThreadState::Terminated {
+                        if matches!(
+                            thread.state,
+                            ThreadState::ExitPending | ThreadState::Terminated
+                        ) {
                             continue;
                         }
                     }
@@ -2624,7 +2657,10 @@ impl Scheduler {
                     .iter()
                     .any(|state| state.idle_thread == thread.id())
                 && thread.privilege == super::thread::ThreadPrivilege::User
-                && thread.state != ThreadState::Terminated
+                && !matches!(
+                    thread.state,
+                    ThreadState::ExitPending | ThreadState::Terminated
+                )
         })
     }
 
@@ -2927,13 +2963,59 @@ pub fn spawn_front(thread: Box<Thread>) {
 }
 
 #[cfg(target_arch = "aarch64")]
-pub fn reclaim_terminated_threads() {
+pub fn request_exit_pending(thread_id: u64) -> bool {
     without_interrupts(|| {
         let mut scheduler_lock = SCHEDULER.lock();
-        if let Some(scheduler) = scheduler_lock.as_mut() {
-            scheduler.reclaim_terminated_threads();
-        }
-    });
+        scheduler_lock
+            .as_mut()
+            .is_some_and(|scheduler| scheduler.request_exit_pending(thread_id))
+    })
+}
+
+#[cfg(target_arch = "aarch64")]
+pub fn finalize_one_exit_pending() -> bool {
+    without_interrupts(|| {
+        let mut scheduler_lock = SCHEDULER.lock();
+        let Some(scheduler) = scheduler_lock.as_mut() else {
+            return false;
+        };
+        let candidate = scheduler.threads.iter().find_map(|thread| {
+            if thread.state != ThreadState::ExitPending {
+                return None;
+            }
+            let fence = thread.retirement_fence.as_ref()?;
+            RetirementSnapshot::acquire(fence).map(|snapshot| (thread.id(), snapshot))
+        });
+        candidate.is_some_and(|(thread_id, snapshot)| {
+            scheduler.finalize_exit_pending(thread_id, &snapshot)
+        })
+    })
+}
+
+#[cfg(target_arch = "aarch64")]
+pub fn detach_reclaimable_thread() -> Option<Box<Thread>> {
+    without_interrupts(|| {
+        let mut scheduler_lock = SCHEDULER.lock();
+        scheduler_lock
+            .as_mut()
+            .and_then(Scheduler::detach_reclaimable_thread)
+    })
+}
+
+#[cfg(target_arch = "aarch64")]
+pub fn has_pending_thread_reclaim() -> bool {
+    without_interrupts(|| {
+        let scheduler_lock = SCHEDULER.lock();
+        scheduler_lock.as_ref().is_some_and(|scheduler| {
+            scheduler.threads.iter().any(|thread| {
+                matches!(thread.state, ThreadState::ExitPending | ThreadState::Terminated)
+                    && !scheduler
+                        .cpu_state
+                        .iter()
+                        .any(|state| state.idle_thread == thread.id())
+            })
+        })
+    })
 }
 
 /// Add a thread as the current running thread without scheduling.
@@ -3194,7 +3276,8 @@ pub fn get_process_display_state(owner_pid: u64) -> Option<&'static str> {
                 | super::thread::ThreadState::BlockedOnChildExit
                 | super::thread::ThreadState::BlockedOnTimer
                 | super::thread::ThreadState::BlockedOnIO => saw_blocked = true,
-                super::thread::ThreadState::Terminated => saw_terminated = true,
+                super::thread::ThreadState::ExitPending
+                | super::thread::ThreadState::Terminated => saw_terminated = true,
             }
         }
 

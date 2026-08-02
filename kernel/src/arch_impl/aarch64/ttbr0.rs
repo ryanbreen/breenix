@@ -94,30 +94,61 @@ pub(crate) fn invalidate_user_tlb_broadcast() {
     }
 }
 
-/// Return whether any online CPU still retains `root_phys` in a TTBR0 shadow.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct RootLiveness {
+    pub local_hardware: bool,
+    pub saved_cpu_mask: u32,
+    pub next_cpu_mask: u32,
+    pub cached_thread: Option<u64>,
+}
+
+impl RootLiveness {
+    pub fn is_live(self) -> bool {
+        self.local_hardware
+            || self.saved_cpu_mask != 0
+            || self.next_cpu_mask != 0
+            || self.cached_thread.is_some()
+    }
+
+    pub fn blocker_mask(self) -> u32 {
+        self.saved_cpu_mask | self.next_cpu_mask
+    }
+}
+
+/// Observe every scheduler and CPU lease for `root_phys` after the retirement fence.
 ///
-/// TTBR0 values may carry an ASID, so compare only the physical root bits using
-/// the same mask as the exception fault lookup paths.
-pub fn is_ttbr0_root_live(root_phys: u64) -> bool {
+/// A CPU cannot read another CPU's `TTBR0_EL1` architecturally. The online CPUs'
+/// saved and pending shadows are the conservative superset maintained by the
+/// handoff protocol; the reaper's own hardware register is read exactly.
+pub fn root_liveness(
+    snapshot: &crate::task::scheduler::RetirementSnapshot,
+    root_phys: u64,
+) -> RootLiveness {
     let root_phys = root_phys & TTBR0_ROOT_MASK;
     if root_phys == 0 {
-        return false;
+        return RootLiveness::default();
     }
 
-    if read_ttbr0_el1() & TTBR0_ROOT_MASK == root_phys {
-        return true;
-    }
-
-    (0..super::constants::MAX_CPUS).any(|cpu_id| {
+    let mut liveness = RootLiveness {
+        local_hardware: read_ttbr0_el1() & TTBR0_ROOT_MASK == root_phys,
+        ..RootLiveness::default()
+    };
+    for cpu_id in 0..super::constants::MAX_CPUS {
         if !super::smp::is_cpu_online(cpu_id) {
-            return false;
+            continue;
         }
 
-        crate::per_cpu_aarch64::ttbr0_shadow_snapshot(cpu_id)
-            .map(|(saved_process_ttbr0, next_ttbr0)| {
-                saved_process_ttbr0 & TTBR0_ROOT_MASK == root_phys
-                    || next_ttbr0 & TTBR0_ROOT_MASK == root_phys
-            })
-            .unwrap_or(false)
-    })
+        if let Some((saved_process_ttbr0, next_ttbr0)) =
+            crate::per_cpu_aarch64::ttbr0_shadow_snapshot(cpu_id)
+        {
+            if saved_process_ttbr0 & TTBR0_ROOT_MASK == root_phys {
+                liveness.saved_cpu_mask |= 1 << cpu_id;
+            }
+            if next_ttbr0 & TTBR0_ROOT_MASK == root_phys {
+                liveness.next_cpu_mask |= 1 << cpu_id;
+            }
+        }
+    }
+    liveness.cached_thread = crate::task::scheduler::cached_ttbr0_holder(snapshot, root_phys);
+    liveness
 }

@@ -62,6 +62,55 @@ pub enum ProcessState {
     Terminated(i32), // exit code
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExitOutcome {
+    Committed,
+    AlreadyCommitted,
+    Missing,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExitStage {
+    Live,
+    ExitCommitted,
+    Reclaimed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ExitWorkBits(u32);
+
+impl ExitWorkBits {
+    pub const fn empty() -> Self {
+        Self(0)
+    }
+
+    pub const REPARENT_CHILDREN: Self = Self(1 << 0);
+    pub const NOTIFY_PARENT: Self = Self(1 << 1);
+    pub const CLEANUP_GRAPHICS: Self = Self(1 << 2);
+    pub const CLOSE_FDS: Self = Self(1 << 3);
+
+    pub const fn all() -> Self {
+        Self(
+            Self::REPARENT_CHILDREN.0
+                | Self::NOTIFY_PARENT.0
+                | Self::CLEANUP_GRAPHICS.0
+                | Self::CLOSE_FDS.0,
+        )
+    }
+
+    pub const fn contains(self, work: Self) -> bool {
+        self.0 & work.0 != 0
+    }
+
+    pub fn remove(&mut self, work: Self) {
+        self.0 &= !work.0;
+    }
+
+    pub const fn is_empty(self) -> bool {
+        self.0 == 0
+    }
+}
+
 /// A process represents a running program with its own address space
 pub struct Process {
     /// Unique process identifier
@@ -112,6 +161,12 @@ pub struct Process {
 
     /// Exit code (if terminated)
     pub exit_code: Option<i32>,
+
+    pub exit_stage: ExitStage,
+    pub exit_work_bits: ExitWorkBits,
+    pub live_thread_count: u32,
+    pub reaped: bool,
+    pub retired_root: Option<u64>,
 
     /// Memory usage statistics
     pub memory_usage: MemoryUsage,
@@ -171,9 +226,8 @@ pub struct Process {
 
     /// Old page tables from previous exec() calls, pending deferred cleanup.
     /// These cannot be freed immediately during exec because CR3 may still point
-    /// to the old table when a timer interrupt fires. They are drained at the
-    /// start of the next exec (by which point CR3 has definitely switched) or
-    /// when the process exits.
+    /// to the old table when a timer interrupt fires. They move into the process
+    /// grave at exit and remain pinned until the reclaimer proves quiescence.
     pub pending_old_page_tables: Vec<Box<ProcessPageTable>>,
 
     /// Framebuffer mmap info (if this process has an mmap'd framebuffer)
@@ -228,6 +282,11 @@ impl Process {
             threads: Vec::new(),
             parent: None,
             exit_code: None,
+            exit_stage: ExitStage::Live,
+            exit_work_bits: ExitWorkBits::empty(),
+            live_thread_count: 1,
+            reaped: false,
+            retired_root: None,
             memory_usage: MemoryUsage::default(),
             stack: None,
             page_table: None,
@@ -274,184 +333,58 @@ impl Process {
         self.state = ProcessState::Ready;
     }
 
-    /// Terminate the process
-    ///
-    /// This sets the process state to Terminated and closes all file descriptors
-    /// to properly release resources (e.g., decrement pipe reader/writer counts).
-    /// Also cleans up Copy-on-Write frame references to avoid memory leaks.
-    /// CRITICAL: Also marks the main thread as Terminated so the scheduler
-    /// doesn't keep scheduling this thread after process termination.
-    ///
-    /// NOTE: This method does FD cleanup and CoW cleanup inline, which means
-    /// it acquires pipe locks, scheduler locks, and frame metadata locks.
-    /// For `handle_thread_exit`, use `terminate_minimal()` + deferred cleanup
-    /// to reduce PM lock hold time on ARM64 SMP.
-    pub fn terminate(&mut self, exit_code: i32) {
-        // Guard against double-terminate: if the process is already terminated,
-        // skip all cleanup to prevent double-decrementing COW page refcounts
-        // (which would free pages still mapped by other processes).
-        if matches!(self.state, ProcessState::Terminated(_)) {
-            return;
+    pub fn mark_exit_committed(&mut self, exit_code: i32) -> ExitOutcome {
+        if self.exit_stage != ExitStage::Live {
+            return ExitOutcome::AlreadyCommitted;
         }
-
-        // Close all file descriptors before setting state to Terminated
-        // This ensures pipe counts are properly decremented so readers get EOF
-        self.close_all_fds();
-
-        // Clean up Copy-on-Write frame references
-        // This decrements refcounts for all pages and deallocates frames that are no longer shared
-        self.cleanup_cow_frames();
-
+        self.exit_stage = ExitStage::ExitCommitted;
+        self.exit_work_bits = ExitWorkBits::all();
+        self.live_thread_count = 0;
         self.state = ProcessState::Terminated(exit_code);
         self.exit_code = Some(exit_code);
-
-        // CRITICAL FIX: Mark the main thread as terminated so the scheduler
-        // doesn't keep putting it back in the ready queue. The scheduler checks
-        // thread state (not process state) when deciding whether to re-queue a thread.
-        // Without this, a process terminated by signal would have its thread keep
-        // getting scheduled forever in an infinite loop.
-        if let Some(ref mut thread) = self.main_thread {
-            thread.set_terminated();
-        }
+        ExitOutcome::Committed
     }
 
-    /// Minimal terminate: mark process and thread as terminated without cleanup.
-    ///
-    /// Used by `handle_thread_exit` to mark the process as terminated under PM lock,
-    /// then perform FD closure and CoW cleanup OUTSIDE the PM lock. This prevents
-    /// a system-wide hang on ARM64 SMP where logging, pipe wakeups, and scheduler
-    /// calls inside close_all_fds create lock ordering violations with the serial
-    /// output lock and framebuffer lock while all CPUs have interrupts disabled.
-    pub fn terminate_minimal(&mut self, exit_code: i32) {
-        if matches!(self.state, ProcessState::Terminated(_)) {
-            return;
+    /// Move every heavy resource into the grave allocated at process birth.
+    pub fn commit_grave(
+        &mut self,
+        exit_code: i32,
+    ) -> Option<Box<crate::task::reclaim::ProcessGrave>> {
+        let retired_root = self.cr3_value();
+        let mut grave = self.grave.take()?;
+        grave.exit_code = exit_code;
+        grave.page_table = self.page_table.take();
+        core::mem::swap(
+            &mut grave.old_page_tables,
+            &mut self.pending_old_page_tables,
+        );
+        grave.stack = self.stack.take();
+        #[cfg(target_arch = "aarch64")]
+        {
+            grave.fence = crate::task::scheduler::RetirementFence::capture();
         }
-        self.state = ProcessState::Terminated(exit_code);
-        self.exit_code = Some(exit_code);
-        if let Some(ref mut thread) = self.main_thread {
-            thread.set_terminated();
-        }
+        let (secs, nanos) = crate::time::get_monotonic_time_ns();
+        grave.queued_at_ns = secs.saturating_mul(1_000_000_000) + nanos;
+        self.retired_root = retired_root;
+        let outcome = self.mark_exit_committed(exit_code);
+        debug_assert_eq!(outcome, ExitOutcome::Committed);
+        Some(grave)
     }
 
-    /// Extract all file descriptor entries for deferred cleanup outside PM lock.
-    ///
-    /// Returns the FD entries without closing them — the caller is responsible
-    /// for pipe close_read/close_write, PTY refcounting, etc.
-    pub fn take_fd_entries(&mut self) -> alloc::vec::Vec<(usize, crate::ipc::fd::FileDescriptor)> {
-        self.fd_table.take_all()
+    pub fn is_exit_committed(&self) -> bool {
+        self.exit_stage != ExitStage::Live
     }
 
-    /// Close all file descriptors in this process
-    ///
-    /// This properly decrements pipe reader/writer counts, ensuring that
-    /// when all writers close, readers get EOF instead of EAGAIN.
-    ///
-    /// CRITICAL: No logging in this function — it runs under PM lock where
-    /// log calls create lock ordering violations (PM → SERIAL → framebuffer).
-    #[cfg(target_arch = "x86_64")]
-    fn close_all_fds(&mut self) {
-        use crate::ipc::FdKind;
-
-        for fd in 0..crate::ipc::MAX_FDS {
-            if let Ok(fd_entry) = self.fd_table.close(fd as i32) {
-                match fd_entry.kind {
-                    FdKind::PipeRead(buffer) => {
-                        buffer.lock().close_read();
-                    }
-                    FdKind::PipeWrite(buffer) => {
-                        buffer.lock().close_write();
-                    }
-                    FdKind::TcpListener(port) => {
-                        crate::net::tcp::tcp_listener_ref_dec(port);
-                    }
-                    FdKind::TcpConnection(conn_id) => {
-                        let _ = crate::net::tcp::tcp_close(&conn_id);
-                    }
-                    FdKind::PtyMaster(pty_num) => {
-                        if let Some(pair) = crate::tty::pty::get(pty_num) {
-                            let old_count = pair
-                                .master_refcount
-                                .fetch_sub(1, core::sync::atomic::Ordering::SeqCst);
-                            if old_count == 1 {
-                                crate::tty::pty::release(pty_num);
-                            }
-                        }
-                    }
-                    FdKind::PtySlave(pty_num) => {
-                        if let Some(pair) = crate::tty::pty::get(pty_num) {
-                            pair.slave_close();
-                        }
-                    }
-                    FdKind::UnixStream(socket) => {
-                        socket.lock().close();
-                    }
-                    FdKind::FifoRead(path, buffer) => {
-                        crate::ipc::fifo::close_fifo_read(&path);
-                        buffer.lock().close_read();
-                    }
-                    FdKind::FifoWrite(path, buffer) => {
-                        crate::ipc::fifo::close_fifo_write(&path);
-                        buffer.lock().close_write();
-                    }
-                    _ => {} // StdIo, RegularFile, Directory, Device, etc. — no action needed
-                }
-            }
-        }
+    pub fn mark_reclaimed(&mut self) {
+        self.exit_stage = ExitStage::Reclaimed;
     }
 
-    /// Close all file descriptors in this process (ARM64)
-    ///
-    /// CRITICAL: No logging in this function — it runs under PM lock where
-    /// log calls create lock ordering violations (PM → SERIAL → framebuffer).
-    #[cfg(not(target_arch = "x86_64"))]
-    fn close_all_fds(&mut self) {
-        use crate::ipc::FdKind;
+    pub fn mark_reaped(&mut self) {
+        self.reaped = true;
+    }
 
-        for fd in 0..crate::ipc::MAX_FDS {
-            if let Ok(fd_entry) = self.fd_table.close(fd as i32) {
-                match fd_entry.kind {
-                    FdKind::PipeRead(buffer) => {
-                        buffer.lock().close_read();
-                    }
-                    FdKind::PipeWrite(buffer) => {
-                        buffer.lock().close_write();
-                    }
-                    FdKind::TcpListener(port) => {
-                        crate::net::tcp::tcp_listener_ref_dec(port);
-                    }
-                    FdKind::TcpConnection(conn_id) => {
-                        let _ = crate::net::tcp::tcp_close(&conn_id);
-                    }
-                    FdKind::PtyMaster(pty_num) => {
-                        if let Some(pair) = crate::tty::pty::get(pty_num) {
-                            let old_count = pair
-                                .master_refcount
-                                .fetch_sub(1, core::sync::atomic::Ordering::SeqCst);
-                            if old_count == 1 {
-                                crate::tty::pty::release(pty_num);
-                            }
-                        }
-                    }
-                    FdKind::PtySlave(pty_num) => {
-                        if let Some(pair) = crate::tty::pty::get(pty_num) {
-                            pair.slave_close();
-                        }
-                    }
-                    FdKind::UnixStream(socket) => {
-                        socket.lock().close();
-                    }
-                    FdKind::FifoRead(path, buffer) => {
-                        crate::ipc::fifo::close_fifo_read(&path);
-                        buffer.lock().close_read();
-                    }
-                    FdKind::FifoWrite(path, buffer) => {
-                        crate::ipc::fifo::close_fifo_write(&path);
-                        buffer.lock().close_write();
-                    }
-                    _ => {} // StdIo, RegularFile, Directory, Device, etc. — no action needed
-                }
-            }
-        }
+    pub fn can_remove_row(&self) -> bool {
+        self.reaped && self.exit_stage == ExitStage::Reclaimed && self.exit_work_bits.is_empty()
     }
 
     /// Clean up Copy-on-Write frame references when process exits
@@ -460,7 +393,7 @@ impl Process {
     /// reference counts. Frames that are no longer shared (refcount reaches 0)
     /// are returned to the frame allocator for reuse.
     #[cfg(target_arch = "x86_64")]
-    pub(crate) fn cleanup_cow_frames(&mut self) {
+    pub fn cleanup_cow_frames(&mut self, _context: &crate::task::reclaim::ReclaimContext) {
         use crate::memory::frame_allocator::deallocate_frame;
         use crate::memory::frame_metadata::frame_decref;
         use x86_64::structures::paging::{PageTableFlags, PhysFrame};
@@ -499,20 +432,9 @@ impl Process {
     ///
     /// CRITICAL: No logging — may run under PM lock.
     #[cfg(not(target_arch = "x86_64"))]
-    pub(crate) fn cleanup_cow_frames(&mut self) {
+    pub fn cleanup_cow_frames(&mut self, context: &crate::task::reclaim::ReclaimContext) {
         if let Some(page_table) = self.page_table.as_ref() {
-            cleanup_cow_page_table(page_table);
-        }
-    }
-
-    /// Drain and clean up any pending old page tables from previous exec() calls.
-    ///
-    /// This is safe to call once CR3 has definitely switched away from the old
-    /// page table (e.g., at the start of the next exec, or during process exit).
-    /// Each old page table has its user-space frames freed via `cleanup_for_exec()`.
-    pub fn drain_old_page_tables(&mut self) {
-        for old_pt in self.pending_old_page_tables.drain(..) {
-            old_pt.cleanup_for_exec();
+            cleanup_cow_page_table(page_table, context);
         }
     }
 
@@ -567,7 +489,10 @@ impl Process {
 /// Deferred exit reclamation owns the page table after removing it from the
 /// process table, so this operation accepts the page table directly.
 #[cfg(target_arch = "aarch64")]
-pub(crate) fn cleanup_cow_page_table(page_table: &ProcessPageTable) {
+pub(crate) fn cleanup_cow_page_table(
+    page_table: &ProcessPageTable,
+    _context: &crate::task::reclaim::ReclaimContext,
+) {
     use crate::memory::arch_stub::{PageTableFlags, PhysFrame};
     use crate::memory::frame_allocator::deallocate_frame;
     use crate::memory::frame_metadata::frame_decref;

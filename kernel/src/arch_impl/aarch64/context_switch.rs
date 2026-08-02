@@ -192,7 +192,8 @@ fn trace_thread_state_code(state: ThreadState) -> u16 {
         ThreadState::BlockedOnChildExit => 5,
         ThreadState::BlockedOnTimer => 6,
         ThreadState::BlockedOnIO => 7,
-        ThreadState::Terminated => 8,
+        ThreadState::ExitPending => 8,
+        ThreadState::Terminated => 9,
     }
 }
 
@@ -3431,7 +3432,6 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
     frame: &mut Aarch64ExceptionFrame,
     from_el0: bool,
 ) {
-    crate::task::process_task::drain_deferred_fault_sigsegv_exits();
 
     // ── Lock-free pre-checks ──────────────────────────────────────
     let preempt_count = Aarch64PerCpu::preempt_count();
@@ -3550,6 +3550,7 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
                         | ThreadState::BlockedOnChildExit
                         | ThreadState::BlockedOnTimer
                         | ThreadState::BlockedOnIO
+                        | ThreadState::ExitPending
                         | ThreadState::Terminated
                 )
             } else {
@@ -3638,6 +3639,7 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
                 | ThreadState::BlockedOnChildExit
                 | ThreadState::BlockedOnTimer
                 | ThreadState::BlockedOnIO
+                | ThreadState::ExitPending
                 | ThreadState::Terminated
         )
     } else {
@@ -4452,7 +4454,6 @@ fn cpu0_breadcrumb(cpu_id: usize, id: u64) {
 }
 
 pub fn schedule_from_kernel() {
-    crate::task::process_task::drain_deferred_fault_sigsegv_exits();
 
     let saved_daif = read_daif();
     let cpu_id = Aarch64PerCpu::cpu_id() as usize;
@@ -4770,11 +4771,15 @@ fn set_next_ttbr0_for_thread(thread_id: u64) -> TtbrResult {
 
     let next_ttbr0 = if let Some(ref manager) = *manager_guard {
         if let Some((_pid, process)) = manager.find_process_by_thread(thread_id) {
-            process
-                .page_table
-                .as_ref()
-                .map(|pt| pt.level_4_frame().start_address().as_u64())
-                .or(process.inherited_cr3)
+            if process.is_exit_committed() {
+                None
+            } else {
+                process
+                    .page_table
+                    .as_ref()
+                    .map(|pt| pt.level_4_frame().start_address().as_u64())
+                    .or(process.inherited_cr3)
+            }
         } else {
             // Thread's process not found — orphaned thread.
             // Diagnostic: dump all process thread IDs to identify the mismatch.

@@ -128,6 +128,15 @@ pub fn kthread_should_stop() -> bool {
 /// Park current thread until unparked (sleep)
 /// Use this in kthread wait loops instead of bare HLT to ensure kthread_stop() can wake promptly.
 pub fn kthread_park() {
+    kthread_park_if(|| true);
+}
+
+/// Park only if a condition still holds after the parked state is published.
+/// This closes the wake-before-park window for generation-counted workers.
+pub fn kthread_park_if<F>(should_park: F)
+where
+    F: FnOnce() -> bool,
+{
     let handle = match current_kthread() {
         Some(h) => h,
         None => return, // Not a kthread, nothing to do
@@ -135,6 +144,11 @@ pub fn kthread_park() {
 
     // Set parked flag first
     handle.inner.parked.store(true, Ordering::Release);
+
+    if !should_park() {
+        handle.inner.parked.store(false, Ordering::Release);
+        return;
+    }
 
     // CRITICAL: Check should_stop AFTER setting parked to handle race with kthread_stop().
     // If kthread_stop() was called before we set parked, we need to return immediately.

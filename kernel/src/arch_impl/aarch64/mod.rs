@@ -55,9 +55,10 @@ pub use syscall_entry::{is_el0_confirmed, syscall_return_to_userspace_aarch64};
 #[allow(unused_imports)]
 pub use timer::Aarch64Timer;
 pub use ttbr0::{
-    arm_process_ttbr0, install_process_ttbr0, is_ttbr0_root_live, kernel_ttbr0,
-    leave_process_ttbr0,
+    arm_process_ttbr0, install_process_ttbr0, kernel_ttbr0, leave_process_ttbr0, root_liveness,
+    RootLiveness,
 };
+pub(crate) use ttbr0::invalidate_user_tlb_broadcast;
 
 // Re-export interrupt control functions for convenient access
 // These provide the ARM64 equivalent of x86_64::instructions::interrupts::*

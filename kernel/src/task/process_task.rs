@@ -43,15 +43,18 @@ impl DeferredFaultExitBuffer {
         false
     }
 
-    fn drain(&self, out: &mut alloc::vec::Vec<u64>) {
+    fn take_one(&self) -> Option<u64> {
         for slot in &self.slots {
             let tid = slot.swap(DEFERRED_FAULT_EXIT_EMPTY, Ordering::AcqRel);
             if tid != DEFERRED_FAULT_EXIT_EMPTY {
-                out.push(tid);
+                return Some(tid);
             }
         }
+        None
     }
 }
+
+pub static FAULT_EXIT_INTENT_DROPPED: AtomicU64 = AtomicU64::new(0);
 
 #[cfg(target_arch = "aarch64")]
 static DEFERRED_FAULT_EXIT_BUFFERS: [DeferredFaultExitBuffer; 8] =
@@ -60,133 +63,52 @@ static DEFERRED_FAULT_EXIT_BUFFERS: [DeferredFaultExitBuffer; 8] =
 static DEFERRED_FAULT_EXIT_BUFFERS: [DeferredFaultExitBuffer; 1] =
     [const { DeferredFaultExitBuffer::new() }];
 
-#[cfg(target_arch = "aarch64")]
-struct PendingProcessReclaim {
-    page_table: Option<alloc::boxed::Box<crate::memory::process_memory::ProcessPageTable>>,
-    old_page_tables: alloc::vec::Vec<
-        alloc::boxed::Box<crate::memory::process_memory::ProcessPageTable>,
-    >,
-    retirement: scheduler::RetirementFence,
-}
-
-#[cfg(target_arch = "aarch64")]
-impl PendingProcessReclaim {
-    fn root_is_live(&self) -> bool {
-        self.page_table
-            .iter()
-            .chain(self.old_page_tables.iter())
-            .any(|page_table| {
-                crate::arch_impl::aarch64::is_ttbr0_root_live(
-                    page_table.level_4_frame().start_address().as_u64(),
-                )
-            })
-    }
-
-    fn reclaim(mut self) {
-        if let Some(page_table) = self.page_table.as_ref() {
-            crate::process::process::cleanup_cow_page_table(page_table);
-        }
-        for old_page_table in self.old_page_tables.drain(..) {
-            old_page_table.cleanup_for_exec();
-        }
-        drop(self.page_table.take());
-    }
-}
-
-#[cfg(target_arch = "aarch64")]
-static PENDING_PROCESS_RECLAIMS: spin::Mutex<alloc::vec::Vec<PendingProcessReclaim>> =
-    spin::Mutex::new(alloc::vec::Vec::new());
-
-fn release_process_resources(process: &mut crate::process::Process) {
-    process.cleanup_cow_frames();
-    process.drain_old_page_tables();
-    drop(process.page_table.take());
-    drop(process.stack.take());
-    process.pending_old_page_tables.clear();
-}
-
-#[cfg(target_arch = "aarch64")]
-fn defer_live_process_resources(
-    process: &mut crate::process::Process,
-) -> Option<PendingProcessReclaim> {
-    let root_is_live = process
-        .page_table
-        .iter()
-        .chain(process.pending_old_page_tables.iter())
-        .any(|page_table| {
-            crate::arch_impl::aarch64::is_ttbr0_root_live(
-                page_table.level_4_frame().start_address().as_u64(),
-            )
-        });
-    if !root_is_live {
-        return None;
-    }
-
-    Some(PendingProcessReclaim {
-        page_table: process.page_table.take(),
-        old_page_tables: core::mem::take(&mut process.pending_old_page_tables),
-        retirement: scheduler::RetirementFence::capture(),
-    })
-}
-
-#[cfg(target_arch = "aarch64")]
-fn enqueue_process_reclaim(reclaim: PendingProcessReclaim) {
-    crate::arch_without_interrupts(|| PENDING_PROCESS_RECLAIMS.lock().push(reclaim));
-}
-
-/// Close extracted file descriptor entries outside the PM lock.
-///
-/// This performs the same cleanup as Process::close_all_fds() but operates on
-/// a Vec of entries that were extracted from the FD table under PM lock via
-/// Process::take_fd_entries(). This avoids holding PM lock during pipe wakeups,
-/// PTY refcounting, TCP close, etc.
+/// Close one process-owned file descriptor outside the PM lock.
 ///
 /// CRITICAL: No PM lock is held when this runs.
-fn close_extracted_fds(entries: alloc::vec::Vec<(usize, FileDescriptor)>) {
+pub fn close_owned_fd(fd_entry: FileDescriptor) {
     use crate::ipc::FdKind;
 
-    for (_fd, fd_entry) in entries {
-        match fd_entry.kind {
-            FdKind::PipeRead(buffer) => {
-                buffer.lock().close_read();
-            }
-            FdKind::PipeWrite(buffer) => {
-                buffer.lock().close_write();
-            }
-            FdKind::TcpListener(port) => {
-                crate::net::tcp::tcp_listener_ref_dec(port);
-            }
-            FdKind::TcpConnection(conn_id) => {
-                let _ = crate::net::tcp::tcp_close(&conn_id);
-            }
-            FdKind::PtyMaster(pty_num) => {
-                if let Some(pair) = crate::tty::pty::get(pty_num) {
-                    let old_count = pair
-                        .master_refcount
-                        .fetch_sub(1, core::sync::atomic::Ordering::SeqCst);
-                    if old_count == 1 {
-                        crate::tty::pty::release(pty_num);
-                    }
-                }
-            }
-            FdKind::PtySlave(pty_num) => {
-                if let Some(pair) = crate::tty::pty::get(pty_num) {
-                    pair.slave_close();
-                }
-            }
-            FdKind::UnixStream(socket) => {
-                socket.lock().close();
-            }
-            FdKind::FifoRead(path, buffer) => {
-                crate::ipc::fifo::close_fifo_read(&path);
-                buffer.lock().close_read();
-            }
-            FdKind::FifoWrite(path, buffer) => {
-                crate::ipc::fifo::close_fifo_write(&path);
-                buffer.lock().close_write();
-            }
-            _ => {} // StdIo, RegularFile, Directory, Device, etc. — no action needed
+    match fd_entry.kind {
+        FdKind::PipeRead(buffer) => {
+            buffer.lock().close_read();
         }
+        FdKind::PipeWrite(buffer) => {
+            buffer.lock().close_write();
+        }
+        FdKind::TcpListener(port) => {
+            crate::net::tcp::tcp_listener_ref_dec(port);
+        }
+        FdKind::TcpConnection(conn_id) => {
+            let _ = crate::net::tcp::tcp_close(&conn_id);
+        }
+        FdKind::PtyMaster(pty_num) => {
+            if let Some(pair) = crate::tty::pty::get(pty_num) {
+                let old_count = pair
+                    .master_refcount
+                    .fetch_sub(1, core::sync::atomic::Ordering::SeqCst);
+                if old_count == 1 {
+                    crate::tty::pty::release(pty_num);
+                }
+            }
+        }
+        FdKind::PtySlave(pty_num) => {
+            if let Some(pair) = crate::tty::pty::get(pty_num) {
+                pair.slave_close();
+            }
+        }
+        FdKind::UnixStream(socket) => {
+            socket.lock().close();
+        }
+        FdKind::FifoRead(path, buffer) => {
+            crate::ipc::fifo::close_fifo_read(&path);
+            buffer.lock().close_read();
+        }
+        FdKind::FifoWrite(path, buffer) => {
+            crate::ipc::fifo::close_fifo_write(&path);
+            buffer.lock().close_write();
+        }
+        _ => {} // StdIo, RegularFile, Directory, Device, etc. — no action needed
     }
 }
 
@@ -198,91 +120,25 @@ impl ProcessScheduler {
     ///
     /// Two-phase design to minimize PM lock hold time and prevent deadlocks:
     ///
-    /// Phase 1 (under PM lock): Mark process terminated, extract FD entries,
-    ///   set SIGCHLD on parent, collect parent thread ID for wakeup.
-    ///   No logging, no pipe wakeups, no scheduler calls.
+    /// Phase 1 (under PM lock): Commit the process grave, set SIGCHLD on the
+    ///   parent, and collect the durable worker obligations. No logging, FD
+    ///   close, allocation, scheduler call, or heavy destructor runs here.
     ///
-    /// Phase 2 (no PM lock): Close extracted FDs (pipe wakeups, PTY cleanup),
-    ///   wake parent thread via scheduler, log the exit.
+    /// Phase 2 (no PM lock): Complete the receipt and wake the reclaimer.
     ///
     /// This prevents a system-wide hang on ARM64 SMP where the PM lock (acquired
     /// with interrupts disabled on all CPUs) combined with logging (which acquires
     /// SERIAL and framebuffer locks) creates an unbreakable deadlock.
     pub fn handle_thread_exit(thread_id: u64, exit_code: i32) {
-        // Phase 1: Under PM lock — minimal work only
-        let phase1_result = {
-            if let Some(ref mut manager) = *crate::process::manager() {
-                if let Some((pid, process)) = manager.find_process_by_thread_mut(thread_id) {
-                    let parent_pid = process.parent;
-                    let process_name = process.name.clone();
-                    // Mark terminated and extract FDs without closing them
-                    process.terminate_minimal(exit_code);
-                    let fd_entries = process.take_fd_entries();
-                    #[cfg(target_arch = "aarch64")]
-                    if let Some(reclaim) = defer_live_process_resources(process) {
-                        enqueue_process_reclaim(reclaim);
-                        drop(process.stack.take());
-                    } else {
-                        release_process_resources(process);
-                    }
-                    #[cfg(not(target_arch = "aarch64"))]
-                    release_process_resources(process);
-
-                    #[cfg(feature = "btrt")]
-                    crate::test_framework::btrt::on_process_exit(pid.as_u64(), exit_code);
-
-                    // Set SIGCHLD on parent and get parent thread ID for wakeup
-                    let parent_tid = if let Some(parent_pid) = parent_pid {
-                        if let Some(parent_process) = manager.get_process_mut(parent_pid) {
-                            use crate::signal::constants::SIGCHLD;
-                            parent_process.signals.set_pending(SIGCHLD);
-                            parent_process.main_thread.as_ref().map(|t| t.id)
-                        } else {
-                            None
-                        }
-                    } else {
-                        None
-                    };
-
-                    manager.reparent_children(pid, ProcessId::new(1));
-
-                    Some((pid, process_name, fd_entries, parent_tid))
-                } else {
-                    None
-                }
-            } else {
-                None
-            }
-        }; // PM lock dropped here
-
-        // Phase 2: No PM lock — safe to do pipe wakeups, scheduler calls, logging
-        if let Some((pid, process_name, fd_entries, parent_tid)) = phase1_result {
-            // Close FDs outside PM lock (pipe close_write wakes readers, etc.)
-            close_extracted_fds(fd_entries);
-
-            // Clean up window buffers so the compositor stops reading freed pages
-            #[cfg(target_arch = "aarch64")]
-            crate::syscall::graphics::cleanup_windows_for_pid(pid.as_u64());
-
-            // Wake parent thread if blocked on waitpid or pause()
-            if let Some(parent_tid) = parent_tid {
-                scheduler::with_scheduler(|sched| {
-                    sched.unblock_for_child_exit(parent_tid);
-                    sched.unblock_for_signal(parent_tid);
-                });
-                crate::tracing::providers::process::trace_waitpid_wake(
-                    parent_tid as u16,
-                    pid.as_u64() as u16,
-                );
-            }
-
-            log::debug!(
-                "Process {} '{}' (thread {}) exited with code {}",
-                pid.as_u64(),
-                process_name,
-                thread_id,
-                exit_code
-            );
+        let receipt = {
+            let mut manager_guard = crate::process::manager();
+            manager_guard.as_mut().and_then(|manager| {
+                let pid = manager.find_process_by_thread(thread_id).map(|(pid, _)| pid)?;
+                Some(manager.retire_process(pid, exit_code))
+            })
+        };
+        if let Some(receipt) = receipt {
+            receipt.complete();
         }
     }
 
@@ -312,35 +168,14 @@ pub fn defer_fault_sigsegv_exit(thread_id: u64) -> bool {
     DEFERRED_FAULT_EXIT_BUFFERS[idx].push(thread_id)
 }
 
-/// Drain deferred kernel-fault exits from a normal scheduling context.
-pub fn drain_deferred_fault_sigsegv_exits() {
-    let mut tids = alloc::vec::Vec::new();
+/// Claim one deferred kernel-fault exit without allocating.
+pub fn take_deferred_fault_sigsegv_exit() -> Option<u64> {
     for buf in &DEFERRED_FAULT_EXIT_BUFFERS {
-        buf.drain(&mut tids);
-    }
-    for tid in tids {
-        ProcessScheduler::handle_thread_exit(tid, -11);
-    }
-}
-
-/// Reclaim process frames whose cross-CPU TTBR0 retention has quiesced.
-#[cfg(target_arch = "aarch64")]
-pub fn reclaim_deferred_process_resources() {
-    loop {
-        let reclaim = crate::arch_without_interrupts(|| {
-            let mut pending = PENDING_PROCESS_RECLAIMS.lock();
-            let ready = pending.iter().position(|reclaim| {
-                scheduler::RetirementSnapshot::acquire(&reclaim.retirement).is_some()
-                    && !reclaim.root_is_live()
-            });
-            ready.map(|index| pending.swap_remove(index))
-        });
-
-        match reclaim {
-            Some(reclaim) => reclaim.reclaim(),
-            None => break,
+        if let Some(tid) = buf.take_one() {
+            return Some(tid);
         }
     }
+    None
 }
 
 /// Extension trait for Thread to support process operations

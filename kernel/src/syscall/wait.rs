@@ -361,13 +361,19 @@ fn complete_wait(
     // Reap the child row; parentage is represented solely by child.parent.
     if crate::task::scheduler::current_thread_id().is_some() {
         let mut manager_guard = crate::process::manager();
-        if let Some(ref mut manager) = *manager_guard {
-            manager.remove_process(child_pid);
+        let reaped_row = if let Some(ref mut manager) = *manager_guard {
+            let row = manager.mark_reaped(child_pid);
             log::debug!(
-                "complete_wait: Reaped process {} from process table",
+                "complete_wait: consumed process {} exit status",
                 child_pid.as_u64()
             );
-        }
+            row
+        } else {
+            None
+        };
+        drop(manager_guard);
+        drop(reaped_row);
+        crate::task::reclaim::kreclaim_wake();
     }
 
     // Clear blocked_in_syscall flag

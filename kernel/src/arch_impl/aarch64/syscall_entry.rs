@@ -354,9 +354,9 @@ fn sys_exit_aarch64(exit_code: i32) -> u64 {
             crate::serial_println!("[syscall] exit({}) thread={}", exit_code, thread_id);
         }
 
-        // Leave the retiring userspace address space before process teardown
-        // drops its page-table root. Clear both assembly return shadows so no
-        // later return path can reinstall that retired root.
+        // Leave the retiring userspace address space before publishing its
+        // grave. Clear both assembly return shadows so no later return path can
+        // reinstall that root while the reclaimer waits for quiescence.
         super::leave_process_ttbr0();
 
         crate::task::process_task::ProcessScheduler::handle_thread_exit(thread_id, exit_code);
@@ -408,7 +408,8 @@ fn dispatch_syscall_enum(
     // without adding a match arm here will produce a compiler warning.
     match syscall {
         // EXIT is arch-specific (uses wfi instead of hlt)
-        SyscallNumber::Exit | SyscallNumber::ExitGroup => sys_exit_aarch64(arg1 as i32),
+        SyscallNumber::Exit => sys_exit_aarch64(arg1 as i32),
+        SyscallNumber::ExitGroup => sys_exit_aarch64(arg1 as i32),
 
         // FORK, EXEC, SIGRETURN, PAUSE, SIGSUSPEND are handled before
         // dispatch_syscall_enum is called (they need frame access).
@@ -914,8 +915,8 @@ fn sys_fork_aarch64(frame: &Aarch64ExceptionFrame) -> u64 {
 
     // Reclaim quiesced process frames and scheduler-owned kernel stacks before
     // consuming more of either finite allocator pool.
-    crate::task::process_task::reclaim_deferred_process_resources();
-    crate::task::scheduler::reclaim_terminated_threads();
+    let reclaim_context = crate::task::reclaim::ReclaimContext::assert_preemptible();
+    crate::task::reclaim::reclaim_pass(&reclaim_context);
 
     // Create child page table OUTSIDE PM lock (heap allocation safe — interrupts enabled)
     crate::serial_aarch64::raw_serial_char(b'3'); // Fork: allocating page table

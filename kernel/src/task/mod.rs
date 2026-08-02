@@ -49,7 +49,7 @@ pub mod spawn;
 #[allow(unused_imports)]
 pub use kthread::{
     kthread_exit, kthread_join, kthread_park, kthread_run, kthread_should_stop, kthread_stop,
-    kthread_unpark, KthreadError, KthreadHandle,
+    kthread_park_if, kthread_unpark, KthreadError, KthreadHandle,
 };
 
 // Re-export workqueue public API for kernel-wide use

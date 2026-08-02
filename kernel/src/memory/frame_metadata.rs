@@ -13,14 +13,91 @@
 #[cfg(not(target_arch = "x86_64"))]
 use crate::memory::arch_stub::PhysFrame;
 use alloc::collections::BTreeMap;
-use core::sync::atomic::{AtomicU32, Ordering};
-use spin::Mutex;
+use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use spin::{Mutex, MutexGuard};
 #[cfg(target_arch = "x86_64")]
 use x86_64::structures::paging::PhysFrame;
 
 /// Global frame metadata storage
 /// Uses BTreeMap for sparse storage - only frames that need tracking are stored
 static FRAME_METADATA: Mutex<BTreeMap<u64, FrameMetadata>> = Mutex::new(BTreeMap::new());
+pub static FRAME_DECREF_UNDERFLOW: AtomicU64 = AtomicU64::new(0);
+pub static FRAME_DECREF_UNTRACKED: AtomicU64 = AtomicU64::new(0);
+
+fn preempt_disable() {
+    #[cfg(target_arch = "aarch64")]
+    crate::per_cpu_aarch64::preempt_disable();
+    #[cfg(not(target_arch = "aarch64"))]
+    crate::per_cpu::preempt_disable();
+}
+
+fn preempt_enable() {
+    #[cfg(target_arch = "aarch64")]
+    crate::per_cpu_aarch64::preempt_enable();
+    #[cfg(not(target_arch = "aarch64"))]
+    crate::per_cpu::preempt_enable();
+}
+
+struct PinnedMetadataGuard {
+    metadata: Option<MutexGuard<'static, BTreeMap<u64, FrameMetadata>>>,
+}
+
+impl PinnedMetadataGuard {
+    fn lock() -> Self {
+        preempt_disable();
+        Self {
+            metadata: Some(FRAME_METADATA.lock()),
+        }
+    }
+
+    fn metadata(&self) -> &BTreeMap<u64, FrameMetadata> {
+        self.metadata.as_ref().expect("metadata guard missing")
+    }
+
+    fn metadata_mut(&mut self) -> &mut BTreeMap<u64, FrameMetadata> {
+        self.metadata.as_mut().expect("metadata guard missing")
+    }
+}
+
+impl Drop for PinnedMetadataGuard {
+    fn drop(&mut self) {
+        drop(self.metadata.take());
+        preempt_enable();
+    }
+}
+
+pub struct FrameMetadataRetry;
+
+pub struct FaultMetadataTransaction {
+    metadata: MutexGuard<'static, BTreeMap<u64, FrameMetadata>>,
+}
+
+impl FaultMetadataTransaction {
+    pub fn is_shared(&self, frame: PhysFrame) -> bool {
+        self.metadata
+            .get(&frame.start_address().as_u64())
+            .map(|metadata| metadata.refcount.load(Ordering::SeqCst))
+            .unwrap_or(1)
+            > 1
+    }
+
+    pub fn register(&mut self, frame: PhysFrame) {
+        self.metadata
+            .entry(frame.start_address().as_u64())
+            .or_insert_with(|| FrameMetadata::new(1));
+    }
+
+    pub fn decref(&mut self, frame: PhysFrame) -> bool {
+        decref_locked(&mut self.metadata, frame.start_address().as_u64())
+    }
+}
+
+pub fn try_fault_transaction() -> Result<FaultMetadataTransaction, FrameMetadataRetry> {
+    FRAME_METADATA
+        .try_lock()
+        .map(|metadata| FaultMetadataTransaction { metadata })
+        .ok_or(FrameMetadataRetry)
+}
 
 /// Metadata for a single physical frame
 #[derive(Debug)]
@@ -50,7 +127,8 @@ impl FrameMetadata {
 #[allow(dead_code)] // Public API for explicit frame tracking
 pub fn frame_register(frame: PhysFrame) {
     let addr = frame.start_address().as_u64();
-    let mut metadata = FRAME_METADATA.lock();
+    let mut guard = PinnedMetadataGuard::lock();
+    let metadata = guard.metadata_mut();
 
     if !metadata.contains_key(&addr) {
         metadata.insert(addr, FrameMetadata::new(1));
@@ -62,7 +140,8 @@ pub fn frame_register(frame: PhysFrame) {
 #[allow(dead_code)]
 pub fn frame_incref(frame: PhysFrame) {
     let addr = frame.start_address().as_u64();
-    let mut metadata = FRAME_METADATA.lock();
+    let mut guard = PinnedMetadataGuard::lock();
+    let metadata = guard.metadata_mut();
 
     if let Some(meta) = metadata.get(&addr) {
         meta.refcount.fetch_add(1, Ordering::SeqCst);
@@ -78,8 +157,11 @@ pub fn frame_incref(frame: PhysFrame) {
 /// Returns true if frame can be freed (refcount reached 0)
 pub fn frame_decref(frame: PhysFrame) -> bool {
     let addr = frame.start_address().as_u64();
-    let mut metadata = FRAME_METADATA.lock();
+    let mut guard = PinnedMetadataGuard::lock();
+    decref_locked(guard.metadata_mut(), addr)
+}
 
+fn decref_locked(metadata: &mut BTreeMap<u64, FrameMetadata>, addr: u64) -> bool {
     if let Some(meta) = metadata.get(&addr) {
         let old_count = meta.refcount.fetch_sub(1, Ordering::SeqCst);
         if old_count == 1 {
@@ -88,10 +170,7 @@ pub fn frame_decref(frame: PhysFrame) -> bool {
             return true;
         } else if old_count == 0 {
             // This shouldn't happen - underflow protection
-            log::error!(
-                "frame_decref: underflow for frame {:#x}, restoring to 0",
-                addr
-            );
+            FRAME_DECREF_UNDERFLOW.fetch_add(1, Ordering::Relaxed);
             meta.refcount.store(0, Ordering::SeqCst);
             metadata.remove(&addr);
             return false;
@@ -107,10 +186,7 @@ pub fn frame_decref(frame: PhysFrame) -> bool {
         // We only reach here from cleanup_cow_frames / cleanup_for_exec
         // which iterate USER_ACCESSIBLE pages — all of which belong to
         // the process being cleaned up.
-        log::trace!(
-            "frame_decref: frame {:#x} not tracked (private), allowing free",
-            addr
-        );
+        FRAME_DECREF_UNTRACKED.fetch_add(1, Ordering::Relaxed);
         true
     }
 }
@@ -119,7 +195,8 @@ pub fn frame_decref(frame: PhysFrame) -> bool {
 /// Returns 1 if frame is not tracked (assumed private)
 pub fn frame_refcount(frame: PhysFrame) -> u32 {
     let addr = frame.start_address().as_u64();
-    let metadata = FRAME_METADATA.lock();
+    let guard = PinnedMetadataGuard::lock();
+    let metadata = guard.metadata();
 
     metadata
         .get(&addr)
@@ -136,7 +213,8 @@ pub fn frame_is_shared(frame: PhysFrame) -> bool {
 /// Returns (tracked_frames, total_refcount)
 #[allow(dead_code)] // Diagnostic API for future CoW debugging
 pub fn frame_metadata_stats() -> (usize, u64) {
-    let metadata = FRAME_METADATA.lock();
+    let guard = PinnedMetadataGuard::lock();
+    let metadata = guard.metadata();
     let tracked = metadata.len();
     let total_refs: u64 = metadata
         .values()

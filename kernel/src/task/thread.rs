@@ -42,7 +42,9 @@ pub enum ThreadState {
     BlockedOnTimer,
     /// Thread is blocked waiting for device I/O completion (AHCI, etc.)
     BlockedOnIO,
-    /// Thread has terminated
+    /// Thread may not run and remains non-reclaimable until it is off-stack
+    ExitPending,
+    /// Thread is off-stack and may be reclaimed after its retirement fence elapses
     Terminated,
 }
 
@@ -499,6 +501,9 @@ pub struct Thread {
     /// On ARM64 this lets the scheduler resume blocked-in-syscall threads without
     /// taking PROCESS_MANAGER in the hot dispatch path when the lock is contended.
     pub cached_ttbr0: u64,
+
+    /// Retirement proof stamped only when this thread is off its own stack.
+    pub retirement_fence: Option<super::scheduler::RetirementFence>,
 }
 
 impl Clone for Thread {
@@ -529,6 +534,7 @@ impl Clone for Thread {
             cpu_ticks_total: self.cpu_ticks_total,
             owner_pid: self.owner_pid,
             cached_ttbr0: self.cached_ttbr0,
+            retirement_fence: None,
         }
     }
 }
@@ -596,6 +602,7 @@ impl Thread {
             cpu_ticks_total: 0,
             owner_pid: None,
             cached_ttbr0: 0,
+            retirement_fence: None,
         })
     }
 
@@ -658,6 +665,7 @@ impl Thread {
             cpu_ticks_total: 0,
             owner_pid: None,
             cached_ttbr0: 0,
+            retirement_fence: None,
         })
     }
 
@@ -707,6 +715,7 @@ impl Thread {
             cpu_ticks_total: 0,
             owner_pid: None,
             cached_ttbr0: 0,
+            retirement_fence: None,
         }
     }
 
@@ -755,6 +764,7 @@ impl Thread {
             cpu_ticks_total: 0,
             owner_pid: None,
             cached_ttbr0: 0,
+            retirement_fence: None,
         }
     }
 
@@ -816,6 +826,7 @@ impl Thread {
             cpu_ticks_total: 0,
             owner_pid: None,
             cached_ttbr0: 0,
+            retirement_fence: None,
         }
     }
 
@@ -872,6 +883,7 @@ impl Thread {
             cpu_ticks_total: 0,
             owner_pid: None,
             cached_ttbr0: 0,
+            retirement_fence: None,
         }
     }
 
@@ -892,8 +904,14 @@ impl Thread {
 
     /// Mark thread as ready
     pub fn set_ready(&mut self) {
-        if self.state != ThreadState::Terminated {
+        if !matches!(self.state, ThreadState::ExitPending | ThreadState::Terminated) {
             self.state = ThreadState::Ready;
+        }
+    }
+
+    pub fn set_exit_pending(&mut self) {
+        if self.state != ThreadState::Terminated {
+            self.state = ThreadState::ExitPending;
         }
     }
 
@@ -906,6 +924,8 @@ impl Thread {
     /// Mark thread as terminated
     pub fn set_terminated(&mut self) {
         self.state = ThreadState::Terminated;
+        self.cached_ttbr0 = 0;
+        self.retirement_fence = Some(super::scheduler::RetirementFence::capture());
     }
 
     /// Create a new thread with a specific ID (used for fork) - x86_64 only
@@ -953,6 +973,7 @@ impl Thread {
             cpu_ticks_total: 0,
             owner_pid: None,
             cached_ttbr0: 0,
+            retirement_fence: None,
         }
     }
 
@@ -997,6 +1018,7 @@ impl Thread {
             cpu_ticks_total: 0,
             owner_pid: None,
             cached_ttbr0: 0,
+            retirement_fence: None,
         }
     }
 }

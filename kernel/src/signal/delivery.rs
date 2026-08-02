@@ -212,69 +212,14 @@ pub enum DeliverResult {
 fn deliver_default_action(process: &mut Process, sig: u32) -> DeliverResult {
     match default_action(sig) {
         SignalDefaultAction::Terminate => {
-            crate::serial_println!(
-                "[signal] Process {} ({}) terminated by signal {} ({})",
-                process.id.as_u64(),
-                process.name,
-                sig,
-                signal_name(sig)
-            );
             // Exit code for signal termination is typically 128 + signal number
             // But we use negative signal number to indicate signal death
-            process.terminate(-(sig as i32));
-
-            // CRITICAL: Also mark the scheduler's copy of the thread as terminated.
-            // The process.terminate() call above marks process.main_thread, but
-            // the scheduler has its own copy of threads in its threads vector.
-            // Without this, the scheduler would keep scheduling the terminated thread!
-            if let Some(ref thread) = process.main_thread {
-                let thread_id = thread.id();
-                crate::task::scheduler::with_thread_mut(thread_id, |sched_thread| {
-                    sched_thread.set_terminated();
-                    log::info!(
-                        "Signal delivery: marked scheduler thread {} as Terminated",
-                        thread_id
-                    );
-                });
-            }
-
-            // Return notification info for parent - caller will notify after releasing lock
-            if let Some(notification) = notify_parent_of_termination(process) {
-                DeliverResult::Terminated(notification)
-            } else {
-                DeliverResult::Delivered
-            }
+            DeliverResult::Terminated(exit_request(process, -(sig as i32)))
         }
         SignalDefaultAction::CoreDump => {
-            crate::serial_println!(
-                "[signal] Process {} ({}) killed (core dump) by signal {} ({})",
-                process.id.as_u64(),
-                process.name,
-                sig,
-                signal_name(sig)
-            );
             // Core dump not implemented, just terminate
             // The 0x80 flag indicates core dump
-            process.terminate(-((sig as i32) | 0x80));
-
-            // CRITICAL: Also mark the scheduler's copy of the thread as terminated.
-            if let Some(ref thread) = process.main_thread {
-                let thread_id = thread.id();
-                crate::task::scheduler::with_thread_mut(thread_id, |sched_thread| {
-                    sched_thread.set_terminated();
-                    log::info!(
-                        "Signal delivery: marked scheduler thread {} as Terminated (core dump)",
-                        thread_id
-                    );
-                });
-            }
-
-            // Return notification info for parent - caller will notify after releasing lock
-            if let Some(notification) = notify_parent_of_termination(process) {
-                DeliverResult::Terminated(notification)
-            } else {
-                DeliverResult::Delivered
-            }
+            DeliverResult::Terminated(exit_request(process, -((sig as i32) | 0x80)))
         }
         SignalDefaultAction::Stop => {
             log::info!(
@@ -730,8 +675,10 @@ fn deliver_to_user_handler_aarch64(
 /// This is used to defer parent notification until after the process manager lock is released,
 /// avoiding deadlocks when signal delivery happens while the manager lock is held.
 pub struct ParentNotification {
-    pub parent_pid: crate::process::ProcessId,
+    pub parent_pid: Option<crate::process::ProcessId>,
     pub child_pid: crate::process::ProcessId,
+    pub exit_code: i32,
+    pub victim_tid: Option<u64>,
 }
 
 /// Notify parent process when a child process is terminated by signal
@@ -746,79 +693,30 @@ pub struct ParentNotification {
 /// It will try to acquire the lock internally, so calling it while the lock is held
 /// will cause a deadlock.
 pub fn notify_parent_of_termination_deferred(notification: &ParentNotification) {
-    let parent_pid = notification.parent_pid;
     let child_pid = notification.child_pid;
-
-    log::info!(
-        "notify_parent_of_termination_deferred: notifying parent {} about child {} termination",
-        parent_pid.as_u64(),
-        child_pid.as_u64()
-    );
-
-    // Get process manager to find and update parent
-    // This is safe because we're called after the caller released their lock
-    let parent_thread_id = {
+    let receipt = {
         let mut manager_guard = crate::process::manager();
         let Some(ref mut manager) = *manager_guard else {
-            log::warn!("notify_parent_of_termination_deferred: no process manager");
             return;
         };
-
-        // Find parent process and send SIGCHLD
-        if let Some(parent_process) = manager.get_process_mut(parent_pid) {
-            // Send SIGCHLD to parent
-            parent_process.signals.set_pending(SIGCHLD);
-            log::debug!(
-                "notify_parent_of_termination_deferred: sent SIGCHLD to parent {} for child {} termination",
-                parent_pid.as_u64(),
-                child_pid.as_u64()
-            );
-
-            // Get parent's main thread ID for unblocking
-            parent_process.main_thread.as_ref().map(|t| t.id)
-        } else {
-            log::warn!(
-                "notify_parent_of_termination_deferred: parent process {} not found for child {}",
-                parent_pid.as_u64(),
-                child_pid.as_u64()
-            );
-            None
-        }
-        // manager_guard is dropped here
+        manager.retire_process(child_pid, notification.exit_code)
     };
-
-    // Unblock parent thread if it's waiting on waitpid or sigsuspend
-    if let Some(parent_tid) = parent_thread_id {
-        crate::task::scheduler::with_scheduler(|sched| {
-            // Wake parent if blocked in waitpid (BlockedOnChildExit)
-            sched.unblock_for_child_exit(parent_tid);
-            // Also wake parent if blocked in sigsuspend/pause (BlockedOnSignal)
-            // so SIGCHLD can be delivered
-            sched.unblock_for_signal(parent_tid);
-        });
-        log::info!(
-            "notify_parent_of_termination_deferred: unblocked parent thread {} for child {} termination",
-            parent_tid,
-            child_pid.as_u64()
-        );
+    receipt.complete();
+    if let Some(thread_id) = notification.victim_tid {
+        #[cfg(target_arch = "aarch64")]
+        crate::task::scheduler::request_exit_pending(thread_id);
+        #[cfg(not(target_arch = "aarch64"))]
+        crate::task::scheduler::with_thread_mut(thread_id, |thread| thread.set_terminated());
     }
 }
 
-/// Internal function called from deliver_default_action
-/// Returns parent notification info if parent should be notified (does NOT acquire lock)
-fn notify_parent_of_termination(process: &Process) -> Option<ParentNotification> {
-    let parent_pid = process.parent?;
-
-    log::debug!(
-        "notify_parent_of_termination: process {} has parent {}, notification queued",
-        process.id.as_u64(),
-        parent_pid.as_u64()
-    );
-
-    Some(ParentNotification {
-        parent_pid,
+fn exit_request(process: &Process, exit_code: i32) -> ParentNotification {
+    ParentNotification {
+        parent_pid: process.parent,
         child_pid: process.id,
-    })
+        exit_code,
+        victim_tid: process.main_thread.as_ref().map(|thread| thread.id),
+    }
 }
 
 // =============================================================================

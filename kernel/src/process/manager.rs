@@ -16,11 +16,16 @@ use x86_64::VirtAddr;
 #[cfg(not(target_arch = "x86_64"))]
 use crate::memory::arch_stub::VirtAddr;
 
-use super::{Process, ProcessId, ProcessState};
+use super::{ExitOutcome, ExitWorkBits, Process, ProcessId, ProcessState};
 #[cfg(target_arch = "x86_64")]
 use crate::elf;
 use crate::memory::process_memory::ProcessPageTable;
 use crate::task::thread::Thread;
+
+pub enum ExitFdAction {
+    Close(crate::ipc::fd::FileDescriptor),
+    Drained,
+}
 
 /// Process manager handles all processes in the system
 pub struct ProcessManager {
@@ -43,36 +48,26 @@ pub struct ProcessManager {
 
 impl ProcessManager {
     #[cfg(target_arch = "aarch64")]
-    fn find_live_clone_vm_sibling_holding_cr3(
+    pub(crate) fn root_has_live_sharer(
         &self,
-        pid: ProcessId,
-        thread_group_id: u64,
-        old_cr3: u64,
-    ) -> Option<(ProcessId, u64)> {
-        self.processes
-            .iter()
-            .find_map(|(&candidate_pid, candidate)| {
-                if candidate_pid == pid || candidate.is_terminated() {
-                    return None;
-                }
-
-                let candidate_thread_group_id = candidate.thread_group_id?;
-                if candidate_thread_group_id != thread_group_id {
-                    return None;
-                }
-
-                if candidate.inherited_cr3 != Some(old_cr3) {
-                    return None;
-                }
-
-                if let Some(thread) = candidate.main_thread.as_ref() {
-                    if thread.state == crate::task::thread::ThreadState::Terminated {
-                        return None;
-                    }
-                    Some((candidate_pid, thread.id))
-                } else {
-                    Some((candidate_pid, 0))
-                }
+        root: u64,
+        except_pid: Option<ProcessId>,
+    ) -> bool {
+        const ROOT_MASK: u64 = !0xFFFF_0000_0000_0FFF;
+        let root = root & ROOT_MASK;
+        root != 0
+            && self.processes.iter().any(|(&candidate_pid, candidate)| {
+                candidate_pid != except_pid.unwrap_or(ProcessId::new(u64::MAX))
+                    && !candidate.is_exit_committed()
+                    && (candidate
+                        .page_table
+                        .as_ref()
+                        .is_some_and(|page_table| {
+                            page_table.level_4_frame().start_address().as_u64() & ROOT_MASK == root
+                        })
+                        || candidate
+                            .inherited_cr3
+                            .is_some_and(|inherited| inherited & ROOT_MASK == root))
             })
     }
 
@@ -903,6 +898,7 @@ impl ProcessManager {
             cpu_ticks_total: 0,
             owner_pid: Some(process.id.as_u64()),
             cached_ttbr0: 0,
+            retirement_fence: None,
         };
 
         Ok(thread)
@@ -982,6 +978,7 @@ impl ProcessManager {
             cpu_ticks_total: 0,
             owner_pid: Some(process.id.as_u64()),
             cached_ttbr0: 0,
+            retirement_fence: None,
         };
 
         Ok(thread)
@@ -1066,6 +1063,7 @@ impl ProcessManager {
             cpu_ticks_total: 0,
             owner_pid: Some(process.id.as_u64()),
             cached_ttbr0: 0,
+            retirement_fence: None,
         };
 
         Ok(thread)
@@ -1098,10 +1096,16 @@ impl ProcessManager {
         self.processes.insert(pid, process);
     }
 
-    /// Remove a terminated process from the process table (reap).
-    /// Called after waitpid() has collected the exit status.
-    pub fn remove_process(&mut self, pid: ProcessId) {
-        self.processes.remove(&pid);
+    /// Record that waitpid consumed this process's status exactly once.
+    pub fn mark_reaped(&mut self, pid: ProcessId) -> Option<Process> {
+        self.processes.get_mut(&pid)?.mark_reaped();
+        #[cfg(not(target_arch = "aarch64"))]
+        {
+            if self.processes.get(&pid).is_some_and(Process::can_remove_row) {
+                return self.processes.remove(&pid);
+            }
+        }
+        None
     }
 
     /// Get a reference to a process
@@ -1116,66 +1120,176 @@ impl ProcessManager {
         self.processes.get_mut(&pid)
     }
 
-    /// Exit a process with the given exit code
-    #[allow(dead_code)]
-    pub fn exit_process(&mut self, pid: ProcessId, exit_code: i32) {
-        // Get parent PID before we borrow the process mutably
-        let parent_pid = self.processes.get(&pid).and_then(|p| p.parent);
+    /// Commit process exit without allocating, logging, freeing, or taking a second lock.
+    #[must_use]
+    pub fn retire_process(&mut self, pid: ProcessId, exit_code: i32) -> crate::process::ExitReceipt {
+        let parent_pid = self.processes.get(&pid).and_then(|process| process.parent);
+        let parent_tid = parent_pid.and_then(|parent_pid| {
+            self.processes
+                .get(&parent_pid)
+                .and_then(|parent| parent.main_thread.as_ref().map(|thread| thread.id))
+        });
 
-        if let Some(process) = self.processes.get_mut(&pid) {
-            log::info!(
-                "Process {} (PID {}) exiting with code {}",
-                process.name,
-                pid.as_u64(),
-                exit_code
-            );
+        let mut work_bits = ExitWorkBits::empty();
+        #[cfg(not(target_arch = "aarch64"))]
+        let mut receipt_grave = None;
 
-            // Drain any pending old page tables from previous exec() calls
-            process.drain_old_page_tables();
+        let outcome = if let Some(process) = self.processes.get_mut(&pid) {
+            if let Some(grave) = process.commit_grave(exit_code) {
+                work_bits = process.exit_work_bits;
+                #[cfg(target_arch = "aarch64")]
+                crate::task::reclaim::push_grave(grave);
+                #[cfg(not(target_arch = "aarch64"))]
+                {
+                    receipt_grave = Some(grave);
+                }
+                ExitOutcome::Committed
+            } else {
+                ExitOutcome::AlreadyCommitted
+            }
+        } else {
+            ExitOutcome::Missing
+        };
 
-            process.terminate(exit_code);
-
-            // Remove from ready queue
-            self.ready_queue.retain(|&p| p != pid);
-
-            // If this was the current process, clear it
+        if outcome == ExitOutcome::Committed {
+            self.ready_queue.retain(|queued_pid| *queued_pid != pid);
             if self.current_pid == Some(pid) {
                 self.current_pid = None;
             }
-
-            // Free heavy resources immediately rather than waiting for waitpid reap.
-            // CoW refcounts were already decremented by terminate() -> cleanup_cow_frames(),
-            // so it's safe to drop the page table now.
-            process.page_table.take();
-            process.stack.take();
-            process.pending_old_page_tables.clear();
-
-            // Clean up window buffers so the compositor stops reading freed pages
-            #[cfg(target_arch = "aarch64")]
-            crate::syscall::graphics::cleanup_windows_for_pid(pid.as_u64());
-        }
-
-        // Reparent children to init (PID 1). Process.parent is authoritative;
-        // there is no separately maintained children mirror.
-        let init_pid = ProcessId::new(1);
-        if pid != init_pid {
-            for child in self.processes.values_mut() {
-                if child.parent == Some(pid) {
-                    child.parent = Some(init_pid);
+            if let Some(parent_pid) = parent_pid {
+                if let Some(parent) = self.processes.get_mut(&parent_pid) {
+                    parent.signals.set_pending(crate::signal::constants::SIGCHLD);
                 }
             }
         }
 
-        // Send SIGCHLD to the parent process (if any)
-        if let Some(parent_pid) = parent_pid {
-            if let Some(parent_process) = self.processes.get_mut(&parent_pid) {
-                use crate::signal::constants::SIGCHLD;
-                parent_process.signals.set_pending(SIGCHLD);
-                log::debug!(
-                    "Sent SIGCHLD to parent process {} for child {} exit",
-                    parent_pid.as_u64(),
-                    pid.as_u64()
-                );
+        crate::process::ExitReceipt::new(
+            pid,
+            parent_tid,
+            outcome,
+            work_bits,
+            #[cfg(not(target_arch = "aarch64"))]
+            receipt_grave,
+        )
+    }
+
+    pub fn take_next_fd_for_exit(
+        &mut self,
+        pid: ProcessId,
+    ) -> Option<crate::ipc::fd::FileDescriptor> {
+        self.processes
+            .get_mut(&pid)
+            .and_then(|process| process.fd_table.take_next_for_exit().map(|(_, fd)| fd))
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    pub(crate) fn service_one_reparent(&mut self) -> bool {
+        let Some(parent_pid) = self.processes.iter().find_map(|(pid, process)| {
+            (process.is_exit_committed()
+                && process
+                    .exit_work_bits
+                    .contains(ExitWorkBits::REPARENT_CHILDREN))
+            .then_some(*pid)
+        }) else {
+            return false;
+        };
+        let init_pid = ProcessId::new(1);
+        if let Some(child) = self
+            .processes
+            .values_mut()
+            .find(|process| process.parent == Some(parent_pid))
+        {
+            child.parent = Some(init_pid);
+            return true;
+        }
+        if let Some(parent) = self.processes.get_mut(&parent_pid) {
+            parent.exit_work_bits.remove(ExitWorkBits::REPARENT_CHILDREN);
+        }
+        true
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    pub(crate) fn claim_one_parent_wake(&mut self) -> Option<(ProcessId, Option<u64>)> {
+        let pid = self.processes.iter().find_map(|(pid, process)| {
+            (process.is_exit_committed()
+                && process.exit_work_bits.contains(ExitWorkBits::NOTIFY_PARENT))
+            .then_some(*pid)
+        })?;
+        let parent_tid = self.processes.get(&pid).and_then(|process| process.parent).and_then(
+            |parent_pid| {
+                self.processes
+                    .get(&parent_pid)
+                    .and_then(|parent| parent.main_thread.as_ref().map(|thread| thread.id))
+            },
+        );
+        self.processes
+            .get_mut(&pid)?
+            .exit_work_bits
+            .remove(ExitWorkBits::NOTIFY_PARENT);
+        Some((pid, parent_tid))
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    pub(crate) fn claim_one_graphics_cleanup(&mut self) -> Option<ProcessId> {
+        let pid = self.processes.iter().find_map(|(pid, process)| {
+            (process.is_exit_committed()
+                && process
+                    .exit_work_bits
+                    .contains(ExitWorkBits::CLEANUP_GRAPHICS))
+            .then_some(*pid)
+        })?;
+        self.processes
+            .get_mut(&pid)?
+            .exit_work_bits
+            .remove(ExitWorkBits::CLEANUP_GRAPHICS);
+        Some(pid)
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    pub(crate) fn claim_one_exit_fd(&mut self) -> Option<ExitFdAction> {
+        let pid = self.processes.iter().find_map(|(pid, process)| {
+            (process.is_exit_committed()
+                && process.exit_work_bits.contains(ExitWorkBits::CLOSE_FDS))
+            .then_some(*pid)
+        })?;
+        let process = self.processes.get_mut(&pid)?;
+        if let Some((_, fd)) = process.fd_table.take_next_for_exit() {
+            Some(ExitFdAction::Close(fd))
+        } else {
+            process.exit_work_bits.remove(ExitWorkBits::CLOSE_FDS);
+            Some(ExitFdAction::Drained)
+        }
+    }
+
+    pub(crate) fn mark_address_space_reclaimed(&mut self, pid: ProcessId) {
+        if let Some(process) = self.processes.get_mut(&pid) {
+            process.mark_reclaimed();
+        }
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    pub(crate) fn detach_one_removable_row(&mut self) -> Option<Process> {
+        let pid = self.processes.iter().find_map(|(pid, process)| {
+            if !process.can_remove_row() {
+                return None;
+            }
+            let live_sharer = process
+                .retired_root
+                .is_some_and(|root| self.root_has_live_sharer(root, Some(*pid)));
+            (!live_sharer).then_some(*pid)
+        })?;
+        self.processes.remove(&pid)
+    }
+
+    #[cfg(not(target_arch = "aarch64"))]
+    pub(crate) fn finish_exit_work_inline(&mut self, pid: ProcessId) {
+        self.reparent_children(pid, ProcessId::new(1));
+        if let Some(process) = self.processes.get_mut(&pid) {
+            process.exit_work_bits.remove(ExitWorkBits::REPARENT_CHILDREN);
+            process.exit_work_bits.remove(ExitWorkBits::NOTIFY_PARENT);
+            process.exit_work_bits.remove(ExitWorkBits::CLEANUP_GRAPHICS);
+            if process.fd_table.is_drained() {
+                process.exit_work_bits.remove(ExitWorkBits::CLOSE_FDS);
             }
         }
     }
@@ -1255,7 +1369,7 @@ impl ProcessManager {
         })
     }
 
-    pub(crate) fn reparent_children(&mut self, parent: ProcessId, new_parent: ProcessId) {
+    pub fn reparent_children(&mut self, parent: ProcessId, new_parent: ProcessId) {
         for process in self.processes.values_mut() {
             if process.parent == Some(parent) {
                 process.parent = Some(new_parent);
@@ -2366,6 +2480,7 @@ impl ProcessManager {
                 cpu_ticks_total: 0,
                 owner_pid: Some(child_pid.as_u64()),
                 cached_ttbr0: parent_thread.cached_ttbr0,
+                retirement_fence: None,
             };
 
             // CoW fork: Child uses the same stack virtual addresses as the parent.
@@ -2455,7 +2570,6 @@ impl ProcessManager {
 
         // Drain any pending old page tables from previous exec() calls.
         // By this point, CR3 has definitely switched away from any old tables.
-        process.drain_old_page_tables();
 
         // For now, assume non-current processes are not actively running
         // This is a simplification - in a real OS we'd check the scheduler state
@@ -2798,7 +2912,6 @@ impl ProcessManager {
         let thread_id = {
             let process = self.processes.get_mut(&pid).ok_or("Process not found")?;
             // Drain any pending old page tables from previous exec() calls.
-            process.drain_old_page_tables();
             let main_thread = process
                 .main_thread
                 .as_ref()
@@ -3052,36 +3165,25 @@ impl ProcessManager {
         // a use-after-free on exec failure: if any subsequent operation fails, the Err return
         // would drop the old Box<ProcessPageTable>, freeing physical memory while TTBR0_EL1
         // still points to it. The old page table is taken later, after all fallible ops succeed.
-        let (thread_id, old_cr3, thread_group_id) = {
+        let (thread_id, old_cr3) = {
             let process = self.processes.get(&pid).ok_or("Process not found")?;
             let old_cr3 = process.cr3_value();
-            let thread_group_id = process.thread_group_id.unwrap_or(pid.as_u64());
             let main_thread = process
                 .main_thread
                 .as_ref()
                 .ok_or("Process has no main thread")?;
-            (main_thread.id, old_cr3, thread_group_id)
+            (main_thread.id, old_cr3)
         };
 
         if let Some(old_cr3) = old_cr3 {
-            if let Some((sibling_pid, sibling_thread_id)) =
-                self.find_live_clone_vm_sibling_holding_cr3(pid, thread_group_id, old_cr3)
-            {
+            if self.root_has_live_sharer(old_cr3, Some(pid)) {
                 log::warn!(
-                    "exec_process_with_argv [ARM64]: rejecting exec for PID {} while CLONE_VM sibling PID {} thread {} still holds inherited CR3 {:#x}",
+                    "exec_process_with_argv [ARM64]: rejecting exec for PID {} while a live sibling still names root {:#x}",
                     pid.as_u64(),
-                    sibling_pid.as_u64(),
-                    sibling_thread_id,
                     old_cr3
                 );
                 return Err("exec blocked while CLONE_VM sibling shares old address space");
             }
-        }
-
-        {
-            let process = self.processes.get_mut(&pid).ok_or("Process not found")?;
-            // Drain any pending old page tables from previous exec() calls.
-            process.drain_old_page_tables();
         }
 
         log::info!(
@@ -3348,7 +3450,6 @@ impl ProcessManager {
         let process = self.processes.get_mut(&pid).ok_or("Process not found")?;
 
         // Drain any pending old page tables from previous exec() calls.
-        process.drain_old_page_tables();
 
         // For now, assume non-current processes are not actively running
         let is_scheduled = false;

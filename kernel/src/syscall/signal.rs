@@ -159,10 +159,17 @@ fn send_signal_to_process(target_pid: ProcessId, sig: u32) -> SyscallResult {
                     "SIGKILL sent to process {} - terminating immediately",
                     target_pid.as_u64()
                 );
-                process.terminate(-9); // Exit code for SIGKILL
-                                       // Wake up process if blocked so scheduler removes it
-                if matches!(process.state, crate::process::ProcessState::Blocked) {
-                    process.set_ready();
+                let victim_tid = process.main_thread.as_ref().map(|thread| thread.id);
+                let receipt = manager.retire_process(target_pid, -9);
+                drop(manager_guard);
+                receipt.complete();
+                if let Some(thread_id) = victim_tid {
+                    #[cfg(target_arch = "aarch64")]
+                    crate::task::scheduler::request_exit_pending(thread_id);
+                    #[cfg(not(target_arch = "aarch64"))]
+                    crate::task::scheduler::with_thread_mut(thread_id, |thread| {
+                        thread.set_terminated()
+                    });
                 }
                 // Trigger reschedule
                 crate::task::scheduler::set_need_resched();

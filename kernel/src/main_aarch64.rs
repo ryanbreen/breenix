@@ -812,6 +812,12 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
     #[cfg(feature = "btrt")]
     kernel::test_framework::btrt::pass(kernel::test_framework::catalog::KTHREAD_SUBSYSTEM);
 
+    drop(
+        kernel::task::reclaim::init_reclaim_thread()
+            .expect("failed to start the AArch64 process reclaimer"),
+    );
+    serial_println!("[boot] Process reclaimer initialized");
+
     // Spawn render thread for deferred framebuffer rendering
     // This MUST come after scheduler is initialized (needs kthread infrastructure).
     //

@@ -4,6 +4,8 @@
 //! A process is a running instance of a program with its own address space.
 
 use core::sync::atomic::{AtomicU64, Ordering};
+#[cfg(not(target_arch = "aarch64"))]
+use alloc::boxed::Box;
 use spin::Mutex;
 
 pub mod creation;
@@ -12,7 +14,82 @@ pub mod manager;
 pub mod process;
 
 pub use manager::ProcessManager;
-pub use process::{Process, ProcessId, ProcessState};
+pub use process::{ExitOutcome, ExitStage, ExitWorkBits, Process, ProcessId, ProcessState};
+
+#[must_use = "an exit receipt must be completed after releasing the process-manager lock"]
+pub struct ExitReceipt {
+    pid: ProcessId,
+    parent_tid: Option<u64>,
+    outcome: ExitOutcome,
+    work_bits: ExitWorkBits,
+    #[cfg(not(target_arch = "aarch64"))]
+    grave: Option<Box<crate::task::reclaim::ProcessGrave>>,
+}
+
+impl ExitReceipt {
+    pub(crate) fn new(
+        pid: ProcessId,
+        parent_tid: Option<u64>,
+        outcome: ExitOutcome,
+        work_bits: ExitWorkBits,
+        #[cfg(not(target_arch = "aarch64"))] grave: Option<
+            Box<crate::task::reclaim::ProcessGrave>,
+        >,
+    ) -> Self {
+        Self {
+            pid,
+            parent_tid,
+            outcome,
+            work_bits,
+            #[cfg(not(target_arch = "aarch64"))]
+            grave,
+        }
+    }
+
+    pub fn complete(self) {
+        #[cfg(target_arch = "aarch64")]
+        debug_assert!(
+            self.outcome != ExitOutcome::Committed || !self.work_bits.is_empty(),
+            "a committed AArch64 exit must publish durable worker obligations"
+        );
+
+        #[cfg(not(target_arch = "aarch64"))]
+        {
+            if self.work_bits.contains(ExitWorkBits::CLOSE_FDS) {
+                while let Some(fd) = manager()
+                    .as_mut()
+                    .and_then(|manager| manager.take_next_fd_for_exit(self.pid))
+                {
+                    crate::task::process_task::close_owned_fd(fd);
+                }
+            }
+            if let Some(grave) = self.grave {
+                crate::task::reclaim::arch_retire_address_space(grave);
+            }
+            if let Some(manager) = manager().as_mut() {
+                manager.finish_exit_work_inline(self.pid);
+            }
+        }
+
+        if let Some(parent_tid) = self.parent_tid {
+            crate::task::scheduler::with_scheduler(|scheduler| {
+                scheduler.unblock_for_child_exit(parent_tid);
+                scheduler.unblock_for_signal(parent_tid);
+            });
+            crate::tracing::providers::process::trace_waitpid_wake(
+                parent_tid as u16,
+                self.pid.as_u64() as u16,
+            );
+        }
+
+        crate::task::reclaim::kreclaim_wake();
+        log::debug!(
+            "completed process exit tail pid={} outcome={:?}",
+            self.pid.as_u64(),
+            self.outcome
+        );
+    }
+}
 
 const PM_LOCK_OWNER_NONE: u64 = u64::MAX;
 
@@ -109,6 +186,11 @@ pub fn process_manager_owner_snapshot() -> Option<(u64, u64)> {
     }
     let tid = PROCESS_MANAGER_OWNER_TID.load(Ordering::Relaxed);
     Some((cpu, tid))
+}
+
+pub(crate) fn process_manager_lock_held_by_current_cpu() -> bool {
+    process_manager_owner_snapshot()
+        .is_some_and(|(cpu, _)| cpu == current_process_manager_owner_identity().0)
 }
 
 /// Initialize the process management system
@@ -251,21 +333,4 @@ pub fn current_pid() -> Option<ProcessId> {
     let manager_guard = manager();
     let manager = manager_guard.as_ref()?;
     manager.current_pid()
-}
-
-/// Exit the current process
-#[allow(dead_code)]
-pub fn exit_current(exit_code: i32) {
-    log::debug!("exit_current called with code {}", exit_code);
-
-    if let Some(pid) = current_pid() {
-        log::debug!("Current PID is {}", pid.as_u64());
-        if let Some(ref mut manager) = *manager() {
-            manager.exit_process(pid, exit_code);
-        } else {
-            log::error!("Process manager not available!");
-        }
-    } else {
-        log::error!("No current PID set!");
-    }
 }
