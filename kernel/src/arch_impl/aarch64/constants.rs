@@ -159,6 +159,15 @@ pub const PERCPU_DISPATCH_ELR_OFFSET: usize = 104;
 /// Immune to cross-CPU frame overwrite race (per-CPU, not on shared stack).
 pub const PERCPU_DISPATCH_SPSR_OFFSET: usize = 112;
 
+/// Offset of the ELR captured by an assembly ERET invariant redirect.
+pub const PERCPU_ERET_GUARD_ELR_OFFSET: usize = 120;
+
+/// Offset of the SPSR captured by an assembly ERET invariant redirect.
+pub const PERCPU_ERET_GUARD_SPSR_OFFSET: usize = 128;
+
+/// Offset of the ERET guard source tag, published after ELR/SPSR.
+pub const PERCPU_ERET_GUARD_SOURCE_OFFSET: usize = 136;
+
 // ============================================================================
 // Preempt Count Bit Layout (Linux-compatible)
 // ============================================================================

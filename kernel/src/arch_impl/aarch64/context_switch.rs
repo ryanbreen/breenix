@@ -1588,6 +1588,24 @@ pub fn dump_all_last_dispatched_tids() {
     }
 }
 
+/// Dump the last branch-only ERET invariant redirect captured on each CPU.
+pub fn dump_all_eret_guard_records() {
+    for cpu_id in 0..crate::arch_impl::aarch64::constants::MAX_CPUS {
+        let Some((source, elr, spsr)) = crate::per_cpu_aarch64::eret_guard_record(cpu_id) else {
+            continue;
+        };
+        raw_uart_str("[ERET_GUARD_REDIRECT] cpu=");
+        raw_uart_dec(cpu_id as u64);
+        raw_uart_str(" source=");
+        raw_uart_dec(source);
+        raw_uart_str(" elr=");
+        raw_uart_hex(elr);
+        raw_uart_str(" spsr=");
+        raw_uart_hex(spsr);
+        raw_uart_str("\n");
+    }
+}
+
 /// Record an ERET-consumer-site frame anomaly into this CPU's last-wins
 /// ERET_ANOMALY slot. Lock-free; safe to call from inside the scheduler
 /// lock hold (both consumer sites call this while still holding it).
@@ -2124,6 +2142,7 @@ fn log_idle_thread_context(tag: &str, thread: &Thread, sp: u64, elr: u64, x30: u
 #[inline(always)]
 fn clear_inline_schedule_state(thread: &mut Thread) {
     thread.saved_by_inline_schedule = false;
+    thread.inline_schedule_spsr = 0;
     thread.inline_schedule_saved_sp = 0;
     thread.inline_schedule_caller_lr = 0;
 }
@@ -2757,7 +2776,7 @@ fn restore_userspace_context_inline(
 
     // Restore program counter and status
     frame.elr = thread.context.elr_el1;
-    frame.spsr = dispatch_spsr(thread.context.spsr_el1);
+    frame.spsr = dispatch_spsr(thread.context.spsr_el1) & !SPSR_MODE_MASK;
 
     // Restore SP_EL0 (user stack pointer)
     unsafe {
@@ -2928,6 +2947,12 @@ fn setup_idle_return_locked(
     unsafe {
         Aarch64PerCpu::set_user_rsp_scratch(idle_stack);
         Aarch64PerCpu::set_kernel_stack_top(idle_stack);
+        let mut kernel_ttbr0 = Aarch64PerCpu::kernel_cr3();
+        if kernel_ttbr0 == 0 {
+            kernel_ttbr0 = 0x4200_0000;
+        }
+        Aarch64PerCpu::set_next_cr3(kernel_ttbr0);
+        Aarch64PerCpu::set_saved_process_cr3(0);
         Aarch64PerCpu::set_current_thread_ptr(core::ptr::null_mut());
         Aarch64PerCpu::clear_preempt_active();
     }
@@ -2992,6 +3017,7 @@ fn reset_idle_continuation_locked(
 
     let idle_addr = idle_loop_arm64 as *const () as u64;
     thread.saved_by_inline_schedule = false;
+    thread.inline_schedule_spsr = 0;
     thread.inline_schedule_saved_sp = 0;
     thread.inline_schedule_caller_lr = 0;
     thread.context.sp = idle_sp;
@@ -4454,7 +4480,7 @@ pub fn schedule_from_kernel() {
             }
             old_thread.context.sp_el0 = read_sp_el0();
             old_thread.context.tpidr_el0 = read_tpidr_el0();
-            old_thread.context.spsr_el1 = kernel_dispatch_spsr(saved_daif & 0x3C0);
+            old_thread.inline_schedule_spsr = kernel_dispatch_spsr(saved_daif & 0x3C0);
             old_thread.inline_schedule_caller_lr =
                 unsafe { core::ptr::read_volatile((schedule_sp + 0x20) as *const u64) };
             old_thread.inline_schedule_saved_sp = schedule_sp;

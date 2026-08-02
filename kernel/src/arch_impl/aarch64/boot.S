@@ -18,6 +18,9 @@
 
 // High-half kernel base (must match linker.ld)
 .equ KERNEL_VIRT_BASE, 0xFFFF000000000000
+.equ PERCPU_ERET_GUARD_ELR, 120
+.equ PERCPU_ERET_GUARD_SPSR, 128
+.equ PERCPU_ERET_GUARD_SOURCE, 136
 
 // Descriptor bits
 .equ DESC_VALID,        (1 << 0)
@@ -514,12 +517,25 @@ sync_exception_handler:
     // Read ELR from exception frame (modified by Rust handler if redirected)
     ldr x1, [sp, #248]       // x1 = frame.elr
 
-    // DIAGNOSTIC: Check for corrupted ELR before ERET (sync handler path)
-    cmp x1, #0x1000
-    b.hs 10f
-    // ELR < 0x1000 — corrupted. Skip UART diagnostic (QEMU UART at
-    // 0x09000000 doesn't exist on Parallels). Redirect to idle.
-    // Redirect to idle_loop_arm64 instead of crashing
+    // Guard the EL1 return invariant: an EL1 frame may only resume in the
+    // kernel VA range. EL0 returns legitimately use lower addresses.
+    ldr x2, [sp, #256]       // x2 = frame.spsr
+    and x3, x2, #0xF         // x3 = M[3:0]
+    cbz x3, 10f              // EL0 return
+    ldr x3, =KERNEL_VIRT_BASE
+    cmp x1, x3
+    b.hs 10f                 // valid EL1 kernel return
+
+    // Branch-only record, published by writing source last. Never perform
+    // UART or other I/O in this return corridor.
+    mrs x3, tpidr_el1
+    cbz x3, 11f
+    str x1, [x3, #PERCPU_ERET_GUARD_ELR]
+    str x2, [x3, #PERCPU_ERET_GUARD_SPSR]
+    mov x4, #1              // source 1 = sync epilogue
+    str x4, [x3, #PERCPU_ERET_GUARD_SOURCE]
+11:
+    // Redirect to idle_loop_arm64 instead of returning to EL1 at a user VA.
     adrp x1, idle_loop_arm64
     add x1, x1, :lo12:idle_loop_arm64
     // Write safe values to frame
@@ -658,12 +674,25 @@ irq_handler:
     // CPU, so no other CPU can dispatch it while we still read from the frame.
     ldr x16, [sp, #248]      // x16 = frame.elr
 
-    // DIAGNOSTIC: Check for corrupted ELR before ERET.
-    // If ELR < 0x1000, the saved context is corrupted (null return address).
-    // Fix it by redirecting to idle_loop_arm64 instead of crashing.
-    cmp x16, #0x1000
-    b.hs 1f
-    // ELR < 0x1000 — corrupted context. Redirect to idle_loop_arm64.
+    // Guard the EL1 return invariant: an EL1 frame may only resume in the
+    // kernel VA range. EL0 returns legitimately use lower addresses.
+    ldr x1, [sp, #256]       // x1 = frame.spsr
+    and x2, x1, #0xF         // x2 = M[3:0]
+    cbz x2, 1f               // EL0 return
+    ldr x2, =KERNEL_VIRT_BASE
+    cmp x16, x2
+    b.hs 1f                  // valid EL1 kernel return
+
+    // Branch-only record, published by writing source last. Never perform
+    // UART or other I/O in this return corridor.
+    mrs x2, tpidr_el1
+    cbz x2, 2f
+    str x16, [x2, #PERCPU_ERET_GUARD_ELR]
+    str x1, [x2, #PERCPU_ERET_GUARD_SPSR]
+    mov x3, #2              // source 2 = IRQ epilogue
+    str x3, [x2, #PERCPU_ERET_GUARD_SOURCE]
+2:
+    // Redirect to idle_loop_arm64 instead of returning to EL1 at a user VA.
     adrp x16, idle_loop_arm64
     add x16, x16, :lo12:idle_loop_arm64
     str x16, [sp, #248]      // frame.elr = idle_loop_arm64

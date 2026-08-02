@@ -289,6 +289,12 @@ fn set_idle_stack_for_eret() {
     unsafe {
         Aarch64PerCpu::set_user_rsp_scratch(idle_stack);
         Aarch64PerCpu::set_kernel_stack_top(idle_stack);
+        let mut kernel_ttbr0 = Aarch64PerCpu::kernel_cr3();
+        if kernel_ttbr0 == 0 {
+            kernel_ttbr0 = 0x4200_0000;
+        }
+        Aarch64PerCpu::set_next_cr3(kernel_ttbr0);
+        Aarch64PerCpu::set_saved_process_cr3(0);
         Aarch64PerCpu::set_current_thread_ptr(core::ptr::null_mut());
         Aarch64PerCpu::clear_preempt_active();
     }
@@ -430,6 +436,7 @@ fn dump_fatal_postmortem_once(label: &str) {
     });
     dump_fatal_postmortem_section(cpu_id, 6, "\n  Last-dispatched tids:\n", || {
         crate::arch_impl::aarch64::context_switch::dump_all_last_dispatched_tids();
+        crate::arch_impl::aarch64::context_switch::dump_all_eret_guard_records();
     });
     dump_fatal_postmortem_section(cpu_id, 7, "\n  Trace buffers:\n", || {
         crate::tracing::dump_all_buffers();

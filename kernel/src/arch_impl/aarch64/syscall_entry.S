@@ -37,6 +37,11 @@
 .extern check_need_resched_and_switch_arm64
 .extern trace_eret_to_el0
 
+.equ KERNEL_VIRT_BASE, 0xFFFF000000000000
+.equ PERCPU_ERET_GUARD_ELR, 120
+.equ PERCPU_ERET_GUARD_SPSR, 128
+.equ PERCPU_ERET_GUARD_SOURCE, 136
+
 /*
  * Syscall entry point from EL0 (userspace)
  *
@@ -269,12 +274,23 @@ syscall_entry_from_el0:
     /* Read ELR from exception frame */
     ldr x10, [sp, #248]      /* x10 = frame.elr */
 
-    /* DIAGNOSTIC: Check for corrupted ELR before ERET (was missing in SVC path) */
-    cmp x10, #0x1000
-    b.hs .Lsvc_elr_ok
-    /* ELR < 0x1000 — corrupted. Skip UART diagnostic (QEMU UART at
-       0x09000000 doesn't exist on Parallels). Redirect to idle. */
-    /* Redirect to idle_loop_arm64 */
+    /* Guard the EL1 return invariant. EL0 legitimately uses lower VAs. */
+    ldr x1, [sp, #256]          /* x1 = frame.spsr */
+    and x9, x1, #0xF            /* x9 = M[3:0] */
+    cbz x9, .Lsvc_elr_ok         /* EL0 return */
+    ldr x9, =KERNEL_VIRT_BASE
+    cmp x10, x9
+    b.hs .Lsvc_elr_ok            /* valid EL1 kernel return */
+
+    /* Branch-only record, published by writing source last. No UART/I/O. */
+    mrs x9, tpidr_el1
+    cbz x9, .Lsvc_eret_guard_recorded
+    str x10, [x9, #PERCPU_ERET_GUARD_ELR]
+    str x1, [x9, #PERCPU_ERET_GUARD_SPSR]
+    mov x1, #3                   /* source 3 = syscall epilogue */
+    str x1, [x9, #PERCPU_ERET_GUARD_SOURCE]
+.Lsvc_eret_guard_recorded:
+    /* Redirect to idle_loop_arm64 instead of returning to EL1 at a user VA. */
     adrp x10, idle_loop_arm64
     add x10, x10, :lo12:idle_loop_arm64
     /* Force SPSR to EL1h - write to frame */
