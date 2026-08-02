@@ -29,6 +29,8 @@ pub static CPU0_LAST_SYNC_FAR: AtomicU64 = AtomicU64::new(0);
 pub static CPU0_LAST_SYNC_ELR: AtomicU64 = AtomicU64::new(0);
 static PC_ALIGN_VERBOSE_CAPTURED: AtomicBool = AtomicBool::new(false);
 static FATAL_POSTMORTEM_CAPTURED: [AtomicBool; 8] = [const { AtomicBool::new(false) }; 8];
+static FATAL_POSTMORTEM_SECTIONS_CLAIMED: [AtomicU64; 8] =
+    [const { AtomicU64::new(0) }; 8];
 static EL1_UNHANDLED_FAULT_LATCHED: [AtomicBool; 8] = [const { AtomicBool::new(false) }; 8];
 static FATAL_POSTMORTEM_UART_LOCK: AtomicBool = AtomicBool::new(false);
 
@@ -287,33 +289,11 @@ fn set_idle_stack_for_eret() {
     unsafe {
         Aarch64PerCpu::set_user_rsp_scratch(idle_stack);
         Aarch64PerCpu::set_kernel_stack_top(idle_stack);
+        let kernel_ttbr0 = super::kernel_ttbr0();
+        Aarch64PerCpu::set_next_cr3(kernel_ttbr0);
+        Aarch64PerCpu::set_saved_process_cr3(0);
         Aarch64PerCpu::set_current_thread_ptr(core::ptr::null_mut());
         Aarch64PerCpu::clear_preempt_active();
-    }
-}
-
-/// Switch TTBR0 to the kernel page table and flush the TLB.
-///
-/// This ensures we don't return to userspace with a stale/terminated address space.
-#[inline(always)]
-fn switch_ttbr0_to_kernel() {
-    let mut kernel_ttbr0 = crate::per_cpu_aarch64::get_kernel_cr3();
-    if kernel_ttbr0 == 0 {
-        // Fallback to boot TTBR0 table if per-CPU kernel TTBR0 is unavailable.
-        kernel_ttbr0 = 0x4200_0000;
-    }
-
-    unsafe {
-        core::arch::asm!(
-            "dsb ishst",
-            "msr ttbr0_el1, {}",
-            "isb",
-            "tlbi vmalle1is",
-            "dsb ish",
-            "isb",
-            in(reg) kernel_ttbr0,
-            options(nomem, nostack)
-        );
     }
 }
 
@@ -337,10 +317,25 @@ fn terminate_current_scheduler_thread() {
     }
 }
 
-fn defer_current_user_thread_sigsegv_exit(label: &str) {
+fn defer_current_user_thread_sigsegv_exit(label: &str, frame_addr: u64) {
     use crate::arch_impl::aarch64::context_switch::{raw_uart_dec, raw_uart_str};
 
-    if let Some(tid) = crate::task::scheduler::current_thread_id() {
+    // Publish the deferred exit only after this CPU has left the retiring root
+    // and cleared both assembly return shadows. A peer CPU may drain the queue
+    // immediately after publication.
+    super::quiesce_ttbr0_for_exit();
+
+    let stack_owner =
+        crate::arch_impl::aarch64::context_switch::last_dispatched_tid_for_stack_address(
+            frame_addr,
+        )
+        .and_then(|(_, tid)| (tid != 0).then_some(tid));
+    let cpu_id = crate::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id() as usize;
+    let victim_tid = stack_owner.or_else(|| {
+        crate::arch_impl::aarch64::context_switch::last_dispatched_tid(cpu_id)
+    });
+
+    if let Some(tid) = victim_tid {
         let queued = crate::task::process_task::defer_fault_sigsegv_exit(tid);
         raw_uart_str(label);
         raw_uart_str(" deferred_tid=");
@@ -354,38 +349,75 @@ fn defer_current_user_thread_sigsegv_exit(label: &str) {
     }
 }
 
-fn dump_fatal_postmortem_once(label: &str) {
-    use crate::arch_impl::aarch64::context_switch::{raw_uart_dec, raw_uart_str};
-
-    let cpu_id = crate::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id() as usize;
-    if cpu_id >= FATAL_POSTMORTEM_CAPTURED.len()
-        || FATAL_POSTMORTEM_CAPTURED[cpu_id].swap(true, Ordering::AcqRel)
+#[cold]
+#[inline(never)]
+fn dump_fatal_postmortem_section<F>(cpu_id: usize, section: usize, heading: &str, dump: F)
+where
+    F: FnOnce(),
+{
+    let section_bit = 1u64 << section;
+    if FATAL_POSTMORTEM_SECTIONS_CLAIMED[cpu_id].fetch_or(section_bit, Ordering::AcqRel)
+        & section_bit
+        != 0
     {
         return;
     }
 
-    raw_uart_str("[FATAL_POSTMORTEM] cpu=");
-    raw_uart_dec(cpu_id as u64);
-    raw_uart_str(" label=");
-    raw_uart_str(label);
-    raw_uart_str("\n  Deferred requeue snapshots:\n");
-    crate::arch_impl::aarch64::context_switch::dump_defer_requeue_snapshots();
-    raw_uart_str("\n  Trace buffers:\n");
-    crate::tracing::dump_all_buffers();
-    raw_uart_str("\n  Idle redirect histories:\n");
-    crate::arch_impl::aarch64::context_switch::dump_all_idle_redirect_histories();
-    raw_uart_str("\n  Stack pivot alias histories:\n");
-    crate::arch_impl::aarch64::context_switch::dump_stack_pivot_alias_history();
-    raw_uart_str("\n  Stack-half boundary canaries:\n");
-    for canary_cpu in 0..super::constants::MAX_CPUS {
-        raw_uart_str("    cpu=");
-        raw_uart_dec(canary_cpu as u64);
-        raw_uart_str(" intact=");
-        raw_uart_dec(
-            super::constants::percpu_stack_boundary_canary_is_intact(canary_cpu) as u64,
-        );
-        raw_uart_str("\n");
+    crate::arch_impl::aarch64::context_switch::raw_uart_str(heading);
+    dump();
+}
+
+fn dump_fatal_postmortem_once(label: &str) {
+    use crate::arch_impl::aarch64::context_switch::{raw_uart_dec, raw_uart_str};
+
+    let cpu_id = crate::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id() as usize;
+    if cpu_id >= FATAL_POSTMORTEM_CAPTURED.len() {
+        return;
     }
+
+    if !FATAL_POSTMORTEM_CAPTURED[cpu_id].swap(true, Ordering::AcqRel) {
+        raw_uart_str("[FATAL_POSTMORTEM] cpu=");
+        raw_uart_dec(cpu_id as u64);
+        raw_uart_str(" label=");
+        raw_uart_str(label);
+    }
+
+    // Claim each section before entering it. If the section itself faults, a
+    // nested postmortem skips that in-progress section and continues with the
+    // remaining evidence instead of losing the rest of the dump.
+    dump_fatal_postmortem_section(cpu_id, 0, "\n  Deferred requeue snapshots:\n", || {
+        crate::arch_impl::aarch64::context_switch::dump_defer_requeue_snapshots();
+    });
+    dump_fatal_postmortem_section(cpu_id, 1, "\n  Idle redirect histories:\n", || {
+        crate::arch_impl::aarch64::context_switch::dump_all_idle_redirect_histories();
+    });
+    dump_fatal_postmortem_section(cpu_id, 2, "\n  Stack pivot alias histories:\n", || {
+        crate::arch_impl::aarch64::context_switch::dump_stack_pivot_alias_history();
+    });
+    dump_fatal_postmortem_section(cpu_id, 3, "\n  Save-skew slots:\n", || {
+        crate::arch_impl::aarch64::context_switch::dump_all_save_skew_snapshots();
+    });
+    dump_fatal_postmortem_section(cpu_id, 4, "\n  Inline save-skew slots:\n", || {
+        crate::arch_impl::aarch64::context_switch::dump_all_inline_save_skew_snapshots();
+    });
+    dump_fatal_postmortem_section(cpu_id, 5, "\n  Stack-half boundary canaries:\n", || {
+        for canary_cpu in 0..super::constants::MAX_CPUS {
+            raw_uart_str("    cpu=");
+            raw_uart_dec(canary_cpu as u64);
+            raw_uart_str(" intact=");
+            raw_uart_dec(
+                super::constants::percpu_stack_boundary_canary_is_intact(canary_cpu) as u64,
+            );
+            raw_uart_str("\n");
+        }
+    });
+    dump_fatal_postmortem_section(cpu_id, 6, "\n  Last-dispatched tids:\n", || {
+        crate::arch_impl::aarch64::context_switch::dump_all_last_dispatched_tids();
+        crate::arch_impl::aarch64::context_switch::dump_all_eret_guard_records();
+    });
+    dump_fatal_postmortem_section(cpu_id, 7, "\n  Trace buffers:\n", || {
+        crate::tracing::dump_all_buffers();
+    });
 }
 
 #[inline(never)]
@@ -394,9 +426,7 @@ fn dump_stack_classification(frame_addr: u64) {
 
     let stack_base = super::constants::percpu_stack_region_base();
     let stack_end = stack_base + super::constants::PERCPU_STACK_REGION_SIZE as u64;
-    const HHDM_BASE_DIAG: u64 = 0xFFFF_0000_0000_0000;
-    const KSTACK_BASE: u64 = HHDM_BASE_DIAG + 0x5200_0000;
-    const KSTACK_END: u64 = HHDM_BASE_DIAG + 0x5400_0000;
+    use crate::memory::kernel_stack::{ARM64_KERNEL_STACK_BASE, ARM64_KERNEL_STACK_END};
 
     if frame_addr >= stack_base && frame_addr < stack_end {
         let offset_from_base = frame_addr - stack_base;
@@ -408,8 +438,18 @@ fn dump_stack_classification(frame_addr: u64) {
             raw_uart_str("\n  STACK=boot_cpu");
         }
         raw_uart_dec(cpu_id);
-    } else if frame_addr >= KSTACK_BASE && frame_addr < KSTACK_END {
+    } else if frame_addr >= ARM64_KERNEL_STACK_BASE && frame_addr < ARM64_KERNEL_STACK_END {
         raw_uart_str("\n  STACK=alloc_kstack");
+        if let Some((slot, tid)) =
+            crate::arch_impl::aarch64::context_switch::last_dispatched_tid_for_stack_address(
+                frame_addr,
+            )
+        {
+            raw_uart_str(" slot=");
+            raw_uart_dec(slot as u64);
+            raw_uart_str(" last_dispatched_tid=");
+            raw_uart_dec(tid);
+        }
     } else {
         raw_uart_str("\n  STACK=unknown");
     }
@@ -710,6 +750,10 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                 // Get current TTBR0 to find the process
                 let page_table_phys = ttbr0 & !0xFFFF_0000_0000_0FFF;
 
+                // The process exit below can retire this root. Leave it before
+                // acquiring the process manager and freeing any resources.
+                super::switch_ttbr0_to_kernel();
+
                 // Find and terminate the process
                 let mut terminated = false;
                 let mut already_terminated = false;
@@ -736,7 +780,6 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                     // the thread is Ready/Running and will re-dispatch it on
                     // another CPU, causing ERET to a freed address space.
                     terminate_current_scheduler_thread();
-                    switch_ttbr0_to_kernel();
                     crate::task::scheduler::set_need_resched();
 
                     // CRITICAL: Set frame values BEFORE switch_to_idle() —
@@ -757,13 +800,12 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                 use crate::arch_impl::aarch64::context_switch::raw_uart_str;
                 raw_uart_str("[DATA_ABORT] kernel-mode fault, deferring process cleanup\n");
             }
-            defer_current_user_thread_sigsegv_exit("[DATA_ABORT]");
+            defer_current_user_thread_sigsegv_exit("[DATA_ABORT]", frame as u64);
             dump_fatal_postmortem_once("DATA_ABORT");
             drop(fatal_uart_guard);
 
             // Mark scheduler thread as terminated (best effort)
             terminate_current_scheduler_thread();
-            switch_ttbr0_to_kernel();
             crate::task::scheduler::set_need_resched();
 
             // CRITICAL: Set frame values BEFORE switch_to_idle_best_effort() —
@@ -1030,9 +1072,9 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                     let boot_stack_base = super::constants::percpu_stack_region_base();
                     let boot_stack_end =
                         boot_stack_base + super::constants::PERCPU_STACK_REGION_SIZE as u64;
-                    const HHDM_BASE_DIAG: u64 = 0xFFFF_0000_0000_0000;
-                    const KSTACK_BASE: u64 = HHDM_BASE_DIAG + 0x5200_0000;
-                    const KSTACK_END: u64 = HHDM_BASE_DIAG + 0x5400_0000;
+                    use crate::memory::kernel_stack::{
+                        ARM64_KERNEL_STACK_BASE, ARM64_KERNEL_STACK_END,
+                    };
                     dump_stack_classification(frame_addr);
 
                     // DISPATCH TRACE: last 8 dispatches on this CPU
@@ -1044,7 +1086,8 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                     // OUTER FRAME: Read the frame 272 bytes above (if on a valid stack)
                     let outer_frame_addr = frame_addr + 272;
                     if outer_frame_addr + 272 <= boot_stack_end
-                        || (outer_frame_addr >= KSTACK_BASE && outer_frame_addr + 272 <= KSTACK_END)
+                        || (outer_frame_addr >= ARM64_KERNEL_STACK_BASE
+                            && outer_frame_addr + 272 <= ARM64_KERNEL_STACK_END)
                     {
                         let outer = outer_frame_addr as *const u64;
                         unsafe {
@@ -1067,6 +1110,10 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
             if from_el0 {
                 // From userspace - terminate the process with SIGSEGV
                 let page_table_phys = ttbr0 & !0xFFFF_0000_0000_0FFF;
+
+                // Install the kernel root before pm.exit_process can retire
+                // the faulting userspace root.
+                super::switch_ttbr0_to_kernel();
 
                 let mut terminated = false;
                 let mut already_terminated = false;
@@ -1096,7 +1143,6 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
 
                 if terminated || already_terminated {
                     terminate_current_scheduler_thread();
-                    switch_ttbr0_to_kernel();
                     crate::task::scheduler::set_need_resched();
                     // CRITICAL: Set frame values BEFORE switch_to_idle()
                     frame_ref.elr = crate::arch_impl::aarch64::idle_loop_arm64 as *const () as u64;
@@ -1117,9 +1163,8 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                 use crate::arch_impl::aarch64::context_switch::raw_uart_str;
                 raw_uart_str("[INSTRUCTION_ABORT] deferring process cleanup\n");
             }
-            defer_current_user_thread_sigsegv_exit("[INSTRUCTION_ABORT]");
+            defer_current_user_thread_sigsegv_exit("[INSTRUCTION_ABORT]", frame as u64);
             terminate_current_scheduler_thread();
-            switch_ttbr0_to_kernel();
             crate::task::scheduler::set_need_resched();
             frame_ref.elr = crate::arch_impl::aarch64::idle_loop_arm64 as *const () as u64;
             frame_ref.spsr = 0x5; // EL1h, DAIF clear (interrupts enabled)
@@ -1159,6 +1204,7 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                     core::arch::asm!("mrs {}, ttbr0_el1", out(reg) ttbr0, options(nomem, nostack));
                 }
                 let page_table_phys = ttbr0 & !0xFFFF_0000_0000_0FFF;
+                super::switch_ttbr0_to_kernel();
                 crate::process::with_process_manager(|pm| {
                     if let Some((pid, process)) = pm.find_process_by_cr3_mut(page_table_phys) {
                         if !process.is_terminated() {
@@ -1167,7 +1213,6 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                     }
                 });
                 terminate_current_scheduler_thread();
-                switch_ttbr0_to_kernel();
             }
             // CRITICAL: Set frame values BEFORE switch_to_idle_best_effort()
             frame_ref.elr = crate::arch_impl::aarch64::idle_loop_arm64 as *const () as u64;
@@ -1256,6 +1301,7 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                     core::arch::asm!("mrs {}, ttbr0_el1", out(reg) ttbr0, options(nomem, nostack));
                 }
                 let page_table_phys = ttbr0 & !0xFFFF_0000_0000_0FFF;
+                super::switch_ttbr0_to_kernel();
                 crate::process::with_process_manager(|pm| {
                     if let Some((pid, process)) = pm.find_process_by_cr3_mut(page_table_phys) {
                         if !process.is_terminated() {
@@ -1264,7 +1310,6 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                     }
                 });
                 terminate_current_scheduler_thread();
-                switch_ttbr0_to_kernel();
             }
             // CRITICAL: Set frame values BEFORE switch_to_idle_best_effort()
             frame_ref.elr = crate::arch_impl::aarch64::idle_loop_arm64 as *const () as u64;

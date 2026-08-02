@@ -55,8 +55,18 @@ pub struct PerCpuData {
     /// Scratch register save area for ERET paths (offset 96)
     /// Used by assembly to save one register across SP switches during ERET.
     pub eret_scratch: u64,
-    /// Padding to match x86_64 layout
-    _pad3: [u8; 88],
+    /// Last frame ELR selected by the Rust dispatcher (offset 104).
+    pub dispatch_elr: u64,
+    /// Last frame SPSR selected by the Rust dispatcher (offset 112).
+    pub dispatch_spsr: u64,
+    /// ELR captured by an assembly ERET invariant redirect (offset 120).
+    pub eret_guard_elr: u64,
+    /// SPSR captured by an assembly ERET invariant redirect (offset 128).
+    pub eret_guard_spsr: u64,
+    /// Guard source tag, written last to publish the record (offset 136).
+    pub eret_guard_source: u64,
+    /// Padding to match the fixed 192-byte per-CPU layout.
+    _pad3: [u8; 48],
 }
 
 const _: () = assert!(
@@ -85,10 +95,28 @@ impl PerCpuData {
             exception_cleanup_context: 0,
             _pad3a: [0; 7],
             eret_scratch: 0,
-            _pad3: [0; 88],
+            dispatch_elr: 0,
+            dispatch_spsr: 0,
+            eret_guard_elr: 0,
+            eret_guard_spsr: 0,
+            eret_guard_source: 0,
+            _pad3: [0; 48],
         }
     }
 }
+
+const _: () = assert!(
+    core::mem::offset_of!(PerCpuData, eret_guard_elr)
+        == crate::arch_impl::aarch64::constants::PERCPU_ERET_GUARD_ELR_OFFSET
+);
+const _: () = assert!(
+    core::mem::offset_of!(PerCpuData, eret_guard_spsr)
+        == crate::arch_impl::aarch64::constants::PERCPU_ERET_GUARD_SPSR_OFFSET
+);
+const _: () = assert!(
+    core::mem::offset_of!(PerCpuData, eret_guard_source)
+        == crate::arch_impl::aarch64::constants::PERCPU_ERET_GUARD_SOURCE_OFFSET
+);
 
 /// Per-CPU data for all CPUs (up to MAX_CPUS).
 /// Each CPU's TPIDR_EL1 points to its own entry in this array.
@@ -106,6 +134,70 @@ static mut ALL_CPU_DATA: [PerCpuData; crate::arch_impl::aarch64::constants::MAX_
 /// Flag to indicate whether per-CPU data is initialized
 static PER_CPU_INITIALIZED: AtomicBool = AtomicBool::new(false);
 static EARLY_SOFTIRQ_PENDING: AtomicU32 = AtomicU32::new(0);
+
+/// Read the last assembly ERET-guard redirect record for `cpu_id`.
+/// The source tag is written last by assembly and acts as the validity word.
+pub fn eret_guard_record(cpu_id: usize) -> Option<(u64, u64, u64)> {
+    if cpu_id >= crate::arch_impl::aarch64::constants::MAX_CPUS {
+        return None;
+    }
+
+    let cpu_data = unsafe { &raw const ALL_CPU_DATA[cpu_id] };
+    let source = unsafe {
+        core::ptr::read_volatile(core::ptr::addr_of!((*cpu_data).eret_guard_source))
+    };
+    if source == 0 {
+        return None;
+    }
+    core::sync::atomic::fence(Ordering::Acquire);
+    let elr = unsafe {
+        core::ptr::read_volatile(core::ptr::addr_of!((*cpu_data).eret_guard_elr))
+    };
+    let spsr = unsafe {
+        core::ptr::read_volatile(core::ptr::addr_of!((*cpu_data).eret_guard_spsr))
+    };
+    Some((source, elr, spsr))
+}
+
+/// Snapshot the two per-CPU pointers that can keep a kernel-stack slot live.
+///
+/// These fields are also read and written by exception-return assembly, so use
+/// volatile loads rather than borrowing the shared per-CPU object. Callers use
+/// this only as a conservative reclamation/allocator exclusion check.
+pub fn live_stack_snapshot(cpu_id: usize) -> Option<(u64, u64)> {
+    if cpu_id >= crate::arch_impl::aarch64::constants::MAX_CPUS {
+        return None;
+    }
+
+    let cpu_data = unsafe { &raw const ALL_CPU_DATA[cpu_id] };
+    let kernel_stack_top = unsafe {
+        core::ptr::read_volatile(core::ptr::addr_of!((*cpu_data).kernel_stack_top))
+    };
+    let user_rsp_scratch = unsafe {
+        core::ptr::read_volatile(core::ptr::addr_of!((*cpu_data).user_sp_scratch))
+    };
+    Some((kernel_stack_top, user_rsp_scratch))
+}
+
+/// Snapshot the per-CPU TTBR0 shadows that can retain a userspace root.
+///
+/// Exception-return assembly also reads and writes these fields, so use
+/// volatile loads rather than borrowing the shared per-CPU object. Callers
+/// combine this conservative snapshot with a scheduling-epoch grace period
+/// before returning frames reachable from a retired root to the allocator.
+pub fn ttbr0_shadow_snapshot(cpu_id: usize) -> Option<(u64, u64)> {
+    if cpu_id >= crate::arch_impl::aarch64::constants::MAX_CPUS {
+        return None;
+    }
+
+    let cpu_data = unsafe { &raw const ALL_CPU_DATA[cpu_id] };
+    let saved_process_ttbr0 = unsafe {
+        core::ptr::read_volatile(core::ptr::addr_of!((*cpu_data).saved_process_ttbr0))
+    };
+    let next_ttbr0 =
+        unsafe { core::ptr::read_volatile(core::ptr::addr_of!((*cpu_data).next_ttbr0)) };
+    Some((saved_process_ttbr0, next_ttbr0))
+}
 
 /// Check if per-CPU data has been initialized
 pub fn is_initialized() -> bool {

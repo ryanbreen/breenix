@@ -495,29 +495,9 @@ impl Process {
     /// CRITICAL: No logging — may run under PM lock.
     #[cfg(not(target_arch = "x86_64"))]
     pub(crate) fn cleanup_cow_frames(&mut self) {
-        use crate::memory::arch_stub::{PageTableFlags, PhysFrame};
-        use crate::memory::frame_allocator::deallocate_frame;
-        use crate::memory::frame_metadata::frame_decref;
-
-        // Get the page table for this process
-        let page_table = match self.page_table.as_ref() {
-            Some(pt) => pt,
-            None => return,
-        };
-
-        // Walk all user pages and decrement refcounts
-        let _ = page_table.walk_mapped_pages(|_virt_addr, phys_addr, flags| {
-            // Only process user-accessible pages
-            if !flags.contains(PageTableFlags::USER_ACCESSIBLE) {
-                return;
-            }
-
-            let frame = PhysFrame::containing_address(phys_addr);
-
-            if frame_decref(frame) {
-                deallocate_frame(frame);
-            }
-        });
+        if let Some(page_table) = self.page_table.as_ref() {
+            cleanup_cow_page_table(page_table);
+        }
     }
 
     /// Drain and clean up any pending old page tables from previous exec() calls.
@@ -587,4 +567,26 @@ impl Process {
     pub fn vma_list_mut(&mut self) -> &mut alloc::vec::Vec<crate::memory::vma::Vma> {
         &mut self.vmas
     }
+}
+
+/// Release the user-frame references reachable from an AArch64 process root.
+///
+/// Deferred exit reclamation owns the page table after removing it from the
+/// process table, so this operation accepts the page table directly.
+#[cfg(target_arch = "aarch64")]
+pub(crate) fn cleanup_cow_page_table(page_table: &ProcessPageTable) {
+    use crate::memory::arch_stub::{PageTableFlags, PhysFrame};
+    use crate::memory::frame_allocator::deallocate_frame;
+    use crate::memory::frame_metadata::frame_decref;
+
+    let _ = page_table.walk_mapped_pages(|_virt_addr, phys_addr, flags| {
+        if !flags.contains(PageTableFlags::USER_ACCESSIBLE) {
+            return;
+        }
+
+        let frame = PhysFrame::containing_address(phys_addr);
+        if frame_decref(frame) {
+            deallocate_frame(frame);
+        }
+    });
 }

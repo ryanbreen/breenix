@@ -1502,6 +1502,33 @@ static ERET_ANOMALY_SPSR: [AtomicU64; crate::arch_impl::aarch64::constants::MAX_
 static LAST_DISPATCHED_TID: [AtomicU64; crate::arch_impl::aarch64::constants::MAX_CPUS] =
     [const { AtomicU64::new(0) }; crate::arch_impl::aarch64::constants::MAX_CPUS];
 
+const LAST_DISPATCHED_SLOT_BITS: u32 = 9;
+const LAST_DISPATCHED_SLOT_MASK: u64 = (1 << LAST_DISPATCHED_SLOT_BITS) - 1;
+const _: () = assert!(
+    crate::memory::kernel_stack::ARM64_MAX_KERNEL_STACKS
+        <= LAST_DISPATCHED_SLOT_MASK as usize
+);
+
+#[inline(always)]
+fn reusable_kstack_slot_for_address(address: u64) -> Option<usize> {
+    use crate::memory::kernel_stack::{
+        ARM64_KERNEL_STACK_BASE, ARM64_KERNEL_STACK_END, ARM64_STACK_SLOT_SIZE,
+    };
+
+    if address < ARM64_KERNEL_STACK_BASE || address >= ARM64_KERNEL_STACK_END {
+        return None;
+    }
+    Some(((address - ARM64_KERNEL_STACK_BASE) / ARM64_STACK_SLOT_SIZE) as usize)
+}
+
+#[inline(always)]
+fn decode_last_dispatched(encoded: u64) -> (u64, Option<usize>) {
+    let tid = encoded >> LAST_DISPATCHED_SLOT_BITS;
+    let slot_code = encoded & LAST_DISPATCHED_SLOT_MASK;
+    let slot = (slot_code != 0).then(|| (slot_code - 1) as usize);
+    (tid, slot)
+}
+
 /// Stamp the OWNER-TID CANARY for this CPU. Called from `dispatch_thread_locked`
 /// at its two frame-finalize points. Lock-free; safe to call from inside the
 /// scheduler lock hold.
@@ -1510,7 +1537,73 @@ fn stamp_last_dispatched_tid(cpu_id: usize, tid: u64) {
     if cpu_id >= crate::arch_impl::aarch64::constants::MAX_CPUS {
         return;
     }
-    LAST_DISPATCHED_TID[cpu_id].store(tid, Ordering::Release);
+    debug_assert!(tid <= (u64::MAX >> LAST_DISPATCHED_SLOT_BITS));
+    let slot_code = reusable_kstack_slot_for_address(
+        Aarch64PerCpu::kernel_stack_top().saturating_sub(1),
+    )
+    .map(|slot| slot as u64 + 1)
+    .unwrap_or(0);
+    let encoded = (tid << LAST_DISPATCHED_SLOT_BITS) | slot_code;
+    LAST_DISPATCHED_TID[cpu_id].store(encoded, Ordering::Release);
+}
+
+/// Return the reusable kernel-stack slot containing `address` and the tid most
+/// recently finalized for dispatch on that slot. A zero tid means the slot has
+/// not been stamped yet.
+pub fn last_dispatched_tid_for_stack_address(address: u64) -> Option<(usize, u64)> {
+    let slot = reusable_kstack_slot_for_address(address)?;
+    let tid = LAST_DISPATCHED_TID
+        .iter()
+        .find_map(|record| {
+            let (tid, recorded_slot) = decode_last_dispatched(record.load(Ordering::Acquire));
+            (recorded_slot == Some(slot)).then_some(tid)
+        })
+        .unwrap_or(0);
+    Some((slot, tid))
+}
+
+/// Return the tid most recently finalized for dispatch on `cpu_id`.
+pub fn last_dispatched_tid(cpu_id: usize) -> Option<u64> {
+    if cpu_id >= crate::arch_impl::aarch64::constants::MAX_CPUS {
+        return None;
+    }
+    let (tid, _) = decode_last_dispatched(LAST_DISPATCHED_TID[cpu_id].load(Ordering::Acquire));
+    (tid != 0).then_some(tid)
+}
+
+/// Dump the owner-TID canary and its reusable stack slot for every CPU.
+pub fn dump_all_last_dispatched_tids() {
+    for cpu_id in 0..crate::arch_impl::aarch64::constants::MAX_CPUS {
+        let (tid, slot) =
+            decode_last_dispatched(LAST_DISPATCHED_TID[cpu_id].load(Ordering::Acquire));
+        raw_uart_str("[LAST_DISPATCHED_TID] cpu=");
+        raw_uart_dec(cpu_id as u64);
+        raw_uart_str(" tid=");
+        raw_uart_dec(tid);
+        if let Some(slot) = slot {
+            raw_uart_str(" kstack_slot=");
+            raw_uart_dec(slot as u64);
+        }
+        raw_uart_str("\n");
+    }
+}
+
+/// Dump the last branch-only ERET invariant redirect captured on each CPU.
+pub fn dump_all_eret_guard_records() {
+    for cpu_id in 0..crate::arch_impl::aarch64::constants::MAX_CPUS {
+        let Some((source, elr, spsr)) = crate::per_cpu_aarch64::eret_guard_record(cpu_id) else {
+            continue;
+        };
+        raw_uart_str("[ERET_GUARD_REDIRECT] cpu=");
+        raw_uart_dec(cpu_id as u64);
+        raw_uart_str(" source=");
+        raw_uart_dec(source);
+        raw_uart_str(" elr=");
+        raw_uart_hex(elr);
+        raw_uart_str(" spsr=");
+        raw_uart_hex(spsr);
+        raw_uart_str("\n");
+    }
 }
 
 /// Record an ERET-consumer-site frame anomaly into this CPU's last-wins
@@ -1648,6 +1741,19 @@ static INLINE_SCHEDULE_STATE: [InlineScheduleState;
         should_requeue_old: AtomicBool::new(false),
     },
 ];
+
+struct ExitScheduleState {
+    scheduler_ptr: AtomicUsize,
+    thread_id: AtomicU64,
+}
+
+static EXIT_SCHEDULE_STATE: [ExitScheduleState; crate::arch_impl::aarch64::constants::MAX_CPUS] =
+    [const {
+        ExitScheduleState {
+            scheduler_ptr: AtomicUsize::new(0),
+            thread_id: AtomicU64::new(0),
+        }
+    }; crate::arch_impl::aarch64::constants::MAX_CPUS];
 
 const INLINE_SCHEDULE_BREADCRUMB_CPUS: usize = crate::arch_impl::aarch64::constants::MAX_CPUS;
 const INLINE_SCHEDULE_BREADCRUMB_SLOTS: usize = 16;
@@ -2049,6 +2155,7 @@ fn log_idle_thread_context(tag: &str, thread: &Thread, sp: u64, elr: u64, x30: u
 #[inline(always)]
 fn clear_inline_schedule_state(thread: &mut Thread) {
     thread.saved_by_inline_schedule = false;
+    thread.inline_schedule_spsr = 0;
     thread.inline_schedule_saved_sp = 0;
     thread.inline_schedule_caller_lr = 0;
 }
@@ -2682,7 +2789,7 @@ fn restore_userspace_context_inline(
 
     // Restore program counter and status
     frame.elr = thread.context.elr_el1;
-    frame.spsr = dispatch_spsr(thread.context.spsr_el1);
+    frame.spsr = dispatch_spsr(thread.context.spsr_el1) & !SPSR_MODE_MASK;
 
     // Restore SP_EL0 (user stack pointer)
     unsafe {
@@ -2853,6 +2960,12 @@ fn setup_idle_return_locked(
     unsafe {
         Aarch64PerCpu::set_user_rsp_scratch(idle_stack);
         Aarch64PerCpu::set_kernel_stack_top(idle_stack);
+        let mut kernel_ttbr0 = Aarch64PerCpu::kernel_cr3();
+        if kernel_ttbr0 == 0 {
+            kernel_ttbr0 = 0x4200_0000;
+        }
+        Aarch64PerCpu::set_next_cr3(kernel_ttbr0);
+        Aarch64PerCpu::set_saved_process_cr3(0);
         Aarch64PerCpu::set_current_thread_ptr(core::ptr::null_mut());
         Aarch64PerCpu::clear_preempt_active();
     }
@@ -2917,6 +3030,7 @@ fn reset_idle_continuation_locked(
 
     let idle_addr = idle_loop_arm64 as *const () as u64;
     thread.saved_by_inline_schedule = false;
+    thread.inline_schedule_spsr = 0;
     thread.inline_schedule_saved_sp = 0;
     thread.inline_schedule_caller_lr = 0;
     thread.context.sp = idle_sp;
@@ -3336,6 +3450,11 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
         // exception — don't context switch now.
         return;
     }
+
+    // This entry proves an earlier handoff completed, but the current handoff
+    // may still be using its old stack. Reclamation therefore requires two
+    // bumps: this one plus a subsequent exception's scheduling entry.
+    crate::task::scheduler::note_scheduling_epoch(cpu_id_early);
 
     // Read deferred requeue atomically (lock-free).
     // CRITICAL: This must happen BEFORE the preempt_count early return below.
@@ -3910,6 +4029,95 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
     }
 }
 
+/// Final scheduler handoff for an exiting AArch64 thread.
+///
+/// The inline switch saves the outgoing context and changes SP to the per-CPU
+/// scheduler stack before entering `exit_schedule_trampoline`. Only that
+/// neutral-stack trampoline is allowed to publish `Terminated`.
+pub fn schedule_terminated_from_exit(thread_id: u64) -> ! {
+    unsafe {
+        crate::arch_impl::aarch64::cpu::disable_interrupts();
+    }
+    // Balance rust_syscall_handler_aarch64's preempt_disable only after IRQs
+    // are masked, leaving no interrupt window between enabling preemption and
+    // the final stack pivot.
+    Aarch64PerCpu::preempt_enable();
+
+    let cpu_id = Aarch64PerCpu::cpu_id() as usize;
+    let mut guard = crate::task::scheduler::lock_for_context_switch();
+    let sched = guard
+        .as_mut()
+        .expect("scheduler unavailable during AArch64 exit handoff");
+    let old_context_ptr = sched
+        .get_thread_mut(thread_id)
+        .map(|thread| &mut thread.context as *mut CpuContext)
+        .expect("exiting AArch64 thread missing from scheduler");
+
+    EXIT_SCHEDULE_STATE[cpu_id]
+        .scheduler_ptr
+        .store(sched as *mut Scheduler as usize, Ordering::Relaxed);
+    EXIT_SCHEDULE_STATE[cpu_id]
+        .thread_id
+        .store(thread_id, Ordering::Release);
+
+    let _ = spin::MutexGuard::leak(guard);
+    let scheduler_top = scheduler_stack_top(cpu_id);
+    assert_pivot_free(cpu_id, scheduler_top, read_current_sp(), 4);
+
+    unsafe {
+        aarch64_inline_schedule_switch(old_context_ptr, scheduler_top, exit_schedule_trampoline);
+    }
+
+    panic!("terminated AArch64 thread was dispatched after final exit handoff");
+}
+
+extern "C" fn exit_schedule_trampoline() -> ! {
+    let cpu_id = Aarch64PerCpu::cpu_id() as usize;
+    let state = &EXIT_SCHEDULE_STATE[cpu_id];
+    let sched_ptr = state.scheduler_ptr.swap(0, Ordering::Acquire) as *mut Scheduler;
+    let thread_id = state.thread_id.swap(0, Ordering::Relaxed);
+    assert!(!sched_ptr.is_null(), "missing AArch64 exit scheduler state");
+
+    // The assembly caller has already executed `mov sp, scheduler_stack_top`.
+    // Publishing Terminated here makes "terminated while still on its own
+    // kernel stack" unrepresentable on the syscall-exit path.
+    let sched = unsafe { &mut *sched_ptr };
+    sched
+        .get_thread_mut(thread_id)
+        .expect("exiting AArch64 thread disappeared before stack pivot")
+        .set_terminated();
+    sched.remove_from_ready_queue(thread_id);
+
+    let (old_id, new_id, should_requeue_old) = sched
+        .schedule_deferred_requeue()
+        .expect("AArch64 exit handoff found no idle or runnable successor");
+    assert_eq!(
+        old_id, thread_id,
+        "AArch64 exit handoff saved the wrong thread"
+    );
+    assert_ne!(
+        new_id, thread_id,
+        "terminated AArch64 thread selected again"
+    );
+    debug_assert!(!should_requeue_old);
+
+    INLINE_SCHEDULE_STATE[cpu_id]
+        .scheduler_ptr
+        .store(sched_ptr as usize, Ordering::Relaxed);
+    INLINE_SCHEDULE_STATE[cpu_id]
+        .old_thread_id
+        .store(old_id, Ordering::Relaxed);
+    INLINE_SCHEDULE_STATE[cpu_id]
+        .new_thread_id
+        .store(new_id, Ordering::Relaxed);
+    INLINE_SCHEDULE_STATE[cpu_id]
+        .should_requeue_old
+        .store(false, Ordering::Relaxed);
+    crate::task::scheduler::increment_context_switch_count();
+
+    inline_schedule_trampoline()
+}
+
 extern "C" fn inline_schedule_trampoline() -> ! {
     let cpu_id = Aarch64PerCpu::cpu_id() as usize;
     inline_schedule_breadcrumb(cpu_id, INLINE_BC_TRAMPOLINE_ENTRY, 0);
@@ -4379,7 +4587,7 @@ pub fn schedule_from_kernel() {
             }
             old_thread.context.sp_el0 = read_sp_el0();
             old_thread.context.tpidr_el0 = read_tpidr_el0();
-            old_thread.context.spsr_el1 = kernel_dispatch_spsr(saved_daif & 0x3C0);
+            old_thread.inline_schedule_spsr = kernel_dispatch_spsr(saved_daif & 0x3C0);
             old_thread.inline_schedule_caller_lr =
                 unsafe { core::ptr::read_volatile((schedule_sp + 0x20) as *const u64) };
             old_thread.inline_schedule_saved_sp = schedule_sp;

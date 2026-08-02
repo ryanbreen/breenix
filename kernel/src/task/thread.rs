@@ -458,6 +458,11 @@ pub struct Thread {
     /// Matches Linux's cpu_switch_to approach: kernel-to-kernel switches use ret.
     pub saved_by_inline_schedule: bool,
 
+    /// Kernel PSTATE captured by the ret-based inline schedule path.
+    /// `context.spsr_el1` remains paired with `context.elr_el1`; inline resume
+    /// metadata must not turn a saved user PC into an apparent EL1 return.
+    pub inline_schedule_spsr: u64,
+
     /// Diagnostic: caller LR saved in the suspended schedule_from_kernel() frame.
     /// Used to detect whether the inline-saved kernel frame is already corrupt
     /// by the time a later exception save overwrites this thread's context.
@@ -515,6 +520,7 @@ impl Clone for Thread {
             has_started: self.has_started,
             blocked_in_syscall: self.blocked_in_syscall,
             saved_by_inline_schedule: false,
+            inline_schedule_spsr: 0,
             inline_schedule_caller_lr: self.inline_schedule_caller_lr,
             inline_schedule_saved_sp: self.inline_schedule_saved_sp,
             saved_userspace_context: self.saved_userspace_context.clone(),
@@ -581,6 +587,7 @@ impl Thread {
             has_started: false,        // New thread hasn't run yet
             blocked_in_syscall: false, // New thread is not blocked in syscall
             saved_by_inline_schedule: false,
+            inline_schedule_spsr: 0,
             inline_schedule_caller_lr: 0,
             inline_schedule_saved_sp: 0,
             saved_userspace_context: None,
@@ -642,6 +649,7 @@ impl Thread {
             has_started: false,
             blocked_in_syscall: false,
             saved_by_inline_schedule: false,
+            inline_schedule_spsr: 0,
             inline_schedule_caller_lr: 0,
             inline_schedule_saved_sp: 0,
             saved_userspace_context: None,
@@ -690,6 +698,7 @@ impl Thread {
             has_started: false,        // New thread hasn't run yet
             blocked_in_syscall: false, // New thread is not blocked in syscall
             saved_by_inline_schedule: false,
+            inline_schedule_spsr: 0,
             inline_schedule_caller_lr: 0,
             inline_schedule_saved_sp: 0,
             saved_userspace_context: None,
@@ -737,6 +746,7 @@ impl Thread {
             has_started: false,
             blocked_in_syscall: false,
             saved_by_inline_schedule: false,
+            inline_schedule_spsr: 0,
             inline_schedule_caller_lr: 0,
             inline_schedule_saved_sp: 0,
             saved_userspace_context: None,
@@ -797,6 +807,7 @@ impl Thread {
             has_started: false,        // New thread hasn't run yet
             blocked_in_syscall: false, // New thread is not blocked in syscall
             saved_by_inline_schedule: false,
+            inline_schedule_spsr: 0,
             inline_schedule_caller_lr: 0,
             inline_schedule_saved_sp: 0,
             saved_userspace_context: None,
@@ -852,6 +863,7 @@ impl Thread {
             has_started: false,
             blocked_in_syscall: false,
             saved_by_inline_schedule: false,
+            inline_schedule_spsr: 0,
             inline_schedule_caller_lr: 0,
             inline_schedule_saved_sp: 0,
             saved_userspace_context: None,
@@ -932,6 +944,7 @@ impl Thread {
             has_started: false,        // New thread hasn't run yet
             blocked_in_syscall: false, // New thread is not blocked in syscall
             saved_by_inline_schedule: false,
+            inline_schedule_spsr: 0,
             inline_schedule_caller_lr: 0,
             inline_schedule_saved_sp: 0,
             saved_userspace_context: None,
@@ -975,6 +988,7 @@ impl Thread {
             has_started: false,
             blocked_in_syscall: false,
             saved_by_inline_schedule: false,
+            inline_schedule_spsr: 0,
             inline_schedule_caller_lr: 0,
             inline_schedule_saved_sp: 0,
             saved_userspace_context: None,

@@ -28,6 +28,7 @@ pub mod syscall_entry;
 pub mod timer;
 pub mod timer_interrupt;
 pub mod trace;
+pub mod ttbr0;
 
 // Re-export commonly used items
 // These re-exports are part of the complete HAL API
@@ -53,6 +54,9 @@ pub use privilege::Aarch64PrivilegeLevel;
 pub use syscall_entry::{is_el0_confirmed, syscall_return_to_userspace_aarch64};
 #[allow(unused_imports)]
 pub use timer::Aarch64Timer;
+pub use ttbr0::{
+    is_ttbr0_root_live, kernel_ttbr0, quiesce_ttbr0_for_exit, switch_ttbr0_to_kernel,
+};
 
 // Re-export interrupt control functions for convenient access
 // These provide the ARM64 equivalent of x86_64::instructions::interrupts::*
