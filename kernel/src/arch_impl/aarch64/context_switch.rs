@@ -1175,24 +1175,37 @@ pub fn dump_all_idle_redirect_histories() {
 //
 // Every scheduler/idle SP pivot checks whether the current SP is already in
 // the destination stack's live range. The clean path is two comparisons. A
-// violation is record-only: capture it in a bounded per-CPU ring and emit one
-// raw-UART line per CPU, without changing control flow.
+// violation is record-only: capture it in a bounded per-CPU ring without
+// changing control flow. Human-readable output is deferred to the fatal
+// postmortem path so this masked pivot corridor never performs UART MMIO.
 
 const STACK_PIVOT_HISTORY_SIZE: usize = 16;
 const STACK_PIVOT_HISTORY_FIELDS: usize = 3;
-static STACK_PIVOT_HISTORY: [[AtomicU64; STACK_PIVOT_HISTORY_SIZE * STACK_PIVOT_HISTORY_FIELDS];
-    crate::arch_impl::aarch64::constants::MAX_CPUS] = {
+type StackPivotHistory = [[AtomicU64;
+    STACK_PIVOT_HISTORY_SIZE * STACK_PIVOT_HISTORY_FIELDS];
+    crate::arch_impl::aarch64::constants::MAX_CPUS];
+static STACK_PIVOT_HISTORY: CacheLineAligned<StackPivotHistory> = CacheLineAligned({
     const INIT_FIELD: AtomicU64 = AtomicU64::new(0);
     const INIT_CPU: [AtomicU64; STACK_PIVOT_HISTORY_SIZE * STACK_PIVOT_HISTORY_FIELDS] =
         [INIT_FIELD; STACK_PIVOT_HISTORY_SIZE * STACK_PIVOT_HISTORY_FIELDS];
     [INIT_CPU; crate::arch_impl::aarch64::constants::MAX_CPUS]
-};
-static STACK_PIVOT_HISTORY_IDX: [AtomicU64;
-    crate::arch_impl::aarch64::constants::MAX_CPUS] =
-    [const { AtomicU64::new(0) }; crate::arch_impl::aarch64::constants::MAX_CPUS];
-static STACK_PIVOT_ALIAS_REPORTED: [AtomicBool;
-    crate::arch_impl::aarch64::constants::MAX_CPUS] =
-    [const { AtomicBool::new(false) }; crate::arch_impl::aarch64::constants::MAX_CPUS];
+});
+static STACK_PIVOT_HISTORY_IDX: CacheLineAligned<
+    [AtomicU64; crate::arch_impl::aarch64::constants::MAX_CPUS],
+> = CacheLineAligned([
+    const { AtomicU64::new(0) };
+    crate::arch_impl::aarch64::constants::MAX_CPUS
+]);
+
+#[cold]
+#[inline(never)]
+fn record_stack_pivot_alias(cpu: usize, dest_top: u64, cur_sp: u64, site: u8) {
+    let index = STACK_PIVOT_HISTORY_IDX[cpu].fetch_add(1, Ordering::Relaxed) as usize;
+    let base = (index % STACK_PIVOT_HISTORY_SIZE) * STACK_PIVOT_HISTORY_FIELDS;
+    STACK_PIVOT_HISTORY[cpu][base].store(site as u64, Ordering::Relaxed);
+    STACK_PIVOT_HISTORY[cpu][base + 1].store(dest_top, Ordering::Relaxed);
+    STACK_PIVOT_HISTORY[cpu][base + 2].store(cur_sp, Ordering::Relaxed);
+}
 
 #[inline(always)]
 fn assert_pivot_free(cpu: usize, dest_top: u64, cur_sp: u64, site: u8) {
@@ -1205,23 +1218,7 @@ fn assert_pivot_free(cpu: usize, dest_top: u64, cur_sp: u64, site: u8) {
         return;
     }
 
-    let index = STACK_PIVOT_HISTORY_IDX[cpu].fetch_add(1, Ordering::Relaxed) as usize;
-    let base = (index % STACK_PIVOT_HISTORY_SIZE) * STACK_PIVOT_HISTORY_FIELDS;
-    STACK_PIVOT_HISTORY[cpu][base].store(site as u64, Ordering::Relaxed);
-    STACK_PIVOT_HISTORY[cpu][base + 1].store(dest_top, Ordering::Relaxed);
-    STACK_PIVOT_HISTORY[cpu][base + 2].store(cur_sp, Ordering::Relaxed);
-
-    if !STACK_PIVOT_ALIAS_REPORTED[cpu].swap(true, Ordering::AcqRel) {
-        raw_uart_str("[STACK_PIVOT_ALIAS] cpu=");
-        raw_uart_dec(cpu as u64);
-        raw_uart_str(" site=");
-        raw_uart_dec(site as u64);
-        raw_uart_str(" dest_top=");
-        raw_uart_hex(dest_top);
-        raw_uart_str(" cur_sp=");
-        raw_uart_hex(cur_sp);
-        raw_uart_str("\n");
-    }
+    record_stack_pivot_alias(cpu, dest_top, cur_sp, site);
 }
 
 pub fn dump_stack_pivot_alias_history() {
@@ -2863,23 +2860,68 @@ fn setup_idle_return_locked(
 }
 
 #[inline(always)]
-fn reset_idle_continuation_locked(sched: &mut Scheduler, new_id: u64, idle_sp: u64) {
-    // The null-trampoline fallback may observe stale handoff IDs after it
-    // discovers there is no scheduler pointer to consume.  Only the thread
-    // actually being restarted as idle may have its continuation replaced.
-    if !sched.is_idle_thread_inner(new_id) {
+fn reset_idle_continuation_locked(
+    sched: &mut Scheduler,
+    cpu_id: usize,
+    target_id: u64,
+    idle_sp: u64,
+) {
+    let Some(cpu_state) = sched.cpu_state.get(cpu_id) else {
+        debug_assert!(false, "idle continuation reset for invalid CPU {cpu_id}");
+        return;
+    };
+    let owned_idle_id = cpu_state.idle_thread;
+    let current_id = cpu_state.current_thread;
+
+    // A global "is any idle thread" predicate is insufficient: a stale
+    // handoff ID can name another CPU's idle thread, and CPU 0's idle TCB also
+    // represents the bootstrap thread. Require exact per-CPU ownership and a
+    // scheduler state that has already committed this idle thread as current.
+    debug_assert_eq!(
+        target_id, owned_idle_id,
+        "idle continuation reset target is not CPU-owned idle"
+    );
+    debug_assert_eq!(
+        current_id,
+        Some(target_id),
+        "idle continuation reset target is not current"
+    );
+    if target_id != owned_idle_id || current_id != Some(target_id) {
         return;
     }
 
-    if let Some(thread) = sched.get_thread_mut(new_id) {
-        let idle_addr = idle_loop_arm64 as *const () as u64;
-        thread.saved_by_inline_schedule = false;
-        thread.inline_schedule_saved_sp = 0;
-        thread.inline_schedule_caller_lr = 0;
-        thread.context.sp = idle_sp;
-        thread.context.elr_el1 = idle_addr;
-        thread.context.x30 = idle_addr;
+    // handle_irq_event() must perform ICC_DIR_EL1 before irq_exit(), and the
+    // HARDIRQ bit blocks scheduler entry until then. Keep this helper outside
+    // every IRQ dispatch so it cannot strand a split-EOI deactivation.
+    debug_assert!(
+        !crate::per_cpu_aarch64::in_interrupt(),
+        "idle continuation reset while GIC deactivation may be pending"
+    );
+    if crate::per_cpu_aarch64::in_interrupt() {
+        return;
     }
+
+    // CPU 0 has no scheduler-owned, disposable idle continuation: its idle
+    // TCB is the bootstrap thread that ran kernel_main. Fresh-idle dispatch is
+    // still guaranteed by the explicit branch SP/PC at both call sites, but
+    // this persistent CpuContext must never be treated like a secondary CPU's
+    // purpose-built idle context.
+    if cpu_id == 0 {
+        return;
+    }
+
+    let Some(thread) = sched.get_thread_mut(target_id) else {
+        debug_assert!(false, "CPU-owned idle thread is absent from scheduler");
+        return;
+    };
+
+    let idle_addr = idle_loop_arm64 as *const () as u64;
+    thread.saved_by_inline_schedule = false;
+    thread.inline_schedule_saved_sp = 0;
+    thread.inline_schedule_caller_lr = 0;
+    thread.context.sp = idle_sp;
+    thread.context.elr_el1 = idle_addr;
+    thread.context.x30 = idle_addr;
 }
 
 /// Dispatch an idle thread — called inside scheduler lock hold.
@@ -3906,8 +3948,8 @@ extern "C" fn inline_schedule_trampoline() -> ! {
             // Persist the exact normalized stack value used by the live pivot.
             // Use the current idle ID from this lock hold, never either stale
             // handoff ID.
-            reset_idle_continuation_locked(sched, idle_id, idle_sp);
             sched.fix_exception_cleanup_cpu_state();
+            reset_idle_continuation_locked(sched, cpu_id, idle_id, idle_sp);
             idle_sp
         })
         // with_scheduler returns None only when the scheduler object itself is
@@ -4128,7 +4170,7 @@ extern "C" fn inline_schedule_trampoline() -> ! {
 
     let fresh_idle_sp = if is_idle {
         let idle_sp = idle_dispatch_stack(cpu_id, Aarch64PerCpu::kernel_stack_top());
-        reset_idle_continuation_locked(sched, new_id, idle_sp);
+        reset_idle_continuation_locked(sched, cpu_id, new_id, idle_sp);
         idle_sp
     } else {
         0
