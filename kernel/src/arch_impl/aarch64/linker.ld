@@ -67,6 +67,9 @@ SECTIONS
     . = ALIGN(4K);
     .text : AT(ADDR(.text) - VMLINUX_OFFSET) {
         *(.text .text.*)
+        *(.init .init.*)
+        *(.fini .fini.*)
+        *(.plt .plt.* .iplt)
     }
 
     /* Separate executable text from non-executable read-only data at the
@@ -79,6 +82,9 @@ SECTIONS
     __kernel_rodata_start = .;
     .rodata : AT(ADDR(.rodata) - VMLINUX_OFFSET) {
         *(.rodata .rodata.*)
+        *(.srodata .srodata.*)
+        *(.gcc_except_table .gcc_except_table.*)
+        *(.ARM.extab* .ARM.exidx*)
     }
 
     . = ALIGN(L2_BLOCK_SIZE);
@@ -89,6 +95,12 @@ SECTIONS
     __kernel_writable_start = .;
     .data : AT(ADDR(.data) - VMLINUX_OFFSET) {
         *(.data .data.*)
+        *(.sdata .sdata.*)
+        *(.got .got.* .igot .igot.*)
+        *(.preinit_array .preinit_array.*)
+        *(.init_array .init_array.*)
+        *(.fini_array .fini_array.*)
+        *(.tdata .tdata.*)
     }
 
     /* BSS - zero initialized */
@@ -96,6 +108,8 @@ SECTIONS
     __bss_start = .;
     .bss (NOLOAD) : AT(ADDR(.bss) - VMLINUX_OFFSET) {
         *(.bss .bss.*)
+        *(.sbss .sbss.*)
+        *(.tbss .tbss.*)
         *(COMMON)
     }
     __bss_end = .;
@@ -140,6 +154,13 @@ SECTIONS
         *(.note*)
         *(.eh_frame*)
     }
+
+    /* LLD synthesizes these non-allocated metadata tables. Name them
+     * explicitly so --orphan-handling=error remains strict for input
+     * sections without rejecting the linker's own symbol/string tables. */
+    .symtab 0 : { *(.symtab) }
+    .strtab 0 : { *(.strtab) }
+    .shstrtab 0 : { *(.shstrtab) }
 
     _end = .;
 }

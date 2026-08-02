@@ -61,7 +61,7 @@ pub fn jump_to_kernel(
 ///   x2 = kernel entry point physical address
 ///   x3 = HardwareConfig pointer (physical, identity-mapped)
 #[inline(never)]
-unsafe fn switch_and_jump(ttbr0: u64, ttbr1: u64, entry: u64, hw_config_ptr: u64) -> ! {
+pub(crate) unsafe fn switch_and_jump(ttbr0: u64, ttbr1: u64, entry: u64, hw_config_ptr: u64) -> ! {
     // Get the address of our exception vector table (defined in global_asm! below).
     extern "C" {
         static loader_exception_vectors: u8;

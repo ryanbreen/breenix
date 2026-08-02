@@ -2802,7 +2802,9 @@ fn setup_idle_return_locked(
 ) -> u64 {
     let current_before = sched.cpu_state[cpu_id].current_thread.unwrap_or(0xDEAD);
     let idle_id = sched.cpu_state[cpu_id].idle_thread;
-    crate::task::scheduler::record_cpu_state_change(cpu_id, 19, current_before, idle_id);
+    if current_before != idle_id {
+        crate::task::scheduler::record_cpu_state_change(cpu_id, 19, current_before, idle_id);
+    }
     sched.cpu_state[cpu_id].current_thread = Some(idle_id);
 
     // Set frame ELR and SPSR to safe values FIRST
