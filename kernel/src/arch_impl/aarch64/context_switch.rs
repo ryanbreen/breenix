@@ -1502,6 +1502,33 @@ static ERET_ANOMALY_SPSR: [AtomicU64; crate::arch_impl::aarch64::constants::MAX_
 static LAST_DISPATCHED_TID: [AtomicU64; crate::arch_impl::aarch64::constants::MAX_CPUS] =
     [const { AtomicU64::new(0) }; crate::arch_impl::aarch64::constants::MAX_CPUS];
 
+const LAST_DISPATCHED_SLOT_BITS: u32 = 9;
+const LAST_DISPATCHED_SLOT_MASK: u64 = (1 << LAST_DISPATCHED_SLOT_BITS) - 1;
+const _: () = assert!(
+    crate::memory::kernel_stack::ARM64_MAX_KERNEL_STACKS
+        <= LAST_DISPATCHED_SLOT_MASK as usize
+);
+
+#[inline(always)]
+fn reusable_kstack_slot_for_address(address: u64) -> Option<usize> {
+    use crate::memory::kernel_stack::{
+        ARM64_KERNEL_STACK_BASE, ARM64_KERNEL_STACK_END, ARM64_STACK_SLOT_SIZE,
+    };
+
+    if address < ARM64_KERNEL_STACK_BASE || address >= ARM64_KERNEL_STACK_END {
+        return None;
+    }
+    Some(((address - ARM64_KERNEL_STACK_BASE) / ARM64_STACK_SLOT_SIZE) as usize)
+}
+
+#[inline(always)]
+fn decode_last_dispatched(encoded: u64) -> (u64, Option<usize>) {
+    let tid = encoded >> LAST_DISPATCHED_SLOT_BITS;
+    let slot_code = encoded & LAST_DISPATCHED_SLOT_MASK;
+    let slot = (slot_code != 0).then(|| (slot_code - 1) as usize);
+    (tid, slot)
+}
+
 /// Stamp the OWNER-TID CANARY for this CPU. Called from `dispatch_thread_locked`
 /// at its two frame-finalize points. Lock-free; safe to call from inside the
 /// scheduler lock hold.
@@ -1510,7 +1537,55 @@ fn stamp_last_dispatched_tid(cpu_id: usize, tid: u64) {
     if cpu_id >= crate::arch_impl::aarch64::constants::MAX_CPUS {
         return;
     }
-    LAST_DISPATCHED_TID[cpu_id].store(tid, Ordering::Release);
+    debug_assert!(tid <= (u64::MAX >> LAST_DISPATCHED_SLOT_BITS));
+    let slot_code = reusable_kstack_slot_for_address(
+        Aarch64PerCpu::kernel_stack_top().saturating_sub(1),
+    )
+    .map(|slot| slot as u64 + 1)
+    .unwrap_or(0);
+    let encoded = (tid << LAST_DISPATCHED_SLOT_BITS) | slot_code;
+    LAST_DISPATCHED_TID[cpu_id].store(encoded, Ordering::Release);
+}
+
+/// Return the reusable kernel-stack slot containing `address` and the tid most
+/// recently finalized for dispatch on that slot. A zero tid means the slot has
+/// not been stamped yet.
+pub fn last_dispatched_tid_for_stack_address(address: u64) -> Option<(usize, u64)> {
+    let slot = reusable_kstack_slot_for_address(address)?;
+    let tid = LAST_DISPATCHED_TID
+        .iter()
+        .find_map(|record| {
+            let (tid, recorded_slot) = decode_last_dispatched(record.load(Ordering::Acquire));
+            (recorded_slot == Some(slot)).then_some(tid)
+        })
+        .unwrap_or(0);
+    Some((slot, tid))
+}
+
+/// Return the tid most recently finalized for dispatch on `cpu_id`.
+pub fn last_dispatched_tid(cpu_id: usize) -> Option<u64> {
+    if cpu_id >= crate::arch_impl::aarch64::constants::MAX_CPUS {
+        return None;
+    }
+    let (tid, _) = decode_last_dispatched(LAST_DISPATCHED_TID[cpu_id].load(Ordering::Acquire));
+    (tid != 0).then_some(tid)
+}
+
+/// Dump the owner-TID canary and its reusable stack slot for every CPU.
+pub fn dump_all_last_dispatched_tids() {
+    for cpu_id in 0..crate::arch_impl::aarch64::constants::MAX_CPUS {
+        let (tid, slot) =
+            decode_last_dispatched(LAST_DISPATCHED_TID[cpu_id].load(Ordering::Acquire));
+        raw_uart_str("[LAST_DISPATCHED_TID] cpu=");
+        raw_uart_dec(cpu_id as u64);
+        raw_uart_str(" tid=");
+        raw_uart_dec(tid);
+        if let Some(slot) = slot {
+            raw_uart_str(" kstack_slot=");
+            raw_uart_dec(slot as u64);
+        }
+        raw_uart_str("\n");
+    }
 }
 
 /// Record an ERET-consumer-site frame anomaly into this CPU's last-wins

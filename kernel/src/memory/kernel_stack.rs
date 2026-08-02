@@ -236,9 +236,9 @@ mod aarch64 {
     /// - Kernel stacks: 0x5420_0000 to 0x561F_FFFF (32 MB)
     const ARM64_KERNEL_STACK_PHYS_BASE: u64 = 0x5420_0000;
     const ARM64_KERNEL_STACK_PHYS_END: u64 = 0x5620_0000;
-    const ARM64_KERNEL_STACK_BASE: u64 =
+    pub(crate) const ARM64_KERNEL_STACK_BASE: u64 =
         crate::arch_impl::aarch64::constants::HHDM_BASE + ARM64_KERNEL_STACK_PHYS_BASE;
-    const ARM64_KERNEL_STACK_END: u64 =
+    pub(crate) const ARM64_KERNEL_STACK_END: u64 =
         crate::arch_impl::aarch64::constants::HHDM_BASE + ARM64_KERNEL_STACK_PHYS_END;
 
     /// Stack size for ARM64 (64KB per stack)
@@ -248,10 +248,10 @@ mod aarch64 {
     const ARM64_GUARD_PAGE_SIZE: u64 = 4 * 1024;
 
     /// Total slot size (stack + guard)
-    const ARM64_STACK_SLOT_SIZE: u64 = ARM64_KERNEL_STACK_SIZE + ARM64_GUARD_PAGE_SIZE;
+    pub(crate) const ARM64_STACK_SLOT_SIZE: u64 = ARM64_KERNEL_STACK_SIZE + ARM64_GUARD_PAGE_SIZE;
 
     /// Bitmap to track allocated ARM64 stacks.
-    const ARM64_MAX_KERNEL_STACKS: usize =
+    pub(crate) const ARM64_MAX_KERNEL_STACKS: usize =
         ((ARM64_KERNEL_STACK_END - ARM64_KERNEL_STACK_BASE) / ARM64_STACK_SLOT_SIZE) as usize;
     const ARM64_BITMAP_SIZE: usize = (ARM64_MAX_KERNEL_STACKS + 63) / 64;
     static ARM64_STACK_BITMAP: Mutex<[u64; ARM64_BITMAP_SIZE]> = Mutex::new([0; ARM64_BITMAP_SIZE]);
@@ -404,6 +404,12 @@ mod aarch64 {
 pub use aarch64::{
     allocate_kernel_stack as allocate_kernel_stack_aarch64, init as init_aarch64,
     is_in_reused_kstack_region as is_in_reused_kstack_region_aarch64, Aarch64KernelStack,
+};
+
+#[cfg(target_arch = "aarch64")]
+pub(crate) use aarch64::{
+    ARM64_KERNEL_STACK_BASE, ARM64_KERNEL_STACK_END, ARM64_MAX_KERNEL_STACKS,
+    ARM64_STACK_SLOT_SIZE,
 };
 
 /// ARM64: Use the aarch64-specific allocator
