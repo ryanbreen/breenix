@@ -3902,7 +3902,7 @@ extern "C" fn inline_schedule_trampoline() -> ! {
                 .get_thread(idle_id)
                 .and_then(|thread| thread.kernel_stack_top.map(|stack| stack.as_u64()))
                 .unwrap_or_else(|| super::constants::percpu_kernel_stack_top(cpu_id));
-            reset_idle_continuation_locked(sched, new_id, idle_sp);
+            reset_idle_continuation_locked(sched, idle_id, idle_sp);
             sched.fix_exception_cleanup_cpu_state();
             idle_sp
         })
