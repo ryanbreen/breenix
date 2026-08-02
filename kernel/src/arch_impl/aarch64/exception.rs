@@ -289,9 +289,7 @@ fn set_idle_stack_for_eret() {
     unsafe {
         Aarch64PerCpu::set_user_rsp_scratch(idle_stack);
         Aarch64PerCpu::set_kernel_stack_top(idle_stack);
-        let kernel_ttbr0 = super::kernel_ttbr0();
-        Aarch64PerCpu::set_next_cr3(kernel_ttbr0);
-        Aarch64PerCpu::set_saved_process_cr3(0);
+        super::leave_process_ttbr0();
         Aarch64PerCpu::set_current_thread_ptr(core::ptr::null_mut());
         Aarch64PerCpu::clear_preempt_active();
     }
@@ -323,7 +321,7 @@ fn defer_current_user_thread_sigsegv_exit(label: &str, frame_addr: u64) {
     // Publish the deferred exit only after this CPU has left the retiring root
     // and cleared both assembly return shadows. A peer CPU may drain the queue
     // immediately after publication.
-    super::quiesce_ttbr0_for_exit();
+    super::leave_process_ttbr0();
 
     let stack_owner =
         crate::arch_impl::aarch64::context_switch::last_dispatched_tid_for_stack_address(
@@ -752,7 +750,7 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
 
                 // The process exit below can retire this root. Leave it before
                 // acquiring the process manager and freeing any resources.
-                super::switch_ttbr0_to_kernel();
+                super::leave_process_ttbr0();
 
                 // Find and terminate the process
                 let mut terminated = false;
@@ -1113,7 +1111,7 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
 
                 // Install the kernel root before pm.exit_process can retire
                 // the faulting userspace root.
-                super::switch_ttbr0_to_kernel();
+                super::leave_process_ttbr0();
 
                 let mut terminated = false;
                 let mut already_terminated = false;
@@ -1204,7 +1202,7 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                     core::arch::asm!("mrs {}, ttbr0_el1", out(reg) ttbr0, options(nomem, nostack));
                 }
                 let page_table_phys = ttbr0 & !0xFFFF_0000_0000_0FFF;
-                super::switch_ttbr0_to_kernel();
+                super::leave_process_ttbr0();
                 crate::process::with_process_manager(|pm| {
                     if let Some((pid, process)) = pm.find_process_by_cr3_mut(page_table_phys) {
                         if !process.is_terminated() {
@@ -1301,7 +1299,7 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                     core::arch::asm!("mrs {}, ttbr0_el1", out(reg) ttbr0, options(nomem, nostack));
                 }
                 let page_table_phys = ttbr0 & !0xFFFF_0000_0000_0FFF;
-                super::switch_ttbr0_to_kernel();
+                super::leave_process_ttbr0();
                 crate::process::with_process_manager(|pm| {
                     if let Some((pid, process)) = pm.find_process_by_cr3_mut(page_table_phys) {
                         if !process.is_terminated() {

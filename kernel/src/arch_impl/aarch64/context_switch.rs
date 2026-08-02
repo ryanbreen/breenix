@@ -2961,12 +2961,7 @@ fn setup_idle_return_locked(
     unsafe {
         Aarch64PerCpu::set_user_rsp_scratch(idle_stack);
         Aarch64PerCpu::set_kernel_stack_top(idle_stack);
-        let mut kernel_ttbr0 = Aarch64PerCpu::kernel_cr3();
-        if kernel_ttbr0 == 0 {
-            kernel_ttbr0 = 0x4200_0000;
-        }
-        Aarch64PerCpu::set_next_cr3(kernel_ttbr0);
-        Aarch64PerCpu::set_saved_process_cr3(0);
+        super::leave_process_ttbr0();
         Aarch64PerCpu::set_current_thread_ptr(core::ptr::null_mut());
         Aarch64PerCpu::clear_preempt_active();
     }
@@ -4742,33 +4737,7 @@ fn switch_ttbr0_if_needed(_thread_id: u64) {
         return;
     }
 
-    let current_ttbr0: u64;
-    unsafe {
-        core::arch::asm!("mrs {}, ttbr0_el1", out(reg) current_ttbr0, options(nomem, nostack));
-    }
-
-    if current_ttbr0 != next_ttbr0 {
-        unsafe {
-            core::arch::asm!(
-                "dsb ishst",
-                "msr ttbr0_el1, {}",
-                "isb",
-                "tlbi vmalle1is",
-                "dsb ish",
-                "isb",
-                in(reg) next_ttbr0,
-                options(nomem, nostack)
-            );
-        }
-
-        unsafe {
-            Aarch64PerCpu::set_saved_process_cr3(next_ttbr0);
-        }
-    }
-
-    unsafe {
-        Aarch64PerCpu::set_next_cr3(0);
-    }
+    super::install_process_ttbr0(next_ttbr0);
 }
 
 /// Result of attempting to set TTBR0 for a thread.
@@ -4839,9 +4808,7 @@ fn set_next_ttbr0_for_thread(thread_id: u64) -> TtbrResult {
         // (ASID=0) don't match user VA accesses. Combined with nG bits on
         // process page table entries, this ensures ASID-based separation.
         let tagged_ttbr0 = ttbr0 | (1u64 << 48); // ASID=1 in bits [55:48]
-        unsafe {
-            Aarch64PerCpu::set_next_cr3(tagged_ttbr0);
-        }
+        super::arm_process_ttbr0(tagged_ttbr0);
         TtbrResult::Ok
     } else {
         // Process exists but has no page table — shouldn't happen
@@ -5065,18 +5032,7 @@ fn check_and_deliver_signals_for_current_thread_arm64(frame: &mut Aarch64Excepti
                 // Switch to process's page table for signal delivery
                 if let Some(ref page_table) = process.page_table {
                     let raw_ttbr0 = page_table.level_4_frame().start_address().as_u64();
-                    unsafe {
-                        core::arch::asm!(
-                            "dsb ishst",
-                            "msr ttbr0_el1, {}",
-                            "isb",
-                            "tlbi vmalle1is",
-                            "dsb ish",
-                            "isb",
-                            in(reg) raw_ttbr0,
-                            options(nomem, nostack)
-                        );
-                    }
+                    super::install_process_ttbr0(raw_ttbr0);
                 }
 
                 // Create SavedRegisters from exception frame for signal delivery

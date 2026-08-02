@@ -236,18 +236,7 @@ fn check_and_deliver_signals_aarch64(frame: &mut Aarch64ExceptionFrame) {
             // Switch to process's page table for signal delivery
             if let Some(ref page_table) = process.page_table {
                 let ttbr0 = page_table.level_4_frame().start_address().as_u64();
-                unsafe {
-                    core::arch::asm!(
-                        "dsb ishst",
-                        "msr ttbr0_el1, {}",
-                        "isb",
-                        "tlbi vmalle1is",
-                        "dsb ish",
-                        "isb",
-                        in(reg) ttbr0,
-                        options(nostack)
-                    );
-                }
+                super::install_process_ttbr0(ttbr0);
             }
 
             // Read current SP_EL0
@@ -368,11 +357,7 @@ fn sys_exit_aarch64(exit_code: i32) -> u64 {
         // Leave the retiring userspace address space before process teardown
         // drops its page-table root. Clear both assembly return shadows so no
         // later return path can reinstall that retired root.
-        super::switch_ttbr0_to_kernel();
-        unsafe {
-            Aarch64PerCpu::set_saved_process_cr3(0);
-            Aarch64PerCpu::set_next_cr3(0);
-        }
+        super::leave_process_ttbr0();
 
         crate::task::process_task::ProcessScheduler::handle_thread_exit(thread_id, exit_code);
 
@@ -1187,7 +1172,7 @@ fn sys_exec_aarch64(
             // exec cannot retire the root currently active on this CPU. On an
             // error, the unchanged saved_process_cr3 restores the old root in
             // the normal syscall epilogue.
-            super::switch_ttbr0_to_kernel();
+            super::leave_process_ttbr0();
 
             match manager.exec_process_with_argv(
                 current_pid,
@@ -1255,18 +1240,7 @@ fn sys_exec_aarch64(
                         if let Some(ref page_table) = process.page_table {
                             let new_ttbr0 = page_table.level_4_frame().start_address().as_u64();
                             log::info!("sys_exec_aarch64: Setting TTBR0_EL1 to {:#x}", new_ttbr0);
-                            unsafe {
-                                core::arch::asm!(
-                                    "dsb ishst",
-                                    "msr ttbr0_el1, {}",
-                                    "isb",
-                                    "tlbi vmalle1is",
-                                    "dsb ish",
-                                    "isb",
-                                    in(reg) new_ttbr0,
-                                    options(nostack)
-                                );
-                            }
+                            super::install_process_ttbr0(new_ttbr0);
                             // Trace: TTBR0 page table switched
                             super::trace::trace_exec(b'P');
 
@@ -1275,9 +1249,6 @@ fn sys_exec_aarch64(
                             // Without this, the .Lrestore_saved_ttbr path in syscall_entry.S
                             // switches TTBR0 back to the pre-exec page table, which has
                             // been deallocated by exec_process_with_argv.
-                            unsafe {
-                                Aarch64PerCpu::set_saved_process_cr3(new_ttbr0);
-                            }
                         }
                     }
 
