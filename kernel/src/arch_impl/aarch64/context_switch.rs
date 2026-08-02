@@ -3437,8 +3437,6 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
     frame: &mut Aarch64ExceptionFrame,
     from_el0: bool,
 ) {
-    crate::task::process_task::drain_deferred_fault_sigsegv_exits();
-
     // ── Lock-free pre-checks ──────────────────────────────────────
     let preempt_count = Aarch64PerCpu::preempt_count();
     let cpu_id_early = Aarch64PerCpu::cpu_id() as usize;
@@ -4458,8 +4456,6 @@ fn cpu0_breadcrumb(cpu_id: usize, id: u64) {
 }
 
 pub fn schedule_from_kernel() {
-    crate::task::process_task::drain_deferred_fault_sigsegv_exits();
-
     let saved_daif = read_daif();
     let cpu_id = Aarch64PerCpu::cpu_id() as usize;
     cpu0_breadcrumb(cpu_id, 1); // entry

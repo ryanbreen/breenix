@@ -11,6 +11,8 @@ use core::sync::atomic::{AtomicU64, Ordering};
 
 const DEFERRED_FAULT_EXIT_SLOTS: usize = 16;
 const DEFERRED_FAULT_EXIT_EMPTY: u64 = 0;
+#[cfg(target_arch = "aarch64")]
+const PROCESS_RECLAIM_INTERVAL_NS: u64 = 10_000_000;
 
 struct DeferredFaultExitBuffer {
     slots: [AtomicU64; DEFERRED_FAULT_EXIT_SLOTS],
@@ -385,6 +387,31 @@ pub fn reclaim_deferred_process_resources() {
             None => break,
         }
     }
+}
+
+/// Start the AArch64 process-retirement worker.
+///
+/// Deferred fault exits and address-space teardown run only from this normal,
+/// preemptible kernel-thread context. In particular, neither operation is tied
+/// to the assembly exception-return tails or to the idle loop's scheduler call.
+#[cfg(target_arch = "aarch64")]
+pub fn init_process_reclaim_worker() -> Result<(), crate::task::kthread::KthreadError> {
+    crate::task::kthread::kthread_run(
+        || loop {
+            drain_deferred_fault_sigsegv_exits();
+            reclaim_deferred_process_resources();
+
+            let (secs, nanos) = crate::time::get_monotonic_time_ns();
+            let now_ns = secs as u64 * 1_000_000_000 + nanos as u64;
+            let wake_time_ns = now_ns.saturating_add(PROCESS_RECLAIM_INTERVAL_NS);
+            scheduler::with_scheduler(|sched| {
+                sched.block_current_for_timer(wake_time_ns);
+            });
+            crate::arch_impl::aarch64::context_switch::schedule_from_kernel();
+        },
+        "kprocess-reclaim",
+    )
+    .map(|_| ())
 }
 
 /// Extension trait for Thread to support process operations

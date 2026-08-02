@@ -1864,9 +1864,6 @@ impl ProcessPageTable {
         use alloc::vec::Vec;
 
         let phys_offset = crate::memory::physical_memory_offset();
-        let mut user_frames_freed = 0u64;
-        let mut user_frames_still_shared = 0u64;
-        let mut table_frames_freed = 0u64;
 
         // Collect page table structure frames to free after walking
         let mut l1_frames: Vec<PhysFrame> = Vec::new();
@@ -1904,9 +1901,6 @@ impl ProcessPageTable {
                         let frame = PhysFrame::containing_address(l1_entry.addr());
                         if frame_decref(frame) {
                             deallocate_frame(frame);
-                            user_frames_freed += 1;
-                        } else {
-                            user_frames_still_shared += 1;
                         }
                         continue;
                     }
@@ -1932,9 +1926,6 @@ impl ProcessPageTable {
                             let frame = PhysFrame::containing_address(l2_entry.addr());
                             if frame_decref(frame) {
                                 deallocate_frame(frame);
-                                user_frames_freed += 1;
-                            } else {
-                                user_frames_still_shared += 1;
                             }
                             continue;
                         }
@@ -1959,9 +1950,6 @@ impl ProcessPageTable {
                             let frame = PhysFrame::containing_address(l3_entry.addr());
                             if frame_decref(frame) {
                                 deallocate_frame(frame);
-                                user_frames_freed += 1;
-                            } else {
-                                user_frames_still_shared += 1;
                             }
                         }
                     }
@@ -1971,28 +1959,17 @@ impl ProcessPageTable {
             // Free page table structure frames (L3 first, then L2, then L1)
             for frame in l3_frames {
                 deallocate_frame(frame);
-                table_frames_freed += 1;
             }
             for frame in l2_frames {
                 deallocate_frame(frame);
-                table_frames_freed += 1;
             }
             for frame in l1_frames {
                 deallocate_frame(frame);
-                table_frames_freed += 1;
             }
 
             // Free the L0 frame itself
             deallocate_frame(self.level_4_frame);
-            table_frames_freed += 1;
         }
-
-        log::info!(
-            "cleanup_for_exec [ARM64]: freed {} user frames, {} still shared, {} table frames",
-            user_frames_freed,
-            user_frames_still_shared,
-            table_frames_freed
-        );
     }
 }
 

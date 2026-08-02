@@ -806,6 +806,9 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
     #[cfg(feature = "btrt")]
     kernel::test_framework::btrt::pass(kernel::test_framework::catalog::WORKQUEUE_INIT);
 
+    kernel::task::process_task::init_process_reclaim_worker()
+        .expect("failed to start process reclaim worker");
+
     // Initialize softirq subsystem (depends on kthread infrastructure)
     kernel::task::softirqd::init_softirq();
     serial_println!("[boot] Softirq subsystem initialized");
