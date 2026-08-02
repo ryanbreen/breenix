@@ -35,6 +35,7 @@
 
 .equ BLOCK_FLAGS_DEVICE, (DESC_BLOCK | DESC_AF | DESC_SH_NONE | DESC_AP_KERNEL | DESC_ATTR_DEVICE | DESC_PXN | DESC_UXN)
 .equ BLOCK_FLAGS_NORMAL, (DESC_BLOCK | DESC_AF | DESC_SH_INNER | DESC_AP_KERNEL | DESC_ATTR_NORMAL)
+.equ BLOCK_FLAGS_NORMAL_NX, (BLOCK_FLAGS_NORMAL | DESC_PXN | DESC_UXN)
 .equ BLOCK_FLAGS_KERNEL_TEXT,   (DESC_BLOCK | DESC_AF | DESC_SH_INNER | DESC_AP_KERNEL_RO | DESC_ATTR_NORMAL | DESC_UXN)
 .equ BLOCK_FLAGS_KERNEL_RODATA, (DESC_BLOCK | DESC_AF | DESC_SH_INNER | DESC_AP_KERNEL_RO | DESC_ATTR_NORMAL | DESC_PXN | DESC_UXN)
 .equ BLOCK_FLAGS_KERNEL_DATA,   (DESC_BLOCK | DESC_AF | DESC_SH_INNER | DESC_AP_KERNEL | DESC_ATTR_NORMAL | DESC_PXN | DESC_UXN)
@@ -407,7 +408,7 @@ zero_table_loop:
 fill_l2_ram:
     mov x1, #0                // i = 0
     ldr x3, =0x40000000       // base physical address
-    ldr x4, =BLOCK_FLAGS_NORMAL
+    ldr x4, =BLOCK_FLAGS_NORMAL_NX
     ldr x5, =BLOCK_FLAGS_NC
     ldr x8, =BLOCK_FLAGS_KERNEL_TEXT
     ldr x9, =BLOCK_FLAGS_KERNEL_RODATA
@@ -421,8 +422,8 @@ fill_l2_loop:
     lsl x6, x1, #21           // offset = i * 2MB (0x200000)
     add x6, x6, x3            // phys = 0x40000000 + offset
 
-    // Defaults outside the kernel image retain the existing normal-memory
-    // attributes. Apply increasingly specific kernel ranges without adding
+    // Defaults outside the kernel image are writable normal memory with PXN+UXN.
+    // Apply increasingly specific kernel ranges without adding
     // conditional branches to this CONDBR19-sensitive assembly file.
     mov x7, x4
     cmp x6, x15
