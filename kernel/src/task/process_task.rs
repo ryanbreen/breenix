@@ -222,7 +222,11 @@ impl ProcessScheduler {
                 if let Some((pid, process)) = manager.find_process_by_thread_mut(thread_id) {
                     let parent_pid = process.parent;
                     let process_name = process.name.clone();
-                    let children = core::mem::take(&mut process.children);
+                    let children = if pid == ProcessId::new(1) {
+                        alloc::vec::Vec::new()
+                    } else {
+                        core::mem::take(&mut process.children)
+                    };
 
                     // Extract FDs without closing them under the PM lock.
                     let fd_entries = process.take_fd_entries();
@@ -259,7 +263,6 @@ impl ProcessScheduler {
 
                     // Reparent children to init (PID 1)
                     if !children.is_empty() {
-                        use crate::process::ProcessId;
                         let init_pid = ProcessId::new(1);
                         for &child_pid in &children {
                             if let Some(child) = manager.get_process_mut(child_pid) {
