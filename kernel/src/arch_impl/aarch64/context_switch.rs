@@ -1660,7 +1660,8 @@ pub fn dump_all_eret_frame_anomaly_snapshots() {
     for cpu_id in 0..crate::arch_impl::aarch64::constants::MAX_CPUS {
         if let Some((tid, frame_elr, ctx_elr, x26, spsr)) = eret_frame_anomaly_snapshot(cpu_id) {
             any_recorded = true;
-            let owner_tid = LAST_DISPATCHED_TID[cpu_id].load(Ordering::Acquire);
+            let (owner_tid, _) =
+                decode_last_dispatched(LAST_DISPATCHED_TID[cpu_id].load(Ordering::Acquire));
             raw_uart_str("[ERET_ANOMALY] cpu=");
             raw_uart_dec(cpu_id as u64);
             raw_uart_str(" tid=");
