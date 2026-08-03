@@ -155,6 +155,7 @@ metadata behavior without an x86-specific review. Needs one of:
 | `teardown-design-B.md` | Design exploration doc B (alternative considered, kept for record) |
 | `r16-findings.md` | Full findings detail for review round r16 (21 findings, 7 blocking) |
 | `r17-findings.md` | Full findings detail for review round r17 (21 closed, 2 new x86 divergences flagged) |
+| `r20-findings.md` | Full findings detail for the r20 final review (27 findings, 15 blocking) — see "R20 UPDATE" below |
 
 ## Why parked instead of continued
 
@@ -166,3 +167,178 @@ investing in the full validation matrix (12-boot + Parallels soak) and a
 merge. Parking here avoids validating a state that will need to change again
 once (a) and (b) are resolved, and keeps the branch + its record intact for
 whoever picks it up next.
+
+---
+
+## R20 UPDATE (2026-08-03)
+
+**Status change:** The two open items from the r18 park (items (a) and (b)
+above) are **RESOLVED**. A final review + gate-classification round (r20)
+then ran against the resolved branch and found a large new findings set.
+The branch is **PARKED again**, pending an **operator decision on path
+forward** — it is NOT ready to proceed to the validation matrix (12-boot +
+Parallels soak) or merge.
+
+### Open items resolved
+
+- **(a) `process_task.rs` reparent guard — KEPT AND RATIFIED.** Commit
+  `cb6e5678` ("fix(process): document and ratify the x86 init-reparent
+  guard (r18 item a)") documents why the `pid != init_pid` guard is correct
+  behavior and keeps it as shared (non-arch-gated) code.
+- **(b) `frame_metadata.rs` reclaimer plumbing — ARCH-GATED.** Commit
+  `496a49df` ("fix(memory): arch-gate frame_metadata's reclaimer plumbing
+  off the x86 path (r18 item b)") wraps the aarch64-only reclaimer logic in
+  `#[cfg(target_arch = "aarch64")]`; the r20 review independently verified
+  this by diffing `frame_metadata.rs` at base `31126c2a` function-by-function
+  and confirmed the five x86_64 bodies are byte-identical to main.
+- **x86-parity verify: PASSED.** The r20 workflow's dedicated x86-parity
+  verification pass reported `x86Clean: true`, `buildsClean: true`,
+  `frozenByteIdentical: true` — diffing `31126c2a..HEAD` (496a49df) across
+  all 37 changed files confirmed the aarch64-only files stayed aarch64-only
+  and frozen/gold-master regions are untouched.
+
+### Final review (r20): 27 findings, 15 blocking
+
+A full report-everything review (`opus-review-r20`) plus a separate gate
+pass (`gate-classify-r20b`) ran against the branch at `496a49df`. Full
+verbatim findings and gate classification: **`r20-findings.md`** (this
+directory) — this section is a pointer, not a substitute.
+
+**27 findings total, 15 classified BLOCKING.** The review states prior-round
+closures (r16/r17/r18) genuinely held and both builds remain zero-warning,
+but surfaces a large new set of core-machinery holes, including:
+
+- **EL0 kill-path silent early returns** (`exception.rs:306` —
+  `kill_current_user_process_and_redirect` has five silent early-return
+  paths; all four EL0 call sites `return` unconditionally afterward, so the
+  handler ERETs back to the faulting instruction forever under routine SMP
+  lock contention, or on a second fault on an already-exit-committed
+  process).
+- **CLONE_VM wrong-victim targeting** (`exception.rs:317` — the fault
+  victim is taken as the CR3-owning row's `main_thread`, not the thread
+  that actually faulted, so a clone thread's fault kills the parent and
+  leaves the real faulter runnable — livelock).
+- **ExitPending finalization deadlock** (`scheduler.rs:1031` —
+  `finalize_exit_pending` requires the victim's kernel-stack slot to be
+  non-live, but an ExitPending thread is removed from every ready queue and
+  never re-dispatched, so a thread quarantined mid-syscall can never make
+  its own stack quiesce — permanent Thread + kernel-stack leak).
+- **Intent-ring stranding** (`process_task.rs:339` — a full 16-slot
+  per-CPU deferred-fault-exit ring silently drops the exit intent on
+  overflow, only bumping a counter, stranding the process forever with no
+  retirement/reparent/parent-wake).
+- **FRAME_METADATA lock-nesting** (`exception.rs:1957` — the new
+  `FaultMetadataTransaction` holds FRAME_METADATA across `allocate_frame`,
+  a page copy, `unmap_page` and `map_page`, introducing a
+  PM→FRAME_METADATA→FRAME_ALLOCATOR nesting that did not exist before —
+  deadlock risk for any future reverse-order acquirer).
+- **Release-mode no-op capability assertions** (`reclaim.rs:55` —
+  `ReclaimContext::assert_preemptible` is composed entirely of
+  `debug_assert!`s, so the capability token proves nothing about
+  interrupts/preempt-count/PM-lock ownership in the shipping release
+  build).
+- **kreclaimd logging** (`reclaim.rs:296` — `log::warn!` runs inside
+  kreclaimd's grave-scanning loop, reintroducing a logger-lock dependency
+  into the single-threaded reclaim engine that the redesign was built to
+  keep off).
+- Plus: aarch64 exec-drain now enforced only by a release-stripped
+  `debug_assert!` (`manager.rs:3386`), stale `cpu_state.current_thread` on
+  the `switch_to_idle_best_effort` fallback (`exception.rs:346` — same bug
+  class as `0cfa03e0`/`d27c2362`), an undocumented third x86 `sys_waitpid`
+  behavior change (`handlers.rs:2760`), and the
+  `teardown_structure.rs:190` "no direct Terminated transitions" invariant
+  being a syntactic check that the branch's own code routes around via
+  `set_terminated()`.
+
+### Tier-1 `time.rs` finding — investigation result (CORRECTS the r18 record)
+
+r20 findings #4/#22 flagged that `kernel/src/syscall/time.rs` — a Tier-1
+prohibited file per top-level CLAUDE.md ("clock_gettime precision - called
+in tight loops") — is modified on this branch, contradicting this
+document's r18-era claim, above, that the two `syscall_entry.S` hunks were
+the **only** Tier-1-listed file touched. This was investigated directly
+this session rather than taken on trust:
+
+```
+$ git log --oneline --follow 31126c2a..HEAD -- kernel/src/syscall/time.rs
+76404d88 fix(aarch64): descope teardown hardening and close r17
+
+$ git diff 31126c2a..HEAD -- kernel/src/syscall/time.rs
+diff --git a/kernel/src/syscall/time.rs b/kernel/src/syscall/time.rs
+index 98dd1893..92efcdf6 100644
+--- a/kernel/src/syscall/time.rs
++++ b/kernel/src/syscall/time.rs
+@@ -139,6 +139,8 @@ fn ensure_current_address_space() {
+         if let Some((_pid, process)) = manager.find_process_by_thread(thread_id) {
+             if let Some(ref page_table) = process.page_table {
+                 let ttbr0_value = page_table.level_4_frame().start_address().as_u64();
++                // Known-unreviewed TTBR0 writer relative to the lease/shadow invariant; Tier-1 protected
++                // and out of scope here. Fixing it requires an explicit operator-approved follow-up.
+                 unsafe {
+                     core::arch::asm!(
+                         "dsb ishst",
+```
+
+**Finding: exactly ONE commit touches this file across the whole branch
+(`76404d88`), and the entire change is the two-line comment shown above —
+no other line in `time.rs` differs from `31126c2a`.** This is item 11 of
+`76404d88`'s own commit message: "enforce lease-aware wait/graphics writers
+and document the Tier-1 time.rs writer as an explicit operator-deferred
+partial closure."
+
+Conclusions:
+
+- **The branch did NOT modify the raw TTBR0-writing code.** The
+  `ensure_current_address_space` body — a bare `asm!` write to `TTBR0_EL1`
+  with no `saved_process_cr3`/`next_cr3` shadow publication — is main's own
+  pre-existing code, byte-for-byte unchanged except for the comment.
+  `r17-findings.md:81` independently confirms this exact gap (present in
+  `wait.rs`, `time.rs`, and `graphics.rs` alike) was already KNOWN and
+  flagged at r17, i.e. it predates this park cycle and predates r18.
+- **The branch fixed the sibling raw writers but explicitly deferred this
+  one.** Commit `76404d88` made `wait.rs` and `graphics.rs` lease-aware
+  (per its own item 11) but left `time.rs`'s writer as an "operator-deferred
+  partial closure," adding the two-line comment as the only trace of that
+  decision in the source. So the branch **left main's pre-existing
+  violation unfixed** rather than introducing a new one — it did not make
+  the TTBR0-lease bug in `time.rs` worse, but it also did not close it,
+  despite closing the identical bug pattern next door.
+- **This document's separate "only Tier-1 file touched" claim (above,
+  under "Branch state") is FALSE and is hereby corrected.**
+  `kernel/src/syscall/time.rs` IS Tier-1-listed in top-level CLAUDE.md and
+  WAS touched — by a 2-line comment, in commit `76404d88` — with no
+  standalone "Tier-1 edit, operator-approved" commit message of the kind
+  `be116df7` carries for the `syscall_entry.S` assembly hunks. The comment
+  is codegen-neutral (changes no emitted instructions), but the prior
+  claim that the assembly hunks were the sole Tier-1 touch was factually
+  wrong given the branch's own diff, and is corrected here rather than
+  repeated.
+- The gate (`gate-classify-r20b`) classifies this pair as linked and BOTH
+  BLOCKING: #4 because the underlying TTBR0 lease violation is live and
+  `tests/teardown_structure.rs:174` (`deferred_writer =
+  "kernel/src/syscall/time.rs"`) whitelists it by name rather than closing
+  it; #22 because this document's prior claim was contradicted by the
+  branch's own diff.
+
+**Bottom line: the branch did not introduce the TTBR0-lease bug in
+`time.rs` — that bug predates the branch (present on main at `31126c2a`
+and already flagged at r17). What the branch did is (1) fix the identical
+bug pattern in the two sibling files (`wait.rs`, `graphics.rs`), (2) leave
+`time.rs` unfixed by an explicit operator-deferred decision, (3) add a
+two-line comment recording that decision, and (4) whitelist the file by
+name in the structural invariant test so the 9/9 pass rate does not
+surface the gap. This document's earlier "only Tier-1 file touched" claim
+did not account for that comment-only touch and is corrected by this
+update.**
+
+### Branch status
+
+`fix/teardown-grave` is **PARKED**, pending an **operator decision on path
+forward**. It is not ready for the 12-boot + Parallels validation matrix or
+a merge — 15 blocking findings from r20 (including the core-machinery
+holes in the EL0 kill path, CLONE_VM wrong-victim targeting, ExitPending
+finalization, the deferred-fault-exit ring, FRAME_METADATA lock nesting,
+release-mode no-op capability assertions, and kreclaimd logging) must be
+resolved, or the branch's scope must be re-decided, before further
+investment in validation. See `r20-findings.md` for the complete verbatim
+record.
