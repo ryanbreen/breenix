@@ -237,6 +237,21 @@ impl ProcessScheduler {
                     };
 
                     let init_pid = ProcessId::new(1);
+                    // Guard against init reparenting its own children to itself.
+                    // If `pid == init_pid` here, init itself is exiting (or being
+                    // torn down) with live children still attached; without this
+                    // check the loop below would set `child.parent = Some(init_pid)`
+                    // for children that already have init as their parent and then
+                    // re-append them onto `init.children`, corrupting the child
+                    // list with duplicates and creating a self-referential
+                    // reparent that never terminates the (already degenerate)
+                    // parent chain. This mirrors the identical `pid != init_pid`
+                    // guard in `ProcessManager`'s exit paths (see
+                    // `process/manager.rs`), which apply the same constraint to
+                    // the exact reparent-to-init operation. Missing the
+                    // equivalent guard on aarch64's retire path was flagged as a
+                    // blocking r13 review finding (reparent livelock); do not
+                    // remove this without re-deriving that analysis.
                     if pid != init_pid && !children.is_empty() {
                         for &child_pid in &children {
                             if let Some(child) = manager.get_process_mut(child_pid) {
