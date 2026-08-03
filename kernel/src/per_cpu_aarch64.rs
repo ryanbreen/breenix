@@ -191,11 +191,20 @@ pub fn ttbr0_shadow_snapshot(cpu_id: usize) -> Option<(u64, u64)> {
     }
 
     let cpu_data = unsafe { &raw const ALL_CPU_DATA[cpu_id] };
+    let next_ttbr0 =
+        unsafe { core::ptr::read_volatile(core::ptr::addr_of!((*cpu_data).next_ttbr0)) };
+    // Pair with the writer's release barrier between publishing `saved` and
+    // clearing `next`. Observing a cleared pending lease therefore also
+    // observes the installed root in `saved`; observing a nonzero `next`
+    // already conservatively names the root through the hardware switch.
+    core::sync::atomic::compiler_fence(Ordering::Acquire);
+    unsafe {
+        core::arch::asm!("dmb ishld", options(nomem, nostack, preserves_flags));
+    }
+    core::sync::atomic::compiler_fence(Ordering::Acquire);
     let saved_process_ttbr0 = unsafe {
         core::ptr::read_volatile(core::ptr::addr_of!((*cpu_data).saved_process_ttbr0))
     };
-    let next_ttbr0 =
-        unsafe { core::ptr::read_volatile(core::ptr::addr_of!((*cpu_data).next_ttbr0)) };
     Some((saved_process_ttbr0, next_ttbr0))
 }
 

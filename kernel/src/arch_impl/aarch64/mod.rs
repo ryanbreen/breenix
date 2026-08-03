@@ -58,7 +58,9 @@ pub use ttbr0::{
     arm_process_ttbr0, install_process_ttbr0, kernel_ttbr0, leave_process_ttbr0, root_liveness,
     RootLiveness,
 };
-pub(crate) use ttbr0::invalidate_user_tlb_broadcast;
+pub(crate) use ttbr0::{
+    complete_armed_process_ttbr0, current_ttbr0_root, invalidate_user_tlb_broadcast,
+};
 
 // Re-export interrupt control functions for convenient access
 // These provide the ARM64 equivalent of x86_64::instructions::interrupts::*

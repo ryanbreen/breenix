@@ -3178,10 +3178,9 @@ fn dispatch_thread_locked(
                     raw_uart_str(" cpu=");
                     raw_uart_dec(cpu_id as u64);
                     raw_uart_str("\n");
-                    // Process no longer exists — terminate orphaned thread.
-                    if let Some(thread) = sched.get_thread_mut(thread_id) {
-                        thread.state = ThreadState::Terminated;
-                    }
+                    // Process no longer exists. Keep the thread non-reclaimable
+                    // until the off-stack worker transition stamps its fence.
+                    sched.request_exit_pending(thread_id);
                     let current_before = setup_idle_return_locked(sched, frame, cpu_id);
                     record_idle_redirect(
                         sched,
@@ -3386,10 +3385,9 @@ fn dispatch_thread_locked(
                 raw_uart_str(" cpu=");
                 raw_uart_dec(cpu_id as u64);
                 raw_uart_str("\n");
-                // Process no longer exists — terminate orphaned thread.
-                if let Some(thread) = sched.get_thread_mut(thread_id) {
-                    thread.state = ThreadState::Terminated;
-                }
+                // Process no longer exists. Keep the thread non-reclaimable
+                // until the off-stack worker transition stamps its fence.
+                sched.request_exit_pending(thread_id);
                 let current_before = setup_idle_return_locked(sched, frame, cpu_id);
                 record_idle_redirect(
                     sched,
@@ -4738,7 +4736,11 @@ fn switch_ttbr0_if_needed(_thread_id: u64) {
         return;
     }
 
-    super::install_process_ttbr0(next_ttbr0);
+    if super::current_ttbr0_root() != next_ttbr0 {
+        super::install_process_ttbr0(next_ttbr0);
+    } else {
+        super::complete_armed_process_ttbr0(next_ttbr0);
+    }
 }
 
 /// Result of attempting to set TTBR0 for a thread.

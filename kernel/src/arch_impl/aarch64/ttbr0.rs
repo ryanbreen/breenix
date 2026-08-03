@@ -11,6 +11,27 @@ fn read_ttbr0_el1() -> u64 {
     ttbr0
 }
 
+#[inline(always)]
+pub(crate) fn current_ttbr0_root() -> u64 {
+    read_ttbr0_el1()
+}
+
+/// Finish an already-armed TTBR0 handoff without touching hardware.
+///
+/// This is used when dispatch observes that hardware already holds the target
+/// root. The release barrier preserves the same two-word lease protocol as a
+/// real install while avoiding a redundant broadcast TLB invalidation.
+#[inline(always)]
+pub(crate) fn complete_armed_process_ttbr0(root: u64) {
+    unsafe {
+        super::percpu::Aarch64PerCpu::set_saved_process_cr3(root);
+        core::sync::atomic::compiler_fence(core::sync::atomic::Ordering::Release);
+        core::arch::asm!("dmb ishst", options(nomem, nostack, preserves_flags));
+        core::sync::atomic::compiler_fence(core::sync::atomic::Ordering::Release);
+        super::percpu::Aarch64PerCpu::set_next_cr3(0);
+    }
+}
+
 /// Return the kernel TTBR0 root, falling back to the boot identity table before
 /// per-CPU state has been populated.
 #[inline(always)]
@@ -45,6 +66,7 @@ pub fn leave_process_ttbr0() {
             kernel_ttbr0 = in(reg) kernel_ttbr0,
             options(nomem, nostack)
         );
+        core::sync::atomic::compiler_fence(core::sync::atomic::Ordering::Release);
         super::percpu::Aarch64PerCpu::set_saved_process_cr3(0);
         super::percpu::Aarch64PerCpu::set_next_cr3(0);
     }
@@ -55,6 +77,7 @@ pub fn leave_process_ttbr0() {
 pub fn install_process_ttbr0(root: u64) {
     unsafe {
         super::percpu::Aarch64PerCpu::set_next_cr3(root);
+        core::sync::atomic::compiler_fence(core::sync::atomic::Ordering::Release);
         core::arch::asm!(
             "dsb ishst",
             "msr ttbr0_el1, {root}",
@@ -62,8 +85,7 @@ pub fn install_process_ttbr0(root: u64) {
             root = in(reg) root,
             options(nomem, nostack)
         );
-        super::percpu::Aarch64PerCpu::set_saved_process_cr3(root);
-        super::percpu::Aarch64PerCpu::set_next_cr3(0);
+        complete_armed_process_ttbr0(root);
         core::arch::asm!(
             "tlbi vmalle1is",
             "dsb ish",
@@ -123,6 +145,7 @@ impl RootLiveness {
 pub fn root_liveness(
     snapshot: &crate::task::scheduler::RetirementSnapshot,
     root_phys: u64,
+    cached_thread: Option<u64>,
 ) -> RootLiveness {
     let root_phys = root_phys & TTBR0_ROOT_MASK;
     if root_phys == 0 {
@@ -131,6 +154,7 @@ pub fn root_liveness(
 
     let mut liveness = RootLiveness {
         local_hardware: read_ttbr0_el1() & TTBR0_ROOT_MASK == root_phys,
+        cached_thread,
         ..RootLiveness::default()
     };
     for cpu_id in 0..super::constants::MAX_CPUS {
@@ -149,6 +173,6 @@ pub fn root_liveness(
             }
         }
     }
-    liveness.cached_thread = crate::task::scheduler::cached_ttbr0_holder(snapshot, root_phys);
+    let _ = snapshot;
     liveness
 }

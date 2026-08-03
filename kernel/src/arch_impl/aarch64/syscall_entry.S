@@ -366,6 +366,7 @@ syscall_entry_from_el0:
     msr ttbr0_el1, x1
     isb
     str x1, [x0, #80]           /* saved_process_cr3 = installed root */
+    dmb ishst                    /* release saved before clearing next */
     str xzr, [x0, #64]          /* clear next_cr3 last */
     tlbi vmalle1is
     dsb ish
@@ -467,6 +468,7 @@ syscall_return_to_userspace_aarch64:
     msr ttbr0_el1, x10
     isb
     str x10, [x9, #80]          /* saved_process_cr3 = installed root */
+    dmb ishst                    /* release saved before clearing next */
     str xzr, [x9, #64]          /* clear next_cr3 last */
     tlbi vmalle1is
     dsb ish
