@@ -2591,6 +2591,25 @@ impl Scheduler {
         })
     }
 
+    /// Make every scheduler-owned thread for a process non-runnable.
+    #[cfg(target_arch = "aarch64")]
+    pub fn terminate_process_threads(&mut self, owner_pid: u64) {
+        for thread in self.threads.iter_mut() {
+            if thread.owner_pid == Some(owner_pid) {
+                thread.set_terminated();
+            }
+        }
+
+        let threads = &self.threads;
+        for queue in self.per_cpu_queues.iter_mut() {
+            queue.retain(|&thread_id| {
+                !threads.iter().any(|thread| {
+                    thread.id() == thread_id && thread.owner_pid == Some(owner_pid)
+                })
+            });
+        }
+    }
+
     /// Remove a thread from all per-CPU queues (used when blocking)
     pub fn remove_from_ready_queue(&mut self, thread_id: u64) {
         for q in self.per_cpu_queues.iter_mut() {

@@ -752,27 +752,34 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
 
                 // The process exit below can retire this root. Leave it before
                 // acquiring the process manager and freeing any resources.
-                super::switch_ttbr0_to_kernel();
+                super::quiesce_ttbr0_for_exit();
 
-                // Find and terminate the process
+                // Resolve the victim without holding the process-manager lock
+                // across the scheduler-side non-runnable transition.
                 let mut terminated = false;
                 let mut already_terminated = false;
-                crate::process::with_process_manager(|pm| {
-                    if let Some((pid, _process)) = pm.find_process_by_cr3_mut(page_table_phys) {
-                        if _process.is_terminated() {
-                            already_terminated = true;
-                            return;
-                        }
+                let victim = crate::process::with_process_manager(|pm| {
+                    pm.find_process_by_cr3_mut(page_table_phys)
+                        .map(|(pid, process)| (pid, process.is_terminated()))
+                })
+                .flatten();
+                if let Some((pid, was_terminated)) = victim {
+                    let _ = crate::task::scheduler::with_scheduler(|sched| {
+                        sched.terminate_process_threads(pid.as_u64());
+                    });
+                    if was_terminated {
+                        already_terminated = true;
+                    } else {
                         crate::tracing::providers::process::trace_process_exit(
                             pid.as_u64() as u16,
                             (-11i16) as u16,
                         );
-                        pm.exit_process(pid, -11); // SIGSEGV exit code
+                        let _ = crate::process::with_process_manager(|pm| {
+                            pm.exit_process(pid, -11); // SIGSEGV exit code
+                        });
                         terminated = true;
-                    } else {
-                        // trace_data_abort already captured the fault
                     }
-                });
+                }
 
                 if terminated || already_terminated {
                     // CRITICAL: Mark the scheduler's thread as Terminated BEFORE
@@ -1113,26 +1120,34 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
 
                 // Install the kernel root before pm.exit_process can retire
                 // the faulting userspace root.
-                super::switch_ttbr0_to_kernel();
+                super::quiesce_ttbr0_for_exit();
 
                 let mut terminated = false;
                 let mut already_terminated = false;
                 let mut killed_pid: u64 = 0;
-                crate::process::with_process_manager(|pm| {
-                    if let Some((pid, _process)) = pm.find_process_by_cr3_mut(page_table_phys) {
-                        if _process.is_terminated() {
-                            already_terminated = true;
-                            return;
-                        }
+                let victim = crate::process::with_process_manager(|pm| {
+                    pm.find_process_by_cr3_mut(page_table_phys)
+                        .map(|(pid, process)| (pid, process.is_terminated()))
+                })
+                .flatten();
+                if let Some((pid, was_terminated)) = victim {
+                    let _ = crate::task::scheduler::with_scheduler(|sched| {
+                        sched.terminate_process_threads(pid.as_u64());
+                    });
+                    if was_terminated {
+                        already_terminated = true;
+                    } else {
                         killed_pid = pid.as_u64();
                         crate::tracing::providers::process::trace_process_exit(
                             pid.as_u64() as u16,
                             (-11i16) as u16,
                         );
-                        pm.exit_process(pid, -11); // SIGSEGV
+                        let _ = crate::process::with_process_manager(|pm| {
+                            pm.exit_process(pid, -11); // SIGSEGV
+                        });
                         terminated = true;
                     }
-                });
+                }
                 // Lock-free diagnostic AFTER releasing process manager lock
                 if terminated {
                     use crate::arch_impl::aarch64::context_switch::{raw_uart_dec, raw_uart_str};
@@ -1204,14 +1219,20 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                     core::arch::asm!("mrs {}, ttbr0_el1", out(reg) ttbr0, options(nomem, nostack));
                 }
                 let page_table_phys = ttbr0 & !0xFFFF_0000_0000_0FFF;
-                super::switch_ttbr0_to_kernel();
-                crate::process::with_process_manager(|pm| {
-                    if let Some((pid, process)) = pm.find_process_by_cr3_mut(page_table_phys) {
-                        if !process.is_terminated() {
-                            pm.exit_process(pid, -11);
-                        }
-                    }
-                });
+                super::quiesce_ttbr0_for_exit();
+                let victim = crate::process::with_process_manager(|pm| {
+                    pm.find_process_by_cr3_mut(page_table_phys)
+                        .map(|(pid, process)| (pid, process.is_terminated()))
+                })
+                .flatten();
+                if let Some((pid, _)) = victim {
+                    let _ = crate::task::scheduler::with_scheduler(|sched| {
+                        sched.terminate_process_threads(pid.as_u64());
+                    });
+                    let _ = crate::process::with_process_manager(|pm| {
+                        pm.exit_process(pid, -11);
+                    });
+                }
                 terminate_current_scheduler_thread();
             }
             // CRITICAL: Set frame values BEFORE switch_to_idle_best_effort()
@@ -1301,14 +1322,20 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                     core::arch::asm!("mrs {}, ttbr0_el1", out(reg) ttbr0, options(nomem, nostack));
                 }
                 let page_table_phys = ttbr0 & !0xFFFF_0000_0000_0FFF;
-                super::switch_ttbr0_to_kernel();
-                crate::process::with_process_manager(|pm| {
-                    if let Some((pid, process)) = pm.find_process_by_cr3_mut(page_table_phys) {
-                        if !process.is_terminated() {
-                            pm.exit_process(pid, -11);
-                        }
-                    }
-                });
+                super::quiesce_ttbr0_for_exit();
+                let victim = crate::process::with_process_manager(|pm| {
+                    pm.find_process_by_cr3_mut(page_table_phys)
+                        .map(|(pid, process)| (pid, process.is_terminated()))
+                })
+                .flatten();
+                if let Some((pid, _)) = victim {
+                    let _ = crate::task::scheduler::with_scheduler(|sched| {
+                        sched.terminate_process_threads(pid.as_u64());
+                    });
+                    let _ = crate::process::with_process_manager(|pm| {
+                        pm.exit_process(pid, -11);
+                    });
+                }
                 terminate_current_scheduler_thread();
             }
             // CRITICAL: Set frame values BEFORE switch_to_idle_best_effort()

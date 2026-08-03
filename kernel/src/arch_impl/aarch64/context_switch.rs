@@ -4457,6 +4457,8 @@ fn cpu0_breadcrumb(cpu_id: usize, id: u64) {
 
 pub fn schedule_from_kernel() {
     crate::task::process_task::drain_deferred_fault_sigsegv_exits();
+    crate::task::process_task::reclaim_deferred_process_resources();
+    crate::task::scheduler::reclaim_terminated_threads();
 
     let saved_daif = read_daif();
     let cpu_id = Aarch64PerCpu::cpu_id() as usize;

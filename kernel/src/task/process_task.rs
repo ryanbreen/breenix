@@ -61,7 +61,7 @@ static DEFERRED_FAULT_EXIT_BUFFERS: [DeferredFaultExitBuffer; 1] =
     [const { DeferredFaultExitBuffer::new() }];
 
 #[cfg(target_arch = "aarch64")]
-struct PendingProcessReclaim {
+pub(crate) struct PendingProcessReclaim {
     page_table: Option<alloc::boxed::Box<crate::memory::process_memory::ProcessPageTable>>,
     old_page_tables: alloc::vec::Vec<
         alloc::boxed::Box<crate::memory::process_memory::ProcessPageTable>,
@@ -97,7 +97,7 @@ impl PendingProcessReclaim {
 static PENDING_PROCESS_RECLAIMS: spin::Mutex<alloc::vec::Vec<PendingProcessReclaim>> =
     spin::Mutex::new(alloc::vec::Vec::new());
 
-fn release_process_resources(process: &mut crate::process::Process) {
+pub(crate) fn release_process_resources(process: &mut crate::process::Process) {
     process.cleanup_cow_frames();
     process.drain_old_page_tables();
     drop(process.page_table.take());
@@ -106,7 +106,7 @@ fn release_process_resources(process: &mut crate::process::Process) {
 }
 
 #[cfg(target_arch = "aarch64")]
-fn defer_live_process_resources(
+pub(crate) fn defer_live_process_resources(
     process: &mut crate::process::Process,
 ) -> Option<PendingProcessReclaim> {
     let root_is_live = process
@@ -122,15 +122,22 @@ fn defer_live_process_resources(
         return None;
     }
 
-    Some(PendingProcessReclaim {
-        page_table: process.page_table.take(),
-        old_page_tables: core::mem::take(&mut process.pending_old_page_tables),
-        after_epoch: scheduler::retirement_grace_target(),
-    })
+    Some(defer_process_resources(process))
 }
 
 #[cfg(target_arch = "aarch64")]
-fn enqueue_process_reclaim(reclaim: PendingProcessReclaim) {
+pub(crate) fn defer_process_resources(
+    process: &mut crate::process::Process,
+) -> PendingProcessReclaim {
+    PendingProcessReclaim {
+        page_table: process.page_table.take(),
+        old_page_tables: core::mem::take(&mut process.pending_old_page_tables),
+        after_epoch: scheduler::retirement_grace_target(),
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+pub(crate) fn enqueue_process_reclaim(reclaim: PendingProcessReclaim) {
     crate::arch_without_interrupts(|| PENDING_PROCESS_RECLAIMS.lock().push(reclaim));
 }
 
@@ -217,8 +224,7 @@ impl ProcessScheduler {
                     let process_name = process.name.clone();
                     let children = core::mem::take(&mut process.children);
 
-                    // Mark terminated and extract FDs without closing them
-                    process.terminate_minimal(exit_code);
+                    // Extract FDs without closing them under the PM lock.
                     let fd_entries = process.take_fd_entries();
                     #[cfg(target_arch = "aarch64")]
                     if let Some(reclaim) = defer_live_process_resources(process) {
@@ -229,6 +235,11 @@ impl ProcessScheduler {
                     }
                     #[cfg(not(target_arch = "aarch64"))]
                     release_process_resources(process);
+
+                    // Keep termination after release/deferral. Once page_table is
+                    // None, cleanup_cow_frames() cannot repeat the CoW walk; moving
+                    // terminate()/terminate_minimal() earlier breaks that invariant.
+                    process.terminate_minimal(exit_code);
 
                     #[cfg(feature = "btrt")]
                     crate::test_framework::btrt::on_process_exit(pid.as_u64(), exit_code);
