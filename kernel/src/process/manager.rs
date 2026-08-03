@@ -2780,10 +2780,9 @@ impl ProcessManager {
         // Get the existing process
         let process = self.processes.get_mut(&pid).ok_or("Process not found")?;
 
-        debug_assert!(
-            process.pending_old_page_tables.is_empty(),
-            "exec caller must drain previously retired page tables before replacement"
-        );
+        // Drain any pending old page tables from previous exec() calls.
+        // By this point, CR3 has definitely switched away from any old tables.
+        process.drain_old_page_tables();
 
         // For now, assume non-current processes are not actively running
         // This is a simplification - in a real OS we'd check the scheduler state
@@ -3125,10 +3124,8 @@ impl ProcessManager {
         // points to it. The old page table is taken later, after all fallible ops succeed.
         let thread_id = {
             let process = self.processes.get_mut(&pid).ok_or("Process not found")?;
-            debug_assert!(
-                process.pending_old_page_tables.is_empty(),
-                "exec caller must drain previously retired page tables before replacement"
-            );
+            // Drain any pending old page tables from previous exec() calls.
+            process.drain_old_page_tables();
             let main_thread = process
                 .main_thread
                 .as_ref()

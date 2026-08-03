@@ -699,25 +699,15 @@ extern "x86-interrupt" fn invalid_opcode_handler(stack_frame: InterruptStackFram
 /// Copy-on-Write statistics - re-export from architecture-independent module
 pub use crate::memory::cow_stats;
 
-enum CowFaultOutcome {
-    Handled,
-    Retry,
-    NotHandled,
-}
-
-fn handle_cow_fault(
-    faulting_addr: VirtAddr,
-    error_code: PageFaultErrorCode,
-    cr3: u64,
-) -> CowFaultOutcome {
+fn handle_cow_fault(faulting_addr: VirtAddr, error_code: PageFaultErrorCode, cr3: u64) -> bool {
     // CoW faults are:
     // - Protection violation (page is present but not writable)
     // - Caused by write
     if !error_code.contains(PageFaultErrorCode::PROTECTION_VIOLATION) {
-        return CowFaultOutcome::NotHandled;
+        return false;
     }
     if !error_code.contains(PageFaultErrorCode::CAUSED_BY_WRITE) {
-        return CowFaultOutcome::NotHandled;
+        return false;
     }
 
     // Track CoW fault count for debugging
@@ -733,16 +723,11 @@ fn handle_cow_fault(
 
     // Try to acquire process manager lock. If it's held (e.g., by signal delivery),
     // we'll handle the CoW fault directly via CR3 to avoid deadlock.
-    let mut metadata = match crate::memory::frame_metadata::try_fault_transaction() {
-        Ok(transaction) => transaction,
-        Err(_) => return CowFaultOutcome::Retry,
-    };
-
-    let handled = match crate::process::try_manager() {
+    match crate::process::try_manager() {
         Some(mut guard) => {
             // Lock acquired, proceed with normal CoW handling via ProcessPageTable
             cow_stats::MANAGER_PATH.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-            handle_cow_with_manager(&mut guard, faulting_addr, cr3, &mut metadata)
+            handle_cow_with_manager(&mut guard, faulting_addr, cr3)
         }
         None => {
             // Lock is held - handle CoW directly via CR3 to avoid deadlock
@@ -751,13 +736,8 @@ fn handle_cow_fault(
             if fault_num < 20 {
                 crate::serial_println!("[COW FAULT #{}] lock held, using direct path", fault_num);
             }
-            handle_cow_direct(faulting_addr, cr3, &mut metadata)
+            handle_cow_direct(faulting_addr, cr3)
         }
-    };
-    if handled {
-        CowFaultOutcome::Handled
-    } else {
-        CowFaultOutcome::NotHandled
     }
 }
 
@@ -766,9 +746,9 @@ fn handle_cow_with_manager(
     guard: &mut spin::MutexGuard<'static, Option<crate::process::ProcessManager>>,
     faulting_addr: VirtAddr,
     cr3: u64,
-    metadata: &mut crate::memory::frame_metadata::FaultMetadataTransaction,
 ) -> bool {
     use crate::memory::frame_allocator::allocate_frame;
+    use crate::memory::frame_metadata::{frame_decref, frame_is_shared, frame_register};
     use crate::memory::process_memory::{is_cow_page, make_private_flags};
     use x86_64::structures::paging::{Page, Size4KiB};
 
@@ -801,7 +781,7 @@ fn handle_cow_with_manager(
     }
 
     // Check if we're the only reference - can just make it writable
-    if !metadata.is_shared(old_frame) {
+    if !frame_is_shared(old_frame) {
         let new_flags = make_private_flags(old_flags);
         if page_table.update_page_flags(page, new_flags).is_err() {
             return false;
@@ -818,7 +798,7 @@ fn handle_cow_with_manager(
     };
 
     // Register the new frame so it's tracked for cleanup on process exit
-    metadata.register(new_frame);
+    frame_register(new_frame);
 
     // Copy page contents
     let phys_offset = crate::memory::physical_memory_offset();
@@ -838,7 +818,7 @@ fn handle_cow_with_manager(
     }
 
     // Decrement old frame reference count
-    metadata.decref(old_frame);
+    frame_decref(old_frame);
 
     // Flush TLB for this page
     X86PageTableOps::flush_tlb_page(faulting_addr.as_u64());
@@ -850,12 +830,9 @@ fn handle_cow_with_manager(
 ///
 /// This function walks the page table manually and modifies entries directly,
 /// avoiding the need to acquire the process manager lock.
-fn handle_cow_direct(
-    faulting_addr: VirtAddr,
-    cr3: u64,
-    metadata: &mut crate::memory::frame_metadata::FaultMetadataTransaction,
-) -> bool {
+fn handle_cow_direct(faulting_addr: VirtAddr, cr3: u64) -> bool {
     use crate::memory::frame_allocator::allocate_frame;
+    use crate::memory::frame_metadata::{frame_decref, frame_is_shared, frame_register};
     use crate::memory::process_memory::{is_cow_page, make_private_flags};
     use x86_64::structures::paging::{PageTable, PageTableFlags, PhysFrame, Size4KiB};
 
@@ -919,7 +896,7 @@ fn handle_cow_direct(
         }
 
         // Check if we're the only reference
-        if !metadata.is_shared(old_frame) {
+        if !frame_is_shared(old_frame) {
             // Sole owner - just update flags to make writable
             let new_flags = make_private_flags(old_flags);
             l1_entry.set_addr(l1_entry.addr(), new_flags);
@@ -935,7 +912,7 @@ fn handle_cow_direct(
         };
 
         // Register the new frame so it's tracked for cleanup on process exit
-        metadata.register(new_frame);
+        frame_register(new_frame);
 
         // Copy page contents
         let src = (phys_offset + old_frame.start_address().as_u64()).as_ptr::<u8>();
@@ -947,7 +924,7 @@ fn handle_cow_direct(
         l1_entry.set_addr(new_frame.start_address(), new_flags);
 
         // Decrement old frame reference count
-        metadata.decref(old_frame);
+        frame_decref(old_frame);
 
         // Flush TLB
         X86PageTableOps::flush_tlb_page(faulting_addr.as_u64());
@@ -1268,14 +1245,10 @@ extern "x86-interrupt" fn page_fault_handler(
     // just checking if the fault came from userspace. This allows the kernel
     // to trigger CoW when writing to user memory (e.g., signal frame setup).
     let is_user_address = accessed_addr.as_u64() < crate::memory::layout::USER_STACK_REGION_END;
-    if is_user_address {
-        match handle_cow_fault(accessed_addr, error_code, cr3) {
-            CowFaultOutcome::Handled | CowFaultOutcome::Retry => {
-                crate::per_cpu::preempt_enable();
-                return;
-            }
-            CowFaultOutcome::NotHandled => {}
-        }
+    if is_user_address && handle_cow_fault(accessed_addr, error_code, cr3) {
+        // CoW fault handled successfully - resume execution
+        crate::per_cpu::preempt_enable();
+        return;
     }
 
     // Try to handle as demand-paged stack growth
