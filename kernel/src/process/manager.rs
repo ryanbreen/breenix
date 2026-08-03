@@ -27,6 +27,13 @@ pub enum ExitFdAction {
     Drained,
 }
 
+#[cfg(target_arch = "aarch64")]
+#[derive(Clone, Copy)]
+pub(crate) struct RowRemovalCandidate {
+    pub pid: ProcessId,
+    pub owned_stack: Option<(u64, u64)>,
+}
+
 /// Process manager handles all processes in the system
 pub struct ProcessManager {
     /// All processes indexed by PID
@@ -1124,6 +1131,7 @@ impl ProcessManager {
     #[must_use]
     pub fn retire_process(&mut self, pid: ProcessId, exit_code: i32) -> crate::process::ExitReceipt {
         let parent_pid = self.processes.get(&pid).and_then(|process| process.parent);
+        #[cfg(not(target_arch = "aarch64"))]
         let parent_tid = parent_pid.and_then(|parent_pid| {
             self.processes
                 .get(&parent_pid)
@@ -1164,7 +1172,9 @@ impl ProcessManager {
         }
 
         crate::process::ExitReceipt::new(
+            #[cfg(not(target_arch = "aarch64"))]
             pid,
+            #[cfg(not(target_arch = "aarch64"))]
             parent_tid,
             outcome,
             work_bits,
@@ -1182,6 +1192,14 @@ impl ProcessManager {
             .and_then(|process| process.fd_table.take_next_for_exit().map(|(_, fd)| fd))
     }
 
+    pub(crate) fn take_old_page_tables_for_exec(
+        &mut self,
+        pid: ProcessId,
+    ) -> Option<Vec<Box<ProcessPageTable>>> {
+        let process = self.processes.get_mut(&pid)?;
+        Some(core::mem::take(&mut process.pending_old_page_tables))
+    }
+
     #[cfg(target_arch = "aarch64")]
     pub(crate) fn service_one_reparent(&mut self) -> bool {
         let Some(parent_pid) = self.processes.iter().find_map(|(pid, process)| {
@@ -1194,13 +1212,15 @@ impl ProcessManager {
             return false;
         };
         let init_pid = ProcessId::new(1);
-        if let Some(child) = self
-            .processes
-            .values_mut()
-            .find(|process| process.parent == Some(parent_pid))
-        {
-            child.parent = Some(init_pid);
-            return true;
+        if parent_pid != init_pid {
+            if let Some(child) = self
+                .processes
+                .values_mut()
+                .find(|process| process.parent == Some(parent_pid))
+            {
+                child.parent = Some(init_pid);
+                return true;
+            }
         }
         if let Some(parent) = self.processes.get_mut(&parent_pid) {
             parent.exit_work_bits.remove(ExitWorkBits::REPARENT_CHILDREN);
@@ -1268,16 +1288,40 @@ impl ProcessManager {
     }
 
     #[cfg(target_arch = "aarch64")]
-    pub(crate) fn detach_one_removable_row(&mut self) -> Option<Process> {
-        let pid = self.processes.iter().find_map(|(pid, process)| {
+    pub(crate) fn removable_row_candidate(&self) -> Option<RowRemovalCandidate> {
+        self.processes.iter().find_map(|(pid, process)| {
             if !process.can_remove_row() {
                 return None;
             }
             let live_sharer = process
                 .retired_root
                 .is_some_and(|root| self.root_has_live_sharer(root, Some(*pid)));
-            (!live_sharer).then_some(*pid)
-        })?;
+            if live_sharer {
+                return None;
+            }
+            let owned_stack = match process.main_thread.as_ref() {
+                Some(thread) if thread.kernel_stack_allocation.is_some() => {
+                    Some((thread.id(), thread.kernel_stack_top?.as_u64()))
+                }
+                _ => None,
+            };
+            Some(RowRemovalCandidate {
+                pid: *pid,
+                owned_stack,
+            })
+        })
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    pub(crate) fn detach_removable_row(&mut self, pid: ProcessId) -> Option<Process> {
+        let process = self.processes.get(&pid)?;
+        if !process.can_remove_row()
+            || process
+                .retired_root
+                .is_some_and(|root| self.root_has_live_sharer(root, Some(pid)))
+        {
+            return None;
+        }
         self.processes.remove(&pid)
     }
 
@@ -1344,7 +1388,9 @@ impl ProcessManager {
     pub fn child_pids(&self, parent: ProcessId) -> impl Iterator<Item = ProcessId> + '_ {
         self.processes
             .iter()
-            .filter_map(move |(pid, process)| (process.parent == Some(parent)).then_some(*pid))
+            .filter_map(move |(pid, process)| {
+                (process.parent == Some(parent) && !process.reaped).then_some(*pid)
+            })
     }
 
     pub fn child_count(&self, parent: ProcessId) -> usize {
@@ -1354,12 +1400,15 @@ impl ProcessManager {
     pub fn is_child_of(&self, parent: ProcessId, child: ProcessId) -> bool {
         self.processes
             .get(&child)
-            .is_some_and(|process| process.parent == Some(parent))
+            .is_some_and(|process| process.parent == Some(parent) && !process.reaped)
     }
 
     pub fn find_terminated_child(&self, parent: ProcessId) -> Option<(ProcessId, i32)> {
         self.processes.iter().find_map(|(pid, process)| {
             if process.parent != Some(parent) {
+                return None;
+            }
+            if process.reaped {
                 return None;
             }
             match process.state {
@@ -2568,8 +2617,10 @@ impl ProcessManager {
         // Get the existing process
         let process = self.processes.get_mut(&pid).ok_or("Process not found")?;
 
-        // Drain any pending old page tables from previous exec() calls.
-        // By this point, CR3 has definitely switched away from any old tables.
+        debug_assert!(
+            process.pending_old_page_tables.is_empty(),
+            "exec caller must drain previously retired page tables before replacement"
+        );
 
         // For now, assume non-current processes are not actively running
         // This is a simplification - in a real OS we'd check the scheduler state
@@ -2911,7 +2962,10 @@ impl ProcessManager {
         // points to it. The old page table is taken later, after all fallible ops succeed.
         let thread_id = {
             let process = self.processes.get_mut(&pid).ok_or("Process not found")?;
-            // Drain any pending old page tables from previous exec() calls.
+            debug_assert!(
+                process.pending_old_page_tables.is_empty(),
+                "exec caller must drain previously retired page tables before replacement"
+            );
             let main_thread = process
                 .main_thread
                 .as_ref()
@@ -3167,6 +3221,10 @@ impl ProcessManager {
         // still points to it. The old page table is taken later, after all fallible ops succeed.
         let (thread_id, old_cr3) = {
             let process = self.processes.get(&pid).ok_or("Process not found")?;
+            debug_assert!(
+                process.pending_old_page_tables.is_empty(),
+                "exec caller must drain previously retired page tables before replacement"
+            );
             let old_cr3 = process.cr3_value();
             let main_thread = process
                 .main_thread
@@ -3449,7 +3507,10 @@ impl ProcessManager {
         // Get the existing process
         let process = self.processes.get_mut(&pid).ok_or("Process not found")?;
 
-        // Drain any pending old page tables from previous exec() calls.
+        debug_assert!(
+            process.pending_old_page_tables.is_empty(),
+            "exec caller must drain previously retired page tables before replacement"
+        );
 
         // For now, assume non-current processes are not actively running
         let is_scheduled = false;

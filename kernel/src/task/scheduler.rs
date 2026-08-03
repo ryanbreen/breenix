@@ -612,14 +612,15 @@ impl RetirementSnapshot {
 }
 
 #[cfg(target_arch = "aarch64")]
-pub(crate) fn cached_ttbr0_holder(
+pub(crate) fn cached_ttbr0_holder_matching(
     _snapshot: &RetirementSnapshot,
-    root_phys: u64,
-) -> Option<u64> {
+    mut matches_root: impl FnMut(u64) -> bool,
+) -> Option<(u64, u64)> {
     const ROOT_MASK: u64 = !0xFFFF_0000_0000_0FFF;
     with_scheduler(|scheduler| {
         scheduler.threads.iter().find_map(|thread| {
-            (thread.cached_ttbr0 & ROOT_MASK == (root_phys & ROOT_MASK)).then_some(thread.id())
+            let root = thread.cached_ttbr0 & ROOT_MASK;
+            (root != 0 && matches_root(root)).then_some((thread.id(), root))
         })
     })
     .flatten()
@@ -1002,7 +1003,10 @@ impl Scheduler {
         let Some(thread) = self.get_thread_mut(thread_id) else {
             return false;
         };
-        if thread.state == ThreadState::Terminated {
+        if matches!(
+            thread.state,
+            ThreadState::ExitPending | ThreadState::Terminated
+        ) {
             return true;
         }
         thread.set_exit_pending();
@@ -1011,6 +1015,16 @@ impl Scheduler {
             queue.retain(|queued| *queued != thread_id);
         }
         true
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    fn drain_teardown_intents(&mut self) {
+        if let Some(tid) = crate::task::reclaim::take_reclaim_wake_tid() {
+            self.unblock(tid);
+        }
+        crate::task::process_task::for_each_deferred_fault_exit(|tid| {
+            self.request_exit_pending(tid);
+        });
     }
 
     /// Complete the off-stack edge after an ordered retirement observation.
@@ -1150,6 +1164,9 @@ impl Scheduler {
         let debug_log = _count < 5 || (_count % 500 == 0);
         #[cfg(not(target_arch = "x86_64"))]
         let debug_log = false;
+
+        #[cfg(target_arch = "aarch64")]
+        self.drain_teardown_intents();
 
         // Drain lock-free ISR wakeup buffers (see schedule_deferred_requeue for rationale).
         {
@@ -1463,6 +1480,8 @@ impl Scheduler {
                 | ((current_is_idle as u32) << 1)
                 | self.ready_queue_length() as u32,
         );
+
+        self.drain_teardown_intents();
 
         // Drain lock-free ISR wakeup buffers — ISRs (AHCI, etc.) push thread IDs
         // here via isr_unblock_for_io() to avoid spinning on SCHEDULER from ISR
@@ -3018,6 +3037,32 @@ pub fn has_pending_thread_reclaim() -> bool {
     })
 }
 
+/// Prove that a kernel stack still owned by a zombie Process row is no longer
+/// reachable by the scheduler. This runs between two short PM transactions so
+/// PROCESS_MANAGER and SCHEDULER are never held together.
+#[cfg(target_arch = "aarch64")]
+pub fn process_row_stack_reclaimable(thread_id: u64, stack_top: u64) -> bool {
+    without_interrupts(|| {
+        let scheduler_lock = SCHEDULER.lock();
+        let Some(scheduler) = scheduler_lock.as_ref() else {
+            return false;
+        };
+        let stack_live = crate::memory::kernel_stack::is_kernel_stack_slot_live(stack_top);
+        let Some(thread) = scheduler.get_thread(thread_id) else {
+            // Scheduler detachment already required TERMINATED, an elapsed
+            // fence, and a non-live stack slot.
+            return !stack_live;
+        };
+        thread.state == ThreadState::Terminated
+            && thread
+                .retirement_fence
+                .as_ref()
+                .and_then(RetirementSnapshot::acquire)
+                .is_some()
+            && !stack_live
+    })
+}
+
 /// Add a thread as the current running thread without scheduling.
 ///
 /// Used when manually starting the first userspace thread (init process).
@@ -3475,6 +3520,8 @@ pub fn is_cpu_idle_raw(cpu_id: usize) -> bool {
 /// This updates scheduler state so subsequent timer interrupts can properly schedule.
 /// Call this before modifying exception frame to return to idle_loop.
 pub fn switch_to_idle() {
+    #[cfg(target_arch = "x86_64")]
+    crate::task::process_task::arm_deferred_signal_exits_for_current_cpu();
     with_scheduler(|sched| {
         let cpu_id = Scheduler::current_cpu_id();
         let idle_id = sched.cpu_state[cpu_id].idle_thread;

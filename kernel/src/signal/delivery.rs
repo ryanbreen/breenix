@@ -675,7 +675,6 @@ fn deliver_to_user_handler_aarch64(
 /// This is used to defer parent notification until after the process manager lock is released,
 /// avoiding deadlocks when signal delivery happens while the manager lock is held.
 pub struct ParentNotification {
-    pub parent_pid: Option<crate::process::ProcessId>,
     pub child_pid: crate::process::ProcessId,
     pub exit_code: i32,
     pub victim_tid: Option<u64>,
@@ -693,6 +692,8 @@ pub struct ParentNotification {
 /// It will try to acquire the lock internally, so calling it while the lock is held
 /// will cause a deadlock.
 pub fn notify_parent_of_termination_deferred(notification: &ParentNotification) {
+    #[cfg(target_arch = "x86_64")]
+    crate::task::process_task::cancel_deferred_signal_exit(notification.child_pid);
     let child_pid = notification.child_pid;
     let receipt = {
         let mut manager_guard = crate::process::manager();
@@ -711,12 +712,14 @@ pub fn notify_parent_of_termination_deferred(notification: &ParentNotification) 
 }
 
 fn exit_request(process: &Process, exit_code: i32) -> ParentNotification {
-    ParentNotification {
-        parent_pid: process.parent,
+    let notification = ParentNotification {
         child_pid: process.id,
         exit_code,
         victim_tid: process.main_thread.as_ref().map(|thread| thread.id),
-    }
+    };
+    #[cfg(target_arch = "x86_64")]
+    let _ = crate::task::process_task::defer_signal_exit(&notification);
+    notification
 }
 
 // =============================================================================

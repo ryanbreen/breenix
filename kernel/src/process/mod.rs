@@ -18,7 +18,9 @@ pub use process::{ExitOutcome, ExitStage, ExitWorkBits, Process, ProcessId, Proc
 
 #[must_use = "an exit receipt must be completed after releasing the process-manager lock"]
 pub struct ExitReceipt {
+    #[cfg(not(target_arch = "aarch64"))]
     pid: ProcessId,
+    #[cfg(not(target_arch = "aarch64"))]
     parent_tid: Option<u64>,
     outcome: ExitOutcome,
     work_bits: ExitWorkBits,
@@ -28,8 +30,8 @@ pub struct ExitReceipt {
 
 impl ExitReceipt {
     pub(crate) fn new(
-        pid: ProcessId,
-        parent_tid: Option<u64>,
+        #[cfg(not(target_arch = "aarch64"))] pid: ProcessId,
+        #[cfg(not(target_arch = "aarch64"))] parent_tid: Option<u64>,
         outcome: ExitOutcome,
         work_bits: ExitWorkBits,
         #[cfg(not(target_arch = "aarch64"))] grave: Option<
@@ -37,7 +39,9 @@ impl ExitReceipt {
         >,
     ) -> Self {
         Self {
+            #[cfg(not(target_arch = "aarch64"))]
             pid,
+            #[cfg(not(target_arch = "aarch64"))]
             parent_tid,
             outcome,
             work_bits,
@@ -71,6 +75,7 @@ impl ExitReceipt {
             }
         }
 
+        #[cfg(not(target_arch = "aarch64"))]
         if let Some(parent_tid) = self.parent_tid {
             crate::task::scheduler::with_scheduler(|scheduler| {
                 scheduler.unblock_for_child_exit(parent_tid);
@@ -83,6 +88,7 @@ impl ExitReceipt {
         }
 
         crate::task::reclaim::kreclaim_wake();
+        #[cfg(not(target_arch = "aarch64"))]
         log::debug!(
             "completed process exit tail pid={} outcome={:?}",
             self.pid.as_u64(),

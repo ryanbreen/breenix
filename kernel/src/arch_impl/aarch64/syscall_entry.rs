@@ -408,8 +408,7 @@ fn dispatch_syscall_enum(
     // without adding a match arm here will produce a compiler warning.
     match syscall {
         // EXIT is arch-specific (uses wfi instead of hlt)
-        SyscallNumber::Exit => sys_exit_aarch64(arg1 as i32),
-        SyscallNumber::ExitGroup => sys_exit_aarch64(arg1 as i32),
+        SyscallNumber::Exit | SyscallNumber::ExitGroup => sys_exit_aarch64(arg1 as i32),
 
         // FORK, EXEC, SIGRETURN, PAUSE, SIGSUSPEND are handled before
         // dispatch_syscall_enum is called (they need frame access).
@@ -916,7 +915,7 @@ fn sys_fork_aarch64(frame: &Aarch64ExceptionFrame) -> u64 {
     // Reclaim quiesced process frames and scheduler-owned kernel stacks before
     // consuming more of either finite allocator pool.
     let reclaim_context = crate::task::reclaim::ReclaimContext::assert_preemptible();
-    crate::task::reclaim::reclaim_pass(&reclaim_context);
+    crate::task::reclaim::reclaim_one(&reclaim_context);
 
     // Create child page table OUTSIDE PM lock (heap allocation safe — interrupts enabled)
     crate::serial_aarch64::raw_serial_char(b'3'); // Fork: allocating page table
@@ -1162,6 +1161,7 @@ fn sys_exec_aarch64(
 
     let argv_slices: alloc::vec::Vec<&[u8]> = argv_vec.iter().map(|v| v.as_slice()).collect();
 
+    crate::task::reclaim::drain_old_page_tables_for_exec(current_pid);
     without_interrupts(|| {
         let mut manager_guard = crate::process::manager();
         if let Some(ref mut manager) = *manager_guard {

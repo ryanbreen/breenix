@@ -183,9 +183,8 @@ fn decref_locked(metadata: &mut BTreeMap<u64, FrameMetadata>, addr: u64) -> bool
         // (e.g., allocated during ELF loading, brk, or stack growth).
         // It belongs solely to the exiting process, so it's safe to free.
         //
-        // We only reach here from cleanup_cow_frames / cleanup_for_exec
-        // which iterate USER_ACCESSIBLE pages — all of which belong to
-        // the process being cleaned up.
+        // We only reach here from cleanup_for_exec, which iterates process-owned
+        // user pages.
         FRAME_DECREF_UNTRACKED.fetch_add(1, Ordering::Relaxed);
         true
     }

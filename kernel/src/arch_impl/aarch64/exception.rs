@@ -295,35 +295,33 @@ fn set_idle_stack_for_eret() {
     }
 }
 
-fn kill_current_user_process_and_redirect(
-    frame: &mut Aarch64ExceptionFrame,
-    page_table_phys: u64,
-) {
-    let victim_tid = crate::task::scheduler::current_thread_id();
+fn kill_current_user_process_and_redirect(frame: &mut Aarch64ExceptionFrame) {
     super::leave_process_ttbr0();
 
-    let receipt = crate::process::with_process_manager(|manager| {
-        let pid = manager
-            .find_process_by_cr3_mut(page_table_phys)
-            .map(|(pid, _)| pid)?;
-        crate::tracing::providers::process::trace_process_exit(
-            pid.as_u64() as u16,
-            (-11i16) as u16,
-        );
-        Some(manager.retire_process(pid, -11))
-    })
-    .flatten();
-    if let Some(receipt) = receipt {
-        receipt.complete();
-    }
-    if let Some(thread_id) = victim_tid {
-        crate::task::scheduler::request_exit_pending(thread_id);
+    if let Some(thread_id) = fault_victim_tid(frame as *mut _ as u64) {
+        if !crate::task::process_task::defer_fault_sigsegv_exit(thread_id) {
+            crate::task::process_task::FAULT_EXIT_INTENT_DROPPED
+                .fetch_add(1, Ordering::Relaxed);
+            crate::arch_impl::aarch64::context_switch::raw_uart_str(
+                "[FAULT_EXIT_INTENT_DROPPED]",
+            );
+        }
     }
     crate::task::scheduler::set_need_resched();
     frame.elr = crate::arch_impl::aarch64::idle_loop_arm64 as *const () as u64;
     frame.spsr = 0x5;
     set_idle_stack_for_eret();
     crate::task::scheduler::switch_to_idle_best_effort();
+}
+
+fn fault_victim_tid(frame_addr: u64) -> Option<u64> {
+    let stack_owner =
+        crate::arch_impl::aarch64::context_switch::last_dispatched_tid_for_stack_address(
+            frame_addr,
+        )
+        .and_then(|(_, tid)| (tid != 0).then_some(tid));
+    let cpu_id = crate::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id() as usize;
+    stack_owner.or_else(|| crate::arch_impl::aarch64::context_switch::last_dispatched_tid(cpu_id))
 }
 
 fn defer_current_user_thread_sigsegv_exit(label: &str, frame_addr: u64) {
@@ -334,19 +332,10 @@ fn defer_current_user_thread_sigsegv_exit(label: &str, frame_addr: u64) {
     // immediately after publication.
     super::leave_process_ttbr0();
 
-    let stack_owner =
-        crate::arch_impl::aarch64::context_switch::last_dispatched_tid_for_stack_address(
-            frame_addr,
-        )
-        .and_then(|(_, tid)| (tid != 0).then_some(tid));
-    let cpu_id = crate::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id() as usize;
-    let victim_tid = stack_owner.or_else(|| {
-        crate::arch_impl::aarch64::context_switch::last_dispatched_tid(cpu_id)
-    });
+    let victim_tid = fault_victim_tid(frame_addr);
 
     if let Some(tid) = victim_tid {
         let queued = crate::task::process_task::defer_fault_sigsegv_exit(tid);
-        crate::task::scheduler::request_exit_pending(tid);
         if !queued {
             crate::task::process_task::FAULT_EXIT_INTENT_DROPPED
                 .fetch_add(1, Ordering::Relaxed);
@@ -766,8 +755,7 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
 
                 // From userspace - terminate the process with SIGSEGV
                 // Get current TTBR0 to find the process
-                let page_table_phys = ttbr0 & !0xFFFF_0000_0000_0FFF;
-                kill_current_user_process_and_redirect(frame_ref, page_table_phys);
+                kill_current_user_process_and_redirect(frame_ref);
                 return;
             }
 
@@ -892,7 +880,7 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                     let cpu_id = crate::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id();
                     raw_uart_str("\n[EL0_DIAG] cpu=");
                     raw_uart_dec(cpu_id as u64);
-                    if let Some(tid) = crate::task::scheduler::current_thread_id() {
+                    if let Some(tid) = fault_victim_tid(frame as u64) {
                         raw_uart_str(" tid=");
                         raw_uart_dec(tid);
                     }
@@ -1084,8 +1072,7 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
 
             if from_el0 {
                 // From userspace - terminate the process with SIGSEGV
-                let page_table_phys = ttbr0 & !0xFFFF_0000_0000_0FFF;
-                kill_current_user_process_and_redirect(frame_ref, page_table_phys);
+                kill_current_user_process_and_redirect(frame_ref);
                 return;
             }
 
@@ -1133,12 +1120,7 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                 raw_uart_str("\n");
             }
             if from_el0 {
-                let ttbr0: u64;
-                unsafe {
-                    core::arch::asm!("mrs {}, ttbr0_el1", out(reg) ttbr0, options(nomem, nostack));
-                }
-                let page_table_phys = ttbr0 & !0xFFFF_0000_0000_0FFF;
-                kill_current_user_process_and_redirect(frame_ref, page_table_phys);
+                kill_current_user_process_and_redirect(frame_ref);
                 return;
             }
             // CRITICAL: Set frame values BEFORE switch_to_idle_best_effort()
@@ -1187,25 +1169,9 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                     raw_uart_hex(frame_ref.x0);
                     raw_uart_str(" x1=");
                     raw_uart_hex(frame_ref.x1);
-                    if let Some(tid) = crate::task::scheduler::current_thread_id() {
+                    if let Some(tid) = fault_victim_tid(frame as u64) {
                         raw_uart_str("\n  current_tid=");
                         raw_uart_dec(tid);
-                        if let Some(dump) = crate::task::scheduler::try_dump_state() {
-                            if let Some(thread) = dump.threads.iter().find(|t| t.id == tid) {
-                                raw_uart_str(" owner_pid=");
-                                raw_uart_dec(thread.owner_pid);
-                                raw_uart_str(" bis=");
-                                raw_uart_char(if thread.blocked_in_syscall {
-                                    b'1'
-                                } else {
-                                    b'0'
-                                });
-                                raw_uart_str(" saved_elr=");
-                                raw_uart_hex(thread.elr_el1);
-                                raw_uart_str(" saved_x30=");
-                                raw_uart_hex(thread.x30);
-                            }
-                        }
                     }
                     raw_uart_str("\n  last_dispatch_elr=");
                     raw_uart_hex(dispatch_elr);
@@ -1223,12 +1189,7 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                 raw_uart_str("\n");
             }
             if from_el0 {
-                let ttbr0: u64;
-                unsafe {
-                    core::arch::asm!("mrs {}, ttbr0_el1", out(reg) ttbr0, options(nomem, nostack));
-                }
-                let page_table_phys = ttbr0 & !0xFFFF_0000_0000_0FFF;
-                kill_current_user_process_and_redirect(frame_ref, page_table_phys);
+                kill_current_user_process_and_redirect(frame_ref);
                 return;
             }
             // CRITICAL: Set frame values BEFORE switch_to_idle_best_effort()

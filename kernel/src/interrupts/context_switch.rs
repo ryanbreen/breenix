@@ -1372,6 +1372,8 @@ fn check_and_deliver_signals_for_current_thread(
 /// Simple idle loop - made pub for exception handlers that need to jump to idle
 pub fn idle_loop() -> ! {
     loop {
+        x86_64::instructions::interrupts::enable();
+        while crate::task::process_task::complete_one_deferred_signal_exit() {}
         // Try to flush any pending IRQ logs while idle
         crate::irq_log::flush_local_try();
         // CRITICAL: Use enable_and_hlt() instead of just hlt()

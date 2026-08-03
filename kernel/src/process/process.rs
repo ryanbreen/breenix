@@ -164,7 +164,6 @@ pub struct Process {
 
     pub exit_stage: ExitStage,
     pub exit_work_bits: ExitWorkBits,
-    pub live_thread_count: u32,
     pub reaped: bool,
     pub retired_root: Option<u64>,
 
@@ -226,8 +225,9 @@ pub struct Process {
 
     /// Old page tables from previous exec() calls, pending deferred cleanup.
     /// These cannot be freed immediately during exec because CR3 may still point
-    /// to the old table when a timer interrupt fires. They move into the process
-    /// grave at exit and remain pinned until the reclaimer proves quiescence.
+    /// to the old table when a timer interrupt fires. They are drained outside
+    /// the PM lock at the start of the next exec, or move into the process grave
+    /// if the process exits first.
     pub pending_old_page_tables: Vec<Box<ProcessPageTable>>,
 
     /// Framebuffer mmap info (if this process has an mmap'd framebuffer)
@@ -284,7 +284,6 @@ impl Process {
             exit_code: None,
             exit_stage: ExitStage::Live,
             exit_work_bits: ExitWorkBits::empty(),
-            live_thread_count: 1,
             reaped: false,
             retired_root: None,
             memory_usage: MemoryUsage::default(),
@@ -339,7 +338,6 @@ impl Process {
         }
         self.exit_stage = ExitStage::ExitCommitted;
         self.exit_work_bits = ExitWorkBits::all();
-        self.live_thread_count = 0;
         self.state = ProcessState::Terminated(exit_code);
         self.exit_code = Some(exit_code);
         ExitOutcome::Committed
@@ -387,57 +385,6 @@ impl Process {
         self.reaped && self.exit_stage == ExitStage::Reclaimed && self.exit_work_bits.is_empty()
     }
 
-    /// Clean up Copy-on-Write frame references when process exits
-    ///
-    /// Walks all user pages in the process's page table and decrements their
-    /// reference counts. Frames that are no longer shared (refcount reaches 0)
-    /// are returned to the frame allocator for reuse.
-    #[cfg(target_arch = "x86_64")]
-    pub fn cleanup_cow_frames(&mut self, _context: &crate::task::reclaim::ReclaimContext) {
-        use crate::memory::frame_allocator::deallocate_frame;
-        use crate::memory::frame_metadata::frame_decref;
-        use x86_64::structures::paging::{PageTableFlags, PhysFrame};
-
-        // Get the page table for this process
-        let page_table = match self.page_table.as_ref() {
-            Some(pt) => pt,
-            None => return,
-        };
-
-        // Walk all user pages and decrement refcounts
-        let _ = page_table.walk_mapped_pages(|_virt_addr, phys_addr, flags| {
-            // Only process user-accessible pages
-            if !flags.contains(PageTableFlags::USER_ACCESSIBLE) {
-                return;
-            }
-
-            let frame = PhysFrame::containing_address(phys_addr);
-
-            // Decrement reference count.
-            // Returns true if the frame should be freed:
-            // - Tracked frame whose refcount reached 0 (was shared, now sole owner exiting)
-            // - Untracked frame (private to this process, never shared via CoW)
-            // Returns false if still shared (refcount > 0 after decrement).
-            if frame_decref(frame) {
-                deallocate_frame(frame);
-            }
-        });
-    }
-
-    /// Clean up Copy-on-Write frame references when process exits (ARM64)
-    ///
-    /// Walks all user pages in the process's page table and decrements their
-    /// reference counts. Frames that are no longer shared (refcount reaches 0)
-    /// are returned to the frame allocator for reuse.
-    ///
-    /// CRITICAL: No logging — may run under PM lock.
-    #[cfg(not(target_arch = "x86_64"))]
-    pub fn cleanup_cow_frames(&mut self, context: &crate::task::reclaim::ReclaimContext) {
-        if let Some(page_table) = self.page_table.as_ref() {
-            cleanup_cow_page_table(page_table, context);
-        }
-    }
-
     /// Check if process is terminated
     pub fn is_terminated(&self) -> bool {
         matches!(self.state, ProcessState::Terminated(_))
@@ -482,29 +429,4 @@ impl Process {
     pub fn vma_list_mut(&mut self) -> &mut alloc::vec::Vec<crate::memory::vma::Vma> {
         &mut self.vmas
     }
-}
-
-/// Release the user-frame references reachable from an AArch64 process root.
-///
-/// Deferred exit reclamation owns the page table after removing it from the
-/// process table, so this operation accepts the page table directly.
-#[cfg(target_arch = "aarch64")]
-pub(crate) fn cleanup_cow_page_table(
-    page_table: &ProcessPageTable,
-    _context: &crate::task::reclaim::ReclaimContext,
-) {
-    use crate::memory::arch_stub::{PageTableFlags, PhysFrame};
-    use crate::memory::frame_allocator::deallocate_frame;
-    use crate::memory::frame_metadata::frame_decref;
-
-    let _ = page_table.walk_mapped_pages(|_virt_addr, phys_addr, flags| {
-        if !flags.contains(PageTableFlags::USER_ACCESSIBLE) {
-            return;
-        }
-
-        let frame = PhysFrame::containing_address(phys_addr);
-        if frame_decref(frame) {
-            deallocate_frame(frame);
-        }
-    });
 }

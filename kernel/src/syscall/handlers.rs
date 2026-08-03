@@ -1912,6 +1912,13 @@ pub fn sys_exec_with_frame(
     program_name_ptr: u64,
     elf_data_ptr: u64,
 ) -> SyscallResult {
+    if let Some(current_pid) = crate::task::scheduler::current_thread_id().and_then(|tid| {
+        crate::process::manager()
+            .as_ref()
+            .and_then(|manager| manager.find_process_by_thread(tid).map(|(pid, _)| pid))
+    }) {
+        crate::task::reclaim::drain_old_page_tables_for_exec(current_pid);
+    }
     crate::arch_without_interrupts(|| {
         log::info!(
             "sys_exec_with_frame called: program_name_ptr={:#x}, elf_data_ptr={:#x}",
@@ -2374,6 +2381,7 @@ pub fn sys_execv_with_frame(
 
         // CRITICAL SECTION: Frame manipulation and process state changes
         // Only this part needs interrupts disabled for atomicity
+        crate::task::reclaim::drain_old_page_tables_for_exec(current_pid);
         crate::arch_without_interrupts(|| {
             let mut manager_guard = crate::process::manager();
             if let Some(ref mut manager) = *manager_guard {
@@ -2469,6 +2477,13 @@ pub fn sys_execv_with_frame(
 /// DEPRECATED: Use sys_exec_with_frame instead to properly update the syscall frame
 #[cfg(target_arch = "x86_64")]
 pub fn sys_exec(program_name_ptr: u64, elf_data_ptr: u64) -> SyscallResult {
+    if let Some(current_pid) = crate::task::scheduler::current_thread_id().and_then(|tid| {
+        crate::process::manager()
+            .as_ref()
+            .and_then(|manager| manager.find_process_by_thread(tid).map(|(pid, _)| pid))
+    }) {
+        crate::task::reclaim::drain_old_page_tables_for_exec(current_pid);
+    }
     crate::arch_without_interrupts(|| {
         log::info!(
             "sys_exec called: program_name_ptr={:#x}, elf_data_ptr={:#x}",

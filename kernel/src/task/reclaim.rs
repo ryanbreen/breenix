@@ -3,6 +3,8 @@
 use alloc::alloc::{alloc, Layout};
 use alloc::boxed::Box;
 use alloc::vec::Vec;
+#[cfg(target_arch = "aarch64")]
+use core::sync::atomic::AtomicBool;
 use core::sync::atomic::{AtomicPtr, AtomicU64, Ordering};
 
 use crate::memory::process_memory::ProcessPageTable;
@@ -28,11 +30,13 @@ pub struct ProcessGrave {
 unsafe impl Send for ProcessGrave {}
 
 static GRAVEYARD: AtomicPtr<ProcessGrave> = AtomicPtr::new(core::ptr::null_mut());
+#[cfg(target_arch = "aarch64")]
+static GRAVE_DETACH_LOCK: spin::Mutex<()> = spin::Mutex::new(());
 static RECLAIM_WORK_GEN: AtomicU64 = AtomicU64::new(0);
 #[cfg(target_arch = "aarch64")]
 static RECLAIM_TID: AtomicU64 = AtomicU64::new(0);
 #[cfg(target_arch = "aarch64")]
-static RECLAIM_HANDLE: spin::Mutex<Option<crate::task::KthreadHandle>> = spin::Mutex::new(None);
+static RECLAIM_WAKE_PENDING: AtomicBool = AtomicBool::new(false);
 static GRAVES_QUEUED: AtomicU64 = AtomicU64::new(0);
 #[cfg(target_arch = "aarch64")]
 static GRAVES_RECLAIMED: AtomicU64 = AtomicU64::new(0);
@@ -56,6 +60,26 @@ impl ReclaimContext {
         );
         debug_assert!(!crate::process::process_manager_lock_held_by_current_cpu());
         Self(())
+    }
+}
+
+/// Dispose of page tables retired by the preceding exec before beginning the
+/// next address-space replacement. The PM transaction only moves the existing
+/// Vec buffer; all frame walks, logging, and destruction happen after the lock
+/// is released in a preemptible context.
+pub fn drain_old_page_tables_for_exec(pid: ProcessId) {
+    let old_page_tables = crate::process::manager()
+        .as_mut()
+        .and_then(|manager| manager.take_old_page_tables_for_exec(pid));
+    let Some(old_page_tables) = old_page_tables else {
+        return;
+    };
+    if old_page_tables.is_empty() {
+        return;
+    }
+    let context = ReclaimContext::assert_preemptible();
+    for page_table in old_page_tables {
+        page_table.cleanup_for_exec(&context);
     }
 }
 
@@ -117,18 +141,49 @@ fn push_grave_inner(grave: Box<ProcessGrave>) {
 }
 
 /// Detach the entire graveyard for one reclaimer pass.
-pub fn take_all_graves() -> *mut ProcessGrave {
+#[cfg(target_arch = "aarch64")]
+fn take_all_graves() -> *mut ProcessGrave {
     GRAVEYARD.swap(core::ptr::null_mut(), Ordering::Acquire)
+}
+
+#[cfg(target_arch = "aarch64")]
+fn take_one_grave() -> *mut ProcessGrave {
+    let mut head = GRAVEYARD.load(Ordering::Acquire);
+    loop {
+        if head.is_null() {
+            return head;
+        }
+        let next = unsafe { (*head).next };
+        match GRAVEYARD.compare_exchange_weak(head, next, Ordering::Acquire, Ordering::Relaxed) {
+            Ok(_) => return head,
+            Err(observed) => head = observed,
+        }
+    }
 }
 
 pub fn kreclaim_wake() {
     RECLAIM_WORK_GEN.fetch_add(1, Ordering::Release);
     #[cfg(target_arch = "aarch64")]
-    if let Some(handle) = RECLAIM_HANDLE
-        .try_lock()
-        .and_then(|handle| handle.as_ref().cloned())
     {
-        crate::task::kthread_unpark(&handle);
+        RECLAIM_WAKE_PENDING.store(true, Ordering::Release);
+        crate::task::scheduler::set_need_resched();
+    }
+}
+
+/// Claim the durable reclaimer wake marker while already holding the scheduler
+/// lock. Producers only publish atomics, so fault/ERET paths never acquire the
+/// scheduler lock and the wake cannot overflow a bounded queue.
+#[cfg(target_arch = "aarch64")]
+pub(crate) fn take_reclaim_wake_tid() -> Option<u64> {
+    if !RECLAIM_WAKE_PENDING.swap(false, Ordering::AcqRel) {
+        return None;
+    }
+    let tid = RECLAIM_TID.load(Ordering::Acquire);
+    if tid == 0 {
+        RECLAIM_WAKE_PENDING.store(true, Ordering::Release);
+        None
+    } else {
+        Some(tid)
     }
 }
 
@@ -164,17 +219,47 @@ fn grave_reclaimable(
     grave: &ProcessGrave,
     snapshot: &super::scheduler::RetirementSnapshot,
 ) -> (bool, u64, u32, Option<u64>) {
+    let root_mask = !0xFFFF_0000_0000_0FFF;
+    let contains_root = |candidate: u64| {
+        grave
+            .page_table
+            .iter()
+            .chain(grave.old_page_tables.iter())
+            .any(|page_table| {
+                page_table.level_4_frame().start_address().as_u64() & root_mask
+                    == candidate & root_mask
+            })
+    };
+
+    let live_sharer_root = {
+        let manager = crate::process::manager();
+        manager.as_ref().and_then(|manager| {
+            grave
+                .page_table
+                .iter()
+                .chain(grave.old_page_tables.iter())
+                .map(|page_table| page_table.level_4_frame().start_address().as_u64())
+                .find(|root| manager.root_has_live_sharer(*root, None))
+        })
+    };
+    if let Some(root) = live_sharer_root {
+        return (false, root, 0, None);
+    }
+
+    let cached_holder =
+        crate::task::scheduler::cached_ttbr0_holder_matching(snapshot, contains_root);
     for page_table in grave
         .page_table
         .iter()
         .chain(grave.old_page_tables.iter())
     {
         let root = page_table.level_4_frame().start_address().as_u64();
-        let liveness = crate::arch_impl::aarch64::root_liveness(snapshot, root);
-        let live_sharer = crate::process::manager().as_ref().is_some_and(|manager| {
-            manager.root_has_live_sharer(root, None)
-        });
-        if liveness.is_live() || live_sharer {
+        let cached_thread = cached_holder
+            .filter(|(_, cached_root)| *cached_root == root & root_mask)
+            .map(|(thread_id, _)| thread_id);
+        let liveness =
+            crate::arch_impl::aarch64::root_liveness(snapshot, root, cached_thread);
+        if liveness.is_live() {
             return (
                 false,
                 root,
@@ -187,10 +272,9 @@ fn grave_reclaimable(
 }
 
 #[cfg(target_arch = "aarch64")]
-pub fn reclaim_pass(context: &ReclaimContext) -> ReclaimStats {
+fn reclaim_detached(context: &ReclaimContext, mut cursor: *mut ProcessGrave) -> ReclaimStats {
     let mut stats = ReclaimStats::default();
     let mut ready = core::ptr::null_mut();
-    let mut cursor = take_all_graves();
 
     while !cursor.is_null() {
         let mut grave = unsafe { Box::from_raw(cursor) };
@@ -239,9 +323,7 @@ pub fn reclaim_pass(context: &ReclaimContext) -> ReclaimStats {
         ready = grave.next;
         grave.release_stack(context);
         if let Some(page_table) = grave.page_table.take() {
-            let root = page_table.level_4_frame();
-            crate::process::process::cleanup_cow_page_table(&page_table, context);
-            crate::memory::frame_allocator::deallocate_frame(root);
+            page_table.cleanup_for_exec(context);
         }
         for old_page_table in grave.old_page_tables.drain(..) {
             old_page_table.cleanup_for_exec(context);
@@ -257,6 +339,25 @@ pub fn reclaim_pass(context: &ReclaimContext) -> ReclaimStats {
 }
 
 #[cfg(target_arch = "aarch64")]
+pub fn reclaim_pass(context: &ReclaimContext) -> ReclaimStats {
+    let cursor = {
+        let _detach = GRAVE_DETACH_LOCK.lock();
+        take_all_graves()
+    };
+    reclaim_detached(context, cursor)
+}
+
+/// Reclaim at most one grave from latency-sensitive allocation paths.
+#[cfg(target_arch = "aarch64")]
+pub fn reclaim_one(context: &ReclaimContext) -> ReclaimStats {
+    let cursor = {
+        let _detach = GRAVE_DETACH_LOCK.lock();
+        take_one_grave()
+    };
+    reclaim_detached(context, cursor)
+}
+
+#[cfg(target_arch = "aarch64")]
 enum ReclaimWork {
     DidWork,
     Blocked,
@@ -267,6 +368,7 @@ enum ReclaimWork {
 fn service_one(context: &ReclaimContext) -> ReclaimWork {
     if let Some(thread_id) = crate::task::process_task::take_deferred_fault_sigsegv_exit() {
         crate::task::process_task::ProcessScheduler::handle_thread_exit(thread_id, -11);
+        crate::task::scheduler::request_exit_pending(thread_id);
         return ReclaimWork::DidWork;
     }
 
@@ -330,12 +432,22 @@ fn service_one(context: &ReclaimContext) -> ReclaimWork {
     }
     blocked |= crate::task::scheduler::has_pending_thread_reclaim();
 
-    let row = crate::process::manager()
-        .as_mut()
-        .and_then(crate::process::ProcessManager::detach_one_removable_row);
-    if let Some(row) = row {
-        drop(row);
-        return ReclaimWork::DidWork;
+    let row_candidate = crate::process::manager()
+        .as_ref()
+        .and_then(crate::process::ProcessManager::removable_row_candidate);
+    if let Some(candidate) = row_candidate {
+        let stack_reclaimable = candidate.owned_stack.is_none_or(|(thread_id, stack_top)| {
+            crate::task::scheduler::process_row_stack_reclaimable(thread_id, stack_top)
+        });
+        if stack_reclaimable {
+            let row = crate::process::manager()
+                .as_mut()
+                .and_then(|manager| manager.detach_removable_row(candidate.pid));
+            if let Some(row) = row {
+                drop(row);
+                return ReclaimWork::DidWork;
+            }
+        }
     }
 
     if blocked {
@@ -354,10 +466,6 @@ fn block_for_liveness_retry() {
     });
     crate::task::scheduler::set_need_resched();
     crate::task::scheduler::schedule();
-    crate::task::scheduler::yield_current();
-    unsafe {
-        core::arch::asm!("wfi", options(nomem, nostack));
-    }
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -366,12 +474,7 @@ pub fn kreclaimd_main() {
         let observed_generation = RECLAIM_WORK_GEN.load(Ordering::Acquire);
         let context = ReclaimContext::assert_preemptible();
         match service_one(&context) {
-            ReclaimWork::DidWork => {
-                crate::task::scheduler::yield_current();
-                unsafe {
-                    core::arch::asm!("wfi", options(nomem, nostack));
-                }
-            }
+            ReclaimWork::DidWork => continue,
             ReclaimWork::Blocked => block_for_liveness_retry(),
             ReclaimWork::Empty => crate::task::kthread_park_if(|| {
                 RECLAIM_WORK_GEN.load(Ordering::Acquire) == observed_generation
@@ -384,7 +487,9 @@ pub fn kreclaimd_main() {
 pub fn init_reclaim_thread() -> Result<crate::task::KthreadHandle, crate::task::KthreadError> {
     let handle = crate::task::kthread_run(kreclaimd_main, "kreclaimd")?;
     RECLAIM_TID.store(handle.tid(), Ordering::Release);
-    *RECLAIM_HANDLE.lock() = Some(handle.clone());
+    if RECLAIM_WAKE_PENDING.load(Ordering::Acquire) {
+        crate::task::scheduler::set_need_resched();
+    }
     Ok(handle)
 }
 

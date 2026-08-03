@@ -12,6 +12,51 @@ use core::sync::atomic::{AtomicU64, Ordering};
 const DEFERRED_FAULT_EXIT_SLOTS: usize = 16;
 const DEFERRED_FAULT_EXIT_EMPTY: u64 = 0;
 
+#[cfg(target_arch = "x86_64")]
+const DEFERRED_SIGNAL_EXIT_SLOTS: usize = 16;
+#[cfg(target_arch = "x86_64")]
+const SIGNAL_EXIT_EMPTY: u64 = 0;
+#[cfg(target_arch = "x86_64")]
+const SIGNAL_EXIT_WRITING: u64 = 1;
+#[cfg(target_arch = "x86_64")]
+const SIGNAL_EXIT_PENDING: u64 = 2;
+#[cfg(target_arch = "x86_64")]
+const SIGNAL_EXIT_READY: u64 = 3;
+#[cfg(target_arch = "x86_64")]
+const SIGNAL_EXIT_READING: u64 = 4;
+
+#[cfg(target_arch = "x86_64")]
+struct DeferredSignalExitSlot {
+    state: AtomicU64,
+    owner_cpu: AtomicU64,
+    child_pid: AtomicU64,
+    exit_code: AtomicU64,
+    victim_tid: AtomicU64,
+}
+
+#[cfg(target_arch = "x86_64")]
+impl DeferredSignalExitSlot {
+    const fn new() -> Self {
+        Self {
+            state: AtomicU64::new(SIGNAL_EXIT_EMPTY),
+            owner_cpu: AtomicU64::new(0),
+            child_pid: AtomicU64::new(0),
+            exit_code: AtomicU64::new(0),
+            victim_tid: AtomicU64::new(0),
+        }
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+static DEFERRED_SIGNAL_EXITS: [DeferredSignalExitSlot; DEFERRED_SIGNAL_EXIT_SLOTS] =
+    [const { DeferredSignalExitSlot::new() }; DEFERRED_SIGNAL_EXIT_SLOTS];
+
+#[cfg(target_arch = "x86_64")]
+#[inline(always)]
+fn x86_cpu_id() -> u64 {
+    <crate::arch_impl::x86_64::X86PerCpu as crate::arch_impl::PerCpuOps>::cpu_id()
+}
+
 struct DeferredFaultExitBuffer {
     slots: [AtomicU64; DEFERRED_FAULT_EXIT_SLOTS],
 }
@@ -55,6 +100,8 @@ impl DeferredFaultExitBuffer {
 }
 
 pub static FAULT_EXIT_INTENT_DROPPED: AtomicU64 = AtomicU64::new(0);
+#[cfg(target_arch = "aarch64")]
+static DEFERRED_FAULT_EXIT_COUNT: AtomicU64 = AtomicU64::new(0);
 
 #[cfg(target_arch = "aarch64")]
 static DEFERRED_FAULT_EXIT_BUFFERS: [DeferredFaultExitBuffer; 8] =
@@ -130,15 +177,25 @@ impl ProcessScheduler {
     /// with interrupts disabled on all CPUs) combined with logging (which acquires
     /// SERIAL and framebuffer locks) creates an unbreakable deadlock.
     pub fn handle_thread_exit(thread_id: u64, exit_code: i32) {
-        let receipt = {
+        let exit = {
             let mut manager_guard = crate::process::manager();
             manager_guard.as_mut().and_then(|manager| {
                 let pid = manager.find_process_by_thread(thread_id).map(|(pid, _)| pid)?;
-                Some(manager.retire_process(pid, exit_code))
+                Some((pid, manager.retire_process(pid, exit_code)))
             })
         };
-        if let Some(receipt) = receipt {
-            receipt.complete();
+        if let Some(exit) = exit {
+            #[cfg(feature = "btrt")]
+            {
+                let (pid, receipt) = exit;
+                receipt.complete();
+                crate::test_framework::btrt::on_process_exit(pid.as_u64(), exit_code);
+            }
+            #[cfg(not(feature = "btrt"))]
+            {
+                let (_, receipt) = exit;
+                receipt.complete();
+            }
         }
     }
 
@@ -165,17 +222,169 @@ pub fn defer_fault_sigsegv_exit(thread_id: u64) -> bool {
     let cpu = 0usize;
 
     let idx = cpu.min(DEFERRED_FAULT_EXIT_BUFFERS.len().saturating_sub(1));
-    DEFERRED_FAULT_EXIT_BUFFERS[idx].push(thread_id)
+    let queued = DEFERRED_FAULT_EXIT_BUFFERS[idx].push(thread_id);
+    #[cfg(target_arch = "aarch64")]
+    if queued {
+        DEFERRED_FAULT_EXIT_COUNT.fetch_add(1, Ordering::Release);
+        crate::task::reclaim::kreclaim_wake();
+    }
+    queued
 }
 
 /// Claim one deferred kernel-fault exit without allocating.
 pub fn take_deferred_fault_sigsegv_exit() -> Option<u64> {
     for buf in &DEFERRED_FAULT_EXIT_BUFFERS {
         if let Some(tid) = buf.take_one() {
+            #[cfg(target_arch = "aarch64")]
+            DEFERRED_FAULT_EXIT_COUNT.fetch_sub(1, Ordering::AcqRel);
             return Some(tid);
         }
     }
     None
+}
+
+/// Publish a fatal x86 signal exit before returning the notification to a
+/// caller. Normal consumers cancel their copy before completing it; the
+/// syscall-return consumer that discards the notification leaves this durable
+/// intent for the off-stack idle context.
+#[cfg(target_arch = "x86_64")]
+pub(crate) fn defer_signal_exit(notification: &crate::signal::delivery::ParentNotification) -> bool {
+    for slot in &DEFERRED_SIGNAL_EXITS {
+        if slot
+            .state
+            .compare_exchange(
+                SIGNAL_EXIT_EMPTY,
+                SIGNAL_EXIT_WRITING,
+                Ordering::Acquire,
+                Ordering::Relaxed,
+            )
+            .is_ok()
+        {
+            slot.owner_cpu.store(x86_cpu_id(), Ordering::Relaxed);
+            slot.child_pid
+                .store(notification.child_pid.as_u64(), Ordering::Relaxed);
+            slot.exit_code
+                .store(notification.exit_code as i64 as u64, Ordering::Relaxed);
+            slot.victim_tid
+                .store(notification.victim_tid.unwrap_or(0), Ordering::Relaxed);
+            slot.state.store(SIGNAL_EXIT_PENDING, Ordering::Release);
+            return true;
+        }
+    }
+    false
+}
+
+#[cfg(target_arch = "x86_64")]
+pub(crate) fn cancel_deferred_signal_exit(child_pid: ProcessId) {
+    for slot in &DEFERRED_SIGNAL_EXITS {
+        loop {
+            let state = slot.state.load(Ordering::Acquire);
+            if !matches!(state, SIGNAL_EXIT_PENDING | SIGNAL_EXIT_READY) {
+                break;
+            }
+            if slot
+                .state
+                .compare_exchange(
+                    state,
+                    SIGNAL_EXIT_READING,
+                    Ordering::Acquire,
+                    Ordering::Relaxed,
+                )
+                .is_err()
+            {
+                continue;
+            }
+            if slot.child_pid.load(Ordering::Relaxed) == child_pid.as_u64() {
+                slot.state.store(SIGNAL_EXIT_EMPTY, Ordering::Release);
+                return;
+            }
+            slot.state.store(state, Ordering::Release);
+            break;
+        }
+    }
+}
+
+/// Make this CPU's pending signal-exit intents visible to its idle loop. The
+/// syscall-return fatal-signal path calls `switch_to_idle()` after discarding
+/// the notification; ordinary consumers cancel while the intent is pending.
+#[cfg(target_arch = "x86_64")]
+pub(crate) fn arm_deferred_signal_exits_for_current_cpu() {
+    let current_cpu = x86_cpu_id();
+    for slot in &DEFERRED_SIGNAL_EXITS {
+        if slot.owner_cpu.load(Ordering::Relaxed) == current_cpu {
+            let _ = slot.state.compare_exchange(
+                SIGNAL_EXIT_PENDING,
+                SIGNAL_EXIT_READY,
+                Ordering::Release,
+                Ordering::Relaxed,
+            );
+        }
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+fn take_deferred_signal_exit() -> Option<crate::signal::delivery::ParentNotification> {
+    let current_cpu = x86_cpu_id();
+    for slot in &DEFERRED_SIGNAL_EXITS {
+        if slot
+            .state
+            .compare_exchange(
+                SIGNAL_EXIT_READY,
+                SIGNAL_EXIT_READING,
+                Ordering::Acquire,
+                Ordering::Relaxed,
+            )
+            .is_err()
+        {
+            continue;
+        }
+        if slot.owner_cpu.load(Ordering::Relaxed) != current_cpu {
+            slot.state.store(SIGNAL_EXIT_READY, Ordering::Release);
+            continue;
+        }
+        let child_pid = ProcessId::new(slot.child_pid.load(Ordering::Relaxed));
+        let exit_code = slot.exit_code.load(Ordering::Relaxed) as i64 as i32;
+        let victim_tid = match slot.victim_tid.load(Ordering::Relaxed) {
+            0 => None,
+            tid => Some(tid),
+        };
+        slot.state.store(SIGNAL_EXIT_EMPTY, Ordering::Release);
+        return Some(crate::signal::delivery::ParentNotification {
+            child_pid,
+            exit_code,
+            victim_tid,
+        });
+    }
+    None
+}
+
+/// Complete one deferred fatal-signal exit from off-stack, IRQ-enabled x86
+/// idle context.
+#[cfg(target_arch = "x86_64")]
+pub fn complete_one_deferred_signal_exit() -> bool {
+    let Some(notification) = take_deferred_signal_exit() else {
+        return false;
+    };
+    crate::signal::delivery::notify_parent_of_termination_deferred(&notification);
+    true
+}
+
+/// Visit queued AArch64 fault victims without consuming their process-exit
+/// intents. The scheduler uses this while holding its own lock so a victim is
+/// quarantined before selection; kreclaimd remains the sole consumer.
+#[cfg(target_arch = "aarch64")]
+pub(crate) fn for_each_deferred_fault_exit(mut visit: impl FnMut(u64)) {
+    if DEFERRED_FAULT_EXIT_COUNT.load(Ordering::Acquire) == 0 {
+        return;
+    }
+    for buffer in &DEFERRED_FAULT_EXIT_BUFFERS {
+        for slot in &buffer.slots {
+            let tid = slot.load(Ordering::Acquire);
+            if tid != DEFERRED_FAULT_EXIT_EMPTY {
+                visit(tid);
+            }
+        }
+    }
 }
 
 /// Extension trait for Thread to support process operations
