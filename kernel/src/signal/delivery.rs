@@ -209,6 +209,7 @@ pub enum DeliverResult {
 
 /// Deliver a signal's default action
 /// Returns DeliverResult indicating what action was taken
+#[cfg(target_arch = "aarch64")]
 fn deliver_default_action(process: &mut Process, sig: u32) -> DeliverResult {
     match default_action(sig) {
         SignalDefaultAction::Terminate => {
@@ -239,6 +240,101 @@ fn deliver_default_action(process: &mut Process, sig: u32) -> DeliverResult {
                 signal_name(sig)
             );
             // Only change state if process was stopped
+            if matches!(process.state, ProcessState::Blocked) {
+                process.set_ready();
+                DeliverResult::Delivered
+            } else {
+                DeliverResult::Ignored
+            }
+        }
+        SignalDefaultAction::Ignore => {
+            log::debug!(
+                "Signal {} ({}) ignored (default) by process {}",
+                sig,
+                signal_name(sig),
+                process.id.as_u64()
+            );
+            DeliverResult::Ignored
+        }
+    }
+}
+
+/// Deliver a signal's default action using the synchronous x86 lifecycle from
+/// main. Signal termination and scheduler bookkeeping remain in-place.
+#[cfg(target_arch = "x86_64")]
+fn deliver_default_action(process: &mut Process, sig: u32) -> DeliverResult {
+    match default_action(sig) {
+        SignalDefaultAction::Terminate => {
+            crate::serial_println!(
+                "[signal] Process {} ({}) terminated by signal {} ({})",
+                process.id.as_u64(),
+                process.name,
+                sig,
+                signal_name(sig)
+            );
+            process.terminate(-(sig as i32));
+
+            if let Some(ref thread) = process.main_thread {
+                let thread_id = thread.id();
+                crate::task::scheduler::with_thread_mut(thread_id, |sched_thread| {
+                    sched_thread.set_terminated();
+                    log::info!(
+                        "Signal delivery: marked scheduler thread {} as Terminated",
+                        thread_id
+                    );
+                });
+            }
+
+            if let Some(notification) = notify_parent_of_termination(process) {
+                DeliverResult::Terminated(notification)
+            } else {
+                DeliverResult::Delivered
+            }
+        }
+        SignalDefaultAction::CoreDump => {
+            crate::serial_println!(
+                "[signal] Process {} ({}) killed (core dump) by signal {} ({})",
+                process.id.as_u64(),
+                process.name,
+                sig,
+                signal_name(sig)
+            );
+            process.terminate(-((sig as i32) | 0x80));
+
+            if let Some(ref thread) = process.main_thread {
+                let thread_id = thread.id();
+                crate::task::scheduler::with_thread_mut(thread_id, |sched_thread| {
+                    sched_thread.set_terminated();
+                    log::info!(
+                        "Signal delivery: marked scheduler thread {} as Terminated (core dump)",
+                        thread_id
+                    );
+                });
+            }
+
+            if let Some(notification) = notify_parent_of_termination(process) {
+                DeliverResult::Terminated(notification)
+            } else {
+                DeliverResult::Delivered
+            }
+        }
+        SignalDefaultAction::Stop => {
+            log::info!(
+                "Process {} stopped by signal {} ({})",
+                process.id.as_u64(),
+                sig,
+                signal_name(sig)
+            );
+            process.set_blocked();
+            DeliverResult::Delivered
+        }
+        SignalDefaultAction::Continue => {
+            log::info!(
+                "Process {} continued by signal {} ({})",
+                process.id.as_u64(),
+                sig,
+                signal_name(sig)
+            );
             if matches!(process.state, ProcessState::Blocked) {
                 process.set_ready();
                 DeliverResult::Delivered
@@ -675,8 +771,12 @@ fn deliver_to_user_handler_aarch64(
 /// This is used to defer parent notification until after the process manager lock is released,
 /// avoiding deadlocks when signal delivery happens while the manager lock is held.
 pub struct ParentNotification {
+    #[cfg(target_arch = "x86_64")]
+    pub parent_pid: crate::process::ProcessId,
     pub child_pid: crate::process::ProcessId,
+    #[cfg(target_arch = "aarch64")]
     pub exit_code: i32,
+    #[cfg(target_arch = "aarch64")]
     pub victim_tid: Option<u64>,
 }
 
@@ -691,9 +791,8 @@ pub struct ParentNotification {
 /// IMPORTANT: This function must be called AFTER the process manager lock is released!
 /// It will try to acquire the lock internally, so calling it while the lock is held
 /// will cause a deadlock.
+#[cfg(target_arch = "aarch64")]
 pub fn notify_parent_of_termination_deferred(notification: &ParentNotification) {
-    #[cfg(target_arch = "x86_64")]
-    crate::task::process_task::cancel_deferred_signal_exit(notification.child_pid);
     let child_pid = notification.child_pid;
     let receipt = {
         let mut manager_guard = crate::process::manager();
@@ -704,22 +803,82 @@ pub fn notify_parent_of_termination_deferred(notification: &ParentNotification) 
     };
     receipt.complete();
     if let Some(thread_id) = notification.victim_tid {
-        #[cfg(target_arch = "aarch64")]
         crate::task::scheduler::request_exit_pending(thread_id);
-        #[cfg(not(target_arch = "aarch64"))]
-        crate::task::scheduler::with_thread_mut(thread_id, |thread| thread.set_terminated());
     }
 }
 
+#[cfg(target_arch = "aarch64")]
 fn exit_request(process: &Process, exit_code: i32) -> ParentNotification {
-    let notification = ParentNotification {
+    ParentNotification {
         child_pid: process.id,
         exit_code,
         victim_tid: process.main_thread.as_ref().map(|thread| thread.id),
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+pub fn notify_parent_of_termination_deferred(notification: &ParentNotification) {
+    let parent_pid = notification.parent_pid;
+    let child_pid = notification.child_pid;
+
+    log::info!(
+        "notify_parent_of_termination_deferred: notifying parent {} about child {} termination",
+        parent_pid.as_u64(),
+        child_pid.as_u64()
+    );
+
+    let parent_thread_id = {
+        let mut manager_guard = crate::process::manager();
+        let Some(ref mut manager) = *manager_guard else {
+            log::warn!("notify_parent_of_termination_deferred: no process manager");
+            return;
+        };
+
+        if let Some(parent_process) = manager.get_process_mut(parent_pid) {
+            parent_process.signals.set_pending(SIGCHLD);
+            log::debug!(
+                "notify_parent_of_termination_deferred: sent SIGCHLD to parent {} for child {} termination",
+                parent_pid.as_u64(),
+                child_pid.as_u64()
+            );
+            parent_process.main_thread.as_ref().map(|thread| thread.id)
+        } else {
+            log::warn!(
+                "notify_parent_of_termination_deferred: parent process {} not found for child {}",
+                parent_pid.as_u64(),
+                child_pid.as_u64()
+            );
+            None
+        }
     };
-    #[cfg(target_arch = "x86_64")]
-    let _ = crate::task::process_task::defer_signal_exit(&notification);
-    notification
+
+    if let Some(parent_tid) = parent_thread_id {
+        crate::task::scheduler::with_scheduler(|scheduler| {
+            scheduler.unblock_for_child_exit(parent_tid);
+            scheduler.unblock_for_signal(parent_tid);
+        });
+        log::info!(
+            "notify_parent_of_termination_deferred: unblocked parent thread {} for child {} termination",
+            parent_tid,
+            child_pid.as_u64()
+        );
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+fn notify_parent_of_termination(process: &Process) -> Option<ParentNotification> {
+    let parent_pid = process.parent?;
+
+    log::debug!(
+        "notify_parent_of_termination: process {} has parent {}, notification queued",
+        process.id.as_u64(),
+        parent_pid.as_u64()
+    );
+
+    Some(ParentNotification {
+        parent_pid,
+        child_pid: process.id,
+    })
 }
 
 // =============================================================================

@@ -200,6 +200,7 @@ pub fn sys_clone(
     #[cfg(not(target_arch = "x86_64"))]
     let entry_point = crate::memory::arch_stub::VirtAddr::new(fn_ptr);
 
+    #[cfg(target_arch = "aarch64")]
     let grave = match crate::task::reclaim::ProcessGrave::try_new(child_pid) {
         Some(grave) => grave,
         None => return SyscallResult::Err(super::errno::ENOMEM as u64),
@@ -208,6 +209,7 @@ pub fn sys_clone(
         child_pid,
         alloc::format!("thread-{}", child_pid.as_u64()),
         entry_point,
+        #[cfg(target_arch = "aarch64")]
         grave,
     );
     child_process.parent = Some(parent_pid);
@@ -241,6 +243,11 @@ pub fn sys_clone(
 
     // Add child to process manager
     manager.insert_process(child_pid, child_process);
+
+    #[cfg(target_arch = "x86_64")]
+    if let Some(parent) = manager.get_process_mut(parent_pid) {
+        parent.children.push(child_pid);
+    }
 
     // Get the thread from the newly inserted process to add to scheduler
     let scheduler_thread = if let Some(process) = manager.get_process_mut(child_pid) {

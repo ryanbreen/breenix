@@ -1912,13 +1912,6 @@ pub fn sys_exec_with_frame(
     program_name_ptr: u64,
     elf_data_ptr: u64,
 ) -> SyscallResult {
-    if let Some(current_pid) = crate::task::scheduler::current_thread_id().and_then(|tid| {
-        crate::process::manager()
-            .as_ref()
-            .and_then(|manager| manager.find_process_by_thread(tid).map(|(pid, _)| pid))
-    }) {
-        crate::task::reclaim::drain_old_page_tables_for_exec(current_pid);
-    }
     crate::arch_without_interrupts(|| {
         log::info!(
             "sys_exec_with_frame called: program_name_ptr={:#x}, elf_data_ptr={:#x}",
@@ -2381,7 +2374,6 @@ pub fn sys_execv_with_frame(
 
         // CRITICAL SECTION: Frame manipulation and process state changes
         // Only this part needs interrupts disabled for atomicity
-        crate::task::reclaim::drain_old_page_tables_for_exec(current_pid);
         crate::arch_without_interrupts(|| {
             let mut manager_guard = crate::process::manager();
             if let Some(ref mut manager) = *manager_guard {
@@ -2477,13 +2469,6 @@ pub fn sys_execv_with_frame(
 /// DEPRECATED: Use sys_exec_with_frame instead to properly update the syscall frame
 #[cfg(target_arch = "x86_64")]
 pub fn sys_exec(program_name_ptr: u64, elf_data_ptr: u64) -> SyscallResult {
-    if let Some(current_pid) = crate::task::scheduler::current_thread_id().and_then(|tid| {
-        crate::process::manager()
-            .as_ref()
-            .and_then(|manager| manager.find_process_by_thread(tid).map(|(pid, _)| pid))
-    }) {
-        crate::task::reclaim::drain_old_page_tables_for_exec(current_pid);
-    }
     crate::arch_without_interrupts(|| {
         log::info!(
             "sys_exec called: program_name_ptr={:#x}, elf_data_ptr={:#x}",
@@ -3065,7 +3050,7 @@ fn complete_wait(
         }
     }
 
-    // Reap the child row; parentage is represented solely by child.parent.
+    #[cfg(target_arch = "aarch64")]
     if crate::task::scheduler::current_thread_id().is_some() {
         let mut manager_guard = crate::process::manager();
         let reaped_row = if let Some(ref mut manager) = *manager_guard {
@@ -3081,6 +3066,25 @@ fn complete_wait(
         drop(manager_guard);
         drop(reaped_row);
         crate::task::reclaim::kreclaim_wake();
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    if let Some(thread_id) = crate::task::scheduler::current_thread_id() {
+        let mut manager_guard = crate::process::manager();
+        if let Some(ref mut manager) = *manager_guard {
+            if let Some((_parent_pid, parent)) = manager.find_process_by_thread_mut(thread_id) {
+                parent.children.retain(|&id| id != child_pid);
+                log::debug!(
+                    "complete_wait: Removed child {} from parent's children list",
+                    child_pid.as_u64()
+                );
+            }
+            manager.remove_process(child_pid);
+            log::debug!(
+                "complete_wait: Reaped process {} from process table",
+                child_pid.as_u64()
+            );
+        }
     }
 
     // CRITICAL: Clear the blocked_in_syscall flag now that the syscall is completing.
@@ -3582,19 +3586,9 @@ fn poll_ensure_address_space() {
     if let Some(ref manager) = *manager_guard {
         if let Some((_pid, process)) = manager.find_process_by_thread(thread_id) {
             if let Some(ref page_table) = process.page_table {
-                let ttbr0_value = page_table.level_4_frame().start_address().as_u64();
-                unsafe {
-                    core::arch::asm!(
-                        "dsb ishst",
-                        "msr ttbr0_el1, {}",
-                        "isb",
-                        "tlbi vmalle1is",
-                        "dsb ish",
-                        "isb",
-                        in(reg) ttbr0_value,
-                        options(nomem, nostack)
-                    );
-                }
+                let ttbr0_value =
+                    page_table.level_4_frame().start_address().as_u64() | (1u64 << 48);
+                crate::arch_impl::aarch64::install_process_ttbr0(ttbr0_value);
             }
         }
     }

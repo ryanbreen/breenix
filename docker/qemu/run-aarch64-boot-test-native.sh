@@ -14,6 +14,9 @@ MAX_RETRIES=5
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BREENIX_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
+echo "Running AArch64 teardown structure checks..."
+(cd "$BREENIX_ROOT" && cargo test --test teardown_structure)
+
 # Find the ARM64 kernel
 KERNEL="$BREENIX_ROOT/target/aarch64-breenix/release/kernel-aarch64"
 if [ ! -f "$KERNEL" ]; then

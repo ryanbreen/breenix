@@ -119,15 +119,9 @@ fn ensure_current_address_space() {
     if let Some(ref manager) = *manager_guard {
         if let Some((_pid, process)) = manager.find_process_by_thread(thread_id) {
             if let Some(ref page_table) = process.page_table {
-                let ttbr0_value = page_table.level_4_frame().start_address().as_u64();
-                unsafe {
-                    core::arch::asm!(
-                        "dsb ishst",
-                        "msr ttbr0_el1, {}",
-                        "isb",
-                        in(reg) ttbr0_value
-                    );
-                }
+                let ttbr0_value =
+                    page_table.level_4_frame().start_address().as_u64() | (1u64 << 48);
+                crate::arch_impl::aarch64::install_process_ttbr0(ttbr0_value);
             }
         }
     }
@@ -1732,6 +1726,10 @@ fn handle_create_window_buffer(width: u32, height: u32, out_addr_ptr: u64) -> Sy
                 return SyscallResult::Err(super::ErrorCode::NoSuchProcess as u64);
             }
         };
+
+        // Reserve the row-local cleanup obligation before window resources can
+        // be published outside the process-manager lock.
+        process.has_window_buffers = true;
 
         let total_size = (num_pages as u64) * PAGE_SIZE;
         let new_addr = round_down_to_page(process.mmap_hint.saturating_sub(total_size));

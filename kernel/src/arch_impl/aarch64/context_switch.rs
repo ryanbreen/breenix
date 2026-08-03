@@ -3223,7 +3223,7 @@ fn dispatch_thread_locked(
             // into this thread's context slot, compounding the corruption.
             trace_dispatch_redirect(thread_id, TRACE_REDIRECT_RESTORE_FAILED);
             if let Some(thread) = sched.get_thread_mut(thread_id) {
-                thread.state = ThreadState::Terminated;
+                thread.set_terminated();
             }
             let current_before = setup_idle_return_locked(sched, frame, cpu_id);
             record_idle_redirect(
@@ -3317,7 +3317,7 @@ fn dispatch_thread_locked(
                 // would hit the same corrupt context. Termination lets the parent
                 // process (init) detect the exit and respawn if needed.
                 if let Some(thread) = sched.get_thread_mut(thread_id) {
-                    thread.state = ThreadState::Terminated;
+                    thread.set_terminated();
                 }
                 let current_before = setup_idle_return_locked(sched, frame, cpu_id);
                 record_idle_redirect(
@@ -3430,7 +3430,6 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
     frame: &mut Aarch64ExceptionFrame,
     from_el0: bool,
 ) {
-
     // ── Lock-free pre-checks ──────────────────────────────────────
     let preempt_count = Aarch64PerCpu::preempt_count();
     let cpu_id_early = Aarch64PerCpu::cpu_id() as usize;
@@ -4452,7 +4451,6 @@ fn cpu0_breadcrumb(cpu_id: usize, id: u64) {
 }
 
 pub fn schedule_from_kernel() {
-
     let saved_daif = read_daif();
     let cpu_id = Aarch64PerCpu::cpu_id() as usize;
     cpu0_breadcrumb(cpu_id, 1); // entry
@@ -5038,8 +5036,9 @@ fn check_and_deliver_signals_for_current_thread_arm64(frame: &mut Aarch64Excepti
 
                 // Switch to process's page table for signal delivery
                 if let Some(ref page_table) = process.page_table {
-                    let raw_ttbr0 = page_table.level_4_frame().start_address().as_u64();
-                    super::install_process_ttbr0(raw_ttbr0);
+                    let tagged_ttbr0 =
+                        page_table.level_4_frame().start_address().as_u64() | (1u64 << 48);
+                    super::install_process_ttbr0(tagged_ttbr0);
                 }
 
                 // Create SavedRegisters from exception frame for signal delivery

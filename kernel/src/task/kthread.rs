@@ -195,15 +195,24 @@ where
 
 /// Unpark a parked thread (wake)
 pub fn kthread_unpark(handle: &KthreadHandle) {
-    handle.inner.parked.store(false, Ordering::Release);
     scheduler::with_scheduler(|sched| {
-        sched.unblock(handle.inner.tid);
+        kthread_unpark_with_scheduler(handle, sched);
     });
     // CRITICAL: Set need_resched to ensure a context switch happens soon.
     // Without this, the unparked thread won't run until the current thread's
     // quantum expires (up to 50ms). This matches spawn()'s behavior of setting
     // need_resched after adding a thread to ready_queue.
     scheduler::set_need_resched();
+}
+
+/// Complete the existing kthread unpark protocol while the caller already
+/// owns the scheduler lock.
+pub(crate) fn kthread_unpark_with_scheduler(
+    handle: &KthreadHandle,
+    scheduler: &mut scheduler::Scheduler,
+) {
+    handle.inner.parked.store(false, Ordering::Release);
+    scheduler.unblock(handle.inner.tid);
 }
 
 /// Wait for kthread to exit and return its exit code

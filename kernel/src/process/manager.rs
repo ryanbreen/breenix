@@ -16,12 +16,15 @@ use x86_64::VirtAddr;
 #[cfg(not(target_arch = "x86_64"))]
 use crate::memory::arch_stub::VirtAddr;
 
-use super::{ExitOutcome, ExitWorkBits, Process, ProcessId, ProcessState};
+#[cfg(target_arch = "aarch64")]
+use super::{ExitOutcome, ExitWorkBits};
+use super::{Process, ProcessId, ProcessState};
 #[cfg(target_arch = "x86_64")]
 use crate::elf;
 use crate::memory::process_memory::ProcessPageTable;
 use crate::task::thread::Thread;
 
+#[cfg(target_arch = "aarch64")]
 pub enum ExitFdAction {
     Close(crate::ipc::fd::FileDescriptor),
     Drained,
@@ -274,9 +277,16 @@ impl ProcessManager {
 
         // Create the process
         crate::serial_println!("manager.create_process: Creating Process struct");
+        #[cfg(target_arch = "aarch64")]
         let grave = crate::task::reclaim::ProcessGrave::try_new(pid)
             .ok_or("Failed to allocate process grave")?;
-        let mut process = Process::new(pid, name.clone(), loaded_elf.entry_point, grave);
+        let mut process = Process::new(
+            pid,
+            name.clone(),
+            loaded_elf.entry_point,
+            #[cfg(target_arch = "aarch64")]
+            grave,
+        );
         process.page_table = Some(page_table);
 
         // Initialize heap tracking - heap starts at end of loaded segments (page aligned)
@@ -436,9 +446,16 @@ impl ProcessManager {
         // Create the process
         crate::serial_println!("manager.create_process [ARM64]: Creating Process struct");
         let entry_point = VirtAddr::new(loaded_elf.entry_point);
+        #[cfg(target_arch = "aarch64")]
         let grave = crate::task::reclaim::ProcessGrave::try_new(pid)
             .ok_or("Failed to allocate process grave")?;
-        let mut process = Process::new(pid, name.clone(), entry_point, grave);
+        let mut process = Process::new(
+            pid,
+            name.clone(),
+            entry_point,
+            #[cfg(target_arch = "aarch64")]
+            grave,
+        );
         process.page_table = Some(page_table);
 
         // Initialize heap tracking - heap starts at end of loaded segments (page aligned)
@@ -651,9 +668,16 @@ impl ProcessManager {
 
         // Create the process
         let entry_point = VirtAddr::new(loaded_elf.entry_point);
+        #[cfg(target_arch = "aarch64")]
         let grave = crate::task::reclaim::ProcessGrave::try_new(pid)
             .ok_or("Failed to allocate process grave")?;
-        let mut process = Process::new(pid, name.clone(), entry_point, grave);
+        let mut process = Process::new(
+            pid,
+            name.clone(),
+            entry_point,
+            #[cfg(target_arch = "aarch64")]
+            grave,
+        );
         process.page_table = Some(page_table);
 
         // Initialize heap tracking
@@ -806,6 +830,11 @@ impl ProcessManager {
             child.pgid = parent_pgid;
             child.sid = parent_sid;
             child.cwd = parent_cwd;
+        }
+
+        #[cfg(target_arch = "x86_64")]
+        if let Some(parent) = self.processes.get_mut(&parent_pid) {
+            parent.children.push(child_pid);
         }
 
         crate::serial_println!(
@@ -1104,15 +1133,15 @@ impl ProcessManager {
     }
 
     /// Record that waitpid consumed this process's status exactly once.
+    #[cfg(target_arch = "aarch64")]
     pub fn mark_reaped(&mut self, pid: ProcessId) -> Option<Process> {
         self.processes.get_mut(&pid)?.mark_reaped();
-        #[cfg(not(target_arch = "aarch64"))]
-        {
-            if self.processes.get(&pid).is_some_and(Process::can_remove_row) {
-                return self.processes.remove(&pid);
-            }
-        }
         None
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    pub fn remove_process(&mut self, pid: ProcessId) {
+        self.processes.remove(&pid);
     }
 
     /// Get a reference to a process
@@ -1127,30 +1156,99 @@ impl ProcessManager {
         self.processes.get_mut(&pid)
     }
 
+    #[cfg(target_arch = "x86_64")]
+    #[allow(dead_code)]
+    pub fn exit_process(&mut self, pid: ProcessId, exit_code: i32) {
+        let parent_pid = self.processes.get(&pid).and_then(|process| process.parent);
+
+        if let Some(process) = self.processes.get_mut(&pid) {
+            log::info!(
+                "Process {} (PID {}) exiting with code {}",
+                process.name,
+                pid.as_u64(),
+                exit_code
+            );
+
+            process.drain_old_page_tables();
+            process.terminate(exit_code);
+            self.ready_queue.retain(|queued_pid| *queued_pid != pid);
+            if self.current_pid == Some(pid) {
+                self.current_pid = None;
+            }
+
+            process.page_table.take();
+            process.stack.take();
+            process.pending_old_page_tables.clear();
+        }
+
+        let init_pid = ProcessId::new(1);
+        if pid != init_pid {
+            let children = self
+                .processes
+                .get(&pid)
+                .map(|process| process.children.clone())
+                .unwrap_or_default();
+
+            if !children.is_empty() {
+                for &child_pid in &children {
+                    if let Some(child) = self.processes.get_mut(&child_pid) {
+                        child.parent = Some(init_pid);
+                    }
+                }
+                if let Some(init) = self.processes.get_mut(&init_pid) {
+                    init.children.extend(children.iter());
+                }
+                if let Some(exiting) = self.processes.get_mut(&pid) {
+                    exiting.children.clear();
+                }
+            }
+        }
+
+        if let Some(parent_pid) = parent_pid {
+            if let Some(parent_process) = self.processes.get_mut(&parent_pid) {
+                use crate::signal::constants::SIGCHLD;
+                parent_process.signals.set_pending(SIGCHLD);
+                log::debug!(
+                    "Sent SIGCHLD to parent process {} for child {} exit",
+                    parent_pid.as_u64(),
+                    pid.as_u64()
+                );
+            }
+        }
+    }
+
     /// Commit process exit without allocating, logging, freeing, or taking a second lock.
+    #[cfg(target_arch = "aarch64")]
     #[must_use]
     pub fn retire_process(&mut self, pid: ProcessId, exit_code: i32) -> crate::process::ExitReceipt {
         let parent_pid = self.processes.get(&pid).and_then(|process| process.parent);
-        #[cfg(not(target_arch = "aarch64"))]
-        let parent_tid = parent_pid.and_then(|parent_pid| {
-            self.processes
-                .get(&parent_pid)
-                .and_then(|parent| parent.main_thread.as_ref().map(|thread| thread.id))
-        });
-
         let mut work_bits = ExitWorkBits::empty();
-        #[cfg(not(target_arch = "aarch64"))]
-        let mut receipt_grave = None;
+        let init_pid = ProcessId::new(1);
+        if pid != init_pid
+            && self
+                .processes
+                .values()
+                .any(|process| process.parent == Some(pid))
+        {
+            work_bits.insert(ExitWorkBits::REPARENT_CHILDREN);
+        }
+        if parent_pid.is_some_and(|parent_pid| self.processes.contains_key(&parent_pid)) {
+            work_bits.insert(ExitWorkBits::NOTIFY_PARENT);
+        }
+        if let Some(process) = self.processes.get(&pid) {
+            if process.has_window_buffers {
+                work_bits.insert(ExitWorkBits::CLEANUP_GRAPHICS);
+            }
+            if !process.fd_table.is_drained() {
+                work_bits.insert(ExitWorkBits::CLOSE_FDS);
+            }
+        }
+        let mut grave_published = false;
 
         let outcome = if let Some(process) = self.processes.get_mut(&pid) {
-            if let Some(grave) = process.commit_grave(exit_code) {
-                work_bits = process.exit_work_bits;
-                #[cfg(target_arch = "aarch64")]
+            if let Some(grave) = process.commit_grave(exit_code, work_bits) {
                 crate::task::reclaim::push_grave(grave);
-                #[cfg(not(target_arch = "aarch64"))]
-                {
-                    receipt_grave = Some(grave);
-                }
+                grave_published = true;
                 ExitOutcome::Committed
             } else {
                 ExitOutcome::AlreadyCommitted
@@ -1171,18 +1269,10 @@ impl ProcessManager {
             }
         }
 
-        crate::process::ExitReceipt::new(
-            #[cfg(not(target_arch = "aarch64"))]
-            pid,
-            #[cfg(not(target_arch = "aarch64"))]
-            parent_tid,
-            outcome,
-            work_bits,
-            #[cfg(not(target_arch = "aarch64"))]
-            receipt_grave,
-        )
+        crate::process::ExitReceipt::new(outcome, grave_published)
     }
 
+    #[cfg(target_arch = "aarch64")]
     pub fn take_next_fd_for_exit(
         &mut self,
         pid: ProcessId,
@@ -1192,6 +1282,7 @@ impl ProcessManager {
             .and_then(|process| process.fd_table.take_next_for_exit().map(|(_, fd)| fd))
     }
 
+    #[cfg(target_arch = "aarch64")]
     pub(crate) fn take_old_page_tables_for_exec(
         &mut self,
         pid: ProcessId,
@@ -1281,6 +1372,7 @@ impl ProcessManager {
         }
     }
 
+    #[cfg(target_arch = "aarch64")]
     pub(crate) fn mark_address_space_reclaimed(&mut self, pid: ProcessId) {
         if let Some(process) = self.processes.get_mut(&pid) {
             process.mark_reclaimed();
@@ -1300,9 +1392,10 @@ impl ProcessManager {
                 return None;
             }
             let owned_stack = match process.main_thread.as_ref() {
-                Some(thread) if thread.kernel_stack_allocation.is_some() => {
-                    Some((thread.id(), thread.kernel_stack_top?.as_u64()))
-                }
+                Some(thread) => thread
+                    .kernel_stack_allocation
+                    .as_ref()
+                    .map(|stack| (thread.id(), stack.top().as_u64())),
                 _ => None,
             };
             Some(RowRemovalCandidate {
@@ -1313,7 +1406,12 @@ impl ProcessManager {
     }
 
     #[cfg(target_arch = "aarch64")]
-    pub(crate) fn detach_removable_row(&mut self, pid: ProcessId) -> Option<Process> {
+    pub(crate) fn detach_removable_row(
+        &mut self,
+        candidate: RowRemovalCandidate,
+        stack_permit: Option<&crate::task::scheduler::RowStackReclaimPermit>,
+    ) -> Option<Process> {
+        let pid = candidate.pid;
         let process = self.processes.get(&pid)?;
         if !process.can_remove_row()
             || process
@@ -1322,20 +1420,20 @@ impl ProcessManager {
         {
             return None;
         }
-        self.processes.remove(&pid)
-    }
-
-    #[cfg(not(target_arch = "aarch64"))]
-    pub(crate) fn finish_exit_work_inline(&mut self, pid: ProcessId) {
-        self.reparent_children(pid, ProcessId::new(1));
-        if let Some(process) = self.processes.get_mut(&pid) {
-            process.exit_work_bits.remove(ExitWorkBits::REPARENT_CHILDREN);
-            process.exit_work_bits.remove(ExitWorkBits::NOTIFY_PARENT);
-            process.exit_work_bits.remove(ExitWorkBits::CLEANUP_GRAPHICS);
-            if process.fd_table.is_drained() {
-                process.exit_work_bits.remove(ExitWorkBits::CLOSE_FDS);
-            }
+        let owned_stack = process.main_thread.as_ref().and_then(|thread| {
+            thread
+                .kernel_stack_allocation
+                .as_ref()
+                .map(|stack| (thread.id(), stack.top().as_u64()))
+        });
+        match (owned_stack, stack_permit) {
+            (None, None) => {}
+            (Some((thread_id, stack_top)), Some(permit))
+                if candidate.owned_stack == owned_stack
+                    && permit.revalidates(thread_id, stack_top) => {}
+            _ => return None,
         }
+        self.processes.remove(&pid)
     }
 
     /// Get the next ready process to run
@@ -1385,6 +1483,7 @@ impl ProcessManager {
     }
 
     /// Enumerate child rows from the authoritative parent field.
+    #[cfg(target_arch = "aarch64")]
     pub fn child_pids(&self, parent: ProcessId) -> impl Iterator<Item = ProcessId> + '_ {
         self.processes
             .iter()
@@ -1393,16 +1492,35 @@ impl ProcessManager {
             })
     }
 
+    #[cfg(target_arch = "x86_64")]
+    pub fn child_pids(&self, parent: ProcessId) -> impl Iterator<Item = ProcessId> + '_ {
+        self.processes
+            .get(&parent)
+            .into_iter()
+            .flat_map(|process| process.children.iter().copied())
+            .filter(|child| self.processes.contains_key(child))
+    }
+
     pub fn child_count(&self, parent: ProcessId) -> usize {
         self.child_pids(parent).count()
     }
 
+    #[cfg(target_arch = "aarch64")]
     pub fn is_child_of(&self, parent: ProcessId, child: ProcessId) -> bool {
         self.processes
             .get(&child)
             .is_some_and(|process| process.parent == Some(parent) && !process.reaped)
     }
 
+    #[cfg(target_arch = "x86_64")]
+    pub fn is_child_of(&self, parent: ProcessId, child: ProcessId) -> bool {
+        self.processes
+            .get(&parent)
+            .is_some_and(|process| process.children.contains(&child))
+            && self.processes.contains_key(&child)
+    }
+
+    #[cfg(target_arch = "aarch64")]
     pub fn find_terminated_child(&self, parent: ProcessId) -> Option<(ProcessId, i32)> {
         self.processes.iter().find_map(|(pid, process)| {
             if process.parent != Some(parent) {
@@ -1418,6 +1536,19 @@ impl ProcessManager {
         })
     }
 
+    #[cfg(target_arch = "x86_64")]
+    pub fn find_terminated_child(&self, parent: ProcessId) -> Option<(ProcessId, i32)> {
+        self.processes.get(&parent)?.children.iter().find_map(|pid| {
+            self.processes
+                .get(pid)
+                .and_then(|process| match process.state {
+                    ProcessState::Terminated(exit_code) => Some((*pid, exit_code)),
+                    _ => None,
+                })
+        })
+    }
+
+    #[cfg(target_arch = "aarch64")]
     pub fn reparent_children(&mut self, parent: ProcessId, new_parent: ProcessId) {
         for process in self.processes.values_mut() {
             if process.parent == Some(parent) {
@@ -1602,10 +1733,16 @@ impl ProcessManager {
         let child_name = format!("{}_child_{}", parent_name, child_pid.as_u64());
 
         // Create the child process with the same entry point
+        #[cfg(target_arch = "aarch64")]
         let grave = crate::task::reclaim::ProcessGrave::try_new(child_pid)
             .ok_or("Failed to allocate child process grave")?;
-        let mut child_process =
-            Process::new(child_pid, child_name.clone(), parent_entry_point, grave);
+        let mut child_process = Process::new(
+            child_pid,
+            child_name.clone(),
+            parent_entry_point,
+            #[cfg(target_arch = "aarch64")]
+            grave,
+        );
         child_process.parent = Some(parent_pid);
         // POSIX: Child inherits parent's process group, session, and working directory
         child_process.pgid = parent_pgid;
@@ -1747,10 +1884,16 @@ impl ProcessManager {
         let child_name = format!("{}_child_{}", parent_name, child_pid.as_u64());
 
         // Create the child process with the same entry point
+        #[cfg(target_arch = "aarch64")]
         let grave = crate::task::reclaim::ProcessGrave::try_new(child_pid)
             .ok_or("Failed to allocate child process grave")?;
-        let mut child_process =
-            Process::new(child_pid, child_name.clone(), parent_entry_point, grave);
+        let mut child_process = Process::new(
+            child_pid,
+            child_name.clone(),
+            parent_entry_point,
+            #[cfg(target_arch = "aarch64")]
+            grave,
+        );
         child_process.parent = Some(parent_pid);
         // POSIX: Child inherits parent's process group, session, and working directory
         child_process.pgid = parent_pgid;
@@ -1890,10 +2033,16 @@ impl ProcessManager {
         let child_name = format!("{}_child_{}", parent_name, child_pid.as_u64());
 
         // Create the child process with the same entry point
+        #[cfg(target_arch = "aarch64")]
         let grave = crate::task::reclaim::ProcessGrave::try_new(child_pid)
             .ok_or("Failed to allocate child process grave")?;
-        let mut child_process =
-            Process::new(child_pid, child_name.clone(), parent_entry_point, grave);
+        let mut child_process = Process::new(
+            child_pid,
+            child_name.clone(),
+            parent_entry_point,
+            #[cfg(target_arch = "aarch64")]
+            grave,
+        );
         child_process.parent = Some(parent_pid);
         // POSIX: Child inherits parent's process group, session, and working directory
         child_process.pgid = parent_pgid;
@@ -2298,6 +2447,10 @@ impl ProcessManager {
             return Err("Parent process not found during state copy");
         }
 
+        if let Some(parent) = self.processes.get_mut(&parent_pid) {
+            parent.children.push(child_pid);
+        }
+
         // Insert the child process into the process table
         log::debug!("About to insert child process into process table");
         self.processes.insert(child_pid, child_process);
@@ -2356,10 +2509,16 @@ impl ProcessManager {
         let parent_cwd = parent.cwd.clone();
 
         // Create the child process with the same entry point
+        #[cfg(target_arch = "aarch64")]
         let grave = crate::task::reclaim::ProcessGrave::try_new(child_pid)
             .ok_or("Failed to allocate child process grave")?;
-        let mut child_process =
-            Process::new(child_pid, child_name.clone(), parent.entry_point, grave);
+        let mut child_process = Process::new(
+            child_pid,
+            child_name.clone(),
+            parent.entry_point,
+            #[cfg(target_arch = "aarch64")]
+            grave,
+        );
         child_process.parent = Some(parent_pid);
         // POSIX: Child inherits parent's process group, session, and working directory
         child_process.pgid = parent_pgid;
@@ -2568,6 +2727,10 @@ impl ProcessManager {
 
             // Set the child thread as the main thread of the child process
             child_process.set_main_thread(child_thread);
+
+            if let Some(parent) = self.processes.get_mut(&parent_pid) {
+                parent.add_child(child_pid);
+            }
 
             // Add the child process to the process table
             self.processes.insert(child_pid, child_process);

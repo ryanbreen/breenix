@@ -485,7 +485,7 @@ pub fn try_dump_state() -> Option<SchedulerDumpInfo> {
                     ThreadState::BlockedOnTimer => 5,
                     ThreadState::BlockedOnIO => 7,
                     ThreadState::ExitPending => 8,
-                    ThreadState::Terminated => 6,
+                    ThreadState::Terminated => 9,
                 },
                 blocked_in_syscall: t.blocked_in_syscall,
                 saved_by_inline_schedule: t.saved_by_inline_schedule,
@@ -550,13 +550,6 @@ pub struct RetirementFence {
 #[derive(Clone, Copy)]
 #[cfg(not(target_arch = "aarch64"))]
 pub struct RetirementFence;
-
-#[cfg(not(target_arch = "aarch64"))]
-impl RetirementFence {
-    pub(crate) const fn capture() -> Self {
-        Self
-    }
-}
 
 #[cfg(target_arch = "aarch64")]
 impl RetirementFence {
@@ -1019,12 +1012,7 @@ impl Scheduler {
 
     #[cfg(target_arch = "aarch64")]
     fn drain_teardown_intents(&mut self) {
-        if let Some(tid) = crate::task::reclaim::take_reclaim_wake_tid() {
-            self.unblock(tid);
-        }
-        crate::task::process_task::for_each_deferred_fault_exit(|tid| {
-            self.request_exit_pending(tid);
-        });
+        crate::task::reclaim::drain_reclaim_wake(self);
     }
 
     /// Complete the off-stack edge after an ordered retirement observation.
@@ -3037,29 +3025,55 @@ pub fn has_pending_thread_reclaim() -> bool {
     })
 }
 
+/// Scheduler-issued proof that a zombie row's owned stack cannot be resumed.
+#[cfg(target_arch = "aarch64")]
+pub(crate) struct RowStackReclaimPermit {
+    thread_id: u64,
+    stack_top: u64,
+}
+
+#[cfg(target_arch = "aarch64")]
+impl RowStackReclaimPermit {
+    /// Recheck both permit identity and the lock-free architectural liveness
+    /// predicate inside the final process-manager transaction.
+    pub(crate) fn revalidates(&self, thread_id: u64, stack_top: u64) -> bool {
+        self.thread_id == thread_id
+            && self.stack_top == stack_top
+            && !crate::memory::kernel_stack::is_kernel_stack_slot_live(stack_top)
+    }
+}
+
 /// Prove that a kernel stack still owned by a zombie Process row is no longer
 /// reachable by the scheduler. This runs between two short PM transactions so
 /// PROCESS_MANAGER and SCHEDULER are never held together.
 #[cfg(target_arch = "aarch64")]
-pub fn process_row_stack_reclaimable(thread_id: u64, stack_top: u64) -> bool {
+pub(crate) fn process_row_stack_reclaim_permit(
+    thread_id: u64,
+    stack_top: u64,
+) -> Option<RowStackReclaimPermit> {
     without_interrupts(|| {
         let scheduler_lock = SCHEDULER.lock();
         let Some(scheduler) = scheduler_lock.as_ref() else {
-            return false;
+            return None;
         };
         let stack_live = crate::memory::kernel_stack::is_kernel_stack_slot_live(stack_top);
-        let Some(thread) = scheduler.get_thread(thread_id) else {
+        let reclaimable = if let Some(thread) = scheduler.get_thread(thread_id) {
+            thread.state == ThreadState::Terminated
+                && thread
+                    .retirement_fence
+                    .as_ref()
+                    .and_then(RetirementSnapshot::acquire)
+                    .is_some()
+                && !stack_live
+        } else {
             // Scheduler detachment already required TERMINATED, an elapsed
             // fence, and a non-live stack slot.
-            return !stack_live;
+            !stack_live
         };
-        thread.state == ThreadState::Terminated
-            && thread
-                .retirement_fence
-                .as_ref()
-                .and_then(RetirementSnapshot::acquire)
-                .is_some()
-            && !stack_live
+        reclaimable.then_some(RowStackReclaimPermit {
+            thread_id,
+            stack_top,
+        })
     })
 }
 
@@ -3157,6 +3171,18 @@ pub fn try_schedule() -> Option<(u64, u64)> {
         }
     }
     None
+}
+
+/// Quarantine a fault victim without blocking in synchronous exception context.
+#[cfg(target_arch = "aarch64")]
+pub fn try_request_exit_pending(thread_id: u64) -> bool {
+    let Some(mut scheduler_lock) = SCHEDULER.try_lock() else {
+        return false;
+    };
+    let Some(scheduler) = scheduler_lock.as_mut() else {
+        return false;
+    };
+    scheduler.request_exit_pending(thread_id)
 }
 
 /// Check if the current thread is the idle thread (safe to call from IRQ context)
@@ -3520,8 +3546,6 @@ pub fn is_cpu_idle_raw(cpu_id: usize) -> bool {
 /// This updates scheduler state so subsequent timer interrupts can properly schedule.
 /// Call this before modifying exception frame to return to idle_loop.
 pub fn switch_to_idle() {
-    #[cfg(target_arch = "x86_64")]
-    crate::task::process_task::arm_deferred_signal_exits_for_current_cpu();
     with_scheduler(|sched| {
         let cpu_id = Scheduler::current_cpu_id();
         let idle_id = sched.cpu_state[cpu_id].idle_thread;

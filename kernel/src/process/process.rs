@@ -89,17 +89,12 @@ impl ExitWorkBits {
     pub const CLEANUP_GRAPHICS: Self = Self(1 << 2);
     pub const CLOSE_FDS: Self = Self(1 << 3);
 
-    pub const fn all() -> Self {
-        Self(
-            Self::REPARENT_CHILDREN.0
-                | Self::NOTIFY_PARENT.0
-                | Self::CLEANUP_GRAPHICS.0
-                | Self::CLOSE_FDS.0,
-        )
+    pub const fn contains(self, work: Self) -> bool {
+        self.0 & work.0 == work.0
     }
 
-    pub const fn contains(self, work: Self) -> bool {
-        self.0 & work.0 != 0
+    pub fn insert(&mut self, work: Self) {
+        self.0 |= work.0;
     }
 
     pub fn remove(&mut self, work: Self) {
@@ -159,12 +154,20 @@ pub struct Process {
     /// Parent process ID (if any)
     pub parent: Option<ProcessId>,
 
+    /// Child processes. AArch64 derives this relation from child.parent.
+    #[cfg(target_arch = "x86_64")]
+    pub children: Vec<ProcessId>,
+
     /// Exit code (if terminated)
     pub exit_code: Option<i32>,
 
+    #[cfg(target_arch = "aarch64")]
     pub exit_stage: ExitStage,
+    #[cfg(target_arch = "aarch64")]
     pub exit_work_bits: ExitWorkBits,
+    #[cfg(target_arch = "aarch64")]
     pub reaped: bool,
+    #[cfg(target_arch = "aarch64")]
     pub retired_root: Option<u64>,
 
     /// Memory usage statistics
@@ -177,6 +180,7 @@ pub struct Process {
     pub page_table: Option<Box<ProcessPageTable>>,
 
     /// Preallocated receiver for heavy resources at the exit commit point.
+    #[cfg(target_arch = "aarch64")]
     pub grave: Option<Box<crate::task::reclaim::ProcessGrave>>,
 
     /// Heap start address (page-aligned, set from ELF segments_end)
@@ -236,6 +240,10 @@ pub struct Process {
     /// Whether this process has taken over the display (called take_over_display syscall)
     pub has_display_ownership: bool,
 
+    /// Whether this process may own entries in the AArch64 window registry.
+    #[cfg(target_arch = "aarch64")]
+    pub has_window_buffers: bool,
+
     /// Accumulated CPU ticks for this process (for btop display)
     pub cpu_ticks: u64,
 }
@@ -258,6 +266,7 @@ impl Process {
         id: ProcessId,
         name: String,
         entry_point: VirtAddr,
+        #[cfg(target_arch = "aarch64")]
         grave: Box<crate::task::reclaim::ProcessGrave>,
     ) -> Self {
         Process {
@@ -281,14 +290,21 @@ impl Process {
             main_thread: None,
             threads: Vec::new(),
             parent: None,
+            #[cfg(target_arch = "x86_64")]
+            children: Vec::new(),
             exit_code: None,
+            #[cfg(target_arch = "aarch64")]
             exit_stage: ExitStage::Live,
+            #[cfg(target_arch = "aarch64")]
             exit_work_bits: ExitWorkBits::empty(),
+            #[cfg(target_arch = "aarch64")]
             reaped: false,
+            #[cfg(target_arch = "aarch64")]
             retired_root: None,
             memory_usage: MemoryUsage::default(),
             stack: None,
             page_table: None,
+            #[cfg(target_arch = "aarch64")]
             grave: Some(grave),
             heap_start: 0,
             heap_end: 0,
@@ -306,6 +322,8 @@ impl Process {
             pending_old_page_tables: Vec::new(),
             fb_mmap: None,
             has_display_ownership: false,
+            #[cfg(target_arch = "aarch64")]
+            has_window_buffers: false,
             cpu_ticks: 0,
         }
     }
@@ -332,21 +350,136 @@ impl Process {
         self.state = ProcessState::Ready;
     }
 
-    pub fn mark_exit_committed(&mut self, exit_code: i32) -> ExitOutcome {
+    #[cfg(target_arch = "x86_64")]
+    pub fn terminate(&mut self, exit_code: i32) {
+        if matches!(self.state, ProcessState::Terminated(_)) {
+            return;
+        }
+
+        self.close_all_fds();
+        self.cleanup_cow_frames();
+        self.state = ProcessState::Terminated(exit_code);
+        self.exit_code = Some(exit_code);
+
+        if let Some(ref mut thread) = self.main_thread {
+            thread.set_terminated();
+        }
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    pub fn terminate_minimal(&mut self, exit_code: i32) {
+        if matches!(self.state, ProcessState::Terminated(_)) {
+            return;
+        }
+        self.state = ProcessState::Terminated(exit_code);
+        self.exit_code = Some(exit_code);
+        if let Some(ref mut thread) = self.main_thread {
+            thread.set_terminated();
+        }
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    pub fn take_fd_entries(&mut self) -> alloc::vec::Vec<(usize, crate::ipc::fd::FileDescriptor)> {
+        self.fd_table.take_all()
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    fn close_all_fds(&mut self) {
+        use crate::ipc::FdKind;
+
+        for fd in 0..crate::ipc::MAX_FDS {
+            if let Ok(fd_entry) = self.fd_table.close(fd as i32) {
+                match fd_entry.kind {
+                    FdKind::PipeRead(buffer) => buffer.lock().close_read(),
+                    FdKind::PipeWrite(buffer) => buffer.lock().close_write(),
+                    FdKind::TcpListener(port) => {
+                        crate::net::tcp::tcp_listener_ref_dec(port);
+                    }
+                    FdKind::TcpConnection(conn_id) => {
+                        let _ = crate::net::tcp::tcp_close(&conn_id);
+                    }
+                    FdKind::PtyMaster(pty_num) => {
+                        if let Some(pair) = crate::tty::pty::get(pty_num) {
+                            let old_count = pair
+                                .master_refcount
+                                .fetch_sub(1, core::sync::atomic::Ordering::SeqCst);
+                            if old_count == 1 {
+                                crate::tty::pty::release(pty_num);
+                            }
+                        }
+                    }
+                    FdKind::PtySlave(pty_num) => {
+                        if let Some(pair) = crate::tty::pty::get(pty_num) {
+                            pair.slave_close();
+                        }
+                    }
+                    FdKind::UnixStream(socket) => socket.lock().close(),
+                    FdKind::FifoRead(path, buffer) => {
+                        crate::ipc::fifo::close_fifo_read(&path);
+                        buffer.lock().close_read();
+                    }
+                    FdKind::FifoWrite(path, buffer) => {
+                        crate::ipc::fifo::close_fifo_write(&path);
+                        buffer.lock().close_write();
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    pub(crate) fn cleanup_cow_frames(&mut self) {
+        use crate::memory::frame_allocator::deallocate_frame;
+        use crate::memory::frame_metadata::frame_decref;
+        use x86_64::structures::paging::{PageTableFlags, PhysFrame};
+
+        let page_table = match self.page_table.as_ref() {
+            Some(page_table) => page_table,
+            None => return,
+        };
+
+        let _ = page_table.walk_mapped_pages(|_virt_addr, phys_addr, flags| {
+            if !flags.contains(PageTableFlags::USER_ACCESSIBLE) {
+                return;
+            }
+
+            let frame = PhysFrame::containing_address(phys_addr);
+            if frame_decref(frame) {
+                deallocate_frame(frame);
+            }
+        });
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    pub fn drain_old_page_tables(&mut self) {
+        for old_page_table in self.pending_old_page_tables.drain(..) {
+            old_page_table.cleanup_for_exec();
+        }
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    pub fn mark_exit_committed(
+        &mut self,
+        exit_code: i32,
+        work_bits: ExitWorkBits,
+    ) -> ExitOutcome {
         if self.exit_stage != ExitStage::Live {
             return ExitOutcome::AlreadyCommitted;
         }
         self.exit_stage = ExitStage::ExitCommitted;
-        self.exit_work_bits = ExitWorkBits::all();
+        self.exit_work_bits = work_bits;
         self.state = ProcessState::Terminated(exit_code);
         self.exit_code = Some(exit_code);
         ExitOutcome::Committed
     }
 
     /// Move every heavy resource into the grave allocated at process birth.
+    #[cfg(target_arch = "aarch64")]
     pub fn commit_grave(
         &mut self,
         exit_code: i32,
+        work_bits: ExitWorkBits,
     ) -> Option<Box<crate::task::reclaim::ProcessGrave>> {
         let retired_root = self.cr3_value();
         let mut grave = self.grave.take()?;
@@ -364,23 +497,27 @@ impl Process {
         let (secs, nanos) = crate::time::get_monotonic_time_ns();
         grave.queued_at_ns = secs.saturating_mul(1_000_000_000) + nanos;
         self.retired_root = retired_root;
-        let outcome = self.mark_exit_committed(exit_code);
+        let outcome = self.mark_exit_committed(exit_code, work_bits);
         debug_assert_eq!(outcome, ExitOutcome::Committed);
         Some(grave)
     }
 
+    #[cfg(target_arch = "aarch64")]
     pub fn is_exit_committed(&self) -> bool {
         self.exit_stage != ExitStage::Live
     }
 
+    #[cfg(target_arch = "aarch64")]
     pub fn mark_reclaimed(&mut self) {
         self.exit_stage = ExitStage::Reclaimed;
     }
 
+    #[cfg(target_arch = "aarch64")]
     pub fn mark_reaped(&mut self) {
         self.reaped = true;
     }
 
+    #[cfg(target_arch = "aarch64")]
     pub fn can_remove_row(&self) -> bool {
         self.reaped && self.exit_stage == ExitStage::Reclaimed && self.exit_work_bits.is_empty()
     }
@@ -388,6 +525,18 @@ impl Process {
     /// Check if process is terminated
     pub fn is_terminated(&self) -> bool {
         matches!(self.state, ProcessState::Terminated(_))
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[allow(dead_code)]
+    pub fn add_child(&mut self, child_id: ProcessId) {
+        self.children.push(child_id);
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[allow(dead_code)]
+    pub fn remove_child(&mut self, child_id: ProcessId) {
+        self.children.retain(|&id| id != child_id);
     }
 
     /// Get the process ID

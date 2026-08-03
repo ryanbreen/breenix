@@ -904,11 +904,17 @@ impl Thread {
 
     /// Mark thread as ready
     pub fn set_ready(&mut self) {
+        #[cfg(target_arch = "aarch64")]
         if !matches!(self.state, ThreadState::ExitPending | ThreadState::Terminated) {
+            self.state = ThreadState::Ready;
+        }
+        #[cfg(target_arch = "x86_64")]
+        if self.state != ThreadState::Terminated {
             self.state = ThreadState::Ready;
         }
     }
 
+    #[cfg(target_arch = "aarch64")]
     pub fn set_exit_pending(&mut self) {
         if self.state != ThreadState::Terminated {
             self.state = ThreadState::ExitPending;
@@ -924,8 +930,11 @@ impl Thread {
     /// Mark thread as terminated
     pub fn set_terminated(&mut self) {
         self.state = ThreadState::Terminated;
-        self.cached_ttbr0 = 0;
-        self.retirement_fence = Some(super::scheduler::RetirementFence::capture());
+        #[cfg(target_arch = "aarch64")]
+        {
+            self.cached_ttbr0 = 0;
+            self.retirement_fence = Some(super::scheduler::RetirementFence::capture());
+        }
     }
 
     /// Create a new thread with a specific ID (used for fork) - x86_64 only

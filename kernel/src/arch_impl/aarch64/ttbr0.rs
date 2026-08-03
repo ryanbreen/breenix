@@ -1,6 +1,7 @@
 //! Shared TTBR0 transition helpers for AArch64 teardown paths.
 
 const TTBR0_ROOT_MASK: u64 = !0xFFFF_0000_0000_0FFF;
+const PROCESS_ASID: u64 = 1u64 << 48;
 
 #[inline(always)]
 fn read_ttbr0_el1() -> u64 {
@@ -75,6 +76,7 @@ pub fn leave_process_ttbr0() {
 /// Install a userspace TTBR0 root directly from Rust.
 #[inline(always)]
 pub fn install_process_ttbr0(root: u64) {
+    let root = root | PROCESS_ASID;
     unsafe {
         super::percpu::Aarch64PerCpu::set_next_cr3(root);
         core::sync::atomic::compiler_fence(core::sync::atomic::Ordering::Release);
@@ -98,6 +100,7 @@ pub fn install_process_ttbr0(root: u64) {
 /// Publish a pending userspace root for an assembly return path to install.
 #[inline(always)]
 pub fn arm_process_ttbr0(root: u64) {
+    let root = root | PROCESS_ASID;
     unsafe {
         super::percpu::Aarch64PerCpu::set_next_cr3(root);
     }

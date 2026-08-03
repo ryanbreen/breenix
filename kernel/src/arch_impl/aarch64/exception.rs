@@ -296,16 +296,48 @@ fn set_idle_stack_for_eret() {
 }
 
 fn kill_current_user_process_and_redirect(frame: &mut Aarch64ExceptionFrame) {
+    let ttbr0: u64;
+    unsafe {
+        core::arch::asm!("mrs {}, ttbr0_el1", out(reg) ttbr0, options(nomem, nostack));
+    }
+    let page_table_phys = ttbr0 & !0xFFFF_0000_0000_0FFF;
+
+    let victim = {
+        let mut manager_guard = match crate::process::try_manager() {
+            Some(guard) => guard,
+            None => return,
+        };
+        let Some(manager) = manager_guard.as_mut() else {
+            return;
+        };
+        manager
+            .find_process_by_cr3_mut(page_table_phys)
+            .and_then(|(pid, process)| {
+                process
+                    .main_thread
+                    .as_ref()
+                    .filter(|thread| {
+                        thread.privilege == crate::task::thread::ThreadPrivilege::User
+                    })
+                    .map(|thread| (pid, thread.id()))
+            })
+    };
+    let Some((pid, thread_id)) = victim else {
+        return;
+    };
+
+    if !crate::task::scheduler::try_request_exit_pending(thread_id) {
+        return;
+    }
+
+    crate::tracing::providers::process::trace_process_exit(
+        pid.as_u64() as u16,
+        (-11i16) as u16,
+    );
     super::leave_process_ttbr0();
 
-    if let Some(thread_id) = fault_victim_tid(frame as *mut _ as u64) {
-        if !crate::task::process_task::defer_fault_sigsegv_exit(thread_id) {
-            crate::task::process_task::FAULT_EXIT_INTENT_DROPPED
-                .fetch_add(1, Ordering::Relaxed);
-            crate::arch_impl::aarch64::context_switch::raw_uart_str(
-                "[FAULT_EXIT_INTENT_DROPPED]",
-            );
-        }
+    if !crate::task::process_task::defer_fault_sigsegv_exit(thread_id) {
+        crate::task::process_task::FAULT_EXIT_INTENT_DROPPED.fetch_add(1, Ordering::Relaxed);
     }
     crate::task::scheduler::set_need_resched();
     frame.elr = crate::arch_impl::aarch64::idle_loop_arm64 as *const () as u64;
@@ -339,7 +371,6 @@ fn defer_current_user_thread_sigsegv_exit(label: &str, frame_addr: u64) {
         if !queued {
             crate::task::process_task::FAULT_EXIT_INTENT_DROPPED
                 .fetch_add(1, Ordering::Relaxed);
-            raw_uart_str("[FAULT_EXIT_INTENT_DROPPED]");
         }
         raw_uart_str(label);
         raw_uart_str(" deferred_tid=");

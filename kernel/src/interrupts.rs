@@ -1442,7 +1442,7 @@ extern "x86-interrupt" fn page_fault_handler(
             // because during context switch the "current" thread may not match the faulting process
             let mut faulting_thread_id: Option<u64> = None;
 
-            let exit_receipt = crate::process::with_process_manager(|pm| {
+            crate::process::with_process_manager(|pm| {
                 if let Some((pid, process)) = pm.find_process_by_cr3_mut(cr3) {
                     let name = process.name.clone();
                     // Get the thread ID before we exit the process
@@ -1453,19 +1453,14 @@ extern "x86-interrupt" fn page_fault_handler(
                         pid.as_u64(),
                         cr3
                     );
-                    Some(pm.retire_process(pid, -11)) // SIGSEGV exit code
+                    pm.exit_process(pid, -11); // SIGSEGV exit code
                 } else {
                     log::error!(
                         "Could not find process with CR3={:#x} - cannot terminate",
                         cr3
                     );
-                    None
                 }
-            })
-            .flatten();
-            if let Some(receipt) = exit_receipt {
-                receipt.complete();
-            }
+            });
 
             // Mark thread as terminated by setting it not runnable
             if let Some(thread_id) = faulting_thread_id {
@@ -1753,7 +1748,7 @@ extern "x86-interrupt" fn general_protection_fault_handler(
         // Find the process by CR3
         let mut faulting_thread_id: Option<u64> = None;
 
-        let exit_receipt = crate::process::with_process_manager(|pm| {
+        crate::process::with_process_manager(|pm| {
             if let Some((pid, process)) = pm.find_process_by_cr3_mut(cr3) {
                 let name = process.name.clone();
                 // Get the thread ID before we exit the process
@@ -1764,19 +1759,14 @@ extern "x86-interrupt" fn general_protection_fault_handler(
                     pid.as_u64(),
                     cr3
                 );
-                Some(pm.retire_process(pid, -11)) // SIGSEGV exit code
+                pm.exit_process(pid, -11); // SIGSEGV exit code
             } else {
                 log::error!(
                     "Could not find process with CR3={:#x} - cannot terminate",
                     cr3
                 );
-                None
             }
-        })
-        .flatten();
-        if let Some(receipt) = exit_receipt {
-            receipt.complete();
-        }
+        });
 
         // Mark thread as terminated by setting it not runnable
         if let Some(thread_id) = faulting_thread_id {

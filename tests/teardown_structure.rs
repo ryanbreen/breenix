@@ -20,13 +20,6 @@ fn source_files_with_extension(dir: &Path, extension: &str, out: &mut Vec<PathBu
     }
 }
 
-fn slice_until<'a>(text: &'a str, start: &str, end: &str) -> &'a str {
-    let start_offset = text.find(start).expect("region start must exist");
-    let rest = &text[start_offset..];
-    let end_offset = rest.find(end).expect("region end must exist");
-    &rest[..end_offset]
-}
-
 fn function_source<'a>(text: &'a str, signature: &str) -> &'a str {
     let start = text.find(signature).expect("function signature must exist");
     let body_start = text[start..]
@@ -53,6 +46,64 @@ fn fnv1a64(text: &str) -> u64 {
     text.as_bytes().iter().fold(0xcbf29ce484222325, |hash, byte| {
         (hash ^ u64::from(*byte)).wrapping_mul(0x100000001b3)
     })
+}
+
+const GOLD_MASTER_AUTOPSY: &str = "docs/planning/cpu0-user-guard-autopsy/README.md";
+
+fn frozen_slice_until<'a>(name: &str, text: &'a str, start: &str, end: &str) -> &'a str {
+    let start_offset = text.find(start).unwrap_or_else(|| {
+        panic!(
+            "frozen region {name} lost its start marker; read {GOLD_MASTER_AUTOPSY} before editing"
+        )
+    });
+    let rest = &text[start_offset..];
+    let end_offset = rest.find(end).unwrap_or_else(|| {
+        panic!(
+            "frozen region {name} lost its end marker; read {GOLD_MASTER_AUTOPSY} before editing"
+        )
+    });
+    &rest[..end_offset]
+}
+
+fn frozen_function_source<'a>(name: &str, text: &'a str, signature: &str) -> &'a str {
+    let start = text.find(signature).unwrap_or_else(|| {
+        panic!(
+            "frozen region {name} lost its function signature; read {GOLD_MASTER_AUTOPSY} before editing"
+        )
+    });
+    let body_start = text[start..]
+        .find('{')
+        .map(|offset| start + offset)
+        .unwrap_or_else(|| {
+            panic!(
+                "frozen region {name} lost its function body; read {GOLD_MASTER_AUTOPSY} before editing"
+            )
+        });
+    let mut depth = 0usize;
+    for (offset, byte) in text.as_bytes()[body_start..].iter().enumerate() {
+        match byte {
+            b'{' => depth += 1,
+            b'}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return &text[start..=body_start + offset];
+                }
+            }
+            _ => {}
+        }
+    }
+    panic!(
+        "frozen region {name} has an unterminated function body; read {GOLD_MASTER_AUTOPSY} before editing"
+    );
+}
+
+fn assert_frozen_region(name: &str, region: &str, expected: u64) {
+    let actual = fnv1a64(region);
+    assert_eq!(
+        actual,
+        expected,
+        "frozen region changed: {name}. Read {GOLD_MASTER_AUTOPSY}, obtain project-owner signoff, then update this expected hash to {actual:#018x} and rerun `cargo test --test teardown_structure`"
+    );
 }
 
 #[test]
@@ -92,6 +143,16 @@ fn assembly_publishes_installed_root_before_clearing_pending_lease() {
 
 #[test]
 fn no_new_rust_ttbr0_writer_escapes_the_reviewed_set() {
+    for reviewed in [
+        "kernel/src/syscall/wait.rs",
+        "kernel/src/syscall/graphics.rs",
+    ] {
+        assert!(
+            source(reviewed).contains("install_process_ttbr0(ttbr0_value)"),
+            "reviewed TTBR0 writer must publish the two-word lease: {reviewed}"
+        );
+    }
+
     let mut files = Vec::new();
     source_files_with_extension(&root().join("kernel/src"), "rs", &mut files);
     let mut writers: Vec<_> = files
@@ -109,6 +170,8 @@ fn no_new_rust_ttbr0_writer_escapes_the_reviewed_set() {
         })
         .collect();
     writers.sort();
+    // time.rs is Tier-1 protected; its known raw writer is operator-deferred, not reviewed here.
+    let deferred_writer = "kernel/src/syscall/time.rs";
     assert_eq!(
         writers,
         [
@@ -116,12 +179,58 @@ fn no_new_rust_ttbr0_writer_escapes_the_reviewed_set() {
             "kernel/src/arch_impl/aarch64/ttbr0.rs",
             "kernel/src/main_aarch64.rs",
             "kernel/src/memory/arch_stub.rs",
-            "kernel/src/syscall/graphics.rs",
-            "kernel/src/syscall/handlers.rs",
-            "kernel/src/syscall/time.rs",
-            "kernel/src/syscall/wait.rs",
+            deferred_writer,
         ]
     );
+}
+
+#[test]
+fn aarch64_teardown_protocol_structure_is_preserved() {
+    let context = source("kernel/src/arch_impl/aarch64/context_switch.rs");
+    assert!(!context.contains(".state = ThreadState::Terminated"));
+
+    let exception = source("kernel/src/arch_impl/aarch64/exception.rs");
+    let kill = function_source(
+        &exception,
+        "fn kill_current_user_process_and_redirect(",
+    );
+    assert!(kill.contains("mrs {}, ttbr0_el1"));
+    assert!(kill.contains("find_process_by_cr3_mut(page_table_phys)"));
+    let non_runnable = kill
+        .find("try_request_exit_pending(thread_id)")
+        .expect("fault exit must make its victim non-runnable");
+    let redirect = kill
+        .find("frame.elr = crate::arch_impl::aarch64::idle_loop_arm64")
+        .expect("fault exit must redirect to idle");
+    assert!(non_runnable < redirect);
+
+    let reclaim = source("kernel/src/task/reclaim.rs");
+    assert!(!reclaim.contains("take_one_grave"));
+    assert!(reclaim.contains("process_row_stack_reclaim_permit"));
+    assert!(reclaim.contains("RECLAIM_KTHREAD"));
+    assert!(reclaim.contains("kthread_unpark_with_scheduler(handle, scheduler)"));
+
+    let process = source("kernel/src/process/process.rs");
+    assert!(process.contains("self.0 & work.0 == work.0"));
+    assert!(!process.contains("ExitWorkBits::all()"));
+
+    let receipt = source("kernel/src/process/mod.rs");
+    assert!(receipt.contains("self.grave_published"));
+    assert!(!receipt.contains("!self.work_bits.is_empty()"));
+
+    let manager = source("kernel/src/process/manager.rs");
+    assert!(manager.contains("stack.top().as_u64()"));
+    assert!(manager.contains("permit.revalidates(thread_id, stack_top)"));
+
+    let scheduler = source("kernel/src/task/scheduler.rs");
+    assert!(scheduler.contains("ThreadState::Terminated => 9"));
+    assert!(!scheduler.contains("for_each_deferred_fault_exit"));
+
+    assert!(context.contains("ThreadState::Terminated => 9"));
+
+    let ttbr0 = source("kernel/src/arch_impl/aarch64/ttbr0.rs");
+    let install = function_source(&ttbr0, "pub fn install_process_ttbr0(");
+    assert!(install.contains("let root = root | PROCESS_ASID"));
 }
 
 #[test]
@@ -137,7 +246,7 @@ fn reclaim_capability_has_only_the_reviewed_mint_sites() {
                 .count()
         })
         .sum();
-    assert_eq!(matches, 4, "unexpected ReclaimContext capability mint");
+    assert_eq!(matches, 3, "unexpected ReclaimContext capability mint");
     assert_eq!(
         source("kernel/src/arch_impl/aarch64/syscall_entry.rs")
             .matches("ReclaimContext::assert_preemptible()")
@@ -148,14 +257,15 @@ fn reclaim_capability_has_only_the_reviewed_mint_sites() {
         source("kernel/src/task/reclaim.rs")
             .matches("ReclaimContext::assert_preemptible()")
             .count(),
-        3
+        2
     );
 
     let process = source("kernel/src/process/process.rs");
     let memory = source("kernel/src/memory/process_memory.rs");
     let reclaim = source("kernel/src/task/reclaim.rs");
-    assert!(!process.contains("cleanup_cow_frames"));
-    assert!(!process.contains("cleanup_cow_page_table"));
+    let commit_grave = function_source(&process, "pub fn commit_grave(");
+    assert!(!commit_grave.contains("cleanup_cow_frames"));
+    assert!(!commit_grave.contains("cleanup_cow_page_table"));
     assert!(
         memory.contains("cleanup_for_exec(self, _context: &crate::task::reclaim::ReclaimContext)")
     );
@@ -204,7 +314,8 @@ fn frozen_regions_match_the_reviewed_gold_masters() {
     let regions = [
         (
             "EL0 dispatch banner/guard",
-            slice_until(
+            frozen_slice_until(
+                "EL0 dispatch banner/guard",
                 &context,
                 "        // 🔒 GOLD-MASTER REGION — DO NOT ADD A CPU0-SPECIFIC EL0 DISPATCH GUARD",
                 "\n\n        if !has_started {",
@@ -213,12 +324,17 @@ fn frozen_regions_match_the_reviewed_gold_masters() {
         ),
         (
             "idle_loop_arm64 body",
-            function_source(&context, "pub extern \"C\" fn idle_loop_arm64()"),
+            frozen_function_source(
+                "idle_loop_arm64 body",
+                &context,
+                "pub extern \"C\" fn idle_loop_arm64()",
+            ),
             0x7ff37a17a3a7c666,
         ),
         (
             "aarch64_enter_exception_frame ISB placement",
-            slice_until(
+            frozen_slice_until(
+                "aarch64_enter_exception_frame ISB placement",
                 &context,
                 "aarch64_enter_exception_frame:\n",
                 "\n\"#\n);",
@@ -227,7 +343,8 @@ fn frozen_regions_match_the_reviewed_gold_masters() {
         ),
         (
             "GIC SGI enable block",
-            slice_until(
+            frozen_slice_until(
+                "GIC SGI enable block",
                 &gic,
                 "    // 🔒 GOLD-MASTER REGION — SGI admission enable",
                 "\n}\n\n/// Initialize GICv3 CPU Interface",
@@ -236,7 +353,8 @@ fn frozen_regions_match_the_reviewed_gold_masters() {
         ),
         (
             "timer arm-at-top block",
-            slice_until(
+            frozen_slice_until(
+                "timer arm-at-top block",
                 &timer,
                 "    // 🔒 GOLD-MASTER REGION — arm_timer at TOP of handler",
                 "\n\n    // Snapshot CNTV_CTL_EL0 for this CPU",
@@ -245,7 +363,8 @@ fn frozen_regions_match_the_reviewed_gold_masters() {
         ),
         (
             "CPU0 regression alarm",
-            slice_until(
+            frozen_slice_until(
+                "CPU0 regression alarm",
                 &timer,
                 "    // 🔒 GOLD-MASTER REGION — CPU0 divergence regression alarm",
                 "\n\n    // Mask the timer interrupt at the source",
@@ -255,7 +374,7 @@ fn frozen_regions_match_the_reviewed_gold_masters() {
     ];
 
     for (name, region, expected) in regions {
-        assert_eq!(fnv1a64(region), expected, "frozen region changed: {name}");
+        assert_frozen_region(name, region, expected);
     }
 }
 

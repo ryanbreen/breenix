@@ -1686,7 +1686,7 @@ impl ProcessPageTable {
     ///
     /// Call this on the OLD page table after installing the new one during exec().
     #[cfg(target_arch = "x86_64")]
-    pub fn cleanup_for_exec(self, _context: &crate::task::reclaim::ReclaimContext) {
+    pub fn cleanup_for_exec(self) {
         use crate::memory::frame_allocator::deallocate_frame;
         use crate::memory::frame_metadata::frame_decref;
         use alloc::vec::Vec;

@@ -235,7 +235,7 @@ fn check_and_deliver_signals_aarch64(frame: &mut Aarch64ExceptionFrame) {
 
             // Switch to process's page table for signal delivery
             if let Some(ref page_table) = process.page_table {
-                let ttbr0 = page_table.level_4_frame().start_address().as_u64();
+                let ttbr0 = page_table.level_4_frame().start_address().as_u64() | (1u64 << 48);
                 super::install_process_ttbr0(ttbr0);
             }
 

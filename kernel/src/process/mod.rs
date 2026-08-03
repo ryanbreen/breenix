@@ -4,8 +4,6 @@
 //! A process is a running instance of a program with its own address space.
 
 use core::sync::atomic::{AtomicU64, Ordering};
-#[cfg(not(target_arch = "aarch64"))]
-use alloc::boxed::Box;
 use spin::Mutex;
 
 pub mod creation;
@@ -16,84 +14,28 @@ pub mod process;
 pub use manager::ProcessManager;
 pub use process::{ExitOutcome, ExitStage, ExitWorkBits, Process, ProcessId, ProcessState};
 
+#[cfg(target_arch = "aarch64")]
 #[must_use = "an exit receipt must be completed after releasing the process-manager lock"]
 pub struct ExitReceipt {
-    #[cfg(not(target_arch = "aarch64"))]
-    pid: ProcessId,
-    #[cfg(not(target_arch = "aarch64"))]
-    parent_tid: Option<u64>,
     outcome: ExitOutcome,
-    work_bits: ExitWorkBits,
-    #[cfg(not(target_arch = "aarch64"))]
-    grave: Option<Box<crate::task::reclaim::ProcessGrave>>,
+    grave_published: bool,
 }
 
+#[cfg(target_arch = "aarch64")]
 impl ExitReceipt {
-    pub(crate) fn new(
-        #[cfg(not(target_arch = "aarch64"))] pid: ProcessId,
-        #[cfg(not(target_arch = "aarch64"))] parent_tid: Option<u64>,
-        outcome: ExitOutcome,
-        work_bits: ExitWorkBits,
-        #[cfg(not(target_arch = "aarch64"))] grave: Option<
-            Box<crate::task::reclaim::ProcessGrave>,
-        >,
-    ) -> Self {
+    pub(crate) fn new(outcome: ExitOutcome, grave_published: bool) -> Self {
         Self {
-            #[cfg(not(target_arch = "aarch64"))]
-            pid,
-            #[cfg(not(target_arch = "aarch64"))]
-            parent_tid,
             outcome,
-            work_bits,
-            #[cfg(not(target_arch = "aarch64"))]
-            grave,
+            grave_published,
         }
     }
 
     pub fn complete(self) {
-        #[cfg(target_arch = "aarch64")]
         debug_assert!(
-            self.outcome != ExitOutcome::Committed || !self.work_bits.is_empty(),
-            "a committed AArch64 exit must publish durable worker obligations"
+            self.outcome != ExitOutcome::Committed || self.grave_published,
+            "a committed AArch64 exit must publish its grave before wakeup"
         );
-
-        #[cfg(not(target_arch = "aarch64"))]
-        {
-            if self.work_bits.contains(ExitWorkBits::CLOSE_FDS) {
-                while let Some(fd) = manager()
-                    .as_mut()
-                    .and_then(|manager| manager.take_next_fd_for_exit(self.pid))
-                {
-                    crate::task::process_task::close_owned_fd(fd);
-                }
-            }
-            if let Some(grave) = self.grave {
-                crate::task::reclaim::arch_retire_address_space(grave);
-            }
-            if let Some(manager) = manager().as_mut() {
-                manager.finish_exit_work_inline(self.pid);
-            }
-        }
-
-        #[cfg(not(target_arch = "aarch64"))]
-        if let Some(parent_tid) = self.parent_tid {
-            crate::task::scheduler::with_scheduler(|scheduler| {
-                scheduler.unblock_for_child_exit(parent_tid);
-                scheduler.unblock_for_signal(parent_tid);
-            });
-            crate::tracing::providers::process::trace_waitpid_wake(
-                parent_tid as u16,
-                self.pid.as_u64() as u16,
-            );
-        }
-
         crate::task::reclaim::kreclaim_wake();
-        #[cfg(not(target_arch = "aarch64"))]
-        log::debug!(
-            "completed process exit tail pid={} outcome={:?}",
-            self.pid.as_u64(),
-            self.outcome
-        );
     }
 }
 
@@ -194,6 +136,7 @@ pub fn process_manager_owner_snapshot() -> Option<(u64, u64)> {
     Some((cpu, tid))
 }
 
+#[cfg(target_arch = "aarch64")]
 pub(crate) fn process_manager_lock_held_by_current_cpu() -> bool {
     process_manager_owner_snapshot()
         .is_some_and(|(cpu, _)| cpu == current_process_manager_owner_identity().0)

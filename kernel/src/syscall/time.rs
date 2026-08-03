@@ -139,6 +139,8 @@ fn ensure_current_address_space() {
         if let Some((_pid, process)) = manager.find_process_by_thread(thread_id) {
             if let Some(ref page_table) = process.page_table {
                 let ttbr0_value = page_table.level_4_frame().start_address().as_u64();
+                // Known-unreviewed TTBR0 writer relative to the lease/shadow invariant; Tier-1 protected
+                // and out of scope here. Fixing it requires an explicit operator-approved follow-up.
                 unsafe {
                     core::arch::asm!(
                         "dsb ishst",

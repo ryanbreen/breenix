@@ -323,7 +323,19 @@ impl FdTable {
         FdTable { fds }
     }
 
+    #[cfg(target_arch = "x86_64")]
+    pub fn take_all(&mut self) -> alloc::vec::Vec<(usize, FileDescriptor)> {
+        let mut entries = alloc::vec::Vec::new();
+        for fd in 0..MAX_FDS {
+            if let Some(entry) = self.fds[fd].take() {
+                entries.push((fd, entry));
+            }
+        }
+        entries
+    }
+
     /// Take one descriptor for exit without allocating.
+    #[cfg(target_arch = "aarch64")]
     pub fn take_next_for_exit(&mut self) -> Option<(usize, FileDescriptor)> {
         for fd in 0..MAX_FDS {
             if let Some(entry) = self.fds[fd].take() {
@@ -333,6 +345,7 @@ impl FdTable {
         None
     }
 
+    #[cfg(target_arch = "aarch64")]
     pub fn is_drained(&self) -> bool {
         self.fds.iter().all(Option::is_none)
     }
