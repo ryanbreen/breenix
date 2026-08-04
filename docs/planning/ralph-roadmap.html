@@ -66,20 +66,20 @@
 
   <h2>📋 Queued — non-gold-master (ARM64)</h2>
   <div class="grid">
-    <div class="card"><h3>SOFT_LOCKUP_VIRGL Parallels failure class <span class="badge b-p1">P1</span> <span class="arch">ARM64 · Parallels</span></h3><p>Investigate + classify the <code>SOFT_LOCKUP_VIRGL</code> failure class on Parallels. beads <code>breenix-ha9</code>.</p></div>
-    <div class="card"><h3>F15 — ARM64 AHCI timeout corridor after GICR discovery <span class="badge b-p1">P1</span> <span class="arch">ARM64</span></h3><p>Remaining AHCI timeout corridor after GICR discovery; verify storage-driver-only (non-gold-master) vs <code>gic.rs</code> (signoff). beads <code>breenix-xk8</code>.</p></div>
-    <div class="card"><h3>bsshd SSH exit-status / close for exec <span class="badge b-p2">P2</span> <span class="arch">ARM64</span></h3><p>bsshd should send SSH exit-status + channel close for exec requests. beads <code>breenix-72x</code>.</p></div>
+    <div class="card"><h3>SOFT_LOCKUP_VIRGL Parallels failure class <span class="badge b-p1">P1</span> <span class="arch">ARM64 · Parallels</span></h3><p>Investigate + classify the <code>SOFT_LOCKUP_VIRGL</code> failure class on Parallels. GitHub <a href="https://github.com/ryanbreen/breenix/issues/454">#454</a>.</p></div>
+    <div class="card"><h3>F15 — ARM64 AHCI timeout corridor after GICR discovery <span class="badge b-p1">P1</span> <span class="arch">ARM64</span></h3><p>Remaining AHCI timeout corridor after GICR discovery; verify storage-driver-only (non-gold-master) vs <code>gic.rs</code> (signoff). GitHub <a href="https://github.com/ryanbreen/breenix/issues/485">#485</a>.</p></div>
+    <div class="card"><h3>bsshd SSH exit-status / close for exec <span class="badge b-p2">P2</span> <span class="arch">ARM64</span></h3><p>bsshd should send SSH exit-status + channel close for exec requests. GitHub <a href="https://github.com/ryanbreen/breenix/issues/430">#430</a>.</p></div>
   </div>
 
   <h2>🔒 Signoff-gated — gold-master / CPU0 cluster (awaiting operator)</h2>
   <div class="grid">
-    <div class="card"><h3>CPU0 timer-death + scheduler cluster <span class="badge b-block">signoff</span> <span class="arch">ARM64 · Parallels</span></h3><p>CPU0 vtimer death on Parallels + remote-wake / resched scheduling. Fixes live in frozen gold-master <code>timer_interrupt.rs</code> / <code>gic.rs</code> / <code>context_switch.rs</code> → need operator signoff (this cluster burned ~a week before). beads <code>oia, 9f1, cb7, 6f4, e43, k16, eh4</code>.</p></div>
-    <div class="card"><h3>BusyBox applet DATA_ABORT — ARM64 musl TLS <span class="badge b-block">signoff</span> <span class="arch">ARM64</span></h3><p>BusyBox applet faults on the ARM64 musl TLS path (errno from a zero <code>TPIDR_EL0</code>). User-facing symptom fixed (native <code>bls</code> as <code>/bin/ls</code>); principled TLS fix touches gold-master context-switch → signoff. beads <code>breenix-b7u</code>.</p></div>
+    <div class="card"><h3>CPU0 timer-death + scheduler cluster <span class="badge b-block">signoff</span> <span class="arch">ARM64 · Parallels</span></h3><p>CPU0 vtimer death on Parallels + remote-wake / resched scheduling. Fixes live in frozen gold-master <code>timer_interrupt.rs</code> / <code>gic.rs</code> / <code>context_switch.rs</code> → need operator signoff (this cluster burned ~a week before). GitHub <a href="https://github.com/ryanbreen/breenix/issues/472">#472</a>, <a href="https://github.com/ryanbreen/breenix/issues/434">#434</a>, <a href="https://github.com/ryanbreen/breenix/issues/445">#445</a>, <a href="https://github.com/ryanbreen/breenix/issues/428">#428</a>, <a href="https://github.com/ryanbreen/breenix/issues/449">#449</a>, <a href="https://github.com/ryanbreen/breenix/issues/463">#463</a>, <a href="https://github.com/ryanbreen/breenix/issues/450">#450</a>.</p></div>
+    <div class="card"><h3>BusyBox applet DATA_ABORT — ARM64 musl TLS <span class="badge b-block">signoff</span> <span class="arch">ARM64</span></h3><p>BusyBox applet faults on the ARM64 musl TLS path (errno from a zero <code>TPIDR_EL0</code>). User-facing symptom fixed (native <code>bls</code> as <code>/bin/ls</code>); principled TLS fix touches gold-master context-switch → signoff. GitHub <a href="https://github.com/ryanbreen/breenix/issues/439">#439</a>.</p></div>
   </div>
 
   <h2>⏸ Deprioritized — x86_64 (future)</h2>
   <div class="grid">
-    <div class="card"><h3>E5-1 — execv child returns to kernel RIP under Ring 3 <span class="badge b-parked">x86 future</span> <span class="arch">x86_64</span></h3><p>Process/thread context-sync bug on blocked-in-syscall wake/restore mid-<code>execv</code>. ARM64-focus → deprioritized. beads <code>breenix-ql2</code>.</p></div>
+    <div class="card"><h3>E5-1 — execv child returns to kernel RIP under Ring 3 <span class="badge b-parked">x86 future</span> <span class="arch">x86_64</span></h3><p>Process/thread context-sync bug on blocked-in-syscall wake/restore mid-<code>execv</code>. ARM64-focus → deprioritized. GitHub <a href="https://github.com/ryanbreen/breenix/issues/474">#474</a>.</p></div>
     <div class="card"><h3>NB-2 — ARP stage-22 boot-stages stall <span class="badge b-parked">x86 future</span> <span class="arch">x86_64</span></h3><p>x86 boot-stages hang at <code>[22/252] ARP reply received</code>; ARM64-focus → deprioritized (x86 boot-stages is not used as a gate).</p></div>
   </div>
 
@@ -97,8 +97,8 @@
 
   <h2>✅ Resolved without a fix (closed with evidence)</h2>
   <div class="grid">
-    <div class="card"><h3>0wf — BWM spawn-wedge <span class="badge b-done">dismissed</span></h3><p>6/6 fresh boots reached bwm <code>create_process_with_argv ENTRY</code> + full ELF load — harness/classification noise, not a real wedge. beads closed.</p></div>
-    <div class="card"><h3>c5d — ARM64 BWM GPU compositor for animated windows <span class="badge b-done">already fixed</span></h3><p>Live counters: <code>SUBMIT_3D</code> climbs ~154/s under Bounce while CPU full-frame composite stays flat — already GPU-composited by merged <a href="https://github.com/ryanbreen/breenix/pull/381">#381</a>. beads closed.</p></div>
+    <div class="card"><h3>0wf — BWM spawn-wedge <span class="badge b-done">dismissed</span></h3><p>6/6 fresh boots reached bwm <code>create_process_with_argv ENTRY</code> + full ELF load — harness/classification noise, not a real wedge. closed.</p></div>
+    <div class="card"><h3>c5d — ARM64 BWM GPU compositor for animated windows <span class="badge b-done">already fixed</span></h3><p>Live counters: <code>SUBMIT_3D</code> climbs ~154/s under Bounce while CPU full-frame composite stays flat — already GPU-composited by merged <a href="https://github.com/ryanbreen/breenix/pull/381">#381</a>. closed.</p></div>
     <div class="card"><h3>NB-3 — <code>ls</code> hang in bsh <span class="badge b-done">fixed</span></h3><p>Native <code>bls</code> installed as <code>/bin/ls</code> (the BusyBox applet musl-TLS fault is tracked separately as <code>b7u</code>).</p></div>
     <div class="card"><h3>NB-4 — window clipping <span class="badge b-done">= oi6</span></h3><p>Resolved as the oi6 multi-window virtio-gpu fix (<a href="https://github.com/ryanbreen/breenix/pull/382">#382</a>).</p></div>
   </div>

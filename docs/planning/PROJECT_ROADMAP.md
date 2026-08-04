@@ -4,9 +4,10 @@ This is the master project roadmap for Breenix OS: current development status,
 completed phases, in-progress work, and planned work. Update after each PR
 merge and when starting new work.
 
-Detailed, per-issue tracking lives in Beads (`bd`), not here — this file
-stays a short pointer to what's current. Live turn-by-turn ARM64/Parallels
-work log: `docs/planning/ralph-roadmap.html`.
+Detailed, per-issue tracking lives in GitHub Issues (`gh issue list` /
+`gh issue create` in `ryanbreen/breenix`), not here — this file stays a
+short pointer to what's current. Live turn-by-turn ARM64/Parallels work
+log: `docs/planning/ralph-roadmap.html`.
 
 ## Current Development Status
 
@@ -28,10 +29,10 @@ https://v0-breenix-dashboard.vercel.app/).
 
 ## Planned Follow-ups
 
-- 📋 **CLONE_VM group seal + exec-time `thread_group_id`/`inherited_cr3` detach** — `bd breenix-n2f`
-- 📋 **`Thread::clone` kernel-stack ownership transfer** (mirror `fork`'s `kernel_stack_allocation` transfer) — `bd breenix-uoz`
-- 📋 **Designated-init runtime flag + panic-on-init-exit** — `bd breenix-k19`
-- 📋 **Duplicate SIGCHLD / stale exit code on the already-terminated exit path** — `bd breenix-90v`
-- 📋 **Idle-path CoW-walk latency under IRQ mask** in the `schedule_from_kernel` drain — `bd breenix-dmk`
+- 📋 **CLONE_VM group seal + exec-time `thread_group_id`/`inherited_cr3` detach** — [#471](https://github.com/ryanbreen/breenix/issues/471)
+- 📋 **`Thread::clone` kernel-stack ownership transfer** (mirror `fork`'s `kernel_stack_allocation` transfer) — [#481](https://github.com/ryanbreen/breenix/issues/481)
+- 📋 **Designated-init runtime flag + panic-on-init-exit** — [#464](https://github.com/ryanbreen/breenix/issues/464)
+- 📋 **Duplicate SIGCHLD / stale exit code on the already-terminated exit path** — [#433](https://github.com/ryanbreen/breenix/issues/433)
+- 📋 **Idle-path CoW-walk latency under IRQ mask** in the `schedule_from_kernel` drain — [#448](https://github.com/ryanbreen/breenix/issues/448)
 
-Run `bd list` / `bd ready` for the full current backlog.
+Run `gh issue list --repo ryanbreen/breenix` for the full current backlog.
