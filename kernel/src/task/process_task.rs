@@ -220,6 +220,7 @@ impl ProcessScheduler {
         let phase1_result = {
             if let Some(ref mut manager) = *crate::process::manager() {
                 if let Some((pid, process)) = manager.find_process_by_thread_mut(thread_id) {
+                    let already_terminated = process.is_terminated();
                     let parent_pid = process.parent;
                     let process_name = process.name.clone();
                     let children = if pid == ProcessId::new(1) {
@@ -230,15 +231,24 @@ impl ProcessScheduler {
 
                     // Extract FDs without closing them under the PM lock.
                     let fd_entries = process.take_fd_entries();
-                    #[cfg(target_arch = "aarch64")]
-                    if let Some(reclaim) = defer_live_process_resources(process) {
-                        enqueue_process_reclaim(reclaim);
+                    if already_terminated {
+                        // Preserve the single-CoW-decref invariant: external
+                        // terminate() already walked these mappings, so raw-drop
+                        // them without another reclaim/decref path.
+                        drop(process.page_table.take());
                         drop(process.stack.take());
+                        process.pending_old_page_tables.clear();
                     } else {
+                        #[cfg(target_arch = "aarch64")]
+                        if let Some(reclaim) = defer_live_process_resources(process) {
+                            enqueue_process_reclaim(reclaim);
+                            drop(process.stack.take());
+                        } else {
+                            release_process_resources(process);
+                        }
+                        #[cfg(not(target_arch = "aarch64"))]
                         release_process_resources(process);
                     }
-                    #[cfg(not(target_arch = "aarch64"))]
-                    release_process_resources(process);
 
                     // Keep termination after release/deferral. Once page_table is
                     // None, cleanup_cow_frames() cannot repeat the CoW walk; moving
