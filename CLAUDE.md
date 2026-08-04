@@ -813,4 +813,4 @@ pkill -9 qemu-system-aarch64 2>/dev/null; pgrep -l qemu || echo "All QEMU proces
 
 ## Work Tracking
 
-We use Beads (bd) instead of Markdown for issue tracking. Run `bd quickstart` to get started.
+We use GitHub Issues (not Beads/bd, and not Markdown TODO files) for issue tracking. Run `gh issue list` to see open work and `gh issue create` to file new issues in this repo.
