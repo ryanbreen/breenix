@@ -4,9 +4,9 @@ Runtime trace:
 - Not available. Noninteractive ssh to linux-probe remains blocked by host-key/key-auth failures documented in Turn 15.
 
 Linux source files:
-- turn1-artifacts/linux-source/virtgpu_vq.c
-- turn1-artifacts/linux-probe/linux-v6.8-virtgpu_kms.c
-- turn1-artifacts/linux-probe/linux-v6.8-virtgpu_drv.h
+- docs/artifacts/turn1-artifacts/linux-source/virtgpu_vq.c
+- docs/artifacts/turn1-artifacts/linux-probe/linux-v6.8-virtgpu_kms.c
+- docs/artifacts/turn1-artifacts/linux-probe/linux-v6.8-virtgpu_drv.h
 
 Key source references:
 - virtgpu_vq.c:57-70: control and cursor virtqueue callbacks schedule dequeue work.
