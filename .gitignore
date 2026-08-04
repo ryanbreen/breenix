@@ -104,3 +104,8 @@ logs/
 .dolt/
 *.db
 .beads-credential-key
+
+# Agent work-session scratch files (repo root)
+/heartbeat
+/heartbeat.codex
+/turn*-*.md
