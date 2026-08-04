@@ -1660,7 +1660,8 @@ pub fn dump_all_eret_frame_anomaly_snapshots() {
     for cpu_id in 0..crate::arch_impl::aarch64::constants::MAX_CPUS {
         if let Some((tid, frame_elr, ctx_elr, x26, spsr)) = eret_frame_anomaly_snapshot(cpu_id) {
             any_recorded = true;
-            let owner_tid = LAST_DISPATCHED_TID[cpu_id].load(Ordering::Acquire);
+            let (owner_tid, _) =
+                decode_last_dispatched(LAST_DISPATCHED_TID[cpu_id].load(Ordering::Acquire));
             raw_uart_str("[ERET_ANOMALY] cpu=");
             raw_uart_dec(cpu_id as u64);
             raw_uart_str(" tid=");
@@ -4457,6 +4458,8 @@ fn cpu0_breadcrumb(cpu_id: usize, id: u64) {
 
 pub fn schedule_from_kernel() {
     crate::task::process_task::drain_deferred_fault_sigsegv_exits();
+    crate::task::process_task::reclaim_deferred_process_resources();
+    crate::task::scheduler::reclaim_terminated_threads();
 
     let saved_daif = read_daif();
     let cpu_id = Aarch64PerCpu::cpu_id() as usize;

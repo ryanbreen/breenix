@@ -1118,6 +1118,11 @@ impl ProcessManager {
     /// Exit a process with the given exit code
     #[allow(dead_code)]
     pub fn exit_process(&mut self, pid: ProcessId, exit_code: i32) {
+        let already_terminated = match self.processes.get(&pid) {
+            Some(process) => process.is_terminated(),
+            None => return,
+        };
+
         // Get parent PID before we borrow the process mutably
         let parent_pid = self.processes.get(&pid).and_then(|p| p.parent);
 
@@ -1129,10 +1134,32 @@ impl ProcessManager {
                 exit_code
             );
 
-            // Drain any pending old page tables from previous exec() calls
-            process.drain_old_page_tables();
+            if already_terminated {
+                // Preserve the single-CoW-decref invariant: external terminate()
+                // already walked these mappings, so raw-drop them without ever
+                // routing the page table through another reclaim/decref path.
+                drop(process.page_table.take());
+                drop(process.stack.take());
+                process.pending_old_page_tables.clear();
+            } else {
+                #[cfg(target_arch = "aarch64")]
+                {
+                    // Fault exits always defer: the two-epoch grace covers both a
+                    // peer's pre-shadow-stamp dispatch window and hardware TTBR0 lag.
+                    // A peer's own EL1-fault shadow-clear window remains the same
+                    // parked structural issue as normal-exit deferral.
+                    let reclaim = crate::task::process_task::defer_process_resources(process);
+                    crate::task::process_task::enqueue_process_reclaim(reclaim);
+                    drop(process.stack.take());
+                }
+                #[cfg(not(target_arch = "aarch64"))]
+                crate::task::process_task::release_process_resources(process);
 
-            process.terminate(exit_code);
+                // Keep termination after release/deferral. Once page_table is None,
+                // cleanup_cow_frames() cannot repeat the CoW walk; restoring the old
+                // order would walk the same CoW mappings twice.
+                process.terminate(exit_code);
+            }
 
             // Remove from ready queue
             self.ready_queue.retain(|&p| p != pid);
@@ -1141,13 +1168,6 @@ impl ProcessManager {
             if self.current_pid == Some(pid) {
                 self.current_pid = None;
             }
-
-            // Free heavy resources immediately rather than waiting for waitpid reap.
-            // CoW refcounts were already decremented by terminate() -> cleanup_cow_frames(),
-            // so it's safe to drop the page table now.
-            process.page_table.take();
-            process.stack.take();
-            process.pending_old_page_tables.clear();
 
             // Clean up window buffers so the compositor stops reading freed pages
             #[cfg(target_arch = "aarch64")]

@@ -991,18 +991,21 @@ impl Scheduler {
                 return true;
             }
 
-            let stack_is_live = thread
-                .kernel_stack_top
-                .map(|top| {
-                    crate::memory::kernel_stack::is_kernel_stack_slot_live(top.as_u64())
-                })
-                .unwrap_or(false);
             let grace_elapsed = graces
                 .iter()
                 .find(|grace| grace.thread_id == thread.id())
                 .map(|grace| retirement_grace_elapsed(&grace.after_epoch))
                 .unwrap_or(false);
-            if stack_is_live || !grace_elapsed {
+            if !grace_elapsed {
+                return true;
+            }
+            if thread
+                .kernel_stack_top
+                .map(|top| {
+                    crate::memory::kernel_stack::is_kernel_stack_slot_live(top.as_u64())
+                })
+                .unwrap_or(false)
+            {
                 return true;
             }
 
@@ -2589,6 +2592,25 @@ impl Scheduler {
                 && thread.privilege == super::thread::ThreadPrivilege::User
                 && thread.state != ThreadState::Terminated
         })
+    }
+
+    /// Make every scheduler-owned thread for a process non-runnable.
+    #[cfg(target_arch = "aarch64")]
+    pub fn terminate_process_threads(&mut self, owner_pid: u64) {
+        for thread in self.threads.iter_mut() {
+            if thread.owner_pid == Some(owner_pid) {
+                thread.set_terminated();
+            }
+        }
+
+        let threads = &self.threads;
+        for queue in self.per_cpu_queues.iter_mut() {
+            queue.retain(|&thread_id| {
+                !threads.iter().any(|thread| {
+                    thread.id() == thread_id && thread.owner_pid == Some(owner_pid)
+                })
+            });
+        }
     }
 
     /// Remove a thread from all per-CPU queues (used when blocking)
