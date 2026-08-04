@@ -1,2 +1,0 @@
- kernel/src/main.rs | 9 ---------
- 1 file changed, 9 deletions(-)

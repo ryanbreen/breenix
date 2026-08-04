@@ -1,2 +1,0 @@
-kernel/src/net/mod.rs
-kernel/src/tracing/providers/counters.rs

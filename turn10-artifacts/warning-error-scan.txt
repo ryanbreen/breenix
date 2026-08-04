@@ -1,2 +1,0 @@
-# Build warning/error scan
-# Test output warning/error scan

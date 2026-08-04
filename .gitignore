@@ -109,3 +109,4 @@ logs/
 /heartbeat
 /heartbeat.codex
 /turn*-*.md
+/turn*-artifacts/

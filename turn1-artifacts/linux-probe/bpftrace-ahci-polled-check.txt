@@ -1,9 +1,0 @@
-Attaching 4 probes...
-@irq: 4770
-@port: 4770
-@polled: 0
-
-
-@irq: 4770
-@polled: 0
-@port: 4770

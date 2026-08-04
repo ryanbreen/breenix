@@ -1,2 +1,0 @@
-333:manager.create_process_with_argv [ARM64]: Generated PID 1
-345:[init] Breenix init starting (PID 1)

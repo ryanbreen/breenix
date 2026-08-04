@@ -1,2 +1,0 @@
-/usr/bin/acpidump
-Invalid table signature [PRL4010]: must be exactly 4 characters
