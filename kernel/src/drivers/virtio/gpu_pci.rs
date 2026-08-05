@@ -2424,18 +2424,13 @@ fn wait_for_ctrlq_completion(
 
     let expected_used_idx = previous_used_idx.wrapping_add(1);
     let expected_token = ctrlq_completion_token(expected_used_idx);
-    match GPU_COMPLETION.wait_timeout(expected_token, GPU_COMPLETION_TIMEOUT_NS) {
-        Ok(true) => {}
-        Ok(false) => {
-            record_gpu_wait_ticks(sleep_start);
-            virtgpu::trace_wait_completion_exit(cmd_type, resource_id, wait_path, false);
-            return Err("GPU PCI command completion timeout");
-        }
-        Err(_eintr) => {
-            record_gpu_wait_ticks(sleep_start);
-            virtgpu::trace_wait_completion_exit(cmd_type, resource_id, wait_path, false);
-            return Err("GPU PCI command completion interrupted");
-        }
+    let completed = GPU_COMPLETION
+        .wait_timeout_uninterruptible(expected_token, GPU_COMPLETION_TIMEOUT_NS)
+        .expect("uninterruptible GPU completion wait returned an error");
+    if !completed {
+        record_gpu_wait_ticks(sleep_start);
+        virtgpu::trace_wait_completion_exit(cmd_type, resource_id, wait_path, false);
+        return Err("GPU PCI command completion timeout");
     }
 
     record_gpu_wait_ticks(sleep_start);

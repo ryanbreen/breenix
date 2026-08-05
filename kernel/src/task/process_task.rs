@@ -256,7 +256,16 @@ impl ProcessScheduler {
                     process.terminate_minimal(exit_code);
 
                     #[cfg(feature = "btrt")]
-                    crate::test_framework::btrt::on_process_exit(pid.as_u64(), exit_code);
+                    {
+                        // terminate_minimal() is a no-op on a repeat teardown pass (process.rs:320
+                        // early-returns without touching exit_code), so process.exit_code already
+                        // holds the first-recorded status here on every pass — report that, never
+                        // this pass's exit_code parameter, so a later pass with a different code
+                        // (e.g. a fault arriving after an earlier SIGKILL) can't overwrite what the
+                        // parent already reaped via waitpid.
+                        let reported_exit_code = process.exit_code.unwrap_or(exit_code);
+                        crate::test_framework::btrt::on_process_exit(pid.as_u64(), reported_exit_code);
+                    }
 
                     // Set SIGCHLD on parent and get parent thread ID for wakeup
                     let parent_tid = if let Some(parent_pid) = parent_pid {

@@ -243,9 +243,19 @@ pub fn sys_clone(
 
     // Get the thread from the newly inserted process to add to scheduler
     let scheduler_thread = if let Some(process) = manager.get_process_mut(child_pid) {
-        if let Some(ref thread) = process.main_thread {
-            // Create a copy for the scheduler
-            Some(Box::new(thread.clone()))
+        if let Some(ref mut thread) = process.main_thread {
+            #[cfg(target_arch = "aarch64")]
+            let scheduler_thread = {
+                let mut scheduler_thread = thread.clone();
+                // The scheduler owns the child's kernel stack so reclamation is
+                // protected by the two-epoch retirement grace, as it is for fork.
+                scheduler_thread.kernel_stack_allocation = thread.kernel_stack_allocation.take();
+                scheduler_thread
+            };
+            #[cfg(not(target_arch = "aarch64"))]
+            let scheduler_thread = thread.clone();
+
+            Some(Box::new(scheduler_thread))
         } else {
             None
         }
