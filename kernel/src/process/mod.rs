@@ -126,10 +126,14 @@ fn current_process_manager_owner_identity() -> (u64, u64) {
     (cpu, 0)
 }
 
-#[cfg(not(target_arch = "aarch64"))]
+#[cfg(target_arch = "x86_64")]
 #[inline(always)]
 fn current_process_manager_owner_identity() -> (u64, u64) {
-    (0, 0)
+    use crate::arch_impl::current::percpu::X86PerCpu;
+    use crate::arch_impl::PerCpuOps;
+
+    // x86 is currently single-CPU, so the real CPU id is provably zero today.
+    (X86PerCpu::cpu_id(), 0)
 }
 
 /// Snapshot the best-effort PROCESS_MANAGER lock owner.

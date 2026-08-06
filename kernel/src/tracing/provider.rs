@@ -214,34 +214,6 @@ pub static mut TRACE_PROVIDERS: [Option<&'static TraceProvider>; MAX_PROVIDERS] 
 #[no_mangle]
 pub static TRACE_PROVIDER_COUNT: AtomicU64 = AtomicU64::new(0);
 
-/// Exact enable masks for the providers registered when the snapshot is taken.
-///
-/// This is intended for tests that temporarily change provider filtering while
-/// the rest of the kernel is live. Restoring the snapshot preserves each
-/// provider's individual probe mask instead of blanket-enabling providers.
-pub struct ProviderEnabledStateSnapshot {
-    states: [Option<(&'static TraceProvider, u64)>; MAX_PROVIDERS],
-}
-
-impl ProviderEnabledStateSnapshot {
-    /// Capture every registered provider and its current probe-enable mask.
-    pub fn capture() -> Self {
-        let providers_ptr = core::ptr::addr_of!(TRACE_PROVIDERS);
-        let states = core::array::from_fn(|index| unsafe {
-            (*providers_ptr)[index]
-                .map(|provider| (provider, provider.enabled.load(Ordering::Acquire)))
-        });
-        Self { states }
-    }
-
-    /// Restore every captured provider's exact probe-enable mask.
-    pub fn restore(&self) {
-        for (provider, enabled) in self.states.iter().flatten() {
-            provider.enabled.store(*enabled, Ordering::Release);
-        }
-    }
-}
-
 /// Register a provider in the global registry.
 ///
 /// This is typically called during static initialization.

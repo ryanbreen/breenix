@@ -319,7 +319,6 @@ impl Process {
     /// output lock and framebuffer lock while all CPUs have interrupts disabled.
     pub fn terminate_minimal(&mut self, exit_code: i32) {
         if matches!(self.state, ProcessState::Terminated(_)) {
-            crate::trace_count!(crate::tracing::providers::teardown::EXIT_REPEAT_REQUESTS);
             return;
         }
         self.state = ProcessState::Terminated(exit_code);

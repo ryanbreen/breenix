@@ -30,8 +30,8 @@ it un-skippable.
 > not enough; it must survive the same adversarial pre-check that produced the debt. A tranche may be
 > submitted while debts owned by *later* phases remain open, and only while that is true.
 >
-> **Tranche 1 = P0 + P1 + P2. It owns none of the six debts below** (their owners are P6a, P6b, P7,
-> P9, P10 and P12), which is precisely why it is submitted for ratification now.
+> **Tranche 1 = P0 + P1 + P2. It owns none of the seven debts below** (their owners are P6a, P6b,
+> P7, P8, P9, P10 and P12), which is precisely why it is submitted for ratification now.
 
 | Debt | Owner phase | What must be true before that phase's tranche can ratify | Source finding |
 |---|---|---|---|
@@ -41,6 +41,7 @@ it un-skippable.
 | **DEBT-4 — the x86 reap path bypasses the tombstone gate** | **P6a** | P6a's whole claim is that a row is removed only by the **two-event join** (`reaped` ∧ `retired`, whichever writer sees the other flag set performs the removal). **`kernel/src/syscall/handlers.rs:3101` removes the row directly on the live x86 reap path**, so the join is not the only remover and the retention gate can pass on aarch64 while x86 still frees a row out from under an un-retired receipt. Before P6a's tranche: that site routes through the join, **or** P6a's retention gate is honestly re-scoped to aarch64 with the x86 divergence named in AC-12's evidence column, a ratchet pinning `handlers.rs:3101` by name, and a stated phase that closes it. Scoping the gate narrowly to avoid tripping on it, without naming it, is not available | v3 pre-check and re-check, item **B NOT-CLOSED** (second half, both passes): *"P6a omits the live x86 reap at `kernel/src/syscall/handlers.rs:3101`, which still removes the row directly"*. PLAN P6a |
 | **DEBT-5 — `EXIT_BLOCK_REFUSED` post-migration semantics: it is NEVER asserted to zero** | **P10** *(a/b/c/d)* | The admission interlock is **permanent**, not scaffolding. Migration changes only the fate of a victim *already* blocked; it does not change the refusal owed to an already-latched victim trying to **enter** a migrated wait — which must stay refused, or migration manufactures cancellation work and reopens a lost-wakeup window between block and cancel. Therefore: **no gate anywhere may assert `EXIT_BLOCK_REFUSED{family} == 0`**, before or after migration. `EXIT_BLOCK_REFUSED{family}` is asserted **nonzero** in P9's own admission-race test and **re-asserted nonzero** in each of P10a-d; the migration evidence is the *pair* `EXIT_LEGACY_REMOTE_MARK{family} → 0` and `EXIT_WAIT_CANCELLED{family} → nonzero`. This debt is **repaired in the v3 text**; it is registered because it is a standing guard that a later phase can silently break, and because the failure mode (a "tidy-up" that asserts the counter to zero once migration is done) reads like cleanup | v3 pre-check, MAJOR item 5: *"P10's requirement that `EXIT_BLOCK_REFUSED{family}` hits zero post-migration contradicts the permanent admission interlock"*. DESIGN §1.5, §3 AC-11; PLAN P0 counter table, P9, P10a-d |
 | **DEBT-6 — P12's group-membership drop is scoped to EXTERNALLY-ORIGINATED signals only** | **P12** | The S1 group-seal check drops a fatal request when the designated init is a member of the **target group**. That drop applies to **`ExitIntent.origin == Signal` only** — sender-agnostic (a self-directed `kill(getpid())`/`raise` is still a signal and is still dropped, matching Linux's `sig_task_ignore`, which consults `SIGNAL_UNKILLABLE` and disposition and never the sender). **`ExitSyscall`** (init's own `exit_group`, or the exit of its last member) **and `FatalFault` BYPASS the membership test entirely**, so init's own exit still seals, latches and reaches the kernel-fatal panic. An unscoped check makes that panic path unreachable and the system hangs with init alive — a silent inversion of the policy. P12's gate must include the negative (a deliberate init `exit_group` still panics; a `FatalFault` injection still panics; an ordinary group kill still works) and record the unscoped-check pre-image. This debt is **repaired in the v3 text** and is registered because the failure is silent | v3 pre-check, MAJOR item 6: *"P12's group-membership signal drop isn't scoped to externally-originated signals; as written it would also suppress init's own `exit_group`, contradicting the required panic path"*. DESIGN §2.2 (End 2); PLAN P12 |
+| **DEBT-7 — P0 defer/reclaim evidence is aggregate-only, not per-PID causal pairing** | **P8** | P0's `TraceCounter` substrate stores only per-CPU scalar totals, so its nonzero workload delta can prove aggregate balancing but cannot prove that process X's defer is followed by process X's reclaim. Sampling live `TRACE_BUFFERS` is not an acceptable substitute: `iter_events()` requires tracing to be disabled, and disabling every provider during a boot test drops unrelated live-boot evidence. Before P8's tranche can ratify, add a race-free, bounded correlation mechanism keyed by PID and restore the stronger gate: every one of the test's 64 child PIDs has exactly one defer followed by exactly one reclaim. The mechanism must not sample live trace rings, disable tracing or providers system-wide, or add unbounded test storage; P8 owns this because it introduces the round's real per-PID boundary-observation infrastructure | P0 observability STRIP+SIMPLIFY review round 2, S1. `tracing/providers/teardown.rs`; `tracing/buffer.rs::iter_events`; PLAN P0 gate extra 1 and P8 |
 
 **Not in this register, and why.** Items the pre-checks raised that are *closed in the v3 text* and
 carry no further obligation are recorded in the changelogs, not here: the seven-vs-nine caller count
@@ -169,7 +170,7 @@ P10a/b/c/d, so "P10c empties the allowlist" reads **P10d** today, and "16 PRs" r
 | **3** | **P1** restructures the reclaim drain to *detach → drop queue lock → prove → free-or-reinsert*; the under-queue-lock predicate stays lock-free. **P2** changes `exit_process` to return a `#[must_use] RetirementReceipt` and converts **both** existing PM-nested `enqueue_process_reclaim` sites | P1, P2 |
 | **4** | **P8** now states the hook-activation control flow explicitly (the hook is the *only* entry to `do_exit_current`, so normal exit exercises it in this PR), plus the tombstone and one-at-a-time FD-acquisition control flow Codex's P8 note called for | P8 |
 | **5** | **P11** deletes `DeliverResult::Terminated` **and** its caller-side parent-notification action in the same PR, replacing it with intent-only `DeliverResult::FatalIntent` | P11 |
-| **6** | **P0** names every existing teardown write-site (file:line) each counter attaches to, marks which counters are legitimately zero until a later phase, and adds a **nonzero causally-paired** defer/reclaim test. The **honest PR count is 13 numbered phases / 16 PRs**, enumerated below. The false "P3/P4/P5 are file-disjoint from P2, so they can merge in parallel" claim is **deleted** — the file lists overlap and all phases merge sequentially | P0, §0 PR ledger, §0 graph |
+| **6** | **P0** names every existing teardown write-site (file:line) each counter attaches to, marks which counters are legitimately zero until a later phase, and adds a **nonzero aggregate-delta** defer/reclaim test. The stronger per-PID causal claim originally written here is not supported by P0's aggregate counters and is now registered as **DEBT-7**, owned by P8. The **honest PR count is 13 numbered phases / 16 PRs**, enumerated below. The false "P3/P4/P5 are file-disjoint from P2, so they can merge in parallel" claim is **deleted** — the file lists overlap and all phases merge sequentially | P0, §0 PR ledger, §0 graph, DEBT-7 |
 | **7** | *(corrected in v3 — closure G)* The real condition 7 is **"close conditions 1-6 and obtain a NEW ratification pass before implementation begins"**. v2 mislabelled this row as the OQ-1 decision. It is **OPEN by construction** and is closed only when a fresh pass returns `ENDORSE: YES`. *(v3 tranche pass: the gate is now **tranche-scoped** — condition 7 is discharged per tranche, not once for the whole document. Tranche 1 (P0+P1+P2) is submitted; P0/P1/P2 are cleared for build when **that tranche's** pass returns `ENDORSE: YES`, and every later phase stays uncleared until its own tranche ratifies, with the DESIGN-DEBT REGISTER's rule gating any tranche that contains a debt owner. The condition itself is not weakened — it is applied more times, not fewer.)* | §2 ratification gate, **DESIGN-DEBT REGISTER** |
 
 **Coordinator decision recorded separately (NOT a ratification condition — closure G).** **P12**
@@ -253,7 +254,13 @@ as its own subphase makes the true figure **17 PRs**. Every one is listed; there
    `[BOOT_TESTS:PASS]`; the ordinary boot paths must reach the
    real `KERNEL_POST_TESTS_COMPLETE` marker. A marker printed before the behaviour under test is never
    accepted as evidence. **QEMU concurrency capped at 4** per standing operator rule (batch 4 and 4,
-   never 8+).
+   never 8+). **Known pre-existing flake:** the `timer:time` family, currently emitted as
+   `timer:timer_quantum_reset_aarch64`, reproduced against plain-main kernel sources with this GICv3
+   gate runner in three consecutive runs: **PASS 84/84; PASS 84/84; FAIL 84/84** with
+   `[TEST:timer:timer_quantum_reset_aarch64:FAIL:reset_quantum did not increment counter - ARM64 reset is a no-op]`.
+   On that named failure only, retry the full command up to **two** times; any other failure, or the
+   same failure after both retries, is a hard failure. A tracking issue for the underlying timer
+   flake is still required.
 3. **Phase-specific assertions** below — every one an observed outcome (counter equality, actual
    `waitpid` status, zero fault markers). "The process was created" is never evidence, and **a
    counter equality that holds at zero is never evidence** (condition 6): every equality gate names
@@ -376,7 +383,7 @@ the *exact current* bypass surface so any regression fails CI immediately.
 | `TEARDOWN_ENTRY{fault}` | `task/process_task.rs:369` (`handle_thread_exit(tid, -11)` inside `drain_deferred_fault_sigsegv_exits`, `:363`) + the four EL0 fault sites `arch_impl/aarch64/exception.rs:768,1135,1230,1333` | yes under the fault tests |
 | `TEARDOWN_ENTRY{signal}` | `syscall/signal.rs:162`, `signal/delivery.rs:224`, `:258` | yes under the signal tests |
 | `TEARDOWN_ENTRY{group}` | *(no group path exists on `main`)* | **declared zero until P9** — not part of any equality gate before then |
-| `EXIT_FIRST_REQUESTS` / `EXIT_REPEAT_REQUESTS` | the `already_terminated` reads at `process/manager.rs:1121` and `task/process_task.rs:222`, plus `Process::terminate_minimal`'s repeat early-return (`process/process.rs:320`) | yes (first); repeat is exercised by the P0 repeat test |
+| `EXIT_FIRST_REQUESTS` / `EXIT_REPEAT_REQUESTS` | the `already_terminated` reads at `process/manager.rs:1121` and `task/process_task.rs:222` | yes (first); repeat is exercised by the P0 repeat test |
 | `TEARDOWN_QUARANTINE` | `task/scheduler.rs:2599 terminate_process_threads` (five call sites: `exception.rs:768,1135,1230,1333`, and `signal.rs` from P2) | yes under the fault tests |
 | `EXIT_SGI_SENT` *(re-wired in v3 — closure F)* | **NOT** the generic sends. `task/scheduler.rs:1857` is inside `send_resched_ipi` (`:1843`), which wakes **idle** CPUs, and `:1886` is inside `send_resched_ipi_to_cpu` (`:1868`), which targets the CPU that got a **newly runnable task** — neither knows a victim, so wiring them makes every ordinary wakeup satisfy a "> 0" gate. The counter is written **only** by the teardown-specific `Scheduler::send_exit_expedite_sgi(victim_pid, batch)` that P2 introduces, carrying the victim pid in the `trace_event!` payload | **declared zero until P2** — the write site does not exist before then; excluded from every gate until P2 |
 | `EXIT_REQUEST_OBSERVED` *(new, closure F)* | the boundary hook's first observation of a latched request, carrying the observed pid — i.e. the paired consumer side of `EXIT_SGI_SENT{pid}` **from P8 onward** | **declared zero until P8** (the hook does not exist before then). P2 and P9 pair against the **`EXIT_KICK` bucket proxy** specified in DESIGN §2.7 — *not* against this counter, and not against an unnamed "P2-era proxy" *(v3 tranche pass: the proxy is now a specified mechanism; the earlier wording pointed at gates that pointed back at it)* |
@@ -483,23 +490,21 @@ the aarch64 standard-gate command above: `run-aarch64-full-test.sh --rebuild --b
 enables `boot_tests`, runs the EarlyBoot and PostScheduler stages, and accepts only the final
 `[BOOT_TESTS:PASS]` result.
 
-1. **`fork_exit_defer_reclaim_pairing_test` (the causally-paired nonzero gate).** Fork and exit **64**
+1. **`fork_exit_defer_reclaim_pairing_test` (the aggregate-delta nonzero gate).** Fork and exit **64**
    children in a loop, then quiesce. Assert (a) `TEARDOWN_ENTRY{exit} >= 64`; (b) `TEARDOWN_DEFER >= 64`;
    (c) after the drain, `TEARDOWN_DEFER == TEARDOWN_RECLAIM` **at a value ≥ 64** — the equality is only
-   accepted at a nonzero, workload-explained value; (d) **per-pid pairing**: each deferred pid recorded
-   by a `trace_event!` payload appears exactly once in a later reclaim event, so the equality cannot be
-   satisfied by two unrelated streams that happen to have equal totals.
+   accepted at a nonzero, workload-explained value. This proves aggregate balancing only; the current
+   counters have no PID dimension and therefore cannot prove per-PID causality. **DEBT-7** assigns that
+   stronger proof to P8, where real per-PID observation infrastructure enters the round.
 2. Ring-overflow injection drives `DEFERRED_FAULT_RING_DROPPED` nonzero and back to a quiescent read.
 3. Baseline snapshot of `TEARDOWN_MASKED_FRAMES_WALKED`, `FD_CLOSES_UNDER_PM` and
    `RECLAIM_ENQUEUE_UNDER_PM` on `main` — these are **expected nonzero** and are the pre-existing
    defects later phases drive to zero; recording the baseline is what makes those later gates meaningful.
 4. `TEARDOWN_LOCK_ORDER_SUSPECT == 0`, `PROOF_UNDER_QUEUE_LOCK == 0`, and every counter has a reader
    (no write-only counters).
-5. *(v3 — closure F)* **A negative assertion that `EXIT_SGI_SENT` is zero on a normal boot**, proving
-   it is not wired to the generic send helpers. A boot performs many reschedule IPIs; if the counter
-   moves at P0, the wiring is wrong and the phase fails. This is the inverse of a vacuous-zero gate:
-   the zero is the *evidence*, and it is explained by a named workload (every boot sends reschedule
-   IPIs) rather than by absence of activity.
+5. *(v3 — closure F)* **`EXIT_SGI_SENT` is declaration-only until P2 and is excluded from P0 runtime
+   gates.** The structural ratchet forbids it in the generic reschedule helpers and pins its eventual
+   producer to the teardown-only helper; P0 deliberately does not use equality-at-zero as evidence.
 6. *(v3 — closures A, D, E)* The five new ratchet rules pass on `main` unchanged, and each is proven
    to be a real constraint by a deliberately-broken variant in the test: adding a tenth blocking
    primitive, a second `thread_group_id` write, an **eighth** `exit_process` caller *(v3 repair — the
@@ -1904,9 +1909,9 @@ P12's argument. The gate is therefore **discharged per tranche**:
   ratified. Ratifying tranche 1 grants nothing to P3 and beyond.
 - **The DESIGN-DEBT REGISTER gates the later tranches.** A tranche containing a debt's owner phase
   cannot be ratified until that debt's closure is *written into these documents and pre-checked*.
-  Tranche 1 owns none of the six debts, which is the entire reason it can be submitted while they
-  stand open. A tranche that contains P6a, P6b, P7, P9, P10 or P12 arrives carrying its debt closure
-  or it does not arrive.
+  Tranche 1 owns none of the seven debts, which is the entire reason it can be submitted while they
+  stand open. A tranche that contains P6a, P6b, P7, P8, P9, P10 or P12 arrives carrying its debt
+  closure or it does not arrive.
 
 The condition is applied **more** times under this model, not fewer, and no phase ever builds on an
 unratified argument.

@@ -262,7 +262,7 @@ pub static TRACE_COUNTER_COUNT: AtomicU64 = AtomicU64::new(0);
 /// Register a counter in the global registry.
 ///
 /// This is typically called during static initialization.
-/// Returns the slot index if successful, or None if the registry is full.
+/// Returns the slot index if successful. Panics if the registry is full.
 ///
 /// # Safety
 ///
@@ -274,9 +274,6 @@ pub fn register_counter(counter: &'static TraceCounter) -> Option<usize> {
         (count as usize) < MAX_COUNTERS,
         "trace counter registry capacity exhausted"
     );
-    if count as usize >= MAX_COUNTERS {
-        return None;
-    }
 
     // Find an empty slot
     unsafe {
@@ -290,11 +287,8 @@ pub fn register_counter(counter: &'static TraceCounter) -> Option<usize> {
         }
     }
 
-    assert!(
-        TRACE_COUNTER_COUNT.load(Ordering::Acquire) as usize >= MAX_COUNTERS,
-        "trace counter registry count does not match its occupied slots"
-    );
-    None
+    // The leading capacity assertion guarantees that one registry slot is free.
+    unreachable!("counter registry count below capacity but no slot was free")
 }
 
 /// Get a counter by name.

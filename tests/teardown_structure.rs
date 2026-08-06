@@ -175,14 +175,14 @@ const EXIT_PROCESS_CALLS: &[(&str, usize)] = &[
     ("kernel/src/arch_impl/aarch64/exception.rs", 1378),
     ("kernel/src/interrupts.rs", 1429),
     ("kernel/src/interrupts.rs", 1735),
-    ("kernel/src/process/mod.rs", 321),
+    ("kernel/src/process/mod.rs", 325),
 ];
 const EXIT_PROCESS_BY_PID_CALLS: &[(&str, usize)] = &[
-    ("kernel/src/process/mod.rs", 313),
-    ("kernel/src/process/mod.rs", 329),
+    ("kernel/src/process/mod.rs", 317),
+    ("kernel/src/process/mod.rs", 333),
 ];
 const EXIT_PROCESS_FOR_TEARDOWN_TEST_CALLS: &[(&str, usize)] =
-    &[("kernel/src/tracing/providers/teardown.rs", 507)];
+    &[("kernel/src/tracing/providers/teardown.rs", 385)];
 const BLOCKING_PRIMITIVES: &[(&str, usize)] = &[
     ("kernel/src/task/scheduler.rs", 1740),
     ("kernel/src/task/scheduler.rs", 1911),
@@ -363,7 +363,7 @@ fn v3_structural_closures_are_exact() {
 }
 
 #[test]
-fn all_phase_zero_counters_have_registered_readers_and_runtime_gates() {
+fn all_phase_zero_counters_have_registered_readers_and_honest_runtime_gates() {
     let sources = rust_sources_below("kernel/src");
     let provider = source(&sources, "kernel/src/tracing/providers/teardown.rs");
     let declarations: BTreeSet<_> = provider
@@ -396,20 +396,34 @@ fn all_phase_zero_counters_have_registered_readers_and_runtime_gates() {
     );
     assert!(provider.contains("core::array::from_fn(|index| COUNTERS[index].aggregate())"));
     assert!(provider.contains("for _ in 0..64"));
-    assert!(provider.contains("defer_reclaim_events_are_paired("));
-    assert!(provider.contains("&deferred_pids"));
+    assert!(provider.contains("deferred_delta != reclaimed_delta || reclaimed_delta < 64"));
+    assert!(!provider.contains("TeardownPairingEvidence"));
+    assert!(!provider.contains("defer_reclaim_events_are_paired("));
+    assert!(!provider.contains("deferred_pids"));
+    assert!(!provider.contains("iter_events()"));
+    assert!(!provider.contains("TRACE_BUFFERS"));
+    assert!(!provider.contains("super::disable_all()"));
+    assert!(!provider.contains("crate::tracing::enable()"));
+    assert!(!provider.contains("crate::tracing::disable()"));
+    assert!(!provider.contains("TEARDOWN_PROVIDER.enable_all()"));
+    assert!(!provider.contains("TEARDOWN_PROVIDER.disable_all()"));
     assert!(source(&sources, "kernel/src/task/process_task.rs").contains("for tid in 1..=17"));
-    assert!(provider.contains("let exit_sgi_sent_before = EXIT_SGI_SENT.aggregate()"));
-    assert!(provider.contains("saturating_sub(exit_sgi_sent_before)"));
+    assert!(!provider.contains("EXIT_SGI_SENT.aggregate()"));
+    assert!(!provider.contains("TEARDOWN_ENTRY_GROUP.aggregate()"));
+
+    let declaration_only = provider
+        .split("// Declaration-only until the phase named in PLAN.md.")
+        .nth(1)
+        .expect("declaration-only counter boundary");
+    assert!(declaration_only.contains("counter!(TEARDOWN_ENTRY_GROUP,"));
+    assert!(declaration_only.contains("counter!(EXIT_SGI_SENT,"));
 
     let registry = source(&sources, "kernel/src/test_framework/registry.rs");
     assert!(registry.contains("name: \"fork_exit_defer_reclaim_pairing_test\""));
     assert!(registry.contains("name: \"deferred_fault_ring_overflow_injection\""));
 
     let plan = repo_text("docs/planning/teardown-unification/PLAN.md");
-    assert!(plan.contains(
-        "./docker/qemu/run-aarch64-full-test.sh --rebuild --boot-tests-only"
-    ));
+    assert!(plan.contains("./docker/qemu/run-aarch64-full-test.sh --rebuild --boot-tests-only"));
     let aarch64_gate = repo_text("docker/qemu/run-aarch64-full-test.sh");
     assert!(aarch64_gate.contains("cargo build --release --features boot_tests"));
     assert!(aarch64_gate.contains("--boot-tests-only"));

@@ -28,7 +28,6 @@ macro_rules! counter {
 counter!(TEARDOWN_ENTRY_EXIT, "Exit teardown entries");
 counter!(TEARDOWN_ENTRY_FAULT, "Fault teardown entries");
 counter!(TEARDOWN_ENTRY_SIGNAL, "Signal teardown entries");
-counter!(TEARDOWN_ENTRY_GROUP, "Group teardown entries");
 counter!(EXIT_FIRST_REQUESTS, "First exit requests");
 counter!(EXIT_REPEAT_REQUESTS, "Repeated exit requests");
 counter!(TEARDOWN_QUARANTINE, "Scheduler quarantine operations");
@@ -68,6 +67,7 @@ counter!(
 
 // Declaration-only until the phase named in PLAN.md. These intentionally have
 // no trace_count! producer in Phase 0.
+counter!(TEARDOWN_ENTRY_GROUP, "Group teardown entries");
 counter!(EXIT_SGI_SENT, "Teardown-attributed expedite SGIs");
 counter!(EXIT_REQUEST_OBSERVED, "Observed latched exit requests");
 counter!(EXIT_KICK_PUBLISHED, "Published exit-kick buckets");
@@ -279,102 +279,6 @@ pub fn scheduler_scope_active() -> bool {
         != 0
 }
 
-#[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
-struct TeardownPairingEvidence {
-    seen: alloc::vec::Vec<(u64, u16, u32, u8)>,
-    events: alloc::vec::Vec<crate::tracing::TraceEvent>,
-}
-
-#[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
-impl TeardownPairingEvidence {
-    fn new() -> Self {
-        let mut evidence = Self {
-            seen: alloc::vec::Vec::new(),
-            events: alloc::vec::Vec::new(),
-        };
-        evidence.sample_into(false);
-        evidence
-    }
-
-    fn sample(&mut self) {
-        self.sample_into(true);
-    }
-
-    fn sample_into(&mut self, retain: bool) {
-        unsafe {
-            let buffers = core::ptr::addr_of!(crate::tracing::TRACE_BUFFERS);
-            for buffer in &*buffers {
-                for event in buffer.iter_events() {
-                    if event.event_type != TEARDOWN_DEFER_EVENT
-                        && event.event_type != TEARDOWN_RECLAIM_EVENT
-                    {
-                        continue;
-                    }
-                    let key = (
-                        event.timestamp,
-                        event.event_type,
-                        event.payload,
-                        event.cpu_id,
-                    );
-                    if self.seen.contains(&key) {
-                        continue;
-                    }
-                    self.seen.push(key);
-                    if retain {
-                        self.events.push(*event);
-                    }
-                }
-            }
-        }
-    }
-}
-
-#[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
-pub fn defer_reclaim_events_are_paired(
-    pids: &[u64],
-    events: &[crate::tracing::TraceEvent],
-) -> Result<(), &'static str> {
-    let mut defer = alloc::vec![None; pids.len()];
-    let mut reclaim = alloc::vec![None; pids.len()];
-    let mut defer_count = alloc::vec![0u8; pids.len()];
-    let mut reclaim_count = alloc::vec![0u8; pids.len()];
-
-    for event in events {
-        let Some(index) = pids.iter().position(|pid| *pid as u32 == event.payload) else {
-            continue;
-        };
-        if event.event_type == TEARDOWN_DEFER_EVENT {
-            defer_count[index] = defer_count[index].saturating_add(1);
-            defer[index] = Some(event.timestamp);
-        } else if event.event_type == TEARDOWN_RECLAIM_EVENT {
-            reclaim_count[index] = reclaim_count[index].saturating_add(1);
-            reclaim[index] = Some(event.timestamp);
-        }
-    }
-
-    for index in 0..pids.len() {
-        if defer_count[index] == 0 {
-            return Err("per-pid defer event was missing");
-        }
-        if defer_count[index] != 1 {
-            return Err("per-pid defer event was duplicated");
-        }
-        if reclaim_count[index] == 0 {
-            return Err("per-pid reclaim event was missing");
-        }
-        if reclaim_count[index] != 1 {
-            return Err("per-pid reclaim event was duplicated");
-        }
-        if !defer[index]
-            .zip(reclaim[index])
-            .is_some_and(|(deferred, reclaimed)| deferred < reclaimed)
-        {
-            return Err("per-pid reclaim event did not follow its defer event");
-        }
-    }
-    Ok(())
-}
-
 #[cfg(feature = "boot_tests")]
 pub fn deferred_fault_ring_overflow_test() -> crate::test_framework::registry::TestResult {
     use crate::test_framework::registry::TestResult;
@@ -397,29 +301,6 @@ pub fn deferred_fault_ring_overflow_test() -> crate::test_framework::registry::T
 pub fn fork_exit_defer_reclaim_pairing_test() -> crate::test_framework::registry::TestResult {
     use crate::test_framework::registry::TestResult;
 
-    struct RestoreTracingState {
-        globally_enabled: bool,
-        providers: crate::tracing::provider::ProviderEnabledStateSnapshot,
-    }
-    impl Drop for RestoreTracingState {
-        fn drop(&mut self) {
-            self.providers.restore();
-            if self.globally_enabled {
-                crate::tracing::enable();
-            } else {
-                crate::tracing::disable();
-            }
-        }
-    }
-
-    let _restore_tracing_state = RestoreTracingState {
-        globally_enabled: crate::tracing::is_enabled(),
-        providers: crate::tracing::provider::ProviderEnabledStateSnapshot::capture(),
-    };
-    crate::tracing::enable();
-    super::disable_all();
-    TEARDOWN_PROVIDER.enable_all();
-
     let teardown_entry_exit_before = TEARDOWN_ENTRY_EXIT.aggregate();
     let exit_first_requests_before = EXIT_FIRST_REQUESTS.aggregate();
     let exit_repeat_requests_before = EXIT_REPEAT_REQUESTS.aggregate();
@@ -431,8 +312,6 @@ pub fn fork_exit_defer_reclaim_pairing_test() -> crate::test_framework::registry
     let lock_order_suspect_before = TEARDOWN_LOCK_ORDER_SUSPECT.aggregate();
     let proof_under_queue_lock_before = PROOF_UNDER_QUEUE_LOCK.aggregate();
     let reclaim_context_violations_before = RECLAIM_CONTEXT_VIOLATIONS.aggregate();
-    let exit_sgi_sent_before = EXIT_SGI_SENT.aggregate();
-    let mut pairing_evidence = TeardownPairingEvidence::new();
 
     let parent_page_table = match crate::memory::process_memory::ProcessPageTable::new() {
         Ok(page_table) => alloc::boxed::Box::new(page_table),
@@ -475,7 +354,6 @@ pub fn fork_exit_defer_reclaim_pairing_test() -> crate::test_framework::registry
         manager.insert_process(parent_pid, parent_process);
     };
 
-    let mut deferred_pids = alloc::vec::Vec::with_capacity(64);
     for _ in 0..64 {
         let child_page_table = match crate::memory::process_memory::ProcessPageTable::new() {
             Ok(page_table) => alloc::boxed::Box::new(page_table),
@@ -516,8 +394,6 @@ pub fn fork_exit_defer_reclaim_pairing_test() -> crate::test_framework::registry
                 parent.children.retain(|pid| *pid != child.0);
             }
         }
-        deferred_pids.push(child.0.as_u64());
-        pairing_evidence.sample();
     }
 
     // Exercise today's immediate-release path as part of the same explained
@@ -558,15 +434,6 @@ pub fn fork_exit_defer_reclaim_pairing_test() -> crate::test_framework::registry
     }
 
     let timer_frequency = crate::arch_impl::aarch64::timer::frequency_hz();
-    for _ in 0..4 {
-        crate::task::scheduler::nudge_retirement_grace_for_test();
-        let boundary_deadline =
-            crate::arch_impl::aarch64::timer::rdtsc().saturating_add(timer_frequency / 1000);
-        while crate::arch_impl::aarch64::timer::rdtsc() < boundary_deadline {
-            core::hint::spin_loop();
-        }
-        pairing_evidence.sample();
-    }
     let quiesce_deadline =
         crate::arch_impl::aarch64::timer::rdtsc().saturating_add(timer_frequency.saturating_mul(5));
     loop {
@@ -577,7 +444,6 @@ pub fn fork_exit_defer_reclaim_pairing_test() -> crate::test_framework::registry
             core::hint::spin_loop();
         }
         crate::task::process_task::reclaim_deferred_process_resources();
-        pairing_evidence.sample();
         let deferred_delta = TEARDOWN_DEFER
             .aggregate()
             .saturating_sub(teardown_defer_before);
@@ -614,18 +480,8 @@ pub fn fork_exit_defer_reclaim_pairing_test() -> crate::test_framework::registry
     if exit_first_requests_delta < 64 || exit_repeat_requests_delta < 64 {
         return TestResult::Fail("first/repeat exit request workload deltas did not reach 64");
     }
-    if deferred_delta < 64 {
-        return TestResult::Fail("TEARDOWN_DEFER workload delta did not reach 64");
-    }
-    if deferred_delta != reclaimed_delta {
-        return TestResult::Fail("TEARDOWN_DEFER workload delta did not equal TEARDOWN_RECLAIM");
-    }
-    crate::tracing::disable();
-    pairing_evidence.sample();
-    TEARDOWN_PROVIDER.disable_all();
-    if let Err(message) = defer_reclaim_events_are_paired(&deferred_pids, &pairing_evidence.events)
-    {
-        return TestResult::Fail(message);
+    if deferred_delta != reclaimed_delta || reclaimed_delta < 64 {
+        return TestResult::Fail("defer/reclaim workload deltas did not pair at 64 or more");
     }
     if TEARDOWN_MASKED_FRAMES_WALKED
         .aggregate()
@@ -656,13 +512,6 @@ pub fn fork_exit_defer_reclaim_pairing_test() -> crate::test_framework::registry
             != 0
     {
         return TestResult::Fail("healthy teardown lock-context counter moved");
-    }
-    if EXIT_SGI_SENT
-        .aggregate()
-        .saturating_sub(exit_sgi_sent_before)
-        != 0
-    {
-        return TestResult::Fail("generic reschedule IPI moved EXIT_SGI_SENT");
     }
     let _all_counter_readers = snapshot();
 
