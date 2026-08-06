@@ -44,10 +44,10 @@ pub struct TryProcessManagerGuard {
 
 impl Drop for TryProcessManagerGuard {
     fn drop(&mut self) {
+        note_process_manager_lock_released();
         unsafe {
             core::mem::ManuallyDrop::drop(&mut self.guard);
         }
-        note_process_manager_lock_released();
     }
 }
 
@@ -67,14 +67,15 @@ impl core::ops::DerefMut for TryProcessManagerGuard {
 
 impl Drop for ProcessManagerGuard {
     fn drop(&mut self) {
+        // Clear owner metadata before the mutex becomes available to another CPU.
+        note_process_manager_lock_released();
+
         // CRITICAL: Release the lock BEFORE restoring interrupts.
         // If we restored DAIF first, there'd be a window where interrupts are enabled
         // but the lock is still held, allowing the exact deadlock we're preventing.
         unsafe {
             core::mem::ManuallyDrop::drop(&mut self._guard);
         }
-
-        note_process_manager_lock_released();
 
         #[cfg(target_arch = "aarch64")]
         unsafe {
@@ -196,8 +197,8 @@ where
         let mut manager_lock = PROCESS_MANAGER.lock();
         note_process_manager_lock_acquired();
         let result = manager_lock.as_mut().map(f);
-        drop(manager_lock);
         note_process_manager_lock_released();
+        drop(manager_lock);
         result
     })
 }
@@ -213,8 +214,8 @@ where
         let mut manager_lock = PROCESS_MANAGER.lock();
         note_process_manager_lock_acquired();
         let result = manager_lock.as_mut().map(f);
-        drop(manager_lock);
         note_process_manager_lock_released();
+        drop(manager_lock);
         result
     })
 }

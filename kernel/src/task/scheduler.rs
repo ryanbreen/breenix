@@ -234,6 +234,20 @@ pub fn emit_wake_attribution_counters() {
 /// Global scheduler instance
 static SCHEDULER: Mutex<Option<Scheduler>> = Mutex::new(None);
 
+#[inline(always)]
+fn lock_scheduler() -> spin::MutexGuard<'static, Option<Scheduler>> {
+    let guard = SCHEDULER.lock();
+    crate::tracing::providers::teardown::note_scheduler_acquire();
+    guard
+}
+
+#[inline(always)]
+fn try_lock_scheduler() -> Option<spin::MutexGuard<'static, Option<Scheduler>>> {
+    let guard = SCHEDULER.try_lock()?;
+    crate::tracing::providers::teardown::note_scheduler_acquire();
+    Some(guard)
+}
+
 /// Global need_resched flag for timer interrupt
 static NEED_RESCHED: AtomicBool = AtomicBool::new(false);
 
@@ -319,7 +333,7 @@ pub fn increment_context_switch_count() {
 /// SCHEDULER.lock() while holding this guard (would deadlock).
 #[cfg(target_arch = "aarch64")]
 pub fn lock_for_context_switch() -> spin::MutexGuard<'static, Option<Scheduler>> {
-    SCHEDULER.lock()
+    lock_scheduler()
 }
 
 /// Force-unlock the scheduler mutex after an inline AArch64 context switch.
@@ -395,7 +409,7 @@ pub struct SchedulerLivenessSnapshot {
 /// Returns `None` when the scheduler lock is busy or uninitialized; both are
 /// diagnostic for watchdog output.
 pub fn try_liveness_snapshot(cpu_id: usize) -> Option<SchedulerLivenessSnapshot> {
-    let guard = SCHEDULER.try_lock()?;
+    let guard = try_lock_scheduler()?;
     let sched = guard.as_ref()?;
     let cpu = cpu_id.min(MAX_CPUS.saturating_sub(1));
 
@@ -436,7 +450,7 @@ pub fn try_liveness_snapshot(cpu_id: usize) -> Option<SchedulerLivenessSnapshot>
 /// Returns None if the scheduler lock is held (which is itself diagnostic).
 /// Safe to call from interrupt context.
 pub fn try_dump_state() -> Option<SchedulerDumpInfo> {
-    let guard = SCHEDULER.try_lock()?;
+    let guard = try_lock_scheduler()?;
     let sched = guard.as_ref()?;
 
     let current_thread_id = sched.cpu_state[0].current_thread.unwrap_or(0);
@@ -2603,16 +2617,6 @@ impl Scheduler {
                 crate::tracing::providers::teardown::TEARDOWN_LOCK_ORDER_SUSPECT
             );
         }
-        if self
-            .current_thread()
-            .and_then(|thread| thread.owner_pid)
-            .is_some_and(|current_owner| current_owner != owner_pid)
-        {
-            crate::trace_count!(
-                crate::tracing::providers::teardown::TEARDOWN_VICTIM_DIVERGENCE
-            );
-        }
-
         for thread in self.threads.iter_mut() {
             if thread.owner_pid == Some(owner_pid) {
                 thread.set_terminated();
@@ -2830,7 +2834,7 @@ impl Scheduler {
 /// Initialize the global scheduler
 #[allow(dead_code)]
 pub fn init(idle_thread: Box<Thread>) {
-    let mut scheduler_lock = SCHEDULER.lock();
+    let mut scheduler_lock = lock_scheduler();
     *scheduler_lock = Some(Scheduler::new(idle_thread));
     // CRITICAL: Only log on x86_64 to avoid deadlock on ARM64
     #[cfg(target_arch = "x86_64")]
@@ -2840,7 +2844,7 @@ pub fn init(idle_thread: Box<Thread>) {
 /// Initialize scheduler with the current thread as the idle task (Linux-style)
 /// This is used during boot where the boot thread becomes the idle task
 pub fn init_with_current(current_thread: Box<Thread>) {
-    let mut scheduler_lock = SCHEDULER.lock();
+    let mut scheduler_lock = lock_scheduler();
     let thread_id = current_thread.id();
 
     // Create scheduler with current thread as both idle and current
@@ -2870,7 +2874,7 @@ pub fn init_with_current(current_thread: Box<Thread>) {
 #[cfg(target_arch = "aarch64")]
 pub fn register_cpu_idle_thread(cpu_id: usize, idle_thread: Box<Thread>) {
     without_interrupts(|| {
-        let mut scheduler_lock = SCHEDULER.lock();
+        let mut scheduler_lock = lock_scheduler();
         if let Some(scheduler) = scheduler_lock.as_mut() {
             scheduler.register_idle_thread(cpu_id, idle_thread);
         }
@@ -2881,7 +2885,7 @@ pub fn register_cpu_idle_thread(cpu_id: usize, idle_thread: Box<Thread>) {
 pub fn spawn(thread: Box<Thread>) {
     // Disable interrupts to prevent timer interrupt deadlock
     without_interrupts(|| {
-        let mut scheduler_lock = SCHEDULER.lock();
+        let mut scheduler_lock = lock_scheduler();
         if let Some(scheduler) = scheduler_lock.as_mut() {
             scheduler.add_thread(thread);
             // Ensure a switch happens ASAP (especially in CI smoke runs)
@@ -2906,7 +2910,7 @@ pub fn spawn(thread: Box<Thread>) {
 /// Used for fork children so they run before other queued threads.
 pub fn spawn_front(thread: Box<Thread>) {
     without_interrupts(|| {
-        let mut scheduler_lock = SCHEDULER.lock();
+        let mut scheduler_lock = lock_scheduler();
         if let Some(scheduler) = scheduler_lock.as_mut() {
             scheduler.add_thread_front(thread);
             NEED_RESCHED.store(true, Ordering::Relaxed);
@@ -2930,7 +2934,7 @@ pub fn spawn_front(thread: Box<Thread>) {
 #[cfg(target_arch = "aarch64")]
 pub fn reclaim_terminated_threads() {
     without_interrupts(|| {
-        let mut scheduler_lock = SCHEDULER.lock();
+        let mut scheduler_lock = lock_scheduler();
         if let Some(scheduler) = scheduler_lock.as_mut() {
             scheduler.reclaim_terminated_threads();
         }
@@ -2946,7 +2950,7 @@ pub fn reclaim_terminated_threads() {
 #[allow(dead_code)]
 pub fn spawn_as_current(thread: Box<Thread>) {
     without_interrupts(|| {
-        let mut scheduler_lock = SCHEDULER.lock();
+        let mut scheduler_lock = lock_scheduler();
         if let Some(scheduler) = scheduler_lock.as_mut() {
             scheduler.add_thread_as_current(thread);
             // NOTE: Do NOT set need_resched - we want this thread to run
@@ -2971,7 +2975,7 @@ pub fn schedule() -> Option<(u64, u64)> {
     let result = if interrupts_were_enabled {
         // Normal case: disable interrupts to prevent deadlock
         without_interrupts(|| {
-            let mut scheduler_lock = SCHEDULER.lock();
+            let mut scheduler_lock = lock_scheduler();
             if let Some(scheduler) = scheduler_lock.as_mut() {
                 scheduler.schedule().map(|(old, new)| (old.id(), new.id()))
             } else {
@@ -2980,7 +2984,7 @@ pub fn schedule() -> Option<(u64, u64)> {
         })
     } else {
         // Already in interrupt context - don't try to disable interrupts again
-        let mut scheduler_lock = SCHEDULER.lock();
+        let mut scheduler_lock = lock_scheduler();
         if let Some(scheduler) = scheduler_lock.as_mut() {
             scheduler.schedule().map(|(old, new)| (old.id(), new.id()))
         } else {
@@ -3025,7 +3029,7 @@ pub fn preempt_schedule_irq() {
 #[allow(dead_code)]
 pub fn try_schedule() -> Option<(u64, u64)> {
     // Do not disable interrupts; we only attempt a non-blocking lock here
-    if let Some(mut scheduler_lock) = SCHEDULER.try_lock() {
+    if let Some(mut scheduler_lock) = try_lock_scheduler() {
         if let Some(scheduler) = scheduler_lock.as_mut() {
             return scheduler.schedule().map(|(old, new)| (old.id(), new.id()));
         }
@@ -3039,7 +3043,7 @@ pub fn try_schedule() -> Option<(u64, u64)> {
 pub fn is_current_idle_thread() -> Option<bool> {
     // Try to get the lock without blocking - if we can't, assume not idle
     // to be safe. This prevents deadlock when timer fires during scheduler ops.
-    if let Some(scheduler_lock) = SCHEDULER.try_lock() {
+    if let Some(scheduler_lock) = try_lock_scheduler() {
         if let Some(scheduler) = scheduler_lock.as_ref() {
             return Some(
                 scheduler
@@ -3068,7 +3072,7 @@ where
         }
     }
     without_interrupts(|| {
-        let mut scheduler_lock = SCHEDULER.lock();
+        let mut scheduler_lock = lock_scheduler();
         let _scheduler_scope =
             crate::tracing::providers::teardown::SchedulerScope::enter();
         #[cfg(target_arch = "aarch64")]
@@ -3101,7 +3105,7 @@ where
 /// Safe to call from kernel context; disables interrupts internally.
 pub fn collect_idle_thread_ids(out: &mut [u64]) -> usize {
     without_interrupts(|| {
-        let scheduler_lock = SCHEDULER.lock();
+        let scheduler_lock = lock_scheduler();
         if let Some(sched) = scheduler_lock.as_ref() {
             let count = out.len().min(MAX_CPUS);
             for i in 0..count {
@@ -3121,7 +3125,7 @@ where
     F: FnOnce(&mut super::thread::Thread) -> R,
 {
     without_interrupts(|| {
-        let mut scheduler_lock = SCHEDULER.lock();
+        let mut scheduler_lock = lock_scheduler();
         scheduler_lock
             .as_mut()
             .and_then(|sched| sched.get_thread_mut(thread_id).map(f))
@@ -3145,7 +3149,7 @@ pub fn wake_waitqueue_thread(tid: u64) {
 /// Used by btop monitor to display CPU% per process.
 pub fn get_process_cpu_ticks() -> alloc::vec::Vec<(u64, u64)> {
     without_interrupts(|| {
-        if let Some(scheduler_lock) = SCHEDULER.try_lock() {
+        if let Some(scheduler_lock) = try_lock_scheduler() {
             if let Some(scheduler) = scheduler_lock.as_ref() {
                 let now = crate::time::get_ticks();
                 return scheduler
@@ -3177,7 +3181,7 @@ pub fn get_process_cpu_ticks() -> alloc::vec::Vec<(u64, u64)> {
 /// need the thread-level runtime state to avoid presenting sleepers as CPU-bound.
 pub fn get_process_display_state(owner_pid: u64) -> Option<&'static str> {
     without_interrupts(|| {
-        let scheduler_lock = SCHEDULER.try_lock()?;
+        let scheduler_lock = try_lock_scheduler()?;
         let scheduler = scheduler_lock.as_ref()?;
 
         let mut saw_ready = false;
@@ -3217,7 +3221,7 @@ pub fn get_process_display_state(owner_pid: u64) -> Option<&'static str> {
 /// This function disables interrupts to prevent deadlock with timer interrupt
 pub fn current_thread_id() -> Option<u64> {
     without_interrupts(|| {
-        let scheduler_lock = SCHEDULER.lock();
+        let scheduler_lock = lock_scheduler();
         scheduler_lock
             .as_ref()
             .and_then(|s| s.cpu_state[Scheduler::current_cpu_id()].current_thread)
@@ -3230,7 +3234,7 @@ pub fn current_thread_id() -> Option<u64> {
 #[allow(dead_code)]
 pub fn set_current_thread(thread_id: u64) {
     without_interrupts(|| {
-        let mut scheduler_lock = SCHEDULER.lock();
+        let mut scheduler_lock = lock_scheduler();
         if let Some(scheduler) = scheduler_lock.as_mut() {
             scheduler.set_current_thread(thread_id);
         }
@@ -3438,7 +3442,7 @@ pub fn switch_to_idle() {
 /// next timer interrupt on this CPU will see the idle loop and correct the state.
 #[cfg(target_arch = "aarch64")]
 pub fn switch_to_idle_best_effort() {
-    if let Some(mut scheduler_lock) = SCHEDULER.try_lock() {
+    if let Some(mut scheduler_lock) = try_lock_scheduler() {
         if let Some(sched) = scheduler_lock.as_mut() {
             let cpu_id = Scheduler::current_cpu_id();
             let idle_id = sched.cpu_state[cpu_id].idle_thread;

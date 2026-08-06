@@ -11,10 +11,11 @@
 # prompt, this test waits for the full 84-test suite to complete and then
 # monitors sustained operation under GPU load.
 #
-# Usage: ./run-aarch64-full-test.sh [--rebuild]
+# Usage: ./run-aarch64-full-test.sh [--rebuild] [--boot-tests-only]
 #
 # Options:
-#   --rebuild   Force rebuild of the kernel before testing
+#   --rebuild          Force rebuild of the kernel before testing
+#   --boot-tests-only  Stop after the registered boot-test suite passes
 
 set -e
 
@@ -23,9 +24,11 @@ BREENIX_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 # Parse args
 REBUILD=false
+BOOT_TESTS_ONLY=false
 for arg in "$@"; do
     case "$arg" in
         --rebuild) REBUILD=true ;;
+        --boot-tests-only) BOOT_TESTS_ONLY=true ;;
     esac
 done
 
@@ -80,7 +83,7 @@ echo ""
 
 # Start QEMU in background (120s total timeout — 84 tests need time)
 timeout 120 qemu-system-aarch64 \
-    -M virt -cpu cortex-a72 -m 512 -smp 4 \
+    -M virt,gic-version=3 -cpu max -m 512 -smp 4 \
     -kernel "$KERNEL" \
     -display none -no-reboot \
     -device virtio-gpu-device \
@@ -176,7 +179,7 @@ if ! $PHASE1_OK && [ -z "$FAIL_REASON" ]; then
 fi
 
 # --- Phase 2: Verify services (10s) ---
-if [ -z "$FAIL_REASON" ]; then
+if [ -z "$FAIL_REASON" ] && ! $BOOT_TESTS_ONLY; then
     echo "Phase 1: PASS (${TESTS_PASSED}/${TESTS_TOTAL} tests)"
     echo ""
     echo "Phase 2: Checking services..."
@@ -213,7 +216,7 @@ fi
 # --- Phase 3: Sustained operation under GPU load (15s) ---
 # This catches the crashes that only manifest under sustained GPU rendering
 # (e.g., bounce demo, btop updating, BWM rendering test progress).
-if [ -z "$FAIL_REASON" ]; then
+if [ -z "$FAIL_REASON" ] && ! $BOOT_TESTS_ONLY; then
     echo ""
     echo "Phase 3: Sustained operation soak (15 seconds)..."
     for check in $(seq 1 5); do
@@ -250,10 +253,16 @@ TOTAL_LINES=${TOTAL_LINES:-0}
 
 if [ -z "$FAIL_REASON" ]; then
     echo "========================================="
-    echo "ARM64 FULL SYSTEM TEST: PASSED"
+    if $BOOT_TESTS_ONLY; then
+        echo "ARM64 BOOT TESTS: PASSED"
+    else
+        echo "ARM64 FULL SYSTEM TEST: PASSED"
+    fi
     echo "========================================="
     echo "Tests: ${TESTS_PASSED}/${TESTS_TOTAL} passed"
-    echo "Stability: 15s soak clean"
+    if ! $BOOT_TESTS_ONLY; then
+        echo "Stability: 15s soak clean"
+    fi
     echo "Serial: ${TOTAL_LINES} lines"
     echo "Log: $OUTPUT_DIR/serial.txt"
     exit 0

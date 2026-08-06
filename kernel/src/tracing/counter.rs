@@ -242,7 +242,12 @@ fn current_cpu_id() -> usize {
 // =============================================================================
 
 /// Maximum number of counters that can be registered.
-pub const MAX_COUNTERS: usize = 64;
+///
+/// The built-in providers currently register 106 counters on both x86_64 and
+/// aarch64 (110 when the optional `btrt` feature is enabled). Keep enough
+/// headroom for new observability counters without silently truncating the
+/// registry.
+pub const MAX_COUNTERS: usize = 160;
 
 /// Global registry of trace counters.
 ///
@@ -265,6 +270,10 @@ pub static TRACE_COUNTER_COUNT: AtomicU64 = AtomicU64::new(0);
 /// single-threaded initialization.
 pub fn register_counter(counter: &'static TraceCounter) -> Option<usize> {
     let count = TRACE_COUNTER_COUNT.load(Ordering::Acquire);
+    assert!(
+        (count as usize) < MAX_COUNTERS,
+        "trace counter registry capacity exhausted"
+    );
     if count as usize >= MAX_COUNTERS {
         return None;
     }
@@ -281,6 +290,10 @@ pub fn register_counter(counter: &'static TraceCounter) -> Option<usize> {
         }
     }
 
+    assert!(
+        TRACE_COUNTER_COUNT.load(Ordering::Acquire) as usize >= MAX_COUNTERS,
+        "trace counter registry count does not match its occupied slots"
+    );
     None
 }
 

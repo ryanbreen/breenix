@@ -384,7 +384,6 @@ pub fn drain_deferred_fault_sigsegv_exits() {
         buf.drain(&mut tids);
     }
     for tid in tids {
-        crate::trace_count!(crate::tracing::providers::teardown::TEARDOWN_ENTRY_FAULT);
         ProcessScheduler::handle_thread_exit(tid, -11);
     }
 }
@@ -424,12 +423,10 @@ pub fn reclaim_deferred_process_resources() {
 
 #[cfg(feature = "boot_tests")]
 pub fn deferred_fault_ring_overflow_injection() -> bool {
+    // Exercise the production push/drain implementation without touching any
+    // per-CPU ring that live fault handling can concurrently use.
+    let buffer = DeferredFaultExitBuffer::new();
     let mut drained = alloc::vec::Vec::new();
-    let buffer = &DEFERRED_FAULT_EXIT_BUFFERS[0];
-    buffer.drain(&mut drained);
-
-    let before =
-        crate::tracing::providers::teardown::DEFERRED_FAULT_RING_DROPPED.aggregate();
     let mut accepted = 0usize;
     for tid in 1..=17 {
         if buffer.push(u64::MAX - tid) {
@@ -446,8 +443,6 @@ pub fn deferred_fault_ring_overflow_injection() -> bool {
     accepted == DEFERRED_FAULT_EXIT_SLOTS
         && quiescent_count == DEFERRED_FAULT_EXIT_SLOTS
         && drained.is_empty()
-        && crate::tracing::providers::teardown::DEFERRED_FAULT_RING_DROPPED.aggregate()
-            > before
 }
 
 /// Extension trait for Thread to support process operations

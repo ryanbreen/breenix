@@ -46,7 +46,7 @@ counter!(TEARDOWN_VICTIM_DIVERGENCE, "TID and CR3 victim divergence");
 counter!(TEARDOWN_CR3_MISS, "Fault-victim CR3 misses");
 counter!(
     EXIT_ATTRIBUTION_UNCERTAIN,
-    "Uncertain fault-victim attribution"
+    "Neither CR3 nor dispatched TID resolved a fault victim"
 );
 counter!(DEFERRED_FAULT_RING_DROPPED, "Dropped deferred fault exits");
 counter!(
@@ -163,7 +163,10 @@ pub static COUNTERS: [&TraceCounter; COUNTER_COUNT] = [
 pub fn init() {
     register_provider(&TEARDOWN_PROVIDER);
     for counter in COUNTERS {
-        register_counter(counter);
+        assert!(
+            register_counter(counter).is_some(),
+            "trace counter registry overflow while registering teardown counters"
+        );
     }
 }
 
@@ -242,9 +245,6 @@ impl SchedulerScope {
     #[inline(always)]
     pub fn enter() -> Self {
         let cpu = current_cpu().min(crate::tracing::MAX_CPUS - 1);
-        if RECLAIM_PROOF_DEPTH[cpu].load(Ordering::Relaxed) != 0 {
-            crate::trace_count!(PROOF_UNDER_QUEUE_LOCK);
-        }
         SCHEDULER_SCOPE_DEPTH[cpu].fetch_add(1, Ordering::Relaxed);
         Self { cpu }
     }
@@ -259,6 +259,14 @@ impl Drop for SchedulerScope {
 
 #[inline(always)]
 pub fn note_process_manager_acquire() {
+    let cpu = current_cpu().min(crate::tracing::MAX_CPUS - 1);
+    if RECLAIM_PROOF_DEPTH[cpu].load(Ordering::Relaxed) != 0 {
+        crate::trace_count!(PROOF_UNDER_QUEUE_LOCK);
+    }
+}
+
+#[inline(always)]
+pub fn note_scheduler_acquire() {
     let cpu = current_cpu().min(crate::tracing::MAX_CPUS - 1);
     if RECLAIM_PROOF_DEPTH[cpu].load(Ordering::Relaxed) != 0 {
         crate::trace_count!(PROOF_UNDER_QUEUE_LOCK);
@@ -371,9 +379,14 @@ pub fn defer_reclaim_events_are_paired(
 pub fn deferred_fault_ring_overflow_test() -> crate::test_framework::registry::TestResult {
     use crate::test_framework::registry::TestResult;
 
-    if crate::task::process_task::deferred_fault_ring_overflow_injection()
-        && DEFERRED_FAULT_RING_DROPPED.aggregate() != 0
-    {
+    let dropped_before = DEFERRED_FAULT_RING_DROPPED.aggregate();
+    let ring_behaved_as_expected =
+        crate::task::process_task::deferred_fault_ring_overflow_injection();
+    let dropped_delta = DEFERRED_FAULT_RING_DROPPED
+        .aggregate()
+        .saturating_sub(dropped_before);
+
+    if ring_behaved_as_expected && dropped_delta >= 1 {
         TestResult::Pass
     } else {
         TestResult::Fail("deferred fault ring overflow was not counted and drained")
@@ -384,18 +397,41 @@ pub fn deferred_fault_ring_overflow_test() -> crate::test_framework::registry::T
 pub fn fork_exit_defer_reclaim_pairing_test() -> crate::test_framework::registry::TestResult {
     use crate::test_framework::registry::TestResult;
 
-    struct RestoreProviders;
-    impl Drop for RestoreProviders {
+    struct RestoreTracingState {
+        globally_enabled: bool,
+        providers: crate::tracing::provider::ProviderEnabledStateSnapshot,
+    }
+    impl Drop for RestoreTracingState {
         fn drop(&mut self) {
-            crate::tracing::enable();
-            super::enable_all();
+            self.providers.restore();
+            if self.globally_enabled {
+                crate::tracing::enable();
+            } else {
+                crate::tracing::disable();
+            }
         }
     }
 
+    let _restore_tracing_state = RestoreTracingState {
+        globally_enabled: crate::tracing::is_enabled(),
+        providers: crate::tracing::provider::ProviderEnabledStateSnapshot::capture(),
+    };
     crate::tracing::enable();
     super::disable_all();
     TEARDOWN_PROVIDER.enable_all();
-    let _restore_providers = RestoreProviders;
+
+    let teardown_entry_exit_before = TEARDOWN_ENTRY_EXIT.aggregate();
+    let exit_first_requests_before = EXIT_FIRST_REQUESTS.aggregate();
+    let exit_repeat_requests_before = EXIT_REPEAT_REQUESTS.aggregate();
+    let teardown_defer_before = TEARDOWN_DEFER.aggregate();
+    let teardown_reclaim_before = TEARDOWN_RECLAIM.aggregate();
+    let masked_frames_walked_before = TEARDOWN_MASKED_FRAMES_WALKED.aggregate();
+    let fd_closes_under_pm_before = FD_CLOSES_UNDER_PM.aggregate();
+    let reclaim_enqueue_under_pm_before = RECLAIM_ENQUEUE_UNDER_PM.aggregate();
+    let lock_order_suspect_before = TEARDOWN_LOCK_ORDER_SUSPECT.aggregate();
+    let proof_under_queue_lock_before = PROOF_UNDER_QUEUE_LOCK.aggregate();
+    let reclaim_context_violations_before = RECLAIM_CONTEXT_VIOLATIONS.aggregate();
+    let exit_sgi_sent_before = EXIT_SGI_SENT.aggregate();
     let mut pairing_evidence = TeardownPairingEvidence::new();
 
     let parent_page_table = match crate::memory::process_memory::ProcessPageTable::new() {
@@ -542,9 +578,13 @@ pub fn fork_exit_defer_reclaim_pairing_test() -> crate::test_framework::registry
         }
         crate::task::process_task::reclaim_deferred_process_resources();
         pairing_evidence.sample();
-        if TEARDOWN_DEFER.aggregate() == TEARDOWN_RECLAIM.aggregate()
-            && TEARDOWN_RECLAIM.aggregate() >= 64
-        {
+        let deferred_delta = TEARDOWN_DEFER
+            .aggregate()
+            .saturating_sub(teardown_defer_before);
+        let reclaimed_delta = TEARDOWN_RECLAIM
+            .aggregate()
+            .saturating_sub(teardown_reclaim_before);
+        if deferred_delta == reclaimed_delta && reclaimed_delta >= 64 {
             break;
         }
         if crate::arch_impl::aarch64::timer::rdtsc() >= quiesce_deadline {
@@ -553,19 +593,32 @@ pub fn fork_exit_defer_reclaim_pairing_test() -> crate::test_framework::registry
         core::hint::spin_loop();
     }
 
-    let deferred = TEARDOWN_DEFER.aggregate();
-    let reclaimed = TEARDOWN_RECLAIM.aggregate();
-    if TEARDOWN_ENTRY_EXIT.aggregate() < 64 {
-        return TestResult::Fail("TEARDOWN_ENTRY_EXIT did not reach 64");
+    let teardown_entry_exit_delta = TEARDOWN_ENTRY_EXIT
+        .aggregate()
+        .saturating_sub(teardown_entry_exit_before);
+    let exit_first_requests_delta = EXIT_FIRST_REQUESTS
+        .aggregate()
+        .saturating_sub(exit_first_requests_before);
+    let exit_repeat_requests_delta = EXIT_REPEAT_REQUESTS
+        .aggregate()
+        .saturating_sub(exit_repeat_requests_before);
+    let deferred_delta = TEARDOWN_DEFER
+        .aggregate()
+        .saturating_sub(teardown_defer_before);
+    let reclaimed_delta = TEARDOWN_RECLAIM
+        .aggregate()
+        .saturating_sub(teardown_reclaim_before);
+    if teardown_entry_exit_delta < 64 {
+        return TestResult::Fail("TEARDOWN_ENTRY_EXIT workload delta did not reach 64");
     }
-    if EXIT_FIRST_REQUESTS.aggregate() < 64 || EXIT_REPEAT_REQUESTS.aggregate() < 64 {
-        return TestResult::Fail("first/repeat exit request counters did not reach 64");
+    if exit_first_requests_delta < 64 || exit_repeat_requests_delta < 64 {
+        return TestResult::Fail("first/repeat exit request workload deltas did not reach 64");
     }
-    if deferred < 64 {
-        return TestResult::Fail("TEARDOWN_DEFER did not reach 64");
+    if deferred_delta < 64 {
+        return TestResult::Fail("TEARDOWN_DEFER workload delta did not reach 64");
     }
-    if deferred != reclaimed {
-        return TestResult::Fail("TEARDOWN_DEFER did not equal TEARDOWN_RECLAIM");
+    if deferred_delta != reclaimed_delta {
+        return TestResult::Fail("TEARDOWN_DEFER workload delta did not equal TEARDOWN_RECLAIM");
     }
     crate::tracing::disable();
     pairing_evidence.sample();
@@ -574,19 +627,41 @@ pub fn fork_exit_defer_reclaim_pairing_test() -> crate::test_framework::registry
     {
         return TestResult::Fail(message);
     }
-    if TEARDOWN_MASKED_FRAMES_WALKED.aggregate() == 0
-        || FD_CLOSES_UNDER_PM.aggregate() == 0
-        || RECLAIM_ENQUEUE_UNDER_PM.aggregate() == 0
+    if TEARDOWN_MASKED_FRAMES_WALKED
+        .aggregate()
+        .saturating_sub(masked_frames_walked_before)
+        == 0
+        || FD_CLOSES_UNDER_PM
+            .aggregate()
+            .saturating_sub(fd_closes_under_pm_before)
+            == 0
+        || RECLAIM_ENQUEUE_UNDER_PM
+            .aggregate()
+            .saturating_sub(reclaim_enqueue_under_pm_before)
+            == 0
     {
         return TestResult::Fail("expected Phase-0 under-PM baseline remained zero");
     }
-    if TEARDOWN_LOCK_ORDER_SUSPECT.aggregate() != 0
-        || PROOF_UNDER_QUEUE_LOCK.aggregate() != 0
-        || RECLAIM_CONTEXT_VIOLATIONS.aggregate() != 0
+    if TEARDOWN_LOCK_ORDER_SUSPECT
+        .aggregate()
+        .saturating_sub(lock_order_suspect_before)
+        != 0
+        || PROOF_UNDER_QUEUE_LOCK
+            .aggregate()
+            .saturating_sub(proof_under_queue_lock_before)
+            != 0
+        || RECLAIM_CONTEXT_VIOLATIONS
+            .aggregate()
+            .saturating_sub(reclaim_context_violations_before)
+            != 0
     {
         return TestResult::Fail("healthy teardown lock-context counter moved");
     }
-    if EXIT_SGI_SENT.aggregate() != 0 {
+    if EXIT_SGI_SENT
+        .aggregate()
+        .saturating_sub(exit_sgi_sent_before)
+        != 0
+    {
         return TestResult::Fail("generic reschedule IPI moved EXIT_SGI_SENT");
     }
     let _all_counter_readers = snapshot();

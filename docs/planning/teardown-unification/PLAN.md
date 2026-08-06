@@ -247,10 +247,13 @@ as its own subphase makes the true figure **17 PRs**. Every one is listed; there
    - `cargo build --release --features testing,external_test_bins --bin qemu-uefi`
    - `cargo build --release --target aarch64-breenix.json -Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem -p kernel --bin kernel-aarch64`
    - the aarch64 `ec0_fault_inject` config
-2. **QEMU boot/regression:** `./docker/qemu/run-boot-parallel.sh` (x86) + the aarch64 native/strict
-   boot test. Tests must reach the real `KERNEL_POST_TESTS_COMPLETE` marker — a marker printed before
-   the behaviour under test is never accepted as evidence. **QEMU concurrency capped at 4** per
-   standing operator rule (batch 4 and 4, never 8+).
+2. **QEMU boot/regression:** `./docker/qemu/run-boot-parallel.sh` (x86) +
+   `./docker/qemu/run-aarch64-full-test.sh --rebuild --boot-tests-only` (aarch64 `boot_tests`
+   runtime gates) plus the aarch64 native/strict boot test. The aarch64 runtime gate must reach
+   `[BOOT_TESTS:PASS]`; the ordinary boot paths must reach the
+   real `KERNEL_POST_TESTS_COMPLETE` marker. A marker printed before the behaviour under test is never
+   accepted as evidence. **QEMU concurrency capped at 4** per standing operator rule (batch 4 and 4,
+   never 8+).
 3. **Phase-specific assertions** below — every one an observed outcome (counter equality, actual
    `waitpid` status, zero fault markers). "The process was created" is never evidence, and **a
    counter equality that holds at zero is never evidence** (condition 6): every equality gate names
@@ -475,6 +478,11 @@ declarations in the same new provider file and the added ratchet rules are asser
 test file, so the file count does not grow.)*
 
 **Gate extras.** *(v2 — condition 6: no vacuous zero-baseline gate.)*
+The two P0 runtime extras below are registered in the parallel boot-test framework and execute under
+the aarch64 standard-gate command above: `run-aarch64-full-test.sh --rebuild --boot-tests-only`
+enables `boot_tests`, runs the EarlyBoot and PostScheduler stages, and accepts only the final
+`[BOOT_TESTS:PASS]` result.
+
 1. **`fork_exit_defer_reclaim_pairing_test` (the causally-paired nonzero gate).** Fork and exit **64**
    children in a loop, then quiesce. Assert (a) `TEARDOWN_ENTRY{exit} >= 64`; (b) `TEARDOWN_DEFER >= 64`;
    (c) after the drain, `TEARDOWN_DEFER == TEARDOWN_RECLAIM` **at a value ≥ 64** — the equality is only
