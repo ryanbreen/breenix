@@ -182,7 +182,7 @@ const EXIT_PROCESS_BY_PID_CALLS: &[(&str, usize)] = &[
     ("kernel/src/process/mod.rs", 333),
 ];
 const EXIT_PROCESS_FOR_TEARDOWN_TEST_CALLS: &[(&str, usize)] =
-    &[("kernel/src/tracing/providers/teardown.rs", 385)];
+    &[("kernel/src/tracing/providers/teardown.rs", 517)];
 const BLOCKING_PRIMITIVES: &[(&str, usize)] = &[
     ("kernel/src/task/scheduler.rs", 1740),
     ("kernel/src/task/scheduler.rs", 1911),
@@ -396,7 +396,10 @@ fn all_phase_zero_counters_have_registered_readers_and_honest_runtime_gates() {
     );
     assert!(provider.contains("core::array::from_fn(|index| COUNTERS[index].aggregate())"));
     assert!(provider.contains("for _ in 0..64"));
-    assert!(provider.contains("deferred_delta != reclaimed_delta || reclaimed_delta < 64"));
+    assert!(provider.contains("reset_boot_test_pid_counts();"));
+    assert!(provider.contains("for pid in pairing_child_pids"));
+    assert!(provider.contains("defer_count == 0 || defer_count != reclaim_count"));
+    assert!(!provider.contains("deferred_delta != reclaimed_delta || reclaimed_delta < 64"));
     assert!(!provider.contains("TeardownPairingEvidence"));
     assert!(!provider.contains("defer_reclaim_events_are_paired("));
     assert!(!provider.contains("deferred_pids"));

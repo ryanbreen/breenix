@@ -175,16 +175,141 @@ pub fn snapshot() -> [u64; COUNTER_COUNT] {
     core::array::from_fn(|index| COUNTERS[index].aggregate())
 }
 
+#[cfg(feature = "boot_tests")]
+const BOOT_TEST_PID_COUNT_SLOTS: usize = 128;
+
+#[cfg(feature = "boot_tests")]
+struct BootTestPidCountSlot {
+    pid: AtomicU64,
+    defer_count: AtomicU64,
+    reclaim_count: AtomicU64,
+}
+
+#[cfg(feature = "boot_tests")]
+impl BootTestPidCountSlot {
+    const fn new() -> Self {
+        Self {
+            pid: AtomicU64::new(0),
+            defer_count: AtomicU64::new(0),
+            reclaim_count: AtomicU64::new(0),
+        }
+    }
+}
+
+#[cfg(feature = "boot_tests")]
+static BOOT_TEST_PID_COUNTS: [BootTestPidCountSlot; BOOT_TEST_PID_COUNT_SLOTS] =
+    [const { BootTestPidCountSlot::new() }; BOOT_TEST_PID_COUNT_SLOTS];
+
+#[cfg(feature = "boot_tests")]
+static BOOT_TEST_PID_COUNTS_ACTIVE: AtomicU64 = AtomicU64::new(0);
+
+#[cfg(feature = "boot_tests")]
+enum BootTestPidCountKind {
+    Defer,
+    Reclaim,
+}
+
+#[cfg(feature = "boot_tests")]
+#[inline(always)]
+fn record_boot_test_pid_count(pid: u64, kind: BootTestPidCountKind) {
+    if BOOT_TEST_PID_COUNTS_ACTIVE.load(Ordering::Acquire) == 0 || pid == 0 {
+        return;
+    }
+
+    let start = pid as usize & (BOOT_TEST_PID_COUNT_SLOTS - 1);
+    for offset in 0..BOOT_TEST_PID_COUNT_SLOTS {
+        let slot = &BOOT_TEST_PID_COUNTS[(start + offset) & (BOOT_TEST_PID_COUNT_SLOTS - 1)];
+        let slot_pid = slot.pid.load(Ordering::Acquire);
+        if slot_pid == pid {
+            match kind {
+                BootTestPidCountKind::Defer => {
+                    slot.defer_count.fetch_add(1, Ordering::Relaxed);
+                }
+                BootTestPidCountKind::Reclaim => {
+                    slot.reclaim_count.fetch_add(1, Ordering::Relaxed);
+                }
+            }
+            return;
+        }
+        if slot_pid == 0 {
+            return;
+        }
+    }
+}
+
+#[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
+fn reset_boot_test_pid_counts() {
+    BOOT_TEST_PID_COUNTS_ACTIVE.store(0, Ordering::Release);
+    for slot in &BOOT_TEST_PID_COUNTS {
+        slot.pid.store(0, Ordering::Relaxed);
+        slot.defer_count.store(0, Ordering::Relaxed);
+        slot.reclaim_count.store(0, Ordering::Relaxed);
+    }
+    BOOT_TEST_PID_COUNTS_ACTIVE.store(1, Ordering::Release);
+}
+
+#[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
+fn track_boot_test_pid(pid: u64) -> bool {
+    if pid == 0 {
+        return false;
+    }
+
+    let start = pid as usize & (BOOT_TEST_PID_COUNT_SLOTS - 1);
+    for offset in 0..BOOT_TEST_PID_COUNT_SLOTS {
+        let slot = &BOOT_TEST_PID_COUNTS[(start + offset) & (BOOT_TEST_PID_COUNT_SLOTS - 1)];
+        match slot
+            .pid
+            .compare_exchange(0, pid, Ordering::AcqRel, Ordering::Acquire)
+        {
+            Ok(_) => return true,
+            Err(slot_pid) if slot_pid == pid => return true,
+            Err(_) => {}
+        }
+    }
+    false
+}
+
+#[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
+fn boot_test_pid_counts(pid: u64) -> (u64, u64) {
+    let start = pid as usize & (BOOT_TEST_PID_COUNT_SLOTS - 1);
+    for offset in 0..BOOT_TEST_PID_COUNT_SLOTS {
+        let slot = &BOOT_TEST_PID_COUNTS[(start + offset) & (BOOT_TEST_PID_COUNT_SLOTS - 1)];
+        let slot_pid = slot.pid.load(Ordering::Acquire);
+        if slot_pid == pid {
+            return (
+                slot.defer_count.load(Ordering::Relaxed),
+                slot.reclaim_count.load(Ordering::Relaxed),
+            );
+        }
+        if slot_pid == 0 {
+            break;
+        }
+    }
+    (0, 0)
+}
+
+#[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
+fn boot_test_pid_counts_complete(pids: &[u64]) -> bool {
+    pids.iter().all(|pid| {
+        let (defer_count, reclaim_count) = boot_test_pid_counts(*pid);
+        defer_count >= 1 && defer_count == reclaim_count
+    })
+}
+
 #[inline(always)]
 pub fn record_defer(pid: u64) {
     crate::trace_count!(TEARDOWN_DEFER);
     crate::trace_event!(TEARDOWN_PROVIDER, TEARDOWN_DEFER_EVENT, pid as u32);
+    #[cfg(feature = "boot_tests")]
+    record_boot_test_pid_count(pid, BootTestPidCountKind::Defer);
 }
 
 #[inline(always)]
 pub fn record_reclaim(pid: u64) {
     crate::trace_count!(TEARDOWN_RECLAIM);
     crate::trace_event!(TEARDOWN_PROVIDER, TEARDOWN_RECLAIM_EVENT, pid as u32);
+    #[cfg(feature = "boot_tests")]
+    record_boot_test_pid_count(pid, BootTestPidCountKind::Reclaim);
 }
 
 #[inline(always)]
@@ -304,8 +429,6 @@ pub fn fork_exit_defer_reclaim_pairing_test() -> crate::test_framework::registry
     let teardown_entry_exit_before = TEARDOWN_ENTRY_EXIT.aggregate();
     let exit_first_requests_before = EXIT_FIRST_REQUESTS.aggregate();
     let exit_repeat_requests_before = EXIT_REPEAT_REQUESTS.aggregate();
-    let teardown_defer_before = TEARDOWN_DEFER.aggregate();
-    let teardown_reclaim_before = TEARDOWN_RECLAIM.aggregate();
     let masked_frames_walked_before = TEARDOWN_MASKED_FRAMES_WALKED.aggregate();
     let fd_closes_under_pm_before = FD_CLOSES_UNDER_PM.aggregate();
     let reclaim_enqueue_under_pm_before = RECLAIM_ENQUEUE_UNDER_PM.aggregate();
@@ -354,6 +477,9 @@ pub fn fork_exit_defer_reclaim_pairing_test() -> crate::test_framework::registry
         manager.insert_process(parent_pid, parent_process);
     };
 
+    let mut pairing_child_pids = [0u64; 64];
+    let mut pairing_child_count = 0;
+    reset_boot_test_pid_counts();
     for _ in 0..64 {
         let child_page_table = match crate::memory::process_memory::ProcessPageTable::new() {
             Ok(page_table) => alloc::boxed::Box::new(page_table),
@@ -381,6 +507,12 @@ pub fn fork_exit_defer_reclaim_pairing_test() -> crate::test_framework::registry
             };
             (child_pid, child_tid)
         };
+
+        pairing_child_pids[pairing_child_count] = child.0.as_u64();
+        if !track_boot_test_pid(pairing_child_pids[pairing_child_count]) {
+            return TestResult::Fail("per-PID pairing tally table capacity exhausted");
+        }
+        pairing_child_count += 1;
 
         crate::process::exit_process_for_teardown_test(child.0, 0);
         crate::task::process_task::ProcessScheduler::handle_thread_exit(child.1, 0);
@@ -444,13 +576,7 @@ pub fn fork_exit_defer_reclaim_pairing_test() -> crate::test_framework::registry
             core::hint::spin_loop();
         }
         crate::task::process_task::reclaim_deferred_process_resources();
-        let deferred_delta = TEARDOWN_DEFER
-            .aggregate()
-            .saturating_sub(teardown_defer_before);
-        let reclaimed_delta = TEARDOWN_RECLAIM
-            .aggregate()
-            .saturating_sub(teardown_reclaim_before);
-        if deferred_delta == reclaimed_delta && reclaimed_delta >= 64 {
+        if boot_test_pid_counts_complete(&pairing_child_pids) {
             break;
         }
         if crate::arch_impl::aarch64::timer::rdtsc() >= quiesce_deadline {
@@ -468,21 +594,21 @@ pub fn fork_exit_defer_reclaim_pairing_test() -> crate::test_framework::registry
     let exit_repeat_requests_delta = EXIT_REPEAT_REQUESTS
         .aggregate()
         .saturating_sub(exit_repeat_requests_before);
-    let deferred_delta = TEARDOWN_DEFER
-        .aggregate()
-        .saturating_sub(teardown_defer_before);
-    let reclaimed_delta = TEARDOWN_RECLAIM
-        .aggregate()
-        .saturating_sub(teardown_reclaim_before);
     if teardown_entry_exit_delta < 64 {
         return TestResult::Fail("TEARDOWN_ENTRY_EXIT workload delta did not reach 64");
     }
     if exit_first_requests_delta < 64 || exit_repeat_requests_delta < 64 {
         return TestResult::Fail("first/repeat exit request workload deltas did not reach 64");
     }
-    if deferred_delta != reclaimed_delta || reclaimed_delta < 64 {
-        return TestResult::Fail("defer/reclaim workload deltas did not pair at 64 or more");
+    for pid in pairing_child_pids {
+        let (defer_count, reclaim_count) = boot_test_pid_counts(pid);
+        if defer_count == 0 || defer_count != reclaim_count {
+            return TestResult::Fail(
+                "per-PID defer/reclaim count pairing failed for a pairing-test child",
+            );
+        }
     }
+    BOOT_TEST_PID_COUNTS_ACTIVE.store(0, Ordering::Release);
     if TEARDOWN_MASKED_FRAMES_WALKED
         .aggregate()
         .saturating_sub(masked_frames_walked_before)
