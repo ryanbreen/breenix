@@ -53,7 +53,26 @@ and the two are deliberately kept in separate lists.
 
 ## CHANGELOG
 
-### v3 tranche pass — acceptance model changed, three tranche-1 items closed, six debts registered *(current revision)*
+### v3.1 tranche-1 repair — the `EXIT_KICK` slot protocol, its negative gates, and one stale API line *(current revision)*
+
+Codex `gpt-5.6-sol` (xhigh, read-only) refused tranche-1 ratification — **`ENDORSE: NO`** — on **one**
+self-contained P2 mechanism defect. Its other verdicts stand and are **not** reopened here: the
+caller-count taxonomy (P0 rule 1 / P2's call-site table) and the parked-receipt gates (P1) both read
+**CLOSED**, later-debt spillover read **NO-FLAG**, and the six-item DESIGN-DEBT REGISTER is
+byte-stable. This pass changes exactly three things.
+
+| # | Finding | What this pass wrote |
+|---|---|---|
+| **1** | **FATAL — `EXIT_KICK` buckets were not reusable.** Publication was `seq.fetch_add(2, Release)`; `2` is even, so it can never clear bit 0. Once a bucket had been observed once — `0 → publish 2 → observe 3 → publish 5` — every later kick in it read as already observed and was **silently, permanently** lost. P2's single-victim gate against an initially empty table structurally cannot see this | **DESIGN §2.7's protocol is rewritten** (`KickSlot { pid, at, state }`; `state` = `gen` bits 63…2 / `LOCK` bit 1 / `OBSERVED` bit 0; reserve with an `Acquire` CAS installing a **fresh generation, `OBSERVED` clear**, fill under `LOCK`, commit with a `Release` store, observe by seqlock-validated sample plus a CAS that claims **that** generation). **P0's counter table and ratchet rule 4 are restated to the new protocol** (publish/commit/claim each pinned to one site; no site may clear `OBSERVED` except by installing a new generation), and **P2 gains gate item 5** — sequential reuse of one bucket by a second congruent victim, with its detection power demonstrated against the v3 publish step |
+| **2** | **MAJOR — concurrent publication was not a coherent record.** `pid` and `at` were two relaxed stores with no reservation, so colliding publishers could interleave them, and the collision counter — inspecting the slot without owning it — was not guaranteed to notice | The reservation CAS makes its winner the sole writer of `pid`/`at`; collisions are counted in **two exhaustive arms** (reservation lost / unobserved record displaced), each from a position of exclusive knowledge. **P2 gains gate item 6**: a deterministic reservation-lost case, a deterministic displacement case, and a `N >= 10_000`-iteration two-CPU storm asserting zero torn pairs per observation plus an **exact** attempts-accounting identity |
+| **3** | **MINOR — stale API narration** in DESIGN §2.1's Increment-1 (`with_process_manager(\|pm\| pm.exit_process(pid, -9))`), contradicting the wrapper-only custody contract this PLAN's P2 implements | Fixed in **DESIGN §2.1** only — it now names `exit_process_and_retire(pid, -9)`. **No PLAN change**: P2's scope, call-site table and revert note already spelled the wrapper correctly |
+
+**Nothing else moved.** No phase added, split, reordered or renumbered; still **13 phases / 17 PRs**;
+no dependency edge, acceptance criterion, line budget or commit-split seam changed; the DESIGN-DEBT
+REGISTER is untouched. The two new gate items are test code and do not consume P2's production-line
+budget.
+
+### v3 tranche pass — acceptance model changed, three tranche-1 items closed, six debts registered *(prior revision)*
 
 **The acceptance model changed, and that is the headline.** The whole-document ratification bar is
 **replaced by TRANCHE ratification**. A tranche of phases is submitted, pre-checked and ratified on
@@ -69,7 +88,7 @@ re-check left open, adds the register and the status header, and changes nothing
 | # | Tranche-1 item | What was wrong | What this pass wrote |
 |---|---|---|---|
 | **i** | **The seven-vs-nine caller count contradicted itself across the two documents** | The v3 repair correctly pinned P0's baseline at **seven** `exit_process` callers, but did not propagate: DESIGN §1.7 and PLAN P2's gate still demanded that "all NINE adapted sites call `exit_process_and_retire`", asserted as an exact set. `handle_thread_exit` (`task/process_task.rs:244`) routes its receipt through `phase1_result` and never calls the wrapper, so that gate was **unsatisfiable by construction** — the docs were half-updated | One live-verified taxonomy, stated once in **DESIGN §1.7** and mirrored verbatim in **PLAN P0 rule 1** and **P2's call-site table** (which gains a `Class` column). **Three disjoint classes: 7 `exit_process` callers + 1 new SIGKILL arm + 1 PM-nested enqueue = 9 ADAPTED SITES.** Callers and enqueue sites are never conflated again. The post-P2 gate becomes **three exact sets — 8 / 1 / 3** (`exit_process_and_retire` call sites / `exit_process_locked` callers / PM-free `enqueue_process_reclaim` sites), because one set cannot express three shapes. Verified by `git grep` at `main` @ `985881a6` |
-| **ii** | **P2's victim-attributed observation was a placeholder** | Closure F gated AC-11 on per-victim-PID pairing, but `EXIT_REQUEST_OBSERVED{pid}` is written by the return-boundary hook, which does not exist until **P8**, and the live SGI receiver (`arch_impl/aarch64/exception.rs:1761-1768`) carries only an interrupt id — no pid, no batch. The docs said "the P2-era proxy described in their own gates"; the gates pointed back at the counter table. Nothing specified the mechanism, so P2's pairing gate was vacuous | **The mechanism is chosen and written** (option: specify, not downgrade). **DESIGN §2.7** gains the `EXIT_KICK` bucket table: a fixed `[KickSlot; 64]` of three atomics, **published** by `send_exit_expedite_sgi(victim_pid, batch)` before the broadcast (`pid`/`at` Relaxed, `seq.fetch_add(2, Release)`), **consumed** by one `compare_exchange` at the peer scheduler pass that declines to dispatch the quarantined victim — lock-free, no allocation, no new per-thread field. Counters `EXIT_KICK_PUBLISHED{bucket}` / `EXIT_KICK_OBSERVED{pid}` / `EXIT_KICK_BUCKET_COLLISION` added to P0's table, declared zero until P2 and **deleted in P8**. The proxy's weaker claim is written into the gate rather than overclaimed, and its two limits are **residual R-21** |
+| **ii** | **P2's victim-attributed observation was a placeholder** | Closure F gated AC-11 on per-victim-PID pairing, but `EXIT_REQUEST_OBSERVED{pid}` is written by the return-boundary hook, which does not exist until **P8**, and the live SGI receiver (`arch_impl/aarch64/exception.rs:1761-1768`) carries only an interrupt id — no pid, no batch. The docs said "the P2-era proxy described in their own gates"; the gates pointed back at the counter table. Nothing specified the mechanism, so P2's pairing gate was vacuous | **The mechanism is chosen and written** (option: specify, not downgrade). **DESIGN §2.7** gains the `EXIT_KICK` bucket table: a fixed `[KickSlot; 64]` of three atomics, **published** by `send_exit_expedite_sgi(victim_pid, batch)` before the broadcast, **consumed** by one `compare_exchange` at the peer scheduler pass that declines to dispatch the quarantined victim — lock-free, no allocation, no new per-thread field. Counters `EXIT_KICK_PUBLISHED{bucket}` / `EXIT_KICK_OBSERVED{pid}` / `EXIT_KICK_BUCKET_COLLISION` added to P0's table, declared zero until P2 and **deleted in P8**. The proxy's weaker claim is written into the gate rather than overclaimed, and its limits are **residual R-21**. *(**v3.1**: this pass's publish step, `seq.fetch_add(2, Release)`, could not clear the observed bit and made a bucket single-use; the slot protocol is rewritten and P2 gains two negative gates — see the v3.1 row above)* |
 | **iii** | **Parked receipts: "fresh" was under-specified and the age backstop had no unit** | The repair said `ParkRecord` captures a "freshly captured fence", which still permits reusing the `RetirementSnapshot` the same drain cycle took at step 2 — stale by exactly the interval that caused the park. And the age arm was `now - parked_at_tick` "exceeds the park backstop", with the backstop never defined, while gate 3(c) required completion "within the stated backstop" | **`parked_at` captures a FRESH `RetirementSnapshot` taken AT PARK TIME** — never `reclaim.after_epoch`, never the cycle's earlier snapshot — with a **second negative gate** (P1 gate 5(b)) that an earlier-snapshot implementation fails while passing the first. **The age backstop gets a concrete unit: `PARK_AGE_BACKSTOP_EPOCHS = 64` SCHEDULING EPOCHS, summed over `fence_at_park.online_mask` — not wall time.** `parked_at_tick` is deleted; the key is derived from the captured fence, so `ParkRecord` carries no timestamp. P1 gate 3(c) becomes checkable (fires at a sum advance of 64, still parked at 63) |
 
 **Everything else is byte-stable.** No phase was added, split, reordered or renumbered; the ledger is
@@ -333,7 +352,7 @@ the *exact current* bypass surface so any regression fails CI immediately.
 | `TEARDOWN_QUARANTINE` | `task/scheduler.rs:2599 terminate_process_threads` (five call sites: `exception.rs:768,1135,1230,1333`, and `signal.rs` from P2) | yes under the fault tests |
 | `EXIT_SGI_SENT` *(re-wired in v3 — closure F)* | **NOT** the generic sends. `task/scheduler.rs:1857` is inside `send_resched_ipi` (`:1843`), which wakes **idle** CPUs, and `:1886` is inside `send_resched_ipi_to_cpu` (`:1868`), which targets the CPU that got a **newly runnable task** — neither knows a victim, so wiring them makes every ordinary wakeup satisfy a "> 0" gate. The counter is written **only** by the teardown-specific `Scheduler::send_exit_expedite_sgi(victim_pid, batch)` that P2 introduces, carrying the victim pid in the `trace_event!` payload | **declared zero until P2** — the write site does not exist before then; excluded from every gate until P2 |
 | `EXIT_REQUEST_OBSERVED` *(new, closure F)* | the boundary hook's first observation of a latched request, carrying the observed pid — i.e. the paired consumer side of `EXIT_SGI_SENT{pid}` **from P8 onward** | **declared zero until P8** (the hook does not exist before then). P2 and P9 pair against the **`EXIT_KICK` bucket proxy** specified in DESIGN §2.7 — *not* against this counter, and not against an unnamed "P2-era proxy" *(v3 tranche pass: the proxy is now a specified mechanism; the earlier wording pointed at gates that pointed back at it)* |
-| `EXIT_KICK_PUBLISHED{bucket}`, `EXIT_KICK_OBSERVED{pid}`, `EXIT_KICK_BUCKET_COLLISION` *(new, v3 tranche pass — closure F's P2-era observation half)* | the `[KickSlot; 64]` table in this provider (`KickSlot { pid, at, seq }`, three atomics). **Publish:** the teardown-only `Scheduler::send_exit_expedite_sgi(victim_pid, batch)` — `pid`/`at` Relaxed, then `seq.fetch_add(2, Release)`; the only publish site, ratcheted. **Observe:** the peer scheduler pass that declines to dispatch a quarantined victim — acquire-load `seq`, match `pid`, `compare_exchange(seq, seq\|1)`; the single winner records `EXIT_KICK_OBSERVED{pid}` with the interval `now - at`. No lock, no allocation, no per-thread field | **declared zero until P2** (the table and the helper do not exist before then); **deleted in P8**, in the same PR that introduces the boundary hook and `EXIT_REQUEST_OBSERVED{pid}` — the round never carries two observation mechanisms past the phase that unifies them. Residual R-21 |
+| `EXIT_KICK_PUBLISHED{bucket}`, `EXIT_KICK_OBSERVED{pid}`, `EXIT_KICK_BUCKET_COLLISION` *(new, v3 tranche pass — closure F's P2-era observation half)* | the `[KickSlot; 64]` table in this provider (`KickSlot { pid, at, state }`, three atomics; `state` = `gen` in bits 63…2, `LOCK` in bit 1, `OBSERVED` in bit 0 — DESIGN §2.7, rewritten in v3.1). **Publish:** the teardown-only `Scheduler::send_exit_expedite_sgi(victim_pid, batch)` — **reserve** with `compare_exchange_weak(cur, ((gen+1)<<2)\|LOCK, Acquire, Relaxed)` (bounded at 4 attempts; a rival that finds `LOCK` set counts a collision and publishes nothing), **fill** `pid`/`at` Relaxed while `LOCK` is held, **commit** with `state.store((gen+1)<<2, Release)`; the only publish site, ratcheted. **Observe:** the peer scheduler pass that declines to dispatch a quarantined victim — `s1 = state.load(Acquire)` (reject if `gen == 0`, `LOCK` set, or `OBSERVED` set), sample `pid`/`at` Relaxed, re-read `s2 = state.load(Acquire)` and **discard unless `s2 == s1`**, then claim `compare_exchange(s1, s1\|OBSERVED, AcqRel, Relaxed)`; the single winner records `EXIT_KICK_OBSERVED{pid}` with the interval `now - at`. **Every publication installs a fresh generation with `OBSERVED` clear**, so a bucket is reusable indefinitely, and only the reservation winner ever writes `pid`/`at`, so the pair cannot tear. No lock, no allocation, no per-thread field | **declared zero until P2** (the table and the helper do not exist before then); **deleted in P8**, in the same PR that introduces the boundary hook and `EXIT_REQUEST_OBSERVED{pid}` — the round never carries two observation mechanisms past the phase that unifies them. Residual R-21 |
 | `TEARDOWN_DEFER` | `task/process_task.rs:129 defer_process_resources` (reached from `:125 defer_live_process_resources` and `process/manager.rs:1151`) | **yes** — every aarch64 exit |
 | `TEARDOWN_RECLAIM` | `task/process_task.rs:387` (`reclaim.reclaim()` inside `reclaim_deferred_process_resources`, `:375-391`) *(v3: line corrected from `:388`)* | **yes** |
 | `TEARDOWN_MASKED_FRAMES_WALKED` | `task/process_task.rs:100 release_process_resources` → `cleanup_cow_frames()`, incremented only when the PM-owner instrumentation says a PM guard is live (call sites `manager.rs:1156`, `process_task.rs:247`, `:250`) | yes on `main` (that is the defect P2/P7/P11 drive to 0) |
@@ -412,10 +431,15 @@ what it is today:
 4. *(closure F; extended by the v3 tranche pass)* **`EXIT_SGI_SENT` appears at exactly one source
    location**, and neither `send_resched_ipi` nor `send_resched_ipi_to_cpu` may reference it. **The
    `EXIT_KICK` table's publish side is pinned the same way**: `EXIT_KICK_PUBLISHED` and the
-   `seq.fetch_add` that publishes a slot appear at **exactly one** source location — inside
-   `send_exit_expedite_sgi` — so the observation gate can never be satisfied by a second publisher
-   wired somewhere convenient. The consume side (`compare_exchange` on `seq`) is likewise pinned to
-   the one scheduler site that declines to dispatch a quarantined victim.
+   **reserving `compare_exchange` on `state`** that publishes a slot appear at **exactly one** source
+   location — inside `send_exit_expedite_sgi` — so the observation gate can never be satisfied by a
+   second publisher wired somewhere convenient *(v3.1: the pinned publish step was `seq.fetch_add`,
+   which no longer exists)*. The consume side — the **claiming `compare_exchange` on `state`** — is
+   likewise pinned to the one scheduler site that declines to dispatch a quarantined victim. Two
+   further single-site rules follow from the v3.1 protocol: `state.store(..., Release)` (the commit)
+   appears **only** inside `send_exit_expedite_sgi`, and **no site anywhere may clear `OBSERVED`
+   except by installing a new generation** — a bare `fetch_and`/`fetch_or` on `state` outside the two
+   pinned sites fails the ratchet.
 5. *(closure B)* **`btrt::on_process_exit` has exactly one call site** (`task/process_task.rs:267`),
    pinned before P6b splits it into `claim_exit_slot` + `record_exit`; after P6b, `record_exit` must
    have exactly one call site and `claim_exit_slot` must not appear outside a PM-guarded body.
@@ -666,8 +690,9 @@ other online CPU via the new teardown-only `send_exit_expedite_sgi(pid, batch)` 
 `cpu_state[].current_thread` residency predicate — that read is stale-prone and was a fatal panel
 finding; and no reuse of the generic `send_resched_ipi*` helpers, so the expedite evidence is
 teardown-attributable — closure F). **That helper also publishes the victim's `EXIT_KICK` bucket
-before it broadcasts, and the peer scheduler pass that declines to dispatch a quarantined victim
-consumes it with one `compare_exchange`** — the P2-era observation half of closure F's pairing,
+before it broadcasts — reserve, fill, commit on the slot's `state` word — and the peer scheduler pass
+that declines to dispatch a quarantined victim consumes it with one seqlock-validated
+generation-claiming `compare_exchange`** — the P2-era observation half of closure F's pairing,
 specified in DESIGN §2.7 and deleted in P8 (v3 tranche pass). Then `exit_process_and_retire(pid, -9)`, whose
 merged aarch64 path already grace-defers the page table **before** `terminate()` runs. Keep the
 existing `set_need_resched()` tail. Additionally install the **durable report/SIGCHLD obligation seed**:
@@ -818,6 +843,51 @@ survive** (this phase does not sweep the group). Repeat as self-kill `kill(getpi
    **`LEDGER_CLAIM_ORPHANED == 0`** for the whole run: no recovery path exists before P6b, so any
    nonzero value means a T4 was added unnoticed. Plus the P0 ratchet re-asserted: `on_process_exit`
    still has **exactly one** call site and `claim_exit_slot`/`record_exit` do not yet exist.
+
+**v3.1 gate extras — the two negative tests the single-victim gate structurally cannot fail.** *(The
+v3 tranche pass shipped a bucket protocol whose observed bit was sticky forever; its gate passed
+anyway, because one named victim against an initially empty table exercises neither reuse nor
+collision. These two tests exist so that class of defect fails a gate instead of surviving one. Both
+land in the SAME PR as the slot protocol — a mechanism and the test that can falsify it are never
+separated by a merge boundary, the same rule P6b applies to T4 and its marker. Both are test code and
+do not consume the phase's production-line budget.)*
+
+5. **Sequential bucket reuse — a SECOND victim in the SAME bucket must still be observed.** After the
+   single-victim assertions above complete for victim `V1`, the test forks a second victim `V2` chosen
+   so that **`V2 % 64 == V1 % 64`** — the harness forks and discards until the congruence holds, and
+   the test **prints and asserts both pids and the congruence itself**, because a reuse test that
+   cannot prove it reused the bucket is vacuous — then kills `V2` and asserts:
+   (i) `EXIT_KICK_OBSERVED{V2}` fires, per-pid, with its **own** measured send→observe interval
+   strictly shorter than the victim's tick period (not merely that a global counter advanced);
+   (ii) for the two-victim workload, `EXIT_KICK_PUBLISHED{bucket} == 2` and `EXIT_KICK_OBSERVED == 2`;
+   (iii) `EXIT_KICK_BUCKET_COLLISION == 0` — `V1`'s generation was observed *before* `V2` published, so
+   the displacement arm must **not** fire, which simultaneously proves that arm does not over-count.
+   **Falsification is demonstrated, not assumed:** a unit test instantiates the slot protocol directly
+   with the v3 publish step (`seq.fetch_add(2, Release)`) and asserts the second observation is
+   **absent** — this gate is shown to FAIL against the exact defect it exists to catch, and to PASS
+   against the v3.1 protocol. A negative test whose detection power is never demonstrated is how the
+   v3 defect got through.
+6. **Simultaneous colliding publishers — one bucket, two CPUs: no torn pair, and both collision arms
+   provably fire.** A kernel-internal test in three parts, none of which relies on winning a race by
+   luck:
+   (a) **Reservation-lost arm, deterministic.** A test-only hook holds CPU A between its reserving CAS
+   and its commit store while CPU B publishes into the same bucket. B **must** find `LOCK` set, bump
+   `EXIT_KICK_BUCKET_COLLISION` exactly once, write neither `pid` nor `at`, and still broadcast. A is
+   then released; the subsequent observation must carry **A's** pid with **A's** `at` — proving the
+   loser never contaminated the record and that a lost publication costs evidence, never coherence.
+   (b) **Displacement arm, deterministic.** A publishes and commits; **no** observation is taken; B
+   then publishes into the same bucket with a different pid. B must bump
+   `EXIT_KICK_BUCKET_COLLISION` exactly once, and the next observation must claim **B's** generation
+   with **B's** `pid`/`at` pair — never A's, and never a mix.
+   (c) **Free-running storm, for the torn-pair invariant.** Two CPUs publish into one bucket for
+   `N >= 10_000` iterations with `at` values drawn from **disjoint per-publisher ranges**, while a
+   third CPU observes. Assertions: **every** recorded observation satisfies `at` in `range_of(pid)` —
+   **zero** torn pairs across the whole run, asserted per observation rather than as a sample; the
+   accounting identity
+   `attempts == EXIT_KICK_PUBLISHED + collisions_reservation_lost + collisions_displaced` holds
+   **exactly** (an inequality would let a silent collision hide, which is precisely the v3 weakness);
+   the bucket is left with `state & LOCK == 0`; and one final publish→observe cycle after the storm
+   still succeeds, proving the storm neither stranded nor wedged the bucket.
 
 **Strictly better.** The confirmed-live eager `cleanup_cow_frames`-while-remote-runs UAF class is
 gone; quarantine, expedited reschedule, and SIGCHLD arrive for the first time on this path; and both
