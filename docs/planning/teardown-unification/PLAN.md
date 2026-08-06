@@ -53,7 +53,32 @@ and the two are deliberately kept in separate lists.
 
 ## CHANGELOG
 
-### v3.1 tranche-1 repair — the `EXIT_KICK` slot protocol, its negative gates, and one stale API line *(current revision)*
+### v3.2 gate-6 repair — accounting identity + exact per-generation storm oracle *(current revision)*
+
+Second scoped re-ratification refusal (rat2, Codex `gpt-5.6-sol` xhigh read-only) found P2 gate item 6
+NOT ADEQUATE on one self-contained accounting/oracle defect introduced by v3.1; §2.7, §2.1, and gate
+item 5 were independently re-confirmed CLOSED/ADEQUATE and are untouched here. This pass changes
+exactly gate item 6's text, in two places:
+
+1. **Accounting identity double-counted displacements.** `attempts == EXIT_KICK_PUBLISHED +
+   collisions_reservation_lost + collisions_displaced` double-counts every displacement, since a
+   displacement is a successful commit and therefore already increments `EXIT_KICK_PUBLISHED` on its
+   own. Replaced with `attempts == EXIT_KICK_PUBLISHED + collisions_reservation_lost` plus a separate,
+   exact identity `EXIT_KICK_BUCKET_COLLISION == collisions_reservation_lost + collisions_displaced`.
+   `collisions_reservation_lost` (rival's reservation CAS found `LOCK` set, wrote nothing) and
+   `collisions_displaced` (a commit replaced an unobserved prior generation, which also advances
+   `EXIT_KICK_PUBLISHED`) are now defined explicitly as distinct test-local counters.
+2. **Storm oracle was publisher-coherent, not generation-coherent.** Part (c)'s `at in range_of(pid)`
+   membership check cannot catch a same-publisher cross-generation mismatch (generation *N*'s `pid`
+   paired with generation *N±1*'s `at`, both still inside that publisher's range). Replaced with a
+   unique per-publication token written alongside `pid`/`at` under the same reservation, and every
+   observation is now asserted against the exact `(generation, pid, token)` tuple recorded by its
+   publisher, across the full `N >= 10_000`-iteration storm.
+
+Nothing else moved: no phase added, split, reordered or renumbered; still 13 phases / 17 PRs; DESIGN
+untouched; gate item 5 untouched.
+
+### v3.1 tranche-1 repair — the `EXIT_KICK` slot protocol, its negative gates, and one stale API line *(prior revision)*
 
 Codex `gpt-5.6-sol` (xhigh, read-only) refused tranche-1 ratification — **`ENDORSE: NO`** — on **one**
 self-contained P2 mechanism defect. Its other verdicts stand and are **not** reopened here: the
@@ -869,25 +894,43 @@ do not consume the phase's production-line budget.)*
    v3 defect got through.
 6. **Simultaneous colliding publishers — one bucket, two CPUs: no torn pair, and both collision arms
    provably fire.** A kernel-internal test in three parts, none of which relies on winning a race by
-   luck:
+   luck. The test maintains two test-local counters, distinct from the single aggregate
+   `EXIT_KICK_BUCKET_COLLISION`: **`collisions_reservation_lost`** — incremented when a rival's
+   reservation CAS finds `LOCK` already set, so the rival writes neither `pid` nor `at` and publishes
+   nothing — and **`collisions_displaced`** — incremented when a publisher's commit **replaces** a
+   prior generation that was never claimed/observed; a displacement is a *successful* publish (it
+   still stores a new `pid`/`at` pair and commits a fresh generation), so it **also** increments
+   `EXIT_KICK_PUBLISHED` — which is exactly why `collisions_displaced` must not be added a second
+   time into the `attempts` identity below (doing so double-counts the same event once as a publish
+   and once as a collision):
    (a) **Reservation-lost arm, deterministic.** A test-only hook holds CPU A between its reserving CAS
    and its commit store while CPU B publishes into the same bucket. B **must** find `LOCK` set, bump
-   `EXIT_KICK_BUCKET_COLLISION` exactly once, write neither `pid` nor `at`, and still broadcast. A is
-   then released; the subsequent observation must carry **A's** pid with **A's** `at` — proving the
-   loser never contaminated the record and that a lost publication costs evidence, never coherence.
+   `EXIT_KICK_BUCKET_COLLISION` and `collisions_reservation_lost` exactly once each, write neither
+   `pid` nor `at`, and still broadcast. A is then released; the subsequent observation must carry
+   **A's** pid with **A's** `at` — proving the loser never contaminated the record and that a lost
+   publication costs evidence, never coherence.
    (b) **Displacement arm, deterministic.** A publishes and commits; **no** observation is taken; B
    then publishes into the same bucket with a different pid. B must bump
-   `EXIT_KICK_BUCKET_COLLISION` exactly once, and the next observation must claim **B's** generation
-   with **B's** `pid`/`at` pair — never A's, and never a mix.
-   (c) **Free-running storm, for the torn-pair invariant.** Two CPUs publish into one bucket for
-   `N >= 10_000` iterations with `at` values drawn from **disjoint per-publisher ranges**, while a
-   third CPU observes. Assertions: **every** recorded observation satisfies `at` in `range_of(pid)` —
-   **zero** torn pairs across the whole run, asserted per observation rather than as a sample; the
-   accounting identity
-   `attempts == EXIT_KICK_PUBLISHED + collisions_reservation_lost + collisions_displaced` holds
-   **exactly** (an inequality would let a silent collision hide, which is precisely the v3 weakness);
-   the bucket is left with `state & LOCK == 0`; and one final publish→observe cycle after the storm
-   still succeeds, proving the storm neither stranded nor wedged the bucket.
+   `EXIT_KICK_BUCKET_COLLISION` and `collisions_displaced` exactly once each — and, because B's
+   publish committed successfully, `EXIT_KICK_PUBLISHED` also advances for B's commit — and the next
+   observation must claim **B's** generation with **B's** `pid`/`at` pair — never A's, and never a
+   mix.
+   (c) **Free-running storm, for the torn-pair invariant, with an exact per-generation oracle.** Two
+   CPUs publish into one bucket for `N >= 10_000` iterations; each publication carries a **unique
+   per-publication token** (monotonically issued, never reused) written alongside `pid`/`at` under
+   the same reservation, while a third CPU observes. Assertions: **every** recorded observation is
+   checked against the **exact** `(generation, pid, token)` tuple recorded by the publisher of that
+   generation — not membership in a publisher-wide range, which cannot distinguish generation *N* of
+   a publisher from that same publisher's generation *N±1* — so **zero** torn pairs **and zero
+   cross-generation mismatches** across the whole run, asserted per observation rather than as a
+   sample; the accounting identity `attempts == EXIT_KICK_PUBLISHED + collisions_reservation_lost`
+   holds **exactly**, and the separate identity
+   `EXIT_KICK_BUCKET_COLLISION == collisions_reservation_lost + collisions_displaced` also holds
+   **exactly** (a displacement is counted once, in the collision-arm identity, never a second time in
+   the attempts identity — an inequality in either identity would let a silent collision or a
+   double-count hide, which is precisely the v3 weakness); the bucket is left with
+   `state & LOCK == 0`; and one final publish→observe cycle after the storm still succeeds, proving
+   the storm neither stranded nor wedged the bucket.
 
 **Strictly better.** The confirmed-live eager `cleanup_cow_frames`-while-remote-runs UAF class is
 gone; quarantine, expedited reschedule, and SIGCHLD arrive for the first time on this path; and both
