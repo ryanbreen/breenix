@@ -340,7 +340,7 @@ fn save_current_thread_context_with_guard(
     thread_id: u64,
     saved_regs: &mut SavedRegisters,
     interrupt_frame: &mut InterruptStackFrame,
-    manager_guard: &mut spin::MutexGuard<'static, Option<crate::process::ProcessManager>>,
+    manager_guard: &mut crate::process::TryProcessManagerGuard,
 ) -> bool {
     if let Some(ref mut manager) = **manager_guard {
         if let Some((pid, process)) = manager.find_process_by_thread_mut(thread_id) {
@@ -378,7 +378,7 @@ fn save_kernel_context_with_guard(
     thread_id: u64,
     saved_regs: &SavedRegisters,
     interrupt_frame: &InterruptStackFrame,
-    manager_guard: &mut spin::MutexGuard<'static, Option<crate::process::ProcessManager>>,
+    manager_guard: &mut crate::process::TryProcessManagerGuard,
 ) {
     if let Some(ref mut manager) = **manager_guard {
         if let Some((_pid, process)) = manager.find_process_by_thread_mut(thread_id) {
@@ -471,9 +471,7 @@ fn switch_to_thread(
     thread_id: u64,
     saved_regs: &mut SavedRegisters,
     interrupt_frame: &mut InterruptStackFrame,
-    process_manager_guard: Option<
-        spin::MutexGuard<'static, Option<crate::process::ProcessManager>>,
-    >,
+    process_manager_guard: Option<crate::process::TryProcessManagerGuard>,
 ) {
     // Debug marker: entering switch_to_thread (raw serial, no locks)
     raw_serial_str("[SW]");
@@ -962,9 +960,7 @@ fn restore_userspace_thread_context(
     thread_id: u64,
     saved_regs: &mut SavedRegisters,
     interrupt_frame: &mut InterruptStackFrame,
-    process_manager_guard: Option<
-        spin::MutexGuard<'static, Option<crate::process::ProcessManager>>,
-    >,
+    process_manager_guard: Option<crate::process::TryProcessManagerGuard>,
 ) {
     log::trace!("restore_userspace_thread_context: thread {}", thread_id);
 
@@ -1154,9 +1150,7 @@ fn setup_first_userspace_entry(
     thread_id: u64,
     interrupt_frame: &mut InterruptStackFrame,
     saved_regs: &mut SavedRegisters,
-    process_manager_guard: Option<
-        spin::MutexGuard<'static, Option<crate::process::ProcessManager>>,
-    >,
+    process_manager_guard: Option<crate::process::TryProcessManagerGuard>,
 ) {
     log::info!("setup_first_userspace_entry: thread {}", thread_id);
 

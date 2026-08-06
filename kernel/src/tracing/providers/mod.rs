@@ -32,6 +32,7 @@ pub mod net_rx;
 pub mod process;
 pub mod sched;
 pub mod syscall;
+pub mod teardown;
 pub mod virtgpu;
 pub mod xhci;
 // #[cfg(feature = "btrt")]
@@ -43,6 +44,7 @@ pub use net_rx::NET_RX_PROVIDER;
 pub use process::PROCESS_PROVIDER;
 pub use sched::SCHED_PROVIDER;
 pub use syscall::SYSCALL_PROVIDER;
+pub use teardown::TEARDOWN_PROVIDER;
 pub use virtgpu::VIRTGPU_PROVIDER;
 pub use xhci::XHCI_PROVIDER;
 // #[cfg(feature = "btrt")]
@@ -61,6 +63,7 @@ pub fn init() {
     irq::init();
     net_rx::init();
     process::init();
+    teardown::init();
     virtgpu::init();
     xhci::init();
     // #[cfg(feature = "btrt")]
@@ -68,12 +71,13 @@ pub fn init() {
     counters::init();
 
     log::info!(
-        "Tracing providers initialized: syscall={:#x}, sched={:#x}, irq={:#x}, net_rx={:#x}, process={:#x}, virtgpu={:#x}, xhci={:#x}",
+        "Tracing providers initialized: syscall={:#x}, sched={:#x}, irq={:#x}, net_rx={:#x}, process={:#x}, teardown={:#x}, virtgpu={:#x}, xhci={:#x}",
         syscall::PROVIDER_ID,
         sched::PROVIDER_ID,
         irq::PROVIDER_ID,
         net_rx::PROVIDER_ID,
         process::PROVIDER_ID,
+        teardown::PROVIDER_ID,
         virtgpu::PROVIDER_ID,
         xhci::PROVIDER_ID
     );
@@ -87,6 +91,7 @@ pub fn enable_all() {
     IRQ_PROVIDER.enable_all();
     NET_RX_PROVIDER.enable_all();
     PROCESS_PROVIDER.enable_all();
+    TEARDOWN_PROVIDER.enable_all();
     VIRTGPU_PROVIDER.enable_all();
     XHCI_PROVIDER.enable_all();
     // #[cfg(feature = "btrt")]
@@ -101,6 +106,7 @@ pub fn disable_all() {
     IRQ_PROVIDER.disable_all();
     NET_RX_PROVIDER.disable_all();
     PROCESS_PROVIDER.disable_all();
+    TEARDOWN_PROVIDER.disable_all();
     VIRTGPU_PROVIDER.disable_all();
     XHCI_PROVIDER.disable_all();
     // #[cfg(feature = "btrt")]

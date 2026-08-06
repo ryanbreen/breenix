@@ -4969,6 +4969,13 @@ static INTERRUPT_TESTS: &[TestDef] = &[
 /// - userspace_syscall_confirmed: Verify userspace syscalls are working
 static PROCESS_TESTS: &[TestDef] = &[
     TestDef {
+        name: "deferred_fault_ring_overflow_injection",
+        func: crate::tracing::providers::teardown::deferred_fault_ring_overflow_test,
+        arch: Arch::Any,
+        timeout_ms: 5000,
+        stage: TestStage::EarlyBoot,
+    },
+    TestDef {
         name: "process_manager_init",
         func: test_process_manager_init,
         arch: Arch::Any,
@@ -5020,6 +5027,14 @@ static PROCESS_TESTS: &[TestDef] = &[
         arch: Arch::Any,
         timeout_ms: 5000,
         stage: TestStage::ProcessContext,
+    },
+    #[cfg(target_arch = "aarch64")]
+    TestDef {
+        name: "fork_exit_defer_reclaim_pairing_test",
+        func: crate::tracing::providers::teardown::fork_exit_defer_reclaim_pairing_test,
+        arch: Arch::Aarch64,
+        timeout_ms: 30000,
+        stage: TestStage::PostScheduler,
     },
     // Note: Userspace stage tests cannot run from syscall context (would block).
     // The Userspace stage is marked when EL0/Ring3 syscall is confirmed, but

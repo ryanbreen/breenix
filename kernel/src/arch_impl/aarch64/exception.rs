@@ -676,6 +676,7 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
             }
 
             if from_el0 {
+                crate::trace_count!(crate::tracing::providers::teardown::TEARDOWN_ENTRY_FAULT);
                 // Page table walk diagnostic: dump L0-L3 entries for the fault VA
                 // to understand why the mapping is missing or has wrong permissions.
                 {
@@ -763,6 +764,12 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                         .map(|(pid, process)| (pid, process.is_terminated()))
                 })
                 .flatten();
+                if victim.is_none() {
+                    crate::trace_count!(crate::tracing::providers::teardown::TEARDOWN_CR3_MISS);
+                    crate::trace_count!(
+                        crate::tracing::providers::teardown::EXIT_ATTRIBUTION_UNCERTAIN
+                    );
+                }
                 if let Some((pid, was_terminated)) = victim {
                     let _ = crate::task::scheduler::with_scheduler(|sched| {
                         sched.terminate_process_threads(pid.as_u64());
@@ -1115,6 +1122,7 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
             drop(fatal_uart_guard);
 
             if from_el0 {
+                crate::trace_count!(crate::tracing::providers::teardown::TEARDOWN_ENTRY_FAULT);
                 // From userspace - terminate the process with SIGSEGV
                 let page_table_phys = ttbr0 & !0xFFFF_0000_0000_0FFF;
 
@@ -1130,6 +1138,12 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                         .map(|(pid, process)| (pid, process.is_terminated()))
                 })
                 .flatten();
+                if victim.is_none() {
+                    crate::trace_count!(crate::tracing::providers::teardown::TEARDOWN_CR3_MISS);
+                    crate::trace_count!(
+                        crate::tracing::providers::teardown::EXIT_ATTRIBUTION_UNCERTAIN
+                    );
+                }
                 if let Some((pid, was_terminated)) = victim {
                     let _ = crate::task::scheduler::with_scheduler(|sched| {
                         sched.terminate_process_threads(pid.as_u64());
@@ -1214,6 +1228,7 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                 raw_uart_str("\n");
             }
             if from_el0 {
+                crate::trace_count!(crate::tracing::providers::teardown::TEARDOWN_ENTRY_FAULT);
                 let ttbr0: u64;
                 unsafe {
                     core::arch::asm!("mrs {}, ttbr0_el1", out(reg) ttbr0, options(nomem, nostack));
@@ -1225,6 +1240,12 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                         .map(|(pid, process)| (pid, process.is_terminated()))
                 })
                 .flatten();
+                if victim.is_none() {
+                    crate::trace_count!(crate::tracing::providers::teardown::TEARDOWN_CR3_MISS);
+                    crate::trace_count!(
+                        crate::tracing::providers::teardown::EXIT_ATTRIBUTION_UNCERTAIN
+                    );
+                }
                 if let Some((pid, _)) = victim {
                     let _ = crate::task::scheduler::with_scheduler(|sched| {
                         sched.terminate_process_threads(pid.as_u64());
@@ -1317,6 +1338,7 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                 raw_uart_str("\n");
             }
             if from_el0 {
+                crate::trace_count!(crate::tracing::providers::teardown::TEARDOWN_ENTRY_FAULT);
                 let ttbr0: u64;
                 unsafe {
                     core::arch::asm!("mrs {}, ttbr0_el1", out(reg) ttbr0, options(nomem, nostack));
@@ -1328,6 +1350,12 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                         .map(|(pid, process)| (pid, process.is_terminated()))
                 })
                 .flatten();
+                if victim.is_none() {
+                    crate::trace_count!(crate::tracing::providers::teardown::TEARDOWN_CR3_MISS);
+                    crate::trace_count!(
+                        crate::tracing::providers::teardown::EXIT_ATTRIBUTION_UNCERTAIN
+                    );
+                }
                 if let Some((pid, _)) = victim {
                     let _ = crate::task::scheduler::with_scheduler(|sched| {
                         sched.terminate_process_threads(pid.as_u64());

@@ -743,7 +743,7 @@ fn handle_cow_fault(faulting_addr: VirtAddr, error_code: PageFaultErrorCode, cr3
 
 /// Handle CoW fault through the process manager (normal path)
 fn handle_cow_with_manager(
-    guard: &mut spin::MutexGuard<'static, Option<crate::process::ProcessManager>>,
+    guard: &mut crate::process::TryProcessManagerGuard,
     faulting_addr: VirtAddr,
     cr3: u64,
 ) -> bool {

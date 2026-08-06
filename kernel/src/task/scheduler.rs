@@ -2597,6 +2597,22 @@ impl Scheduler {
     /// Make every scheduler-owned thread for a process non-runnable.
     #[cfg(target_arch = "aarch64")]
     pub fn terminate_process_threads(&mut self, owner_pid: u64) {
+        crate::trace_count!(crate::tracing::providers::teardown::TEARDOWN_QUARANTINE);
+        if crate::process::process_manager_held_on_current_cpu() {
+            crate::trace_count!(
+                crate::tracing::providers::teardown::TEARDOWN_LOCK_ORDER_SUSPECT
+            );
+        }
+        if self
+            .current_thread()
+            .and_then(|thread| thread.owner_pid)
+            .is_some_and(|current_owner| current_owner != owner_pid)
+        {
+            crate::trace_count!(
+                crate::tracing::providers::teardown::TEARDOWN_VICTIM_DIVERGENCE
+            );
+        }
+
         for thread in self.threads.iter_mut() {
             if thread.owner_pid == Some(owner_pid) {
                 thread.set_terminated();
@@ -3053,6 +3069,8 @@ where
     }
     without_interrupts(|| {
         let mut scheduler_lock = SCHEDULER.lock();
+        let _scheduler_scope =
+            crate::tracing::providers::teardown::SchedulerScope::enter();
         #[cfg(target_arch = "aarch64")]
         {
             use crate::arch_impl::aarch64::timer_interrupt::CPU0_BREADCRUMB_ID;
@@ -3614,4 +3632,12 @@ pub fn run_scheduler_tests() {
         // Clean up
         crate::per_cpu::set_need_resched(false);
     }
+}
+
+/// Drive real scheduler boundaries on every idle online CPU for the Phase-0
+/// teardown grace-period boot test.
+#[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
+pub fn nudge_retirement_grace_for_test() {
+    let _ = with_scheduler(|scheduler| scheduler.send_resched_ipi());
+    set_need_resched();
 }

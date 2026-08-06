@@ -159,6 +159,7 @@ fn send_signal_to_process(target_pid: ProcessId, sig: u32) -> SyscallResult {
                     "SIGKILL sent to process {} - terminating immediately",
                     target_pid.as_u64()
                 );
+                crate::trace_count!(crate::tracing::providers::teardown::TEARDOWN_ENTRY_SIGNAL);
                 process.terminate(-9); // Exit code for SIGKILL
                                        // Wake up process if blocked so scheduler removes it
                 if matches!(process.state, crate::process::ProcessState::Blocked) {

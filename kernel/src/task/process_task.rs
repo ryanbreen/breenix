@@ -40,6 +40,9 @@ impl DeferredFaultExitBuffer {
                 return true;
             }
         }
+        crate::trace_count!(
+            crate::tracing::providers::teardown::DEFERRED_FAULT_RING_DROPPED
+        );
         false
     }
 
@@ -62,6 +65,7 @@ static DEFERRED_FAULT_EXIT_BUFFERS: [DeferredFaultExitBuffer; 1] =
 
 #[cfg(target_arch = "aarch64")]
 pub(crate) struct PendingProcessReclaim {
+    pid: u64,
     page_table: Option<alloc::boxed::Box<crate::memory::process_memory::ProcessPageTable>>,
     old_page_tables: alloc::vec::Vec<
         alloc::boxed::Box<crate::memory::process_memory::ProcessPageTable>,
@@ -98,6 +102,11 @@ static PENDING_PROCESS_RECLAIMS: spin::Mutex<alloc::vec::Vec<PendingProcessRecla
     spin::Mutex::new(alloc::vec::Vec::new());
 
 pub(crate) fn release_process_resources(process: &mut crate::process::Process) {
+    if crate::process::process_manager_held_on_current_cpu() {
+        crate::trace_count!(
+            crate::tracing::providers::teardown::TEARDOWN_MASKED_FRAMES_WALKED
+        );
+    }
     process.cleanup_cow_frames();
     process.drain_old_page_tables();
     drop(process.page_table.take());
@@ -129,7 +138,9 @@ pub(crate) fn defer_live_process_resources(
 pub(crate) fn defer_process_resources(
     process: &mut crate::process::Process,
 ) -> PendingProcessReclaim {
+    crate::tracing::providers::teardown::record_defer(process.id.as_u64());
     PendingProcessReclaim {
+        pid: process.id.as_u64(),
         page_table: process.page_table.take(),
         old_page_tables: core::mem::take(&mut process.pending_old_page_tables),
         after_epoch: scheduler::retirement_grace_target(),
@@ -138,6 +149,11 @@ pub(crate) fn defer_process_resources(
 
 #[cfg(target_arch = "aarch64")]
 pub(crate) fn enqueue_process_reclaim(reclaim: PendingProcessReclaim) {
+    if crate::process::process_manager_held_on_current_cpu() {
+        crate::trace_count!(
+            crate::tracing::providers::teardown::RECLAIM_ENQUEUE_UNDER_PM
+        );
+    }
     crate::arch_without_interrupts(|| PENDING_PROCESS_RECLAIMS.lock().push(reclaim));
 }
 
@@ -216,11 +232,13 @@ impl ProcessScheduler {
     /// with interrupts disabled on all CPUs) combined with logging (which acquires
     /// SERIAL and framebuffer locks) creates an unbreakable deadlock.
     pub fn handle_thread_exit(thread_id: u64, exit_code: i32) {
+        crate::trace_count!(crate::tracing::providers::teardown::TEARDOWN_ENTRY_EXIT);
         // Phase 1: Under PM lock — minimal work only
         let phase1_result = {
             if let Some(ref mut manager) = *crate::process::manager() {
                 if let Some((pid, process)) = manager.find_process_by_thread_mut(thread_id) {
                     let already_terminated = process.is_terminated();
+                    crate::tracing::providers::teardown::record_exit_request(already_terminated);
                     let parent_pid = process.parent;
                     let process_name = process.name.clone();
                     let children = if pid == ProcessId::new(1) {
@@ -366,6 +384,7 @@ pub fn drain_deferred_fault_sigsegv_exits() {
         buf.drain(&mut tids);
     }
     for tid in tids {
+        crate::trace_count!(crate::tracing::providers::teardown::TEARDOWN_ENTRY_FAULT);
         ProcessScheduler::handle_thread_exit(tid, -11);
     }
 }
@@ -373,9 +392,19 @@ pub fn drain_deferred_fault_sigsegv_exits() {
 /// Reclaim process frames whose cross-CPU TTBR0 retention has quiesced.
 #[cfg(target_arch = "aarch64")]
 pub fn reclaim_deferred_process_resources() {
+    if crate::process::process_manager_held_on_current_cpu()
+        || crate::tracing::providers::teardown::scheduler_scope_active()
+    {
+        crate::trace_count!(
+            crate::tracing::providers::teardown::RECLAIM_CONTEXT_VIOLATIONS
+        );
+    }
+
     loop {
         let reclaim = crate::arch_without_interrupts(|| {
             let mut pending = PENDING_PROCESS_RECLAIMS.lock();
+            let _proof_scope =
+                crate::tracing::providers::teardown::ReclaimProofScope::enter();
             let ready = pending.iter().position(|reclaim| {
                 scheduler::retirement_grace_elapsed(&reclaim.after_epoch)
                     && !reclaim.root_is_live()
@@ -384,10 +413,41 @@ pub fn reclaim_deferred_process_resources() {
         });
 
         match reclaim {
-            Some(reclaim) => reclaim.reclaim(),
+            Some(reclaim) => {
+                crate::tracing::providers::teardown::record_reclaim(reclaim.pid);
+                reclaim.reclaim();
+            }
             None => break,
         }
     }
+}
+
+#[cfg(feature = "boot_tests")]
+pub fn deferred_fault_ring_overflow_injection() -> bool {
+    let mut drained = alloc::vec::Vec::new();
+    let buffer = &DEFERRED_FAULT_EXIT_BUFFERS[0];
+    buffer.drain(&mut drained);
+
+    let before =
+        crate::tracing::providers::teardown::DEFERRED_FAULT_RING_DROPPED.aggregate();
+    let mut accepted = 0usize;
+    for tid in 1..=17 {
+        if buffer.push(u64::MAX - tid) {
+            accepted += 1;
+        }
+    }
+
+    drained.clear();
+    buffer.drain(&mut drained);
+    let quiescent_count = drained.len();
+    drained.clear();
+    buffer.drain(&mut drained);
+
+    accepted == DEFERRED_FAULT_EXIT_SLOTS
+        && quiescent_count == DEFERRED_FAULT_EXIT_SLOTS
+        && drained.is_empty()
+        && crate::tracing::providers::teardown::DEFERRED_FAULT_RING_DROPPED.aggregate()
+            > before
 }
 
 /// Extension trait for Thread to support process operations
