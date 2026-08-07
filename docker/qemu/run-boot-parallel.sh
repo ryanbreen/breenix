@@ -51,10 +51,16 @@ for i in $(seq 1 $COUNT); do
     echo "  Started test $i"
 done
 
-# Wait for all to complete - look for kthread markers (they run early in boot)
+# Wait for all to complete - look for kthread markers (they run early in boot),
+# then require proof that userspace actually executed (RING3_SMOKE), not just
+# the early kthread markers. See #498 post-merge review: this gate historically
+# declared PASS before userspace ever ran.
 echo "Waiting for kthread tests to complete (120s timeout)..."
 PASSED=0
 FAILED=0
+# Emitted via raw_serial_str() on COM1 (kernel/src/interrupts/context_switch.rs)
+# on the FIRST entry to userspace, so it lands in serial_user.txt.
+USERSPACE_MARKER="RING3_SMOKE: userspace executed + syscall path verified"
 
 for i in $(seq 1 $COUNT); do
     OUTPUT_DIR="/tmp/breenix_boot_$i"
@@ -72,8 +78,25 @@ for i in $(seq 1 $COUNT); do
     if $FOUND; then
         # Check if kthread tests actually passed
         if grep -q "KTHREAD_EXIT: kthread exited cleanly" "$OUTPUT_DIR/serial_kernel.txt" 2>/dev/null; then
-            echo "  Test $i: PASS"
-            PASSED=$((PASSED + 1))
+            # Kthread markers alone don't prove userspace ever ran - wait for
+            # the RING3_SMOKE marker emitted on first entry to Ring 3.
+            USERSPACE_FOUND=false
+            for j in $(seq 1 90); do
+                if grep -q "$USERSPACE_MARKER" "$OUTPUT_DIR/serial_user.txt" 2>/dev/null; then
+                    USERSPACE_FOUND=true
+                    break
+                fi
+                sleep 1
+            done
+
+            if $USERSPACE_FOUND; then
+                echo "  Test $i: PASS"
+                PASSED=$((PASSED + 1))
+            else
+                echo "  Test $i: FAIL (userspace never executed - RING3_SMOKE marker not found)"
+                tail -10 "$OUTPUT_DIR/serial_user.txt" 2>/dev/null || echo "    (no output)"
+                FAILED=$((FAILED + 1))
+            fi
         else
             echo "  Test $i: FAIL (kthread didn't exit cleanly)"
             FAILED=$((FAILED + 1))
