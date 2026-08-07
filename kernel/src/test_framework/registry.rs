@@ -5052,6 +5052,22 @@ static PROCESS_TESTS: &[TestDef] = &[
         timeout_ms: 10000,
         stage: TestStage::PostScheduler,
     },
+    #[cfg(target_arch = "aarch64")]
+    TestDef {
+        name: "exit_kick_protocol_gate",
+        func: crate::tracing::providers::teardown::exit_kick_protocol_gate_test,
+        arch: Arch::Aarch64,
+        timeout_ms: 30000,
+        stage: TestStage::PostScheduler,
+    },
+    #[cfg(all(target_arch = "aarch64", feature = "receipt_drop_test"))]
+    TestDef {
+        name: "retirement_receipt_drop_gate",
+        func: crate::task::process_task::retirement_receipt_drop_gate_test,
+        arch: Arch::Aarch64,
+        timeout_ms: 5000,
+        stage: TestStage::PostScheduler,
+    },
     // Note: Userspace stage tests cannot run from syscall context (would block).
     // The Userspace stage is marked when EL0/Ring3 syscall is confirmed, but
     // tests at this stage are skipped. The confirmation itself is the test.

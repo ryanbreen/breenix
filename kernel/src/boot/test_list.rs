@@ -31,6 +31,7 @@ pub const TEST_BINARIES: &[&str] = &[
     "signal_regs_test",
     "sigaltstack_test",
     "sigchld_test",
+    "sigkill_teardown_test",
     "pause_test",
     "sigsuspend_test",
     "signal_exec_test",

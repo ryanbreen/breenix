@@ -68,6 +68,10 @@ pub enum ProcEntryType {
     TraceCounters,
     /// /proc/trace/providers - registered providers
     TraceProviders,
+    /// /proc/trace/teardown - per-PID teardown evidence directory
+    TraceTeardownDir,
+    /// /proc/trace/teardown/[pid] - per-PID teardown evidence
+    TraceTeardownPid(u64),
     /// /proc/slabinfo - slab allocator statistics
     SlabInfo,
     /// /proc/stat - kernel activity counters
@@ -113,6 +117,8 @@ impl ProcEntryType {
             ProcEntryType::TraceBuffer => "buffer",
             ProcEntryType::TraceCounters => "counters",
             ProcEntryType::TraceProviders => "providers",
+            ProcEntryType::TraceTeardownDir => "teardown",
+            ProcEntryType::TraceTeardownPid(_) => "pid",
             ProcEntryType::SlabInfo => "slabinfo",
             ProcEntryType::Stat => "stat",
             ProcEntryType::CowInfo => "cowinfo",
@@ -145,6 +151,8 @@ impl ProcEntryType {
             ProcEntryType::TraceBuffer => "/proc/trace/buffer",
             ProcEntryType::TraceCounters => "/proc/trace/counters",
             ProcEntryType::TraceProviders => "/proc/trace/providers",
+            ProcEntryType::TraceTeardownDir => "/proc/trace/teardown",
+            ProcEntryType::TraceTeardownPid(_) => "/proc/trace/teardown/<pid>",
             ProcEntryType::SlabInfo => "/proc/slabinfo",
             ProcEntryType::Stat => "/proc/stat",
             ProcEntryType::CowInfo => "/proc/cowinfo",
@@ -179,6 +187,8 @@ impl ProcEntryType {
             ProcEntryType::TraceBuffer => 103,
             ProcEntryType::TraceCounters => 104,
             ProcEntryType::TraceProviders => 105,
+            ProcEntryType::TraceTeardownDir => 106,
+            ProcEntryType::TraceTeardownPid(pid) => 30000 + pid,
             ProcEntryType::SlabInfo => 5,
             ProcEntryType::Stat => 6,
             ProcEntryType::CowInfo => 7,
@@ -200,6 +210,7 @@ impl ProcEntryType {
         matches!(
             self,
             ProcEntryType::TraceDir
+                | ProcEntryType::TraceTeardownDir
                 | ProcEntryType::BreenixDir
                 | ProcEntryType::XhciDir
                 | ProcEntryType::PidDir(_)
@@ -295,6 +306,9 @@ pub fn init() {
     procfs
         .entries
         .push(ProcEntry::new(ProcEntryType::TraceProviders));
+    procfs
+        .entries
+        .push(ProcEntry::new(ProcEntryType::TraceTeardownDir));
 
     procfs.initialized = true;
     log::info!("procfs: initialized with {} entries", procfs.entries.len());
@@ -325,6 +339,9 @@ pub fn lookup(name: &str) -> Option<ProcEntry> {
 
     // Try dynamic per-PID paths (e.g., "123/status", "123")
     let normalized = name.trim_start_matches('/');
+    if let Some(entry) = lookup_trace_teardown_path(normalized) {
+        return Some(entry);
+    }
     let full_path = alloc::format!("/proc/{}", normalized);
     lookup_pid_path(&full_path)
 }
@@ -343,7 +360,7 @@ pub fn lookup_by_path(path: &str) -> Option<ProcEntry> {
     // PROCFS lock is released here before we try dynamic PID lookup
 
     // Try dynamic per-PID paths (e.g., /proc/123/status, /proc/123)
-    lookup_pid_path(path)
+    lookup_trace_teardown_path(path.trim_start_matches("/proc/")).or_else(|| lookup_pid_path(path))
 }
 
 /// Look up an entry by inode number
@@ -378,6 +395,7 @@ pub fn list_entries() -> Vec<String> {
                         | ProcEntryType::TraceBuffer
                         | ProcEntryType::TraceCounters
                         | ProcEntryType::TraceProviders
+                        | ProcEntryType::TraceTeardownDir
                         | ProcEntryType::BreenixTesting
                         | ProcEntryType::XhciTrace
                         | ProcEntryType::XhciCounters
@@ -415,6 +433,7 @@ pub fn list_trace_entries() -> Vec<String> {
                     | ProcEntryType::TraceBuffer
                     | ProcEntryType::TraceCounters
                     | ProcEntryType::TraceProviders
+                    | ProcEntryType::TraceTeardownDir
             )
         })
         .map(|e| String::from(e.entry_type.name()))
@@ -476,6 +495,8 @@ pub fn read_entry(entry_type: ProcEntryType) -> Result<String, i32> {
         ProcEntryType::TraceBuffer => Ok(trace::generate_buffer()),
         ProcEntryType::TraceCounters => Ok(trace::generate_counters()),
         ProcEntryType::TraceProviders => Ok(trace::generate_providers()),
+        ProcEntryType::TraceTeardownDir => Ok(String::from("<pid>\n")),
+        ProcEntryType::TraceTeardownPid(pid) => Ok(trace::generate_teardown_pid(pid)),
         ProcEntryType::SlabInfo => Ok(generate_slabinfo()),
         ProcEntryType::Stat => Ok(generate_stat()),
         ProcEntryType::CowInfo => Ok(generate_cowinfo()),
@@ -982,6 +1003,19 @@ fn lookup_pid_path(path: &str) -> Option<ProcEntry> {
         Some("status") => Some(ProcEntry::new(ProcEntryType::PidStatus(pid))),
         Some(_) => None, // Unknown sub-path
     }
+}
+
+fn lookup_trace_teardown_path(path: &str) -> Option<ProcEntry> {
+    let relative = path.trim_start_matches('/');
+    let pid_text = relative.strip_prefix("trace/teardown/")?;
+    if pid_text.is_empty()
+        || pid_text.contains('/')
+        || (pid_text.len() > 1 && pid_text.starts_with('0'))
+    {
+        return None;
+    }
+    let pid = pid_text.parse().ok()?;
+    Some(ProcEntry::new(ProcEntryType::TraceTeardownPid(pid)))
 }
 
 /// Generate directory listing for /proc/[pid]

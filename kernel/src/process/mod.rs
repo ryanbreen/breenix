@@ -14,6 +14,47 @@ pub mod process;
 pub use manager::ProcessManager;
 pub use process::{Process, ProcessId, ProcessState};
 
+/// Result of entering process teardown through the receipt-custody wrapper.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ExitOutcome {
+    Missing,
+    FirstCommit,
+    RepeatCommit,
+}
+
+/// Crate-private custody object for a deferred process root. There is no
+/// public constructor and no public API that can hand one to a caller.
+pub(crate) struct RetirementReceipt {
+    #[cfg(target_arch = "aarch64")]
+    reclaim: Option<crate::task::process_task::PendingProcessReclaim>,
+}
+
+impl RetirementReceipt {
+    #[cfg(target_arch = "aarch64")]
+    pub(crate) fn from_reclaim(reclaim: crate::task::process_task::PendingProcessReclaim) -> Self {
+        Self {
+            reclaim: Some(reclaim),
+        }
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    pub(crate) fn take_contents(
+        &mut self,
+    ) -> Option<crate::task::process_task::PendingProcessReclaim> {
+        self.reclaim.take()
+    }
+}
+
+impl Drop for RetirementReceipt {
+    fn drop(&mut self) {
+        #[cfg(target_arch = "aarch64")]
+        if let Some(reclaim) = self.take_contents() {
+            crate::trace_count!(crate::tracing::providers::teardown::RECEIPT_DROPPED_UNRETIRED);
+            crate::task::process_task::enqueue_process_reclaim(reclaim);
+        }
+    }
+}
+
 const PM_LOCK_OWNER_NONE: u64 = u64::MAX;
 
 /// Best-effort owner snapshot for PROCESS_MANAGER lock contention analysis.
@@ -207,6 +248,54 @@ where
     })
 }
 
+/// The only public process-exit entry point. The locked half can return a
+/// receipt only into this function; PM is out of scope before the receipt is
+/// enqueued and before notification redemption enters scheduler/SERIAL code.
+pub fn exit_process_and_retire(pid: ProcessId, exit_code: i32) -> ExitOutcome {
+    let locked = with_process_manager(|pm| {
+        let Some(process) = pm.get_process(pid) else {
+            return (ExitOutcome::Missing, None, None, exit_code);
+        };
+        let outcome = if process.is_terminated() {
+            ExitOutcome::RepeatCommit
+        } else {
+            ExitOutcome::FirstCommit
+        };
+        let thread_id = process.main_thread.as_ref().map(|thread| thread.id);
+        let receipt = pm.exit_process_locked(pid, exit_code);
+        let reported_exit_code = pm
+            .get_process(pid)
+            .and_then(|process| process.exit_code)
+            .unwrap_or(exit_code);
+        (outcome, receipt, thread_id, reported_exit_code)
+    });
+
+    let Some((outcome, receipt, thread_id, reported_exit_code)) = locked else {
+        return ExitOutcome::Missing;
+    };
+
+    #[cfg(target_arch = "aarch64")]
+    if let Some(mut receipt) = receipt {
+        if let Some(reclaim) = receipt.take_contents() {
+            crate::task::process_task::enqueue_process_reclaim(reclaim);
+        }
+    }
+    #[cfg(not(target_arch = "aarch64"))]
+    let _receipt = receipt;
+
+    // The unchanged btrt effect remains in handle_thread_exit. Calling the
+    // existing two-phase path here lets a remote commit race a natural thread
+    // exit for the row's report claim without ever invoking SERIAL under PM.
+    if let Some(thread_id) = thread_id {
+        crate::task::process_task::ProcessScheduler::handle_thread_exit(
+            thread_id,
+            reported_exit_code,
+        );
+    }
+
+    outcome
+}
+
 /// Execute a function with the process manager while interrupts are disabled (ARM64)
 /// This prevents deadlock when timer interrupts try to access the process manager
 #[cfg(target_arch = "aarch64")]
@@ -321,11 +410,7 @@ pub fn exit_current(exit_code: i32) {
 }
 
 fn exit_process_by_pid(pid: ProcessId, exit_code: i32) {
-    if let Some(ref mut manager) = *manager() {
-        manager.exit_process(pid, exit_code);
-    } else {
-        log::error!("Process manager not available!");
-    }
+    let _ = exit_process_and_retire(pid, exit_code);
 }
 
 #[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]

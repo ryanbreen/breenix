@@ -62,6 +62,101 @@ pub enum ProcessState {
     Terminated(i32), // exit code
 }
 
+/// Phase-2 exit-obligation state. The PM lock is the sole serializer for
+/// every transition; later teardown phases extend this exact shape rather
+/// than upgrading a boolean in place.
+#[derive(Clone, Copy)]
+pub(crate) enum ExitObligationState {
+    Absent,
+    Pending,
+    Claimed { claimer: u64, fence: ExitClaimFence },
+    Completed,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct ExitClaimFence {
+    #[cfg(target_arch = "aarch64")]
+    retirement: crate::task::scheduler::RetirementFence,
+}
+
+impl ExitClaimFence {
+    fn capture() -> Self {
+        Self {
+            #[cfg(target_arch = "aarch64")]
+            retirement: crate::task::scheduler::retirement_grace_target(),
+        }
+    }
+}
+
+/// P2's durable notification seed: SIGCHLD is a class-A obligation completed
+/// with its PM-owned effect, while Report uses T1/T2/T3 around the unchanged
+/// `btrt::on_process_exit` effect outside PM. T4 intentionally does not exist.
+pub(crate) struct ExitNotificationObligations {
+    pub(crate) sigchld: ExitObligationState,
+    report: ExitObligationState,
+}
+
+impl ExitNotificationObligations {
+    const fn new() -> Self {
+        Self {
+            sigchld: ExitObligationState::Absent,
+            report: ExitObligationState::Absent,
+        }
+    }
+
+    /// T1: create each obligation exactly once, on the first exit commit.
+    pub(crate) fn seed(&mut self) {
+        if matches!(self.sigchld, ExitObligationState::Absent) {
+            self.sigchld = ExitObligationState::Pending;
+        }
+        if matches!(self.report, ExitObligationState::Absent) {
+            self.report = ExitObligationState::Pending;
+        }
+    }
+
+    /// Class-A T2.3: the caller performs the SIGCHLD effect in the same PM
+    /// acquisition before marking the obligation complete.
+    pub(crate) fn complete_sigchld(&mut self) {
+        if matches!(self.sigchld, ExitObligationState::Pending) {
+            self.sigchld = ExitObligationState::Completed;
+        }
+    }
+
+    /// T2: claim the report effect under PM. Exactly one competing exit path
+    /// can observe Pending and become the sole redeemer.
+    pub(crate) fn claim_report(&mut self, claimer: u64) -> bool {
+        if !matches!(self.report, ExitObligationState::Pending) {
+            return false;
+        }
+        self.report = ExitObligationState::Claimed {
+            claimer,
+            fence: ExitClaimFence::capture(),
+        };
+        true
+    }
+
+    /// T3: only the path that claimed the report may complete it, under a
+    /// fresh PM acquisition after the effect ran outside PM.
+    pub(crate) fn complete_report(&mut self, claimer: u64) {
+        match self.report {
+            ExitObligationState::Claimed {
+                claimer: owner,
+                fence,
+            } if owner == claimer => {
+                #[cfg(target_arch = "aarch64")]
+                let _claim_fence = fence.retirement;
+                #[cfg(not(target_arch = "aarch64"))]
+                let _claim_fence = fence;
+                self.report = ExitObligationState::Completed;
+            }
+            ExitObligationState::Claimed { .. } => {
+                crate::trace_count!(crate::tracing::providers::teardown::LEDGER_CLAIM_MISMATCH);
+            }
+            _ => {}
+        }
+    }
+}
+
 /// A process represents a running program with its own address space
 pub struct Process {
     /// Unique process identifier
@@ -115,6 +210,9 @@ pub struct Process {
 
     /// Exit code (if terminated)
     pub exit_code: Option<i32>,
+
+    /// Durable P2 notification state, serialized exclusively by the PM lock.
+    pub(crate) exit_notifications: ExitNotificationObligations,
 
     /// Memory usage statistics
     pub memory_usage: MemoryUsage,
@@ -224,6 +322,7 @@ impl Process {
             parent: None,
             children: Vec::new(),
             exit_code: None,
+            exit_notifications: ExitNotificationObligations::new(),
             memory_usage: MemoryUsage::default(),
             stack: None,
             page_table: None,

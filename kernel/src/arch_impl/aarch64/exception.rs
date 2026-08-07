@@ -821,9 +821,7 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                             pid.as_u64() as u16,
                             (-11i16) as u16,
                         );
-                        let _ = crate::process::with_process_manager(|pm| {
-                            pm.exit_process(pid, -11); // SIGSEGV exit code
-                        });
+                        let _ = crate::process::exit_process_and_retire(pid, -11);
                         terminated = true;
                     }
                 }
@@ -1186,9 +1184,7 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                             pid.as_u64() as u16,
                             (-11i16) as u16,
                         );
-                        let _ = crate::process::with_process_manager(|pm| {
-                            pm.exit_process(pid, -11); // SIGSEGV
-                        });
+                        let _ = crate::process::exit_process_and_retire(pid, -11);
                         terminated = true;
                     }
                 }
@@ -1274,9 +1270,7 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                     let _ = crate::task::scheduler::with_scheduler(|sched| {
                         sched.terminate_process_threads(pid.as_u64());
                     });
-                    let _ = crate::process::with_process_manager(|pm| {
-                        pm.exit_process(pid, -11);
-                    });
+                    let _ = crate::process::exit_process_and_retire(pid, -11);
                 }
                 terminate_current_scheduler_thread();
             }
@@ -1374,9 +1368,7 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                     let _ = crate::task::scheduler::with_scheduler(|sched| {
                         sched.terminate_process_threads(pid.as_u64());
                     });
-                    let _ = crate::process::with_process_manager(|pm| {
-                        pm.exit_process(pid, -11);
-                    });
+                    let _ = crate::process::exit_process_and_retire(pid, -11);
                 }
                 terminate_current_scheduler_thread();
             }

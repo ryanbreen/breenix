@@ -151,6 +151,7 @@ STD_BINARIES=(
     "cloexec_test"
     "kill_process_group_test"
     "sigchld_test"
+    "sigkill_teardown_test"
     "sigchld_job_test"
     "ctrl_c_test"
     "job_control_test"

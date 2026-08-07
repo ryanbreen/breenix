@@ -53,6 +53,44 @@ use core::cmp::Reverse;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use spin::Mutex;
 
+/// Exit-batch identity carried by teardown-attributed expedite evidence.
+/// P2 uses one pid-derived batch per single-victim request; P9 later assigns
+/// one shared id to a group request rather than introducing a parallel type.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GroupBatchId(u64);
+
+impl GroupBatchId {
+    pub const fn for_single_victim(pid: u64) -> Self {
+        Self(pid)
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    const fn as_u64(self) -> u64 {
+        self.0
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+#[inline(always)]
+fn observe_exit_kick(thread_pid: u64) -> bool {
+    use crate::tracing::providers::teardown::{EXIT_KICK_BUCKETS, EXIT_KICK_SLOTS};
+
+    let slot = &EXIT_KICK_SLOTS[thread_pid as usize % EXIT_KICK_BUCKETS];
+    if let Some(observation) = slot.observe(thread_pid) {
+        let interval = crate::tracing::trace_timestamp().wrapping_sub(observation.at);
+        crate::tracing::providers::teardown::record_exit_kick_observed(thread_pid, interval);
+        true
+    } else {
+        slot.is_observed_for(thread_pid)
+    }
+}
+
+#[cfg(not(target_arch = "aarch64"))]
+#[inline(always)]
+fn observe_exit_kick(_thread_pid: u64) -> bool {
+    true
+}
+
 // Architecture-generic HAL wrappers for interrupt control.
 #[cfg(not(target_arch = "aarch64"))]
 use crate::arch_interrupts_enabled as are_enabled;
@@ -234,6 +272,10 @@ pub fn emit_wake_attribution_counters() {
 /// Global scheduler instance
 static SCHEDULER: Mutex<Option<Scheduler>> = Mutex::new(None);
 
+#[cfg(all(target_arch = "aarch64", feature = "boot_tests"))]
+static BOOT_TEST_CPU_AFFINITY: [AtomicU64; MAX_CPUS] =
+    [const { AtomicU64::new(0) }; MAX_CPUS];
+
 #[inline(always)]
 fn lock_scheduler() -> spin::MutexGuard<'static, Option<Scheduler>> {
     let guard = SCHEDULER.lock();
@@ -246,6 +288,29 @@ fn try_lock_scheduler() -> Option<spin::MutexGuard<'static, Option<Scheduler>>> 
     let guard = SCHEDULER.try_lock()?;
     crate::tracing::providers::teardown::note_scheduler_acquire();
     Some(guard)
+}
+
+#[cfg(all(target_arch = "aarch64", feature = "boot_tests"))]
+fn retain_cpu_affine_test_thread(
+    queue: &mut VecDeque<u64>,
+    thread_id: u64,
+    current_cpu: usize,
+) -> bool {
+    let target_cpu = BOOT_TEST_CPU_AFFINITY
+        .iter()
+        .position(|slot| slot.load(Ordering::Acquire) == thread_id);
+    if target_cpu.is_none() || target_cpu == Some(current_cpu) {
+        return false;
+    }
+    queue.push_back(thread_id);
+    true
+}
+
+#[cfg(all(target_arch = "aarch64", feature = "boot_tests"))]
+pub(crate) fn clear_cpu_affinity_for_test(thread_id: u64) {
+    for slot in BOOT_TEST_CPU_AFFINITY.iter() {
+        let _ = slot.compare_exchange(thread_id, 0, Ordering::AcqRel, Ordering::Relaxed);
+    }
 }
 
 /// Global need_resched flag for timer interrupt
@@ -1010,6 +1075,14 @@ impl Scheduler {
         self.add_thread_inner(thread, true);
     }
 
+    #[cfg(all(target_arch = "aarch64", feature = "boot_tests"))]
+    fn add_thread_on_cpu_for_test(&mut self, thread: Box<Thread>, cpu: usize) {
+        debug_assert!(cpu < MAX_CPUS);
+        let thread_id = thread.id();
+        self.threads.push(thread);
+        self.per_cpu_queues[cpu].push_back(thread_id);
+    }
+
     fn add_thread_inner(&mut self, thread: Box<Thread>, front: bool) {
         let thread_id = thread.id();
         let thread_name = thread.name.clone();
@@ -1045,11 +1118,7 @@ impl Scheduler {
     #[cfg(target_arch = "aarch64")]
     pub fn reclaim_terminated_threads(&mut self) {
         for queue in self.per_cpu_queues.iter_mut() {
-            queue.retain(|&thread_id| {
-                self.threads.iter().any(|thread| {
-                    thread.id() == thread_id && thread.state != ThreadState::Terminated
-                })
-            });
+            queue.retain(|&thread_id| self.threads.iter().any(|thread| thread.id() == thread_id));
         }
 
         let terminated_ids: alloc::vec::Vec<u64> = self
@@ -1108,6 +1177,9 @@ impl Scheduler {
         });
         self.retirement_grace
             .retain(|grace| !reclaimed_ids.contains(&grace.thread_id));
+        for queue in self.per_cpu_queues.iter_mut() {
+            queue.retain(|thread_id| !reclaimed_ids.contains(thread_id));
+        }
     }
 
     /// Add a thread as the current running thread without scheduling.
@@ -1271,11 +1343,20 @@ impl Scheduler {
         let current_cpu = Self::current_cpu_id();
         let mut next_thread_id = 'outer: loop {
             // Try local queue first
-            while let Some(n) = self.per_cpu_queues[current_cpu].pop_front() {
-                if let Some(thread) = self.get_thread(n) {
-                    if thread.state == ThreadState::Terminated {
-                        continue;
+            let local_candidates = self.per_cpu_queues[current_cpu].len();
+            for _ in 0..local_candidates {
+                let Some(n) = self.per_cpu_queues[current_cpu].pop_front() else {
+                    break;
+                };
+                let (terminated, owner_pid) = self
+                    .get_thread(n)
+                    .map(|thread| (thread.state == ThreadState::Terminated, thread.owner_pid))
+                    .unwrap_or((false, None));
+                if terminated {
+                    if owner_pid.is_some_and(|pid| !observe_exit_kick(pid)) {
+                        self.per_cpu_queues[current_cpu].push_back(n);
                     }
+                    continue;
                 }
                 break 'outer n;
             }
@@ -1284,7 +1365,19 @@ impl Scheduler {
                 if steal_cpu == current_cpu {
                     continue;
                 }
-                while let Some(n) = self.per_cpu_queues[steal_cpu].pop_front() {
+                let steal_candidates = self.per_cpu_queues[steal_cpu].len();
+                for _ in 0..steal_candidates {
+                    let Some(n) = self.per_cpu_queues[steal_cpu].pop_front() else {
+                        break;
+                    };
+                    #[cfg(all(target_arch = "aarch64", feature = "boot_tests"))]
+                    if retain_cpu_affine_test_thread(
+                        &mut self.per_cpu_queues[steal_cpu],
+                        n,
+                        current_cpu,
+                    ) {
+                        continue;
+                    }
                     #[cfg(all(target_arch = "aarch64", feature = "ec0_fault_inject"))]
                     if retain_ec0_fault_inject_on_cpu0(
                         &mut self.per_cpu_queues[steal_cpu],
@@ -1293,10 +1386,15 @@ impl Scheduler {
                     ) {
                         break;
                     }
-                    if let Some(thread) = self.get_thread(n) {
-                        if thread.state == ThreadState::Terminated {
-                            continue;
+                    let (terminated, owner_pid) = self
+                        .get_thread(n)
+                        .map(|thread| (thread.state == ThreadState::Terminated, thread.owner_pid))
+                        .unwrap_or((false, None));
+                    if terminated {
+                        if owner_pid.is_some_and(|pid| !observe_exit_kick(pid)) {
+                            self.per_cpu_queues[steal_cpu].push_back(n);
                         }
+                        continue;
                     }
                     break 'outer n;
                 }
@@ -1331,6 +1429,14 @@ impl Scheduler {
                             continue;
                         }
                         if let Some(n) = self.per_cpu_queues[steal_cpu].pop_front() {
+                            #[cfg(all(target_arch = "aarch64", feature = "boot_tests"))]
+                            if retain_cpu_affine_test_thread(
+                                &mut self.per_cpu_queues[steal_cpu],
+                                n,
+                                current_cpu,
+                            ) {
+                                continue;
+                            }
                             #[cfg(all(target_arch = "aarch64", feature = "ec0_fault_inject"))]
                             if retain_ec0_fault_inject_on_cpu0(
                                 &mut self.per_cpu_queues[steal_cpu],
@@ -1525,19 +1631,30 @@ impl Scheduler {
         let mut should_requeue_old = false;
         if let Some(current_id) = self.cpu_state[Self::current_cpu_id()].current_thread {
             if current_id != self.cpu_state[Self::current_cpu_id()].idle_thread {
-                let (is_terminated, is_blocked) = if let Some(current) = self.get_thread(current_id)
-                {
-                    let was_terminated = current.state == ThreadState::Terminated;
-                    let was_blocked = current.state == ThreadState::Blocked
-                        || current.state == ThreadState::BlockedOnSignal
-                        || current.state == ThreadState::BlockedOnChildExit
-                        || current.state == ThreadState::BlockedOnTimer
-                        || current.state == ThreadState::BlockedOnIO;
+                let (is_terminated, is_blocked, terminated_owner_pid) =
+                    if let Some(current) = self.get_thread(current_id) {
+                        let was_terminated = current.state == ThreadState::Terminated;
+                        let was_blocked = current.state == ThreadState::Blocked
+                            || current.state == ThreadState::BlockedOnSignal
+                            || current.state == ThreadState::BlockedOnChildExit
+                            || current.state == ThreadState::BlockedOnTimer
+                            || current.state == ThreadState::BlockedOnIO;
 
-                    (was_terminated, was_blocked)
-                } else {
-                    (true, false)
-                };
+                        (
+                            was_terminated,
+                            was_blocked,
+                            was_terminated.then_some(current.owner_pid).flatten(),
+                        )
+                    } else {
+                        (true, false, None)
+                    };
+
+                // This peer scheduling pass is declining to dispatch a thread
+                // already quarantined by terminate_process_threads. Consume the
+                // matching teardown kick without taking any additional lock.
+                if let Some(owner_pid) = terminated_owner_pid {
+                    observe_exit_kick(owner_pid);
+                }
 
                 let published_ready = !is_terminated && !is_blocked;
                 let in_queue = self.per_cpu_queues.iter().any(|q| q.contains(&current_id));
@@ -1582,11 +1699,20 @@ impl Scheduler {
         let current_cpu = Self::current_cpu_id();
         let mut next_thread_id = 'sched_outer: loop {
             // Try local queue
-            while let Some(n) = self.per_cpu_queues[current_cpu].pop_front() {
-                if let Some(thread) = self.get_thread(n) {
-                    if thread.state == ThreadState::Terminated {
-                        continue;
+            let local_candidates = self.per_cpu_queues[current_cpu].len();
+            for _ in 0..local_candidates {
+                let Some(n) = self.per_cpu_queues[current_cpu].pop_front() else {
+                    break;
+                };
+                let (terminated, owner_pid) = self
+                    .get_thread(n)
+                    .map(|thread| (thread.state == ThreadState::Terminated, thread.owner_pid))
+                    .unwrap_or((false, None));
+                if terminated {
+                    if owner_pid.is_some_and(|pid| !observe_exit_kick(pid)) {
+                        self.per_cpu_queues[current_cpu].push_back(n);
                     }
+                    continue;
                 }
                 break 'sched_outer n;
             }
@@ -1595,7 +1721,19 @@ impl Scheduler {
                 if steal_cpu == current_cpu {
                     continue;
                 }
-                while let Some(n) = self.per_cpu_queues[steal_cpu].pop_front() {
+                let steal_candidates = self.per_cpu_queues[steal_cpu].len();
+                for _ in 0..steal_candidates {
+                    let Some(n) = self.per_cpu_queues[steal_cpu].pop_front() else {
+                        break;
+                    };
+                    #[cfg(all(target_arch = "aarch64", feature = "boot_tests"))]
+                    if retain_cpu_affine_test_thread(
+                        &mut self.per_cpu_queues[steal_cpu],
+                        n,
+                        current_cpu,
+                    ) {
+                        continue;
+                    }
                     #[cfg(all(target_arch = "aarch64", feature = "ec0_fault_inject"))]
                     if retain_ec0_fault_inject_on_cpu0(
                         &mut self.per_cpu_queues[steal_cpu],
@@ -1604,10 +1742,15 @@ impl Scheduler {
                     ) {
                         break;
                     }
-                    if let Some(thread) = self.get_thread(n) {
-                        if thread.state == ThreadState::Terminated {
-                            continue;
+                    let (terminated, owner_pid) = self
+                        .get_thread(n)
+                        .map(|thread| (thread.state == ThreadState::Terminated, thread.owner_pid))
+                        .unwrap_or((false, None));
+                    if terminated {
+                        if owner_pid.is_some_and(|pid| !observe_exit_kick(pid)) {
+                            self.per_cpu_queues[steal_cpu].push_back(n);
                         }
+                        continue;
                     }
                     break 'sched_outer n;
                 }
@@ -1641,6 +1784,14 @@ impl Scheduler {
                             continue;
                         }
                         if let Some(n) = self.per_cpu_queues[steal_cpu].pop_front() {
+                            #[cfg(all(target_arch = "aarch64", feature = "boot_tests"))]
+                            if retain_cpu_affine_test_thread(
+                                &mut self.per_cpu_queues[steal_cpu],
+                                n,
+                                current_cpu,
+                            ) {
+                                continue;
+                            }
                             #[cfg(all(target_arch = "aarch64", feature = "ec0_fault_inject"))]
                             if retain_ec0_fault_inject_on_cpu0(
                                 &mut self.per_cpu_queues[steal_cpu],
@@ -1980,6 +2131,49 @@ impl Scheduler {
             crate::arch_impl::aarch64::constants::SGI_RESCHEDULE as u8,
             target_cpu as u8,
         );
+    }
+
+    /// Publish teardown-attributed evidence, then broadcast a reschedule SGI
+    /// to every other online CPU. This is intentionally separate from the two
+    /// generic wakeup helpers and must be called with no lock held.
+    pub fn send_exit_expedite_sgi(victim_pid: u64, batch: GroupBatchId) {
+        #[cfg(target_arch = "aarch64")]
+        {
+            use crate::arch_impl::aarch64::{constants::SGI_RESCHEDULE, gic, smp};
+            use crate::tracing::providers::teardown::{
+                KickPublishResult, EXIT_KICK_BUCKETS, EXIT_KICK_PUBLISHED, EXIT_KICK_SLOTS,
+            };
+
+            let bucket = victim_pid as usize % EXIT_KICK_BUCKETS;
+            let slot = &EXIT_KICK_SLOTS[bucket];
+            let at = crate::tracing::trace_timestamp();
+            match slot.publish(victim_pid, at) {
+                KickPublishResult::Published { displaced, .. } => {
+                    if displaced {
+                        crate::tracing::providers::teardown::record_exit_kick_collision(bucket);
+                    }
+                    crate::trace_count!(EXIT_KICK_PUBLISHED);
+                    crate::tracing::providers::teardown::record_exit_kick_published(bucket);
+                }
+                KickPublishResult::ReservationLost => {
+                    crate::tracing::providers::teardown::record_exit_kick_collision(bucket);
+                }
+            }
+
+            crate::trace_count!(crate::tracing::providers::teardown::EXIT_SGI_SENT);
+            crate::tracing::providers::teardown::record_exit_sgi_sent(victim_pid, batch.as_u64());
+
+            let current_cpu = Self::current_cpu_id();
+            let online = smp::cpus_online() as usize;
+            for cpu in 0..online.min(MAX_CPUS) {
+                if cpu != current_cpu {
+                    gic::send_sgi(SGI_RESCHEDULE as u8, cpu as u8);
+                }
+            }
+        }
+
+        #[cfg(not(target_arch = "aarch64"))]
+        let _ = (victim_pid, batch);
     }
 
     /// Block current thread until a signal is delivered
@@ -2689,27 +2883,42 @@ impl Scheduler {
     }
 
     /// Make every scheduler-owned thread for a process non-runnable.
-    #[cfg(target_arch = "aarch64")]
     pub fn terminate_process_threads(&mut self, owner_pid: u64) {
-        crate::trace_count!(crate::tracing::providers::teardown::TEARDOWN_QUARANTINE);
+        crate::tracing::providers::teardown::record_quarantine(owner_pid);
         if crate::process::process_manager_held_on_current_cpu() {
             crate::trace_count!(
                 crate::tracing::providers::teardown::TEARDOWN_LOCK_ORDER_SUSPECT
             );
         }
-        for thread in self.threads.iter_mut() {
-            if thread.owner_pid == Some(owner_pid) {
+        // Preserve one scheduler-visible quarantine token per victim thread. A
+        // peer can take SCHEDULER in the intentional gap before EXIT_KICK is
+        // published; a pre-publication decline requeues this token, and the SGI
+        // pass after publication consumes it. No CPU-residency predicate is
+        // needed, and unobserved collision cases age out with thread retirement.
+        for index in 0..self.threads.len() {
+            let thread_id = {
+                let thread = &mut self.threads[index];
+                if thread.owner_pid != Some(owner_pid) {
+                    continue;
+                }
                 thread.set_terminated();
+                thread.id()
+            };
+            if !self.per_cpu_queues.iter().any(|queue| queue.contains(&thread_id)) {
+                // A quarantine pass may not allocate while SCHEDULER is held.
+                // A running thread was previously popped from a queue, so the
+                // normal path has retained capacity for this token. If every
+                // queue is genuinely full, the outgoing-current observation
+                // hook remains the evidence path for a running victim.
+                if let Some(target) = (0..MAX_CPUS)
+                    .filter(|&cpu| {
+                        self.per_cpu_queues[cpu].len() < self.per_cpu_queues[cpu].capacity()
+                    })
+                    .min_by_key(|&cpu| self.per_cpu_queues[cpu].len())
+                {
+                    self.per_cpu_queues[target].push_back(thread_id);
+                }
             }
-        }
-
-        let threads = &self.threads;
-        for queue in self.per_cpu_queues.iter_mut() {
-            queue.retain(|&thread_id| {
-                !threads.iter().any(|thread| {
-                    thread.id() == thread_id && thread.owner_pid == Some(owner_pid)
-                })
-            });
         }
     }
 
@@ -3000,6 +3209,23 @@ pub fn spawn(thread: Box<Thread>) {
         } else {
             panic!("Scheduler not initialized");
         }
+    });
+}
+
+/// Test-only deterministic placement for concurrent protocol gates.
+#[cfg(all(target_arch = "aarch64", feature = "boot_tests"))]
+pub(crate) fn spawn_on_cpu_for_test(thread: Box<Thread>, cpu: usize) {
+    without_interrupts(|| {
+        let thread_id = thread.id();
+        let mut scheduler_lock = lock_scheduler();
+        let scheduler = scheduler_lock
+            .as_mut()
+            .expect("scheduler not initialized for test placement");
+        BOOT_TEST_CPU_AFFINITY[cpu].store(thread_id, Ordering::Release);
+        scheduler.add_thread_on_cpu_for_test(thread, cpu);
+        NEED_RESCHED.store(true, Ordering::Relaxed);
+        crate::per_cpu_aarch64::set_need_resched(true);
+        scheduler.send_resched_ipi_to_cpu(cpu);
     });
 }
 

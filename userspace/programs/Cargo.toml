@@ -197,6 +197,10 @@ name = "sigchld_test"
 path = "src/sigchld_test.rs"
 
 [[bin]]
+name = "sigkill_teardown_test"
+path = "src/sigkill_teardown_test.rs"
+
+[[bin]]
 name = "sigchld_job_test"
 path = "src/sigchld_job_test.rs"
 
