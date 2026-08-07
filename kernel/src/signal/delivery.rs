@@ -221,6 +221,7 @@ fn deliver_default_action(process: &mut Process, sig: u32) -> DeliverResult {
             );
             // Exit code for signal termination is typically 128 + signal number
             // But we use negative signal number to indicate signal death
+            crate::trace_count!(crate::tracing::providers::teardown::TEARDOWN_ENTRY_SIGNAL);
             process.terminate(-(sig as i32));
 
             // CRITICAL: Also mark the scheduler's copy of the thread as terminated.
@@ -255,6 +256,7 @@ fn deliver_default_action(process: &mut Process, sig: u32) -> DeliverResult {
             );
             // Core dump not implemented, just terminate
             // The 0x80 flag indicates core dump
+            crate::trace_count!(crate::tracing::providers::teardown::TEARDOWN_ENTRY_SIGNAL);
             process.terminate(-((sig as i32) | 0x80));
 
             // CRITICAL: Also mark the scheduler's copy of the thread as terminated.

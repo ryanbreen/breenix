@@ -380,6 +380,7 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
     // Initialize DTrace-style tracing framework
     // This must be after per_cpu::init() and time::init() for timestamps
     tracing::init();
+    tracing::providers::init();
     // Enable tracing and all providers for kernel observability
     tracing::enable();
     tracing::providers::enable_all();

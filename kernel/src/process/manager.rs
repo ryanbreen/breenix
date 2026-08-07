@@ -1122,6 +1122,7 @@ impl ProcessManager {
             Some(process) => process.is_terminated(),
             None => return,
         };
+        crate::tracing::providers::teardown::record_exit_request(already_terminated);
 
         // Get parent PID before we borrow the process mutably
         let parent_pid = self.processes.get(&pid).and_then(|p| p.parent);

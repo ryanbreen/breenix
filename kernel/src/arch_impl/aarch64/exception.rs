@@ -317,7 +317,11 @@ fn terminate_current_scheduler_thread() {
     }
 }
 
-fn defer_current_user_thread_sigsegv_exit(label: &str, frame_addr: u64) {
+fn defer_current_user_thread_sigsegv_exit(
+    label: &str,
+    frame_addr: u64,
+    entry_already_counted: bool,
+) {
     use crate::arch_impl::aarch64::context_switch::{raw_uart_dec, raw_uart_str};
 
     // Publish the deferred exit only after this CPU has left the retiring root
@@ -336,6 +340,9 @@ fn defer_current_user_thread_sigsegv_exit(label: &str, frame_addr: u64) {
     });
 
     if let Some(tid) = victim_tid {
+        if !entry_already_counted {
+            crate::trace_count!(crate::tracing::providers::teardown::TEARDOWN_ENTRY_FAULT);
+        }
         let queued = crate::task::process_task::defer_fault_sigsegv_exit(tid);
         raw_uart_str(label);
         raw_uart_str(" deferred_tid=");
@@ -346,6 +353,49 @@ fn defer_current_user_thread_sigsegv_exit(label: &str, frame_addr: u64) {
     } else {
         raw_uart_str(label);
         raw_uart_str(" deferred_tid=none\n");
+    }
+}
+
+/// Resolve an EL0 fault victim and record whether the CR3 and dispatched-TID
+/// evidence agree. The dispatched TID is read from the existing lock-free
+/// per-CPU dispatch record so this exception path never acquires SCHEDULER.
+fn resolve_el0_fault_victim(page_table_phys: u64) -> Option<(crate::process::ProcessId, bool)> {
+    let cpu_id = crate::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id() as usize;
+    let dispatched_tid =
+        crate::arch_impl::aarch64::context_switch::last_dispatched_tid(cpu_id);
+    let resolution = crate::process::with_process_manager(|pm| {
+        let tid_owner = dispatched_tid.and_then(|tid| {
+            pm.find_process_by_thread(tid)
+                .map(|(pid, _process)| pid)
+        });
+        let cr3_victim = pm
+            .find_process_by_cr3_mut(page_table_phys)
+            .map(|(pid, process)| (pid, process.is_terminated()));
+        (tid_owner, cr3_victim)
+    });
+
+    let (tid_owner, cr3_victim) = resolution.unwrap_or((None, None));
+    if cr3_victim.is_none() {
+        crate::trace_count!(crate::tracing::providers::teardown::TEARDOWN_CR3_MISS);
+    }
+
+    match (tid_owner, cr3_victim) {
+        (Some(tid_pid), Some((cr3_pid, was_terminated))) => {
+            if tid_pid != cr3_pid {
+                crate::trace_count!(
+                    crate::tracing::providers::teardown::TEARDOWN_VICTIM_DIVERGENCE
+                );
+            }
+            Some((cr3_pid, was_terminated))
+        }
+        (None, Some(victim)) => Some(victim),
+        (Some(_), None) => None,
+        (None, None) => {
+            crate::trace_count!(
+                crate::tracing::providers::teardown::EXIT_ATTRIBUTION_UNCERTAIN
+            );
+            None
+        }
     }
 }
 
@@ -676,6 +726,7 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
             }
 
             if from_el0 {
+                crate::trace_count!(crate::tracing::providers::teardown::TEARDOWN_ENTRY_FAULT);
                 // Page table walk diagnostic: dump L0-L3 entries for the fault VA
                 // to understand why the mapping is missing or has wrong permissions.
                 {
@@ -758,11 +809,7 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                 // across the scheduler-side non-runnable transition.
                 let mut terminated = false;
                 let mut already_terminated = false;
-                let victim = crate::process::with_process_manager(|pm| {
-                    pm.find_process_by_cr3_mut(page_table_phys)
-                        .map(|(pid, process)| (pid, process.is_terminated()))
-                })
-                .flatten();
+                let victim = resolve_el0_fault_victim(page_table_phys);
                 if let Some((pid, was_terminated)) = victim {
                     let _ = crate::task::scheduler::with_scheduler(|sched| {
                         sched.terminate_process_threads(pid.as_u64());
@@ -807,7 +854,7 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                 use crate::arch_impl::aarch64::context_switch::raw_uart_str;
                 raw_uart_str("[DATA_ABORT] kernel-mode fault, deferring process cleanup\n");
             }
-            defer_current_user_thread_sigsegv_exit("[DATA_ABORT]", frame as u64);
+            defer_current_user_thread_sigsegv_exit("[DATA_ABORT]", frame as u64, from_el0);
             dump_fatal_postmortem_once("DATA_ABORT");
             drop(fatal_uart_guard);
 
@@ -1115,6 +1162,7 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
             drop(fatal_uart_guard);
 
             if from_el0 {
+                crate::trace_count!(crate::tracing::providers::teardown::TEARDOWN_ENTRY_FAULT);
                 // From userspace - terminate the process with SIGSEGV
                 let page_table_phys = ttbr0 & !0xFFFF_0000_0000_0FFF;
 
@@ -1125,11 +1173,7 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                 let mut terminated = false;
                 let mut already_terminated = false;
                 let mut killed_pid: u64 = 0;
-                let victim = crate::process::with_process_manager(|pm| {
-                    pm.find_process_by_cr3_mut(page_table_phys)
-                        .map(|(pid, process)| (pid, process.is_terminated()))
-                })
-                .flatten();
+                let victim = resolve_el0_fault_victim(page_table_phys);
                 if let Some((pid, was_terminated)) = victim {
                     let _ = crate::task::scheduler::with_scheduler(|sched| {
                         sched.terminate_process_threads(pid.as_u64());
@@ -1178,7 +1222,11 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                 use crate::arch_impl::aarch64::context_switch::raw_uart_str;
                 raw_uart_str("[INSTRUCTION_ABORT] deferring process cleanup\n");
             }
-            defer_current_user_thread_sigsegv_exit("[INSTRUCTION_ABORT]", frame as u64);
+            defer_current_user_thread_sigsegv_exit(
+                "[INSTRUCTION_ABORT]",
+                frame as u64,
+                from_el0,
+            );
             terminate_current_scheduler_thread();
             crate::task::scheduler::set_need_resched();
             frame_ref.elr = crate::arch_impl::aarch64::idle_loop_arm64 as *const () as u64;
@@ -1214,17 +1262,14 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                 raw_uart_str("\n");
             }
             if from_el0 {
+                crate::trace_count!(crate::tracing::providers::teardown::TEARDOWN_ENTRY_FAULT);
                 let ttbr0: u64;
                 unsafe {
                     core::arch::asm!("mrs {}, ttbr0_el1", out(reg) ttbr0, options(nomem, nostack));
                 }
                 let page_table_phys = ttbr0 & !0xFFFF_0000_0000_0FFF;
                 super::quiesce_ttbr0_for_exit();
-                let victim = crate::process::with_process_manager(|pm| {
-                    pm.find_process_by_cr3_mut(page_table_phys)
-                        .map(|(pid, process)| (pid, process.is_terminated()))
-                })
-                .flatten();
+                let victim = resolve_el0_fault_victim(page_table_phys);
                 if let Some((pid, _)) = victim {
                     let _ = crate::task::scheduler::with_scheduler(|sched| {
                         sched.terminate_process_threads(pid.as_u64());
@@ -1317,17 +1362,14 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                 raw_uart_str("\n");
             }
             if from_el0 {
+                crate::trace_count!(crate::tracing::providers::teardown::TEARDOWN_ENTRY_FAULT);
                 let ttbr0: u64;
                 unsafe {
                     core::arch::asm!("mrs {}, ttbr0_el1", out(reg) ttbr0, options(nomem, nostack));
                 }
                 let page_table_phys = ttbr0 & !0xFFFF_0000_0000_0FFF;
                 super::quiesce_ttbr0_for_exit();
-                let victim = crate::process::with_process_manager(|pm| {
-                    pm.find_process_by_cr3_mut(page_table_phys)
-                        .map(|(pid, process)| (pid, process.is_terminated()))
-                })
-                .flatten();
+                let victim = resolve_el0_fault_victim(page_table_phys);
                 if let Some((pid, _)) = victim {
                     let _ = crate::task::scheduler::with_scheduler(|sched| {
                         sched.terminate_process_threads(pid.as_u64());

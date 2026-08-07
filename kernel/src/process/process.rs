@@ -333,7 +333,11 @@ impl Process {
     /// Returns the FD entries without closing them — the caller is responsible
     /// for pipe close_read/close_write, PTY refcounting, etc.
     pub fn take_fd_entries(&mut self) -> alloc::vec::Vec<(usize, crate::ipc::fd::FileDescriptor)> {
-        self.fd_table.take_all()
+        let entries = self.fd_table.take_all();
+        if crate::process::process_manager_held_on_current_cpu() {
+            crate::tracing::providers::teardown::FD_CLOSES_UNDER_PM.add(entries.len() as u64);
+        }
+        entries
     }
 
     /// Close all file descriptors in this process
@@ -349,6 +353,9 @@ impl Process {
 
         for fd in 0..crate::ipc::MAX_FDS {
             if let Ok(fd_entry) = self.fd_table.close(fd as i32) {
+                if crate::process::process_manager_held_on_current_cpu() {
+                    crate::trace_count!(crate::tracing::providers::teardown::FD_CLOSES_UNDER_PM);
+                }
                 match fd_entry.kind {
                     FdKind::PipeRead(buffer) => {
                         buffer.lock().close_read();
@@ -404,6 +411,9 @@ impl Process {
 
         for fd in 0..crate::ipc::MAX_FDS {
             if let Ok(fd_entry) = self.fd_table.close(fd as i32) {
+                if crate::process::process_manager_held_on_current_cpu() {
+                    crate::trace_count!(crate::tracing::providers::teardown::FD_CLOSES_UNDER_PM);
+                }
                 match fd_entry.kind {
                     FdKind::PipeRead(buffer) => {
                         buffer.lock().close_read();

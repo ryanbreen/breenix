@@ -36,16 +36,46 @@ pub struct ProcessManagerGuard {
     saved_daif: u64,
 }
 
+/// Non-blocking process-manager guard with the same owner instrumentation as
+/// `manager()`, but without changing interrupt state.
+pub struct TryProcessManagerGuard {
+    guard: core::mem::ManuallyDrop<spin::MutexGuard<'static, Option<ProcessManager>>>,
+}
+
+impl Drop for TryProcessManagerGuard {
+    fn drop(&mut self) {
+        note_process_manager_lock_released();
+        unsafe {
+            core::mem::ManuallyDrop::drop(&mut self.guard);
+        }
+    }
+}
+
+impl core::ops::Deref for TryProcessManagerGuard {
+    type Target = Option<ProcessManager>;
+
+    fn deref(&self) -> &Self::Target {
+        &*self.guard
+    }
+}
+
+impl core::ops::DerefMut for TryProcessManagerGuard {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut *self.guard
+    }
+}
+
 impl Drop for ProcessManagerGuard {
     fn drop(&mut self) {
+        // Clear owner metadata before the mutex becomes available to another CPU.
+        note_process_manager_lock_released();
+
         // CRITICAL: Release the lock BEFORE restoring interrupts.
         // If we restored DAIF first, there'd be a window where interrupts are enabled
         // but the lock is still held, allowing the exact deadlock we're preventing.
         unsafe {
             core::mem::ManuallyDrop::drop(&mut self._guard);
         }
-
-        note_process_manager_lock_released();
 
         #[cfg(target_arch = "aarch64")]
         unsafe {
@@ -80,6 +110,7 @@ fn note_process_manager_lock_acquired() {
     let (cpu, tid) = current_process_manager_owner_identity();
     PROCESS_MANAGER_OWNER_TID.store(tid, Ordering::Relaxed);
     PROCESS_MANAGER_OWNER_CPU.store(cpu, Ordering::Release);
+    crate::tracing::providers::teardown::note_process_manager_acquire();
 }
 
 #[inline(always)]
@@ -95,10 +126,14 @@ fn current_process_manager_owner_identity() -> (u64, u64) {
     (cpu, 0)
 }
 
-#[cfg(not(target_arch = "aarch64"))]
+#[cfg(target_arch = "x86_64")]
 #[inline(always)]
 fn current_process_manager_owner_identity() -> (u64, u64) {
-    (0, 0)
+    use crate::arch_impl::current::percpu::X86PerCpu;
+    use crate::arch_impl::PerCpuOps;
+
+    // x86 is currently single-CPU, so the real CPU id is provably zero today.
+    (X86PerCpu::cpu_id(), 0)
 }
 
 /// Snapshot the best-effort PROCESS_MANAGER lock owner.
@@ -109,6 +144,13 @@ pub fn process_manager_owner_snapshot() -> Option<(u64, u64)> {
     }
     let tid = PROCESS_MANAGER_OWNER_TID.load(Ordering::Relaxed);
     Some((cpu, tid))
+}
+
+/// Whether this CPU currently owns the process-manager lock.
+#[inline(always)]
+pub fn process_manager_held_on_current_cpu() -> bool {
+    process_manager_owner_snapshot()
+        .is_some_and(|(cpu, _)| cpu == current_process_manager_owner_identity().0)
 }
 
 /// Initialize the process management system
@@ -157,7 +199,11 @@ where
 {
     x86_64::instructions::interrupts::without_interrupts(|| {
         let mut manager_lock = PROCESS_MANAGER.lock();
-        manager_lock.as_mut().map(f)
+        note_process_manager_lock_acquired();
+        let result = manager_lock.as_mut().map(f);
+        note_process_manager_lock_released();
+        drop(manager_lock);
+        result
     })
 }
 
@@ -170,13 +216,21 @@ where
 {
     crate::arch_impl::aarch64::cpu::without_interrupts(|| {
         let mut manager_lock = PROCESS_MANAGER.lock();
-        manager_lock.as_mut().map(f)
+        note_process_manager_lock_acquired();
+        let result = manager_lock.as_mut().map(f);
+        note_process_manager_lock_released();
+        drop(manager_lock);
+        result
     })
 }
 
 /// Try to get the process manager without blocking (for interrupt contexts)
-pub fn try_manager() -> Option<spin::MutexGuard<'static, Option<ProcessManager>>> {
-    PROCESS_MANAGER.try_lock()
+pub fn try_manager() -> Option<TryProcessManagerGuard> {
+    let guard = PROCESS_MANAGER.try_lock()?;
+    note_process_manager_lock_acquired();
+    Some(TryProcessManagerGuard {
+        guard: core::mem::ManuallyDrop::new(guard),
+    })
 }
 
 /// Per-process info for lockup diagnostics (small, stack-allocated).
@@ -260,12 +314,21 @@ pub fn exit_current(exit_code: i32) {
 
     if let Some(pid) = current_pid() {
         log::debug!("Current PID is {}", pid.as_u64());
-        if let Some(ref mut manager) = *manager() {
-            manager.exit_process(pid, exit_code);
-        } else {
-            log::error!("Process manager not available!");
-        }
+        exit_process_by_pid(pid, exit_code);
     } else {
         log::error!("No current PID set!");
     }
+}
+
+fn exit_process_by_pid(pid: ProcessId, exit_code: i32) {
+    if let Some(ref mut manager) = *manager() {
+        manager.exit_process(pid, exit_code);
+    } else {
+        log::error!("Process manager not available!");
+    }
+}
+
+#[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
+pub(crate) fn exit_process_for_teardown_test(pid: ProcessId, exit_code: i32) {
+    exit_process_by_pid(pid, exit_code);
 }
