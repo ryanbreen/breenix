@@ -2805,7 +2805,11 @@ impl Scheduler {
     {
         self.threads
             .iter()
-            .any(|thread| thread.cached_ttbr0 != 0 && root_matches(thread.cached_ttbr0))
+            .any(|thread| {
+                thread.state != ThreadState::Terminated
+                    && thread.cached_ttbr0 != 0
+                    && root_matches(thread.cached_ttbr0)
+            })
     }
 
     /// Check if a thread is in the deferred requeue state on any CPU.

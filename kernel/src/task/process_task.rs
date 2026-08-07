@@ -554,6 +554,16 @@ impl ProcessScheduler {
     }
 }
 
+#[cfg(target_arch = "aarch64")]
+fn next_reclaim_pass_id(mut pass: u32) -> u32 {
+    while pass == 0 {
+        pass = RECLAIM_PASS_ID
+            .fetch_add(1, Ordering::Relaxed)
+            .wrapping_add(1);
+    }
+    pass
+}
+
 /// Defer a SIGSEGV-style process exit for a user thread that faulted in kernel mode.
 pub fn defer_fault_sigsegv_exit(thread_id: u64) -> bool {
     #[cfg(target_arch = "aarch64")]
@@ -763,15 +773,18 @@ fn boot_finish_reclaim_pass() {
 /// Reclaim process frames whose cross-CPU TTBR0 retention has quiesced.
 #[cfg(target_arch = "aarch64")]
 pub fn reclaim_deferred_process_resources() {
-    let my_pass = RECLAIM_PASS_ID
-        .fetch_add(1, Ordering::Relaxed)
-        .wrapping_add(1);
+    let my_pass = next_reclaim_pass_id(
+        RECLAIM_PASS_ID
+            .fetch_add(1, Ordering::Relaxed)
+            .wrapping_add(1),
+    );
     if crate::process::process_manager_held_on_current_cpu()
         || crate::tracing::providers::teardown::scheduler_scope_active()
     {
         crate::trace_count!(
             crate::tracing::providers::teardown::RECLAIM_CONTEXT_VIOLATIONS
         );
+        return;
     }
     #[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
     let (_boot_invocation_guard, boot_reclaim_allowed) = BootReclaimInvocationGuard::enter();
@@ -854,9 +867,11 @@ fn reclaim_deferred_process_resources_for_pass(my_pass: u32) {
 
 #[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
 fn boot_reclaim_deferred_process_resources() {
-    let my_pass = RECLAIM_PASS_ID
-        .fetch_add(1, Ordering::Relaxed)
-        .wrapping_add(1);
+    let my_pass = next_reclaim_pass_id(
+        RECLAIM_PASS_ID
+            .fetch_add(1, Ordering::Relaxed)
+            .wrapping_add(1),
+    );
     reclaim_deferred_process_resources_for_pass(my_pass);
 }
 
