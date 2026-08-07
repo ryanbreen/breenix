@@ -19,6 +19,7 @@
 #   ./run.sh --ahci --headless # ARM64 AHCI with serial output only
 #   ./run.sh --btrt            # ARM64 BTRT structured boot test
 #   ./run.sh --btrt --x86      # x86_64 BTRT structured boot test
+#   ./run.sh --no-audio        # Disable audio entirely (default: coreaudio output on)
 #
 # Display:
 #   ARM64:  Native window (cocoa) - no VNC needed
@@ -47,6 +48,7 @@ DEBUG=false
 REBUILD_HOME=false
 RESOLUTION=""
 USE_AHCI=false
+NO_AUDIO=false
 
 # Parse arguments
 while [[ $# -gt 0 ]]; do
@@ -102,6 +104,10 @@ while [[ $# -gt 0 ]]; do
             USE_AHCI=true
             shift
             ;;
+        --no-audio)
+            NO_AUDIO=true
+            shift
+            ;;
         --rebuild-home)
             REBUILD_HOME=true
             shift
@@ -135,6 +141,7 @@ while [[ $# -gt 0 ]]; do
             echo "  --graphics, --vnc          Run with VNC display (default)"
             echo "  --btrt                     Run BTRT structured boot test"
             echo "  --ahci                     Use AHCI (SATA) disk instead of virtio-blk (ARM64)"
+            echo "  --no-audio                 Disable audio entirely (default: coreaudio output on)"
             echo "  --debug                    Enable GDB stub (port 1234) for debugging"
             echo "  --resolution WxH           Set display resolution (e.g. 1920x1080)"
             echo "                             Default: auto-detect from screen"
@@ -1004,11 +1011,21 @@ else
 fi
 
 # Audio options (VirtIO sound device)
-AUDIO_OPTS="-audiodev coreaudio,id=audio0"
-if [ "$ARCH" = "arm64" ]; then
-    AUDIO_OPTS="$AUDIO_OPTS -device virtio-sound-device,audiodev=audio0"
+# NOTE: virtio-sound normally creates BOTH a playback (out) and a capture (in)
+# PCM stream. macOS coreaudio can open the playback stream fine, but cannot
+# open a capture stream in this environment ("Can not open `virtio-sound.in'
+# (no host audio driver)"), which aborts device realization and QEMU never
+# boots. streams=1 limits the device to just the playback stream, keeping
+# audio OUTPUT working while dropping the failing capture stream.
+if [ "$NO_AUDIO" = true ]; then
+    AUDIO_OPTS="-audiodev none,id=audio0"
 else
-    AUDIO_OPTS="$AUDIO_OPTS -device virtio-sound-pci,audiodev=audio0"
+    AUDIO_OPTS="-audiodev coreaudio,id=audio0"
+    if [ "$ARCH" = "arm64" ]; then
+        AUDIO_OPTS="$AUDIO_OPTS -device virtio-sound-device,audiodev=audio0,streams=1"
+    else
+        AUDIO_OPTS="$AUDIO_OPTS -device virtio-sound-pci,audiodev=audio0,streams=1"
+    fi
 fi
 
 # QMP socket for programmatic VM control (always enabled)
