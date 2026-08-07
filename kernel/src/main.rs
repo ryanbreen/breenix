@@ -999,6 +999,31 @@ fn kernel_main_continue() -> ! {
     // refactored to iterate the shared list. See boot/test_list.rs for details.
     #[cfg(all(feature = "testing", not(feature = "interactive")))]
     {
+        // Disk-backed test binaries require VirtIO block IRQ completions, so
+        // interrupts must be hardware-enabled here and must STAY enabled for
+        // the rest of this boot-time test-registration phase: every
+        // get_test_binary() call in the dozens of test_exec::test_*()
+        // functions invoked later in this function also loads from disk and
+        // needs the same IRQ completion (confirmed: unconditionally
+        // re-disabling interrupts here causes those later calls to panic
+        // with "DISK LOADING FAILED" - the IRQ can never be serviced).
+        //
+        // preempt_disable() is used (not interrupts::disable()) so the boot
+        // thread's scheduling is gated by preempt_count rather than the raw
+        // interrupt flag, keeping IRQs serviceable. This closes the
+        // documented-invariant violation the post-#498-merge review flagged
+        // (PRECONDITION 7 below now checks the real guard, preempt_count,
+        // instead of the interrupt flag) and matches this function's
+        // documented intent that scheduling should not happen until the
+        // deliberate preempt_enable()/interrupts::enable() pair near the end
+        // of this function. NOTE: real boot testing shows the timer
+        // interrupt can still switch away from the boot thread during the
+        // busy-spin disk-completion wait in this window (a pre-existing gap
+        // between preempt_count and this kernel's actual can_schedule()
+        // logic, not something this change introduces or fully closes) -
+        // see the PR that added this comment for full investigation notes
+        // and the recommended follow-up RCA.
+        kernel::per_cpu::preempt_disable();
         // Disk-backed test binaries require VirtIO block IRQ completions.
         x86_64::instructions::interrupts::enable();
         let elf = userspace_test::get_test_binary("hello_time");
@@ -1580,15 +1605,20 @@ fn kernel_main_continue() -> ! {
         false
     };
 
-    // PRECONDITION 7: Interrupts Currently Disabled
-    log::info!("PRECONDITION 7: Verifying interrupts are currently disabled...");
-    let interrupts_enabled = interrupts::are_interrupts_enabled();
-    if !interrupts_enabled {
-        log::info!("PRECONDITION 7: Interrupts disabled ✓ PASS");
-        log::info!("  Ready to enable interrupts safely");
+    // PRECONDITION 7: Preemption Currently Disabled
+    // (Interrupts are intentionally already hardware-enabled by this point -
+    // see the preempt_disable()/interrupts::enable() pair in the first
+    // RING3_SMOKE block above, needed for disk-backed test binary loads.
+    // preempt_count is the real invariant guarding against premature
+    // scheduling during this boot-time test-registration phase.)
+    log::info!("PRECONDITION 7: Verifying preemption is currently disabled...");
+    let preemption_disabled = kernel::per_cpu::preempt_count() > 0;
+    if preemption_disabled {
+        log::info!("PRECONDITION 7: Preemption disabled ✓ PASS");
+        log::info!("  Ready to enable preemption safely");
     } else {
-        log::error!("PRECONDITION 7: Interrupts disabled ✗ FAIL");
-        log::error!("  Interrupts are already enabled! This should not happen.");
+        log::error!("PRECONDITION 7: Preemption disabled ✗ FAIL");
+        log::error!("  Preemption is not disabled! This should not happen.");
     }
 
     log::info!("================================================================");
@@ -1599,7 +1629,7 @@ fn kernel_main_continue() -> ! {
         && irq0_unmasked
         && has_runnable.unwrap_or(false)
         && has_current_thread
-        && !interrupts_enabled;
+        && preemption_disabled;
 
     if all_passed {
         log::info!("✓ ALL PRECONDITIONS PASSED - Safe to enable interrupts");
@@ -1614,9 +1644,11 @@ fn kernel_main_continue() -> ! {
     time_test::test_timer_resolution();
     log::info!("✅ Timer resolution test passed");
 
-    // Test our clock_gettime implementation BEFORE enabling interrupts
-    // This must run before interrupts are enabled because once interrupts are on,
-    // the scheduler will preempt to userspace and this code will never execute.
+    // Test our clock_gettime implementation BEFORE enabling preemption.
+    // Interrupts are already hardware-enabled at this point (see the first
+    // RING3_SMOKE block above); preemption is intended to still be disabled
+    // via preempt_disable() called there (see that comment for a known gap:
+    // the timer can still switch away during a disk-completion busy-wait).
     log::info!("Testing clock_gettime syscall implementation...");
     clock_gettime_test::test_clock_gettime();
     log::info!("✅ clock_gettime tests passed");
@@ -1649,6 +1681,12 @@ fn kernel_main_continue() -> ! {
     // registered test processes have completed.
     #[cfg(all(feature = "btrt", not(feature = "testing")))]
     kernel::test_framework::btrt::finalize();
+
+    // Release the scheduling brake taken in the first RING3_SMOKE block
+    // above (see its preempt_disable() comment) - this is the true,
+    // intended start of preemption for userspace processes registered
+    // since then.
+    kernel::per_cpu::preempt_enable();
 
     // Enable interrupts for preemptive multitasking - userspace processes will now run
     // WARNING: After this call, kernel_main will likely be preempted immediately
