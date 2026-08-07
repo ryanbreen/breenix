@@ -557,28 +557,108 @@ static SCHEDULING_EPOCHS: [AtomicU64; MAX_CPUS] =
 #[derive(Clone, Copy)]
 struct RetirementGrace {
     thread_id: u64,
-    after_epoch: [u64; MAX_CPUS],
+    after_epoch: RetirementFence,
 }
 
 #[cfg(target_arch = "aarch64")]
-pub(crate) fn retirement_grace_target() -> [u64; MAX_CPUS] {
-    let mut target = [0; MAX_CPUS];
-    for cpu_id in 0..MAX_CPUS {
-        if crate::arch_impl::aarch64::smp::is_cpu_online(cpu_id) {
-            target[cpu_id] = SCHEDULING_EPOCHS[cpu_id]
-                .load(Ordering::Acquire)
-                .saturating_add(2);
+#[derive(Clone, Copy)]
+pub(crate) struct RetirementFence {
+    pub(crate) epochs: [u64; MAX_CPUS],
+    pub(crate) online_mask: u64,
+}
+
+#[cfg(target_arch = "aarch64")]
+#[derive(Clone, Copy)]
+pub(crate) struct RetirementSnapshot {
+    pub(crate) epochs: [u64; MAX_CPUS],
+    pub(crate) online_mask: u64,
+}
+
+#[cfg(target_arch = "aarch64")]
+impl RetirementSnapshot {
+    pub(crate) fn capture() -> Self {
+        let mut epochs = [0; MAX_CPUS];
+        let mut online_mask = 0;
+        for cpu_id in 0..MAX_CPUS {
+            epochs[cpu_id] = SCHEDULING_EPOCHS[cpu_id].load(Ordering::Acquire);
+            if crate::arch_impl::aarch64::smp::is_cpu_online(cpu_id) {
+                online_mask |= 1 << cpu_id;
+            }
+        }
+        core::sync::atomic::fence(Ordering::Acquire);
+        Self {
+            epochs,
+            online_mask,
         }
     }
-    target
+
+    pub(crate) fn as_fence(self) -> RetirementFence {
+        RetirementFence {
+            epochs: self.epochs,
+            online_mask: self.online_mask,
+        }
+    }
+
+    fn target_after(self, advances: u64) -> RetirementFence {
+        let mut epochs = self.epochs;
+        for (cpu_id, epoch) in epochs.iter_mut().enumerate() {
+            if self.online_mask & (1 << cpu_id) != 0 {
+                *epoch = epoch.wrapping_add(advances);
+            }
+        }
+        RetirementFence {
+            epochs,
+            online_mask: self.online_mask,
+        }
+    }
+
+    pub(crate) fn fence_elapsed(&self, fence: &RetirementFence) -> bool {
+        if fence.online_mask == 0 {
+            crate::trace_count!(crate::tracing::providers::teardown::RETIRE_EMPTY_ONLINE_MASK);
+            return false;
+        }
+        (0..MAX_CPUS).all(|cpu_id| {
+            fence.online_mask & (1 << cpu_id) == 0
+                || epoch_reached(self.epochs[cpu_id], fence.epochs[cpu_id])
+        })
+    }
+
+    pub(crate) fn all_advanced_since(&self, fence: &RetirementFence) -> bool {
+        fence.online_mask != 0
+            && (0..MAX_CPUS).all(|cpu_id| {
+                fence.online_mask & (1 << cpu_id) == 0
+                    || epoch_advanced(self.epochs[cpu_id], fence.epochs[cpu_id])
+            })
+    }
+
+    pub(crate) fn epoch_sum(&self, online_mask: u64) -> u64 {
+        (0..MAX_CPUS)
+            .filter(|cpu_id| online_mask & (1 << cpu_id) != 0)
+            .fold(0u64, |sum, cpu_id| sum.wrapping_add(self.epochs[cpu_id]))
+    }
 }
 
 #[cfg(target_arch = "aarch64")]
-pub(crate) fn retirement_grace_elapsed(target: &[u64; MAX_CPUS]) -> bool {
-    (0..MAX_CPUS).all(|cpu_id| {
-        target[cpu_id] == 0
-            || SCHEDULING_EPOCHS[cpu_id].load(Ordering::Acquire) >= target[cpu_id]
-    })
+#[inline(always)]
+fn epoch_reached(now: u64, target: u64) -> bool {
+    now.wrapping_sub(target) < (1u64 << 63)
+}
+
+#[cfg(target_arch = "aarch64")]
+#[inline(always)]
+fn epoch_advanced(now: u64, before: u64) -> bool {
+    let delta = now.wrapping_sub(before);
+    delta != 0 && delta < (1u64 << 63)
+}
+
+#[cfg(target_arch = "aarch64")]
+pub(crate) fn retirement_grace_target() -> RetirementFence {
+    RetirementSnapshot::capture().target_after(2)
+}
+
+#[cfg(target_arch = "aarch64")]
+pub(crate) fn retirement_grace_elapsed(target: &RetirementFence) -> bool {
+    RetirementSnapshot::capture().fence_elapsed(target)
 }
 
 /// Record a scheduler entry for the current CPU.
@@ -2713,6 +2793,23 @@ impl Scheduler {
     #[cfg(target_arch = "aarch64")]
     pub fn is_idle_thread_inner(&self, thread_id: u64) -> bool {
         (0..MAX_CPUS).any(|cpu| self.cpu_state[cpu].idle_thread == thread_id)
+    }
+
+    /// Return whether any scheduler-owned thread still caches a matching
+    /// userspace translation-table root. The caller supplies the root matcher
+    /// so the scheduler lock is acquired exactly once for an entire receipt.
+    #[cfg(target_arch = "aarch64")]
+    pub(crate) fn any_cached_ttbr0_matches<F>(&self, mut root_matches: F) -> bool
+    where
+        F: FnMut(u64) -> bool,
+    {
+        self.threads
+            .iter()
+            .any(|thread| {
+                thread.state != ThreadState::Terminated
+                    && thread.cached_ttbr0 != 0
+                    && root_matches(thread.cached_ttbr0)
+            })
     }
 
     /// Check if a thread is in the deferred requeue state on any CPU.

@@ -137,16 +137,16 @@ fn function_body<'a>(source: &'a str, name: &str) -> &'a str {
 
 const TERMINATE_CALLS: &[(&str, usize)] = &[
     ("kernel/src/interrupts/context_switch.rs", 1017),
-    ("kernel/src/process/manager.rs", 1162),
+    ("kernel/src/process/manager.rs", 1164),
     ("kernel/src/signal/delivery.rs", 225),
     ("kernel/src/signal/delivery.rs", 260),
     ("kernel/src/syscall/signal.rs", 163),
 ];
-const TERMINATE_MINIMAL_CALLS: &[(&str, usize)] = &[("kernel/src/task/process_task.rs", 274)];
+const TERMINATE_MINIMAL_CALLS: &[(&str, usize)] = &[("kernel/src/task/process_task.rs", 462)];
 const PRODUCTION_INIT_PID_SITES: &[(&str, usize)] = &[
-    ("kernel/src/process/manager.rs", 1179),
-    ("kernel/src/task/process_task.rs", 244),
-    ("kernel/src/task/process_task.rs", 303),
+    ("kernel/src/process/manager.rs", 1181),
+    ("kernel/src/task/process_task.rs", 432),
+    ("kernel/src/task/process_task.rs", 491),
 ];
 const TEST_INIT_PID_SITES: &[(&str, usize)] = &[
     ("kernel/src/test_userspace.rs", 84),
@@ -161,12 +161,12 @@ const QUARANTINE_CALLS: &[(&str, usize)] = &[
 ];
 const KERNEL_STACK_MUTATIONS: &[(&str, usize)] = &[
     ("kernel/src/arch_impl/aarch64/syscall_entry.rs", 961),
-    ("kernel/src/process/manager.rs", 1839),
+    ("kernel/src/process/manager.rs", 1841),
     ("kernel/src/syscall/clone.rs", 252),
 ];
 const RECLAIM_ENQUEUE_CALLS: &[(&str, usize)] = &[
-    ("kernel/src/process/manager.rs", 1153),
-    ("kernel/src/task/process_task.rs", 262),
+    ("kernel/src/process/manager.rs", 1155),
+    ("kernel/src/task/process_task.rs", 450),
 ];
 const EXIT_PROCESS_CALLS: &[(&str, usize)] = &[
     ("kernel/src/arch_impl/aarch64/exception.rs", 825),
@@ -182,16 +182,16 @@ const EXIT_PROCESS_BY_PID_CALLS: &[(&str, usize)] = &[
     ("kernel/src/process/mod.rs", 333),
 ];
 const EXIT_PROCESS_FOR_TEARDOWN_TEST_CALLS: &[(&str, usize)] =
-    &[("kernel/src/tracing/providers/teardown.rs", 528)];
+    &[("kernel/src/tracing/providers/teardown.rs", 552)];
 const BLOCKING_PRIMITIVES: &[(&str, usize)] = &[
-    ("kernel/src/task/scheduler.rs", 1740),
-    ("kernel/src/task/scheduler.rs", 1911),
-    ("kernel/src/task/scheduler.rs", 1930),
-    ("kernel/src/task/scheduler.rs", 2079),
-    ("kernel/src/task/scheduler.rs", 2167),
-    ("kernel/src/task/scheduler.rs", 2232),
-    ("kernel/src/task/scheduler.rs", 2241),
-    ("kernel/src/task/scheduler.rs", 2400),
+    ("kernel/src/task/scheduler.rs", 1820),
+    ("kernel/src/task/scheduler.rs", 1991),
+    ("kernel/src/task/scheduler.rs", 2010),
+    ("kernel/src/task/scheduler.rs", 2159),
+    ("kernel/src/task/scheduler.rs", 2247),
+    ("kernel/src/task/scheduler.rs", 2312),
+    ("kernel/src/task/scheduler.rs", 2321),
+    ("kernel/src/task/scheduler.rs", 2480),
     ("kernel/src/task/waitqueue.rs", 52),
 ];
 const RAW_SCHEDULER_LOCK_SITES: &[(&str, usize)] = &[
@@ -345,7 +345,7 @@ fn v3_structural_closures_are_exact() {
     );
     assert_exact(
         sites_matching(&sources, |line| line.contains("btrt::on_process_exit(")),
-        &[("kernel/src/task/process_task.rs", 285)],
+        &[("kernel/src/task/process_task.rs", 473)],
         "btrt::on_process_exit callers",
     );
 
@@ -360,6 +360,111 @@ fn v3_structural_closures_are_exact() {
     assert!(!provider.contains("struct KickSlot"));
     assert!(!provider.contains("trace_count!(EXIT_SGI_SENT"));
     assert!(!provider.contains("trace_count!(EXIT_KICK_PUBLISHED"));
+}
+
+#[test]
+fn phase_one_retirement_fence_and_lock_domains_are_structural() {
+    let sources = rust_sources_below("kernel/src");
+    let process = source(&sources, "kernel/src/task/process_task.rs");
+    let scheduler = source(&sources, "kernel/src/task/scheduler.rs");
+    let manager = source(&sources, "kernel/src/process/manager.rs");
+    let ttbr0 = source(&sources, "kernel/src/arch_impl/aarch64/ttbr0.rs");
+    let provider = source(&sources, "kernel/src/tracing/providers/teardown.rs");
+
+    assert_eq!(
+        process.matches("static PENDING_PROCESS_RECLAIMS:").count(),
+        1
+    );
+    assert_eq!(
+        process.matches("static PARKED_PROCESS_RECLAIMS:").count(),
+        1
+    );
+    assert!(process.contains("last_pass: u32"));
+    assert!(process.contains("proof_failures: u8"));
+    assert!(process.contains("parked: Option<ParkRecord>"));
+    assert!(process.contains("fence_at_park: scheduler::RetirementFence"));
+    assert!(process.contains("row_epoch_at_park: u64"));
+    assert!(process.contains("age_epoch_sum_at_park: u64"));
+    assert!(process.contains("const PARK_AGE_BACKSTOP_EPOCHS: u64 = 64"));
+
+    let drain = function_body(process, "reclaim_deferred_process_resources");
+    assert_eq!(drain.matches("RECLAIM_PASS_ID").count(), 1);
+    assert!(drain.contains(".fetch_add(1, Ordering::Relaxed)"));
+    let cycle = function_body(process, "reclaim_deferred_process_resources_for_pass");
+    assert!(
+        cycle.find("unpark_sweep();").unwrap() < cycle.find("PENDING_PROCESS_RECLAIMS").unwrap()
+    );
+    assert!(cycle.contains("reclaim.last_pass = my_pass"));
+    assert!(cycle.contains("pending.swap_remove(index)"));
+    assert!(cycle.contains("reclaim.cached_root_is_live()"));
+    assert!(cycle.contains("reclaim.live_row_names_root()"));
+
+    let lock_free = function_body(process, "lock_free_root_proof");
+    assert!(lock_free.contains("fence_elapsed(&self.after_epoch)"));
+    assert!(lock_free.contains("local_ttbr0_root()"));
+    assert!(lock_free.contains("is_ttbr0_root_live_in_mask"));
+    assert!(!lock_free.contains("with_scheduler"));
+    assert!(!lock_free.contains("process::manager"));
+
+    let park = function_body(process, "park_reclaim");
+    assert!(park.contains("let snapshot_at_park = scheduler::RetirementSnapshot::capture();"));
+    assert!(park.contains("let fence_at_park = snapshot_at_park.as_fence();"));
+    assert!(!park.contains("reclaim.after_epoch"));
+    let unpark = function_body(process, "unpark_sweep_with_snapshot");
+    assert!(
+        unpark.find("PARKED_PROCESS_RECLAIMS.lock()").unwrap()
+            < unpark.find("PENDING_PROCESS_RECLAIMS.lock()").unwrap()
+    );
+
+    assert!(scheduler.contains("pub(crate) struct RetirementFence"));
+    assert!(scheduler.contains("pub(crate) struct RetirementSnapshot"));
+    let capture = function_body(scheduler, "capture");
+    assert!(capture.contains("core::sync::atomic::fence(Ordering::Acquire)"));
+    let elapsed = function_body(scheduler, "fence_elapsed");
+    assert!(
+        elapsed.find("fence.online_mask == 0").unwrap()
+            < elapsed.find("(0..MAX_CPUS).all").unwrap()
+    );
+    let stack_reclaim = function_body(scheduler, "reclaim_terminated_threads");
+    assert!(
+        stack_reclaim.find("retirement_grace_elapsed").unwrap()
+            < stack_reclaim.find("is_kernel_stack_slot_live").unwrap()
+    );
+
+    assert_exact(
+        sites_matching(&sources, |line| {
+            line.contains("note_process_row_removed()")
+                && !line.contains("fn note_process_row_removed")
+        }),
+        &[("kernel/src/process/manager.rs", 1104)],
+        "ROW_REMOVAL_EPOCH bump sites",
+    );
+    assert!(function_body(manager, "remove_process").contains("self.processes.remove(&pid)"));
+    assert!(ttbr0.contains("core::arch::asm!(\"mrs {}, ttbr0_el1\""));
+
+    for counter in [
+        "ROOT_PROOF_BLOCKED_EPOCH",
+        "ROOT_PROOF_BLOCKED_HW",
+        "ROOT_PROOF_BLOCKED_SHADOW",
+        "ROOT_PROOF_BLOCKED_CACHED",
+        "ROOT_PROOF_BLOCKED_LIVE_ROW",
+        "RETIRE_EMPTY_ONLINE_MASK",
+    ] {
+        assert!(provider.contains(counter));
+    }
+    let declaration_only = provider
+        .split("// Declaration-only until the phase named in PLAN.md.")
+        .nth(1)
+        .expect("declaration-only counter boundary")
+        .split("pub const COUNTER_COUNT")
+        .next()
+        .expect("declaration-only counter terminator");
+    assert!(!declaration_only.contains("RECLAIM_PASS_SKIPPED"));
+    assert!(!declaration_only.contains("RETIRE_EMPTY_ONLINE_MASK"));
+
+    let registry = source(&sources, "kernel/src/test_framework/registry.rs");
+    assert!(registry.contains("name: \"retirement_fence_gate\""));
+    assert!(registry.contains("name: \"reclaim_progress_gate\""));
 }
 
 #[test]
@@ -389,7 +494,7 @@ fn all_phase_zero_counters_have_registered_readers_and_honest_runtime_gates() {
         .filter_map(|rest| rest.strip_suffix(','))
         .map(str::to_owned)
         .collect();
-    assert_eq!(declarations.len(), 39);
+    assert_eq!(declarations.len(), 45);
     assert_eq!(
         readers, declarations,
         "every counter must have an inventory reader"

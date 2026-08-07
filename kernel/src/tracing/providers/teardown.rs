@@ -1,8 +1,8 @@
 //! Lock-free teardown observability.
 //!
-//! Phase 0 records existing teardown behavior only. Counters whose producer is
-//! introduced by a later phase are deliberately registered and readable here,
-//! but have no increment site yet.
+//! Phase 0 established the provider and Phase 1 adds retirement-proof
+//! producers. Counters owned by later phases remain registered and readable
+//! here without an increment site yet.
 
 use crate::tracing::counter::{register_counter, TraceCounter};
 use crate::tracing::provider::{register_provider, TraceProvider};
@@ -64,16 +64,24 @@ counter!(
     TEARDOWN_LOCK_ORDER_SUSPECT,
     "Suspect teardown lock ordering"
 );
-
-// Declaration-only until the phase named in PLAN.md. These intentionally have
-// no trace_count! producer in Phase 0.
-counter!(TEARDOWN_ENTRY_GROUP, "Group teardown entries");
-counter!(EXIT_SGI_SENT, "Teardown-attributed expedite SGIs");
-counter!(EXIT_REQUEST_OBSERVED, "Observed latched exit requests");
-counter!(EXIT_KICK_PUBLISHED, "Published exit-kick buckets");
-counter!(EXIT_KICK_OBSERVED, "Observed exit-kick victims");
-counter!(EXIT_KICK_BUCKET_COLLISION, "Exit-kick bucket collisions");
-counter!(RECEIPT_DROPPED_UNRETIRED, "Receipts recovered by Drop");
+counter!(ROOT_PROOF_BLOCKED_EPOCH, "Retirements blocked by epoch");
+counter!(ROOT_PROOF_BLOCKED_HW, "Retirements blocked by local TTBR0");
+counter!(
+    ROOT_PROOF_BLOCKED_SHADOW,
+    "Retirements blocked by TTBR0 shadows"
+);
+counter!(
+    ROOT_PROOF_BLOCKED_CACHED,
+    "Retirements blocked by scheduler roots"
+);
+counter!(
+    ROOT_PROOF_BLOCKED_LIVE_ROW,
+    "Retirements blocked by live process rows"
+);
+counter!(
+    RETIRE_EMPTY_ONLINE_MASK,
+    "Retirement fences refused for empty online masks"
+);
 counter!(
     RECLAIM_PASS_SKIPPED,
     "Reclaim candidates skipped in one pass"
@@ -90,6 +98,16 @@ counter!(
     "Immediately unparked reclaims"
 );
 counter!(RECLAIM_PARK_RESIDENT, "Resident parked reclaims");
+
+// Declaration-only until the phase named in PLAN.md. These intentionally have
+// no trace_count! producer yet.
+counter!(TEARDOWN_ENTRY_GROUP, "Group teardown entries");
+counter!(EXIT_SGI_SENT, "Teardown-attributed expedite SGIs");
+counter!(EXIT_REQUEST_OBSERVED, "Observed latched exit requests");
+counter!(EXIT_KICK_PUBLISHED, "Published exit-kick buckets");
+counter!(EXIT_KICK_OBSERVED, "Observed exit-kick victims");
+counter!(EXIT_KICK_BUCKET_COLLISION, "Exit-kick bucket collisions");
+counter!(RECEIPT_DROPPED_UNRETIRED, "Receipts recovered by Drop");
 counter!(LEDGER_EFFECT_AMBIGUOUS_REPORT, "Ambiguous report effects");
 counter!(
     TOMBSTONE_JOIN_REAP_SECOND,
@@ -113,7 +131,7 @@ counter!(
     "Fatal group signals dropped for init"
 );
 
-pub const COUNTER_COUNT: usize = 39;
+pub const COUNTER_COUNT: usize = 45;
 
 /// The registration and normal-context reader inventory. Keeping one inventory
 /// makes a write-only counter structurally impossible without changing the P0
@@ -138,6 +156,12 @@ pub static COUNTERS: [&TraceCounter; COUNTER_COUNT] = [
     &PROOF_UNDER_QUEUE_LOCK,
     &RECLAIM_CONTEXT_VIOLATIONS,
     &TEARDOWN_LOCK_ORDER_SUSPECT,
+    &ROOT_PROOF_BLOCKED_EPOCH,
+    &ROOT_PROOF_BLOCKED_HW,
+    &ROOT_PROOF_BLOCKED_SHADOW,
+    &ROOT_PROOF_BLOCKED_CACHED,
+    &ROOT_PROOF_BLOCKED_LIVE_ROW,
+    &RETIRE_EMPTY_ONLINE_MASK,
     &EXIT_SGI_SENT,
     &EXIT_REQUEST_OBSERVED,
     &EXIT_KICK_PUBLISHED,
