@@ -999,10 +999,23 @@ fn kernel_main_continue() -> ! {
     // refactored to iterate the shared list. See boot/test_list.rs for details.
     #[cfg(all(feature = "testing", not(feature = "interactive")))]
     {
+        // Disk-backed test binaries require VirtIO block IRQ completions.
+        x86_64::instructions::interrupts::enable();
+        let elf = userspace_test::get_test_binary("hello_time");
+        let register_test_buf = kernel::userspace_test::get_test_binary("register_init_test");
+        let clock_test_buf = kernel::userspace_test::get_test_binary("clock_gettime_test");
+        let brk_test_buf = kernel::userspace_test::get_test_binary("brk_test");
+        let test_mmap_buf = kernel::userspace_test::get_test_binary("test_mmap");
+        let diagnostic_test_buf =
+            kernel::userspace_test::get_test_binary("syscall_diagnostic_test");
+        let udp_test_buf = kernel::userspace_test::get_test_binary("udp_socket_test");
+        let tcp_test_buf = kernel::userspace_test::get_test_binary("tcp_socket_test");
+        let dns_test_buf = kernel::userspace_test::get_test_binary("dns_test");
+        let http_test_buf = kernel::userspace_test::get_test_binary("http_test");
+
         x86_64::instructions::interrupts::without_interrupts(|| {
             use alloc::string::String;
             log::info!("RING3_SMOKE: creating hello_time userspace process (early)");
-            let elf = userspace_test::get_test_binary("hello_time");
             match process::creation::create_user_process(String::from("smoke_hello_time"), &elf) {
                 Ok(pid) => {
                     log::info!(
@@ -1018,8 +1031,6 @@ fn kernel_main_continue() -> ! {
             // Launch register_init_test to verify registers are properly initialized
             {
                 serial_println!("RING3_SMOKE: creating register_init_test userspace process");
-                let register_test_buf =
-                    kernel::userspace_test::get_test_binary("register_init_test");
                 match process::creation::create_user_process(
                     String::from("register_init_test"),
                     &register_test_buf,
@@ -1039,7 +1050,6 @@ fn kernel_main_continue() -> ! {
             // Launch clock_gettime_test after hello_time
             {
                 serial_println!("RING3_SMOKE: creating clock_gettime_test userspace process");
-                let clock_test_buf = kernel::userspace_test::get_test_binary("clock_gettime_test");
                 match process::creation::create_user_process(
                     String::from("clock_gettime_test"),
                     &clock_test_buf,
@@ -1059,7 +1069,6 @@ fn kernel_main_continue() -> ! {
             // Launch brk_test to validate heap management syscall
             {
                 serial_println!("RING3_SMOKE: creating brk_test userspace process");
-                let brk_test_buf = kernel::userspace_test::get_test_binary("brk_test");
                 match process::creation::create_user_process(
                     String::from("brk_test"),
                     &brk_test_buf,
@@ -1076,7 +1085,6 @@ fn kernel_main_continue() -> ! {
             // Launch test_mmap to validate mmap/munmap syscalls
             {
                 serial_println!("RING3_SMOKE: creating test_mmap userspace process");
-                let test_mmap_buf = kernel::userspace_test::get_test_binary("test_mmap");
                 match process::creation::create_user_process(
                     String::from("test_mmap"),
                     &test_mmap_buf,
@@ -1093,8 +1101,6 @@ fn kernel_main_continue() -> ! {
             // Launch syscall_diagnostic_test to isolate register corruption bug
             {
                 serial_println!("RING3_SMOKE: creating syscall_diagnostic_test userspace process");
-                let diagnostic_test_buf =
-                    kernel::userspace_test::get_test_binary("syscall_diagnostic_test");
                 match process::creation::create_user_process(
                     String::from("syscall_diagnostic_test"),
                     &diagnostic_test_buf,
@@ -1114,7 +1120,6 @@ fn kernel_main_continue() -> ! {
             // Launch UDP socket test to verify network syscalls from userspace
             {
                 serial_println!("RING3_SMOKE: creating udp_socket_test userspace process");
-                let udp_test_buf = kernel::userspace_test::get_test_binary("udp_socket_test");
                 match process::creation::create_user_process(
                     String::from("udp_socket_test"),
                     &udp_test_buf,
@@ -1131,7 +1136,6 @@ fn kernel_main_continue() -> ! {
             // Launch TCP socket test to verify TCP syscalls from userspace
             {
                 serial_println!("RING3_SMOKE: creating tcp_socket_test userspace process");
-                let tcp_test_buf = kernel::userspace_test::get_test_binary("tcp_socket_test");
                 match process::creation::create_user_process(
                     String::from("tcp_socket_test"),
                     &tcp_test_buf,
@@ -1148,7 +1152,6 @@ fn kernel_main_continue() -> ! {
             // Launch DNS test to verify DNS resolution using UDP sockets
             {
                 serial_println!("RING3_SMOKE: creating dns_test userspace process");
-                let dns_test_buf = kernel::userspace_test::get_test_binary("dns_test");
                 match process::creation::create_user_process(
                     String::from("dns_test"),
                     &dns_test_buf,
@@ -1165,7 +1168,6 @@ fn kernel_main_continue() -> ! {
             // Launch HTTP test to verify HTTP client over TCP+DNS
             {
                 serial_println!("RING3_SMOKE: creating http_test userspace process");
-                let http_test_buf = kernel::userspace_test::get_test_binary("http_test");
                 match process::creation::create_user_process(
                     String::from("http_test"),
                     &http_test_buf,
@@ -1659,10 +1661,10 @@ fn kernel_main_continue() -> ! {
     // Must be done after interrupts are enabled but before other tests
     #[cfg(all(feature = "testing", not(feature = "interactive")))]
     {
+        let elf = userspace_test::get_test_binary("hello_time");
         x86_64::instructions::interrupts::without_interrupts(|| {
             use alloc::string::String;
             serial_println!("RING3_SMOKE: creating hello_time userspace process (early)");
-            let elf = userspace_test::get_test_binary("hello_time");
             match process::create_user_process(String::from("smoke_hello_time"), &elf) {
                 Ok(pid) => {
                     serial_println!(
