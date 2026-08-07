@@ -227,26 +227,18 @@ impl Completion {
             fence(Ordering::SeqCst);
 
             // Compute deadline using the ARM64 free-running counter.
+            #[cfg(target_arch = "aarch64")]
             let deadline_cntpct = {
-                #[cfg(target_arch = "aarch64")]
-                {
-                    let cnt: u64;
-                    let freq: u64;
-                    unsafe {
-                        core::arch::asm!("mrs {}, cntpct_el0", out(reg) cnt, options(nomem, nostack));
-                        core::arch::asm!("mrs {}, cntfrq_el0", out(reg) freq, options(nomem, nostack));
-                    }
-                    // Convert ns timeout to counter ticks.
-                    // freq is in Hz; timeout_ns / 1e9 * freq = timeout_ns * freq / 1e9.
-                    let ticks = (timeout_ns as u128 * freq as u128 / 1_000_000_000) as u64;
-                    cnt.wrapping_add(ticks)
+                let cnt: u64;
+                let freq: u64;
+                unsafe {
+                    core::arch::asm!("mrs {}, cntpct_el0", out(reg) cnt, options(nomem, nostack));
+                    core::arch::asm!("mrs {}, cntfrq_el0", out(reg) freq, options(nomem, nostack));
                 }
-                #[cfg(not(target_arch = "aarch64"))]
-                {
-                    // On x86_64 AHCI is not the primary driver; use a large
-                    // sentinel so the loop below is effectively unbounded.
-                    u64::MAX
-                }
+                // Convert ns timeout to counter ticks.
+                // freq is in Hz; timeout_ns / 1e9 * freq = timeout_ns * freq / 1e9.
+                let ticks = (timeout_ns as u128 * freq as u128 / 1_000_000_000) as u64;
+                cnt.wrapping_add(ticks)
             };
             let deadline_ns = {
                 #[cfg(target_arch = "aarch64")]
@@ -257,7 +249,8 @@ impl Completion {
                 }
                 #[cfg(not(target_arch = "aarch64"))]
                 {
-                    u64::MAX
+                    let (secs, nanos) = crate::time::get_monotonic_time_ns();
+                    (secs * 1_000_000_000 + nanos).saturating_add(timeout_ns)
                 }
             };
 
@@ -396,7 +389,13 @@ impl Completion {
                     }
                     #[cfg(not(target_arch = "aarch64"))]
                     {
-                        let _ = deadline_cntpct;
+                        let (secs, nanos) = crate::time::get_monotonic_time_ns();
+                        let now_ns = secs * 1_000_000_000 + nanos;
+                        if now_ns >= deadline_ns {
+                            self.waiter.store(0, Ordering::Release);
+                            restore_syscall_preempt_state();
+                            return Ok(false);
+                        }
                     }
                 }
             } else {
@@ -436,7 +435,12 @@ impl Completion {
                     }
                     #[cfg(not(target_arch = "aarch64"))]
                     {
-                        let _ = deadline_cntpct;
+                        let (secs, nanos) = crate::time::get_monotonic_time_ns();
+                        let now_ns = secs * 1_000_000_000 + nanos;
+                        if now_ns >= deadline_ns {
+                            self.waiter.store(0, Ordering::Release);
+                            return Ok(false);
+                        }
                         core::hint::spin_loop();
                     }
                 }
