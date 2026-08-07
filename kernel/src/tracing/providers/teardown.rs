@@ -175,17 +175,17 @@ pub fn snapshot() -> [u64; COUNTER_COUNT] {
     core::array::from_fn(|index| COUNTERS[index].aggregate())
 }
 
-#[cfg(feature = "boot_tests")]
+#[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
 const BOOT_TEST_PID_COUNT_SLOTS: usize = 128;
 
-#[cfg(feature = "boot_tests")]
+#[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
 struct BootTestPidCountSlot {
     pid: AtomicU64,
     defer_count: AtomicU64,
     reclaim_count: AtomicU64,
 }
 
-#[cfg(feature = "boot_tests")]
+#[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
 impl BootTestPidCountSlot {
     const fn new() -> Self {
         Self {
@@ -196,20 +196,30 @@ impl BootTestPidCountSlot {
     }
 }
 
-#[cfg(feature = "boot_tests")]
+#[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
 static BOOT_TEST_PID_COUNTS: [BootTestPidCountSlot; BOOT_TEST_PID_COUNT_SLOTS] =
     [const { BootTestPidCountSlot::new() }; BOOT_TEST_PID_COUNT_SLOTS];
 
-#[cfg(feature = "boot_tests")]
+#[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
 static BOOT_TEST_PID_COUNTS_ACTIVE: AtomicU64 = AtomicU64::new(0);
 
-#[cfg(feature = "boot_tests")]
+#[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
+struct BootTestPidCountsGuard;
+
+#[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
+impl Drop for BootTestPidCountsGuard {
+    fn drop(&mut self) {
+        BOOT_TEST_PID_COUNTS_ACTIVE.store(0, Ordering::Release);
+    }
+}
+
+#[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
 enum BootTestPidCountKind {
     Defer,
     Reclaim,
 }
 
-#[cfg(feature = "boot_tests")]
+#[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
 #[inline(always)]
 fn record_boot_test_pid_count(pid: u64, kind: BootTestPidCountKind) {
     if BOOT_TEST_PID_COUNTS_ACTIVE.load(Ordering::Acquire) == 0 || pid == 0 {
@@ -238,7 +248,7 @@ fn record_boot_test_pid_count(pid: u64, kind: BootTestPidCountKind) {
 }
 
 #[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
-fn reset_boot_test_pid_counts() {
+fn reset_boot_test_pid_counts() -> BootTestPidCountsGuard {
     BOOT_TEST_PID_COUNTS_ACTIVE.store(0, Ordering::Release);
     for slot in &BOOT_TEST_PID_COUNTS {
         slot.pid.store(0, Ordering::Relaxed);
@@ -246,6 +256,7 @@ fn reset_boot_test_pid_counts() {
         slot.reclaim_count.store(0, Ordering::Relaxed);
     }
     BOOT_TEST_PID_COUNTS_ACTIVE.store(1, Ordering::Release);
+    BootTestPidCountsGuard
 }
 
 #[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
@@ -300,7 +311,7 @@ fn boot_test_pid_counts_complete(pids: &[u64]) -> bool {
 pub fn record_defer(pid: u64) {
     crate::trace_count!(TEARDOWN_DEFER);
     crate::trace_event!(TEARDOWN_PROVIDER, TEARDOWN_DEFER_EVENT, pid as u32);
-    #[cfg(feature = "boot_tests")]
+    #[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
     record_boot_test_pid_count(pid, BootTestPidCountKind::Defer);
 }
 
@@ -308,7 +319,7 @@ pub fn record_defer(pid: u64) {
 pub fn record_reclaim(pid: u64) {
     crate::trace_count!(TEARDOWN_RECLAIM);
     crate::trace_event!(TEARDOWN_PROVIDER, TEARDOWN_RECLAIM_EVENT, pid as u32);
-    #[cfg(feature = "boot_tests")]
+    #[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
     record_boot_test_pid_count(pid, BootTestPidCountKind::Reclaim);
 }
 
@@ -479,7 +490,7 @@ pub fn fork_exit_defer_reclaim_pairing_test() -> crate::test_framework::registry
 
     let mut pairing_child_pids = [0u64; 64];
     let mut pairing_child_count = 0;
-    reset_boot_test_pid_counts();
+    let pid_counts_guard = reset_boot_test_pid_counts();
     for _ in 0..64 {
         let child_page_table = match crate::memory::process_memory::ProcessPageTable::new() {
             Ok(page_table) => alloc::boxed::Box::new(page_table),
@@ -608,7 +619,6 @@ pub fn fork_exit_defer_reclaim_pairing_test() -> crate::test_framework::registry
             );
         }
     }
-    BOOT_TEST_PID_COUNTS_ACTIVE.store(0, Ordering::Release);
     if TEARDOWN_MASKED_FRAMES_WALKED
         .aggregate()
         .saturating_sub(masked_frames_walked_before)
@@ -652,5 +662,6 @@ pub fn fork_exit_defer_reclaim_pairing_test() -> crate::test_framework::registry
         manager.remove_process(parent_pid);
     }
 
+    core::mem::drop(pid_counts_guard);
     TestResult::Pass
 }
