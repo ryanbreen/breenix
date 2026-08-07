@@ -182,7 +182,7 @@ const EXIT_PROCESS_BY_PID_CALLS: &[(&str, usize)] = &[
     ("kernel/src/process/mod.rs", 333),
 ];
 const EXIT_PROCESS_FOR_TEARDOWN_TEST_CALLS: &[(&str, usize)] =
-    &[("kernel/src/tracing/providers/teardown.rs", 517)];
+    &[("kernel/src/tracing/providers/teardown.rs", 528)];
 const BLOCKING_PRIMITIVES: &[(&str, usize)] = &[
     ("kernel/src/task/scheduler.rs", 1740),
     ("kernel/src/task/scheduler.rs", 1911),
