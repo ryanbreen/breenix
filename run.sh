@@ -1053,8 +1053,7 @@ if [ "$ARCH" = "arm64" ]; then
     # by scanning MMIO addresses low-to-high, so the LAST device here gets the
     # lowest address and becomes device 0 (the system/root disk).
     qemu-system-aarch64 \
-        -M virt -cpu cortex-a72 \
-        -smp 4 \
+        -M virt,gic-version=3 -cpu max -smp 4 \
         -m 512M \
         -kernel "$KERNEL" \
         $DISPLAY_OPTS \
