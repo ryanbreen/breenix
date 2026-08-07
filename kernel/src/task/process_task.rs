@@ -201,8 +201,6 @@ static ROW_REMOVAL_EPOCH: AtomicU64 = AtomicU64::new(0);
 #[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
 static BOOT_RECLAIM_TEST_OWNER: AtomicU64 = AtomicU64::new(0);
 #[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
-static BOOT_RECLAIM_ACTIVE_DRAINS: AtomicU64 = AtomicU64::new(0);
-#[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
 static BOOT_RECLAIM_FORCED_PID: AtomicU64 = AtomicU64::new(0);
 #[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
 static BOOT_RECLAIM_FORCED_BLOCKER: AtomicU64 = AtomicU64::new(0);
@@ -790,25 +788,6 @@ fn boot_forces_blocker(pid: u64, blocker: RootBlocker, allow_boot_injection: boo
     }
 }
 
-#[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
-struct BootReclaimInvocationGuard;
-
-#[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
-impl BootReclaimInvocationGuard {
-    fn enter() -> (Self, bool) {
-        BOOT_RECLAIM_ACTIVE_DRAINS.fetch_add(1, Ordering::AcqRel);
-        let allowed = BOOT_RECLAIM_TEST_OWNER.load(Ordering::Acquire) == 0;
-        (Self, allowed)
-    }
-}
-
-#[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
-impl Drop for BootReclaimInvocationGuard {
-    fn drop(&mut self) {
-        BOOT_RECLAIM_ACTIVE_DRAINS.fetch_sub(1, Ordering::AcqRel);
-    }
-}
-
 #[cfg(target_arch = "aarch64")]
 fn boot_after_step_two(fence: &scheduler::RetirementFence) {
     #[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
@@ -824,32 +803,38 @@ fn boot_after_step_two(fence: &scheduler::RetirementFence) {
 }
 
 #[cfg(target_arch = "aarch64")]
-fn boot_begin_reclaim_pass() {
+fn boot_begin_reclaim_pass(boot_test_owned: bool) {
     #[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
-    if BOOT_RECLAIM_TEST_OWNER.load(Ordering::Acquire) != 0 {
+    if boot_test_owned {
         let queue_len = crate::arch_without_interrupts(|| PENDING_PROCESS_RECLAIMS.lock().len());
         BOOT_RECLAIM_PASS_START.store(queue_len as u64, Ordering::Relaxed);
         BOOT_RECLAIM_PASS_SELECTIONS.store(0, Ordering::Relaxed);
     }
+    #[cfg(not(all(feature = "boot_tests", target_arch = "aarch64")))]
+    let _ = boot_test_owned;
 }
 
 #[cfg(target_arch = "aarch64")]
-fn boot_note_reclaim_selection() {
+fn boot_note_reclaim_selection(boot_test_owned: bool) {
     #[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
-    if BOOT_RECLAIM_TEST_OWNER.load(Ordering::Acquire) != 0 {
+    if boot_test_owned {
         BOOT_RECLAIM_PASS_SELECTIONS.fetch_add(1, Ordering::Relaxed);
     }
+    #[cfg(not(all(feature = "boot_tests", target_arch = "aarch64")))]
+    let _ = boot_test_owned;
 }
 
 #[cfg(target_arch = "aarch64")]
-fn boot_finish_reclaim_pass() {
+fn boot_finish_reclaim_pass(boot_test_owned: bool) {
     #[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
-    if BOOT_RECLAIM_TEST_OWNER.load(Ordering::Acquire) != 0 {
+    if boot_test_owned {
         debug_assert!(
             BOOT_RECLAIM_PASS_SELECTIONS.load(Ordering::Relaxed)
                 <= BOOT_RECLAIM_PASS_START.load(Ordering::Relaxed)
         );
     }
+    #[cfg(not(all(feature = "boot_tests", target_arch = "aarch64")))]
+    let _ = boot_test_owned;
 }
 
 /// Reclaim process frames whose cross-CPU TTBR0 retention has quiesced.
@@ -869,21 +854,29 @@ pub fn reclaim_deferred_process_resources() {
         return;
     }
     #[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
-    let (_boot_invocation_guard, boot_reclaim_allowed) = BootReclaimInvocationGuard::enter();
-    #[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
-    if !boot_reclaim_allowed {
+    if BOOT_RECLAIM_TEST_OWNER.load(Ordering::Acquire) != 0 {
         return;
     }
 
-    reclaim_deferred_process_resources_for_pass(my_pass);
+    reclaim_deferred_process_resources_for_pass(my_pass, false);
 }
 
 #[cfg(target_arch = "aarch64")]
-fn reclaim_deferred_process_resources_for_pass(my_pass: u32) {
+fn reclaim_deferred_process_resources_for_pass(my_pass: u32, boot_test_owned: bool) {
+    #[cfg(not(all(feature = "boot_tests", target_arch = "aarch64")))]
+    let _ = boot_test_owned;
+    #[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
+    if !boot_test_owned && BOOT_RECLAIM_TEST_OWNER.load(Ordering::Acquire) != 0 {
+        return;
+    }
     unpark_sweep();
-    boot_begin_reclaim_pass();
+    boot_begin_reclaim_pass(boot_test_owned);
 
     loop {
+        #[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
+        if !boot_test_owned && BOOT_RECLAIM_TEST_OWNER.load(Ordering::Acquire) != 0 {
+            break;
+        }
         let reclaim = crate::arch_without_interrupts(|| {
             let mut pending = PENDING_PROCESS_RECLAIMS.lock();
             let _proof_scope =
@@ -907,7 +900,7 @@ fn reclaim_deferred_process_resources_for_pass(my_pass: u32) {
 
         match reclaim {
             Some(mut reclaim) => {
-                boot_note_reclaim_selection();
+                boot_note_reclaim_selection(boot_test_owned);
                 let snapshot = scheduler::RetirementSnapshot::capture();
                 let mut proof = reclaim.lock_free_root_proof(&snapshot, true);
                 boot_after_step_two(&reclaim.after_epoch);
@@ -944,7 +937,7 @@ fn reclaim_deferred_process_resources_for_pass(my_pass: u32) {
             None => break,
         }
     }
-    boot_finish_reclaim_pass();
+    boot_finish_reclaim_pass(boot_test_owned);
 }
 
 #[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
@@ -954,7 +947,7 @@ fn boot_reclaim_deferred_process_resources() {
             .fetch_add(1, Ordering::Relaxed)
             .wrapping_add(1),
     );
-    reclaim_deferred_process_resources_for_pass(my_pass);
+    reclaim_deferred_process_resources_for_pass(my_pass, true);
 }
 
 #[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
@@ -970,9 +963,6 @@ impl BootReclaimTestGuard {
         BOOT_RECLAIM_TEST_OWNER
             .compare_exchange(0, owner, Ordering::AcqRel, Ordering::Acquire)
             .map_err(|_| "another reclaim injection is active")?;
-        while BOOT_RECLAIM_ACTIVE_DRAINS.load(Ordering::Acquire) != 0 {
-            core::hint::spin_loop();
-        }
         let live_empty =
             crate::arch_without_interrupts(|| PENDING_PROCESS_RECLAIMS.lock().is_empty());
         let parked_empty =

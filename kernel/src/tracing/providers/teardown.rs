@@ -1191,8 +1191,14 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
     // still reach the SGI broadcast tail before A is released.
     const RESERVATION_PID_A: u64 = u64::MAX - 7;
     const RESERVATION_PID_B: u64 = RESERVATION_PID_A - EXIT_KICK_BUCKETS as u64;
+    const PUBLISHER_A_CPU: usize = 1;
+    const PUBLISHER_B_CPU: usize = 2;
     let reservation_bucket = RESERVATION_PID_A as usize % EXIT_KICK_BUCKETS;
     let reservation_slot = &EXIT_KICK_SLOTS[reservation_bucket];
+    let online_cpus = crate::arch_impl::aarch64::smp::cpus_online() as usize;
+    if PUBLISHER_A_CPU >= online_cpus || PUBLISHER_B_CPU >= online_cpus {
+        return TestResult::Fail("exit-kick reservation-loss publisher CPU is not online");
+    }
     let payload_before = (
         reservation_slot.pid.load(Ordering::Relaxed),
         reservation_slot.at.load(Ordering::Relaxed),
@@ -1206,7 +1212,7 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
     let hook = ExitKickTestHookGuard::arm(RESERVATION_PID_A);
 
     let a_done = Arc::clone(&publisher_a_done);
-    let publisher_a = match crate::task::kthread::kthread_run(
+    let publisher_a = match crate::task::kthread::kthread_run_on_cpu_for_test(
         move || {
             crate::task::scheduler::Scheduler::send_exit_expedite_sgi(
                 RESERVATION_PID_A,
@@ -1215,6 +1221,7 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
             a_done.store(1, Ordering::Release);
         },
         "exit_kick_reserve_a",
+        PUBLISHER_A_CPU,
     ) {
         Ok(handle) => handle,
         Err(_) => return TestResult::Fail("failed to spawn held exit-kick publisher A"),
@@ -1227,7 +1234,7 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
 
     let b_done = Arc::clone(&publisher_b_done);
     let b_cpu = Arc::clone(&publisher_b_cpu);
-    let publisher_b = match crate::task::kthread::kthread_run(
+    let publisher_b = match crate::task::kthread::kthread_run_on_cpu_for_test(
         move || {
             b_cpu.store(
                 crate::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id() as u64,
@@ -1240,6 +1247,7 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
             b_done.store(1, Ordering::Release);
         },
         "exit_kick_reserve_b",
+        PUBLISHER_B_CPU,
     ) {
         Ok(handle) => handle,
         Err(_) => {
@@ -1274,6 +1282,8 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
         || publisher_a_cpu == u64::MAX
         || publisher_b_cpu == u64::MAX
         || publisher_a_cpu == publisher_b_cpu
+        || publisher_a_cpu != PUBLISHER_A_CPU as u64
+        || publisher_b_cpu != PUBLISHER_B_CPU as u64
         || loser_payload != payload_before
         || !loser_accounting_exact
         || EXIT_KICK_PUBLISHED.aggregate() != published_before + 1
@@ -1475,22 +1485,14 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
     }
 
     // Keep the creating thread fixed while the test-only spawn primitive queues
-    // the three workers on the other three CPUs. This preserves a CPU on which
-    // the coordinator can release the start barrier. The RAII guard restores
-    // preemption on every error return.
+    // the three workers on scheduler-managed CPUs. CPU 0 runs the boot-test
+    // executor outside the scheduler and cannot service a pinned kthread. The
+    // RAII guard restores preemption on every error return.
     let spawn_guard = StormSpawnPreemptGuard::enter();
 
     let online_cpus = crate::arch_impl::aarch64::smp::cpus_online() as usize;
-    let coordinator_cpu = crate::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id() as usize;
-    let mut worker_cpus = [usize::MAX; 3];
-    let mut worker_count = 0;
-    for cpu in 0..online_cpus {
-        if cpu != coordinator_cpu && worker_count < worker_cpus.len() {
-            worker_cpus[worker_count] = cpu;
-            worker_count += 1;
-        }
-    }
-    if worker_count != worker_cpus.len() {
+    let worker_cpus = [1, 2, 3];
+    if worker_cpus.iter().any(|cpu| *cpu >= online_cpus) {
         return TestResult::Fail("exit-kick storm requires four online CPUs");
     }
 

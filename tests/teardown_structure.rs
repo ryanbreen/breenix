@@ -141,11 +141,11 @@ const TERMINATE_CALLS: &[(&str, usize)] = &[
     ("kernel/src/signal/delivery.rs", 225),
     ("kernel/src/signal/delivery.rs", 260),
 ];
-const TERMINATE_MINIMAL_CALLS: &[(&str, usize)] = &[("kernel/src/task/process_task.rs", 498)];
+const TERMINATE_MINIMAL_CALLS: &[(&str, usize)] = &[("kernel/src/task/process_task.rs", 496)];
 const PRODUCTION_INIT_PID_SITES: &[(&str, usize)] = &[
     ("kernel/src/process/manager.rs", 1187),
-    ("kernel/src/task/process_task.rs", 460),
-    ("kernel/src/task/process_task.rs", 530),
+    ("kernel/src/task/process_task.rs", 458),
+    ("kernel/src/task/process_task.rs", 528),
 ];
 const TEST_INIT_PID_SITES: &[(&str, usize)] = &[
     ("kernel/src/test_userspace.rs", 84),
@@ -167,7 +167,7 @@ const KERNEL_STACK_MUTATIONS: &[(&str, usize)] = &[
 const RECLAIM_ENQUEUE_CALLS: &[(&str, usize)] = &[
     ("kernel/src/process/mod.rs", 53),
     ("kernel/src/process/mod.rs", 280),
-    ("kernel/src/task/process_task.rs", 572),
+    ("kernel/src/task/process_task.rs", 570),
 ];
 const EXIT_PROCESS_AND_RETIRE_CALLS: &[(&str, usize)] = &[
     ("kernel/src/arch_impl/aarch64/exception.rs", 824),
@@ -187,19 +187,19 @@ const EXIT_PROCESS_BY_PID_CALLS: &[(&str, usize)] = &[
 const EXIT_PROCESS_FOR_TEARDOWN_TEST_CALLS: &[(&str, usize)] =
     &[("kernel/src/tracing/providers/teardown.rs", 936)];
 const BLOCKING_PRIMITIVES: &[(&str, usize)] = &[
-    ("kernel/src/task/scheduler.rs", 1912),
-    ("kernel/src/task/scheduler.rs", 2126),
-    ("kernel/src/task/scheduler.rs", 2145),
-    ("kernel/src/task/scheduler.rs", 2294),
-    ("kernel/src/task/scheduler.rs", 2382),
-    ("kernel/src/task/scheduler.rs", 2447),
-    ("kernel/src/task/scheduler.rs", 2456),
-    ("kernel/src/task/scheduler.rs", 2615),
+    ("kernel/src/task/scheduler.rs", 1971),
+    ("kernel/src/task/scheduler.rs", 2185),
+    ("kernel/src/task/scheduler.rs", 2204),
+    ("kernel/src/task/scheduler.rs", 2353),
+    ("kernel/src/task/scheduler.rs", 2441),
+    ("kernel/src/task/scheduler.rs", 2506),
+    ("kernel/src/task/scheduler.rs", 2515),
+    ("kernel/src/task/scheduler.rs", 2674),
     ("kernel/src/task/waitqueue.rs", 52),
 ];
 const RAW_SCHEDULER_LOCK_SITES: &[(&str, usize)] = &[
-    ("kernel/src/task/scheduler.rs", 277),
-    ("kernel/src/task/scheduler.rs", 284),
+    ("kernel/src/task/scheduler.rs", 281),
+    ("kernel/src/task/scheduler.rs", 288),
 ];
 
 const BLOCKING_NAMES: &[&str] = &[
@@ -358,7 +358,7 @@ fn v3_structural_closures_are_exact() {
     );
     assert_exact(
         sites_matching(&sources, |line| line.contains("btrt::on_process_exit(")),
-        &[("kernel/src/task/process_task.rs", 599)],
+        &[("kernel/src/task/process_task.rs", 597)],
         "btrt::on_process_exit callers",
     );
 

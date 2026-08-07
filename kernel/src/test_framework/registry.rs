@@ -1278,6 +1278,23 @@ fn test_timer_delay() -> TestResult {
     {
         use crate::arch_impl::aarch64::timer;
 
+        struct TimerDelayPreemptGuard;
+
+        impl TimerDelayPreemptGuard {
+            fn enter() -> Self {
+                crate::per_cpu_aarch64::preempt_disable();
+                Self
+            }
+        }
+
+        impl Drop for TimerDelayPreemptGuard {
+            fn drop(&mut self) {
+                crate::per_cpu_aarch64::preempt_enable();
+            }
+        }
+
+        let _preempt_guard = TimerDelayPreemptGuard::enter();
+
         // Get frequency for nanosecond calculations
         let freq = timer::frequency_hz();
         if freq == 0 {
