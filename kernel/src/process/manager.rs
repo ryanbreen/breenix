@@ -1100,7 +1100,9 @@ impl ProcessManager {
     /// Remove a terminated process from the process table (reap).
     /// Called after waitpid() has collected the exit status.
     pub fn remove_process(&mut self, pid: ProcessId) {
-        self.processes.remove(&pid);
+        if self.processes.remove(&pid).is_some() {
+            crate::task::process_task::note_process_row_removed();
+        }
     }
 
     /// Get a reference to a process
@@ -3911,5 +3913,17 @@ impl ProcessManager {
             self.write_byte_to_stack(page_table, virt_addr + i as u64, *byte)?;
         }
         Ok(())
+    }
+
+    /// Return whether a live or creating process row still names a matching
+    /// userspace translation-table root.
+    #[cfg(target_arch = "aarch64")]
+    pub(crate) fn any_live_root_matches<F>(&self, mut root_matches: F) -> bool
+    where
+        F: FnMut(u64) -> bool,
+    {
+        self.processes.values().any(|process| {
+            !process.is_terminated() && process.cr3_value().is_some_and(&mut root_matches)
+        })
     }
 }
