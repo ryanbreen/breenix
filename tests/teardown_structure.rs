@@ -186,7 +186,7 @@ fn validate_exit_kick_wait_watchdogs(
         "budget_ms={}",
         "condition_name",
         "WaitFailureKind::CounterStall",
-        "\"exit_kick_gate: CNTVCT counter not advancing; iteration cap exhausted, cannot bound wait\";",
+        "\"exit_kick_gate: CNTVCT counter not advancing; iteration cap exhausted, cannot bound wait; CPU may be unresponsive or counter frozen\";",
         "WaitFailureKind::CounterStall => TestResult::Fail(COUNTER_STALL_MESSAGE)",
         "whole-gate deadline expired while current wait remained unresponsive",
         "late_true={}",
@@ -204,12 +204,15 @@ fn validate_exit_kick_wait_watchdogs(
         (".max(1)", 4),
         ("WaitSite {", 9),
         ("Some(WaitFailureKind::WholeGateDeadline)", 1),
+        ("crate::task::kthread::kthread_join(", 7),
+        (
+            ".expect(\"kthread_join returned Err despite its infallible contract\")",
+            7,
+        ),
     ] {
         require_count("exit_kick_protocol_gate_test", gate, needle, expected)?;
     }
-    if gate.matches("if cond() {").count() < 2 {
-        return Err("exit_kick_protocol_gate_test lost its final condition re-check".into());
-    }
+    require_count("exit_kick_protocol_gate_test", gate, "if cond() {", 3)?;
 
     let spin = function_body(provider, "spin_with_resched");
     require_count(
@@ -245,6 +248,7 @@ fn validate_exit_kick_wait_watchdogs(
         "const PSCI_CPU_ON_RETRY_BACKOFF_MICROSECONDS: u64 = 500;",
         "fn psci_cpu_on_result_is_retryable(ret: i64) -> bool",
         "fn psci_cpu_on_result_is_success(ret: i64) -> bool",
+        "0 | PSCI_RETURN_ALREADY_ON | PSCI_RETURN_ON_PENDING",
         "psci_cpu_on_result_is_retryable(hvc64_ret)",
         "psci_cpu_on_result_is_retryable(ret)",
         "hvc64_ret == PSCI_RETURN_ON_PENDING || ret == PSCI_RETURN_ON_PENDING",
@@ -807,4 +811,11 @@ fn deliberately_broken_variants_fail_the_ratchet() {
     );
     validate_exit_kick_wait_watchdogs(&preemptive_iteration_cap, main_aarch64, smp)
         .expect_err("preemptive iteration cap passed the exit-kick watchdog ratchet");
+    let discarded_join_result = provider.replacen(
+        ".expect(\"kthread_join returned Err despite its infallible contract\")",
+        ";",
+        1,
+    );
+    validate_exit_kick_wait_watchdogs(&discarded_join_result, main_aarch64, smp)
+        .expect_err("discarded kthread_join result passed the exit-kick watchdog ratchet");
 }

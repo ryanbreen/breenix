@@ -247,7 +247,7 @@ fn psci_cpu_on_result_is_retryable(ret: i64) -> bool {
 }
 
 fn psci_cpu_on_result_is_success(ret: i64) -> bool {
-    matches!(ret, 0 | PSCI_RETURN_ALREADY_ON)
+    matches!(ret, 0 | PSCI_RETURN_ALREADY_ON | PSCI_RETURN_ON_PENDING)
 }
 
 /// PSCI CPU_ON with 64-bit function ID via SMC (EL3 firmware conduit).
@@ -271,8 +271,8 @@ fn psci_cpu_on_smc(target_cpu: u64, entry_point: u64, context_id: u64) -> i64 {
 /// The CPU will start executing at `secondary_cpu_entry` in boot.S,
 /// which sets up the stack and MMU, then calls `secondary_cpu_entry_rust(cpu_id)`.
 ///
-/// Returns the PSCI result: 0 = success, negative = error
-/// (-2 = INVALID_PARAMS, -9 = NOT_PRESENT, etc.)
+/// Returns 0 for PSCI success, ALREADY_ON, or ON_PENDING. Other negative PSCI
+/// results are returned, using the final HVC32 status when fallback was tried.
 pub fn release_cpu(cpu_id: usize) -> i64 {
     if cpu_id == 0 || cpu_id >= MAX_CPUS {
         return PSCI_RETURN_INVALID_PARAMS;

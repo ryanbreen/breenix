@@ -1126,7 +1126,7 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
     const FIRST_RESCHED_REKICK_GRACE_MILLISECONDS: u64 = 100;
     const RESCHED_REKICK_INTERVAL_MILLISECONDS: u64 = 5;
     const COUNTER_STALL_MESSAGE: &str =
-        "exit_kick_gate: CNTVCT counter not advancing; iteration cap exhausted, cannot bound wait";
+        "exit_kick_gate: CNTVCT counter not advancing; iteration cap exhausted, cannot bound wait; CPU may be unresponsive or counter frozen";
     // Keep this fallback identical to the one in main_aarch64.rs. If firmware
     // reports zero, a high assumed frequency prevents a normally faster-than-
     // assumed counter from shrinking the intended wall-clock timeout.
@@ -1198,14 +1198,14 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
     // Every wait receives its own three-second CNTVCT deadline, a modest margin
     // increase that remains below the five-second soft-lockup threshold for a
     // genuinely dead worker. A separate 15-second deadline is checked whenever
-    // the coordinator is inside a wait; it caps accumulated wait time, not the
-    // non-wait setup and accounting work. CPU 0's loop count can race ahead while
-    // a live target vCPU is deprived of host time, so it has no timeout role: the
-    // iteration threshold is actionable only when CNTVCT has advanced by zero
-    // ticks since the wait began. After the initial grace period, every wait
-    // periodically re-sends the existing per-CPU resched SGI while it remains in
-    // budget. That is expected for long storm joins as well as short handshakes,
-    // and does not touch EXIT_KICK accounting.
+    // the coordinator is inside a wait; it caps total wall-clock elapsed since
+    // gate_start, including non-wait setup and accounting work. CPU 0's loop
+    // count can race ahead while a live target vCPU is deprived of host time, so
+    // it has no timeout role: the iteration threshold is actionable only when
+    // CNTVCT has advanced by zero ticks since the wait began. After the initial
+    // grace period, every wait periodically re-sends the existing per-CPU
+    // resched SGI while it remains in budget. That is expected for long storm
+    // joins as well as short handshakes, and does not touch EXIT_KICK accounting.
     fn spin_with_resched<F: Fn() -> bool>(
         cond: F,
         kick_cpus: &[usize],
@@ -1291,9 +1291,12 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
             kick_cpus,
             watchdog,
         )?;
-        // The probe and join read the same monotonic SeqCst `exited` flag, so
-        // once the bounded probe succeeds, this join returns immediately.
-        let _ = crate::task::kthread::kthread_join(handle);
+        // The probe and join read the same monotonic SeqCst `exited` flag. The
+        // bounded probe observed it, and `kthread_join` currently has no `Err`
+        // path (`kernel/src/task/kthread.rs:232-248`). Assert the result so a
+        // future fallible contract cannot silently weaken this gate.
+        crate::task::kthread::kthread_join(handle)
+            .expect("kthread_join returned Err despite its infallible contract");
         Ok(())
     }
 
@@ -1557,7 +1560,11 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
         Ok(handle) => handle,
         Err(_) => {
             hook.release();
-            let _ = crate::task::kthread::kthread_join(&publisher_a);
+            // `kthread_join` currently has no `Err` path
+            // (`kernel/src/task/kthread.rs:232-248`). Assert this cleanup result
+            // so a future fallible contract cannot be silently swallowed.
+            crate::task::kthread::kthread_join(&publisher_a)
+                .expect("kthread_join returned Err despite its infallible contract");
             return TestResult::Fail("failed to spawn colliding exit-kick publisher B");
         }
     };
@@ -1605,7 +1612,11 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
         let condition_value =
             crate::task::kthread::kthread_has_exited_for_test(&publisher_b) as u64;
         if condition_value != 0 {
-            let _ = crate::task::kthread::kthread_join(&publisher_b);
+            // The late-success probe observed `exited`, and `kthread_join`
+            // currently has no `Err` path (`kernel/src/task/kthread.rs:232-248`).
+            // Assert the result so a future fallible contract cannot be ignored.
+            crate::task::kthread::kthread_join(&publisher_b)
+                .expect("kthread_join returned Err despite its infallible contract");
             report_late_wait_success(
                 &failure,
                 "publisher_b_join",
@@ -1628,7 +1639,11 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
         let condition_value =
             crate::task::kthread::kthread_has_exited_for_test(&publisher_a) as u64;
         if condition_value != 0 {
-            let _ = crate::task::kthread::kthread_join(&publisher_a);
+            // The late-success probe observed `exited`, and `kthread_join`
+            // currently has no `Err` path (`kernel/src/task/kthread.rs:232-248`).
+            // Assert the result so a future fallible contract cannot be ignored.
+            crate::task::kthread::kthread_join(&publisher_a)
+                .expect("kthread_join returned Err despite its infallible contract");
             report_late_wait_success(
                 &failure,
                 "publisher_a_join",
@@ -1967,7 +1982,11 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
         let condition_value =
             crate::task::kthread::kthread_has_exited_for_test(&publisher_a) as u64;
         if condition_value != 0 {
-            let _ = crate::task::kthread::kthread_join(&publisher_a);
+            // The late-success probe observed `exited`, and `kthread_join`
+            // currently has no `Err` path (`kernel/src/task/kthread.rs:232-248`).
+            // Assert the result so a future fallible contract cannot be ignored.
+            crate::task::kthread::kthread_join(&publisher_a)
+                .expect("kthread_join returned Err despite its infallible contract");
             report_late_wait_success(
                 &failure,
                 "storm_publisher_a_join",
@@ -1991,7 +2010,11 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
         let condition_value =
             crate::task::kthread::kthread_has_exited_for_test(&publisher_b) as u64;
         if condition_value != 0 {
-            let _ = crate::task::kthread::kthread_join(&publisher_b);
+            // The late-success probe observed `exited`, and `kthread_join`
+            // currently has no `Err` path (`kernel/src/task/kthread.rs:232-248`).
+            // Assert the result so a future fallible contract cannot be ignored.
+            crate::task::kthread::kthread_join(&publisher_b)
+                .expect("kthread_join returned Err despite its infallible contract");
             report_late_wait_success(
                 &failure,
                 "storm_publisher_b_join",
@@ -2014,7 +2037,11 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
     if let Err(failure) = join_with_resched(&observer, &worker_cpus, &gate_watchdog) {
         let condition_value = crate::task::kthread::kthread_has_exited_for_test(&observer) as u64;
         if condition_value != 0 {
-            let _ = crate::task::kthread::kthread_join(&observer);
+            // The late-success probe observed `exited`, and `kthread_join`
+            // currently has no `Err` path (`kernel/src/task/kthread.rs:232-248`).
+            // Assert the result so a future fallible contract cannot be ignored.
+            crate::task::kthread::kthread_join(&observer)
+                .expect("kthread_join returned Err despite its infallible contract");
             report_late_wait_success(
                 &failure,
                 "storm_observer_join",
