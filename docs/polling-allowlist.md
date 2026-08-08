@@ -53,11 +53,11 @@ This document formalizes the **Linux-rigor polling-elimination gate** for cases 
 
 ## P17: SMP secondary CPU online wait
 
-- **File:** `kernel/src/main_aarch64.rs:967-1002` (boot-time SMP bring-up wait after PSCI CPU_ON)
+- **File:** `kernel/src/main_aarch64.rs:970-1019` (boot-time SMP bring-up wait after PSCI CPU_ON)
 - **Loop:** `while kernel::arch_impl::aarch64::smp::cpus_online() < expected { ... core::hint::spin_loop(); }` with explicit timeout check.
 - **Justification:** Boot CPU waits for secondary CPUs to come online after issuing PSCI CPU_ON requests. The secondary CPUs increment `cpus_online` once they reach their entry point. Bounded CPU-management handshake (NOT event polling) — there is no IRQ available for "CPU now online" because the GIC distributor isn't fully wired across CPUs until each is up.
 - **Linux precedent:** `kernel/smp.c::__cpu_up()` uses `wait_for_completion_timeout()` for the equivalent transition — scheduler-backed wait that blocks until the secondary CPU sets its online state. Linux's wait is functionally a bounded busy-equivalent (scheduler may park the boot CPU, but the wait itself is on a completion that the secondary CPU triggers). Breenix's busy-spin is appropriate here because the scheduler is partially up at this stage and a CPU-management wait on this specific path doesn't benefit from yielding.
-- **Bounded:** Explicit CNTVCT timeout check inside the loop exits with a `[smp] Timeout waiting for CPUs ...` message after 45 seconds. The 14-host-hog proof exhausted the prior 10-second budget; 45 seconds is 4.5x that observation, and the 45-second SMP wait plus the shared 10-second exit-kick watchdog leave 35 seconds in the harness's 90-second Phase 1 window.
+- **Bounded:** Explicit CNTVCT timeout check inside the loop exits with a `[smp] Timeout waiting for CPUs ...` message after six seconds, with an online-count progress line at most once per second. Six seconds is conservative headroom for the previously unreproduced bring-up starvation case while leaving time for an actionable guest-side verdict inside the tightest 20-second boot harness; the recorded 14-host-hog failure itself completed SMP bring-up under the old 100-millisecond bound and failed later in the exit-kick gate.
 - **Frequency:** Once at boot, after PSCI CPU_ON broadcast.
 - **Status:** ALLOWLISTED — not subject to polling-elimination conversion.
 

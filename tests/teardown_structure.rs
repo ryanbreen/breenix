@@ -135,6 +135,81 @@ fn function_body<'a>(source: &'a str, name: &str) -> &'a str {
     panic!("unterminated function {name}")
 }
 
+fn validate_exit_kick_wait_watchdogs(
+    provider: &str,
+    main_aarch64: &str,
+    smp: &str,
+) -> Result<(), ()> {
+    let gate = function_body(provider, "exit_kick_protocol_gate_test");
+    for required in [
+        "const PER_WAIT_BUDGET_MILLISECONDS: u64 = 3_000;",
+        "const WHOLE_GATE_BUDGET_MILLISECONDS: u64 = 15_000;",
+        "const HANDSHAKE_ITERATION_CAP: u64 = 1 << 32;",
+        "const FIRST_RESCHED_REKICK_GRACE_MILLISECONDS: u64 = 100;",
+        "const RESCHED_REKICK_INTERVAL_MILLISECONDS: u64 = 5;",
+        "const CNTVCT_FALLBACK_FREQUENCY_HZ: u64 = 1_000_000;",
+        "let wait_elapsed = now.wrapping_sub(wait_start);",
+        "let gate_elapsed = now.wrapping_sub(watchdog.gate_start);",
+        "wait_elapsed >= watchdog.per_wait_timeout_ticks",
+        "gate_elapsed >= watchdog.gate_timeout_ticks",
+        "now.wrapping_sub(last_kick) >= watchdog.rekick_interval_ticks",
+        "rekick_sgis",
+        "crate::arch_impl::aarch64::smp::cpus_online()",
+        "elapsed_ms={}",
+        "budget_ms={}",
+        "condition_name",
+        "WaitFailureKind::IterationCap",
+        "exit_kick_gate: whole-gate wall-clock cap exhausted",
+    ] {
+        if !gate.contains(required) {
+            return Err(());
+        }
+    }
+    if gate.matches("&gate_watchdog").count() != 8
+        || gate.matches("return wait_failure_result(").count() != 8
+        || gate.matches("iteration cap exhausted").count() != 8
+        || gate.matches("if cond() {").count() < 2
+        || gate.matches("&worker_cpus, &gate_watchdog").count() != 3
+        || gate.matches(".max(1)").count() != 4
+    {
+        return Err(());
+    }
+
+    let join = function_body(provider, "join_with_resched");
+    if !join.contains("kick_cpus: &[usize]")
+        || !join.contains("spin_with_resched(")
+        || !join.contains("kick_cpus,")
+        || !join.contains("watchdog,")
+    {
+        return Err(());
+    }
+
+    for required in [
+        "const SMP_ONLINE_TIMEOUT_SECONDS: u64 = 6;",
+        "const SMP_ONLINE_PROGRESS_INTERVAL_SECONDS: u64 = 1;",
+        "const CNTVCT_FALLBACK_FREQUENCY_HZ: u64 = 1_000_000;",
+        "[smp] still waiting, {} online",
+        "reported_frequency_hz == 0",
+    ] {
+        if !main_aarch64.contains(required) {
+            return Err(());
+        }
+    }
+
+    for required in [
+        "const PSCI_CPU_ON_MAX_ATTEMPTS: usize = 4;",
+        "const PSCI_CPU_ON_RETRY_BACKOFF_MICROSECONDS: u64 = 500;",
+        "static LAST_PSCI_RETURN_CODE:",
+        "pub fn last_psci_return_code(cpu_id: usize) -> Option<i64>",
+    ] {
+        if !smp.contains(required) {
+            return Err(());
+        }
+    }
+
+    Ok(())
+}
+
 const TERMINATE_CALLS: &[(&str, usize)] = &[
     ("kernel/src/interrupts/context_switch.rs", 1017),
     ("kernel/src/process/manager.rs", 1170),
@@ -595,24 +670,11 @@ fn all_phase_zero_counters_have_registered_readers_and_honest_runtime_gates() {
 }
 
 #[test]
-fn exit_kick_waits_share_one_deadline_and_delay_rekicks() {
+fn exit_kick_waits_have_independent_deadlines_and_bounded_rekicks() {
     let provider = repo_text("kernel/src/tracing/providers/teardown.rs");
-    let gate = function_body(&provider, "exit_kick_protocol_gate_test");
-
-    assert!(gate.contains("const HANDSHAKE_BUDGET_SECONDS: u64 = 10;"));
-    assert!(gate.contains("const FIRST_RESCHED_REKICK_GRACE_MILLISECONDS: u64 = 100;"));
-    assert!(gate.contains("const CNTVCT_FALLBACK_FREQUENCY_HZ: u64 = 1_000_000_000;"));
-    assert!(gate.contains("let gate_watchdog = HandshakeWatchdog"));
-    assert_eq!(gate.matches("&gate_watchdog").count(), 8);
-    assert!(gate.contains("reported_frequency_hz == 0"));
-    assert!(gate.contains("now.wrapping_sub(watchdog.start) >= watchdog.timeout_ticks"));
-    assert!(gate.contains("now.wrapping_sub(wait_start) >= watchdog.first_rekick_grace_ticks"));
-    assert!(gate.contains("now.wrapping_sub(last_kick) >= watchdog.rekick_interval_ticks"));
-
     let main_aarch64 = repo_text("kernel/src/main_aarch64.rs");
-    assert!(main_aarch64.contains("const SMP_ONLINE_TIMEOUT_SECONDS: u64 = 45;"));
-    assert!(main_aarch64.contains("const CNTVCT_FALLBACK_FREQUENCY_HZ: u64 = 1_000_000_000;"));
-    assert!(main_aarch64.contains("reported_frequency_hz == 0"));
+    let smp = repo_text("kernel/src/arch_impl/aarch64/smp.rs");
+    assert!(validate_exit_kick_wait_watchdogs(&provider, &main_aarch64, &smp).is_ok());
 }
 
 #[test]
@@ -670,4 +732,20 @@ fn deliberately_broken_variants_fail_the_ratchet() {
     let broken_sgi =
         with_replaced_source(&sources, "kernel/src/task/scheduler.rs", broken_scheduler);
     assert!(validate_exit_sgi_is_teardown_only(&broken_sgi).is_err());
+
+    let provider = source(&sources, "kernel/src/tracing/providers/teardown.rs");
+    let main_aarch64 = source(&sources, "kernel/src/main_aarch64.rs");
+    let smp = source(&sources, "kernel/src/arch_impl/aarch64/smp.rs");
+    let unthrottled_rekick = provider.replacen(
+        "const RESCHED_REKICK_INTERVAL_MILLISECONDS: u64 = 5;",
+        "const RESCHED_REKICK_INTERVAL_MILLISECONDS: u64 = 0;",
+        1,
+    );
+    assert!(validate_exit_kick_wait_watchdogs(&unthrottled_rekick, main_aarch64, smp).is_err());
+    let uncoupled_storm_join = provider.replacen(
+        "&worker_cpus, &gate_watchdog",
+        "&[worker_cpus[0]], &gate_watchdog",
+        1,
+    );
+    assert!(validate_exit_kick_wait_watchdogs(&uncoupled_storm_join, main_aarch64, smp).is_err());
 }
