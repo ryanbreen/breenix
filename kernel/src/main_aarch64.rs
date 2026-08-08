@@ -967,7 +967,15 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
             // Wait for all launched CPUs to come online (with timeout)
             let expected = 1 + launched; // boot CPU + launched
             let start = timer::rdtsc();
-            let timeout_ticks = timer::frequency_hz() / 10; // 100ms timeout
+            let reported_frequency_hz = timer::frequency_hz();
+            let counter_frequency_hz = if reported_frequency_hz == 0 {
+                kernel::arch_impl::aarch64::smp::CNTVCT_FALLBACK_FREQUENCY_HZ
+            } else {
+                reported_frequency_hz
+            };
+            let timeout_ticks = counter_frequency_hz.saturating_mul(6);
+            let progress_ticks = counter_frequency_hz;
+            let mut last_progress = start;
             // SMP secondary CPU bring-up wait: boot CPU spins until all
             // released secondary CPUs increment cpus_online. Bounded CPU-
             // management handshake (NOT event polling) — no IRQ available
@@ -977,13 +985,30 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
             // explicit timeout check inside the loop. Allowlisted per
             // docs/polling-allowlist.md.
             while kernel::arch_impl::aarch64::smp::cpus_online() < expected {
-                if timer::rdtsc() - start > timeout_ticks {
+                let now = timer::rdtsc();
+                if now.wrapping_sub(start) >= timeout_ticks {
                     serial_println!(
-                        "[smp] Timeout waiting for CPUs ({}  online, {} expected)",
+                        "[smp] Timeout waiting for CPUs ({} online, {} expected)",
                         kernel::arch_impl::aarch64::smp::cpus_online(),
                         expected
                     );
+                    for cpu in 1..expected as usize {
+                        if !kernel::arch_impl::aarch64::smp::is_cpu_online(cpu) {
+                            serial_println!(
+                                "[smp] CPU {} still offline, last PSCI return code {}",
+                                cpu,
+                                kernel::arch_impl::aarch64::smp::last_psci_return_code(cpu)
+                            );
+                        }
+                    }
                     break;
+                }
+                if now.wrapping_sub(last_progress) >= progress_ticks {
+                    serial_println!(
+                        "[smp] still waiting, {} online",
+                        kernel::arch_impl::aarch64::smp::cpus_online()
+                    );
+                    last_progress = now;
                 }
                 core::hint::spin_loop();
             }

@@ -53,13 +53,33 @@ This document formalizes the **Linux-rigor polling-elimination gate** for cases 
 
 ## P17: SMP secondary CPU online wait
 
-- **File:** `kernel/src/main_aarch64.rs:967-976` (boot-time SMP bring-up wait after PSCI CPU_ON)
+- **File:** `kernel/src/main_aarch64.rs` (boot-time SMP bring-up wait after PSCI CPU_ON)
 - **Loop:** `while kernel::arch_impl::aarch64::smp::cpus_online() < expected { ... core::hint::spin_loop(); }` with explicit timeout check.
 - **Justification:** Boot CPU waits for secondary CPUs to come online after issuing PSCI CPU_ON requests. The secondary CPUs increment `cpus_online` once they reach their entry point. Bounded CPU-management handshake (NOT event polling) — there is no IRQ available for "CPU now online" because the GIC distributor isn't fully wired across CPUs until each is up.
 - **Linux precedent:** `kernel/smp.c::__cpu_up()` uses `wait_for_completion_timeout()` for the equivalent transition — scheduler-backed wait that blocks until the secondary CPU sets its online state. Linux's wait is functionally a bounded busy-equivalent (scheduler may park the boot CPU, but the wait itself is on a completion that the secondary CPU triggers). Breenix's busy-spin is appropriate here because the scheduler is partially up at this stage and a CPU-management wait on this specific path doesn't benefit from yielding.
-- **Bounded:** Explicit timeout check inside the loop exits with a `[smp] Timeout waiting for CPUs ...` message after a bounded wall-clock interval.
+- **Bounded:** A six-second CNTVCT wall-clock deadline replaces the former 100ms deadline and exits immediately when all expected CPUs are online. A zero `CNTFRQ_EL0` reading uses the lowest plausible 1MHz frequency so the fallback errs toward a short bound. While delayed, the loop emits `[smp] still waiting, N online` at most once per second; final timeout diagnostics include each missing CPU's last raw PSCI return code.
 - **Frequency:** Once at boot, after PSCI CPU_ON broadcast.
 - **Status:** ALLOWLISTED — not subject to polling-elimination conversion.
+
+## P19: PSCI CPU_ON transient-failure retry backoff
+
+- **File:** `kernel/src/arch_impl/aarch64/smp.rs` (`release_cpu()` and `psci_cpu_on_retry_backoff()`)
+- **Loop:** At most four CPU_ON attempts. Each attempt preserves the existing HVC64 → HVC32 conduit order; only PSCI `INTERNAL_FAILURE` is retried. The 500µs inter-attempt backoff is bounded by both CNTVCT and a 1,000,000-iteration safety cap.
+- **Justification:** A transient firmware/hypervisor failure should not permanently reduce the expected CPU count. `SUCCESS`, `ALREADY_ON`, and `ON_PENDING` are accepted; `ON_PENDING` is left to P17's separately bounded online wait. SMC remains excluded.
+- **Bounded:** At most four attempts and three 500µs backoffs per CPU. A zero `CNTFRQ_EL0` reading uses the same conservative 1MHz fallback as P17. The last raw status is retained per CPU for P17 timeout diagnostics.
+- **Frequency:** Once per probed secondary CPU during boot.
+- **Status:** ALLOWLISTED — bounded CPU-management retry.
+
+## P20: Exit-kick boot-test cross-CPU waits
+
+- **File:** `kernel/src/tracing/providers/teardown.rs` (`spin_with_resched()`, `join_with_resched()`, and their existing coordinator-owned call sites)
+- **Loop:** The boot-test coordinator polls reservation, completion, worker-ready, and kthread-exit conditions. No wait was moved into a publisher or observer closure.
+- **Progress bound:** Each wait has a fresh three-second no-progress window. It re-arms only when the awaited kthread advances a worker-owned work/publish counter or its lock-free per-TID exit-stage counter; CPU timer ticks and other CPU-level activity are not progress. The exit-stage terminal increment occurs after the kthread's `exited` store, so a terminal counter cannot precede a false join condition. The first exit-stage increment occurs before affinity is cleared, proving the pinned worker reached its exit tail.
+- **Hard bounds and recovery:** Every wait has a distinct 30-second absolute ceiling and resends the reschedule SGI about every 50ms. Every 100,000 coordinator iterations, an unconditional delta check fails if CNTVCT made zero progress. If `CNTFRQ_EL0` is zero, the gate fails immediately instead of guessing a frequency. The condition is re-read immediately before failure; a recovered late-true wait logs evidence and the next wait receives a fresh window.
+- **Diagnostics:** Before failure, one line records wait/cause, elapsed and window milliseconds, re-kick count, online CPUs, current condition, progress start/final values, and time since last progress. A wait that re-arms and exceeds three seconds emits at most one breadcrumb per second.
+- **Aggregate boundedness:** There is no shared gate deadline. At most eight normal-path waits are individually bounded at 30 seconds, a failed wait returns immediately, and intervening coordinator work is finite. The structural worst case is therefore eight × 30 seconds plus finite work; this intentionally exceeds the external harness budget, so harness timeouts should be triaged with the emitted wait evidence.
+- **Linux precedent:** Linux completion waits pair progress-sensitive wakeups with timeout and retry diagnostics; this boot-test-only poll provides the same bounded liveness property where blocking `kthread_join()` cannot produce an actionable failure.
+- **Status:** ALLOWLISTED — boot-test-only bounded cross-CPU handshake.
 
 ## P12: AHCI engine + taskfile bounded register handshakes (Sites 3, 4, 5)
 

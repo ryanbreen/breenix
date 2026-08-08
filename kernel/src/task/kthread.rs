@@ -250,6 +250,8 @@ pub fn kthread_join(handle: &KthreadHandle) -> Result<i32, KthreadError> {
 /// Exit the current kthread with a specific exit code.
 pub fn kthread_exit(code: i32) -> ! {
     let handle = current_kthread().expect("kthread_exit called outside kthread");
+    #[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
+    crate::tracing::providers::teardown::record_kthread_exit_stage_for_test(handle.inner.tid);
 
     // Store exit_code BEFORE setting exited flag with a release fence.
     // This ensures kthread_join() sees the exit_code when it observes exited=true.
@@ -268,6 +270,8 @@ pub fn kthread_exit(code: i32) -> ! {
     without_interrupts(|| {
         KTHREAD_REGISTRY.lock().remove(&handle.inner.tid);
     });
+    #[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
+    crate::tracing::providers::teardown::record_kthread_exit_stage_for_test(handle.inner.tid);
 
     #[cfg(all(target_arch = "aarch64", feature = "boot_tests"))]
     scheduler::clear_cpu_affinity_for_test(handle.inner.tid);
@@ -277,11 +281,15 @@ pub fn kthread_exit(code: i32) -> ! {
             thread.set_terminated();
         }
     });
+    #[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
+    crate::tracing::providers::teardown::record_kthread_exit_stage_for_test(handle.inner.tid);
     scheduler::set_need_resched();
 
     // Set exited LAST — after all lock-protected cleanup is done.
     // Use SeqCst to provide a total order with kthread_join()'s acquire load.
     handle.inner.exited.store(true, Ordering::SeqCst);
+    #[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
+    crate::tracing::providers::teardown::record_kthread_exit_stage_for_test(handle.inner.tid);
 
     loop {
         unsafe {

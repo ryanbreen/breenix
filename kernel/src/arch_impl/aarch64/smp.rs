@@ -10,10 +10,23 @@
 //! 3. boot.S sets up stack, MMU, and calls `secondary_cpu_entry_rust()`
 //! 4. Rust entry initializes per-CPU data, GIC, timer, creates idle thread
 
-use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 
 /// Maximum number of CPUs supported.
 pub const MAX_CPUS: usize = 8;
+
+pub const CNTVCT_FALLBACK_FREQUENCY_HZ: u64 = 1_000_000;
+const PSCI_CPU_ON_MAX_ATTEMPTS: usize = 4;
+const PSCI_CPU_ON_RETRY_BACKOFF_MICROSECONDS: u64 = 500;
+const PSCI_CPU_ON_BACKOFF_ITERATION_CAP: usize = 1_000_000;
+const PSCI_RETURN_SUCCESS: i64 = 0;
+const PSCI_RETURN_ALREADY_ON: i64 = -4;
+const PSCI_RETURN_ON_PENDING: i64 = -5;
+const PSCI_RETURN_INTERNAL_FAILURE: i64 = -6;
+const PSCI_RETURN_NOT_ATTEMPTED: i64 = i64::MIN;
+
+static LAST_PSCI_RETURN_CODE: [AtomicI64; MAX_CPUS] =
+    [const { AtomicI64::new(PSCI_RETURN_NOT_ATTEMPTED) }; MAX_CPUS];
 
 /// PSCI function IDs (SMCCC compliant).
 const PSCI_CPU_ON_64: u64 = 0xC400_0003;
@@ -216,6 +229,34 @@ fn psci_cpu_on_smc(target_cpu: u64, entry_point: u64, context_id: u64) -> i64 {
     ret
 }
 
+fn psci_cpu_on_was_accepted(ret: i64) -> bool {
+    matches!(
+        ret,
+        PSCI_RETURN_SUCCESS | PSCI_RETURN_ALREADY_ON | PSCI_RETURN_ON_PENDING
+    )
+}
+
+fn psci_cpu_on_retry_backoff() {
+    let reported_frequency_hz = crate::arch_impl::aarch64::timer::frequency_hz();
+    let frequency_hz = if reported_frequency_hz == 0 {
+        CNTVCT_FALLBACK_FREQUENCY_HZ
+    } else {
+        reported_frequency_hz
+    };
+    let backoff_ticks = frequency_hz
+        .saturating_mul(PSCI_CPU_ON_RETRY_BACKOFF_MICROSECONDS)
+        .checked_div(1_000_000)
+        .unwrap_or(0)
+        .max(1);
+    let start = crate::arch_impl::aarch64::timer::rdtsc();
+    for _ in 0..PSCI_CPU_ON_BACKOFF_ITERATION_CAP {
+        if crate::arch_impl::aarch64::timer::rdtsc().wrapping_sub(start) >= backoff_ticks {
+            break;
+        }
+        core::hint::spin_loop();
+    }
+}
+
 /// Release a secondary CPU using PSCI CPU_ON.
 ///
 /// The CPU will start executing at `secondary_cpu_entry` in boot.S,
@@ -242,21 +283,32 @@ pub fn release_cpu(cpu_id: usize) -> i64 {
     // Context ID: pass cpu_id so the new CPU knows who it is
     let context_id = cpu_id as u64;
 
-    // Try 64-bit PSCI CPU_ON via HVC first (standard for ARM64 hypervisors)
-    let mut ret = psci_cpu_on(target_mpidr, entry_phys, context_id);
+    let mut ret = PSCI_RETURN_NOT_ATTEMPTED;
+    for attempt in 0..PSCI_CPU_ON_MAX_ATTEMPTS {
+        // Preserve the established conduit order on every bounded attempt:
+        // HVC64 first, then HVC32. SMC remains deliberately excluded.
+        let hvc64_ret = psci_cpu_on(target_mpidr, entry_phys, context_id);
+        ret = hvc64_ret;
+        if !psci_cpu_on_was_accepted(ret) {
+            if attempt == 0 {
+                crate::serial_println!(
+                    "[smp] CPU {}: HVC64 failed (ret={}), trying HVC32...",
+                    cpu_id,
+                    hvc64_ret
+                );
+            }
+            ret = psci_cpu_on_32(target_mpidr, entry_phys, context_id);
+        }
+        LAST_PSCI_RETURN_CODE[cpu_id].store(ret, Ordering::Release);
 
-    // If 64-bit failed, try 32-bit function ID (some hypervisors only support this)
-    if ret != 0 {
-        crate::serial_println!(
-            "[smp] CPU {}: HVC64 failed (ret={}), trying HVC32...",
-            cpu_id,
-            ret
-        );
-        ret = psci_cpu_on_32(target_mpidr, entry_phys, context_id);
+        if psci_cpu_on_was_accepted(ret) {
+            return PSCI_RETURN_SUCCESS;
+        }
+        if ret != PSCI_RETURN_INTERNAL_FAILURE || attempt + 1 == PSCI_CPU_ON_MAX_ATTEMPTS {
+            break;
+        }
+        psci_cpu_on_retry_backoff();
     }
-
-    // Note: SMC conduit not attempted — on VMware (EL1 guest, no EL3),
-    // SMC would trap to EL2 and likely fault. HVC is the correct conduit.
 
     if ret != 0 {
         crate::serial_println!(
@@ -269,6 +321,14 @@ pub fn release_cpu(cpu_id: usize) -> i64 {
     }
 
     ret
+}
+
+/// Last raw PSCI status observed for a CPU, retained for online-timeout diagnostics.
+pub fn last_psci_return_code(cpu_id: usize) -> i64 {
+    LAST_PSCI_RETURN_CODE
+        .get(cpu_id)
+        .map(|status| status.load(Ordering::Acquire))
+        .unwrap_or(PSCI_RETURN_NOT_ATTEMPTED)
 }
 
 /// Get the number of CPUs currently online.

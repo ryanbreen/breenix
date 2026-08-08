@@ -185,16 +185,16 @@ const EXIT_PROCESS_BY_PID_CALLS: &[(&str, usize)] = &[
     ("kernel/src/process/mod.rs", 418),
 ];
 const EXIT_PROCESS_FOR_TEARDOWN_TEST_CALLS: &[(&str, usize)] =
-    &[("kernel/src/tracing/providers/teardown.rs", 936)];
+    &[("kernel/src/tracing/providers/teardown.rs", 1047)];
 const BLOCKING_PRIMITIVES: &[(&str, usize)] = &[
-    ("kernel/src/task/scheduler.rs", 1971),
-    ("kernel/src/task/scheduler.rs", 2185),
-    ("kernel/src/task/scheduler.rs", 2204),
-    ("kernel/src/task/scheduler.rs", 2353),
-    ("kernel/src/task/scheduler.rs", 2441),
-    ("kernel/src/task/scheduler.rs", 2506),
-    ("kernel/src/task/scheduler.rs", 2515),
-    ("kernel/src/task/scheduler.rs", 2674),
+    ("kernel/src/task/scheduler.rs", 1975),
+    ("kernel/src/task/scheduler.rs", 2189),
+    ("kernel/src/task/scheduler.rs", 2208),
+    ("kernel/src/task/scheduler.rs", 2357),
+    ("kernel/src/task/scheduler.rs", 2445),
+    ("kernel/src/task/scheduler.rs", 2510),
+    ("kernel/src/task/scheduler.rs", 2519),
+    ("kernel/src/task/scheduler.rs", 2678),
     ("kernel/src/task/waitqueue.rs", 52),
 ];
 const RAW_SCHEDULER_LOCK_SITES: &[(&str, usize)] = &[
@@ -592,6 +592,83 @@ fn all_phase_zero_counters_have_registered_readers_and_honest_runtime_gates() {
     assert!(aarch64_gate.contains("cargo build --release --features boot_tests"));
     assert!(aarch64_gate.contains("--boot-tests-only"));
     assert!(aarch64_gate.contains("grep -q \"\\[BOOT_TESTS:PASS\\]\""));
+}
+
+#[test]
+fn aarch64_exit_kick_waits_are_progress_bounded() {
+    let provider = repo_text("kernel/src/tracing/providers/teardown.rs");
+    let gate = function_body(&provider, "exit_kick_protocol_gate_test");
+    for required in [
+        "const NO_PROGRESS_WINDOW_MILLISECONDS: u64 = 3_000;",
+        "const ABSOLUTE_WAIT_CEILING_MILLISECONDS: u64 = 30_000;",
+        "const RESCHED_REKICK_INTERVAL_MILLISECONDS: u64 = 50;",
+        "const CNTVCT_STALL_SAMPLE_INTERVAL_ITERATIONS: u64 = 100_000;",
+        "if counter_frequency_hz == 0",
+        "let counter_delta = now.wrapping_sub(last_counter_sample);",
+        "if counter_delta == 0",
+        "progress_current.advanced_from(last_progress)",
+        "now.wrapping_sub(last_advance) >= no_progress_ticks",
+        "elapsed >= absolute_ceiling_ticks",
+        "now.wrapping_sub(last_re_kick) >= re_kick_ticks",
+        "let late_condition = condition_value();",
+        "cause={} elapsed_ms={} window_budget_ms={}",
+        "last_advance_ms_ago={}",
+        "breadcrumb=1 elapsed_ms={}",
+        "WaitProgress::work(publisher_a_progress.load(Ordering::Acquire))",
+        "WaitProgress::work(publisher_b_progress.load(Ordering::Acquire))",
+        "WaitProgress::work(accounting.workers_ready.load(Ordering::Acquire))",
+        "exit: kthread_exit_progress_for_test(tid)",
+    ] {
+        assert!(
+            gate.contains(required),
+            "missing exit-kick bound: {required}"
+        );
+    }
+    assert!(!gate.contains("HANDSHAKE_SPIN_CAP"));
+    assert!(!gate.contains("TIMER_TICK_COUNT"));
+    assert!(!gate.contains("WHOLE_GATE_BUDGET"));
+    assert_eq!(
+        gate.matches("EXIT_KICK_TEST_HOOK_RESERVED.load").count(),
+        1,
+        "the reservation wait must remain coordinator-owned"
+    );
+
+    let kthread = repo_text("kernel/src/task/kthread.rs");
+    let kthread_exit = function_body(&kthread, "kthread_exit");
+    assert_eq!(
+        kthread_exit
+            .matches("record_kthread_exit_stage_for_test")
+            .count(),
+        4
+    );
+    assert!(
+        kthread_exit
+            .rfind("record_kthread_exit_stage_for_test")
+            .expect("terminal exit progress bump")
+            > kthread_exit
+                .find("handle.inner.exited.store(true, Ordering::SeqCst);")
+                .expect("exited store"),
+        "terminal exit progress must follow the exited store"
+    );
+
+    let scheduler = repo_text("kernel/src/task/scheduler.rs");
+    assert_eq!(
+        function_body(&scheduler, "clear_cpu_affinity_for_test")
+            .matches("record_kthread_exit_stage_for_test")
+            .count(),
+        2
+    );
+
+    let main = repo_text("kernel/src/main_aarch64.rs");
+    assert!(main.contains("let timeout_ticks = counter_frequency_hz.saturating_mul(6);"));
+    assert!(main.contains("[smp] still waiting, {} online"));
+    assert!(main.contains("last_psci_return_code(cpu)"));
+
+    let smp = repo_text("kernel/src/arch_impl/aarch64/smp.rs");
+    assert!(smp.contains("const PSCI_CPU_ON_MAX_ATTEMPTS: usize = 4;"));
+    assert!(smp.contains("ret != PSCI_RETURN_INTERNAL_FAILURE"));
+    assert!(smp.contains("PSCI_CPU_ON_BACKOFF_ITERATION_CAP"));
+    assert!(smp.contains("LAST_PSCI_RETURN_CODE[cpu_id].store(ret, Ordering::Release);"));
 }
 
 #[test]
