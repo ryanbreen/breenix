@@ -983,6 +983,27 @@ fn exit_kick_waits_have_progress_rearmed_deadlines_and_bounded_rekicks() {
 }
 
 #[test]
+fn boot_test_stage_completion_does_not_wait_for_worker_teardown() {
+    let executor = repo_text("kernel/src/test_framework/executor.rs");
+    let run_stage = function_body(&executor, "run_staged_tests");
+    let run_subsystem = function_body(&executor, "run_subsystem_stage_tests");
+
+    assert!(run_stage.contains("get_stage_progress(*id)[target_stage as usize]"));
+    assert!(!run_stage.contains("kthread_join("));
+
+    let completed = run_subsystem
+        .find("increment_stage_completed(id, target_stage);")
+        .expect("stage completion accounting must remain in the subsystem worker");
+    let result_marker = run_subsystem
+        .find("[TEST:{}:{}:PASS]")
+        .expect("subsystem worker must emit the structured PASS marker");
+    assert!(
+        completed < result_marker,
+        "a printed result must already be durable before a worker can be starved"
+    );
+}
+
+#[test]
 fn deliberately_broken_variants_fail_the_ratchet() {
     let sources = rust_sources_below("kernel/src");
 
