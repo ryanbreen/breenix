@@ -1377,7 +1377,10 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
             WaitFailureKind::WholeGateDeadline => TestResult::Fail(
                 "exit_kick_gate: whole-gate deadline expired while current wait remained unresponsive",
             ),
-            _ => TestResult::Fail(deadline_message),
+            WaitFailureKind::JoinFailed => TestResult::Fail(
+                "exit_kick_gate: kthread join bookkeeping unresponsive after worker exit",
+            ),
+            WaitFailureKind::PerWaitDeadline => TestResult::Fail(deadline_message),
         }
     }
 

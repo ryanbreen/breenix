@@ -160,6 +160,7 @@ fn validate_exit_kick_wait_watchdogs(
         "condition_name",
         "WaitFailureKind::IterationCap",
         "whole-gate deadline expired while current wait remained unresponsive",
+        "kthread join bookkeeping unresponsive after worker exit",
         "late_true={}",
         "result=pass gate_elapsed_ms={}",
         "success.wait_elapsed_ticks",
