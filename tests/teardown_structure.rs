@@ -260,7 +260,7 @@ fn validate_aarch64_liveness_bounds(
         "const CNTVCT_STALL_SAMPLE_INTERVAL_ITERATIONS: u64 = 10_000_000;",
         "const FIRST_RESCHED_REKICK_GRACE_MILLISECONDS: u64 = 500;",
         "const RESCHED_REKICK_INTERVAL_MILLISECONDS: u64 = 50;",
-        "const CNTVCT_FALLBACK_FREQUENCY_HZ: u64 = 1_000_000_000;",
+        "const CNTVCT_FALLBACK_FREQUENCY_HZ: u64 = 1_000_000;",
         "let wait_elapsed = now.wrapping_sub(wait_start);",
         "let no_progress_elapsed = now.wrapping_sub(last_advance);",
         "wait_elapsed >= watchdog.absolute_wait_ceiling_ticks",
@@ -284,6 +284,8 @@ fn validate_aarch64_liveness_bounds(
         "absolute_ceiling_ms={}",
         "progress_start={}",
         "progress_final={}",
+        "progress_never_advanced={}",
+        "progress_never_advanced: progress_final == progress_start",
         "last_advance_ms_ago={}",
         "progress_sample_count={}",
         "progress_sample_0_ms={}",
@@ -301,6 +303,9 @@ fn validate_aarch64_liveness_bounds(
         "slowest_wait_elapsed_ms={}",
         "struct WaitSite",
         "read_progress",
+        "fn target_cpu_tick_progress(target_cpus: &[usize]) -> u64",
+        "TIMER_TICK_COUNT[cpu].load(Ordering::Relaxed)",
+        ".min()",
         "let publisher_a_progress = Arc::new(AtomicU64::new(0));",
         "let publisher_b_progress = Arc::new(AtomicU64::new(0));",
         "a_progress.store(1, Ordering::Release);",
@@ -315,12 +320,18 @@ fn validate_aarch64_liveness_bounds(
         "exit-kick reservation-loss publisher CPU is not online",
         "exit-kick storm requires four online CPUs",
         "name: \"publisher_a_cleanup_join\"",
+        "exit_kick_gate: publisher A reservation exceeded the 60-second absolute wait ceiling; CPU 1 may be unresponsive",
+        "exit_kick_gate: publisher A cleanup join exceeded the 60-second absolute wait ceiling after publisher B spawn failure; CPU 1 may be unresponsive",
+        "exit_kick_gate: publisher B completion exceeded the 60-second absolute wait ceiling; CPU 2 may be unresponsive",
+        "exit_kick_gate: publisher B join exceeded the 60-second absolute wait ceiling; CPU 2 may be unresponsive",
+        "exit_kick_gate: publisher A join exceeded the 60-second absolute wait ceiling; CPU 1 may be unresponsive",
+        "exit_kick_gate: workers_ready exceeded the 60-second absolute wait ceiling; a worker CPU (1/2/3) may be unresponsive",
         "exit_kick_gate: storm publisher A made no progress for 3 seconds, a worker CPU (1/2/3) is unresponsive",
         "exit_kick_gate: storm publisher B made no progress for 3 seconds, a worker CPU (1/2/3) is unresponsive",
         "exit_kick_gate: storm observer made no progress for 3 seconds, a worker CPU (1/2/3) is unresponsive",
-        "exit_kick_gate: storm publisher A exceeded the 60-second absolute wait ceiling",
-        "exit_kick_gate: storm publisher B exceeded the 60-second absolute wait ceiling",
-        "exit_kick_gate: storm observer exceeded the 60-second absolute wait ceiling",
+        "exit_kick_gate: storm publisher A exceeded the 60-second absolute wait ceiling; a worker CPU (1/2/3) may be unresponsive",
+        "exit_kick_gate: storm publisher B exceeded the 60-second absolute wait ceiling; a worker CPU (1/2/3) may be unresponsive",
+        "exit_kick_gate: storm observer exceeded the 60-second absolute wait ceiling; a worker CPU (1/2/3) may be unresponsive",
     ] {
         require_contains("exit_kick_protocol_gate_test", gate, required)?;
     }
@@ -339,34 +350,14 @@ fn validate_aarch64_liveness_bounds(
         // cleanup join. The latter returns before the remaining path runs.
         ("&wait_watchdog", 9),
         ("crate::task::kthread::kthread_join(", 1),
-        (
-            "|| EXIT_KICK_TEST_HOOK_RESERVED.load(Ordering::Acquire),",
-            2,
-        ),
-        (
-            "|| publisher_a_progress.load(Ordering::Acquire),",
-            2,
-        ),
-        (
-            "|| publisher_b_progress.load(Ordering::Acquire),",
-            2,
-        ),
-        (
-            "|| accounting.workers_ready.load(Ordering::Acquire),",
-            2,
-        ),
-        (
-            "|| accounting.publisher_a_attempts.load(Ordering::Acquire),",
-            1,
-        ),
-        (
-            "|| accounting.publisher_b_attempts.load(Ordering::Acquire),",
-            1,
-        ),
-        (
-            "|| accounting.observer_iterations.load(Ordering::Acquire),",
-            1,
-        ),
+        ("|| EXIT_KICK_TEST_HOOK_RESERVED.load(Ordering::Acquire),", 1),
+        ("|| accounting.workers_ready.load(Ordering::Acquire),", 1),
+        ("|| target_cpu_tick_progress(&[PUBLISHER_A_CPU]),", 3),
+        ("|| target_cpu_tick_progress(&[PUBLISHER_B_CPU]),", 2),
+        ("|| target_cpu_tick_progress(&worker_cpus),", 1),
+        ("|| target_cpu_tick_progress(&[worker_cpus[0]]),", 1),
+        ("|| target_cpu_tick_progress(&[worker_cpus[1]]),", 1),
+        ("|| target_cpu_tick_progress(&[worker_cpus[2]]),", 1),
     ] {
         require_count("exit_kick_protocol_gate_test", gate, needle, expected)?;
     }
@@ -384,6 +375,11 @@ fn validate_aarch64_liveness_bounds(
         "per_wait_timeout_ticks",
         "wait_budget_ms",
         ".expect(\"kthread_join returned Err despite its infallible contract\")",
+        "|| publisher_a_progress.load(Ordering::Acquire),",
+        "|| publisher_b_progress.load(Ordering::Acquire),",
+        "|| accounting.publisher_a_attempts.load(Ordering::Acquire),",
+        "|| accounting.publisher_b_attempts.load(Ordering::Acquire),",
+        "|| accounting.observer_iterations.load(Ordering::Acquire),",
     ] {
         require_absent("exit_kick_protocol_gate_test", gate, forbidden)?;
     }
@@ -992,6 +988,13 @@ fn deliberately_broken_variants_fail_the_ratchet() {
     );
     validate_aarch64_liveness_bounds(&fixed_no_progress_window, main_aarch64, smp)
         .expect_err("fixed per-wait deadline passed the progress-rearm ratchet");
+    let terminal_join_progress = provider.replacen(
+        "join_with_resched(\n        &publisher_b,\n        &[PUBLISHER_B_CPU],\n        &wait_watchdog,\n        || target_cpu_tick_progress(&[PUBLISHER_B_CPU]),",
+        "join_with_resched(\n        &publisher_b,\n        &[PUBLISHER_B_CPU],\n        &wait_watchdog,\n        || publisher_b_progress.load(Ordering::Acquire),",
+        1,
+    );
+    validate_aarch64_liveness_bounds(&terminal_join_progress, main_aarch64, smp)
+        .expect_err("terminal publisher counter passed the target-CPU progress ratchet");
     let missing_absolute_ceiling = provider.replacen(
         "wait_elapsed >= watchdog.absolute_wait_ceiling_ticks",
         "false",

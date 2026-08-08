@@ -53,7 +53,7 @@ This document formalizes the **Linux-rigor polling-elimination gate** for cases 
 
 ## P17: SMP secondary CPU online wait
 
-- **File:** `kernel/src/main_aarch64.rs:970-1021` (boot-time SMP bring-up wait after PSCI CPU_ON)
+- **File:** `kernel/src/main_aarch64.rs` (boot-time SMP bring-up wait after PSCI CPU_ON)
 - **Loop:** `while kernel::arch_impl::aarch64::smp::cpus_online() < expected { ... core::hint::spin_loop(); }` with explicit timeout check.
 - **Justification:** Boot CPU waits for secondary CPUs to come online after issuing PSCI CPU_ON requests. The secondary CPUs increment `cpus_online` once they reach their entry point. Bounded CPU-management handshake (NOT event polling) — there is no IRQ available for "CPU now online" because the GIC distributor isn't fully wired across CPUs until each is up.
 - **Linux precedent:** `kernel/smp.c::__cpu_up()` uses `wait_for_completion_timeout()` for the equivalent transition — scheduler-backed wait that blocks until the secondary CPU sets its online state. Linux's wait is functionally a bounded busy-equivalent (scheduler may park the boot CPU, but the wait itself is on a completion that the secondary CPU triggers). Breenix's busy-spin is appropriate here because the scheduler is partially up at this stage and a CPU-management wait on this specific path doesn't benefit from yielding.
@@ -66,7 +66,7 @@ This document formalizes the **Linux-rigor polling-elimination gate** for cases 
 
 ## P19: PSCI CPU_ON retry backoff
 
-- **File:** `kernel/src/arch_impl/aarch64/smp.rs:226-246` (`psci_cpu_on_retry_backoff()`)
+- **File:** `kernel/src/arch_impl/aarch64/smp.rs` (`psci_cpu_on_retry_backoff()`)
 - **Loop:** Short busy-wait between bounded PSCI CPU_ON attempts, exiting on the CNTVCT deadline or after 1,000,000 iterations if the counter is unavailable or stopped.
 - **Justification:** Secondary CPU release runs before the target CPU can signal through the scheduler. A transient PSCI `INTERNAL_FAILURE` response gets a short delay before retrying; there is no event source to block on at this stage. `ON_PENDING` is accepted and left to the separately bounded secondary-online wait rather than retried.
 - **Bounded:** At most 500 microseconds by CNTVCT and independently capped at 1,000,000 iterations. `release_cpu()` performs at most four total attempts, so at most three backoffs occur for one CPU probe.
@@ -78,9 +78,9 @@ This document formalizes the **Linux-rigor polling-elimination gate** for cases 
 - **File:** `kernel/src/tracing/providers/teardown.rs` (`spin_with_resched()`, nested in `exit_kick_protocol_gate_test()`)
 - **Loop:** The boot-test coordinator on CPU 0 polls conditions completed by kthreads pinned to CPUs 1-3. It samples CNTVCT on every pass, yields, and periodically sends `SGI_RESCHEDULE` after a 500-millisecond grace and then at 50-millisecond intervals.
 - **Justification:** The boot-test executor runs synchronously outside the scheduler, so it has no scheduler-backed wait context to park. The loop is test-only and validates cross-CPU scheduler/exit-kick liveness; production waits remain scheduler-backed.
-- **Progress bound:** Each wait fails after three consecutive CNTVCT seconds with no advance of its own lock-free progress counter. Any advance re-arms a fresh three-second window. Readiness and reservation waits use their condition counters; reservation-loss completion/joins use per-publisher stage counters; storm publisher joins use dedicated per-publisher attempt counters; and the observer join uses an unconditional scan-iteration counter.
-- **Absolute bound:** Every wait also has a distinct 60-second absolute ceiling for a pathological producer that advances often enough to re-arm but never completes. There is no aggregate gate deadline. A separate detector samples CNTVCT every 10,000,000 coordinator iterations and fails if the counter itself did not advance.
-- **Evidence:** Failures report the starting/final progress values, milliseconds since the last advance, and up to five chronological one-second progress samples, alongside re-kick count and online CPU count.
+- **Progress bound:** Each wait fails after three consecutive CNTVCT seconds with no timer-tick advance on its target CPU. Any target tick re-arms a fresh three-second window, including through kthread exit teardown after test-owned stage/attempt counters have stopped. The multi-CPU readiness wait uses the minimum tick count across CPUs 1-3, so ticking peers cannot mask a target whose timer interrupts stopped. If CNTFRQ_EL0 reports zero, the one-megahertz lowest-plausible fallback favors an earlier guest verdict over stretching the watchdog beyond the external harness timeout.
+- **Absolute bound:** Every wait also has a distinct 60-second absolute ceiling for a pathological target that keeps ticking but never completes. There is no aggregate gate deadline. The external Phase-1/QEMU timeout can preempt a late ceiling after earlier tests, so this ceiling is a safety backstop rather than the ordinary dead-CPU verdict. A separate detector samples CNTVCT every 10,000,000 coordinator iterations and fails if the counter itself did not advance.
+- **Evidence:** Failures report the starting/final target-tick values, whether progress never advanced, milliseconds since the last advance, and the most recent five chronological one-second progress samples, alongside re-kick count and online CPU count.
 - **Frequency:** Once per ARM64 boot-test run.
 - **Status:** ALLOWLISTED — test-harness-only synchronous fallback; not a production event-polling primitive.
 
