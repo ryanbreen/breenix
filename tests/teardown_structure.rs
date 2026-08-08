@@ -161,7 +161,17 @@ fn require_count(
     }
 }
 
-fn validate_exit_kick_wait_watchdogs(
+fn require_absent(source_name: &str, source: &str, forbidden: &str) -> Result<(), String> {
+    if source.contains(forbidden) {
+        Err(format!(
+            "{source_name} still contains forbidden text: {forbidden}"
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+fn validate_aarch64_liveness_bounds(
     provider: &str,
     main_aarch64: &str,
     smp: &str,
@@ -169,66 +179,65 @@ fn validate_exit_kick_wait_watchdogs(
     let gate = function_body(provider, "exit_kick_protocol_gate_test");
     for required in [
         "const PER_WAIT_BUDGET_MILLISECONDS: u64 = 3_000;",
-        "const WHOLE_GATE_BUDGET_MILLISECONDS: u64 = 15_000;",
-        "const HANDSHAKE_ITERATION_CAP: u64 = 50_000_000;",
+        "const CNTVCT_STALL_SAMPLE_INTERVAL_ITERATIONS: u64 = 10_000_000;",
         "const FIRST_RESCHED_REKICK_GRACE_MILLISECONDS: u64 = 100;",
-        "const RESCHED_REKICK_INTERVAL_MILLISECONDS: u64 = 5;",
-        "const CNTVCT_FALLBACK_FREQUENCY_HZ: u64 = 1_000_000_000;",
+        "const RESCHED_REKICK_INTERVAL_MILLISECONDS: u64 = 50;",
+        "const CNTVCT_FALLBACK_FREQUENCY_HZ: u64 = 1_000_000;",
         "let wait_elapsed = now.wrapping_sub(wait_start);",
-        "let gate_elapsed = now.wrapping_sub(watchdog.gate_start);",
         "wait_elapsed >= watchdog.per_wait_timeout_ticks",
-        "gate_elapsed >= watchdog.gate_timeout_ticks",
-        "iterations >= HANDSHAKE_ITERATION_CAP && wait_elapsed == 0",
+        "stall_sample_iterations >= CNTVCT_STALL_SAMPLE_INTERVAL_ITERATIONS",
+        "if now == last_counter_sample",
+        "last_counter_sample = now;",
         "now.wrapping_sub(last_kick) >= watchdog.rekick_interval_ticks",
+        "wait_budget_ms: self.ticks_to_milliseconds(self.per_wait_timeout_ticks)",
         "rekick_sgis",
         "crate::arch_impl::aarch64::smp::cpus_online()",
         "elapsed_ms={}",
-        "budget_ms={}",
+        "wait_budget_ms={}",
         "condition_name",
         "WaitFailureKind::CounterStall",
-        "\"exit_kick_gate: CNTVCT counter not advancing; iteration cap exhausted, cannot bound wait; CPU may be unresponsive or counter frozen\";",
+        "\"exit_kick_gate: CNTVCT stalled between watchdog samples; cannot bound wait; CPU may be unresponsive or counter frozen\";",
         "WaitFailureKind::CounterStall => TestResult::Fail(COUNTER_STALL_MESSAGE)",
-        "whole-gate deadline expired while current wait remained unresponsive",
         "late_true={}",
         "result=pass gate_elapsed_ms={}",
+        "slowest_wait_elapsed_ms={}",
         "struct WaitSite",
+        "exit-kick reservation-loss publisher CPU is not online",
+        "exit-kick storm requires four online CPUs",
+        "join_with_resched(\n        &publisher_a,\n        &worker_cpus,\n        &wait_watchdog,",
+        "join_with_resched(\n        &publisher_b,\n        &worker_cpus,\n        &wait_watchdog,",
+        "join_with_resched(\n        &observer,\n        &worker_cpus,\n        &wait_watchdog,",
     ] {
         require_contains("exit_kick_protocol_gate_test", gate, required)?;
     }
     for (needle, expected) in [
-        ("&gate_watchdog", 8),
-        ("return wait_failure_result(", 8),
-        ("iteration cap exhausted", 1),
-        ("&worker_cpus, &gate_watchdog", 3),
-        ("report_late_wait_success(", 9),
-        (".max(1)", 4),
-        ("WaitSite {", 9),
-        ("Some(WaitFailureKind::WholeGateDeadline)", 1),
-        ("crate::task::kthread::kthread_join(", 7),
-        (
-            ".expect(\"kthread_join returned Err despite its infallible contract\")",
-            7,
-        ),
+        ("&wait_watchdog", 8),
+        ("crate::task::kthread::kthread_join(", 2),
     ] {
         require_count("exit_kick_protocol_gate_test", gate, needle, expected)?;
     }
-    require_count("exit_kick_protocol_gate_test", gate, "if cond() {", 3)?;
+    for forbidden in [
+        "WHOLE_GATE_BUDGET_MILLISECONDS",
+        "WholeGateDeadline",
+        "gate_timeout_ticks",
+        "watchdog.gate_start",
+        "gate_budget_ms",
+        "whole-gate deadline",
+        "wait_elapsed == 0",
+        ".expect(\"kthread_join returned Err despite its infallible contract\")",
+    ] {
+        require_absent("exit_kick_protocol_gate_test", gate, forbidden)?;
+    }
 
     let spin = function_body(provider, "spin_with_resched");
-    require_count(
-        "spin_with_resched",
-        spin,
-        "Some(WaitFailureKind::WholeGateDeadline)",
-        1,
-    )?;
+    require_count("spin_with_resched", spin, "if cond() {", 3)?;
 
     let join = function_body(provider, "join_with_resched");
     for required in [
         "kick_cpus: &[usize]",
-        "spin_with_resched(",
-        "kick_cpus,",
-        "watchdog,",
-        "probe and join read the same monotonic SeqCst `exited` flag",
+        "wait_with_resched(",
+        "crate::task::kthread::kthread_join(handle).is_err()",
+        "return Err(TestResult::Fail(join_error_message));",
     ] {
         require_contains("join_with_resched", join, required)?;
     }
@@ -236,7 +245,7 @@ fn validate_exit_kick_wait_watchdogs(
     for required in [
         "const SMP_ONLINE_TIMEOUT_SECONDS: u64 = 6;",
         "const SMP_ONLINE_PROGRESS_INTERVAL_SECONDS: u64 = 1;",
-        "const CNTVCT_FALLBACK_FREQUENCY_HZ: u64 = 1_000_000_000;",
+        "const CNTVCT_FALLBACK_FREQUENCY_HZ: u64 = 1_000_000;",
         "[smp] still waiting for CPUs ({} online, {} expected)",
         "reported_frequency_hz == 0",
     ] {
@@ -248,16 +257,22 @@ fn validate_exit_kick_wait_watchdogs(
         "const PSCI_CPU_ON_RETRY_BACKOFF_MICROSECONDS: u64 = 500;",
         "fn psci_cpu_on_result_is_retryable(ret: i64) -> bool",
         "fn psci_cpu_on_result_is_success(ret: i64) -> bool",
+        "matches!(ret, PSCI_RETURN_INTERNAL_FAILURE)",
         "0 | PSCI_RETURN_ALREADY_ON | PSCI_RETURN_ON_PENDING",
         "psci_cpu_on_result_is_retryable(hvc64_ret)",
         "psci_cpu_on_result_is_retryable(ret)",
-        "hvc64_ret == PSCI_RETURN_ON_PENDING || ret == PSCI_RETURN_ON_PENDING",
         "HVC64 failed (ret={}), trying HVC32...",
         "static LAST_PSCI_HVC64_RETURN_CODE:",
+        "LAST_PSCI_HVC64_RETURN_CODE[cpu_id].store(hvc64_ret, Ordering::Relaxed);",
         "pub fn last_psci_hvc64_return_code(cpu_id: usize) -> Option<i64>",
     ] {
         require_contains("smp.rs", smp, required)?;
     }
+    require_absent(
+        "smp.rs",
+        smp,
+        "hvc64_ret == PSCI_RETURN_ON_PENDING || ret == PSCI_RETURN_ON_PENDING",
+    )?;
 
     Ok(())
 }
@@ -727,7 +742,7 @@ fn exit_kick_waits_have_independent_deadlines_and_bounded_rekicks() {
     let provider = source(&sources, "kernel/src/tracing/providers/teardown.rs");
     let main_aarch64 = source(&sources, "kernel/src/main_aarch64.rs");
     let smp = source(&sources, "kernel/src/arch_impl/aarch64/smp.rs");
-    validate_exit_kick_wait_watchdogs(provider, main_aarch64, smp)
+    validate_aarch64_liveness_bounds(provider, main_aarch64, smp)
         .expect("exit-kick wait watchdog structure changed");
 }
 
@@ -795,27 +810,34 @@ fn deliberately_broken_variants_fail_the_ratchet() {
         "true",
         1,
     );
-    validate_exit_kick_wait_watchdogs(&unthrottled_rekick, main_aarch64, smp)
+    validate_aarch64_liveness_bounds(&unthrottled_rekick, main_aarch64, smp)
         .expect_err("unthrottled re-kick variant passed the exit-kick watchdog ratchet");
     let uncoupled_storm_join = provider.replacen(
-        "&worker_cpus, &gate_watchdog",
-        "&[worker_cpus[0]], &gate_watchdog",
+        "join_with_resched(\n        &publisher_a,\n        &worker_cpus,\n        &wait_watchdog,",
+        "join_with_resched(\n        &publisher_a,\n        &[worker_cpus[0]],\n        &wait_watchdog,",
         1,
     );
-    validate_exit_kick_wait_watchdogs(&uncoupled_storm_join, main_aarch64, smp)
+    validate_aarch64_liveness_bounds(&uncoupled_storm_join, main_aarch64, smp)
         .expect_err("uncoupled storm join passed the exit-kick watchdog ratchet");
-    let preemptive_iteration_cap = provider.replacen(
-        "iterations >= HANDSHAKE_ITERATION_CAP && wait_elapsed == 0",
-        "iterations >= HANDSHAKE_ITERATION_CAP",
+    let stale_counter_baseline = provider.replacen(
+        "if now == last_counter_sample",
+        "if wait_elapsed == 0",
         1,
     );
-    validate_exit_kick_wait_watchdogs(&preemptive_iteration_cap, main_aarch64, smp)
-        .expect_err("preemptive iteration cap passed the exit-kick watchdog ratchet");
+    validate_aarch64_liveness_bounds(&stale_counter_baseline, main_aarch64, smp)
+        .expect_err("wait-start-based CNTVCT stall check passed the liveness ratchet");
+    let shared_gate_deadline = provider.replacen(
+        "let wait_elapsed = now.wrapping_sub(wait_start);",
+        "let wait_elapsed = now.wrapping_sub(wait_start); let gate_timeout_ticks = wait_elapsed;",
+        1,
+    );
+    validate_aarch64_liveness_bounds(&shared_gate_deadline, main_aarch64, smp)
+        .expect_err("shared whole-gate deadline state passed the liveness ratchet");
     let discarded_join_result = provider.replacen(
-        ".expect(\"kthread_join returned Err despite its infallible contract\")",
-        ";",
+        "if crate::task::kthread::kthread_join(handle).is_err() {",
+        "if false {",
         1,
     );
-    validate_exit_kick_wait_watchdogs(&discarded_join_result, main_aarch64, smp)
+    validate_aarch64_liveness_bounds(&discarded_join_result, main_aarch64, smp)
         .expect_err("discarded kthread_join result passed the exit-kick watchdog ratchet");
 }

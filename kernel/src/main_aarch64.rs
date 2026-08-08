@@ -952,7 +952,7 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
         for cpu in 1..max_cpus_to_probe {
             let ret = kernel::arch_impl::aarch64::smp::release_cpu(cpu);
             if ret == 0 {
-                serial_println!("[smp] CPU {}: PSCI CPU_ON success", cpu);
+                serial_println!("[smp] CPU {}: PSCI CPU_ON accepted", cpu);
                 launched += 1;
             } else {
                 let last_hvc64_ret =
@@ -971,10 +971,11 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
             // Wait for all launched CPUs to come online (with timeout)
             const SMP_ONLINE_TIMEOUT_SECONDS: u64 = 6;
             const SMP_ONLINE_PROGRESS_INTERVAL_SECONDS: u64 = 1;
-            // Keep this fallback identical to teardown.rs. If firmware reports
-            // zero, a high assumed frequency prevents a normally faster-than-
-            // assumed counter from shrinking the intended wall-clock timeout.
-            const CNTVCT_FALLBACK_FREQUENCY_HZ: u64 = 1_000_000_000;
+            // Keep this fallback identical to teardown.rs and smp.rs. If
+            // firmware reports zero, the lowest plausible frequency keeps the
+            // guest-side verdict inside the harness timeout even when CNTVCT
+            // is actually faster.
+            const CNTVCT_FALLBACK_FREQUENCY_HZ: u64 = 1_000_000;
 
             let expected = 1 + launched; // boot CPU + launched
             let start = timer::rdtsc();

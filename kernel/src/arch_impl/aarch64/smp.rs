@@ -224,6 +224,9 @@ fn psci_cpu_on_32(target_cpu: u64, entry_point: u64, context_id: u64) -> i64 {
 }
 
 fn psci_cpu_on_retry_backoff() {
+    // release_cpu runs before timer calibration on some boot paths, but
+    // frequency_hz reads CNTFRQ_EL0 directly until its cache is populated. The
+    // independent iteration cap still bounds a stopped or unavailable counter.
     let reported_frequency_hz = super::timer::frequency_hz();
     let counter_frequency_hz = if reported_frequency_hz == 0 {
         CNTVCT_FALLBACK_FREQUENCY_HZ
@@ -243,7 +246,7 @@ fn psci_cpu_on_retry_backoff() {
 }
 
 fn psci_cpu_on_result_is_retryable(ret: i64) -> bool {
-    matches!(ret, PSCI_RETURN_ON_PENDING | PSCI_RETURN_INTERNAL_FAILURE)
+    matches!(ret, PSCI_RETURN_INTERNAL_FAILURE)
 }
 
 fn psci_cpu_on_result_is_success(ret: i64) -> bool {
@@ -311,16 +314,13 @@ pub fn release_cpu(cpu_id: usize) -> i64 {
             }
             psci_cpu_on_32(target_mpidr, entry_phys, context_id)
         };
-        LAST_PSCI_HVC64_RETURN_CODE[cpu_id].store(hvc64_ret, Ordering::Release);
+        LAST_PSCI_HVC64_RETURN_CODE[cpu_id].store(hvc64_ret, Ordering::Relaxed);
         if psci_cpu_on_result_is_success(ret) {
             return 0;
         }
         let retryable =
             psci_cpu_on_result_is_retryable(hvc64_ret) || psci_cpu_on_result_is_retryable(ret);
         if attempts >= PSCI_CPU_ON_MAX_ATTEMPTS {
-            if hvc64_ret == PSCI_RETURN_ON_PENDING || ret == PSCI_RETURN_ON_PENDING {
-                return 0;
-            }
             break (hvc64_ret, ret);
         }
         if !retryable {
@@ -346,7 +346,7 @@ pub fn release_cpu(cpu_id: usize) -> i64 {
 pub fn last_psci_hvc64_return_code(cpu_id: usize) -> Option<i64> {
     let value = LAST_PSCI_HVC64_RETURN_CODE
         .get(cpu_id)?
-        .load(Ordering::Acquire);
+        .load(Ordering::Relaxed);
     (value != PSCI_RETURN_NOT_ATTEMPTED).then_some(value)
 }
 
