@@ -941,7 +941,7 @@ fn reclaim_deferred_process_resources_for_pass(my_pass: u32, boot_test_owned: bo
 }
 
 #[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
-fn boot_reclaim_deferred_process_resources() {
+pub(crate) fn boot_reclaim_deferred_process_resources() {
     let my_pass = next_reclaim_pass_id(
         RECLAIM_PASS_ID
             .fetch_add(1, Ordering::Relaxed)
@@ -954,11 +954,11 @@ fn boot_reclaim_deferred_process_resources() {
 const BOOT_RECLAIM_PID_BASE: u64 = u64::MAX - 0x1000;
 
 #[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
-struct BootReclaimTestGuard;
+pub(crate) struct BootReclaimTestGuard;
 
 #[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
 impl BootReclaimTestGuard {
-    fn enter() -> Result<Self, &'static str> {
+    pub(crate) fn enter() -> Result<Self, &'static str> {
         let owner = crate::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id().wrapping_add(1);
         BOOT_RECLAIM_TEST_OWNER
             .compare_exchange(0, owner, Ordering::AcqRel, Ordering::Acquire)

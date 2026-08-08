@@ -818,6 +818,20 @@ pub fn deferred_fault_ring_overflow_test() -> crate::test_framework::registry::T
 pub fn fork_exit_defer_reclaim_pairing_test() -> crate::test_framework::registry::TestResult {
     use crate::test_framework::registry::TestResult;
 
+    // Claim single-threaded ownership of the deferred-reclaim queues for the
+    // whole measurement window. The queues are quiescent here (before any fork),
+    // so this mirrors the sibling reclaim_progress_gate_test: peer CPUs early-
+    // return from reclaim_deferred_process_resources() while the owner is set,
+    // so every free and its reclaim-count increment happen on this CPU. Without
+    // it, a peer could drain the shared PENDING queue concurrently and score an
+    // entry freed-but-counter-not-yet-visible as unpaired against the deadline.
+    let _reclaim_owner = match crate::task::process_task::BootReclaimTestGuard::enter() {
+        Ok(guard) => guard,
+        Err(_) => {
+            return TestResult::Fail("reclaim queues not quiescent at pairing-test start")
+        }
+    };
+
     let teardown_entry_exit_before = TEARDOWN_ENTRY_EXIT.aggregate();
     let exit_first_requests_before = EXIT_FIRST_REQUESTS.aggregate();
     let exit_repeat_requests_before = EXIT_REPEAT_REQUESTS.aggregate();
@@ -995,7 +1009,7 @@ pub fn fork_exit_defer_reclaim_pairing_test() -> crate::test_framework::registry
         while crate::arch_impl::aarch64::timer::rdtsc() < boundary_deadline {
             core::hint::spin_loop();
         }
-        crate::task::process_task::reclaim_deferred_process_resources();
+        crate::task::process_task::boot_reclaim_deferred_process_resources();
         if boot_test_pid_counts_complete(&pairing_child_pids) {
             break;
         }
@@ -1004,6 +1018,12 @@ pub fn fork_exit_defer_reclaim_pairing_test() -> crate::test_framework::registry
         }
         core::hint::spin_loop();
     }
+
+    // The final owned drain has returned. It performed every free and its
+    // reclaim-count store on this CPU; publish those stores with an Acquire
+    // fence before scoring so a store that landed inside the last drain cannot
+    // be read as unpaired below.
+    core::sync::atomic::fence(Ordering::Acquire);
 
     let teardown_entry_exit_delta = TEARDOWN_ENTRY_EXIT
         .aggregate()
