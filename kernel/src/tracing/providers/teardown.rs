@@ -1124,59 +1124,52 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
     //
     // This gate coordinator runs synchronously on CPU 0 (outside the scheduler)
     // and busy-waits on handshakes completed by kthreads pinned to CPU 1/2/3.
-    // Every such wait is now bounded: a rare lost wakeup on a secondary CPU used
-    // to hang the whole boot-test harness silently for ~90s. The cap is chosen
-    // FAR beyond any healthy completion (a normal — even slow — run finishes in
-    // a handful of spins), so it never false-trips. On the first cap we re-send
-    // a reschedule IPI to the stuck target CPU(s) exactly once via the existing
-    // per-CPU resched SGI path (self-heals a dropped wakeup), reset the counter,
-    // and spin again; if the SECOND cap is also exceeded the target is genuinely
-    // wedged and the caller returns an actionable Fail naming the handshake and
-    // CPU. This does NOT touch the EXIT_KICK protocol itself.
+    // Every such wait is bounded by CNTVCT wall time: CPU 0's loop count can race
+    // ahead while a live target vCPU is deprived of host time. Ten seconds is
+    // orders of magnitude beyond a healthy completion and gives a host-starved
+    // vCPU many scheduling opportunities, while still failing a genuinely dead
+    // CPU well within the boot-test timeout. Re-send the existing per-CPU resched
+    // SGI every 5ms throughout the wait so a dropped wakeup can self-heal even if
+    // the target was still starved when an earlier SGI arrived. This does NOT
+    // touch the EXIT_KICK protocol itself.
     fn spin_with_resched<F: Fn() -> bool>(cond: F, kick_cpus: &[usize]) -> bool {
-        const HANDSHAKE_SPIN_CAP: u64 = 50_000_000;
+        const HANDSHAKE_TIMEOUT_SECONDS: u64 = 10;
+        const RESCHED_REKICK_MILLISECONDS: u64 = 5;
 
-        // First bounded attempt.
-        let mut spins: u64 = 0;
-        while !cond() {
+        let frequency = crate::arch_impl::aarch64::timer::frequency_hz();
+        let timeout_ticks = frequency * HANDSHAKE_TIMEOUT_SECONDS;
+        let rekick_ticks = frequency * RESCHED_REKICK_MILLISECONDS / 1_000;
+        let start = crate::arch_impl::aarch64::timer::rdtsc();
+        let mut last_kick = start;
+
+        loop {
+            if cond() {
+                return true;
+            }
+
+            let now = crate::arch_impl::aarch64::timer::rdtsc();
+            if now.wrapping_sub(start) >= timeout_ticks {
+                return false;
+            }
+            if now.wrapping_sub(last_kick) >= rekick_ticks {
+                for &cpu in kick_cpus {
+                    crate::arch_impl::aarch64::gic::send_sgi(
+                        crate::arch_impl::aarch64::constants::SGI_RESCHEDULE as u8,
+                        cpu as u8,
+                    );
+                }
+                last_kick = now;
+            }
+
             crate::task::scheduler::yield_current();
             core::hint::spin_loop();
-            spins += 1;
-            if spins >= HANDSHAKE_SPIN_CAP {
-                break;
-            }
         }
-        if cond() {
-            return true;
-        }
-
-        // Self-heal: re-send a reschedule IPI to each stuck target CPU exactly
-        // once, then reset the counter and retry. This is the same per-CPU
-        // resched SGI the scheduler uses to wake a CPU; we only call it here.
-        for &cpu in kick_cpus {
-            crate::arch_impl::aarch64::gic::send_sgi(
-                crate::arch_impl::aarch64::constants::SGI_RESCHEDULE as u8,
-                cpu as u8,
-            );
-        }
-
-        // Second bounded attempt after the self-heal.
-        let mut spins: u64 = 0;
-        while !cond() {
-            crate::task::scheduler::yield_current();
-            core::hint::spin_loop();
-            spins += 1;
-            if spins >= HANDSHAKE_SPIN_CAP {
-                break;
-            }
-        }
-        cond()
     }
 
     // Bounded replacement for a blocking kthread_join on a CPU-pinned worker:
-    // poll the non-blocking exit flag with the same capped + self-healing spin,
-    // then let kthread_join return immediately once the exit is visible. Returns
-    // false if the worker never exited even after the resched self-heal.
+    // poll the non-blocking exit flag with the same wall-clock-bound, periodically
+    // re-kicked wait, then let kthread_join return immediately once the exit is
+    // visible. Returns false if the worker never exits before the deadline.
     fn join_with_resched(
         handle: &crate::task::kthread::KthreadHandle,
         cpu: usize,

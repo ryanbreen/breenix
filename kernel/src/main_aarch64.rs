@@ -967,17 +967,19 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
             // Wait for all launched CPUs to come online (with timeout)
             let expected = 1 + launched; // boot CPU + launched
             let start = timer::rdtsc();
-            let timeout_ticks = timer::frequency_hz() / 10; // 100ms timeout
+            const SMP_ONLINE_TIMEOUT_SECONDS: u64 = 10;
+            let timeout_ticks = timer::frequency_hz() * SMP_ONLINE_TIMEOUT_SECONDS;
             // SMP secondary CPU bring-up wait: boot CPU spins until all
             // released secondary CPUs increment cpus_online. Bounded CPU-
             // management handshake (NOT event polling) — no IRQ available
             // for "CPU online" because GIC isn't fully wired across CPUs
             // until each is up. Linux uses wait_for_completion_timeout()
-            // in __cpu_up() for the equivalent transition. Bounded by the
-            // explicit timeout check inside the loop. Allowlisted per
-            // docs/polling-allowlist.md.
+            // in __cpu_up() for the equivalent transition. CNTVCT advances
+            // while this vCPU is host-starved, so allow ten seconds for slow
+            // hosts; healthy boots still leave the loop as soon as all CPUs
+            // report online. Allowlisted per docs/polling-allowlist.md.
             while kernel::arch_impl::aarch64::smp::cpus_online() < expected {
-                if timer::rdtsc() - start > timeout_ticks {
+                if timer::rdtsc().wrapping_sub(start) >= timeout_ticks {
                     serial_println!(
                         "[smp] Timeout waiting for CPUs ({}  online, {} expected)",
                         kernel::arch_impl::aarch64::smp::cpus_online(),
