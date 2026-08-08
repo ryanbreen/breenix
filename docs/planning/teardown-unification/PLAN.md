@@ -3,7 +3,7 @@
 Companion to `teardown-unification-DESIGN-v3.md`. Design-only: nothing below has been implemented and
 no gate result is claimed.
 
-**Status:** **Tranche-ratified document. Tranche 1 (P0+P1+P2): submitted for ratification. Later phases: design-debt register applies; sections may change before their tranche ratifies.**
+**Status:** **Tranche-ratified document. Tranche 1 (P0+P1+P2): COMPLETE — merged to `main`. P2 (SPINE-1, #491's live UAF) shipped via PR #515, merge commit `6003c7a6758a51c4f2092f8a1e3a502432273795`; exit_kick_protocol_gate + fork_exit_defer_reclaim_pairing_test deterministic 100/100, 0 fault markers, beast x86 3/3. Later phases: design-debt register applies; sections may change before their tranche ratifies.**
 
 **Base:** `main` @ `eebc8868` (docs re-verified at `main` @ `c9efdcc7`; **re-verified again for v3 at
 `main` @ `985881a6`** — v2 of these documents merged, no kernel change. Every file:line below was read

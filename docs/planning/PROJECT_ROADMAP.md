@@ -17,6 +17,12 @@ https://v0-breenix-dashboard.vercel.app/).
 
 ## Recently Completed
 
+- ✅ **Teardown-unification tranche 1 (P0+P1+P2) COMPLETE — SIGKILL use-after-free spine closed** ([PR #515](https://github.com/ryanbreen/breenix/pull/515), Aug 2026)
+  - P2 (SPINE-1) stops SIGKILL/fault-kill from eager-freeing victim frames, routing the kill path through `exit_process_and_retire` receipt custody + the `EXIT_KICK` expedite SGI, closing the cross-CPU use-after-free tracked at [#491](https://github.com/ryanbreen/breenix/issues/491). This completes **tranche 1** of the `docs/planning/teardown-unification/` phased plan (P0 observability/ratchet + P1 retirement-fence/drain restructure + P2 spine), all three now merged to `main`.
+  - Gates: `exit_kick_protocol_gate` deterministic 100/100 (hardened with bounded reservation handshakes + self-heal IPI after a fatal reusability defect found in review — see `docs/planning/teardown-unification/PLAN.md` CHANGELOG); `fork_exit_defer_reclaim_pairing_test` deterministic 100/100 (unblocked by #513, a test observation-race fix); 0 fault/UAF/panic markers across confirmation boots; beast x86 3/3. x86 fault-path findings from review adjudicated non-blocking, tracked at #511.
+  - Pre-existing, unrelated flake filed as a follow-up: ARM64 `timer_quantum_reset_aarch64` / `arm64_socket_reset_quantum` fail ~4% at zero load — [#516](https://github.com/ryanbreen/breenix/issues/516).
+  - Merge commit: `6003c7a6758a51c4f2092f8a1e3a502432273795`.
+
 - ✅ **PR #418 follow-ups: clone stack ownership, exit-status reporting + GPU DMA lifetime fix** ([PR #494](https://github.com/ryanbreen/breenix/pull/494), Aug 2026)
   - Closes two of #418's tracked follow-ups: [#481](https://github.com/ryanbreen/breenix/issues/481) `Thread::clone` now transfers `kernel_stack_allocation` to the scheduler-owned thread copy on aarch64 (mirroring `fork`), so the child's kernel stack is protected by the two-epoch retirement grace; [#433](https://github.com/ryanbreen/breenix/issues/433) repeat teardown passes on the same process now report the *first-recorded* exit status to `btrt`/waitpid instead of a later pass's parameter, while keeping SIGCHLD/parent-wakeup/`btrt` notification unconditional on every pass.
   - **GPU DMA lifetime fix**, found by this round's own Parallels launcher-test gate, not by review: a spurious `SIGCHLD` (default-ignored, but `check_signals_for_eintr` ignores disposition) aborted an interruptible VirtIO-GPU ctrlq completion wait mid-flight, freeing device-owned DMA buffers while the device still held live virtqueue descriptors; the device's later DMA write poisoned a `linked_list_allocator` `Hole.next` pointer, surfacing as an unrelated EL1 `DATA_ABORT` in `HoleList::deallocate`. Fixed by switching the ctrlq wait to `wait_timeout_uninterruptible`, matching the AHCI precedent. A dual Opus+Codex-Sol RCA converged independently on this root cause. 10/10 clean Parallels launcher-test runs post-fix.
@@ -38,7 +44,6 @@ https://v0-breenix-dashboard.vercel.app/).
 - 📋 **CLONE_VM group seal + exec-time `thread_group_id`/`inherited_cr3` detach** — [#471](https://github.com/ryanbreen/breenix/issues/471)
 - 📋 **Designated-init runtime flag + panic-on-init-exit** (design together with #471) — [#464](https://github.com/ryanbreen/breenix/issues/464)
 - 📋 **Idle-path CoW-walk latency under IRQ mask** in the `schedule_from_kernel` drain (design together with #492) — [#448](https://github.com/ryanbreen/breenix/issues/448)
-- 📋 **SIGKILL teardown bypasses the hardened exit path** (pre-existing eager-free UAF class in `send_signal_to_process`) — [#491](https://github.com/ryanbreen/breenix/issues/491)
 - 📋 **Fault-exit deferred drain unbounded under IRQ mask** (`DEFERRED_FAULT_EXIT_BUFFERS` can replay up to 128 passes in one `schedule_from_kernel` call) — [#492](https://github.com/ryanbreen/breenix/issues/492)
 - 📋 **`check_signals_for_eintr` ignores signal disposition** (default-ignored signals spuriously interrupt futex/epoll/`wait.rs`/AHCI/`socket.rs`/`time.rs` waits) — [#493](https://github.com/ryanbreen/breenix/issues/493)
 
