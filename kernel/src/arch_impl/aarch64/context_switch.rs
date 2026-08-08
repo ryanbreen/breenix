@@ -717,37 +717,31 @@ aarch64_enter_exception_frame:
     str x17, [x16]
 5:
 
-    // ═════════════════════════════════════════════════════════════════════
-    // 🔒 GOLD-MASTER REGION — ISB before dispatch ERET
-    // ═════════════════════════════════════════════════════════════════════
+    // ISB before dispatch ERET — narrow placement is load-bearing.
     //
-    // Frozen by PR #336. Original fix: aeb3e989 (added ISB at 6 ERET sites)
-    // then aade0871 (narrowed to this ONE site). Narrow placement is
-    // load-bearing: ISBs at the other ERET sites (IRQ return, syscall
-    // return, first-entry-to-userspace) caused a DIFFERENT timer death at
-    // ~10K ticks. Only the dispatch ERET needs the ISB.
+    // Added in PR #336. Original fix: aeb3e989 (added ISB at 6 ERET sites)
+    // then aade0871 (narrowed to this ONE site). ISBs at the other ERET
+    // sites (IRQ return, syscall return, first-entry-to-userspace) caused a
+    // DIFFERENT timer death at ~10K ticks. Only the dispatch ERET needs the
+    // ISB, so do NOT add ISBs before the other ERETs.
     //
     // Bisection evidence (aeb3e989 commit message):
     //   - ret-based dispatch (no ERET): timer survives 55000+ ticks
     //   - ERET without ISB: timer dies after ~4 ticks
     //   - ERET with ISB: timer survives 300000+ ticks indefinitely
     //
-    // Rationale: HVF intercepts ERET before it executes as a context-sync
+    // Why: HVF intercepts ERET before it executes as a context-sync
     // event. Without the ISB, HVF reads guest SPSR_EL1/ELR_EL1 pre-sync.
     // On real hardware ERET is itself a sync, so this ISB is architecturally
     // redundant — but HVF doesn't get the sync until it runs the interception.
     //
-    // DO NOT:
-    //   - Remove this isb.
-    //   - Add ISBs before other ERETs (boot.S sync/irq handlers, syscall
-    //     return in syscall_entry.S). aade0871 specifically removed them
-    //     from those sites because they caused timer death.
-    //   - Inline additional instructions between this isb and the eret
-    //     below unless you've verified (via boot + 30s trace) that the
-    //     timer still survives.
+    // If you change this, re-verify (via boot + 30s trace) that the timer
+    // survives — in particular don't add ISBs before the other ERETs (boot.S
+    // sync/irq handlers, syscall return in syscall_entry.S; aade0871 removed
+    // them there precisely because they caused timer death), and don't inline
+    // extra instructions between this isb and the eret below without checking.
     //
-    // See docs/planning/cpu0-user-guard-autopsy/README.md.
-    // ═════════════════════════════════════════════════════════════════════
+    // Background: docs/planning/cpu0-user-guard-autopsy/README.md.
     isb
     mrs x16, mpidr_el1
     and x16, x16, #0xFF
@@ -1375,10 +1369,10 @@ pub fn dump_all_inline_save_skew_snapshots() {
 // frame was not (fully) rebuilt from context before consumption -- exactly
 // the mechanism by which a stale idle/scheduler frame physically resident on
 // a reused kstack slot could reach ERET/branch instead of the thread's real
-// saved state. Placed in the RUST callers only, per the gold-master
-// constraints on aarch64_enter_exception_frame / idle_loop_arm64 / the EL0
-// dispatch site (see CLAUDE.md's frozen-region table and
-// docs/planning/cpu0-user-guard-autopsy/README.md) -- never inside those
+// saved state. Placed in the RUST callers only -- keep the timing-sensitive
+// aarch64_enter_exception_frame / idle_loop_arm64 / EL0 dispatch site
+// sequences (see docs/planning/cpu0-user-guard-autopsy/README.md for why they
+// are shaped the way they are) untouched, never instrumenting inside those
 // regions. Strictly lock-free atomics, last-wins per CPU; record-and-continue
 // only, no behavior change.
 static DISPATCH_MISMATCH_SEEN: [AtomicU64; crate::arch_impl::aarch64::constants::MAX_CPUS] =
@@ -1467,11 +1461,11 @@ pub fn dump_all_dispatch_mismatch_snapshots() {
 // nested exception reusing the same stack-local frame storage), or that
 // carries idle's live register-file fingerprint per
 // `frame_is_idle_register_file` even when its elr happens to equal the
-// dispatched thread's context.elr_el1. Placed in the RUST callers only, per
-// the gold-master constraints on aarch64_enter_exception_frame /
-// idle_loop_arm64 / the EL0 dispatch site (CLAUDE.md's frozen-region table,
-// docs/planning/cpu0-user-guard-autopsy/README.md) -- never inside those
-// regions. Strictly lock-free atomics, last-wins per CPU; record-and-
+// dispatched thread's context.elr_el1. Placed in the RUST callers only --
+// keep the timing-sensitive aarch64_enter_exception_frame / idle_loop_arm64 /
+// EL0 dispatch site sequences (see docs/planning/cpu0-user-guard-autopsy/
+// README.md for why they are shaped the way they are) untouched, never
+// instrumenting inside those regions. Strictly lock-free atomics, last-wins per CPU; record-and-
 // continue only, no behavior change.
 static ERET_ANOMALY_SEEN: [AtomicU64; crate::arch_impl::aarch64::constants::MAX_CPUS] =
     [const { AtomicU64::new(0) }; crate::arch_impl::aarch64::constants::MAX_CPUS];
@@ -1491,9 +1485,9 @@ static ERET_ANOMALY_SPSR: [AtomicU64; crate::arch_impl::aarch64::constants::MAX_
 /// `record_dispatch_mismatch_if_needed` (kernel-context-restore and
 /// userspace-dispatch branches). A parallel per-CPU atomic rather than a
 /// field inside `Aarch64ExceptionFrame` itself -- the frame's layout is
-/// consumed by the frozen assembly in `aarch64_enter_exception_frame` at
-/// fixed offsets, so adding a live field there would require re-deriving
-/// every offset used by that gold-master code. Read (not written) by the
+/// consumed by the hand-written assembly in `aarch64_enter_exception_frame`
+/// at fixed offsets, so adding a live field there would require re-deriving
+/// every offset used by that code. Read (not written) by the
 /// ERET_ANOMALY consumer sites so the postmortem can show whether the tid
 /// about to be ERET'd/resumed actually matches the last tid a frame was
 /// finalized for on this CPU, or whether an intervening dispatch path
@@ -3258,11 +3252,10 @@ fn dispatch_thread_locked(
                 );
             }
         }
-        // ═══════════════════════════════════════════════════════════════════
-        // 🔒 GOLD-MASTER REGION — DO NOT ADD A CPU0-SPECIFIC EL0 DISPATCH GUARD
-        // ═══════════════════════════════════════════════════════════════════
+        // No CPU0-specific EL0 dispatch guard here — CPU0 dispatches EL0
+        // threads IDENTICALLY to CPUs 1-7.
         //
-        // Frozen by PR #334 (commit 9da897f4, 2026-04-22) after a one-week
+        // History (PR #334, commit 9da897f4, 2026-04-22): a one-week
         // investigation attributed CPU0 "timer death" to an HVF vtimer issue.
         // The real bug was a CPU0-specific guard here that redirected every
         // EL0 candidate, then called `requeue_thread_after_save(thread_id)`
@@ -3271,27 +3264,20 @@ fn dispatch_thread_locked(
         // same thread, hit the guard, requeued, looped at ~24 kHz,
         // indefinitely, never reaching userspace.
         //
-        // RULE: CPU0 dispatches EL0 threads IDENTICALLY to CPUs 1-7. Do not
-        // add any CPU-specific branch here.
-        //
-        // IF YOU BELIEVE CPU0 NEEDS SPECIAL HANDLING, DO ALL OF:
-        //   1. Read docs/planning/cpu0-user-guard-autopsy/README.md first.
-        //   2. Reproduce the problem with cpu0-trace-dump-probe evidence,
-        //      specifically per-CPU tick_count parity at 30s uptime.
-        //   3. Verify on the Linux probe VM (10.211.55.3) that Linux needs
-        //      the behavior you're proposing. If Linux works without it,
-        //      Breenix can work without it.
-        //   4. Ensure any requeue you add demonstrably routes to a NON-CPU0
-        //      ready queue (NOT requeue_thread_after_save which re-enqueues
-        //      on the current CPU).
-        //   5. Obtain PR signoff from the project owner.
+        // So: don't add a CPU-specific branch here without strong evidence.
+        // If you think CPU0 genuinely needs special handling, reproduce the
+        // problem first (per-CPU tick_count parity at 30s uptime via the
+        // cpu0-trace-dump-probe), confirm on the Linux probe VM (10.211.55.3)
+        // that Linux needs the behavior — if Linux works without it, Breenix
+        // can too — and make sure any requeue you add demonstrably routes to a
+        // NON-CPU0 ready queue (NOT requeue_thread_after_save, which
+        // re-enqueues on the current CPU).
         //
         // The boot-time regression alarm in timer_interrupt.rs (panics if
-        // CPU0 tick_count < 10% of max peer at 30s) will catch you if any
-        // change to this region reintroduces the loop.
+        // CPU0 tick_count < 10% of max peer at 30s) will catch a change here
+        // that reintroduces the loop.
         //
-        // DO NOT REMOVE OR RELAX THIS COMMENT BLOCK.
-        // ═══════════════════════════════════════════════════════════════════
+        // Background: docs/planning/cpu0-user-guard-autopsy/README.md.
 
         if !has_started {
             if let Some(thread) = sched.get_thread_mut(thread_id) {
@@ -4900,32 +4886,28 @@ fn idle_enter_scheduler_if_needed() -> bool {
 
 /// ARM64 idle loop - wait for interrupts.
 #[no_mangle]
-// ═══════════════════════════════════════════════════════════════════════════
-// 🔒 GOLD-MASTER REGION — idle_loop_arm64
-// ═══════════════════════════════════════════════════════════════════════════
+// idle_loop_arm64 — the (daifset → gate check → dsb sy → wfi → daifclr)
+// sequence in this loop is load-bearing.
 //
-// Frozen by PR #334 (commit 9da897f4, 2026-04-22). The (daifset → gate check
-// → dsb sy → wfi → daifclr) sequence in this loop is the result of F20e
-// (bff1d92a), F32j's sleep gate (part of PR #328), and the empirical
-// finding that Linux runs the same pattern on the same Parallels
-// hypervisor without issue.
+// Shaped by PR #334 (commit 9da897f4, 2026-04-22), F20e (bff1d92a), F32j's
+// sleep gate (part of PR #328), and the empirical finding that Linux runs the
+// same pattern on the same Parallels hypervisor without issue.
 //
 // In particular:
 //   - `dsb sy` BEFORE wfi matches Linux's `arch/arm64/kernel/process.c::cpu_do_idle`
 //   - WFI runs with IRQs masked; masked IRQs still wake WFI per ARM spec
 //   - `daifclr` after WFI unmasks to take the pending IRQ
 //
-// DO NOT:
-//   - Re-add the idle-loop `rearm_timer()` that F20e removed (handler-level
-//     re-arm from e4e16b68 covers this)
-//   - Change the DAIF mask width without citing Linux arch_local_irq_disable
-//   - Add a CPU0-specific branch here (the previous guard was what caused
-//     the week-long "CPU0 regression" — see
+// When changing this loop, keep those invariants in mind:
+//   - Don't re-add the idle-loop `rearm_timer()` that F20e removed (handler-
+//     level re-arm from e4e16b68 covers this)
+//   - Don't change the DAIF mask width without citing Linux arch_local_irq_disable
+//   - Don't add a CPU0-specific branch here (the previous guard was what
+//     caused the week-long "CPU0 regression" — see
 //     docs/planning/cpu0-user-guard-autopsy/README.md)
 //
 // The regression alarm in timer_interrupt.rs fires if CPU0 tick_count
 // diverges from peer CPUs at 30s uptime.
-// ═══════════════════════════════════════════════════════════════════════════
 pub extern "C" fn idle_loop_arm64() -> ! {
     // Get CPU ID once (cheap MRS).
     let cpu_id = crate::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id() as usize;
