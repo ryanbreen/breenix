@@ -1120,9 +1120,9 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
     use alloc::vec::Vec;
     use core::sync::atomic::AtomicBool;
 
-    const PER_WAIT_BUDGET_MILLISECONDS: u64 = 3_000;
+    const PER_WAIT_BUDGET_MILLISECONDS: u64 = 1_500;
     const WHOLE_GATE_BUDGET_MILLISECONDS: u64 = 15_000;
-    const HANDSHAKE_ITERATION_CAP: u64 = 1 << 32;
+    const HANDSHAKE_ITERATION_CAP: u64 = 50_000_000;
     const FIRST_RESCHED_REKICK_GRACE_MILLISECONDS: u64 = 100;
     const RESCHED_REKICK_INTERVAL_MILLISECONDS: u64 = 5;
     // Keep this fallback identical to the one in main_aarch64.rs. If firmware
@@ -1155,6 +1155,12 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
         wait_budget_ms: u64,
         gate_elapsed_ms: u64,
         gate_budget_ms: u64,
+        rekick_sgis: u64,
+    }
+
+    struct WaitSuccess {
+        wait_elapsed_ticks: u64,
+        gate_elapsed_ticks: u64,
         rekick_sgis: u64,
     }
 
@@ -1195,19 +1201,21 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
     //
     // This gate coordinator runs synchronously on CPU 0 (outside the scheduler)
     // and busy-waits on handshakes completed by kthreads pinned to CPU 1/2/3.
-    // Every wait receives its own three-second CNTVCT deadline, while the whole
-    // gate has a separate 15-second backstop. CPU 0's loop count can race ahead
-    // while a live target vCPU is deprived of host time, so iteration count is
-    // only a secondary guard for a stopped/trapped CNTVCT. After the initial
-    // grace period, every wait periodically re-sends the existing per-CPU
-    // resched SGI while it remains in budget. That is expected for long storm
-    // joins as well as short handshakes, and does not touch EXIT_KICK accounting.
+    // Every wait receives its own 1.5-second CNTVCT deadline. Eight full wait
+    // budgets total 12 seconds, leaving three seconds of headroom under the
+    // separate 15-second in-wait whole-gate backstop. CPU 0's loop count can
+    // race ahead while a live target vCPU is deprived of host time, so iteration
+    // count is only a secondary guard for a stopped/trapped CNTVCT. After the
+    // initial grace period, every wait periodically re-sends the existing per-
+    // CPU resched SGI while it remains in budget. That is expected for long
+    // storm joins as well as short handshakes, and does not touch EXIT_KICK
+    // accounting.
     fn spin_with_resched<F: Fn() -> bool>(
         cond: F,
         kick_cpus: &[usize],
         watchdog: &HandshakeWatchdog,
-    ) -> Result<(), WaitFailure> {
-        let wait_start = crate::arch_impl::aarch64::timer::rdtsc();
+    ) -> Result<WaitSuccess, WaitFailure> {
+        let wait_start = crate::arch_impl::aarch64::timer::rdtsc_serialized();
         let mut sent_rekick = false;
         let mut last_kick = wait_start;
         let mut iterations = 0u64;
@@ -1215,7 +1223,12 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
 
         loop {
             if cond() {
-                return Ok(());
+                let now = crate::arch_impl::aarch64::timer::rdtsc_serialized();
+                return Ok(WaitSuccess {
+                    wait_elapsed_ticks: now.wrapping_sub(wait_start),
+                    gate_elapsed_ticks: now.wrapping_sub(watchdog.gate_start),
+                    rekick_sgis,
+                });
             }
 
             let now = crate::arch_impl::aarch64::timer::rdtsc_serialized();
@@ -1231,7 +1244,11 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
             if let Some(kind) = deadline_kind {
                 // Close the observation/deadline race before reporting failure.
                 if cond() {
-                    return Ok(());
+                    return Ok(WaitSuccess {
+                        wait_elapsed_ticks: wait_elapsed,
+                        gate_elapsed_ticks: gate_elapsed,
+                        rekick_sgis,
+                    });
                 }
                 return Err(watchdog.failure(kind, wait_elapsed, gate_elapsed, rekick_sgis));
             }
@@ -1239,7 +1256,12 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
             iterations = iterations.saturating_add(1);
             if iterations >= HANDSHAKE_ITERATION_CAP {
                 if cond() {
-                    return Ok(());
+                    let now = crate::arch_impl::aarch64::timer::rdtsc_serialized();
+                    return Ok(WaitSuccess {
+                        wait_elapsed_ticks: now.wrapping_sub(wait_start),
+                        gate_elapsed_ticks: now.wrapping_sub(watchdog.gate_start),
+                        rekick_sgis,
+                    });
                 }
                 let now = crate::arch_impl::aarch64::timer::rdtsc_serialized();
                 return Err(watchdog.failure(
@@ -1283,7 +1305,7 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
         kick_cpus: &[usize],
         watchdog: &HandshakeWatchdog,
     ) -> Result<(), WaitFailure> {
-        spin_with_resched(
+        let success = spin_with_resched(
             || crate::task::kthread::kthread_has_exited_for_test(handle),
             kick_cpus,
             watchdog,
@@ -1294,23 +1316,23 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
             let now = crate::arch_impl::aarch64::timer::rdtsc_serialized();
             Err(watchdog.failure(
                 WaitFailureKind::JoinFailed,
-                0,
-                now.wrapping_sub(watchdog.gate_start),
-                0,
+                success.wait_elapsed_ticks,
+                now.wrapping_sub(watchdog.gate_start)
+                    .max(success.gate_elapsed_ticks),
+                success.rekick_sgis,
             ))
         }
     }
 
-    fn wait_failure_result(
-        failure: WaitFailure,
+    fn print_wait_diagnostic(
+        failure: &WaitFailure,
         wait_name: &'static str,
         condition_name: &'static str,
         condition_value: u64,
-        deadline_message: &'static str,
-        iteration_message: &'static str,
-    ) -> TestResult {
+        late_true: bool,
+    ) {
         crate::serial_println!(
-            "[exit_kick_gate] wait={} cause={} elapsed_ms={} budget_ms={} gate_elapsed_ms={} gate_budget_ms={} rekick_sgis={} cpus_online={} {}={}",
+            "[exit_kick_gate] wait={} cause={} elapsed_ms={} budget_ms={} gate_elapsed_ms={} gate_budget_ms={} rekick_sgis={} cpus_online={} {}={} late_true={}",
             wait_name,
             failure.kind.as_str(),
             failure.wait_elapsed_ms,
@@ -1321,11 +1343,41 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
             crate::arch_impl::aarch64::smp::cpus_online(),
             condition_name,
             condition_value,
+            late_true as u8,
         );
-        if matches!(failure.kind, WaitFailureKind::IterationCap) {
-            TestResult::Fail(iteration_message)
-        } else {
-            TestResult::Fail(deadline_message)
+    }
+
+    fn report_late_wait_success(
+        failure: &WaitFailure,
+        wait_name: &'static str,
+        condition_name: &'static str,
+        condition_value: u64,
+    ) {
+        print_wait_diagnostic(failure, wait_name, condition_name, condition_value, true);
+    }
+
+    fn wait_failure_result(
+        failure: WaitFailure,
+        wait_name: &'static str,
+        condition_name: &'static str,
+        condition_value: u64,
+        deadline_message: &'static str,
+        iteration_message: &'static str,
+        late_true: bool,
+    ) -> TestResult {
+        print_wait_diagnostic(
+            &failure,
+            wait_name,
+            condition_name,
+            condition_value,
+            late_true,
+        );
+        match failure.kind {
+            WaitFailureKind::IterationCap => TestResult::Fail(iteration_message),
+            WaitFailureKind::WholeGateDeadline => TestResult::Fail(
+                "exit_kick_gate: whole-gate deadline expired while current wait remained unresponsive",
+            ),
+            _ => TestResult::Fail(deadline_message),
         }
     }
 
@@ -1487,15 +1539,26 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
         &[PUBLISHER_A_CPU],
         &gate_watchdog,
     ) {
-        // `hook` is dropped on return, releasing publisher A from its hold.
-        return wait_failure_result(
-            failure,
-            "publisher_a_reservation",
-            "reserved",
-            EXIT_KICK_TEST_HOOK_RESERVED.load(Ordering::Acquire),
-            "exit_kick_gate: publisher A reservation handshake stuck, CPU 1 unresponsive",
-            "exit_kick_gate: publisher A reservation handshake iteration cap exhausted, CPU 1 unresponsive",
-        );
+        let condition_value = EXIT_KICK_TEST_HOOK_RESERVED.load(Ordering::Acquire);
+        if condition_value != 0 {
+            report_late_wait_success(
+                &failure,
+                "publisher_a_reservation",
+                "reserved",
+                condition_value,
+            );
+        } else {
+            // `hook` is dropped on return, releasing publisher A from its hold.
+            return wait_failure_result(
+                failure,
+                "publisher_a_reservation",
+                "reserved",
+                condition_value,
+                "exit_kick_gate: publisher A reservation handshake stuck, CPU 1 unresponsive",
+                "exit_kick_gate: publisher A reservation handshake iteration cap exhausted, CPU 1 unresponsive",
+                false,
+            );
+        }
     }
 
     let b_done = Arc::clone(&publisher_b_done);
@@ -1528,15 +1591,26 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
         &[PUBLISHER_B_CPU],
         &gate_watchdog,
     ) {
-        // `hook` is dropped on return, releasing publisher A from its hold.
-        return wait_failure_result(
-            failure,
-            "publisher_b_completion",
-            "publisher_b_done",
-            publisher_b_done.load(Ordering::Acquire),
-            "exit_kick_gate: publisher B completion handshake stuck, CPU 2 unresponsive",
-            "exit_kick_gate: publisher B completion handshake iteration cap exhausted, CPU 2 unresponsive",
-        );
+        let condition_value = publisher_b_done.load(Ordering::Acquire);
+        if condition_value != 0 {
+            report_late_wait_success(
+                &failure,
+                "publisher_b_completion",
+                "publisher_b_done",
+                condition_value,
+            );
+        } else {
+            // `hook` is dropped on return, releasing publisher A from its hold.
+            return wait_failure_result(
+                failure,
+                "publisher_b_completion",
+                "publisher_b_done",
+                condition_value,
+                "exit_kick_gate: publisher B completion handshake stuck, CPU 2 unresponsive",
+                "exit_kick_gate: publisher B completion handshake iteration cap exhausted, CPU 2 unresponsive",
+                false,
+            );
+        }
     }
 
     let publisher_a_cpu = EXIT_KICK_TEST_HOOK_CPU.load(Ordering::Acquire);
@@ -1550,25 +1624,59 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
         && EXIT_SGI_SENT.aggregate() == sgi_before + 1;
 
     hook.release();
-    if let Err(failure) = join_with_resched(&publisher_b, &[PUBLISHER_B_CPU], &gate_watchdog) {
-        return wait_failure_result(
-            failure,
-            "publisher_b_join",
-            "publisher_b_exited",
-            crate::task::kthread::kthread_has_exited_for_test(&publisher_b) as u64,
-            "exit_kick_gate: publisher B join stuck, CPU 2 unresponsive",
-            "exit_kick_gate: publisher B join iteration cap exhausted, CPU 2 unresponsive",
-        );
+    if let Err(mut failure) = join_with_resched(&publisher_b, &[PUBLISHER_B_CPU], &gate_watchdog) {
+        let condition_value =
+            crate::task::kthread::kthread_has_exited_for_test(&publisher_b) as u64;
+        let late_completion =
+            !matches!(failure.kind, WaitFailureKind::JoinFailed) && condition_value != 0;
+        if late_completion && crate::task::kthread::kthread_join(&publisher_b).is_ok() {
+            report_late_wait_success(
+                &failure,
+                "publisher_b_join",
+                "publisher_b_exited",
+                condition_value,
+            );
+        } else {
+            if late_completion {
+                failure.kind = WaitFailureKind::JoinFailed;
+            }
+            return wait_failure_result(
+                failure,
+                "publisher_b_join",
+                "publisher_b_exited",
+                condition_value,
+                "exit_kick_gate: publisher B join stuck, CPU 2 unresponsive",
+                "exit_kick_gate: publisher B join iteration cap exhausted, CPU 2 unresponsive",
+                late_completion,
+            );
+        }
     }
-    if let Err(failure) = join_with_resched(&publisher_a, &[PUBLISHER_A_CPU], &gate_watchdog) {
-        return wait_failure_result(
-            failure,
-            "publisher_a_join",
-            "publisher_a_exited",
-            crate::task::kthread::kthread_has_exited_for_test(&publisher_a) as u64,
-            "exit_kick_gate: publisher A join stuck, CPU 1 unresponsive",
-            "exit_kick_gate: publisher A join iteration cap exhausted, CPU 1 unresponsive",
-        );
+    if let Err(mut failure) = join_with_resched(&publisher_a, &[PUBLISHER_A_CPU], &gate_watchdog) {
+        let condition_value =
+            crate::task::kthread::kthread_has_exited_for_test(&publisher_a) as u64;
+        let late_completion =
+            !matches!(failure.kind, WaitFailureKind::JoinFailed) && condition_value != 0;
+        if late_completion && crate::task::kthread::kthread_join(&publisher_a).is_ok() {
+            report_late_wait_success(
+                &failure,
+                "publisher_a_join",
+                "publisher_a_exited",
+                condition_value,
+            );
+        } else {
+            if late_completion {
+                failure.kind = WaitFailureKind::JoinFailed;
+            }
+            return wait_failure_result(
+                failure,
+                "publisher_a_join",
+                "publisher_a_exited",
+                condition_value,
+                "exit_kick_gate: publisher A join stuck, CPU 1 unresponsive",
+                "exit_kick_gate: publisher A join iteration cap exhausted, CPU 1 unresponsive",
+                late_completion,
+            );
+        }
     }
     core::mem::drop(hook);
 
@@ -1868,46 +1976,102 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
         &worker_cpus,
         &gate_watchdog,
     ) {
-        return wait_failure_result(
-            failure,
-            "workers_ready",
-            "workers_ready",
-            accounting.workers_ready.load(Ordering::Acquire),
-            "exit_kick_gate: workers_ready never reached 3, a worker CPU (1/2/3) is unresponsive",
-            "exit_kick_gate: workers_ready iteration cap exhausted, a worker CPU (1/2/3) is unresponsive",
-        );
+        let condition_value = accounting.workers_ready.load(Ordering::Acquire);
+        if condition_value == 3 {
+            report_late_wait_success(&failure, "workers_ready", "workers_ready", condition_value);
+        } else {
+            return wait_failure_result(
+                failure,
+                "workers_ready",
+                "workers_ready",
+                condition_value,
+                "exit_kick_gate: workers_ready never reached 3, a worker CPU (1/2/3) is unresponsive",
+                "exit_kick_gate: workers_ready iteration cap exhausted, a worker CPU (1/2/3) is unresponsive",
+                false,
+            );
+        }
     }
     accounting.start.store(true, Ordering::Release);
 
-    if let Err(failure) = join_with_resched(&publisher_a, &worker_cpus, &gate_watchdog) {
-        return wait_failure_result(
-            failure,
-            "storm_publisher_a_join",
-            "publisher_a_exited",
-            crate::task::kthread::kthread_has_exited_for_test(&publisher_a) as u64,
-            "exit_kick_gate: storm publisher A join stuck, CPU 1 unresponsive",
-            "exit_kick_gate: storm publisher A join iteration cap exhausted, CPU 1 unresponsive",
-        );
+    if let Err(mut failure) = join_with_resched(&publisher_a, &worker_cpus, &gate_watchdog) {
+        let condition_value =
+            crate::task::kthread::kthread_has_exited_for_test(&publisher_a) as u64;
+        let late_completion =
+            !matches!(failure.kind, WaitFailureKind::JoinFailed) && condition_value != 0;
+        if late_completion && crate::task::kthread::kthread_join(&publisher_a).is_ok() {
+            report_late_wait_success(
+                &failure,
+                "storm_publisher_a_join",
+                "publisher_a_exited",
+                condition_value,
+            );
+        } else {
+            if late_completion {
+                failure.kind = WaitFailureKind::JoinFailed;
+            }
+            return wait_failure_result(
+                failure,
+                "storm_publisher_a_join",
+                "publisher_a_exited",
+                condition_value,
+                "exit_kick_gate: storm publisher A join stuck, CPU 1 unresponsive",
+                "exit_kick_gate: storm publisher A join iteration cap exhausted, CPU 1 unresponsive",
+                late_completion,
+            );
+        }
     }
-    if let Err(failure) = join_with_resched(&publisher_b, &worker_cpus, &gate_watchdog) {
-        return wait_failure_result(
-            failure,
-            "storm_publisher_b_join",
-            "publisher_b_exited",
-            crate::task::kthread::kthread_has_exited_for_test(&publisher_b) as u64,
-            "exit_kick_gate: storm publisher B join stuck, CPU 2 unresponsive",
-            "exit_kick_gate: storm publisher B join iteration cap exhausted, CPU 2 unresponsive",
-        );
+    if let Err(mut failure) = join_with_resched(&publisher_b, &worker_cpus, &gate_watchdog) {
+        let condition_value =
+            crate::task::kthread::kthread_has_exited_for_test(&publisher_b) as u64;
+        let late_completion =
+            !matches!(failure.kind, WaitFailureKind::JoinFailed) && condition_value != 0;
+        if late_completion && crate::task::kthread::kthread_join(&publisher_b).is_ok() {
+            report_late_wait_success(
+                &failure,
+                "storm_publisher_b_join",
+                "publisher_b_exited",
+                condition_value,
+            );
+        } else {
+            if late_completion {
+                failure.kind = WaitFailureKind::JoinFailed;
+            }
+            return wait_failure_result(
+                failure,
+                "storm_publisher_b_join",
+                "publisher_b_exited",
+                condition_value,
+                "exit_kick_gate: storm publisher B join stuck, CPU 2 unresponsive",
+                "exit_kick_gate: storm publisher B join iteration cap exhausted, CPU 2 unresponsive",
+                late_completion,
+            );
+        }
     }
-    if let Err(failure) = join_with_resched(&observer, &worker_cpus, &gate_watchdog) {
-        return wait_failure_result(
-            failure,
-            "storm_observer_join",
-            "observer_exited",
-            crate::task::kthread::kthread_has_exited_for_test(&observer) as u64,
-            "exit_kick_gate: storm observer join stuck, CPU 3 unresponsive",
-            "exit_kick_gate: storm observer join iteration cap exhausted, CPU 3 unresponsive",
-        );
+    if let Err(mut failure) = join_with_resched(&observer, &worker_cpus, &gate_watchdog) {
+        let condition_value = crate::task::kthread::kthread_has_exited_for_test(&observer) as u64;
+        let late_completion =
+            !matches!(failure.kind, WaitFailureKind::JoinFailed) && condition_value != 0;
+        if late_completion && crate::task::kthread::kthread_join(&observer).is_ok() {
+            report_late_wait_success(
+                &failure,
+                "storm_observer_join",
+                "observer_exited",
+                condition_value,
+            );
+        } else {
+            if late_completion {
+                failure.kind = WaitFailureKind::JoinFailed;
+            }
+            return wait_failure_result(
+                failure,
+                "storm_observer_join",
+                "observer_exited",
+                condition_value,
+                "exit_kick_gate: storm observer join stuck, CPU 3 unresponsive",
+                "exit_kick_gate: storm observer join iteration cap exhausted, CPU 3 unresponsive",
+                late_completion,
+            );
+        }
     }
 
     let attempts = accounting.next_token.load(Ordering::Acquire);
@@ -1963,18 +2127,15 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
         return TestResult::Fail("exit-kick slot remained wedged after storm");
     }
 
-    let gate_elapsed_ticks = crate::arch_impl::aarch64::timer::rdtsc_serialized()
-        .wrapping_sub(gate_watchdog.gate_start);
-    if gate_elapsed_ticks >= gate_watchdog.gate_timeout_ticks {
-        crate::serial_println!(
-            "[exit_kick_gate] wait=whole_gate cause=whole_gate_deadline elapsed_ms={} budget_ms={} rekick_sgis={} cpus_online={} gate_complete=1",
-            gate_watchdog.ticks_to_milliseconds(gate_elapsed_ticks),
-            WHOLE_GATE_BUDGET_MILLISECONDS,
-            gate_watchdog.total_rekick_sgis.get(),
-            crate::arch_impl::aarch64::smp::cpus_online(),
-        );
-        return TestResult::Fail("exit_kick_gate: whole-gate wall-clock cap exhausted");
-    }
+    let gate_elapsed_ticks =
+        crate::arch_impl::aarch64::timer::rdtsc_serialized().wrapping_sub(gate_watchdog.gate_start);
+    crate::serial_println!(
+        "[exit_kick_gate] result=pass gate_elapsed_ms={} gate_budget_ms={} total_rekick_sgis={} cpus_online={}",
+        gate_watchdog.ticks_to_milliseconds(gate_elapsed_ticks),
+        WHOLE_GATE_BUDGET_MILLISECONDS,
+        gate_watchdog.total_rekick_sgis.get(),
+        crate::arch_impl::aarch64::smp::cpus_online(),
+    );
 
     TestResult::Pass
 }

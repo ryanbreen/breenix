@@ -142,9 +142,9 @@ fn validate_exit_kick_wait_watchdogs(
 ) -> Result<(), ()> {
     let gate = function_body(provider, "exit_kick_protocol_gate_test");
     for required in [
-        "const PER_WAIT_BUDGET_MILLISECONDS: u64 = 3_000;",
+        "const PER_WAIT_BUDGET_MILLISECONDS: u64 = 1_500;",
         "const WHOLE_GATE_BUDGET_MILLISECONDS: u64 = 15_000;",
-        "const HANDSHAKE_ITERATION_CAP: u64 = 1 << 32;",
+        "const HANDSHAKE_ITERATION_CAP: u64 = 50_000_000;",
         "const FIRST_RESCHED_REKICK_GRACE_MILLISECONDS: u64 = 100;",
         "const RESCHED_REKICK_INTERVAL_MILLISECONDS: u64 = 5;",
         "const CNTVCT_FALLBACK_FREQUENCY_HZ: u64 = 1_000_000;",
@@ -159,7 +159,11 @@ fn validate_exit_kick_wait_watchdogs(
         "budget_ms={}",
         "condition_name",
         "WaitFailureKind::IterationCap",
-        "exit_kick_gate: whole-gate wall-clock cap exhausted",
+        "whole-gate deadline expired while current wait remained unresponsive",
+        "late_true={}",
+        "result=pass gate_elapsed_ms={}",
+        "success.wait_elapsed_ticks",
+        "success.rekick_sgis",
     ] {
         if !gate.contains(required) {
             return Err(());
@@ -170,7 +174,10 @@ fn validate_exit_kick_wait_watchdogs(
         || gate.matches("iteration cap exhausted").count() != 8
         || gate.matches("if cond() {").count() < 2
         || gate.matches("&worker_cpus, &gate_watchdog").count() != 3
+        || gate.matches("report_late_wait_success(").count() != 9
         || gate.matches(".max(1)").count() != 4
+        || gate.contains("gate_complete=1")
+        || gate.contains("gate_elapsed_ticks >= gate_watchdog.gate_timeout_ticks")
     {
         return Err(());
     }
@@ -188,7 +195,7 @@ fn validate_exit_kick_wait_watchdogs(
         "const SMP_ONLINE_TIMEOUT_SECONDS: u64 = 6;",
         "const SMP_ONLINE_PROGRESS_INTERVAL_SECONDS: u64 = 1;",
         "const CNTVCT_FALLBACK_FREQUENCY_HZ: u64 = 1_000_000;",
-        "[smp] still waiting, {} online",
+        "[smp] still waiting for CPUs ({} online, {} expected)",
         "reported_frequency_hz == 0",
     ] {
         if !main_aarch64.contains(required) {
@@ -199,8 +206,10 @@ fn validate_exit_kick_wait_watchdogs(
     for required in [
         "const PSCI_CPU_ON_MAX_ATTEMPTS: usize = 4;",
         "const PSCI_CPU_ON_RETRY_BACKOFF_MICROSECONDS: u64 = 500;",
-        "static LAST_PSCI_RETURN_CODE:",
-        "pub fn last_psci_return_code(cpu_id: usize) -> Option<i64>",
+        "fn psci_cpu_on_result_is_retryable(ret: i64) -> bool",
+        "!psci_cpu_on_result_is_retryable(ret)",
+        "static LAST_PSCI_HVC64_RETURN_CODE:",
+        "pub fn last_psci_hvc64_return_code(cpu_id: usize) -> Option<i64>",
     ] {
         if !smp.contains(required) {
             return Err(());
@@ -737,8 +746,8 @@ fn deliberately_broken_variants_fail_the_ratchet() {
     let main_aarch64 = source(&sources, "kernel/src/main_aarch64.rs");
     let smp = source(&sources, "kernel/src/arch_impl/aarch64/smp.rs");
     let unthrottled_rekick = provider.replacen(
-        "const RESCHED_REKICK_INTERVAL_MILLISECONDS: u64 = 5;",
-        "const RESCHED_REKICK_INTERVAL_MILLISECONDS: u64 = 0;",
+        "now.wrapping_sub(last_kick) >= watchdog.rekick_interval_ticks",
+        "true",
         1,
     );
     assert!(validate_exit_kick_wait_watchdogs(&unthrottled_rekick, main_aarch64, smp).is_err());

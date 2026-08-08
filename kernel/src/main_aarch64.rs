@@ -955,13 +955,14 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
                 serial_println!("[smp] CPU {}: PSCI CPU_ON success", cpu);
                 launched += 1;
             } else {
-                let last_psci_ret =
-                    kernel::arch_impl::aarch64::smp::last_psci_return_code(cpu).unwrap_or(ret);
+                let last_hvc64_ret =
+                    kernel::arch_impl::aarch64::smp::last_psci_hvc64_return_code(cpu)
+                        .unwrap_or(ret);
                 serial_println!(
-                    "[smp] CPU {}: PSCI CPU_ON failed (ret={}, recorded_ret={}), stopping probe",
+                    "[smp] CPU {}: PSCI CPU_ON failed (ret={}, last_hvc64_ret={}), stopping probe",
                     cpu,
                     ret,
-                    last_psci_ret
+                    last_hvc64_ret
                 );
                 break;
             }
@@ -1010,8 +1011,9 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
                 }
                 if now.wrapping_sub(last_progress) >= progress_interval_ticks {
                     serial_println!(
-                        "[smp] still waiting, {} online",
-                        kernel::arch_impl::aarch64::smp::cpus_online()
+                        "[smp] still waiting for CPUs ({} online, {} expected)",
+                        kernel::arch_impl::aarch64::smp::cpus_online(),
+                        expected
                     );
                     last_progress = now;
                 }

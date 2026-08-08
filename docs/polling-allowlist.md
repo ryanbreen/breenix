@@ -53,7 +53,7 @@ This document formalizes the **Linux-rigor polling-elimination gate** for cases 
 
 ## P17: SMP secondary CPU online wait
 
-- **File:** `kernel/src/main_aarch64.rs:970-1019` (boot-time SMP bring-up wait after PSCI CPU_ON)
+- **File:** `kernel/src/main_aarch64.rs:970-1021` (boot-time SMP bring-up wait after PSCI CPU_ON)
 - **Loop:** `while kernel::arch_impl::aarch64::smp::cpus_online() < expected { ... core::hint::spin_loop(); }` with explicit timeout check.
 - **Justification:** Boot CPU waits for secondary CPUs to come online after issuing PSCI CPU_ON requests. The secondary CPUs increment `cpus_online` once they reach their entry point. Bounded CPU-management handshake (NOT event polling) — there is no IRQ available for "CPU now online" because the GIC distributor isn't fully wired across CPUs until each is up.
 - **Linux precedent:** `kernel/smp.c::__cpu_up()` uses `wait_for_completion_timeout()` for the equivalent transition — scheduler-backed wait that blocks until the secondary CPU sets its online state. Linux's wait is functionally a bounded busy-equivalent (scheduler may park the boot CPU, but the wait itself is on a completion that the secondary CPU triggers). Breenix's busy-spin is appropriate here because the scheduler is partially up at this stage and a CPU-management wait on this specific path doesn't benefit from yielding.
