@@ -16,6 +16,11 @@
 use crate::arch_impl::traits::TimerOps;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
+/// Lowest plausible counter frequency used by short boot-time fail-safe waits
+/// when firmware reports CNTFRQ_EL0 as zero. Test liveness watchdogs that must
+/// distinguish starvation from a wedge fail explicitly instead of using this.
+pub const CNTVCT_FALLBACK_FREQUENCY_HZ: u64 = 1_000_000;
+
 /// Cached counter frequency (read once at init, never changes)
 static COUNTER_FREQ: AtomicU64 = AtomicU64::new(0);
 /// Whether the timer has been initialized

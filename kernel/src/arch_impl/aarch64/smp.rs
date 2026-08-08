@@ -26,10 +26,6 @@ const PSCI_RETURN_ALREADY_ON: i64 = -4;
 const PSCI_RETURN_ON_PENDING: i64 = -5;
 const PSCI_RETURN_INTERNAL_FAILURE: i64 = -6;
 const PSCI_RETURN_NOT_ATTEMPTED: i64 = i64::MIN;
-// If CNTFRQ_EL0 is unavailable, a conservative low assumption makes the
-// backoff shorter on a real faster counter rather than unexpectedly long.
-const CNTVCT_FALLBACK_FREQUENCY_HZ: u64 = 1_000_000;
-
 extern "C" {
     /// Physical address of secondary_cpu_entry, stored in .rodata by boot.S.
     /// We cannot reference secondary_cpu_entry directly from Rust because it lives
@@ -229,13 +225,15 @@ fn psci_cpu_on_retry_backoff() {
     // independent iteration cap still bounds a stopped or unavailable counter.
     let reported_frequency_hz = super::timer::frequency_hz();
     let counter_frequency_hz = if reported_frequency_hz == 0 {
-        CNTVCT_FALLBACK_FREQUENCY_HZ
+        super::timer::CNTVCT_FALLBACK_FREQUENCY_HZ
     } else {
         reported_frequency_hz
     };
     let backoff_ticks =
         (counter_frequency_hz.saturating_mul(PSCI_CPU_ON_RETRY_BACKOFF_MICROSECONDS) / 1_000_000)
             .max(1);
+    // Ordering against prior memory operations is irrelevant for elapsed-time
+    // backoff, so the plain CNTVCT read avoids an unnecessary ISB here.
     let start = super::timer::rdtsc();
     for _ in 0..PSCI_CPU_ON_BACKOFF_ITERATION_CAP {
         if super::timer::rdtsc().wrapping_sub(start) >= backoff_ticks {

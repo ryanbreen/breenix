@@ -971,19 +971,14 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
             // Wait for all launched CPUs to come online (with timeout)
             const SMP_ONLINE_TIMEOUT_SECONDS: u64 = 6;
             const SMP_ONLINE_PROGRESS_INTERVAL_SECONDS: u64 = 1;
-            // Keep this fallback identical to smp.rs. Teardown's longer
-            // test-only watchdog deliberately uses a different fallback. If
-            // firmware reports zero here, the lowest plausible frequency keeps
-            // the guest-side verdict inside the harness timeout even when
-            // CNTVCT is actually faster.
-            const CNTVCT_FALLBACK_FREQUENCY_HZ: u64 = 1_000_000;
-
             let expected = 1 + launched; // boot CPU + launched
+            // Ordering against prior memory operations is irrelevant for this
+            // elapsed-time poll, so the plain CNTVCT read avoids an ISB.
             let start = timer::rdtsc();
             let mut last_progress = start;
             let reported_frequency_hz = timer::frequency_hz();
             let counter_frequency_hz = if reported_frequency_hz == 0 {
-                CNTVCT_FALLBACK_FREQUENCY_HZ
+                timer::CNTVCT_FALLBACK_FREQUENCY_HZ
             } else {
                 reported_frequency_hz
             };

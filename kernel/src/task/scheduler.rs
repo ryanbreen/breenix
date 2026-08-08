@@ -272,7 +272,7 @@ pub fn emit_wake_attribution_counters() {
 /// Global scheduler instance
 static SCHEDULER: Mutex<Option<Scheduler>> = Mutex::new(None);
 
-#[cfg(all(target_arch = "aarch64", feature = "boot_tests"))]
+#[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
 static BOOT_TEST_CPU_AFFINITY: [AtomicU64; MAX_CPUS] =
     [const { AtomicU64::new(0) }; MAX_CPUS];
 
@@ -290,7 +290,7 @@ fn try_lock_scheduler() -> Option<spin::MutexGuard<'static, Option<Scheduler>>> 
     Some(guard)
 }
 
-#[cfg(all(target_arch = "aarch64", feature = "boot_tests"))]
+#[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
 fn retain_cpu_affine_test_thread(
     queue: &mut VecDeque<u64>,
     thread_id: u64,
@@ -306,13 +306,12 @@ fn retain_cpu_affine_test_thread(
     true
 }
 
-#[cfg(all(target_arch = "aarch64", feature = "boot_tests"))]
+#[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
 pub(crate) fn clear_cpu_affinity_for_test(thread_id: u64) {
     crate::tracing::providers::teardown::record_kthread_exit_stage_for_test(thread_id);
     for slot in BOOT_TEST_CPU_AFFINITY.iter() {
         let _ = slot.compare_exchange(thread_id, 0, Ordering::AcqRel, Ordering::Relaxed);
     }
-    crate::tracing::providers::teardown::await_kthread_exit_watch_for_test(thread_id);
     crate::tracing::providers::teardown::record_kthread_exit_stage_for_test(thread_id);
 }
 
@@ -1078,7 +1077,7 @@ impl Scheduler {
         self.add_thread_inner(thread, true);
     }
 
-    #[cfg(all(target_arch = "aarch64", feature = "boot_tests"))]
+    #[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
     fn add_thread_on_cpu_for_test(&mut self, thread: Box<Thread>, cpu: usize) {
         debug_assert!(cpu < MAX_CPUS);
         let thread_id = thread.id();
@@ -1373,7 +1372,7 @@ impl Scheduler {
                     let Some(n) = self.per_cpu_queues[steal_cpu].pop_front() else {
                         break;
                     };
-                    #[cfg(all(target_arch = "aarch64", feature = "boot_tests"))]
+                    #[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
                     if retain_cpu_affine_test_thread(
                         &mut self.per_cpu_queues[steal_cpu],
                         n,
@@ -1432,7 +1431,7 @@ impl Scheduler {
                             continue;
                         }
                         if let Some(n) = self.per_cpu_queues[steal_cpu].pop_front() {
-                            #[cfg(all(target_arch = "aarch64", feature = "boot_tests"))]
+                            #[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
                             if retain_cpu_affine_test_thread(
                                 &mut self.per_cpu_queues[steal_cpu],
                                 n,
@@ -1729,7 +1728,7 @@ impl Scheduler {
                     let Some(n) = self.per_cpu_queues[steal_cpu].pop_front() else {
                         break;
                     };
-                    #[cfg(all(target_arch = "aarch64", feature = "boot_tests"))]
+                    #[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
                     if retain_cpu_affine_test_thread(
                         &mut self.per_cpu_queues[steal_cpu],
                         n,
@@ -1787,7 +1786,7 @@ impl Scheduler {
                             continue;
                         }
                         if let Some(n) = self.per_cpu_queues[steal_cpu].pop_front() {
-                            #[cfg(all(target_arch = "aarch64", feature = "boot_tests"))]
+                            #[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
                             if retain_cpu_affine_test_thread(
                                 &mut self.per_cpu_queues[steal_cpu],
                                 n,
@@ -3216,7 +3215,7 @@ pub fn spawn(thread: Box<Thread>) {
 }
 
 /// Test-only deterministic placement for concurrent protocol gates.
-#[cfg(all(target_arch = "aarch64", feature = "boot_tests"))]
+#[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
 pub(crate) fn spawn_on_cpu_for_test(thread: Box<Thread>, cpu: usize) {
     without_interrupts(|| {
         let thread_id = thread.id();
