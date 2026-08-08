@@ -66,7 +66,7 @@ This document formalizes the **Linux-rigor polling-elimination gate** for cases 
 
 ## P19: PSCI CPU_ON retry backoff
 
-- **File:** `kernel/src/arch_impl/aarch64/smp.rs:226-243` (`psci_cpu_on_retry_backoff()`)
+- **File:** `kernel/src/arch_impl/aarch64/smp.rs:226-246` (`psci_cpu_on_retry_backoff()`)
 - **Loop:** Short busy-wait between bounded PSCI CPU_ON attempts, exiting on the CNTVCT deadline or after 1,000,000 iterations if the counter is unavailable or stopped.
 - **Justification:** Secondary CPU release runs before the target CPU can signal through the scheduler. A transient PSCI `INTERNAL_FAILURE` response gets a short delay before retrying; there is no event source to block on at this stage. `ON_PENDING` is accepted and left to the separately bounded secondary-online wait rather than retried.
 - **Bounded:** At most 500 microseconds by CNTVCT and independently capped at 1,000,000 iterations. `release_cpu()` performs at most four total attempts, so at most three backoffs occur for one CPU probe.

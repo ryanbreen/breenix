@@ -246,27 +246,11 @@ fn psci_cpu_on_retry_backoff() {
 }
 
 fn psci_cpu_on_result_is_retryable(ret: i64) -> bool {
-    matches!(ret, PSCI_RETURN_INTERNAL_FAILURE)
+    ret == PSCI_RETURN_INTERNAL_FAILURE
 }
 
 fn psci_cpu_on_result_is_success(ret: i64) -> bool {
     matches!(ret, 0 | PSCI_RETURN_ALREADY_ON | PSCI_RETURN_ON_PENDING)
-}
-
-/// PSCI CPU_ON with 64-bit function ID via SMC (EL3 firmware conduit).
-fn psci_cpu_on_smc(target_cpu: u64, entry_point: u64, context_id: u64) -> i64 {
-    let ret: i64;
-    unsafe {
-        core::arch::asm!(
-            "smc #0",
-            inout("x0") PSCI_CPU_ON_64 => ret,
-            in("x1") target_cpu,
-            in("x2") entry_point,
-            in("x3") context_id,
-            options(nomem, nostack),
-        );
-    }
-    ret
 }
 
 /// Release a secondary CPU using PSCI CPU_ON.

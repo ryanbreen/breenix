@@ -1120,16 +1120,20 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
     use alloc::vec::Vec;
     use core::sync::atomic::AtomicBool;
 
-    const PER_WAIT_BUDGET_MILLISECONDS: u64 = 3_000;
+    const PER_WAIT_BUDGET_MILLISECONDS: u64 = 8_000;
+    // On current unstarved ARM64 virtual hosts, 10 million iterations of the
+    // watchdog loop take roughly 0.3-0.6 seconds of wall-clock time. Re-measure
+    // this sample window if the loop body changes materially.
     const CNTVCT_STALL_SAMPLE_INTERVAL_ITERATIONS: u64 = 10_000_000;
-    const FIRST_RESCHED_REKICK_GRACE_MILLISECONDS: u64 = 100;
+    const FIRST_RESCHED_REKICK_GRACE_MILLISECONDS: u64 = 500;
     const RESCHED_REKICK_INTERVAL_MILLISECONDS: u64 = 50;
     const COUNTER_STALL_MESSAGE: &str =
         "exit_kick_gate: CNTVCT stalled between watchdog samples; cannot bound wait; CPU may be unresponsive or counter frozen";
-    // Keep this fallback identical to main_aarch64.rs and smp.rs. If firmware
-    // reports zero, the lowest plausible frequency keeps the guest-side
-    // verdict inside the harness timeout even when CNTVCT is actually faster.
-    const CNTVCT_FALLBACK_FREQUENCY_HZ: u64 = 1_000_000;
+    // This test's fallback deliberately differs from the short boot/backoff
+    // fallbacks in main_aarch64.rs and smp.rs. If CNTFRQ_EL0 is unavailable,
+    // use the 1GHz frequency observed by the #519 proof environment so a live
+    // faster counter cannot silently shrink this cross-CPU liveness budget.
+    const CNTVCT_FALLBACK_FREQUENCY_HZ: u64 = 1_000_000_000;
 
     #[derive(Clone, Copy)]
     enum WaitFailureKind {
@@ -1192,14 +1196,20 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
     //
     // This gate coordinator runs synchronously on CPU 0 (outside the scheduler)
     // and busy-waits on handshakes completed by kthreads pinned to CPU 1/2/3.
-    // Each of the eight cross-CPU waits starts its own three-second CNTVCT
-    // deadline. There is deliberately no aggregate gate deadline: a shared
+    // Each of the eight normal-path cross-CPU waits starts its own eight-second
+    // CNTVCT deadline. The attempt-7 proof exhausted 3.005 seconds while all
+    // four CPUs were online and 58 re-kicks still left CPU 2 host-starved, so
+    // eight seconds gives that observed failure more than 2.6x wall-clock
+    // headroom. There is deliberately no aggregate gate deadline: a shared
     // budget would let finite storm work or an earlier late success consume the
     // next wait's allowance. The gate is bounded by construction instead: every
-    // cross-CPU wait returns immediately on its own deadline, and all work
-    // between waits is finite CPU-0 computation. Thus the gate costs at most
-    // roughly eight full waits plus finite work, within the 90/120-second test
-    // harness bounds, while every later wait retains a fresh full budget.
+    // cross-CPU wait returns on its own deadline, and all work between waits is
+    // finite CPU-0 computation. Eight deadline-edge late successes can consume
+    // at most 64 seconds of wait time, leaving 26 seconds in the 90-second Phase
+    // 1 budget and 56 seconds before the 120-second QEMU kill. The conditional
+    // publisher-A cleanup wait replaces the rest of the normal path after a
+    // publisher-B spawn failure; it cannot add a ninth sequential wait to a
+    // passing run. Every later wait therefore retains a fresh full budget.
     //
     // CPU 0's loop count can race ahead while a live target vCPU is deprived of
     // host time, so iteration count is used only to sample CNTVCT for stalls.
@@ -1576,10 +1586,18 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
         Ok(handle) => handle,
         Err(_) => {
             hook.release();
-            if crate::task::kthread::kthread_join(&publisher_a).is_err() {
-                return TestResult::Fail(
-                    "exit_kick_gate: publisher A cleanup join failed after publisher B spawn failure",
-                );
+            if let Err(result) = join_with_resched(
+                &publisher_a,
+                &[PUBLISHER_A_CPU],
+                &wait_watchdog,
+                &WaitSite {
+                    name: "publisher_a_cleanup_join",
+                    condition_name: "publisher_a_exited",
+                    deadline_message: "exit_kick_gate: publisher A cleanup join stuck after publisher B spawn failure, CPU 1 unresponsive",
+                },
+                "exit_kick_gate: publisher A cleanup join failed after publisher B spawn failure",
+            ) {
+                return result;
             }
             return TestResult::Fail("failed to spawn colliding exit-kick publisher B");
         }
@@ -1954,7 +1972,8 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
         &WaitSite {
             name: "storm_publisher_a_join",
             condition_name: "publisher_a_exited",
-            deadline_message: "exit_kick_gate: storm publisher A join stuck, CPU 1 unresponsive",
+            deadline_message:
+                "exit_kick_gate: storm publisher A join stuck, a worker CPU (1/2/3) is unresponsive",
         },
         "exit_kick_gate: storm publisher A kthread_join failed after exit observation",
     ) {
@@ -1967,7 +1986,8 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
         &WaitSite {
             name: "storm_publisher_b_join",
             condition_name: "publisher_b_exited",
-            deadline_message: "exit_kick_gate: storm publisher B join stuck, CPU 2 unresponsive",
+            deadline_message:
+                "exit_kick_gate: storm publisher B join stuck, a worker CPU (1/2/3) is unresponsive",
         },
         "exit_kick_gate: storm publisher B kthread_join failed after exit observation",
     ) {
@@ -1980,7 +2000,8 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
         &WaitSite {
             name: "storm_observer_join",
             condition_name: "observer_exited",
-            deadline_message: "exit_kick_gate: storm observer join stuck, CPU 3 unresponsive",
+            deadline_message:
+                "exit_kick_gate: storm observer join stuck, a worker CPU (1/2/3) is unresponsive",
         },
         "exit_kick_gate: storm observer kthread_join failed after exit observation",
     ) {

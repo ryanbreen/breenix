@@ -113,24 +113,60 @@ fn source<'a>(sources: &'a [(String, String)], path: &str) -> &'a str {
         .1
 }
 
+fn starts_char_literal(bytes: &[u8], apostrophe: usize) -> bool {
+    let Some(&first) = bytes.get(apostrophe + 1) else {
+        return false;
+    };
+    if first == b'\\' {
+        return true;
+    }
+    let utf8_width = match first {
+        0x00..=0x7f => 1,
+        0xc0..=0xdf => 2,
+        0xe0..=0xef => 3,
+        _ => 4,
+    };
+    bytes.get(apostrophe + 1 + utf8_width) == Some(&b'\'')
+}
+
 fn function_body<'a>(source: &'a str, name: &str) -> &'a str {
     let marker = format!("fn {name}");
     let start = source
         .find(&marker)
         .unwrap_or_else(|| panic!("missing function {name}"));
     let open = start + source[start..].find('{').expect("function open brace");
+    let bytes = source.as_bytes();
     let mut depth = 0usize;
-    for (offset, byte) in source.as_bytes()[open..].iter().enumerate() {
-        match byte {
-            b'{' => depth += 1,
-            b'}' => {
-                depth -= 1;
-                if depth == 0 {
-                    return &source[start..open + offset + 1];
-                }
+    let mut in_string = false;
+    let mut in_char = false;
+    let mut escaped = false;
+    let mut cursor = open;
+    while cursor < bytes.len() {
+        let byte = bytes[cursor];
+        if in_string || in_char {
+            if escaped {
+                escaped = false;
+            } else if byte == b'\\' {
+                escaped = true;
+            } else if in_string && byte == b'"' {
+                in_string = false;
+            } else if in_char && byte == b'\'' {
+                in_char = false;
             }
-            _ => {}
+        } else if byte == b'"' {
+            in_string = true;
+        } else if byte == b'\'' && starts_char_literal(bytes, cursor) {
+            in_char = true;
+        } else if byte == b'{' {
+            depth += 1;
+        } else if byte == b'}' {
+            assert!(depth > 0, "unexpected closing brace in function {name}");
+            depth -= 1;
+            if depth == 0 {
+                return &source[start..cursor + 1];
+            }
         }
+        cursor += 1;
     }
     panic!("unterminated function {name}")
 }
@@ -143,6 +179,45 @@ fn require_contains(source_name: &str, source: &str, required: &str) -> Result<(
             "{source_name} is missing required text: {required}"
         ))
     }
+}
+
+fn require_contains_ignoring_ascii_whitespace(
+    source_name: &str,
+    source: &str,
+    required: &str,
+) -> Result<(), String> {
+    let compact_source: String = source
+        .chars()
+        .filter(|character| !character.is_ascii_whitespace())
+        .collect();
+    let compact_required: String = required
+        .chars()
+        .filter(|character| !character.is_ascii_whitespace())
+        .collect();
+    if compact_source.contains(&compact_required) {
+        Ok(())
+    } else {
+        Err(format!(
+            "{source_name} is missing required text (ignoring ASCII whitespace): {required}"
+        ))
+    }
+}
+
+#[test]
+fn function_body_ignores_braces_in_quoted_literals() {
+    let source = r###"
+fn target() {
+    let _normal = "}";
+    let _escaped = "{{";
+    let _char = '}';
+    if true {}
+}
+
+fn next() {}
+"###;
+    let body = function_body(source, "target");
+    assert!(body.contains("if true {}"));
+    assert!(!body.contains("fn next"));
 }
 
 fn require_count(
@@ -178,11 +253,11 @@ fn validate_aarch64_liveness_bounds(
 ) -> Result<(), String> {
     let gate = function_body(provider, "exit_kick_protocol_gate_test");
     for required in [
-        "const PER_WAIT_BUDGET_MILLISECONDS: u64 = 3_000;",
+        "const PER_WAIT_BUDGET_MILLISECONDS: u64 = 8_000;",
         "const CNTVCT_STALL_SAMPLE_INTERVAL_ITERATIONS: u64 = 10_000_000;",
-        "const FIRST_RESCHED_REKICK_GRACE_MILLISECONDS: u64 = 100;",
+        "const FIRST_RESCHED_REKICK_GRACE_MILLISECONDS: u64 = 500;",
         "const RESCHED_REKICK_INTERVAL_MILLISECONDS: u64 = 50;",
-        "const CNTVCT_FALLBACK_FREQUENCY_HZ: u64 = 1_000_000;",
+        "const CNTVCT_FALLBACK_FREQUENCY_HZ: u64 = 1_000_000_000;",
         "let wait_elapsed = now.wrapping_sub(wait_start);",
         "wait_elapsed >= watchdog.per_wait_timeout_ticks",
         "stall_sample_iterations >= CNTVCT_STALL_SAMPLE_INTERVAL_ITERATIONS",
@@ -204,15 +279,25 @@ fn validate_aarch64_liveness_bounds(
         "struct WaitSite",
         "exit-kick reservation-loss publisher CPU is not online",
         "exit-kick storm requires four online CPUs",
-        "join_with_resched(\n        &publisher_a,\n        &worker_cpus,\n        &wait_watchdog,",
-        "join_with_resched(\n        &publisher_b,\n        &worker_cpus,\n        &wait_watchdog,",
-        "join_with_resched(\n        &observer,\n        &worker_cpus,\n        &wait_watchdog,",
+        "name: \"publisher_a_cleanup_join\"",
+        "exit_kick_gate: storm publisher A join stuck, a worker CPU (1/2/3) is unresponsive",
+        "exit_kick_gate: storm publisher B join stuck, a worker CPU (1/2/3) is unresponsive",
+        "exit_kick_gate: storm observer join stuck, a worker CPU (1/2/3) is unresponsive",
     ] {
         require_contains("exit_kick_protocol_gate_test", gate, required)?;
     }
+    for required in [
+        "join_with_resched(&publisher_a, &worker_cpus, &wait_watchdog,",
+        "join_with_resched(&publisher_b, &worker_cpus, &wait_watchdog,",
+        "join_with_resched(&observer, &worker_cpus, &wait_watchdog,",
+    ] {
+        require_contains_ignoring_ascii_whitespace("exit_kick_protocol_gate_test", gate, required)?;
+    }
     for (needle, expected) in [
-        ("&wait_watchdog", 8),
-        ("crate::task::kthread::kthread_join(", 2),
+        // Eight normal-path waits plus the mutually exclusive spawn-failure
+        // cleanup join. The latter returns before the remaining path runs.
+        ("&wait_watchdog", 9),
+        ("crate::task::kthread::kthread_join(", 1),
     ] {
         require_count("exit_kick_protocol_gate_test", gate, needle, expected)?;
     }
@@ -257,7 +342,7 @@ fn validate_aarch64_liveness_bounds(
         "const PSCI_CPU_ON_RETRY_BACKOFF_MICROSECONDS: u64 = 500;",
         "fn psci_cpu_on_result_is_retryable(ret: i64) -> bool",
         "fn psci_cpu_on_result_is_success(ret: i64) -> bool",
-        "matches!(ret, PSCI_RETURN_INTERNAL_FAILURE)",
+        "ret == PSCI_RETURN_INTERNAL_FAILURE",
         "0 | PSCI_RETURN_ALREADY_ON | PSCI_RETURN_ON_PENDING",
         "psci_cpu_on_result_is_retryable(hvc64_ret)",
         "psci_cpu_on_result_is_retryable(ret)",
@@ -819,11 +904,8 @@ fn deliberately_broken_variants_fail_the_ratchet() {
     );
     validate_aarch64_liveness_bounds(&uncoupled_storm_join, main_aarch64, smp)
         .expect_err("uncoupled storm join passed the exit-kick watchdog ratchet");
-    let stale_counter_baseline = provider.replacen(
-        "if now == last_counter_sample",
-        "if wait_elapsed == 0",
-        1,
-    );
+    let stale_counter_baseline =
+        provider.replacen("if now == last_counter_sample", "if wait_elapsed == 0", 1);
     validate_aarch64_liveness_bounds(&stale_counter_baseline, main_aarch64, smp)
         .expect_err("wait-start-based CNTVCT stall check passed the liveness ratchet");
     let shared_gate_deadline = provider.replacen(
