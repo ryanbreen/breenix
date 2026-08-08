@@ -595,6 +595,27 @@ fn all_phase_zero_counters_have_registered_readers_and_honest_runtime_gates() {
 }
 
 #[test]
+fn exit_kick_waits_share_one_deadline_and_delay_rekicks() {
+    let provider = repo_text("kernel/src/tracing/providers/teardown.rs");
+    let gate = function_body(&provider, "exit_kick_protocol_gate_test");
+
+    assert!(gate.contains("const HANDSHAKE_BUDGET_SECONDS: u64 = 10;"));
+    assert!(gate.contains("const FIRST_RESCHED_REKICK_GRACE_MILLISECONDS: u64 = 100;"));
+    assert!(gate.contains("const CNTVCT_FALLBACK_FREQUENCY_HZ: u64 = 1_000_000_000;"));
+    assert!(gate.contains("let gate_watchdog = HandshakeWatchdog"));
+    assert_eq!(gate.matches("&gate_watchdog").count(), 8);
+    assert!(gate.contains("reported_frequency_hz == 0"));
+    assert!(gate.contains("now.wrapping_sub(watchdog.start) >= watchdog.timeout_ticks"));
+    assert!(gate.contains("now.wrapping_sub(wait_start) >= watchdog.first_rekick_grace_ticks"));
+    assert!(gate.contains("now.wrapping_sub(last_kick) >= watchdog.rekick_interval_ticks"));
+
+    let main_aarch64 = repo_text("kernel/src/main_aarch64.rs");
+    assert!(main_aarch64.contains("const SMP_ONLINE_TIMEOUT_SECONDS: u64 = 45;"));
+    assert!(main_aarch64.contains("const CNTVCT_FALLBACK_FREQUENCY_HZ: u64 = 1_000_000_000;"));
+    assert!(main_aarch64.contains("reported_frequency_hz == 0"));
+}
+
+#[test]
 fn deliberately_broken_variants_fail_the_ratchet() {
     let sources = rust_sources_below("kernel/src");
 

@@ -1120,27 +1120,40 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
     use alloc::vec::Vec;
     use core::sync::atomic::AtomicBool;
 
+    const HANDSHAKE_BUDGET_SECONDS: u64 = 10;
+    const FIRST_RESCHED_REKICK_GRACE_MILLISECONDS: u64 = 100;
+    const RESCHED_REKICK_INTERVAL_MILLISECONDS: u64 = 5;
+    // QEMU on the proof host reports a 1 GHz CNTVCT. Firmware must program
+    // CNTFRQ_EL0, but retain a real wall-clock budget if it reports zero.
+    const CNTVCT_FALLBACK_FREQUENCY_HZ: u64 = 1_000_000_000;
+
+    #[derive(Clone, Copy)]
+    struct HandshakeWatchdog {
+        start: u64,
+        timeout_ticks: u64,
+        first_rekick_grace_ticks: u64,
+        rekick_interval_ticks: u64,
+    }
+
     // ---- Cross-CPU handshake watchdog (test harness only) --------------------
     //
     // This gate coordinator runs synchronously on CPU 0 (outside the scheduler)
     // and busy-waits on handshakes completed by kthreads pinned to CPU 1/2/3.
     // Every such wait is bounded by CNTVCT wall time: CPU 0's loop count can race
-    // ahead while a live target vCPU is deprived of host time. Ten seconds is
-    // orders of magnitude beyond a healthy completion and gives a host-starved
-    // vCPU many scheduling opportunities, while still failing a genuinely dead
-    // CPU well within the boot-test timeout. Re-send the existing per-CPU resched
-    // SGI every 5ms throughout the wait so a dropped wakeup can self-heal even if
-    // the target was still starved when an earlier SGI arrived. This does NOT
-    // touch the EXIT_KICK protocol itself.
-    fn spin_with_resched<F: Fn() -> bool>(cond: F, kick_cpus: &[usize]) -> bool {
-        const HANDSHAKE_TIMEOUT_SECONDS: u64 = 10;
-        const RESCHED_REKICK_MILLISECONDS: u64 = 5;
-
-        let frequency = crate::arch_impl::aarch64::timer::frequency_hz();
-        let timeout_ticks = frequency * HANDSHAKE_TIMEOUT_SECONDS;
-        let rekick_ticks = frequency * RESCHED_REKICK_MILLISECONDS / 1_000;
-        let start = crate::arch_impl::aarch64::timer::rdtsc();
-        let mut last_kick = start;
+    // ahead while a live target vCPU is deprived of host time. All eight waits
+    // share one ten-second budget, so a slow-but-successful wait cannot restart
+    // the clock and consume the harness's 90-second Phase 1 window. A healthy
+    // wait receives no extra SGI: only after 100ms of abnormal delay do we send
+    // the existing per-CPU resched SGI, then re-send it every 5ms so a dropped
+    // wakeup can self-heal. This does NOT touch the EXIT_KICK protocol itself.
+    fn spin_with_resched<F: Fn() -> bool>(
+        cond: F,
+        kick_cpus: &[usize],
+        watchdog: &HandshakeWatchdog,
+    ) -> bool {
+        let wait_start = crate::arch_impl::aarch64::timer::rdtsc();
+        let mut sent_rekick = false;
+        let mut last_kick = wait_start;
 
         loop {
             if cond() {
@@ -1148,16 +1161,22 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
             }
 
             let now = crate::arch_impl::aarch64::timer::rdtsc();
-            if now.wrapping_sub(start) >= timeout_ticks {
+            if now.wrapping_sub(watchdog.start) >= watchdog.timeout_ticks {
                 return false;
             }
-            if now.wrapping_sub(last_kick) >= rekick_ticks {
+            let rekick_due = if sent_rekick {
+                now.wrapping_sub(last_kick) >= watchdog.rekick_interval_ticks
+            } else {
+                now.wrapping_sub(wait_start) >= watchdog.first_rekick_grace_ticks
+            };
+            if rekick_due {
                 for &cpu in kick_cpus {
                     crate::arch_impl::aarch64::gic::send_sgi(
                         crate::arch_impl::aarch64::constants::SGI_RESCHEDULE as u8,
                         cpu as u8,
                     );
                 }
+                sent_rekick = true;
                 last_kick = now;
             }
 
@@ -1173,16 +1192,35 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
     fn join_with_resched(
         handle: &crate::task::kthread::KthreadHandle,
         cpu: usize,
+        watchdog: &HandshakeWatchdog,
     ) -> bool {
         let exited = spin_with_resched(
             || crate::task::kthread::kthread_has_exited_for_test(handle),
             &[cpu],
+            watchdog,
         );
         if !exited {
             return false;
         }
         crate::task::kthread::kthread_join(handle).is_ok()
     }
+
+    let reported_frequency_hz = crate::arch_impl::aarch64::timer::frequency_hz();
+    let counter_frequency_hz = if reported_frequency_hz == 0 {
+        CNTVCT_FALLBACK_FREQUENCY_HZ
+    } else {
+        reported_frequency_hz
+    };
+    let gate_watchdog = HandshakeWatchdog {
+        start: crate::arch_impl::aarch64::timer::rdtsc(),
+        timeout_ticks: counter_frequency_hz.saturating_mul(HANDSHAKE_BUDGET_SECONDS),
+        first_rekick_grace_ticks: counter_frequency_hz
+            .saturating_mul(FIRST_RESCHED_REKICK_GRACE_MILLISECONDS)
+            / 1_000,
+        rekick_interval_ticks: counter_frequency_hz
+            .saturating_mul(RESCHED_REKICK_INTERVAL_MILLISECONDS)
+            / 1_000,
+    };
 
     struct BrokenV3Slot {
         pid: AtomicU64,
@@ -1314,6 +1352,7 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
     if !spin_with_resched(
         || EXIT_KICK_TEST_HOOK_RESERVED.load(Ordering::Acquire) != 0,
         &[PUBLISHER_A_CPU],
+        &gate_watchdog,
     ) {
         // `hook` is dropped on return, releasing publisher A from its hold.
         return TestResult::Fail(
@@ -1349,6 +1388,7 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
     if !spin_with_resched(
         || publisher_b_done.load(Ordering::Acquire) != 0,
         &[PUBLISHER_B_CPU],
+        &gate_watchdog,
     ) {
         // `hook` is dropped on return, releasing publisher A from its hold.
         return TestResult::Fail(
@@ -1367,15 +1407,11 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
         && EXIT_SGI_SENT.aggregate() == sgi_before + 1;
 
     hook.release();
-    if !join_with_resched(&publisher_b, PUBLISHER_B_CPU) {
-        return TestResult::Fail(
-            "exit_kick_gate: publisher B join stuck, CPU 2 unresponsive",
-        );
+    if !join_with_resched(&publisher_b, PUBLISHER_B_CPU, &gate_watchdog) {
+        return TestResult::Fail("exit_kick_gate: publisher B join stuck, CPU 2 unresponsive");
     }
-    if !join_with_resched(&publisher_a, PUBLISHER_A_CPU) {
-        return TestResult::Fail(
-            "exit_kick_gate: publisher A join stuck, CPU 1 unresponsive",
-        );
+    if !join_with_resched(&publisher_a, PUBLISHER_A_CPU, &gate_watchdog) {
+        return TestResult::Fail("exit_kick_gate: publisher A join stuck, CPU 1 unresponsive");
     }
     let joined = true;
     core::mem::drop(hook);
@@ -1675,6 +1711,7 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
     if !spin_with_resched(
         || accounting.workers_ready.load(Ordering::Acquire) == 3,
         &worker_cpus,
+        &gate_watchdog,
     ) {
         return TestResult::Fail(
             "exit_kick_gate: workers_ready never reached 3, a worker CPU (1/2/3) is unresponsive",
@@ -1682,20 +1719,18 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
     }
     accounting.start.store(true, Ordering::Release);
 
-    if !join_with_resched(&publisher_a, worker_cpus[0]) {
+    if !join_with_resched(&publisher_a, worker_cpus[0], &gate_watchdog) {
         return TestResult::Fail(
             "exit_kick_gate: storm publisher A join stuck, CPU 1 unresponsive",
         );
     }
-    if !join_with_resched(&publisher_b, worker_cpus[1]) {
+    if !join_with_resched(&publisher_b, worker_cpus[1], &gate_watchdog) {
         return TestResult::Fail(
             "exit_kick_gate: storm publisher B join stuck, CPU 2 unresponsive",
         );
     }
-    if !join_with_resched(&observer, worker_cpus[2]) {
-        return TestResult::Fail(
-            "exit_kick_gate: storm observer join stuck, CPU 3 unresponsive",
-        );
+    if !join_with_resched(&observer, worker_cpus[2], &gate_watchdog) {
+        return TestResult::Fail("exit_kick_gate: storm observer join stuck, CPU 3 unresponsive");
     }
 
     let attempts = accounting.next_token.load(Ordering::Acquire);

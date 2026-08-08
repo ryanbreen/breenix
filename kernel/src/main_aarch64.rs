@@ -965,23 +965,35 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
         }
         if launched > 0 {
             // Wait for all launched CPUs to come online (with timeout)
+            const SMP_ONLINE_TIMEOUT_SECONDS: u64 = 45;
+            // The proof host reports a 1 GHz CNTVCT. Firmware should always
+            // program CNTFRQ_EL0, but zero must not collapse this wait to an
+            // immediate timeout.
+            const CNTVCT_FALLBACK_FREQUENCY_HZ: u64 = 1_000_000_000;
+
             let expected = 1 + launched; // boot CPU + launched
             let start = timer::rdtsc();
-            const SMP_ONLINE_TIMEOUT_SECONDS: u64 = 10;
-            let timeout_ticks = timer::frequency_hz() * SMP_ONLINE_TIMEOUT_SECONDS;
+            let reported_frequency_hz = timer::frequency_hz();
+            let counter_frequency_hz = if reported_frequency_hz == 0 {
+                CNTVCT_FALLBACK_FREQUENCY_HZ
+            } else {
+                reported_frequency_hz
+            };
+            let timeout_ticks = counter_frequency_hz.saturating_mul(SMP_ONLINE_TIMEOUT_SECONDS);
             // SMP secondary CPU bring-up wait: boot CPU spins until all
             // released secondary CPUs increment cpus_online. Bounded CPU-
             // management handshake (NOT event polling) — no IRQ available
             // for "CPU online" because GIC isn't fully wired across CPUs
             // until each is up. Linux uses wait_for_completion_timeout()
             // in __cpu_up() for the equivalent transition. CNTVCT advances
-            // while this vCPU is host-starved, so allow ten seconds for slow
-            // hosts; healthy boots still leave the loop as soon as all CPUs
-            // report online. Allowlisted per docs/polling-allowlist.md.
+            // while this vCPU is host-starved. The 14-hog proof exhausted ten
+            // seconds, so allow 45 seconds (4.5x that observation); healthy
+            // boots still leave as soon as all CPUs report online. Allowlisted
+            // per docs/polling-allowlist.md.
             while kernel::arch_impl::aarch64::smp::cpus_online() < expected {
                 if timer::rdtsc().wrapping_sub(start) >= timeout_ticks {
                     serial_println!(
-                        "[smp] Timeout waiting for CPUs ({}  online, {} expected)",
+                        "[smp] Timeout waiting for CPUs ({} online, {} expected)",
                         kernel::arch_impl::aarch64::smp::cpus_online(),
                         expected
                     );
