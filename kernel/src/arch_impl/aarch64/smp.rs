@@ -280,13 +280,16 @@ pub fn release_cpu(cpu_id: usize) -> i64 {
     let context_id = cpu_id as u64;
 
     let mut attempts = 0usize;
+    let mut hvc64_internal_failures = 0usize;
+    let mut hvc32_internal_failures = 0usize;
     let (last_hvc64_ret, last_ret) = loop {
         attempts += 1;
 
         // Preserve the established conduit order on every bounded attempt:
         // HVC64 first, then HVC32 only if HVC64 fails. SMC remains excluded.
         let hvc64_ret = psci_cpu_on(target_mpidr, entry_phys, context_id);
-        let ret = if psci_cpu_on_result_is_success(hvc64_ret) {
+        let hvc64_succeeded = psci_cpu_on_result_is_success(hvc64_ret);
+        let ret = if hvc64_succeeded {
             hvc64_ret
         } else {
             if attempts == 1 {
@@ -298,8 +301,24 @@ pub fn release_cpu(cpu_id: usize) -> i64 {
             }
             psci_cpu_on_32(target_mpidr, entry_phys, context_id)
         };
+        if hvc64_ret == PSCI_RETURN_INTERNAL_FAILURE {
+            hvc64_internal_failures += 1;
+        }
+        if !hvc64_succeeded && ret == PSCI_RETURN_INTERNAL_FAILURE {
+            hvc32_internal_failures += 1;
+        }
         LAST_PSCI_HVC64_RETURN_CODE[cpu_id].store(hvc64_ret, Ordering::Relaxed);
         if psci_cpu_on_result_is_success(ret) {
+            if attempts > 1 {
+                crate::serial_println!(
+                    "[smp] CPU {}: PSCI CPU_ON accepted after {} attempts (hvc64_internal_failures={} hvc32_internal_failures={} final_ret={})",
+                    cpu_id,
+                    attempts,
+                    hvc64_internal_failures,
+                    hvc32_internal_failures,
+                    ret
+                );
+            }
             return 0;
         }
         let retryable =
@@ -314,11 +333,13 @@ pub fn release_cpu(cpu_id: usize) -> i64 {
     };
 
     crate::serial_println!(
-        "[smp] PSCI CPU_ON failed for CPU {} after {} attempts: ret={} last_hvc64_ret={} (MPIDR={:#x} entry={:#x})",
+        "[smp] PSCI CPU_ON failed for CPU {} after {} attempts: ret={} last_hvc64_ret={} hvc64_internal_failures={} hvc32_internal_failures={} (MPIDR={:#x} entry={:#x})",
         cpu_id,
         attempts,
         last_ret,
         last_hvc64_ret,
+        hvc64_internal_failures,
+        hvc32_internal_failures,
         target_mpidr,
         entry_phys
     );

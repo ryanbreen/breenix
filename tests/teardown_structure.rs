@@ -253,36 +253,74 @@ fn validate_aarch64_liveness_bounds(
 ) -> Result<(), String> {
     let gate = function_body(provider, "exit_kick_protocol_gate_test");
     for required in [
-        "const PER_WAIT_BUDGET_MILLISECONDS: u64 = 8_000;",
+        "const NO_PROGRESS_WINDOW_MILLISECONDS: u64 = 3_000;",
+        "const ABSOLUTE_WAIT_CEILING_MILLISECONDS: u64 = 60_000;",
+        "const PROGRESS_SAMPLE_INTERVAL_MILLISECONDS: u64 = 1_000;",
+        "const PROGRESS_SAMPLE_CAPACITY: usize = 5;",
         "const CNTVCT_STALL_SAMPLE_INTERVAL_ITERATIONS: u64 = 10_000_000;",
         "const FIRST_RESCHED_REKICK_GRACE_MILLISECONDS: u64 = 500;",
         "const RESCHED_REKICK_INTERVAL_MILLISECONDS: u64 = 50;",
         "const CNTVCT_FALLBACK_FREQUENCY_HZ: u64 = 1_000_000_000;",
         "let wait_elapsed = now.wrapping_sub(wait_start);",
-        "wait_elapsed >= watchdog.per_wait_timeout_ticks",
+        "let no_progress_elapsed = now.wrapping_sub(last_advance);",
+        "wait_elapsed >= watchdog.absolute_wait_ceiling_ticks",
+        "no_progress_elapsed >= watchdog.no_progress_window_ticks",
+        "if progress_value > last_progress",
+        "last_advance = now;",
         "stall_sample_iterations >= CNTVCT_STALL_SAMPLE_INTERVAL_ITERATIONS",
         "if now == last_counter_sample",
         "last_counter_sample = now;",
         "now.wrapping_sub(last_kick) >= watchdog.rekick_interval_ticks",
-        "wait_budget_ms: self.ticks_to_milliseconds(self.per_wait_timeout_ticks)",
+        "WaitFailureKind::NoProgress",
+        "WaitFailureKind::AbsoluteCeiling",
+        "Self::NoProgress => \"no_progress\"",
+        "Self::AbsoluteCeiling => \"absolute_ceiling\"",
+        "no_progress_window_ms",
+        "absolute_ceiling_ms",
         "rekick_sgis",
         "crate::arch_impl::aarch64::smp::cpus_online()",
         "elapsed_ms={}",
-        "wait_budget_ms={}",
+        "no_progress_window_ms={}",
+        "absolute_ceiling_ms={}",
+        "progress_start={}",
+        "progress_final={}",
+        "last_advance_ms_ago={}",
+        "progress_sample_count={}",
+        "progress_sample_0_ms={}",
+        "progress_sample_0={}",
+        "progress_sample_4_ms={}",
+        "progress_sample_4={}",
         "condition_name",
         "WaitFailureKind::CounterStall",
         "\"exit_kick_gate: CNTVCT stalled between watchdog samples; cannot bound wait; CPU may be unresponsive or counter frozen\";",
         "WaitFailureKind::CounterStall => TestResult::Fail(COUNTER_STALL_MESSAGE)",
+        "WaitFailureKind::NoProgress => TestResult::Fail(site.no_progress_message)",
+        "WaitFailureKind::AbsoluteCeiling => TestResult::Fail(site.absolute_ceiling_message)",
         "late_true={}",
         "result=pass gate_elapsed_ms={}",
         "slowest_wait_elapsed_ms={}",
         "struct WaitSite",
+        "read_progress",
+        "let publisher_a_progress = Arc::new(AtomicU64::new(0));",
+        "let publisher_b_progress = Arc::new(AtomicU64::new(0));",
+        "a_progress.store(1, Ordering::Release);",
+        "a_progress.store(2, Ordering::Release);",
+        "a_progress.store(3, Ordering::Release);",
+        "b_progress.store(1, Ordering::Release);",
+        "b_progress.store(2, Ordering::Release);",
+        "b_progress.store(3, Ordering::Release);",
+        "publisher_a_attempts: AtomicU64",
+        "publisher_b_attempts: AtomicU64",
+        "observer_iterations: AtomicU64",
         "exit-kick reservation-loss publisher CPU is not online",
         "exit-kick storm requires four online CPUs",
         "name: \"publisher_a_cleanup_join\"",
-        "exit_kick_gate: storm publisher A join stuck, a worker CPU (1/2/3) is unresponsive",
-        "exit_kick_gate: storm publisher B join stuck, a worker CPU (1/2/3) is unresponsive",
-        "exit_kick_gate: storm observer join stuck, a worker CPU (1/2/3) is unresponsive",
+        "exit_kick_gate: storm publisher A made no progress for 3 seconds, a worker CPU (1/2/3) is unresponsive",
+        "exit_kick_gate: storm publisher B made no progress for 3 seconds, a worker CPU (1/2/3) is unresponsive",
+        "exit_kick_gate: storm observer made no progress for 3 seconds, a worker CPU (1/2/3) is unresponsive",
+        "exit_kick_gate: storm publisher A exceeded the 60-second absolute wait ceiling",
+        "exit_kick_gate: storm publisher B exceeded the 60-second absolute wait ceiling",
+        "exit_kick_gate: storm observer exceeded the 60-second absolute wait ceiling",
     ] {
         require_contains("exit_kick_protocol_gate_test", gate, required)?;
     }
@@ -290,6 +328,9 @@ fn validate_aarch64_liveness_bounds(
         "join_with_resched(&publisher_a, &worker_cpus, &wait_watchdog,",
         "join_with_resched(&publisher_b, &worker_cpus, &wait_watchdog,",
         "join_with_resched(&observer, &worker_cpus, &wait_watchdog,",
+        "publisher_a_attempts.fetch_add(1, Ordering::Relaxed);",
+        "publisher_b_attempts.fetch_add(1, Ordering::Relaxed);",
+        "observer_iterations.fetch_add(1, Ordering::Relaxed);",
     ] {
         require_contains_ignoring_ascii_whitespace("exit_kick_protocol_gate_test", gate, required)?;
     }
@@ -298,6 +339,34 @@ fn validate_aarch64_liveness_bounds(
         // cleanup join. The latter returns before the remaining path runs.
         ("&wait_watchdog", 9),
         ("crate::task::kthread::kthread_join(", 1),
+        (
+            "|| EXIT_KICK_TEST_HOOK_RESERVED.load(Ordering::Acquire),",
+            2,
+        ),
+        (
+            "|| publisher_a_progress.load(Ordering::Acquire),",
+            2,
+        ),
+        (
+            "|| publisher_b_progress.load(Ordering::Acquire),",
+            2,
+        ),
+        (
+            "|| accounting.workers_ready.load(Ordering::Acquire),",
+            2,
+        ),
+        (
+            "|| accounting.publisher_a_attempts.load(Ordering::Acquire),",
+            1,
+        ),
+        (
+            "|| accounting.publisher_b_attempts.load(Ordering::Acquire),",
+            1,
+        ),
+        (
+            "|| accounting.observer_iterations.load(Ordering::Acquire),",
+            1,
+        ),
     ] {
         require_count("exit_kick_protocol_gate_test", gate, needle, expected)?;
     }
@@ -309,13 +378,18 @@ fn validate_aarch64_liveness_bounds(
         "gate_budget_ms",
         "whole-gate deadline",
         "wait_elapsed == 0",
+        "PER_WAIT_BUDGET_MILLISECONDS",
+        "PerWaitDeadline",
+        "per_wait_deadline",
+        "per_wait_timeout_ticks",
+        "wait_budget_ms",
         ".expect(\"kthread_join returned Err despite its infallible contract\")",
     ] {
         require_absent("exit_kick_protocol_gate_test", gate, forbidden)?;
     }
 
     let spin = function_body(provider, "spin_with_resched");
-    require_count("spin_with_resched", spin, "if cond() {", 3)?;
+    require_count("spin_with_resched", spin, "if cond() {", 4)?;
 
     let join = function_body(provider, "join_with_resched");
     for required in [
@@ -347,6 +421,9 @@ fn validate_aarch64_liveness_bounds(
         "psci_cpu_on_result_is_retryable(hvc64_ret)",
         "psci_cpu_on_result_is_retryable(ret)",
         "HVC64 failed (ret={}), trying HVC32...",
+        "hvc64_internal_failures",
+        "hvc32_internal_failures",
+        "PSCI CPU_ON accepted after {} attempts",
         "static LAST_PSCI_HVC64_RETURN_CODE:",
         "LAST_PSCI_HVC64_RETURN_CODE[cpu_id].store(hvc64_ret, Ordering::Relaxed);",
         "pub fn last_psci_hvc64_return_code(cpu_id: usize) -> Option<i64>",
@@ -822,7 +899,7 @@ fn all_phase_zero_counters_have_registered_readers_and_honest_runtime_gates() {
 }
 
 #[test]
-fn exit_kick_waits_have_independent_deadlines_and_bounded_rekicks() {
+fn exit_kick_waits_have_progress_rearmed_deadlines_and_bounded_rekicks() {
     let sources = rust_sources_below("kernel/src");
     let provider = source(&sources, "kernel/src/tracing/providers/teardown.rs");
     let main_aarch64 = source(&sources, "kernel/src/main_aarch64.rs");
@@ -908,6 +985,20 @@ fn deliberately_broken_variants_fail_the_ratchet() {
         provider.replacen("if now == last_counter_sample", "if wait_elapsed == 0", 1);
     validate_aarch64_liveness_bounds(&stale_counter_baseline, main_aarch64, smp)
         .expect_err("wait-start-based CNTVCT stall check passed the liveness ratchet");
+    let fixed_no_progress_window = provider.replacen(
+        "let no_progress_elapsed = now.wrapping_sub(last_advance);",
+        "let no_progress_elapsed = wait_elapsed;",
+        1,
+    );
+    validate_aarch64_liveness_bounds(&fixed_no_progress_window, main_aarch64, smp)
+        .expect_err("fixed per-wait deadline passed the progress-rearm ratchet");
+    let missing_absolute_ceiling = provider.replacen(
+        "wait_elapsed >= watchdog.absolute_wait_ceiling_ticks",
+        "false",
+        1,
+    );
+    validate_aarch64_liveness_bounds(&missing_absolute_ceiling, main_aarch64, smp)
+        .expect_err("missing absolute wait ceiling passed the liveness ratchet");
     let shared_gate_deadline = provider.replacen(
         "let wait_elapsed = now.wrapping_sub(wait_start);",
         "let wait_elapsed = now.wrapping_sub(wait_start); let gate_timeout_ticks = wait_elapsed;",

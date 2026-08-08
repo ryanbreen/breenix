@@ -1120,7 +1120,10 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
     use alloc::vec::Vec;
     use core::sync::atomic::AtomicBool;
 
-    const PER_WAIT_BUDGET_MILLISECONDS: u64 = 8_000;
+    const NO_PROGRESS_WINDOW_MILLISECONDS: u64 = 3_000;
+    const ABSOLUTE_WAIT_CEILING_MILLISECONDS: u64 = 60_000;
+    const PROGRESS_SAMPLE_INTERVAL_MILLISECONDS: u64 = 1_000;
+    const PROGRESS_SAMPLE_CAPACITY: usize = 5;
     // On current unstarved ARM64 virtual hosts, 10 million iterations of the
     // watchdog loop take roughly 0.3-0.6 seconds of wall-clock time. Re-measure
     // this sample window if the loop body changes materially.
@@ -1137,28 +1140,44 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
 
     #[derive(Clone, Copy)]
     enum WaitFailureKind {
-        PerWaitDeadline,
+        NoProgress,
+        AbsoluteCeiling,
         CounterStall,
     }
 
     impl WaitFailureKind {
         fn as_str(self) -> &'static str {
             match self {
-                Self::PerWaitDeadline => "per_wait_deadline",
+                Self::NoProgress => "no_progress",
+                Self::AbsoluteCeiling => "absolute_ceiling",
                 Self::CounterStall => "cntvct_stall",
             }
         }
     }
 
+    #[derive(Clone, Copy)]
+    struct ProgressSample {
+        elapsed_ms: u64,
+        value: u64,
+    }
+
     struct WaitFailure {
         kind: WaitFailureKind,
         wait_elapsed_ms: u64,
-        wait_budget_ms: u64,
+        no_progress_window_ms: u64,
+        absolute_ceiling_ms: u64,
         rekick_sgis: u64,
+        progress_start: u64,
+        progress_final: u64,
+        last_advance_ms_ago: u64,
+        progress_samples: [ProgressSample; PROGRESS_SAMPLE_CAPACITY],
+        progress_sample_count: usize,
     }
 
     struct HandshakeWatchdog {
-        per_wait_timeout_ticks: u64,
+        no_progress_window_ticks: u64,
+        absolute_wait_ceiling_ticks: u64,
+        progress_sample_interval_ticks: u64,
         first_rekick_grace_ticks: u64,
         rekick_interval_ticks: u64,
         counter_frequency_hz: u64,
@@ -1181,14 +1200,41 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
             &self,
             kind: WaitFailureKind,
             wait_elapsed_ticks: u64,
+            last_advance_ticks_ago: u64,
             rekick_sgis: u64,
+            progress_start: u64,
+            progress_final: u64,
+            progress_samples: [ProgressSample; PROGRESS_SAMPLE_CAPACITY],
+            progress_sample_count: usize,
         ) -> WaitFailure {
             WaitFailure {
                 kind,
                 wait_elapsed_ms: self.ticks_to_milliseconds(wait_elapsed_ticks),
-                wait_budget_ms: self.ticks_to_milliseconds(self.per_wait_timeout_ticks),
+                no_progress_window_ms: self.ticks_to_milliseconds(self.no_progress_window_ticks),
+                absolute_ceiling_ms: self.ticks_to_milliseconds(self.absolute_wait_ceiling_ticks),
                 rekick_sgis,
+                progress_start,
+                progress_final,
+                last_advance_ms_ago: self.ticks_to_milliseconds(last_advance_ticks_ago),
+                progress_samples,
+                progress_sample_count,
             }
+        }
+    }
+
+    fn record_progress_sample(
+        samples: &mut [ProgressSample; PROGRESS_SAMPLE_CAPACITY],
+        sample_count: &mut usize,
+        elapsed_ms: u64,
+        value: u64,
+    ) {
+        let sample = ProgressSample { elapsed_ms, value };
+        if *sample_count < PROGRESS_SAMPLE_CAPACITY {
+            samples[*sample_count] = sample;
+            *sample_count += 1;
+        } else {
+            samples.rotate_left(1);
+            samples[PROGRESS_SAMPLE_CAPACITY - 1] = sample;
         }
     }
 
@@ -1196,40 +1242,64 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
     //
     // This gate coordinator runs synchronously on CPU 0 (outside the scheduler)
     // and busy-waits on handshakes completed by kthreads pinned to CPU 1/2/3.
-    // Each of the eight normal-path cross-CPU waits starts its own eight-second
-    // CNTVCT deadline. The attempt-7 proof exhausted 3.005 seconds while all
-    // four CPUs were online and 58 re-kicks still left CPU 2 host-starved, so
-    // eight seconds gives that observed failure more than 2.6x wall-clock
-    // headroom. There is deliberately no aggregate gate deadline: a shared
-    // budget would let finite storm work or an earlier late success consume the
-    // next wait's allowance. The gate is bounded by construction instead: every
-    // cross-CPU wait returns on its own deadline, and all work between waits is
-    // finite CPU-0 computation. Eight deadline-edge late successes can consume
-    // at most 64 seconds of wait time, leaving 26 seconds in the 90-second Phase
-    // 1 budget and 56 seconds before the 120-second QEMU kill. The conditional
-    // publisher-A cleanup wait replaces the rest of the normal path after a
-    // publisher-B spawn failure; it cannot add a ninth sequential wait to a
-    // passing run. Every later wait therefore retains a fresh full budget.
+    // Each of the eight normal-path cross-CPU waits starts a three-second
+    // CNTVCT no-progress window. Advancing the wait's own lock-free progress
+    // counter re-arms a fresh window, so finite work that is merely slow under
+    // host starvation is not rejected for exceeding a fixed completion-time
+    // budget. A truly stalled worker still fails after three seconds without
+    // an advance. A distinct 60-second absolute ceiling catches pathological
+    // crawls that keep advancing just often enough to re-arm forever.
+    //
+    // There is deliberately no aggregate gate deadline: a shared budget would
+    // let earlier finite work consume a later wait's liveness window. The
+    // conditional publisher-A cleanup wait replaces the rest of the normal
+    // path after a publisher-B spawn failure, so a passing run has at most eight
+    // sequential waits. The strict theoretical ceiling is therefore 8 * 60 =
+    // 480 seconds plus finite CPU-0 work, which does not fit the external
+    // 90-second Phase-1 or 120-second QEMU budgets. That is an explicit tradeoff
+    // of removing false fixed-budget verdicts; ordinary deadlocks fail on the
+    // three-second no-progress window, and the 60-second ceiling is only a
+    // per-wait safety bound for a never-observed pathological crawl.
     //
     // CPU 0's loop count can race ahead while a live target vCPU is deprived of
     // host time, so iteration count is used only to sample CNTVCT for stalls.
     // Comparing each sample with the previous one catches a counter that moves
     // briefly and then freezes. After the initial grace period, every wait
-    // periodically re-sends the existing per-CPU resched SGI while it remains in
-    // budget. A 50ms interval matches the scheduler quantum and avoids loading
-    // healthy storm workers with one SGI per timer tick. These re-kicks do not
-    // touch EXIT_KICK accounting.
-    fn spin_with_resched<F: Fn() -> bool>(
-        cond: F,
+    // periodically re-sends the existing per-CPU resched SGI while it remains
+    // within the watchdog bounds. A 50ms interval matches the scheduler quantum
+    // and avoids loading healthy storm workers with one SGI per timer tick.
+    // These re-kicks do not touch EXIT_KICK accounting.
+    fn spin_with_resched<C, P>(
+        cond: C,
+        read_progress: P,
         kick_cpus: &[usize],
         watchdog: &HandshakeWatchdog,
-    ) -> Result<(), WaitFailure> {
+    ) -> Result<(), WaitFailure>
+    where
+        C: Fn() -> bool,
+        P: Fn() -> u64,
+    {
         let wait_start = crate::arch_impl::aarch64::timer::rdtsc_serialized();
+        let progress_start = read_progress();
+        let mut last_progress = progress_start;
+        let mut last_advance = wait_start;
         let mut sent_rekick = false;
         let mut last_kick = wait_start;
         let mut last_counter_sample = wait_start;
+        let mut last_progress_sample = wait_start;
         let mut stall_sample_iterations = 0u64;
         let mut rekick_sgis = 0u64;
+        let mut progress_samples = [ProgressSample {
+            elapsed_ms: 0,
+            value: 0,
+        }; PROGRESS_SAMPLE_CAPACITY];
+        let mut progress_sample_count = 0usize;
+        record_progress_sample(
+            &mut progress_samples,
+            &mut progress_sample_count,
+            0,
+            progress_start,
+        );
 
         loop {
             if cond() {
@@ -1239,15 +1309,77 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
             let now = crate::arch_impl::aarch64::timer::rdtsc_serialized();
             let wait_elapsed = now.wrapping_sub(wait_start);
             watchdog.record_wait_elapsed(wait_elapsed);
-            if wait_elapsed >= watchdog.per_wait_timeout_ticks {
-                // Close the observation/deadline race before reporting failure.
+            let progress_value = read_progress();
+            if progress_value > last_progress {
+                last_progress = progress_value;
+                last_advance = now;
+            }
+            if now.wrapping_sub(last_progress_sample) >= watchdog.progress_sample_interval_ticks {
+                record_progress_sample(
+                    &mut progress_samples,
+                    &mut progress_sample_count,
+                    watchdog.ticks_to_milliseconds(wait_elapsed),
+                    progress_value,
+                );
+                last_progress_sample = now;
+            }
+
+            if wait_elapsed >= watchdog.absolute_wait_ceiling_ticks {
+                // Close the observation/ceiling race before reporting failure.
                 if cond() {
                     return Ok(());
                 }
+                let progress_final = read_progress();
+                if progress_final > last_progress {
+                    last_progress = progress_final;
+                    last_advance = now;
+                    record_progress_sample(
+                        &mut progress_samples,
+                        &mut progress_sample_count,
+                        watchdog.ticks_to_milliseconds(wait_elapsed),
+                        progress_final,
+                    );
+                }
                 return Err(watchdog.failure(
-                    WaitFailureKind::PerWaitDeadline,
+                    WaitFailureKind::AbsoluteCeiling,
                     wait_elapsed,
+                    now.wrapping_sub(last_advance),
                     rekick_sgis,
+                    progress_start,
+                    last_progress,
+                    progress_samples,
+                    progress_sample_count,
+                ));
+            }
+
+            let no_progress_elapsed = now.wrapping_sub(last_advance);
+            if no_progress_elapsed >= watchdog.no_progress_window_ticks {
+                // Close both races: the condition may have become true, or the
+                // producer may have advanced since this iteration's first read.
+                if cond() {
+                    return Ok(());
+                }
+                let progress_final = read_progress();
+                if progress_final > last_progress {
+                    last_progress = progress_final;
+                    last_advance = now;
+                    record_progress_sample(
+                        &mut progress_samples,
+                        &mut progress_sample_count,
+                        watchdog.ticks_to_milliseconds(wait_elapsed),
+                        progress_final,
+                    );
+                    continue;
+                }
+                return Err(watchdog.failure(
+                    WaitFailureKind::NoProgress,
+                    wait_elapsed,
+                    no_progress_elapsed,
+                    rekick_sgis,
+                    progress_start,
+                    progress_final,
+                    progress_samples,
+                    progress_sample_count,
                 ));
             }
 
@@ -1261,7 +1393,12 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
                     return Err(watchdog.failure(
                         WaitFailureKind::CounterStall,
                         wait_elapsed,
+                        now.wrapping_sub(last_advance),
                         rekick_sgis,
+                        progress_start,
+                        last_progress,
+                        progress_samples,
+                        progress_sample_count,
                     ));
                 }
                 last_counter_sample = now;
@@ -1294,12 +1431,14 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
     struct WaitSite {
         name: &'static str,
         condition_name: &'static str,
-        deadline_message: &'static str,
+        no_progress_message: &'static str,
+        absolute_ceiling_message: &'static str,
     }
 
-    fn wait_with_resched<F, P>(
+    fn wait_with_resched<F, P, R>(
         read_condition: F,
         condition_is_true: P,
+        read_progress: R,
         kick_cpus: &[usize],
         watchdog: &HandshakeWatchdog,
         site: &WaitSite,
@@ -1307,9 +1446,11 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
     where
         F: Fn() -> u64,
         P: Fn(u64) -> bool,
+        R: Fn() -> u64,
     {
         let wait_result = spin_with_resched(
             || condition_is_true(read_condition()),
+            read_progress,
             kick_cpus,
             watchdog,
         );
@@ -1317,8 +1458,8 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
             Ok(()) => Ok(()),
             Err(failure) => {
                 // Re-read at the reporting boundary as well as inside the
-                // primitive. A condition that raced the deadline is evidence,
-                // not failure, and the next call starts a fresh wait timer.
+                // primitive. A condition that raced a progress/ceiling check
+                // is evidence, not failure, and the next call starts fresh.
                 let condition_value = read_condition();
                 if condition_is_true(condition_value) {
                     print_wait_diagnostic(
@@ -1337,19 +1478,25 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
     }
 
     // Bounded replacement for a blocking kthread_join on a CPU-pinned worker:
-    // poll the non-blocking exit flag with the same wall-clock-bound,
+    // poll the non-blocking exit flag with the same progress-re-armed,
     // periodically re-kicked wait, then let kthread_join return immediately
-    // once exit is visible. The caller supplies every CPU coupled to progress.
-    fn join_with_resched(
+    // once exit is visible. The caller supplies every CPU coupled to progress
+    // and the narrowest lock-free counter advanced by the joined worker.
+    fn join_with_resched<P>(
         handle: &crate::task::kthread::KthreadHandle,
         kick_cpus: &[usize],
         watchdog: &HandshakeWatchdog,
+        read_progress: P,
         site: &WaitSite,
         join_error_message: &'static str,
-    ) -> Result<(), TestResult> {
+    ) -> Result<(), TestResult>
+    where
+        P: Fn() -> u64,
+    {
         wait_with_resched(
             || crate::task::kthread::kthread_has_exited_for_test(handle) as u64,
             |value| value != 0,
+            read_progress,
             kick_cpus,
             watchdog,
             site,
@@ -1368,15 +1515,30 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
         late_true: bool,
     ) {
         crate::serial_println!(
-            "[exit_kick_gate] wait={} cause={} elapsed_ms={} wait_budget_ms={} rekick_sgis={} cpus_online={} {}={} late_true={}",
+            "[exit_kick_gate] wait={} cause={} elapsed_ms={} no_progress_window_ms={} absolute_ceiling_ms={} rekick_sgis={} cpus_online={} {}={} progress_start={} progress_final={} last_advance_ms_ago={} progress_sample_count={} progress_sample_0_ms={} progress_sample_0={} progress_sample_1_ms={} progress_sample_1={} progress_sample_2_ms={} progress_sample_2={} progress_sample_3_ms={} progress_sample_3={} progress_sample_4_ms={} progress_sample_4={} late_true={}",
             wait_name,
             failure.kind.as_str(),
             failure.wait_elapsed_ms,
-            failure.wait_budget_ms,
+            failure.no_progress_window_ms,
+            failure.absolute_ceiling_ms,
             failure.rekick_sgis,
             crate::arch_impl::aarch64::smp::cpus_online(),
             condition_name,
             condition_value,
+            failure.progress_start,
+            failure.progress_final,
+            failure.last_advance_ms_ago,
+            failure.progress_sample_count,
+            failure.progress_samples[0].elapsed_ms,
+            failure.progress_samples[0].value,
+            failure.progress_samples[1].elapsed_ms,
+            failure.progress_samples[1].value,
+            failure.progress_samples[2].elapsed_ms,
+            failure.progress_samples[2].value,
+            failure.progress_samples[3].elapsed_ms,
+            failure.progress_samples[3].value,
+            failure.progress_samples[4].elapsed_ms,
+            failure.progress_samples[4].value,
             late_true as u8,
         );
     }
@@ -1395,7 +1557,8 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
         );
         match failure.kind {
             WaitFailureKind::CounterStall => TestResult::Fail(COUNTER_STALL_MESSAGE),
-            WaitFailureKind::PerWaitDeadline => TestResult::Fail(site.deadline_message),
+            WaitFailureKind::NoProgress => TestResult::Fail(site.no_progress_message),
+            WaitFailureKind::AbsoluteCeiling => TestResult::Fail(site.absolute_ceiling_message),
         }
     }
 
@@ -1407,7 +1570,16 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
     };
     let gate_measurement_start = crate::arch_impl::aarch64::timer::rdtsc_serialized();
     let wait_watchdog = HandshakeWatchdog {
-        per_wait_timeout_ticks: (counter_frequency_hz.saturating_mul(PER_WAIT_BUDGET_MILLISECONDS)
+        no_progress_window_ticks: (counter_frequency_hz
+            .saturating_mul(NO_PROGRESS_WINDOW_MILLISECONDS)
+            / 1_000)
+            .max(1),
+        absolute_wait_ceiling_ticks: (counter_frequency_hz
+            .saturating_mul(ABSOLUTE_WAIT_CEILING_MILLISECONDS)
+            / 1_000)
+            .max(1),
+        progress_sample_interval_ticks: (counter_frequency_hz
+            .saturating_mul(PROGRESS_SAMPLE_INTERVAL_MILLISECONDS)
             / 1_000)
             .max(1),
         first_rekick_grace_ticks: (counter_frequency_hz
@@ -1531,17 +1703,25 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
     let sgi_before = EXIT_SGI_SENT.aggregate();
     let publisher_a_done = Arc::new(AtomicU64::new(0));
     let publisher_b_done = Arc::new(AtomicU64::new(0));
+    // Per-publisher stages make the short reservation-loss workers observable:
+    // 1 = entered, 2 = exit-expedite helper returned, 3 = done flag published.
+    let publisher_a_progress = Arc::new(AtomicU64::new(0));
+    let publisher_b_progress = Arc::new(AtomicU64::new(0));
     let publisher_b_cpu = Arc::new(AtomicU64::new(u64::MAX));
     let hook = ExitKickTestHookGuard::arm(RESERVATION_PID_A);
 
     let a_done = Arc::clone(&publisher_a_done);
+    let a_progress = Arc::clone(&publisher_a_progress);
     let publisher_a = match crate::task::kthread::kthread_run_on_cpu_for_test(
         move || {
+            a_progress.store(1, Ordering::Release);
             crate::task::scheduler::Scheduler::send_exit_expedite_sgi(
                 RESERVATION_PID_A,
                 crate::task::scheduler::GroupBatchId::for_single_victim(RESERVATION_PID_A),
             );
+            a_progress.store(2, Ordering::Release);
             a_done.store(1, Ordering::Release);
+            a_progress.store(3, Ordering::Release);
         },
         "exit_kick_reserve_a",
         PUBLISHER_A_CPU,
@@ -1553,13 +1733,16 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
     if let Err(result) = wait_with_resched(
         || EXIT_KICK_TEST_HOOK_RESERVED.load(Ordering::Acquire),
         |value| value != 0,
+        || EXIT_KICK_TEST_HOOK_RESERVED.load(Ordering::Acquire),
         &[PUBLISHER_A_CPU],
         &wait_watchdog,
         &WaitSite {
             name: "publisher_a_reservation",
             condition_name: "reserved",
-            deadline_message:
-                "exit_kick_gate: publisher A reservation handshake stuck, CPU 1 unresponsive",
+            no_progress_message:
+                "exit_kick_gate: publisher A reservation made no progress for 3 seconds, CPU 1 unresponsive",
+            absolute_ceiling_message:
+                "exit_kick_gate: publisher A reservation exceeded the 60-second absolute wait ceiling",
         },
     ) {
         // `hook` is dropped on return, releasing publisher A from its hold.
@@ -1567,6 +1750,7 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
     }
 
     let b_done = Arc::clone(&publisher_b_done);
+    let b_progress = Arc::clone(&publisher_b_progress);
     let b_cpu = Arc::clone(&publisher_b_cpu);
     let publisher_b = match crate::task::kthread::kthread_run_on_cpu_for_test(
         move || {
@@ -1574,11 +1758,14 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
                 crate::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id() as u64,
                 Ordering::Relaxed,
             );
+            b_progress.store(1, Ordering::Release);
             crate::task::scheduler::Scheduler::send_exit_expedite_sgi(
                 RESERVATION_PID_B,
                 crate::task::scheduler::GroupBatchId::for_single_victim(RESERVATION_PID_B),
             );
+            b_progress.store(2, Ordering::Release);
             b_done.store(1, Ordering::Release);
+            b_progress.store(3, Ordering::Release);
         },
         "exit_kick_reserve_b",
         PUBLISHER_B_CPU,
@@ -1590,10 +1777,12 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
                 &publisher_a,
                 &[PUBLISHER_A_CPU],
                 &wait_watchdog,
+                || publisher_a_progress.load(Ordering::Acquire),
                 &WaitSite {
                     name: "publisher_a_cleanup_join",
                     condition_name: "publisher_a_exited",
-                    deadline_message: "exit_kick_gate: publisher A cleanup join stuck after publisher B spawn failure, CPU 1 unresponsive",
+                    no_progress_message: "exit_kick_gate: publisher A cleanup join made no progress for 3 seconds after publisher B spawn failure, CPU 1 unresponsive",
+                    absolute_ceiling_message: "exit_kick_gate: publisher A cleanup join exceeded the 60-second absolute wait ceiling after publisher B spawn failure",
                 },
                 "exit_kick_gate: publisher A cleanup join failed after publisher B spawn failure",
             ) {
@@ -1606,13 +1795,16 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
     if let Err(result) = wait_with_resched(
         || publisher_b_done.load(Ordering::Acquire),
         |value| value != 0,
+        || publisher_b_progress.load(Ordering::Acquire),
         &[PUBLISHER_B_CPU],
         &wait_watchdog,
         &WaitSite {
             name: "publisher_b_completion",
             condition_name: "publisher_b_done",
-            deadline_message:
-                "exit_kick_gate: publisher B completion handshake stuck, CPU 2 unresponsive",
+            no_progress_message:
+                "exit_kick_gate: publisher B completion made no progress for 3 seconds, CPU 2 unresponsive",
+            absolute_ceiling_message:
+                "exit_kick_gate: publisher B completion exceeded the 60-second absolute wait ceiling",
         },
     ) {
         // `hook` is dropped on return, releasing publisher A from its hold.
@@ -1634,10 +1826,14 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
         &publisher_b,
         &[PUBLISHER_B_CPU],
         &wait_watchdog,
+        || publisher_b_progress.load(Ordering::Acquire),
         &WaitSite {
             name: "publisher_b_join",
             condition_name: "publisher_b_exited",
-            deadline_message: "exit_kick_gate: publisher B join stuck, CPU 2 unresponsive",
+            no_progress_message:
+                "exit_kick_gate: publisher B join made no progress for 3 seconds, CPU 2 unresponsive",
+            absolute_ceiling_message:
+                "exit_kick_gate: publisher B join exceeded the 60-second absolute wait ceiling",
         },
         "exit_kick_gate: publisher B kthread_join failed after exit observation",
     ) {
@@ -1647,10 +1843,14 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
         &publisher_a,
         &[PUBLISHER_A_CPU],
         &wait_watchdog,
+        || publisher_a_progress.load(Ordering::Acquire),
         &WaitSite {
             name: "publisher_a_join",
             condition_name: "publisher_a_exited",
-            deadline_message: "exit_kick_gate: publisher A join stuck, CPU 1 unresponsive",
+            no_progress_message:
+                "exit_kick_gate: publisher A join made no progress for 3 seconds, CPU 1 unresponsive",
+            absolute_ceiling_message:
+                "exit_kick_gate: publisher A join exceeded the 60-second absolute wait ceiling",
         },
         "exit_kick_gate: publisher A kthread_join failed after exit observation",
     ) {
@@ -1659,6 +1859,8 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
     core::mem::drop(hook);
 
     if publisher_a_done.load(Ordering::Acquire) != 1
+        || publisher_a_progress.load(Ordering::Acquire) != 3
+        || publisher_b_progress.load(Ordering::Acquire) != 3
         || publisher_a_cpu == u64::MAX
         || publisher_b_cpu == u64::MAX
         || publisher_a_cpu == publisher_b_cpu
@@ -1725,6 +1927,9 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
         publisher_a_cpu_mask: AtomicU64,
         publisher_b_cpu_mask: AtomicU64,
         observer_cpu_mask: AtomicU64,
+        publisher_a_attempts: AtomicU64,
+        publisher_b_attempts: AtomicU64,
+        observer_iterations: AtomicU64,
         next_token: AtomicU64,
         published: AtomicU64,
         collisions: AtomicU64,
@@ -1752,6 +1957,9 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
         publisher_a_cpu_mask: AtomicU64::new(0),
         publisher_b_cpu_mask: AtomicU64::new(0),
         observer_cpu_mask: AtomicU64::new(0),
+        publisher_a_attempts: AtomicU64::new(0),
+        publisher_b_attempts: AtomicU64::new(0),
+        observer_iterations: AtomicU64::new(0),
         next_token: AtomicU64::new(0),
         published: AtomicU64::new(0),
         collisions: AtomicU64::new(0),
@@ -1796,6 +2004,15 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
                     }
                 }
                 for attempt in 0..ATTEMPTS_PER_PUBLISHER {
+                    if pid == PID_A {
+                        accounting
+                            .publisher_a_attempts
+                            .fetch_add(1, Ordering::Relaxed);
+                    } else {
+                        accounting
+                            .publisher_b_attempts
+                            .fetch_add(1, Ordering::Relaxed);
+                    }
                     let cpu_bit =
                         1u64 << crate::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id();
                     if pid == PID_A {
@@ -1905,6 +2122,9 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
                 .observer_running
                 .store(true, Ordering::Release);
             while observer_accounting.publishers_done.load(Ordering::Acquire) != 2 {
+                observer_accounting
+                    .observer_iterations
+                    .fetch_add(1, Ordering::Relaxed);
                 let cpu_bit = 1u64 << crate::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id();
                 observer_accounting
                     .observer_cpu_mask
@@ -1952,13 +2172,16 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
     if let Err(result) = wait_with_resched(
         || accounting.workers_ready.load(Ordering::Acquire),
         |value| value == 3,
+        || accounting.workers_ready.load(Ordering::Acquire),
         &worker_cpus,
         &wait_watchdog,
         &WaitSite {
             name: "workers_ready",
             condition_name: "workers_ready",
-            deadline_message:
-                "exit_kick_gate: workers_ready never reached 3, a worker CPU (1/2/3) is unresponsive",
+            no_progress_message:
+                "exit_kick_gate: workers_ready made no progress for 3 seconds, a worker CPU (1/2/3) is unresponsive",
+            absolute_ceiling_message:
+                "exit_kick_gate: workers_ready exceeded the 60-second absolute wait ceiling",
         },
     ) {
         return result;
@@ -1969,11 +2192,14 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
         &publisher_a,
         &worker_cpus,
         &wait_watchdog,
+        || accounting.publisher_a_attempts.load(Ordering::Acquire),
         &WaitSite {
             name: "storm_publisher_a_join",
             condition_name: "publisher_a_exited",
-            deadline_message:
-                "exit_kick_gate: storm publisher A join stuck, a worker CPU (1/2/3) is unresponsive",
+            no_progress_message:
+                "exit_kick_gate: storm publisher A made no progress for 3 seconds, a worker CPU (1/2/3) is unresponsive",
+            absolute_ceiling_message:
+                "exit_kick_gate: storm publisher A exceeded the 60-second absolute wait ceiling",
         },
         "exit_kick_gate: storm publisher A kthread_join failed after exit observation",
     ) {
@@ -1983,11 +2209,14 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
         &publisher_b,
         &worker_cpus,
         &wait_watchdog,
+        || accounting.publisher_b_attempts.load(Ordering::Acquire),
         &WaitSite {
             name: "storm_publisher_b_join",
             condition_name: "publisher_b_exited",
-            deadline_message:
-                "exit_kick_gate: storm publisher B join stuck, a worker CPU (1/2/3) is unresponsive",
+            no_progress_message:
+                "exit_kick_gate: storm publisher B made no progress for 3 seconds, a worker CPU (1/2/3) is unresponsive",
+            absolute_ceiling_message:
+                "exit_kick_gate: storm publisher B exceeded the 60-second absolute wait ceiling",
         },
         "exit_kick_gate: storm publisher B kthread_join failed after exit observation",
     ) {
@@ -1997,11 +2226,14 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
         &observer,
         &worker_cpus,
         &wait_watchdog,
+        || accounting.observer_iterations.load(Ordering::Acquire),
         &WaitSite {
             name: "storm_observer_join",
             condition_name: "observer_exited",
-            deadline_message:
-                "exit_kick_gate: storm observer join stuck, a worker CPU (1/2/3) is unresponsive",
+            no_progress_message:
+                "exit_kick_gate: storm observer made no progress for 3 seconds, a worker CPU (1/2/3) is unresponsive",
+            absolute_ceiling_message:
+                "exit_kick_gate: storm observer exceeded the 60-second absolute wait ceiling",
         },
         "exit_kick_gate: storm observer kthread_join failed after exit observation",
     ) {
@@ -2009,6 +2241,8 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
     }
 
     let attempts = accounting.next_token.load(Ordering::Acquire);
+    let publisher_a_attempts = accounting.publisher_a_attempts.load(Ordering::Acquire);
+    let publisher_b_attempts = accounting.publisher_b_attempts.load(Ordering::Acquire);
     let published = accounting.published.load(Ordering::Acquire);
     let collisions_reservation_lost = accounting
         .collisions_reservation_lost
@@ -2031,7 +2265,10 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
     if !occupied_three_distinct_cpus {
         return TestResult::Fail("exit-kick storm did not occupy three distinct CPUs");
     }
-    if attempts != TOTAL_ATTEMPTS {
+    if attempts != TOTAL_ATTEMPTS
+        || publisher_a_attempts != ATTEMPTS_PER_PUBLISHER
+        || publisher_b_attempts != ATTEMPTS_PER_PUBLISHER
+    {
         return TestResult::Fail("exit-kick storm did not execute all publisher attempts");
     }
     if attempts != published + collisions_reservation_lost {

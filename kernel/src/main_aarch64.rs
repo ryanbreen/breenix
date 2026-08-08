@@ -971,10 +971,11 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
             // Wait for all launched CPUs to come online (with timeout)
             const SMP_ONLINE_TIMEOUT_SECONDS: u64 = 6;
             const SMP_ONLINE_PROGRESS_INTERVAL_SECONDS: u64 = 1;
-            // Keep this fallback identical to teardown.rs and smp.rs. If
-            // firmware reports zero, the lowest plausible frequency keeps the
-            // guest-side verdict inside the harness timeout even when CNTVCT
-            // is actually faster.
+            // Keep this fallback identical to smp.rs. Teardown's longer
+            // test-only watchdog deliberately uses a different fallback. If
+            // firmware reports zero here, the lowest plausible frequency keeps
+            // the guest-side verdict inside the harness timeout even when
+            // CNTVCT is actually faster.
             const CNTVCT_FALLBACK_FREQUENCY_HZ: u64 = 1_000_000;
 
             let expected = 1 + launched; // boot CPU + launched

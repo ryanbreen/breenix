@@ -73,6 +73,17 @@ This document formalizes the **Linux-rigor polling-elimination gate** for cases 
 - **Frequency:** Boot-time SMP probing only, and only after a transient PSCI response.
 - **Status:** ALLOWLISTED — not subject to polling-elimination conversion.
 
+## P20: Exit-kick boot-gate cross-CPU handshakes
+
+- **File:** `kernel/src/tracing/providers/teardown.rs` (`spin_with_resched()`, nested in `exit_kick_protocol_gate_test()`)
+- **Loop:** The boot-test coordinator on CPU 0 polls conditions completed by kthreads pinned to CPUs 1-3. It samples CNTVCT on every pass, yields, and periodically sends `SGI_RESCHEDULE` after a 500-millisecond grace and then at 50-millisecond intervals.
+- **Justification:** The boot-test executor runs synchronously outside the scheduler, so it has no scheduler-backed wait context to park. The loop is test-only and validates cross-CPU scheduler/exit-kick liveness; production waits remain scheduler-backed.
+- **Progress bound:** Each wait fails after three consecutive CNTVCT seconds with no advance of its own lock-free progress counter. Any advance re-arms a fresh three-second window. Readiness and reservation waits use their condition counters; reservation-loss completion/joins use per-publisher stage counters; storm publisher joins use dedicated per-publisher attempt counters; and the observer join uses an unconditional scan-iteration counter.
+- **Absolute bound:** Every wait also has a distinct 60-second absolute ceiling for a pathological producer that advances often enough to re-arm but never completes. There is no aggregate gate deadline. A separate detector samples CNTVCT every 10,000,000 coordinator iterations and fails if the counter itself did not advance.
+- **Evidence:** Failures report the starting/final progress values, milliseconds since the last advance, and up to five chronological one-second progress samples, alongside re-kick count and online CPU count.
+- **Frequency:** Once per ARM64 boot-test run.
+- **Status:** ALLOWLISTED — test-harness-only synchronous fallback; not a production event-polling primitive.
+
 ## P12: AHCI engine + taskfile bounded register handshakes (Sites 3, 4, 5)
 
 - **File:** `kernel/src/drivers/ahci/mod.rs:1075-1106` (Site 3: `PORT_CMD.CR` / `PORT_CMD.FR` command-engine state handshakes in `stop_cmd()` / `start_cmd()`)
