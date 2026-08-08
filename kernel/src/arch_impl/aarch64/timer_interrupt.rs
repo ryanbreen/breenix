@@ -527,9 +527,7 @@ pub extern "C" fn timer_interrupt_handler(frame: *const Aarch64ExceptionFrame) {
         }
     }
 
-    // ═══════════════════════════════════════════════════════════════════════
-    // 🔒 GOLD-MASTER REGION — CPU0 divergence regression alarm
-    // ═══════════════════════════════════════════════════════════════════════
+    // CPU0 divergence regression alarm.
     //
     // Installed by PR #334 (2026-04-22) after the CPU0 user-guard dispatch
     // loop cost ~1 week to diagnose. The alarm fires a `panic!` at 30s
@@ -544,8 +542,7 @@ pub extern "C" fn timer_interrupt_handler(frame: *const Aarch64ExceptionFrame) {
     // A panic is intentionally loud: this regression SHOULD make the
     // system unbootable because silent degradation was the whole problem.
     //
-    // See docs/planning/cpu0-user-guard-autopsy/README.md.
-    // ═══════════════════════════════════════════════════════════════════════
+    // Background: docs/planning/cpu0-user-guard-autopsy/README.md.
     if cpu_id >= 1 && cpu_id < 8 {
         let this_cpu_ticks = TIMER_TICK_COUNT[cpu_id].load(Ordering::Relaxed);
         if this_cpu_ticks == 30000 {
@@ -604,7 +601,6 @@ pub extern "C" fn timer_interrupt_handler(frame: *const Aarch64ExceptionFrame) {
             }
         }
     }
-    // ═══════════════════════════════════════════════════════════════════════
 
     // Mask the timer interrupt at the source (set IMASK=1, keep ENABLE=1).
     // This de-asserts the PPI line, which signals the hypervisor (Parallels/HVF)
@@ -631,11 +627,10 @@ pub extern "C" fn timer_interrupt_handler(frame: *const Aarch64ExceptionFrame) {
         }
     }
 
-    // ═══════════════════════════════════════════════════════════════════════
-    // 🔒 GOLD-MASTER REGION — arm_timer at TOP of handler
-    // ═══════════════════════════════════════════════════════════════════════
+    // arm_timer at the TOP of the handler — unconditional re-arm before any
+    // handler work, to prevent IMASK death if the handler hangs.
     //
-    // Frozen by PR #336 after review. Original fix in commit e4e16b68
+    // Added in PR #336 after review; original fix in commit e4e16b68
     // (2026-03-29): "move arm_timer to top of handler — prevents IMASK death
     // when handler work hangs".
     //
@@ -647,19 +642,17 @@ pub extern "C" fn timer_interrupt_handler(frame: *const Aarch64ExceptionFrame) {
     // the timer is already re-armed with IMASK=0 so the CPU's vtimer keeps
     // ticking instead of dying permanently.
     //
-    // DO NOT:
-    //   - Move this re-arm later in the handler ("just a quick poll first,
-    //     then arm" has been tried and regresses to IMASK-death).
-    //   - Gate it on any condition — every timer-handler entry re-arms,
-    //     unconditionally, even if the previous arm happened 1µs ago.
-    //   - Replace the direct CNTV_CTL=1 + CVAL write with an arm function
-    //     that could take a lock.
+    // So keep the re-arm here: don't move it later in the handler ("just a
+    // quick poll first, then arm" has been tried and regresses to
+    // IMASK-death), don't gate it on any condition (every timer-handler entry
+    // re-arms, unconditionally, even if the previous arm happened 1µs ago),
+    // and don't replace the direct CNTV_CTL=1 + CVAL write with an arm
+    // function that could take a lock.
     //
     // Diagnostic proof of the IMASK-death class is in the e4e16b68 commit
     // message: `timer_ctl[0]=0x7 (ENABLE=1, IMASK=1, ISTATUS=1)` on a dead
     // CPU0 before the fix. See also docs/planning/cpu0-user-guard-autopsy
     // for the broader CPU0-liveness story.
-    // ═══════════════════════════════════════════════════════════════════════
     let ticks = TICKS_PER_INTERRUPT.load(Ordering::Relaxed);
     if crate::platform_config::is_vmware() {
         // VMware: re-arm both timers using CVAL (absolute compare value)

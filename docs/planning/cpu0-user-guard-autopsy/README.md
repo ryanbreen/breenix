@@ -5,7 +5,8 @@
 This document is the definitive post-mortem on the "CPU0 regression" that
 burned approximately one week of engineering time across factories F32i,
 F32j, F33, F34, and several ad-hoc investigations in early- to mid-April
-2026. Read this *first* before touching any CPU0-adjacent code.
+2026. It explains why the CPU0-adjacent code is shaped the way it is; worth
+reading before you change any of it, so you don't re-create the bug.
 
 ---
 
@@ -224,8 +225,9 @@ If you believe CPU0 needs special handling that CPUs 1-7 do not:
 4. **Expect the detection alarm to fire** if you break this. The panic
    message will reference this document.
 
-5. **PR signoff from the project owner is required** for any change to
-   the gold-master code regions that reference this autopsy.
+These regions are not frozen — change them with discipline when you have the
+evidence above. The point of this record is that the reasons are understood,
+not that the code is untouchable.
 
 ---
 
@@ -234,7 +236,7 @@ If you believe CPU0 needs special handling that CPUs 1-7 do not:
 - This document: `docs/planning/cpu0-user-guard-autopsy/README.md`
 - Fix commit: `9da897f4` (PR #334)
 - Probe branch: `origin/cpu0-trace-dump-probe`
-- Gold-master markers in:
+- Load-bearing regions that reference this autopsy:
   - `kernel/src/arch_impl/aarch64/context_switch.rs` (dispatch site)
   - `kernel/src/arch_impl/aarch64/context_switch.rs` (`idle_loop_arm64`)
   - `kernel/src/arch_impl/aarch64/gic.rs` (`init_gicv3_redistributor`
