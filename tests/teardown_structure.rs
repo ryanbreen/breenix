@@ -250,22 +250,24 @@ fn validate_aarch64_liveness_bounds(
     provider: &str,
     main_aarch64: &str,
     smp: &str,
+    scheduler: &str,
+    kthread: &str,
 ) -> Result<(), String> {
     let gate = function_body(provider, "exit_kick_protocol_gate_test");
     for required in [
         "const NO_PROGRESS_WINDOW_MILLISECONDS: u64 = 3_000;",
-        "const ABSOLUTE_WAIT_CEILING_MILLISECONDS: u64 = 60_000;",
+        "const ABSOLUTE_WAIT_CEILING_MILLISECONDS: u64 = 30_000;",
         "const PROGRESS_SAMPLE_INTERVAL_MILLISECONDS: u64 = 1_000;",
         "const PROGRESS_SAMPLE_CAPACITY: usize = 5;",
         "const CNTVCT_STALL_SAMPLE_INTERVAL_ITERATIONS: u64 = 10_000_000;",
         "const FIRST_RESCHED_REKICK_GRACE_MILLISECONDS: u64 = 500;",
         "const RESCHED_REKICK_INTERVAL_MILLISECONDS: u64 = 50;",
-        "const CNTVCT_FALLBACK_FREQUENCY_HZ: u64 = 1_000_000;",
+        "exit_kick_gate: CNTFRQ_EL0 unavailable; unresponsive watchdog cannot establish wall-clock bounds",
         "let wait_elapsed = now.wrapping_sub(wait_start);",
         "let no_progress_elapsed = now.wrapping_sub(last_advance);",
         "wait_elapsed >= watchdog.absolute_wait_ceiling_ticks",
         "no_progress_elapsed >= watchdog.no_progress_window_ticks",
-        "if progress_value > last_progress",
+        "if progress_value.advanced_since(last_progress)",
         "last_advance = now;",
         "stall_sample_iterations >= CNTVCT_STALL_SAMPLE_INTERVAL_ITERATIONS",
         "if now == last_counter_sample",
@@ -282,30 +284,40 @@ fn validate_aarch64_liveness_bounds(
         "elapsed_ms={}",
         "no_progress_window_ms={}",
         "absolute_ceiling_ms={}",
-        "progress_start={}",
-        "progress_final={}",
+        "work_progress_start={}",
+        "work_progress_final={}",
+        "exit_stage_applicable={}",
+        "exit_stage_progress_start={}",
+        "exit_stage_progress_final={}",
         "progress_never_advanced={}",
-        "progress_never_advanced: progress_final == progress_start",
+        "progress_never_advanced: !progress_final.advanced_since(progress_start)",
         "last_advance_ms_ago={}",
         "progress_sample_count={}",
         "progress_sample_0_ms={}",
-        "progress_sample_0={}",
+        "progress_sample_0_work={}",
+        "progress_sample_0_exit_stage={}",
         "progress_sample_4_ms={}",
-        "progress_sample_4={}",
+        "progress_sample_4_work={}",
+        "progress_sample_4_exit_stage={}",
         "condition_name",
         "WaitFailureKind::CounterStall",
         "\"exit_kick_gate: CNTVCT stalled between watchdog samples; cannot bound wait; CPU may be unresponsive or counter frozen\";",
         "WaitFailureKind::CounterStall => TestResult::Fail(COUNTER_STALL_MESSAGE)",
+        "late_true && !matches!(failure.kind, WaitFailureKind::CounterStall)",
         "WaitFailureKind::NoProgress => TestResult::Fail(site.no_progress_message)",
         "WaitFailureKind::AbsoluteCeiling => TestResult::Fail(site.absolute_ceiling_message)",
         "late_true={}",
+        "breadcrumb=1 elapsed_ms={}",
+        "work_progress={}",
+        "exit_stage_progress={}",
         "result=pass gate_elapsed_ms={}",
         "slowest_wait_elapsed_ms={}",
         "struct WaitSite",
         "read_progress",
-        "fn target_cpu_tick_progress(target_cpus: &[usize]) -> u64",
-        "TIMER_TICK_COUNT[cpu].load(Ordering::Relaxed)",
-        ".min()",
+        "struct WaitProgress",
+        "fn work_only(work: u64) -> Self",
+        "fn with_exit_stage(work: u64, exit_stage: u64) -> Self",
+        "boot_test_kthread_exit_stage(handle.tid())",
         "let publisher_a_progress = Arc::new(AtomicU64::new(0));",
         "let publisher_b_progress = Arc::new(AtomicU64::new(0));",
         "a_progress.store(1, Ordering::Release);",
@@ -317,21 +329,24 @@ fn validate_aarch64_liveness_bounds(
         "publisher_a_attempts: AtomicU64",
         "publisher_b_attempts: AtomicU64",
         "observer_iterations: AtomicU64",
+        "let observer_iterations = accounting.observer_iterations.load(Ordering::Acquire);",
+        "if observer_iterations == 0",
+        "exit-kick storm observer never executed its observation loop",
         "exit-kick reservation-loss publisher CPU is not online",
         "exit-kick storm requires four online CPUs",
         "name: \"publisher_a_cleanup_join\"",
-        "exit_kick_gate: publisher A reservation exceeded the 60-second absolute wait ceiling; CPU 1 may be unresponsive",
-        "exit_kick_gate: publisher A cleanup join exceeded the 60-second absolute wait ceiling after publisher B spawn failure; CPU 1 may be unresponsive",
-        "exit_kick_gate: publisher B completion exceeded the 60-second absolute wait ceiling; CPU 2 may be unresponsive",
-        "exit_kick_gate: publisher B join exceeded the 60-second absolute wait ceiling; CPU 2 may be unresponsive",
-        "exit_kick_gate: publisher A join exceeded the 60-second absolute wait ceiling; CPU 1 may be unresponsive",
-        "exit_kick_gate: workers_ready exceeded the 60-second absolute wait ceiling; a worker CPU (1/2/3) may be unresponsive",
+        "exit_kick_gate: publisher A reservation exceeded the 30-second absolute wait ceiling; CPU 1 may be unresponsive",
+        "exit_kick_gate: publisher A cleanup join exceeded the 30-second absolute wait ceiling after publisher B spawn failure; CPU 1 may be unresponsive",
+        "exit_kick_gate: publisher B completion exceeded the 30-second absolute wait ceiling; CPU 2 may be unresponsive",
+        "exit_kick_gate: publisher B join exceeded the 30-second absolute wait ceiling; CPU 2 may be unresponsive",
+        "exit_kick_gate: publisher A join exceeded the 30-second absolute wait ceiling; CPU 1 may be unresponsive",
+        "exit_kick_gate: workers_ready exceeded the 30-second absolute wait ceiling; a worker CPU (1/2/3) may be unresponsive",
         "exit_kick_gate: storm publisher A made no progress for 3 seconds, a worker CPU (1/2/3) is unresponsive",
         "exit_kick_gate: storm publisher B made no progress for 3 seconds, a worker CPU (1/2/3) is unresponsive",
         "exit_kick_gate: storm observer made no progress for 3 seconds, a worker CPU (1/2/3) is unresponsive",
-        "exit_kick_gate: storm publisher A exceeded the 60-second absolute wait ceiling; a worker CPU (1/2/3) may be unresponsive",
-        "exit_kick_gate: storm publisher B exceeded the 60-second absolute wait ceiling; a worker CPU (1/2/3) may be unresponsive",
-        "exit_kick_gate: storm observer exceeded the 60-second absolute wait ceiling; a worker CPU (1/2/3) may be unresponsive",
+        "exit_kick_gate: storm publisher A exceeded the 30-second absolute wait ceiling; a worker CPU (1/2/3) may be unresponsive",
+        "exit_kick_gate: storm publisher B exceeded the 30-second absolute wait ceiling; a worker CPU (1/2/3) may be unresponsive",
+        "exit_kick_gate: storm observer exceeded the 30-second absolute wait ceiling; a worker CPU (1/2/3) may be unresponsive",
     ] {
         require_contains("exit_kick_protocol_gate_test", gate, required)?;
     }
@@ -350,17 +365,33 @@ fn validate_aarch64_liveness_bounds(
         // cleanup join. The latter returns before the remaining path runs.
         ("&wait_watchdog", 9),
         ("crate::task::kthread::kthread_join(", 1),
-        ("|| EXIT_KICK_TEST_HOOK_RESERVED.load(Ordering::Acquire),", 1),
+        (
+            "|| EXIT_KICK_TEST_HOOK_RESERVED.load(Ordering::Acquire),",
+            1,
+        ),
         ("|| accounting.workers_ready.load(Ordering::Acquire),", 1),
-        ("|| target_cpu_tick_progress(&[PUBLISHER_A_CPU]),", 3),
-        ("|| target_cpu_tick_progress(&[PUBLISHER_B_CPU]),", 2),
-        ("|| target_cpu_tick_progress(&worker_cpus),", 1),
-        ("|| target_cpu_tick_progress(&[worker_cpus[0]]),", 1),
-        ("|| target_cpu_tick_progress(&[worker_cpus[1]]),", 1),
-        ("|| target_cpu_tick_progress(&[worker_cpus[2]]),", 1),
+        ("|| publisher_a_progress.load(Ordering::Acquire),", 2),
+        ("|| publisher_b_progress.load(Ordering::Acquire),", 1),
+        (
+            "|| accounting.publisher_a_attempts.load(Ordering::Acquire),",
+            1,
+        ),
+        (
+            "|| accounting.publisher_b_attempts.load(Ordering::Acquire),",
+            1,
+        ),
+        (
+            "|| accounting.observer_iterations.load(Ordering::Acquire),",
+            1,
+        ),
     ] {
         require_count("exit_kick_protocol_gate_test", gate, needle, expected)?;
     }
+    require_contains(
+        "exit_kick_protocol_gate_test",
+        gate,
+        "WaitProgress::work_only(publisher_b_progress.load(Ordering::Acquire))",
+    )?;
     for forbidden in [
         "WHOLE_GATE_BUDGET_MILLISECONDS",
         "WholeGateDeadline",
@@ -375,21 +406,23 @@ fn validate_aarch64_liveness_bounds(
         "per_wait_timeout_ticks",
         "wait_budget_ms",
         ".expect(\"kthread_join returned Err despite its infallible contract\")",
-        "|| publisher_a_progress.load(Ordering::Acquire),",
-        "|| publisher_b_progress.load(Ordering::Acquire),",
-        "|| accounting.publisher_a_attempts.load(Ordering::Acquire),",
-        "|| accounting.publisher_b_attempts.load(Ordering::Acquire),",
-        "|| accounting.observer_iterations.load(Ordering::Acquire),",
+        "target_cpu_tick_progress",
+        "TIMER_TICK_COUNT",
+        "CNTVCT_FALLBACK_FREQUENCY_HZ",
     ] {
         require_absent("exit_kick_protocol_gate_test", gate, forbidden)?;
     }
 
     let spin = function_body(provider, "spin_with_resched");
-    require_count("spin_with_resched", spin, "if cond() {", 4)?;
+    require_count("spin_with_resched", spin, "if cond() {", 3)?;
 
     let join = function_body(provider, "join_with_resched");
     for required in [
         "kick_cpus: &[usize]",
+        "read_work_progress",
+        "WaitProgress::with_exit_stage(",
+        "boot_test_kthread_exit_stage(handle.tid())",
+        "start_kthread_exit_watch_for_test(handle.tid())",
         "wait_with_resched(",
         "crate::task::kthread::kthread_join(handle).is_err()",
         "return Err(TestResult::Fail(join_error_message));",
@@ -431,6 +464,49 @@ fn validate_aarch64_liveness_bounds(
         smp,
         "hvc64_ret == PSCI_RETURN_ON_PENDING || ret == PSCI_RETURN_ON_PENDING",
     )?;
+
+    for required in [
+        "const BOOT_TEST_KTHREAD_EXIT_STAGE_SLOTS: usize = 64;",
+        "static BOOT_TEST_KTHREAD_EXIT_STAGES:",
+        "fn reset_boot_test_kthread_exit_stages()",
+        "let kthread_exit_stages_guard = reset_boot_test_kthread_exit_stages();",
+        "core::mem::drop(kthread_exit_stages_guard);",
+        "fn register_current_kthread_exit_watch_for_test",
+        "pub(crate) fn record_kthread_exit_stage_for_test",
+        "pub(crate) fn await_kthread_exit_watch_for_test",
+        "fn start_kthread_exit_watch_for_test",
+        "fn boot_test_kthread_exit_stage",
+    ] {
+        require_contains("teardown.rs", provider, required)?;
+    }
+    require_count(
+        "exit_kick_protocol_gate_test",
+        gate,
+        "register_current_kthread_exit_watch_for_test();",
+        4,
+    )?;
+    let clear_affinity = function_body(scheduler, "clear_cpu_affinity_for_test");
+    for required in [
+        "record_kthread_exit_stage_for_test(",
+        "await_kthread_exit_watch_for_test(thread_id);",
+    ] {
+        require_contains("clear_cpu_affinity_for_test", clear_affinity, required)?;
+    }
+    require_count(
+        "clear_cpu_affinity_for_test",
+        clear_affinity,
+        "record_kthread_exit_stage_for_test(",
+        2,
+    )?;
+    require_contains(
+        "kthread_exit",
+        function_body(kthread, "kthread_exit"),
+        "scheduler::clear_cpu_affinity_for_test(handle.inner.tid);",
+    )?;
+    assert!(
+        join.find("let progress = WaitProgress::with_exit_stage(")
+            < join.find("start_kthread_exit_watch_for_test(handle.tid())")
+    );
 
     Ok(())
 }
@@ -487,14 +563,14 @@ const EXIT_PROCESS_BY_PID_CALLS: &[(&str, usize)] = &[
 const EXIT_PROCESS_FOR_TEARDOWN_TEST_CALLS: &[(&str, usize)] =
     &[("kernel/src/tracing/providers/teardown.rs", 950)];
 const BLOCKING_PRIMITIVES: &[(&str, usize)] = &[
-    ("kernel/src/task/scheduler.rs", 1971),
-    ("kernel/src/task/scheduler.rs", 2185),
-    ("kernel/src/task/scheduler.rs", 2204),
-    ("kernel/src/task/scheduler.rs", 2353),
-    ("kernel/src/task/scheduler.rs", 2441),
-    ("kernel/src/task/scheduler.rs", 2506),
-    ("kernel/src/task/scheduler.rs", 2515),
-    ("kernel/src/task/scheduler.rs", 2674),
+    ("kernel/src/task/scheduler.rs", 1974),
+    ("kernel/src/task/scheduler.rs", 2188),
+    ("kernel/src/task/scheduler.rs", 2207),
+    ("kernel/src/task/scheduler.rs", 2356),
+    ("kernel/src/task/scheduler.rs", 2444),
+    ("kernel/src/task/scheduler.rs", 2509),
+    ("kernel/src/task/scheduler.rs", 2518),
+    ("kernel/src/task/scheduler.rs", 2677),
     ("kernel/src/task/waitqueue.rs", 52),
 ];
 const RAW_SCHEDULER_LOCK_SITES: &[(&str, usize)] = &[
@@ -900,7 +976,9 @@ fn exit_kick_waits_have_progress_rearmed_deadlines_and_bounded_rekicks() {
     let provider = source(&sources, "kernel/src/tracing/providers/teardown.rs");
     let main_aarch64 = source(&sources, "kernel/src/main_aarch64.rs");
     let smp = source(&sources, "kernel/src/arch_impl/aarch64/smp.rs");
-    validate_aarch64_liveness_bounds(provider, main_aarch64, smp)
+    let scheduler = source(&sources, "kernel/src/task/scheduler.rs");
+    let kthread = source(&sources, "kernel/src/task/kthread.rs");
+    validate_aarch64_liveness_bounds(provider, main_aarch64, smp, scheduler, kthread)
         .expect("exit-kick wait watchdog structure changed");
 }
 
@@ -963,57 +1041,109 @@ fn deliberately_broken_variants_fail_the_ratchet() {
     let provider = source(&sources, "kernel/src/tracing/providers/teardown.rs");
     let main_aarch64 = source(&sources, "kernel/src/main_aarch64.rs");
     let smp = source(&sources, "kernel/src/arch_impl/aarch64/smp.rs");
+    let scheduler = source(&sources, "kernel/src/task/scheduler.rs");
+    let kthread = source(&sources, "kernel/src/task/kthread.rs");
     let unthrottled_rekick = provider.replacen(
         "now.wrapping_sub(last_kick) >= watchdog.rekick_interval_ticks",
         "true",
         1,
     );
-    validate_aarch64_liveness_bounds(&unthrottled_rekick, main_aarch64, smp)
+    validate_aarch64_liveness_bounds(&unthrottled_rekick, main_aarch64, smp, scheduler, kthread)
         .expect_err("unthrottled re-kick variant passed the exit-kick watchdog ratchet");
     let uncoupled_storm_join = provider.replacen(
         "join_with_resched(\n        &publisher_a,\n        &worker_cpus,\n        &wait_watchdog,",
         "join_with_resched(\n        &publisher_a,\n        &[worker_cpus[0]],\n        &wait_watchdog,",
         1,
     );
-    validate_aarch64_liveness_bounds(&uncoupled_storm_join, main_aarch64, smp)
+    validate_aarch64_liveness_bounds(&uncoupled_storm_join, main_aarch64, smp, scheduler, kthread)
         .expect_err("uncoupled storm join passed the exit-kick watchdog ratchet");
     let stale_counter_baseline =
         provider.replacen("if now == last_counter_sample", "if wait_elapsed == 0", 1);
-    validate_aarch64_liveness_bounds(&stale_counter_baseline, main_aarch64, smp)
-        .expect_err("wait-start-based CNTVCT stall check passed the liveness ratchet");
+    validate_aarch64_liveness_bounds(
+        &stale_counter_baseline,
+        main_aarch64,
+        smp,
+        scheduler,
+        kthread,
+    )
+    .expect_err("wait-start-based CNTVCT stall check passed the liveness ratchet");
     let fixed_no_progress_window = provider.replacen(
         "let no_progress_elapsed = now.wrapping_sub(last_advance);",
         "let no_progress_elapsed = wait_elapsed;",
         1,
     );
-    validate_aarch64_liveness_bounds(&fixed_no_progress_window, main_aarch64, smp)
-        .expect_err("fixed per-wait deadline passed the progress-rearm ratchet");
+    validate_aarch64_liveness_bounds(
+        &fixed_no_progress_window,
+        main_aarch64,
+        smp,
+        scheduler,
+        kthread,
+    )
+    .expect_err("fixed per-wait deadline passed the progress-rearm ratchet");
+    let per_tid_join_progress =
+        "WaitProgress::with_exit_stage(\n                    read_work_progress(),\n                    boot_test_kthread_exit_stage(handle.tid()),\n                )";
+    assert!(provider.contains(per_tid_join_progress));
     let terminal_join_progress = provider.replacen(
-        "join_with_resched(\n        &publisher_b,\n        &[PUBLISHER_B_CPU],\n        &wait_watchdog,\n        || target_cpu_tick_progress(&[PUBLISHER_B_CPU]),",
-        "join_with_resched(\n        &publisher_b,\n        &[PUBLISHER_B_CPU],\n        &wait_watchdog,\n        || publisher_b_progress.load(Ordering::Acquire),",
+        per_tid_join_progress,
+        "WaitProgress::work_only(read_work_progress())",
         1,
     );
-    validate_aarch64_liveness_bounds(&terminal_join_progress, main_aarch64, smp)
-        .expect_err("terminal publisher counter passed the target-CPU progress ratchet");
+    validate_aarch64_liveness_bounds(
+        &terminal_join_progress,
+        main_aarch64,
+        smp,
+        scheduler,
+        kthread,
+    )
+    .expect_err("terminal-only join counter passed the per-TID exit-stage ratchet");
+    let cpu_tick_only_join_progress = provider.replacen(
+        per_tid_join_progress,
+        "WaitProgress::work_only(TIMER_TICK_COUNT[0].load(Ordering::Relaxed))",
+        1,
+    );
+    validate_aarch64_liveness_bounds(
+        &cpu_tick_only_join_progress,
+        main_aarch64,
+        smp,
+        scheduler,
+        kthread,
+    )
+    .expect_err("CPU-tick-only join progress passed the per-TID exit-stage ratchet");
+    let unarmed_exit_stage =
+        provider.replacen("start_kthread_exit_watch_for_test(handle.tid());", "", 1);
+    validate_aarch64_liveness_bounds(&unarmed_exit_stage, main_aarch64, smp, scheduler, kthread)
+        .expect_err("unarmed per-TID exit-stage source passed the join-progress ratchet");
     let missing_absolute_ceiling = provider.replacen(
         "wait_elapsed >= watchdog.absolute_wait_ceiling_ticks",
         "false",
         1,
     );
-    validate_aarch64_liveness_bounds(&missing_absolute_ceiling, main_aarch64, smp)
-        .expect_err("missing absolute wait ceiling passed the liveness ratchet");
+    validate_aarch64_liveness_bounds(
+        &missing_absolute_ceiling,
+        main_aarch64,
+        smp,
+        scheduler,
+        kthread,
+    )
+    .expect_err("missing absolute wait ceiling passed the liveness ratchet");
     let shared_gate_deadline = provider.replacen(
         "let wait_elapsed = now.wrapping_sub(wait_start);",
         "let wait_elapsed = now.wrapping_sub(wait_start); let gate_timeout_ticks = wait_elapsed;",
         1,
     );
-    validate_aarch64_liveness_bounds(&shared_gate_deadline, main_aarch64, smp)
+    validate_aarch64_liveness_bounds(&shared_gate_deadline, main_aarch64, smp, scheduler, kthread)
         .expect_err("shared whole-gate deadline state passed the liveness ratchet");
     let discarded_join_result = provider.replacen(
         "if crate::task::kthread::kthread_join(handle).is_err() {",
         "if false {",
         1,
     );
-    validate_aarch64_liveness_bounds(&discarded_join_result, main_aarch64, smp)
-        .expect_err("discarded kthread_join result passed the exit-kick watchdog ratchet");
+    validate_aarch64_liveness_bounds(
+        &discarded_join_result,
+        main_aarch64,
+        smp,
+        scheduler,
+        kthread,
+    )
+    .expect_err("discarded kthread_join result passed the exit-kick watchdog ratchet");
 }
