@@ -247,6 +247,41 @@ pub fn generate_counters() -> String {
     output
 }
 
+/// Generate the test-scoped, per-PID teardown evidence used by the P2 gate.
+/// Reading the file before a kill registers that PID in the provider's fixed,
+/// lock-free tally table; a later read returns only that PID's deltas.
+pub fn generate_teardown_pid(pid: u64) -> String {
+    #[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
+    {
+        let Some(evidence) = crate::tracing::providers::teardown::teardown_pid_evidence(pid) else {
+            return String::from("capacity_exhausted: 1\n");
+        };
+        return format!(
+            "pid: {}\ndefer: {}\nreclaim: {}\nquarantine: {}\nsgi_sent: {}\nkick_observed: {}\nkick_interval: {}\ntick_period: {}\nmasked_frames_walked: {}\nreport: {}\nbucket_published: {}\nbucket_observed: {}\nbucket_collision: {}\n",
+            pid,
+            evidence.defer_count,
+            evidence.reclaim_count,
+            evidence.quarantine_count,
+            evidence.sgi_sent_count,
+            evidence.kick_observed_count,
+            evidence.kick_observed_interval,
+            crate::arch_impl::aarch64::timer_interrupt::TICKS_PER_INTERRUPT
+                .load(Ordering::Acquire),
+            evidence.masked_frames_walked,
+            evidence.report_count,
+            evidence.bucket_published_count,
+            evidence.bucket_observed_count,
+            evidence.bucket_collision_count,
+        );
+    }
+
+    #[cfg(not(all(feature = "boot_tests", target_arch = "aarch64")))]
+    {
+        let _ = pid;
+        String::from("unavailable: 1\n")
+    }
+}
+
 #[cfg(target_arch = "aarch64")]
 fn append_gicv2m_diag(output: &mut String) {
     let Some(irq) = crate::drivers::virtio::net_pci::get_irq() else {

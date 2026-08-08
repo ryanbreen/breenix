@@ -155,17 +155,21 @@ fn send_signal_to_process(target_pid: ProcessId, sig: u32) -> SyscallResult {
 
             // SIGKILL and SIGSTOP are special - cannot be caught or blocked
             if sig == SIGKILL {
-                log::info!(
-                    "SIGKILL sent to process {} - terminating immediately",
-                    target_pid.as_u64()
-                );
+                let victim_pid = process.id;
+                drop(manager_guard);
+
                 crate::trace_count!(crate::tracing::providers::teardown::TEARDOWN_ENTRY_SIGNAL);
-                process.terminate(-9); // Exit code for SIGKILL
-                                       // Wake up process if blocked so scheduler removes it
-                if matches!(process.state, crate::process::ProcessState::Blocked) {
-                    process.set_ready();
-                }
-                // Trigger reschedule
+                crate::task::scheduler::with_scheduler(|scheduler| {
+                    scheduler.terminate_process_threads(victim_pid.as_u64());
+                });
+
+                let batch =
+                    crate::task::scheduler::GroupBatchId::for_single_victim(victim_pid.as_u64());
+                crate::task::scheduler::Scheduler::send_exit_expedite_sgi(
+                    victim_pid.as_u64(),
+                    batch,
+                );
+                let _ = crate::process::exit_process_and_retire(victim_pid, -9);
                 crate::task::scheduler::set_need_resched();
                 return SyscallResult::Ok(0);
             }

@@ -137,16 +137,15 @@ fn function_body<'a>(source: &'a str, name: &str) -> &'a str {
 
 const TERMINATE_CALLS: &[(&str, usize)] = &[
     ("kernel/src/interrupts/context_switch.rs", 1017),
-    ("kernel/src/process/manager.rs", 1164),
+    ("kernel/src/process/manager.rs", 1170),
     ("kernel/src/signal/delivery.rs", 225),
     ("kernel/src/signal/delivery.rs", 260),
-    ("kernel/src/syscall/signal.rs", 163),
 ];
-const TERMINATE_MINIMAL_CALLS: &[(&str, usize)] = &[("kernel/src/task/process_task.rs", 462)];
+const TERMINATE_MINIMAL_CALLS: &[(&str, usize)] = &[("kernel/src/task/process_task.rs", 496)];
 const PRODUCTION_INIT_PID_SITES: &[(&str, usize)] = &[
-    ("kernel/src/process/manager.rs", 1181),
-    ("kernel/src/task/process_task.rs", 432),
-    ("kernel/src/task/process_task.rs", 491),
+    ("kernel/src/process/manager.rs", 1187),
+    ("kernel/src/task/process_task.rs", 458),
+    ("kernel/src/task/process_task.rs", 528),
 ];
 const TEST_INIT_PID_SITES: &[(&str, usize)] = &[
     ("kernel/src/test_userspace.rs", 84),
@@ -155,48 +154,52 @@ const TEST_INIT_PID_SITES: &[(&str, usize)] = &[
 ];
 const QUARANTINE_CALLS: &[(&str, usize)] = &[
     ("kernel/src/arch_impl/aarch64/exception.rs", 815),
-    ("kernel/src/arch_impl/aarch64/exception.rs", 1179),
-    ("kernel/src/arch_impl/aarch64/exception.rs", 1275),
-    ("kernel/src/arch_impl/aarch64/exception.rs", 1375),
+    ("kernel/src/arch_impl/aarch64/exception.rs", 1177),
+    ("kernel/src/arch_impl/aarch64/exception.rs", 1271),
+    ("kernel/src/arch_impl/aarch64/exception.rs", 1369),
+    ("kernel/src/syscall/signal.rs", 163),
 ];
 const KERNEL_STACK_MUTATIONS: &[(&str, usize)] = &[
     ("kernel/src/arch_impl/aarch64/syscall_entry.rs", 961),
-    ("kernel/src/process/manager.rs", 1841),
+    ("kernel/src/process/manager.rs", 1856),
     ("kernel/src/syscall/clone.rs", 252),
 ];
 const RECLAIM_ENQUEUE_CALLS: &[(&str, usize)] = &[
-    ("kernel/src/process/manager.rs", 1155),
-    ("kernel/src/task/process_task.rs", 450),
+    ("kernel/src/process/mod.rs", 53),
+    ("kernel/src/process/mod.rs", 280),
+    ("kernel/src/task/process_task.rs", 570),
 ];
-const EXIT_PROCESS_CALLS: &[(&str, usize)] = &[
-    ("kernel/src/arch_impl/aarch64/exception.rs", 825),
-    ("kernel/src/arch_impl/aarch64/exception.rs", 1190),
-    ("kernel/src/arch_impl/aarch64/exception.rs", 1278),
-    ("kernel/src/arch_impl/aarch64/exception.rs", 1378),
-    ("kernel/src/interrupts.rs", 1429),
-    ("kernel/src/interrupts.rs", 1735),
-    ("kernel/src/process/mod.rs", 325),
+const EXIT_PROCESS_AND_RETIRE_CALLS: &[(&str, usize)] = &[
+    ("kernel/src/arch_impl/aarch64/exception.rs", 824),
+    ("kernel/src/arch_impl/aarch64/exception.rs", 1187),
+    ("kernel/src/arch_impl/aarch64/exception.rs", 1273),
+    ("kernel/src/arch_impl/aarch64/exception.rs", 1371),
+    ("kernel/src/interrupts.rs", 1440),
+    ("kernel/src/interrupts.rs", 1751),
+    ("kernel/src/process/mod.rs", 413),
+    ("kernel/src/syscall/signal.rs", 172),
 ];
+const EXIT_PROCESS_LOCKED_CALLS: &[(&str, usize)] = &[("kernel/src/process/mod.rs", 265)];
 const EXIT_PROCESS_BY_PID_CALLS: &[(&str, usize)] = &[
-    ("kernel/src/process/mod.rs", 317),
-    ("kernel/src/process/mod.rs", 333),
+    ("kernel/src/process/mod.rs", 406),
+    ("kernel/src/process/mod.rs", 418),
 ];
 const EXIT_PROCESS_FOR_TEARDOWN_TEST_CALLS: &[(&str, usize)] =
-    &[("kernel/src/tracing/providers/teardown.rs", 552)];
+    &[("kernel/src/tracing/providers/teardown.rs", 936)];
 const BLOCKING_PRIMITIVES: &[(&str, usize)] = &[
-    ("kernel/src/task/scheduler.rs", 1820),
-    ("kernel/src/task/scheduler.rs", 1991),
-    ("kernel/src/task/scheduler.rs", 2010),
-    ("kernel/src/task/scheduler.rs", 2159),
-    ("kernel/src/task/scheduler.rs", 2247),
-    ("kernel/src/task/scheduler.rs", 2312),
-    ("kernel/src/task/scheduler.rs", 2321),
-    ("kernel/src/task/scheduler.rs", 2480),
+    ("kernel/src/task/scheduler.rs", 1971),
+    ("kernel/src/task/scheduler.rs", 2185),
+    ("kernel/src/task/scheduler.rs", 2204),
+    ("kernel/src/task/scheduler.rs", 2353),
+    ("kernel/src/task/scheduler.rs", 2441),
+    ("kernel/src/task/scheduler.rs", 2506),
+    ("kernel/src/task/scheduler.rs", 2515),
+    ("kernel/src/task/scheduler.rs", 2674),
     ("kernel/src/task/waitqueue.rs", 52),
 ];
 const RAW_SCHEDULER_LOCK_SITES: &[(&str, usize)] = &[
-    ("kernel/src/task/scheduler.rs", 239),
-    ("kernel/src/task/scheduler.rs", 246),
+    ("kernel/src/task/scheduler.rs", 281),
+    ("kernel/src/task/scheduler.rs", 288),
 ];
 
 const BLOCKING_NAMES: &[&str] = &[
@@ -223,9 +226,19 @@ fn validate_reclaim_enqueue_callers(sources: &[(String, String)]) -> Result<(), 
 
 fn validate_exit_process_entry_points(sources: &[(String, String)]) -> Result<(), ()> {
     validate_exact(
-        &sites_matching(sources, |line| line.contains(".exit_process(")),
-        EXIT_PROCESS_CALLS,
+        &sites_matching(sources, |line| {
+            line.contains("exit_process_and_retire(")
+                && !line.contains("fn exit_process_and_retire")
+        }),
+        EXIT_PROCESS_AND_RETIRE_CALLS,
     )?;
+    validate_exact(
+        &sites_matching(sources, |line| line.contains(".exit_process_locked(")),
+        EXIT_PROCESS_LOCKED_CALLS,
+    )?;
+    if !sites_matching(sources, |line| line.contains(".exit_process(")).is_empty() {
+        return Err(());
+    }
     validate_exact(
         &sites_matching(sources, |line| {
             line.contains("exit_process_by_pid(") && !line.contains("fn exit_process_by_pid")
@@ -259,7 +272,7 @@ fn validate_group_writes(sources: &[(String, String)]) -> Result<(), ()> {
 
 fn validate_exit_sgi_is_teardown_only(sources: &[(String, String)]) -> Result<(), ()> {
     let scheduler = source(sources, "kernel/src/task/scheduler.rs");
-    (!scheduler.contains("EXIT_SGI_SENT")
+    (function_body(scheduler, "send_exit_expedite_sgi").contains("EXIT_SGI_SENT")
         && !function_body(scheduler, "send_resched_ipi").contains("EXIT_SGI_SENT")
         && !function_body(scheduler, "send_resched_ipi_to_cpu").contains("EXIT_SGI_SENT"))
     .then_some(())
@@ -345,7 +358,7 @@ fn v3_structural_closures_are_exact() {
     );
     assert_exact(
         sites_matching(&sources, |line| line.contains("btrt::on_process_exit(")),
-        &[("kernel/src/task/process_task.rs", 473)],
+        &[("kernel/src/task/process_task.rs", 597)],
         "btrt::on_process_exit callers",
     );
 
@@ -355,11 +368,37 @@ fn v3_structural_closures_are_exact() {
     assert_eq!(provider.matches("counter!(EXIT_KICK_PUBLISHED,").count(), 1);
     validate_exit_sgi_is_teardown_only(&sources)
         .expect("EXIT_SGI_SENT escaped the teardown-only producer");
-    assert!(!scheduler.contains("EXIT_KICK_PUBLISHED"));
-    assert!(!scheduler.contains("send_exit_expedite_sgi"));
-    assert!(!provider.contains("struct KickSlot"));
+    let expedite = function_body(scheduler, "send_exit_expedite_sgi");
+    assert_eq!(expedite.matches("EXIT_SGI_SENT").count(), 1);
+    assert_eq!(
+        expedite
+            .matches("trace_count!(EXIT_KICK_PUBLISHED)")
+            .count(),
+        1
+    );
+    assert!(expedite.find("slot.publish(").unwrap() < expedite.find("gic::send_sgi(").unwrap());
+    assert!(!expedite.contains("current_thread"));
+    assert_eq!(scheduler.matches("send_exit_expedite_sgi(").count(), 1);
+    assert!(provider.contains("struct KickSlot"));
+    assert!(provider.contains("pub(crate) pid: AtomicU64"));
+    assert!(provider.contains("pub(crate) at: AtomicU64"));
+    assert!(provider.contains("pub(crate) state: AtomicU64"));
     assert!(!provider.contains("trace_count!(EXIT_SGI_SENT"));
     assert!(!provider.contains("trace_count!(EXIT_KICK_PUBLISHED"));
+
+    let process_mod = source(&sources, "kernel/src/process/mod.rs");
+    assert!(process_mod.contains("pub(crate) struct RetirementReceipt"));
+    assert!(!process_mod.contains("pub struct RetirementReceipt"));
+    assert!(!process_mod.contains("pub fn from_reclaim"));
+    assert!(function_body(process_mod, "drop").contains("enqueue_process_reclaim("));
+
+    let process = source(&sources, "kernel/src/process/process.rs");
+    for state in ["Absent", "Pending", "Claimed", "Completed"] {
+        assert!(process.contains(state));
+    }
+    assert!(!process.contains("report_marker"));
+    assert!(!process.contains("claim_exit_slot"));
+    assert!(!process.contains("record_exit"));
 }
 
 #[test]
@@ -494,16 +533,23 @@ fn all_phase_zero_counters_have_registered_readers_and_honest_runtime_gates() {
         .filter_map(|rest| rest.strip_suffix(','))
         .map(str::to_owned)
         .collect();
-    assert_eq!(declarations.len(), 45);
+    assert_eq!(declarations.len(), 47);
     assert_eq!(
         readers, declarations,
         "every counter must have an inventory reader"
     );
     assert!(provider.contains("core::array::from_fn(|index| COUNTERS[index].aggregate())"));
-    assert!(provider.contains("for _ in 0..64"));
+    assert!(provider.contains("for iteration in 0..64"));
     assert!(provider.contains("reset_boot_test_pid_counts();"));
     assert!(provider.contains("for pid in pairing_child_pids"));
-    assert!(provider.contains("defer_count == 0 || defer_count != reclaim_count"));
+    for exact_failure in [
+        "adapted-site per-PID defer proof was absent",
+        "adapted-site per-PID defer proof was duplicated",
+        "adapted-site per-PID reclaim proof was absent",
+        "adapted-site per-PID reclaim proof was duplicated",
+    ] {
+        assert!(provider.contains(exact_failure));
+    }
     assert!(!provider.contains("deferred_delta != reclaimed_delta || reclaimed_delta < 64"));
     assert!(!provider.contains("TeardownPairingEvidence"));
     assert!(!provider.contains("defer_reclaim_events_are_paired("));
@@ -516,7 +562,12 @@ fn all_phase_zero_counters_have_registered_readers_and_honest_runtime_gates() {
     assert!(!provider.contains("TEARDOWN_PROVIDER.enable_all()"));
     assert!(!provider.contains("TEARDOWN_PROVIDER.disable_all()"));
     assert!(source(&sources, "kernel/src/task/process_task.rs").contains("for tid in 1..=17"));
-    assert!(!provider.contains("EXIT_SGI_SENT.aggregate()"));
+    assert_eq!(
+        function_body(provider, "exit_kick_protocol_gate_test")
+            .matches("EXIT_SGI_SENT.aggregate()")
+            .count(),
+        5
+    );
     assert!(!provider.contains("TEARDOWN_ENTRY_GROUP.aggregate()"));
 
     let declaration_only = provider
@@ -524,11 +575,16 @@ fn all_phase_zero_counters_have_registered_readers_and_honest_runtime_gates() {
         .nth(1)
         .expect("declaration-only counter boundary");
     assert!(declaration_only.contains("counter!(TEARDOWN_ENTRY_GROUP,"));
-    assert!(declaration_only.contains("counter!(EXIT_SGI_SENT,"));
+    assert!(declaration_only.contains("counter!(EXIT_REQUEST_OBSERVED,"));
+    assert!(!declaration_only.contains("counter!(EXIT_SGI_SENT,"));
+    assert!(!declaration_only.contains("counter!(EXIT_KICK_PUBLISHED,"));
+    assert!(!declaration_only.contains("counter!(RECEIPT_DROPPED_UNRETIRED,"));
 
     let registry = source(&sources, "kernel/src/test_framework/registry.rs");
     assert!(registry.contains("name: \"fork_exit_defer_reclaim_pairing_test\""));
     assert!(registry.contains("name: \"deferred_fault_ring_overflow_injection\""));
+    assert!(registry.contains("name: \"exit_kick_protocol_gate\""));
+    assert!(registry.contains("name: \"retirement_receipt_drop_gate\""));
 
     let plan = repo_text("docs/planning/teardown-unification/PLAN.md");
     assert!(plan.contains("./docker/qemu/run-aarch64-full-test.sh --rebuild --boot-tests-only"));

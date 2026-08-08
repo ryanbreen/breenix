@@ -1278,6 +1278,23 @@ fn test_timer_delay() -> TestResult {
     {
         use crate::arch_impl::aarch64::timer;
 
+        struct TimerDelayPreemptGuard;
+
+        impl TimerDelayPreemptGuard {
+            fn enter() -> Self {
+                crate::per_cpu_aarch64::preempt_disable();
+                Self
+            }
+        }
+
+        impl Drop for TimerDelayPreemptGuard {
+            fn drop(&mut self) {
+                crate::per_cpu_aarch64::preempt_enable();
+            }
+        }
+
+        let _preempt_guard = TimerDelayPreemptGuard::enter();
+
         // Get frequency for nanosecond calculations
         let freq = timer::frequency_hz();
         if freq == 0 {
@@ -5050,6 +5067,22 @@ static PROCESS_TESTS: &[TestDef] = &[
         func: crate::task::process_task::reclaim_progress_gate_test,
         arch: Arch::Aarch64,
         timeout_ms: 10000,
+        stage: TestStage::PostScheduler,
+    },
+    #[cfg(target_arch = "aarch64")]
+    TestDef {
+        name: "exit_kick_protocol_gate",
+        func: crate::tracing::providers::teardown::exit_kick_protocol_gate_test,
+        arch: Arch::Aarch64,
+        timeout_ms: 30000,
+        stage: TestStage::PostScheduler,
+    },
+    #[cfg(all(target_arch = "aarch64", feature = "receipt_drop_test"))]
+    TestDef {
+        name: "retirement_receipt_drop_gate",
+        func: crate::task::process_task::retirement_receipt_drop_gate_test,
+        arch: Arch::Aarch64,
+        timeout_ms: 5000,
         stage: TestStage::PostScheduler,
     },
     // Note: Userspace stage tests cannot run from syscall context (would block).

@@ -144,6 +144,7 @@ pub const UTEST_UNIX_NAMED_SOCKET: u16 = 372;
 pub const UTEST_PIPE_FORK: u16 = 373;
 pub const UTEST_PIPE_CONCURRENT: u16 = 374;
 pub const UTEST_JOB_CONTROL: u16 = 375;
+pub const UTEST_SIGKILL_TEARDOWN: u16 = 376;
 
 /// Complete catalog (mirrors kernel-side).
 pub static CATALOG: &[BootTestDef] = &[
@@ -691,6 +692,11 @@ pub static CATALOG: &[BootTestDef] = &[
     BootTestDef {
         id: UTEST_JOB_CONTROL,
         name: "utest_job_control",
+        category: BootTestCategory::UserspaceResult,
+    },
+    BootTestDef {
+        id: UTEST_SIGKILL_TEARDOWN,
+        name: "utest_sigkill_teardown",
         category: BootTestCategory::UserspaceResult,
     },
 ];

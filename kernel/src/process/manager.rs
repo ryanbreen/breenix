@@ -1117,25 +1117,31 @@ impl ProcessManager {
         self.processes.get_mut(&pid)
     }
 
-    /// Exit a process with the given exit code
-    #[allow(dead_code)]
-    pub fn exit_process(&mut self, pid: ProcessId, exit_code: i32) {
+    /// Locked half of process exit. The sole caller is
+    /// `process::exit_process_and_retire`, which drops PM before enqueueing the
+    /// returned receipt.
+    pub(crate) fn exit_process_locked(
+        &mut self,
+        pid: ProcessId,
+        exit_code: i32,
+    ) -> Option<super::RetirementReceipt> {
         let already_terminated = match self.processes.get(&pid) {
             Some(process) => process.is_terminated(),
-            None => return,
+            None => return None,
         };
         crate::tracing::providers::teardown::record_exit_request(already_terminated);
 
         // Get parent PID before we borrow the process mutably
         let parent_pid = self.processes.get(&pid).and_then(|p| p.parent);
 
+        #[cfg(target_arch = "aarch64")]
+        let mut receipt = None;
+        #[cfg(not(target_arch = "aarch64"))]
+        let receipt: Option<super::RetirementReceipt> = None;
         if let Some(process) = self.processes.get_mut(&pid) {
-            log::info!(
-                "Process {} (PID {}) exiting with code {}",
-                process.name,
-                pid.as_u64(),
-                exit_code
-            );
+            if !already_terminated {
+                process.exit_notifications.seed();
+            }
 
             if already_terminated {
                 // Preserve the single-CoW-decref invariant: external terminate()
@@ -1152,7 +1158,7 @@ impl ProcessManager {
                     // A peer's own EL1-fault shadow-clear window remains the same
                     // parked structural issue as normal-exit deferral.
                     let reclaim = crate::task::process_task::defer_process_resources(process);
-                    crate::task::process_task::enqueue_process_reclaim(reclaim);
+                    receipt = Some(super::RetirementReceipt::from_reclaim(reclaim));
                     drop(process.stack.take());
                 }
                 #[cfg(not(target_arch = "aarch64"))]
@@ -1201,18 +1207,27 @@ impl ProcessManager {
             }
         }
 
-        // Send SIGCHLD to the parent process (if any)
-        if let Some(parent_pid) = parent_pid {
-            if let Some(parent_process) = self.processes.get_mut(&parent_pid) {
-                use crate::signal::constants::SIGCHLD;
-                parent_process.signals.set_pending(SIGCHLD);
-                log::debug!(
-                    "Sent SIGCHLD to parent process {} for child {} exit",
-                    parent_pid.as_u64(),
-                    pid.as_u64()
-                );
+        // Class-A SIGCHLD obligation: perform the PM-owned effect and mark it
+        // completed in this same acquisition. Repeat exit paths do neither.
+        let sigchld_pending = self.processes.get(&pid).is_some_and(|process| {
+            matches!(
+                process.exit_notifications.sigchld,
+                super::process::ExitObligationState::Pending
+            )
+        });
+        if sigchld_pending {
+            if let Some(parent_pid) = parent_pid {
+                if let Some(parent_process) = self.processes.get_mut(&parent_pid) {
+                    use crate::signal::constants::SIGCHLD;
+                    parent_process.signals.set_pending(SIGCHLD);
+                }
+            }
+            if let Some(process) = self.processes.get_mut(&pid) {
+                process.exit_notifications.complete_sigchld();
             }
         }
+
+        receipt
     }
 
     /// Get the next ready process to run

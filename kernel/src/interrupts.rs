@@ -1414,19 +1414,20 @@ extern "x86-interrupt" fn page_fault_handler(
             // Find the process by CR3 - this is more reliable than using current_thread_id
             // because during context switch the "current" thread may not match the faulting process
             let mut faulting_thread_id: Option<u64> = None;
+            let mut faulting_process_id: Option<crate::process::ProcessId> = None;
 
             crate::process::with_process_manager(|pm| {
                 if let Some((pid, process)) = pm.find_process_by_cr3_mut(cr3) {
                     let name = process.name.clone();
                     // Get the thread ID before we exit the process
                     faulting_thread_id = process.main_thread.as_ref().map(|t| t.id);
+                    faulting_process_id = Some(pid);
                     log::error!(
                         "Killing process {} (PID {}) due to page fault (CR3={:#x})",
                         name,
                         pid.as_u64(),
                         cr3
                     );
-                    pm.exit_process(pid, -11); // SIGSEGV exit code
                 } else {
                     log::error!(
                         "Could not find process with CR3={:#x} - cannot terminate",
@@ -1434,6 +1435,10 @@ extern "x86-interrupt" fn page_fault_handler(
                     );
                 }
             });
+
+            if let Some(pid) = faulting_process_id {
+                let _ = crate::process::exit_process_and_retire(pid, -11);
+            }
 
             // Mark thread as terminated by setting it not runnable
             if let Some(thread_id) = faulting_thread_id {
@@ -1720,19 +1725,20 @@ extern "x86-interrupt" fn general_protection_fault_handler(
 
         // Find the process by CR3
         let mut faulting_thread_id: Option<u64> = None;
+        let mut faulting_process_id: Option<crate::process::ProcessId> = None;
 
         crate::process::with_process_manager(|pm| {
             if let Some((pid, process)) = pm.find_process_by_cr3_mut(cr3) {
                 let name = process.name.clone();
                 // Get the thread ID before we exit the process
                 faulting_thread_id = process.main_thread.as_ref().map(|t| t.id);
+                faulting_process_id = Some(pid);
                 log::error!(
                     "Killing process {} (PID {}) due to GPF (CR3={:#x})",
                     name,
                     pid.as_u64(),
                     cr3
                 );
-                pm.exit_process(pid, -11); // SIGSEGV exit code
             } else {
                 log::error!(
                     "Could not find process with CR3={:#x} - cannot terminate",
@@ -1740,6 +1746,10 @@ extern "x86-interrupt" fn general_protection_fault_handler(
                 );
             }
         });
+
+        if let Some(pid) = faulting_process_id {
+            let _ = crate::process::exit_process_and_retire(pid, -11);
+        }
 
         // Mark thread as terminated by setting it not runnable
         if let Some(thread_id) = faulting_thread_id {

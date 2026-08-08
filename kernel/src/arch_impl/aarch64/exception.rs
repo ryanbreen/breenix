@@ -817,13 +817,11 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                     if was_terminated {
                         already_terminated = true;
                     } else {
+                        let batch = crate::task::scheduler::GroupBatchId::for_single_victim(pid.as_u64());
+                        crate::task::scheduler::Scheduler::send_exit_expedite_sgi(pid.as_u64(), batch);
                         crate::tracing::providers::process::trace_process_exit(
-                            pid.as_u64() as u16,
-                            (-11i16) as u16,
-                        );
-                        let _ = crate::process::with_process_manager(|pm| {
-                            pm.exit_process(pid, -11); // SIGSEGV exit code
-                        });
+                            pid.as_u64() as u16, (-11i16) as u16);
+                        let _ = crate::process::exit_process_and_retire(pid, -11);
                         terminated = true;
                     }
                 }
@@ -1182,13 +1180,11 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                         already_terminated = true;
                     } else {
                         killed_pid = pid.as_u64();
+                        let batch = crate::task::scheduler::GroupBatchId::for_single_victim(pid.as_u64());
+                        crate::task::scheduler::Scheduler::send_exit_expedite_sgi(pid.as_u64(), batch);
                         crate::tracing::providers::process::trace_process_exit(
-                            pid.as_u64() as u16,
-                            (-11i16) as u16,
-                        );
-                        let _ = crate::process::with_process_manager(|pm| {
-                            pm.exit_process(pid, -11); // SIGSEGV
-                        });
+                            pid.as_u64() as u16, (-11i16) as u16);
+                        let _ = crate::process::exit_process_and_retire(pid, -11);
                         terminated = true;
                     }
                 }
@@ -1270,13 +1266,11 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                 let page_table_phys = ttbr0 & !0xFFFF_0000_0000_0FFF;
                 super::quiesce_ttbr0_for_exit();
                 let victim = resolve_el0_fault_victim(page_table_phys);
-                if let Some((pid, _)) = victim {
+                if let Some((pid, was_terminated)) = victim {
                     let _ = crate::task::scheduler::with_scheduler(|sched| {
                         sched.terminate_process_threads(pid.as_u64());
-                    });
-                    let _ = crate::process::with_process_manager(|pm| {
-                        pm.exit_process(pid, -11);
-                    });
+                    }); if !was_terminated { let batch = crate::task::scheduler::GroupBatchId::for_single_victim(pid.as_u64()); crate::task::scheduler::Scheduler::send_exit_expedite_sgi(pid.as_u64(), batch); }
+                    let _ = crate::process::exit_process_and_retire(pid, -11);
                 }
                 terminate_current_scheduler_thread();
             }
@@ -1370,13 +1364,11 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                 let page_table_phys = ttbr0 & !0xFFFF_0000_0000_0FFF;
                 super::quiesce_ttbr0_for_exit();
                 let victim = resolve_el0_fault_victim(page_table_phys);
-                if let Some((pid, _)) = victim {
+                if let Some((pid, was_terminated)) = victim {
                     let _ = crate::task::scheduler::with_scheduler(|sched| {
                         sched.terminate_process_threads(pid.as_u64());
-                    });
-                    let _ = crate::process::with_process_manager(|pm| {
-                        pm.exit_process(pid, -11);
-                    });
+                    }); if !was_terminated { let batch = crate::task::scheduler::GroupBatchId::for_single_victim(pid.as_u64()); crate::task::scheduler::Scheduler::send_exit_expedite_sgi(pid.as_u64(), batch); }
+                    let _ = crate::process::exit_process_and_retire(pid, -11);
                 }
                 terminate_current_scheduler_thread();
             }

@@ -59,6 +59,28 @@ pub fn kthread_run<F>(func: F, name: &str) -> Result<KthreadHandle, KthreadError
 where
     F: FnOnce() + Send + 'static,
 {
+    kthread_run_with(func, name, scheduler::spawn)
+}
+
+#[cfg(all(target_arch = "aarch64", feature = "boot_tests"))]
+pub(crate) fn kthread_run_on_cpu_for_test<F>(
+    func: F,
+    name: &str,
+    cpu: usize,
+) -> Result<KthreadHandle, KthreadError>
+where
+    F: FnOnce() + Send + 'static,
+{
+    kthread_run_with(func, name, move |thread| {
+        scheduler::spawn_on_cpu_for_test(thread, cpu)
+    })
+}
+
+fn kthread_run_with<F, S>(func: F, name: &str, spawn_thread: S) -> Result<KthreadHandle, KthreadError>
+where
+    F: FnOnce() + Send + 'static,
+    S: FnOnce(Box<Thread>),
+{
     let mut thread = Thread::new_kernel(name.to_string(), kthread_entry, 0)
         .map_err(|_| KthreadError::SpawnFailed)?;
 
@@ -92,7 +114,7 @@ where
     // the registry entry to exist.
     without_interrupts(|| {
         KTHREAD_REGISTRY.lock().insert(tid, Arc::clone(&kthread));
-        scheduler::spawn(Box::new(thread));
+        spawn_thread(Box::new(thread));
     });
 
     Ok(KthreadHandle { inner: kthread })
@@ -192,6 +214,19 @@ pub fn kthread_unpark(handle: &KthreadHandle) {
     scheduler::set_need_resched();
 }
 
+/// Test-only, non-blocking probe of whether a kthread has exited.
+///
+/// Boot-test coordinators (which run synchronously on CPU 0) use this to bound
+/// their cross-CPU join waits: they poll this flag with their own capped
+/// spin-loop instead of blocking unboundedly in `kthread_join`, so a lost
+/// wakeup on a secondary CPU surfaces as an actionable test failure rather than
+/// a silent harness hang. This is a pure read; it changes no production
+/// behavior and matches the SeqCst ordering `kthread_join` uses.
+#[cfg(all(target_arch = "aarch64", feature = "boot_tests"))]
+pub(crate) fn kthread_has_exited_for_test(handle: &KthreadHandle) -> bool {
+    handle.inner.exited.load(Ordering::SeqCst)
+}
+
 /// Wait for kthread to exit and return its exit code
 /// Blocks the calling context until the thread terminates
 pub fn kthread_join(handle: &KthreadHandle) -> Result<i32, KthreadError> {
@@ -233,6 +268,9 @@ pub fn kthread_exit(code: i32) -> ! {
     without_interrupts(|| {
         KTHREAD_REGISTRY.lock().remove(&handle.inner.tid);
     });
+
+    #[cfg(all(target_arch = "aarch64", feature = "boot_tests"))]
+    scheduler::clear_cpu_affinity_for_test(handle.inner.tid);
 
     scheduler::with_scheduler(|sched| {
         if let Some(thread) = sched.current_thread_mut() {
