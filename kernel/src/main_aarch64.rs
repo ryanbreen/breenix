@@ -952,67 +952,38 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
         for cpu in 1..max_cpus_to_probe {
             let ret = kernel::arch_impl::aarch64::smp::release_cpu(cpu);
             if ret == 0 {
-                serial_println!("[smp] CPU {}: PSCI CPU_ON accepted", cpu);
+                serial_println!("[smp] CPU {}: PSCI CPU_ON success", cpu);
                 launched += 1;
             } else {
-                let last_hvc64_ret =
-                    kernel::arch_impl::aarch64::smp::last_psci_hvc64_return_code(cpu)
-                        .unwrap_or(ret);
                 serial_println!(
-                    "[smp] CPU {}: PSCI CPU_ON failed (ret={}, last_hvc64_ret={}), stopping probe",
+                    "[smp] CPU {}: PSCI CPU_ON failed (ret={}), stopping probe",
                     cpu,
-                    ret,
-                    last_hvc64_ret
+                    ret
                 );
                 break;
             }
         }
         if launched > 0 {
             // Wait for all launched CPUs to come online (with timeout)
-            const SMP_ONLINE_TIMEOUT_SECONDS: u64 = 6;
-            const SMP_ONLINE_PROGRESS_INTERVAL_SECONDS: u64 = 1;
             let expected = 1 + launched; // boot CPU + launched
-            // Ordering against prior memory operations is irrelevant for this
-            // elapsed-time poll, so the plain CNTVCT read avoids an ISB.
             let start = timer::rdtsc();
-            let mut last_progress = start;
-            let reported_frequency_hz = timer::frequency_hz();
-            let counter_frequency_hz = if reported_frequency_hz == 0 {
-                timer::CNTVCT_FALLBACK_FREQUENCY_HZ
-            } else {
-                reported_frequency_hz
-            };
-            let timeout_ticks = counter_frequency_hz.saturating_mul(SMP_ONLINE_TIMEOUT_SECONDS);
-            let progress_interval_ticks = counter_frequency_hz
-                .saturating_mul(SMP_ONLINE_PROGRESS_INTERVAL_SECONDS)
-                .max(1);
+            let timeout_ticks = timer::frequency_hz() / 10; // 100ms timeout
             // SMP secondary CPU bring-up wait: boot CPU spins until all
             // released secondary CPUs increment cpus_online. Bounded CPU-
             // management handshake (NOT event polling) — no IRQ available
             // for "CPU online" because GIC isn't fully wired across CPUs
             // until each is up. Linux uses wait_for_completion_timeout()
-            // in __cpu_up() for the equivalent transition. CNTVCT advances
-            // while this vCPU is host-starved. Six seconds leaves diagnostic
-            // headroom inside the tightest 20-second harness; healthy boots
-            // still leave as soon as all CPUs report online. Allowlisted per
+            // in __cpu_up() for the equivalent transition. Bounded by the
+            // explicit timeout check inside the loop. Allowlisted per
             // docs/polling-allowlist.md.
             while kernel::arch_impl::aarch64::smp::cpus_online() < expected {
-                let now = timer::rdtsc();
-                if now.wrapping_sub(start) >= timeout_ticks {
+                if timer::rdtsc() - start > timeout_ticks {
                     serial_println!(
-                        "[smp] Timeout waiting for CPUs ({} online, {} expected)",
+                        "[smp] Timeout waiting for CPUs ({}  online, {} expected)",
                         kernel::arch_impl::aarch64::smp::cpus_online(),
                         expected
                     );
                     break;
-                }
-                if now.wrapping_sub(last_progress) >= progress_interval_ticks {
-                    serial_println!(
-                        "[smp] still waiting for CPUs ({} online, {} expected)",
-                        kernel::arch_impl::aarch64::smp::cpus_online(),
-                        expected
-                    );
-                    last_progress = now;
                 }
                 core::hint::spin_loop();
             }

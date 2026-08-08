@@ -10,7 +10,7 @@
 //! 3. boot.S sets up stack, MMU, and calls `secondary_cpu_entry_rust()`
 //! 4. Rust entry initializes per-CPU data, GIC, timer, creates idle thread
 
-use core::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 /// Maximum number of CPUs supported.
 pub const MAX_CPUS: usize = 8;
@@ -18,14 +18,7 @@ pub const MAX_CPUS: usize = 8;
 /// PSCI function IDs (SMCCC compliant).
 const PSCI_CPU_ON_64: u64 = 0xC400_0003;
 const PSCI_CPU_ON_32: u64 = 0x8400_0003;
-const PSCI_CPU_ON_MAX_ATTEMPTS: usize = 4;
-const PSCI_CPU_ON_RETRY_BACKOFF_MICROSECONDS: u64 = 500;
-const PSCI_CPU_ON_BACKOFF_ITERATION_CAP: u64 = 1_000_000;
-const PSCI_RETURN_INVALID_PARAMS: i64 = -2;
-const PSCI_RETURN_ALREADY_ON: i64 = -4;
-const PSCI_RETURN_ON_PENDING: i64 = -5;
-const PSCI_RETURN_INTERNAL_FAILURE: i64 = -6;
-const PSCI_RETURN_NOT_ATTEMPTED: i64 = i64::MIN;
+
 extern "C" {
     /// Physical address of secondary_cpu_entry, stored in .rodata by boot.S.
     /// We cannot reference secondary_cpu_entry directly from Rust because it lives
@@ -168,18 +161,6 @@ static CPU_ONLINE: [AtomicBool; MAX_CPUS] = [
     AtomicBool::new(false),
 ];
 
-/// Raw HVC64 PSCI CPU_ON return code from the last attempt for each CPU.
-static LAST_PSCI_HVC64_RETURN_CODE: [AtomicI64; MAX_CPUS] = [
-    AtomicI64::new(PSCI_RETURN_NOT_ATTEMPTED),
-    AtomicI64::new(PSCI_RETURN_NOT_ATTEMPTED),
-    AtomicI64::new(PSCI_RETURN_NOT_ATTEMPTED),
-    AtomicI64::new(PSCI_RETURN_NOT_ATTEMPTED),
-    AtomicI64::new(PSCI_RETURN_NOT_ATTEMPTED),
-    AtomicI64::new(PSCI_RETURN_NOT_ATTEMPTED),
-    AtomicI64::new(PSCI_RETURN_NOT_ATTEMPTED),
-    AtomicI64::new(PSCI_RETURN_NOT_ATTEMPTED),
-];
-
 /// Issue a PSCI CPU_ON call via HVC to start a secondary CPU.
 ///
 /// Arguments:
@@ -219,36 +200,20 @@ fn psci_cpu_on_32(target_cpu: u64, entry_point: u64, context_id: u64) -> i64 {
     ret
 }
 
-fn psci_cpu_on_retry_backoff() {
-    // release_cpu runs before timer calibration on some boot paths, but
-    // frequency_hz reads CNTFRQ_EL0 directly until its cache is populated. The
-    // independent iteration cap still bounds a stopped or unavailable counter.
-    let reported_frequency_hz = super::timer::frequency_hz();
-    let counter_frequency_hz = if reported_frequency_hz == 0 {
-        super::timer::CNTVCT_FALLBACK_FREQUENCY_HZ
-    } else {
-        reported_frequency_hz
-    };
-    let backoff_ticks =
-        (counter_frequency_hz.saturating_mul(PSCI_CPU_ON_RETRY_BACKOFF_MICROSECONDS) / 1_000_000)
-            .max(1);
-    // Ordering against prior memory operations is irrelevant for elapsed-time
-    // backoff, so the plain CNTVCT read avoids an unnecessary ISB here.
-    let start = super::timer::rdtsc();
-    for _ in 0..PSCI_CPU_ON_BACKOFF_ITERATION_CAP {
-        if super::timer::rdtsc().wrapping_sub(start) >= backoff_ticks {
-            break;
-        }
-        core::hint::spin_loop();
+/// PSCI CPU_ON with 64-bit function ID via SMC (EL3 firmware conduit).
+fn psci_cpu_on_smc(target_cpu: u64, entry_point: u64, context_id: u64) -> i64 {
+    let ret: i64;
+    unsafe {
+        core::arch::asm!(
+            "smc #0",
+            inout("x0") PSCI_CPU_ON_64 => ret,
+            in("x1") target_cpu,
+            in("x2") entry_point,
+            in("x3") context_id,
+            options(nomem, nostack),
+        );
     }
-}
-
-fn psci_cpu_on_result_is_retryable(ret: i64) -> bool {
-    ret == PSCI_RETURN_INTERNAL_FAILURE
-}
-
-fn psci_cpu_on_result_is_success(ret: i64) -> bool {
-    matches!(ret, 0 | PSCI_RETURN_ALREADY_ON | PSCI_RETURN_ON_PENDING)
+    ret
 }
 
 /// Release a secondary CPU using PSCI CPU_ON.
@@ -256,11 +221,11 @@ fn psci_cpu_on_result_is_success(ret: i64) -> bool {
 /// The CPU will start executing at `secondary_cpu_entry` in boot.S,
 /// which sets up the stack and MMU, then calls `secondary_cpu_entry_rust(cpu_id)`.
 ///
-/// Returns 0 for PSCI success, ALREADY_ON, or ON_PENDING. Other negative PSCI
-/// results are returned, using the final HVC32 status when fallback was tried.
+/// Returns the PSCI result: 0 = success, negative = error
+/// (-2 = INVALID_PARAMS, -9 = NOT_PRESENT, etc.)
 pub fn release_cpu(cpu_id: usize) -> i64 {
     if cpu_id == 0 || cpu_id >= MAX_CPUS {
-        return PSCI_RETURN_INVALID_PARAMS;
+        return -2; // INVALID_PARAMS
     }
 
     // Get the physical address of the secondary entry point in boot.S.
@@ -277,80 +242,33 @@ pub fn release_cpu(cpu_id: usize) -> i64 {
     // Context ID: pass cpu_id so the new CPU knows who it is
     let context_id = cpu_id as u64;
 
-    let mut attempts = 0usize;
-    let mut hvc64_internal_failures = 0usize;
-    let mut hvc32_internal_failures = 0usize;
-    let (last_hvc64_ret, last_ret) = loop {
-        attempts += 1;
+    // Try 64-bit PSCI CPU_ON via HVC first (standard for ARM64 hypervisors)
+    let mut ret = psci_cpu_on(target_mpidr, entry_phys, context_id);
 
-        // Preserve the established conduit order on every bounded attempt:
-        // HVC64 first, then HVC32 only if HVC64 fails. SMC remains excluded.
-        let hvc64_ret = psci_cpu_on(target_mpidr, entry_phys, context_id);
-        let hvc64_succeeded = psci_cpu_on_result_is_success(hvc64_ret);
-        let ret = if hvc64_succeeded {
-            hvc64_ret
-        } else {
-            if attempts == 1 {
-                crate::serial_println!(
-                    "[smp] CPU {}: HVC64 failed (ret={}), trying HVC32...",
-                    cpu_id,
-                    hvc64_ret
-                );
-            }
-            psci_cpu_on_32(target_mpidr, entry_phys, context_id)
-        };
-        if hvc64_ret == PSCI_RETURN_INTERNAL_FAILURE {
-            hvc64_internal_failures += 1;
-        }
-        if !hvc64_succeeded && ret == PSCI_RETURN_INTERNAL_FAILURE {
-            hvc32_internal_failures += 1;
-        }
-        LAST_PSCI_HVC64_RETURN_CODE[cpu_id].store(hvc64_ret, Ordering::Relaxed);
-        if psci_cpu_on_result_is_success(ret) {
-            if attempts > 1 {
-                crate::serial_println!(
-                    "[smp] CPU {}: PSCI CPU_ON accepted after {} attempts (hvc64_internal_failures={} hvc32_internal_failures={} final_ret={})",
-                    cpu_id,
-                    attempts,
-                    hvc64_internal_failures,
-                    hvc32_internal_failures,
-                    ret
-                );
-            }
-            return 0;
-        }
-        let retryable =
-            psci_cpu_on_result_is_retryable(hvc64_ret) || psci_cpu_on_result_is_retryable(ret);
-        if attempts >= PSCI_CPU_ON_MAX_ATTEMPTS {
-            break (hvc64_ret, ret);
-        }
-        if !retryable {
-            break (hvc64_ret, ret);
-        }
-        psci_cpu_on_retry_backoff();
-    };
+    // If 64-bit failed, try 32-bit function ID (some hypervisors only support this)
+    if ret != 0 {
+        crate::serial_println!(
+            "[smp] CPU {}: HVC64 failed (ret={}), trying HVC32...",
+            cpu_id,
+            ret
+        );
+        ret = psci_cpu_on_32(target_mpidr, entry_phys, context_id);
+    }
 
-    crate::serial_println!(
-        "[smp] PSCI CPU_ON failed for CPU {} after {} attempts: ret={} last_hvc64_ret={} hvc64_internal_failures={} hvc32_internal_failures={} (MPIDR={:#x} entry={:#x})",
-        cpu_id,
-        attempts,
-        last_ret,
-        last_hvc64_ret,
-        hvc64_internal_failures,
-        hvc32_internal_failures,
-        target_mpidr,
-        entry_phys
-    );
+    // Note: SMC conduit not attempted — on VMware (EL1 guest, no EL3),
+    // SMC would trap to EL2 and likely fault. HVC is the correct conduit.
 
-    last_ret
-}
+    if ret != 0 {
+        crate::serial_println!(
+            "[smp] PSCI CPU_ON failed for CPU {}: ret={} (MPIDR={:#x} entry={:#x})",
+            cpu_id,
+            ret,
+            target_mpidr,
+            entry_phys
+        );
+    }
 
-/// Return the raw HVC64 status from the last PSCI CPU_ON attempt for a CPU.
-pub fn last_psci_hvc64_return_code(cpu_id: usize) -> Option<i64> {
-    let value = LAST_PSCI_HVC64_RETURN_CODE
-        .get(cpu_id)?
-        .load(Ordering::Relaxed);
-    (value != PSCI_RETURN_NOT_ATTEMPTED).then_some(value)
+    ret
 }
 
 /// Get the number of CPUs currently online.

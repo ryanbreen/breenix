@@ -53,36 +53,13 @@ This document formalizes the **Linux-rigor polling-elimination gate** for cases 
 
 ## P17: SMP secondary CPU online wait
 
-- **File:** `kernel/src/main_aarch64.rs` (boot-time SMP bring-up wait after PSCI CPU_ON)
+- **File:** `kernel/src/main_aarch64.rs:967-976` (boot-time SMP bring-up wait after PSCI CPU_ON)
 - **Loop:** `while kernel::arch_impl::aarch64::smp::cpus_online() < expected { ... core::hint::spin_loop(); }` with explicit timeout check.
 - **Justification:** Boot CPU waits for secondary CPUs to come online after issuing PSCI CPU_ON requests. The secondary CPUs increment `cpus_online` once they reach their entry point. Bounded CPU-management handshake (NOT event polling) — there is no IRQ available for "CPU now online" because the GIC distributor isn't fully wired across CPUs until each is up.
 - **Linux precedent:** `kernel/smp.c::__cpu_up()` uses `wait_for_completion_timeout()` for the equivalent transition — scheduler-backed wait that blocks until the secondary CPU sets its online state. Linux's wait is functionally a bounded busy-equivalent (scheduler may park the boot CPU, but the wait itself is on a completion that the secondary CPU triggers). Breenix's busy-spin is appropriate here because the scheduler is partially up at this stage and a CPU-management wait on this specific path doesn't benefit from yielding.
-- **Bounded:** An explicit CNTVCT timeout check exits with a `[smp] Timeout waiting for CPUs ...` message after six seconds. If CNTFRQ_EL0 reports zero, the one-megahertz lowest-plausible fallback makes the actual wait shorter rather than exceeding the harness timeout.
-- **Progress:** The loop emits an online-count progress line at most once per second.
-- **Budget rationale:** Six seconds leaves time for an actionable guest-side verdict inside the tightest 20-second boot harness while tolerating the previously unreproduced bring-up starvation case.
-- **Observed case:** The recorded 14-host-hog failure completed SMP bring-up under the old 100-millisecond bound and failed later in the exit-kick gate.
+- **Bounded:** Explicit timeout check inside the loop exits with a `[smp] Timeout waiting for CPUs ...` message after a bounded wall-clock interval.
 - **Frequency:** Once at boot, after PSCI CPU_ON broadcast.
 - **Status:** ALLOWLISTED — not subject to polling-elimination conversion.
-
-## P19: PSCI CPU_ON retry backoff
-
-- **File:** `kernel/src/arch_impl/aarch64/smp.rs` (`psci_cpu_on_retry_backoff()`)
-- **Loop:** Short busy-wait between bounded PSCI CPU_ON attempts, exiting on the CNTVCT deadline or after 1,000,000 iterations if the counter is unavailable or stopped.
-- **Justification:** Secondary CPU release runs before the target CPU can signal through the scheduler. A transient PSCI `INTERNAL_FAILURE` response gets a short delay before retrying; there is no event source to block on at this stage. `ON_PENDING` is accepted and left to the separately bounded secondary-online wait rather than retried.
-- **Bounded:** At most 500 microseconds by CNTVCT and independently capped at 1,000,000 iterations. `release_cpu()` performs at most four total attempts, so at most three backoffs occur for one CPU probe.
-- **Frequency:** Boot-time SMP probing only, and only after a transient PSCI response.
-- **Status:** ALLOWLISTED — not subject to polling-elimination conversion.
-
-## P20: Exit-kick boot-gate cross-CPU handshakes
-
-- **File:** `kernel/src/tracing/providers/teardown.rs` (`spin_with_resched()`, nested in `exit_kick_protocol_gate_test()`)
-- **Loop:** The boot-test coordinator on CPU 0 polls conditions completed by kthreads pinned to CPUs 1-3. It samples CNTVCT on every pass, yields, and periodically sends `SGI_RESCHEDULE` after a 500-millisecond grace and then at 50-millisecond intervals.
-- **Justification:** The boot-test executor runs synchronously outside the scheduler, so it has no scheduler-backed wait context to park. The loop is test-only and validates cross-CPU scheduler/exit-kick liveness; production waits remain scheduler-backed.
-- **Progress bound:** Each wait fails after three consecutive CNTVCT seconds without relevant work. The reservation-loss closure exposes its reservation, publish, completion, and closure-entry stages through the same combined wait that observes publisher B's exit. The storm similarly combines finite per-worker closure stages, readiness, publish attempts, completion, and exact-TID exit stages in one three-worker wait. The first exit-stage write occurs before the worker clears its test affinity, proving that the pinned worker reached its exit tail; later writes prove only that the same TID continued, because affinity has then been cleared. No worker spins waiting for the coordinator to arm it, and CPU timer ticks are not a progress source. If CNTFRQ_EL0 reports zero, the watchdog fails immediately with a named counter-unavailable verdict instead of guessing a frequency that could either shrink or stretch the liveness window.
-- **Absolute bound:** Every wait also has a distinct 10-second absolute ceiling and returns immediately on failure. There is no aggregate gate deadline: the reservation arm has two sequential normal-path waits and the storm has one combined wait, so the pathological normal path is bounded by construction at roughly 3 × 10 seconds plus finite CPU-0 work. The publisher-A cleanup wait is mutually exclusive with that normal path. This low-tens-of-seconds ceiling fits inside the 90-second Phase-1 poll and 120-second QEMU timeout. A separate detector samples CNTVCT every 100,000 coordinator iterations and treats advancement below 16 ticks as a stalled counter; counter-stall and absolute-ceiling verdicts cannot be converted to a late pass.
-- **Evidence:** Failures report starting/final work and exact-TID exit-stage values, whether either source advanced, progress-rearm count, milliseconds since the last advance, and the most recent three chronological one-second progress samples, alongside re-kick SGIs and online CPU count. Diagnostics tag `result=failure` versus `result=late_success`, and join bookkeeping failures carry `failure_family=join_bookkeeping`. Any wait that re-arms and runs beyond three seconds emits one compact breadcrumb per second with its name, elapsed time, current work/exit-stage values, and re-kick count.
-- **Frequency:** Once per ARM64 boot-test run.
-- **Status:** ALLOWLISTED — test-harness-only synchronous fallback; not a production event-polling primitive.
 
 ## P12: AHCI engine + taskfile bounded register handshakes (Sites 3, 4, 5)
 

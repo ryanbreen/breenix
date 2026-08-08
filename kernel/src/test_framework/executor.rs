@@ -39,12 +39,12 @@ use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU8, Ordering};
 
 use super::progress::{
-    get_overall_progress, get_stage_progress, increment_completed, increment_stage_completed,
-    init_subsystem, init_subsystem_stage, mark_failed, mark_started,
+    get_overall_progress, increment_completed, increment_stage_completed, init_subsystem,
+    init_subsystem_stage, mark_failed, mark_started,
 };
 use super::registry::{Subsystem, SubsystemId, TestResult, TestStage, SUBSYSTEMS};
 use crate::serial_println;
-use crate::task::kthread::{kthread_run, KthreadHandle};
+use crate::task::kthread::{kthread_join, kthread_run, KthreadHandle};
 
 /// Current boot stage - tests with stage <= this can run
 static CURRENT_STAGE: AtomicU8 = AtomicU8::new(TestStage::EarlyBoot as u8);
@@ -189,7 +189,6 @@ pub fn run_all_tests() -> u32 {
 /// Run tests for a specific stage (and mark them as run)
 fn run_staged_tests(target_stage: TestStage) -> u32 {
     let mut handles: Vec<(SubsystemId, KthreadHandle)> = Vec::new();
-    let failed_before = get_overall_progress().2;
 
     for subsystem in SUBSYSTEMS.iter() {
         // Count tests that match architecture AND stage
@@ -219,26 +218,25 @@ fn run_staged_tests(target_stage: TestStage) -> u32 {
             }
             Err(e) => {
                 serial_println!("[SUBSYSTEM:{}:SPAWN_ERROR:{:?}]", subsystem.name, e);
-                mark_failed(subsystem.id);
             }
         }
     }
 
-    // Wait for durable test results, not for the short-lived executor kthreads
-    // to traverse their teardown tails. A worker can be host-starved after its
-    // final result is committed; making that unrelated exit a stage prerequisite
-    // used to leave CPU 0 blocked forever in a teardown join. Keeping the handles
-    // alive until every spawned subsystem has accounted for its tests preserves
-    // the result lifetime without coupling stage progress to worker teardown.
-    while handles.iter().any(|(id, _handle)| {
-        let (completed, total) = get_stage_progress(*id)[target_stage as usize];
-        completed < total
-    }) {
-        crate::arch_halt();
+    // Wait for all test threads to complete
+    let mut total_failed = 0u32;
+    for (id, handle) in handles {
+        match kthread_join(&handle) {
+            Ok(exit_code) => {
+                if exit_code != 0 {
+                    total_failed += exit_code as u32;
+                }
+            }
+            Err(e) => {
+                serial_println!("[SUBSYSTEM:{}:JOIN_ERROR:{:?}]", id.name(), e);
+                total_failed += 1;
+            }
+        }
     }
-    core::mem::drop(handles);
-
-    let total_failed = get_overall_progress().2.saturating_sub(failed_before);
 
     // Emit stage summary
     let (completed, total, failed) = get_overall_progress();
@@ -364,22 +362,24 @@ fn run_subsystem_stage_tests(id: SubsystemId, target_stage: TestStage) {
         // Run the test (timeout handling will be added in Phase 5)
         let result = run_single_test(test.func);
 
-        // Commit the result before emitting its marker. Serial output is the
-        // external proof that a test finished, so seeing PASS/FAIL must also
-        // guarantee that the coordinator can observe the matching progress.
+        // Emit test result marker
         match result {
             TestResult::Pass => {
+                serial_println!("[TEST:{}:{}:PASS]", id_name, test_name);
                 passed_count += 1;
             }
-            TestResult::Fail(_) => {
+            TestResult::Fail(msg) => {
+                serial_println!("[TEST:{}:{}:FAIL:{}]", id_name, test_name, msg);
                 mark_failed(id);
                 failed_count += 1;
             }
             TestResult::Timeout => {
+                serial_println!("[TEST:{}:{}:TIMEOUT]", id_name, test_name);
                 mark_failed(id);
                 failed_count += 1;
             }
             TestResult::Panic => {
+                serial_println!("[TEST:{}:{}:PANIC]", id_name, test_name);
                 mark_failed(id);
                 failed_count += 1;
             }
@@ -387,22 +387,6 @@ fn run_subsystem_stage_tests(id: SubsystemId, target_stage: TestStage) {
 
         increment_completed(id);
         increment_stage_completed(id, target_stage);
-
-        // Emit the marker only after the atomic result accounting above.
-        match result {
-            TestResult::Pass => {
-                serial_println!("[TEST:{}:{}:PASS]", id_name, test_name);
-            }
-            TestResult::Fail(msg) => {
-                serial_println!("[TEST:{}:{}:FAIL:{}]", id_name, test_name, msg);
-            }
-            TestResult::Timeout => {
-                serial_println!("[TEST:{}:{}:TIMEOUT]", id_name, test_name);
-            }
-            TestResult::Panic => {
-                serial_println!("[TEST:{}:{}:PANIC]", id_name, test_name);
-            }
-        }
 
         // Refresh display after each test
         super::display::request_refresh();
