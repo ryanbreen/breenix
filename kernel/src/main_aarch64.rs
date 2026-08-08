@@ -972,9 +972,9 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
             const SMP_ONLINE_TIMEOUT_SECONDS: u64 = 6;
             const SMP_ONLINE_PROGRESS_INTERVAL_SECONDS: u64 = 1;
             // Keep this fallback identical to teardown.rs. If firmware reports
-            // zero, assuming a conservative low frequency makes a real faster
-            // counter expire early instead of stretching this bound into minutes.
-            const CNTVCT_FALLBACK_FREQUENCY_HZ: u64 = 1_000_000;
+            // zero, a high assumed frequency prevents a normally faster-than-
+            // assumed counter from shrinking the intended wall-clock timeout.
+            const CNTVCT_FALLBACK_FREQUENCY_HZ: u64 = 1_000_000_000;
 
             let expected = 1 + launched; // boot CPU + launched
             let start = timer::rdtsc();

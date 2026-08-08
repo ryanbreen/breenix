@@ -135,86 +135,124 @@ fn function_body<'a>(source: &'a str, name: &str) -> &'a str {
     panic!("unterminated function {name}")
 }
 
+fn require_contains(source_name: &str, source: &str, required: &str) -> Result<(), String> {
+    if source.contains(required) {
+        Ok(())
+    } else {
+        Err(format!(
+            "{source_name} is missing required text: {required}"
+        ))
+    }
+}
+
+fn require_count(
+    source_name: &str,
+    source: &str,
+    needle: &str,
+    expected: usize,
+) -> Result<(), String> {
+    let actual = source.matches(needle).count();
+    if actual == expected {
+        Ok(())
+    } else {
+        Err(format!(
+            "{source_name} expected {expected} occurrences of {needle:?}, found {actual}"
+        ))
+    }
+}
+
 fn validate_exit_kick_wait_watchdogs(
     provider: &str,
     main_aarch64: &str,
     smp: &str,
-) -> Result<(), ()> {
+) -> Result<(), String> {
     let gate = function_body(provider, "exit_kick_protocol_gate_test");
     for required in [
-        "const PER_WAIT_BUDGET_MILLISECONDS: u64 = 1_500;",
+        "const PER_WAIT_BUDGET_MILLISECONDS: u64 = 3_000;",
         "const WHOLE_GATE_BUDGET_MILLISECONDS: u64 = 15_000;",
         "const HANDSHAKE_ITERATION_CAP: u64 = 50_000_000;",
         "const FIRST_RESCHED_REKICK_GRACE_MILLISECONDS: u64 = 100;",
         "const RESCHED_REKICK_INTERVAL_MILLISECONDS: u64 = 5;",
-        "const CNTVCT_FALLBACK_FREQUENCY_HZ: u64 = 1_000_000;",
+        "const CNTVCT_FALLBACK_FREQUENCY_HZ: u64 = 1_000_000_000;",
         "let wait_elapsed = now.wrapping_sub(wait_start);",
         "let gate_elapsed = now.wrapping_sub(watchdog.gate_start);",
         "wait_elapsed >= watchdog.per_wait_timeout_ticks",
         "gate_elapsed >= watchdog.gate_timeout_ticks",
+        "iterations >= HANDSHAKE_ITERATION_CAP && wait_elapsed == 0",
         "now.wrapping_sub(last_kick) >= watchdog.rekick_interval_ticks",
         "rekick_sgis",
         "crate::arch_impl::aarch64::smp::cpus_online()",
         "elapsed_ms={}",
         "budget_ms={}",
         "condition_name",
-        "WaitFailureKind::IterationCap",
+        "WaitFailureKind::CounterStall",
+        "\"exit_kick_gate: CNTVCT counter not advancing; iteration cap exhausted, cannot bound wait\";",
+        "WaitFailureKind::CounterStall => TestResult::Fail(COUNTER_STALL_MESSAGE)",
         "whole-gate deadline expired while current wait remained unresponsive",
-        "kthread join bookkeeping unresponsive after worker exit",
         "late_true={}",
         "result=pass gate_elapsed_ms={}",
-        "success.wait_elapsed_ticks",
-        "success.rekick_sgis",
+        "struct WaitSite",
     ] {
-        if !gate.contains(required) {
-            return Err(());
-        }
+        require_contains("exit_kick_protocol_gate_test", gate, required)?;
     }
-    if gate.matches("&gate_watchdog").count() != 8
-        || gate.matches("return wait_failure_result(").count() != 8
-        || gate.matches("iteration cap exhausted").count() != 8
-        || gate.matches("if cond() {").count() < 2
-        || gate.matches("&worker_cpus, &gate_watchdog").count() != 3
-        || gate.matches("report_late_wait_success(").count() != 9
-        || gate.matches(".max(1)").count() != 4
-        || gate.contains("gate_complete=1")
-        || gate.contains("gate_elapsed_ticks >= gate_watchdog.gate_timeout_ticks")
-    {
-        return Err(());
+    for (needle, expected) in [
+        ("&gate_watchdog", 8),
+        ("return wait_failure_result(", 8),
+        ("iteration cap exhausted", 1),
+        ("&worker_cpus, &gate_watchdog", 3),
+        ("report_late_wait_success(", 9),
+        (".max(1)", 4),
+        ("WaitSite {", 9),
+        ("Some(WaitFailureKind::WholeGateDeadline)", 1),
+    ] {
+        require_count("exit_kick_protocol_gate_test", gate, needle, expected)?;
+    }
+    if gate.matches("if cond() {").count() < 2 {
+        return Err("exit_kick_protocol_gate_test lost its final condition re-check".into());
     }
 
+    let spin = function_body(provider, "spin_with_resched");
+    require_count(
+        "spin_with_resched",
+        spin,
+        "Some(WaitFailureKind::WholeGateDeadline)",
+        1,
+    )?;
+
     let join = function_body(provider, "join_with_resched");
-    if !join.contains("kick_cpus: &[usize]")
-        || !join.contains("spin_with_resched(")
-        || !join.contains("kick_cpus,")
-        || !join.contains("watchdog,")
-    {
-        return Err(());
+    for required in [
+        "kick_cpus: &[usize]",
+        "spin_with_resched(",
+        "kick_cpus,",
+        "watchdog,",
+        "probe and join read the same monotonic SeqCst `exited` flag",
+    ] {
+        require_contains("join_with_resched", join, required)?;
     }
 
     for required in [
         "const SMP_ONLINE_TIMEOUT_SECONDS: u64 = 6;",
         "const SMP_ONLINE_PROGRESS_INTERVAL_SECONDS: u64 = 1;",
-        "const CNTVCT_FALLBACK_FREQUENCY_HZ: u64 = 1_000_000;",
+        "const CNTVCT_FALLBACK_FREQUENCY_HZ: u64 = 1_000_000_000;",
         "[smp] still waiting for CPUs ({} online, {} expected)",
         "reported_frequency_hz == 0",
     ] {
-        if !main_aarch64.contains(required) {
-            return Err(());
-        }
+        require_contains("main_aarch64.rs", main_aarch64, required)?;
     }
 
     for required in [
         "const PSCI_CPU_ON_MAX_ATTEMPTS: usize = 4;",
         "const PSCI_CPU_ON_RETRY_BACKOFF_MICROSECONDS: u64 = 500;",
         "fn psci_cpu_on_result_is_retryable(ret: i64) -> bool",
-        "!psci_cpu_on_result_is_retryable(ret)",
+        "fn psci_cpu_on_result_is_success(ret: i64) -> bool",
+        "psci_cpu_on_result_is_retryable(hvc64_ret)",
+        "psci_cpu_on_result_is_retryable(ret)",
+        "hvc64_ret == PSCI_RETURN_ON_PENDING || ret == PSCI_RETURN_ON_PENDING",
+        "HVC64 failed (ret={}), trying HVC32...",
         "static LAST_PSCI_HVC64_RETURN_CODE:",
         "pub fn last_psci_hvc64_return_code(cpu_id: usize) -> Option<i64>",
     ] {
-        if !smp.contains(required) {
-            return Err(());
-        }
+        require_contains("smp.rs", smp, required)?;
     }
 
     Ok(())
@@ -681,10 +719,12 @@ fn all_phase_zero_counters_have_registered_readers_and_honest_runtime_gates() {
 
 #[test]
 fn exit_kick_waits_have_independent_deadlines_and_bounded_rekicks() {
-    let provider = repo_text("kernel/src/tracing/providers/teardown.rs");
-    let main_aarch64 = repo_text("kernel/src/main_aarch64.rs");
-    let smp = repo_text("kernel/src/arch_impl/aarch64/smp.rs");
-    assert!(validate_exit_kick_wait_watchdogs(&provider, &main_aarch64, &smp).is_ok());
+    let sources = rust_sources_below("kernel/src");
+    let provider = source(&sources, "kernel/src/tracing/providers/teardown.rs");
+    let main_aarch64 = source(&sources, "kernel/src/main_aarch64.rs");
+    let smp = source(&sources, "kernel/src/arch_impl/aarch64/smp.rs");
+    validate_exit_kick_wait_watchdogs(provider, main_aarch64, smp)
+        .expect("exit-kick wait watchdog structure changed");
 }
 
 #[test]
@@ -751,11 +791,20 @@ fn deliberately_broken_variants_fail_the_ratchet() {
         "true",
         1,
     );
-    assert!(validate_exit_kick_wait_watchdogs(&unthrottled_rekick, main_aarch64, smp).is_err());
+    validate_exit_kick_wait_watchdogs(&unthrottled_rekick, main_aarch64, smp)
+        .expect_err("unthrottled re-kick variant passed the exit-kick watchdog ratchet");
     let uncoupled_storm_join = provider.replacen(
         "&worker_cpus, &gate_watchdog",
         "&[worker_cpus[0]], &gate_watchdog",
         1,
     );
-    assert!(validate_exit_kick_wait_watchdogs(&uncoupled_storm_join, main_aarch64, smp).is_err());
+    validate_exit_kick_wait_watchdogs(&uncoupled_storm_join, main_aarch64, smp)
+        .expect_err("uncoupled storm join passed the exit-kick watchdog ratchet");
+    let preemptive_iteration_cap = provider.replacen(
+        "iterations >= HANDSHAKE_ITERATION_CAP && wait_elapsed == 0",
+        "iterations >= HANDSHAKE_ITERATION_CAP",
+        1,
+    );
+    validate_exit_kick_wait_watchdogs(&preemptive_iteration_cap, main_aarch64, smp)
+        .expect_err("preemptive iteration cap passed the exit-kick watchdog ratchet");
 }

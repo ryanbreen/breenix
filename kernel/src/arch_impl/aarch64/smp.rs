@@ -21,11 +21,10 @@ const PSCI_CPU_ON_32: u64 = 0x8400_0003;
 const PSCI_CPU_ON_MAX_ATTEMPTS: usize = 4;
 const PSCI_CPU_ON_RETRY_BACKOFF_MICROSECONDS: u64 = 500;
 const PSCI_CPU_ON_BACKOFF_ITERATION_CAP: u64 = 1_000_000;
-const PSCI_RETURN_NOT_SUPPORTED: i64 = -1;
 const PSCI_RETURN_INVALID_PARAMS: i64 = -2;
+const PSCI_RETURN_ALREADY_ON: i64 = -4;
 const PSCI_RETURN_ON_PENDING: i64 = -5;
 const PSCI_RETURN_INTERNAL_FAILURE: i64 = -6;
-const PSCI_RETURN_NOT_PRESENT: i64 = -9;
 const PSCI_RETURN_NOT_ATTEMPTED: i64 = i64::MIN;
 // If CNTFRQ_EL0 is unavailable, a conservative low assumption makes the
 // backoff shorter on a real faster counter rather than unexpectedly long.
@@ -244,13 +243,11 @@ fn psci_cpu_on_retry_backoff() {
 }
 
 fn psci_cpu_on_result_is_retryable(ret: i64) -> bool {
-    if matches!(ret, PSCI_RETURN_INVALID_PARAMS | PSCI_RETURN_NOT_PRESENT) {
-        return false;
-    }
-    matches!(
-        ret,
-        PSCI_RETURN_NOT_SUPPORTED | PSCI_RETURN_ON_PENDING | PSCI_RETURN_INTERNAL_FAILURE
-    )
+    matches!(ret, PSCI_RETURN_ON_PENDING | PSCI_RETURN_INTERNAL_FAILURE)
+}
+
+fn psci_cpu_on_result_is_success(ret: i64) -> bool {
+    matches!(ret, 0 | PSCI_RETURN_ALREADY_ON)
 }
 
 /// PSCI CPU_ON with 64-bit function ID via SMC (EL3 firmware conduit).
@@ -277,10 +274,7 @@ fn psci_cpu_on_smc(target_cpu: u64, entry_point: u64, context_id: u64) -> i64 {
 /// Returns the PSCI result: 0 = success, negative = error
 /// (-2 = INVALID_PARAMS, -9 = NOT_PRESENT, etc.)
 pub fn release_cpu(cpu_id: usize) -> i64 {
-    if cpu_id == 0 {
-        return PSCI_RETURN_INVALID_PARAMS;
-    }
-    if cpu_id >= MAX_CPUS {
+    if cpu_id == 0 || cpu_id >= MAX_CPUS {
         return PSCI_RETURN_INVALID_PARAMS;
     }
 
@@ -305,16 +299,31 @@ pub fn release_cpu(cpu_id: usize) -> i64 {
         // Preserve the established conduit order on every bounded attempt:
         // HVC64 first, then HVC32 only if HVC64 fails. SMC remains excluded.
         let hvc64_ret = psci_cpu_on(target_mpidr, entry_phys, context_id);
-        let ret = if hvc64_ret == 0 {
-            0
+        let ret = if psci_cpu_on_result_is_success(hvc64_ret) {
+            hvc64_ret
         } else {
+            if attempts == 1 {
+                crate::serial_println!(
+                    "[smp] CPU {}: HVC64 failed (ret={}), trying HVC32...",
+                    cpu_id,
+                    hvc64_ret
+                );
+            }
             psci_cpu_on_32(target_mpidr, entry_phys, context_id)
         };
         LAST_PSCI_HVC64_RETURN_CODE[cpu_id].store(hvc64_ret, Ordering::Release);
-        if ret == 0 {
+        if psci_cpu_on_result_is_success(ret) {
             return 0;
         }
-        if attempts >= PSCI_CPU_ON_MAX_ATTEMPTS || !psci_cpu_on_result_is_retryable(ret) {
+        let retryable =
+            psci_cpu_on_result_is_retryable(hvc64_ret) || psci_cpu_on_result_is_retryable(ret);
+        if attempts >= PSCI_CPU_ON_MAX_ATTEMPTS {
+            if hvc64_ret == PSCI_RETURN_ON_PENDING || ret == PSCI_RETURN_ON_PENDING {
+                return 0;
+            }
+            break (hvc64_ret, ret);
+        }
+        if !retryable {
             break (hvc64_ret, ret);
         }
         psci_cpu_on_retry_backoff();

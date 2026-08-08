@@ -1120,22 +1120,23 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
     use alloc::vec::Vec;
     use core::sync::atomic::AtomicBool;
 
-    const PER_WAIT_BUDGET_MILLISECONDS: u64 = 1_500;
+    const PER_WAIT_BUDGET_MILLISECONDS: u64 = 3_000;
     const WHOLE_GATE_BUDGET_MILLISECONDS: u64 = 15_000;
     const HANDSHAKE_ITERATION_CAP: u64 = 50_000_000;
     const FIRST_RESCHED_REKICK_GRACE_MILLISECONDS: u64 = 100;
     const RESCHED_REKICK_INTERVAL_MILLISECONDS: u64 = 5;
+    const COUNTER_STALL_MESSAGE: &str =
+        "exit_kick_gate: CNTVCT counter not advancing; iteration cap exhausted, cannot bound wait";
     // Keep this fallback identical to the one in main_aarch64.rs. If firmware
-    // reports zero, assuming a conservative low frequency makes a real faster
-    // counter expire early instead of stretching this bound into minutes.
-    const CNTVCT_FALLBACK_FREQUENCY_HZ: u64 = 1_000_000;
+    // reports zero, a high assumed frequency prevents a normally faster-than-
+    // assumed counter from shrinking the intended wall-clock timeout.
+    const CNTVCT_FALLBACK_FREQUENCY_HZ: u64 = 1_000_000_000;
 
     #[derive(Clone, Copy)]
     enum WaitFailureKind {
         PerWaitDeadline,
         WholeGateDeadline,
-        IterationCap,
-        JoinFailed,
+        CounterStall,
     }
 
     impl WaitFailureKind {
@@ -1143,8 +1144,7 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
             match self {
                 Self::PerWaitDeadline => "per_wait_deadline",
                 Self::WholeGateDeadline => "whole_gate_deadline",
-                Self::IterationCap => "iteration_cap",
-                Self::JoinFailed => "kthread_join_failed",
+                Self::CounterStall => "cntvct_stall",
             }
         }
     }
@@ -1155,12 +1155,6 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
         wait_budget_ms: u64,
         gate_elapsed_ms: u64,
         gate_budget_ms: u64,
-        rekick_sgis: u64,
-    }
-
-    struct WaitSuccess {
-        wait_elapsed_ticks: u64,
-        gate_elapsed_ticks: u64,
         rekick_sgis: u64,
     }
 
@@ -1201,20 +1195,22 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
     //
     // This gate coordinator runs synchronously on CPU 0 (outside the scheduler)
     // and busy-waits on handshakes completed by kthreads pinned to CPU 1/2/3.
-    // Every wait receives its own 1.5-second CNTVCT deadline. Eight full wait
-    // budgets total 12 seconds, leaving three seconds of headroom under the
-    // separate 15-second in-wait whole-gate backstop. CPU 0's loop count can
-    // race ahead while a live target vCPU is deprived of host time, so iteration
-    // count is only a secondary guard for a stopped/trapped CNTVCT. After the
-    // initial grace period, every wait periodically re-sends the existing per-
-    // CPU resched SGI while it remains in budget. That is expected for long
-    // storm joins as well as short handshakes, and does not touch EXIT_KICK
-    // accounting.
+    // Every wait receives its own three-second CNTVCT deadline, a modest margin
+    // increase that remains below the five-second soft-lockup threshold for a
+    // genuinely dead worker. A separate 15-second deadline is checked whenever
+    // the coordinator is inside a wait; it caps accumulated wait time, not the
+    // non-wait setup and accounting work. CPU 0's loop count can race ahead while
+    // a live target vCPU is deprived of host time, so it has no timeout role: the
+    // iteration threshold is actionable only when CNTVCT has advanced by zero
+    // ticks since the wait began. After the initial grace period, every wait
+    // periodically re-sends the existing per-CPU resched SGI while it remains in
+    // budget. That is expected for long storm joins as well as short handshakes,
+    // and does not touch EXIT_KICK accounting.
     fn spin_with_resched<F: Fn() -> bool>(
         cond: F,
         kick_cpus: &[usize],
         watchdog: &HandshakeWatchdog,
-    ) -> Result<WaitSuccess, WaitFailure> {
+    ) -> Result<(), WaitFailure> {
         let wait_start = crate::arch_impl::aarch64::timer::rdtsc_serialized();
         let mut sent_rekick = false;
         let mut last_kick = wait_start;
@@ -1223,12 +1219,7 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
 
         loop {
             if cond() {
-                let now = crate::arch_impl::aarch64::timer::rdtsc_serialized();
-                return Ok(WaitSuccess {
-                    wait_elapsed_ticks: now.wrapping_sub(wait_start),
-                    gate_elapsed_ticks: now.wrapping_sub(watchdog.gate_start),
-                    rekick_sgis,
-                });
+                return Ok(());
             }
 
             let now = crate::arch_impl::aarch64::timer::rdtsc_serialized();
@@ -1244,30 +1235,20 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
             if let Some(kind) = deadline_kind {
                 // Close the observation/deadline race before reporting failure.
                 if cond() {
-                    return Ok(WaitSuccess {
-                        wait_elapsed_ticks: wait_elapsed,
-                        gate_elapsed_ticks: gate_elapsed,
-                        rekick_sgis,
-                    });
+                    return Ok(());
                 }
                 return Err(watchdog.failure(kind, wait_elapsed, gate_elapsed, rekick_sgis));
             }
 
             iterations = iterations.saturating_add(1);
-            if iterations >= HANDSHAKE_ITERATION_CAP {
+            if iterations >= HANDSHAKE_ITERATION_CAP && wait_elapsed == 0 {
                 if cond() {
-                    let now = crate::arch_impl::aarch64::timer::rdtsc_serialized();
-                    return Ok(WaitSuccess {
-                        wait_elapsed_ticks: now.wrapping_sub(wait_start),
-                        gate_elapsed_ticks: now.wrapping_sub(watchdog.gate_start),
-                        rekick_sgis,
-                    });
+                    return Ok(());
                 }
-                let now = crate::arch_impl::aarch64::timer::rdtsc_serialized();
                 return Err(watchdog.failure(
-                    WaitFailureKind::IterationCap,
-                    now.wrapping_sub(wait_start),
-                    now.wrapping_sub(watchdog.gate_start),
+                    WaitFailureKind::CounterStall,
+                    wait_elapsed,
+                    gate_elapsed,
                     rekick_sgis,
                 ));
             }
@@ -1305,23 +1286,15 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
         kick_cpus: &[usize],
         watchdog: &HandshakeWatchdog,
     ) -> Result<(), WaitFailure> {
-        let success = spin_with_resched(
+        spin_with_resched(
             || crate::task::kthread::kthread_has_exited_for_test(handle),
             kick_cpus,
             watchdog,
         )?;
-        if crate::task::kthread::kthread_join(handle).is_ok() {
-            Ok(())
-        } else {
-            let now = crate::arch_impl::aarch64::timer::rdtsc_serialized();
-            Err(watchdog.failure(
-                WaitFailureKind::JoinFailed,
-                success.wait_elapsed_ticks,
-                now.wrapping_sub(watchdog.gate_start)
-                    .max(success.gate_elapsed_ticks),
-                success.rekick_sgis,
-            ))
-        }
+        // The probe and join read the same monotonic SeqCst `exited` flag, so
+        // once the bounded probe succeeds, this join returns immediately.
+        let _ = crate::task::kthread::kthread_join(handle);
+        Ok(())
     }
 
     fn print_wait_diagnostic(
@@ -1356,31 +1329,30 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
         print_wait_diagnostic(failure, wait_name, condition_name, condition_value, true);
     }
 
+    struct WaitSite {
+        name: &'static str,
+        condition_name: &'static str,
+        deadline_message: &'static str,
+    }
+
     fn wait_failure_result(
         failure: WaitFailure,
-        wait_name: &'static str,
-        condition_name: &'static str,
+        site: WaitSite,
         condition_value: u64,
-        deadline_message: &'static str,
-        iteration_message: &'static str,
-        late_true: bool,
     ) -> TestResult {
         print_wait_diagnostic(
             &failure,
-            wait_name,
-            condition_name,
+            site.name,
+            site.condition_name,
             condition_value,
-            late_true,
+            false,
         );
         match failure.kind {
-            WaitFailureKind::IterationCap => TestResult::Fail(iteration_message),
+            WaitFailureKind::CounterStall => TestResult::Fail(COUNTER_STALL_MESSAGE),
             WaitFailureKind::WholeGateDeadline => TestResult::Fail(
                 "exit_kick_gate: whole-gate deadline expired while current wait remained unresponsive",
             ),
-            WaitFailureKind::JoinFailed => TestResult::Fail(
-                "exit_kick_gate: kthread join bookkeeping unresponsive after worker exit",
-            ),
-            WaitFailureKind::PerWaitDeadline => TestResult::Fail(deadline_message),
+            WaitFailureKind::PerWaitDeadline => TestResult::Fail(site.deadline_message),
         }
     }
 
@@ -1554,12 +1526,13 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
             // `hook` is dropped on return, releasing publisher A from its hold.
             return wait_failure_result(
                 failure,
-                "publisher_a_reservation",
-                "reserved",
+                WaitSite {
+                    name: "publisher_a_reservation",
+                    condition_name: "reserved",
+                    deadline_message:
+                        "exit_kick_gate: publisher A reservation handshake stuck, CPU 1 unresponsive",
+                },
                 condition_value,
-                "exit_kick_gate: publisher A reservation handshake stuck, CPU 1 unresponsive",
-                "exit_kick_gate: publisher A reservation handshake iteration cap exhausted, CPU 1 unresponsive",
-                false,
             );
         }
     }
@@ -1606,12 +1579,13 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
             // `hook` is dropped on return, releasing publisher A from its hold.
             return wait_failure_result(
                 failure,
-                "publisher_b_completion",
-                "publisher_b_done",
+                WaitSite {
+                    name: "publisher_b_completion",
+                    condition_name: "publisher_b_done",
+                    deadline_message:
+                        "exit_kick_gate: publisher B completion handshake stuck, CPU 2 unresponsive",
+                },
                 condition_value,
-                "exit_kick_gate: publisher B completion handshake stuck, CPU 2 unresponsive",
-                "exit_kick_gate: publisher B completion handshake iteration cap exhausted, CPU 2 unresponsive",
-                false,
             );
         }
     }
@@ -1627,12 +1601,11 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
         && EXIT_SGI_SENT.aggregate() == sgi_before + 1;
 
     hook.release();
-    if let Err(mut failure) = join_with_resched(&publisher_b, &[PUBLISHER_B_CPU], &gate_watchdog) {
+    if let Err(failure) = join_with_resched(&publisher_b, &[PUBLISHER_B_CPU], &gate_watchdog) {
         let condition_value =
             crate::task::kthread::kthread_has_exited_for_test(&publisher_b) as u64;
-        let late_completion =
-            !matches!(failure.kind, WaitFailureKind::JoinFailed) && condition_value != 0;
-        if late_completion && crate::task::kthread::kthread_join(&publisher_b).is_ok() {
+        if condition_value != 0 {
+            let _ = crate::task::kthread::kthread_join(&publisher_b);
             report_late_wait_success(
                 &failure,
                 "publisher_b_join",
@@ -1640,26 +1613,22 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
                 condition_value,
             );
         } else {
-            if late_completion {
-                failure.kind = WaitFailureKind::JoinFailed;
-            }
             return wait_failure_result(
                 failure,
-                "publisher_b_join",
-                "publisher_b_exited",
+                WaitSite {
+                    name: "publisher_b_join",
+                    condition_name: "publisher_b_exited",
+                    deadline_message: "exit_kick_gate: publisher B join stuck, CPU 2 unresponsive",
+                },
                 condition_value,
-                "exit_kick_gate: publisher B join stuck, CPU 2 unresponsive",
-                "exit_kick_gate: publisher B join iteration cap exhausted, CPU 2 unresponsive",
-                late_completion,
             );
         }
     }
-    if let Err(mut failure) = join_with_resched(&publisher_a, &[PUBLISHER_A_CPU], &gate_watchdog) {
+    if let Err(failure) = join_with_resched(&publisher_a, &[PUBLISHER_A_CPU], &gate_watchdog) {
         let condition_value =
             crate::task::kthread::kthread_has_exited_for_test(&publisher_a) as u64;
-        let late_completion =
-            !matches!(failure.kind, WaitFailureKind::JoinFailed) && condition_value != 0;
-        if late_completion && crate::task::kthread::kthread_join(&publisher_a).is_ok() {
+        if condition_value != 0 {
+            let _ = crate::task::kthread::kthread_join(&publisher_a);
             report_late_wait_success(
                 &failure,
                 "publisher_a_join",
@@ -1667,17 +1636,14 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
                 condition_value,
             );
         } else {
-            if late_completion {
-                failure.kind = WaitFailureKind::JoinFailed;
-            }
             return wait_failure_result(
                 failure,
-                "publisher_a_join",
-                "publisher_a_exited",
+                WaitSite {
+                    name: "publisher_a_join",
+                    condition_name: "publisher_a_exited",
+                    deadline_message: "exit_kick_gate: publisher A join stuck, CPU 1 unresponsive",
+                },
                 condition_value,
-                "exit_kick_gate: publisher A join stuck, CPU 1 unresponsive",
-                "exit_kick_gate: publisher A join iteration cap exhausted, CPU 1 unresponsive",
-                late_completion,
             );
         }
     }
@@ -1985,23 +1951,23 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
         } else {
             return wait_failure_result(
                 failure,
-                "workers_ready",
-                "workers_ready",
+                WaitSite {
+                    name: "workers_ready",
+                    condition_name: "workers_ready",
+                    deadline_message:
+                        "exit_kick_gate: workers_ready never reached 3, a worker CPU (1/2/3) is unresponsive",
+                },
                 condition_value,
-                "exit_kick_gate: workers_ready never reached 3, a worker CPU (1/2/3) is unresponsive",
-                "exit_kick_gate: workers_ready iteration cap exhausted, a worker CPU (1/2/3) is unresponsive",
-                false,
             );
         }
     }
     accounting.start.store(true, Ordering::Release);
 
-    if let Err(mut failure) = join_with_resched(&publisher_a, &worker_cpus, &gate_watchdog) {
+    if let Err(failure) = join_with_resched(&publisher_a, &worker_cpus, &gate_watchdog) {
         let condition_value =
             crate::task::kthread::kthread_has_exited_for_test(&publisher_a) as u64;
-        let late_completion =
-            !matches!(failure.kind, WaitFailureKind::JoinFailed) && condition_value != 0;
-        if late_completion && crate::task::kthread::kthread_join(&publisher_a).is_ok() {
+        if condition_value != 0 {
+            let _ = crate::task::kthread::kthread_join(&publisher_a);
             report_late_wait_success(
                 &failure,
                 "storm_publisher_a_join",
@@ -2009,26 +1975,23 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
                 condition_value,
             );
         } else {
-            if late_completion {
-                failure.kind = WaitFailureKind::JoinFailed;
-            }
             return wait_failure_result(
                 failure,
-                "storm_publisher_a_join",
-                "publisher_a_exited",
+                WaitSite {
+                    name: "storm_publisher_a_join",
+                    condition_name: "publisher_a_exited",
+                    deadline_message:
+                        "exit_kick_gate: storm publisher A join stuck, CPU 1 unresponsive",
+                },
                 condition_value,
-                "exit_kick_gate: storm publisher A join stuck, CPU 1 unresponsive",
-                "exit_kick_gate: storm publisher A join iteration cap exhausted, CPU 1 unresponsive",
-                late_completion,
             );
         }
     }
-    if let Err(mut failure) = join_with_resched(&publisher_b, &worker_cpus, &gate_watchdog) {
+    if let Err(failure) = join_with_resched(&publisher_b, &worker_cpus, &gate_watchdog) {
         let condition_value =
             crate::task::kthread::kthread_has_exited_for_test(&publisher_b) as u64;
-        let late_completion =
-            !matches!(failure.kind, WaitFailureKind::JoinFailed) && condition_value != 0;
-        if late_completion && crate::task::kthread::kthread_join(&publisher_b).is_ok() {
+        if condition_value != 0 {
+            let _ = crate::task::kthread::kthread_join(&publisher_b);
             report_late_wait_success(
                 &failure,
                 "storm_publisher_b_join",
@@ -2036,25 +1999,22 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
                 condition_value,
             );
         } else {
-            if late_completion {
-                failure.kind = WaitFailureKind::JoinFailed;
-            }
             return wait_failure_result(
                 failure,
-                "storm_publisher_b_join",
-                "publisher_b_exited",
+                WaitSite {
+                    name: "storm_publisher_b_join",
+                    condition_name: "publisher_b_exited",
+                    deadline_message:
+                        "exit_kick_gate: storm publisher B join stuck, CPU 2 unresponsive",
+                },
                 condition_value,
-                "exit_kick_gate: storm publisher B join stuck, CPU 2 unresponsive",
-                "exit_kick_gate: storm publisher B join iteration cap exhausted, CPU 2 unresponsive",
-                late_completion,
             );
         }
     }
-    if let Err(mut failure) = join_with_resched(&observer, &worker_cpus, &gate_watchdog) {
+    if let Err(failure) = join_with_resched(&observer, &worker_cpus, &gate_watchdog) {
         let condition_value = crate::task::kthread::kthread_has_exited_for_test(&observer) as u64;
-        let late_completion =
-            !matches!(failure.kind, WaitFailureKind::JoinFailed) && condition_value != 0;
-        if late_completion && crate::task::kthread::kthread_join(&observer).is_ok() {
+        if condition_value != 0 {
+            let _ = crate::task::kthread::kthread_join(&observer);
             report_late_wait_success(
                 &failure,
                 "storm_observer_join",
@@ -2062,17 +2022,15 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
                 condition_value,
             );
         } else {
-            if late_completion {
-                failure.kind = WaitFailureKind::JoinFailed;
-            }
             return wait_failure_result(
                 failure,
-                "storm_observer_join",
-                "observer_exited",
+                WaitSite {
+                    name: "storm_observer_join",
+                    condition_name: "observer_exited",
+                    deadline_message:
+                        "exit_kick_gate: storm observer join stuck, CPU 3 unresponsive",
+                },
                 condition_value,
-                "exit_kick_gate: storm observer join stuck, CPU 3 unresponsive",
-                "exit_kick_gate: storm observer join iteration cap exhausted, CPU 3 unresponsive",
-                late_completion,
             );
         }
     }

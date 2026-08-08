@@ -61,6 +61,15 @@ This document formalizes the **Linux-rigor polling-elimination gate** for cases 
 - **Frequency:** Once at boot, after PSCI CPU_ON broadcast.
 - **Status:** ALLOWLISTED — not subject to polling-elimination conversion.
 
+## P18: PSCI CPU_ON retry backoff
+
+- **File:** `kernel/src/arch_impl/aarch64/smp.rs:226-243` (`psci_cpu_on_retry_backoff()`)
+- **Loop:** Short busy-wait between bounded PSCI CPU_ON attempts, exiting on the CNTVCT deadline or after 1,000,000 iterations if the counter is unavailable or stopped.
+- **Justification:** Secondary CPU release runs before the target CPU can signal through the scheduler. A transient PSCI `ON_PENDING` or `INTERNAL_FAILURE` response needs a short delay before retrying; there is no event source to block on at this stage.
+- **Bounded:** At most 500 microseconds by CNTVCT and independently capped at 1,000,000 iterations. `release_cpu()` performs at most four total attempts, so at most three backoffs occur for one CPU probe.
+- **Frequency:** Boot-time SMP probing only, and only after a transient PSCI response.
+- **Status:** ALLOWLISTED — not subject to polling-elimination conversion.
+
 ## P12: AHCI engine + taskfile bounded register handshakes (Sites 3, 4, 5)
 
 - **File:** `kernel/src/drivers/ahci/mod.rs:1075-1106` (Site 3: `PORT_CMD.CR` / `PORT_CMD.FR` command-engine state handshakes in `stop_cmd()` / `start_cmd()`)
