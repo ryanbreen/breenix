@@ -214,6 +214,19 @@ pub fn kthread_unpark(handle: &KthreadHandle) {
     scheduler::set_need_resched();
 }
 
+/// Test-only, non-blocking probe of whether a kthread has exited.
+///
+/// Boot-test coordinators (which run synchronously on CPU 0) use this to bound
+/// their cross-CPU join waits: they poll this flag with their own capped
+/// spin-loop instead of blocking unboundedly in `kthread_join`, so a lost
+/// wakeup on a secondary CPU surfaces as an actionable test failure rather than
+/// a silent harness hang. This is a pure read; it changes no production
+/// behavior and matches the SeqCst ordering `kthread_join` uses.
+#[cfg(all(target_arch = "aarch64", feature = "boot_tests"))]
+pub(crate) fn kthread_has_exited_for_test(handle: &KthreadHandle) -> bool {
+    handle.inner.exited.load(Ordering::SeqCst)
+}
+
 /// Wait for kthread to exit and return its exit code
 /// Blocks the calling context until the thread terminates
 pub fn kthread_join(handle: &KthreadHandle) -> Result<i32, KthreadError> {

@@ -1120,6 +1120,77 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
     use alloc::vec::Vec;
     use core::sync::atomic::AtomicBool;
 
+    // ---- Cross-CPU handshake watchdog (test harness only) --------------------
+    //
+    // This gate coordinator runs synchronously on CPU 0 (outside the scheduler)
+    // and busy-waits on handshakes completed by kthreads pinned to CPU 1/2/3.
+    // Every such wait is now bounded: a rare lost wakeup on a secondary CPU used
+    // to hang the whole boot-test harness silently for ~90s. The cap is chosen
+    // FAR beyond any healthy completion (a normal — even slow — run finishes in
+    // a handful of spins), so it never false-trips. On the first cap we re-send
+    // a reschedule IPI to the stuck target CPU(s) exactly once via the existing
+    // per-CPU resched SGI path (self-heals a dropped wakeup), reset the counter,
+    // and spin again; if the SECOND cap is also exceeded the target is genuinely
+    // wedged and the caller returns an actionable Fail naming the handshake and
+    // CPU. This does NOT touch the EXIT_KICK protocol itself.
+    fn spin_with_resched<F: Fn() -> bool>(cond: F, kick_cpus: &[usize]) -> bool {
+        const HANDSHAKE_SPIN_CAP: u64 = 50_000_000;
+
+        // First bounded attempt.
+        let mut spins: u64 = 0;
+        while !cond() {
+            crate::task::scheduler::yield_current();
+            core::hint::spin_loop();
+            spins += 1;
+            if spins >= HANDSHAKE_SPIN_CAP {
+                break;
+            }
+        }
+        if cond() {
+            return true;
+        }
+
+        // Self-heal: re-send a reschedule IPI to each stuck target CPU exactly
+        // once, then reset the counter and retry. This is the same per-CPU
+        // resched SGI the scheduler uses to wake a CPU; we only call it here.
+        for &cpu in kick_cpus {
+            crate::arch_impl::aarch64::gic::send_sgi(
+                crate::arch_impl::aarch64::constants::SGI_RESCHEDULE as u8,
+                cpu as u8,
+            );
+        }
+
+        // Second bounded attempt after the self-heal.
+        let mut spins: u64 = 0;
+        while !cond() {
+            crate::task::scheduler::yield_current();
+            core::hint::spin_loop();
+            spins += 1;
+            if spins >= HANDSHAKE_SPIN_CAP {
+                break;
+            }
+        }
+        cond()
+    }
+
+    // Bounded replacement for a blocking kthread_join on a CPU-pinned worker:
+    // poll the non-blocking exit flag with the same capped + self-healing spin,
+    // then let kthread_join return immediately once the exit is visible. Returns
+    // false if the worker never exited even after the resched self-heal.
+    fn join_with_resched(
+        handle: &crate::task::kthread::KthreadHandle,
+        cpu: usize,
+    ) -> bool {
+        let exited = spin_with_resched(
+            || crate::task::kthread::kthread_has_exited_for_test(handle),
+            &[cpu],
+        );
+        if !exited {
+            return false;
+        }
+        crate::task::kthread::kthread_join(handle).is_ok()
+    }
+
     struct BrokenV3Slot {
         pid: AtomicU64,
         at: AtomicU64,
@@ -1247,9 +1318,14 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
         Err(_) => return TestResult::Fail("failed to spawn held exit-kick publisher A"),
     };
 
-    while EXIT_KICK_TEST_HOOK_RESERVED.load(Ordering::Acquire) == 0 {
-        crate::task::scheduler::yield_current();
-        core::hint::spin_loop();
+    if !spin_with_resched(
+        || EXIT_KICK_TEST_HOOK_RESERVED.load(Ordering::Acquire) != 0,
+        &[PUBLISHER_A_CPU],
+    ) {
+        // `hook` is dropped on return, releasing publisher A from its hold.
+        return TestResult::Fail(
+            "exit_kick_gate: publisher A reservation handshake stuck, CPU 1 unresponsive",
+        );
     }
 
     let b_done = Arc::clone(&publisher_b_done);
@@ -1277,9 +1353,14 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
         }
     };
 
-    while publisher_b_done.load(Ordering::Acquire) == 0 {
-        crate::task::scheduler::yield_current();
-        core::hint::spin_loop();
+    if !spin_with_resched(
+        || publisher_b_done.load(Ordering::Acquire) != 0,
+        &[PUBLISHER_B_CPU],
+    ) {
+        // `hook` is dropped on return, releasing publisher A from its hold.
+        return TestResult::Fail(
+            "exit_kick_gate: publisher B completion handshake stuck, CPU 2 unresponsive",
+        );
     }
 
     let publisher_a_cpu = EXIT_KICK_TEST_HOOK_CPU.load(Ordering::Acquire);
@@ -1293,8 +1374,17 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
         && EXIT_SGI_SENT.aggregate() == sgi_before + 1;
 
     hook.release();
-    let joined = crate::task::kthread::kthread_join(&publisher_b).is_ok()
-        && crate::task::kthread::kthread_join(&publisher_a).is_ok();
+    if !join_with_resched(&publisher_b, PUBLISHER_B_CPU) {
+        return TestResult::Fail(
+            "exit_kick_gate: publisher B join stuck, CPU 2 unresponsive",
+        );
+    }
+    if !join_with_resched(&publisher_a, PUBLISHER_A_CPU) {
+        return TestResult::Fail(
+            "exit_kick_gate: publisher A join stuck, CPU 1 unresponsive",
+        );
+    }
+    let joined = true;
     core::mem::drop(hook);
 
     if !joined
@@ -1589,17 +1679,30 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
     };
     core::mem::drop(spawn_guard);
 
-    while accounting.workers_ready.load(Ordering::Acquire) != 3 {
-        crate::task::scheduler::yield_current();
-        core::hint::spin_loop();
+    if !spin_with_resched(
+        || accounting.workers_ready.load(Ordering::Acquire) == 3,
+        &worker_cpus,
+    ) {
+        return TestResult::Fail(
+            "exit_kick_gate: workers_ready never reached 3, a worker CPU (1/2/3) is unresponsive",
+        );
     }
     accounting.start.store(true, Ordering::Release);
 
-    if crate::task::kthread::kthread_join(&publisher_a).is_err()
-        || crate::task::kthread::kthread_join(&publisher_b).is_err()
-        || crate::task::kthread::kthread_join(&observer).is_err()
-    {
-        return TestResult::Fail("exit-kick storm kthread join failed");
+    if !join_with_resched(&publisher_a, worker_cpus[0]) {
+        return TestResult::Fail(
+            "exit_kick_gate: storm publisher A join stuck, CPU 1 unresponsive",
+        );
+    }
+    if !join_with_resched(&publisher_b, worker_cpus[1]) {
+        return TestResult::Fail(
+            "exit_kick_gate: storm publisher B join stuck, CPU 2 unresponsive",
+        );
+    }
+    if !join_with_resched(&observer, worker_cpus[2]) {
+        return TestResult::Fail(
+            "exit_kick_gate: storm observer join stuck, CPU 3 unresponsive",
+        );
     }
 
     let attempts = accounting.next_token.load(Ordering::Acquire);
