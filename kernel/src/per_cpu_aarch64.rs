@@ -65,8 +65,11 @@ pub struct PerCpuData {
     pub eret_guard_spsr: u64,
     /// Guard source tag, written last to publish the record (offset 136).
     pub eret_guard_source: u64,
+    /// Second scratch slot used by the assembly dispatch ERET path to carry
+    /// `frame.x17` across the SP switch (offset 144).
+    pub eret_scratch2: u64,
     /// Padding to match the fixed 192-byte per-CPU layout.
-    _pad3: [u8; 48],
+    _pad3: [u8; 40],
 }
 
 const _: () = assert!(
@@ -100,7 +103,8 @@ impl PerCpuData {
             eret_guard_elr: 0,
             eret_guard_spsr: 0,
             eret_guard_source: 0,
-            _pad3: [0; 48],
+            eret_scratch2: 0,
+            _pad3: [0; 40],
         }
     }
 }
@@ -116,6 +120,10 @@ const _: () = assert!(
 const _: () = assert!(
     core::mem::offset_of!(PerCpuData, eret_guard_source)
         == crate::arch_impl::aarch64::constants::PERCPU_ERET_GUARD_SOURCE_OFFSET
+);
+const _: () = assert!(
+    core::mem::offset_of!(PerCpuData, eret_scratch2)
+        == crate::arch_impl::aarch64::constants::PERCPU_ERET_SCRATCH2_OFFSET
 );
 
 /// Per-CPU data for all CPUs (up to MAX_CPUS).
