@@ -968,8 +968,8 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
             }
         }
         if launched > 0 {
-            const SMP_ONLINE_NO_PROGRESS_WINDOW_SECONDS: u64 = 3;
-            const SMP_ONLINE_ABSOLUTE_CEILING_SECONDS: u64 = 10;
+            const SMP_ONLINE_NO_PROGRESS_WINDOW_SECONDS: u64 = 20;
+            const SMP_ONLINE_ABSOLUTE_CEILING_SECONDS: u64 = 40;
             const SMP_ONLINE_BREADCRUMB_INTERVAL_SECONDS: u64 = 1;
             const SMP_ONLINE_STAGE_SAMPLE_INTERVAL_ITERATIONS: u64 = 4_096;
             const SMP_ONLINE_CNTVCT_STALL_SAMPLE_INTERVAL_ITERATIONS: u64 = 10_000_000;
@@ -1020,9 +1020,9 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
             };
 
             // SMP secondary CPU bring-up wait: boot CPU spins until all
-            // released secondary CPUs increment cpus_online. Its three-second
+            // released secondary CPUs increment cpus_online. Its twenty-second
             // no-progress window is re-armed only when cpus_online or the sum
-            // of secondary bring-up stages advances, and a distinct ten-second
+            // of secondary bring-up stages advances, and a distinct forty-second
             // absolute ceiling starts at this wait's own start. With a running
             // CNTVCT the ceiling bounds the loop; if CNTVCT freezes, the
             // unconditional delta sample bounds it by iterations instead. No

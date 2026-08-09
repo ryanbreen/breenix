@@ -767,8 +767,8 @@ fn aarch64_exit_kick_waits_are_progress_bounded() {
 
     let main = repo_text("kernel/src/main_aarch64.rs");
     let compact_main: String = main.chars().filter(|ch| !ch.is_whitespace()).collect();
-    assert!(main.contains("const SMP_ONLINE_NO_PROGRESS_WINDOW_SECONDS: u64 = 3;"));
-    assert!(main.contains("const SMP_ONLINE_ABSOLUTE_CEILING_SECONDS: u64 = 10;"));
+    assert!(main.contains("const SMP_ONLINE_NO_PROGRESS_WINDOW_SECONDS: u64 = 20;"));
+    assert!(main.contains("const SMP_ONLINE_ABSOLUTE_CEILING_SECONDS: u64 = 40;"));
     assert!(main.contains("const SMP_ONLINE_BREADCRUMB_INTERVAL_SECONDS: u64 = 1;"));
     assert!(
         main.contains("const SMP_ONLINE_STAGE_SAMPLE_INTERVAL_ITERATIONS: u64 = 4_096;")
@@ -812,7 +812,8 @@ fn aarch64_exit_kick_waits_are_progress_bounded() {
 
     let smp = repo_text("kernel/src/arch_impl/aarch64/smp.rs");
     assert!(smp.contains("const PSCI_CPU_ON_MAX_ATTEMPTS: usize = 4;"));
-    assert!(smp.contains("ret != PSCI_RETURN_INTERNAL_FAILURE"));
+    assert!(smp.contains("if attempt + 1 == PSCI_CPU_ON_MAX_ATTEMPTS"));
+    assert!(!smp.contains("PSCI_RETURN_INTERNAL_FAILURE"));
     assert!(smp.contains("PSCI_CPU_ON_BACKOFF_ITERATION_CAP"));
     assert!(smp.contains("LAST_PSCI_RETURN_CODE[cpu_id].store(ret, Ordering::Release);"));
     assert!(smp.contains("SMC would trap to EL2 and likely fault. HVC is the correct conduit."));

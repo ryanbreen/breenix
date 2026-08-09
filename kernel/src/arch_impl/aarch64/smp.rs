@@ -22,7 +22,6 @@ const PSCI_CPU_ON_BACKOFF_ITERATION_CAP: usize = 1_000_000;
 const PSCI_RETURN_SUCCESS: i64 = 0;
 const PSCI_RETURN_ALREADY_ON: i64 = -4;
 const PSCI_RETURN_ON_PENDING: i64 = -5;
-const PSCI_RETURN_INTERNAL_FAILURE: i64 = -6;
 const PSCI_RETURN_NOT_ATTEMPTED: i64 = i64::MIN;
 
 static LAST_PSCI_RETURN_CODE: [AtomicI64; MAX_CPUS] =
@@ -412,7 +411,7 @@ pub fn release_cpu(cpu_id: usize) -> i64 {
             }
             return PSCI_RETURN_SUCCESS;
         }
-        if ret != PSCI_RETURN_INTERNAL_FAILURE || attempt + 1 == PSCI_CPU_ON_MAX_ATTEMPTS {
+        if attempt + 1 == PSCI_CPU_ON_MAX_ATTEMPTS {
             break;
         }
         psci_cpu_on_retry_backoff();
@@ -445,7 +444,6 @@ pub fn cpus_online() -> u64 {
 }
 
 /// Check if a specific CPU is online.
-#[allow(dead_code)]
 pub fn is_cpu_online(cpu_id: usize) -> bool {
     if cpu_id >= MAX_CPUS {
         return false;
