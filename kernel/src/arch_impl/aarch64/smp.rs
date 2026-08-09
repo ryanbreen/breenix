@@ -214,6 +214,8 @@ fn psci_cpu_on_32(target_cpu: u64, entry_point: u64, context_id: u64) -> i64 {
 }
 
 /// PSCI CPU_ON with 64-bit function ID via SMC (EL3 firmware conduit).
+// Note: SMC conduit not attempted — on VMware (EL1 guest, no EL3),
+// SMC would trap to EL2 and likely fault. HVC is the correct conduit.
 fn psci_cpu_on_smc(target_cpu: u64, entry_point: u64, context_id: u64) -> i64 {
     let ret: i64;
     unsafe {
@@ -262,8 +264,9 @@ fn psci_cpu_on_retry_backoff() {
 /// The CPU will start executing at `secondary_cpu_entry` in boot.S,
 /// which sets up the stack and MMU, then calls `secondary_cpu_entry_rust(cpu_id)`.
 ///
-/// Returns the PSCI result: 0 = success, negative = error
-/// (-2 = INVALID_PARAMS, -9 = NOT_PRESENT, etc.)
+/// Returns 0 for PSCI success, `ALREADY_ON`, or `ON_PENDING`; other negative
+/// PSCI results are returned. The raw final code is preserved for diagnostics
+/// through [`last_psci_return_code()`].
 pub fn release_cpu(cpu_id: usize) -> i64 {
     if cpu_id == 0 || cpu_id >= MAX_CPUS {
         return -2; // INVALID_PARAMS

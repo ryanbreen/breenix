@@ -992,6 +992,8 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
                         kernel::arch_impl::aarch64::smp::cpus_online(),
                         expected
                     );
+                    // The probe stops at its first failure, so launched CPU IDs
+                    // are contiguous and every possible missing CPU is in this range.
                     for cpu in 1..expected as usize {
                         if !kernel::arch_impl::aarch64::smp::is_cpu_online(cpu) {
                             serial_println!(

@@ -187,14 +187,14 @@ const EXIT_PROCESS_BY_PID_CALLS: &[(&str, usize)] = &[
 const EXIT_PROCESS_FOR_TEARDOWN_TEST_CALLS: &[(&str, usize)] =
     &[("kernel/src/tracing/providers/teardown.rs", 1047)];
 const BLOCKING_PRIMITIVES: &[(&str, usize)] = &[
-    ("kernel/src/task/scheduler.rs", 1975),
-    ("kernel/src/task/scheduler.rs", 2189),
-    ("kernel/src/task/scheduler.rs", 2208),
-    ("kernel/src/task/scheduler.rs", 2357),
-    ("kernel/src/task/scheduler.rs", 2445),
-    ("kernel/src/task/scheduler.rs", 2510),
-    ("kernel/src/task/scheduler.rs", 2519),
-    ("kernel/src/task/scheduler.rs", 2678),
+    ("kernel/src/task/scheduler.rs", 1973),
+    ("kernel/src/task/scheduler.rs", 2187),
+    ("kernel/src/task/scheduler.rs", 2206),
+    ("kernel/src/task/scheduler.rs", 2355),
+    ("kernel/src/task/scheduler.rs", 2443),
+    ("kernel/src/task/scheduler.rs", 2508),
+    ("kernel/src/task/scheduler.rs", 2517),
+    ("kernel/src/task/scheduler.rs", 2676),
     ("kernel/src/task/waitqueue.rs", 52),
 ];
 const RAW_SCHEDULER_LOCK_SITES: &[(&str, usize)] = &[
@@ -599,25 +599,39 @@ fn aarch64_exit_kick_waits_are_progress_bounded() {
     let provider = repo_text("kernel/src/tracing/providers/teardown.rs");
     let gate = function_body(&provider, "exit_kick_protocol_gate_test");
     for required in [
+        "const FIRST_PROGRESS_WINDOW_MILLISECONDS: u64 = 8_000;",
         "const NO_PROGRESS_WINDOW_MILLISECONDS: u64 = 3_000;",
-        "const ABSOLUTE_WAIT_CEILING_MILLISECONDS: u64 = 30_000;",
+        "const ABSOLUTE_WAIT_CEILING_MILLISECONDS: u64 = 15_000;",
         "const RESCHED_REKICK_INTERVAL_MILLISECONDS: u64 = 50;",
         "const CNTVCT_STALL_SAMPLE_INTERVAL_ITERATIONS: u64 = 100_000;",
         "if counter_frequency_hz == 0",
         "let counter_delta = now.wrapping_sub(last_counter_sample);",
         "if counter_delta == 0",
         "progress_current.advanced_from(last_progress)",
-        "now.wrapping_sub(last_advance) >= no_progress_ticks",
+        "let (governing_window_ticks, governing_window_milliseconds) = if progress_rearmed",
+        "now.wrapping_sub(last_advance) >= governing_window_ticks",
         "elapsed >= absolute_ceiling_ticks",
         "now.wrapping_sub(last_re_kick) >= re_kick_ticks",
+        "if elapsed >= no_progress_ticks",
         "let late_condition = condition_value();",
+        "struct WaitEvidence<'a>",
+        "fn print_wait_evidence(evidence: WaitEvidence<'_>)",
         "cause={} elapsed_ms={} window_budget_ms={}",
+        "WaitFailureKind::NoProgress => governing_window_milliseconds",
+        "WaitFailureKind::AbsoluteCeiling => ABSOLUTE_WAIT_CEILING_MILLISECONDS",
+        "| WaitFailureKind::JoinFailed => 0",
         "last_advance_ms_ago={}",
         "breadcrumb=1 elapsed_ms={}",
         "WaitProgress::work(publisher_a_progress.load(Ordering::Acquire))",
         "WaitProgress::work(publisher_b_progress.load(Ordering::Acquire))",
-        "WaitProgress::work(accounting.workers_ready.load(Ordering::Acquire))",
+        "let storm_progress = ||",
+        ".publisher_a_progress\n            .load(Ordering::Acquire)\n            .saturating_add",
+        "saturating_add(accounting.publisher_b_progress.load(Ordering::Acquire))",
+        "saturating_add(accounting.observer_progress.load(Ordering::Acquire))",
+        "WaitProgress::work(storm_progress())",
         "exit: kthread_exit_progress_for_test(tid)",
+        "exit-kick reservation-loss publisher CPU is not online",
+        "exit-kick storm requires four online CPUs",
     ] {
         assert!(
             gate.contains(required),
@@ -628,10 +642,37 @@ fn aarch64_exit_kick_waits_are_progress_bounded() {
     assert!(!gate.contains("TIMER_TICK_COUNT"));
     assert!(!gate.contains("WHOLE_GATE_BUDGET"));
     assert_eq!(
+        gate.matches("&storm_progress").count(),
+        3,
+        "all three storm joins must observe the dependency-chain progress union"
+    );
+    assert_eq!(
+        gate.matches("&worker_cpus,").count(),
+        4,
+        "workers_ready and all three storm joins must kick every worker CPU"
+    );
+    for forbidden in [
+        "&[worker_cpus[0]]",
+        "&[worker_cpus[1]]",
+        "&[worker_cpus[2]]",
+        "storm publisher A join stuck, CPU 1 unresponsive",
+        "storm publisher B join stuck, CPU 2 unresponsive",
+        "storm observer join stuck, CPU 3 unresponsive",
+    ] {
+        assert!(
+            !gate.contains(forbidden),
+            "storm wait retained a single-CPU dependency: {forbidden}"
+        );
+    }
+    assert_eq!(
         gate.matches("EXIT_KICK_TEST_HOOK_RESERVED.load").count(),
         1,
         "the reservation wait must remain coordinator-owned"
     );
+
+    let exit_progress_reader = function_body(&provider, "kthread_exit_progress_for_test");
+    assert!(exit_progress_reader.contains("kthread_exit_progress_slot(tid, false)"));
+    assert!(!exit_progress_reader.contains("kthread_exit_progress_slot(tid, true)"));
 
     let kthread = repo_text("kernel/src/task/kthread.rs");
     let kthread_exit = function_body(&kthread, "kthread_exit");
@@ -652,12 +693,14 @@ fn aarch64_exit_kick_waits_are_progress_bounded() {
     );
 
     let scheduler = repo_text("kernel/src/task/scheduler.rs");
+    let clear_affinity = function_body(&scheduler, "clear_cpu_affinity_for_test");
     assert_eq!(
-        function_body(&scheduler, "clear_cpu_affinity_for_test")
+        clear_affinity
             .matches("record_kthread_exit_stage_for_test")
             .count(),
         2
     );
+    assert!(!clear_affinity.contains("#[cfg("));
 
     let main = repo_text("kernel/src/main_aarch64.rs");
     assert!(main.contains("let timeout_ticks = counter_frequency_hz.saturating_mul(6);"));
@@ -669,6 +712,9 @@ fn aarch64_exit_kick_waits_are_progress_bounded() {
     assert!(smp.contains("ret != PSCI_RETURN_INTERNAL_FAILURE"));
     assert!(smp.contains("PSCI_CPU_ON_BACKOFF_ITERATION_CAP"));
     assert!(smp.contains("LAST_PSCI_RETURN_CODE[cpu_id].store(ret, Ordering::Release);"));
+    assert!(smp.contains("SMC would trap to EL2 and likely fault. HVC is the correct conduit."));
+    assert!(smp.contains("`ALREADY_ON`, or `ON_PENDING`"));
+    assert!(smp.contains("[`last_psci_return_code()`]"));
 }
 
 #[test]
