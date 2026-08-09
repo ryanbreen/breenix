@@ -381,6 +381,12 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
         }
     }
 
+    // Start the one Phase-1 liveness budget after any required high-half
+    // transition but before kernel initialization, SMP release, or boot tests.
+    // CNTVCT is architectural and readable before timer calibration.
+    #[cfg(feature = "boot_tests")]
+    kernel::test_framework::begin_phase_one_liveness_budget(timer::rdtsc_serialized());
+
     // Zero the .dma section (Non-Cacheable DMA buffer region).
     // This memory is NOLOAD in the ELF, so neither the loader nor boot.S zeroes it.
     // Must happen before any driver init that uses DMA buffers.
@@ -952,7 +958,11 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
         for cpu in 1..max_cpus_to_probe {
             let ret = kernel::arch_impl::aarch64::smp::release_cpu(cpu);
             if ret == 0 {
-                serial_println!("[smp] CPU {}: PSCI CPU_ON success", cpu);
+                serial_println!(
+                    "[smp] CPU {}: PSCI CPU_ON success (raw_status={})",
+                    cpu,
+                    kernel::arch_impl::aarch64::smp::last_psci_return_code(cpu)
+                );
                 launched += 1;
             } else {
                 serial_println!(
@@ -964,26 +974,216 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
             }
         }
         if launched > 0 {
-            // Wait for all launched CPUs to come online (with timeout)
+            #[cfg(feature = "boot_tests")]
+            const SMP_ONLINE_NO_PROGRESS_WINDOW_SECONDS: u64 = 20;
+            #[cfg(not(feature = "boot_tests"))]
+            const SMP_ONLINE_NO_PROGRESS_WINDOW_SECONDS: u64 = 2;
+            // The boot_tests 40s local ceiling and P20's 45s local gate ceiling
+            // are both capped by one 65s clock started near kernel entry:
+            // P17 + P20 <= 65s, and the harness retains 90s - 65s = 25s for
+            // initialization, the other subsystem tests, and script overhead.
+            // The realistic starved proof remains far inside this backstop:
+            // <=10s total, with the longest observed individual wait about 8s.
+            #[cfg(feature = "boot_tests")]
+            const SMP_ONLINE_ABSOLUTE_CEILING_SECONDS: u64 = 40;
+            #[cfg(not(feature = "boot_tests"))]
+            const SMP_ONLINE_ABSOLUTE_CEILING_SECONDS: u64 = 4;
+            const SMP_ONLINE_BREADCRUMB_INTERVAL_SECONDS: u64 = 1;
+            const SMP_ONLINE_STAGE_SAMPLE_INTERVAL_ITERATIONS: u64 = 4_096;
+            const SMP_ONLINE_CNTVCT_STALL_SAMPLE_INTERVAL_ITERATIONS: u64 = 10_000_000;
+
+            // Wait for all launched CPUs to come online.
             let expected = 1 + launched; // boot CPU + launched
+            let reported_frequency_hz = timer::frequency_hz();
+            let counter_frequency_hz = if reported_frequency_hz == 0 {
+                // P17/P19 deliberately use a short 1MHz bring-up fallback;
+                // the boot-test watchdog P20 instead fails closed because a
+                // guessed frequency could silently stretch their harness bound.
+                kernel::arch_impl::aarch64::timer::BOOT_COUNTER_FALLBACK_FREQUENCY_HZ
+            } else {
+                reported_frequency_hz
+            };
+            let no_progress_ticks =
+                counter_frequency_hz.saturating_mul(SMP_ONLINE_NO_PROGRESS_WINDOW_SECONDS);
+            let absolute_ceiling_ticks =
+                counter_frequency_hz.saturating_mul(SMP_ONLINE_ABSOLUTE_CEILING_SECONDS);
+            #[cfg(feature = "boot_tests")]
+            let phase_one_liveness_started_at =
+                kernel::test_framework::phase_one_liveness_started_at();
+            #[cfg(feature = "boot_tests")]
+            let phase_one_liveness_ceiling_ticks = timer::milliseconds_to_ticks(
+                counter_frequency_hz,
+                kernel::test_framework::PHASE_ONE_LIVENESS_BUDGET_MILLISECONDS,
+            );
+            let breadcrumb_ticks = counter_frequency_hz
+                .saturating_mul(SMP_ONLINE_BREADCRUMB_INTERVAL_SECONDS);
+            let stage_at_start: [u32; kernel::arch_impl::aarch64::smp::MAX_CPUS] =
+                core::array::from_fn(kernel::arch_impl::aarch64::smp::bringup_stage_of);
+            let mut last_online = kernel::arch_impl::aarch64::smp::cpus_online();
+            let mut last_bringup_progress = kernel::arch_impl::aarch64::smp::bringup_progress();
             let start = timer::rdtsc();
-            let timeout_ticks = timer::frequency_hz() / 10; // 100ms timeout
+            let mut last_advance = start;
+            let mut last_breadcrumb = start;
+            let mut last_counter_sample = start;
+            let mut iterations = 0u64;
+            let report_offline_diagnostics = || {
+                // The probe stops at its first failure, so launched CPU IDs
+                // are contiguous and every possible missing CPU is in this range.
+                for cpu in 1..expected as usize {
+                    if !kernel::arch_impl::aarch64::smp::is_cpu_online(cpu) {
+                        let stage_now = kernel::arch_impl::aarch64::smp::bringup_stage_of(cpu);
+                        let last_psci =
+                            kernel::arch_impl::aarch64::smp::last_psci_return_code(cpu);
+                        serial_println!(
+                            "[smp] CPU {} still offline: stage={} {} last PSCI return code {} ({}) stage_at_start={} stage_advanced={}",
+                            cpu,
+                            stage_now,
+                            kernel::arch_impl::aarch64::smp::bringup_stage_name(stage_now),
+                            last_psci,
+                            kernel::arch_impl::aarch64::smp::psci_return_code_name(last_psci),
+                            stage_at_start[cpu],
+                            stage_now > stage_at_start[cpu]
+                        );
+                    }
+                }
+            };
+
             // SMP secondary CPU bring-up wait: boot CPU spins until all
-            // released secondary CPUs increment cpus_online. Bounded CPU-
-            // management handshake (NOT event polling) — no IRQ available
-            // for "CPU online" because GIC isn't fully wired across CPUs
-            // until each is up. Linux uses wait_for_completion_timeout()
-            // in __cpu_up() for the equivalent transition. Bounded by the
-            // explicit timeout check inside the loop. Allowlisted per
+            // released secondary CPUs increment cpus_online. The boot_tests
+            // build retains the starvation-tolerant 20s/40s bounds; the plain
+            // kernel uses 2s/4s: still twenty times the former 100ms allowance,
+            // while preserving at least 16 seconds of the strict harness for the
+            // rest of boot and final diagnostics. The no-progress window is
+            // re-armed only when cpus_online or the sum of secondary bring-up
+            // stages advances. In boot_tests, the shared Phase-1 ceiling can only
+            // shorten the local 40-second ceiling; it cannot re-arm it. With a
+            // running CNTVCT those ceilings bound the loop; if CNTVCT freezes,
+            // the unconditional delta sample bounds it by iterations instead. No
+            // IRQ can signal "CPU online" before each CPU wires its GIC, so this
+            // bounded CPU-management handshake is allowlisted per
             // docs/polling-allowlist.md.
-            while kernel::arch_impl::aarch64::smp::cpus_online() < expected {
-                if timer::rdtsc() - start > timeout_ticks {
+            loop {
+                let now = timer::rdtsc();
+                let current_online = kernel::arch_impl::aarch64::smp::cpus_online();
+                if current_online >= expected {
+                    break;
+                }
+                if current_online > last_online {
+                    last_online = current_online;
+                    last_advance = now;
+                } else if iterations % SMP_ONLINE_STAGE_SAMPLE_INTERVAL_ITERATIONS == 0 {
+                    let current_bringup_progress =
+                        kernel::arch_impl::aarch64::smp::bringup_progress();
+                    if current_bringup_progress > last_bringup_progress {
+                        last_bringup_progress = current_bringup_progress;
+                        last_advance = now;
+                    }
+                }
+
+                #[cfg(feature = "boot_tests")]
+                if let Some(phase_one_started_at) = phase_one_liveness_started_at {
+                    if timer::elapsed_ticks(now, phase_one_started_at)
+                        >= phase_one_liveness_ceiling_ticks
+                    {
+                        let online_at_verdict = kernel::arch_impl::aarch64::smp::cpus_online();
+                        if online_at_verdict >= expected {
+                            break;
+                        }
+                        serial_println!(
+                            "[smp] Timeout waiting for CPUs: shared Phase-1 liveness ceiling of {} ms reached ({} online, {} expected)",
+                            kernel::test_framework::PHASE_ONE_LIVENESS_BUDGET_MILLISECONDS,
+                            online_at_verdict,
+                            expected
+                        );
+                        report_offline_diagnostics();
+                        break;
+                    }
+                } else {
+                    let online_at_verdict = kernel::arch_impl::aarch64::smp::cpus_online();
+                    if online_at_verdict >= expected {
+                        break;
+                    }
                     serial_println!(
-                        "[smp] Timeout waiting for CPUs ({}  online, {} expected)",
-                        kernel::arch_impl::aarch64::smp::cpus_online(),
+                        "[smp] Phase-1 liveness budget anchor unavailable ({} online, {} expected)",
+                        online_at_verdict,
                         expected
                     );
+                    report_offline_diagnostics();
                     break;
+                }
+
+                if timer::elapsed_ticks(now, start) >= absolute_ceiling_ticks {
+                    let online_at_verdict = kernel::arch_impl::aarch64::smp::cpus_online();
+                    if online_at_verdict >= expected {
+                        break;
+                    }
+                    serial_println!(
+                        "[smp] Timeout waiting for CPUs: absolute ceiling of {} seconds reached ({} online, {} expected)",
+                        SMP_ONLINE_ABSOLUTE_CEILING_SECONDS,
+                        online_at_verdict,
+                        expected
+                    );
+                    report_offline_diagnostics();
+                    break;
+                }
+
+                if timer::elapsed_ticks(now, last_advance) >= no_progress_ticks {
+                    let online_at_verdict = kernel::arch_impl::aarch64::smp::cpus_online();
+                    if online_at_verdict >= expected {
+                        break;
+                    }
+                    let progress_at_verdict = kernel::arch_impl::aarch64::smp::bringup_progress();
+                    if online_at_verdict > last_online
+                        || progress_at_verdict > last_bringup_progress
+                    {
+                        last_online = online_at_verdict;
+                        last_bringup_progress = progress_at_verdict;
+                        last_advance = timer::rdtsc();
+                        continue;
+                    }
+                    serial_println!(
+                        "[smp] Timeout waiting for CPUs: no progress for {} seconds ({} online, {} expected)",
+                        SMP_ONLINE_NO_PROGRESS_WINDOW_SECONDS,
+                        online_at_verdict,
+                        expected
+                    );
+                    report_offline_diagnostics();
+                    break;
+                }
+
+                iterations = iterations.wrapping_add(1);
+                if iterations % SMP_ONLINE_CNTVCT_STALL_SAMPLE_INTERVAL_ITERATIONS == 0 {
+                    let counter_delta = timer::elapsed_ticks(now, last_counter_sample);
+                    if counter_delta == 0 {
+                        let online_at_verdict = kernel::arch_impl::aarch64::smp::cpus_online();
+                        if online_at_verdict >= expected {
+                            break;
+                        }
+                        serial_println!(
+                            "[smp] CNTVCT stalled while waiting for CPUs ({} online, {} expected)",
+                            online_at_verdict,
+                            expected
+                        );
+                        report_offline_diagnostics();
+                        break;
+                    }
+                    last_counter_sample = now;
+                }
+
+                if timer::elapsed_ticks(now, last_breadcrumb) >= breadcrumb_ticks {
+                    for cpu in 1..expected as usize {
+                        if !kernel::arch_impl::aarch64::smp::is_cpu_online(cpu) {
+                            let stage_now = kernel::arch_impl::aarch64::smp::bringup_stage_of(cpu);
+                            serial_println!(
+                                "[smp] still waiting, {} online (cpu{} stage={} {})",
+                                current_online,
+                                cpu,
+                                stage_now,
+                                kernel::arch_impl::aarch64::smp::bringup_stage_name(stage_now)
+                            );
+                        }
+                    }
+                    last_breadcrumb = now;
                 }
                 core::hint::spin_loop();
             }

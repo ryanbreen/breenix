@@ -16,6 +16,27 @@
 use crate::arch_impl::traits::TimerOps;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
+/// Conservative boot-time fallback when firmware reports CNTFRQ_EL0 as zero.
+///
+/// SMP bring-up uses this only to remain bounded and deliberately errs toward
+/// shorter waits. Test-harness watchdogs fail closed instead of guessing.
+pub const BOOT_COUNTER_FALLBACK_FREQUENCY_HZ: u64 = 1_000_000;
+
+/// Convert a millisecond duration to counter ticks without overflowing.
+#[inline(always)]
+pub fn milliseconds_to_ticks(frequency_hz: u64, milliseconds: u64) -> u64 {
+    (frequency_hz.saturating_mul(milliseconds) / 1_000).max(1)
+}
+
+/// Return a forward-only counter delta.
+///
+/// Architecturally CNTVCT is monotonic, but treating a backwards read as zero
+/// prevents hypervisor migration skew from becoming an immediate huge timeout.
+#[inline(always)]
+pub fn elapsed_ticks(now: u64, start: u64) -> u64 {
+    now.checked_sub(start).unwrap_or(0)
+}
+
 /// Cached counter frequency (read once at init, never changes)
 static COUNTER_FREQ: AtomicU64 = AtomicU64::new(0);
 /// Whether the timer has been initialized

@@ -10,10 +10,27 @@
 //! 3. boot.S sets up stack, MMU, and calls `secondary_cpu_entry_rust()`
 //! 4. Rust entry initializes per-CPU data, GIC, timer, creates idle thread
 
-use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, AtomicU64, Ordering};
 
 /// Maximum number of CPUs supported.
 pub const MAX_CPUS: usize = 8;
+
+const PSCI_CPU_ON_MAX_ATTEMPTS: usize = 4;
+const PSCI_CPU_ON_RETRY_BACKOFF_MICROSECONDS: u64 = 500;
+const PSCI_CPU_ON_BACKOFF_ITERATION_CAP: usize = 1_000_000;
+const PSCI_RETURN_SUCCESS: i64 = 0;
+const PSCI_RETURN_NOT_SUPPORTED: i64 = -1;
+const PSCI_RETURN_INVALID_PARAMS: i64 = -2;
+const PSCI_RETURN_DENIED: i64 = -3;
+const PSCI_RETURN_ALREADY_ON: i64 = -4;
+const PSCI_RETURN_ON_PENDING: i64 = -5;
+const PSCI_RETURN_INTERNAL_FAILURE: i64 = -6;
+const PSCI_RETURN_NOT_PRESENT: i64 = -7;
+const PSCI_RETURN_INVALID_ADDRESS: i64 = -9;
+const PSCI_RETURN_NOT_ATTEMPTED: i64 = i64::MIN;
+
+static LAST_PSCI_RETURN_CODE: [AtomicI64; MAX_CPUS] =
+    [const { AtomicI64::new(PSCI_RETURN_NOT_ATTEMPTED) }; MAX_CPUS];
 
 /// PSCI function IDs (SMCCC compliant).
 const PSCI_CPU_ON_64: u64 = 0xC400_0003;
@@ -161,6 +178,104 @@ static CPU_ONLINE: [AtomicBool; MAX_CPUS] = [
     AtomicBool::new(false),
 ];
 
+const BRINGUP_STAGE_NOT_STARTED: u32 = 0;
+const BRINGUP_STAGE_RUST_ENTRY: u32 = 1;
+const BRINGUP_STAGE_PER_CPU_DATA_INITIALIZED: u32 = 2;
+const BRINGUP_STAGE_KERNEL_PAGE_TABLE_RECORDED: u32 = 3;
+const BRINGUP_STAGE_KERNEL_STACK_RECORDED: u32 = 4;
+const BRINGUP_STAGE_ENTERING_GIC_CPU_INTERFACE_INIT: u32 = 5;
+const BRINGUP_STAGE_GIC_CPU_INTERFACE_INITIALIZED: u32 = 6;
+const BRINGUP_STAGE_ENTERING_TIMER_INIT: u32 = 7;
+const BRINGUP_STAGE_TIMER_INITIALIZED: u32 = 8;
+const BRINGUP_STAGE_ALLOCATING_IDLE_THREAD: u32 = 9;
+const BRINGUP_STAGE_IDLE_THREAD_ALLOCATED: u32 = 10;
+const BRINGUP_STAGE_REGISTERING_IDLE_THREAD: u32 = 11;
+const BRINGUP_STAGE_IDLE_THREAD_REGISTERED: u32 = 12;
+const BRINGUP_STAGE_INTERRUPT_HANDOFF_READY: u32 = 13;
+const BRINGUP_STAGE_ONLINE: u32 = 14;
+
+/// One cache-line-isolated bring-up stage for a single CPU.
+///
+/// This is intentionally present in production builds: the plain kernel uses
+/// the same bounded SMP online wait and needs an actionable cold-boot wedge
+/// location. These stores execute only during one-time secondary bring-up.
+///
+/// Secondary CPUs publish stages concurrently while CPU 0 samples them. If
+/// adjacent stages share a cache line, those stores invalidate one another and
+/// CPU 0's reads contend with every secondary on the same line, delaying the
+/// bring-up this diagnostic is meant to observe.
+#[repr(C, align(64))]
+struct CpuBringupStage {
+    value: AtomicU32,
+    _padding: [u8; 60],
+}
+
+impl CpuBringupStage {
+    const fn new() -> Self {
+        Self {
+            value: AtomicU32::new(BRINGUP_STAGE_NOT_STARTED),
+            _padding: [0; 60],
+        }
+    }
+}
+
+const _: () = assert!(
+    core::mem::size_of::<CpuBringupStage>() == 64,
+    "CpuBringupStage must occupy exactly one cache line"
+);
+const _: () = assert!(
+    core::mem::align_of::<CpuBringupStage>() == 64,
+    "CpuBringupStage must be cache-line aligned"
+);
+
+static CPU_BRINGUP_STAGE: [CpuBringupStage; MAX_CPUS] =
+    [const { CpuBringupStage::new() }; MAX_CPUS];
+
+#[inline(always)]
+fn set_bringup_stage(cpu_id: usize, stage: u32) {
+    if let Some(cpu_stage) = CPU_BRINGUP_STAGE.get(cpu_id) {
+        cpu_stage.value.store(stage, Ordering::Release);
+    }
+}
+
+/// Return the most recently published bring-up stage for one CPU.
+pub fn bringup_stage_of(cpu_id: usize) -> u32 {
+    CPU_BRINGUP_STAGE
+        .get(cpu_id)
+        .map(|stage| stage.value.load(Ordering::Acquire))
+        .unwrap_or(BRINGUP_STAGE_NOT_STARTED)
+}
+
+/// Return the static diagnostic name for a bring-up stage.
+pub fn bringup_stage_name(stage: u32) -> &'static str {
+    match stage {
+        BRINGUP_STAGE_NOT_STARTED => "not-started",
+        BRINGUP_STAGE_RUST_ENTRY => "rust-entry",
+        BRINGUP_STAGE_PER_CPU_DATA_INITIALIZED => "per-cpu-data-initialized",
+        BRINGUP_STAGE_KERNEL_PAGE_TABLE_RECORDED => "kernel-page-table-recorded",
+        BRINGUP_STAGE_KERNEL_STACK_RECORDED => "kernel-stack-recorded",
+        BRINGUP_STAGE_ENTERING_GIC_CPU_INTERFACE_INIT => "entering-gic-cpu-interface-init",
+        BRINGUP_STAGE_GIC_CPU_INTERFACE_INITIALIZED => "gic-cpu-interface-initialized",
+        BRINGUP_STAGE_ENTERING_TIMER_INIT => "entering-timer-init",
+        BRINGUP_STAGE_TIMER_INITIALIZED => "timer-initialized",
+        BRINGUP_STAGE_ALLOCATING_IDLE_THREAD => "allocating-idle-thread",
+        BRINGUP_STAGE_IDLE_THREAD_ALLOCATED => "idle-thread-allocated",
+        BRINGUP_STAGE_REGISTERING_IDLE_THREAD => "registering-idle-thread",
+        BRINGUP_STAGE_IDLE_THREAD_REGISTERED => "idle-thread-registered",
+        BRINGUP_STAGE_INTERRUPT_HANDOFF_READY => "interrupt-handoff-ready",
+        BRINGUP_STAGE_ONLINE => "online",
+        _ => "unknown",
+    }
+}
+
+/// Sum the monotonic per-CPU bring-up stages into one progress signal.
+pub fn bringup_progress() -> u64 {
+    CPU_BRINGUP_STAGE
+        .iter()
+        .map(|stage| u64::from(stage.value.load(Ordering::Acquire)))
+        .sum()
+}
+
 /// Issue a PSCI CPU_ON call via HVC to start a secondary CPU.
 ///
 /// Arguments:
@@ -200,20 +315,57 @@ fn psci_cpu_on_32(target_cpu: u64, entry_point: u64, context_id: u64) -> i64 {
     ret
 }
 
-/// PSCI CPU_ON with 64-bit function ID via SMC (EL3 firmware conduit).
-fn psci_cpu_on_smc(target_cpu: u64, entry_point: u64, context_id: u64) -> i64 {
-    let ret: i64;
-    unsafe {
-        core::arch::asm!(
-            "smc #0",
-            inout("x0") PSCI_CPU_ON_64 => ret,
-            in("x1") target_cpu,
-            in("x2") entry_point,
-            in("x3") context_id,
-            options(nomem, nostack),
-        );
+fn psci_cpu_on_was_accepted(ret: i64) -> bool {
+    matches!(ret, PSCI_RETURN_SUCCESS | PSCI_RETURN_ON_PENDING)
+}
+
+fn psci_cpu_on_failure_is_transient(ret: i64) -> bool {
+    matches!(ret, PSCI_RETURN_DENIED | PSCI_RETURN_INTERNAL_FAILURE)
+}
+
+/// Choose the raw status that best explains one failed HVC64/HVC32 attempt.
+///
+/// ALREADY_ON is retained first because the caller must not count that firmware
+/// claim as a launch without a local online publication. Otherwise a transient
+/// result is retained so the retrying conduit remains visible even when the
+/// other conduit is permanently unsupported. HVC32 is the final fallback.
+fn psci_cpu_on_attempt_failure(hvc64_ret: i64, hvc32_ret: i64) -> i64 {
+    if hvc64_ret == PSCI_RETURN_ALREADY_ON {
+        hvc64_ret
+    } else if hvc32_ret == PSCI_RETURN_ALREADY_ON {
+        hvc32_ret
+    } else if psci_cpu_on_failure_is_transient(hvc64_ret) {
+        hvc64_ret
+    } else if psci_cpu_on_failure_is_transient(hvc32_ret) {
+        hvc32_ret
+    } else {
+        hvc32_ret
     }
-    ret
+}
+
+fn psci_cpu_on_retry_backoff() {
+    let reported_frequency_hz = crate::arch_impl::aarch64::timer::frequency_hz();
+    let frequency_hz = if reported_frequency_hz == 0 {
+        // P17/P19 in docs/polling-allowlist.md deliberately use a short 1MHz
+        // boot fallback. P20 instead fails closed because its deadlines protect
+        // host harnesses.
+        super::timer::BOOT_COUNTER_FALLBACK_FREQUENCY_HZ
+    } else {
+        reported_frequency_hz
+    };
+    let backoff_ticks = (frequency_hz
+        .saturating_mul(PSCI_CPU_ON_RETRY_BACKOFF_MICROSECONDS)
+        / 1_000_000)
+        .max(1);
+    let start = crate::arch_impl::aarch64::timer::rdtsc();
+    for _ in 0..PSCI_CPU_ON_BACKOFF_ITERATION_CAP {
+        if super::timer::elapsed_ticks(crate::arch_impl::aarch64::timer::rdtsc(), start)
+            >= backoff_ticks
+        {
+            break;
+        }
+        core::hint::spin_loop();
+    }
 }
 
 /// Release a secondary CPU using PSCI CPU_ON.
@@ -221,11 +373,19 @@ fn psci_cpu_on_smc(target_cpu: u64, entry_point: u64, context_id: u64) -> i64 {
 /// The CPU will start executing at `secondary_cpu_entry` in boot.S,
 /// which sets up the stack and MMU, then calls `secondary_cpu_entry_rust(cpu_id)`.
 ///
-/// Returns the PSCI result: 0 = success, negative = error
-/// (-2 = INVALID_PARAMS, -9 = NOT_PRESENT, etc.)
+/// Returns 0 for PSCI `SUCCESS` or `ON_PENDING`. `ALREADY_ON` is accepted only
+/// after this kernel's per-CPU online flag independently proves that the expected
+/// secondary entry path completed; otherwise it remains a distinct failure.
+/// Other negative PSCI results are returned. The raw final code is preserved for
+/// diagnostics through [`last_psci_return_code()`].
 pub fn release_cpu(cpu_id: usize) -> i64 {
-    if cpu_id == 0 || cpu_id >= MAX_CPUS {
-        return -2; // INVALID_PARAMS
+    if cpu_id >= MAX_CPUS {
+        return PSCI_RETURN_INVALID_PARAMS;
+    }
+    LAST_PSCI_RETURN_CODE[cpu_id].store(PSCI_RETURN_NOT_ATTEMPTED, Ordering::Release);
+    if cpu_id == 0 {
+        LAST_PSCI_RETURN_CODE[cpu_id].store(PSCI_RETURN_INVALID_PARAMS, Ordering::Release);
+        return PSCI_RETURN_INVALID_PARAMS;
     }
 
     // Get the physical address of the secondary entry point in boot.S.
@@ -242,26 +402,72 @@ pub fn release_cpu(cpu_id: usize) -> i64 {
     // Context ID: pass cpu_id so the new CPU knows who it is
     let context_id = cpu_id as u64;
 
-    // Try 64-bit PSCI CPU_ON via HVC first (standard for ARM64 hypervisors)
-    let mut ret = psci_cpu_on(target_mpidr, entry_phys, context_id);
+    let mut ret = PSCI_RETURN_NOT_ATTEMPTED;
+    let mut attempts_made = 0usize;
+    for attempt in 0..PSCI_CPU_ON_MAX_ATTEMPTS {
+        attempts_made = attempt + 1;
+        // Preserve the established conduit order on every bounded attempt:
+        // HVC64 first, then HVC32. SMC remains deliberately excluded: an EL1
+        // guest has no EL3 conduit, so SMC would trap to EL2 and may fault.
+        let hvc64_ret = psci_cpu_on(target_mpidr, entry_phys, context_id);
+        let hvc32_ret = if psci_cpu_on_was_accepted(hvc64_ret) {
+            None
+        } else {
+            crate::serial_println!(
+                "[smp] CPU {} attempt {}/{}: HVC64 failed (ret={}), trying HVC32...",
+                cpu_id,
+                attempt + 1,
+                PSCI_CPU_ON_MAX_ATTEMPTS,
+                hvc64_ret
+            );
+            Some(psci_cpu_on_32(target_mpidr, entry_phys, context_id))
+        };
+        ret = match hvc32_ret {
+            None => hvc64_ret,
+            Some(hvc32_ret) if psci_cpu_on_was_accepted(hvc32_ret) => hvc32_ret,
+            Some(hvc32_ret) => psci_cpu_on_attempt_failure(hvc64_ret, hvc32_ret),
+        };
+        LAST_PSCI_RETURN_CODE[cpu_id].store(ret, Ordering::Release);
 
-    // If 64-bit failed, try 32-bit function ID (some hypervisors only support this)
-    if ret != 0 {
-        crate::serial_println!(
-            "[smp] CPU {}: HVC64 failed (ret={}), trying HVC32...",
-            cpu_id,
-            ret
-        );
-        ret = psci_cpu_on_32(target_mpidr, entry_phys, context_id);
+        if psci_cpu_on_was_accepted(ret) {
+            if attempt > 0 {
+                crate::serial_println!(
+                    "[smp] CPU {}: PSCI CPU_ON accepted after {} attempts (raw_status={})",
+                    cpu_id,
+                    attempt + 1,
+                    ret
+                );
+            }
+            return PSCI_RETURN_SUCCESS;
+        }
+        if ret == PSCI_RETURN_ALREADY_ON && is_cpu_online(cpu_id) {
+            crate::serial_println!(
+                "[smp] CPU {}: PSCI claimed ALREADY_ON and the local online flag confirms it",
+                cpu_id
+            );
+            return PSCI_RETURN_SUCCESS;
+        }
+        let attempt_retryable = psci_cpu_on_failure_is_transient(hvc64_ret)
+            || hvc32_ret.is_some_and(psci_cpu_on_failure_is_transient);
+        if !attempt_retryable || attempt + 1 == PSCI_CPU_ON_MAX_ATTEMPTS {
+            break;
+        }
+        psci_cpu_on_retry_backoff();
     }
 
-    // Note: SMC conduit not attempted — on VMware (EL1 guest, no EL3),
-    // SMC would trap to EL2 and likely fault. HVC is the correct conduit.
-
-    if ret != 0 {
+    if ret == PSCI_RETURN_ALREADY_ON && !is_cpu_online(cpu_id) {
+        let stage = bringup_stage_of(cpu_id);
         crate::serial_println!(
-            "[smp] PSCI CPU_ON failed for CPU {}: ret={} (MPIDR={:#x} entry={:#x})",
+            "[smp] PSCI claimed ALREADY_ON for CPU {}, but CPU is not online: bring-up stage={} {}",
             cpu_id,
+            stage,
+            bringup_stage_name(stage)
+        );
+    } else if ret != 0 {
+        crate::serial_println!(
+            "[smp] PSCI CPU_ON failed for CPU {} after {} attempts: ret={} (MPIDR={:#x} entry={:#x})",
+            cpu_id,
+            attempts_made,
             ret,
             target_mpidr,
             entry_phys
@@ -271,13 +477,37 @@ pub fn release_cpu(cpu_id: usize) -> i64 {
     ret
 }
 
+/// Last raw PSCI status observed for a CPU, retained for online-timeout diagnostics.
+pub fn last_psci_return_code(cpu_id: usize) -> i64 {
+    LAST_PSCI_RETURN_CODE
+        .get(cpu_id)
+        .map(|status| status.load(Ordering::Acquire))
+        .unwrap_or(PSCI_RETURN_INVALID_PARAMS)
+}
+
+/// Return a readable name for a raw PSCI status code.
+pub fn psci_return_code_name(status: i64) -> &'static str {
+    match status {
+        PSCI_RETURN_SUCCESS => "success",
+        PSCI_RETURN_NOT_SUPPORTED => "not-supported",
+        PSCI_RETURN_INVALID_PARAMS => "invalid-params",
+        PSCI_RETURN_DENIED => "denied",
+        PSCI_RETURN_ALREADY_ON => "already-on",
+        PSCI_RETURN_ON_PENDING => "on-pending",
+        PSCI_RETURN_INTERNAL_FAILURE => "internal-failure",
+        PSCI_RETURN_NOT_PRESENT => "not-present",
+        PSCI_RETURN_INVALID_ADDRESS => "invalid-address",
+        PSCI_RETURN_NOT_ATTEMPTED => "not-attempted",
+        _ => "unknown",
+    }
+}
+
 /// Get the number of CPUs currently online.
 pub fn cpus_online() -> u64 {
     CPUS_ONLINE.load(Ordering::Acquire)
 }
 
 /// Check if a specific CPU is online.
-#[allow(dead_code)]
 pub fn is_cpu_online(cpu_id: usize) -> bool {
     if cpu_id >= MAX_CPUS {
         return false;
@@ -306,9 +536,11 @@ fn raw_uart_char(c: u8) {
 pub extern "C" fn secondary_cpu_entry_rust(cpu_id: u64) -> ! {
     // Emit raw UART character to signal this CPU is alive
     raw_uart_char(b'0' + cpu_id as u8);
+    set_bringup_stage(cpu_id as usize, BRINGUP_STAGE_RUST_ENTRY);
 
     // Initialize per-CPU data (sets TPIDR_EL1 for this CPU)
     crate::per_cpu_aarch64::init_cpu(cpu_id as usize);
+    set_bringup_stage(cpu_id as usize, BRINGUP_STAGE_PER_CPU_DATA_INITIALIZED);
 
     // Store the boot TTBR0 as the kernel page table for this CPU.
     let boot_ttbr0: u64;
@@ -316,6 +548,7 @@ pub extern "C" fn secondary_cpu_entry_rust(cpu_id: u64) -> ! {
         core::arch::asm!("mrs {}, ttbr0_el1", out(reg) boot_ttbr0, options(nomem, nostack));
     }
     crate::per_cpu_aarch64::set_kernel_cr3(boot_ttbr0);
+    set_bringup_stage(cpu_id as usize, BRINGUP_STAGE_KERNEL_PAGE_TABLE_RECORDED);
 
     // Set kernel stack top for this CPU.
     // boot.S sets SP to SMP_STACK_BASE_PHYS + (cpu_id+1)*0x200000 (physical),
@@ -324,28 +557,44 @@ pub extern "C" fn secondary_cpu_entry_rust(cpu_id: u64) -> ! {
     // exception occurs, the kernel needs to switch to this stack.
     let kernel_stack_top = super::constants::percpu_kernel_stack_top(cpu_id as usize);
     crate::per_cpu_aarch64::set_kernel_stack_top(kernel_stack_top);
+    set_bringup_stage(cpu_id as usize, BRINGUP_STAGE_KERNEL_STACK_RECORDED);
 
     // Initialize GIC CPU interface (GICC registers are banked per-CPU)
+    set_bringup_stage(
+        cpu_id as usize,
+        BRINGUP_STAGE_ENTERING_GIC_CPU_INTERFACE_INIT,
+    );
     super::gic::init_cpu_interface_secondary();
+    set_bringup_stage(cpu_id as usize, BRINGUP_STAGE_GIC_CPU_INTERFACE_INITIALIZED);
 
     // Initialize timer for this CPU (arm virtual timer, enable PPI 27)
+    set_bringup_stage(cpu_id as usize, BRINGUP_STAGE_ENTERING_TIMER_INIT);
     super::timer_interrupt::init_secondary();
+    set_bringup_stage(cpu_id as usize, BRINGUP_STAGE_TIMER_INITIALIZED);
 
     // Create and register this CPU's idle thread with the scheduler.
     // This must happen before enabling interrupts — the scheduler needs
     // an idle thread for this CPU before timer interrupts fire.
     create_and_register_idle_thread(cpu_id as usize);
 
-    // Enable interrupts so this CPU can handle timer ticks
-    unsafe {
-        super::cpu::enable_interrupts();
-    }
-
-    // Mark this CPU as online (after all init is complete)
+    // Publish every readiness signal before unmasking interrupts. The timer was
+    // armed earlier, so its PPI may already be pending here. If that first IRQ
+    // schedules another thread, the bootstrap continuation is intentionally not
+    // saved because it is registered as this CPU's idle thread. Nothing after the
+    // unmask is therefore guaranteed to run. This is the same bootstrap-handoff
+    // invariant enforced for CPU 0's first userspace dispatch in main_aarch64.rs.
+    set_bringup_stage(cpu_id as usize, BRINGUP_STAGE_INTERRUPT_HANDOFF_READY);
     if (cpu_id as usize) < MAX_CPUS {
         CPU_ONLINE[cpu_id as usize].store(true, Ordering::Release);
     }
+    set_bringup_stage(cpu_id as usize, BRINGUP_STAGE_ONLINE);
     CPUS_ONLINE.fetch_add(1, Ordering::Release);
+
+    // This must be the final fallible control-flow handoff. A pending timer or
+    // SGI may dispatch a runnable thread instead of returning here.
+    unsafe {
+        super::cpu::enable_interrupts();
+    }
 
     // Idle loop — wait for interrupts, handle timer, participate in scheduling
     loop {
@@ -362,6 +611,8 @@ fn create_and_register_idle_thread(cpu_id: usize) {
     use alloc::boxed::Box;
     use alloc::format;
 
+    set_bringup_stage(cpu_id, BRINGUP_STAGE_ALLOCATING_IDLE_THREAD);
+
     // Boot stack addresses — must match boot.S layout.
     let boot_stack_top = VirtAddr::new(super::constants::percpu_kernel_stack_top(cpu_id));
     let boot_stack_bottom = VirtAddr::new(super::constants::percpu_kernel_stack_bottom(cpu_id));
@@ -375,6 +626,7 @@ fn create_and_register_idle_thread(cpu_id: usize) {
         dummy_tls,
         ThreadPrivilege::Kernel,
     ));
+    set_bringup_stage(cpu_id, BRINGUP_STAGE_IDLE_THREAD_ALLOCATED);
 
     // CRITICAL: Set kernel_stack_top to this CPU's boot stack. Without this,
     // setup_idle_return_arm64 falls back to the per-CPU kernel_stack_top from
@@ -396,7 +648,9 @@ fn create_and_register_idle_thread(cpu_id: usize) {
     crate::per_cpu_aarch64::set_current_thread(idle_task_ptr);
 
     // Register with the global scheduler
+    set_bringup_stage(cpu_id, BRINGUP_STAGE_REGISTERING_IDLE_THREAD);
     crate::task::scheduler::register_cpu_idle_thread(cpu_id, idle_task);
+    set_bringup_stage(cpu_id, BRINGUP_STAGE_IDLE_THREAD_REGISTERED);
 }
 
 /// Idle thread function for secondary CPUs.

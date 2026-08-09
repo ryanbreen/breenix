@@ -183,10 +183,10 @@ static RESET_QUANTUM_CALL_COUNT: AtomicU64 = AtomicU64::new(0);
 
 // ─── Soft Lockup Detector ────────────────────────────────────────────────────
 //
-// Detects when no context switch has occurred for LOCKUP_THRESHOLD_TICKS timer
-// interrupts (~5 seconds at 1000 Hz). When triggered, dumps diagnostic state to
-// serial using lock-free raw_serial_str(). Fires once per stall, resets when
-// context switches resume.
+// Detects when no context switch, syscall, or boot-test coordinator heartbeat
+// has occurred for LOCKUP_THRESHOLD_TICKS timer interrupts. When triggered,
+// dumps diagnostic state to serial using lock-free raw_serial_str(). Fires once
+// per stall and resets when one of those liveness signals resumes.
 
 /// Threshold in CPU0-local timer ticks before declaring a soft lockup.
 const LOCKUP_THRESHOLD_TICKS: u64 = TARGET_TIMER_HZ * 5;
@@ -197,12 +197,32 @@ static WATCHDOG_LAST_CTX_SWITCH: AtomicU64 = AtomicU64::new(0);
 /// Last observed syscall count (CPU 0 only, tracks system liveness)
 static WATCHDOG_LAST_SYSCALL: AtomicU64 = AtomicU64::new(0);
 
-/// CPU0-local timer tick when progress was last observed (ctx switch OR syscall)
+/// Boot-test coordinator heartbeat for bounded exit-kick cross-CPU waits.
+#[cfg(feature = "boot_tests")]
+static EXIT_KICK_GATE_WATCHDOG_HEARTBEAT: AtomicU64 = AtomicU64::new(0);
+
+/// Last exit-kick coordinator heartbeat observed by CPU 0's watchdog.
+#[cfg(feature = "boot_tests")]
+static WATCHDOG_LAST_EXIT_KICK_GATE_HEARTBEAT: AtomicU64 = AtomicU64::new(0);
+
+/// CPU0-local timer tick when a watchdog liveness signal was last observed.
 static WATCHDOG_LAST_PROGRESS_TICK: AtomicU64 = AtomicU64::new(0);
 
 /// Whether we've already reported a lockup (avoid spamming serial)
 static WATCHDOG_REPORTED: core::sync::atomic::AtomicBool =
     core::sync::atomic::AtomicBool::new(false);
+
+/// Record that CPU 0 is actively supervising a bounded exit-kick wait.
+///
+/// The gate has its own worker-specific deadlines, so this heartbeat prevents
+/// the system-wide soft-lockup detector from preempting its more actionable
+/// verdict. This is a boot-test-only relaxed atomic increment: it adds no lock,
+/// allocation, formatting, or I/O to either the caller or timer interrupt path.
+#[cfg(feature = "boot_tests")]
+#[inline(always)]
+pub fn record_exit_kick_gate_watchdog_heartbeat() {
+    EXIT_KICK_GATE_WATCHDOG_HEARTBEAT.fetch_add(1, Ordering::Relaxed);
+}
 
 /// Initialize the timer interrupt system
 ///
@@ -993,8 +1013,8 @@ fn print_hex_u64(val: u64) {
 
 /// Check for soft lockup (CPU 0 only, called from timer interrupt).
 ///
-/// Compares the current context switch count against the last observed value.
-/// If no context switches or syscalls have occurred for
+/// Compares the current liveness counters against their last observed values.
+/// If no context switches, syscalls, or boot-test coordinator heartbeats occur for
 /// LOCKUP_THRESHOLD_TICKS CPU0-local timer interrupts (~5 seconds), reports
 /// the stall with scheduler/process state:
 /// - If the scheduler lock is held → likely deadlock, report immediately
@@ -1017,7 +1037,24 @@ fn check_soft_lockup(cpu0_tick: u64) {
         WATCHDOG_LAST_SYSCALL.store(syscall_count, Ordering::Relaxed);
     }
 
-    if ctx_progressed || syscall_progressed {
+    // Boot tests can run a CPU-0 coordinator outside the scheduler while all
+    // userspace is stopped. One relaxed atomic load here lets that coordinator's
+    // bounded exit-kick watchdog report the target CPU, instead of this generic
+    // watchdog firing first. Production builds do not contain this path.
+    #[cfg(feature = "boot_tests")]
+    let exit_kick_gate_heartbeat_progressed = {
+        let heartbeat = EXIT_KICK_GATE_WATCHDOG_HEARTBEAT.load(Ordering::Relaxed);
+        let last_heartbeat = WATCHDOG_LAST_EXIT_KICK_GATE_HEARTBEAT.load(Ordering::Relaxed);
+        let progressed = heartbeat != last_heartbeat;
+        if progressed {
+            WATCHDOG_LAST_EXIT_KICK_GATE_HEARTBEAT.store(heartbeat, Ordering::Relaxed);
+        }
+        progressed
+    };
+    #[cfg(not(feature = "boot_tests"))]
+    let exit_kick_gate_heartbeat_progressed = false;
+
+    if ctx_progressed || syscall_progressed || exit_kick_gate_heartbeat_progressed {
         // System is making progress — update baseline
         WATCHDOG_LAST_PROGRESS_TICK.store(cpu0_tick, Ordering::Relaxed);
         WATCHDOG_REPORTED.store(false, Ordering::Relaxed);

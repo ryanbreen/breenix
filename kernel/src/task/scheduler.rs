@@ -308,9 +308,11 @@ fn retain_cpu_affine_test_thread(
 
 #[cfg(all(target_arch = "aarch64", feature = "boot_tests"))]
 pub(crate) fn clear_cpu_affinity_for_test(thread_id: u64) {
+    crate::tracing::providers::teardown::record_kthread_exit_stage_for_test(thread_id);
     for slot in BOOT_TEST_CPU_AFFINITY.iter() {
         let _ = slot.compare_exchange(thread_id, 0, Ordering::AcqRel, Ordering::Relaxed);
     }
+    crate::tracing::providers::teardown::record_kthread_exit_stage_for_test(thread_id);
 }
 
 /// Global need_resched flag for timer interrupt
