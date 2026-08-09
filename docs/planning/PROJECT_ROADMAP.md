@@ -17,6 +17,13 @@ https://v0-breenix-dashboard.vercel.app/).
 
 ## Recently Completed
 
+- ✅ **`exit_kick_protocol_gate` SMP-liveness flake fixed** ([PR #521](https://github.com/ryanbreen/breenix/pull/521), Aug 2026, closes [#519](https://github.com/ryanbreen/breenix/issues/519))
+  - Fixed the rare (~1% zero-load) PSCI CPU_ON 3-of-4 CPU bring-up miss that could fail `exit_kick_protocol_gate` with progress-re-armed liveness waits, keyed to the awaited kthread's own execution counters rather than a fixed wall-clock window.
+  - Added a periodic resched-SGI re-kick (was one-shot self-heal), a bounded PSCI CPU_ON retry, per-CPU bring-up-stage breadcrumbs, and a 5-8s SMP online-wait with progress lines instead of a single hard timeout.
+  - Proven via 0/100 starved (14-hog) + 0/100 clean confirmation runs, plus beast x86 3/3.
+  - Merge commit: `306d665c67a42ce792e605759f278eb938ca4cf3`.
+  - Follow-ups explicitly rated non-blocking at merge review and tracked at [#522](https://github.com/ryanbreen/breenix/issues/522): multi-target waits use a summed-union window instead of strict per-target windows; the shared Phase-1 ceiling is anchored at kernel entry (a new, if remote, false-FAIL mode on slow-but-healthy boots); six new failure classes no longer match the canonical `exit_kick_gate:.*unresponsive` grep, so gate scripts need widening; a latent off-by-one in the new test-helper raw-string scanner.
+
 - ✅ **Teardown-unification tranche 1 (P0+P1+P2) COMPLETE — SIGKILL use-after-free spine closed** ([PR #515](https://github.com/ryanbreen/breenix/pull/515), Aug 2026)
   - P2 (SPINE-1) stops SIGKILL/fault-kill from eager-freeing victim frames, routing the kill path through `exit_process_and_retire` receipt custody + the `EXIT_KICK` expedite SGI, closing the cross-CPU use-after-free tracked at [#491](https://github.com/ryanbreen/breenix/issues/491). This completes **tranche 1** of the `docs/planning/teardown-unification/` phased plan (P0 observability/ratchet + P1 retirement-fence/drain restructure + P2 spine), all three now merged to `main`.
   - Gates: `exit_kick_protocol_gate` deterministic 100/100 (hardened with bounded reservation handshakes + self-heal IPI after a fatal reusability defect found in review — see `docs/planning/teardown-unification/PLAN.md` CHANGELOG); `fork_exit_defer_reclaim_pairing_test` deterministic 100/100 (unblocked by #513, a test observation-race fix); 0 fault/UAF/panic markers across confirmation boots; beast x86 3/3. x86 fault-path findings from review adjudicated non-blocking, tracked at #511.
