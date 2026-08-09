@@ -46,197 +46,6 @@ use super::registry::{Subsystem, SubsystemId, TestResult, TestStage, SUBSYSTEMS}
 use crate::serial_println;
 use crate::task::kthread::{kthread_join, kthread_run, KthreadHandle};
 
-#[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
-const BOOT_TEST_STAGE_JOIN_CEILING_MILLISECONDS: u64 = 60_000;
-#[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
-// Leave one full gate per-wait ceiling after the aggregate verdict for its
-// evidence/result/exit path to run even under severe host-vCPU starvation.
-const BOOT_TEST_EXIT_KICK_JOIN_MARGIN_MILLISECONDS: u64 = 15_000;
-#[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
-const BOOT_TEST_JOIN_REKICK_INTERVAL_MILLISECONDS: u64 = 50;
-#[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
-const BOOT_TEST_JOIN_CNTVCT_STALL_SAMPLE_INTERVAL_ITERATIONS: u64 = 100_000;
-
-#[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
-type BootTestJoinAnchor = u64;
-#[cfg(not(all(feature = "boot_tests", target_arch = "aarch64")))]
-type BootTestJoinAnchor = ();
-
-#[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
-fn boot_test_join_anchor_now() -> BootTestJoinAnchor {
-    crate::arch_impl::aarch64::timer::rdtsc_serialized()
-}
-
-#[cfg(not(all(feature = "boot_tests", target_arch = "aarch64")))]
-const fn boot_test_join_anchor_now() -> BootTestJoinAnchor {}
-
-#[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
-enum BootTestJoinFailure {
-    Join(crate::task::kthread::KthreadError),
-    Watchdog,
-}
-
-/// Join one subsystem worker without allowing the boot-test harness to hang
-/// silently on a host-starved aarch64 vCPU.
-///
-/// `run_all_tests()` captures one anchor immediately before its EarlyBoot stage
-/// runner and reuses it for PostScheduler, so ordinary subsystem joins cannot stack
-/// their 60-second budgets. The Process/PostScheduler worker is special because it
-/// contains the exit-kick gate: once that gate publishes its exact start timestamp,
-/// this outer join defers to the gate's 45-second ceiling plus a strict 15-second
-/// completion margin. Before publication, the ordinary shared deadline still catches
-/// a worker that never reaches the gate. See P21 in docs/polling-allowlist.md.
-#[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
-fn join_boot_test_kthread_bounded(
-    subsystem: SubsystemId,
-    target_stage: TestStage,
-    handle: &KthreadHandle,
-    boot_join_started_at: u64,
-) -> Result<i32, BootTestJoinFailure> {
-    use crate::arch_impl::aarch64::{
-        constants::SGI_RESCHEDULE, gic, percpu::Aarch64PerCpu, smp, timer,
-    };
-    use crate::task::kthread::kthread_has_exited_for_test;
-    use crate::tracing::providers::teardown::{
-        exit_kick_gate_started_at_for_test, EXIT_KICK_GATE_CEILING_MILLISECONDS,
-    };
-
-    if kthread_has_exited_for_test(handle) {
-        return kthread_join(handle).map_err(BootTestJoinFailure::Join);
-    }
-
-    let counter_frequency_hz = timer::frequency_hz();
-    if counter_frequency_hz == 0 {
-        serial_println!(
-            "[boot_tests] subsystem_join_watchdog_failure subsystem={} stage={} cause=counter_frequency_unavailable elapsed_ms=0 re_kick_sgis=0 cpus_online={}",
-            subsystem.name(),
-            target_stage.name(),
-            smp::cpus_online(),
-        );
-        serial_println!("[BOOT_TESTS:FAIL:subsystem_join_watchdog]");
-        return Err(BootTestJoinFailure::Watchdog);
-    }
-
-    let boot_join_ceiling_ticks =
-        (counter_frequency_hz.saturating_mul(BOOT_TEST_STAGE_JOIN_CEILING_MILLISECONDS) / 1_000)
-            .max(1);
-    let exit_kick_gate_join_ceiling_milliseconds = EXIT_KICK_GATE_CEILING_MILLISECONDS
-        .saturating_add(BOOT_TEST_EXIT_KICK_JOIN_MARGIN_MILLISECONDS);
-    let exit_kick_gate_join_ceiling_ticks =
-        (counter_frequency_hz.saturating_mul(exit_kick_gate_join_ceiling_milliseconds) / 1_000)
-            .max(1);
-    let re_kick_ticks =
-        (counter_frequency_hz.saturating_mul(BOOT_TEST_JOIN_REKICK_INTERVAL_MILLISECONDS) / 1_000)
-            .max(1);
-    let wait_started_at = timer::rdtsc_serialized();
-    let mut last_counter_sample = wait_started_at;
-    let mut last_re_kick = wait_started_at;
-    let mut iterations = 0u64;
-    let mut re_kick_sgis = 0u64;
-
-    loop {
-        if kthread_has_exited_for_test(handle) {
-            return kthread_join(handle).map_err(BootTestJoinFailure::Join);
-        }
-
-        let now = timer::rdtsc_serialized();
-        iterations = iterations.wrapping_add(1);
-        if iterations % BOOT_TEST_JOIN_CNTVCT_STALL_SAMPLE_INTERVAL_ITERATIONS == 0 {
-            let counter_delta = now.wrapping_sub(last_counter_sample);
-            if counter_delta == 0 {
-                if kthread_has_exited_for_test(handle) {
-                    return kthread_join(handle).map_err(BootTestJoinFailure::Join);
-                }
-                serial_println!(
-                    "[boot_tests] subsystem_join_watchdog_failure subsystem={} stage={} cause=cntvct_stall elapsed_ms={} re_kick_sgis={} cpus_online={}",
-                    subsystem.name(),
-                    target_stage.name(),
-                    now.wrapping_sub(wait_started_at).saturating_mul(1_000)
-                        / counter_frequency_hz,
-                    re_kick_sgis,
-                    smp::cpus_online(),
-                );
-                serial_println!("[BOOT_TESTS:FAIL:subsystem_join_watchdog]");
-                return Err(BootTestJoinFailure::Watchdog);
-            }
-            last_counter_sample = now;
-        }
-
-        let exit_kick_gate_started_at =
-            if subsystem == SubsystemId::Process && target_stage == TestStage::PostScheduler {
-                exit_kick_gate_started_at_for_test()
-            } else {
-                None
-            };
-        let (deadline_expired, deadline_scope, deadline_budget_ms) =
-            if let Some(gate_started_at) = exit_kick_gate_started_at {
-                (
-                    now.wrapping_sub(gate_started_at) >= exit_kick_gate_join_ceiling_ticks,
-                    "exit_kick_gate",
-                    exit_kick_gate_join_ceiling_milliseconds,
-                )
-            } else {
-                (
-                    now.wrapping_sub(boot_join_started_at) >= boot_join_ceiling_ticks,
-                    "boot_test_stages",
-                    BOOT_TEST_STAGE_JOIN_CEILING_MILLISECONDS,
-                )
-            };
-        if deadline_expired {
-            // Close the deadline race before emitting a permanent failure marker.
-            if kthread_has_exited_for_test(handle) {
-                return kthread_join(handle).map_err(BootTestJoinFailure::Join);
-            }
-            // The gate can publish between the deadline calculation and this
-            // verdict. Re-enter the loop so its full 45s + 15s outer budget wins.
-            if exit_kick_gate_started_at.is_none()
-                && subsystem == SubsystemId::Process
-                && target_stage == TestStage::PostScheduler
-                && exit_kick_gate_started_at_for_test().is_some()
-            {
-                continue;
-            }
-
-            let cpus_online = smp::cpus_online();
-            let elapsed_ms =
-                now.wrapping_sub(wait_started_at).saturating_mul(1_000) / counter_frequency_hz;
-            let boot_join_elapsed_ms =
-                now.wrapping_sub(boot_join_started_at).saturating_mul(1_000)
-                    / counter_frequency_hz;
-            serial_println!(
-                "[boot_tests] subsystem_join_timeout subsystem={} stage={} deadline_scope={} deadline_budget_ms={} elapsed_ms={} boot_join_elapsed_ms={} re_kick_sgis={} cpus_online={}",
-                subsystem.name(),
-                target_stage.name(),
-                deadline_scope,
-                deadline_budget_ms,
-                elapsed_ms,
-                boot_join_elapsed_ms,
-                re_kick_sgis,
-                cpus_online,
-            );
-            serial_println!("[BOOT_TESTS:FAIL:subsystem_join_timeout]");
-            return Err(BootTestJoinFailure::Watchdog);
-        }
-
-        if now.wrapping_sub(last_re_kick) >= re_kick_ticks {
-            let coordinator_cpu = Aarch64PerCpu::cpu_id() as usize;
-            for cpu in 0..smp::MAX_CPUS {
-                if cpu != coordinator_cpu && smp::is_cpu_online(cpu) {
-                    gic::send_sgi(SGI_RESCHEDULE as u8, cpu as u8);
-                    re_kick_sgis = re_kick_sgis.saturating_add(1);
-                }
-            }
-            last_re_kick = now;
-        }
-
-        // Match the exit-kick gate's reachable CNTVCT-stall watchdog: request
-        // rescheduling and keep sampling instead of sleeping in WFI on the same
-        // counter source whose failure this loop must detect.
-        crate::task::scheduler::yield_current();
-        core::hint::spin_loop();
-    }
-}
-
 /// Current boot stage - tests with stage <= this can run
 static CURRENT_STAGE: AtomicU8 = AtomicU8::new(TestStage::EarlyBoot as u8);
 
@@ -273,7 +82,7 @@ pub fn advance_to_stage(stage: TestStage) -> u32 {
     CURRENT_STAGE.store(stage as u8, Ordering::Release);
 
     // Run any tests that were waiting for this stage
-    run_staged_tests(stage, boot_test_join_anchor_now())
+    run_staged_tests(stage)
 }
 
 /// Advance to a new stage without running tests
@@ -365,25 +174,20 @@ pub fn run_all_tests() -> u32 {
         }
     }
 
-    // One aarch64 boot-test anchor governs both join phases. Capturing it here,
-    // rather than inside run_staged_tests(), prevents PostScheduler from
-    // re-arming the watchdog after a host-starved EarlyBoot phase.
-    let boot_join_started_at = boot_test_join_anchor_now();
-
     // Run EarlyBoot tests
-    let early_failures = run_staged_tests(TestStage::EarlyBoot, boot_join_started_at);
+    let early_failures = run_staged_tests(TestStage::EarlyBoot);
 
     // Now advance to PostScheduler stage - by this point kthreads are working
     // (we just used them to run EarlyBoot tests)
     serial_println!("[STAGE:{}:ADVANCE]", TestStage::PostScheduler.name());
     CURRENT_STAGE.store(TestStage::PostScheduler as u8, Ordering::Release);
-    let post_failures = run_staged_tests(TestStage::PostScheduler, boot_join_started_at);
+    let post_failures = run_staged_tests(TestStage::PostScheduler);
 
     early_failures + post_failures
 }
 
 /// Run tests for a specific stage (and mark them as run)
-fn run_staged_tests(target_stage: TestStage, boot_join_started_at: BootTestJoinAnchor) -> u32 {
+fn run_staged_tests(target_stage: TestStage) -> u32 {
     let mut handles: Vec<(SubsystemId, KthreadHandle)> = Vec::new();
 
     for subsystem in SUBSYSTEMS.iter() {
@@ -418,36 +222,9 @@ fn run_staged_tests(target_stage: TestStage, boot_join_started_at: BootTestJoinA
         }
     }
 
-    // Wait for all test threads to complete. On aarch64 boot-test builds the
-    // caller-provided timestamp is shared by every sequential join. run_all_tests
-    // also shares it across EarlyBoot and PostScheduler.
-    #[cfg(not(all(feature = "boot_tests", target_arch = "aarch64")))]
-    let _ = boot_join_started_at;
+    // Wait for all test threads to complete
     let mut total_failed = 0u32;
     for (id, handle) in handles {
-        #[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
-        match join_boot_test_kthread_bounded(id, target_stage, &handle, boot_join_started_at) {
-            Ok(exit_code) => {
-                if exit_code != 0 {
-                    total_failed += exit_code as u32;
-                }
-            }
-            Err(BootTestJoinFailure::Join(e)) => {
-                serial_println!("[SUBSYSTEM:{}:JOIN_ERROR:{:?}]", id.name(), e);
-                total_failed += 1;
-            }
-            Err(BootTestJoinFailure::Watchdog) => {
-                mark_failed(id);
-                total_failed += 1;
-                // There is no safe kthread cancellation primitive. Stop here
-                // rather than cascade the already-expired deadline across every
-                // remaining handle; those workers are intentionally detached and
-                // the terminal BOOT_TESTS failure tells the harness to end QEMU.
-                break;
-            }
-        }
-
-        #[cfg(not(all(feature = "boot_tests", target_arch = "aarch64")))]
         match kthread_join(&handle) {
             Ok(exit_code) => {
                 if exit_code != 0 {

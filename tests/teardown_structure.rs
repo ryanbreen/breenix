@@ -717,10 +717,7 @@ fn all_phase_zero_counters_have_registered_readers_and_honest_runtime_gates() {
 fn aarch64_exit_kick_waits_are_progress_bounded() {
     let provider = repo_text("kernel/src/tracing/providers/teardown.rs");
     let gate = function_body(&provider, "exit_kick_protocol_gate_test");
-    assert!(
-        provider.contains("pub(crate) const EXIT_KICK_GATE_CEILING_MILLISECONDS: u64 = 45_000;")
-    );
-    assert!(provider.contains("pub(crate) fn exit_kick_gate_started_at_for_test() -> Option<u64>"));
+    assert!(provider.contains("const EXIT_KICK_GATE_CEILING_MILLISECONDS: u64 = 45_000;"));
     for required in [
         "const FIRST_PROGRESS_WINDOW_MILLISECONDS: u64 = 8_000;",
         "const NO_PROGRESS_WINDOW_MILLISECONDS: u64 = 3_000;",
@@ -737,9 +734,7 @@ fn aarch64_exit_kick_waits_are_progress_bounded() {
         ".saturating_add(no_progress_ticks);",
         "let progress_deadline_elapsed =",
         "core::cmp::max(first_progress_ticks, no_progress_deadline_elapsed);",
-        "let effective_deadline_elapsed =",
-        "core::cmp::min(progress_deadline_elapsed, gate_deadline_elapsed);",
-        "elapsed >= effective_deadline_elapsed",
+        "elapsed >= progress_deadline_elapsed",
         "elapsed >= absolute_ceiling_ticks",
         "now.wrapping_sub(gate_started_at) >= gate_ceiling_ticks",
         "matches!(failure, WaitFailureKind::NoProgress) && late_true",
@@ -749,7 +744,7 @@ fn aarch64_exit_kick_waits_are_progress_bounded() {
         "struct WaitEvidence<'a>",
         "fn print_wait_evidence(evidence: WaitEvidence<'_>)",
         "cause={} elapsed_ms={} window_budget_ms={}",
-        "ticks_to_milliseconds(effective_deadline_elapsed, counter_frequency_hz)",
+        "ticks_to_milliseconds(progress_deadline_elapsed, counter_frequency_hz)",
         "WaitFailureKind::AbsoluteCeiling => ABSOLUTE_WAIT_CEILING_MILLISECONDS",
         "WaitFailureKind::GateCeiling => GATE_CEILING_MILLISECONDS",
         "| WaitFailureKind::JoinFailed => 0",
@@ -771,9 +766,9 @@ fn aarch64_exit_kick_waits_are_progress_bounded() {
         "self.accounting.abort.store(true, Ordering::Release);",
         "exit-kick reservation-loss publisher CPU is not online",
         "exit-kick storm requires four online CPUs",
-        "storm publisher A join stuck, CPU 1 unresponsive",
-        "storm publisher B join stuck, CPU 2 unresponsive",
-        "storm observer join stuck, CPU 3 unresponsive",
+        "storm publisher A progress/exit stalled; a worker CPU (1/2/3) is unresponsive",
+        "storm publisher B progress/exit stalled; a worker CPU (1/2/3) is unresponsive",
+        "storm observer progress/exit stalled; a worker CPU (1/2/3) is unresponsive",
     ] {
         assert!(
             gate.contains(required),
@@ -849,9 +844,9 @@ fn aarch64_exit_kick_waits_are_progress_bounded() {
         "&[worker_cpus[0]]",
         "&[worker_cpus[1]]",
         "&[worker_cpus[2]]",
-        "storm publisher A join stuck, a worker CPU (1/2/3) is unresponsive",
-        "storm publisher B join stuck, a worker CPU (1/2/3) is unresponsive",
-        "storm observer join stuck, a worker CPU (1/2/3) is unresponsive",
+        "storm publisher A join stuck, CPU 1 unresponsive",
+        "storm publisher B join stuck, CPU 2 unresponsive",
+        "storm observer join stuck, CPU 3 unresponsive",
     ] {
         assert!(
             !gate.contains(forbidden),
@@ -900,7 +895,7 @@ fn aarch64_exit_kick_waits_are_progress_bounded() {
         gate_start_capture < gate_start_store
             && gate_start_store < gate_started_store
             && gate_started_store < exit_progress_arm,
-        "the executor must observe the exact gate anchor before gate work begins"
+        "the gate must publish its exact anchor before gate work begins"
     );
 
     let gate_ceiling_check = gate
@@ -910,7 +905,7 @@ fn aarch64_exit_kick_waits_are_progress_bounded() {
         .find("elapsed >= absolute_ceiling_ticks")
         .expect("absolute wait-ceiling check");
     let no_progress_check = gate
-        .find("elapsed >= effective_deadline_elapsed")
+        .find("elapsed >= progress_deadline_elapsed")
         .expect("no-progress check");
     let counter_stall_check = gate
         .find("iterations % CNTVCT_STALL_SAMPLE_INTERVAL_ITERATIONS == 0")
@@ -942,10 +937,19 @@ fn aarch64_exit_kick_waits_are_progress_bounded() {
     assert!(progress_watch.contains("-> bool"));
     assert!(progress_watch.contains(".is_some()"));
     assert_eq!(
-        gate.matches("if !watch_kthread_exit_progress_for_test").count(),
+        gate.matches("if !watch_kthread_exit_progress_for_test")
+            .count(),
         6,
         "every exit-progress registration must fail explicitly"
     );
+    let registration_failures = gate
+        .lines()
+        .filter(|line| line.contains("exit-progress registration failed"))
+        .collect::<Vec<_>>();
+    assert_eq!(registration_failures.len(), 5);
+    assert!(registration_failures
+        .iter()
+        .all(|line| !line.contains("unresponsive")));
     let storm_abort_arm = gate
         .find("let mut storm_abort_guard = StormAbortGuard::arm(&accounting);")
         .expect("storm abort guard arm");
@@ -956,7 +960,7 @@ fn aarch64_exit_kick_waits_are_progress_bounded() {
         .find("storm_abort_guard.disarm();")
         .expect("storm abort guard disarm");
     let last_storm_join = gate
-        .find("storm observer join stuck")
+        .find("storm observer progress/exit stalled")
         .expect("last storm join failure");
     assert!(
         storm_abort_arm < first_storm_spawn && last_storm_join < storm_abort_disarm,
@@ -998,8 +1002,14 @@ fn aarch64_exit_kick_waits_are_progress_bounded() {
 
     let main = repo_text("kernel/src/main_aarch64.rs");
     let compact_main: String = main.chars().filter(|ch| !ch.is_whitespace()).collect();
-    assert!(main.contains("const SMP_ONLINE_NO_PROGRESS_WINDOW_SECONDS: u64 = 20;"));
-    assert!(main.contains("const SMP_ONLINE_ABSOLUTE_CEILING_SECONDS: u64 = 40;"));
+    for required in [
+        "#[cfg(feature = \"boot_tests\")]\n            const SMP_ONLINE_NO_PROGRESS_WINDOW_SECONDS: u64 = 20;",
+        "#[cfg(not(feature = \"boot_tests\"))]\n            const SMP_ONLINE_NO_PROGRESS_WINDOW_SECONDS: u64 = 5;",
+        "#[cfg(feature = \"boot_tests\")]\n            const SMP_ONLINE_ABSOLUTE_CEILING_SECONDS: u64 = 40;",
+        "#[cfg(not(feature = \"boot_tests\"))]\n            const SMP_ONLINE_ABSOLUTE_CEILING_SECONDS: u64 = 10;",
+    ] {
+        assert!(main.contains(required), "missing SMP timeout profile: {required}");
+    }
     assert!(main.contains("const SMP_ONLINE_BREADCRUMB_INTERVAL_SECONDS: u64 = 1;"));
     assert!(
         main.contains("const SMP_ONLINE_STAGE_SAMPLE_INTERVAL_ITERATIONS: u64 = 4_096;")
@@ -1043,8 +1053,21 @@ fn aarch64_exit_kick_waits_are_progress_bounded() {
 
     let smp = repo_text("kernel/src/arch_impl/aarch64/smp.rs");
     assert!(smp.contains("const PSCI_CPU_ON_MAX_ATTEMPTS: usize = 4;"));
-    assert!(smp.contains("if attempt + 1 == PSCI_CPU_ON_MAX_ATTEMPTS"));
-    assert!(!smp.contains("PSCI_RETURN_INTERNAL_FAILURE"));
+    for required in [
+        "const PSCI_RETURN_INVALID_PARAMS: i64 = -2;",
+        "const PSCI_RETURN_DENIED: i64 = -3;",
+        "const PSCI_RETURN_INTERNAL_FAILURE: i64 = -6;",
+        "const PSCI_RETURN_NOT_PRESENT: i64 = -7;",
+        "PSCI_RETURN_DENIED | PSCI_RETURN_INTERNAL_FAILURE => true,",
+        "PSCI_RETURN_INVALID_PARAMS | PSCI_RETURN_NOT_PRESENT => false,",
+        "if !psci_cpu_on_failure_is_transient(ret)",
+        "|| attempt + 1 == PSCI_CPU_ON_MAX_ATTEMPTS",
+    ] {
+        assert!(
+            smp.contains(required),
+            "missing PSCI retry invariant: {required}"
+        );
+    }
     assert!(smp.contains("PSCI_CPU_ON_BACKOFF_ITERATION_CAP"));
     assert!(smp.contains("LAST_PSCI_RETURN_CODE[cpu_id].store(ret, Ordering::Release);"));
     assert!(smp.contains("SMC would trap to EL2 and may fault."));
@@ -1145,79 +1168,6 @@ fn aarch64_exit_kick_waits_are_progress_bounded() {
         .find("set_bringup_stage(cpu_id, BRINGUP_STAGE_IDLE_THREAD_REGISTERED);")
         .expect("idle-thread scheduler registration completion stage");
     assert!(registering < registration && registration < registered);
-}
-
-#[test]
-fn aarch64_boot_test_subsystem_joins_are_stage_bounded() {
-    let executor = repo_text("kernel/src/test_framework/executor.rs");
-    for required in [
-        "const BOOT_TEST_STAGE_JOIN_CEILING_MILLISECONDS: u64 = 60_000;",
-        "const BOOT_TEST_EXIT_KICK_JOIN_MARGIN_MILLISECONDS: u64 = 15_000;",
-        "const BOOT_TEST_JOIN_REKICK_INTERVAL_MILLISECONDS: u64 = 50;",
-        "const BOOT_TEST_JOIN_CNTVCT_STALL_SAMPLE_INTERVAL_ITERATIONS: u64 = 100_000;",
-        "#[cfg(all(feature = \"boot_tests\", target_arch = \"aarch64\"))]\nfn join_boot_test_kthread_bounded",
-        "#[cfg(not(all(feature = \"boot_tests\", target_arch = \"aarch64\")))]",
-    ] {
-        assert!(
-            executor.contains(required),
-            "missing bounded boot-test join invariant: {required}"
-        );
-    }
-
-    let bounded_join = function_body(&executor, "join_boot_test_kthread_bounded");
-    for required in [
-        "if counter_frequency_hz == 0",
-        "kthread_has_exited_for_test(handle)",
-        "now.wrapping_sub(boot_join_started_at) >= boot_join_ceiling_ticks",
-        "exit_kick_gate_started_at_for_test()",
-        "EXIT_KICK_GATE_CEILING_MILLISECONDS",
-        "now.wrapping_sub(gate_started_at) >= exit_kick_gate_join_ceiling_ticks",
-        "iterations = iterations.wrapping_add(1);",
-        "let counter_delta = now.wrapping_sub(last_counter_sample);",
-        "cause=cntvct_stall",
-        "now.wrapping_sub(last_re_kick) >= re_kick_ticks",
-        "let coordinator_cpu = Aarch64PerCpu::cpu_id() as usize;",
-        "for cpu in 0..smp::MAX_CPUS",
-        "if cpu != coordinator_cpu && smp::is_cpu_online(cpu)",
-        "SGI_RESCHEDULE as u8",
-        "[boot_tests] subsystem_join_timeout subsystem={} stage={} deadline_scope={} deadline_budget_ms={} elapsed_ms={} boot_join_elapsed_ms={} re_kick_sgis={} cpus_online={}",
-        "[BOOT_TESTS:FAIL:subsystem_join_timeout]",
-        "crate::task::scheduler::yield_current();",
-        "core::hint::spin_loop();",
-    ] {
-        assert!(
-            bounded_join.contains(required),
-            "missing bounded boot-test join behavior: {required}"
-        );
-    }
-    assert!(!bounded_join.contains("TIMER_TICK_COUNT"));
-    assert!(!bounded_join.contains("BOOT_TEST_JOIN_ITERATION_CEILING"));
-    assert!(!bounded_join.contains("BOOT_TEST_STAGE_JOIN_ITERATION_CEILING"));
-    assert!(!bounded_join.contains("for cpu in 0..cpus_online"));
-    assert!(!bounded_join.contains("crate::arch_halt();"));
-
-    let run_stage = function_body(&executor, "run_staged_tests");
-    for required in [
-        "join_boot_test_kthread_bounded(",
-        "boot_join_started_at",
-        "mark_failed(id);",
-        "total_failed += 1;",
-        "break;",
-        "match kthread_join(&handle)",
-    ] {
-        assert!(
-            run_stage.contains(required),
-            "run_staged_tests lost bounded-join handling: {required}"
-        );
-    }
-
-    let run_all = function_body(&executor, "run_all_tests");
-    assert!(run_all.contains("let boot_join_started_at = boot_test_join_anchor_now();"));
-    assert_eq!(
-        run_all.matches("boot_join_started_at").count(),
-        3,
-        "run_all_tests must capture one anchor and pass it to both join phases"
-    );
 }
 
 #[test]

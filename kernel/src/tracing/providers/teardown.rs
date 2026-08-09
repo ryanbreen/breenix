@@ -1214,25 +1214,11 @@ pub fn fork_exit_defer_reclaim_pairing_test() -> crate::test_framework::registry
 }
 
 #[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
-pub(crate) const EXIT_KICK_GATE_CEILING_MILLISECONDS: u64 = 45_000;
+const EXIT_KICK_GATE_CEILING_MILLISECONDS: u64 = 45_000;
 #[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
 static EXIT_KICK_GATE_STARTED_AT: AtomicU64 = AtomicU64::new(0);
 #[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
 static EXIT_KICK_GATE_HAS_STARTED: AtomicU64 = AtomicU64::new(0);
-
-/// Return the exact CNTVCT anchor used by the gate's aggregate watchdog.
-///
-/// The executor uses this one-way publication to keep its outer Process-stage
-/// join deadline strictly outside the gate's own deadline. The gate runs once
-/// per boot, so the timestamp deliberately remains published after it returns.
-#[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
-pub(crate) fn exit_kick_gate_started_at_for_test() -> Option<u64> {
-    if EXIT_KICK_GATE_HAS_STARTED.load(Ordering::Acquire) == 0 {
-        None
-    } else {
-        Some(EXIT_KICK_GATE_STARTED_AT.load(Ordering::Relaxed))
-    }
-}
 
 #[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
 pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestResult {
@@ -1421,8 +1407,6 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
         let breadcrumb_ticks =
             milliseconds_to_ticks(counter_frequency_hz, BREADCRUMB_INTERVAL_MILLISECONDS);
         let wait_start = crate::arch_impl::aarch64::timer::rdtsc_serialized();
-        let gate_elapsed_at_wait_start = wait_start.wrapping_sub(gate_started_at);
-        let gate_deadline_elapsed = gate_ceiling_ticks.saturating_sub(gate_elapsed_at_wait_start);
         let mut last_advance = wait_start;
         let mut last_progress = progress_start;
         let mut last_counter_sample = wait_start;
@@ -1448,8 +1432,6 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
                 .saturating_add(no_progress_ticks);
             let progress_deadline_elapsed =
                 core::cmp::max(first_progress_ticks, no_progress_deadline_elapsed);
-            let effective_deadline_elapsed =
-                core::cmp::min(progress_deadline_elapsed, gate_deadline_elapsed);
 
             iterations = iterations.wrapping_add(1);
             let elapsed = now.wrapping_sub(wait_start);
@@ -1460,7 +1442,7 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
             if failure.is_none() && elapsed >= absolute_ceiling_ticks {
                 failure = Some(WaitFailureKind::AbsoluteCeiling);
             }
-            if failure.is_none() && elapsed >= effective_deadline_elapsed {
+            if failure.is_none() && elapsed >= progress_deadline_elapsed {
                 failure = Some(WaitFailureKind::NoProgress);
             }
             if failure.is_none() && iterations % CNTVCT_STALL_SAMPLE_INTERVAL_ITERATIONS == 0 {
@@ -1478,7 +1460,7 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
                 let late_true = condition_met(late_condition);
                 let window_budget_ms = match failure {
                     WaitFailureKind::NoProgress => {
-                        ticks_to_milliseconds(effective_deadline_elapsed, counter_frequency_hz)
+                        ticks_to_milliseconds(progress_deadline_elapsed, counter_frequency_hz)
                     }
                     WaitFailureKind::AbsoluteCeiling => ABSOLUTE_WAIT_CEILING_MILLISECONDS,
                     WaitFailureKind::GateCeiling => GATE_CEILING_MILLISECONDS,
@@ -1751,7 +1733,7 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
         Ok(handle) => {
             if !watch_kthread_exit_progress_for_test(handle.tid()) {
                 return TestResult::Fail(
-                    "exit_kick_gate: publisher A exit-progress registration failed, CPU 1 unresponsive classification unavailable",
+                    "exit_kick_gate: publisher A exit-progress registration failed",
                 );
             }
             handle
@@ -1799,7 +1781,7 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
         Ok(handle) => {
             if !watch_kthread_exit_progress_for_test(handle.tid()) {
                 return TestResult::Fail(
-                    "exit_kick_gate: publisher B exit-progress registration failed, CPU 2 unresponsive classification unavailable",
+                    "exit_kick_gate: publisher B exit-progress registration failed",
                 );
             }
             handle
@@ -2168,7 +2150,7 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
         Ok(handle) => {
             if !watch_kthread_exit_progress_for_test(handle.tid()) {
                 return TestResult::Fail(
-                    "exit_kick_gate: storm publisher A exit-progress registration failed, a worker CPU (1/2/3) is unresponsive",
+                    "exit_kick_gate: storm publisher A exit-progress registration failed",
                 );
             }
             handle
@@ -2179,7 +2161,7 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
         Ok(handle) => {
             if !watch_kthread_exit_progress_for_test(handle.tid()) {
                 return TestResult::Fail(
-                    "exit_kick_gate: storm publisher B exit-progress registration failed, a worker CPU (1/2/3) is unresponsive",
+                    "exit_kick_gate: storm publisher B exit-progress registration failed",
                 );
             }
             handle
@@ -2267,7 +2249,7 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
         Ok(handle) => {
             if !watch_kthread_exit_progress_for_test(handle.tid()) {
                 return TestResult::Fail(
-                    "exit_kick_gate: storm observer exit-progress registration failed, a worker CPU (1/2/3) is unresponsive",
+                    "exit_kick_gate: storm observer exit-progress registration failed",
                 );
             }
             handle
@@ -2311,7 +2293,9 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
         gate_started_at,
     ) {
         return TestResult::Fail(
-            failure.message("exit_kick_gate: storm publisher A join stuck, CPU 1 unresponsive"),
+            failure.message(
+                "exit_kick_gate: storm publisher A progress/exit stalled; a worker CPU (1/2/3) is unresponsive",
+            ),
         );
     }
     if let Err(failure) = join_with_resched(
@@ -2322,7 +2306,9 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
         gate_started_at,
     ) {
         return TestResult::Fail(
-            failure.message("exit_kick_gate: storm publisher B join stuck, CPU 2 unresponsive"),
+            failure.message(
+                "exit_kick_gate: storm publisher B progress/exit stalled; a worker CPU (1/2/3) is unresponsive",
+            ),
         );
     }
     if let Err(failure) = join_with_resched(
@@ -2333,7 +2319,9 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
         gate_started_at,
     ) {
         return TestResult::Fail(
-            failure.message("exit_kick_gate: storm observer join stuck, CPU 3 unresponsive"),
+            failure.message(
+                "exit_kick_gate: storm observer progress/exit stalled; a worker CPU (1/2/3) is unresponsive",
+            ),
         );
     }
     storm_abort_guard.disarm();

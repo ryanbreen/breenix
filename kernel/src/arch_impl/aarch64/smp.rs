@@ -19,8 +19,12 @@ const PSCI_CPU_ON_MAX_ATTEMPTS: usize = 4;
 const PSCI_CPU_ON_RETRY_BACKOFF_MICROSECONDS: u64 = 500;
 const PSCI_CPU_ON_BACKOFF_ITERATION_CAP: usize = 1_000_000;
 const PSCI_RETURN_SUCCESS: i64 = 0;
+const PSCI_RETURN_INVALID_PARAMS: i64 = -2;
+const PSCI_RETURN_DENIED: i64 = -3;
 const PSCI_RETURN_ALREADY_ON: i64 = -4;
 const PSCI_RETURN_ON_PENDING: i64 = -5;
+const PSCI_RETURN_INTERNAL_FAILURE: i64 = -6;
+const PSCI_RETURN_NOT_PRESENT: i64 = -7;
 const PSCI_RETURN_NOT_ATTEMPTED: i64 = i64::MIN;
 
 static LAST_PSCI_RETURN_CODE: [AtomicI64; MAX_CPUS] =
@@ -316,12 +320,20 @@ fn psci_cpu_on_was_accepted(ret: i64) -> bool {
     )
 }
 
+fn psci_cpu_on_failure_is_transient(ret: i64) -> bool {
+    match ret {
+        PSCI_RETURN_DENIED | PSCI_RETURN_INTERNAL_FAILURE => true,
+        PSCI_RETURN_INVALID_PARAMS | PSCI_RETURN_NOT_PRESENT => false,
+        _ => false,
+    }
+}
+
 fn psci_cpu_on_retry_backoff() {
     let reported_frequency_hz = crate::arch_impl::aarch64::timer::frequency_hz();
     let frequency_hz = if reported_frequency_hz == 0 {
         // P17/P19 in docs/polling-allowlist.md deliberately use a short 1MHz
-        // boot fallback. P20/P21 instead fail closed because their deadlines
-        // protect host harnesses.
+        // boot fallback. P20 instead fails closed because its deadlines protect
+        // host harnesses.
         super::timer::BOOT_COUNTER_FALLBACK_FREQUENCY_HZ
     } else {
         reported_frequency_hz
@@ -349,7 +361,7 @@ fn psci_cpu_on_retry_backoff() {
 /// through [`last_psci_return_code()`].
 pub fn release_cpu(cpu_id: usize) -> i64 {
     if cpu_id == 0 || cpu_id >= MAX_CPUS {
-        return -2; // INVALID_PARAMS
+        return PSCI_RETURN_INVALID_PARAMS;
     }
 
     // Get the physical address of the secondary entry point in boot.S.
@@ -398,7 +410,7 @@ pub fn release_cpu(cpu_id: usize) -> i64 {
             }
             return PSCI_RETURN_SUCCESS;
         }
-        if attempt + 1 == PSCI_CPU_ON_MAX_ATTEMPTS {
+        if !psci_cpu_on_failure_is_transient(ret) || attempt + 1 == PSCI_CPU_ON_MAX_ATTEMPTS {
             break;
         }
         psci_cpu_on_retry_backoff();
