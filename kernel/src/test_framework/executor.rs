@@ -49,6 +49,10 @@ use crate::task::kthread::{kthread_join, kthread_run, KthreadHandle};
 #[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
 const BOOT_TEST_STAGE_JOIN_CEILING_MILLISECONDS: u64 = 60_000;
 #[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
+// Leave one full gate per-wait ceiling after the aggregate verdict for its
+// evidence/result/exit path to run even under severe host-vCPU starvation.
+const BOOT_TEST_EXIT_KICK_JOIN_MARGIN_MILLISECONDS: u64 = 15_000;
+#[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
 const BOOT_TEST_JOIN_REKICK_INTERVAL_MILLISECONDS: u64 = 50;
 #[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
 const BOOT_TEST_JOIN_CNTVCT_STALL_SAMPLE_INTERVAL_ITERATIONS: u64 = 100_000;
@@ -76,13 +80,12 @@ enum BootTestJoinFailure {
 /// silently on a host-starved aarch64 vCPU.
 ///
 /// `run_all_tests()` captures one anchor immediately before its EarlyBoot stage
-/// runner and reuses it for PostScheduler, so the two stages cannot stack their
-/// budgets. The combined 60-second ceiling leaves 30 seconds before Phase 1's
-/// 90-second poll and 60 seconds before QEMU's 120-second kill for boot work before
-/// the anchor and for the coordinator to be scheduled after expiry. No in-guest
-/// watchdog can emit while QEMU receives no host CPU time at all, but EarlyBoot
-/// duration can no longer postpone the PostScheduler deadline. See P21 in
-/// docs/polling-allowlist.md.
+/// runner and reuses it for PostScheduler, so ordinary subsystem joins cannot stack
+/// their 60-second budgets. The Process/PostScheduler worker is special because it
+/// contains the exit-kick gate: once that gate publishes its exact start timestamp,
+/// this outer join defers to the gate's 45-second ceiling plus a strict 15-second
+/// completion margin. Before publication, the ordinary shared deadline still catches
+/// a worker that never reaches the gate. See P21 in docs/polling-allowlist.md.
 #[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
 fn join_boot_test_kthread_bounded(
     subsystem: SubsystemId,
@@ -90,8 +93,13 @@ fn join_boot_test_kthread_bounded(
     handle: &KthreadHandle,
     boot_join_started_at: u64,
 ) -> Result<i32, BootTestJoinFailure> {
-    use crate::arch_impl::aarch64::{constants::SGI_RESCHEDULE, gic, smp, timer};
+    use crate::arch_impl::aarch64::{
+        constants::SGI_RESCHEDULE, gic, percpu::Aarch64PerCpu, smp, timer,
+    };
     use crate::task::kthread::kthread_has_exited_for_test;
+    use crate::tracing::providers::teardown::{
+        exit_kick_gate_started_at_for_test, EXIT_KICK_GATE_CEILING_MILLISECONDS,
+    };
 
     if kthread_has_exited_for_test(handle) {
         return kthread_join(handle).map_err(BootTestJoinFailure::Join);
@@ -111,6 +119,11 @@ fn join_boot_test_kthread_bounded(
 
     let boot_join_ceiling_ticks =
         (counter_frequency_hz.saturating_mul(BOOT_TEST_STAGE_JOIN_CEILING_MILLISECONDS) / 1_000)
+            .max(1);
+    let exit_kick_gate_join_ceiling_milliseconds = EXIT_KICK_GATE_CEILING_MILLISECONDS
+        .saturating_add(BOOT_TEST_EXIT_KICK_JOIN_MARGIN_MILLISECONDS);
+    let exit_kick_gate_join_ceiling_ticks =
+        (counter_frequency_hz.saturating_mul(exit_kick_gate_join_ceiling_milliseconds) / 1_000)
             .max(1);
     let re_kick_ticks =
         (counter_frequency_hz.saturating_mul(BOOT_TEST_JOIN_REKICK_INTERVAL_MILLISECONDS) / 1_000)
@@ -149,23 +162,53 @@ fn join_boot_test_kthread_bounded(
             last_counter_sample = now;
         }
 
-        if now.wrapping_sub(boot_join_started_at) >= boot_join_ceiling_ticks {
+        let exit_kick_gate_started_at =
+            if subsystem == SubsystemId::Process && target_stage == TestStage::PostScheduler {
+                exit_kick_gate_started_at_for_test()
+            } else {
+                None
+            };
+        let (deadline_expired, deadline_scope, deadline_budget_ms) =
+            if let Some(gate_started_at) = exit_kick_gate_started_at {
+                (
+                    now.wrapping_sub(gate_started_at) >= exit_kick_gate_join_ceiling_ticks,
+                    "exit_kick_gate",
+                    exit_kick_gate_join_ceiling_milliseconds,
+                )
+            } else {
+                (
+                    now.wrapping_sub(boot_join_started_at) >= boot_join_ceiling_ticks,
+                    "boot_test_stages",
+                    BOOT_TEST_STAGE_JOIN_CEILING_MILLISECONDS,
+                )
+            };
+        if deadline_expired {
             // Close the deadline race before emitting a permanent failure marker.
             if kthread_has_exited_for_test(handle) {
                 return kthread_join(handle).map_err(BootTestJoinFailure::Join);
+            }
+            // The gate can publish between the deadline calculation and this
+            // verdict. Re-enter the loop so its full 45s + 15s outer budget wins.
+            if exit_kick_gate_started_at.is_none()
+                && subsystem == SubsystemId::Process
+                && target_stage == TestStage::PostScheduler
+                && exit_kick_gate_started_at_for_test().is_some()
+            {
+                continue;
             }
 
             let cpus_online = smp::cpus_online();
             let elapsed_ms =
                 now.wrapping_sub(wait_started_at).saturating_mul(1_000) / counter_frequency_hz;
-            let boot_join_elapsed_ms = now
-                .wrapping_sub(boot_join_started_at)
-                .saturating_mul(1_000)
-                / counter_frequency_hz;
+            let boot_join_elapsed_ms =
+                now.wrapping_sub(boot_join_started_at).saturating_mul(1_000)
+                    / counter_frequency_hz;
             serial_println!(
-                "[boot_tests] subsystem_join_timeout subsystem={} stage={} elapsed_ms={} boot_join_elapsed_ms={} re_kick_sgis={} cpus_online={}",
+                "[boot_tests] subsystem_join_timeout subsystem={} stage={} deadline_scope={} deadline_budget_ms={} elapsed_ms={} boot_join_elapsed_ms={} re_kick_sgis={} cpus_online={}",
                 subsystem.name(),
                 target_stage.name(),
+                deadline_scope,
+                deadline_budget_ms,
                 elapsed_ms,
                 boot_join_elapsed_ms,
                 re_kick_sgis,
@@ -176,8 +219,9 @@ fn join_boot_test_kthread_bounded(
         }
 
         if now.wrapping_sub(last_re_kick) >= re_kick_ticks {
+            let coordinator_cpu = Aarch64PerCpu::cpu_id() as usize;
             for cpu in 0..smp::MAX_CPUS {
-                if smp::is_cpu_online(cpu) {
+                if cpu != coordinator_cpu && smp::is_cpu_online(cpu) {
                     gic::send_sgi(SGI_RESCHEDULE as u8, cpu as u8);
                     re_kick_sgis = re_kick_sgis.saturating_add(1);
                 }
@@ -185,7 +229,11 @@ fn join_boot_test_kthread_bounded(
             last_re_kick = now;
         }
 
-        crate::arch_halt();
+        // Match the exit-kick gate's reachable CNTVCT-stall watchdog: request
+        // rescheduling and keep sampling instead of sleeping in WFI on the same
+        // counter source whose failure this loop must detect.
+        crate::task::scheduler::yield_current();
+        core::hint::spin_loop();
     }
 }
 
@@ -391,6 +439,10 @@ fn run_staged_tests(target_stage: TestStage, boot_join_started_at: BootTestJoinA
             Err(BootTestJoinFailure::Watchdog) => {
                 mark_failed(id);
                 total_failed += 1;
+                // There is no safe kthread cancellation primitive. Stop here
+                // rather than cascade the already-expired deadline across every
+                // remaining handle; those workers are intentionally detached and
+                // the terminal BOOT_TESTS failure tells the harness to end QEMU.
                 break;
             }
         }

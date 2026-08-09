@@ -1214,6 +1214,27 @@ pub fn fork_exit_defer_reclaim_pairing_test() -> crate::test_framework::registry
 }
 
 #[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
+pub(crate) const EXIT_KICK_GATE_CEILING_MILLISECONDS: u64 = 45_000;
+#[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
+static EXIT_KICK_GATE_STARTED_AT: AtomicU64 = AtomicU64::new(0);
+#[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
+static EXIT_KICK_GATE_HAS_STARTED: AtomicU64 = AtomicU64::new(0);
+
+/// Return the exact CNTVCT anchor used by the gate's aggregate watchdog.
+///
+/// The executor uses this one-way publication to keep its outer Process-stage
+/// join deadline strictly outside the gate's own deadline. The gate runs once
+/// per boot, so the timestamp deliberately remains published after it returns.
+#[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
+pub(crate) fn exit_kick_gate_started_at_for_test() -> Option<u64> {
+    if EXIT_KICK_GATE_HAS_STARTED.load(Ordering::Acquire) == 0 {
+        None
+    } else {
+        Some(EXIT_KICK_GATE_STARTED_AT.load(Ordering::Relaxed))
+    }
+}
+
+#[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
 pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestResult {
     use crate::test_framework::registry::TestResult;
     use alloc::sync::Arc;
@@ -1238,7 +1259,7 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
     const FIRST_PROGRESS_WINDOW_MILLISECONDS: u64 = 8_000;
     const NO_PROGRESS_WINDOW_MILLISECONDS: u64 = 3_000;
     const ABSOLUTE_WAIT_CEILING_MILLISECONDS: u64 = 15_000;
-    const GATE_CEILING_MILLISECONDS: u64 = 45_000;
+    const GATE_CEILING_MILLISECONDS: u64 = EXIT_KICK_GATE_CEILING_MILLISECONDS;
     const RESCHED_REKICK_INTERVAL_MILLISECONDS: u64 = 50;
     const BREADCRUMB_INTERVAL_MILLISECONDS: u64 = 1_000;
     const CNTVCT_STALL_SAMPLE_INTERVAL_ITERATIONS: u64 = 100_000;
@@ -1284,11 +1305,17 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
         }
 
         fn message(self, site_message: &'static str) -> &'static str {
-            // The evidence line already carries the precise failure cause. Keep
-            // the permanent FAIL line site-specific for every cause so a ceiling,
-            // counter failure, or join invariant still names the awaited worker.
-            let _ = self;
-            site_message
+            match self {
+                Self::NoProgress | Self::AbsoluteCeiling | Self::GateCeiling => site_message,
+                Self::CounterStall => {
+                    "exit_kick_gate: CNTVCT stalled while enforcing wait deadline"
+                }
+                Self::CounterUnavailable => {
+                    "exit_kick_gate: CNTFRQ unavailable; cannot enforce wait deadline"
+                }
+                Self::ProgressUnavailable => "exit_kick_gate: exit-progress tracking unavailable",
+                Self::JoinFailed => "exit_kick_gate: kthread join failed after exit observation",
+            }
         }
     }
 
@@ -1436,9 +1463,7 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
             if failure.is_none() && elapsed >= effective_deadline_elapsed {
                 failure = Some(WaitFailureKind::NoProgress);
             }
-            if failure.is_none()
-                && iterations % CNTVCT_STALL_SAMPLE_INTERVAL_ITERATIONS == 0
-            {
+            if failure.is_none() && iterations % CNTVCT_STALL_SAMPLE_INTERVAL_ITERATIONS == 0 {
                 let counter_delta = now.wrapping_sub(last_counter_sample);
                 if counter_delta == 0 {
                     failure = Some(WaitFailureKind::CounterStall);
@@ -1541,8 +1566,7 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
                 elapsed_ms: 0,
                 window_budget_ms: 0,
                 re_kick_sgis: 0,
-                condition_current: crate::task::kthread::kthread_has_exited_for_test(handle)
-                    as u64,
+                condition_current: crate::task::kthread::kthread_has_exited_for_test(handle) as u64,
                 condition_expected: 1,
                 progress_start: progress,
                 progress_final: progress,
@@ -1591,6 +1615,8 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
     }
 
     let gate_started_at = crate::arch_impl::aarch64::timer::rdtsc_serialized();
+    EXIT_KICK_GATE_STARTED_AT.store(gate_started_at, Ordering::Relaxed);
+    EXIT_KICK_GATE_HAS_STARTED.store(1, Ordering::Release);
     let _exit_progress_guard = KthreadExitProgressGuard::arm();
 
     struct BrokenV3Slot {
@@ -2273,16 +2299,8 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
     }
     accounting.start.store(true, Ordering::Release);
 
-    let storm_publisher_a_progress = || {
-        accounting
-            .publisher_a_progress
-            .load(Ordering::Acquire)
-    };
-    let storm_publisher_b_progress = || {
-        accounting
-            .publisher_b_progress
-            .load(Ordering::Acquire)
-    };
+    let storm_publisher_a_progress = || accounting.publisher_a_progress.load(Ordering::Acquire);
+    let storm_publisher_b_progress = || accounting.publisher_b_progress.load(Ordering::Acquire);
     let storm_observer_progress = || accounting.observer_progress.load(Ordering::Acquire);
 
     if let Err(failure) = join_with_resched(
@@ -2292,9 +2310,9 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
         &worker_cpus,
         gate_started_at,
     ) {
-        return TestResult::Fail(failure.message(
-            "exit_kick_gate: storm publisher A join stuck, a worker CPU (1/2/3) is unresponsive",
-        ));
+        return TestResult::Fail(
+            failure.message("exit_kick_gate: storm publisher A join stuck, CPU 1 unresponsive"),
+        );
     }
     if let Err(failure) = join_with_resched(
         "storm_publisher_b_join",
@@ -2303,9 +2321,9 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
         &worker_cpus,
         gate_started_at,
     ) {
-        return TestResult::Fail(failure.message(
-            "exit_kick_gate: storm publisher B join stuck, a worker CPU (1/2/3) is unresponsive",
-        ));
+        return TestResult::Fail(
+            failure.message("exit_kick_gate: storm publisher B join stuck, CPU 2 unresponsive"),
+        );
     }
     if let Err(failure) = join_with_resched(
         "storm_observer_join",
@@ -2314,9 +2332,9 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
         &worker_cpus,
         gate_started_at,
     ) {
-        return TestResult::Fail(failure.message(
-            "exit_kick_gate: storm observer join stuck, a worker CPU (1/2/3) is unresponsive",
-        ));
+        return TestResult::Fail(
+            failure.message("exit_kick_gate: storm observer join stuck, CPU 3 unresponsive"),
+        );
     }
     storm_abort_guard.disarm();
 

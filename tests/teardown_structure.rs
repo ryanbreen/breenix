@@ -717,11 +717,15 @@ fn all_phase_zero_counters_have_registered_readers_and_honest_runtime_gates() {
 fn aarch64_exit_kick_waits_are_progress_bounded() {
     let provider = repo_text("kernel/src/tracing/providers/teardown.rs");
     let gate = function_body(&provider, "exit_kick_protocol_gate_test");
+    assert!(
+        provider.contains("pub(crate) const EXIT_KICK_GATE_CEILING_MILLISECONDS: u64 = 45_000;")
+    );
+    assert!(provider.contains("pub(crate) fn exit_kick_gate_started_at_for_test() -> Option<u64>"));
     for required in [
         "const FIRST_PROGRESS_WINDOW_MILLISECONDS: u64 = 8_000;",
         "const NO_PROGRESS_WINDOW_MILLISECONDS: u64 = 3_000;",
         "const ABSOLUTE_WAIT_CEILING_MILLISECONDS: u64 = 15_000;",
-        "const GATE_CEILING_MILLISECONDS: u64 = 45_000;",
+        "const GATE_CEILING_MILLISECONDS: u64 = EXIT_KICK_GATE_CEILING_MILLISECONDS;",
         "const RESCHED_REKICK_INTERVAL_MILLISECONDS: u64 = 50;",
         "const CNTVCT_STALL_SAMPLE_INTERVAL_ITERATIONS: u64 = 100_000;",
         "if counter_frequency_hz == 0",
@@ -767,6 +771,9 @@ fn aarch64_exit_kick_waits_are_progress_bounded() {
         "self.accounting.abort.store(true, Ordering::Release);",
         "exit-kick reservation-loss publisher CPU is not online",
         "exit-kick storm requires four online CPUs",
+        "storm publisher A join stuck, CPU 1 unresponsive",
+        "storm publisher B join stuck, CPU 2 unresponsive",
+        "storm observer join stuck, CPU 3 unresponsive",
     ] {
         assert!(
             gate.contains(required),
@@ -842,9 +849,9 @@ fn aarch64_exit_kick_waits_are_progress_bounded() {
         "&[worker_cpus[0]]",
         "&[worker_cpus[1]]",
         "&[worker_cpus[2]]",
-        "storm publisher A join stuck, CPU 1 unresponsive",
-        "storm publisher B join stuck, CPU 2 unresponsive",
-        "storm observer join stuck, CPU 3 unresponsive",
+        "storm publisher A join stuck, a worker CPU (1/2/3) is unresponsive",
+        "storm publisher B join stuck, a worker CPU (1/2/3) is unresponsive",
+        "storm observer join stuck, a worker CPU (1/2/3) is unresponsive",
     ] {
         assert!(
             !gate.contains(forbidden),
@@ -855,6 +862,45 @@ fn aarch64_exit_kick_waits_are_progress_bounded() {
         gate.matches("EXIT_KICK_TEST_HOOK_RESERVED.load").count(),
         1,
         "the reservation wait must remain coordinator-owned"
+    );
+
+    let failure_message = function_body(gate, "message");
+    for required in [
+        "Self::NoProgress | Self::AbsoluteCeiling | Self::GateCeiling => site_message",
+        "Self::CounterStall =>",
+        "exit_kick_gate: CNTVCT stalled while enforcing wait deadline",
+        "Self::CounterUnavailable =>",
+        "exit_kick_gate: CNTFRQ unavailable; cannot enforce wait deadline",
+        "Self::ProgressUnavailable =>",
+        "exit_kick_gate: exit-progress tracking unavailable",
+        "Self::JoinFailed =>",
+        "exit_kick_gate: kthread join failed after exit observation",
+    ] {
+        assert!(
+            failure_message.contains(required),
+            "wait failure message lost cause-specific diagnostic: {required}"
+        );
+    }
+    assert!(!failure_message.contains("let _ = self"));
+    assert!(!failure_message.contains("unresponsive"));
+
+    let gate_start_capture = gate
+        .find("let gate_started_at = crate::arch_impl::aarch64::timer::rdtsc_serialized();")
+        .expect("gate CNTVCT anchor capture");
+    let gate_start_store = gate
+        .find("EXIT_KICK_GATE_STARTED_AT.store(gate_started_at, Ordering::Relaxed);")
+        .expect("gate CNTVCT anchor publication");
+    let gate_started_store = gate
+        .find("EXIT_KICK_GATE_HAS_STARTED.store(1, Ordering::Release);")
+        .expect("gate start release publication");
+    let exit_progress_arm = gate
+        .find("let _exit_progress_guard = KthreadExitProgressGuard::arm();")
+        .expect("exit progress guard arm");
+    assert!(
+        gate_start_capture < gate_start_store
+            && gate_start_store < gate_started_store
+            && gate_started_store < exit_progress_arm,
+        "the executor must observe the exact gate anchor before gate work begins"
     );
 
     let gate_ceiling_check = gate
@@ -1106,6 +1152,7 @@ fn aarch64_boot_test_subsystem_joins_are_stage_bounded() {
     let executor = repo_text("kernel/src/test_framework/executor.rs");
     for required in [
         "const BOOT_TEST_STAGE_JOIN_CEILING_MILLISECONDS: u64 = 60_000;",
+        "const BOOT_TEST_EXIT_KICK_JOIN_MARGIN_MILLISECONDS: u64 = 15_000;",
         "const BOOT_TEST_JOIN_REKICK_INTERVAL_MILLISECONDS: u64 = 50;",
         "const BOOT_TEST_JOIN_CNTVCT_STALL_SAMPLE_INTERVAL_ITERATIONS: u64 = 100_000;",
         "#[cfg(all(feature = \"boot_tests\", target_arch = \"aarch64\"))]\nfn join_boot_test_kthread_bounded",
@@ -1122,16 +1169,21 @@ fn aarch64_boot_test_subsystem_joins_are_stage_bounded() {
         "if counter_frequency_hz == 0",
         "kthread_has_exited_for_test(handle)",
         "now.wrapping_sub(boot_join_started_at) >= boot_join_ceiling_ticks",
+        "exit_kick_gate_started_at_for_test()",
+        "EXIT_KICK_GATE_CEILING_MILLISECONDS",
+        "now.wrapping_sub(gate_started_at) >= exit_kick_gate_join_ceiling_ticks",
         "iterations = iterations.wrapping_add(1);",
         "let counter_delta = now.wrapping_sub(last_counter_sample);",
         "cause=cntvct_stall",
         "now.wrapping_sub(last_re_kick) >= re_kick_ticks",
+        "let coordinator_cpu = Aarch64PerCpu::cpu_id() as usize;",
         "for cpu in 0..smp::MAX_CPUS",
-        "if smp::is_cpu_online(cpu)",
+        "if cpu != coordinator_cpu && smp::is_cpu_online(cpu)",
         "SGI_RESCHEDULE as u8",
-        "[boot_tests] subsystem_join_timeout subsystem={} stage={} elapsed_ms={} boot_join_elapsed_ms={} re_kick_sgis={} cpus_online={}",
+        "[boot_tests] subsystem_join_timeout subsystem={} stage={} deadline_scope={} deadline_budget_ms={} elapsed_ms={} boot_join_elapsed_ms={} re_kick_sgis={} cpus_online={}",
         "[BOOT_TESTS:FAIL:subsystem_join_timeout]",
-        "crate::arch_halt();",
+        "crate::task::scheduler::yield_current();",
+        "core::hint::spin_loop();",
     ] {
         assert!(
             bounded_join.contains(required),
@@ -1142,6 +1194,7 @@ fn aarch64_boot_test_subsystem_joins_are_stage_bounded() {
     assert!(!bounded_join.contains("BOOT_TEST_JOIN_ITERATION_CEILING"));
     assert!(!bounded_join.contains("BOOT_TEST_STAGE_JOIN_ITERATION_CEILING"));
     assert!(!bounded_join.contains("for cpu in 0..cpus_online"));
+    assert!(!bounded_join.contains("crate::arch_halt();"));
 
     let run_stage = function_body(&executor, "run_staged_tests");
     for required in [
