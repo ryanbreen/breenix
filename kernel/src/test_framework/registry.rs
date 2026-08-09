@@ -1243,9 +1243,9 @@ fn test_timer_ticks() -> TestResult {
 /// Attempts to delay for approximately 10ms and checks that the elapsed
 /// time is within the MIN_MS..=MAX_MS band. This accounts for timer resolution
 /// and scheduling variance. On ARM64 the measurement window is additionally
-/// screened for host-starvation contamination and re-measured when the window
-/// itself, not the kernel timer, was what went wrong (see the detector comment
-/// in the aarch64 branch). The scored bounds are never widened.
+/// screened for intervals where wall-clock time advanced while the test thread
+/// made no progress. Such windows are re-measured without widening the scored
+/// bounds (see the detector comment in the aarch64 branch).
 fn test_timer_delay() -> TestResult {
     // Target delay in milliseconds
     const TARGET_MS: u64 = 10;
@@ -1284,41 +1284,44 @@ fn test_timer_delay() -> TestResult {
         // ---- Measurement-contamination detector (test harness only) ---------
         //
         // The busy-wait below is measured with CNTVCT_EL0, which under QEMU TCG
-        // advances with host wall-clock time rather than with guest execution
-        // progress. The preempt guard below suppresses *guest* preemption of
-        // this thread, but nothing inside the guest can stop the host scheduler
-        // from descheduling the whole vCPU thread mid-window. When that
-        // happens, the next counter read jumps forward by the entire host
-        // stall, so elapsed_ms reports the host outage instead of the kernel's
-        // delay accuracy and lands past MAX_MS even when the timer is exact.
+        // advances with host wall-clock time rather than guest execution
+        // progress. The preempt guard suppresses guest thread preemption, but
+        // interrupts remain enabled. A large inter-sample gap therefore proves
+        // only that wall-clock time advanced while this thread made no progress;
+        // it may include time in this CPU's interrupt handlers as well as time
+        // when the host descheduled the vCPU.
         //
-        // The window is therefore self-instrumented. Every spin iteration, plus
-        // both measurement boundaries, records the counter delta since the
-        // previous counter read; the whole interval that elapsed_ms covers is
-        // sampled with no gaps. One spin_loop() plus one counter read cannot
-        // legitimately consume STALL_SAMPLE_MICROSECONDS of wall clock (a clean
-        // window executes tens of thousands of iterations per millisecond), so
-        // any larger delta is direct guest-observable evidence that wall-clock
-        // time outran guest progress, i.e. the vCPU lost its host CPU. The
-        // excess of every such delta accumulates into stall_ticks.
+        // This conservative accounting is acceptable because it only causes a
+        // bounded re-measurement. A defect that deterministically steals the
+        // window contaminates every attempt and still FAILs on exhaustion. Only
+        // busy-wait gaps strictly between the two scored timestamp reads accrue
+        // stall_ticks. Excess in the boundary gaps is unattributable because the
+        // gaps straddle those reads; a long window with any such excess is
+        // unmeasurable and must be retried rather than excused or scored.
         //
-        // A host stall can only ever *lengthen* a wall-clock measurement, so a
-        // short reading is always the kernel timer's fault and FAILs at once. A
-        // long reading is treated as contaminated only when at least
+        // A lack of thread progress can only ever lengthen a wall-clock
+        // measurement, so a short reading is always the kernel timer's fault
+        // and FAILs at once. A measurable long reading is contaminated only
+        // when at least
         // CONTAMINATION_STALL_MILLISECONDS of stall was observed AND removing
         // exactly that observed stall brings the reading back to MAX_MS or
-        // less - that is, the observed loss of CPU fully explains the overrun.
-        // Contaminated windows are re-measured (bounded by
-        // MAX_MEASUREMENT_ATTEMPTS) instead of being scored. A clean window, or
-        // one whose overrun the observed stalls do not explain (which is what a
-        // genuinely broken or inaccurate kernel timer produces), is scored
-        // against the unchanged MIN_MS/MAX_MS bounds and FAILs exactly as
-        // before. If no uncontaminated window is ever obtained the test FAILs
-        // with its own distinct message; it never passes by default and the
-        // asserted property is unchanged.
+        // less. Re-measurement is bounded by both attempt count and CNTVCT wall
+        // time. A clean window whose overrun the observed stalls do not fully
+        // explain FAILs against the unchanged bounds. The test never passes
+        // without observing an in-band scored window.
         const STALL_SAMPLE_MICROSECONDS: u64 = 10;
         const CONTAMINATION_STALL_MILLISECONDS: u64 = 1;
         const MAX_MEASUREMENT_ATTEMPTS: u32 = 16;
+        const MEASUREMENT_BUDGET_MS: u64 = 5_000;
+        const MIN_SCREENABLE_FREQUENCY_HZ: u64 = 100_000;
+
+        struct TimerDelayMeasurement {
+            elapsed_ms: u64,
+            stall_ticks: u64,
+            unattributed_bracket_ticks: u64,
+            max_gap_ticks: u64,
+            samples: u64,
+        }
 
         struct TimerDelayPreemptGuard;
 
@@ -1340,103 +1343,121 @@ fn test_timer_delay() -> TestResult {
         if freq == 0 {
             return TestResult::Fail("timer frequency is 0");
         }
+        if freq < MIN_SCREENABLE_FREQUENCY_HZ {
+            return TestResult::Fail("timer frequency below 100 kHz; cannot screen delay on ARM64");
+        }
 
         // Calculate ticks for TARGET_MS milliseconds
-        let ticks_for_target = (freq * TARGET_MS) / 1000;
-        // Per-sample wall-clock cost above which a single loop iteration can
-        // only be explained by the vCPU having lost its host CPU.
+        let ticks_for_target = timer::milliseconds_to_ticks(freq, TARGET_MS);
+        // On QEMU TCG aarch64 at CNTFRQ_EL0=24MHz, a clean window retires about
+        // 14k samples/ms (~70ns/sample), roughly 140x below this 10us threshold.
         let stall_sample_ticks =
             (freq.saturating_mul(STALL_SAMPLE_MICROSECONDS) / 1_000_000).max(1);
         let contamination_stall_ticks =
             timer::milliseconds_to_ticks(freq, CONTAMINATION_STALL_MILLISECONDS);
+        let measurement_budget_ticks = timer::milliseconds_to_ticks(freq, MEASUREMENT_BUDGET_MS);
         let stall_excess = |gap: u64| gap.saturating_sub(stall_sample_ticks);
         let ticks_to_microseconds = |ticks: u64| ticks.saturating_mul(1_000_000) / freq;
 
+        let measure_window = || {
+            let _preempt_guard = TimerDelayPreemptGuard::enter();
+
+            let pre_start_counter = timer::rdtsc();
+            let start_ns = timer::nanoseconds_since_base().unwrap_or(0);
+            let start_counter = timer::rdtsc();
+            let target_counter = start_counter.saturating_add(ticks_for_target);
+
+            let opening_gap = timer::elapsed_ticks(start_counter, pre_start_counter);
+            let mut unattributed_bracket_ticks = stall_excess(opening_gap);
+            let mut max_gap_ticks = opening_gap;
+            let mut stall_ticks = 0u64;
+            let mut previous_sample = start_counter;
+            let mut samples = 1u64;
+
+            loop {
+                let sample = timer::rdtsc();
+                let gap = timer::elapsed_ticks(sample, previous_sample);
+                max_gap_ticks = max_gap_ticks.max(gap);
+                stall_ticks = stall_ticks.saturating_add(stall_excess(gap));
+                samples = samples.saturating_add(1);
+                previous_sample = sample;
+                if sample >= target_counter {
+                    break;
+                }
+                core::hint::spin_loop();
+            }
+
+            let end_ns = timer::nanoseconds_since_base().unwrap_or(0);
+            let post_end_counter = timer::rdtsc();
+            let closing_gap = timer::elapsed_ticks(post_end_counter, previous_sample);
+            max_gap_ticks = max_gap_ticks.max(closing_gap);
+            unattributed_bracket_ticks =
+                unattributed_bracket_ticks.saturating_add(stall_excess(closing_gap));
+            samples = samples.saturating_add(1);
+
+            TimerDelayMeasurement {
+                elapsed_ms: end_ns.saturating_sub(start_ns) / 1_000_000,
+                stall_ticks,
+                unattributed_bracket_ticks,
+                max_gap_ticks,
+                samples,
+            }
+        };
+
+        let measurement_budget_start = timer::rdtsc();
         let mut attempt: u32 = 0;
         loop {
-            attempt += 1;
-
-            let (elapsed_ms, stall_ticks, max_gap_ticks, samples) = {
-                let _preempt_guard = TimerDelayPreemptGuard::enter();
-
-                // Bracket the opening timestamp so a host stall between these
-                // two reads is attributed as stall, not as delay error.
-                let pre_start_counter = timer::rdtsc();
-                let start_ns = timer::nanoseconds_since_base().unwrap_or(0);
-                let start_counter = timer::rdtsc();
-                let target_counter = start_counter + ticks_for_target;
-
-                let mut max_gap_ticks = timer::elapsed_ticks(start_counter, pre_start_counter);
-                let mut stall_ticks = stall_excess(max_gap_ticks);
-                let mut previous_sample = start_counter;
-                let mut samples: u64 = 1;
-
-                // Busy-wait until we reach target, sampling host-stall evidence
-                loop {
-                    let sample = timer::rdtsc();
-                    let gap = timer::elapsed_ticks(sample, previous_sample);
-                    if gap > max_gap_ticks {
-                        max_gap_ticks = gap;
-                    }
-                    stall_ticks = stall_ticks.saturating_add(stall_excess(gap));
-                    samples = samples.saturating_add(1);
-                    previous_sample = sample;
-                    if sample >= target_counter {
-                        break;
-                    }
-                    core::hint::spin_loop();
-                }
-
-                let end_ns = timer::nanoseconds_since_base().unwrap_or(0);
-                let post_end_counter = timer::rdtsc();
-                let tail_gap = timer::elapsed_ticks(post_end_counter, previous_sample);
-                if tail_gap > max_gap_ticks {
-                    max_gap_ticks = tail_gap;
-                }
-                stall_ticks = stall_ticks.saturating_add(stall_excess(tail_gap));
-                samples = samples.saturating_add(1);
-
-                (
-                    (end_ns.saturating_sub(start_ns)) / 1_000_000,
-                    stall_ticks,
-                    max_gap_ticks,
-                    samples,
-                )
-            };
-
-            if elapsed_ms >= MIN_MS && elapsed_ms <= MAX_MS {
-                return TestResult::Pass;
-            }
-
-            // Out of band: decide whether the measurement window was
-            // contaminated by host starvation or the kernel timer is wrong.
-            let stall_ms = stall_ticks.saturating_mul(1_000) / freq;
-            let contaminated = elapsed_ms > MAX_MS
-                && stall_ticks >= contamination_stall_ticks
-                && elapsed_ms.saturating_sub(stall_ms) <= MAX_MS;
-
-            crate::serial_println!(
-                "[timer_delay] attempt={} contaminated={} elapsed_ms={} stall_ms={} max_gap_us={} samples={}",
-                attempt,
-                contaminated as u8,
-                elapsed_ms,
-                stall_ms,
-                ticks_to_microseconds(max_gap_ticks),
-                samples,
-            );
-
-            if !contaminated {
-                return if elapsed_ms < MIN_MS {
-                    TestResult::Fail("delay too short on ARM64")
-                } else {
-                    TestResult::Fail("delay too long on ARM64")
-                };
-            }
-
-            if attempt >= MAX_MEASUREMENT_ATTEMPTS {
+            if attempt >= MAX_MEASUREMENT_ATTEMPTS
+                || timer::elapsed_ticks(timer::rdtsc(), measurement_budget_start)
+                    >= measurement_budget_ticks
+            {
                 return TestResult::Fail(
                     "timer delay never observed an uncontaminated window on ARM64",
                 );
+            }
+            attempt += 1;
+
+            let measurement = measure_window();
+            let in_band = measurement.elapsed_ms >= MIN_MS && measurement.elapsed_ms <= MAX_MS;
+            let stall_ms = measurement.stall_ticks.saturating_mul(1_000) / freq;
+            let unmeasurable =
+                measurement.elapsed_ms > MAX_MS && measurement.unattributed_bracket_ticks != 0;
+            let contaminated = measurement.elapsed_ms > MAX_MS
+                && !unmeasurable
+                && measurement.stall_ticks >= contamination_stall_ticks
+                && measurement.elapsed_ms.saturating_sub(stall_ms) <= MAX_MS;
+            let verdict = if in_band {
+                "in-band"
+            } else if unmeasurable {
+                "unmeasurable"
+            } else if contaminated {
+                "contaminated"
+            } else {
+                "out-of-band"
+            };
+
+            if !in_band || attempt != 1 {
+                // Serial is required because boot-test capture does not include log::* output.
+                crate::serial_println!(
+                    "[timer_delay] attempt={} verdict={} elapsed_ms={} stall_ms={} bracket_loss_us={} max_gap_us={} samples={}",
+                    attempt,
+                    verdict,
+                    measurement.elapsed_ms,
+                    stall_ms,
+                    ticks_to_microseconds(measurement.unattributed_bracket_ticks),
+                    ticks_to_microseconds(measurement.max_gap_ticks),
+                    measurement.samples,
+                );
+            }
+
+            if in_band {
+                return TestResult::Pass;
+            }
+            if measurement.elapsed_ms < MIN_MS {
+                return TestResult::Fail("delay too short on ARM64");
+            }
+            if !unmeasurable && !contaminated {
+                return TestResult::Fail("delay too long on ARM64");
             }
         }
     }
