@@ -1296,8 +1296,13 @@ fn test_timer_delay() -> TestResult {
         // window contaminates every attempt and still FAILs on exhaustion. Only
         // busy-wait gaps strictly between the two scored timestamp reads accrue
         // stall_ticks. Excess in the boundary gaps is unattributable because the
-        // gaps straddle those reads; a long window with any such excess is
-        // unmeasurable and must be retried rather than excused or scored.
+        // gaps straddle those reads. A long window is unmeasurable only when
+        // crediting both the observed stall and the whole-millisecond bracket
+        // loss brings the reading back to MAX_MS or less. The bracket conversion
+        // deliberately truncates because under-crediting unattributable time is
+        // the strict direction. A fault-injection control with a 4x-too-long wait
+        // and only 44us of bracket loss demonstrated why bracket loss alone must
+        // not force a retry.
         //
         // A lack of thread progress can only ever lengthen a wall-clock
         // measurement, so a short reading is always the kernel timer's fault
@@ -1420,8 +1425,15 @@ fn test_timer_delay() -> TestResult {
             let measurement = measure_window();
             let in_band = measurement.elapsed_ms >= MIN_MS && measurement.elapsed_ms <= MAX_MS;
             let stall_ms = measurement.stall_ticks.saturating_mul(1_000) / freq;
-            let unmeasurable =
-                measurement.elapsed_ms > MAX_MS && measurement.unattributed_bracket_ticks != 0;
+            let bracket_loss_ms =
+                measurement.unattributed_bracket_ticks.saturating_mul(1_000) / freq;
+            let unmeasurable = measurement.elapsed_ms > MAX_MS
+                && measurement.unattributed_bracket_ticks != 0
+                && measurement
+                    .elapsed_ms
+                    .saturating_sub(stall_ms)
+                    .saturating_sub(bracket_loss_ms)
+                    <= MAX_MS;
             let contaminated = measurement.elapsed_ms > MAX_MS
                 && !unmeasurable
                 && measurement.stall_ticks >= contamination_stall_ticks
