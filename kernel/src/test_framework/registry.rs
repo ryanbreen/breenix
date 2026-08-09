@@ -1242,10 +1242,16 @@ fn test_timer_ticks() -> TestResult {
 ///
 /// Attempts to delay for approximately 10ms and checks that the elapsed
 /// time is within the MIN_MS..=MAX_MS band. This accounts for timer resolution
-/// and scheduling variance. On ARM64 the measurement window is additionally
-/// screened for intervals where wall-clock time advanced while the test thread
-/// made no progress. Such windows are re-measured without widening the scored
-/// bounds (see the detector comment in the aarch64 branch).
+/// and scheduling variance. On ARM64 the busy-wait additionally proves, from
+/// inside the guest, whether wall-clock time advanced while this vCPU executed
+/// nothing at all; only those windows are re-measured, and the scored bounds
+/// never move (see the attribution comment in the aarch64 branch).
+///
+/// The x86_64 branch keeps the single unscreened measurement it has always
+/// had. The starved-boot gate this screen exists for runs ARM64 only, and the
+/// PIT path has no per-CPU interrupt counter with which to prove the premise
+/// the ARM64 attribution rests on; it is a knowingly unscreened measurement
+/// rather than an oversight.
 fn test_timer_delay() -> TestResult {
     // Target delay in milliseconds
     const TARGET_MS: u64 = 10;
@@ -1281,50 +1287,64 @@ fn test_timer_delay() -> TestResult {
     {
         use crate::arch_impl::aarch64::timer;
 
-        // ---- Measurement-contamination detector (test harness only) ---------
+        // ---- Host-starvation attribution (test harness only) ----------------
         //
-        // The busy-wait below is measured with CNTVCT_EL0, which under QEMU TCG
-        // advances with host wall-clock time rather than guest execution
-        // progress. The preempt guard suppresses guest thread preemption, but
-        // interrupts remain enabled. A large inter-sample gap therefore proves
-        // only that wall-clock time advanced while this thread made no progress;
-        // it may include time in this CPU's interrupt handlers as well as time
-        // when the host descheduled the vCPU.
+        // CNTVCT_EL0 measures host wall-clock under QEMU TCG, so an overrunning
+        // window has two unrelated explanations: this CPU spent the time in its
+        // own kernel code (a real defect this test must report), or the host
+        // descheduled the vCPU thread and the guest executed nothing at all.
+        // Counting "wall-clock advanced while the loop made no progress" cannot
+        // tell those apart, so the window is built to make them distinguishable
+        // instead of guessing between them.
         //
-        // This conservative accounting is acceptable because it only causes a
-        // bounded re-measurement. A defect that deterministically steals the
-        // window contaminates every attempt and still FAILs on exhaustion. Only
-        // busy-wait gaps strictly between the two scored timestamp reads accrue
-        // stall_ticks. Excess in the boundary gaps is unattributable because the
-        // gaps straddle those reads. A long window is unmeasurable only when
-        // crediting both the observed stall and the whole-millisecond bracket
-        // loss brings the reading back to MAX_MS or less. The bracket conversion
-        // deliberately truncates because under-crediting unattributable time is
-        // the strict direction. A fault-injection control with a 4x-too-long wait
-        // and only 44us of bracket loss demonstrated why bracket loss alone must
-        // not force a retry.
+        // The busy-wait runs in slices with IRQ+FIQ masked. Inside a slice the
+        // only code this CPU can execute is the loop below, and each slice
+        // checks that premise rather than assuming it: it compares the per-CPU
+        // interrupt counter (IRQ_TOTAL, incremented at the top of handle_irq,
+        // which both the IRQ and the FIQ vector enter) and the per-CPU
+        // synchronous-exception counter across the slice. A gap inside a slice
+        // whose premise held is therefore proof that the vCPU itself was not
+        // running: no in-guest defect can manufacture one. Only that time is
+        // credited as host starvation, and only credited time can send a window
+        // back to be measured again.
         //
-        // A lack of thread progress can only ever lengthen a wall-clock
-        // measurement, so a short reading is always the kernel timer's fault
-        // and FAILs at once. A measurable long reading is contaminated only
-        // when at least
-        // CONTAMINATION_STALL_MILLISECONDS of stall was observed AND removing
-        // exactly that observed stall brings the reading back to MAX_MS or
-        // less. Re-measurement is bounded by both attempt count and CNTVCT wall
-        // time. A clean window whose overrun the observed stalls do not fully
-        // explain FAILs against the unchanged bounds. The test never passes
-        // without observing an in-band scored window.
-        const STALL_SAMPLE_MICROSECONDS: u64 = 10;
+        // Guest interrupt work stays inside the measurement on purpose: between
+        // slices the mask is opened so pending interrupts are taken, and what
+        // that costs lands in elapsed_ms with no credit. A handler that runs
+        // long, an interrupt storm, or any other in-guest theft of this CPU
+        // therefore still FAILs with "delay too long on ARM64" on the very
+        // first window, exactly as it did before this screen existed, and just
+        // as reliably when the defect is intermittent, because such a window is
+        // never retried. A slice whose premise failed is credited to nobody,
+        // which is the strict direction. Slices are short enough (250us) that
+        // no timer tick is lost, only deferred.
+        //
+        // Known residue, stated rather than hidden: a host outage landing
+        // wholly inside one of the brief open-mask windows is attributed to the
+        // guest and FAILs. That is the verdict main gives today for every
+        // outage, and the open windows are a small fraction of the measurement.
+        //
+        // Lost thread progress can only lengthen a wall-clock reading, so a
+        // short reading is always the kernel timer's fault and FAILs at once
+        // with no retry. Re-measurement is bounded by attempt count and by
+        // CNTVCT wall time (checked between attempts, so the bound is that
+        // budget plus at most one window), and exhausting it is a distinct
+        // FAIL. The test never passes without an in-band scored window.
+        const STALL_SAMPLE_MICROSECONDS: u64 = 5;
+        const SLICE_MICROSECONDS: u64 = 250;
         const CONTAMINATION_STALL_MILLISECONDS: u64 = 1;
-        const MAX_MEASUREMENT_ATTEMPTS: u32 = 16;
-        const MEASUREMENT_BUDGET_MS: u64 = 5_000;
-        const MIN_SCREENABLE_FREQUENCY_HZ: u64 = 100_000;
+        const MAX_MEASUREMENT_ATTEMPTS: u32 = 4;
+        const MEASUREMENT_BUDGET_MS: u64 = 400;
+        const MIN_SCREENABLE_FREQUENCY_HZ: u64 = 1_000_000;
 
         struct TimerDelayMeasurement {
             elapsed_ms: u64,
-            stall_ticks: u64,
-            unattributed_bracket_ticks: u64,
+            host_stall_ticks: u64,
             max_gap_ticks: u64,
+            open_window_ticks: u64,
+            irqs_taken: u64,
+            forfeited_slices: u64,
+            slices: u64,
             samples: u64,
         }
 
@@ -1343,121 +1363,223 @@ fn test_timer_delay() -> TestResult {
             }
         }
 
+        /// Masks IRQ+FIQ for the scored window and restores DAIF exactly.
+        struct TimerDelayMaskGuard(u64);
+
+        impl TimerDelayMaskGuard {
+            fn enter() -> Self {
+                let daif: u64;
+                unsafe {
+                    core::arch::asm!("mrs {}, daif", out(reg) daif, options(nomem, nostack));
+                    core::arch::asm!("msr daifset, #3", "isb", options(nomem, nostack));
+                }
+                Self(daif)
+            }
+
+            /// DAIF I bit (bit 7) clear means interrupts were live on entry.
+            fn interrupts_were_enabled(&self) -> bool {
+                (self.0 & (1 << 7)) == 0
+            }
+        }
+
+        impl Drop for TimerDelayMaskGuard {
+            fn drop(&mut self) {
+                unsafe {
+                    core::arch::asm!("msr daif, {}", "isb", in(reg) self.0, options(nomem, nostack));
+                }
+            }
+        }
+
+        /// Give pending interrupts an architectural window in which to be taken.
+        fn open_interrupt_window() {
+            unsafe {
+                core::arch::asm!(
+                    "msr daifclr, #3",
+                    "isb",
+                    "msr daifset, #3",
+                    "isb",
+                    options(nomem, nostack)
+                );
+            }
+        }
+
         // Get frequency for nanosecond calculations
         let freq = timer::frequency_hz();
         if freq == 0 {
             return TestResult::Fail("timer frequency is 0");
         }
-        if freq < MIN_SCREENABLE_FREQUENCY_HZ {
-            return TestResult::Fail("timer frequency below 100 kHz; cannot screen delay on ARM64");
-        }
+        // Below this frequency a 5us gap is not representable in whole ticks, so
+        // the screen is switched off and the measurement is scored exactly as it
+        // was before this screen existed - one window, no retry.
+        let screened = freq >= MIN_SCREENABLE_FREQUENCY_HZ;
 
         // Calculate ticks for TARGET_MS milliseconds
         let ticks_for_target = timer::milliseconds_to_ticks(freq, TARGET_MS);
-        // On QEMU TCG aarch64 at CNTFRQ_EL0=24MHz, a clean window retires about
-        // 14k samples/ms (~70ns/sample), roughly 140x below this 10us threshold.
-        let stall_sample_ticks =
-            (freq.saturating_mul(STALL_SAMPLE_MICROSECONDS) / 1_000_000).max(1);
+        let microseconds_to_ticks =
+            |microseconds: u64| (freq.saturating_mul(microseconds) / 1_000_000).max(1);
+        // On QEMU TCG aarch64 a masked slice retires a sample every ~70ns,
+        // roughly 70x below this threshold.
+        let stall_sample_ticks = microseconds_to_ticks(STALL_SAMPLE_MICROSECONDS);
+        let slice_ticks = microseconds_to_ticks(SLICE_MICROSECONDS);
         let contamination_stall_ticks =
             timer::milliseconds_to_ticks(freq, CONTAMINATION_STALL_MILLISECONDS);
         let measurement_budget_ticks = timer::milliseconds_to_ticks(freq, MEASUREMENT_BUDGET_MS);
         let stall_excess = |gap: u64| gap.saturating_sub(stall_sample_ticks);
         let ticks_to_microseconds = |ticks: u64| ticks.saturating_mul(1_000_000) / freq;
+        let ticks_to_milliseconds = |ticks: u64| ticks.saturating_mul(1_000) / freq;
+
+        let cpu = crate::arch_impl::current::percpu::Aarch64PerCpu::cpu_id() as usize;
+        let irq_count = || crate::tracing::providers::counters::IRQ_TOTAL.get_cpu(cpu);
+        let sync_count = || {
+            crate::arch_impl::aarch64::exception::SYNC_EXCEPTION_COUNT
+                .get(cpu)
+                .map(|counter| counter.load(core::sync::atomic::Ordering::Relaxed))
+                .unwrap_or(0)
+        };
 
         let measure_window = || {
             let _preempt_guard = TimerDelayPreemptGuard::enter();
+            let mask_guard = TimerDelayMaskGuard::enter();
+            let may_open_windows = mask_guard.interrupts_were_enabled();
+
+            let window_irq_start = irq_count();
+            let mut slice_irq = window_irq_start;
+            let mut slice_sync = sync_count();
+            let mut slice_stall_ticks = 0u64;
+
+            let mut host_stall_ticks = 0u64;
+            let mut max_gap_ticks = 0u64;
+            let mut open_window_ticks = 0u64;
+            let mut forfeited_slices = 0u64;
+            let mut slices = 1u64;
 
             let pre_start_counter = timer::rdtsc();
             let start_ns = timer::nanoseconds_since_base().unwrap_or(0);
             let start_counter = timer::rdtsc();
-            let target_counter = start_counter.saturating_add(ticks_for_target);
+            let mut samples = 2u64;
+            let mut previous_sample = start_counter;
+            let mut slice_start = start_counter;
 
             let opening_gap = timer::elapsed_ticks(start_counter, pre_start_counter);
-            let mut unattributed_bracket_ticks = stall_excess(opening_gap);
-            let mut max_gap_ticks = opening_gap;
-            let mut stall_ticks = 0u64;
-            let mut previous_sample = start_counter;
-            let mut samples = 1u64;
+            slice_stall_ticks = slice_stall_ticks.saturating_add(stall_excess(opening_gap));
+            max_gap_ticks = max_gap_ticks.max(opening_gap);
 
             loop {
                 let sample = timer::rdtsc();
                 let gap = timer::elapsed_ticks(sample, previous_sample);
+                slice_stall_ticks = slice_stall_ticks.saturating_add(stall_excess(gap));
                 max_gap_ticks = max_gap_ticks.max(gap);
-                stall_ticks = stall_ticks.saturating_add(stall_excess(gap));
                 samples = samples.saturating_add(1);
                 previous_sample = sample;
-                if sample >= target_counter {
+
+                if timer::elapsed_ticks(sample, start_counter) >= ticks_for_target {
                     break;
                 }
+
+                if timer::elapsed_ticks(sample, slice_start) >= slice_ticks {
+                    // Credit this slice only if nothing but this loop ran on
+                    // this CPU for the whole of it.
+                    if irq_count() == slice_irq && sync_count() == slice_sync {
+                        host_stall_ticks = host_stall_ticks.saturating_add(slice_stall_ticks);
+                    } else {
+                        forfeited_slices = forfeited_slices.saturating_add(1);
+                    }
+                    slice_stall_ticks = 0;
+
+                    let open_start = timer::rdtsc();
+                    if may_open_windows {
+                        open_interrupt_window();
+                    }
+                    let open_end = timer::rdtsc();
+                    open_window_ticks = open_window_ticks
+                        .saturating_add(timer::elapsed_ticks(open_end, open_start));
+
+                    slice_irq = irq_count();
+                    slice_sync = sync_count();
+                    slices = slices.saturating_add(1);
+                    previous_sample = timer::rdtsc();
+                    slice_start = previous_sample;
+                    samples = samples.saturating_add(3);
+                }
+
                 core::hint::spin_loop();
             }
 
             let end_ns = timer::nanoseconds_since_base().unwrap_or(0);
             let post_end_counter = timer::rdtsc();
+            samples = samples.saturating_add(2);
             let closing_gap = timer::elapsed_ticks(post_end_counter, previous_sample);
+            slice_stall_ticks = slice_stall_ticks.saturating_add(stall_excess(closing_gap));
             max_gap_ticks = max_gap_ticks.max(closing_gap);
-            unattributed_bracket_ticks =
-                unattributed_bracket_ticks.saturating_add(stall_excess(closing_gap));
-            samples = samples.saturating_add(1);
+
+            let window_irq_end = irq_count();
+            if window_irq_end == slice_irq && sync_count() == slice_sync {
+                host_stall_ticks = host_stall_ticks.saturating_add(slice_stall_ticks);
+            } else {
+                forfeited_slices = forfeited_slices.saturating_add(1);
+            }
 
             TimerDelayMeasurement {
                 elapsed_ms: end_ns.saturating_sub(start_ns) / 1_000_000,
-                stall_ticks,
-                unattributed_bracket_ticks,
+                host_stall_ticks,
                 max_gap_ticks,
+                open_window_ticks,
+                irqs_taken: window_irq_end.wrapping_sub(window_irq_start),
+                forfeited_slices,
+                slices,
                 samples,
             }
         };
 
         let measurement_budget_start = timer::rdtsc();
+        let max_attempts = if screened {
+            MAX_MEASUREMENT_ATTEMPTS
+        } else {
+            1
+        };
         let mut attempt: u32 = 0;
         loop {
-            if attempt >= MAX_MEASUREMENT_ATTEMPTS
+            if attempt >= max_attempts
                 || timer::elapsed_ticks(timer::rdtsc(), measurement_budget_start)
                     >= measurement_budget_ticks
             {
-                return TestResult::Fail(
-                    "timer delay never observed an uncontaminated window on ARM64",
-                );
+                return TestResult::Fail("timer delay never observed an unstarved window on ARM64");
             }
             attempt += 1;
 
             let measurement = measure_window();
             let in_band = measurement.elapsed_ms >= MIN_MS && measurement.elapsed_ms <= MAX_MS;
-            let stall_ms = measurement.stall_ticks.saturating_mul(1_000) / freq;
-            let bracket_loss_ms =
-                measurement.unattributed_bracket_ticks.saturating_mul(1_000) / freq;
-            let unmeasurable = measurement.elapsed_ms > MAX_MS
-                && measurement.unattributed_bracket_ticks != 0
-                && measurement
-                    .elapsed_ms
-                    .saturating_sub(stall_ms)
-                    .saturating_sub(bracket_loss_ms)
-                    <= MAX_MS;
-            let contaminated = measurement.elapsed_ms > MAX_MS
-                && !unmeasurable
-                && measurement.stall_ticks >= contamination_stall_ticks
-                && measurement.elapsed_ms.saturating_sub(stall_ms) <= MAX_MS;
+            let host_stall_ms = ticks_to_milliseconds(measurement.host_stall_ticks);
+            let host_starved = screened
+                && measurement.elapsed_ms > MAX_MS
+                && measurement.host_stall_ticks >= contamination_stall_ticks
+                && measurement.elapsed_ms.saturating_sub(host_stall_ms) <= MAX_MS;
             let verdict = if in_band {
                 "in-band"
-            } else if unmeasurable {
-                "unmeasurable"
-            } else if contaminated {
-                "contaminated"
+            } else if host_starved {
+                "host-starved"
             } else {
                 "out-of-band"
             };
 
-            if !in_band || attempt != 1 {
-                // Serial is required because boot-test capture does not include log::* output.
+            // Serial matches the framework's own [TEST:...] marker channel.
+            // Printed for every window that was not a clean first-attempt pass,
+            // and for a passing window that nonetheless saw a credited stall, so
+            // starvation that pulled a short delay up into the band leaves
+            // evidence instead of passing silently.
+            if !in_band || attempt > 1 || measurement.host_stall_ticks >= contamination_stall_ticks
+            {
                 crate::serial_println!(
-                    "[timer_delay] attempt={} verdict={} elapsed_ms={} stall_ms={} bracket_loss_us={} max_gap_us={} samples={}",
+                    "[timer_delay] attempt={} verdict={} elapsed_ms={} host_stall_ms={} max_gap_us={} open_window_us={} irqs={} slices={} forfeited={} samples={}",
                     attempt,
                     verdict,
                     measurement.elapsed_ms,
-                    stall_ms,
-                    ticks_to_microseconds(measurement.unattributed_bracket_ticks),
+                    host_stall_ms,
                     ticks_to_microseconds(measurement.max_gap_ticks),
+                    ticks_to_microseconds(measurement.open_window_ticks),
+                    measurement.irqs_taken,
+                    measurement.slices,
+                    measurement.forfeited_slices,
                     measurement.samples,
                 );
             }
@@ -1468,7 +1590,7 @@ fn test_timer_delay() -> TestResult {
             if measurement.elapsed_ms < MIN_MS {
                 return TestResult::Fail("delay too short on ARM64");
             }
-            if !unmeasurable && !contaminated {
+            if !host_starved {
                 return TestResult::Fail("delay too long on ARM64");
             }
         }

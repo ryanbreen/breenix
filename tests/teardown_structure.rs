@@ -1337,3 +1337,48 @@ fn deliberately_broken_variants_fail_the_ratchet() {
         with_replaced_source(&sources, "kernel/src/task/scheduler.rs", broken_scheduler);
     assert!(validate_exit_sgi_is_teardown_only(&broken_sgi).is_err());
 }
+
+/// The ARM64 `timer_delay` re-measurement may only be granted on evidence that
+/// the vCPU itself stopped executing. This pins the leniency-granting predicates
+/// so a future edit cannot quietly turn the screen into a retry-until-green loop.
+#[test]
+fn timer_delay_retry_is_gated_on_proven_host_starvation() {
+    let registry = repo_text("kernel/src/test_framework/registry.rs");
+    let body = function_body(&registry, "test_timer_delay");
+
+    // Scored bounds and both original failure verdicts are untouched.
+    assert!(body.contains("const MIN_MS: u64 = TARGET_MS / 2;"));
+    assert!(body.contains("const MAX_MS: u64 = TARGET_MS * 2;"));
+    assert!(body.contains("TestResult::Fail(\"delay too short on ARM64\")"));
+    assert!(body.contains("TestResult::Fail(\"delay too long on ARM64\")"));
+    assert!(body.contains("if in_band {\n                return TestResult::Pass;"));
+
+    // The window is measured in IRQ+FIQ-masked slices, and interrupts are still
+    // taken between slices so in-guest interrupt cost stays inside the reading.
+    assert!(body.contains("msr daifset, #3"));
+    assert!(body.contains("msr daifclr, #3"));
+    assert!(body.contains("if may_open_windows {"));
+
+    // Stall time is credited only for a slice whose interrupt and synchronous
+    // exception counters prove no other guest code ran on this CPU.
+    assert!(body.contains("if irq_count() == slice_irq && sync_count() == slice_sync {"));
+    assert!(body.contains("host_stall_ticks = host_stall_ticks.saturating_add(slice_stall_ticks);"));
+    assert!(body.contains("forfeited_slices = forfeited_slices.saturating_add(1);"));
+
+    // Only credited stall, large enough to explain the overrun, sends a window
+    // back for re-measurement; everything else is a verdict on this attempt.
+    assert!(body.contains("let host_starved = screened"));
+    assert!(body.contains("&& measurement.host_stall_ticks >= contamination_stall_ticks"));
+    assert!(body.contains("&& measurement.elapsed_ms.saturating_sub(host_stall_ms) <= MAX_MS;"));
+    assert!(body.contains(
+        "if !host_starved {\n                return TestResult::Fail(\"delay too long on ARM64\");"
+    ));
+
+    // Re-measurement stays bounded by attempts and by wall clock, and running
+    // out of both is a distinct failure rather than a pass.
+    assert!(body.contains("const MAX_MEASUREMENT_ATTEMPTS: u32 = 4;"));
+    assert!(body.contains("const MEASUREMENT_BUDGET_MS: u64 = 400;"));
+    assert!(body.contains(
+        "return TestResult::Fail(\"timer delay never observed an unstarved window on ARM64\");"
+    ));
+}
