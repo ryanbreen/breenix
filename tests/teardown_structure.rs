@@ -770,6 +770,9 @@ fn aarch64_exit_kick_waits_are_progress_bounded() {
     assert!(main.contains("const SMP_ONLINE_NO_PROGRESS_WINDOW_SECONDS: u64 = 3;"));
     assert!(main.contains("const SMP_ONLINE_ABSOLUTE_CEILING_SECONDS: u64 = 10;"));
     assert!(main.contains("const SMP_ONLINE_BREADCRUMB_INTERVAL_SECONDS: u64 = 1;"));
+    assert!(
+        main.contains("const SMP_ONLINE_STAGE_SAMPLE_INTERVAL_ITERATIONS: u64 = 4_096;")
+    );
     assert!(main
         .contains("const SMP_ONLINE_CNTVCT_STALL_SAMPLE_INTERVAL_ITERATIONS: u64 = 10_000_000;"));
     assert!(main.contains("let no_progress_ticks ="));
@@ -784,10 +787,16 @@ fn aarch64_exit_kick_waits_are_progress_bounded() {
     ));
     assert!(main.contains("if current_online > last_online"));
     assert!(compact_main.contains(
-        "ifcurrent_online>last_online{last_online=current_online;last_advance=now;}else{letcurrent_bringup_progress="
+        "ifcurrent_online>last_online{last_online=current_online;last_advance=now;}elseifiterations%SMP_ONLINE_STAGE_SAMPLE_INTERVAL_ITERATIONS==0{letcurrent_bringup_progress="
     ));
     assert!(main.contains("current_bringup_progress > last_bringup_progress"));
     assert!(main.contains("last_advance = now;"));
+    assert!(compact_main.contains(
+        "letprogress_at_verdict=kernel::arch_impl::aarch64::smp::bringup_progress();"
+    ));
+    assert!(compact_main.contains(
+        "ifonline_at_verdict>last_online||progress_at_verdict>last_bringup_progress"
+    ));
     assert!(main.contains("let counter_delta = now.wrapping_sub(last_counter_sample);"));
     assert!(main.contains("if counter_delta == 0"));
     assert!(main.contains("[smp] CNTVCT stalled"));
@@ -810,8 +819,13 @@ fn aarch64_exit_kick_waits_are_progress_bounded() {
     assert!(smp.contains("`ALREADY_ON`, or `ON_PENDING`"));
     assert!(smp.contains("[`last_psci_return_code()`]"));
     assert!(smp.contains("PSCI CPU_ON accepted after {} attempts (raw_status={})"));
-    assert!(smp.contains("static CPU_BRINGUP_STAGE: [AtomicU32; MAX_CPUS]"));
-    assert!(smp.contains("[const { AtomicU32::new(BRINGUP_STAGE_NOT_STARTED) }; MAX_CPUS]"));
+    assert!(smp.contains("#[repr(C, align(64))]"));
+    assert!(smp.contains("struct CpuBringupStage"));
+    assert!(smp.contains("_padding: [u8; 60]"));
+    assert!(smp.contains("core::mem::size_of::<CpuBringupStage>() == 64"));
+    assert!(smp.contains("core::mem::align_of::<CpuBringupStage>() == 64"));
+    assert!(smp.contains("static CPU_BRINGUP_STAGE: [CpuBringupStage; MAX_CPUS]"));
+    assert!(smp.contains("[const { CpuBringupStage::new() }; MAX_CPUS]"));
     assert!(smp.contains("pub fn bringup_stage_of(cpu_id: usize) -> u32"));
     assert!(smp.contains("pub fn bringup_stage_name(stage: u32) -> &'static str"));
     assert!(smp.contains("pub fn bringup_progress() -> u64"));
@@ -827,11 +841,11 @@ fn aarch64_exit_kick_waits_are_progress_bounded() {
     let stage_setter = function_body(&smp, "set_bringup_stage");
     assert!(stage_setter.contains("CPU_BRINGUP_STAGE.get(cpu_id)"));
     assert_eq!(stage_setter.matches(".store(").count(), 1);
-    assert!(stage_setter.contains("cpu_stage.store(stage, Ordering::Release);"));
+    assert!(stage_setter.contains("cpu_stage.value.store(stage, Ordering::Release);"));
 
     let bringup_progress = function_body(&smp, "bringup_progress");
     assert!(bringup_progress.contains("CPU_BRINGUP_STAGE"));
-    assert!(bringup_progress.contains("stage.load(Ordering::Acquire)"));
+    assert!(bringup_progress.contains("stage.value.load(Ordering::Acquire)"));
     assert!(bringup_progress.contains(".sum()"));
 
     let secondary_entry = function_body(&smp, "secondary_cpu_entry_rust");

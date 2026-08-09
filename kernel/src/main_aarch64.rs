@@ -971,6 +971,7 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
             const SMP_ONLINE_NO_PROGRESS_WINDOW_SECONDS: u64 = 3;
             const SMP_ONLINE_ABSOLUTE_CEILING_SECONDS: u64 = 10;
             const SMP_ONLINE_BREADCRUMB_INTERVAL_SECONDS: u64 = 1;
+            const SMP_ONLINE_STAGE_SAMPLE_INTERVAL_ITERATIONS: u64 = 4_096;
             const SMP_ONLINE_CNTVCT_STALL_SAMPLE_INTERVAL_ITERATIONS: u64 = 10_000_000;
 
             // Wait for all launched CPUs to come online.
@@ -1037,7 +1038,7 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
                 if current_online > last_online {
                     last_online = current_online;
                     last_advance = now;
-                } else {
+                } else if iterations % SMP_ONLINE_STAGE_SAMPLE_INTERVAL_ITERATIONS == 0 {
                     let current_bringup_progress =
                         kernel::arch_impl::aarch64::smp::bringup_progress();
                     if current_bringup_progress > last_bringup_progress {

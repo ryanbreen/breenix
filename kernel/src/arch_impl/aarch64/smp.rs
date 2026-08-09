@@ -190,13 +190,43 @@ const BRINGUP_STAGE_IDLE_THREAD_REGISTERED: u32 = 12;
 const BRINGUP_STAGE_INTERRUPTS_ENABLED: u32 = 13;
 const BRINGUP_STAGE_ONLINE: u32 = 14;
 
-static CPU_BRINGUP_STAGE: [AtomicU32; MAX_CPUS] =
-    [const { AtomicU32::new(BRINGUP_STAGE_NOT_STARTED) }; MAX_CPUS];
+/// One cache-line-isolated bring-up stage for a single CPU.
+///
+/// Secondary CPUs publish stages concurrently while CPU 0 samples them. If
+/// adjacent stages share a cache line, those stores invalidate one another and
+/// CPU 0's reads contend with every secondary on the same line, delaying the
+/// bring-up this diagnostic is meant to observe.
+#[repr(C, align(64))]
+struct CpuBringupStage {
+    value: AtomicU32,
+    _padding: [u8; 60],
+}
+
+impl CpuBringupStage {
+    const fn new() -> Self {
+        Self {
+            value: AtomicU32::new(BRINGUP_STAGE_NOT_STARTED),
+            _padding: [0; 60],
+        }
+    }
+}
+
+const _: () = assert!(
+    core::mem::size_of::<CpuBringupStage>() == 64,
+    "CpuBringupStage must occupy exactly one cache line"
+);
+const _: () = assert!(
+    core::mem::align_of::<CpuBringupStage>() == 64,
+    "CpuBringupStage must be cache-line aligned"
+);
+
+static CPU_BRINGUP_STAGE: [CpuBringupStage; MAX_CPUS] =
+    [const { CpuBringupStage::new() }; MAX_CPUS];
 
 #[inline(always)]
 fn set_bringup_stage(cpu_id: usize, stage: u32) {
     if let Some(cpu_stage) = CPU_BRINGUP_STAGE.get(cpu_id) {
-        cpu_stage.store(stage, Ordering::Release);
+        cpu_stage.value.store(stage, Ordering::Release);
     }
 }
 
@@ -204,7 +234,7 @@ fn set_bringup_stage(cpu_id: usize, stage: u32) {
 pub fn bringup_stage_of(cpu_id: usize) -> u32 {
     CPU_BRINGUP_STAGE
         .get(cpu_id)
-        .map(|stage| stage.load(Ordering::Acquire))
+        .map(|stage| stage.value.load(Ordering::Acquire))
         .unwrap_or(BRINGUP_STAGE_NOT_STARTED)
 }
 
@@ -234,7 +264,7 @@ pub fn bringup_stage_name(stage: u32) -> &'static str {
 pub fn bringup_progress() -> u64 {
     CPU_BRINGUP_STAGE
         .iter()
-        .map(|stage| u64::from(stage.load(Ordering::Acquire)))
+        .map(|stage| u64::from(stage.value.load(Ordering::Acquire)))
         .sum()
 }
 
