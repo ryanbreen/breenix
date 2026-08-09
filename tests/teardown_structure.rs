@@ -703,8 +703,30 @@ fn aarch64_exit_kick_waits_are_progress_bounded() {
     assert!(!clear_affinity.contains("#[cfg("));
 
     let main = repo_text("kernel/src/main_aarch64.rs");
-    assert!(main.contains("let timeout_ticks = counter_frequency_hz.saturating_mul(6);"));
+    assert!(main.contains("const SMP_ONLINE_NO_PROGRESS_WINDOW_SECONDS: u64 = 3;"));
+    assert!(main.contains("const SMP_ONLINE_ABSOLUTE_CEILING_SECONDS: u64 = 10;"));
+    assert!(main
+        .contains("const SMP_ONLINE_CNTVCT_STALL_SAMPLE_INTERVAL_ITERATIONS: u64 = 10_000_000;"));
+    assert!(main.contains("let no_progress_ticks ="));
+    assert!(main
+        .contains("counter_frequency_hz.saturating_mul(SMP_ONLINE_NO_PROGRESS_WINDOW_SECONDS);"));
+    assert!(main.contains("let absolute_ceiling_ticks ="));
+    assert!(
+        main.contains("counter_frequency_hz.saturating_mul(SMP_ONLINE_ABSOLUTE_CEILING_SECONDS);")
+    );
+    assert!(main.contains(
+        "let current_bringup_progress = kernel::arch_impl::aarch64::smp::bringup_progress();"
+    ));
+    assert!(main.contains("current_bringup_progress > last_bringup_progress"));
+    assert!(main.contains("last_advance = now;"));
+    assert!(main.contains("let counter_delta = now.wrapping_sub(last_counter_sample);"));
+    assert!(main.contains("if counter_delta == 0"));
+    assert!(main.contains("[smp] CNTVCT stalled"));
     assert!(main.contains("[smp] still waiting, {} online"));
+    assert!(main.contains("cpu{} stage={} {}"));
+    assert!(main.contains("bringup_stage_name(stage_now)"));
+    assert!(main.contains("stage_at_start={} stage_advanced={}"));
+    assert!(main.contains("[smp] Timeout waiting for CPUs: absolute ceiling"));
     assert!(main.contains("last_psci_return_code(cpu)"));
 
     let smp = repo_text("kernel/src/arch_impl/aarch64/smp.rs");
@@ -715,6 +737,56 @@ fn aarch64_exit_kick_waits_are_progress_bounded() {
     assert!(smp.contains("SMC would trap to EL2 and likely fault. HVC is the correct conduit."));
     assert!(smp.contains("`ALREADY_ON`, or `ON_PENDING`"));
     assert!(smp.contains("[`last_psci_return_code()`]"));
+    assert!(smp.contains("static CPU_BRINGUP_STAGE: [AtomicU32; MAX_CPUS]"));
+    assert!(smp.contains("[const { AtomicU32::new(BRINGUP_STAGE_NOT_STARTED) }; MAX_CPUS]"));
+    assert!(smp.contains("pub fn bringup_stage_of(cpu_id: usize) -> u32"));
+    assert!(smp.contains("pub fn bringup_stage_name(stage: u32) -> &'static str"));
+    assert!(smp.contains("pub fn bringup_progress() -> u64"));
+    for stage_constant in [
+        "const BRINGUP_STAGE_ALLOCATING_IDLE_THREAD: u32 = 9;",
+        "const BRINGUP_STAGE_IDLE_THREAD_ALLOCATED: u32 = 10;",
+        "const BRINGUP_STAGE_REGISTERING_IDLE_THREAD: u32 = 11;",
+        "const BRINGUP_STAGE_IDLE_THREAD_REGISTERED: u32 = 12;",
+    ] {
+        assert!(smp.contains(stage_constant));
+    }
+
+    let stage_setter = function_body(&smp, "set_bringup_stage");
+    assert!(stage_setter.contains("CPU_BRINGUP_STAGE.get(cpu_id)"));
+    assert_eq!(stage_setter.matches(".store(").count(), 1);
+    assert!(stage_setter.contains("cpu_stage.store(stage, Ordering::Release);"));
+
+    let bringup_progress = function_body(&smp, "bringup_progress");
+    assert!(bringup_progress.contains("CPU_BRINGUP_STAGE"));
+    assert!(bringup_progress.contains("stage.load(Ordering::Acquire)"));
+    assert!(bringup_progress.contains(".sum()"));
+
+    let secondary_entry = function_body(&smp, "secondary_cpu_entry_rust");
+    assert_eq!(secondary_entry.matches("set_bringup_stage(").count(), 10);
+
+    let create_idle = function_body(&smp, "create_and_register_idle_thread");
+    assert_eq!(create_idle.matches("set_bringup_stage(").count(), 4);
+    let allocating = create_idle
+        .find("set_bringup_stage(cpu_id, BRINGUP_STAGE_ALLOCATING_IDLE_THREAD);")
+        .expect("idle-thread allocation entry stage");
+    let allocation = create_idle
+        .find("let mut idle_task = Box::new(Thread::new(")
+        .expect("idle-thread allocation");
+    let allocated = create_idle
+        .find("set_bringup_stage(cpu_id, BRINGUP_STAGE_IDLE_THREAD_ALLOCATED);")
+        .expect("idle-thread allocation completion stage");
+    assert!(allocating < allocation && allocation < allocated);
+
+    let registering = create_idle
+        .find("set_bringup_stage(cpu_id, BRINGUP_STAGE_REGISTERING_IDLE_THREAD);")
+        .expect("idle-thread scheduler registration entry stage");
+    let registration = create_idle
+        .find("crate::task::scheduler::register_cpu_idle_thread(cpu_id, idle_task);")
+        .expect("idle-thread scheduler registration");
+    let registered = create_idle
+        .find("set_bringup_stage(cpu_id, BRINGUP_STAGE_IDLE_THREAD_REGISTERED);")
+        .expect("idle-thread scheduler registration completion stage");
+    assert!(registering < registration && registration < registered);
 }
 
 #[test]

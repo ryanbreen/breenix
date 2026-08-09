@@ -10,7 +10,7 @@
 //! 3. boot.S sets up stack, MMU, and calls `secondary_cpu_entry_rust()`
 //! 4. Rust entry initializes per-CPU data, GIC, timer, creates idle thread
 
-use core::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, AtomicU64, Ordering};
 
 /// Maximum number of CPUs supported.
 pub const MAX_CPUS: usize = 8;
@@ -173,6 +173,70 @@ static CPU_ONLINE: [AtomicBool; MAX_CPUS] = [
     AtomicBool::new(false),
     AtomicBool::new(false),
 ];
+
+const BRINGUP_STAGE_NOT_STARTED: u32 = 0;
+const BRINGUP_STAGE_RUST_ENTRY: u32 = 1;
+const BRINGUP_STAGE_PER_CPU_DATA_INITIALIZED: u32 = 2;
+const BRINGUP_STAGE_KERNEL_PAGE_TABLE_RECORDED: u32 = 3;
+const BRINGUP_STAGE_KERNEL_STACK_RECORDED: u32 = 4;
+const BRINGUP_STAGE_ENTERING_GIC_CPU_INTERFACE_INIT: u32 = 5;
+const BRINGUP_STAGE_GIC_CPU_INTERFACE_INITIALIZED: u32 = 6;
+const BRINGUP_STAGE_ENTERING_TIMER_INIT: u32 = 7;
+const BRINGUP_STAGE_TIMER_INITIALIZED: u32 = 8;
+const BRINGUP_STAGE_ALLOCATING_IDLE_THREAD: u32 = 9;
+const BRINGUP_STAGE_IDLE_THREAD_ALLOCATED: u32 = 10;
+const BRINGUP_STAGE_REGISTERING_IDLE_THREAD: u32 = 11;
+const BRINGUP_STAGE_IDLE_THREAD_REGISTERED: u32 = 12;
+const BRINGUP_STAGE_INTERRUPTS_ENABLED: u32 = 13;
+const BRINGUP_STAGE_ONLINE: u32 = 14;
+
+static CPU_BRINGUP_STAGE: [AtomicU32; MAX_CPUS] =
+    [const { AtomicU32::new(BRINGUP_STAGE_NOT_STARTED) }; MAX_CPUS];
+
+#[inline(always)]
+fn set_bringup_stage(cpu_id: usize, stage: u32) {
+    if let Some(cpu_stage) = CPU_BRINGUP_STAGE.get(cpu_id) {
+        cpu_stage.store(stage, Ordering::Release);
+    }
+}
+
+/// Return the most recently published bring-up stage for one CPU.
+pub fn bringup_stage_of(cpu_id: usize) -> u32 {
+    CPU_BRINGUP_STAGE
+        .get(cpu_id)
+        .map(|stage| stage.load(Ordering::Acquire))
+        .unwrap_or(BRINGUP_STAGE_NOT_STARTED)
+}
+
+/// Return the static diagnostic name for a bring-up stage.
+pub fn bringup_stage_name(stage: u32) -> &'static str {
+    match stage {
+        BRINGUP_STAGE_NOT_STARTED => "not-started",
+        BRINGUP_STAGE_RUST_ENTRY => "rust-entry",
+        BRINGUP_STAGE_PER_CPU_DATA_INITIALIZED => "per-cpu-data-initialized",
+        BRINGUP_STAGE_KERNEL_PAGE_TABLE_RECORDED => "kernel-page-table-recorded",
+        BRINGUP_STAGE_KERNEL_STACK_RECORDED => "kernel-stack-recorded",
+        BRINGUP_STAGE_ENTERING_GIC_CPU_INTERFACE_INIT => "entering-gic-cpu-interface-init",
+        BRINGUP_STAGE_GIC_CPU_INTERFACE_INITIALIZED => "gic-cpu-interface-initialized",
+        BRINGUP_STAGE_ENTERING_TIMER_INIT => "entering-timer-init",
+        BRINGUP_STAGE_TIMER_INITIALIZED => "timer-initialized",
+        BRINGUP_STAGE_ALLOCATING_IDLE_THREAD => "allocating-idle-thread",
+        BRINGUP_STAGE_IDLE_THREAD_ALLOCATED => "idle-thread-allocated",
+        BRINGUP_STAGE_REGISTERING_IDLE_THREAD => "registering-idle-thread",
+        BRINGUP_STAGE_IDLE_THREAD_REGISTERED => "idle-thread-registered",
+        BRINGUP_STAGE_INTERRUPTS_ENABLED => "interrupts-enabled",
+        BRINGUP_STAGE_ONLINE => "online",
+        _ => "unknown",
+    }
+}
+
+/// Sum the monotonic per-CPU bring-up stages into one progress signal.
+pub fn bringup_progress() -> u64 {
+    CPU_BRINGUP_STAGE
+        .iter()
+        .map(|stage| u64::from(stage.load(Ordering::Acquire)))
+        .sum()
+}
 
 /// Issue a PSCI CPU_ON call via HVC to start a secondary CPU.
 ///
@@ -369,9 +433,11 @@ fn raw_uart_char(c: u8) {
 pub extern "C" fn secondary_cpu_entry_rust(cpu_id: u64) -> ! {
     // Emit raw UART character to signal this CPU is alive
     raw_uart_char(b'0' + cpu_id as u8);
+    set_bringup_stage(cpu_id as usize, BRINGUP_STAGE_RUST_ENTRY);
 
     // Initialize per-CPU data (sets TPIDR_EL1 for this CPU)
     crate::per_cpu_aarch64::init_cpu(cpu_id as usize);
+    set_bringup_stage(cpu_id as usize, BRINGUP_STAGE_PER_CPU_DATA_INITIALIZED);
 
     // Store the boot TTBR0 as the kernel page table for this CPU.
     let boot_ttbr0: u64;
@@ -379,6 +445,7 @@ pub extern "C" fn secondary_cpu_entry_rust(cpu_id: u64) -> ! {
         core::arch::asm!("mrs {}, ttbr0_el1", out(reg) boot_ttbr0, options(nomem, nostack));
     }
     crate::per_cpu_aarch64::set_kernel_cr3(boot_ttbr0);
+    set_bringup_stage(cpu_id as usize, BRINGUP_STAGE_KERNEL_PAGE_TABLE_RECORDED);
 
     // Set kernel stack top for this CPU.
     // boot.S sets SP to SMP_STACK_BASE_PHYS + (cpu_id+1)*0x200000 (physical),
@@ -387,12 +454,20 @@ pub extern "C" fn secondary_cpu_entry_rust(cpu_id: u64) -> ! {
     // exception occurs, the kernel needs to switch to this stack.
     let kernel_stack_top = super::constants::percpu_kernel_stack_top(cpu_id as usize);
     crate::per_cpu_aarch64::set_kernel_stack_top(kernel_stack_top);
+    set_bringup_stage(cpu_id as usize, BRINGUP_STAGE_KERNEL_STACK_RECORDED);
 
     // Initialize GIC CPU interface (GICC registers are banked per-CPU)
+    set_bringup_stage(
+        cpu_id as usize,
+        BRINGUP_STAGE_ENTERING_GIC_CPU_INTERFACE_INIT,
+    );
     super::gic::init_cpu_interface_secondary();
+    set_bringup_stage(cpu_id as usize, BRINGUP_STAGE_GIC_CPU_INTERFACE_INITIALIZED);
 
     // Initialize timer for this CPU (arm virtual timer, enable PPI 27)
+    set_bringup_stage(cpu_id as usize, BRINGUP_STAGE_ENTERING_TIMER_INIT);
     super::timer_interrupt::init_secondary();
+    set_bringup_stage(cpu_id as usize, BRINGUP_STAGE_TIMER_INITIALIZED);
 
     // Create and register this CPU's idle thread with the scheduler.
     // This must happen before enabling interrupts — the scheduler needs
@@ -403,12 +478,14 @@ pub extern "C" fn secondary_cpu_entry_rust(cpu_id: u64) -> ! {
     unsafe {
         super::cpu::enable_interrupts();
     }
+    set_bringup_stage(cpu_id as usize, BRINGUP_STAGE_INTERRUPTS_ENABLED);
 
     // Mark this CPU as online (after all init is complete)
     if (cpu_id as usize) < MAX_CPUS {
         CPU_ONLINE[cpu_id as usize].store(true, Ordering::Release);
     }
     CPUS_ONLINE.fetch_add(1, Ordering::Release);
+    set_bringup_stage(cpu_id as usize, BRINGUP_STAGE_ONLINE);
 
     // Idle loop — wait for interrupts, handle timer, participate in scheduling
     loop {
@@ -425,6 +502,8 @@ fn create_and_register_idle_thread(cpu_id: usize) {
     use alloc::boxed::Box;
     use alloc::format;
 
+    set_bringup_stage(cpu_id, BRINGUP_STAGE_ALLOCATING_IDLE_THREAD);
+
     // Boot stack addresses — must match boot.S layout.
     let boot_stack_top = VirtAddr::new(super::constants::percpu_kernel_stack_top(cpu_id));
     let boot_stack_bottom = VirtAddr::new(super::constants::percpu_kernel_stack_bottom(cpu_id));
@@ -438,6 +517,7 @@ fn create_and_register_idle_thread(cpu_id: usize) {
         dummy_tls,
         ThreadPrivilege::Kernel,
     ));
+    set_bringup_stage(cpu_id, BRINGUP_STAGE_IDLE_THREAD_ALLOCATED);
 
     // CRITICAL: Set kernel_stack_top to this CPU's boot stack. Without this,
     // setup_idle_return_arm64 falls back to the per-CPU kernel_stack_top from
@@ -459,7 +539,9 @@ fn create_and_register_idle_thread(cpu_id: usize) {
     crate::per_cpu_aarch64::set_current_thread(idle_task_ptr);
 
     // Register with the global scheduler
+    set_bringup_stage(cpu_id, BRINGUP_STAGE_REGISTERING_IDLE_THREAD);
     crate::task::scheduler::register_cpu_idle_thread(cpu_id, idle_task);
+    set_bringup_stage(cpu_id, BRINGUP_STAGE_IDLE_THREAD_REGISTERED);
 }
 
 /// Idle thread function for secondary CPUs.

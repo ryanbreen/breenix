@@ -964,53 +964,147 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
             }
         }
         if launched > 0 {
-            // Wait for all launched CPUs to come online (with timeout)
+            const SMP_ONLINE_NO_PROGRESS_WINDOW_SECONDS: u64 = 3;
+            const SMP_ONLINE_ABSOLUTE_CEILING_SECONDS: u64 = 10;
+            const SMP_ONLINE_CNTVCT_STALL_SAMPLE_INTERVAL_ITERATIONS: u64 = 10_000_000;
+
+            // Wait for all launched CPUs to come online.
             let expected = 1 + launched; // boot CPU + launched
-            let start = timer::rdtsc();
             let reported_frequency_hz = timer::frequency_hz();
             let counter_frequency_hz = if reported_frequency_hz == 0 {
                 kernel::arch_impl::aarch64::smp::CNTVCT_FALLBACK_FREQUENCY_HZ
             } else {
                 reported_frequency_hz
             };
-            let timeout_ticks = counter_frequency_hz.saturating_mul(6);
-            let progress_ticks = counter_frequency_hz;
-            let mut last_progress = start;
+            let no_progress_ticks =
+                counter_frequency_hz.saturating_mul(SMP_ONLINE_NO_PROGRESS_WINDOW_SECONDS);
+            let absolute_ceiling_ticks =
+                counter_frequency_hz.saturating_mul(SMP_ONLINE_ABSOLUTE_CEILING_SECONDS);
+            let breadcrumb_ticks = counter_frequency_hz;
+            let stage_at_start: [u32; kernel::arch_impl::aarch64::smp::MAX_CPUS] =
+                core::array::from_fn(kernel::arch_impl::aarch64::smp::bringup_stage_of);
+            let mut last_online = kernel::arch_impl::aarch64::smp::cpus_online();
+            let mut last_bringup_progress = kernel::arch_impl::aarch64::smp::bringup_progress();
+            let start = timer::rdtsc();
+            let mut last_advance = start;
+            let mut last_breadcrumb = start;
+            let mut last_counter_sample = start;
+            let mut iterations = 0u64;
+            let report_offline_diagnostics = || {
+                // The probe stops at its first failure, so launched CPU IDs
+                // are contiguous and every possible missing CPU is in this range.
+                for cpu in 1..expected as usize {
+                    if !kernel::arch_impl::aarch64::smp::is_cpu_online(cpu) {
+                        let stage_now = kernel::arch_impl::aarch64::smp::bringup_stage_of(cpu);
+                        serial_println!(
+                            "[smp] CPU {} still offline: stage={} {} last PSCI return code {} stage_at_start={} stage_advanced={}",
+                            cpu,
+                            stage_now,
+                            kernel::arch_impl::aarch64::smp::bringup_stage_name(stage_now),
+                            kernel::arch_impl::aarch64::smp::last_psci_return_code(cpu),
+                            stage_at_start[cpu],
+                            stage_now > stage_at_start[cpu]
+                        );
+                    }
+                }
+            };
+
             // SMP secondary CPU bring-up wait: boot CPU spins until all
-            // released secondary CPUs increment cpus_online. Bounded CPU-
-            // management handshake (NOT event polling) — no IRQ available
-            // for "CPU online" because GIC isn't fully wired across CPUs
-            // until each is up. Linux uses wait_for_completion_timeout()
-            // in __cpu_up() for the equivalent transition. Bounded by the
-            // explicit timeout check inside the loop. Allowlisted per
+            // released secondary CPUs increment cpus_online. Its three-second
+            // no-progress window is re-armed only when cpus_online or the sum
+            // of secondary bring-up stages advances, and a distinct ten-second
+            // absolute ceiling starts at this wait's own start. With a running
+            // CNTVCT the ceiling bounds the loop; if CNTVCT freezes, the
+            // unconditional delta sample bounds it by iterations instead. No
+            // IRQ can signal "CPU online" before each CPU wires its GIC, so this
+            // bounded CPU-management handshake is allowlisted per
             // docs/polling-allowlist.md.
             while kernel::arch_impl::aarch64::smp::cpus_online() < expected {
                 let now = timer::rdtsc();
-                if now.wrapping_sub(start) >= timeout_ticks {
+                let current_online = kernel::arch_impl::aarch64::smp::cpus_online();
+                if current_online >= expected {
+                    break;
+                }
+                let current_bringup_progress = kernel::arch_impl::aarch64::smp::bringup_progress();
+                if current_online > last_online || current_bringup_progress > last_bringup_progress
+                {
+                    last_online = current_online;
+                    last_bringup_progress = current_bringup_progress;
+                    last_advance = now;
+                }
+
+                if now.wrapping_sub(start) >= absolute_ceiling_ticks {
+                    let online_at_verdict = kernel::arch_impl::aarch64::smp::cpus_online();
+                    if online_at_verdict >= expected {
+                        break;
+                    }
                     serial_println!(
-                        "[smp] Timeout waiting for CPUs ({} online, {} expected)",
-                        kernel::arch_impl::aarch64::smp::cpus_online(),
+                        "[smp] Timeout waiting for CPUs: absolute ceiling of {} seconds reached ({} online, {} expected)",
+                        SMP_ONLINE_ABSOLUTE_CEILING_SECONDS,
+                        online_at_verdict,
                         expected
                     );
-                    // The probe stops at its first failure, so launched CPU IDs
-                    // are contiguous and every possible missing CPU is in this range.
+                    report_offline_diagnostics();
+                    break;
+                }
+
+                if now.wrapping_sub(last_advance) >= no_progress_ticks {
+                    let online_at_verdict = kernel::arch_impl::aarch64::smp::cpus_online();
+                    if online_at_verdict >= expected {
+                        break;
+                    }
+                    let progress_at_verdict = kernel::arch_impl::aarch64::smp::bringup_progress();
+                    if online_at_verdict > last_online
+                        || progress_at_verdict > last_bringup_progress
+                    {
+                        last_online = online_at_verdict;
+                        last_bringup_progress = progress_at_verdict;
+                        last_advance = timer::rdtsc();
+                        continue;
+                    }
+                    serial_println!(
+                        "[smp] Timeout waiting for CPUs: no progress for {} seconds ({} online, {} expected)",
+                        SMP_ONLINE_NO_PROGRESS_WINDOW_SECONDS,
+                        online_at_verdict,
+                        expected
+                    );
+                    report_offline_diagnostics();
+                    break;
+                }
+
+                iterations = iterations.saturating_add(1);
+                if iterations % SMP_ONLINE_CNTVCT_STALL_SAMPLE_INTERVAL_ITERATIONS == 0 {
+                    let counter_delta = now.wrapping_sub(last_counter_sample);
+                    if counter_delta == 0 {
+                        let online_at_verdict = kernel::arch_impl::aarch64::smp::cpus_online();
+                        if online_at_verdict >= expected {
+                            break;
+                        }
+                        serial_println!(
+                            "[smp] CNTVCT stalled while waiting for CPUs ({} online, {} expected)",
+                            online_at_verdict,
+                            expected
+                        );
+                        report_offline_diagnostics();
+                        break;
+                    }
+                    last_counter_sample = now;
+                }
+
+                if now.wrapping_sub(last_breadcrumb) >= breadcrumb_ticks {
                     for cpu in 1..expected as usize {
                         if !kernel::arch_impl::aarch64::smp::is_cpu_online(cpu) {
+                            let stage_now = kernel::arch_impl::aarch64::smp::bringup_stage_of(cpu);
                             serial_println!(
-                                "[smp] CPU {} still offline, last PSCI return code {}",
+                                "[smp] still waiting, {} online (cpu{} stage={} {})",
+                                current_online,
                                 cpu,
-                                kernel::arch_impl::aarch64::smp::last_psci_return_code(cpu)
+                                stage_now,
+                                kernel::arch_impl::aarch64::smp::bringup_stage_name(stage_now)
                             );
                         }
                     }
-                    break;
-                }
-                if now.wrapping_sub(last_progress) >= progress_ticks {
-                    serial_println!(
-                        "[smp] still waiting, {} online",
-                        kernel::arch_impl::aarch64::smp::cpus_online()
-                    );
-                    last_progress = now;
+                    last_breadcrumb = now;
                 }
                 core::hint::spin_loop();
             }
