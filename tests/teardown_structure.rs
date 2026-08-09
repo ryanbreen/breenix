@@ -1337,3 +1337,144 @@ fn deliberately_broken_variants_fail_the_ratchet() {
         with_replaced_source(&sources, "kernel/src/task/scheduler.rs", broken_scheduler);
     assert!(validate_exit_sgi_is_teardown_only(&broken_sgi).is_err());
 }
+
+/// The ARM64 `timer_delay` re-measurement may only be granted on evidence that
+/// the vCPU itself stopped executing. This pins the leniency-granting predicates
+/// so a future edit cannot quietly turn the screen into a retry-until-green loop.
+fn check_timer_delay_starvation_ratchet(body: &str) -> Result<(), String> {
+    let body = body.split_whitespace().collect::<Vec<_>>().join(" ");
+    let require = |needle: &str| {
+        body.contains(needle)
+            .then_some(())
+            .ok_or_else(|| format!("missing timer_delay safety anchor: {needle}"))
+    };
+
+    // Pin the target and leniency threshold as well as the bound expressions.
+    require("const TARGET_MS: u64 = 10;")?;
+    require("const MIN_MS: u64 = TARGET_MS / 2;")?;
+    require("const MAX_MS: u64 = TARGET_MS * 2;")?;
+    require("const CONTAMINATION_STALL_MILLISECONDS: u64 = 1;")?;
+    require("TestResult::Fail(\"delay too short on ARM64\")")?;
+    require("TestResult::Fail(\"delay too long on ARM64\")")?;
+    require("if in_band { return TestResult::Pass;")?;
+
+    // The window uses short IRQ+FIQ-masked slices. Each open window remains
+    // open until both premise counters are quiet, subject to a hard cap.
+    require("const SLICE_MICROSECONDS: u64 = 100;")?;
+    require("const DRAIN_QUIET_MICROSECONDS: u64 = 5;")?;
+    require("const DRAIN_CAP_MICROSECONDS: u64 = 1_000;")?;
+    require("msr daifset, #3")?;
+    require("msr daifclr, #3")?;
+    require("if may_open_windows {")?;
+    require("timer::elapsed_ticks(now, quiet_start) >= quiet_ticks")?;
+    require("timer::elapsed_ticks(now, drain_start) >= cap_ticks")?;
+    require("open_window_ticks = open_window_ticks.saturating_add(drain.elapsed_ticks);")?;
+
+    // Counter lookup is per attempt, after preemption is disabled, and an
+    // unindexable IRQ or synchronous-exception counter fails closed.
+    let preempt = body
+        .find("let _preempt_guard = TimerDelayPreemptGuard::enter();")
+        .ok_or_else(|| "missing preemption guard".to_owned())?;
+    let cpu = body[preempt..]
+        .find("Aarch64PerCpu::cpu_id() as usize;")
+        .map(|offset| preempt + offset)
+        .ok_or_else(|| "CPU id is not sampled after preemption is disabled".to_owned())?;
+    if cpu <= preempt {
+        return Err("CPU id must be sampled inside the guarded window".to_owned());
+    }
+    require("let Some(irq) = IRQ_TOTAL.per_cpu.get(cpu) else { return None;")?;
+    require("let Some(sync) = SYNC_EXCEPTION_COUNT.get(cpu) else { return None;")?;
+    require("_ => false,")?;
+
+    // Only gaps between samples inside the timestamp reads can be credited.
+    // The boundary-bracket bookkeeping that caused the review hard-stop must
+    // not return under another accidental edit.
+    for forbidden in [
+        "pre_start_counter",
+        "post_end_counter",
+        "opening_gap",
+        "closing_gap",
+    ] {
+        if body.contains(forbidden) {
+            return Err(format!(
+                "timestamp boundary bracket must remain uncredited: {forbidden}"
+            ));
+        }
+    }
+    if body
+        .matches("host_stall_ticks = host_stall_ticks.saturating_add(slice_stall_ticks);")
+        .count()
+        != 2
+    {
+        return Err(
+            "host stall credit must come from exactly the completed and final masked slices"
+                .to_owned(),
+        );
+    }
+    require("fn sample_counter(samples: &mut u64) -> u64")?;
+    require("*samples = samples.saturating_add(1);")?;
+    if body.contains("samples = samples.saturating_add(2)")
+        || body.contains("samples = samples.saturating_add(3)")
+    {
+        return Err("sample diagnostics must count each CNTVCT sample at its call site".to_owned());
+    }
+
+    // The final partial slice is decided while masked, then pending work is
+    // drained before the closing scored timestamp.
+    let final_premise = body
+        .find("let final_slice_counters = counter_snapshot(cpu);")
+        .ok_or_else(|| "missing final masked-slice premise check".to_owned())?;
+    let final_drain = body[final_premise..]
+        .find("let final_drain = drain_interrupts(")
+        .map(|offset| final_premise + offset)
+        .ok_or_else(|| "missing final interrupt drain".to_owned())?;
+    let closing_timestamp = body[final_drain..]
+        .find("let end_ns = timer::nanoseconds_since_base().unwrap_or(0);")
+        .map(|offset| final_drain + offset)
+        .ok_or_else(|| "final drain must precede the closing timestamp".to_owned())?;
+    if !(final_premise < final_drain && final_drain < closing_timestamp) {
+        return Err("final premise, drain, and closing timestamp are out of order".to_owned());
+    }
+
+    // Only credited stall, large enough to explain the overrun, sends a window
+    // back for re-measurement; everything else is a verdict on this attempt.
+    require("let host_starved = screened")?;
+    require("&& measurement.host_stall_ticks >= contamination_stall_ticks")?;
+    require("&& measurement.elapsed_ms.saturating_sub(host_stall_ms) <= MAX_MS;")?;
+    require("if !host_starved { return TestResult::Fail(\"delay too long on ARM64\");")?;
+
+    // Re-measurement stays bounded by attempts and by wall clock, and running
+    // out of either is a distinct failure rather than a pass.
+    require("const MAX_MEASUREMENT_ATTEMPTS: u32 = 4;")?;
+    require("const MEASUREMENT_BUDGET_MS: u64 = 400;")?;
+    require("TestResult::Fail(\"timer delay never observed an unstarved window on ARM64\")")?;
+
+    Ok(())
+}
+
+#[test]
+fn timer_delay_retry_is_gated_on_proven_host_starvation() {
+    let registry = repo_text("kernel/src/test_framework/registry.rs");
+    let body = function_body(&registry, "test_timer_delay");
+    check_timer_delay_starvation_ratchet(body).expect("timer_delay starvation safety ratchet");
+}
+
+#[test]
+fn deliberately_broken_timer_delay_variants_fail_the_ratchet() {
+    let registry = repo_text("kernel/src/test_framework/registry.rs");
+    let body = function_body(&registry, "test_timer_delay");
+
+    let widened_target = body.replacen(
+        "const TARGET_MS: u64 = 10;",
+        "const TARGET_MS: u64 = 40;",
+        1,
+    );
+    assert!(check_timer_delay_starvation_ratchet(&widened_target).is_err());
+
+    let skipped_final_drain = body.replacen(
+        "let final_drain = drain_interrupts(",
+        "let final_drain = skip_interrupt_drain(",
+        1,
+    );
+    assert!(check_timer_delay_starvation_ratchet(&skipped_final_drain).is_err());
+}
