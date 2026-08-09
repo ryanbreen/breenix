@@ -725,25 +725,33 @@ fn aarch64_exit_kick_waits_are_progress_bounded() {
         "const GATE_CEILING_MILLISECONDS: u64 = EXIT_KICK_GATE_CEILING_MILLISECONDS;",
         "const RESCHED_REKICK_INTERVAL_MILLISECONDS: u64 = 50;",
         "const CNTVCT_STALL_SAMPLE_INTERVAL_ITERATIONS: u64 = 100_000;",
+        "It cannot lose the race against the five-second soft-lockup detector",
         "if counter_frequency_hz == 0",
-        "let counter_delta = now.wrapping_sub(last_counter_sample);",
+        "let counter_delta = crate::arch_impl::aarch64::timer::elapsed_ticks(",
         "if counter_delta == 0",
         "progress_current.advanced_from(last_progress)",
-        "let no_progress_deadline_elapsed = last_advance",
-        ".wrapping_sub(wait_start)",
+        "let no_progress_deadline_elapsed =",
+        "crate::arch_impl::aarch64::timer::elapsed_ticks(last_advance, wait_start)",
         ".saturating_add(no_progress_ticks);",
         "let progress_deadline_elapsed =",
         "core::cmp::max(first_progress_ticks, no_progress_deadline_elapsed);",
         "elapsed >= progress_deadline_elapsed",
         "elapsed >= absolute_ceiling_ticks",
-        "now.wrapping_sub(gate_started_at) >= gate_ceiling_ticks",
+        "crate::arch_impl::aarch64::timer::elapsed_ticks(now, gate_started_at)",
         "matches!(failure, WaitFailureKind::NoProgress) && late_true",
-        "now.wrapping_sub(last_re_kick) >= re_kick_ticks",
+        "crate::arch_impl::aarch64::timer::elapsed_ticks(now, last_re_kick)",
+        "record_exit_kick_gate_watchdog_heartbeat();",
         "if elapsed >= no_progress_ticks",
         "let late_condition = condition_value();",
         "struct WaitEvidence<'a>",
         "fn print_wait_evidence(evidence: WaitEvidence<'_>)",
         "cause={} elapsed_ms={} window_budget_ms={}",
+        "worker_1_progress_start={}",
+        "worker_1_progress_final={}",
+        "worker_2_progress_start={}",
+        "worker_2_progress_final={}",
+        "worker_3_progress_start={}",
+        "worker_3_progress_final={}",
         "ticks_to_milliseconds(progress_deadline_elapsed, counter_frequency_hz)",
         "WaitFailureKind::AbsoluteCeiling => ABSOLUTE_WAIT_CEILING_MILLISECONDS",
         "WaitFailureKind::GateCeiling => GATE_CEILING_MILLISECONDS",
@@ -752,10 +760,7 @@ fn aarch64_exit_kick_waits_are_progress_bounded() {
         "breadcrumb=1 elapsed_ms={}",
         "WaitProgress::work(publisher_a_progress.load(Ordering::Acquire))",
         "WaitProgress::work(publisher_b_progress.load(Ordering::Acquire))",
-        "let storm_progress = ||",
-        "saturating_add(accounting.publisher_b_progress.load(Ordering::Acquire))",
-        "saturating_add(accounting.observer_progress.load(Ordering::Acquire))",
-        "WaitProgress::work(storm_progress())",
+        "WaitProgress::workers(",
         "let storm_publisher_a_progress =",
         "let storm_publisher_b_progress =",
         "let storm_observer_progress =",
@@ -780,23 +785,27 @@ fn aarch64_exit_kick_waits_are_progress_bounded() {
     assert!(!gate.contains("governing_window_ticks"));
     assert!(!gate.contains("TIMER_TICK_COUNT"));
     assert!(!gate.contains("WHOLE_GATE_BUDGET"));
+    assert!(!gate.contains(".wrapping_sub("));
     assert_eq!(
-        gate.matches("&storm_progress").count(),
-        0,
-        "the dependency-wide storm union must be reserved for workers_ready"
+        gate.matches("record_exit_kick_gate_watchdog_heartbeat();")
+            .count(),
+        3,
+        "the soft-lockup heartbeat must cover gate entry, wait entry, and each periodic re-kick"
     );
+    assert!(!gate.contains("let storm_progress ="));
     assert_eq!(
         gate.matches("&worker_cpus").count(),
         4,
         "workers_ready and all three storm joins must kick every worker CPU"
     );
     let storm_union_start = gate
-        .find("let storm_progress =")
-        .expect("storm dependency-union declaration");
-    let storm_union = gate[storm_union_start..]
-        .find(';')
-        .map(|end| &gate[storm_union_start..storm_union_start + end])
-        .expect("storm dependency-union terminator");
+        .find("\"workers_ready\"")
+        .expect("workers_ready wait");
+    let storm_union_end = gate[storm_union_start..]
+        .find("accounting.start.store(true, Ordering::Release);")
+        .map(|end| storm_union_start + end)
+        .expect("workers_ready wait terminator");
+    let storm_union = &gate[storm_union_start..storm_union_end];
     for counter in [
         "publisher_a_progress",
         "publisher_b_progress",
@@ -808,7 +817,6 @@ fn aarch64_exit_kick_waits_are_progress_bounded() {
         );
     }
     for (progress_source, counter) in [
-        ("storm_publisher_a_progress", "publisher_a_progress"),
         ("storm_publisher_b_progress", "publisher_b_progress"),
         ("storm_observer_progress", "observer_progress"),
     ] {
@@ -840,6 +848,48 @@ fn aarch64_exit_kick_waits_are_progress_bounded() {
             "{progress_source} must govern exactly one storm join"
         );
     }
+    let publisher_a_progress_declaration = gate
+        .find("let storm_publisher_a_progress =")
+        .expect("publisher A dependency-progress declaration");
+    let publisher_a_progress = gate[publisher_a_progress_declaration..]
+        .find(';')
+        .map(|end| {
+            &gate[publisher_a_progress_declaration..publisher_a_progress_declaration + end]
+        })
+        .expect("publisher A dependency-progress closure terminator");
+    assert!(publisher_a_progress.contains("publisher_a_progress"));
+    assert!(publisher_a_progress.contains("observer_progress"));
+    assert!(!publisher_a_progress.contains("publisher_b_progress"));
+    assert_eq!(gate.matches("&storm_publisher_a_progress").count(), 1);
+
+    assert!(!gate.contains(
+        "while observer_accounting.publishers_done.load(Ordering::Acquire) != 2"
+    ));
+    for required in [
+        "let mut publishers_done_seen = 0u64;",
+        "if publishers_done > publishers_done_seen",
+        "publishers_done - publishers_done_seen",
+        "observer_progress",
+    ] {
+        assert!(
+            gate.contains(required),
+            "observer progress is not tied to a genuine state transition: {required}"
+        );
+    }
+    let observer_loop_start = gate
+        .find("let mut publishers_done_seen = 0u64;")
+        .and_then(|start| gate[start..].find("loop {").map(|offset| start + offset))
+        .expect("observer publisher-completion loop");
+    let observer_loop_end = gate[observer_loop_start..]
+        .find(".observer_done")
+        .map(|offset| observer_loop_start + offset)
+        .expect("observer loop completion publication");
+    let observer_loop = &gate[observer_loop_start..observer_loop_end];
+    assert_eq!(
+        observer_loop.matches(".observer_progress").count(),
+        3,
+        "observer progress must advance only for a publisher-done transition or one of the two claimed publications"
+    );
     for forbidden in [
         "&[worker_cpus[0]]",
         "&[worker_cpus[1]]",
@@ -861,7 +911,11 @@ fn aarch64_exit_kick_waits_are_progress_bounded() {
 
     let failure_message = function_body(gate, "message");
     for required in [
-        "Self::NoProgress | Self::AbsoluteCeiling | Self::GateCeiling => site_message",
+        "Self::NoProgress | Self::AbsoluteCeiling => site_message",
+        "Self::GateCeiling =>",
+        "exit_kick_gate: gate liveness ceiling exhausted before this wait's condition was observed (not a per-CPU stall)",
+        "Self::PhaseOneCeiling =>",
+        "exit_kick_gate: shared Phase-1 liveness budget exhausted before this wait's condition was observed (not a per-CPU stall)",
         "Self::CounterStall =>",
         "exit_kick_gate: CNTVCT stalled while enforcing wait deadline",
         "Self::CounterUnavailable =>",
@@ -882,24 +936,18 @@ fn aarch64_exit_kick_waits_are_progress_bounded() {
     let gate_start_capture = gate
         .find("let gate_started_at = crate::arch_impl::aarch64::timer::rdtsc_serialized();")
         .expect("gate CNTVCT anchor capture");
-    let gate_start_store = gate
-        .find("EXIT_KICK_GATE_STARTED_AT.store(gate_started_at, Ordering::Relaxed);")
-        .expect("gate CNTVCT anchor publication");
-    let gate_started_store = gate
-        .find("EXIT_KICK_GATE_HAS_STARTED.store(1, Ordering::Release);")
-        .expect("gate start release publication");
     let exit_progress_arm = gate
         .find("let _exit_progress_guard = KthreadExitProgressGuard::arm();")
         .expect("exit progress guard arm");
     assert!(
-        gate_start_capture < gate_start_store
-            && gate_start_store < gate_started_store
-            && gate_started_store < exit_progress_arm,
-        "the gate must publish its exact anchor before gate work begins"
+        gate_start_capture < exit_progress_arm,
+        "the local gate anchor must be captured before gate work begins"
     );
+    assert!(!provider.contains("EXIT_KICK_GATE_STARTED_AT"));
+    assert!(!provider.contains("EXIT_KICK_GATE_HAS_STARTED"));
 
     let gate_ceiling_check = gate
-        .find("now.wrapping_sub(gate_started_at) >= gate_ceiling_ticks")
+        .find("crate::arch_impl::aarch64::timer::elapsed_ticks(now, gate_started_at)")
         .expect("aggregate gate-ceiling check");
     let absolute_ceiling_check = gate
         .find("elapsed >= absolute_ceiling_ticks")
@@ -914,7 +962,7 @@ fn aarch64_exit_kick_waits_are_progress_bounded() {
         .find("if let Some(failure) = failure")
         .expect("failure verdict");
     let periodic_rekick = gate
-        .find("if now.wrapping_sub(last_re_kick) >= re_kick_ticks")
+        .find("crate::arch_impl::aarch64::timer::elapsed_ticks(now, last_re_kick)")
         .expect("periodic reschedule re-kick");
     assert!(
         gate_ceiling_check < absolute_ceiling_check
@@ -1004,9 +1052,9 @@ fn aarch64_exit_kick_waits_are_progress_bounded() {
     let compact_main: String = main.chars().filter(|ch| !ch.is_whitespace()).collect();
     for required in [
         "#[cfg(feature = \"boot_tests\")]\n            const SMP_ONLINE_NO_PROGRESS_WINDOW_SECONDS: u64 = 20;",
-        "#[cfg(not(feature = \"boot_tests\"))]\n            const SMP_ONLINE_NO_PROGRESS_WINDOW_SECONDS: u64 = 5;",
+        "#[cfg(not(feature = \"boot_tests\"))]\n            const SMP_ONLINE_NO_PROGRESS_WINDOW_SECONDS: u64 = 2;",
         "#[cfg(feature = \"boot_tests\")]\n            const SMP_ONLINE_ABSOLUTE_CEILING_SECONDS: u64 = 40;",
-        "#[cfg(not(feature = \"boot_tests\"))]\n            const SMP_ONLINE_ABSOLUTE_CEILING_SECONDS: u64 = 10;",
+        "#[cfg(not(feature = \"boot_tests\"))]\n            const SMP_ONLINE_ABSOLUTE_CEILING_SECONDS: u64 = 4;",
     ] {
         assert!(main.contains(required), "missing SMP timeout profile: {required}");
     }
@@ -1038,8 +1086,21 @@ fn aarch64_exit_kick_waits_are_progress_bounded() {
     assert!(compact_main.contains(
         "ifonline_at_verdict>last_online||progress_at_verdict>last_bringup_progress"
     ));
-    assert!(main.contains("let counter_delta = now.wrapping_sub(last_counter_sample);"));
+    assert!(main.contains(
+        "let counter_delta = timer::elapsed_ticks(now, last_counter_sample);"
+    ));
     assert!(main.contains("if counter_delta == 0"));
+    for deadline in [
+        "timer::elapsed_ticks(now, phase_one_started_at)",
+        "timer::elapsed_ticks(now, start)",
+        "timer::elapsed_ticks(now, last_advance)",
+        "timer::elapsed_ticks(now, last_breadcrumb)",
+    ] {
+        assert!(
+            main.contains(deadline),
+            "missing forward-only SMP delta: {deadline}"
+        );
+    }
     assert!(main.contains("[smp] CNTVCT stalled"));
     assert!(main.contains("[smp] still waiting, {} online"));
     assert!(main.contains("cpu{} stage={} {}"));
@@ -1047,6 +1108,7 @@ fn aarch64_exit_kick_waits_are_progress_bounded() {
     assert!(main.contains("stage_at_start={} stage_advanced={}"));
     assert!(main.contains("[smp] Timeout waiting for CPUs: absolute ceiling"));
     assert!(main.contains("last_psci_return_code(cpu)"));
+    assert!(main.contains("psci_return_code_name(last_psci)"));
     assert!(main.contains("iterations = iterations.wrapping_add(1);"));
     assert!(!main.contains("iterations = iterations.saturating_add(1);"));
     assert!(main.contains("PSCI CPU_ON success (raw_status={})"));
@@ -1054,13 +1116,14 @@ fn aarch64_exit_kick_waits_are_progress_bounded() {
     let smp = repo_text("kernel/src/arch_impl/aarch64/smp.rs");
     assert!(smp.contains("const PSCI_CPU_ON_MAX_ATTEMPTS: usize = 4;"));
     for required in [
+        "const PSCI_RETURN_NOT_SUPPORTED: i64 = -1;",
         "const PSCI_RETURN_INVALID_PARAMS: i64 = -2;",
         "const PSCI_RETURN_DENIED: i64 = -3;",
         "const PSCI_RETURN_INTERNAL_FAILURE: i64 = -6;",
         "const PSCI_RETURN_NOT_PRESENT: i64 = -7;",
-        "PSCI_RETURN_DENIED | PSCI_RETURN_INTERNAL_FAILURE => true,",
-        "PSCI_RETURN_INVALID_PARAMS | PSCI_RETURN_NOT_PRESENT => false,",
-        "if !psci_cpu_on_failure_is_transient(ret)",
+        "matches!(ret, PSCI_RETURN_DENIED | PSCI_RETURN_INTERNAL_FAILURE)",
+        "let attempt_retryable = psci_cpu_on_failure_is_transient(hvc64_ret)",
+        "hvc32_ret.is_some_and(psci_cpu_on_failure_is_transient)",
         "|| attempt + 1 == PSCI_CPU_ON_MAX_ATTEMPTS",
     ] {
         assert!(
@@ -1069,9 +1132,33 @@ fn aarch64_exit_kick_waits_are_progress_bounded() {
         );
     }
     assert!(smp.contains("PSCI_CPU_ON_BACKOFF_ITERATION_CAP"));
+    let retry_backoff = function_body(&smp, "psci_cpu_on_retry_backoff");
+    assert!(retry_backoff.contains("super::timer::elapsed_ticks("));
+    assert!(!retry_backoff.contains("wrapping_sub"));
     assert!(smp.contains("LAST_PSCI_RETURN_CODE[cpu_id].store(ret, Ordering::Release);"));
+    let release_cpu = function_body(&smp, "release_cpu");
+    let reset_last_status = release_cpu
+        .find("LAST_PSCI_RETURN_CODE[cpu_id].store(PSCI_RETURN_NOT_ATTEMPTED")
+        .expect("per-call PSCI diagnostic reset");
+    let cpu_zero_reject = release_cpu.find("if cpu_id == 0").expect("CPU 0 rejection");
+    assert!(reset_last_status < cpu_zero_reject);
+    assert!(release_cpu.contains(
+        "LAST_PSCI_RETURN_CODE[cpu_id].store(PSCI_RETURN_INVALID_PARAMS, Ordering::Release);"
+    ));
+    let last_psci_return_code = function_body(&smp, "last_psci_return_code");
+    assert!(last_psci_return_code.contains(".unwrap_or(PSCI_RETURN_INVALID_PARAMS)"));
+    let psci_return_code_name = function_body(&smp, "psci_return_code_name");
+    assert!(psci_return_code_name.contains("PSCI_RETURN_NOT_ATTEMPTED => \"not-attempted\""));
     assert!(smp.contains("SMC would trap to EL2 and may fault."));
-    assert!(smp.contains("`ALREADY_ON`, or `ON_PENDING`"));
+    let accepted = function_body(&smp, "psci_cpu_on_was_accepted");
+    assert!(accepted.contains("PSCI_RETURN_SUCCESS | PSCI_RETURN_ON_PENDING"));
+    assert!(!accepted.contains("PSCI_RETURN_ALREADY_ON"));
+    assert!(smp.contains("PSCI claimed ALREADY_ON"));
+    assert!(smp.contains("CPU is not online"));
+    assert!(smp.contains("`ALREADY_ON` is accepted only"));
+    assert!(release_cpu.contains(
+        "ret == PSCI_RETURN_ALREADY_ON && is_cpu_online(cpu_id)"
+    ));
     assert!(smp.contains("[`last_psci_return_code()`]"));
     assert!(smp.contains("PSCI CPU_ON accepted after {} attempts (raw_status={})"));
     assert!(smp.contains("attempt {}/{}: HVC64 failed"));
@@ -1080,6 +1167,30 @@ fn aarch64_exit_kick_waits_are_progress_bounded() {
     assert!(!smp.contains("pub const CNTVCT_FALLBACK_FREQUENCY_HZ"));
     let timer = repo_text("kernel/src/arch_impl/aarch64/timer.rs");
     assert!(timer.contains("pub const BOOT_COUNTER_FALLBACK_FREQUENCY_HZ: u64 = 1_000_000;"));
+    let milliseconds_to_ticks = function_body(&timer, "milliseconds_to_ticks");
+    assert!(milliseconds_to_ticks.contains("frequency_hz.saturating_mul(milliseconds)"));
+    assert!(milliseconds_to_ticks.contains("/ 1_000"));
+    let elapsed_ticks = function_body(&timer, "elapsed_ticks");
+    assert!(elapsed_ticks.contains("now.checked_sub(start).unwrap_or(0)"));
+    assert!(provider.contains(
+        "crate::arch_impl::aarch64::timer::milliseconds_to_ticks("
+    ));
+    assert!(compact_main.contains(
+        "timer::milliseconds_to_ticks(counter_frequency_hz,kernel::test_framework::PHASE_ONE_LIVENESS_BUDGET_MILLISECONDS,)"
+    ));
+
+    let timer_interrupt = repo_text("kernel/src/arch_impl/aarch64/timer_interrupt.rs");
+    assert!(timer_interrupt.contains("static EXIT_KICK_GATE_WATCHDOG_HEARTBEAT: AtomicU64"));
+    let heartbeat = function_body(
+        &timer_interrupt,
+        "record_exit_kick_gate_watchdog_heartbeat",
+    );
+    assert!(heartbeat.contains("fetch_add(1, Ordering::Relaxed)"));
+    let soft_lockup = function_body(&timer_interrupt, "check_soft_lockup");
+    assert!(soft_lockup.contains("exit_kick_gate_heartbeat_progressed"));
+    assert!(soft_lockup.contains(
+        "ctx_progressed || syscall_progressed || exit_kick_gate_heartbeat_progressed"
+    ));
     assert!(smp.contains("super::timer::BOOT_COUNTER_FALLBACK_FREQUENCY_HZ"));
     assert!(main.contains(
         "kernel::arch_impl::aarch64::timer::BOOT_COUNTER_FALLBACK_FREQUENCY_HZ"

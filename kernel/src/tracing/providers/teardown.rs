@@ -1220,13 +1220,10 @@ pub fn fork_exit_defer_reclaim_pairing_test() -> crate::test_framework::registry
 // with the longest observed individual wait about 8s.
 #[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
 const EXIT_KICK_GATE_CEILING_MILLISECONDS: u64 = 45_000;
-#[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
-static EXIT_KICK_GATE_STARTED_AT: AtomicU64 = AtomicU64::new(0);
-#[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
-static EXIT_KICK_GATE_HAS_STARTED: AtomicU64 = AtomicU64::new(0);
 
 #[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
 pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestResult {
+    use crate::arch_impl::aarch64::timer_interrupt::record_exit_kick_gate_watchdog_heartbeat;
     use crate::test_framework::registry::TestResult;
     use alloc::sync::Arc;
     use alloc::vec::Vec;
@@ -1242,13 +1239,23 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
     // is a union: one sibling's early advance cannot shorten another sibling's
     // first-schedule allowance. CPU timer ticks never count as progress. Each storm
     // join observes only its awaited worker's work counter plus that worker's exit
-    // stages; the dependency union is reserved for workers_ready. A separate
+    // stages, plus genuine dependency progress when a worker is deliberately
+    // blocked on another worker. A separate
     // 15-second per-wait ceiling and one 45-second gate ceiling remain hard
     // backstops across late-true recoveries. The gate is additionally capped by
     // the shared 65-second Phase-1 liveness clock that also bounds SMP bring-up,
     // so the two watchdogs cannot compose past the external harness. Resched SGIs
-    // are re-sent every 50ms. This observes the EXIT_KICK test without changing
-    // its protocol. See P20 in docs/polling-allowlist.md.
+    // are re-sent every 50ms. Each re-kick also records a boot-test-only CPU-0
+    // watchdog heartbeat, preventing the generic five-second soft-lockup detector
+    // from preempting this gate's worker-specific verdict. This observes the
+    // EXIT_KICK test without changing its protocol. See P20 in
+    // docs/polling-allowlist.md.
+    //
+    // Eight seconds remains the proven starvation-tolerant first-progress floor.
+    // It cannot lose the race against the five-second soft-lockup detector:
+    // gate entry, wait entry, and every 50ms re-kick advance the heartbeat that
+    // detector treats as progress, while a genuinely wedged worker still reaches
+    // this gate's own actionable no-progress FAIL after the full eight seconds.
     const FIRST_PROGRESS_WINDOW_MILLISECONDS: u64 = 8_000;
     const NO_PROGRESS_WINDOW_MILLISECONDS: u64 = 3_000;
     const ABSOLUTE_WAIT_CEILING_MILLISECONDS: u64 = 15_000;
@@ -1261,11 +1268,26 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
     struct WaitProgress {
         work: u64,
         exit: u64,
+        workers: [u64; 3],
     }
 
     impl WaitProgress {
         const fn work(work: u64) -> Self {
-            Self { work, exit: 0 }
+            Self {
+                work,
+                exit: 0,
+                workers: [0; 3],
+            }
+        }
+
+        const fn workers(workers: [u64; 3]) -> Self {
+            Self {
+                work: workers[0]
+                    .saturating_add(workers[1])
+                    .saturating_add(workers[2]),
+                exit: 0,
+                workers,
+            }
         }
 
         fn advanced_from(self, previous: Self) -> bool {
@@ -1301,8 +1323,16 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
 
         fn message(self, site_message: &'static str) -> &'static str {
             match self {
-                Self::NoProgress | Self::AbsoluteCeiling | Self::GateCeiling => site_message,
-                Self::PhaseOneCeiling => site_message,
+                Self::NoProgress | Self::AbsoluteCeiling => site_message,
+                // These aggregate ceilings can be consumed by earlier waits or
+                // boot stages. Their permanent messages must neither blame this
+                // site's CPU nor match the per-CPU liveness-failure classifier.
+                Self::GateCeiling => {
+                    "exit_kick_gate: gate liveness ceiling exhausted before this wait's condition was observed (not a per-CPU stall)"
+                }
+                Self::PhaseOneCeiling => {
+                    "exit_kick_gate: shared Phase-1 liveness budget exhausted before this wait's condition was observed (not a per-CPU stall)"
+                }
                 Self::CounterStall => {
                     "exit_kick_gate: CNTVCT stalled while enforcing wait deadline"
                 }
@@ -1313,10 +1343,6 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
                 Self::JoinFailed => "exit_kick_gate: kthread join failed after exit observation",
             }
         }
-    }
-
-    fn milliseconds_to_ticks(counter_frequency_hz: u64, milliseconds: u64) -> u64 {
-        (counter_frequency_hz.saturating_mul(milliseconds) / 1_000).max(1)
     }
 
     fn ticks_to_milliseconds(ticks: u64, counter_frequency_hz: u64) -> u64 {
@@ -1342,7 +1368,7 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
         // use `exit_kick_gate:` so late_true=1 recovery cannot match the
         // canonical `exit_kick_gate:.*unresponsive` failure grep.
         crate::serial_println!(
-            "[exit_kick_gate] wait={} cause={} elapsed_ms={} window_budget_ms={} re_kick_sgis={} cpus_online={} condition_current={} condition_expected={} progress_work_start={} progress_work_final={} progress_exit_start={} progress_exit_final={} last_advance_ms_ago={} late_true={}",
+            "[exit_kick_gate] wait={} cause={} elapsed_ms={} window_budget_ms={} re_kick_sgis={} cpus_online={} condition_current={} condition_expected={} progress_work_start={} progress_work_final={} progress_exit_start={} progress_exit_final={} worker_1_progress_start={} worker_1_progress_final={} worker_2_progress_start={} worker_2_progress_final={} worker_3_progress_start={} worker_3_progress_final={} last_advance_ms_ago={} late_true={}",
             evidence.wait_name,
             evidence.failure.cause(),
             evidence.elapsed_ms,
@@ -1355,6 +1381,12 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
             evidence.progress_final.work,
             evidence.progress_start.exit,
             evidence.progress_final.exit,
+            evidence.progress_start.workers[0],
+            evidence.progress_final.workers[0],
+            evidence.progress_start.workers[1],
+            evidence.progress_final.workers[1],
+            evidence.progress_start.workers[2],
+            evidence.progress_final.workers[2],
             evidence.last_advance_ms_ago,
             evidence.late_true as u8,
         );
@@ -1406,22 +1438,42 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
         }
 
         let first_progress_ticks =
-            milliseconds_to_ticks(counter_frequency_hz, FIRST_PROGRESS_WINDOW_MILLISECONDS);
+            crate::arch_impl::aarch64::timer::milliseconds_to_ticks(
+                counter_frequency_hz,
+                FIRST_PROGRESS_WINDOW_MILLISECONDS,
+            );
         let no_progress_ticks =
-            milliseconds_to_ticks(counter_frequency_hz, NO_PROGRESS_WINDOW_MILLISECONDS);
+            crate::arch_impl::aarch64::timer::milliseconds_to_ticks(
+                counter_frequency_hz,
+                NO_PROGRESS_WINDOW_MILLISECONDS,
+            );
         let absolute_ceiling_ticks =
-            milliseconds_to_ticks(counter_frequency_hz, ABSOLUTE_WAIT_CEILING_MILLISECONDS);
+            crate::arch_impl::aarch64::timer::milliseconds_to_ticks(
+                counter_frequency_hz,
+                ABSOLUTE_WAIT_CEILING_MILLISECONDS,
+            );
         let gate_ceiling_ticks =
-            milliseconds_to_ticks(counter_frequency_hz, GATE_CEILING_MILLISECONDS);
-        let phase_one_ceiling_ticks = milliseconds_to_ticks(
-            counter_frequency_hz,
-            crate::test_framework::PHASE_ONE_LIVENESS_BUDGET_MILLISECONDS,
-        );
+            crate::arch_impl::aarch64::timer::milliseconds_to_ticks(
+                counter_frequency_hz,
+                GATE_CEILING_MILLISECONDS,
+            );
+        let phase_one_ceiling_ticks =
+            crate::arch_impl::aarch64::timer::milliseconds_to_ticks(
+                counter_frequency_hz,
+                crate::test_framework::PHASE_ONE_LIVENESS_BUDGET_MILLISECONDS,
+            );
         let re_kick_ticks =
-            milliseconds_to_ticks(counter_frequency_hz, RESCHED_REKICK_INTERVAL_MILLISECONDS);
+            crate::arch_impl::aarch64::timer::milliseconds_to_ticks(
+                counter_frequency_hz,
+                RESCHED_REKICK_INTERVAL_MILLISECONDS,
+            );
         let breadcrumb_ticks =
-            milliseconds_to_ticks(counter_frequency_hz, BREADCRUMB_INTERVAL_MILLISECONDS);
+            crate::arch_impl::aarch64::timer::milliseconds_to_ticks(
+                counter_frequency_hz,
+                BREADCRUMB_INTERVAL_MILLISECONDS,
+            );
         let wait_start = crate::arch_impl::aarch64::timer::rdtsc_serialized();
+        record_exit_kick_gate_watchdog_heartbeat();
         let mut last_advance = wait_start;
         let mut last_progress = progress_start;
         let mut last_counter_sample = wait_start;
@@ -1442,19 +1494,24 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
                 last_progress = progress_current;
                 last_advance = now;
             }
-            let no_progress_deadline_elapsed = last_advance
-                .wrapping_sub(wait_start)
+            let no_progress_deadline_elapsed =
+                crate::arch_impl::aarch64::timer::elapsed_ticks(last_advance, wait_start)
                 .saturating_add(no_progress_ticks);
             let progress_deadline_elapsed =
                 core::cmp::max(first_progress_ticks, no_progress_deadline_elapsed);
 
             iterations = iterations.wrapping_add(1);
-            let elapsed = now.wrapping_sub(wait_start);
+            let elapsed = crate::arch_impl::aarch64::timer::elapsed_ticks(now, wait_start);
             let mut failure = None;
-            if now.wrapping_sub(phase_one_started_at) >= phase_one_ceiling_ticks {
+            if crate::arch_impl::aarch64::timer::elapsed_ticks(now, phase_one_started_at)
+                >= phase_one_ceiling_ticks
+            {
                 failure = Some(WaitFailureKind::PhaseOneCeiling);
             }
-            if failure.is_none() && now.wrapping_sub(gate_started_at) >= gate_ceiling_ticks {
+            if failure.is_none()
+                && crate::arch_impl::aarch64::timer::elapsed_ticks(now, gate_started_at)
+                    >= gate_ceiling_ticks
+            {
                 failure = Some(WaitFailureKind::GateCeiling);
             }
             if failure.is_none() && elapsed >= absolute_ceiling_ticks {
@@ -1464,7 +1521,10 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
                 failure = Some(WaitFailureKind::NoProgress);
             }
             if failure.is_none() && iterations % CNTVCT_STALL_SAMPLE_INTERVAL_ITERATIONS == 0 {
-                let counter_delta = now.wrapping_sub(last_counter_sample);
+                let counter_delta = crate::arch_impl::aarch64::timer::elapsed_ticks(
+                    now,
+                    last_counter_sample,
+                );
                 if counter_delta == 0 {
                     failure = Some(WaitFailureKind::CounterStall);
                 }
@@ -1494,7 +1554,7 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
                     wait_name,
                     failure,
                     elapsed_ms: ticks_to_milliseconds(
-                        verdict_at.wrapping_sub(wait_start),
+                        crate::arch_impl::aarch64::timer::elapsed_ticks(verdict_at, wait_start),
                         counter_frequency_hz,
                     ),
                     window_budget_ms,
@@ -1504,7 +1564,7 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
                     progress_start,
                     progress_final,
                     last_advance_ms_ago: ticks_to_milliseconds(
-                        verdict_at.wrapping_sub(last_advance),
+                        crate::arch_impl::aarch64::timer::elapsed_ticks(verdict_at, last_advance),
                         counter_frequency_hz,
                     ),
                     late_true,
@@ -1521,7 +1581,9 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
                 };
             }
 
-            if now.wrapping_sub(last_re_kick) >= re_kick_ticks {
+            if crate::arch_impl::aarch64::timer::elapsed_ticks(now, last_re_kick)
+                >= re_kick_ticks
+            {
                 for &cpu in kick_cpus {
                     crate::arch_impl::aarch64::gic::send_sgi(
                         crate::arch_impl::aarch64::constants::SGI_RESCHEDULE as u8,
@@ -1529,10 +1591,13 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
                     );
                     re_kick_sgis = re_kick_sgis.saturating_add(1);
                 }
+                record_exit_kick_gate_watchdog_heartbeat();
                 last_re_kick = now;
             }
 
-            if elapsed >= no_progress_ticks && now.wrapping_sub(last_breadcrumb) >= breadcrumb_ticks
+            if elapsed >= no_progress_ticks
+                && crate::arch_impl::aarch64::timer::elapsed_ticks(now, last_breadcrumb)
+                    >= breadcrumb_ticks
             {
                 crate::serial_println!(
                     "[exit_kick_gate] wait={} breadcrumb=1 elapsed_ms={} progress_work={} progress_exit={} re_kick_sgis={}",
@@ -1582,6 +1647,7 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
         let progress_start = WaitProgress {
             work: work_progress(),
             exit: kthread_exit_progress_for_test(tid),
+            workers: [0; 3],
         };
         spin_with_resched(
             wait_name,
@@ -1591,6 +1657,7 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
             || WaitProgress {
                 work: work_progress(),
                 exit: kthread_exit_progress_for_test(tid),
+                workers: [0; 3],
             },
             kick_cpus,
             phase_one_started_at,
@@ -1600,6 +1667,7 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
             let progress_final = WaitProgress {
                 work: work_progress(),
                 exit: kthread_exit_progress_for_test(tid),
+                workers: [0; 3],
             };
             print_wait_evidence(WaitEvidence {
                 wait_name,
@@ -1619,6 +1687,7 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
         Ok(())
     }
 
+    record_exit_kick_gate_watchdog_heartbeat();
     let phase_one_started_at = match crate::test_framework::phase_one_liveness_started_at() {
         Some(started_at) => started_at,
         None => {
@@ -1628,8 +1697,6 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
         }
     };
     let gate_started_at = crate::arch_impl::aarch64::timer::rdtsc_serialized();
-    EXIT_KICK_GATE_STARTED_AT.store(gate_started_at, Ordering::Relaxed);
-    EXIT_KICK_GATE_HAS_STARTED.store(1, Ordering::Release);
     let _exit_progress_guard = KthreadExitProgressGuard::arm();
 
     struct BrokenV3Slot {
@@ -2229,16 +2296,30 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
             if observer_accounting.abort.load(Ordering::Acquire) {
                 return;
             }
+            let mut publishers_done_seen = 0u64;
             observer_accounting
                 .observer_running
                 .store(true, Ordering::Release);
-            while observer_accounting.publishers_done.load(Ordering::Acquire) != 2 {
+            observer_accounting
+                .observer_progress
+                .fetch_add(1, Ordering::Release);
+            loop {
                 if observer_accounting.abort.load(Ordering::Acquire) {
                     return;
                 }
-                observer_accounting
-                    .observer_progress
-                    .fetch_add(1, Ordering::Release);
+                let publishers_done = observer_accounting
+                    .publishers_done
+                    .load(Ordering::Acquire);
+                if publishers_done > publishers_done_seen {
+                    observer_accounting.observer_progress.fetch_add(
+                        publishers_done - publishers_done_seen,
+                        Ordering::Release,
+                    );
+                    publishers_done_seen = publishers_done;
+                }
+                if publishers_done_seen == 2 {
+                    break;
+                }
                 let cpu_bit = 1u64 << crate::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id();
                 observer_accounting
                     .observer_cpu_mask
@@ -2255,6 +2336,9 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
                     observer_accounting
                         .observations
                         .fetch_add(1, Ordering::Relaxed);
+                    observer_accounting
+                        .observer_progress
+                        .fetch_add(1, Ordering::Release);
                 }
                 if let Some(observation) = observer_slot.observe(PID_B) {
                     let row = &observer_oracle[observation.generation as usize];
@@ -2268,6 +2352,9 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
                     observer_accounting
                         .observations
                         .fetch_add(1, Ordering::Relaxed);
+                    observer_accounting
+                        .observer_progress
+                        .fetch_add(1, Ordering::Release);
                 }
                 core::hint::spin_loop();
             }
@@ -2293,20 +2380,18 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
     };
     core::mem::drop(spawn_guard);
 
-    let storm_progress = || {
-        accounting
-            .publisher_a_progress
-            .load(Ordering::Acquire)
-            .saturating_add(accounting.publisher_b_progress.load(Ordering::Acquire))
-            .saturating_add(accounting.observer_progress.load(Ordering::Acquire))
-    };
-
     if let Err(failure) = spin_with_resched(
         "workers_ready",
         || accounting.workers_ready.load(Ordering::Acquire),
         |value| value == 3,
         3,
-        || WaitProgress::work(storm_progress()),
+        || {
+            WaitProgress::workers([
+                accounting.publisher_a_progress.load(Ordering::Acquire),
+                accounting.publisher_b_progress.load(Ordering::Acquire),
+                accounting.observer_progress.load(Ordering::Acquire),
+            ])
+        },
         &worker_cpus,
         phase_one_started_at,
         gate_started_at,
@@ -2317,7 +2402,12 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
     }
     accounting.start.store(true, Ordering::Release);
 
-    let storm_publisher_a_progress = || accounting.publisher_a_progress.load(Ordering::Acquire);
+    let storm_publisher_a_progress = || {
+        accounting
+            .publisher_a_progress
+            .load(Ordering::Acquire)
+            .saturating_add(accounting.observer_progress.load(Ordering::Acquire))
+    };
     let storm_publisher_b_progress = || accounting.publisher_b_progress.load(Ordering::Acquire);
     let storm_observer_progress = || accounting.observer_progress.load(Ordering::Acquire);
 

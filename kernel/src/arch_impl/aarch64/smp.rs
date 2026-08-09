@@ -19,12 +19,14 @@ const PSCI_CPU_ON_MAX_ATTEMPTS: usize = 4;
 const PSCI_CPU_ON_RETRY_BACKOFF_MICROSECONDS: u64 = 500;
 const PSCI_CPU_ON_BACKOFF_ITERATION_CAP: usize = 1_000_000;
 const PSCI_RETURN_SUCCESS: i64 = 0;
+const PSCI_RETURN_NOT_SUPPORTED: i64 = -1;
 const PSCI_RETURN_INVALID_PARAMS: i64 = -2;
 const PSCI_RETURN_DENIED: i64 = -3;
 const PSCI_RETURN_ALREADY_ON: i64 = -4;
 const PSCI_RETURN_ON_PENDING: i64 = -5;
 const PSCI_RETURN_INTERNAL_FAILURE: i64 = -6;
 const PSCI_RETURN_NOT_PRESENT: i64 = -7;
+const PSCI_RETURN_INVALID_ADDRESS: i64 = -9;
 const PSCI_RETURN_NOT_ATTEMPTED: i64 = i64::MIN;
 
 static LAST_PSCI_RETURN_CODE: [AtomicI64; MAX_CPUS] =
@@ -314,17 +316,30 @@ fn psci_cpu_on_32(target_cpu: u64, entry_point: u64, context_id: u64) -> i64 {
 }
 
 fn psci_cpu_on_was_accepted(ret: i64) -> bool {
-    matches!(
-        ret,
-        PSCI_RETURN_SUCCESS | PSCI_RETURN_ALREADY_ON | PSCI_RETURN_ON_PENDING
-    )
+    matches!(ret, PSCI_RETURN_SUCCESS | PSCI_RETURN_ON_PENDING)
 }
 
 fn psci_cpu_on_failure_is_transient(ret: i64) -> bool {
-    match ret {
-        PSCI_RETURN_DENIED | PSCI_RETURN_INTERNAL_FAILURE => true,
-        PSCI_RETURN_INVALID_PARAMS | PSCI_RETURN_NOT_PRESENT => false,
-        _ => false,
+    matches!(ret, PSCI_RETURN_DENIED | PSCI_RETURN_INTERNAL_FAILURE)
+}
+
+/// Choose the raw status that best explains one failed HVC64/HVC32 attempt.
+///
+/// ALREADY_ON is retained first because the caller must not count that firmware
+/// claim as a launch without a local online publication. Otherwise a transient
+/// result is retained so the retrying conduit remains visible even when the
+/// other conduit is permanently unsupported. HVC32 is the final fallback.
+fn psci_cpu_on_attempt_failure(hvc64_ret: i64, hvc32_ret: i64) -> i64 {
+    if hvc64_ret == PSCI_RETURN_ALREADY_ON {
+        hvc64_ret
+    } else if hvc32_ret == PSCI_RETURN_ALREADY_ON {
+        hvc32_ret
+    } else if psci_cpu_on_failure_is_transient(hvc64_ret) {
+        hvc64_ret
+    } else if psci_cpu_on_failure_is_transient(hvc32_ret) {
+        hvc32_ret
+    } else {
+        hvc32_ret
     }
 }
 
@@ -344,7 +359,9 @@ fn psci_cpu_on_retry_backoff() {
         .max(1);
     let start = crate::arch_impl::aarch64::timer::rdtsc();
     for _ in 0..PSCI_CPU_ON_BACKOFF_ITERATION_CAP {
-        if crate::arch_impl::aarch64::timer::rdtsc().wrapping_sub(start) >= backoff_ticks {
+        if super::timer::elapsed_ticks(crate::arch_impl::aarch64::timer::rdtsc(), start)
+            >= backoff_ticks
+        {
             break;
         }
         core::hint::spin_loop();
@@ -356,11 +373,18 @@ fn psci_cpu_on_retry_backoff() {
 /// The CPU will start executing at `secondary_cpu_entry` in boot.S,
 /// which sets up the stack and MMU, then calls `secondary_cpu_entry_rust(cpu_id)`.
 ///
-/// Returns 0 for PSCI success, `ALREADY_ON`, or `ON_PENDING`; other negative
-/// PSCI results are returned. The raw final code is preserved for diagnostics
-/// through [`last_psci_return_code()`].
+/// Returns 0 for PSCI `SUCCESS` or `ON_PENDING`. `ALREADY_ON` is accepted only
+/// after this kernel's per-CPU online flag independently proves that the expected
+/// secondary entry path completed; otherwise it remains a distinct failure.
+/// Other negative PSCI results are returned. The raw final code is preserved for
+/// diagnostics through [`last_psci_return_code()`].
 pub fn release_cpu(cpu_id: usize) -> i64 {
-    if cpu_id == 0 || cpu_id >= MAX_CPUS {
+    if cpu_id >= MAX_CPUS {
+        return PSCI_RETURN_INVALID_PARAMS;
+    }
+    LAST_PSCI_RETURN_CODE[cpu_id].store(PSCI_RETURN_NOT_ATTEMPTED, Ordering::Release);
+    if cpu_id == 0 {
+        LAST_PSCI_RETURN_CODE[cpu_id].store(PSCI_RETURN_INVALID_PARAMS, Ordering::Release);
         return PSCI_RETURN_INVALID_PARAMS;
     }
 
@@ -386,8 +410,9 @@ pub fn release_cpu(cpu_id: usize) -> i64 {
         // HVC64 first, then HVC32. SMC remains deliberately excluded: an EL1
         // guest has no EL3 conduit, so SMC would trap to EL2 and may fault.
         let hvc64_ret = psci_cpu_on(target_mpidr, entry_phys, context_id);
-        ret = hvc64_ret;
-        if !psci_cpu_on_was_accepted(ret) {
+        let hvc32_ret = if psci_cpu_on_was_accepted(hvc64_ret) {
+            None
+        } else {
             crate::serial_println!(
                 "[smp] CPU {} attempt {}/{}: HVC64 failed (ret={}), trying HVC32...",
                 cpu_id,
@@ -395,8 +420,13 @@ pub fn release_cpu(cpu_id: usize) -> i64 {
                 PSCI_CPU_ON_MAX_ATTEMPTS,
                 hvc64_ret
             );
-            ret = psci_cpu_on_32(target_mpidr, entry_phys, context_id);
-        }
+            Some(psci_cpu_on_32(target_mpidr, entry_phys, context_id))
+        };
+        ret = match hvc32_ret {
+            None => hvc64_ret,
+            Some(hvc32_ret) if psci_cpu_on_was_accepted(hvc32_ret) => hvc32_ret,
+            Some(hvc32_ret) => psci_cpu_on_attempt_failure(hvc64_ret, hvc32_ret),
+        };
         LAST_PSCI_RETURN_CODE[cpu_id].store(ret, Ordering::Release);
 
         if psci_cpu_on_was_accepted(ret) {
@@ -410,13 +440,30 @@ pub fn release_cpu(cpu_id: usize) -> i64 {
             }
             return PSCI_RETURN_SUCCESS;
         }
-        if !psci_cpu_on_failure_is_transient(ret) || attempt + 1 == PSCI_CPU_ON_MAX_ATTEMPTS {
+        if ret == PSCI_RETURN_ALREADY_ON && is_cpu_online(cpu_id) {
+            crate::serial_println!(
+                "[smp] CPU {}: PSCI claimed ALREADY_ON and the local online flag confirms it",
+                cpu_id
+            );
+            return PSCI_RETURN_SUCCESS;
+        }
+        let attempt_retryable = psci_cpu_on_failure_is_transient(hvc64_ret)
+            || hvc32_ret.is_some_and(psci_cpu_on_failure_is_transient);
+        if !attempt_retryable || attempt + 1 == PSCI_CPU_ON_MAX_ATTEMPTS {
             break;
         }
         psci_cpu_on_retry_backoff();
     }
 
-    if ret != 0 {
+    if ret == PSCI_RETURN_ALREADY_ON && !is_cpu_online(cpu_id) {
+        let stage = bringup_stage_of(cpu_id);
+        crate::serial_println!(
+            "[smp] PSCI claimed ALREADY_ON for CPU {}, but CPU is not online: bring-up stage={} {}",
+            cpu_id,
+            stage,
+            bringup_stage_name(stage)
+        );
+    } else if ret != 0 {
         crate::serial_println!(
             "[smp] PSCI CPU_ON failed for CPU {} after {} attempts: ret={} (MPIDR={:#x} entry={:#x})",
             cpu_id,
@@ -435,7 +482,24 @@ pub fn last_psci_return_code(cpu_id: usize) -> i64 {
     LAST_PSCI_RETURN_CODE
         .get(cpu_id)
         .map(|status| status.load(Ordering::Acquire))
-        .unwrap_or(PSCI_RETURN_NOT_ATTEMPTED)
+        .unwrap_or(PSCI_RETURN_INVALID_PARAMS)
+}
+
+/// Return a readable name for a raw PSCI status code.
+pub fn psci_return_code_name(status: i64) -> &'static str {
+    match status {
+        PSCI_RETURN_SUCCESS => "success",
+        PSCI_RETURN_NOT_SUPPORTED => "not-supported",
+        PSCI_RETURN_INVALID_PARAMS => "invalid-params",
+        PSCI_RETURN_DENIED => "denied",
+        PSCI_RETURN_ALREADY_ON => "already-on",
+        PSCI_RETURN_ON_PENDING => "on-pending",
+        PSCI_RETURN_INTERNAL_FAILURE => "internal-failure",
+        PSCI_RETURN_NOT_PRESENT => "not-present",
+        PSCI_RETURN_INVALID_ADDRESS => "invalid-address",
+        PSCI_RETURN_NOT_ATTEMPTED => "not-attempted",
+        _ => "unknown",
+    }
 }
 
 /// Get the number of CPUs currently online.

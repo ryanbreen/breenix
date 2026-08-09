@@ -977,7 +977,7 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
             #[cfg(feature = "boot_tests")]
             const SMP_ONLINE_NO_PROGRESS_WINDOW_SECONDS: u64 = 20;
             #[cfg(not(feature = "boot_tests"))]
-            const SMP_ONLINE_NO_PROGRESS_WINDOW_SECONDS: u64 = 5;
+            const SMP_ONLINE_NO_PROGRESS_WINDOW_SECONDS: u64 = 2;
             // The boot_tests 40s local ceiling and P20's 45s local gate ceiling
             // are both capped by one 65s clock started near kernel entry:
             // P17 + P20 <= 65s, and the harness retains 90s - 65s = 25s for
@@ -987,7 +987,7 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
             #[cfg(feature = "boot_tests")]
             const SMP_ONLINE_ABSOLUTE_CEILING_SECONDS: u64 = 40;
             #[cfg(not(feature = "boot_tests"))]
-            const SMP_ONLINE_ABSOLUTE_CEILING_SECONDS: u64 = 10;
+            const SMP_ONLINE_ABSOLUTE_CEILING_SECONDS: u64 = 4;
             const SMP_ONLINE_BREADCRUMB_INTERVAL_SECONDS: u64 = 1;
             const SMP_ONLINE_STAGE_SAMPLE_INTERVAL_ITERATIONS: u64 = 4_096;
             const SMP_ONLINE_CNTVCT_STALL_SAMPLE_INTERVAL_ITERATIONS: u64 = 10_000_000;
@@ -1011,8 +1011,9 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
             let phase_one_liveness_started_at =
                 kernel::test_framework::phase_one_liveness_started_at();
             #[cfg(feature = "boot_tests")]
-            let phase_one_liveness_ceiling_ticks = counter_frequency_hz.saturating_mul(
-                kernel::test_framework::PHASE_ONE_LIVENESS_BUDGET_MILLISECONDS / 1_000,
+            let phase_one_liveness_ceiling_ticks = timer::milliseconds_to_ticks(
+                counter_frequency_hz,
+                kernel::test_framework::PHASE_ONE_LIVENESS_BUDGET_MILLISECONDS,
             );
             let breadcrumb_ticks = counter_frequency_hz
                 .saturating_mul(SMP_ONLINE_BREADCRUMB_INTERVAL_SECONDS);
@@ -1031,12 +1032,15 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
                 for cpu in 1..expected as usize {
                     if !kernel::arch_impl::aarch64::smp::is_cpu_online(cpu) {
                         let stage_now = kernel::arch_impl::aarch64::smp::bringup_stage_of(cpu);
+                        let last_psci =
+                            kernel::arch_impl::aarch64::smp::last_psci_return_code(cpu);
                         serial_println!(
-                            "[smp] CPU {} still offline: stage={} {} last PSCI return code {} stage_at_start={} stage_advanced={}",
+                            "[smp] CPU {} still offline: stage={} {} last PSCI return code {} ({}) stage_at_start={} stage_advanced={}",
                             cpu,
                             stage_now,
                             kernel::arch_impl::aarch64::smp::bringup_stage_name(stage_now),
-                            kernel::arch_impl::aarch64::smp::last_psci_return_code(cpu),
+                            last_psci,
+                            kernel::arch_impl::aarch64::smp::psci_return_code_name(last_psci),
                             stage_at_start[cpu],
                             stage_now > stage_at_start[cpu]
                         );
@@ -1047,8 +1051,9 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
             // SMP secondary CPU bring-up wait: boot CPU spins until all
             // released secondary CPUs increment cpus_online. The boot_tests
             // build retains the starvation-tolerant 20s/40s bounds; the plain
-            // kernel uses 5s/10s so strict 20s and native 30s harnesses retain
-            // time to capture the final diagnostics. The no-progress window is
+            // kernel uses 2s/4s: still twenty times the former 100ms allowance,
+            // while preserving at least 16 seconds of the strict harness for the
+            // rest of boot and final diagnostics. The no-progress window is
             // re-armed only when cpus_online or the sum of secondary bring-up
             // stages advances. In boot_tests, the shared Phase-1 ceiling can only
             // shorten the local 40-second ceiling; it cannot re-arm it. With a
@@ -1077,7 +1082,9 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
 
                 #[cfg(feature = "boot_tests")]
                 if let Some(phase_one_started_at) = phase_one_liveness_started_at {
-                    if now.wrapping_sub(phase_one_started_at) >= phase_one_liveness_ceiling_ticks {
+                    if timer::elapsed_ticks(now, phase_one_started_at)
+                        >= phase_one_liveness_ceiling_ticks
+                    {
                         let online_at_verdict = kernel::arch_impl::aarch64::smp::cpus_online();
                         if online_at_verdict >= expected {
                             break;
@@ -1105,7 +1112,7 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
                     break;
                 }
 
-                if now.wrapping_sub(start) >= absolute_ceiling_ticks {
+                if timer::elapsed_ticks(now, start) >= absolute_ceiling_ticks {
                     let online_at_verdict = kernel::arch_impl::aarch64::smp::cpus_online();
                     if online_at_verdict >= expected {
                         break;
@@ -1120,7 +1127,7 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
                     break;
                 }
 
-                if now.wrapping_sub(last_advance) >= no_progress_ticks {
+                if timer::elapsed_ticks(now, last_advance) >= no_progress_ticks {
                     let online_at_verdict = kernel::arch_impl::aarch64::smp::cpus_online();
                     if online_at_verdict >= expected {
                         break;
@@ -1146,7 +1153,7 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
 
                 iterations = iterations.wrapping_add(1);
                 if iterations % SMP_ONLINE_CNTVCT_STALL_SAMPLE_INTERVAL_ITERATIONS == 0 {
-                    let counter_delta = now.wrapping_sub(last_counter_sample);
+                    let counter_delta = timer::elapsed_ticks(now, last_counter_sample);
                     if counter_delta == 0 {
                         let online_at_verdict = kernel::arch_impl::aarch64::smp::cpus_online();
                         if online_at_verdict >= expected {
@@ -1163,7 +1170,7 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
                     last_counter_sample = now;
                 }
 
-                if now.wrapping_sub(last_breadcrumb) >= breadcrumb_ticks {
+                if timer::elapsed_ticks(now, last_breadcrumb) >= breadcrumb_ticks {
                     for cpu in 1..expected as usize {
                         if !kernel::arch_impl::aarch64::smp::is_cpu_online(cpu) {
                             let stage_now = kernel::arch_impl::aarch64::smp::bringup_stage_of(cpu);
