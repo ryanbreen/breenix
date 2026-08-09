@@ -981,7 +981,7 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
                 // P17/P19 deliberately use a short 1MHz bring-up fallback;
                 // boot-test watchdogs P20/P21 instead fail closed because a
                 // guessed frequency could silently stretch their harness bound.
-                kernel::arch_impl::aarch64::smp::CNTVCT_FALLBACK_FREQUENCY_HZ
+                kernel::arch_impl::aarch64::timer::BOOT_COUNTER_FALLBACK_FREQUENCY_HZ
             } else {
                 reported_frequency_hz
             };

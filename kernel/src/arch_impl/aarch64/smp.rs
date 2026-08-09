@@ -15,7 +15,6 @@ use core::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, AtomicU64, Ordering};
 /// Maximum number of CPUs supported.
 pub const MAX_CPUS: usize = 8;
 
-pub const CNTVCT_FALLBACK_FREQUENCY_HZ: u64 = 1_000_000;
 const PSCI_CPU_ON_MAX_ATTEMPTS: usize = 4;
 const PSCI_CPU_ON_RETRY_BACKOFF_MICROSECONDS: u64 = 500;
 const PSCI_CPU_ON_BACKOFF_ITERATION_CAP: usize = 1_000_000;
@@ -186,10 +185,14 @@ const BRINGUP_STAGE_ALLOCATING_IDLE_THREAD: u32 = 9;
 const BRINGUP_STAGE_IDLE_THREAD_ALLOCATED: u32 = 10;
 const BRINGUP_STAGE_REGISTERING_IDLE_THREAD: u32 = 11;
 const BRINGUP_STAGE_IDLE_THREAD_REGISTERED: u32 = 12;
-const BRINGUP_STAGE_INTERRUPTS_ENABLED: u32 = 13;
+const BRINGUP_STAGE_INTERRUPT_HANDOFF_READY: u32 = 13;
 const BRINGUP_STAGE_ONLINE: u32 = 14;
 
 /// One cache-line-isolated bring-up stage for a single CPU.
+///
+/// This is intentionally present in production builds: the plain kernel uses
+/// the same bounded SMP online wait and needs an actionable cold-boot wedge
+/// location. These stores execute only during one-time secondary bring-up.
 ///
 /// Secondary CPUs publish stages concurrently while CPU 0 samples them. If
 /// adjacent stages share a cache line, those stores invalidate one another and
@@ -253,7 +256,7 @@ pub fn bringup_stage_name(stage: u32) -> &'static str {
         BRINGUP_STAGE_IDLE_THREAD_ALLOCATED => "idle-thread-allocated",
         BRINGUP_STAGE_REGISTERING_IDLE_THREAD => "registering-idle-thread",
         BRINGUP_STAGE_IDLE_THREAD_REGISTERED => "idle-thread-registered",
-        BRINGUP_STAGE_INTERRUPTS_ENABLED => "interrupts-enabled",
+        BRINGUP_STAGE_INTERRUPT_HANDOFF_READY => "interrupt-handoff-ready",
         BRINGUP_STAGE_ONLINE => "online",
         _ => "unknown",
     }
@@ -306,25 +309,6 @@ fn psci_cpu_on_32(target_cpu: u64, entry_point: u64, context_id: u64) -> i64 {
     ret
 }
 
-/// PSCI CPU_ON with 64-bit function ID via SMC (EL3 firmware conduit).
-///
-/// This conduit is not attempted on VMware (EL1 guest, no EL3).
-/// SMC would trap to EL2 and likely fault. HVC is the correct conduit.
-fn psci_cpu_on_smc(target_cpu: u64, entry_point: u64, context_id: u64) -> i64 {
-    let ret: i64;
-    unsafe {
-        core::arch::asm!(
-            "smc #0",
-            inout("x0") PSCI_CPU_ON_64 => ret,
-            in("x1") target_cpu,
-            in("x2") entry_point,
-            in("x3") context_id,
-            options(nomem, nostack),
-        );
-    }
-    ret
-}
-
 fn psci_cpu_on_was_accepted(ret: i64) -> bool {
     matches!(
         ret,
@@ -338,7 +322,7 @@ fn psci_cpu_on_retry_backoff() {
         // P17/P19 in docs/polling-allowlist.md deliberately use a short 1MHz
         // boot fallback. P20/P21 instead fail closed because their deadlines
         // protect host harnesses.
-        CNTVCT_FALLBACK_FREQUENCY_HZ
+        super::timer::BOOT_COUNTER_FALLBACK_FREQUENCY_HZ
     } else {
         reported_frequency_hz
     };
@@ -383,19 +367,22 @@ pub fn release_cpu(cpu_id: usize) -> i64 {
     let context_id = cpu_id as u64;
 
     let mut ret = PSCI_RETURN_NOT_ATTEMPTED;
+    let mut attempts_made = 0usize;
     for attempt in 0..PSCI_CPU_ON_MAX_ATTEMPTS {
+        attempts_made = attempt + 1;
         // Preserve the established conduit order on every bounded attempt:
-        // HVC64 first, then HVC32. SMC remains deliberately excluded.
+        // HVC64 first, then HVC32. SMC remains deliberately excluded: an EL1
+        // guest has no EL3 conduit, so SMC would trap to EL2 and may fault.
         let hvc64_ret = psci_cpu_on(target_mpidr, entry_phys, context_id);
         ret = hvc64_ret;
         if !psci_cpu_on_was_accepted(ret) {
-            if attempt == 0 {
-                crate::serial_println!(
-                    "[smp] CPU {}: HVC64 failed (ret={}), trying HVC32...",
-                    cpu_id,
-                    hvc64_ret
-                );
-            }
+            crate::serial_println!(
+                "[smp] CPU {} attempt {}/{}: HVC64 failed (ret={}), trying HVC32...",
+                cpu_id,
+                attempt + 1,
+                PSCI_CPU_ON_MAX_ATTEMPTS,
+                hvc64_ret
+            );
             ret = psci_cpu_on_32(target_mpidr, entry_phys, context_id);
         }
         LAST_PSCI_RETURN_CODE[cpu_id].store(ret, Ordering::Release);
@@ -419,8 +406,9 @@ pub fn release_cpu(cpu_id: usize) -> i64 {
 
     if ret != 0 {
         crate::serial_println!(
-            "[smp] PSCI CPU_ON failed for CPU {}: ret={} (MPIDR={:#x} entry={:#x})",
+            "[smp] PSCI CPU_ON failed for CPU {} after {} attempts: ret={} (MPIDR={:#x} entry={:#x})",
             cpu_id,
+            attempts_made,
             ret,
             target_mpidr,
             entry_phys
@@ -513,18 +501,24 @@ pub extern "C" fn secondary_cpu_entry_rust(cpu_id: u64) -> ! {
     // an idle thread for this CPU before timer interrupts fire.
     create_and_register_idle_thread(cpu_id as usize);
 
-    // Enable interrupts so this CPU can handle timer ticks
-    unsafe {
-        super::cpu::enable_interrupts();
-    }
-    set_bringup_stage(cpu_id as usize, BRINGUP_STAGE_INTERRUPTS_ENABLED);
-
-    // Mark this CPU as online (after all init is complete)
+    // Publish every readiness signal before unmasking interrupts. The timer was
+    // armed earlier, so its PPI may already be pending here. If that first IRQ
+    // schedules another thread, the bootstrap continuation is intentionally not
+    // saved because it is registered as this CPU's idle thread. Nothing after the
+    // unmask is therefore guaranteed to run. This is the same bootstrap-handoff
+    // invariant enforced for CPU 0's first userspace dispatch in main_aarch64.rs.
+    set_bringup_stage(cpu_id as usize, BRINGUP_STAGE_INTERRUPT_HANDOFF_READY);
     if (cpu_id as usize) < MAX_CPUS {
         CPU_ONLINE[cpu_id as usize].store(true, Ordering::Release);
     }
-    CPUS_ONLINE.fetch_add(1, Ordering::Release);
     set_bringup_stage(cpu_id as usize, BRINGUP_STAGE_ONLINE);
+    CPUS_ONLINE.fetch_add(1, Ordering::Release);
+
+    // This must be the final fallible control-flow handoff. A pending timer or
+    // SGI may dispatch a runnable thread instead of returning here.
+    unsafe {
+        super::cpu::enable_interrupts();
+    }
 
     // Idle loop — wait for interrupts, handle timer, participate in scheduling
     loop {

@@ -62,11 +62,10 @@ struct KthreadExitProgressGuard;
 #[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
 impl KthreadExitProgressGuard {
     fn arm() -> Self {
-        KTHREAD_EXIT_PROGRESS_ACTIVE.store(0, Ordering::Release);
-        for slot in &KTHREAD_EXIT_PROGRESS {
-            slot.steps.store(0, Ordering::Relaxed);
-            slot.tid.store(0, Ordering::Relaxed);
-        }
+        // The gate runs once per boot and thread IDs are never reused. Keep the
+        // table insertion-only instead of clearing it: a recorder that observed
+        // ACTIVE=1 just before a prior guard dropped can never race a reset and
+        // write a stale step into a newly assigned slot.
         KTHREAD_EXIT_PROGRESS_ACTIVE.store(1, Ordering::Release);
         Self
     }
@@ -93,7 +92,11 @@ fn kthread_exit_progress_slot(tid: u64, create: bool) -> Option<&'static Kthread
         if current == tid {
             return Some(slot);
         }
-        if current == 0 && create {
+        if current == 0 && !create {
+            // Slots are insertion-only, so an empty slot terminates this probe.
+            return None;
+        }
+        if current == 0 {
             match slot
                 .tid
                 .compare_exchange(0, tid, Ordering::AcqRel, Ordering::Acquire)
@@ -108,8 +111,8 @@ fn kthread_exit_progress_slot(tid: u64, create: bool) -> Option<&'static Kthread
 }
 
 #[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
-fn watch_kthread_exit_progress_for_test(tid: u64) {
-    let _ = kthread_exit_progress_slot(tid, true);
+fn watch_kthread_exit_progress_for_test(tid: u64) -> bool {
+    kthread_exit_progress_slot(tid, true).is_some()
 }
 
 #[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
@@ -1263,6 +1266,7 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
         GateCeiling,
         CounterStall,
         CounterUnavailable,
+        ProgressUnavailable,
         JoinFailed,
     }
 
@@ -1274,29 +1278,17 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
                 Self::GateCeiling => "gate_ceiling",
                 Self::CounterStall => "cntvct_stall",
                 Self::CounterUnavailable => "counter_frequency_unavailable",
+                Self::ProgressUnavailable => "exit_progress_unavailable",
                 Self::JoinFailed => "join_failed",
             }
         }
 
-        fn message(self, no_progress_message: &'static str) -> &'static str {
-            match self {
-                Self::NoProgress => no_progress_message,
-                Self::AbsoluteCeiling => {
-                    "exit_kick_gate: absolute per-wait ceiling exceeded, awaited CPU unresponsive"
-                }
-                Self::GateCeiling => {
-                    "exit_kick_gate: aggregate gate ceiling exceeded, awaited CPU unresponsive"
-                }
-                Self::CounterStall => {
-                    "exit_kick_gate: CNTVCT stalled, awaited CPU unresponsive or counter frozen"
-                }
-                Self::CounterUnavailable => {
-                    "exit_kick_gate: counter frequency unavailable; cannot classify an unresponsive worker with wall-clock bounds"
-                }
-                Self::JoinFailed => {
-                    "exit_kick_gate: kthread join failed after exit observation, unresponsive bookkeeping invariant"
-                }
-            }
+        fn message(self, site_message: &'static str) -> &'static str {
+            // The evidence line already carries the precise failure cause. Keep
+            // the permanent FAIL line site-specific for every cause so a ceiling,
+            // counter failure, or join invariant still names the awaited worker.
+            let _ = self;
+            site_message
         }
     }
 
@@ -1386,11 +1378,7 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
                 last_advance_ms_ago: 0,
                 late_true,
             });
-            return if late_true {
-                Ok(())
-            } else {
-                Err(WaitFailureKind::CounterUnavailable)
-            };
+            return Err(WaitFailureKind::CounterUnavailable);
         }
 
         let first_progress_ticks =
@@ -1437,17 +1425,9 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
                 core::cmp::min(progress_deadline_elapsed, gate_deadline_elapsed);
 
             iterations = iterations.wrapping_add(1);
-            let mut failure = None;
-            if iterations % CNTVCT_STALL_SAMPLE_INTERVAL_ITERATIONS == 0 {
-                let counter_delta = now.wrapping_sub(last_counter_sample);
-                if counter_delta == 0 {
-                    failure = Some(WaitFailureKind::CounterStall);
-                }
-                last_counter_sample = now;
-            }
-
             let elapsed = now.wrapping_sub(wait_start);
-            if failure.is_none() && now.wrapping_sub(gate_started_at) >= gate_ceiling_ticks {
+            let mut failure = None;
+            if now.wrapping_sub(gate_started_at) >= gate_ceiling_ticks {
                 failure = Some(WaitFailureKind::GateCeiling);
             }
             if failure.is_none() && elapsed >= absolute_ceiling_ticks {
@@ -1455,6 +1435,62 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
             }
             if failure.is_none() && elapsed >= effective_deadline_elapsed {
                 failure = Some(WaitFailureKind::NoProgress);
+            }
+            if failure.is_none()
+                && iterations % CNTVCT_STALL_SAMPLE_INTERVAL_ITERATIONS == 0
+            {
+                let counter_delta = now.wrapping_sub(last_counter_sample);
+                if counter_delta == 0 {
+                    failure = Some(WaitFailureKind::CounterStall);
+                }
+                last_counter_sample = now;
+            }
+
+            if let Some(failure) = failure {
+                let verdict_at = crate::arch_impl::aarch64::timer::rdtsc_serialized();
+                let late_condition = condition_value();
+                let progress_final = progress();
+                let late_true = condition_met(late_condition);
+                let window_budget_ms = match failure {
+                    WaitFailureKind::NoProgress => {
+                        ticks_to_milliseconds(effective_deadline_elapsed, counter_frequency_hz)
+                    }
+                    WaitFailureKind::AbsoluteCeiling => ABSOLUTE_WAIT_CEILING_MILLISECONDS,
+                    WaitFailureKind::GateCeiling => GATE_CEILING_MILLISECONDS,
+                    WaitFailureKind::CounterStall
+                    | WaitFailureKind::CounterUnavailable
+                    | WaitFailureKind::ProgressUnavailable
+                    | WaitFailureKind::JoinFailed => 0,
+                };
+                print_wait_evidence(WaitEvidence {
+                    wait_name,
+                    failure,
+                    elapsed_ms: ticks_to_milliseconds(
+                        verdict_at.wrapping_sub(wait_start),
+                        counter_frequency_hz,
+                    ),
+                    window_budget_ms,
+                    re_kick_sgis,
+                    condition_current: late_condition,
+                    condition_expected,
+                    progress_start,
+                    progress_final,
+                    last_advance_ms_ago: ticks_to_milliseconds(
+                        verdict_at.wrapping_sub(last_advance),
+                        counter_frequency_hz,
+                    ),
+                    late_true,
+                });
+                // A no-progress threshold can race the awaited store, so its
+                // final reread may recover. Hard ceilings and counter failures
+                // remain failures even if the condition changes concurrently.
+                let recoverable_late_true =
+                    matches!(failure, WaitFailureKind::NoProgress) && late_true;
+                return if recoverable_late_true {
+                    Ok(())
+                } else {
+                    Err(failure)
+                };
             }
 
             if now.wrapping_sub(last_re_kick) >= re_kick_ticks {
@@ -1481,43 +1517,6 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
                 last_breadcrumb = now;
             }
 
-            if let Some(failure) = failure {
-                let verdict_at = crate::arch_impl::aarch64::timer::rdtsc_serialized();
-                let late_condition = condition_value();
-                let progress_final = progress();
-                let late_true = condition_met(late_condition);
-                let window_budget_ms = match failure {
-                    WaitFailureKind::NoProgress => {
-                        ticks_to_milliseconds(effective_deadline_elapsed, counter_frequency_hz)
-                    }
-                    WaitFailureKind::AbsoluteCeiling => ABSOLUTE_WAIT_CEILING_MILLISECONDS,
-                    WaitFailureKind::GateCeiling => GATE_CEILING_MILLISECONDS,
-                    WaitFailureKind::CounterStall
-                    | WaitFailureKind::CounterUnavailable
-                    | WaitFailureKind::JoinFailed => 0,
-                };
-                print_wait_evidence(WaitEvidence {
-                    wait_name,
-                    failure,
-                    elapsed_ms: ticks_to_milliseconds(
-                        verdict_at.wrapping_sub(wait_start),
-                        counter_frequency_hz,
-                    ),
-                    window_budget_ms,
-                    re_kick_sgis,
-                    condition_current: late_condition,
-                    condition_expected,
-                    progress_start,
-                    progress_final,
-                    last_advance_ms_ago: ticks_to_milliseconds(
-                        verdict_at.wrapping_sub(last_advance),
-                        counter_frequency_hz,
-                    ),
-                    late_true,
-                });
-                return if late_true { Ok(()) } else { Err(failure) };
-            }
-
             crate::task::scheduler::yield_current();
             core::hint::spin_loop();
         }
@@ -1534,7 +1533,24 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
         P: Fn() -> u64,
     {
         let tid = handle.tid();
-        watch_kthread_exit_progress_for_test(tid);
+        if !watch_kthread_exit_progress_for_test(tid) {
+            let progress = WaitProgress::work(work_progress());
+            print_wait_evidence(WaitEvidence {
+                wait_name,
+                failure: WaitFailureKind::ProgressUnavailable,
+                elapsed_ms: 0,
+                window_budget_ms: 0,
+                re_kick_sgis: 0,
+                condition_current: crate::task::kthread::kthread_has_exited_for_test(handle)
+                    as u64,
+                condition_expected: 1,
+                progress_start: progress,
+                progress_final: progress,
+                last_advance_ms_ago: 0,
+                late_true: false,
+            });
+            return Err(WaitFailureKind::ProgressUnavailable);
+        }
         let progress_start = WaitProgress {
             work: work_progress(),
             exit: kthread_exit_progress_for_test(tid),
@@ -1707,7 +1723,11 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
         PUBLISHER_A_CPU,
     ) {
         Ok(handle) => {
-            watch_kthread_exit_progress_for_test(handle.tid());
+            if !watch_kthread_exit_progress_for_test(handle.tid()) {
+                return TestResult::Fail(
+                    "exit_kick_gate: publisher A exit-progress registration failed, CPU 1 unresponsive classification unavailable",
+                );
+            }
             handle
         }
         Err(_) => return TestResult::Fail("failed to spawn held exit-kick publisher A"),
@@ -1751,7 +1771,11 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
         PUBLISHER_B_CPU,
     ) {
         Ok(handle) => {
-            watch_kthread_exit_progress_for_test(handle.tid());
+            if !watch_kthread_exit_progress_for_test(handle.tid()) {
+                return TestResult::Fail(
+                    "exit_kick_gate: publisher B exit-progress registration failed, CPU 2 unresponsive classification unavailable",
+                );
+            }
             handle
         }
         Err(_) => {
@@ -1875,6 +1899,7 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
     struct Accounting {
         workers_ready: AtomicU64,
         start: AtomicBool,
+        abort: AtomicBool,
         publisher_a_cpu_mask: AtomicU64,
         publisher_b_cpu_mask: AtomicU64,
         observer_cpu_mask: AtomicU64,
@@ -1905,6 +1930,7 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
     let accounting = Arc::new(Accounting {
         workers_ready: AtomicU64::new(0),
         start: AtomicBool::new(false),
+        abort: AtomicBool::new(false),
         publisher_a_cpu_mask: AtomicU64::new(0),
         publisher_b_cpu_mask: AtomicU64::new(0),
         observer_cpu_mask: AtomicU64::new(0),
@@ -1922,6 +1948,38 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
         observer_running: AtomicBool::new(false),
         observer_done: AtomicBool::new(false),
     });
+
+    struct StormAbortGuard {
+        accounting: Arc<Accounting>,
+        armed: bool,
+    }
+
+    impl StormAbortGuard {
+        fn arm(accounting: &Arc<Accounting>) -> Self {
+            Self {
+                accounting: Arc::clone(accounting),
+                armed: true,
+            }
+        }
+
+        fn disarm(&mut self) {
+            self.armed = false;
+        }
+    }
+
+    impl Drop for StormAbortGuard {
+        fn drop(&mut self) {
+            if self.armed {
+                // Release every worker-side rendezvous before the coordinator
+                // returns a permanent FAIL. Live workers then leave their
+                // closures instead of spinning for the rest of the boot.
+                self.accounting.abort.store(true, Ordering::Release);
+                self.accounting.start.store(true, Ordering::Release);
+            }
+        }
+    }
+
+    let mut storm_abort_guard = StormAbortGuard::arm(&accounting);
 
     let spawn_publisher = |pid: u64, name: &'static str, cpu: usize| {
         let slot = Arc::clone(&storm_slot);
@@ -1950,20 +2008,35 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
                 }
                 accounting.workers_ready.fetch_add(1, Ordering::Release);
                 while !accounting.start.load(Ordering::Acquire) {
+                    if accounting.abort.load(Ordering::Acquire) {
+                        return;
+                    }
                     crate::task::scheduler::yield_current();
                     core::hint::spin_loop();
                 }
+                if accounting.abort.load(Ordering::Acquire) {
+                    return;
+                }
                 while !accounting.observer_running.load(Ordering::Acquire) {
+                    if accounting.abort.load(Ordering::Acquire) {
+                        return;
+                    }
                     crate::task::scheduler::yield_current();
                     core::hint::spin_loop();
                 }
                 if pid == PID_B {
                     while accounting.observations.load(Ordering::Acquire) == 0 {
+                        if accounting.abort.load(Ordering::Acquire) {
+                            return;
+                        }
                         crate::task::scheduler::yield_current();
                         core::hint::spin_loop();
                     }
                 }
                 for attempt in 0..ATTEMPTS_PER_PUBLISHER {
+                    if accounting.abort.load(Ordering::Acquire) {
+                        return;
+                    }
                     if pid == PID_A {
                         accounting
                             .publisher_a_progress
@@ -2011,6 +2084,9 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
                     }
                     if pid == PID_A && attempt == 0 {
                         while accounting.observations.load(Ordering::Acquire) == 0 {
+                            if accounting.abort.load(Ordering::Acquire) {
+                                return;
+                            }
                             crate::task::scheduler::yield_current();
                             core::hint::spin_loop();
                         }
@@ -2064,14 +2140,22 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
 
     let publisher_a = match spawn_publisher(PID_A, "exit_kick_pub_a", worker_cpus[0]) {
         Ok(handle) => {
-            watch_kthread_exit_progress_for_test(handle.tid());
+            if !watch_kthread_exit_progress_for_test(handle.tid()) {
+                return TestResult::Fail(
+                    "exit_kick_gate: storm publisher A exit-progress registration failed, a worker CPU (1/2/3) is unresponsive",
+                );
+            }
             handle
         }
         Err(_) => return TestResult::Fail("failed to spawn exit-kick publisher A"),
     };
     let publisher_b = match spawn_publisher(PID_B, "exit_kick_pub_b", worker_cpus[1]) {
         Ok(handle) => {
-            watch_kthread_exit_progress_for_test(handle.tid());
+            if !watch_kthread_exit_progress_for_test(handle.tid()) {
+                return TestResult::Fail(
+                    "exit_kick_gate: storm publisher B exit-progress registration failed, a worker CPU (1/2/3) is unresponsive",
+                );
+            }
             handle
         }
         Err(_) => return TestResult::Fail("failed to spawn exit-kick publisher B"),
@@ -2093,13 +2177,22 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
                 .workers_ready
                 .fetch_add(1, Ordering::Release);
             while !observer_accounting.start.load(Ordering::Acquire) {
+                if observer_accounting.abort.load(Ordering::Acquire) {
+                    return;
+                }
                 crate::task::scheduler::yield_current();
                 core::hint::spin_loop();
+            }
+            if observer_accounting.abort.load(Ordering::Acquire) {
+                return;
             }
             observer_accounting
                 .observer_running
                 .store(true, Ordering::Release);
             while observer_accounting.publishers_done.load(Ordering::Acquire) != 2 {
+                if observer_accounting.abort.load(Ordering::Acquire) {
+                    return;
+                }
                 observer_accounting
                     .observer_progress
                     .fetch_add(1, Ordering::Release);
@@ -2146,7 +2239,11 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
         worker_cpus[2],
     ) {
         Ok(handle) => {
-            watch_kthread_exit_progress_for_test(handle.tid());
+            if !watch_kthread_exit_progress_for_test(handle.tid()) {
+                return TestResult::Fail(
+                    "exit_kick_gate: storm observer exit-progress registration failed, a worker CPU (1/2/3) is unresponsive",
+                );
+            }
             handle
         }
         Err(_) => return TestResult::Fail("failed to spawn exit-kick observer"),
@@ -2221,6 +2318,7 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
             "exit_kick_gate: storm observer join stuck, a worker CPU (1/2/3) is unresponsive",
         ));
     }
+    storm_abort_guard.disarm();
 
     let attempts = accounting.next_token.load(Ordering::Acquire);
     let published = accounting.published.load(Ordering::Acquire);

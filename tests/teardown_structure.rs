@@ -114,25 +114,144 @@ fn source<'a>(sources: &'a [(String, String)], path: &str) -> &'a str {
 }
 
 fn function_body<'a>(source: &'a str, name: &str) -> &'a str {
-    let marker = format!("fn {name}");
-    let start = source
-        .find(&marker)
+    let plain_marker = format!("fn {name}(");
+    let generic_marker = format!("fn {name}<");
+    let start = [source.find(&plain_marker), source.find(&generic_marker)]
+        .into_iter()
+        .flatten()
+        .min()
         .unwrap_or_else(|| panic!("missing function {name}"));
-    let open = start + source[start..].find('{').expect("function open brace");
+    let bytes = source.as_bytes();
+    let mut line_comment = false;
+    let mut block_comment_depth = 0usize;
+    let mut string = false;
+    let mut character = false;
+    let mut raw_string_hashes = None;
+    let mut escaped = false;
     let mut depth = 0usize;
-    for (offset, byte) in source.as_bytes()[open..].iter().enumerate() {
+    let mut open = None;
+    let mut index = start;
+    while index < bytes.len() {
+        let byte = bytes[index];
+
+        if line_comment {
+            if byte == b'\n' {
+                line_comment = false;
+            }
+            index += 1;
+            continue;
+        }
+        if block_comment_depth != 0 {
+            if byte == b'/' && bytes.get(index + 1) == Some(&b'*') {
+                block_comment_depth += 1;
+                index += 2;
+            } else if byte == b'*' && bytes.get(index + 1) == Some(&b'/') {
+                block_comment_depth -= 1;
+                index += 2;
+            } else {
+                index += 1;
+            }
+            continue;
+        }
+        if let Some(hashes) = raw_string_hashes {
+            if byte == b'"'
+                && bytes
+                    .get(index + 1..index + 1 + hashes)
+                    .is_some_and(|suffix| suffix.iter().all(|byte| *byte == b'#'))
+            {
+                raw_string_hashes = None;
+                index += hashes + 1;
+            }
+            index += 1;
+            continue;
+        }
+        if string || character {
+            if escaped {
+                escaped = false;
+            } else if byte == b'\\' {
+                escaped = true;
+            } else if (string && byte == b'"') || (character && byte == b'\'') {
+                string = false;
+                character = false;
+            }
+            index += 1;
+            continue;
+        }
+
+        if byte == b'/' && bytes.get(index + 1) == Some(&b'/') {
+            line_comment = true;
+            index += 2;
+            continue;
+        }
+        if byte == b'/' && bytes.get(index + 1) == Some(&b'*') {
+            block_comment_depth = 1;
+            index += 2;
+            continue;
+        }
+        if byte == b'r' {
+            let mut quote = index + 1;
+            while bytes.get(quote) == Some(&b'#') {
+                quote += 1;
+            }
+            if bytes.get(quote) == Some(&b'"') {
+                raw_string_hashes = Some(quote - index - 1);
+                index = quote + 1;
+                continue;
+            }
+        }
+        if byte == b'"' {
+            string = true;
+            index += 1;
+            continue;
+        }
+        if byte == b'\'' {
+            let plain_char = bytes.get(index + 2) == Some(&b'\'');
+            let escaped_char = bytes.get(index + 1) == Some(&b'\\')
+                && bytes.get(index + 3) == Some(&b'\'');
+            if plain_char || escaped_char {
+                character = true;
+                index += 1;
+                continue;
+            }
+        }
+
         match byte {
-            b'{' => depth += 1,
-            b'}' => {
+            b'{' => {
+                open.get_or_insert(index);
+                depth += 1;
+            }
+            b'}' if open.is_some() => {
                 depth -= 1;
                 if depth == 0 {
-                    return &source[start..open + offset + 1];
+                    return &source[start..index + 1];
                 }
             }
             _ => {}
         }
+        index += 1;
     }
     panic!("unterminated function {name}")
+}
+
+#[test]
+fn function_body_is_lexically_scoped_and_exactly_named() {
+    let fixture = r##"
+fn target_helper() { panic!("}") }
+fn target() {
+    let _ordinary = "}";
+    let _raw = r#"}"#;
+    let _character = '}';
+    // }
+    /* } */
+    if true { }
+}
+fn later() {}
+"##;
+    let body = function_body(fixture, "target");
+    assert!(body.starts_with("fn target()"));
+    assert!(body.contains("if true { }"));
+    assert!(!body.contains("target_helper"));
+    assert!(!body.contains("fn later"));
 }
 
 const TERMINATE_CALLS: &[(&str, usize)] = &[
@@ -185,7 +304,7 @@ const EXIT_PROCESS_BY_PID_CALLS: &[(&str, usize)] = &[
     ("kernel/src/process/mod.rs", 418),
 ];
 const EXIT_PROCESS_FOR_TEARDOWN_TEST_CALLS: &[(&str, usize)] =
-    &[("kernel/src/tracing/providers/teardown.rs", 1047)];
+    &[("kernel/src/tracing/providers/teardown.rs", 1050)];
 const BLOCKING_PRIMITIVES: &[(&str, usize)] = &[
     ("kernel/src/task/scheduler.rs", 1973),
     ("kernel/src/task/scheduler.rs", 2187),
@@ -619,6 +738,7 @@ fn aarch64_exit_kick_waits_are_progress_bounded() {
         "elapsed >= effective_deadline_elapsed",
         "elapsed >= absolute_ceiling_ticks",
         "now.wrapping_sub(gate_started_at) >= gate_ceiling_ticks",
+        "matches!(failure, WaitFailureKind::NoProgress) && late_true",
         "now.wrapping_sub(last_re_kick) >= re_kick_ticks",
         "if elapsed >= no_progress_ticks",
         "let late_condition = condition_value();",
@@ -641,6 +761,10 @@ fn aarch64_exit_kick_waits_are_progress_bounded() {
         "let storm_publisher_b_progress =",
         "let storm_observer_progress =",
         "exit: kthread_exit_progress_for_test(tid)",
+        "WaitFailureKind::ProgressUnavailable",
+        "struct StormAbortGuard",
+        "abort: AtomicBool",
+        "self.accounting.abort.store(true, Ordering::Release);",
         "exit-kick reservation-loss publisher CPU is not online",
         "exit-kick storm requires four online CPUs",
     ] {
@@ -733,6 +857,67 @@ fn aarch64_exit_kick_waits_are_progress_bounded() {
         "the reservation wait must remain coordinator-owned"
     );
 
+    let gate_ceiling_check = gate
+        .find("now.wrapping_sub(gate_started_at) >= gate_ceiling_ticks")
+        .expect("aggregate gate-ceiling check");
+    let absolute_ceiling_check = gate
+        .find("elapsed >= absolute_ceiling_ticks")
+        .expect("absolute wait-ceiling check");
+    let no_progress_check = gate
+        .find("elapsed >= effective_deadline_elapsed")
+        .expect("no-progress check");
+    let counter_stall_check = gate
+        .find("iterations % CNTVCT_STALL_SAMPLE_INTERVAL_ITERATIONS == 0")
+        .expect("counter-stall sampling");
+    let failure_verdict = gate
+        .find("if let Some(failure) = failure")
+        .expect("failure verdict");
+    let periodic_rekick = gate
+        .find("if now.wrapping_sub(last_re_kick) >= re_kick_ticks")
+        .expect("periodic reschedule re-kick");
+    assert!(
+        gate_ceiling_check < absolute_ceiling_check
+            && absolute_ceiling_check < no_progress_check
+            && no_progress_check < counter_stall_check,
+        "real wait deadlines must take precedence over a simultaneous CNTVCT-stall sample"
+    );
+    assert!(
+        failure_verdict < periodic_rekick,
+        "a decided failure must return before sending another reschedule SGI"
+    );
+
+    let progress_slot = function_body(&provider, "kthread_exit_progress_slot");
+    assert!(progress_slot.contains("if current == 0 && !create"));
+    assert!(progress_slot.contains("return None;"));
+    let progress_guard_arm = function_body(&provider, "arm");
+    assert!(!progress_guard_arm.contains("slot.tid.store(0"));
+    assert!(!progress_guard_arm.contains("slot.steps.store(0"));
+    let progress_watch = function_body(&provider, "watch_kthread_exit_progress_for_test");
+    assert!(progress_watch.contains("-> bool"));
+    assert!(progress_watch.contains(".is_some()"));
+    assert_eq!(
+        gate.matches("if !watch_kthread_exit_progress_for_test").count(),
+        6,
+        "every exit-progress registration must fail explicitly"
+    );
+    let storm_abort_arm = gate
+        .find("let mut storm_abort_guard = StormAbortGuard::arm(&accounting);")
+        .expect("storm abort guard arm");
+    let first_storm_spawn = gate
+        .find("let publisher_a = match spawn_publisher")
+        .expect("first storm spawn");
+    let storm_abort_disarm = gate
+        .find("storm_abort_guard.disarm();")
+        .expect("storm abort guard disarm");
+    let last_storm_join = gate
+        .find("storm observer join stuck")
+        .expect("last storm join failure");
+    assert!(
+        storm_abort_arm < first_storm_spawn && last_storm_join < storm_abort_disarm,
+        "storm workers must be released on every coordinator failure before all joins complete"
+    );
+    assert!(gate.matches("abort.load(Ordering::Acquire)").count() >= 8);
+
     let exit_progress_reader = function_body(&provider, "kthread_exit_progress_for_test");
     assert!(exit_progress_reader.contains("kthread_exit_progress_slot(tid, false)"));
     assert!(!exit_progress_reader.contains("kthread_exit_progress_slot(tid, true)"));
@@ -816,10 +1001,20 @@ fn aarch64_exit_kick_waits_are_progress_bounded() {
     assert!(!smp.contains("PSCI_RETURN_INTERNAL_FAILURE"));
     assert!(smp.contains("PSCI_CPU_ON_BACKOFF_ITERATION_CAP"));
     assert!(smp.contains("LAST_PSCI_RETURN_CODE[cpu_id].store(ret, Ordering::Release);"));
-    assert!(smp.contains("SMC would trap to EL2 and likely fault. HVC is the correct conduit."));
+    assert!(smp.contains("SMC would trap to EL2 and may fault."));
     assert!(smp.contains("`ALREADY_ON`, or `ON_PENDING`"));
     assert!(smp.contains("[`last_psci_return_code()`]"));
     assert!(smp.contains("PSCI CPU_ON accepted after {} attempts (raw_status={})"));
+    assert!(smp.contains("attempt {}/{}: HVC64 failed"));
+    assert!(smp.contains("PSCI CPU_ON failed for CPU {} after {} attempts"));
+    assert!(!smp.contains("fn psci_cpu_on_smc"));
+    assert!(!smp.contains("pub const CNTVCT_FALLBACK_FREQUENCY_HZ"));
+    let timer = repo_text("kernel/src/arch_impl/aarch64/timer.rs");
+    assert!(timer.contains("pub const BOOT_COUNTER_FALLBACK_FREQUENCY_HZ: u64 = 1_000_000;"));
+    assert!(smp.contains("super::timer::BOOT_COUNTER_FALLBACK_FREQUENCY_HZ"));
+    assert!(main.contains(
+        "kernel::arch_impl::aarch64::timer::BOOT_COUNTER_FALLBACK_FREQUENCY_HZ"
+    ));
     assert!(smp.contains("#[repr(C, align(64))]"));
     assert!(smp.contains("struct CpuBringupStage"));
     assert!(smp.contains("_padding: [u8; 60]"));
@@ -835,9 +1030,12 @@ fn aarch64_exit_kick_waits_are_progress_bounded() {
         "const BRINGUP_STAGE_IDLE_THREAD_ALLOCATED: u32 = 10;",
         "const BRINGUP_STAGE_REGISTERING_IDLE_THREAD: u32 = 11;",
         "const BRINGUP_STAGE_IDLE_THREAD_REGISTERED: u32 = 12;",
+        "const BRINGUP_STAGE_INTERRUPT_HANDOFF_READY: u32 = 13;",
+        "const BRINGUP_STAGE_ONLINE: u32 = 14;",
     ] {
         assert!(smp.contains(stage_constant));
     }
+    assert!(smp.contains("BRINGUP_STAGE_INTERRUPT_HANDOFF_READY => \"interrupt-handoff-ready\""));
 
     let stage_setter = function_body(&smp, "set_bringup_stage");
     assert!(stage_setter.contains("CPU_BRINGUP_STAGE.get(cpu_id)"));
@@ -851,6 +1049,32 @@ fn aarch64_exit_kick_waits_are_progress_bounded() {
 
     let secondary_entry = function_body(&smp, "secondary_cpu_entry_rust");
     assert_eq!(secondary_entry.matches("set_bringup_stage(").count(), 10);
+    let interrupt_handoff_ready = secondary_entry
+        .find("BRINGUP_STAGE_INTERRUPT_HANDOFF_READY")
+        .expect("secondary interrupt-handoff-ready stage");
+    let online_flag = secondary_entry
+        .find("CPU_ONLINE[cpu_id as usize].store(true, Ordering::Release);")
+        .expect("secondary per-CPU online publication");
+    let online_stage = secondary_entry
+        .find("set_bringup_stage(cpu_id as usize, BRINGUP_STAGE_ONLINE);")
+        .expect("secondary online stage publication");
+    let online_count = secondary_entry
+        .find("CPUS_ONLINE.fetch_add(1, Ordering::Release);")
+        .expect("secondary online-count publication");
+    let interrupt_enable = secondary_entry
+        .find("super::cpu::enable_interrupts();")
+        .expect("secondary interrupt enable");
+    assert!(
+        interrupt_handoff_ready < online_flag
+            && online_flag < online_stage
+            && online_stage < online_count
+            && online_count < interrupt_enable,
+        "secondary readiness and online state must be published before a pending IRQ can schedule away the bootstrap continuation"
+    );
+    assert!(
+        !secondary_entry[interrupt_enable..].contains("set_bringup_stage("),
+        "no bring-up stage may depend on returning from the first unmasked IRQ"
+    );
 
     let create_idle = function_body(&smp, "create_and_register_idle_thread");
     assert_eq!(create_idle.matches("set_bringup_stage(").count(), 4);
