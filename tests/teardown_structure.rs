@@ -608,8 +608,12 @@ fn aarch64_exit_kick_waits_are_progress_bounded() {
         "let counter_delta = now.wrapping_sub(last_counter_sample);",
         "if counter_delta == 0",
         "progress_current.advanced_from(last_progress)",
-        "let (governing_window_ticks, governing_window_milliseconds) = if progress_rearmed",
-        "now.wrapping_sub(last_advance) >= governing_window_ticks",
+        "let no_progress_deadline_elapsed = last_advance",
+        ".wrapping_sub(wait_start)",
+        ".saturating_add(no_progress_ticks);",
+        "let effective_deadline_elapsed =",
+        "core::cmp::max(first_progress_ticks, no_progress_deadline_elapsed);",
+        "elapsed >= effective_deadline_elapsed",
         "elapsed >= absolute_ceiling_ticks",
         "now.wrapping_sub(last_re_kick) >= re_kick_ticks",
         "if elapsed >= no_progress_ticks",
@@ -617,7 +621,7 @@ fn aarch64_exit_kick_waits_are_progress_bounded() {
         "struct WaitEvidence<'a>",
         "fn print_wait_evidence(evidence: WaitEvidence<'_>)",
         "cause={} elapsed_ms={} window_budget_ms={}",
-        "WaitFailureKind::NoProgress => governing_window_milliseconds",
+        "ticks_to_milliseconds(effective_deadline_elapsed, counter_frequency_hz)",
         "WaitFailureKind::AbsoluteCeiling => ABSOLUTE_WAIT_CEILING_MILLISECONDS",
         "| WaitFailureKind::JoinFailed => 0",
         "last_advance_ms_ago={}",
@@ -639,6 +643,8 @@ fn aarch64_exit_kick_waits_are_progress_bounded() {
         );
     }
     assert!(!gate.contains("HANDSHAKE_SPIN_CAP"));
+    assert!(!gate.contains("progress_rearmed"));
+    assert!(!gate.contains("governing_window_ticks"));
     assert!(!gate.contains("TIMER_TICK_COUNT"));
     assert!(!gate.contains("WHOLE_GATE_BUDGET"));
     assert_eq!(
@@ -787,6 +793,57 @@ fn aarch64_exit_kick_waits_are_progress_bounded() {
         .find("set_bringup_stage(cpu_id, BRINGUP_STAGE_IDLE_THREAD_REGISTERED);")
         .expect("idle-thread scheduler registration completion stage");
     assert!(registering < registration && registration < registered);
+}
+
+#[test]
+fn aarch64_boot_test_subsystem_joins_are_stage_bounded() {
+    let executor = repo_text("kernel/src/test_framework/executor.rs");
+    for required in [
+        "const BOOT_TEST_STAGE_JOIN_CEILING_MILLISECONDS: u64 = 80_000;",
+        "const BOOT_TEST_JOIN_REKICK_INTERVAL_MILLISECONDS: u64 = 50;",
+        "#[cfg(all(feature = \"boot_tests\", target_arch = \"aarch64\"))]\nfn join_boot_test_kthread_bounded",
+        "#[cfg(not(all(feature = \"boot_tests\", target_arch = \"aarch64\")))]",
+    ] {
+        assert!(
+            executor.contains(required),
+            "missing bounded boot-test join invariant: {required}"
+        );
+    }
+
+    let bounded_join = function_body(&executor, "join_boot_test_kthread_bounded");
+    for required in [
+        "if counter_frequency_hz == 0",
+        "kthread_has_exited_for_test(handle)",
+        "now.wrapping_sub(stage_join_started_at) >= stage_join_ceiling_ticks",
+        "now.wrapping_sub(last_re_kick) >= re_kick_ticks",
+        "for cpu in 0..cpus_online",
+        "SGI_RESCHEDULE as u8",
+        "[boot_tests] subsystem_join_timeout subsystem={} stage={} elapsed_ms={} stage_elapsed_ms={} re_kick_sgis={} cpus_online={}",
+        "[BOOT_TESTS:FAIL:subsystem_join_timeout]",
+        "crate::arch_halt();",
+    ] {
+        assert!(
+            bounded_join.contains(required),
+            "missing bounded boot-test join behavior: {required}"
+        );
+    }
+    assert!(!bounded_join.contains("TIMER_TICK_COUNT"));
+    assert!(!bounded_join.contains("iterations"));
+
+    let run_stage = function_body(&executor, "run_staged_tests");
+    for required in [
+        "let stage_join_started_at =",
+        "join_boot_test_kthread_bounded(",
+        "mark_failed(id);",
+        "total_failed += 1;",
+        "break;",
+        "match kthread_join(&handle)",
+    ] {
+        assert!(
+            run_stage.contains(required),
+            "run_staged_tests lost bounded-join handling: {required}"
+        );
+    }
 }
 
 #[test]

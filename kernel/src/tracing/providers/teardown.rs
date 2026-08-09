@@ -1219,22 +1219,19 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
 
     // ---- Cross-CPU handshake watchdog (test harness only) --------------------
     //
-    // Each coordinator-owned wait has its own CNTVCT deadline. Until a wait sees
-    // target progress it allows eight seconds for first scheduling; after any
-    // advance, a three-second no-progress window is re-armed only by worker-owned
-    // work or per-TID exit-stage counters. CPU timer ticks never count as progress.
-    // Thus a starved-but-running target re-arms and cannot false-FAIL, a target
-    // that never runs FAILs in eight seconds, and a target that ran and then wedged
-    // FAILs within three seconds of its true stall. Eight seconds remains well
-    // inside the strict harness's 20-second kill and the 90-second Phase-1 budget.
-    // A separate 15-second ceiling is the hard backstop, and resched SGIs are
-    // re-sent every 50ms. There is deliberately no aggregate gate cap: a ceiling
-    // expiry logs evidence and returns immediately, while multiple long waits can
-    // accumulate only through separately evidenced late-true recoveries. Clean
-    // gates complete in milliseconds and observed starved gates in single-digit
-    // seconds, keeping the gate well inside Phase 1. A late success is local to
-    // its wait; the next wait starts with a fresh window. This observes the
-    // EXIT_KICK test without changing its protocol.
+    // Each coordinator-owned wait has its own CNTVCT deadline. Every wait keeps an
+    // unconditional eight-second floor from wait entry. After that floor, it may
+    // fail only when worker-owned work or per-TID exit-stage counters have also
+    // made no advance for three seconds. The effective no-progress deadline is
+    // therefore max(wait_start + 8s, last_advance + 3s). This matters when progress
+    // is a union: one sibling's early advance cannot shorten another sibling's
+    // first-schedule allowance. CPU timer ticks never count as progress. Aggregate
+    // progress is not necessarily target-attributable, so the separate 15-second
+    // ceiling remains the hard backstop. Resched SGIs are re-sent every 50ms.
+    // There is deliberately no aggregate gate cap; each expired wait logs evidence,
+    // and a late-true recovery starts no new time for the current wait. The next
+    // wait receives fresh floor/window/ceiling clocks. This observes the EXIT_KICK
+    // test without changing its protocol.
     const FIRST_PROGRESS_WINDOW_MILLISECONDS: u64 = 8_000;
     const NO_PROGRESS_WINDOW_MILLISECONDS: u64 = 3_000;
     const ABSOLUTE_WAIT_CEILING_MILLISECONDS: u64 = 15_000;
@@ -1404,7 +1401,6 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
         let mut last_breadcrumb = wait_start;
         let mut iterations = 0u64;
         let mut re_kick_sgis = 0u64;
-        let mut progress_rearmed = false;
 
         loop {
             let condition_current = condition_value();
@@ -1417,13 +1413,12 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
             if progress_current.advanced_from(last_progress) {
                 last_progress = progress_current;
                 last_advance = now;
-                progress_rearmed = true;
             }
-            let (governing_window_ticks, governing_window_milliseconds) = if progress_rearmed {
-                (no_progress_ticks, NO_PROGRESS_WINDOW_MILLISECONDS)
-            } else {
-                (first_progress_ticks, FIRST_PROGRESS_WINDOW_MILLISECONDS)
-            };
+            let no_progress_deadline_elapsed = last_advance
+                .wrapping_sub(wait_start)
+                .saturating_add(no_progress_ticks);
+            let effective_deadline_elapsed =
+                core::cmp::max(first_progress_ticks, no_progress_deadline_elapsed);
 
             iterations = iterations.wrapping_add(1);
             let mut failure = None;
@@ -1439,7 +1434,7 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
             if failure.is_none() && elapsed >= absolute_ceiling_ticks {
                 failure = Some(WaitFailureKind::AbsoluteCeiling);
             }
-            if failure.is_none() && now.wrapping_sub(last_advance) >= governing_window_ticks {
+            if failure.is_none() && elapsed >= effective_deadline_elapsed {
                 failure = Some(WaitFailureKind::NoProgress);
             }
 
@@ -1473,7 +1468,9 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
                 let progress_final = progress();
                 let late_true = condition_met(late_condition);
                 let window_budget_ms = match failure {
-                    WaitFailureKind::NoProgress => governing_window_milliseconds,
+                    WaitFailureKind::NoProgress => {
+                        ticks_to_milliseconds(effective_deadline_elapsed, counter_frequency_hz)
+                    }
                     WaitFailureKind::AbsoluteCeiling => ABSOLUTE_WAIT_CEILING_MILLISECONDS,
                     WaitFailureKind::CounterStall
                     | WaitFailureKind::CounterUnavailable

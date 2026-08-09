@@ -46,6 +46,109 @@ use super::registry::{Subsystem, SubsystemId, TestResult, TestStage, SUBSYSTEMS}
 use crate::serial_println;
 use crate::task::kthread::{kthread_join, kthread_run, KthreadHandle};
 
+#[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
+const BOOT_TEST_STAGE_JOIN_CEILING_MILLISECONDS: u64 = 80_000;
+#[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
+const BOOT_TEST_JOIN_REKICK_INTERVAL_MILLISECONDS: u64 = 50;
+
+#[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
+enum BootTestJoinFailure {
+    Join(crate::task::kthread::KthreadError),
+    Watchdog,
+}
+
+/// Join one subsystem worker without allowing the boot-test harness to hang
+/// silently on a host-starved aarch64 vCPU.
+///
+/// All workers in a stage are spawned together, so every sequential join shares
+/// one 80-second stage deadline. Thus all 11 EarlyBoot joins together consume at
+/// most 80 seconds, rather than 11 independent ceilings. Eighty seconds is ten
+/// below Phase 1's 90-second budget and forty below QEMU's 120-second kill, but
+/// the Phase-1 clock starts before this join phase, so that ten seconds is not
+/// guaranteed headroom. The fail_002 artifact remained stalled beyond 80 seconds,
+/// so this ceiling guarantees an actionable failure but cannot guarantee recovery
+/// under that extreme 14-hog starvation profile.
+#[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
+fn join_boot_test_kthread_bounded(
+    subsystem: SubsystemId,
+    target_stage: TestStage,
+    handle: &KthreadHandle,
+    stage_join_started_at: u64,
+) -> Result<i32, BootTestJoinFailure> {
+    use crate::arch_impl::aarch64::{constants::SGI_RESCHEDULE, gic, smp, timer};
+    use crate::task::kthread::kthread_has_exited_for_test;
+
+    if kthread_has_exited_for_test(handle) {
+        return kthread_join(handle).map_err(BootTestJoinFailure::Join);
+    }
+
+    let counter_frequency_hz = timer::frequency_hz();
+    if counter_frequency_hz == 0 {
+        serial_println!(
+            "[boot_tests] subsystem_join_watchdog_failure subsystem={} stage={} cause=counter_frequency_unavailable elapsed_ms=0 re_kick_sgis=0 cpus_online={}",
+            subsystem.name(),
+            target_stage.name(),
+            smp::cpus_online(),
+        );
+        serial_println!("[BOOT_TESTS:FAIL:subsystem_join_watchdog]");
+        return Err(BootTestJoinFailure::Watchdog);
+    }
+
+    let stage_join_ceiling_ticks =
+        (counter_frequency_hz.saturating_mul(BOOT_TEST_STAGE_JOIN_CEILING_MILLISECONDS) / 1_000)
+            .max(1);
+    let re_kick_ticks =
+        (counter_frequency_hz.saturating_mul(BOOT_TEST_JOIN_REKICK_INTERVAL_MILLISECONDS) / 1_000)
+            .max(1);
+    let wait_started_at = timer::rdtsc_serialized();
+    let mut last_re_kick = wait_started_at;
+    let mut re_kick_sgis = 0u64;
+
+    loop {
+        if kthread_has_exited_for_test(handle) {
+            return kthread_join(handle).map_err(BootTestJoinFailure::Join);
+        }
+
+        let now = timer::rdtsc_serialized();
+        if now.wrapping_sub(stage_join_started_at) >= stage_join_ceiling_ticks {
+            // Close the deadline race before emitting a permanent failure marker.
+            if kthread_has_exited_for_test(handle) {
+                return kthread_join(handle).map_err(BootTestJoinFailure::Join);
+            }
+
+            let cpus_online = smp::cpus_online();
+            let elapsed_ms =
+                now.wrapping_sub(wait_started_at).saturating_mul(1_000) / counter_frequency_hz;
+            let stage_elapsed_ms = now
+                .wrapping_sub(stage_join_started_at)
+                .saturating_mul(1_000)
+                / counter_frequency_hz;
+            serial_println!(
+                "[boot_tests] subsystem_join_timeout subsystem={} stage={} elapsed_ms={} stage_elapsed_ms={} re_kick_sgis={} cpus_online={}",
+                subsystem.name(),
+                target_stage.name(),
+                elapsed_ms,
+                stage_elapsed_ms,
+                re_kick_sgis,
+                cpus_online,
+            );
+            serial_println!("[BOOT_TESTS:FAIL:subsystem_join_timeout]");
+            return Err(BootTestJoinFailure::Watchdog);
+        }
+
+        if now.wrapping_sub(last_re_kick) >= re_kick_ticks {
+            let cpus_online = smp::cpus_online();
+            for cpu in 0..cpus_online {
+                gic::send_sgi(SGI_RESCHEDULE as u8, cpu as u8);
+                re_kick_sgis = re_kick_sgis.saturating_add(1);
+            }
+            last_re_kick = now;
+        }
+
+        crate::arch_halt();
+    }
+}
+
 /// Current boot stage - tests with stage <= this can run
 static CURRENT_STAGE: AtomicU8 = AtomicU8::new(TestStage::EarlyBoot as u8);
 
@@ -222,9 +325,32 @@ fn run_staged_tests(target_stage: TestStage) -> u32 {
         }
     }
 
-    // Wait for all test threads to complete
+    // Wait for all test threads to complete. On aarch64 boot-test builds the
+    // timestamp is shared by every sequential join, preventing N handles from
+    // multiplying the watchdog ceiling.
+    #[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
+    let stage_join_started_at = crate::arch_impl::aarch64::timer::rdtsc_serialized();
     let mut total_failed = 0u32;
     for (id, handle) in handles {
+        #[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
+        match join_boot_test_kthread_bounded(id, target_stage, &handle, stage_join_started_at) {
+            Ok(exit_code) => {
+                if exit_code != 0 {
+                    total_failed += exit_code as u32;
+                }
+            }
+            Err(BootTestJoinFailure::Join(e)) => {
+                serial_println!("[SUBSYSTEM:{}:JOIN_ERROR:{:?}]", id.name(), e);
+                total_failed += 1;
+            }
+            Err(BootTestJoinFailure::Watchdog) => {
+                mark_failed(id);
+                total_failed += 1;
+                break;
+            }
+        }
+
+        #[cfg(not(all(feature = "boot_tests", target_arch = "aarch64")))]
         match kthread_join(&handle) {
             Ok(exit_code) => {
                 if exit_code != 0 {
