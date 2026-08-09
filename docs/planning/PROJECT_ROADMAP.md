@@ -17,6 +17,17 @@ https://v0-breenix-dashboard.vercel.app/).
 
 ## Recently Completed
 
+- ✅ **Parallels-only init `DATA_ABORT` boot regression fixed** ([PR #525](https://github.com/ryanbreen/breenix/pull/525), Aug 2026)
+  - Culprit: CPU0 breadcrumb asm in `aarch64_enter_exception_frame` left behind by the P1 teardown-unification merge ([308c281b](https://github.com/ryanbreen/breenix/commit/308c281b)). Deterministic on Parallels, invisible to QEMU, so it survived every prior gate.
+  - Found by the conclusive #519 post-merge demonstration, not by a new bug report.
+  - Proven via 0/100 + 0/100 QEMU gates, beast x86 3/3, and 3 consecutive green Parallels boots on `main` at `8ef8575f`.
+  - Merge commit: `8ef8575fc98c1355053bee22f0af318a80c00ad5`.
+
+- ✅ **`timer_delay` starved-boot false-FAIL fixed** ([PR #524](https://github.com/ryanbreen/breenix/pull/524), Aug 2026)
+  - Fixed via counter-verified host-stall crediting, so a starved boot no longer misreports as a real `timer_delay` failure.
+  - Discovered by the #519 post-merge demonstration.
+  - Merge commit: `7ad21766d93abc1db6589f84b711ad0b1b331432`.
+
 - ✅ **`exit_kick_protocol_gate` SMP-liveness flake fixed** ([PR #521](https://github.com/ryanbreen/breenix/pull/521), Aug 2026, closes [#519](https://github.com/ryanbreen/breenix/issues/519))
   - Fixed the rare (~1% zero-load) PSCI CPU_ON 3-of-4 CPU bring-up miss that could fail `exit_kick_protocol_gate` with progress-re-armed liveness waits, keyed to the awaited kthread's own execution counters rather than a fixed wall-clock window.
   - Added a periodic resched-SGI re-kick (was one-shot self-heal), a bounded PSCI CPU_ON retry, per-CPU bring-up-stage breadcrumbs, and a 5-8s SMP online-wait with progress lines instead of a single hard timeout.
