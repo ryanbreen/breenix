@@ -149,6 +149,12 @@ pub const PERCPU_EXCEPTION_CLEANUP_CONTEXT_OFFSET: usize = 88;
 /// Used by assembly ERET paths to save/restore one register across SP switches.
 pub const PERCPU_ERET_SCRATCH_OFFSET: usize = 96;
 
+/// Offset of the second ERET scratch register save area in PerCpuData.
+/// Holds `frame.x17` for the dispatch ERET path in `aarch64_enter_exception_frame`,
+/// which needs a second scratch register after its SP switch has made the
+/// exception frame unaddressable.
+pub const PERCPU_ERET_SCRATCH2_OFFSET: usize = 144;
+
 /// Offset of dispatch ELR in PerCpuData.
 /// Written by context switch Rust code, read by assembly ERET path.
 /// Immune to cross-CPU frame overwrite race (per-CPU, not on shared stack).

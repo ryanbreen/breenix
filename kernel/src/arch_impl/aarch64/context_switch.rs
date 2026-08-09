@@ -688,10 +688,16 @@ aarch64_enter_exception_frame:
     ldp x28, x29, [sp, #224]
     ldr x30, [sp, #240]
 
+    // Park frame.x16 and frame.x17 in per-CPU scratch before the SP switch
+    // below makes the exception frame unaddressable. Both are re-loaded
+    // immediately before the ERET: the CPU0 breadcrumb blocks after the SP
+    // switch use x16 and x17 as their only available scratch registers, so
+    // neither can hold its final architectural value across them.
     mrs x16, tpidr_el1
     ldr x17, [sp, #128]
-    str x17, [x16, #96]
+    str x17, [x16, #96]      // percpu.eret_scratch  = frame.x16
     ldr x17, [sp, #136]
+    str x17, [x16, #144]     // percpu.eret_scratch2 = frame.x17
 
     mrs x16, spsr_el1
     and x16, x16, #0xF
@@ -757,7 +763,8 @@ aarch64_enter_exception_frame:
 6:
 
     mrs x16, tpidr_el1
-    ldr x16, [x16, #96]
+    ldr x17, [x16, #144]     // x17 = saved frame.x17
+    ldr x16, [x16, #96]      // x16 = saved frame.x16
     eret
 "#
 );
