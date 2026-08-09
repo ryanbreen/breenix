@@ -278,8 +278,9 @@ fn psci_cpu_on_32(target_cpu: u64, entry_point: u64, context_id: u64) -> i64 {
 }
 
 /// PSCI CPU_ON with 64-bit function ID via SMC (EL3 firmware conduit).
-// Note: SMC conduit not attempted — on VMware (EL1 guest, no EL3),
-// SMC would trap to EL2 and likely fault. HVC is the correct conduit.
+///
+/// This conduit is not attempted on VMware (EL1 guest, no EL3).
+/// SMC would trap to EL2 and likely fault. HVC is the correct conduit.
 fn psci_cpu_on_smc(target_cpu: u64, entry_point: u64, context_id: u64) -> i64 {
     let ret: i64;
     unsafe {
@@ -305,14 +306,16 @@ fn psci_cpu_on_was_accepted(ret: i64) -> bool {
 fn psci_cpu_on_retry_backoff() {
     let reported_frequency_hz = crate::arch_impl::aarch64::timer::frequency_hz();
     let frequency_hz = if reported_frequency_hz == 0 {
+        // P17/P19 in docs/polling-allowlist.md deliberately use a short 1MHz
+        // boot fallback. P20/P21 instead fail closed because their deadlines
+        // protect host harnesses.
         CNTVCT_FALLBACK_FREQUENCY_HZ
     } else {
         reported_frequency_hz
     };
-    let backoff_ticks = frequency_hz
+    let backoff_ticks = (frequency_hz
         .saturating_mul(PSCI_CPU_ON_RETRY_BACKOFF_MICROSECONDS)
-        .checked_div(1_000_000)
-        .unwrap_or(0)
+        / 1_000_000)
         .max(1);
     let start = crate::arch_impl::aarch64::timer::rdtsc();
     for _ in 0..PSCI_CPU_ON_BACKOFF_ITERATION_CAP {
@@ -369,6 +372,14 @@ pub fn release_cpu(cpu_id: usize) -> i64 {
         LAST_PSCI_RETURN_CODE[cpu_id].store(ret, Ordering::Release);
 
         if psci_cpu_on_was_accepted(ret) {
+            if attempt > 0 {
+                crate::serial_println!(
+                    "[smp] CPU {}: PSCI CPU_ON accepted after {} attempts (raw_status={})",
+                    cpu_id,
+                    attempt + 1,
+                    ret
+                );
+            }
             return PSCI_RETURN_SUCCESS;
         }
         if ret != PSCI_RETURN_INTERNAL_FAILURE || attempt + 1 == PSCI_CPU_ON_MAX_ATTEMPTS {

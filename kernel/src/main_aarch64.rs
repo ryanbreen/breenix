@@ -952,7 +952,11 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
         for cpu in 1..max_cpus_to_probe {
             let ret = kernel::arch_impl::aarch64::smp::release_cpu(cpu);
             if ret == 0 {
-                serial_println!("[smp] CPU {}: PSCI CPU_ON success", cpu);
+                serial_println!(
+                    "[smp] CPU {}: PSCI CPU_ON success (raw_status={})",
+                    cpu,
+                    kernel::arch_impl::aarch64::smp::last_psci_return_code(cpu)
+                );
                 launched += 1;
             } else {
                 serial_println!(
@@ -966,12 +970,16 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
         if launched > 0 {
             const SMP_ONLINE_NO_PROGRESS_WINDOW_SECONDS: u64 = 3;
             const SMP_ONLINE_ABSOLUTE_CEILING_SECONDS: u64 = 10;
+            const SMP_ONLINE_BREADCRUMB_INTERVAL_SECONDS: u64 = 1;
             const SMP_ONLINE_CNTVCT_STALL_SAMPLE_INTERVAL_ITERATIONS: u64 = 10_000_000;
 
             // Wait for all launched CPUs to come online.
             let expected = 1 + launched; // boot CPU + launched
             let reported_frequency_hz = timer::frequency_hz();
             let counter_frequency_hz = if reported_frequency_hz == 0 {
+                // P17/P19 deliberately use a short 1MHz bring-up fallback;
+                // boot-test watchdogs P20/P21 instead fail closed because a
+                // guessed frequency could silently stretch their harness bound.
                 kernel::arch_impl::aarch64::smp::CNTVCT_FALLBACK_FREQUENCY_HZ
             } else {
                 reported_frequency_hz
@@ -980,7 +988,8 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
                 counter_frequency_hz.saturating_mul(SMP_ONLINE_NO_PROGRESS_WINDOW_SECONDS);
             let absolute_ceiling_ticks =
                 counter_frequency_hz.saturating_mul(SMP_ONLINE_ABSOLUTE_CEILING_SECONDS);
-            let breadcrumb_ticks = counter_frequency_hz;
+            let breadcrumb_ticks = counter_frequency_hz
+                .saturating_mul(SMP_ONLINE_BREADCRUMB_INTERVAL_SECONDS);
             let stage_at_start: [u32; kernel::arch_impl::aarch64::smp::MAX_CPUS] =
                 core::array::from_fn(kernel::arch_impl::aarch64::smp::bringup_stage_of);
             let mut last_online = kernel::arch_impl::aarch64::smp::cpus_online();
@@ -1019,18 +1028,22 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
             // IRQ can signal "CPU online" before each CPU wires its GIC, so this
             // bounded CPU-management handshake is allowlisted per
             // docs/polling-allowlist.md.
-            while kernel::arch_impl::aarch64::smp::cpus_online() < expected {
+            loop {
                 let now = timer::rdtsc();
                 let current_online = kernel::arch_impl::aarch64::smp::cpus_online();
                 if current_online >= expected {
                     break;
                 }
-                let current_bringup_progress = kernel::arch_impl::aarch64::smp::bringup_progress();
-                if current_online > last_online || current_bringup_progress > last_bringup_progress
-                {
+                if current_online > last_online {
                     last_online = current_online;
-                    last_bringup_progress = current_bringup_progress;
                     last_advance = now;
+                } else {
+                    let current_bringup_progress =
+                        kernel::arch_impl::aarch64::smp::bringup_progress();
+                    if current_bringup_progress > last_bringup_progress {
+                        last_bringup_progress = current_bringup_progress;
+                        last_advance = now;
+                    }
                 }
 
                 if now.wrapping_sub(start) >= absolute_ceiling_ticks {
@@ -1072,7 +1085,7 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
                     break;
                 }
 
-                iterations = iterations.saturating_add(1);
+                iterations = iterations.wrapping_add(1);
                 if iterations % SMP_ONLINE_CNTVCT_STALL_SAMPLE_INTERVAL_ITERATIONS == 0 {
                     let counter_delta = now.wrapping_sub(last_counter_sample);
                     if counter_delta == 0 {
