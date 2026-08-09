@@ -1213,6 +1213,11 @@ pub fn fork_exit_defer_reclaim_pairing_test() -> crate::test_framework::registry
     TestResult::Pass
 }
 
+// P20 retains its calibrated 45s local ceiling, but both it and P17 consume
+// one 65s budget anchored near kernel entry. Thus P17 + P20 <= 65s and the
+// 90s Phase-1 harness keeps 90s - 65s = 25s for other tests and overhead.
+// This does not constrain the realistic starvation evidence: <=10s total,
+// with the longest observed individual wait about 8s.
 #[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
 const EXIT_KICK_GATE_CEILING_MILLISECONDS: u64 = 45_000;
 #[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
@@ -1239,9 +1244,11 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
     // join observes only its awaited worker's work counter plus that worker's exit
     // stages; the dependency union is reserved for workers_ready. A separate
     // 15-second per-wait ceiling and one 45-second gate ceiling remain hard
-    // backstops across late-true recoveries. Resched SGIs are re-sent every 50ms.
-    // This observes the EXIT_KICK test without changing its protocol. See P20 in
-    // docs/polling-allowlist.md.
+    // backstops across late-true recoveries. The gate is additionally capped by
+    // the shared 65-second Phase-1 liveness clock that also bounds SMP bring-up,
+    // so the two watchdogs cannot compose past the external harness. Resched SGIs
+    // are re-sent every 50ms. This observes the EXIT_KICK test without changing
+    // its protocol. See P20 in docs/polling-allowlist.md.
     const FIRST_PROGRESS_WINDOW_MILLISECONDS: u64 = 8_000;
     const NO_PROGRESS_WINDOW_MILLISECONDS: u64 = 3_000;
     const ABSOLUTE_WAIT_CEILING_MILLISECONDS: u64 = 15_000;
@@ -1271,6 +1278,7 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
         NoProgress,
         AbsoluteCeiling,
         GateCeiling,
+        PhaseOneCeiling,
         CounterStall,
         CounterUnavailable,
         ProgressUnavailable,
@@ -1283,6 +1291,7 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
                 Self::NoProgress => "no_progress",
                 Self::AbsoluteCeiling => "absolute_ceiling",
                 Self::GateCeiling => "gate_ceiling",
+                Self::PhaseOneCeiling => "phase_one_ceiling",
                 Self::CounterStall => "cntvct_stall",
                 Self::CounterUnavailable => "counter_frequency_unavailable",
                 Self::ProgressUnavailable => "exit_progress_unavailable",
@@ -1293,6 +1302,7 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
         fn message(self, site_message: &'static str) -> &'static str {
             match self {
                 Self::NoProgress | Self::AbsoluteCeiling | Self::GateCeiling => site_message,
+                Self::PhaseOneCeiling => site_message,
                 Self::CounterStall => {
                     "exit_kick_gate: CNTVCT stalled while enforcing wait deadline"
                 }
@@ -1357,6 +1367,7 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
         condition_expected: u64,
         progress: P,
         kick_cpus: &[usize],
+        phase_one_started_at: u64,
         gate_started_at: u64,
     ) -> Result<(), WaitFailureKind>
     where
@@ -1402,6 +1413,10 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
             milliseconds_to_ticks(counter_frequency_hz, ABSOLUTE_WAIT_CEILING_MILLISECONDS);
         let gate_ceiling_ticks =
             milliseconds_to_ticks(counter_frequency_hz, GATE_CEILING_MILLISECONDS);
+        let phase_one_ceiling_ticks = milliseconds_to_ticks(
+            counter_frequency_hz,
+            crate::test_framework::PHASE_ONE_LIVENESS_BUDGET_MILLISECONDS,
+        );
         let re_kick_ticks =
             milliseconds_to_ticks(counter_frequency_hz, RESCHED_REKICK_INTERVAL_MILLISECONDS);
         let breadcrumb_ticks =
@@ -1436,7 +1451,10 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
             iterations = iterations.wrapping_add(1);
             let elapsed = now.wrapping_sub(wait_start);
             let mut failure = None;
-            if now.wrapping_sub(gate_started_at) >= gate_ceiling_ticks {
+            if now.wrapping_sub(phase_one_started_at) >= phase_one_ceiling_ticks {
+                failure = Some(WaitFailureKind::PhaseOneCeiling);
+            }
+            if failure.is_none() && now.wrapping_sub(gate_started_at) >= gate_ceiling_ticks {
                 failure = Some(WaitFailureKind::GateCeiling);
             }
             if failure.is_none() && elapsed >= absolute_ceiling_ticks {
@@ -1464,6 +1482,9 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
                     }
                     WaitFailureKind::AbsoluteCeiling => ABSOLUTE_WAIT_CEILING_MILLISECONDS,
                     WaitFailureKind::GateCeiling => GATE_CEILING_MILLISECONDS,
+                    WaitFailureKind::PhaseOneCeiling => {
+                        crate::test_framework::PHASE_ONE_LIVENESS_BUDGET_MILLISECONDS
+                    }
                     WaitFailureKind::CounterStall
                     | WaitFailureKind::CounterUnavailable
                     | WaitFailureKind::ProgressUnavailable
@@ -1534,6 +1555,7 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
         handle: &crate::task::kthread::KthreadHandle,
         work_progress: P,
         kick_cpus: &[usize],
+        phase_one_started_at: u64,
         gate_started_at: u64,
     ) -> Result<(), WaitFailureKind>
     where
@@ -1571,6 +1593,7 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
                 exit: kthread_exit_progress_for_test(tid),
             },
             kick_cpus,
+            phase_one_started_at,
             gate_started_at,
         )?;
         if crate::task::kthread::kthread_join(handle).is_err() {
@@ -1596,6 +1619,14 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
         Ok(())
     }
 
+    let phase_one_started_at = match crate::test_framework::phase_one_liveness_started_at() {
+        Some(started_at) => started_at,
+        None => {
+            return TestResult::Fail(
+                "exit_kick_gate: shared Phase-1 liveness budget anchor unavailable",
+            )
+        }
+    };
     let gate_started_at = crate::arch_impl::aarch64::timer::rdtsc_serialized();
     EXIT_KICK_GATE_STARTED_AT.store(gate_started_at, Ordering::Relaxed);
     EXIT_KICK_GATE_HAS_STARTED.store(1, Ordering::Release);
@@ -1748,6 +1779,7 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
         1,
         || WaitProgress::work(publisher_a_progress.load(Ordering::Acquire)),
         &[PUBLISHER_A_CPU],
+        phase_one_started_at,
         gate_started_at,
     ) {
         // `hook` is dropped on return, releasing publisher A from its hold.
@@ -1800,6 +1832,7 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
         1,
         || WaitProgress::work(publisher_b_progress.load(Ordering::Acquire)),
         &[PUBLISHER_B_CPU],
+        phase_one_started_at,
         gate_started_at,
     ) {
         // `hook` is dropped on return, releasing publisher A from its hold.
@@ -1824,6 +1857,7 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
         &publisher_b,
         || publisher_b_progress.load(Ordering::Acquire),
         &[PUBLISHER_B_CPU],
+        phase_one_started_at,
         gate_started_at,
     ) {
         return TestResult::Fail(
@@ -1835,6 +1869,7 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
         &publisher_a,
         || publisher_a_progress.load(Ordering::Acquire),
         &[PUBLISHER_A_CPU],
+        phase_one_started_at,
         gate_started_at,
     ) {
         return TestResult::Fail(
@@ -2273,6 +2308,7 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
         3,
         || WaitProgress::work(storm_progress()),
         &worker_cpus,
+        phase_one_started_at,
         gate_started_at,
     ) {
         return TestResult::Fail(failure.message(
@@ -2290,6 +2326,7 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
         &publisher_a,
         &storm_publisher_a_progress,
         &worker_cpus,
+        phase_one_started_at,
         gate_started_at,
     ) {
         return TestResult::Fail(
@@ -2303,6 +2340,7 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
         &publisher_b,
         &storm_publisher_b_progress,
         &worker_cpus,
+        phase_one_started_at,
         gate_started_at,
     ) {
         return TestResult::Fail(
@@ -2316,6 +2354,7 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
         &observer,
         &storm_observer_progress,
         &worker_cpus,
+        phase_one_started_at,
         gate_started_at,
     ) {
         return TestResult::Fail(

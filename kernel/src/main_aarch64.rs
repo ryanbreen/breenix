@@ -381,6 +381,12 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
         }
     }
 
+    // Start the one Phase-1 liveness budget after any required high-half
+    // transition but before kernel initialization, SMP release, or boot tests.
+    // CNTVCT is architectural and readable before timer calibration.
+    #[cfg(feature = "boot_tests")]
+    kernel::test_framework::begin_phase_one_liveness_budget(timer::rdtsc_serialized());
+
     // Zero the .dma section (Non-Cacheable DMA buffer region).
     // This memory is NOLOAD in the ELF, so neither the loader nor boot.S zeroes it.
     // Must happen before any driver init that uses DMA buffers.
@@ -972,6 +978,12 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
             const SMP_ONLINE_NO_PROGRESS_WINDOW_SECONDS: u64 = 20;
             #[cfg(not(feature = "boot_tests"))]
             const SMP_ONLINE_NO_PROGRESS_WINDOW_SECONDS: u64 = 5;
+            // The boot_tests 40s local ceiling and P20's 45s local gate ceiling
+            // are both capped by one 65s clock started near kernel entry:
+            // P17 + P20 <= 65s, and the harness retains 90s - 65s = 25s for
+            // initialization, the other subsystem tests, and script overhead.
+            // The realistic starved proof remains far inside this backstop:
+            // <=10s total, with the longest observed individual wait about 8s.
             #[cfg(feature = "boot_tests")]
             const SMP_ONLINE_ABSOLUTE_CEILING_SECONDS: u64 = 40;
             #[cfg(not(feature = "boot_tests"))]
@@ -995,6 +1007,13 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
                 counter_frequency_hz.saturating_mul(SMP_ONLINE_NO_PROGRESS_WINDOW_SECONDS);
             let absolute_ceiling_ticks =
                 counter_frequency_hz.saturating_mul(SMP_ONLINE_ABSOLUTE_CEILING_SECONDS);
+            #[cfg(feature = "boot_tests")]
+            let phase_one_liveness_started_at =
+                kernel::test_framework::phase_one_liveness_started_at();
+            #[cfg(feature = "boot_tests")]
+            let phase_one_liveness_ceiling_ticks = counter_frequency_hz.saturating_mul(
+                kernel::test_framework::PHASE_ONE_LIVENESS_BUDGET_MILLISECONDS / 1_000,
+            );
             let breadcrumb_ticks = counter_frequency_hz
                 .saturating_mul(SMP_ONLINE_BREADCRUMB_INTERVAL_SECONDS);
             let stage_at_start: [u32; kernel::arch_impl::aarch64::smp::MAX_CPUS] =
@@ -1031,11 +1050,13 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
             // kernel uses 5s/10s so strict 20s and native 30s harnesses retain
             // time to capture the final diagnostics. The no-progress window is
             // re-armed only when cpus_online or the sum of secondary bring-up
-            // stages advances. With a running CNTVCT the absolute ceiling bounds
-            // the loop; if CNTVCT freezes, the unconditional delta sample bounds
-            // it by iterations instead. No IRQ can signal "CPU online" before
-            // each CPU wires its GIC, so this bounded CPU-management handshake
-            // is allowlisted per docs/polling-allowlist.md.
+            // stages advances. In boot_tests, the shared Phase-1 ceiling can only
+            // shorten the local 40-second ceiling; it cannot re-arm it. With a
+            // running CNTVCT those ceilings bound the loop; if CNTVCT freezes,
+            // the unconditional delta sample bounds it by iterations instead. No
+            // IRQ can signal "CPU online" before each CPU wires its GIC, so this
+            // bounded CPU-management handshake is allowlisted per
+            // docs/polling-allowlist.md.
             loop {
                 let now = timer::rdtsc();
                 let current_online = kernel::arch_impl::aarch64::smp::cpus_online();
@@ -1052,6 +1073,36 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
                         last_bringup_progress = current_bringup_progress;
                         last_advance = now;
                     }
+                }
+
+                #[cfg(feature = "boot_tests")]
+                if let Some(phase_one_started_at) = phase_one_liveness_started_at {
+                    if now.wrapping_sub(phase_one_started_at) >= phase_one_liveness_ceiling_ticks {
+                        let online_at_verdict = kernel::arch_impl::aarch64::smp::cpus_online();
+                        if online_at_verdict >= expected {
+                            break;
+                        }
+                        serial_println!(
+                            "[smp] Timeout waiting for CPUs: shared Phase-1 liveness ceiling of {} ms reached ({} online, {} expected)",
+                            kernel::test_framework::PHASE_ONE_LIVENESS_BUDGET_MILLISECONDS,
+                            online_at_verdict,
+                            expected
+                        );
+                        report_offline_diagnostics();
+                        break;
+                    }
+                } else {
+                    let online_at_verdict = kernel::arch_impl::aarch64::smp::cpus_online();
+                    if online_at_verdict >= expected {
+                        break;
+                    }
+                    serial_println!(
+                        "[smp] Phase-1 liveness budget anchor unavailable ({} online, {} expected)",
+                        online_at_verdict,
+                        expected
+                    );
+                    report_offline_diagnostics();
+                    break;
                 }
 
                 if now.wrapping_sub(start) >= absolute_ceiling_ticks {
