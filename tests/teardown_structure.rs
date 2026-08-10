@@ -233,6 +233,12 @@ fn function_body<'a>(source: &'a str, name: &str) -> &'a str {
     panic!("unterminated function {name}")
 }
 
+fn function_body_span(source: &str, name: &str) -> std::ops::Range<usize> {
+    let body = function_body(source, name);
+    let start = body.as_ptr() as usize - source.as_ptr() as usize;
+    start..start + body.len()
+}
+
 #[test]
 fn function_body_is_lexically_scoped_and_exactly_named() {
     let fixture = r##"
@@ -304,13 +310,13 @@ const EXIT_PROCESS_BY_PID_CALLS: &[(&str, usize)] = &[
     ("kernel/src/process/mod.rs", 418),
 ];
 const EXIT_PROCESS_FOR_TEARDOWN_TEST_CALLS: &[(&str, usize)] = &[
-    ("kernel/src/tracing/providers/teardown.rs", 1235),
-    ("kernel/src/tracing/providers/teardown.rs", 1303),
+    ("kernel/src/tracing/providers/teardown.rs", 1260),
+    ("kernel/src/tracing/providers/teardown.rs", 1328),
 ];
 const ROOT_RETIRE_PROOF_SITES: &[(&str, usize)] = &[
     ("kernel/src/memory/process_memory.rs", 95),
     ("kernel/src/memory/process_memory.rs", 100),
-    ("kernel/src/memory/process_memory.rs", 1739),
+    ("kernel/src/memory/process_memory.rs", 2040),
     ("kernel/src/task/process_task.rs", 927),
 ];
 const ROOT_RETIRE_PROOF_CONSTRUCTION_SITES: &[(&str, usize)] = &[
@@ -321,6 +327,17 @@ const ROOT_RETIRE_PROOF_CONSTRUCTION_SITES: &[(&str, usize)] = &[
 const KNOWN_X86_RAW_ROOT_DROP_SITES: &[(&str, usize)] = &[
     ("kernel/src/process/manager.rs", 1157),
     ("kernel/src/task/process_task.rs", 321),
+    ("kernel/src/task/process_task.rs", 479),
+];
+const PAGE_TABLE_TAKE_SITES: &[(&str, usize)] = &[
+    ("kernel/src/process/manager.rs", 1157),
+    ("kernel/src/process/manager.rs", 2497),
+    ("kernel/src/process/manager.rs", 2947),
+    ("kernel/src/process/manager.rs", 3218),
+    ("kernel/src/process/manager.rs", 3388),
+    ("kernel/src/task/process_task.rs", 196),
+    ("kernel/src/task/process_task.rs", 321),
+    ("kernel/src/task/process_task.rs", 348),
     ("kernel/src/task/process_task.rs", 479),
 ];
 const KNOWN_X86_OLD_ROOT_CLEAR_SITES: &[(&str, usize)] = &[
@@ -427,11 +444,11 @@ fn validate_exit_sgi_is_teardown_only(sources: &[(String, String)]) -> Result<()
 
 fn validate_single_page_table_retire_free(sources: &[(String, String)]) -> Result<(), ()> {
     let process_memory = source(sources, "kernel/src/memory/process_memory.rs");
-    (process_memory.matches("deallocate_frame(").count()
-        == function_body(process_memory, "retire")
-            .matches("deallocate_frame(")
-            .count()
-        && process_memory.matches("fn retire(").count() == 1)
+    let retire = function_body_span(process_memory, "retire");
+    (process_memory.matches("fn retire(").count() == 1
+        && process_memory
+            .match_indices("deallocate_frame(")
+            .all(|(offset, _)| retire.contains(&offset)))
     .then_some(())
     .ok_or(())
 }
@@ -464,6 +481,10 @@ fn validate_root_retire_proof_sites(sources: &[(String, String)]) -> Result<(), 
 
 fn validate_known_x86_raw_root_drop_shapes(sources: &[(String, String)]) -> Result<(), ()> {
     validate_exact(
+        &sites_matching(sources, |line| line.contains("page_table.take()")),
+        PAGE_TABLE_TAKE_SITES,
+    )?;
+    validate_exact(
         &sites_matching(sources, |line| {
             line.contains("page_table.take()") && line.contains("drop(")
         }),
@@ -474,25 +495,7 @@ fn validate_known_x86_raw_root_drop_shapes(sources: &[(String, String)]) -> Resu
             line.contains("pending_old_page_tables.clear()")
         }),
         KNOWN_X86_OLD_ROOT_CLEAR_SITES,
-    )?;
-    let compact_sources: String = sources
-        .iter()
-        .flat_map(|(_, contents)| contents.chars())
-        .filter(|character| !character.is_whitespace())
-        .collect();
-    (compact_sources
-        .matches("drop(process.page_table.take())")
-        .count()
-        == KNOWN_X86_RAW_ROOT_DROP_SITES.len()
-        && compact_sources
-            .matches("process.pending_old_page_tables.clear()")
-            .count()
-            == KNOWN_X86_OLD_ROOT_CLEAR_SITES.len()
-        && !compact_sources.contains(
-            "letpage_table=process.page_table.take();drop(page_table)",
-        ))
-    .then_some(())
-    .ok_or(())
+    )
 }
 
 #[test]
@@ -622,6 +625,7 @@ fn phase_one_retirement_fence_and_lock_domains_are_structural() {
     let sources = rust_sources_below("kernel/src");
     let process = source(&sources, "kernel/src/task/process_task.rs");
     let process_memory = source(&sources, "kernel/src/memory/process_memory.rs");
+    let frame_allocator = source(&sources, "kernel/src/memory/frame_allocator.rs");
     let scheduler = source(&sources, "kernel/src/task/scheduler.rs");
     let manager = source(&sources, "kernel/src/process/manager.rs");
     let ttbr0 = source(&sources, "kernel/src/arch_impl/aarch64/ttbr0.rs");
@@ -662,6 +666,21 @@ fn phase_one_retirement_fence_and_lock_domains_are_structural() {
     assert_eq!(reclaim.matches(".retire(").count(), 1);
     assert_eq!(reclaim.matches("cleanup_cow_page_table(").count(), 1);
     assert!(process.contains("leaves: LeafCustody"));
+    let retire = function_body(process_memory, "retire");
+    assert!(!retire.contains("Vec<"));
+    assert!(!retire.contains("log::"));
+    assert!(retire.contains("frame_deallocation_provenance_is_proved"));
+    assert!(retire.contains("duplicate_table_frame"));
+    let provenance = function_body(frame_allocator, "frame_deallocation_provenance_is_proved");
+    assert!(provenance.contains("frame_has_allocator_provenance"));
+    assert!(provenance.contains("FREE_FRAMES"));
+    assert!(provenance.contains("free_list.contains(&frame)"));
+    let provenance_bounds = function_body(frame_allocator, "allocated_frame_ordinal");
+    assert!(provenance_bounds.contains("address < allocated_end"));
+    assert!(!provenance_bounds.contains("NEXT_FREE_FRAME"));
+    assert!(function_body(frame_allocator, "frame_has_allocator_provenance")
+        .contains("NEXT_FREE_FRAME"));
+    assert!(!function_body(frame_allocator, "deallocate_frame").contains("log::"));
 
     let drain = function_body(process, "reclaim_deferred_process_resources");
     assert_eq!(drain.matches("RECLAIM_PASS_ID").count(), 1);
@@ -772,7 +791,7 @@ fn all_phase_zero_counters_have_registered_readers_and_honest_runtime_gates() {
         .filter_map(|rest| rest.strip_suffix(','))
         .map(str::to_owned)
         .collect();
-    assert_eq!(declarations.len(), 54);
+    assert_eq!(declarations.len(), 55);
     assert_eq!(
         readers, declarations,
         "every counter must have an inventory reader"
@@ -783,13 +802,12 @@ fn all_phase_zero_counters_have_registered_readers_and_honest_runtime_gates() {
     assert!(provider.contains("for pid in pairing_child_pids"));
     let pairing_gate = function_body(provider, "fork_exit_defer_reclaim_pairing_test");
     for cohort_field in [
-        "cohort_root_counts.roots_retired",
-        "cohort_root_counts.table_frames_reclaimed",
         "cohort_root_counts.table_frames_unbalanced",
         "cohort_root_counts.table_frames_lost",
         "cohort_root_counts.unproved_root_drops",
         "cohort_root_counts.root_retire_refused",
         "cohort_root_counts.nonuser_leaf_seen",
+        "cohort_root_counts.table_frame_provenance_refused",
     ] {
         assert!(pairing_gate.contains(cohort_field));
     }
@@ -801,12 +819,15 @@ fn all_phase_zero_counters_have_registered_readers_and_honest_runtime_gates() {
         "UNPROVED_ROOT_DROP_REFUSED.aggregate()",
         "ROOT_RETIRE_REFUSED.aggregate()",
         "PT_NONUSER_LEAF_SEEN.aggregate()",
+        "PT_TABLE_FRAME_PROVENANCE_REFUSED.aggregate()",
     ] {
         assert!(!pairing_gate.contains(contaminated_global_delta));
     }
     assert!(pairing_gate.contains("let mut pairing_child_pids = [0u64; 66];"));
     assert!(pairing_gate.contains("pairing_child_pids[pairing_child_count] = parent_pid.as_u64();"));
     assert_eq!(pairing_gate.matches(".tag_boot_test_pid(").count(), 3);
+    assert!(pairing_gate.contains("root_counts.roots_retired != 1"));
+    assert!(pairing_gate.contains("root_counts.table_frames_reclaimed < minimum_table_frames"));
     for exact_failure in [
         "adapted-site per-PID defer proof was absent",
         "adapted-site per-PID defer proof was duplicated",
@@ -851,6 +872,7 @@ fn all_phase_zero_counters_have_registered_readers_and_honest_runtime_gates() {
     assert!(!declaration_only.contains("counter!(UNPROVED_ROOT_DROP_REFUSED,"));
     assert!(!declaration_only.contains("counter!(ROOT_RETIRE_REFUSED,"));
     assert!(!declaration_only.contains("counter!(PT_NONUSER_LEAF_SEEN,"));
+    assert!(!declaration_only.contains("counter!(PT_TABLE_FRAME_PROVENANCE_REFUSED,"));
 
     let registry = source(&sources, "kernel/src/test_framework/registry.rs");
     assert!(registry.contains("name: \"fork_exit_defer_reclaim_pairing_test\""));
@@ -1445,6 +1467,33 @@ fn deliberately_broken_variants_fail_the_ratchet() {
         format!("{process_memory}\nfn rogue_free(frame: PhysFrame) {{ deallocate_frame(frame); }}"),
     );
     assert!(validate_single_page_table_retire_free(&broken_retire).is_err());
+
+    let broken_retire_before = with_replaced_source(
+        &sources,
+        "kernel/src/memory/process_memory.rs",
+        format!("fn rogue_free(frame: PhysFrame) {{ deallocate_frame(frame); }}\n{process_memory}"),
+    );
+    assert!(validate_single_page_table_retire_free(&broken_retire_before).is_err());
+
+    let retire_span = function_body_span(process_memory, "retire");
+    let retire_free = process_memory[retire_span.clone()]
+        .find("deallocate_frame(")
+        .expect("retire deallocation call")
+        + retire_span.start;
+    let mut count_preserving_escape = process_memory.to_owned();
+    count_preserving_escape.replace_range(
+        retire_free..retire_free + "deallocate_frame(".len(),
+        "do_not_deallocate(",
+    );
+    count_preserving_escape.push_str(
+        "\nfn rogue_free(frame: PhysFrame) { deallocate_frame(frame); }",
+    );
+    let broken_count_preserving_retire = with_replaced_source(
+        &sources,
+        "kernel/src/memory/process_memory.rs",
+        count_preserving_escape,
+    );
+    assert!(validate_single_page_table_retire_free(&broken_count_preserving_retire).is_err());
 
     let broken_mint = with_synthetic_source(
         &sources,
