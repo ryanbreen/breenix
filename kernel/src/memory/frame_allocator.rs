@@ -345,6 +345,7 @@ pub fn deallocate_frame(frame: PhysFrame) {
     } else {
         // If we can't get the lock (e.g., called from interrupt context),
         // we lose this frame. This is a memory leak but prevents deadlock.
+        crate::trace_count!(crate::tracing::providers::teardown::PT_FRAMES_LOST_TO_CONTENTION);
         log::warn!(
             "Frame allocator: Could not deallocate frame {:#x} - lock contention",
             frame.start_address().as_u64()

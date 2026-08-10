@@ -413,6 +413,25 @@ counter!(EXIT_KICK_BUCKET_COLLISION, "Exit-kick bucket collisions");
 counter!(RECEIPT_DROPPED_UNRETIRED, "Receipts recovered by Drop");
 counter!(LEDGER_CLAIM_MISMATCH, "Exit-obligation claimer mismatches");
 counter!(LEDGER_CLAIM_ORPHANED, "Recovered orphaned exit claims");
+counter!(PT_ROOTS_RETIRED, "Process page-table roots retired");
+counter!(
+    PT_TABLE_FRAMES_RECLAIMED,
+    "Process table frames returned to the allocator"
+);
+counter!(
+    PT_TABLE_FRAMES_UNBALANCED,
+    "Process table retire frame-count mismatches"
+);
+counter!(
+    PT_FRAMES_LOST_TO_CONTENTION,
+    "Frames lost to allocator free-list contention"
+);
+counter!(UNPROVED_ROOT_DROP_REFUSED, "Unproved process roots leaked");
+counter!(ROOT_RETIRE_REFUSED, "Process root retire token refusals");
+counter!(
+    PT_NONUSER_LEAF_SEEN,
+    "Non-user leaves seen during structure-only retire"
+);
 
 // Declaration-only until the phase named in PLAN.md. These intentionally have
 // no trace_count! producer yet.
@@ -441,7 +460,7 @@ counter!(
     "Fatal group signals dropped for init"
 );
 
-pub const COUNTER_COUNT: usize = 47;
+pub const COUNTER_COUNT: usize = 54;
 
 /// The registration and normal-context reader inventory. Keeping one inventory
 /// makes a write-only counter structurally impossible without changing the P0
@@ -480,6 +499,13 @@ pub static COUNTERS: [&TraceCounter; COUNTER_COUNT] = [
     &RECEIPT_DROPPED_UNRETIRED,
     &LEDGER_CLAIM_MISMATCH,
     &LEDGER_CLAIM_ORPHANED,
+    &PT_ROOTS_RETIRED,
+    &PT_TABLE_FRAMES_RECLAIMED,
+    &PT_TABLE_FRAMES_UNBALANCED,
+    &PT_FRAMES_LOST_TO_CONTENTION,
+    &UNPROVED_ROOT_DROP_REFUSED,
+    &ROOT_RETIRE_REFUSED,
+    &PT_NONUSER_LEAF_SEEN,
     &RECLAIM_PASS_SKIPPED,
     &RECLAIM_PARKED,
     &RECLAIM_UNPARKED_EPOCH,
@@ -918,6 +944,29 @@ pub fn deferred_fault_ring_overflow_test() -> crate::test_framework::registry::T
 pub fn fork_exit_defer_reclaim_pairing_test() -> crate::test_framework::registry::TestResult {
     use crate::test_framework::registry::TestResult;
 
+    fn page_table_with_sentinel(
+    ) -> Result<alloc::boxed::Box<crate::memory::process_memory::ProcessPageTable>, &'static str>
+    {
+        let mut page_table = crate::memory::process_memory::ProcessPageTable::new()?;
+        let frame = crate::memory::frame_allocator::allocate_frame()
+            .ok_or("sentinel frame allocation failed")?;
+        let page = crate::memory::arch_stub::Page::containing_address(
+            crate::memory::arch_stub::VirtAddr::new(0x0100_0000),
+        );
+        let flags = crate::memory::arch_stub::PageTableFlags::PRESENT
+            | crate::memory::arch_stub::PageTableFlags::WRITABLE
+            | crate::memory::arch_stub::PageTableFlags::USER_ACCESSIBLE;
+        if page_table.map_page(page, frame, flags).is_err() {
+            crate::memory::frame_allocator::deallocate_frame(frame);
+            return Err("sentinel page mapping failed");
+        }
+        Ok(alloc::boxed::Box::new(page_table))
+    }
+
+    fn exit_for_pairing(pid: crate::process::ProcessId) {
+        crate::process::exit_process_for_teardown_test(pid, 0);
+    }
+
     // Claim single-threaded ownership of the deferred-reclaim queues for the
     // whole measurement window. The queues are quiescent here (before any fork),
     // so this mirrors the sibling reclaim_progress_gate_test: peer CPUs early-
@@ -942,6 +991,13 @@ pub fn fork_exit_defer_reclaim_pairing_test() -> crate::test_framework::registry
     let proof_under_queue_lock_before = PROOF_UNDER_QUEUE_LOCK.aggregate();
     let reclaim_context_violations_before = RECLAIM_CONTEXT_VIOLATIONS.aggregate();
     let receipt_dropped_before = RECEIPT_DROPPED_UNRETIRED.aggregate();
+    let roots_retired_before = PT_ROOTS_RETIRED.aggregate();
+    let table_frames_reclaimed_before = PT_TABLE_FRAMES_RECLAIMED.aggregate();
+    let table_frames_unbalanced_before = PT_TABLE_FRAMES_UNBALANCED.aggregate();
+    let frames_lost_to_contention_before = PT_FRAMES_LOST_TO_CONTENTION.aggregate();
+    let unproved_root_drops_before = UNPROVED_ROOT_DROP_REFUSED.aggregate();
+    let root_retire_refused_before = ROOT_RETIRE_REFUSED.aggregate();
+    let nonuser_leaf_seen_before = PT_NONUSER_LEAF_SEEN.aggregate();
 
     let parent_page_table = match crate::memory::process_memory::ProcessPageTable::new() {
         Ok(page_table) => alloc::boxed::Box::new(page_table),
@@ -984,7 +1040,7 @@ pub fn fork_exit_defer_reclaim_pairing_test() -> crate::test_framework::registry
         manager.insert_process(parent_pid, parent_process);
     };
 
-    let mut pairing_child_pids = [0u64; 64];
+    let mut pairing_child_pids = [0u64; 65];
     let mut pairing_child_count = 0;
     let pid_counts_guard = reset_boot_test_pid_counts();
     // The nine labels mirror PLAN P2's disjoint adapted-site table. The exact
@@ -1003,8 +1059,8 @@ pub fn fork_exit_defer_reclaim_pairing_test() -> crate::test_framework::registry
         2, // SIGKILL after quarantine/expedite
     ];
     for iteration in 0..64 {
-        let child_page_table = match crate::memory::process_memory::ProcessPageTable::new() {
-            Ok(page_table) => alloc::boxed::Box::new(page_table),
+        let child_page_table = match page_table_with_sentinel() {
+            Ok(page_table) => page_table,
             Err(_) => return TestResult::Fail("pairing fork page-table allocation failed"),
         };
         let child = {
@@ -1038,16 +1094,12 @@ pub fn fork_exit_defer_reclaim_pairing_test() -> crate::test_framework::registry
 
         let site_class = ADAPTED_SITE_CLASSES[iteration % ADAPTED_SITE_CLASSES.len()];
         if site_class == 3 {
-            {
-                let _force_live =
-                    crate::task::process_task::ForceLiveReclaimTestGuard::arm(child.0.as_u64());
-                crate::task::process_task::ProcessScheduler::handle_thread_exit(child.1, 0);
-            }
+            crate::task::process_task::ProcessScheduler::handle_thread_exit(child.1, 0);
             // Preserve the gate's first/repeat accounting workload without
             // creating a second receipt or reclaim record.
             crate::task::process_task::ProcessScheduler::handle_thread_exit(child.1, 0);
         } else {
-            crate::process::exit_process_for_teardown_test(child.0, 0);
+            exit_for_pairing(child.0);
             crate::task::process_task::ProcessScheduler::handle_thread_exit(child.1, 0);
         }
         {
@@ -1062,10 +1114,10 @@ pub fn fork_exit_defer_reclaim_pairing_test() -> crate::test_framework::registry
         }
     }
 
-    // Exercise today's immediate-release path as part of the same explained
-    // workload so the three known-under-PM baseline defects cannot pass at zero.
-    let immediate_page_table = match crate::memory::process_memory::ProcessPageTable::new() {
-        Ok(page_table) => alloc::boxed::Box::new(page_table),
+    // Keep the former immediate-release child in the measured cohort now that
+    // every aarch64 exit uses deferred root retirement.
+    let immediate_page_table = match page_table_with_sentinel() {
+        Ok(page_table) => page_table,
         Err(_) => return TestResult::Fail("baseline fork page-table allocation failed"),
     };
     let immediate = {
@@ -1087,6 +1139,10 @@ pub fn fork_exit_defer_reclaim_pairing_test() -> crate::test_framework::registry
         };
         (child_pid, child_tid)
     };
+    pairing_child_pids[pairing_child_count] = immediate.0.as_u64();
+    if !track_boot_test_pid(pairing_child_pids[pairing_child_count]) {
+        return TestResult::Fail("per-PID pairing tally table capacity exhausted");
+    }
     crate::task::process_task::ProcessScheduler::handle_thread_exit(immediate.1, 0);
     {
         let mut manager_guard = crate::process::manager();
@@ -1097,6 +1153,15 @@ pub fn fork_exit_defer_reclaim_pairing_test() -> crate::test_framework::registry
         if let Some(parent) = manager.get_process_mut(parent_pid) {
             parent.children.retain(|pid| *pid != immediate.0);
         }
+    }
+
+    exit_for_pairing(parent_pid);
+    {
+        let mut manager_guard = crate::process::manager();
+        let Some(manager) = manager_guard.as_mut() else {
+            return TestResult::Fail("process manager unavailable for parent cleanup");
+        };
+        manager.remove_process(parent_pid);
     }
 
     let timer_frequency = crate::arch_impl::aarch64::timer::frequency_hz();
@@ -1155,14 +1220,66 @@ pub fn fork_exit_defer_reclaim_pairing_test() -> crate::test_framework::registry
             return TestResult::Fail("adapted-site per-PID reclaim proof was duplicated");
         }
     }
+    if PT_TABLE_FRAMES_UNBALANCED
+        .aggregate()
+        .saturating_sub(table_frames_unbalanced_before)
+        != 0
+    {
+        return TestResult::Fail("process table retire frame balance moved");
+    }
+    if PT_FRAMES_LOST_TO_CONTENTION
+        .aggregate()
+        .saturating_sub(frames_lost_to_contention_before)
+        != 0
+    {
+        return TestResult::Fail("process table frames were lost to allocator contention");
+    }
+    if UNPROVED_ROOT_DROP_REFUSED
+        .aggregate()
+        .saturating_sub(unproved_root_drops_before)
+        != 0
+    {
+        return TestResult::Fail("an unproved process root reached Drop");
+    }
+    if ROOT_RETIRE_REFUSED
+        .aggregate()
+        .saturating_sub(root_retire_refused_before)
+        != 0
+    {
+        return TestResult::Fail("a process root retire token was refused");
+    }
+    if PT_NONUSER_LEAF_SEEN
+        .aggregate()
+        .saturating_sub(nonuser_leaf_seen_before)
+        != 0
+    {
+        return TestResult::Fail("structure-only retire saw a non-user leaf");
+    }
+    if PT_ROOTS_RETIRED
+        .aggregate()
+        .saturating_sub(roots_retired_before)
+        < 65
+    {
+        return TestResult::Fail("process root retirement anti-vacuity floor was not reached");
+    }
+    if PT_TABLE_FRAMES_RECLAIMED
+        .aggregate()
+        .saturating_sub(table_frames_reclaimed_before)
+        < 4 * 65
+    {
+        return TestResult::Fail("process table-frame reclaim anti-vacuity floor was not reached");
+    }
     if TEARDOWN_MASKED_FRAMES_WALKED
         .aggregate()
         .saturating_sub(masked_frames_walked_before)
+        != 0
+    {
+        return TestResult::Fail("aarch64 exit still walks frames under PM");
+    }
+    if FD_CLOSES_UNDER_PM
+        .aggregate()
+        .saturating_sub(fd_closes_under_pm_before)
         == 0
-        || FD_CLOSES_UNDER_PM
-            .aggregate()
-            .saturating_sub(fd_closes_under_pm_before)
-            == 0
     {
         return TestResult::Fail("retained pre-P7 under-PM baseline unexpectedly disappeared");
     }
@@ -1197,17 +1314,6 @@ pub fn fork_exit_defer_reclaim_pairing_test() -> crate::test_framework::registry
         return TestResult::Fail("receipt custody or pre-P6b orphan counter moved");
     }
     let _all_counter_readers = snapshot();
-
-    {
-        let mut manager_guard = crate::process::manager();
-        let Some(manager) = manager_guard.as_mut() else {
-            return TestResult::Fail("process manager unavailable for parent cleanup");
-        };
-        if let Some(parent) = manager.get_process_mut(parent_pid) {
-            crate::task::process_task::release_process_resources(parent);
-        }
-        manager.remove_process(parent_pid);
-    }
 
     core::mem::drop(pid_counts_guard);
     TestResult::Pass

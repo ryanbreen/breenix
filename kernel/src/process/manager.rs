@@ -1144,12 +1144,15 @@ impl ProcessManager {
             }
 
             if already_terminated {
-                // Preserve the single-CoW-decref invariant: external terminate()
-                // already walked these mappings, so raw-drop them without ever
-                // routing the page table through another reclaim/decref path.
-                drop(process.page_table.take());
+                #[cfg(target_arch = "aarch64")]
+                if process.page_table.is_some() || !process.pending_old_page_tables.is_empty() {
+                    let reclaim =
+                        crate::task::process_task::defer_process_resources_already_released(
+                            process,
+                        );
+                    receipt = Some(super::RetirementReceipt::from_reclaim(reclaim));
+                }
                 drop(process.stack.take());
-                process.pending_old_page_tables.clear();
             } else {
                 #[cfg(target_arch = "aarch64")]
                 {

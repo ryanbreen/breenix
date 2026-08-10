@@ -72,10 +72,18 @@ pub(crate) struct PendingProcessReclaim {
     old_page_tables: alloc::vec::Vec<
         alloc::boxed::Box<crate::memory::process_memory::ProcessPageTable>,
     >,
+    leaves: LeafCustody,
     after_epoch: scheduler::RetirementFence,
     last_pass: u32,
     proof_failures: u8,
     parked: Option<ParkRecord>,
+}
+
+#[cfg(target_arch = "aarch64")]
+#[derive(Clone, Copy)]
+enum LeafCustody {
+    Owned,
+    AlreadyReleased,
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -176,14 +184,21 @@ impl PendingProcessReclaim {
         })
     }
 
-    fn reclaim(mut self) {
-        if let Some(page_table) = self.page_table.as_ref() {
-            crate::process::process::cleanup_cow_page_table(page_table);
+    fn reclaim(mut self, proof: &crate::memory::process_memory::RootRetireProof) {
+        if matches!(self.leaves, LeafCustody::Owned) {
+            if let Some(page_table) = self.page_table.as_ref() {
+                crate::process::process::cleanup_cow_page_table(page_table);
+            }
         }
         for old_page_table in self.old_page_tables.drain(..) {
             old_page_table.cleanup_for_exec();
         }
-        drop(self.page_table.take());
+        if let Some(page_table) = self.page_table.take() {
+            page_table.retire(
+                proof,
+                crate::memory::process_memory::LeafPolicy::StructureOnly,
+            );
+        }
     }
 }
 
@@ -254,6 +269,24 @@ impl RootProof {
     }
 }
 
+impl crate::memory::process_memory::RootRetireProof {
+    pub(crate) fn superseded_by_exec() -> Self {
+        Self(())
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+impl crate::memory::process_memory::RootRetireProof {
+    fn from_discharged_root_proof(proof: &RootProof) -> Option<Self> {
+        if proof.blocker().is_some() {
+            crate::trace_count!(crate::tracing::providers::teardown::ROOT_RETIRE_REFUSED);
+            None
+        } else {
+            Some(Self(()))
+        }
+    }
+}
+
 #[cfg(target_arch = "aarch64")]
 impl ParkRecord {
     fn unpark_reason(
@@ -282,72 +315,43 @@ pub(crate) fn note_process_row_removed() {
     ROW_REMOVAL_EPOCH.fetch_add(1, Ordering::Relaxed);
 }
 
+#[cfg(not(target_arch = "aarch64"))]
 pub(crate) fn release_process_resources(process: &mut crate::process::Process) {
     if crate::process::process_manager_held_on_current_cpu() {
         crate::tracing::providers::teardown::record_masked_frames_walked(process.id.as_u64());
     }
     process.cleanup_cow_frames();
     process.drain_old_page_tables();
-    drop(process.page_table.take());
+    let page_table = process.page_table.take();
+    drop(page_table);
     drop(process.stack.take());
-    process.pending_old_page_tables.clear();
-}
-
-#[cfg(target_arch = "aarch64")]
-pub(crate) fn defer_live_process_resources(
-    process: &mut crate::process::Process,
-) -> Option<PendingProcessReclaim> {
-    let snapshot = scheduler::RetirementSnapshot::capture();
-    let root_is_live = process
-        .page_table
-        .iter()
-        .chain(process.pending_old_page_tables.iter())
-        .any(|page_table| {
-            crate::arch_impl::aarch64::ttbr0::is_ttbr0_root_live_in_mask(
-                page_table.level_4_frame().start_address().as_u64(),
-                snapshot.online_mask,
-            )
-        });
-    #[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
-    let root_is_live = root_is_live
-        || FORCE_LIVE_RECLAIM_TEST_PID.load(Ordering::Acquire) == process.id.as_u64();
-    if !root_is_live {
-        return None;
-    }
-
-    Some(defer_process_resources(process))
-}
-
-#[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
-static FORCE_LIVE_RECLAIM_TEST_PID: AtomicU64 = AtomicU64::new(0);
-
-#[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
-pub(crate) struct ForceLiveReclaimTestGuard;
-
-#[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
-impl ForceLiveReclaimTestGuard {
-    pub(crate) fn arm(pid: u64) -> Self {
-        FORCE_LIVE_RECLAIM_TEST_PID.store(pid, Ordering::Release);
-        Self
-    }
-}
-
-#[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
-impl Drop for ForceLiveReclaimTestGuard {
-    fn drop(&mut self) {
-        FORCE_LIVE_RECLAIM_TEST_PID.store(0, Ordering::Release);
-    }
 }
 
 #[cfg(target_arch = "aarch64")]
 pub(crate) fn defer_process_resources(
     process: &mut crate::process::Process,
 ) -> PendingProcessReclaim {
+    defer_process_resources_with_leaves(process, LeafCustody::Owned)
+}
+
+#[cfg(target_arch = "aarch64")]
+pub(crate) fn defer_process_resources_already_released(
+    process: &mut crate::process::Process,
+) -> PendingProcessReclaim {
+    defer_process_resources_with_leaves(process, LeafCustody::AlreadyReleased)
+}
+
+#[cfg(target_arch = "aarch64")]
+fn defer_process_resources_with_leaves(
+    process: &mut crate::process::Process,
+    leaves: LeafCustody,
+) -> PendingProcessReclaim {
     crate::tracing::providers::teardown::record_defer(process.id.as_u64());
     PendingProcessReclaim {
         pid: process.id.as_u64(),
         page_table: process.page_table.take(),
         old_page_tables: core::mem::take(&mut process.pending_old_page_tables),
+        leaves,
         after_epoch: scheduler::retirement_grace_target(),
         last_pass: 0,
         proof_failures: 0,
@@ -465,23 +469,26 @@ impl ProcessScheduler {
                     let fd_entries = process.take_fd_entries();
                     let retirement_receipt: Option<crate::process::RetirementReceipt> =
                         if already_terminated {
-                            // Preserve the single-CoW-decref invariant: external
-                            // terminate() already walked these mappings, so raw-drop
-                            // them without another reclaim/decref path.
-                            drop(process.page_table.take());
+                            #[cfg(target_arch = "aarch64")]
+                            let receipt = if process.page_table.is_some()
+                                || !process.pending_old_page_tables.is_empty()
+                            {
+                                let reclaim = defer_process_resources_already_released(process);
+                                Some(crate::process::RetirementReceipt::from_reclaim(reclaim))
+                            } else {
+                                None
+                            };
+                            #[cfg(not(target_arch = "aarch64"))]
+                            let receipt = None;
                             drop(process.stack.take());
-                            process.pending_old_page_tables.clear();
-                            None
+                            receipt
                         } else {
                             #[cfg(target_arch = "aarch64")]
-                            let receipt =
-                                if let Some(reclaim) = defer_live_process_resources(process) {
-                                    drop(process.stack.take());
-                                    Some(crate::process::RetirementReceipt::from_reclaim(reclaim))
-                                } else {
-                                    release_process_resources(process);
-                                    None
-                                };
+                            let receipt = {
+                                let reclaim = defer_process_resources(process);
+                                drop(process.stack.take());
+                                Some(crate::process::RetirementReceipt::from_reclaim(reclaim))
+                            };
                             #[cfg(not(target_arch = "aarch64"))]
                             let receipt = {
                                 release_process_resources(process);
@@ -930,8 +937,18 @@ fn reclaim_deferred_process_resources_for_pass(my_pass: u32, boot_test_owned: bo
                         });
                     }
                 } else {
+                    let Some(retire_proof) =
+                        crate::memory::process_memory::RootRetireProof::from_discharged_root_proof(
+                            &proof,
+                        )
+                    else {
+                        crate::arch_without_interrupts(|| {
+                            PENDING_PROCESS_RECLAIMS.lock().push(reclaim)
+                        });
+                        continue;
+                    };
                     crate::tracing::providers::teardown::record_reclaim(reclaim.pid);
-                    reclaim.reclaim();
+                    reclaim.reclaim(&retire_proof);
                 }
             }
             None => break,
@@ -1009,6 +1026,7 @@ fn boot_test_reclaim(pid: u64) -> PendingProcessReclaim {
         pid,
         page_table: None,
         old_page_tables: alloc::vec::Vec::new(),
+        leaves: LeafCustody::Owned,
         after_epoch: scheduler::RetirementSnapshot::capture().as_fence(),
         last_pass: 0,
         proof_failures: 0,
