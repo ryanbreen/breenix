@@ -321,37 +321,88 @@ pub fn allocate_frame() -> Option<PhysFrame> {
     allocator.allocate_frame()
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FrameDeallocationOutcome {
+    Reclaimed,
+    ProvenanceRefused,
+    Contended,
+}
+
+fn allocated_frame_ordinal(frame: PhysFrame) -> Option<usize> {
+    const FRAME_SIZE: u64 = 4096;
+    let address = frame.start_address().as_u64();
+    if address & (FRAME_SIZE - 1) != 0 {
+        return None;
+    }
+
+    let info = MEMORY_INFO.get()?;
+    let mut preceding_frames = 0usize;
+    for index in 0..info.region_count {
+        let Some(region) = info.regions[index] else {
+            continue;
+        };
+        let region_frames = ((region.end - region.start) / FRAME_SIZE) as usize;
+        let allocated_end = region.start + region_frames as u64 * FRAME_SIZE;
+        if address >= region.start
+            && address < allocated_end
+            && (address - region.start) & (FRAME_SIZE - 1) == 0
+        {
+            return Some(preceding_frames + ((address - region.start) / FRAME_SIZE) as usize);
+        }
+        preceding_frames += region_frames;
+    }
+    None
+}
+
+fn frame_has_allocator_provenance(frame: PhysFrame) -> bool {
+    allocated_frame_ordinal(frame)
+        .is_some_and(|ordinal| ordinal < NEXT_FREE_FRAME.load(Ordering::Acquire))
+}
+
+/// Prove the checks that can be made without freeing the frame.
+///
+/// The address must be page-aligned, belong to a usable allocator region, have
+/// crossed the sequential allocation frontier, and not already be on the free
+/// list. A busy free list is a refusal because absence cannot be proven.
+pub(crate) fn frame_deallocation_provenance_is_proved(frame: PhysFrame) -> bool {
+    let proved = frame_has_allocator_provenance(frame)
+        && FREE_FRAMES
+            .try_lock()
+            .is_some_and(|free_list| !free_list.contains(&frame));
+    if !proved {
+        crate::trace_count!(
+            crate::tracing::providers::teardown::PT_TABLE_FRAME_PROVENANCE_REFUSED
+        );
+    }
+    proved
+}
+
 /// Deallocate a physical frame, returning it to the free pool
 ///
 /// The frame will be available for reuse by future allocations.
 /// This is called when a CoW page's reference count drops to zero.
-pub fn deallocate_frame(frame: PhysFrame) -> bool {
-    // Don't deallocate frames below the low memory floor
-    if frame.start_address().as_u64() < LOW_MEMORY_FLOOR {
-        log::warn!(
-            "Refusing to deallocate frame {:#x} below low memory floor",
-            frame.start_address().as_u64()
+pub fn deallocate_frame(frame: PhysFrame) -> FrameDeallocationOutcome {
+    if !frame_has_allocator_provenance(frame) {
+        crate::trace_count!(
+            crate::tracing::providers::teardown::PT_TABLE_FRAME_PROVENANCE_REFUSED
         );
-        return false;
+        return FrameDeallocationOutcome::ProvenanceRefused;
     }
 
     if let Some(mut free_list) = FREE_FRAMES.try_lock() {
-        log::trace!(
-            "Frame allocator: Deallocated frame {:#x} (free list size: {})",
-            frame.start_address().as_u64(),
-            free_list.len() + 1
-        );
+        if free_list.contains(&frame) {
+            crate::trace_count!(
+                crate::tracing::providers::teardown::PT_TABLE_FRAME_PROVENANCE_REFUSED
+            );
+            return FrameDeallocationOutcome::ProvenanceRefused;
+        }
         free_list.push(frame);
-        true
+        FrameDeallocationOutcome::Reclaimed
     } else {
         // If we can't get the lock (e.g., called from interrupt context),
         // we lose this frame. This is a memory leak but prevents deadlock.
         crate::trace_count!(crate::tracing::providers::teardown::PT_FRAMES_LOST_TO_CONTENTION);
-        log::warn!(
-            "Frame allocator: Could not deallocate frame {:#x} - lock contention",
-            frame.start_address().as_u64()
-        );
-        false
+        FrameDeallocationOutcome::Contended
     }
 }
 

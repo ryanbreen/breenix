@@ -128,6 +128,41 @@ unsafe impl FrameAllocator<Size4KiB> for ProcessTableFrames<'_> {
     }
 }
 
+// Breenix currently caps physical RAM far below the virtual address-space
+// maximum. A bounded scratch buffer keeps retire allocation-free; roots that
+// exceed it are refused before any table frame is returned.
+const RETIRE_TABLE_FRAME_CAPACITY: usize = 1024;
+
+struct RetireTableFrames {
+    frames: [core::mem::MaybeUninit<PhysFrame>; RETIRE_TABLE_FRAME_CAPACITY],
+    len: usize,
+}
+
+impl RetireTableFrames {
+    fn new() -> Self {
+        Self {
+            frames: [const { core::mem::MaybeUninit::uninit() }; RETIRE_TABLE_FRAME_CAPACITY],
+            len: 0,
+        }
+    }
+
+    fn push(&mut self, frame: PhysFrame) {
+        if self.len < self.frames.len() {
+            self.frames[self.len].write(frame);
+            self.len += 1;
+        }
+    }
+
+    fn len(&self) -> usize {
+        self.len
+    }
+
+    fn get(&self, index: usize) -> PhysFrame {
+        debug_assert!(index < self.len);
+        unsafe { self.frames[index].assume_init() }
+    }
+}
+
 impl ProcessPageTable {
     /// Deep copy a PML4 entry, creating independent L3/L2/L1 tables
     ///
@@ -490,6 +525,7 @@ impl ProcessPageTable {
             level_4_table[i].set_unused();
         }
         log::debug!("Successfully cleared new page table (all entries set to unused)");
+        let mut owned_table_frames = 1u32;
 
         // Copy kernel mappings from the CURRENT page table
         // The current CR3 has working mappings (kernel is running), so use those
@@ -646,6 +682,7 @@ impl ProcessPageTable {
                 // Each process needs its own independent page table hierarchy here
                 let fresh_pdpt_frame =
                     allocate_frame().ok_or("Failed to allocate PDPT for PML4[0]")?;
+                owned_table_frames += 1;
 
                 // Map and zero out the fresh PDPT
                 let fresh_pdpt_virt = phys_offset + fresh_pdpt_frame.start_address().as_u64();
@@ -1113,8 +1150,7 @@ impl ProcessPageTable {
         let new_page_table = ProcessPageTable {
             level_4_frame,
             mapper,
-            // PML4[0] owns the fresh PDPT allocated above in addition to the root.
-            owned_table_frames: 2,
+            owned_table_frames,
         };
 
         // With global kernel page tables, all kernel stacks are automatically visible
@@ -1725,6 +1761,271 @@ impl ProcessPageTable {
         Ok(())
     }
 
+    #[cfg(target_arch = "x86_64")]
+    unsafe fn walk_retire_frames<Enter, Leaf, Leave>(
+        &self,
+        mut enter_table: Enter,
+        mut visit_leaf: Leaf,
+        mut leave_table: Leave,
+    ) -> bool
+    where
+        Enter: FnMut(PhysFrame) -> bool,
+        Leaf: FnMut(PhysFrame, bool, u8) -> bool,
+        Leave: FnMut(PhysFrame),
+    {
+        if !enter_table(self.level_4_frame) {
+            return false;
+        }
+        let phys_offset = crate::memory::physical_memory_offset();
+        let l4_virt = phys_offset + self.level_4_frame.start_address().as_u64();
+        let l4_table = unsafe { &*(l4_virt.as_ptr() as *const PageTable) };
+
+        // A user-marked PML4 entry is an ownership boundary: new() either
+        // installs a fresh PML4[0] PDPT or the mapper creates the subtree.
+        // Non-user PML4 entries are shared kernel mappings and stay untouched.
+        for l4_idx in 0..256usize {
+            let l4_entry = &l4_table[l4_idx];
+            if l4_entry.is_unused()
+                || !l4_entry.flags().contains(PageTableFlags::PRESENT)
+                || !l4_entry.flags().contains(PageTableFlags::USER_ACCESSIBLE)
+            {
+                continue;
+            }
+
+            let l3_frame = PhysFrame::containing_address(l4_entry.addr());
+            if !enter_table(l3_frame) {
+                return false;
+            }
+            let l3_virt = phys_offset + l3_frame.start_address().as_u64();
+            let l3_table = unsafe { &*(l3_virt.as_ptr() as *const PageTable) };
+
+            for l3_idx in 0..512usize {
+                let l3_entry = &l3_table[l3_idx];
+                if l3_entry.is_unused()
+                    || !l3_entry.flags().contains(PageTableFlags::PRESENT)
+                {
+                    continue;
+                }
+                let l3_user = l3_entry.flags().contains(PageTableFlags::USER_ACCESSIBLE);
+                if l3_entry.flags().contains(PageTableFlags::HUGE_PAGE) {
+                    if !visit_leaf(
+                        PhysFrame::containing_address(l3_entry.addr()),
+                        l3_user,
+                        3,
+                    ) {
+                        return false;
+                    }
+                    continue;
+                }
+
+                // Once below an owned PML4 subtree, intermediate tables remain
+                // owned even when a kernel-only mapping omitted USER_ACCESSIBLE.
+                let l2_frame = PhysFrame::containing_address(l3_entry.addr());
+                if !enter_table(l2_frame) {
+                    return false;
+                }
+                let l2_virt = phys_offset + l2_frame.start_address().as_u64();
+                let l2_table = unsafe { &*(l2_virt.as_ptr() as *const PageTable) };
+
+                for l2_idx in 0..512usize {
+                    let l2_entry = &l2_table[l2_idx];
+                    if l2_entry.is_unused()
+                        || !l2_entry.flags().contains(PageTableFlags::PRESENT)
+                    {
+                        continue;
+                    }
+                    let l2_user = l3_user
+                        && l2_entry.flags().contains(PageTableFlags::USER_ACCESSIBLE);
+                    if l2_entry.flags().contains(PageTableFlags::HUGE_PAGE) {
+                        if !visit_leaf(
+                            PhysFrame::containing_address(l2_entry.addr()),
+                            l2_user,
+                            2,
+                        ) {
+                            return false;
+                        }
+                        continue;
+                    }
+
+                    let l1_frame = PhysFrame::containing_address(l2_entry.addr());
+                    if !enter_table(l1_frame) {
+                        return false;
+                    }
+                    let l1_virt = phys_offset + l1_frame.start_address().as_u64();
+                    let l1_table = unsafe { &*(l1_virt.as_ptr() as *const PageTable) };
+
+                    for l1_idx in 0..512usize {
+                        let l1_entry = &l1_table[l1_idx];
+                        if l1_entry.is_unused()
+                            || !l1_entry.flags().contains(PageTableFlags::PRESENT)
+                        {
+                            continue;
+                        }
+                        let leaf_user = l2_user
+                            && l1_entry.flags().contains(PageTableFlags::USER_ACCESSIBLE);
+                        if !visit_leaf(
+                            PhysFrame::containing_address(l1_entry.addr()),
+                            leaf_user,
+                            1,
+                        ) {
+                            return false;
+                        }
+                    }
+                    leave_table(l1_frame);
+                }
+                leave_table(l2_frame);
+            }
+            leave_table(l3_frame);
+        }
+        leave_table(self.level_4_frame);
+        true
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    unsafe fn walk_retire_frames<Enter, Leaf, Leave>(
+        &self,
+        mut enter_table: Enter,
+        mut visit_leaf: Leaf,
+        mut leave_table: Leave,
+    ) -> bool
+    where
+        Enter: FnMut(PhysFrame) -> bool,
+        Leaf: FnMut(PhysFrame, bool, u8) -> bool,
+        Leave: FnMut(PhysFrame),
+    {
+        if !enter_table(self.level_4_frame) {
+            return false;
+        }
+        let phys_offset = crate::memory::physical_memory_offset();
+        let l0_virt = phys_offset + self.level_4_frame.start_address().as_u64();
+        let l0_table = unsafe { &*(l0_virt.as_ptr() as *const PageTable) };
+
+        for l0_idx in 0..512usize {
+            let l0_entry = &l0_table[l0_idx];
+            if l0_entry.is_unused() || !l0_entry.flags().contains(PageTableFlags::PRESENT) {
+                continue;
+            }
+            let l1_frame = PhysFrame::containing_address(l0_entry.addr());
+            if !enter_table(l1_frame) {
+                return false;
+            }
+            let l1_virt = phys_offset + l1_frame.start_address().as_u64();
+            let l1_table = unsafe { &*(l1_virt.as_ptr() as *const PageTable) };
+
+            for l1_idx in 0..512usize {
+                let l1_entry = &l1_table[l1_idx];
+                if l1_entry.is_unused()
+                    || !l1_entry.flags().contains(PageTableFlags::PRESENT)
+                {
+                    continue;
+                }
+                if l1_entry.flags().contains(PageTableFlags::HUGE_PAGE) {
+                    if !visit_leaf(
+                        PhysFrame::containing_address(l1_entry.addr()),
+                        l1_entry.flags().contains(PageTableFlags::USER_ACCESSIBLE),
+                        1,
+                    ) {
+                        return false;
+                    }
+                    continue;
+                }
+
+                let l2_frame = PhysFrame::containing_address(l1_entry.addr());
+                if !enter_table(l2_frame) {
+                    return false;
+                }
+                let l2_virt = phys_offset + l2_frame.start_address().as_u64();
+                let l2_table = unsafe { &*(l2_virt.as_ptr() as *const PageTable) };
+
+                for l2_idx in 0..512usize {
+                    let l2_entry = &l2_table[l2_idx];
+                    if l2_entry.is_unused()
+                        || !l2_entry.flags().contains(PageTableFlags::PRESENT)
+                    {
+                        continue;
+                    }
+                    if l2_entry.flags().contains(PageTableFlags::HUGE_PAGE) {
+                        if !visit_leaf(
+                            PhysFrame::containing_address(l2_entry.addr()),
+                            l2_entry.flags().contains(PageTableFlags::USER_ACCESSIBLE),
+                            2,
+                        ) {
+                            return false;
+                        }
+                        continue;
+                    }
+
+                    let l3_frame = PhysFrame::containing_address(l2_entry.addr());
+                    if !enter_table(l3_frame) {
+                        return false;
+                    }
+                    let l3_virt = phys_offset + l3_frame.start_address().as_u64();
+                    let l3_table = unsafe { &*(l3_virt.as_ptr() as *const PageTable) };
+
+                    for l3_idx in 0..512usize {
+                        let l3_entry = &l3_table[l3_idx];
+                        if l3_entry.is_unused()
+                            || !l3_entry.flags().contains(PageTableFlags::PRESENT)
+                        {
+                            continue;
+                        }
+                        if !visit_leaf(
+                            PhysFrame::containing_address(l3_entry.addr()),
+                            l3_entry.flags().contains(PageTableFlags::USER_ACCESSIBLE),
+                            3,
+                        ) {
+                            return false;
+                        }
+                    }
+                    leave_table(l3_frame);
+                }
+                leave_table(l2_frame);
+            }
+            leave_table(l1_frame);
+        }
+        leave_table(self.level_4_frame);
+        true
+    }
+
+    fn duplicate_table_frame(&self) -> bool {
+        let mut lower_bound = None;
+        loop {
+            let mut next_address = None;
+            let mut next_count = 0u32;
+            let _ = unsafe {
+                self.walk_retire_frames(
+                    |frame| {
+                        let address = frame.start_address().as_u64();
+                        if lower_bound.map_or(true, |bound| address > bound) {
+                            match next_address {
+                                None => {
+                                    next_address = Some(address);
+                                    next_count = 1;
+                                }
+                                Some(next) if address < next => {
+                                    next_address = Some(address);
+                                    next_count = 1;
+                                }
+                                Some(next) if address == next => next_count += 1,
+                                Some(_) => {}
+                            }
+                        }
+                        true
+                    },
+                    |_, _, _| true,
+                    |_| {},
+                )
+            };
+            let Some(address) = next_address else {
+                return false;
+            };
+            if next_count > 1 {
+                return true;
+            }
+            lower_bound = Some(address);
+        }
+    }
+
     /// Clean up page table resources during exec()
     ///
     /// This walks the entire page table hierarchy and:
@@ -1742,19 +2043,20 @@ impl ProcessPageTable {
     }
 
     pub(crate) fn retire(self, _proof: &RootRetireProof, leaves: LeafPolicy) {
-        use crate::memory::frame_allocator::deallocate_frame;
+        use crate::memory::frame_allocator::{
+            deallocate_frame, frame_deallocation_provenance_is_proved,
+            FrameDeallocationOutcome,
+        };
         use crate::memory::frame_metadata::frame_decref;
-        use alloc::vec::Vec;
 
         #[cfg(target_arch = "x86_64")]
         match leaves {
             LeafPolicy::DecrefAndFree => {}
         }
         let phys_offset = crate::memory::physical_memory_offset();
-        let mut user_frames_freed = 0u64;
-        let mut user_frames_still_shared = 0u64;
         let mut table_frames_freed = 0u64;
         let mut table_frames_lost = 0u64;
+        let table_frame_provenance_refused = core::cell::Cell::new(0u64);
         #[cfg(target_arch = "aarch64")]
         let mut nonuser_leaf_seen = 0u64;
         #[cfg(target_arch = "aarch64")]
@@ -1764,13 +2066,99 @@ impl ProcessPageTable {
         #[cfg(not(target_arch = "aarch64"))]
         let nonuser_leaf_levels = 0u64;
 
-        // Collect page table structure frames to free after walking
+        let mut table_frames_seen = 0u64;
         #[cfg(target_arch = "x86_64")]
-        let mut l3_frames: Vec<PhysFrame> = Vec::new();
+        let walk_provenance_proved = unsafe {
+            self.walk_retire_frames(
+                |frame| {
+                    table_frames_seen += 1;
+                    let proved = frame_deallocation_provenance_is_proved(frame);
+                    if !proved {
+                        table_frame_provenance_refused
+                            .set(table_frame_provenance_refused.get() + 1);
+                    }
+                    proved
+                },
+                |frame, user_accessible, _| {
+                    if !user_accessible {
+                        return true;
+                    }
+                    let proved = frame_deallocation_provenance_is_proved(frame);
+                    if !proved {
+                        table_frame_provenance_refused
+                            .set(table_frame_provenance_refused.get() + 1);
+                    }
+                    proved
+                },
+                |_| {},
+            )
+        };
+        #[cfg(target_arch = "aarch64")]
+        let walk_provenance_proved = unsafe {
+            self.walk_retire_frames(
+                |frame| {
+                    table_frames_seen += 1;
+                    let proved = frame_deallocation_provenance_is_proved(frame);
+                    if !proved {
+                        table_frame_provenance_refused
+                            .set(table_frame_provenance_refused.get() + 1);
+                    }
+                    proved
+                },
+                |frame, user_accessible, level| match leaves {
+                    LeafPolicy::DecrefAndFree => {
+                        let proved = frame_deallocation_provenance_is_proved(frame);
+                        if !proved {
+                            table_frame_provenance_refused
+                                .set(table_frame_provenance_refused.get() + 1);
+                        }
+                        proved
+                    }
+                    LeafPolicy::StructureOnly => {
+                        if !user_accessible {
+                            nonuser_leaf_seen += 1;
+                            nonuser_leaf_levels |= 1 << level;
+                            crate::trace_count!(
+                                crate::tracing::providers::teardown::PT_NONUSER_LEAF_SEEN
+                            );
+                        }
+                        true
+                    }
+                },
+                |_| {},
+            )
+        };
+
+        let duplicate_table_frame = walk_provenance_proved && self.duplicate_table_frame();
+        if duplicate_table_frame {
+            table_frame_provenance_refused.set(table_frame_provenance_refused.get() + 1);
+            crate::trace_count!(
+                crate::tracing::providers::teardown::PT_TABLE_FRAME_PROVENANCE_REFUSED
+            );
+        }
+        let capacity_proved = table_frames_seen.saturating_sub(1)
+            <= RETIRE_TABLE_FRAME_CAPACITY as u64;
+        if !capacity_proved {
+            table_frame_provenance_refused.set(table_frame_provenance_refused.get() + 1);
+            crate::trace_count!(
+                crate::tracing::providers::teardown::PT_TABLE_FRAME_PROVENANCE_REFUSED
+            );
+        }
+        let structure_balance_proved =
+            table_frames_seen == u64::from(self.owned_table_frames);
+        if !structure_balance_proved {
+            crate::trace_count!(crate::tracing::providers::teardown::PT_TABLE_FRAMES_UNBALANCED);
+        }
+        // Intentional fail-closed precondition: the spec described balance as a
+        // detector, but freeing a partially proved hierarchy can poison the
+        // allocator. The oracle makes every refusal observable.
+        let reclamation_preconditions_proved = walk_provenance_proved
+            && !duplicate_table_frame
+            && capacity_proved
+            && structure_balance_proved;
+
         #[cfg(target_arch = "x86_64")]
-        let mut l2_frames: Vec<PhysFrame> = Vec::new();
-        #[cfg(target_arch = "x86_64")]
-        let mut l1_frames: Vec<PhysFrame> = Vec::new();
+        let mut table_frames = RetireTableFrames::new();
 
         #[cfg(target_arch = "x86_64")]
         unsafe {
@@ -1794,7 +2182,7 @@ impl ProcessPageTable {
                 // Get L3 table and mark for cleanup
                 let l3_phys = l4_entry.addr();
                 let l3_frame = PhysFrame::containing_address(l3_phys);
-                l3_frames.push(l3_frame);
+                table_frames.push(l3_frame);
 
                 let l3_virt = phys_offset + l3_phys.as_u64();
                 let l3_table = &*(l3_virt.as_ptr() as *const PageTable);
@@ -1804,34 +2192,26 @@ impl ProcessPageTable {
                     if l3_entry.is_unused() || !l3_entry.flags().contains(PageTableFlags::PRESENT) {
                         continue;
                     }
+                    let l3_user_accessible =
+                        l3_entry.flags().contains(PageTableFlags::USER_ACCESSIBLE);
 
                     // 1GB huge page - handle CoW for the frame
                     if l3_entry.flags().contains(PageTableFlags::HUGE_PAGE) {
                         // Skip kernel identity-mapped frames (not USER_ACCESSIBLE)
-                        if !l3_entry.flags().contains(PageTableFlags::USER_ACCESSIBLE) {
+                        if !l3_user_accessible {
                             continue;
                         }
                         let frame = PhysFrame::containing_address(l3_entry.addr());
                         if frame_decref(frame) {
-                            deallocate_frame(frame);
-                            user_frames_freed += 1;
-                        } else {
-                            user_frames_still_shared += 1;
+                            let _ = deallocate_frame(frame);
                         }
-                        continue;
-                    }
-
-                    // Skip kernel-only subtrees (not USER_ACCESSIBLE)
-                    // On x86-64, intermediate entries must have USER_ACCESSIBLE for
-                    // any leaf pages under them to be accessible from userspace.
-                    if !l3_entry.flags().contains(PageTableFlags::USER_ACCESSIBLE) {
                         continue;
                     }
 
                     // Get L2 table and mark for cleanup
                     let l2_phys = l3_entry.addr();
                     let l2_frame = PhysFrame::containing_address(l2_phys);
-                    l2_frames.push(l2_frame);
+                    table_frames.push(l2_frame);
 
                     let l2_virt = phys_offset + l2_phys.as_u64();
                     let l2_table = &*(l2_virt.as_ptr() as *const PageTable);
@@ -1843,32 +2223,26 @@ impl ProcessPageTable {
                         {
                             continue;
                         }
+                        let l2_user_accessible = l3_user_accessible
+                            && l2_entry.flags().contains(PageTableFlags::USER_ACCESSIBLE);
 
                         // 2MB huge page - handle CoW for the frame
                         if l2_entry.flags().contains(PageTableFlags::HUGE_PAGE) {
                             // Skip kernel identity-mapped frames (not USER_ACCESSIBLE)
-                            if !l2_entry.flags().contains(PageTableFlags::USER_ACCESSIBLE) {
+                            if !l2_user_accessible {
                                 continue;
                             }
                             let frame = PhysFrame::containing_address(l2_entry.addr());
                             if frame_decref(frame) {
-                                deallocate_frame(frame);
-                                user_frames_freed += 1;
-                            } else {
-                                user_frames_still_shared += 1;
+                                let _ = deallocate_frame(frame);
                             }
-                            continue;
-                        }
-
-                        // Skip kernel-only subtrees (not USER_ACCESSIBLE)
-                        if !l2_entry.flags().contains(PageTableFlags::USER_ACCESSIBLE) {
                             continue;
                         }
 
                         // Get L1 table and mark for cleanup
                         let l1_phys = l2_entry.addr();
                         let l1_frame = PhysFrame::containing_address(l1_phys);
-                        l1_frames.push(l1_frame);
+                        table_frames.push(l1_frame);
 
                         let l1_virt = phys_offset + l1_phys.as_u64();
                         let l1_table = &*(l1_virt.as_ptr() as *const PageTable);
@@ -1882,80 +2256,57 @@ impl ProcessPageTable {
                             }
 
                             // Skip kernel identity-mapped frames (not USER_ACCESSIBLE)
-                            if !l1_entry.flags().contains(PageTableFlags::USER_ACCESSIBLE) {
+                            if !l2_user_accessible
+                                || !l1_entry.flags().contains(PageTableFlags::USER_ACCESSIBLE)
+                            {
                                 continue;
                             }
 
                             // 4KB page - handle CoW for the frame
                             let frame = PhysFrame::containing_address(l1_entry.addr());
                             if frame_decref(frame) {
-                                deallocate_frame(frame);
-                                user_frames_freed += 1;
-                            } else {
-                                user_frames_still_shared += 1;
+                                let _ = deallocate_frame(frame);
                             }
                         }
                     }
                 }
             }
 
-            let structure_balance_proved =
-                l1_frames.len() + l2_frames.len() + l3_frames.len() + 1
-                    == self.owned_table_frames as usize;
-            if structure_balance_proved {
-                // Free page table structure frames (L1 first, then L2, then L3)
-                for frame in l1_frames {
-                    if !deallocate_frame(frame) {
-                        table_frames_lost += 1;
+            if reclamation_preconditions_proved {
+                for index in (0..table_frames.len()).rev() {
+                    match deallocate_frame(table_frames.get(index)) {
+                        FrameDeallocationOutcome::Reclaimed => {
+                            table_frames_freed += 1;
+                            crate::trace_count!(
+                                crate::tracing::providers::teardown::PT_TABLE_FRAMES_RECLAIMED
+                            );
+                        }
+                        FrameDeallocationOutcome::ProvenanceRefused => {
+                            table_frame_provenance_refused
+                                .set(table_frame_provenance_refused.get() + 1);
+                        }
+                        FrameDeallocationOutcome::Contended => table_frames_lost += 1,
                     }
-                    table_frames_freed += 1;
-                    crate::trace_count!(
-                        crate::tracing::providers::teardown::PT_TABLE_FRAMES_RECLAIMED
-                    );
                 }
-                for frame in l2_frames {
-                    if !deallocate_frame(frame) {
-                        table_frames_lost += 1;
+                match deallocate_frame(self.level_4_frame) {
+                    FrameDeallocationOutcome::Reclaimed => {
+                        table_frames_freed += 1;
+                        crate::trace_count!(
+                            crate::tracing::providers::teardown::PT_TABLE_FRAMES_RECLAIMED
+                        );
                     }
-                    table_frames_freed += 1;
-                    crate::trace_count!(
-                        crate::tracing::providers::teardown::PT_TABLE_FRAMES_RECLAIMED
-                    );
-                }
-                for frame in l3_frames {
-                    if !deallocate_frame(frame) {
-                        table_frames_lost += 1;
+                    FrameDeallocationOutcome::ProvenanceRefused => {
+                        table_frame_provenance_refused
+                            .set(table_frame_provenance_refused.get() + 1);
                     }
-                    table_frames_freed += 1;
-                    crate::trace_count!(
-                        crate::tracing::providers::teardown::PT_TABLE_FRAMES_RECLAIMED
-                    );
+                    FrameDeallocationOutcome::Contended => table_frames_lost += 1,
                 }
-
-                // Free the L4 frame itself
-                if !deallocate_frame(self.level_4_frame) {
-                    table_frames_lost += 1;
-                }
-                table_frames_freed += 1;
-                crate::trace_count!(crate::tracing::providers::teardown::PT_TABLE_FRAMES_RECLAIMED);
             }
         }
 
-        #[cfg(target_arch = "x86_64")]
-        log::info!(
-            "cleanup_for_exec: freed {} user frames, {} still shared, {} table frames",
-            user_frames_freed,
-            user_frames_still_shared,
-            table_frames_freed
-        );
-
         // ARM64 uses different page table naming (L0/L1/L2/L3) but the same walk.
         #[cfg(target_arch = "aarch64")]
-        let mut l1_frames: Vec<PhysFrame> = Vec::new();
-        #[cfg(target_arch = "aarch64")]
-        let mut l2_frames: Vec<PhysFrame> = Vec::new();
-        #[cfg(target_arch = "aarch64")]
-        let mut l3_frames: Vec<PhysFrame> = Vec::new();
+        let mut table_frames = RetireTableFrames::new();
 
         #[cfg(target_arch = "aarch64")]
         unsafe {
@@ -1973,7 +2324,7 @@ impl ProcessPageTable {
                 // Get L1 table and mark for cleanup
                 let l1_phys = l0_entry.addr();
                 let l1_frame = PhysFrame::containing_address(l1_phys);
-                l1_frames.push(l1_frame);
+                table_frames.push(l1_frame);
 
                 let l1_virt = phys_offset + l1_phys.as_u64();
                 let l1_table = &*(l1_virt.as_ptr() as *const PageTable);
@@ -1987,21 +2338,11 @@ impl ProcessPageTable {
                     // Check for 1GB block (huge page equivalent)
                     if l1_entry.flags().contains(PageTableFlags::HUGE_PAGE) {
                         if matches!(leaves, LeafPolicy::StructureOnly) {
-                            if !l1_entry.flags().contains(PageTableFlags::USER_ACCESSIBLE) {
-                                nonuser_leaf_seen += 1;
-                                nonuser_leaf_levels |= 1 << 1;
-                                crate::trace_count!(
-                                    crate::tracing::providers::teardown::PT_NONUSER_LEAF_SEEN
-                                );
-                            }
                             continue;
                         }
                         let frame = PhysFrame::containing_address(l1_entry.addr());
                         if frame_decref(frame) {
-                            deallocate_frame(frame);
-                            user_frames_freed += 1;
-                        } else {
-                            user_frames_still_shared += 1;
+                            let _ = deallocate_frame(frame);
                         }
                         continue;
                     }
@@ -2009,7 +2350,7 @@ impl ProcessPageTable {
                     // Get L2 table and mark for cleanup
                     let l2_phys = l1_entry.addr();
                     let l2_frame = PhysFrame::containing_address(l2_phys);
-                    l2_frames.push(l2_frame);
+                    table_frames.push(l2_frame);
 
                     let l2_virt = phys_offset + l2_phys.as_u64();
                     let l2_table = &*(l2_virt.as_ptr() as *const PageTable);
@@ -2025,21 +2366,11 @@ impl ProcessPageTable {
                         // Check for 2MB block
                         if l2_entry.flags().contains(PageTableFlags::HUGE_PAGE) {
                             if matches!(leaves, LeafPolicy::StructureOnly) {
-                                if !l2_entry.flags().contains(PageTableFlags::USER_ACCESSIBLE) {
-                                    nonuser_leaf_seen += 1;
-                                    nonuser_leaf_levels |= 1 << 2;
-                                    crate::trace_count!(
-                                        crate::tracing::providers::teardown::PT_NONUSER_LEAF_SEEN
-                                    );
-                                }
                                 continue;
                             }
                             let frame = PhysFrame::containing_address(l2_entry.addr());
                             if frame_decref(frame) {
-                                deallocate_frame(frame);
-                                user_frames_freed += 1;
-                            } else {
-                                user_frames_still_shared += 1;
+                                let _ = deallocate_frame(frame);
                             }
                             continue;
                         }
@@ -2047,7 +2378,7 @@ impl ProcessPageTable {
                         // Get L3 table and mark for cleanup
                         let l3_phys = l2_entry.addr();
                         let l3_frame = PhysFrame::containing_address(l3_phys);
-                        l3_frames.push(l3_frame);
+                        table_frames.push(l3_frame);
 
                         let l3_virt = phys_offset + l3_phys.as_u64();
                         let l3_table = &*(l3_virt.as_ptr() as *const PageTable);
@@ -2062,95 +2393,73 @@ impl ProcessPageTable {
 
                             // 4KB page
                             if matches!(leaves, LeafPolicy::StructureOnly) {
-                                if !l3_entry.flags().contains(PageTableFlags::USER_ACCESSIBLE) {
-                                    nonuser_leaf_seen += 1;
-                                    nonuser_leaf_levels |= 1 << 3;
-                                    crate::trace_count!(
-                                        crate::tracing::providers::teardown::PT_NONUSER_LEAF_SEEN
-                                    );
-                                }
                                 continue;
                             }
                             let frame = PhysFrame::containing_address(l3_entry.addr());
                             if frame_decref(frame) {
-                                deallocate_frame(frame);
-                                user_frames_freed += 1;
-                            } else {
-                                user_frames_still_shared += 1;
+                                let _ = deallocate_frame(frame);
                             }
                         }
                     }
                 }
             }
 
-            let structure_balance_proved =
-                l1_frames.len() + l2_frames.len() + l3_frames.len() + 1
-                    == self.owned_table_frames as usize;
-            if structure_balance_proved {
-                // Free page table structure frames (L3 first, then L2, then L1)
-                for frame in l3_frames {
-                    if !deallocate_frame(frame) {
-                        table_frames_lost += 1;
+            if reclamation_preconditions_proved {
+                for index in (0..table_frames.len()).rev() {
+                    match deallocate_frame(table_frames.get(index)) {
+                        FrameDeallocationOutcome::Reclaimed => {
+                            table_frames_freed += 1;
+                            crate::trace_count!(
+                                crate::tracing::providers::teardown::PT_TABLE_FRAMES_RECLAIMED
+                            );
+                        }
+                        FrameDeallocationOutcome::ProvenanceRefused => {
+                            table_frame_provenance_refused
+                                .set(table_frame_provenance_refused.get() + 1);
+                        }
+                        FrameDeallocationOutcome::Contended => table_frames_lost += 1,
                     }
-                    table_frames_freed += 1;
-                    crate::trace_count!(
-                        crate::tracing::providers::teardown::PT_TABLE_FRAMES_RECLAIMED
-                    );
                 }
-                for frame in l2_frames {
-                    if !deallocate_frame(frame) {
-                        table_frames_lost += 1;
+                match deallocate_frame(self.level_4_frame) {
+                    FrameDeallocationOutcome::Reclaimed => {
+                        table_frames_freed += 1;
+                        crate::trace_count!(
+                            crate::tracing::providers::teardown::PT_TABLE_FRAMES_RECLAIMED
+                        );
                     }
-                    table_frames_freed += 1;
-                    crate::trace_count!(
-                        crate::tracing::providers::teardown::PT_TABLE_FRAMES_RECLAIMED
-                    );
-                }
-                for frame in l1_frames {
-                    if !deallocate_frame(frame) {
-                        table_frames_lost += 1;
+                    FrameDeallocationOutcome::ProvenanceRefused => {
+                        table_frame_provenance_refused
+                            .set(table_frame_provenance_refused.get() + 1);
                     }
-                    table_frames_freed += 1;
-                    crate::trace_count!(
-                        crate::tracing::providers::teardown::PT_TABLE_FRAMES_RECLAIMED
-                    );
+                    FrameDeallocationOutcome::Contended => table_frames_lost += 1,
                 }
-
-                // Free the L0 frame itself
-                if !deallocate_frame(self.level_4_frame) {
-                    table_frames_lost += 1;
-                }
-                table_frames_freed += 1;
-                crate::trace_count!(crate::tracing::providers::teardown::PT_TABLE_FRAMES_RECLAIMED);
             }
         }
-
-        #[cfg(target_arch = "aarch64")]
-        log::info!(
-            "cleanup_for_exec [ARM64]: freed {} user frames, {} still shared, {} table frames",
-            user_frames_freed,
-            user_frames_still_shared,
-            table_frames_freed
-        );
-        let table_frames_unbalanced = table_frames_freed != u64::from(self.owned_table_frames);
-        if table_frames_unbalanced {
-            crate::trace_count!(crate::tracing::providers::teardown::PT_TABLE_FRAMES_UNBALANCED);
+        let root_retired = table_frames_freed != 0
+            && table_frames_freed == u64::from(self.owned_table_frames)
+            && table_frames_lost == 0
+            && table_frame_provenance_refused.get() == 0;
+        if root_retired {
+            crate::trace_count!(crate::tracing::providers::teardown::PT_ROOTS_RETIRED);
         }
-        crate::trace_count!(crate::tracing::providers::teardown::PT_ROOTS_RETIRED);
         #[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
         crate::tracing::providers::teardown::record_boot_test_root_retire(
             self.boot_test_pid,
+            root_retired,
             table_frames_freed,
-            table_frames_unbalanced,
+            !structure_balance_proved,
             table_frames_lost,
+            table_frame_provenance_refused.get(),
             nonuser_leaf_seen,
             nonuser_leaf_levels,
         );
         #[cfg(not(all(feature = "boot_tests", target_arch = "aarch64")))]
         let _ = (
             table_frames_lost,
+            table_frame_provenance_refused.get(),
             nonuser_leaf_seen,
             nonuser_leaf_levels,
+            root_retired,
         );
         core::mem::forget(self);
     }
