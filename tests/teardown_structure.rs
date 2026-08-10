@@ -445,10 +445,13 @@ fn validate_exit_sgi_is_teardown_only(sources: &[(String, String)]) -> Result<()
 fn validate_single_page_table_retire_free(sources: &[(String, String)]) -> Result<(), ()> {
     let process_memory = source(sources, "kernel/src/memory/process_memory.rs");
     let retire = function_body_span(process_memory, "retire");
+    let frees: Vec<_> = process_memory
+        .match_indices("deallocate_frame_proven_owned(")
+        .map(|(offset, _)| offset)
+        .collect();
     (process_memory.matches("fn retire(").count() == 1
-        && process_memory
-            .match_indices("deallocate_frame(")
-            .all(|(offset, _)| retire.contains(&offset)))
+        && !frees.is_empty()
+        && frees.into_iter().all(|offset| retire.contains(&offset)))
     .then_some(())
     .ok_or(())
 }
@@ -660,6 +663,10 @@ fn phase_one_retirement_fence_and_lock_domains_are_structural() {
         CLEANUP_FOR_EXEC_CALLS,
         "cleanup_for_exec callers",
     );
+    assert!(process_memory.contains("owned_table_frames: OwnedTableFrames"));
+    assert!(process_memory.contains("struct OwnedTableFrames"));
+    assert!(process_memory.contains("fn record_walk_frame("));
+    assert!(process_memory.contains("fn walk_cross_check_complete("));
     assert_eq!(process_memory.matches("ProcessTableFrames").count(), 4);
     assert!(!process_memory.contains("GlobalFrameAllocator"));
     let reclaim = function_body(process, "reclaim");
@@ -669,18 +676,42 @@ fn phase_one_retirement_fence_and_lock_domains_are_structural() {
     let retire = function_body(process_memory, "retire");
     assert!(!retire.contains("Vec<"));
     assert!(!retire.contains("log::"));
-    assert!(retire.contains("frame_deallocation_provenance_is_proved"));
-    assert!(retire.contains("duplicate_table_frame"));
-    let provenance = function_body(frame_allocator, "frame_deallocation_provenance_is_proved");
-    assert!(provenance.contains("frame_has_allocator_provenance"));
-    assert!(provenance.contains("FREE_FRAMES"));
-    assert!(provenance.contains("free_list.contains(&frame)"));
-    let provenance_bounds = function_body(frame_allocator, "allocated_frame_ordinal");
-    assert!(provenance_bounds.contains("address < allocated_end"));
-    assert!(!provenance_bounds.contains("NEXT_FREE_FRAME"));
-    assert!(function_body(frame_allocator, "frame_has_allocator_provenance")
-        .contains("NEXT_FREE_FRAME"));
+    assert_eq!(retire.matches("walk_retire_frames(").count(), 2);
+    assert!(retire.contains("record_walk_frame"));
+    assert!(retire.contains("walk_cross_check_complete"));
+    assert!(retire.contains("leaf_mapping_is_known"));
+    assert!(retire.contains("release_leaf_mapping"));
+    assert!(retire.contains("deallocate_frame_proven_owned"));
+    assert!(!process_memory.contains("RetireTableFrames"));
+    assert!(!process_memory.contains("RETIRE_TABLE_FRAME_CAPACITY"));
+    assert!(!process_memory.contains("duplicate_table_frame"));
+    assert!(!retire.contains("frame_deallocation_provenance_is_proved"));
+    let preflight = retire
+        .find("let reclamation_preconditions_proved")
+        .expect("retire preflight");
+    let leaf_release = retire
+        .find("release_leaf_mapping")
+        .expect("gated leaf release");
+    let table_release = retire
+        .find("for frame in owned_table_frames.into_frames()")
+        .expect("recorded table-frame release");
+    assert!(preflight < leaf_release && leaf_release < table_release);
+    let proven_free = function_body(frame_allocator, "deallocate_frame_proven_owned");
+    assert!(proven_free.contains("free_list.push(frame)"));
+    assert!(!proven_free.contains("contains("));
+    assert!(!proven_free.contains("frame_has_allocator_provenance"));
     assert!(!function_body(frame_allocator, "deallocate_frame").contains("log::"));
+
+    let frame_metadata = source(&sources, "kernel/src/memory/frame_metadata.rs");
+    assert!(frame_metadata.contains("enum LeafMappingOwnership"));
+    assert!(frame_metadata.contains("fn record_leaf_mapping("));
+    assert!(frame_metadata.contains("fn leaf_mapping_is_known("));
+    assert!(frame_metadata.contains("fn release_leaf_mapping("));
+    assert!(frame_metadata.contains("fn forget_leaf_mapping("));
+
+    assert!(provider.contains("inject_unowned_table_descriptor"));
+    assert!(provider.contains("injected table-ownership refusal did not fire exactly once"));
+    assert!(provider.contains("injected table descriptor reached the recorded-frame free set"));
 
     let drain = function_body(process, "reclaim_deferred_process_resources");
     assert_eq!(drain.matches("RECLAIM_PASS_ID").count(), 1);
@@ -791,7 +822,7 @@ fn all_phase_zero_counters_have_registered_readers_and_honest_runtime_gates() {
         .filter_map(|rest| rest.strip_suffix(','))
         .map(str::to_owned)
         .collect();
-    assert_eq!(declarations.len(), 55);
+    assert_eq!(declarations.len(), 56);
     assert_eq!(
         readers, declarations,
         "every counter must have an inventory reader"
@@ -808,6 +839,7 @@ fn all_phase_zero_counters_have_registered_readers_and_honest_runtime_gates() {
         "cohort_root_counts.root_retire_refused",
         "cohort_root_counts.nonuser_leaf_seen",
         "cohort_root_counts.table_frame_provenance_refused",
+        "cohort_root_counts.leaf_frame_ownership_refused",
     ] {
         assert!(pairing_gate.contains(cohort_field));
     }
@@ -820,6 +852,7 @@ fn all_phase_zero_counters_have_registered_readers_and_honest_runtime_gates() {
         "ROOT_RETIRE_REFUSED.aggregate()",
         "PT_NONUSER_LEAF_SEEN.aggregate()",
         "PT_TABLE_FRAME_PROVENANCE_REFUSED.aggregate()",
+        "PT_LEAF_FRAME_OWNERSHIP_REFUSED.aggregate()",
     ] {
         assert!(!pairing_gate.contains(contaminated_global_delta));
     }
@@ -873,6 +906,7 @@ fn all_phase_zero_counters_have_registered_readers_and_honest_runtime_gates() {
     assert!(!declaration_only.contains("counter!(ROOT_RETIRE_REFUSED,"));
     assert!(!declaration_only.contains("counter!(PT_NONUSER_LEAF_SEEN,"));
     assert!(!declaration_only.contains("counter!(PT_TABLE_FRAME_PROVENANCE_REFUSED,"));
+    assert!(!declaration_only.contains("counter!(PT_LEAF_FRAME_OWNERSHIP_REFUSED,"));
 
     let registry = source(&sources, "kernel/src/test_framework/registry.rs");
     assert!(registry.contains("name: \"fork_exit_defer_reclaim_pairing_test\""));
@@ -1464,29 +1498,29 @@ fn deliberately_broken_variants_fail_the_ratchet() {
     let broken_retire = with_replaced_source(
         &sources,
         "kernel/src/memory/process_memory.rs",
-        format!("{process_memory}\nfn rogue_free(frame: PhysFrame) {{ deallocate_frame(frame); }}"),
+        format!("{process_memory}\nfn rogue_free(frame: PhysFrame) {{ deallocate_frame_proven_owned(frame); }}"),
     );
     assert!(validate_single_page_table_retire_free(&broken_retire).is_err());
 
     let broken_retire_before = with_replaced_source(
         &sources,
         "kernel/src/memory/process_memory.rs",
-        format!("fn rogue_free(frame: PhysFrame) {{ deallocate_frame(frame); }}\n{process_memory}"),
+        format!("fn rogue_free(frame: PhysFrame) {{ deallocate_frame_proven_owned(frame); }}\n{process_memory}"),
     );
     assert!(validate_single_page_table_retire_free(&broken_retire_before).is_err());
 
     let retire_span = function_body_span(process_memory, "retire");
     let retire_free = process_memory[retire_span.clone()]
-        .find("deallocate_frame(")
+        .find("deallocate_frame_proven_owned(")
         .expect("retire deallocation call")
         + retire_span.start;
     let mut count_preserving_escape = process_memory.to_owned();
     count_preserving_escape.replace_range(
-        retire_free..retire_free + "deallocate_frame(".len(),
+        retire_free..retire_free + "deallocate_frame_proven_owned(".len(),
         "do_not_deallocate(",
     );
     count_preserving_escape.push_str(
-        "\nfn rogue_free(frame: PhysFrame) { deallocate_frame(frame); }",
+        "\nfn rogue_free(frame: PhysFrame) { deallocate_frame_proven_owned(frame); }",
     );
     let broken_count_preserving_retire = with_replaced_source(
         &sources,
