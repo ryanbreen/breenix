@@ -420,11 +420,15 @@ counter!(
 );
 counter!(
     PT_TABLE_FRAMES_UNBALANCED,
-    "Process table retire frame-count mismatches"
+    "Process table descriptor/record set mismatches"
 );
 counter!(
     PT_TABLE_FRAME_PROVENANCE_REFUSED,
-    "Process table frames refused for unproved allocator provenance"
+    "Process table descriptor/record ownership mismatches"
+);
+counter!(
+    PT_LEAF_FRAME_OWNERSHIP_REFUSED,
+    "Process leaf frames refused for missing address-space ownership"
 );
 counter!(
     PT_FRAMES_LOST_TO_CONTENTION,
@@ -464,7 +468,7 @@ counter!(
     "Fatal group signals dropped for init"
 );
 
-pub const COUNTER_COUNT: usize = 55;
+pub const COUNTER_COUNT: usize = 56;
 
 /// The registration and normal-context reader inventory. Keeping one inventory
 /// makes a write-only counter structurally impossible without changing the P0
@@ -507,6 +511,7 @@ pub static COUNTERS: [&TraceCounter; COUNTER_COUNT] = [
     &PT_TABLE_FRAMES_RECLAIMED,
     &PT_TABLE_FRAMES_UNBALANCED,
     &PT_TABLE_FRAME_PROVENANCE_REFUSED,
+    &PT_LEAF_FRAME_OWNERSHIP_REFUSED,
     &PT_FRAMES_LOST_TO_CONTENTION,
     &UNPROVED_ROOT_DROP_REFUSED,
     &ROOT_RETIRE_REFUSED,
@@ -560,6 +565,7 @@ struct BootTestPidCountSlot {
     table_frames_reclaimed: AtomicU64,
     table_frames_unbalanced: AtomicU64,
     table_frame_provenance_refused: AtomicU64,
+    leaf_frame_ownership_refused: AtomicU64,
     table_frames_lost: AtomicU64,
     unproved_root_drops: AtomicU64,
     root_retire_refused: AtomicU64,
@@ -584,6 +590,7 @@ impl BootTestPidCountSlot {
             table_frames_reclaimed: AtomicU64::new(0),
             table_frames_unbalanced: AtomicU64::new(0),
             table_frame_provenance_refused: AtomicU64::new(0),
+            leaf_frame_ownership_refused: AtomicU64::new(0),
             table_frames_lost: AtomicU64::new(0),
             unproved_root_drops: AtomicU64::new(0),
             root_retire_refused: AtomicU64::new(0),
@@ -625,6 +632,7 @@ enum BootTestPidCountKind {
         table_frames_unbalanced: bool,
         table_frames_lost: u64,
         table_frame_provenance_refused: u64,
+        leaf_frame_ownership_refused: u64,
         nonuser_leaf_seen: u64,
         nonuser_leaf_levels: u64,
     },
@@ -635,6 +643,11 @@ enum BootTestPidCountKind {
 #[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
 #[inline(always)]
 fn record_boot_test_pid_count(pid: u64, kind: BootTestPidCountKind) {
+    // PID 0 means an untagged production root. Production refusal, imbalance,
+    // and loss signals have already reached the global TraceCounters before
+    // this boot-test-only helper runs. The bounded per-PID table is only a
+    // cohort oracle, and every cohort root is tagged with a nonzero PID before
+    // it can be deferred, so this no-op cannot hide a cohort failure.
     if BOOT_TEST_PID_COUNTS_ACTIVE.load(Ordering::Acquire) == 0 || pid == 0 {
         return;
     }
@@ -674,6 +687,7 @@ fn record_boot_test_pid_count(pid: u64, kind: BootTestPidCountKind) {
                     table_frames_unbalanced,
                     table_frames_lost,
                     table_frame_provenance_refused,
+                    leaf_frame_ownership_refused,
                     nonuser_leaf_seen,
                     nonuser_leaf_levels,
                 } => {
@@ -690,6 +704,8 @@ fn record_boot_test_pid_count(pid: u64, kind: BootTestPidCountKind) {
                         .fetch_add(table_frames_lost, Ordering::Relaxed);
                     slot.table_frame_provenance_refused
                         .fetch_add(table_frame_provenance_refused, Ordering::Relaxed);
+                    slot.leaf_frame_ownership_refused
+                        .fetch_add(leaf_frame_ownership_refused, Ordering::Relaxed);
                     slot.nonuser_leaf_seen
                         .fetch_add(nonuser_leaf_seen, Ordering::Relaxed);
                     slot.nonuser_leaf_levels
@@ -727,6 +743,8 @@ fn reset_boot_test_pid_counts() -> BootTestPidCountsGuard {
         slot.table_frames_reclaimed.store(0, Ordering::Relaxed);
         slot.table_frames_unbalanced.store(0, Ordering::Relaxed);
         slot.table_frame_provenance_refused
+            .store(0, Ordering::Relaxed);
+        slot.leaf_frame_ownership_refused
             .store(0, Ordering::Relaxed);
         slot.table_frames_lost.store(0, Ordering::Relaxed);
         slot.unproved_root_drops.store(0, Ordering::Relaxed);
@@ -793,6 +811,7 @@ struct BootTestRootCounts {
     table_frames_reclaimed: u64,
     table_frames_unbalanced: u64,
     table_frame_provenance_refused: u64,
+    leaf_frame_ownership_refused: u64,
     table_frames_lost: u64,
     unproved_root_drops: u64,
     root_retire_refused: u64,
@@ -813,6 +832,9 @@ fn boot_test_root_counts(pid: u64) -> BootTestRootCounts {
                 table_frames_unbalanced: slot.table_frames_unbalanced.load(Ordering::Relaxed),
                 table_frame_provenance_refused: slot
                     .table_frame_provenance_refused
+                    .load(Ordering::Relaxed),
+                leaf_frame_ownership_refused: slot
+                    .leaf_frame_ownership_refused
                     .load(Ordering::Relaxed),
                 table_frames_lost: slot.table_frames_lost.load(Ordering::Relaxed),
                 unproved_root_drops: slot.unproved_root_drops.load(Ordering::Relaxed),
@@ -836,6 +858,7 @@ pub(crate) fn record_boot_test_root_retire(
     table_frames_unbalanced: bool,
     table_frames_lost: u64,
     table_frame_provenance_refused: u64,
+    leaf_frame_ownership_refused: u64,
     nonuser_leaf_seen: u64,
     nonuser_leaf_levels: u64,
 ) {
@@ -847,6 +870,7 @@ pub(crate) fn record_boot_test_root_retire(
             table_frames_unbalanced,
             table_frames_lost,
             table_frame_provenance_refused,
+            leaf_frame_ownership_refused,
             nonuser_leaf_seen,
             nonuser_leaf_levels,
         },
@@ -1123,6 +1147,30 @@ pub fn fork_exit_defer_reclaim_pairing_test() -> crate::test_framework::registry
         })
     }
 
+    fn page_table_with_injected_unowned_descriptor() -> Result<
+        (
+            alloc::boxed::Box<crate::memory::process_memory::ProcessPageTable>,
+            crate::memory::arch_stub::PhysFrame,
+        ),
+        &'static str,
+    > {
+        let mut page_table = page_table_with_sentinel()?;
+        crate::arch_without_interrupts(|| {
+            let page = crate::memory::arch_stub::Page::containing_address(
+                crate::memory::arch_stub::VirtAddr::new(0x0100_0000),
+            );
+            let sentinel = page_table.unmap_page(page)?;
+            if !matches!(
+                crate::memory::frame_allocator::deallocate_frame(sentinel),
+                crate::memory::frame_allocator::FrameDeallocationOutcome::Reclaimed
+            ) {
+                return Err("injection sentinel release failed");
+            }
+            let injected = page_table.inject_unowned_table_descriptor(page)?;
+            Ok((page_table, injected))
+        })
+    }
+
     // Claim single-threaded ownership of the deferred-reclaim queues for the
     // whole measurement window. The queues are quiescent here (before any fork),
     // so this mirrors the sibling reclaim_progress_gate_test: peer CPUs early-
@@ -1274,8 +1322,9 @@ pub fn fork_exit_defer_reclaim_pairing_test() -> crate::test_framework::registry
 
     // Keep the former immediate-release child in the measured cohort now that
     // every aarch64 exit uses deferred root retirement.
-    let immediate_page_table = match page_table_with_sentinel() {
-        Ok(page_table) => page_table,
+    let (immediate_page_table, injected_descriptor_frame) =
+        match page_table_with_injected_unowned_descriptor() {
+        Ok(injected) => injected,
         Err(error) => return TestResult::Fail(error),
     };
     let immediate = {
@@ -1305,6 +1354,7 @@ pub fn fork_exit_defer_reclaim_pairing_test() -> crate::test_framework::registry
         (child_pid, child_tid)
     };
     pairing_child_pids[pairing_child_count] = immediate.0.as_u64();
+    let injected_refusal_pid = immediate.0.as_u64();
     if !track_boot_test_pid(pairing_child_pids[pairing_child_count]) {
         return TestResult::Fail("per-PID pairing tally table capacity exhausted");
     }
@@ -1392,9 +1442,21 @@ pub fn fork_exit_defer_reclaim_pairing_test() -> crate::test_framework::registry
             return TestResult::Fail("adapted-site per-PID reclaim proof was duplicated");
         }
         let root_counts = boot_test_root_counts(pid);
-        cohort_root_counts.table_frames_unbalanced += root_counts.table_frames_unbalanced;
-        cohort_root_counts.table_frame_provenance_refused +=
-            root_counts.table_frame_provenance_refused;
+        if pid == injected_refusal_pid {
+            if root_counts.table_frames_unbalanced != 1
+                || root_counts.table_frame_provenance_refused != 1
+            {
+                return TestResult::Fail(
+                    "injected table-ownership refusal did not fire exactly once",
+                );
+            }
+        } else {
+            cohort_root_counts.table_frames_unbalanced += root_counts.table_frames_unbalanced;
+            cohort_root_counts.table_frame_provenance_refused +=
+                root_counts.table_frame_provenance_refused;
+        }
+        cohort_root_counts.leaf_frame_ownership_refused +=
+            root_counts.leaf_frame_ownership_refused;
         cohort_root_counts.table_frames_lost += root_counts.table_frames_lost;
         cohort_root_counts.unproved_root_drops += root_counts.unproved_root_drops;
         cohort_root_counts.root_retire_refused += root_counts.root_retire_refused;
@@ -1423,6 +1485,9 @@ pub fn fork_exit_defer_reclaim_pairing_test() -> crate::test_framework::registry
     if cohort_root_counts.table_frame_provenance_refused != 0 {
         return TestResult::Fail("process table frame provenance was refused");
     }
+    if cohort_root_counts.leaf_frame_ownership_refused != 0 {
+        return TestResult::Fail("process leaf frame ownership was refused");
+    }
     if cohort_root_counts.unproved_root_drops != 0 {
         return TestResult::Fail("an unproved process root reached Drop");
     }
@@ -1446,11 +1511,19 @@ pub fn fork_exit_defer_reclaim_pairing_test() -> crate::test_framework::registry
             return TestResult::Fail("a tracked process root was not retired exactly once");
         }
         let minimum_table_frames = if pid == parent_pid.as_u64() { 1 } else { 4 };
-        if root_counts.table_frames_reclaimed < minimum_table_frames {
+        if root_counts.table_frames_reclaimed != minimum_table_frames {
             return TestResult::Fail(
                 "a tracked process root missed its table-frame anti-vacuity floor",
             );
         }
+    }
+    if !matches!(
+        crate::memory::frame_allocator::deallocate_frame(injected_descriptor_frame),
+        crate::memory::frame_allocator::FrameDeallocationOutcome::Reclaimed
+    ) {
+        return TestResult::Fail(
+            "injected table descriptor reached the recorded-frame free set",
+        );
     }
     if TEARDOWN_MASKED_FRAMES_WALKED
         .aggregate()

@@ -310,19 +310,19 @@ const EXIT_PROCESS_BY_PID_CALLS: &[(&str, usize)] = &[
     ("kernel/src/process/mod.rs", 418),
 ];
 const EXIT_PROCESS_FOR_TEARDOWN_TEST_CALLS: &[(&str, usize)] = &[
-    ("kernel/src/tracing/providers/teardown.rs", 1260),
-    ("kernel/src/tracing/providers/teardown.rs", 1328),
+    ("kernel/src/tracing/providers/teardown.rs", 1308),
+    ("kernel/src/tracing/providers/teardown.rs", 1378),
 ];
 const ROOT_RETIRE_PROOF_SITES: &[(&str, usize)] = &[
-    ("kernel/src/memory/process_memory.rs", 95),
-    ("kernel/src/memory/process_memory.rs", 100),
-    ("kernel/src/memory/process_memory.rs", 2040),
+    ("kernel/src/memory/process_memory.rs", 97),
+    ("kernel/src/memory/process_memory.rs", 102),
+    ("kernel/src/memory/process_memory.rs", 2121),
     ("kernel/src/task/process_task.rs", 927),
 ];
 const ROOT_RETIRE_PROOF_CONSTRUCTION_SITES: &[(&str, usize)] = &[
-    ("kernel/src/memory/process_memory.rs", 92),
-    ("kernel/src/memory/process_memory.rs", 96),
-    ("kernel/src/memory/process_memory.rs", 104),
+    ("kernel/src/memory/process_memory.rs", 94),
+    ("kernel/src/memory/process_memory.rs", 98),
+    ("kernel/src/memory/process_memory.rs", 106),
 ];
 const KNOWN_X86_RAW_ROOT_DROP_SITES: &[(&str, usize)] = &[
     ("kernel/src/process/manager.rs", 1157),
@@ -346,7 +346,7 @@ const KNOWN_X86_OLD_ROOT_CLEAR_SITES: &[(&str, usize)] = &[
     ("kernel/src/task/process_task.rs", 480),
 ];
 const CLEANUP_FOR_EXEC_CALLS: &[(&str, usize)] = &[
-    ("kernel/src/process/process.rs", 619),
+    ("kernel/src/process/process.rs", 627),
     ("kernel/src/task/process_task.rs", 194),
 ];
 const BLOCKING_PRIMITIVES: &[(&str, usize)] = &[
@@ -676,7 +676,8 @@ fn phase_one_retirement_fence_and_lock_domains_are_structural() {
     let retire = function_body(process_memory, "retire");
     assert!(!retire.contains("Vec<"));
     assert!(!retire.contains("log::"));
-    assert_eq!(retire.matches("walk_retire_frames(").count(), 2);
+    // One architecture-specific preflight per target plus one shared gated leaf pass.
+    assert_eq!(retire.matches("walk_retire_frames(").count(), 3);
     assert!(retire.contains("record_walk_frame"));
     assert!(retire.contains("walk_cross_check_complete"));
     assert!(retire.contains("leaf_mapping_is_known"));
@@ -690,7 +691,7 @@ fn phase_one_retirement_fence_and_lock_domains_are_structural() {
         .find("let reclamation_preconditions_proved")
         .expect("retire preflight");
     let leaf_release = retire
-        .find("release_leaf_mapping")
+        .find("match release_leaf_mapping")
         .expect("gated leaf release");
     let table_release = retire
         .find("for frame in owned_table_frames.into_frames()")
@@ -860,7 +861,7 @@ fn all_phase_zero_counters_have_registered_readers_and_honest_runtime_gates() {
     assert!(pairing_gate.contains("pairing_child_pids[pairing_child_count] = parent_pid.as_u64();"));
     assert_eq!(pairing_gate.matches(".tag_boot_test_pid(").count(), 3);
     assert!(pairing_gate.contains("root_counts.roots_retired != 1"));
-    assert!(pairing_gate.contains("root_counts.table_frames_reclaimed < minimum_table_frames"));
+    assert!(pairing_gate.contains("root_counts.table_frames_reclaimed != minimum_table_frames"));
     for exact_failure in [
         "adapted-site per-PID defer proof was absent",
         "adapted-site per-PID defer proof was duplicated",

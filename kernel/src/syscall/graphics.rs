@@ -2152,7 +2152,7 @@ fn handle_map_window_buffer(cmd: &FbDrawCmd) -> SyscallResult {
         let page_addr = new_addr + (i as u64) * PAGE_SIZE;
         let page = Page::<Size4KiB>::containing_address(VirtAddr::new(page_addr));
 
-        if let Err(_) = page_table.map_page(page, frame, page_flags) {
+        if let Err(_) = page_table.map_borrowed_page(page, frame, page_flags) {
             return SyscallResult::Err(super::ErrorCode::OutOfMemory as u64);
         }
         flush_tlb(VirtAddr::new(page_addr));
@@ -2261,7 +2261,7 @@ fn handle_map_compositor_texture(cmd: &FbDrawCmd) -> SyscallResult {
         let page_addr = new_addr + (i as u64) * PAGE_SIZE;
         let page = Page::<Size4KiB>::containing_address(VirtAddr::new(page_addr));
 
-        if let Err(_) = page_table.map_page(page, frame, page_flags) {
+        if let Err(_) = page_table.map_borrowed_page(page, frame, page_flags) {
             return SyscallResult::Err(super::ErrorCode::OutOfMemory as u64);
         }
         flush_tlb(VirtAddr::new(page_addr));

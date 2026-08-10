@@ -10,7 +10,9 @@
 //!    as fallback and for testing.
 
 use crate::memory::frame_allocator::allocate_frame;
-use crate::memory::frame_metadata::frame_incref;
+use crate::memory::frame_metadata::{
+    frame_incref, leaf_mapping_ownership, LeafMappingOwnership,
+};
 use crate::memory::process_memory::{make_cow_flags, ProcessPageTable};
 use crate::memory::vma::{MmapFlags, Vma};
 use crate::process::Process;
@@ -131,6 +133,27 @@ fn is_in_shared_vma(virt_addr: VirtAddr, vmas: &[Vma]) -> bool {
     })
 }
 
+fn map_inherited_page(
+    parent_page_table: &ProcessPageTable,
+    child_page_table: &mut ProcessPageTable,
+    page: Page<Size4KiB>,
+    frame: PhysFrame,
+    flags: PageTableFlags,
+) -> Result<LeafMappingOwnership, &'static str> {
+    let Some(ownership) =
+        leaf_mapping_ownership(parent_page_table.level_4_frame(), frame)
+    else {
+        return Err("Parent leaf mapping has no address-space ownership record");
+    };
+    match ownership {
+        LeafMappingOwnership::Owned => child_page_table.map_page(page, frame, flags)?,
+        LeafMappingOwnership::Borrowed => {
+            child_page_table.map_borrowed_page(page, frame, flags)?
+        }
+    }
+    Ok(ownership)
+}
+
 /// Set up Copy-on-Write sharing between parent and child
 ///
 /// Instead of copying all pages immediately (expensive), this function:
@@ -206,11 +229,14 @@ pub fn setup_cow_pages_with_vmas(
         // MAP_SHARED pages: share directly with full write permissions preserved.
         // Both parent and child write to the SAME physical frame — no CoW.
         if is_in_shared_vma(virt_addr, vmas) {
-            if let Err(_e) = child_page_table.map_page(page, frame, flags) {
-                cow_error = Some("Failed to share MAP_SHARED page");
-                continue;
+            match map_inherited_page(parent_page_table, child_page_table, page, frame, flags) {
+                Ok(LeafMappingOwnership::Owned) => frame_incref(frame),
+                Ok(LeafMappingOwnership::Borrowed) => {}
+                Err(_) => {
+                    cow_error = Some("Failed to share MAP_SHARED page");
+                    continue;
+                }
             }
-            frame_incref(frame);
             pages_shared += 1;
             continue;
         }
@@ -235,23 +261,31 @@ pub fn setup_cow_pages_with_vmas(
             crate::memory::arch_stub::tlb::flush(virt_addr);
 
             // Map same frame in child with CoW flags
-            if let Err(_e) = child_page_table.map_page(page, frame, cow_flags) {
-                cow_error = Some("Failed to map CoW page in child");
-                continue;
+            match map_inherited_page(
+                parent_page_table,
+                child_page_table,
+                page,
+                frame,
+                cow_flags,
+            ) {
+                Ok(LeafMappingOwnership::Owned) => frame_incref(frame),
+                Ok(LeafMappingOwnership::Borrowed) => {}
+                Err(_) => {
+                    cow_error = Some("Failed to map CoW page in child");
+                    continue;
+                }
             }
-
-            // Increment reference count (frame is now shared)
-            frame_incref(frame);
         } else {
             // Read-only page (e.g., code) - share directly without CoW flag
             // These pages can never be written, so no fault handling needed
-            if let Err(_e) = child_page_table.map_page(page, frame, flags) {
-                cow_error = Some("Failed to share read-only page");
-                continue;
+            match map_inherited_page(parent_page_table, child_page_table, page, frame, flags) {
+                Ok(LeafMappingOwnership::Owned) => frame_incref(frame),
+                Ok(LeafMappingOwnership::Borrowed) => {}
+                Err(_) => {
+                    cow_error = Some("Failed to share read-only page");
+                    continue;
+                }
             }
-
-            // Still track reference for cleanup when process exits
-            frame_incref(frame);
         }
 
         pages_shared += 1;

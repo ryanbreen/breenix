@@ -18,9 +18,44 @@ use spin::Mutex;
 #[cfg(target_arch = "x86_64")]
 use x86_64::structures::paging::PhysFrame;
 
-/// Global frame metadata storage
-/// Uses BTreeMap for sparse storage - only frames that need tracking are stored
-static FRAME_METADATA: Mutex<BTreeMap<u64, FrameMetadata>> = Mutex::new(BTreeMap::new());
+/// Whether an address space owns a mapped leaf frame or merely borrows it from
+/// another kernel object.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum LeafMappingOwnership {
+    Owned,
+    Borrowed,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum LeafReleaseOutcome {
+    Reclaim,
+    Retained,
+    Borrowed,
+    Refused,
+}
+
+#[derive(Default)]
+struct LeafMappingCounts {
+    owned: u32,
+    borrowed: u32,
+}
+
+struct FrameRegistry {
+    refcounts: BTreeMap<u64, FrameMetadata>,
+    leaf_mappings: BTreeMap<(u64, u64), LeafMappingCounts>,
+}
+
+impl FrameRegistry {
+    const fn new() -> Self {
+        Self {
+            refcounts: BTreeMap::new(),
+            leaf_mappings: BTreeMap::new(),
+        }
+    }
+}
+
+/// Global CoW and address-space leaf-ownership registry.
+static FRAME_METADATA: Mutex<FrameRegistry> = Mutex::new(FrameRegistry::new());
 
 /// Metadata for a single physical frame
 #[derive(Debug)]
@@ -50,10 +85,10 @@ impl FrameMetadata {
 #[allow(dead_code)] // Public API for explicit frame tracking
 pub fn frame_register(frame: PhysFrame) {
     let addr = frame.start_address().as_u64();
-    let mut metadata = FRAME_METADATA.lock();
+    let mut registry = FRAME_METADATA.lock();
 
-    if !metadata.contains_key(&addr) {
-        metadata.insert(addr, FrameMetadata::new(1));
+    if !registry.refcounts.contains_key(&addr) {
+        registry.refcounts.insert(addr, FrameMetadata::new(1));
     }
 }
 
@@ -62,15 +97,133 @@ pub fn frame_register(frame: PhysFrame) {
 #[allow(dead_code)]
 pub fn frame_incref(frame: PhysFrame) {
     let addr = frame.start_address().as_u64();
-    let mut metadata = FRAME_METADATA.lock();
+    let mut registry = FRAME_METADATA.lock();
 
-    if let Some(meta) = metadata.get(&addr) {
+    if let Some(meta) = registry.refcounts.get(&addr) {
         meta.refcount.fetch_add(1, Ordering::SeqCst);
     } else {
         // First time tracking this frame - it's being shared
         // When we start tracking, the frame is being shared between 2 processes
         let meta = FrameMetadata::new(2);
-        metadata.insert(addr, meta);
+        registry.refcounts.insert(addr, meta);
+    }
+}
+
+pub(crate) fn record_leaf_mapping(
+    root: PhysFrame,
+    frame: PhysFrame,
+    ownership: LeafMappingOwnership,
+) {
+    let key = (
+        root.start_address().as_u64(),
+        frame.start_address().as_u64(),
+    );
+    let mut registry = FRAME_METADATA.lock();
+    let counts = registry.leaf_mappings.entry(key).or_default();
+    match ownership {
+        LeafMappingOwnership::Owned => counts.owned = counts.owned.saturating_add(1),
+        LeafMappingOwnership::Borrowed => {
+            counts.borrowed = counts.borrowed.saturating_add(1)
+        }
+    }
+}
+
+pub(crate) fn leaf_mapping_is_known(root: PhysFrame, frame: PhysFrame) -> bool {
+    leaf_mapping_ownership(root, frame).is_some()
+}
+
+pub(crate) fn leaf_mapping_ownership(
+    root: PhysFrame,
+    frame: PhysFrame,
+) -> Option<LeafMappingOwnership> {
+    let key = (
+        root.start_address().as_u64(),
+        frame.start_address().as_u64(),
+    );
+    let registry = FRAME_METADATA.lock();
+    registry.leaf_mappings.get(&key).and_then(|counts| {
+        if counts.owned != 0 {
+            Some(LeafMappingOwnership::Owned)
+        } else if counts.borrowed != 0 {
+            Some(LeafMappingOwnership::Borrowed)
+        } else {
+            None
+        }
+    })
+}
+
+pub(crate) fn forget_leaf_mapping(root: PhysFrame, frame: PhysFrame) {
+    let key = (
+        root.start_address().as_u64(),
+        frame.start_address().as_u64(),
+    );
+    let mut registry = FRAME_METADATA.lock();
+    let remove = if let Some(counts) = registry.leaf_mappings.get_mut(&key) {
+        if counts.owned != 0 {
+            counts.owned -= 1;
+        } else if counts.borrowed != 0 {
+            counts.borrowed -= 1;
+        }
+        counts.owned == 0 && counts.borrowed == 0
+    } else {
+        false
+    };
+    if remove {
+        registry.leaf_mappings.remove(&key);
+    }
+}
+
+fn frame_decref_locked(registry: &mut FrameRegistry, addr: u64) -> bool {
+    if let Some(meta) = registry.refcounts.get(&addr) {
+        let old_count = meta.refcount.fetch_sub(1, Ordering::SeqCst);
+        if old_count == 1 {
+            registry.refcounts.remove(&addr);
+            true
+        } else if old_count == 0 {
+            meta.refcount.store(0, Ordering::SeqCst);
+            registry.refcounts.remove(&addr);
+            false
+        } else {
+            false
+        }
+    } else {
+        true
+    }
+}
+
+pub(crate) fn release_leaf_mapping(root: PhysFrame, frame: PhysFrame) -> LeafReleaseOutcome {
+    let key = (
+        root.start_address().as_u64(),
+        frame.start_address().as_u64(),
+    );
+    let frame_addr = frame.start_address().as_u64();
+    let mut registry = FRAME_METADATA.lock();
+    let Some(counts) = registry.leaf_mappings.get_mut(&key) else {
+        return LeafReleaseOutcome::Refused;
+    };
+    let ownership = if counts.owned != 0 {
+        counts.owned -= 1;
+        LeafMappingOwnership::Owned
+    } else if counts.borrowed != 0 {
+        counts.borrowed -= 1;
+        LeafMappingOwnership::Borrowed
+    } else {
+        return LeafReleaseOutcome::Refused;
+    };
+    let remove = counts.owned == 0 && counts.borrowed == 0;
+    if remove {
+        registry.leaf_mappings.remove(&key);
+    }
+
+    match ownership {
+        LeafMappingOwnership::Borrowed => LeafReleaseOutcome::Borrowed,
+        LeafMappingOwnership::Owned => {
+            if frame_decref_locked(&mut registry, frame_addr) {
+                LeafReleaseOutcome::Reclaim
+            } else {
+                LeafReleaseOutcome::Retained
+            }
+        }
     }
 }
 
@@ -78,50 +231,17 @@ pub fn frame_incref(frame: PhysFrame) {
 /// Returns true if frame can be freed (refcount reached 0)
 pub fn frame_decref(frame: PhysFrame) -> bool {
     let addr = frame.start_address().as_u64();
-    let mut metadata = FRAME_METADATA.lock();
-
-    if let Some(meta) = metadata.get(&addr) {
-        let old_count = meta.refcount.fetch_sub(1, Ordering::SeqCst);
-        if old_count == 1 {
-            // Was 1, now 0 - remove from tracking and allow free
-            metadata.remove(&addr);
-            return true;
-        } else if old_count == 0 {
-            // This shouldn't happen - underflow protection
-            log::error!(
-                "frame_decref: underflow for frame {:#x}, restoring to 0",
-                addr
-            );
-            meta.refcount.store(0, Ordering::SeqCst);
-            metadata.remove(&addr);
-            return false;
-        }
-        // old_count > 1, still shared
-        false
-    } else {
-        // Frame wasn't tracked in CoW metadata.
-        // This means it's a private frame that was never shared via CoW
-        // (e.g., allocated during ELF loading, brk, or stack growth).
-        // It belongs solely to the exiting process, so it's safe to free.
-        //
-        // We only reach here from cleanup_cow_frames / cleanup_for_exec
-        // which iterate USER_ACCESSIBLE pages — all of which belong to
-        // the process being cleaned up.
-        log::trace!(
-            "frame_decref: frame {:#x} not tracked (private), allowing free",
-            addr
-        );
-        true
-    }
+    frame_decref_locked(&mut FRAME_METADATA.lock(), addr)
 }
 
 /// Get current reference count for a frame
 /// Returns 1 if frame is not tracked (assumed private)
 pub fn frame_refcount(frame: PhysFrame) -> u32 {
     let addr = frame.start_address().as_u64();
-    let metadata = FRAME_METADATA.lock();
+    let registry = FRAME_METADATA.lock();
 
-    metadata
+    registry
+        .refcounts
         .get(&addr)
         .map(|m| m.refcount.load(Ordering::SeqCst))
         .unwrap_or(1) // Untracked frames are private
@@ -136,9 +256,10 @@ pub fn frame_is_shared(frame: PhysFrame) -> bool {
 /// Returns (tracked_frames, total_refcount)
 #[allow(dead_code)] // Diagnostic API for future CoW debugging
 pub fn frame_metadata_stats() -> (usize, u64) {
-    let metadata = FRAME_METADATA.lock();
-    let tracked = metadata.len();
-    let total_refs: u64 = metadata
+    let registry = FRAME_METADATA.lock();
+    let tracked = registry.refcounts.len();
+    let total_refs: u64 = registry
+        .refcounts
         .values()
         .map(|m| m.refcount.load(Ordering::Relaxed) as u64)
         .sum();

@@ -565,8 +565,10 @@ impl Process {
     /// are returned to the frame allocator for reuse.
     #[cfg(target_arch = "x86_64")]
     pub(crate) fn cleanup_cow_frames(&mut self) {
-        use crate::memory::frame_allocator::deallocate_frame;
-        use crate::memory::frame_metadata::frame_decref;
+        use crate::memory::frame_allocator::{
+            deallocate_frame_proven_owned, FrameDeallocationOutcome,
+        };
+        use crate::memory::frame_metadata::{release_leaf_mapping, LeafReleaseOutcome};
         use x86_64::structures::paging::{PageTableFlags, PhysFrame};
 
         // Get the page table for this process
@@ -584,13 +586,19 @@ impl Process {
 
             let frame = PhysFrame::containing_address(phys_addr);
 
-            // Decrement reference count.
-            // Returns true if the frame should be freed:
-            // - Tracked frame whose refcount reached 0 (was shared, now sole owner exiting)
-            // - Untracked frame (private to this process, never shared via CoW)
-            // Returns false if still shared (refcount > 0 after decrement).
-            if frame_decref(frame) {
-                deallocate_frame(frame);
+            match release_leaf_mapping(page_table.level_4_frame(), frame) {
+                LeafReleaseOutcome::Reclaim => {
+                    if matches!(
+                        deallocate_frame_proven_owned(frame),
+                        FrameDeallocationOutcome::ProvenanceRefused
+                    ) {
+                        page_table.record_leaf_ownership_refusal();
+                    }
+                }
+                LeafReleaseOutcome::Retained | LeafReleaseOutcome::Borrowed => {}
+                LeafReleaseOutcome::Refused => {
+                    page_table.record_leaf_ownership_refusal();
+                }
             }
         });
     }
@@ -685,8 +693,10 @@ impl Process {
 #[cfg(target_arch = "aarch64")]
 pub(crate) fn cleanup_cow_page_table(page_table: &ProcessPageTable) {
     use crate::memory::arch_stub::{PageTableFlags, PhysFrame};
-    use crate::memory::frame_allocator::deallocate_frame;
-    use crate::memory::frame_metadata::frame_decref;
+    use crate::memory::frame_allocator::{
+        deallocate_frame_proven_owned, FrameDeallocationOutcome,
+    };
+    use crate::memory::frame_metadata::{release_leaf_mapping, LeafReleaseOutcome};
 
     let _ = page_table.walk_mapped_pages(|_virt_addr, phys_addr, flags| {
         if !flags.contains(PageTableFlags::USER_ACCESSIBLE) {
@@ -694,8 +704,19 @@ pub(crate) fn cleanup_cow_page_table(page_table: &ProcessPageTable) {
         }
 
         let frame = PhysFrame::containing_address(phys_addr);
-        if frame_decref(frame) {
-            deallocate_frame(frame);
+        match release_leaf_mapping(page_table.level_4_frame(), frame) {
+            LeafReleaseOutcome::Reclaim => {
+                if matches!(
+                    deallocate_frame_proven_owned(frame),
+                    FrameDeallocationOutcome::ProvenanceRefused
+                ) {
+                    page_table.record_leaf_ownership_refusal();
+                }
+            }
+            LeafReleaseOutcome::Retained | LeafReleaseOutcome::Borrowed => {}
+            LeafReleaseOutcome::Refused => {
+                page_table.record_leaf_ownership_refusal();
+            }
         }
     });
 }

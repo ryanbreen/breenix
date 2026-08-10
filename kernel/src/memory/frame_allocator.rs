@@ -359,24 +359,6 @@ fn frame_has_allocator_provenance(frame: PhysFrame) -> bool {
         .is_some_and(|ordinal| ordinal < NEXT_FREE_FRAME.load(Ordering::Acquire))
 }
 
-/// Prove the checks that can be made without freeing the frame.
-///
-/// The address must be page-aligned, belong to a usable allocator region, have
-/// crossed the sequential allocation frontier, and not already be on the free
-/// list. A busy free list is a refusal because absence cannot be proven.
-pub(crate) fn frame_deallocation_provenance_is_proved(frame: PhysFrame) -> bool {
-    let proved = frame_has_allocator_provenance(frame)
-        && FREE_FRAMES
-            .try_lock()
-            .is_some_and(|free_list| !free_list.contains(&frame));
-    if !proved {
-        crate::trace_count!(
-            crate::tracing::providers::teardown::PT_TABLE_FRAME_PROVENANCE_REFUSED
-        );
-    }
-    proved
-}
-
 /// Deallocate a physical frame, returning it to the free pool
 ///
 /// The frame will be available for reuse by future allocations.
@@ -401,6 +383,22 @@ pub fn deallocate_frame(frame: PhysFrame) -> FrameDeallocationOutcome {
     } else {
         // If we can't get the lock (e.g., called from interrupt context),
         // we lose this frame. This is a memory leak but prevents deadlock.
+        crate::trace_count!(crate::tracing::providers::teardown::PT_FRAMES_LOST_TO_CONTENTION);
+        FrameDeallocationOutcome::Contended
+    }
+}
+
+/// Return a frame whose current caller has an allocation-time ownership proof.
+///
+/// Process table frames come only from their address space's recorded allocator
+/// returns. Process leaves come only from the address-space mapping registry.
+/// Those proofs make a free-list membership scan both redundant and too costly
+/// for deferred retirement.
+pub(crate) fn deallocate_frame_proven_owned(frame: PhysFrame) -> FrameDeallocationOutcome {
+    if let Some(mut free_list) = FREE_FRAMES.try_lock() {
+        free_list.push(frame);
+        FrameDeallocationOutcome::Reclaimed
+    } else {
         crate::trace_count!(crate::tracing::providers::teardown::PT_FRAMES_LOST_TO_CONTENTION);
         FrameDeallocationOutcome::Contended
     }
