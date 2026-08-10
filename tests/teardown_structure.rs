@@ -256,15 +256,15 @@ fn later() {}
 
 const TERMINATE_CALLS: &[(&str, usize)] = &[
     ("kernel/src/interrupts/context_switch.rs", 1017),
-    ("kernel/src/process/manager.rs", 1170),
+    ("kernel/src/process/manager.rs", 1173),
     ("kernel/src/signal/delivery.rs", 225),
     ("kernel/src/signal/delivery.rs", 260),
 ];
-const TERMINATE_MINIMAL_CALLS: &[(&str, usize)] = &[("kernel/src/task/process_task.rs", 496)];
+const TERMINATE_MINIMAL_CALLS: &[(&str, usize)] = &[("kernel/src/task/process_task.rs", 503)];
 const PRODUCTION_INIT_PID_SITES: &[(&str, usize)] = &[
-    ("kernel/src/process/manager.rs", 1187),
-    ("kernel/src/task/process_task.rs", 458),
-    ("kernel/src/task/process_task.rs", 528),
+    ("kernel/src/process/manager.rs", 1190),
+    ("kernel/src/task/process_task.rs", 462),
+    ("kernel/src/task/process_task.rs", 535),
 ];
 const TEST_INIT_PID_SITES: &[(&str, usize)] = &[
     ("kernel/src/test_userspace.rs", 84),
@@ -280,13 +280,13 @@ const QUARANTINE_CALLS: &[(&str, usize)] = &[
 ];
 const KERNEL_STACK_MUTATIONS: &[(&str, usize)] = &[
     ("kernel/src/arch_impl/aarch64/syscall_entry.rs", 961),
-    ("kernel/src/process/manager.rs", 1856),
+    ("kernel/src/process/manager.rs", 1859),
     ("kernel/src/syscall/clone.rs", 252),
 ];
 const RECLAIM_ENQUEUE_CALLS: &[(&str, usize)] = &[
     ("kernel/src/process/mod.rs", 53),
     ("kernel/src/process/mod.rs", 280),
-    ("kernel/src/task/process_task.rs", 570),
+    ("kernel/src/task/process_task.rs", 577),
 ];
 const EXIT_PROCESS_AND_RETIRE_CALLS: &[(&str, usize)] = &[
     ("kernel/src/arch_impl/aarch64/exception.rs", 824),
@@ -304,7 +304,17 @@ const EXIT_PROCESS_BY_PID_CALLS: &[(&str, usize)] = &[
     ("kernel/src/process/mod.rs", 418),
 ];
 const EXIT_PROCESS_FOR_TEARDOWN_TEST_CALLS: &[(&str, usize)] =
-    &[("kernel/src/tracing/providers/teardown.rs", 1050)];
+    &[("kernel/src/tracing/providers/teardown.rs", 967)];
+const ROOT_RETIRE_PROOF_SITES: &[(&str, usize)] = &[
+    ("kernel/src/memory/process_memory.rs", 1712),
+    ("kernel/src/task/process_task.rs", 273),
+    ("kernel/src/task/process_task.rs", 280),
+    ("kernel/src/task/process_task.rs", 941),
+];
+const CLEANUP_FOR_EXEC_CALLS: &[(&str, usize)] = &[
+    ("kernel/src/process/process.rs", 619),
+    ("kernel/src/task/process_task.rs", 194),
+];
 const BLOCKING_PRIMITIVES: &[(&str, usize)] = &[
     ("kernel/src/task/scheduler.rs", 1973),
     ("kernel/src/task/scheduler.rs", 2187),
@@ -398,6 +408,44 @@ fn validate_exit_sgi_is_teardown_only(sources: &[(String, String)]) -> Result<()
     .ok_or(())
 }
 
+fn validate_single_page_table_retire_free(sources: &[(String, String)]) -> Result<(), ()> {
+    let process_memory = source(sources, "kernel/src/memory/process_memory.rs");
+    (process_memory.matches("deallocate_frame(").count()
+        == function_body(process_memory, "retire")
+            .matches("deallocate_frame(")
+            .count()
+        && process_memory.matches("fn retire(").count() == 1)
+    .then_some(())
+    .ok_or(())
+}
+
+fn validate_root_retire_proof_sites(sources: &[(String, String)]) -> Result<(), ()> {
+    validate_exact(
+        &sites_matching(sources, |line| {
+            line.contains("fn from_discharged_root_proof")
+                || line.contains("RootRetireProof::from_discharged_root_proof")
+                || line.contains("fn superseded_by_exec")
+                || line.contains("RootRetireProof::superseded_by_exec")
+        }),
+        ROOT_RETIRE_PROOF_SITES,
+    )
+}
+
+fn validate_no_raw_root_drop_shapes(sources: &[(String, String)]) -> Result<(), ()> {
+    if !sites_matching(sources, |line| {
+        line.contains("page_table.take()") && line.contains("drop(")
+    })
+    .is_empty()
+        || !sites_matching(sources, |line| {
+            line.contains("pending_old_page_tables.clear()")
+        })
+        .is_empty()
+    {
+        return Err(());
+    }
+    Ok(())
+}
+
 #[test]
 fn current_teardown_bypass_surface_is_exact() {
     let sources = rust_sources_below("kernel/src");
@@ -477,7 +525,7 @@ fn v3_structural_closures_are_exact() {
     );
     assert_exact(
         sites_matching(&sources, |line| line.contains("btrt::on_process_exit(")),
-        &[("kernel/src/task/process_task.rs", 597)],
+        &[("kernel/src/task/process_task.rs", 604)],
         "btrt::on_process_exit callers",
     );
 
@@ -524,6 +572,7 @@ fn v3_structural_closures_are_exact() {
 fn phase_one_retirement_fence_and_lock_domains_are_structural() {
     let sources = rust_sources_below("kernel/src");
     let process = source(&sources, "kernel/src/task/process_task.rs");
+    let process_memory = source(&sources, "kernel/src/memory/process_memory.rs");
     let scheduler = source(&sources, "kernel/src/task/scheduler.rs");
     let manager = source(&sources, "kernel/src/process/manager.rs");
     let ttbr0 = source(&sources, "kernel/src/arch_impl/aarch64/ttbr0.rs");
@@ -544,6 +593,25 @@ fn phase_one_retirement_fence_and_lock_domains_are_structural() {
     assert!(process.contains("row_epoch_at_park: u64"));
     assert!(process.contains("age_epoch_sum_at_park: u64"));
     assert!(process.contains("const PARK_AGE_BACKSTOP_EPOCHS: u64 = 64"));
+    validate_single_page_table_retire_free(&sources)
+        .expect("page-table frame free escaped ProcessPageTable::retire");
+    validate_root_retire_proof_sites(&sources).expect("root-retire proof mint sites changed");
+    validate_no_raw_root_drop_shapes(&sources).expect("raw process-root drop shape returned");
+    let drop_backstop = function_body(process_memory, "drop");
+    assert!(drop_backstop.contains("UNPROVED_ROOT_DROP_REFUSED"));
+    assert!(!drop_backstop.contains("deallocate_frame"));
+    assert!(!drop_backstop.contains("retire("));
+    assert_exact(
+        sites_matching(&sources, |line| line.contains(".cleanup_for_exec(")),
+        CLEANUP_FOR_EXEC_CALLS,
+        "cleanup_for_exec callers",
+    );
+    assert_eq!(process_memory.matches("ProcessTableFrames").count(), 4);
+    assert!(!process_memory.contains("GlobalFrameAllocator"));
+    let reclaim = function_body(process, "reclaim");
+    assert_eq!(reclaim.matches(".retire(").count(), 1);
+    assert_eq!(reclaim.matches("cleanup_cow_page_table(").count(), 1);
+    assert!(process.contains("leaves: LeafCustody"));
 
     let drain = function_body(process, "reclaim_deferred_process_resources");
     assert_eq!(drain.matches("RECLAIM_PASS_ID").count(), 1);
@@ -652,7 +720,7 @@ fn all_phase_zero_counters_have_registered_readers_and_honest_runtime_gates() {
         .filter_map(|rest| rest.strip_suffix(','))
         .map(str::to_owned)
         .collect();
-    assert_eq!(declarations.len(), 47);
+    assert_eq!(declarations.len(), 54);
     assert_eq!(
         readers, declarations,
         "every counter must have an inventory reader"
@@ -661,6 +729,18 @@ fn all_phase_zero_counters_have_registered_readers_and_honest_runtime_gates() {
     assert!(provider.contains("for iteration in 0..64"));
     assert!(provider.contains("reset_boot_test_pid_counts();"));
     assert!(provider.contains("for pid in pairing_child_pids"));
+    let pairing_gate = function_body(provider, "fork_exit_defer_reclaim_pairing_test");
+    for counter in [
+        "PT_ROOTS_RETIRED.aggregate()",
+        "PT_TABLE_FRAMES_RECLAIMED.aggregate()",
+        "PT_TABLE_FRAMES_UNBALANCED.aggregate()",
+        "PT_FRAMES_LOST_TO_CONTENTION.aggregate()",
+        "UNPROVED_ROOT_DROP_REFUSED.aggregate()",
+        "ROOT_RETIRE_REFUSED.aggregate()",
+        "PT_NONUSER_LEAF_SEEN.aggregate()",
+    ] {
+        assert!(pairing_gate.contains(counter));
+    }
     for exact_failure in [
         "adapted-site per-PID defer proof was absent",
         "adapted-site per-PID defer proof was duplicated",
@@ -698,6 +778,13 @@ fn all_phase_zero_counters_have_registered_readers_and_honest_runtime_gates() {
     assert!(!declaration_only.contains("counter!(EXIT_SGI_SENT,"));
     assert!(!declaration_only.contains("counter!(EXIT_KICK_PUBLISHED,"));
     assert!(!declaration_only.contains("counter!(RECEIPT_DROPPED_UNRETIRED,"));
+    assert!(!declaration_only.contains("counter!(PT_ROOTS_RETIRED,"));
+    assert!(!declaration_only.contains("counter!(PT_TABLE_FRAMES_RECLAIMED,"));
+    assert!(!declaration_only.contains("counter!(PT_TABLE_FRAMES_UNBALANCED,"));
+    assert!(!declaration_only.contains("counter!(PT_FRAMES_LOST_TO_CONTENTION,"));
+    assert!(!declaration_only.contains("counter!(UNPROVED_ROOT_DROP_REFUSED,"));
+    assert!(!declaration_only.contains("counter!(ROOT_RETIRE_REFUSED,"));
+    assert!(!declaration_only.contains("counter!(PT_NONUSER_LEAF_SEEN,"));
 
     let registry = source(&sources, "kernel/src/test_framework/registry.rs");
     assert!(registry.contains("name: \"fork_exit_defer_reclaim_pairing_test\""));
@@ -1284,6 +1371,28 @@ fn aarch64_exit_kick_waits_are_progress_bounded() {
 #[test]
 fn deliberately_broken_variants_fail_the_ratchet() {
     let sources = rust_sources_below("kernel/src");
+
+    let process_memory = source(&sources, "kernel/src/memory/process_memory.rs");
+    let broken_retire = with_replaced_source(
+        &sources,
+        "kernel/src/memory/process_memory.rs",
+        format!("{process_memory}\nfn rogue_free(frame: PhysFrame) {{ deallocate_frame(frame); }}"),
+    );
+    assert!(validate_single_page_table_retire_free(&broken_retire).is_err());
+
+    let broken_mint = with_synthetic_source(
+        &sources,
+        "kernel/src/synthetic_root_mint.rs",
+        "fn rogue_mint() { RootRetireProof::superseded_by_exec(); }",
+    );
+    assert!(validate_root_retire_proof_sites(&broken_mint).is_err());
+
+    let broken_raw_drop = with_synthetic_source(
+        &sources,
+        "kernel/src/synthetic_root_drop.rs",
+        "fn rogue_drop(process: &mut Process) { drop(process.page_table.take()); process.pending_old_page_tables.clear(); }",
+    );
+    assert!(validate_no_raw_root_drop_shapes(&broken_raw_drop).is_err());
 
     let broken_exit = with_synthetic_source(
         &sources,
