@@ -325,14 +325,14 @@ pub fn allocate_frame() -> Option<PhysFrame> {
 ///
 /// The frame will be available for reuse by future allocations.
 /// This is called when a CoW page's reference count drops to zero.
-pub fn deallocate_frame(frame: PhysFrame) {
+pub fn deallocate_frame(frame: PhysFrame) -> bool {
     // Don't deallocate frames below the low memory floor
     if frame.start_address().as_u64() < LOW_MEMORY_FLOOR {
         log::warn!(
             "Refusing to deallocate frame {:#x} below low memory floor",
             frame.start_address().as_u64()
         );
-        return;
+        return false;
     }
 
     if let Some(mut free_list) = FREE_FRAMES.try_lock() {
@@ -342,6 +342,7 @@ pub fn deallocate_frame(frame: PhysFrame) {
             free_list.len() + 1
         );
         free_list.push(frame);
+        true
     } else {
         // If we can't get the lock (e.g., called from interrupt context),
         // we lose this frame. This is a memory leak but prevents deadlock.
@@ -350,6 +351,7 @@ pub fn deallocate_frame(frame: PhysFrame) {
             "Frame allocator: Could not deallocate frame {:#x} - lock contention",
             frame.start_address().as_u64()
         );
+        false
     }
 }
 

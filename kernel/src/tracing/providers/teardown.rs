@@ -551,6 +551,14 @@ struct BootTestPidCountSlot {
     kick_observed_interval: AtomicU64,
     masked_frames_walked: AtomicU64,
     report_count: AtomicU64,
+    roots_retired: AtomicU64,
+    table_frames_reclaimed: AtomicU64,
+    table_frames_unbalanced: AtomicU64,
+    table_frames_lost: AtomicU64,
+    unproved_root_drops: AtomicU64,
+    root_retire_refused: AtomicU64,
+    nonuser_leaf_seen: AtomicU64,
+    nonuser_leaf_levels: AtomicU64,
 }
 
 #[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
@@ -566,6 +574,14 @@ impl BootTestPidCountSlot {
             kick_observed_interval: AtomicU64::new(0),
             masked_frames_walked: AtomicU64::new(0),
             report_count: AtomicU64::new(0),
+            roots_retired: AtomicU64::new(0),
+            table_frames_reclaimed: AtomicU64::new(0),
+            table_frames_unbalanced: AtomicU64::new(0),
+            table_frames_lost: AtomicU64::new(0),
+            unproved_root_drops: AtomicU64::new(0),
+            root_retire_refused: AtomicU64::new(0),
+            nonuser_leaf_seen: AtomicU64::new(0),
+            nonuser_leaf_levels: AtomicU64::new(0),
         }
     }
 }
@@ -596,6 +612,15 @@ enum BootTestPidCountKind {
     KickObserved(u64),
     MaskedFramesWalked,
     Report,
+    RootRetire {
+        table_frames_reclaimed: u64,
+        table_frames_unbalanced: bool,
+        table_frames_lost: u64,
+        nonuser_leaf_seen: u64,
+        nonuser_leaf_levels: u64,
+    },
+    UnprovedRootDrop,
+    RootRetireRefused,
 }
 
 #[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
@@ -634,6 +659,33 @@ fn record_boot_test_pid_count(pid: u64, kind: BootTestPidCountKind) {
                 BootTestPidCountKind::Report => {
                     slot.report_count.fetch_add(1, Ordering::Relaxed);
                 }
+                BootTestPidCountKind::RootRetire {
+                    table_frames_reclaimed,
+                    table_frames_unbalanced,
+                    table_frames_lost,
+                    nonuser_leaf_seen,
+                    nonuser_leaf_levels,
+                } => {
+                    slot.roots_retired.fetch_add(1, Ordering::Relaxed);
+                    slot.table_frames_reclaimed
+                        .fetch_add(table_frames_reclaimed, Ordering::Relaxed);
+                    if table_frames_unbalanced {
+                        slot.table_frames_unbalanced
+                            .fetch_add(1, Ordering::Relaxed);
+                    }
+                    slot.table_frames_lost
+                        .fetch_add(table_frames_lost, Ordering::Relaxed);
+                    slot.nonuser_leaf_seen
+                        .fetch_add(nonuser_leaf_seen, Ordering::Relaxed);
+                    slot.nonuser_leaf_levels
+                        .fetch_or(nonuser_leaf_levels, Ordering::Relaxed);
+                }
+                BootTestPidCountKind::UnprovedRootDrop => {
+                    slot.unproved_root_drops.fetch_add(1, Ordering::Relaxed);
+                }
+                BootTestPidCountKind::RootRetireRefused => {
+                    slot.root_retire_refused.fetch_add(1, Ordering::Relaxed);
+                }
             }
             return;
         }
@@ -656,6 +708,14 @@ fn reset_boot_test_pid_counts() -> BootTestPidCountsGuard {
         slot.kick_observed_interval.store(0, Ordering::Relaxed);
         slot.masked_frames_walked.store(0, Ordering::Relaxed);
         slot.report_count.store(0, Ordering::Relaxed);
+        slot.roots_retired.store(0, Ordering::Relaxed);
+        slot.table_frames_reclaimed.store(0, Ordering::Relaxed);
+        slot.table_frames_unbalanced.store(0, Ordering::Relaxed);
+        slot.table_frames_lost.store(0, Ordering::Relaxed);
+        slot.unproved_root_drops.store(0, Ordering::Relaxed);
+        slot.root_retire_refused.store(0, Ordering::Relaxed);
+        slot.nonuser_leaf_seen.store(0, Ordering::Relaxed);
+        slot.nonuser_leaf_levels.store(0, Ordering::Relaxed);
     }
     BOOT_TEST_PID_COUNTS_ACTIVE.store(1, Ordering::Release);
     BootTestPidCountsGuard
@@ -707,6 +767,75 @@ fn boot_test_pid_counts_complete(pids: &[u64]) -> bool {
         let (defer_count, reclaim_count) = boot_test_pid_counts(*pid);
         defer_count >= 1 && defer_count == reclaim_count
     })
+}
+
+#[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
+#[derive(Default)]
+struct BootTestRootCounts {
+    roots_retired: u64,
+    table_frames_reclaimed: u64,
+    table_frames_unbalanced: u64,
+    table_frames_lost: u64,
+    unproved_root_drops: u64,
+    root_retire_refused: u64,
+    nonuser_leaf_seen: u64,
+    nonuser_leaf_levels: u64,
+}
+
+#[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
+fn boot_test_root_counts(pid: u64) -> BootTestRootCounts {
+    let start = pid as usize & (BOOT_TEST_PID_COUNT_SLOTS - 1);
+    for offset in 0..BOOT_TEST_PID_COUNT_SLOTS {
+        let slot = &BOOT_TEST_PID_COUNTS[(start + offset) & (BOOT_TEST_PID_COUNT_SLOTS - 1)];
+        let slot_pid = slot.pid.load(Ordering::Acquire);
+        if slot_pid == pid {
+            return BootTestRootCounts {
+                roots_retired: slot.roots_retired.load(Ordering::Relaxed),
+                table_frames_reclaimed: slot.table_frames_reclaimed.load(Ordering::Relaxed),
+                table_frames_unbalanced: slot.table_frames_unbalanced.load(Ordering::Relaxed),
+                table_frames_lost: slot.table_frames_lost.load(Ordering::Relaxed),
+                unproved_root_drops: slot.unproved_root_drops.load(Ordering::Relaxed),
+                root_retire_refused: slot.root_retire_refused.load(Ordering::Relaxed),
+                nonuser_leaf_seen: slot.nonuser_leaf_seen.load(Ordering::Relaxed),
+                nonuser_leaf_levels: slot.nonuser_leaf_levels.load(Ordering::Relaxed),
+            };
+        }
+        if slot_pid == 0 {
+            break;
+        }
+    }
+    BootTestRootCounts::default()
+}
+
+#[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
+pub(crate) fn record_boot_test_root_retire(
+    pid: u64,
+    table_frames_reclaimed: u64,
+    table_frames_unbalanced: bool,
+    table_frames_lost: u64,
+    nonuser_leaf_seen: u64,
+    nonuser_leaf_levels: u64,
+) {
+    record_boot_test_pid_count(
+        pid,
+        BootTestPidCountKind::RootRetire {
+            table_frames_reclaimed,
+            table_frames_unbalanced,
+            table_frames_lost,
+            nonuser_leaf_seen,
+            nonuser_leaf_levels,
+        },
+    );
+}
+
+#[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
+pub(crate) fn record_boot_test_unproved_root_drop(pid: u64) {
+    record_boot_test_pid_count(pid, BootTestPidCountKind::UnprovedRootDrop);
+}
+
+#[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
+pub(crate) fn record_boot_test_root_retire_refused(pid: u64) {
+    record_boot_test_pid_count(pid, BootTestPidCountKind::RootRetireRefused);
 }
 
 #[inline(always)]
@@ -947,24 +1076,26 @@ pub fn fork_exit_defer_reclaim_pairing_test() -> crate::test_framework::registry
     fn page_table_with_sentinel(
     ) -> Result<alloc::boxed::Box<crate::memory::process_memory::ProcessPageTable>, &'static str>
     {
-        let mut page_table = crate::memory::process_memory::ProcessPageTable::new()?;
-        let frame = crate::memory::frame_allocator::allocate_frame()
-            .ok_or("sentinel frame allocation failed")?;
-        let page = crate::memory::arch_stub::Page::containing_address(
-            crate::memory::arch_stub::VirtAddr::new(0x0100_0000),
-        );
-        let flags = crate::memory::arch_stub::PageTableFlags::PRESENT
-            | crate::memory::arch_stub::PageTableFlags::WRITABLE
-            | crate::memory::arch_stub::PageTableFlags::USER_ACCESSIBLE;
-        if page_table.map_page(page, frame, flags).is_err() {
-            crate::memory::frame_allocator::deallocate_frame(frame);
-            return Err("sentinel page mapping failed");
-        }
-        Ok(alloc::boxed::Box::new(page_table))
-    }
-
-    fn exit_for_pairing(pid: crate::process::ProcessId) {
-        crate::process::exit_process_for_teardown_test(pid, 0);
+        // This synthetic builder runs in a preemptible PostScheduler kthread,
+        // outside the syscall/PM domains that normally serialize page-table
+        // construction. Keep only the raw construction masked; the entire
+        // exit, proof, and reclaim workload below remains fully interruptible.
+        crate::arch_without_interrupts(|| {
+            let mut page_table = crate::memory::process_memory::ProcessPageTable::new()?;
+            let frame = crate::memory::frame_allocator::allocate_frame()
+                .ok_or("sentinel frame allocation failed")?;
+            let page = crate::memory::arch_stub::Page::containing_address(
+                crate::memory::arch_stub::VirtAddr::new(0x0100_0000),
+            );
+            let flags = crate::memory::arch_stub::PageTableFlags::PRESENT
+                | crate::memory::arch_stub::PageTableFlags::WRITABLE
+                | crate::memory::arch_stub::PageTableFlags::USER_ACCESSIBLE;
+            if page_table.map_page(page, frame, flags).is_err() {
+                crate::memory::frame_allocator::deallocate_frame(frame);
+                return Err("sentinel page mapping failed");
+            }
+            Ok(alloc::boxed::Box::new(page_table))
+        })
     }
 
     // Claim single-threaded ownership of the deferred-reclaim queues for the
@@ -991,15 +1122,9 @@ pub fn fork_exit_defer_reclaim_pairing_test() -> crate::test_framework::registry
     let proof_under_queue_lock_before = PROOF_UNDER_QUEUE_LOCK.aggregate();
     let reclaim_context_violations_before = RECLAIM_CONTEXT_VIOLATIONS.aggregate();
     let receipt_dropped_before = RECEIPT_DROPPED_UNRETIRED.aggregate();
-    let roots_retired_before = PT_ROOTS_RETIRED.aggregate();
-    let table_frames_reclaimed_before = PT_TABLE_FRAMES_RECLAIMED.aggregate();
-    let table_frames_unbalanced_before = PT_TABLE_FRAMES_UNBALANCED.aggregate();
-    let frames_lost_to_contention_before = PT_FRAMES_LOST_TO_CONTENTION.aggregate();
-    let unproved_root_drops_before = UNPROVED_ROOT_DROP_REFUSED.aggregate();
-    let root_retire_refused_before = ROOT_RETIRE_REFUSED.aggregate();
-    let nonuser_leaf_seen_before = PT_NONUSER_LEAF_SEEN.aggregate();
-
-    let parent_page_table = match crate::memory::process_memory::ProcessPageTable::new() {
+    let mut parent_page_table = match crate::arch_without_interrupts(
+        crate::memory::process_memory::ProcessPageTable::new,
+    ) {
         Ok(page_table) => alloc::boxed::Box::new(page_table),
         Err(_) => return TestResult::Fail("parent page-table allocation failed"),
     };
@@ -1010,6 +1135,7 @@ pub fn fork_exit_defer_reclaim_pairing_test() -> crate::test_framework::registry
         };
         manager.allocate_pid()
     };
+    parent_page_table.tag_boot_test_pid(parent_pid.as_u64());
     fn test_user_entry() {}
     let entry = crate::memory::arch_stub::VirtAddr::new(0x0040_0000);
     let stack_top = crate::memory::arch_stub::VirtAddr::new(0x0080_0000);
@@ -1040,7 +1166,7 @@ pub fn fork_exit_defer_reclaim_pairing_test() -> crate::test_framework::registry
         manager.insert_process(parent_pid, parent_process);
     };
 
-    let mut pairing_child_pids = [0u64; 65];
+    let mut pairing_child_pids = [0u64; 66];
     let mut pairing_child_count = 0;
     let pid_counts_guard = reset_boot_test_pid_counts();
     // The nine labels mirror PLAN P2's disjoint adapted-site table. The exact
@@ -1061,7 +1187,7 @@ pub fn fork_exit_defer_reclaim_pairing_test() -> crate::test_framework::registry
     for iteration in 0..64 {
         let child_page_table = match page_table_with_sentinel() {
             Ok(page_table) => page_table,
-            Err(_) => return TestResult::Fail("pairing fork page-table allocation failed"),
+            Err(error) => return TestResult::Fail(error),
         };
         let child = {
             let mut manager_guard = crate::process::manager();
@@ -1076,6 +1202,13 @@ pub fn fork_exit_defer_reclaim_pairing_test() -> crate::test_framework::registry
                 Ok(pid) => pid,
                 Err(_) => return TestResult::Fail("pairing fork failed"),
             };
+            let Some(child_process) = manager.get_process_mut(child_pid) else {
+                return TestResult::Fail("pairing child process disappeared");
+            };
+            let Some(child_page_table) = child_process.page_table.as_mut() else {
+                return TestResult::Fail("pairing child has no page table");
+            };
+            child_page_table.tag_boot_test_pid(child_pid.as_u64());
             let Some(child_tid) = manager
                 .get_process(child_pid)
                 .and_then(|process| process.main_thread.as_ref())
@@ -1099,7 +1232,7 @@ pub fn fork_exit_defer_reclaim_pairing_test() -> crate::test_framework::registry
             // creating a second receipt or reclaim record.
             crate::task::process_task::ProcessScheduler::handle_thread_exit(child.1, 0);
         } else {
-            exit_for_pairing(child.0);
+            crate::process::exit_process_for_teardown_test(child.0, 0);
             crate::task::process_task::ProcessScheduler::handle_thread_exit(child.1, 0);
         }
         {
@@ -1118,7 +1251,7 @@ pub fn fork_exit_defer_reclaim_pairing_test() -> crate::test_framework::registry
     // every aarch64 exit uses deferred root retirement.
     let immediate_page_table = match page_table_with_sentinel() {
         Ok(page_table) => page_table,
-        Err(_) => return TestResult::Fail("baseline fork page-table allocation failed"),
+        Err(error) => return TestResult::Fail(error),
     };
     let immediate = {
         let mut manager_guard = crate::process::manager();
@@ -1130,6 +1263,13 @@ pub fn fork_exit_defer_reclaim_pairing_test() -> crate::test_framework::registry
                 Ok(pid) => pid,
                 Err(_) => return TestResult::Fail("baseline fork failed"),
             };
+        let Some(child_process) = manager.get_process_mut(child_pid) else {
+            return TestResult::Fail("baseline child process disappeared");
+        };
+        let Some(child_page_table) = child_process.page_table.as_mut() else {
+            return TestResult::Fail("baseline child has no page table");
+        };
+        child_page_table.tag_boot_test_pid(child_pid.as_u64());
         let Some(child_tid) = manager
             .get_process(child_pid)
             .and_then(|process| process.main_thread.as_ref())
@@ -1143,6 +1283,7 @@ pub fn fork_exit_defer_reclaim_pairing_test() -> crate::test_framework::registry
     if !track_boot_test_pid(pairing_child_pids[pairing_child_count]) {
         return TestResult::Fail("per-PID pairing tally table capacity exhausted");
     }
+    pairing_child_count += 1;
     crate::task::process_task::ProcessScheduler::handle_thread_exit(immediate.1, 0);
     {
         let mut manager_guard = crate::process::manager();
@@ -1155,7 +1296,11 @@ pub fn fork_exit_defer_reclaim_pairing_test() -> crate::test_framework::registry
         }
     }
 
-    exit_for_pairing(parent_pid);
+    pairing_child_pids[pairing_child_count] = parent_pid.as_u64();
+    if !track_boot_test_pid(pairing_child_pids[pairing_child_count]) {
+        return TestResult::Fail("per-PID pairing tally table capacity exhausted");
+    }
+    crate::process::exit_process_for_teardown_test(parent_pid, 0);
     {
         let mut manager_guard = crate::process::manager();
         let Some(manager) = manager_guard.as_mut() else {
@@ -1205,6 +1350,8 @@ pub fn fork_exit_defer_reclaim_pairing_test() -> crate::test_framework::registry
     if exit_first_requests_delta < 64 || exit_repeat_requests_delta < 64 {
         return TestResult::Fail("first/repeat exit request workload deltas did not reach 64");
     }
+    let mut cohort_root_counts = BootTestRootCounts::default();
+    let mut nonuser_leaf_failure = 0u8;
     for pid in pairing_child_pids {
         let (defer_count, reclaim_count) = boot_test_pid_counts(pid);
         if defer_count == 0 {
@@ -1219,54 +1366,56 @@ pub fn fork_exit_defer_reclaim_pairing_test() -> crate::test_framework::registry
         if reclaim_count > 1 {
             return TestResult::Fail("adapted-site per-PID reclaim proof was duplicated");
         }
+        let root_counts = boot_test_root_counts(pid);
+        cohort_root_counts.roots_retired += root_counts.roots_retired;
+        cohort_root_counts.table_frames_reclaimed += root_counts.table_frames_reclaimed;
+        cohort_root_counts.table_frames_unbalanced += root_counts.table_frames_unbalanced;
+        cohort_root_counts.table_frames_lost += root_counts.table_frames_lost;
+        cohort_root_counts.unproved_root_drops += root_counts.unproved_root_drops;
+        cohort_root_counts.root_retire_refused += root_counts.root_retire_refused;
+        cohort_root_counts.nonuser_leaf_seen += root_counts.nonuser_leaf_seen;
+        cohort_root_counts.nonuser_leaf_levels |= root_counts.nonuser_leaf_levels;
+        if root_counts.nonuser_leaf_seen != 0 && nonuser_leaf_failure == 0 {
+            let owner = if pid == parent_pid.as_u64() { 4 } else { 0 };
+            nonuser_leaf_failure = owner
+                + if root_counts.nonuser_leaf_levels & (1 << 1) != 0 {
+                    1
+                } else if root_counts.nonuser_leaf_levels & (1 << 2) != 0 {
+                    2
+                } else if root_counts.nonuser_leaf_levels & (1 << 3) != 0 {
+                    3
+                } else {
+                    0
+                };
+        }
     }
-    if PT_TABLE_FRAMES_UNBALANCED
-        .aggregate()
-        .saturating_sub(table_frames_unbalanced_before)
-        != 0
-    {
+    if cohort_root_counts.table_frames_unbalanced != 0 {
         return TestResult::Fail("process table retire frame balance moved");
     }
-    if PT_FRAMES_LOST_TO_CONTENTION
-        .aggregate()
-        .saturating_sub(frames_lost_to_contention_before)
-        != 0
-    {
+    if cohort_root_counts.table_frames_lost != 0 {
         return TestResult::Fail("process table frames were lost to allocator contention");
     }
-    if UNPROVED_ROOT_DROP_REFUSED
-        .aggregate()
-        .saturating_sub(unproved_root_drops_before)
-        != 0
-    {
+    if cohort_root_counts.unproved_root_drops != 0 {
         return TestResult::Fail("an unproved process root reached Drop");
     }
-    if ROOT_RETIRE_REFUSED
-        .aggregate()
-        .saturating_sub(root_retire_refused_before)
-        != 0
-    {
+    if cohort_root_counts.root_retire_refused != 0 {
         return TestResult::Fail("a process root retire token was refused");
     }
-    if PT_NONUSER_LEAF_SEEN
-        .aggregate()
-        .saturating_sub(nonuser_leaf_seen_before)
-        != 0
-    {
-        return TestResult::Fail("structure-only retire saw a non-user leaf");
+    if cohort_root_counts.nonuser_leaf_seen != 0 {
+        return TestResult::Fail(match nonuser_leaf_failure {
+            1 => "structure-only retire saw a child L1 non-user block",
+            2 => "structure-only retire saw a child L2 non-user block",
+            3 => "structure-only retire saw a child L3 non-user page",
+            5 => "structure-only retire saw a parent L1 non-user block",
+            6 => "structure-only retire saw a parent L2 non-user block",
+            7 => "structure-only retire saw a parent L3 non-user page",
+            _ => "structure-only retire saw a non-user leaf",
+        });
     }
-    if PT_ROOTS_RETIRED
-        .aggregate()
-        .saturating_sub(roots_retired_before)
-        < 65
-    {
+    if cohort_root_counts.roots_retired < 66 {
         return TestResult::Fail("process root retirement anti-vacuity floor was not reached");
     }
-    if PT_TABLE_FRAMES_RECLAIMED
-        .aggregate()
-        .saturating_sub(table_frames_reclaimed_before)
-        < 4 * 65
-    {
+    if cohort_root_counts.table_frames_reclaimed < 4 * 65 + 1 {
         return TestResult::Fail("process table-frame reclaim anti-vacuity floor was not reached");
     }
     if TEARDOWN_MASKED_FRAMES_WALKED

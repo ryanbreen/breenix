@@ -1152,6 +1152,11 @@ impl ProcessManager {
                         );
                     receipt = Some(super::RetirementReceipt::from_reclaim(reclaim));
                 }
+                #[cfg(not(target_arch = "aarch64"))]
+                {
+                    drop(process.page_table.take());
+                    process.pending_old_page_tables.clear();
+                }
                 drop(process.stack.take());
             } else {
                 #[cfg(target_arch = "aarch64")]

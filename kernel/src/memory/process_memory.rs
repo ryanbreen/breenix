@@ -84,10 +84,30 @@ pub struct ProcessPageTable {
     mapper: OffsetPageTable<'static>,
     /// Root plus intermediate table frames allocated for this address space.
     owned_table_frames: u32,
+    #[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
+    boot_test_pid: u64,
 }
 
 #[must_use]
-pub(crate) struct RootRetireProof(pub(crate) ());
+pub(crate) struct RootRetireProof(());
+
+impl RootRetireProof {
+    fn superseded_by_exec() -> Self {
+        Self(())
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    pub(crate) fn from_discharged_root_proof(
+        proof: &crate::task::process_task::RootProof,
+    ) -> Option<Self> {
+        if proof.is_discharged() {
+            Some(Self(()))
+        } else {
+            crate::trace_count!(crate::tracing::providers::teardown::ROOT_RETIRE_REFUSED);
+            None
+        }
+    }
+}
 
 #[derive(Clone, Copy)]
 pub(crate) enum LeafPolicy {
@@ -337,7 +357,6 @@ impl ProcessPageTable {
                 return Err("Failed to allocate frame for page table");
             }
         };
-
         // Get physical memory offset
         let phys_offset = crate::memory::physical_memory_offset();
 
@@ -369,6 +388,8 @@ impl ProcessPageTable {
             level_4_frame: l0_frame,
             mapper,
             owned_table_frames: 1,
+            #[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
+            boot_test_pid: 0,
         };
 
         log::debug!("ARM64: ProcessPageTable created successfully");
@@ -1092,7 +1113,8 @@ impl ProcessPageTable {
         let new_page_table = ProcessPageTable {
             level_4_frame,
             mapper,
-            owned_table_frames: 1,
+            // PML4[0] owns the fresh PDPT allocated above in addition to the root.
+            owned_table_frames: 2,
         };
 
         // With global kernel page tables, all kernel stacks are automatically visible
@@ -1105,6 +1127,11 @@ impl ProcessPageTable {
     /// Get the physical frame of the level 4 page table
     pub fn level_4_frame(&self) -> PhysFrame {
         self.level_4_frame
+    }
+
+    #[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
+    pub(crate) fn tag_boot_test_pid(&mut self, pid: u64) {
+        self.boot_test_pid = pid;
     }
 
     /// Walk all mapped user pages in this page table
@@ -1727,6 +1754,15 @@ impl ProcessPageTable {
         let mut user_frames_freed = 0u64;
         let mut user_frames_still_shared = 0u64;
         let mut table_frames_freed = 0u64;
+        let mut table_frames_lost = 0u64;
+        #[cfg(target_arch = "aarch64")]
+        let mut nonuser_leaf_seen = 0u64;
+        #[cfg(target_arch = "aarch64")]
+        let mut nonuser_leaf_levels = 0u64;
+        #[cfg(not(target_arch = "aarch64"))]
+        let nonuser_leaf_seen = 0u64;
+        #[cfg(not(target_arch = "aarch64"))]
+        let nonuser_leaf_levels = 0u64;
 
         // Collect page table structure frames to free after walking
         #[cfg(target_arch = "x86_64")]
@@ -1863,27 +1899,46 @@ impl ProcessPageTable {
                 }
             }
 
-            // Free page table structure frames (L1 first, then L2, then L3)
-            for frame in l1_frames {
-                deallocate_frame(frame);
-                table_frames_freed += 1;
-                crate::trace_count!(crate::tracing::providers::teardown::PT_TABLE_FRAMES_RECLAIMED);
-            }
-            for frame in l2_frames {
-                deallocate_frame(frame);
-                table_frames_freed += 1;
-                crate::trace_count!(crate::tracing::providers::teardown::PT_TABLE_FRAMES_RECLAIMED);
-            }
-            for frame in l3_frames {
-                deallocate_frame(frame);
-                table_frames_freed += 1;
-                crate::trace_count!(crate::tracing::providers::teardown::PT_TABLE_FRAMES_RECLAIMED);
-            }
+            let structure_balance_proved =
+                l1_frames.len() + l2_frames.len() + l3_frames.len() + 1
+                    == self.owned_table_frames as usize;
+            if structure_balance_proved {
+                // Free page table structure frames (L1 first, then L2, then L3)
+                for frame in l1_frames {
+                    if !deallocate_frame(frame) {
+                        table_frames_lost += 1;
+                    }
+                    table_frames_freed += 1;
+                    crate::trace_count!(
+                        crate::tracing::providers::teardown::PT_TABLE_FRAMES_RECLAIMED
+                    );
+                }
+                for frame in l2_frames {
+                    if !deallocate_frame(frame) {
+                        table_frames_lost += 1;
+                    }
+                    table_frames_freed += 1;
+                    crate::trace_count!(
+                        crate::tracing::providers::teardown::PT_TABLE_FRAMES_RECLAIMED
+                    );
+                }
+                for frame in l3_frames {
+                    if !deallocate_frame(frame) {
+                        table_frames_lost += 1;
+                    }
+                    table_frames_freed += 1;
+                    crate::trace_count!(
+                        crate::tracing::providers::teardown::PT_TABLE_FRAMES_RECLAIMED
+                    );
+                }
 
-            // Free the L4 frame itself
-            deallocate_frame(self.level_4_frame);
-            table_frames_freed += 1;
-            crate::trace_count!(crate::tracing::providers::teardown::PT_TABLE_FRAMES_RECLAIMED);
+                // Free the L4 frame itself
+                if !deallocate_frame(self.level_4_frame) {
+                    table_frames_lost += 1;
+                }
+                table_frames_freed += 1;
+                crate::trace_count!(crate::tracing::providers::teardown::PT_TABLE_FRAMES_RECLAIMED);
+            }
         }
 
         #[cfg(target_arch = "x86_64")]
@@ -1933,6 +1988,8 @@ impl ProcessPageTable {
                     if l1_entry.flags().contains(PageTableFlags::HUGE_PAGE) {
                         if matches!(leaves, LeafPolicy::StructureOnly) {
                             if !l1_entry.flags().contains(PageTableFlags::USER_ACCESSIBLE) {
+                                nonuser_leaf_seen += 1;
+                                nonuser_leaf_levels |= 1 << 1;
                                 crate::trace_count!(
                                     crate::tracing::providers::teardown::PT_NONUSER_LEAF_SEEN
                                 );
@@ -1969,6 +2026,8 @@ impl ProcessPageTable {
                         if l2_entry.flags().contains(PageTableFlags::HUGE_PAGE) {
                             if matches!(leaves, LeafPolicy::StructureOnly) {
                                 if !l2_entry.flags().contains(PageTableFlags::USER_ACCESSIBLE) {
+                                    nonuser_leaf_seen += 1;
+                                    nonuser_leaf_levels |= 1 << 2;
                                     crate::trace_count!(
                                         crate::tracing::providers::teardown::PT_NONUSER_LEAF_SEEN
                                     );
@@ -2004,6 +2063,8 @@ impl ProcessPageTable {
                             // 4KB page
                             if matches!(leaves, LeafPolicy::StructureOnly) {
                                 if !l3_entry.flags().contains(PageTableFlags::USER_ACCESSIBLE) {
+                                    nonuser_leaf_seen += 1;
+                                    nonuser_leaf_levels |= 1 << 3;
                                     crate::trace_count!(
                                         crate::tracing::providers::teardown::PT_NONUSER_LEAF_SEEN
                                     );
@@ -2022,27 +2083,46 @@ impl ProcessPageTable {
                 }
             }
 
-            // Free page table structure frames (L3 first, then L2, then L1)
-            for frame in l3_frames {
-                deallocate_frame(frame);
-                table_frames_freed += 1;
-                crate::trace_count!(crate::tracing::providers::teardown::PT_TABLE_FRAMES_RECLAIMED);
-            }
-            for frame in l2_frames {
-                deallocate_frame(frame);
-                table_frames_freed += 1;
-                crate::trace_count!(crate::tracing::providers::teardown::PT_TABLE_FRAMES_RECLAIMED);
-            }
-            for frame in l1_frames {
-                deallocate_frame(frame);
-                table_frames_freed += 1;
-                crate::trace_count!(crate::tracing::providers::teardown::PT_TABLE_FRAMES_RECLAIMED);
-            }
+            let structure_balance_proved =
+                l1_frames.len() + l2_frames.len() + l3_frames.len() + 1
+                    == self.owned_table_frames as usize;
+            if structure_balance_proved {
+                // Free page table structure frames (L3 first, then L2, then L1)
+                for frame in l3_frames {
+                    if !deallocate_frame(frame) {
+                        table_frames_lost += 1;
+                    }
+                    table_frames_freed += 1;
+                    crate::trace_count!(
+                        crate::tracing::providers::teardown::PT_TABLE_FRAMES_RECLAIMED
+                    );
+                }
+                for frame in l2_frames {
+                    if !deallocate_frame(frame) {
+                        table_frames_lost += 1;
+                    }
+                    table_frames_freed += 1;
+                    crate::trace_count!(
+                        crate::tracing::providers::teardown::PT_TABLE_FRAMES_RECLAIMED
+                    );
+                }
+                for frame in l1_frames {
+                    if !deallocate_frame(frame) {
+                        table_frames_lost += 1;
+                    }
+                    table_frames_freed += 1;
+                    crate::trace_count!(
+                        crate::tracing::providers::teardown::PT_TABLE_FRAMES_RECLAIMED
+                    );
+                }
 
-            // Free the L0 frame itself
-            deallocate_frame(self.level_4_frame);
-            table_frames_freed += 1;
-            crate::trace_count!(crate::tracing::providers::teardown::PT_TABLE_FRAMES_RECLAIMED);
+                // Free the L0 frame itself
+                if !deallocate_frame(self.level_4_frame) {
+                    table_frames_lost += 1;
+                }
+                table_frames_freed += 1;
+                crate::trace_count!(crate::tracing::providers::teardown::PT_TABLE_FRAMES_RECLAIMED);
+            }
         }
 
         #[cfg(target_arch = "aarch64")]
@@ -2052,17 +2132,38 @@ impl ProcessPageTable {
             user_frames_still_shared,
             table_frames_freed
         );
-        if table_frames_freed != u64::from(self.owned_table_frames) {
+        let table_frames_unbalanced = table_frames_freed != u64::from(self.owned_table_frames);
+        if table_frames_unbalanced {
             crate::trace_count!(crate::tracing::providers::teardown::PT_TABLE_FRAMES_UNBALANCED);
         }
         crate::trace_count!(crate::tracing::providers::teardown::PT_ROOTS_RETIRED);
+        #[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
+        crate::tracing::providers::teardown::record_boot_test_root_retire(
+            self.boot_test_pid,
+            table_frames_freed,
+            table_frames_unbalanced,
+            table_frames_lost,
+            nonuser_leaf_seen,
+            nonuser_leaf_levels,
+        );
+        #[cfg(not(all(feature = "boot_tests", target_arch = "aarch64")))]
+        let _ = (
+            table_frames_lost,
+            nonuser_leaf_seen,
+            nonuser_leaf_levels,
+        );
         core::mem::forget(self);
     }
 }
 
+#[cfg(target_arch = "aarch64")]
 impl Drop for ProcessPageTable {
     fn drop(&mut self) {
         crate::trace_count!(crate::tracing::providers::teardown::UNPROVED_ROOT_DROP_REFUSED);
+        #[cfg(feature = "boot_tests")]
+        crate::tracing::providers::teardown::record_boot_test_unproved_root_drop(
+            self.boot_test_pid,
+        );
     }
 }
 

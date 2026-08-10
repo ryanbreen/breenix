@@ -95,8 +95,8 @@ struct ParkRecord {
 }
 
 #[cfg(target_arch = "aarch64")]
-#[derive(Clone, Copy, Default)]
-struct RootProof {
+#[derive(Clone, Copy)]
+pub(crate) struct RootProof {
     blocked_epoch: bool,
     blocked_hw: bool,
     blocked_shadow: bool,
@@ -160,7 +160,7 @@ impl PendingProcessReclaim {
         {
             return RootProof::blocked(RootBlocker::Shadow);
         }
-        RootProof::default()
+        RootProof::clear()
     }
 
     fn cached_root_is_live(&self) -> bool {
@@ -240,8 +240,18 @@ const PARK_AGE_BACKSTOP_EPOCHS: u64 = 64;
 
 #[cfg(target_arch = "aarch64")]
 impl RootProof {
+    fn clear() -> Self {
+        Self {
+            blocked_epoch: false,
+            blocked_hw: false,
+            blocked_shadow: false,
+            blocked_cached: false,
+            blocked_live_row: false,
+        }
+    }
+
     fn blocked(blocker: RootBlocker) -> Self {
-        let mut proof = Self::default();
+        let mut proof = Self::clear();
         match blocker {
             RootBlocker::Epoch => proof.blocked_epoch = true,
             RootBlocker::Hardware => proof.blocked_hw = true,
@@ -267,23 +277,9 @@ impl RootProof {
             None
         }
     }
-}
 
-impl crate::memory::process_memory::RootRetireProof {
-    pub(crate) fn superseded_by_exec() -> Self {
-        Self(())
-    }
-}
-
-#[cfg(target_arch = "aarch64")]
-impl crate::memory::process_memory::RootRetireProof {
-    fn from_discharged_root_proof(proof: &RootProof) -> Option<Self> {
-        if proof.blocker().is_some() {
-            crate::trace_count!(crate::tracing::providers::teardown::ROOT_RETIRE_REFUSED);
-            None
-        } else {
-            Some(Self(()))
-        }
+    pub(crate) fn is_discharged(&self) -> bool {
+        self.blocker().is_none()
     }
 }
 
@@ -322,9 +318,9 @@ pub(crate) fn release_process_resources(process: &mut crate::process::Process) {
     }
     process.cleanup_cow_frames();
     process.drain_old_page_tables();
-    let page_table = process.page_table.take();
-    drop(page_table);
+    drop(process.page_table.take());
     drop(process.stack.take());
+    process.pending_old_page_tables.clear();
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -479,7 +475,11 @@ impl ProcessScheduler {
                                 None
                             };
                             #[cfg(not(target_arch = "aarch64"))]
-                            let receipt = None;
+                            let receipt = {
+                                drop(process.page_table.take());
+                                process.pending_old_page_tables.clear();
+                                None
+                            };
                             drop(process.stack.take());
                             receipt
                         } else {
@@ -924,31 +924,36 @@ fn reclaim_deferred_process_resources_for_pass(my_pass: u32, boot_test_owned: bo
                     proof = RootProof::blocked(RootBlocker::LiveRow);
                 }
 
-                if let Some(blocker) = proof.blocker() {
-                    record_root_blocker(blocker);
-                    if matches!(blocker, RootBlocker::Cached | RootBlocker::LiveRow) {
-                        reclaim.proof_failures = reclaim.proof_failures.saturating_add(1);
+                match crate::memory::process_memory::RootRetireProof::from_discharged_root_proof(
+                    &proof,
+                ) {
+                    Some(retire_proof) => {
+                        crate::tracing::providers::teardown::record_reclaim(reclaim.pid);
+                        reclaim.reclaim(&retire_proof);
                     }
-                    if reclaim.proof_failures == PROOF_FAILURES_BEFORE_PARK {
-                        park_reclaim(reclaim);
-                    } else {
-                        crate::arch_without_interrupts(|| {
-                            PENDING_PROCESS_RECLAIMS.lock().push(reclaim)
-                        });
+                    None => {
+                        #[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
+                        crate::tracing::providers::teardown::record_boot_test_root_retire_refused(
+                            reclaim.pid,
+                        );
+                        let Some(blocker) = proof.blocker() else {
+                            crate::arch_without_interrupts(|| {
+                                PENDING_PROCESS_RECLAIMS.lock().push(reclaim)
+                            });
+                            continue;
+                        };
+                        record_root_blocker(blocker);
+                        if matches!(blocker, RootBlocker::Cached | RootBlocker::LiveRow) {
+                            reclaim.proof_failures = reclaim.proof_failures.saturating_add(1);
+                        }
+                        if reclaim.proof_failures == PROOF_FAILURES_BEFORE_PARK {
+                            park_reclaim(reclaim);
+                        } else {
+                            crate::arch_without_interrupts(|| {
+                                PENDING_PROCESS_RECLAIMS.lock().push(reclaim)
+                            });
+                        }
                     }
-                } else {
-                    let Some(retire_proof) =
-                        crate::memory::process_memory::RootRetireProof::from_discharged_root_proof(
-                            &proof,
-                        )
-                    else {
-                        crate::arch_without_interrupts(|| {
-                            PENDING_PROCESS_RECLAIMS.lock().push(reclaim)
-                        });
-                        continue;
-                    };
-                    crate::tracing::providers::teardown::record_reclaim(reclaim.pid);
-                    reclaim.reclaim(&retire_proof);
                 }
             }
             None => break,
