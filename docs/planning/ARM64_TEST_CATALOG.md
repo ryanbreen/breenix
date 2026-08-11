@@ -340,7 +340,7 @@ Per arm64-parity.md:
 ### Running Tests
 ```bash
 # Build ARM64 kernel
-cargo build --release --features testing --target aarch64-breenix.json \
+cargo build --release --features testing --target aarch64-breenix-kernel.json \
     -Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem \
     -p kernel --bin kernel-aarch64
 

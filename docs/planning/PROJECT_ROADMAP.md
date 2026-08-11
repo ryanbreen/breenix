@@ -15,6 +15,10 @@ Focus is ARM64/Parallels: teardown/process-lifecycle correctness, SMP
 scheduling, and the userland/POSIX compliance stack (dashboard:
 https://v0-breenix-dashboard.vercel.app/).
 
+- 🚧 **AArch64 interrupt-resume page-table corruption** ([#528](https://github.com/ryanbreen/breenix/issues/528))
+  - The kernel now has a dedicated soft-float/general-registers-only target because its exception and context-switch frames do not preserve FP/SIMD state.
+  - Userspace retains the original hardware-FP target and code generation; its FP/SIMD state is already preserved across task switches, and a soft-float kernel leaves that state untouched across syscalls and interrupts.
+
 ## Recently Completed
 
 - ✅ **Parallels-only init `DATA_ABORT` boot regression fixed** ([PR #525](https://github.com/ryanbreen/breenix/pull/525), Aug 2026)

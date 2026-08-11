@@ -29,7 +29,7 @@ BREENIX_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$BREENIX_ROOT"
 
 # Configuration
-KERNEL_PATH="target/aarch64-breenix/release/kernel-aarch64"
+KERNEL_PATH="target/aarch64-breenix-kernel/release/kernel-aarch64"
 SERIAL_OUTPUT="/tmp/arm64_boot_test_output.txt"
 TIMEOUT_SECS=30
 TEST_MODE="${1:-full}"
@@ -49,7 +49,7 @@ fi
 # Build the kernel
 echo "[1/4] Building ARM64 kernel..."
 if ! cargo build --release \
-    --target aarch64-breenix.json \
+    --target aarch64-breenix-kernel.json \
     -Z build-std=core,alloc \
     -Z build-std-features=compiler-builtins-mem \
     -p kernel \

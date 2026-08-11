@@ -130,8 +130,9 @@ drop_to_el1:
 el1_init:
     // Now running at EL1
 
-    // Enable FP/SIMD (CPACR_EL1.FPEN = 0b11)
-    // This is required because Rust code may use FP/SIMD instructions
+    // Permit userspace FP/SIMD (CPACR_EL1.FPEN = 0b11). This encoding also
+    // permits EL1, so kernel code must remain general-registers-only: exception
+    // and context-switch frames do not preserve FP/SIMD state.
     mov x0, #(3 << 20)      // FPEN = 0b11 (no trapping of FP/SIMD)
     msr cpacr_el1, x0
     isb
@@ -894,7 +895,7 @@ secondary_el1_init:
     strb w1, [x20]
 10:
 
-    // Enable FP/SIMD (CPACR_EL1.FPEN = 0b11)
+    // Permit userspace FP/SIMD. Kernel code remains general-registers-only.
     mov x0, #(3 << 20)
     msr cpacr_el1, x0
     isb

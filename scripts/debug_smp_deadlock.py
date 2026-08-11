@@ -17,7 +17,7 @@ import sys
 import time
 
 BREENIX_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-KERNEL = os.path.join(BREENIX_ROOT, "target/aarch64-breenix/release/kernel-aarch64")
+KERNEL = os.path.join(BREENIX_ROOT, "target/aarch64-breenix-kernel/release/kernel-aarch64")
 EXT2_DISK = os.path.join(BREENIX_ROOT, "target/ext2-aarch64.img")
 MONITOR_SOCK = "/tmp/breenix_smp_deadlock/monitor.sock"
 OUTPUT_DIR = "/tmp/breenix_smp_deadlock"
@@ -252,7 +252,7 @@ def main():
     if not os.path.exists(KERNEL):
         print(f"ERROR: Kernel not found: {KERNEL}")
         print("Build with:")
-        print("  cargo build --release --features boot_tests --target aarch64-breenix.json \\")
+        print("  cargo build --release --features boot_tests --target aarch64-breenix-kernel.json \\")
         print("    -Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem \\")
         print("    -p kernel --bin kernel-aarch64")
         sys.exit(1)

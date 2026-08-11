@@ -7,10 +7,10 @@ BREENIX_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$BREENIX_ROOT"
 
 # Build ARM64 kernel
-KERNEL="$BREENIX_ROOT/target/aarch64-breenix/release/kernel-aarch64"
+KERNEL="$BREENIX_ROOT/target/aarch64-breenix-kernel/release/kernel-aarch64"
 if [ ! -f "$KERNEL" ]; then
     echo "Building ARM64 kernel..."
-    cargo build --release --target aarch64-breenix.json \
+    cargo build --release --target aarch64-breenix-kernel.json \
         -Z build-std=core,alloc \
         -Z build-std-features=compiler-builtins-mem \
         -p kernel --bin kernel-aarch64

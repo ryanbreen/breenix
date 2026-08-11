@@ -8,10 +8,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BREENIX_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 # Find the ARM64 kernel binary
-KERNEL_BIN="$BREENIX_ROOT/target/aarch64-breenix/release/kernel-aarch64"
+KERNEL_BIN="$BREENIX_ROOT/target/aarch64-breenix-kernel/release/kernel-aarch64"
 if [ ! -f "$KERNEL_BIN" ]; then
     echo "Error: ARM64 kernel not found. Build with:"
-    echo "  cd \"$BREENIX_ROOT\" && cargo build --release --target aarch64-breenix.json -Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem --features testing -p kernel --bin kernel-aarch64"
+    echo "  cd \"$BREENIX_ROOT\" && cargo build --release --target aarch64-breenix-kernel.json -Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem --features testing -p kernel --bin kernel-aarch64"
     exit 1
 fi
 

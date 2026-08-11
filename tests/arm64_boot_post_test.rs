@@ -2335,7 +2335,7 @@ fn test_arm64_memory_management_completeness() {
 // valid build artifacts. Unlike the boot tests above, these do NOT require
 // QEMU to run - they are host-side verification tests.
 //
-// ARM64 build path: target/aarch64-breenix/release/kernel-aarch64
+// ARM64 build path: target/aarch64-breenix-kernel/release/kernel-aarch64
 // x86-64 build path: target/x86_64-breenix/release/kernel (for comparison)
 
 use std::env;
@@ -2357,7 +2357,7 @@ fn test_arm64_kernel_binary_exists() {
     let workspace_root = PathBuf::from(&manifest_dir);
 
     // ARM64 kernel binary path
-    let kernel_path = workspace_root.join("target/aarch64-breenix/release/kernel-aarch64");
+    let kernel_path = workspace_root.join("target/aarch64-breenix-kernel/release/kernel-aarch64");
 
     // Build the ARM64 kernel first
     println!("Building ARM64 kernel...");
@@ -2367,7 +2367,7 @@ fn test_arm64_kernel_binary_exists() {
             "build",
             "--release",
             "--target",
-            "aarch64-breenix.json",
+            "aarch64-breenix-kernel.json",
             "-Z",
             "build-std=core,alloc",
             "-Z",
@@ -2417,7 +2417,7 @@ fn test_arm64_kernel_binary_exists() {
 /// Test that the ARM64 target directory structure is correct
 ///
 /// Verifies that the ARM64 build creates the expected directory structure
-/// under target/aarch64-breenix/.
+/// under target/aarch64-breenix-kernel/.
 #[test]
 fn test_arm64_target_directory() {
     println!("\n========================================");
@@ -2429,7 +2429,7 @@ fn test_arm64_target_directory() {
     let workspace_root = PathBuf::from(&manifest_dir);
 
     // Expected directory structure
-    let target_base = workspace_root.join("target/aarch64-breenix");
+    let target_base = workspace_root.join("target/aarch64-breenix-kernel");
     let release_dir = target_base.join("release");
 
     // Build first to ensure directories exist
@@ -2440,7 +2440,7 @@ fn test_arm64_target_directory() {
             "build",
             "--release",
             "--target",
-            "aarch64-breenix.json",
+            "aarch64-breenix-kernel.json",
             "-Z",
             "build-std=core,alloc",
             "-Z",
@@ -2461,7 +2461,7 @@ fn test_arm64_target_directory() {
     // Check directory structure
     println!("\nTarget Directory Structure:");
 
-    print!("  {:.<40} ", "target/aarch64-breenix exists");
+    print!("  {:.<40} ", "target/aarch64-breenix-kernel exists");
     if target_base.exists() && target_base.is_dir() {
         println!("PASS");
     } else {
@@ -2469,7 +2469,7 @@ fn test_arm64_target_directory() {
         panic!("ARM64 target base directory not found");
     }
 
-    print!("  {:.<40} ", "target/aarch64-breenix/release exists");
+    print!("  {:.<40} ", "target/aarch64-breenix-kernel/release exists");
     if release_dir.exists() && release_dir.is_dir() {
         println!("PASS");
     } else {
@@ -2512,7 +2512,7 @@ fn test_arm64_elf_format() {
     // Get workspace root
     let manifest_dir = env::var("CARGO_MANIFEST_DIR").unwrap();
     let workspace_root = PathBuf::from(&manifest_dir);
-    let kernel_path = workspace_root.join("target/aarch64-breenix/release/kernel-aarch64");
+    let kernel_path = workspace_root.join("target/aarch64-breenix-kernel/release/kernel-aarch64");
 
     // Build first
     println!("Building ARM64 kernel...");
@@ -2522,7 +2522,7 @@ fn test_arm64_elf_format() {
             "build",
             "--release",
             "--target",
-            "aarch64-breenix.json",
+            "aarch64-breenix-kernel.json",
             "-Z",
             "build-std=core,alloc",
             "-Z",
@@ -2856,7 +2856,7 @@ fn test_arm64_system_stability() {
 /// checks for the presence of boot test markers if enabled.
 ///
 /// To run with testing feature:
-/// cargo build --release --target aarch64-breenix.json -Z build-std=core,alloc \
+/// cargo build --release --target aarch64-breenix-kernel.json -Z build-std=core,alloc \
 ///   -Z build-std-features=compiler-builtins-mem -p kernel --bin kernel-aarch64 \
 ///   --features boot_tests
 #[test]
@@ -2919,7 +2919,7 @@ fn test_arm64_runtime_testing_feature() {
         println!("  This test requires building with --features boot_tests");
         println!("");
         println!("  Build command:");
-        println!("    cargo build --release --target aarch64-breenix.json \\");
+        println!("    cargo build --release --target aarch64-breenix-kernel.json \\");
         println!("      -Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem \\");
         println!("      -p kernel --bin kernel-aarch64 --features boot_tests");
     }

@@ -23,7 +23,7 @@ def run_test(test_name, timeout=45):
     script_dir = os.path.dirname(os.path.abspath(__file__))
     breenix_root = os.path.dirname(os.path.dirname(script_dir))
     
-    kernel = os.path.join(breenix_root, "target/aarch64-breenix/release/kernel-aarch64")
+    kernel = os.path.join(breenix_root, "target/aarch64-breenix-kernel/release/kernel-aarch64")
     ext2_disk = os.path.join(breenix_root, "target/ext2-aarch64.img")
     
     if not os.path.exists(kernel):

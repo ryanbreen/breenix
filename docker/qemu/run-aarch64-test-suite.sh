@@ -105,7 +105,7 @@ PYTHON
     
     # Build (with testing feature to enable exec() and other test syscalls)
     echo "Building kernel..."
-    if ! cargo build --release --features testing --target aarch64-breenix.json \
+    if ! cargo build --release --features testing --target aarch64-breenix-kernel.json \
         -Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem \
         -p kernel --bin kernel-aarch64 2>&1 | tail -3; then
         echo "BUILD FAILED for $test_name"
@@ -119,7 +119,7 @@ PYTHON
     echo "Running test..."
     timeout 30 qemu-system-aarch64 \
         -M virt -cpu cortex-a72 -m 512 \
-        -kernel "$BREENIX_ROOT/target/aarch64-breenix/release/kernel-aarch64" \
+        -kernel "$BREENIX_ROOT/target/aarch64-breenix-kernel/release/kernel-aarch64" \
         -display none -no-reboot \
         -device virtio-gpu-device \
         -device virtio-keyboard-device \

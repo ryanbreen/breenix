@@ -16,7 +16,7 @@ import sys
 import time
 
 BREENIX_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-KERNEL = os.path.join(BREENIX_ROOT, "target/aarch64-breenix/release/kernel-aarch64")
+KERNEL = os.path.join(BREENIX_ROOT, "target/aarch64-breenix-kernel/release/kernel-aarch64")
 EXT2_DISK = os.path.join(BREENIX_ROOT, "target/ext2-aarch64.img")
 MONITOR_SOCK = "/tmp/breenix_debug_monitor.sock"
 OUTPUT_DIR = "/tmp/breenix_debug_elr0"

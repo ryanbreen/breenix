@@ -195,8 +195,8 @@ log "Step 4: Capturing GDB backtraces..."
 # Detect architecture from kernel binary
 KERNEL_ARCH=""
 KERNEL_BIN=""
-if [ -f "$BREENIX_ROOT/target/aarch64-breenix/release/kernel-aarch64" ]; then
-    KERNEL_BIN="$BREENIX_ROOT/target/aarch64-breenix/release/kernel-aarch64"
+if [ -f "$BREENIX_ROOT/target/aarch64-breenix-kernel/release/kernel-aarch64" ]; then
+    KERNEL_BIN="$BREENIX_ROOT/target/aarch64-breenix-kernel/release/kernel-aarch64"
     KERNEL_ARCH="aarch64"
 elif [ -f "$BREENIX_ROOT/target/release/build/breenix-"*/out/breenix-uefi.img ]; then
     KERNEL_BIN=$(ls -t "$BREENIX_ROOT/target/release/qemu-uefi" 2>/dev/null | head -1)

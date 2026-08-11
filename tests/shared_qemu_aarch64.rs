@@ -23,7 +23,7 @@ pub struct Arm64BuildConfig {
 impl Default for Arm64BuildConfig {
     fn default() -> Self {
         Self {
-            target: "aarch64-breenix.json",
+            target: "aarch64-breenix-kernel.json",
             release: true,
         }
     }
@@ -65,7 +65,7 @@ pub fn build_arm64_kernel(config: &Arm64BuildConfig) -> Result<String, String> {
 
     // Determine the output path
     let profile = if config.release { "release" } else { "debug" };
-    let kernel_path = format!("target/aarch64-breenix/{}/kernel-aarch64", profile);
+    let kernel_path = format!("target/aarch64-breenix-kernel/{}/kernel-aarch64", profile);
 
     // Verify the kernel exists
     if !std::path::Path::new(&kernel_path).exists() {
@@ -169,7 +169,6 @@ pub fn run_arm64_qemu(kernel_path: &str, timeout_secs: u64) -> Result<String, St
 
     // Poll for boot completion AND userspace execution markers
     let mut post_complete = false;
-    let mut userspace_executed = false;
     while start.elapsed() < timeout {
         if let Ok(content) = fs::read_to_string(serial_output_file) {
             // Check for ARM64-specific POST completion or boot completion
@@ -191,7 +190,6 @@ pub fn run_arm64_qemu(kernel_path: &str, timeout_secs: u64) -> Result<String, St
                     || content.contains("breenix>")
                     || content.contains("[STDIN_BLOCK]"))
             {
-                userspace_executed = true;
                 println!("Userspace execution confirmed");
                 // Give it a moment to finish writing any final output
                 thread::sleep(Duration::from_millis(500));

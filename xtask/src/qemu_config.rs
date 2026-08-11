@@ -58,7 +58,7 @@ impl QemuConfig {
                         "build",
                         "--release",
                         "--target",
-                        "aarch64-breenix.json",
+                        "aarch64-breenix-kernel.json",
                         "-Z",
                         "build-std=core,alloc",
                         "-Z",
@@ -103,7 +103,7 @@ impl QemuConfig {
     pub fn spawn_qemu(&self) -> Result<std::process::Child> {
         match &self.arch {
             Arch::Arm64 => {
-                let kernel_binary = "target/aarch64-breenix/release/kernel-aarch64";
+                let kernel_binary = "target/aarch64-breenix-kernel/release/kernel-aarch64";
                 let mut args = vec![
                     "-M".to_string(),
                     "virt".to_string(),
