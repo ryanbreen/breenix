@@ -64,6 +64,25 @@ fn above_top_of_ram_frame() -> Option<PhysFrame> {
     Some(PhysFrame::containing_address(PhysAddr::new(aligned)))
 }
 
+/// Atomically consume one sequential ordinal without claiming its ledger slot.
+/// The successful frontier CAS makes the returned frame permanently never-issued,
+/// so exercising the production deallocation wrapper cannot race a live owner.
+fn reserve_never_allocated_frame() -> Option<PhysFrame> {
+    loop {
+        let index = NEXT_FREE_FRAME.load(Ordering::Acquire);
+        let frame = BootInfoFrameAllocator::get_usable_frame(index)?;
+        if !matches!(prepare_frame_for_allocation(index), PrepareFrame::Ready) {
+            return None;
+        }
+        if NEXT_FREE_FRAME
+            .compare_exchange(index, index + 1, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok()
+        {
+            return Some(frame);
+        }
+    }
+}
+
 fn stale_lease_fixture() -> Option<(FrameLease, FrameLease)> {
     for _ in 0..3 {
         let stale = allocate_frame_leased()?;
@@ -162,8 +181,7 @@ pub fn frame_custody_refusal_gate_test() -> TestResult {
     if after_untracked[3] != before_untracked[3] + 1 || free_after_untracked != free_before {
         return TestResult::Fail("C: untracked frame return was not isolated");
     }
-    let never_index = NEXT_FREE_FRAME.load(Ordering::Acquire);
-    let never_frame = match BootInfoFrameAllocator::get_usable_frame(never_index) {
+    let never_frame = match reserve_never_allocated_frame() {
         Some(frame) => frame,
         None => return TestResult::Fail("C: no never-allocated frame available"),
     };

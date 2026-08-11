@@ -450,6 +450,10 @@ fn alias_method_calls(body: &str) -> Vec<String> {
             let mut cursor = offset + alias.len();
             loop {
                 skip_trivia(bytes, &mask, &mut cursor);
+                while bytes.get(cursor) == Some(&b')') && mask[cursor] {
+                    cursor += 1;
+                    skip_trivia(bytes, &mask, &mut cursor);
+                }
                 if bytes.get(cursor) != Some(&b'.') || !mask[cursor] {
                     break;
                 }
@@ -494,6 +498,144 @@ fn alias_method_calls(body: &str) -> Vec<String> {
         }
     }
     calls
+}
+
+fn alias_argument_exports(body: &str) -> Vec<String> {
+    fn matching_close(bytes: &[u8], mask: &[bool], open: usize) -> Option<usize> {
+        let mut depth = 0usize;
+        for index in open..bytes.len() {
+            if !mask[index] {
+                continue;
+            }
+            match bytes[index] {
+                b'(' => depth += 1,
+                b')' => {
+                    depth = depth.checked_sub(1)?;
+                    if depth == 0 {
+                        return Some(index);
+                    }
+                }
+                _ => {}
+            }
+        }
+        None
+    }
+
+    fn call_name_before(body: &str, mask: &[bool], open: usize) -> Option<String> {
+        let bytes = body.as_bytes();
+        let mut cursor = open;
+        while cursor > 0 {
+            cursor -= 1;
+            if mask[cursor] && !bytes[cursor].is_ascii_whitespace() {
+                break;
+            }
+        }
+        if bytes.get(cursor) == Some(&b'!') {
+            cursor = cursor.checked_sub(1)?;
+            while !mask[cursor] || bytes[cursor].is_ascii_whitespace() {
+                cursor = cursor.checked_sub(1)?;
+            }
+        }
+        if !identifier_byte(*bytes.get(cursor)?) {
+            return None;
+        }
+        let end = cursor + 1;
+        while cursor > 0 && identifier_byte(bytes[cursor - 1]) {
+            cursor -= 1;
+        }
+        let name = &body[cursor..end];
+        (!matches!(name, "if" | "while" | "for" | "match" | "return"))
+            .then(|| name.to_owned())
+    }
+
+    fn direct_alias_argument(argument: &str, alias: &str) -> bool {
+        let mask = code_mask(argument);
+        let alias_offsets = identifier_offsets(argument, &mask, alias);
+        if alias_offsets.len() != 1 {
+            return false;
+        }
+        let alias_offset = alias_offsets[0];
+        let mut cursor = 0usize;
+        while cursor < argument.len() {
+            if !mask[cursor] || argument.as_bytes()[cursor].is_ascii_whitespace() {
+                cursor += 1;
+                continue;
+            }
+            if cursor == alias_offset {
+                cursor += alias.len();
+                continue;
+            }
+            if argument[cursor..].starts_with("mut")
+                && identifier_offsets(argument, &mask, "mut").contains(&cursor)
+            {
+                cursor += "mut".len();
+                continue;
+            }
+            if matches!(argument.as_bytes()[cursor], b'&' | b'*' | b'(' | b')') {
+                cursor += 1;
+                continue;
+            }
+            return false;
+        }
+        true
+    }
+
+    let mask = code_mask(body);
+    let bytes = body.as_bytes();
+    let aliases = aliases_derived_from_free_frames(body);
+    let mut exports = Vec::new();
+    for alias in aliases {
+        for offset in identifier_offsets(body, &mask, &alias) {
+            let mut opens = Vec::new();
+            for open in code_offsets(&body[..offset], &mask[..offset], "(") {
+                if matching_close(bytes, &mask, open).is_some_and(|close| close > offset) {
+                    opens.push(open);
+                }
+            }
+            for open in opens.into_iter().rev() {
+                let Some(call_name) = call_name_before(body, &mask, open) else {
+                    continue;
+                };
+                let close = matching_close(bytes, &mask, open).expect("enclosing call close");
+                let mut after_close = close + 1;
+                while bytes.get(after_close).is_some_and(|byte| {
+                    !mask[after_close] || byte.is_ascii_whitespace()
+                }) {
+                    after_close += 1;
+                }
+                if bytes.get(after_close) == Some(&b'=')
+                    && bytes.get(after_close + 1) != Some(&b'=')
+                {
+                    continue;
+                }
+                let mut depth = 0usize;
+                let mut argument_start = open + 1;
+                let mut argument = None;
+                for index in open + 1..=close {
+                    if !mask[index] {
+                        continue;
+                    }
+                    match bytes[index] {
+                        b'(' | b'[' | b'{' => depth += 1,
+                        b')' | b']' | b'}' if depth > 0 => depth -= 1,
+                        b',' | b')' if depth == 0 => {
+                            if (argument_start..index).contains(&offset) {
+                                argument = Some(&body[argument_start..index]);
+                                break;
+                            }
+                            argument_start = index + 1;
+                        }
+                        _ => {}
+                    }
+                }
+                if argument.is_some_and(|argument| direct_alias_argument(argument, &alias)) {
+                    exports.push(call_name);
+                    break;
+                }
+            }
+        }
+    }
+    exports
 }
 
 fn function_body<'a>(source: &'a str, name: &str) -> &'a str {
@@ -673,6 +815,22 @@ let _same_line = "needle"; let _real = needle();
         "match FREE_FRAMES.try_lock() { Some(mut renamed) => renamed.insert(0, frame), None => {} }"
     )
     .contains(&"insert".to_owned()));
+    assert!(alias_method_calls(
+        "if let Some(mut free) = FREE_FRAMES.try_lock() { (*free).insert(0, frame); }"
+    )
+    .contains(&"insert".to_owned()));
+    assert_eq!(
+        alias_argument_exports(
+            "if let Some(mut free) = FREE_FRAMES.try_lock() { stash_frame(&mut free, frame); }"
+        ),
+        vec!["stash_frame"]
+    );
+    assert_eq!(
+        alias_argument_exports(
+            "if let Some(mut free) = FREE_FRAMES.try_lock() { Vec::insert(&mut free, 0, frame); }"
+        ),
+        vec!["insert"]
+    );
 }
 
 const TERMINATE_CALLS: &[(&str, usize)] = &[
@@ -854,10 +1012,20 @@ fn validate_exit_sgi_is_teardown_only(sources: &[(String, String)]) -> Result<()
     .ok_or(())
 }
 
-fn validate_alias_methods(body: &str, allowed: &[&str]) -> Result<(), ()> {
+fn validate_alias_methods(
+    body: &str,
+    allowed: &[&str],
+    allowed_exports: &[&str],
+) -> Result<(), ()> {
     for method in alias_method_calls(body) {
         if !allowed.contains(&method.as_str()) {
             eprintln!("unexpected free-list alias method: {method}");
+            return Err(());
+        }
+    }
+    for callee in alias_argument_exports(body) {
+        if !allowed_exports.contains(&callee.as_str()) {
+            eprintln!("unexpected free-list alias export to: {callee}");
             return Err(());
         }
     }
@@ -915,22 +1083,27 @@ fn validate_frame_return_choke_point(sources: &[(String, String)]) -> Result<(),
             "iter",
             "copied",
         ],
+        &[],
     )?;
     validate_alias_methods(
         function_body(allocator, "ensure_free_frame_capacity"),
         &["try_lock", "capacity", "len", "try_reserve", "is_err"],
+        &[],
     )?;
     validate_alias_methods(
         function_body(allocator, "allocate_candidate"),
         &["try_lock", "pop", "len"],
+        &[],
     )?;
     validate_alias_methods(
         function_body(allocator, "return_lease"),
         &["try_lock", "len", "capacity", "push"],
+        &[],
     )?;
     validate_alias_methods(
         function_body(allocator, "memory_stats"),
         &["try_lock", "len"],
+        &[],
     )?;
 
     let fixture = source(sources, "kernel/src/memory/frame_allocator_tests.rs");
@@ -973,7 +1146,7 @@ fn validate_frame_return_choke_point(sources: &[(String, String)]) -> Result<(),
 
 fn validate_frame_ledger_hot_paths(sources: &[(String, String)]) -> Result<(), ()> {
     let allocator = source(sources, "kernel/src/memory/frame_allocator.rs");
-    for name in ["frame_ordinal", "claim_frame", "counted", "return_lease"] {
+    for name in ["frame_ordinal", "get", "claim_frame", "counted", "return_lease"] {
         let body = function_body(allocator, name);
         for forbidden in [
             "log::",
@@ -1088,6 +1261,7 @@ fn validate_frame_ledger_runtime_oracles(sources: &[(String, String)]) -> Result
     let stale = function_body(tests, "stale_lease_fixture");
     let gate = function_body(tests, "frame_custody_refusal_gate_test");
     let above_top = function_body(tests, "above_top_of_ram_frame");
+    let never_allocated = function_body(tests, "reserve_never_allocated_frame");
     let allocator = source(sources, "kernel/src/memory/frame_allocator.rs");
     let returned = function_body(allocator, "return_lease");
     let counted = function_body(allocator, "counted");
@@ -1143,6 +1317,14 @@ fn validate_frame_ledger_runtime_oracles(sources: &[(String, String)]) -> Result
         && gate.contains("return_lease(stale) != ReturnOutcome::RefusedStale")
         && gate.contains("above_top_of_ram_frame()")
         && gate.contains("deallocate_frame(untracked)")
+        && gate.contains("reserve_never_allocated_frame()")
+        && gate.contains("deallocate_frame(never_frame)")
+        && never_allocated.contains("BootInfoFrameAllocator::get_usable_frame(index)")
+        && never_allocated.contains("prepare_frame_for_allocation(index)")
+        && never_allocated.contains("NEXT_FREE_FRAME\n            .compare_exchange(")
+        && never_allocated.find("prepare_frame_for_allocation(index)").ok_or(())?
+            < never_allocated.find(".compare_exchange(").ok_or(())?
+        && never_allocated.contains(".is_ok()\n        {\n            return Some(frame);")
         && !gate.contains("FrameLease {")
         && above_top.contains("MEMORY_INFO.get()")
         && above_top.contains("region.end")
@@ -2227,6 +2409,36 @@ fn deliberately_broken_variants_fail_the_ratchet() {
     let reborrowed =
         with_replaced_source(&sources, "kernel/src/memory/frame_allocator.rs", reborrowed);
     assert!(validate_frame_return_choke_point(&reborrowed).is_err());
+    let parenthesized_reborrow = allocator.replacen(
+        "if let Some(frame) = free_list.pop() {",
+        "if let Some(frame) = free_list.pop() { (*free_list).insert(0, frame);",
+        1,
+    );
+    let parenthesized_reborrow = with_replaced_source(
+        &sources,
+        "kernel/src/memory/frame_allocator.rs",
+        parenthesized_reborrow,
+    );
+    assert!(validate_frame_return_choke_point(&parenthesized_reborrow).is_err());
+    let helper_export = allocator.replacen(
+        "if let Some(frame) = free_list.pop() {",
+        "if let Some(frame) = free_list.pop() { stash_frame(&mut free_list, frame);",
+        1,
+    );
+    let helper_export = with_replaced_source(
+        &sources,
+        "kernel/src/memory/frame_allocator.rs",
+        helper_export,
+    );
+    assert!(validate_frame_return_choke_point(&helper_export).is_err());
+    let ufcs_export = allocator.replacen(
+        "if let Some(frame) = free_list.pop() {",
+        "if let Some(frame) = free_list.pop() { Vec::insert(&mut free_list, 0, frame);",
+        1,
+    );
+    let ufcs_export =
+        with_replaced_source(&sources, "kernel/src/memory/frame_allocator.rs", ufcs_export);
+    assert!(validate_frame_return_choke_point(&ufcs_export).is_err());
     let renamed_alias = allocator.replacen(
         "if let Some(frame) = free_list.pop() {",
         "if let Some(frame) = free_list.pop() { if let Some(mut aliased) = FREE_FRAMES.try_lock() { aliased.insert(0, frame); }",
@@ -2299,6 +2511,14 @@ fn deliberately_broken_variants_fail_the_ratchet() {
         growing_return,
     );
     assert!(validate_frame_ledger_hot_paths(&growing_return).is_err());
+    let logged_get = allocator.replacen(
+        "fn get(&self, index: usize) -> Option<&AtomicU32> {",
+        "fn get(&self, index: usize) -> Option<&AtomicU32> { log::warn!(\"ledger get {}\", index);",
+        1,
+    );
+    let logged_get =
+        with_replaced_source(&sources, "kernel/src/memory/frame_allocator.rs", logged_get);
+    assert!(validate_frame_ledger_hot_paths(&logged_get).is_err());
 
     // R9: each ordering negative calls the ordering validator directly.
     let memory_mod = source(&sources, "kernel/src/memory/mod.rs");
@@ -2453,6 +2673,17 @@ fn deliberately_broken_variants_fail_the_ratchet() {
         hand_forged_untracked,
     );
     assert!(validate_frame_ledger_runtime_oracles(&hand_forged_untracked).is_err());
+    let unreserved_never_allocated = fixture.replacen(
+        "if NEXT_FREE_FRAME\n            .compare_exchange(index, index + 1, Ordering::SeqCst, Ordering::SeqCst)\n            .is_ok()",
+        "if true",
+        1,
+    );
+    let unreserved_never_allocated = with_replaced_source(
+        &sources,
+        "kernel/src/memory/frame_allocator_tests.rs",
+        unreserved_never_allocated,
+    );
+    assert!(validate_frame_ledger_runtime_oracles(&unreserved_never_allocated).is_err());
 
     // Registration is keyed by the function identity, not display spelling.
     let registry = source(&sources, "kernel/src/test_framework/registry.rs");
