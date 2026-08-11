@@ -305,6 +305,155 @@ fn function_span(source: &str, name: &str) -> std::ops::Range<usize> {
     start..start + body.len()
 }
 
+fn pattern_binding_identifiers(pattern: &str) -> BTreeSet<String> {
+    let mask = code_mask(pattern);
+    let bytes = pattern.as_bytes();
+    let mut paren_depth = 0usize;
+    let mut bracket_depth = 0usize;
+    let mut brace_depth = 0usize;
+    let mut pattern_end = pattern.len();
+    for index in 0..bytes.len() {
+        if !mask[index] {
+            continue;
+        }
+        match bytes[index] {
+            b'(' => paren_depth += 1,
+            b')' => paren_depth = paren_depth.saturating_sub(1),
+            b'[' => bracket_depth += 1,
+            b']' => bracket_depth = bracket_depth.saturating_sub(1),
+            b'{' => brace_depth += 1,
+            b'}' => brace_depth = brace_depth.saturating_sub(1),
+            b':' if paren_depth == 0
+                && bracket_depth == 0
+                && brace_depth == 0
+                && bytes.get(index.wrapping_sub(1)) != Some(&b':')
+                && bytes.get(index + 1) != Some(&b':') =>
+            {
+                pattern_end = index;
+                break;
+            }
+            _ => {}
+        }
+    }
+
+    let pattern = &pattern[..pattern_end];
+    let mask = &mask[..pattern_end];
+    let bytes = pattern.as_bytes();
+    let mut bindings = BTreeSet::new();
+    let mut cursor = 0usize;
+    while cursor < bytes.len() {
+        if !mask[cursor] || !(bytes[cursor] == b'_' || bytes[cursor].is_ascii_alphabetic()) {
+            cursor += 1;
+            continue;
+        }
+        let start = cursor;
+        cursor += 1;
+        while cursor < bytes.len() && identifier_byte(bytes[cursor]) {
+            cursor += 1;
+        }
+        let candidate = &pattern[start..cursor];
+        if matches!(
+            candidate,
+            "_" | "let"
+                | "if"
+                | "match"
+                | "mut"
+                | "ref"
+                | "Some"
+                | "None"
+                | "Ok"
+                | "Err"
+                | "self"
+                | "Self"
+                | "super"
+                | "crate"
+                | "true"
+                | "false"
+        ) || candidate
+            .as_bytes()
+            .first()
+            .is_some_and(u8::is_ascii_uppercase)
+        {
+            continue;
+        }
+
+        let previous = (0..start)
+            .rev()
+            .find(|index| mask[*index] && !bytes[*index].is_ascii_whitespace());
+        let next = (cursor..bytes.len())
+            .find(|index| mask[*index] && !bytes[*index].is_ascii_whitespace());
+        let path_segment = previous.is_some_and(|index| {
+            bytes[index] == b':'
+                && index
+                    .checked_sub(1)
+                    .is_some_and(|before| mask[before] && bytes[before] == b':')
+        }) || next.is_some_and(|index| {
+            bytes[index] == b':'
+                && bytes
+                    .get(index + 1)
+                    .is_some_and(|byte| *byte == b':' && mask[index + 1])
+        });
+        let field_label = next.is_some_and(|index| {
+            bytes[index] == b':'
+                && bytes
+                    .get(index + 1)
+                    .is_none_or(|byte| *byte != b':' || !mask[index + 1])
+        });
+        if !path_segment && !field_label {
+            bindings.insert(candidate.to_owned());
+        }
+    }
+    bindings
+}
+
+fn direct_alias_expression(expression: &str, alias: &str) -> bool {
+    let mask = code_mask(expression);
+    let alias_offsets = identifier_offsets(expression, &mask, alias);
+    if alias_offsets.len() != 1 {
+        return false;
+    }
+    let alias_offset = alias_offsets[0];
+    let mut cursor = 0usize;
+    while cursor < expression.len() {
+        if !mask[cursor] || expression.as_bytes()[cursor].is_ascii_whitespace() {
+            cursor += 1;
+            continue;
+        }
+        if cursor == alias_offset {
+            cursor += alias.len();
+            continue;
+        }
+        if ["mut", "ref"].iter().any(|modifier| {
+            expression[cursor..].starts_with(modifier)
+                && identifier_offsets(expression, &mask, modifier).contains(&cursor)
+        }) {
+            cursor += if expression[cursor..].starts_with("mut") {
+                "mut".len()
+            } else {
+                "ref".len()
+            };
+            continue;
+        }
+        if matches!(expression.as_bytes()[cursor], b'&' | b'*' | b'(' | b')') {
+            cursor += 1;
+            continue;
+        }
+        return false;
+    }
+    true
+}
+
+fn expression_derives_alias(expression: &str, aliases: &BTreeSet<String>) -> bool {
+    let mask = code_mask(expression);
+    aliases.iter().any(|alias| {
+        !identifier_offsets(expression, &mask, alias).is_empty()
+            && (direct_alias_expression(expression, alias)
+                || ["try_lock", ".lock", "&mut", "as_mut"]
+                    .iter()
+                    .any(|capability| !code_offsets(expression, &mask, capability).is_empty()))
+    })
+}
+
 fn aliases_derived_from_free_frames(body: &str) -> BTreeSet<String> {
     let mask = code_mask(body);
     let bytes = body.as_bytes();
@@ -322,57 +471,22 @@ fn aliases_derived_from_free_frames(body: &str) -> BTreeSet<String> {
                 continue;
             };
             let rhs = &body[equals + 1..end];
-            let rhs_mask = code_mask(rhs);
-            if !aliases
-                .iter()
-                .any(|alias| !identifier_offsets(rhs, &rhs_mask, alias).is_empty())
-                || !["try_lock", ".lock", "&mut", "as_mut"]
-                    .iter()
-                    .any(|capability| rhs.contains(capability))
-            {
+            if !expression_derives_alias(rhs, &aliases) {
                 continue;
             }
             let lhs = &body[let_offset + 3..equals];
-            let lhs_mask = code_mask(lhs);
-            let mut cursor = 0usize;
-            let mut binding = None;
-            while cursor < lhs.len() {
-                if lhs_mask[cursor]
-                    && (lhs.as_bytes()[cursor] == b'_'
-                        || lhs.as_bytes()[cursor].is_ascii_alphabetic())
-                {
-                    let start = cursor;
-                    cursor += 1;
-                    while cursor < lhs.len() && identifier_byte(lhs.as_bytes()[cursor]) {
-                        cursor += 1;
-                    }
-                    let candidate = &lhs[start..cursor];
-                    if !matches!(candidate, "let" | "if" | "mut" | "Some" | "Ok" | "Err") {
-                        binding = Some(candidate.to_owned());
-                    }
-                } else {
-                    cursor += 1;
-                }
-            }
-            if let Some(binding) = binding {
+            for binding in pattern_binding_identifiers(lhs) {
                 changed |= aliases.insert(binding);
             }
         }
         for match_offset in identifier_offsets(body, &mask, "match") {
-            let Some(open) = (match_offset..bytes.len())
-                .find(|index| mask[*index] && bytes[*index] == b'{')
+            let Some(open) =
+                (match_offset..bytes.len()).find(|index| mask[*index] && bytes[*index] == b'{')
             else {
                 continue;
             };
             let expression = &body[match_offset + "match".len()..open];
-            let expression_mask = code_mask(expression);
-            if !aliases
-                .iter()
-                .any(|alias| !identifier_offsets(expression, &expression_mask, alias).is_empty())
-                || !["try_lock", ".lock", "&mut", "as_mut"]
-                    .iter()
-                    .any(|capability| expression.contains(capability))
-            {
+            if !expression_derives_alias(expression, &aliases) {
                 continue;
             }
 
@@ -394,34 +508,29 @@ fn aliases_derived_from_free_frames(body: &str) -> BTreeSet<String> {
             let arms = &body[open + 1..close];
             let arms_mask = code_mask(arms);
             for arrow in code_offsets(arms, &arms_mask, "=>") {
-                let pattern_start = arms[..arrow]
-                    .rfind(',')
-                    .map_or(0, |comma| comma + 1);
-                let pattern = &arms[pattern_start..arrow];
-                let pattern_mask = code_mask(pattern);
-                let mut binding = None;
-                let mut cursor = 0usize;
-                while cursor < pattern.len() {
-                    if pattern_mask[cursor]
-                        && (pattern.as_bytes()[cursor] == b'_'
-                            || pattern.as_bytes()[cursor].is_ascii_alphabetic())
-                    {
-                        let start = cursor;
-                        cursor += 1;
-                        while cursor < pattern.len()
-                            && identifier_byte(pattern.as_bytes()[cursor])
-                        {
-                            cursor += 1;
+                let mut paren_depth = 0usize;
+                let mut bracket_depth = 0usize;
+                let mut brace_depth = 0usize;
+                let mut pattern_start = 0usize;
+                for index in 0..arrow {
+                    if !arms_mask[index] {
+                        continue;
+                    }
+                    match arms.as_bytes()[index] {
+                        b'(' => paren_depth += 1,
+                        b')' => paren_depth = paren_depth.saturating_sub(1),
+                        b'[' => bracket_depth += 1,
+                        b']' => bracket_depth = bracket_depth.saturating_sub(1),
+                        b'{' => brace_depth += 1,
+                        b'}' => brace_depth = brace_depth.saturating_sub(1),
+                        b',' if paren_depth == 0 && bracket_depth == 0 && brace_depth == 0 => {
+                            pattern_start = index + 1;
                         }
-                        let candidate = &pattern[start..cursor];
-                        if !matches!(candidate, "match" | "if" | "mut" | "Some" | "None" | "Ok" | "Err") {
-                            binding = Some(candidate.to_owned());
-                        }
-                    } else {
-                        cursor += 1;
+                        _ => {}
                     }
                 }
-                if let Some(binding) = binding {
+                let pattern = &arms[pattern_start..arrow];
+                for binding in pattern_binding_identifiers(pattern) {
                     changed |= aliases.insert(binding);
                 }
             }
@@ -544,40 +653,7 @@ fn alias_argument_exports(body: &str) -> Vec<String> {
             cursor -= 1;
         }
         let name = &body[cursor..end];
-        (!matches!(name, "if" | "while" | "for" | "match" | "return"))
-            .then(|| name.to_owned())
-    }
-
-    fn direct_alias_argument(argument: &str, alias: &str) -> bool {
-        let mask = code_mask(argument);
-        let alias_offsets = identifier_offsets(argument, &mask, alias);
-        if alias_offsets.len() != 1 {
-            return false;
-        }
-        let alias_offset = alias_offsets[0];
-        let mut cursor = 0usize;
-        while cursor < argument.len() {
-            if !mask[cursor] || argument.as_bytes()[cursor].is_ascii_whitespace() {
-                cursor += 1;
-                continue;
-            }
-            if cursor == alias_offset {
-                cursor += alias.len();
-                continue;
-            }
-            if argument[cursor..].starts_with("mut")
-                && identifier_offsets(argument, &mask, "mut").contains(&cursor)
-            {
-                cursor += "mut".len();
-                continue;
-            }
-            if matches!(argument.as_bytes()[cursor], b'&' | b'*' | b'(' | b')') {
-                cursor += 1;
-                continue;
-            }
-            return false;
-        }
-        true
+        (!matches!(name, "if" | "while" | "for" | "match" | "return")).then(|| name.to_owned())
     }
 
     let mask = code_mask(body);
@@ -598,9 +674,10 @@ fn alias_argument_exports(body: &str) -> Vec<String> {
                 };
                 let close = matching_close(bytes, &mask, open).expect("enclosing call close");
                 let mut after_close = close + 1;
-                while bytes.get(after_close).is_some_and(|byte| {
-                    !mask[after_close] || byte.is_ascii_whitespace()
-                }) {
+                while bytes
+                    .get(after_close)
+                    .is_some_and(|byte| !mask[after_close] || byte.is_ascii_whitespace())
+                {
                     after_close += 1;
                 }
                 if bytes.get(after_close) == Some(&b'=')
@@ -628,7 +705,7 @@ fn alias_argument_exports(body: &str) -> Vec<String> {
                         _ => {}
                     }
                 }
-                if argument.is_some_and(|argument| direct_alias_argument(argument, &alias)) {
+                if argument.is_some_and(|argument| direct_alias_expression(argument, &alias)) {
                     exports.push(call_name);
                     break;
                 }
@@ -807,6 +884,15 @@ let _same_line = "needle"; let _real = needle();
     );
     assert!(aliases.contains("first"));
     assert!(aliases.contains("second"));
+    let typed_aliases = aliases_derived_from_free_frames(
+        "if let Some(mut first) = FREE_FRAMES.try_lock() { let list: &mut Vec<PhysFrame> = &mut first; list.insert(0, frame); }",
+    );
+    assert!(typed_aliases.contains("list"));
+    assert!(!typed_aliases.contains("PhysFrame"));
+    let destructured_aliases = aliases_derived_from_free_frames(
+        "if let Some(mut first) = FREE_FRAMES.try_lock() { let (list, _): (&mut Vec<PhysFrame>, ()) = (&mut first, ()); list.insert(0, frame); }",
+    );
+    assert!(destructured_aliases.contains("list"));
     assert!(alias_method_calls(
         "if let Some(mut first) = FREE_FRAMES.try_lock() { let second = &mut *first; second.insert(0, frame); }"
     )
@@ -1059,6 +1145,7 @@ fn validate_free_frame_capabilities(
 
 fn validate_frame_return_choke_point(sources: &[(String, String)]) -> Result<(), ()> {
     let allocator = source(sources, "kernel/src/memory/frame_allocator.rs");
+    let init = function_body(allocator, "init_frame_ledger");
     validate_free_frame_capabilities(
         "kernel/src/memory/frame_allocator.rs",
         allocator,
@@ -1071,7 +1158,7 @@ fn validate_frame_return_choke_point(sources: &[(String, String)]) -> Result<(),
         ],
     )?;
     validate_alias_methods(
-        function_body(allocator, "init_frame_ledger"),
+        init,
         &[
             "lock",
             "capacity",
@@ -1085,6 +1172,15 @@ fn validate_frame_return_choke_point(sources: &[(String, String)]) -> Result<(),
         ],
         &[],
     )?;
+    let init_methods = alias_method_calls(init);
+    if init_methods.iter().filter(|method| *method == "push").count() != 1
+        || !init.contains(
+            "if seed_free_frame(&ledger, frame) {\n                free_list.push(frame);\n            }",
+        )
+    {
+        eprintln!("bootstrap free-list insertion escaped its seeded-frame span");
+        return Err(());
+    }
     validate_alias_methods(
         function_body(allocator, "ensure_free_frame_capacity"),
         &["try_lock", "capacity", "len", "try_reserve", "is_err"],
@@ -1146,7 +1242,13 @@ fn validate_frame_return_choke_point(sources: &[(String, String)]) -> Result<(),
 
 fn validate_frame_ledger_hot_paths(sources: &[(String, String)]) -> Result<(), ()> {
     let allocator = source(sources, "kernel/src/memory/frame_allocator.rs");
-    for name in ["frame_ordinal", "get", "claim_frame", "counted", "return_lease"] {
+    for name in [
+        "frame_ordinal",
+        "get",
+        "claim_frame",
+        "counted",
+        "return_lease",
+    ] {
         let body = function_body(allocator, name);
         for forbidden in [
             "log::",
@@ -1309,12 +1411,23 @@ fn validate_frame_ledger_runtime_oracles(sources: &[(String, String)]) -> Result
         .ok_or(())?;
     let memory_init = function_body(source(sources, "kernel/src/memory/mod.rs"), "init");
 
-    (take_free.contains("claim_frame(candidate)")
+    const DOUBLE_RETURN_ASSERTION: &str = "if return_lease(lease) != ReturnOutcome::Returned\n        || return_lease(lease) != ReturnOutcome::RefusedDoubleRelease\n        || FREE_FRAMES.lock().len() != free_before + 1\n        || free_frame_count(lease.frame) != 1\n        || !healthy_round_trip()\n    {";
+    const STALE_FIXTURE_ASSERTION: &str =
+        "if current.index != stale.index || current.generation == stale.generation {";
+    const STALE_RETURN_ASSERTION: &str = "if return_lease(stale) != ReturnOutcome::RefusedStale {";
+    const DUPLICATE_CLEANUP: &str = "let replacement = allocate_frame_leased();\n    remove_duplicate_candidates(live.frame);\n    let live_after =";
+    const DUPLICATE_OWNER_ASSERTION: &str = "if live_before.is_none()\n        || live_after != live_before\n        || !replacement_is_distinct\n        || counters()[4] != duplicate_before + 3\n    {";
+    const AGGREGATE_ASSERTION: &str = "if end[0] != start[0] + 1\n        || end[1] != start[1] + 1\n        || end[2] != start[2] + 1\n        || end[3] != start[3] + 1\n        || end[4] != start[4] + 3\n        || end[5] < start[5] + 1\n    {";
+
+    (take_free
+        .trim_end()
+        .ends_with("claim_frame(candidate).ok().flatten()\n}")
         && !take_free.contains("FrameLease {")
         && stale.contains("return_lease(stale)")
         && stale.contains("take_free_frame(stale.frame)")
-        && stale.contains("current.index != stale.index || current.generation == stale.generation")
-        && gate.contains("return_lease(stale) != ReturnOutcome::RefusedStale")
+        && stale.contains(STALE_FIXTURE_ASSERTION)
+        && gate.contains(STALE_RETURN_ASSERTION)
+        && gate.contains(DOUBLE_RETURN_ASSERTION)
         && gate.contains("above_top_of_ram_frame()")
         && gate.contains("deallocate_frame(untracked)")
         && gate.contains("reserve_never_allocated_frame()")
@@ -1349,12 +1462,11 @@ fn validate_frame_ledger_runtime_oracles(sources: &[(String, String)]) -> Result
         && counted.contains("ReturnOutcome::LostContended => teardown::FRAME_LOST_CONTENDED.increment()")
         && claim.contains("FRAME_DUPLICATE_ALLOC_REFUSED.increment()")
         && claim.contains("return Err(ClaimError::Duplicate);")
-        && gate.contains("free_frame_count(lease.frame) != 1")
-        && gate.contains("remove_duplicate_candidates(live.frame);")
-        && gate.contains("live_after != live_before")
+        && gate.contains(DUPLICATE_CLEANUP)
+        && gate.contains(DUPLICATE_OWNER_ASSERTION)
         && gate.contains("let free_guard = FREE_FRAMES.lock();")
         && gate.matches("healthy_round_trip()").count() == 5
-        && gate.contains("end[5] < start[5] + 1")
+        && gate.contains(AGGREGATE_ASSERTION)
         && refusal_def.contains("name: \"frame_custody_refusal_gate\"")
         && refusal_def.contains("arch: Arch::Aarch64")
         && refusal_def.contains("stage: TestStage::SerialBoot")
@@ -1392,7 +1504,11 @@ fn validate_frame_ledger_counter_inventory(provider: &str) -> Result<(), ()> {
     let declared: BTreeSet<_> = provider
         .split("counter!(")
         .skip(1)
-        .filter_map(|rest| rest.trim_start().split_once(',').map(|(name, _)| name.trim()))
+        .filter_map(|rest| {
+            rest.trim_start()
+                .split_once(',')
+                .map(|(name, _)| name.trim())
+        })
         .filter(|name| {
             name.starts_with("FRAME_RETURN_REFUSED_")
                 || *name == "FRAME_DUPLICATE_ALLOC_REFUSED"
@@ -2409,6 +2525,17 @@ fn deliberately_broken_variants_fail_the_ratchet() {
     let reborrowed =
         with_replaced_source(&sources, "kernel/src/memory/frame_allocator.rs", reborrowed);
     assert!(validate_frame_return_choke_point(&reborrowed).is_err());
+    let typed_reborrow = allocator.replacen(
+        "if let Some(frame) = free_list.pop() {",
+        "if let Some(frame) = free_list.pop() { let list: &mut Vec<PhysFrame> = &mut free_list; list.insert(0, frame);",
+        1,
+    );
+    let typed_reborrow = with_replaced_source(
+        &sources,
+        "kernel/src/memory/frame_allocator.rs",
+        typed_reborrow,
+    );
+    assert!(validate_frame_return_choke_point(&typed_reborrow).is_err());
     let parenthesized_reborrow = allocator.replacen(
         "if let Some(frame) = free_list.pop() {",
         "if let Some(frame) = free_list.pop() { (*free_list).insert(0, frame);",
@@ -2436,8 +2563,11 @@ fn deliberately_broken_variants_fail_the_ratchet() {
         "if let Some(frame) = free_list.pop() { Vec::insert(&mut free_list, 0, frame);",
         1,
     );
-    let ufcs_export =
-        with_replaced_source(&sources, "kernel/src/memory/frame_allocator.rs", ufcs_export);
+    let ufcs_export = with_replaced_source(
+        &sources,
+        "kernel/src/memory/frame_allocator.rs",
+        ufcs_export,
+    );
     assert!(validate_frame_return_choke_point(&ufcs_export).is_err());
     let renamed_alias = allocator.replacen(
         "if let Some(frame) = free_list.pop() {",
@@ -2455,8 +2585,11 @@ fn deliberately_broken_variants_fail_the_ratchet() {
         "if let Some(frame) = free_list.pop() { match FREE_FRAMES.try_lock() { Some(mut renamed) => renamed.insert(0, frame), None => {} }",
         1,
     );
-    let matched_alias =
-        with_replaced_source(&sources, "kernel/src/memory/frame_allocator.rs", matched_alias);
+    let matched_alias = with_replaced_source(
+        &sources,
+        "kernel/src/memory/frame_allocator.rs",
+        matched_alias,
+    );
     assert!(validate_frame_return_choke_point(&matched_alias).is_err());
     let fixture_escape = format!(
         "{fixture}\nfn rogue_fixture(frame: PhysFrame) {{ FREE_FRAMES.lock().append(&mut alloc::vec![frame]); FREE_FRAMES.lock().extend_from_slice(&[frame]); }}"
@@ -2476,6 +2609,17 @@ fn deliberately_broken_variants_fail_the_ratchet() {
         process_escape,
     );
     assert!(validate_frame_return_choke_point(&process_escape).is_err());
+    let unseeded_bootstrap_push = allocator.replacen(
+        "        bootstrap.len = 0;",
+        "        free_list.push(PhysFrame::containing_address(PhysAddr::new(0x100000)));\n        bootstrap.len = 0;",
+        1,
+    );
+    let unseeded_bootstrap_push = with_replaced_source(
+        &sources,
+        "kernel/src/memory/frame_allocator.rs",
+        unseeded_bootstrap_push,
+    );
+    assert!(validate_frame_return_choke_point(&unseeded_bootstrap_push).is_err());
 
     // R7: direct and transitive logging plus hidden capacity growth.
     let logged_counter = allocator.replacen(
@@ -2684,6 +2828,28 @@ fn deliberately_broken_variants_fail_the_ratchet() {
         unreserved_never_allocated,
     );
     assert!(validate_frame_ledger_runtime_oracles(&unreserved_never_allocated).is_err());
+    let muted_live_owner_assertion = fixture.replacen(
+        "|| live_after != live_before",
+        "|| (live_after != live_before) && false",
+        1,
+    );
+    let muted_live_owner_assertion = with_replaced_source(
+        &sources,
+        "kernel/src/memory/frame_allocator_tests.rs",
+        muted_live_owner_assertion,
+    );
+    assert!(validate_frame_ledger_runtime_oracles(&muted_live_owner_assertion).is_err());
+    let conditional_duplicate_cleanup = fixture.replacen(
+        "    remove_duplicate_candidates(live.frame);\n    let live_after =",
+        "    if false { remove_duplicate_candidates(live.frame); }\n    let live_after =",
+        1,
+    );
+    let conditional_duplicate_cleanup = with_replaced_source(
+        &sources,
+        "kernel/src/memory/frame_allocator_tests.rs",
+        conditional_duplicate_cleanup,
+    );
+    assert!(validate_frame_ledger_runtime_oracles(&conditional_duplicate_cleanup).is_err());
 
     // Registration is keyed by the function identity, not display spelling.
     let registry = source(&sources, "kernel/src/test_framework/registry.rs");
