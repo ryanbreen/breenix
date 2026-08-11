@@ -37,12 +37,14 @@ impl SubsystemProgress {
             failed: AtomicU32::new(0),
             started: AtomicU32::new(0),
             stage_completed: [
+                AtomicU32::new(0), // SerialBoot
                 AtomicU32::new(0), // EarlyBoot
                 AtomicU32::new(0), // PostScheduler
                 AtomicU32::new(0), // ProcessContext
                 AtomicU32::new(0), // Userspace
             ],
             stage_total: [
+                AtomicU32::new(0),
                 AtomicU32::new(0),
                 AtomicU32::new(0),
                 AtomicU32::new(0),
