@@ -128,7 +128,7 @@ print('Config fragment applied successfully')
 "
 
 # Let Kconfig resolve dependencies (accept defaults for any new prompts)
-yes "" | make oldconfig >/dev/null 2>&1
+{ yes "" || true; } | make oldconfig >/dev/null 2>&1
 
 echo "Configuration applied. Building..."
 echo ""
