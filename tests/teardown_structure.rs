@@ -113,14 +113,405 @@ fn source<'a>(sources: &'a [(String, String)], path: &str) -> &'a str {
         .1
 }
 
+fn code_mask(source: &str) -> Vec<bool> {
+    let bytes = source.as_bytes();
+    let mut mask = vec![true; bytes.len()];
+    let mut line_comment = false;
+    let mut block_comment_depth = 0usize;
+    let mut string = false;
+    let mut character = false;
+    let mut raw_string_hashes = None;
+    let mut escaped = false;
+    let mut index = 0usize;
+    while index < bytes.len() {
+        let byte = bytes[index];
+        if line_comment {
+            if byte == b'\n' {
+                line_comment = false;
+            } else {
+                mask[index] = false;
+            }
+            index += 1;
+            continue;
+        }
+        if block_comment_depth != 0 {
+            mask[index] = false;
+            if byte == b'/' && bytes.get(index + 1) == Some(&b'*') {
+                mask[index + 1] = false;
+                block_comment_depth += 1;
+                index += 2;
+            } else if byte == b'*' && bytes.get(index + 1) == Some(&b'/') {
+                mask[index + 1] = false;
+                block_comment_depth -= 1;
+                index += 2;
+            } else {
+                index += 1;
+            }
+            continue;
+        }
+        if let Some(hashes) = raw_string_hashes {
+            mask[index] = false;
+            if byte == b'"'
+                && bytes
+                    .get(index + 1..index + 1 + hashes)
+                    .is_some_and(|suffix| suffix.iter().all(|byte| *byte == b'#'))
+            {
+                for hash in 1..=hashes {
+                    mask[index + hash] = false;
+                }
+                raw_string_hashes = None;
+                index += hashes + 1;
+            }
+            index += 1;
+            continue;
+        }
+        if string || character {
+            mask[index] = false;
+            if escaped {
+                escaped = false;
+            } else if byte == b'\\' {
+                escaped = true;
+            } else if (string && byte == b'"') || (character && byte == b'\'') {
+                string = false;
+                character = false;
+            }
+            index += 1;
+            continue;
+        }
+        if byte == b'/' && bytes.get(index + 1) == Some(&b'/') {
+            mask[index] = false;
+            mask[index + 1] = false;
+            line_comment = true;
+            index += 2;
+            continue;
+        }
+        if byte == b'/' && bytes.get(index + 1) == Some(&b'*') {
+            mask[index] = false;
+            mask[index + 1] = false;
+            block_comment_depth = 1;
+            index += 2;
+            continue;
+        }
+        if byte == b'r' {
+            let mut quote = index + 1;
+            while bytes.get(quote) == Some(&b'#') {
+                quote += 1;
+            }
+            if bytes.get(quote) == Some(&b'"') {
+                mask[index..=quote].fill(false);
+                raw_string_hashes = Some(quote - index - 1);
+                index = quote + 1;
+                continue;
+            }
+        }
+        if byte == b'"' {
+            mask[index] = false;
+            string = true;
+            index += 1;
+            continue;
+        }
+        if byte == b'\'' {
+            let plain_char = bytes.get(index + 2) == Some(&b'\'');
+            let escaped_char =
+                bytes.get(index + 1) == Some(&b'\\') && bytes.get(index + 3) == Some(&b'\'');
+            if plain_char || escaped_char {
+                mask[index] = false;
+                character = true;
+                index += 1;
+                continue;
+            }
+        }
+        index += 1;
+    }
+    mask
+}
+
+fn code_offsets(source: &str, mask: &[bool], needle: &str) -> Vec<usize> {
+    source
+        .match_indices(needle)
+        .filter_map(|(offset, _)| mask.get(offset).copied().unwrap_or(false).then_some(offset))
+        .collect()
+}
+
+fn identifier_byte(byte: u8) -> bool {
+    byte == b'_' || byte.is_ascii_alphanumeric() || !byte.is_ascii()
+}
+
+fn identifier_offsets(source: &str, mask: &[bool], identifier: &str) -> Vec<usize> {
+    let bytes = source.as_bytes();
+    code_offsets(source, mask, identifier)
+        .into_iter()
+        .filter(|offset| {
+            let end = *offset + identifier.len();
+            !offset
+                .checked_sub(1)
+                .and_then(|before| bytes.get(before))
+                .is_some_and(|byte| identifier_byte(*byte))
+                && !bytes.get(end).is_some_and(|byte| identifier_byte(*byte))
+        })
+        .collect()
+}
+
+fn braced_block<'a>(source: &'a str, mask: &[bool], start: usize) -> Option<&'a str> {
+    let bytes = source.as_bytes();
+    let open = (start..bytes.len()).find(|index| mask[*index] && bytes[*index] == b'{')?;
+    let mut depth = 0usize;
+    for index in open..bytes.len() {
+        if !mask[index] {
+            continue;
+        }
+        match bytes[index] {
+            b'{' => depth += 1,
+            b'}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(&source[start..index + 1]);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn code_sites(sources: &[(String, String)], needle: &str) -> BTreeSet<Site> {
+    let mut sites = BTreeSet::new();
+    for (path, source) in sources {
+        let mask = code_mask(source);
+        for offset in code_offsets(source, &mask, needle) {
+            let line = source.as_bytes()[..offset]
+                .iter()
+                .filter(|byte| **byte == b'\n')
+                .count()
+                + 1;
+            sites.insert((path.clone(), line));
+        }
+    }
+    sites
+}
+
+fn enclosing_test_def<'a>(source: &'a str, mask: &[bool], offset: usize) -> Option<&'a str> {
+    let start = code_offsets(source, mask, "TestDef {")
+        .into_iter()
+        .filter(|start| *start <= offset)
+        .next_back()?;
+    let block = braced_block(source, mask, start)?;
+    (offset < start + block.len()).then_some(block)
+}
+
+fn function_span(source: &str, name: &str) -> std::ops::Range<usize> {
+    let body = function_body(source, name);
+    let start = body.as_ptr() as usize - source.as_ptr() as usize;
+    start..start + body.len()
+}
+
+fn aliases_derived_from_free_frames(body: &str) -> BTreeSet<String> {
+    let mask = code_mask(body);
+    let bytes = body.as_bytes();
+    let mut aliases = BTreeSet::from(["FREE_FRAMES".to_owned()]);
+    let mut changed = true;
+    while changed {
+        changed = false;
+        for let_offset in identifier_offsets(body, &mask, "let") {
+            let end = (let_offset..bytes.len())
+                .find(|index| mask[*index] && matches!(bytes[*index], b';' | b'{'))
+                .unwrap_or(bytes.len());
+            let Some(equals) =
+                (let_offset..end).find(|index| mask[*index] && bytes[*index] == b'=')
+            else {
+                continue;
+            };
+            let rhs = &body[equals + 1..end];
+            let rhs_mask = code_mask(rhs);
+            if !aliases
+                .iter()
+                .any(|alias| !identifier_offsets(rhs, &rhs_mask, alias).is_empty())
+                || !["try_lock", ".lock", "&mut", "as_mut"]
+                    .iter()
+                    .any(|capability| rhs.contains(capability))
+            {
+                continue;
+            }
+            let lhs = &body[let_offset + 3..equals];
+            let lhs_mask = code_mask(lhs);
+            let mut cursor = 0usize;
+            let mut binding = None;
+            while cursor < lhs.len() {
+                if lhs_mask[cursor]
+                    && (lhs.as_bytes()[cursor] == b'_'
+                        || lhs.as_bytes()[cursor].is_ascii_alphabetic())
+                {
+                    let start = cursor;
+                    cursor += 1;
+                    while cursor < lhs.len() && identifier_byte(lhs.as_bytes()[cursor]) {
+                        cursor += 1;
+                    }
+                    let candidate = &lhs[start..cursor];
+                    if !matches!(candidate, "let" | "if" | "mut" | "Some" | "Ok" | "Err") {
+                        binding = Some(candidate.to_owned());
+                    }
+                } else {
+                    cursor += 1;
+                }
+            }
+            if let Some(binding) = binding {
+                changed |= aliases.insert(binding);
+            }
+        }
+        for match_offset in identifier_offsets(body, &mask, "match") {
+            let Some(open) = (match_offset..bytes.len())
+                .find(|index| mask[*index] && bytes[*index] == b'{')
+            else {
+                continue;
+            };
+            let expression = &body[match_offset + "match".len()..open];
+            let expression_mask = code_mask(expression);
+            if !aliases
+                .iter()
+                .any(|alias| !identifier_offsets(expression, &expression_mask, alias).is_empty())
+                || !["try_lock", ".lock", "&mut", "as_mut"]
+                    .iter()
+                    .any(|capability| expression.contains(capability))
+            {
+                continue;
+            }
+
+            let mut depth = 1usize;
+            let close = ((open + 1)..bytes.len()).find(|index| {
+                if !mask[*index] {
+                    return false;
+                }
+                match bytes[*index] {
+                    b'{' => depth += 1,
+                    b'}' => depth -= 1,
+                    _ => {}
+                }
+                depth == 0
+            });
+            let Some(close) = close else {
+                continue;
+            };
+            let arms = &body[open + 1..close];
+            let arms_mask = code_mask(arms);
+            for arrow in code_offsets(arms, &arms_mask, "=>") {
+                let pattern_start = arms[..arrow]
+                    .rfind(',')
+                    .map_or(0, |comma| comma + 1);
+                let pattern = &arms[pattern_start..arrow];
+                let pattern_mask = code_mask(pattern);
+                let mut binding = None;
+                let mut cursor = 0usize;
+                while cursor < pattern.len() {
+                    if pattern_mask[cursor]
+                        && (pattern.as_bytes()[cursor] == b'_'
+                            || pattern.as_bytes()[cursor].is_ascii_alphabetic())
+                    {
+                        let start = cursor;
+                        cursor += 1;
+                        while cursor < pattern.len()
+                            && identifier_byte(pattern.as_bytes()[cursor])
+                        {
+                            cursor += 1;
+                        }
+                        let candidate = &pattern[start..cursor];
+                        if !matches!(candidate, "match" | "if" | "mut" | "Some" | "None" | "Ok" | "Err") {
+                            binding = Some(candidate.to_owned());
+                        }
+                    } else {
+                        cursor += 1;
+                    }
+                }
+                if let Some(binding) = binding {
+                    changed |= aliases.insert(binding);
+                }
+            }
+        }
+    }
+    aliases
+}
+
+fn alias_method_calls(body: &str) -> Vec<String> {
+    fn skip_trivia(bytes: &[u8], mask: &[bool], cursor: &mut usize) {
+        while bytes
+            .get(*cursor)
+            .is_some_and(|byte| byte.is_ascii_whitespace())
+            || mask.get(*cursor).is_some_and(|code| !*code)
+        {
+            *cursor += 1;
+        }
+    }
+
+    let mask = code_mask(body);
+    let bytes = body.as_bytes();
+    let aliases = aliases_derived_from_free_frames(body);
+    let mut calls = Vec::new();
+    for alias in aliases {
+        for offset in identifier_offsets(body, &mask, &alias) {
+            let mut cursor = offset + alias.len();
+            loop {
+                skip_trivia(bytes, &mask, &mut cursor);
+                if bytes.get(cursor) != Some(&b'.') || !mask[cursor] {
+                    break;
+                }
+                cursor += 1;
+                skip_trivia(bytes, &mask, &mut cursor);
+                let name_start = cursor;
+                while bytes.get(cursor).is_some_and(|byte| identifier_byte(*byte)) {
+                    cursor += 1;
+                }
+                if cursor == name_start {
+                    break;
+                }
+                let name = body[name_start..cursor].to_owned();
+                skip_trivia(bytes, &mask, &mut cursor);
+                if bytes.get(cursor) != Some(&b'(') || !mask[cursor] {
+                    break;
+                }
+                calls.push(name);
+                let mut depth = 0usize;
+                let mut close = None;
+                for index in cursor..bytes.len() {
+                    if !mask[index] {
+                        continue;
+                    }
+                    match bytes[index] {
+                        b'(' => depth += 1,
+                        b')' => {
+                            depth -= 1;
+                            if depth == 0 {
+                                close = Some(index);
+                                break;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                let Some(argument_end) = close else {
+                    break;
+                };
+                cursor = argument_end + 1;
+            }
+        }
+    }
+    calls
+}
+
 fn function_body<'a>(source: &'a str, name: &str) -> &'a str {
     let plain_marker = format!("fn {name}(");
     let generic_marker = format!("fn {name}<");
-    let start = [source.find(&plain_marker), source.find(&generic_marker)]
-        .into_iter()
-        .flatten()
-        .min()
-        .unwrap_or_else(|| panic!("missing function {name}"));
+    let mask = code_mask(source);
+    let start = [
+        code_offsets(source, &mask, &plain_marker)
+            .into_iter()
+            .next(),
+        code_offsets(source, &mask, &generic_marker)
+            .into_iter()
+            .next(),
+    ]
+    .into_iter()
+    .flatten()
+    .min()
+    .unwrap_or_else(|| panic!("missing function {name}"));
     let bytes = source.as_bytes();
     let mut line_comment = false;
     let mut block_comment_depth = 0usize;
@@ -206,8 +597,8 @@ fn function_body<'a>(source: &'a str, name: &str) -> &'a str {
         }
         if byte == b'\'' {
             let plain_char = bytes.get(index + 2) == Some(&b'\'');
-            let escaped_char = bytes.get(index + 1) == Some(&b'\\')
-                && bytes.get(index + 3) == Some(&b'\'');
+            let escaped_char =
+                bytes.get(index + 1) == Some(&b'\\') && bytes.get(index + 3) == Some(&b'\'');
             if plain_char || escaped_char {
                 character = true;
                 index += 1;
@@ -252,6 +643,36 @@ fn later() {}
     assert!(body.contains("if true { }"));
     assert!(!body.contains("target_helper"));
     assert!(!body.contains("fn later"));
+}
+
+#[test]
+fn code_mask_reports_only_real_code_occurrences() {
+    let fixture = r###"
+let _string = "needle";
+// needle
+/* needle */
+let _raw = r#"needle"#;
+let _same_line = "needle"; let _real = needle();
+"###;
+    let mask = code_mask(fixture);
+    assert_eq!(
+        code_offsets(fixture, &mask, "needle"),
+        vec![fixture.rfind("needle();").expect("real code occurrence")]
+    );
+
+    let aliases = aliases_derived_from_free_frames(
+        "if let Some(mut first) = FREE_FRAMES.try_lock() { let second = &mut *first; second.insert(0, frame); }",
+    );
+    assert!(aliases.contains("first"));
+    assert!(aliases.contains("second"));
+    assert!(alias_method_calls(
+        "if let Some(mut first) = FREE_FRAMES.try_lock() { let second = &mut *first; second.insert(0, frame); }"
+    )
+    .contains(&"insert".to_owned()));
+    assert!(alias_method_calls(
+        "match FREE_FRAMES.try_lock() { Some(mut renamed) => renamed.insert(0, frame), None => {} }"
+    )
+    .contains(&"insert".to_owned()));
 }
 
 const TERMINATE_CALLS: &[(&str, usize)] = &[
@@ -304,7 +725,7 @@ const EXIT_PROCESS_BY_PID_CALLS: &[(&str, usize)] = &[
     ("kernel/src/process/mod.rs", 418),
 ];
 const EXIT_PROCESS_FOR_TEARDOWN_TEST_CALLS: &[(&str, usize)] =
-    &[("kernel/src/tracing/providers/teardown.rs", 1050)];
+    &[("kernel/src/tracing/providers/teardown.rs", 1068)];
 const BLOCKING_PRIMITIVES: &[(&str, usize)] = &[
     ("kernel/src/task/scheduler.rs", 1973),
     ("kernel/src/task/scheduler.rs", 2187),
@@ -319,6 +740,41 @@ const BLOCKING_PRIMITIVES: &[(&str, usize)] = &[
 const RAW_SCHEDULER_LOCK_SITES: &[(&str, usize)] = &[
     ("kernel/src/task/scheduler.rs", 281),
     ("kernel/src/task/scheduler.rs", 288),
+];
+const PROCESS_MEMORY_FRAME_RETURNS: &[(&str, usize)] = &[
+    ("kernel/src/memory/process_memory.rs", 1744),
+    ("kernel/src/memory/process_memory.rs", 1783),
+    ("kernel/src/memory/process_memory.rs", 1820),
+    ("kernel/src/memory/process_memory.rs", 1832),
+    ("kernel/src/memory/process_memory.rs", 1836),
+    ("kernel/src/memory/process_memory.rs", 1840),
+    ("kernel/src/memory/process_memory.rs", 1845),
+    ("kernel/src/memory/process_memory.rs", 1906),
+    ("kernel/src/memory/process_memory.rs", 1934),
+    ("kernel/src/memory/process_memory.rs", 1961),
+    ("kernel/src/memory/process_memory.rs", 1973),
+    ("kernel/src/memory/process_memory.rs", 1977),
+    ("kernel/src/memory/process_memory.rs", 1981),
+    ("kernel/src/memory/process_memory.rs", 1986),
+];
+const FRAME_LEDGER_INIT_CALLS: &[(&str, usize)] = &[
+    ("kernel/src/main_aarch64.rs", 493),
+    ("kernel/src/memory/mod.rs", 137),
+];
+const PROCESS_PAGE_TABLE_CONSTRUCTORS: &[(&str, usize)] = &[
+    ("kernel/src/arch_impl/aarch64/syscall_entry.rs", 937),
+    ("kernel/src/process/manager.rs", 144),
+    ("kernel/src/process/manager.rs", 399),
+    ("kernel/src/process/manager.rs", 623),
+    ("kernel/src/process/manager.rs", 2240),
+    ("kernel/src/process/manager.rs", 2506),
+    ("kernel/src/process/manager.rs", 2834),
+    ("kernel/src/process/manager.rs", 3110),
+    ("kernel/src/process/manager.rs", 3391),
+    ("kernel/src/syscall/handlers.rs", 1822),
+    ("kernel/src/tracing/providers/teardown.rs", 964),
+    ("kernel/src/tracing/providers/teardown.rs", 1024),
+    ("kernel/src/tracing/providers/teardown.rs", 1085),
 ];
 
 const BLOCKING_NAMES: &[&str] = &[
@@ -396,6 +852,433 @@ fn validate_exit_sgi_is_teardown_only(sources: &[(String, String)]) -> Result<()
         && !function_body(scheduler, "send_resched_ipi_to_cpu").contains("EXIT_SGI_SENT"))
     .then_some(())
     .ok_or(())
+}
+
+fn validate_alias_methods(body: &str, allowed: &[&str]) -> Result<(), ()> {
+    for method in alias_method_calls(body) {
+        if !allowed.contains(&method.as_str()) {
+            eprintln!("unexpected free-list alias method: {method}");
+            return Err(());
+        }
+    }
+    Ok(())
+}
+
+fn validate_free_frame_capabilities(
+    path: &str,
+    module: &str,
+    allowed_functions: &[&str],
+) -> Result<(), ()> {
+    let mask = code_mask(module);
+    let spans = allowed_functions
+        .iter()
+        .map(|name| function_span(module, name))
+        .collect::<Vec<_>>();
+    let declaration = (path == "kernel/src/memory/frame_allocator.rs")
+        .then(|| module.find("static FREE_FRAMES:"))
+        .flatten();
+    for offset in identifier_offsets(module, &mask, "FREE_FRAMES") {
+        if declaration == Some(offset.saturating_sub("static ".len())) {
+            continue;
+        }
+        if !spans.iter().any(|span| span.contains(&offset)) {
+            eprintln!("FREE_FRAMES capability outside allowed span in {path} at byte {offset}");
+            return Err(());
+        }
+    }
+    Ok(())
+}
+
+fn validate_frame_return_choke_point(sources: &[(String, String)]) -> Result<(), ()> {
+    let allocator = source(sources, "kernel/src/memory/frame_allocator.rs");
+    validate_free_frame_capabilities(
+        "kernel/src/memory/frame_allocator.rs",
+        allocator,
+        &[
+            "init_frame_ledger",
+            "ensure_free_frame_capacity",
+            "allocate_candidate",
+            "return_lease",
+            "memory_stats",
+        ],
+    )?;
+    validate_alias_methods(
+        function_body(allocator, "init_frame_ledger"),
+        &[
+            "lock",
+            "capacity",
+            "len",
+            "try_reserve",
+            "expect",
+            "push",
+            "swap_remove",
+            "iter",
+            "copied",
+        ],
+    )?;
+    validate_alias_methods(
+        function_body(allocator, "ensure_free_frame_capacity"),
+        &["try_lock", "capacity", "len", "try_reserve", "is_err"],
+    )?;
+    validate_alias_methods(
+        function_body(allocator, "allocate_candidate"),
+        &["try_lock", "pop", "len"],
+    )?;
+    validate_alias_methods(
+        function_body(allocator, "return_lease"),
+        &["try_lock", "len", "capacity", "push"],
+    )?;
+    validate_alias_methods(
+        function_body(allocator, "memory_stats"),
+        &["try_lock", "len"],
+    )?;
+
+    let fixture = source(sources, "kernel/src/memory/frame_allocator_tests.rs");
+    validate_free_frame_capabilities(
+        "kernel/src/memory/frame_allocator_tests.rs",
+        fixture,
+        &[
+            "inject_duplicate_candidates",
+            "remove_duplicate_candidates",
+            "republish_lost_frame",
+            "free_frame_count",
+            "take_free_frame",
+            "frame_custody_refusal_gate_test",
+        ],
+    )?;
+
+    for (path, module) in sources.iter().filter(|(path, _)| {
+        path != "kernel/src/memory/frame_allocator.rs"
+            && path != "kernel/src/memory/frame_allocator_tests.rs"
+    }) {
+        let mask = code_mask(module);
+        if !identifier_offsets(module, &mask, "FREE_FRAMES").is_empty() {
+            eprintln!("unexpected FREE_FRAMES capability in {path}");
+            return Err(());
+        }
+    }
+
+    validate_exact(
+        &sites_matching(sources, |line| {
+            (line.contains("deallocate_frame(") || line.contains("return_lease("))
+                && !line.contains("fn deallocate_frame")
+                && !line.contains("fn return_lease")
+        })
+        .into_iter()
+        .filter(|(path, _)| path == "kernel/src/memory/process_memory.rs")
+        .collect(),
+        PROCESS_MEMORY_FRAME_RETURNS,
+    )
+}
+
+fn validate_frame_ledger_hot_paths(sources: &[(String, String)]) -> Result<(), ()> {
+    let allocator = source(sources, "kernel/src/memory/frame_allocator.rs");
+    for name in ["frame_ordinal", "claim_frame", "counted", "return_lease"] {
+        let body = function_body(allocator, name);
+        for forbidden in [
+            "log::",
+            "serial_println!",
+            "format!",
+            "vec!",
+            "Vec::new",
+            "Vec::with_capacity",
+            "alloc::",
+        ] {
+            if body.contains(forbidden) {
+                return Err(());
+            }
+        }
+    }
+    let returned = function_body(allocator, "return_lease");
+    for forbidden in ["reserve(", "try_reserve(", "resize(", "with_capacity("] {
+        if returned.contains(forbidden) {
+            return Err(());
+        }
+    }
+    let boundary = returned
+        .find("if free_list.len() == free_list.capacity() {")
+        .ok_or(())?;
+    let push = returned.find("free_list.push(lease.frame);").ok_or(())?;
+    (boundary < push).then_some(()).ok_or(())
+}
+
+fn validate_frame_ledger_bounded_boot_allocation(sources: &[(String, String)]) -> Result<(), ()> {
+    let allocator = source(sources, "kernel/src/memory/frame_allocator.rs");
+    let init = function_body(allocator, "init_frame_ledger");
+    let ledger_init = function_body(allocator, "try_new");
+    let ensure_chunk = function_body(allocator, "ensure_chunk");
+    let prepare = function_body(allocator, "prepare_frame_for_allocation");
+    let reserve = function_body(allocator, "ensure_free_frame_capacity");
+    let sequential_allocate = function_body(allocator, "allocate_frame");
+    let prepare_before_publish = sequential_allocate
+        .find("prepare_frame_for_allocation(current)")
+        .ok_or(())?
+        < sequential_allocate
+            .find("NEXT_FREE_FRAME.compare_exchange(")
+            .ok_or(())?;
+    let built_outside_once = ensure_chunk.find("slots.try_reserve_exact").ok_or(())?
+        < ensure_chunk.find(".call_once(||").ok_or(())?;
+    let contention = sequential_allocate
+        .find("PrepareFrame::Contended if capacity_contentions < 8")
+        .ok_or(())?;
+    let exhausted = sequential_allocate
+        .find("PrepareFrame::Exhausted => return None")
+        .ok_or(())?;
+
+    (allocator.contains("const LEDGER_CHUNK_FRAMES: usize = 64 * 1024;")
+        && init.contains("FrameLedger::try_new(total_frames, frontier)")
+        && init.contains("while chunk_start < frontier")
+        && init.contains(".ensure_chunk(chunk_start)")
+        && init.contains("advertised_frames.min(MAX_TRACKED_FRAMES)")
+        && init.contains("NEXT_FREE_FRAME.load(Ordering::Acquire),\n        frontier_snapshot")
+        && !init.contains("(0..total_frames)")
+        && !init.contains("reserve_exact(total_frames)")
+        && ledger_init.contains("try_reserve_exact(chunk_count)")
+        && prepare.contains("ledger.ensure_chunk(index)")
+        && prepare.contains("ensure_free_frame_capacity(index + 1)")
+        && reserve.contains("try_reserve(additional)")
+        && built_outside_once
+        && prepare_before_publish
+        && contention < exhausted)
+        .then_some(())
+        .ok_or(())
+}
+
+fn validate_frame_ledger_boot_order(sources: &[(String, String)]) -> Result<(), ()> {
+    let memory_init = function_body(source(sources, "kernel/src/memory/mod.rs"), "init");
+    let x86_ledger = memory_init
+        .find("frame_allocator::init_frame_ledger();")
+        .ok_or(())?;
+    if memory_init.rfind("heap::init(&mapper)").ok_or(())? > x86_ledger
+        || x86_ledger > memory_init.find("slab::init();").ok_or(())?
+        || memory_init[..x86_ledger].contains("ProcessPageTable::new(")
+    {
+        return Err(());
+    }
+
+    let arm_main = function_body(source(sources, "kernel/src/main_aarch64.rs"), "kernel_main");
+    let arm_ledger = arm_main
+        .find("frame_allocator::init_frame_ledger();")
+        .ok_or(())?;
+    if arm_main.find("memory::init_aarch64_heap();").ok_or(())? > arm_ledger
+        || arm_ledger > arm_main.find("memory::kernel_stack::init();").ok_or(())?
+        || arm_ledger > arm_main.find("kernel::process::init();").ok_or(())?
+        || arm_main[..arm_ledger].contains("ProcessPageTable::new(")
+    {
+        return Err(());
+    }
+    Ok(())
+}
+
+fn validate_frame_ledger_init(sources: &[(String, String)]) -> Result<(), ()> {
+    validate_exact(
+        &code_sites(sources, "init_frame_ledger();"),
+        FRAME_LEDGER_INIT_CALLS,
+    )?;
+    validate_exact(
+        &code_sites(sources, "ProcessPageTable::new("),
+        PROCESS_PAGE_TABLE_CONSTRUCTORS,
+    )?;
+    validate_frame_ledger_boot_order(sources)
+}
+
+fn validate_frame_ledger_runtime_oracles(sources: &[(String, String)]) -> Result<(), ()> {
+    let tests = source(sources, "kernel/src/memory/frame_allocator_tests.rs");
+    let take_free = function_body(tests, "take_free_frame");
+    let stale = function_body(tests, "stale_lease_fixture");
+    let gate = function_body(tests, "frame_custody_refusal_gate_test");
+    let above_top = function_body(tests, "above_top_of_ram_frame");
+    let allocator = source(sources, "kernel/src/memory/frame_allocator.rs");
+    let returned = function_body(allocator, "return_lease");
+    let counted = function_body(allocator, "counted");
+    let claim = function_body(allocator, "claim_frame");
+    let ordinal = function_body(allocator, "frame_ordinal");
+    let registry = source(sources, "kernel/src/test_framework/registry.rs");
+    let registry_mask = code_mask(registry);
+    if !code_offsets(
+        registry,
+        &registry_mask,
+        "use crate::memory::frame_allocator::frame_custody_refusal_gate_test as",
+    )
+    .is_empty()
+    {
+        return Err(());
+    }
+    let refusal_offsets =
+        identifier_offsets(registry, &registry_mask, "frame_custody_refusal_gate_test");
+    if refusal_offsets.len() != 1 {
+        return Err(());
+    }
+    let refusal_def = enclosing_test_def(registry, &registry_mask, refusal_offsets[0]).ok_or(())?;
+    let executor = source(sources, "kernel/src/test_framework/executor.rs");
+    let run_all = function_body(executor, "run_all_tests");
+    let run_staged = function_body(executor, "run_staged_tests");
+    let serial = run_all
+        .find("run_staged_tests(TestStage::SerialBoot)")
+        .ok_or(())?;
+    let parallel = run_all
+        .find("run_staged_tests(TestStage::EarlyBoot)")
+        .ok_or(())?;
+    let serial_condition = run_staged
+        .find("if target_stage == TestStage::SerialBoot {")
+        .ok_or(())?;
+    let serial_join = run_staged[serial_condition..]
+        .find("join_test_thread(subsystem.id, handle)")
+        .ok_or(())?;
+    let parallel_push = run_staged[serial_condition..]
+        .find("} else {")
+        .and_then(|offset| {
+            run_staged[serial_condition + offset..]
+                .find("handles.push((subsystem.id, handle));")
+                .map(|push| offset + push)
+        })
+        .ok_or(())?;
+    let memory_init = function_body(source(sources, "kernel/src/memory/mod.rs"), "init");
+
+    (take_free.contains("claim_frame(candidate)")
+        && !take_free.contains("FrameLease {")
+        && stale.contains("return_lease(stale)")
+        && stale.contains("take_free_frame(stale.frame)")
+        && stale.contains("current.index != stale.index || current.generation == stale.generation")
+        && gate.contains("return_lease(stale) != ReturnOutcome::RefusedStale")
+        && gate.contains("above_top_of_ram_frame()")
+        && gate.contains("deallocate_frame(untracked)")
+        && !gate.contains("FrameLease {")
+        && above_top.contains("MEMORY_INFO.get()")
+        && above_top.contains("region.end")
+        && above_top.contains(".max()")
+        && returned.contains("if observed >> 2 != lease.generation {")
+        && returned.contains(
+            "ST_FREE => return counted(ReturnOutcome::RefusedDoubleRelease),",
+        )
+        && ordinal.trim_end().ends_with("None\n}")
+        && counted.contains(
+            "ReturnOutcome::RefusedStale => teardown::FRAME_RETURN_REFUSED_STALE.increment()",
+        )
+        && counted.contains(
+            "ReturnOutcome::RefusedDoubleRelease => teardown::FRAME_RETURN_REFUSED_DOUBLE.increment()",
+        )
+        && counted.contains(
+            "teardown::FRAME_RETURN_REFUSED_NEVER_ALLOCATED.increment()",
+        )
+        && counted.contains(
+            "ReturnOutcome::RefusedUntracked => teardown::FRAME_RETURN_REFUSED_UNTRACKED.increment()",
+        )
+        && counted.contains("ReturnOutcome::LostContended => teardown::FRAME_LOST_CONTENDED.increment()")
+        && claim.contains("FRAME_DUPLICATE_ALLOC_REFUSED.increment()")
+        && claim.contains("return Err(ClaimError::Duplicate);")
+        && gate.contains("free_frame_count(lease.frame) != 1")
+        && gate.contains("remove_duplicate_candidates(live.frame);")
+        && gate.contains("live_after != live_before")
+        && gate.contains("let free_guard = FREE_FRAMES.lock();")
+        && gate.matches("healthy_round_trip()").count() == 5
+        && gate.contains("end[5] < start[5] + 1")
+        && refusal_def.contains("name: \"frame_custody_refusal_gate\"")
+        && refusal_def.contains("arch: Arch::Aarch64")
+        && refusal_def.contains("stage: TestStage::SerialBoot")
+        && serial < parallel
+        && serial_join < parallel_push
+        && function_body(registry, "test_timer_init").contains("test_timer_ticks()")
+        && memory_init
+            .matches("frame_allocator::run_x86_frame_custody_gate();")
+            .count()
+            == 1)
+        .then_some(())
+        .ok_or(())
+}
+
+fn validate_x86_frame_custody_harness(script: &str) -> Result<(), ()> {
+    (!script.contains("grep -q '\\[BOOT_TESTS:PASS\\]'")
+        && script.contains("FRAME_CUSTODY_COUNTERS:x86:double=1:stale=1:never=1:untracked=1:duplicate=3:contended=[1-9][0-9]*")
+        && script.contains("-eq 1")
+        && script.contains("x86 frame-custody gate run")
+        && script.contains("BOOT_TESTS:FAIL|KERNEL PANIC|panic!"))
+    .then_some(())
+    .ok_or(())
+}
+
+fn validate_frame_ledger_counter_inventory(provider: &str) -> Result<(), ()> {
+    const EXPECTED: [&str; 6] = [
+        "FRAME_RETURN_REFUSED_DOUBLE",
+        "FRAME_RETURN_REFUSED_STALE",
+        "FRAME_RETURN_REFUSED_NEVER_ALLOCATED",
+        "FRAME_RETURN_REFUSED_UNTRACKED",
+        "FRAME_DUPLICATE_ALLOC_REFUSED",
+        "FRAME_LOST_CONTENDED",
+    ];
+    let expected: BTreeSet<_> = EXPECTED.into_iter().map(str::to_owned).collect();
+    let declared: BTreeSet<_> = provider
+        .split("counter!(")
+        .skip(1)
+        .filter_map(|rest| rest.trim_start().split_once(',').map(|(name, _)| name.trim()))
+        .filter(|name| {
+            name.starts_with("FRAME_RETURN_REFUSED_")
+                || *name == "FRAME_DUPLICATE_ALLOC_REFUSED"
+                || *name == "FRAME_LOST_CONTENDED"
+        })
+        .map(str::to_owned)
+        .collect();
+    let inventory = provider
+        .split("pub static COUNTERS")
+        .nth(1)
+        .ok_or(())?
+        .split("];")
+        .next()
+        .ok_or(())?;
+
+    (declared == expected
+        && EXPECTED
+            .iter()
+            .all(|counter| inventory.contains(&format!("&{counter},")))
+        && provider.contains("pub const COUNTER_COUNT: usize = 53;"))
+    .then_some(())
+    .ok_or(())
+}
+
+#[test]
+fn frame_ledger_return_and_initialization_ratchets_are_exact() {
+    let sources = rust_sources_below("kernel/src");
+    validate_frame_ledger_hot_paths(&sources)
+        .expect("R7 frame-ledger hot path gained log/format/heap work");
+    validate_frame_ledger_bounded_boot_allocation(&sources)
+        .expect("frame ledger regained eager or post-publication allocation");
+    validate_frame_return_choke_point(&sources).expect("R1 frame-return choke point changed");
+    validate_frame_ledger_boot_order(&sources).expect("R9 ARM/x86 frame-ledger boot order changed");
+    validate_frame_ledger_init(&sources).expect("R9 frame-ledger initialization moved");
+    validate_frame_ledger_runtime_oracles(&sources)
+        .expect("frame-custody runtime oracle became vacuous");
+    validate_x86_frame_custody_harness(&repo_text("docker/qemu/run-x86-boot-tests.sh"))
+        .expect("x86 frame-custody harness became vacuous");
+
+    let provider = source(&sources, "kernel/src/tracing/providers/teardown.rs");
+    validate_frame_ledger_counter_inventory(provider)
+        .expect("frame-ledger counter inventory changed");
+    for counter in [
+        "FRAME_RETURN_REFUSED_DOUBLE",
+        "FRAME_RETURN_REFUSED_STALE",
+        "FRAME_RETURN_REFUSED_NEVER_ALLOCATED",
+        "FRAME_RETURN_REFUSED_UNTRACKED",
+        "FRAME_DUPLICATE_ALLOC_REFUSED",
+        "FRAME_LOST_CONTENDED",
+    ] {
+        assert_eq!(
+            provider.matches(&format!("counter!({counter},")).count()
+                + provider
+                    .matches(&format!("counter!(\n    {counter},"))
+                    .count(),
+            1,
+            "counter declaration changed: {counter}"
+        );
+        let declaration = provider
+            .find(counter)
+            .unwrap_or_else(|| panic!("missing counter {counter}"));
+        let prefix = &provider[declaration.saturating_sub(80)..declaration];
+        assert!(
+            !prefix.contains("#[cfg("),
+            "counter became conditional: {counter}"
+        );
+    }
+    assert!(provider.contains("pub const COUNTER_COUNT: usize = 53;"));
 }
 
 #[test]
@@ -652,7 +1535,7 @@ fn all_phase_zero_counters_have_registered_readers_and_honest_runtime_gates() {
         .filter_map(|rest| rest.strip_suffix(','))
         .map(str::to_owned)
         .collect();
-    assert_eq!(declarations.len(), 47);
+    assert_eq!(declarations.len(), 53);
     assert_eq!(
         readers, declarations,
         "every counter must have an inventory reader"
@@ -798,9 +1681,7 @@ fn aarch64_exit_kick_waits_are_progress_bounded() {
         4,
         "workers_ready and all three storm joins must kick every worker CPU"
     );
-    let storm_union_start = gate
-        .find("\"workers_ready\"")
-        .expect("workers_ready wait");
+    let storm_union_start = gate.find("\"workers_ready\"").expect("workers_ready wait");
     let storm_union_end = gate[storm_union_start..]
         .find("accounting.start.store(true, Ordering::Release);")
         .map(|end| storm_union_start + end)
@@ -853,18 +1734,16 @@ fn aarch64_exit_kick_waits_are_progress_bounded() {
         .expect("publisher A dependency-progress declaration");
     let publisher_a_progress = gate[publisher_a_progress_declaration..]
         .find(';')
-        .map(|end| {
-            &gate[publisher_a_progress_declaration..publisher_a_progress_declaration + end]
-        })
+        .map(|end| &gate[publisher_a_progress_declaration..publisher_a_progress_declaration + end])
         .expect("publisher A dependency-progress closure terminator");
     assert!(publisher_a_progress.contains("publisher_a_progress"));
     assert!(publisher_a_progress.contains("observer_progress"));
     assert!(!publisher_a_progress.contains("publisher_b_progress"));
     assert_eq!(gate.matches("&storm_publisher_a_progress").count(), 1);
 
-    assert!(!gate.contains(
-        "while observer_accounting.publishers_done.load(Ordering::Acquire) != 2"
-    ));
+    assert!(
+        !gate.contains("while observer_accounting.publishers_done.load(Ordering::Acquire) != 2")
+    );
     for required in [
         "let mut publishers_done_seen = 0u64;",
         "if publishers_done > publishers_done_seen",
@@ -1059,9 +1938,7 @@ fn aarch64_exit_kick_waits_are_progress_bounded() {
         assert!(main.contains(required), "missing SMP timeout profile: {required}");
     }
     assert!(main.contains("const SMP_ONLINE_BREADCRUMB_INTERVAL_SECONDS: u64 = 1;"));
-    assert!(
-        main.contains("const SMP_ONLINE_STAGE_SAMPLE_INTERVAL_ITERATIONS: u64 = 4_096;")
-    );
+    assert!(main.contains("const SMP_ONLINE_STAGE_SAMPLE_INTERVAL_ITERATIONS: u64 = 4_096;"));
     assert!(main
         .contains("const SMP_ONLINE_CNTVCT_STALL_SAMPLE_INTERVAL_ITERATIONS: u64 = 10_000_000;"));
     assert!(main.contains("let no_progress_ticks ="));
@@ -1080,15 +1957,11 @@ fn aarch64_exit_kick_waits_are_progress_bounded() {
     ));
     assert!(main.contains("current_bringup_progress > last_bringup_progress"));
     assert!(main.contains("last_advance = now;"));
-    assert!(compact_main.contains(
-        "letprogress_at_verdict=kernel::arch_impl::aarch64::smp::bringup_progress();"
-    ));
-    assert!(compact_main.contains(
-        "ifonline_at_verdict>last_online||progress_at_verdict>last_bringup_progress"
-    ));
-    assert!(main.contains(
-        "let counter_delta = timer::elapsed_ticks(now, last_counter_sample);"
-    ));
+    assert!(compact_main
+        .contains("letprogress_at_verdict=kernel::arch_impl::aarch64::smp::bringup_progress();"));
+    assert!(compact_main
+        .contains("ifonline_at_verdict>last_online||progress_at_verdict>last_bringup_progress"));
+    assert!(main.contains("let counter_delta = timer::elapsed_ticks(now, last_counter_sample);"));
     assert!(main.contains("if counter_delta == 0"));
     for deadline in [
         "timer::elapsed_ticks(now, phase_one_started_at)",
@@ -1156,9 +2029,7 @@ fn aarch64_exit_kick_waits_are_progress_bounded() {
     assert!(smp.contains("PSCI claimed ALREADY_ON"));
     assert!(smp.contains("CPU is not online"));
     assert!(smp.contains("`ALREADY_ON` is accepted only"));
-    assert!(release_cpu.contains(
-        "ret == PSCI_RETURN_ALREADY_ON && is_cpu_online(cpu_id)"
-    ));
+    assert!(release_cpu.contains("ret == PSCI_RETURN_ALREADY_ON && is_cpu_online(cpu_id)"));
     assert!(smp.contains("[`last_psci_return_code()`]"));
     assert!(smp.contains("PSCI CPU_ON accepted after {} attempts (raw_status={})"));
     assert!(smp.contains("attempt {}/{}: HVC64 failed"));
@@ -1172,29 +2043,21 @@ fn aarch64_exit_kick_waits_are_progress_bounded() {
     assert!(milliseconds_to_ticks.contains("/ 1_000"));
     let elapsed_ticks = function_body(&timer, "elapsed_ticks");
     assert!(elapsed_ticks.contains("now.checked_sub(start).unwrap_or(0)"));
-    assert!(provider.contains(
-        "crate::arch_impl::aarch64::timer::milliseconds_to_ticks("
-    ));
+    assert!(provider.contains("crate::arch_impl::aarch64::timer::milliseconds_to_ticks("));
     assert!(compact_main.contains(
         "timer::milliseconds_to_ticks(counter_frequency_hz,kernel::test_framework::PHASE_ONE_LIVENESS_BUDGET_MILLISECONDS,)"
     ));
 
     let timer_interrupt = repo_text("kernel/src/arch_impl/aarch64/timer_interrupt.rs");
     assert!(timer_interrupt.contains("static EXIT_KICK_GATE_WATCHDOG_HEARTBEAT: AtomicU64"));
-    let heartbeat = function_body(
-        &timer_interrupt,
-        "record_exit_kick_gate_watchdog_heartbeat",
-    );
+    let heartbeat = function_body(&timer_interrupt, "record_exit_kick_gate_watchdog_heartbeat");
     assert!(heartbeat.contains("fetch_add(1, Ordering::Relaxed)"));
     let soft_lockup = function_body(&timer_interrupt, "check_soft_lockup");
     assert!(soft_lockup.contains("exit_kick_gate_heartbeat_progressed"));
-    assert!(soft_lockup.contains(
-        "ctx_progressed || syscall_progressed || exit_kick_gate_heartbeat_progressed"
-    ));
+    assert!(soft_lockup
+        .contains("ctx_progressed || syscall_progressed || exit_kick_gate_heartbeat_progressed"));
     assert!(smp.contains("super::timer::BOOT_COUNTER_FALLBACK_FREQUENCY_HZ"));
-    assert!(main.contains(
-        "kernel::arch_impl::aarch64::timer::BOOT_COUNTER_FALLBACK_FREQUENCY_HZ"
-    ));
+    assert!(main.contains("kernel::arch_impl::aarch64::timer::BOOT_COUNTER_FALLBACK_FREQUENCY_HZ"));
     assert!(smp.contains("#[repr(C, align(64))]"));
     assert!(smp.contains("struct CpuBringupStage"));
     assert!(smp.contains("_padding: [u8; 60]"));
@@ -1336,6 +2199,334 @@ fn deliberately_broken_variants_fail_the_ratchet() {
     let broken_sgi =
         with_replaced_source(&sources, "kernel/src/task/scheduler.rs", broken_scheduler);
     assert!(validate_exit_sgi_is_teardown_only(&broken_sgi).is_err());
+
+    let allocator = source(&sources, "kernel/src/memory/frame_allocator.rs");
+    let fixture = source(&sources, "kernel/src/memory/frame_allocator_tests.rs");
+    let process_memory = source(&sources, "kernel/src/memory/process_memory.rs");
+
+    // R1: seven syntactically distinct ways to bypass the return choke point.
+    for insertion in [
+        "free_list.push(frame);",
+        "free_list.insert(0, frame);",
+        "free_list /* trivia */ .insert(0, frame);",
+        "free_list.push_within_capacity(frame);",
+    ] {
+        let broken = allocator.replacen(
+            "if let Some(frame) = free_list.pop() {",
+            &format!("if let Some(frame) = free_list.pop() {{ {insertion}"),
+            1,
+        );
+        let broken = with_replaced_source(&sources, "kernel/src/memory/frame_allocator.rs", broken);
+        assert!(validate_frame_return_choke_point(&broken).is_err());
+    }
+    let reborrowed = allocator.replacen(
+        "if let Some(frame) = free_list.pop() {",
+        "if let Some(frame) = free_list.pop() { let list = &mut *free_list; list.insert(0, frame);",
+        1,
+    );
+    let reborrowed =
+        with_replaced_source(&sources, "kernel/src/memory/frame_allocator.rs", reborrowed);
+    assert!(validate_frame_return_choke_point(&reborrowed).is_err());
+    let renamed_alias = allocator.replacen(
+        "if let Some(frame) = free_list.pop() {",
+        "if let Some(frame) = free_list.pop() { if let Some(mut aliased) = FREE_FRAMES.try_lock() { aliased.insert(0, frame); }",
+        1,
+    );
+    let renamed_alias = with_replaced_source(
+        &sources,
+        "kernel/src/memory/frame_allocator.rs",
+        renamed_alias,
+    );
+    assert!(validate_frame_return_choke_point(&renamed_alias).is_err());
+    let matched_alias = allocator.replacen(
+        "if let Some(frame) = free_list.pop() {",
+        "if let Some(frame) = free_list.pop() { match FREE_FRAMES.try_lock() { Some(mut renamed) => renamed.insert(0, frame), None => {} }",
+        1,
+    );
+    let matched_alias =
+        with_replaced_source(&sources, "kernel/src/memory/frame_allocator.rs", matched_alias);
+    assert!(validate_frame_return_choke_point(&matched_alias).is_err());
+    let fixture_escape = format!(
+        "{fixture}\nfn rogue_fixture(frame: PhysFrame) {{ FREE_FRAMES.lock().append(&mut alloc::vec![frame]); FREE_FRAMES.lock().extend_from_slice(&[frame]); }}"
+    );
+    let fixture_escape = with_replaced_source(
+        &sources,
+        "kernel/src/memory/frame_allocator_tests.rs",
+        fixture_escape,
+    );
+    assert!(validate_frame_return_choke_point(&fixture_escape).is_err());
+    let process_escape = format!(
+        "{process_memory}\nfn rogue_return(frame: PhysFrame) {{ crate::memory::frame_allocator::deallocate_frame(frame); }}"
+    );
+    let process_escape = with_replaced_source(
+        &sources,
+        "kernel/src/memory/process_memory.rs",
+        process_escape,
+    );
+    assert!(validate_frame_return_choke_point(&process_escape).is_err());
+
+    // R7: direct and transitive logging plus hidden capacity growth.
+    let logged_counter = allocator.replacen(
+        "match outcome {",
+        "match outcome { _ if false => { log::warn!(\"refused\"); },",
+        1,
+    );
+    let logged_counter = with_replaced_source(
+        &sources,
+        "kernel/src/memory/frame_allocator.rs",
+        logged_counter,
+    );
+    assert!(validate_frame_ledger_hot_paths(&logged_counter).is_err());
+    let logged_return = allocator.replacen(
+        "fn return_lease(lease: FrameLease) -> ReturnOutcome {",
+        "fn return_lease(lease: FrameLease) -> ReturnOutcome { log::info!(\"return\");",
+        1,
+    );
+    let logged_return = with_replaced_source(
+        &sources,
+        "kernel/src/memory/frame_allocator.rs",
+        logged_return,
+    );
+    assert!(validate_frame_ledger_hot_paths(&logged_return).is_err());
+    let growing_return = allocator.replacen(
+        "fn return_lease(lease: FrameLease) -> ReturnOutcome {",
+        "fn return_lease(lease: FrameLease) -> ReturnOutcome { let _ = FREE_FRAMES.lock().try_reserve(1);",
+        1,
+    );
+    let growing_return = with_replaced_source(
+        &sources,
+        "kernel/src/memory/frame_allocator.rs",
+        growing_return,
+    );
+    assert!(validate_frame_ledger_hot_paths(&growing_return).is_err());
+
+    // R9: each ordering negative calls the ordering validator directly.
+    let memory_mod = source(&sources, "kernel/src/memory/mod.rs");
+    let late_x86 = memory_mod.replacen(
+        "frame_allocator::init_frame_ledger();\n\n    // Initialize slab caches (must be after heap)\n    slab::init();",
+        "// Initialize slab caches (must be after heap)\n    slab::init();\n    frame_allocator::init_frame_ledger();",
+        1,
+    );
+    let late_x86 = with_replaced_source(&sources, "kernel/src/memory/mod.rs", late_x86);
+    assert!(validate_frame_ledger_boot_order(&late_x86).is_err());
+    let arm_main = source(&sources, "kernel/src/main_aarch64.rs");
+    let late_arm = arm_main.replacen(
+        "kernel::memory::frame_allocator::init_frame_ledger();\n    kernel::memory::kernel_stack::init();",
+        "kernel::memory::kernel_stack::init();\n    kernel::memory::frame_allocator::init_frame_ledger();",
+        1,
+    );
+    let late_arm = with_replaced_source(&sources, "kernel/src/main_aarch64.rs", late_arm);
+    assert!(validate_frame_ledger_boot_order(&late_arm).is_err());
+    let preledger_root = arm_main.replacen(
+        "kernel::memory::frame_allocator::init_frame_ledger();",
+        "let _p = kernel::memory::process_memory::ProcessPageTable::new();\n    kernel::memory::frame_allocator::init_frame_ledger();",
+        1,
+    );
+    let preledger_root =
+        with_replaced_source(&sources, "kernel/src/main_aarch64.rs", preledger_root);
+    assert!(validate_frame_ledger_boot_order(&preledger_root).is_err());
+    let indirect_constructor = with_synthetic_source(
+        &sources,
+        "kernel/src/memory/indirect_constructor.rs",
+        "fn rogue() { let _shadow = ProcessPageTable::new().expect(\"root alloc\"); }",
+    );
+    assert!(validate_frame_ledger_init(&indirect_constructor).is_err());
+
+    // Demand-backing and pre-publication preparation cannot regress.
+    let eager_ledger = allocator.replacen(
+        "let advertised_frames =",
+        "let _eager: Vec<_> = (0..total_frames).collect();\n    let advertised_frames =",
+        1,
+    );
+    let eager_ledger = with_replaced_source(
+        &sources,
+        "kernel/src/memory/frame_allocator.rs",
+        eager_ledger,
+    );
+    assert!(validate_frame_ledger_bounded_boot_allocation(&eager_ledger).is_err());
+    let whole_ram_reserve = allocator.replacen(
+        "let advertised_frames =",
+        "FREE_FRAMES.lock().reserve_exact(total_frames);\n    let advertised_frames =",
+        1,
+    );
+    let whole_ram_reserve = with_replaced_source(
+        &sources,
+        "kernel/src/memory/frame_allocator.rs",
+        whole_ram_reserve,
+    );
+    assert!(validate_frame_ledger_bounded_boot_allocation(&whole_ram_reserve).is_err());
+    let post_publish_prepare = allocator.replacen(
+        "match prepare_frame_for_allocation(current) {",
+        "let _after_publish = NEXT_FREE_FRAME.compare_exchange(current, current + 1, Ordering::SeqCst, Ordering::SeqCst);\n            match prepare_frame_for_allocation(current) {",
+        1,
+    );
+    let post_publish_prepare = with_replaced_source(
+        &sources,
+        "kernel/src/memory/frame_allocator.rs",
+        post_publish_prepare,
+    );
+    assert!(validate_frame_ledger_bounded_boot_allocation(&post_publish_prepare).is_err());
+
+    // O2 mechanisms and fixtures must remain mutation-sensitive.
+    let double_push = allocator.replacen(
+        "ST_FREE => return counted(ReturnOutcome::RefusedDoubleRelease),",
+        "ST_FREE => { FREE_FRAMES.lock().push(lease.frame); return counted(ReturnOutcome::RefusedDoubleRelease); },",
+        1,
+    );
+    let double_push = with_replaced_source(
+        &sources,
+        "kernel/src/memory/frame_allocator.rs",
+        double_push,
+    );
+    assert!(validate_frame_ledger_runtime_oracles(&double_push).is_err());
+    let stale_disabled = allocator.replacen(
+        "if observed >> 2 != lease.generation {",
+        "if observed >> 2 != lease.generation && false {",
+        1,
+    );
+    let stale_disabled = with_replaced_source(
+        &sources,
+        "kernel/src/memory/frame_allocator.rs",
+        stale_disabled,
+    );
+    assert!(validate_frame_ledger_runtime_oracles(&stale_disabled).is_err());
+    let stale_miscounted = allocator.replacen(
+        "ReturnOutcome::RefusedStale => teardown::FRAME_RETURN_REFUSED_STALE.increment()",
+        "ReturnOutcome::RefusedStale => teardown::FRAME_RETURN_REFUSED_DOUBLE.increment()",
+        1,
+    );
+    let stale_miscounted = with_replaced_source(
+        &sources,
+        "kernel/src/memory/frame_allocator.rs",
+        stale_miscounted,
+    );
+    assert!(validate_frame_ledger_runtime_oracles(&stale_miscounted).is_err());
+    let escaped_duplicate =
+        allocator.replacen("return Err(ClaimError::Duplicate);", "return Ok(None);", 1);
+    let escaped_duplicate = with_replaced_source(
+        &sources,
+        "kernel/src/memory/frame_allocator.rs",
+        escaped_duplicate,
+    );
+    assert!(validate_frame_ledger_runtime_oracles(&escaped_duplicate).is_err());
+    let broken_bounds = allocator.replacen(
+        "\n    None\n}\n\nfn seed_free_frame",
+        "\n    Some(0)\n}\n\nfn seed_free_frame",
+        1,
+    );
+    let broken_bounds = with_replaced_source(
+        &sources,
+        "kernel/src/memory/frame_allocator.rs",
+        broken_bounds,
+    );
+    assert!(validate_frame_ledger_runtime_oracles(&broken_bounds).is_err());
+    let synthetic_stale = fixture.replacen(
+        "let current = take_free_frame(stale.frame)?;",
+        "let current = FrameLease { frame: stale.frame, index: stale.index, generation: stale.generation + 1 };",
+        1,
+    );
+    let synthetic_stale = with_replaced_source(
+        &sources,
+        "kernel/src/memory/frame_allocator_tests.rs",
+        synthetic_stale,
+    );
+    assert!(validate_frame_ledger_runtime_oracles(&synthetic_stale).is_err());
+    let unchecked_stale = fixture.replacen(
+        "if current.index != stale.index || current.generation == stale.generation {",
+        "if false {",
+        1,
+    );
+    let unchecked_stale = with_replaced_source(
+        &sources,
+        "kernel/src/memory/frame_allocator_tests.rs",
+        unchecked_stale,
+    );
+    assert!(validate_frame_ledger_runtime_oracles(&unchecked_stale).is_err());
+    let hand_forged_untracked = fixture.replacen(
+        "deallocate_frame(untracked);",
+        "let forged = FrameLease { frame: untracked, index: u32::MAX, generation: 0 }; let _ = return_lease(forged);",
+        1,
+    );
+    let hand_forged_untracked = with_replaced_source(
+        &sources,
+        "kernel/src/memory/frame_allocator_tests.rs",
+        hand_forged_untracked,
+    );
+    assert!(validate_frame_ledger_runtime_oracles(&hand_forged_untracked).is_err());
+
+    // Registration is keyed by the function identity, not display spelling.
+    let registry = source(&sources, "kernel/src/test_framework/registry.rs");
+    let any_arch = registry.replacen(
+        "func: crate::memory::frame_allocator::frame_custody_refusal_gate_test,\n        arch: Arch::Aarch64,",
+        "func: crate::memory::frame_allocator::frame_custody_refusal_gate_test,\n        arch: Arch::Any,",
+        1,
+    );
+    let any_arch =
+        with_replaced_source(&sources, "kernel/src/test_framework/registry.rs", any_arch);
+    assert!(validate_frame_ledger_runtime_oracles(&any_arch).is_err());
+    let aliased_registration = format!(
+        "use crate::memory::frame_allocator::frame_custody_refusal_gate_test as aliased_frame_custody_gate;\n{registry}\nconst _: Option<fn() -> TestResult> = Some(aliased_frame_custody_gate);"
+    );
+    let aliased_registration = with_replaced_source(
+        &sources,
+        "kernel/src/test_framework/registry.rs",
+        aliased_registration,
+    );
+    assert!(validate_frame_ledger_runtime_oracles(&aliased_registration).is_err());
+    let duplicate_registration = registry.replacen(
+        "    TestDef {\n        name: \"process_manager_init\",",
+        "    TestDef { name: \"frame_custody_refusal_gate_x86\", func: crate::memory::frame_allocator::frame_custody_refusal_gate_test, arch: Arch::Any, timeout_ms: 5000, stage: TestStage::EarlyBoot },\n    TestDef {\n        name: \"process_manager_init\",",
+        1,
+    );
+    let duplicate_registration = with_replaced_source(
+        &sources,
+        "kernel/src/test_framework/registry.rs",
+        duplicate_registration,
+    );
+    assert!(validate_frame_ledger_runtime_oracles(&duplicate_registration).is_err());
+    let parallel_gate = registry.replacen(
+        "stage: TestStage::SerialBoot,",
+        "stage: TestStage::EarlyBoot,",
+        1,
+    );
+    let parallel_gate = with_replaced_source(
+        &sources,
+        "kernel/src/test_framework/registry.rs",
+        parallel_gate,
+    );
+    assert!(validate_frame_ledger_runtime_oracles(&parallel_gate).is_err());
+    let executor = source(&sources, "kernel/src/test_framework/executor.rs");
+    let nonserial_join = executor.replacen(
+        "if target_stage == TestStage::SerialBoot {",
+        "if target_stage == TestStage::SerialBoot && false {",
+        1,
+    );
+    let nonserial_join = with_replaced_source(
+        &sources,
+        "kernel/src/test_framework/executor.rs",
+        nonserial_join,
+    );
+    assert!(validate_frame_ledger_runtime_oracles(&nonserial_join).is_err());
+    let vacuous_timer = registry.replacen("test_timer_ticks()", "TestResult::Pass", 1);
+    let vacuous_timer = with_replaced_source(
+        &sources,
+        "kernel/src/test_framework/registry.rs",
+        vacuous_timer,
+    );
+    assert!(validate_frame_ledger_runtime_oracles(&vacuous_timer).is_err());
+
+    let harness = repo_text("docker/qemu/run-x86-boot-tests.sh");
+    assert!(validate_x86_frame_custody_harness(&harness.replace("-eq 1", "-ge 0")).is_err());
+
+    let provider = source(&sources, "kernel/src/tracing/providers/teardown.rs");
+    let missing_counter_reader = provider.replacen("    &FRAME_RETURN_REFUSED_DOUBLE,\n", "", 1);
+    assert!(validate_frame_ledger_counter_inventory(&missing_counter_reader).is_err());
+    let unproduced_counter = provider.replacen(
+        "counter!(FRAME_LOST_CONTENDED, \"Frame returns lost to contention\");",
+        "counter!(FRAME_LOST_CONTENDED, \"Frame returns lost to contention\");\ncounter!(FRAME_RETURN_REFUSED_UNUSED, \"Unproduced frame refusal\");",
+        1,
+    );
+    assert!(validate_frame_ledger_counter_inventory(&unproduced_counter).is_err());
 }
 
 /// The ARM64 `timer_delay` re-measurement may only be granted on evidence that
