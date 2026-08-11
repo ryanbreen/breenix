@@ -134,6 +134,7 @@ pub fn init(physical_memory_offset: VirtAddr, memory_regions: &'static MemoryReg
         log::info!("Initializing heap allocator...");
         heap::init(&mapper).expect("heap initialization failed");
     }
+    frame_allocator::init_frame_ledger();
 
     // Initialize slab caches (must be after heap)
     slab::init();
@@ -153,6 +154,9 @@ pub fn init(physical_memory_offset: VirtAddr, memory_regions: &'static MemoryReg
         per_cpu_stack::init_per_cpu_stacks(1).expect("Failed to initialize per-CPU stacks");
 
     log::info!("Memory management initialized");
+
+    #[cfg(all(target_arch = "x86_64", feature = "boot_tests"))]
+    frame_allocator::run_x86_frame_custody_gate();
 }
 
 /// Get the physical memory offset

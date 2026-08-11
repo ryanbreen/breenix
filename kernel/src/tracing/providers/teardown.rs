@@ -413,6 +413,18 @@ counter!(EXIT_KICK_BUCKET_COLLISION, "Exit-kick bucket collisions");
 counter!(RECEIPT_DROPPED_UNRETIRED, "Receipts recovered by Drop");
 counter!(LEDGER_CLAIM_MISMATCH, "Exit-obligation claimer mismatches");
 counter!(LEDGER_CLAIM_ORPHANED, "Recovered orphaned exit claims");
+counter!(FRAME_RETURN_REFUSED_DOUBLE, "Double frame returns refused");
+// Production deallocation synthesizes authority from the generation it just
+// read. A stale mismatch therefore requires a double-free racing with reuse;
+// the boot gate is the deterministic PR-1a exerciser.
+counter!(FRAME_RETURN_REFUSED_STALE, "Stale frame returns refused");
+counter!(
+    FRAME_RETURN_REFUSED_NEVER_ALLOCATED,
+    "Never-allocated frame returns refused"
+);
+counter!(FRAME_RETURN_REFUSED_UNTRACKED, "Untracked frame returns refused");
+counter!(FRAME_DUPLICATE_ALLOC_REFUSED, "Duplicate frame allocations refused");
+counter!(FRAME_LOST_CONTENDED, "Frame returns lost to contention");
 
 // Declaration-only until the phase named in PLAN.md. These intentionally have
 // no trace_count! producer yet.
@@ -441,7 +453,7 @@ counter!(
     "Fatal group signals dropped for init"
 );
 
-pub const COUNTER_COUNT: usize = 47;
+pub const COUNTER_COUNT: usize = 53;
 
 /// The registration and normal-context reader inventory. Keeping one inventory
 /// makes a write-only counter structurally impossible without changing the P0
@@ -480,6 +492,12 @@ pub static COUNTERS: [&TraceCounter; COUNTER_COUNT] = [
     &RECEIPT_DROPPED_UNRETIRED,
     &LEDGER_CLAIM_MISMATCH,
     &LEDGER_CLAIM_ORPHANED,
+    &FRAME_RETURN_REFUSED_DOUBLE,
+    &FRAME_RETURN_REFUSED_STALE,
+    &FRAME_RETURN_REFUSED_NEVER_ALLOCATED,
+    &FRAME_RETURN_REFUSED_UNTRACKED,
+    &FRAME_DUPLICATE_ALLOC_REFUSED,
+    &FRAME_LOST_CONTENDED,
     &RECLAIM_PASS_SKIPPED,
     &RECLAIM_PARKED,
     &RECLAIM_UNPARKED_EPOCH,

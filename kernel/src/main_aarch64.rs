@@ -490,6 +490,7 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
     );
     kernel::memory::frame_allocator::init_aarch64(fa_start, fa_end);
     kernel::memory::init_aarch64_heap();
+    kernel::memory::frame_allocator::init_frame_ledger();
     kernel::memory::kernel_stack::init();
     serial_println!("[boot] Memory management ready");
 
