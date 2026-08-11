@@ -15,11 +15,16 @@ Focus is ARM64/Parallels: teardown/process-lifecycle correctness, SMP
 scheduling, and the userland/POSIX compliance stack (dashboard:
 https://v0-breenix-dashboard.vercel.app/).
 
-- 🚧 **AArch64 interrupt-resume page-table corruption** ([#528](https://github.com/ryanbreen/breenix/issues/528))
-  - The kernel now has a dedicated soft-float/general-registers-only target because its exception and context-switch frames do not preserve FP/SIMD state.
-  - Userspace retains the original hardware-FP target and code generation; its FP/SIMD state is already preserved across task switches, and a soft-float kernel leaves that state untouched across syscalls and interrupts.
-
 ## Recently Completed
+
+- ✅ **AArch64 IRQ-resume page-table corruption fixed** ([PR #531](https://github.com/ryanbreen/breenix/pull/531), Aug 2026, closes [#528](https://github.com/ryanbreen/breenix/issues/528))
+  - Root cause: compiler-generated NEON `memset` (used for page-table zeroing) ran on hardware-FP kernel codegen. The aarch64 IRQ entry/exit path does not preserve FP/SIMD registers, so an IRQ landing mid-`memset` resumed with a clobbered `q0`, spraying live machine values over the rest of the table — the contiguous 32-byte-boundary tails with 16-byte repeats captured by the Gate-0 discriminator.
+  - Fix: split-target architecture. Kernel builds general-regs-only/soft-float (Rust and C, via `-mgeneral-regs-only`), eliminating live kernel `q`/`v` state across IRQ/syscall boundaries by construction (0 FP/SIMD-register operand lines across the entire linked kernel ELF, down from 4,807 at `main`). Userspace is unchanged — hard-float, 142/142 ELFs byte-identical to `main` (SHA-256).
+  - Note: userspace FP/SIMD state is *not* preserved across task switches — that EL0↔EL0 exposure is separate and pre-existing, tracked at [#529](https://github.com/ryanbreen/breenix/issues/529). This fix only removes kernel-side FP clobbering.
+  - Proven via DECISIVE unmasked proof gate 0/60 (vs. a ~3/35 baseline on the unfixed vehicle), clean gate 0/100, starved gate (14-hog) 0/100, beast x86 kthread 3/3, and 3 consecutive long-window Parallels boots (380/352/366 heartbeats, zero fault markers).
+  - Merge commit: `26e96253969426b723fb67aa6ce8b71140f25cfd`.
+  - Follow-ups tracked at [#529](https://github.com/ryanbreen/breenix/issues/529) (EL0↔EL0 FPSIMD context-switch preservation) and [#530](https://github.com/ryanbreen/breenix/issues/530) (build-time guard against a kernel build accidentally selecting the userspace hard-float target; portable linked-kernel q/v/d/s ratchet).
+  - `fix/470-process-root-reclaim` remains open/held — its oracle found this bug. `repro/528-unmasked` is kept as the proof harness.
 
 - ✅ **Parallels-only init `DATA_ABORT` boot regression fixed** ([PR #525](https://github.com/ryanbreen/breenix/pull/525), Aug 2026)
   - Culprit: CPU0 breadcrumb asm in `aarch64_enter_exception_frame` left behind by the P1 teardown-unification merge ([308c281b](https://github.com/ryanbreen/breenix/commit/308c281b)). Deterministic on Parallels, invisible to QEMU, so it survived every prior gate.
