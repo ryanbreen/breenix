@@ -4,12 +4,16 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BREENIX_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+cd "$BREENIX_ROOT"
 
 # Build ARM64 kernel
-KERNEL="$BREENIX_ROOT/target/aarch64-unknown-none/release/kernel-aarch64"
+KERNEL="$BREENIX_ROOT/target/aarch64-breenix/release/kernel-aarch64"
 if [ ! -f "$KERNEL" ]; then
     echo "Building ARM64 kernel..."
-    cargo build --release --target aarch64-unknown-none -p kernel --bin kernel-aarch64
+    cargo build --release --target aarch64-breenix.json \
+        -Z build-std=core,alloc \
+        -Z build-std-features=compiler-builtins-mem \
+        -p kernel --bin kernel-aarch64
 fi
 
 # Build ARM64 userspace if needed
@@ -17,7 +21,7 @@ USERSPACE_DIR="$BREENIX_ROOT/userspace/programs/aarch64"
 if [ ! -d "$USERSPACE_DIR" ] || [ -z "$(ls -A $USERSPACE_DIR/*.elf 2>/dev/null)" ]; then
     echo "Building ARM64 userspace binaries..."
     cd "$BREENIX_ROOT/userspace/programs"
-    ./build-aarch64.sh
+    ./build.sh --arch aarch64
     cd "$BREENIX_ROOT"
 fi
 

@@ -9,18 +9,22 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BREENIX_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+cd "$BREENIX_ROOT"
 
 # Build the kernel if needed
-KERNEL="$BREENIX_ROOT/target/aarch64-unknown-none/release/kernel-aarch64"
+KERNEL="$BREENIX_ROOT/target/aarch64-breenix/release/kernel-aarch64"
 if [ ! -f "$KERNEL" ]; then
     echo "Building ARM64 kernel..."
-    cargo build --release --target aarch64-unknown-none -p kernel --bin kernel-aarch64
+    cargo build --release --target aarch64-breenix.json \
+        -Z build-std=core,alloc \
+        -Z build-std-features=compiler-builtins-mem \
+        -p kernel --bin kernel-aarch64
 fi
 
 if [ ! -f "$KERNEL" ]; then
     echo "Error: ARM64 kernel not found at $KERNEL"
     echo "Try building with:"
-    echo "  cargo build --release --target aarch64-unknown-none -p kernel --bin kernel-aarch64"
+    echo "  cd \"$BREENIX_ROOT\" && cargo build --release --target aarch64-breenix.json -Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem -p kernel --bin kernel-aarch64"
     exit 1
 fi
 
