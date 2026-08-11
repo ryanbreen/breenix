@@ -14,7 +14,7 @@ if {$test_name eq ""} {
 # Get paths
 set script_dir [file dirname [file normalize [info script]]]
 set breenix_root [file dirname [file dirname $script_dir]]
-set kernel "$breenix_root/target/aarch64-breenix/release/kernel-aarch64"
+set kernel "$breenix_root/target/aarch64-breenix-kernel/release/kernel-aarch64"
 set ext2_disk "$breenix_root/target/ext2-aarch64.img"
 
 # Create writable copy to allow filesystem writes

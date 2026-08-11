@@ -106,7 +106,8 @@ cargo build --release --features testing,external_test_bins --bin qemu-uefi
 ./docker/qemu/run-boot-parallel.sh 5
 
 # Build ARM64 kernel
-cargo build --release --target aarch64-breenix.json -Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem -p kernel --bin kernel-aarch64
+# Kernel code must use the soft-float target; userspace keeps aarch64-breenix.json.
+cargo build --release --target aarch64-breenix-kernel.json -Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem -p kernel --bin kernel-aarch64
 
 # Run ARM64 boot test
 ./docker/qemu/run-aarch64-boot-test-native.sh

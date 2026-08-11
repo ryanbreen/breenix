@@ -36,7 +36,7 @@ done
 if $REBUILD; then
     echo "Building ARM64 kernel with boot_tests feature..."
     (cd "$BREENIX_ROOT" && cargo build --release --features boot_tests \
-        --target aarch64-breenix.json \
+        --target aarch64-breenix-kernel.json \
         -Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem \
         -p kernel --bin kernel-aarch64 2>&1)
     echo "Build complete."
@@ -44,10 +44,10 @@ if $REBUILD; then
 fi
 
 # Find the ARM64 kernel
-KERNEL="$BREENIX_ROOT/target/aarch64-breenix/release/kernel-aarch64"
+KERNEL="$BREENIX_ROOT/target/aarch64-breenix-kernel/release/kernel-aarch64"
 if [ ! -f "$KERNEL" ]; then
     echo "Error: No ARM64 kernel found at $KERNEL"
-    echo "Build with: cargo build --release --features boot_tests --target aarch64-breenix.json -Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem -p kernel --bin kernel-aarch64"
+    echo "Build with: cargo build --release --features boot_tests --target aarch64-breenix-kernel.json -Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem -p kernel --bin kernel-aarch64"
     exit 1
 fi
 

@@ -46,11 +46,11 @@ if [ "$INCLUDE_KERNEL" = true ]; then
     if [ "${BREENIX_XHCI_LINUX_HARNESS:-}" = "1" ]; then
         KERNEL_FEATURES+=(--features xhci_linux_harness)
     fi
-    cargo build --release --target aarch64-breenix.json \
+    cargo build --release --target aarch64-breenix-kernel.json \
         -Z build-std=core,alloc \
         -Z build-std-features=compiler-builtins-mem \
         -p kernel --bin kernel-aarch64 ${KERNEL_FEATURES[@]+"${KERNEL_FEATURES[@]}"}
-    KERNEL_ELF="$PROJECT_ROOT/target/aarch64-breenix/release/kernel-aarch64"
+    KERNEL_ELF="$PROJECT_ROOT/target/aarch64-breenix-kernel/release/kernel-aarch64"
     if [ ! -f "$KERNEL_ELF" ]; then
         echo "ERROR: Kernel ELF not found at $KERNEL_ELF"
         exit 1

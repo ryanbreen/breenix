@@ -14,9 +14,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BREENIX_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 if [ "$BUILD_TYPE" = "debug" ]; then
-    KERNEL="$BREENIX_ROOT/target/aarch64-breenix/debug/kernel-aarch64"
+    KERNEL="$BREENIX_ROOT/target/aarch64-breenix-kernel/debug/kernel-aarch64"
 else
-    KERNEL="$BREENIX_ROOT/target/aarch64-breenix/release/kernel-aarch64"
+    KERNEL="$BREENIX_ROOT/target/aarch64-breenix-kernel/release/kernel-aarch64"
 fi
 
 # Feature flags
@@ -29,9 +29,9 @@ fi
 # Build kernel (always rebuild to pick up changes)
 echo "Building ARM64 kernel ($BUILD_TYPE)..."
 if [ "$BUILD_TYPE" = "debug" ]; then
-    cargo build --target aarch64-breenix.json -Zbuild-std=core,alloc -Zbuild-std-features=compiler-builtins-mem -p kernel --bin kernel-aarch64 $FEATURES
+    cargo build --target aarch64-breenix-kernel.json -Zbuild-std=core,alloc -Zbuild-std-features=compiler-builtins-mem -p kernel --bin kernel-aarch64 $FEATURES
 else
-    cargo build --release --target aarch64-breenix.json -Zbuild-std=core,alloc -Zbuild-std-features=compiler-builtins-mem -p kernel --bin kernel-aarch64 $FEATURES
+    cargo build --release --target aarch64-breenix-kernel.json -Zbuild-std=core,alloc -Zbuild-std-features=compiler-builtins-mem -p kernel --bin kernel-aarch64 $FEATURES
 fi
 
 # Prefer ext2 disk image (for /bin/init_shell); fall back to BXTEST disk

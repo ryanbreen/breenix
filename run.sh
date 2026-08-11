@@ -214,7 +214,7 @@ if [ "$PARALLELS" = true ]; then
     done
 
     LOADER_EFI="$BREENIX_ROOT/target/aarch64-unknown-uefi/release/parallels-loader.efi"
-    KERNEL_ELF="$BREENIX_ROOT/target/aarch64-breenix/release/kernel-aarch64"
+    KERNEL_ELF="$BREENIX_ROOT/target/aarch64-breenix-kernel/release/kernel-aarch64"
 
     if [ "$NO_BUILD" = true ]; then
         echo "Skipping compilation (--no-build)"
@@ -240,7 +240,7 @@ if [ "$PARALLELS" = true ]; then
         # Build the kernel
         echo ""
         echo "[2/4] Building kernel..."
-        cargo build --release --target aarch64-breenix.json \
+        cargo build --release --target aarch64-breenix-kernel.json \
             -Z build-std=core,alloc \
             -Z build-std-features=compiler-builtins-mem \
             -p kernel --bin kernel-aarch64
@@ -551,13 +551,13 @@ if [ "$VMWARE" = true ]; then
         # Build kernel
         echo ""
         echo "[2/6] Building kernel..."
-        cargo build --release --target aarch64-breenix.json \
+        cargo build --release --target aarch64-breenix-kernel.json \
             -Z build-std=core,alloc \
             -Z build-std-features=compiler-builtins-mem \
             -p kernel --bin kernel-aarch64
 
         LOADER_EFI="$BREENIX_ROOT/target/aarch64-unknown-uefi/release/parallels-loader.efi"
-        KERNEL_ELF="$BREENIX_ROOT/target/aarch64-breenix/release/kernel-aarch64"
+        KERNEL_ELF="$BREENIX_ROOT/target/aarch64-breenix-kernel/release/kernel-aarch64"
 
         if [ ! -f "$LOADER_EFI" ]; then
             echo "ERROR: UEFI loader not found at $LOADER_EFI"
@@ -793,12 +793,12 @@ fi
 # Route to architecture-specific runner
 if [ "$ARCH" = "arm64" ]; then
     # ARM64 path - direct kernel boot
-    KERNEL="$BREENIX_ROOT/target/aarch64-breenix/release/kernel-aarch64"
+    KERNEL="$BREENIX_ROOT/target/aarch64-breenix-kernel/release/kernel-aarch64"
     EXT2_DISK="$BREENIX_ROOT/target/ext2-aarch64.img"
     HOME_DISK="$BREENIX_ROOT/target/ext2-home-aarch64.img"
 
     # Build command for ARM64
-    BUILD_CMD="cargo build --release --features boot_tests --target aarch64-breenix.json -Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem -p kernel --bin kernel-aarch64"
+    BUILD_CMD="cargo build --release --features boot_tests --target aarch64-breenix-kernel.json -Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem -p kernel --bin kernel-aarch64"
 else
     # x86_64 path - uses UEFI boot
     EXT2_DISK="$BREENIX_ROOT/target/ext2.img"

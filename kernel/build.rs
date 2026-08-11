@@ -126,7 +126,8 @@ fn main() {
             .arg("-Werror");
 
         if target.contains("aarch64") {
-            cmd.arg("--target=aarch64-unknown-none");
+            cmd.arg("--target=aarch64-unknown-none")
+                .arg("-mgeneral-regs-only");
         } else if target.contains("x86_64") {
             cmd.arg("--target=x86_64-unknown-none");
         }

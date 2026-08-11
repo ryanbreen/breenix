@@ -550,12 +550,12 @@ def find_kernel(profile: str = "release", arch: str = "x86_64") -> Path:
     if arch == "aarch64":
         # ARM64 kernel binary
         profile_dir = "debug" if profile == "dev" else "release"
-        kernel_path = breenix / f"target/aarch64-breenix/{profile_dir}/kernel-aarch64"
+        kernel_path = breenix / f"target/aarch64-breenix-kernel/{profile_dir}/kernel-aarch64"
         if kernel_path.exists():
             return kernel_path
         raise FileNotFoundError(
             f"ARM64 kernel not found at {kernel_path}\n"
-            f"Build with: cargo build --release --target aarch64-breenix.json "
+            f"Build with: cargo build --release --target aarch64-breenix-kernel.json "
             f"-Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem "
             f"-p kernel --bin kernel-aarch64"
         )
