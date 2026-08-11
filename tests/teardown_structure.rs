@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -272,6 +272,106 @@ fn braced_block<'a>(source: &'a str, mask: &[bool], start: usize) -> Option<&'a 
         }
     }
     None
+}
+
+/// Code text with comments and string literals removed and whitespace
+/// collapsed, so a structural pin compares what the compiler sees rather than
+/// one formatting of it.
+fn normalized_code(fragment: &str) -> String {
+    let mask = code_mask(fragment);
+    let kept: Vec<u8> = fragment
+        .bytes()
+        .zip(mask)
+        .filter_map(|(byte, code)| code.then_some(byte))
+        .collect();
+    String::from_utf8_lossy(&kept)
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// The statements inside a brace-matched block returned by `braced_block`.
+fn block_statements(block: &str) -> Option<&str> {
+    let mask = code_mask(block);
+    let open = (0..block.len()).find(|index| mask[*index] && block.as_bytes()[*index] == b'{')?;
+    let close = block.len().checked_sub(1)?;
+    (block.as_bytes()[close] == b'}' && open < close).then(|| &block[open + 1..close])
+}
+
+/// Every `fn NAME(` definition in a module, keyed by name. Names may repeat
+/// (`cfg`-split, or same-named inherent methods on different types); every body
+/// is kept so a check over a name covers all of them.
+fn module_function_bodies(source: &str) -> BTreeMap<String, Vec<&str>> {
+    let mask = code_mask(source);
+    let bytes = source.as_bytes();
+    let mut bodies: BTreeMap<String, Vec<&str>> = BTreeMap::new();
+    for offset in identifier_offsets(source, &mask, "fn") {
+        let mut cursor = offset + "fn".len();
+        while cursor < bytes.len() && (!mask[cursor] || bytes[cursor].is_ascii_whitespace()) {
+            cursor += 1;
+        }
+        let name_start = cursor;
+        while cursor < bytes.len() && mask[cursor] && identifier_byte(bytes[cursor]) {
+            cursor += 1;
+        }
+        if cursor == name_start {
+            continue;
+        }
+        let name = &source[name_start..cursor];
+        // A signature terminated by `;` (trait requirement, extern block) has no
+        // body; taking the next brace would attribute a foreign body to it.
+        let brace = (cursor..bytes.len()).find(|index| mask[*index] && bytes[*index] == b'{');
+        let semicolon = (cursor..bytes.len()).find(|index| mask[*index] && bytes[*index] == b';');
+        let Some(brace) = brace else { continue };
+        if semicolon.is_some_and(|semicolon| semicolon < brace) {
+            continue;
+        }
+        let Some(body) = braced_block(source, &mask, brace) else {
+            continue;
+        };
+        bodies.entry(name.to_owned()).or_default().push(body);
+    }
+    bodies
+}
+
+/// The transitive callee closure of `roots` within one module.
+///
+/// R7's no-log/no-heap property must hold for everything `return_lease` reaches,
+/// so the span is derived from the call graph rather than enumerated: a helper
+/// added tomorrow is covered the day it is called.
+fn transitively_called_functions(source: &str, roots: &[&str]) -> BTreeSet<String> {
+    let bodies = module_function_bodies(source);
+    let mut reached: BTreeSet<String> = BTreeSet::new();
+    let mut pending: Vec<String> = roots.iter().map(|name| (*name).to_owned()).collect();
+    while let Some(name) = pending.pop() {
+        if !reached.insert(name.clone()) {
+            continue;
+        }
+        for body in bodies.get(&name).into_iter().flatten() {
+            let body_mask = code_mask(body);
+            let body_bytes = body.as_bytes();
+            for callee in bodies.keys() {
+                if reached.contains(callee) {
+                    continue;
+                }
+                let called = identifier_offsets(body, &body_mask, callee)
+                    .into_iter()
+                    .any(|offset| {
+                        let mut cursor = offset + callee.len();
+                        while cursor < body_bytes.len()
+                            && (!body_mask[cursor] || body_bytes[cursor].is_ascii_whitespace())
+                        {
+                            cursor += 1;
+                        }
+                        body_bytes.get(cursor) == Some(&b'(')
+                    });
+                if called {
+                    pending.push(callee.clone());
+                }
+            }
+        }
+    }
+    reached
 }
 
 fn code_sites(sources: &[(String, String)], needle: &str) -> BTreeSet<Site> {
@@ -715,6 +815,63 @@ fn alias_argument_exports(body: &str) -> Vec<String> {
     exports
 }
 
+/// Assignments whose left-hand side is rooted at a free-list alias.
+///
+/// `alias_method_calls` and `alias_argument_exports` only see calls; an index
+/// or deref store (`alias[i] = frame`, `*alias = other`) publishes a frame into
+/// the reuse pool without any method and without any ledger transition, which
+/// is precisely the physical-return bypass R1 forbids. Every such write is
+/// reported by its left-hand side so the failure names the offending store.
+fn alias_write_targets(body: &str) -> Vec<String> {
+    let mask = code_mask(body);
+    let bytes = body.as_bytes();
+    let aliases = aliases_derived_from_free_frames(body);
+    let mut writes = Vec::new();
+    for index in 0..bytes.len() {
+        if !mask[index] || bytes[index] != b'=' {
+            continue;
+        }
+        // `==` and `=>` are not stores.
+        if bytes
+            .get(index + 1)
+            .is_some_and(|byte| matches!(byte, b'=' | b'>') && mask[index + 1])
+        {
+            continue;
+        }
+        // `==`/`!=`/`<=`/`>=` are comparisons; `<<=`/`>>=` are stores.
+        let previous = index.checked_sub(1).map(|before| bytes[before]);
+        if matches!(previous, Some(b'=' | b'!' | b'<' | b'>')) {
+            let two_back = index.checked_sub(2).map(|before| bytes[before]);
+            let shift_assign = matches!(
+                (previous, two_back),
+                (Some(b'<'), Some(b'<')) | (Some(b'>'), Some(b'>'))
+            );
+            if !shift_assign {
+                continue;
+            }
+        }
+        let start = (0..index)
+            .rev()
+            .find(|offset| mask[*offset] && matches!(bytes[*offset], b';' | b'{' | b'}'))
+            .map(|offset| offset + 1)
+            .unwrap_or(0);
+        let lhs = &body[start..index];
+        let lhs_mask = &mask[start..index];
+        // A `let` anywhere left of the `=` makes this a binding, not a store;
+        // bindings are already followed by `aliases_derived_from_free_frames`.
+        if !identifier_offsets(lhs, lhs_mask, "let").is_empty() {
+            continue;
+        }
+        if aliases
+            .iter()
+            .any(|alias| !identifier_offsets(lhs, lhs_mask, alias).is_empty())
+        {
+            writes.push(lhs.split_whitespace().collect::<Vec<_>>().join(" "));
+        }
+    }
+    writes
+}
+
 fn function_body<'a>(source: &'a str, name: &str) -> &'a str {
     let plain_marker = format!("fn {name}(");
     let generic_marker = format!("fn {name}<");
@@ -917,6 +1074,16 @@ let _same_line = "needle"; let _real = needle();
         ),
         vec!["insert"]
     );
+    assert_eq!(
+        alias_write_targets("if let Some(mut free) = FREE_FRAMES.try_lock() { free[0] = frame; }"),
+        vec!["free[0]"]
+    );
+    assert_eq!(
+        alias_write_targets(
+            "if let Some(mut free) = FREE_FRAMES.try_lock() { *free = alloc::vec![frame]; }"
+        ),
+        vec!["*free"]
+    );
 }
 
 const TERMINATE_CALLS: &[(&str, usize)] = &[
@@ -1103,6 +1270,10 @@ fn validate_alias_methods(
     allowed: &[&str],
     allowed_exports: &[&str],
 ) -> Result<(), ()> {
+    for target in alias_write_targets(body) {
+        eprintln!("free-list alias write target: {target}");
+        return Err(());
+    }
     for method in alias_method_calls(body) {
         if !allowed.contains(&method.as_str()) {
             eprintln!("unexpected free-list alias method: {method}");
@@ -1242,25 +1413,35 @@ fn validate_frame_return_choke_point(sources: &[(String, String)]) -> Result<(),
 
 fn validate_frame_ledger_hot_paths(sources: &[(String, String)]) -> Result<(), ()> {
     let allocator = source(sources, "kernel/src/memory/frame_allocator.rs");
-    for name in [
+    const ROOTS: [&str; 5] = [
         "frame_ordinal",
         "get",
         "claim_frame",
         "counted",
         "return_lease",
-    ] {
-        let body = function_body(allocator, name);
-        for forbidden in [
-            "log::",
-            "serial_println!",
-            "format!",
-            "vec!",
-            "Vec::new",
-            "Vec::with_capacity",
-            "alloc::",
-        ] {
-            if body.contains(forbidden) {
-                return Err(());
+    ];
+    let bodies = module_function_bodies(allocator);
+    let reached = transitively_called_functions(allocator, &ROOTS);
+    if !ROOTS
+        .iter()
+        .all(|name| reached.contains(*name) && bodies.contains_key(*name))
+    {
+        return Err(());
+    }
+    for name in reached {
+        for body in bodies.get(&name).into_iter().flatten() {
+            for forbidden in [
+                "log::",
+                "serial_println!",
+                "format!",
+                "vec!",
+                "Vec::new",
+                "Vec::with_capacity",
+                "alloc::",
+            ] {
+                if body.contains(forbidden) {
+                    return Err(());
+                }
             }
         }
     }
@@ -1362,6 +1543,7 @@ fn validate_frame_ledger_runtime_oracles(sources: &[(String, String)]) -> Result
     let take_free = function_body(tests, "take_free_frame");
     let stale = function_body(tests, "stale_lease_fixture");
     let gate = function_body(tests, "frame_custody_refusal_gate_test");
+    let healthy_guard = function_body(tests, "frame_custody_healthy_counters_test");
     let above_top = function_body(tests, "above_top_of_ram_frame");
     let never_allocated = function_body(tests, "reserve_never_allocated_frame");
     let allocator = source(sources, "kernel/src/memory/frame_allocator.rs");
@@ -1386,6 +1568,24 @@ fn validate_frame_ledger_runtime_oracles(sources: &[(String, String)]) -> Result
         return Err(());
     }
     let refusal_def = enclosing_test_def(registry, &registry_mask, refusal_offsets[0]).ok_or(())?;
+    if !code_offsets(
+        registry,
+        &registry_mask,
+        "use crate::memory::frame_allocator::frame_custody_healthy_counters_test as",
+    )
+    .is_empty()
+    {
+        return Err(());
+    }
+    let healthy_offsets = identifier_offsets(
+        registry,
+        &registry_mask,
+        "frame_custody_healthy_counters_test",
+    );
+    if healthy_offsets.len() != 1 {
+        return Err(());
+    }
+    let healthy_def = enclosing_test_def(registry, &registry_mask, healthy_offsets[0]).ok_or(())?;
     let executor = source(sources, "kernel/src/test_framework/executor.rs");
     let run_all = function_body(executor, "run_all_tests");
     let run_staged = function_body(executor, "run_staged_tests");
@@ -1398,23 +1598,53 @@ fn validate_frame_ledger_runtime_oracles(sources: &[(String, String)]) -> Result
     let serial_condition = run_staged
         .find("if target_stage == TestStage::SerialBoot {")
         .ok_or(())?;
-    let serial_join = run_staged[serial_condition..]
-        .find("join_test_thread(subsystem.id, handle)")
-        .ok_or(())?;
-    let parallel_push = run_staged[serial_condition..]
-        .find("} else {")
-        .and_then(|offset| {
-            run_staged[serial_condition + offset..]
-                .find("handles.push((subsystem.id, handle));")
-                .map(|push| offset + push)
-        })
-        .ok_or(())?;
+    let run_staged_mask = code_mask(run_staged);
+    let serial_block = braced_block(run_staged, &run_staged_mask, serial_condition).ok_or(())?;
+    if normalized_code(block_statements(serial_block).ok_or(())?)
+        != "total_failed += join_test_thread(subsystem.id, handle);"
+    {
+        return Err(());
+    }
+    let mut else_cursor = serial_condition + serial_block.len();
+    while else_cursor < run_staged.len()
+        && (!run_staged_mask[else_cursor]
+            || run_staged.as_bytes()[else_cursor].is_ascii_whitespace())
+    {
+        else_cursor += 1;
+    }
+    if !run_staged[else_cursor..].starts_with("else") {
+        return Err(());
+    }
+    else_cursor += "else".len();
+    while else_cursor < run_staged.len()
+        && (!run_staged_mask[else_cursor]
+            || run_staged.as_bytes()[else_cursor].is_ascii_whitespace())
+    {
+        else_cursor += 1;
+    }
+    if run_staged.as_bytes().get(else_cursor) != Some(&b'{') {
+        return Err(());
+    }
+    let parallel_block = braced_block(run_staged, &run_staged_mask, else_cursor).ok_or(())?;
+    if normalized_code(block_statements(parallel_block).ok_or(())?)
+        != "handles.push((subsystem.id, handle));"
+    {
+        return Err(());
+    }
     let memory_init = function_body(source(sources, "kernel/src/memory/mod.rs"), "init");
 
     const DOUBLE_RETURN_ASSERTION: &str = "if return_lease(lease) != ReturnOutcome::Returned\n        || return_lease(lease) != ReturnOutcome::RefusedDoubleRelease\n        || FREE_FRAMES.lock().len() != free_before + 1\n        || free_frame_count(lease.frame) != 1\n        || !healthy_round_trip()\n    {";
     const STALE_FIXTURE_ASSERTION: &str =
         "if current.index != stale.index || current.generation == stale.generation {";
     const STALE_RETURN_ASSERTION: &str = "if return_lease(stale) != ReturnOutcome::RefusedStale {";
+    const GATE_PRECONDITION_ASSERTION: &str = "if start[..5] != [0; 5] {";
+    const UNTRACKED_ASSERTION: &str =
+        "if after_untracked[3] != before_untracked[3] + 1 || free_after_untracked != free_before {";
+    const NEVER_ALLOCATED_ASSERTION: &str = "if counters()[2] != before_never[2] + 1
+        || FREE_FRAMES.lock().len() != free_before
+        || !healthy_round_trip()
+    {";
+    const CONTENTION_ASSERTION: &str = "if outcome != ReturnOutcome::LostContended {";
     const DUPLICATE_CLEANUP: &str = "let replacement = allocate_frame_leased();\n    remove_duplicate_candidates(live.frame);\n    let live_after =";
     const DUPLICATE_OWNER_ASSERTION: &str = "if live_before.is_none()\n        || live_after != live_before\n        || !replacement_is_distinct\n        || counters()[4] != duplicate_before + 3\n    {";
     const AGGREGATE_ASSERTION: &str = "if end[0] != start[0] + 1\n        || end[1] != start[1] + 1\n        || end[2] != start[2] + 1\n        || end[3] != start[3] + 1\n        || end[4] != start[4] + 3\n        || end[5] < start[5] + 1\n    {";
@@ -1427,6 +1657,10 @@ fn validate_frame_ledger_runtime_oracles(sources: &[(String, String)]) -> Result
         && stale.contains("take_free_frame(stale.frame)")
         && stale.contains(STALE_FIXTURE_ASSERTION)
         && gate.contains(STALE_RETURN_ASSERTION)
+        && gate.contains(GATE_PRECONDITION_ASSERTION)
+        && gate.contains(UNTRACKED_ASSERTION)
+        && gate.contains(NEVER_ALLOCATED_ASSERTION)
+        && gate.contains(CONTENTION_ASSERTION)
         && gate.contains(DOUBLE_RETURN_ASSERTION)
         && gate.contains("above_top_of_ram_frame()")
         && gate.contains("deallocate_frame(untracked)")
@@ -1470,8 +1704,12 @@ fn validate_frame_ledger_runtime_oracles(sources: &[(String, String)]) -> Result
         && refusal_def.contains("name: \"frame_custody_refusal_gate\"")
         && refusal_def.contains("arch: Arch::Aarch64")
         && refusal_def.contains("stage: TestStage::SerialBoot")
+        && healthy_def.contains("name: \"frame_custody_healthy_counters\"")
+        && healthy_def.contains("arch: Arch::Aarch64")
+        && healthy_def.contains("stage: TestStage::ProcessContext")
+        && healthy_guard.contains("if counters()[..5] != [1, 1, 1, 1, 3] {")
+        && healthy_guard.contains("TestResult::Fail(")
         && serial < parallel
-        && serial_join < parallel_push
         && function_body(registry, "test_timer_init").contains("test_timer_ticks()")
         && memory_init
             .matches("frame_allocator::run_x86_frame_custody_gate();")
@@ -1479,6 +1717,40 @@ fn validate_frame_ledger_runtime_oracles(sources: &[(String, String)]) -> Result
             == 1)
         .then_some(())
         .ok_or(())
+}
+
+/// Always-true / always-false operands in the boot-test oracle surface.
+/// HT-2's prefix-pin class was closed instance-by-instance twice; this closes the
+/// spelling itself, so a new assertion cannot be neutered without a red suite.
+fn validate_no_vacuous_test_conditions(sources: &[(String, String)]) -> Result<(), ()> {
+    const PATHS: [&str; 4] = [
+        "kernel/src/memory/frame_allocator_tests.rs",
+        "kernel/src/test_framework/registry.rs",
+        "kernel/src/test_framework/executor.rs",
+        "kernel/src/tracing/providers/teardown.rs",
+    ];
+    const SHAPES: [&str; 9] = [
+        "&& false",
+        "false &&",
+        "|| true",
+        "true ||",
+        "if false",
+        "if true",
+        "while false",
+        "#[cfg(never)]",
+        "#[cfg(any())]",
+    ];
+
+    for path in PATHS {
+        let normalized = normalized_code(source(sources, path));
+        for shape in SHAPES {
+            if normalized.contains(shape) {
+                eprintln!("vacuous boot-test condition in {path}: {shape}");
+                return Err(());
+            }
+        }
+    }
+    Ok(())
 }
 
 fn validate_x86_frame_custody_harness(script: &str) -> Result<(), ()> {
@@ -1545,6 +1817,8 @@ fn frame_ledger_return_and_initialization_ratchets_are_exact() {
     validate_frame_ledger_init(&sources).expect("R9 frame-ledger initialization moved");
     validate_frame_ledger_runtime_oracles(&sources)
         .expect("frame-custody runtime oracle became vacuous");
+    validate_no_vacuous_test_conditions(&sources)
+        .expect("boot-test oracle gained an always-true/always-false vacuity shape");
     validate_x86_frame_custody_harness(&repo_text("docker/qemu/run-x86-boot-tests.sh"))
         .expect("x86 frame-custody harness became vacuous");
 
@@ -2547,6 +2821,28 @@ fn deliberately_broken_variants_fail_the_ratchet() {
         parenthesized_reborrow,
     );
     assert!(validate_frame_return_choke_point(&parenthesized_reborrow).is_err());
+    let indexed_alias_store = allocator.replacen(
+        "if let Some(frame) = free_list.pop() {",
+        "if let Some(frame) = free_list.pop() { if free_list.len() > 0 { free_list[0] = frame; }",
+        1,
+    );
+    let indexed_alias_store = with_replaced_source(
+        &sources,
+        "kernel/src/memory/frame_allocator.rs",
+        indexed_alias_store,
+    );
+    assert!(validate_frame_return_choke_point(&indexed_alias_store).is_err());
+    let deref_alias_store = allocator.replacen(
+        "if let Some(frame) = free_list.pop() {",
+        "if let Some(frame) = free_list.pop() { *free_list = alloc::vec![frame, frame];",
+        1,
+    );
+    let deref_alias_store = with_replaced_source(
+        &sources,
+        "kernel/src/memory/frame_allocator.rs",
+        deref_alias_store,
+    );
+    assert!(validate_frame_return_choke_point(&deref_alias_store).is_err());
     let helper_export = allocator.replacen(
         "if let Some(frame) = free_list.pop() {",
         "if let Some(frame) = free_list.pop() { stash_frame(&mut free_list, frame);",
@@ -2663,6 +2959,17 @@ fn deliberately_broken_variants_fail_the_ratchet() {
     let logged_get =
         with_replaced_source(&sources, "kernel/src/memory/frame_allocator.rs", logged_get);
     assert!(validate_frame_ledger_hot_paths(&logged_get).is_err());
+    let transitive_helper_log = allocator.replacen(
+        "fn return_lease(lease: FrameLease) -> ReturnOutcome {",
+        "fn note_return(frame: PhysFrame) { log::info!(\"returned {:#x}\", frame.start_address().as_u64()); }\n\nfn return_lease(lease: FrameLease) -> ReturnOutcome { note_return(lease.frame);",
+        1,
+    );
+    let transitive_helper_log = with_replaced_source(
+        &sources,
+        "kernel/src/memory/frame_allocator.rs",
+        transitive_helper_log,
+    );
+    assert!(validate_frame_ledger_hot_paths(&transitive_helper_log).is_err());
 
     // R9: each ordering negative calls the ordering validator directly.
     let memory_mod = source(&sources, "kernel/src/memory/mod.rs");
@@ -2850,6 +3157,61 @@ fn deliberately_broken_variants_fail_the_ratchet() {
         conditional_duplicate_cleanup,
     );
     assert!(validate_frame_ledger_runtime_oracles(&conditional_duplicate_cleanup).is_err());
+    let neutered_gate_precondition = fixture.replacen(
+        "if start[..5] != [0; 5] {",
+        "if start[..5] != [0; 5] && false {",
+        1,
+    );
+    let neutered_gate_precondition = with_replaced_source(
+        &sources,
+        "kernel/src/memory/frame_allocator_tests.rs",
+        neutered_gate_precondition,
+    );
+    assert!(validate_frame_ledger_runtime_oracles(&neutered_gate_precondition).is_err());
+    let neutered_untracked_guard = fixture.replacen(
+        "if after_untracked[3] != before_untracked[3] + 1 || free_after_untracked != free_before {",
+        "if after_untracked[3] != before_untracked[3] + 1 || free_after_untracked != free_before && false {",
+        1,
+    );
+    let neutered_untracked_guard = with_replaced_source(
+        &sources,
+        "kernel/src/memory/frame_allocator_tests.rs",
+        neutered_untracked_guard,
+    );
+    assert!(validate_frame_ledger_runtime_oracles(&neutered_untracked_guard).is_err());
+    let neutered_never_guard = fixture.replacen(
+        "if counters()[2] != before_never[2] + 1\n        || FREE_FRAMES.lock().len() != free_before\n        || !healthy_round_trip()\n    {",
+        "if counters()[2] != before_never[2] + 1\n        || FREE_FRAMES.lock().len() != free_before\n        || !healthy_round_trip() && false\n    {",
+        1,
+    );
+    let neutered_never_guard = with_replaced_source(
+        &sources,
+        "kernel/src/memory/frame_allocator_tests.rs",
+        neutered_never_guard,
+    );
+    assert!(validate_frame_ledger_runtime_oracles(&neutered_never_guard).is_err());
+    let neutered_contention_guard = fixture.replacen(
+        "if outcome != ReturnOutcome::LostContended {",
+        "if outcome != ReturnOutcome::LostContended && false {",
+        1,
+    );
+    let neutered_contention_guard = with_replaced_source(
+        &sources,
+        "kernel/src/memory/frame_allocator_tests.rs",
+        neutered_contention_guard,
+    );
+    assert!(validate_frame_ledger_runtime_oracles(&neutered_contention_guard).is_err());
+    let neutered_healthy_guard = fixture.replacen(
+        "if counters()[..5] != [1, 1, 1, 1, 3] {",
+        "if counters()[..5] != [1, 1, 1, 1, 3] && false {",
+        1,
+    );
+    let neutered_healthy_guard = with_replaced_source(
+        &sources,
+        "kernel/src/memory/frame_allocator_tests.rs",
+        neutered_healthy_guard,
+    );
+    assert!(validate_frame_ledger_runtime_oracles(&neutered_healthy_guard).is_err());
 
     // Registration is keyed by the function identity, not display spelling.
     let registry = source(&sources, "kernel/src/test_framework/registry.rs");
@@ -2881,6 +3243,17 @@ fn deliberately_broken_variants_fail_the_ratchet() {
         duplicate_registration,
     );
     assert!(validate_frame_ledger_runtime_oracles(&duplicate_registration).is_err());
+    let deleted_healthy_guard = registry.replacen(
+        "    TestDef {\n        name: \"frame_custody_healthy_counters\",\n        func: crate::memory::frame_allocator::frame_custody_healthy_counters_test,\n        arch: Arch::Aarch64,\n        timeout_ms: 5000,\n        stage: TestStage::ProcessContext,\n    },\n",
+        "",
+        1,
+    );
+    let deleted_healthy_guard = with_replaced_source(
+        &sources,
+        "kernel/src/test_framework/registry.rs",
+        deleted_healthy_guard,
+    );
+    assert!(validate_frame_ledger_runtime_oracles(&deleted_healthy_guard).is_err());
     let parallel_gate = registry.replacen(
         "stage: TestStage::SerialBoot,",
         "stage: TestStage::EarlyBoot,",
@@ -2904,6 +3277,17 @@ fn deliberately_broken_variants_fail_the_ratchet() {
         nonserial_join,
     );
     assert!(validate_frame_ledger_runtime_oracles(&nonserial_join).is_err());
+    let nested_false_join = executor.replacen(
+        "                if target_stage == TestStage::SerialBoot {\n                    total_failed += join_test_thread(subsystem.id, handle);\n                } else {\n                    handles.push((subsystem.id, handle));\n                }",
+        "                if target_stage == TestStage::SerialBoot {\n                    if false {\n                        total_failed += join_test_thread(subsystem.id, handle);\n                    } else {\n                        handles.push((subsystem.id, handle));\n                    }\n                } else {\n                    handles.push((subsystem.id, handle));\n                }",
+        1,
+    );
+    let nested_false_join = with_replaced_source(
+        &sources,
+        "kernel/src/test_framework/executor.rs",
+        nested_false_join,
+    );
+    assert!(validate_frame_ledger_runtime_oracles(&nested_false_join).is_err());
     let vacuous_timer = registry.replacen("test_timer_ticks()", "TestResult::Pass", 1);
     let vacuous_timer = with_replaced_source(
         &sources,
@@ -2912,10 +3296,35 @@ fn deliberately_broken_variants_fail_the_ratchet() {
     );
     assert!(validate_frame_ledger_runtime_oracles(&vacuous_timer).is_err());
 
+    let vacuous_frame_tests = with_replaced_source(
+        &sources,
+        "kernel/src/memory/frame_allocator_tests.rs",
+        format!("{fixture}\nfn synthetic_vacuity() {{ if false {{}} }}"),
+    );
+    assert!(validate_no_vacuous_test_conditions(&vacuous_frame_tests).is_err());
+    let vacuous_registry = with_replaced_source(
+        &sources,
+        "kernel/src/test_framework/registry.rs",
+        format!("{registry}\nfn synthetic_vacuity() {{ if true {{}} }}"),
+    );
+    assert!(validate_no_vacuous_test_conditions(&vacuous_registry).is_err());
+    let vacuous_executor = with_replaced_source(
+        &sources,
+        "kernel/src/test_framework/executor.rs",
+        format!("{executor}\nfn synthetic_vacuity() {{ while false {{}} }}"),
+    );
+    assert!(validate_no_vacuous_test_conditions(&vacuous_executor).is_err());
+    let provider = source(&sources, "kernel/src/tracing/providers/teardown.rs");
+    let vacuous_provider = with_replaced_source(
+        &sources,
+        "kernel/src/tracing/providers/teardown.rs",
+        format!("{provider}\n#[cfg(any())]\nfn synthetic_vacuity() {{}}"),
+    );
+    assert!(validate_no_vacuous_test_conditions(&vacuous_provider).is_err());
+
     let harness = repo_text("docker/qemu/run-x86-boot-tests.sh");
     assert!(validate_x86_frame_custody_harness(&harness.replace("-eq 1", "-ge 0")).is_err());
 
-    let provider = source(&sources, "kernel/src/tracing/providers/teardown.rs");
     let missing_counter_reader = provider.replacen("    &FRAME_RETURN_REFUSED_DOUBLE,\n", "", 1);
     assert!(validate_frame_ledger_counter_inventory(&missing_counter_reader).is_err());
     let unproduced_counter = provider.replacen(

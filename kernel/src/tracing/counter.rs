@@ -461,10 +461,8 @@ mod tests {
 
     #[test_case]
     fn test_counter_initial_value() {
-        // A fresh counter should have zero in all slots
-        let total = TEST_COUNTER.aggregate();
-        // Note: can't guarantee zero if other tests ran, but structure should be valid
-        assert!(total >= 0); // Just verify it doesn't panic
+        TEST_COUNTER.reset();
+        assert_eq!(TEST_COUNTER.aggregate(), 0);
     }
 
     #[test_case]

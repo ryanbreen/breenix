@@ -2764,9 +2764,8 @@ fn test_workqueue_operational() -> TestResult {
         core::hint::spin_loop();
     }
 
-    // If work didn't run, it might be due to timing - don't fail hard
-    // The workqueue may not be initialized on all configurations
-    TestResult::Pass
+    // Reaching the timeout means the scheduled work was never observed running.
+    TestResult::Fail("workqueue did not execute scheduled work")
 }
 
 // =============================================================================
