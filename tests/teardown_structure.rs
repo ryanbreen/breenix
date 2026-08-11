@@ -506,6 +506,100 @@ fn pattern_binding_identifiers(pattern: &str) -> BTreeSet<String> {
     bindings
 }
 
+/// The `]` closing the `[` at `open`, honouring nesting.
+fn matching_bracket(bytes: &[u8], mask: &[bool], open: usize) -> Option<usize> {
+    let mut depth = 0usize;
+    for index in open..bytes.len() {
+        if !mask.get(index).copied().unwrap_or(false) {
+            continue;
+        }
+        match bytes[index] {
+            b'[' => depth += 1,
+            b']' => {
+                depth = depth.checked_sub(1)?;
+                if depth == 0 {
+                    return Some(index);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Blanks every index/slice suffix applied to `alias`, so an indexed element
+/// reads as the alias itself.
+///
+/// `free_list[0]`, `free_list[..]` and `free_list[0..1]` are the same physical
+/// free-list storage as `free_list`: exporting one of them
+/// (`core::mem::replace(&mut free_list[0], frame)`) publishes a frame into the
+/// reuse pool exactly as exporting the alias does. Blanking the subscript also
+/// removes any alias occurrence *inside* the subscript, leaving the single
+/// occurrence `direct_alias_expression` requires.
+fn strip_index_suffixes(expression: &str, alias: &str) -> String {
+    let mask = code_mask(expression);
+    let bytes = expression.as_bytes();
+    let mut stripped = bytes.to_vec();
+    for offset in identifier_offsets(expression, &mask, alias) {
+        let mut cursor = offset + alias.len();
+        loop {
+            while cursor < bytes.len() && (!mask[cursor] || bytes[cursor].is_ascii_whitespace()) {
+                cursor += 1;
+            }
+            if bytes.get(cursor) != Some(&b'[') {
+                break;
+            }
+            let Some(close) = matching_bracket(bytes, &mask, cursor) else {
+                break;
+            };
+            for byte in &mut stripped[cursor..=close] {
+                *byte = b' ';
+            }
+            cursor = close + 1;
+        }
+    }
+    String::from_utf8(stripped).expect("blanked spans are whole bracket groups")
+}
+
+/// The identifier immediately left of `offset`, ignoring trivia.
+fn preceding_identifier(source: &str, mask: &[bool], offset: usize) -> Option<String> {
+    let bytes = source.as_bytes();
+    let mut cursor = offset;
+    loop {
+        cursor = cursor.checked_sub(1)?;
+        if mask[cursor] && !bytes[cursor].is_ascii_whitespace() {
+            break;
+        }
+    }
+    if !identifier_byte(bytes[cursor]) {
+        return None;
+    }
+    let end = cursor + 1;
+    while cursor > 0 && identifier_byte(bytes[cursor - 1]) {
+        cursor -= 1;
+    }
+    Some(source[cursor..end].to_owned())
+}
+
+/// The `;` that ends the statement starting at `from`, traversing balanced
+/// bracket groups so a block-valued initializer stays inside the statement.
+fn statement_end(source: &str, mask: &[bool], from: usize) -> usize {
+    let bytes = source.as_bytes();
+    let mut depth = 0usize;
+    for index in from..bytes.len() {
+        if !mask[index] {
+            continue;
+        }
+        match bytes[index] {
+            b'{' | b'(' | b'[' => depth += 1,
+            b'}' | b')' | b']' => depth = depth.saturating_sub(1),
+            b';' if depth == 0 => return index,
+            _ => {}
+        }
+    }
+    bytes.len()
+}
+
 fn direct_alias_expression(expression: &str, alias: &str) -> bool {
     let mask = code_mask(expression);
     let alias_offsets = identifier_offsets(expression, &mask, alias);
@@ -562,9 +656,20 @@ fn aliases_derived_from_free_frames(body: &str) -> BTreeSet<String> {
     while changed {
         changed = false;
         for let_offset in identifier_offsets(body, &mask, "let") {
-            let end = (let_offset..bytes.len())
-                .find(|index| mask[*index] && matches!(bytes[*index], b';' | b'{'))
-                .unwrap_or(bytes.len());
+            // `if let` / `while let` bind from a scrutinee that ends at the block
+            // brace. A plain `let` may initialise from a block expression
+            // (`let dest = if cond { &mut spare } else { &mut free_list };`),
+            // whose braces belong to the initializer and must be traversed
+            // rather than treated as the statement terminator.
+            let binds_from_scrutinee = preceding_identifier(body, &mask, let_offset)
+                .is_some_and(|keyword| keyword == "if" || keyword == "while");
+            let end = if binds_from_scrutinee {
+                (let_offset..bytes.len())
+                    .find(|index| mask[*index] && matches!(bytes[*index], b';' | b'{'))
+                    .unwrap_or(bytes.len())
+            } else {
+                statement_end(body, &mask, let_offset)
+            };
             let Some(equals) =
                 (let_offset..end).find(|index| mask[*index] && bytes[*index] == b'=')
             else {
@@ -659,8 +764,20 @@ fn alias_method_calls(body: &str) -> Vec<String> {
             let mut cursor = offset + alias.len();
             loop {
                 skip_trivia(bytes, &mask, &mut cursor);
-                while bytes.get(cursor) == Some(&b')') && mask[cursor] {
-                    cursor += 1;
+                // A closing paren, an index and a slice all leave the walk on the
+                // same physical storage: `(free_list)`, `free_list[0]` and
+                // `free_list[..]` are the alias, so a method called on any of them
+                // is a method called on the alias.
+                while mask.get(cursor).copied().unwrap_or(false)
+                    && matches!(bytes.get(cursor), Some(&b')') | Some(&b'['))
+                {
+                    if bytes[cursor] == b')' {
+                        cursor += 1;
+                    } else if let Some(close) = matching_bracket(bytes, &mask, cursor) {
+                        cursor = close + 1;
+                    } else {
+                        break;
+                    }
                     skip_trivia(bytes, &mask, &mut cursor);
                 }
                 if bytes.get(cursor) != Some(&b'.') || !mask[cursor] {
@@ -805,7 +922,9 @@ fn alias_argument_exports(body: &str) -> Vec<String> {
                         _ => {}
                     }
                 }
-                if argument.is_some_and(|argument| direct_alias_expression(argument, &alias)) {
+                if argument.is_some_and(|argument| {
+                    direct_alias_expression(&strip_index_suffixes(argument, &alias), &alias)
+                }) {
                     exports.push(call_name);
                     break;
                 }
@@ -1648,6 +1767,17 @@ fn validate_frame_ledger_runtime_oracles(sources: &[(String, String)]) -> Result
     const DUPLICATE_CLEANUP: &str = "let replacement = allocate_frame_leased();\n    remove_duplicate_candidates(live.frame);\n    let live_after =";
     const DUPLICATE_OWNER_ASSERTION: &str = "if live_before.is_none()\n        || live_after != live_before\n        || !replacement_is_distinct\n        || counters()[4] != duplicate_before + 3\n    {";
     const AGGREGATE_ASSERTION: &str = "if end[0] != start[0] + 1\n        || end[1] != start[1] + 1\n        || end[2] != start[2] + 1\n        || end[3] != start[3] + 1\n        || end[4] != start[4] + 3\n        || end[5] < start[5] + 1\n    {";
+    // The O2/B, O2/D and O2/E guards. Pinned through their opening brace so an
+    // always-false operand of ANY spelling — not just the nine the vacuity rule
+    // knows — reds the suite (review-sweep-r4 finding 2).
+    const STALE_OWNER_ASSERTION: &str = "if state\n        .is_none_or(|state| state & STATE_MASK != ST_ALLOCATED || state >> 2 != current.generation)\n    {";
+    const STALE_RECOVERY_ASSERTION: &str =
+        "if return_lease(current) != ReturnOutcome::Returned || !healthy_round_trip() {";
+    const DUPLICATE_FIXTURE_ASSERTION: &str = "if !inject_duplicate_candidates(live.frame, 3) {";
+    const DUPLICATE_CLEANUP_ASSERTION: &str = "if !replacement_returned || !live_returned {";
+    const DUPLICATE_RECOVERY_ASSERTION: &str = "if !healthy_round_trip() {";
+    const CONTENDED_ISOLATION_ASSERTION: &str = "if lost_state.is_none_or(|state| state & STATE_MASK != ST_FREE)\n        || free_frame_count(contended.frame) != 0\n    {";
+    const CONTENDED_RECOVERY_ASSERTION: &str = "if return_lease(repaired) != ReturnOutcome::Returned\n        || counters()[..5] != before_healthy[..5]\n        || !healthy_round_trip()\n    {";
 
     (take_free
         .trim_end()
@@ -1662,6 +1792,13 @@ fn validate_frame_ledger_runtime_oracles(sources: &[(String, String)]) -> Result
         && gate.contains(NEVER_ALLOCATED_ASSERTION)
         && gate.contains(CONTENTION_ASSERTION)
         && gate.contains(DOUBLE_RETURN_ASSERTION)
+        && gate.contains(STALE_OWNER_ASSERTION)
+        && gate.contains(STALE_RECOVERY_ASSERTION)
+        && gate.contains(DUPLICATE_FIXTURE_ASSERTION)
+        && gate.contains(DUPLICATE_CLEANUP_ASSERTION)
+        && gate.contains(DUPLICATE_RECOVERY_ASSERTION)
+        && gate.contains(CONTENDED_ISOLATION_ASSERTION)
+        && gate.contains(CONTENDED_RECOVERY_ASSERTION)
         && gate.contains("above_top_of_ram_frame()")
         && gate.contains("deallocate_frame(untracked)")
         && gate.contains("reserve_never_allocated_frame()")
@@ -1753,14 +1890,81 @@ fn validate_no_vacuous_test_conditions(sources: &[(String, String)]) -> Result<(
     Ok(())
 }
 
+/// The x86 harness's *pass mechanism*, not just its shape. The five `contains`
+/// checks below prove the gate looks for the right markers; the block above them
+/// proves the recorded verdict is actually spent — `set -e` still on, `$passed`
+/// executed bare (so a false verdict ends the run), and no early or zero exit
+/// able to pre-empt it (review-sweep-r4 finding 4).
 fn validate_x86_frame_custody_harness(script: &str) -> Result<(), ()> {
-    (!script.contains("grep -q '\\[BOOT_TESTS:PASS\\]'")
+    let mut bare_verdict = false;
+    for line in script.lines() {
+        let statement = line.trim();
+        if statement == "$passed" {
+            bare_verdict = true;
+        }
+        if statement.split_whitespace().next() == Some("exit") && statement != "exit 1" {
+            eprintln!("x86 harness gained an exit that pre-empts its verdict: {statement}");
+            return Err(());
+        }
+    }
+    let verdict_false = script.find("passed=false").ok_or(())?;
+    let verdict_true = script.find("passed=true").ok_or(())?;
+    let verdict_spent = script.find("\n    $passed\n").ok_or(())?;
+    let counter_check = script.find("-eq 1").ok_or(())?;
+
+    (bare_verdict
+        && script.contains("set -euo pipefail")
+        && !script.contains("set +")
+        && script.matches("passed=false").count() == 1
+        && script.matches("passed=true").count() == 1
+        && script.matches("$passed").count() == 1
+        && verdict_false < verdict_true
+        && verdict_true < verdict_spent
+        && verdict_spent < counter_check
+        && !script.contains("grep -q '\\[BOOT_TESTS:PASS\\]'")
         && script.contains("FRAME_CUSTODY_COUNTERS:x86:double=1:stale=1:never=1:untracked=1:duplicate=3:contended=[1-9][0-9]*")
         && script.contains("-eq 1")
         && script.contains("x86 frame-custody gate run")
         && script.contains("BOOT_TESTS:FAIL|KERNEL PANIC|panic!"))
     .then_some(())
     .ok_or(())
+}
+
+/// The PostScheduler workqueue probe must wait on the workqueue's own completion
+/// handshake and score a counter that advances only when the scheduled closure
+/// ran. The #519/#521 campaign's progress-bounded-wait norm forbids the spin
+/// budget this replaced, and TRAP-LIST HT-3 requires the fall-through verdict to
+/// be pinned so reverting it to `TestResult::Pass` cannot pass the suite.
+fn validate_workqueue_progress_wait(registry: &str) -> Result<(), ()> {
+    let body = function_body(registry, "test_workqueue_operational");
+    for forbidden in [
+        "for _ in 0..",
+        "spin_loop",
+        "get_monotonic_time",
+        "rdtsc",
+        "elapsed",
+    ] {
+        if body.contains(forbidden) {
+            eprintln!("workqueue probe regained a timing-based wait: {forbidden}");
+            return Err(());
+        }
+    }
+    let wait = body.find("work.wait();").ok_or(())?;
+    let completion = body.find("if !work.is_completed() {").ok_or(())?;
+
+    (body.contains("static WORK_RUNS: AtomicU32 = AtomicU32::new(0);")
+        && body.contains("let before = WORK_RUNS.load(Ordering::SeqCst);")
+        && body.contains("WORK_RUNS.fetch_add(1, Ordering::SeqCst);")
+        && body.contains("if !workqueue::schedule_work(Arc::clone(&work)) {")
+        && body.contains("TestResult::Fail(\"workqueue refused the scheduled work\")")
+        && body.contains("TestResult::Fail(\"workqueue wait returned before the work completed\")")
+        && body.contains("if WORK_RUNS.load(Ordering::SeqCst) != before.wrapping_add(1) {")
+        && body.contains(
+            "TestResult::Fail(\"workqueue did not execute scheduled work exactly once\")",
+        )
+        && wait < completion)
+        .then_some(())
+        .ok_or(())
 }
 
 fn validate_frame_ledger_counter_inventory(provider: &str) -> Result<(), ()> {
@@ -1821,6 +2025,8 @@ fn frame_ledger_return_and_initialization_ratchets_are_exact() {
         .expect("boot-test oracle gained an always-true/always-false vacuity shape");
     validate_x86_frame_custody_harness(&repo_text("docker/qemu/run-x86-boot-tests.sh"))
         .expect("x86 frame-custody harness became vacuous");
+    validate_workqueue_progress_wait(source(&sources, "kernel/src/test_framework/registry.rs"))
+        .expect("workqueue probe lost its progress key or regained a timing-based wait");
 
     let provider = source(&sources, "kernel/src/tracing/providers/teardown.rs");
     validate_frame_ledger_counter_inventory(provider)
@@ -2843,6 +3049,95 @@ fn deliberately_broken_variants_fail_the_ratchet() {
         deref_alias_store,
     );
     assert!(validate_frame_return_choke_point(&deref_alias_store).is_err());
+    // R1: the same physical bypass through an indexed, sliced or branch-selected alias.
+    let indexed_element_replace = allocator.replacen(
+        "if let Some(frame) = free_list.pop() {",
+        "if let Some(frame) = free_list.pop() { core::mem::replace(&mut free_list[0], frame);",
+        1,
+    );
+    let indexed_element_replace = with_replaced_source(
+        &sources,
+        "kernel/src/memory/frame_allocator.rs",
+        indexed_element_replace,
+    );
+    assert!(validate_frame_return_choke_point(&indexed_element_replace).is_err());
+    let indexed_element_swap = allocator.replacen(
+        "if let Some(frame) = free_list.pop() {",
+        "if let Some(frame) = free_list.pop() { let mut spare = frame; core::mem::swap(&mut free_list[0], &mut spare);",
+        1,
+    );
+    let indexed_element_swap = with_replaced_source(
+        &sources,
+        "kernel/src/memory/frame_allocator.rs",
+        indexed_element_swap,
+    );
+    assert!(validate_frame_return_choke_point(&indexed_element_swap).is_err());
+    let indexed_element_clone_from = allocator.replacen(
+        "if let Some(frame) = free_list.pop() {",
+        "if let Some(frame) = free_list.pop() { free_list[0].clone_from(&frame);",
+        1,
+    );
+    let indexed_element_clone_from = with_replaced_source(
+        &sources,
+        "kernel/src/memory/frame_allocator.rs",
+        indexed_element_clone_from,
+    );
+    assert!(validate_frame_return_choke_point(&indexed_element_clone_from).is_err());
+    let sliced_copy_from_slice = allocator.replacen(
+        "if let Some(frame) = free_list.pop() {",
+        "if let Some(frame) = free_list.pop() { free_list[..].copy_from_slice(&[frame]);",
+        1,
+    );
+    let sliced_copy_from_slice = with_replaced_source(
+        &sources,
+        "kernel/src/memory/frame_allocator.rs",
+        sliced_copy_from_slice,
+    );
+    assert!(validate_frame_return_choke_point(&sliced_copy_from_slice).is_err());
+    let sliced_fill = allocator.replacen(
+        "if let Some(frame) = free_list.pop() {",
+        "if let Some(frame) = free_list.pop() { free_list[0..1].fill(frame);",
+        1,
+    );
+    let sliced_fill = with_replaced_source(
+        &sources,
+        "kernel/src/memory/frame_allocator.rs",
+        sliced_fill,
+    );
+    assert!(validate_frame_return_choke_point(&sliced_fill).is_err());
+    let indexed_helper_export = allocator.replacen(
+        "if let Some(frame) = free_list.pop() {",
+        "if let Some(frame) = free_list.pop() { publish_frame(&mut free_list[0], frame);",
+        1,
+    );
+    let indexed_helper_export = with_replaced_source(
+        &sources,
+        "kernel/src/memory/frame_allocator.rs",
+        indexed_helper_export,
+    );
+    assert!(validate_frame_return_choke_point(&indexed_helper_export).is_err());
+    let conditional_branch_alias_store = allocator.replacen(
+        "if let Some(frame) = free_list.pop() {",
+        "if let Some(frame) = free_list.pop() { let mut spare = alloc::vec![frame]; let dest = if free_list.len() > 1 { &mut spare } else { &mut *free_list }; *dest = alloc::vec![frame];",
+        1,
+    );
+    let conditional_branch_alias_store = with_replaced_source(
+        &sources,
+        "kernel/src/memory/frame_allocator.rs",
+        conditional_branch_alias_store,
+    );
+    assert!(validate_frame_return_choke_point(&conditional_branch_alias_store).is_err());
+    let conditional_branch_alias_method = allocator.replacen(
+        "if let Some(frame) = free_list.pop() {",
+        "if let Some(frame) = free_list.pop() { let mut spare = alloc::vec![frame]; let dest = if free_list.len() > 1 { &mut spare } else { &mut *free_list }; dest.push(frame);",
+        1,
+    );
+    let conditional_branch_alias_method = with_replaced_source(
+        &sources,
+        "kernel/src/memory/frame_allocator.rs",
+        conditional_branch_alias_method,
+    );
+    assert!(validate_frame_return_choke_point(&conditional_branch_alias_method).is_err());
     let helper_export = allocator.replacen(
         "if let Some(frame) = free_list.pop() {",
         "if let Some(frame) = free_list.pop() { stash_frame(&mut free_list, frame);",
@@ -3212,6 +3507,83 @@ fn deliberately_broken_variants_fail_the_ratchet() {
         neutered_healthy_guard,
     );
     assert!(validate_frame_ledger_runtime_oracles(&neutered_healthy_guard).is_err());
+    let neutered_stale_owner_guard = fixture.replacen(
+        "|state| state & STATE_MASK != ST_ALLOCATED || state >> 2 != current.generation)",
+        "|state| state & STATE_MASK != ST_ALLOCATED || state >> 2 != current.generation) && 1 == 2",
+        1,
+    );
+    let neutered_stale_owner_guard = with_replaced_source(
+        &sources,
+        "kernel/src/memory/frame_allocator_tests.rs",
+        neutered_stale_owner_guard,
+    );
+    assert!(validate_frame_ledger_runtime_oracles(&neutered_stale_owner_guard).is_err());
+    let neutered_stale_recovery_guard = fixture.replacen(
+        "if return_lease(current) != ReturnOutcome::Returned || !healthy_round_trip() {",
+        "if return_lease(current) != ReturnOutcome::Returned || !healthy_round_trip() && 1 == 2 {",
+        1,
+    );
+    let neutered_stale_recovery_guard = with_replaced_source(
+        &sources,
+        "kernel/src/memory/frame_allocator_tests.rs",
+        neutered_stale_recovery_guard,
+    );
+    assert!(validate_frame_ledger_runtime_oracles(&neutered_stale_recovery_guard).is_err());
+    let neutered_duplicate_fixture_guard = fixture.replacen(
+        "if !inject_duplicate_candidates(live.frame, 3) {",
+        "if !inject_duplicate_candidates(live.frame, 3) && 1 == 2 {",
+        1,
+    );
+    let neutered_duplicate_fixture_guard = with_replaced_source(
+        &sources,
+        "kernel/src/memory/frame_allocator_tests.rs",
+        neutered_duplicate_fixture_guard,
+    );
+    assert!(validate_frame_ledger_runtime_oracles(&neutered_duplicate_fixture_guard).is_err());
+    let neutered_duplicate_cleanup_guard = fixture.replacen(
+        "if !replacement_returned || !live_returned {",
+        "if !replacement_returned || !live_returned && 1 == 2 {",
+        1,
+    );
+    let neutered_duplicate_cleanup_guard = with_replaced_source(
+        &sources,
+        "kernel/src/memory/frame_allocator_tests.rs",
+        neutered_duplicate_cleanup_guard,
+    );
+    assert!(validate_frame_ledger_runtime_oracles(&neutered_duplicate_cleanup_guard).is_err());
+    let neutered_duplicate_recovery_guard = fixture.replacen(
+        "if !healthy_round_trip() {",
+        "if !healthy_round_trip() && 1 == 2 {",
+        1,
+    );
+    let neutered_duplicate_recovery_guard = with_replaced_source(
+        &sources,
+        "kernel/src/memory/frame_allocator_tests.rs",
+        neutered_duplicate_recovery_guard,
+    );
+    assert!(validate_frame_ledger_runtime_oracles(&neutered_duplicate_recovery_guard).is_err());
+    let neutered_contended_isolation_guard = fixture.replacen(
+        "if lost_state.is_none_or(|state| state & STATE_MASK != ST_FREE)\n        || free_frame_count(contended.frame) != 0\n    {",
+        "if lost_state.is_none_or(|state| state & STATE_MASK != ST_FREE)\n        || free_frame_count(contended.frame) != 0 && 1 == 2\n    {",
+        1,
+    );
+    let neutered_contended_isolation_guard = with_replaced_source(
+        &sources,
+        "kernel/src/memory/frame_allocator_tests.rs",
+        neutered_contended_isolation_guard,
+    );
+    assert!(validate_frame_ledger_runtime_oracles(&neutered_contended_isolation_guard).is_err());
+    let neutered_contended_recovery_guard = fixture.replacen(
+        "if return_lease(repaired) != ReturnOutcome::Returned\n        || counters()[..5] != before_healthy[..5]\n        || !healthy_round_trip()\n    {",
+        "if return_lease(repaired) != ReturnOutcome::Returned\n        || counters()[..5] != before_healthy[..5]\n        || !healthy_round_trip() && 1 == 2\n    {",
+        1,
+    );
+    let neutered_contended_recovery_guard = with_replaced_source(
+        &sources,
+        "kernel/src/memory/frame_allocator_tests.rs",
+        neutered_contended_recovery_guard,
+    );
+    assert!(validate_frame_ledger_runtime_oracles(&neutered_contended_recovery_guard).is_err());
 
     // Registration is keyed by the function identity, not display spelling.
     let registry = source(&sources, "kernel/src/test_framework/registry.rs");
@@ -3295,6 +3667,18 @@ fn deliberately_broken_variants_fail_the_ratchet() {
         vacuous_timer,
     );
     assert!(validate_frame_ledger_runtime_oracles(&vacuous_timer).is_err());
+    let spin_budget_workqueue = registry.replacen(
+        "    work.wait();\n",
+        "    for _ in 0..1_000_000 {\n        core::hint::spin_loop();\n    }\n",
+        1,
+    );
+    assert!(validate_workqueue_progress_wait(&spin_budget_workqueue).is_err());
+    let unscored_workqueue = registry.replacen(
+        "if WORK_RUNS.load(Ordering::SeqCst) != before.wrapping_add(1) {",
+        "if WORK_RUNS.load(Ordering::SeqCst) != before.wrapping_add(1) && 1 == 2 {",
+        1,
+    );
+    assert!(validate_workqueue_progress_wait(&unscored_workqueue).is_err());
 
     let vacuous_frame_tests = with_replaced_source(
         &sources,
@@ -3321,9 +3705,37 @@ fn deliberately_broken_variants_fail_the_ratchet() {
         format!("{provider}\n#[cfg(any())]\nfn synthetic_vacuity() {{}}"),
     );
     assert!(validate_no_vacuous_test_conditions(&vacuous_provider).is_err());
+    let vacuous_and_false = with_replaced_source(
+        &sources,
+        "kernel/src/memory/frame_allocator_tests.rs",
+        format!(
+            "{fixture}\nfn synthetic_vacuity_operand() {{ if counters()[0] == 0 && false {{}} }}"
+        ),
+    );
+    assert!(validate_no_vacuous_test_conditions(&vacuous_and_false).is_err());
+    let vacuous_false_and = with_replaced_source(
+        &sources,
+        "kernel/src/test_framework/registry.rs",
+        format!(
+            "{registry}\nfn synthetic_vacuity_operand() {{ if false && counters_ready() {{}} }}"
+        ),
+    );
+    assert!(validate_no_vacuous_test_conditions(&vacuous_false_and).is_err());
 
     let harness = repo_text("docker/qemu/run-x86-boot-tests.sh");
     assert!(validate_x86_frame_custody_harness(&harness.replace("-eq 1", "-ge 0")).is_err());
+    assert!(validate_x86_frame_custody_harness(
+        &harness.replace("\n    $passed\n", "\n    $passed || true\n")
+    )
+    .is_err());
+    assert!(validate_x86_frame_custody_harness(
+        &harness.replace("set -euo pipefail", "set -uo pipefail\nset +e")
+    )
+    .is_err());
+    assert!(validate_x86_frame_custody_harness(
+        &harness.replace("\n    $passed\n", "\n    exit 0\n    $passed\n")
+    )
+    .is_err());
 
     let missing_counter_reader = provider.replacen("    &FRAME_RETURN_REFUSED_DOUBLE,\n", "", 1);
     assert!(validate_frame_ledger_counter_inventory(&missing_counter_reader).is_err());

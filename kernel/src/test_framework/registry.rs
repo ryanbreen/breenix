@@ -2739,33 +2739,42 @@ fn test_kthread_spawn_verify() -> TestResult {
 
 /// Test that the workqueue is operational in PostScheduler stage.
 ///
-/// This test verifies that work can be queued and executed through the
-/// workqueue subsystem.
+/// The wait is progress-keyed, not timed (#519 norm). `Work::wait()` blocks on
+/// the work item's own completion handshake — the flag the worker sets after the
+/// closure returns — and `WORK_RUNS` advances only when that closure runs. The
+/// spin-count deadline this replaced was a wall-clock budget shared with every
+/// other parallel PostScheduler kthread, so a slow or starved host could red
+/// `[BOOT_TESTS:PASS]` while the workqueue was healthy.
 fn test_workqueue_operational() -> TestResult {
     use crate::task::workqueue;
-    use core::sync::atomic::{AtomicBool, Ordering};
+    use alloc::sync::Arc;
+    use core::sync::atomic::{AtomicU32, Ordering};
 
-    static WORK_RAN: AtomicBool = AtomicBool::new(false);
-    WORK_RAN.store(false, Ordering::SeqCst);
+    // A counter, not a flag: it advances if and only if the scheduled closure
+    // itself ran, so it is the awaited work's own progress key.
+    static WORK_RUNS: AtomicU32 = AtomicU32::new(0);
+    let before = WORK_RUNS.load(Ordering::SeqCst);
 
-    // Schedule work using the workqueue API
-    let _work = workqueue::schedule_work_fn(
+    let work = workqueue::Work::new(
         || {
-            WORK_RAN.store(true, Ordering::SeqCst);
+            WORK_RUNS.fetch_add(1, Ordering::SeqCst);
         },
         "wq_test",
     );
-
-    // Give the workqueue time to process (busy wait)
-    for _ in 0..1_000_000 {
-        if WORK_RAN.load(Ordering::SeqCst) {
-            return TestResult::Pass;
-        }
-        core::hint::spin_loop();
+    if !workqueue::schedule_work(Arc::clone(&work)) {
+        return TestResult::Fail("workqueue refused the scheduled work");
     }
 
-    // Reaching the timeout means the scheduled work was never observed running.
-    TestResult::Fail("workqueue did not execute scheduled work")
+    work.wait();
+
+    if !work.is_completed() {
+        return TestResult::Fail("workqueue wait returned before the work completed");
+    }
+    if WORK_RUNS.load(Ordering::SeqCst) != before.wrapping_add(1) {
+        return TestResult::Fail("workqueue did not execute scheduled work exactly once");
+    }
+
+    TestResult::Pass
 }
 
 // =============================================================================
