@@ -563,49 +563,9 @@ impl Process {
     /// Walks all user pages in the process's page table and decrements their
     /// reference counts. Frames that are no longer shared (refcount reaches 0)
     /// are returned to the frame allocator for reuse.
-    #[cfg(target_arch = "x86_64")]
     pub(crate) fn cleanup_cow_frames(&mut self) {
-        use crate::memory::frame_allocator::deallocate_frame;
-        use crate::memory::frame_metadata::frame_decref;
-        use x86_64::structures::paging::{PageTableFlags, PhysFrame};
-
-        // Get the page table for this process
-        let page_table = match self.page_table.as_ref() {
-            Some(pt) => pt,
-            None => return,
-        };
-
-        // Walk all user pages and decrement refcounts
-        let _ = page_table.walk_mapped_pages(|_virt_addr, phys_addr, flags| {
-            // Only process user-accessible pages
-            if !flags.contains(PageTableFlags::USER_ACCESSIBLE) {
-                return;
-            }
-
-            let frame = PhysFrame::containing_address(phys_addr);
-
-            // Decrement reference count.
-            // Returns true if the frame should be freed:
-            // - Tracked frame whose refcount reached 0 (was shared, now sole owner exiting)
-            // - Untracked frame (private to this process, never shared via CoW)
-            // Returns false if still shared (refcount > 0 after decrement).
-            if frame_decref(frame) {
-                deallocate_frame(frame);
-            }
-        });
-    }
-
-    /// Clean up Copy-on-Write frame references when process exits (ARM64)
-    ///
-    /// Walks all user pages in the process's page table and decrements their
-    /// reference counts. Frames that are no longer shared (refcount reaches 0)
-    /// are returned to the frame allocator for reuse.
-    ///
-    /// CRITICAL: No logging — may run under PM lock.
-    #[cfg(not(target_arch = "x86_64"))]
-    pub(crate) fn cleanup_cow_frames(&mut self) {
-        if let Some(page_table) = self.page_table.as_ref() {
-            cleanup_cow_page_table(page_table);
+        if let Some(page_table) = self.page_table.as_mut() {
+            page_table.release_mapped_leaves();
         }
     }
 
@@ -614,10 +574,33 @@ impl Process {
     /// This is safe to call once CR3 has definitely switched away from the old
     /// page table (e.g., at the start of the next exec, or during process exit).
     /// Each old page table has its user-space frames freed via `cleanup_for_exec()`.
+    #[cfg(target_arch = "x86_64")]
     pub fn drain_old_page_tables(&mut self) {
         for old_pt in self.pending_old_page_tables.drain(..) {
             old_pt.cleanup_for_exec();
         }
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    pub(crate) fn drain_old_page_tables_bounded(&mut self, budget: &mut u32) -> bool {
+        while *budget > 0 {
+            let Some(old_page_table) = self.pending_old_page_tables.last_mut() else {
+                return true;
+            };
+            if old_page_table.cleanup_for_exec(self.id.as_u64(), budget)
+                != crate::memory::process_memory::RetireProgress::Complete
+            {
+                return false;
+            }
+            self.pending_old_page_tables.pop();
+        }
+        self.pending_old_page_tables.is_empty()
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    pub fn drain_old_page_tables(&mut self) {
+        let mut budget = crate::memory::process_memory::RETIRE_FRAME_BUDGET;
+        let _ = self.drain_old_page_tables_bounded(&mut budget);
     }
 
     /// Check if process is terminated
@@ -676,26 +659,4 @@ impl Process {
     pub fn vma_list_mut(&mut self) -> &mut alloc::vec::Vec<crate::memory::vma::Vma> {
         &mut self.vmas
     }
-}
-
-/// Release the user-frame references reachable from an AArch64 process root.
-///
-/// Deferred exit reclamation owns the page table after removing it from the
-/// process table, so this operation accepts the page table directly.
-#[cfg(target_arch = "aarch64")]
-pub(crate) fn cleanup_cow_page_table(page_table: &ProcessPageTable) {
-    use crate::memory::arch_stub::{PageTableFlags, PhysFrame};
-    use crate::memory::frame_allocator::deallocate_frame;
-    use crate::memory::frame_metadata::frame_decref;
-
-    let _ = page_table.walk_mapped_pages(|_virt_addr, phys_addr, flags| {
-        if !flags.contains(PageTableFlags::USER_ACCESSIBLE) {
-            return;
-        }
-
-        let frame = PhysFrame::containing_address(phys_addr);
-        if frame_decref(frame) {
-            deallocate_frame(frame);
-        }
-    });
 }

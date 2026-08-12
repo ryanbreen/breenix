@@ -2031,16 +2031,6 @@ fn handle_resize_window_buffer(cmd: &FbDrawCmd) -> SyscallResult {
     );
     process.vmas.push(vma);
 
-    // Deallocate old physical frames
-    for &old_phys in &old_phys_addrs {
-        use crate::memory::arch_stub::PhysAddr;
-        crate::memory::frame_allocator::deallocate_frame(crate::memory::arch_stub::PhysFrame::<
-            Size4KiB,
-        >::containing_address(
-            PhysAddr::new(old_phys)
-        ));
-    }
-
     // Update registry
     {
         let mut reg = WINDOW_REGISTRY.lock();
@@ -2220,6 +2210,15 @@ fn handle_map_compositor_texture(cmd: &FbDrawCmd) -> SyscallResult {
             None => return SyscallResult::Err(super::ErrorCode::InvalidArgument as u64),
         }
     };
+
+    if crate::memory::frame_allocator::register_external_leaf_span(
+        crate::memory::arch_stub::PhysAddr::new(phys_base),
+        (num_pages as u64) * PAGE_SIZE,
+    )
+    .is_err()
+    {
+        return SyscallResult::Err(super::ErrorCode::InvalidArgument as u64);
+    }
 
     // Get current process
     let current_thread_id = match get_current_thread_id() {

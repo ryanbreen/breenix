@@ -500,8 +500,12 @@ fn load_segment_into_page_table(
                 page_vaddr.as_u64()
             );
 
-            // Map the page in the process page table
-            page_table.map_page(page, new_frame, page_flags)?;
+            // Map the page in the process page table. A refusal leaves the
+            // frame unpublished, so the loader still owns its return.
+            if let Err(error) = page_table.map_page(page, new_frame, page_flags) {
+                let _ = crate::memory::frame_allocator::deallocate_leaf_frame(new_frame);
+                return Err(error);
+            }
 
             (new_frame, false)
         };

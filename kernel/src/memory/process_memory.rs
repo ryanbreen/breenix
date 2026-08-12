@@ -9,9 +9,12 @@ use crate::memory::arch_stub::{
 };
 #[cfg(target_arch = "aarch64")]
 use crate::memory::frame_allocator::allocate_frame;
-use crate::memory::frame_allocator::{allocate_frame_leased, FrameLease};
 #[cfg(target_arch = "aarch64")]
-use crate::memory::frame_allocator::{return_lease, ReturnOutcome};
+use crate::memory::frame_allocator::return_lease;
+use crate::memory::frame_allocator::{
+    acquire_leaf_mapping, allocate_frame_leased, deallocate_leaf_frame, FrameLease,
+    LeafMappingClass, ReturnOutcome,
+};
 use crate::memory::layout::USER_STACK_REGION_END;
 #[cfg(target_arch = "x86_64")]
 use x86_64::{
@@ -90,6 +93,39 @@ pub struct ProcessPageTable {
     root_lease: FrameLease,
     /// Allocation-derived custody for every intermediate table we created.
     tables: OwnedTableFrames,
+    /// One allocation-derived custody record per user virtual page.
+    leaves: OwnedLeafFrames,
+}
+
+#[derive(Clone, Copy)]
+enum LeafMapping {
+    Owned,
+    External,
+}
+
+#[derive(Clone, Copy)]
+struct LeafRecord {
+    page: u64,
+    mapping: LeafMapping,
+}
+
+struct OwnedLeafFrames {
+    records: Vec<LeafRecord>,
+    released: bool,
+}
+
+impl OwnedLeafFrames {
+    fn new() -> Self {
+        Self {
+            records: Vec::new(),
+            released: false,
+        }
+    }
+
+    fn search(&self, page: u64) -> Result<usize, usize> {
+        self.records
+            .binary_search_by_key(&page, |record| record.page)
+    }
 }
 
 struct OwnedTableFrames {
@@ -129,6 +165,7 @@ enum Disposition {
     Retiring,
     #[cfg(target_arch = "aarch64")]
     Retired,
+    #[cfg(target_arch = "x86_64")]
     RetiredByExecWalk,
     Abandoned(AbandonReason),
 }
@@ -142,6 +179,60 @@ pub(crate) enum RetireProgress {
 
 #[cfg(target_arch = "aarch64")]
 pub(crate) const RETIRE_FRAME_BUDGET: u32 = 64;
+
+/// Owns an aarch64 address space until exec publishes it in a Process row.
+/// Failure drops release leaves first, then tables and the root. This needs no
+/// hardware-liveness proof because the table has never been installed in TTBR0.
+#[cfg(target_arch = "aarch64")]
+pub(crate) struct UnpublishedPageTable {
+    page_table: Option<alloc::boxed::Box<ProcessPageTable>>,
+    pid: u64,
+}
+
+#[cfg(target_arch = "aarch64")]
+impl UnpublishedPageTable {
+    pub(crate) fn new(page_table: ProcessPageTable, pid: u64) -> Self {
+        Self {
+            page_table: Some(alloc::boxed::Box::new(page_table)),
+            pid,
+        }
+    }
+
+    pub(crate) fn as_mut(&mut self) -> &mut ProcessPageTable {
+        self.page_table.as_deref_mut().expect("unpublished table")
+    }
+
+    pub(crate) fn publish(mut self) -> alloc::boxed::Box<ProcessPageTable> {
+        self.page_table.take().expect("unpublished table")
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+impl core::ops::Deref for UnpublishedPageTable {
+    type Target = ProcessPageTable;
+
+    fn deref(&self) -> &Self::Target {
+        self.page_table.as_deref().expect("unpublished table")
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+impl core::ops::DerefMut for UnpublishedPageTable {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.as_mut()
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+impl Drop for UnpublishedPageTable {
+    fn drop(&mut self) {
+        if let Some(page_table) = self.page_table.as_deref_mut() {
+            page_table.release_mapped_leaves();
+            let mut budget = u32::MAX;
+            let _ = page_table.retire_bounded(self.pid, &mut budget);
+        }
+    }
+}
 
 #[derive(Clone, Copy)]
 pub(crate) enum AbandonReason {
@@ -214,6 +305,7 @@ impl ProcessPageTable {
             mapper,
             root_lease,
             tables: OwnedTableFrames::new(),
+            leaves: OwnedLeafFrames::new(),
         };
 
         log::debug!("ARM64: ProcessPageTable created successfully");
@@ -943,6 +1035,7 @@ impl ProcessPageTable {
             mapper,
             root_lease,
             tables,
+            leaves: OwnedLeafFrames::new(),
         };
 
         // With global kernel page tables, all kernel stacks are automatically visible
@@ -1089,11 +1182,20 @@ impl ProcessPageTable {
                 );
                 return Err("Cannot map kernel addresses as user-accessible");
             }
+            let user_mapping = flags.contains(PageTableFlags::USER_ACCESSIBLE);
 
             // CRITICAL FIX: Check if page is already mapped before attempting to map
             // This handles the case where L3 tables are shared between processes
             if let Ok(existing_frame) = self.mapper.translate_page(page) {
                 if existing_frame == frame {
+                    if user_mapping {
+                        let Ok(_) = self.leaves.search(page_addr) else {
+                            crate::trace_count!(
+                                crate::tracing::providers::teardown::LEAF_CUSTODY_REFUSED
+                            );
+                            return Err("Mapped user page has no leaf custody record");
+                        };
+                    }
                     // Page is already mapped to the correct frame, skip
                     log::trace!(
                         "Page {:#x} already mapped to frame {:#x}, skipping",
@@ -1113,6 +1215,38 @@ impl ProcessPageTable {
                 }
             }
 
+            let leaf_insert = if user_mapping {
+                match self.leaves.search(page_addr) {
+                    Ok(_) => {
+                        crate::trace_count!(
+                            crate::tracing::providers::teardown::LEAF_CUSTODY_REFUSED
+                        );
+                        return Err("Leaf custody record exists without a mapped descriptor");
+                    }
+                    Err(index) => {
+                        self.leaves
+                            .records
+                            .try_reserve(1)
+                            .map_err(|_| "Failed to reserve leaf custody")?;
+                        let mapping = match acquire_leaf_mapping(frame) {
+                            Ok(LeafMappingClass::Owned) => LeafMapping::Owned,
+                            Ok(LeafMappingClass::External) => LeafMapping::External,
+                            Err(error) => return Err(error),
+                        };
+                        self.leaves.records.insert(
+                            index,
+                            LeafRecord {
+                                page: page_addr,
+                                mapping,
+                            },
+                        );
+                        Some((index, mapping))
+                    }
+                }
+            } else {
+                None
+            };
+
             // Page is not mapped, proceed with mapping
             // CRITICAL FIX: Use map_to_with_table_flags to ensure USER_ACCESSIBLE
             // is set on intermediate page tables (PML4, PDPT, PD) not just the final PT entry
@@ -1124,14 +1258,17 @@ impl ProcessPageTable {
                 PageTableFlags::PRESENT | PageTableFlags::WRITABLE
             };
 
-            let Self { mapper, tables, .. } = self;
-            match mapper.map_to_with_table_flags(
-                page,
-                frame,
-                flags,
-                table_flags,
-                &mut TableRecorder(tables),
-            ) {
+            let map_result = {
+                let Self { mapper, tables, .. } = self;
+                mapper.map_to_with_table_flags(
+                    page,
+                    frame,
+                    flags,
+                    table_flags,
+                    &mut TableRecorder(tables),
+                )
+            };
+            match map_result {
                 Ok(flush) => {
                     // CRITICAL: Do NOT flush TLB immediately!
                     // This is a common mistake that differs from how real OSes work.
@@ -1147,10 +1284,23 @@ impl ProcessPageTable {
                     // In the future, we could collect these and batch flush if needed
                     let _ = flush; // Explicitly ignore the flush
 
+                    if leaf_insert.is_some() {
+                        self.leaves.released = false;
+                        crate::trace_count!(
+                            crate::tracing::providers::teardown::LEAF_MAPPINGS_RECORDED
+                        );
+                    }
+
                     log::trace!("mapper.map_to succeeded, TLB flush deferred");
                     Ok(())
                 }
                 Err(e) => {
+                    if let Some((index, mapping)) = leaf_insert {
+                        self.leaves.records.remove(index);
+                        if let LeafMapping::Owned = mapping {
+                            let _ = crate::memory::frame_metadata::frame_decref(frame);
+                        }
+                    }
                     // Enhanced error logging to understand map_to failures
                     #[cfg(not(target_arch = "x86_64"))]
                     use crate::memory::arch_stub::mapper::MapToError;
@@ -1185,13 +1335,58 @@ impl ProcessPageTable {
         &mut self,
         page: Page<Size4KiB>,
     ) -> Result<PhysFrame<Size4KiB>, &'static str> {
+        let page_addr = page.start_address().as_u64();
+        let record_index = self.leaves.search(page_addr).map_err(|_| {
+            crate::trace_count!(crate::tracing::providers::teardown::LEAF_CUSTODY_REFUSED);
+            "Mapped user page has no releasable leaf custody"
+        })?;
+        let record = self.leaves.records[record_index];
         let (frame, flush) = self
             .mapper
             .unmap(page)
             .map_err(|_| "Failed to unmap page")?;
         // Don't flush immediately - same reasoning as map_page
         let _ = flush;
+        self.leaves.records.remove(record_index);
+        Self::release_leaf_record(record, frame);
         Ok(frame)
+    }
+
+    fn release_leaf_record(record: LeafRecord, frame: PhysFrame) {
+        crate::trace_count!(crate::tracing::providers::teardown::LEAF_MAPPINGS_RELEASED);
+        if let LeafMapping::Owned = record.mapping {
+            if crate::memory::frame_metadata::frame_decref(frame)
+                && deallocate_leaf_frame(frame) == ReturnOutcome::Returned
+            {
+                crate::trace_count!(crate::tracing::providers::teardown::LEAF_FRAMES_RETURNED);
+            }
+        }
+    }
+
+    /// Release mapped user leaves exactly once while the caller owns a dead or
+    /// never-published address space. The record proves custody of the virtual
+    /// mapping; its current descriptor supplies the frame identity so a CoW
+    /// replacement does not change the record's ownership key.
+    pub(crate) fn release_mapped_leaves(&mut self) {
+        if self.leaves.released {
+            return;
+        }
+        let records = &self.leaves.records;
+        let _ = self.walk_mapped_pages(|virt_addr, phys_addr, flags| {
+            if !flags.contains(PageTableFlags::USER_ACCESSIBLE) {
+                return;
+            }
+            let page = virt_addr.as_u64() & !0xfff;
+            let frame = PhysFrame::containing_address(phys_addr);
+            match records.binary_search_by_key(&page, |record| record.page) {
+                Ok(index) => Self::release_leaf_record(records[index], frame),
+                Err(_) => {
+                    crate::trace_count!(crate::tracing::providers::teardown::LEAF_CUSTODY_REFUSED);
+                }
+            }
+        });
+        self.leaves.records.clear();
+        self.leaves.released = true;
     }
 
     /// Update the flags of an already-mapped page
@@ -1518,9 +1713,11 @@ impl ProcessPageTable {
         let end_page = Page::<Size4KiB>::containing_address(end_addr);
 
         for page in Page::range_inclusive(start_page, end_page) {
-            // Try to unmap the page - it's OK if it's not mapped
-            match self.mapper.unmap(page) {
-                Ok((frame, _flush)) => {
+            if self.mapper.translate_page(page).is_err() {
+                continue;
+            }
+            match self.unmap_page(page) {
+                Ok(frame) => {
                     // Don't flush immediately - the page table switch will handle it
                     log::trace!(
                         "Unmapped page {:#x} (was mapped to frame {:#x})",
@@ -1528,10 +1725,7 @@ impl ProcessPageTable {
                         frame.start_address().as_u64()
                     );
                 }
-                Err(_) => {
-                    // Page wasn't mapped, that's fine
-                    log::trace!("Page {:#x} was not mapped", page.start_address().as_u64());
-                }
+                Err(_) => return Err("Mapped user page could not release leaf custody"),
             }
         }
 
@@ -1574,7 +1768,7 @@ impl ProcessPageTable {
                 self.tables.disposition = Disposition::Retiring;
             }
             Disposition::Retiring => {}
-            Disposition::RetiredByExecWalk | Disposition::Abandoned(_) => {
+            Disposition::Abandoned(_) => {
                 return RetireProgress::Complete;
             }
         }
@@ -1595,7 +1789,8 @@ impl ProcessPageTable {
                         ReturnOutcome::RefusedDoubleRelease
                         | ReturnOutcome::RefusedStale
                         | ReturnOutcome::RefusedNeverAllocated
-                        | ReturnOutcome::RefusedUntracked => {}
+                        | ReturnOutcome::RefusedUntracked
+                        | ReturnOutcome::RefusedLiveLeaf => {}
                     }
                     self.tables.disposition = Disposition::Retired;
                     crate::tracing::providers::teardown::record_pt_root_retired(pid);
@@ -1612,7 +1807,8 @@ impl ProcessPageTable {
                 ReturnOutcome::RefusedDoubleRelease
                 | ReturnOutcome::RefusedStale
                 | ReturnOutcome::RefusedNeverAllocated
-                | ReturnOutcome::RefusedUntracked => {}
+                | ReturnOutcome::RefusedUntracked
+                | ReturnOutcome::RefusedLiveLeaf => {}
             }
         }
 
@@ -1629,7 +1825,7 @@ impl ProcessPageTable {
     ///
     /// Call this on the OLD page table after installing the new one during exec().
     #[cfg(target_arch = "x86_64")]
-    pub fn cleanup_for_exec(mut self) {
+    pub(crate) fn cleanup_for_exec(mut self) {
         use crate::memory::frame_allocator::deallocate_frame;
         use crate::memory::frame_metadata::frame_decref;
         use alloc::vec::Vec;
@@ -1803,151 +1999,13 @@ impl ProcessPageTable {
         );
     }
 
-    /// Clean up page table resources during exec() (ARM64 version)
-    ///
-    /// ARM64 uses different page table naming (L0/L1/L2/L3) but same structure.
+    /// Release a superseded ARM64 address space from allocation-derived leaf
+    /// and table custody. The caller supplies the shared retirement budget so
+    /// old exec roots remain resumable with the ordinary exit pipeline.
     #[cfg(target_arch = "aarch64")]
-    pub fn cleanup_for_exec(mut self) {
-        use crate::memory::frame_allocator::deallocate_frame;
-        use crate::memory::frame_metadata::frame_decref;
-        use alloc::vec::Vec;
-
-        self.tables.disposition = Disposition::RetiredByExecWalk;
-        crate::trace_count_add!(
-            crate::tracing::providers::teardown::PT_EXEC_WALK_LEASES_UNRETURNED,
-            self.tables.leases.len() as u64
-        );
-
-        let phys_offset = crate::memory::physical_memory_offset();
-        let mut user_frames_freed = 0u64;
-        let mut user_frames_still_shared = 0u64;
-        let mut table_frames_freed = 0u64;
-
-        // Collect page table structure frames to free after walking
-        let mut l1_frames: Vec<PhysFrame> = Vec::new();
-        let mut l2_frames: Vec<PhysFrame> = Vec::new();
-        let mut l3_frames: Vec<PhysFrame> = Vec::new();
-
-        unsafe {
-            // Get the L0 table (TTBR0 - userspace only on ARM64)
-            let l0_virt = phys_offset + self.level_4_frame.start_address().as_u64();
-            let l0_table = &*(l0_virt.as_ptr() as *const PageTable);
-
-            // Walk all L0 entries (all are userspace on ARM64 TTBR0)
-            for l0_idx in 0..512usize {
-                let l0_entry = &l0_table[l0_idx];
-                if l0_entry.is_unused() || !l0_entry.flags().contains(PageTableFlags::PRESENT) {
-                    continue;
-                }
-
-                // Get L1 table and mark for cleanup
-                let l1_phys = l0_entry.addr();
-                let l1_frame = PhysFrame::containing_address(l1_phys);
-                l1_frames.push(l1_frame);
-
-                let l1_virt = phys_offset + l1_phys.as_u64();
-                let l1_table = &*(l1_virt.as_ptr() as *const PageTable);
-
-                for l1_idx in 0..512usize {
-                    let l1_entry = &l1_table[l1_idx];
-                    if l1_entry.is_unused() || !l1_entry.flags().contains(PageTableFlags::PRESENT) {
-                        continue;
-                    }
-
-                    // Check for 1GB block (huge page equivalent)
-                    if l1_entry.flags().contains(PageTableFlags::HUGE_PAGE) {
-                        let frame = PhysFrame::containing_address(l1_entry.addr());
-                        if frame_decref(frame) {
-                            deallocate_frame(frame);
-                            user_frames_freed += 1;
-                        } else {
-                            user_frames_still_shared += 1;
-                        }
-                        continue;
-                    }
-
-                    // Get L2 table and mark for cleanup
-                    let l2_phys = l1_entry.addr();
-                    let l2_frame = PhysFrame::containing_address(l2_phys);
-                    l2_frames.push(l2_frame);
-
-                    let l2_virt = phys_offset + l2_phys.as_u64();
-                    let l2_table = &*(l2_virt.as_ptr() as *const PageTable);
-
-                    for l2_idx in 0..512usize {
-                        let l2_entry = &l2_table[l2_idx];
-                        if l2_entry.is_unused()
-                            || !l2_entry.flags().contains(PageTableFlags::PRESENT)
-                        {
-                            continue;
-                        }
-
-                        // Check for 2MB block
-                        if l2_entry.flags().contains(PageTableFlags::HUGE_PAGE) {
-                            let frame = PhysFrame::containing_address(l2_entry.addr());
-                            if frame_decref(frame) {
-                                deallocate_frame(frame);
-                                user_frames_freed += 1;
-                            } else {
-                                user_frames_still_shared += 1;
-                            }
-                            continue;
-                        }
-
-                        // Get L3 table and mark for cleanup
-                        let l3_phys = l2_entry.addr();
-                        let l3_frame = PhysFrame::containing_address(l3_phys);
-                        l3_frames.push(l3_frame);
-
-                        let l3_virt = phys_offset + l3_phys.as_u64();
-                        let l3_table = &*(l3_virt.as_ptr() as *const PageTable);
-
-                        for l3_idx in 0..512usize {
-                            let l3_entry = &l3_table[l3_idx];
-                            if l3_entry.is_unused()
-                                || !l3_entry.flags().contains(PageTableFlags::PRESENT)
-                            {
-                                continue;
-                            }
-
-                            // 4KB page
-                            let frame = PhysFrame::containing_address(l3_entry.addr());
-                            if frame_decref(frame) {
-                                deallocate_frame(frame);
-                                user_frames_freed += 1;
-                            } else {
-                                user_frames_still_shared += 1;
-                            }
-                        }
-                    }
-                }
-            }
-
-            // Free page table structure frames (L3 first, then L2, then L1)
-            for frame in l3_frames {
-                deallocate_frame(frame);
-                table_frames_freed += 1;
-            }
-            for frame in l2_frames {
-                deallocate_frame(frame);
-                table_frames_freed += 1;
-            }
-            for frame in l1_frames {
-                deallocate_frame(frame);
-                table_frames_freed += 1;
-            }
-
-            // Free the L0 frame itself
-            deallocate_frame(self.level_4_frame);
-            table_frames_freed += 1;
-        }
-
-        log::info!(
-            "cleanup_for_exec [ARM64]: freed {} user frames, {} still shared, {} table frames",
-            user_frames_freed,
-            user_frames_still_shared,
-            table_frames_freed
-        );
+    pub(crate) fn cleanup_for_exec(&mut self, pid: u64, budget: &mut u32) -> RetireProgress {
+        self.release_mapped_leaves();
+        self.retire_bounded(pid, budget)
     }
 }
 
@@ -1965,6 +2023,7 @@ impl Drop for ProcessPageTable {
             }
             #[cfg(target_arch = "aarch64")]
             Disposition::Retired => {}
+            #[cfg(target_arch = "x86_64")]
             Disposition::RetiredByExecWalk => {}
             Disposition::Abandoned(reason) => match reason {
                 AbandonReason::NoProofPipeline
@@ -1986,6 +2045,78 @@ fn disposition_gate_counters() -> [u64; 6] {
         teardown::PT_ROOT_DROPPED_UNDECIDED.aggregate(),
         teardown::PT_EXEC_WALK_LEASES_UNRETURNED.aggregate(),
     ]
+}
+
+#[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
+fn corrupt_executable_fixture() -> [u8; 180] {
+    use crate::arch_impl::aarch64::elf::{
+        flags, Elf64Header, Elf64ProgramHeader, SegmentType, ELFDATA2LSB, ELFCLASS64, ELF_MAGIC,
+        EM_AARCH64,
+    };
+
+    let header = Elf64Header {
+        magic: ELF_MAGIC,
+        class: ELFCLASS64,
+        data: ELFDATA2LSB,
+        version: 1,
+        osabi: 0,
+        abiversion: 0,
+        _pad: [0; 7],
+        elf_type: 2,
+        machine: EM_AARCH64,
+        version2: 1,
+        entry: 0x20_0000,
+        phoff: 64,
+        shoff: 0,
+        flags: 0,
+        ehsize: 64,
+        phentsize: 56,
+        phnum: 2,
+        shentsize: 0,
+        shnum: 0,
+        shstrndx: 0,
+    };
+    let executable = Elf64ProgramHeader {
+        p_type: SegmentType::Load as u32,
+        p_flags: flags::PF_R | flags::PF_X,
+        p_offset: 176,
+        p_vaddr: 0x20_0000,
+        p_paddr: 0,
+        p_filesz: 4,
+        p_memsz: 4096,
+        p_align: 4096,
+    };
+    let corrupt = Elf64ProgramHeader {
+        p_type: SegmentType::Load as u32,
+        p_flags: flags::PF_R | flags::PF_X,
+        p_offset: 180,
+        p_vaddr: 0x40_0000,
+        p_paddr: 0,
+        p_filesz: 4,
+        p_memsz: 4096,
+        p_align: 4096,
+    };
+
+    let mut bytes = [0u8; 180];
+    unsafe {
+        core::ptr::copy_nonoverlapping(
+            &header as *const Elf64Header as *const u8,
+            bytes.as_mut_ptr(),
+            core::mem::size_of::<Elf64Header>(),
+        );
+        core::ptr::copy_nonoverlapping(
+            &executable as *const Elf64ProgramHeader as *const u8,
+            bytes.as_mut_ptr().add(64),
+            core::mem::size_of::<Elf64ProgramHeader>(),
+        );
+        core::ptr::copy_nonoverlapping(
+            &corrupt as *const Elf64ProgramHeader as *const u8,
+            bytes.as_mut_ptr().add(120),
+            core::mem::size_of::<Elf64ProgramHeader>(),
+        );
+    }
+    bytes[176..180].copy_from_slice(&[0x1f, 0x20, 0x03, 0xd5]);
+    bytes
 }
 
 /// O2/G-H: drive the real classified-abandon and non-freeing Drop paths.
@@ -2025,6 +2156,72 @@ pub fn page_table_custody_disposition_gate_test() -> crate::test_framework::regi
             || crate::memory::frame_allocator::free_list_len_for_gate() != free_before + 1
         {
             return TestResult::Fail("E: retirement contention was not isolated and repaired");
+        }
+
+        let used_before = {
+            let stats = crate::memory::frame_allocator::memory_stats();
+            stats.allocated_frames.saturating_sub(
+                crate::memory::frame_allocator::free_list_len_for_gate(),
+            )
+        };
+        let leaf_recorded_before = teardown::LEAF_MAPPINGS_RECORDED.aggregate();
+        let leaf_released_before = teardown::LEAF_MAPPINGS_RELEASED.aggregate();
+        let leaf_returned_before = teardown::LEAF_FRAMES_RETURNED.aggregate();
+        let tables_returned_before = teardown::PT_TABLE_FRAMES_RETURNED.aggregate();
+        let roots_retired_before = teardown::PT_ROOTS_RETIRED.aggregate();
+        let live_refusals_before = teardown::FRAME_RETURN_REFUSED_LIVE_LEAF.aggregate();
+        let custody_refusals_before = teardown::LEAF_CUSTODY_REFUSED.aggregate();
+        let unregistered_before = teardown::LEAF_DECREF_UNREGISTERED.aggregate();
+
+        let page_table = match ProcessPageTable::new() {
+            Ok(page_table) => page_table,
+            Err(_) => return TestResult::Fail("F4: unpublished page-table construction failed"),
+        };
+        let unpublished_pid = u64::MAX - 2;
+        let mut unpublished = UnpublishedPageTable::new(page_table, unpublished_pid);
+        let corrupt_elf = corrupt_executable_fixture();
+        let failed_load = crate::arch_impl::aarch64::elf::load_elf_into_page_table(
+            &corrupt_elf,
+            unpublished.as_mut(),
+        );
+        match failed_load {
+            Err("Segment data out of bounds") => {}
+            _ => {
+                return TestResult::Fail(
+                    "F4: corrupt executable did not fail after its first mapping",
+                )
+            }
+        }
+        drop(unpublished);
+
+        let used_after = {
+            let stats = crate::memory::frame_allocator::memory_stats();
+            stats.allocated_frames.saturating_sub(
+                crate::memory::frame_allocator::free_list_len_for_gate(),
+            )
+        };
+        crate::serial_println!(
+            "[EXEC_FAILED_RELEASE_ORACLE:aarch64:used_before={}:used_after={}:leaf_recorded={}:leaf_released={}:leaf_returned={}:tables_returned={}:roots_retired={}:live_refused={}]",
+            used_before,
+            used_after,
+            teardown::LEAF_MAPPINGS_RECORDED.aggregate() - leaf_recorded_before,
+            teardown::LEAF_MAPPINGS_RELEASED.aggregate() - leaf_released_before,
+            teardown::LEAF_FRAMES_RETURNED.aggregate() - leaf_returned_before,
+            teardown::PT_TABLE_FRAMES_RETURNED.aggregate() - tables_returned_before,
+            teardown::PT_ROOTS_RETIRED.aggregate() - roots_retired_before,
+            teardown::FRAME_RETURN_REFUSED_LIVE_LEAF.aggregate() - live_refusals_before,
+        );
+        if used_after != used_before
+            || teardown::LEAF_MAPPINGS_RECORDED.aggregate() != leaf_recorded_before + 1
+            || teardown::LEAF_MAPPINGS_RELEASED.aggregate() != leaf_released_before + 1
+            || teardown::LEAF_FRAMES_RETURNED.aggregate() != leaf_returned_before + 1
+            || teardown::PT_TABLE_FRAMES_RETURNED.aggregate() != tables_returned_before + 4
+            || teardown::PT_ROOTS_RETIRED.aggregate() != roots_retired_before + 1
+            || teardown::FRAME_RETURN_REFUSED_LIVE_LEAF.aggregate() != live_refusals_before
+            || teardown::LEAF_CUSTODY_REFUSED.aggregate() != custody_refusals_before
+            || teardown::LEAF_DECREF_UNREGISTERED.aggregate() != unregistered_before
+        {
+            return TestResult::Fail("F4: failed exec did not release unpublished custody exactly");
         }
     }
 
@@ -2422,18 +2619,25 @@ pub fn map_user_stack_to_process(
 /// * `process_page_table` - The process's page table to map into
 /// * `user_stack_bottom` - Userspace virtual address for stack bottom
 /// * `user_stack_top` - Userspace virtual address for stack top (SP points here)
-/// * `phys_bottom` - Physical address of the stack bottom
+/// * `frames` - Physical frames backing the stack, in ascending virtual-page
+///   order (page `i` maps to `frames[i]`). The frames need not be physically
+///   contiguous; each one is the exact frame the stack allocator reserved and
+///   registered as an external leaf, so the leaf-custody gate accepts them.
 #[cfg(target_arch = "aarch64")]
 pub fn map_user_stack_to_process_with_phys(
     process_page_table: &mut ProcessPageTable,
     user_stack_bottom: VirtAddr,
     user_stack_top: VirtAddr,
-    phys_bottom: u64,
+    frames: &[PhysFrame],
 ) -> Result<(), &'static str> {
-    use crate::memory::arch_stub::{Page, PageTableFlags, PhysAddr, PhysFrame, Size4KiB};
+    use crate::memory::arch_stub::{Page, PageTableFlags, Size4KiB};
 
     let stack_size = user_stack_top.as_u64() - user_stack_bottom.as_u64();
     let num_pages = stack_size / 4096;
+
+    if (frames.len() as u64) < num_pages {
+        return Err("user stack frame list shorter than stack page count");
+    }
 
     let flags =
         PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::USER_ACCESSIBLE;
@@ -2441,23 +2645,22 @@ pub fn map_user_stack_to_process_with_phys(
     for i in 0..num_pages {
         let page_offset = i * 4096;
         let user_vaddr = VirtAddr::new(user_stack_bottom.as_u64() + page_offset);
-        let phys_addr = PhysAddr::new(phys_bottom + page_offset);
         let page = Page::<Size4KiB>::containing_address(user_vaddr);
-        let frame = PhysFrame::<Size4KiB>::containing_address(phys_addr);
+        let frame = frames[i as usize];
 
         match process_page_table.map_page(page, frame, flags) {
             Ok(()) => {
                 log::trace!(
                     "Mapped user stack page {:#x} -> frame {:#x}",
                     user_vaddr.as_u64(),
-                    phys_addr.as_u64()
+                    frame.start_address().as_u64()
                 );
             }
             Err(e) => {
                 log::error!(
                     "Failed to map page {:#x} -> {:#x}: {}",
                     user_vaddr.as_u64(),
-                    phys_addr.as_u64(),
+                    frame.start_address().as_u64(),
                     e
                 );
                 return Err("Failed to map user stack page");

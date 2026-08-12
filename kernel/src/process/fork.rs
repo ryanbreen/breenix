@@ -10,7 +10,6 @@
 //!    as fallback and for testing.
 
 use crate::memory::frame_allocator::allocate_frame;
-use crate::memory::frame_metadata::frame_incref;
 use crate::memory::process_memory::{make_cow_flags, ProcessPageTable};
 use crate::memory::vma::{MmapFlags, Vma};
 use crate::process::Process;
@@ -210,7 +209,6 @@ pub fn setup_cow_pages_with_vmas(
                 cow_error = Some("Failed to share MAP_SHARED page");
                 continue;
             }
-            frame_incref(frame);
             pages_shared += 1;
             continue;
         }
@@ -239,9 +237,6 @@ pub fn setup_cow_pages_with_vmas(
                 cow_error = Some("Failed to map CoW page in child");
                 continue;
             }
-
-            // Increment reference count (frame is now shared)
-            frame_incref(frame);
         } else {
             // Read-only page (e.g., code) - share directly without CoW flag
             // These pages can never be written, so no fault handling needed
@@ -249,9 +244,6 @@ pub fn setup_cow_pages_with_vmas(
                 cow_error = Some("Failed to share read-only page");
                 continue;
             }
-
-            // Still track reference for cleanup when process exits
-            frame_incref(frame);
         }
 
         pages_shared += 1;

@@ -431,6 +431,21 @@ counter!(
     "Duplicate frame allocations refused"
 );
 counter!(FRAME_LOST_CONTENDED, "Frame returns lost to contention");
+counter!(
+    FRAME_RETURN_REFUSED_LIVE_LEAF,
+    "Returns of frames with live leaf mappings refused"
+);
+counter!(LEAF_MAPPINGS_RECORDED, "Process leaf mappings recorded");
+counter!(LEAF_MAPPINGS_RELEASED, "Process leaf mappings released");
+counter!(LEAF_FRAMES_RETURNED, "Process leaf frames returned");
+counter!(
+    LEAF_DECREF_UNREGISTERED,
+    "Unregistered process leaf decrements refused"
+);
+counter!(
+    LEAF_CUSTODY_REFUSED,
+    "Process leaf custody classifications refused"
+);
 counter!(PT_TABLE_FRAMES_RECORDED, "Process table frames recorded");
 counter!(
     PT_ROOT_ABANDONED_NO_PROOF,
@@ -497,7 +512,7 @@ counter!(
     "Fatal group signals dropped for init"
 );
 
-pub const COUNTER_COUNT: usize = 64;
+pub const COUNTER_COUNT: usize = 70;
 
 /// The registration and normal-context reader inventory. Keeping one inventory
 /// makes a write-only counter structurally impossible without changing the P0
@@ -542,6 +557,12 @@ pub static COUNTERS: [&TraceCounter; COUNTER_COUNT] = [
     &FRAME_RETURN_REFUSED_UNTRACKED,
     &FRAME_DUPLICATE_ALLOC_REFUSED,
     &FRAME_LOST_CONTENDED,
+    &FRAME_RETURN_REFUSED_LIVE_LEAF,
+    &LEAF_MAPPINGS_RECORDED,
+    &LEAF_MAPPINGS_RELEASED,
+    &LEAF_FRAMES_RETURNED,
+    &LEAF_DECREF_UNREGISTERED,
+    &LEAF_CUSTODY_REFUSED,
     &PT_TABLE_FRAMES_RECORDED,
     &PT_ROOT_ABANDONED_NO_PROOF,
     &PT_ROOT_ABANDONED_NO_ARCH,
@@ -1233,6 +1254,9 @@ pub fn fork_exit_defer_reclaim_pairing_test() -> crate::test_framework::registry
     let roots_retired_before = PT_ROOTS_RETIRED.aggregate();
     let table_frames_returned_before = PT_TABLE_FRAMES_RETURNED.aggregate();
     let table_frames_lost_before = PT_RETIRE_FRAMES_LOST.aggregate();
+    let leaf_mappings_recorded_before = LEAF_MAPPINGS_RECORDED.aggregate();
+    let leaf_mappings_released_before = LEAF_MAPPINGS_RELEASED.aggregate();
+    let leaf_frames_returned_before = LEAF_FRAMES_RETURNED.aggregate();
     let dropped_undecided_before = PT_ROOT_DROPPED_UNDECIDED.aggregate();
     let dropped_mid_retire_before = PT_ROOT_DROPPED_MID_RETIRE.aggregate();
     let budget_requeued_before = PT_RETIRE_BUDGET_REQUEUED.aggregate();
@@ -1243,6 +1267,9 @@ pub fn fork_exit_defer_reclaim_pairing_test() -> crate::test_framework::registry
         FRAME_RETURN_REFUSED_NEVER_ALLOCATED.aggregate(),
         FRAME_RETURN_REFUSED_UNTRACKED.aggregate(),
         FRAME_DUPLICATE_ALLOC_REFUSED.aggregate(),
+        FRAME_RETURN_REFUSED_LIVE_LEAF.aggregate(),
+        LEAF_DECREF_UNREGISTERED.aggregate(),
+        LEAF_CUSTODY_REFUSED.aggregate(),
     ];
     // The nine labels mirror PLAN P2's disjoint adapted-site table. The exact
     // source ratchets below prove which concrete callers use each custody
@@ -1367,6 +1394,19 @@ pub fn fork_exit_defer_reclaim_pairing_test() -> crate::test_framework::registry
     let table_frames_lost_delta = PT_RETIRE_FRAMES_LOST
         .aggregate()
         .saturating_sub(table_frames_lost_before);
+    let leaf_mappings_recorded_delta = LEAF_MAPPINGS_RECORDED
+        .aggregate()
+        .saturating_sub(leaf_mappings_recorded_before);
+    let leaf_mappings_released_delta = LEAF_MAPPINGS_RELEASED
+        .aggregate()
+        .saturating_sub(leaf_mappings_released_before);
+    let leaf_frames_returned_delta = LEAF_FRAMES_RETURNED
+        .aggregate()
+        .saturating_sub(leaf_frames_returned_before);
+    let live_leaf_refused_delta = FRAME_RETURN_REFUSED_LIVE_LEAF
+        .aggregate()
+        .saturating_sub(refusal_counters_before[5]);
+    let expected_leaves = (RETIRE_SENTINEL_VAS.len() * pairing_child_pids.len()) as u64;
     crate::serial_println!(
         "[PT_RETIRE_ORACLE:aarch64:cycles=64:used_before={}:used_after={}:expected_tables={}:roots={}:returned={}:lost={}]",
         allocator_used_before,
@@ -1376,8 +1416,24 @@ pub fn fork_exit_defer_reclaim_pairing_test() -> crate::test_framework::registry
         table_frames_returned_delta,
         table_frames_lost_delta
     );
+    crate::serial_println!(
+        "[PT_LEAF_ORACLE:aarch64:cycles=64:expected={}:recorded={}:released={}:returned={}:live_refused={}:used_before={}:used_after={}]",
+        expected_leaves,
+        leaf_mappings_recorded_delta,
+        leaf_mappings_released_delta,
+        leaf_frames_returned_delta,
+        live_leaf_refused_delta,
+        allocator_used_before,
+        allocator_used_after
+    );
     if allocator_used_after != allocator_used_before {
         return TestResult::Fail("retire leak oracle did not return frame accounting to baseline");
+    }
+    if leaf_mappings_recorded_delta != expected_leaves
+        || leaf_mappings_released_delta != expected_leaves
+        || leaf_frames_returned_delta != expected_leaves
+    {
+        return TestResult::Fail("leaf leak oracle committed-effect accounting was not exact");
     }
     if teardown_entry_exit_delta < 64 {
         return TestResult::Fail("TEARDOWN_ENTRY_EXIT workload delta did not reach 64");
@@ -1442,6 +1498,9 @@ pub fn fork_exit_defer_reclaim_pairing_test() -> crate::test_framework::registry
         FRAME_RETURN_REFUSED_NEVER_ALLOCATED.aggregate(),
         FRAME_RETURN_REFUSED_UNTRACKED.aggregate(),
         FRAME_DUPLICATE_ALLOC_REFUSED.aggregate(),
+        FRAME_RETURN_REFUSED_LIVE_LEAF.aggregate(),
+        LEAF_DECREF_UNREGISTERED.aggregate(),
+        LEAF_CUSTODY_REFUSED.aggregate(),
     ];
     if refusal_counters_after != refusal_counters_before {
         return TestResult::Fail("retire cohort triggered an unexpected frame refusal");
