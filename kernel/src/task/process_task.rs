@@ -77,7 +77,6 @@ pub(crate) struct PendingProcessReclaim {
     last_pass: u32,
     proof_failures: u8,
     parked: Option<ParkRecord>,
-    leaves_released: bool,
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -181,20 +180,24 @@ impl PendingProcessReclaim {
     fn reclaim_bounded(&mut self) -> crate::memory::process_memory::RetireProgress {
         use crate::memory::process_memory::{RetireProgress, RETIRE_FRAME_BUDGET};
 
-        if !self.leaves_released {
-            if let Some(page_table) = self.page_table.as_ref() {
-                crate::process::process::cleanup_cow_page_table(page_table);
+        let mut budget = RETIRE_FRAME_BUDGET;
+        while budget > 0 {
+            let Some(old_page_table) = self.old_page_tables.last_mut() else {
+                break;
+            };
+            if old_page_table.cleanup_for_exec(self.pid, &mut budget) != RetireProgress::Complete {
+                return RetireProgress::Budgeted;
             }
-            for old_page_table in self.old_page_tables.drain(..) {
-                old_page_table.cleanup_for_exec();
-            }
-            self.leaves_released = true;
+            self.old_page_tables.pop();
+        }
+        if !self.old_page_tables.is_empty() {
+            return RetireProgress::Budgeted;
         }
 
         let Some(page_table) = self.page_table.as_mut() else {
             return RetireProgress::Complete;
         };
-        let mut budget = RETIRE_FRAME_BUDGET;
+        page_table.release_mapped_leaves();
         let progress = page_table.retire_bounded(self.pid, &mut budget);
         if progress == RetireProgress::Complete {
             self.page_table = None;
@@ -373,7 +376,6 @@ pub(crate) fn defer_process_resources(
         last_pass: 0,
         proof_failures: 0,
         parked: None,
-        leaves_released: false,
     }
 }
 
@@ -1045,7 +1047,6 @@ fn boot_test_reclaim(pid: u64) -> PendingProcessReclaim {
         last_pass: 0,
         proof_failures: 0,
         parked: None,
-        leaves_released: false,
     }
 }
 
@@ -1069,10 +1070,9 @@ fn boot_oversized_page_table(
             deallocate_frame(frame);
             return Err("oversized sentinel mapping failed");
         }
-        let leaf = page_table
+        page_table
             .unmap_page(page)
             .map_err(|_| "oversized sentinel unmap failed")?;
-        deallocate_frame(leaf);
     }
     Ok(page_table)
 }

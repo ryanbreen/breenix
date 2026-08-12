@@ -477,11 +477,9 @@ pub fn sys_munmap(addr: u64, length: u64) -> SyscallResult {
     let mut pages_unmapped = 0u32;
     for page in Page::range_inclusive(start_page, end_page) {
         match page_table.unmap_page(page) {
-            Ok(frame) => {
+            Ok(_) => {
                 // Flush TLB for this page
                 flush_tlb(page.start_address());
-                // Free the physical frame
-                crate::memory::frame_allocator::deallocate_frame(frame);
                 pages_unmapped += 1;
             }
             Err(e) => {

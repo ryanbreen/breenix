@@ -235,6 +235,10 @@ impl GuardedStack {
             let frame = crate::memory::frame_allocator::allocate_frame().ok_or("out of memory")?;
             log::trace!("map_stack_pages: allocate_frame() returned successfully");
 
+            if privilege == ThreadPrivilege::User {
+                crate::memory::frame_allocator::register_external_leaf_frame(frame)?;
+            }
+
             log::trace!(
                 "map_stack_pages: Allocated frame {:#x} for page {:#x}",
                 frame.start_address(),
@@ -332,6 +336,9 @@ pub fn allocate_stack_with_privilege(
 
     for i in 0..stack_pages {
         let frame = allocate_frame().ok_or("out of memory for stack")?;
+        if privilege == ThreadPrivilege::User {
+            crate::memory::frame_allocator::register_external_leaf_frame(frame)?;
+        }
         let phys = frame.start_address().as_u64();
 
         if i == 0 {

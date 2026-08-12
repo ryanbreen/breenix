@@ -91,14 +91,12 @@ pub fn cleanup_mapped_pages(
         mapped_pages.len()
     );
 
-    for (page, frame) in mapped_pages.iter() {
+    for (page, _) in mapped_pages.iter() {
         // Unmap the page
         match page_table.unmap_page(*page) {
             Ok(_) => {
                 // Flush TLB
                 flush_tlb(page.start_address());
-                // Free the frame
-                crate::memory::frame_allocator::deallocate_frame(*frame);
             }
             Err(e) => {
                 log::error!(
@@ -106,8 +104,6 @@ pub fn cleanup_mapped_pages(
                     page.start_address().as_u64(),
                     e
                 );
-                // Still try to free the frame
-                crate::memory::frame_allocator::deallocate_frame(*frame);
             }
         }
     }

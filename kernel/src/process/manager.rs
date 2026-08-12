@@ -96,11 +96,14 @@ impl ProcessManager {
             core::ptr::write_bytes(kernel_virt.as_mut_ptr::<u8>(), 0, TLS_PAGE_SIZE);
         }
 
-        page_table.map_page(
+        if let Err(error) = page_table.map_page(
             tls_page,
             frame,
             PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::USER_ACCESSIBLE,
-        )?;
+        ) {
+            let _ = crate::memory::frame_allocator::deallocate_leaf_frame(frame);
+            return Err(error);
+        }
 
         Ok(VirtAddr::new(
             tls_page.start_address().as_u64() + TLS_TP_OFFSET,
@@ -3108,9 +3111,10 @@ impl ProcessManager {
             pid.as_u64()
         );
 
-        let mut new_page_table = Box::new(
+        let mut new_page_table = crate::memory::process_memory::UnpublishedPageTable::new(
             crate::memory::process_memory::ProcessPageTable::new()
                 .map_err(|_| "Failed to create new page table for exec")?,
+            pid.as_u64(),
         );
 
         new_page_table.clear_user_entries();
@@ -3165,13 +3169,16 @@ impl ProcessManager {
             let frame = crate::memory::frame_allocator::allocate_frame()
                 .ok_or("Failed to allocate frame for exec stack")?;
 
-            new_page_table.map_page(
+            if let Err(error) = new_page_table.map_page(
                 page,
                 frame,
                 PageTableFlags::PRESENT
                     | PageTableFlags::WRITABLE
                     | PageTableFlags::USER_ACCESSIBLE,
-            )?;
+            ) {
+                let _ = crate::memory::frame_allocator::deallocate_leaf_frame(frame);
+                return Err(error);
+            }
         }
         let initial_tpidr_el0 = Self::map_initial_arm64_tls(new_page_table.as_mut(), stack_top)?;
 
@@ -3232,7 +3239,7 @@ impl ProcessManager {
         // Close FD_CLOEXEC file descriptors per POSIX
         process.fd_table.close_cloexec();
 
-        process.page_table = Some(new_page_table);
+        process.page_table = Some(new_page_table.publish());
         process.stack = Some(Box::new(new_stack));
         process.user_stack_top = user_stack_top;
         process.user_stack_bottom = user_stack_top - USER_STACK_SIZE as u64;
@@ -3362,24 +3369,41 @@ impl ProcessManager {
             );
         }
 
-        // Get the existing process
-        let process = self.processes.get_mut(&pid).ok_or("Process not found")?;
-
-        // Drain any pending old page tables from previous exec() calls.
-        process.drain_old_page_tables();
-
         // For now, assume non-current processes are not actively running
         let is_scheduled = false;
 
-        // Get the main thread (we need to preserve its ID)
-        let main_thread = process
-            .main_thread
-            .as_ref()
-            .ok_or("Process has no main thread")?;
-        let thread_id = main_thread.id;
+        // Keep the live table installed until every fallible construction step
+        // has succeeded. A failed exec must leave TTBR0 custody unchanged.
+        let (thread_id, old_cr3, thread_group_id) = {
+            let process = self.processes.get(&pid).ok_or("Process not found")?;
+            let old_cr3 = process.cr3_value();
+            let thread_group_id = process.thread_group_id.unwrap_or(pid.as_u64());
+            let main_thread = process
+                .main_thread
+                .as_ref()
+                .ok_or("Process has no main thread")?;
+            (main_thread.id, old_cr3, thread_group_id)
+        };
 
-        // Store old page table for proper cleanup
-        let old_page_table = process.page_table.take();
+        if let Some(old_cr3) = old_cr3 {
+            if let Some((sibling_pid, sibling_thread_id)) =
+                self.find_live_clone_vm_sibling_holding_cr3(pid, thread_group_id, old_cr3)
+            {
+                log::warn!(
+                    "exec_process [ARM64]: rejecting exec for PID {} while CLONE_VM sibling PID {} thread {} still holds inherited CR3 {:#x}",
+                    pid.as_u64(),
+                    sibling_pid.as_u64(),
+                    sibling_thread_id,
+                    old_cr3
+                );
+                return Err("exec blocked while CLONE_VM sibling shares old address space");
+            }
+        }
+
+        {
+            let process = self.processes.get_mut(&pid).ok_or("Process not found")?;
+            process.drain_old_page_tables();
+        }
 
         log::info!(
             "exec_process [ARM64]: Preserving thread ID {} for process {}",
@@ -3389,9 +3413,10 @@ impl ProcessManager {
 
         // Create a new page table for the new program
         log::info!("exec_process [ARM64]: Creating new page table...");
-        let mut new_page_table = Box::new(
+        let mut new_page_table = crate::memory::process_memory::UnpublishedPageTable::new(
             crate::memory::process_memory::ProcessPageTable::new()
                 .map_err(|_| "Failed to create new page table for exec")?,
+            pid.as_u64(),
         );
         log::info!("exec_process [ARM64]: New page table created successfully");
 
@@ -3461,13 +3486,16 @@ impl ProcessManager {
                 .ok_or("Failed to allocate frame for exec stack")?;
 
             // Map into the NEW process page table with user-accessible permissions
-            new_page_table.map_page(
+            if let Err(error) = new_page_table.map_page(
                 page,
                 frame,
                 PageTableFlags::PRESENT
                     | PageTableFlags::WRITABLE
                     | PageTableFlags::USER_ACCESSIBLE,
-            )?;
+            ) {
+                let _ = crate::memory::frame_allocator::deallocate_leaf_frame(frame);
+                return Err(error);
+            }
         }
         let initial_tpidr_el0 = Self::map_initial_arm64_tls(new_page_table.as_mut(), stack_top)?;
 
@@ -3483,6 +3511,14 @@ impl ProcessManager {
             new_entry_point,
             stack_top.as_u64()
         );
+
+        // All fallible construction is complete; only now supersede the live
+        // address space and transfer the unpublished table into the Process.
+        let process = self
+            .processes
+            .get_mut(&pid)
+            .ok_or("Process not found during update")?;
+        let old_page_table = process.page_table.take();
 
         // Update the process with new program data
         if let Some(name) = program_name {
@@ -3509,7 +3545,7 @@ impl ProcessManager {
         );
 
         // Replace the page table with the new one containing the loaded program
-        process.page_table = Some(new_page_table);
+        process.page_table = Some(new_page_table.publish());
 
         // Replace the stack
         process.stack = Some(Box::new(new_stack));

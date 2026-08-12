@@ -2037,8 +2037,8 @@ fn exception_class_name(ec: u32) -> &'static str {
 fn handle_cow_fault_arm64(far: u64, iss: u32) -> bool {
     use crate::memory::arch_stub::{Page, Size4KiB, VirtAddr};
     use crate::memory::cow_stats;
-    use crate::memory::frame_allocator::allocate_frame;
-    use crate::memory::frame_metadata::{frame_decref, frame_is_shared, frame_register};
+    use crate::memory::frame_allocator::{allocate_frame, deallocate_leaf_frame};
+    use crate::memory::frame_metadata::frame_is_shared;
     use crate::memory::process_memory::{is_cow_page, make_private_flags};
 
     // Check if this is a CoW fault:
@@ -2146,9 +2146,6 @@ fn handle_cow_fault_arm64(far: u64, iss: u32) -> bool {
         }
     };
 
-    // Register the new frame so it's tracked for cleanup on process exit
-    frame_register(new_frame);
-
     // Copy page contents via HHDM
     let hhdm_base = crate::arch_impl::aarch64::constants::HHDM_BASE;
     let src = (hhdm_base + old_frame.start_address().as_u64()) as *const u8;
@@ -2161,14 +2158,14 @@ fn handle_cow_fault_arm64(far: u64, iss: u32) -> bool {
     // Unmap old page and map new one with write permissions
     let new_flags = make_private_flags(old_flags);
     if page_table.unmap_page(page).is_err() {
+        let _ = deallocate_leaf_frame(new_frame);
         return false;
     }
     if page_table.map_page(page, new_frame, new_flags).is_err() {
+        let _ = page_table.map_page(page, old_frame, old_flags);
+        let _ = deallocate_leaf_frame(new_frame);
         return false;
     }
-
-    // Decrement reference count on old frame
-    frame_decref(old_frame);
 
     // Flush TLB for the CoW-copied page
     unsafe {

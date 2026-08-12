@@ -747,8 +747,8 @@ fn handle_cow_with_manager(
     faulting_addr: VirtAddr,
     cr3: u64,
 ) -> bool {
-    use crate::memory::frame_allocator::allocate_frame;
-    use crate::memory::frame_metadata::{frame_decref, frame_is_shared, frame_register};
+    use crate::memory::frame_allocator::{allocate_frame, deallocate_leaf_frame};
+    use crate::memory::frame_metadata::frame_is_shared;
     use crate::memory::process_memory::{is_cow_page, make_private_flags};
     use x86_64::structures::paging::{Page, Size4KiB};
 
@@ -797,9 +797,6 @@ fn handle_cow_with_manager(
         None => return false,
     };
 
-    // Register the new frame so it's tracked for cleanup on process exit
-    frame_register(new_frame);
-
     // Copy page contents
     let phys_offset = crate::memory::physical_memory_offset();
     unsafe {
@@ -811,14 +808,14 @@ fn handle_cow_with_manager(
     // Update page table: unmap old, map new with writable flags
     let new_flags = make_private_flags(old_flags);
     if page_table.unmap_page(page).is_err() {
+        let _ = deallocate_leaf_frame(new_frame);
         return false;
     }
     if page_table.map_page(page, new_frame, new_flags).is_err() {
+        let _ = page_table.map_page(page, old_frame, old_flags);
+        let _ = deallocate_leaf_frame(new_frame);
         return false;
     }
-
-    // Decrement old frame reference count
-    frame_decref(old_frame);
 
     // Flush TLB for this page
     X86PageTableOps::flush_tlb_page(faulting_addr.as_u64());
@@ -831,8 +828,11 @@ fn handle_cow_with_manager(
 /// This function walks the page table manually and modifies entries directly,
 /// avoiding the need to acquire the process manager lock.
 fn handle_cow_direct(faulting_addr: VirtAddr, cr3: u64) -> bool {
-    use crate::memory::frame_allocator::allocate_frame;
-    use crate::memory::frame_metadata::{frame_decref, frame_is_shared, frame_register};
+    use crate::memory::frame_allocator::{
+        acquire_leaf_mapping, allocate_frame, deallocate_leaf_frame, LeafMappingClass,
+        ReturnOutcome,
+    };
+    use crate::memory::frame_metadata::{frame_decref, frame_is_shared};
     use crate::memory::process_memory::{is_cow_page, make_private_flags};
     use x86_64::structures::paging::{PageTable, PageTableFlags, PhysFrame, Size4KiB};
 
@@ -911,20 +911,24 @@ fn handle_cow_direct(faulting_addr: VirtAddr, cr3: u64) -> bool {
             None => return false,
         };
 
-        // Register the new frame so it's tracked for cleanup on process exit
-        frame_register(new_frame);
-
         // Copy page contents
         let src = (phys_offset + old_frame.start_address().as_u64()).as_ptr::<u8>();
         let dst = (phys_offset + new_frame.start_address().as_u64()).as_mut_ptr::<u8>();
         core::ptr::copy_nonoverlapping(src, dst, 4096);
 
-        // Update the L1 entry with new frame and writable flags
+        // The virtual-page custody record remains Owned across a CoW
+        // replacement. Acquire the new allocator-derived reference before the
+        // descriptor becomes visible, then release the old reference after.
+        if acquire_leaf_mapping(new_frame) != Ok(LeafMappingClass::Owned) {
+            let _ = deallocate_leaf_frame(new_frame);
+            return false;
+        }
         let new_flags = make_private_flags(old_flags);
         l1_entry.set_addr(new_frame.start_address(), new_flags);
 
-        // Decrement old frame reference count
-        frame_decref(old_frame);
+        if frame_decref(old_frame) && deallocate_leaf_frame(old_frame) == ReturnOutcome::Returned {
+            crate::trace_count!(crate::tracing::providers::teardown::LEAF_FRAMES_RETURNED);
+        }
 
         // Flush TLB
         X86PageTableOps::flush_tlb_page(faulting_addr.as_u64());
@@ -1030,11 +1034,9 @@ fn handle_stack_growth(faulting_addr: VirtAddr, cr3: u64) -> bool {
             | PageTableFlags::NO_EXECUTE;
 
         if page_table.map_page(page, frame, flags).is_err() {
+            let _ = crate::memory::frame_allocator::deallocate_leaf_frame(frame);
             return false;
         }
-
-        // Register the frame for cleanup tracking
-        crate::memory::frame_metadata::frame_register(frame);
 
         addr += 4096;
     }
