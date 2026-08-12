@@ -1247,15 +1247,15 @@ let _same_line = "needle"; let _real = needle();
 
 const TERMINATE_CALLS: &[(&str, usize)] = &[
     ("kernel/src/interrupts/context_switch.rs", 1017),
-    ("kernel/src/process/manager.rs", 1172),
+    ("kernel/src/process/manager.rs", 1175),
     ("kernel/src/signal/delivery.rs", 225),
     ("kernel/src/signal/delivery.rs", 260),
 ];
-const TERMINATE_MINIMAL_CALLS: &[(&str, usize)] = &[("kernel/src/task/process_task.rs", 520)];
+const TERMINATE_MINIMAL_CALLS: &[(&str, usize)] = &[("kernel/src/task/process_task.rs", 522)];
 const PRODUCTION_INIT_PID_SITES: &[(&str, usize)] = &[
-    ("kernel/src/process/manager.rs", 1189),
-    ("kernel/src/task/process_task.rs", 480),
-    ("kernel/src/task/process_task.rs", 552),
+    ("kernel/src/process/manager.rs", 1192),
+    ("kernel/src/task/process_task.rs", 482),
+    ("kernel/src/task/process_task.rs", 554),
 ];
 const TEST_INIT_PID_SITES: &[(&str, usize)] = &[
     ("kernel/src/test_userspace.rs", 84),
@@ -1271,21 +1271,21 @@ const QUARANTINE_CALLS: &[(&str, usize)] = &[
 ];
 const KERNEL_STACK_MUTATIONS: &[(&str, usize)] = &[
     ("kernel/src/arch_impl/aarch64/syscall_entry.rs", 961),
-    ("kernel/src/process/manager.rs", 1858),
+    ("kernel/src/process/manager.rs", 1861),
     ("kernel/src/syscall/clone.rs", 252),
 ];
 const RECLAIM_ENQUEUE_CALLS: &[(&str, usize)] = &[
     ("kernel/src/process/mod.rs", 53),
     ("kernel/src/process/mod.rs", 280),
-    ("kernel/src/task/process_task.rs", 594),
+    ("kernel/src/task/process_task.rs", 596),
 ];
 const EXIT_PROCESS_AND_RETIRE_CALLS: &[(&str, usize)] = &[
     ("kernel/src/arch_impl/aarch64/exception.rs", 824),
     ("kernel/src/arch_impl/aarch64/exception.rs", 1187),
     ("kernel/src/arch_impl/aarch64/exception.rs", 1273),
     ("kernel/src/arch_impl/aarch64/exception.rs", 1371),
-    ("kernel/src/interrupts.rs", 1440),
-    ("kernel/src/interrupts.rs", 1751),
+    ("kernel/src/interrupts.rs", 1442),
+    ("kernel/src/interrupts.rs", 1753),
     ("kernel/src/process/mod.rs", 413),
     ("kernel/src/syscall/signal.rs", 172),
 ];
@@ -1295,7 +1295,7 @@ const EXIT_PROCESS_BY_PID_CALLS: &[(&str, usize)] = &[
     ("kernel/src/process/mod.rs", 418),
 ];
 const EXIT_PROCESS_FOR_TEARDOWN_TEST_CALLS: &[(&str, usize)] =
-    &[("kernel/src/tracing/providers/teardown.rs", 1310)];
+    &[("kernel/src/tracing/providers/teardown.rs", 1337)];
 const BLOCKING_PRIMITIVES: &[(&str, usize)] = &[
     ("kernel/src/task/scheduler.rs", 1973),
     ("kernel/src/task/scheduler.rs", 2187),
@@ -1312,26 +1312,20 @@ const RAW_SCHEDULER_LOCK_SITES: &[(&str, usize)] = &[
     ("kernel/src/task/scheduler.rs", 288),
 ];
 const PROCESS_MEMORY_FRAME_RETURNS: &[(&str, usize)] = &[
-    ("kernel/src/memory/process_memory.rs", 1693),
-    ("kernel/src/memory/process_memory.rs", 1732),
-    ("kernel/src/memory/process_memory.rs", 1769),
-    ("kernel/src/memory/process_memory.rs", 1781),
-    ("kernel/src/memory/process_memory.rs", 1785),
-    ("kernel/src/memory/process_memory.rs", 1789),
-    ("kernel/src/memory/process_memory.rs", 1794),
-    ("kernel/src/memory/process_memory.rs", 1861),
     ("kernel/src/memory/process_memory.rs", 1889),
-    ("kernel/src/memory/process_memory.rs", 1916),
     ("kernel/src/memory/process_memory.rs", 1928),
-    ("kernel/src/memory/process_memory.rs", 1932),
-    ("kernel/src/memory/process_memory.rs", 1936),
-    ("kernel/src/memory/process_memory.rs", 1941),
+    ("kernel/src/memory/process_memory.rs", 1965),
+    ("kernel/src/memory/process_memory.rs", 1977),
+    ("kernel/src/memory/process_memory.rs", 1981),
+    ("kernel/src/memory/process_memory.rs", 1985),
+    ("kernel/src/memory/process_memory.rs", 1990),
 ];
-const RETURN_LEASE_DEFINITION: (&str, usize) = ("kernel/src/memory/frame_allocator.rs", 672);
+const RETURN_LEASE_DEFINITION: (&str, usize) = ("kernel/src/memory/frame_allocator.rs", 924);
 const RETURN_LEASE_PRODUCTION_CALLS: &[(&str, usize)] = &[
-    ("kernel/src/memory/frame_allocator.rs", 760),
-    ("kernel/src/memory/process_memory.rs", 1585),
-    ("kernel/src/memory/process_memory.rs", 1587),
+    ("kernel/src/memory/frame_allocator.rs", 1005),
+    ("kernel/src/memory/frame_allocator.rs", 1024),
+    ("kernel/src/memory/process_memory.rs", 1779),
+    ("kernel/src/memory/process_memory.rs", 1781),
 ];
 const RETURN_LEASE_BOOT_FIXTURE_CALLS: &[(&str, usize)] = &[
     ("kernel/src/memory/frame_allocator_tests.rs", 45),
@@ -1345,62 +1339,65 @@ const RETURN_LEASE_BOOT_FIXTURE_CALLS: &[(&str, usize)] = &[
     ("kernel/src/memory/frame_allocator_tests.rs", 284),
 ];
 const TABLE_RECORDER_SITES: &[(&str, usize)] = &[
-    ("kernel/src/memory/process_memory.rs", 1133),
-    ("kernel/src/memory/process_memory.rs", 1244),
+    ("kernel/src/memory/process_memory.rs", 1268),
+    ("kernel/src/memory/process_memory.rs", 1439),
 ];
 const PROCESS_PAGE_TABLE_ABANDON_SITES: &[(&str, usize, &str)] = &[
     (
         "kernel/src/task/process_task.rs",
-        309,
+        312,
         "AbandonReason::NoProofPipeline",
     ),
     (
         "kernel/src/task/process_task.rs",
-        311,
+        314,
         "AbandonReason::NoArchPipeline",
     ),
     (
         "kernel/src/task/process_task.rs",
-        494,
+        496,
         "AbandonReason::AlreadyTerminated",
     ),
     (
         "kernel/src/process/manager.rs",
-        1151,
+        1154,
         "AbandonReason::AlreadyTerminated",
     ),
 ];
 const PROCESS_PAGE_TABLE_RETIRE_SITES: &[(&str, usize)] = &[
     ("kernel/src/memory/frame_allocator_tests.rs", 41),
-    ("kernel/src/task/process_task.rs", 198),
+    ("kernel/src/memory/process_memory.rs", 232),
+    ("kernel/src/memory/process_memory.rs", 2008),
+    ("kernel/src/task/process_task.rs", 201),
     ("kernel/src/task/process_task.rs", 1491),
     ("kernel/src/task/process_task.rs", 1509),
     ("kernel/src/task/process_task.rs", 1517),
 ];
-const PENDING_RECLAIM_BOUNDED_SITES: &[(&str, usize)] = &[("kernel/src/task/process_task.rs", 956)];
+const PENDING_RECLAIM_BOUNDED_SITES: &[(&str, usize)] = &[("kernel/src/task/process_task.rs", 958)];
 const FRAME_LEDGER_INIT_CALLS: &[(&str, usize)] = &[
     ("kernel/src/main_aarch64.rs", 493),
     ("kernel/src/memory/mod.rs", 137),
 ];
 const PROCESS_PAGE_TABLE_CONSTRUCTORS: &[(&str, usize)] = &[
     ("kernel/src/arch_impl/aarch64/syscall_entry.rs", 937),
-    ("kernel/src/process/manager.rs", 144),
-    ("kernel/src/process/manager.rs", 399),
-    ("kernel/src/process/manager.rs", 623),
-    ("kernel/src/process/manager.rs", 2242),
-    ("kernel/src/process/manager.rs", 2508),
-    ("kernel/src/process/manager.rs", 2836),
-    ("kernel/src/process/manager.rs", 3112),
-    ("kernel/src/process/manager.rs", 3393),
+    ("kernel/src/process/manager.rs", 147),
+    ("kernel/src/process/manager.rs", 402),
+    ("kernel/src/process/manager.rs", 626),
+    ("kernel/src/process/manager.rs", 2245),
+    ("kernel/src/process/manager.rs", 2511),
+    ("kernel/src/process/manager.rs", 2839),
+    ("kernel/src/process/manager.rs", 3115),
+    ("kernel/src/process/manager.rs", 3417),
     ("kernel/src/syscall/handlers.rs", 1822),
-    ("kernel/src/tracing/providers/teardown.rs", 1146),
-    ("kernel/src/tracing/providers/teardown.rs", 1190),
-    ("kernel/src/tracing/providers/teardown.rs", 1263),
-    ("kernel/src/memory/process_memory.rs", 2005),
-    ("kernel/src/memory/process_memory.rs", 2031),
-    ("kernel/src/memory/process_memory.rs", 2048),
-    ("kernel/src/memory/process_memory.rs", 2069),
-    ("kernel/src/task/process_task.rs", 1059),
+    ("kernel/src/tracing/providers/teardown.rs", 1167),
+    ("kernel/src/tracing/providers/teardown.rs", 1211),
+    ("kernel/src/tracing/providers/teardown.rs", 1290),
+    ("kernel/src/memory/process_memory.rs", 2136),
+    ("kernel/src/memory/process_memory.rs", 2176),
+    ("kernel/src/memory/process_memory.rs", 2228),
+    ("kernel/src/memory/process_memory.rs", 2245),
+    ("kernel/src/memory/process_memory.rs", 2266),
+    ("kernel/src/task/process_task.rs", 1060),
     ("kernel/src/task/process_task.rs", 1504),
 ];
 
@@ -1651,12 +1648,15 @@ fn validate_frame_return_choke_point(sources: &[(String, String)]) -> Result<(),
 
 fn validate_frame_ledger_hot_paths(sources: &[(String, String)]) -> Result<(), ()> {
     let allocator = source(sources, "kernel/src/memory/frame_allocator.rs");
-    const ROOTS: [&str; 5] = [
+    const ROOTS: [&str; 8] = [
         "frame_ordinal",
         "get",
         "claim_frame",
         "counted",
         "return_lease",
+        "acquire_leaf_mapping",
+        "decref_leaf_mapping",
+        "deallocate_leaf_frame",
     ];
     let bodies = module_function_bodies(allocator);
     let reached = transitively_called_functions(allocator, &ROOTS);
@@ -1724,7 +1724,7 @@ fn validate_frame_ledger_bounded_boot_allocation(sources: &[(String, String)]) -
         && init.contains("while chunk_start < frontier")
         && init.contains(".ensure_chunk(chunk_start)")
         && init.contains("advertised_frames.min(MAX_TRACKED_FRAMES)")
-        && init.contains("NEXT_FREE_FRAME.load(Ordering::Acquire),\n        frontier_snapshot")
+        && init.contains("assert_eq!(NEXT_FREE_FRAME.load(Ordering::Acquire), frontier_snapshot)")
         && !init.contains("(0..total_frames)")
         && !init.contains("reserve_exact(total_frames)")
         && ledger_init.contains("try_reserve_exact(chunk_count)")
@@ -1951,7 +1951,9 @@ fn validate_frame_ledger_runtime_oracles(sources: &[(String, String)]) -> Result
         )
         && counted.contains("ReturnOutcome::LostContended => teardown::FRAME_LOST_CONTENDED.increment()")
         && claim.contains("FRAME_DUPLICATE_ALLOC_REFUSED.increment()")
-        && claim.contains("return Err(ClaimError::Duplicate);")
+        && claim.contains(
+            "ST_ALLOCATED => {\n                crate::tracing::providers::teardown::FRAME_DUPLICATE_ALLOC_REFUSED.increment();\n                return Err(ClaimError::Duplicate);",
+        )
         && gate.contains(DUPLICATE_CLEANUP)
         && gate.contains(DUPLICATE_OWNER_ASSERTION)
         && gate.contains("let free_guard = FREE_FRAMES.lock();")
@@ -2089,13 +2091,14 @@ fn validate_workqueue_progress_wait(registry: &str) -> Result<(), ()> {
 }
 
 fn validate_frame_ledger_counter_inventory(provider: &str) -> Result<(), ()> {
-    const EXPECTED: [&str; 6] = [
+    const EXPECTED: [&str; 7] = [
         "FRAME_RETURN_REFUSED_DOUBLE",
         "FRAME_RETURN_REFUSED_STALE",
         "FRAME_RETURN_REFUSED_NEVER_ALLOCATED",
         "FRAME_RETURN_REFUSED_UNTRACKED",
         "FRAME_DUPLICATE_ALLOC_REFUSED",
         "FRAME_LOST_CONTENDED",
+        "FRAME_RETURN_REFUSED_LIVE_LEAF",
     ];
     let expected: BTreeSet<_> = EXPECTED.into_iter().map(str::to_owned).collect();
     let declared: BTreeSet<_> = provider
@@ -2125,7 +2128,7 @@ fn validate_frame_ledger_counter_inventory(provider: &str) -> Result<(), ()> {
         && EXPECTED
             .iter()
             .all(|counter| inventory.contains(&format!("&{counter},")))
-        && provider.contains("pub const COUNTER_COUNT: usize = 64;"))
+        && provider.contains("pub const COUNTER_COUNT: usize = 70;"))
     .then_some(())
     .ok_or(())
 }
@@ -2167,7 +2170,10 @@ fn validate_process_table_recorder(sources: &[(String, String)]) -> Result<(), (
 
 fn validate_process_page_table_drop_is_non_freeing(sources: &[(String, String)]) -> Result<(), ()> {
     let process_memory = source(sources, "kernel/src/memory/process_memory.rs");
-    let drop_body = function_body(process_memory, "drop");
+    let process_drop = process_memory
+        .find("impl Drop for ProcessPageTable")
+        .ok_or(())?;
+    let drop_body = function_body(&process_memory[process_drop..], "drop");
     (drop_body.contains("Disposition::Undecided")
         && drop_body.contains("trace_count!")
         && drop_body.contains("PT_ROOT_DROPPED_UNDECIDED")
@@ -2211,11 +2217,18 @@ fn validate_process_page_table_dispositions(sources: &[(String, String)]) -> Res
     let process_memory = source(sources, "kernel/src/memory/process_memory.rs");
     let bodies = module_function_bodies(process_memory);
     let cleanup_bodies = bodies.get("cleanup_for_exec").ok_or(())?;
-    (cleanup_bodies.len() == 2
-        && cleanup_bodies.iter().all(|body| {
-            body.matches("Disposition::RetiredByExecWalk").count() == 1
-                && body.matches("PT_EXEC_WALK_LEASES_UNRETURNED").count() == 1
-        }))
+    let legacy = cleanup_bodies.iter().filter(|body| {
+        body.contains("Disposition::RetiredByExecWalk")
+            && body.contains("PT_EXEC_WALK_LEASES_UNRETURNED")
+    });
+    let custody = cleanup_bodies.iter().filter(|body| {
+        body.contains("self.release_mapped_leaves();")
+            && body.contains("self.retire_bounded(pid, budget)")
+            && !body.contains("RetiredByExecWalk")
+            && !body.contains("Vec::new")
+            && !body.contains("log::")
+    });
+    (cleanup_bodies.len() == 2 && legacy.count() == 1 && custody.count() == 1)
     .then_some(())
     .ok_or(())
 }
@@ -2286,7 +2299,7 @@ fn validate_process_page_table_counter_inventory(sources: &[(String, String)]) -
         || !EXPECTED
             .iter()
             .all(|counter| inventory.contains(&format!("&{counter},")))
-        || !provider.contains("pub const COUNTER_COUNT: usize = 64;")
+        || !provider.contains("pub const COUNTER_COUNT: usize = 70;")
     {
         return Err(());
     }
@@ -2300,7 +2313,10 @@ fn validate_process_page_table_counter_inventory(sources: &[(String, String)]) -
     let process_memory = source(sources, "kernel/src/memory/process_memory.rs");
     let record = function_body(process_memory, "record");
     let abandon = function_body(process_memory, "abandon");
-    let drop_body = function_body(process_memory, "drop");
+    let process_drop = process_memory
+        .find("impl Drop for ProcessPageTable")
+        .ok_or(())?;
+    let drop_body = function_body(&process_memory[process_drop..], "drop");
     if !process_memory.contains("pub(crate) fn retire_bounded") {
         return Err(());
     }
@@ -2322,7 +2338,9 @@ fn validate_process_page_table_counter_inventory(sources: &[(String, String)]) -
         && cleanup_bodies.len() == 2
         && cleanup_bodies
             .iter()
-            .all(|body| body.contains("PT_EXEC_WALK_LEASES_UNRETURNED")))
+            .filter(|body| body.contains("PT_EXEC_WALK_LEASES_UNRETURNED"))
+            .count()
+            == 1)
     .then_some(())
     .ok_or(())
 }
@@ -2338,9 +2356,18 @@ fn validate_process_page_table_exit_paths_are_minimal(
     if !task.contains("fn reclaim_bounded(&mut self)") {
         return Err(());
     }
+    let process_drop = process_memory
+        .find("impl Drop for ProcessPageTable")
+        .ok_or(())?;
+    let unpublished_drop = process_memory
+        .find("impl Drop for UnpublishedPageTable")
+        .ok_or(())?;
     for body in [
         function_body(process_memory, "abandon"),
-        function_body(process_memory, "drop"),
+        function_body(&process_memory[process_drop..], "drop"),
+        function_body(&process_memory[unpublished_drop..], "drop"),
+        function_body(process_memory, "release_leaf_record"),
+        function_body(process_memory, "release_mapped_leaves"),
         function_body(process_memory, "retire_bounded"),
         function_body(task, "reclaim_bounded"),
     ] {
@@ -2356,6 +2383,150 @@ fn validate_process_page_table_exit_paths_are_minimal(
         ] {
             if body.contains(forbidden) {
                 eprintln!("R7 page-table exit path gained {forbidden}");
+                return Err(());
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_leaf_custody(sources: &[(String, String)]) -> Result<(), ()> {
+    let process_memory = source(sources, "kernel/src/memory/process_memory.rs");
+    let allocator = source(sources, "kernel/src/memory/frame_allocator.rs");
+    let metadata = source(sources, "kernel/src/memory/frame_metadata.rs");
+    let fork = source(sources, "kernel/src/process/fork.rs");
+    let interrupts = source(sources, "kernel/src/interrupts.rs");
+    let arm_exception = source(sources, "kernel/src/arch_impl/aarch64/exception.rs");
+    let stack = source(sources, "kernel/src/memory/stack.rs");
+    let graphics = source(sources, "kernel/src/syscall/graphics.rs");
+    let manager = source(sources, "kernel/src/process/manager.rs");
+    let arm_elf = source(sources, "kernel/src/arch_impl/aarch64/elf.rs");
+
+    let map = function_body(process_memory, "map_page");
+    let reserve = map.find(".try_reserve(1)").ok_or(())?;
+    let acquire = map.find("acquire_leaf_mapping(frame)").ok_or(())?;
+    let insert = map.find("self.leaves.records.insert(").ok_or(())?;
+    let publish = map.find("mapper.map_to_with_table_flags(").ok_or(())?;
+    let committed = map.find("LEAF_MAPPINGS_RECORDED").ok_or(())?;
+    if !(reserve < acquire && acquire < insert && insert < publish && publish < committed)
+        || !map.contains("self.leaves.records.remove(index);")
+        || !map.contains("frame_decref(frame)")
+    {
+        return Err(());
+    }
+
+    let unmap = function_body(process_memory, "unmap_page");
+    let release = function_body(process_memory, "release_leaf_record");
+    let drain = function_body(process_memory, "release_mapped_leaves");
+    if !process_memory.contains("struct LeafRecord")
+        || !process_memory.contains("page: u64")
+        || !process_memory.contains("binary_search_by_key(&page")
+        || !unmap.contains("self.leaves.search(page_addr)")
+        || !unmap.contains("Self::release_leaf_record(record, frame)")
+        || !release.contains("frame_decref(frame)")
+        || !release.contains("deallocate_leaf_frame(frame) == ReturnOutcome::Returned")
+        || !drain.contains("self.walk_mapped_pages(")
+        || !drain.contains("records.binary_search_by_key(&page")
+        || !drain.contains("self.leaves.records.clear();")
+        || !drain.contains("self.leaves.released = true;")
+    {
+        return Err(());
+    }
+
+    let decref = function_body(allocator, "decref_leaf_mapping");
+    let returned = function_body(allocator, "return_lease");
+    if !decref.contains("if refs == 0 {")
+        || !decref.contains("LEAF_DECREF_UNREGISTERED")
+        || !decref.contains("return false;")
+        || decref.contains("return true;")
+        || !returned.contains("if slot.leaf_refs.load(Ordering::Acquire) != 0 {")
+        || !returned.contains("ReturnOutcome::RefusedLiveLeaf")
+        || !metadata.contains("decref_leaf_mapping(frame)")
+    {
+        return Err(());
+    }
+
+    for converted in [fork, interrupts, arm_exception] {
+        let mask = code_mask(converted);
+        if !code_offsets(converted, &mask, "frame_register(").is_empty()
+            || !code_offsets(converted, &mask, "frame_incref(").is_empty()
+        {
+            return Err(());
+        }
+    }
+    if stack.matches("register_external_leaf_frame(frame)?;").count() != 2
+        || !graphics.contains("register_external_leaf_span(")
+    {
+        return Err(());
+    }
+
+    let unpublished = process_memory
+        .find("impl Drop for UnpublishedPageTable")
+        .ok_or(())?;
+    let unpublished_drop = function_body(&process_memory[unpublished..], "drop");
+    if unpublished_drop.find("page_table.release_mapped_leaves();").ok_or(())?
+        > unpublished_drop
+            .find("page_table.retire_bounded(self.pid, &mut budget)")
+            .ok_or(())?
+        || !arm_elf.contains("deallocate_leaf_frame(new_frame)")
+    {
+        return Err(());
+    }
+    let exec_bodies = module_function_bodies(manager);
+    let mut arm_execs = Vec::new();
+    for name in ["exec_process", "exec_process_with_argv"] {
+        for body in exec_bodies.get(name).into_iter().flatten() {
+            if body.contains("[ARM64]") {
+                arm_execs.push(*body);
+            }
+        }
+    }
+    if arm_execs.len() != 2 {
+        return Err(());
+    }
+    for body in arm_execs {
+        let guard = body.find("UnpublishedPageTable::new(").ok_or(())?;
+        let load = body.find("load_elf_into_page_table(").ok_or(())?;
+        let supersede = body.find("process.page_table.take()").ok_or(())?;
+        let publish = body.find("new_page_table.publish()").ok_or(())?;
+        if !(guard < load && load < supersede && supersede < publish)
+            || body.matches("UnpublishedPageTable::new(").count() != 1
+            || body.matches("new_page_table.publish()").count() != 1
+        {
+            return Err(());
+        }
+    }
+
+    let gate = function_body(process_memory, "page_table_custody_disposition_gate_test");
+    for required in [
+        "corrupt_executable_fixture()",
+        "Err(\"Segment data out of bounds\")",
+        "drop(unpublished);",
+        "used_after != used_before",
+        "LEAF_MAPPINGS_RECORDED.aggregate() != leaf_recorded_before + 1",
+        "LEAF_MAPPINGS_RELEASED.aggregate() != leaf_released_before + 1",
+        "LEAF_FRAMES_RETURNED.aggregate() != leaf_returned_before + 1",
+        "PT_TABLE_FRAMES_RETURNED.aggregate() != tables_returned_before + 4",
+        "PT_ROOTS_RETIRED.aggregate() != roots_retired_before + 1",
+        "[EXEC_FAILED_RELEASE_ORACLE:aarch64:",
+    ] {
+        if !gate.contains(required) {
+            return Err(());
+        }
+    }
+
+    for body in [release, drain, decref, function_body(allocator, "deallocate_leaf_frame")] {
+        for forbidden in [
+            "log::",
+            "serial_println!",
+            "format!",
+            "vec!",
+            "Vec::",
+            "alloc::",
+            "reserve(",
+            "try_reserve(",
+        ] {
+            if body.contains(forbidden) {
                 return Err(());
             }
         }
@@ -2382,6 +2553,12 @@ fn validate_pr1c_retirement_oracles(sources: &[(String, String)]) -> Result<(), 
         "PT_ROOT_ABANDONED_NO_ARCH",
         "saturating_sub(no_arch_before)",
         "[PT_RETIRE_ORACLE:aarch64:cycles=64:",
+        "[PT_LEAF_ORACLE:aarch64:cycles=64:",
+        "let expected_leaves = (RETIRE_SENTINEL_VAS.len() * pairing_child_pids.len()) as u64;",
+        "leaf_mappings_recorded_delta != expected_leaves",
+        "leaf_mappings_released_delta != expected_leaves",
+        "leaf_frames_returned_delta != expected_leaves",
+        "leaf leak oracle committed-effect accounting was not exact",
     ] {
         if !gate.contains(required) {
             return Err(());
@@ -2409,7 +2586,7 @@ fn validate_process_page_table_runtime_oracle(sources: &[(String, String)]) -> R
         || !gate.contains("no_arch.abandon(AbandonReason::NoArchPipeline);")
         || !gate.contains("after_no_arch[2] != after_drop[2] + 1")
         || !gate.contains("PT_TABLE_FRAMES_RETURNED.aggregate()")
-        || gate.matches("free_list_len_for_gate()").count() != 7
+        || gate.matches("free_list_len_for_gate()").count() != 9
         || gate.contains("&& false")
         || gate.contains("|| true")
     {
@@ -2472,6 +2649,8 @@ fn process_page_table_custody_ratchets_are_exact() {
         .expect("R6 process page-table counter inventory changed");
     validate_process_page_table_exit_paths_are_minimal(&sources)
         .expect("R7 process page-table exit path gained log/format/heap work");
+    validate_leaf_custody(&sources)
+        .expect("PR-2 virtual-page leaf custody or fail-closed release changed");
     validate_process_page_table_runtime_oracle(&sources)
         .expect("O2/G-H process page-table runtime oracle became vacuous");
     validate_pr1c_retirement_oracles(&sources)
@@ -2507,6 +2686,7 @@ fn frame_ledger_return_and_initialization_ratchets_are_exact() {
         "FRAME_RETURN_REFUSED_UNTRACKED",
         "FRAME_DUPLICATE_ALLOC_REFUSED",
         "FRAME_LOST_CONTENDED",
+        "FRAME_RETURN_REFUSED_LIVE_LEAF",
     ] {
         assert_eq!(
             provider.matches(&format!("counter!({counter},")).count()
@@ -2525,7 +2705,7 @@ fn frame_ledger_return_and_initialization_ratchets_are_exact() {
             "counter became conditional: {counter}"
         );
     }
-    assert!(provider.contains("pub const COUNTER_COUNT: usize = 64;"));
+    assert!(provider.contains("pub const COUNTER_COUNT: usize = 70;"));
 }
 
 #[test]
@@ -2607,7 +2787,7 @@ fn v3_structural_closures_are_exact() {
     );
     assert_exact(
         sites_matching(&sources, |line| line.contains("btrt::on_process_exit(")),
-        &[("kernel/src/task/process_task.rs", 621)],
+        &[("kernel/src/task/process_task.rs", 623)],
         "btrt::on_process_exit callers",
     );
 
@@ -2724,7 +2904,7 @@ fn phase_one_retirement_fence_and_lock_domains_are_structural() {
             line.contains("note_process_row_removed()")
                 && !line.contains("fn note_process_row_removed")
         }),
-        &[("kernel/src/process/manager.rs", 1104)],
+        &[("kernel/src/process/manager.rs", 1107)],
         "ROW_REMOVAL_EPOCH bump sites",
     );
     assert!(function_body(manager, "remove_process").contains("self.processes.remove(&pid)"));
@@ -2782,7 +2962,7 @@ fn all_phase_zero_counters_have_registered_readers_and_honest_runtime_gates() {
         .filter_map(|rest| rest.strip_suffix(','))
         .map(str::to_owned)
         .collect();
-    assert_eq!(declarations.len(), 64);
+    assert_eq!(declarations.len(), 70);
     assert_eq!(
         readers, declarations,
         "every counter must have an inventory reader"
@@ -3477,8 +3657,8 @@ fn deliberately_broken_variants_fail_the_ratchet() {
 
     // R4: ProcessPageTable's Drop can count but can never return a frame.
     let freeing_drop = process_memory.replacen(
-        "fn drop(&mut self) {",
-        "fn drop(&mut self) { crate::memory::frame_allocator::deallocate_frame(self.level_4_frame);",
+        "impl Drop for ProcessPageTable {\n    fn drop(&mut self) {",
+        "impl Drop for ProcessPageTable {\n    fn drop(&mut self) { crate::memory::frame_allocator::deallocate_frame(self.level_4_frame);",
         1,
     );
     let freeing_drop = with_replaced_source(
@@ -3587,8 +3767,8 @@ fn deliberately_broken_variants_fail_the_ratchet() {
     );
     assert!(validate_process_page_table_exit_paths_are_minimal(&logged_abandon).is_err());
     let allocating_drop = process_memory.replacen(
-        "fn drop(&mut self) {",
-        "fn drop(&mut self) { let _unexpected = Vec::<u8>::new();",
+        "impl Drop for ProcessPageTable {\n    fn drop(&mut self) {",
+        "impl Drop for ProcessPageTable {\n    fn drop(&mut self) { let _unexpected = Vec::<u8>::new();",
         1,
     );
     let allocating_drop = with_replaced_source(
@@ -3614,6 +3794,77 @@ fn deliberately_broken_variants_fail_the_ratchet() {
         logged_retire,
     );
     assert!(validate_process_page_table_exit_paths_are_minimal(&logged_retire).is_err());
+
+    // PR-2: virtual-page records precede descriptor publication, decref is
+    // fail-closed, and a live leaf can never enter the reuse pool.
+    let no_leaf_reserve = process_memory.replacen(".try_reserve(1)", ".try_reserve(0)", 1);
+    let no_leaf_reserve = with_replaced_source(
+        &sources,
+        "kernel/src/memory/process_memory.rs",
+        no_leaf_reserve,
+    );
+    assert!(validate_leaf_custody(&no_leaf_reserve).is_err());
+    let post_publish_record = process_memory.replacen(
+        "let mapping = match acquire_leaf_mapping(frame)",
+        "let mapping = match classify_after_descriptor(frame)",
+        1,
+    );
+    let post_publish_record = with_replaced_source(
+        &sources,
+        "kernel/src/memory/process_memory.rs",
+        post_publish_record,
+    );
+    assert!(validate_leaf_custody(&post_publish_record).is_err());
+    let fail_open_decref = allocator.replacen(
+        "if refs == 0 {",
+        "if refs == 0 { return true; } if false {",
+        1,
+    );
+    let fail_open_decref = with_replaced_source(
+        &sources,
+        "kernel/src/memory/frame_allocator.rs",
+        fail_open_decref,
+    );
+    assert!(validate_leaf_custody(&fail_open_decref).is_err());
+    let live_leaf_return = allocator.replacen(
+        "ST_ALLOCATED => {\n                if slot.leaf_refs.load(Ordering::Acquire) != 0 {",
+        "ST_ALLOCATED => {\n                if slot.leaf_refs.load(Ordering::Acquire) != 0 && false {",
+        1,
+    );
+    let live_leaf_return = with_replaced_source(
+        &sources,
+        "kernel/src/memory/frame_allocator.rs",
+        live_leaf_return,
+    );
+    assert!(validate_leaf_custody(&live_leaf_return).is_err());
+    let logged_leaf_release = process_memory.replacen(
+        "fn release_leaf_record(record: LeafRecord, frame: PhysFrame) {",
+        "fn release_leaf_record(record: LeafRecord, frame: PhysFrame) { log::info!(\"leaf\");",
+        1,
+    );
+    let logged_leaf_release = with_replaced_source(
+        &sources,
+        "kernel/src/memory/process_memory.rs",
+        logged_leaf_release,
+    );
+    assert!(validate_leaf_custody(&logged_leaf_release).is_err());
+    let restored_fork_incref = with_replaced_source(
+        &sources,
+        "kernel/src/process/fork.rs",
+        format!("{}\nfn synthetic_leaf_bypass(frame: PhysFrame) {{ frame_incref(frame); }}", source(&sources, "kernel/src/process/fork.rs")),
+    );
+    assert!(validate_leaf_custody(&restored_fork_incref).is_err());
+    let early_exec_supersede = source(&sources, "kernel/src/process/manager.rs").replacen(
+        "crate::memory::process_memory::UnpublishedPageTable::new(",
+        "crate::memory::process_memory::ProcessPageTable::new_unchecked(",
+        1,
+    );
+    let early_exec_supersede = with_replaced_source(
+        &sources,
+        "kernel/src/process/manager.rs",
+        early_exec_supersede,
+    );
+    assert!(validate_leaf_custody(&early_exec_supersede).is_err());
 
     // O2/G-H: weaken either exact counter assertion and the named validator fails.
     for (needle, replacement) in [
@@ -3967,8 +4218,8 @@ fn deliberately_broken_variants_fail_the_ratchet() {
     );
     assert!(validate_frame_ledger_hot_paths(&growing_return).is_err());
     let logged_get = allocator.replacen(
-        "fn get(&self, index: usize) -> Option<&AtomicU32> {",
-        "fn get(&self, index: usize) -> Option<&AtomicU32> { log::warn!(\"ledger get {}\", index);",
+        "fn get(&self, index: usize) -> Option<&FrameLedgerSlot> {",
+        "fn get(&self, index: usize) -> Option<&FrameLedgerSlot> { log::warn!(\"ledger get {}\", index);",
         1,
     );
     let logged_get =
@@ -4087,8 +4338,11 @@ fn deliberately_broken_variants_fail_the_ratchet() {
         stale_miscounted,
     );
     assert!(validate_frame_ledger_runtime_oracles(&stale_miscounted).is_err());
-    let escaped_duplicate =
-        allocator.replacen("return Err(ClaimError::Duplicate);", "return Ok(None);", 1);
+    let escaped_duplicate = allocator.replacen(
+        "crate::tracing::providers::teardown::FRAME_DUPLICATE_ALLOC_REFUSED.increment();\n                return Err(ClaimError::Duplicate);",
+        "crate::tracing::providers::teardown::FRAME_DUPLICATE_ALLOC_REFUSED.increment();\n                return Ok(None);",
+        1,
+    );
     let escaped_duplicate = with_replaced_source(
         &sources,
         "kernel/src/memory/frame_allocator.rs",
@@ -4096,8 +4350,8 @@ fn deliberately_broken_variants_fail_the_ratchet() {
     );
     assert!(validate_frame_ledger_runtime_oracles(&escaped_duplicate).is_err());
     let broken_bounds = allocator.replacen(
-        "\n    None\n}\n\nfn seed_free_frame",
-        "\n    Some(0)\n}\n\nfn seed_free_frame",
+        "\n    None\n}\n\nfn frame_in_external_leaf_span",
+        "\n    Some(0)\n}\n\nfn frame_in_external_leaf_span",
         1,
     );
     let broken_bounds = with_replaced_source(
