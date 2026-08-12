@@ -1354,6 +1354,7 @@ const PROCESS_PAGE_TABLE_ABANDON_SITES: &[(&str, usize, &str)] = &[
     ),
 ];
 const PROCESS_PAGE_TABLE_RETIRE_SITES: &[(&str, usize)] = &[
+    ("kernel/src/memory/frame_allocator_tests.rs", 41),
     ("kernel/src/task/process_task.rs", 198),
     ("kernel/src/task/process_task.rs", 1491),
     ("kernel/src/task/process_task.rs", 1509),
@@ -2188,10 +2189,7 @@ fn validate_process_page_table_dispositions(sources: &[(String, String)]) -> Res
 
 fn validate_process_page_table_retire_site(sources: &[(String, String)]) -> Result<(), ()> {
     let process_task = source(sources, "kernel/src/task/process_task.rs");
-    let retire_sites = code_sites(sources, ".retire_bounded(")
-        .into_iter()
-        .filter(|(path, _)| path == "kernel/src/task/process_task.rs")
-        .collect();
+    let retire_sites = code_sites(sources, ".retire_bounded(");
     validate_exact(&retire_sites, PROCESS_PAGE_TABLE_RETIRE_SITES)?;
 
     let reclaim_sites = code_sites(sources, ".reclaim_bounded(")
@@ -2341,9 +2339,9 @@ fn validate_pr1c_retirement_oracles(sources: &[(String, String)]) -> Result<(), 
         "let allocator_used_before = frame_allocator_used_frames();",
         "if allocator_used_after != allocator_used_before {",
         "retire leak oracle did not return frame accounting to baseline",
-        "counts.roots_retired != 1",
-        "counts.table_frames_recorded != expected_tables",
-        "counts.table_frames_returned != counts.table_frames_recorded + 1",
+        "if counts.roots_retired != 1 {",
+        "if counts.table_frames_recorded != expected_tables {",
+        "if counts.table_frames_returned != counts.table_frames_recorded + 1 {",
         "counts.table_frames_lost != 0",
         "retire cohort per-PID anti-vacuity table count was not exact",
         "retire cohort per-PID committed return equality failed",
@@ -2356,12 +2354,7 @@ fn validate_pr1c_retirement_oracles(sources: &[(String, String)]) -> Result<(), 
             return Err(());
         }
     }
-    if gate.contains("allocator_used_after != allocator_used_before && false")
-        || gate.contains("counts.roots_retired != 1 && false")
-        || gate.contains("counts.table_frames_recorded != expected_tables && false")
-        || gate
-            .contains("counts.table_frames_returned != counts.table_frames_recorded + 1 && false")
-        || !expected.contains("address >> 39")
+    if !expected.contains("address >> 39")
         || !expected.contains("distinct_l0_subtrees * 3")
         || gate.contains("let expected_tables = 9")
     {
@@ -3517,6 +3510,15 @@ fn deliberately_broken_variants_fail_the_ratchet() {
         ),
     );
     assert!(validate_process_page_table_retire_site(&extra_reclaim).is_err());
+    let process_manager = source(&sources, "kernel/src/process/manager.rs");
+    let cross_file_retire = with_replaced_source(
+        &sources,
+        "kernel/src/process/manager.rs",
+        format!(
+            "{process_manager}\nfn synthetic_cross_file_retire(page_table: &mut ProcessPageTable, pid: u64, budget: &mut u32) {{ let _ = page_table.retire_bounded(pid, budget); }}"
+        ),
+    );
+    assert!(validate_process_page_table_retire_site(&cross_file_retire).is_err());
 
     // R6: inventory membership and unconditional declarations are both pinned.
     let provider = source(&sources, "kernel/src/tracing/providers/teardown.rs");
@@ -3626,6 +3628,28 @@ fn deliberately_broken_variants_fail_the_ratchet() {
         (
             "counts.table_frames_returned != counts.table_frames_recorded + 1 {",
             "counts.table_frames_returned != counts.table_frames_recorded + 1 && false {",
+        ),
+    ] {
+        let weakened = provider.replacen(needle, replacement, 1);
+        let weakened = with_replaced_source(
+            &sources,
+            "kernel/src/tracing/providers/teardown.rs",
+            weakened,
+        );
+        assert!(validate_pr1c_retirement_oracles(&weakened).is_err());
+    }
+    for (needle, replacement) in [
+        (
+            "counts.roots_retired != 1 {",
+            "counts.roots_retired != 1 && 1 == 0 {",
+        ),
+        (
+            "counts.table_frames_recorded != expected_tables {",
+            "counts.table_frames_recorded != expected_tables && 1 == 0 {",
+        ),
+        (
+            "counts.table_frames_returned != counts.table_frames_recorded + 1 {",
+            "counts.table_frames_returned != counts.table_frames_recorded + 1 && 1 == 0 {",
         ),
     ] {
         let weakened = provider.replacen(needle, replacement, 1);
