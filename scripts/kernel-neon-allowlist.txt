@@ -1,0 +1,23 @@
+# Kernel NEON/FP-store guard allowlist  (see scripts/check-kernel-no-neon.sh)
+#
+# The aarch64 kernel is compiled with the SOFT-FLOAT target
+# aarch64-breenix-kernel.json ("features": "...,-neon,-fp-armv8", "abi":
+# "softfloat"). A correctly-built kernel therefore contains ZERO vector/FP
+# load or store instructions in its .text sections. If the kernel is ever
+# built with the userspace NEON hardfloat target (aarch64-breenix.json) by
+# mistake, compiler-builtins' memcpy/memset and ordinary spills start using
+# q/d/s/v registers on the kernel stack before the FPU trap is configured —
+# this is the exact fault class tracked by issue #528 (see the #470 PR-1c RCA).
+#
+# Each non-comment, non-blank line is an EXTENDED-REGEX matched against the
+# demangled/mangled symbol name that owns an offending instruction. A match
+# means "this FP/SIMD use in kernel code is intentional and reviewed."
+#
+# POLICY: keep this list EMPTY. Kernel code must not use FP/SIMD. Only add a
+# symbol here if a maintainer has deliberately introduced reviewed FP/SIMD
+# kernel code (e.g. an explicit userspace FPSIMD context save/restore routine),
+# and document why on the same line. An allowlisted entry is NOT a licence to
+# build the whole kernel with the NEON target — that path stays banned.
+#
+# --- allowlisted symbols (regex, one per line) ---
+# (intentionally empty)
