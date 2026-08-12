@@ -77,6 +77,7 @@ pub(crate) struct PendingProcessReclaim {
     last_pass: u32,
     proof_failures: u8,
     parked: Option<ParkRecord>,
+    leaves_released: bool,
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -177,16 +178,28 @@ impl PendingProcessReclaim {
         })
     }
 
-    fn reclaim(mut self) {
-        if let Some(page_table) = self.page_table.as_ref() {
-            crate::process::process::cleanup_cow_page_table(page_table);
+    fn reclaim_bounded(&mut self) -> crate::memory::process_memory::RetireProgress {
+        use crate::memory::process_memory::{RetireProgress, RETIRE_FRAME_BUDGET};
+
+        if !self.leaves_released {
+            if let Some(page_table) = self.page_table.as_ref() {
+                crate::process::process::cleanup_cow_page_table(page_table);
+            }
+            for old_page_table in self.old_page_tables.drain(..) {
+                old_page_table.cleanup_for_exec();
+            }
+            self.leaves_released = true;
         }
-        for old_page_table in self.old_page_tables.drain(..) {
-            old_page_table.cleanup_for_exec();
+
+        let Some(page_table) = self.page_table.as_mut() else {
+            return RetireProgress::Complete;
+        };
+        let mut budget = RETIRE_FRAME_BUDGET;
+        let progress = page_table.retire_bounded(self.pid, &mut budget);
+        if progress == RetireProgress::Complete {
+            self.page_table = None;
         }
-        if let Some(page_table) = self.page_table.take() {
-            page_table.abandon(AbandonReason::NoProofPipeline);
-        }
+        progress
     }
 }
 
@@ -360,6 +373,7 @@ pub(crate) fn defer_process_resources(
         last_pass: 0,
         proof_failures: 0,
         parked: None,
+        leaves_released: false,
     }
 }
 
@@ -939,9 +953,17 @@ fn reclaim_deferred_process_resources_for_pass(my_pass: u32, boot_test_owned: bo
                             PENDING_PROCESS_RECLAIMS.lock().push(reclaim)
                         });
                     }
-                } else {
+                } else if reclaim.reclaim_bounded()
+                    == crate::memory::process_memory::RetireProgress::Complete
+                {
                     crate::tracing::providers::teardown::record_reclaim(reclaim.pid);
-                    reclaim.reclaim();
+                } else {
+                    crate::trace_count!(
+                        crate::tracing::providers::teardown::PT_RETIRE_BUDGET_REQUEUED
+                    );
+                    crate::arch_without_interrupts(|| {
+                        PENDING_PROCESS_RECLAIMS.lock().push(reclaim)
+                    });
                 }
             }
             None => break,
@@ -1023,7 +1045,36 @@ fn boot_test_reclaim(pid: u64) -> PendingProcessReclaim {
         last_pass: 0,
         proof_failures: 0,
         parked: None,
+        leaves_released: false,
     }
+}
+
+#[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
+fn boot_oversized_page_table(
+) -> Result<alloc::boxed::Box<crate::memory::process_memory::ProcessPageTable>, &'static str> {
+    use crate::memory::arch_stub::{Page, PageTableFlags, Size4KiB, VirtAddr};
+    use crate::memory::frame_allocator::{allocate_frame, deallocate_frame};
+
+    let mut page_table = alloc::boxed::Box::new(
+        crate::memory::process_memory::ProcessPageTable::new()
+            .map_err(|_| "oversized root allocation failed")?,
+    );
+    let flags =
+        PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::USER_ACCESSIBLE;
+    for l0_index in 0..22u64 {
+        let page =
+            Page::<Size4KiB>::containing_address(VirtAddr::new((l0_index << 39) | 0x0040_0000));
+        let frame = allocate_frame().ok_or("oversized leaf allocation failed")?;
+        if page_table.map_page(page, frame, flags).is_err() {
+            deallocate_frame(frame);
+            return Err("oversized sentinel mapping failed");
+        }
+        let leaf = page_table
+            .unmap_page(page)
+            .map_err(|_| "oversized sentinel unmap failed")?;
+        deallocate_frame(leaf);
+    }
+    Ok(page_table)
 }
 
 #[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
@@ -1384,6 +1435,92 @@ pub fn reclaim_progress_gate_test() -> crate::test_framework::registry::TestResu
             != 8
     {
         return TestResult::Fail("pass cursor acted as a reclaim cap");
+    }
+
+    // O2/F: 22 distinct L0 subtrees force 66 recorded tables. The production
+    // drain must return exactly 64 frames, requeue through last_pass, re-prove
+    // next pass, and commit the remaining two tables plus root.
+    let oversized_pid = BOOT_RECLAIM_PID_BASE + 100;
+    let mut oversized = boot_test_reclaim(oversized_pid);
+    oversized.page_table = match boot_oversized_page_table() {
+        Ok(page_table) => Some(page_table),
+        Err(message) => return TestResult::Fail(message),
+    };
+    let budget_before = trace::PT_RETIRE_BUDGET_REQUEUED.aggregate();
+    let returned_before = trace::PT_TABLE_FRAMES_RETURNED.aggregate();
+    let roots_before = trace::PT_ROOTS_RETIRED.aggregate();
+    let reclaimed_before = trace::TEARDOWN_RECLAIM.aggregate();
+    crate::arch_without_interrupts(|| PENDING_PROCESS_RECLAIMS.lock().push(oversized));
+    boot_reclaim_deferred_process_resources();
+    if trace::PT_RETIRE_BUDGET_REQUEUED
+        .aggregate()
+        .saturating_sub(budget_before)
+        != 1
+        || trace::PT_TABLE_FRAMES_RETURNED
+            .aggregate()
+            .saturating_sub(returned_before)
+            != 64
+        || trace::PT_ROOTS_RETIRED.aggregate() != roots_before
+        || trace::TEARDOWN_RECLAIM.aggregate() != reclaimed_before
+        || boot_reclaim_locations(oversized_pid) != (true, false)
+    {
+        return TestResult::Fail("F: oversized retirement did not requeue at exactly 64 frames");
+    }
+    boot_reclaim_deferred_process_resources();
+    if trace::PT_RETIRE_BUDGET_REQUEUED.aggregate() != budget_before + 1
+        || trace::PT_TABLE_FRAMES_RETURNED
+            .aggregate()
+            .saturating_sub(returned_before)
+            != 67
+        || trace::PT_ROOTS_RETIRED.aggregate() != roots_before + 1
+        || trace::TEARDOWN_RECLAIM.aggregate() != reclaimed_before + 1
+        || boot_reclaim_locations(oversized_pid) != (false, false)
+    {
+        return TestResult::Fail("F: oversized retirement did not complete after re-proof");
+    }
+
+    // O2/I: dropping an intentionally interrupted retirement counts the root
+    // still in custody and never retries an already-popped lease.
+    let mut interrupted = match boot_oversized_page_table() {
+        Ok(page_table) => page_table,
+        Err(message) => return TestResult::Fail(message),
+    };
+    let mid_before = trace::PT_ROOT_DROPPED_MID_RETIRE.aggregate();
+    let double_before = trace::FRAME_RETURN_REFUSED_DOUBLE.aggregate();
+    let mut budget = crate::memory::process_memory::RETIRE_FRAME_BUDGET;
+    if interrupted.retire_bounded(BOOT_RECLAIM_PID_BASE + 101, &mut budget)
+        != crate::memory::process_memory::RetireProgress::Budgeted
+    {
+        return TestResult::Fail("I: oversized retirement did not stop at its budget");
+    }
+    drop(interrupted);
+    if trace::PT_ROOT_DROPPED_MID_RETIRE.aggregate() != mid_before + 1
+        || trace::FRAME_RETURN_REFUSED_DOUBLE.aggregate() != double_before
+    {
+        return TestResult::Fail("I: interrupted retirement did not fail closed");
+    }
+
+    // O2/J: completion is terminal; a second call has no accounting effect.
+    let mut completed = match crate::memory::process_memory::ProcessPageTable::new() {
+        Ok(page_table) => page_table,
+        Err(_) => return TestResult::Fail("J: page-table construction failed"),
+    };
+    let mut budget = crate::memory::process_memory::RETIRE_FRAME_BUDGET;
+    if completed.retire_bounded(BOOT_RECLAIM_PID_BASE + 102, &mut budget)
+        != crate::memory::process_memory::RetireProgress::Complete
+    {
+        return TestResult::Fail("J: initial root retirement did not complete");
+    }
+    let returned_after_complete = trace::PT_TABLE_FRAMES_RETURNED.aggregate();
+    let roots_after_complete = trace::PT_ROOTS_RETIRED.aggregate();
+    let lost_after_complete = trace::PT_RETIRE_FRAMES_LOST.aggregate();
+    if completed.retire_bounded(BOOT_RECLAIM_PID_BASE + 102, &mut budget)
+        != crate::memory::process_memory::RetireProgress::Complete
+        || trace::PT_TABLE_FRAMES_RETURNED.aggregate() != returned_after_complete
+        || trace::PT_ROOTS_RETIRED.aggregate() != roots_after_complete
+        || trace::PT_RETIRE_FRAMES_LOST.aggregate() != lost_after_complete
+    {
+        return TestResult::Fail("J: completed retirement was not idempotent");
     }
     if trace::RECLAIM_PARK_RESIDENT.aggregate() != resident_before
         || trace::PROOF_UNDER_QUEUE_LOCK.aggregate() != proof_lock_before

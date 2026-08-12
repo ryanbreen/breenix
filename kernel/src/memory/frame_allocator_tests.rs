@@ -26,6 +26,21 @@ fn republish_lost_frame(frame: PhysFrame) -> bool {
     true
 }
 
+#[cfg(target_arch = "aarch64")]
+pub(crate) fn republish_frame_for_gate(frame: PhysFrame) -> bool {
+    republish_lost_frame(frame)
+}
+
+#[cfg(target_arch = "aarch64")]
+pub(crate) fn retire_with_free_list_contended(
+    page_table: &mut crate::memory::process_memory::ProcessPageTable,
+    pid: u64,
+    budget: &mut u32,
+) -> crate::memory::process_memory::RetireProgress {
+    let _free_list = FREE_FRAMES.lock();
+    page_table.retire_bounded(pid, budget)
+}
+
 fn restore_lease(lease: FrameLease) -> bool {
     match return_lease(lease) {
         ReturnOutcome::Returned => true,
