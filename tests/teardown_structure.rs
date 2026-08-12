@@ -1327,6 +1327,23 @@ const PROCESS_MEMORY_FRAME_RETURNS: &[(&str, usize)] = &[
     ("kernel/src/memory/process_memory.rs", 1936),
     ("kernel/src/memory/process_memory.rs", 1941),
 ];
+const RETURN_LEASE_DEFINITION: (&str, usize) = ("kernel/src/memory/frame_allocator.rs", 672);
+const RETURN_LEASE_PRODUCTION_CALLS: &[(&str, usize)] = &[
+    ("kernel/src/memory/frame_allocator.rs", 760),
+    ("kernel/src/memory/process_memory.rs", 1585),
+    ("kernel/src/memory/process_memory.rs", 1587),
+];
+const RETURN_LEASE_BOOT_FIXTURE_CALLS: &[(&str, usize)] = &[
+    ("kernel/src/memory/frame_allocator_tests.rs", 45),
+    ("kernel/src/memory/frame_allocator_tests.rs", 108),
+    ("kernel/src/memory/frame_allocator_tests.rs", 144),
+    ("kernel/src/memory/frame_allocator_tests.rs", 159),
+    ("kernel/src/memory/frame_allocator_tests.rs", 160),
+    ("kernel/src/memory/frame_allocator_tests.rs", 173),
+    ("kernel/src/memory/frame_allocator_tests.rs", 185),
+    ("kernel/src/memory/frame_allocator_tests.rs", 265),
+    ("kernel/src/memory/frame_allocator_tests.rs", 284),
+];
 const TABLE_RECORDER_SITES: &[(&str, usize)] = &[
     ("kernel/src/memory/process_memory.rs", 1133),
     ("kernel/src/memory/process_memory.rs", 1244),
@@ -1608,6 +1625,22 @@ fn validate_frame_return_choke_point(sources: &[(String, String)]) -> Result<(),
         .collect(),
         PROCESS_MEMORY_FRAME_RETURNS,
     )?;
+
+    let mut return_lease_calls = code_sites(sources, "return_lease(");
+    if !return_lease_calls.remove(&(
+        RETURN_LEASE_DEFINITION.0.to_owned(),
+        RETURN_LEASE_DEFINITION.1,
+    )) {
+        eprintln!("return_lease definition moved or disappeared");
+        return Err(());
+    }
+    let mut allowed_return_lease_calls = expected(RETURN_LEASE_PRODUCTION_CALLS);
+    allowed_return_lease_calls.extend(expected(RETURN_LEASE_BOOT_FIXTURE_CALLS));
+    if return_lease_calls != allowed_return_lease_calls {
+        eprintln!("return_lease caller escaped the production/boot-fixture allowlist");
+        return Err(());
+    }
+
     let process_memory = source(sources, "kernel/src/memory/process_memory.rs");
     let all_returns = code_offsets(process_memory, &code_mask(process_memory), "return_lease(");
     let retire = function_body(process_memory, "retire_bounded");
@@ -3879,6 +3912,14 @@ fn deliberately_broken_variants_fail_the_ratchet() {
         process_escape,
     );
     assert!(validate_frame_return_choke_point(&process_escape).is_err());
+    let cross_file_return = with_replaced_source(
+        &sources,
+        "kernel/src/process/manager.rs",
+        format!(
+            "{process_manager}\n#[cfg(test)] fn synthetic_cross_file_return() {{ if let Some(lease) = crate::memory::frame_allocator::allocate_frame_leased() {{ let _ = crate::memory::frame_allocator::return_lease(lease); }} }}"
+        ),
+    );
+    assert!(validate_frame_return_choke_point(&cross_file_return).is_err());
     let unseeded_bootstrap_push = allocator.replacen(
         "        bootstrap.len = 0;",
         "        free_list.push(PhysFrame::containing_address(PhysAddr::new(0x100000)));\n        bootstrap.len = 0;",
