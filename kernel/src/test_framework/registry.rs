@@ -5367,6 +5367,13 @@ static PROCESS_TESTS: &[TestDef] = &[
         stage: TestStage::SerialBoot,
     },
     TestDef {
+        name: "page_table_custody_disposition_gate",
+        func: crate::memory::process_memory::page_table_custody_disposition_gate_test,
+        arch: Arch::Aarch64,
+        timeout_ms: 5000,
+        stage: TestStage::SerialBoot,
+    },
+    TestDef {
         name: "deferred_fault_ring_overflow_injection",
         func: crate::tracing::providers::teardown::deferred_fault_ring_overflow_test,
         arch: Arch::Any,

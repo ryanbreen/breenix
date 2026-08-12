@@ -3,25 +3,25 @@
 //! This module provides per-process page tables and address space isolation.
 
 #[cfg(not(target_arch = "x86_64"))]
-use crate::memory::arch_stub::ThreadPrivilege;
-#[cfg(not(target_arch = "x86_64"))]
 use crate::memory::arch_stub::{
-    Cr3, Mapper, OffsetPageTable, Page, PageTable, PageTableEntry, PageTableFlags, PhysAddr,
+    Cr3, FrameAllocator, Mapper, OffsetPageTable, Page, PageTable, PageTableFlags, PhysAddr,
     PhysFrame, Size4KiB, Translate, VirtAddr,
 };
-use crate::memory::frame_allocator::{allocate_frame, GlobalFrameAllocator};
+#[cfg(target_arch = "aarch64")]
+use crate::memory::frame_allocator::allocate_frame;
+use crate::memory::frame_allocator::{allocate_frame_leased, FrameLease};
 use crate::memory::layout::USER_STACK_REGION_END;
-#[cfg(target_arch = "x86_64")]
-use crate::task::thread::ThreadPrivilege;
 #[cfg(target_arch = "x86_64")]
 use x86_64::{
     registers::control::Cr3,
     structures::paging::{
-        mapper::TranslateResult, page_table::PageTableEntry, Mapper, OffsetPageTable, Page,
-        PageTable, PageTableFlags, PhysFrame, Size4KiB, Translate,
+        mapper::TranslateResult, FrameAllocator, Mapper, OffsetPageTable, Page, PageTable,
+        PageTableFlags, PhysFrame, Size4KiB, Translate,
     },
     PhysAddr, VirtAddr,
 };
+
+use alloc::vec::Vec;
 
 // ============================================================================
 // Copy-on-Write (CoW) Support
@@ -82,210 +82,61 @@ pub struct ProcessPageTable {
     level_4_frame: PhysFrame,
     /// The mapper for this page table
     mapper: OffsetPageTable<'static>,
+    /// Allocator authority for the root. PR-1c consumes this after proving the
+    /// address space is no longer live; PR-1b intentionally never returns it.
+    #[allow(dead_code)]
+    root_lease: FrameLease,
+    /// Allocation-derived custody for every intermediate table we created.
+    tables: OwnedTableFrames,
+}
+
+struct OwnedTableFrames {
+    leases: Vec<FrameLease>,
+    disposition: Disposition,
+}
+
+impl OwnedTableFrames {
+    fn new() -> Self {
+        Self {
+            leases: Vec::new(),
+            disposition: Disposition::Undecided,
+        }
+    }
+
+    fn record(&mut self, lease: FrameLease) {
+        self.leases.push(lease);
+        crate::trace_count!(crate::tracing::providers::teardown::PT_TABLE_FRAMES_RECORDED);
+    }
+}
+
+struct TableRecorder<'a>(&'a mut OwnedTableFrames);
+
+unsafe impl FrameAllocator<Size4KiB> for TableRecorder<'_> {
+    fn allocate_frame(&mut self) -> Option<PhysFrame> {
+        let lease = allocate_frame_leased()?;
+        let frame = lease.frame();
+        self.0.record(lease);
+        Some(frame)
+    }
+}
+
+#[derive(Clone, Copy)]
+enum Disposition {
+    Undecided,
+    RetiredByExecWalk,
+    Abandoned(AbandonReason),
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum AbandonReason {
+    #[cfg_attr(not(target_arch = "aarch64"), allow(dead_code))]
+    NoProofPipeline,
+    #[cfg_attr(target_arch = "aarch64", allow(dead_code))]
+    NoArchPipeline,
+    AlreadyTerminated,
 }
 
 impl ProcessPageTable {
-    /// Deep copy a PML4 entry, creating independent L3/L2/L1 tables
-    ///
-    /// This creates a complete copy of the page table hierarchy below this L4 entry,
-    /// ensuring that each process has its own isolated page tables.
-    #[allow(dead_code)]
-    fn deep_copy_pml4_entry(
-        source_entry: &PageTableEntry,
-        entry_index: usize,
-        phys_offset: VirtAddr,
-    ) -> Result<PhysFrame, &'static str> {
-        log::debug!(
-            "Deep copying PML4 entry {} with L3 addr {:#x}",
-            entry_index,
-            source_entry.addr().as_u64()
-        );
-
-        // Allocate a new L3 table
-        let new_l3_frame = allocate_frame().ok_or("Failed to allocate frame for L3 table")?;
-
-        // Map the new L3 table
-        let new_l3_virt = phys_offset + new_l3_frame.start_address().as_u64();
-        let new_l3_table = unsafe { &mut *(new_l3_virt.as_mut_ptr() as *mut PageTable) };
-
-        // Clear the new L3 table
-        // Clear all entries properly (not using zero() which sets PRESENT | WRITABLE)
-        for i in 0..512 {
-            new_l3_table[i].set_unused();
-        }
-
-        // Map the source L3 table
-        let source_l3_virt = phys_offset + source_entry.addr().as_u64();
-        let source_l3_table = unsafe { &*(source_l3_virt.as_ptr() as *const PageTable) };
-
-        // Copy each L3 entry, deep copying L2 tables as needed
-        for i in 0..512 {
-            if !source_l3_table[i].is_unused() {
-                // Check if this is a huge page (1GB page at L3 level)
-                if source_l3_table[i]
-                    .flags()
-                    .contains(PageTableFlags::HUGE_PAGE)
-                {
-                    // Huge pages can be shared at the physical level
-                    new_l3_table[i] = source_l3_table[i].clone();
-                    log::trace!("Copied L3 huge page entry {}", i);
-                } else {
-                    // Regular L3 entry pointing to L2 table - deep copy the L2 table
-                    match Self::deep_copy_l3_entry(&source_l3_table[i], i, phys_offset) {
-                        Ok(new_l2_frame) => {
-                            let flags = source_l3_table[i].flags();
-                            new_l3_table[i].set_addr(new_l2_frame.start_address(), flags);
-                            log::trace!(
-                                "Deep copied L3 entry {} -> new L2 frame {:#x}",
-                                i,
-                                new_l2_frame.start_address().as_u64()
-                            );
-                        }
-                        Err(e) => {
-                            log::error!("Failed to deep copy L3 entry {}: {}", i, e);
-                            return Err("Failed to deep copy L3 entry");
-                        }
-                    }
-                }
-            }
-        }
-
-        log::debug!(
-            "Successfully deep copied PML4 entry {} to new L3 frame {:#x}",
-            entry_index,
-            new_l3_frame.start_address().as_u64()
-        );
-
-        Ok(new_l3_frame)
-    }
-
-    /// Deep copy an L3 entry, creating independent L2/L1 tables
-    #[allow(dead_code)]
-    fn deep_copy_l3_entry(
-        source_entry: &PageTableEntry,
-        entry_index: usize,
-        phys_offset: VirtAddr,
-    ) -> Result<PhysFrame, &'static str> {
-        // Allocate a new L2 table
-        let new_l2_frame = allocate_frame().ok_or("Failed to allocate frame for L2 table")?;
-
-        // Map the new L2 table
-        let new_l2_virt = phys_offset + new_l2_frame.start_address().as_u64();
-        let new_l2_table = unsafe { &mut *(new_l2_virt.as_mut_ptr() as *mut PageTable) };
-
-        // Clear the new L2 table
-        // Clear all entries properly (not using zero() which sets PRESENT | WRITABLE)
-        for i in 0..512 {
-            new_l2_table[i].set_unused();
-        }
-
-        // Map the source L2 table
-        let source_l2_virt = phys_offset + source_entry.addr().as_u64();
-        let source_l2_table = unsafe { &*(source_l2_virt.as_ptr() as *const PageTable) };
-
-        // Copy each L2 entry, deep copying L1 tables as needed
-        for i in 0..512 {
-            if !source_l2_table[i].is_unused() {
-                // Check if this is a huge page (2MB page at L2 level)
-                if source_l2_table[i]
-                    .flags()
-                    .contains(PageTableFlags::HUGE_PAGE)
-                {
-                    // Huge pages can be shared at the physical level for kernel code
-                    // Calculate the virtual address this L2 entry covers
-                    let l2_virt_addr = (entry_index as u64) * 0x40000000 + (i as u64) * 0x200000; // 1GB per L3, 2MB per L2
-
-                    if l2_virt_addr >= 0x800000000000 {
-                        // Kernel space - safe to share huge pages
-                        new_l2_table[i] = source_l2_table[i].clone();
-                        log::trace!(
-                            "Shared kernel L2 huge page entry {} (addr {:#x})",
-                            i,
-                            l2_virt_addr
-                        );
-                    } else {
-                        // User space - should not share, but for now we'll share kernel code pages
-                        // This needs refinement based on what's actually mapped
-                        new_l2_table[i] = source_l2_table[i].clone();
-                        // Don't spam logs with hundreds of huge page entries
-                        if i < 10 {
-                            log::trace!(
-                                "Shared user L2 huge page entry {} (addr {:#x}) - FIXME",
-                                i,
-                                l2_virt_addr
-                            );
-                        }
-                    }
-                } else {
-                    // Regular L2 entry pointing to L1 table - deep copy the L1 table
-                    match Self::deep_copy_l2_entry(&source_l2_table[i], i, phys_offset) {
-                        Ok(new_l1_frame) => {
-                            let flags = source_l2_table[i].flags();
-                            new_l2_table[i].set_addr(new_l1_frame.start_address(), flags);
-                            log::trace!(
-                                "Deep copied L2 entry {} -> new L1 frame {:#x}",
-                                i,
-                                new_l1_frame.start_address().as_u64()
-                            );
-                        }
-                        Err(e) => {
-                            log::error!("Failed to deep copy L2 entry {}: {}", i, e);
-                            return Err("Failed to deep copy L2 entry");
-                        }
-                    }
-                }
-            }
-        }
-
-        Ok(new_l2_frame)
-    }
-
-    /// Deep copy an L2 entry, creating independent L1 tables
-    #[allow(dead_code)]
-    fn deep_copy_l2_entry(
-        source_entry: &PageTableEntry,
-        _entry_index: usize,
-        phys_offset: VirtAddr,
-    ) -> Result<PhysFrame, &'static str> {
-        // Allocate a new L1 table
-        let new_l1_frame = allocate_frame().ok_or("Failed to allocate frame for L1 table")?;
-
-        // Map the new L1 table
-        let new_l1_virt = phys_offset + new_l1_frame.start_address().as_u64();
-        let new_l1_table = unsafe { &mut *(new_l1_virt.as_mut_ptr() as *mut PageTable) };
-
-        // Clear the new L1 table
-        // Clear all entries properly (not using zero() which sets PRESENT | WRITABLE)
-        for i in 0..512 {
-            new_l1_table[i].set_unused();
-        }
-
-        // Map the source L1 table
-        let source_l1_virt = phys_offset + source_entry.addr().as_u64();
-        let source_l1_table = unsafe { &*(source_l1_virt.as_ptr() as *const PageTable) };
-
-        // Copy L1 entries - these point to actual physical pages
-        // For now, we'll share all physical pages (kernel code should be read-only anyway)
-        // In a full copy-on-write implementation, we'd mark pages as read-only and copy on write
-        for i in 0..512 {
-            if !source_l1_table[i].is_unused() {
-                // Share the physical page but with independent page table entry
-                // This allows different processes to have different permissions/flags if needed
-                new_l1_table[i] = source_l1_table[i].clone();
-                // Don't spam logs with L1 entries
-                if i < 5 {
-                    log::trace!(
-                        "Copied L1 entry {} -> phys frame {:#x}",
-                        i,
-                        source_l1_table[i].addr().as_u64()
-                    );
-                }
-            }
-        }
-
-        Ok(new_l1_frame)
-    }
-
     /// Create a new page table for a process (ARM64 version)
     ///
     /// On ARM64, this is much simpler than x86_64 because:
@@ -300,19 +151,20 @@ impl ProcessPageTable {
         log::debug!("ProcessPageTable::new() [ARM64] - Creating userspace page table");
 
         // Allocate a frame for the L0 page table (TTBR0)
-        let l0_frame = match allocate_frame() {
-            Some(frame) => {
+        let root_lease = match allocate_frame_leased() {
+            Some(lease) => {
                 log::debug!(
                     "ARM64: Allocated L0 frame for TTBR0: {:#x}",
-                    frame.start_address().as_u64()
+                    lease.frame().start_address().as_u64()
                 );
-                frame
+                lease
             }
             None => {
                 log::error!("ARM64: Frame allocator returned None - out of memory?");
                 return Err("Failed to allocate frame for page table");
             }
         };
+        let l0_frame = root_lease.frame();
 
         // Get physical memory offset
         let phys_offset = crate::memory::physical_memory_offset();
@@ -344,6 +196,8 @@ impl ProcessPageTable {
         let page_table = ProcessPageTable {
             level_4_frame: l0_frame,
             mapper,
+            root_lease,
+            tables: OwnedTableFrames::new(),
         };
 
         log::debug!("ARM64: ProcessPageTable created successfully");
@@ -377,9 +231,9 @@ impl ProcessPageTable {
         log::debug!("ProcessPageTable::new() - About to allocate L4 frame");
 
         // Try to allocate with error handling
-        let level_4_frame = match allocate_frame() {
-            Some(frame) => {
-                let frame_addr = frame.start_address().as_u64();
+        let root_lease = match allocate_frame_leased() {
+            Some(lease) => {
+                let frame_addr = lease.frame().start_address().as_u64();
                 log::debug!("Successfully allocated frame: {:#x}", frame_addr);
 
                 // Check for problematic frames
@@ -389,13 +243,15 @@ impl ProcessPageTable {
                     );
                 }
 
-                frame
+                lease
             }
             None => {
                 log::error!("Frame allocator returned None - out of memory?");
                 return Err("Failed to allocate frame for page table");
             }
         };
+        let level_4_frame = root_lease.frame();
+        let mut tables = OwnedTableFrames::new();
 
         log::debug!(
             "Allocated L4 frame: {:#x}",
@@ -598,8 +454,10 @@ impl ProcessPageTable {
                 // CREATE a fresh PDPT for PML4[0] to enable userspace mappings
                 // PML4[0] covers 0x0 - 0x7FFFFFFFFF (512GB) - this is the userspace region
                 // Each process needs its own independent page table hierarchy here
-                let fresh_pdpt_frame =
-                    allocate_frame().ok_or("Failed to allocate PDPT for PML4[0]")?;
+                let fresh_pdpt_lease =
+                    allocate_frame_leased().ok_or("Failed to allocate PDPT for PML4[0]")?;
+                let fresh_pdpt_frame = fresh_pdpt_lease.frame();
+                tables.record(fresh_pdpt_lease);
 
                 // Map and zero out the fresh PDPT
                 let fresh_pdpt_virt = phys_offset + fresh_pdpt_frame.start_address().as_u64();
@@ -1067,6 +925,8 @@ impl ProcessPageTable {
         let new_page_table = ProcessPageTable {
             level_4_frame,
             mapper,
+            root_lease,
+            tables,
         };
 
         // With global kernel page tables, all kernel stacks are automatically visible
@@ -1248,12 +1108,13 @@ impl ProcessPageTable {
                 PageTableFlags::PRESENT | PageTableFlags::WRITABLE
             };
 
-            match self.mapper.map_to_with_table_flags(
+            let Self { mapper, tables, .. } = self;
+            match mapper.map_to_with_table_flags(
                 page,
                 frame,
                 flags,
                 table_flags,
-                &mut GlobalFrameAllocator,
+                &mut TableRecorder(tables),
             ) {
                 Ok(flush) => {
                     // CRITICAL: Do NOT flush TLB immediately!
@@ -1357,13 +1218,14 @@ impl ProcessPageTable {
         };
 
         unsafe {
-            self.mapper
+            let Self { mapper, tables, .. } = self;
+            mapper
                 .map_to_with_table_flags(
                     page,
                     frame,
                     new_flags,
                     table_flags,
-                    &mut GlobalFrameAllocator,
+                    &mut TableRecorder(tables),
                 )
                 .map_err(|_| "Failed to remap page with new flags")?
                 .ignore(); // Don't flush - caller will handle TLB
@@ -1560,22 +1422,6 @@ impl ProcessPageTable {
         result
     }
 
-    /// Get a reference to the mapper
-    #[allow(dead_code)]
-    pub fn mapper(&mut self) -> &mut OffsetPageTable<'static> {
-        &mut self.mapper
-    }
-
-    /// Allocate a stack in this process's page table
-    #[allow(dead_code)]
-    pub fn allocate_stack(
-        &mut self,
-        size: usize,
-        privilege: ThreadPrivilege,
-    ) -> Result<crate::memory::stack::GuardedStack, &'static str> {
-        crate::memory::stack::GuardedStack::new(size, &mut self.mapper, privilege)
-    }
-
     /// Clear specific userspace mappings before loading a new program
     ///
     /// WORKAROUND: Since we share L3 tables between processes, we need to
@@ -1676,6 +1522,27 @@ impl ProcessPageTable {
         Ok(())
     }
 
+    /// Classify an address space that this PR cannot reclaim. This method is
+    /// intentionally limited to disposition accounting and returns no frames.
+    pub(crate) fn abandon(mut self, reason: AbandonReason) {
+        self.tables.disposition = Disposition::Abandoned(reason);
+        match reason {
+            AbandonReason::NoProofPipeline => {
+                crate::trace_count!(
+                    crate::tracing::providers::teardown::PT_ROOT_ABANDONED_NO_PROOF
+                );
+            }
+            AbandonReason::NoArchPipeline => {
+                crate::trace_count!(crate::tracing::providers::teardown::PT_ROOT_ABANDONED_NO_ARCH);
+            }
+            AbandonReason::AlreadyTerminated => {
+                crate::trace_count!(
+                    crate::tracing::providers::teardown::PT_ROOT_ABANDONED_TERMINATED
+                );
+            }
+        }
+    }
+
     /// Clean up page table resources during exec()
     ///
     /// This walks the entire page table hierarchy and:
@@ -1686,10 +1553,16 @@ impl ProcessPageTable {
     ///
     /// Call this on the OLD page table after installing the new one during exec().
     #[cfg(target_arch = "x86_64")]
-    pub fn cleanup_for_exec(self) {
+    pub fn cleanup_for_exec(mut self) {
         use crate::memory::frame_allocator::deallocate_frame;
         use crate::memory::frame_metadata::frame_decref;
         use alloc::vec::Vec;
+
+        self.tables.disposition = Disposition::RetiredByExecWalk;
+        crate::trace_count_add!(
+            crate::tracing::providers::teardown::PT_EXEC_WALK_LEASES_UNRETURNED,
+            self.tables.leases.len() as u64
+        );
 
         let phys_offset = crate::memory::physical_memory_offset();
         let mut user_frames_freed = 0u64;
@@ -1858,10 +1731,16 @@ impl ProcessPageTable {
     ///
     /// ARM64 uses different page table naming (L0/L1/L2/L3) but same structure.
     #[cfg(target_arch = "aarch64")]
-    pub fn cleanup_for_exec(self) {
+    pub fn cleanup_for_exec(mut self) {
         use crate::memory::frame_allocator::deallocate_frame;
         use crate::memory::frame_metadata::frame_decref;
         use alloc::vec::Vec;
+
+        self.tables.disposition = Disposition::RetiredByExecWalk;
+        crate::trace_count_add!(
+            crate::tracing::providers::teardown::PT_EXEC_WALK_LEASES_UNRETURNED,
+            self.tables.leases.len() as u64
+        );
 
         let phys_offset = crate::memory::physical_memory_offset();
         let mut user_frames_freed = 0u64;
@@ -1994,6 +1873,99 @@ impl ProcessPageTable {
             table_frames_freed
         );
     }
+}
+
+impl Drop for ProcessPageTable {
+    fn drop(&mut self) {
+        match self.tables.disposition {
+            Disposition::Undecided => {
+                crate::trace_count!(crate::tracing::providers::teardown::PT_ROOT_DROPPED_UNDECIDED);
+            }
+            Disposition::RetiredByExecWalk => {}
+            Disposition::Abandoned(reason) => match reason {
+                AbandonReason::NoProofPipeline
+                | AbandonReason::NoArchPipeline
+                | AbandonReason::AlreadyTerminated => {}
+            },
+        }
+    }
+}
+
+#[cfg(feature = "boot_tests")]
+fn disposition_gate_counters() -> [u64; 6] {
+    use crate::tracing::providers::teardown;
+    [
+        teardown::PT_TABLE_FRAMES_RECORDED.aggregate(),
+        teardown::PT_ROOT_ABANDONED_NO_PROOF.aggregate(),
+        teardown::PT_ROOT_ABANDONED_NO_ARCH.aggregate(),
+        teardown::PT_ROOT_ABANDONED_TERMINATED.aggregate(),
+        teardown::PT_ROOT_DROPPED_UNDECIDED.aggregate(),
+        teardown::PT_EXEC_WALK_LEASES_UNRETURNED.aggregate(),
+    ]
+}
+
+/// O2/G-H: drive the real classified-abandon and non-freeing Drop paths.
+#[cfg(feature = "boot_tests")]
+pub fn page_table_custody_disposition_gate_test() -> crate::test_framework::registry::TestResult {
+    use crate::test_framework::registry::TestResult;
+
+    let start = disposition_gate_counters();
+
+    let terminated = match ProcessPageTable::new() {
+        Ok(page_table) => page_table,
+        Err(_) => return TestResult::Fail("G: page-table construction failed"),
+    };
+    let free_before_abandon = crate::memory::frame_allocator::free_list_len_for_gate();
+    terminated.abandon(AbandonReason::AlreadyTerminated);
+    let after_abandon = disposition_gate_counters();
+    if after_abandon[3] != start[3] + 1
+        || after_abandon[1] != start[1]
+        || after_abandon[2] != start[2]
+        || after_abandon[4] != start[4]
+        || after_abandon[5] != start[5]
+        || crate::memory::frame_allocator::free_list_len_for_gate() != free_before_abandon
+    {
+        return TestResult::Fail("G: terminated abandonment was not isolated and non-freeing");
+    }
+
+    let undecided = match ProcessPageTable::new() {
+        Ok(page_table) => page_table,
+        Err(_) => return TestResult::Fail("H: page-table construction failed"),
+    };
+    let free_before_drop = crate::memory::frame_allocator::free_list_len_for_gate();
+    drop(undecided);
+    let after_drop = disposition_gate_counters();
+    if after_drop[3] != after_abandon[3]
+        || after_drop[1] != after_abandon[1]
+        || after_drop[2] != after_abandon[2]
+        || after_drop[4] != after_abandon[4] + 1
+        || after_drop[5] != after_abandon[5]
+        || crate::memory::frame_allocator::free_list_len_for_gate() != free_before_drop
+    {
+        return TestResult::Fail("H: undecided Drop was not isolated and non-freeing");
+    }
+
+    TestResult::Pass
+}
+
+#[cfg(all(feature = "boot_tests", target_arch = "x86_64"))]
+pub fn run_x86_page_table_custody_gate() {
+    crate::serial_println!("[TEST:process:page_table_custody_disposition_gate:START]");
+    let result = page_table_custody_disposition_gate_test();
+    if result.is_pass() {
+        crate::serial_println!("[TEST:process:page_table_custody_disposition_gate:PASS]");
+    } else {
+        crate::serial_println!(
+            "[TEST:process:page_table_custody_disposition_gate:FAIL:{:?}]",
+            result
+        );
+    }
+    let values = disposition_gate_counters();
+    crate::serial_println!(
+        "[PT_CUSTODY_COUNTERS:x86:recorded={}:no_proof={}:no_arch={}:terminated={}:undecided={}:exec_unreturned={}]",
+        values[0], values[1], values[2], values[3], values[4], values[5]
+    );
+    assert!(result.is_pass(), "x86 page-table custody gate failed");
 }
 
 /// Switch to a process's page table (ARM64 version)
