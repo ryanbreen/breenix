@@ -51,8 +51,41 @@ const STATE_MASK: u32 = 0b11;
 /// Demand-backed frame state indexed by the allocator's usable-frame ordinal.
 /// Only the directory and chunks below the boot frontier are allocated at init;
 /// later chunks are prepared before the sequential frontier publishes a frame.
+struct FrameLedgerSlot {
+    allocation: AtomicU32,
+    leaf_refs: AtomicU32,
+}
+
+impl FrameLedgerSlot {
+    fn new(allocation: u32) -> Self {
+        Self {
+            allocation: AtomicU32::new(allocation),
+            leaf_refs: AtomicU32::new(0),
+        }
+    }
+
+    fn load(&self, order: Ordering) -> u32 {
+        self.allocation.load(order)
+    }
+
+    fn store(&self, value: u32, order: Ordering) {
+        self.allocation.store(value, order);
+    }
+
+    fn compare_exchange(
+        &self,
+        current: u32,
+        new: u32,
+        success: Ordering,
+        failure: Ordering,
+    ) -> Result<u32, u32> {
+        self.allocation
+            .compare_exchange(current, new, success, failure)
+    }
+}
+
 struct FrameLedger {
-    chunks: &'static [spin::Once<&'static [AtomicU32]>],
+    chunks: &'static [spin::Once<&'static [FrameLedgerSlot]>],
     total_frames: usize,
     initial_frontier: usize,
 }
@@ -70,7 +103,7 @@ impl FrameLedger {
         })
     }
 
-    fn ensure_chunk(&self, index: usize) -> Result<&'static [AtomicU32], ()> {
+    fn ensure_chunk(&self, index: usize) -> Result<&'static [FrameLedgerSlot], ()> {
         if index >= self.total_frames {
             return Err(());
         }
@@ -94,18 +127,18 @@ impl FrameLedger {
                 ST_NEVER
             };
             slot_index += 1;
-            AtomicU32::new(state)
+            FrameLedgerSlot::new(state)
         });
 
         let mut prepared = Some(slots);
         let published = self.chunks[chunk_index].call_once(|| {
             Vec::leak(prepared.take().expect("prepared frame-ledger chunk"))
-                as &'static [AtomicU32]
+                as &'static [FrameLedgerSlot]
         });
         Ok(*published)
     }
 
-    fn get(&self, index: usize) -> Option<&AtomicU32> {
+    fn get(&self, index: usize) -> Option<&FrameLedgerSlot> {
         if index >= self.total_frames {
             return None;
         }
@@ -151,7 +184,27 @@ pub(crate) enum ReturnOutcome {
     RefusedStale,
     RefusedNeverAllocated,
     RefusedUntracked,
+    RefusedLiveLeaf,
 }
+
+const LEAF_EXTERNAL: u32 = u32::MAX;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum LeafMappingClass {
+    Owned,
+    External,
+}
+
+#[derive(Clone, Copy)]
+struct ExternalLeafSpan {
+    start: u64,
+    end: u64,
+}
+
+const EMPTY_EXTERNAL_LEAF_SPAN: ExternalLeafSpan = ExternalLeafSpan { start: 0, end: 0 };
+const MAX_EXTERNAL_LEAF_SPANS: usize = 16;
+static EXTERNAL_LEAF_SPANS: Mutex<[ExternalLeafSpan; MAX_EXTERNAL_LEAF_SPANS]> =
+    Mutex::new([EMPTY_EXTERNAL_LEAF_SPAN; MAX_EXTERNAL_LEAF_SPANS]);
 
 /// Free list for deallocated frames
 /// When frames are deallocated (e.g., after CoW copy reduces refcount to 0),
@@ -261,6 +314,203 @@ fn frame_ordinal(frame: PhysFrame) -> Option<usize> {
     None
 }
 
+fn frame_in_external_leaf_span(frame: PhysFrame) -> bool {
+    let address = frame.start_address().as_u64();
+    EXTERNAL_LEAF_SPANS
+        .lock()
+        .iter()
+        .any(|span| span.start != span.end && (span.start..span.end).contains(&address))
+}
+
+fn mark_external_leaf_slot(frame: PhysFrame) -> Result<bool, &'static str> {
+    let Some(index) = frame_ordinal(frame) else {
+        return Ok(false);
+    };
+    let Some(ledger) = FRAME_LEDGER.get() else {
+        return Err("frame ledger not initialized");
+    };
+    let Some(slot) = ledger.get(index) else {
+        return Err("external leaf frame has no realized allocator slot");
+    };
+    if slot.load(Ordering::Acquire) & STATE_MASK != ST_ALLOCATED {
+        return Err("external leaf frame is not allocator-owned and live");
+    }
+    loop {
+        let refs = slot.leaf_refs.load(Ordering::Acquire);
+        if refs == LEAF_EXTERNAL {
+            return Ok(true);
+        }
+        if refs != 0 {
+            return Err("external leaf frame already has owned mappings");
+        }
+        if slot
+            .leaf_refs
+            .compare_exchange(0, LEAF_EXTERNAL, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+        {
+            return Ok(true);
+        }
+    }
+}
+
+/// Register allocator-backed memory that remains owned outside process page
+/// tables. Mapping code does not choose this class: the owning allocator site
+/// marks the frame before any user descriptor can be published.
+pub(crate) fn register_external_leaf_frame(frame: PhysFrame) -> Result<(), &'static str> {
+    if mark_external_leaf_slot(frame)? {
+        Ok(())
+    } else {
+        Err("external leaf frame is outside allocator memory")
+    }
+}
+
+/// Register a kernel/device-owned physical span before it is exposed through a
+/// process page table. Allocator-backed pages also receive the per-frame marker;
+/// device apertures remain authoritative through this fixed-capacity registry.
+#[cfg(target_arch = "aarch64")]
+pub(crate) fn register_external_leaf_span(
+    start: PhysAddr,
+    byte_len: u64,
+) -> Result<(), &'static str> {
+    let start = start.as_u64();
+    if start & 0xfff != 0 || byte_len == 0 || byte_len & 0xfff != 0 {
+        return Err("external leaf span must be nonempty and page-aligned");
+    }
+    let end = start
+        .checked_add(byte_len)
+        .ok_or("external leaf span overflow")?;
+
+    let mut address = start;
+    while address < end {
+        let frame = PhysFrame::containing_address(PhysAddr::new(address));
+        mark_external_leaf_slot(frame)?;
+        address += 4096;
+    }
+
+    let mut spans = EXTERNAL_LEAF_SPANS.lock();
+    if spans
+        .iter()
+        .any(|span| span.start == start && span.end == end)
+    {
+        return Ok(());
+    }
+    let Some(slot) = spans.iter_mut().find(|span| span.start == span.end) else {
+        return Err("external leaf span registry full");
+    };
+    *slot = ExternalLeafSpan { start, end };
+    Ok(())
+}
+
+/// Derive one mapping reference from allocator state before its descriptor is
+/// published. The caller must roll the reference back if mapping fails.
+pub(crate) fn acquire_leaf_mapping(frame: PhysFrame) -> Result<LeafMappingClass, &'static str> {
+    if frame_in_external_leaf_span(frame) {
+        return Ok(LeafMappingClass::External);
+    }
+    let Some(index) = frame_ordinal(frame) else {
+        crate::trace_count!(crate::tracing::providers::teardown::LEAF_CUSTODY_REFUSED);
+        return Err("leaf frame is neither allocator-owned nor registered external memory");
+    };
+    let Some(ledger) = FRAME_LEDGER.get() else {
+        crate::trace_count!(crate::tracing::providers::teardown::LEAF_CUSTODY_REFUSED);
+        return Err("frame ledger not initialized");
+    };
+    let Some(slot) = ledger.get(index) else {
+        crate::trace_count!(crate::tracing::providers::teardown::LEAF_CUSTODY_REFUSED);
+        return Err("leaf frame has no realized allocator slot");
+    };
+    if slot.load(Ordering::Acquire) & STATE_MASK != ST_ALLOCATED {
+        crate::trace_count!(crate::tracing::providers::teardown::LEAF_CUSTODY_REFUSED);
+        return Err("leaf frame is not allocator-owned and live");
+    }
+
+    loop {
+        let refs = slot.leaf_refs.load(Ordering::Acquire);
+        if refs == LEAF_EXTERNAL {
+            return Ok(LeafMappingClass::External);
+        }
+        if refs == LEAF_EXTERNAL - 1 {
+            crate::trace_count!(crate::tracing::providers::teardown::LEAF_CUSTODY_REFUSED);
+            return Err("leaf mapping reference count exhausted");
+        }
+        if slot
+            .leaf_refs
+            .compare_exchange(refs, refs + 1, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+        {
+            if slot.load(Ordering::Acquire) & STATE_MASK == ST_ALLOCATED {
+                return Ok(LeafMappingClass::Owned);
+            }
+            slot.leaf_refs.fetch_sub(1, Ordering::AcqRel);
+            crate::trace_count!(crate::tracing::providers::teardown::LEAF_CUSTODY_REFUSED);
+            return Err("leaf frame changed allocator state during classification");
+        }
+    }
+}
+
+/// Release one allocator-derived mapping reference. Unregistered, external,
+/// or non-live frames fail closed and can never be returned by this operation.
+pub(crate) fn decref_leaf_mapping(frame: PhysFrame) -> bool {
+    let Some(index) = frame_ordinal(frame) else {
+        crate::trace_count!(crate::tracing::providers::teardown::LEAF_DECREF_UNREGISTERED);
+        return false;
+    };
+    let Some(slot) = FRAME_LEDGER.get().and_then(|ledger| ledger.get(index)) else {
+        crate::trace_count!(crate::tracing::providers::teardown::LEAF_DECREF_UNREGISTERED);
+        return false;
+    };
+    if slot.load(Ordering::Acquire) & STATE_MASK != ST_ALLOCATED {
+        crate::trace_count!(crate::tracing::providers::teardown::LEAF_DECREF_UNREGISTERED);
+        return false;
+    }
+
+    loop {
+        let refs = slot.leaf_refs.load(Ordering::Acquire);
+        if refs == LEAF_EXTERNAL {
+            return false;
+        }
+        if refs == 0 {
+            crate::trace_count!(crate::tracing::providers::teardown::LEAF_DECREF_UNREGISTERED);
+            return false;
+        }
+        if slot
+            .leaf_refs
+            .compare_exchange(refs, refs - 1, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+        {
+            return refs == 1;
+        }
+    }
+}
+
+pub(crate) fn leaf_mapping_refcount(frame: PhysFrame) -> u32 {
+    if frame_in_external_leaf_span(frame) {
+        return LEAF_EXTERNAL;
+    }
+    frame_ordinal(frame)
+        .and_then(|index| FRAME_LEDGER.get()?.get(index))
+        .map(|slot| slot.leaf_refs.load(Ordering::Acquire))
+        .unwrap_or(0)
+}
+
+pub(crate) fn leaf_mapping_stats() -> (usize, u64) {
+    let Some(ledger) = FRAME_LEDGER.get() else {
+        return (0, 0);
+    };
+    let mut tracked = 0usize;
+    let mut total_refs = 0u64;
+    for chunk in ledger.chunks.iter().filter_map(spin::Once::get) {
+        for slot in chunk.iter() {
+            let refs = slot.leaf_refs.load(Ordering::Relaxed);
+            if refs != 0 && refs != LEAF_EXTERNAL {
+                tracked += 1;
+                total_refs += refs as u64;
+            }
+        }
+    }
+    (tracked, total_refs)
+}
+
 fn seed_free_frame(ledger: &FrameLedger, frame: PhysFrame) -> bool {
     let Some(index) = frame_ordinal(frame) else {
         crate::tracing::providers::teardown::FRAME_RETURN_REFUSED_UNTRACKED.increment();
@@ -342,10 +592,7 @@ pub fn init_frame_ledger() {
     }
 
     // No allocation may race the snapshot used to seed ST_ALLOCATED/ST_NEVER.
-    assert_eq!(
-        NEXT_FREE_FRAME.load(Ordering::Acquire),
-        frontier_snapshot
-    );
+    assert_eq!(NEXT_FREE_FRAME.load(Ordering::Acquire), frontier_snapshot);
     FRAME_LEDGER.call_once(|| ledger);
 }
 
@@ -610,6 +857,10 @@ fn claim_frame(frame: PhysFrame) -> Result<Option<FrameLease>, ClaimError> {
         let observed = slot.load(Ordering::Acquire);
         match observed & STATE_MASK {
             ST_NEVER | ST_FREE => {
+                if slot.leaf_refs.load(Ordering::Acquire) != 0 {
+                    crate::trace_count!(crate::tracing::providers::teardown::LEAF_CUSTODY_REFUSED);
+                    return Err(ClaimError::Duplicate);
+                }
                 let generation = (observed >> 2).wrapping_add(1) & 0x3fff_ffff;
                 let allocated = (generation << 2) | ST_ALLOCATED;
                 if slot
@@ -664,6 +915,7 @@ fn counted(outcome: ReturnOutcome) -> ReturnOutcome {
             teardown::FRAME_RETURN_REFUSED_NEVER_ALLOCATED.increment()
         }
         ReturnOutcome::RefusedUntracked => teardown::FRAME_RETURN_REFUSED_UNTRACKED.increment(),
+        ReturnOutcome::RefusedLiveLeaf => teardown::FRAME_RETURN_REFUSED_LIVE_LEAF.increment(),
         ReturnOutcome::Returned => {}
     }
     outcome
@@ -704,6 +956,9 @@ pub(crate) fn return_lease(lease: FrameLease) -> ReturnOutcome {
         }
         match observed & STATE_MASK {
             ST_ALLOCATED => {
+                if slot.leaf_refs.load(Ordering::Acquire) != 0 {
+                    return counted(ReturnOutcome::RefusedLiveLeaf);
+                }
                 let free = (observed & !STATE_MASK) | ST_FREE;
                 if slot
                     .compare_exchange(observed, free, Ordering::AcqRel, Ordering::Acquire)
@@ -730,6 +985,26 @@ pub(crate) fn return_lease(lease: FrameLease) -> ReturnOutcome {
     }
 }
 
+fn current_lease_for_frame(frame: PhysFrame) -> FrameLease {
+    let index = frame_ordinal(frame).unwrap_or(usize::MAX);
+    let generation = FRAME_LEDGER
+        .get()
+        .and_then(|ledger| ledger.get(index))
+        .map(|slot| slot.load(Ordering::Acquire) >> 2)
+        .unwrap_or(0);
+    FrameLease {
+        frame,
+        index: u32::try_from(index).unwrap_or(u32::MAX),
+        generation,
+    }
+}
+
+/// Return a leaf whose mapping refcount reached zero without adding logging,
+/// formatting, allocation, or blocking lock acquisition to the drain path.
+pub(crate) fn deallocate_leaf_frame(frame: PhysFrame) -> ReturnOutcome {
+    return_lease(current_lease_for_frame(frame))
+}
+
 /// Deallocate a physical frame, returning it to the free pool
 ///
 /// Before ledger publication bootstrap callers use a fixed, allocation-free
@@ -746,18 +1021,7 @@ pub fn deallocate_frame(frame: PhysFrame) {
         return;
     }
 
-    let index = frame_ordinal(frame).unwrap_or(usize::MAX);
-    let generation = FRAME_LEDGER
-        .get()
-        .and_then(|ledger| ledger.get(index))
-        .map(|slot| slot.load(Ordering::Acquire) >> 2)
-        .unwrap_or(0);
-    let lease = FrameLease {
-        frame,
-        index: u32::try_from(index).unwrap_or(u32::MAX),
-        generation,
-    };
-    match return_lease(lease) {
+    match return_lease(current_lease_for_frame(frame)) {
         ReturnOutcome::Returned => log::trace!(
             "Frame allocator: Deallocated frame {:#x}",
             frame.start_address().as_u64()
