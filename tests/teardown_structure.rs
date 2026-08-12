@@ -1251,11 +1251,11 @@ const TERMINATE_CALLS: &[(&str, usize)] = &[
     ("kernel/src/signal/delivery.rs", 225),
     ("kernel/src/signal/delivery.rs", 260),
 ];
-const TERMINATE_MINIMAL_CALLS: &[(&str, usize)] = &[("kernel/src/task/process_task.rs", 506)];
+const TERMINATE_MINIMAL_CALLS: &[(&str, usize)] = &[("kernel/src/task/process_task.rs", 520)];
 const PRODUCTION_INIT_PID_SITES: &[(&str, usize)] = &[
     ("kernel/src/process/manager.rs", 1189),
-    ("kernel/src/task/process_task.rs", 466),
-    ("kernel/src/task/process_task.rs", 538),
+    ("kernel/src/task/process_task.rs", 480),
+    ("kernel/src/task/process_task.rs", 552),
 ];
 const TEST_INIT_PID_SITES: &[(&str, usize)] = &[
     ("kernel/src/test_userspace.rs", 84),
@@ -1277,7 +1277,7 @@ const KERNEL_STACK_MUTATIONS: &[(&str, usize)] = &[
 const RECLAIM_ENQUEUE_CALLS: &[(&str, usize)] = &[
     ("kernel/src/process/mod.rs", 53),
     ("kernel/src/process/mod.rs", 280),
-    ("kernel/src/task/process_task.rs", 580),
+    ("kernel/src/task/process_task.rs", 594),
 ];
 const EXIT_PROCESS_AND_RETIRE_CALLS: &[(&str, usize)] = &[
     ("kernel/src/arch_impl/aarch64/exception.rs", 824),
@@ -1295,7 +1295,7 @@ const EXIT_PROCESS_BY_PID_CALLS: &[(&str, usize)] = &[
     ("kernel/src/process/mod.rs", 418),
 ];
 const EXIT_PROCESS_FOR_TEARDOWN_TEST_CALLS: &[(&str, usize)] =
-    &[("kernel/src/tracing/providers/teardown.rs", 1095)];
+    &[("kernel/src/tracing/providers/teardown.rs", 1310)];
 const BLOCKING_PRIMITIVES: &[(&str, usize)] = &[
     ("kernel/src/task/scheduler.rs", 1973),
     ("kernel/src/task/scheduler.rs", 2187),
@@ -1312,44 +1312,56 @@ const RAW_SCHEDULER_LOCK_SITES: &[(&str, usize)] = &[
     ("kernel/src/task/scheduler.rs", 288),
 ];
 const PROCESS_MEMORY_FRAME_RETURNS: &[(&str, usize)] = &[
-    ("kernel/src/memory/process_memory.rs", 1617),
-    ("kernel/src/memory/process_memory.rs", 1656),
     ("kernel/src/memory/process_memory.rs", 1693),
-    ("kernel/src/memory/process_memory.rs", 1705),
-    ("kernel/src/memory/process_memory.rs", 1709),
-    ("kernel/src/memory/process_memory.rs", 1713),
-    ("kernel/src/memory/process_memory.rs", 1718),
+    ("kernel/src/memory/process_memory.rs", 1732),
+    ("kernel/src/memory/process_memory.rs", 1769),
+    ("kernel/src/memory/process_memory.rs", 1781),
     ("kernel/src/memory/process_memory.rs", 1785),
-    ("kernel/src/memory/process_memory.rs", 1813),
-    ("kernel/src/memory/process_memory.rs", 1840),
-    ("kernel/src/memory/process_memory.rs", 1852),
-    ("kernel/src/memory/process_memory.rs", 1856),
-    ("kernel/src/memory/process_memory.rs", 1860),
-    ("kernel/src/memory/process_memory.rs", 1865),
+    ("kernel/src/memory/process_memory.rs", 1789),
+    ("kernel/src/memory/process_memory.rs", 1794),
+    ("kernel/src/memory/process_memory.rs", 1861),
+    ("kernel/src/memory/process_memory.rs", 1889),
+    ("kernel/src/memory/process_memory.rs", 1916),
+    ("kernel/src/memory/process_memory.rs", 1928),
+    ("kernel/src/memory/process_memory.rs", 1932),
+    ("kernel/src/memory/process_memory.rs", 1936),
+    ("kernel/src/memory/process_memory.rs", 1941),
+];
+const RETURN_LEASE_DEFINITION: (&str, usize) = ("kernel/src/memory/frame_allocator.rs", 672);
+const RETURN_LEASE_PRODUCTION_CALLS: &[(&str, usize)] = &[
+    ("kernel/src/memory/frame_allocator.rs", 760),
+    ("kernel/src/memory/process_memory.rs", 1585),
+    ("kernel/src/memory/process_memory.rs", 1587),
+];
+const RETURN_LEASE_BOOT_FIXTURE_CALLS: &[(&str, usize)] = &[
+    ("kernel/src/memory/frame_allocator_tests.rs", 45),
+    ("kernel/src/memory/frame_allocator_tests.rs", 108),
+    ("kernel/src/memory/frame_allocator_tests.rs", 144),
+    ("kernel/src/memory/frame_allocator_tests.rs", 159),
+    ("kernel/src/memory/frame_allocator_tests.rs", 160),
+    ("kernel/src/memory/frame_allocator_tests.rs", 173),
+    ("kernel/src/memory/frame_allocator_tests.rs", 185),
+    ("kernel/src/memory/frame_allocator_tests.rs", 265),
+    ("kernel/src/memory/frame_allocator_tests.rs", 284),
 ];
 const TABLE_RECORDER_SITES: &[(&str, usize)] = &[
-    ("kernel/src/memory/process_memory.rs", 1117),
-    ("kernel/src/memory/process_memory.rs", 1228),
+    ("kernel/src/memory/process_memory.rs", 1133),
+    ("kernel/src/memory/process_memory.rs", 1244),
 ];
 const PROCESS_PAGE_TABLE_ABANDON_SITES: &[(&str, usize, &str)] = &[
     (
         "kernel/src/task/process_task.rs",
-        188,
+        309,
         "AbandonReason::NoProofPipeline",
     ),
     (
         "kernel/src/task/process_task.rs",
-        296,
-        "AbandonReason::NoProofPipeline",
-    ),
-    (
-        "kernel/src/task/process_task.rs",
-        298,
+        311,
         "AbandonReason::NoArchPipeline",
     ),
     (
         "kernel/src/task/process_task.rs",
-        480,
+        494,
         "AbandonReason::AlreadyTerminated",
     ),
     (
@@ -1358,6 +1370,14 @@ const PROCESS_PAGE_TABLE_ABANDON_SITES: &[(&str, usize, &str)] = &[
         "AbandonReason::AlreadyTerminated",
     ),
 ];
+const PROCESS_PAGE_TABLE_RETIRE_SITES: &[(&str, usize)] = &[
+    ("kernel/src/memory/frame_allocator_tests.rs", 41),
+    ("kernel/src/task/process_task.rs", 198),
+    ("kernel/src/task/process_task.rs", 1491),
+    ("kernel/src/task/process_task.rs", 1509),
+    ("kernel/src/task/process_task.rs", 1517),
+];
+const PENDING_RECLAIM_BOUNDED_SITES: &[(&str, usize)] = &[("kernel/src/task/process_task.rs", 956)];
 const FRAME_LEDGER_INIT_CALLS: &[(&str, usize)] = &[
     ("kernel/src/main_aarch64.rs", 493),
     ("kernel/src/memory/mod.rs", 137),
@@ -1373,11 +1393,15 @@ const PROCESS_PAGE_TABLE_CONSTRUCTORS: &[(&str, usize)] = &[
     ("kernel/src/process/manager.rs", 3112),
     ("kernel/src/process/manager.rs", 3393),
     ("kernel/src/syscall/handlers.rs", 1822),
-    ("kernel/src/tracing/providers/teardown.rs", 991),
-    ("kernel/src/tracing/providers/teardown.rs", 1051),
-    ("kernel/src/tracing/providers/teardown.rs", 1112),
-    ("kernel/src/memory/process_memory.rs", 1914),
-    ("kernel/src/memory/process_memory.rs", 1931),
+    ("kernel/src/tracing/providers/teardown.rs", 1146),
+    ("kernel/src/tracing/providers/teardown.rs", 1190),
+    ("kernel/src/tracing/providers/teardown.rs", 1263),
+    ("kernel/src/memory/process_memory.rs", 2005),
+    ("kernel/src/memory/process_memory.rs", 2031),
+    ("kernel/src/memory/process_memory.rs", 2048),
+    ("kernel/src/memory/process_memory.rs", 2069),
+    ("kernel/src/task/process_task.rs", 1059),
+    ("kernel/src/task/process_task.rs", 1504),
 ];
 
 const BLOCKING_NAMES: &[&str] = &[
@@ -1573,6 +1597,7 @@ fn validate_frame_return_choke_point(sources: &[(String, String)]) -> Result<(),
             "inject_duplicate_candidates",
             "remove_duplicate_candidates",
             "republish_lost_frame",
+            "retire_with_free_list_contended",
             "free_frame_count",
             "free_list_len_for_gate",
             "take_free_frame",
@@ -1593,15 +1618,35 @@ fn validate_frame_return_choke_point(sources: &[(String, String)]) -> Result<(),
 
     validate_exact(
         &sites_matching(sources, |line| {
-            (line.contains("deallocate_frame(") || line.contains("return_lease("))
-                && !line.contains("fn deallocate_frame")
-                && !line.contains("fn return_lease")
+            line.contains("deallocate_frame(") && !line.contains("fn deallocate_frame")
         })
         .into_iter()
         .filter(|(path, _)| path == "kernel/src/memory/process_memory.rs")
         .collect(),
         PROCESS_MEMORY_FRAME_RETURNS,
-    )
+    )?;
+
+    let mut return_lease_calls = code_sites(sources, "return_lease(");
+    if !return_lease_calls.remove(&(
+        RETURN_LEASE_DEFINITION.0.to_owned(),
+        RETURN_LEASE_DEFINITION.1,
+    )) {
+        eprintln!("return_lease definition moved or disappeared");
+        return Err(());
+    }
+    let mut allowed_return_lease_calls = expected(RETURN_LEASE_PRODUCTION_CALLS);
+    allowed_return_lease_calls.extend(expected(RETURN_LEASE_BOOT_FIXTURE_CALLS));
+    if return_lease_calls != allowed_return_lease_calls {
+        eprintln!("return_lease caller escaped the production/boot-fixture allowlist");
+        return Err(());
+    }
+
+    let process_memory = source(sources, "kernel/src/memory/process_memory.rs");
+    let all_returns = code_offsets(process_memory, &code_mask(process_memory), "return_lease(");
+    let retire = function_body(process_memory, "retire_bounded");
+    (all_returns.len() == 2 && retire.matches("return_lease(").count() == all_returns.len())
+        .then_some(())
+        .ok_or(())
 }
 
 fn validate_frame_ledger_hot_paths(sources: &[(String, String)]) -> Result<(), ()> {
@@ -1998,7 +2043,7 @@ fn validate_x86_frame_custody_harness(script: &str) -> Result<(), ()> {
         && !script.contains("grep -q '\\[BOOT_TESTS:PASS\\]'")
         && script.contains("FRAME_CUSTODY_COUNTERS:x86:double=1:stale=1:never=1:untracked=1:duplicate=3:contended=[1-9][0-9]*")
         && script.contains("page_table_custody_disposition_gate:PASS")
-        && script.contains("recorded=2:no_proof=0:no_arch=0:terminated=1:undecided=1:exec_unreturned=0")
+        && script.contains("recorded=3:no_proof=0:no_arch=1:terminated=1:undecided=1:exec_unreturned=0")
         && script.contains("-eq 1")
         && script.contains("x86 frame-custody gate run")
         && script.contains("BOOT_TESTS:FAIL|KERNEL PANIC|panic!"))
@@ -2080,7 +2125,7 @@ fn validate_frame_ledger_counter_inventory(provider: &str) -> Result<(), ()> {
         && EXPECTED
             .iter()
             .all(|counter| inventory.contains(&format!("&{counter},")))
-        && provider.contains("pub const COUNTER_COUNT: usize = 59;"))
+        && provider.contains("pub const COUNTER_COUNT: usize = 64;"))
     .then_some(())
     .ok_or(())
 }
@@ -2116,13 +2161,11 @@ fn validate_process_table_recorder(sources: &[(String, String)]) -> Result<(), (
         && recorder.contains("Some(frame)")
         && !recorder.contains("deallocate_frame")
         && !recorder.contains("return_lease"))
-        .then_some(())
-        .ok_or(())
+    .then_some(())
+    .ok_or(())
 }
 
-fn validate_process_page_table_drop_is_non_freeing(
-    sources: &[(String, String)],
-) -> Result<(), ()> {
+fn validate_process_page_table_drop_is_non_freeing(sources: &[(String, String)]) -> Result<(), ()> {
     let process_memory = source(sources, "kernel/src/memory/process_memory.rs");
     let drop_body = function_body(process_memory, "drop");
     (drop_body.contains("Disposition::Undecided")
@@ -2131,8 +2174,8 @@ fn validate_process_page_table_drop_is_non_freeing(
         && ["deallocate_frame", "return_lease", "retire_bounded"]
             .iter()
             .all(|forbidden| !drop_body.contains(forbidden)))
-        .then_some(())
-        .ok_or(())
+    .then_some(())
+    .ok_or(())
 }
 
 fn validate_process_page_table_dispositions(sources: &[(String, String)]) -> Result<(), ()> {
@@ -2177,16 +2220,47 @@ fn validate_process_page_table_dispositions(sources: &[(String, String)]) -> Res
     .ok_or(())
 }
 
-fn validate_process_page_table_counter_inventory(
-    sources: &[(String, String)],
-) -> Result<(), ()> {
-    const EXPECTED: [&str; 6] = [
+fn validate_process_page_table_retire_site(sources: &[(String, String)]) -> Result<(), ()> {
+    let process_task = source(sources, "kernel/src/task/process_task.rs");
+    let retire_sites = code_sites(sources, ".retire_bounded(");
+    validate_exact(&retire_sites, PROCESS_PAGE_TABLE_RETIRE_SITES)?;
+
+    let reclaim_sites = code_sites(sources, ".reclaim_bounded(")
+        .into_iter()
+        .filter(|(path, _)| path == "kernel/src/task/process_task.rs")
+        .collect();
+    validate_exact(&reclaim_sites, PENDING_RECLAIM_BOUNDED_SITES)?;
+
+    if !process_task.contains("fn reclaim_bounded(&mut self)") {
+        return Err(());
+    }
+    let reclaim = function_body(process_task, "reclaim_bounded");
+    let drain = function_body(process_task, "reclaim_deferred_process_resources_for_pass");
+    (reclaim.matches(".retire_bounded(").count() == 1
+        && drain.matches(".reclaim_bounded(").count() == 1
+        && drain
+            .find("if let Some(blocker) = proof.blocker()")
+            .ok_or(())?
+            < drain.find(".reclaim_bounded(").ok_or(())?
+        && drain.find(".reclaim_bounded(").ok_or(())?
+            < drain.find("record_reclaim(reclaim.pid)").ok_or(())?)
+    .then_some(())
+    .ok_or(())
+}
+
+fn validate_process_page_table_counter_inventory(sources: &[(String, String)]) -> Result<(), ()> {
+    const EXPECTED: [&str; 11] = [
         "PT_TABLE_FRAMES_RECORDED",
         "PT_ROOT_ABANDONED_NO_PROOF",
         "PT_ROOT_ABANDONED_NO_ARCH",
         "PT_ROOT_ABANDONED_TERMINATED",
         "PT_ROOT_DROPPED_UNDECIDED",
         "PT_EXEC_WALK_LEASES_UNRETURNED",
+        "PT_ROOTS_RETIRED",
+        "PT_TABLE_FRAMES_RETURNED",
+        "PT_RETIRE_FRAMES_LOST",
+        "PT_ROOT_DROPPED_MID_RETIRE",
+        "PT_RETIRE_BUDGET_REQUEUED",
     ];
     let provider = source(sources, "kernel/src/tracing/providers/teardown.rs");
     let expected: BTreeSet<_> = EXPECTED.into_iter().map(str::to_owned).collect();
@@ -2212,7 +2286,7 @@ fn validate_process_page_table_counter_inventory(
         || !EXPECTED
             .iter()
             .all(|counter| inventory.contains(&format!("&{counter},")))
-        || !provider.contains("pub const COUNTER_COUNT: usize = 59;")
+        || !provider.contains("pub const COUNTER_COUNT: usize = 64;")
     {
         return Err(());
     }
@@ -2227,6 +2301,11 @@ fn validate_process_page_table_counter_inventory(
     let record = function_body(process_memory, "record");
     let abandon = function_body(process_memory, "abandon");
     let drop_body = function_body(process_memory, "drop");
+    if !process_memory.contains("pub(crate) fn retire_bounded") {
+        return Err(());
+    }
+    let retire = function_body(process_memory, "retire_bounded");
+    let task = source(sources, "kernel/src/task/process_task.rs");
     let cleanup_bodies = module_function_bodies(process_memory)
         .remove("cleanup_for_exec")
         .ok_or(())?;
@@ -2235,6 +2314,11 @@ fn validate_process_page_table_counter_inventory(
         && abandon.contains("PT_ROOT_ABANDONED_NO_ARCH")
         && abandon.contains("PT_ROOT_ABANDONED_TERMINATED")
         && drop_body.contains("PT_ROOT_DROPPED_UNDECIDED")
+        && drop_body.contains("PT_ROOT_DROPPED_MID_RETIRE")
+        && retire.contains("record_pt_frame_returned")
+        && retire.contains("record_pt_frame_lost")
+        && retire.contains("record_pt_root_retired")
+        && task.contains("PT_RETIRE_BUDGET_REQUEUED")
         && cleanup_bodies.len() == 2
         && cleanup_bodies
             .iter()
@@ -2247,9 +2331,18 @@ fn validate_process_page_table_exit_paths_are_minimal(
     sources: &[(String, String)],
 ) -> Result<(), ()> {
     let process_memory = source(sources, "kernel/src/memory/process_memory.rs");
+    if !process_memory.contains("pub(crate) fn retire_bounded") {
+        return Err(());
+    }
+    let task = source(sources, "kernel/src/task/process_task.rs");
+    if !task.contains("fn reclaim_bounded(&mut self)") {
+        return Err(());
+    }
     for body in [
         function_body(process_memory, "abandon"),
         function_body(process_memory, "drop"),
+        function_body(process_memory, "retire_bounded"),
+        function_body(task, "reclaim_bounded"),
     ] {
         for forbidden in [
             "log::",
@@ -2270,6 +2363,39 @@ fn validate_process_page_table_exit_paths_are_minimal(
     Ok(())
 }
 
+fn validate_pr1c_retirement_oracles(sources: &[(String, String)]) -> Result<(), ()> {
+    let provider = source(sources, "kernel/src/tracing/providers/teardown.rs");
+    let gate = function_body(provider, "fork_exit_defer_reclaim_pairing_test");
+    let expected = function_body(provider, "expected_retire_table_frames");
+    for required in [
+        "map_retire_sentinels(child_page_table.as_mut())",
+        "let allocator_used_before = frame_allocator_used_frames();",
+        "if allocator_used_after != allocator_used_before {",
+        "retire leak oracle did not return frame accounting to baseline",
+        "if counts.roots_retired != 1 {",
+        "if counts.table_frames_recorded != expected_tables {",
+        "if counts.table_frames_returned != counts.table_frames_recorded + 1 {",
+        "counts.table_frames_lost != 0",
+        "retire cohort per-PID anti-vacuity table count was not exact",
+        "retire cohort per-PID committed return equality failed",
+        "refusal_counters_after != refusal_counters_before",
+        "PT_ROOT_ABANDONED_NO_ARCH",
+        "saturating_sub(no_arch_before)",
+        "[PT_RETIRE_ORACLE:aarch64:cycles=64:",
+    ] {
+        if !gate.contains(required) {
+            return Err(());
+        }
+    }
+    if !expected.contains("address >> 39")
+        || !expected.contains("distinct_l0_subtrees * 3")
+        || gate.contains("let expected_tables = 9")
+    {
+        return Err(());
+    }
+    Ok(())
+}
+
 fn validate_process_page_table_runtime_oracle(sources: &[(String, String)]) -> Result<(), ()> {
     let process_memory = source(sources, "kernel/src/memory/process_memory.rs");
     let gate = function_body(process_memory, "page_table_custody_disposition_gate_test");
@@ -2277,7 +2403,13 @@ fn validate_process_page_table_runtime_oracle(sources: &[(String, String)]) -> R
         || !gate.contains("drop(undecided);")
         || !gate.contains("after_abandon[3] != start[3] + 1")
         || !gate.contains("after_drop[4] != after_abandon[4] + 1")
-        || gate.matches("free_list_len_for_gate()").count() != 4
+        || !gate.contains("retire_with_free_list_contended(")
+        || !gate.contains("PT_RETIRE_FRAMES_LOST.aggregate() != lost_before + 1")
+        || !gate.contains("republish_frame_for_gate(root)")
+        || !gate.contains("no_arch.abandon(AbandonReason::NoArchPipeline);")
+        || !gate.contains("after_no_arch[2] != after_drop[2] + 1")
+        || !gate.contains("PT_TABLE_FRAMES_RETURNED.aggregate()")
+        || gate.matches("free_list_len_for_gate()").count() != 7
         || gate.contains("&& false")
         || gate.contains("|| true")
     {
@@ -2291,8 +2423,7 @@ fn validate_process_page_table_runtime_oracle(sources: &[(String, String)]) -> R
         &registry_mask,
         "page_table_custody_disposition_gate_test",
     );
-    if registrations.len() != 1
-        || registry.contains("page_table_custody_disposition_gate_test as")
+    if registrations.len() != 1 || registry.contains("page_table_custody_disposition_gate_test as")
     {
         return Err(());
     }
@@ -2317,8 +2448,12 @@ fn validate_process_page_table_runtime_oracle(sources: &[(String, String)]) -> R
     }
     let harness = repo_text("docker/qemu/run-x86-boot-tests.sh");
     (harness.contains("page_table_custody_disposition_gate:PASS")
-        && harness.contains("recorded=2:no_proof=0:no_arch=0:terminated=1:undecided=1:exec_unreturned=0")
-        && harness.matches("page_table_custody_disposition_gate:PASS").count() == 2)
+        && harness
+            .contains("recorded=3:no_proof=0:no_arch=1:terminated=1:undecided=1:exec_unreturned=0")
+        && harness
+            .matches("page_table_custody_disposition_gate:PASS")
+            .count()
+            == 2)
         .then_some(())
         .ok_or(())
 }
@@ -2329,6 +2464,8 @@ fn process_page_table_custody_ratchets_are_exact() {
     validate_process_table_recorder(&sources).expect("R2 process mapper recorder was bypassed");
     validate_process_page_table_drop_is_non_freeing(&sources)
         .expect("R4 ProcessPageTable Drop gained a freeing path");
+    validate_process_page_table_retire_site(&sources)
+        .expect("R3 process page-table retirement escaped the proof-gated site");
     validate_process_page_table_dispositions(&sources)
         .expect("R5 process page-table disposition set changed");
     validate_process_page_table_counter_inventory(&sources)
@@ -2337,6 +2474,8 @@ fn process_page_table_custody_ratchets_are_exact() {
         .expect("R7 process page-table exit path gained log/format/heap work");
     validate_process_page_table_runtime_oracle(&sources)
         .expect("O2/G-H process page-table runtime oracle became vacuous");
+    validate_pr1c_retirement_oracles(&sources)
+        .expect("PR-1c leak or per-PID retirement oracle became vacuous");
 }
 
 #[test]
@@ -2386,7 +2525,7 @@ fn frame_ledger_return_and_initialization_ratchets_are_exact() {
             "counter became conditional: {counter}"
         );
     }
-    assert!(provider.contains("pub const COUNTER_COUNT: usize = 59;"));
+    assert!(provider.contains("pub const COUNTER_COUNT: usize = 64;"));
 }
 
 #[test]
@@ -2468,7 +2607,7 @@ fn v3_structural_closures_are_exact() {
     );
     assert_exact(
         sites_matching(&sources, |line| line.contains("btrt::on_process_exit(")),
-        &[("kernel/src/task/process_task.rs", 607)],
+        &[("kernel/src/task/process_task.rs", 621)],
         "btrt::on_process_exit callers",
     );
 
@@ -2643,7 +2782,7 @@ fn all_phase_zero_counters_have_registered_readers_and_honest_runtime_gates() {
         .filter_map(|rest| rest.strip_suffix(','))
         .map(str::to_owned)
         .collect();
-    assert_eq!(declarations.len(), 59);
+    assert_eq!(declarations.len(), 64);
     assert_eq!(
         readers, declarations,
         "every counter must have an inventory reader"
@@ -3313,11 +3452,8 @@ fn deliberately_broken_variants_fail_the_ratchet() {
     let process_memory = source(&sources, "kernel/src/memory/process_memory.rs");
 
     // R2: the mapper allocator and deleted escape hatches cannot be restored.
-    let bypassed_recorder = process_memory.replacen(
-        "&mut TableRecorder(tables)",
-        "&mut GlobalFrameAllocator",
-        1,
-    );
+    let bypassed_recorder =
+        process_memory.replacen("&mut TableRecorder(tables)", "&mut GlobalFrameAllocator", 1);
     let bypassed_recorder = with_replaced_source(
         &sources,
         "kernel/src/memory/process_memory.rs",
@@ -3362,7 +3498,9 @@ fn deliberately_broken_variants_fail_the_ratchet() {
         let raw_drop = with_replaced_source(
             &sources,
             "kernel/src/task/process_task.rs",
-            format!("{process_task}\nfn synthetic_raw_drop(process: &mut Process) {{ {raw_drop} }}"),
+            format!(
+                "{process_task}\nfn synthetic_raw_drop(process: &mut Process) {{ {raw_drop} }}"
+            ),
         );
         assert!(validate_process_page_table_dispositions(&raw_drop).is_err());
     }
@@ -3372,11 +3510,8 @@ fn deliberately_broken_variants_fail_the_ratchet() {
         "page_table.abandon(AbandonReason::NoProofPipeline);",
         1,
     );
-    let wrong_reason = with_replaced_source(
-        &sources,
-        "kernel/src/task/process_task.rs",
-        wrong_reason,
-    );
+    let wrong_reason =
+        with_replaced_source(&sources, "kernel/src/task/process_task.rs", wrong_reason);
     assert!(validate_process_page_table_dispositions(&wrong_reason).is_err());
     let missing_exec_disposition = process_memory.replacen(
         "self.tables.disposition = Disposition::RetiredByExecWalk;",
@@ -3389,6 +3524,34 @@ fn deliberately_broken_variants_fail_the_ratchet() {
         missing_exec_disposition,
     );
     assert!(validate_process_page_table_dispositions(&missing_exec_disposition).is_err());
+
+    // R3: a second retirement call, even with a different receiver spelling,
+    // is outside the one proof-gated site and must fail exact site membership.
+    let extra_retire = with_replaced_source(
+        &sources,
+        "kernel/src/task/process_task.rs",
+        format!(
+            "{process_task}\nfn synthetic_retire(page_table: &mut ProcessPageTable, pid: u64, budget: &mut u32) {{ let _ = page_table.retire_bounded(pid, budget); }}"
+        ),
+    );
+    assert!(validate_process_page_table_retire_site(&extra_retire).is_err());
+    let extra_reclaim = with_replaced_source(
+        &sources,
+        "kernel/src/task/process_task.rs",
+        format!(
+            "{process_task}\nfn synthetic_reclaim(reclaim: &mut PendingProcessReclaim) {{ let _ = reclaim.reclaim_bounded(); }}"
+        ),
+    );
+    assert!(validate_process_page_table_retire_site(&extra_reclaim).is_err());
+    let process_manager = source(&sources, "kernel/src/process/manager.rs");
+    let cross_file_retire = with_replaced_source(
+        &sources,
+        "kernel/src/process/manager.rs",
+        format!(
+            "{process_manager}\nfn synthetic_cross_file_retire(page_table: &mut ProcessPageTable, pid: u64, budget: &mut u32) {{ let _ = page_table.retire_bounded(pid, budget); }}"
+        ),
+    );
+    assert!(validate_process_page_table_retire_site(&cross_file_retire).is_err());
 
     // R6: inventory membership and unconditional declarations are both pinned.
     let provider = source(&sources, "kernel/src/tracing/providers/teardown.rs");
@@ -3435,6 +3598,23 @@ fn deliberately_broken_variants_fail_the_ratchet() {
     );
     assert!(validate_process_page_table_exit_paths_are_minimal(&allocating_drop).is_err());
 
+    let logged_retire = process_memory.replacen(
+        "pub(crate) fn retire_bounded",
+        "pub(crate) fn retire_bounded",
+        1,
+    );
+    let logged_retire = logged_retire.replacen(
+        "self.tables.disposition = Disposition::Retiring;",
+        "log::info!(\"retire\"); self.tables.disposition = Disposition::Retiring;",
+        1,
+    );
+    let logged_retire = with_replaced_source(
+        &sources,
+        "kernel/src/memory/process_memory.rs",
+        logged_retire,
+    );
+    assert!(validate_process_page_table_exit_paths_are_minimal(&logged_retire).is_err());
+
     // O2/G-H: weaken either exact counter assertion and the named validator fails.
     for (needle, replacement) in [
         (
@@ -3447,12 +3627,71 @@ fn deliberately_broken_variants_fail_the_ratchet() {
         ),
     ] {
         let weakened = process_memory.replacen(needle, replacement, 1);
+        let weakened =
+            with_replaced_source(&sources, "kernel/src/memory/process_memory.rs", weakened);
+        assert!(validate_process_page_table_runtime_oracle(&weakened).is_err());
+    }
+
+    // O1 + leak oracle: removing anti-vacuity mappings or weakening any exact
+    // per-PID/baseline equality invalidates the named validator directly.
+    let no_sentinels = provider.replacen(
+        "map_retire_sentinels(child_page_table.as_mut())",
+        "map_retire_sentinels_disabled(child_page_table.as_mut())",
+        1,
+    );
+    let no_sentinels = with_replaced_source(
+        &sources,
+        "kernel/src/tracing/providers/teardown.rs",
+        no_sentinels,
+    );
+    assert!(validate_pr1c_retirement_oracles(&no_sentinels).is_err());
+    for (needle, replacement) in [
+        (
+            "allocator_used_after != allocator_used_before {",
+            "allocator_used_after != allocator_used_before && false {",
+        ),
+        (
+            "counts.roots_retired != 1 {",
+            "counts.roots_retired != 1 && false {",
+        ),
+        (
+            "counts.table_frames_recorded != expected_tables {",
+            "counts.table_frames_recorded != expected_tables && false {",
+        ),
+        (
+            "counts.table_frames_returned != counts.table_frames_recorded + 1 {",
+            "counts.table_frames_returned != counts.table_frames_recorded + 1 && false {",
+        ),
+    ] {
+        let weakened = provider.replacen(needle, replacement, 1);
         let weakened = with_replaced_source(
             &sources,
-            "kernel/src/memory/process_memory.rs",
+            "kernel/src/tracing/providers/teardown.rs",
             weakened,
         );
-        assert!(validate_process_page_table_runtime_oracle(&weakened).is_err());
+        assert!(validate_pr1c_retirement_oracles(&weakened).is_err());
+    }
+    for (needle, replacement) in [
+        (
+            "counts.roots_retired != 1 {",
+            "counts.roots_retired != 1 && 1 == 0 {",
+        ),
+        (
+            "counts.table_frames_recorded != expected_tables {",
+            "counts.table_frames_recorded != expected_tables && 1 == 0 {",
+        ),
+        (
+            "counts.table_frames_returned != counts.table_frames_recorded + 1 {",
+            "counts.table_frames_returned != counts.table_frames_recorded + 1 && 1 == 0 {",
+        ),
+    ] {
+        let weakened = provider.replacen(needle, replacement, 1);
+        let weakened = with_replaced_source(
+            &sources,
+            "kernel/src/tracing/providers/teardown.rs",
+            weakened,
+        );
+        assert!(validate_pr1c_retirement_oracles(&weakened).is_err());
     }
 
     // R1: seven syntactically distinct ways to bypass the return choke point.
@@ -3673,6 +3912,14 @@ fn deliberately_broken_variants_fail_the_ratchet() {
         process_escape,
     );
     assert!(validate_frame_return_choke_point(&process_escape).is_err());
+    let cross_file_return = with_replaced_source(
+        &sources,
+        "kernel/src/process/manager.rs",
+        format!(
+            "{process_manager}\n#[cfg(test)] fn synthetic_cross_file_return() {{ if let Some(lease) = crate::memory::frame_allocator::allocate_frame_leased() {{ let _ = crate::memory::frame_allocator::return_lease(lease); }} }}"
+        ),
+    );
+    assert!(validate_frame_return_choke_point(&cross_file_return).is_err());
     let unseeded_bootstrap_push = allocator.replacen(
         "        bootstrap.len = 0;",
         "        free_list.push(PhysFrame::containing_address(PhysAddr::new(0x100000)));\n        bootstrap.len = 0;",
@@ -3698,8 +3945,8 @@ fn deliberately_broken_variants_fail_the_ratchet() {
     );
     assert!(validate_frame_ledger_hot_paths(&logged_counter).is_err());
     let logged_return = allocator.replacen(
-        "fn return_lease(lease: FrameLease) -> ReturnOutcome {",
-        "fn return_lease(lease: FrameLease) -> ReturnOutcome { log::info!(\"return\");",
+        "pub(crate) fn return_lease(lease: FrameLease) -> ReturnOutcome {",
+        "pub(crate) fn return_lease(lease: FrameLease) -> ReturnOutcome { log::info!(\"return\");",
         1,
     );
     let logged_return = with_replaced_source(
@@ -3709,8 +3956,8 @@ fn deliberately_broken_variants_fail_the_ratchet() {
     );
     assert!(validate_frame_ledger_hot_paths(&logged_return).is_err());
     let growing_return = allocator.replacen(
-        "fn return_lease(lease: FrameLease) -> ReturnOutcome {",
-        "fn return_lease(lease: FrameLease) -> ReturnOutcome { let _ = FREE_FRAMES.lock().try_reserve(1);",
+        "pub(crate) fn return_lease(lease: FrameLease) -> ReturnOutcome {",
+        "pub(crate) fn return_lease(lease: FrameLease) -> ReturnOutcome { let _ = FREE_FRAMES.lock().try_reserve(1);",
         1,
     );
     let growing_return = with_replaced_source(
@@ -3728,7 +3975,7 @@ fn deliberately_broken_variants_fail_the_ratchet() {
         with_replaced_source(&sources, "kernel/src/memory/frame_allocator.rs", logged_get);
     assert!(validate_frame_ledger_hot_paths(&logged_get).is_err());
     let transitive_helper_log = allocator.replacen(
-        "fn return_lease(lease: FrameLease) -> ReturnOutcome {",
+        "pub(crate) fn return_lease(lease: FrameLease) -> ReturnOutcome {",
         "fn note_return(frame: PhysFrame) { log::info!(\"returned {:#x}\", frame.start_address().as_u64()); }\n\nfn return_lease(lease: FrameLease) -> ReturnOutcome { note_return(lease.frame);",
         1,
     );

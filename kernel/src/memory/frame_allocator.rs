@@ -144,7 +144,7 @@ impl FrameLease {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum ReturnOutcome {
+pub(crate) enum ReturnOutcome {
     Returned,
     LostContended,
     RefusedDoubleRelease,
@@ -669,7 +669,7 @@ fn counted(outcome: ReturnOutcome) -> ReturnOutcome {
     outcome
 }
 
-fn return_lease(lease: FrameLease) -> ReturnOutcome {
+pub(crate) fn return_lease(lease: FrameLease) -> ReturnOutcome {
     let Some(ledger) = FRAME_LEDGER.get() else {
         let Some(mut bootstrap) = BOOTSTRAP_FREE_FRAMES.try_lock() else {
             return counted(ReturnOutcome::LostContended);
@@ -773,6 +773,10 @@ pub fn deallocate_frame(frame: PhysFrame) {
 #[cfg(feature = "boot_tests")]
 #[path = "frame_allocator_tests.rs"]
 mod boot_tests;
+#[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
+pub(crate) use boot_tests::republish_frame_for_gate;
+#[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
+pub(crate) use boot_tests::retire_with_free_list_contended;
 #[cfg(all(feature = "boot_tests", target_arch = "x86_64"))]
 pub use boot_tests::run_x86_frame_custody_gate;
 #[cfg(feature = "boot_tests")]

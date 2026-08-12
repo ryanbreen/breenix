@@ -422,8 +422,14 @@ counter!(
     FRAME_RETURN_REFUSED_NEVER_ALLOCATED,
     "Never-allocated frame returns refused"
 );
-counter!(FRAME_RETURN_REFUSED_UNTRACKED, "Untracked frame returns refused");
-counter!(FRAME_DUPLICATE_ALLOC_REFUSED, "Duplicate frame allocations refused");
+counter!(
+    FRAME_RETURN_REFUSED_UNTRACKED,
+    "Untracked frame returns refused"
+);
+counter!(
+    FRAME_DUPLICATE_ALLOC_REFUSED,
+    "Duplicate frame allocations refused"
+);
 counter!(FRAME_LOST_CONTENDED, "Frame returns lost to contention");
 counter!(PT_TABLE_FRAMES_RECORDED, "Process table frames recorded");
 counter!(
@@ -445,6 +451,23 @@ counter!(
 counter!(
     PT_EXEC_WALK_LEASES_UNRETURNED,
     "Recorded table leases consumed by the legacy exec walk"
+);
+counter!(PT_ROOTS_RETIRED, "Process roots retired after proof");
+counter!(
+    PT_TABLE_FRAMES_RETURNED,
+    "Recorded process table frames returned"
+);
+counter!(
+    PT_RETIRE_FRAMES_LOST,
+    "Process table retirement frames lost to contention"
+);
+counter!(
+    PT_ROOT_DROPPED_MID_RETIRE,
+    "Process roots dropped during bounded retirement"
+);
+counter!(
+    PT_RETIRE_BUDGET_REQUEUED,
+    "Process table retirements requeued at the frame budget"
 );
 
 // Declaration-only until the phase named in PLAN.md. These intentionally have
@@ -474,7 +497,7 @@ counter!(
     "Fatal group signals dropped for init"
 );
 
-pub const COUNTER_COUNT: usize = 59;
+pub const COUNTER_COUNT: usize = 64;
 
 /// The registration and normal-context reader inventory. Keeping one inventory
 /// makes a write-only counter structurally impossible without changing the P0
@@ -525,6 +548,11 @@ pub static COUNTERS: [&TraceCounter; COUNTER_COUNT] = [
     &PT_ROOT_ABANDONED_TERMINATED,
     &PT_ROOT_DROPPED_UNDECIDED,
     &PT_EXEC_WALK_LEASES_UNRETURNED,
+    &PT_ROOTS_RETIRED,
+    &PT_TABLE_FRAMES_RETURNED,
+    &PT_RETIRE_FRAMES_LOST,
+    &PT_ROOT_DROPPED_MID_RETIRE,
+    &PT_RETIRE_BUDGET_REQUEUED,
     &RECLAIM_PASS_SKIPPED,
     &RECLAIM_PARKED,
     &RECLAIM_UNPARKED_EPOCH,
@@ -570,6 +598,10 @@ struct BootTestPidCountSlot {
     kick_observed_interval: AtomicU64,
     masked_frames_walked: AtomicU64,
     report_count: AtomicU64,
+    table_frames_recorded: AtomicU64,
+    table_frames_returned: AtomicU64,
+    table_frames_lost: AtomicU64,
+    roots_retired: AtomicU64,
 }
 
 #[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
@@ -585,6 +617,10 @@ impl BootTestPidCountSlot {
             kick_observed_interval: AtomicU64::new(0),
             masked_frames_walked: AtomicU64::new(0),
             report_count: AtomicU64::new(0),
+            table_frames_recorded: AtomicU64::new(0),
+            table_frames_returned: AtomicU64::new(0),
+            table_frames_lost: AtomicU64::new(0),
+            roots_retired: AtomicU64::new(0),
         }
     }
 }
@@ -615,6 +651,10 @@ enum BootTestPidCountKind {
     KickObserved(u64),
     MaskedFramesWalked,
     Report,
+    TableFramesRecorded(u64),
+    TableFrameReturned,
+    TableFrameLost,
+    RootRetired,
 }
 
 #[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
@@ -653,6 +693,19 @@ fn record_boot_test_pid_count(pid: u64, kind: BootTestPidCountKind) {
                 BootTestPidCountKind::Report => {
                     slot.report_count.fetch_add(1, Ordering::Relaxed);
                 }
+                BootTestPidCountKind::TableFramesRecorded(count) => {
+                    slot.table_frames_recorded
+                        .fetch_add(count, Ordering::Relaxed);
+                }
+                BootTestPidCountKind::TableFrameReturned => {
+                    slot.table_frames_returned.fetch_add(1, Ordering::Relaxed);
+                }
+                BootTestPidCountKind::TableFrameLost => {
+                    slot.table_frames_lost.fetch_add(1, Ordering::Relaxed);
+                }
+                BootTestPidCountKind::RootRetired => {
+                    slot.roots_retired.fetch_add(1, Ordering::Release);
+                }
             }
             return;
         }
@@ -675,6 +728,10 @@ fn reset_boot_test_pid_counts() -> BootTestPidCountsGuard {
         slot.kick_observed_interval.store(0, Ordering::Relaxed);
         slot.masked_frames_walked.store(0, Ordering::Relaxed);
         slot.report_count.store(0, Ordering::Relaxed);
+        slot.table_frames_recorded.store(0, Ordering::Relaxed);
+        slot.table_frames_returned.store(0, Ordering::Relaxed);
+        slot.table_frames_lost.store(0, Ordering::Relaxed);
+        slot.roots_retired.store(0, Ordering::Relaxed);
     }
     BOOT_TEST_PID_COUNTS_ACTIVE.store(1, Ordering::Release);
     BootTestPidCountsGuard
@@ -702,30 +759,80 @@ fn track_boot_test_pid(pid: u64) -> bool {
 }
 
 #[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
-fn boot_test_pid_counts(pid: u64) -> (u64, u64) {
+#[derive(Clone, Copy, Default)]
+struct BootTestPidCounts {
+    defer_count: u64,
+    reclaim_count: u64,
+    table_frames_recorded: u64,
+    table_frames_returned: u64,
+    table_frames_lost: u64,
+    roots_retired: u64,
+}
+
+#[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
+fn boot_test_pid_counts(pid: u64) -> BootTestPidCounts {
     let start = pid as usize & (BOOT_TEST_PID_COUNT_SLOTS - 1);
     for offset in 0..BOOT_TEST_PID_COUNT_SLOTS {
         let slot = &BOOT_TEST_PID_COUNTS[(start + offset) & (BOOT_TEST_PID_COUNT_SLOTS - 1)];
         let slot_pid = slot.pid.load(Ordering::Acquire);
         if slot_pid == pid {
-            return (
-                slot.defer_count.load(Ordering::Relaxed),
-                slot.reclaim_count.load(Ordering::Relaxed),
-            );
+            return BootTestPidCounts {
+                defer_count: slot.defer_count.load(Ordering::Relaxed),
+                reclaim_count: slot.reclaim_count.load(Ordering::Relaxed),
+                table_frames_recorded: slot.table_frames_recorded.load(Ordering::Relaxed),
+                table_frames_returned: slot.table_frames_returned.load(Ordering::Relaxed),
+                table_frames_lost: slot.table_frames_lost.load(Ordering::Relaxed),
+                roots_retired: slot.roots_retired.load(Ordering::Relaxed),
+            };
         }
         if slot_pid == 0 {
             break;
         }
     }
-    (0, 0)
+    BootTestPidCounts::default()
 }
 
 #[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
 fn boot_test_pid_counts_complete(pids: &[u64]) -> bool {
     pids.iter().all(|pid| {
-        let (defer_count, reclaim_count) = boot_test_pid_counts(*pid);
-        defer_count >= 1 && defer_count == reclaim_count
+        let counts = boot_test_pid_counts(*pid);
+        counts.defer_count >= 1 && counts.defer_count == counts.reclaim_count
     })
+}
+
+#[inline(always)]
+pub fn record_pt_retire_started(pid: u64, table_frames: u64) {
+    #[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
+    record_boot_test_pid_count(pid, BootTestPidCountKind::TableFramesRecorded(table_frames));
+    #[cfg(not(all(feature = "boot_tests", target_arch = "aarch64")))]
+    let _ = (pid, table_frames);
+}
+
+#[inline(always)]
+pub fn record_pt_frame_returned(pid: u64) {
+    crate::trace_count!(PT_TABLE_FRAMES_RETURNED);
+    #[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
+    record_boot_test_pid_count(pid, BootTestPidCountKind::TableFrameReturned);
+    #[cfg(not(all(feature = "boot_tests", target_arch = "aarch64")))]
+    let _ = pid;
+}
+
+#[inline(always)]
+pub fn record_pt_frame_lost(pid: u64) {
+    crate::trace_count!(PT_RETIRE_FRAMES_LOST);
+    #[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
+    record_boot_test_pid_count(pid, BootTestPidCountKind::TableFrameLost);
+    #[cfg(not(all(feature = "boot_tests", target_arch = "aarch64")))]
+    let _ = pid;
+}
+
+#[inline(always)]
+pub fn record_pt_root_retired(pid: u64) {
+    crate::trace_count!(PT_ROOTS_RETIRED);
+    #[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
+    record_boot_test_pid_count(pid, BootTestPidCountKind::RootRetired);
+    #[cfg(not(all(feature = "boot_tests", target_arch = "aarch64")))]
+    let _ = pid;
 }
 
 #[inline(always)]
@@ -960,6 +1067,56 @@ pub fn deferred_fault_ring_overflow_test() -> crate::test_framework::registry::T
 }
 
 #[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
+const RETIRE_SENTINEL_VAS: [u64; 3] = [
+    0x0000_0000_0040_0000,
+    0x0000_0080_0040_0000,
+    0x0000_0100_0040_0000,
+];
+
+#[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
+fn expected_retire_table_frames() -> u64 {
+    let mut distinct_l0_subtrees = 0u64;
+    for (index, address) in RETIRE_SENTINEL_VAS.iter().enumerate() {
+        let l0_index = (address >> 39) & 0x1ff;
+        if !RETIRE_SENTINEL_VAS[..index]
+            .iter()
+            .any(|prior| ((prior >> 39) & 0x1ff) == l0_index)
+        {
+            distinct_l0_subtrees += 1;
+        }
+    }
+    distinct_l0_subtrees * 3
+}
+
+#[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
+fn map_retire_sentinels(
+    page_table: &mut crate::memory::process_memory::ProcessPageTable,
+) -> Result<(), &'static str> {
+    use crate::memory::arch_stub::{Page, PageTableFlags, Size4KiB, VirtAddr};
+    use crate::memory::frame_allocator::{allocate_frame, deallocate_frame};
+
+    let flags =
+        PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::USER_ACCESSIBLE;
+    for address in RETIRE_SENTINEL_VAS {
+        let frame = allocate_frame().ok_or("sentinel leaf allocation failed")?;
+        let page = Page::<Size4KiB>::containing_address(VirtAddr::new(address));
+        if page_table.map_page(page, frame, flags).is_err() {
+            deallocate_frame(frame);
+            return Err("sentinel mapping failed");
+        }
+    }
+    Ok(())
+}
+
+#[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
+fn frame_allocator_used_frames() -> usize {
+    let stats = crate::memory::frame_allocator::memory_stats();
+    stats
+        .allocated_frames
+        .saturating_sub(crate::memory::frame_allocator::free_list_len_for_gate())
+}
+
+#[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
 pub fn fork_exit_defer_reclaim_pairing_test() -> crate::test_framework::registry::TestResult {
     use crate::test_framework::registry::TestResult;
 
@@ -972,9 +1129,7 @@ pub fn fork_exit_defer_reclaim_pairing_test() -> crate::test_framework::registry
     // entry freed-but-counter-not-yet-visible as unpaired against the deadline.
     let _reclaim_owner = match crate::task::process_task::BootReclaimTestGuard::enter() {
         Ok(guard) => guard,
-        Err(_) => {
-            return TestResult::Fail("reclaim queues not quiescent at pairing-test start")
-        }
+        Err(_) => return TestResult::Fail("reclaim queues not quiescent at pairing-test start"),
     };
 
     let teardown_entry_exit_before = TEARDOWN_ENTRY_EXIT.aggregate();
@@ -1029,9 +1184,66 @@ pub fn fork_exit_defer_reclaim_pairing_test() -> crate::test_framework::registry
         manager.insert_process(parent_pid, parent_process);
     };
 
+    // Exercise the known unproved immediate-release path before the leak
+    // measurement. Its intentional abandonment is therefore present in both
+    // allocator baselines and cannot disguise a deferred-root leak.
+    let immediate_page_table = match crate::memory::process_memory::ProcessPageTable::new() {
+        Ok(page_table) => alloc::boxed::Box::new(page_table),
+        Err(_) => return TestResult::Fail("baseline fork page-table allocation failed"),
+    };
+    let immediate = {
+        let mut manager_guard = crate::process::manager();
+        let Some(manager) = manager_guard.as_mut() else {
+            return TestResult::Fail("process manager unavailable during baseline fork");
+        };
+        let child_pid = match manager.fork_process_aarch64(
+            parent_pid,
+            parent_context.clone(),
+            immediate_page_table,
+        ) {
+            Ok(pid) => pid,
+            Err(_) => return TestResult::Fail("baseline fork failed"),
+        };
+        let Some(child_tid) = manager
+            .get_process(child_pid)
+            .and_then(|process| process.main_thread.as_ref())
+            .map(|thread| thread.id)
+        else {
+            return TestResult::Fail("baseline child has no main thread");
+        };
+        (child_pid, child_tid)
+    };
+    crate::task::process_task::ProcessScheduler::handle_thread_exit(immediate.1, 0);
+    {
+        let mut manager_guard = crate::process::manager();
+        let Some(manager) = manager_guard.as_mut() else {
+            return TestResult::Fail("process manager unavailable during baseline reap");
+        };
+        manager.remove_process(immediate.0);
+        if let Some(parent) = manager.get_process_mut(parent_pid) {
+            parent.children.retain(|pid| *pid != immediate.0);
+        }
+    }
+
     let mut pairing_child_pids = [0u64; 64];
     let mut pairing_child_count = 0;
     let pid_counts_guard = reset_boot_test_pid_counts();
+    let expected_tables = expected_retire_table_frames();
+    let allocator_used_before = frame_allocator_used_frames();
+    let roots_retired_before = PT_ROOTS_RETIRED.aggregate();
+    let table_frames_returned_before = PT_TABLE_FRAMES_RETURNED.aggregate();
+    let table_frames_lost_before = PT_RETIRE_FRAMES_LOST.aggregate();
+    let dropped_undecided_before = PT_ROOT_DROPPED_UNDECIDED.aggregate();
+    let dropped_mid_retire_before = PT_ROOT_DROPPED_MID_RETIRE.aggregate();
+    let budget_requeued_before = PT_RETIRE_BUDGET_REQUEUED.aggregate();
+    let no_arch_before = PT_ROOT_ABANDONED_NO_ARCH.aggregate();
+    let refusal_counters_before = [
+        FRAME_RETURN_REFUSED_DOUBLE.aggregate(),
+        FRAME_RETURN_REFUSED_STALE.aggregate(),
+        FRAME_RETURN_REFUSED_NEVER_ALLOCATED.aggregate(),
+        FRAME_RETURN_REFUSED_UNTRACKED.aggregate(),
+        FRAME_DUPLICATE_ALLOC_REFUSED.aggregate(),
+    ];
     // The nine labels mirror PLAN P2's disjoint adapted-site table. The exact
     // source ratchets below prove which concrete callers use each custody
     // shape; this runtime matrix injects one independent process through every
@@ -1048,10 +1260,13 @@ pub fn fork_exit_defer_reclaim_pairing_test() -> crate::test_framework::registry
         2, // SIGKILL after quarantine/expedite
     ];
     for iteration in 0..64 {
-        let child_page_table = match crate::memory::process_memory::ProcessPageTable::new() {
+        let mut child_page_table = match crate::memory::process_memory::ProcessPageTable::new() {
             Ok(page_table) => alloc::boxed::Box::new(page_table),
             Err(_) => return TestResult::Fail("pairing fork page-table allocation failed"),
         };
+        if map_retire_sentinels(child_page_table.as_mut()).is_err() {
+            return TestResult::Fail("pairing retire sentinel mapping failed");
+        }
         let child = {
             let mut manager_guard = crate::process::manager();
             let Some(manager) = manager_guard.as_mut() else {
@@ -1107,43 +1322,6 @@ pub fn fork_exit_defer_reclaim_pairing_test() -> crate::test_framework::registry
         }
     }
 
-    // Exercise today's immediate-release path as part of the same explained
-    // workload so the three known-under-PM baseline defects cannot pass at zero.
-    let immediate_page_table = match crate::memory::process_memory::ProcessPageTable::new() {
-        Ok(page_table) => alloc::boxed::Box::new(page_table),
-        Err(_) => return TestResult::Fail("baseline fork page-table allocation failed"),
-    };
-    let immediate = {
-        let mut manager_guard = crate::process::manager();
-        let Some(manager) = manager_guard.as_mut() else {
-            return TestResult::Fail("process manager unavailable during baseline fork");
-        };
-        let child_pid =
-            match manager.fork_process_aarch64(parent_pid, parent_context, immediate_page_table) {
-                Ok(pid) => pid,
-                Err(_) => return TestResult::Fail("baseline fork failed"),
-            };
-        let Some(child_tid) = manager
-            .get_process(child_pid)
-            .and_then(|process| process.main_thread.as_ref())
-            .map(|thread| thread.id)
-        else {
-            return TestResult::Fail("baseline child has no main thread");
-        };
-        (child_pid, child_tid)
-    };
-    crate::task::process_task::ProcessScheduler::handle_thread_exit(immediate.1, 0);
-    {
-        let mut manager_guard = crate::process::manager();
-        let Some(manager) = manager_guard.as_mut() else {
-            return TestResult::Fail("process manager unavailable during baseline reap");
-        };
-        manager.remove_process(immediate.0);
-        if let Some(parent) = manager.get_process_mut(parent_pid) {
-            parent.children.retain(|pid| *pid != immediate.0);
-        }
-    }
-
     let timer_frequency = crate::arch_impl::aarch64::timer::frequency_hz();
     let quiesce_deadline =
         crate::arch_impl::aarch64::timer::rdtsc().saturating_add(timer_frequency.saturating_mul(5));
@@ -1179,6 +1357,28 @@ pub fn fork_exit_defer_reclaim_pairing_test() -> crate::test_framework::registry
     let exit_repeat_requests_delta = EXIT_REPEAT_REQUESTS
         .aggregate()
         .saturating_sub(exit_repeat_requests_before);
+    let allocator_used_after = frame_allocator_used_frames();
+    let roots_retired_delta = PT_ROOTS_RETIRED
+        .aggregate()
+        .saturating_sub(roots_retired_before);
+    let table_frames_returned_delta = PT_TABLE_FRAMES_RETURNED
+        .aggregate()
+        .saturating_sub(table_frames_returned_before);
+    let table_frames_lost_delta = PT_RETIRE_FRAMES_LOST
+        .aggregate()
+        .saturating_sub(table_frames_lost_before);
+    crate::serial_println!(
+        "[PT_RETIRE_ORACLE:aarch64:cycles=64:used_before={}:used_after={}:expected_tables={}:roots={}:returned={}:lost={}]",
+        allocator_used_before,
+        allocator_used_after,
+        expected_tables,
+        roots_retired_delta,
+        table_frames_returned_delta,
+        table_frames_lost_delta
+    );
+    if allocator_used_after != allocator_used_before {
+        return TestResult::Fail("retire leak oracle did not return frame accounting to baseline");
+    }
     if teardown_entry_exit_delta < 64 {
         return TestResult::Fail("TEARDOWN_ENTRY_EXIT workload delta did not reach 64");
     }
@@ -1186,19 +1386,65 @@ pub fn fork_exit_defer_reclaim_pairing_test() -> crate::test_framework::registry
         return TestResult::Fail("first/repeat exit request workload deltas did not reach 64");
     }
     for pid in pairing_child_pids {
-        let (defer_count, reclaim_count) = boot_test_pid_counts(pid);
-        if defer_count == 0 {
+        let counts = boot_test_pid_counts(pid);
+        if counts.defer_count == 0 {
             return TestResult::Fail("adapted-site per-PID defer proof was absent");
         }
-        if defer_count > 1 {
+        if counts.defer_count > 1 {
             return TestResult::Fail("adapted-site per-PID defer proof was duplicated");
         }
-        if reclaim_count == 0 {
+        if counts.reclaim_count == 0 {
             return TestResult::Fail("adapted-site per-PID reclaim proof was absent");
         }
-        if reclaim_count > 1 {
+        if counts.reclaim_count > 1 {
             return TestResult::Fail("adapted-site per-PID reclaim proof was duplicated");
         }
+        if counts.roots_retired != 1 {
+            return TestResult::Fail("retire cohort per-PID root completion was not exactly one");
+        }
+        if counts.table_frames_recorded != expected_tables {
+            return TestResult::Fail(
+                "retire cohort per-PID anti-vacuity table count was not exact",
+            );
+        }
+        if counts.table_frames_returned != counts.table_frames_recorded + 1 {
+            return TestResult::Fail("retire cohort per-PID committed return equality failed");
+        }
+        if counts.table_frames_lost != 0 {
+            return TestResult::Fail("retire cohort per-PID frame loss was nonzero");
+        }
+    }
+    if roots_retired_delta != pairing_child_pids.len() as u64
+        || table_frames_returned_delta != (expected_tables + 1) * pairing_child_pids.len() as u64
+        || table_frames_lost_delta != 0
+        || PT_ROOT_DROPPED_UNDECIDED
+            .aggregate()
+            .saturating_sub(dropped_undecided_before)
+            != 0
+        || PT_ROOT_DROPPED_MID_RETIRE
+            .aggregate()
+            .saturating_sub(dropped_mid_retire_before)
+            != 0
+        || PT_RETIRE_BUDGET_REQUEUED
+            .aggregate()
+            .saturating_sub(budget_requeued_before)
+            != 0
+        || PT_ROOT_ABANDONED_NO_ARCH
+            .aggregate()
+            .saturating_sub(no_arch_before)
+            != 0
+    {
+        return TestResult::Fail("retire cohort global committed-effect accounting failed");
+    }
+    let refusal_counters_after = [
+        FRAME_RETURN_REFUSED_DOUBLE.aggregate(),
+        FRAME_RETURN_REFUSED_STALE.aggregate(),
+        FRAME_RETURN_REFUSED_NEVER_ALLOCATED.aggregate(),
+        FRAME_RETURN_REFUSED_UNTRACKED.aggregate(),
+        FRAME_DUPLICATE_ALLOC_REFUSED.aggregate(),
+    ];
+    if refusal_counters_after != refusal_counters_before {
+        return TestResult::Fail("retire cohort triggered an unexpected frame refusal");
     }
     if TEARDOWN_MASKED_FRAMES_WALKED
         .aggregate()
