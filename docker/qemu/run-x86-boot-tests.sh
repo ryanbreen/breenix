@@ -48,6 +48,10 @@ for i in $(seq 1 "$COUNT"); do
         if grep -q '\[TEST:process:frame_custody_refusal_gate:PASS\]' \
             "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
             && grep -qE '\[FRAME_CUSTODY_COUNTERS:x86:double=1:stale=1:never=1:untracked=1:duplicate=3:contended=[1-9][0-9]*\]' \
+                "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
+            && grep -q '\[TEST:process:page_table_custody_disposition_gate:PASS\]' \
+                "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
+            && grep -q '\[PT_CUSTODY_COUNTERS:x86:recorded=2:no_proof=0:no_arch=0:terminated=1:undecided=1:exec_unreturned=0\]' \
                 "$OUTPUT_DIR"/serial_*.txt 2>/dev/null; then
             passed=true
             break
@@ -68,9 +72,14 @@ for i in $(seq 1 "$COUNT"); do
     $passed
     test "$(grep -h -c '\[TEST:process:frame_custody_refusal_gate:PASS\]' \
         "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 1
+    test "$(grep -h -c '\[TEST:process:page_table_custody_disposition_gate:PASS\]' \
+        "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 1
     COUNTER_LINE=$(grep -hE '\[FRAME_CUSTODY_COUNTERS:x86:' \
         "$OUTPUT_DIR"/serial_*.txt | tail -1)
     echo "$COUNTER_LINE"
+    PT_COUNTER_LINE=$(grep -hE '\[PT_CUSTODY_COUNTERS:x86:' \
+        "$OUTPUT_DIR"/serial_*.txt | tail -1)
+    echo "$PT_COUNTER_LINE"
     if grep -qE '\[BOOT_TESTS:FAIL|KERNEL PANIC|panic!' \
         "$OUTPUT_DIR"/serial_*.txt; then
         exit 1
