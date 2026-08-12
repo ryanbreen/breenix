@@ -19,7 +19,7 @@ use crate::memory::arch_stub::VirtAddr;
 use super::{Process, ProcessId};
 #[cfg(target_arch = "x86_64")]
 use crate::elf;
-use crate::memory::process_memory::ProcessPageTable;
+use crate::memory::process_memory::{AbandonReason, ProcessPageTable};
 use crate::task::thread::Thread;
 
 /// Process manager handles all processes in the system
@@ -1147,7 +1147,9 @@ impl ProcessManager {
                 // Preserve the single-CoW-decref invariant: external terminate()
                 // already walked these mappings, so raw-drop them without ever
                 // routing the page table through another reclaim/decref path.
-                drop(process.page_table.take());
+                if let Some(page_table) = process.page_table.take() {
+                    page_table.abandon(AbandonReason::AlreadyTerminated);
+                }
                 drop(process.stack.take());
                 process.pending_old_page_tables.clear();
             } else {

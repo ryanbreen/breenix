@@ -4,6 +4,7 @@
 //! allowing processes to be scheduled as tasks.
 
 use crate::ipc::fd::FileDescriptor;
+use crate::memory::process_memory::AbandonReason;
 use crate::process::ProcessId;
 use crate::task::scheduler;
 use crate::task::thread::{Thread, ThreadPrivilege};
@@ -183,7 +184,9 @@ impl PendingProcessReclaim {
         for old_page_table in self.old_page_tables.drain(..) {
             old_page_table.cleanup_for_exec();
         }
-        drop(self.page_table.take());
+        if let Some(page_table) = self.page_table.take() {
+            page_table.abandon(AbandonReason::NoProofPipeline);
+        }
     }
 }
 
@@ -288,7 +291,12 @@ pub(crate) fn release_process_resources(process: &mut crate::process::Process) {
     }
     process.cleanup_cow_frames();
     process.drain_old_page_tables();
-    drop(process.page_table.take());
+    if let Some(page_table) = process.page_table.take() {
+        #[cfg(target_arch = "aarch64")]
+        page_table.abandon(AbandonReason::NoProofPipeline);
+        #[cfg(not(target_arch = "aarch64"))]
+        page_table.abandon(AbandonReason::NoArchPipeline);
+    }
     drop(process.stack.take());
     process.pending_old_page_tables.clear();
 }
@@ -468,7 +476,9 @@ impl ProcessScheduler {
                             // Preserve the single-CoW-decref invariant: external
                             // terminate() already walked these mappings, so raw-drop
                             // them without another reclaim/decref path.
-                            drop(process.page_table.take());
+                            if let Some(page_table) = process.page_table.take() {
+                                page_table.abandon(AbandonReason::AlreadyTerminated);
+                            }
                             drop(process.stack.take());
                             process.pending_old_page_tables.clear();
                             None

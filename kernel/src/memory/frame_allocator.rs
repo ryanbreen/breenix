@@ -131,10 +131,16 @@ static BOOTSTRAP_FREE_FRAMES: Mutex<BootstrapFreeFrames> = Mutex::new(BootstrapF
 
 /// Unforgeable authority to return one allocator-issued generation.
 #[derive(Clone, Copy)]
-struct FrameLease {
+pub(crate) struct FrameLease {
     frame: PhysFrame,
     index: u32,
     generation: u32,
+}
+
+impl FrameLease {
+    pub(crate) fn frame(self) -> PhysFrame {
+        self.frame
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -643,8 +649,7 @@ pub fn allocate_frame() -> Option<PhysFrame> {
     allocate_claimed().map(|(frame, _)| frame)
 }
 
-#[cfg(feature = "boot_tests")]
-fn allocate_frame_leased() -> Option<FrameLease> {
+pub(crate) fn allocate_frame_leased() -> Option<FrameLease> {
     assert!(FRAME_LEDGER.get().is_some(), "frame ledger not initialized");
     allocate_claimed().and_then(|(_, lease)| lease)
 }
@@ -771,7 +776,9 @@ mod boot_tests;
 #[cfg(all(feature = "boot_tests", target_arch = "x86_64"))]
 pub use boot_tests::run_x86_frame_custody_gate;
 #[cfg(feature = "boot_tests")]
-pub use boot_tests::{frame_custody_healthy_counters_test, frame_custody_refusal_gate_test};
+pub use boot_tests::{
+    frame_custody_healthy_counters_test, frame_custody_refusal_gate_test, free_list_len_for_gate,
+};
 
 /// Memory statistics for procfs reporting
 pub struct MemoryStats {

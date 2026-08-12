@@ -157,6 +157,8 @@ pub fn init(physical_memory_offset: VirtAddr, memory_regions: &'static MemoryReg
 
     #[cfg(all(target_arch = "x86_64", feature = "boot_tests"))]
     frame_allocator::run_x86_frame_custody_gate();
+    #[cfg(all(target_arch = "x86_64", feature = "boot_tests"))]
+    process_memory::run_x86_page_table_custody_gate();
 }
 
 /// Get the physical memory offset

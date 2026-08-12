@@ -425,6 +425,27 @@ counter!(
 counter!(FRAME_RETURN_REFUSED_UNTRACKED, "Untracked frame returns refused");
 counter!(FRAME_DUPLICATE_ALLOC_REFUSED, "Duplicate frame allocations refused");
 counter!(FRAME_LOST_CONTENDED, "Frame returns lost to contention");
+counter!(PT_TABLE_FRAMES_RECORDED, "Process table frames recorded");
+counter!(
+    PT_ROOT_ABANDONED_NO_PROOF,
+    "Process roots abandoned without a retirement pipeline"
+);
+counter!(
+    PT_ROOT_ABANDONED_NO_ARCH,
+    "Process roots abandoned without an architecture pipeline"
+);
+counter!(
+    PT_ROOT_ABANDONED_TERMINATED,
+    "Process roots abandoned after prior termination"
+);
+counter!(
+    PT_ROOT_DROPPED_UNDECIDED,
+    "Process roots dropped without a disposition"
+);
+counter!(
+    PT_EXEC_WALK_LEASES_UNRETURNED,
+    "Recorded table leases consumed by the legacy exec walk"
+);
 
 // Declaration-only until the phase named in PLAN.md. These intentionally have
 // no trace_count! producer yet.
@@ -453,7 +474,7 @@ counter!(
     "Fatal group signals dropped for init"
 );
 
-pub const COUNTER_COUNT: usize = 53;
+pub const COUNTER_COUNT: usize = 59;
 
 /// The registration and normal-context reader inventory. Keeping one inventory
 /// makes a write-only counter structurally impossible without changing the P0
@@ -498,6 +519,12 @@ pub static COUNTERS: [&TraceCounter; COUNTER_COUNT] = [
     &FRAME_RETURN_REFUSED_UNTRACKED,
     &FRAME_DUPLICATE_ALLOC_REFUSED,
     &FRAME_LOST_CONTENDED,
+    &PT_TABLE_FRAMES_RECORDED,
+    &PT_ROOT_ABANDONED_NO_PROOF,
+    &PT_ROOT_ABANDONED_NO_ARCH,
+    &PT_ROOT_ABANDONED_TERMINATED,
+    &PT_ROOT_DROPPED_UNDECIDED,
+    &PT_EXEC_WALK_LEASES_UNRETURNED,
     &RECLAIM_PASS_SKIPPED,
     &RECLAIM_PARKED,
     &RECLAIM_UNPARKED_EPOCH,

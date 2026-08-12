@@ -42,6 +42,10 @@ fn free_frame_count(frame: PhysFrame) -> usize {
         .count()
 }
 
+pub fn free_list_len_for_gate() -> usize {
+    FREE_FRAMES.lock().len()
+}
+
 fn take_free_frame(frame: PhysFrame) -> Option<FrameLease> {
     let candidate = {
         let mut free = FREE_FRAMES.lock();
