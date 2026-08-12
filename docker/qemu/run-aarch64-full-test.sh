@@ -51,6 +51,11 @@ if [ ! -f "$KERNEL" ]; then
     exit 1
 fi
 
+# Durable #528 guard: the kernel MUST be soft-float. Fail fast if it was built
+# with the NEON hardfloat target (aarch64-breenix.json) — that re-arms #528.
+# (set -e aborts the test if the guard trips.)
+"$BREENIX_ROOT/scripts/check-kernel-no-neon.sh" "$KERNEL"
+
 # Find ext2 disk
 EXT2_DISK="$BREENIX_ROOT/target/ext2-aarch64.img"
 if [ ! -f "$EXT2_DISK" ]; then
