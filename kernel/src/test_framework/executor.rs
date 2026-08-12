@@ -5,10 +5,10 @@
 //!
 //! # Staged Execution
 //!
-//! Tests declare which boot stage they require (EarlyBoot, PostScheduler,
-//! ProcessContext, Userspace). The executor tracks the current stage and
-//! only runs tests whose requirements are met. Call `advance_to_stage()`
-//! at appropriate points in the boot sequence to run staged tests.
+//! Tests declare which boot stage they require (SerialBoot, EarlyBoot,
+//! PostScheduler, ProcessContext, Userspace). SerialBoot tests run alone;
+//! subsystem-level parallelism starts at EarlyBoot. The executor tracks the
+//! current stage and only runs tests whose requirements are met.
 //!
 //! # Serial Output Protocol
 //!
@@ -47,7 +47,7 @@ use crate::serial_println;
 use crate::task::kthread::{kthread_join, kthread_run, KthreadHandle};
 
 /// Current boot stage - tests with stage <= this can run
-static CURRENT_STAGE: AtomicU8 = AtomicU8::new(TestStage::EarlyBoot as u8);
+static CURRENT_STAGE: AtomicU8 = AtomicU8::new(TestStage::SerialBoot as u8);
 
 /// Track which tests have already run (by subsystem + test index)
 /// This is a simple bitmap: each subsystem gets 64 bits (max 64 tests per subsystem)
@@ -60,7 +60,7 @@ use core::sync::atomic::AtomicU64;
 
 /// Get the current test stage
 pub fn current_stage() -> TestStage {
-    TestStage::from_u8(CURRENT_STAGE.load(Ordering::Acquire)).unwrap_or(TestStage::EarlyBoot)
+    TestStage::from_u8(CURRENT_STAGE.load(Ordering::Acquire)).unwrap_or(TestStage::SerialBoot)
 }
 
 /// Advance to a new stage and run any tests waiting for that stage
@@ -123,7 +123,7 @@ pub fn run_all_tests() -> u32 {
     // Use serial_println! for test markers (works on both x86_64 and ARM64)
     // log::info!() is silently discarded on ARM64 due to lack of logger backend
     serial_println!("[BOOT_TESTS:START]");
-    serial_println!("[STAGE:{}:ADVANCE]", TestStage::EarlyBoot.name());
+    serial_println!("[STAGE:{}:ADVANCE]", TestStage::SerialBoot.name());
 
     // Initialize graphical display if framebuffer is available
     super::display::init();
@@ -141,13 +141,19 @@ pub fn run_all_tests() -> u32 {
     }
 
     // Count tests by stage for reporting
-    let early_boot_count: u32 = SUBSYSTEMS
+    let serial_boot_count: u32 = SUBSYSTEMS
+        .iter()
+        .map(|s| count_stage_filtered_tests(s, TestStage::SerialBoot))
+        .sum();
+    let parallel_boot_count: u32 = SUBSYSTEMS
         .iter()
         .map(|s| count_stage_filtered_tests(s, TestStage::EarlyBoot))
         .sum();
+    let early_boot_count = serial_boot_count + parallel_boot_count;
     let later_stage_count = total_test_count - early_boot_count;
 
     serial_println!("[BOOT_TESTS:TOTAL:{}]", total_test_count);
+    serial_println!("[BOOT_TESTS:SERIAL_BOOT:{}]", serial_boot_count);
     serial_println!("[BOOT_TESTS:EARLY_BOOT:{}]", early_boot_count);
     if later_stage_count > 0 {
         serial_println!(
@@ -174,7 +180,12 @@ pub fn run_all_tests() -> u32 {
         }
     }
 
-    // Run EarlyBoot tests
+    // Run state-mutating gates before any parallel test kthreads exist.
+    let serial_failures = run_staged_tests(TestStage::SerialBoot);
+
+    // Run ordinary EarlyBoot tests with subsystem-level parallelism.
+    serial_println!("[STAGE:{}:ADVANCE]", TestStage::EarlyBoot.name());
+    CURRENT_STAGE.store(TestStage::EarlyBoot as u8, Ordering::Release);
     let early_failures = run_staged_tests(TestStage::EarlyBoot);
 
     // Now advance to PostScheduler stage - by this point kthreads are working
@@ -183,12 +194,13 @@ pub fn run_all_tests() -> u32 {
     CURRENT_STAGE.store(TestStage::PostScheduler as u8, Ordering::Release);
     let post_failures = run_staged_tests(TestStage::PostScheduler);
 
-    early_failures + post_failures
+    serial_failures + early_failures + post_failures
 }
 
 /// Run tests for a specific stage (and mark them as run)
 fn run_staged_tests(target_stage: TestStage) -> u32 {
     let mut handles: Vec<(SubsystemId, KthreadHandle)> = Vec::new();
+    let mut total_failed = 0u32;
 
     for subsystem in SUBSYSTEMS.iter() {
         // Count tests that match architecture AND stage
@@ -208,13 +220,17 @@ fn run_staged_tests(target_stage: TestStage) -> u32 {
             &thread_name,
         ) {
             Ok(handle) => {
-                handles.push((subsystem.id, handle));
                 log::debug!(
                     "Spawned test thread for {}:{} ({} tests)",
                     subsystem.name,
                     target_stage.name(),
                     test_count
                 );
+                if target_stage == TestStage::SerialBoot {
+                    total_failed += join_test_thread(subsystem.id, handle);
+                } else {
+                    handles.push((subsystem.id, handle));
+                }
             }
             Err(e) => {
                 serial_println!("[SUBSYSTEM:{}:SPAWN_ERROR:{:?}]", subsystem.name, e);
@@ -223,19 +239,8 @@ fn run_staged_tests(target_stage: TestStage) -> u32 {
     }
 
     // Wait for all test threads to complete
-    let mut total_failed = 0u32;
     for (id, handle) in handles {
-        match kthread_join(&handle) {
-            Ok(exit_code) => {
-                if exit_code != 0 {
-                    total_failed += exit_code as u32;
-                }
-            }
-            Err(e) => {
-                serial_println!("[SUBSYSTEM:{}:JOIN_ERROR:{:?}]", id.name(), e);
-                total_failed += 1;
-            }
-        }
+        total_failed += join_test_thread(id, handle);
     }
 
     // Emit stage summary
@@ -265,6 +270,17 @@ fn run_staged_tests(target_stage: TestStage) -> u32 {
     super::display::render_progress();
 
     total_failed
+}
+
+fn join_test_thread(id: SubsystemId, handle: KthreadHandle) -> u32 {
+    match kthread_join(&handle) {
+        Ok(exit_code) if exit_code != 0 => exit_code as u32,
+        Ok(_) => 0,
+        Err(e) => {
+            serial_println!("[SUBSYSTEM:{}:JOIN_ERROR:{:?}]", id.name(), e);
+            1
+        }
+    }
 }
 
 /// Count tests that match the current architecture

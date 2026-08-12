@@ -70,29 +70,34 @@ impl Arch {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 #[repr(u8)]
 pub enum TestStage {
+    /// Must run alone before the parallel boot-test cohort. Reserved for tests
+    /// that deliberately mutate shared global state and restore it exactly.
+    SerialBoot = 0,
+
     /// Can run immediately after basic kernel init (heap, interrupts enabled)
     /// Most tests should use this stage.
-    EarlyBoot = 0,
+    EarlyBoot = 1,
 
     /// Requires scheduler to be running and kthreads functional
-    PostScheduler = 1,
+    PostScheduler = 2,
 
     /// Requires a user process to exist (has fd_table, can allocate fds)
     /// Use this for tests that call syscalls requiring process context.
-    ProcessContext = 2,
+    ProcessContext = 3,
 
     /// Requires confirmed userspace execution (EL0/Ring3 syscalls working)
     /// Use this for tests that need actual userspace code to run.
-    Userspace = 3,
+    Userspace = 4,
 }
 
 impl TestStage {
     /// Total number of stages
-    pub const COUNT: usize = 4;
+    pub const COUNT: usize = 5;
 
     /// Get stage name for display
     pub fn name(&self) -> &'static str {
         match self {
+            TestStage::SerialBoot => "serial",
             TestStage::EarlyBoot => "early",
             TestStage::PostScheduler => "sched",
             TestStage::ProcessContext => "proc",
@@ -103,10 +108,11 @@ impl TestStage {
     /// Convert from u8 to TestStage
     pub fn from_u8(val: u8) -> Option<Self> {
         match val {
-            0 => Some(TestStage::EarlyBoot),
-            1 => Some(TestStage::PostScheduler),
-            2 => Some(TestStage::ProcessContext),
-            3 => Some(TestStage::Userspace),
+            0 => Some(TestStage::SerialBoot),
+            1 => Some(TestStage::EarlyBoot),
+            2 => Some(TestStage::PostScheduler),
+            3 => Some(TestStage::ProcessContext),
+            4 => Some(TestStage::Userspace),
             _ => None,
         }
     }
@@ -1164,16 +1170,7 @@ fn test_timer_init() -> TestResult {
         }
         // Fallback: check PIT ticks (timer interrupt counter)
         // The PIT should be initialized before boot tests run
-        let ticks = crate::time::get_ticks();
-        // At boot, ticks may be 0 if interrupts just started, but the
-        // important thing is that the timer subsystem is initialized
-        // We can't easily verify increment without sleeping, which is
-        // covered by test_timer_ticks
-        if ticks >= 0 {
-            // PIT is initialized (get_ticks() didn't panic)
-            return TestResult::Pass;
-        }
-        TestResult::Fail("timer not initialized on x86_64")
+        test_timer_ticks()
     }
 
     #[cfg(target_arch = "aarch64")]
@@ -2742,33 +2739,41 @@ fn test_kthread_spawn_verify() -> TestResult {
 
 /// Test that the workqueue is operational in PostScheduler stage.
 ///
-/// This test verifies that work can be queued and executed through the
-/// workqueue subsystem.
+/// The wait is progress-keyed, not timed (#519 norm). `Work::wait()` blocks on
+/// the work item's own completion handshake — the flag the worker sets after the
+/// closure returns — and `WORK_RUNS` advances only when that closure runs. The
+/// spin-count deadline this replaced was a wall-clock budget shared with every
+/// other parallel PostScheduler kthread, so a slow or starved host could red
+/// `[BOOT_TESTS:PASS]` while the workqueue was healthy.
 fn test_workqueue_operational() -> TestResult {
     use crate::task::workqueue;
-    use core::sync::atomic::{AtomicBool, Ordering};
+    use alloc::sync::Arc;
+    use core::sync::atomic::{AtomicU32, Ordering};
 
-    static WORK_RAN: AtomicBool = AtomicBool::new(false);
-    WORK_RAN.store(false, Ordering::SeqCst);
+    // A counter, not a flag: it advances if and only if the scheduled closure
+    // itself ran, so it is the awaited work's own progress key.
+    static WORK_RUNS: AtomicU32 = AtomicU32::new(0);
+    let before = WORK_RUNS.load(Ordering::SeqCst);
 
-    // Schedule work using the workqueue API
-    let _work = workqueue::schedule_work_fn(
+    let work = workqueue::Work::new(
         || {
-            WORK_RAN.store(true, Ordering::SeqCst);
+            WORK_RUNS.fetch_add(1, Ordering::SeqCst);
         },
         "wq_test",
     );
-
-    // Give the workqueue time to process (busy wait)
-    for _ in 0..1_000_000 {
-        if WORK_RAN.load(Ordering::SeqCst) {
-            return TestResult::Pass;
-        }
-        core::hint::spin_loop();
+    if !workqueue::schedule_work(Arc::clone(&work)) {
+        return TestResult::Fail("workqueue refused the scheduled work");
     }
 
-    // If work didn't run, it might be due to timing - don't fail hard
-    // The workqueue may not be initialized on all configurations
+    work.wait();
+
+    if !work.is_completed() {
+        return TestResult::Fail("workqueue wait returned before the work completed");
+    }
+    if WORK_RUNS.load(Ordering::SeqCst) != before.wrapping_add(1) {
+        return TestResult::Fail("workqueue did not execute scheduled work exactly once");
+    }
+
     TestResult::Pass
 }
 
@@ -5355,6 +5360,13 @@ static INTERRUPT_TESTS: &[TestDef] = &[
 /// - userspace_syscall_confirmed: Verify userspace syscalls are working
 static PROCESS_TESTS: &[TestDef] = &[
     TestDef {
+        name: "frame_custody_refusal_gate",
+        func: crate::memory::frame_allocator::frame_custody_refusal_gate_test,
+        arch: Arch::Aarch64,
+        timeout_ms: 5000,
+        stage: TestStage::SerialBoot,
+    },
+    TestDef {
         name: "deferred_fault_ring_overflow_injection",
         func: crate::tracing::providers::teardown::deferred_fault_ring_overflow_test,
         arch: Arch::Any,
@@ -5411,6 +5423,13 @@ static PROCESS_TESTS: &[TestDef] = &[
         name: "process_list_populated",
         func: test_process_list_populated,
         arch: Arch::Any,
+        timeout_ms: 5000,
+        stage: TestStage::ProcessContext,
+    },
+    TestDef {
+        name: "frame_custody_healthy_counters",
+        func: crate::memory::frame_allocator::frame_custody_healthy_counters_test,
+        arch: Arch::Aarch64,
         timeout_ms: 5000,
         stage: TestStage::ProcessContext,
     },

@@ -12,9 +12,11 @@
 
 use core::sync::atomic::{AtomicBool, Ordering};
 
+#[cfg(any(feature = "interactive", target_arch = "aarch64"))]
 use super::progress::{
     get_overall_progress, get_progress, get_stage_progress, is_complete, is_started,
 };
+#[cfg(any(feature = "interactive", target_arch = "aarch64"))]
 use super::registry::{SubsystemId, TestStage};
 
 /// Whether graphical display is available and initialized
@@ -265,6 +267,7 @@ fn render_to_framebuffer() {
     ) {
         // Stage colors in order
         const STAGE_COLORS: [Color; TestStage::COUNT] = [
+            COLOR_STAGE_EARLY, // SerialBoot - Green
             COLOR_STAGE_EARLY, // EarlyBoot - Green
             COLOR_STAGE_SCHED, // PostScheduler - Blue
             COLOR_STAGE_PROC,  // ProcessContext - Yellow
