@@ -2,7 +2,9 @@
 use crate::memory::arch_stub::ThreadPrivilege;
 #[cfg(not(target_arch = "x86_64"))]
 #[allow(unused_imports)] // Stubs - only OffsetPageTable and VirtAddr used on ARM64
-use crate::memory::arch_stub::{Mapper, OffsetPageTable, Page, PageTableFlags, Size4KiB, VirtAddr};
+use crate::memory::arch_stub::{
+    Mapper, OffsetPageTable, Page, PageTableFlags, PhysFrame, Size4KiB, VirtAddr,
+};
 use crate::memory::layout::{
     PERCPU_STACK_REGION_BASE, PERCPU_STACK_REGION_SIZE, USER_STACK_REGION_END,
     USER_STACK_REGION_START,
@@ -32,6 +34,13 @@ pub struct GuardedStack {
     /// Privilege level of the stack
     #[allow(dead_code)]
     privilege: ThreadPrivilege,
+    /// Physical frames backing the stack, in ascending virtual-page order
+    /// (ARM64 only). The user mapping binds page `i` to `frames[i]`, so the
+    /// stack works correctly whether or not the frames are physically
+    /// contiguous. Every frame here is individually registered as an external
+    /// leaf frame, so it exactly matches the set the user page table maps.
+    #[cfg(target_arch = "aarch64")]
+    frames: alloc::vec::Vec<PhysFrame>,
 }
 
 impl GuardedStack {
@@ -87,6 +96,11 @@ impl GuardedStack {
             stack_top,
             stack_size,
             privilege,
+            // This constructor is the x86_64 mapper path; the ARM64 user-stack
+            // path builds its GuardedStack in `allocate_stack_with_privilege`
+            // with the real frame list. Kept valid for the shared struct shape.
+            #[cfg(target_arch = "aarch64")]
+            frames: alloc::vec::Vec::new(),
         })
     }
 
@@ -126,6 +140,14 @@ impl GuardedStack {
     /// Get the size of the usable stack area
     pub fn size(&self) -> usize {
         self.stack_size
+    }
+
+    /// Physical frames backing this stack, in ascending virtual-page order
+    /// (ARM64). Page `i` of the user stack maps to `frames()[i]`; no physical
+    /// contiguity is assumed.
+    #[cfg(target_arch = "aarch64")]
+    pub fn frames(&self) -> &[PhysFrame] {
+        &self.frames
     }
 
     /// Find free virtual address space for stack allocation
@@ -329,10 +351,16 @@ pub fn allocate_stack_with_privilege(
     // CRITICAL: No logging in stack allocation path - timer interrupt + logger lock = deadlock
     // This function is called during process creation which may have interrupts enabled
 
-    // Allocate physical frames for the stack
-    // We track all frames and verify they're contiguous
+    // Allocate physical frames for the stack.
+    //
+    // The frames are NOT required to be physically contiguous: each one is
+    // recorded in `frames` in ascending virtual-page order and the user page
+    // table binds page `i` to `frames[i]`. This avoids the latent corruption
+    // that arose when the free list handed back a non-ascending run and the
+    // mapper derived a bogus contiguous [bottom, top) span (issue #470 PR-2).
     let mut first_frame_phys: Option<u64> = None;
     let mut prev_frame_phys: Option<u64> = None;
+    let mut frames: alloc::vec::Vec<PhysFrame> = alloc::vec::Vec::with_capacity(stack_pages);
 
     for i in 0..stack_pages {
         let frame = allocate_frame().ok_or("out of memory for stack")?;
@@ -340,12 +368,11 @@ pub fn allocate_stack_with_privilege(
             crate::memory::frame_allocator::register_external_leaf_frame(frame)?;
         }
         let phys = frame.start_address().as_u64();
+        frames.push(frame);
 
         if i == 0 {
             first_frame_phys = Some(phys);
         }
-        // Note: We don't log non-contiguous frames here - just accept them
-        // For simple stacks this works fine even if frames aren't contiguous
         prev_frame_phys = Some(phys);
 
         // Zero the frame via HHDM
@@ -371,6 +398,7 @@ pub fn allocate_stack_with_privilege(
         stack_top,
         stack_size: size,
         privilege,
+        frames,
     })
 }
 

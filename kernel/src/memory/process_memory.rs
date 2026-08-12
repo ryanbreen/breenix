@@ -2619,18 +2619,25 @@ pub fn map_user_stack_to_process(
 /// * `process_page_table` - The process's page table to map into
 /// * `user_stack_bottom` - Userspace virtual address for stack bottom
 /// * `user_stack_top` - Userspace virtual address for stack top (SP points here)
-/// * `phys_bottom` - Physical address of the stack bottom
+/// * `frames` - Physical frames backing the stack, in ascending virtual-page
+///   order (page `i` maps to `frames[i]`). The frames need not be physically
+///   contiguous; each one is the exact frame the stack allocator reserved and
+///   registered as an external leaf, so the leaf-custody gate accepts them.
 #[cfg(target_arch = "aarch64")]
 pub fn map_user_stack_to_process_with_phys(
     process_page_table: &mut ProcessPageTable,
     user_stack_bottom: VirtAddr,
     user_stack_top: VirtAddr,
-    phys_bottom: u64,
+    frames: &[PhysFrame],
 ) -> Result<(), &'static str> {
-    use crate::memory::arch_stub::{Page, PageTableFlags, PhysAddr, PhysFrame, Size4KiB};
+    use crate::memory::arch_stub::{Page, PageTableFlags, Size4KiB};
 
     let stack_size = user_stack_top.as_u64() - user_stack_bottom.as_u64();
     let num_pages = stack_size / 4096;
+
+    if (frames.len() as u64) < num_pages {
+        return Err("user stack frame list shorter than stack page count");
+    }
 
     let flags =
         PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::USER_ACCESSIBLE;
@@ -2638,23 +2645,22 @@ pub fn map_user_stack_to_process_with_phys(
     for i in 0..num_pages {
         let page_offset = i * 4096;
         let user_vaddr = VirtAddr::new(user_stack_bottom.as_u64() + page_offset);
-        let phys_addr = PhysAddr::new(phys_bottom + page_offset);
         let page = Page::<Size4KiB>::containing_address(user_vaddr);
-        let frame = PhysFrame::<Size4KiB>::containing_address(phys_addr);
+        let frame = frames[i as usize];
 
         match process_page_table.map_page(page, frame, flags) {
             Ok(()) => {
                 log::trace!(
                     "Mapped user stack page {:#x} -> frame {:#x}",
                     user_vaddr.as_u64(),
-                    phys_addr.as_u64()
+                    frame.start_address().as_u64()
                 );
             }
             Err(e) => {
                 log::error!(
                     "Failed to map page {:#x} -> {:#x}: {}",
                     user_vaddr.as_u64(),
-                    phys_addr.as_u64(),
+                    frame.start_address().as_u64(),
                     e
                 );
                 return Err("Failed to map user stack page");

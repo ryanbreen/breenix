@@ -520,7 +520,7 @@ impl ProcessManager {
                 page_table,
                 VirtAddr::new(user_stack_bottom),
                 VirtAddr::new(user_stack_top),
-                stack_phys_bottom,
+                process.stack.as_deref().ok_or("user stack frames unavailable")?.frames(),
             )
             .map_err(|e| {
                 crate::serial_println!(
@@ -670,12 +670,6 @@ impl ProcessManager {
             stack::allocate_stack_with_privilege(USER_STACK_SIZE, StackPrivilege::User)
                 .map_err(|_| "Failed to allocate user stack")?;
 
-        // Extract physical address from HHDM address
-        let kernel_stack_top = kernel_stack.top().as_u64();
-        let hhdm_base = crate::arch_impl::aarch64::constants::HHDM_BASE;
-        let stack_phys_top = kernel_stack_top - hhdm_base;
-        let stack_phys_bottom = stack_phys_top - USER_STACK_SIZE as u64;
-
         // Calculate userspace stack addresses
         let user_stack_top = USER_STACK_REGION_START;
         let user_stack_bottom = user_stack_top - USER_STACK_SIZE as u64;
@@ -697,7 +691,7 @@ impl ProcessManager {
                 page_table,
                 VirtAddr::new(user_stack_bottom),
                 VirtAddr::new(user_stack_top),
-                stack_phys_bottom,
+                process.stack.as_deref().ok_or("user stack frames unavailable")?.frames(),
             )
             .map_err(|e| {
                 log::error!(

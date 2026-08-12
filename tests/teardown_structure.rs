@@ -1247,13 +1247,13 @@ let _same_line = "needle"; let _real = needle();
 
 const TERMINATE_CALLS: &[(&str, usize)] = &[
     ("kernel/src/interrupts/context_switch.rs", 1017),
-    ("kernel/src/process/manager.rs", 1175),
+    ("kernel/src/process/manager.rs", 1169),
     ("kernel/src/signal/delivery.rs", 225),
     ("kernel/src/signal/delivery.rs", 260),
 ];
 const TERMINATE_MINIMAL_CALLS: &[(&str, usize)] = &[("kernel/src/task/process_task.rs", 522)];
 const PRODUCTION_INIT_PID_SITES: &[(&str, usize)] = &[
-    ("kernel/src/process/manager.rs", 1192),
+    ("kernel/src/process/manager.rs", 1186),
     ("kernel/src/task/process_task.rs", 482),
     ("kernel/src/task/process_task.rs", 554),
 ];
@@ -1271,7 +1271,7 @@ const QUARANTINE_CALLS: &[(&str, usize)] = &[
 ];
 const KERNEL_STACK_MUTATIONS: &[(&str, usize)] = &[
     ("kernel/src/arch_impl/aarch64/syscall_entry.rs", 961),
-    ("kernel/src/process/manager.rs", 1861),
+    ("kernel/src/process/manager.rs", 1855),
     ("kernel/src/syscall/clone.rs", 252),
 ];
 const RECLAIM_ENQUEUE_CALLS: &[(&str, usize)] = &[
@@ -1360,7 +1360,7 @@ const PROCESS_PAGE_TABLE_ABANDON_SITES: &[(&str, usize, &str)] = &[
     ),
     (
         "kernel/src/process/manager.rs",
-        1154,
+        1148,
         "AbandonReason::AlreadyTerminated",
     ),
 ];
@@ -1383,11 +1383,11 @@ const PROCESS_PAGE_TABLE_CONSTRUCTORS: &[(&str, usize)] = &[
     ("kernel/src/process/manager.rs", 147),
     ("kernel/src/process/manager.rs", 402),
     ("kernel/src/process/manager.rs", 626),
-    ("kernel/src/process/manager.rs", 2245),
-    ("kernel/src/process/manager.rs", 2511),
-    ("kernel/src/process/manager.rs", 2839),
-    ("kernel/src/process/manager.rs", 3115),
-    ("kernel/src/process/manager.rs", 3417),
+    ("kernel/src/process/manager.rs", 2239),
+    ("kernel/src/process/manager.rs", 2505),
+    ("kernel/src/process/manager.rs", 2833),
+    ("kernel/src/process/manager.rs", 3109),
+    ("kernel/src/process/manager.rs", 3411),
     ("kernel/src/syscall/handlers.rs", 1822),
     ("kernel/src/tracing/providers/teardown.rs", 1167),
     ("kernel/src/tracing/providers/teardown.rs", 1211),
@@ -2904,7 +2904,7 @@ fn phase_one_retirement_fence_and_lock_domains_are_structural() {
             line.contains("note_process_row_removed()")
                 && !line.contains("fn note_process_row_removed")
         }),
-        &[("kernel/src/process/manager.rs", 1107)],
+        &[("kernel/src/process/manager.rs", 1101)],
         "ROW_REMOVAL_EPOCH bump sites",
     );
     assert!(function_body(manager, "remove_process").contains("self.processes.remove(&pid)"));
