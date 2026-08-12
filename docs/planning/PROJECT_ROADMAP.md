@@ -17,12 +17,22 @@ https://v0-breenix-dashboard.vercel.app/).
 
 ## Recently Completed
 
+- ✅ **AArch64 leaf-frame custody + exec-path leaf release — PR-2/F4 of the #470 plan** ([PR #547](https://github.com/ryanbreen/breenix/pull/547), Aug 2026, closes the remaining aarch64 F4 scope of [#470](https://github.com/ryanbreen/breenix/issues/470))
+  - Leaf-frame custody wired end-to-end through fork/CoW/`External`-conversion, `frame_decref` now fails closed on illegal custody transitions instead of silently no-opping, and aarch64 `cleanup_for_exec` now retires (bounded) + decrefs every mapped leaf via `walk_mapped_pages` instead of ad hoc handling. A process that fails partway through `exec()` now releases the frames it had already mapped for the new image.
+  - Also fixes a **pre-existing latent aarch64 user-stack contiguity bug** (`kernel/src/memory/stack.rs`): stack allocation now maps each frame individually so the mapped virtual range always matches the frames actually allocated, found while getting custody accounting to balance exactly.
+  - **Honest trade**: borrowed/`External` user-stack frames are never decref'd through the owned-frame path (`GuardedStack::Drop` is a no-op for them) — this eliminates the #470/#528 over-free/corruption class in exchange for a safe, bounded, per-exit leak, deliberately per DESIGN-470-v2 §1.6. Owner-side reclamation of `External` frames tracked as a follow-up at [#546](https://github.com/ryanbreen/breenix/issues/546).
+  - Proof: wired custody 92/92, leaf custody oracles 192/192/192, `retire_bounded` lost=0, failed-exec release balanced; mutation-tested (stub-out → oracle fails, over-free reintroduced → fails closed at `live_refused=192`, restore → passes).
+  - Gates: aarch64 clean-gate 300/300 0 faults, starved-gate 100/100 0 faults, x86 build clean (0 warnings), Parallels 3/3.
+  - Discovered and filed, but does **not** gate this PR: a pre-existing, intermittent x86 TCP-recv scheduler hang (a `recv()`-blocked thread is never woken because the general kernel idle loop doesn't drain the loopback packet queue) — confirmed reproducible on `main` independent of this PR, tracked at [#545](https://github.com/ryanbreen/breenix/issues/545).
+  - Merge commit: `926b22e06c0ac8b67727b247a67b722f9d636cf0`.
+  - Remaining under #470: the x86 free path (PR-3, requires Tier-2 approval for `interrupts/context_switch.rs`).
+
 - ✅ **AArch64 process page-table root retirement — PR-1c of the #470 plan, closes #470-F3 aarch64 leak** ([PR #542](https://github.com/ryanbreen/breenix/pull/542), Aug 2026, closes the aarch64 half of [#470](https://github.com/ryanbreen/breenix/issues/470))
   - PR-1c of DESIGN-470-v2: aarch64 `retire_bounded` now frees the recorded custody set (leased at allocation by PR-1b's `TableRecorder`) on process exit, only after the proof-gated reclaim pipeline authorizes. x86 exit is unchanged in this PR.
   - Closes `#470-F3` (aarch64 root+table leak), proven via leak-oracle: stub the production retire call → `FAIL` (leak observed), restore it → `PASS`, allocator accounting returns exactly to baseline.
   - **Gate-target-fidelity finding**: PR-1c's first "clean" gate run showed 1 `DATA_ABORT`/89 runs. RCA proved this was not a PR-1c defect — the throwaway gate scripts were building the hardfloat target (`aarch64-breenix.json`, NEON on) instead of the soft-float kernel target (`aarch64-breenix-kernel.json`), re-arming the unrelated #528 NEON/soft-float fault (~1/600 base rate). With the gate scripts corrected to build the soft-float kernel target, PR-1c re-proved clean: 0/2000 clean boots, starved 0/100, beast 3/3, Parallels 3/3 long-window.
   - Merge commit: `600dc2a57e90591f53a132a8e80d566c10902882`.
-  - Remaining under #470: F4 aarch64 exec-leaves (PR-2) and the x86 free path (PR-3, requires Tier-2 approval for `interrupts/context_switch.rs`).
+  - Remaining under #470 at the time: F4 aarch64 exec-leaves (PR-2, since merged as [PR #547](https://github.com/ryanbreen/breenix/pull/547)) and the x86 free path (PR-3, requires Tier-2 approval for `interrupts/context_switch.rs`).
 
 - ✅ **Process page-table custody record — PR-1b of the #470 plan** ([PR #539](https://github.com/ryanbreen/breenix/pull/539), Aug 2026, part 1b of [#470](https://github.com/ryanbreen/breenix/issues/470) — does NOT close it)
   - PR-1b of the ratified DESIGN-470-v2 plan: every process page-table frame is now leased at allocation via `TableRecorder`/`OwnedTableFrames` (the only allocator handed to a process mapper), every `ProcessPageTable` root drop on both arches is classified (`RetiredByExecWalk` or an explicit `abandon(reason)`) and counted unconditionally in every build, and the non-freeing `Drop` backstop only matches/counts — it cannot free. Six new unconditional production counters turn the #470 leak into a measured production number. Behaviour-preserving by construction: `git diff` proves zero `deallocate_frame`/`return_lease` calls added anywhere; dead escape hatches (`mapper()`, `allocate_stack()`, three `deep_copy_*` helpers) deleted and ratcheted gone.
@@ -90,6 +100,9 @@ https://v0-breenix-dashboard.vercel.app/).
 
 ## Planned Follow-ups
 
+- 📋 **#470 PR-3: x86 free path** (requires Tier-2 approval for `interrupts/context_switch.rs`) — [#470](https://github.com/ryanbreen/breenix/issues/470)
+- 📋 **x86 TCP-recv blocked thread never rescheduled → boot-test hang** (pre-existing; general kernel idle loop doesn't drain the loopback packet queue) — [#545](https://github.com/ryanbreen/breenix/issues/545)
+- 📋 **Owner-side `GuardedStack` reclamation of `External` user-stack frames** (#470 residual leaf leak) — [#546](https://github.com/ryanbreen/breenix/issues/546)
 - 📋 **CLONE_VM group seal + exec-time `thread_group_id`/`inherited_cr3` detach** — [#471](https://github.com/ryanbreen/breenix/issues/471)
 - 📋 **Designated-init runtime flag + panic-on-init-exit** (design together with #471) — [#464](https://github.com/ryanbreen/breenix/issues/464)
 - 📋 **Idle-path CoW-walk latency under IRQ mask** in the `schedule_from_kernel` drain (design together with #492) — [#448](https://github.com/ryanbreen/breenix/issues/448)
