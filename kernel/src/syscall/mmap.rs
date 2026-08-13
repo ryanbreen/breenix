@@ -48,7 +48,7 @@ pub fn sys_mmap(
     let prot = Protection::from_bits_truncate(prot);
     let flags = MmapFlags::from_bits_truncate(flags);
 
-    log::info!(
+    log::trace!(
         "sys_mmap: addr={:#x} length={:#x} prot={:?} flags={:?} fd={} offset={:#x}",
         addr,
         length,
@@ -156,7 +156,7 @@ pub fn sys_mmap(
             }
         };
 
-        log::info!(
+        log::trace!(
             "sys_mmap: allocating region {:#x}..{:#x}",
             start_addr,
             end_addr
@@ -243,7 +243,7 @@ pub fn sys_mmap(
         current_page += 1;
     }
 
-    log::info!("sys_mmap: Successfully mapped {} pages", mapped_pages.len());
+    log::trace!("sys_mmap: Successfully mapped {} pages", mapped_pages.len());
 
     // Phase 3: Re-acquire lock to register the VMA in the process.
     {
@@ -275,7 +275,7 @@ pub fn sys_mmap(
 pub fn sys_mprotect(addr: u64, length: u64, prot: u32) -> SyscallResult {
     let new_prot = Protection::from_bits_truncate(prot);
 
-    log::info!(
+    log::trace!(
         "sys_mprotect: addr={:#x} length={:#x} prot={:?}",
         addr,
         length,
@@ -384,7 +384,7 @@ pub fn sys_mprotect(addr: u64, length: u64, prot: u32) -> SyscallResult {
         }
     }
 
-    log::info!("sys_mprotect: Successfully updated {} pages", pages_updated);
+    log::trace!("sys_mprotect: Successfully updated {} pages", pages_updated);
 
     // Update VMA protection flags
     process.vmas[vma_index].prot = new_prot;
@@ -400,7 +400,7 @@ pub fn sys_mprotect(addr: u64, length: u64, prot: u32) -> SyscallResult {
 ///
 /// Returns: 0 on success, negative errno on error
 pub fn sys_munmap(addr: u64, length: u64) -> SyscallResult {
-    log::info!("sys_munmap: addr={:#x} length={:#x}", addr, length);
+    log::trace!("sys_munmap: addr={:#x} length={:#x}", addr, length);
 
     // Validate addr is page-aligned
     if !is_page_aligned(addr) {
@@ -493,7 +493,7 @@ pub fn sys_munmap(addr: u64, length: u64) -> SyscallResult {
         }
     }
 
-    log::info!("sys_munmap: Successfully unmapped {} pages", pages_unmapped);
+    log::trace!("sys_munmap: Successfully unmapped {} pages", pages_unmapped);
 
     // Remove VMA from process
     process.vmas.remove(vma_index);

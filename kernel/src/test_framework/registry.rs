@@ -2781,10 +2781,30 @@ fn test_workqueue_operational() -> TestResult {
 // ProcessContext Stage Tests
 // =============================================================================
 
-/// Test that current_thread returns Some in ProcessContext stage.
+/// Test that a current thread exists in the ProcessContext stage.
 ///
-/// After a user process is created, there should always be a current thread
-/// pointer set in per-CPU data.
+/// x86_64: the boot path installs the per-CPU current-thread pointer before the
+/// stage advances, so `per_cpu::current_thread()` is a genuine invariant here
+/// and is read directly.
+///
+/// aarch64: reading `per_cpu_aarch64::current_thread()` here asserted an
+/// invariant the aarch64 boot path never establishes at this point.
+/// `launch_init_from_elf` advances to `ProcessContext` (main_aarch64.rs:128)
+/// about ninety lines *before* `spawn_as_current()` and
+/// `per_cpu_aarch64::set_current_thread()` install the init thread's pointer
+/// (main_aarch64.rs:217), and the staged test body runs in a kthread on a
+/// secondary CPU — the boot CPU holds IRQs masked and preemption disabled
+/// across that whole function, so it cannot run the body itself. The value the
+/// old read returned was therefore the observing CPU's dispatch artifact, which
+/// the pre-existing idle-redirect paths (`setup_idle_return_locked`,
+/// `setup_idle_return_arm64`, `set_idle_stack_for_eret`) NULL. That is a race,
+/// not an invariant: it false-failed roughly 1% of starved boots, on `main` as
+/// much as on any branch that perturbs boot timing inside that window.
+///
+/// The aarch64 arm asserts what this stage does establish, race-free: the
+/// scheduler tracks a live current thread for the CPU running the test, and the
+/// user process just created owns the dispatchable main thread that the boot CPU
+/// installs as current a few lines later.
 fn test_current_thread_exists() -> TestResult {
     #[cfg(target_arch = "x86_64")]
     {
@@ -2795,8 +2815,52 @@ fn test_current_thread_exists() -> TestResult {
 
     #[cfg(target_arch = "aarch64")]
     {
-        if crate::per_cpu_aarch64::current_thread().is_none() {
-            return TestResult::Fail("current_thread is None in ProcessContext");
+        // 1. The CPU executing this test has a scheduler-recorded current
+        //    thread, and that record names a thread the scheduler still holds.
+        //    Unlike the raw per-CPU pointer, `cpu_state[cpu].current_thread` is
+        //    cleared only by `terminate_current()` for the terminating thread
+        //    itself, so it cannot go None under a thread that is running: every
+        //    dispatch path and every idle redirect writes Some(tid).
+        let current_tid = match crate::task::scheduler::current_thread_id() {
+            Some(tid) => tid,
+            None => {
+                return TestResult::Fail("scheduler tracks no current thread in ProcessContext")
+            }
+        };
+        if crate::task::scheduler::with_thread_mut(current_tid, |thread| thread.id)
+            != Some(current_tid)
+        {
+            return TestResult::Fail("current thread is not registered with the scheduler");
+        }
+
+        // 2. The user process whose creation advanced this stage — the newest
+        //    PID, since PIDs are allocated monotonically and no ProcessContext
+        //    test creates a process — owns an address space and a dispatchable
+        //    main thread. That main thread is exactly what `launch_init_from_elf`
+        //    installs as CPU 0's current thread once this stage returns; without
+        //    it, no current thread could ever exist.
+        let manager_guard = crate::process::manager();
+        let manager = match *manager_guard {
+            Some(ref manager) => manager,
+            None => return TestResult::Fail("process manager not initialized in ProcessContext"),
+        };
+        let newest = manager
+            .iter_processes()
+            .max_by_key(|(pid, _)| pid.as_u64())
+            .map(|(_, process)| process);
+        let process = match newest {
+            Some(process) => process,
+            None => return TestResult::Fail("no process registered in ProcessContext"),
+        };
+        if process.page_table.is_none() {
+            return TestResult::Fail("created process has no address space in ProcessContext");
+        }
+        match process.main_thread.as_ref() {
+            Some(thread) if thread.id != 0 => {}
+            Some(_) => {
+                return TestResult::Fail("created process main thread has no valid thread id")
+            }
+            None => return TestResult::Fail("created process has no main thread"),
         }
     }
 
@@ -5440,7 +5504,6 @@ static PROCESS_TESTS: &[TestDef] = &[
         timeout_ms: 5000,
         stage: TestStage::ProcessContext,
     },
-    #[cfg(target_arch = "aarch64")]
     TestDef {
         name: "fork_exit_defer_reclaim_pairing_test",
         func: crate::tracing::providers::teardown::fork_exit_defer_reclaim_pairing_test,
@@ -5448,7 +5511,6 @@ static PROCESS_TESTS: &[TestDef] = &[
         timeout_ms: 30000,
         stage: TestStage::PostScheduler,
     },
-    #[cfg(target_arch = "aarch64")]
     TestDef {
         name: "retirement_fence_gate",
         func: crate::task::process_task::retirement_fence_gate_test,
@@ -5472,11 +5534,11 @@ static PROCESS_TESTS: &[TestDef] = &[
         timeout_ms: 30000,
         stage: TestStage::PostScheduler,
     },
-    #[cfg(all(target_arch = "aarch64", feature = "receipt_drop_test"))]
+    #[cfg(feature = "receipt_drop_test")]
     TestDef {
         name: "retirement_receipt_drop_gate",
         func: crate::task::process_task::retirement_receipt_drop_gate_test,
-        arch: Arch::Aarch64,
+        arch: Arch::Any,
         timeout_ms: 5000,
         stage: TestStage::PostScheduler,
     },

@@ -605,18 +605,17 @@ pub fn try_dump_state() -> Option<SchedulerDumpInfo> {
 
 /// Maximum CPUs for scheduler state arrays.
 #[cfg(target_arch = "aarch64")]
-const MAX_CPUS: usize = 8;
+pub(crate) const MAX_CPUS: usize = 8;
 #[cfg(not(target_arch = "aarch64"))]
-const MAX_CPUS: usize = 1;
+pub(crate) const MAX_CPUS: usize = 1;
 
-/// Scheduler-entry epochs per online AArch64 CPU.
+/// Scheduler-entry epochs per online CPU.
 ///
 /// A retiring resource records a target two greater than every online CPU's
 /// current value. The first bump may be recorded by a handoff that is already
 /// in flight on the retiring stack. Requiring a second bump proves that CPU
 /// entered the scheduler through a later exception, which can only happen
 /// after the in-flight exception return and its old-stack restore completed.
-#[cfg(target_arch = "aarch64")]
 static SCHEDULING_EPOCHS: [AtomicU64; MAX_CPUS] =
     [const { AtomicU64::new(0) }; MAX_CPUS];
 
@@ -627,28 +626,32 @@ struct RetirementGrace {
     after_epoch: RetirementFence,
 }
 
-#[cfg(target_arch = "aarch64")]
 #[derive(Clone, Copy)]
 pub(crate) struct RetirementFence {
     pub(crate) epochs: [u64; MAX_CPUS],
     pub(crate) online_mask: u64,
 }
 
-#[cfg(target_arch = "aarch64")]
 #[derive(Clone, Copy)]
 pub(crate) struct RetirementSnapshot {
     pub(crate) epochs: [u64; MAX_CPUS],
     pub(crate) online_mask: u64,
 }
 
-#[cfg(target_arch = "aarch64")]
 impl RetirementSnapshot {
     pub(crate) fn capture() -> Self {
         let mut epochs = [0; MAX_CPUS];
         let mut online_mask = 0;
         for cpu_id in 0..MAX_CPUS {
             epochs[cpu_id] = SCHEDULING_EPOCHS[cpu_id].load(Ordering::Acquire);
+            #[cfg(target_arch = "aarch64")]
             if crate::arch_impl::aarch64::smp::is_cpu_online(cpu_id) {
+                online_mask |= 1 << cpu_id;
+            }
+            #[cfg(target_arch = "x86_64")]
+            {
+                // x86 is single-CPU today. Keep CPU 0 unconditionally live so
+                // retirement can never silently degenerate to an empty mask.
                 online_mask |= 1 << cpu_id;
             }
         }
@@ -705,20 +708,17 @@ impl RetirementSnapshot {
     }
 }
 
-#[cfg(target_arch = "aarch64")]
 #[inline(always)]
 fn epoch_reached(now: u64, target: u64) -> bool {
     now.wrapping_sub(target) < (1u64 << 63)
 }
 
-#[cfg(target_arch = "aarch64")]
 #[inline(always)]
 fn epoch_advanced(now: u64, before: u64) -> bool {
     let delta = now.wrapping_sub(before);
     delta != 0 && delta < (1u64 << 63)
 }
 
-#[cfg(target_arch = "aarch64")]
 pub(crate) fn retirement_grace_target() -> RetirementFence {
     RetirementSnapshot::capture().target_after(2)
 }
@@ -732,7 +732,6 @@ pub(crate) fn retirement_grace_elapsed(target: &RetirementFence) -> bool {
 ///
 /// A single entry does not prove the handoff active at that entry has finished;
 /// reclamation targets require a second, subsequent entry on every online CPU.
-#[cfg(target_arch = "aarch64")]
 pub fn note_scheduling_epoch(cpu_id: usize) {
     if cpu_id < MAX_CPUS {
         SCHEDULING_EPOCHS[cpu_id].fetch_add(1, Ordering::Release);
@@ -1987,7 +1986,6 @@ impl Scheduler {
         UNBLOCK_CALL_COUNT.fetch_add(1, Ordering::SeqCst);
 
         if let Some(thread) = self.get_thread_mut(thread_id) {
-            let was_blocked_on_io = thread.state == ThreadState::BlockedOnIO;
             if thread.state == ThreadState::Blocked
                 || thread.state == ThreadState::BlockedOnSignal
                 || thread.state == ThreadState::BlockedOnTimer
@@ -1996,12 +1994,11 @@ impl Scheduler {
                 thread.set_ready();
                 WAKE_SITE_UNBLOCK.fetch_add(1, Ordering::Relaxed);
                 record_ready_site(thread_id, READY_SITE_UNBLOCK);
-                // For BlockedOnIO, do NOT clear blocked_in_syscall here —
-                // the wait_timeout caller manages it after detecting the wakeup.
-                // For other states it is safe (and necessary) to clear.
-                if !was_blocked_on_io {
-                    thread.blocked_in_syscall = false;
-                }
+                // blocked_in_syscall does not record blocked-ness (ThreadState does); it
+                // records which kind of context is saved in thread.context. Only code
+                // running on the thread itself may clear it. This keeps unblock()
+                // consistent with unblock_for_signal() and the BlockedOnIO arm of
+                // wake_io_thread_locked(), which already refuse to clear it.
 
                 // SMP safety: Don't add to ready_queue if thread is currently
                 // running on any CPU. If a thread is blocked in a syscall's WFI
@@ -3758,6 +3755,66 @@ pub fn switch_to_idle() {
     });
 }
 
+/// Undo a dispatch the interrupt-return path could not complete: return the
+/// undispatched thread to the ready queue and make the interrupted thread current
+/// again, so the scheduler's current_thread matches the context IRETQ will actually
+/// resume. Handing the CPU to idle here would strand whatever lock the interrupted
+/// thread holds - which is the very condition that aborts the dispatch.
+#[cfg(target_arch = "x86_64")]
+pub fn abort_dispatch_and_resume(aborted_thread_id: u64, resume_thread_id: u64) {
+    with_scheduler(|sched| {
+        let cpu_id = Scheduler::current_cpu_id();
+
+        if sched.get_thread(aborted_thread_id).is_none()
+            || sched.get_thread(resume_thread_id).is_none()
+        {
+            log::error!(
+                "Cannot abort dispatch of thread {} and resume thread {}: scheduler thread missing",
+                aborted_thread_id,
+                resume_thread_id
+            );
+            return;
+        }
+
+        let should_queue = match sched.get_thread_mut(aborted_thread_id) {
+            Some(thread) if thread.state != ThreadState::Terminated => {
+                thread.set_ready();
+                true
+            }
+            _ => false,
+        };
+        let in_queue = sched
+            .per_cpu_queues
+            .iter()
+            .any(|queue| queue.contains(&aborted_thread_id));
+        if should_queue && !in_queue {
+            sched.per_cpu_queues[cpu_id].push_back(aborted_thread_id);
+        }
+
+        for queue in sched.per_cpu_queues.iter_mut() {
+            if let Some(position) = queue.iter().position(|&id| id == resume_thread_id) {
+                queue.remove(position);
+            }
+        }
+
+        let (kernel_stack_top, thread_ptr) = match sched.get_thread_mut(resume_thread_id) {
+            Some(thread) => {
+                thread.set_running();
+                (
+                    thread.kernel_stack_top,
+                    thread as *const _ as *mut crate::task::thread::Thread,
+                )
+            }
+            None => return,
+        };
+        sched.cpu_state[cpu_id].current_thread = Some(resume_thread_id);
+        crate::per_cpu::set_current_thread(thread_ptr);
+        if let Some(kernel_stack_top) = kernel_stack_top {
+            crate::per_cpu::update_tss_rsp0(kernel_stack_top.as_u64());
+        }
+    });
+}
+
 /// Best-effort switch to idle — uses try_lock to avoid deadlock in crash handlers.
 ///
 /// When an INSTRUCTION_ABORT or DATA_ABORT occurs from EL1, the SCHEDULER lock
@@ -3965,8 +4022,9 @@ pub fn run_scheduler_tests() {
 
 /// Drive real scheduler boundaries on every idle online CPU for the Phase-0
 /// teardown grace-period boot test.
-#[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
+#[cfg(feature = "boot_tests")]
 pub fn nudge_retirement_grace_for_test() {
+    #[cfg(target_arch = "aarch64")]
     let _ = with_scheduler(|scheduler| scheduler.send_resched_ipi());
     set_need_resched();
 }

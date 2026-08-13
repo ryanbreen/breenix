@@ -204,6 +204,10 @@ pub fn generate_buffer() -> String {
 /// Lists all counter values in a parseable format.
 /// Format: `counter_name: total_value (cpu0=v0, cpu1=v1, ...)`
 pub fn generate_counters() -> String {
+    // The production heartbeat reads this cold procfs endpoint periodically,
+    // making late root-custody changes visible without logging in a hot path.
+    crate::tracing::providers::teardown::emit_root_custody_summary();
+
     let mut output = String::new();
 
     let count = TRACE_COUNTER_COUNT.load(Ordering::Relaxed);

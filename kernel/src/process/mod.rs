@@ -25,19 +25,16 @@ pub enum ExitOutcome {
 /// Crate-private custody object for a deferred process root. There is no
 /// public constructor and no public API that can hand one to a caller.
 pub(crate) struct RetirementReceipt {
-    #[cfg(target_arch = "aarch64")]
     reclaim: Option<crate::task::process_task::PendingProcessReclaim>,
 }
 
 impl RetirementReceipt {
-    #[cfg(target_arch = "aarch64")]
     pub(crate) fn from_reclaim(reclaim: crate::task::process_task::PendingProcessReclaim) -> Self {
         Self {
             reclaim: Some(reclaim),
         }
     }
 
-    #[cfg(target_arch = "aarch64")]
     pub(crate) fn take_contents(
         &mut self,
     ) -> Option<crate::task::process_task::PendingProcessReclaim> {
@@ -47,7 +44,6 @@ impl RetirementReceipt {
 
 impl Drop for RetirementReceipt {
     fn drop(&mut self) {
-        #[cfg(target_arch = "aarch64")]
         if let Some(reclaim) = self.take_contents() {
             crate::trace_count!(crate::tracing::providers::teardown::RECEIPT_DROPPED_UNRETIRED);
             crate::task::process_task::enqueue_process_reclaim(reclaim);
@@ -274,14 +270,13 @@ pub fn exit_process_and_retire(pid: ProcessId, exit_code: i32) -> ExitOutcome {
         return ExitOutcome::Missing;
     };
 
-    #[cfg(target_arch = "aarch64")]
     if let Some(mut receipt) = receipt {
         if let Some(reclaim) = receipt.take_contents() {
             crate::task::process_task::enqueue_process_reclaim(reclaim);
         }
     }
-    #[cfg(not(target_arch = "aarch64"))]
-    let _receipt = receipt;
+    #[cfg(target_arch = "x86_64")]
+    crate::task::process_task::reclaim_deferred_process_resources();
 
     // The unchanged btrt effect remains in handle_thread_exit. Calling the
     // existing two-phase path here lets a remote commit race a natural thread
@@ -413,7 +408,7 @@ fn exit_process_by_pid(pid: ProcessId, exit_code: i32) {
     let _ = exit_process_and_retire(pid, exit_code);
 }
 
-#[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
+#[cfg(feature = "boot_tests")]
 pub(crate) fn exit_process_for_teardown_test(pid: ProcessId, exit_code: i32) {
     exit_process_by_pid(pid, exit_code);
 }

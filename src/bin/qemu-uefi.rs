@@ -254,11 +254,25 @@ fn main() {
         }
     }
     // Improve CI capture and stability
+    let qemu_accel = match env::var("BREENIX_QEMU_ACCEL").as_deref() {
+        Ok("tcg") => "tcg",
+        Ok("kvm") => "kvm",
+        Ok("hvf") => "hvf",
+        Ok("whpx") => "whpx",
+        _ => "tcg",
+    };
+    let qemu_cpu = match env::var("BREENIX_QEMU_CPU").as_deref() {
+        Ok("qemu64") => "qemu64",
+        Ok("host") => "host",
+        Ok("max") => "max",
+        _ => "qemu64",
+    };
+    let machine = format!("pc,accel={}", qemu_accel);
     qemu.args([
         "-machine",
-        "pc,accel=tcg",
+        machine.as_str(),
         "-cpu",
-        "qemu64",
+        qemu_cpu,
         "-smp",
         "1",
         "-m",

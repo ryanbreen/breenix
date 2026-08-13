@@ -8,6 +8,10 @@
 #   - rust-fork/library (forked Rust std with target_os = "breenix")
 #   - libs/libbreenix-libc (provides libc.a for std's Unix PAL)
 #
+# Environment:
+#   BREENIX_RUST_FORK_LIBRARY  Override the forked Rust library path
+#                              (default: <repo>/rust-fork/library)
+#
 # Usage:
 #   ./userspace/programs/build.sh                  # x86_64 (default)
 #   ./userspace/programs/build.sh --arch aarch64   # aarch64
@@ -79,9 +83,10 @@ echo ""
 # Step 2: Build all userspace binaries
 echo "[2/3] Building userspace ($ARCH)..."
 
-RUST_FORK_LIBRARY="$PROJECT_ROOT/rust-fork/library"
+RUST_FORK_LIBRARY="${BREENIX_RUST_FORK_LIBRARY:-$PROJECT_ROOT/rust-fork/library}"
 if [ ! -d "$RUST_FORK_LIBRARY" ]; then
-    echo "  ERROR: rust-fork/library not found"
+    echo "  ERROR: forked Rust library not found at $RUST_FORK_LIBRARY"
+    echo "  Set BREENIX_RUST_FORK_LIBRARY to the forked Rust library path"
     echo "  The forked Rust compiler is required for std support"
     exit 1
 fi

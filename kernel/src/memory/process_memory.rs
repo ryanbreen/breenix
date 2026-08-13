@@ -9,7 +9,6 @@ use crate::memory::arch_stub::{
 };
 #[cfg(target_arch = "aarch64")]
 use crate::memory::frame_allocator::allocate_frame;
-#[cfg(target_arch = "aarch64")]
 use crate::memory::frame_allocator::return_lease;
 use crate::memory::frame_allocator::{
     acquire_leaf_mapping, allocate_frame_leased, deallocate_leaf_frame, FrameLease,
@@ -89,12 +88,61 @@ pub struct ProcessPageTable {
     mapper: OffsetPageTable<'static>,
     /// Allocator authority for the root. PR-1c consumes this after proving the
     /// address space is no longer live; PR-1b intentionally never returns it.
-    #[cfg_attr(not(target_arch = "aarch64"), allow(dead_code))]
     root_lease: FrameLease,
     /// Allocation-derived custody for every intermediate table we created.
     tables: OwnedTableFrames,
+    /// Root-table slots whose sub-hierarchy this address space allocated.
+    owned_root_slots: RootSlotOwnership,
     /// One allocation-derived custody record per user virtual page.
     leaves: OwnedLeafFrames,
+}
+
+const ROOT_SLOT_WORDS: usize = 8;
+
+/// Tracks root slots whose sub-hierarchy belongs exclusively to this address
+/// space. x86 `new()` copies the master kernel's root entries verbatim, so a
+/// populated slot is shared with the kernel and every other address space unless
+/// this table allocated it. Writing through a shared slot would alias kernel
+/// pages into a process and record master-kernel table frames as this process's
+/// custody, which retirement would later free while the kernel still walks them.
+#[derive(Clone, Copy)]
+struct RootSlotOwnership {
+    words: [u64; ROOT_SLOT_WORDS],
+}
+
+impl RootSlotOwnership {
+    const fn new() -> Self {
+        Self {
+            words: [0; ROOT_SLOT_WORDS],
+        }
+    }
+
+    fn contains(&self, slot: usize) -> bool {
+        self.words[slot >> 6] & (1u64 << (slot & 63)) != 0
+    }
+
+    fn insert(&mut self, slot: usize) {
+        self.words[slot >> 6] |= 1u64 << (slot & 63);
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RootSlotCustody {
+    Owned,
+    Vacant,
+    Inherited,
+}
+
+#[cfg(feature = "boot_tests")]
+const GATE_SENTINEL_PAGE_OFFSET: u64 = 0x0040_0000;
+
+/// One sentinel address a boot fixture may map into this table, with the number
+/// of intermediate tables that mapping it will make the table record.
+#[cfg(feature = "boot_tests")]
+#[derive(Clone, Copy)]
+pub(crate) struct GateSentinel {
+    pub(crate) address: u64,
+    pub(crate) table_frames: usize,
 }
 
 #[derive(Clone, Copy)]
@@ -161,9 +209,7 @@ unsafe impl FrameAllocator<Size4KiB> for TableRecorder<'_> {
 #[derive(Clone, Copy)]
 enum Disposition {
     Undecided,
-    #[cfg(target_arch = "aarch64")]
     Retiring,
-    #[cfg(target_arch = "aarch64")]
     Retired,
     #[cfg(target_arch = "x86_64")]
     RetiredByExecWalk,
@@ -171,13 +217,11 @@ enum Disposition {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[cfg(target_arch = "aarch64")]
 pub(crate) enum RetireProgress {
     Complete,
     Budgeted,
 }
 
-#[cfg(target_arch = "aarch64")]
 pub(crate) const RETIRE_FRAME_BUDGET: u32 = 64;
 
 /// Owns an aarch64 address space until exec publishes it in a Process row.
@@ -305,6 +349,7 @@ impl ProcessPageTable {
             mapper,
             root_lease,
             tables: OwnedTableFrames::new(),
+            owned_root_slots: RootSlotOwnership::new(),
             leaves: OwnedLeafFrames::new(),
         };
 
@@ -360,6 +405,7 @@ impl ProcessPageTable {
         };
         let level_4_frame = root_lease.frame();
         let mut tables = OwnedTableFrames::new();
+        let mut owned_root_slots = RootSlotOwnership::new();
 
         log::debug!(
             "Allocated L4 frame: {:#x}",
@@ -580,6 +626,8 @@ impl ProcessPageTable {
                     | PageTableFlags::WRITABLE
                     | PageTableFlags::USER_ACCESSIBLE;
                 level_4_table[0].set_addr(fresh_pdpt_frame.start_address(), pml4_0_flags);
+                // PML4[0] is the one root-slot sub-hierarchy this constructor allocates.
+                owned_root_slots.insert(0);
                 log::info!(
                     "PHASE2: Created fresh PDPT for PML4[0] at frame {:#x}",
                     fresh_pdpt_frame.start_address().as_u64()
@@ -1035,6 +1083,7 @@ impl ProcessPageTable {
             mapper,
             root_lease,
             tables,
+            owned_root_slots,
             leaves: OwnedLeafFrames::new(),
         };
 
@@ -1048,6 +1097,122 @@ impl ProcessPageTable {
     /// Get the physical frame of the level 4 page table
     pub fn level_4_frame(&self) -> PhysFrame {
         self.level_4_frame
+    }
+
+    #[cfg(feature = "boot_tests")]
+    pub(crate) fn recorded_table_frames_for_gate(&self) -> usize {
+        self.tables.leases.len()
+    }
+
+    fn root_slot_populated(&self, page_addr: u64) -> bool {
+        let phys_offset = crate::memory::physical_memory_offset();
+        let slot = ((page_addr >> 39) & 0x1ff) as usize;
+        unsafe {
+            let root_virt = phys_offset + self.level_4_frame.start_address().as_u64();
+            let root = &*(root_virt.as_ptr() as *const PageTable);
+            !root[slot].is_unused()
+        }
+    }
+
+    fn root_slot_custody(&self, page_addr: u64) -> RootSlotCustody {
+        let slot = ((page_addr >> 39) & 0x1ff) as usize;
+        if !self.root_slot_populated(page_addr) {
+            RootSlotCustody::Vacant
+        } else if self.owned_root_slots.contains(slot) {
+            RootSlotCustody::Owned
+        } else {
+            RootSlotCustody::Inherited
+        }
+    }
+
+    #[cfg(feature = "boot_tests")]
+    fn gate_sentinel_cost(&self, address: u64) -> Option<usize> {
+        match self.root_slot_custody(address) {
+            RootSlotCustody::Inherited => return None,
+            RootSlotCustody::Vacant => return Some(3),
+            RootSlotCustody::Owned => {}
+        }
+
+        let phys_offset = crate::memory::physical_memory_offset();
+        unsafe {
+            let root_virt = phys_offset + self.level_4_frame.start_address().as_u64();
+            let root = &*(root_virt.as_ptr() as *const PageTable);
+            let root_entry = &root[((address >> 39) & 0x1ff) as usize];
+            if root_entry.flags().contains(PageTableFlags::HUGE_PAGE) {
+                return None;
+            }
+
+            let pdpt_virt = phys_offset + root_entry.addr().as_u64();
+            let pdpt = &*(pdpt_virt.as_ptr() as *const PageTable);
+            let pdpt_entry = &pdpt[((address >> 30) & 0x1ff) as usize];
+            if pdpt_entry.is_unused() {
+                return Some(2);
+            }
+            if pdpt_entry.flags().contains(PageTableFlags::HUGE_PAGE) {
+                return None;
+            }
+
+            let pd_virt = phys_offset + pdpt_entry.addr().as_u64();
+            let pd = &*(pd_virt.as_ptr() as *const PageTable);
+            let pd_entry = &pd[((address >> 21) & 0x1ff) as usize];
+            if pd_entry.is_unused() {
+                return Some(1);
+            }
+            if pd_entry.flags().contains(PageTableFlags::HUGE_PAGE) {
+                return None;
+            }
+
+            let pt_virt = phys_offset + pd_entry.addr().as_u64();
+            let pt = &*(pt_virt.as_ptr() as *const PageTable);
+            let pt_entry = &pt[((address >> 12) & 0x1ff) as usize];
+            pt_entry.is_unused().then_some(0)
+        }
+    }
+
+    #[cfg(feature = "boot_tests")]
+    pub(crate) fn gate_sentinels(&self, count: usize) -> Option<alloc::vec::Vec<GateSentinel>> {
+        #[cfg(target_arch = "x86_64")]
+        let root_slots = 0..256usize;
+        #[cfg(not(target_arch = "x86_64"))]
+        let root_slots = 0..512usize;
+
+        let mut sentinels = alloc::vec::Vec::new();
+        for slot in root_slots {
+            let address = ((slot as u64) << 39) | GATE_SENTINEL_PAGE_OFFSET;
+            if let Some(table_frames) = self.gate_sentinel_cost(address) {
+                sentinels.push(GateSentinel {
+                    address,
+                    table_frames,
+                });
+                if sentinels.len() == count {
+                    break;
+                }
+            }
+        }
+        (sentinels.len() == count).then_some(sentinels)
+    }
+
+    #[cfg(feature = "boot_tests")]
+    pub(crate) fn gate_page_is_unmapped(&self, page: Page<Size4KiB>) -> bool {
+        self.mapper.translate_page(page).is_err()
+    }
+
+    #[cfg(all(feature = "boot_tests", target_arch = "x86_64"))]
+    pub(crate) fn gate_inherited_slot_address(&self) -> Option<u64> {
+        (0..256usize)
+            .find(|slot| {
+                let address = ((*slot as u64) << 39) | GATE_SENTINEL_PAGE_OFFSET;
+                self.root_slot_custody(address) == RootSlotCustody::Inherited
+            })
+            .map(|slot| ((slot as u64) << 39) | GATE_SENTINEL_PAGE_OFFSET)
+    }
+
+    #[cfg(all(feature = "boot_tests", target_arch = "x86_64"))]
+    pub(crate) fn custody_frames_for_gate(&self) -> alloc::vec::Vec<PhysFrame> {
+        let mut frames = alloc::vec::Vec::with_capacity(self.tables.leases.len() + 1);
+        frames.extend(self.tables.leases.iter().map(|lease| lease.frame()));
+        frames.push(self.root_lease.frame());
+        frames
     }
 
     /// Walk all mapped user pages in this page table
@@ -1182,6 +1347,22 @@ impl ProcessPageTable {
                 );
                 return Err("Cannot map kernel addresses as user-accessible");
             }
+            // An inherited root slot points into the shared master-kernel
+            // hierarchy. Writing through it could expose a kernel page as
+            // user-accessible or record shared table frames as this process's
+            // custody for retirement to free.
+            let root_custody = self.root_slot_custody(page_addr);
+            if root_custody == RootSlotCustody::Inherited {
+                crate::trace_count!(
+                    crate::tracing::providers::teardown::PT_ROOT_SLOT_REFUSED
+                );
+                log::error!(
+                    "Refusing to map {:#x}: root slot {} was inherited, not allocated by this address space",
+                    page_addr,
+                    (page_addr >> 39) & 0x1ff
+                );
+                return Err("Cannot map into an inherited root page-table slot");
+            }
             let user_mapping = flags.contains(PageTableFlags::USER_ACCESSIBLE);
 
             // CRITICAL FIX: Check if page is already mapped before attempting to map
@@ -1268,6 +1449,13 @@ impl ProcessPageTable {
                     &mut TableRecorder(tables),
                 )
             };
+            // The only allocator that can populate a vacant root slot in this
+            // table is the TableRecorder above, so the new sub-hierarchy is this
+            // address space's custody. Claim it before inspecting the result: a
+            // partially built hierarchy is ours too.
+            if root_custody == RootSlotCustody::Vacant && self.root_slot_populated(page_addr) {
+                self.owned_root_slots.insert(((page_addr >> 39) & 0x1ff) as usize);
+            }
             match map_result {
                 Ok(flush) => {
                     // CRITICAL: Do NOT flush TLB immediately!
@@ -1398,6 +1586,11 @@ impl ProcessPageTable {
         page: Page<Size4KiB>,
         new_flags: PageTableFlags,
     ) -> Result<(), &'static str> {
+        if self.root_slot_custody(page.start_address().as_u64()) == RootSlotCustody::Inherited {
+            crate::trace_count!(crate::tracing::providers::teardown::PT_ROOT_SLOT_REFUSED);
+            return Err("Cannot update flags in an inherited root page-table slot");
+        }
+
         // First, check if the page is mapped and get the physical frame
         let frame = self
             .mapper
@@ -1756,7 +1949,6 @@ impl ProcessPageTable {
     /// Return only allocator-issued table leases after the caller has proved
     /// this address space is no longer live. Work is resumable and the root is
     /// always attempted last, after every intermediate-table lease is consumed.
-    #[cfg(target_arch = "aarch64")]
     pub(crate) fn retire_bounded(&mut self, pid: u64, budget: &mut u32) -> RetireProgress {
         match self.tables.disposition {
             Disposition::Retired => return RetireProgress::Complete,
@@ -1768,6 +1960,8 @@ impl ProcessPageTable {
                 self.tables.disposition = Disposition::Retiring;
             }
             Disposition::Retiring => {}
+            #[cfg(target_arch = "x86_64")]
+            Disposition::RetiredByExecWalk => return RetireProgress::Complete,
             Disposition::Abandoned(_) => {
                 return RetireProgress::Complete;
             }
@@ -2015,13 +2209,11 @@ impl Drop for ProcessPageTable {
             Disposition::Undecided => {
                 crate::trace_count!(crate::tracing::providers::teardown::PT_ROOT_DROPPED_UNDECIDED);
             }
-            #[cfg(target_arch = "aarch64")]
             Disposition::Retiring => {
                 crate::trace_count!(
                     crate::tracing::providers::teardown::PT_ROOT_DROPPED_MID_RETIRE
                 );
             }
-            #[cfg(target_arch = "aarch64")]
             Disposition::Retired => {}
             #[cfg(target_arch = "x86_64")]
             Disposition::RetiredByExecWalk => {}
@@ -2035,7 +2227,7 @@ impl Drop for ProcessPageTable {
 }
 
 #[cfg(feature = "boot_tests")]
-fn disposition_gate_counters() -> [u64; 6] {
+fn disposition_gate_counters() -> [u64; 10] {
     use crate::tracing::providers::teardown;
     [
         teardown::PT_TABLE_FRAMES_RECORDED.aggregate(),
@@ -2044,8 +2236,15 @@ fn disposition_gate_counters() -> [u64; 6] {
         teardown::PT_ROOT_ABANDONED_TERMINATED.aggregate(),
         teardown::PT_ROOT_DROPPED_UNDECIDED.aggregate(),
         teardown::PT_EXEC_WALK_LEASES_UNRETURNED.aggregate(),
+        teardown::PT_ROOTS_RETIRED.aggregate(),
+        teardown::PT_TABLE_FRAMES_RETURNED.aggregate(),
+        teardown::PT_RETIRE_FRAMES_LOST.aggregate(),
+        teardown::PT_RETIRE_BUDGET_REQUEUED.aggregate(),
     ]
 }
+
+#[cfg(all(feature = "boot_tests", target_arch = "x86_64"))]
+const X86_CUSTODY_SENTINEL_COUNT: usize = 3;
 
 #[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
 fn corrupt_executable_fixture() -> [u8; 180] {
@@ -2259,23 +2458,89 @@ pub fn page_table_custody_disposition_gate_test() -> crate::test_framework::regi
         return TestResult::Fail("H: undecided Drop was not isolated and non-freeing");
     }
 
-    // O3 x86 residual direction: without an architecture proof pipeline the
-    // same custody object must be counted and must return no table frame.
+    // O3 x86 closure direction: recorded custody is consumed by the real
+    // bounded retirement primitive, with the root returned last.
     #[cfg(target_arch = "x86_64")]
     {
-        let no_arch = match ProcessPageTable::new() {
+        use crate::memory::frame_allocator::{allocate_frame, deallocate_frame};
+        use crate::tracing::providers::teardown;
+
+        let mut retiring = match ProcessPageTable::new() {
             Ok(page_table) => page_table,
             Err(_) => return TestResult::Fail("O3: page-table construction failed"),
         };
-        let returned_before =
-            crate::tracing::providers::teardown::PT_TABLE_FRAMES_RETURNED.aggregate();
-        no_arch.abandon(AbandonReason::NoArchPipeline);
-        let after_no_arch = disposition_gate_counters();
-        if after_no_arch[2] != after_drop[2] + 1
-            || crate::tracing::providers::teardown::PT_TABLE_FRAMES_RETURNED.aggregate()
-                != returned_before
+        let flags = PageTableFlags::PRESENT
+            | PageTableFlags::WRITABLE
+            | PageTableFlags::USER_ACCESSIBLE;
+        let base_recorded = retiring.recorded_table_frames_for_gate();
+        if base_recorded != 1 {
+            return TestResult::Fail("O3: fresh x86 table did not record exactly its PML4[0] PDPT");
+        }
+        let Some(sentinels) = retiring.gate_sentinels(X86_CUSTODY_SENTINEL_COUNT) else {
+            return TestResult::Fail("O3: table offered too few unshared root slots");
+        };
+        let mut expected_recorded = base_recorded;
+        for sentinel in sentinels {
+            expected_recorded += sentinel.table_frames;
+            let page = Page::<Size4KiB>::containing_address(VirtAddr::new(sentinel.address));
+            if !retiring.gate_page_is_unmapped(page) {
+                return TestResult::Fail("O3: sentinel address was already mapped");
+            }
+            let frame = match allocate_frame() {
+                Some(frame) => frame,
+                None => return TestResult::Fail("O3: sentinel leaf allocation failed"),
+            };
+            if retiring.map_page(page, frame, flags).is_err() {
+                deallocate_frame(frame);
+                return TestResult::Fail("O3: sentinel mapping failed");
+            }
+        }
+        let recorded = retiring.recorded_table_frames_for_gate();
+        if recorded != expected_recorded {
+            return TestResult::Fail("O3: x86 recorded hierarchy was not exact");
+        }
+
+        // O4: the shared master-kernel subtrees this table inherited are refused
+        // fail-closed, and the refusal records no custody for a frame the
+        // address space does not own.
+        let Some(inherited_address) = retiring.gate_inherited_slot_address() else {
+            return TestResult::Fail("O4: table exposed no inherited root slot to refuse");
+        };
+        let refused_before = teardown::PT_ROOT_SLOT_REFUSED.aggregate();
+        let inherited_page =
+            Page::<Size4KiB>::containing_address(VirtAddr::new(inherited_address));
+        let inherited_frame = match allocate_frame() {
+            Some(frame) => frame,
+            None => return TestResult::Fail("O4: refusal probe allocation failed"),
+        };
+        let inherited_refused = retiring
+            .map_page(inherited_page, inherited_frame, flags)
+            .is_err();
+        deallocate_frame(inherited_frame);
+        if !inherited_refused
+            || teardown::PT_ROOT_SLOT_REFUSED.aggregate() != refused_before + 1
+            || retiring.recorded_table_frames_for_gate() != recorded
         {
-            return TestResult::Fail("O3: x86 residual abandonment returned a table frame");
+            return TestResult::Fail("O4: inherited root slot was not refused fail-closed");
+        }
+        retiring.release_mapped_leaves();
+        let returned_before = teardown::PT_TABLE_FRAMES_RETURNED.aggregate();
+        let retired_before = teardown::PT_ROOTS_RETIRED.aggregate();
+        let lost_before = teardown::PT_RETIRE_FRAMES_LOST.aggregate();
+        let requeued_before = teardown::PT_RETIRE_BUDGET_REQUEUED.aggregate();
+        let mut budget = RETIRE_FRAME_BUDGET;
+        if retiring.retire_bounded(u64::MAX - 3, &mut budget) != RetireProgress::Complete {
+            return TestResult::Fail("O3: x86 bounded retirement did not complete");
+        }
+        let after_retire = disposition_gate_counters();
+        if after_retire[2] != after_drop[2]
+            || teardown::PT_ROOTS_RETIRED.aggregate() != retired_before + 1
+            || teardown::PT_TABLE_FRAMES_RETURNED.aggregate()
+                != returned_before + recorded as u64 + 1
+            || teardown::PT_RETIRE_FRAMES_LOST.aggregate() != lost_before
+            || teardown::PT_RETIRE_BUDGET_REQUEUED.aggregate() != requeued_before
+        {
+            return TestResult::Fail("O3: x86 custody retirement accounting was not exact");
         }
     }
 
@@ -2296,9 +2561,12 @@ pub fn run_x86_page_table_custody_gate() {
     }
     let values = disposition_gate_counters();
     crate::serial_println!(
-        "[PT_CUSTODY_COUNTERS:x86:recorded={}:no_proof={}:no_arch={}:terminated={}:undecided={}:exec_unreturned={}]",
-        values[0], values[1], values[2], values[3], values[4], values[5]
+        "[PT_CUSTODY_COUNTERS:x86:recorded={}:no_proof={}:no_arch={}:terminated={}:undecided={}:exec_unreturned={}:retired={}:returned={}:lost={}:requeued={}]",
+        values[0], values[1], values[2], values[3], values[4], values[5], values[6], values[7],
+        values[8], values[9]
     );
+    // Deliberate fail-loud boot policy: never let the direct x86 hook continue
+    // after a custody oracle failure and emit misleading later boot markers.
     assert!(result.is_pass(), "x86 page-table custody gate failed");
 }
 

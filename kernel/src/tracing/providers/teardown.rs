@@ -369,11 +369,18 @@ counter!(
     "Reclaim calls from forbidden contexts"
 );
 counter!(
+    RECLAIM_DRAIN_NESTED_REFUSED,
+    "Reclaim calls refused while another drain owns the queues"
+);
+counter!(
     TEARDOWN_LOCK_ORDER_SUSPECT,
     "Suspect teardown lock ordering"
 );
 counter!(ROOT_PROOF_BLOCKED_EPOCH, "Retirements blocked by epoch");
-counter!(ROOT_PROOF_BLOCKED_HW, "Retirements blocked by local TTBR0");
+counter!(
+    ROOT_PROOF_BLOCKED_HW,
+    "Retirements blocked by the local hardware root register"
+);
 counter!(
     ROOT_PROOF_BLOCKED_SHADOW,
     "Retirements blocked by TTBR0 shadows"
@@ -484,6 +491,11 @@ counter!(
     PT_RETIRE_BUDGET_REQUEUED,
     "Process table retirements requeued at the frame budget"
 );
+counter!(
+    PT_ROOT_SLOT_REFUSED,
+    "Mappings refused into inherited root slots"
+);
+counter!(PT_SHADOW_ROOT_CLEARED, "Saved x86 process roots cleared");
 
 // Declaration-only until the phase named in PLAN.md. These intentionally have
 // no trace_count! producer yet.
@@ -512,7 +524,7 @@ counter!(
     "Fatal group signals dropped for init"
 );
 
-pub const COUNTER_COUNT: usize = 70;
+pub const COUNTER_COUNT: usize = 73;
 
 /// The registration and normal-context reader inventory. Keeping one inventory
 /// makes a write-only counter structurally impossible without changing the P0
@@ -536,6 +548,7 @@ pub static COUNTERS: [&TraceCounter; COUNTER_COUNT] = [
     &RECLAIM_ENQUEUE_UNDER_PM,
     &PROOF_UNDER_QUEUE_LOCK,
     &RECLAIM_CONTEXT_VIOLATIONS,
+    &RECLAIM_DRAIN_NESTED_REFUSED,
     &TEARDOWN_LOCK_ORDER_SUSPECT,
     &ROOT_PROOF_BLOCKED_EPOCH,
     &ROOT_PROOF_BLOCKED_HW,
@@ -574,6 +587,8 @@ pub static COUNTERS: [&TraceCounter; COUNTER_COUNT] = [
     &PT_RETIRE_FRAMES_LOST,
     &PT_ROOT_DROPPED_MID_RETIRE,
     &PT_RETIRE_BUDGET_REQUEUED,
+    &PT_ROOT_SLOT_REFUSED,
+    &PT_SHADOW_ROOT_CLEARED,
     &RECLAIM_PASS_SKIPPED,
     &RECLAIM_PARKED,
     &RECLAIM_UNPARKED_EPOCH,
@@ -605,10 +620,27 @@ pub fn snapshot() -> [u64; COUNTER_COUNT] {
     core::array::from_fn(|index| COUNTERS[index].aggregate())
 }
 
-#[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
+/// Emit the root-disposition counters from normal context.
+///
+/// The production userspace heartbeat reads `/proc/trace/counters`, so that
+/// cold procfs path repeats this line as the hardware run progresses. Both
+/// architecture boot paths also emit it once before launching userspace.
+pub fn emit_root_custody_summary() {
+    crate::serial_println!(
+        "[PT_ROOT_CUSTODY:no_proof={}:no_arch={}:terminated={}:undecided={}:mid_retire={}:retired={}]",
+        PT_ROOT_ABANDONED_NO_PROOF.aggregate(),
+        PT_ROOT_ABANDONED_NO_ARCH.aggregate(),
+        PT_ROOT_ABANDONED_TERMINATED.aggregate(),
+        PT_ROOT_DROPPED_UNDECIDED.aggregate(),
+        PT_ROOT_DROPPED_MID_RETIRE.aggregate(),
+        PT_ROOTS_RETIRED.aggregate()
+    );
+}
+
+#[cfg(feature = "boot_tests")]
 const BOOT_TEST_PID_COUNT_SLOTS: usize = 256;
 
-#[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
+#[cfg(feature = "boot_tests")]
 struct BootTestPidCountSlot {
     pid: AtomicU64,
     defer_count: AtomicU64,
@@ -625,7 +657,7 @@ struct BootTestPidCountSlot {
     roots_retired: AtomicU64,
 }
 
-#[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
+#[cfg(feature = "boot_tests")]
 impl BootTestPidCountSlot {
     const fn new() -> Self {
         Self {
@@ -646,24 +678,24 @@ impl BootTestPidCountSlot {
     }
 }
 
-#[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
+#[cfg(feature = "boot_tests")]
 static BOOT_TEST_PID_COUNTS: [BootTestPidCountSlot; BOOT_TEST_PID_COUNT_SLOTS] =
     [const { BootTestPidCountSlot::new() }; BOOT_TEST_PID_COUNT_SLOTS];
 
-#[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
+#[cfg(feature = "boot_tests")]
 static BOOT_TEST_PID_COUNTS_ACTIVE: AtomicU64 = AtomicU64::new(0);
 
-#[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
+#[cfg(feature = "boot_tests")]
 struct BootTestPidCountsGuard;
 
-#[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
+#[cfg(feature = "boot_tests")]
 impl Drop for BootTestPidCountsGuard {
     fn drop(&mut self) {
         BOOT_TEST_PID_COUNTS_ACTIVE.store(0, Ordering::Release);
     }
 }
 
-#[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
+#[cfg(feature = "boot_tests")]
 enum BootTestPidCountKind {
     Defer,
     Reclaim,
@@ -678,7 +710,7 @@ enum BootTestPidCountKind {
     RootRetired,
 }
 
-#[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
+#[cfg(feature = "boot_tests")]
 #[inline(always)]
 fn record_boot_test_pid_count(pid: u64, kind: BootTestPidCountKind) {
     if BOOT_TEST_PID_COUNTS_ACTIVE.load(Ordering::Acquire) == 0 || pid == 0 {
@@ -736,7 +768,7 @@ fn record_boot_test_pid_count(pid: u64, kind: BootTestPidCountKind) {
     }
 }
 
-#[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
+#[cfg(feature = "boot_tests")]
 fn reset_boot_test_pid_counts() -> BootTestPidCountsGuard {
     BOOT_TEST_PID_COUNTS_ACTIVE.store(0, Ordering::Release);
     for slot in &BOOT_TEST_PID_COUNTS {
@@ -758,7 +790,7 @@ fn reset_boot_test_pid_counts() -> BootTestPidCountsGuard {
     BootTestPidCountsGuard
 }
 
-#[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
+#[cfg(feature = "boot_tests")]
 fn track_boot_test_pid(pid: u64) -> bool {
     if pid == 0 {
         return false;
@@ -779,7 +811,7 @@ fn track_boot_test_pid(pid: u64) -> bool {
     false
 }
 
-#[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
+#[cfg(feature = "boot_tests")]
 #[derive(Clone, Copy, Default)]
 struct BootTestPidCounts {
     defer_count: u64,
@@ -790,7 +822,7 @@ struct BootTestPidCounts {
     roots_retired: u64,
 }
 
-#[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
+#[cfg(feature = "boot_tests")]
 fn boot_test_pid_counts(pid: u64) -> BootTestPidCounts {
     let start = pid as usize & (BOOT_TEST_PID_COUNT_SLOTS - 1);
     for offset in 0..BOOT_TEST_PID_COUNT_SLOTS {
@@ -813,7 +845,7 @@ fn boot_test_pid_counts(pid: u64) -> BootTestPidCounts {
     BootTestPidCounts::default()
 }
 
-#[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
+#[cfg(feature = "boot_tests")]
 fn boot_test_pid_counts_complete(pids: &[u64]) -> bool {
     pids.iter().all(|pid| {
         let counts = boot_test_pid_counts(*pid);
@@ -823,36 +855,36 @@ fn boot_test_pid_counts_complete(pids: &[u64]) -> bool {
 
 #[inline(always)]
 pub fn record_pt_retire_started(pid: u64, table_frames: u64) {
-    #[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
+    #[cfg(feature = "boot_tests")]
     record_boot_test_pid_count(pid, BootTestPidCountKind::TableFramesRecorded(table_frames));
-    #[cfg(not(all(feature = "boot_tests", target_arch = "aarch64")))]
+    #[cfg(not(feature = "boot_tests"))]
     let _ = (pid, table_frames);
 }
 
 #[inline(always)]
 pub fn record_pt_frame_returned(pid: u64) {
     crate::trace_count!(PT_TABLE_FRAMES_RETURNED);
-    #[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
+    #[cfg(feature = "boot_tests")]
     record_boot_test_pid_count(pid, BootTestPidCountKind::TableFrameReturned);
-    #[cfg(not(all(feature = "boot_tests", target_arch = "aarch64")))]
+    #[cfg(not(feature = "boot_tests"))]
     let _ = pid;
 }
 
 #[inline(always)]
 pub fn record_pt_frame_lost(pid: u64) {
     crate::trace_count!(PT_RETIRE_FRAMES_LOST);
-    #[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
+    #[cfg(feature = "boot_tests")]
     record_boot_test_pid_count(pid, BootTestPidCountKind::TableFrameLost);
-    #[cfg(not(all(feature = "boot_tests", target_arch = "aarch64")))]
+    #[cfg(not(feature = "boot_tests"))]
     let _ = pid;
 }
 
 #[inline(always)]
 pub fn record_pt_root_retired(pid: u64) {
     crate::trace_count!(PT_ROOTS_RETIRED);
-    #[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
+    #[cfg(feature = "boot_tests")]
     record_boot_test_pid_count(pid, BootTestPidCountKind::RootRetired);
-    #[cfg(not(all(feature = "boot_tests", target_arch = "aarch64")))]
+    #[cfg(not(feature = "boot_tests"))]
     let _ = pid;
 }
 
@@ -860,7 +892,7 @@ pub fn record_pt_root_retired(pid: u64) {
 pub fn record_defer(pid: u64) {
     crate::trace_count!(TEARDOWN_DEFER);
     crate::trace_event!(TEARDOWN_PROVIDER, TEARDOWN_DEFER_EVENT, pid as u32);
-    #[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
+    #[cfg(feature = "boot_tests")]
     record_boot_test_pid_count(pid, BootTestPidCountKind::Defer);
 }
 
@@ -868,16 +900,16 @@ pub fn record_defer(pid: u64) {
 pub fn record_reclaim(pid: u64) {
     crate::trace_count!(TEARDOWN_RECLAIM);
     crate::trace_event!(TEARDOWN_PROVIDER, TEARDOWN_RECLAIM_EVENT, pid as u32);
-    #[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
+    #[cfg(feature = "boot_tests")]
     record_boot_test_pid_count(pid, BootTestPidCountKind::Reclaim);
 }
 
 #[inline(always)]
 pub fn record_quarantine(pid: u64) {
     crate::trace_count!(TEARDOWN_QUARANTINE);
-    #[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
+    #[cfg(feature = "boot_tests")]
     record_boot_test_pid_count(pid, BootTestPidCountKind::Quarantine);
-    #[cfg(not(all(feature = "boot_tests", target_arch = "aarch64")))]
+    #[cfg(not(feature = "boot_tests"))]
     let _ = pid;
 }
 
@@ -885,7 +917,7 @@ pub fn record_quarantine(pid: u64) {
 pub fn record_exit_sgi_sent(pid: u64, batch: u64) {
     crate::trace_event!(TEARDOWN_PROVIDER, EXIT_SGI_SENT_EVENT, pid as u32);
     crate::trace_event!(TEARDOWN_PROVIDER, EXIT_SGI_BATCH_EVENT, batch as u32);
-    #[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
+    #[cfg(feature = "boot_tests")]
     record_boot_test_pid_count(pid, BootTestPidCountKind::SgiSent);
 }
 
@@ -906,30 +938,30 @@ pub fn record_exit_kick_observed(pid: u64, interval: u64) {
     EXIT_KICK_BUCKET_OBSERVED_COUNTS[pid as usize % EXIT_KICK_BUCKETS]
         .fetch_add(1, Ordering::Relaxed);
     crate::trace_event!(TEARDOWN_PROVIDER, EXIT_KICK_OBSERVED_EVENT, pid as u32);
-    #[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
+    #[cfg(feature = "boot_tests")]
     record_boot_test_pid_count(pid, BootTestPidCountKind::KickObserved(interval));
-    #[cfg(not(all(feature = "boot_tests", target_arch = "aarch64")))]
+    #[cfg(not(feature = "boot_tests"))]
     let _ = interval;
 }
 
 #[inline(always)]
 pub fn record_masked_frames_walked(pid: u64) {
     crate::trace_count!(TEARDOWN_MASKED_FRAMES_WALKED);
-    #[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
+    #[cfg(feature = "boot_tests")]
     record_boot_test_pid_count(pid, BootTestPidCountKind::MaskedFramesWalked);
-    #[cfg(not(all(feature = "boot_tests", target_arch = "aarch64")))]
+    #[cfg(not(feature = "boot_tests"))]
     let _ = pid;
 }
 
 #[inline(always)]
 pub fn record_report(pid: u64) {
-    #[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
+    #[cfg(feature = "boot_tests")]
     record_boot_test_pid_count(pid, BootTestPidCountKind::Report);
-    #[cfg(not(all(feature = "boot_tests", target_arch = "aarch64")))]
+    #[cfg(not(feature = "boot_tests"))]
     let _ = pid;
 }
 
-#[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
+#[cfg(feature = "boot_tests")]
 #[derive(Clone, Copy)]
 pub struct TeardownPidEvidence {
     pub defer_count: u64,
@@ -945,7 +977,7 @@ pub struct TeardownPidEvidence {
     pub bucket_collision_count: u64,
 }
 
-#[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
+#[cfg(feature = "boot_tests")]
 pub fn teardown_pid_evidence(pid: u64) -> Option<TeardownPidEvidence> {
     // Reading the per-pid procfs file is the test's explicit opt-in. It occurs
     // before the kill, so every hot-path recorder remains bounded and lock-free.
@@ -1087,49 +1119,44 @@ pub fn deferred_fault_ring_overflow_test() -> crate::test_framework::registry::T
     }
 }
 
-#[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
-const RETIRE_SENTINEL_VAS: [u64; 3] = [
-    0x0000_0000_0040_0000,
-    0x0000_0080_0040_0000,
-    0x0000_0100_0040_0000,
-];
+#[cfg(feature = "boot_tests")]
+const RETIRE_SENTINEL_SUBTREES: usize = 3;
 
-#[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
-fn expected_retire_table_frames() -> u64 {
-    let mut distinct_l0_subtrees = 0u64;
-    for (index, address) in RETIRE_SENTINEL_VAS.iter().enumerate() {
-        let l0_index = (address >> 39) & 0x1ff;
-        if !RETIRE_SENTINEL_VAS[..index]
-            .iter()
-            .any(|prior| ((prior >> 39) & 0x1ff) == l0_index)
-        {
-            distinct_l0_subtrees += 1;
-        }
-    }
-    distinct_l0_subtrees * 3
-}
-
-#[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
+#[cfg(feature = "boot_tests")]
 fn map_retire_sentinels(
     page_table: &mut crate::memory::process_memory::ProcessPageTable,
-) -> Result<(), &'static str> {
+) -> Result<u64, &'static str> {
+    #[cfg(not(target_arch = "x86_64"))]
     use crate::memory::arch_stub::{Page, PageTableFlags, Size4KiB, VirtAddr};
     use crate::memory::frame_allocator::{allocate_frame, deallocate_frame};
+    #[cfg(target_arch = "x86_64")]
+    use x86_64::{
+        structures::paging::{Page, PageTableFlags, Size4KiB},
+        VirtAddr,
+    };
 
     let flags =
         PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::USER_ACCESSIBLE;
-    for address in RETIRE_SENTINEL_VAS {
+    let mut expected = page_table.recorded_table_frames_for_gate() as u64;
+    let sentinels = page_table
+        .gate_sentinels(RETIRE_SENTINEL_SUBTREES)
+        .ok_or("table offered too few unshared root slots")?;
+    for sentinel in sentinels {
+        expected += sentinel.table_frames as u64;
+        let page = Page::<Size4KiB>::containing_address(VirtAddr::new(sentinel.address));
+        if !page_table.gate_page_is_unmapped(page) {
+            return Err("retire sentinel address was already mapped");
+        }
         let frame = allocate_frame().ok_or("sentinel leaf allocation failed")?;
-        let page = Page::<Size4KiB>::containing_address(VirtAddr::new(address));
         if page_table.map_page(page, frame, flags).is_err() {
             deallocate_frame(frame);
             return Err("sentinel mapping failed");
         }
     }
-    Ok(())
+    Ok(expected)
 }
 
-#[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
+#[cfg(feature = "boot_tests")]
 fn frame_allocator_used_frames() -> usize {
     let stats = crate::memory::frame_allocator::memory_stats();
     stats
@@ -1138,8 +1165,34 @@ fn frame_allocator_used_frames() -> usize {
 }
 
 #[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
+fn retirement_oracle_clock_now() -> u64 {
+    crate::arch_impl::aarch64::timer::rdtsc()
+}
+
+#[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
+fn retirement_oracle_clock_delta(milliseconds: u64) -> u64 {
+    crate::arch_impl::aarch64::timer::frequency_hz()
+        .saturating_mul(milliseconds)
+        / 1000
+}
+
+#[cfg(all(feature = "boot_tests", target_arch = "x86_64"))]
+fn retirement_oracle_clock_now() -> u64 {
+    crate::time::timer::get_monotonic_time()
+}
+
+#[cfg(all(feature = "boot_tests", target_arch = "x86_64"))]
+fn retirement_oracle_clock_delta(milliseconds: u64) -> u64 {
+    milliseconds
+}
+
+#[cfg(feature = "boot_tests")]
 pub fn fork_exit_defer_reclaim_pairing_test() -> crate::test_framework::registry::TestResult {
+    #[cfg(not(target_arch = "x86_64"))]
+    use crate::memory::arch_stub::VirtAddr;
     use crate::test_framework::registry::TestResult;
+    #[cfg(target_arch = "x86_64")]
+    use x86_64::VirtAddr;
 
     // Claim single-threaded ownership of the deferred-reclaim queues for the
     // whole measurement window. The queues are quiescent here (before any fork),
@@ -1176,10 +1229,17 @@ pub fn fork_exit_defer_reclaim_pairing_test() -> crate::test_framework::registry
         manager.allocate_pid()
     };
     fn test_user_entry() {}
-    let entry = crate::memory::arch_stub::VirtAddr::new(0x0040_0000);
-    let stack_top = crate::memory::arch_stub::VirtAddr::new(0x0080_0000);
-    let stack_bottom = crate::memory::arch_stub::VirtAddr::new(0x007f_0000);
-    let tls = crate::memory::arch_stub::VirtAddr::new(0x0001_0000);
+    let entry = VirtAddr::new(0x0040_0000);
+    let stack_top = VirtAddr::new(0x0080_0000);
+    let stack_bottom = VirtAddr::new(0x007f_0000);
+    let tls = VirtAddr::new(0x0001_0000);
+    #[cfg(target_arch = "aarch64")]
+    let parent_privilege = crate::task::thread::ThreadPrivilege::User;
+    #[cfg(target_arch = "x86_64")]
+    // The x86 fork helper intentionally Box::leak's a kernel-stack allocation
+    // for userspace children. This fixture never dispatches its synthetic
+    // threads, so kernel privilege isolates O4 to the page-table lifecycle.
+    let parent_privilege = crate::task::thread::ThreadPrivilege::Kernel;
     let mut parent_process = crate::process::Process::new(
         parent_pid,
         alloc::string::String::from("teardown_pairing_parent"),
@@ -1191,9 +1251,10 @@ pub fn fork_exit_defer_reclaim_pairing_test() -> crate::test_framework::registry
         stack_top,
         stack_bottom,
         tls,
-        crate::task::thread::ThreadPrivilege::User,
+        parent_privilege,
     );
     parent_thread.owner_pid = Some(parent_pid.as_u64());
+    #[cfg(target_arch = "aarch64")]
     let parent_context = parent_thread.context.clone();
     parent_process.page_table = Some(parent_page_table);
     parent_process.set_main_thread(parent_thread);
@@ -1205,51 +1266,54 @@ pub fn fork_exit_defer_reclaim_pairing_test() -> crate::test_framework::registry
         manager.insert_process(parent_pid, parent_process);
     };
 
-    // Exercise the known unproved immediate-release path before the leak
-    // measurement. Its intentional abandonment is therefore present in both
-    // allocator baselines and cannot disguise a deferred-root leak.
-    let immediate_page_table = match crate::memory::process_memory::ProcessPageTable::new() {
-        Ok(page_table) => alloc::boxed::Box::new(page_table),
-        Err(_) => return TestResult::Fail("baseline fork page-table allocation failed"),
-    };
-    let immediate = {
-        let mut manager_guard = crate::process::manager();
-        let Some(manager) = manager_guard.as_mut() else {
-            return TestResult::Fail("process manager unavailable during baseline fork");
-        };
-        let child_pid = match manager.fork_process_aarch64(
-            parent_pid,
-            parent_context.clone(),
-            immediate_page_table,
-        ) {
-            Ok(pid) => pid,
-            Err(_) => return TestResult::Fail("baseline fork failed"),
-        };
-        let Some(child_tid) = manager
-            .get_process(child_pid)
-            .and_then(|process| process.main_thread.as_ref())
-            .map(|thread| thread.id)
-        else {
-            return TestResult::Fail("baseline child has no main thread");
-        };
-        (child_pid, child_tid)
-    };
-    crate::task::process_task::ProcessScheduler::handle_thread_exit(immediate.1, 0);
+    #[cfg(target_arch = "aarch64")]
     {
-        let mut manager_guard = crate::process::manager();
-        let Some(manager) = manager_guard.as_mut() else {
-            return TestResult::Fail("process manager unavailable during baseline reap");
+        // Exercise the known unproved immediate-release path before the leak
+        // measurement. Its intentional abandonment is therefore present in
+        // both allocator baselines and cannot disguise a deferred-root leak.
+        let immediate_page_table = match crate::memory::process_memory::ProcessPageTable::new() {
+            Ok(page_table) => alloc::boxed::Box::new(page_table),
+            Err(_) => return TestResult::Fail("baseline fork page-table allocation failed"),
         };
-        manager.remove_process(immediate.0);
-        if let Some(parent) = manager.get_process_mut(parent_pid) {
-            parent.children.retain(|pid| *pid != immediate.0);
+        let immediate = {
+            let mut manager_guard = crate::process::manager();
+            let Some(manager) = manager_guard.as_mut() else {
+                return TestResult::Fail("process manager unavailable during baseline fork");
+            };
+            let child_pid = match manager.fork_process_aarch64(
+                parent_pid,
+                parent_context.clone(),
+                immediate_page_table,
+            ) {
+                Ok(pid) => pid,
+                Err(_) => return TestResult::Fail("baseline fork failed"),
+            };
+            let Some(child_tid) = manager
+                .get_process(child_pid)
+                .and_then(|process| process.main_thread.as_ref())
+                .map(|thread| thread.id)
+            else {
+                return TestResult::Fail("baseline child has no main thread");
+            };
+            (child_pid, child_tid)
+        };
+        crate::task::process_task::ProcessScheduler::handle_thread_exit(immediate.1, 0);
+        {
+            let mut manager_guard = crate::process::manager();
+            let Some(manager) = manager_guard.as_mut() else {
+                return TestResult::Fail("process manager unavailable during baseline reap");
+            };
+            manager.remove_process(immediate.0);
+            if let Some(parent) = manager.get_process_mut(parent_pid) {
+                parent.children.retain(|pid| *pid != immediate.0);
+            }
         }
     }
 
     let mut pairing_child_pids = [0u64; 64];
     let mut pairing_child_count = 0;
     let pid_counts_guard = reset_boot_test_pid_counts();
-    let expected_tables = expected_retire_table_frames();
+    let mut expected_tables = 0u64;
     let allocator_used_before = frame_allocator_used_frames();
     let roots_retired_before = PT_ROOTS_RETIRED.aggregate();
     let table_frames_returned_before = PT_TABLE_FRAMES_RETURNED.aggregate();
@@ -1291,19 +1355,43 @@ pub fn fork_exit_defer_reclaim_pairing_test() -> crate::test_framework::registry
             Ok(page_table) => alloc::boxed::Box::new(page_table),
             Err(_) => return TestResult::Fail("pairing fork page-table allocation failed"),
         };
-        if map_retire_sentinels(child_page_table.as_mut()).is_err() {
-            return TestResult::Fail("pairing retire sentinel mapping failed");
+        let child_expected_tables = match map_retire_sentinels(child_page_table.as_mut()) {
+            Ok(expected) => expected,
+            Err(_) => return TestResult::Fail("pairing retire sentinel mapping failed"),
+        };
+        if iteration == 0 {
+            expected_tables = child_expected_tables;
+        } else if child_expected_tables != expected_tables {
+            return TestResult::Fail("pairing sentinel hierarchy cost changed between children");
         }
+        #[cfg(target_arch = "x86_64")]
+        let mut pending_old_page_table = if iteration == 0 {
+            match crate::memory::process_memory::ProcessPageTable::new() {
+                Ok(page_table) => Some(alloc::boxed::Box::new(page_table)),
+                Err(_) => return TestResult::Fail("pairing old page-table allocation failed"),
+            }
+        } else {
+            None
+        };
         let child = {
             let mut manager_guard = crate::process::manager();
             let Some(manager) = manager_guard.as_mut() else {
                 return TestResult::Fail("process manager unavailable during pairing fork");
             };
-            let child_pid = match manager.fork_process_aarch64(
+            #[cfg(target_arch = "aarch64")]
+            let fork_result = manager.fork_process_aarch64(
                 parent_pid,
                 parent_context.clone(),
                 child_page_table,
-            ) {
+            );
+            #[cfg(target_arch = "x86_64")]
+            let fork_result = manager.fork_process_with_page_table(
+                parent_pid,
+                None,
+                None,
+                child_page_table,
+            );
+            let child_pid = match fork_result {
                 Ok(pid) => pid,
                 Err(_) => return TestResult::Fail("pairing fork failed"),
             };
@@ -1314,6 +1402,13 @@ pub fn fork_exit_defer_reclaim_pairing_test() -> crate::test_framework::registry
             else {
                 return TestResult::Fail("pairing child has no main thread");
             };
+            #[cfg(target_arch = "x86_64")]
+            if let Some(old_page_table) = pending_old_page_table.take() {
+                let Some(child_process) = manager.get_process_mut(child_pid) else {
+                    return TestResult::Fail("pairing child disappeared before old-root install");
+                };
+                child_process.pending_old_page_tables.push(old_page_table);
+            }
             (child_pid, child_tid)
         };
 
@@ -1349,21 +1444,20 @@ pub fn fork_exit_defer_reclaim_pairing_test() -> crate::test_framework::registry
         }
     }
 
-    let timer_frequency = crate::arch_impl::aarch64::timer::frequency_hz();
-    let quiesce_deadline =
-        crate::arch_impl::aarch64::timer::rdtsc().saturating_add(timer_frequency.saturating_mul(5));
+    let quiesce_deadline = retirement_oracle_clock_now()
+        .saturating_add(retirement_oracle_clock_delta(5_000));
     loop {
         crate::task::scheduler::nudge_retirement_grace_for_test();
-        let boundary_deadline =
-            crate::arch_impl::aarch64::timer::rdtsc().saturating_add(timer_frequency / 1000);
-        while crate::arch_impl::aarch64::timer::rdtsc() < boundary_deadline {
+        let boundary_deadline = retirement_oracle_clock_now()
+            .saturating_add(retirement_oracle_clock_delta(1));
+        while retirement_oracle_clock_now() < boundary_deadline {
             core::hint::spin_loop();
         }
         crate::task::process_task::boot_reclaim_deferred_process_resources();
         if boot_test_pid_counts_complete(&pairing_child_pids) {
             break;
         }
-        if crate::arch_impl::aarch64::timer::rdtsc() >= quiesce_deadline {
+        if retirement_oracle_clock_now() >= quiesce_deadline {
             break;
         }
         core::hint::spin_loop();
@@ -1403,10 +1497,16 @@ pub fn fork_exit_defer_reclaim_pairing_test() -> crate::test_framework::registry
     let leaf_frames_returned_delta = LEAF_FRAMES_RETURNED
         .aggregate()
         .saturating_sub(leaf_frames_returned_before);
+    #[cfg(target_arch = "aarch64")]
     let live_leaf_refused_delta = FRAME_RETURN_REFUSED_LIVE_LEAF
         .aggregate()
         .saturating_sub(refusal_counters_before[5]);
-    let expected_leaves = (RETIRE_SENTINEL_VAS.len() * pairing_child_pids.len()) as u64;
+    let expected_leaves = (RETIRE_SENTINEL_SUBTREES * pairing_child_pids.len()) as u64;
+    #[cfg(target_arch = "x86_64")]
+    let cohort_recorded = expected_tables * pairing_child_pids.len() as u64;
+    #[cfg(target_arch = "x86_64")]
+    let allocator_balance = allocator_used_after as i64 - allocator_used_before as i64;
+    #[cfg(target_arch = "aarch64")]
     crate::serial_println!(
         "[PT_RETIRE_ORACLE:aarch64:cycles=64:used_before={}:used_after={}:expected_tables={}:roots={}:returned={}:lost={}]",
         allocator_used_before,
@@ -1416,6 +1516,7 @@ pub fn fork_exit_defer_reclaim_pairing_test() -> crate::test_framework::registry
         table_frames_returned_delta,
         table_frames_lost_delta
     );
+    #[cfg(target_arch = "aarch64")]
     crate::serial_println!(
         "[PT_LEAF_ORACLE:aarch64:cycles=64:expected={}:recorded={}:released={}:returned={}:live_refused={}:used_before={}:used_after={}]",
         expected_leaves,
@@ -1470,25 +1571,25 @@ pub fn fork_exit_defer_reclaim_pairing_test() -> crate::test_framework::registry
             return TestResult::Fail("retire cohort per-PID frame loss was nonzero");
         }
     }
+    let dropped_undecided_delta = PT_ROOT_DROPPED_UNDECIDED
+        .aggregate()
+        .saturating_sub(dropped_undecided_before);
+    let dropped_mid_retire_delta = PT_ROOT_DROPPED_MID_RETIRE
+        .aggregate()
+        .saturating_sub(dropped_mid_retire_before);
+    let no_arch_delta = PT_ROOT_ABANDONED_NO_ARCH
+        .aggregate()
+        .saturating_sub(no_arch_before);
     if roots_retired_delta != pairing_child_pids.len() as u64
         || table_frames_returned_delta != (expected_tables + 1) * pairing_child_pids.len() as u64
         || table_frames_lost_delta != 0
-        || PT_ROOT_DROPPED_UNDECIDED
-            .aggregate()
-            .saturating_sub(dropped_undecided_before)
-            != 0
-        || PT_ROOT_DROPPED_MID_RETIRE
-            .aggregate()
-            .saturating_sub(dropped_mid_retire_before)
-            != 0
+        || dropped_undecided_delta != 0
+        || dropped_mid_retire_delta != 0
         || PT_RETIRE_BUDGET_REQUEUED
             .aggregate()
             .saturating_sub(budget_requeued_before)
             != 0
-        || PT_ROOT_ABANDONED_NO_ARCH
-            .aggregate()
-            .saturating_sub(no_arch_before)
-            != 0
+        || no_arch_delta != 0
     {
         return TestResult::Fail("retire cohort global committed-effect accounting failed");
     }
@@ -1505,6 +1606,7 @@ pub fn fork_exit_defer_reclaim_pairing_test() -> crate::test_framework::registry
     if refusal_counters_after != refusal_counters_before {
         return TestResult::Fail("retire cohort triggered an unexpected frame refusal");
     }
+    #[cfg(target_arch = "aarch64")]
     if TEARDOWN_MASKED_FRAMES_WALKED
         .aggregate()
         .saturating_sub(masked_frames_walked_before)
@@ -1515,6 +1617,18 @@ pub fn fork_exit_defer_reclaim_pairing_test() -> crate::test_framework::registry
             == 0
     {
         return TestResult::Fail("retained pre-P7 under-PM baseline unexpectedly disappeared");
+    }
+    #[cfg(target_arch = "x86_64")]
+    if TEARDOWN_MASKED_FRAMES_WALKED
+        .aggregate()
+        .saturating_sub(masked_frames_walked_before)
+        != 0
+        || FD_CLOSES_UNDER_PM
+            .aggregate()
+            .saturating_sub(fd_closes_under_pm_before)
+            == 0
+    {
+        return TestResult::Fail("x86 deferred exits walked leaves or lost the FD workload");
     }
     if RECLAIM_ENQUEUE_UNDER_PM
         .aggregate()
@@ -1548,6 +1662,7 @@ pub fn fork_exit_defer_reclaim_pairing_test() -> crate::test_framework::registry
     }
     let _all_counter_readers = snapshot();
 
+    #[cfg(target_arch = "aarch64")]
     {
         let mut manager_guard = crate::process::manager();
         let Some(manager) = manager_guard.as_mut() else {
@@ -1559,8 +1674,78 @@ pub fn fork_exit_defer_reclaim_pairing_test() -> crate::test_framework::registry
         manager.remove_process(parent_pid);
     }
 
+    #[cfg(target_arch = "x86_64")]
+    {
+        let parent_reclaim = {
+            let mut manager_guard = crate::process::manager();
+            let Some(manager) = manager_guard.as_mut() else {
+                return TestResult::Fail("process manager unavailable for parent cleanup");
+            };
+            let reclaim = {
+                let Some(parent) = manager.get_process_mut(parent_pid) else {
+                    return TestResult::Fail("pairing parent disappeared before cleanup");
+                };
+                let reclaim = crate::task::process_task::defer_process_resources(parent);
+                crate::task::process_task::release_process_resources(parent);
+                reclaim
+            };
+            manager.remove_process(parent_pid);
+            reclaim
+        };
+        crate::task::process_task::enqueue_process_reclaim(parent_reclaim);
+        let cleanup_deadline = retirement_oracle_clock_now()
+            .saturating_add(retirement_oracle_clock_delta(5_000));
+        while crate::task::process_task::boot_reclaim_locations(parent_pid.as_u64())
+            != (false, false)
+        {
+            crate::task::scheduler::nudge_retirement_grace_for_test();
+            let boundary_deadline = retirement_oracle_clock_now()
+                .saturating_add(retirement_oracle_clock_delta(1));
+            while retirement_oracle_clock_now() < boundary_deadline {
+                core::hint::spin_loop();
+            }
+            crate::task::process_task::boot_reclaim_deferred_process_resources();
+            if retirement_oracle_clock_now() >= cleanup_deadline {
+                break;
+            }
+        }
+        if crate::task::process_task::boot_reclaim_locations(parent_pid.as_u64())
+            != (false, false)
+        {
+            return TestResult::Fail("pairing parent deferred cleanup did not quiesce");
+        }
+    }
+
     core::mem::drop(pid_counts_guard);
+    #[cfg(target_arch = "x86_64")]
+    {
+        crate::serial_println!("[TEST:process:x86_retire_cohort:PASS]");
+        crate::serial_println!(
+            "[PT_RETIRE_COHORT:x86:children={}:retired={}:returned={}:recorded={}:lost={}:no_arch={}:undecided={}:mid_retire={}:balance={}]",
+            pairing_child_pids.len(),
+            roots_retired_delta,
+            table_frames_returned_delta,
+            cohort_recorded,
+            table_frames_lost_delta,
+            no_arch_delta,
+            dropped_undecided_delta,
+            dropped_mid_retire_delta,
+            allocator_balance
+        );
+    }
     TestResult::Pass
+}
+
+#[cfg(all(feature = "boot_tests", target_arch = "x86_64"))]
+pub fn run_x86_retire_cohort_gate() {
+    crate::serial_println!("[TEST:process:x86_retire_cohort:START]");
+    let result = fork_exit_defer_reclaim_pairing_test();
+    if !result.is_pass() {
+        crate::serial_println!("[TEST:process:x86_retire_cohort:FAIL:{:?}]", result);
+    }
+    // Deliberate fail-loud boot policy, identical to the two sibling gates: never
+    // continue past a failed custody oracle and emit misleading later boot markers.
+    assert!(result.is_pass(), "x86 retire cohort gate failed");
 }
 
 // P20 retains its calibrated 45s local ceiling, but both it and P17 consume

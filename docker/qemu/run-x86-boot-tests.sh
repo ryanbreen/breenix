@@ -1,13 +1,18 @@
 #!/bin/bash
-# Build and execute the x86_64 frame-custody injection gate.
-# The x86 staged registry is not dispatched yet, so this script deliberately
-# does not treat its marker-only [BOOT_TESTS:PASS] as test evidence.
+# Build and execute the x86_64 frame/page-table custody injection gates.
+# This script deliberately does not treat [BOOT_TESTS:PASS] as test evidence:
+# advance_stage_marker_only
+# emits it unconditionally alongside [TESTS_COMPLETE:0/0]. The removed
+# KERNEL_POST_TESTS_COMPLETE marker is likewise never used as a gate.
 
 set -euo pipefail
 
 COUNT="${1:-1}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BREENIX_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+FRAME_CUSTODY_PATTERN='^\[FRAME_CUSTODY_COUNTERS:x86:double=1:stale=1:never=1:untracked=1:duplicate=3:contended=[1-9][0-9]*\]$'
+PT_CUSTODY_LITERAL='[PT_CUSTODY_COUNTERS:x86:recorded=11:no_proof=0:no_arch=0:terminated=1:undecided=1:exec_unreturned=0:retired=1:returned=10:lost=0:requeued=0]'
+PT_COHORT_LITERAL='[PT_RETIRE_COHORT:x86:children=64:retired=64:returned=640:recorded=576:lost=0:no_arch=0:undecided=0:mid_retire=0:balance=0]'
 
 cd "$BREENIX_ROOT"
 cargo build --release --features boot_tests,testing,external_test_bins --bin qemu-uefi
@@ -47,11 +52,19 @@ for i in $(seq 1 "$COUNT"); do
     for _ in $(seq 1 180); do
         if grep -q '\[TEST:process:frame_custody_refusal_gate:PASS\]' \
             "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
-            && grep -qE '\[FRAME_CUSTODY_COUNTERS:x86:double=1:stale=1:never=1:untracked=1:duplicate=3:contended=[1-9][0-9]*\]' \
+            && grep -qE "$FRAME_CUSTODY_PATTERN" \
                 "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
             && grep -q '\[TEST:process:page_table_custody_disposition_gate:PASS\]' \
                 "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
-            && grep -q '\[PT_CUSTODY_COUNTERS:x86:recorded=3:no_proof=0:no_arch=1:terminated=1:undecided=1:exec_unreturned=0\]' \
+            && grep -qF -x "$PT_CUSTODY_LITERAL" \
+                "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
+            && grep -q '\[TEST:process:retirement_fence_gate:PASS\]' \
+                "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
+            && grep -q '\[TEST:process:reclaim_progress_gate:PASS\]' \
+                "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
+            && grep -q '\[TEST:process:x86_retire_cohort:PASS\]' \
+                "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
+            && grep -qF -x "$PT_COHORT_LITERAL" \
                 "$OUTPUT_DIR"/serial_*.txt 2>/dev/null; then
             passed=true
             break
@@ -74,12 +87,25 @@ for i in $(seq 1 "$COUNT"); do
         "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 1
     test "$(grep -h -c '\[TEST:process:page_table_custody_disposition_gate:PASS\]' \
         "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 1
-    COUNTER_LINE=$(grep -hE '\[FRAME_CUSTODY_COUNTERS:x86:' \
+    test "$(grep -h -c '\[TEST:process:retirement_fence_gate:PASS\]' \
+        "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 1
+    test "$(grep -h -c '\[TEST:process:reclaim_progress_gate:PASS\]' \
+        "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 1
+    test "$(grep -h -c '\[TEST:process:x86_retire_cohort:PASS\]' \
+        "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 1
+    test "$(grep -h -c 'Refusing to map' \
+        "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 1
+    test "$(grep -h -E -c "$FRAME_CUSTODY_PATTERN" \
+        "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 1
+    test "$(grep -h -F -x -c "$PT_CUSTODY_LITERAL" \
+        "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 1
+    test "$(grep -h -F -x -c "$PT_COHORT_LITERAL" \
+        "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 1
+    COUNTER_LINE=$(grep -hE "$FRAME_CUSTODY_PATTERN" \
         "$OUTPUT_DIR"/serial_*.txt | tail -1)
     echo "$COUNTER_LINE"
-    PT_COUNTER_LINE=$(grep -hE '\[PT_CUSTODY_COUNTERS:x86:' \
-        "$OUTPUT_DIR"/serial_*.txt | tail -1)
-    echo "$PT_COUNTER_LINE"
+    echo "$PT_CUSTODY_LITERAL"
+    echo "$PT_COHORT_LITERAL"
     if grep -qE '\[BOOT_TESTS:FAIL|KERNEL PANIC|panic!' \
         "$OUTPUT_DIR"/serial_*.txt; then
         exit 1

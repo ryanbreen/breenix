@@ -26,12 +26,10 @@ fn republish_lost_frame(frame: PhysFrame) -> bool {
     true
 }
 
-#[cfg(target_arch = "aarch64")]
 pub(crate) fn republish_frame_for_gate(frame: PhysFrame) -> bool {
     republish_lost_frame(frame)
 }
 
-#[cfg(target_arch = "aarch64")]
 pub(crate) fn retire_with_free_list_contended(
     page_table: &mut crate::memory::process_memory::ProcessPageTable,
     pid: u64,
