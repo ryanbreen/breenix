@@ -204,17 +204,6 @@ pub fn get_tss_ptr() -> *mut TaskStateSegment {
     TSS_PTR.load(Ordering::Acquire)
 }
 
-pub fn set_kernel_stack(stack_top: VirtAddr) {
-    let tss_ptr = TSS_PTR.load(Ordering::Acquire);
-    if !tss_ptr.is_null() {
-        unsafe {
-            (*tss_ptr).privilege_stack_table[0] = stack_top;
-        }
-    } else {
-        panic!("TSS not initialized");
-    }
-}
-
 #[cfg(feature = "testing")]
 #[allow(dead_code)]
 pub fn double_fault_stack_top() -> VirtAddr {

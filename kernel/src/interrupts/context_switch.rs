@@ -242,13 +242,14 @@ pub extern "C" fn check_need_resched_and_switch(
         // preempt_active is false (otherwise we would have returned early).
 
         // Check if current thread is blocked in syscall (pause/waitpid)
-        let blocked_in_syscall =
-            scheduler::with_thread_mut(old_thread_id, |thread| thread.blocked_in_syscall)
-                .unwrap_or(false);
-        let old_thread_is_user = scheduler::with_thread_mut(old_thread_id, |thread| {
-            thread.privilege == ThreadPrivilege::User
-        })
-        .unwrap_or(false);
+        let (blocked_in_syscall, old_thread_is_user) =
+            scheduler::with_thread_mut(old_thread_id, |thread| {
+                (
+                    thread.blocked_in_syscall,
+                    thread.privilege == ThreadPrivilege::User,
+                )
+            })
+            .unwrap_or((false, false));
 
         if from_userspace {
             // Use the already-held guard to save context (prevents TOCTOU race)
@@ -486,16 +487,6 @@ fn saved_context_is_kernel_frame(
     thread_id: u64,
     guard: Option<&crate::process::TryProcessManagerGuard>,
 ) -> bool {
-    let is_idle =
-        scheduler::with_scheduler(|sched| thread_id == sched.idle_thread()).unwrap_or(false);
-    let is_user_thread = scheduler::with_thread_mut(thread_id, |thread| {
-        thread.privilege == ThreadPrivilege::User
-    })
-    .unwrap_or(false);
-    if is_idle || !is_user_thread {
-        return false;
-    }
-
     let manager_has_kernel_frame = |manager: &crate::process::ProcessManager| {
         manager
             .find_process_by_thread(thread_id)
@@ -573,12 +564,6 @@ fn switch_to_thread(
     // continue executing the syscall code and return through the normal path.
     let blocked_in_syscall =
         scheduler::with_thread_mut(thread_id, |thread| thread.blocked_in_syscall).unwrap_or(false);
-    // The saved CS is the authoritative record of the ring where the context was
-    // captured, even if a remote waker cleared blocked_in_syscall. This mirrors
-    // the aarch64 is_in_kernel_mode term.
-    let saved_context_is_kernel_frame =
-        saved_context_is_kernel_frame(thread_id, process_manager_guard.as_ref());
-
     if is_idle {
         // Check if idle thread has a saved context to restore
         // If it was preempted while running actual code (not idle_loop), restore that context
@@ -618,7 +603,12 @@ fn switch_to_thread(
         // Debug marker: kernel thread (raw serial, no locks)
         raw_serial_str("<K>");
         setup_kernel_thread_return(thread_id, saved_regs, interrupt_frame);
-    } else if blocked_in_syscall || saved_context_is_kernel_frame {
+    // The saved CS is the authoritative record of the ring where the context was
+    // captured, even if a remote waker cleared blocked_in_syscall. Evaluate it
+    // only for the non-idle userspace thread that consumes the result.
+    } else if blocked_in_syscall
+        || saved_context_is_kernel_frame(thread_id, process_manager_guard.as_ref())
+    {
         // Debug marker: blocked in syscall (raw serial, no locks)
         raw_serial_str("<B>");
         // CRITICAL: Thread was blocked inside a syscall (like pause() or waitpid()).
@@ -724,7 +714,7 @@ fn switch_to_thread(
 
                             // Update TSS RSP0 for the thread's kernel stack
                             if let Some(kernel_stack_top) = thread.kernel_stack_top {
-                                crate::gdt::set_kernel_stack(kernel_stack_top);
+                                crate::per_cpu::update_tss_rsp0(kernel_stack_top.as_u64());
                             }
                         }
 
@@ -835,7 +825,7 @@ fn switch_to_thread(
 
                             // Update TSS RSP0 for the thread's kernel stack
                             if let Some(kernel_stack_top) = thread.kernel_stack_top {
-                                crate::gdt::set_kernel_stack(kernel_stack_top);
+                                crate::per_cpu::update_tss_rsp0(kernel_stack_top.as_u64());
                             }
                         }
 
@@ -1137,7 +1127,7 @@ fn restore_userspace_thread_context(
 
                             // Update TSS RSP0 for the new thread's kernel stack
                             if let Some(kernel_stack_top) = thread.kernel_stack_top {
-                                crate::gdt::set_kernel_stack(kernel_stack_top);
+                                crate::per_cpu::update_tss_rsp0(kernel_stack_top.as_u64());
                                 log::trace!("Set kernel stack: {:#x}", kernel_stack_top.as_u64());
                             } else {
                                 log::error!(
@@ -1278,7 +1268,7 @@ fn setup_first_userspace_entry(
             options(nostack, preserves_flags)
         );
     }
-    crate::gdt::set_kernel_stack(kernel_stack_top);
+    crate::per_cpu::update_tss_rsp0(kernel_stack_top.as_u64());
 
     // Phase 2: commit the first userspace frame only after CR3 and RSP0 are installed.
     unsafe {
