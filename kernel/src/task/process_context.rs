@@ -273,17 +273,33 @@ pub fn save_userspace_context(
     );
 }
 
+/// True when `cs` is a supervisor code selector (RPL 0), i.e. the context it
+/// came from was captured in ring 0. A zero selector means "no context saved
+/// yet" and is not a kernel frame.
+#[cfg(target_arch = "x86_64")]
+pub fn is_kernel_code_selector(cs: u64) -> bool {
+    cs != 0 && (cs & 3) == 0
+}
+
+#[cfg(target_arch = "x86_64")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RestoreError {
+    NonCanonicalRip,
+    NonCanonicalRsp,
+    KernelFrame,
+}
+
 /// Restore userspace context to interrupt frame (x86_64)
 /// This modifies the interrupt frame so that IRETQ will restore the process.
 ///
-/// Returns `Err(())` if the thread's RIP or RSP contains a non-canonical address,
-/// which indicates corrupted process state. The caller should terminate the thread.
+/// Returns an error if the thread's RIP or RSP contains a non-canonical address
+/// or a user thread carries a kernel frame. The caller should terminate the thread.
 #[cfg(target_arch = "x86_64")]
 pub fn restore_userspace_context(
     thread: &Thread,
     interrupt_frame: &mut InterruptStackFrame,
     saved_regs: &mut SavedRegisters,
-) -> Result<(), ()> {
+) -> Result<(), RestoreError> {
     // NOTE: No logging here per CLAUDE.md - this is called from interrupt context
 
     // Validate RIP and RSP are canonical before using VirtAddr::new (which panics
@@ -291,12 +307,15 @@ pub fn restore_userspace_context(
     // process state, e.g. from a race condition during exec.
     let rip = match VirtAddr::try_new(thread.context.rip) {
         Ok(addr) => addr,
-        Err(_) => return Err(()),
+        Err(_) => return Err(RestoreError::NonCanonicalRip),
     };
     let rsp = match VirtAddr::try_new(thread.context.rsp) {
         Ok(addr) => addr,
-        Err(_) => return Err(()),
+        Err(_) => return Err(RestoreError::NonCanonicalRsp),
     };
+    if thread.privilege == ThreadPrivilege::User && is_kernel_code_selector(thread.context.cs) {
+        return Err(RestoreError::KernelFrame);
+    }
 
     // Restore general purpose registers
     saved_regs.rax = thread.context.rax;

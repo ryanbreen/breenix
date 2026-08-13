@@ -1986,7 +1986,6 @@ impl Scheduler {
         UNBLOCK_CALL_COUNT.fetch_add(1, Ordering::SeqCst);
 
         if let Some(thread) = self.get_thread_mut(thread_id) {
-            let was_blocked_on_io = thread.state == ThreadState::BlockedOnIO;
             if thread.state == ThreadState::Blocked
                 || thread.state == ThreadState::BlockedOnSignal
                 || thread.state == ThreadState::BlockedOnTimer
@@ -1995,12 +1994,11 @@ impl Scheduler {
                 thread.set_ready();
                 WAKE_SITE_UNBLOCK.fetch_add(1, Ordering::Relaxed);
                 record_ready_site(thread_id, READY_SITE_UNBLOCK);
-                // For BlockedOnIO, do NOT clear blocked_in_syscall here —
-                // the wait_timeout caller manages it after detecting the wakeup.
-                // For other states it is safe (and necessary) to clear.
-                if !was_blocked_on_io {
-                    thread.blocked_in_syscall = false;
-                }
+                // blocked_in_syscall does not record blocked-ness (ThreadState does); it
+                // records which kind of context is saved in thread.context. Only code
+                // running on the thread itself may clear it. This keeps unblock()
+                // consistent with unblock_for_signal() and the BlockedOnIO arm of
+                // wake_io_thread_locked(), which already refuse to clear it.
 
                 // SMP safety: Don't add to ready_queue if thread is currently
                 // running on any CPU. If a thread is blocked in a syscall's WFI

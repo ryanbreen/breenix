@@ -7,7 +7,8 @@
 #![cfg(target_arch = "x86_64")]
 
 use crate::task::process_context::{
-    restore_userspace_context, save_userspace_context, SavedRegisters,
+    is_kernel_code_selector, restore_userspace_context, save_userspace_context, RestoreError,
+    SavedRegisters,
 };
 use crate::task::scheduler;
 use crate::task::thread::ThreadPrivilege;
@@ -235,6 +236,10 @@ pub extern "C" fn check_need_resched_and_switch(
         let blocked_in_syscall =
             scheduler::with_thread_mut(old_thread_id, |thread| thread.blocked_in_syscall)
                 .unwrap_or(false);
+        let old_thread_is_user = scheduler::with_thread_mut(old_thread_id, |thread| {
+            thread.privilege == ThreadPrivilege::User
+        })
+        .unwrap_or(false);
 
         if from_userspace {
             // Use the already-held guard to save context (prevents TOCTOU race)
@@ -260,10 +265,10 @@ pub extern "C" fn check_need_resched_and_switch(
                 log::error!("BUG: from_userspace=true but no process_manager_guard");
                 return;
             }
-        } else if !from_userspace && blocked_in_syscall {
-            // Thread is blocked inside a syscall (pause/waitpid) and was interrupted
-            // in kernel mode (in the HLT loop). Save the KERNEL context so we can
-            // resume the thread at the correct kernel location.
+        } else if !from_userspace && (blocked_in_syscall || old_thread_is_user) {
+            // A user thread was interrupted in kernel mode, including a thread blocked
+            // in a syscall's HLT loop. Save the KERNEL context in process.main_thread so
+            // the user-thread restore path can resume it at the correct kernel location.
             // NOTE: No logging here - this is a hot path during blocking I/O
             let save_succeeded = if let Some(ref mut guard) = process_manager_guard {
                 save_kernel_context_with_guard(old_thread_id, saved_regs, interrupt_frame, guard);
@@ -467,6 +472,45 @@ fn save_kthread_context(
     core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
 }
 
+fn saved_context_is_kernel_frame(
+    thread_id: u64,
+    guard: Option<&crate::process::TryProcessManagerGuard>,
+) -> bool {
+    let is_idle =
+        scheduler::with_scheduler(|sched| thread_id == sched.idle_thread()).unwrap_or(false);
+    let is_user_thread = scheduler::with_thread_mut(thread_id, |thread| {
+        thread.privilege == ThreadPrivilege::User
+    })
+    .unwrap_or(false);
+    if is_idle || !is_user_thread {
+        return false;
+    }
+
+    let manager_has_kernel_frame = |manager: &crate::process::ProcessManager| {
+        manager
+            .find_process_by_thread(thread_id)
+            .and_then(|(_pid, process)| process.main_thread.as_ref())
+            .is_some_and(|thread| {
+                thread.has_started && is_kernel_code_selector(thread.context.cs)
+            })
+    };
+
+    if let Some(manager_guard) = guard {
+        let manager_option: &Option<crate::process::ProcessManager> = manager_guard;
+        return manager_option
+            .as_ref()
+            .is_some_and(manager_has_kernel_frame);
+    }
+
+    let Some(manager_guard) = crate::process::try_manager() else {
+        return false;
+    };
+    let manager_option: &Option<crate::process::ProcessManager> = &manager_guard;
+    manager_option
+        .as_ref()
+        .is_some_and(manager_has_kernel_frame)
+}
+
 /// Switch to a different thread
 fn switch_to_thread(
     thread_id: u64,
@@ -518,6 +562,11 @@ fn switch_to_thread(
     // continue executing the syscall code and return through the normal path.
     let blocked_in_syscall =
         scheduler::with_thread_mut(thread_id, |thread| thread.blocked_in_syscall).unwrap_or(false);
+    // The saved CS is the authoritative record of the ring where the context was
+    // captured, even if a remote waker cleared blocked_in_syscall. This mirrors
+    // the aarch64 is_in_kernel_mode term.
+    let saved_context_is_kernel_frame =
+        saved_context_is_kernel_frame(thread_id, process_manager_guard.as_ref());
 
     if is_idle {
         // Check if idle thread has a saved context to restore
@@ -558,7 +607,7 @@ fn switch_to_thread(
         // Debug marker: kernel thread (raw serial, no locks)
         raw_serial_str("<K>");
         setup_kernel_thread_return(thread_id, saved_regs, interrupt_frame);
-    } else if blocked_in_syscall {
+    } else if blocked_in_syscall || saved_context_is_kernel_frame {
         // Debug marker: blocked in syscall (raw serial, no locks)
         raw_serial_str("<B>");
         // CRITICAL: Thread was blocked inside a syscall (like pause() or waitpid()).
@@ -1010,10 +1059,22 @@ fn restore_userspace_thread_context(
                     if thread.privilege == ThreadPrivilege::User {
                         // Debug marker: restoring userspace context (raw serial, no locks)
                         raw_serial_str("<R>");
-                        if restore_userspace_context(thread, interrupt_frame, saved_regs).is_err() {
-                            // Non-canonical RIP or RSP - corrupted process state.
-                            // Terminate the process and switch to idle.
-                            raw_serial_str("<BADADDR>");
+                        if let Err(error) =
+                            restore_userspace_context(thread, interrupt_frame, saved_regs)
+                        {
+                            match error {
+                                RestoreError::NonCanonicalRip
+                                | RestoreError::NonCanonicalRsp => raw_serial_str("<BADADDR>"),
+                                RestoreError::KernelFrame => {
+                                    raw_serial_str("<KFRAME>");
+                                    log::error!(
+                                        "Refusing userspace restore of kernel frame for thread {}: saved CS={:#x}",
+                                        thread_id,
+                                        thread.context.cs
+                                    );
+                                }
+                            }
+                            // Corrupted process state. Terminate the process and switch to idle.
                             thread.set_terminated();
                             process.terminate(-11); // SIGSEGV equivalent
                             crate::task::scheduler::with_thread_mut(thread_id, |sched_thread| {
