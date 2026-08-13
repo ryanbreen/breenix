@@ -36,10 +36,10 @@ unsafe fn arch_enable_interrupts() {
 /// Linux uses 10, we match that
 const MAX_SOFTIRQ_RESTART: u32 = 10;
 
-/// Maximum number of softirq types (matches Linux)
-pub const NR_SOFTIRQS: usize = 10;
+/// Maximum number of softirq types (Linux's fixed set plus one Breenix slot)
+pub const NR_SOFTIRQS: usize = 11;
 
-/// Softirq types - fixed set matching Linux priorities
+/// Softirq types - Linux's fixed set plus one Breenix-specific slot
 /// Lower numbers = higher priority (processed first)
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -64,6 +64,11 @@ pub enum SoftirqType {
     Hrtimer = 8,
     /// Read-copy-update callbacks
     Rcu = 9,
+    /// Breenix-specific slot for local (loopback) packet delivery.
+    ///
+    /// Kept separate from NetRx because that handler polls the network device,
+    /// and loopback delivery must never take driver locks from softirq context.
+    Loopback = 10,
 }
 
 impl SoftirqType {
@@ -80,6 +85,7 @@ impl SoftirqType {
             7 => Some(SoftirqType::Sched),
             8 => Some(SoftirqType::Hrtimer),
             9 => Some(SoftirqType::Rcu),
+            10 => Some(SoftirqType::Loopback),
             _ => None,
         }
     }
@@ -97,6 +103,7 @@ pub type SoftirqHandler = fn(SoftirqType);
 /// Static array of softirq handlers
 /// Index corresponds to SoftirqType ordinal
 static SOFTIRQ_HANDLERS: [AtomicPtr<()>; NR_SOFTIRQS] = [
+    AtomicPtr::new(core::ptr::null_mut()),
     AtomicPtr::new(core::ptr::null_mut()),
     AtomicPtr::new(core::ptr::null_mut()),
     AtomicPtr::new(core::ptr::null_mut()),

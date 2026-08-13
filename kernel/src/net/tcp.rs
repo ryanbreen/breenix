@@ -21,26 +21,40 @@ struct DeferredTx {
     tcp_segment: Vec<u8>,
 }
 
+// Touched from both thread and softirq context, so every access is IRQ-masked.
 static DEFERRED_TX_QUEUE: Mutex<Vec<DeferredTx>> = Mutex::new(Vec::new());
 
 fn queue_deferred_tx_with_mac(dst_ip: [u8; 4], dst_mac: Option<[u8; 6]>, tcp_segment: Vec<u8>) {
-    DEFERRED_TX_QUEUE.lock().push(DeferredTx {
+    let saved = super::irq_save();
+    let mut queue = DEFERRED_TX_QUEUE.lock();
+    queue.push(DeferredTx {
         dst_ip,
         dst_mac,
         tcp_segment,
     });
+    drop(queue);
+    super::irq_restore(saved);
 }
 
 pub fn deferred_tx_queue_len() -> usize {
-    DEFERRED_TX_QUEUE.lock().len()
+    let saved = super::irq_save();
+    let queue = DEFERRED_TX_QUEUE.lock();
+    let len = queue.len();
+    drop(queue);
+    super::irq_restore(saved);
+    len
 }
 
 /// Drain the deferred TX queue, sending all queued packets.
 /// Called after process_rx() completes.
 pub fn drain_deferred_tx() {
     let packets: Vec<DeferredTx> = {
+        let saved = super::irq_save();
         let mut queue = DEFERRED_TX_QUEUE.lock();
-        core::mem::take(&mut *queue)
+        let packets = core::mem::take(&mut *queue);
+        drop(queue);
+        super::irq_restore(saved);
+        packets
     };
 
     for pkt in packets {

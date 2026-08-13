@@ -19,6 +19,7 @@ pub mod tcp;
 pub mod udp;
 
 use alloc::vec::Vec;
+use core::sync::atomic::{AtomicBool, Ordering};
 use spin::Mutex;
 
 // Use E1000 on x86_64, VirtIO net on ARM64 (MMIO for QEMU, PCI for Parallels)
@@ -232,6 +233,7 @@ struct LoopbackPacket {
 }
 
 static LOOPBACK_QUEUE: Mutex<Vec<LoopbackPacket>> = Mutex::new(Vec::new());
+static LOOPBACK_DRAINING: AtomicBool = AtomicBool::new(false);
 
 /// IPv4 packets waiting for ARP resolution of their next hop.
 struct PendingArpPacket {
@@ -325,17 +327,38 @@ pub(crate) fn flush_arp_pending_packets(next_hop: &[u8; 4], mac: &[u8; 6]) {
 
 /// Drain the loopback queue, delivering any pending packets.
 ///
-/// Called after syscalls release their locks to avoid deadlock. TCP loopback
-/// can enqueue deferred replies (SYN+ACK, ACK) while delivering an earlier
-/// packet, so drain bounded rounds until the local packet chain is quiescent.
+/// Called from both syscall (thread) context and the Loopback softirq. The
+/// single-entry guard prevents concurrent drains, and delivery never runs while
+/// this CPU owns the process-manager lock. TCP loopback can enqueue deferred
+/// replies (SYN+ACK, ACK) while delivering an earlier packet, so drain bounded
+/// rounds until the local packet chain is quiescent.
 pub fn drain_loopback_queue() {
     const MAX_DRAIN_ROUNDS: usize = 16;
+
+    if crate::process::process_manager_held_on_current_cpu() {
+        // Delivery can take the process-manager lock; retry from the next irq_exit.
+        crate::task::softirqd::raise_softirq(SoftirqType::Loopback);
+        return;
+    }
+
+    if LOOPBACK_DRAINING
+        .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+        .is_err()
+    {
+        // Another drain owns the backlog; make sure the leftovers are retried.
+        crate::task::softirqd::raise_softirq(SoftirqType::Loopback);
+        return;
+    }
 
     for _ in 0..MAX_DRAIN_ROUNDS {
         // Take all packets from the queue
         let packets: Vec<LoopbackPacket> = {
+            let saved = irq_save();
             let mut queue = LOOPBACK_QUEUE.lock();
-            core::mem::take(&mut *queue)
+            let packets = core::mem::take(&mut *queue);
+            drop(queue);
+            irq_restore(saved);
+            packets
         };
 
         if packets.is_empty() {
@@ -358,6 +381,8 @@ pub fn drain_loopback_queue() {
 
         tcp::drain_deferred_tx();
     }
+
+    LOOPBACK_DRAINING.store(false, Ordering::Release);
 }
 
 /// Softirq handler for network RX processing.
@@ -418,10 +443,21 @@ fn net_rx_softirq_handler(_softirq: SoftirqType) {
     crate::tracing::providers::net_rx::count_softirq_exit();
 }
 
+/// Softirq handler for local (loopback) packet delivery.
+///
+/// Loopback traffic never touches the NIC, so this handler deliberately does
+/// not poll the device: it only drains the local backlog. Keeping it off the
+/// NetRx path means a loopback send can never make softirq context contend
+/// for the driver lock held by a transmitting thread.
+fn loopback_softirq_handler(_softirq: SoftirqType) {
+    drain_loopback_queue();
+}
+
 /// Re-register the network softirq handler.
 /// This is needed after tests that override the handler for testing purposes.
 pub fn register_net_softirq() {
     register_softirq_handler(SoftirqType::NetRx, net_rx_softirq_handler);
+    register_softirq_handler(SoftirqType::Loopback, loopback_softirq_handler);
 }
 
 /// Initialize the network stack
@@ -839,18 +875,31 @@ pub fn send_ipv4(dst_ip: [u8; 4], protocol: u8, payload: &[u8]) -> Result<(), &'
         // Build IP packet
         let ip_packet = ipv4::Ipv4Packet::build(config.ip_addr, dst_ip, protocol, payload);
 
-        // Queue for deferred delivery (to avoid deadlock with process manager lock)
-        // The caller must call drain_loopback_queue() after releasing locks
+        // Queue for deferred delivery (to avoid deadlock with process manager lock).
+        // The Loopback softirq pumps the backlog; syscall-path drains remain as
+        // a low-latency fast path.
+        let saved = irq_save();
         let mut queue = LOOPBACK_QUEUE.lock();
 
         // Drop oldest packet if queue is full to prevent unbounded memory growth
-        if queue.len() >= MAX_LOOPBACK_QUEUE_SIZE {
+        let dropped_oldest = if queue.len() >= MAX_LOOPBACK_QUEUE_SIZE {
             queue.remove(0);
-            net_warn!("NET: Loopback queue full, dropped oldest packet");
-        }
+            true
+        } else {
+            false
+        };
 
         queue.push(LoopbackPacket { data: ip_packet });
-        net_debug!("NET: Loopback packet queued (queue size: {})", queue.len());
+        #[cfg(target_arch = "x86_64")]
+        let queue_len = queue.len();
+        drop(queue);
+        irq_restore(saved);
+
+        if dropped_oldest {
+            net_warn!("NET: Loopback queue full, dropped oldest packet");
+        }
+        net_debug!("NET: Loopback packet queued (queue size: {})", queue_len);
+        crate::task::softirqd::raise_softirq(SoftirqType::Loopback);
 
         return Ok(());
     }
