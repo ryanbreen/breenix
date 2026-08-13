@@ -2736,7 +2736,7 @@ fn validate_no_vacuous_test_conditions(sources: &[(String, String)]) -> Result<(
 fn validate_x86_frame_custody_harness(script: &str) -> Result<(), ()> {
     const FRAME_VECTOR: &str = "FRAME_CUSTODY_PATTERN='^\\[FRAME_CUSTODY_COUNTERS:x86:double=1:stale=1:never=1:untracked=1:duplicate=3:contended=[1-9][0-9]*\\]$'";
     const PT_CUSTODY_VECTOR: &str = "PT_CUSTODY_LITERAL='[PT_CUSTODY_COUNTERS:x86:recorded=11:no_proof=0:no_arch=0:terminated=1:undecided=1:exec_unreturned=0:retired=1:returned=10:lost=0:requeued=0]'";
-    const PT_COHORT_VECTOR: &str = "PT_COHORT_LITERAL='TODO(observe): replace with exact [PT_RETIRE_COHORT:x86:...] line'";
+    const PT_COHORT_VECTOR: &str = "PT_COHORT_LITERAL='[PT_RETIRE_COHORT:x86:children=64:retired=64:returned=640:recorded=576:lost=0:no_arch=0:undecided=0:mid_retire=0:balance=0]'";
     let exact_marker_count = |marker: &str| {
         let needle = format!("grep -h -c '\\[TEST:process:{marker}:PASS\\]'");
         script.find(&needle).is_some_and(|start| {
@@ -3759,7 +3759,7 @@ fn validate_process_page_table_runtime_oracle(sources: &[(String, String)]) -> R
     (harness.contains("page_table_custody_disposition_gate:PASS")
         && harness.contains("x86_retire_cohort:PASS")
         && harness.contains("[PT_CUSTODY_COUNTERS:x86:recorded=11:no_proof=0:no_arch=0:terminated=1:undecided=1:exec_unreturned=0:retired=1:returned=10:lost=0:requeued=0]")
-        && harness.contains("TODO(observe): replace with exact [PT_RETIRE_COHORT:x86:...] line")
+        && harness.contains("[PT_RETIRE_COHORT:x86:children=64:retired=64:returned=640:recorded=576:lost=0:no_arch=0:undecided=0:mid_retire=0:balance=0]")
         && harness
             .matches("page_table_custody_disposition_gate:PASS")
             .count()
@@ -6339,8 +6339,8 @@ fn deliberately_broken_variants_fail_the_ratchet() {
     .is_err());
     assert!(validate_x86_frame_custody_harness(
         &harness.replace(
-            "TODO(observe): replace with exact [PT_RETIRE_COHORT:x86:...] line",
-            "TODO(observe): replace with regex [PT_RETIRE_COHORT:x86:.*] line",
+            "[PT_RETIRE_COHORT:x86:children=64:retired=64:returned=640:recorded=576:lost=0:no_arch=0:undecided=0:mid_retire=0:balance=0]",
+            "[PT_RETIRE_COHORT:x86:.*]",
         )
     )
     .is_err());
@@ -6939,7 +6939,7 @@ fn validate_x86_leaf_timing_oracle_is_live(
         || !cohort.contains("TEARDOWN_MASKED_FRAMES_WALKED")
         || !cohort.contains("!= 0")
         || !harness.contains(
-            "PT_COHORT_LITERAL='TODO(observe): replace with exact [PT_RETIRE_COHORT:x86:...] line'",
+            "PT_COHORT_LITERAL='[PT_RETIRE_COHORT:x86:children=64:retired=64:returned=640:recorded=576:lost=0:no_arch=0:undecided=0:mid_retire=0:balance=0]'",
         )
     {
         return Err(());
@@ -6973,7 +6973,7 @@ fn leaf_timing_oracle_validator_rejects_an_empty_old_root_fixture() {
             if TEARDOWN_MASKED_FRAMES_WALKED.aggregate() != 0 { fail(); }
         }
     "#;
-    let harness = "PT_COHORT_LITERAL='TODO(observe): replace with exact [PT_RETIRE_COHORT:x86:...] line'";
+    let harness = "PT_COHORT_LITERAL='[PT_RETIRE_COHORT:x86:children=64:retired=64:returned=640:recorded=576:lost=0:no_arch=0:undecided=0:mid_retire=0:balance=0]'";
     assert!(validate_x86_leaf_timing_oracle_is_live(process, teardown, harness).is_err());
 }
 
