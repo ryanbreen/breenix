@@ -3727,6 +3727,33 @@ fn validate_process_page_table_runtime_oracle(sources: &[(String, String)]) -> R
     {
         return Err(());
     }
+
+    let main = source(sources, "kernel/src/main.rs");
+    if code_offsets(
+        main,
+        &code_mask(main),
+        "teardown::run_x86_retire_cohort_gate();",
+    )
+    .len()
+        != 1
+    {
+        return Err(());
+    }
+    let teardown = source(sources, "kernel/src/tracing/providers/teardown.rs");
+    let retire_cohort_wrapper = function_body(teardown, "run_x86_retire_cohort_gate");
+    let wrapper_mask = code_mask(retire_cohort_wrapper);
+    if call_offsets(
+        retire_cohort_wrapper,
+        &wrapper_mask,
+        "fork_exit_defer_reclaim_pairing_test",
+    )
+    .len()
+        != 1
+        || !retire_cohort_wrapper.contains("assert!(result.is_pass()")
+        || retire_cohort_wrapper.contains("x86_retire_cohort:PASS")
+    {
+        return Err(());
+    }
     let harness = repo_text("docker/qemu/run-x86-boot-tests.sh");
     (harness.contains("page_table_custody_disposition_gate:PASS")
         && harness.contains("x86_retire_cohort:PASS")

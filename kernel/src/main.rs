@@ -628,6 +628,13 @@ extern "C" fn kernel_main_on_kernel_stack(arg: *mut core::ffi::c_void) -> ! {
         log::info!("No home filesystem: no home block device attached");
     }
 
+    // Run after process::init() and the memory custody gates, while deferred-reclaim
+    // queues are still quiescent and before any user process exists. This is inside
+    // the IF=1 driver-test window because the gate needs timer ticks and scheduler
+    // epochs; placing it immediately after process::init() would spin forever.
+    #[cfg(all(target_arch = "x86_64", feature = "boot_tests"))]
+    kernel::tracing::providers::teardown::run_x86_retire_cohort_gate();
+
     x86_64::instructions::interrupts::disable();
     log::info!("Driver post-init self-tests complete; interrupts disabled for remaining init");
 

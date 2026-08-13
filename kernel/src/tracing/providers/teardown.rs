@@ -1696,6 +1696,18 @@ pub fn fork_exit_defer_reclaim_pairing_test() -> crate::test_framework::registry
     TestResult::Pass
 }
 
+#[cfg(all(feature = "boot_tests", target_arch = "x86_64"))]
+pub fn run_x86_retire_cohort_gate() {
+    crate::serial_println!("[TEST:process:x86_retire_cohort:START]");
+    let result = fork_exit_defer_reclaim_pairing_test();
+    if !result.is_pass() {
+        crate::serial_println!("[TEST:process:x86_retire_cohort:FAIL:{:?}]", result);
+    }
+    // Deliberate fail-loud boot policy, identical to the two sibling gates: never
+    // continue past a failed custody oracle and emit misleading later boot markers.
+    assert!(result.is_pass(), "x86 retire cohort gate failed");
+}
+
 // P20 retains its calibrated 45s local ceiling, but both it and P17 consume
 // one 65s budget anchored near kernel entry. Thus P17 + P20 <= 65s and the
 // 90s Phase-1 harness keeps 90s - 65s = 25s for other tests and overhead.
