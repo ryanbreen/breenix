@@ -1037,9 +1037,9 @@ pub fn deallocate_frame(frame: PhysFrame) {
 #[cfg(feature = "boot_tests")]
 #[path = "frame_allocator_tests.rs"]
 mod boot_tests;
-#[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
+#[cfg(feature = "boot_tests")]
 pub(crate) use boot_tests::republish_frame_for_gate;
-#[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
+#[cfg(feature = "boot_tests")]
 pub(crate) use boot_tests::retire_with_free_list_contended;
 #[cfg(all(feature = "boot_tests", target_arch = "x86_64"))]
 pub use boot_tests::run_x86_frame_custody_gate;

@@ -1131,10 +1131,7 @@ impl ProcessManager {
         // Get parent PID before we borrow the process mutably
         let parent_pid = self.processes.get(&pid).and_then(|p| p.parent);
 
-        #[cfg(target_arch = "aarch64")]
         let mut receipt = None;
-        #[cfg(not(target_arch = "aarch64"))]
-        let receipt: Option<super::RetirementReceipt> = None;
         if let Some(process) = self.processes.get_mut(&pid) {
             if !already_terminated {
                 process.exit_notifications.seed();
@@ -1150,18 +1147,13 @@ impl ProcessManager {
                 drop(process.stack.take());
                 process.pending_old_page_tables.clear();
             } else {
-                #[cfg(target_arch = "aarch64")]
-                {
-                    // Fault exits always defer: the two-epoch grace covers both a
-                    // peer's pre-shadow-stamp dispatch window and hardware TTBR0 lag.
-                    // A peer's own EL1-fault shadow-clear window remains the same
-                    // parked structural issue as normal-exit deferral.
-                    let reclaim = crate::task::process_task::defer_process_resources(process);
-                    receipt = Some(super::RetirementReceipt::from_reclaim(reclaim));
-                    drop(process.stack.take());
-                }
-                #[cfg(not(target_arch = "aarch64"))]
-                crate::task::process_task::release_process_resources(process);
+                // Fault exits always defer: the two-epoch grace covers both a
+                // peer's pre-shadow-stamp dispatch window and hardware root lag.
+                // A peer's own fault shadow-clear window remains the same parked
+                // structural issue as normal-exit deferral.
+                let reclaim = crate::task::process_task::defer_process_resources(process);
+                receipt = Some(super::RetirementReceipt::from_reclaim(reclaim));
+                drop(process.stack.take());
 
                 // Keep termination after release/deferral. Once page_table is None,
                 // cleanup_cow_frames() cannot repeat the CoW walk; restoring the old
@@ -1383,7 +1375,6 @@ impl ProcessManager {
     /// This version accepts a page table created outside the lock to avoid deadlock
     /// Note: Fork requires architecture-specific register manipulation
     #[cfg(target_arch = "x86_64")]
-    #[allow(dead_code)] // Part of public fork API - available for deadlock-free fork patterns
     pub fn fork_process_with_page_table(
         &mut self,
         parent_pid: ProcessId,
@@ -3964,7 +3955,6 @@ impl ProcessManager {
 
     /// Return whether a live or creating process row still names a matching
     /// userspace translation-table root.
-    #[cfg(target_arch = "aarch64")]
     pub(crate) fn any_live_root_matches<F>(&self, mut root_matches: F) -> bool
     where
         F: FnMut(u64) -> bool,

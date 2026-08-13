@@ -5440,29 +5440,26 @@ static PROCESS_TESTS: &[TestDef] = &[
         timeout_ms: 5000,
         stage: TestStage::ProcessContext,
     },
-    #[cfg(target_arch = "aarch64")]
     TestDef {
         name: "fork_exit_defer_reclaim_pairing_test",
         func: crate::tracing::providers::teardown::fork_exit_defer_reclaim_pairing_test,
-        arch: Arch::Aarch64,
+        arch: Arch::Any,
         timeout_ms: 30000,
         stage: TestStage::PostScheduler,
     },
-    #[cfg(target_arch = "aarch64")]
     TestDef {
         name: "retirement_fence_gate",
         func: crate::task::process_task::retirement_fence_gate_test,
-        arch: Arch::Aarch64,
+        arch: Arch::Any,
         timeout_ms: 5000,
         stage: TestStage::PostScheduler,
     },
-    #[cfg(target_arch = "aarch64")]
     TestDef {
         name: "reclaim_progress_gate",
         func: crate::task::process_task::reclaim_progress_gate_test,
-        arch: Arch::Aarch64,
+        arch: Arch::Any,
         timeout_ms: 10000,
-        stage: TestStage::PostScheduler,
+        stage: TestStage::SerialBoot,
     },
     #[cfg(target_arch = "aarch64")]
     TestDef {
@@ -5472,11 +5469,11 @@ static PROCESS_TESTS: &[TestDef] = &[
         timeout_ms: 30000,
         stage: TestStage::PostScheduler,
     },
-    #[cfg(all(target_arch = "aarch64", feature = "receipt_drop_test"))]
+    #[cfg(feature = "receipt_drop_test")]
     TestDef {
         name: "retirement_receipt_drop_gate",
         func: crate::task::process_task::retirement_receipt_drop_gate_test,
-        arch: Arch::Aarch64,
+        arch: Arch::Any,
         timeout_ms: 5000,
         stage: TestStage::PostScheduler,
     },

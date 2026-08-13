@@ -605,18 +605,17 @@ pub fn try_dump_state() -> Option<SchedulerDumpInfo> {
 
 /// Maximum CPUs for scheduler state arrays.
 #[cfg(target_arch = "aarch64")]
-const MAX_CPUS: usize = 8;
+pub(crate) const MAX_CPUS: usize = 8;
 #[cfg(not(target_arch = "aarch64"))]
-const MAX_CPUS: usize = 1;
+pub(crate) const MAX_CPUS: usize = 1;
 
-/// Scheduler-entry epochs per online AArch64 CPU.
+/// Scheduler-entry epochs per online CPU.
 ///
 /// A retiring resource records a target two greater than every online CPU's
 /// current value. The first bump may be recorded by a handoff that is already
 /// in flight on the retiring stack. Requiring a second bump proves that CPU
 /// entered the scheduler through a later exception, which can only happen
 /// after the in-flight exception return and its old-stack restore completed.
-#[cfg(target_arch = "aarch64")]
 static SCHEDULING_EPOCHS: [AtomicU64; MAX_CPUS] =
     [const { AtomicU64::new(0) }; MAX_CPUS];
 
@@ -627,28 +626,32 @@ struct RetirementGrace {
     after_epoch: RetirementFence,
 }
 
-#[cfg(target_arch = "aarch64")]
 #[derive(Clone, Copy)]
 pub(crate) struct RetirementFence {
     pub(crate) epochs: [u64; MAX_CPUS],
     pub(crate) online_mask: u64,
 }
 
-#[cfg(target_arch = "aarch64")]
 #[derive(Clone, Copy)]
 pub(crate) struct RetirementSnapshot {
     pub(crate) epochs: [u64; MAX_CPUS],
     pub(crate) online_mask: u64,
 }
 
-#[cfg(target_arch = "aarch64")]
 impl RetirementSnapshot {
     pub(crate) fn capture() -> Self {
         let mut epochs = [0; MAX_CPUS];
         let mut online_mask = 0;
         for cpu_id in 0..MAX_CPUS {
             epochs[cpu_id] = SCHEDULING_EPOCHS[cpu_id].load(Ordering::Acquire);
+            #[cfg(target_arch = "aarch64")]
             if crate::arch_impl::aarch64::smp::is_cpu_online(cpu_id) {
+                online_mask |= 1 << cpu_id;
+            }
+            #[cfg(target_arch = "x86_64")]
+            {
+                // x86 is single-CPU today. Keep CPU 0 unconditionally live so
+                // retirement can never silently degenerate to an empty mask.
                 online_mask |= 1 << cpu_id;
             }
         }
@@ -705,20 +708,17 @@ impl RetirementSnapshot {
     }
 }
 
-#[cfg(target_arch = "aarch64")]
 #[inline(always)]
 fn epoch_reached(now: u64, target: u64) -> bool {
     now.wrapping_sub(target) < (1u64 << 63)
 }
 
-#[cfg(target_arch = "aarch64")]
 #[inline(always)]
 fn epoch_advanced(now: u64, before: u64) -> bool {
     let delta = now.wrapping_sub(before);
     delta != 0 && delta < (1u64 << 63)
 }
 
-#[cfg(target_arch = "aarch64")]
 pub(crate) fn retirement_grace_target() -> RetirementFence {
     RetirementSnapshot::capture().target_after(2)
 }
@@ -732,7 +732,6 @@ pub(crate) fn retirement_grace_elapsed(target: &RetirementFence) -> bool {
 ///
 /// A single entry does not prove the handoff active at that entry has finished;
 /// reclamation targets require a second, subsequent entry on every online CPU.
-#[cfg(target_arch = "aarch64")]
 pub fn note_scheduling_epoch(cpu_id: usize) {
     if cpu_id < MAX_CPUS {
         SCHEDULING_EPOCHS[cpu_id].fetch_add(1, Ordering::Release);
@@ -3965,8 +3964,9 @@ pub fn run_scheduler_tests() {
 
 /// Drive real scheduler boundaries on every idle online CPU for the Phase-0
 /// teardown grace-period boot test.
-#[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
+#[cfg(feature = "boot_tests")]
 pub fn nudge_retirement_grace_for_test() {
+    #[cfg(target_arch = "aarch64")]
     let _ = with_scheduler(|scheduler| scheduler.send_resched_ipi());
     set_need_resched();
 }

@@ -9,7 +9,6 @@ use crate::memory::arch_stub::{
 };
 #[cfg(target_arch = "aarch64")]
 use crate::memory::frame_allocator::allocate_frame;
-#[cfg(target_arch = "aarch64")]
 use crate::memory::frame_allocator::return_lease;
 use crate::memory::frame_allocator::{
     acquire_leaf_mapping, allocate_frame_leased, deallocate_leaf_frame, FrameLease,
@@ -89,7 +88,6 @@ pub struct ProcessPageTable {
     mapper: OffsetPageTable<'static>,
     /// Allocator authority for the root. PR-1c consumes this after proving the
     /// address space is no longer live; PR-1b intentionally never returns it.
-    #[cfg_attr(not(target_arch = "aarch64"), allow(dead_code))]
     root_lease: FrameLease,
     /// Allocation-derived custody for every intermediate table we created.
     tables: OwnedTableFrames,
@@ -161,9 +159,7 @@ unsafe impl FrameAllocator<Size4KiB> for TableRecorder<'_> {
 #[derive(Clone, Copy)]
 enum Disposition {
     Undecided,
-    #[cfg(target_arch = "aarch64")]
     Retiring,
-    #[cfg(target_arch = "aarch64")]
     Retired,
     #[cfg(target_arch = "x86_64")]
     RetiredByExecWalk,
@@ -171,13 +167,11 @@ enum Disposition {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[cfg(target_arch = "aarch64")]
 pub(crate) enum RetireProgress {
     Complete,
     Budgeted,
 }
 
-#[cfg(target_arch = "aarch64")]
 pub(crate) const RETIRE_FRAME_BUDGET: u32 = 64;
 
 /// Owns an aarch64 address space until exec publishes it in a Process row.
@@ -1050,6 +1044,19 @@ impl ProcessPageTable {
         self.level_4_frame
     }
 
+    #[cfg(feature = "boot_tests")]
+    pub(crate) fn recorded_table_frames_for_gate(&self) -> usize {
+        self.tables.leases.len()
+    }
+
+    #[cfg(all(feature = "boot_tests", target_arch = "x86_64"))]
+    pub(crate) fn custody_frames_for_gate(&self) -> alloc::vec::Vec<PhysFrame> {
+        let mut frames = alloc::vec::Vec::with_capacity(self.tables.leases.len() + 1);
+        frames.extend(self.tables.leases.iter().map(|lease| lease.frame()));
+        frames.push(self.root_lease.frame());
+        frames
+    }
+
     /// Walk all mapped user pages in this page table
     ///
     /// This walks the entire page table hierarchy (L4 -> L3 -> L2 -> L1) and calls
@@ -1756,7 +1763,6 @@ impl ProcessPageTable {
     /// Return only allocator-issued table leases after the caller has proved
     /// this address space is no longer live. Work is resumable and the root is
     /// always attempted last, after every intermediate-table lease is consumed.
-    #[cfg(target_arch = "aarch64")]
     pub(crate) fn retire_bounded(&mut self, pid: u64, budget: &mut u32) -> RetireProgress {
         match self.tables.disposition {
             Disposition::Retired => return RetireProgress::Complete,
@@ -1768,6 +1774,8 @@ impl ProcessPageTable {
                 self.tables.disposition = Disposition::Retiring;
             }
             Disposition::Retiring => {}
+            #[cfg(target_arch = "x86_64")]
+            Disposition::RetiredByExecWalk => return RetireProgress::Complete,
             Disposition::Abandoned(_) => {
                 return RetireProgress::Complete;
             }
@@ -2015,13 +2023,11 @@ impl Drop for ProcessPageTable {
             Disposition::Undecided => {
                 crate::trace_count!(crate::tracing::providers::teardown::PT_ROOT_DROPPED_UNDECIDED);
             }
-            #[cfg(target_arch = "aarch64")]
             Disposition::Retiring => {
                 crate::trace_count!(
                     crate::tracing::providers::teardown::PT_ROOT_DROPPED_MID_RETIRE
                 );
             }
-            #[cfg(target_arch = "aarch64")]
             Disposition::Retired => {}
             #[cfg(target_arch = "x86_64")]
             Disposition::RetiredByExecWalk => {}
@@ -2035,7 +2041,7 @@ impl Drop for ProcessPageTable {
 }
 
 #[cfg(feature = "boot_tests")]
-fn disposition_gate_counters() -> [u64; 6] {
+fn disposition_gate_counters() -> [u64; 10] {
     use crate::tracing::providers::teardown;
     [
         teardown::PT_TABLE_FRAMES_RECORDED.aggregate(),
@@ -2044,7 +2050,36 @@ fn disposition_gate_counters() -> [u64; 6] {
         teardown::PT_ROOT_ABANDONED_TERMINATED.aggregate(),
         teardown::PT_ROOT_DROPPED_UNDECIDED.aggregate(),
         teardown::PT_EXEC_WALK_LEASES_UNRETURNED.aggregate(),
+        teardown::PT_ROOTS_RETIRED.aggregate(),
+        teardown::PT_TABLE_FRAMES_RETURNED.aggregate(),
+        teardown::PT_RETIRE_FRAMES_LOST.aggregate(),
+        teardown::PT_RETIRE_BUDGET_REQUEUED.aggregate(),
     ]
+}
+
+#[cfg(all(feature = "boot_tests", target_arch = "x86_64"))]
+const X86_CUSTODY_SENTINEL_VAS: [u64; 3] = [
+    0x0000_0000_0040_0000,
+    0x0000_0080_0040_0000,
+    0x0000_0100_0040_0000,
+];
+
+#[cfg(all(feature = "boot_tests", target_arch = "x86_64"))]
+fn expected_x86_custody_table_frames() -> usize {
+    // ProcessPageTable::new() already records PML4[0]'s PDPT. A sentinel in
+    // that subtree adds PD+PT; each fresh PML4 slot adds PDPT+PD+PT.
+    let mut expected = 1usize;
+    for (index, address) in X86_CUSTODY_SENTINEL_VAS.iter().enumerate() {
+        let pml4_index = (address >> 39) & 0x1ff;
+        if X86_CUSTODY_SENTINEL_VAS[..index]
+            .iter()
+            .any(|prior| ((prior >> 39) & 0x1ff) == pml4_index)
+        {
+            continue;
+        }
+        expected += if pml4_index == 0 { 2 } else { 3 };
+    }
+    expected
 }
 
 #[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
@@ -2259,23 +2294,53 @@ pub fn page_table_custody_disposition_gate_test() -> crate::test_framework::regi
         return TestResult::Fail("H: undecided Drop was not isolated and non-freeing");
     }
 
-    // O3 x86 residual direction: without an architecture proof pipeline the
-    // same custody object must be counted and must return no table frame.
+    // O3 x86 closure direction: recorded custody is consumed by the real
+    // bounded retirement primitive, with the root returned last.
     #[cfg(target_arch = "x86_64")]
     {
-        let no_arch = match ProcessPageTable::new() {
+        use crate::memory::frame_allocator::{allocate_frame, deallocate_frame};
+        use crate::tracing::providers::teardown;
+
+        let mut retiring = match ProcessPageTable::new() {
             Ok(page_table) => page_table,
             Err(_) => return TestResult::Fail("O3: page-table construction failed"),
         };
-        let returned_before =
-            crate::tracing::providers::teardown::PT_TABLE_FRAMES_RETURNED.aggregate();
-        no_arch.abandon(AbandonReason::NoArchPipeline);
-        let after_no_arch = disposition_gate_counters();
-        if after_no_arch[2] != after_drop[2] + 1
-            || crate::tracing::providers::teardown::PT_TABLE_FRAMES_RETURNED.aggregate()
-                != returned_before
+        let flags = PageTableFlags::PRESENT
+            | PageTableFlags::WRITABLE
+            | PageTableFlags::USER_ACCESSIBLE;
+        for address in X86_CUSTODY_SENTINEL_VAS {
+            let frame = match allocate_frame() {
+                Some(frame) => frame,
+                None => return TestResult::Fail("O3: sentinel leaf allocation failed"),
+            };
+            let page = Page::<Size4KiB>::containing_address(VirtAddr::new(address));
+            if retiring.map_page(page, frame, flags).is_err() {
+                deallocate_frame(frame);
+                return TestResult::Fail("O3: sentinel mapping failed");
+            }
+        }
+        let recorded = retiring.recorded_table_frames_for_gate();
+        if recorded != expected_x86_custody_table_frames() {
+            return TestResult::Fail("O3: x86 recorded hierarchy was not exact");
+        }
+        retiring.release_mapped_leaves();
+        let returned_before = teardown::PT_TABLE_FRAMES_RETURNED.aggregate();
+        let retired_before = teardown::PT_ROOTS_RETIRED.aggregate();
+        let lost_before = teardown::PT_RETIRE_FRAMES_LOST.aggregate();
+        let requeued_before = teardown::PT_RETIRE_BUDGET_REQUEUED.aggregate();
+        let mut budget = RETIRE_FRAME_BUDGET;
+        if retiring.retire_bounded(u64::MAX - 3, &mut budget) != RetireProgress::Complete {
+            return TestResult::Fail("O3: x86 bounded retirement did not complete");
+        }
+        let after_retire = disposition_gate_counters();
+        if after_retire[2] != after_drop[2]
+            || teardown::PT_ROOTS_RETIRED.aggregate() != retired_before + 1
+            || teardown::PT_TABLE_FRAMES_RETURNED.aggregate()
+                != returned_before + recorded as u64 + 1
+            || teardown::PT_RETIRE_FRAMES_LOST.aggregate() != lost_before
+            || teardown::PT_RETIRE_BUDGET_REQUEUED.aggregate() != requeued_before
         {
-            return TestResult::Fail("O3: x86 residual abandonment returned a table frame");
+            return TestResult::Fail("O3: x86 custody retirement accounting was not exact");
         }
     }
 
@@ -2296,9 +2361,12 @@ pub fn run_x86_page_table_custody_gate() {
     }
     let values = disposition_gate_counters();
     crate::serial_println!(
-        "[PT_CUSTODY_COUNTERS:x86:recorded={}:no_proof={}:no_arch={}:terminated={}:undecided={}:exec_unreturned={}]",
-        values[0], values[1], values[2], values[3], values[4], values[5]
+        "[PT_CUSTODY_COUNTERS:x86:recorded={}:no_proof={}:no_arch={}:terminated={}:undecided={}:exec_unreturned={}:retired={}:returned={}:lost={}:requeued={}]",
+        values[0], values[1], values[2], values[3], values[4], values[5], values[6], values[7],
+        values[8], values[9]
     );
+    // Deliberate fail-loud boot policy: never let the direct x86 hook continue
+    // after a custody oracle failure and emit misleading later boot markers.
     assert!(result.is_pass(), "x86 page-table custody gate failed");
 }
 

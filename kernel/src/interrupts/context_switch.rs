@@ -53,6 +53,7 @@ pub extern "C" fn check_need_resched_and_switch(
     saved_regs: &mut SavedRegisters,
     interrupt_frame: &mut InterruptStackFrame,
 ) {
+    crate::task::scheduler::note_scheduling_epoch(0);
     // CRITICAL: Only schedule when returning to userspace with preempt_count == 0
     if !crate::per_cpu::can_schedule(interrupt_frame.code_segment.0 as u64) {
         return;
@@ -1364,6 +1365,7 @@ fn check_and_deliver_signals_for_current_thread(
 /// Simple idle loop - made pub for exception handlers that need to jump to idle
 pub fn idle_loop() -> ! {
     loop {
+        crate::task::process_task::reclaim_deferred_process_resources();
         // Try to flush any pending IRQ logs while idle
         crate::irq_log::flush_local_try();
         // CRITICAL: Use enable_and_hlt() instead of just hlt()
