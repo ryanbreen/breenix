@@ -138,35 +138,25 @@ impl Virtqueue {
         // Allocate contiguous physical frames
         // IMPORTANT: VirtIO legacy requires physically contiguous memory for the queue
         let mut frames: [Option<PhysFrame>; 4] = [None; 4];
-        let mut base_phys: Option<u64> = None;
-        let mut prev_phys: Option<u64> = None;
+        let base_frame = frame_allocator::allocate_contiguous_frames(num_pages, &mut frames)
+            .ok_or("Failed to allocate contiguous frames for virtqueue")?;
 
-        for (i, frame_slot) in frames.iter_mut().take(num_pages).enumerate() {
-            let frame = frame_allocator::allocate_frame()
-                .ok_or("Failed to allocate frame for virtqueue")?;
-
-            let frame_phys = frame.start_address().as_u64();
-
-            if i == 0 {
-                base_phys = Some(frame_phys);
-            } else if let Some(prev) = prev_phys {
-                // Verify frames are contiguous
-                if frame_phys != prev + 4096 {
-                    log::error!(
-                        "VirtIO queue: Non-contiguous frames allocated! prev={:#x}, curr={:#x}",
-                        prev,
-                        frame_phys
-                    );
-                    // Continue anyway - early boot allocations are usually contiguous
-                    // but log the warning for debugging
+        let mut previous_address = None;
+        for frame in frames[..num_pages].iter().copied() {
+            let frame = match frame {
+                Some(frame) => frame,
+                None => {
+                    return Err("VirtIO queue: allocator returned non-contiguous ring frames");
                 }
+            };
+            let address = frame.start_address().as_u64();
+            if previous_address.is_some_and(|previous| address != previous + 4096) {
+                return Err("VirtIO queue: allocator returned non-contiguous ring frames");
             }
-
-            prev_phys = Some(frame_phys);
-            *frame_slot = Some(frame);
+            previous_address = Some(address);
         }
 
-        let phys_addr = base_phys.ok_or("No frames allocated")?;
+        let phys_addr = base_frame.start_address().as_u64();
 
         log::debug!(
             "VirtIO queue: Allocated {} pages starting at phys={:#x}",

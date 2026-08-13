@@ -900,6 +900,132 @@ pub fn allocate_frame() -> Option<PhysFrame> {
     allocate_claimed().map(|(frame, _)| frame)
 }
 
+/// Bounded retries for a contiguous reservation. Every retry either lost the
+/// frontier compare-exchange or stepped past a usable-region boundary, so a
+/// small cap cannot turn a satisfiable request into a spurious failure.
+const MAX_CONTIGUOUS_ATTEMPTS: usize = 16;
+
+/// Reserve `count` physically contiguous frames, writing them in ascending
+/// address order into `out[..count]`, and return the base frame.
+///
+/// DMA rings (VirtIO virtqueues) are published to the device as a single
+/// physical address covering the whole ring, so their frames must be genuinely
+/// adjacent in physical memory. The free list recycles frames in arbitrary
+/// order, so adjacency can only be established at the sequential frontier:
+/// this reserves a run of consecutive allocator ordinals whose physical
+/// addresses are checked adjacent, and claims every one of them in the ledger
+/// exactly as a single-frame allocation does. Frames reserved but not usable
+/// (a run cut short by a usable-region boundary) are handed back through the
+/// normal fail-closed return path, never dropped on the floor.
+///
+/// Fail-closed: returns `None` rather than a run that is not contiguous. A
+/// caller that cannot get real contiguity must fail its own initialization.
+pub fn allocate_contiguous_frames(
+    count: usize,
+    out: &mut [Option<PhysFrame>],
+) -> Option<PhysFrame> {
+    if count == 0 || out.len() < count {
+        return None;
+    }
+
+    // Test-only: simulate OOM if flag is set
+    #[cfg(feature = "testing")]
+    if SIMULATE_OOM.load(Ordering::SeqCst) {
+        return None;
+    }
+
+    for _ in 0..MAX_CONTIGUOUS_ATTEMPTS {
+        let base = NEXT_FREE_FRAME.load(Ordering::SeqCst);
+
+        // Measure how many frames at the frontier are physically adjacent.
+        let first = BootInfoFrameAllocator::get_usable_frame(base)?;
+        let mut run = 1usize;
+        let mut prev = first.start_address().as_u64();
+        while run < count {
+            let Some(frame) = BootInfoFrameAllocator::get_usable_frame(base + run) else {
+                break;
+            };
+            let address = frame.start_address().as_u64();
+            if address != prev + 4096 {
+                break;
+            }
+            prev = address;
+            run += 1;
+        }
+
+        // Ledger capacity for every ordinal must exist before the frontier moves.
+        if !prepare_contiguous_run(base, run) {
+            return None;
+        }
+
+        if NEXT_FREE_FRAME
+            .compare_exchange(base, base + run, Ordering::SeqCst, Ordering::SeqCst)
+            .is_err()
+        {
+            // Another allocation took the frontier; re-measure and retry.
+            continue;
+        }
+
+        // The ordinals are reserved; take one ledger generation for each.
+        let mut claimed = 0usize;
+        while claimed < run {
+            let Some(frame) = BootInfoFrameAllocator::get_usable_frame(base + claimed) else {
+                break;
+            };
+            if claim_frame(frame).is_err() {
+                break;
+            }
+            out[claimed] = Some(frame);
+            claimed += 1;
+        }
+
+        if claimed == count {
+            return Some(first);
+        }
+
+        // Short run (region boundary) or a refused claim: return everything
+        // claimed here through the fail-closed path and never keep a partial,
+        // non-contiguous run.
+        for slot in out[..claimed].iter_mut() {
+            if let Some(frame) = slot.take() {
+                deallocate_frame(frame);
+            }
+        }
+
+        if claimed != run {
+            // A refusal means the ledger disagrees about ownership of a frontier
+            // frame. Do not spin on it - fail the caller instead.
+            return None;
+        }
+    }
+
+    None
+}
+
+/// Prepare ledger and free-list capacity for every ordinal in a contiguous run.
+///
+/// Returns false only when capacity is genuinely exhausted. As on the
+/// single-frame path, a transient free-list lock holder must not manufacture
+/// OOM: after bounded retries the run is published anyway and a future
+/// exact-boundary return is refused as a counted loss instead of reallocating.
+fn prepare_contiguous_run(base: usize, run: usize) -> bool {
+    for i in 0..run {
+        let mut capacity_contentions = 0u8;
+        loop {
+            match prepare_frame_for_allocation(base + i) {
+                PrepareFrame::Ready => break,
+                PrepareFrame::Contended if capacity_contentions < 8 => {
+                    capacity_contentions += 1;
+                    core::hint::spin_loop();
+                }
+                PrepareFrame::Contended => break,
+                PrepareFrame::Exhausted => return false,
+            }
+        }
+    }
+    true
+}
+
 pub(crate) fn allocate_frame_leased() -> Option<FrameLease> {
     assert!(FRAME_LEDGER.get().is_some(), "frame ledger not initialized");
     allocate_claimed().and_then(|(_, lease)| lease)
