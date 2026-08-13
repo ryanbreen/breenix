@@ -487,6 +487,10 @@ counter!(
     PT_RETIRE_BUDGET_REQUEUED,
     "Process table retirements requeued at the frame budget"
 );
+counter!(
+    PT_ROOT_SLOT_REFUSED,
+    "Mappings refused into inherited root slots"
+);
 
 // Declaration-only until the phase named in PLAN.md. These intentionally have
 // no trace_count! producer yet.
@@ -515,7 +519,7 @@ counter!(
     "Fatal group signals dropped for init"
 );
 
-pub const COUNTER_COUNT: usize = 70;
+pub const COUNTER_COUNT: usize = 71;
 
 /// The registration and normal-context reader inventory. Keeping one inventory
 /// makes a write-only counter structurally impossible without changing the P0
@@ -577,6 +581,7 @@ pub static COUNTERS: [&TraceCounter; COUNTER_COUNT] = [
     &PT_RETIRE_FRAMES_LOST,
     &PT_ROOT_DROPPED_MID_RETIRE,
     &PT_RETIRE_BUDGET_REQUEUED,
+    &PT_ROOT_SLOT_REFUSED,
     &RECLAIM_PASS_SKIPPED,
     &RECLAIM_PARKED,
     &RECLAIM_UNPARKED_EPOCH,
@@ -1091,41 +1096,12 @@ pub fn deferred_fault_ring_overflow_test() -> crate::test_framework::registry::T
 }
 
 #[cfg(feature = "boot_tests")]
-const RETIRE_SENTINEL_VAS: [u64; 3] = [
-    0x0000_0000_0040_0000,
-    0x0000_0080_0040_0000,
-    0x0000_0100_0040_0000,
-];
-
-#[cfg(feature = "boot_tests")]
-fn expected_retire_table_frames() -> u64 {
-    #[cfg(target_arch = "aarch64")]
-    let mut expected = 0u64;
-    #[cfg(target_arch = "x86_64")]
-    let mut expected = 1u64;
-    for (index, address) in RETIRE_SENTINEL_VAS.iter().enumerate() {
-        let top_level_index = (address >> 39) & 0x1ff;
-        if !RETIRE_SENTINEL_VAS[..index]
-            .iter()
-            .any(|prior| ((prior >> 39) & 0x1ff) == top_level_index)
-        {
-            #[cfg(target_arch = "aarch64")]
-            {
-                expected += 3;
-            }
-            #[cfg(target_arch = "x86_64")]
-            {
-                expected += if top_level_index == 0 { 2 } else { 3 };
-            }
-        }
-    }
-    expected
-}
+const RETIRE_SENTINEL_SUBTREES: usize = 3;
 
 #[cfg(feature = "boot_tests")]
 fn map_retire_sentinels(
     page_table: &mut crate::memory::process_memory::ProcessPageTable,
-) -> Result<(), &'static str> {
+) -> Result<u64, &'static str> {
     #[cfg(not(target_arch = "x86_64"))]
     use crate::memory::arch_stub::{Page, PageTableFlags, Size4KiB, VirtAddr};
     use crate::memory::frame_allocator::{allocate_frame, deallocate_frame};
@@ -1137,15 +1113,23 @@ fn map_retire_sentinels(
 
     let flags =
         PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::USER_ACCESSIBLE;
-    for address in RETIRE_SENTINEL_VAS {
+    let mut expected = page_table.recorded_table_frames_for_gate() as u64;
+    let sentinels = page_table
+        .gate_sentinels(RETIRE_SENTINEL_SUBTREES)
+        .ok_or("table offered too few unshared root slots")?;
+    for sentinel in sentinels {
+        expected += sentinel.table_frames as u64;
+        let page = Page::<Size4KiB>::containing_address(VirtAddr::new(sentinel.address));
+        if !page_table.gate_page_is_unmapped(page) {
+            return Err("retire sentinel address was already mapped");
+        }
         let frame = allocate_frame().ok_or("sentinel leaf allocation failed")?;
-        let page = Page::<Size4KiB>::containing_address(VirtAddr::new(address));
         if page_table.map_page(page, frame, flags).is_err() {
             deallocate_frame(frame);
             return Err("sentinel mapping failed");
         }
     }
-    Ok(())
+    Ok(expected)
 }
 
 #[cfg(feature = "boot_tests")]
@@ -1305,7 +1289,7 @@ pub fn fork_exit_defer_reclaim_pairing_test() -> crate::test_framework::registry
     let mut pairing_child_pids = [0u64; 64];
     let mut pairing_child_count = 0;
     let pid_counts_guard = reset_boot_test_pid_counts();
-    let expected_tables = expected_retire_table_frames();
+    let mut expected_tables = 0u64;
     let allocator_used_before = frame_allocator_used_frames();
     let roots_retired_before = PT_ROOTS_RETIRED.aggregate();
     let table_frames_returned_before = PT_TABLE_FRAMES_RETURNED.aggregate();
@@ -1347,8 +1331,14 @@ pub fn fork_exit_defer_reclaim_pairing_test() -> crate::test_framework::registry
             Ok(page_table) => alloc::boxed::Box::new(page_table),
             Err(_) => return TestResult::Fail("pairing fork page-table allocation failed"),
         };
-        if map_retire_sentinels(child_page_table.as_mut()).is_err() {
-            return TestResult::Fail("pairing retire sentinel mapping failed");
+        let child_expected_tables = match map_retire_sentinels(child_page_table.as_mut()) {
+            Ok(expected) => expected,
+            Err(_) => return TestResult::Fail("pairing retire sentinel mapping failed"),
+        };
+        if iteration == 0 {
+            expected_tables = child_expected_tables;
+        } else if child_expected_tables != expected_tables {
+            return TestResult::Fail("pairing sentinel hierarchy cost changed between children");
         }
         let child = {
             let mut manager_guard = crate::process::manager();
@@ -1471,7 +1461,7 @@ pub fn fork_exit_defer_reclaim_pairing_test() -> crate::test_framework::registry
     let live_leaf_refused_delta = FRAME_RETURN_REFUSED_LIVE_LEAF
         .aggregate()
         .saturating_sub(refusal_counters_before[5]);
-    let expected_leaves = (RETIRE_SENTINEL_VAS.len() * pairing_child_pids.len()) as u64;
+    let expected_leaves = (RETIRE_SENTINEL_SUBTREES * pairing_child_pids.len()) as u64;
     #[cfg(target_arch = "x86_64")]
     let cohort_recorded = expected_tables * pairing_child_pids.len() as u64;
     #[cfg(target_arch = "x86_64")]

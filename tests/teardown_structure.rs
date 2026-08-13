@@ -1931,7 +1931,7 @@ const RAW_SCHEDULER_LOCK_SITES: &[(&str, &str, usize)] = &[
 #[rustfmt::skip]
 const PROCESS_MEMORY_FRAME_RETURNS: &[(&str, &str, usize)] = &[
     ("kernel/src/memory/process_memory.rs", "impl ProcessPageTable::#[cfg(target_arch=x86_64)] fn cleanup_for_exec", 7),
-    ("kernel/src/memory/process_memory.rs", "#[cfg(feature=boot_tests)] fn page_table_custody_disposition_gate_test", 1),
+    ("kernel/src/memory/process_memory.rs", "#[cfg(feature=boot_tests)] fn page_table_custody_disposition_gate_test", 2),
 ];
 #[rustfmt::skip]
 const RETURN_LEASE_DEFINITION: &[(&str, &str, usize)] = &[
@@ -2871,7 +2871,7 @@ fn validate_frame_ledger_counter_inventory(provider: &str) -> Result<(), ()> {
         && EXPECTED
             .iter()
             .all(|counter| inventory.contains(&format!("&{counter},")))
-        && provider.contains("pub const COUNTER_COUNT: usize = 70;"))
+        && provider.contains("pub const COUNTER_COUNT: usize = 71;"))
     .then_some(())
     .ok_or(())
 }
@@ -3093,7 +3093,7 @@ fn validate_process_page_table_retire_site(
 }
 
 fn validate_process_page_table_counter_inventory(sources: &[(String, String)]) -> Result<(), ()> {
-    const EXPECTED: [&str; 11] = [
+    const EXPECTED: [&str; 12] = [
         "PT_TABLE_FRAMES_RECORDED",
         "PT_ROOT_ABANDONED_NO_PROOF",
         "PT_ROOT_ABANDONED_NO_ARCH",
@@ -3105,6 +3105,7 @@ fn validate_process_page_table_counter_inventory(sources: &[(String, String)]) -
         "PT_RETIRE_FRAMES_LOST",
         "PT_ROOT_DROPPED_MID_RETIRE",
         "PT_RETIRE_BUDGET_REQUEUED",
+        "PT_ROOT_SLOT_REFUSED",
     ];
     let provider = source(sources, "kernel/src/tracing/providers/teardown.rs");
     let expected: BTreeSet<_> = EXPECTED.into_iter().map(str::to_owned).collect();
@@ -3130,7 +3131,7 @@ fn validate_process_page_table_counter_inventory(sources: &[(String, String)]) -
         || !EXPECTED
             .iter()
             .all(|counter| inventory.contains(&format!("&{counter},")))
-        || !provider.contains("pub const COUNTER_COUNT: usize = 70;")
+        || !provider.contains("pub const COUNTER_COUNT: usize = 71;")
     {
         return Err(());
     }
@@ -3152,6 +3153,7 @@ fn validate_process_page_table_counter_inventory(sources: &[(String, String)]) -
         return Err(());
     }
     let retire = function_body(process_memory, "retire_bounded");
+    let map_page = function_body(process_memory, "map_page");
     let task = source(sources, "kernel/src/task/process_task.rs");
     let cleanup_bodies = module_function_bodies(process_memory)
         .remove("cleanup_for_exec")
@@ -3166,6 +3168,7 @@ fn validate_process_page_table_counter_inventory(sources: &[(String, String)]) -
         && retire.contains("record_pt_frame_lost")
         && retire.contains("record_pt_root_retired")
         && task.contains("PT_RETIRE_BUDGET_REQUEUED")
+        && map_page.contains("PT_ROOT_SLOT_REFUSED")
         && cleanup_bodies.len() == 2
         && cleanup_bodies
             .iter()
@@ -3174,6 +3177,61 @@ fn validate_process_page_table_counter_inventory(sources: &[(String, String)]) -
             == 1)
     .then_some(())
     .ok_or(())
+}
+
+fn validate_root_slot_custody(sources: &[(String, String)]) -> Result<(), ()> {
+    let process_memory = source(sources, "kernel/src/memory/process_memory.rs");
+    if !process_memory.contains("enum RootSlotCustody")
+        || !process_memory.contains("struct RootSlotOwnership")
+        || !process_memory.contains("owned_root_slots: RootSlotOwnership,")
+    {
+        return Err(());
+    }
+    let custody = function_body(process_memory, "root_slot_custody");
+    if !custody.contains("self.root_slot_populated(page_addr)")
+        || !custody.contains("self.owned_root_slots.contains(slot)")
+        || !custody.contains("RootSlotCustody::Vacant")
+        || !custody.contains("RootSlotCustody::Owned")
+        || !custody.contains("RootSlotCustody::Inherited")
+    {
+        return Err(());
+    }
+    let map = function_body(process_memory, "map_page");
+    let refusal = map
+        .find("root_custody == RootSlotCustody::Inherited")
+        .ok_or(())?;
+    let counter = map.find("PT_ROOT_SLOT_REFUSED").ok_or(())?;
+    let refused = map
+        .find("return Err(\"Cannot map into an inherited root page-table slot\");")
+        .ok_or(())?;
+    let reserve = map.find(".try_reserve(1)").ok_or(())?;
+    let publish = map.find("mapper.map_to_with_table_flags(").ok_or(())?;
+    let claim = map.find("self.owned_root_slots.insert(").ok_or(())?;
+    if !(refusal < counter
+        && counter < refused
+        && refused < reserve
+        && reserve < publish
+        && publish < claim)
+    {
+        return Err(());
+    }
+    let flags = function_body(process_memory, "update_page_flags");
+    let flags_refusal = flags.find("RootSlotCustody::Inherited").ok_or(())?;
+    if !flags.contains("PT_ROOT_SLOT_REFUSED") || flags_refusal > flags.find(".unmap(").ok_or(())? {
+        return Err(());
+    }
+    let mask = code_mask(process_memory);
+    if code_offsets(process_memory, &mask, "owned_root_slots.insert(").len() != 2 {
+        return Err(());
+    }
+    let cost = function_body(process_memory, "gate_sentinel_cost");
+    let sentinels = function_body(process_memory, "gate_sentinels");
+    if !cost.contains("RootSlotCustody::Inherited")
+        || !sentinels.contains("(sentinels.len() == count).then_some(sentinels)")
+    {
+        return Err(());
+    }
+    Ok(())
 }
 
 fn validate_process_page_table_exit_paths_are_minimal(
@@ -3557,7 +3615,7 @@ fn validate_x86_epoch_stamp_is_minimal(sources: &[(String, String)]) -> Result<(
 fn validate_pr1c_retirement_oracles(sources: &[(String, String)]) -> Result<(), ()> {
     let provider = source(sources, "kernel/src/tracing/providers/teardown.rs");
     let gate = function_body(provider, "fork_exit_defer_reclaim_pairing_test");
-    let expected = function_body(provider, "expected_retire_table_frames");
+    let sentinels = function_body(provider, "map_retire_sentinels");
     for required in [
         "map_retire_sentinels(child_page_table.as_mut())",
         "let allocator_used_before = frame_allocator_used_frames();",
@@ -3574,7 +3632,7 @@ fn validate_pr1c_retirement_oracles(sources: &[(String, String)]) -> Result<(), 
         "saturating_sub(no_arch_before)",
         "[PT_RETIRE_ORACLE:aarch64:cycles=64:",
         "[PT_LEAF_ORACLE:aarch64:cycles=64:",
-        "let expected_leaves = (RETIRE_SENTINEL_VAS.len() * pairing_child_pids.len()) as u64;",
+        "let expected_leaves = (RETIRE_SENTINEL_SUBTREES * pairing_child_pids.len()) as u64;",
         "leaf_mappings_recorded_delta != expected_leaves",
         "leaf_mappings_released_delta != expected_leaves",
         "leaf_frames_returned_delta != expected_leaves",
@@ -3585,16 +3643,15 @@ fn validate_pr1c_retirement_oracles(sources: &[(String, String)]) -> Result<(), 
         "|| no_arch_delta != 0",
         "[TEST:process:x86_retire_cohort:PASS]",
         "[PT_RETIRE_COHORT:x86:children={}:retired={}:returned={}:recorded={}:lost={}:no_arch={}:undecided={}:mid_retire={}:balance={}]",
+        "pairing sentinel hierarchy cost changed between children",
     ] {
         if !gate.contains(required) {
             return Err(());
         }
     }
-    if !expected.contains("let mut expected = 0u64;")
-        || !expected.contains("let mut expected = 1u64;")
-        || !expected.contains("address >> 39")
-        || !expected.contains("expected += 3;")
-        || !expected.contains("expected += if top_level_index == 0 { 2 } else { 3 };")
+    if !sentinels.contains(".gate_sentinels(RETIRE_SENTINEL_SUBTREES)")
+        || !sentinels.contains("page_table.gate_page_is_unmapped(page)")
+        || !sentinels.contains("expected += sentinel.table_frames as u64;")
         || gate.contains("let expected_tables = 9")
     {
         return Err(());
@@ -3606,7 +3663,6 @@ fn validate_process_page_table_runtime_oracle(sources: &[(String, String)]) -> R
     let process_memory = source(sources, "kernel/src/memory/process_memory.rs");
     let gate = function_body(process_memory, "page_table_custody_disposition_gate_test");
     let normalized_gate = normalized_code(gate);
-    let expected = function_body(process_memory, "expected_x86_custody_table_frames");
     if !gate.contains("terminated.abandon(AbandonReason::AlreadyTerminated);")
         || !gate.contains("drop(undecided);")
         || !gate.contains("after_abandon[3] != start[3] + 1")
@@ -3614,10 +3670,16 @@ fn validate_process_page_table_runtime_oracle(sources: &[(String, String)]) -> R
         || !gate.contains("retire_with_free_list_contended(")
         || !gate.contains("PT_RETIRE_FRAMES_LOST.aggregate() != lost_before + 1")
         || !gate.contains("republish_frame_for_gate(root)")
-        || !gate.contains("for address in X86_CUSTODY_SENTINEL_VAS")
+        || !gate.contains("for sentinel in sentinels")
         || !gate.contains("retiring.map_page(page, frame, flags)")
         || !gate.contains("let recorded = retiring.recorded_table_frames_for_gate();")
-        || !gate.contains("if recorded != expected_x86_custody_table_frames() {")
+        || !gate.contains("if recorded != expected_recorded {")
+        || !gate.contains("retiring.gate_sentinels(X86_CUSTODY_SENTINEL_COUNT)")
+        || !gate.contains("retiring.gate_page_is_unmapped(page)")
+        || !gate.contains("O3: sentinel address was already mapped")
+        || !gate.contains("retiring.gate_inherited_slot_address()")
+        || !gate.contains("O4: inherited root slot was not refused fail-closed")
+        || !gate.contains("PT_ROOT_SLOT_REFUSED.aggregate() != refused_before + 1")
         || !gate.contains("retiring.release_mapped_leaves();")
         || !gate.contains("retiring.retire_bounded(u64::MAX - 3, &mut budget)")
         || !normalized_gate.contains("if after_retire[2] != after_drop[2] ||")
@@ -3629,8 +3691,6 @@ fn validate_process_page_table_runtime_oracle(sources: &[(String, String)]) -> R
         || gate.contains("after_no_arch[2] != after_drop[2] + 1")
         || !gate.contains("PT_TABLE_FRAMES_RETURNED.aggregate()")
         || gate.matches("free_list_len_for_gate()").count() != 9
-        || !expected.contains("address >> 39")
-        || !expected.contains("if pml4_index == 0 { 2 } else { 3 }")
         || gate.contains("&& false")
         || gate.contains("|| true")
     {
@@ -3721,6 +3781,11 @@ fn process_page_table_custody_ratchets_are_exact() {
         &mut failures,
         "PR-2 virtual-page leaf custody or fail-closed release changed",
         validate_leaf_custody(&sources),
+    );
+    record_unit(
+        &mut failures,
+        "PR-3 root-slot custody guard changed",
+        validate_root_slot_custody(&sources),
     );
     record_unit(
         &mut failures,
@@ -3826,8 +3891,8 @@ fn frame_ledger_return_and_initialization_ratchets_are_exact() {
     }
     check(
         &mut failures,
-        "COUNTER_COUNT is no longer 70",
-        provider.contains("pub const COUNTER_COUNT: usize = 70;"),
+        "COUNTER_COUNT is no longer 71",
+        provider.contains("pub const COUNTER_COUNT: usize = 71;"),
     );
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
@@ -4315,7 +4380,7 @@ fn all_phase_zero_counters_have_registered_readers_and_honest_runtime_gates() {
         .filter_map(|rest| rest.strip_suffix(','))
         .map(str::to_owned)
         .collect();
-    assert_eq!(declarations.len(), 70);
+    assert_eq!(declarations.len(), 71);
     assert_eq!(
         readers, declarations,
         "every counter must have an inventory reader"
@@ -5232,6 +5297,31 @@ fn deliberately_broken_variants_fail_the_ratchet() {
         conditional_pt_counter,
     );
     assert!(validate_process_page_table_counter_inventory(&conditional_pt_counter).is_err());
+
+    // PR-3: inherited root slots must remain fail-closed and classified from
+    // allocation-derived ownership rather than population alone.
+    let missing_root_refusal = process_memory.replacen(
+        "return Err(\"Cannot map into an inherited root page-table slot\");",
+        "",
+        1,
+    );
+    let missing_root_refusal = with_replaced_source(
+        &sources,
+        "kernel/src/memory/process_memory.rs",
+        missing_root_refusal,
+    );
+    assert!(validate_root_slot_custody(&missing_root_refusal).is_err());
+    let unclassified_root = process_memory.replacen(
+        "self.owned_root_slots.contains(slot)",
+        "true",
+        1,
+    );
+    let unclassified_root = with_replaced_source(
+        &sources,
+        "kernel/src/memory/process_memory.rs",
+        unclassified_root,
+    );
+    assert!(validate_root_slot_custody(&unclassified_root).is_err());
 
     // R7: neither explicit disposition path may gain formatting or heap work.
     let logged_abandon = process_memory.replacen(

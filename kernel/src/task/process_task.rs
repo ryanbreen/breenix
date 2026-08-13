@@ -1289,22 +1289,16 @@ fn boot_oversized_page_table(
     let flags =
         PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::USER_ACCESSIBLE;
     let subtree_count = RETIRE_FRAME_BUDGET as usize / 3 + 1;
-    #[cfg(target_arch = "aarch64")]
-    let mut expected_recorded = 0usize;
-    #[cfg(target_arch = "x86_64")]
-    let mut expected_recorded = 1usize;
-    for top_level_index in 0..subtree_count {
-        let address = ((top_level_index as u64) << 39) | 0x0040_0000;
-        #[cfg(target_arch = "aarch64")]
-        {
-            expected_recorded += 3;
+    let sentinels = page_table
+        .gate_sentinels(subtree_count)
+        .ok_or("oversized fixture found too few unshared root slots")?;
+    let mut expected_recorded = page_table.recorded_table_frames_for_gate();
+    for sentinel in sentinels {
+        expected_recorded += sentinel.table_frames;
+        let page = Page::<Size4KiB>::containing_address(VirtAddr::new(sentinel.address));
+        if !page_table.gate_page_is_unmapped(page) {
+            return Err("oversized sentinel address was already mapped");
         }
-        #[cfg(target_arch = "x86_64")]
-        {
-            let pml4_index = (address >> 39) & 0x1ff;
-            expected_recorded += if pml4_index == 0 { 2 } else { 3 };
-        }
-        let page = Page::<Size4KiB>::containing_address(VirtAddr::new(address));
         let frame = allocate_frame().ok_or("oversized leaf allocation failed")?;
         if page_table.map_page(page, frame, flags).is_err() {
             deallocate_frame(frame);
