@@ -1126,8 +1126,14 @@ fn expected_retire_table_frames() -> u64 {
 fn map_retire_sentinels(
     page_table: &mut crate::memory::process_memory::ProcessPageTable,
 ) -> Result<(), &'static str> {
+    #[cfg(not(target_arch = "x86_64"))]
     use crate::memory::arch_stub::{Page, PageTableFlags, Size4KiB, VirtAddr};
     use crate::memory::frame_allocator::{allocate_frame, deallocate_frame};
+    #[cfg(target_arch = "x86_64")]
+    use x86_64::{
+        structures::paging::{Page, PageTableFlags, Size4KiB},
+        VirtAddr,
+    };
 
     let flags =
         PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::USER_ACCESSIBLE;
@@ -1174,7 +1180,11 @@ fn retirement_oracle_clock_delta(milliseconds: u64) -> u64 {
 
 #[cfg(feature = "boot_tests")]
 pub fn fork_exit_defer_reclaim_pairing_test() -> crate::test_framework::registry::TestResult {
+    #[cfg(not(target_arch = "x86_64"))]
+    use crate::memory::arch_stub::VirtAddr;
     use crate::test_framework::registry::TestResult;
+    #[cfg(target_arch = "x86_64")]
+    use x86_64::VirtAddr;
 
     // Claim single-threaded ownership of the deferred-reclaim queues for the
     // whole measurement window. The queues are quiescent here (before any fork),
@@ -1211,10 +1221,10 @@ pub fn fork_exit_defer_reclaim_pairing_test() -> crate::test_framework::registry
         manager.allocate_pid()
     };
     fn test_user_entry() {}
-    let entry = crate::memory::arch_stub::VirtAddr::new(0x0040_0000);
-    let stack_top = crate::memory::arch_stub::VirtAddr::new(0x0080_0000);
-    let stack_bottom = crate::memory::arch_stub::VirtAddr::new(0x007f_0000);
-    let tls = crate::memory::arch_stub::VirtAddr::new(0x0001_0000);
+    let entry = VirtAddr::new(0x0040_0000);
+    let stack_top = VirtAddr::new(0x0080_0000);
+    let stack_bottom = VirtAddr::new(0x007f_0000);
+    let tls = VirtAddr::new(0x0001_0000);
     #[cfg(target_arch = "aarch64")]
     let parent_privilege = crate::task::thread::ThreadPrivilege::User;
     #[cfg(target_arch = "x86_64")]
@@ -1457,6 +1467,7 @@ pub fn fork_exit_defer_reclaim_pairing_test() -> crate::test_framework::registry
     let leaf_frames_returned_delta = LEAF_FRAMES_RETURNED
         .aggregate()
         .saturating_sub(leaf_frames_returned_before);
+    #[cfg(target_arch = "aarch64")]
     let live_leaf_refused_delta = FRAME_RETURN_REFUSED_LIVE_LEAF
         .aggregate()
         .saturating_sub(refusal_counters_before[5]);
@@ -1654,7 +1665,9 @@ pub fn fork_exit_defer_reclaim_pairing_test() -> crate::test_framework::registry
         crate::task::process_task::enqueue_process_reclaim(parent_reclaim);
         let cleanup_deadline = retirement_oracle_clock_now()
             .saturating_add(retirement_oracle_clock_delta(5_000));
-        while crate::task::process_task::boot_reclaim_locations(parent_pid) != (false, false) {
+        while crate::task::process_task::boot_reclaim_locations(parent_pid.as_u64())
+            != (false, false)
+        {
             crate::task::scheduler::nudge_retirement_grace_for_test();
             let boundary_deadline = retirement_oracle_clock_now()
                 .saturating_add(retirement_oracle_clock_delta(1));
@@ -1666,7 +1679,9 @@ pub fn fork_exit_defer_reclaim_pairing_test() -> crate::test_framework::registry
                 break;
             }
         }
-        if crate::task::process_task::boot_reclaim_locations(parent_pid) != (false, false) {
+        if crate::task::process_task::boot_reclaim_locations(parent_pid.as_u64())
+            != (false, false)
+        {
             return TestResult::Fail("pairing parent deferred cleanup did not quiesce");
         }
     }

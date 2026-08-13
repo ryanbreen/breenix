@@ -3406,7 +3406,22 @@ fn validate_root_proof_architecture_legs(sources: &[(String, String)]) -> Result
     let bodies = module_function_bodies(process);
     let hardware = bodies.get("local_hardware_root").ok_or(())?;
     let shadow = bodies.get("shadow_root_is_live").ok_or(())?;
-    if hardware.len() != 2 || shadow.len() != 2 {
+    let clear_shadow = bodies.get("clear_shadow_root").ok_or(())?;
+    if hardware.len() != 2 || shadow.len() != 2 || clear_shadow.len() != 1 {
+        return Err(());
+    }
+    let clear_shadow = clear_shadow[0];
+    let defer = function_body(process, "defer_process_resources");
+    if clear_shadow
+        .matches("crate::per_cpu::get_saved_process_cr3()")
+        .count()
+        != 1
+        || clear_shadow
+            .matches("crate::per_cpu::set_saved_process_cr3(0)")
+            .count()
+            != 1
+        || defer.matches("clear_shadow_root(").count() != 1
+    {
         return Err(());
     }
     let arm_hardware = hardware
@@ -3521,18 +3536,18 @@ fn validate_x86_epoch_stamp_is_minimal(sources: &[(String, String)]) -> Result<(
     if stamps.len() != 1 {
         return Err(());
     }
-    let statements = block_statements(body).ok_or(())?;
-    if !normalized_code(statements)
-        .starts_with("crate::task::scheduler::note_scheduling_epoch(0);")
-    {
-        return Err(());
-    }
     let prefix = &body[..stamps[0]];
     let prefix_mask = code_mask(prefix);
     if ["log::", "serial_println!", "format!", "Vec::", "alloc::"]
         .iter()
         .any(|forbidden| !code_offsets(prefix, &prefix_mask, forbidden).is_empty())
         || !call_offsets(prefix, &prefix_mask, "lock").is_empty()
+    {
+        return Err(());
+    }
+    let statements = block_statements(body).ok_or(())?;
+    if !normalized_code(statements)
+        .starts_with("crate::task::scheduler::note_scheduling_epoch(0);")
     {
         return Err(());
     }
@@ -5149,6 +5164,18 @@ fn deliberately_broken_variants_fail_the_ratchet() {
     );
     assert!(validate_x86_epoch_stamp_is_minimal(&locked_before_stamp).is_err());
 
+    let statement_before_stamp = x86_context.replacen(
+        "    crate::task::scheduler::note_scheduling_epoch(0);",
+        "    core::hint::spin_loop();\n    crate::task::scheduler::note_scheduling_epoch(0);",
+        1,
+    );
+    let statement_before_stamp = with_replaced_source(
+        &sources,
+        "kernel/src/interrupts/context_switch.rs",
+        statement_before_stamp,
+    );
+    assert!(validate_x86_epoch_stamp_is_minimal(&statement_before_stamp).is_err());
+
     let missing_saved_shadow = process_task.replacen(
         "crate::per_cpu::get_saved_process_cr3()",
         "crate::per_cpu::get_next_cr3()",
@@ -5160,6 +5187,18 @@ fn deliberately_broken_variants_fail_the_ratchet() {
         missing_saved_shadow,
     );
     assert!(validate_root_proof_architecture_legs(&missing_saved_shadow).is_err());
+
+    let missing_shadow_clear = process_task.replacen(
+        "        clear_shadow_root(page_table.level_4_frame().start_address().as_u64());",
+        "        core::hint::spin_loop();",
+        1,
+    );
+    let missing_shadow_clear = with_replaced_source(
+        &sources,
+        "kernel/src/task/process_task.rs",
+        missing_shadow_clear,
+    );
+    assert!(validate_root_proof_architecture_legs(&missing_shadow_clear).is_err());
 
     let locked_root_proof = process_task.replacen(
         "        if !snapshot.fence_elapsed(&self.after_epoch)",

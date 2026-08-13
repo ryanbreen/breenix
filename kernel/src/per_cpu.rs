@@ -863,6 +863,21 @@ pub fn get_saved_process_cr3() -> u64 {
     hal_percpu::X86PerCpu::saved_process_cr3()
 }
 
+/// Set the process CR3 saved for a future return to userspace.
+///
+/// Writing 0 makes the return path skip its CR3 restore, which is what the
+/// retirement pipeline wants once a root has been deferred.
+#[inline]
+pub fn set_saved_process_cr3(cr3: u64) {
+    if !PER_CPU_INITIALIZED.load(Ordering::Acquire) {
+        return;
+    }
+
+    unsafe {
+        hal_percpu::X86PerCpu::set_saved_process_cr3(cr3);
+    }
+}
+
 /// Set the target CR3 for next IRETQ
 /// This communicates to timer_entry.asm and entry.asm (syscall return)
 /// which CR3 to switch to before returning to userspace.
