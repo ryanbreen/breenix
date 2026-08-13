@@ -3738,7 +3738,8 @@ fn validate_process_page_table_runtime_oracle(sources: &[(String, String)]) -> R
             == 2
         && harness.matches("x86_retire_cohort:PASS").count() == 2
         && harness.matches("PT_CUSTODY_COUNTERS:x86:").count() == 1
-        && harness.matches("PT_RETIRE_COHORT:x86:").count() == 1)
+        && harness.matches("PT_RETIRE_COHORT:x86:").count() == 1
+        && harness.contains("grep -h -c 'Refusing to map'"))
         .then_some(())
         .ok_or(())
 }

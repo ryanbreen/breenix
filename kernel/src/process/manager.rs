@@ -231,27 +231,14 @@ impl ProcessManager {
                 }
             }
 
-            // Also map GDT/IDT/TSS/per-CPU region: 0x100000f0000 - 0x100000f4000
-            let control_start = 0x100000f0000u64;
-            let control_end = 0x100000f4000u64;
-
-            for addr in (control_start..control_end).step_by(0x1000) {
-                let page = Page::<Size4KiB>::containing_address(VirtAddr::new(addr));
-                let frame = PhysFrame::<Size4KiB>::containing_address(x86_64::PhysAddr::new(addr));
-
-                let flags =
-                    PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::GLOBAL;
-
-                // Ignore if already mapped
-                if page_table.translate_page(VirtAddr::new(addr)).is_some() {
-                    continue;
-                }
-
-                if let Err(e) = page_table.map_page(page, frame, flags) {
-                    log::error!("Failed to map control structure at {:#x}: {}", addr, e);
-                    // Non-fatal, continue
-                }
-            }
+            // The kernel's GDT/IDT/TSS/per-CPU structures need no per-process
+            // mapping: they live in the master kernel PML4[2] subtree that
+            // ProcessPageTable::new() inherits verbatim, and the CPU reads them
+            // in Ring 0 with supervisor privilege. The remap this replaced used
+            // stale addresses, mapped them onto a nonexistent physical frame,
+            // and - because PML4[2] is shared - would have written those PTEs
+            // into the kernel's own page tables while recording the table frames
+            // it allocated there as this process's retirable custody.
 
             log::info!("✓ Kernel low-half mappings restored");
             crate::serial_println!("manager.create_process: Kernel mappings restored");
