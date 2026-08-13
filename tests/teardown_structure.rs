@@ -1458,6 +1458,28 @@ fn method_call_offsets(source: &str, mask: &[bool], name: &str) -> Vec<usize> {
         .collect()
 }
 
+/// Assignment sites for one field identifier, excluding comparisons. This is
+/// spelling-independent with respect to the receiver (`thread.field`,
+/// `candidate.field`, and so on) and comment/string aware through `mask`.
+fn assignment_offsets(source: &str, mask: &[bool], identifier: &str) -> Vec<usize> {
+    let bytes = source.as_bytes();
+    identifier_offsets(source, mask, identifier)
+        .into_iter()
+        .filter(|offset| {
+            let Some(operator) = next_code(source, mask, offset + identifier.len()) else {
+                return false;
+            };
+            if bytes[operator] == b'=' {
+                return next_code(source, mask, operator + 1)
+                    .is_none_or(|next| bytes[next] != b'=');
+            }
+            matches!(bytes[operator], b'+' | b'-' | b'*' | b'/' | b'%' | b'&' | b'|' | b'^')
+                && next_code(source, mask, operator + 1)
+                    .is_some_and(|equals| bytes[equals] == b'=')
+        })
+        .collect()
+}
+
 /// `(fn keyword offset, body brace offset)` for the definition whose name spans
 /// `offset..end`, or `None` when that identifier is not a definition name or the
 /// definition has no body. The body brace is found at paren/bracket depth zero,
@@ -1865,6 +1887,8 @@ const RECLAIM_ENQUEUE_CALLS: &[(&str, &str, usize)] = &[
     ("kernel/src/process/mod.rs", "fn exit_process_and_retire", 1),
     ("kernel/src/process/mod.rs", "impl Drop for RetirementReceipt::fn drop", 1),
     ("kernel/src/task/process_task.rs", "impl ProcessScheduler::fn handle_thread_exit", 1),
+    ("kernel/src/task/process_task.rs", "#[cfg(feature=boot_tests)] fn reclaim_progress_gate_test", 2),
+    ("kernel/src/tracing/providers/teardown.rs", "#[cfg(feature=boot_tests)] fn fork_exit_defer_reclaim_pairing_test", 1),
 ];
 #[rustfmt::skip]
 const EXIT_PROCESS_AND_RETIRE_CALLS: &[(&str, &str, usize)] = &[
@@ -1880,12 +1904,12 @@ const EXIT_PROCESS_LOCKED_CALLS: &[(&str, &str, usize)] = &[
 ];
 #[rustfmt::skip]
 const EXIT_PROCESS_BY_PID_CALLS: &[(&str, &str, usize)] = &[
-    ("kernel/src/process/mod.rs", "#[cfg(all(feature=boot_tests,target_arch=aarch64))] fn exit_process_for_teardown_test", 1),
+    ("kernel/src/process/mod.rs", "#[cfg(feature=boot_tests)] fn exit_process_for_teardown_test", 1),
     ("kernel/src/process/mod.rs", "fn exit_current", 1),
 ];
 #[rustfmt::skip]
 const EXIT_PROCESS_FOR_TEARDOWN_TEST_CALLS: &[(&str, &str, usize)] = &[
-    ("kernel/src/tracing/providers/teardown.rs", "#[cfg(all(feature=boot_tests,target_arch=aarch64))] fn fork_exit_defer_reclaim_pairing_test", 1),
+    ("kernel/src/tracing/providers/teardown.rs", "#[cfg(feature=boot_tests)] fn fork_exit_defer_reclaim_pairing_test", 1),
 ];
 #[rustfmt::skip]
 const BLOCKING_PRIMITIVES: &[(&str, &str, usize)] = &[
@@ -1907,6 +1931,7 @@ const RAW_SCHEDULER_LOCK_SITES: &[(&str, &str, usize)] = &[
 #[rustfmt::skip]
 const PROCESS_MEMORY_FRAME_RETURNS: &[(&str, &str, usize)] = &[
     ("kernel/src/memory/process_memory.rs", "impl ProcessPageTable::#[cfg(target_arch=x86_64)] fn cleanup_for_exec", 7),
+    ("kernel/src/memory/process_memory.rs", "#[cfg(feature=boot_tests)] fn page_table_custody_disposition_gate_test", 1),
 ];
 #[rustfmt::skip]
 const RETURN_LEASE_DEFINITION: &[(&str, &str, usize)] = &[
@@ -1916,7 +1941,7 @@ const RETURN_LEASE_DEFINITION: &[(&str, &str, usize)] = &[
 const RETURN_LEASE_PRODUCTION_CALLS: &[(&str, &str, usize)] = &[
     ("kernel/src/memory/frame_allocator.rs", "fn deallocate_frame", 1),
     ("kernel/src/memory/frame_allocator.rs", "fn deallocate_leaf_frame", 1),
-    ("kernel/src/memory/process_memory.rs", "impl ProcessPageTable::#[cfg(target_arch=aarch64)] fn retire_bounded", 2),
+    ("kernel/src/memory/process_memory.rs", "impl ProcessPageTable::fn retire_bounded", 2),
 ];
 #[rustfmt::skip]
 const RETURN_LEASE_BOOT_FIXTURE_CALLS: &[(&str, &str, usize)] = &[
@@ -1933,21 +1958,23 @@ const TABLE_RECORDER_SITES: &[(&str, &str, usize)] = &[
 #[rustfmt::skip]
 const PROCESS_PAGE_TABLE_ABANDON_SITES: &[(&str, &str, usize)] = &[
     ("kernel/src/process/manager.rs", "impl ProcessManager::fn exit_process_locked => AbandonReason::AlreadyTerminated", 1),
-    ("kernel/src/task/process_task.rs", "fn release_process_resources => AbandonReason::NoArchPipeline", 1),
-    ("kernel/src/task/process_task.rs", "fn release_process_resources => AbandonReason::NoProofPipeline", 1),
+    ("kernel/src/task/process_task.rs", "fn abandon_unqueued_reclaim => AbandonReason::NoArchPipeline", 1),
+    ("kernel/src/task/process_task.rs", "fn abandon_unqueued_reclaim => AbandonReason::NoProofPipeline", 1),
+    ("kernel/src/task/process_task.rs", "#[cfg(any(target_arch=aarch64,feature=boot_tests))] fn release_process_resources => AbandonReason::NoProofPipeline", 1),
     ("kernel/src/task/process_task.rs", "impl ProcessScheduler::fn handle_thread_exit => AbandonReason::AlreadyTerminated", 1),
 ];
 #[rustfmt::skip]
 const PROCESS_PAGE_TABLE_RETIRE_SITES: &[(&str, &str, usize)] = &[
-    ("kernel/src/memory/frame_allocator_tests.rs", "#[cfg(target_arch=aarch64)] fn retire_with_free_list_contended", 1),
+    ("kernel/src/memory/frame_allocator_tests.rs", "fn retire_with_free_list_contended", 1),
     ("kernel/src/memory/process_memory.rs", "#[cfg(target_arch=aarch64)] impl Drop for UnpublishedPageTable::fn drop", 1),
+    ("kernel/src/memory/process_memory.rs", "#[cfg(feature=boot_tests)] fn page_table_custody_disposition_gate_test", 1),
     ("kernel/src/memory/process_memory.rs", "impl ProcessPageTable::#[cfg(target_arch=aarch64)] fn cleanup_for_exec", 1),
-    ("kernel/src/task/process_task.rs", "#[cfg(all(feature=boot_tests,target_arch=aarch64))] fn reclaim_progress_gate_test", 3),
-    ("kernel/src/task/process_task.rs", "#[cfg(target_arch=aarch64)] impl PendingProcessReclaim::fn reclaim_bounded", 1),
+    ("kernel/src/task/process_task.rs", "#[cfg(feature=boot_tests)] fn reclaim_progress_gate_test", 4),
+    ("kernel/src/task/process_task.rs", "impl PendingProcessReclaim::fn reclaim_bounded", 1),
 ];
 #[rustfmt::skip]
 const PENDING_RECLAIM_BOUNDED_SITES: &[(&str, &str, usize)] = &[
-    ("kernel/src/task/process_task.rs", "#[cfg(target_arch=aarch64)] fn reclaim_deferred_process_resources_for_pass", 1),
+    ("kernel/src/task/process_task.rs", "fn reclaim_deferred_process_resources_for_pass", 1),
 ];
 #[rustfmt::skip]
 const FRAME_LEDGER_INIT_CALLS: &[(&str, &str, usize)] = &[
@@ -1967,9 +1994,17 @@ const PROCESS_PAGE_TABLE_CONSTRUCTORS: &[(&str, &str, usize)] = &[
     ("kernel/src/process/manager.rs", "impl ProcessManager::#[cfg(target_arch=x86_64)] fn exec_process_with_argv", 1),
     ("kernel/src/process/manager.rs", "impl ProcessManager::#[cfg(target_arch=x86_64)] fn fork_process_with_context", 1),
     ("kernel/src/syscall/handlers.rs", "#[cfg(target_arch=x86_64)] fn sys_fork_with_parent_context", 1),
-    ("kernel/src/task/process_task.rs", "#[cfg(all(feature=boot_tests,target_arch=aarch64))] fn boot_oversized_page_table", 1),
-    ("kernel/src/task/process_task.rs", "#[cfg(all(feature=boot_tests,target_arch=aarch64))] fn reclaim_progress_gate_test", 1),
-    ("kernel/src/tracing/providers/teardown.rs", "#[cfg(all(feature=boot_tests,target_arch=aarch64))] fn fork_exit_defer_reclaim_pairing_test", 3),
+    ("kernel/src/task/process_task.rs", "#[cfg(all(feature=boot_tests,target_arch=x86_64))] fn boot_page_table_reclaim", 1),
+    ("kernel/src/task/process_task.rs", "#[cfg(feature=boot_tests)] fn boot_oversized_page_table", 1),
+    ("kernel/src/task/process_task.rs", "#[cfg(feature=boot_tests)] fn reclaim_progress_gate_test", 3),
+    ("kernel/src/tracing/providers/teardown.rs", "#[cfg(feature=boot_tests)] fn fork_exit_defer_reclaim_pairing_test", 3),
+];
+#[rustfmt::skip]
+const DEFERRED_RECLAIM_DRAIN_SITES: &[(&str, &str, usize)] = &[
+    ("kernel/src/arch_impl/aarch64/context_switch.rs", "fn schedule_from_kernel", 1),
+    ("kernel/src/arch_impl/aarch64/syscall_entry.rs", "fn sys_fork_aarch64", 1),
+    ("kernel/src/interrupts/context_switch.rs", "fn idle_loop", 1),
+    ("kernel/src/process/mod.rs", "fn exit_process_and_retire", 1),
 ];
 #[rustfmt::skip]
 const THREAD_GROUP_WRITES: &[(&str, &str, usize)] = &[
@@ -2699,6 +2734,17 @@ fn validate_no_vacuous_test_conditions(sources: &[(String, String)]) -> Result<(
 /// executed bare (so a false verdict ends the run), and no early or zero exit
 /// able to pre-empt it (review-sweep-r4 finding 4).
 fn validate_x86_frame_custody_harness(script: &str) -> Result<(), ()> {
+    const FRAME_VECTOR: &str = "FRAME_CUSTODY_PATTERN='^\\[FRAME_CUSTODY_COUNTERS:x86:double=1:stale=1:never=1:untracked=1:duplicate=3:contended=[1-9][0-9]*\\]$'";
+    const PT_CUSTODY_VECTOR: &str = "PT_CUSTODY_LITERAL='[PT_CUSTODY_COUNTERS:x86:recorded=11:no_proof=0:no_arch=0:terminated=1:undecided=1:exec_unreturned=0:retired=1:returned=10:lost=0:requeued=0]'";
+    const PT_COHORT_VECTOR: &str = "PT_COHORT_LITERAL='[PT_RETIRE_COHORT:x86:children=64:retired=64:returned=640:recorded=576:lost=0:no_arch=0:undecided=0:mid_retire=0:balance=0]'";
+    let exact_marker_count = |marker: &str| {
+        let needle = format!("grep -h -c '\\[TEST:process:{marker}:PASS\\]'");
+        script.find(&needle).is_some_and(|start| {
+            let tail = &script[start..];
+            let end = tail.find("\n    test ").unwrap_or(tail.len());
+            tail[..end].contains(")\" -eq 1")
+        })
+    };
     let mut bare_verdict = false;
     for line in script.lines() {
         let statement = line.trim();
@@ -2725,12 +2771,27 @@ fn validate_x86_frame_custody_harness(script: &str) -> Result<(), ()> {
         && verdict_true < verdict_spent
         && verdict_spent < counter_check
         && !script.contains("grep -q '\\[BOOT_TESTS:PASS\\]'")
-        && script.contains("FRAME_CUSTODY_COUNTERS:x86:double=1:stale=1:never=1:untracked=1:duplicate=3:contended=[1-9][0-9]*")
-        && script.contains("page_table_custody_disposition_gate:PASS")
-        && script.contains("recorded=3:no_proof=0:no_arch=1:terminated=1:undecided=1:exec_unreturned=0")
+        && !script.contains("grep -q 'KERNEL_POST_TESTS_COMPLETE'")
+        && script.contains("advance_stage_marker_only")
+        && script.contains("[TESTS_COMPLETE:0/0]")
+        && script.contains(FRAME_VECTOR)
+        && script.contains(PT_CUSTODY_VECTOR)
+        && script.contains(PT_COHORT_VECTOR)
+        && script.matches("frame_custody_refusal_gate:PASS").count() == 2
+        && script.matches("page_table_custody_disposition_gate:PASS").count() == 2
+        && script.matches("x86_retire_cohort:PASS").count() == 2
+        && exact_marker_count("frame_custody_refusal_gate")
+        && exact_marker_count("page_table_custody_disposition_gate")
+        && exact_marker_count("x86_retire_cohort")
+        && script.contains("grep -qE \"$FRAME_CUSTODY_PATTERN\"")
+        && script.contains("grep -qF -x \"$PT_CUSTODY_LITERAL\"")
+        && script.contains("grep -qF -x \"$PT_COHORT_LITERAL\"")
+        && script.contains("grep -h -E -c \"$FRAME_CUSTODY_PATTERN\"")
+        && script.contains("grep -h -F -x -c \"$PT_CUSTODY_LITERAL\"")
+        && script.contains("grep -h -F -x -c \"$PT_COHORT_LITERAL\"")
         && script.contains("-eq 1")
         && script.contains("x86 frame-custody gate run")
-        && script.contains("BOOT_TESTS:FAIL|KERNEL PANIC|panic!"))
+        && script.matches("BOOT_TESTS:FAIL|KERNEL PANIC|panic!").count() == 2)
     .then_some(())
     .ok_or(())
 }
@@ -2888,7 +2949,7 @@ fn validate_process_page_table_dispositions(
         let bytes = source.as_bytes();
         let reason_prefix = "AbandonReason::";
         let reason_offsets = code_offsets(source, mask, reason_prefix);
-        method_call_offsets(source, mask, "abandon")
+        let mut sites: Vec<_> = method_call_offsets(source, mask, "abandon")
             .into_iter()
             .flat_map(|call| {
                 let Some(open) = next_code(source, mask, call + "abandon".len()) else {
@@ -2916,7 +2977,26 @@ fn validate_process_page_table_dispositions(
                     })
                     .collect()
             })
-            .collect()
+            .collect();
+
+        // The reservation-failure fallback chooses its reason under cfg and
+        // passes the local through the one consuming call. Treat both cfg arms
+        // as disposition producers and pin the call through its semicolon.
+        if code_offsets(source, mask, "fn abandon_unqueued_reclaim").len() == 1 {
+            let body = function_body(source, "abandon_unqueued_reclaim");
+            let normalized = normalized_code(body);
+            if normalized.contains("page_table.abandon(reason);") {
+                let base = body.as_ptr() as usize - source.as_ptr() as usize;
+                let body_mask = code_mask(body);
+                for reason in ["NoProofPipeline", "NoArchPipeline"] {
+                    let needle = format!("AbandonReason::{reason}");
+                    sites.extend(code_offsets(body, &body_mask, &needle).into_iter().map(
+                        |offset| (base + offset, needle.clone()),
+                    ));
+                }
+            }
+        }
+        sites
     });
     abandon_sites.retain(|(path, _), _| adapted_paths.contains(&path.as_str()));
     record(
@@ -2962,7 +3042,7 @@ fn validate_process_page_table_retire_site(
     let mut failures = Vec::new();
     let process_task = source(sources, "kernel/src/task/process_task.rs");
     let retire_sites = census(sources, |source, mask| {
-        method_call_offsets(source, mask, "retire_bounded")
+        call_offsets(source, mask, "retire_bounded")
     });
     record(
         &mut failures,
@@ -2971,7 +3051,7 @@ fn validate_process_page_table_retire_site(
     );
 
     let mut reclaim_sites = census(sources, |source, mask| {
-        method_call_offsets(source, mask, "reclaim_bounded")
+        call_offsets(source, mask, "reclaim_bounded")
     });
     reclaim_sites.retain(|(path, _), _| path == "kernel/src/task/process_task.rs");
     record(
@@ -3285,6 +3365,180 @@ fn validate_leaf_custody(sources: &[(String, String)]) -> Result<(), ()> {
     Ok(())
 }
 
+/// Q2's asymmetric cached-root proof is intentional: x86 has no per-thread
+/// cached CR3 writer. Discover assignments structurally, then require every
+/// writer to belong to the one aarch64 cache helper span.
+fn validate_cached_ttbr0_single_writer(sources: &[(String, String)]) -> Result<(), ()> {
+    const ALLOWED_PATH: &str = "kernel/src/arch_impl/aarch64/context_switch.rs";
+    let mut writers = Vec::new();
+    for (path, module) in sources {
+        let mask = code_mask(module);
+        writers.extend(
+            assignment_offsets(module, &mask, "cached_ttbr0")
+                .into_iter()
+                .map(|offset| (path.as_str(), offset)),
+        );
+    }
+    if writers.len() != 1 || writers[0].0 != ALLOWED_PATH {
+        return Err(());
+    }
+    let module = source(sources, ALLOWED_PATH);
+    function_span(module, "cache_thread_ttbr0")
+        .contains(&writers[0].1)
+        .then_some(())
+        .ok_or(())
+}
+
+/// The shared proof must dispatch to both architectures' real hardware and
+/// shadow readers without taking the scheduler or process-manager lock in its
+/// lock-free phase.
+fn validate_root_proof_architecture_legs(sources: &[(String, String)]) -> Result<(), ()> {
+    let process = source(sources, "kernel/src/task/process_task.rs");
+    let shared = function_body(process, "lock_free_root_proof");
+    if !shared.contains("self.any_root_matches(local_hardware_root())")
+        || !shared.contains("shadow_root_is_live(self, self.after_epoch.online_mask)")
+        || shared.contains("with_scheduler")
+        || shared.contains("process::manager")
+    {
+        return Err(());
+    }
+
+    let bodies = module_function_bodies(process);
+    let hardware = bodies.get("local_hardware_root").ok_or(())?;
+    let shadow = bodies.get("shadow_root_is_live").ok_or(())?;
+    if hardware.len() != 2 || shadow.len() != 2 {
+        return Err(());
+    }
+    let arm_hardware = hardware
+        .iter()
+        .find(|body| body.contains("local_ttbr0_root()"))
+        .ok_or(())?;
+    let x86_hardware = hardware
+        .iter()
+        .find(|body| body.contains("x86_64::registers::control::Cr3::read()"))
+        .ok_or(())?;
+    let arm_shadow = shadow
+        .iter()
+        .find(|body| body.contains("is_ttbr0_root_live_in_mask("))
+        .ok_or(())?;
+    let x86_shadow = shadow
+        .iter()
+        .find(|body| body.contains("get_next_cr3()"))
+        .ok_or(())?;
+    if !x86_hardware.contains(".start_address()")
+        || !x86_hardware.contains(".as_u64()")
+        || !arm_shadow.contains("page_table.level_4_frame().start_address().as_u64()")
+        || !x86_shadow.contains("online_mask & 1 != 0")
+        || !x86_shadow.contains("get_saved_process_cr3()")
+    {
+        return Err(());
+    }
+
+    let spans = rendered_item_spans(&item_spans(process, &code_mask(process)));
+    for (body, needle, expected_path) in [
+        (*arm_hardware, "local_ttbr0_root()", "#[cfg(target_arch=aarch64)] fn local_hardware_root"),
+        (*x86_hardware, "x86_64::registers::control::Cr3::read()", "#[cfg(target_arch=x86_64)] fn local_hardware_root"),
+        (*arm_shadow, "is_ttbr0_root_live_in_mask(", "#[cfg(target_arch=aarch64)] fn shadow_root_is_live"),
+        (*x86_shadow, "get_saved_process_cr3()", "#[cfg(target_arch=x86_64)] fn shadow_root_is_live"),
+    ] {
+        let offsets = code_offsets(body, &code_mask(body), needle);
+        let base = body.as_ptr() as usize - process.as_ptr() as usize;
+        if offsets.len() != 1 || item_path_at(&spans, base + offsets[0]) != expected_path {
+            return Err(());
+        }
+    }
+    Ok(())
+}
+
+/// Exact production drain membership. Both x86 calls are normal-context sites;
+/// the interrupt-return function is explicitly excluded.
+fn validate_deferred_reclaim_drain_sites(
+    sources: &[(String, String)],
+) -> Result<(), Vec<String>> {
+    let mut failures = Vec::new();
+    record(
+        &mut failures,
+        "deferred-reclaim drain callers",
+        validate_census(
+            &census(sources, |module, mask| {
+                call_offsets(module, mask, "reclaim_deferred_process_resources")
+            }),
+            DEFERRED_RECLAIM_DRAIN_SITES,
+        ),
+    );
+
+    let context_switch = source(sources, "kernel/src/interrupts/context_switch.rs");
+    let interrupt_return = function_body(context_switch, "check_need_resched_and_switch");
+    let idle = function_body(context_switch, "idle_loop");
+    if !call_offsets(
+        interrupt_return,
+        &code_mask(interrupt_return),
+        "reclaim_deferred_process_resources",
+    )
+    .is_empty()
+        || call_offsets(
+            idle,
+            &code_mask(idle),
+            "reclaim_deferred_process_resources",
+        )
+        .len()
+            != 1
+    {
+        failures.push("x86 drain entered interrupt-return context or left idle_loop".to_owned());
+    }
+
+    let process_mod = source(sources, "kernel/src/process/mod.rs");
+    let exit = function_body(process_mod, "exit_process_and_retire");
+    let exit_mask = code_mask(exit);
+    let calls = call_offsets(exit, &exit_mask, "reclaim_deferred_process_resources");
+    if calls.len() != 1 {
+        failures.push("x86 post-exit drain site changed".to_owned());
+    } else {
+        let cfg = code_offsets(exit, &exit_mask, "#[cfg")
+            .into_iter()
+            .filter(|offset| *offset < calls[0])
+            .next_back();
+        let cfg_is_x86 = cfg.and_then(|offset| {
+            let open = exit[offset..].find('[').map(|relative| offset + relative)?;
+            let close = matching_bracket(exit.as_bytes(), &exit_mask, open)?;
+            Some(&exit[offset..=close])
+        });
+        if !cfg_is_x86.is_some_and(|attribute| {
+            attribute.contains("target_arch") && attribute.contains("\"x86_64\"")
+        }) {
+            failures.push("post-exit drain lost its x86-only statement cfg".to_owned());
+        }
+    }
+    failures.is_empty().then_some(()).ok_or(failures)
+}
+
+/// The interrupt-return hook may stamp one epoch and do nothing before it.
+fn validate_x86_epoch_stamp_is_minimal(sources: &[(String, String)]) -> Result<(), ()> {
+    let context_switch = source(sources, "kernel/src/interrupts/context_switch.rs");
+    let body = function_body(context_switch, "check_need_resched_and_switch");
+    let mask = code_mask(body);
+    let stamps = call_offsets(body, &mask, "note_scheduling_epoch");
+    if stamps.len() != 1 {
+        return Err(());
+    }
+    let statements = block_statements(body).ok_or(())?;
+    if !normalized_code(statements)
+        .starts_with("crate::task::scheduler::note_scheduling_epoch(0);")
+    {
+        return Err(());
+    }
+    let prefix = &body[..stamps[0]];
+    let prefix_mask = code_mask(prefix);
+    if ["log::", "serial_println!", "format!", "Vec::", "alloc::"]
+        .iter()
+        .any(|forbidden| !code_offsets(prefix, &prefix_mask, forbidden).is_empty())
+        || !call_offsets(prefix, &prefix_mask, "lock").is_empty()
+    {
+        return Err(());
+    }
+    Ok(())
+}
+
 fn validate_pr1c_retirement_oracles(sources: &[(String, String)]) -> Result<(), ()> {
     let provider = source(sources, "kernel/src/tracing/providers/teardown.rs");
     let gate = function_body(provider, "fork_exit_defer_reclaim_pairing_test");
@@ -3310,13 +3564,22 @@ fn validate_pr1c_retirement_oracles(sources: &[(String, String)]) -> Result<(), 
         "leaf_mappings_released_delta != expected_leaves",
         "leaf_frames_returned_delta != expected_leaves",
         "leaf leak oracle committed-effect accounting was not exact",
+        "let fork_result = manager.fork_process_with_page_table(",
+        "let cohort_recorded = expected_tables * pairing_child_pids.len() as u64;",
+        "let allocator_balance = allocator_used_after as i64 - allocator_used_before as i64;",
+        "|| no_arch_delta != 0",
+        "[TEST:process:x86_retire_cohort:PASS]",
+        "[PT_RETIRE_COHORT:x86:children={}:retired={}:returned={}:recorded={}:lost={}:no_arch={}:undecided={}:mid_retire={}:balance={}]",
     ] {
         if !gate.contains(required) {
             return Err(());
         }
     }
-    if !expected.contains("address >> 39")
-        || !expected.contains("distinct_l0_subtrees * 3")
+    if !expected.contains("let mut expected = 0u64;")
+        || !expected.contains("let mut expected = 1u64;")
+        || !expected.contains("address >> 39")
+        || !expected.contains("expected += 3;")
+        || !expected.contains("expected += if top_level_index == 0 { 2 } else { 3 };")
         || gate.contains("let expected_tables = 9")
     {
         return Err(());
@@ -3327,6 +3590,8 @@ fn validate_pr1c_retirement_oracles(sources: &[(String, String)]) -> Result<(), 
 fn validate_process_page_table_runtime_oracle(sources: &[(String, String)]) -> Result<(), ()> {
     let process_memory = source(sources, "kernel/src/memory/process_memory.rs");
     let gate = function_body(process_memory, "page_table_custody_disposition_gate_test");
+    let normalized_gate = normalized_code(gate);
+    let expected = function_body(process_memory, "expected_x86_custody_table_frames");
     if !gate.contains("terminated.abandon(AbandonReason::AlreadyTerminated);")
         || !gate.contains("drop(undecided);")
         || !gate.contains("after_abandon[3] != start[3] + 1")
@@ -3334,10 +3599,23 @@ fn validate_process_page_table_runtime_oracle(sources: &[(String, String)]) -> R
         || !gate.contains("retire_with_free_list_contended(")
         || !gate.contains("PT_RETIRE_FRAMES_LOST.aggregate() != lost_before + 1")
         || !gate.contains("republish_frame_for_gate(root)")
-        || !gate.contains("no_arch.abandon(AbandonReason::NoArchPipeline);")
-        || !gate.contains("after_no_arch[2] != after_drop[2] + 1")
+        || !gate.contains("for address in X86_CUSTODY_SENTINEL_VAS")
+        || !gate.contains("retiring.map_page(page, frame, flags)")
+        || !gate.contains("let recorded = retiring.recorded_table_frames_for_gate();")
+        || !gate.contains("if recorded != expected_x86_custody_table_frames() {")
+        || !gate.contains("retiring.release_mapped_leaves();")
+        || !gate.contains("retiring.retire_bounded(u64::MAX - 3, &mut budget)")
+        || !normalized_gate.contains("if after_retire[2] != after_drop[2] ||")
+        || !gate.contains("PT_ROOTS_RETIRED.aggregate() != retired_before + 1")
+        || !gate.contains("!= returned_before + recorded as u64 + 1")
+        || !gate.contains("PT_RETIRE_FRAMES_LOST.aggregate() != lost_before")
+        || !gate.contains("PT_RETIRE_BUDGET_REQUEUED.aggregate() != requeued_before")
+        || gate.contains("no_arch.abandon(AbandonReason::NoArchPipeline);")
+        || gate.contains("after_no_arch[2] != after_drop[2] + 1")
         || !gate.contains("PT_TABLE_FRAMES_RETURNED.aggregate()")
         || gate.matches("free_list_len_for_gate()").count() != 9
+        || !expected.contains("address >> 39")
+        || !expected.contains("if pml4_index == 0 { 2 } else { 3 }")
         || gate.contains("&& false")
         || gate.contains("|| true")
     {
@@ -3376,12 +3654,16 @@ fn validate_process_page_table_runtime_oracle(sources: &[(String, String)]) -> R
     }
     let harness = repo_text("docker/qemu/run-x86-boot-tests.sh");
     (harness.contains("page_table_custody_disposition_gate:PASS")
-        && harness
-            .contains("recorded=3:no_proof=0:no_arch=1:terminated=1:undecided=1:exec_unreturned=0")
+        && harness.contains("x86_retire_cohort:PASS")
+        && harness.contains("[PT_CUSTODY_COUNTERS:x86:recorded=11:no_proof=0:no_arch=0:terminated=1:undecided=1:exec_unreturned=0:retired=1:returned=10:lost=0:requeued=0]")
+        && harness.contains("[PT_RETIRE_COHORT:x86:children=64:retired=64:returned=640:recorded=576:lost=0:no_arch=0:undecided=0:mid_retire=0:balance=0]")
         && harness
             .matches("page_table_custody_disposition_gate:PASS")
             .count()
-            == 2)
+            == 2
+        && harness.matches("x86_retire_cohort:PASS").count() == 2
+        && harness.matches("PT_CUSTODY_COUNTERS:x86:").count() == 1
+        && harness.matches("PT_RETIRE_COHORT:x86:").count() == 1)
         .then_some(())
         .ok_or(())
 }
@@ -3870,10 +4152,26 @@ fn phase_one_retirement_fence_and_lock_domains_are_structural() {
 
     let lock_free = function_body(process, "lock_free_root_proof");
     assert!(lock_free.contains("fence_elapsed(&self.after_epoch)"));
-    assert!(lock_free.contains("local_ttbr0_root()"));
-    assert!(lock_free.contains("is_ttbr0_root_live_in_mask"));
-    assert!(!lock_free.contains("with_scheduler"));
-    assert!(!lock_free.contains("process::manager"));
+    record_unit(
+        &mut failures,
+        "shared root proof lost an architecture leg or gained a lock",
+        validate_root_proof_architecture_legs(&sources),
+    );
+    record_unit(
+        &mut failures,
+        "cached_ttbr0 gained a second or non-aarch64 writer",
+        validate_cached_ttbr0_single_writer(&sources),
+    );
+    record(
+        &mut failures,
+        "deferred-reclaim drain site set changed",
+        validate_deferred_reclaim_drain_sites(&sources),
+    );
+    record_unit(
+        &mut failures,
+        "x86 interrupt-return epoch stamp gained work",
+        validate_x86_epoch_stamp_is_minimal(&sources),
+    );
 
     let park = function_body(process, "park_reclaim");
     assert!(park.contains("let snapshot_at_park = scheduler::RetirementSnapshot::capture();"));
@@ -4751,6 +5049,23 @@ fn deliberately_broken_variants_fail_the_ratchet() {
         missing_exec_disposition,
     );
     assert!(validate_process_page_table_dispositions(&missing_exec_disposition).is_err());
+    let abandon_reason_moved_back = process_task
+        .replacen(
+            "page_table.abandon(AbandonReason::NoProofPipeline);",
+            "page_table.abandon({ AbandonReason::NoArchPipeline });",
+            1,
+        )
+        .replacen(
+            "let reason = AbandonReason::NoArchPipeline;",
+            "let reason = AbandonReason::NoProofPipeline;",
+            1,
+        );
+    let abandon_reason_moved_back = with_replaced_source(
+        &sources,
+        "kernel/src/task/process_task.rs",
+        abandon_reason_moved_back,
+    );
+    assert!(validate_process_page_table_dispositions(&abandon_reason_moved_back).is_err());
 
     // R3: a second retirement call, even with a different receiver spelling,
     // is outside the one proof-gated site and must fail exact site membership.
@@ -4758,7 +5073,7 @@ fn deliberately_broken_variants_fail_the_ratchet() {
         &sources,
         "kernel/src/task/process_task.rs",
         format!(
-            "{process_task}\nfn synthetic_retire(page_table: &mut ProcessPageTable, pid: u64, budget: &mut u32) {{ let _ = page_table.retire_bounded(pid, budget); }}"
+            "{process_task}\nfn synthetic_retire(page_table: &mut ProcessPageTable, pid: u64, budget: &mut u32) {{ let _ = ProcessPageTable::retire_bounded(page_table, pid, budget); }}"
         ),
     );
     assert!(validate_process_page_table_retire_site(&extra_retire).is_err());
@@ -4766,7 +5081,7 @@ fn deliberately_broken_variants_fail_the_ratchet() {
         &sources,
         "kernel/src/task/process_task.rs",
         format!(
-            "{process_task}\nfn synthetic_reclaim(reclaim: &mut PendingProcessReclaim) {{ let _ = reclaim.reclaim_bounded(); }}"
+            "{process_task}\nfn synthetic_reclaim(reclaim: &mut PendingProcessReclaim) {{ let _ = PendingProcessReclaim::reclaim_bounded(reclaim); }}"
         ),
     );
     assert!(validate_process_page_table_retire_site(&extra_reclaim).is_err());
@@ -4779,6 +5094,84 @@ fn deliberately_broken_variants_fail_the_ratchet() {
         ),
     );
     assert!(validate_process_page_table_retire_site(&cross_file_retire).is_err());
+
+    // Q1/Q2: x86 retirement may drain only in normal context, the IRQ-return
+    // hook may only stamp its epoch, and cached root writes remain aarch64-only.
+    let x86_context = source(&sources, "kernel/src/interrupts/context_switch.rs");
+    let moved_drain = x86_context
+        .replacen(
+            "        crate::task::process_task::reclaim_deferred_process_resources();",
+            "        core::hint::spin_loop();",
+            1,
+        )
+        .replacen(
+            "    crate::task::scheduler::note_scheduling_epoch(0);",
+            "    crate::task::scheduler::note_scheduling_epoch(0);\n    process_task::reclaim_deferred_process_resources();",
+            1,
+        );
+    let moved_drain = with_replaced_source(
+        &sources,
+        "kernel/src/interrupts/context_switch.rs",
+        moved_drain,
+    );
+    assert!(validate_deferred_reclaim_drain_sites(&moved_drain).is_err());
+
+    let second_cached_writer = with_replaced_source(
+        &sources,
+        "kernel/src/interrupts/context_switch.rs",
+        format!(
+            "{x86_context}\nfn synthetic_x86_cached_writer(candidate: &mut Thread, new_root: u64) {{ candidate.cached_ttbr0 = new_root; }}"
+        ),
+    );
+    assert!(validate_cached_ttbr0_single_writer(&second_cached_writer).is_err());
+
+    let logged_before_stamp = x86_context.replacen(
+        "    crate::task::scheduler::note_scheduling_epoch(0);",
+        "    log::trace!(\"epoch probe\");\n    crate::task::scheduler::note_scheduling_epoch(0);",
+        1,
+    );
+    let logged_before_stamp = with_replaced_source(
+        &sources,
+        "kernel/src/interrupts/context_switch.rs",
+        logged_before_stamp,
+    );
+    assert!(validate_x86_epoch_stamp_is_minimal(&logged_before_stamp).is_err());
+
+    let locked_before_stamp = x86_context.replacen(
+        "    crate::task::scheduler::note_scheduling_epoch(0);",
+        "    let _unexpected = SCHEDULER.lock();\n    crate::task::scheduler::note_scheduling_epoch(0);",
+        1,
+    );
+    let locked_before_stamp = with_replaced_source(
+        &sources,
+        "kernel/src/interrupts/context_switch.rs",
+        locked_before_stamp,
+    );
+    assert!(validate_x86_epoch_stamp_is_minimal(&locked_before_stamp).is_err());
+
+    let missing_saved_shadow = process_task.replacen(
+        "crate::per_cpu::get_saved_process_cr3()",
+        "crate::per_cpu::get_next_cr3()",
+        1,
+    );
+    let missing_saved_shadow = with_replaced_source(
+        &sources,
+        "kernel/src/task/process_task.rs",
+        missing_saved_shadow,
+    );
+    assert!(validate_root_proof_architecture_legs(&missing_saved_shadow).is_err());
+
+    let locked_root_proof = process_task.replacen(
+        "        if !snapshot.fence_elapsed(&self.after_epoch)",
+        "        let _unexpected = crate::process::manager();\n        if !snapshot.fence_elapsed(&self.after_epoch)",
+        1,
+    );
+    let locked_root_proof = with_replaced_source(
+        &sources,
+        "kernel/src/task/process_task.rs",
+        locked_root_proof,
+    );
+    assert!(validate_root_proof_architecture_legs(&locked_root_proof).is_err());
 
     // R6: inventory membership and unconditional declarations are both pinned.
     let provider = source(&sources, "kernel/src/tracing/providers/teardown.rs");
@@ -4929,6 +5322,17 @@ fn deliberately_broken_variants_fail_the_ratchet() {
             with_replaced_source(&sources, "kernel/src/memory/process_memory.rs", weakened);
         assert!(validate_process_page_table_runtime_oracle(&weakened).is_err());
     }
+    let residual_x86_o3 = process_memory.replacen(
+        "after_retire[2] != after_drop[2]",
+        "after_retire[2] != after_drop[2] + 1",
+        1,
+    );
+    let residual_x86_o3 = with_replaced_source(
+        &sources,
+        "kernel/src/memory/process_memory.rs",
+        residual_x86_o3,
+    );
+    assert!(validate_process_page_table_runtime_oracle(&residual_x86_o3).is_err());
 
     // O1 + leak oracle: removing anti-vacuity mappings or weakening any exact
     // per-PID/baseline equality invalidates the named validator directly.
@@ -4969,6 +5373,17 @@ fn deliberately_broken_variants_fail_the_ratchet() {
         );
         assert!(validate_pr1c_retirement_oracles(&weakened).is_err());
     }
+    let unbalanced_x86_marker = provider.replacen(
+        "mid_retire={}:balance={}]",
+        "mid_retire={}:balance=unchecked]",
+        1,
+    );
+    let unbalanced_x86_marker = with_replaced_source(
+        &sources,
+        "kernel/src/tracing/providers/teardown.rs",
+        unbalanced_x86_marker,
+    );
+    assert!(validate_pr1c_retirement_oracles(&unbalanced_x86_marker).is_err());
     for (needle, replacement) in [
         (
             "counts.roots_retired != 1 {",
@@ -5757,6 +6172,27 @@ fn deliberately_broken_variants_fail_the_ratchet() {
         &harness.replace("\n    $passed\n", "\n    exit 0\n    $passed\n")
     )
     .is_err());
+    assert!(validate_x86_frame_custody_harness(
+        &harness.replace(
+            "recorded=11:no_proof=0:no_arch=0:terminated=1:undecided=1:exec_unreturned=0:retired=1:returned=10:lost=0:requeued=0",
+            "recorded=3:no_proof=0:no_arch=1:terminated=1:undecided=1:exec_unreturned=0",
+        )
+    )
+    .is_err());
+    assert!(validate_x86_frame_custody_harness(
+        &harness.replace("mid_retire=0:balance=0", "mid_retire=0:balance=.*")
+    )
+    .is_err());
+    let cohort_count_start = harness
+        .find("grep -h -c '\\[TEST:process:x86_retire_cohort:PASS\\]'")
+        .expect("x86 cohort count assertion");
+    let cohort_equality = harness[cohort_count_start..]
+        .find("-eq 1")
+        .map(|offset| cohort_count_start + offset)
+        .expect("x86 cohort exact count equality");
+    let mut weakened_cohort_count = harness.clone();
+    weakened_cohort_count.replace_range(cohort_equality..cohort_equality + 5, "-ge 0");
+    assert!(validate_x86_frame_custody_harness(&weakened_cohort_count).is_err());
 
     let missing_counter_reader = provider.replacen("    &FRAME_RETURN_REFUSED_DOUBLE,\n", "", 1);
     assert!(validate_frame_ledger_counter_inventory(&missing_counter_reader).is_err());

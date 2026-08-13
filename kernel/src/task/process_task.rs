@@ -338,6 +338,7 @@ pub(crate) fn note_process_row_removed() {
     ROW_REMOVAL_EPOCH.fetch_add(1, Ordering::Relaxed);
 }
 
+#[cfg(any(target_arch = "aarch64", feature = "boot_tests"))]
 pub(crate) fn release_process_resources(process: &mut crate::process::Process) {
     #[cfg(target_arch = "aarch64")]
     if crate::process::process_manager_held_on_current_cpu() {
