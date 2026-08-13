@@ -100,6 +100,8 @@ fn save_qemu_pid(pid: u32) {
 }
 
 fn build_std_test_binaries() -> Result<()> {
+    const RUST_FORK_LIBRARY_ENV: &str = "BREENIX_RUST_FORK_LIBRARY";
+
     println!("Building Rust std test binaries...\n");
 
     // Step 1: Build libbreenix-libc (produces libc.a)
@@ -143,9 +145,20 @@ fn build_std_test_binaries() -> Result<()> {
     // The rust-toolchain.toml in tests specifies the nightly version
     // __CARGO_TESTS_ONLY_SRC_ROOT must point to the forked Rust library so that
     // -Z build-std compiles std from our patched sources (with target_os = "breenix")
-    let rust_fork_library = std::env::current_dir()
-        .unwrap_or_default()
-        .join("rust-fork/library");
+    let rust_fork_library = std::env::var_os(RUST_FORK_LIBRARY_ENV)
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            std::env::current_dir()
+                .unwrap_or_default()
+                .join("rust-fork/library")
+        });
+    if !rust_fork_library.is_dir() {
+        bail!(
+            "Forked Rust library not found at {}. Set {} to the forked Rust library path.",
+            rust_fork_library.display(),
+            RUST_FORK_LIBRARY_ENV,
+        );
+    }
     let status = Command::new("cargo")
         .args(&["build", "--release"])
         .current_dir(tests_std_dir)
