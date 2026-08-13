@@ -1129,6 +1129,14 @@ pub const ENOSYS: i32 = 38;
 // C Runtime Startup (_start entry point)
 // =============================================================================
 
+/// Pristine x86_64 GPR values at process entry.
+///
+/// The index order is rax, rbx, rcx, rdx, rsi, rdi, rbp, rsp, and r8 through
+/// r15. `_start` captures these values before executing any runtime code.
+#[cfg(target_arch = "x86_64")]
+#[no_mangle]
+pub static mut __breenix_entry_gprs: [u64; 16] = [0; 16];
+
 /// The _start entry point for Rust programs using std.
 ///
 /// Uses a naked function to properly extract argc/argv from the stack
@@ -1146,9 +1154,28 @@ pub const ENOSYS: i32 = 38;
 #[no_mangle]
 pub unsafe extern "C" fn _start() -> ! {
     core::arch::naked_asm!(
+        // Preserve evidence of the kernel's process-entry register state before
+        // the runtime can repurpose any register.
+        "mov qword ptr [rip + {entry_gprs} + 0*8], rax",
+        "mov qword ptr [rip + {entry_gprs} + 1*8], rbx",
+        "mov qword ptr [rip + {entry_gprs} + 2*8], rcx",
+        "mov qword ptr [rip + {entry_gprs} + 3*8], rdx",
+        "mov qword ptr [rip + {entry_gprs} + 4*8], rsi",
+        "mov qword ptr [rip + {entry_gprs} + 5*8], rdi",
+        "mov qword ptr [rip + {entry_gprs} + 6*8], rbp",
+        "mov qword ptr [rip + {entry_gprs} + 7*8], rsp",
+        "mov qword ptr [rip + {entry_gprs} + 8*8], r8",
+        "mov qword ptr [rip + {entry_gprs} + 9*8], r9",
+        "mov qword ptr [rip + {entry_gprs} + 10*8], r10",
+        "mov qword ptr [rip + {entry_gprs} + 11*8], r11",
+        "mov qword ptr [rip + {entry_gprs} + 12*8], r12",
+        "mov qword ptr [rip + {entry_gprs} + 13*8], r13",
+        "mov qword ptr [rip + {entry_gprs} + 14*8], r14",
+        "mov qword ptr [rip + {entry_gprs} + 15*8], r15",
         "mov rdi, rsp",  // Pass stack pointer as first argument
         "and rsp, -16",  // Align stack to 16 bytes
         "call {entry}",
+        entry_gprs = sym __breenix_entry_gprs,
         entry = sym _start_rust,
     )
 }
