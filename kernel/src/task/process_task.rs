@@ -1848,37 +1848,67 @@ pub fn reclaim_progress_gate_test() -> crate::test_framework::registry::TestResu
         boot_reclaim_deferred_process_resources();
     }
 
-    let age_pid = BOOT_RECLAIM_PID_BASE + 3;
-    let age_advance_cpu = scheduler::MAX_CPUS.saturating_sub(2);
-    let age_last_cpu = scheduler::MAX_CPUS.saturating_sub(1);
-    let age_mask = (1 << age_advance_cpu) | (1 << age_last_cpu);
-    let (age_record, age_snapshot) = boot_synthetic_park(age_mask, 200);
-    boot_push_parked(age_pid, age_record);
-    if trace::RECLAIM_PARK_RESIDENT.aggregate() != resident_before.wrapping_add(1) {
-        return TestResult::Fail("age-arm receipt was not observably resident");
+    if scheduler::MAX_CPUS >= 2 {
+        let age_pid = BOOT_RECLAIM_PID_BASE + 3;
+        let age_advance_cpu = scheduler::MAX_CPUS.saturating_sub(2);
+        let age_last_cpu = scheduler::MAX_CPUS.saturating_sub(1);
+        let age_mask = (1 << age_advance_cpu) | (1 << age_last_cpu);
+        let (age_record, age_snapshot) = boot_synthetic_park(age_mask, 200);
+        boot_push_parked(age_pid, age_record);
+        if trace::RECLAIM_PARK_RESIDENT.aggregate() != resident_before.wrapping_add(1) {
+            return TestResult::Fail("age-arm receipt was not observably resident");
+        }
+        let mut age_63 = age_snapshot;
+        age_63.epochs[age_advance_cpu] = age_63.epochs[age_advance_cpu].wrapping_add(63);
+        unpark_sweep_with_snapshot(age_63, age_record.row_epoch_at_park);
+        if boot_reclaim_locations(age_pid) != (false, true) {
+            return TestResult::Fail("age unpark arm fired before 64 scheduling epochs");
+        }
+        boot_force_blocker(age_pid, Some(RootBlocker::LiveRow));
+        let mut age_64 = age_63;
+        age_64.epochs[age_advance_cpu] = age_64.epochs[age_advance_cpu].wrapping_add(1);
+        let age_before = trace::RECLAIM_UNPARKED_AGE.aggregate();
+        unpark_sweep_with_snapshot(age_64, age_record.row_epoch_at_park);
+        boot_reclaim_deferred_process_resources();
+        if trace::RECLAIM_UNPARKED_AGE
+            .aggregate()
+            .saturating_sub(age_before)
+            != 1
+            || boot_reclaim_locations(age_pid) != (true, false)
+        {
+            return TestResult::Fail("age arm did not re-prove the receipt at epoch sum 64");
+        }
+        boot_force_blocker(age_pid, None);
+        boot_reclaim_deferred_process_resources();
+    } else if scheduler::MAX_CPUS == 1 {
+        let epoch_pid = BOOT_RECLAIM_PID_BASE + 3;
+        let epoch_cpu = 0;
+        let (epoch_record, epoch_snapshot) = boot_synthetic_park(1 << epoch_cpu, 200);
+        boot_push_parked(epoch_pid, epoch_record);
+        if trace::RECLAIM_PARK_RESIDENT.aggregate() != resident_before.wrapping_add(1) {
+            return TestResult::Fail("single-CPU epoch-arm receipt was not observably resident");
+        }
+        boot_force_blocker(epoch_pid, Some(RootBlocker::LiveRow));
+        let epoch_before = trace::RECLAIM_UNPARKED_EPOCH.aggregate();
+        let age_before = trace::RECLAIM_UNPARKED_AGE.aggregate();
+        let mut epoch_advanced = epoch_snapshot;
+        epoch_advanced.epochs[epoch_cpu] = epoch_advanced.epochs[epoch_cpu].wrapping_add(1);
+        unpark_sweep_with_snapshot(epoch_advanced, epoch_record.row_epoch_at_park);
+        boot_reclaim_deferred_process_resources();
+        if trace::RECLAIM_UNPARKED_EPOCH
+            .aggregate()
+            .saturating_sub(epoch_before)
+            != 1
+            || trace::RECLAIM_UNPARKED_AGE.aggregate() != age_before
+            || boot_reclaim_locations(epoch_pid) != (true, false)
+        {
+            return TestResult::Fail("single-CPU advance did not unpark through the epoch arm alone");
+        }
+        boot_force_blocker(epoch_pid, None);
+        boot_reclaim_deferred_process_resources();
+    } else {
+        return TestResult::Fail("reclaim progress gate requires at least one CPU");
     }
-    let mut age_63 = age_snapshot;
-    age_63.epochs[age_advance_cpu] = age_63.epochs[age_advance_cpu].wrapping_add(63);
-    unpark_sweep_with_snapshot(age_63, age_record.row_epoch_at_park);
-    if boot_reclaim_locations(age_pid) != (false, true) {
-        return TestResult::Fail("age unpark arm fired before 64 scheduling epochs");
-    }
-    boot_force_blocker(age_pid, Some(RootBlocker::LiveRow));
-    let mut age_64 = age_63;
-    age_64.epochs[age_advance_cpu] = age_64.epochs[age_advance_cpu].wrapping_add(1);
-    let age_before = trace::RECLAIM_UNPARKED_AGE.aggregate();
-    unpark_sweep_with_snapshot(age_64, age_record.row_epoch_at_park);
-    boot_reclaim_deferred_process_resources();
-    if trace::RECLAIM_UNPARKED_AGE
-        .aggregate()
-        .saturating_sub(age_before)
-        != 1
-        || boot_reclaim_locations(age_pid) != (true, false)
-    {
-        return TestResult::Fail("age arm did not re-prove the receipt at epoch sum 64");
-    }
-    boot_force_blocker(age_pid, None);
-    boot_reclaim_deferred_process_resources();
 
     #[cfg(target_arch = "aarch64")]
     {

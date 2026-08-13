@@ -6627,6 +6627,90 @@ fn direct_x86_teardown_gate_validator_rejects_dead_tail_and_duplicate_pass() {
     assert!(validate_x86_direct_teardown_gates(main, process, teardown, harness).is_err());
 }
 
+fn validate_reclaim_progress_topology_arms(process_task: &str) -> Result<(), &'static str> {
+    let gate = function_body(process_task, "reclaim_progress_gate_test");
+    let gate_mask = code_mask(gate);
+    let multi_marker = "if scheduler::MAX_CPUS >= 2";
+    let multi_start = code_offsets(gate, &gate_mask, multi_marker)
+        .into_iter()
+        .next()
+        .ok_or("reclaim gate lost its multi-CPU discriminator")?;
+    let multi_arm = braced_block(gate, &gate_mask, multi_start)
+        .ok_or("reclaim gate multi-CPU arm is not brace balanced")?;
+    let one_marker = "else if scheduler::MAX_CPUS == 1";
+    let one_start = code_offsets(gate, &gate_mask, one_marker)
+        .into_iter()
+        .next()
+        .ok_or("reclaim gate lost its one-CPU discriminator")?;
+    let one_arm = braced_block(gate, &gate_mask, one_start)
+        .ok_or("reclaim gate one-CPU arm is not brace balanced")?;
+    if one_start <= multi_start + multi_arm.len() || one_arm.contains("target_arch") {
+        return Err("reclaim gate topology arms are not selected solely by CPU count");
+    }
+
+    let compact = |fragment: &str| normalized_code(fragment).replace(' ', "");
+    let multi = compact(multi_arm);
+    for required in [
+        "letage_advance_cpu=scheduler::MAX_CPUS.saturating_sub(2);",
+        "letage_last_cpu=scheduler::MAX_CPUS.saturating_sub(1);",
+        "letage_mask=(1<<age_advance_cpu)|(1<<age_last_cpu);",
+        "boot_push_parked(age_pid,age_record);",
+        "age_63.epochs[age_advance_cpu]=age_63.epochs[age_advance_cpu].wrapping_add(63);",
+        "boot_reclaim_locations(age_pid)!=(false,true)",
+        "age_64.epochs[age_advance_cpu]=age_64.epochs[age_advance_cpu].wrapping_add(1);",
+        "RECLAIM_UNPARKED_AGE.aggregate().saturating_sub(age_before)!=1",
+    ] {
+        if !multi.contains(required) {
+            return Err("reclaim gate multi-CPU age proposition was weakened");
+        }
+    }
+
+    let one = compact(one_arm);
+    for required in [
+        "letepoch_cpu=0;",
+        "boot_synthetic_park(1<<epoch_cpu,200);",
+        "boot_push_parked(epoch_pid,epoch_record);",
+        "epoch_advanced.epochs[epoch_cpu]=epoch_advanced.epochs[epoch_cpu].wrapping_add(1);",
+        "unpark_sweep_with_snapshot(epoch_advanced,epoch_record.row_epoch_at_park);",
+        "RECLAIM_UNPARKED_EPOCH.aggregate().saturating_sub(epoch_before)!=1",
+        "RECLAIM_UNPARKED_AGE.aggregate()!=age_before",
+        "boot_reclaim_locations(epoch_pid)!=(true,false)",
+    ] {
+        if !one.contains(required) {
+            return Err("reclaim gate one-CPU epoch proposition was weakened or skipped");
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn reclaim_progress_park_unpark_arms_follow_cpu_topology() {
+    assert_eq!(
+        validate_reclaim_progress_topology_arms(&repo_text(
+            "kernel/src/task/process_task.rs"
+        )),
+        Ok(())
+    );
+}
+
+#[test]
+fn reclaim_progress_topology_validator_rejects_arch_selection_and_a_skipped_counter() {
+    let process_task = repo_text("kernel/src/task/process_task.rs");
+    let arch_selected = process_task.replacen(
+        "if scheduler::MAX_CPUS >= 2",
+        "if cfg!(target_arch = \"aarch64\")",
+        1,
+    );
+    assert!(validate_reclaim_progress_topology_arms(&arch_selected).is_err());
+
+    let skipped_counter = process_task.replacen(
+        "trace::RECLAIM_UNPARKED_EPOCH\n            .aggregate()\n            .saturating_sub(epoch_before)\n            != 1",
+        "trace::RECLAIM_UNPARKED_EPOCH.aggregate() == epoch_before",
+        2,
+    );
+    assert!(validate_reclaim_progress_topology_arms(&skipped_counter).is_err());
+}
+
 fn validate_single_gate_producer_per_arch(main: &str, registry: &str) -> Result<(), ()> {
     let normalized_registry = normalized_code(registry);
     for (function, direct_call) in [
