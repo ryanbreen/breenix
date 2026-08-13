@@ -3755,6 +3755,66 @@ pub fn switch_to_idle() {
     });
 }
 
+/// Undo a dispatch the interrupt-return path could not complete: return the
+/// undispatched thread to the ready queue and make the interrupted thread current
+/// again, so the scheduler's current_thread matches the context IRETQ will actually
+/// resume. Handing the CPU to idle here would strand whatever lock the interrupted
+/// thread holds - which is the very condition that aborts the dispatch.
+#[cfg(target_arch = "x86_64")]
+pub fn abort_dispatch_and_resume(aborted_thread_id: u64, resume_thread_id: u64) {
+    with_scheduler(|sched| {
+        let cpu_id = Scheduler::current_cpu_id();
+
+        if sched.get_thread(aborted_thread_id).is_none()
+            || sched.get_thread(resume_thread_id).is_none()
+        {
+            log::error!(
+                "Cannot abort dispatch of thread {} and resume thread {}: scheduler thread missing",
+                aborted_thread_id,
+                resume_thread_id
+            );
+            return;
+        }
+
+        let should_queue = match sched.get_thread_mut(aborted_thread_id) {
+            Some(thread) if thread.state != ThreadState::Terminated => {
+                thread.set_ready();
+                true
+            }
+            _ => false,
+        };
+        let in_queue = sched
+            .per_cpu_queues
+            .iter()
+            .any(|queue| queue.contains(&aborted_thread_id));
+        if should_queue && !in_queue {
+            sched.per_cpu_queues[cpu_id].push_back(aborted_thread_id);
+        }
+
+        for queue in sched.per_cpu_queues.iter_mut() {
+            if let Some(position) = queue.iter().position(|&id| id == resume_thread_id) {
+                queue.remove(position);
+            }
+        }
+
+        let (kernel_stack_top, thread_ptr) = match sched.get_thread_mut(resume_thread_id) {
+            Some(thread) => {
+                thread.set_running();
+                (
+                    thread.kernel_stack_top,
+                    thread as *const _ as *mut crate::task::thread::Thread,
+                )
+            }
+            None => return,
+        };
+        sched.cpu_state[cpu_id].current_thread = Some(resume_thread_id);
+        crate::per_cpu::set_current_thread(thread_ptr);
+        if let Some(kernel_stack_top) = kernel_stack_top {
+            crate::per_cpu::update_tss_rsp0(kernel_stack_top.as_u64());
+        }
+    });
+}
+
 /// Best-effort switch to idle — uses try_lock to avoid deadlock in crash handlers.
 ///
 /// When an INSTRUCTION_ABORT or DATA_ABORT occurs from EL1, the SCHEDULER lock

@@ -13,8 +13,17 @@ use crate::task::process_context::{
 use crate::task::scheduler;
 use crate::task::thread::ThreadPrivilege;
 use crate::tracing::providers::sched::trace_ctx_switch;
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use x86_64::structures::idt::InterruptStackFrame;
 use x86_64::VirtAddr;
+
+enum FirstUserspaceEntry {
+    Installed,
+    Aborted(&'static str),
+}
+
+static FIRST_USERSPACE_ENTRY_ABORT_COUNT: AtomicU64 = AtomicU64::new(0);
+static FIRST_USERSPACE_ENTRY_ABORT_LOGGED: AtomicBool = AtomicBool::new(false);
 
 /// Raw serial debug output - single character, no locks, no allocations.
 /// Use this for debugging context switch paths where any allocation/locking
@@ -305,6 +314,7 @@ pub extern "C" fn check_need_resched_and_switch(
         // Pass the process_manager_guard so we don't try to re-acquire the lock
         switch_to_thread(
             new_thread_id,
+            old_thread_id,
             saved_regs,
             interrupt_frame,
             process_manager_guard.take(),
@@ -514,6 +524,7 @@ fn saved_context_is_kernel_frame(
 /// Switch to a different thread
 fn switch_to_thread(
     thread_id: u64,
+    resume_thread_id: u64,
     saved_regs: &mut SavedRegisters,
     interrupt_frame: &mut InterruptStackFrame,
     process_manager_guard: Option<crate::process::TryProcessManagerGuard>,
@@ -892,6 +903,7 @@ fn switch_to_thread(
         // Pass the process_manager_guard to avoid double-lock
         restore_userspace_thread_context(
             thread_id,
+            resume_thread_id,
             saved_regs,
             interrupt_frame,
             process_manager_guard,
@@ -1008,6 +1020,7 @@ fn setup_kernel_thread_return(
 /// Restore userspace thread context
 fn restore_userspace_thread_context(
     thread_id: u64,
+    resume_thread_id: u64,
     saved_regs: &mut SavedRegisters,
     interrupt_frame: &mut InterruptStackFrame,
     process_manager_guard: Option<crate::process::TryProcessManagerGuard>,
@@ -1023,18 +1036,31 @@ fn restore_userspace_thread_context(
         // We need to set up for its first entry to userspace
         log::info!("First run: thread {} entering userspace", thread_id);
 
-        // Mark thread as started
-        scheduler::with_thread_mut(thread_id, |thread| {
-            thread.has_started = true;
-        });
-
         // For first run, we need to set up the interrupt frame to jump to userspace
-        setup_first_userspace_entry(
+        match setup_first_userspace_entry(
             thread_id,
             interrupt_frame,
             saved_regs,
             process_manager_guard,
-        );
+        ) {
+            FirstUserspaceEntry::Installed => {
+                scheduler::with_thread_mut(thread_id, |thread| {
+                    thread.has_started = true;
+                });
+            }
+            FirstUserspaceEntry::Aborted(reason) => {
+                FIRST_USERSPACE_ENTRY_ABORT_COUNT.fetch_add(1, Ordering::Relaxed);
+                if !FIRST_USERSPACE_ENTRY_ABORT_LOGGED.swap(true, Ordering::Relaxed) {
+                    log::error!(
+                        "Aborted first userspace entry for thread {}: {}",
+                        thread_id,
+                        reason
+                    );
+                }
+                scheduler::abort_dispatch_and_resume(thread_id, resume_thread_id);
+                scheduler::set_need_resched();
+            }
+        }
         return;
     }
 
@@ -1213,45 +1239,78 @@ fn setup_first_userspace_entry(
     interrupt_frame: &mut InterruptStackFrame,
     saved_regs: &mut SavedRegisters,
     process_manager_guard: Option<crate::process::TryProcessManagerGuard>,
-) {
+) -> FirstUserspaceEntry {
     log::info!("setup_first_userspace_entry: thread {}", thread_id);
 
-    // Get the thread's context (entry point, stack, etc.)
-    scheduler::with_thread_mut(thread_id, |thread| {
-        let context = &thread.context;
+    // Phase 1: resolve every fallible dependency before touching the return frame.
+    let mut manager_guard = match process_manager_guard.or_else(crate::process::try_manager) {
+        Some(guard) if guard.is_some() => guard,
+        _ => return FirstUserspaceEntry::Aborted("process manager unavailable"),
+    };
+    let (_, process) = match manager_guard
+        .as_mut()
+        .and_then(|manager| manager.find_process_by_thread_mut(thread_id))
+    {
+        Some(found) => found,
+        None => return FirstUserspaceEntry::Aborted("process lookup failed"),
+    };
+    let cr3_value = match process.cr3_value() {
+        Some(value) => value,
+        None => return FirstUserspaceEntry::Aborted("process CR3 unavailable"),
+    };
+    let thread = match process.main_thread.as_ref() {
+        Some(thread) => thread,
+        None => return FirstUserspaceEntry::Aborted("thread kernel stack unavailable"),
+    };
+    let kernel_stack_top = match thread.kernel_stack_top {
+        Some(stack_top) => stack_top,
+        None => return FirstUserspaceEntry::Aborted("thread kernel stack unavailable"),
+    };
+    let entry_rip = thread.context.rip;
+    let user_rsp = thread.context.rsp;
+    drop(manager_guard);
 
-        // Set up the interrupt frame to jump to userspace
-        unsafe {
-            interrupt_frame.as_mut().update(|frame| {
-                // Set instruction pointer to entry point
-                frame.instruction_pointer = VirtAddr::new(context.rip);
+    unsafe {
+        crate::per_cpu::set_next_cr3(cr3_value);
+        core::arch::asm!(
+            "mov gs:[80], {}",
+            in(reg) cr3_value,
+            options(nostack, preserves_flags)
+        );
+    }
+    crate::gdt::set_kernel_stack(kernel_stack_top);
 
-                // Set stack pointer to user stack with proper alignment
-                // Ensure (rsp % 16) == 8 at entry for SysV AMD64 ABI
-                let aligned_rsp = (context.rsp & !0xF) | 0x8;
-                frame.stack_pointer = VirtAddr::new(aligned_rsp);
+    // Phase 2: commit the first userspace frame only after CR3 and RSP0 are installed.
+    unsafe {
+        interrupt_frame.as_mut().update(|frame| {
+            // Set instruction pointer to entry point
+            frame.instruction_pointer = VirtAddr::new(entry_rip);
 
-                // Set code segment to user code (Ring 3)
-                frame.code_segment = crate::gdt::user_code_selector();
+            // Set stack pointer to user stack with proper alignment
+            // Ensure (rsp % 16) == 8 at entry for SysV AMD64 ABI
+            let aligned_rsp = (user_rsp & !0xF) | 0x8;
+            frame.stack_pointer = VirtAddr::new(aligned_rsp);
 
-                // Set stack segment to user data (Ring 3)
-                frame.stack_segment = crate::gdt::user_data_selector();
+            // Set code segment to user code (Ring 3)
+            frame.code_segment = crate::gdt::user_code_selector();
 
-                // Set CPU flags: IF=1 (interrupts enabled), bit 1=1 (reserved)
-                let flags_ptr =
-                    &mut frame.cpu_flags as *mut x86_64::registers::rflags::RFlags as *mut u64;
-                *flags_ptr = 0x202; // Bit 1=1 (required), IF=1 (bit 9)
+            // Set stack segment to user data (Ring 3)
+            frame.stack_segment = crate::gdt::user_data_selector();
 
-                log::info!(
-                    "RING3_ENTRY: RIP={:#x}, RSP={:#x}, CS={:#x}, SS={:#x}",
-                    frame.instruction_pointer.as_u64(),
-                    frame.stack_pointer.as_u64(),
-                    frame.code_segment.0,
-                    frame.stack_segment.0
-                );
-            });
-        }
-    });
+            // Set CPU flags: IF=1 (interrupts enabled), bit 1=1 (reserved)
+            let flags_ptr =
+                &mut frame.cpu_flags as *mut x86_64::registers::rflags::RFlags as *mut u64;
+            *flags_ptr = 0x202; // Bit 1=1 (required), IF=1 (bit 9)
+
+            log::info!(
+                "RING3_ENTRY: RIP={:#x}, RSP={:#x}, CS={:#x}, SS={:#x}",
+                frame.instruction_pointer.as_u64(),
+                frame.stack_pointer.as_u64(),
+                frame.code_segment.0,
+                frame.stack_segment.0
+            );
+        });
+    }
 
     // CRITICAL: Zero all general-purpose registers for security and determinism
     // This ensures userspace starts with a clean register state
@@ -1274,65 +1333,11 @@ fn setup_first_userspace_entry(
     // DEBUG: Log that registers were zeroed for first entry
     log::info!("FIRST_ENTRY t{}: zeroed all registers", thread_id);
 
-    // CRITICAL: Now set up CR3 and kernel stack for this thread
-    // This must happen BEFORE we iretq to userspace
-    // Use the passed-in guard if available, otherwise try to acquire one.
-    let guard_option = process_manager_guard.or_else(|| crate::process::try_manager());
-    if let Some(mut manager_guard) = guard_option {
-        if let Some((pid, process)) = manager_guard
-            .as_mut()
-            .and_then(|m| m.find_process_by_thread_mut(thread_id))
-        {
-            log::trace!("Thread {} belongs to process {}", thread_id, pid.as_u64());
-
-            // Get kernel stack info BEFORE switching CR3
-            let kernel_stack_top = process.main_thread.as_ref().and_then(|thread| {
-                if thread.id == thread_id {
-                    thread.kernel_stack_top
-                } else {
-                    None
-                }
-            });
-
-            // CRITICAL: Defer CR3 switch to entry.asm before IRETQ
-            // We do NOT switch CR3 here for the same reasons as restore_userspace_thread_context():
-            // 1. Kernel can run on process page tables (they have kernel mappings)
-            // 2. entry.asm (syscall_return_to_userspace) will perform the actual switch before IRETQ
-            // 3. Switching here would cause DOUBLE CR3 write (flush TLB twice)
-            if let Some(cr3_value) = process.cr3_value() {
-                log::trace!("CR3 switch deferred to {:#x}", cr3_value);
-
-                unsafe {
-                    // Tell interrupt return path to use this CR3
-                    crate::per_cpu::set_next_cr3(cr3_value);
-
-                    // Set saved_process_cr3 for timer interrupt
-                    core::arch::asm!(
-                        "mov gs:[80], {}",
-                        in(reg) cr3_value,
-                        options(nostack, preserves_flags)
-                    );
-                }
-            }
-
-            // Set kernel stack for TSS RSP0
-            if let Some(stack_top) = kernel_stack_top {
-                crate::gdt::set_kernel_stack(stack_top);
-                log::trace!(
-                    "Set TSS RSP0 to {:#x} for thread {}",
-                    stack_top.as_u64(),
-                    thread_id
-                );
-            } else {
-                log::error!("No kernel stack found for thread {}", thread_id);
-            }
-        }
-    }
-
     log::info!(
         "First userspace entry setup complete for thread {}",
         thread_id
     );
+    FirstUserspaceEntry::Installed
 }
 
 /// Check and deliver pending signals for the current thread

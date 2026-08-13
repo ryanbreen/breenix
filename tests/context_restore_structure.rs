@@ -344,6 +344,76 @@ fn validate_restore_source(source: &str) -> Result<(), String> {
     Ok(())
 }
 
+fn validate_first_userspace_entry_source(source: &str) -> Result<(), String> {
+    let setup = function_body(source, "setup_first_userspace_entry")
+        .ok_or_else(|| "missing fn setup_first_userspace_entry".to_string())?;
+    let setup_mask = code_mask(setup);
+    let ring3_commit = identifier_offsets(setup, &setup_mask, "user_code_selector")
+        .first()
+        .copied()
+        .ok_or_else(|| "first userspace entry has no ring-3 commit".to_string())?;
+    for install in ["set_next_cr3", "set_kernel_stack"] {
+        let install_offset = identifier_offsets(setup, &setup_mask, install)
+            .first()
+            .copied()
+            .ok_or_else(|| format!("first userspace entry does not call {install}"))?;
+        if install_offset > ring3_commit {
+            return Err(format!(
+                "first userspace entry calls {install} after the ring-3 commit"
+            ));
+        }
+    }
+    if identifier_offsets(setup, &setup_mask, "Aborted")
+        .into_iter()
+        .any(|offset| offset > ring3_commit)
+    {
+        return Err("first userspace entry can abort after the ring-3 commit".to_string());
+    }
+
+    let restore = function_body(source, "restore_userspace_thread_context")
+        .ok_or_else(|| "missing fn restore_userspace_thread_context".to_string())?;
+    let restore_mask = code_mask(restore);
+    let installed_offset = identifier_offsets(restore, &restore_mask, "Installed")
+        .first()
+        .copied()
+        .ok_or_else(|| "first-entry restore has no Installed arm".to_string())?;
+    let installed_arm = braced_block(restore, &restore_mask, installed_offset)
+        .ok_or_else(|| "Installed arm has no block".to_string())?;
+    let normalized_restore = normalized_code(restore);
+    if normalized_restore
+        .matches("thread.has_started = true;")
+        .count()
+        != 1
+        || !normalized_code(installed_arm).contains("thread.has_started = true;")
+    {
+        return Err("has_started is not committed only in the Installed arm".to_string());
+    }
+
+    let aborted_offset = identifier_offsets(restore, &restore_mask, "Aborted")
+        .first()
+        .copied()
+        .ok_or_else(|| "first-entry restore has no Aborted arm".to_string())?;
+    let aborted_arm = braced_block(restore, &restore_mask, aborted_offset)
+        .ok_or_else(|| "Aborted arm has no block".to_string())?;
+    let normalized_abort = normalized_code(aborted_arm);
+    for required in [
+        "scheduler::abort_dispatch_and_resume(thread_id, resume_thread_id);",
+        "scheduler::set_need_resched();",
+    ] {
+        if !normalized_abort.contains(required) {
+            return Err(format!("Aborted arm is missing {required}"));
+        }
+    }
+    let aborted_mask = code_mask(aborted_arm);
+    if !identifier_offsets(aborted_arm, &aborted_mask, "setup_idle_return").is_empty() {
+        return Err("Aborted arm parks the CPU in idle".to_string());
+    }
+    if !identifier_offsets(aborted_arm, &aborted_mask, "interrupt_frame").is_empty() {
+        return Err("Aborted arm touches the interrupt return frame".to_string());
+    }
+    Ok(())
+}
+
 #[test]
 fn unblock_preserves_blocked_syscall_context_ownership() {
     let source = repo_text("kernel/src/task/scheduler.rs");
@@ -422,4 +492,85 @@ fn restore_validator_rejects_missing_kernel_selector_guard() {
         }
     "#;
     assert!(validate_restore_source(synthetic).is_err());
+}
+
+#[test]
+fn first_userspace_entry_installs_address_space_before_ring3_commit() {
+    let source = repo_text("kernel/src/interrupts/context_switch.rs");
+    assert_eq!(validate_first_userspace_entry_source(&source), Ok(()));
+}
+
+#[test]
+fn first_userspace_entry_validator_rejects_write_first_dispatch() {
+    let synthetic = r#"
+        fn restore_userspace_thread_context(
+            thread_id: u64,
+            interrupt_frame: &mut InterruptStackFrame,
+            saved_regs: &mut SavedRegisters,
+        ) {
+            thread.has_started = true;
+            setup_first_userspace_entry(thread_id, interrupt_frame, saved_regs);
+        }
+
+        fn setup_first_userspace_entry(
+            interrupt_frame: &mut InterruptStackFrame,
+            saved_regs: &mut SavedRegisters,
+        ) {
+            interrupt_frame.as_mut().update(|frame| {
+                frame.code_segment = crate::gdt::user_code_selector();
+            });
+            saved_regs.rax = 0;
+            if let Some(cr3_value) = process.cr3_value() {
+                crate::per_cpu::set_next_cr3(cr3_value);
+                crate::gdt::set_kernel_stack(kernel_stack_top);
+            }
+        }
+    "#;
+    assert!(validate_first_userspace_entry_source(synthetic).is_err());
+}
+#[test]
+fn first_userspace_entry_validator_rejects_idle_abort_recovery() {
+    let synthetic = r#"
+        fn restore_userspace_thread_context(
+            thread_id: u64,
+            resume_thread_id: u64,
+            interrupt_frame: &mut InterruptStackFrame,
+            saved_regs: &mut SavedRegisters,
+        ) {
+            match setup_first_userspace_entry(thread_id, interrupt_frame, saved_regs) {
+                FirstUserspaceEntry::Installed => {
+                    scheduler::with_thread_mut(thread_id, |thread| {
+                        thread.has_started = true;
+                    });
+                }
+                FirstUserspaceEntry::Aborted(_) => {
+                    scheduler::abort_dispatch_and_resume(thread_id, resume_thread_id);
+                    setup_idle_return(interrupt_frame);
+                    scheduler::set_need_resched();
+                }
+            }
+        }
+
+        fn setup_first_userspace_entry(
+            interrupt_frame: &mut InterruptStackFrame,
+            saved_regs: &mut SavedRegisters,
+        ) {
+            if let Some(cr3_value) = process.cr3_value() {
+                crate::per_cpu::set_next_cr3(cr3_value);
+            } else {
+                return FirstUserspaceEntry::Aborted("missing CR3");
+            }
+            if let Some(kernel_stack_top) = thread.kernel_stack_top {
+                crate::gdt::set_kernel_stack(kernel_stack_top);
+            } else {
+                return FirstUserspaceEntry::Aborted("missing RSP0");
+            }
+            interrupt_frame.as_mut().update(|frame| {
+                frame.code_segment = crate::gdt::user_code_selector();
+            });
+            saved_regs.rax = 0;
+            FirstUserspaceEntry::Installed
+        }
+    "#;
+    assert!(validate_first_userspace_entry_source(synthetic).is_err());
 }
