@@ -193,13 +193,35 @@ pub fn sys_exit(exit_code: i32) -> SyscallResult {
 
             // Signal that userspace testing is complete with clear markers
             log::info!("🎯 USERSPACE TEST COMPLETE - All processes finished successfully");
-            log::info!("=====================================");
-            log::info!("✅ USERSPACE EXECUTION SUCCESSFUL ✅");
-            log::info!("✅ Ring 3 execution confirmed       ✅");
-            log::info!("✅ System calls working correctly   ✅");
-            log::info!("✅ Process lifecycle complete       ✅");
-            log::info!("=====================================");
-            log::info!("🏁 TEST RUNNER: All tests passed - you can exit QEMU now 🏁");
+            let (exited, nonzero) = crate::task::exit_tally::totals();
+            let (failures, failure_count) = crate::task::exit_tally::snapshot_failures();
+            let failures = &failures[..failure_count];
+            log::info!(
+                "TEST_TALLY: exited={} nonzero={} failed=[{}]",
+                exited,
+                nonzero,
+                crate::task::exit_tally::FailureList::new(failures, nonzero)
+            );
+
+            if nonzero == 0 {
+                log::info!("=====================================");
+                log::info!("✅ USERSPACE EXECUTION SUCCESSFUL ✅");
+                log::info!("✅ Ring 3 execution confirmed       ✅");
+                log::info!("✅ System calls working correctly   ✅");
+                log::info!("✅ Process lifecycle complete       ✅");
+                log::info!("=====================================");
+                log::info!("🏁 TEST RUNNER: All tests passed - you can exit QEMU now 🏁");
+            } else {
+                log::error!(
+                    "🚨 Failing userspace processes: {} 🚨",
+                    crate::task::exit_tally::FailureList::new(failures, nonzero)
+                );
+                log::error!(
+                    "🚨 TEST RUNNER: FAILED - {} of {} userspace processes exited nonzero 🚨",
+                    nonzero,
+                    exited
+                );
+            }
 
             // Set flag for automated systems that want to detect completion
             USERSPACE_TEST_COMPLETE.store(true, Ordering::SeqCst);

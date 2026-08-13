@@ -9,6 +9,7 @@ use core::{
 // Core task/thread modules - shared across architectures
 pub mod completion;
 pub mod executor;
+pub mod exit_tally;
 pub mod thread;
 pub mod waitqueue;
 
