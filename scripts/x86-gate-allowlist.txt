@@ -1,0 +1,3 @@
+# Two-way ratchet: every failure must be listed, and every listed test must still fail.
+# Required entry format: <test-name>   # <issue reference>
+# Remove an entry as soon as its referenced failure is fixed.

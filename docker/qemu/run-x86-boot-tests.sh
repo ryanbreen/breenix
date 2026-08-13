@@ -49,7 +49,7 @@ for i in $(seq 1 "$COUNT"); do
     RUNNER_PID=$!
 
     passed=false
-    for _ in $(seq 1 180); do
+    for _ in $(seq 1 300); do
         if grep -q '\[TEST:process:frame_custody_refusal_gate:PASS\]' \
             "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
             && grep -qE "$FRAME_CUSTODY_PATTERN" \
@@ -65,6 +65,8 @@ for i in $(seq 1 "$COUNT"); do
             && grep -q '\[TEST:process:x86_retire_cohort:PASS\]' \
                 "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
             && grep -qF -x "$PT_COHORT_LITERAL" \
+                "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
+            && grep -q 'TEST_TALLY:' \
                 "$OUTPUT_DIR"/serial_*.txt 2>/dev/null; then
             passed=true
             break
@@ -101,6 +103,7 @@ for i in $(seq 1 "$COUNT"); do
         "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 1
     test "$(grep -h -F -x -c "$PT_COHORT_LITERAL" \
         "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 1
+    "$BREENIX_ROOT/scripts/x86-gate-verdict.sh" "$OUTPUT_DIR"/serial_*.txt
     COUNTER_LINE=$(grep -hE "$FRAME_CUSTODY_PATTERN" \
         "$OUTPUT_DIR"/serial_*.txt | tail -1)
     echo "$COUNTER_LINE"
