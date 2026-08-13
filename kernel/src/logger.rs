@@ -9,27 +9,23 @@ use crate::graphics::primitives::{Canvas, Color};
 #[cfg(feature = "interactive")]
 use crate::graphics::DoubleBufferedFrameBuffer;
 use crate::log_serial_println;
-#[cfg(feature = "interactive")]
 use bootloader_api::info::{FrameBufferInfo, PixelFormat};
-use bootloader_x86_64_common::logger::LockedLogger;
 use conquer_once::spin::OnceCell;
 use core::fmt::{self, Write};
 use core::sync::atomic::{AtomicU64, Ordering};
 use log::{Level, LevelFilter, Log, Metadata, Record};
-#[cfg(feature = "interactive")]
 use noto_sans_mono_bitmap::{
     get_raster, get_raster_width, FontWeight, RasterHeight, RasterizedChar,
 };
 use spin::Mutex;
 
-pub static FRAMEBUFFER_LOGGER: OnceCell<LockedLogger> = OnceCell::uninit();
+static LOG_FRAMEBUFFER: OnceCell<Mutex<LogFrameBuffer>> = OnceCell::uninit();
 
 /// Shell framebuffer for direct shell output (interactive mode only)
 #[cfg(feature = "interactive")]
 pub static SHELL_FRAMEBUFFER: OnceCell<Mutex<ShellFrameBuffer>> = OnceCell::uninit();
 
-/// Font constants for shell framebuffer
-#[cfg(feature = "interactive")]
+/// Font constants shared by the diagnostic log and interactive shell consoles.
 mod shell_font {
     use super::*;
 
@@ -56,23 +52,169 @@ enum AnsiState {
 }
 
 /// Additional vertical space between lines
-#[cfg(feature = "interactive")]
 const LINE_SPACING: usize = 2;
 /// Additional horizontal space between characters
-#[cfg(feature = "interactive")]
 const LETTER_SPACING: usize = 0;
 /// Padding from the border
-#[cfg(feature = "interactive")]
 const BORDER_PADDING: usize = 1;
 
 /// Returns the raster of the given char or a backup char
-#[cfg(feature = "interactive")]
 fn get_char_raster(c: char) -> RasterizedChar {
     fn get(c: char) -> Option<RasterizedChar> {
         get_raster(c, shell_font::FONT_WEIGHT, shell_font::CHAR_RASTER_HEIGHT)
     }
     get(c)
         .unwrap_or_else(|| get(shell_font::BACKUP_CHAR).expect("Should get raster of backup char"))
+}
+
+/// Minimal direct framebuffer console for the diagnostic log sink.
+struct LogFrameBuffer {
+    buffer_ptr: *mut u8,
+    buffer_len: usize,
+    info: FrameBufferInfo,
+    x_pos: usize,
+    y_pos: usize,
+}
+
+unsafe impl Send for LogFrameBuffer {}
+unsafe impl Sync for LogFrameBuffer {}
+
+impl LogFrameBuffer {
+    fn new(buffer_ptr: *mut u8, buffer_len: usize, info: FrameBufferInfo) -> Self {
+        let framebuffer = Self {
+            buffer_ptr,
+            buffer_len,
+            info,
+            x_pos: BORDER_PADDING,
+            y_pos: BORDER_PADDING,
+        };
+        unsafe {
+            core::ptr::write_bytes(buffer_ptr, 0, buffer_len);
+        }
+        framebuffer
+    }
+
+    fn width(&self) -> usize {
+        self.info.width
+    }
+
+    fn height(&self) -> usize {
+        self.info.height
+    }
+
+    fn newline(&mut self) {
+        let next_y = self.y_pos.saturating_add(Self::line_height());
+        self.y_pos = if next_y
+            .saturating_add(shell_font::CHAR_RASTER_HEIGHT.val())
+            .saturating_add(BORDER_PADDING)
+            >= self.height()
+        {
+            BORDER_PADDING
+        } else {
+            next_y
+        };
+        self.carriage_return();
+        self.clear_current_line();
+    }
+
+    fn carriage_return(&mut self) {
+        self.x_pos = BORDER_PADDING;
+    }
+
+    const fn line_height() -> usize {
+        shell_font::CHAR_RASTER_HEIGHT.val() + LINE_SPACING
+    }
+
+    /// Clear only the destination text line. This bounds every log-path clear
+    /// independently of total framebuffer size.
+    fn clear_current_line(&mut self) {
+        let Some(row_bytes) = self.info.stride.checked_mul(self.info.bytes_per_pixel) else {
+            return;
+        };
+        let rows = Self::line_height().min(self.height().saturating_sub(self.y_pos));
+        let Some(start) = self.y_pos.checked_mul(row_bytes) else {
+            return;
+        };
+        let Some(line_bytes) = rows.checked_mul(row_bytes) else {
+            return;
+        };
+        let clear_len = line_bytes.min(self.buffer_len.saturating_sub(start));
+        if clear_len == 0 || start >= self.buffer_len {
+            return;
+        }
+        unsafe {
+            core::ptr::write_bytes(self.buffer_ptr.add(start), 0, clear_len);
+        }
+    }
+
+    fn write_char(&mut self, character: char) {
+        match character {
+            '\n' => self.newline(),
+            '\r' => self.carriage_return(),
+            character => {
+                let new_x = self.x_pos.saturating_add(shell_font::CHAR_RASTER_WIDTH);
+                if new_x >= self.width() {
+                    self.newline();
+                }
+                self.write_rendered_char(get_char_raster(character));
+            }
+        }
+    }
+
+    fn write_rendered_char(&mut self, rendered_char: RasterizedChar) {
+        for (y, row) in rendered_char.raster().iter().enumerate() {
+            for (x, intensity) in row.iter().enumerate() {
+                self.write_pixel(self.x_pos + x, self.y_pos + y, *intensity);
+            }
+        }
+        self.x_pos = self
+            .x_pos
+            .saturating_add(rendered_char.width() + LETTER_SPACING);
+    }
+
+    fn write_pixel(&mut self, x: usize, y: usize, intensity: u8) {
+        if x >= self.width() || y >= self.height() {
+            return;
+        }
+        let color = match self.info.pixel_format {
+            PixelFormat::Rgb => [intensity, intensity, intensity / 2, 0],
+            PixelFormat::Bgr => [intensity / 2, intensity, intensity, 0],
+            PixelFormat::U8 => [if intensity > 200 { 0xf } else { 0 }, 0, 0, 0],
+            _ => [intensity, intensity, intensity / 2, 0],
+        };
+        let bytes_per_pixel = self.info.bytes_per_pixel;
+        if bytes_per_pixel == 0 || bytes_per_pixel > color.len() {
+            return;
+        }
+        let Some(pixel_offset) = y
+            .checked_mul(self.info.stride)
+            .and_then(|row| row.checked_add(x))
+        else {
+            return;
+        };
+        let Some(byte_offset) = pixel_offset.checked_mul(bytes_per_pixel) else {
+            return;
+        };
+        if byte_offset.saturating_add(bytes_per_pixel) > self.buffer_len {
+            return;
+        }
+        unsafe {
+            for (index, byte) in color[..bytes_per_pixel].iter().copied().enumerate() {
+                self.buffer_ptr
+                    .add(byte_offset + index)
+                    .write_volatile(byte);
+            }
+        }
+    }
+}
+
+impl fmt::Write for LogFrameBuffer {
+    fn write_str(&mut self, string: &str) -> fmt::Result {
+        for character in string.chars() {
+            self.write_char(character);
+        }
+        Ok(())
+    }
 }
 
 /// Shell framebuffer writer for direct text output
@@ -812,6 +954,25 @@ impl CombinedLogger {
     }
 }
 
+/// Diagnostic-only framebuffer sink.
+///
+/// COM2 holds the authoritative log, so this sink must never block and must
+/// never be strandable: `try_lock` means no caller can ever wait on it, and
+/// masking interrupts across the critical section means the holder can never
+/// be preempted while it is held. Dropping a framebuffer copy under contention
+/// is correct; deadlocking the machine to render a diagnostic is not.
+#[cfg(not(feature = "interactive"))]
+fn write_framebuffer_record(record: &Record) {
+    let Some(framebuffer) = LOG_FRAMEBUFFER.get() else {
+        return;
+    };
+    crate::arch_without_interrupts(|| {
+        if let Some(mut framebuffer) = framebuffer.try_lock() {
+            let _ = writeln!(framebuffer, "{:>5}: {}", record.level(), record.args());
+        }
+    });
+}
+
 impl Log for CombinedLogger {
     fn enabled(&self, metadata: &Metadata) -> bool {
         metadata.level() <= Level::Trace
@@ -920,11 +1081,7 @@ impl Log for CombinedLogger {
                         };
 
                         if !skip_framebuffer {
-                            // TODO: Add proper synchronization to prevent rendering conflicts
-                            // For now, we'll accept occasional visual glitches rather than deadlock
-                            if let Some(fb_logger) = FRAMEBUFFER_LOGGER.get() {
-                                fb_logger.log(record);
-                            }
+                            write_framebuffer_record(record);
                         }
                     }
                 }
@@ -932,11 +1089,7 @@ impl Log for CombinedLogger {
         }
     }
 
-    fn flush(&self) {
-        if let Some(fb_logger) = FRAMEBUFFER_LOGGER.get() {
-            fb_logger.flush();
-        }
-    }
+    fn flush(&self) {}
 }
 
 pub static COMBINED_LOGGER: CombinedLogger = CombinedLogger::new();
@@ -960,22 +1113,21 @@ pub fn serial_ready() {
 /// Call `upgrade_to_double_buffer()` after heap is initialized to enable
 /// double buffering for tear-free rendering.
 pub fn init_framebuffer(buffer: &'static mut [u8], info: bootloader_api::info::FrameBufferInfo) {
+    let buffer_ptr = buffer.as_mut_ptr();
+    let buffer_len = buffer.len();
+
     // In interactive mode, store framebuffer info for later double buffer upgrade
     // We can't allocate the shadow buffer yet because the heap isn't initialized
     #[cfg(feature = "interactive")]
     {
-        // Store the framebuffer parameters for later use
-        let buffer_ptr = buffer.as_mut_ptr();
-        let buffer_len = buffer.len();
-
         // Initialize with direct hardware writes (no double buffering yet)
         let _ = SHELL_FRAMEBUFFER
             .get_or_init(|| Mutex::new(ShellFrameBuffer::new_direct(buffer_ptr, buffer_len, info)));
     }
 
     // Initialize framebuffer logger (used for non-interactive mode)
-    let _fb_logger =
-        FRAMEBUFFER_LOGGER.get_or_init(move || LockedLogger::new(buffer, info, true, false));
+    let _ = LOG_FRAMEBUFFER
+        .get_or_init(|| Mutex::new(LogFrameBuffer::new(buffer_ptr, buffer_len, info)));
 
     // Mark logger as fully ready
     COMBINED_LOGGER.fully_ready();
