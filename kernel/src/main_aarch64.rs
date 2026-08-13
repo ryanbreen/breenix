@@ -1277,6 +1277,8 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
         kernel::test_framework::btrt::pass(kernel::test_framework::catalog::BOOT_TESTS_COMPLETE);
     }
 
+    kernel::tracing::providers::teardown::emit_root_custody_summary();
+
     // Finalize BTRT: in non-testing mode, finalize now (kernel milestones only).
     // In testing mode, auto-finalize happens via on_process_exit() when all
     // registered test processes have completed.

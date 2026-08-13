@@ -369,6 +369,10 @@ counter!(
     "Reclaim calls from forbidden contexts"
 );
 counter!(
+    RECLAIM_DRAIN_NESTED_REFUSED,
+    "Reclaim calls refused while another drain owns the queues"
+);
+counter!(
     TEARDOWN_LOCK_ORDER_SUSPECT,
     "Suspect teardown lock ordering"
 );
@@ -491,6 +495,7 @@ counter!(
     PT_ROOT_SLOT_REFUSED,
     "Mappings refused into inherited root slots"
 );
+counter!(PT_SHADOW_ROOT_CLEARED, "Saved x86 process roots cleared");
 
 // Declaration-only until the phase named in PLAN.md. These intentionally have
 // no trace_count! producer yet.
@@ -519,7 +524,7 @@ counter!(
     "Fatal group signals dropped for init"
 );
 
-pub const COUNTER_COUNT: usize = 71;
+pub const COUNTER_COUNT: usize = 73;
 
 /// The registration and normal-context reader inventory. Keeping one inventory
 /// makes a write-only counter structurally impossible without changing the P0
@@ -543,6 +548,7 @@ pub static COUNTERS: [&TraceCounter; COUNTER_COUNT] = [
     &RECLAIM_ENQUEUE_UNDER_PM,
     &PROOF_UNDER_QUEUE_LOCK,
     &RECLAIM_CONTEXT_VIOLATIONS,
+    &RECLAIM_DRAIN_NESTED_REFUSED,
     &TEARDOWN_LOCK_ORDER_SUSPECT,
     &ROOT_PROOF_BLOCKED_EPOCH,
     &ROOT_PROOF_BLOCKED_HW,
@@ -582,6 +588,7 @@ pub static COUNTERS: [&TraceCounter; COUNTER_COUNT] = [
     &PT_ROOT_DROPPED_MID_RETIRE,
     &PT_RETIRE_BUDGET_REQUEUED,
     &PT_ROOT_SLOT_REFUSED,
+    &PT_SHADOW_ROOT_CLEARED,
     &RECLAIM_PASS_SKIPPED,
     &RECLAIM_PARKED,
     &RECLAIM_UNPARKED_EPOCH,
@@ -611,6 +618,23 @@ pub fn init() {
 /// Read every Phase-0 counter from normal context.
 pub fn snapshot() -> [u64; COUNTER_COUNT] {
     core::array::from_fn(|index| COUNTERS[index].aggregate())
+}
+
+/// Emit the root-disposition counters from normal context.
+///
+/// The production userspace heartbeat reads `/proc/trace/counters`, so that
+/// cold procfs path repeats this line as the hardware run progresses. Both
+/// architecture boot paths also emit it once before launching userspace.
+pub fn emit_root_custody_summary() {
+    crate::serial_println!(
+        "[PT_ROOT_CUSTODY:no_proof={}:no_arch={}:terminated={}:undecided={}:mid_retire={}:retired={}]",
+        PT_ROOT_ABANDONED_NO_PROOF.aggregate(),
+        PT_ROOT_ABANDONED_NO_ARCH.aggregate(),
+        PT_ROOT_ABANDONED_TERMINATED.aggregate(),
+        PT_ROOT_DROPPED_UNDECIDED.aggregate(),
+        PT_ROOT_DROPPED_MID_RETIRE.aggregate(),
+        PT_ROOTS_RETIRED.aggregate()
+    );
 }
 
 #[cfg(feature = "boot_tests")]
@@ -1340,6 +1364,15 @@ pub fn fork_exit_defer_reclaim_pairing_test() -> crate::test_framework::registry
         } else if child_expected_tables != expected_tables {
             return TestResult::Fail("pairing sentinel hierarchy cost changed between children");
         }
+        #[cfg(target_arch = "x86_64")]
+        let mut pending_old_page_table = if iteration == 0 {
+            match crate::memory::process_memory::ProcessPageTable::new() {
+                Ok(page_table) => Some(alloc::boxed::Box::new(page_table)),
+                Err(_) => return TestResult::Fail("pairing old page-table allocation failed"),
+            }
+        } else {
+            None
+        };
         let child = {
             let mut manager_guard = crate::process::manager();
             let Some(manager) = manager_guard.as_mut() else {
@@ -1369,6 +1402,13 @@ pub fn fork_exit_defer_reclaim_pairing_test() -> crate::test_framework::registry
             else {
                 return TestResult::Fail("pairing child has no main thread");
             };
+            #[cfg(target_arch = "x86_64")]
+            if let Some(old_page_table) = pending_old_page_table.take() {
+                let Some(child_process) = manager.get_process_mut(child_pid) else {
+                    return TestResult::Fail("pairing child disappeared before old-root install");
+                };
+                child_process.pending_old_page_tables.push(old_page_table);
+            }
             (child_pid, child_tid)
         };
 

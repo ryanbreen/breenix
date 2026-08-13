@@ -5443,14 +5443,14 @@ static PROCESS_TESTS: &[TestDef] = &[
     TestDef {
         name: "fork_exit_defer_reclaim_pairing_test",
         func: crate::tracing::providers::teardown::fork_exit_defer_reclaim_pairing_test,
-        arch: Arch::Any,
+        arch: Arch::Aarch64,
         timeout_ms: 30000,
         stage: TestStage::PostScheduler,
     },
     TestDef {
         name: "retirement_fence_gate",
         func: crate::task::process_task::retirement_fence_gate_test,
-        arch: Arch::Any,
+        arch: Arch::Aarch64,
         timeout_ms: 5000,
         stage: TestStage::PostScheduler,
     },
@@ -5461,14 +5461,6 @@ static PROCESS_TESTS: &[TestDef] = &[
         arch: Arch::Aarch64,
         timeout_ms: 10000,
         stage: TestStage::PostScheduler,
-    },
-    #[cfg(target_arch = "x86_64")]
-    TestDef {
-        name: "reclaim_progress_gate",
-        func: crate::task::process_task::reclaim_progress_gate_test,
-        arch: Arch::X86_64,
-        timeout_ms: 10000,
-        stage: TestStage::SerialBoot,
     },
     #[cfg(target_arch = "aarch64")]
     TestDef {

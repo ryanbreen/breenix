@@ -630,10 +630,19 @@ extern "C" fn kernel_main_on_kernel_stack(arg: *mut core::ffi::c_void) -> ! {
 
     // Run after process::init() and the memory custody gates, while deferred-reclaim
     // queues are still quiescent and before any user process exists. This is inside
-    // the IF=1 driver-test window because the gate needs timer ticks and scheduler
-    // epochs; placing it immediately after process::init() would spin forever.
+    // the IF=1 driver-test window because the gates need timer ticks and scheduler
+    // epochs; placing them immediately after process::init() would spin forever.
+    // The state-free fence check runs first. The reclaim-progress gate then owns
+    // and returns quiescent deferred-reclaim queues. The cohort runs last because
+    // it creates 64 synthetic children and is the only allocation-heavy gate.
     #[cfg(all(target_arch = "x86_64", feature = "boot_tests"))]
-    kernel::tracing::providers::teardown::run_x86_retire_cohort_gate();
+    {
+        kernel::task::process_task::run_x86_retirement_fence_gate();
+        kernel::task::process_task::run_x86_reclaim_progress_gate();
+        kernel::tracing::providers::teardown::run_x86_retire_cohort_gate();
+    }
+
+    kernel::tracing::providers::teardown::emit_root_custody_summary();
 
     x86_64::instructions::interrupts::disable();
     log::info!("Driver post-init self-tests complete; interrupts disabled for remaining init");

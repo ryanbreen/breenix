@@ -167,6 +167,7 @@ fn shadow_root_is_live(reclaim: &PendingProcessReclaim, online_mask: u64) -> boo
 fn clear_shadow_root(root: u64) {
     if roots_match(crate::per_cpu::get_saved_process_cr3(), root) {
         crate::per_cpu::set_saved_process_cr3(0);
+        crate::trace_count!(crate::tracing::providers::teardown::PT_SHADOW_ROOT_CLEARED);
     }
 }
 
@@ -241,12 +242,8 @@ impl PendingProcessReclaim {
             self.old_page_tables.pop();
         }
         #[cfg(target_arch = "x86_64")]
-        while budget > 0 {
-            let Some(old_page_table) = self.old_page_tables.pop() else {
-                break;
-            };
-            budget -= 1;
-            old_page_table.cleanup_for_exec();
+        if !drain_old_page_tables_counted(self.pid, &mut self.old_page_tables, &mut budget) {
+            return RetireProgress::Budgeted;
         }
         if !self.old_page_tables.is_empty() {
             return RetireProgress::Budgeted;
@@ -364,14 +361,27 @@ pub(crate) fn note_process_row_removed() {
 /// TEARDOWN_MASKED_FRAMES_WALKED: a deferred exit that walks nothing keeps the
 /// counter flat, which is exactly what the leaf-timing oracle asserts.
 #[cfg(target_arch = "x86_64")]
-fn drain_old_page_tables_counted(process: &mut crate::process::Process) {
-    if process.pending_old_page_tables.is_empty() {
-        return;
+fn drain_old_page_tables_counted(
+    pid: u64,
+    old_page_tables: &mut alloc::vec::Vec<
+        alloc::boxed::Box<crate::memory::process_memory::ProcessPageTable>,
+    >,
+    budget: &mut u32,
+) -> bool {
+    if old_page_tables.is_empty() {
+        return true;
     }
     if crate::process::process_manager_held_on_current_cpu() {
-        crate::tracing::providers::teardown::record_masked_frames_walked(process.id.as_u64());
+        crate::tracing::providers::teardown::record_masked_frames_walked(pid);
     }
-    process.drain_old_page_tables();
+    while *budget > 0 {
+        let Some(old_page_table) = old_page_tables.pop() else {
+            return true;
+        };
+        *budget -= 1;
+        old_page_table.cleanup_for_exec();
+    }
+    old_page_tables.is_empty()
 }
 
 #[cfg(any(target_arch = "aarch64", feature = "boot_tests"))]
@@ -385,7 +395,15 @@ pub(crate) fn release_process_resources(process: &mut crate::process::Process) {
     #[cfg(target_arch = "aarch64")]
     process.drain_old_page_tables();
     #[cfg(target_arch = "x86_64")]
-    drain_old_page_tables_counted(process);
+    {
+        let mut budget = u32::MAX;
+        let pid = process.id.as_u64();
+        let _ = drain_old_page_tables_counted(
+            pid,
+            &mut process.pending_old_page_tables,
+            &mut budget,
+        );
+    }
     #[cfg(target_arch = "aarch64")]
     if let Some(page_table) = process.page_table.take() {
         page_table.abandon(AbandonReason::NoProofPipeline);
@@ -452,10 +470,8 @@ impl Drop for ForceLiveReclaimTestGuard {
 pub(crate) fn defer_process_resources(
     process: &mut crate::process::Process,
 ) -> PendingProcessReclaim {
-    // PR-4 owns x86 exec-root custody. Preserve today's consuming descriptor
-    // walk at process exit instead of moving old roots into this receipt.
-    #[cfg(target_arch = "x86_64")]
-    drain_old_page_tables_counted(process);
+    // Carry superseded exec roots into the same proof-gated receipt as the
+    // current root. The owning drain consumes them after PM is out of scope.
     crate::tracing::providers::teardown::record_defer(process.id.as_u64());
     let page_table = process.page_table.take();
     #[cfg(target_arch = "x86_64")]
@@ -501,7 +517,9 @@ fn boot_forces_reclaim_reserve_failure() -> bool {
 fn push_pending_or_abandon(reclaim: PendingProcessReclaim) {
     let mut reclaim = Some(reclaim);
     let queued = crate::arch_without_interrupts(|| {
-        let mut pending = PENDING_PROCESS_RECLAIMS.lock();
+        let Some(mut pending) = PENDING_PROCESS_RECLAIMS.try_lock() else {
+            return false;
+        };
         #[cfg(feature = "boot_tests")]
         let reservation = if boot_forces_reclaim_reserve_failure() {
             pending.try_reserve(usize::MAX)
@@ -895,7 +913,9 @@ fn park_reclaim(mut reclaim: PendingProcessReclaim) {
     reclaim.parked = Some(park_record);
     let mut reclaim = Some(reclaim);
     let parked = crate::arch_without_interrupts(|| {
-        let mut parked = PARKED_PROCESS_RECLAIMS.lock();
+        let Some(mut parked) = PARKED_PROCESS_RECLAIMS.try_lock() else {
+            return false;
+        };
         if parked.try_reserve(1).is_err() {
             false
         } else {
@@ -918,8 +938,10 @@ fn park_reclaim(mut reclaim: PendingProcessReclaim) {
 
 fn unpark_sweep_with_snapshot(snapshot: scheduler::RetirementSnapshot, row_epoch: u64) {
     let mut ready = alloc::vec::Vec::new();
-    crate::arch_without_interrupts(|| {
-        let mut parked = PARKED_PROCESS_RECLAIMS.lock();
+    let swept = crate::arch_without_interrupts(|| {
+        let Some(mut parked) = PARKED_PROCESS_RECLAIMS.try_lock() else {
+            return false;
+        };
         let mut index = 0;
         while index < parked.len() {
             let reason = parked[index]
@@ -940,11 +962,17 @@ fn unpark_sweep_with_snapshot(snapshot: scheduler::RetirementSnapshot, row_epoch
                 index += 1;
             }
         }
+        true
     });
+    if !swept {
+        return;
+    }
     if !ready.is_empty() {
         let mut ready = Some(ready);
         let queued = crate::arch_without_interrupts(|| {
-            let mut pending = PENDING_PROCESS_RECLAIMS.lock();
+            let Some(mut pending) = PENDING_PROCESS_RECLAIMS.try_lock() else {
+                return false;
+            };
             let ready_len = ready.as_ref().expect("ready reclaims retained").len();
             if pending.try_reserve(ready_len).is_err() {
                 false
@@ -1049,8 +1077,9 @@ pub fn reclaim_deferred_process_resources() {
         .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
         .is_err()
     {
+        // Refusing benign nesting is correct: the receipt is already queued; the owning drain will take it.
         crate::trace_count!(
-            crate::tracing::providers::teardown::RECLAIM_CONTEXT_VIOLATIONS
+            crate::tracing::providers::teardown::RECLAIM_DRAIN_NESTED_REFUSED
         );
         return;
     }
@@ -2124,6 +2153,33 @@ pub fn reclaim_progress_gate_test() -> crate::test_framework::registry::TestResu
         return TestResult::Fail("P1 reclaim gate left residents or nested proof locks");
     }
     TestResult::Pass
+}
+
+#[cfg(all(feature = "boot_tests", target_arch = "x86_64"))]
+pub fn run_x86_retirement_fence_gate() {
+    crate::serial_println!("[TEST:process:retirement_fence_gate:START]");
+    let result = retirement_fence_gate_test();
+    if result.is_pass() {
+        crate::serial_println!("[TEST:process:retirement_fence_gate:PASS]");
+    } else {
+        crate::serial_println!(
+            "[TEST:process:retirement_fence_gate:FAIL:{:?}]",
+            result
+        );
+    }
+    assert!(result.is_pass(), "x86 retirement fence gate failed");
+}
+
+#[cfg(all(feature = "boot_tests", target_arch = "x86_64"))]
+pub fn run_x86_reclaim_progress_gate() {
+    crate::serial_println!("[TEST:process:reclaim_progress_gate:START]");
+    let result = reclaim_progress_gate_test();
+    if result.is_pass() {
+        crate::serial_println!("[TEST:process:reclaim_progress_gate:PASS]");
+    } else {
+        crate::serial_println!("[TEST:process:reclaim_progress_gate:FAIL:{:?}]", result);
+    }
+    assert!(result.is_pass(), "x86 reclaim progress gate failed");
 }
 
 #[cfg(feature = "boot_tests")]

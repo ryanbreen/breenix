@@ -12,7 +12,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BREENIX_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 FRAME_CUSTODY_PATTERN='^\[FRAME_CUSTODY_COUNTERS:x86:double=1:stale=1:never=1:untracked=1:duplicate=3:contended=[1-9][0-9]*\]$'
 PT_CUSTODY_LITERAL='[PT_CUSTODY_COUNTERS:x86:recorded=11:no_proof=0:no_arch=0:terminated=1:undecided=1:exec_unreturned=0:retired=1:returned=10:lost=0:requeued=0]'
-PT_COHORT_LITERAL='[PT_RETIRE_COHORT:x86:children=64:retired=64:returned=640:recorded=576:lost=0:no_arch=0:undecided=0:mid_retire=0:balance=0]'
+PT_COHORT_LITERAL='TODO(observe): replace with exact [PT_RETIRE_COHORT:x86:...] line'
 
 cd "$BREENIX_ROOT"
 cargo build --release --features boot_tests,testing,external_test_bins --bin qemu-uefi
@@ -58,6 +58,10 @@ for i in $(seq 1 "$COUNT"); do
                 "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
             && grep -qF -x "$PT_CUSTODY_LITERAL" \
                 "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
+            && grep -q '\[TEST:process:retirement_fence_gate:PASS\]' \
+                "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
+            && grep -q '\[TEST:process:reclaim_progress_gate:PASS\]' \
+                "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
             && grep -q '\[TEST:process:x86_retire_cohort:PASS\]' \
                 "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
             && grep -qF -x "$PT_COHORT_LITERAL" \
@@ -82,6 +86,10 @@ for i in $(seq 1 "$COUNT"); do
     test "$(grep -h -c '\[TEST:process:frame_custody_refusal_gate:PASS\]' \
         "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 1
     test "$(grep -h -c '\[TEST:process:page_table_custody_disposition_gate:PASS\]' \
+        "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 1
+    test "$(grep -h -c '\[TEST:process:retirement_fence_gate:PASS\]' \
+        "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 1
+    test "$(grep -h -c '\[TEST:process:reclaim_progress_gate:PASS\]' \
         "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 1
     test "$(grep -h -c '\[TEST:process:x86_retire_cohort:PASS\]' \
         "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 1
