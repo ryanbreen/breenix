@@ -912,7 +912,7 @@ fn switch_to_thread(
 }
 
 /// Set up interrupt frame to return to idle loop
-fn setup_idle_return(interrupt_frame: &mut InterruptStackFrame) {
+pub(crate) fn setup_idle_return(interrupt_frame: &mut InterruptStackFrame) {
     // CRITICAL: Get the idle thread's actual kernel stack from the scheduler
     // Do NOT use per_cpu::kernel_stack_top() because that gets updated during
     // context switches and may point to a different thread's stack!

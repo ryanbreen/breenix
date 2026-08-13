@@ -1479,33 +1479,9 @@ extern "x86-interrupt" fn page_fault_handler(
             // This ensures subsequent timer interrupts can properly schedule other threads.
             crate::task::scheduler::switch_to_idle();
 
-            // CRITICAL FIX: Instead of entering an hlt loop (which doesn't work because
-            // timer interrupts can't properly schedule from exception context), modify
-            // the exception frame to return directly to the idle loop.
-            //
-            // NOTE: CR3 was already switched to kernel page table above. DO NOT call
-            // switch_to_kernel_page_table() again - redundant CR3 writes with TLB flush
-            // can cause hangs when on the IST stack.
-            unsafe {
-                stack_frame.as_mut().update(|frame| {
-                    frame.code_segment = crate::gdt::kernel_code_selector();
-                    frame.stack_segment = crate::gdt::kernel_data_selector();
-                    frame.instruction_pointer =
-                        x86_64::VirtAddr::new(context_switch::idle_loop as *const () as u64);
-                    // CRITICAL: Set both INTERRUPT_FLAG (bit 9) AND reserved bit 1 (always required)
-                    // 0x202 = INTERRUPT_FLAG (0x200) | reserved bit 1 (0x002)
-                    let flags_ptr =
-                        &mut frame.cpu_flags as *mut x86_64::registers::rflags::RFlags as *mut u64;
-                    *flags_ptr = 0x202;
-
-                    // CRITICAL: Use the idle thread's actual kernel stack, NOT the IST stack!
-                    // The page fault handler runs on IST[1] which is small and not meant
-                    // for general execution. Using current_rsp would continue on IST stack
-                    // which can overflow when timer interrupts fire.
-                    let idle_stack = crate::per_cpu::kernel_stack_top();
-                    frame.stack_pointer = x86_64::VirtAddr::new(idle_stack);
-                });
-            }
+            // CR3 is already the kernel table. Rewrite the frame last, using the
+            // scheduler-owned idle thread stack rather than the dying thread's stack.
+            context_switch::setup_idle_return(&mut stack_frame);
 
             log::info!("Page fault handler: Modified exception frame to return to idle loop");
 
@@ -1790,31 +1766,9 @@ extern "x86-interrupt" fn general_protection_fault_handler(
         // This ensures subsequent timer interrupts can properly schedule other threads.
         crate::task::scheduler::switch_to_idle();
 
-        // CRITICAL FIX: Instead of entering an hlt loop (which doesn't work because
-        // timer interrupts can't properly schedule from exception context), modify
-        // the exception frame to return directly to the idle loop.
-        //
-        // NOTE: CR3 was already switched to kernel page table above. DO NOT call
-        // switch_to_kernel_page_table() again - redundant CR3 writes with TLB flush
-        // can cause hangs when on the IST stack.
-        unsafe {
-            stack_frame.as_mut().update(|frame| {
-                frame.code_segment = crate::gdt::kernel_code_selector();
-                frame.stack_segment = crate::gdt::kernel_data_selector();
-                frame.instruction_pointer =
-                    x86_64::VirtAddr::new(context_switch::idle_loop as *const () as u64);
-                // CRITICAL: Set both INTERRUPT_FLAG (bit 9) AND reserved bit 1 (always required)
-                // 0x202 = INTERRUPT_FLAG (0x200) | reserved bit 1 (0x002)
-                let flags_ptr =
-                    &mut frame.cpu_flags as *mut x86_64::registers::rflags::RFlags as *mut u64;
-                *flags_ptr = 0x202;
-
-                // Set up kernel stack - use current RSP with some headroom
-                let current_rsp: u64;
-                core::arch::asm!("mov {}, rsp", out(reg) current_rsp);
-                frame.stack_pointer = x86_64::VirtAddr::new(current_rsp + 256);
-            });
-        }
+        // CR3 is already the kernel table. Rewrite the frame last, using the
+        // scheduler-owned idle thread stack rather than the exception IST stack.
+        context_switch::setup_idle_return(&mut stack_frame);
 
         log::info!("GPF handler: Modified exception frame to return to idle loop");
 

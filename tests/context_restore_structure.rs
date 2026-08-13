@@ -414,6 +414,75 @@ fn validate_first_userspace_entry_source(source: &str) -> Result<(), String> {
     Ok(())
 }
 
+fn validate_fault_idle_return_source(source: &str) -> Result<(), String> {
+    fn inline_rsp_outputs(body: &str) -> Vec<String> {
+        let mask = code_mask(body);
+        let mut outputs = Vec::new();
+        for (literal_offset, literal) in body.match_indices("\"mov {}, rsp\"") {
+            let after_literal = literal_offset + literal.len();
+            let tail = &body[after_literal..];
+            let tail_mask = &mask[after_literal..];
+            let Some(out_offset) = identifier_offsets(tail, tail_mask, "out").first().copied()
+            else {
+                continue;
+            };
+            let after_out = after_literal + out_offset + "out".len();
+            let reg_tail = &body[after_out..];
+            let reg_mask = &mask[after_out..];
+            let Some(reg_offset) = identifier_offsets(reg_tail, reg_mask, "reg").first().copied()
+            else {
+                continue;
+            };
+            let mut cursor = after_out + reg_offset + "reg".len();
+            while cursor < body.len()
+                && (!mask[cursor] || !identifier_byte(body.as_bytes()[cursor]))
+            {
+                cursor += 1;
+            }
+            let start = cursor;
+            while cursor < body.len()
+                && mask[cursor]
+                && identifier_byte(body.as_bytes()[cursor])
+            {
+                cursor += 1;
+            }
+            if cursor > start {
+                outputs.push(body[start..cursor].to_string());
+            }
+        }
+        outputs
+    }
+
+    for handler in ["page_fault_handler", "general_protection_fault_handler"] {
+        let body = function_body(source, handler)
+            .ok_or_else(|| format!("missing fn {handler}"))?;
+        let mask = code_mask(body);
+        if identifier_offsets(body, &mask, "setup_idle_return").len() != 1 {
+            return Err(format!("{handler} does not use the shared idle-return helper"));
+        }
+        if !identifier_offsets(body, &mask, "kernel_stack_top").is_empty() {
+            return Err(format!("{handler} computes an idle stack from kernel_stack_top"));
+        }
+        for output in inline_rsp_outputs(body) {
+            for stack_pointer in identifier_offsets(body, &mask, "stack_pointer") {
+                let end = (stack_pointer..body.len())
+                    .find(|offset| mask[*offset] && body.as_bytes()[*offset] == b';')
+                    .unwrap_or(body.len());
+                let statement = &body[stack_pointer..end];
+                let statement_mask = code_mask(statement);
+                if statement.contains('=')
+                    && !identifier_offsets(statement, &statement_mask, &output).is_empty()
+                {
+                    return Err(format!(
+                        "{handler} derives its idle stack from the exception RSP"
+                    ));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 #[test]
 fn unblock_preserves_blocked_syscall_context_ownership() {
     let source = repo_text("kernel/src/task/scheduler.rs");
@@ -528,6 +597,7 @@ fn first_userspace_entry_validator_rejects_write_first_dispatch() {
     "#;
     assert!(validate_first_userspace_entry_source(synthetic).is_err());
 }
+
 #[test]
 fn first_userspace_entry_validator_rejects_idle_abort_recovery() {
     let synthetic = r#"
@@ -573,4 +643,48 @@ fn first_userspace_entry_validator_rejects_idle_abort_recovery() {
         }
     "#;
     assert!(validate_first_userspace_entry_source(synthetic).is_err());
+}
+
+#[test]
+fn userspace_fault_termination_returns_on_the_idle_thread_stack() {
+    let source = repo_text("kernel/src/interrupts.rs");
+    assert_eq!(validate_fault_idle_return_source(&source), Ok(()));
+}
+
+#[test]
+fn userspace_fault_idle_return_validator_rejects_private_stack_derivation() {
+    let kernel_stack_mutant = r#"
+        fn page_fault_handler(mut stack_frame: InterruptStackFrame) {
+            switch_to_idle();
+            setup_idle_return(&mut stack_frame);
+            let idle_stack = crate::per_cpu::kernel_stack_top();
+            stack_frame.as_mut().update(|frame| {
+                frame.stack_pointer = VirtAddr::new(idle_stack);
+            });
+        }
+
+        fn general_protection_fault_handler(mut stack_frame: InterruptStackFrame) {
+            switch_to_idle();
+            setup_idle_return(&mut stack_frame);
+        }
+    "#;
+    assert!(validate_fault_idle_return_source(kernel_stack_mutant).is_err());
+
+    let ist_stack_mutant = r#"
+        fn page_fault_handler(mut stack_frame: InterruptStackFrame) {
+            switch_to_idle();
+            setup_idle_return(&mut stack_frame);
+        }
+
+        fn general_protection_fault_handler(mut stack_frame: InterruptStackFrame) {
+            switch_to_idle();
+            setup_idle_return(&mut stack_frame);
+            let current_rsp: u64;
+            core::arch::asm!("mov {}, rsp", out(reg) current_rsp);
+            stack_frame.as_mut().update(|frame| {
+                frame.stack_pointer = VirtAddr::new(current_rsp + 256);
+            });
+        }
+    "#;
+    assert!(validate_fault_idle_return_source(ist_stack_mutant).is_err());
 }
