@@ -2,8 +2,6 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-type Site = (String, usize);
-
 fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
@@ -38,43 +36,6 @@ fn rust_sources_below(relative: &str) -> Vec<(String, String)> {
     visit(&root, &root.join(relative), &mut sources);
     sources.sort_by(|left, right| left.0.cmp(&right.0));
     sources
-}
-
-fn is_code(line: &str) -> bool {
-    let trimmed = line.trim_start();
-    !trimmed.starts_with("//") && !trimmed.starts_with("/*") && !trimmed.starts_with('*')
-}
-
-fn sites_matching<F>(sources: &[(String, String)], mut predicate: F) -> BTreeSet<Site>
-where
-    F: FnMut(&str) -> bool,
-{
-    let mut sites = BTreeSet::new();
-    for (path, source) in sources {
-        for (index, line) in source.lines().enumerate() {
-            if is_code(line) && predicate(line) {
-                sites.insert((path.clone(), index + 1));
-            }
-        }
-    }
-    sites
-}
-
-fn expected(sites: &[(&str, usize)]) -> BTreeSet<Site> {
-    sites
-        .iter()
-        .map(|(path, line)| ((*path).to_owned(), *line))
-        .collect()
-}
-
-fn assert_exact(actual: BTreeSet<Site>, expected_sites: &[(&str, usize)], label: &str) {
-    assert_eq!(actual, expected(expected_sites), "{label} changed");
-}
-
-fn validate_exact(actual: &BTreeSet<Site>, expected_sites: &[(&str, usize)]) -> Result<(), ()> {
-    (*actual == expected(expected_sites))
-        .then_some(())
-        .ok_or(())
 }
 
 fn with_synthetic_source(
@@ -126,7 +87,7 @@ fn code_mask(source: &str) -> Vec<bool> {
     while index < bytes.len() {
         let byte = bytes[index];
         if line_comment {
-            if byte == b'\n' {
+            if matches!(byte, b'\n') {
                 line_comment = false;
             } else {
                 mask[index] = false;
@@ -372,22 +333,6 @@ fn transitively_called_functions(source: &str, roots: &[&str]) -> BTreeSet<Strin
         }
     }
     reached
-}
-
-fn code_sites(sources: &[(String, String)], needle: &str) -> BTreeSet<Site> {
-    let mut sites = BTreeSet::new();
-    for (path, source) in sources {
-        let mask = code_mask(source);
-        for offset in code_offsets(source, &mask, needle) {
-            let line = source.as_bytes()[..offset]
-                .iter()
-                .filter(|byte| **byte == b'\n')
-                .count()
-                + 1;
-            sites.insert((path.clone(), line));
-        }
-    }
-    sites
 }
 
 /// Code offsets for calls whose balanced argument subtree contains `needle`.
@@ -1061,7 +1006,7 @@ fn function_body<'a>(source: &'a str, name: &str) -> &'a str {
         let byte = bytes[index];
 
         if line_comment {
-            if byte == b'\n' {
+            if matches!(byte, b'\n') {
                 line_comment = false;
             }
             index += 1;
@@ -1159,6 +1104,445 @@ fn function_body<'a>(source: &'a str, name: &str) -> &'a str {
     panic!("unterminated function {name}")
 }
 
+// ---------------------------------------------------------------------------
+// Structural anchors
+//
+// A ratchet site is named by `(repo-relative path, canonical item path)` plus an
+// occurrence count -- never by a source line, so reflowing or moving code inside
+// a pinned function costs nothing while an added, removed or relocated site is
+// still red. To re-verify that no line pin has crept back in, run from the repo
+// root (expected output `0`):
+//
+//   tr '\n' ' ' < tests/teardown_structure.rs | grep -coE '\(&str, *usize[,)]|"(kernel|docker|docs|libs|xtask)/[^"]*" *, *[0-9]+|\.lines\(\) *\.(nth|enumerate)\(|== *b.\\n.'
+// The last alternative catches offset-to-line-number conversion by counting
+// `b'\n'`. Two legitimate lexer newline checks in `code_mask` and
+// `function_body` would trip it, so they use `matches!(byte, b'\n')` instead.
+// Do not "tidy" them back to direct byte-equality newline checks.
+// ---------------------------------------------------------------------------
+
+/// (repo-relative path, canonical item path).
+type Anchor = (String, String);
+
+/// Every anchor holding at least one match, with its match count.
+type Census = BTreeMap<Anchor, usize>;
+
+/// The first code byte at or after `from`, skipping trivia.
+fn next_code(source: &str, mask: &[bool], from: usize) -> Option<usize> {
+    let bytes = source.as_bytes();
+    (from..bytes.len()).find(|index| mask[*index] && !bytes[*index].is_ascii_whitespace())
+}
+
+/// The last code byte before `before`, skipping trivia.
+fn previous_code(source: &str, mask: &[bool], before: usize) -> Option<usize> {
+    let bytes = source.as_bytes();
+    (0..before)
+        .rev()
+        .find(|index| mask[*index] && !bytes[*index].is_ascii_whitespace())
+}
+
+/// Whether the token immediately before `offset`, modulo trivia, is `keyword`.
+fn preceded_by_keyword(source: &str, mask: &[bool], offset: usize, keyword: &str) -> bool {
+    let bytes = source.as_bytes();
+    let Some(end) = previous_code(source, mask, offset) else {
+        return false;
+    };
+    if !identifier_byte(bytes[end]) {
+        return false;
+    }
+    let mut start = end;
+    while start > 0 && mask[start - 1] && identifier_byte(bytes[start - 1]) {
+        start -= 1;
+    }
+    &source[start..end + 1] == keyword
+}
+
+/// Whether the code text at `from`, modulo trivia, begins with `expected`.
+fn code_follows(source: &str, mask: &[bool], from: usize, expected: &str) -> bool {
+    let bytes = source.as_bytes();
+    let mut cursor = from;
+    for wanted in expected.bytes() {
+        let Some(next) = next_code(source, mask, cursor) else {
+            return false;
+        };
+        if bytes[next] != wanted {
+            return false;
+        }
+        cursor = next + 1;
+    }
+    true
+}
+
+/// The `)` closing the `(` at `open`, honouring nesting.
+fn matching_paren(source: &str, mask: &[bool], open: usize) -> Option<usize> {
+    let bytes = source.as_bytes();
+    let mut depth = 0usize;
+    for index in open..bytes.len() {
+        if !mask[index] {
+            continue;
+        }
+        match bytes[index] {
+            b'(' => depth += 1,
+            b')' => {
+                depth = depth.checked_sub(1)?;
+                if depth == 0 {
+                    return Some(index);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// The `#[cfg(...)]` attribute decorating the item whose keyword sits at
+/// `keyword`, whitespace and quotes removed, or `""` when it has none. Keeping
+/// the attribute in the anchor makes `cfg`-split siblings distinct items, so a
+/// call migrating between architectures is a key change rather than a line move.
+fn header_cfg(header: &str, mask: &[bool], keyword: usize) -> String {
+    let bytes = header.as_bytes();
+    let mut attribute = "";
+    for offset in code_offsets(header, mask, "#[cfg") {
+        if offset >= keyword {
+            break;
+        }
+        let Some(paren) = next_code(header, mask, offset + "#[cfg".len()) else {
+            continue;
+        };
+        if bytes[paren] != b'(' {
+            continue;
+        }
+        let mut depth = 0usize;
+        for close in offset..bytes.len() {
+            match bytes[close] {
+                b'[' => depth += 1,
+                b']' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        attribute = &header[offset..close + 1];
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    if attribute.is_empty() {
+        return String::new();
+    }
+    let compact: String = attribute
+        .chars()
+        .filter(|character| !character.is_whitespace() && *character != '"')
+        .collect();
+    format!("{compact} ")
+}
+
+/// The `impl` header text from its keyword to the body brace, comments removed,
+/// whitespace collapsed and any `where` clause dropped.
+fn impl_segment(header: &str, mask: &[bool], keyword: usize) -> String {
+    let kept: Vec<u8> = header.as_bytes()[keyword..]
+        .iter()
+        .zip(&mask[keyword..])
+        .filter_map(|(byte, code)| code.then_some(*byte))
+        .collect();
+    let text = String::from_utf8_lossy(&kept)
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    match text.find(" where ") {
+        Some(clause) => text[..clause].to_owned(),
+        None => text,
+    }
+}
+
+/// How an item declared by `header` is named in an anchor: `fn NAME`,
+/// `impl TYPE`, `impl TRAIT for TYPE`, `mod NAME` or `trait NAME`, prefixed by
+/// its `#[cfg(...)]` attribute when it has one.
+fn item_segment(header: &str, mask: &[bool]) -> Option<String> {
+    let bytes = header.as_bytes();
+    let named = |keyword: usize, length: usize| -> Option<String> {
+        let mut cursor = keyword + length;
+        while cursor < bytes.len() && (!mask[cursor] || bytes[cursor].is_ascii_whitespace()) {
+            cursor += 1;
+        }
+        let start = cursor;
+        while cursor < bytes.len() && mask[cursor] && identifier_byte(bytes[cursor]) {
+            cursor += 1;
+        }
+        (cursor > start).then(|| header[start..cursor].to_owned())
+    };
+
+    // A `fn NAME` declaration wins over every other keyword in the same header,
+    // so neither an `-> impl Iterator` return type nor a bare `fn()` pointer
+    // parameter can rename the item.
+    let declaration = identifier_offsets(header, mask, "fn")
+        .into_iter()
+        .filter_map(|offset| named(offset, "fn".len()).map(|name| (offset, format!("fn {name}"))))
+        .next_back()
+        .or_else(|| {
+            ["impl", "mod", "trait"]
+                .into_iter()
+                .flat_map(|keyword| {
+                    identifier_offsets(header, mask, keyword)
+                        .into_iter()
+                        .map(move |offset| (keyword, offset))
+                })
+                .max_by_key(|(_, offset)| *offset)
+                .and_then(|(keyword, offset)| match keyword {
+                    "impl" => Some((offset, impl_segment(header, mask, offset))),
+                    _ => named(offset, keyword.len())
+                        .map(|name| (offset, format!("{keyword} {name}"))),
+                })
+        });
+    let (keyword, segment) = declaration?;
+    Some(format!("{}{segment}", header_cfg(header, mask, keyword)))
+}
+
+/// Every `fn` / `impl` / `mod` / `trait` block in the file, as
+/// `(open brace offset, close brace offset, anchor segment)`.
+fn item_spans(source: &str, mask: &[bool]) -> Vec<(usize, usize, String)> {
+    let bytes = source.as_bytes();
+    let mut spans = Vec::new();
+    let mut stack: Vec<(usize, usize)> = Vec::new();
+    let mut header = 0usize;
+    for index in 0..bytes.len() {
+        if !mask[index] {
+            continue;
+        }
+        match bytes[index] {
+            b'{' => {
+                stack.push((index, header));
+                header = index + 1;
+            }
+            b'}' => {
+                if let Some((open, start)) = stack.pop() {
+                    if let Some(segment) = item_segment(&source[start..open], &mask[start..open]) {
+                        spans.push((open, index, segment));
+                    }
+                }
+                header = index + 1;
+            }
+            b';' => header = index + 1,
+            _ => {}
+        }
+    }
+    spans
+}
+
+/// The chain of enclosing items containing `offset`, outermost first, joined
+/// with `::`. Empty for a file-top-level offset.
+fn item_path_at(spans: &[(usize, usize, String)], offset: usize) -> String {
+    let mut enclosing: Vec<&(usize, usize, String)> = spans
+        .iter()
+        .filter(|(open, close, _)| *open <= offset && offset <= *close)
+        .collect();
+    enclosing.sort_by_key(|(open, _, _)| *open);
+    enclosing
+        .iter()
+        .map(|(_, _, segment)| segment.as_str())
+        .collect::<Vec<_>>()
+        .join("::")
+}
+
+/// Every match of `matcher`, bucketed by enclosing item. A non-empty tag is
+/// appended to the item path, so a matcher can put a payload (the abandon
+/// reason) into the key instead of re-reading a pinned line.
+fn census_tagged<F>(sources: &[(String, String)], mut matcher: F) -> Census
+where
+    F: FnMut(&str, &[bool]) -> Vec<(usize, String)>,
+{
+    let mut census = Census::new();
+    for (path, source) in sources {
+        let mask = code_mask(source);
+        let matches = matcher(source, &mask);
+        if matches.is_empty() {
+            continue;
+        }
+        let spans = item_spans(source, &mask);
+        for (offset, tag) in matches {
+            let mut item = item_path_at(&spans, offset);
+            if !tag.is_empty() {
+                item = format!("{item} => {tag}");
+            }
+            *census.entry((path.clone(), item)).or_default() += 1;
+        }
+    }
+    census
+}
+
+/// Every match of `matcher`, bucketed by enclosing item.
+fn census<F>(sources: &[(String, String)], mut matcher: F) -> Census
+where
+    F: FnMut(&str, &[bool]) -> Vec<usize>,
+{
+    census_tagged(sources, |source, mask| {
+        matcher(source, mask)
+            .into_iter()
+            .map(|offset| (offset, String::new()))
+            .collect()
+    })
+}
+
+/// Offsets of calls to `name`: the identifier followed, modulo trivia, by `(`.
+/// The definition is excluded, so a validator never has to subtract it.
+fn call_offsets(source: &str, mask: &[bool], name: &str) -> Vec<usize> {
+    let bytes = source.as_bytes();
+    identifier_offsets(source, mask, name)
+        .into_iter()
+        .filter(|offset| {
+            next_code(source, mask, offset + name.len()).is_some_and(|open| bytes[open] == b'(')
+                && !preceded_by_keyword(source, mask, *offset, "fn")
+        })
+        .collect()
+}
+
+/// Offsets of method calls `.name(`.
+fn method_call_offsets(source: &str, mask: &[bool], name: &str) -> Vec<usize> {
+    let bytes = source.as_bytes();
+    identifier_offsets(source, mask, name)
+        .into_iter()
+        .filter(|offset| {
+            next_code(source, mask, offset + name.len()).is_some_and(|open| bytes[open] == b'(')
+                && previous_code(source, mask, *offset).is_some_and(|dot| {
+                    bytes[dot] == b'.'
+                        && !previous_code(source, mask, dot)
+                            .is_some_and(|before| bytes[before] == b'.')
+                })
+        })
+        .collect()
+}
+
+/// `(fn keyword offset, body brace offset)` for every `fn NAME` definition that
+/// has a body. A census anchors on the brace, so a definition is named by the
+/// item path that already includes the definition itself.
+fn definition_offsets(source: &str, mask: &[bool], name: &str) -> Vec<(usize, usize)> {
+    let bytes = source.as_bytes();
+    identifier_offsets(source, mask, name)
+        .into_iter()
+        .filter_map(|offset| {
+            let keyword = previous_code(source, mask, offset)?;
+            if !preceded_by_keyword(source, mask, offset, "fn") {
+                return None;
+            }
+            let keyword = keyword + 1 - "fn".len();
+            let brace = (offset..bytes.len()).find(|index| mask[*index] && bytes[*index] == b'{')?;
+            let semicolon =
+                (offset..bytes.len()).find(|index| mask[*index] && bytes[*index] == b';');
+            (!semicolon.is_some_and(|semicolon| semicolon < brace)).then_some((keyword, brace))
+        })
+        .collect()
+}
+
+fn expected_census(anchors: &[(&str, &str, usize)]) -> Census {
+    let mut census = Census::new();
+    for (path, item, count) in anchors {
+        *census
+            .entry(((*path).to_owned(), (*item).to_owned()))
+            .or_default() += count;
+    }
+    census
+}
+
+/// Every divergence between the observed and the pinned census, never just the
+/// first: a legitimate kernel change is re-anchored in one pass.
+fn census_diff(actual: &Census, anchors: &[(&str, &str, usize)]) -> Vec<String> {
+    let expected = expected_census(anchors);
+    let mut diff = Vec::new();
+    for (anchor, count) in actual {
+        match expected.get(anchor) {
+            None => diff.push(format!(
+                "+ {} :: {}  ({count} occurrences, expected none)",
+                anchor.0, anchor.1
+            )),
+            Some(want) if want != count => diff.push(format!(
+                "~ {} :: {}  (expected {want}, found {count})",
+                anchor.0, anchor.1
+            )),
+            Some(_) => {}
+        }
+    }
+    for (anchor, count) in &expected {
+        if !actual.contains_key(anchor) {
+            diff.push(format!(
+                "- {} :: {}  (expected {count}, found none)",
+                anchor.0, anchor.1
+            ));
+        }
+    }
+    diff
+}
+
+fn validate_census(actual: &Census, anchors: &[(&str, &str, usize)]) -> Result<(), Vec<String>> {
+    let diff = census_diff(actual, anchors);
+    diff.is_empty().then_some(()).ok_or(diff)
+}
+
+/// Accumulate a census-carrying outcome under `label` instead of failing on the
+/// first divergence, so one run reports every anchor that needs re-pinning.
+fn record(failures: &mut Vec<String>, label: &str, outcome: Result<(), Vec<String>>) {
+    if let Err(details) = outcome {
+        failures.push(label.to_owned());
+        failures.extend(details.into_iter().map(|detail| format!("    {detail}")));
+    }
+}
+
+/// Accumulate an outcome that carries no diff detail of its own.
+fn record_unit(failures: &mut Vec<String>, label: &str, outcome: Result<(), ()>) {
+    if outcome.is_err() {
+        failures.push(label.to_owned());
+    }
+}
+
+#[test]
+fn item_path_is_cfg_and_impl_scoped() {
+    let fixture = r##"
+#[cfg(target_arch = "x86_64")]
+fn split() { needle(); }
+#[cfg(target_arch = "aarch64")]
+fn split() { needle(); needle(); }
+impl Drop for Guard { fn drop(&mut self) { needle(); } }
+impl Guard { fn drop_all(&mut self) { fn inner() { needle(); } } }
+fn plain() { let _s = "needle()"; /* needle() */ }
+"##;
+    let sources = vec![("fixture.rs".to_owned(), fixture.to_owned())];
+    let actual = census(&sources, |source, mask| code_offsets(source, mask, "needle()"));
+
+    assert_eq!(
+        actual.get(&(
+            "fixture.rs".to_owned(),
+            "#[cfg(target_arch=x86_64)] fn split".to_owned(),
+        )),
+        Some(&1)
+    );
+    assert_eq!(
+        actual.get(&(
+            "fixture.rs".to_owned(),
+            "#[cfg(target_arch=aarch64)] fn split".to_owned(),
+        )),
+        Some(&2)
+    );
+    assert_eq!(
+        actual.get(&(
+            "fixture.rs".to_owned(),
+            "impl Drop for Guard::fn drop".to_owned(),
+        )),
+        Some(&1)
+    );
+    assert_eq!(
+        actual.get(&(
+            "fixture.rs".to_owned(),
+            "impl Guard::fn drop_all::fn inner".to_owned(),
+        )),
+        Some(&1)
+    );
+    assert!(!actual.contains_key(&("fixture.rs".to_owned(), "fn plain".to_owned())));
+    let split_entries = actual
+        .iter()
+        .filter(|((_, item), _)| item.ends_with("fn split"))
+        .collect::<Vec<_>>();
+    assert_eq!(split_entries.len(), 2);
+    assert_eq!(actual.len(), 4);
+}
+
 #[test]
 fn function_body_is_lexically_scoped_and_exactly_named() {
     let fixture = r##"
@@ -1245,161 +1629,390 @@ let _same_line = "needle"; let _real = needle();
     );
 }
 
-const TERMINATE_CALLS: &[(&str, usize)] = &[
-    ("kernel/src/interrupts/context_switch.rs", 1017),
-    ("kernel/src/process/manager.rs", 1169),
-    ("kernel/src/signal/delivery.rs", 225),
-    ("kernel/src/signal/delivery.rs", 260),
-];
-const TERMINATE_MINIMAL_CALLS: &[(&str, usize)] = &[("kernel/src/task/process_task.rs", 522)];
-const PRODUCTION_INIT_PID_SITES: &[(&str, usize)] = &[
-    ("kernel/src/process/manager.rs", 1186),
-    ("kernel/src/task/process_task.rs", 482),
-    ("kernel/src/task/process_task.rs", 554),
-];
-const TEST_INIT_PID_SITES: &[(&str, usize)] = &[
-    ("kernel/src/test_userspace.rs", 84),
-    ("kernel/src/test_userspace.rs", 203),
-    ("kernel/src/test_userspace.rs", 292),
-];
-const QUARANTINE_CALLS: &[(&str, usize)] = &[
-    ("kernel/src/arch_impl/aarch64/exception.rs", 815),
-    ("kernel/src/arch_impl/aarch64/exception.rs", 1177),
-    ("kernel/src/arch_impl/aarch64/exception.rs", 1271),
-    ("kernel/src/arch_impl/aarch64/exception.rs", 1369),
-    ("kernel/src/syscall/signal.rs", 163),
-];
-const KERNEL_STACK_MUTATIONS: &[(&str, usize)] = &[
-    ("kernel/src/arch_impl/aarch64/syscall_entry.rs", 961),
-    ("kernel/src/process/manager.rs", 1855),
-    ("kernel/src/syscall/clone.rs", 252),
-];
-const RECLAIM_ENQUEUE_CALLS: &[(&str, usize)] = &[
-    ("kernel/src/process/mod.rs", 53),
-    ("kernel/src/process/mod.rs", 280),
-    ("kernel/src/task/process_task.rs", 596),
-];
-const EXIT_PROCESS_AND_RETIRE_CALLS: &[(&str, usize)] = &[
-    ("kernel/src/arch_impl/aarch64/exception.rs", 824),
-    ("kernel/src/arch_impl/aarch64/exception.rs", 1187),
-    ("kernel/src/arch_impl/aarch64/exception.rs", 1273),
-    ("kernel/src/arch_impl/aarch64/exception.rs", 1371),
-    ("kernel/src/interrupts.rs", 1442),
-    ("kernel/src/interrupts.rs", 1753),
-    ("kernel/src/process/mod.rs", 413),
-    ("kernel/src/syscall/signal.rs", 172),
-];
-const EXIT_PROCESS_LOCKED_CALLS: &[(&str, usize)] = &[("kernel/src/process/mod.rs", 265)];
-const EXIT_PROCESS_BY_PID_CALLS: &[(&str, usize)] = &[
-    ("kernel/src/process/mod.rs", 406),
-    ("kernel/src/process/mod.rs", 418),
-];
-const EXIT_PROCESS_FOR_TEARDOWN_TEST_CALLS: &[(&str, usize)] =
-    &[("kernel/src/tracing/providers/teardown.rs", 1337)];
-const BLOCKING_PRIMITIVES: &[(&str, usize)] = &[
-    ("kernel/src/task/scheduler.rs", 1973),
-    ("kernel/src/task/scheduler.rs", 2187),
-    ("kernel/src/task/scheduler.rs", 2206),
-    ("kernel/src/task/scheduler.rs", 2355),
-    ("kernel/src/task/scheduler.rs", 2443),
-    ("kernel/src/task/scheduler.rs", 2508),
-    ("kernel/src/task/scheduler.rs", 2517),
-    ("kernel/src/task/scheduler.rs", 2676),
-    ("kernel/src/task/waitqueue.rs", 52),
-];
-const RAW_SCHEDULER_LOCK_SITES: &[(&str, usize)] = &[
-    ("kernel/src/task/scheduler.rs", 281),
-    ("kernel/src/task/scheduler.rs", 288),
-];
-const PROCESS_MEMORY_FRAME_RETURNS: &[(&str, usize)] = &[
-    ("kernel/src/memory/process_memory.rs", 1889),
-    ("kernel/src/memory/process_memory.rs", 1928),
-    ("kernel/src/memory/process_memory.rs", 1965),
-    ("kernel/src/memory/process_memory.rs", 1977),
-    ("kernel/src/memory/process_memory.rs", 1981),
-    ("kernel/src/memory/process_memory.rs", 1985),
-    ("kernel/src/memory/process_memory.rs", 1990),
-];
-const RETURN_LEASE_DEFINITION: (&str, usize) = ("kernel/src/memory/frame_allocator.rs", 924);
-const RETURN_LEASE_PRODUCTION_CALLS: &[(&str, usize)] = &[
-    ("kernel/src/memory/frame_allocator.rs", 1005),
-    ("kernel/src/memory/frame_allocator.rs", 1024),
-    ("kernel/src/memory/process_memory.rs", 1779),
-    ("kernel/src/memory/process_memory.rs", 1781),
-];
-const RETURN_LEASE_BOOT_FIXTURE_CALLS: &[(&str, usize)] = &[
-    ("kernel/src/memory/frame_allocator_tests.rs", 45),
-    ("kernel/src/memory/frame_allocator_tests.rs", 108),
-    ("kernel/src/memory/frame_allocator_tests.rs", 144),
-    ("kernel/src/memory/frame_allocator_tests.rs", 159),
-    ("kernel/src/memory/frame_allocator_tests.rs", 160),
-    ("kernel/src/memory/frame_allocator_tests.rs", 173),
-    ("kernel/src/memory/frame_allocator_tests.rs", 185),
-    ("kernel/src/memory/frame_allocator_tests.rs", 265),
-    ("kernel/src/memory/frame_allocator_tests.rs", 284),
-];
-const TABLE_RECORDER_SITES: &[(&str, usize)] = &[
-    ("kernel/src/memory/process_memory.rs", 1268),
-    ("kernel/src/memory/process_memory.rs", 1439),
-];
-const PROCESS_PAGE_TABLE_ABANDON_SITES: &[(&str, usize, &str)] = &[
+const TERMINATE_CALLS: &[(&str, &str, usize)] = &[
     (
-        "kernel/src/task/process_task.rs",
-        312,
-        "AbandonReason::NoProofPipeline",
-    ),
-    (
-        "kernel/src/task/process_task.rs",
-        314,
-        "AbandonReason::NoArchPipeline",
-    ),
-    (
-        "kernel/src/task/process_task.rs",
-        496,
-        "AbandonReason::AlreadyTerminated",
+        "kernel/src/interrupts/context_switch.rs",
+        "fn restore_userspace_thread_context",
+        1,
     ),
     (
         "kernel/src/process/manager.rs",
-        1148,
-        "AbandonReason::AlreadyTerminated",
+        "impl ProcessManager::fn exit_process_locked",
+        1,
+    ),
+    (
+        "kernel/src/signal/delivery.rs",
+        "fn deliver_default_action",
+        2,
     ),
 ];
-const PROCESS_PAGE_TABLE_RETIRE_SITES: &[(&str, usize)] = &[
-    ("kernel/src/memory/frame_allocator_tests.rs", 41),
-    ("kernel/src/memory/process_memory.rs", 232),
-    ("kernel/src/memory/process_memory.rs", 2008),
-    ("kernel/src/task/process_task.rs", 201),
-    ("kernel/src/task/process_task.rs", 1491),
-    ("kernel/src/task/process_task.rs", 1509),
-    ("kernel/src/task/process_task.rs", 1517),
+const TERMINATE_MINIMAL_CALLS: &[(&str, &str, usize)] = &[(
+    "kernel/src/task/process_task.rs",
+    "impl ProcessScheduler::fn handle_thread_exit",
+    1,
+)];
+const PRODUCTION_INIT_PID_SITES: &[(&str, &str, usize)] = &[
+    (
+        "kernel/src/process/manager.rs",
+        "impl ProcessManager::fn exit_process_locked",
+        1,
+    ),
+    (
+        "kernel/src/task/process_task.rs",
+        "impl ProcessScheduler::fn handle_thread_exit",
+        2,
+    ),
 ];
-const PENDING_RECLAIM_BOUNDED_SITES: &[(&str, usize)] = &[("kernel/src/task/process_task.rs", 958)];
-const FRAME_LEDGER_INIT_CALLS: &[(&str, usize)] = &[
-    ("kernel/src/main_aarch64.rs", 493),
-    ("kernel/src/memory/mod.rs", 137),
+const TEST_INIT_PID_SITES: &[(&str, &str, usize)] = &[(
+    "kernel/src/test_userspace.rs",
+    "fn test_minimal_userspace",
+    3,
+)];
+const QUARANTINE_CALLS: &[(&str, &str, usize)] = &[
+    (
+        "kernel/src/arch_impl/aarch64/exception.rs",
+        "fn handle_sync_exception",
+        4,
+    ),
+    (
+        "kernel/src/syscall/signal.rs",
+        "fn send_signal_to_process",
+        1,
+    ),
 ];
-const PROCESS_PAGE_TABLE_CONSTRUCTORS: &[(&str, usize)] = &[
-    ("kernel/src/arch_impl/aarch64/syscall_entry.rs", 937),
-    ("kernel/src/process/manager.rs", 147),
-    ("kernel/src/process/manager.rs", 402),
-    ("kernel/src/process/manager.rs", 626),
-    ("kernel/src/process/manager.rs", 2239),
-    ("kernel/src/process/manager.rs", 2505),
-    ("kernel/src/process/manager.rs", 2833),
-    ("kernel/src/process/manager.rs", 3109),
-    ("kernel/src/process/manager.rs", 3411),
-    ("kernel/src/syscall/handlers.rs", 1822),
-    ("kernel/src/tracing/providers/teardown.rs", 1167),
-    ("kernel/src/tracing/providers/teardown.rs", 1211),
-    ("kernel/src/tracing/providers/teardown.rs", 1290),
-    ("kernel/src/memory/process_memory.rs", 2136),
-    ("kernel/src/memory/process_memory.rs", 2176),
-    ("kernel/src/memory/process_memory.rs", 2228),
-    ("kernel/src/memory/process_memory.rs", 2245),
-    ("kernel/src/memory/process_memory.rs", 2266),
-    ("kernel/src/task/process_task.rs", 1060),
-    ("kernel/src/task/process_task.rs", 1504),
+const KERNEL_STACK_MUTATIONS: &[(&str, &str, usize)] = &[
+    (
+        "kernel/src/arch_impl/aarch64/syscall_entry.rs",
+        "fn sys_fork_aarch64",
+        1,
+    ),
+    (
+        "kernel/src/process/manager.rs",
+        "impl ProcessManager::#[cfg(target_arch=aarch64)] fn complete_fork_aarch64",
+        1,
+    ),
+    ("kernel/src/syscall/clone.rs", "fn sys_clone", 1),
 ];
+const RECLAIM_ENQUEUE_CALLS: &[(&str, &str, usize)] = &[
+    (
+        "kernel/src/process/mod.rs",
+        "fn exit_process_and_retire",
+        1,
+    ),
+    (
+        "kernel/src/process/mod.rs",
+        "impl Drop for RetirementReceipt::fn drop",
+        1,
+    ),
+    (
+        "kernel/src/task/process_task.rs",
+        "impl ProcessScheduler::fn handle_thread_exit",
+        1,
+    ),
+];
+const EXIT_PROCESS_AND_RETIRE_CALLS: &[(&str, &str, usize)] = &[
+    (
+        "kernel/src/arch_impl/aarch64/exception.rs",
+        "fn handle_sync_exception",
+        4,
+    ),
+    (
+        "kernel/src/interrupts.rs",
+        "fn general_protection_fault_handler",
+        1,
+    ),
+    ("kernel/src/interrupts.rs", "fn page_fault_handler", 1),
+    (
+        "kernel/src/process/mod.rs",
+        "fn exit_process_by_pid",
+        1,
+    ),
+    (
+        "kernel/src/syscall/signal.rs",
+        "fn send_signal_to_process",
+        1,
+    ),
+];
+const EXIT_PROCESS_LOCKED_CALLS: &[(&str, &str, usize)] = &[(
+    "kernel/src/process/mod.rs",
+    "fn exit_process_and_retire",
+    1,
+)];
+const EXIT_PROCESS_BY_PID_CALLS: &[(&str, &str, usize)] = &[
+    (
+        "kernel/src/process/mod.rs",
+        "#[cfg(all(feature=boot_tests,target_arch=aarch64))] fn exit_process_for_teardown_test",
+        1,
+    ),
+    ("kernel/src/process/mod.rs", "fn exit_current", 1),
+];
+const EXIT_PROCESS_FOR_TEARDOWN_TEST_CALLS: &[(&str, &str, usize)] = &[(
+    "kernel/src/tracing/providers/teardown.rs",
+    "#[cfg(all(feature=boot_tests,target_arch=aarch64))] fn fork_exit_defer_reclaim_pairing_test",
+    1,
+)];
+const BLOCKING_PRIMITIVES: &[(&str, &str, usize)] = &[
+    (
+        "kernel/src/task/scheduler.rs",
+        "impl Scheduler::fn block_current",
+        1,
+    ),
+    (
+        "kernel/src/task/scheduler.rs",
+        "impl Scheduler::fn block_current_for_child_exit",
+        1,
+    ),
+    (
+        "kernel/src/task/scheduler.rs",
+        "impl Scheduler::fn block_current_for_compositor",
+        1,
+    ),
+    (
+        "kernel/src/task/scheduler.rs",
+        "impl Scheduler::fn block_current_for_io",
+        1,
+    ),
+    (
+        "kernel/src/task/scheduler.rs",
+        "impl Scheduler::fn block_current_for_io_with_timeout",
+        1,
+    ),
+    (
+        "kernel/src/task/scheduler.rs",
+        "impl Scheduler::fn block_current_for_signal",
+        1,
+    ),
+    (
+        "kernel/src/task/scheduler.rs",
+        "impl Scheduler::fn block_current_for_signal_with_context",
+        1,
+    ),
+    (
+        "kernel/src/task/scheduler.rs",
+        "impl Scheduler::fn block_current_for_timer",
+        1,
+    ),
+    (
+        "kernel/src/task/waitqueue.rs",
+        "impl WaitQueueHead::fn prepare_to_wait",
+        1,
+    ),
+];
+const RAW_SCHEDULER_LOCK_SITES: &[(&str, &str, usize)] = &[
+    ("kernel/src/task/scheduler.rs", "fn lock_scheduler", 1),
+    (
+        "kernel/src/task/scheduler.rs",
+        "fn try_lock_scheduler",
+        1,
+    ),
+];
+const PROCESS_MEMORY_FRAME_RETURNS: &[(&str, &str, usize)] = &[(
+    "kernel/src/memory/process_memory.rs",
+    "impl ProcessPageTable::#[cfg(target_arch=x86_64)] fn cleanup_for_exec",
+    7,
+)];
+const RETURN_LEASE_DEFINITION: &[(&str, &str, usize)] = &[(
+    "kernel/src/memory/frame_allocator.rs",
+    "fn return_lease",
+    1,
+)];
+const RETURN_LEASE_PRODUCTION_CALLS: &[(&str, &str, usize)] = &[
+    (
+        "kernel/src/memory/frame_allocator.rs",
+        "fn deallocate_frame",
+        1,
+    ),
+    (
+        "kernel/src/memory/frame_allocator.rs",
+        "fn deallocate_leaf_frame",
+        1,
+    ),
+    (
+        "kernel/src/memory/process_memory.rs",
+        "impl ProcessPageTable::#[cfg(target_arch=aarch64)] fn retire_bounded",
+        2,
+    ),
+];
+const RETURN_LEASE_BOOT_FIXTURE_CALLS: &[(&str, &str, usize)] = &[
+    (
+        "kernel/src/memory/frame_allocator_tests.rs",
+        "fn frame_custody_refusal_gate_test",
+        6,
+    ),
+    (
+        "kernel/src/memory/frame_allocator_tests.rs",
+        "fn healthy_round_trip",
+        1,
+    ),
+    (
+        "kernel/src/memory/frame_allocator_tests.rs",
+        "fn restore_lease",
+        1,
+    ),
+    (
+        "kernel/src/memory/frame_allocator_tests.rs",
+        "fn stale_lease_fixture",
+        1,
+    ),
+];
+const TABLE_RECORDER_SITES: &[(&str, &str, usize)] = &[
+    (
+        "kernel/src/memory/process_memory.rs",
+        "impl ProcessPageTable::fn map_page",
+        1,
+    ),
+    (
+        "kernel/src/memory/process_memory.rs",
+        "impl ProcessPageTable::fn update_page_flags",
+        1,
+    ),
+];
+const PROCESS_PAGE_TABLE_ABANDON_SITES: &[(&str, &str, usize)] = &[
+    (
+        "kernel/src/process/manager.rs",
+        "impl ProcessManager::fn exit_process_locked => AbandonReason::AlreadyTerminated",
+        1,
+    ),
+    (
+        "kernel/src/task/process_task.rs",
+        "fn release_process_resources => AbandonReason::NoArchPipeline",
+        1,
+    ),
+    (
+        "kernel/src/task/process_task.rs",
+        "fn release_process_resources => AbandonReason::NoProofPipeline",
+        1,
+    ),
+    (
+        "kernel/src/task/process_task.rs",
+        "impl ProcessScheduler::fn handle_thread_exit => AbandonReason::AlreadyTerminated",
+        1,
+    ),
+];
+const PROCESS_PAGE_TABLE_RETIRE_SITES: &[(&str, &str, usize)] = &[
+    (
+        "kernel/src/memory/frame_allocator_tests.rs",
+        "#[cfg(target_arch=aarch64)] fn retire_with_free_list_contended",
+        1,
+    ),
+    (
+        "kernel/src/memory/process_memory.rs",
+        "#[cfg(target_arch=aarch64)] impl Drop for UnpublishedPageTable::fn drop",
+        1,
+    ),
+    (
+        "kernel/src/memory/process_memory.rs",
+        "impl ProcessPageTable::#[cfg(target_arch=aarch64)] fn cleanup_for_exec",
+        1,
+    ),
+    (
+        "kernel/src/task/process_task.rs",
+        "#[cfg(all(feature=boot_tests,target_arch=aarch64))] fn reclaim_progress_gate_test",
+        3,
+    ),
+    (
+        "kernel/src/task/process_task.rs",
+        "#[cfg(target_arch=aarch64)] impl PendingProcessReclaim::fn reclaim_bounded",
+        1,
+    ),
+];
+const PENDING_RECLAIM_BOUNDED_SITES: &[(&str, &str, usize)] = &[(
+    "kernel/src/task/process_task.rs",
+    "#[cfg(target_arch=aarch64)] fn reclaim_deferred_process_resources_for_pass",
+    1,
+)];
+const FRAME_LEDGER_INIT_CALLS: &[(&str, &str, usize)] = &[
+    (
+        "kernel/src/main_aarch64.rs",
+        "#[cfg(target_arch=aarch64)] fn kernel_main",
+        1,
+    ),
+    ("kernel/src/memory/mod.rs", "fn init", 1),
+];
+const PROCESS_PAGE_TABLE_CONSTRUCTORS: &[(&str, &str, usize)] = &[
+    (
+        "kernel/src/arch_impl/aarch64/syscall_entry.rs",
+        "fn sys_fork_aarch64",
+        1,
+    ),
+    (
+        "kernel/src/memory/process_memory.rs",
+        "#[cfg(feature=boot_tests)] fn page_table_custody_disposition_gate_test",
+        5,
+    ),
+    (
+        "kernel/src/process/manager.rs",
+        "impl ProcessManager::#[cfg(target_arch=aarch64)] fn create_process",
+        1,
+    ),
+    (
+        "kernel/src/process/manager.rs",
+        "impl ProcessManager::#[cfg(target_arch=aarch64)] fn create_process_with_argv",
+        1,
+    ),
+    (
+        "kernel/src/process/manager.rs",
+        "impl ProcessManager::#[cfg(target_arch=aarch64)] fn exec_process",
+        1,
+    ),
+    (
+        "kernel/src/process/manager.rs",
+        "impl ProcessManager::#[cfg(target_arch=aarch64)] fn exec_process_with_argv",
+        1,
+    ),
+    (
+        "kernel/src/process/manager.rs",
+        "impl ProcessManager::#[cfg(target_arch=x86_64)] fn create_process",
+        1,
+    ),
+    (
+        "kernel/src/process/manager.rs",
+        "impl ProcessManager::#[cfg(target_arch=x86_64)] fn exec_process",
+        1,
+    ),
+    (
+        "kernel/src/process/manager.rs",
+        "impl ProcessManager::#[cfg(target_arch=x86_64)] fn exec_process_with_argv",
+        1,
+    ),
+    (
+        "kernel/src/process/manager.rs",
+        "impl ProcessManager::#[cfg(target_arch=x86_64)] fn fork_process_with_context",
+        1,
+    ),
+    (
+        "kernel/src/syscall/handlers.rs",
+        "#[cfg(target_arch=x86_64)] fn sys_fork_with_parent_context",
+        1,
+    ),
+    (
+        "kernel/src/task/process_task.rs",
+        "#[cfg(all(feature=boot_tests,target_arch=aarch64))] fn boot_oversized_page_table",
+        1,
+    ),
+    (
+        "kernel/src/task/process_task.rs",
+        "#[cfg(all(feature=boot_tests,target_arch=aarch64))] fn reclaim_progress_gate_test",
+        1,
+    ),
+    (
+        "kernel/src/tracing/providers/teardown.rs",
+        "#[cfg(all(feature=boot_tests,target_arch=aarch64))] fn fork_exit_defer_reclaim_pairing_test",
+        3,
+    ),
+];
+const THREAD_GROUP_WRITES: &[(&str, &str, usize)] =
+    &[("kernel/src/syscall/clone.rs", "fn sys_clone", 1)];
+const BTRT_PROCESS_EXIT_REPORTS: &[(&str, &str, usize)] = &[(
+    "kernel/src/task/process_task.rs",
+    "impl ProcessScheduler::fn handle_thread_exit",
+    1,
+)];
+const ROW_REMOVAL_EPOCH_BUMPS: &[(&str, &str, usize)] = &[(
+    "kernel/src/process/manager.rs",
+    "impl ProcessManager::fn remove_process",
+    1,
+)];
 
 const BLOCKING_NAMES: &[&str] = &[
     "block_current(",
@@ -1413,59 +2026,95 @@ const BLOCKING_NAMES: &[&str] = &[
     "prepare_to_wait(",
 ];
 
-fn validate_reclaim_enqueue_callers(sources: &[(String, String)]) -> Result<(), ()> {
-    validate_exact(
-        &sites_matching(sources, |line| {
-            line.contains("enqueue_process_reclaim(")
-                && !line.contains("fn enqueue_process_reclaim")
+fn validate_reclaim_enqueue_callers(
+    sources: &[(String, String)],
+) -> Result<(), Vec<String>> {
+    validate_census(
+        &census(sources, |source, mask| {
+            call_offsets(source, mask, "enqueue_process_reclaim")
         }),
         RECLAIM_ENQUEUE_CALLS,
     )
 }
 
-fn validate_exit_process_entry_points(sources: &[(String, String)]) -> Result<(), ()> {
-    validate_exact(
-        &sites_matching(sources, |line| {
-            line.contains("exit_process_and_retire(")
-                && !line.contains("fn exit_process_and_retire")
-        }),
-        EXIT_PROCESS_AND_RETIRE_CALLS,
-    )?;
-    validate_exact(
-        &sites_matching(sources, |line| line.contains(".exit_process_locked(")),
-        EXIT_PROCESS_LOCKED_CALLS,
-    )?;
-    if !sites_matching(sources, |line| line.contains(".exit_process(")).is_empty() {
-        return Err(());
+fn validate_exit_process_entry_points(
+    sources: &[(String, String)],
+) -> Result<(), Vec<String>> {
+    let mut failures = Vec::new();
+    record(
+        &mut failures,
+        "exit_process_and_retire callers",
+        validate_census(
+            &census(sources, |source, mask| {
+                call_offsets(source, mask, "exit_process_and_retire")
+            }),
+            EXIT_PROCESS_AND_RETIRE_CALLS,
+        ),
+    );
+    record(
+        &mut failures,
+        "exit_process_locked callers",
+        validate_census(
+            &census(sources, |source, mask| {
+                method_call_offsets(source, mask, "exit_process_locked")
+            }),
+            EXIT_PROCESS_LOCKED_CALLS,
+        ),
+    );
+    if !census(sources, |source, mask| {
+        method_call_offsets(source, mask, "exit_process")
+    })
+    .is_empty()
+    {
+        failures.push("unexpected exit_process method caller".to_owned());
     }
-    validate_exact(
-        &sites_matching(sources, |line| {
-            line.contains("exit_process_by_pid(") && !line.contains("fn exit_process_by_pid")
-        }),
-        EXIT_PROCESS_BY_PID_CALLS,
-    )?;
-    validate_exact(
-        &sites_matching(sources, |line| {
-            line.contains("exit_process_for_teardown_test(")
-                && !line.contains("fn exit_process_for_teardown_test")
-        }),
-        EXIT_PROCESS_FOR_TEARDOWN_TEST_CALLS,
-    )
+    record(
+        &mut failures,
+        "exit_process_by_pid callers",
+        validate_census(
+            &census(sources, |source, mask| {
+                call_offsets(source, mask, "exit_process_by_pid")
+            }),
+            EXIT_PROCESS_BY_PID_CALLS,
+        ),
+    );
+    record(
+        &mut failures,
+        "exit_process_for_teardown_test callers",
+        validate_census(
+            &census(sources, |source, mask| {
+                call_offsets(source, mask, "exit_process_for_teardown_test")
+            }),
+            EXIT_PROCESS_FOR_TEARDOWN_TEST_CALLS,
+        ),
+    );
+    failures.is_empty().then_some(()).ok_or(failures)
 }
 
-fn validate_blocking_primitives(sources: &[(String, String)]) -> Result<(), ()> {
-    validate_exact(
-        &sites_matching(sources, |line| {
-            line.contains("pub fn ") && BLOCKING_NAMES.iter().any(|name| line.contains(name))
+fn validate_blocking_primitives(sources: &[(String, String)]) -> Result<(), Vec<String>> {
+    validate_census(
+        &census(sources, |source, mask| {
+            BLOCKING_NAMES
+                .iter()
+                .flat_map(|name| {
+                    definition_offsets(source, mask, name.trim_end_matches('('))
+                        .into_iter()
+                        .filter_map(|(keyword, brace)| {
+                            preceded_by_keyword(source, mask, keyword, "pub").then_some(brace)
+                        })
+                })
+                .collect()
         }),
         BLOCKING_PRIMITIVES,
     )
 }
 
-fn validate_group_writes(sources: &[(String, String)]) -> Result<(), ()> {
-    validate_exact(
-        &sites_matching(sources, |line| line.contains("thread_group_id = Some(")),
-        &[("kernel/src/syscall/clone.rs", 210)],
+fn validate_group_writes(sources: &[(String, String)]) -> Result<(), Vec<String>> {
+    validate_census(
+        &census(sources, |source, mask| {
+            code_offsets(source, mask, "thread_group_id = Some(")
+        }),
+        THREAD_GROUP_WRITES,
     )
 }
 
@@ -1527,35 +2176,81 @@ fn validate_free_frame_capabilities(
     Ok(())
 }
 
-fn validate_frame_return_choke_point(sources: &[(String, String)]) -> Result<(), ()> {
+fn validate_frame_return_choke_point(
+    sources: &[(String, String)],
+) -> Result<(), Vec<String>> {
+    let mut failures = Vec::new();
+
+    let mut process_memory_returns = census(sources, |source, mask| {
+        call_offsets(source, mask, "deallocate_frame")
+    });
+    process_memory_returns
+        .retain(|(path, _), _| path == "kernel/src/memory/process_memory.rs");
+    record(
+        &mut failures,
+        "process-memory frame returns",
+        validate_census(&process_memory_returns, PROCESS_MEMORY_FRAME_RETURNS),
+    );
+
+    let definitions = census(sources, |source, mask| {
+        definition_offsets(source, mask, "return_lease")
+            .into_iter()
+            .map(|(_, brace)| brace)
+            .collect()
+    });
+    record(
+        &mut failures,
+        "return_lease definition",
+        validate_census(&definitions, RETURN_LEASE_DEFINITION),
+    );
+
+    let return_lease_calls = census(sources, |source, mask| {
+        call_offsets(source, mask, "return_lease")
+    });
+    let mut allowed_return_lease_calls = RETURN_LEASE_PRODUCTION_CALLS.to_vec();
+    allowed_return_lease_calls.extend_from_slice(RETURN_LEASE_BOOT_FIXTURE_CALLS);
+    record(
+        &mut failures,
+        "return_lease callers",
+        validate_census(&return_lease_calls, &allowed_return_lease_calls),
+    );
+
     let allocator = source(sources, "kernel/src/memory/frame_allocator.rs");
     let init = function_body(allocator, "init_frame_ledger");
-    validate_free_frame_capabilities(
-        "kernel/src/memory/frame_allocator.rs",
-        allocator,
-        &[
-            "init_frame_ledger",
-            "ensure_free_frame_capacity",
-            "allocate_candidate",
-            "return_lease",
-            "memory_stats",
-        ],
-    )?;
-    validate_alias_methods(
-        init,
-        &[
-            "lock",
-            "capacity",
-            "len",
-            "try_reserve",
-            "expect",
-            "push",
-            "swap_remove",
-            "iter",
-            "copied",
-        ],
-        &[],
-    )?;
+    record_unit(
+        &mut failures,
+        "allocator FREE_FRAMES capability escaped",
+        validate_free_frame_capabilities(
+            "kernel/src/memory/frame_allocator.rs",
+            allocator,
+            &[
+                "init_frame_ledger",
+                "ensure_free_frame_capacity",
+                "allocate_candidate",
+                "return_lease",
+                "memory_stats",
+            ],
+        ),
+    );
+    record_unit(
+        &mut failures,
+        "init_frame_ledger free-list alias methods changed",
+        validate_alias_methods(
+            init,
+            &[
+                "lock",
+                "capacity",
+                "len",
+                "try_reserve",
+                "expect",
+                "push",
+                "swap_remove",
+                "iter",
+                "copied",
+            ],
+            &[],
+        ),
+    );
     let init_methods = alias_method_calls(init);
     if init_methods.iter().filter(|method| *method == "push").count() != 1
         || !init.contains(
@@ -1563,44 +2258,64 @@ fn validate_frame_return_choke_point(sources: &[(String, String)]) -> Result<(),
         )
     {
         eprintln!("bootstrap free-list insertion escaped its seeded-frame span");
-        return Err(());
+        failures.push("bootstrap free-list insertion escaped its seeded-frame span".to_owned());
     }
-    validate_alias_methods(
-        function_body(allocator, "ensure_free_frame_capacity"),
-        &["try_lock", "capacity", "len", "try_reserve", "is_err"],
-        &[],
-    )?;
-    validate_alias_methods(
-        function_body(allocator, "allocate_candidate"),
-        &["try_lock", "pop", "len"],
-        &[],
-    )?;
-    validate_alias_methods(
-        function_body(allocator, "return_lease"),
-        &["try_lock", "len", "capacity", "push"],
-        &[],
-    )?;
-    validate_alias_methods(
-        function_body(allocator, "memory_stats"),
-        &["try_lock", "len"],
-        &[],
-    )?;
+    record_unit(
+        &mut failures,
+        "ensure_free_frame_capacity alias methods changed",
+        validate_alias_methods(
+            function_body(allocator, "ensure_free_frame_capacity"),
+            &["try_lock", "capacity", "len", "try_reserve", "is_err"],
+            &[],
+        ),
+    );
+    record_unit(
+        &mut failures,
+        "allocate_candidate alias methods changed",
+        validate_alias_methods(
+            function_body(allocator, "allocate_candidate"),
+            &["try_lock", "pop", "len"],
+            &[],
+        ),
+    );
+    record_unit(
+        &mut failures,
+        "return_lease alias methods changed",
+        validate_alias_methods(
+            function_body(allocator, "return_lease"),
+            &["try_lock", "len", "capacity", "push"],
+            &[],
+        ),
+    );
+    record_unit(
+        &mut failures,
+        "memory_stats alias methods changed",
+        validate_alias_methods(
+            function_body(allocator, "memory_stats"),
+            &["try_lock", "len"],
+            &[],
+        ),
+    );
 
     let fixture = source(sources, "kernel/src/memory/frame_allocator_tests.rs");
-    validate_free_frame_capabilities(
-        "kernel/src/memory/frame_allocator_tests.rs",
-        fixture,
-        &[
-            "inject_duplicate_candidates",
-            "remove_duplicate_candidates",
-            "republish_lost_frame",
-            "retire_with_free_list_contended",
-            "free_frame_count",
-            "free_list_len_for_gate",
-            "take_free_frame",
-            "frame_custody_refusal_gate_test",
-        ],
-    )?;
+    record_unit(
+        &mut failures,
+        "fixture FREE_FRAMES capability escaped",
+        validate_free_frame_capabilities(
+            "kernel/src/memory/frame_allocator_tests.rs",
+            fixture,
+            &[
+                "inject_duplicate_candidates",
+                "remove_duplicate_candidates",
+                "republish_lost_frame",
+                "retire_with_free_list_contended",
+                "free_frame_count",
+                "free_list_len_for_gate",
+                "take_free_frame",
+                "frame_custody_refusal_gate_test",
+            ],
+        ),
+    );
 
     for (path, module) in sources.iter().filter(|(path, _)| {
         path != "kernel/src/memory/frame_allocator.rs"
@@ -1609,41 +2324,22 @@ fn validate_frame_return_choke_point(sources: &[(String, String)]) -> Result<(),
         let mask = code_mask(module);
         if !identifier_offsets(module, &mask, "FREE_FRAMES").is_empty() {
             eprintln!("unexpected FREE_FRAMES capability in {path}");
-            return Err(());
+            failures.push(format!("unexpected FREE_FRAMES capability in {path}"));
         }
-    }
-
-    validate_exact(
-        &sites_matching(sources, |line| {
-            line.contains("deallocate_frame(") && !line.contains("fn deallocate_frame")
-        })
-        .into_iter()
-        .filter(|(path, _)| path == "kernel/src/memory/process_memory.rs")
-        .collect(),
-        PROCESS_MEMORY_FRAME_RETURNS,
-    )?;
-
-    let mut return_lease_calls = code_sites(sources, "return_lease(");
-    if !return_lease_calls.remove(&(
-        RETURN_LEASE_DEFINITION.0.to_owned(),
-        RETURN_LEASE_DEFINITION.1,
-    )) {
-        eprintln!("return_lease definition moved or disappeared");
-        return Err(());
-    }
-    let mut allowed_return_lease_calls = expected(RETURN_LEASE_PRODUCTION_CALLS);
-    allowed_return_lease_calls.extend(expected(RETURN_LEASE_BOOT_FIXTURE_CALLS));
-    if return_lease_calls != allowed_return_lease_calls {
-        eprintln!("return_lease caller escaped the production/boot-fixture allowlist");
-        return Err(());
     }
 
     let process_memory = source(sources, "kernel/src/memory/process_memory.rs");
     let all_returns = code_offsets(process_memory, &code_mask(process_memory), "return_lease(");
     let retire = function_body(process_memory, "retire_bounded");
-    (all_returns.len() == 2 && retire.matches("return_lease(").count() == all_returns.len())
-        .then_some(())
-        .ok_or(())
+    record_unit(
+        &mut failures,
+        "process-memory return_lease calls escaped retire_bounded",
+        (all_returns.len() == 2 && retire.matches("return_lease(").count() == all_returns.len())
+            .then_some(())
+            .ok_or(()),
+    );
+
+    failures.is_empty().then_some(()).ok_or(failures)
 }
 
 fn validate_frame_ledger_hot_paths(sources: &[(String, String)]) -> Result<(), ()> {
@@ -1764,16 +2460,34 @@ fn validate_frame_ledger_boot_order(sources: &[(String, String)]) -> Result<(), 
     Ok(())
 }
 
-fn validate_frame_ledger_init(sources: &[(String, String)]) -> Result<(), ()> {
-    validate_exact(
-        &code_sites(sources, "init_frame_ledger();"),
-        FRAME_LEDGER_INIT_CALLS,
-    )?;
-    validate_exact(
-        &code_sites(sources, "ProcessPageTable::new("),
-        PROCESS_PAGE_TABLE_CONSTRUCTORS,
-    )?;
-    validate_frame_ledger_boot_order(sources)
+fn validate_frame_ledger_init(sources: &[(String, String)]) -> Result<(), Vec<String>> {
+    let mut failures = Vec::new();
+    record(
+        &mut failures,
+        "frame-ledger init calls",
+        validate_census(
+            &census(sources, |source, mask| {
+                code_offsets(source, mask, "init_frame_ledger();")
+            }),
+            FRAME_LEDGER_INIT_CALLS,
+        ),
+    );
+    record(
+        &mut failures,
+        "ProcessPageTable constructors",
+        validate_census(
+            &census(sources, |source, mask| {
+                code_offsets(source, mask, "ProcessPageTable::new(")
+            }),
+            PROCESS_PAGE_TABLE_CONSTRUCTORS,
+        ),
+    );
+    record_unit(
+        &mut failures,
+        "frame-ledger boot order",
+        validate_frame_ledger_boot_order(sources),
+    );
+    failures.is_empty().then_some(()).ok_or(failures)
 }
 
 fn validate_frame_ledger_runtime_oracles(sources: &[(String, String)]) -> Result<(), ()> {
@@ -2133,7 +2847,20 @@ fn validate_frame_ledger_counter_inventory(provider: &str) -> Result<(), ()> {
     .ok_or(())
 }
 
-fn validate_process_table_recorder(sources: &[(String, String)]) -> Result<(), ()> {
+fn validate_process_table_recorder(
+    sources: &[(String, String)],
+) -> Result<(), Vec<String>> {
+    let mut failures = Vec::new();
+    let mut recorder_sites = census(sources, |source, mask| {
+        code_offsets(source, mask, "TableRecorder(tables)")
+    });
+    recorder_sites.retain(|(path, _), _| path == "kernel/src/memory/process_memory.rs");
+    record(
+        &mut failures,
+        "process mapper recorder sites",
+        validate_census(&recorder_sites, TABLE_RECORDER_SITES),
+    );
+
     let process_memory = source(sources, "kernel/src/memory/process_memory.rs");
     let mask = code_mask(process_memory);
     for forbidden in [
@@ -2146,26 +2873,23 @@ fn validate_process_table_recorder(sources: &[(String, String)]) -> Result<(), (
     ] {
         if !code_offsets(process_memory, &mask, forbidden).is_empty() {
             eprintln!("R2 process mapper escape hatch restored: {forbidden}");
-            return Err(());
+            failures.push(format!("R2 process mapper escape hatch restored: {forbidden}"));
         }
     }
 
-    validate_exact(
-        &code_sites(sources, "TableRecorder(tables)")
-            .into_iter()
-            .filter(|(path, _)| path == "kernel/src/memory/process_memory.rs")
-            .collect(),
-        TABLE_RECORDER_SITES,
-    )?;
-
     let recorder = function_body(process_memory, "allocate_frame");
-    (recorder.contains("let lease = allocate_frame_leased()?")
-        && recorder.contains("self.0.record(lease);")
-        && recorder.contains("Some(frame)")
-        && !recorder.contains("deallocate_frame")
-        && !recorder.contains("return_lease"))
-    .then_some(())
-    .ok_or(())
+    record_unit(
+        &mut failures,
+        "TableRecorder allocation flow changed",
+        (recorder.contains("let lease = allocate_frame_leased()?")
+            && recorder.contains("self.0.record(lease);")
+            && recorder.contains("Some(frame)")
+            && !recorder.contains("deallocate_frame")
+            && !recorder.contains("return_lease"))
+        .then_some(())
+        .ok_or(()),
+    );
+    failures.is_empty().then_some(()).ok_or(failures)
 }
 
 fn validate_process_page_table_drop_is_non_freeing(sources: &[(String, String)]) -> Result<(), ()> {
@@ -2184,81 +2908,131 @@ fn validate_process_page_table_drop_is_non_freeing(sources: &[(String, String)])
     .ok_or(())
 }
 
-fn validate_process_page_table_dispositions(sources: &[(String, String)]) -> Result<(), ()> {
+fn validate_process_page_table_dispositions(
+    sources: &[(String, String)],
+) -> Result<(), Vec<String>> {
+    let mut failures = Vec::new();
     let adapted_paths = [
         "kernel/src/task/process_task.rs",
         "kernel/src/process/manager.rs",
     ];
-    let actual = sites_matching(sources, |line| line.contains(".abandon(AbandonReason::"))
-        .into_iter()
-        .filter(|(path, _)| adapted_paths.contains(&path.as_str()))
-        .collect();
-    let expected_sites = PROCESS_PAGE_TABLE_ABANDON_SITES
-        .iter()
-        .map(|(path, line, _)| (*path, *line))
-        .collect::<Vec<_>>();
-    validate_exact(&actual, &expected_sites)?;
-    for (path, line, reason) in PROCESS_PAGE_TABLE_ABANDON_SITES {
-        let source_line = source(sources, path).lines().nth(line - 1).ok_or(())?;
-        if !source_line.contains(reason) {
-            eprintln!("R5 abandon reason changed at {path}:{line}");
-            return Err(());
-        }
-    }
+    let mut abandon_sites = census_tagged(sources, |source, mask| {
+        let bytes = source.as_bytes();
+        let reason_prefix = "AbandonReason::";
+        let reason_offsets = code_offsets(source, mask, reason_prefix);
+        method_call_offsets(source, mask, "abandon")
+            .into_iter()
+            .flat_map(|call| {
+                let Some(open) = next_code(source, mask, call + "abandon".len()) else {
+                    return Vec::new();
+                };
+                let Some(close) = matching_paren(source, mask, open) else {
+                    return Vec::new();
+                };
+                reason_offsets
+                    .iter()
+                    .copied()
+                    .filter(|offset| open < *offset && *offset < close)
+                    .filter_map(|offset| {
+                        let start = next_code(source, mask, offset + reason_prefix.len())?;
+                        let mut end = start;
+                        while end < bytes.len() && mask[end] && identifier_byte(bytes[end]) {
+                            end += 1;
+                        }
+                        (end > start).then(|| {
+                            (
+                                call,
+                                format!("{reason_prefix}{}", &source[start..end]),
+                            )
+                        })
+                    })
+                    .collect()
+            })
+            .collect()
+    });
+    abandon_sites.retain(|(path, _), _| adapted_paths.contains(&path.as_str()));
+    record(
+        &mut failures,
+        "process page-table abandon sites",
+        validate_census(&abandon_sites, PROCESS_PAGE_TABLE_ABANDON_SITES),
+    );
 
     for path in adapted_paths {
         let module = source(sources, path);
         if !call_sites_with_argument(module, "drop", "page_table.take()").is_empty() {
             eprintln!("R5 raw page-table drop restored in {path}");
-            return Err(());
+            failures.push(format!("R5 raw page-table drop restored in {path}"));
         }
     }
 
     let process_memory = source(sources, "kernel/src/memory/process_memory.rs");
     let bodies = module_function_bodies(process_memory);
-    let cleanup_bodies = bodies.get("cleanup_for_exec").ok_or(())?;
-    let legacy = cleanup_bodies.iter().filter(|body| {
-        body.contains("Disposition::RetiredByExecWalk")
-            && body.contains("PT_EXEC_WALK_LEASES_UNRETURNED")
-    });
-    let custody = cleanup_bodies.iter().filter(|body| {
-        body.contains("self.release_mapped_leaves();")
-            && body.contains("self.retire_bounded(pid, budget)")
-            && !body.contains("RetiredByExecWalk")
-            && !body.contains("Vec::new")
-            && !body.contains("log::")
-    });
-    (cleanup_bodies.len() == 2 && legacy.count() == 1 && custody.count() == 1)
-    .then_some(())
-    .ok_or(())
+    if let Some(cleanup_bodies) = bodies.get("cleanup_for_exec") {
+        let legacy = cleanup_bodies.iter().filter(|body| {
+            body.contains("Disposition::RetiredByExecWalk")
+                && body.contains("PT_EXEC_WALK_LEASES_UNRETURNED")
+        });
+        let custody = cleanup_bodies.iter().filter(|body| {
+            body.contains("self.release_mapped_leaves();")
+                && body.contains("self.retire_bounded(pid, budget)")
+                && !body.contains("RetiredByExecWalk")
+                && !body.contains("Vec::new")
+                && !body.contains("log::")
+        });
+        if cleanup_bodies.len() != 2 || legacy.count() != 1 || custody.count() != 1 {
+            failures.push("cleanup_for_exec disposition bodies changed".to_owned());
+        }
+    } else {
+        failures.push("cleanup_for_exec disposition bodies disappeared".to_owned());
+    }
+    failures.is_empty().then_some(()).ok_or(failures)
 }
 
-fn validate_process_page_table_retire_site(sources: &[(String, String)]) -> Result<(), ()> {
+fn validate_process_page_table_retire_site(
+    sources: &[(String, String)],
+) -> Result<(), Vec<String>> {
+    let mut failures = Vec::new();
     let process_task = source(sources, "kernel/src/task/process_task.rs");
-    let retire_sites = code_sites(sources, ".retire_bounded(");
-    validate_exact(&retire_sites, PROCESS_PAGE_TABLE_RETIRE_SITES)?;
+    let retire_sites = census(sources, |source, mask| {
+        method_call_offsets(source, mask, "retire_bounded")
+    });
+    record(
+        &mut failures,
+        "retire_bounded callers",
+        validate_census(&retire_sites, PROCESS_PAGE_TABLE_RETIRE_SITES),
+    );
 
-    let reclaim_sites = code_sites(sources, ".reclaim_bounded(")
-        .into_iter()
-        .filter(|(path, _)| path == "kernel/src/task/process_task.rs")
-        .collect();
-    validate_exact(&reclaim_sites, PENDING_RECLAIM_BOUNDED_SITES)?;
+    let mut reclaim_sites = census(sources, |source, mask| {
+        method_call_offsets(source, mask, "reclaim_bounded")
+    });
+    reclaim_sites.retain(|(path, _), _| path == "kernel/src/task/process_task.rs");
+    record(
+        &mut failures,
+        "reclaim_bounded callers",
+        validate_census(&reclaim_sites, PENDING_RECLAIM_BOUNDED_SITES),
+    );
 
-    if !process_task.contains("fn reclaim_bounded(&mut self)") {
-        return Err(());
-    }
     let reclaim = function_body(process_task, "reclaim_bounded");
     let drain = function_body(process_task, "reclaim_deferred_process_resources_for_pass");
-    (reclaim.matches(".retire_bounded(").count() == 1
-        && drain.matches(".reclaim_bounded(").count() == 1
-        && drain
-            .find("if let Some(blocker) = proof.blocker()")
-            .ok_or(())?
-            < drain.find(".reclaim_bounded(").ok_or(())?
-        && drain.find(".reclaim_bounded(").ok_or(())?
-            < drain.find("record_reclaim(reclaim.pid)").ok_or(())?)
-    .then_some(())
-    .ok_or(())
+    let structural = (|| -> Result<(), ()> {
+        (process_task.contains("fn reclaim_bounded(&mut self)")
+            && reclaim.matches(".retire_bounded(").count() == 1
+            && drain.matches(".reclaim_bounded(").count() == 1
+            && drain
+                .find("if let Some(blocker) = proof.blocker()")
+                .ok_or(())?
+                < drain.find(".reclaim_bounded(").ok_or(())?
+            && drain.find(".reclaim_bounded(").ok_or(())?
+                < drain.find("record_reclaim(reclaim.pid)").ok_or(())?)
+        .then_some(())
+        .ok_or(())
+    })();
+    record_unit(
+        &mut failures,
+        "proof-gated reclaim ordering changed",
+        structural,
+    );
+    failures.is_empty().then_some(()).ok_or(failures)
 }
 
 fn validate_process_page_table_counter_inventory(sources: &[(String, String)]) -> Result<(), ()> {
@@ -2638,47 +3412,114 @@ fn validate_process_page_table_runtime_oracle(sources: &[(String, String)]) -> R
 #[test]
 fn process_page_table_custody_ratchets_are_exact() {
     let sources = rust_sources_below("kernel/src");
-    validate_process_table_recorder(&sources).expect("R2 process mapper recorder was bypassed");
-    validate_process_page_table_drop_is_non_freeing(&sources)
-        .expect("R4 ProcessPageTable Drop gained a freeing path");
-    validate_process_page_table_retire_site(&sources)
-        .expect("R3 process page-table retirement escaped the proof-gated site");
-    validate_process_page_table_dispositions(&sources)
-        .expect("R5 process page-table disposition set changed");
-    validate_process_page_table_counter_inventory(&sources)
-        .expect("R6 process page-table counter inventory changed");
-    validate_process_page_table_exit_paths_are_minimal(&sources)
-        .expect("R7 process page-table exit path gained log/format/heap work");
-    validate_leaf_custody(&sources)
-        .expect("PR-2 virtual-page leaf custody or fail-closed release changed");
-    validate_process_page_table_runtime_oracle(&sources)
-        .expect("O2/G-H process page-table runtime oracle became vacuous");
-    validate_pr1c_retirement_oracles(&sources)
-        .expect("PR-1c leak or per-PID retirement oracle became vacuous");
+    let mut failures = Vec::new();
+    record(
+        &mut failures,
+        "R2 process mapper recorder was bypassed",
+        validate_process_table_recorder(&sources),
+    );
+    record_unit(
+        &mut failures,
+        "R4 ProcessPageTable Drop gained a freeing path",
+        validate_process_page_table_drop_is_non_freeing(&sources),
+    );
+    record(
+        &mut failures,
+        "R3 process page-table retirement escaped the proof-gated site",
+        validate_process_page_table_retire_site(&sources),
+    );
+    record(
+        &mut failures,
+        "R5 process page-table disposition set changed",
+        validate_process_page_table_dispositions(&sources),
+    );
+    record_unit(
+        &mut failures,
+        "R6 process page-table counter inventory changed",
+        validate_process_page_table_counter_inventory(&sources),
+    );
+    record_unit(
+        &mut failures,
+        "R7 process page-table exit path gained log/format/heap work",
+        validate_process_page_table_exit_paths_are_minimal(&sources),
+    );
+    record_unit(
+        &mut failures,
+        "PR-2 virtual-page leaf custody or fail-closed release changed",
+        validate_leaf_custody(&sources),
+    );
+    record_unit(
+        &mut failures,
+        "O2/G-H process page-table runtime oracle became vacuous",
+        validate_process_page_table_runtime_oracle(&sources),
+    );
+    record_unit(
+        &mut failures,
+        "PR-1c leak or per-PID retirement oracle became vacuous",
+        validate_pr1c_retirement_oracles(&sources),
+    );
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 
 #[test]
 fn frame_ledger_return_and_initialization_ratchets_are_exact() {
     let sources = rust_sources_below("kernel/src");
-    validate_frame_ledger_hot_paths(&sources)
-        .expect("R7 frame-ledger hot path gained log/format/heap work");
-    validate_frame_ledger_bounded_boot_allocation(&sources)
-        .expect("frame ledger regained eager or post-publication allocation");
-    validate_frame_return_choke_point(&sources).expect("R1 frame-return choke point changed");
-    validate_frame_ledger_boot_order(&sources).expect("R9 ARM/x86 frame-ledger boot order changed");
-    validate_frame_ledger_init(&sources).expect("R9 frame-ledger initialization moved");
-    validate_frame_ledger_runtime_oracles(&sources)
-        .expect("frame-custody runtime oracle became vacuous");
-    validate_no_vacuous_test_conditions(&sources)
-        .expect("boot-test oracle gained an always-true/always-false vacuity shape");
-    validate_x86_frame_custody_harness(&repo_text("docker/qemu/run-x86-boot-tests.sh"))
-        .expect("x86 frame-custody harness became vacuous");
-    validate_workqueue_progress_wait(source(&sources, "kernel/src/test_framework/registry.rs"))
-        .expect("workqueue probe lost its progress key or regained a timing-based wait");
+    let mut failures = Vec::new();
+    record_unit(
+        &mut failures,
+        "R7 frame-ledger hot path gained log/format/heap work",
+        validate_frame_ledger_hot_paths(&sources),
+    );
+    record_unit(
+        &mut failures,
+        "frame ledger regained eager or post-publication allocation",
+        validate_frame_ledger_bounded_boot_allocation(&sources),
+    );
+    record(
+        &mut failures,
+        "R1 frame-return choke point changed",
+        validate_frame_return_choke_point(&sources),
+    );
+    record_unit(
+        &mut failures,
+        "R9 ARM/x86 frame-ledger boot order changed",
+        validate_frame_ledger_boot_order(&sources),
+    );
+    record(
+        &mut failures,
+        "R9 frame-ledger initialization moved",
+        validate_frame_ledger_init(&sources),
+    );
+    record_unit(
+        &mut failures,
+        "frame-custody runtime oracle became vacuous",
+        validate_frame_ledger_runtime_oracles(&sources),
+    );
+    record_unit(
+        &mut failures,
+        "boot-test oracle gained an always-true/always-false vacuity shape",
+        validate_no_vacuous_test_conditions(&sources),
+    );
+    record_unit(
+        &mut failures,
+        "x86 frame-custody harness became vacuous",
+        validate_x86_frame_custody_harness(&repo_text("docker/qemu/run-x86-boot-tests.sh")),
+    );
+    record_unit(
+        &mut failures,
+        "workqueue probe lost its progress key or regained a timing-based wait",
+        validate_workqueue_progress_wait(source(
+            &sources,
+            "kernel/src/test_framework/registry.rs",
+        )),
+    );
 
     let provider = source(&sources, "kernel/src/tracing/providers/teardown.rs");
-    validate_frame_ledger_counter_inventory(provider)
-        .expect("frame-ledger counter inventory changed");
+    record_unit(
+        &mut failures,
+        "frame-ledger counter inventory changed",
+        validate_frame_ledger_counter_inventory(provider),
+    );
     for counter in [
         "FRAME_RETURN_REFUSED_DOUBLE",
         "FRAME_RETURN_REFUSED_STALE",
@@ -2706,39 +3547,57 @@ fn frame_ledger_return_and_initialization_ratchets_are_exact() {
         );
     }
     assert!(provider.contains("pub const COUNTER_COUNT: usize = 70;"));
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 
 #[test]
 fn current_teardown_bypass_surface_is_exact() {
     let sources = rust_sources_below("kernel/src");
+    let mut failures = Vec::new();
 
-    assert_exact(
-        sites_matching(&sources, |line| line.contains(".terminate(")),
-        TERMINATE_CALLS,
+    record(
+        &mut failures,
         "Process::terminate callers",
+        validate_census(
+            &census(&sources, |source, mask| {
+                method_call_offsets(source, mask, "terminate")
+            }),
+            TERMINATE_CALLS,
+        ),
     );
-    assert_exact(
-        sites_matching(&sources, |line| line.contains(".terminate_minimal(")),
-        TERMINATE_MINIMAL_CALLS,
+    record(
+        &mut failures,
         "Process::terminate_minimal callers",
+        validate_census(
+            &census(&sources, |source, mask| {
+                method_call_offsets(source, mask, "terminate_minimal")
+            }),
+            TERMINATE_MINIMAL_CALLS,
+        ),
     );
 
-    let init_sites = sites_matching(&sources, |line| line.contains("ProcessId::new(1)"));
-    let test_sites: BTreeSet<_> = init_sites
+    let init_sites = census(&sources, |source, mask| {
+        code_offsets(source, mask, "ProcessId::new(1)")
+    });
+    let test_sites: Census = init_sites
         .iter()
-        .filter(|(path, _)| path == "kernel/src/test_userspace.rs")
-        .cloned()
+        .filter(|((path, _), _)| path == "kernel/src/test_userspace.rs")
+        .map(|(anchor, count)| (anchor.clone(), *count))
         .collect();
-    let production_sites: BTreeSet<_> = init_sites.difference(&test_sites).cloned().collect();
-    assert_exact(
-        production_sites,
-        PRODUCTION_INIT_PID_SITES,
+    let production_sites: Census = init_sites
+        .iter()
+        .filter(|((path, _), _)| path != "kernel/src/test_userspace.rs")
+        .map(|(anchor, count)| (anchor.clone(), *count))
+        .collect();
+    record(
+        &mut failures,
         "production PID-1 literals",
+        validate_census(&production_sites, PRODUCTION_INIT_PID_SITES),
     );
-    assert_exact(
-        test_sites,
-        TEST_INIT_PID_SITES,
+    record(
+        &mut failures,
         "test_minimal_userspace PID-1 allowlist",
+        validate_census(&test_sites, TEST_INIT_PID_SITES),
     );
     let test_userspace = source(&sources, "kernel/src/test_userspace.rs");
     assert_eq!(
@@ -2756,47 +3615,94 @@ fn current_teardown_bypass_surface_is_exact() {
         "the three test PID-1 sites must remain in test_minimal_userspace"
     );
 
-    assert_exact(
-        sites_matching(&sources, |line| {
-            line.contains(".terminate_process_threads(")
-        }),
-        QUARANTINE_CALLS,
+    record(
+        &mut failures,
         "terminate_process_threads callers",
+        validate_census(
+            &census(&sources, |source, mask| {
+                method_call_offsets(source, mask, "terminate_process_threads")
+            }),
+            QUARANTINE_CALLS,
+        ),
     );
-    assert_exact(
-        sites_matching(&sources, |line| line.contains(".kernel_stack_allocation =")),
-        KERNEL_STACK_MUTATIONS,
+    record(
+        &mut failures,
         "kernel_stack_allocation ownership mutations",
+        validate_census(
+            &census(&sources, |source, mask| {
+                code_offsets(source, mask, ".kernel_stack_allocation =")
+            }),
+            KERNEL_STACK_MUTATIONS,
+        ),
     );
-    validate_reclaim_enqueue_callers(&sources)
-        .expect("enqueue_process_reclaim caller ratchet changed");
+    record(
+        &mut failures,
+        "enqueue_process_reclaim caller ratchet changed",
+        validate_reclaim_enqueue_callers(&sources),
+    );
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 
 #[test]
 fn v3_structural_closures_are_exact() {
     let sources = rust_sources_below("kernel/src");
-    validate_exit_process_entry_points(&sources).expect("process-exit entry-point ratchet changed");
-    validate_blocking_primitives(&sources).expect("the nine P0 blocking primitives changed");
-    validate_group_writes(&sources).expect("thread_group_id production writers changed");
-    assert_exact(
-        sites_matching(&sources, |line| {
-            line.contains("SCHEDULER.lock()") || line.contains("SCHEDULER.try_lock()")
-        }),
-        RAW_SCHEDULER_LOCK_SITES,
-        "raw scheduler-lock acquisitions outside the instrumented wrappers",
+    let mut failures = Vec::new();
+    record(
+        &mut failures,
+        "process-exit entry-point ratchet changed",
+        validate_exit_process_entry_points(&sources),
     );
-    assert_exact(
-        sites_matching(&sources, |line| line.contains("btrt::on_process_exit(")),
-        &[("kernel/src/task/process_task.rs", 623)],
+    record(
+        &mut failures,
+        "the nine P0 blocking primitives changed",
+        validate_blocking_primitives(&sources),
+    );
+    record(
+        &mut failures,
+        "thread_group_id production writers changed",
+        validate_group_writes(&sources),
+    );
+    record(
+        &mut failures,
+        "raw scheduler-lock acquisitions outside the instrumented wrappers",
+        validate_census(
+            &census(&sources, |source, mask| {
+                identifier_offsets(source, mask, "SCHEDULER")
+                    .into_iter()
+                    .filter(|offset| {
+                        code_follows(source, mask, offset + "SCHEDULER".len(), ".lock()")
+                            || code_follows(
+                                source,
+                                mask,
+                                offset + "SCHEDULER".len(),
+                                ".try_lock()",
+                            )
+                    })
+                    .collect()
+            }),
+            RAW_SCHEDULER_LOCK_SITES,
+        ),
+    );
+    record(
+        &mut failures,
         "btrt::on_process_exit callers",
+        validate_census(
+            &census(&sources, |source, mask| {
+                call_offsets(source, mask, "on_process_exit")
+            }),
+            BTRT_PROCESS_EXIT_REPORTS,
+        ),
     );
 
     let provider = source(&sources, "kernel/src/tracing/providers/teardown.rs");
     let scheduler = source(&sources, "kernel/src/task/scheduler.rs");
     assert_eq!(provider.matches("counter!(EXIT_SGI_SENT,").count(), 1);
     assert_eq!(provider.matches("counter!(EXIT_KICK_PUBLISHED,").count(), 1);
-    validate_exit_sgi_is_teardown_only(&sources)
-        .expect("EXIT_SGI_SENT escaped the teardown-only producer");
+    record_unit(
+        &mut failures,
+        "EXIT_SGI_SENT escaped the teardown-only producer",
+        validate_exit_sgi_is_teardown_only(&sources),
+    );
     let expedite = function_body(scheduler, "send_exit_expedite_sgi");
     assert_eq!(expedite.matches("EXIT_SGI_SENT").count(), 1);
     assert_eq!(
@@ -2828,11 +3734,13 @@ fn v3_structural_closures_are_exact() {
     assert!(!process.contains("report_marker"));
     assert!(!process.contains("claim_exit_slot"));
     assert!(!process.contains("record_exit"));
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 
 #[test]
 fn phase_one_retirement_fence_and_lock_domains_are_structural() {
     let sources = rust_sources_below("kernel/src");
+    let mut failures = Vec::new();
     let process = source(&sources, "kernel/src/task/process_task.rs");
     let scheduler = source(&sources, "kernel/src/task/scheduler.rs");
     let manager = source(&sources, "kernel/src/process/manager.rs");
@@ -2899,13 +3807,15 @@ fn phase_one_retirement_fence_and_lock_domains_are_structural() {
             < stack_reclaim.find("is_kernel_stack_slot_live").unwrap()
     );
 
-    assert_exact(
-        sites_matching(&sources, |line| {
-            line.contains("note_process_row_removed()")
-                && !line.contains("fn note_process_row_removed")
-        }),
-        &[("kernel/src/process/manager.rs", 1101)],
+    record(
+        &mut failures,
         "ROW_REMOVAL_EPOCH bump sites",
+        validate_census(
+            &census(&sources, |source, mask| {
+                call_offsets(source, mask, "note_process_row_removed")
+            }),
+            ROW_REMOVAL_EPOCH_BUMPS,
+        ),
     );
     assert!(function_body(manager, "remove_process").contains("self.processes.remove(&pid)"));
     assert!(ttbr0.contains("core::arch::asm!(\"mrs {}, ttbr0_el1\""));
@@ -2933,6 +3843,7 @@ fn phase_one_retirement_fence_and_lock_domains_are_structural() {
     let registry = source(&sources, "kernel/src/test_framework/registry.rs");
     assert!(registry.contains("name: \"retirement_fence_gate\""));
     assert!(registry.contains("name: \"reclaim_progress_gate\""));
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 
 #[test]
