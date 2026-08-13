@@ -352,7 +352,7 @@ fn validate_first_userspace_entry_source(source: &str) -> Result<(), String> {
         .first()
         .copied()
         .ok_or_else(|| "first userspace entry has no ring-3 commit".to_string())?;
-    for install in ["set_next_cr3", "set_kernel_stack"] {
+    for install in ["set_next_cr3", "update_tss_rsp0"] {
         let install_offset = identifier_offsets(setup, &setup_mask, install)
             .first()
             .copied()
@@ -687,4 +687,111 @@ fn userspace_fault_idle_return_validator_rejects_private_stack_derivation() {
         }
     "#;
     assert!(validate_fault_idle_return_source(ist_stack_mutant).is_err());
+}
+
+fn validate_coherent_rsp0_publishers(source: &str) -> Result<(), String> {
+    let mask = code_mask(source);
+    if !identifier_offsets(source, &mask, "set_kernel_stack").is_empty() {
+        return Err("context_switch.rs still calls the TSS-only RSP0 writer".to_string());
+    }
+    let first_entry = function_body(source, "setup_first_userspace_entry")
+        .ok_or_else(|| "missing fn setup_first_userspace_entry".to_string())?;
+    let first_entry_mask = code_mask(first_entry);
+    if identifier_offsets(first_entry, &first_entry_mask, "update_tss_rsp0").is_empty() {
+        return Err("first userspace entry does not publish RSP0 through per-CPU state".to_string());
+    }
+    Ok(())
+}
+
+#[test]
+fn every_context_switch_rsp0_publish_updates_tss_and_per_cpu_cache() {
+    let source = repo_text("kernel/src/interrupts/context_switch.rs");
+    assert_eq!(validate_coherent_rsp0_publishers(&source), Ok(()));
+}
+
+#[test]
+fn rsp0_publisher_validator_rejects_a_tss_only_first_entry_write() {
+    let synthetic = r#"
+        fn setup_first_userspace_entry(kernel_stack_top: VirtAddr) {
+            crate::gdt::set_kernel_stack(kernel_stack_top);
+        }
+        fn another_restore(kernel_stack_top: VirtAddr) {
+            crate::per_cpu::update_tss_rsp0(kernel_stack_top.as_u64());
+        }
+    "#;
+    assert!(validate_coherent_rsp0_publishers(synthetic).is_err());
+}
+
+fn validate_interrupt_return_scheduler_acquisitions(source: &str) -> Result<(), String> {
+    let check = function_body(source, "check_need_resched_and_switch")
+        .ok_or_else(|| "missing fn check_need_resched_and_switch".to_string())?;
+    let pair_start = check
+        .find("let (blocked_in_syscall, old_thread_is_user) =")
+        .ok_or_else(|| "old-thread fields are not read as one pair".to_string())?;
+    let pair_end = check[pair_start..]
+        .find("if from_userspace {")
+        .map(|offset| pair_start + offset)
+        .ok_or_else(|| "missing from-userspace branch after old-thread read".to_string())?;
+    let pair = &check[pair_start..pair_end];
+    if pair.matches("scheduler::with_thread_mut(old_thread_id").count() != 1
+        || !pair.contains("thread.blocked_in_syscall")
+        || !pair.contains("thread.privilege == ThreadPrivilege::User")
+    {
+        return Err("old-thread fields require more than one scheduler acquisition".to_string());
+    }
+
+    let switch = function_body(source, "switch_to_thread")
+        .ok_or_else(|| "missing fn switch_to_thread".to_string())?;
+    let normalized_switch = normalized_code(switch);
+    if !normalized_switch.contains(
+        "} else if blocked_in_syscall || saved_context_is_kernel_frame(thread_id, process_manager_guard.as_ref()) {",
+    ) || normalized_switch.contains("let saved_context_is_kernel_frame =")
+    {
+        return Err(
+            "saved-frame lookup is not lazy inside the non-idle user branch".to_string(),
+        );
+    }
+    let helper = function_body(source, "saved_context_is_kernel_frame")
+        .ok_or_else(|| "missing fn saved_context_is_kernel_frame".to_string())?;
+    let helper_mask = code_mask(helper);
+    if !identifier_offsets(helper, &helper_mask, "with_scheduler").is_empty()
+        || !identifier_offsets(helper, &helper_mask, "with_thread_mut").is_empty()
+    {
+        return Err("saved-frame helper recomputes caller-known scheduler state".to_string());
+    }
+    Ok(())
+}
+
+#[test]
+fn interrupt_return_reads_old_thread_once_and_lazily_checks_saved_cs() {
+    let source = repo_text("kernel/src/interrupts/context_switch.rs");
+    assert_eq!(validate_interrupt_return_scheduler_acquisitions(&source), Ok(()));
+}
+
+#[test]
+fn interrupt_return_validator_rejects_unconditional_saved_frame_lookup() {
+    let synthetic = r#"
+        fn check_need_resched_and_switch(old_thread_id: u64) {
+            let (blocked_in_syscall, old_thread_is_user) =
+                scheduler::with_thread_mut(old_thread_id, |thread| {
+                    (thread.blocked_in_syscall, thread.privilege == ThreadPrivilege::User)
+                });
+            if from_userspace {}
+        }
+        fn saved_context_is_kernel_frame(thread_id: u64, guard: Option<&Guard>) -> bool {
+            manager_has_kernel_frame(thread_id, guard)
+        }
+        fn switch_to_thread(thread_id: u64, process_manager_guard: Option<Guard>) {
+            let saved_context_is_kernel_frame =
+                saved_context_is_kernel_frame(thread_id, process_manager_guard.as_ref());
+            if is_idle {
+                setup_idle_return();
+            } else if is_kernel_thread {
+                setup_kernel_thread_return();
+            } else if blocked_in_syscall || saved_context_is_kernel_frame {
+                restore_kernel_frame();
+            }
+        }
+    "#;
+    assert!(validate_interrupt_return_scheduler_acquisitions(synthetic).is_err());
 }

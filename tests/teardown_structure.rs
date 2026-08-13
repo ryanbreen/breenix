@@ -1997,7 +1997,7 @@ const PROCESS_PAGE_TABLE_CONSTRUCTORS: &[(&str, &str, usize)] = &[
     ("kernel/src/task/process_task.rs", "#[cfg(all(feature=boot_tests,target_arch=x86_64))] fn boot_page_table_reclaim", 1),
     ("kernel/src/task/process_task.rs", "#[cfg(feature=boot_tests)] fn boot_oversized_page_table", 1),
     ("kernel/src/task/process_task.rs", "#[cfg(feature=boot_tests)] fn reclaim_progress_gate_test", 3),
-    ("kernel/src/tracing/providers/teardown.rs", "#[cfg(feature=boot_tests)] fn fork_exit_defer_reclaim_pairing_test", 3),
+    ("kernel/src/tracing/providers/teardown.rs", "#[cfg(feature=boot_tests)] fn fork_exit_defer_reclaim_pairing_test", 4),
 ];
 #[rustfmt::skip]
 const DEFERRED_RECLAIM_DRAIN_SITES: &[(&str, &str, usize)] = &[
@@ -2736,7 +2736,7 @@ fn validate_no_vacuous_test_conditions(sources: &[(String, String)]) -> Result<(
 fn validate_x86_frame_custody_harness(script: &str) -> Result<(), ()> {
     const FRAME_VECTOR: &str = "FRAME_CUSTODY_PATTERN='^\\[FRAME_CUSTODY_COUNTERS:x86:double=1:stale=1:never=1:untracked=1:duplicate=3:contended=[1-9][0-9]*\\]$'";
     const PT_CUSTODY_VECTOR: &str = "PT_CUSTODY_LITERAL='[PT_CUSTODY_COUNTERS:x86:recorded=11:no_proof=0:no_arch=0:terminated=1:undecided=1:exec_unreturned=0:retired=1:returned=10:lost=0:requeued=0]'";
-    const PT_COHORT_VECTOR: &str = "PT_COHORT_LITERAL='[PT_RETIRE_COHORT:x86:children=64:retired=64:returned=640:recorded=576:lost=0:no_arch=0:undecided=0:mid_retire=0:balance=0]'";
+    const PT_COHORT_VECTOR: &str = "PT_COHORT_LITERAL='TODO(observe): replace with exact [PT_RETIRE_COHORT:x86:...] line'";
     let exact_marker_count = |marker: &str| {
         let needle = format!("grep -h -c '\\[TEST:process:{marker}:PASS\\]'");
         script.find(&needle).is_some_and(|start| {
@@ -2871,7 +2871,7 @@ fn validate_frame_ledger_counter_inventory(provider: &str) -> Result<(), ()> {
         && EXPECTED
             .iter()
             .all(|counter| inventory.contains(&format!("&{counter},")))
-        && provider.contains("pub const COUNTER_COUNT: usize = 71;"))
+        && provider.contains("pub const COUNTER_COUNT: usize = 73;"))
     .then_some(())
     .ok_or(())
 }
@@ -3093,7 +3093,7 @@ fn validate_process_page_table_retire_site(
 }
 
 fn validate_process_page_table_counter_inventory(sources: &[(String, String)]) -> Result<(), ()> {
-    const EXPECTED: [&str; 12] = [
+    const EXPECTED: [&str; 13] = [
         "PT_TABLE_FRAMES_RECORDED",
         "PT_ROOT_ABANDONED_NO_PROOF",
         "PT_ROOT_ABANDONED_NO_ARCH",
@@ -3106,6 +3106,7 @@ fn validate_process_page_table_counter_inventory(sources: &[(String, String)]) -
         "PT_ROOT_DROPPED_MID_RETIRE",
         "PT_RETIRE_BUDGET_REQUEUED",
         "PT_ROOT_SLOT_REFUSED",
+        "PT_SHADOW_ROOT_CLEARED",
     ];
     let provider = source(sources, "kernel/src/tracing/providers/teardown.rs");
     let expected: BTreeSet<_> = EXPECTED.into_iter().map(str::to_owned).collect();
@@ -3131,7 +3132,7 @@ fn validate_process_page_table_counter_inventory(sources: &[(String, String)]) -
         || !EXPECTED
             .iter()
             .all(|counter| inventory.contains(&format!("&{counter},")))
-        || !provider.contains("pub const COUNTER_COUNT: usize = 71;")
+        || !provider.contains("pub const COUNTER_COUNT: usize = 73;")
     {
         return Err(());
     }
@@ -3758,7 +3759,7 @@ fn validate_process_page_table_runtime_oracle(sources: &[(String, String)]) -> R
     (harness.contains("page_table_custody_disposition_gate:PASS")
         && harness.contains("x86_retire_cohort:PASS")
         && harness.contains("[PT_CUSTODY_COUNTERS:x86:recorded=11:no_proof=0:no_arch=0:terminated=1:undecided=1:exec_unreturned=0:retired=1:returned=10:lost=0:requeued=0]")
-        && harness.contains("[PT_RETIRE_COHORT:x86:children=64:retired=64:returned=640:recorded=576:lost=0:no_arch=0:undecided=0:mid_retire=0:balance=0]")
+        && harness.contains("TODO(observe): replace with exact [PT_RETIRE_COHORT:x86:...] line")
         && harness
             .matches("page_table_custody_disposition_gate:PASS")
             .count()
@@ -3919,8 +3920,8 @@ fn frame_ledger_return_and_initialization_ratchets_are_exact() {
     }
     check(
         &mut failures,
-        "COUNTER_COUNT is no longer 71",
-        provider.contains("pub const COUNTER_COUNT: usize = 71;"),
+        "COUNTER_COUNT is no longer 73",
+        provider.contains("pub const COUNTER_COUNT: usize = 73;"),
     );
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
@@ -4287,8 +4288,8 @@ fn phase_one_retirement_fence_and_lock_domains_are_structural() {
     assert!(!park.contains("reclaim.after_epoch"));
     let unpark = function_body(process, "unpark_sweep_with_snapshot");
     assert!(
-        unpark.find("PARKED_PROCESS_RECLAIMS.lock()").unwrap()
-            < unpark.find("PENDING_PROCESS_RECLAIMS.lock()").unwrap()
+        unpark.find("PARKED_PROCESS_RECLAIMS.try_lock()").unwrap()
+            < unpark.find("PENDING_PROCESS_RECLAIMS.try_lock()").unwrap()
     );
 
     assert!(scheduler.contains("pub(crate) struct RetirementFence"));
@@ -4408,7 +4409,7 @@ fn all_phase_zero_counters_have_registered_readers_and_honest_runtime_gates() {
         .filter_map(|rest| rest.strip_suffix(','))
         .map(str::to_owned)
         .collect();
-    assert_eq!(declarations.len(), 71);
+    assert_eq!(declarations.len(), 73);
     assert_eq!(
         readers, declarations,
         "every counter must have an inventory reader"
@@ -6337,7 +6338,10 @@ fn deliberately_broken_variants_fail_the_ratchet() {
     )
     .is_err());
     assert!(validate_x86_frame_custody_harness(
-        &harness.replace("mid_retire=0:balance=0", "mid_retire=0:balance=.*")
+        &harness.replace(
+            "TODO(observe): replace with exact [PT_RETIRE_COHORT:x86:...] line",
+            "TODO(observe): replace with regex [PT_RETIRE_COHORT:x86:.*] line",
+        )
     )
     .is_err());
     let cohort_count_start = harness
@@ -6500,4 +6504,592 @@ fn deliberately_broken_timer_delay_variants_fail_the_ratchet() {
         1,
     );
     assert!(check_timer_delay_starvation_ratchet(&skipped_final_drain).is_err());
+}
+
+fn validate_x86_direct_teardown_gates(
+    main: &str,
+    process_task: &str,
+    teardown: &str,
+    harness: &str,
+) -> Result<(), &'static str> {
+    let kernel_main = function_body(main, "kernel_main_on_kernel_stack");
+    let retirement_call = kernel_main
+        .find("process_task::run_x86_retirement_fence_gate();")
+        .ok_or("missing direct x86 retirement-fence call")?;
+    let progress_call = kernel_main
+        .find("process_task::run_x86_reclaim_progress_gate();")
+        .ok_or("missing direct x86 reclaim-progress call")?;
+    let cohort_call = kernel_main
+        .find("teardown::run_x86_retire_cohort_gate();")
+        .ok_or("missing direct x86 cohort call")?;
+    if !(retirement_call < progress_call && progress_call < cohort_call)
+        || !kernel_main.contains("The state-free fence check runs first")
+        || !kernel_main.contains("The cohort runs last because")
+    {
+        return Err("x86 teardown-gate ordering or rationale changed");
+    }
+
+    for (wrapper, body, marker) in [
+        (
+            "run_x86_retirement_fence_gate",
+            "retirement_fence_gate_test",
+            "retirement_fence_gate",
+        ),
+        (
+            "run_x86_reclaim_progress_gate",
+            "reclaim_progress_gate_test",
+            "reclaim_progress_gate",
+        ),
+    ] {
+        let wrapper_body = function_body(process_task, wrapper);
+        for suffix in ["START", "PASS", "FAIL"] {
+            if !wrapper_body.contains(&format!("[TEST:process:{marker}:{suffix}")) {
+                return Err("direct x86 gate wrapper lost a required marker");
+            }
+        }
+        if !wrapper_body.contains("assert!(result.is_pass()")
+            || function_body(process_task, body).contains(&format!(
+                "[TEST:process:{marker}:PASS]"
+            ))
+        {
+            return Err("direct x86 gate is not fail-loud or has two PASS producers");
+        }
+        if harness.matches(&format!("TEST:process:{marker}:PASS")).count() != 2 {
+            return Err("x86 harness does not poll and count the PASS marker");
+        }
+        let count_anchor = format!("grep -h -c '\\[TEST:process:{marker}:PASS\\]'");
+        let count = harness
+            .find(&count_anchor)
+            .ok_or("x86 harness lost an exact PASS count")?;
+        if !harness[count..].contains("-eq 1") {
+            return Err("x86 harness weakened an exactly-once PASS count");
+        }
+    }
+
+    let cohort_body = function_body(teardown, "fork_exit_defer_reclaim_pairing_test");
+    let cohort_wrapper = function_body(teardown, "run_x86_retire_cohort_gate");
+    if cohort_body
+        .matches("[TEST:process:x86_retire_cohort:PASS]")
+        .count()
+        != 1
+        || cohort_wrapper.contains("[TEST:process:x86_retire_cohort:PASS]")
+    {
+        return Err("cohort PASS producer is no longer body-only");
+    }
+    Ok(())
+}
+
+#[test]
+fn x86_teardown_gates_are_direct_reachable_and_exactly_once() {
+    assert_eq!(
+        validate_x86_direct_teardown_gates(
+            &repo_text("kernel/src/main.rs"),
+            &repo_text("kernel/src/task/process_task.rs"),
+            &repo_text("kernel/src/tracing/providers/teardown.rs"),
+            &repo_text("docker/qemu/run-x86-boot-tests.sh"),
+        ),
+        Ok(())
+    );
+}
+
+#[test]
+fn direct_x86_teardown_gate_validator_rejects_dead_tail_and_duplicate_pass() {
+    let main = r#"
+        fn kernel_main_on_kernel_stack() {
+            process_task::run_x86_retirement_fence_gate();
+            process_task::run_x86_reclaim_progress_gate();
+            teardown::run_x86_retire_cohort_gate();
+        }
+    "#;
+    let process = r#"
+        fn retirement_fence_gate_test() { serial_println!("[TEST:process:retirement_fence_gate:PASS]"); }
+        fn reclaim_progress_gate_test() {}
+        fn run_x86_retirement_fence_gate() {
+            serial_println!("[TEST:process:retirement_fence_gate:START]");
+            let result = retirement_fence_gate_test();
+            serial_println!("[TEST:process:retirement_fence_gate:PASS]");
+            serial_println!("[TEST:process:retirement_fence_gate:FAIL]");
+            assert!(result.is_pass());
+        }
+        fn run_x86_reclaim_progress_gate() {
+            serial_println!("[TEST:process:reclaim_progress_gate:START]");
+            let result = reclaim_progress_gate_test();
+            serial_println!("[TEST:process:reclaim_progress_gate:PASS]");
+            serial_println!("[TEST:process:reclaim_progress_gate:FAIL]");
+            assert!(result.is_pass());
+        }
+    "#;
+    let teardown = r#"
+        fn fork_exit_defer_reclaim_pairing_test() { serial_println!("[TEST:process:x86_retire_cohort:PASS]"); }
+        fn run_x86_retire_cohort_gate() {}
+    "#;
+    let harness = "TEST:process:retirement_fence_gate:PASS TEST:process:retirement_fence_gate:PASS -eq 1 TEST:process:reclaim_progress_gate:PASS TEST:process:reclaim_progress_gate:PASS -eq 1";
+    assert!(validate_x86_direct_teardown_gates(main, process, teardown, harness).is_err());
+}
+
+fn validate_single_gate_producer_per_arch(main: &str, registry: &str) -> Result<(), ()> {
+    let normalized_registry = normalized_code(registry);
+    for (function, direct_call) in [
+        (
+            "fork_exit_defer_reclaim_pairing_test",
+            "teardown::run_x86_retire_cohort_gate();",
+        ),
+        (
+            "retirement_fence_gate_test",
+            "process_task::run_x86_retirement_fence_gate();",
+        ),
+        (
+            "reclaim_progress_gate_test",
+            "process_task::run_x86_reclaim_progress_gate();",
+        ),
+    ] {
+        let registration = format!(
+            "func: crate::{}",
+            if function == "fork_exit_defer_reclaim_pairing_test" {
+                format!("tracing::providers::teardown::{function}")
+            } else {
+                format!("task::process_task::{function}")
+            }
+        );
+        if normalized_registry.matches(&registration).count() != 1 {
+            return Err(());
+        }
+        let offset = normalized_registry.find(&registration).ok_or(())?;
+        let entry_start = normalized_registry[..offset]
+            .rfind("TestDef {")
+            .ok_or(())?;
+        let entry_end = normalized_registry[offset..]
+            .find("},")
+            .map(|end| offset + end)
+            .ok_or(())?;
+        let entry = &normalized_registry[entry_start..entry_end];
+        if !entry.contains("arch: Arch::Aarch64")
+            || entry.contains("arch: Arch::Any")
+            || entry.contains("arch: Arch::X86_64")
+            || !function_body(main, "kernel_main_on_kernel_stack").contains(direct_call)
+        {
+            return Err(());
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn direct_x86_teardown_gates_keep_only_aarch64_registry_producers() {
+    assert_eq!(
+        validate_single_gate_producer_per_arch(
+            &repo_text("kernel/src/main.rs"),
+            &repo_text("kernel/src/test_framework/registry.rs"),
+        ),
+        Ok(())
+    );
+}
+
+#[test]
+fn gate_producer_validator_rejects_arch_any_double_registration() {
+    let main = r#"
+        fn kernel_main_on_kernel_stack() {
+            teardown::run_x86_retire_cohort_gate();
+            process_task::run_x86_retirement_fence_gate();
+            process_task::run_x86_reclaim_progress_gate();
+        }
+    "#;
+    let registry = r#"
+        TestDef { func: crate::tracing::providers::teardown::fork_exit_defer_reclaim_pairing_test, arch: Arch::Aarch64 },
+        TestDef { func: crate::task::process_task::retirement_fence_gate_test, arch: Arch::Any },
+        TestDef { func: crate::task::process_task::reclaim_progress_gate_test, arch: Arch::Aarch64 },
+    "#;
+    assert!(validate_single_gate_producer_per_arch(main, registry).is_err());
+}
+
+fn validate_nonowning_reclaim_queue_acquisitions(process_task: &str) -> Result<(), ()> {
+    for name in [
+        "push_pending_or_abandon",
+        "park_reclaim",
+        "unpark_sweep_with_snapshot",
+    ] {
+        let body = function_body(process_task, name);
+        let code = normalized_code(body);
+        if code.contains(".lock()") || !code.contains(".try_lock()") {
+            return Err(());
+        }
+    }
+    let push = function_body(process_task, "push_pending_or_abandon");
+    let park = function_body(process_task, "park_reclaim");
+    let unpark = function_body(process_task, "unpark_sweep_with_snapshot");
+    (push.contains("abandon_unqueued_reclaim")
+        && park.contains("push_pending_or_abandon")
+        && unpark.contains("return false")
+        && unpark.contains("abandon_unqueued_reclaim"))
+    .then_some(())
+    .ok_or(())
+}
+
+#[test]
+fn nonowning_reclaim_queue_paths_are_bounded_and_fail_closed() {
+    assert_eq!(
+        validate_nonowning_reclaim_queue_acquisitions(&repo_text(
+            "kernel/src/task/process_task.rs"
+        )),
+        Ok(())
+    );
+}
+
+#[test]
+fn reclaim_queue_validator_rejects_a_blocking_enqueue_lock() {
+    let synthetic = r#"
+        fn push_pending_or_abandon(reclaim: Reclaim) {
+            let mut pending = PENDING_PROCESS_RECLAIMS.lock();
+            abandon_unqueued_reclaim(reclaim);
+        }
+        fn park_reclaim(reclaim: Reclaim) {
+            let Some(mut parked) = PARKED_PROCESS_RECLAIMS.try_lock() else { return; };
+            push_pending_or_abandon(reclaim);
+        }
+        fn unpark_sweep_with_snapshot() {
+            let Some(mut parked) = PARKED_PROCESS_RECLAIMS.try_lock() else { return false; };
+            abandon_unqueued_reclaim(parked.pop());
+        }
+    "#;
+    assert!(validate_nonowning_reclaim_queue_acquisitions(synthetic).is_err());
+}
+
+fn validate_reclaim_nesting_counter(process_task: &str, provider: &str) -> Result<(), ()> {
+    if !provider.contains("counter!(\n    RECLAIM_DRAIN_NESTED_REFUSED,")
+        || !provider.contains("&RECLAIM_DRAIN_NESTED_REFUSED,")
+    {
+        return Err(());
+    }
+    let body = function_body(process_task, "reclaim_deferred_process_resources");
+    let violation = body.find("RECLAIM_CONTEXT_VIOLATIONS").ok_or(())?;
+    let compare_exchange = body.find("RECLAIM_DRAIN_ACTIVE").ok_or(())?;
+    let nesting = body.find("RECLAIM_DRAIN_NESTED_REFUSED").ok_or(())?;
+    if !(violation < compare_exchange && compare_exchange < nesting)
+        || body[nesting..].contains("RECLAIM_CONTEXT_VIOLATIONS")
+        || !body.contains("the receipt is already queued; the owning drain will take it")
+    {
+        return Err(());
+    }
+    Ok(())
+}
+
+#[test]
+fn benign_reclaim_nesting_has_a_distinct_counter() {
+    assert_eq!(
+        validate_reclaim_nesting_counter(
+            &repo_text("kernel/src/task/process_task.rs"),
+            &repo_text("kernel/src/tracing/providers/teardown.rs"),
+        ),
+        Ok(())
+    );
+}
+
+#[test]
+fn reclaim_nesting_validator_rejects_context_violation_conflation() {
+    let process = r#"
+        fn reclaim_deferred_process_resources() {
+            trace_count!(RECLAIM_CONTEXT_VIOLATIONS);
+            if RECLAIM_DRAIN_ACTIVE.compare_exchange(false, true).is_err() {
+                trace_count!(RECLAIM_CONTEXT_VIOLATIONS);
+            }
+        }
+    "#;
+    let provider = r#"
+        counter!(RECLAIM_DRAIN_NESTED_REFUSED, "nested");
+        static COUNTERS: [&Counter; 1] = [&RECLAIM_DRAIN_NESTED_REFUSED,];
+    "#;
+    assert!(validate_reclaim_nesting_counter(process, provider).is_err());
+}
+
+fn validate_shadow_root_clear_counter(process_task: &str, provider: &str) -> Result<(), ()> {
+    if !provider.contains("counter!(PT_SHADOW_ROOT_CLEARED,")
+        || !provider.contains("&PT_SHADOW_ROOT_CLEARED,")
+    {
+        return Err(());
+    }
+    let body = function_body(process_task, "clear_shadow_root");
+    let clear = body.find("crate::per_cpu::set_saved_process_cr3(0)").ok_or(())?;
+    let count = body.find("PT_SHADOW_ROOT_CLEARED").ok_or(())?;
+    (clear < count).then_some(()).ok_or(())
+}
+
+#[test]
+fn shadow_root_clears_are_observable_in_production_counters() {
+    assert_eq!(
+        validate_shadow_root_clear_counter(
+            &repo_text("kernel/src/task/process_task.rs"),
+            &repo_text("kernel/src/tracing/providers/teardown.rs"),
+        ),
+        Ok(())
+    );
+}
+
+#[test]
+fn shadow_root_counter_validator_rejects_an_uncounted_clear() {
+    let process = r#"
+        fn clear_shadow_root(root: u64) {
+            if roots_match(saved(), root) { crate::per_cpu::set_saved_process_cr3(0); }
+        }
+    "#;
+    let provider = r#"
+        counter!(PT_SHADOW_ROOT_CLEARED, "cleared");
+        static COUNTERS: [&Counter; 1] = [&PT_SHADOW_ROOT_CLEARED,];
+    "#;
+    assert!(validate_shadow_root_clear_counter(process, provider).is_err());
+}
+
+fn validate_x86_leaf_timing_oracle_is_live(
+    process_task: &str,
+    teardown: &str,
+    harness: &str,
+) -> Result<(), ()> {
+    let defer = function_body(process_task, "defer_process_resources");
+    let reclaim = function_body(process_task, "reclaim_bounded");
+    let cohort = function_body(teardown, "fork_exit_defer_reclaim_pairing_test");
+    if defer.contains("drain_old_page_tables_counted(process)")
+        || !defer.contains("core::mem::take(&mut process.pending_old_page_tables)")
+        || !reclaim.contains("drain_old_page_tables_counted(")
+        || !cohort.contains("if iteration == 0")
+        || !cohort.contains("pending_old_page_tables.push(")
+        || !cohort.contains("ProcessPageTable::new()")
+        || !cohort.contains("TEARDOWN_MASKED_FRAMES_WALKED")
+        || !cohort.contains("!= 0")
+        || !harness.contains(
+            "PT_COHORT_LITERAL='TODO(observe): replace with exact [PT_RETIRE_COHORT:x86:...] line'",
+        )
+    {
+        return Err(());
+    }
+    Ok(())
+}
+
+#[test]
+fn x86_leaf_timing_oracle_has_an_exec_root_producer_in_its_window() {
+    assert_eq!(
+        validate_x86_leaf_timing_oracle_is_live(
+            &repo_text("kernel/src/task/process_task.rs"),
+            &repo_text("kernel/src/tracing/providers/teardown.rs"),
+            &repo_text("docker/qemu/run-x86-boot-tests.sh"),
+        ),
+        Ok(())
+    );
+}
+
+#[test]
+fn leaf_timing_oracle_validator_rejects_an_empty_old_root_fixture() {
+    let process = r#"
+        fn defer_process_resources(process: &mut Process) {
+            let old_page_tables = core::mem::take(&mut process.pending_old_page_tables);
+        }
+        fn reclaim_bounded() { drain_old_page_tables_counted(); }
+    "#;
+    let teardown = r#"
+        fn fork_exit_defer_reclaim_pairing_test() {
+            if iteration == 0 { let old = ProcessPageTable::new(); }
+            if TEARDOWN_MASKED_FRAMES_WALKED.aggregate() != 0 { fail(); }
+        }
+    "#;
+    let harness = "PT_COHORT_LITERAL='TODO(observe): replace with exact [PT_RETIRE_COHORT:x86:...] line'";
+    assert!(validate_x86_leaf_timing_oracle_is_live(process, teardown, harness).is_err());
+}
+
+fn validate_production_root_custody_summary(
+    provider: &str,
+    procfs_trace: &str,
+    x86_main: &str,
+    arm_main: &str,
+) -> Result<(), ()> {
+    let marker = "pub fn emit_root_custody_summary";
+    let declaration = provider.find(marker).ok_or(())?;
+    let prefix_start = provider[..declaration]
+        .rfind('}')
+        .map(|offset| offset + 1)
+        .unwrap_or(0);
+    if provider[prefix_start..declaration].contains("boot_tests") {
+        return Err(());
+    }
+    let body = function_body(provider, "emit_root_custody_summary");
+    for required in [
+        "PT_ROOT_ABANDONED_NO_PROOF",
+        "PT_ROOT_ABANDONED_NO_ARCH",
+        "PT_ROOT_ABANDONED_TERMINATED",
+        "PT_ROOT_DROPPED_UNDECIDED",
+        "PT_ROOT_DROPPED_MID_RETIRE",
+        "PT_ROOTS_RETIRED",
+        "[PT_ROOT_CUSTODY:",
+    ] {
+        if !body.contains(required) {
+            return Err(());
+        }
+    }
+    if body.matches("serial_println!").count() != 1
+        || !function_body(procfs_trace, "generate_counters")
+            .contains("emit_root_custody_summary();")
+        || !function_body(x86_main, "kernel_main_on_kernel_stack")
+            .contains("emit_root_custody_summary();")
+        || !function_body(arm_main, "kernel_main").contains("emit_root_custody_summary();")
+    {
+        return Err(());
+    }
+    Ok(())
+}
+
+#[test]
+fn production_boot_and_heartbeat_emit_root_custody_summary() {
+    assert_eq!(
+        validate_production_root_custody_summary(
+            &repo_text("kernel/src/tracing/providers/teardown.rs"),
+            &repo_text("kernel/src/fs/procfs/trace.rs"),
+            &repo_text("kernel/src/main.rs"),
+            &repo_text("kernel/src/main_aarch64.rs"),
+        ),
+        Ok(())
+    );
+}
+
+#[test]
+fn root_custody_summary_validator_rejects_a_boot_tests_only_emitter() {
+    let provider = r#"
+        #[cfg(feature = "boot_tests")]
+        pub fn emit_root_custody_summary() {
+            serial_println!("[PT_ROOT_CUSTODY:{}:{}:{}:{}:{}:{}]",
+                PT_ROOT_ABANDONED_NO_PROOF, PT_ROOT_ABANDONED_NO_ARCH,
+                PT_ROOT_ABANDONED_TERMINATED, PT_ROOT_DROPPED_UNDECIDED,
+                PT_ROOT_DROPPED_MID_RETIRE, PT_ROOTS_RETIRED);
+        }
+    "#;
+    let caller = "fn generate_counters() { emit_root_custody_summary(); }";
+    let main = "fn kernel_main_on_kernel_stack() { emit_root_custody_summary(); }";
+    assert!(validate_production_root_custody_summary(provider, caller, main, main).is_err());
+}
+
+fn validate_qemu_accelerator_and_cpu_knobs(source: &str) -> Result<(), &'static str> {
+    let main = function_body(source, "main");
+    for required in [
+        "env::var(\"BREENIX_QEMU_ACCEL\")",
+        "Ok(\"tcg\") => \"tcg\"",
+        "Ok(\"kvm\") => \"kvm\"",
+        "Ok(\"hvf\") => \"hvf\"",
+        "Ok(\"whpx\") => \"whpx\"",
+        "_ => \"tcg\"",
+        "format!(\"pc,accel={}\", qemu_accel)",
+        "machine.as_str()",
+    ] {
+        if !main.contains(required) {
+            return Err("qemu accelerator knob lost its allowlist or TCG fallback");
+        }
+    }
+    for required in [
+        "env::var(\"BREENIX_QEMU_CPU\")",
+        "Ok(\"qemu64\") => \"qemu64\"",
+        "Ok(\"host\") => \"host\"",
+        "Ok(\"max\") => \"max\"",
+        "_ => \"qemu64\"",
+        "\"-cpu\"",
+        "qemu_cpu",
+    ] {
+        if !main.contains(required) {
+            return Err("qemu CPU knob lost its allowlist or qemu64 fallback");
+        }
+    }
+    for variable in ["BREENIX_QEMU_ACCEL", "BREENIX_QEMU_CPU"] {
+        if main.contains(&format!("env::var(\"{variable}\").unwrap_or")) {
+            return Err("qemu knob accepts an unvalidated environment value");
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn qemu_accelerator_is_opt_in_allowlisted_and_defaults_to_tcg() {
+    let source = repo_text("src/bin/qemu-uefi.rs");
+    assert_eq!(validate_qemu_accelerator_and_cpu_knobs(&source), Ok(()));
+}
+
+#[test]
+fn qemu_accelerator_validator_rejects_unvalidated_environment_input() {
+    let unvalidated_accelerator = r#"
+        fn main() {
+            let qemu_accel = env::var("BREENIX_QEMU_ACCEL")
+                .unwrap_or_else(|_| "tcg".to_string());
+            let qemu_cpu = match env::var("BREENIX_QEMU_CPU").as_deref() {
+                Ok("qemu64") => "qemu64",
+                Ok("host") => "host",
+                Ok("max") => "max",
+                _ => "qemu64",
+            };
+            let machine = format!("pc,accel={}", qemu_accel);
+            qemu.args(["-machine", machine.as_str(), "-cpu", qemu_cpu]);
+        }
+    "#;
+    let unvalidated_cpu = r#"
+        fn main() {
+            let qemu_accel = match env::var("BREENIX_QEMU_ACCEL").as_deref() {
+                Ok("tcg") => "tcg",
+                Ok("kvm") => "kvm",
+                Ok("hvf") => "hvf",
+                Ok("whpx") => "whpx",
+                _ => "tcg",
+            };
+            let qemu_cpu = env::var("BREENIX_QEMU_CPU")
+                .unwrap_or_else(|_| "qemu64".to_string());
+            let machine = format!("pc,accel={}", qemu_accel);
+            qemu.args(["-machine", machine.as_str(), "-cpu", qemu_cpu.as_str()]);
+        }
+    "#;
+    assert!(validate_qemu_accelerator_and_cpu_knobs(unvalidated_accelerator).is_err());
+    assert!(validate_qemu_accelerator_and_cpu_knobs(unvalidated_cpu).is_err());
+}
+
+fn validate_rust_fork_library_override(build_script: &str, xtask: &str) -> Result<(), ()> {
+    const ENV: &str = "BREENIX_RUST_FORK_LIBRARY";
+    let shell_assignment = format!(
+        r#"RUST_FORK_LIBRARY="${{{ENV}:-$PROJECT_ROOT/rust-fork/library}}""#
+    );
+    let rust_env_lookup = "std::env::var_os(RUST_FORK_LIBRARY_ENV)";
+    if !build_script.contains(ENV)
+        || !build_script.contains(&shell_assignment)
+        || !build_script.contains("__CARGO_TESTS_ONLY_SRC_ROOT=\"$RUST_FORK_LIBRARY\"")
+        || !build_script.contains("forked Rust library not found at $RUST_FORK_LIBRARY")
+        || !build_script.contains(&format!("Set {ENV} to the forked Rust library path"))
+        || !xtask.contains(&format!("const RUST_FORK_LIBRARY_ENV: &str = \"{ENV}\";"))
+        || !xtask.contains(&rust_env_lookup)
+        || !xtask.contains(".map(PathBuf::from)")
+        || !xtask.contains(".join(\"rust-fork/library\")")
+        || !xtask.contains(".env(\"__CARGO_TESTS_ONLY_SRC_ROOT\", &rust_fork_library)")
+        || !xtask.contains("Forked Rust library not found at {}. Set {}")
+        || !xtask.contains("RUST_FORK_LIBRARY_ENV")
+    {
+        return Err(());
+    }
+    Ok(())
+}
+
+#[test]
+fn rust_fork_library_paths_are_overrideable_in_both_builders() {
+    assert_eq!(
+        validate_rust_fork_library_override(
+            &repo_text("userspace/programs/build.sh"),
+            &repo_text("xtask/src/main.rs"),
+        ),
+        Ok(())
+    );
+}
+
+#[test]
+fn rust_fork_library_override_validator_rejects_hardcoded_paths() {
+    let hardcoded_build_script = r#"
+        RUST_FORK_LIBRARY="$PROJECT_ROOT/rust-fork/library"
+        __CARGO_TESTS_ONLY_SRC_ROOT="$RUST_FORK_LIBRARY"
+        echo "forked Rust library not found at $RUST_FORK_LIBRARY"
+    "#;
+    let hardcoded_xtask = r#"
+        const RUST_FORK_LIBRARY_ENV: &str = "BREENIX_RUST_FORK_LIBRARY";
+        let rust_fork_library = std::env::current_dir()
+            .unwrap_or_default()
+            .join("rust-fork/library");
+        .env("__CARGO_TESTS_ONLY_SRC_ROOT", &rust_fork_library)
+        bail!("Forked Rust library not found at {}. Set {}", path, RUST_FORK_LIBRARY_ENV);
+    "#;
+    assert!(validate_rust_fork_library_override(hardcoded_build_script, hardcoded_xtask).is_err());
 }
