@@ -267,12 +267,16 @@ pub extern "C" fn check_need_resched_and_switch(
                          Would cause return to stale RIP!",
                         old_thread_id
                     );
-                    // Don't clear need_resched - we'll try again on next interrupt return
+                    // Roll back the committed switch and re-arm rescheduling.
+                    scheduler::abort_dispatch_and_resume(new_thread_id, old_thread_id);
+                    scheduler::set_need_resched();
                     return;
                 }
             } else {
                 // This shouldn't happen - from_userspace implies we acquired the guard
                 log::error!("BUG: from_userspace=true but no process_manager_guard");
+                scheduler::abort_dispatch_and_resume(new_thread_id, old_thread_id);
+                scheduler::set_need_resched();
                 return;
             }
         } else if !from_userspace && (blocked_in_syscall || old_thread_is_user) {
@@ -300,7 +304,8 @@ pub extern "C" fn check_need_resched_and_switch(
             };
 
             if !save_succeeded {
-                // Cannot save context - abort switch, try again later
+                // Cannot save context - roll back the committed switch and try again later
+                scheduler::abort_dispatch_and_resume(new_thread_id, old_thread_id);
                 scheduler::set_need_resched();
                 return;
             }
@@ -483,6 +488,10 @@ fn save_kthread_context(
     core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
 }
 
+/// The saved CS is authoritative, and this predicate deliberately mirrors the
+/// enforcement check in `restore_userspace_context`. A never-run user thread
+/// carries `cs = 0x33`, while `is_kernel_code_selector` rejects `cs == 0`, so
+/// this does not widen kernel-frame routing.
 fn saved_context_is_kernel_frame(
     thread_id: u64,
     guard: Option<&crate::process::TryProcessManagerGuard>,
@@ -492,7 +501,8 @@ fn saved_context_is_kernel_frame(
             .find_process_by_thread(thread_id)
             .and_then(|(_pid, process)| process.main_thread.as_ref())
             .is_some_and(|thread| {
-                thread.has_started && is_kernel_code_selector(thread.context.cs)
+                thread.privilege == ThreadPrivilege::User
+                    && is_kernel_code_selector(thread.context.cs)
             })
     };
 
@@ -549,6 +559,8 @@ fn switch_to_thread(
     if !is_kernel_thread {
         if let Err(e) = crate::tls::switch_tls(thread_id) {
             log::error!("Failed to switch TLS for thread {}: {}", thread_id, e);
+            scheduler::abort_dispatch_and_resume(thread_id, resume_thread_id);
+            scheduler::set_need_resched();
             return;
         }
         // Debug marker: TLS switch completed (raw serial, no locks)
@@ -772,7 +784,17 @@ fn switch_to_thread(
                                     "Signal termination in blocked_in_syscall path: parent {} will be notified when resumed",
                                     n.parent_pid.as_u64()
                                 );
-                                // Just return - RAII will release the locks
+                                // The return frame, RSP0, and CR3 already name the terminated
+                                // thread, so bookkeeping-only rollback would make recorded and
+                                // executing threads diverge. Complete the switch to idle on its
+                                // own stack and master kernel PML4; the saved resume thread will
+                                // be dispatched again by the reschedule armed here.
+                                scheduler::set_need_resched();
+                                setup_idle_return(interrupt_frame);
+                                scheduler::switch_to_idle();
+                                unsafe {
+                                    crate::memory::process_memory::switch_to_kernel_page_table();
+                                }
                                 return;
                             }
                             crate::signal::delivery::SignalDeliveryResult::Delivered => {
@@ -880,10 +902,9 @@ fn switch_to_thread(
                 "Failed to acquire lock to restore kernel context for thread {}. Context switch aborted.",
                 thread_id
             );
-            // Re-set need_resched to try again later
+            // Roll back the committed dispatch and re-arm rescheduling.
+            scheduler::abort_dispatch_and_resume(thread_id, resume_thread_id);
             scheduler::set_need_resched();
-            // Note: Scheduler state was already updated (current_thread, TSS.RSP0)
-            // but we must NOT return with broken interrupt frame
             return;
         }
     } else {
@@ -1079,8 +1100,9 @@ fn restore_userspace_thread_context(
                             restore_userspace_context(thread, interrupt_frame, saved_regs)
                         {
                             match error {
-                                RestoreError::NonCanonicalRip
-                                | RestoreError::NonCanonicalRsp => raw_serial_str("<BADADDR>"),
+                                RestoreError::NonCanonicalRip | RestoreError::NonCanonicalRsp => {
+                                    raw_serial_str("<BADADDR>")
+                                }
                                 RestoreError::KernelFrame => {
                                     raw_serial_str("<KFRAME>");
                                     log::error!(
