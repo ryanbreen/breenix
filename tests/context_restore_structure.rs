@@ -946,12 +946,157 @@ fn validate_interrupt_return_scheduler_acquisitions(source: &str) -> Result<(), 
     Ok(())
 }
 
+fn validate_abort_dispatch_preserves_resume_state(source: &str) -> Result<(), String> {
+    let body = function_body(source, "abort_dispatch_and_resume")
+        .ok_or_else(|| "missing fn abort_dispatch_and_resume".to_string())?;
+    let mask = code_mask(body);
+    let bytes = body.as_bytes();
+
+    let guard = identifier_offsets(body, &mask, "let")
+        .into_iter()
+        .find_map(|let_offset| {
+            let mut cursor = let_offset + "let".len();
+            while cursor < bytes.len() && (!mask[cursor] || bytes[cursor].is_ascii_whitespace()) {
+                cursor += 1;
+            }
+            let name_start = cursor;
+            while cursor < bytes.len() && mask[cursor] && identifier_byte(bytes[cursor]) {
+                cursor += 1;
+            }
+            if cursor == name_start {
+                return None;
+            }
+            let binding_end =
+                (cursor..bytes.len()).find(|offset| mask[*offset] && bytes[*offset] == b';')?;
+            let binding = &body[cursor..binding_end];
+            let normalized_binding = normalized_code(binding);
+            (normalized_binding.contains("thread.state")
+                && normalized_binding.contains("ThreadState::Ready"))
+            .then(|| body[name_start..cursor].to_string())
+        })
+        .ok_or_else(|| {
+            "resume-thread runnable guard does not derive from thread.state and ThreadState::Ready"
+                .to_string()
+        })?;
+
+    let guarded_blocks: Vec<_> = identifier_offsets(body, &mask, "if")
+        .into_iter()
+        .filter_map(|if_offset| {
+            let block = braced_block(body, &mask, if_offset)?;
+            let open =
+                (if_offset..bytes.len()).find(|offset| mask[*offset] && bytes[*offset] == b'{')?;
+            let condition = &body[if_offset + "if".len()..open];
+            let condition_mask = code_mask(condition);
+            (!identifier_offsets(condition, &condition_mask, &guard).is_empty())
+                .then_some((open + 1, if_offset + block.len() - 1))
+        })
+        .collect();
+    if guarded_blocks.is_empty() {
+        return Err(format!(
+            "resume-thread runnable guard `{guard}` does not control an if block"
+        ));
+    }
+    let inside_guard = |offset: usize| {
+        guarded_blocks
+            .iter()
+            .any(|(start, end)| *start <= offset && offset < *end)
+    };
+
+    let running_transitions = identifier_offsets(body, &mask, "set_running");
+    if running_transitions.is_empty() {
+        return Err("abort rollback never transitions a runnable resume thread".to_string());
+    }
+    if running_transitions
+        .into_iter()
+        .any(|offset| !inside_guard(offset))
+    {
+        return Err("resume-thread set_running is outside the runnable guard".to_string());
+    }
+
+    let resume_dequeues: Vec<_> = identifier_offsets(body, &mask, "per_cpu_queues")
+        .into_iter()
+        .filter(|queue_offset| {
+            let statement_end = (*queue_offset..bytes.len())
+                .find(|offset| mask[*offset] && bytes[*offset] == b';')
+                .unwrap_or(bytes.len());
+            let statement = &body[*queue_offset..statement_end];
+            let statement_mask = code_mask(statement);
+            !identifier_offsets(statement, &statement_mask, "resume_thread_id").is_empty()
+                && !identifier_offsets(statement, &statement_mask, "remove").is_empty()
+        })
+        .collect();
+    if resume_dequeues.is_empty() {
+        return Err("abort rollback does not dequeue a runnable resume thread".to_string());
+    }
+    if resume_dequeues
+        .into_iter()
+        .any(|offset| !inside_guard(offset))
+    {
+        return Err("resume-thread queue removal is outside the runnable guard".to_string());
+    }
+    Ok(())
+}
+
+fn validate_terminated_signal_dispatch_switches_to_idle(source: &str) -> Result<(), String> {
+    let body = function_body(source, "switch_to_thread")
+        .ok_or_else(|| "missing fn switch_to_thread".to_string())?;
+    let mask = code_mask(body);
+    let bytes = body.as_bytes();
+    let arm = identifier_offsets(body, &mask, "Terminated")
+        .into_iter()
+        .find_map(|terminated_offset| {
+            let prefix_start = terminated_offset.saturating_sub(160);
+            let pattern_end = terminated_offset + "Terminated".len();
+            if !normalized_code(&body[prefix_start..pattern_end])
+                .contains("SignalDeliveryResult::Terminated")
+            {
+                return None;
+            }
+            let equals = (pattern_end..bytes.len())
+                .find(|offset| mask[*offset] && bytes[*offset] == b'=')?;
+            let arrow = (equals + 1..bytes.len())
+                .find(|offset| mask[*offset] && !bytes[*offset].is_ascii_whitespace())?;
+            if bytes[arrow] != b'>' {
+                return None;
+            }
+            braced_block(body, &mask, arrow + 1)
+        })
+        .ok_or_else(|| {
+            "switch_to_thread has no SignalDeliveryResult::Terminated arm".to_string()
+        })?;
+    let arm_mask = code_mask(arm);
+
+    if !identifier_offsets(arm, &arm_mask, "abort_dispatch_and_resume").is_empty() {
+        return Err("Terminated arm rolls back scheduler bookkeeping".to_string());
+    }
+    if identifier_offsets(arm, &arm_mask, "setup_idle_return").is_empty() {
+        return Err("Terminated arm does not install an idle return frame".to_string());
+    }
+    let switch_offset = identifier_offsets(arm, &arm_mask, "switch_to_idle")
+        .first()
+        .copied()
+        .ok_or_else(|| "Terminated arm does not switch scheduler state to idle".to_string())?;
+    let return_offset = identifier_offsets(arm, &arm_mask, "return")
+        .first()
+        .copied()
+        .ok_or_else(|| "Terminated arm has no early return".to_string())?;
+    if switch_offset > return_offset {
+        return Err("Terminated arm returns before switching scheduler state to idle".to_string());
+    }
+    Ok(())
+}
+
 fn validate_rollback_return_alternation(region: &str, description: &str) -> Result<(), String> {
     let region_mask = code_mask(region);
     let mut sequence: Vec<_> =
         identifier_offsets(region, &region_mask, "abort_dispatch_and_resume")
             .into_iter()
             .map(|offset| (offset, "abort_dispatch_and_resume"))
+            .chain(
+                identifier_offsets(region, &region_mask, "switch_to_idle")
+                    .into_iter()
+                    .map(|offset| (offset, "switch_to_idle")),
+            )
             .chain(
                 identifier_offsets(region, &region_mask, "return")
                     .into_iter()
@@ -969,12 +1114,17 @@ fn validate_rollback_return_alternation(region: &str, description: &str) -> Resu
         ));
     }
     for (index, (_, identifier)) in sequence.iter().enumerate() {
-        let expected = if index % 2 == 0 {
-            "abort_dispatch_and_resume"
+        let valid = if index % 2 == 0 {
+            matches!(*identifier, "abort_dispatch_and_resume" | "switch_to_idle")
         } else {
-            "return"
+            *identifier == "return"
         };
-        if *identifier != expected {
+        if !valid {
+            let expected = if index % 2 == 0 {
+                "abort_dispatch_and_resume or switch_to_idle"
+            } else {
+                "return"
+            };
             return Err(format!(
                 "{description} rollback/return sequence item {index} is `{identifier}`, expected `{expected}`"
             ));
@@ -982,7 +1132,7 @@ fn validate_rollback_return_alternation(region: &str, description: &str) -> Resu
     }
     if sequence.len() % 2 != 0 {
         return Err(format!(
-            "{description} has a rollback call without a following return"
+            "{description} has a dispatch commitment without a following return"
         ));
     }
     Ok(())
@@ -1072,6 +1222,113 @@ fn interrupt_return_validator_rejects_unconditional_saved_frame_lookup() {
 }
 
 #[test]
+fn abort_dispatch_rollback_preserves_resume_thread_state() {
+    let source = repo_text("kernel/src/task/scheduler.rs");
+    assert_eq!(
+        validate_abort_dispatch_preserves_resume_state(&source),
+        Ok(())
+    );
+}
+
+#[test]
+fn abort_dispatch_validator_rejects_unconditional_running_transition() {
+    let synthetic = r#"
+        fn abort_dispatch_and_resume(resume_thread_id: u64) {
+            let (resume_runnable, thread_ptr) = match sched.get_thread_mut(resume_thread_id) {
+                Some(thread) => {
+                    let resume_runnable = matches!(
+                        thread.state,
+                        ThreadState::Ready | ThreadState::Running
+                    );
+                    thread.set_running();
+                    (resume_runnable, thread as *mut Thread)
+                }
+                None => return,
+            };
+            if resume_runnable {
+                for queue in sched.per_cpu_queues.iter_mut() {
+                    if let Some(position) =
+                        queue.iter().position(|&id| id == resume_thread_id)
+                    {
+                        queue.remove(position);
+                    }
+                }
+            }
+        }
+    "#;
+    assert!(validate_abort_dispatch_preserves_resume_state(synthetic).is_err());
+}
+
+#[test]
+fn abort_dispatch_validator_rejects_unguarded_resume_dequeue() {
+    let synthetic = r#"
+        fn abort_dispatch_and_resume(resume_thread_id: u64) {
+            let (resume_runnable, thread_ptr) = match sched.get_thread_mut(resume_thread_id) {
+                Some(thread) => {
+                    let resume_runnable = matches!(
+                        thread.state,
+                        ThreadState::Ready | ThreadState::Running
+                    );
+                    if resume_runnable {
+                        thread.set_running();
+                    }
+                    (resume_runnable, thread as *mut Thread)
+                }
+                None => return,
+            };
+            for queue in sched.per_cpu_queues.iter_mut() {
+                if let Some(position) = queue.iter().position(|&id| id == resume_thread_id) {
+                    queue.remove(position);
+                }
+            }
+        }
+    "#;
+    assert!(validate_abort_dispatch_preserves_resume_state(synthetic).is_err());
+}
+
+#[test]
+fn terminated_signal_dispatch_completes_switch_to_idle() {
+    let source = repo_text("kernel/src/interrupts/context_switch.rs");
+    assert_eq!(
+        validate_terminated_signal_dispatch_switches_to_idle(&source),
+        Ok(())
+    );
+}
+
+#[test]
+fn terminated_signal_validator_rejects_bookkeeping_rollback() {
+    let synthetic = r#"
+        fn switch_to_thread(thread_id: u64, resume_thread_id: u64) {
+            match signal_result {
+                SignalDeliveryResult::Terminated(notification) => {
+                    scheduler::abort_dispatch_and_resume(thread_id, resume_thread_id);
+                    scheduler::set_need_resched();
+                    return;
+                }
+                SignalDeliveryResult::NoAction => {}
+            }
+        }
+    "#;
+    assert!(validate_terminated_signal_dispatch_switches_to_idle(synthetic).is_err());
+}
+
+#[test]
+fn terminated_signal_validator_rejects_return_without_completed_switch() {
+    let synthetic = r#"
+        fn switch_to_thread() {
+            match signal_result {
+                SignalDeliveryResult::Terminated(notification) => {
+                    scheduler::set_need_resched();
+                    return;
+                }
+                SignalDeliveryResult::NoAction => {}
+            }
+        }
+    "#;
+    assert!(validate_terminated_signal_dispatch_switches_to_idle(synthetic).is_err());
+}
+
+#[test]
 fn every_save_failure_rolls_back_the_committed_dispatch() {
     let source = repo_text("kernel/src/interrupts/context_switch.rs");
     assert_eq!(validate_save_failure_rollback(&source), Ok(()));
@@ -1137,4 +1394,9 @@ fn switch_dispatch_rollback_validator_rejects_rollback_after_return() {
         }
     "#;
     assert!(validate_switch_dispatch_rollback(synthetic).is_err());
+}
+
+#[test]
+fn rollback_return_alternation_rejects_return_without_commitment() {
+    assert!(validate_rollback_return_alternation("return;", "synthetic region").is_err());
 }

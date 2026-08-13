@@ -3756,10 +3756,11 @@ pub fn switch_to_idle() {
 }
 
 /// Undo a dispatch the interrupt-return path could not complete: return the
-/// undispatched thread to the ready queue and make the interrupted thread current
-/// again, so the scheduler's current_thread matches the context IRETQ will actually
-/// resume. Handing the CPU to idle here would strand whatever lock the interrupted
-/// thread holds - which is the very condition that aborts the dispatch.
+/// undispatched thread to the ready queue and restore the interrupted thread's
+/// pre-dispatch state. Only a runnable interrupted thread is transitioned back to
+/// Running and dequeued. The scheduler's current_thread still records the context
+/// IRETQ will actually resume; handing the CPU to idle here would strand whatever
+/// lock the interrupted thread holds - which is the condition that aborts dispatch.
 #[cfg(target_arch = "x86_64")]
 pub fn abort_dispatch_and_resume(aborted_thread_id: u64, resume_thread_id: u64) {
     with_scheduler(|sched| {
@@ -3791,22 +3792,36 @@ pub fn abort_dispatch_and_resume(aborted_thread_id: u64, resume_thread_id: u64) 
             sched.per_cpu_queues[cpu_id].push_back(aborted_thread_id);
         }
 
-        for queue in sched.per_cpu_queues.iter_mut() {
-            if let Some(position) = queue.iter().position(|&id| id == resume_thread_id) {
-                queue.remove(position);
+        let (resume_runnable, kernel_stack_top, thread_ptr) =
+            match sched.get_thread_mut(resume_thread_id) {
+                Some(thread) => {
+                    let resume_runnable =
+                        matches!(thread.state, ThreadState::Ready | ThreadState::Running);
+                    // A wake before rollback is already visible as Ready, so taking the
+                    // runnable transition preserves it; preserving Blocked keeps the
+                    // thread matchable by the next wake. No wake can land between
+                    // schedule and rollback while interrupts and the scheduler lock are
+                    // held; buffered ISR wakes drain at the next schedule.
+                    if resume_runnable {
+                        thread.set_running();
+                    }
+                    (
+                        resume_runnable,
+                        thread.kernel_stack_top,
+                        thread as *const _ as *mut crate::task::thread::Thread,
+                    )
+                }
+                None => return,
+            };
+
+        if resume_runnable {
+            for queue in sched.per_cpu_queues.iter_mut() {
+                if let Some(position) = queue.iter().position(|&id| id == resume_thread_id) {
+                    queue.remove(position);
+                }
             }
         }
 
-        let (kernel_stack_top, thread_ptr) = match sched.get_thread_mut(resume_thread_id) {
-            Some(thread) => {
-                thread.set_running();
-                (
-                    thread.kernel_stack_top,
-                    thread as *const _ as *mut crate::task::thread::Thread,
-                )
-            }
-            None => return,
-        };
         sched.cpu_state[cpu_id].current_thread = Some(resume_thread_id);
         crate::per_cpu::set_current_thread(thread_ptr);
         if let Some(kernel_stack_top) = kernel_stack_top {

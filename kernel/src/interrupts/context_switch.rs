@@ -784,10 +784,17 @@ fn switch_to_thread(
                                     "Signal termination in blocked_in_syscall path: parent {} will be notified when resumed",
                                     n.parent_pid.as_u64()
                                 );
-                                // Roll back the committed dispatch and re-arm rescheduling;
-                                // returning lets RAII release the locks.
-                                scheduler::abort_dispatch_and_resume(thread_id, resume_thread_id);
+                                // The return frame, RSP0, and CR3 already name the terminated
+                                // thread, so bookkeeping-only rollback would make recorded and
+                                // executing threads diverge. Complete the switch to idle on its
+                                // own stack and master kernel PML4; the saved resume thread will
+                                // be dispatched again by the reschedule armed here.
                                 scheduler::set_need_resched();
+                                setup_idle_return(interrupt_frame);
+                                scheduler::switch_to_idle();
+                                unsafe {
+                                    crate::memory::process_memory::switch_to_kernel_page_table();
+                                }
                                 return;
                             }
                             crate::signal::delivery::SignalDeliveryResult::Delivered => {
