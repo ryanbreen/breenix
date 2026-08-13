@@ -1458,38 +1458,73 @@ fn method_call_offsets(source: &str, mask: &[bool], name: &str) -> Vec<usize> {
         .collect()
 }
 
+/// `(fn keyword offset, body brace offset)` for the definition whose name spans
+/// `offset..end`, or `None` when that identifier is not a definition name or the
+/// definition has no body. The body brace is found at paren/bracket depth zero,
+/// so an array type in the signature (`[u64; 32]`) is not read as a bodyless
+/// declaration.
+fn definition_span(
+    source: &str,
+    mask: &[bool],
+    offset: usize,
+    end: usize,
+) -> Option<(usize, usize)> {
+    let bytes = source.as_bytes();
+    let keyword = previous_code(source, mask, offset)?;
+    if !preceded_by_keyword(source, mask, offset, "fn") {
+        return None;
+    }
+    let keyword = keyword + 1 - "fn".len();
+    let mut paren_depth = 0usize;
+    let mut bracket_depth = 0usize;
+    for index in end..bytes.len() {
+        if !mask[index] {
+            continue;
+        }
+        match bytes[index] {
+            b'(' => paren_depth += 1,
+            b')' => paren_depth = paren_depth.checked_sub(1)?,
+            b'[' => bracket_depth += 1,
+            b']' => bracket_depth = bracket_depth.checked_sub(1)?,
+            b'{' if paren_depth == 0 && bracket_depth == 0 => {
+                return Some((keyword, index));
+            }
+            b';' if paren_depth == 0 && bracket_depth == 0 => return None,
+            _ => {}
+        }
+    }
+    None
+}
+
 /// `(fn keyword offset, body brace offset)` for every `fn NAME` definition that
 /// has a body. A census anchors on the brace, so a definition is named by the
 /// item path that already includes the definition itself.
 fn definition_offsets(source: &str, mask: &[bool], name: &str) -> Vec<(usize, usize)> {
-    let bytes = source.as_bytes();
     identifier_offsets(source, mask, name)
         .into_iter()
+        .filter_map(|offset| definition_span(source, mask, offset, offset + name.len()))
+        .collect()
+}
+
+/// The same, for every definition whose name *begins* with `prefix`. A family
+/// pinned by prefix stays sensitive to a newly named member such as
+/// `block_current_probe`, which an exact-name list cannot see at all.
+fn definition_prefix_offsets(source: &str, mask: &[bool], prefix: &str) -> Vec<(usize, usize)> {
+    let bytes = source.as_bytes();
+    code_offsets(source, mask, prefix)
+        .into_iter()
+        .filter(|offset| {
+            !offset
+                .checked_sub(1)
+                .and_then(|before| bytes.get(before))
+                .is_some_and(|byte| identifier_byte(*byte))
+        })
         .filter_map(|offset| {
-            let keyword = previous_code(source, mask, offset)?;
-            if !preceded_by_keyword(source, mask, offset, "fn") {
-                return None;
+            let mut end = offset + prefix.len();
+            while bytes.get(end).is_some_and(|byte| identifier_byte(*byte)) {
+                end += 1;
             }
-            let keyword = keyword + 1 - "fn".len();
-            let mut paren_depth = 0usize;
-            let mut bracket_depth = 0usize;
-            for index in offset + name.len()..bytes.len() {
-                if !mask[index] {
-                    continue;
-                }
-                match bytes[index] {
-                    b'(' => paren_depth += 1,
-                    b')' => paren_depth = paren_depth.checked_sub(1)?,
-                    b'[' => bracket_depth += 1,
-                    b']' => bracket_depth = bracket_depth.checked_sub(1)?,
-                    b'{' if paren_depth == 0 && bracket_depth == 0 => {
-                        return Some((keyword, index));
-                    }
-                    b';' if paren_depth == 0 && bracket_depth == 0 => return None,
-                    _ => {}
-                }
-            }
-            None
+            definition_span(source, mask, offset, end)
         })
         .collect()
 }
@@ -1659,6 +1694,24 @@ fn duplicate() { needle(); }
         definitions.get(&("array.rs".to_owned(), "fn block_current".to_owned())),
         Some(&1)
     );
+
+    let family_signature = "pub fn block_current(saved: [u64; 32]) {}\npub fn block_current_probe(saved: [u64; 32]) {}\npub fn unblock_current() {}";
+    let family_sources = vec![("family.rs".to_owned(), family_signature.to_owned())];
+    let family = census(&family_sources, |source, mask| {
+        definition_prefix_offsets(source, mask, "block_current")
+            .into_iter()
+            .map(|(_, brace)| brace)
+            .collect()
+    });
+    assert_eq!(
+        family.get(&("family.rs".to_owned(), "fn block_current".to_owned())),
+        Some(&1)
+    );
+    assert_eq!(
+        family.get(&("family.rs".to_owned(), "fn block_current_probe".to_owned())),
+        Some(&1)
+    );
+    assert_eq!(family.len(), 2);
 
     let scheduler_locks = "SCHEDULER.lock(); GLOBAL_SCHEDULER.try_lock(); SCHEDULERX.lock();";
     let scheduler_mask = code_mask(scheduler_locks);
@@ -1931,17 +1984,12 @@ const ROW_REMOVAL_EPOCH_BUMPS: &[(&str, &str, usize)] = &[
     ("kernel/src/process/manager.rs", "impl ProcessManager::fn remove_process", 1),
 ];
 
-const BLOCKING_NAMES: &[&str] = &[
-    "block_current",
-    "block_current_for_signal",
-    "block_current_for_signal_with_context",
-    "block_current_for_child_exit",
-    "block_current_for_timer",
-    "block_current_for_io",
-    "block_current_for_io_with_timeout",
-    "block_current_for_compositor",
-    "prepare_to_wait",
-];
+/// The blocking-primitive families, pinned by name *prefix* so that a tenth
+/// primitive is caught however it is named: an exact-name list only ever sees
+/// the nine that already exist, so `block_current_probe` would be invisible.
+/// The nine current definitions are still pinned individually by
+/// `BLOCKING_PRIMITIVES`.
+const BLOCKING_NAME_PREFIXES: &[&str] = &["block_current", "prepare_to_wait"];
 
 fn validate_reclaim_enqueue_callers(
     sources: &[(String, String)],
@@ -2011,10 +2059,10 @@ fn validate_exit_process_entry_points(
 fn validate_blocking_primitives(sources: &[(String, String)]) -> Result<(), Vec<String>> {
     validate_census(
         &census(sources, |source, mask| {
-            BLOCKING_NAMES
+            BLOCKING_NAME_PREFIXES
                 .iter()
-                .flat_map(|name| {
-                    definition_offsets(source, mask, name)
+                .flat_map(|prefix| {
+                    definition_prefix_offsets(source, mask, prefix)
                         .into_iter()
                         .filter_map(|(keyword, brace)| {
                             preceded_by_keyword(source, mask, keyword, "pub").then_some(brace)
@@ -4601,6 +4649,13 @@ fn deliberately_broken_variants_fail_the_ratchet() {
         "pub fn block_current() {}",
     );
     assert!(validate_blocking_primitives(&broken_blocking).is_err());
+
+    let broken_blocking_family = with_synthetic_source(
+        &sources,
+        "kernel/src/task/synthetic_blocking_family.rs",
+        "pub fn block_current_probe(saved_regs: [u64; 32]) { let _ = saved_regs; }",
+    );
+    assert!(validate_blocking_primitives(&broken_blocking_family).is_err());
 
     let broken_group_write = with_synthetic_source(
         &sources,
