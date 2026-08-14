@@ -10,6 +10,8 @@ BREENIX_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 # Re-pin consciously whenever this profile's launched test-program set changes.
 readonly EXPECTED_USERSPACE_EXITS=10
 
+# Rebuild userspace ELFs, then repack with cargo run -p xtask -- create-test-disk
+# before invoking this pure runner; a stale image boots the previous branch's binaries.
 # Find the full boot image
 UEFI_IMG=$(ls -t "$BREENIX_ROOT/target/release/build/breenix-"*/out/breenix-uefi.img 2>/dev/null | head -1)
 if [ -z "$UEFI_IMG" ]; then

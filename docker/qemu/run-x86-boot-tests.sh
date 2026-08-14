@@ -20,7 +20,11 @@ cd "$BREENIX_ROOT"
 cargo build --release --features boot_tests,testing,external_test_bins --bin qemu-uefi
 BREENIX_PRINT_UEFI_IMAGE=1 cargo run --release \
     --features boot_tests,testing,external_test_bins --bin qemu-uefi >/dev/null
-test -f target/test_binaries.img || cargo run -p xtask -- create-test-disk
+# create-test-disk packs userspace/programs/*.elf without rebuilding them, so
+# repack every run to pick up rebuilt userspace; callers must rebuild those
+# ELFs with ./userspace/programs/build.sh when userspace or libs/libbreenix-libc changed.
+rm -f target/test_binaries.img
+cargo run -p xtask -- create-test-disk
 test -f target/ext2.img || ./scripts/create_ext2_disk.sh
 
 UEFI_IMG=$(ls -t target/release/build/breenix-*/out/breenix-uefi.img | head -1)
