@@ -23,24 +23,37 @@ struct DeferredTx {
 
 static DEFERRED_TX_QUEUE: Mutex<Vec<DeferredTx>> = Mutex::new(Vec::new());
 
+/// Thread-context and NetRx TCP paths both enqueue, so exclude softirq re-entry.
 fn queue_deferred_tx_with_mac(dst_ip: [u8; 4], dst_mac: Option<[u8; 6]>, tcp_segment: Vec<u8>) {
-    DEFERRED_TX_QUEUE.lock().push(DeferredTx {
+    let _guard = super::net_lock_guard();
+    let mut queue = DEFERRED_TX_QUEUE.lock();
+    queue.push(DeferredTx {
         dst_ip,
         dst_mac,
         tcp_segment,
     });
+    drop(queue);
 }
 
+/// Thread context and the NetRx softirq inspect this queue, so exclude re-entry.
 pub fn deferred_tx_queue_len() -> usize {
-    DEFERRED_TX_QUEUE.lock().len()
+    let _guard = super::net_lock_guard();
+    let queue = DEFERRED_TX_QUEUE.lock();
+    let len = queue.len();
+    drop(queue);
+    len
 }
 
 /// Drain the deferred TX queue, sending all queued packets.
 /// Called after process_rx() completes.
+/// The queue is filled from thread context and NetRx, so guard only the queue take.
 pub fn drain_deferred_tx() {
     let packets: Vec<DeferredTx> = {
+        let _guard = super::net_lock_guard();
         let mut queue = DEFERRED_TX_QUEUE.lock();
-        core::mem::take(&mut *queue)
+        let packets = core::mem::take(&mut *queue);
+        drop(queue);
+        packets
     };
 
     for pkt in packets {
@@ -517,41 +530,39 @@ pub struct ListenSocket {
 }
 
 /// Global TCP connection table
-pub static TCP_CONNECTIONS: Mutex<BTreeMap<ConnectionId, TcpConnection>> =
-    Mutex::new(BTreeMap::new());
+static TCP_CONNECTIONS: Mutex<BTreeMap<ConnectionId, TcpConnection>> = Mutex::new(BTreeMap::new());
 
 /// Global listening socket table (by local port)
-pub static TCP_LISTENERS: Mutex<BTreeMap<u16, ListenSocket>> = Mutex::new(BTreeMap::new());
+static TCP_LISTENERS: Mutex<BTreeMap<u16, ListenSocket>> = Mutex::new(BTreeMap::new());
 
 /// Sequence number generator (simple counter, should be more random in production)
 static SEQ_COUNTER: Mutex<u32> = Mutex::new(0x12345678);
 
-fn with_tcp_connections<R>(f: impl FnOnce(&mut BTreeMap<ConnectionId, TcpConnection>) -> R) -> R {
-    let saved = super::irq_save();
+pub(crate) fn with_tcp_connections<R>(
+    f: impl FnOnce(&mut BTreeMap<ConnectionId, TcpConnection>) -> R,
+) -> R {
+    let _guard = super::net_lock_guard();
     let mut connections = TCP_CONNECTIONS.lock();
     let result = f(&mut connections);
     drop(connections);
-    super::irq_restore(saved);
     result
 }
 
-fn with_tcp_listeners<R>(f: impl FnOnce(&mut BTreeMap<u16, ListenSocket>) -> R) -> R {
-    let saved = super::irq_save();
+pub(crate) fn with_tcp_listeners<R>(f: impl FnOnce(&mut BTreeMap<u16, ListenSocket>) -> R) -> R {
+    let _guard = super::net_lock_guard();
     let mut listeners = TCP_LISTENERS.lock();
     let result = f(&mut listeners);
     drop(listeners);
-    super::irq_restore(saved);
     result
 }
 
 /// Generate a new initial sequence number
 pub fn generate_isn() -> u32 {
-    let saved = super::irq_save();
+    let _guard = super::net_lock_guard();
     let mut counter = SEQ_COUNTER.lock();
     let isn = *counter;
     *counter = counter.wrapping_add(64000); // Increment by a large amount
     drop(counter);
-    super::irq_restore(saved);
     isn
 }
 

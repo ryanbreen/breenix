@@ -316,12 +316,12 @@ pub fn sys_bind(fd: u64, addr_ptr: u64, addrlen: u64) -> SyscallResult {
                     let port = addr.port_host();
 
                     // Check if port is already in use by another TCP listener
-                    {
-                        let listeners = crate::net::tcp::TCP_LISTENERS.lock();
-                        if listeners.contains_key(&port) {
-                            log::debug!("TCP: bind failed, port {} already in use", port);
-                            return SyscallResult::Err(EADDRINUSE as u64);
-                        }
+                    let port_in_use = crate::net::tcp::with_tcp_listeners(|listeners| {
+                        listeners.contains_key(&port)
+                    });
+                    if port_in_use {
+                        log::debug!("TCP: bind failed, port {} already in use", port);
+                        return SyscallResult::Err(EADDRINUSE as u64);
                     }
 
                     // Update the fd entry with the bound port
