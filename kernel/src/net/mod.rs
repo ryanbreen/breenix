@@ -545,7 +545,7 @@ pub fn idle_loopback_drain_calls() -> u64 {
 pub fn dump_loopback_state() {
     let pump_tid = loopback_pump_tid();
     crate::serial_println!(
-        "loopback: depth={} drain_contended={} drain_take_abandoned={} drain_completed={} dropped_full={} pump_tid={} pump_passes={} pump_rearms={} pump_rearm_from_sched={} pump_wakes={} pump_wake_rejected={} pump_wake_already_awake={} isr_wakeup_depth_cpu0={} isr_wakeup_buffer_full={} stalled_reclaimed={}",
+        "loopback: depth={} drain_contended={} drain_take_abandoned={} drain_completed={} dropped_full={} pump_tid={} pump_passes={} pump_rearms={} pump_rearm_from_sched={} pump_wakes={} pump_wake_rejected={} pump_wake_already_awake={} accept_publish_race_recovered={} isr_wakeup_depth_cpu0={} isr_wakeup_buffer_full={} stalled_reclaimed={}",
         loopback_queue_depth(),
         loopback_drain_contended(),
         loopback_drain_take_abandoned(),
@@ -558,6 +558,7 @@ pub fn dump_loopback_state() {
         loopback_pump_wakes(),
         loopback_pump_wake_rejected(),
         loopback_pump_wake_already_awake(),
+        tcp::tcp_accept_publish_race_recovered(),
         crate::task::scheduler::isr_wakeup_depth(0),
         crate::task::scheduler::isr_wakeup_buffer_full(),
         crate::task::scheduler::enqueue_stalled_reclaimed(),

@@ -2678,6 +2678,126 @@ fn loopback_wake_loss_counters_are_zero() -> TestResult {
     TestResult::Pass
 }
 
+fn tcp_final_ack_survives_accept_publish_race() -> TestResult {
+    use crate::net::{ipv4, tcp};
+    use crate::process::process::ProcessId;
+
+    const LISTEN_PORT: u16 = 54_530;
+    const CLIENT_PORT: u16 = 54_531;
+    const CLIENT_ISN: u32 = 0x5453_0000;
+    const LOOPBACK_QUIESCE_ATTEMPTS: usize = 8;
+
+    let mut loopback_quiescent = false;
+    for _ in 0..LOOPBACK_QUIESCE_ATTEMPTS {
+        crate::net::drain_loopback_queue();
+        crate::task::scheduler::yield_current();
+        if crate::net::loopback_queue_depth_for_test() == 0 {
+            loopback_quiescent = true;
+            break;
+        }
+    }
+    if !loopback_quiescent {
+        return TestResult::Fail(
+            "loopback queue did not quiesce before the final-ACK race oracle",
+        );
+    }
+
+    if tcp::tcp_listen(LISTEN_PORT, 4, ProcessId::new(0)).is_err() {
+        return TestResult::Fail("tcp_listen failed in final-ACK race oracle");
+    }
+
+    let mut child = None;
+    let result = (|| {
+        let server_ip = crate::net::config().ip_addr;
+        let client_ip = [127, 0, 0, 1];
+        let syn_segment = tcp::build_tcp_packet_with_checksum(
+            client_ip,
+            server_ip,
+            CLIENT_PORT,
+            LISTEN_PORT,
+            CLIENT_ISN,
+            0,
+            tcp::TcpFlags::syn(),
+            65_535,
+            &[],
+        );
+        let syn_packet = ipv4::Ipv4Packet::build(
+            client_ip,
+            server_ip,
+            ipv4::PROTOCOL_TCP,
+            &syn_segment,
+        );
+        let Some(syn_ip) = ipv4::Ipv4Packet::parse(&syn_packet) else {
+            return TestResult::Fail("failed to parse synthetic SYN IPv4 packet");
+        };
+        tcp::handle_tcp(&syn_ip, syn_ip.payload);
+        if tcp::tcp_pending_accept_depth(LISTEN_PORT) != 1 {
+            return TestResult::Fail("synthetic SYN did not create one pending connection");
+        }
+
+        let Some(server) = tcp::tcp_accept(LISTEN_PORT) else {
+            return TestResult::Fail("tcp_accept failed in final-ACK race oracle");
+        };
+        child = Some(server);
+        if tcp::tcp_pending_accept_depth(LISTEN_PORT) != 0 {
+            return TestResult::Fail("tcp_accept did not remove the pending connection");
+        }
+        if tcp::tcp_get_state(&server) != Some(tcp::TcpState::SynReceived) {
+            return TestResult::Fail("accepted child was not waiting for the final ACK");
+        }
+
+        let Some(server_ack) = tcp::with_tcp_connections(|connections| {
+            connections.get(&server).map(|connection| connection.send_next)
+        }) else {
+            return TestResult::Fail("accepted child was not published");
+        };
+        let recovered_before = tcp::tcp_accept_publish_race_recovered();
+        tcp::arm_forced_connection_lookup_miss(LISTEN_PORT, CLIENT_PORT, 1);
+
+        let ack_segment = tcp::build_tcp_packet_with_checksum(
+            client_ip,
+            server_ip,
+            CLIENT_PORT,
+            LISTEN_PORT,
+            CLIENT_ISN.wrapping_add(1),
+            server_ack,
+            tcp::TcpFlags::ack(),
+            65_535,
+            &[],
+        );
+        let ack_packet = ipv4::Ipv4Packet::build(
+            client_ip,
+            server_ip,
+            ipv4::PROTOCOL_TCP,
+            &ack_segment,
+        );
+        let Some(ack_ip) = ipv4::Ipv4Packet::parse(&ack_packet) else {
+            tcp::arm_forced_connection_lookup_miss(LISTEN_PORT, CLIENT_PORT, 0);
+            return TestResult::Fail("failed to parse synthetic ACK IPv4 packet");
+        };
+        tcp::handle_tcp(&ack_ip, ack_ip.payload);
+        tcp::arm_forced_connection_lookup_miss(LISTEN_PORT, CLIENT_PORT, 0);
+
+        if tcp::tcp_get_state(&server) != Some(tcp::TcpState::Established) {
+            return TestResult::Fail("final ACK did not establish the accepted child");
+        }
+        if tcp::tcp_accept_publish_race_recovered() != recovered_before.wrapping_add(1) {
+            return TestResult::Fail("final ACK did not take exactly one recovery path");
+        }
+
+        TestResult::Pass
+    })();
+
+    tcp::arm_forced_connection_lookup_miss(LISTEN_PORT, CLIENT_PORT, 0);
+    if let Some(server) = child {
+        let _ = tcp::tcp_close(&server);
+    }
+    tcp::tcp_listener_ref_dec(LISTEN_PORT);
+    tcp::drain_deferred_tx();
+    crate::net::drain_loopback_queue();
+    result
+}
+
 /// Test NetRx softirq registration and dispatch on ARM64.
 ///
 /// This test verifies that:
@@ -5813,6 +5933,7 @@ static FILESYSTEM_TESTS: &[TestDef] = &[
 /// - loopback_recv_wake_when_idle: Verify blocked TCP recv wakes with only idle runnable
 /// - loopback_recv_wake_under_load: Verify the pump delivers while idle never runs
 /// - loopback_pump_does_not_busy_spin: Verify an empty pump blocks instead of polling
+/// - tcp_final_ack_survives_accept_publish_race: Prove accept cannot lose the final ACK
 /// - net_lock_guard_masks_interrupt_source: Prove per-arch network exclusion
 static NETWORK_TESTS: &[TestDef] = &[
     TestDef {
@@ -5876,6 +5997,13 @@ static NETWORK_TESTS: &[TestDef] = &[
         func: loopback_pump_does_not_busy_spin,
         arch: Arch::Any,
         timeout_ms: 15000,
+        stage: TestStage::EarlyBoot,
+    },
+    TestDef {
+        name: "tcp_final_ack_survives_accept_publish_race",
+        func: tcp_final_ack_survives_accept_publish_race,
+        arch: Arch::Any,
+        timeout_ms: 5000,
         stage: TestStage::EarlyBoot,
     },
     TestDef {

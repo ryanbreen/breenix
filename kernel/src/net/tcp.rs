@@ -24,9 +24,50 @@ struct DeferredTx {
 
 static DEFERRED_TX_QUEUE: Mutex<Vec<DeferredTx>> = Mutex::new(Vec::new());
 static TCP_WAKE_REJECTED: AtomicU64 = AtomicU64::new(0);
+static TCP_ACCEPT_PUBLISH_RACE_RECOVERED: AtomicU64 = AtomicU64::new(0);
+
+#[cfg(feature = "boot_tests")]
+static FORCED_CONNECTION_LOOKUP_MISSES: AtomicU64 = AtomicU64::new(0);
 
 pub fn tcp_wake_rejected() -> u64 {
     TCP_WAKE_REJECTED.load(Ordering::Relaxed)
+}
+
+pub fn tcp_accept_publish_race_recovered() -> u64 {
+    TCP_ACCEPT_PUBLISH_RACE_RECOVERED.load(Ordering::Relaxed)
+}
+
+#[cfg(feature = "boot_tests")]
+pub fn arm_forced_connection_lookup_miss(local_port: u16, remote_port: u16, count: u32) {
+    let state = if count == 0 {
+        0
+    } else {
+        ((local_port as u64) << 48) | ((remote_port as u64) << 32) | count as u64
+    };
+    FORCED_CONNECTION_LOOKUP_MISSES.store(state, Ordering::Release);
+}
+
+#[cfg(feature = "boot_tests")]
+#[inline]
+fn take_forced_connection_lookup_miss(conn_id: &ConnectionId) -> bool {
+    let ports = ((conn_id.local_port as u64) << 48) | ((conn_id.remote_port as u64) << 32);
+    FORCED_CONNECTION_LOOKUP_MISSES
+        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |state| {
+            let remaining = state as u32;
+            if remaining == 0 || state & 0xffff_ffff_0000_0000 != ports {
+                return None;
+            }
+
+            let next = remaining - 1;
+            Some(if next == 0 { 0 } else { ports | next as u64 })
+        })
+        .is_ok()
+}
+
+#[cfg(not(feature = "boot_tests"))]
+#[inline(always)]
+fn take_forced_connection_lookup_miss(_: &ConnectionId) -> bool {
+    false
 }
 
 /// Thread-context and NetRx TCP paths both enqueue, so exclude softirq re-entry.
@@ -600,28 +641,32 @@ pub fn handle_tcp(ip: &Ipv4Packet, data: &[u8]) {
     };
 
     // First, check for an existing connection
-    if with_tcp_connections(|connections| {
-        if let Some(conn) = connections.get_mut(&conn_id) {
-            handle_tcp_for_connection(conn, &header, payload, &config);
-            true
-        } else {
-            false
-        }
-    }) {
+    if !take_forced_connection_lookup_miss(&conn_id)
+        && with_tcp_connections(|connections| {
+            if let Some(conn) = connections.get_mut(&conn_id) {
+                handle_tcp_for_connection(conn, &header, payload, &config);
+                true
+            } else {
+                false
+            }
+        })
+    {
         return;
     }
 
     // No existing connection - check for listening socket
-    if with_tcp_listeners(|listeners| {
+    let (listener_found, retry_connection_lookup) = with_tcp_listeners(|listeners| {
         if let Some(listener) = listeners.get_mut(&header.dst_port) {
             if header.flags.syn && !header.flags.ack {
                 // SYN received on listening socket - add to pending queue
                 handle_syn_for_listener(listener, ip.src_ip, &header, &config);
-            } else if header.flags.ack && !header.flags.syn {
-                // ACK received - this completes the 3-way handshake
-                // Find matching pending connection, mark it as ready, and buffer any data
-                for pending in listener.pending.iter_mut() {
-                    if pending.remote_ip == ip.src_ip && pending.remote_port == header.src_port {
+                (true, false)
+            } else if !header.flags.syn {
+                if let Some(pending) = listener.pending.iter_mut().find(|pending| {
+                    pending.remote_ip == ip.src_ip && pending.remote_port == header.src_port
+                }) {
+                    if header.flags.ack {
+                        // ACK received - this completes the 3-way handshake.
                         // Verify ACK number matches our SYN+ACK (send_initial + 1)
                         if header.ack_num == pending.send_initial.wrapping_add(1) {
                             pending.ack_received = true;
@@ -639,17 +684,49 @@ pub fn handle_tcp(ip: &Ipv4Packet, data: &[u8]) {
                                 payload.len()
                             );
                         }
-                        break;
+                    } else {
+                        log::debug!("TCP: Ignoring packet on listening socket");
                     }
+
+                    (true, false)
+                } else {
+                    (true, true)
                 }
             } else {
                 log::debug!("TCP: Ignoring packet on listening socket");
+                (true, false)
             }
-            true
         } else {
-            false
+            (false, false)
         }
-    }) {
+    });
+
+    if retry_connection_lookup {
+        // tcp_accept publishes the child under TCP_CONNECTIONS (release) before
+        // removing its pending entry under TCP_LISTENERS (release). Observing the
+        // pending entry gone after acquiring TCP_LISTENERS therefore makes the
+        // child publication visible to this subsequent TCP_CONNECTIONS acquire.
+        // One re-check is sufficient; no polling or retransmit delay is needed.
+        let recovered = with_tcp_connections(|connections| {
+            if let Some(conn) = connections.get_mut(&conn_id) {
+                handle_tcp_for_connection(conn, &header, payload, &config);
+                true
+            } else {
+                false
+            }
+        });
+        if recovered {
+            TCP_ACCEPT_PUBLISH_RACE_RECOVERED.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    if listener_found {
+        return;
+    }
+
+    // RFC 793 reset-generation rule: if an unmatched segment has RST set,
+    // drop it silently; an RST must never be answered with another RST.
+    if header.flags.rst {
         return;
     }
 
@@ -1272,10 +1349,14 @@ pub fn tcp_accept(local_port: u16) -> Option<ConnectionId> {
         );
     }
 
+    // MUST precede pending removal: handle_tcp's final-ACK recovery relies on
+    // the child being published before the listener entry disappears.
     with_tcp_connections(|connections| {
         connections.insert(conn_id, conn);
     });
 
+    // MUST remain after the TCP_CONNECTIONS insert above. Once readers observe
+    // this pending entry gone, handle_tcp re-checks the published child once.
     let final_pending = with_tcp_listeners(|listeners| {
         let listener = listeners.get_mut(&local_port)?;
         let position = listener.pending.iter().position(|entry| {
