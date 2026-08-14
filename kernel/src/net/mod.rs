@@ -38,13 +38,14 @@ const E1000_CARRIER_POLL_MS: u32 = 50;
 /// Per-context exclusion for the network tables.
 ///
 /// This guard protects `TCP_CONNECTIONS`, `TCP_LISTENERS`, `SEQ_COUNTER`,
-/// `ARP_CACHE`, `ARP_PENDING_QUEUE`, and `NET_CONFIG` from same-CPU re-entry.
-/// On x86_64 it disables bottom halves rather than clearing IF: the hardirq
-/// handlers do not touch these tables, while e1000 hardirq handling only raises
-/// NetRx and the NetRx softirq is the sole interrupt-context table user. Drop
-/// performs the `local_bh_enable` equivalent, dispatching pending softirqs only
-/// when the complete per-CPU preempt count reaches zero, exactly as `irq_exit`
-/// already does. On aarch64 it preserves the existing DAIF IRQ-mask semantics.
+/// `DEFERRED_TX_QUEUE`, `ARP_CACHE`, `NET_CONFIG`, `LOOPBACK_QUEUE`,
+/// `ARP_PENDING_QUEUE`, and `CURRENT_PACKET_SRC_MAC` from same-CPU re-entry. On
+/// x86_64 it disables bottom halves rather than clearing IF: the hardirq handlers
+/// do not touch these tables, while e1000 hardirq handling only raises NetRx and
+/// the NetRx softirq is the sole interrupt-context table user. Drop performs the
+/// `local_bh_enable` equivalent, dispatching pending softirqs only when the
+/// complete per-CPU preempt count reaches zero, exactly as `irq_exit` already
+/// does. On aarch64 it preserves the existing DAIF IRQ-mask semantics.
 #[must_use = "bind the guard as `let _guard = net_lock_guard();` so it remains active"]
 pub(crate) struct NetLockGuard {
     #[cfg(target_arch = "x86_64")]
@@ -144,7 +145,9 @@ macro_rules! net_debug {
 #[cfg(target_arch = "aarch64")]
 macro_rules! net_debug {
     ($($arg:tt)*) => {
-        /* No-op on ARM64 for now */
+        if false {
+            let _ = core::format_args!($($arg)*);
+        }
     };
 }
 
@@ -366,14 +369,18 @@ pub(crate) fn flush_arp_pending_packets(next_hop: &[u8; 4], mac: &[u8; 6]) {
 /// Called after syscalls release their locks to avoid deadlock. TCP loopback
 /// can enqueue deferred replies (SYN+ACK, ACK) while delivering an earlier
 /// packet, so drain bounded rounds until the local packet chain is quiescent.
+/// The queue is shared by thread-context TX and the NetRx softirq, so guard it against re-entry.
 pub fn drain_loopback_queue() {
     const MAX_DRAIN_ROUNDS: usize = 16;
 
     for _ in 0..MAX_DRAIN_ROUNDS {
         // Take all packets from the queue
         let packets: Vec<LoopbackPacket> = {
+            let _guard = net_lock_guard();
             let mut queue = LOOPBACK_QUEUE.lock();
-            core::mem::take(&mut *queue)
+            let packets = core::mem::take(&mut *queue);
+            drop(queue);
+            packets
         };
 
         if packets.is_empty() {
@@ -823,16 +830,27 @@ pub fn process_rx_budgeted(budget: u32) -> PollOutcome {
 static CURRENT_PACKET_SRC_MAC: Mutex<[u8; 6]> = Mutex::new([0; 6]);
 
 /// Get the source MAC of the current incoming packet.
+/// Thread-context TCP reads it while the NetRx softirq updates it, so exclude re-entry.
 pub fn current_packet_src_mac() -> [u8; 6] {
-    *CURRENT_PACKET_SRC_MAC.lock()
+    let _guard = net_lock_guard();
+    let current_src_mac = CURRENT_PACKET_SRC_MAC.lock();
+    let src_mac = *current_src_mac;
+    drop(current_src_mac);
+    src_mac
 }
 
 /// Process a received Ethernet frame
+/// Source-MAC state is also read from thread context, so its NetRx write is guarded.
 fn process_packet(data: &[u8]) {
     if let Some(frame) = ethernet::EthernetFrame::parse(data) {
         crate::tracing::providers::net_rx::count_frame();
         // Save source MAC so TCP can use it for SYN-ACK routing
-        *CURRENT_PACKET_SRC_MAC.lock() = frame.src_mac;
+        {
+            let _guard = net_lock_guard();
+            let mut current_src_mac = CURRENT_PACKET_SRC_MAC.lock();
+            *current_src_mac = frame.src_mac;
+            drop(current_src_mac);
+        }
         match frame.ethertype {
             ethernet::ETHERTYPE_ARP => {
                 if let Some(arp_packet) = arp::ArpPacket::parse(frame.payload) {
@@ -865,6 +883,7 @@ pub fn send_ethernet(
 }
 
 /// Send an IPv4 packet
+/// Loopback packets are queued from both thread context and the NetRx softirq.
 pub fn send_ipv4(dst_ip: [u8; 4], protocol: u8, payload: &[u8]) -> Result<(), &'static str> {
     let config = config();
 
@@ -877,16 +896,28 @@ pub fn send_ipv4(dst_ip: [u8; 4], protocol: u8, payload: &[u8]) -> Result<(), &'
 
         // Queue for deferred delivery (to avoid deadlock with process manager lock)
         // The caller must call drain_loopback_queue() after releasing locks
-        let mut queue = LOOPBACK_QUEUE.lock();
+        let (queue_len, dropped_oldest) = {
+            let _guard = net_lock_guard();
+            let mut queue = LOOPBACK_QUEUE.lock();
 
-        // Drop oldest packet if queue is full to prevent unbounded memory growth
-        if queue.len() >= MAX_LOOPBACK_QUEUE_SIZE {
-            queue.remove(0);
+            // Drop oldest packet if queue is full to prevent unbounded memory growth
+            let dropped_oldest = if queue.len() >= MAX_LOOPBACK_QUEUE_SIZE {
+                queue.remove(0);
+                true
+            } else {
+                false
+            };
+
+            queue.push(LoopbackPacket { data: ip_packet });
+            let queue_len = queue.len();
+            drop(queue);
+            (queue_len, dropped_oldest)
+        };
+
+        if dropped_oldest {
             net_warn!("NET: Loopback queue full, dropped oldest packet");
         }
-
-        queue.push(LoopbackPacket { data: ip_packet });
-        net_debug!("NET: Loopback packet queued (queue size: {})", queue.len());
+        net_debug!("NET: Loopback packet queued (queue size: {})", queue_len);
 
         return Ok(());
     }
