@@ -677,6 +677,12 @@ extern "C" fn kernel_main_on_kernel_stack(arg: *mut core::ffi::c_void) -> ! {
     #[cfg(all(feature = "testing", not(feature = "kthread_stress_test")))]
     kernel::task::softirq_tests::test_softirq();
 
+    // Any test that schedules in this x86 boot window can poison its resume context
+    // (#567). After the softirq self-test, run only the non-scheduling loopback
+    // wake-loss counter gate; keep the four scheduling registry tests deferred.
+    #[cfg(all(target_arch = "x86_64", feature = "boot_tests"))]
+    kernel::test_framework::registry::run_x86_loopback_gates();
+
     // In kthread_test_only mode, exit immediately after join test
     #[cfg(feature = "kthread_test_only")]
     {

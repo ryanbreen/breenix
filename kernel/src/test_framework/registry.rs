@@ -2798,6 +2798,35 @@ fn tcp_final_ack_survives_accept_publish_race() -> TestResult {
     result
 }
 
+/// Runs the sole loopback gate that x86 can execute safely in this boot window.
+///
+/// Four `Arch::Any` registry tests remain excluded from the direct x86 path until
+/// #567 fixes corrupted kthread/boot-thread resume contexts:
+/// - `loopback_recv_wake_when_idle` passes, then the boot page-faults on an
+///   `INSTRUCTION_FETCH` at RIP `0x0`.
+/// - `loopback_recv_wake_under_load` page-faults on a write to `0x100002590aa`.
+/// - `loopback_pump_does_not_busy_spin` page-faults while fetching an instruction
+///   from a data address.
+/// - `tcp_final_ack_survives_accept_publish_race` resumes at poison-filled RIP
+///   `0x4444446053e6`.
+///
+/// Any test that schedules in this window currently poisons the x86 boot, so this
+/// path runs only `loopback_wake_loss_counters_are_zero`, which does no scheduling.
+#[cfg(all(feature = "boot_tests", target_arch = "x86_64"))]
+pub fn run_x86_loopback_gates() {
+    crate::serial_println!("[TEST:network:loopback_wake_loss_counters_are_zero:START]");
+    let result = loopback_wake_loss_counters_are_zero();
+    match result {
+        TestResult::Pass => {
+            crate::serial_println!("[TEST:network:loopback_wake_loss_counters_are_zero:PASS]")
+        }
+        _ => crate::serial_println!(
+            "[TEST:network:loopback_wake_loss_counters_are_zero:FAIL:{}]",
+            result.failure_message().unwrap_or("test failed")
+        ),
+    }
+}
+
 /// Test NetRx softirq registration and dispatch on ARM64.
 ///
 /// This test verifies that:

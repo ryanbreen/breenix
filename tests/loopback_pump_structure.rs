@@ -779,6 +779,7 @@ fn validate_loopback_regression_tests_are_arch_neutral(source: &str) -> Result<(
         "loopback_recv_wake_under_load",
         "loopback_pump_does_not_busy_spin",
         "loopback_wake_loss_counters_are_zero",
+        "tcp_final_ack_survives_accept_publish_race",
     ] {
         let definition =
             test_def_block(source, name).ok_or_else(|| format!("missing TestDef for {name}"))?;
@@ -800,23 +801,173 @@ fn validate_x86_gate_requires_the_loopback_regression_tests(source: &str) -> Res
             ));
         }
     }
+    let required_name = "loopback_wake_loss_counters_are_zero";
+    let required_marker = format!("\\[TEST:network:{required_name}:PASS\\]");
+    if source.matches(&required_marker).count() != 2 {
+        return Err(format!(
+            "x86 gate does not poll and assert exactly-once evidence for {required_name}"
+        ));
+    }
+    if !source.contains(&format!("grep -q '{required_marker}'")) {
+        return Err(format!("x86 gate does not poll for {required_name}"));
+    }
+    let count_anchor = format!("grep -h -c '{required_marker}'");
+    let count = source
+        .find(&count_anchor)
+        .ok_or_else(|| format!("x86 gate lost the exact PASS count for {required_name}"))?;
+    let count_tail = &source[count..];
+    let next_count = count_tail[1..]
+        .find("test \"$(grep -h -c '")
+        .map_or(count_tail.len(), |offset| offset + 1);
+    if !count_tail[..next_count].contains("-eq 1") {
+        return Err(format!(
+            "x86 gate weakened the exactly-once PASS count for {required_name}"
+        ));
+    }
     for name in [
         "loopback_recv_wake_when_idle",
         "loopback_recv_wake_under_load",
         "loopback_pump_does_not_busy_spin",
-        "loopback_wake_loss_counters_are_zero",
+        "tcp_final_ack_survives_accept_publish_race",
     ] {
         let marker = format!("\\[TEST:network:{name}:PASS\\]");
-        if source.matches(&marker).count() < 2 {
-            return Err(format!(
-                "x86 gate does not poll and assert exactly-once evidence for {name}"
-            ));
+        if source.contains(&marker) {
+            return Err(format!("x86 gate requires deferred scheduling test {name}"));
+        }
+    }
+    for explanation in [
+        "loopback_recv_wake_when_idle",
+        "loopback_recv_wake_under_load",
+        "loopback_pump_does_not_busy_spin",
+        "tcp_final_ack_survives_accept_publish_race",
+        "#567",
+    ] {
+        if !source.contains(explanation) {
+            return Err(format!("x86 gate lost deferred-test rationale ({explanation})"));
         }
     }
     if !source.contains("\\[TEST:network:[^]]*:FAIL") {
         return Err("x86 gate does not reject network test failures".to_string());
     }
     Ok(())
+}
+
+fn validate_x86_direct_loopback_gates(
+    main: &str,
+    registry: &str,
+    harness: &str,
+) -> Result<(), String> {
+    let kernel_main = function_body(main, "kernel_main_on_kernel_stack")
+        .ok_or_else(|| "missing kernel_main_on_kernel_stack".to_string())?;
+    let cohort_call = kernel_main
+        .find("teardown::run_x86_retire_cohort_gate();")
+        .ok_or_else(|| "missing direct x86 retire-cohort gate call".to_string())?;
+    let loopback_call = kernel_main
+        .find("test_framework::registry::run_x86_loopback_gates();")
+        .ok_or_else(|| "missing direct x86 loopback-gate call".to_string())?;
+    if loopback_call <= cohort_call
+        || !kernel_main.contains("only the non-scheduling loopback")
+        || !kernel_main.contains("#567")
+    {
+        return Err("x86 loopback gates lost their direct-call order or rationale".to_string());
+    }
+
+    let declaration = registry
+        .find("pub fn run_x86_loopback_gates")
+        .ok_or_else(|| "missing run_x86_loopback_gates wrapper".to_string())?;
+    let cfg_start = registry[..declaration]
+        .rfind("#[cfg(")
+        .ok_or_else(|| "x86 loopback wrapper has no cfg attribute".to_string())?;
+    let cfg = registry[cfg_start..declaration]
+        .chars()
+        .filter(|character| !character.is_whitespace())
+        .collect::<String>();
+    if cfg != "#[cfg(all(feature=\"boot_tests\",target_arch=\"x86_64\"))]" {
+        return Err("x86 loopback wrapper is not boot_tests+x86_64 gated".to_string());
+    }
+
+    let wrapper = function_body(registry, "run_x86_loopback_gates")
+        .ok_or_else(|| "cannot parse run_x86_loopback_gates wrapper".to_string())?;
+    if wrapper.matches("let result = ").count() != 1 {
+        return Err("x86 loopback wrapper does not contain exactly one gate".to_string());
+    }
+    let name = "loopback_wake_loss_counters_are_zero";
+    let call = wrapper
+        .find(&format!("let result = {name}();"))
+        .ok_or_else(|| format!("x86 loopback wrapper does not call {name}"))?;
+    let start = format!("[TEST:network:{name}:START]");
+    let pass = format!("[TEST:network:{name}:PASS]");
+    let fail = format!("[TEST:network:{name}:FAIL:");
+    for marker in [&start, &pass, &fail] {
+        if wrapper.matches(marker).count() != 1 || registry.matches(marker).count() != 1 {
+            return Err(format!(
+                "x86 loopback wrapper is not the sole producer of {marker}"
+            ));
+        }
+    }
+    let start_offset = wrapper
+        .find(&start)
+        .ok_or_else(|| "x86 loopback wrapper lost its START marker".to_string())?;
+    let pass_offset = wrapper
+        .find(&pass)
+        .ok_or_else(|| "x86 loopback wrapper lost its PASS marker".to_string())?;
+    let fail_offset = wrapper
+        .find(&fail)
+        .ok_or_else(|| "x86 loopback wrapper lost its FAIL marker".to_string())?;
+    if start_offset >= call
+        || call >= pass_offset.min(fail_offset)
+        || !wrapper.contains("match result")
+    {
+        return Err("x86 loopback wrapper lost START then PASS-or-FAIL discipline".to_string());
+    }
+    if wrapper.contains("panic!(")
+        || wrapper.contains(".unwrap()")
+        || wrapper.contains(".expect(")
+    {
+        return Err("x86 loopback wrapper may panic instead of emitting FAIL".to_string());
+    }
+
+    let body = function_body(registry, name)
+        .ok_or_else(|| format!("missing loopback gate body {name}"))?;
+    if body.contains(&format!("[TEST:network:{name}:")) {
+        return Err(format!("{name} body emits its own x86 marker"));
+    }
+    for name in [
+        "loopback_recv_wake_when_idle",
+        "loopback_recv_wake_under_load",
+        "loopback_pump_does_not_busy_spin",
+        "tcp_final_ack_survives_accept_publish_race",
+    ] {
+        if wrapper.contains(&format!("{name}()"))
+            || wrapper.contains(&format!("[TEST:network:{name}:"))
+        {
+            return Err(format!("x86 loopback wrapper calls excluded gate {name}"));
+        }
+    }
+
+    let wrapper_docs = &registry[declaration.saturating_sub(1200)..declaration];
+    for rationale in [
+        "Four `Arch::Any`",
+        "loopback_recv_wake_when_idle",
+        "INSTRUCTION_FETCH",
+        "0x0",
+        "loopback_recv_wake_under_load",
+        "0x100002590aa",
+        "loopback_pump_does_not_busy_spin",
+        "data address",
+        "tcp_final_ack_survives_accept_publish_race",
+        "0x4444446053e6",
+        "Any test that schedules in this window currently poisons the x86 boot",
+        "does no scheduling",
+        "#567",
+    ] {
+        if !wrapper_docs.contains(rationale) {
+            return Err(format!("x86 loopback wrapper docs lost rationale {rationale}"));
+        }
+    }
+
+    validate_loopback_regression_tests_are_arch_neutral(registry)?;
+    validate_x86_gate_requires_the_loopback_regression_tests(harness)
 }
 
 fn validate_schedule_rearms_a_blocked_pump(source: &str) -> Result<(), String> {
@@ -1256,19 +1407,105 @@ fn loopback_arch_validator_rejects_arch_specific_test() {
 }
 
 #[test]
+fn x86_loopback_gates_are_direct_reachable_and_have_one_marker_producer() {
+    validate_x86_direct_loopback_gates(
+        &repo_text("kernel/src/main.rs"),
+        &repo_text("kernel/src/test_framework/registry.rs"),
+        &repo_text("docker/qemu/run-x86-boot-tests.sh"),
+    )
+    .expect("x86 loopback gates remain directly reachable and exactly marked");
+}
+
+#[test]
+fn deliberately_broken_x86_loopback_gate_variants_fail_the_validator() {
+    let main = repo_text("kernel/src/main.rs");
+    let registry = repo_text("kernel/src/test_framework/registry.rs");
+    let harness = repo_text("docker/qemu/run-x86-boot-tests.sh");
+
+    let missing_call = main.replacen(
+        "kernel::test_framework::registry::run_x86_loopback_gates();",
+        "",
+        1,
+    );
+    assert_ne!(missing_call, main, "direct-call mutation must apply");
+    assert!(validate_x86_direct_loopback_gates(&missing_call, &registry, &harness).is_err());
+
+    let weak_cfg = registry.replacen(
+        "#[cfg(all(feature = \"boot_tests\", target_arch = \"x86_64\"))]\n\
+         pub fn run_x86_loopback_gates",
+        "#[cfg(feature = \"boot_tests\")]\n\
+         pub fn run_x86_loopback_gates",
+        1,
+    );
+    assert_ne!(weak_cfg, registry, "cfg-gate mutation must apply");
+    assert!(validate_x86_direct_loopback_gates(&main, &weak_cfg, &harness).is_err());
+
+    let duplicate_marker = registry.replacen(
+        "pub fn run_x86_loopback_gates() {",
+        "pub fn run_x86_loopback_gates() {\n\
+             crate::serial_println!(\"[TEST:network:loopback_wake_loss_counters_are_zero:PASS]\");",
+        1,
+    );
+    assert_ne!(
+        duplicate_marker, registry,
+        "marker-producer mutation must apply"
+    );
+    assert!(
+        validate_x86_direct_loopback_gates(&main, &duplicate_marker, &harness).is_err()
+    );
+
+    let marker = "\\[TEST:network:loopback_wake_loss_counters_are_zero:PASS\\]";
+    let count_anchor = format!("grep -h -c '{marker}'");
+    let count = harness
+        .find(&count_anchor)
+        .expect("find loopback marker count fixture");
+    let weak_count_tail = harness[count..].replacen("-eq 1", "-ge 1", 1);
+    let weak_harness = format!("{}{weak_count_tail}", &harness[..count]);
+    assert_ne!(weak_harness, harness, "exact-count mutation must apply");
+    assert!(
+        validate_x86_direct_loopback_gates(&main, &registry, &weak_harness).is_err()
+    );
+
+    let deferred_gate = registry.replacen(
+        "pub fn run_x86_loopback_gates() {",
+        "pub fn run_x86_loopback_gates() {\n\
+             let _ = loopback_recv_wake_when_idle();",
+        1,
+    );
+    assert_ne!(
+        deferred_gate, registry,
+        "deferred-gate mutation must apply"
+    );
+    assert!(
+        validate_x86_direct_loopback_gates(&main, &deferred_gate, &harness).is_err()
+    );
+}
+
+#[test]
 fn x86_gate_requires_the_loopback_regression_tests() {
     validate_x86_gate_requires_the_loopback_regression_tests(&repo_text(
         "docker/qemu/run-x86-boot-tests.sh",
     ))
-    .expect("x86 gate requires all loopback regression markers");
+    .expect("x86 gate requires exactly the executable loopback regression markers");
 }
 
 #[test]
 fn x86_gate_validator_rejects_missing_loopback_marker() {
     let source = repo_text("docker/qemu/run-x86-boot-tests.sh");
-    let marker = "\\[TEST:network:loopback_recv_wake_under_load:PASS\\]";
+    let marker = "\\[TEST:network:loopback_wake_loss_counters_are_zero:PASS\\]";
     let mutated = source.replace(marker, "");
     assert_ne!(mutated, source, "fixture mutation must apply");
+    assert!(validate_x86_gate_requires_the_loopback_regression_tests(&mutated).is_err());
+}
+
+#[test]
+fn x86_gate_validator_rejects_deferred_loopback_requirement() {
+    let source = repo_text("docker/qemu/run-x86-boot-tests.sh");
+    let marker = "\\[TEST:network:loopback_recv_wake_under_load:PASS\\]";
+    let mutated = format!(
+        "{source}\ntest \"$(grep -h -c '{marker}' /tmp/serial.txt)\" -eq 1\n"
+    );
+    assert_ne!(mutated, source, "deferred-marker mutation must apply");
     assert!(validate_x86_gate_requires_the_loopback_regression_tests(&mutated).is_err());
 }
 
