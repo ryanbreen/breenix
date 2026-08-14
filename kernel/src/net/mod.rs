@@ -12,14 +12,21 @@ pub mod arp;
 pub mod ethernet;
 pub mod icmp;
 pub mod ipv4;
+pub(crate) mod loopback_pump;
 
 // TCP and UDP protocol implementations - architecture-independent
 // The socket syscall layer handles arch-specific details
 pub mod tcp;
 pub mod udp;
 
+pub use loopback_pump::{
+    init_loopback_pump, loopback_pump_passes, loopback_pump_rearms, loopback_pump_tid,
+    loopback_pump_wake_rejected, loopback_pump_wakes,
+};
+
 use alloc::vec::Vec;
 use core::marker::PhantomData;
+use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use spin::Mutex;
 
 // Use E1000 on x86_64, VirtIO net on ARM64 (MMIO for QEMU, PCI for Parallels)
@@ -265,6 +272,8 @@ static NET_CONFIG: Mutex<NetConfig> = Mutex::new(DEFAULT_CONFIG);
 /// Maximum number of packets to queue in loopback queue
 /// Prevents unbounded memory growth if drain_loopback_queue() is not called
 const MAX_LOOPBACK_QUEUE_SIZE: usize = 32;
+const MAX_DRAIN_ROUNDS: usize = 16;
+const LOOPBACK_DRAIN_STUCK_THRESHOLD: u64 = 100;
 const MAX_ARP_PENDING_QUEUE_SIZE: usize = 16;
 const ARP_PENDING_TTL_MS: u64 = 5_000;
 
@@ -276,6 +285,101 @@ struct LoopbackPacket {
 }
 
 static LOOPBACK_QUEUE: Mutex<Vec<LoopbackPacket>> = Mutex::new(Vec::new());
+/// Single-writer-under-lock atomic mirror of `LOOPBACK_QUEUE.len()`.
+/// Writers publish the new length immediately after each queue mutation.
+static LOOPBACK_QUEUE_DEPTH: AtomicUsize = AtomicUsize::new(0);
+static LOOPBACK_DRAIN_TICKET: AtomicU64 = AtomicU64::new(0);
+static LOOPBACK_DRAIN_OWNER: AtomicU64 = AtomicU64::new(0);
+static LOOPBACK_DRAIN_CONTENDED: AtomicU64 = AtomicU64::new(0);
+static LOOPBACK_DRAIN_LAST_SEEN_OWNER: AtomicU64 = AtomicU64::new(0);
+static LOOPBACK_DRAIN_CONSECUTIVE_CONTENDED: AtomicU64 = AtomicU64::new(0);
+static LOOPBACK_DRAIN_STUCK: AtomicU64 = AtomicU64::new(0);
+static LOOPBACK_DRAIN_COMPLETED: AtomicU64 = AtomicU64::new(0);
+static LOOPBACK_DROPPED_FULL: AtomicU64 = AtomicU64::new(0);
+static IDLE_LOOPBACK_DRAIN_CALLS: AtomicU64 = AtomicU64::new(0);
+
+struct LoopbackDrainGuard {
+    owner: u64,
+}
+
+impl LoopbackDrainGuard {
+    fn acquire() -> Option<Self> {
+        let owner = LOOPBACK_DRAIN_TICKET.fetch_add(1, Ordering::Relaxed) + 1;
+
+        match LOOPBACK_DRAIN_OWNER.compare_exchange(0, owner, Ordering::Acquire, Ordering::Relaxed)
+        {
+            Ok(_) => {
+                LOOPBACK_DRAIN_CONSECUTIVE_CONTENDED.store(0, Ordering::Relaxed);
+                Some(Self { owner })
+            }
+            Err(stuck_owner) => {
+                LOOPBACK_DRAIN_CONTENDED.fetch_add(1, Ordering::Relaxed);
+                let last_seen_owner = LOOPBACK_DRAIN_LAST_SEEN_OWNER.load(Ordering::Acquire);
+                let consecutive = if last_seen_owner == stuck_owner {
+                    LOOPBACK_DRAIN_CONSECUTIVE_CONTENDED
+                        .fetch_add(1, Ordering::Relaxed)
+                        .wrapping_add(1)
+                } else {
+                    LOOPBACK_DRAIN_CONSECUTIVE_CONTENDED.store(1, Ordering::Relaxed);
+                    LOOPBACK_DRAIN_LAST_SEEN_OWNER.store(stuck_owner, Ordering::Release);
+                    1
+                };
+
+                if consecutive >= LOOPBACK_DRAIN_STUCK_THRESHOLD
+                    && LOOPBACK_DRAIN_OWNER
+                        .compare_exchange(stuck_owner, 0, Ordering::AcqRel, Ordering::Relaxed)
+                        .is_ok()
+                {
+                    LOOPBACK_DRAIN_STUCK.fetch_add(1, Ordering::Relaxed);
+                    LOOPBACK_DRAIN_CONSECUTIVE_CONTENDED.store(0, Ordering::Relaxed);
+                    log::warn!(
+                        "loopback: force-released stranded drain owner ticket {}",
+                        stuck_owner
+                    );
+                }
+
+                None
+            }
+        }
+    }
+}
+
+impl Drop for LoopbackDrainGuard {
+    fn drop(&mut self) {
+        LOOPBACK_DRAIN_COMPLETED.fetch_add(1, Ordering::Relaxed);
+        let _ = LOOPBACK_DRAIN_OWNER.compare_exchange(
+            self.owner,
+            0,
+            Ordering::Release,
+            Ordering::Relaxed,
+        );
+    }
+}
+
+pub fn loopback_drain_contended() -> u64 {
+    LOOPBACK_DRAIN_CONTENDED.load(Ordering::Relaxed)
+}
+
+pub fn loopback_drain_completed() -> u64 {
+    LOOPBACK_DRAIN_COMPLETED.load(Ordering::Relaxed)
+}
+
+pub fn loopback_drain_stuck() -> u64 {
+    LOOPBACK_DRAIN_STUCK.load(Ordering::Relaxed)
+}
+
+pub fn loopback_dropped_full() -> u64 {
+    LOOPBACK_DROPPED_FULL.load(Ordering::Relaxed)
+}
+
+fn loopback_queue_depth() -> usize {
+    LOOPBACK_QUEUE_DEPTH.load(Ordering::Acquire)
+}
+
+/// True when the lock-free queue-depth mirror reports no pending packets.
+pub(crate) fn loopback_queue_is_empty() -> bool {
+    LOOPBACK_QUEUE_DEPTH.load(Ordering::Acquire) == 0
+}
 
 /// IPv4 packets waiting for ARP resolution of their next hop.
 struct PendingArpPacket {
@@ -364,30 +468,30 @@ pub(crate) fn flush_arp_pending_packets(next_hop: &[u8; 4], mac: &[u8; 6]) {
     drop(queue);
 }
 
-/// Drain the loopback queue, delivering any pending packets.
+/// Deliver at most `max_rounds` rounds of queued loopback packets.
 ///
-/// Called after syscalls release their locks to avoid deadlock. TCP loopback
-/// can enqueue deferred replies (SYN+ACK, ACK) while delivering an earlier
-/// packet, so drain bounded rounds until the local packet chain is quiescent.
-/// The queue is shared by thread-context TX and the NetRx softirq, so guard it against re-entry.
-pub fn drain_loopback_queue() {
-    const MAX_DRAIN_ROUNDS: usize = 16;
+/// Returns true when work remains so callers can re-arm without doing
+/// unbounded delivery work in a single pass.
+pub(crate) fn drain_loopback_rounds(max_rounds: usize) -> bool {
+    let Some(_drain_guard) = LoopbackDrainGuard::acquire() else {
+        return !loopback_queue_is_empty();
+    };
 
-    for _ in 0..MAX_DRAIN_ROUNDS {
-        // Take all packets from the queue
+    for _ in 0..max_rounds {
         let packets: Vec<LoopbackPacket> = {
-            let _guard = net_lock_guard();
+            let guard = net_lock_guard();
             let mut queue = LOOPBACK_QUEUE.lock();
             let packets = core::mem::take(&mut *queue);
+            LOOPBACK_QUEUE_DEPTH.store(queue.len(), Ordering::Release);
             drop(queue);
+            drop(guard);
             packets
         };
 
         if packets.is_empty() {
-            break;
+            return false;
         }
 
-        // Deliver each packet
         for packet in packets {
             if let Some(parsed_ip) = ipv4::Ipv4Packet::parse(&packet.data) {
                 let src_mac = get_mac_address().unwrap_or([0; 6]);
@@ -403,6 +507,45 @@ pub fn drain_loopback_queue() {
 
         tcp::drain_deferred_tx();
     }
+
+    !loopback_queue_is_empty()
+}
+
+/// Drain the loopback queue, delivering any pending packets.
+///
+/// Called after syscalls release their locks to avoid deadlock. TCP loopback
+/// can enqueue deferred replies (SYN+ACK, ACK) while delivering an earlier
+/// packet, so drain bounded rounds until the local packet chain is quiescent.
+pub fn drain_loopback_queue() {
+    let _ = drain_loopback_rounds(MAX_DRAIN_ROUNDS);
+}
+
+/// Drain loopback delivery from a general thread-context idle backstop.
+pub fn drain_loopback_from_idle() {
+    IDLE_LOOPBACK_DRAIN_CALLS.fetch_add(1, Ordering::Relaxed);
+    let _ = drain_loopback_rounds(MAX_DRAIN_ROUNDS);
+}
+
+pub fn idle_loopback_drain_calls() -> u64 {
+    IDLE_LOOPBACK_DRAIN_CALLS.load(Ordering::Relaxed)
+}
+
+/// Log loopback queue, drain, pump, and ISR-buffer state for hang triage.
+pub fn dump_loopback_state() {
+    log::info!(
+        "loopback: depth={} drain_contended={} drain_completed={} drain_stuck={} dropped_full={} pump_tid={} pump_passes={} pump_rearms={} pump_wakes={} pump_wake_rejected={} isr_wakeup_depth_cpu0={}",
+        loopback_queue_depth(),
+        loopback_drain_contended(),
+        loopback_drain_completed(),
+        loopback_drain_stuck(),
+        loopback_dropped_full(),
+        loopback_pump_tid(),
+        loopback_pump_passes(),
+        loopback_pump_rearms(),
+        loopback_pump_wakes(),
+        loopback_pump_wake_rejected(),
+        crate::task::scheduler::isr_wakeup_depth(0),
+    );
 }
 
 /// Softirq handler for network RX processing.
@@ -903,6 +1046,7 @@ pub fn send_ipv4(dst_ip: [u8; 4], protocol: u8, payload: &[u8]) -> Result<(), &'
             // Drop oldest packet if queue is full to prevent unbounded memory growth
             let dropped_oldest = if queue.len() >= MAX_LOOPBACK_QUEUE_SIZE {
                 queue.remove(0);
+                LOOPBACK_DROPPED_FULL.fetch_add(1, Ordering::Relaxed);
                 true
             } else {
                 false
@@ -910,6 +1054,7 @@ pub fn send_ipv4(dst_ip: [u8; 4], protocol: u8, payload: &[u8]) -> Result<(), &'
 
             queue.push(LoopbackPacket { data: ip_packet });
             let queue_len = queue.len();
+            LOOPBACK_QUEUE_DEPTH.store(queue_len, Ordering::Release);
             drop(queue);
             (queue_len, dropped_oldest)
         };
@@ -918,6 +1063,7 @@ pub fn send_ipv4(dst_ip: [u8; 4], protocol: u8, payload: &[u8]) -> Result<(), &'
             net_warn!("NET: Loopback queue full, dropped oldest packet");
         }
         net_debug!("NET: Loopback packet queued (queue size: {})", queue_len);
+        crate::net::loopback_pump::wake_loopback_pump();
 
         return Ok(());
     }

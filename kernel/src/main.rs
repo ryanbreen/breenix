@@ -591,6 +591,7 @@ extern "C" fn kernel_main_on_kernel_stack(arg: *mut core::ffi::c_void) -> ! {
 
     // Initialize softirq subsystem (depends on kthread infrastructure)
     task::softirqd::init_softirq();
+    crate::net::init_loopback_pump();
     #[cfg(feature = "btrt")]
     kernel::test_framework::btrt::pass(kernel::test_framework::catalog::KTHREAD_SUBSYSTEM);
 
@@ -1768,6 +1769,7 @@ fn idle_thread_fn() {
     loop {
         // Enable interrupts and halt until next interrupt
         x86_64::instructions::interrupts::enable_and_hlt();
+        crate::net::drain_loopback_from_idle();
 
         // Check if there are any ready threads
         if let Some(has_work) = task::scheduler::with_scheduler(|s| s.has_runnable_threads()) {

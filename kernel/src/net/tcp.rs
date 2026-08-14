@@ -5,6 +5,7 @@
 use alloc::collections::BTreeMap;
 use alloc::collections::VecDeque;
 use alloc::vec::Vec;
+use core::sync::atomic::{AtomicU64, Ordering};
 use spin::Mutex;
 
 use super::ipv4::{internet_checksum, Ipv4Packet, PROTOCOL_TCP};
@@ -22,6 +23,11 @@ struct DeferredTx {
 }
 
 static DEFERRED_TX_QUEUE: Mutex<Vec<DeferredTx>> = Mutex::new(Vec::new());
+static TCP_WAKE_REJECTED: AtomicU64 = AtomicU64::new(0);
+
+pub fn tcp_wake_rejected() -> u64 {
+    TCP_WAKE_REJECTED.load(Ordering::Relaxed)
+}
 
 /// Thread-context and NetRx TCP paths both enqueue, so exclude softirq re-entry.
 fn queue_deferred_tx_with_mac(dst_ip: [u8; 4], dst_mac: Option<[u8; 6]>, tcp_segment: Vec<u8>) {
@@ -1674,44 +1680,54 @@ pub fn tcp_has_data(conn_id: &ConnectionId) -> bool {
 /// Wake all threads waiting on a listening socket (called when SYN arrives)
 fn wake_accept_waiters(listener: &ListenSocket) {
     let readers: Vec<u64> = {
-        let mut waiting = listener.waiting_threads.lock();
-        waiting.drain(..).collect()
+        let waiting = listener.waiting_threads.lock();
+        waiting.iter().copied().collect()
     };
 
     if !readers.is_empty() {
-        wake_waiting_threads(&readers);
-        log::debug!("TCP: Woke {} accept waiters", readers.len());
+        let rejected = wake_waiting_threads(&readers);
+        let accepted: Vec<u64> = readers
+            .iter()
+            .copied()
+            .filter(|tid| !rejected.contains(tid))
+            .collect();
+        let mut waiting = listener.waiting_threads.lock();
+        waiting.retain(|tid| !accepted.contains(tid));
+        log::debug!("TCP: Woke {} accept waiters", accepted.len());
     }
 }
 
 /// Wake all threads waiting on a connection (called when data arrives or state changes)
 fn wake_connection_waiters(conn: &TcpConnection) {
     let readers: Vec<u64> = {
-        let mut waiting = conn.waiting_threads.lock();
-        waiting.drain(..).collect()
+        let waiting = conn.waiting_threads.lock();
+        waiting.iter().copied().collect()
     };
 
     if !readers.is_empty() {
-        wake_waiting_threads(&readers);
-        log::debug!("TCP: Woke {} connection waiters", readers.len());
+        let rejected = wake_waiting_threads(&readers);
+        let accepted: Vec<u64> = readers
+            .iter()
+            .copied()
+            .filter(|tid| !rejected.contains(tid))
+            .collect();
+        let mut waiting = conn.waiting_threads.lock();
+        waiting.retain(|tid| !accepted.contains(tid));
+        log::debug!("TCP: Woke {} connection waiters", accepted.len());
     }
 }
 
-fn wake_waiting_threads(readers: &[u64]) {
-    #[cfg(target_arch = "aarch64")]
-    if crate::per_cpu::in_interrupt() {
-        for thread_id in readers {
-            crate::task::scheduler::isr_unblock_for_io(*thread_id);
+fn wake_waiting_threads(readers: &[u64]) -> Vec<u64> {
+    let mut rejected = Vec::new();
+    for thread_id in readers {
+        if crate::task::scheduler::wake_thread_any_context(*thread_id)
+            == crate::task::scheduler::WakeOutcome::Rejected
+        {
+            TCP_WAKE_REJECTED.fetch_add(1, Ordering::Relaxed);
+            rejected.push(*thread_id);
         }
-        return;
     }
-
-    crate::task::scheduler::with_scheduler(|sched| {
-        for thread_id in readers {
-            sched.unblock(*thread_id);
-        }
-    });
-    crate::task::scheduler::set_need_resched();
+    rejected
 }
 
 /// Increment the reference count for a TCP listener (called when fd is duplicated via fork)

@@ -815,6 +815,7 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
 
     // Initialize softirq subsystem (depends on kthread infrastructure)
     kernel::task::softirqd::init_softirq();
+    kernel::net::init_loopback_pump();
     serial_println!("[boot] Softirq subsystem initialized");
     #[cfg(feature = "btrt")]
     kernel::test_framework::btrt::pass(kernel::test_framework::catalog::KTHREAD_SUBSYSTEM);
@@ -878,8 +879,7 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
     // before timer init, so it does not depend on CPU0 timer polling.
     serial_println!(
         "[xhci] post-activation: MSI_EVENT_COUNT={} EVENT_COUNT={} POLL_COUNT={} SPI_ACTIVATED={}",
-        kernel::drivers::usb::xhci::MSI_EVENT_COUNT
-            .load(core::sync::atomic::Ordering::Relaxed),
+        kernel::drivers::usb::xhci::MSI_EVENT_COUNT.load(core::sync::atomic::Ordering::Relaxed),
         kernel::drivers::usb::xhci::EVENT_COUNT.load(core::sync::atomic::Ordering::Relaxed),
         kernel::drivers::usb::xhci::POLL_COUNT.load(core::sync::atomic::Ordering::Relaxed),
         kernel::drivers::usb::xhci::SPI_ACTIVATED.load(core::sync::atomic::Ordering::Relaxed),
@@ -1016,8 +1016,8 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
                 counter_frequency_hz,
                 kernel::test_framework::PHASE_ONE_LIVENESS_BUDGET_MILLISECONDS,
             );
-            let breadcrumb_ticks = counter_frequency_hz
-                .saturating_mul(SMP_ONLINE_BREADCRUMB_INTERVAL_SECONDS);
+            let breadcrumb_ticks =
+                counter_frequency_hz.saturating_mul(SMP_ONLINE_BREADCRUMB_INTERVAL_SECONDS);
             let stage_at_start: [u32; kernel::arch_impl::aarch64::smp::MAX_CPUS] =
                 core::array::from_fn(kernel::arch_impl::aarch64::smp::bringup_stage_of);
             let mut last_online = kernel::arch_impl::aarch64::smp::cpus_online();
@@ -1033,8 +1033,7 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
                 for cpu in 1..expected as usize {
                     if !kernel::arch_impl::aarch64::smp::is_cpu_online(cpu) {
                         let stage_now = kernel::arch_impl::aarch64::smp::bringup_stage_of(cpu);
-                        let last_psci =
-                            kernel::arch_impl::aarch64::smp::last_psci_return_code(cpu);
+                        let last_psci = kernel::arch_impl::aarch64::smp::last_psci_return_code(cpu);
                         serial_println!(
                             "[smp] CPU {} still offline: stage={} {} last PSCI return code {} ({}) stage_at_start={} stage_advanced={}",
                             cpu,
@@ -1335,6 +1334,7 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
             unsafe {
                 core::arch::asm!("wfi", options(nomem, nostack));
             }
+            kernel::net::drain_loopback_from_idle();
         }
     }
 
@@ -1406,6 +1406,7 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
         unsafe {
             core::arch::asm!("wfi", options(nomem, nostack));
         }
+        kernel::net::drain_loopback_from_idle();
     }
 }
 
@@ -1562,12 +1563,8 @@ fn init_scheduler() {
     let (boot_stack_top, boot_stack_bottom) =
         if kernel::platform_config::is_qemu() || kernel::platform_config::is_vmware() {
             (
-                VirtAddr::new(
-                    kernel::arch_impl::aarch64::constants::percpu_kernel_stack_top(0),
-                ),
-                VirtAddr::new(
-                    kernel::arch_impl::aarch64::constants::percpu_kernel_stack_bottom(0),
-                ),
+                VirtAddr::new(kernel::arch_impl::aarch64::constants::percpu_kernel_stack_top(0)),
+                VirtAddr::new(kernel::arch_impl::aarch64::constants::percpu_kernel_stack_bottom(0)),
             )
         } else {
             // Parallels: UEFI loader stack at 0x42000000 (phys), now at HHDM
@@ -1620,6 +1617,7 @@ fn idle_thread_fn() {
         unsafe {
             core::arch::asm!("wfi", options(nomem, nostack));
         }
+        kernel::net::drain_loopback_from_idle();
     }
 }
 
