@@ -13,8 +13,9 @@ BREENIX_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 FRAME_CUSTODY_PATTERN='^\[FRAME_CUSTODY_COUNTERS:x86:double=1:stale=1:never=1:untracked=1:duplicate=3:contended=[1-9][0-9]*\]$'
 PT_CUSTODY_LITERAL='[PT_CUSTODY_COUNTERS:x86:recorded=11:no_proof=0:no_arch=0:terminated=1:undecided=1:exec_unreturned=0:retired=1:returned=10:lost=0:requeued=0]'
 PT_COHORT_LITERAL='[PT_RETIRE_COHORT:x86:children=64:retired=64:returned=640:recorded=576:lost=0:no_arch=0:undecided=0:mid_retire=0:balance=0]'
-# Re-pin consciously whenever this profile's launched test-program set changes.
-readonly EXPECTED_USERSPACE_EXITS=17
+# Ten launched test programs plus 64 retire-cohort children pinned by PT_COHORT_LITERAL;
+# re-pin consciously whenever either part changes.
+readonly EXPECTED_USERSPACE_EXITS=74
 
 cd "$BREENIX_ROOT"
 cargo build --release --features boot_tests,testing,external_test_bins --bin qemu-uefi
