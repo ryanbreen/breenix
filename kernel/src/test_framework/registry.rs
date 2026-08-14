@@ -2267,6 +2267,111 @@ fn test_arm64_net_softirq_registration() -> TestResult {
     TestResult::Pass
 }
 
+/// Prove that NetLockGuard masks the architecture's network re-entry source.
+fn net_lock_guard_masks_interrupt_source() -> TestResult {
+    #[cfg(target_arch = "x86_64")]
+    {
+        use crate::task::softirqd::{raise_softirq, register_softirq_handler, SoftirqType};
+        use core::sync::atomic::{AtomicU32, Ordering};
+
+        const SENTINEL: u32 = 0x4E45_544C;
+        static HANDLER_STATE: AtomicU32 = AtomicU32::new(0);
+
+        fn test_handler(_softirq: SoftirqType) {
+            HANDLER_STATE.store(SENTINEL, Ordering::SeqCst);
+        }
+
+        struct NetSoftirqHandlerRestore;
+
+        impl Drop for NetSoftirqHandlerRestore {
+            fn drop(&mut self) {
+                crate::net::register_net_softirq();
+            }
+        }
+
+        if !crate::per_cpu::is_initialized() {
+            return TestResult::Fail("per-CPU state is not initialized");
+        }
+        if crate::per_cpu::in_interrupt() {
+            return TestResult::Fail("net lock guard test started in interrupt context");
+        }
+
+        let initial_preempt_count = crate::per_cpu::preempt_count();
+        let net_rx_bit = 1u32 << SoftirqType::NetRx.as_nr();
+        let guard = crate::net::net_lock_guard();
+        if !crate::per_cpu::in_softirq() {
+            return TestResult::Fail("NetLockGuard did not enter bottom-half exclusion");
+        }
+
+        let _handler_restore = NetSoftirqHandlerRestore;
+        HANDLER_STATE.store(0, Ordering::SeqCst);
+        register_softirq_handler(SoftirqType::NetRx, test_handler);
+
+        raise_softirq(SoftirqType::NetRx);
+        if crate::task::softirqd::do_softirq() {
+            return TestResult::Fail("softirq dispatch ran while NetLockGuard was held");
+        }
+        if HANDLER_STATE.load(Ordering::SeqCst) != 0 {
+            return TestResult::Fail("NetRx handler ran while NetLockGuard was held");
+        }
+        if crate::per_cpu::softirq_pending() & net_rx_bit == 0 {
+            return TestResult::Fail("NetRx pending bit was lost while NetLockGuard was held");
+        }
+
+        drop(guard);
+        if initial_preempt_count != 0 {
+            crate::task::softirqd::do_softirq();
+        }
+
+        if HANDLER_STATE.load(Ordering::SeqCst) != SENTINEL {
+            return TestResult::Fail("deferred NetRx work was not serviced after guard drop");
+        }
+        if crate::per_cpu::softirq_pending() & net_rx_bit != 0 {
+            return TestResult::Fail("NetRx pending bit remained set after guard drop");
+        }
+        if crate::per_cpu::in_softirq() {
+            return TestResult::Fail("bottom-half exclusion remained active after guard drop");
+        }
+        if crate::per_cpu::preempt_count() != initial_preempt_count {
+            return TestResult::Fail("NetLockGuard did not restore the preempt count");
+        }
+
+        TestResult::Pass
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    {
+        const DAIF_I: u64 = 1 << 7;
+
+        #[inline(always)]
+        fn read_daif() -> u64 {
+            let daif: u64;
+            unsafe {
+                core::arch::asm!("mrs {}, daif", out(reg) daif, options(nomem, nostack));
+            }
+            daif
+        }
+
+        let before = read_daif();
+        if before & DAIF_I != 0 {
+            return TestResult::Fail("net lock guard test started with IRQs masked");
+        }
+
+        {
+            let _guard = crate::net::net_lock_guard();
+            if read_daif() & DAIF_I == 0 {
+                return TestResult::Fail("NetLockGuard did not set the DAIF I bit");
+            }
+        }
+
+        if read_daif() != before {
+            return TestResult::Fail("NetLockGuard did not restore the saved DAIF state");
+        }
+
+        TestResult::Pass
+    }
+}
+
 // =============================================================================
 // Exception/Interrupt Test Functions (Phase 4f)
 // =============================================================================
@@ -5206,6 +5311,7 @@ static FILESYSTEM_TESTS: &[TestDef] = &[
 /// - socket_creation: Test UDP socket creation and cleanup
 /// - tcp_socket_creation: Test TCP socket FdKind variants (ARM64 parity)
 /// - loopback: Test loopback packet path
+/// - net_lock_guard_masks_interrupt_source: Prove per-arch network exclusion
 static NETWORK_TESTS: &[TestDef] = &[
     TestDef {
         name: "network_stack_init",
@@ -5246,6 +5352,13 @@ static NETWORK_TESTS: &[TestDef] = &[
         name: "arm64_net_softirq_registration",
         func: test_arm64_net_softirq_registration,
         arch: Arch::Aarch64,
+        timeout_ms: 5000,
+        stage: TestStage::EarlyBoot,
+    },
+    TestDef {
+        name: "net_lock_guard_masks_interrupt_source",
+        func: net_lock_guard_masks_interrupt_source,
+        arch: Arch::Any,
         timeout_ms: 5000,
         stage: TestStage::EarlyBoot,
     },
