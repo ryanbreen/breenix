@@ -189,30 +189,31 @@ pub fn poll_fd(fd_entry: &FileDescriptor, events: i16) -> i16 {
         }
         FdKind::TcpConnection(conn_id) => {
             // Connected socket - check for data and connection state
-            let connections = crate::net::tcp::TCP_CONNECTIONS.lock();
-            if let Some(conn) = connections.get(conn_id) {
-                // Check for readable data
-                if (events & events::POLLIN) != 0 {
-                    if !conn.rx_buffer.is_empty() {
-                        revents |= events::POLLIN;
+            crate::net::tcp::with_tcp_connections(|connections| {
+                if let Some(conn) = connections.get(conn_id) {
+                    // Check for readable data
+                    if (events & events::POLLIN) != 0 {
+                        if !conn.rx_buffer.is_empty() {
+                            revents |= events::POLLIN;
+                        }
                     }
-                }
-                // Check for writable
-                if (events & events::POLLOUT) != 0 {
-                    if conn.state == crate::net::tcp::TcpState::Established {
-                        revents |= events::POLLOUT;
+                    // Check for writable
+                    if (events & events::POLLOUT) != 0 {
+                        if conn.state == crate::net::tcp::TcpState::Established {
+                            revents |= events::POLLOUT;
+                        }
                     }
+                    // Check for connection closed
+                    if conn.state == crate::net::tcp::TcpState::Closed
+                        || conn.state == crate::net::tcp::TcpState::CloseWait
+                    {
+                        revents |= events::POLLHUP;
+                    }
+                } else {
+                    // Connection not found - error
+                    revents |= events::POLLERR;
                 }
-                // Check for connection closed
-                if conn.state == crate::net::tcp::TcpState::Closed
-                    || conn.state == crate::net::tcp::TcpState::CloseWait
-                {
-                    revents |= events::POLLHUP;
-                }
-            } else {
-                // Connection not found - error
-                revents |= events::POLLERR;
-            }
+            });
         }
         FdKind::PtyMaster(pty_num) => {
             // PTY master - check slave_to_master buffer for readable data
