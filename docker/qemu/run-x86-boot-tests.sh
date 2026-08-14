@@ -4,6 +4,8 @@
 # advance_stage_marker_only
 # emits it unconditionally alongside [TESTS_COMPLETE:0/0]. The removed
 # KERNEL_POST_TESTS_COMPLETE marker is likewise never used as a gate.
+# The 900-second poll bound allows the x86 boot-test registry to run after the
+# userspace programs; a shorter bound scores a slow-but-healthy boot as failed.
 
 set -euo pipefail
 
@@ -56,7 +58,7 @@ for i in $(seq 1 "$COUNT"); do
     RUNNER_PID=$!
 
     passed=false
-    for _ in $(seq 1 300); do
+    for _ in $(seq 1 900); do
         if grep -q '\[TEST:process:frame_custody_refusal_gate:PASS\]' \
             "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
             && grep -qE "$FRAME_CUSTODY_PATTERN" \
@@ -73,12 +75,24 @@ for i in $(seq 1 "$COUNT"); do
                 "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
             && grep -qF -x "$PT_COHORT_LITERAL" \
                 "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
+            && grep -q '\[TEST:network:loopback_recv_wake_when_idle:PASS\]' \
+                "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
+            && grep -q '\[TEST:network:loopback_recv_wake_under_load:PASS\]' \
+                "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
+            && grep -q '\[TEST:network:loopback_pump_does_not_busy_spin:PASS\]' \
+                "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
+            && grep -q '\[TEST:network:loopback_wake_loss_counters_are_zero:PASS\]' \
+                "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
             && grep -q 'TEST_TALLY:' \
                 "$OUTPUT_DIR"/serial_*.txt 2>/dev/null; then
             passed=true
             break
         fi
         if grep -qE '\[BOOT_TESTS:FAIL|KERNEL PANIC|panic!' \
+            "$OUTPUT_DIR"/serial_*.txt 2>/dev/null; then
+            break
+        fi
+        if grep -qE '\[TEST:network:[^]]*:FAIL' \
             "$OUTPUT_DIR"/serial_*.txt 2>/dev/null; then
             break
         fi
@@ -102,6 +116,14 @@ for i in $(seq 1 "$COUNT"); do
         "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 1
     test "$(grep -h -c '\[TEST:process:x86_retire_cohort:PASS\]' \
         "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 1
+    test "$(grep -h -c '\[TEST:network:loopback_recv_wake_when_idle:PASS\]' \
+        "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 1
+    test "$(grep -h -c '\[TEST:network:loopback_recv_wake_under_load:PASS\]' \
+        "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 1
+    test "$(grep -h -c '\[TEST:network:loopback_pump_does_not_busy_spin:PASS\]' \
+        "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 1
+    test "$(grep -h -c '\[TEST:network:loopback_wake_loss_counters_are_zero:PASS\]' \
+        "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 1
     test "$(grep -h -c 'Refusing to map' \
         "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 1
     test "$(grep -h -E -c "$FRAME_CUSTODY_PATTERN" \
@@ -118,6 +140,10 @@ for i in $(seq 1 "$COUNT"); do
     echo "$PT_CUSTODY_LITERAL"
     echo "$PT_COHORT_LITERAL"
     if grep -qE '\[BOOT_TESTS:FAIL|KERNEL PANIC|panic!' \
+        "$OUTPUT_DIR"/serial_*.txt; then
+        exit 1
+    fi
+    if grep -qE '\[TEST:network:[^]]*:FAIL' \
         "$OUTPUT_DIR"/serial_*.txt; then
         exit 1
     fi
