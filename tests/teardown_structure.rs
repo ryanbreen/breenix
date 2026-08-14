@@ -4215,8 +4215,21 @@ fn v3_structural_closures_are_exact() {
     );
     check(
         &mut failures,
-        "record_exit was restored",
-        !process.contains("record_exit"),
+        "a process-local record_exit helper was restored",
+        !process.contains("fn record_exit"),
+    );
+    check(
+        &mut failures,
+        "process.rs gained a record_exit call outside the exit-tally seam",
+        process.matches("record_exit(").count()
+            == process
+                .matches("crate::task::exit_tally::record_exit(")
+                .count(),
+    );
+    check(
+        &mut failures,
+        "scheduler-side record_exit was restored",
+        !source(&sources, "kernel/src/task/process_task.rs").contains("record_exit("),
     );
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }

@@ -1263,6 +1263,14 @@ pub fn tcp_accept(local_port: u16) -> Option<ConnectionId> {
 pub fn tcp_send(conn_id: &ConnectionId, data: &[u8]) -> Result<usize, &'static str> {
     let config = super::config();
 
+    match with_tcp_connections(|connections| {
+        connections.get(conn_id).map(|conn| conn.send_shutdown)
+    }) {
+        None => return Err("Connection not found"),
+        Some(true) => return Err("Connection shutdown for writing"),
+        Some(false) => {}
+    }
+
     // Wait for the connection to reach Established state.
     // After accept(), the connection may still be in SynReceived if the
     // client's final ACK hasn't been processed yet. Block until the softirq

@@ -398,6 +398,11 @@ impl Process {
 
         self.state = ProcessState::Terminated(exit_code);
         self.exit_code = Some(exit_code);
+        // Record at the terminated-state transition so fault and signal deaths
+        // count too. The guard above makes this exactly once per process. This
+        // is safe under PROCESS_MANAGER: record_exit allocates/logs nothing and
+        // takes only its leaf spin mutex; that mutex never nests PROCESS_MANAGER.
+        crate::task::exit_tally::record_exit(&self.name, exit_code);
 
         // CRITICAL FIX: Mark the main thread as terminated so the scheduler
         // doesn't keep putting it back in the ready queue. The scheduler checks
@@ -422,6 +427,11 @@ impl Process {
         }
         self.state = ProcessState::Terminated(exit_code);
         self.exit_code = Some(exit_code);
+        // Record at the terminated-state transition so fault and signal deaths
+        // count too. The guard above makes this exactly once per process. This
+        // is safe under PROCESS_MANAGER: record_exit allocates/logs nothing and
+        // takes only its leaf spin mutex; that mutex never nests PROCESS_MANAGER.
+        crate::task::exit_tally::record_exit(&self.name, exit_code);
         if let Some(ref mut thread) = self.main_thread {
             thread.set_terminated();
         }
