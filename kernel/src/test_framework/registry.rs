@@ -2274,31 +2274,56 @@ fn setup_loopback_tcp_pair(
         }
     };
 
+    let deadline = crate::time::get_monotonic_time().saturating_add(1_000);
     let mut server = None;
-    for _ in 0..8 {
+    loop {
         crate::net::drain_loopback_queue();
-        if let Some(connection) = tcp::tcp_accept(listen_port) {
-            server = Some(connection);
+        if server.is_none() {
+            server = tcp::tcp_accept(listen_port);
+        }
+        if let Some(server_connection) = server.as_ref() {
+            if tcp::tcp_is_established(&client) && tcp::tcp_is_established(server_connection) {
+                return Ok((client, *server_connection));
+            }
+        }
+        if crate::time::get_monotonic_time() >= deadline {
             break;
         }
         crate::task::scheduler::yield_current();
         crate::arch_halt_with_interrupts();
     }
 
+    let client_state = tcp::tcp_get_state(&client);
+    let client_established = tcp::tcp_is_established(&client);
+    let server_state = server.as_ref().and_then(tcp::tcp_get_state);
+    let server_established = server.as_ref().is_some_and(tcp::tcp_is_established);
+    crate::serial_println!(
+        "loopback TCP setup timeout: client_state={:?} client_established={} server_state={:?} server_established={} listener_port={} pending_accept_depth={}",
+        client_state,
+        client_established,
+        server_state,
+        server_established,
+        listen_port,
+        tcp::tcp_pending_accept_depth(listen_port),
+    );
+
     let Some(server) = server else {
+        crate::net::dump_loopback_state();
+        crate::task::scheduler::dump_thread_placement(
+            crate::net::loopback_pump_tid(),
+            "kloopbackd",
+        );
         let _ = tcp::tcp_close(&client);
         tcp::tcp_listener_ref_dec(listen_port);
         return Err("tcp_accept failed during loopback setup");
     };
 
-    if !tcp::tcp_is_established(&client) || !tcp::tcp_is_established(&server) {
-        let _ = tcp::tcp_close(&client);
-        let _ = tcp::tcp_close(&server);
-        tcp::tcp_listener_ref_dec(listen_port);
-        return Err("loopback TCP handshake did not establish both peers");
-    }
-
-    Ok((client, server))
+    crate::net::dump_loopback_state();
+    crate::task::scheduler::dump_thread_placement(crate::net::loopback_pump_tid(), "kloopbackd");
+    let _ = tcp::tcp_close(&client);
+    let _ = tcp::tcp_close(&server);
+    tcp::tcp_listener_ref_dec(listen_port);
+    Err("loopback TCP handshake did not establish both peers")
 }
 
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering as AtomicOrdering};
@@ -2307,6 +2332,39 @@ static LOOPBACK_READER_TID: AtomicU64 = AtomicU64::new(0);
 static LOOPBACK_READER_WAKE_MS: AtomicU64 = AtomicU64::new(0);
 static LOOPBACK_READER_BYTES: AtomicU64 = AtomicU64::new(u64::MAX);
 static LOOPBACK_LOAD_STARTED: AtomicBool = AtomicBool::new(false);
+
+#[derive(Clone, Copy)]
+struct LoopbackWakeLossCounters {
+    tcp_wake_rejected: u64,
+    pump_wake_rejected: u64,
+    dropped_full: u64,
+    isr_buffer_full: u64,
+}
+
+impl LoopbackWakeLossCounters {
+    fn sample() -> Self {
+        Self {
+            tcp_wake_rejected: crate::net::tcp::tcp_wake_rejected(),
+            pump_wake_rejected: crate::net::loopback_pump_wake_rejected(),
+            dropped_full: crate::net::loopback_dropped_full(),
+            isr_buffer_full: crate::task::scheduler::isr_wakeup_buffer_full(),
+        }
+    }
+
+    fn increased_since(self, before: Self) -> Option<&'static str> {
+        if self.tcp_wake_rejected > before.tcp_wake_rejected {
+            Some("tcp_wake_rejected increased")
+        } else if self.pump_wake_rejected > before.pump_wake_rejected {
+            Some("loopback_pump_wake_rejected increased")
+        } else if self.dropped_full > before.dropped_full {
+            Some("loopback_dropped_full increased")
+        } else if self.isr_buffer_full > before.isr_buffer_full {
+            Some("isr_wakeup_buffer_full increased")
+        } else {
+            None
+        }
+    }
+}
 
 fn wait_for_thread_blocked(tid: u64, timeout_ms: u64) -> bool {
     use crate::task::thread::ThreadState;
@@ -2329,6 +2387,35 @@ fn wait_for_thread_blocked(tid: u64, timeout_ms: u64) -> bool {
 }
 
 fn run_loopback_recv_wake_test(listen_port: u16, client_port: u16, with_load: bool) -> TestResult {
+    let before = LoopbackWakeLossCounters::sample();
+    let result = run_loopback_recv_wake_test_inner(listen_port, client_port, with_load);
+    let after = LoopbackWakeLossCounters::sample();
+
+    if let Some(message) = after.increased_since(before) {
+        crate::net::dump_loopback_state();
+        crate::serial_println!(
+            "loopback recv wake loss: failure={} before=[tcp_rejected={} pump_rejected={} dropped_full={} isr_full={}] after=[tcp_rejected={} pump_rejected={} dropped_full={} isr_full={}]",
+            message,
+            before.tcp_wake_rejected,
+            before.pump_wake_rejected,
+            before.dropped_full,
+            before.isr_buffer_full,
+            after.tcp_wake_rejected,
+            after.pump_wake_rejected,
+            after.dropped_full,
+            after.isr_buffer_full,
+        );
+        return TestResult::Fail(message);
+    }
+
+    result
+}
+
+fn run_loopback_recv_wake_test_inner(
+    listen_port: u16,
+    client_port: u16,
+    with_load: bool,
+) -> TestResult {
     use crate::net::tcp;
     use crate::task::{kthread, scheduler};
     use crate::{arch_halt_with_interrupts, arch_without_interrupts as without_interrupts};
@@ -2524,10 +2611,14 @@ fn run_loopback_recv_wake_test(listen_port: u16, client_port: u16, with_load: bo
 
     if wake_ms == 0 {
         crate::net::dump_loopback_state();
-        log::error!(
-            "loopback recv wake diagnostic: classification={} tcp_wake_rejected={} reader_tid={} reader_state={:?}",
+        crate::task::scheduler::dump_thread_placement(reader_tid, "loopback-reader");
+        crate::serial_println!(
+            "loopback recv wake diagnostic: classification={} tcp_wake_rejected={} pump_wake_rejected={} dropped_full={} isr_buffer_full={} reader_tid={} reader_state={:?}",
             diagnostic_message,
             tcp::tcp_wake_rejected(),
+            crate::net::loopback_pump_wake_rejected(),
+            crate::net::loopback_dropped_full(),
+            crate::task::scheduler::isr_wakeup_buffer_full(),
             reader_tid,
             reader_state,
         );
@@ -2535,10 +2626,14 @@ fn run_loopback_recv_wake_test(listen_port: u16, client_port: u16, with_load: bo
     }
     if received != 3 {
         crate::net::dump_loopback_state();
-        log::error!(
-            "loopback recv wake diagnostic: classification={} tcp_wake_rejected={} reader_tid={} reader_state={:?}",
+        crate::task::scheduler::dump_thread_placement(reader_tid, "loopback-reader");
+        crate::serial_println!(
+            "loopback recv wake diagnostic: classification={} tcp_wake_rejected={} pump_wake_rejected={} dropped_full={} isr_buffer_full={} reader_tid={} reader_state={:?}",
             diagnostic_message,
             tcp::tcp_wake_rejected(),
+            crate::net::loopback_pump_wake_rejected(),
+            crate::net::loopback_dropped_full(),
+            crate::task::scheduler::isr_wakeup_buffer_full(),
             reader_tid,
             reader_state,
         );
@@ -2562,6 +2657,23 @@ fn loopback_pump_does_not_busy_spin() -> TestResult {
     let passes = crate::net::loopback_pump_passes().saturating_sub(before);
     if passes > 4 {
         return TestResult::Fail("kloopbackd ran more than four passes without traffic");
+    }
+    TestResult::Pass
+}
+
+fn loopback_wake_loss_counters_are_zero() -> TestResult {
+    let counters = LoopbackWakeLossCounters::sample();
+    if counters.tcp_wake_rejected != 0 {
+        return TestResult::Fail("tcp_wake_rejected is nonzero");
+    }
+    if counters.pump_wake_rejected != 0 {
+        return TestResult::Fail("loopback_pump_wake_rejected is nonzero");
+    }
+    if counters.dropped_full != 0 {
+        return TestResult::Fail("loopback_dropped_full is nonzero");
+    }
+    if counters.isr_buffer_full != 0 {
+        return TestResult::Fail("isr_wakeup_buffer_full is nonzero");
     }
     TestResult::Pass
 }
@@ -2638,12 +2750,24 @@ fn net_lock_guard_masks_interrupt_source() -> TestResult {
         if crate::per_cpu::in_interrupt() {
             return TestResult::Fail("net lock guard test started in interrupt context");
         }
+        if crate::per_cpu::in_softirq() {
+            return TestResult::Fail("net lock guard test started with bottom halves disabled");
+        }
+        if crate::per_cpu::in_serving_softirq() {
+            return TestResult::Fail("net lock guard test started while serving softirq");
+        }
 
         let initial_preempt_count = crate::per_cpu::preempt_count();
         let net_rx_bit = 1u32 << SoftirqType::NetRx.as_nr();
         let guard = crate::net::net_lock_guard();
         if !crate::per_cpu::in_softirq() {
             return TestResult::Fail("NetLockGuard did not enter bottom-half exclusion");
+        }
+        if crate::per_cpu::in_interrupt() {
+            return TestResult::Fail("NetLockGuard falsely entered interrupt execution context");
+        }
+        if crate::per_cpu::in_serving_softirq() {
+            return TestResult::Fail("NetLockGuard falsely entered softirq execution context");
         }
 
         let _handler_restore = NetSoftirqHandlerRestore;
@@ -2674,6 +2798,12 @@ fn net_lock_guard_masks_interrupt_source() -> TestResult {
         }
         if crate::per_cpu::in_softirq() {
             return TestResult::Fail("bottom-half exclusion remained active after guard drop");
+        }
+        if crate::per_cpu::in_interrupt() {
+            return TestResult::Fail("interrupt execution context remained after guard drop");
+        }
+        if crate::per_cpu::in_serving_softirq() {
+            return TestResult::Fail("softirq execution context remained after guard drop");
         }
         if crate::per_cpu::preempt_count() != initial_preempt_count {
             return TestResult::Fail("NetLockGuard did not restore the preempt count");
@@ -3092,6 +3222,31 @@ fn test_scheduler_init() -> TestResult {
         }
         None => TestResult::Fail("scheduler not initialized or no current thread"),
     }
+}
+
+/// Verify that scheduler placement never strands a ready thread on an offline CPU.
+fn test_wakes_are_placed_on_online_cpus() -> TestResult {
+    use crate::task::scheduler;
+
+    if scheduler::enqueue_offline_reclaimed() != 0 {
+        return TestResult::Fail("scheduler reclaimed a thread from an offline CPU ready queue");
+    }
+
+    let Some((cpu, _occupancy)) = scheduler::offline_queue_occupancy() else {
+        return TestResult::Pass;
+    };
+
+    TestResult::Fail(match cpu {
+        0 => "thread parked in offline scheduler ready queue 0",
+        1 => "thread parked in offline scheduler ready queue 1",
+        2 => "thread parked in offline scheduler ready queue 2",
+        3 => "thread parked in offline scheduler ready queue 3",
+        4 => "thread parked in offline scheduler ready queue 4",
+        5 => "thread parked in offline scheduler ready queue 5",
+        6 => "thread parked in offline scheduler ready queue 6",
+        7 => "thread parked in offline scheduler ready queue 7",
+        _ => "thread parked in an out-of-range offline scheduler ready queue",
+    })
 }
 
 /// Test kernel thread creation.
@@ -5654,6 +5809,7 @@ static FILESYSTEM_TESTS: &[TestDef] = &[
 /// - socket_creation: Test UDP socket creation and cleanup
 /// - tcp_socket_creation: Test TCP socket FdKind variants (ARM64 parity)
 /// - loopback: Test loopback packet path
+/// - loopback_wake_loss_counters_are_zero: Assert no wake or queue loss was recorded
 /// - loopback_recv_wake_when_idle: Verify blocked TCP recv wakes with only idle runnable
 /// - loopback_recv_wake_under_load: Verify the pump delivers while idle never runs
 /// - loopback_pump_does_not_busy_spin: Verify an empty pump blocks instead of polling
@@ -5692,6 +5848,13 @@ static NETWORK_TESTS: &[TestDef] = &[
         func: test_loopback,
         arch: Arch::Any,
         timeout_ms: 10000,
+        stage: TestStage::EarlyBoot,
+    },
+    TestDef {
+        name: "loopback_wake_loss_counters_are_zero",
+        func: loopback_wake_loss_counters_are_zero,
+        arch: Arch::Any,
+        timeout_ms: 5000,
         stage: TestStage::EarlyBoot,
     },
     TestDef {
@@ -6066,6 +6229,13 @@ static SYSCALL_TESTS: &[TestDef] = &[
 /// - kthread_spawn_verify: Verify kthread spawning works
 /// - workqueue_operational: Verify workqueue is operational
 static SCHEDULER_TESTS: &[TestDef] = &[
+    TestDef {
+        name: "wakes_are_placed_on_online_cpus",
+        func: test_wakes_are_placed_on_online_cpus,
+        arch: Arch::Any,
+        timeout_ms: 2000,
+        stage: TestStage::EarlyBoot,
+    },
     TestDef {
         name: "executor_exists",
         func: test_executor_exists,
