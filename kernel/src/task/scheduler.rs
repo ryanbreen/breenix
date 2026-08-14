@@ -154,7 +154,6 @@ impl IsrWakeupBuffer {
     }
 
     /// Count pending entries without modifying the buffer.
-    #[cfg(target_arch = "aarch64")]
     fn depth(&self) -> usize {
         self.slots
             .iter()
@@ -273,8 +272,7 @@ pub fn emit_wake_attribution_counters() {
 static SCHEDULER: Mutex<Option<Scheduler>> = Mutex::new(None);
 
 #[cfg(all(target_arch = "aarch64", feature = "boot_tests"))]
-static BOOT_TEST_CPU_AFFINITY: [AtomicU64; MAX_CPUS] =
-    [const { AtomicU64::new(0) }; MAX_CPUS];
+static BOOT_TEST_CPU_AFFINITY: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(0) }; MAX_CPUS];
 
 #[inline(always)]
 fn lock_scheduler() -> spin::MutexGuard<'static, Option<Scheduler>> {
@@ -616,8 +614,7 @@ pub(crate) const MAX_CPUS: usize = 1;
 /// in flight on the retiring stack. Requiring a second bump proves that CPU
 /// entered the scheduler through a later exception, which can only happen
 /// after the in-flight exception return and its old-stack restore completed.
-static SCHEDULING_EPOCHS: [AtomicU64; MAX_CPUS] =
-    [const { AtomicU64::new(0) }; MAX_CPUS];
+static SCHEDULING_EPOCHS: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(0) }; MAX_CPUS];
 
 #[cfg(target_arch = "aarch64")]
 #[derive(Clone, Copy)]
@@ -860,12 +857,7 @@ fn install_ec0_fault_inject_thread(scheduler: &mut Scheduler) {
 /// Record a cpu_state change for diagnostics (circular buffer).
 #[cfg(target_arch = "aarch64")]
 #[inline(never)]
-pub(crate) fn record_cpu_state_change(
-    cpu: usize,
-    setter_id: u64,
-    old_val: u64,
-    new_val: u64,
-) {
+pub(crate) fn record_cpu_state_change(cpu: usize, setter_id: u64, old_val: u64, new_val: u64) {
     if cpu < MAX_CPUS {
         let idx =
             CPU_STATE_HISTORY_IDX[cpu].fetch_add(1, core::sync::atomic::Ordering::Relaxed) as usize;
@@ -1165,9 +1157,7 @@ impl Scheduler {
             }
             if thread
                 .kernel_stack_top
-                .map(|top| {
-                    crate::memory::kernel_stack::is_kernel_stack_slot_live(top.as_u64())
-                })
+                .map(|top| crate::memory::kernel_stack::is_kernel_stack_slot_live(top.as_u64()))
                 .unwrap_or(false)
             {
                 return true;
@@ -1981,10 +1971,11 @@ impl Scheduler {
     }
 
     /// Unblock a thread by ID
-    pub fn unblock(&mut self, thread_id: u64) {
+    pub fn unblock(&mut self, thread_id: u64) -> bool {
         // Increment the call counter for testing (tracks that unblock was called)
         UNBLOCK_CALL_COUNT.fetch_add(1, Ordering::SeqCst);
 
+        let mut transitioned = false;
         if let Some(thread) = self.get_thread_mut(thread_id) {
             if thread.state == ThreadState::Blocked
                 || thread.state == ThreadState::BlockedOnSignal
@@ -1992,6 +1983,7 @@ impl Scheduler {
                 || thread.state == ThreadState::BlockedOnIO
             {
                 thread.set_ready();
+                transitioned = true;
                 WAKE_SITE_UNBLOCK.fetch_add(1, Ordering::Relaxed);
                 record_ready_site(thread_id, READY_SITE_UNBLOCK);
                 // blocked_in_syscall does not record blocked-ness (ThreadState does); it
@@ -2059,6 +2051,8 @@ impl Scheduler {
                 }
             }
         }
+
+        transitioned
     }
 
     #[cfg(target_arch = "aarch64")]
@@ -2885,9 +2879,7 @@ impl Scheduler {
     pub fn terminate_process_threads(&mut self, owner_pid: u64) {
         crate::tracing::providers::teardown::record_quarantine(owner_pid);
         if crate::process::process_manager_held_on_current_cpu() {
-            crate::trace_count!(
-                crate::tracing::providers::teardown::TEARDOWN_LOCK_ORDER_SUSPECT
-            );
+            crate::trace_count!(crate::tracing::providers::teardown::TEARDOWN_LOCK_ORDER_SUSPECT);
         }
         // Preserve one scheduler-visible quarantine token per victim thread. A
         // peer can take SCHEDULER in the intentional gap before EXIT_KICK is
@@ -2903,7 +2895,11 @@ impl Scheduler {
                 thread.set_terminated();
                 thread.id()
             };
-            if !self.per_cpu_queues.iter().any(|queue| queue.contains(&thread_id)) {
+            if !self
+                .per_cpu_queues
+                .iter()
+                .any(|queue| queue.contains(&thread_id))
+            {
                 // A quarantine pass may not allocate while SCHEDULER is held.
                 // A running thread was previously popped from a queue, so the
                 // normal path has retained capacity for this token. If every
@@ -3011,13 +3007,11 @@ impl Scheduler {
     where
         F: FnMut(u64) -> bool,
     {
-        self.threads
-            .iter()
-            .any(|thread| {
-                thread.state != ThreadState::Terminated
-                    && thread.cached_ttbr0 != 0
-                    && root_matches(thread.cached_ttbr0)
-            })
+        self.threads.iter().any(|thread| {
+            thread.state != ThreadState::Terminated
+                && thread.cached_ttbr0 != 0
+                && root_matches(thread.cached_ttbr0)
+        })
     }
 
     /// Check if a thread is in the deferred requeue state on any CPU.
@@ -3395,8 +3389,7 @@ where
     }
     without_interrupts(|| {
         let mut scheduler_lock = lock_scheduler();
-        let _scheduler_scope =
-            crate::tracing::providers::teardown::SchedulerScope::enter();
+        let _scheduler_scope = crate::tracing::providers::teardown::SchedulerScope::enter();
         #[cfg(target_arch = "aarch64")]
         {
             use crate::arch_impl::aarch64::timer_interrupt::CPU0_BREADCRUMB_ID;
@@ -3649,12 +3642,58 @@ pub fn is_need_resched() -> bool {
 ///
 /// This is diagnostic-only and lock-free; it reads the wake buffer atomically
 /// without draining it.
-#[cfg(target_arch = "aarch64")]
 pub fn isr_wakeup_depth(cpu: usize) -> usize {
     if cpu < ISR_WAKEUP_BUFFERS.len() {
         ISR_WAKEUP_BUFFERS[cpu].depth()
     } else {
         0
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WakeOutcome {
+    /// State transition applied inline under the scheduler lock.
+    Applied,
+    /// Buffered lock-free into the per-CPU ISR wakeup buffer; the next schedule() applies it.
+    Buffered,
+    /// Not accepted. The caller MUST keep the waiter registered and retry.
+    Rejected,
+}
+
+/// Wake `tid` from any context.
+pub fn wake_thread_any_context(tid: u64) -> WakeOutcome {
+    if crate::per_cpu::is_initialized() && crate::per_cpu::in_interrupt() {
+        let buffered = push_isr_wakeup(tid);
+        set_need_resched();
+        if buffered {
+            WakeOutcome::Buffered
+        } else {
+            WakeOutcome::Rejected
+        }
+    } else {
+        match with_scheduler(|scheduler| scheduler.unblock(tid)) {
+            Some(true) => {
+                set_need_resched();
+                WakeOutcome::Applied
+            }
+            Some(false) | None => WakeOutcome::Rejected,
+        }
+    }
+}
+
+fn push_isr_wakeup(tid: u64) -> bool {
+    let cpu = current_cpu_id_raw();
+    if cpu >= ISR_WAKEUP_BUFFERS.len() {
+        return false;
+    }
+
+    WAKE_SITE_ISR_UNBLOCK.fetch_add(1, Ordering::Relaxed);
+    if ISR_WAKEUP_BUFFERS[cpu].push(tid) {
+        ENQUEUE_ISR_BUFFER.fetch_add(1, Ordering::Relaxed);
+        true
+    } else {
+        ENQUEUE_ISR_BUFFER_FULL.fetch_add(1, Ordering::Relaxed);
+        false
     }
 }
 
@@ -3669,15 +3708,7 @@ pub fn isr_wakeup_depth(cpu: usize) -> usize {
 /// The scheduler drains the buffer under its own lock at the top of every
 /// `schedule_deferred_requeue()` / `schedule()` call.
 pub fn isr_unblock_for_io(tid: u64) {
-    let cpu = current_cpu_id_raw();
-    if cpu < ISR_WAKEUP_BUFFERS.len() {
-        WAKE_SITE_ISR_UNBLOCK.fetch_add(1, Ordering::Relaxed);
-        if ISR_WAKEUP_BUFFERS[cpu].push(tid) {
-            ENQUEUE_ISR_BUFFER.fetch_add(1, Ordering::Relaxed);
-        } else {
-            ENQUEUE_ISR_BUFFER_FULL.fetch_add(1, Ordering::Relaxed);
-        }
-    }
+    push_isr_wakeup(tid);
     set_need_resched();
     // The current CPU will drain the wake buffer on IRQ-return scheduling.
     // Avoid broadcasting reschedule SGIs from hard IRQ context; Linux's TTWU
