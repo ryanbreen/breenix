@@ -13,6 +13,8 @@ BREENIX_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 FRAME_CUSTODY_PATTERN='^\[FRAME_CUSTODY_COUNTERS:x86:double=1:stale=1:never=1:untracked=1:duplicate=3:contended=[1-9][0-9]*\]$'
 PT_CUSTODY_LITERAL='[PT_CUSTODY_COUNTERS:x86:recorded=11:no_proof=0:no_arch=0:terminated=1:undecided=1:exec_unreturned=0:retired=1:returned=10:lost=0:requeued=0]'
 PT_COHORT_LITERAL='[PT_RETIRE_COHORT:x86:children=64:retired=64:returned=640:recorded=576:lost=0:no_arch=0:undecided=0:mid_retire=0:balance=0]'
+# Re-pin consciously whenever this profile's launched test-program set changes.
+readonly EXPECTED_USERSPACE_EXITS=17
 
 cd "$BREENIX_ROOT"
 cargo build --release --features boot_tests,testing,external_test_bins --bin qemu-uefi
@@ -103,7 +105,8 @@ for i in $(seq 1 "$COUNT"); do
         "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 1
     test "$(grep -h -F -x -c "$PT_COHORT_LITERAL" \
         "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 1
-    "$BREENIX_ROOT/scripts/x86-gate-verdict.sh" "$OUTPUT_DIR"/serial_*.txt
+    EXPECTED_EXITS="$EXPECTED_USERSPACE_EXITS" \
+        "$BREENIX_ROOT/scripts/x86-gate-verdict.sh" "$OUTPUT_DIR"/serial_*.txt
     COUNTER_LINE=$(grep -hE "$FRAME_CUSTODY_PATTERN" \
         "$OUTPUT_DIR"/serial_*.txt | tail -1)
     echo "$COUNTER_LINE"

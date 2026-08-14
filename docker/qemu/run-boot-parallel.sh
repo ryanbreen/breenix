@@ -7,6 +7,8 @@ set -e
 COUNT=${1:-5}
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BREENIX_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+# Re-pin consciously whenever this profile's launched test-program set changes.
+readonly EXPECTED_USERSPACE_EXITS=10
 
 # Find the full boot image
 UEFI_IMG=$(ls -t "$BREENIX_ROOT/target/release/build/breenix-"*/out/breenix-uefi.img 2>/dev/null | head -1)
@@ -51,16 +53,12 @@ for i in $(seq 1 $COUNT); do
     echo "  Started test $i"
 done
 
-# Wait for all to complete - look for kthread markers (they run early in boot),
-# then require proof that userspace actually executed (RING3_SMOKE), not just
-# the early kthread markers. See #498 post-merge review: this gate historically
-# declared PASS before userspace ever ran.
+# Wait for all to complete: retain the early kthread subsystem checks, then wait
+# for the userspace TEST_TALLY and require the computed x86 gate verdict. This
+# proves the full pinned test-program cohort ran and exited successfully.
 echo "Waiting for kthread tests to complete (120s timeout)..."
 PASSED=0
 FAILED=0
-# Emitted via raw_serial_str() on COM1 (kernel/src/interrupts/context_switch.rs)
-# on the FIRST entry to userspace, so it lands in serial_user.txt.
-USERSPACE_MARKER="RING3_SMOKE: userspace executed + syscall path verified"
 
 for i in $(seq 1 $COUNT); do
     OUTPUT_DIR="/tmp/breenix_boot_$i"
@@ -78,23 +76,27 @@ for i in $(seq 1 $COUNT); do
     if $FOUND; then
         # Check if kthread tests actually passed
         if grep -q "KTHREAD_EXIT: kthread exited cleanly" "$OUTPUT_DIR/serial_kernel.txt" 2>/dev/null; then
-            # Kthread markers alone don't prove userspace ever ran - wait for
-            # the RING3_SMOKE marker emitted on first entry to Ring 3.
-            USERSPACE_FOUND=false
+            # Kthread markers alone don't prove the userspace cohort completed.
+            # Wait for its tally before asking the verdict script to evaluate it.
             for j in $(seq 1 90); do
-                if grep -q "$USERSPACE_MARKER" "$OUTPUT_DIR/serial_user.txt" 2>/dev/null; then
-                    USERSPACE_FOUND=true
+                if grep -q "TEST_TALLY:" "$OUTPUT_DIR/serial_kernel.txt" 2>/dev/null; then
                     break
                 fi
                 sleep 1
             done
 
-            if $USERSPACE_FOUND; then
+            if VERDICT_OUTPUT="$(
+                EXPECTED_EXITS="$EXPECTED_USERSPACE_EXITS" \
+                    "$BREENIX_ROOT/scripts/x86-gate-verdict.sh" \
+                    "$OUTPUT_DIR/serial_kernel.txt" "$OUTPUT_DIR/serial_user.txt" 2>&1
+            )"; then
                 echo "  Test $i: PASS"
+                echo "    $VERDICT_OUTPUT"
                 PASSED=$((PASSED + 1))
             else
-                echo "  Test $i: FAIL (userspace never executed - RING3_SMOKE marker not found)"
-                tail -10 "$OUTPUT_DIR/serial_user.txt" 2>/dev/null || echo "    (no output)"
+                echo "  Test $i: FAIL (x86 userspace verdict rejected the run)"
+                echo "    $VERDICT_OUTPUT"
+                tail -10 "$OUTPUT_DIR/serial_kernel.txt" 2>/dev/null || echo "    (no output)"
                 FAILED=$((FAILED + 1))
             fi
         else

@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# Validate an x86 userspace run. The caller must set EXPECTED_EXITS to the
+# expected number of userspace process exits for the selected boot profile.
 
 set -euo pipefail
 
@@ -11,8 +13,13 @@ fail() {
 }
 
 if [[ $# -eq 0 ]]; then
-    fail "usage: $0 <serial-log> [<serial-log> ...]"
+    fail "usage: EXPECTED_EXITS=<count> $0 <serial-log> [<serial-log> ...]"
 fi
+
+if [[ ! "${EXPECTED_EXITS:-}" =~ ^[0-9]+$ ]] || (( 10#$EXPECTED_EXITS < 1 )); then
+    fail "EXPECTED_EXITS must be set to the expected number of userspace process exits for this profile"
+fi
+expected_exits=$((10#$EXPECTED_EXITS))
 
 for serial_log in "$@"; do
     [[ -r "$serial_log" ]] || fail "serial log is not readable: $serial_log"
@@ -39,6 +46,8 @@ IFS='|' read -r exited_text nonzero_text failed_field <<< "$parsed_tally"
 exited=$((10#$exited_text))
 nonzero=$((10#$nonzero_text))
 (( nonzero <= exited )) || fail "tally reports nonzero=$nonzero greater than exited=$exited"
+(( exited >= expected_exits )) \
+    || fail "tally reports exited=$exited below the expected floor EXPECTED_EXITS=$expected_exits; a test program never ran or never exited"
 
 pass_marker=false
 failure_marker=false
@@ -131,4 +140,4 @@ for ((allowlist_index = 0; allowlist_index < allowlist_count; allowlist_index++)
     $found || fail "allowlisted process is no longer failing; remove its entry: $allowlist_name"
 done
 
-echo "x86 userspace gate: PASS - exited=$exited nonzero=$nonzero allowlist=$allowlist_count"
+echo "x86 userspace gate: PASS - exited=$exited expected>=$expected_exits nonzero=$nonzero allowlist=$allowlist_count"

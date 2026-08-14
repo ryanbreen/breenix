@@ -731,7 +731,6 @@ impl ProcessScheduler {
                         retirement_receipt,
                         report_claimed,
                         reported_exit_code,
-                        already_terminated,
                     ))
                 } else {
                     None
@@ -750,7 +749,6 @@ impl ProcessScheduler {
             retirement_receipt,
             report_claimed,
             reported_exit_code,
-            already_terminated,
         )) = phase1_result
         {
             if let Some(mut receipt) = retirement_receipt {
@@ -793,10 +791,6 @@ impl ProcessScheduler {
                             .complete_report(completing_claimer);
                     }
                 });
-            }
-
-            if !already_terminated {
-                crate::task::exit_tally::record_exit(&process_name, exit_code);
             }
 
             log::debug!(
