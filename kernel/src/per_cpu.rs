@@ -435,8 +435,7 @@ pub fn set_need_resched(need: bool) {
     }
 }
 
-/// Check if we're in any interrupt context (hardware IRQ, softirq, or NMI)
-/// Returns true if any interrupt nesting level is non-zero
+/// Check if we're executing a hardware IRQ, NMI, or softirq.
 pub fn in_interrupt() -> bool {
     // Use HAL for interrupt context check
 
@@ -454,6 +453,16 @@ pub fn in_hardirq() -> bool {
 pub fn in_softirq() -> bool {
     // Use HAL for softirq context check
     hal_percpu::X86PerCpu::in_softirq()
+}
+
+/// Check if we're executing a softirq rather than merely disabling bottom halves.
+pub fn in_serving_softirq() -> bool {
+    hal_percpu::X86PerCpu::in_serving_softirq()
+}
+
+/// Return the complete softirq field, including bottom-half disable nesting.
+pub fn softirq_count() -> u32 {
+    hal_percpu::X86PerCpu::softirq_count()
 }
 
 /// Check if we're in NMI context
@@ -582,6 +591,35 @@ pub fn softirq_enter() {
     }
 }
 
+/// Disable bottom-half execution without entering softirq execution context.
+pub fn bh_disable() {
+    debug_assert!(
+        PER_CPU_INITIALIZED.load(Ordering::Acquire),
+        "bh_disable called before per-CPU initialization"
+    );
+    hal_percpu::X86PerCpu::bh_disable();
+}
+
+/// Re-enable bottom-half execution.
+pub fn bh_enable() {
+    debug_assert!(
+        PER_CPU_INITIALIZED.load(Ordering::Acquire),
+        "bh_enable called before per-CPU initialization"
+    );
+
+    #[cfg(debug_assertions)]
+    {
+        let count_before = hal_percpu::X86PerCpu::preempt_count();
+        debug_assert!(
+            (count_before & SOFTIRQ_MASK) >= 2 * SOFTIRQ_OFFSET,
+            "bh_enable called but bottom halves are not disabled (preempt_count={:#x})",
+            count_before
+        );
+    }
+
+    hal_percpu::X86PerCpu::bh_enable();
+}
+
 /// Exit softirq context
 pub fn softirq_exit() {
     debug_assert!(
@@ -594,7 +632,7 @@ pub fn softirq_exit() {
     {
         let count_before = hal_percpu::X86PerCpu::preempt_count();
         debug_assert!(
-            (count_before & SOFTIRQ_MASK) != 0,
+            (count_before & SOFTIRQ_OFFSET) != 0,
             "softirq_exit called but SOFTIRQ count is already 0 (preempt_count={:#x})",
             count_before
         );
@@ -812,8 +850,8 @@ pub fn clear_softirq(nr: u32) {
 /// Delegates to the softirqd subsystem if initialized, otherwise uses a
 /// basic fallback that just clears pending bits.
 pub fn do_softirq() {
-    // Don't process softirqs if we're in interrupt context (nested)
-    if in_interrupt() {
+    // Don't process softirqs from nested execution or while bottom halves are disabled.
+    if in_interrupt() || in_softirq() {
         return;
     }
 

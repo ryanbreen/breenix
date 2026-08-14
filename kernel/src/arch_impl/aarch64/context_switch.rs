@@ -3009,10 +3009,10 @@ fn reset_idle_continuation_locked(
     // HARDIRQ bit blocks scheduler entry until then. Keep this helper outside
     // every IRQ dispatch so it cannot strand a split-EOI deactivation.
     debug_assert!(
-        !crate::per_cpu_aarch64::in_interrupt(),
+        !(crate::per_cpu_aarch64::in_interrupt() || crate::per_cpu_aarch64::in_softirq()),
         "idle continuation reset while GIC deactivation may be pending"
     );
-    if crate::per_cpu_aarch64::in_interrupt() {
+    if crate::per_cpu_aarch64::in_interrupt() || crate::per_cpu_aarch64::in_softirq() {
         return;
     }
 

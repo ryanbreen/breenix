@@ -168,7 +168,7 @@ pub fn softirq_pending(softirq: SoftirqType) -> bool {
 /// Returns true if softirqs were processed, false if deferred to ksoftirqd
 pub fn do_softirq() -> bool {
     // Don't process softirqs if we're in interrupt context (nested)
-    if per_cpu::in_interrupt() {
+    if per_cpu::in_interrupt() || per_cpu::in_softirq() {
         return false;
     }
 

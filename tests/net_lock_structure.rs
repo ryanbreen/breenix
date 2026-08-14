@@ -621,8 +621,11 @@ fn validate_x86_bottom_half_guard(source: &str) -> Result<(), String> {
         return Err("x86_64 net_lock_guard acquire arm is a no-op".to_string());
     }
     let acquire_mask = code_mask(acquire_x86);
-    if identifier_offsets(acquire_x86, &acquire_mask, "softirq_enter").is_empty() {
-        return Err("x86_64 net_lock_guard acquire arm does not call softirq_enter".to_string());
+    if identifier_offsets(acquire_x86, &acquire_mask, "bh_disable").is_empty() {
+        return Err("x86_64 net_lock_guard acquire arm does not call bh_disable".to_string());
+    }
+    if !identifier_offsets(acquire_x86, &acquire_mask, "softirq_enter").is_empty() {
+        return Err("x86_64 net_lock_guard acquire arm enters softirq execution".to_string());
     }
 
     let drop = net_lock_guard_drop_body(source)?;
@@ -632,8 +635,11 @@ fn validate_x86_bottom_half_guard(source: &str) -> Result<(), String> {
         return Err("x86_64 NetLockGuard::drop arm is a no-op".to_string());
     }
     let drop_mask = code_mask(drop_x86);
-    if identifier_offsets(drop_x86, &drop_mask, "softirq_exit").is_empty() {
-        return Err("x86_64 NetLockGuard::drop arm does not call softirq_exit".to_string());
+    if identifier_offsets(drop_x86, &drop_mask, "bh_enable").is_empty() {
+        return Err("x86_64 NetLockGuard::drop arm does not call bh_enable".to_string());
+    }
+    if !identifier_offsets(drop_x86, &drop_mask, "softirq_exit").is_empty() {
+        return Err("x86_64 NetLockGuard::drop arm exits softirq execution".to_string());
     }
 
     Ok(())

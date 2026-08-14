@@ -200,6 +200,13 @@ pub const PREEMPT_MASK: u32 = 0xFF;
 /// Mask for SOFTIRQ field.
 pub const SOFTIRQ_MASK: u32 = 0xFF << SOFTIRQ_SHIFT;
 
+/// One softirq-execution nesting level. The low bit distinguishes execution
+/// from bottom-half disable nesting.
+pub const SOFTIRQ_OFFSET: u32 = 1 << SOFTIRQ_SHIFT;
+
+/// One bottom-half disable nesting level.
+pub const SOFTIRQ_DISABLE_OFFSET: u32 = 2 * SOFTIRQ_OFFSET;
+
 /// Mask for HARDIRQ field.
 pub const HARDIRQ_MASK: u32 = 0x3FF << HARDIRQ_SHIFT;
 

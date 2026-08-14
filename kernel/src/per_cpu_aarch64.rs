@@ -151,19 +151,15 @@ pub fn eret_guard_record(cpu_id: usize) -> Option<(u64, u64, u64)> {
     }
 
     let cpu_data = unsafe { &raw const ALL_CPU_DATA[cpu_id] };
-    let source = unsafe {
-        core::ptr::read_volatile(core::ptr::addr_of!((*cpu_data).eret_guard_source))
-    };
+    let source =
+        unsafe { core::ptr::read_volatile(core::ptr::addr_of!((*cpu_data).eret_guard_source)) };
     if source == 0 {
         return None;
     }
     core::sync::atomic::fence(Ordering::Acquire);
-    let elr = unsafe {
-        core::ptr::read_volatile(core::ptr::addr_of!((*cpu_data).eret_guard_elr))
-    };
-    let spsr = unsafe {
-        core::ptr::read_volatile(core::ptr::addr_of!((*cpu_data).eret_guard_spsr))
-    };
+    let elr = unsafe { core::ptr::read_volatile(core::ptr::addr_of!((*cpu_data).eret_guard_elr)) };
+    let spsr =
+        unsafe { core::ptr::read_volatile(core::ptr::addr_of!((*cpu_data).eret_guard_spsr)) };
     Some((source, elr, spsr))
 }
 
@@ -178,12 +174,10 @@ pub fn live_stack_snapshot(cpu_id: usize) -> Option<(u64, u64)> {
     }
 
     let cpu_data = unsafe { &raw const ALL_CPU_DATA[cpu_id] };
-    let kernel_stack_top = unsafe {
-        core::ptr::read_volatile(core::ptr::addr_of!((*cpu_data).kernel_stack_top))
-    };
-    let user_rsp_scratch = unsafe {
-        core::ptr::read_volatile(core::ptr::addr_of!((*cpu_data).user_sp_scratch))
-    };
+    let kernel_stack_top =
+        unsafe { core::ptr::read_volatile(core::ptr::addr_of!((*cpu_data).kernel_stack_top)) };
+    let user_rsp_scratch =
+        unsafe { core::ptr::read_volatile(core::ptr::addr_of!((*cpu_data).user_sp_scratch)) };
     Some((kernel_stack_top, user_rsp_scratch))
 }
 
@@ -199,9 +193,8 @@ pub fn ttbr0_shadow_snapshot(cpu_id: usize) -> Option<(u64, u64)> {
     }
 
     let cpu_data = unsafe { &raw const ALL_CPU_DATA[cpu_id] };
-    let saved_process_ttbr0 = unsafe {
-        core::ptr::read_volatile(core::ptr::addr_of!((*cpu_data).saved_process_ttbr0))
-    };
+    let saved_process_ttbr0 =
+        unsafe { core::ptr::read_volatile(core::ptr::addr_of!((*cpu_data).saved_process_ttbr0)) };
     let next_ttbr0 =
         unsafe { core::ptr::read_volatile(core::ptr::addr_of!((*cpu_data).next_ttbr0)) };
     Some((saved_process_ttbr0, next_ttbr0))
@@ -329,6 +322,18 @@ pub fn need_resched() -> bool {
     }
 }
 
+/// Read another CPU's reschedule flag for scheduler diagnostics.
+pub(crate) fn need_resched_for_cpu(cpu_id: usize) -> bool {
+    if cpu_id >= crate::arch_impl::aarch64::constants::MAX_CPUS
+        || !PER_CPU_INITIALIZED.load(Ordering::Acquire)
+    {
+        return false;
+    }
+
+    let cpu_data = unsafe { &raw const ALL_CPU_DATA[cpu_id] };
+    unsafe { core::ptr::read_volatile(core::ptr::addr_of!((*cpu_data).need_resched)) != 0 }
+}
+
 /// Set the reschedule needed flag
 pub fn set_need_resched(need: bool) {
     if PER_CPU_INITIALIZED.load(Ordering::Acquire) {
@@ -338,7 +343,7 @@ pub fn set_need_resched(need: bool) {
     }
 }
 
-/// Check if we're in any interrupt context
+/// Check if we're executing a hardware IRQ, NMI/FIQ, or softirq.
 pub fn in_interrupt() -> bool {
     hal_percpu::Aarch64PerCpu::in_interrupt()
 }
@@ -351,6 +356,16 @@ pub fn in_hardirq() -> bool {
 /// Check if we're in softirq context
 pub fn in_softirq() -> bool {
     hal_percpu::Aarch64PerCpu::in_softirq()
+}
+
+/// Check if we're executing a softirq rather than merely disabling bottom halves.
+pub fn in_serving_softirq() -> bool {
+    hal_percpu::Aarch64PerCpu::in_serving_softirq()
+}
+
+/// Return the complete softirq field, including bottom-half disable nesting.
+pub fn softirq_count() -> u32 {
+    hal_percpu::Aarch64PerCpu::softirq_count()
 }
 
 /// Check if we're in NMI/FIQ context
@@ -411,6 +426,24 @@ pub fn softirq_enter() {
     unsafe {
         hal_percpu::Aarch64PerCpu::softirq_enter();
     }
+}
+
+/// Disable bottom-half execution without entering softirq execution context.
+pub fn bh_disable() {
+    debug_assert!(
+        PER_CPU_INITIALIZED.load(Ordering::Acquire),
+        "bh_disable called before per-CPU initialization"
+    );
+    hal_percpu::Aarch64PerCpu::bh_disable();
+}
+
+/// Re-enable bottom-half execution.
+pub fn bh_enable() {
+    debug_assert!(
+        PER_CPU_INITIALIZED.load(Ordering::Acquire),
+        "bh_enable called before per-CPU initialization"
+    );
+    hal_percpu::Aarch64PerCpu::bh_enable();
 }
 
 /// Exit softirq context
@@ -494,7 +527,7 @@ pub fn clear_softirq(nr: u32) {
 
 /// Process pending softirqs (minimal implementation)
 pub fn do_softirq() {
-    if in_interrupt() {
+    if in_interrupt() || in_softirq() {
         return;
     }
     softirq_enter();

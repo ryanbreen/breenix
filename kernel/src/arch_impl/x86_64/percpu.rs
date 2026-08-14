@@ -124,10 +124,52 @@ impl PerCpuOps for X86PerCpu {
     }
 
     #[inline(always)]
+    fn bh_disable() {
+        compiler_fence(Ordering::Acquire);
+        unsafe {
+            asm!(
+                "add dword ptr gs:[{offset}], {inc}",
+                offset = const PERCPU_PREEMPT_COUNT_OFFSET,
+                inc = const SOFTIRQ_DISABLE_OFFSET,
+                options(nostack, preserves_flags)
+            );
+        }
+        compiler_fence(Ordering::Release);
+    }
+
+    #[inline(always)]
+    fn bh_enable() {
+        compiler_fence(Ordering::Acquire);
+        unsafe {
+            asm!(
+                "sub dword ptr gs:[{offset}], {dec}",
+                offset = const PERCPU_PREEMPT_COUNT_OFFSET,
+                dec = const SOFTIRQ_DISABLE_OFFSET,
+                options(nostack, preserves_flags)
+            );
+        }
+        compiler_fence(Ordering::Release);
+    }
+
+    #[inline(always)]
     fn in_interrupt() -> bool {
         let count = Self::preempt_count();
-        // In interrupt if HARDIRQ, SOFTIRQ, or NMI bits are set
-        (count & (HARDIRQ_MASK | SOFTIRQ_MASK | NMI_MASK)) != 0
+        (count & (HARDIRQ_MASK | NMI_MASK)) != 0 || (count & SOFTIRQ_OFFSET) != 0
+    }
+
+    #[inline(always)]
+    fn in_serving_softirq() -> bool {
+        (Self::preempt_count() & SOFTIRQ_OFFSET) != 0
+    }
+
+    #[inline(always)]
+    fn softirq_count() -> u32 {
+        Self::preempt_count() & SOFTIRQ_MASK
+    }
+
+    #[inline(always)]
+    fn in_softirq() -> bool {
+        Self::softirq_count() != 0
     }
 
     #[inline(always)]
@@ -460,7 +502,7 @@ impl X86PerCpu {
         asm!(
             "add dword ptr gs:[{offset}], {inc}",
             offset = const PERCPU_PREEMPT_COUNT_OFFSET,
-            inc = const (1 << SOFTIRQ_SHIFT),
+            inc = const SOFTIRQ_OFFSET,
             options(nostack, preserves_flags)
         );
         compiler_fence(Ordering::Release);
@@ -473,7 +515,7 @@ impl X86PerCpu {
         asm!(
             "sub dword ptr gs:[{offset}], {dec}",
             offset = const PERCPU_PREEMPT_COUNT_OFFSET,
-            dec = const (1 << SOFTIRQ_SHIFT),
+            dec = const SOFTIRQ_OFFSET,
             options(nostack, preserves_flags)
         );
         compiler_fence(Ordering::Release);
@@ -503,13 +545,6 @@ impl X86PerCpu {
             options(nostack, preserves_flags)
         );
         compiler_fence(Ordering::Release);
-    }
-
-    /// Check if in softirq context.
-    #[inline(always)]
-    pub fn in_softirq() -> bool {
-        let count = Self::preempt_count();
-        (count & SOFTIRQ_MASK) != 0
     }
 
     /// Check if in NMI context.
