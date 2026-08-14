@@ -1270,6 +1270,13 @@ impl Scheduler {
             }
         }
 
+        if crate::net::loopback_queue_has_work() {
+            let pump_tid = crate::net::loopback_pump_tid();
+            if pump_tid != 0 && self.unblock(pump_tid) {
+                crate::net::record_loopback_pump_rearm_from_sched();
+            }
+        }
+
         // If current thread is still runnable, put it back in ready queue
         if let Some(current_id) = self.cpu_state[Self::current_cpu_id()].current_thread {
             if current_id != self.cpu_state[Self::current_cpu_id()].idle_thread {

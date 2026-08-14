@@ -506,6 +506,21 @@ fn validate_drain_exclusion_is_a_typed_guard(source: &str) -> Result<(), String>
     Ok(())
 }
 
+fn validate_schedule_rearms_a_blocked_pump(source: &str) -> Result<(), String> {
+    let schedule = function_body(source, "schedule")
+        .ok_or_else(|| "missing Scheduler::schedule".to_string())?;
+    if !has_identifier(schedule, "loopback_queue_has_work") {
+        return Err("Scheduler::schedule does not check for loopback work".to_string());
+    }
+    if !has_identifier(schedule, "loopback_pump_tid") {
+        return Err("Scheduler::schedule does not load the loopback pump tid".to_string());
+    }
+    if !normalized_code(schedule).contains("self.unblock(pump_tid)") {
+        return Err("Scheduler::schedule does not re-arm the blocked pump".to_string());
+    }
+    Ok(())
+}
+
 #[test]
 fn pump_producer_seam_is_single() {
     validate_pump_producer_seam_is_single(&net_source_text()).expect("single producer seam");
@@ -651,4 +666,24 @@ fn drain_exclusion_validator_rejects_atomic_bool() {
         "let exclusion = AtomicBool::new(false); drop(exclusion);",
     );
     assert!(validate_drain_exclusion_is_a_typed_guard(&mutated).is_err());
+}
+
+#[test]
+fn schedule_rearms_a_blocked_pump() {
+    validate_schedule_rearms_a_blocked_pump(&repo_text("kernel/src/task/scheduler.rs"))
+        .expect("Scheduler::schedule re-arms a blocked pump when loopback work remains");
+}
+
+#[test]
+fn schedule_rearm_validator_rejects_missing_unblock() {
+    let source = repo_text("kernel/src/task/scheduler.rs");
+    let schedule = function_body(&source, "schedule").expect("find Scheduler::schedule fixture");
+    let call = "self.unblock(pump_tid)";
+    assert!(
+        schedule.contains(call),
+        "fixture mutation target must exist"
+    );
+    let mutated_schedule = schedule.replacen(call, "false", 1);
+    let mutated = source.replacen(schedule, &mutated_schedule, 1);
+    assert!(validate_schedule_rearms_a_blocked_pump(&mutated).is_err());
 }

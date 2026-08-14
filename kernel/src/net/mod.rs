@@ -297,6 +297,7 @@ static LOOPBACK_DRAIN_STUCK: AtomicU64 = AtomicU64::new(0);
 static LOOPBACK_DRAIN_COMPLETED: AtomicU64 = AtomicU64::new(0);
 static LOOPBACK_DROPPED_FULL: AtomicU64 = AtomicU64::new(0);
 static IDLE_LOOPBACK_DRAIN_CALLS: AtomicU64 = AtomicU64::new(0);
+static LOOPBACK_PUMP_REARM_FROM_SCHED: AtomicU64 = AtomicU64::new(0);
 
 struct LoopbackDrainGuard {
     owner: u64,
@@ -376,9 +377,27 @@ fn loopback_queue_depth() -> usize {
     LOOPBACK_QUEUE_DEPTH.load(Ordering::Acquire)
 }
 
+pub fn loopback_queue_depth_for_test() -> usize {
+    loopback_queue_depth()
+}
+
+/// True when the lock-free queue-depth mirror reports pending packets.
+#[inline(always)]
+pub(crate) fn loopback_queue_has_work() -> bool {
+    LOOPBACK_QUEUE_DEPTH.load(Ordering::Acquire) != 0
+}
+
 /// True when the lock-free queue-depth mirror reports no pending packets.
 pub(crate) fn loopback_queue_is_empty() -> bool {
     LOOPBACK_QUEUE_DEPTH.load(Ordering::Acquire) == 0
+}
+
+pub(crate) fn record_loopback_pump_rearm_from_sched() {
+    LOOPBACK_PUMP_REARM_FROM_SCHED.fetch_add(1, Ordering::Relaxed);
+}
+
+pub fn loopback_pump_rearm_from_sched() -> u64 {
+    LOOPBACK_PUMP_REARM_FROM_SCHED.load(Ordering::Relaxed)
 }
 
 /// IPv4 packets waiting for ARP resolution of their next hop.
@@ -533,7 +552,7 @@ pub fn idle_loopback_drain_calls() -> u64 {
 /// Log loopback queue, drain, pump, and ISR-buffer state for hang triage.
 pub fn dump_loopback_state() {
     log::info!(
-        "loopback: depth={} drain_contended={} drain_completed={} drain_stuck={} dropped_full={} pump_tid={} pump_passes={} pump_rearms={} pump_wakes={} pump_wake_rejected={} isr_wakeup_depth_cpu0={}",
+        "loopback: depth={} drain_contended={} drain_completed={} drain_stuck={} dropped_full={} pump_tid={} pump_passes={} pump_rearms={} pump_rearm_from_sched={} pump_wakes={} pump_wake_rejected={} isr_wakeup_depth_cpu0={}",
         loopback_queue_depth(),
         loopback_drain_contended(),
         loopback_drain_completed(),
@@ -542,6 +561,7 @@ pub fn dump_loopback_state() {
         loopback_pump_tid(),
         loopback_pump_passes(),
         loopback_pump_rearms(),
+        loopback_pump_rearm_from_sched(),
         loopback_pump_wakes(),
         loopback_pump_wake_rejected(),
         crate::task::scheduler::isr_wakeup_depth(0),

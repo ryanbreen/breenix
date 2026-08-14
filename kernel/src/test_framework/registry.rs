@@ -2499,6 +2499,10 @@ fn run_loopback_recv_wake_test(listen_port: u16, client_port: u16, with_load: bo
 
     let wake_ms = LOOPBACK_READER_WAKE_MS.load(AtomicOrdering::SeqCst);
     let received = LOOPBACK_READER_BYTES.load(AtomicOrdering::SeqCst);
+    let queue_depth = crate::net::loopback_queue_depth_for_test();
+    let client_has_data = tcp::tcp_has_data(&client);
+    let reader_state =
+        scheduler::with_scheduler(|sched| sched.get_thread(reader_tid).map(|thread| thread.state));
     let _ = kthread::kthread_stop(&reader);
     let _ = kthread::kthread_join(&reader);
     if let Some(handle) = &load {
@@ -2510,10 +2514,34 @@ fn run_loopback_recv_wake_test(listen_port: u16, client_port: u16, with_load: bo
     let _ = tcp::tcp_close(&server);
     tcp::tcp_listener_ref_dec(listen_port);
 
+    let diagnostic_message = if queue_depth > 0 {
+        "pump never drained: packet still queued when the reader timed out"
+    } else if client_has_data {
+        "delivery landed but the recv waiter was never woken"
+    } else {
+        "segment vanished: delivered but never reached the connection rx buffer"
+    };
+
     if wake_ms == 0 {
-        return TestResult::Fail("reader never woken: loopback packet undelivered");
+        crate::net::dump_loopback_state();
+        log::error!(
+            "loopback recv wake diagnostic: classification={} tcp_wake_rejected={} reader_tid={} reader_state={:?}",
+            diagnostic_message,
+            tcp::tcp_wake_rejected(),
+            reader_tid,
+            reader_state,
+        );
+        return TestResult::Fail(diagnostic_message);
     }
     if received != 3 {
+        crate::net::dump_loopback_state();
+        log::error!(
+            "loopback recv wake diagnostic: classification={} tcp_wake_rejected={} reader_tid={} reader_state={:?}",
+            diagnostic_message,
+            tcp::tcp_wake_rejected(),
+            reader_tid,
+            reader_state,
+        );
         return TestResult::Fail("reader woke without receiving the 3 loopback bytes");
     }
 
