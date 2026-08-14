@@ -7,6 +7,8 @@ const TERMINATED_STATE: &str = "ProcessState::Terminated(";
 const EXACT_RECORD_EXIT_CALL: &str = "crate::task::exit_tally::record_exit(";
 const RECORD_EXIT_CALL: &str = "exit_tally::record_exit(";
 const TERMINATED_GUARD: &str = "ifmatches!(self.state,ProcessState::Terminated(_)){return;}";
+const FAILURE_TABLE_LOCK: &str = "USERSPACE_FAILURES.lock()";
+const FAILURE_TABLE_INTERRUPT_GUARD: &str = "with_failure_table_interrupts_disabled(||{";
 
 fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -166,6 +168,31 @@ fn braced_block<'a>(source: &'a str, mask: &[bool], open: usize) -> Option<&'a s
     None
 }
 
+fn matching_delimiter(
+    source: &str,
+    open: usize,
+    opening_delimiter: u8,
+    closing_delimiter: u8,
+) -> Option<usize> {
+    let bytes = source.as_bytes();
+    if bytes.get(open) != Some(&opening_delimiter) {
+        return None;
+    }
+
+    let mut depth = 0usize;
+    for (index, byte) in bytes.iter().enumerate().skip(open) {
+        if *byte == opening_delimiter {
+            depth += 1;
+        } else if *byte == closing_delimiter {
+            depth = depth.checked_sub(1)?;
+            if depth == 0 {
+                return Some(index);
+            }
+        }
+    }
+    None
+}
+
 fn function_body<'a>(source: &'a str, name: &str) -> Option<&'a str> {
     let mask = code_mask(source);
     let bytes = source.as_bytes();
@@ -265,6 +292,48 @@ fn terminated_assignment_detector_handles_paths_without_counting_patterns() {
             terminated_assignment_offsets(reader).len(),
             0,
             "must not classify terminated-state reader as assignment in {reader}"
+        );
+    }
+}
+
+#[test]
+fn failure_table_lock_is_only_taken_with_interrupts_disabled() {
+    let source = repo_text("kernel/src/task/exit_tally.rs");
+    let code = compact_code(&source);
+    let lock_offsets: Vec<_> = code
+        .match_indices(FAILURE_TABLE_LOCK)
+        .map(|(offset, _)| offset)
+        .collect();
+    assert_eq!(
+        lock_offsets.len(),
+        2,
+        "exit_tally.rs must contain exactly the recording and snapshot failure-table locks"
+    );
+
+    let guarded_closures: Vec<_> = code
+        .match_indices(FAILURE_TABLE_INTERRUPT_GUARD)
+        .map(|(call_start, _)| {
+            let call_open = call_start + "with_failure_table_interrupts_disabled".len();
+            let call_close = matching_delimiter(&code, call_open, b'(', b')')
+                .expect("interrupt-disabling helper call must have balanced parentheses");
+            let closure_open = call_start + FAILURE_TABLE_INTERRUPT_GUARD.len() - 1;
+            let closure_close = matching_delimiter(&code, closure_open, b'{', b'}')
+                .expect("interrupt-disabling helper closure must have balanced braces");
+            assert_eq!(
+                closure_close + 1,
+                call_close,
+                "interrupt-disabling helper must receive exactly the matched closure"
+            );
+            (closure_open, closure_close)
+        })
+        .collect();
+
+    for lock_offset in lock_offsets {
+        assert!(
+            guarded_closures
+                .iter()
+                .any(|(start, end)| *start < lock_offset && lock_offset < *end),
+            "USERSPACE_FAILURES.lock() at compacted byte {lock_offset} must be lexically inside the interrupt-disabling helper closure"
         );
     }
 }

@@ -1,8 +1,9 @@
 //! Userspace process exit accounting for the end-of-suite verdict.
 //!
 //! Failure details use a fixed-capacity table so recording an exit never
-//! allocates. Both callers run in ordinary thread context, where taking this
-//! small spin mutex is safe.
+//! allocates. The failure table is taken under `PROCESS_MANAGER` while exits
+//! are recorded, so it is a leaf lock: it must never be held with interrupts
+//! enabled, and nothing may take `PROCESS_MANAGER` while holding it.
 
 use core::fmt;
 use core::sync::atomic::{AtomicU32, Ordering};
@@ -14,6 +15,22 @@ const MAX_NAME_BYTES: usize = 24;
 static USERSPACE_EXITS: AtomicU32 = AtomicU32::new(0);
 static USERSPACE_NONZERO_EXITS: AtomicU32 = AtomicU32::new(0);
 static USERSPACE_FAILURES: Mutex<FailureTable> = Mutex::new(FailureTable::new());
+
+#[cfg(target_arch = "x86_64")]
+fn with_failure_table_interrupts_disabled<F, R>(f: F) -> R
+where
+    F: FnOnce() -> R,
+{
+    x86_64::instructions::interrupts::without_interrupts(f)
+}
+
+#[cfg(target_arch = "aarch64")]
+fn with_failure_table_interrupts_disabled<F, R>(f: F) -> R
+where
+    F: FnOnce() -> R,
+{
+    crate::arch_impl::aarch64::cpu::without_interrupts(f)
+}
 
 #[derive(Clone, Copy)]
 pub struct ExitFailure {
@@ -74,12 +91,14 @@ pub fn record_exit(name: &str, exit_code: i32) {
     }
 
     USERSPACE_NONZERO_EXITS.fetch_add(1, Ordering::SeqCst);
-    let mut failures = USERSPACE_FAILURES.lock();
-    if failures.len < MAX_FAILURES {
-        let index = failures.len;
-        failures.failures[index] = ExitFailure::new(name, exit_code);
-        failures.len += 1;
-    }
+    with_failure_table_interrupts_disabled(|| {
+        let mut failures = USERSPACE_FAILURES.lock();
+        if failures.len < MAX_FAILURES {
+            let index = failures.len;
+            failures.failures[index] = ExitFailure::new(name, exit_code);
+            failures.len += 1;
+        }
+    });
 }
 
 /// Return the total userspace exits and nonzero userspace exits.
@@ -92,8 +111,10 @@ pub fn totals() -> (u32, u32) {
 
 /// Copy the recorded failure details while holding their small static mutex.
 pub fn snapshot_failures() -> ([ExitFailure; MAX_FAILURES], usize) {
-    let failures = USERSPACE_FAILURES.lock();
-    (failures.failures, failures.len)
+    with_failure_table_interrupts_disabled(|| {
+        let failures = USERSPACE_FAILURES.lock();
+        (failures.failures, failures.len)
+    })
 }
 
 /// Allocation-free formatting for the recorded `name:code` failure list.
