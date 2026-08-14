@@ -506,11 +506,14 @@ impl TcpConnection {
 }
 
 /// Pending connection (from SYN received, waiting for accept)
+#[derive(Clone)]
 pub struct PendingConnection {
     pub remote_ip: [u8; 4],
     pub remote_port: u16,
     pub recv_initial: u32,
     pub send_initial: u32,
+    /// True if an acceptor has claimed this entry and is publishing it.
+    pub claimed: bool,
     /// True if the final ACK of the 3-way handshake has been received
     pub ack_received: bool,
     /// Data received before accept() was called (buffered here until connection is created)
@@ -674,7 +677,7 @@ fn handle_tcp_for_connection(
                     conn.send_unack = header.ack_num;
                     conn.state = TcpState::Established;
 
-                    log::info!(
+                    log::debug!(
                         "TCP: Connection established (client) conn_id={{local={}:{}, remote={}:{}}}",
                         conn.id.local_ip[3], conn.id.local_port,
                         conn.id.remote_ip[3], conn.id.remote_port
@@ -697,7 +700,7 @@ fn handle_tcp_for_connection(
                     wake_connection_waiters(conn);
                 }
             } else if header.flags.rst {
-                log::info!("TCP: Connection refused (RST received)");
+                log::debug!("TCP: Connection refused (RST received)");
                 conn.state = TcpState::Closed;
                 // Wake threads blocked in connect() so they see the failure
                 wake_connection_waiters(conn);
@@ -709,7 +712,7 @@ fn handle_tcp_for_connection(
                 if header.ack_num == conn.send_next {
                     conn.state = TcpState::Established;
                     conn.send_unack = header.ack_num;
-                    log::info!("TCP: Connection established (server)");
+                    log::debug!("TCP: Connection established (server)");
 
                     if !payload.is_empty() && header.seq_num == conn.recv_next {
                         conn.rx_buffer.extend(payload);
@@ -1024,6 +1027,7 @@ fn handle_syn_for_listener(
         remote_port: header.src_port,
         recv_initial: header.seq_num,
         send_initial: send_isn,
+        claimed: false,
         ack_received: false,
         early_data: Vec::new(),
         recv_next: header.seq_num.wrapping_add(1), // +1 for SYN
@@ -1156,7 +1160,7 @@ pub fn tcp_connect(
         &[],
     );
 
-    log::info!(
+    log::debug!(
         "TCP: Connecting to {}.{}.{}.{}:{}",
         remote_ip[0],
         remote_ip[1],
@@ -1199,7 +1203,7 @@ pub fn tcp_listen(
         return Err("Port already in use");
     }
 
-    log::info!(
+    log::debug!(
         "TCP: Listening on port {} (backlog={})",
         local_port,
         backlog
@@ -1213,10 +1217,18 @@ pub fn tcp_accept(local_port: u16) -> Option<ConnectionId> {
     let config = super::config();
 
     let pending = with_tcp_listeners(|listeners| {
-        listeners
-            .get_mut(&local_port)
-            .and_then(|listener| listener.pending.pop_front())
+        listeners.get_mut(&local_port).and_then(|listener| {
+            listener
+                .pending
+                .iter_mut()
+                .find(|pending| !pending.claimed)
+                .map(|pending| {
+                    pending.claimed = true;
+                    pending.clone()
+                })
+        })
     })?;
+    let copied_early_data_len = pending.early_data.len();
 
     let conn_id = ConnectionId {
         local_ip: config.ip_addr,
@@ -1237,7 +1249,7 @@ pub fn tcp_accept(local_port: u16) -> Option<ConnectionId> {
         // send_next should be incremented past our SYN+ACK
         conn.send_next = pending.send_initial.wrapping_add(1);
         conn.send_unack = conn.send_next;
-        log::info!("TCP: Connection established (server, ACK already received)");
+        log::debug!("TCP: Connection established (server, ACK already received)");
     } else {
         // Still waiting for ACK — set send_next past our SYN so the ACK
         // check in handle_tcp_for_connection (SynReceived branch) matches:
@@ -1263,6 +1275,42 @@ pub fn tcp_accept(local_port: u16) -> Option<ConnectionId> {
     with_tcp_connections(|connections| {
         connections.insert(conn_id, conn);
     });
+
+    let final_pending = with_tcp_listeners(|listeners| {
+        let listener = listeners.get_mut(&local_port)?;
+        let position = listener.pending.iter().position(|entry| {
+            entry.remote_ip == pending.remote_ip && entry.remote_port == pending.remote_port
+        })?;
+        listener.pending.remove(position)
+    });
+
+    if let Some(final_pending) = final_pending {
+        with_tcp_connections(|connections| {
+            if let Some(conn) = connections.get_mut(&conn_id) {
+                if final_pending.ack_received && conn.state == TcpState::SynReceived {
+                    conn.state = TcpState::Established;
+                    conn.send_unack = conn.send_next;
+                    log::debug!("TCP: Connection established (server)");
+                }
+
+                if final_pending.early_data.len() > copied_early_data_len {
+                    for byte in &final_pending.early_data[copied_early_data_len..] {
+                        conn.rx_buffer.push_back(*byte);
+                    }
+                    log::debug!(
+                        "TCP: Copied {} bytes of early data to connection rx_buffer",
+                        final_pending.early_data.len() - copied_early_data_len
+                    );
+                }
+
+                let pending_advance = final_pending.recv_next.wrapping_sub(pending.recv_next);
+                let connection_advance = conn.recv_next.wrapping_sub(pending.recv_next);
+                if pending_advance > connection_advance {
+                    conn.recv_next = final_pending.recv_next;
+                }
+            }
+        });
+    }
 
     log::debug!(
         "TCP: Accepted connection from {}.{}.{}.{}:{}",
@@ -1607,8 +1655,17 @@ pub fn tcp_has_pending(local_port: u16) -> bool {
     })
 }
 
+/// Return the number of connections waiting to be accepted on a listener.
+pub fn tcp_pending_accept_depth(local_port: u16) -> usize {
+    with_tcp_listeners(|listeners| {
+        listeners
+            .get(&local_port)
+            .map(|listener| listener.pending.len())
+            .unwrap_or(0)
+    })
+}
+
 /// Get connection state for debugging and introspection
-#[allow(dead_code)] // Part of TCP debugging API
 pub fn tcp_get_state(conn_id: &ConnectionId) -> Option<TcpState> {
     with_tcp_connections(|connections| connections.get(conn_id).map(|c| c.state))
 }
@@ -1764,7 +1821,7 @@ pub fn tcp_listener_ref_dec(port: u16) -> bool {
             if old == 1 {
                 // Reference count reached 0, remove the listener
                 listeners.remove(&port);
-                log::info!(
+                log::debug!(
                     "TCP: Removed listener on port {} (ref_count reached 0)",
                     port
                 );

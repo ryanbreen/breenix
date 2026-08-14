@@ -1268,7 +1268,7 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
 
                 // Double-check for data after setting Blocked state
                 if crate::net::tcp::tcp_has_data(&conn_id) {
-                    log::info!(
+                    log::debug!(
                         "TCP: Thread {} caught race - data arrived during block setup",
                         thread_id
                     );
@@ -1285,7 +1285,7 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                 // Re-enable preemption before HLT loop
                 crate::per_cpu::preempt_enable();
 
-                log::info!(
+                log::debug!(
                     "TCP_BLOCK: Thread {} entering blocked state for recv",
                     thread_id
                 );
@@ -1324,7 +1324,7 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
 
                     if !still_blocked {
                         crate::per_cpu::preempt_disable();
-                        log::info!("TCP_BLOCK: Thread {} woken from recv blocking", thread_id);
+                        log::debug!("TCP_BLOCK: Thread {} woken from recv blocking", thread_id);
                         break;
                     }
                 }

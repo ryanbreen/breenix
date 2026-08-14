@@ -8,6 +8,7 @@ static LOOPBACK_PUMP_PASSES: AtomicU64 = AtomicU64::new(0);
 static LOOPBACK_PUMP_REARMS: AtomicU64 = AtomicU64::new(0);
 static LOOPBACK_PUMP_WAKES: AtomicU64 = AtomicU64::new(0);
 static LOOPBACK_PUMP_WAKE_REJECTED: AtomicU64 = AtomicU64::new(0);
+static LOOPBACK_PUMP_WAKE_ALREADY_AWAKE: AtomicU64 = AtomicU64::new(0);
 
 const PUMP_ROUNDS_PER_PASS: usize = 4;
 
@@ -36,8 +37,14 @@ pub(crate) fn wake_loopback_pump() {
     }
 
     LOOPBACK_PUMP_WAKES.fetch_add(1, Ordering::Relaxed);
-    if scheduler::wake_thread_any_context(tid) == scheduler::WakeOutcome::Rejected {
-        LOOPBACK_PUMP_WAKE_REJECTED.fetch_add(1, Ordering::Relaxed);
+    match scheduler::wake_thread_any_context(tid) {
+        scheduler::WakeOutcome::Rejected => {
+            LOOPBACK_PUMP_WAKE_REJECTED.fetch_add(1, Ordering::Relaxed);
+        }
+        scheduler::WakeOutcome::AlreadyRunnable => {
+            LOOPBACK_PUMP_WAKE_ALREADY_AWAKE.fetch_add(1, Ordering::Relaxed);
+        }
+        scheduler::WakeOutcome::Applied | scheduler::WakeOutcome::Buffered => {}
     }
 }
 
@@ -53,7 +60,6 @@ fn loopback_pump_fn() {
         if more {
             LOOPBACK_PUMP_REARMS.fetch_add(1, Ordering::Relaxed);
             scheduler::yield_current();
-            crate::arch_halt_with_interrupts();
             continue;
         }
 
@@ -86,6 +92,10 @@ pub fn loopback_pump_wakes() -> u64 {
 
 pub fn loopback_pump_wake_rejected() -> u64 {
     LOOPBACK_PUMP_WAKE_REJECTED.load(Ordering::Relaxed)
+}
+
+pub fn loopback_pump_wake_already_awake() -> u64 {
+    LOOPBACK_PUMP_WAKE_ALREADY_AWAKE.load(Ordering::Relaxed)
 }
 
 pub fn loopback_pump_tid() -> u64 {
