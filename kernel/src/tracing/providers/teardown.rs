@@ -1937,10 +1937,13 @@ pub fn exec_supersede_cohort_test() -> crate::test_framework::registry::TestResu
             let survivors = pending.split_off(pending.len() - survivor_count);
             child_process.pending_old_page_tables = pending;
             // A populated superseded address space costs more than one frame, so
-            // a one-frame drain must remain incomplete and pending for the next pass.
+            // a one-frame drain must report incomplete and leave every pending table
+            // in place for the next pass.
+            let probe_pending_before = child_process.pending_old_page_tables.len();
             let mut probe_budget = 1u32;
             let probe_complete = child_process.drain_old_page_tables_bounded(&mut probe_budget);
-            if (probe_complete || child_process.pending_old_page_tables.is_empty())
+            if (probe_complete
+                || child_process.pending_old_page_tables.len() != probe_pending_before)
                 && first_failure.is_none()
             {
                 first_failure = Some(
