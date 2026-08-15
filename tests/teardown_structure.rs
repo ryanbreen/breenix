@@ -1889,6 +1889,7 @@ const RECLAIM_ENQUEUE_CALLS: &[(&str, &str, usize)] = &[
     ("kernel/src/task/process_task.rs", "impl ProcessScheduler::fn handle_thread_exit", 1),
     ("kernel/src/task/process_task.rs", "#[cfg(feature=boot_tests)] fn reclaim_progress_gate_test", 2),
     ("kernel/src/tracing/providers/teardown.rs", "#[cfg(feature=boot_tests)] fn fork_exit_defer_reclaim_pairing_test", 1),
+    ("kernel/src/tracing/providers/teardown.rs", "#[cfg(all(feature=boot_tests,target_arch=x86_64))] fn exec_supersede_cohort_test", 1),
 ];
 #[rustfmt::skip]
 const EXIT_PROCESS_AND_RETIRE_CALLS: &[(&str, &str, usize)] = &[
@@ -1910,6 +1911,7 @@ const EXIT_PROCESS_BY_PID_CALLS: &[(&str, &str, usize)] = &[
 #[rustfmt::skip]
 const EXIT_PROCESS_FOR_TEARDOWN_TEST_CALLS: &[(&str, &str, usize)] = &[
     ("kernel/src/tracing/providers/teardown.rs", "#[cfg(feature=boot_tests)] fn fork_exit_defer_reclaim_pairing_test", 1),
+    ("kernel/src/tracing/providers/teardown.rs", "#[cfg(all(feature=boot_tests,target_arch=x86_64))] fn exec_supersede_cohort_test", 1),
 ];
 #[rustfmt::skip]
 const BLOCKING_PRIMITIVES: &[(&str, &str, usize)] = &[
@@ -1930,7 +1932,6 @@ const RAW_SCHEDULER_LOCK_SITES: &[(&str, &str, usize)] = &[
 ];
 #[rustfmt::skip]
 const PROCESS_MEMORY_FRAME_RETURNS: &[(&str, &str, usize)] = &[
-    ("kernel/src/memory/process_memory.rs", "impl ProcessPageTable::#[cfg(target_arch=x86_64)] fn cleanup_for_exec", 7),
     ("kernel/src/memory/process_memory.rs", "#[cfg(feature=boot_tests)] fn page_table_custody_disposition_gate_test", 2),
 ];
 #[rustfmt::skip]
@@ -1968,7 +1969,7 @@ const PROCESS_PAGE_TABLE_RETIRE_SITES: &[(&str, &str, usize)] = &[
     ("kernel/src/memory/frame_allocator_tests.rs", "fn retire_with_free_list_contended", 1),
     ("kernel/src/memory/process_memory.rs", "#[cfg(target_arch=aarch64)] impl Drop for UnpublishedPageTable::fn drop", 1),
     ("kernel/src/memory/process_memory.rs", "#[cfg(feature=boot_tests)] fn page_table_custody_disposition_gate_test", 1),
-    ("kernel/src/memory/process_memory.rs", "impl ProcessPageTable::#[cfg(target_arch=aarch64)] fn cleanup_for_exec", 1),
+    ("kernel/src/memory/process_memory.rs", "impl ProcessPageTable::fn cleanup_for_exec", 1),
     ("kernel/src/task/process_task.rs", "#[cfg(feature=boot_tests)] fn reclaim_progress_gate_test", 4),
     ("kernel/src/task/process_task.rs", "impl PendingProcessReclaim::fn reclaim_bounded", 1),
 ];
@@ -1998,6 +1999,7 @@ const PROCESS_PAGE_TABLE_CONSTRUCTORS: &[(&str, &str, usize)] = &[
     ("kernel/src/task/process_task.rs", "#[cfg(feature=boot_tests)] fn boot_oversized_page_table", 1),
     ("kernel/src/task/process_task.rs", "#[cfg(feature=boot_tests)] fn reclaim_progress_gate_test", 3),
     ("kernel/src/tracing/providers/teardown.rs", "#[cfg(feature=boot_tests)] fn fork_exit_defer_reclaim_pairing_test", 4),
+    ("kernel/src/tracing/providers/teardown.rs", "#[cfg(all(feature=boot_tests,target_arch=x86_64))] fn exec_supersede_cohort_test", 3),
 ];
 #[rustfmt::skip]
 const DEFERRED_RECLAIM_DRAIN_SITES: &[(&str, &str, usize)] = &[
@@ -2735,8 +2737,9 @@ fn validate_no_vacuous_test_conditions(sources: &[(String, String)]) -> Result<(
 /// able to pre-empt it (review-sweep-r4 finding 4).
 fn validate_x86_frame_custody_harness(script: &str) -> Result<(), ()> {
     const FRAME_VECTOR: &str = "FRAME_CUSTODY_PATTERN='^\\[FRAME_CUSTODY_COUNTERS:x86:double=1:stale=1:never=1:untracked=1:duplicate=3:contended=[1-9][0-9]*\\]$'";
-    const PT_CUSTODY_VECTOR: &str = "PT_CUSTODY_LITERAL='[PT_CUSTODY_COUNTERS:x86:recorded=11:no_proof=0:no_arch=0:terminated=1:undecided=1:exec_unreturned=0:retired=1:returned=10:lost=0:requeued=0]'";
-    const PT_COHORT_VECTOR: &str = "PT_COHORT_LITERAL='[PT_RETIRE_COHORT:x86:children=64:retired=64:returned=640:recorded=576:lost=0:no_arch=0:undecided=0:mid_retire=0:balance=0]'";
+    const PT_CUSTODY_VECTOR: &str = "PT_CUSTODY_LITERAL='[PT_CUSTODY_COUNTERS:x86:recorded=11:no_proof=0:no_arch=0:terminated=1:undecided=1:retired=1:returned=10:lost=0:requeued=0]'";
+    const PT_COHORT_VECTOR: &str = "PT_COHORT_LITERAL='[PT_RETIRE_COHORT:x86:children=64:retired=65:returned=642:recorded=577:lost=0:no_arch=0:undecided=0:mid_retire=0:balance=0]'";
+    const PT_EXEC_COHORT_VECTOR: &str = "PT_EXEC_COHORT_LITERAL='[PT_EXEC_COHORT:x86:children=16:superseded=3:roots=64:returned=640:recorded=576:lost=0:leaf_recorded=192:leaf_released=192:leaf_returned=192:custody_refused=0:decref_unregistered=0:undecided=0:mid_retire=0:no_arch=0:balance=0]' # The returned and recorded table-frame fields are pinned from the measured run.";
     let exact_marker_count = |marker: &str| {
         let needle = format!("grep -h -c '\\[TEST:process:{marker}:PASS\\]'");
         script.find(&needle).is_some_and(|start| {
@@ -2777,18 +2780,23 @@ fn validate_x86_frame_custody_harness(script: &str) -> Result<(), ()> {
         && script.contains(FRAME_VECTOR)
         && script.contains(PT_CUSTODY_VECTOR)
         && script.contains(PT_COHORT_VECTOR)
+        && script.contains(PT_EXEC_COHORT_VECTOR)
         && script.matches("frame_custody_refusal_gate:PASS").count() == 2
         && script.matches("page_table_custody_disposition_gate:PASS").count() == 2
         && script.matches("x86_retire_cohort:PASS").count() == 2
+        && script.matches("x86_exec_cohort:PASS").count() == 2
         && exact_marker_count("frame_custody_refusal_gate")
         && exact_marker_count("page_table_custody_disposition_gate")
         && exact_marker_count("x86_retire_cohort")
+        && exact_marker_count("x86_exec_cohort")
         && script.contains("grep -qE \"$FRAME_CUSTODY_PATTERN\"")
         && script.contains("grep -qF -x \"$PT_CUSTODY_LITERAL\"")
         && script.contains("grep -qF -x \"$PT_COHORT_LITERAL\"")
+        && script.contains("grep -qF -x \"$PT_EXEC_COHORT_LITERAL\"")
         && script.contains("grep -h -E -c \"$FRAME_CUSTODY_PATTERN\"")
         && script.contains("grep -h -F -x -c \"$PT_CUSTODY_LITERAL\"")
         && script.contains("grep -h -F -x -c \"$PT_COHORT_LITERAL\"")
+        && script.contains("grep -h -F -x -c \"$PT_EXEC_COHORT_LITERAL\"")
         && script.contains("-eq 1")
         && script.contains("x86 frame-custody gate run")
         && script.matches("BOOT_TESTS:FAIL|KERNEL PANIC|panic!").count() == 2)
@@ -2871,7 +2879,7 @@ fn validate_frame_ledger_counter_inventory(provider: &str) -> Result<(), ()> {
         && EXPECTED
             .iter()
             .all(|counter| inventory.contains(&format!("&{counter},")))
-        && provider.contains("pub const COUNTER_COUNT: usize = 73;"))
+        && provider.contains("pub const COUNTER_COUNT: usize = 72;"))
     .then_some(())
     .ok_or(())
 }
@@ -3016,19 +3024,17 @@ fn validate_process_page_table_dispositions(
     let process_memory = source(sources, "kernel/src/memory/process_memory.rs");
     let bodies = module_function_bodies(process_memory);
     if let Some(cleanup_bodies) = bodies.get("cleanup_for_exec") {
-        let legacy = cleanup_bodies.iter().filter(|body| {
-            body.contains("Disposition::RetiredByExecWalk")
-                && body.contains("PT_EXEC_WALK_LEASES_UNRETURNED")
-        });
-        let custody = cleanup_bodies.iter().filter(|body| {
+        let custody_shaped = cleanup_bodies.iter().filter(|body| {
             body.contains("self.release_mapped_leaves();")
                 && body.contains("self.retire_bounded(pid, budget)")
-                && !body.contains("RetiredByExecWalk")
+                && !body.contains("Disposition::")
+                && !body.contains("deallocate_frame")
                 && !body.contains("Vec::new")
                 && !body.contains("log::")
+                && !body.contains("PhysFrame::containing_address")
         });
-        if cleanup_bodies.len() != 2 || legacy.count() != 1 || custody.count() != 1 {
-            failures.push("cleanup_for_exec disposition bodies changed".to_owned());
+        if cleanup_bodies.len() != 1 || custody_shaped.count() != 1 {
+            failures.push("cleanup_for_exec is no longer a single custody-shaped body".to_owned());
         }
     } else {
         failures.push("cleanup_for_exec disposition bodies disappeared".to_owned());
@@ -3093,13 +3099,12 @@ fn validate_process_page_table_retire_site(
 }
 
 fn validate_process_page_table_counter_inventory(sources: &[(String, String)]) -> Result<(), ()> {
-    const EXPECTED: [&str; 13] = [
+    const EXPECTED: [&str; 12] = [
         "PT_TABLE_FRAMES_RECORDED",
         "PT_ROOT_ABANDONED_NO_PROOF",
         "PT_ROOT_ABANDONED_NO_ARCH",
         "PT_ROOT_ABANDONED_TERMINATED",
         "PT_ROOT_DROPPED_UNDECIDED",
-        "PT_EXEC_WALK_LEASES_UNRETURNED",
         "PT_ROOTS_RETIRED",
         "PT_TABLE_FRAMES_RETURNED",
         "PT_RETIRE_FRAMES_LOST",
@@ -3132,7 +3137,7 @@ fn validate_process_page_table_counter_inventory(sources: &[(String, String)]) -
         || !EXPECTED
             .iter()
             .all(|counter| inventory.contains(&format!("&{counter},")))
-        || !provider.contains("pub const COUNTER_COUNT: usize = 73;")
+        || !provider.contains("pub const COUNTER_COUNT: usize = 72;")
     {
         return Err(());
     }
@@ -3170,10 +3175,13 @@ fn validate_process_page_table_counter_inventory(sources: &[(String, String)]) -
         && retire.contains("record_pt_root_retired")
         && task.contains("PT_RETIRE_BUDGET_REQUEUED")
         && map_page.contains("PT_ROOT_SLOT_REFUSED")
-        && cleanup_bodies.len() == 2
+        && cleanup_bodies.len() == 1
         && cleanup_bodies
             .iter()
-            .filter(|body| body.contains("PT_EXEC_WALK_LEASES_UNRETURNED"))
+            .filter(|body| {
+                body.contains("self.release_mapped_leaves();")
+                    && body.contains("self.retire_bounded(pid, budget)")
+            })
             .count()
             == 1)
     .then_some(())
@@ -3622,9 +3630,11 @@ fn validate_pr1c_retirement_oracles(sources: &[(String, String)]) -> Result<(), 
         "let allocator_used_before = frame_allocator_used_frames();",
         "if allocator_used_after != allocator_used_before {",
         "retire leak oracle did not return frame accounting to baseline",
-        "if counts.roots_retired != 1 {",
-        "if counts.table_frames_recorded != expected_tables {",
-        "if counts.table_frames_returned != counts.table_frames_recorded + 1 {",
+        "let pending_old_pid = pairing_child_pids[0];",
+        "let pending_old_roots = u64::from(has_pending_old_root);",
+        "if counts.roots_retired != 1 + pending_old_roots {",
+        "if counts.table_frames_recorded != expected_tables + pending_old_tables {",
+        "if counts.table_frames_returned != counts.table_frames_recorded + counts.roots_retired {",
         "counts.table_frames_lost != 0",
         "retire cohort per-PID anti-vacuity table count was not exact",
         "retire cohort per-PID committed return equality failed",
@@ -3639,7 +3649,8 @@ fn validate_pr1c_retirement_oracles(sources: &[(String, String)]) -> Result<(), 
         "leaf_frames_returned_delta != expected_leaves",
         "leaf leak oracle committed-effect accounting was not exact",
         "let fork_result = manager.fork_process_with_page_table(",
-        "let cohort_recorded = expected_tables * pairing_child_pids.len() as u64;",
+        "let cohort_recorded = expected_tables * pairing_child_pids.len() as u64",
+        "+ expected_pending_old_tables;",
         "let allocator_balance = allocator_used_after as i64 - allocator_used_before as i64;",
         "|| no_arch_delta != 0",
         "[TEST:process:x86_retire_cohort:PASS]",
@@ -3740,6 +3751,16 @@ fn validate_process_page_table_runtime_oracle(sources: &[(String, String)]) -> R
     {
         return Err(());
     }
+    if code_offsets(
+        main,
+        &code_mask(main),
+        "teardown::run_x86_exec_cohort_gate();",
+    )
+    .len()
+        != 1
+    {
+        return Err(());
+    }
     let teardown = source(sources, "kernel/src/tracing/providers/teardown.rs");
     let retire_cohort_wrapper = function_body(teardown, "run_x86_retire_cohort_gate");
     let wrapper_mask = code_mask(retire_cohort_wrapper);
@@ -3755,18 +3776,36 @@ fn validate_process_page_table_runtime_oracle(sources: &[(String, String)]) -> R
     {
         return Err(());
     }
+    let exec_cohort_wrapper = function_body(teardown, "run_x86_exec_cohort_gate");
+    let exec_wrapper_mask = code_mask(exec_cohort_wrapper);
+    if call_offsets(
+        exec_cohort_wrapper,
+        &exec_wrapper_mask,
+        "exec_supersede_cohort_test",
+    )
+    .len()
+        != 1
+        || !exec_cohort_wrapper.contains("assert!(result.is_pass()")
+        || exec_cohort_wrapper.contains("x86_exec_cohort:PASS")
+    {
+        return Err(());
+    }
     let harness = repo_text("docker/qemu/run-x86-boot-tests.sh");
     (harness.contains("page_table_custody_disposition_gate:PASS")
         && harness.contains("x86_retire_cohort:PASS")
-        && harness.contains("[PT_CUSTODY_COUNTERS:x86:recorded=11:no_proof=0:no_arch=0:terminated=1:undecided=1:exec_unreturned=0:retired=1:returned=10:lost=0:requeued=0]")
-        && harness.contains("[PT_RETIRE_COHORT:x86:children=64:retired=64:returned=640:recorded=576:lost=0:no_arch=0:undecided=0:mid_retire=0:balance=0]")
+        && harness.contains("x86_exec_cohort:PASS")
+        && harness.contains("[PT_CUSTODY_COUNTERS:x86:recorded=11:no_proof=0:no_arch=0:terminated=1:undecided=1:retired=1:returned=10:lost=0:requeued=0]")
+        && harness.contains("[PT_RETIRE_COHORT:x86:children=64:retired=65:returned=642:recorded=577:lost=0:no_arch=0:undecided=0:mid_retire=0:balance=0]")
+        && harness.contains("[PT_EXEC_COHORT:x86:children=16:superseded=3:roots=64:returned=640:recorded=576:lost=0:leaf_recorded=192:leaf_released=192:leaf_returned=192:custody_refused=0:decref_unregistered=0:undecided=0:mid_retire=0:no_arch=0:balance=0]")
         && harness
             .matches("page_table_custody_disposition_gate:PASS")
             .count()
             == 2
         && harness.matches("x86_retire_cohort:PASS").count() == 2
+        && harness.matches("x86_exec_cohort:PASS").count() == 2
         && harness.matches("PT_CUSTODY_COUNTERS:x86:").count() == 1
         && harness.matches("PT_RETIRE_COHORT:x86:").count() == 1
+        && harness.matches("PT_EXEC_COHORT:x86:").count() == 1
         && harness.contains("grep -h -c 'Refusing to map'"))
         .then_some(())
         .ok_or(())
@@ -3920,8 +3959,8 @@ fn frame_ledger_return_and_initialization_ratchets_are_exact() {
     }
     check(
         &mut failures,
-        "COUNTER_COUNT is no longer 73",
-        provider.contains("pub const COUNTER_COUNT: usize = 73;"),
+        "COUNTER_COUNT is no longer 72",
+        provider.contains("pub const COUNTER_COUNT: usize = 72;"),
     );
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
@@ -4422,7 +4461,7 @@ fn all_phase_zero_counters_have_registered_readers_and_honest_runtime_gates() {
         .filter_map(|rest| rest.strip_suffix(','))
         .map(str::to_owned)
         .collect();
-    assert_eq!(declarations.len(), 73);
+    assert_eq!(declarations.len(), 72);
     assert_eq!(
         readers, declarations,
         "every counter must have an inventory reader"
@@ -5160,17 +5199,83 @@ fn deliberately_broken_variants_fail_the_ratchet() {
     let wrong_reason =
         with_replaced_source(&sources, "kernel/src/task/process_task.rs", wrong_reason);
     assert!(validate_process_page_table_dispositions(&wrong_reason).is_err());
-    let missing_exec_disposition = process_memory.replacen(
-        "self.tables.disposition = Disposition::RetiredByExecWalk;",
-        "self.tables.disposition = Disposition::Undecided;",
+    // The exec-supersede walk is gone: `cleanup_for_exec` is one arch-neutral
+    // custody body, and the only frame returns left anywhere in
+    // process_memory.rs are the two inside the boot-test custody fixture. These
+    // five negatives pin that state through the two named validators that own
+    // it, each with a spelling the production source does not use, so the
+    // ratchet is proven to recognise spans and resolved calls rather than one
+    // literal form.
+    const CUSTODY_BODY: &str =
+        "        self.release_mapped_leaves();\n        self.retire_bounded(pid, budget)";
+
+    // 1. A raw frame return smuggled back into the custody body, block-wrapped.
+    let exec_body_frame_return = process_memory.replacen(
+        CUSTODY_BODY,
+        "        self.release_mapped_leaves();\n        {\n            deallocate_frame(self.level_4_frame);\n        }\n        self.retire_bounded(pid, budget)",
         1,
     );
-    let missing_exec_disposition = with_replaced_source(
+    assert_ne!(
+        exec_body_frame_return, process_memory,
+        "exec-body frame-return mutation must apply"
+    );
+    let exec_body_frame_return = with_replaced_source(
         &sources,
         "kernel/src/memory/process_memory.rs",
-        missing_exec_disposition,
+        exec_body_frame_return,
     );
-    assert!(validate_process_page_table_dispositions(&missing_exec_disposition).is_err());
+    assert!(validate_frame_return_choke_point(&exec_body_frame_return).is_err());
+
+    // 2. The same free moved to a third function in the same file: the choke
+    //    point is file-scoped, so relocating the escape does not launder it.
+    let relocated_frame_return = with_replaced_source(
+        &sources,
+        "kernel/src/memory/process_memory.rs",
+        format!(
+            "{process_memory}\nfn synthetic_exec_release(frame: PhysFrame) {{ deallocate_frame(frame); }}"
+        ),
+    );
+    assert!(validate_frame_return_choke_point(&relocated_frame_return).is_err());
+
+    // 3. The same free spelled as a fully qualified path: the census resolves
+    //    call sites, not one import spelling.
+    let qualified_frame_return = with_replaced_source(
+        &sources,
+        "kernel/src/memory/process_memory.rs",
+        format!(
+            "{process_memory}\nfn synthetic_qualified_release(frame: PhysFrame) {{ crate::memory::frame_allocator::deallocate_frame(frame); }}"
+        ),
+    );
+    assert!(validate_frame_return_choke_point(&qualified_frame_return).is_err());
+
+    // 4. A disposition stamp restored inside the custody body, braced so the
+    //    spelling differs from the deleted walk's.
+    let exec_body_disposition = process_memory.replacen(
+        CUSTODY_BODY,
+        "        self.release_mapped_leaves();\n        self.tables.disposition = { Disposition::Retired };\n        self.retire_bounded(pid, budget)",
+        1,
+    );
+    assert_ne!(
+        exec_body_disposition, process_memory,
+        "exec-body disposition mutation must apply"
+    );
+    let exec_body_disposition = with_replaced_source(
+        &sources,
+        "kernel/src/memory/process_memory.rs",
+        exec_body_disposition,
+    );
+    assert!(validate_process_page_table_dispositions(&exec_body_disposition).is_err());
+
+    // 5. The body split back into two architecture-selected copies. The second
+    //    copy is itself custody-shaped, so only the single-body clause can fire.
+    let split_exec_bodies = with_replaced_source(
+        &sources,
+        "kernel/src/memory/process_memory.rs",
+        format!(
+            "{process_memory}\nimpl ProcessPageTable {{\n    #[cfg(target_arch = \"x86_64\")]\n    pub(crate) fn cleanup_for_exec(&mut self, pid: u64, budget: &mut u32) -> RetireProgress {{\n{CUSTODY_BODY}\n    }}\n}}"
+        ),
+    );
+    assert!(validate_process_page_table_dispositions(&split_exec_bodies).is_err());
     let abandon_reason_moved_back = process_task
         .replacen(
             "page_table.abandon(AbandonReason::NoProofPipeline);",
@@ -5524,16 +5629,16 @@ fn deliberately_broken_variants_fail_the_ratchet() {
             "allocator_used_after != allocator_used_before && false {",
         ),
         (
-            "counts.roots_retired != 1 {",
-            "counts.roots_retired != 1 && false {",
+            "counts.roots_retired != 1 + pending_old_roots {",
+            "counts.roots_retired != 1 + pending_old_roots && false {",
         ),
         (
-            "counts.table_frames_recorded != expected_tables {",
-            "counts.table_frames_recorded != expected_tables && false {",
+            "counts.table_frames_recorded != expected_tables + pending_old_tables {",
+            "counts.table_frames_recorded != expected_tables + pending_old_tables && false {",
         ),
         (
-            "counts.table_frames_returned != counts.table_frames_recorded + 1 {",
-            "counts.table_frames_returned != counts.table_frames_recorded + 1 && false {",
+            "counts.table_frames_returned != counts.table_frames_recorded + counts.roots_retired {",
+            "counts.table_frames_returned != counts.table_frames_recorded + counts.roots_retired && false {",
         ),
     ] {
         let weakened = provider.replacen(needle, replacement, 1);
@@ -5557,16 +5662,16 @@ fn deliberately_broken_variants_fail_the_ratchet() {
     assert!(validate_pr1c_retirement_oracles(&unbalanced_x86_marker).is_err());
     for (needle, replacement) in [
         (
-            "counts.roots_retired != 1 {",
-            "counts.roots_retired != 1 && 1 == 0 {",
+            "counts.roots_retired != 1 + pending_old_roots {",
+            "counts.roots_retired != 1 + pending_old_roots && 1 == 0 {",
         ),
         (
-            "counts.table_frames_recorded != expected_tables {",
-            "counts.table_frames_recorded != expected_tables && 1 == 0 {",
+            "counts.table_frames_recorded != expected_tables + pending_old_tables {",
+            "counts.table_frames_recorded != expected_tables + pending_old_tables && 1 == 0 {",
         ),
         (
-            "counts.table_frames_returned != counts.table_frames_recorded + 1 {",
-            "counts.table_frames_returned != counts.table_frames_recorded + 1 && 1 == 0 {",
+            "counts.table_frames_returned != counts.table_frames_recorded + counts.roots_retired {",
+            "counts.table_frames_returned != counts.table_frames_recorded + counts.roots_retired && 1 == 0 {",
         ),
     ] {
         let weakened = provider.replacen(needle, replacement, 1);
@@ -6345,14 +6450,14 @@ fn deliberately_broken_variants_fail_the_ratchet() {
     .is_err());
     assert!(validate_x86_frame_custody_harness(
         &harness.replace(
-            "recorded=11:no_proof=0:no_arch=0:terminated=1:undecided=1:exec_unreturned=0:retired=1:returned=10:lost=0:requeued=0",
-            "recorded=3:no_proof=0:no_arch=1:terminated=1:undecided=1:exec_unreturned=0",
+            "recorded=11:no_proof=0:no_arch=0:terminated=1:undecided=1:retired=1:returned=10:lost=0:requeued=0",
+            "recorded=3:no_proof=0:no_arch=1:terminated=1:undecided=1",
         )
     )
     .is_err());
     assert!(validate_x86_frame_custody_harness(
         &harness.replace(
-            "[PT_RETIRE_COHORT:x86:children=64:retired=64:returned=640:recorded=576:lost=0:no_arch=0:undecided=0:mid_retire=0:balance=0]",
+            "[PT_RETIRE_COHORT:x86:children=64:retired=65:returned=642:recorded=577:lost=0:no_arch=0:undecided=0:mid_retire=0:balance=0]",
             "[PT_RETIRE_COHORT:x86:.*]",
         )
     )
@@ -6535,9 +6640,15 @@ fn validate_x86_direct_teardown_gates(
     let cohort_call = kernel_main
         .find("teardown::run_x86_retire_cohort_gate();")
         .ok_or("missing direct x86 cohort call")?;
-    if !(retirement_call < progress_call && progress_call < cohort_call)
+    let exec_cohort_call = kernel_main
+        .find("teardown::run_x86_exec_cohort_gate();")
+        .ok_or("missing direct x86 exec cohort call")?;
+    if !(retirement_call < progress_call
+        && progress_call < cohort_call
+        && cohort_call < exec_cohort_call)
         || !kernel_main.contains("The state-free fence check runs first")
-        || !kernel_main.contains("The cohort runs last because")
+        || !kernel_main.contains("The retire cohort follows")
+        || !kernel_main.contains("the exec cohort runs last because")
     {
         return Err("x86 teardown-gate ordering or rationale changed");
     }
@@ -6952,7 +7063,7 @@ fn validate_x86_leaf_timing_oracle_is_live(
         || !cohort.contains("TEARDOWN_MASKED_FRAMES_WALKED")
         || !cohort.contains("!= 0")
         || !harness.contains(
-            "PT_COHORT_LITERAL='[PT_RETIRE_COHORT:x86:children=64:retired=64:returned=640:recorded=576:lost=0:no_arch=0:undecided=0:mid_retire=0:balance=0]'",
+            "PT_COHORT_LITERAL='[PT_RETIRE_COHORT:x86:children=64:retired=65:returned=642:recorded=577:lost=0:no_arch=0:undecided=0:mid_retire=0:balance=0]'",
         )
     {
         return Err(());
@@ -6986,7 +7097,7 @@ fn leaf_timing_oracle_validator_rejects_an_empty_old_root_fixture() {
             if TEARDOWN_MASKED_FRAMES_WALKED.aggregate() != 0 { fail(); }
         }
     "#;
-    let harness = "PT_COHORT_LITERAL='[PT_RETIRE_COHORT:x86:children=64:retired=64:returned=640:recorded=576:lost=0:no_arch=0:undecided=0:mid_retire=0:balance=0]'";
+    let harness = "PT_COHORT_LITERAL='[PT_RETIRE_COHORT:x86:children=64:retired=65:returned=642:recorded=577:lost=0:no_arch=0:undecided=0:mid_retire=0:balance=0]'";
     assert!(validate_x86_leaf_timing_oracle_is_live(process, teardown, harness).is_err());
 }
 

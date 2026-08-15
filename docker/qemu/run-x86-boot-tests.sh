@@ -19,13 +19,14 @@ COUNT="${1:-1}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BREENIX_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 FRAME_CUSTODY_PATTERN='^\[FRAME_CUSTODY_COUNTERS:x86:double=1:stale=1:never=1:untracked=1:duplicate=3:contended=[1-9][0-9]*\]$'
-PT_CUSTODY_LITERAL='[PT_CUSTODY_COUNTERS:x86:recorded=11:no_proof=0:no_arch=0:terminated=1:undecided=1:exec_unreturned=0:retired=1:returned=10:lost=0:requeued=0]'
-PT_COHORT_LITERAL='[PT_RETIRE_COHORT:x86:children=64:retired=64:returned=640:recorded=576:lost=0:no_arch=0:undecided=0:mid_retire=0:balance=0]'
-# Ten launched test programs plus 64 retire-cohort children pinned by
-# PT_COHORT_LITERAL, and five loopback_wake_test processes (parent, reader,
-# peer, load, watchdog): 10 + 64 + 5 = 79. This is a floor, checked >= by
+PT_CUSTODY_LITERAL='[PT_CUSTODY_COUNTERS:x86:recorded=11:no_proof=0:no_arch=0:terminated=1:undecided=1:retired=1:returned=10:lost=0:requeued=0]'
+PT_COHORT_LITERAL='[PT_RETIRE_COHORT:x86:children=64:retired=65:returned=642:recorded=577:lost=0:no_arch=0:undecided=0:mid_retire=0:balance=0]'
+PT_EXEC_COHORT_LITERAL='[PT_EXEC_COHORT:x86:children=16:superseded=3:roots=64:returned=640:recorded=576:lost=0:leaf_recorded=192:leaf_released=192:leaf_returned=192:custody_refused=0:decref_unregistered=0:undecided=0:mid_retire=0:no_arch=0:balance=0]' # The returned and recorded table-frame fields are pinned from the measured run.
+# Ten launched test programs, 64 retire-cohort children, five loopback_wake_test
+# processes (parent, reader, peer, load, watchdog), and 16 exec-cohort children:
+# 10 + 64 + 5 + 16 = 95. This is a floor, checked >= by
 # scripts/x86-gate-verdict.sh; re-pin consciously.
-readonly EXPECTED_USERSPACE_EXITS=79
+readonly EXPECTED_USERSPACE_EXITS=95
 
 cd "$BREENIX_ROOT"
 cargo build --release --features boot_tests,testing,external_test_bins --bin qemu-uefi
@@ -96,6 +97,10 @@ for i in $(seq 1 "$COUNT"); do
                 "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
             && grep -qF -x "$PT_COHORT_LITERAL" \
                 "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
+            && grep -q '\[TEST:process:x86_exec_cohort:PASS\]' \
+                "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
+            && grep -qF -x "$PT_EXEC_COHORT_LITERAL" \
+                "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
             && grep -q '\[TEST:userspace:loopback_recv_wake:PASS\]' \
                 "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
             && grep -q 'TEST_TALLY:' \
@@ -135,6 +140,8 @@ for i in $(seq 1 "$COUNT"); do
         "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 1
     test "$(grep -h -c '\[TEST:process:x86_retire_cohort:PASS\]' \
         "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 1
+    test "$(grep -h -c '\[TEST:process:x86_exec_cohort:PASS\]' \
+        "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 1
     # Four scheduling tests remain deferred on x86 until #567 is fixed:
     # loopback_recv_wake_when_idle, loopback_recv_wake_under_load,
     # loopback_pump_does_not_busy_spin, and tcp_final_ack_survives_accept_publish_race.
@@ -148,6 +155,8 @@ for i in $(seq 1 "$COUNT"); do
         "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 1
     test "$(grep -h -F -x -c "$PT_COHORT_LITERAL" \
         "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 1
+    test "$(grep -h -F -x -c "$PT_EXEC_COHORT_LITERAL" \
+        "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 1
     EXPECTED_EXITS="$EXPECTED_USERSPACE_EXITS" \
         "$BREENIX_ROOT/scripts/x86-gate-verdict.sh" "$OUTPUT_DIR"/serial_*.txt
     COUNTER_LINE=$(grep -hE "$FRAME_CUSTODY_PATTERN" \
@@ -155,6 +164,7 @@ for i in $(seq 1 "$COUNT"); do
     echo "$COUNTER_LINE"
     echo "$PT_CUSTODY_LITERAL"
     echo "$PT_COHORT_LITERAL"
+    echo "$PT_EXEC_COHORT_LITERAL"
     if grep -qE '\[BOOT_TESTS:FAIL|KERNEL PANIC|panic!' \
         "$OUTPUT_DIR"/serial_*.txt; then
         exit 1

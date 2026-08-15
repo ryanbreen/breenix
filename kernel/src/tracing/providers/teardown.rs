@@ -470,10 +470,6 @@ counter!(
     PT_ROOT_DROPPED_UNDECIDED,
     "Process roots dropped without a disposition"
 );
-counter!(
-    PT_EXEC_WALK_LEASES_UNRETURNED,
-    "Recorded table leases consumed by the legacy exec walk"
-);
 counter!(PT_ROOTS_RETIRED, "Process roots retired after proof");
 counter!(
     PT_TABLE_FRAMES_RETURNED,
@@ -524,7 +520,7 @@ counter!(
     "Fatal group signals dropped for init"
 );
 
-pub const COUNTER_COUNT: usize = 73;
+pub const COUNTER_COUNT: usize = 72;
 
 /// The registration and normal-context reader inventory. Keeping one inventory
 /// makes a write-only counter structurally impossible without changing the P0
@@ -581,7 +577,6 @@ pub static COUNTERS: [&TraceCounter; COUNTER_COUNT] = [
     &PT_ROOT_ABANDONED_NO_ARCH,
     &PT_ROOT_ABANDONED_TERMINATED,
     &PT_ROOT_DROPPED_UNDECIDED,
-    &PT_EXEC_WALK_LEASES_UNRETURNED,
     &PT_ROOTS_RETIRED,
     &PT_TABLE_FRAMES_RETURNED,
     &PT_RETIRE_FRAMES_LOST,
@@ -1122,6 +1117,13 @@ pub fn deferred_fault_ring_overflow_test() -> crate::test_framework::registry::T
 #[cfg(feature = "boot_tests")]
 const RETIRE_SENTINEL_SUBTREES: usize = 3;
 
+#[cfg(all(feature = "boot_tests", target_arch = "x86_64"))]
+const EXEC_COHORT_CHILDREN: usize = 16;
+#[cfg(all(feature = "boot_tests", target_arch = "x86_64"))]
+const EXEC_COHORT_SUPERSEDED_PER_CHILD: usize = 3;
+#[cfg(all(feature = "boot_tests", target_arch = "x86_64"))]
+const EXEC_COHORT_DRAINED_AT_EXEC: usize = 2;
+
 #[cfg(feature = "boot_tests")]
 fn map_retire_sentinels(
     page_table: &mut crate::memory::process_memory::ProcessPageTable,
@@ -1314,6 +1316,10 @@ pub fn fork_exit_defer_reclaim_pairing_test() -> crate::test_framework::registry
     let mut pairing_child_count = 0;
     let pid_counts_guard = reset_boot_test_pid_counts();
     let mut expected_tables = 0u64;
+    #[cfg(target_arch = "x86_64")]
+    let mut expected_pending_old_tables = 0u64;
+    #[cfg(target_arch = "aarch64")]
+    let expected_pending_old_tables = 0u64;
     let allocator_used_before = frame_allocator_used_frames();
     let roots_retired_before = PT_ROOTS_RETIRED.aggregate();
     let table_frames_returned_before = PT_TABLE_FRAMES_RETURNED.aggregate();
@@ -1367,7 +1373,11 @@ pub fn fork_exit_defer_reclaim_pairing_test() -> crate::test_framework::registry
         #[cfg(target_arch = "x86_64")]
         let mut pending_old_page_table = if iteration == 0 {
             match crate::memory::process_memory::ProcessPageTable::new() {
-                Ok(page_table) => Some(alloc::boxed::Box::new(page_table)),
+                Ok(page_table) => {
+                    expected_pending_old_tables =
+                        page_table.recorded_table_frames_for_gate() as u64;
+                    Some(alloc::boxed::Box::new(page_table))
+                }
                 Err(_) => return TestResult::Fail("pairing old page-table allocation failed"),
             }
         } else {
@@ -1503,7 +1513,8 @@ pub fn fork_exit_defer_reclaim_pairing_test() -> crate::test_framework::registry
         .saturating_sub(refusal_counters_before[5]);
     let expected_leaves = (RETIRE_SENTINEL_SUBTREES * pairing_child_pids.len()) as u64;
     #[cfg(target_arch = "x86_64")]
-    let cohort_recorded = expected_tables * pairing_child_pids.len() as u64;
+    let cohort_recorded = expected_tables * pairing_child_pids.len() as u64
+        + expected_pending_old_tables;
     #[cfg(target_arch = "x86_64")]
     let allocator_balance = allocator_used_after as i64 - allocator_used_before as i64;
     #[cfg(target_arch = "aarch64")]
@@ -1542,8 +1553,16 @@ pub fn fork_exit_defer_reclaim_pairing_test() -> crate::test_framework::registry
     if exit_first_requests_delta < 64 || exit_repeat_requests_delta < 64 {
         return TestResult::Fail("first/repeat exit request workload deltas did not reach 64");
     }
+    let pending_old_pid = pairing_child_pids[0];
     for pid in pairing_child_pids {
         let counts = boot_test_pid_counts(pid);
+        let has_pending_old_root = pid == pending_old_pid && expected_pending_old_tables != 0;
+        let pending_old_roots = u64::from(has_pending_old_root);
+        let pending_old_tables = if has_pending_old_root {
+            expected_pending_old_tables
+        } else {
+            0
+        };
         if counts.defer_count == 0 {
             return TestResult::Fail("adapted-site per-PID defer proof was absent");
         }
@@ -1556,15 +1575,15 @@ pub fn fork_exit_defer_reclaim_pairing_test() -> crate::test_framework::registry
         if counts.reclaim_count > 1 {
             return TestResult::Fail("adapted-site per-PID reclaim proof was duplicated");
         }
-        if counts.roots_retired != 1 {
-            return TestResult::Fail("retire cohort per-PID root completion was not exactly one");
+        if counts.roots_retired != 1 + pending_old_roots {
+            return TestResult::Fail("retire cohort per-PID root completion was not exact");
         }
-        if counts.table_frames_recorded != expected_tables {
+        if counts.table_frames_recorded != expected_tables + pending_old_tables {
             return TestResult::Fail(
                 "retire cohort per-PID anti-vacuity table count was not exact",
             );
         }
-        if counts.table_frames_returned != counts.table_frames_recorded + 1 {
+        if counts.table_frames_returned != counts.table_frames_recorded + counts.roots_retired {
             return TestResult::Fail("retire cohort per-PID committed return equality failed");
         }
         if counts.table_frames_lost != 0 {
@@ -1580,8 +1599,12 @@ pub fn fork_exit_defer_reclaim_pairing_test() -> crate::test_framework::registry
     let no_arch_delta = PT_ROOT_ABANDONED_NO_ARCH
         .aggregate()
         .saturating_sub(no_arch_before);
-    if roots_retired_delta != pairing_child_pids.len() as u64
-        || table_frames_returned_delta != (expected_tables + 1) * pairing_child_pids.len() as u64
+    let pending_old_roots = u64::from(expected_pending_old_tables != 0);
+    if roots_retired_delta != pairing_child_pids.len() as u64 + pending_old_roots
+        || table_frames_returned_delta
+            != (expected_tables + 1) * pairing_child_pids.len() as u64
+                + expected_pending_old_tables
+                + pending_old_roots
         || table_frames_lost_delta != 0
         || dropped_undecided_delta != 0
         || dropped_mid_retire_delta != 0
@@ -1746,6 +1769,431 @@ pub fn run_x86_retire_cohort_gate() {
     // Deliberate fail-loud boot policy, identical to the two sibling gates: never
     // continue past a failed custody oracle and emit misleading later boot markers.
     assert!(result.is_pass(), "x86 retire cohort gate failed");
+}
+
+#[cfg(all(feature = "boot_tests", target_arch = "x86_64"))]
+pub fn exec_supersede_cohort_test() -> crate::test_framework::registry::TestResult {
+    use crate::test_framework::registry::TestResult;
+    use x86_64::VirtAddr;
+
+    let _reclaim_owner = match crate::task::process_task::BootReclaimTestGuard::enter() {
+        Ok(guard) => guard,
+        Err(_) => return TestResult::Fail("reclaim queues not quiescent at exec cohort start"),
+    };
+
+    let parent_page_table = match crate::memory::process_memory::ProcessPageTable::new() {
+        Ok(page_table) => alloc::boxed::Box::new(page_table),
+        Err(_) => return TestResult::Fail("exec cohort parent page-table allocation failed"),
+    };
+    let parent_pid = {
+        let manager_guard = crate::process::manager();
+        let Some(manager) = manager_guard.as_ref() else {
+            return TestResult::Fail("process manager unavailable for exec cohort parent PID");
+        };
+        manager.allocate_pid()
+    };
+    fn test_user_entry() {}
+    let entry = VirtAddr::new(0x0040_0000);
+    let stack_top = VirtAddr::new(0x0080_0000);
+    let stack_bottom = VirtAddr::new(0x007f_0000);
+    let tls = VirtAddr::new(0x0001_0000);
+    let mut parent_process = crate::process::Process::new(
+        parent_pid,
+        alloc::string::String::from("exec_cohort_parent"),
+        entry,
+    );
+    let mut parent_thread = crate::task::thread::Thread::new(
+        alloc::string::String::from("exec_cohort_parent_main"),
+        test_user_entry,
+        stack_top,
+        stack_bottom,
+        tls,
+        crate::task::thread::ThreadPrivilege::Kernel,
+    );
+    parent_thread.owner_pid = Some(parent_pid.as_u64());
+    parent_process.page_table = Some(parent_page_table);
+    parent_process.set_main_thread(parent_thread);
+    {
+        let mut manager_guard = crate::process::manager();
+        let Some(manager) = manager_guard.as_mut() else {
+            return TestResult::Fail("process manager unavailable for exec cohort parent insert");
+        };
+        manager.insert_process(parent_pid, parent_process);
+    }
+
+    let pid_counts_guard = reset_boot_test_pid_counts();
+    let allocator_used_before = frame_allocator_used_frames();
+    let roots_retired_before = PT_ROOTS_RETIRED.aggregate();
+    let table_frames_returned_before = PT_TABLE_FRAMES_RETURNED.aggregate();
+    let table_frames_lost_before = PT_RETIRE_FRAMES_LOST.aggregate();
+    let leaf_mappings_recorded_before = LEAF_MAPPINGS_RECORDED.aggregate();
+    let leaf_mappings_released_before = LEAF_MAPPINGS_RELEASED.aggregate();
+    let leaf_frames_returned_before = LEAF_FRAMES_RETURNED.aggregate();
+    let dropped_undecided_before = PT_ROOT_DROPPED_UNDECIDED.aggregate();
+    let dropped_mid_retire_before = PT_ROOT_DROPPED_MID_RETIRE.aggregate();
+    let no_arch_before = PT_ROOT_ABANDONED_NO_ARCH.aggregate();
+    let refusal_counters_before = [
+        FRAME_RETURN_REFUSED_DOUBLE.aggregate(),
+        FRAME_RETURN_REFUSED_STALE.aggregate(),
+        FRAME_RETURN_REFUSED_NEVER_ALLOCATED.aggregate(),
+        FRAME_RETURN_REFUSED_UNTRACKED.aggregate(),
+        FRAME_DUPLICATE_ALLOC_REFUSED.aggregate(),
+        FRAME_RETURN_REFUSED_LIVE_LEAF.aggregate(),
+        LEAF_DECREF_UNREGISTERED.aggregate(),
+        LEAF_CUSTODY_REFUSED.aggregate(),
+    ];
+
+    let mut child_pids = [0u64; EXEC_COHORT_CHILDREN];
+    let mut expected_tables = 0u64;
+    let mut first_failure: Option<&'static str> = None;
+    for child_index in 0..EXEC_COHORT_CHILDREN {
+        let mut live_page_table = match crate::memory::process_memory::ProcessPageTable::new() {
+            Ok(page_table) => alloc::boxed::Box::new(page_table),
+            Err(_) => return TestResult::Fail("exec cohort live page-table allocation failed"),
+        };
+        let live_expected_tables = match map_retire_sentinels(live_page_table.as_mut()) {
+            Ok(expected) => expected,
+            Err(_) => return TestResult::Fail("exec cohort live sentinel mapping failed"),
+        };
+        if child_index == 0 {
+            expected_tables = live_expected_tables;
+        } else if live_expected_tables != expected_tables {
+            return TestResult::Fail("exec cohort sentinel hierarchy cost changed");
+        }
+
+        let mut superseded_page_tables: alloc::vec::Vec<
+            alloc::boxed::Box<crate::memory::process_memory::ProcessPageTable>,
+        > = alloc::vec::Vec::new();
+        for _ in 0..EXEC_COHORT_SUPERSEDED_PER_CHILD {
+            let mut superseded_page_table =
+                match crate::memory::process_memory::ProcessPageTable::new() {
+                    Ok(page_table) => alloc::boxed::Box::new(page_table),
+                    Err(_) => {
+                        return TestResult::Fail(
+                            "exec cohort superseded page-table allocation failed",
+                        )
+                    }
+                };
+            let superseded_expected_tables =
+                match map_retire_sentinels(superseded_page_table.as_mut()) {
+                    Ok(expected) => expected,
+                    Err(_) => {
+                        return TestResult::Fail("exec cohort superseded sentinel mapping failed")
+                    }
+                };
+            if superseded_expected_tables != expected_tables {
+                return TestResult::Fail("exec cohort sentinel hierarchy cost changed");
+            }
+            superseded_page_tables.push(superseded_page_table);
+        }
+
+        let child = {
+            let mut manager_guard = crate::process::manager();
+            let Some(manager) = manager_guard.as_mut() else {
+                return TestResult::Fail("process manager unavailable during exec cohort fork");
+            };
+            let child_pid =
+                match manager.fork_process_with_page_table(parent_pid, None, None, live_page_table)
+                {
+                    Ok(pid) => pid,
+                    Err(_) => return TestResult::Fail("exec cohort fork failed"),
+                };
+            let Some(child_tid) = manager
+                .get_process(child_pid)
+                .and_then(|process| process.main_thread.as_ref())
+                .map(|thread| thread.id)
+            else {
+                return TestResult::Fail("exec cohort child has no main thread");
+            };
+            let Some(child_process) = manager.get_process_mut(child_pid) else {
+                return TestResult::Fail("exec cohort child disappeared before old-root install");
+            };
+            child_process
+                .pending_old_page_tables
+                .extend(superseded_page_tables);
+            (child_pid, child_tid)
+        };
+
+        child_pids[child_index] = child.0.as_u64();
+        if !track_boot_test_pid(child_pids[child_index]) {
+            return TestResult::Fail("exec cohort per-PID tally table capacity exhausted");
+        }
+
+        let child_leaf_recorded_before = LEAF_MAPPINGS_RECORDED.aggregate();
+        let child_leaf_released_before = LEAF_MAPPINGS_RELEASED.aggregate();
+        let child_leaf_returned_before = LEAF_FRAMES_RETURNED.aggregate();
+        {
+            let mut manager_guard = crate::process::manager();
+            let Some(manager) = manager_guard.as_mut() else {
+                return TestResult::Fail(
+                    "process manager unavailable during exec cohort exec-time drain",
+                );
+            };
+            let Some(child_process) = manager.get_process_mut(child.0) else {
+                return TestResult::Fail("exec cohort child disappeared before exec-time drain");
+            };
+            let mut pending = core::mem::take(&mut child_process.pending_old_page_tables);
+            let survivor_count = EXEC_COHORT_SUPERSEDED_PER_CHILD - EXEC_COHORT_DRAINED_AT_EXEC;
+            let survivors = pending.split_off(pending.len() - survivor_count);
+            child_process.pending_old_page_tables = pending;
+            // A populated superseded address space costs more than one frame, so
+            // a one-frame drain must report incomplete and leave every pending table
+            // in place for the next pass.
+            let probe_pending_before = child_process.pending_old_page_tables.len();
+            let mut probe_budget = 1u32;
+            let probe_complete = child_process.drain_old_page_tables_bounded(&mut probe_budget);
+            if (probe_complete
+                || child_process.pending_old_page_tables.len() != probe_pending_before)
+                && first_failure.is_none()
+            {
+                first_failure = Some(
+                    "exec cohort bounded drain completed a populated address space within a one-frame budget",
+                );
+            }
+            child_process.drain_old_page_tables();
+            if !child_process.pending_old_page_tables.is_empty() && first_failure.is_none() {
+                first_failure = Some("exec cohort exec-time drain did not complete");
+            }
+            child_process.pending_old_page_tables.extend(survivors);
+        }
+
+        let expected_exec_drained_leaves =
+            (EXEC_COHORT_DRAINED_AT_EXEC * RETIRE_SENTINEL_SUBTREES) as u64;
+        if LEAF_MAPPINGS_RELEASED
+            .aggregate()
+            .saturating_sub(child_leaf_released_before)
+            != expected_exec_drained_leaves
+            && first_failure.is_none()
+        {
+            first_failure = Some("exec cohort per-child leaf release equality failed");
+        }
+        if LEAF_FRAMES_RETURNED
+            .aggregate()
+            .saturating_sub(child_leaf_returned_before)
+            != expected_exec_drained_leaves
+            && first_failure.is_none()
+        {
+            first_failure = Some("exec cohort per-child leaf return equality failed");
+        }
+        if LEAF_MAPPINGS_RECORDED
+            .aggregate()
+            .saturating_sub(child_leaf_recorded_before)
+            != 0
+            && first_failure.is_none()
+        {
+            first_failure = Some("exec cohort drain recorded new leaf custody");
+        }
+
+        crate::process::exit_process_for_teardown_test(child.0, 0);
+        crate::task::process_task::ProcessScheduler::handle_thread_exit(child.1, 0);
+        {
+            let mut manager_guard = crate::process::manager();
+            let Some(manager) = manager_guard.as_mut() else {
+                return TestResult::Fail("process manager unavailable during exec cohort reap");
+            };
+            manager.remove_process(child.0);
+            if let Some(parent) = manager.get_process_mut(parent_pid) {
+                parent.children.retain(|pid| *pid != child.0);
+            }
+        }
+    }
+
+    let quiesce_deadline =
+        retirement_oracle_clock_now().saturating_add(retirement_oracle_clock_delta(5_000));
+    loop {
+        crate::task::scheduler::nudge_retirement_grace_for_test();
+        let boundary_deadline =
+            retirement_oracle_clock_now().saturating_add(retirement_oracle_clock_delta(1));
+        while retirement_oracle_clock_now() < boundary_deadline {
+            core::hint::spin_loop();
+        }
+        crate::task::process_task::boot_reclaim_deferred_process_resources();
+        if boot_test_pid_counts_complete(&child_pids) {
+            break;
+        }
+        if retirement_oracle_clock_now() >= quiesce_deadline {
+            break;
+        }
+        core::hint::spin_loop();
+    }
+
+    core::sync::atomic::fence(Ordering::Acquire);
+
+    let allocator_used_after = frame_allocator_used_frames();
+    let roots_retired_delta = PT_ROOTS_RETIRED
+        .aggregate()
+        .saturating_sub(roots_retired_before);
+    let table_frames_returned_delta = PT_TABLE_FRAMES_RETURNED
+        .aggregate()
+        .saturating_sub(table_frames_returned_before);
+    let table_frames_lost_delta = PT_RETIRE_FRAMES_LOST
+        .aggregate()
+        .saturating_sub(table_frames_lost_before);
+    let leaf_mappings_recorded_delta = LEAF_MAPPINGS_RECORDED
+        .aggregate()
+        .saturating_sub(leaf_mappings_recorded_before);
+    let leaf_mappings_released_delta = LEAF_MAPPINGS_RELEASED
+        .aggregate()
+        .saturating_sub(leaf_mappings_released_before);
+    let leaf_frames_returned_delta = LEAF_FRAMES_RETURNED
+        .aggregate()
+        .saturating_sub(leaf_frames_returned_before);
+    let dropped_undecided_delta = PT_ROOT_DROPPED_UNDECIDED
+        .aggregate()
+        .saturating_sub(dropped_undecided_before);
+    let dropped_mid_retire_delta = PT_ROOT_DROPPED_MID_RETIRE
+        .aggregate()
+        .saturating_sub(dropped_mid_retire_before);
+    let no_arch_delta = PT_ROOT_ABANDONED_NO_ARCH
+        .aggregate()
+        .saturating_sub(no_arch_before);
+    let custody_refused_delta = LEAF_CUSTODY_REFUSED
+        .aggregate()
+        .saturating_sub(refusal_counters_before[7]);
+    let decref_unregistered_delta = LEAF_DECREF_UNREGISTERED
+        .aggregate()
+        .saturating_sub(refusal_counters_before[6]);
+    let mut cohort_recorded = 0u64;
+    let mut cohort_returned = 0u64;
+    let mut cohort_roots = 0u64;
+    let mut cohort_lost = 0u64;
+    for pid in child_pids {
+        let counts = boot_test_pid_counts(pid);
+        cohort_recorded = cohort_recorded.saturating_add(counts.table_frames_recorded);
+        cohort_returned = cohort_returned.saturating_add(counts.table_frames_returned);
+        cohort_roots = cohort_roots.saturating_add(counts.roots_retired);
+        cohort_lost = cohort_lost.saturating_add(counts.table_frames_lost);
+    }
+    let allocator_balance = allocator_used_after as i64 - allocator_used_before as i64;
+
+    crate::serial_println!(
+        "[PT_EXEC_COHORT:x86:children={}:superseded={}:roots={}:returned={}:recorded={}:lost={}:leaf_recorded={}:leaf_released={}:leaf_returned={}:custody_refused={}:decref_unregistered={}:undecided={}:mid_retire={}:no_arch={}:balance={}]",
+        EXEC_COHORT_CHILDREN,
+        EXEC_COHORT_SUPERSEDED_PER_CHILD,
+        cohort_roots,
+        cohort_returned,
+        cohort_recorded,
+        cohort_lost,
+        leaf_mappings_recorded_delta,
+        leaf_mappings_released_delta,
+        leaf_frames_returned_delta,
+        custody_refused_delta,
+        decref_unregistered_delta,
+        dropped_undecided_delta,
+        dropped_mid_retire_delta,
+        no_arch_delta,
+        allocator_balance
+    );
+    if let Some(reason) = first_failure {
+        return TestResult::Fail(reason);
+    }
+    for pid in child_pids {
+        let counts = boot_test_pid_counts(pid);
+        if counts.roots_retired != EXEC_COHORT_SUPERSEDED_PER_CHILD as u64 + 1 {
+            return TestResult::Fail("exec cohort per-PID root retirement was not exact");
+        }
+        if counts.table_frames_returned
+            != counts.table_frames_recorded + EXEC_COHORT_SUPERSEDED_PER_CHILD as u64 + 1
+        {
+            return TestResult::Fail("exec cohort per-PID committed return equality failed");
+        }
+        if counts.table_frames_lost != 0 {
+            return TestResult::Fail("exec cohort per-PID frame loss was nonzero");
+        }
+        if counts.table_frames_recorded
+            != (EXEC_COHORT_SUPERSEDED_PER_CHILD as u64 + 1) * expected_tables
+        {
+            return TestResult::Fail(
+                "exec cohort per-PID anti-vacuity table count was not exact",
+            );
+        }
+    }
+    if roots_retired_delta != cohort_roots {
+        return TestResult::Fail("exec cohort global root retirement did not match the per-PID sum");
+    }
+    if table_frames_returned_delta != cohort_returned {
+        return TestResult::Fail("exec cohort global table return did not match the per-PID sum");
+    }
+    if table_frames_lost_delta != cohort_lost {
+        return TestResult::Fail("exec cohort global frame loss did not match the per-PID sum");
+    }
+    let expected_cohort_leaves = (EXEC_COHORT_CHILDREN
+        * (EXEC_COHORT_SUPERSEDED_PER_CHILD + 1)
+        * RETIRE_SENTINEL_SUBTREES) as u64;
+    if leaf_mappings_recorded_delta != expected_cohort_leaves
+        || leaf_mappings_released_delta != expected_cohort_leaves
+        || leaf_frames_returned_delta != expected_cohort_leaves
+    {
+        return TestResult::Fail("exec cohort leaf committed-effect accounting was not exact");
+    }
+    if dropped_undecided_delta != 0 || dropped_mid_retire_delta != 0 || no_arch_delta != 0 {
+        return TestResult::Fail("exec cohort dropped a root without a disposition");
+    }
+    let refusal_counters_after = [
+        FRAME_RETURN_REFUSED_DOUBLE.aggregate(),
+        FRAME_RETURN_REFUSED_STALE.aggregate(),
+        FRAME_RETURN_REFUSED_NEVER_ALLOCATED.aggregate(),
+        FRAME_RETURN_REFUSED_UNTRACKED.aggregate(),
+        FRAME_DUPLICATE_ALLOC_REFUSED.aggregate(),
+        FRAME_RETURN_REFUSED_LIVE_LEAF.aggregate(),
+        LEAF_DECREF_UNREGISTERED.aggregate(),
+        LEAF_CUSTODY_REFUSED.aggregate(),
+    ];
+    if refusal_counters_after != refusal_counters_before {
+        return TestResult::Fail("exec cohort triggered an unexpected frame refusal");
+    }
+    if allocator_used_after != allocator_used_before {
+        return TestResult::Fail("exec cohort did not return frame accounting to baseline");
+    }
+
+    let parent_reclaim = {
+        let mut manager_guard = crate::process::manager();
+        let Some(manager) = manager_guard.as_mut() else {
+            return TestResult::Fail("process manager unavailable for exec cohort parent cleanup");
+        };
+        let reclaim = {
+            let Some(parent) = manager.get_process_mut(parent_pid) else {
+                return TestResult::Fail("exec cohort parent disappeared before cleanup");
+            };
+            let reclaim = crate::task::process_task::defer_process_resources(parent);
+            crate::task::process_task::release_process_resources(parent);
+            reclaim
+        };
+        manager.remove_process(parent_pid);
+        reclaim
+    };
+    crate::task::process_task::enqueue_process_reclaim(parent_reclaim);
+    let cleanup_deadline =
+        retirement_oracle_clock_now().saturating_add(retirement_oracle_clock_delta(5_000));
+    while crate::task::process_task::boot_reclaim_locations(parent_pid.as_u64()) != (false, false) {
+        crate::task::scheduler::nudge_retirement_grace_for_test();
+        let boundary_deadline =
+            retirement_oracle_clock_now().saturating_add(retirement_oracle_clock_delta(1));
+        while retirement_oracle_clock_now() < boundary_deadline {
+            core::hint::spin_loop();
+        }
+        crate::task::process_task::boot_reclaim_deferred_process_resources();
+        if retirement_oracle_clock_now() >= cleanup_deadline {
+            break;
+        }
+    }
+    if crate::task::process_task::boot_reclaim_locations(parent_pid.as_u64()) != (false, false) {
+        return TestResult::Fail("exec cohort parent deferred cleanup did not quiesce");
+    }
+
+    core::mem::drop(pid_counts_guard);
+    crate::serial_println!("[TEST:process:x86_exec_cohort:PASS]");
+    TestResult::Pass
+}
+
+#[cfg(all(feature = "boot_tests", target_arch = "x86_64"))]
+pub fn run_x86_exec_cohort_gate() {
+    crate::serial_println!("[TEST:process:x86_exec_cohort:START]");
+    let result = exec_supersede_cohort_test();
+    if !result.is_pass() {
+        crate::serial_println!("[TEST:process:x86_exec_cohort:FAIL:{:?}]", result);
+    }
+    assert!(result.is_pass(), "x86 exec cohort gate failed");
 }
 
 // P20 retains its calibrated 45s local ceiling, but both it and P17 consume
