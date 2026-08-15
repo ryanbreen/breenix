@@ -129,6 +129,10 @@ check_fatal() {
         echo "Unhandled exception"
         return 0
     fi
+    if grep -qE "\[EXEC_LOCK_ORDER:VIOLATION" "$serial" 2>/dev/null; then
+        echo "Exec lock-order violation"
+        return 0
+    fi
     return 1
 }
 

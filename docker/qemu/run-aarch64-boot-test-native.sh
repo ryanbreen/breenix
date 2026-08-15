@@ -46,6 +46,10 @@ check_crash_markers() {
         echo "Soft lockup"
         return 0
     fi
+    if grep -qE "\[EXEC_LOCK_ORDER:VIOLATION" "$serial_file" 2>/dev/null; then
+        echo "Exec lock-order violation"
+        return 0
+    fi
     return 1
 }
 

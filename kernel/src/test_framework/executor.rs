@@ -58,6 +58,40 @@ static TESTS_RUN: [AtomicU64; SubsystemId::COUNT] = {
 
 use core::sync::atomic::AtomicU64;
 
+/// Emit the aarch64 exec lock-order counters alongside the boot-test verdict.
+///
+/// NOTE: aarch64 userland creates processes with sys_spawn, and the only execve caller is the
+/// interactive shell, which does not come up on the headless QEMU gate — so `commits` is 0 there
+/// and these counters are a latent oracle, not proof that exec ran. The enforcing gate for the
+/// exec lock order is the structural ratchet in tests/exec_lock_order_structure.rs; the
+/// `[EXEC_LOCK_ORDER:VIOLATION:*]` markers (emitted at the instant of a violation, treated as
+/// fatal by the aarch64 gate scripts) cover every surface where exec IS reached.
+#[cfg(target_arch = "aarch64")]
+fn emit_exec_lock_order_counters() -> bool {
+    use crate::task::scheduler::{
+        EXEC_COMMIT_MISSING_THREAD, EXEC_COMMIT_UNPINNED, EXEC_SCHED_COMMITS,
+        SCHED_AFTER_PM_VIOLATIONS,
+    };
+
+    let commits = EXEC_SCHED_COMMITS.load(Ordering::Relaxed);
+    let pm_held = SCHED_AFTER_PM_VIOLATIONS.load(Ordering::Relaxed);
+    let unpinned = EXEC_COMMIT_UNPINNED.load(Ordering::Relaxed);
+    let missing = EXEC_COMMIT_MISSING_THREAD.load(Ordering::Relaxed);
+    serial_println!(
+        "[EXEC_LOCK_ORDER:commits={}:pm_held={}:unpinned={}:missing={}]",
+        commits,
+        pm_held,
+        unpinned,
+        missing
+    );
+    pm_held == 0 && unpinned == 0 && missing == 0
+}
+
+#[cfg(not(target_arch = "aarch64"))]
+fn emit_exec_lock_order_counters() -> bool {
+    true
+}
+
 /// Get the current test stage
 pub fn current_stage() -> TestStage {
     TestStage::from_u8(CURRENT_STAGE.load(Ordering::Acquire)).unwrap_or(TestStage::SerialBoot)
@@ -105,12 +139,14 @@ pub fn advance_stage_marker_only(stage: TestStage) {
 
     // Emit completion marker since no tests run
     let (completed, total, failed) = get_overall_progress();
-    if failed == 0 {
+    let lock_order_clean = emit_exec_lock_order_counters();
+    if failed == 0 && lock_order_clean {
         serial_println!("[TESTS_COMPLETE:{}/{}]", completed, total);
         serial_println!("[BOOT_TESTS:PASS]");
     } else {
         serial_println!("[TESTS_COMPLETE:{}/{}:FAILED:{}]", completed, total, failed);
-        serial_println!("[BOOT_TESTS:FAIL:{}]", failed);
+        let verdict_failures = failed + u32::from(!lock_order_clean);
+        serial_println!("[BOOT_TESTS:FAIL:{}]", verdict_failures);
     }
 }
 
@@ -250,12 +286,14 @@ fn run_staged_tests(target_stage: TestStage) -> u32 {
     let all_complete = completed == total;
 
     if all_complete {
-        if failed == 0 {
+        let lock_order_clean = emit_exec_lock_order_counters();
+        if failed == 0 && lock_order_clean {
             serial_println!("[TESTS_COMPLETE:{}/{}]", completed, total);
             serial_println!("[BOOT_TESTS:PASS]");
         } else {
             serial_println!("[TESTS_COMPLETE:{}/{}:FAILED:{}]", completed, total, failed);
-            serial_println!("[BOOT_TESTS:FAIL:{}]", failed);
+            let verdict_failures = failed + u32::from(!lock_order_clean);
+            serial_println!("[BOOT_TESTS:FAIL:{}]", verdict_failures);
         }
     } else {
         serial_println!(
