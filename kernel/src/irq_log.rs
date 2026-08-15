@@ -242,7 +242,7 @@ pub fn irq_safe_log(_level: LogLevel, args: fmt::Arguments) {
     // Original implementation disabled to debug hang:
     /*
     // Check if we're in interrupt context
-    let in_interrupt = crate::per_cpu::in_interrupt();
+    let in_interrupt = crate::per_cpu::in_interrupt() || crate::per_cpu::in_softirq();
 
     if in_interrupt {
         // In interrupt context - just push to ring buffer

@@ -5,6 +5,7 @@
 use alloc::collections::BTreeMap;
 use alloc::collections::VecDeque;
 use alloc::vec::Vec;
+use core::sync::atomic::{AtomicU64, Ordering};
 use spin::Mutex;
 
 use super::ipv4::{internet_checksum, Ipv4Packet, PROTOCOL_TCP};
@@ -22,6 +23,52 @@ struct DeferredTx {
 }
 
 static DEFERRED_TX_QUEUE: Mutex<Vec<DeferredTx>> = Mutex::new(Vec::new());
+static TCP_WAKE_REJECTED: AtomicU64 = AtomicU64::new(0);
+static TCP_ACCEPT_PUBLISH_RACE_RECOVERED: AtomicU64 = AtomicU64::new(0);
+
+#[cfg(feature = "boot_tests")]
+static FORCED_CONNECTION_LOOKUP_MISSES: AtomicU64 = AtomicU64::new(0);
+
+pub fn tcp_wake_rejected() -> u64 {
+    TCP_WAKE_REJECTED.load(Ordering::Relaxed)
+}
+
+pub fn tcp_accept_publish_race_recovered() -> u64 {
+    TCP_ACCEPT_PUBLISH_RACE_RECOVERED.load(Ordering::Relaxed)
+}
+
+#[cfg(feature = "boot_tests")]
+pub fn arm_forced_connection_lookup_miss(local_port: u16, remote_port: u16, count: u32) {
+    let state = if count == 0 {
+        0
+    } else {
+        ((local_port as u64) << 48) | ((remote_port as u64) << 32) | count as u64
+    };
+    FORCED_CONNECTION_LOOKUP_MISSES.store(state, Ordering::Release);
+}
+
+#[cfg(feature = "boot_tests")]
+#[inline]
+fn take_forced_connection_lookup_miss(conn_id: &ConnectionId) -> bool {
+    let ports = ((conn_id.local_port as u64) << 48) | ((conn_id.remote_port as u64) << 32);
+    FORCED_CONNECTION_LOOKUP_MISSES
+        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |state| {
+            let remaining = state as u32;
+            if remaining == 0 || state & 0xffff_ffff_0000_0000 != ports {
+                return None;
+            }
+
+            let next = remaining - 1;
+            Some(if next == 0 { 0 } else { ports | next as u64 })
+        })
+        .is_ok()
+}
+
+#[cfg(not(feature = "boot_tests"))]
+#[inline(always)]
+fn take_forced_connection_lookup_miss(_: &ConnectionId) -> bool {
+    false
+}
 
 /// Thread-context and NetRx TCP paths both enqueue, so exclude softirq re-entry.
 fn queue_deferred_tx_with_mac(dst_ip: [u8; 4], dst_mac: Option<[u8; 6]>, tcp_segment: Vec<u8>) {
@@ -500,11 +547,14 @@ impl TcpConnection {
 }
 
 /// Pending connection (from SYN received, waiting for accept)
+#[derive(Clone)]
 pub struct PendingConnection {
     pub remote_ip: [u8; 4],
     pub remote_port: u16,
     pub recv_initial: u32,
     pub send_initial: u32,
+    /// True if an acceptor has claimed this entry and is publishing it.
+    pub claimed: bool,
     /// True if the final ACK of the 3-way handshake has been received
     pub ack_received: bool,
     /// Data received before accept() was called (buffered here until connection is created)
@@ -591,28 +641,32 @@ pub fn handle_tcp(ip: &Ipv4Packet, data: &[u8]) {
     };
 
     // First, check for an existing connection
-    if with_tcp_connections(|connections| {
-        if let Some(conn) = connections.get_mut(&conn_id) {
-            handle_tcp_for_connection(conn, &header, payload, &config);
-            true
-        } else {
-            false
-        }
-    }) {
+    if !take_forced_connection_lookup_miss(&conn_id)
+        && with_tcp_connections(|connections| {
+            if let Some(conn) = connections.get_mut(&conn_id) {
+                handle_tcp_for_connection(conn, &header, payload, &config);
+                true
+            } else {
+                false
+            }
+        })
+    {
         return;
     }
 
     // No existing connection - check for listening socket
-    if with_tcp_listeners(|listeners| {
+    let (listener_found, retry_connection_lookup) = with_tcp_listeners(|listeners| {
         if let Some(listener) = listeners.get_mut(&header.dst_port) {
             if header.flags.syn && !header.flags.ack {
                 // SYN received on listening socket - add to pending queue
                 handle_syn_for_listener(listener, ip.src_ip, &header, &config);
-            } else if header.flags.ack && !header.flags.syn {
-                // ACK received - this completes the 3-way handshake
-                // Find matching pending connection, mark it as ready, and buffer any data
-                for pending in listener.pending.iter_mut() {
-                    if pending.remote_ip == ip.src_ip && pending.remote_port == header.src_port {
+                (true, false)
+            } else if !header.flags.syn {
+                if let Some(pending) = listener.pending.iter_mut().find(|pending| {
+                    pending.remote_ip == ip.src_ip && pending.remote_port == header.src_port
+                }) {
+                    if header.flags.ack {
+                        // ACK received - this completes the 3-way handshake.
                         // Verify ACK number matches our SYN+ACK (send_initial + 1)
                         if header.ack_num == pending.send_initial.wrapping_add(1) {
                             pending.ack_received = true;
@@ -630,17 +684,49 @@ pub fn handle_tcp(ip: &Ipv4Packet, data: &[u8]) {
                                 payload.len()
                             );
                         }
-                        break;
+                    } else {
+                        log::debug!("TCP: Ignoring packet on listening socket");
                     }
+
+                    (true, false)
+                } else {
+                    (true, true)
                 }
             } else {
                 log::debug!("TCP: Ignoring packet on listening socket");
+                (true, false)
             }
-            true
         } else {
-            false
+            (false, false)
         }
-    }) {
+    });
+
+    if retry_connection_lookup {
+        // tcp_accept publishes the child under TCP_CONNECTIONS (release) before
+        // removing its pending entry under TCP_LISTENERS (release). Observing the
+        // pending entry gone after acquiring TCP_LISTENERS therefore makes the
+        // child publication visible to this subsequent TCP_CONNECTIONS acquire.
+        // One re-check is sufficient; no polling or retransmit delay is needed.
+        let recovered = with_tcp_connections(|connections| {
+            if let Some(conn) = connections.get_mut(&conn_id) {
+                handle_tcp_for_connection(conn, &header, payload, &config);
+                true
+            } else {
+                false
+            }
+        });
+        if recovered {
+            TCP_ACCEPT_PUBLISH_RACE_RECOVERED.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    if listener_found {
+        return;
+    }
+
+    // RFC 793 reset-generation rule: if an unmatched segment has RST set,
+    // drop it silently; an RST must never be answered with another RST.
+    if header.flags.rst {
         return;
     }
 
@@ -668,7 +754,7 @@ fn handle_tcp_for_connection(
                     conn.send_unack = header.ack_num;
                     conn.state = TcpState::Established;
 
-                    log::info!(
+                    log::debug!(
                         "TCP: Connection established (client) conn_id={{local={}:{}, remote={}:{}}}",
                         conn.id.local_ip[3], conn.id.local_port,
                         conn.id.remote_ip[3], conn.id.remote_port
@@ -691,7 +777,7 @@ fn handle_tcp_for_connection(
                     wake_connection_waiters(conn);
                 }
             } else if header.flags.rst {
-                log::info!("TCP: Connection refused (RST received)");
+                log::debug!("TCP: Connection refused (RST received)");
                 conn.state = TcpState::Closed;
                 // Wake threads blocked in connect() so they see the failure
                 wake_connection_waiters(conn);
@@ -703,7 +789,7 @@ fn handle_tcp_for_connection(
                 if header.ack_num == conn.send_next {
                     conn.state = TcpState::Established;
                     conn.send_unack = header.ack_num;
-                    log::info!("TCP: Connection established (server)");
+                    log::debug!("TCP: Connection established (server)");
 
                     if !payload.is_empty() && header.seq_num == conn.recv_next {
                         conn.rx_buffer.extend(payload);
@@ -1018,6 +1104,7 @@ fn handle_syn_for_listener(
         remote_port: header.src_port,
         recv_initial: header.seq_num,
         send_initial: send_isn,
+        claimed: false,
         ack_received: false,
         early_data: Vec::new(),
         recv_next: header.seq_num.wrapping_add(1), // +1 for SYN
@@ -1150,7 +1237,7 @@ pub fn tcp_connect(
         &[],
     );
 
-    log::info!(
+    log::debug!(
         "TCP: Connecting to {}.{}.{}.{}:{}",
         remote_ip[0],
         remote_ip[1],
@@ -1193,7 +1280,7 @@ pub fn tcp_listen(
         return Err("Port already in use");
     }
 
-    log::info!(
+    log::debug!(
         "TCP: Listening on port {} (backlog={})",
         local_port,
         backlog
@@ -1207,10 +1294,18 @@ pub fn tcp_accept(local_port: u16) -> Option<ConnectionId> {
     let config = super::config();
 
     let pending = with_tcp_listeners(|listeners| {
-        listeners
-            .get_mut(&local_port)
-            .and_then(|listener| listener.pending.pop_front())
+        listeners.get_mut(&local_port).and_then(|listener| {
+            listener
+                .pending
+                .iter_mut()
+                .find(|pending| !pending.claimed)
+                .map(|pending| {
+                    pending.claimed = true;
+                    pending.clone()
+                })
+        })
     })?;
+    let copied_early_data_len = pending.early_data.len();
 
     let conn_id = ConnectionId {
         local_ip: config.ip_addr,
@@ -1231,7 +1326,7 @@ pub fn tcp_accept(local_port: u16) -> Option<ConnectionId> {
         // send_next should be incremented past our SYN+ACK
         conn.send_next = pending.send_initial.wrapping_add(1);
         conn.send_unack = conn.send_next;
-        log::info!("TCP: Connection established (server, ACK already received)");
+        log::debug!("TCP: Connection established (server, ACK already received)");
     } else {
         // Still waiting for ACK — set send_next past our SYN so the ACK
         // check in handle_tcp_for_connection (SynReceived branch) matches:
@@ -1254,9 +1349,49 @@ pub fn tcp_accept(local_port: u16) -> Option<ConnectionId> {
         );
     }
 
+    // MUST precede pending removal: handle_tcp's final-ACK recovery relies on
+    // the child being published before the listener entry disappears.
     with_tcp_connections(|connections| {
         connections.insert(conn_id, conn);
     });
+
+    // MUST remain after the TCP_CONNECTIONS insert above. Once readers observe
+    // this pending entry gone, handle_tcp re-checks the published child once.
+    let final_pending = with_tcp_listeners(|listeners| {
+        let listener = listeners.get_mut(&local_port)?;
+        let position = listener.pending.iter().position(|entry| {
+            entry.remote_ip == pending.remote_ip && entry.remote_port == pending.remote_port
+        })?;
+        listener.pending.remove(position)
+    });
+
+    if let Some(final_pending) = final_pending {
+        with_tcp_connections(|connections| {
+            if let Some(conn) = connections.get_mut(&conn_id) {
+                if final_pending.ack_received && conn.state == TcpState::SynReceived {
+                    conn.state = TcpState::Established;
+                    conn.send_unack = conn.send_next;
+                    log::debug!("TCP: Connection established (server)");
+                }
+
+                if final_pending.early_data.len() > copied_early_data_len {
+                    for byte in &final_pending.early_data[copied_early_data_len..] {
+                        conn.rx_buffer.push_back(*byte);
+                    }
+                    log::debug!(
+                        "TCP: Copied {} bytes of early data to connection rx_buffer",
+                        final_pending.early_data.len() - copied_early_data_len
+                    );
+                }
+
+                let pending_advance = final_pending.recv_next.wrapping_sub(pending.recv_next);
+                let connection_advance = conn.recv_next.wrapping_sub(pending.recv_next);
+                if pending_advance > connection_advance {
+                    conn.recv_next = final_pending.recv_next;
+                }
+            }
+        });
+    }
 
     log::debug!(
         "TCP: Accepted connection from {}.{}.{}.{}:{}",
@@ -1601,8 +1736,17 @@ pub fn tcp_has_pending(local_port: u16) -> bool {
     })
 }
 
+/// Return the number of connections waiting to be accepted on a listener.
+pub fn tcp_pending_accept_depth(local_port: u16) -> usize {
+    with_tcp_listeners(|listeners| {
+        listeners
+            .get(&local_port)
+            .map(|listener| listener.pending.len())
+            .unwrap_or(0)
+    })
+}
+
 /// Get connection state for debugging and introspection
-#[allow(dead_code)] // Part of TCP debugging API
 pub fn tcp_get_state(conn_id: &ConnectionId) -> Option<TcpState> {
     with_tcp_connections(|connections| connections.get(conn_id).map(|c| c.state))
 }
@@ -1674,44 +1818,54 @@ pub fn tcp_has_data(conn_id: &ConnectionId) -> bool {
 /// Wake all threads waiting on a listening socket (called when SYN arrives)
 fn wake_accept_waiters(listener: &ListenSocket) {
     let readers: Vec<u64> = {
-        let mut waiting = listener.waiting_threads.lock();
-        waiting.drain(..).collect()
+        let waiting = listener.waiting_threads.lock();
+        waiting.iter().copied().collect()
     };
 
     if !readers.is_empty() {
-        wake_waiting_threads(&readers);
-        log::debug!("TCP: Woke {} accept waiters", readers.len());
+        let rejected = wake_waiting_threads(&readers);
+        let accepted: Vec<u64> = readers
+            .iter()
+            .copied()
+            .filter(|tid| !rejected.contains(tid))
+            .collect();
+        let mut waiting = listener.waiting_threads.lock();
+        waiting.retain(|tid| !accepted.contains(tid));
+        log::debug!("TCP: Woke {} accept waiters", accepted.len());
     }
 }
 
 /// Wake all threads waiting on a connection (called when data arrives or state changes)
 fn wake_connection_waiters(conn: &TcpConnection) {
     let readers: Vec<u64> = {
-        let mut waiting = conn.waiting_threads.lock();
-        waiting.drain(..).collect()
+        let waiting = conn.waiting_threads.lock();
+        waiting.iter().copied().collect()
     };
 
     if !readers.is_empty() {
-        wake_waiting_threads(&readers);
-        log::debug!("TCP: Woke {} connection waiters", readers.len());
+        let rejected = wake_waiting_threads(&readers);
+        let accepted: Vec<u64> = readers
+            .iter()
+            .copied()
+            .filter(|tid| !rejected.contains(tid))
+            .collect();
+        let mut waiting = conn.waiting_threads.lock();
+        waiting.retain(|tid| !accepted.contains(tid));
+        log::debug!("TCP: Woke {} connection waiters", accepted.len());
     }
 }
 
-fn wake_waiting_threads(readers: &[u64]) {
-    #[cfg(target_arch = "aarch64")]
-    if crate::per_cpu::in_interrupt() {
-        for thread_id in readers {
-            crate::task::scheduler::isr_unblock_for_io(*thread_id);
+fn wake_waiting_threads(readers: &[u64]) -> Vec<u64> {
+    let mut rejected = Vec::new();
+    for thread_id in readers {
+        if crate::task::scheduler::wake_thread_any_context(*thread_id)
+            == crate::task::scheduler::WakeOutcome::Rejected
+        {
+            TCP_WAKE_REJECTED.fetch_add(1, Ordering::Relaxed);
+            rejected.push(*thread_id);
         }
-        return;
     }
-
-    crate::task::scheduler::with_scheduler(|sched| {
-        for thread_id in readers {
-            sched.unblock(*thread_id);
-        }
-    });
-    crate::task::scheduler::set_need_resched();
+    rejected
 }
 
 /// Increment the reference count for a TCP listener (called when fd is duplicated via fork)
@@ -1748,7 +1902,7 @@ pub fn tcp_listener_ref_dec(port: u16) -> bool {
             if old == 1 {
                 // Reference count reached 0, remove the listener
                 listeners.remove(&port);
-                log::info!(
+                log::debug!(
                     "TCP: Removed listener on port {} (ref_count reached 0)",
                     port
                 );

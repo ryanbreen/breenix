@@ -8,12 +8,30 @@
 //!
 //! Note: External network connectivity may not be available in all test
 //! environments. Network tests use SKIP markers when unavailable.
+//! External fetches run in-process with an opt-in deadline at the connected-socket
+//! receive choke point. Connect-phase network failures remain explicit skips and
+//! allow later checks to run, while a connected socket that stalls mid-stream is
+//! an honest test failure.
 //!
 //! This test uses libbreenix's http module for DNS, socket, connect, send,
 //! recv operations.
 
 use libbreenix::http::{self, HttpError, MAX_RESPONSE_SIZE};
+use libbreenix::socket;
+use libbreenix::time::now_monotonic;
 use std::process;
+
+// This in-process deadline bounds an unbounded receive stall, not a fetch SLA.
+const EXTERNAL_FETCH_DEADLINE_MS: u64 = 20_000;
+
+fn monotonic_ms() -> Option<u64> {
+    let now = now_monotonic().ok()?;
+    Some(
+        (now.tv_sec.max(0) as u64)
+            .saturating_mul(1000)
+            .saturating_add((now.tv_nsec.max(0) as u64) / 1_000_000),
+    )
+}
 
 /// Print an HTTP error
 fn print_error(e: &HttpError) {
@@ -171,7 +189,17 @@ fn main() {
 
     // Test 5: HTTPS URL parsing (should attempt TLS, may fail without network)
     print!("HTTP_TEST: testing HTTPS URL parsing...\n");
-    match http::http_get_status("https://example.com/") {
+    let https_deadline_ms = monotonic_ms()
+        .unwrap_or(1)
+        .saturating_add(EXTERNAL_FETCH_DEADLINE_MS);
+    socket::arm_recv_deadline(https_deadline_ms);
+    let https_result = http::http_get_status("https://example.com/");
+    socket::disarm_recv_deadline();
+    if socket::recv_deadline_fired() {
+        print!("HTTP_TEST: https_url FAILED (external fetch stalled mid-stream; no data within 20000ms of a connected socket)\n");
+        process::exit(1);
+    }
+    match https_result {
         Ok(code) => {
             print!("HTTP_TEST: https_url OK (status {})\n", code);
         }
@@ -217,10 +245,23 @@ fn main() {
 
     // Test 7: Network integration - try to fetch example.com
     print!("HTTP_TEST: testing HTTP fetch (example.com)...\n");
+    let example_deadline_ms = monotonic_ms()
+        .unwrap_or(1)
+        .saturating_add(EXTERNAL_FETCH_DEADLINE_MS);
+    socket::arm_recv_deadline(example_deadline_ms);
     let mut buf = [0u8; MAX_RESPONSE_SIZE];
-    match http::http_get_with_buf("http://example.com/", &mut buf) {
+    let example_result = http::http_get_with_buf("http://example.com/", &mut buf);
+    socket::disarm_recv_deadline();
+    if socket::recv_deadline_fired() {
+        print!("HTTP_TEST: example_fetch FAILED (external fetch stalled mid-stream; no data within 20000ms of a connected socket)\n");
+        process::exit(1);
+    }
+    match example_result {
         Ok((response, total_len)) => {
-            print!("HTTP_TEST: received {} bytes, status={}\n", total_len, response.status_code);
+            print!(
+                "HTTP_TEST: received {} bytes, status={}\n",
+                total_len, response.status_code
+            );
 
             if response.status_code == 200 {
                 let body = &buf[response.body_offset..response.body_offset + response.body_len];
@@ -231,11 +272,20 @@ fn main() {
                     process::exit(7);
                 }
             } else if response.status_code == 301 || response.status_code == 302 {
-                print!("HTTP_TEST: example_fetch OK (redirect {})\n", response.status_code);
+                print!(
+                    "HTTP_TEST: example_fetch OK (redirect {})\n",
+                    response.status_code
+                );
             } else if response.status_code >= 200 && response.status_code < 400 {
-                print!("HTTP_TEST: example_fetch OK (status {})\n", response.status_code);
+                print!(
+                    "HTTP_TEST: example_fetch OK (status {})\n",
+                    response.status_code
+                );
             } else {
-                print!("HTTP_TEST: example_fetch FAILED (unexpected status {})\n", response.status_code);
+                print!(
+                    "HTTP_TEST: example_fetch FAILED (unexpected status {})\n",
+                    response.status_code
+                );
                 process::exit(7);
             }
         }

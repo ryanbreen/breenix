@@ -2223,6 +2223,610 @@ fn test_loopback() -> TestResult {
     }
 }
 
+fn monotonic_now_ns() -> u64 {
+    let (seconds, nanos) = crate::time::get_monotonic_time_ns();
+    seconds.saturating_mul(1_000_000_000).saturating_add(nanos)
+}
+
+fn sleep_current_thread_ms(duration_ms: u64) {
+    use crate::task::thread::ThreadState;
+
+    let Some(tid) = crate::task::scheduler::current_thread_id() else {
+        return;
+    };
+    let deadline = monotonic_now_ns().saturating_add(duration_ms.saturating_mul(1_000_000));
+    crate::task::scheduler::with_scheduler(|sched| {
+        sched.block_current_for_timer(deadline);
+    });
+    crate::task::scheduler::yield_current();
+
+    loop {
+        crate::arch_halt_with_interrupts();
+        let blocked = crate::task::scheduler::with_scheduler(|sched| {
+            sched
+                .get_thread(tid)
+                .is_some_and(|thread| thread.state == ThreadState::BlockedOnTimer)
+        })
+        .unwrap_or(false);
+        if !blocked {
+            break;
+        }
+    }
+}
+
+fn setup_loopback_tcp_pair(
+    listen_port: u16,
+    client_port: u16,
+) -> Result<(crate::net::tcp::ConnectionId, crate::net::tcp::ConnectionId), &'static str> {
+    use crate::net::tcp;
+    use crate::process::process::ProcessId;
+
+    if tcp::tcp_listen(listen_port, 4, ProcessId::new(0)).is_err() {
+        return Err("tcp_listen failed during loopback setup");
+    }
+
+    let client = match tcp::tcp_connect(client_port, [127, 0, 0, 1], listen_port, ProcessId::new(0))
+    {
+        Ok(connection) => connection,
+        Err(_) => {
+            tcp::tcp_listener_ref_dec(listen_port);
+            return Err("tcp_connect failed during loopback setup");
+        }
+    };
+
+    let deadline = crate::time::get_monotonic_time().saturating_add(1_000);
+    let mut server = None;
+    loop {
+        crate::net::drain_loopback_queue();
+        if server.is_none() {
+            server = tcp::tcp_accept(listen_port);
+        }
+        if let Some(server_connection) = server.as_ref() {
+            if tcp::tcp_is_established(&client) && tcp::tcp_is_established(server_connection) {
+                return Ok((client, *server_connection));
+            }
+        }
+        if crate::time::get_monotonic_time() >= deadline {
+            break;
+        }
+        crate::task::scheduler::yield_current();
+        crate::arch_halt_with_interrupts();
+    }
+
+    let client_state = tcp::tcp_get_state(&client);
+    let client_established = tcp::tcp_is_established(&client);
+    let server_state = server.as_ref().and_then(tcp::tcp_get_state);
+    let server_established = server.as_ref().is_some_and(tcp::tcp_is_established);
+    crate::serial_println!(
+        "loopback TCP setup timeout: client_state={:?} client_established={} server_state={:?} server_established={} listener_port={} pending_accept_depth={}",
+        client_state,
+        client_established,
+        server_state,
+        server_established,
+        listen_port,
+        tcp::tcp_pending_accept_depth(listen_port),
+    );
+
+    let Some(server) = server else {
+        crate::net::dump_loopback_state();
+        crate::task::scheduler::dump_thread_placement(
+            crate::net::loopback_pump_tid(),
+            "kloopbackd",
+        );
+        let _ = tcp::tcp_close(&client);
+        tcp::tcp_listener_ref_dec(listen_port);
+        return Err("tcp_accept failed during loopback setup");
+    };
+
+    crate::net::dump_loopback_state();
+    crate::task::scheduler::dump_thread_placement(crate::net::loopback_pump_tid(), "kloopbackd");
+    let _ = tcp::tcp_close(&client);
+    let _ = tcp::tcp_close(&server);
+    tcp::tcp_listener_ref_dec(listen_port);
+    Err("loopback TCP handshake did not establish both peers")
+}
+
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering as AtomicOrdering};
+
+static LOOPBACK_READER_TID: AtomicU64 = AtomicU64::new(0);
+static LOOPBACK_READER_WAKE_MS: AtomicU64 = AtomicU64::new(0);
+static LOOPBACK_READER_BYTES: AtomicU64 = AtomicU64::new(u64::MAX);
+static LOOPBACK_LOAD_STARTED: AtomicBool = AtomicBool::new(false);
+
+#[derive(Clone, Copy)]
+struct LoopbackWakeLossCounters {
+    tcp_wake_rejected: u64,
+    pump_wake_rejected: u64,
+    dropped_full: u64,
+    isr_buffer_full: u64,
+}
+
+impl LoopbackWakeLossCounters {
+    fn sample() -> Self {
+        Self {
+            tcp_wake_rejected: crate::net::tcp::tcp_wake_rejected(),
+            pump_wake_rejected: crate::net::loopback_pump_wake_rejected(),
+            dropped_full: crate::net::loopback_dropped_full(),
+            isr_buffer_full: crate::task::scheduler::isr_wakeup_buffer_full(),
+        }
+    }
+
+    fn increased_since(self, before: Self) -> Option<&'static str> {
+        if self.tcp_wake_rejected > before.tcp_wake_rejected {
+            Some("tcp_wake_rejected increased")
+        } else if self.pump_wake_rejected > before.pump_wake_rejected {
+            Some("loopback_pump_wake_rejected increased")
+        } else if self.dropped_full > before.dropped_full {
+            Some("loopback_dropped_full increased")
+        } else if self.isr_buffer_full > before.isr_buffer_full {
+            Some("isr_wakeup_buffer_full increased")
+        } else {
+            None
+        }
+    }
+}
+
+fn wait_for_thread_blocked(tid: u64, timeout_ms: u64) -> bool {
+    use crate::task::thread::ThreadState;
+
+    let deadline = crate::time::get_monotonic_time().saturating_add(timeout_ms);
+    while crate::time::get_monotonic_time() < deadline {
+        let blocked = crate::task::scheduler::with_scheduler(|sched| {
+            sched
+                .get_thread(tid)
+                .is_some_and(|thread| thread.state == ThreadState::Blocked)
+        })
+        .unwrap_or(false);
+        if blocked {
+            return true;
+        }
+        crate::task::scheduler::yield_current();
+        crate::arch_halt_with_interrupts();
+    }
+    false
+}
+
+fn run_loopback_recv_wake_test(listen_port: u16, client_port: u16, with_load: bool) -> TestResult {
+    let before = LoopbackWakeLossCounters::sample();
+    let result = run_loopback_recv_wake_test_inner(listen_port, client_port, with_load);
+    let after = LoopbackWakeLossCounters::sample();
+
+    if let Some(message) = after.increased_since(before) {
+        crate::net::dump_loopback_state();
+        crate::serial_println!(
+            "loopback recv wake loss: failure={} before=[tcp_rejected={} pump_rejected={} dropped_full={} isr_full={}] after=[tcp_rejected={} pump_rejected={} dropped_full={} isr_full={}]",
+            message,
+            before.tcp_wake_rejected,
+            before.pump_wake_rejected,
+            before.dropped_full,
+            before.isr_buffer_full,
+            after.tcp_wake_rejected,
+            after.pump_wake_rejected,
+            after.dropped_full,
+            after.isr_buffer_full,
+        );
+        return TestResult::Fail(message);
+    }
+
+    result
+}
+
+fn run_loopback_recv_wake_test_inner(
+    listen_port: u16,
+    client_port: u16,
+    with_load: bool,
+) -> TestResult {
+    use crate::net::tcp;
+    use crate::task::{kthread, scheduler};
+    use crate::{arch_halt_with_interrupts, arch_without_interrupts as without_interrupts};
+
+    LOOPBACK_READER_TID.store(0, AtomicOrdering::SeqCst);
+    LOOPBACK_READER_WAKE_MS.store(0, AtomicOrdering::SeqCst);
+    LOOPBACK_READER_BYTES.store(u64::MAX, AtomicOrdering::SeqCst);
+    LOOPBACK_LOAD_STARTED.store(false, AtomicOrdering::SeqCst);
+
+    let (client, server) = match setup_loopback_tcp_pair(listen_port, client_port) {
+        Ok(pair) => pair,
+        Err(message) => return TestResult::Fail(message),
+    };
+
+    let reader_client = client;
+    let reader = match kthread::kthread_run(
+        move || {
+            let Some(tid) = scheduler::current_thread_id() else {
+                return;
+            };
+            if kthread::kthread_should_stop() {
+                return;
+            }
+            LOOPBACK_READER_TID.store(tid, AtomicOrdering::SeqCst);
+            tcp::tcp_register_recv_waiter(&reader_client, tid);
+            let stop_before_wait = without_interrupts(|| {
+                if kthread::kthread_should_stop() {
+                    return true;
+                }
+                scheduler::with_scheduler(|sched| {
+                    sched.block_current();
+                });
+                if tcp::tcp_has_data(&reader_client) || kthread::kthread_should_stop() {
+                    scheduler::with_scheduler(|sched| {
+                        sched.unblock(tid);
+                    });
+                }
+                false
+            });
+            if stop_before_wait {
+                tcp::tcp_unregister_recv_waiter(&reader_client, tid);
+                return;
+            }
+            scheduler::yield_current();
+
+            loop {
+                arch_halt_with_interrupts();
+                let blocked = scheduler::with_scheduler(|sched| {
+                    sched.get_thread(tid).is_some_and(|thread| {
+                        thread.state == crate::task::thread::ThreadState::Blocked
+                    })
+                })
+                .unwrap_or(false);
+                if !blocked {
+                    break;
+                }
+            }
+
+            LOOPBACK_READER_WAKE_MS
+                .store(crate::time::get_monotonic_time(), AtomicOrdering::SeqCst);
+            let mut buffer = [0u8; 16];
+            if let Ok(received) = tcp::tcp_recv(&reader_client, &mut buffer) {
+                LOOPBACK_READER_BYTES.store(received as u64, AtomicOrdering::SeqCst);
+            }
+        },
+        "loopback-reader",
+    ) {
+        Ok(handle) => handle,
+        Err(_) => {
+            let _ = tcp::tcp_close(&client);
+            let _ = tcp::tcp_close(&server);
+            tcp::tcp_listener_ref_dec(listen_port);
+            return TestResult::Fail("failed to spawn loopback reader kthread");
+        }
+    };
+
+    let reader_tid_deadline = crate::time::get_monotonic_time().saturating_add(1_000);
+    let reader_tid = loop {
+        let tid = LOOPBACK_READER_TID.load(AtomicOrdering::SeqCst);
+        if tid != 0 {
+            break tid;
+        }
+        if crate::time::get_monotonic_time() >= reader_tid_deadline {
+            let _ = kthread::kthread_stop(&reader);
+            let _ = kthread::kthread_join(&reader);
+            let _ = tcp::tcp_close(&client);
+            let _ = tcp::tcp_close(&server);
+            tcp::tcp_listener_ref_dec(listen_port);
+            return TestResult::Fail("reader did not publish its thread id");
+        }
+        scheduler::yield_current();
+        arch_halt_with_interrupts();
+    };
+
+    if !wait_for_thread_blocked(reader_tid, 1_000) {
+        let _ = kthread::kthread_stop(&reader);
+        let _ = kthread::kthread_join(&reader);
+        tcp::tcp_unregister_recv_waiter(&client, reader_tid);
+        let _ = tcp::tcp_close(&client);
+        let _ = tcp::tcp_close(&server);
+        tcp::tcp_listener_ref_dec(listen_port);
+        return TestResult::Fail("reader did not reach Blocked state");
+    }
+
+    let load = if with_load {
+        match kthread::kthread_run(
+            move || {
+                LOOPBACK_LOAD_STARTED.store(true, AtomicOrdering::SeqCst);
+                let load_deadline = monotonic_now_ns().saturating_add(300_000_000);
+                while monotonic_now_ns() < load_deadline && !kthread::kthread_should_stop() {
+                    scheduler::yield_current();
+                    core::hint::spin_loop();
+                }
+            },
+            "loopback-load",
+        ) {
+            Ok(handle) => Some(handle),
+            Err(_) => {
+                let _ = kthread::kthread_stop(&reader);
+                let _ = kthread::kthread_join(&reader);
+                tcp::tcp_unregister_recv_waiter(&client, reader_tid);
+                let _ = tcp::tcp_close(&client);
+                let _ = tcp::tcp_close(&server);
+                tcp::tcp_listener_ref_dec(listen_port);
+                return TestResult::Fail("failed to spawn loopback load kthread");
+            }
+        }
+    } else {
+        None
+    };
+
+    if with_load {
+        let load_start_deadline = crate::time::get_monotonic_time().saturating_add(1_000);
+        while !LOOPBACK_LOAD_STARTED.load(AtomicOrdering::SeqCst) {
+            if crate::time::get_monotonic_time() >= load_start_deadline {
+                let _ = kthread::kthread_stop(&reader);
+                let _ = kthread::kthread_join(&reader);
+                if let Some(handle) = &load {
+                    let _ = kthread::kthread_stop(handle);
+                    let _ = kthread::kthread_join(handle);
+                }
+                tcp::tcp_unregister_recv_waiter(&client, reader_tid);
+                let _ = tcp::tcp_close(&client);
+                let _ = tcp::tcp_close(&server);
+                tcp::tcp_listener_ref_dec(listen_port);
+                return TestResult::Fail("loopback load kthread did not start");
+            }
+            scheduler::yield_current();
+            arch_halt_with_interrupts();
+        }
+    }
+
+    if tcp::tcp_send(&server, b"545") != Ok(3) {
+        let _ = kthread::kthread_stop(&reader);
+        let _ = kthread::kthread_join(&reader);
+        if let Some(handle) = &load {
+            let _ = kthread::kthread_stop(handle);
+            let _ = kthread::kthread_join(handle);
+        }
+        tcp::tcp_unregister_recv_waiter(&client, reader_tid);
+        let _ = tcp::tcp_close(&client);
+        let _ = tcp::tcp_close(&server);
+        tcp::tcp_listener_ref_dec(listen_port);
+        return TestResult::Fail("tcp_send failed in loopback wake test");
+    }
+
+    sleep_current_thread_ms(200);
+
+    let wake_ms = LOOPBACK_READER_WAKE_MS.load(AtomicOrdering::SeqCst);
+    let received = LOOPBACK_READER_BYTES.load(AtomicOrdering::SeqCst);
+    let queue_depth = crate::net::loopback_queue_depth_for_test();
+    let client_has_data = tcp::tcp_has_data(&client);
+    let reader_state =
+        scheduler::with_scheduler(|sched| sched.get_thread(reader_tid).map(|thread| thread.state));
+    let _ = kthread::kthread_stop(&reader);
+    let _ = kthread::kthread_join(&reader);
+    if let Some(handle) = &load {
+        let _ = kthread::kthread_stop(handle);
+        let _ = kthread::kthread_join(handle);
+    }
+    tcp::tcp_unregister_recv_waiter(&client, reader_tid);
+    let _ = tcp::tcp_close(&client);
+    let _ = tcp::tcp_close(&server);
+    tcp::tcp_listener_ref_dec(listen_port);
+
+    let diagnostic_message = if queue_depth > 0 {
+        "pump never drained: packet still queued when the reader timed out"
+    } else if client_has_data {
+        "delivery landed but the recv waiter was never woken"
+    } else {
+        "segment vanished: delivered but never reached the connection rx buffer"
+    };
+
+    if wake_ms == 0 {
+        crate::net::dump_loopback_state();
+        crate::task::scheduler::dump_thread_placement(reader_tid, "loopback-reader");
+        crate::serial_println!(
+            "loopback recv wake diagnostic: classification={} tcp_wake_rejected={} pump_wake_rejected={} dropped_full={} isr_buffer_full={} reader_tid={} reader_state={:?}",
+            diagnostic_message,
+            tcp::tcp_wake_rejected(),
+            crate::net::loopback_pump_wake_rejected(),
+            crate::net::loopback_dropped_full(),
+            crate::task::scheduler::isr_wakeup_buffer_full(),
+            reader_tid,
+            reader_state,
+        );
+        return TestResult::Fail(diagnostic_message);
+    }
+    if received != 3 {
+        crate::net::dump_loopback_state();
+        crate::task::scheduler::dump_thread_placement(reader_tid, "loopback-reader");
+        crate::serial_println!(
+            "loopback recv wake diagnostic: classification={} tcp_wake_rejected={} pump_wake_rejected={} dropped_full={} isr_buffer_full={} reader_tid={} reader_state={:?}",
+            diagnostic_message,
+            tcp::tcp_wake_rejected(),
+            crate::net::loopback_pump_wake_rejected(),
+            crate::net::loopback_dropped_full(),
+            crate::task::scheduler::isr_wakeup_buffer_full(),
+            reader_tid,
+            reader_state,
+        );
+        return TestResult::Fail("reader woke without receiving the 3 loopback bytes");
+    }
+
+    TestResult::Pass
+}
+
+fn loopback_recv_wake_when_idle() -> TestResult {
+    run_loopback_recv_wake_test(54_510, 54_511, false)
+}
+
+fn loopback_recv_wake_under_load() -> TestResult {
+    run_loopback_recv_wake_test(54_520, 54_521, true)
+}
+
+fn loopback_pump_does_not_busy_spin() -> TestResult {
+    let before = crate::net::loopback_pump_passes();
+    sleep_current_thread_ms(200);
+    let passes = crate::net::loopback_pump_passes().saturating_sub(before);
+    if passes > 4 {
+        return TestResult::Fail("kloopbackd ran more than four passes without traffic");
+    }
+    TestResult::Pass
+}
+
+fn loopback_wake_loss_counters_are_zero() -> TestResult {
+    let counters = LoopbackWakeLossCounters::sample();
+    if counters.tcp_wake_rejected != 0 {
+        return TestResult::Fail("tcp_wake_rejected is nonzero");
+    }
+    if counters.pump_wake_rejected != 0 {
+        return TestResult::Fail("loopback_pump_wake_rejected is nonzero");
+    }
+    if counters.dropped_full != 0 {
+        return TestResult::Fail("loopback_dropped_full is nonzero");
+    }
+    if counters.isr_buffer_full != 0 {
+        return TestResult::Fail("isr_wakeup_buffer_full is nonzero");
+    }
+    TestResult::Pass
+}
+
+fn tcp_final_ack_survives_accept_publish_race() -> TestResult {
+    use crate::net::{ipv4, tcp};
+    use crate::process::process::ProcessId;
+
+    const LISTEN_PORT: u16 = 54_530;
+    const CLIENT_PORT: u16 = 54_531;
+    const CLIENT_ISN: u32 = 0x5453_0000;
+    const LOOPBACK_QUIESCE_ATTEMPTS: usize = 8;
+
+    let mut loopback_quiescent = false;
+    for _ in 0..LOOPBACK_QUIESCE_ATTEMPTS {
+        crate::net::drain_loopback_queue();
+        crate::task::scheduler::yield_current();
+        if crate::net::loopback_queue_depth_for_test() == 0 {
+            loopback_quiescent = true;
+            break;
+        }
+    }
+    if !loopback_quiescent {
+        return TestResult::Fail(
+            "loopback queue did not quiesce before the final-ACK race oracle",
+        );
+    }
+
+    if tcp::tcp_listen(LISTEN_PORT, 4, ProcessId::new(0)).is_err() {
+        return TestResult::Fail("tcp_listen failed in final-ACK race oracle");
+    }
+
+    let mut child = None;
+    let result = (|| {
+        let server_ip = crate::net::config().ip_addr;
+        let client_ip = [127, 0, 0, 1];
+        let syn_segment = tcp::build_tcp_packet_with_checksum(
+            client_ip,
+            server_ip,
+            CLIENT_PORT,
+            LISTEN_PORT,
+            CLIENT_ISN,
+            0,
+            tcp::TcpFlags::syn(),
+            65_535,
+            &[],
+        );
+        let syn_packet = ipv4::Ipv4Packet::build(
+            client_ip,
+            server_ip,
+            ipv4::PROTOCOL_TCP,
+            &syn_segment,
+        );
+        let Some(syn_ip) = ipv4::Ipv4Packet::parse(&syn_packet) else {
+            return TestResult::Fail("failed to parse synthetic SYN IPv4 packet");
+        };
+        tcp::handle_tcp(&syn_ip, syn_ip.payload);
+        if tcp::tcp_pending_accept_depth(LISTEN_PORT) != 1 {
+            return TestResult::Fail("synthetic SYN did not create one pending connection");
+        }
+
+        let Some(server) = tcp::tcp_accept(LISTEN_PORT) else {
+            return TestResult::Fail("tcp_accept failed in final-ACK race oracle");
+        };
+        child = Some(server);
+        if tcp::tcp_pending_accept_depth(LISTEN_PORT) != 0 {
+            return TestResult::Fail("tcp_accept did not remove the pending connection");
+        }
+        if tcp::tcp_get_state(&server) != Some(tcp::TcpState::SynReceived) {
+            return TestResult::Fail("accepted child was not waiting for the final ACK");
+        }
+
+        let Some(server_ack) = tcp::with_tcp_connections(|connections| {
+            connections.get(&server).map(|connection| connection.send_next)
+        }) else {
+            return TestResult::Fail("accepted child was not published");
+        };
+        let recovered_before = tcp::tcp_accept_publish_race_recovered();
+        tcp::arm_forced_connection_lookup_miss(LISTEN_PORT, CLIENT_PORT, 1);
+
+        let ack_segment = tcp::build_tcp_packet_with_checksum(
+            client_ip,
+            server_ip,
+            CLIENT_PORT,
+            LISTEN_PORT,
+            CLIENT_ISN.wrapping_add(1),
+            server_ack,
+            tcp::TcpFlags::ack(),
+            65_535,
+            &[],
+        );
+        let ack_packet = ipv4::Ipv4Packet::build(
+            client_ip,
+            server_ip,
+            ipv4::PROTOCOL_TCP,
+            &ack_segment,
+        );
+        let Some(ack_ip) = ipv4::Ipv4Packet::parse(&ack_packet) else {
+            tcp::arm_forced_connection_lookup_miss(LISTEN_PORT, CLIENT_PORT, 0);
+            return TestResult::Fail("failed to parse synthetic ACK IPv4 packet");
+        };
+        tcp::handle_tcp(&ack_ip, ack_ip.payload);
+        tcp::arm_forced_connection_lookup_miss(LISTEN_PORT, CLIENT_PORT, 0);
+
+        if tcp::tcp_get_state(&server) != Some(tcp::TcpState::Established) {
+            return TestResult::Fail("final ACK did not establish the accepted child");
+        }
+        if tcp::tcp_accept_publish_race_recovered() != recovered_before.wrapping_add(1) {
+            return TestResult::Fail("final ACK did not take exactly one recovery path");
+        }
+
+        TestResult::Pass
+    })();
+
+    tcp::arm_forced_connection_lookup_miss(LISTEN_PORT, CLIENT_PORT, 0);
+    if let Some(server) = child {
+        let _ = tcp::tcp_close(&server);
+    }
+    tcp::tcp_listener_ref_dec(LISTEN_PORT);
+    tcp::drain_deferred_tx();
+    crate::net::drain_loopback_queue();
+    result
+}
+
+/// Runs the sole loopback gate that x86 can execute safely in this boot window.
+///
+/// Four `Arch::Any` registry tests remain excluded from the direct x86 path until
+/// #567 fixes corrupted kthread/boot-thread resume contexts:
+/// - `loopback_recv_wake_when_idle` passes, then the boot page-faults on an
+///   `INSTRUCTION_FETCH` at RIP `0x0`.
+/// - `loopback_recv_wake_under_load` page-faults on a write to `0x100002590aa`.
+/// - `loopback_pump_does_not_busy_spin` page-faults while fetching an instruction
+///   from a data address.
+/// - `tcp_final_ack_survives_accept_publish_race` resumes at poison-filled RIP
+///   `0x4444446053e6`.
+///
+/// Any test that schedules in this window currently poisons the x86 boot, so this
+/// path runs only `loopback_wake_loss_counters_are_zero`, which does no scheduling.
+#[cfg(all(feature = "boot_tests", target_arch = "x86_64"))]
+pub fn run_x86_loopback_gates() {
+    crate::serial_println!("[TEST:network:loopback_wake_loss_counters_are_zero:START]");
+    let result = loopback_wake_loss_counters_are_zero();
+    match result {
+        TestResult::Pass => {
+            crate::serial_println!("[TEST:network:loopback_wake_loss_counters_are_zero:PASS]")
+        }
+        _ => crate::serial_println!(
+            "[TEST:network:loopback_wake_loss_counters_are_zero:FAIL:{}]",
+            result.failure_message().unwrap_or("test failed")
+        ),
+    }
+}
+
 /// Test NetRx softirq registration and dispatch on ARM64.
 ///
 /// This test verifies that:
@@ -2295,12 +2899,24 @@ fn net_lock_guard_masks_interrupt_source() -> TestResult {
         if crate::per_cpu::in_interrupt() {
             return TestResult::Fail("net lock guard test started in interrupt context");
         }
+        if crate::per_cpu::in_softirq() {
+            return TestResult::Fail("net lock guard test started with bottom halves disabled");
+        }
+        if crate::per_cpu::in_serving_softirq() {
+            return TestResult::Fail("net lock guard test started while serving softirq");
+        }
 
         let initial_preempt_count = crate::per_cpu::preempt_count();
         let net_rx_bit = 1u32 << SoftirqType::NetRx.as_nr();
         let guard = crate::net::net_lock_guard();
         if !crate::per_cpu::in_softirq() {
             return TestResult::Fail("NetLockGuard did not enter bottom-half exclusion");
+        }
+        if crate::per_cpu::in_interrupt() {
+            return TestResult::Fail("NetLockGuard falsely entered interrupt execution context");
+        }
+        if crate::per_cpu::in_serving_softirq() {
+            return TestResult::Fail("NetLockGuard falsely entered softirq execution context");
         }
 
         let _handler_restore = NetSoftirqHandlerRestore;
@@ -2331,6 +2947,12 @@ fn net_lock_guard_masks_interrupt_source() -> TestResult {
         }
         if crate::per_cpu::in_softirq() {
             return TestResult::Fail("bottom-half exclusion remained active after guard drop");
+        }
+        if crate::per_cpu::in_interrupt() {
+            return TestResult::Fail("interrupt execution context remained after guard drop");
+        }
+        if crate::per_cpu::in_serving_softirq() {
+            return TestResult::Fail("softirq execution context remained after guard drop");
         }
         if crate::per_cpu::preempt_count() != initial_preempt_count {
             return TestResult::Fail("NetLockGuard did not restore the preempt count");
@@ -2749,6 +3371,31 @@ fn test_scheduler_init() -> TestResult {
         }
         None => TestResult::Fail("scheduler not initialized or no current thread"),
     }
+}
+
+/// Verify that scheduler placement never strands a ready thread on an offline CPU.
+fn test_wakes_are_placed_on_online_cpus() -> TestResult {
+    use crate::task::scheduler;
+
+    if scheduler::enqueue_offline_reclaimed() != 0 {
+        return TestResult::Fail("scheduler reclaimed a thread from an offline CPU ready queue");
+    }
+
+    let Some((cpu, _occupancy)) = scheduler::offline_queue_occupancy() else {
+        return TestResult::Pass;
+    };
+
+    TestResult::Fail(match cpu {
+        0 => "thread parked in offline scheduler ready queue 0",
+        1 => "thread parked in offline scheduler ready queue 1",
+        2 => "thread parked in offline scheduler ready queue 2",
+        3 => "thread parked in offline scheduler ready queue 3",
+        4 => "thread parked in offline scheduler ready queue 4",
+        5 => "thread parked in offline scheduler ready queue 5",
+        6 => "thread parked in offline scheduler ready queue 6",
+        7 => "thread parked in offline scheduler ready queue 7",
+        _ => "thread parked in an out-of-range offline scheduler ready queue",
+    })
 }
 
 /// Test kernel thread creation.
@@ -5311,6 +5958,11 @@ static FILESYSTEM_TESTS: &[TestDef] = &[
 /// - socket_creation: Test UDP socket creation and cleanup
 /// - tcp_socket_creation: Test TCP socket FdKind variants (ARM64 parity)
 /// - loopback: Test loopback packet path
+/// - loopback_wake_loss_counters_are_zero: Assert no wake or queue loss was recorded
+/// - loopback_recv_wake_when_idle: Verify blocked TCP recv wakes with only idle runnable
+/// - loopback_recv_wake_under_load: Verify the pump delivers while idle never runs
+/// - loopback_pump_does_not_busy_spin: Verify an empty pump blocks instead of polling
+/// - tcp_final_ack_survives_accept_publish_race: Prove accept cannot lose the final ACK
 /// - net_lock_guard_masks_interrupt_source: Prove per-arch network exclusion
 static NETWORK_TESTS: &[TestDef] = &[
     TestDef {
@@ -5346,6 +5998,41 @@ static NETWORK_TESTS: &[TestDef] = &[
         func: test_loopback,
         arch: Arch::Any,
         timeout_ms: 10000,
+        stage: TestStage::EarlyBoot,
+    },
+    TestDef {
+        name: "loopback_wake_loss_counters_are_zero",
+        func: loopback_wake_loss_counters_are_zero,
+        arch: Arch::Any,
+        timeout_ms: 5000,
+        stage: TestStage::EarlyBoot,
+    },
+    TestDef {
+        name: "loopback_recv_wake_when_idle",
+        func: loopback_recv_wake_when_idle,
+        arch: Arch::Any,
+        timeout_ms: 15000,
+        stage: TestStage::EarlyBoot,
+    },
+    TestDef {
+        name: "loopback_recv_wake_under_load",
+        func: loopback_recv_wake_under_load,
+        arch: Arch::Any,
+        timeout_ms: 15000,
+        stage: TestStage::EarlyBoot,
+    },
+    TestDef {
+        name: "loopback_pump_does_not_busy_spin",
+        func: loopback_pump_does_not_busy_spin,
+        arch: Arch::Any,
+        timeout_ms: 15000,
+        stage: TestStage::EarlyBoot,
+    },
+    TestDef {
+        name: "tcp_final_ack_survives_accept_publish_race",
+        func: tcp_final_ack_survives_accept_publish_race,
+        arch: Arch::Any,
+        timeout_ms: 5000,
         stage: TestStage::EarlyBoot,
     },
     TestDef {
@@ -5699,6 +6386,13 @@ static SYSCALL_TESTS: &[TestDef] = &[
 /// - kthread_spawn_verify: Verify kthread spawning works
 /// - workqueue_operational: Verify workqueue is operational
 static SCHEDULER_TESTS: &[TestDef] = &[
+    TestDef {
+        name: "wakes_are_placed_on_online_cpus",
+        func: test_wakes_are_placed_on_online_cpus,
+        arch: Arch::Any,
+        timeout_ms: 2000,
+        stage: TestStage::EarlyBoot,
+    },
     TestDef {
         name: "executor_exists",
         func: test_executor_exists,

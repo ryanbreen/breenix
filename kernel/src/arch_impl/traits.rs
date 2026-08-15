@@ -160,8 +160,23 @@ pub trait PerCpuOps {
     /// May trigger rescheduling if count reaches zero and reschedule is needed.
     fn preempt_enable();
 
-    /// Check if currently in any interrupt context.
+    /// Disable bottom-half execution without claiming softirq execution context.
+    fn bh_disable();
+
+    /// Re-enable bottom-half execution.
+    fn bh_enable();
+
+    /// Check if currently executing a hardware interrupt, NMI, or softirq.
     fn in_interrupt() -> bool;
+
+    /// Check if currently executing a softirq (not merely bottom-half disabled).
+    fn in_serving_softirq() -> bool;
+
+    /// Return the complete softirq field, including bottom-half disables.
+    fn softirq_count() -> u32;
+
+    /// Check if softirq execution or bottom-half disable nesting is active.
+    fn in_softirq() -> bool;
 
     /// Check if currently in hard IRQ context.
     fn in_hardirq() -> bool;

@@ -15,7 +15,8 @@ use crate::arch_impl::aarch64::constants::{
     PERCPU_EXCEPTION_CLEANUP_CONTEXT_OFFSET, PERCPU_IDLE_THREAD_OFFSET, PERCPU_KERNEL_CR3_OFFSET,
     PERCPU_KERNEL_STACK_TOP_OFFSET, PERCPU_NEED_RESCHED_OFFSET, PERCPU_NEXT_CR3_OFFSET,
     PERCPU_PREEMPT_COUNT_OFFSET, PERCPU_SAVED_PROCESS_CR3_OFFSET, PERCPU_SOFTIRQ_PENDING_OFFSET,
-    PERCPU_TSS_OFFSET, PERCPU_USER_RSP_SCRATCH_OFFSET, PREEMPT_ACTIVE, SOFTIRQ_MASK, SOFTIRQ_SHIFT,
+    PERCPU_TSS_OFFSET, PERCPU_USER_RSP_SCRATCH_OFFSET, PREEMPT_ACTIVE, SOFTIRQ_DISABLE_OFFSET,
+    SOFTIRQ_MASK, SOFTIRQ_OFFSET,
 };
 use crate::arch_impl::traits::PerCpuOps;
 use core::sync::atomic::{compiler_fence, AtomicU32, Ordering};
@@ -147,11 +148,44 @@ impl PerCpuOps for Aarch64PerCpu {
         }
     }
 
-    /// Check if we're in any interrupt context (hardirq or softirq)
+    #[inline(always)]
+    fn bh_disable() {
+        compiler_fence(Ordering::Acquire);
+        if let Some(atomic) = percpu_atomic_u32(PERCPU_PREEMPT_COUNT_OFFSET) {
+            atomic.fetch_add(SOFTIRQ_DISABLE_OFFSET, Ordering::Relaxed);
+        }
+        compiler_fence(Ordering::Release);
+    }
+
+    #[inline(always)]
+    fn bh_enable() {
+        compiler_fence(Ordering::Acquire);
+        if let Some(atomic) = percpu_atomic_u32(PERCPU_PREEMPT_COUNT_OFFSET) {
+            atomic.fetch_sub(SOFTIRQ_DISABLE_OFFSET, Ordering::Relaxed);
+        }
+        compiler_fence(Ordering::Release);
+    }
+
+    /// Check if we're executing a hardirq, NMI, or softirq.
     #[inline]
     fn in_interrupt() -> bool {
         let count = Self::preempt_count();
-        (count & (HARDIRQ_MASK | SOFTIRQ_MASK)) != 0
+        (count & (HARDIRQ_MASK | NMI_MASK)) != 0 || (count & SOFTIRQ_OFFSET) != 0
+    }
+
+    #[inline(always)]
+    fn in_serving_softirq() -> bool {
+        (Self::preempt_count() & SOFTIRQ_OFFSET) != 0
+    }
+
+    #[inline(always)]
+    fn softirq_count() -> u32 {
+        Self::preempt_count() & SOFTIRQ_MASK
+    }
+
+    #[inline(always)]
+    fn in_softirq() -> bool {
+        Self::softirq_count() != 0
     }
 
     /// Check if we're in hardirq context
@@ -408,7 +442,7 @@ impl Aarch64PerCpu {
     pub unsafe fn softirq_enter() {
         compiler_fence(Ordering::Acquire);
         if let Some(atomic) = percpu_atomic_u32(PERCPU_PREEMPT_COUNT_OFFSET) {
-            atomic.fetch_add(1 << SOFTIRQ_SHIFT, Ordering::Relaxed);
+            atomic.fetch_add(SOFTIRQ_OFFSET, Ordering::Relaxed);
         }
         compiler_fence(Ordering::Release);
     }
@@ -418,7 +452,7 @@ impl Aarch64PerCpu {
     pub unsafe fn softirq_exit() {
         compiler_fence(Ordering::Acquire);
         if let Some(atomic) = percpu_atomic_u32(PERCPU_PREEMPT_COUNT_OFFSET) {
-            atomic.fetch_sub(1 << SOFTIRQ_SHIFT, Ordering::Relaxed);
+            atomic.fetch_sub(SOFTIRQ_OFFSET, Ordering::Relaxed);
         }
         compiler_fence(Ordering::Release);
     }
@@ -441,13 +475,6 @@ impl Aarch64PerCpu {
             atomic.fetch_sub(1 << NMI_SHIFT, Ordering::Relaxed);
         }
         compiler_fence(Ordering::Release);
-    }
-
-    /// Check if in softirq context.
-    #[inline(always)]
-    pub fn in_softirq() -> bool {
-        let count = Self::preempt_count();
-        (count & SOFTIRQ_MASK) != 0
     }
 
     /// Check if in NMI context.

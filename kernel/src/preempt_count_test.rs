@@ -79,12 +79,47 @@ pub fn test_preempt_count_comprehensive() {
     log::info!("  After softirq_enter: {:#x}", in_softirq);
     assert!(in_softirq == 0x100, "Should have SOFTIRQ bit set");
     assert!(per_cpu::in_softirq(), "Should be in softirq");
+    assert!(per_cpu::in_serving_softirq(), "Should be serving a softirq");
+    assert!(
+        per_cpu::in_interrupt(),
+        "Softirq execution is interrupt context"
+    );
 
     per_cpu::softirq_exit();
     let after_softirq = per_cpu::preempt_count();
     log::info!("  After softirq_exit: {:#x}", after_softirq);
     assert!(after_softirq == 0, "Count should be 0 after softirq exit");
     assert!(!per_cpu::in_softirq(), "Should not be in softirq");
+
+    // Test 5b: Bottom-half disable is not softirq execution context
+    log::info!("TEST 5b: Testing bh_disable/bh_enable context split...");
+    per_cpu::bh_disable();
+    let bh_disabled = per_cpu::preempt_count();
+    log::info!("  After bh_disable: {:#x}", bh_disabled);
+    assert!(bh_disabled == 0x200, "Should have BH-disable count set");
+    assert!(per_cpu::softirq_count() == 0x200, "Softirq field mismatch");
+    assert!(per_cpu::in_softirq(), "BH disable belongs to softirq count");
+    assert!(
+        !per_cpu::in_serving_softirq(),
+        "BH disable must not claim softirq execution"
+    );
+    assert!(
+        !per_cpu::in_interrupt(),
+        "BH-disabled thread context is not interrupt execution"
+    );
+    assert!(
+        per_cpu::preempt_count() > 0,
+        "BH disable prevents preemption"
+    );
+    per_cpu::bh_enable();
+    assert!(
+        per_cpu::preempt_count() == 0,
+        "bh_enable should restore preempt count"
+    );
+    assert!(
+        !per_cpu::in_softirq(),
+        "bh_enable should clear softirq count"
+    );
 
     // Test 6: NMI context
     log::info!("TEST 6: Testing NMI context...");
@@ -155,6 +190,7 @@ pub fn test_preempt_count_comprehensive() {
     per_cpu::softirq_enter();
     assert!(per_cpu::in_interrupt(), "In interrupt (softirq)");
     assert!(per_cpu::in_softirq(), "In softirq");
+    assert!(per_cpu::in_serving_softirq(), "Serving softirq");
     per_cpu::softirq_exit();
 
     // Test 10: Spinlock integration

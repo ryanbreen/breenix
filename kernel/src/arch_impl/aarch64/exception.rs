@@ -1975,7 +1975,7 @@ fn check_need_resched_on_irq_exit() {
 
     // Check if we're still in interrupt context (nested IRQs)
     // Note: Timer interrupt already decremented HARDIRQ count before we get here
-    if crate::per_cpu_aarch64::in_interrupt() {
+    if crate::per_cpu_aarch64::in_interrupt() || crate::per_cpu_aarch64::in_softirq() {
         return;
     }
 

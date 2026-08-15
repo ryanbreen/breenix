@@ -591,6 +591,7 @@ extern "C" fn kernel_main_on_kernel_stack(arg: *mut core::ffi::c_void) -> ! {
 
     // Initialize softirq subsystem (depends on kthread infrastructure)
     task::softirqd::init_softirq();
+    crate::net::init_loopback_pump();
     #[cfg(feature = "btrt")]
     kernel::test_framework::btrt::pass(kernel::test_framework::catalog::KTHREAD_SUBSYSTEM);
 
@@ -675,6 +676,12 @@ extern "C" fn kernel_main_on_kernel_stack(arg: *mut core::ffi::c_void) -> ! {
     kernel::task::workqueue_tests::test_workqueue();
     #[cfg(all(feature = "testing", not(feature = "kthread_stress_test")))]
     kernel::task::softirq_tests::test_softirq();
+
+    // Any test that schedules in this x86 boot window can poison its resume context
+    // (#567). After the softirq self-test, run only the non-scheduling loopback
+    // wake-loss counter gate; keep the four scheduling registry tests deferred.
+    #[cfg(all(target_arch = "x86_64", feature = "boot_tests"))]
+    kernel::test_framework::registry::run_x86_loopback_gates();
 
     // In kthread_test_only mode, exit immediately after join test
     #[cfg(feature = "kthread_test_only")]
@@ -1053,6 +1060,8 @@ fn kernel_main_continue() -> ! {
         let tcp_test_buf = kernel::userspace_test::get_test_binary("tcp_socket_test");
         let dns_test_buf = kernel::userspace_test::get_test_binary("dns_test");
         let http_test_buf = kernel::userspace_test::get_test_binary("http_test");
+        let loopback_wake_test_buf =
+            kernel::userspace_test::get_test_binary("loopback_wake_test");
 
         x86_64::instructions::interrupts::without_interrupts(|| {
             use alloc::string::String;
@@ -1218,6 +1227,26 @@ fn kernel_main_continue() -> ! {
                     }
                     Err(e) => {
                         log::error!("Failed to create http_test process: {}", e);
+                    }
+                }
+            }
+
+            // Launch the userspace #545 regression in the normal userspace phase,
+            // where scheduling works and the #567 boot-window restriction does not apply.
+            {
+                serial_println!("RING3_SMOKE: creating loopback_wake_test userspace process");
+                match process::creation::create_user_process(
+                    String::from("loopback_wake_test"),
+                    &loopback_wake_test_buf,
+                ) {
+                    Ok(pid) => {
+                        log::info!(
+                            "Created loopback_wake_test process with PID {}",
+                            pid.as_u64()
+                        );
+                    }
+                    Err(e) => {
+                        log::error!("Failed to create loopback_wake_test process: {}", e);
                     }
                 }
             }
@@ -1768,6 +1797,7 @@ fn idle_thread_fn() {
     loop {
         // Enable interrupts and halt until next interrupt
         x86_64::instructions::interrupts::enable_and_hlt();
+        crate::net::drain_loopback_from_idle();
 
         // Check if there are any ready threads
         if let Some(has_work) = task::scheduler::with_scheduler(|s| s.has_runnable_threads()) {

@@ -4,6 +4,14 @@
 # advance_stage_marker_only
 # emits it unconditionally alongside [TESTS_COMPLETE:0/0]. The removed
 # KERNEL_POST_TESTS_COMPLETE marker is likewise never used as a gate.
+# The 900-second poll bound allows the x86 boot-test registry to run after the
+# userspace programs; a shorter bound scores a slow-but-healthy boot as failed.
+# http_test's live external fetches are bounded in-process by a receive
+# deadline. A connect-phase failure prints an explicit SKIP marker and the boot
+# continues; a mid-stream stall is an honest FAIL that appears in the tally as
+# a nonzero http_test exit. A quiet boot with no marker remains a gate failure.
+# This gate never retries a hung run: a blanket retry could swallow exactly the
+# recv-wake regression this gate exists to catch.
 
 set -euo pipefail
 
@@ -13,9 +21,11 @@ BREENIX_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 FRAME_CUSTODY_PATTERN='^\[FRAME_CUSTODY_COUNTERS:x86:double=1:stale=1:never=1:untracked=1:duplicate=3:contended=[1-9][0-9]*\]$'
 PT_CUSTODY_LITERAL='[PT_CUSTODY_COUNTERS:x86:recorded=11:no_proof=0:no_arch=0:terminated=1:undecided=1:exec_unreturned=0:retired=1:returned=10:lost=0:requeued=0]'
 PT_COHORT_LITERAL='[PT_RETIRE_COHORT:x86:children=64:retired=64:returned=640:recorded=576:lost=0:no_arch=0:undecided=0:mid_retire=0:balance=0]'
-# Ten launched test programs plus 64 retire-cohort children pinned by PT_COHORT_LITERAL;
-# re-pin consciously whenever either part changes.
-readonly EXPECTED_USERSPACE_EXITS=74
+# Ten launched test programs plus 64 retire-cohort children pinned by
+# PT_COHORT_LITERAL, and five loopback_wake_test processes (parent, reader,
+# peer, load, watchdog): 10 + 64 + 5 = 79. This is a floor, checked >= by
+# scripts/x86-gate-verdict.sh; re-pin consciously.
+readonly EXPECTED_USERSPACE_EXITS=79
 
 cd "$BREENIX_ROOT"
 cargo build --release --features boot_tests,testing,external_test_bins --bin qemu-uefi
@@ -56,7 +66,20 @@ for i in $(seq 1 "$COUNT"); do
     RUNNER_PID=$!
 
     passed=false
-    for _ in $(seq 1 300); do
+    # Four scheduling tests remain deferred on x86 until #567 is fixed:
+    # loopback_recv_wake_when_idle, loopback_recv_wake_under_load,
+    # loopback_pump_does_not_busy_spin, and tcp_final_ack_survives_accept_publish_race.
+    # Review finding B1: the boot-window loopback wake-loss counter gate is a
+    # bonus, not the proof for #545. It samples before any user process exists,
+    # so three of its four counters are structurally zero and it cannot go red
+    # for a #545 regression. The userspace recv/EOF wake marker below is the
+    # #545 regression marker on x86: it proves end-to-end loopback FIN delivery
+    # and blocked-reader wake, and goes red under a wake-path defect injection.
+    # It is NOT a proof that kloopbackd is necessary — syscall-path drains can
+    # deliver the same FIN, so the mechanism-level necessity proof is the
+    # aarch64 deterministic registry suite (loopback_recv_wake_when_idle /
+    # loopback_recv_wake_under_load), which is red on main.
+    for _ in $(seq 1 900); do
         if grep -q '\[TEST:process:frame_custody_refusal_gate:PASS\]' \
             "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
             && grep -qE "$FRAME_CUSTODY_PATTERN" \
@@ -73,12 +96,22 @@ for i in $(seq 1 "$COUNT"); do
                 "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
             && grep -qF -x "$PT_COHORT_LITERAL" \
                 "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
+            && grep -q '\[TEST:userspace:loopback_recv_wake:PASS\]' \
+                "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
             && grep -q 'TEST_TALLY:' \
                 "$OUTPUT_DIR"/serial_*.txt 2>/dev/null; then
             passed=true
             break
         fi
         if grep -qE '\[BOOT_TESTS:FAIL|KERNEL PANIC|panic!' \
+            "$OUTPUT_DIR"/serial_*.txt 2>/dev/null; then
+            break
+        fi
+        if grep -qE '\[TEST:network:[^]]*:FAIL' \
+            "$OUTPUT_DIR"/serial_*.txt 2>/dev/null; then
+            break
+        fi
+        if grep -qE '\[TEST:userspace:[^]]*:FAIL' \
             "$OUTPUT_DIR"/serial_*.txt 2>/dev/null; then
             break
         fi
@@ -102,6 +135,11 @@ for i in $(seq 1 "$COUNT"); do
         "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 1
     test "$(grep -h -c '\[TEST:process:x86_retire_cohort:PASS\]' \
         "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 1
+    # Four scheduling tests remain deferred on x86 until #567 is fixed:
+    # loopback_recv_wake_when_idle, loopback_recv_wake_under_load,
+    # loopback_pump_does_not_busy_spin, and tcp_final_ack_survives_accept_publish_race.
+    test "$(grep -h -c '\[TEST:userspace:loopback_recv_wake:PASS\]' \
+        "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 1
     test "$(grep -h -c 'Refusing to map' \
         "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 1
     test "$(grep -h -E -c "$FRAME_CUSTODY_PATTERN" \
@@ -118,6 +156,14 @@ for i in $(seq 1 "$COUNT"); do
     echo "$PT_CUSTODY_LITERAL"
     echo "$PT_COHORT_LITERAL"
     if grep -qE '\[BOOT_TESTS:FAIL|KERNEL PANIC|panic!' \
+        "$OUTPUT_DIR"/serial_*.txt; then
+        exit 1
+    fi
+    if grep -qE '\[TEST:network:[^]]*:FAIL' \
+        "$OUTPUT_DIR"/serial_*.txt; then
+        exit 1
+    fi
+    if grep -qE '\[TEST:userspace:[^]]*:FAIL' \
         "$OUTPUT_DIR"/serial_*.txt; then
         exit 1
     fi

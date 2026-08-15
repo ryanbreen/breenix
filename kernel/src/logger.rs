@@ -1075,7 +1075,9 @@ impl Log for CombinedLogger {
                         // But only if per-CPU is initialized (otherwise assume we're safe)
                         let skip_framebuffer = if crate::per_cpu::is_initialized() {
                             // Skip if in IRQ context OR if preemption is disabled (exception context)
-                            crate::per_cpu::in_interrupt() || crate::per_cpu::preempt_count() > 0
+                            crate::per_cpu::in_interrupt()
+                                || crate::per_cpu::in_softirq()
+                                || crate::per_cpu::preempt_count() > 0
                         } else {
                             false // Early boot, safe to use framebuffer
                         };
