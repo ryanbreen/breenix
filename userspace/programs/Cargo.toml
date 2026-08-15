@@ -266,6 +266,15 @@ path = "src/resolution.rs"
 name = "init_shell"
 path = "src/init_shell.rs"
 
+# Exec smoke (aarch64 boot-path execve coverage)
+[[bin]]
+name = "exec_smoke"
+path = "src/exec_smoke.rs"
+
+[[bin]]
+name = "exec_smoke_target"
+path = "src/exec_smoke_target.rs"
+
 # Additional test programs
 [[bin]]
 name = "alarm_test"

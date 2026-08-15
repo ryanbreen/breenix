@@ -1176,7 +1176,7 @@ fn sys_exec_aarch64(
 
     let argv_slices: alloc::vec::Vec<&[u8]> = argv_vec.iter().map(|v| v.as_slice()).collect();
 
-    without_interrupts(|| {
+    let result = without_interrupts(|| {
         let mut manager_guard = crate::process::manager();
         let exec_result = {
             let Some(manager) = manager_guard.as_mut() else {
@@ -1311,7 +1311,18 @@ fn sys_exec_aarch64(
         super::trace::trace_exec(b'R');
 
         0
-    })
+    });
+
+    // The exec lock-order counters are only live after an exec has actually run. This is the only
+    // site on the aarch64 boot path where a gate can observe `commits >= 1`; it sits OUTSIDE the
+    // masked window and outside the manager/scheduler critical sections, and exists only in
+    // boot_tests builds so the production exec path is untouched.
+    #[cfg(feature = "boot_tests")]
+    if result == 0 {
+        crate::test_framework::emit_exec_lock_order_counters();
+    }
+
+    result
 }
 
 /// Load ELF binary from ext2 filesystem path.

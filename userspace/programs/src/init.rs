@@ -14,6 +14,8 @@ fn main() {
     print!("[init] Breenix init starting (PID {})\n", pid);
 
     #[cfg(target_arch = "aarch64")]
+    run_exec_smoke();
+    #[cfg(target_arch = "aarch64")]
     run_wait_stress_if_enabled();
     #[cfg(target_arch = "aarch64")]
     run_trace_diag_probe_if_enabled();
@@ -44,6 +46,23 @@ fn main() {
                 };
                 let _ = libbreenix::time::nanosleep(&ts);
             }
+        }
+    }
+}
+
+/// Run the boot path's only execve caller. The aarch64 exec gate asserts on the launcher's
+/// post-wait marker, the target's success marker, and the kernel's first scheduler commit marker.
+#[cfg(target_arch = "aarch64")]
+fn run_exec_smoke() {
+    match spawn(b"/bin/exec_smoke\0") {
+        Ok(child_pid) => {
+            let mut status = 0i32;
+            let _ = waitpid(child_pid.raw() as i32, &mut status as *mut i32, 0);
+            let exit_code = (status >> 8) & 0xFF;
+            print!("[EXEC_SMOKE:LAUNCHER_EXIT code={}]\n", exit_code);
+        }
+        Err(error) => {
+            print!("[EXEC_SMOKE:SPAWN_FAILED {}]\n", error);
         }
     }
 }

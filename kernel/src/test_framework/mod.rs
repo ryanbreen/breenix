@@ -69,7 +69,10 @@ pub mod registry;
 #[cfg(feature = "boot_tests")]
 pub use display::{init as init_display, is_ready as display_ready, render_progress};
 #[cfg(feature = "boot_tests")]
-pub use executor::{advance_stage_marker_only, advance_to_stage, current_stage, run_all_tests};
+pub use executor::{
+    advance_stage_marker_only, advance_to_stage, current_stage, emit_exec_lock_order_counters,
+    run_all_tests,
+};
 #[cfg(feature = "boot_tests")]
 pub use progress::get_overall_progress;
 #[cfg(feature = "boot_tests")]

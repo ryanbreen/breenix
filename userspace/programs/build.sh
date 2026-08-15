@@ -112,6 +112,10 @@ STD_BINARIES=(
     # hello_std_real replaces hello_world on disk
     "hello_std_real:hello_world"
 
+    # Exec smoke (aarch64 boot-path execve coverage)
+    "exec_smoke"
+    "exec_smoke_target"
+
     # Phase 1: No-fork programs
     "syscall_enosys"
     "clock_gettime_test"

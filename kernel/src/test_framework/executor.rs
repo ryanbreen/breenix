@@ -58,16 +58,16 @@ static TESTS_RUN: [AtomicU64; SubsystemId::COUNT] = {
 
 use core::sync::atomic::AtomicU64;
 
-/// Emit the aarch64 exec lock-order counters alongside the boot-test verdict.
+/// Emit the aarch64 exec lock-order counters.
 ///
-/// NOTE: aarch64 userland creates processes with sys_spawn, and the only execve caller is the
-/// interactive shell, which does not come up on the headless QEMU gate — so `commits` is 0 there
-/// and these counters are a latent oracle, not proof that exec ran. The enforcing gate for the
-/// exec lock order is the structural ratchet in tests/exec_lock_order_structure.rs; the
-/// `[EXEC_LOCK_ORDER:VIOLATION:*]` markers (emitted at the instant of a violation, treated as
-/// fatal by the aarch64 gate scripts) cover every surface where exec IS reached.
+/// Called twice: once from the boot-test verdict (where `commits` is still 0 — init has not yet
+/// spawned anything), and once from `sys_exec_aarch64` immediately after a successful exec in
+/// `boot_tests` builds, where the counters are live. The aarch64 gate scripts assert on the second
+/// line: `commits >= 1` (the exec smoke really executed) with every violation counter at 0.
+/// Violations are ALSO reported at the instant they happen by the `[EXEC_LOCK_ORDER:VIOLATION:*]`
+/// markers in `ExecSchedCommit::apply`, which every build emits and both gate scripts treat as fatal.
 #[cfg(target_arch = "aarch64")]
-fn emit_exec_lock_order_counters() -> bool {
+pub fn emit_exec_lock_order_counters() -> bool {
     use crate::task::scheduler::{
         EXEC_COMMIT_MISSING_THREAD, EXEC_COMMIT_UNPINNED, EXEC_SCHED_COMMITS,
         SCHED_AFTER_PM_VIOLATIONS,
@@ -88,7 +88,7 @@ fn emit_exec_lock_order_counters() -> bool {
 }
 
 #[cfg(not(target_arch = "aarch64"))]
-fn emit_exec_lock_order_counters() -> bool {
+pub fn emit_exec_lock_order_counters() -> bool {
     true
 }
 
