@@ -579,19 +579,9 @@ impl Process {
         }
     }
 
-    /// Drain and clean up any pending old page tables from previous exec() calls.
-    ///
-    /// This is safe to call once CR3 has definitely switched away from the old
-    /// page table (e.g., at the start of the next exec, or during process exit).
-    /// Each old page table has its user-space frames freed via `cleanup_for_exec()`.
-    #[cfg(target_arch = "x86_64")]
-    pub fn drain_old_page_tables(&mut self) {
-        for old_pt in self.pending_old_page_tables.drain(..) {
-            old_pt.cleanup_for_exec();
-        }
-    }
-
-    #[cfg(target_arch = "aarch64")]
+    /// Retire pending superseded address spaces within a shared per-frame budget.
+    /// Incomplete tables stay pending so a later pass can resume their custody
+    /// release once the old hardware root is no longer live.
     pub(crate) fn drain_old_page_tables_bounded(&mut self, budget: &mut u32) -> bool {
         while *budget > 0 {
             let Some(old_page_table) = self.pending_old_page_tables.last_mut() else {
@@ -607,7 +597,6 @@ impl Process {
         self.pending_old_page_tables.is_empty()
     }
 
-    #[cfg(target_arch = "aarch64")]
     pub fn drain_old_page_tables(&mut self) {
         let mut budget = crate::memory::process_memory::RETIRE_FRAME_BUDGET;
         let _ = self.drain_old_page_tables_bounded(&mut budget);

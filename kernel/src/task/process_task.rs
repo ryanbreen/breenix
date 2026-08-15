@@ -356,10 +356,11 @@ pub(crate) fn note_process_row_removed() {
     ROW_REMOVAL_EPOCH.fetch_add(1, Ordering::Relaxed);
 }
 
-/// Consume x86 exec-superseded roots at exit, counting the walk when it runs
-/// under the process-manager lock. This is the x86 producer for
-/// TEARDOWN_MASKED_FRAMES_WALKED: a deferred exit that walks nothing keeps the
-/// counter flat, which is exactly what the leaf-timing oracle asserts.
+/// Consume x86 exec-superseded roots at exit with a per-frame retirement budget,
+/// counting the walk when it runs under the process-manager lock. This is the
+/// x86 producer for TEARDOWN_MASKED_FRAMES_WALKED: a deferred exit that walks
+/// nothing keeps the counter flat, which is exactly what the leaf-timing oracle
+/// asserts.
 #[cfg(target_arch = "x86_64")]
 fn drain_old_page_tables_counted(
     pid: u64,
@@ -375,11 +376,15 @@ fn drain_old_page_tables_counted(
         crate::tracing::providers::teardown::record_masked_frames_walked(pid);
     }
     while *budget > 0 {
-        let Some(old_page_table) = old_page_tables.pop() else {
+        let Some(old_page_table) = old_page_tables.last_mut() else {
             return true;
         };
-        *budget -= 1;
-        old_page_table.cleanup_for_exec();
+        if old_page_table.cleanup_for_exec(pid, budget)
+            != crate::memory::process_memory::RetireProgress::Complete
+        {
+            return false;
+        }
+        old_page_tables.pop();
     }
     old_page_tables.is_empty()
 }

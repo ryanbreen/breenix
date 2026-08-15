@@ -211,8 +211,6 @@ enum Disposition {
     Undecided,
     Retiring,
     Retired,
-    #[cfg(target_arch = "x86_64")]
-    RetiredByExecWalk,
     Abandoned(AbandonReason),
 }
 
@@ -1960,8 +1958,6 @@ impl ProcessPageTable {
                 self.tables.disposition = Disposition::Retiring;
             }
             Disposition::Retiring => {}
-            #[cfg(target_arch = "x86_64")]
-            Disposition::RetiredByExecWalk => return RetireProgress::Complete,
             Disposition::Abandoned(_) => {
                 return RetireProgress::Complete;
             }
@@ -2009,194 +2005,9 @@ impl ProcessPageTable {
         RetireProgress::Budgeted
     }
 
-    /// Clean up page table resources during exec()
-    ///
-    /// This walks the entire page table hierarchy and:
-    /// 1. Decrements reference counts for all user pages (CoW support)
-    /// 2. Deallocates frames that are no longer shared (refcount=0)
-    /// 3. Deallocates the page table structure frames (L1/L2/L3 tables)
-    /// 4. Deallocates the L4 frame itself
-    ///
-    /// Call this on the OLD page table after installing the new one during exec().
-    #[cfg(target_arch = "x86_64")]
-    pub(crate) fn cleanup_for_exec(mut self) {
-        use crate::memory::frame_allocator::deallocate_frame;
-        use crate::memory::frame_metadata::frame_decref;
-        use alloc::vec::Vec;
-
-        self.tables.disposition = Disposition::RetiredByExecWalk;
-        crate::trace_count_add!(
-            crate::tracing::providers::teardown::PT_EXEC_WALK_LEASES_UNRETURNED,
-            self.tables.leases.len() as u64
-        );
-
-        let phys_offset = crate::memory::physical_memory_offset();
-        let mut user_frames_freed = 0u64;
-        let mut user_frames_still_shared = 0u64;
-        let mut table_frames_freed = 0u64;
-
-        // Collect page table structure frames to free after walking
-        let mut l3_frames: Vec<PhysFrame> = Vec::new();
-        let mut l2_frames: Vec<PhysFrame> = Vec::new();
-        let mut l1_frames: Vec<PhysFrame> = Vec::new();
-
-        unsafe {
-            // Get the L4 table
-            let l4_virt = phys_offset + self.level_4_frame.start_address().as_u64();
-            let l4_table = &*(l4_virt.as_ptr() as *const PageTable);
-
-            // Walk L4 entries 0-255 (userspace only, 256-511 is kernel - don't touch)
-            for l4_idx in 0..256usize {
-                let l4_entry = &l4_table[l4_idx];
-                if l4_entry.is_unused() || !l4_entry.flags().contains(PageTableFlags::PRESENT) {
-                    continue;
-                }
-
-                // Skip kernel entries in lower half (e.g. PML4[136] = kernel heap at 0x4444_4444_0000)
-                // These are copied from the master page table without USER_ACCESSIBLE and are shared.
-                if !l4_entry.flags().contains(PageTableFlags::USER_ACCESSIBLE) {
-                    continue;
-                }
-
-                // Get L3 table and mark for cleanup
-                let l3_phys = l4_entry.addr();
-                let l3_frame = PhysFrame::containing_address(l3_phys);
-                l3_frames.push(l3_frame);
-
-                let l3_virt = phys_offset + l3_phys.as_u64();
-                let l3_table = &*(l3_virt.as_ptr() as *const PageTable);
-
-                for l3_idx in 0..512usize {
-                    let l3_entry = &l3_table[l3_idx];
-                    if l3_entry.is_unused() || !l3_entry.flags().contains(PageTableFlags::PRESENT) {
-                        continue;
-                    }
-
-                    // 1GB huge page - handle CoW for the frame
-                    if l3_entry.flags().contains(PageTableFlags::HUGE_PAGE) {
-                        // Skip kernel identity-mapped frames (not USER_ACCESSIBLE)
-                        if !l3_entry.flags().contains(PageTableFlags::USER_ACCESSIBLE) {
-                            continue;
-                        }
-                        let frame = PhysFrame::containing_address(l3_entry.addr());
-                        if frame_decref(frame) {
-                            deallocate_frame(frame);
-                            user_frames_freed += 1;
-                        } else {
-                            user_frames_still_shared += 1;
-                        }
-                        continue;
-                    }
-
-                    // Skip kernel-only subtrees (not USER_ACCESSIBLE)
-                    // On x86-64, intermediate entries must have USER_ACCESSIBLE for
-                    // any leaf pages under them to be accessible from userspace.
-                    if !l3_entry.flags().contains(PageTableFlags::USER_ACCESSIBLE) {
-                        continue;
-                    }
-
-                    // Get L2 table and mark for cleanup
-                    let l2_phys = l3_entry.addr();
-                    let l2_frame = PhysFrame::containing_address(l2_phys);
-                    l2_frames.push(l2_frame);
-
-                    let l2_virt = phys_offset + l2_phys.as_u64();
-                    let l2_table = &*(l2_virt.as_ptr() as *const PageTable);
-
-                    for l2_idx in 0..512usize {
-                        let l2_entry = &l2_table[l2_idx];
-                        if l2_entry.is_unused()
-                            || !l2_entry.flags().contains(PageTableFlags::PRESENT)
-                        {
-                            continue;
-                        }
-
-                        // 2MB huge page - handle CoW for the frame
-                        if l2_entry.flags().contains(PageTableFlags::HUGE_PAGE) {
-                            // Skip kernel identity-mapped frames (not USER_ACCESSIBLE)
-                            if !l2_entry.flags().contains(PageTableFlags::USER_ACCESSIBLE) {
-                                continue;
-                            }
-                            let frame = PhysFrame::containing_address(l2_entry.addr());
-                            if frame_decref(frame) {
-                                deallocate_frame(frame);
-                                user_frames_freed += 1;
-                            } else {
-                                user_frames_still_shared += 1;
-                            }
-                            continue;
-                        }
-
-                        // Skip kernel-only subtrees (not USER_ACCESSIBLE)
-                        if !l2_entry.flags().contains(PageTableFlags::USER_ACCESSIBLE) {
-                            continue;
-                        }
-
-                        // Get L1 table and mark for cleanup
-                        let l1_phys = l2_entry.addr();
-                        let l1_frame = PhysFrame::containing_address(l1_phys);
-                        l1_frames.push(l1_frame);
-
-                        let l1_virt = phys_offset + l1_phys.as_u64();
-                        let l1_table = &*(l1_virt.as_ptr() as *const PageTable);
-
-                        for l1_idx in 0..512usize {
-                            let l1_entry = &l1_table[l1_idx];
-                            if l1_entry.is_unused()
-                                || !l1_entry.flags().contains(PageTableFlags::PRESENT)
-                            {
-                                continue;
-                            }
-
-                            // Skip kernel identity-mapped frames (not USER_ACCESSIBLE)
-                            if !l1_entry.flags().contains(PageTableFlags::USER_ACCESSIBLE) {
-                                continue;
-                            }
-
-                            // 4KB page - handle CoW for the frame
-                            let frame = PhysFrame::containing_address(l1_entry.addr());
-                            if frame_decref(frame) {
-                                deallocate_frame(frame);
-                                user_frames_freed += 1;
-                            } else {
-                                user_frames_still_shared += 1;
-                            }
-                        }
-                    }
-                }
-            }
-
-            // Free page table structure frames (L1 first, then L2, then L3)
-            for frame in l1_frames {
-                deallocate_frame(frame);
-                table_frames_freed += 1;
-            }
-            for frame in l2_frames {
-                deallocate_frame(frame);
-                table_frames_freed += 1;
-            }
-            for frame in l3_frames {
-                deallocate_frame(frame);
-                table_frames_freed += 1;
-            }
-
-            // Free the L4 frame itself
-            deallocate_frame(self.level_4_frame);
-            table_frames_freed += 1;
-        }
-
-        log::info!(
-            "cleanup_for_exec: freed {} user frames, {} still shared, {} table frames",
-            user_frames_freed,
-            user_frames_still_shared,
-            table_frames_freed
-        );
-    }
-
-    /// Release a superseded ARM64 address space from allocation-derived leaf
-    /// and table custody. The caller supplies the shared retirement budget so
-    /// old exec roots remain resumable with the ordinary exit pipeline.
-    #[cfg(target_arch = "aarch64")]
+    /// Release a superseded address space from allocation-derived leaf and table
+    /// custody. The caller supplies the shared retirement budget, and old exec
+    /// roots remain resumable through the ordinary exit pipeline.
     pub(crate) fn cleanup_for_exec(&mut self, pid: u64, budget: &mut u32) -> RetireProgress {
         self.release_mapped_leaves();
         self.retire_bounded(pid, budget)
@@ -2215,8 +2026,6 @@ impl Drop for ProcessPageTable {
                 );
             }
             Disposition::Retired => {}
-            #[cfg(target_arch = "x86_64")]
-            Disposition::RetiredByExecWalk => {}
             Disposition::Abandoned(reason) => match reason {
                 AbandonReason::NoProofPipeline
                 | AbandonReason::NoArchPipeline
@@ -2227,7 +2036,7 @@ impl Drop for ProcessPageTable {
 }
 
 #[cfg(feature = "boot_tests")]
-fn disposition_gate_counters() -> [u64; 10] {
+fn disposition_gate_counters() -> [u64; 9] {
     use crate::tracing::providers::teardown;
     [
         teardown::PT_TABLE_FRAMES_RECORDED.aggregate(),
@@ -2235,7 +2044,6 @@ fn disposition_gate_counters() -> [u64; 10] {
         teardown::PT_ROOT_ABANDONED_NO_ARCH.aggregate(),
         teardown::PT_ROOT_ABANDONED_TERMINATED.aggregate(),
         teardown::PT_ROOT_DROPPED_UNDECIDED.aggregate(),
-        teardown::PT_EXEC_WALK_LEASES_UNRETURNED.aggregate(),
         teardown::PT_ROOTS_RETIRED.aggregate(),
         teardown::PT_TABLE_FRAMES_RETURNED.aggregate(),
         teardown::PT_RETIRE_FRAMES_LOST.aggregate(),
@@ -2431,6 +2239,7 @@ pub fn page_table_custody_disposition_gate_test() -> crate::test_framework::regi
     let free_before_abandon = crate::memory::frame_allocator::free_list_len_for_gate();
     terminated.abandon(AbandonReason::AlreadyTerminated);
     let after_abandon = disposition_gate_counters();
+    // Terminated abandonment must also leave the root-retirement counter flat.
     if after_abandon[3] != start[3] + 1
         || after_abandon[1] != start[1]
         || after_abandon[2] != start[2]
@@ -2448,6 +2257,7 @@ pub fn page_table_custody_disposition_gate_test() -> crate::test_framework::regi
     let free_before_drop = crate::memory::frame_allocator::free_list_len_for_gate();
     drop(undecided);
     let after_drop = disposition_gate_counters();
+    // An undecided Drop must also leave the root-retirement counter flat.
     if after_drop[3] != after_abandon[3]
         || after_drop[1] != after_abandon[1]
         || after_drop[2] != after_abandon[2]
@@ -2561,9 +2371,9 @@ pub fn run_x86_page_table_custody_gate() {
     }
     let values = disposition_gate_counters();
     crate::serial_println!(
-        "[PT_CUSTODY_COUNTERS:x86:recorded={}:no_proof={}:no_arch={}:terminated={}:undecided={}:exec_unreturned={}:retired={}:returned={}:lost={}:requeued={}]",
+        "[PT_CUSTODY_COUNTERS:x86:recorded={}:no_proof={}:no_arch={}:terminated={}:undecided={}:retired={}:returned={}:lost={}:requeued={}]",
         values[0], values[1], values[2], values[3], values[4], values[5], values[6], values[7],
-        values[8], values[9]
+        values[8]
     );
     // Deliberate fail-loud boot policy: never let the direct x86 hook continue
     // after a custody oracle failure and emit misleading later boot markers.
