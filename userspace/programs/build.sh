@@ -245,6 +245,7 @@ STD_BINARIES=(
     "dns_test"
     "net_test"
     "http_fetch_test"
+    "loopback_wake_test"
 
     # Complex/arch-specific tests
     "syscall_diagnostic_test"

@@ -1060,6 +1060,8 @@ fn kernel_main_continue() -> ! {
         let tcp_test_buf = kernel::userspace_test::get_test_binary("tcp_socket_test");
         let dns_test_buf = kernel::userspace_test::get_test_binary("dns_test");
         let http_test_buf = kernel::userspace_test::get_test_binary("http_test");
+        let loopback_wake_test_buf =
+            kernel::userspace_test::get_test_binary("loopback_wake_test");
 
         x86_64::instructions::interrupts::without_interrupts(|| {
             use alloc::string::String;
@@ -1225,6 +1227,26 @@ fn kernel_main_continue() -> ! {
                     }
                     Err(e) => {
                         log::error!("Failed to create http_test process: {}", e);
+                    }
+                }
+            }
+
+            // Launch the userspace #545 regression in the normal userspace phase,
+            // where scheduling works and the #567 boot-window restriction does not apply.
+            {
+                serial_println!("RING3_SMOKE: creating loopback_wake_test userspace process");
+                match process::creation::create_user_process(
+                    String::from("loopback_wake_test"),
+                    &loopback_wake_test_buf,
+                ) {
+                    Ok(pid) => {
+                        log::info!(
+                            "Created loopback_wake_test process with PID {}",
+                            pid.as_u64()
+                        );
+                    }
+                    Err(e) => {
+                        log::error!("Failed to create loopback_wake_test process: {}", e);
                     }
                 }
             }

@@ -368,6 +368,10 @@ name = "http_fetch_test"
 path = "src/http_fetch_test.rs"
 
 [[bin]]
+name = "loopback_wake_test"
+path = "src/loopback_wake_test.rs"
+
+[[bin]]
 name = "init"
 path = "src/init.rs"
 
