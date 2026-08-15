@@ -24,6 +24,8 @@ enum FirstUserspaceEntry {
 
 static FIRST_USERSPACE_ENTRY_ABORT_COUNT: AtomicU64 = AtomicU64::new(0);
 static FIRST_USERSPACE_ENTRY_ABORT_LOGGED: AtomicBool = AtomicBool::new(false);
+static USERSPACE_DISPATCH_NO_CR3_REFUSED: AtomicU64 = AtomicU64::new(0);
+static USERSPACE_DISPATCH_NO_CR3_LOGGED: AtomicBool = AtomicBool::new(false);
 static DISPATCH_GUARD_UNAVAILABLE_STREAK: AtomicU64 = AtomicU64::new(0);
 static DISPATCH_GUARD_ESCALATION_LOGGED: AtomicBool = AtomicBool::new(false);
 const DISPATCH_GUARD_ESCALATION_THRESHOLD: u64 = 1024;
@@ -668,6 +670,33 @@ fn switch_to_thread(
         if let Some(mut manager_guard) = guard_option {
             if let Some(ref mut manager) = *manager_guard {
                 if let Some((pid, process)) = manager.find_process_by_thread_mut(thread_id) {
+                    let process_cr3 = match process.cr3_value() {
+                        Some(cr3_value) => cr3_value,
+                        None => {
+                            USERSPACE_DISPATCH_NO_CR3_REFUSED.fetch_add(1, Ordering::Relaxed);
+                            if !USERSPACE_DISPATCH_NO_CR3_LOGGED.swap(true, Ordering::Relaxed) {
+                                raw_serial_str("[PMGUARD] no-cr3 dispatch refused tid=");
+                                raw_serial_u64(thread_id);
+                                raw_serial_str(" pid=");
+                                raw_serial_u64(pid.as_u64());
+                                raw_serial_str("\n");
+                            }
+                            if let Some(ref mut thread) = process.main_thread {
+                                thread.set_terminated();
+                            }
+                            crate::task::scheduler::with_thread_mut(thread_id, |sched_thread| {
+                                sched_thread.set_terminated();
+                            });
+                            crate::task::scheduler::set_need_resched();
+                            setup_idle_return(interrupt_frame);
+                            crate::task::scheduler::switch_to_idle();
+                            unsafe {
+                                crate::memory::process_memory::switch_to_kernel_page_table();
+                            }
+                            return;
+                        }
+                    };
+
                     // Check if there are pending signals to deliver
                     crate::signal::delivery::check_and_fire_alarm(process);
                     crate::signal::delivery::check_and_fire_itimer_real(process, 5000);
@@ -765,21 +794,19 @@ fn switch_to_thread(
                         // the process's page table to be active (not the kernel CR3).
                         // Without this, we get a page fault when trying to write the
                         // signal frame to user memory.
-                        if let Some(cr3_val) = process.cr3_value() {
-                            unsafe {
-                                use x86_64::registers::control::{Cr3, Cr3Flags};
-                                use x86_64::structures::paging::PhysFrame;
-                                use x86_64::PhysAddr;
-                                Cr3::write(
-                                    PhysFrame::containing_address(PhysAddr::new(cr3_val)),
-                                    Cr3Flags::empty(),
-                                );
-                            }
-                            log::debug!(
-                                "Switched to process CR3 {:#x} for signal delivery (blocked-in-syscall path)",
-                                cr3_val
+                        unsafe {
+                            use x86_64::registers::control::{Cr3, Cr3Flags};
+                            use x86_64::structures::paging::PhysFrame;
+                            use x86_64::PhysAddr;
+                            Cr3::write(
+                                PhysFrame::containing_address(PhysAddr::new(process_cr3)),
+                                Cr3Flags::empty(),
                             );
                         }
+                        log::debug!(
+                            "Switched to process CR3 {:#x} for signal delivery (blocked-in-syscall path)",
+                            process_cr3
+                        );
 
                         // Now deliver the signal (modifies interrupt_frame and saved_regs)
                         let signal_result = crate::signal::delivery::deliver_pending_signals(
@@ -879,44 +906,40 @@ fn switch_to_thread(
                         // The kernel code (e.g., waitpid HLT loop) will access userspace memory
                         // (like the wstatus pointer). Without switching CR3 here, we'd be using
                         // the previous process's page tables and get a page fault.
-                        if let Some(cr3_val) = process.cr3_value() {
-                            unsafe {
-                                use x86_64::registers::control::{Cr3, Cr3Flags};
-                                use x86_64::structures::paging::PhysFrame;
-                                use x86_64::PhysAddr;
-                                Cr3::write(
-                                    PhysFrame::containing_address(PhysAddr::new(cr3_val)),
-                                    Cr3Flags::empty(),
-                                );
-                            }
-                            log::debug!(
-                                "Switched to process CR3 {:#x} for blocked-in-syscall kernel return (thread {})",
-                                cr3_val,
-                                thread_id
+                        unsafe {
+                            use x86_64::registers::control::{Cr3, Cr3Flags};
+                            use x86_64::structures::paging::PhysFrame;
+                            use x86_64::PhysAddr;
+                            Cr3::write(
+                                PhysFrame::containing_address(PhysAddr::new(process_cr3)),
+                                Cr3Flags::empty(),
                             );
                         }
+                        log::debug!(
+                            "Switched to process CR3 {:#x} for blocked-in-syscall kernel return (thread {})",
+                            process_cr3,
+                            thread_id
+                        );
                     }
 
                     // Set up CR3 for the process's page table
-                    if let Some(cr3_value) = process.cr3_value() {
-                        unsafe {
-                            // Tell timer_entry.asm to switch CR3 before IRETQ
-                            crate::per_cpu::set_next_cr3(cr3_value);
+                    unsafe {
+                        // Tell timer_entry.asm to switch CR3 before IRETQ
+                        crate::per_cpu::set_next_cr3(process_cr3);
 
-                            // Update saved_process_cr3 for future timer interrupts
-                            core::arch::asm!(
-                                "mov gs:[80], {}",
-                                in(reg) cr3_value,
-                                options(nostack, preserves_flags)
-                            );
-                        }
-                        log::trace!(
-                            "Set CR3 to {:#x} for thread {} (pid {})",
-                            cr3_value,
-                            thread_id,
-                            pid.as_u64()
+                        // Update saved_process_cr3 for future timer interrupts
+                        core::arch::asm!(
+                            "mov gs:[80], {}",
+                            in(reg) process_cr3,
+                            options(nostack, preserves_flags)
                         );
                     }
+                    log::trace!(
+                        "Set CR3 to {:#x} for thread {} (pid {})",
+                        process_cr3,
+                        thread_id,
+                        pid.as_u64()
+                    );
                 }
             }
         } else {
@@ -1167,7 +1190,28 @@ fn restore_userspace_thread_context(
                                     );
                                 }
                             } else {
-                                log::warn!("Process {} has no page table!", pid.as_u64());
+                                USERSPACE_DISPATCH_NO_CR3_REFUSED.fetch_add(1, Ordering::Relaxed);
+                                if !USERSPACE_DISPATCH_NO_CR3_LOGGED.swap(true, Ordering::Relaxed) {
+                                    raw_serial_str("[PMGUARD] no-cr3 dispatch refused tid=");
+                                    raw_serial_u64(thread_id);
+                                    raw_serial_str(" pid=");
+                                    raw_serial_u64(pid.as_u64());
+                                    raw_serial_str("\n");
+                                }
+                                // With next_cr3 == 0, timer_entry.asm takes its fallback path
+                                // and restores the interrupted process's address space. Refuse
+                                // to finish this user-mode return with that wrong CR3 active.
+                                thread.set_terminated();
+                                crate::task::scheduler::with_thread_mut(
+                                    thread_id,
+                                    |sched_thread| {
+                                        sched_thread.set_terminated();
+                                    },
+                                );
+                                crate::task::scheduler::set_need_resched();
+                                setup_idle_return(interrupt_frame);
+                                crate::task::scheduler::switch_to_idle();
+                                return;
                             }
 
                             // Update TSS RSP0 for the new thread's kernel stack
