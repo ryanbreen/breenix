@@ -10,15 +10,16 @@
 # "https_url SKIP (network unavailable)" / "example_fetch SKIP" branches when
 # the internet is unreachable, and only those explicit markers count as a
 # skip while the boot continues. A quiet boot with no marker remains a gate
-# failure. When the 15-second external-fetch deadline fires, the run produces
-# both the explicit SKIP marker and a http_test:-9 entry in the exit tally, so
-# the gate still fails. This is deliberate: the gate will not certify a boot
-# whose external fetch never completed. Confirm external connectivity and
-# re-run; never allowlist http_test. A true non-failing skip requires either a
-# receive deadline inside the TLS/HTTP client in libs/libbreenix or a
-# distinguishable process identity for the fetch child. This gate never
-# retries a hung run: a blanket retry could swallow exactly the recv-wake
-# regression this gate exists to catch.
+# failure. When the external-fetch deadline fires, the log contains both SKIP
+# markers, but the parent that SIGKILLed and reaped the forked child still
+# faults in `malloc` before its raw exit takes effect. The boot emits no tally
+# or verdict, so the gate ends as a 900-second no-verdict timeout. This is the
+# filed kernel defect, not a reason to allowlist `http_test` or retry the run;
+# the `http_test:-9` rationale remains pinned here for the structural guard. A
+# proper fix requires repairing fork/CoW teardown or removing the live-internet
+# dependency from the external fetch. This gate never retries a hung run: a
+# blanket retry could swallow exactly the recv-wake regression this gate exists
+# to catch.
 
 set -euo pipefail
 

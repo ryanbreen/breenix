@@ -8,12 +8,18 @@
 //!
 //! Note: External network connectivity may not be available in all test
 //! environments. Network tests use SKIP markers when unavailable.
-//! The fork+deadline guard stops an external stall from wedging the whole boot;
-//! the observed failure froze at `[http] TCP connected (202ms)` mid-TLS-handshake.
-//! If the deadline fires, the parent prints the SKIP markers and exits immediately
-//! after killing and reaping the child. A kernel fork/CoW teardown defect can leave
-//! the parent's heap untrustworthy after a forked child is SIGKILLed (observed as
-//! `malloc` page faults), so the run ends at the first safe point without allocating.
+//! The fork+deadline guard bounds an external stall that would otherwise never end;
+//! the observed failure froze at `[http] TCP connected (202ms)` mid-TLS-handshake,
+//! with no read deadline anywhere on the TLS/HTTP path. It does not yet stop such
+//! a stall from wedging the boot, for the reason given below.
+//! If the deadline fires, the parent prints both SKIP markers, kills and reaps the
+//! child, then calls the raw exit syscall. Nonetheless, the parent faults inside
+//! `malloc` before that exit takes effect: the kernel's fork/CoW teardown defect
+//! damages the heap regardless of how little the parent does after the kill. The
+//! boot consequently emits no `USERSPACE TEST COMPLETE` or `TEST_TALLY` marker,
+//! and the gate fails by exhausting its 900-second poll. Fixing this properly
+//! requires fixing the kernel defect or removing the live-internet dependency from
+//! the external fetch.
 //!
 //! This test uses libbreenix's http module for DNS, socket, connect, send,
 //! recv operations.
@@ -23,6 +29,7 @@ use libbreenix::http::{self, HttpError, MAX_RESPONSE_SIZE};
 use libbreenix::process::{fork, waitpid, wifexited, wexitstatus, ForkResult, WNOHANG};
 use libbreenix::signal;
 use libbreenix::time::{now_monotonic, sleep_ms};
+use libbreenix::types::Pid;
 use libbreenix::Errno;
 use std::process;
 
@@ -44,6 +51,21 @@ fn monotonic_ms() -> Option<u64> {
     )
 }
 
+fn skip_after_external_fetch_failure(child_pid: Pid, deadline_skip: &'static str) -> ! {
+    print!("{deadline_skip}");
+    print!("HTTP_TEST: remaining checks SKIP (external-fetch deadline fired)\n");
+    let _ = signal::kill(child_pid.raw() as i32, 9);
+    let mut status = 0;
+    loop {
+        match waitpid(child_pid.raw() as i32, &mut status, 0) {
+            Ok(reaped) if reaped == child_pid => break,
+            Err(Error::Os(Errno::EINTR)) => continue,
+            Ok(_) | Err(_) => break,
+        }
+    }
+    libbreenix::process::exit(0);
+}
+
 fn run_external_fetch_with_deadline(
     child: fn() -> !,
     deadline_skip: &'static str,
@@ -54,10 +76,7 @@ fn run_external_fetch_with_deadline(
             let start_ms = match monotonic_ms() {
                 Some(now) => now,
                 None => {
-                    let _ = signal::kill(child_pid.raw() as i32, 9);
-                    let mut status = 0;
-                    let _ = waitpid(child_pid.raw() as i32, &mut status, 0);
-                    return DeadlineResult::NetworkUnavailable;
+                    skip_after_external_fetch_failure(child_pid, deadline_skip);
                 }
             };
             let deadline_ms = start_ms.saturating_add(EXTERNAL_FETCH_DEADLINE_MS);
@@ -71,17 +90,7 @@ fn run_external_fetch_with_deadline(
                 }
 
                 if monotonic_ms().is_none_or(|now| now >= deadline_ms) {
-                    print!("{deadline_skip}");
-                    print!("HTTP_TEST: remaining checks SKIP (external-fetch deadline fired)\n");
-                    let _ = signal::kill(child_pid.raw() as i32, 9);
-                    loop {
-                        match waitpid(child_pid.raw() as i32, &mut status, 0) {
-                            Ok(reaped) if reaped == child_pid => break,
-                            Err(Error::Os(Errno::EINTR)) => continue,
-                            Ok(_) | Err(_) => break,
-                        }
-                    }
-                    libbreenix::process::exit(0);
+                    skip_after_external_fetch_failure(child_pid, deadline_skip);
                 }
 
                 let _ = sleep_ms(50);
