@@ -15,6 +15,8 @@
 //! so `kloopbackd`, rather than the idle-loop drain, must deliver it. A watchdog
 //! is the sole bounded escape if a blocking read never wakes.
 
+use libbreenix::errno::Errno;
+use libbreenix::error::Error;
 use libbreenix::io;
 use libbreenix::process::{fork, waitpid, wexitstatus, wifexited, ForkResult};
 use libbreenix::signal;
@@ -27,11 +29,11 @@ const LISTEN_PORT: u16 = 54530;
 const TAG: &[u8] = b"545-wake";
 const PAYLOAD_LEN: usize = 16;
 const DATA_WAKE_BOUND_MS: u64 = 4000;
-const EOF_WAKE_BOUND_MS: u64 = 3000;
-// A live kernel returns EOF in under 3000 ms. If FIN delivery liveness is lost,
-// the idle drain cannot run until this 8000 ms spin ends: 8000 - 3000 = 5000 ms
-// of discrimination between the EOF deadline and the earliest fallback drain.
-const LOAD_SPIN_MS: u64 = 8000;
+const EOF_WAKE_BOUND_MS: u64 = 4000;
+// A healthy kernel returned EOF in 1500 ms, against this 4000 ms bound. If
+// loopback delivery liveness is lost, the FIN cannot arrive until this 12000 ms
+// spin ends and lets the idle drain run.
+const LOAD_SPIN_MS: u64 = 12000;
 const WATCHDOG_AT_MS: u64 = 30000;
 
 fn monotonic_ms() -> Option<u64> {
@@ -183,9 +185,16 @@ fn watchdog_child(epoch_ms: u64, reader_pid: Pid, peer_pid: Pid, load_pid: Pid) 
 
 fn wait_status(pid: Pid) -> Option<i32> {
     let mut status = 0;
-    match waitpid(pid.raw() as i32, &mut status, 0) {
-        Ok(reaped) if reaped == pid => Some(status),
-        _ => None,
+    loop {
+        match waitpid(pid.raw() as i32, &mut status, 0) {
+            Ok(reaped) if reaped == pid => return Some(status),
+            Err(Error::Os(Errno::EINTR)) => {
+                // A sibling's SIGCHLD can interrupt this specific-pid wait.
+                // The watchdog, not this loop, bounds a child that never exits.
+                continue;
+            }
+            Ok(_) | Err(_) => return None,
+        }
     }
 }
 
