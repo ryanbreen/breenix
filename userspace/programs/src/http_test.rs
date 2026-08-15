@@ -22,7 +22,9 @@ use libbreenix::signal;
 use libbreenix::time::{now_monotonic, sleep_ms};
 use std::process;
 
-const EXTERNAL_FETCH_DEADLINE_MS: u64 = 15_000;
+// This deadline bounds an unbounded hang rather than imposing a tight SLA, and
+// must clear the CPU contention from loopback_wake_test's 10-second load window.
+const EXTERNAL_FETCH_DEADLINE_MS: u64 = 45_000;
 
 enum DeadlineResult {
     Completed(i32),

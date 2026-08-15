@@ -30,10 +30,11 @@ const TAG: &[u8] = b"545-wake";
 const PAYLOAD_LEN: usize = 16;
 const DATA_WAKE_BOUND_MS: u64 = 4000;
 const EOF_WAKE_BOUND_MS: u64 = 4000;
-// A healthy kernel returned EOF in 1500 ms, against this 4000 ms bound. If
-// loopback delivery liveness is lost, the FIN cannot arrive until this 12000 ms
-// spin ends and lets the idle drain run.
-const LOAD_SPIN_MS: u64 = 12000;
+// Healthy kernels returned EOF in 1500 ms and 1686 ms, against this 4000 ms
+// bound. If loopback delivery liveness is lost, the FIN cannot arrive until
+// this 10000 ms spin ends and lets the idle drain run, leaving 6000 ms between
+// the EOF deadline and the earliest fallback drain.
+const LOAD_SPIN_MS: u64 = 10000;
 const WATCHDOG_AT_MS: u64 = 30000;
 
 fn monotonic_ms() -> Option<u64> {
