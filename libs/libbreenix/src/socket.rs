@@ -495,41 +495,70 @@ pub fn send(fd: Fd, buf: &[u8]) -> Result<usize, Error> {
 /// # Returns
 /// Number of bytes received on success, or Error on failure
 pub fn recv(fd: Fd, buf: &mut [u8]) -> Result<usize, Error> {
-    let deadline_ms = RECV_DEADLINE_MS.load(Ordering::Acquire);
-    if deadline_ms != 0 {
-        let remaining_ms = crate::time::now_monotonic().ok().and_then(|now| {
-            if now.tv_sec < 0 || now.tv_nsec < 0 {
-                return None;
-            }
-            let now_ms = (now.tv_sec as u64)
-                .saturating_mul(1000)
-                .saturating_add((now.tv_nsec as u64) / 1_000_000);
-            deadline_ms
-                .checked_sub(now_ms)
-                .filter(|remaining| *remaining != 0)
-        });
-        let Some(remaining_ms) = remaining_ms else {
-            RECV_DEADLINE_FIRED.store(true, Ordering::Release);
-            return Err(Error::Os(Errno::ETIMEDOUT));
+    let read_once = |buffer: &mut [u8]| {
+        let ret = unsafe {
+            raw::syscall3(
+                nr::READ,
+                fd.raw(),
+                buffer.as_mut_ptr() as u64,
+                buffer.len() as u64,
+            ) as i64
         };
-        let timeout_ms = remaining_ms.min(i32::MAX as u64) as i32;
-        let events = crate::io::poll_events::POLLIN | crate::io::poll_events::POLLHUP;
-        let mut poll_fds = [crate::io::PollFd::new(fd, events)];
-        if crate::io::poll(&mut poll_fds, timeout_ms)? == 0 {
-            RECV_DEADLINE_FIRED.store(true, Ordering::Release);
-            return Err(Error::Os(Errno::ETIMEDOUT));
-        }
+        Error::from_syscall(ret).map(|n| n as usize)
+    };
+
+    let deadline_ms = RECV_DEADLINE_MS.load(Ordering::Acquire);
+    if deadline_ms == 0 {
+        return read_once(buf);
     }
 
-    let ret = unsafe {
-        raw::syscall3(
-            nr::READ,
-            fd.raw(),
-            buf.as_mut_ptr() as u64,
-            buf.len() as u64,
-        ) as i64
+    let original_flags = match crate::io::fcntl_getfl(fd) {
+        Ok(flags) => flags,
+        Err(_) => return read_once(buf),
     };
-    Error::from_syscall(ret).map(|n| n as usize)
+    if crate::io::fcntl_setfl(
+        fd,
+        original_flags as i32 | crate::io::status_flags::O_NONBLOCK,
+    )
+    .is_err()
+    {
+        // Without non-blocking mode the deadline cannot be enforced, so retain
+        // the ordinary blocking-read behavior instead of failing the receive.
+        return read_once(buf);
+    }
+
+    let result = loop {
+        // Do not use poll() here: polling a connected TCP fd at the first TLS
+        // handshake read wedged the whole guest in legA, while legC completed
+        // after removing this readiness path.
+        match read_once(buf) {
+            Ok(read) => break Ok(read),
+            Err(Error::Os(Errno::EAGAIN)) => {
+                let remaining_ms = crate::time::now_monotonic().ok().and_then(|now| {
+                    if now.tv_sec < 0 || now.tv_nsec < 0 {
+                        return None;
+                    }
+                    let now_ms = (now.tv_sec as u64)
+                        .saturating_mul(1000)
+                        .saturating_add((now.tv_nsec as u64) / 1_000_000);
+                    deadline_ms
+                        .checked_sub(now_ms)
+                        .filter(|remaining| *remaining != 0)
+                });
+                let Some(remaining_ms) = remaining_ms else {
+                    RECV_DEADLINE_FIRED.store(true, Ordering::Release);
+                    break Err(Error::Os(Errno::ETIMEDOUT));
+                };
+                if let Err(error) = crate::time::sleep_ms(remaining_ms.min(20)) {
+                    break Err(error);
+                }
+            }
+            Err(error) => break Err(error),
+        }
+    };
+
+    let _ = crate::io::fcntl_setfl(fd, original_flags as i32);
+    result
 }
 
 /// Close a socket file descriptor.
