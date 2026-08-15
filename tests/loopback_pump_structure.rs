@@ -293,6 +293,13 @@ fn compact_code(fragment: &str) -> String {
         .collect()
 }
 
+fn compact_whitespace(fragment: &str) -> String {
+    fragment
+        .chars()
+        .filter(|character| !character.is_whitespace())
+        .collect()
+}
+
 fn loop_body_after_anchor<'a>(source: &'a str, anchor: &str) -> Option<&'a str> {
     let anchor_offset = source.find(anchor)?;
     let mask = code_mask(source);
@@ -801,8 +808,8 @@ fn validate_x86_gate_requires_the_loopback_regression_tests(source: &str) -> Res
             ));
         }
     }
-    let required_name = "loopback_wake_loss_counters_are_zero";
-    let required_marker = format!("\\[TEST:network:{required_name}:PASS\\]");
+    let required_name = "loopback_recv_wake";
+    let required_marker = format!("\\[TEST:userspace:{required_name}:PASS\\]");
     if source.matches(&required_marker).count() != 2 {
         return Err(format!(
             "x86 gate does not poll and assert exactly-once evidence for {required_name}"
@@ -823,6 +830,25 @@ fn validate_x86_gate_requires_the_loopback_regression_tests(source: &str) -> Res
         return Err(format!(
             "x86 gate weakened the exactly-once PASS count for {required_name}"
         ));
+    }
+    if source.contains("\\[TEST:network:loopback_wake_loss_counters_are_zero:PASS\\]") {
+        return Err("x86 gate still treats the boot-window counter marker as proof".to_string());
+    }
+    if source.matches("readonly EXPECTED_USERSPACE_EXITS=81").count() != 1 {
+        return Err("x86 gate does not pin the 81 expected userspace exits".to_string());
+    }
+    for rationale in [
+        "B1",
+        "bonus, not the proof",
+        "before any user process exists",
+        "three of its four counters are structurally zero",
+        "cannot go red",
+        "#545 regression",
+        "http_test:-9",
+    ] {
+        if !source.contains(rationale) {
+            return Err(format!("x86 gate lost pinned rationale ({rationale})"));
+        }
     }
     for name in [
         "loopback_recv_wake_when_idle",
@@ -846,17 +872,20 @@ fn validate_x86_gate_requires_the_loopback_regression_tests(source: &str) -> Res
             return Err(format!("x86 gate lost deferred-test rationale ({explanation})"));
         }
     }
-    if !source.contains("\\[TEST:network:[^]]*:FAIL") {
-        return Err("x86 gate does not reject network test failures".to_string());
+    for (failure_marker, description) in [
+        ("\\[TEST:network:[^]]*:FAIL", "network"),
+        ("\\[TEST:userspace:[^]]*:FAIL", "userspace"),
+    ] {
+        if source.matches(failure_marker).count() != 2 {
+            return Err(format!(
+                "x86 gate does not reject {description} test failures during and after polling"
+            ));
+        }
     }
     Ok(())
 }
 
-fn validate_x86_direct_loopback_gates(
-    main: &str,
-    registry: &str,
-    harness: &str,
-) -> Result<(), String> {
+fn validate_x86_direct_loopback_gates(main: &str, registry: &str) -> Result<(), String> {
     let kernel_main = function_body(main, "kernel_main_on_kernel_stack")
         .ok_or_else(|| "missing kernel_main_on_kernel_stack".to_string())?;
     let cohort_call = kernel_main
@@ -966,8 +995,29 @@ fn validate_x86_direct_loopback_gates(
         }
     }
 
-    validate_loopback_regression_tests_are_arch_neutral(registry)?;
-    validate_x86_gate_requires_the_loopback_regression_tests(harness)
+    validate_loopback_regression_tests_are_arch_neutral(registry)
+}
+
+fn validate_x86_userspace_phase_launches_loopback_wake_test(
+    source: &str,
+) -> Result<(), String> {
+    let kernel_main_continue = function_body(source, "kernel_main_continue")
+        .ok_or_else(|| "missing kernel_main_continue".to_string())?;
+    let compact = compact_whitespace(kernel_main_continue);
+    let load = "kernel::userspace_test::get_test_binary(\"loopback_wake_test\")";
+    if compact.matches(load).count() != 1 {
+        return Err(
+            "kernel_main_continue must load loopback_wake_test exactly once".to_string(),
+        );
+    }
+    let launch =
+        "process::creation::create_user_process(String::from(\"loopback_wake_test\")";
+    if compact.matches(launch).count() != 1 {
+        return Err(
+            "kernel_main_continue must launch loopback_wake_test exactly once".to_string(),
+        );
+    }
+    Ok(())
 }
 
 fn validate_schedule_rearms_a_blocked_pump(source: &str) -> Result<(), String> {
@@ -1411,7 +1461,6 @@ fn x86_loopback_gates_are_direct_reachable_and_have_one_marker_producer() {
     validate_x86_direct_loopback_gates(
         &repo_text("kernel/src/main.rs"),
         &repo_text("kernel/src/test_framework/registry.rs"),
-        &repo_text("docker/qemu/run-x86-boot-tests.sh"),
     )
     .expect("x86 loopback gates remain directly reachable and exactly marked");
 }
@@ -1420,7 +1469,6 @@ fn x86_loopback_gates_are_direct_reachable_and_have_one_marker_producer() {
 fn deliberately_broken_x86_loopback_gate_variants_fail_the_validator() {
     let main = repo_text("kernel/src/main.rs");
     let registry = repo_text("kernel/src/test_framework/registry.rs");
-    let harness = repo_text("docker/qemu/run-x86-boot-tests.sh");
 
     let missing_call = main.replacen(
         "kernel::test_framework::registry::run_x86_loopback_gates();",
@@ -1428,7 +1476,7 @@ fn deliberately_broken_x86_loopback_gate_variants_fail_the_validator() {
         1,
     );
     assert_ne!(missing_call, main, "direct-call mutation must apply");
-    assert!(validate_x86_direct_loopback_gates(&missing_call, &registry, &harness).is_err());
+    assert!(validate_x86_direct_loopback_gates(&missing_call, &registry).is_err());
 
     let weak_cfg = registry.replacen(
         "#[cfg(all(feature = \"boot_tests\", target_arch = \"x86_64\"))]\n\
@@ -1438,7 +1486,7 @@ fn deliberately_broken_x86_loopback_gate_variants_fail_the_validator() {
         1,
     );
     assert_ne!(weak_cfg, registry, "cfg-gate mutation must apply");
-    assert!(validate_x86_direct_loopback_gates(&main, &weak_cfg, &harness).is_err());
+    assert!(validate_x86_direct_loopback_gates(&main, &weak_cfg).is_err());
 
     let duplicate_marker = registry.replacen(
         "pub fn run_x86_loopback_gates() {",
@@ -1451,19 +1499,7 @@ fn deliberately_broken_x86_loopback_gate_variants_fail_the_validator() {
         "marker-producer mutation must apply"
     );
     assert!(
-        validate_x86_direct_loopback_gates(&main, &duplicate_marker, &harness).is_err()
-    );
-
-    let marker = "\\[TEST:network:loopback_wake_loss_counters_are_zero:PASS\\]";
-    let count_anchor = format!("grep -h -c '{marker}'");
-    let count = harness
-        .find(&count_anchor)
-        .expect("find loopback marker count fixture");
-    let weak_count_tail = harness[count..].replacen("-eq 1", "-ge 1", 1);
-    let weak_harness = format!("{}{weak_count_tail}", &harness[..count]);
-    assert_ne!(weak_harness, harness, "exact-count mutation must apply");
-    assert!(
-        validate_x86_direct_loopback_gates(&main, &registry, &weak_harness).is_err()
+        validate_x86_direct_loopback_gates(&main, &duplicate_marker).is_err()
     );
 
     let deferred_gate = registry.replacen(
@@ -1477,8 +1513,14 @@ fn deliberately_broken_x86_loopback_gate_variants_fail_the_validator() {
         "deferred-gate mutation must apply"
     );
     assert!(
-        validate_x86_direct_loopback_gates(&main, &deferred_gate, &harness).is_err()
+        validate_x86_direct_loopback_gates(&main, &deferred_gate).is_err()
     );
+}
+
+#[test]
+fn x86_userspace_phase_launches_loopback_wake_test() {
+    validate_x86_userspace_phase_launches_loopback_wake_test(&repo_text("kernel/src/main.rs"))
+        .expect("kernel_main_continue loads and launches loopback_wake_test exactly once");
 }
 
 #[test]
@@ -1492,10 +1534,78 @@ fn x86_gate_requires_the_loopback_regression_tests() {
 #[test]
 fn x86_gate_validator_rejects_missing_loopback_marker() {
     let source = repo_text("docker/qemu/run-x86-boot-tests.sh");
-    let marker = "\\[TEST:network:loopback_wake_loss_counters_are_zero:PASS\\]";
+    let marker = "\\[TEST:userspace:loopback_recv_wake:PASS\\]";
     let mutated = source.replace(marker, "");
     assert_ne!(mutated, source, "fixture mutation must apply");
     assert!(validate_x86_gate_requires_the_loopback_regression_tests(&mutated).is_err());
+}
+
+#[test]
+fn x86_gate_validator_rejects_weak_loopback_marker_count() {
+    let source = repo_text("docker/qemu/run-x86-boot-tests.sh");
+    let marker = "\\[TEST:userspace:loopback_recv_wake:PASS\\]";
+    let count_anchor = format!("grep -h -c '{marker}'");
+    let count = source
+        .find(&count_anchor)
+        .expect("find userspace loopback marker count fixture");
+    let weak_count_tail = source[count..].replacen("-eq 1", "-ge 1", 1);
+    let mutated = format!("{}{weak_count_tail}", &source[..count]);
+    assert_ne!(mutated, source, "exact-count mutation must apply");
+    assert!(validate_x86_gate_requires_the_loopback_regression_tests(&mutated).is_err());
+}
+
+#[test]
+fn x86_gate_validator_rejects_missing_userspace_failure_trap() {
+    let source = repo_text("docker/qemu/run-x86-boot-tests.sh");
+    let failure_marker = "\\[TEST:userspace:[^]]*:FAIL";
+    let mutated = source.replace(failure_marker, "");
+    assert_ne!(mutated, source, "userspace FAIL trap mutation must apply");
+    assert!(validate_x86_gate_requires_the_loopback_regression_tests(&mutated).is_err());
+}
+
+#[test]
+fn x86_gate_validator_rejects_lower_userspace_exit_pin() {
+    let source = repo_text("docker/qemu/run-x86-boot-tests.sh");
+    let mutated = source.replacen(
+        "readonly EXPECTED_USERSPACE_EXITS=81",
+        "readonly EXPECTED_USERSPACE_EXITS=80",
+        1,
+    );
+    assert_ne!(mutated, source, "userspace exit-pin mutation must apply");
+    assert!(validate_x86_gate_requires_the_loopback_regression_tests(&mutated).is_err());
+}
+
+#[test]
+fn x86_gate_validator_rejects_missing_http_deadline_tally_disclosure() {
+    let source = repo_text("docker/qemu/run-x86-boot-tests.sh");
+    let mutated = source.replacen("http_test:-9", "", 1);
+    assert_ne!(mutated, source, "http deadline disclosure mutation must apply");
+    assert!(validate_x86_gate_requires_the_loopback_regression_tests(&mutated).is_err());
+}
+
+#[test]
+fn x86_userspace_launch_validator_rejects_missing_loopback_binary_load() {
+    let source = repo_text("kernel/src/main.rs");
+    let mutated = source.replacen(
+        "kernel::userspace_test::get_test_binary(\"loopback_wake_test\")",
+        "kernel::userspace_test::get_test_binary(\"loopback_wake_test_removed\")",
+        1,
+    );
+    assert_ne!(mutated, source, "loopback binary-load mutation must apply");
+    assert!(validate_x86_userspace_phase_launches_loopback_wake_test(&mutated).is_err());
+}
+
+#[test]
+fn x86_userspace_launch_validator_rejects_missing_loopback_process_launch() {
+    let source = repo_text("kernel/src/main.rs");
+    let launch = "process::creation::create_user_process(\n                    String::from(\"loopback_wake_test\")";
+    let mutated = source.replacen(
+        launch,
+        "process::creation::create_user_process_removed(\n                    String::from(\"loopback_wake_test\")",
+        1,
+    );
+    assert_ne!(mutated, source, "loopback process-launch mutation must apply");
+    assert!(validate_x86_userspace_phase_launches_loopback_wake_test(&mutated).is_err());
 }
 
 #[test]
