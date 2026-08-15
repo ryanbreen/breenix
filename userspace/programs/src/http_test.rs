@@ -8,39 +8,21 @@
 //!
 //! Note: External network connectivity may not be available in all test
 //! environments. Network tests use SKIP markers when unavailable.
-//! The fork+deadline guard bounds an external stall that would otherwise never end;
-//! the observed failure froze at `[http] TCP connected (202ms)` mid-TLS-handshake,
-//! with no read deadline anywhere on the TLS/HTTP path. It does not yet stop such
-//! a stall from wedging the boot, for the reason given below.
-//! If the deadline fires, the parent prints both SKIP markers, kills and reaps the
-//! child, then calls the raw exit syscall. Nonetheless, the parent faults inside
-//! `malloc` before that exit takes effect: the kernel's fork/CoW teardown defect
-//! damages the heap regardless of how little the parent does after the kill. The
-//! boot consequently emits no `USERSPACE TEST COMPLETE` or `TEST_TALLY` marker,
-//! and the gate fails by exhausting its 900-second poll. Fixing this properly
-//! requires fixing the kernel defect or removing the live-internet dependency from
-//! the external fetch.
+//! External fetches run in-process with an opt-in deadline at the connected-socket
+//! receive choke point. Connect-phase network failures remain explicit skips and
+//! allow later checks to run, while a connected socket that stalls mid-stream is
+//! an honest test failure.
 //!
 //! This test uses libbreenix's http module for DNS, socket, connect, send,
 //! recv operations.
 
-use libbreenix::error::Error;
 use libbreenix::http::{self, HttpError, MAX_RESPONSE_SIZE};
-use libbreenix::process::{fork, waitpid, wifexited, wexitstatus, ForkResult, WNOHANG};
-use libbreenix::signal;
-use libbreenix::time::{now_monotonic, sleep_ms};
-use libbreenix::types::Pid;
-use libbreenix::Errno;
+use libbreenix::socket;
+use libbreenix::time::now_monotonic;
 use std::process;
 
-// This deadline bounds an unbounded hang rather than imposing a tight SLA, and
-// must clear the CPU contention from loopback_wake_test's 10-second load window.
-const EXTERNAL_FETCH_DEADLINE_MS: u64 = 45_000;
-
-enum DeadlineResult {
-    Completed(i32),
-    NetworkUnavailable,
-}
+// This in-process deadline bounds an unbounded receive stall, not a fetch SLA.
+const EXTERNAL_FETCH_DEADLINE_MS: u64 = 20_000;
 
 fn monotonic_ms() -> Option<u64> {
     let now = now_monotonic().ok()?;
@@ -49,55 +31,6 @@ fn monotonic_ms() -> Option<u64> {
             .saturating_mul(1000)
             .saturating_add((now.tv_nsec.max(0) as u64) / 1_000_000),
     )
-}
-
-fn skip_after_external_fetch_failure(child_pid: Pid, deadline_skip: &'static str) -> ! {
-    print!("{deadline_skip}");
-    print!("HTTP_TEST: remaining checks SKIP (external-fetch deadline fired)\n");
-    let _ = signal::kill(child_pid.raw() as i32, 9);
-    let mut status = 0;
-    loop {
-        match waitpid(child_pid.raw() as i32, &mut status, 0) {
-            Ok(reaped) if reaped == child_pid => break,
-            Err(Error::Os(Errno::EINTR)) => continue,
-            Ok(_) | Err(_) => break,
-        }
-    }
-    libbreenix::process::exit(0);
-}
-
-fn run_external_fetch_with_deadline(
-    child: fn() -> !,
-    deadline_skip: &'static str,
-) -> DeadlineResult {
-    match fork() {
-        Ok(ForkResult::Child) => child(),
-        Ok(ForkResult::Parent(child_pid)) => {
-            let start_ms = match monotonic_ms() {
-                Some(now) => now,
-                None => {
-                    skip_after_external_fetch_failure(child_pid, deadline_skip);
-                }
-            };
-            let deadline_ms = start_ms.saturating_add(EXTERNAL_FETCH_DEADLINE_MS);
-            let mut status = 0;
-
-            loop {
-                match waitpid(child_pid.raw() as i32, &mut status, WNOHANG) {
-                    Ok(pid) if pid.raw() > 0 => return DeadlineResult::Completed(status),
-                    Ok(_) => {}
-                    Err(_) => return DeadlineResult::Completed(5 << 8),
-                }
-
-                if monotonic_ms().is_none_or(|now| now >= deadline_ms) {
-                    skip_after_external_fetch_failure(child_pid, deadline_skip);
-                }
-
-                let _ = sleep_ms(50);
-            }
-        }
-        Err(_) => DeadlineResult::NetworkUnavailable,
-    }
 }
 
 /// Print an HTTP error
@@ -168,86 +101,6 @@ fn create_long_url() -> &'static str {
         "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     );
     LONG_URL
-}
-
-fn https_url_fetch_child() -> ! {
-    match http::http_get_status("https://example.com/") {
-        Ok(code) => {
-            print!("HTTP_TEST: https_url OK (status {})\n", code);
-            process::exit(0);
-        }
-        Err(HttpError::TlsError) => {
-            print!("HTTP_TEST: https_url OK (TLS attempted, failed as expected without network/certs)\n");
-            process::exit(0);
-        }
-        Err(HttpError::ConnectError) | Err(HttpError::DnsError(_)) | Err(HttpError::Timeout) => {
-            print!("HTTP_TEST: https_url SKIP (network unavailable)\n");
-            process::exit(0);
-        }
-        Err(e) => {
-            print!("HTTP_TEST: https_url FAILED wrong err=");
-            print_error(&e);
-            print!("\n");
-            process::exit(5);
-        }
-    }
-}
-
-fn example_fetch_child() -> ! {
-    let mut buf = [0u8; MAX_RESPONSE_SIZE];
-    match http::http_get_with_buf("http://example.com/", &mut buf) {
-        Ok((response, total_len)) => {
-            print!("HTTP_TEST: received {} bytes, status={}\n", total_len, response.status_code);
-
-            if response.status_code == 200 {
-                let body = &buf[response.body_offset..response.body_offset + response.body_len];
-                if contains_html(body) {
-                    print!("HTTP_TEST: example_fetch OK (status 200, body contains HTML)\n");
-                } else {
-                    print!("HTTP_TEST: example_fetch FAILED (status 200 but no HTML in body)\n");
-                    process::exit(7);
-                }
-            } else if response.status_code == 301 || response.status_code == 302 {
-                print!("HTTP_TEST: example_fetch OK (redirect {})\n", response.status_code);
-            } else if response.status_code >= 200 && response.status_code < 400 {
-                print!("HTTP_TEST: example_fetch OK (status {})\n", response.status_code);
-            } else {
-                print!("HTTP_TEST: example_fetch FAILED (unexpected status {})\n", response.status_code);
-                process::exit(7);
-            }
-            process::exit(0);
-        }
-        Err(HttpError::ConnectError) => {
-            print!("HTTP_TEST: example_fetch SKIP (network unavailable - ConnectError)\n");
-            process::exit(0);
-        }
-        Err(HttpError::Timeout) => {
-            print!("HTTP_TEST: example_fetch SKIP (network unavailable - Timeout)\n");
-            process::exit(0);
-        }
-        Err(HttpError::DnsError(_)) => {
-            print!("HTTP_TEST: example_fetch SKIP (network unavailable - DNS unreachable)\n");
-            process::exit(0);
-        }
-        Err(HttpError::SocketError) => {
-            print!("HTTP_TEST: example_fetch SKIP (network unavailable - SocketError)\n");
-            process::exit(0);
-        }
-        Err(HttpError::SendError) => {
-            print!("HTTP_TEST: example_fetch SKIP (network unavailable - SendError)\n");
-            process::exit(0);
-        }
-        Err(HttpError::RecvError) => {
-            print!("HTTP_TEST: example_fetch SKIP (network unavailable - RecvError)\n");
-            process::exit(0);
-        }
-        Err(e) => {
-            print!("HTTP_TEST: example_fetch FAILED err=");
-            print_error(&e);
-            print!("\n");
-            process::exit(7);
-        }
-    }
 }
 
 fn main() {
@@ -336,15 +189,31 @@ fn main() {
 
     // Test 5: HTTPS URL parsing (should attempt TLS, may fail without network)
     print!("HTTP_TEST: testing HTTPS URL parsing...\n");
-    match run_external_fetch_with_deadline(
-        https_url_fetch_child,
-        "HTTP_TEST: https_url SKIP (network unavailable)\n",
-    ) {
-        DeadlineResult::Completed(status)
-            if wifexited(status) && wexitstatus(status) == 0 => {}
-        DeadlineResult::Completed(_) => process::exit(5),
-        DeadlineResult::NetworkUnavailable => {
+    let https_deadline_ms = monotonic_ms()
+        .unwrap_or(1)
+        .saturating_add(EXTERNAL_FETCH_DEADLINE_MS);
+    socket::arm_recv_deadline(https_deadline_ms);
+    let https_result = http::http_get_status("https://example.com/");
+    socket::disarm_recv_deadline();
+    if socket::recv_deadline_fired() {
+        print!("HTTP_TEST: https_url FAILED (external fetch stalled mid-stream; no data within 20000ms of a connected socket)\n");
+        process::exit(1);
+    }
+    match https_result {
+        Ok(code) => {
+            print!("HTTP_TEST: https_url OK (status {})\n", code);
+        }
+        Err(HttpError::TlsError) => {
+            print!("HTTP_TEST: https_url OK (TLS attempted, failed as expected without network/certs)\n");
+        }
+        Err(HttpError::ConnectError) | Err(HttpError::DnsError(_)) | Err(HttpError::Timeout) => {
             print!("HTTP_TEST: https_url SKIP (network unavailable)\n");
+        }
+        Err(e) => {
+            print!("HTTP_TEST: https_url FAILED wrong err=");
+            print_error(&e);
+            print!("\n");
+            process::exit(5);
         }
     }
 
@@ -376,15 +245,73 @@ fn main() {
 
     // Test 7: Network integration - try to fetch example.com
     print!("HTTP_TEST: testing HTTP fetch (example.com)...\n");
-    match run_external_fetch_with_deadline(
-        example_fetch_child,
-        "HTTP_TEST: example_fetch SKIP (network unavailable - Timeout)\n",
-    ) {
-        DeadlineResult::Completed(status)
-            if wifexited(status) && wexitstatus(status) == 0 => {}
-        DeadlineResult::Completed(_) => process::exit(7),
-        DeadlineResult::NetworkUnavailable => {
+    let example_deadline_ms = monotonic_ms()
+        .unwrap_or(1)
+        .saturating_add(EXTERNAL_FETCH_DEADLINE_MS);
+    socket::arm_recv_deadline(example_deadline_ms);
+    let mut buf = [0u8; MAX_RESPONSE_SIZE];
+    let example_result = http::http_get_with_buf("http://example.com/", &mut buf);
+    socket::disarm_recv_deadline();
+    if socket::recv_deadline_fired() {
+        print!("HTTP_TEST: example_fetch FAILED (external fetch stalled mid-stream; no data within 20000ms of a connected socket)\n");
+        process::exit(1);
+    }
+    match example_result {
+        Ok((response, total_len)) => {
+            print!(
+                "HTTP_TEST: received {} bytes, status={}\n",
+                total_len, response.status_code
+            );
+
+            if response.status_code == 200 {
+                let body = &buf[response.body_offset..response.body_offset + response.body_len];
+                if contains_html(body) {
+                    print!("HTTP_TEST: example_fetch OK (status 200, body contains HTML)\n");
+                } else {
+                    print!("HTTP_TEST: example_fetch FAILED (status 200 but no HTML in body)\n");
+                    process::exit(7);
+                }
+            } else if response.status_code == 301 || response.status_code == 302 {
+                print!(
+                    "HTTP_TEST: example_fetch OK (redirect {})\n",
+                    response.status_code
+                );
+            } else if response.status_code >= 200 && response.status_code < 400 {
+                print!(
+                    "HTTP_TEST: example_fetch OK (status {})\n",
+                    response.status_code
+                );
+            } else {
+                print!(
+                    "HTTP_TEST: example_fetch FAILED (unexpected status {})\n",
+                    response.status_code
+                );
+                process::exit(7);
+            }
+        }
+        Err(HttpError::ConnectError) => {
+            print!("HTTP_TEST: example_fetch SKIP (network unavailable - ConnectError)\n");
+        }
+        Err(HttpError::Timeout) => {
             print!("HTTP_TEST: example_fetch SKIP (network unavailable - Timeout)\n");
+        }
+        Err(HttpError::DnsError(_)) => {
+            print!("HTTP_TEST: example_fetch SKIP (network unavailable - DNS unreachable)\n");
+        }
+        Err(HttpError::SocketError) => {
+            print!("HTTP_TEST: example_fetch SKIP (network unavailable - SocketError)\n");
+        }
+        Err(HttpError::SendError) => {
+            print!("HTTP_TEST: example_fetch SKIP (network unavailable - SendError)\n");
+        }
+        Err(HttpError::RecvError) => {
+            print!("HTTP_TEST: example_fetch SKIP (network unavailable - RecvError)\n");
+        }
+        Err(e) => {
+            print!("HTTP_TEST: example_fetch FAILED err=");
+            print_error(&e);
+            print!("\n");
+            process::exit(7);
         }
     }
 

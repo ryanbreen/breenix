@@ -25,6 +25,31 @@
 use crate::error::Error;
 use crate::syscall::{nr, raw};
 use crate::types::{Fd, OwnedFd};
+use crate::Errno;
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+
+/// Absolute monotonic-milliseconds deadline for blocking receives; 0 = disarmed.
+static RECV_DEADLINE_MS: AtomicU64 = AtomicU64::new(0);
+/// Sticky: set when a deadline actually expired, so callers can distinguish a
+/// mid-stream stall from an ordinary error however the error was remapped by
+/// the TLS/HTTP layers above.
+static RECV_DEADLINE_FIRED: AtomicBool = AtomicBool::new(false);
+
+/// Arm the process-global deadline used by blocking connected-socket receives.
+pub fn arm_recv_deadline(absolute_monotonic_ms: u64) {
+    RECV_DEADLINE_FIRED.store(false, Ordering::Release);
+    RECV_DEADLINE_MS.store(absolute_monotonic_ms, Ordering::Release);
+}
+
+/// Disarm the process-global connected-socket receive deadline.
+pub fn disarm_recv_deadline() {
+    RECV_DEADLINE_MS.store(0, Ordering::Release);
+}
+
+/// Return whether the most recently armed deadline expired during a receive.
+pub fn recv_deadline_fired() -> bool {
+    RECV_DEADLINE_FIRED.load(Ordering::Acquire)
+}
 
 /// Address family: Unix (local)
 pub const AF_UNIX: i32 = 1;
@@ -373,9 +398,7 @@ pub fn connect_unix(fd: Fd, addr: &SockAddrUn) -> Result<(), Error> {
 /// # Returns
 /// Ok(()) on success, or Error on failure
 pub fn listen(fd: Fd, backlog: i32) -> Result<(), Error> {
-    let ret = unsafe {
-        raw::syscall2(nr::LISTEN, fd.raw(), backlog as u64) as i64
-    };
+    let ret = unsafe { raw::syscall2(nr::LISTEN, fd.raw(), backlog as u64) as i64 };
     Error::from_syscall(ret).map(|_| ())
 }
 
@@ -402,9 +425,7 @@ pub fn accept(fd: Fd, addr: Option<&mut SockAddrIn>) -> Result<Fd, Error> {
         None => (0u64, 0u64),
     };
 
-    let ret = unsafe {
-        raw::syscall3(nr::ACCEPT, fd.raw(), addr_ptr, addrlen_ptr) as i64
-    };
+    let ret = unsafe { raw::syscall3(nr::ACCEPT, fd.raw(), addr_ptr, addrlen_ptr) as i64 };
     Error::from_syscall(ret).map(Fd::from_raw)
 }
 
@@ -417,9 +438,7 @@ pub fn accept(fd: Fd, addr: Option<&mut SockAddrIn>) -> Result<Fd, Error> {
 /// # Returns
 /// Ok(()) on success, or Error on failure
 pub fn shutdown(fd: Fd, how: i32) -> Result<(), Error> {
-    let ret = unsafe {
-        raw::syscall2(nr::SHUTDOWN, fd.raw(), how as u64) as i64
-    };
+    let ret = unsafe { raw::syscall2(nr::SHUTDOWN, fd.raw(), how as u64) as i64 };
     Error::from_syscall(ret).map(|_| ())
 }
 
@@ -459,14 +478,8 @@ pub fn socketpair(domain: i32, sock_type: i32, protocol: i32) -> Result<(Fd, Fd)
 /// # Returns
 /// Number of bytes sent on success, or Error on failure
 pub fn send(fd: Fd, buf: &[u8]) -> Result<usize, Error> {
-    let ret = unsafe {
-        raw::syscall3(
-            nr::WRITE,
-            fd.raw(),
-            buf.as_ptr() as u64,
-            buf.len() as u64,
-        ) as i64
-    };
+    let ret =
+        unsafe { raw::syscall3(nr::WRITE, fd.raw(), buf.as_ptr() as u64, buf.len() as u64) as i64 };
     Error::from_syscall(ret).map(|n| n as usize)
 }
 
@@ -482,6 +495,32 @@ pub fn send(fd: Fd, buf: &[u8]) -> Result<usize, Error> {
 /// # Returns
 /// Number of bytes received on success, or Error on failure
 pub fn recv(fd: Fd, buf: &mut [u8]) -> Result<usize, Error> {
+    let deadline_ms = RECV_DEADLINE_MS.load(Ordering::Acquire);
+    if deadline_ms != 0 {
+        let remaining_ms = crate::time::now_monotonic().ok().and_then(|now| {
+            if now.tv_sec < 0 || now.tv_nsec < 0 {
+                return None;
+            }
+            let now_ms = (now.tv_sec as u64)
+                .saturating_mul(1000)
+                .saturating_add((now.tv_nsec as u64) / 1_000_000);
+            deadline_ms
+                .checked_sub(now_ms)
+                .filter(|remaining| *remaining != 0)
+        });
+        let Some(remaining_ms) = remaining_ms else {
+            RECV_DEADLINE_FIRED.store(true, Ordering::Release);
+            return Err(Error::Os(Errno::ETIMEDOUT));
+        };
+        let timeout_ms = remaining_ms.min(i32::MAX as u64) as i32;
+        let events = crate::io::poll_events::POLLIN | crate::io::poll_events::POLLHUP;
+        let mut poll_fds = [crate::io::PollFd::new(fd, events)];
+        if crate::io::poll(&mut poll_fds, timeout_ms)? == 0 {
+            RECV_DEADLINE_FIRED.store(true, Ordering::Release);
+            return Err(Error::Os(Errno::ETIMEDOUT));
+        }
+    }
+
     let ret = unsafe {
         raw::syscall3(
             nr::READ,

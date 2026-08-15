@@ -6,20 +6,12 @@
 # KERNEL_POST_TESTS_COMPLETE marker is likewise never used as a gate.
 # The 900-second poll bound allows the x86 boot-test registry to run after the
 # userspace programs; a shorter bound scores a slow-but-healthy boot as failed.
-# http_test's live external fetches may take their explicit
-# "https_url SKIP (network unavailable)" / "example_fetch SKIP" branches when
-# the internet is unreachable, and only those explicit markers count as a
-# skip while the boot continues. A quiet boot with no marker remains a gate
-# failure. When the external-fetch deadline fires, the log contains both SKIP
-# markers, but the parent that SIGKILLed and reaped the forked child still
-# faults in `malloc` before its raw exit takes effect. The boot emits no tally
-# or verdict, so the gate ends as a 900-second no-verdict timeout. This is the
-# filed kernel defect, not a reason to allowlist `http_test` or retry the run;
-# the `http_test:-9` rationale remains pinned here for the structural guard. A
-# proper fix requires repairing fork/CoW teardown or removing the live-internet
-# dependency from the external fetch. This gate never retries a hung run: a
-# blanket retry could swallow exactly the recv-wake regression this gate exists
-# to catch.
+# http_test's live external fetches are bounded in-process by a receive
+# deadline. A connect-phase failure prints an explicit SKIP marker and the boot
+# continues; a mid-stream stall is an honest FAIL that appears in the tally as
+# a nonzero http_test exit. A quiet boot with no marker remains a gate failure.
+# This gate never retries a hung run: a blanket retry could swallow exactly the
+# recv-wake regression this gate exists to catch.
 
 set -euo pipefail
 
@@ -30,9 +22,10 @@ FRAME_CUSTODY_PATTERN='^\[FRAME_CUSTODY_COUNTERS:x86:double=1:stale=1:never=1:un
 PT_CUSTODY_LITERAL='[PT_CUSTODY_COUNTERS:x86:recorded=11:no_proof=0:no_arch=0:terminated=1:undecided=1:exec_unreturned=0:retired=1:returned=10:lost=0:requeued=0]'
 PT_COHORT_LITERAL='[PT_RETIRE_COHORT:x86:children=64:retired=64:returned=640:recorded=576:lost=0:no_arch=0:undecided=0:mid_retire=0:balance=0]'
 # Ten launched test programs plus 64 retire-cohort children pinned by
-# PT_COHORT_LITERAL, five loopback_wake_test processes (parent, reader, peer,
-# load, watchdog), and two http_test deadline children; re-pin consciously.
-readonly EXPECTED_USERSPACE_EXITS=81
+# PT_COHORT_LITERAL, and five loopback_wake_test processes (parent, reader,
+# peer, load, watchdog): 10 + 64 + 5 = 79. This is a floor, checked >= by
+# scripts/x86-gate-verdict.sh; re-pin consciously.
+readonly EXPECTED_USERSPACE_EXITS=79
 
 cd "$BREENIX_ROOT"
 cargo build --release --features boot_tests,testing,external_test_bins --bin qemu-uefi

@@ -2,23 +2,25 @@
 //! blocked in TCP `recv()` on an x86 loopback connection could remain asleep
 //! forever.
 //!
-//! Epoch-relative scheduling was tried first, but produced a false failure on
-//! a healthy x86 kernel: during the busy userspace boot phase, four `fork()`s
-//! plus `accept`/`connect`/handshake setup took about four seconds, so every
-//! scheduled deadline had expired before its child first ran. This version
-//! instead makes every ordering constraint an observed pipe event and measures
-//! data delivery from a timestamp taken by the peer immediately before its
-//! write. Pipe synchronization cannot drain the loopback queue.
+//! Before opening the FIN window, the parent waits for `/proc/pids` to contain
+//! only itself and for the observed PID high-water mark to remain stable. This
+//! prevents another userspace test's network syscall from draining this test's
+//! queued FIN. Ordering remains pipe-carried,
+//! and the peer embeds its pre-write timestamp so the reader measures true data
+//! delivery latency; neither operation drains loopback work.
 //!
 //! The peer exits without closing its socket, so process teardown emits the
-//! undrained FIN under test. A load child keeps the CPU busy across that window
-//! so `kloopbackd`, rather than the idle-loop drain, must deliver it. A watchdog
-//! is the sole bounded escape if a blocking read never wakes.
+//! undrained FIN under test. During that window, a calibrated load child spins
+//! for about 16 seconds without making a syscall, which keeps the idle drain
+//! from running. With `kloopbackd`, the blocking reader sees EOF within its
+//! 6-second bound. Without the pump, the FIN cannot be delivered until the load
+//! child stops and the CPU becomes idle, so the EOF check fails; if the idle
+//! drain is also absent, the watchdog is the sole bounded escape.
 
 use libbreenix::errno::Errno;
 use libbreenix::error::Error;
 use libbreenix::io;
-use libbreenix::process::{fork, waitpid, wexitstatus, wifexited, ForkResult};
+use libbreenix::process::{fork, getpid, waitpid, wexitstatus, wifexited, ForkResult};
 use libbreenix::signal;
 use libbreenix::socket::{self, SockAddrIn, AF_INET, SOCK_STREAM};
 use libbreenix::time::{now_monotonic, sleep_ms};
@@ -28,14 +30,17 @@ use std::process as std_process;
 const LISTEN_PORT: u16 = 54530;
 const TAG: &[u8] = b"545-wake";
 const PAYLOAD_LEN: usize = 16;
+const QUIESCE_POLL_MS: u64 = 250;
+const QUIESCE_STABLE_MS: u64 = 5000;
+const QUIESCE_BOUND_MS: u64 = 300_000;
+const CALIBRATION_ITERS: u64 = 5_000_000;
 const DATA_WAKE_BOUND_MS: u64 = 4000;
-const EOF_WAKE_BOUND_MS: u64 = 4000;
-// Healthy kernels returned EOF in 1500 ms and 1686 ms, against this 4000 ms
-// bound. If loopback delivery liveness is lost, the FIN cannot arrive until
-// this 10000 ms spin ends and lets the idle drain run, leaving 6000 ms between
-// the EOF deadline and the earliest fallback drain.
-const LOAD_SPIN_MS: u64 = 10000;
-const WATCHDOG_AT_MS: u64 = 30000;
+const EOF_WAKE_BOUND_MS: u64 = 6000;
+const LOAD_SPIN_MIN_MS: u64 = 9000;
+// Post-fork calibration can underestimate by ~44%; this target still leaves the
+// 9000 ms floor 3000 ms above EOF_WAKE_BOUND_MS.
+const LOAD_SPIN_MS: u64 = 16000;
+const WATCHDOG_AT_MS: u64 = 60000;
 
 fn monotonic_ms() -> Option<u64> {
     let now = now_monotonic().ok()?;
@@ -51,6 +56,86 @@ fn role_now_or_exit(exit_code: i32) -> u64 {
         Some(now) => now,
         None => std_process::exit(exit_code),
     }
+}
+
+fn wait_for_quiescence() {
+    let parent_pid = match getpid() {
+        Ok(pid) => pid,
+        Err(_) => {
+            println!("LOOPBACK_WAKE_TEST: quiesce waited_ms=0 others=0 quiesced=0");
+            return;
+        }
+    };
+    let start_ms = match monotonic_ms() {
+        Some(now) => now,
+        None => {
+            println!("LOOPBACK_WAKE_TEST: quiesce waited_ms=0 others=0 quiesced=0");
+            return;
+        }
+    };
+    let mut largest_pid_seen = parent_pid.raw();
+    let mut largest_pid_stable_since_ms = start_ms;
+    let mut waited_ms = 0;
+    let mut others = 0usize;
+    let mut quiesced = false;
+
+    loop {
+        let now_ms = match monotonic_ms() {
+            Some(now) => now,
+            None => break,
+        };
+        waited_ms = now_ms.saturating_sub(start_ms);
+
+        match std::fs::read_to_string("/proc/pids") {
+            Ok(contents) => {
+                let mut listed = 0usize;
+                let mut saw_parent = false;
+                let mut largest_pid = 0u64;
+                others = 0;
+
+                for pid in contents.lines().filter_map(|line| line.parse::<u64>().ok()) {
+                    listed = listed.saturating_add(1);
+                    largest_pid = largest_pid.max(pid);
+                    if pid == parent_pid.raw() {
+                        saw_parent = true;
+                    } else {
+                        others = others.saturating_add(1);
+                    }
+                }
+
+                if largest_pid > largest_pid_seen {
+                    largest_pid_seen = largest_pid;
+                    largest_pid_stable_since_ms = now_ms;
+                }
+                let only_parent = listed == 1 && saw_parent && others == 0;
+                let high_water_stable =
+                    now_ms.saturating_sub(largest_pid_stable_since_ms) >= QUIESCE_STABLE_MS;
+                if only_parent && high_water_stable {
+                    quiesced = true;
+                    break;
+                }
+                if listed == 0 {
+                    largest_pid_stable_since_ms = now_ms;
+                }
+            }
+            Err(_) => largest_pid_stable_since_ms = now_ms,
+        }
+
+        let remaining_ms = QUIESCE_BOUND_MS.saturating_sub(waited_ms);
+        if remaining_ms == 0 {
+            break;
+        }
+        if sleep_ms(remaining_ms.min(QUIESCE_POLL_MS)).is_err() {
+            core::hint::spin_loop();
+        }
+    }
+
+    println!(
+        "LOOPBACK_WAKE_TEST: quiesce waited_ms={} others={} quiesced={}",
+        waited_ms,
+        others,
+        u8::from(quiesced)
+    );
 }
 
 fn watchdog_sleep_until(epoch_ms: u64) {
@@ -149,7 +234,22 @@ fn peer_child(spin_r: Fd) -> ! {
     std_process::exit(0);
 }
 
+#[inline(never)]
+fn spin_iterations(iterations: u64) {
+    let mut remaining = iterations;
+    while remaining != 0 {
+        core::hint::spin_loop();
+        remaining -= 1;
+    }
+}
+
 fn load_child(ready_r: Fd, spin_w: Fd) -> ! {
+    let calibration_start_ms = role_now_or_exit(30);
+    spin_iterations(CALIBRATION_ITERS);
+    let calibration_elapsed_ms = role_now_or_exit(30).saturating_sub(calibration_start_ms);
+    let iterations_per_ms = (CALIBRATION_ITERS / calibration_elapsed_ms.max(1)).max(1);
+    let load_iterations = iterations_per_ms.saturating_mul(LOAD_SPIN_MS);
+
     let mut ready_signal = [0u8; 1];
     match io::read(ready_r, &mut ready_signal) {
         Ok(0) => std_process::exit(31),
@@ -157,17 +257,20 @@ fn load_child(ready_r: Fd, spin_w: Fd) -> ! {
         Err(_) => std_process::exit(32),
     }
 
-    let start_ms = role_now_or_exit(30);
+    let spin_start_ms = role_now_or_exit(30);
     match io::write(spin_w, b"s") {
         Ok(1) => {}
         _ => std_process::exit(33),
     }
 
-    // Never block after releasing the peer: denying idle_thread_fn the CPU
-    // across the FIN window makes kloopbackd, not the idle drain, deliver it.
-    let end_ms = start_ms.saturating_add(LOAD_SPIN_MS);
-    while role_now_or_exit(30) < end_ms {
-        core::hint::spin_loop();
+    // No syscall-bearing operation may appear between the spin signal and the
+    // end of this call: the load must deny idle_thread_fn the FIN window.
+    spin_iterations(load_iterations);
+
+    let measured_spin_ms = role_now_or_exit(30).saturating_sub(spin_start_ms);
+    println!("LOOPBACK_WAKE_TEST: load spin_ms={}", measured_spin_ms);
+    if measured_spin_ms < LOAD_SPIN_MIN_MS {
+        std_process::exit(34);
     }
 
     std_process::exit(0);
@@ -237,6 +340,9 @@ fn main() {
         Ok(pipe) => pipe,
         Err(_) => fail("spin_pipe"),
     };
+
+    wait_for_quiescence();
+
     // Only the watchdog uses this epoch, as an outer bound on a total hang.
     let epoch_ms = match monotonic_ms() {
         Some(now) => now,
