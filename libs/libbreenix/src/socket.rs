@@ -528,9 +528,10 @@ pub fn recv(fd: Fd, buf: &mut [u8]) -> Result<usize, Error> {
     }
 
     let result = loop {
-        // Do not use poll() here: polling a connected TCP fd at the first TLS
-        // handshake read wedged the whole guest in legA, while legC completed
-        // after removing this readiness path.
+        // Do not use poll() on a connected TCP fd: at the first TLS handshake
+        // read, it wedges the whole guest; the boot stops with no scheduling
+        // anywhere (issue #568). Enforce the deadline with O_NONBLOCK plus a
+        // sleeping retry, using only paths the kernel already exercises.
         match read_once(buf) {
             Ok(read) => break Ok(read),
             Err(Error::Os(Errno::EAGAIN)) => {
