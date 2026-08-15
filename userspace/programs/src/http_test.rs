@@ -8,12 +8,71 @@
 //!
 //! Note: External network connectivity may not be available in all test
 //! environments. Network tests use SKIP markers when unavailable.
+//! The fork+deadline guard stops an external stall from wedging the whole boot;
+//! the observed failure froze at `[http] TCP connected (202ms)` mid-TLS-handshake.
+//! If it fires, the SKIP marker plus the child's `http_test:-9` exit-tally entry
+//! make the deadline path a bounded, marked gate failure rather than a silent hang.
 //!
 //! This test uses libbreenix's http module for DNS, socket, connect, send,
 //! recv operations.
 
 use libbreenix::http::{self, HttpError, MAX_RESPONSE_SIZE};
+use libbreenix::process::{fork, waitpid, wifexited, wexitstatus, ForkResult, WNOHANG};
+use libbreenix::signal;
+use libbreenix::time::{now_monotonic, sleep_ms};
 use std::process;
+
+const EXTERNAL_FETCH_DEADLINE_MS: u64 = 15_000;
+
+enum DeadlineResult {
+    Completed(i32),
+    NetworkUnavailable,
+}
+
+fn monotonic_ms() -> Option<u64> {
+    let now = now_monotonic().ok()?;
+    Some(
+        (now.tv_sec.max(0) as u64)
+            .saturating_mul(1000)
+            .saturating_add((now.tv_nsec.max(0) as u64) / 1_000_000),
+    )
+}
+
+fn run_external_fetch_with_deadline(child: fn() -> !) -> DeadlineResult {
+    match fork() {
+        Ok(ForkResult::Child) => child(),
+        Ok(ForkResult::Parent(child_pid)) => {
+            let start_ms = match monotonic_ms() {
+                Some(now) => now,
+                None => {
+                    let _ = signal::kill(child_pid.raw() as i32, 9);
+                    let mut status = 0;
+                    let _ = waitpid(child_pid.raw() as i32, &mut status, 0);
+                    return DeadlineResult::NetworkUnavailable;
+                }
+            };
+            let deadline_ms = start_ms.saturating_add(EXTERNAL_FETCH_DEADLINE_MS);
+            let mut status = 0;
+
+            loop {
+                match waitpid(child_pid.raw() as i32, &mut status, WNOHANG) {
+                    Ok(pid) if pid.raw() > 0 => return DeadlineResult::Completed(status),
+                    Ok(_) => {}
+                    Err(_) => return DeadlineResult::Completed(5 << 8),
+                }
+
+                if monotonic_ms().is_none_or(|now| now >= deadline_ms) {
+                    let _ = signal::kill(child_pid.raw() as i32, 9);
+                    let _ = waitpid(child_pid.raw() as i32, &mut status, 0);
+                    return DeadlineResult::NetworkUnavailable;
+                }
+
+                let _ = sleep_ms(50);
+            }
+        }
+        Err(_) => DeadlineResult::NetworkUnavailable,
+    }
+}
 
 /// Print an HTTP error
 fn print_error(e: &HttpError) {
@@ -83,6 +142,86 @@ fn create_long_url() -> &'static str {
         "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     );
     LONG_URL
+}
+
+fn https_url_fetch_child() -> ! {
+    match http::http_get_status("https://example.com/") {
+        Ok(code) => {
+            print!("HTTP_TEST: https_url OK (status {})\n", code);
+            process::exit(0);
+        }
+        Err(HttpError::TlsError) => {
+            print!("HTTP_TEST: https_url OK (TLS attempted, failed as expected without network/certs)\n");
+            process::exit(0);
+        }
+        Err(HttpError::ConnectError) | Err(HttpError::DnsError(_)) | Err(HttpError::Timeout) => {
+            print!("HTTP_TEST: https_url SKIP (network unavailable)\n");
+            process::exit(0);
+        }
+        Err(e) => {
+            print!("HTTP_TEST: https_url FAILED wrong err=");
+            print_error(&e);
+            print!("\n");
+            process::exit(5);
+        }
+    }
+}
+
+fn example_fetch_child() -> ! {
+    let mut buf = [0u8; MAX_RESPONSE_SIZE];
+    match http::http_get_with_buf("http://example.com/", &mut buf) {
+        Ok((response, total_len)) => {
+            print!("HTTP_TEST: received {} bytes, status={}\n", total_len, response.status_code);
+
+            if response.status_code == 200 {
+                let body = &buf[response.body_offset..response.body_offset + response.body_len];
+                if contains_html(body) {
+                    print!("HTTP_TEST: example_fetch OK (status 200, body contains HTML)\n");
+                } else {
+                    print!("HTTP_TEST: example_fetch FAILED (status 200 but no HTML in body)\n");
+                    process::exit(7);
+                }
+            } else if response.status_code == 301 || response.status_code == 302 {
+                print!("HTTP_TEST: example_fetch OK (redirect {})\n", response.status_code);
+            } else if response.status_code >= 200 && response.status_code < 400 {
+                print!("HTTP_TEST: example_fetch OK (status {})\n", response.status_code);
+            } else {
+                print!("HTTP_TEST: example_fetch FAILED (unexpected status {})\n", response.status_code);
+                process::exit(7);
+            }
+            process::exit(0);
+        }
+        Err(HttpError::ConnectError) => {
+            print!("HTTP_TEST: example_fetch SKIP (network unavailable - ConnectError)\n");
+            process::exit(0);
+        }
+        Err(HttpError::Timeout) => {
+            print!("HTTP_TEST: example_fetch SKIP (network unavailable - Timeout)\n");
+            process::exit(0);
+        }
+        Err(HttpError::DnsError(_)) => {
+            print!("HTTP_TEST: example_fetch SKIP (network unavailable - DNS unreachable)\n");
+            process::exit(0);
+        }
+        Err(HttpError::SocketError) => {
+            print!("HTTP_TEST: example_fetch SKIP (network unavailable - SocketError)\n");
+            process::exit(0);
+        }
+        Err(HttpError::SendError) => {
+            print!("HTTP_TEST: example_fetch SKIP (network unavailable - SendError)\n");
+            process::exit(0);
+        }
+        Err(HttpError::RecvError) => {
+            print!("HTTP_TEST: example_fetch SKIP (network unavailable - RecvError)\n");
+            process::exit(0);
+        }
+        Err(e) => {
+            print!("HTTP_TEST: example_fetch FAILED err=");
+            print_error(&e);
+            print!("\n");
+            process::exit(7);
+        }
+    }
 }
 
 fn main() {
@@ -171,21 +310,12 @@ fn main() {
 
     // Test 5: HTTPS URL parsing (should attempt TLS, may fail without network)
     print!("HTTP_TEST: testing HTTPS URL parsing...\n");
-    match http::http_get_status("https://example.com/") {
-        Ok(code) => {
-            print!("HTTP_TEST: https_url OK (status {})\n", code);
-        }
-        Err(HttpError::TlsError) => {
-            print!("HTTP_TEST: https_url OK (TLS attempted, failed as expected without network/certs)\n");
-        }
-        Err(HttpError::ConnectError) | Err(HttpError::DnsError(_)) | Err(HttpError::Timeout) => {
+    match run_external_fetch_with_deadline(https_url_fetch_child) {
+        DeadlineResult::Completed(status)
+            if wifexited(status) && wexitstatus(status) == 0 => {}
+        DeadlineResult::Completed(_) => process::exit(5),
+        DeadlineResult::NetworkUnavailable => {
             print!("HTTP_TEST: https_url SKIP (network unavailable)\n");
-        }
-        Err(e) => {
-            print!("HTTP_TEST: https_url FAILED wrong err=");
-            print_error(&e);
-            print!("\n");
-            process::exit(5);
         }
     }
 
@@ -217,51 +347,12 @@ fn main() {
 
     // Test 7: Network integration - try to fetch example.com
     print!("HTTP_TEST: testing HTTP fetch (example.com)...\n");
-    let mut buf = [0u8; MAX_RESPONSE_SIZE];
-    match http::http_get_with_buf("http://example.com/", &mut buf) {
-        Ok((response, total_len)) => {
-            print!("HTTP_TEST: received {} bytes, status={}\n", total_len, response.status_code);
-
-            if response.status_code == 200 {
-                let body = &buf[response.body_offset..response.body_offset + response.body_len];
-                if contains_html(body) {
-                    print!("HTTP_TEST: example_fetch OK (status 200, body contains HTML)\n");
-                } else {
-                    print!("HTTP_TEST: example_fetch FAILED (status 200 but no HTML in body)\n");
-                    process::exit(7);
-                }
-            } else if response.status_code == 301 || response.status_code == 302 {
-                print!("HTTP_TEST: example_fetch OK (redirect {})\n", response.status_code);
-            } else if response.status_code >= 200 && response.status_code < 400 {
-                print!("HTTP_TEST: example_fetch OK (status {})\n", response.status_code);
-            } else {
-                print!("HTTP_TEST: example_fetch FAILED (unexpected status {})\n", response.status_code);
-                process::exit(7);
-            }
-        }
-        Err(HttpError::ConnectError) => {
-            print!("HTTP_TEST: example_fetch SKIP (network unavailable - ConnectError)\n");
-        }
-        Err(HttpError::Timeout) => {
+    match run_external_fetch_with_deadline(example_fetch_child) {
+        DeadlineResult::Completed(status)
+            if wifexited(status) && wexitstatus(status) == 0 => {}
+        DeadlineResult::Completed(_) => process::exit(7),
+        DeadlineResult::NetworkUnavailable => {
             print!("HTTP_TEST: example_fetch SKIP (network unavailable - Timeout)\n");
-        }
-        Err(HttpError::DnsError(_)) => {
-            print!("HTTP_TEST: example_fetch SKIP (network unavailable - DNS unreachable)\n");
-        }
-        Err(HttpError::SocketError) => {
-            print!("HTTP_TEST: example_fetch SKIP (network unavailable - SocketError)\n");
-        }
-        Err(HttpError::SendError) => {
-            print!("HTTP_TEST: example_fetch SKIP (network unavailable - SendError)\n");
-        }
-        Err(HttpError::RecvError) => {
-            print!("HTTP_TEST: example_fetch SKIP (network unavailable - RecvError)\n");
-        }
-        Err(e) => {
-            print!("HTTP_TEST: example_fetch FAILED err=");
-            print_error(&e);
-            print!("\n");
-            process::exit(7);
         }
     }
 
