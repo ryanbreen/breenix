@@ -1,16 +1,22 @@
-//! Userspace regression test for issue #545, where a reader blocked in TCP
-//! `recv()` on an x86 loopback connection could remain asleep forever.
+//! Event-driven userspace regression test for issue #545, where a reader
+//! blocked in TCP `recv()` on an x86 loopback connection could remain asleep
+//! forever.
 //!
-//! A userspace write drains its own loopback segment, so the first read only
-//! establishes that the connection works. The peer then exits without closing
-//! its socket; process teardown emits an undrained FIN that only the branch's
-//! loopback delivery mechanisms can deliver. A load child keeps the CPU busy
-//! across that FIN-delivery window so `kloopbackd`, rather than the idle-loop
-//! drain, must deliver it. A lost wake is reported as exit 15 when delivery
-//! exceeds the bound, or as the watchdog killing a reader that never wakes.
+//! Epoch-relative scheduling was tried first, but produced a false failure on
+//! a healthy x86 kernel: during the busy userspace boot phase, four `fork()`s
+//! plus `accept`/`connect`/handshake setup took about four seconds, so every
+//! scheduled deadline had expired before its child first ran. This version
+//! instead makes every ordering constraint an observed pipe event and measures
+//! data delivery from a timestamp taken by the peer immediately before its
+//! write. Pipe synchronization cannot drain the loopback queue.
+//!
+//! The peer exits without closing its socket, so process teardown emits the
+//! undrained FIN under test. A load child keeps the CPU busy across that window
+//! so `kloopbackd`, rather than the idle-loop drain, must deliver it. A watchdog
+//! is the sole bounded escape if a blocking read never wakes.
 
 use libbreenix::io;
-use libbreenix::process::{fork, waitpid, wifexited, wexitstatus, ForkResult};
+use libbreenix::process::{fork, waitpid, wexitstatus, wifexited, ForkResult};
 use libbreenix::signal;
 use libbreenix::socket::{self, SockAddrIn, AF_INET, SOCK_STREAM};
 use libbreenix::time::{now_monotonic, sleep_ms};
@@ -18,17 +24,15 @@ use libbreenix::types::{Fd, Pid};
 use std::process as std_process;
 
 const LISTEN_PORT: u16 = 54530;
-const PAYLOAD: &[u8] = b"545-wake";
-const PEER_WRITE_AT_MS: u64 = 600;
-const LOAD_START_AT_MS: u64 = 1400;
-const PEER_EXIT_AT_MS: u64 = 1600;
-const DATA_WAKE_BOUND_MS: u64 = 2000;
-const EOF_WAKE_BOUND_MS: u64 = 2000;
-// The EOF deadline is epoch + 1600 + 2000 = 3600 ms. A kernel that loses
-// loopback delivery liveness cannot deliver the FIN until load ends at epoch
-// + 6400 ms, leaving 2800 ms of separation; keep the load window beyond it.
-const LOAD_END_AT_MS: u64 = 6400;
-const WATCHDOG_AT_MS: u64 = 12000;
+const TAG: &[u8] = b"545-wake";
+const PAYLOAD_LEN: usize = 16;
+const DATA_WAKE_BOUND_MS: u64 = 4000;
+const EOF_WAKE_BOUND_MS: u64 = 3000;
+// A live kernel returns EOF in under 3000 ms. If FIN delivery liveness is lost,
+// the idle drain cannot run until this 8000 ms spin ends: 8000 - 3000 = 5000 ms
+// of discrimination between the EOF deadline and the earliest fallback drain.
+const LOAD_SPIN_MS: u64 = 8000;
+const WATCHDOG_AT_MS: u64 = 30000;
 
 fn monotonic_ms() -> Option<u64> {
     let now = now_monotonic().ok()?;
@@ -46,10 +50,10 @@ fn role_now_or_exit(exit_code: i32) -> u64 {
     }
 }
 
-fn sleep_until(epoch_ms: u64, offset_ms: u64, clock_error_exit: i32) {
-    let target_ms = epoch_ms.saturating_add(offset_ms);
+fn watchdog_sleep_until(epoch_ms: u64) {
+    let target_ms = epoch_ms.saturating_add(WATCHDOG_AT_MS);
     loop {
-        let now_ms = role_now_or_exit(clock_error_exit);
+        let now_ms = role_now_or_exit(40);
         let remaining_ms = target_ms.saturating_sub(now_ms);
         if remaining_ms == 0 {
             return;
@@ -60,59 +64,58 @@ fn sleep_until(epoch_ms: u64, offset_ms: u64, clock_error_exit: i32) {
     }
 }
 
-fn reader_child(server_fd: Fd, epoch_ms: u64) -> ! {
+fn reader_child(server_fd: Fd, ready_w: Fd) -> ! {
     let connection = match socket::accept(server_fd, None) {
         Ok(fd) => fd,
         Err(_) => std_process::exit(10),
     };
 
-    let mut buffer = [0u8; PAYLOAD.len()];
-    let data_result = io::read(connection, &mut buffer);
-    let data_return_ms = role_now_or_exit(16);
-    let data_offset_ms = data_return_ms.saturating_sub(epoch_ms);
-    let data_latency_ms = data_offset_ms.saturating_sub(PEER_WRITE_AT_MS);
-    let data_bytes = data_result.as_ref().copied().unwrap_or(0);
-    println!(
-        "LOOPBACK_WAKE_TEST: data offset_ms={} latency_ms={} bytes={}",
-        data_offset_ms, data_latency_ms, data_bytes
-    );
-    let data_bytes = match data_result {
+    let mut buffer = [0u8; PAYLOAD_LEN];
+    let data_bytes = match io::read(connection, &mut buffer) {
         Ok(bytes) => bytes,
         Err(_) => std_process::exit(11),
     };
-    if data_bytes != PAYLOAD.len() || &buffer[..data_bytes] != PAYLOAD {
+    let t_data = role_now_or_exit(16);
+    if data_bytes != PAYLOAD_LEN || &buffer[8..] != TAG {
         std_process::exit(12);
     }
-    let data_deadline_ms = epoch_ms
-        .saturating_add(PEER_WRITE_AT_MS)
-        .saturating_add(DATA_WAKE_BOUND_MS);
-    if data_return_ms > data_deadline_ms {
+
+    let mut peer_write_bytes = [0u8; 8];
+    peer_write_bytes.copy_from_slice(&buffer[..8]);
+    let peer_write_ms = u64::from_le_bytes(peer_write_bytes);
+    let data_latency_ms = t_data.saturating_sub(peer_write_ms);
+    println!(
+        "LOOPBACK_WAKE_TEST: data latency_ms={} bytes={}",
+        data_latency_ms, data_bytes
+    );
+    if data_latency_ms > DATA_WAKE_BOUND_MS {
         std_process::exit(13);
     }
 
+    match io::write(ready_w, b"g") {
+        Ok(1) => {}
+        _ => std_process::exit(17),
+    }
+    let t_ready = role_now_or_exit(16);
     let eof_result = io::read(connection, &mut buffer);
-    let eof_return_ms = role_now_or_exit(16);
-    let eof_offset_ms = eof_return_ms.saturating_sub(epoch_ms);
-    let eof_latency_ms = eof_offset_ms.saturating_sub(PEER_EXIT_AT_MS);
+    let t_eof = role_now_or_exit(16);
+    let eof_wait_ms = t_eof.saturating_sub(t_ready);
     let eof_bytes = eof_result.as_ref().copied().unwrap_or(0);
     println!(
-        "LOOPBACK_WAKE_TEST: eof offset_ms={} latency_ms={} bytes={}",
-        eof_offset_ms, eof_latency_ms, eof_bytes
+        "LOOPBACK_WAKE_TEST: eof wait_ms={} bytes={}",
+        eof_wait_ms, eof_bytes
     );
     if !matches!(eof_result, Ok(0)) {
         std_process::exit(14);
     }
-    let eof_deadline_ms = epoch_ms
-        .saturating_add(PEER_EXIT_AT_MS)
-        .saturating_add(EOF_WAKE_BOUND_MS);
-    if eof_return_ms > eof_deadline_ms {
+    if eof_wait_ms > EOF_WAKE_BOUND_MS {
         std_process::exit(15);
     }
 
     std_process::exit(0);
 }
 
-fn peer_child(epoch_ms: u64) -> ! {
+fn peer_child(spin_r: Fd) -> ! {
     let connection = match socket::socket(AF_INET, SOCK_STREAM, 0) {
         Ok(fd) => fd,
         Err(_) => std_process::exit(20),
@@ -122,24 +125,44 @@ fn peer_child(epoch_ms: u64) -> ! {
         std_process::exit(21);
     }
 
-    sleep_until(epoch_ms, PEER_WRITE_AT_MS, 23);
-    match io::write(connection, PAYLOAD) {
-        Ok(bytes) if bytes == PAYLOAD.len() => {}
+    let mut payload = [0u8; PAYLOAD_LEN];
+    payload[8..].copy_from_slice(TAG);
+    let peer_write_ms = role_now_or_exit(23);
+    payload[..8].copy_from_slice(&peer_write_ms.to_le_bytes());
+    match io::write(connection, &payload) {
+        Ok(PAYLOAD_LEN) => {}
         _ => std_process::exit(22),
     }
 
-    sleep_until(epoch_ms, PEER_EXIT_AT_MS, 23);
-    // Do not close the socket: process teardown must emit the undrained FIN
-    // whose delivery liveness is the subject of this regression test.
+    let mut spin_signal = [0u8; 1];
+    match io::read(spin_r, &mut spin_signal) {
+        Ok(0) => std_process::exit(24),
+        Ok(_) => {}
+        Err(_) => std_process::exit(25),
+    }
+
+    // Do not close the TCP socket: process teardown must emit the FIN because
+    // nothing on the teardown path drains the loopback queue.
     std_process::exit(0);
 }
 
-fn load_child(epoch_ms: u64) -> ! {
-    sleep_until(epoch_ms, LOAD_START_AT_MS, 30);
+fn load_child(ready_r: Fd, spin_w: Fd) -> ! {
+    let mut ready_signal = [0u8; 1];
+    match io::read(ready_r, &mut ready_signal) {
+        Ok(0) => std_process::exit(31),
+        Ok(_) => {}
+        Err(_) => std_process::exit(32),
+    }
 
-    // This child's only job is to deny idle_thread_fn the CPU across the FIN
-    // delivery window, forcing kloopbackd rather than the idle drain to deliver.
-    let end_ms = epoch_ms.saturating_add(LOAD_END_AT_MS);
+    let start_ms = role_now_or_exit(30);
+    match io::write(spin_w, b"s") {
+        Ok(1) => {}
+        _ => std_process::exit(33),
+    }
+
+    // Never block after releasing the peer: denying idle_thread_fn the CPU
+    // across the FIN window makes kloopbackd, not the idle drain, deliver it.
+    let end_ms = start_ms.saturating_add(LOAD_SPIN_MS);
     while role_now_or_exit(30) < end_ms {
         core::hint::spin_loop();
     }
@@ -147,10 +170,14 @@ fn load_child(epoch_ms: u64) -> ! {
     std_process::exit(0);
 }
 
-fn watchdog_child(epoch_ms: u64, reader_pid: Pid, peer_pid: Pid) -> ! {
-    sleep_until(epoch_ms, WATCHDOG_AT_MS, 40);
+fn watchdog_child(epoch_ms: u64, reader_pid: Pid, peer_pid: Pid, load_pid: Pid) -> ! {
+    watchdog_sleep_until(epoch_ms);
+    // This is the only bounded escape if a wake is lost so completely that a
+    // role never returns from a blocking read. ESRCH is normal: all siblings
+    // should be long gone before the watchdog fires.
     let _ = signal::kill(reader_pid.raw() as i32, 9);
     let _ = signal::kill(peer_pid.raw() as i32, 9);
+    let _ = signal::kill(load_pid.raw() as i32, 9);
     std_process::exit(0);
 }
 
@@ -165,9 +192,7 @@ fn wait_status(pid: Pid) -> Option<i32> {
 fn child_failure_reason(role: &str, status: Option<i32>) -> Option<String> {
     match status {
         Some(status) if wifexited(status) && wexitstatus(status) == 0 => None,
-        Some(status) if wifexited(status) => {
-            Some(format!("{}_exit_{}", role, wexitstatus(status)))
-        }
+        Some(status) if wifexited(status) => Some(format!("{}_exit_{}", role, wexitstatus(status))),
         Some(status) => Some(format!("{}_signal_{}", role, status & 0x7f)),
         None => Some(format!("{}_wait", role)),
     }
@@ -192,19 +217,32 @@ fn main() {
     if socket::listen(server_fd, 4).is_err() {
         fail("listen");
     }
+    // No process explicitly closes the listener.
 
+    let (ready_r, ready_w) = match io::pipe() {
+        Ok(pipe) => pipe,
+        Err(_) => fail("ready_pipe"),
+    };
+    let (spin_r, spin_w) = match io::pipe() {
+        Ok(pipe) => pipe,
+        Err(_) => fail("spin_pipe"),
+    };
+    // Only the watchdog uses this epoch, as an outer bound on a total hang.
     let epoch_ms = match monotonic_ms() {
         Some(now) => now,
         None => fail("clock"),
     };
 
+    // No process closes any pipe end. The parent deliberately keeps every end
+    // open so a dead sibling cannot turn a blocking synchronization read into
+    // spurious EOF; the watchdog is the single bounded escape from any hang.
     let reader_pid = match fork() {
-        Ok(ForkResult::Child) => reader_child(server_fd, epoch_ms),
+        Ok(ForkResult::Child) => reader_child(server_fd, ready_w),
         Ok(ForkResult::Parent(pid)) => pid,
         Err(_) => fail("reader_fork"),
     };
     let peer_pid = match fork() {
-        Ok(ForkResult::Child) => peer_child(epoch_ms),
+        Ok(ForkResult::Child) => peer_child(spin_r),
         Ok(ForkResult::Parent(pid)) => pid,
         Err(_) => {
             let _ = signal::kill(reader_pid.raw() as i32, 9);
@@ -212,7 +250,7 @@ fn main() {
         }
     };
     let load_pid = match fork() {
-        Ok(ForkResult::Child) => load_child(epoch_ms),
+        Ok(ForkResult::Child) => load_child(ready_r, spin_w),
         Ok(ForkResult::Parent(pid)) => pid,
         Err(_) => {
             let _ = signal::kill(reader_pid.raw() as i32, 9);
@@ -221,7 +259,7 @@ fn main() {
         }
     };
     let watchdog_pid = match fork() {
-        Ok(ForkResult::Child) => watchdog_child(epoch_ms, reader_pid, peer_pid),
+        Ok(ForkResult::Child) => watchdog_child(epoch_ms, reader_pid, peer_pid, load_pid),
         Ok(ForkResult::Parent(pid)) => pid,
         Err(_) => {
             let _ = signal::kill(reader_pid.raw() as i32, 9);
