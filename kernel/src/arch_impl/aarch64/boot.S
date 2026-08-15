@@ -139,8 +139,15 @@ el1_init:
 
     // Clear PAN — architecturally UNKNOWN if we entered EL1 directly
     // (the EL2 path sets PAN=0 via SPSR_EL2, but be safe)
+    // MSR PSTATE.PAN requires FEAT_PAN (ARMv8.1) and is UNDEFINED on ARMv8.0-A.
+    // VBAR_EL1 is not programmed yet, so an unguarded write would silently hang
+    // boot. x0 is dead here and reloaded immediately afterwards.
     // Encoding: MSR PAN, #0 = 0xD500409F
-    .inst 0xd500409f
+    mrs  x0, ID_AA64MMFR1_EL1
+    ubfx x0, x0, #20, #4        // ID_AA64MMFR1_EL1.PAN
+    cbz  x0, 77f                // FEAT_PAN absent (ARMv8.0-A) -> skip the PAN write
+    .inst 0xd500409f            // MSR PAN, #0
+77:
     isb
 
     // Set up boot stack pointer (low)
@@ -914,8 +921,15 @@ secondary_el1_init:
     // Clear PAN (Privileged Access Never).
     // PSTATE.PAN is architecturally UNKNOWN on reset — VMware sets it to 1,
     // which causes permission faults when kernel code accesses user-mapped pages.
+    // MSR PSTATE.PAN requires FEAT_PAN (ARMv8.1) and is UNDEFINED on ARMv8.0-A.
+    // VBAR_EL1 is not programmed yet, so an unguarded write would silently hang
+    // boot. x0 is dead here and reloaded immediately afterwards.
     // Encoding: MSR PAN, #0 = 0xD500409F (op1=000, CRm=0000, op2=100)
-    .inst 0xd500409f
+    mrs  x0, ID_AA64MMFR1_EL1
+    ubfx x0, x0, #20, #4        // ID_AA64MMFR1_EL1.PAN
+    cbz  x0, 77f                // FEAT_PAN absent (ARMv8.0-A) -> skip the PAN write
+    .inst 0xd500409f            // MSR PAN, #0
+77:
     isb
 
     // Set up per-CPU boot stack (physical addresses, before MMU)
