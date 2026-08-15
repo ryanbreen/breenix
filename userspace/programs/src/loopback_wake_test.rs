@@ -11,9 +11,32 @@
 //! write. Pipe synchronization cannot drain the loopback queue.
 //!
 //! The peer exits without closing its socket, so process teardown emits the
-//! undrained FIN under test. A load child keeps the CPU busy across that window
-//! so `kloopbackd`, rather than the idle-loop drain, must deliver it. A watchdog
-//! is the sole bounded escape if a blocking read never wakes.
+//! undrained FIN under test. A load child keeps the CPU busy across that window,
+//! so the FIN has to be delivered without the idle loop getting a chance to run.
+//! A watchdog is the sole bounded escape if a blocking read never wakes.
+//!
+//! Proven scope, stated exactly. This is a REGRESSION test for the #545 symptom
+//! on x86: end-to-end loopback FIN delivery and the wake of a reader blocked in
+//! `recv()`, under CPU load. It goes red under a wake-path defect injection
+//! (r4-redF: `wake_connection_waiters` returning early for this port produced
+//! `reader_signal_9` and a red gate).
+//!
+//! It does NOT prove that `kloopbackd` is necessary on x86, and must not be read
+//! that way. Measured on this branch: with the pump stubbed to a no-op and the
+//! `schedule()` re-arm deleted (r4-redC), and additionally with
+//! `drain_loopback_from_idle()` deleted as well (r4-redD), this test still
+//! PASSED. Six syscall drain sites -- TCP `write`, `sendto`, `connect`, `poll`
+//! (two arms) and `select` -- are reachable from any concurrently running socket
+//! program and each drains the whole loopback queue, so a sibling program's
+//! syscall can deliver the FIN. On x86 the pump is a safety net with independent
+//! backstops, not something this test observes.
+//!
+//! The mechanism-level necessity proof lives in the aarch64 deterministic
+//! registry suite (`loopback_recv_wake_when_idle` and
+//! `loopback_recv_wake_under_load`), which drives `tcp_send` directly with no
+//! syscall drain behind it and is red on main. Closing the x86 gap needs #567
+//! fixed, so those registry tests can run on x86, or a kernel-side
+//! drain-activity observable that a userspace test can gate on.
 
 use libbreenix::errno::Errno;
 use libbreenix::error::Error;
@@ -31,9 +54,11 @@ const PAYLOAD_LEN: usize = 16;
 const DATA_WAKE_BOUND_MS: u64 = 4000;
 const EOF_WAKE_BOUND_MS: u64 = 4000;
 // Healthy kernels returned EOF in 1500 ms and 1686 ms, against this 4000 ms
-// bound. If loopback delivery liveness is lost, the FIN cannot arrive until
-// this 10000 ms spin ends and lets the idle drain run, leaving 6000 ms between
-// the EOF deadline and the earliest fallback drain.
+// bound. The 10000 ms spin keeps a runnable thread on the CPU so the idle-loop
+// drain cannot be what satisfies the EOF deadline, leaving 6000 ms of margin.
+// It does not exclude the syscall drain sites that other concurrently running
+// programs reach, so a pass here does not imply the pump delivered the FIN
+// (see the scope note in the module header).
 const LOAD_SPIN_MS: u64 = 10000;
 const WATCHDOG_AT_MS: u64 = 30000;
 

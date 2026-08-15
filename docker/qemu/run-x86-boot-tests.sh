@@ -72,7 +72,13 @@ for i in $(seq 1 "$COUNT"); do
     # Review finding B1: the boot-window loopback wake-loss counter gate is a
     # bonus, not the proof for #545. It samples before any user process exists,
     # so three of its four counters are structurally zero and it cannot go red
-    # for a #545 regression. The userspace recv/EOF wake marker below is proof.
+    # for a #545 regression. The userspace recv/EOF wake marker below is the
+    # #545 regression marker on x86: it proves end-to-end loopback FIN delivery
+    # and blocked-reader wake, and goes red under a wake-path defect injection.
+    # It is NOT a proof that kloopbackd is necessary — syscall-path drains can
+    # deliver the same FIN, so the mechanism-level necessity proof is the
+    # aarch64 deterministic registry suite (loopback_recv_wake_when_idle /
+    # loopback_recv_wake_under_load), which is red on main.
     for _ in $(seq 1 900); do
         if grep -q '\[TEST:process:frame_custody_refusal_gate:PASS\]' \
             "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
