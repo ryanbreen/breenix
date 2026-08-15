@@ -51,7 +51,9 @@ impl Drop for RetirementReceipt {
     }
 }
 
-const PM_LOCK_OWNER_NONE: u64 = u64::MAX;
+pub(crate) const PM_LOCK_OWNER_NONE: u64 = u64::MAX;
+#[cfg(target_arch = "x86_64")]
+pub(crate) const PM_LOCK_OWNER_TID_UNKNOWN: u64 = u64::MAX - 1;
 
 /// Best-effort owner snapshot for PROCESS_MANAGER lock contention analysis.
 static PROCESS_MANAGER_OWNER_CPU: AtomicU64 = AtomicU64::new(PM_LOCK_OWNER_NONE);
@@ -169,8 +171,8 @@ fn current_process_manager_owner_identity() -> (u64, u64) {
     use crate::arch_impl::current::percpu::X86PerCpu;
     use crate::arch_impl::PerCpuOps;
 
-    // x86 is currently single-CPU, so the real CPU id is provably zero today.
-    (X86PerCpu::cpu_id(), 0)
+    let tid = crate::per_cpu::current_thread_id_lock_free().unwrap_or(PM_LOCK_OWNER_TID_UNKNOWN);
+    (X86PerCpu::cpu_id(), tid)
 }
 
 /// Snapshot the best-effort PROCESS_MANAGER lock owner.

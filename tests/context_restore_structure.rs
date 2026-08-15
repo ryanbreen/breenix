@@ -481,6 +481,245 @@ fn validate_routing_matches_enforcement(
     Ok(())
 }
 
+fn validate_dispatch_guard_precheck(source: &str) -> Result<(), String> {
+    fn binding_initializer<'a>(body: &'a str, name: &str) -> Result<(usize, &'a str), String> {
+        let mask = code_mask(body);
+        let bytes = body.as_bytes();
+        let mut bindings = Vec::new();
+
+        for let_offset in identifier_offsets(body, &mask, "let") {
+            let mut cursor = let_offset + "let".len();
+            while cursor < bytes.len() && (!mask[cursor] || bytes[cursor].is_ascii_whitespace()) {
+                cursor += 1;
+            }
+            if bytes
+                .get(cursor..cursor + "mut".len())
+                .is_some_and(|candidate| candidate == b"mut")
+                && !bytes
+                    .get(cursor + "mut".len())
+                    .is_some_and(|byte| identifier_byte(*byte))
+            {
+                cursor += "mut".len();
+                while cursor < bytes.len() && (!mask[cursor] || bytes[cursor].is_ascii_whitespace())
+                {
+                    cursor += 1;
+                }
+            }
+
+            let name_start = cursor;
+            while cursor < bytes.len() && mask[cursor] && identifier_byte(bytes[cursor]) {
+                cursor += 1;
+            }
+            if &body[name_start..cursor] != name {
+                continue;
+            }
+            while cursor < bytes.len() && (!mask[cursor] || bytes[cursor].is_ascii_whitespace()) {
+                cursor += 1;
+            }
+            if bytes.get(cursor) != Some(&b'=') {
+                return Err(format!("{name} binding has no initializer"));
+            }
+
+            let initializer_start = cursor + 1;
+            let mut parentheses = 0usize;
+            let mut braces = 0usize;
+            let mut brackets = 0usize;
+            let initializer_end = (initializer_start..bytes.len())
+                .find(|offset| {
+                    if !mask[*offset] {
+                        return false;
+                    }
+                    match bytes[*offset] {
+                        b'(' => parentheses += 1,
+                        b')' => parentheses = parentheses.saturating_sub(1),
+                        b'{' => braces += 1,
+                        b'}' => braces = braces.saturating_sub(1),
+                        b'[' => brackets += 1,
+                        b']' => brackets = brackets.saturating_sub(1),
+                        b';' if parentheses == 0 && braces == 0 && brackets == 0 => return true,
+                        _ => {}
+                    }
+                    false
+                })
+                .ok_or_else(|| format!("unterminated {name} binding"))?;
+            bindings.push((let_offset, &body[initializer_start..initializer_end]));
+        }
+
+        if bindings.len() != 1 {
+            return Err(format!(
+                "expected exactly one {name} binding, found {}",
+                bindings.len()
+            ));
+        }
+        Ok(bindings[0])
+    }
+
+    fn qualified_zero_arg_call_offsets(scope: &str, qualifier: &str, call: &str) -> Vec<usize> {
+        let mask = code_mask(scope);
+        let bytes = scope.as_bytes();
+        identifier_offsets(scope, &mask, call)
+            .into_iter()
+            .filter(|call_offset| {
+                let previous_code = |before: usize| {
+                    (0..before)
+                        .rev()
+                        .find(|offset| mask[*offset] && !bytes[*offset].is_ascii_whitespace())
+                };
+                let Some(second_colon) = previous_code(*call_offset) else {
+                    return false;
+                };
+                let Some(first_colon) = previous_code(second_colon) else {
+                    return false;
+                };
+                if bytes[second_colon] != b':' || bytes[first_colon] != b':' {
+                    return false;
+                }
+                let Some(qualifier_end) = previous_code(first_colon) else {
+                    return false;
+                };
+                let mut qualifier_start = qualifier_end;
+                while qualifier_start > 0
+                    && mask[qualifier_start - 1]
+                    && identifier_byte(bytes[qualifier_start - 1])
+                {
+                    qualifier_start -= 1;
+                }
+                if &scope[qualifier_start..=qualifier_end] != qualifier {
+                    return false;
+                }
+
+                let mut open = *call_offset + call.len();
+                while open < bytes.len() && (!mask[open] || bytes[open].is_ascii_whitespace()) {
+                    open += 1;
+                }
+                if bytes.get(open) != Some(&b'(') {
+                    return false;
+                }
+                let mut close = open + 1;
+                while close < bytes.len() && (!mask[close] || bytes[close].is_ascii_whitespace()) {
+                    close += 1;
+                }
+                bytes.get(close) == Some(&b')')
+            })
+            .collect()
+    }
+
+    let body = function_body(source, "check_need_resched_and_switch")
+        .ok_or_else(|| "missing fn check_need_resched_and_switch".to_string())?;
+    let (binding_offset, initializer) = binding_initializer(body, "process_manager_guard")?;
+    let compact_initializer = normalized_code(initializer).replace(' ', "");
+    if compact_initializer
+        .matches("crate::process::try_manager()")
+        .count()
+        != 1
+    {
+        return Err(
+            "process_manager_guard is not bound exactly once from crate::process::try_manager()"
+                .to_string(),
+        );
+    }
+
+    let initializer_mask = code_mask(initializer);
+    if !identifier_offsets(initializer, &initializer_mask, "from_userspace").is_empty() {
+        return Err(
+            "process-manager guard acquisition is conditional on from_userspace".to_string(),
+        );
+    }
+
+    let schedule_offsets = qualified_zero_arg_call_offsets(body, "scheduler", "schedule");
+    let schedule_offset = schedule_offsets
+        .first()
+        .copied()
+        .ok_or_else(|| "missing scheduler::schedule() call".to_string())?;
+    if binding_offset >= schedule_offset {
+        return Err("process-manager guard is acquired after scheduler::schedule()".to_string());
+    }
+
+    let none_blocks: Vec<_> = identifier_offsets(initializer, &initializer_mask, "None")
+        .into_iter()
+        .filter_map(|offset| braced_block(initializer, &initializer_mask, offset))
+        .collect();
+    if none_blocks.len() != 1 {
+        return Err("guard acquisition does not have exactly one unavailable arm".to_string());
+    }
+    let unavailable = none_blocks[0];
+    let unavailable_mask = code_mask(unavailable);
+    let compact_unavailable = normalized_code(unavailable).replace(' ', "");
+    if !compact_unavailable.contains("scheduler::set_need_resched();")
+        || identifier_offsets(unavailable, &unavailable_mask, "return").is_empty()
+    {
+        return Err("guard-unavailable arm does not re-arm rescheduling and return".to_string());
+    }
+    if !identifier_offsets(unavailable, &unavailable_mask, "schedule").is_empty()
+        || !identifier_offsets(unavailable, &unavailable_mask, "abort_dispatch_and_resume")
+            .is_empty()
+    {
+        return Err("guard-unavailable arm commits or rolls back a dispatch".to_string());
+    }
+
+    Ok(())
+}
+
+fn validate_first_run_dispatch_has_no_logging(source: &str) -> Result<(), String> {
+    fn log_path_offsets(scope: &str) -> Vec<usize> {
+        let mask = code_mask(scope);
+        let bytes = scope.as_bytes();
+        identifier_offsets(scope, &mask, "log")
+            .into_iter()
+            .filter(|offset| {
+                let mut cursor = *offset + "log".len();
+                while cursor < bytes.len() && (!mask[cursor] || bytes[cursor].is_ascii_whitespace())
+                {
+                    cursor += 1;
+                }
+                bytes.get(cursor..cursor + 2) == Some(b"::")
+            })
+            .collect()
+    }
+
+    let restore = function_body(source, "restore_userspace_thread_context")
+        .ok_or_else(|| "missing fn restore_userspace_thread_context".to_string())?;
+    let restore_mask = code_mask(restore);
+    let first_run = identifier_offsets(restore, &restore_mask, "if")
+        .into_iter()
+        .find_map(|if_offset| {
+            let block = braced_block(restore, &restore_mask, if_offset)?;
+            let open = block.find('{')?;
+            (normalized_predicate(&block["if".len()..open]) == "!has_started").then_some(block)
+        })
+        .ok_or_else(|| "restore has no if !has_started block".to_string())?;
+    let first_run_mask = code_mask(first_run);
+    let installed_offset = identifier_offsets(first_run, &first_run_mask, "Installed")
+        .first()
+        .copied()
+        .ok_or_else(|| "first-run block has no Installed arm".to_string())?;
+    let installed_arm = braced_block(first_run, &first_run_mask, installed_offset)
+        .ok_or_else(|| "Installed arm has no block".to_string())?;
+    let installed_end = installed_offset + installed_arm.len();
+    if log_path_offsets(first_run)
+        .into_iter()
+        .any(|offset| offset < installed_offset || offset >= installed_end)
+    {
+        return Err("first-run dispatch logs outside the Installed arm".to_string());
+    }
+
+    let setup = function_body(source, "setup_first_userspace_entry")
+        .ok_or_else(|| "missing fn setup_first_userspace_entry".to_string())?;
+    let setup_mask = code_mask(setup);
+    let ring3_commit = identifier_offsets(setup, &setup_mask, "user_code_selector")
+        .first()
+        .copied()
+        .ok_or_else(|| "first userspace entry has no ring-3 commit".to_string())?;
+    if log_path_offsets(setup)
+        .into_iter()
+        .any(|offset| offset < ring3_commit)
+    {
+        return Err("first userspace setup logs before the ring-3 commit".to_string());
+    }
+
+    Ok(())
+}
+
 fn validate_first_userspace_entry_source(source: &str) -> Result<(), String> {
     let setup = function_body(source, "setup_first_userspace_entry")
         .ok_or_else(|| "missing fn setup_first_userspace_entry".to_string())?;
@@ -740,6 +979,132 @@ fn routing_enforcement_validator_rejects_missing_selector_check() {
     "#;
     let enforcement_source = repo_text("kernel/src/task/process_context.rs");
     assert!(validate_routing_matches_enforcement(routing_mutant, &enforcement_source).is_err());
+}
+
+#[test]
+fn dispatch_guard_is_shared_and_acquired_before_scheduling() {
+    let source = repo_text("kernel/src/interrupts/context_switch.rs");
+    assert_eq!(validate_dispatch_guard_precheck(&source), Ok(()));
+}
+
+#[test]
+fn dispatch_guard_validator_rejects_userspace_only_acquisition() {
+    let synthetic = r#"
+        fn check_need_resched_and_switch() {
+            let mut process_manager_guard = if from_userspace {
+                match crate::process::try_manager() {
+                    Some(guard) => guard,
+                    None => {
+                        scheduler::set_need_resched();
+                        return;
+                    }
+                }
+            } else {
+                None
+            };
+            let schedule_result = scheduler::schedule();
+        }
+    "#;
+    assert!(validate_dispatch_guard_precheck(synthetic).is_err());
+}
+
+#[test]
+fn dispatch_guard_validator_rejects_acquisition_after_scheduling() {
+    let synthetic = r#"
+        fn check_need_resched_and_switch() {
+            let schedule_result = scheduler::schedule();
+            let mut process_manager_guard = match crate::process::try_manager() {
+                Some(guard) => guard,
+                None => {
+                    scheduler::set_need_resched();
+                    return;
+                }
+            };
+        }
+    "#;
+    assert!(validate_dispatch_guard_precheck(synthetic).is_err());
+}
+
+#[test]
+fn dispatch_guard_validator_rejects_unavailable_fallthrough() {
+    let synthetic = r#"
+        fn check_need_resched_and_switch() {
+            let mut process_manager_guard = match crate::process::try_manager() {
+                Some(guard) => guard,
+                None => {
+                    scheduler::set_need_resched();
+                    scheduler::schedule();
+                }
+            };
+            let schedule_result = scheduler::schedule();
+        }
+    "#;
+    assert!(validate_dispatch_guard_precheck(synthetic).is_err());
+}
+
+#[test]
+fn first_run_dispatch_logs_only_after_installation() {
+    let source = repo_text("kernel/src/interrupts/context_switch.rs");
+    assert_eq!(validate_first_run_dispatch_has_no_logging(&source), Ok(()));
+}
+
+#[test]
+fn first_run_logging_validator_rejects_aborted_arm_logging() {
+    let synthetic = r#"
+        fn restore_userspace_thread_context() {
+            if !has_started {
+                match setup_first_userspace_entry() {
+                    FirstUserspaceEntry::Installed => {
+                        log::info!("First run installed");
+                        thread.has_started = true;
+                    }
+                    FirstUserspaceEntry::Aborted(reason) => {
+                        log::info!("First run aborted: {}", reason);
+                        scheduler::abort_dispatch_and_resume(thread_id, resume_thread_id);
+                        scheduler::set_need_resched();
+                    }
+                }
+            }
+        }
+
+        fn setup_first_userspace_entry() {
+            interrupt_frame.as_mut().update(|frame| {
+                frame.code_segment = crate::gdt::user_code_selector();
+                log::info!("ring 3 committed");
+            });
+        }
+    "#;
+    assert!(validate_first_run_dispatch_has_no_logging(synthetic).is_err());
+}
+
+#[test]
+fn first_run_logging_validator_rejects_setup_prologue_logging() {
+    let synthetic = r#"
+        fn restore_userspace_thread_context() {
+            if !has_started {
+                match setup_first_userspace_entry() {
+                    FirstUserspaceEntry::Installed => {
+                        log::info!("First run installed");
+                        thread.has_started = true;
+                    }
+                    FirstUserspaceEntry::Aborted(reason) => {
+                        raw_serial_str(reason);
+                        scheduler::abort_dispatch_and_resume(thread_id, resume_thread_id);
+                        scheduler::set_need_resched();
+                    }
+                }
+            }
+        }
+
+        fn setup_first_userspace_entry() {
+            log::info!("attempting first entry");
+            interrupt_frame.as_mut().update(|frame| {
+                frame.code_segment = crate::gdt::user_code_selector();
+                log::info!("ring 3 committed");
+            });
+        }
+    "#;
+    assert!(validate_first_run_dispatch_has_no_logging(synthetic).is_err());
 }
 
 #[test]

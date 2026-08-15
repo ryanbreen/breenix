@@ -390,6 +390,20 @@ pub fn current_thread() -> Option<&'static mut crate::task::thread::Thread> {
     }
 }
 
+/// Read the current thread ID without taking the scheduler lock or creating a
+/// mutable reference to the GS-relative thread object.
+#[inline(always)]
+pub fn current_thread_id_lock_free() -> Option<u64> {
+    let thread_ptr =
+        hal_percpu::X86PerCpu::current_thread_ptr() as *const crate::task::thread::Thread;
+
+    if thread_ptr.is_null() {
+        None
+    } else {
+        unsafe { Some((*thread_ptr).id) }
+    }
+}
+
 /// Set the current thread in per-CPU data
 pub fn set_current_thread(thread: *mut crate::task::thread::Thread) {
     // Use HAL for GS-relative access

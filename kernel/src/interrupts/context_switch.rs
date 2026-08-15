@@ -24,12 +24,14 @@ enum FirstUserspaceEntry {
 
 static FIRST_USERSPACE_ENTRY_ABORT_COUNT: AtomicU64 = AtomicU64::new(0);
 static FIRST_USERSPACE_ENTRY_ABORT_LOGGED: AtomicBool = AtomicBool::new(false);
+static DISPATCH_GUARD_UNAVAILABLE_STREAK: AtomicU64 = AtomicU64::new(0);
+static DISPATCH_GUARD_ESCALATION_LOGGED: AtomicBool = AtomicBool::new(false);
+const DISPATCH_GUARD_ESCALATION_THRESHOLD: u64 = 1024;
 
 /// Raw serial debug output - single character, no locks, no allocations.
 /// Use this for debugging context switch paths where any allocation/locking
 /// could perturb timing or cause deadlocks.
 #[inline(always)]
-#[allow(dead_code)]
 pub fn raw_serial_char(c: u8) {
     unsafe {
         use x86_64::instructions::port::Port;
@@ -48,6 +50,59 @@ fn raw_serial_str(s: &str) {
         for byte in s.bytes() {
             port.write(byte);
         }
+    }
+}
+
+/// Raw serial decimal output - no locks, no allocations.
+#[inline(always)]
+fn raw_serial_u64(mut value: u64) {
+    if value == 0 {
+        raw_serial_char(b'0');
+        return;
+    }
+
+    let mut digits = [0_u8; 20];
+    let mut index = digits.len();
+    while value != 0 {
+        index -= 1;
+        digits[index] = b'0' + (value % 10) as u8;
+        value /= 10;
+    }
+    while index < digits.len() {
+        raw_serial_char(digits[index]);
+        index += 1;
+    }
+}
+
+#[inline(always)]
+fn note_dispatch_guard_available() {
+    DISPATCH_GUARD_UNAVAILABLE_STREAK.store(0, Ordering::Relaxed);
+}
+
+#[inline(always)]
+fn note_dispatch_guard_unavailable() {
+    let streak = DISPATCH_GUARD_UNAVAILABLE_STREAK
+        .fetch_add(1, Ordering::Relaxed)
+        .wrapping_add(1);
+    if streak >= DISPATCH_GUARD_ESCALATION_THRESHOLD
+        && !DISPATCH_GUARD_ESCALATION_LOGGED.swap(true, Ordering::Relaxed)
+    {
+        let (owner_cpu, owner_tid) = crate::process::process_manager_owner_snapshot().unwrap_or((
+            crate::process::PM_LOCK_OWNER_NONE,
+            crate::process::PM_LOCK_OWNER_NONE,
+        ));
+        let current_tid = crate::per_cpu::current_thread_id_lock_free()
+            .unwrap_or(crate::process::PM_LOCK_OWNER_TID_UNKNOWN);
+
+        raw_serial_str("[PMGUARD] dispatch refused streak=");
+        raw_serial_u64(streak);
+        raw_serial_str(" owner_cpu=");
+        raw_serial_u64(owner_cpu);
+        raw_serial_str(" owner_tid=");
+        raw_serial_u64(owner_tid);
+        raw_serial_str(" current_tid=");
+        raw_serial_u64(current_tid);
+        raw_serial_str("\n");
     }
 }
 
@@ -150,28 +205,24 @@ pub extern "C" fn check_need_resched_and_switch(
     let _count = RESCHED_LOG_COUNTER.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
     // Note: Debug logging removed from hot path - use GDB if debugging is needed
 
-    // CRITICAL FIX: Acquire and HOLD process manager lock across entire critical section.
-    // This prevents a TOCTOU race where:
-    //   1. Check lock is available (old approach: immediately dropped)
-    //   2. syscall acquires lock
-    //   3. scheduler::schedule() modifies state
-    //   4. save_current_thread_context() fails to acquire lock
-    //   5. Scheduler state is corrupted: wrong thread in ready queue
-    //
-    // By HOLDING the lock, we ensure atomicity of the schedule + save operation.
-    let mut process_manager_guard = if from_userspace {
-        match crate::process::try_manager() {
-            Some(guard) => Some(guard),
-            None => {
-                // Process manager lock is held (likely by a syscall in progress).
-                // Don't even attempt to schedule - we'd corrupt scheduler state if we did.
-                // The need_resched flag was already cleared, so set it again for next time.
-                scheduler::set_need_resched();
-                return;
-            }
+    // Both entry paths must resolve the process-manager dependency BEFORE committing
+    // to a scheduling decision, and both must refuse identically when it is
+    // unavailable. The kernel-entry path used to skip this check and pass `None`
+    // down, so a dispatch could be committed to a never-started user thread whose
+    // first ring-3 entry then aborted for want of this very lock, requeue the
+    // thread and re-arm need_resched, forever. Refusing here leaves the
+    // lock-holding context - the only one that can release it - running.
+    // try_lock only: blocking here would deadlock the interrupt path.
+    let mut process_manager_guard = match crate::process::try_manager() {
+        Some(guard) => {
+            note_dispatch_guard_available();
+            guard
         }
-    } else {
-        None
+        None => {
+            note_dispatch_guard_unavailable();
+            scheduler::set_need_resched();
+            return;
+        }
     };
 
     // Perform scheduling decision
@@ -253,28 +304,20 @@ pub extern "C" fn check_need_resched_and_switch(
 
         if from_userspace {
             // Use the already-held guard to save context (prevents TOCTOU race)
-            if let Some(ref mut guard) = process_manager_guard {
-                // Debug marker: saving userspace context (raw serial, no locks)
-                raw_serial_str("<S>");
-                if !save_current_thread_context_with_guard(
-                    old_thread_id,
-                    saved_regs,
-                    interrupt_frame,
-                    guard,
-                ) {
-                    log::error!(
-                        "Context switch aborted: failed to save thread {} context. \
-                         Would cause return to stale RIP!",
-                        old_thread_id
-                    );
-                    // Roll back the committed switch and re-arm rescheduling.
-                    scheduler::abort_dispatch_and_resume(new_thread_id, old_thread_id);
-                    scheduler::set_need_resched();
-                    return;
-                }
-            } else {
-                // This shouldn't happen - from_userspace implies we acquired the guard
-                log::error!("BUG: from_userspace=true but no process_manager_guard");
+            // Debug marker: saving userspace context (raw serial, no locks)
+            raw_serial_str("<S>");
+            if !save_current_thread_context_with_guard(
+                old_thread_id,
+                saved_regs,
+                interrupt_frame,
+                &mut process_manager_guard,
+            ) {
+                log::error!(
+                    "Context switch aborted: failed to save thread {} context. \
+                     Would cause return to stale RIP!",
+                    old_thread_id
+                );
+                // Roll back the committed switch and re-arm rescheduling.
                 scheduler::abort_dispatch_and_resume(new_thread_id, old_thread_id);
                 scheduler::set_need_resched();
                 return;
@@ -284,31 +327,12 @@ pub extern "C" fn check_need_resched_and_switch(
             // in a syscall's HLT loop. Save the KERNEL context in process.main_thread so
             // the user-thread restore path can resume it at the correct kernel location.
             // NOTE: No logging here - this is a hot path during blocking I/O
-            let save_succeeded = if let Some(ref mut guard) = process_manager_guard {
-                save_kernel_context_with_guard(old_thread_id, saved_regs, interrupt_frame, guard);
-                true
-            } else if let Some(mut guard) = crate::process::try_manager() {
-                save_kernel_context_with_guard(
-                    old_thread_id,
-                    saved_regs,
-                    interrupt_frame,
-                    &mut guard,
-                );
-                true
-            } else {
-                log::error!(
-                    "Failed to acquire lock to save kernel context for thread {}",
-                    old_thread_id
-                );
-                false
-            };
-
-            if !save_succeeded {
-                // Cannot save context - roll back the committed switch and try again later
-                scheduler::abort_dispatch_and_resume(new_thread_id, old_thread_id);
-                scheduler::set_need_resched();
-                return;
-            }
+            save_kernel_context_with_guard(
+                old_thread_id,
+                saved_regs,
+                interrupt_frame,
+                &mut process_manager_guard,
+            );
         } else if !from_userspace {
             // Pure kernel thread (like kthread) being preempted - save its context
             // This is NOT a userspace thread and NOT blocked in syscall - it's a
@@ -323,7 +347,7 @@ pub extern "C" fn check_need_resched_and_switch(
             old_thread_id,
             saved_regs,
             interrupt_frame,
-            process_manager_guard.take(),
+            Some(process_manager_guard),
         );
 
         // NOTE: Don't log here - this is on the hot path and can affect timing
@@ -1045,8 +1069,6 @@ fn restore_userspace_thread_context(
     if !has_started {
         // CRITICAL: This is a brand new thread that has never run
         // We need to set up for its first entry to userspace
-        log::info!("First run: thread {} entering userspace", thread_id);
-
         // For first run, we need to set up the interrupt frame to jump to userspace
         match setup_first_userspace_entry(
             thread_id,
@@ -1055,6 +1077,7 @@ fn restore_userspace_thread_context(
             process_manager_guard,
         ) {
             FirstUserspaceEntry::Installed => {
+                log::info!("First run: thread {} entering userspace", thread_id);
                 scheduler::with_thread_mut(thread_id, |thread| {
                     thread.has_started = true;
                 });
@@ -1062,11 +1085,11 @@ fn restore_userspace_thread_context(
             FirstUserspaceEntry::Aborted(reason) => {
                 FIRST_USERSPACE_ENTRY_ABORT_COUNT.fetch_add(1, Ordering::Relaxed);
                 if !FIRST_USERSPACE_ENTRY_ABORT_LOGGED.swap(true, Ordering::Relaxed) {
-                    log::error!(
-                        "Aborted first userspace entry for thread {}: {}",
-                        thread_id,
-                        reason
-                    );
+                    raw_serial_str("[PMGUARD] first-entry aborted tid=");
+                    raw_serial_u64(thread_id);
+                    raw_serial_str(" reason=");
+                    raw_serial_str(reason);
+                    raw_serial_str("\n");
                 }
                 scheduler::abort_dispatch_and_resume(thread_id, resume_thread_id);
                 scheduler::set_need_resched();
@@ -1252,8 +1275,6 @@ fn setup_first_userspace_entry(
     saved_regs: &mut SavedRegisters,
     process_manager_guard: Option<crate::process::TryProcessManagerGuard>,
 ) -> FirstUserspaceEntry {
-    log::info!("setup_first_userspace_entry: thread {}", thread_id);
-
     // Phase 1: resolve every fallible dependency before touching the return frame.
     let mut manager_guard = match process_manager_guard.or_else(crate::process::try_manager) {
         Some(guard) if guard.is_some() => guard,

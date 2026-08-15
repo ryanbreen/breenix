@@ -155,7 +155,7 @@ fn set_fs_base(base: VirtAddr) -> Result<(), &'static str> {
     // GS remains dedicated to per-CPU kernel data
     FsBase::write(base);
 
-    log::debug!("Set FS base to {:#x}", base);
+    log::trace!("Set FS base to {:#x}", base);
 
     Ok(())
 }
