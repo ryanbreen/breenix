@@ -2237,14 +2237,16 @@ pub fn page_table_custody_disposition_gate_test() -> crate::test_framework::regi
         Err(_) => return TestResult::Fail("G: page-table construction failed"),
     };
     let free_before_abandon = crate::memory::frame_allocator::free_list_len_for_gate();
+    let before_abandon = disposition_gate_counters();
     terminated.abandon(AbandonReason::AlreadyTerminated);
     let after_abandon = disposition_gate_counters();
-    // Terminated abandonment must also leave the root-retirement counter flat.
+    // Terminated abandonment must leave the root-retirement counter flat across
+    // the abandonment itself; earlier oracles in this test may retire roots.
     if after_abandon[3] != start[3] + 1
         || after_abandon[1] != start[1]
         || after_abandon[2] != start[2]
         || after_abandon[4] != start[4]
-        || after_abandon[5] != start[5]
+        || after_abandon[5] != before_abandon[5]
         || crate::memory::frame_allocator::free_list_len_for_gate() != free_before_abandon
     {
         return TestResult::Fail("G: terminated abandonment was not isolated and non-freeing");
