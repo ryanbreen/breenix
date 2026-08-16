@@ -153,8 +153,10 @@ seven explicit conditions. Every change below is traceable to a numbered conditi
 > **Reading note.** This table records the v2 revision **as it was made**, and its phase labels are
 > v2 labels. Two of them are superseded by v3: the wait families are now **P10a/b/c/d** (closure D
 > inserted `BlockedOnSignal` as P10c), so "P10c deletes the arm / #491 completes at P10c" reads
-> **P10d** today; and the honest PR count is **17**, not 16 (closure D / OQ-8). The cond-7 row below
-> is the one v2 got wrong and v3 corrects (closure G).
+> **P10d** today; and the honest PR count is **18**, not 16 — the figure moved 16 → 17 at the v3
+> tranche pass (closure D) and 17 → 18 when the 2026-08-16 repair split P5 into P5a and the held P5b
+> (§7 OQ-8; PLAN §0's ledger is authoritative). The cond-7 row below is the one v2 got wrong and v3
+> corrects (closure G).
 
 | Cond | Condition (verbatim intent) | v2 closure | Where |
 |---|---|---|---|
