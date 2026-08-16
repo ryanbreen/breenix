@@ -1,6 +1,14 @@
 #!/bin/bash
-# Run N parallel Docker full boot tests
+# Run N parallel full boot tests
 # Usage: ./run-boot-parallel.sh [count]
+#
+# The QEMU invocation is identical whether it runs natively or inside the
+# breenix-qemu container; Docker only ever supplied the qemu binary. The x86 gate
+# host runs QEMU natively (as docker/qemu/run-x86-boot-tests.sh already does) and
+# has no Docker daemon, so hard-requiring `docker run` made this gate
+# unconditionally red there — and because the launch was backgrounded with its
+# output discarded, the missing binary surfaced only as a 120s "TIMEOUT" with no
+# serial output. Select the runner, and make a failed launch say so.
 
 set -e
 
@@ -20,10 +28,32 @@ if [ -z "$UEFI_IMG" ]; then
     exit 1
 fi
 
-echo "Running $COUNT parallel Docker full boot tests..."
+for image in "$BREENIX_ROOT/target/test_binaries.img" "$BREENIX_ROOT/target/ext2.img"; do
+    if [ ! -f "$image" ]; then
+        echo "Error: missing $image. Repack with:"
+        echo "  cargo run -p xtask -- create-test-disk && ./scripts/create_ext2_disk.sh"
+        exit 1
+    fi
+done
+
+# Pick the QEMU runner. Native first: it is what the x86 gate host provides and
+# what run-x86-boot-tests.sh already uses, and it removes a Docker daemon from
+# the trusted path of a gate that only ever needed a qemu binary.
+if command -v qemu-system-x86_64 >/dev/null 2>&1; then
+    RUNNER=native
+elif command -v docker >/dev/null 2>&1; then
+    RUNNER=docker
+else
+    echo "Error: no QEMU runner available (need qemu-system-x86_64 on PATH, or docker with the breenix-qemu image)"
+    exit 1
+fi
+
+echo "Running $COUNT parallel full boot tests (runner: $RUNNER)..."
 echo "Image: $UEFI_IMG"
 
-# Create output directories and launch containers
+declare -a RUNNER_PIDS=()
+
+# Create output directories and launch the boots
 for i in $(seq 1 $COUNT); do
     OUTPUT_DIR="/tmp/breenix_boot_$i"
     rm -rf "$OUTPUT_DIR"
@@ -31,27 +61,48 @@ for i in $(seq 1 $COUNT); do
     cp "$BREENIX_ROOT/target/ovmf/x64/code.fd" "$OUTPUT_DIR/OVMF_CODE.fd"
     cp "$BREENIX_ROOT/target/ovmf/x64/vars.fd" "$OUTPUT_DIR/OVMF_VARS.fd"
 
-    docker run --rm \
-        -v "$UEFI_IMG:/breenix/breenix-uefi.img:ro" \
-        -v "$BREENIX_ROOT/target/test_binaries.img:/breenix/test_binaries.img:ro" \
-        -v "$BREENIX_ROOT/target/ext2.img:/breenix/ext2.img:ro" \
-        -v "$OUTPUT_DIR:/output" \
-        breenix-qemu \
+    # Both branches pass byte-identical QEMU arguments; only the file paths
+    # differ, because the container sees the images through bind mounts.
+    if [ "$RUNNER" = native ]; then
         qemu-system-x86_64 \
-            -pflash /output/OVMF_CODE.fd \
-            -pflash /output/OVMF_VARS.fd \
-            -drive if=none,id=hd,format=raw,readonly=on,file=/breenix/breenix-uefi.img \
+            -pflash "$OUTPUT_DIR/OVMF_CODE.fd" \
+            -pflash "$OUTPUT_DIR/OVMF_VARS.fd" \
+            -drive "if=none,id=hd,format=raw,readonly=on,file=$UEFI_IMG" \
             -device virtio-blk-pci,drive=hd,bootindex=0,disable-modern=on,disable-legacy=off \
-            -drive if=none,id=testdisk,format=raw,readonly=on,file=/breenix/test_binaries.img \
+            -drive "if=none,id=testdisk,format=raw,readonly=on,file=$BREENIX_ROOT/target/test_binaries.img" \
             -device virtio-blk-pci,drive=testdisk,disable-modern=on,disable-legacy=off \
-            -drive if=none,id=ext2disk,format=raw,readonly=on,file=/breenix/ext2.img \
+            -drive "if=none,id=ext2disk,format=raw,readonly=on,file=$BREENIX_ROOT/target/ext2.img" \
             -device virtio-blk-pci,drive=ext2disk,disable-modern=on,disable-legacy=off \
             -machine pc,accel=tcg -cpu qemu64 -smp 1 -m 512 \
             -display none -no-reboot -no-shutdown \
             -device isa-debug-exit,iobase=0xf4,iosize=0x04 \
-            -serial file:/output/serial_user.txt \
-            -serial file:/output/serial_kernel.txt \
-        &>/dev/null &
+            -serial "file:$OUTPUT_DIR/serial_user.txt" \
+            -serial "file:$OUTPUT_DIR/serial_kernel.txt" \
+            >"$OUTPUT_DIR/runner.log" 2>&1 &
+    else
+        docker run --rm \
+            -v "$UEFI_IMG:/breenix/breenix-uefi.img:ro" \
+            -v "$BREENIX_ROOT/target/test_binaries.img:/breenix/test_binaries.img:ro" \
+            -v "$BREENIX_ROOT/target/ext2.img:/breenix/ext2.img:ro" \
+            -v "$OUTPUT_DIR:/output" \
+            breenix-qemu \
+            qemu-system-x86_64 \
+                -pflash /output/OVMF_CODE.fd \
+                -pflash /output/OVMF_VARS.fd \
+                -drive if=none,id=hd,format=raw,readonly=on,file=/breenix/breenix-uefi.img \
+                -device virtio-blk-pci,drive=hd,bootindex=0,disable-modern=on,disable-legacy=off \
+                -drive if=none,id=testdisk,format=raw,readonly=on,file=/breenix/test_binaries.img \
+                -device virtio-blk-pci,drive=testdisk,disable-modern=on,disable-legacy=off \
+                -drive if=none,id=ext2disk,format=raw,readonly=on,file=/breenix/ext2.img \
+                -device virtio-blk-pci,drive=ext2disk,disable-modern=on,disable-legacy=off \
+                -machine pc,accel=tcg -cpu qemu64 -smp 1 -m 512 \
+                -display none -no-reboot -no-shutdown \
+                -device isa-debug-exit,iobase=0xf4,iosize=0x04 \
+                -serial file:/output/serial_user.txt \
+                -serial file:/output/serial_kernel.txt \
+            >"$OUTPUT_DIR/runner.log" 2>&1 &
+    fi
+    RUNNER_PIDS[$i]=$!
     echo "  Started test $i"
 done
 
@@ -66,22 +117,40 @@ for i in $(seq 1 $COUNT); do
     OUTPUT_DIR="/tmp/breenix_boot_$i"
     FOUND=false
 
-    # Wait up to 120 seconds for kthread markers
+    # Wait up to 120 seconds for kthread markers. A runner that died before
+    # producing any output is reported as a launch failure with its log, not as
+    # an indistinguishable timeout.
+    LAUNCH_FAILED=false
     for j in $(seq 1 120); do
         if grep -q "KTHREAD JOIN TEST: Completed" "$OUTPUT_DIR/serial_kernel.txt" 2>/dev/null; then
             FOUND=true
             break
         fi
+        if ! kill -0 "${RUNNER_PIDS[$i]}" 2>/dev/null \
+            && [ ! -s "$OUTPUT_DIR/serial_kernel.txt" ]; then
+            LAUNCH_FAILED=true
+            break
+        fi
         sleep 1
     done
 
-    if $FOUND; then
+    if $LAUNCH_FAILED; then
+        echo "  Test $i: FAIL (QEMU runner exited without producing serial output)"
+        sed -n '1,20p' "$OUTPUT_DIR/runner.log" 2>/dev/null || echo "    (no runner log)"
+        FAILED=$((FAILED + 1))
+    elif $FOUND; then
         # Check if kthread tests actually passed
         if grep -q "KTHREAD_EXIT: kthread exited cleanly" "$OUTPUT_DIR/serial_kernel.txt" 2>/dev/null; then
             # Kthread markers alone don't prove the userspace cohort completed.
-            # Wait for its tally before asking the verdict script to evaluate it.
+            # Wait for the TERMINAL verdict marker, not the tally: the kernel
+            # prints TEST_TALLY first and "TEST RUNNER: All tests passed" /
+            # "TEST RUNNER: FAILED" last, and x86-gate-verdict.sh requires the
+            # latter. Evaluating the verdict at first-tally-sighting raced the
+            # terminal marker and scored a healthy boot as
+            # "nonzero=0 but the all-tests-passed marker is absent".
             for j in $(seq 1 90); do
-                if grep -q "TEST_TALLY:" "$OUTPUT_DIR/serial_kernel.txt" 2>/dev/null; then
+                if grep -qE "TEST RUNNER: (All tests passed|FAILED)" \
+                    "$OUTPUT_DIR/serial_kernel.txt" 2>/dev/null; then
                     break
                 fi
                 sleep 1
@@ -112,8 +181,15 @@ for i in $(seq 1 $COUNT); do
     fi
 done
 
-# Cleanup
-docker kill $(docker ps -q --filter ancestor=breenix-qemu) 2>/dev/null || true
+# Cleanup: reap whichever runner was used.
+if [ "$RUNNER" = native ]; then
+    for i in $(seq 1 $COUNT); do
+        kill "${RUNNER_PIDS[$i]}" 2>/dev/null || true
+        wait "${RUNNER_PIDS[$i]}" 2>/dev/null || true
+    done
+else
+    docker kill $(docker ps -q --filter ancestor=breenix-qemu) 2>/dev/null || true
+fi
 
 echo ""
 echo "========================================="
