@@ -1006,6 +1006,38 @@ fn sys_fork_aarch64(frame: &Aarch64ExceptionFrame) -> u64 {
 // Exec syscall implementation for ARM64
 // =============================================================================
 
+#[inline(always)]
+fn read_ttbr0_for_exec() -> u64 {
+    let ttbr0: u64;
+    unsafe {
+        core::arch::asm!("mrs {}, ttbr0_el1", out(reg) ttbr0, options(nomem, nostack));
+    }
+    ttbr0
+}
+
+#[inline(always)]
+fn restore_ttbr0_after_failed_exec(ttbr0: u64) {
+    debug_assert_ne!(ttbr0, 0);
+    if ttbr0 == 0 {
+        return;
+    }
+
+    unsafe {
+        core::arch::asm!(
+            "dsb ishst",
+            "msr ttbr0_el1, {}",
+            "isb",
+            "tlbi vmalle1is",
+            "dsb ish",
+            "isb",
+            in(reg) ttbr0,
+            options(nomem, nostack)
+        );
+        Aarch64PerCpu::set_saved_process_cr3(ttbr0);
+        Aarch64PerCpu::set_next_cr3(0);
+    }
+}
+
 /// sys_exec for ARM64 - Replace current process with a new program
 ///
 /// This function replaces the current process's address space with a new program.
@@ -1178,6 +1210,7 @@ fn sys_exec_aarch64(
 
     let result = without_interrupts(|| {
         let mut manager_guard = crate::process::manager();
+        let previous_ttbr0;
         let exec_result = {
             let Some(manager) = manager_guard.as_mut() else {
                 log::error!("sys_exec_aarch64: Process manager not available");
@@ -1189,9 +1222,10 @@ fn sys_exec_aarch64(
 
             // The manager may take the old process root after its final
             // fallible setup step. Install the shared kernel TTBR0 first so
-            // exec cannot retire the root currently active on this CPU. On an
-            // error, the unchanged saved_process_cr3 restores the old root in
-            // the normal syscall epilogue.
+            // exec cannot retire the root currently active on this CPU. Capture
+            // the exact hardware value so every error can roll this temporary
+            // transition back before the syscall handler returns.
+            previous_ttbr0 = read_ttbr0_for_exec();
             super::switch_ttbr0_to_kernel();
 
             manager.exec_process_with_argv(current_pid, elf_data, Some(&program_name), &argv_slices)
@@ -1204,6 +1238,7 @@ fn sys_exec_aarch64(
                 value
             }
             Err(e) => {
+                restore_ttbr0_after_failed_exec(previous_ttbr0);
                 log::error!("sys_exec_aarch64: Failed to exec process: {}", e);
                 // No receipt was produced, so there is nothing to commit; the guard drops on
                 // return from this closure.

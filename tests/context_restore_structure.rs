@@ -2340,6 +2340,59 @@ fn validate_aarch64_row_unpublished_dispatch(source: &str) -> Result<(), String>
     Ok(())
 }
 
+fn validate_aarch64_failed_exec_ttbr0_rollback(source: &str) -> Result<(), String> {
+    let exec = function_body(source, "sys_exec_aarch64")
+        .ok_or_else(|| "missing sys_exec_aarch64".to_string())?;
+    let exec_mask = code_mask(exec);
+    let capture = call_offsets(exec, &exec_mask, "read_ttbr0_for_exec");
+    let switch = call_offsets(exec, &exec_mask, "switch_ttbr0_to_kernel");
+    let manager_exec = call_offsets(exec, &exec_mask, "exec_process_with_argv");
+    if capture.len() != 1
+        || switch.len() != 1
+        || manager_exec.len() != 1
+        || capture[0] >= switch[0]
+        || switch[0] >= manager_exec[0]
+    {
+        return Err(
+            "aarch64 exec must capture TTBR0 immediately before its fallible kernel-root transition"
+                .to_string(),
+        );
+    }
+
+    let err_offset = code_offsets(exec, &exec_mask, "Err(e) =>")
+        .into_iter()
+        .next()
+        .ok_or_else(|| "aarch64 exec result lacks an Err arm".to_string())?;
+    let err_arm = braced_block(exec, &exec_mask, err_offset)
+        .ok_or_else(|| "aarch64 exec Err arm is not brace balanced".to_string())?;
+    let err_mask = code_mask(err_arm);
+    let rollback = call_offsets(err_arm, &err_mask, "restore_ttbr0_after_failed_exec");
+    let returns = identifier_offsets(err_arm, &err_mask, "return");
+    if rollback.len() != 1
+        || returns.is_empty()
+        || rollback[0] >= returns[0]
+        || !normalized_code(err_arm)
+            .contains("restore_ttbr0_after_failed_exec(previous_ttbr0);")
+    {
+        return Err("aarch64 failed exec can return with the kernel TTBR0 installed".to_string());
+    }
+
+    let restore = function_body(source, "restore_ttbr0_after_failed_exec")
+        .ok_or_else(|| "missing failed-exec TTBR0 rollback helper".to_string())?;
+    let restore_mask = code_mask(restore);
+    if restore.matches("\"msr ttbr0_el1, {}\"").count() != 1
+        || restore.matches("\"tlbi vmalle1is\"").count() != 1
+        || call_offsets(restore, &restore_mask, "set_saved_process_cr3").len() != 1
+        || call_offsets(restore, &restore_mask, "set_next_cr3").len() != 1
+        || !normalized_code(restore).contains("set_next_cr3(0);")
+    {
+        return Err("failed-exec TTBR0 rollback does not restore hardware and both return shadows"
+            .to_string());
+    }
+
+    Ok(())
+}
+
 #[test]
 fn clone_publication_lifecycle_is_closed() {
     assert_eq!(validate_clone_publication_lifecycle(), Ok(()));
@@ -2357,6 +2410,23 @@ fn unpublished_dispatch_is_retry_only_on_both_architectures() {
         )),
         Ok(())
     );
+}
+
+#[test]
+fn aarch64_failed_exec_restores_the_pretransition_ttbr0() {
+    let source = repo_text("kernel/src/arch_impl/aarch64/syscall_entry.rs");
+    assert_eq!(validate_aarch64_failed_exec_ttbr0_rollback(&source), Ok(()));
+}
+
+#[test]
+fn aarch64_failed_exec_ttbr0_validator_rejects_missing_rollback() {
+    let source = repo_text("kernel/src/arch_impl/aarch64/syscall_entry.rs");
+    let mutant = source.replacen(
+        "restore_ttbr0_after_failed_exec(previous_ttbr0);",
+        "",
+        1,
+    );
+    assert!(validate_aarch64_failed_exec_ttbr0_rollback(&mutant).is_err());
 }
 
 #[test]
