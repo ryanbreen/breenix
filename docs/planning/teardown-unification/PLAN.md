@@ -163,7 +163,9 @@ repair adds or splits a PR.
 
 The first Codex Sol ratification refused endorsement (`ENDORSE: NO`) with 2 FATAL seams, 7 MAJOR,
 1 MINOR and 7 conditions. Phase labels in this table are **v2 labels**: the wait families are now
-P10a/b/c/d, so "P10c empties the allowlist" reads **P10d** today, and "16 PRs" reads **17**.
+P10a/b/c/d, so "P10c empties the allowlist" reads **P10d** today, and "16 PRs" reads **22** (§0's
+current ledger; the figure moved 16 → 17 in the v3 tranche pass and 17 → 22 in the 2026-08-16 rule-5
+reconciliation).
 
 | Cond | What changed in this PLAN | Where |
 |---|---|---|
@@ -309,10 +311,12 @@ so in its body.
 | 22 | Init death policy **+ group-membership drop check** | P12 |
 
 > **The arithmetic, stated so it can be checked.** 22 rows = 22 PRs across 13 numbered phases, of
-> which **P5b is held on #575**, so 21 are buildable in sequence today. The movement from 17: **+2**
-> for P4's restoration as its own phase with its seam fired (rows 6 and 7 — P3 simultaneously loses
-> the half that had been folded into it, which is why P3 is still two rows and not three), **+1** for
-> P3's own seam, **+1** for P5a's, **+1** for P9's. **#573** is sequenced ahead of P3 but is **not** a
+> which **P5b is held on #575**, so 21 are buildable in sequence today. The movement from v3's 17 —
+> which carried **one** row each for P3, P4, P5 and P9 — is **+1** for P4's seam firing (v3 already
+> had a P4 row; rows 6 and 7 are that row split, and P3 simultaneously loses the half a prior repair
+> pass had folded into it, which is why P3 is two rows and not three), **+1** for P3's own seam,
+> **+2** for P5 (v3's single P5 row becomes P5a's two rows plus the held P5b row), and **+1** for
+> P9's. 17 + 1 + 1 + 2 + 1 = 22. **#573** is sequenced ahead of P3 but is **not** a
 > tranche-2 PR — it is PR-4b of **#470**, gated and evidenced on its own, and it is not in this count.
 
 ### Standard gate — run on EVERY phase, no exceptions
@@ -1987,9 +1991,10 @@ and `tty/driver.rs:602-603` documents that the TTY unblock path already spans bo
 read) and `BlockedOnSignal`. Each of the four blocking functions runs its own HLT/re-check loop, so
 the migration is "the resumed loop gives a latched fatal request priority over the ordinary
 signal-arrived branch, deregisters, then branches to the trampoline" — the same shape as the other
-families, applied four times. *(Why it is not folded into 10b despite the TTY adjacency: four
-syscall entry points across both architectures would put 10b well over the ~150-line/4-file target.
-OQ-8 records the batching alternative for the operator.)*
+families, applied four times. *(Why it is not folded into 10b despite the TTY adjacency: the two
+families are separately revertable migrations, each with its own allowlist entry to remove, so
+batching them would put two revert stories in one merge commit — rule 5, and **not** any measure of
+size. DESIGN §7 OQ-8 states the same reason and records the batching alternative for the operator.)*
 
 **10d additionally deletes the legacy arm**: with the allowlist empty, `exit_request_is_boundary_reachable`
 becomes total, the remote-marking body of `terminate_process_threads` is deleted, and
