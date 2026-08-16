@@ -99,6 +99,14 @@ for i in $(seq 1 "$COUNT"); do
     # deliver the same FIN, so the mechanism-level necessity proof is the
     # aarch64 deterministic registry suite (loopback_recv_wake_when_idle /
     # loopback_recv_wake_under_load), which is red on main.
+    # The poll loop kills QEMU the moment it breaks, so it must never break on a
+    # marker the kernel prints BEFORE the one the verdict needs. `TEST_TALLY:` is
+    # emitted first and `TEST RUNNER: All tests passed` / `TEST RUNNER: FAILED`
+    # last (kernel/src/syscall/handlers.rs), so breaking on the tally alone raced
+    # the terminal marker and scored a healthy boot as
+    # "nonzero=0 but the all-tests-passed marker is absent". Wait for the terminal
+    # verdict marker itself; either polarity ends the wait, and the failing
+    # polarity is still rejected downstream by scripts/x86-gate-verdict.sh.
     for _ in $(seq 1 900); do
         if grep -q '\[TEST:process:frame_custody_refusal_gate:PASS\]' \
             "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
@@ -135,6 +143,8 @@ for i in $(seq 1 "$COUNT"); do
             && grep -q '\[TEST:userspace:loopback_recv_wake:PASS\]' \
                 "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
             && grep -q 'TEST_TALLY:' \
+                "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
+            && grep -qE 'TEST RUNNER: (All tests passed|FAILED)' \
                 "$OUTPUT_DIR"/serial_*.txt 2>/dev/null; then
             passed=true
             break
