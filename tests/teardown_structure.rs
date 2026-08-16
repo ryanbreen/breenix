@@ -1950,7 +1950,6 @@ const RETURN_LEASE_PRODUCTION_CALLS: &[(&str, &str, usize)] = &[
 ];
 #[rustfmt::skip]
 const RETURN_LEASE_BOOT_FIXTURE_CALLS: &[(&str, &str, usize)] = &[
-    ("kernel/src/memory/frame_allocator.rs", "#[cfg(all(feature=boot_tests,target_arch=aarch64))] fn release_external_leaf_frames_for_teardown_test", 1),
     ("kernel/src/memory/frame_allocator_tests.rs", "fn frame_custody_refusal_gate_test", 6),
     ("kernel/src/memory/frame_allocator_tests.rs", "fn healthy_round_trip", 1),
     ("kernel/src/memory/frame_allocator_tests.rs", "fn restore_lease", 1),
@@ -2745,7 +2744,7 @@ fn validate_x86_frame_custody_harness(script: &str) -> Result<(), ()> {
     const PT_CUSTODY_VECTOR: &str = "PT_CUSTODY_LITERAL='[PT_CUSTODY_COUNTERS:x86:recorded=14:no_proof=0:no_arch=0:terminated=1:undecided=1:retired=2:returned=14:lost=0:requeued=0]'";
     const PT_COHORT_VECTOR: &str = "PT_COHORT_LITERAL='[PT_RETIRE_COHORT:x86:children=64:retired=65:returned=642:recorded=577:lost=0:no_arch=0:undecided=0:mid_retire=0:balance=0]'";
     const PT_EXEC_COHORT_VECTOR: &str = "PT_EXEC_COHORT_LITERAL='[PT_EXEC_COHORT:x86:children=16:superseded=3:roots=64:returned=640:recorded=576:lost=0:leaf_recorded=192:leaf_released=192:leaf_returned=192:custody_refused=0:decref_unregistered=0:undecided=0:mid_retire=0:no_arch=0:balance=0]' # The returned and recorded table-frame fields are pinned from the measured run.";
-    const EXEC_DETACH_ORACLE_VECTOR: &str = "EXEC_DETACH_ORACLE_LITERAL='[EXEC_DETACH_ORACLE:x86:bodies=2:fail_preserved=2:sibling_refused=0:success_detached=2:fresh_root=2:tgid_self=2:balance=0]'";
+    const EXEC_DETACH_ORACLE_VECTOR: &str = "EXEC_DETACH_ORACLE_LITERAL='[EXEC_DETACH_ORACLE:x86:bodies=2:fail_preserved=2:sibling_refused=0:success_detached=2:fresh_root=2:tgid_self=2:custody_balance=0:leaf_residual=16:stack_residual=149]'";
     const CLONE_ADMISSION_ORACLE_VECTOR: &str = "CLONE_ADMISSION_ORACLE_LITERAL='[CLONE_ADMISSION_ORACLE:x86:admitted=1:refused=2:creating_refused=1:published_admitted=2:balance=0]'";
     const EXEC_FAILED_RELEASE_ORACLE_VECTOR: &str = "EXEC_FAILED_RELEASE_ORACLE_PATTERN='^\\[EXEC_FAILED_RELEASE_ORACLE:x86:used_before=[0-9]+:used_after=[0-9]+:recorded_pre=3:leaf_recorded=1:leaf_released=1:leaf_returned=1:tables_returned=4:roots_retired=1:undecided=0:live_refused=0\\]$'";
     const EXEC_FAILED_RELEASE_PROD_VECTOR: &str = "EXEC_FAILED_RELEASE_PROD_LITERAL='[EXEC_FAILED_RELEASE_PROD:x86:plain_err=true:plain_kept=true:argv_err=true:argv_kept=true:name_kept=true:balance=0:undecided=0:mid_retire=0:lost=0:custody_refused=0:decref_unregistered=0:double=0:stale=0:untracked=0:root_slot_refused=0]'";
@@ -3948,7 +3947,7 @@ fn validate_process_page_table_runtime_oracle(sources: &[(String, String)]) -> R
         && harness.contains("[PT_CUSTODY_COUNTERS:x86:recorded=14:no_proof=0:no_arch=0:terminated=1:undecided=1:retired=2:returned=14:lost=0:requeued=0]")
         && harness.contains("[PT_RETIRE_COHORT:x86:children=64:retired=65:returned=642:recorded=577:lost=0:no_arch=0:undecided=0:mid_retire=0:balance=0]")
         && harness.contains("[PT_EXEC_COHORT:x86:children=16:superseded=3:roots=64:returned=640:recorded=576:lost=0:leaf_recorded=192:leaf_released=192:leaf_returned=192:custody_refused=0:decref_unregistered=0:undecided=0:mid_retire=0:no_arch=0:balance=0]")
-        && harness.contains("[EXEC_DETACH_ORACLE:x86:bodies=2:fail_preserved=2:sibling_refused=0:success_detached=2:fresh_root=2:tgid_self=2:balance=0]")
+        && harness.contains("[EXEC_DETACH_ORACLE:x86:bodies=2:fail_preserved=2:sibling_refused=0:success_detached=2:fresh_root=2:tgid_self=2:custody_balance=0:leaf_residual=16:stack_residual=149]")
         && harness.contains("[CLONE_ADMISSION_ORACLE:x86:admitted=1:refused=2:creating_refused=1:published_admitted=2:balance=0]")
         && harness
             .matches("page_table_custody_disposition_gate:PASS")

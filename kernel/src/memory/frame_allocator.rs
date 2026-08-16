@@ -364,41 +364,6 @@ pub(crate) fn register_external_leaf_frame(frame: PhysFrame) -> Result<(), &'sta
     }
 }
 
-/// Return allocator-backed external leaf frames owned by a boot-test fixture.
-///
-/// The caller must first retire every page table that mapped these frames. This
-/// is deliberately unavailable outside aarch64 boot tests: production stack
-/// lifetime still requires a general unmap-and-release design.
-#[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
-pub(crate) fn release_external_leaf_frames_for_teardown_test(frames: &[PhysFrame]) -> bool {
-    let Some(ledger) = FRAME_LEDGER.get() else {
-        return false;
-    };
-    let mut all_returned = true;
-    for frame in frames.iter().copied() {
-        let Some(index) = frame_ordinal(frame) else {
-            all_returned = false;
-            continue;
-        };
-        let Some(slot) = ledger.get(index) else {
-            all_returned = false;
-            continue;
-        };
-        if slot
-            .leaf_refs
-            .compare_exchange(LEAF_EXTERNAL, 0, Ordering::AcqRel, Ordering::Acquire)
-            .is_err()
-        {
-            all_returned = false;
-            continue;
-        }
-        if return_lease(current_lease_for_frame(frame)) != ReturnOutcome::Returned {
-            all_returned = false;
-        }
-    }
-    all_returned
-}
-
 /// Register a kernel/device-owned physical span before it is exposed through a
 /// process page table. Allocator-backed pages also receive the per-frame marker;
 /// device apertures remain authoritative through this fixed-capacity registry.
