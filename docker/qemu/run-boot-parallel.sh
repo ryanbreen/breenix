@@ -16,7 +16,24 @@ COUNT=${1:-5}
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BREENIX_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 # Re-pin consciously whenever this profile's launched test-program set changes.
-readonly EXPECTED_USERSPACE_EXITS=10
+#
+# Measured on the x86 gate host with this runner, one boot each:
+#   main @ 43336f54 : TEST_TALLY: exited=15 nonzero=0 failed=[]
+#   this branch     : TEST_TALLY: exited=17 nonzero=0 failed=[]
+#
+# The old pin of 10 was five under main's own measurement: the loopback_wake_test
+# cohort (parent, reader, peer, load, watchdog = 5 process deaths) reached this
+# profile without the floor being re-pinned, and a `>=` floor hides an under-pin.
+# 10 + 5 = 15 is main; the two this branch adds are
+#   +1 /usr/local/test/bin/clonevm_exec_test - the launched program. It execs
+#      into its own second stage, so it is one row and one death, renamed by the
+#      exec.
+#   +1 thread-14 - its phase-1 CLONE_VM child (sys_clone names child rows
+#      thread-<pid>; the scheduler thread appears as clone-child-26).
+# 15 + 1 + 1 = 17. The clone-admission and exec-detach oracles contribute zero
+# here: both are #[cfg(feature = "boot_tests")] and this profile is built
+# testing,external_test_bins.
+readonly EXPECTED_USERSPACE_EXITS=17
 
 # Rebuild userspace ELFs, then repack with cargo run -p xtask -- create-test-disk
 # before invoking this pure runner; a stale image boots the previous branch's binaries.
