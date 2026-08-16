@@ -97,6 +97,7 @@ pub const TEST_BINARIES: &[&str] = &[
     "argv_test",
     "exec_argv_test",
     "exec_stack_argv_test",
+    "clonevm_exec_test",
     // Graphics tests
     "fbinfo_test",
     // Network tests (depend on virtio-net)

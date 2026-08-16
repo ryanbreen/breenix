@@ -2308,6 +2308,463 @@ pub fn exec_supersede_cohort_test() -> crate::test_framework::registry::TestResu
     TestResult::Pass
 }
 
+#[cfg(feature = "boot_tests")]
+pub fn exec_detach_oracle_test() -> crate::test_framework::registry::TestResult {
+    #[cfg(not(target_arch = "x86_64"))]
+    use crate::memory::arch_stub::VirtAddr;
+    use crate::test_framework::registry::TestResult;
+    #[cfg(target_arch = "x86_64")]
+    use x86_64::VirtAddr;
+
+    fn test_user_entry() {}
+
+    fn process_row(pid: crate::process::ProcessId, name: &'static str) -> crate::process::Process {
+        let entry = VirtAddr::new(0x0040_0000);
+        let stack_top = VirtAddr::new(0x0080_0000);
+        let stack_bottom = VirtAddr::new(0x007f_0000);
+        let tls = VirtAddr::new(0x0001_0000);
+        let mut process =
+            crate::process::Process::new(pid, alloc::string::String::from(name), entry);
+        let mut thread = crate::task::thread::Thread::new(
+            alloc::string::String::from(name),
+            test_user_entry,
+            stack_top,
+            stack_bottom,
+            tls,
+            crate::task::thread::ThreadPrivilege::Kernel,
+        );
+        thread.owner_pid = Some(pid.as_u64());
+        process.set_main_thread(thread);
+        process
+    }
+
+    fn mark_clone_vm_member(
+        process: &mut crate::process::Process,
+        leader_root: u64,
+        leader_pid: crate::process::ProcessId,
+    ) {
+        assert!(process.inherited_cr3.replace(leader_root).is_none());
+        assert!(process
+            .thread_group_id
+            .replace(leader_pid.as_u64())
+            .is_none());
+    }
+
+    fn invoke_exec(
+        manager: &mut crate::process::ProcessManager,
+        pid: crate::process::ProcessId,
+        elf: &[u8],
+        with_argv: bool,
+    ) -> Result<(), &'static str> {
+        if with_argv {
+            let argv: [&[u8]; 1] = [b"exec_detach_oracle\0"];
+            manager
+                .exec_process_with_argv(pid, elf, Some("exec_detach_oracle"), &argv)
+                .map(|_| ())
+        } else {
+            manager
+                .exec_process(pid, elf, Some("exec_detach_oracle"))
+                .map(|_| ())
+        }
+    }
+
+    fn exit_and_remove_row(
+        pid: crate::process::ProcessId,
+        unavailable_reason: &'static str,
+        missing_reason: &'static str,
+    ) -> Result<(), &'static str> {
+        let thread_id = {
+            let manager_guard = crate::process::manager();
+            let Some(manager) = manager_guard.as_ref() else {
+                return Err(unavailable_reason);
+            };
+            manager
+                .get_process(pid)
+                .and_then(|process| process.main_thread.as_ref())
+                .map(|thread| thread.id)
+                .ok_or(missing_reason)?
+        };
+        {
+            let force_live_guard =
+                crate::task::process_task::ForceLiveReclaimTestGuard::arm(pid.as_u64());
+            crate::task::process_task::ProcessScheduler::handle_thread_exit(thread_id, 0);
+            core::mem::drop(force_live_guard);
+        }
+        let mut manager_guard = crate::process::manager();
+        let Some(manager) = manager_guard.as_mut() else {
+            return Err(unavailable_reason);
+        };
+        if !manager
+            .get_process(pid)
+            .map(|process| process.is_terminated())
+            .unwrap_or(false)
+        {
+            return Err(missing_reason);
+        }
+        manager.remove_from_ready_queue(pid);
+        manager.remove_process(pid);
+        Ok(())
+    }
+
+    let reclaim_owner = match crate::task::process_task::BootReclaimTestGuard::enter() {
+        Ok(guard) => guard,
+        Err(_) => {
+            return TestResult::Fail("reclaim queues not quiescent at exec detach oracle start")
+        }
+    };
+    let allocator_used_before = frame_allocator_used_frames();
+
+    #[cfg(target_arch = "aarch64")]
+    let corrupt = crate::memory::process_memory::corrupt_executable_fixture();
+    #[cfg(target_arch = "x86_64")]
+    let corrupt = crate::memory::process_memory::x86_corrupt_executable_fixture();
+    #[cfg(target_arch = "aarch64")]
+    let valid = crate::memory::process_memory::valid_executable_fixture();
+    #[cfg(target_arch = "x86_64")]
+    let valid = crate::memory::process_memory::x86_valid_executable_fixture();
+
+    let leader_pid = {
+        let mut manager_guard = crate::process::manager();
+        let Some(manager) = manager_guard.as_mut() else {
+            return TestResult::Fail("process manager unavailable for exec detach leader insert");
+        };
+        match manager.create_process(alloc::string::String::from("exec_detach_leader"), &valid) {
+            Ok(pid) => pid,
+            Err(_) => return TestResult::Fail("exec detach leader page-table allocation failed"),
+        }
+    };
+    let leader_root = {
+        let manager_guard = crate::process::manager();
+        let Some(manager) = manager_guard.as_ref() else {
+            return TestResult::Fail("process manager unavailable for exec detach leader root");
+        };
+        let Some(page_table) = manager
+            .get_process(leader_pid)
+            .and_then(|process| process.page_table.as_ref())
+        else {
+            return TestResult::Fail("exec detach leader row has no page table");
+        };
+        page_table.level_4_frame().start_address().as_u64()
+    };
+
+    let mut bodies = 0usize;
+    let mut fail_preserved = 0usize;
+    #[cfg(target_arch = "aarch64")]
+    let mut sibling_refused = 0usize;
+    #[cfg(target_arch = "x86_64")]
+    let sibling_refused = 0usize;
+    let mut success_detached = 0usize;
+    let mut fresh_root = 0usize;
+    let mut tgid_self = 0usize;
+    let mut first_failure: Option<&'static str> = None;
+    let mut reclaim_pids = [0u64; 5];
+    let mut reclaim_pid_count = 0usize;
+
+    for body in 0..2 {
+        let with_argv = body == 1;
+        let member_pid = {
+            let manager_guard = crate::process::manager();
+            let Some(manager) = manager_guard.as_ref() else {
+                return TestResult::Fail("process manager unavailable for exec detach member PID");
+            };
+            manager.allocate_pid()
+        };
+        let mut member = process_row(member_pid, "exec_detach_member");
+        mark_clone_vm_member(&mut member, leader_root, leader_pid);
+        {
+            let mut manager_guard = crate::process::manager();
+            let Some(manager) = manager_guard.as_mut() else {
+                return TestResult::Fail(
+                    "process manager unavailable for exec detach member insert",
+                );
+            };
+            manager.insert_process(member_pid, member);
+        }
+        bodies += 1;
+
+        let failed_exec = {
+            let mut manager_guard = crate::process::manager();
+            let Some(manager) = manager_guard.as_mut() else {
+                return TestResult::Fail("process manager unavailable for exec detach failure arm");
+            };
+            invoke_exec(manager, member_pid, &corrupt, with_argv)
+        };
+        let (failed_inherited_cr3, failed_thread_group_id) = {
+            let manager_guard = crate::process::manager();
+            let Some(manager) = manager_guard.as_ref() else {
+                return TestResult::Fail(
+                    "process manager unavailable for exec detach failure observation",
+                );
+            };
+            match manager.get_process(member_pid) {
+                Some(process) => (process.inherited_cr3, process.thread_group_id),
+                None => {
+                    if first_failure.is_none() {
+                        first_failure = Some("exec detach member disappeared after failed exec");
+                    }
+                    (None, None)
+                }
+            }
+        };
+        let failure_error_exact = matches!(failed_exec, Err("Segment data out of bounds"));
+        let failure_inherited_preserved = failed_inherited_cr3 == Some(leader_root);
+        let failure_tgid_preserved = failed_thread_group_id == Some(leader_pid.as_u64());
+        if !failure_error_exact && first_failure.is_none() {
+            first_failure = Some("exec detach corrupt fixture did not fail at segment bounds");
+        }
+        if !failure_inherited_preserved && first_failure.is_none() {
+            first_failure = Some("failed exec mutated inherited_cr3");
+        }
+        if !failure_tgid_preserved && first_failure.is_none() {
+            first_failure = Some("failed exec mutated thread_group_id");
+        }
+        if failure_error_exact && failure_inherited_preserved && failure_tgid_preserved {
+            fail_preserved += 1;
+        }
+
+        #[cfg(target_arch = "aarch64")]
+        {
+            let sibling_pid = {
+                let manager_guard = crate::process::manager();
+                let Some(manager) = manager_guard.as_ref() else {
+                    return TestResult::Fail(
+                        "process manager unavailable for exec detach sibling PID",
+                    );
+                };
+                manager.allocate_pid()
+            };
+            let mut sibling = process_row(sibling_pid, "exec_detach_sibling");
+            mark_clone_vm_member(&mut sibling, leader_root, leader_pid);
+            {
+                let mut manager_guard = crate::process::manager();
+                let Some(manager) = manager_guard.as_mut() else {
+                    return TestResult::Fail(
+                        "process manager unavailable for exec detach sibling insert",
+                    );
+                };
+                manager.insert_process(sibling_pid, sibling);
+            }
+
+            let refused_exec = {
+                let mut manager_guard = crate::process::manager();
+                let Some(manager) = manager_guard.as_mut() else {
+                    return TestResult::Fail(
+                        "process manager unavailable for exec detach sibling arm",
+                    );
+                };
+                invoke_exec(manager, member_pid, &valid, with_argv)
+            };
+            let (refused_inherited_cr3, refused_thread_group_id) = {
+                let manager_guard = crate::process::manager();
+                let Some(manager) = manager_guard.as_ref() else {
+                    return TestResult::Fail(
+                        "process manager unavailable for exec detach sibling observation",
+                    );
+                };
+                match manager.get_process(member_pid) {
+                    Some(process) => (process.inherited_cr3, process.thread_group_id),
+                    None => {
+                        if first_failure.is_none() {
+                            first_failure =
+                                Some("exec detach member disappeared after sibling refusal");
+                        }
+                        (None, None)
+                    }
+                }
+            };
+            let sibling_error_exact = matches!(
+                refused_exec,
+                Err("exec blocked while CLONE_VM sibling shares old address space")
+            );
+            let sibling_inherited_preserved = refused_inherited_cr3 == Some(leader_root);
+            let sibling_tgid_preserved = refused_thread_group_id == Some(leader_pid.as_u64());
+            if !sibling_error_exact && first_failure.is_none() {
+                first_failure = Some("live CLONE_VM sibling did not block exec");
+            }
+            if !sibling_inherited_preserved && first_failure.is_none() {
+                first_failure = Some("sibling-refused exec mutated inherited_cr3");
+            }
+            if !sibling_tgid_preserved && first_failure.is_none() {
+                first_failure = Some("sibling-refused exec mutated thread_group_id");
+            }
+            if sibling_error_exact && sibling_inherited_preserved && sibling_tgid_preserved {
+                sibling_refused += 1;
+            }
+
+            match exit_and_remove_row(
+                sibling_pid,
+                "process manager unavailable for exec detach sibling cleanup",
+                "exec detach sibling disappeared before cleanup",
+            ) {
+                Ok(()) => {
+                    reclaim_pids[reclaim_pid_count] = sibling_pid.as_u64();
+                    reclaim_pid_count += 1;
+                }
+                Err(reason) if first_failure.is_none() => first_failure = Some(reason),
+                Err(_) => {}
+            }
+        }
+
+        let successful_exec = {
+            let mut manager_guard = crate::process::manager();
+            let Some(manager) = manager_guard.as_mut() else {
+                return TestResult::Fail("process manager unavailable for exec detach success arm");
+            };
+            invoke_exec(manager, member_pid, &valid, with_argv)
+        };
+        let mut detached = false;
+        let mut root_is_fresh = false;
+        let mut effective_tgid_is_self = false;
+        {
+            let manager_guard = crate::process::manager();
+            let Some(manager) = manager_guard.as_ref() else {
+                return TestResult::Fail(
+                    "process manager unavailable for exec detach success observation",
+                );
+            };
+            if let Some(process) = manager.get_process(member_pid) {
+                detached = process.inherited_cr3.is_none() && process.thread_group_id.is_none();
+                root_is_fresh = process
+                    .page_table
+                    .as_ref()
+                    .map(|page_table| {
+                        page_table.level_4_frame().start_address().as_u64() != leader_root
+                    })
+                    .unwrap_or(false);
+                effective_tgid_is_self =
+                    process.thread_group_id.unwrap_or(member_pid.as_u64()) == member_pid.as_u64();
+            } else if first_failure.is_none() {
+                first_failure = Some("exec detach member disappeared after successful exec");
+            }
+        }
+        if successful_exec.is_err() && first_failure.is_none() {
+            first_failure = Some("valid exec fixture did not commit");
+        }
+        if !detached && first_failure.is_none() {
+            first_failure = Some("successful exec did not clear both CLONE_VM fields");
+        }
+        if !root_is_fresh && first_failure.is_none() {
+            first_failure = Some("successful exec did not publish an observed fresh root");
+        }
+        if !effective_tgid_is_self && first_failure.is_none() {
+            first_failure = Some("successful exec effective thread-group ID was not self");
+        }
+        if successful_exec.is_ok() && detached {
+            success_detached += 1;
+        }
+        if successful_exec.is_ok() && root_is_fresh {
+            fresh_root += 1;
+        }
+        if successful_exec.is_ok() && effective_tgid_is_self {
+            tgid_self += 1;
+        }
+
+        match exit_and_remove_row(
+            member_pid,
+            "process manager unavailable for exec detach member cleanup",
+            "exec detach member disappeared before cleanup",
+        ) {
+            Ok(()) => {
+                reclaim_pids[reclaim_pid_count] = member_pid.as_u64();
+                reclaim_pid_count += 1;
+            }
+            Err(reason) if first_failure.is_none() => first_failure = Some(reason),
+            Err(_) => {}
+        }
+    }
+
+    match exit_and_remove_row(
+        leader_pid,
+        "process manager unavailable for exec detach leader cleanup",
+        "exec detach leader disappeared before cleanup",
+    ) {
+        Ok(()) => {
+            reclaim_pids[reclaim_pid_count] = leader_pid.as_u64();
+            reclaim_pid_count += 1;
+        }
+        Err(reason) if first_failure.is_none() => first_failure = Some(reason),
+        Err(_) => {}
+    }
+
+    let quiesce_deadline =
+        retirement_oracle_clock_now().saturating_add(retirement_oracle_clock_delta(5_000));
+    loop {
+        crate::task::scheduler::nudge_retirement_grace_for_test();
+        let boundary_deadline =
+            retirement_oracle_clock_now().saturating_add(retirement_oracle_clock_delta(1));
+        while retirement_oracle_clock_now() < boundary_deadline {
+            core::hint::spin_loop();
+        }
+        crate::task::process_task::boot_reclaim_deferred_process_resources();
+        if reclaim_pids[..reclaim_pid_count]
+            .iter()
+            .all(|pid| crate::task::process_task::boot_reclaim_locations(*pid) == (false, false))
+        {
+            break;
+        }
+        if retirement_oracle_clock_now() >= quiesce_deadline {
+            if first_failure.is_none() {
+                first_failure = Some("exec detach deferred cleanup did not quiesce");
+            }
+            break;
+        }
+        core::hint::spin_loop();
+    }
+    core::sync::atomic::fence(Ordering::Acquire);
+
+    let allocator_used_after = frame_allocator_used_frames();
+    let balance = allocator_used_after as i64 - allocator_used_before as i64;
+    core::mem::drop(reclaim_owner);
+    if bodies != 2 && first_failure.is_none() {
+        first_failure = Some("exec detach oracle did not exercise both exec bodies");
+    }
+    if fail_preserved != 2 && first_failure.is_none() {
+        first_failure = Some("failed exec preservation count was not exact");
+    }
+    #[cfg(target_arch = "aarch64")]
+    if sibling_refused != 2 && first_failure.is_none() {
+        first_failure = Some("live-sibling refusal count was not exact");
+    }
+    #[cfg(target_arch = "x86_64")]
+    if sibling_refused != 0 && first_failure.is_none() {
+        first_failure = Some("x86 unexpectedly exercised the aarch64 sibling guard");
+    }
+    if success_detached != 2 && first_failure.is_none() {
+        first_failure = Some("successful exec detach count was not exact");
+    }
+    if fresh_root != 2 && first_failure.is_none() {
+        first_failure = Some("fresh exec root count was not exact");
+    }
+    if tgid_self != 2 && first_failure.is_none() {
+        first_failure = Some("self thread-group ID count was not exact");
+    }
+    if balance != 0 && first_failure.is_none() {
+        first_failure = Some("exec detach oracle did not return frame accounting to baseline");
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    let arch = "aarch64";
+    #[cfg(target_arch = "x86_64")]
+    let arch = "x86";
+    crate::serial_println!(
+        "[EXEC_DETACH_ORACLE:{}:bodies={}:fail_preserved={}:sibling_refused={}:success_detached={}:fresh_root={}:tgid_self={}:balance={}]",
+        arch,
+        bodies,
+        fail_preserved,
+        sibling_refused,
+        success_detached,
+        fresh_root,
+        tgid_self,
+        balance
+    );
+    if let Some(reason) = first_failure {
+        return TestResult::Fail(reason);
+    }
+
+    crate::serial_println!("[TEST:process:exec_detach_oracle:PASS]");
+    TestResult::Pass
+}
+
 #[cfg(all(feature = "boot_tests", target_arch = "x86_64"))]
 pub fn run_x86_exec_cohort_gate() {
     crate::serial_println!("[TEST:process:x86_exec_cohort:START]");
@@ -2316,6 +2773,16 @@ pub fn run_x86_exec_cohort_gate() {
         crate::serial_println!("[TEST:process:x86_exec_cohort:FAIL:{:?}]", result);
     }
     assert!(result.is_pass(), "x86 exec cohort gate failed");
+}
+
+#[cfg(all(feature = "boot_tests", target_arch = "x86_64"))]
+pub fn run_x86_exec_detach_gate() {
+    crate::serial_println!("[TEST:process:exec_detach_oracle:START]");
+    let result = exec_detach_oracle_test();
+    if !result.is_pass() {
+        crate::serial_println!("[TEST:process:exec_detach_oracle:FAIL:{:?}]", result);
+    }
+    assert!(result.is_pass(), "x86 exec detach oracle gate failed");
 }
 
 // P20 retains its calibrated 45s local ceiling, but both it and P17 consume

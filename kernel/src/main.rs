@@ -642,6 +642,7 @@ extern "C" fn kernel_main_on_kernel_stack(arg: *mut core::ffi::c_void) -> ! {
         kernel::task::process_task::run_x86_reclaim_progress_gate();
         kernel::tracing::providers::teardown::run_x86_retire_cohort_gate();
         kernel::tracing::providers::teardown::run_x86_exec_cohort_gate();
+        kernel::tracing::providers::teardown::run_x86_exec_detach_gate();
     }
 
     kernel::tracing::providers::teardown::emit_root_custody_summary();
@@ -1063,6 +1064,8 @@ fn kernel_main_continue() -> ! {
         let http_test_buf = kernel::userspace_test::get_test_binary("http_test");
         let loopback_wake_test_buf =
             kernel::userspace_test::get_test_binary("loopback_wake_test");
+        let clonevm_exec_test_buf =
+            kernel::userspace_test::get_test_binary("clonevm_exec_test");
 
         x86_64::instructions::interrupts::without_interrupts(|| {
             use alloc::string::String;
@@ -1248,6 +1251,24 @@ fn kernel_main_continue() -> ! {
                     }
                     Err(e) => {
                         log::error!("Failed to create loopback_wake_test process: {}", e);
+                    }
+                }
+            }
+
+            {
+                serial_println!("RING3_SMOKE: creating clonevm_exec_test userspace process");
+                match process::creation::create_user_process(
+                    String::from("clonevm_exec_test"),
+                    &clonevm_exec_test_buf,
+                ) {
+                    Ok(pid) => {
+                        log::info!(
+                            "Created clonevm_exec_test process with PID {}",
+                            pid.as_u64()
+                        );
+                    }
+                    Err(e) => {
+                        log::error!("Failed to create clonevm_exec_test process: {}", e);
                     }
                 }
             }

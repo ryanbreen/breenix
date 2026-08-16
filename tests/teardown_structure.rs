@@ -2740,6 +2740,7 @@ fn validate_x86_frame_custody_harness(script: &str) -> Result<(), ()> {
     const PT_CUSTODY_VECTOR: &str = "PT_CUSTODY_LITERAL='[PT_CUSTODY_COUNTERS:x86:recorded=14:no_proof=0:no_arch=0:terminated=1:undecided=1:retired=2:returned=14:lost=0:requeued=0]'";
     const PT_COHORT_VECTOR: &str = "PT_COHORT_LITERAL='[PT_RETIRE_COHORT:x86:children=64:retired=65:returned=642:recorded=577:lost=0:no_arch=0:undecided=0:mid_retire=0:balance=0]'";
     const PT_EXEC_COHORT_VECTOR: &str = "PT_EXEC_COHORT_LITERAL='[PT_EXEC_COHORT:x86:children=16:superseded=3:roots=64:returned=640:recorded=576:lost=0:leaf_recorded=192:leaf_released=192:leaf_returned=192:custody_refused=0:decref_unregistered=0:undecided=0:mid_retire=0:no_arch=0:balance=0]' # The returned and recorded table-frame fields are pinned from the measured run.";
+    const EXEC_DETACH_ORACLE_VECTOR: &str = "EXEC_DETACH_ORACLE_LITERAL='[EXEC_DETACH_ORACLE:x86:bodies=2:fail_preserved=2:sibling_refused=0:success_detached=2:fresh_root=2:tgid_self=2:balance=0]'";
     const EXEC_FAILED_RELEASE_ORACLE_VECTOR: &str = "EXEC_FAILED_RELEASE_ORACLE_PATTERN='^\\[EXEC_FAILED_RELEASE_ORACLE:x86:used_before=[0-9]+:used_after=[0-9]+:recorded_pre=3:leaf_recorded=1:leaf_released=1:leaf_returned=1:tables_returned=4:roots_retired=1:undecided=0:live_refused=0\\]$'";
     const EXEC_FAILED_RELEASE_PROD_VECTOR: &str = "EXEC_FAILED_RELEASE_PROD_LITERAL='[EXEC_FAILED_RELEASE_PROD:x86:plain_err=true:plain_kept=true:argv_err=true:argv_kept=true:name_kept=true:balance=0:undecided=0:mid_retire=0:lost=0:custody_refused=0:decref_unregistered=0:double=0:stale=0:untracked=0:root_slot_refused=0]'";
     let exact_marker_count = |marker: &str| {
@@ -2783,26 +2784,31 @@ fn validate_x86_frame_custody_harness(script: &str) -> Result<(), ()> {
         && script.contains(PT_CUSTODY_VECTOR)
         && script.contains(PT_COHORT_VECTOR)
         && script.contains(PT_EXEC_COHORT_VECTOR)
+        && script.contains(EXEC_DETACH_ORACLE_VECTOR)
         && script.contains(EXEC_FAILED_RELEASE_ORACLE_VECTOR)
         && script.contains(EXEC_FAILED_RELEASE_PROD_VECTOR)
         && script.matches("frame_custody_refusal_gate:PASS").count() == 2
         && script.matches("page_table_custody_disposition_gate:PASS").count() == 2
         && script.matches("x86_retire_cohort:PASS").count() == 2
         && script.matches("x86_exec_cohort:PASS").count() == 2
+        && script.matches("exec_detach_oracle:PASS").count() == 2
         && exact_marker_count("frame_custody_refusal_gate")
         && exact_marker_count("page_table_custody_disposition_gate")
         && exact_marker_count("x86_retire_cohort")
         && exact_marker_count("x86_exec_cohort")
+        && exact_marker_count("exec_detach_oracle")
         && script.contains("grep -qE \"$FRAME_CUSTODY_PATTERN\"")
         && script.contains("grep -qF -x \"$PT_CUSTODY_LITERAL\"")
         && script.contains("grep -qF -x \"$PT_COHORT_LITERAL\"")
         && script.contains("grep -qF -x \"$PT_EXEC_COHORT_LITERAL\"")
+        && script.contains("grep -qF -x \"$EXEC_DETACH_ORACLE_LITERAL\"")
         && script.contains("grep -qE \"$EXEC_FAILED_RELEASE_ORACLE_PATTERN\"")
         && script.contains("grep -qF -x \"$EXEC_FAILED_RELEASE_PROD_LITERAL\"")
         && script.contains("grep -h -E -c \"$FRAME_CUSTODY_PATTERN\"")
         && script.contains("grep -h -F -x -c \"$PT_CUSTODY_LITERAL\"")
         && script.contains("grep -h -F -x -c \"$PT_COHORT_LITERAL\"")
         && script.contains("grep -h -F -x -c \"$PT_EXEC_COHORT_LITERAL\"")
+        && script.contains("grep -h -F -x -c \"$EXEC_DETACH_ORACLE_LITERAL\"")
         && script.contains("grep -h -E -c \"$EXEC_FAILED_RELEASE_ORACLE_PATTERN\"")
         && script.contains("grep -h -F -x -c \"$EXEC_FAILED_RELEASE_PROD_LITERAL\"")
         && script.contains("-eq 1")
@@ -3390,6 +3396,8 @@ fn validate_leaf_custody(sources: &[(String, String)]) -> Result<(), ()> {
         .iter()
         .filter(|body| !body.contains("[ARM64]"))
         .count();
+    // Pin the census and both reset shapes: a fifth exec body, or any body that
+    // silently drops either half of the detach, must fail this ratchet.
     if execs.len() != 4 || arm_exec_count != 2 || x86_exec_count != 2 {
         return Err(());
     }
@@ -3404,6 +3412,38 @@ fn validate_leaf_custody(sources: &[(String, String)]) -> Result<(), ()> {
         {
             return Err(());
         }
+        let inherited_reset = body.find("process.inherited_cr3 = None;").ok_or(())?;
+        let thread_group_reset = body.find("process.thread_group_id = None;").ok_or(())?;
+        if inherited_reset < publish
+            || thread_group_reset < publish
+            || body.matches("process.inherited_cr3 = None;").count() != 1
+            || body.matches("process.thread_group_id = None;").count() != 1
+            || body.contains("process.inherited_cr3 = Some(")
+            || body.contains("process.thread_group_id = Some(")
+        {
+            return Err(());
+        }
+    }
+
+    // Census the writer shapes across production modules, not a known-name list:
+    // exec may clear the pair, but it must never become another group-join site.
+    let production_group_sources = [
+        source(sources, "kernel/src/syscall/clone.rs"),
+        manager,
+        source(sources, "kernel/src/process/process.rs"),
+    ];
+    if production_group_sources
+        .iter()
+        .map(|body| body.matches("thread_group_id = Some(").count())
+        .sum::<usize>()
+        != 1
+        || production_group_sources
+            .iter()
+            .map(|body| body.matches("inherited_cr3 = Some(").count())
+            .sum::<usize>()
+            != 1
+    {
+        return Err(());
     }
 
     let gate = function_body(process_memory, "page_table_custody_disposition_gate_test");
@@ -3751,6 +3791,19 @@ fn validate_process_page_table_runtime_oracle(sources: &[(String, String)]) -> R
     {
         return Err(());
     }
+    let detach_registrations =
+        identifier_offsets(registry, &registry_mask, "exec_detach_oracle_test");
+    if detach_registrations.len() != 1 || registry.contains("exec_detach_oracle_test as") {
+        return Err(());
+    }
+    let detach_test_def =
+        enclosing_test_def(registry, &registry_mask, detach_registrations[0]).ok_or(())?;
+    if !detach_test_def.contains("name: \"exec_detach_oracle\"")
+        || !detach_test_def.contains("arch: Arch::Aarch64")
+        || !detach_test_def.contains("stage: TestStage::PostScheduler")
+    {
+        return Err(());
+    }
 
     let memory = source(sources, "kernel/src/memory/mod.rs");
     if code_offsets(
@@ -3779,6 +3832,16 @@ fn validate_process_page_table_runtime_oracle(sources: &[(String, String)]) -> R
         main,
         &code_mask(main),
         "teardown::run_x86_exec_cohort_gate();",
+    )
+    .len()
+        != 1
+    {
+        return Err(());
+    }
+    if code_offsets(
+        main,
+        &code_mask(main),
+        "teardown::run_x86_exec_detach_gate();",
     )
     .len()
         != 1
@@ -3814,22 +3877,40 @@ fn validate_process_page_table_runtime_oracle(sources: &[(String, String)]) -> R
     {
         return Err(());
     }
+    let exec_detach_wrapper = function_body(teardown, "run_x86_exec_detach_gate");
+    let detach_wrapper_mask = code_mask(exec_detach_wrapper);
+    if call_offsets(
+        exec_detach_wrapper,
+        &detach_wrapper_mask,
+        "exec_detach_oracle_test",
+    )
+    .len()
+        != 1
+        || !exec_detach_wrapper.contains("assert!(result.is_pass()")
+        || exec_detach_wrapper.contains("exec_detach_oracle:PASS")
+    {
+        return Err(());
+    }
     let harness = repo_text("docker/qemu/run-x86-boot-tests.sh");
     (harness.contains("page_table_custody_disposition_gate:PASS")
         && harness.contains("x86_retire_cohort:PASS")
         && harness.contains("x86_exec_cohort:PASS")
+        && harness.contains("exec_detach_oracle:PASS")
         && harness.contains("[PT_CUSTODY_COUNTERS:x86:recorded=14:no_proof=0:no_arch=0:terminated=1:undecided=1:retired=2:returned=14:lost=0:requeued=0]")
         && harness.contains("[PT_RETIRE_COHORT:x86:children=64:retired=65:returned=642:recorded=577:lost=0:no_arch=0:undecided=0:mid_retire=0:balance=0]")
         && harness.contains("[PT_EXEC_COHORT:x86:children=16:superseded=3:roots=64:returned=640:recorded=576:lost=0:leaf_recorded=192:leaf_released=192:leaf_returned=192:custody_refused=0:decref_unregistered=0:undecided=0:mid_retire=0:no_arch=0:balance=0]")
+        && harness.contains("[EXEC_DETACH_ORACLE:x86:bodies=2:fail_preserved=2:sibling_refused=0:success_detached=2:fresh_root=2:tgid_self=2:balance=0]")
         && harness
             .matches("page_table_custody_disposition_gate:PASS")
             .count()
             == 2
         && harness.matches("x86_retire_cohort:PASS").count() == 2
         && harness.matches("x86_exec_cohort:PASS").count() == 2
+        && harness.matches("exec_detach_oracle:PASS").count() == 2
         && harness.matches("PT_CUSTODY_COUNTERS:x86:").count() == 1
         && harness.matches("PT_RETIRE_COHORT:x86:").count() == 1
         && harness.matches("PT_EXEC_COHORT:x86:").count() == 1
+        && harness.matches("EXEC_DETACH_ORACLE:x86:").count() == 1
         && harness.contains("grep -h -c 'Refusing to map'"))
         .then_some(())
         .ok_or(())
@@ -6750,9 +6831,13 @@ fn validate_x86_direct_teardown_gates(
     let exec_cohort_call = kernel_main
         .find("teardown::run_x86_exec_cohort_gate();")
         .ok_or("missing direct x86 exec cohort call")?;
+    let exec_detach_call = kernel_main
+        .find("teardown::run_x86_exec_detach_gate();")
+        .ok_or("missing direct x86 exec detach call")?;
     if !(retirement_call < progress_call
         && progress_call < cohort_call
-        && cohort_call < exec_cohort_call)
+        && cohort_call < exec_cohort_call
+        && exec_cohort_call < exec_detach_call)
         || !kernel_main.contains("The state-free fence check runs first")
         || !kernel_main.contains("The retire cohort follows")
         || !kernel_main.contains("the exec cohort runs last because")
@@ -6806,6 +6891,24 @@ fn validate_x86_direct_teardown_gates(
         || cohort_wrapper.contains("[TEST:process:x86_retire_cohort:PASS]")
     {
         return Err("cohort PASS producer is no longer body-only");
+    }
+    let exec_detach_body = function_body(teardown, "exec_detach_oracle_test");
+    let exec_detach_wrapper = function_body(teardown, "run_x86_exec_detach_gate");
+    if call_offsets(
+        exec_detach_wrapper,
+        &code_mask(exec_detach_wrapper),
+        "exec_detach_oracle_test",
+    )
+    .len()
+        != 1
+        || !exec_detach_wrapper.contains("assert!(result.is_pass()")
+        || exec_detach_body
+            .matches("[TEST:process:exec_detach_oracle:PASS]")
+            .count()
+            != 1
+        || exec_detach_wrapper.contains("[TEST:process:exec_detach_oracle:PASS]")
+    {
+        return Err("exec detach PASS producer is no longer body-only");
     }
     Ok(())
 }
@@ -6957,10 +7060,17 @@ fn validate_single_gate_producer_per_arch(main: &str, registry: &str) -> Result<
             "reclaim_progress_gate_test",
             "process_task::run_x86_reclaim_progress_gate();",
         ),
+        (
+            "exec_detach_oracle_test",
+            "teardown::run_x86_exec_detach_gate();",
+        ),
     ] {
         let registration = format!(
             "func: crate::{}",
-            if function == "fork_exit_defer_reclaim_pairing_test" {
+            if matches!(
+                function,
+                "fork_exit_defer_reclaim_pairing_test" | "exec_detach_oracle_test"
+            ) {
                 format!("tracing::providers::teardown::{function}")
             } else {
                 format!("task::process_task::{function}")
