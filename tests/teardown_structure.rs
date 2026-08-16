@@ -4758,6 +4758,48 @@ fn all_phase_zero_counters_have_registered_readers_and_honest_runtime_gates() {
 }
 
 #[test]
+fn exec_detach_oracle_pins_pre_exec_group_reachability_control() {
+    let provider = repo_text("kernel/src/tracing/providers/teardown.rs");
+    let oracle = function_body(&provider, "exec_detach_oracle_test");
+    let oracle_mask = code_mask(oracle);
+
+    assert_eq!(
+        identifier_offsets(oracle, &oracle_mask, "signal_thread_group_for_test").len(),
+        3,
+        "exec detach oracle must retain all three group-kill probes"
+    );
+    assert_eq!(
+        identifier_offsets(oracle, &oracle_mask, "take_pending_signal_for_test").len(),
+        5,
+        "exec detach oracle must retain all five signal-delivery observations"
+    );
+    assert_eq!(
+        code_offsets(oracle, &oracle_mask, "old_group_reached_pre += 1;").len(),
+        1,
+        "exec detach oracle must count the pre-exec reachability control exactly once"
+    );
+
+    let pre_exec_probe = oracle
+        .find("let old_group_pre_count =")
+        .expect("exec detach oracle pre-exec group-kill probe");
+    let failed_exec = oracle
+        .find("let failed_exec =")
+        .expect("exec detach oracle failed-exec arm");
+    let successful_exec = oracle
+        .find("let successful_exec =")
+        .expect("exec detach oracle successful-exec arm");
+    let post_exec_probe = oracle
+        .find("let old_group_post_count =")
+        .expect("exec detach oracle post-exec old-group probe");
+    assert!(
+        pre_exec_probe < failed_exec
+            && failed_exec < successful_exec
+            && successful_exec < post_exec_probe,
+        "exec detach group-kill controls are out of order"
+    );
+}
+
+#[test]
 fn creating_dispatch_refusal_oracle_is_registered_and_pinned() {
     const PINNED: &str = "[CREATING_DISPATCH_ORACLE:aarch64:injected=1:refused_via_dispatch=1:requeue_retried=1:dispatched_after_publish=1:balance=0]";
 
