@@ -1205,7 +1205,22 @@ because dispatch refuses `Creating` rows, so shipping either without the other i
 **Gate extras.**
 - Extended `clonevm_exec_test`: successful exec → both fields `None`, fresh root, effective
   TGID == pid, and a kill aimed at the **old** group cannot reach it; failed exec → both fields
-  byte-identical to pre-exec.
+  byte-identical to pre-exec. *(Where each half of this lives, recorded when P3 shipped: the
+  userspace program carries the deterministic exec, the live-sibling refusal and the post-exec futex
+  keys; the field, root, TGID and **kill-reachability** observations are made in the kernel by
+  `exec_detach_oracle_test`, on both arches. The kill half cannot be driven from userspace at P3
+  because no group-scoped kill **syscall** exists until P9 — `sys_kill` is pid-scoped — and the only
+  userspace row that could carry a foreign group id is a `CLONE_VM` child, whose exec the live-sibling
+  guard refuses while its group leader is alive and whose leader cannot be retired first without
+  exercising the open **#468** address-space refcount defect inside the gate. So the oracle aims the
+  kill the way P9's sweep will: it selects victims with the production membership expression
+  `thread_group_id.unwrap_or(pid)` — the same one `sys_clone` derives a child's group from and
+  `futex.rs::current_thread_group_id` reads — and delivers a real signal through the row's own
+  `SignalState`, exactly as `sys_kill`'s non-`SIGKILL` path does. Three counters carry it, each exactly
+  2 (one per exec body) on both arches: `old_group_reached_pre` (the anti-vacuity control — the row
+  IS reachable while it is still a member), `old_group_missed_post` (the assertion), and
+  `self_group_reached_post` (the positive control — the delivery path still works after the exec, so
+  the miss is detachment and not a broken probe).)*
 - "Fresh root" is **observed, not argued**: the exec-cohort per-PID oracle in
   `kernel/src/tracing/providers/teardown.rs` is `exec_supersede_cohort_test`, which emits the x86
   counter line `PT_EXEC_COHORT`. *(This sentence previously named `fork_exit_defer_reclaim_pairing_test`,

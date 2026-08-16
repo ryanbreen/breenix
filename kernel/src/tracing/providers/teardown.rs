@@ -2370,6 +2370,50 @@ pub fn exec_supersede_cohort_test() -> crate::test_framework::registry::TestResu
     TestResult::Pass
 }
 
+/// Deliver `sig` to every row a group-scoped kill aimed at `group` would select.
+/// Membership is the production predicate: thread_group_id.unwrap_or(pid) == group.
+/// Returns the number of live rows the signal actually reached.
+#[cfg(feature = "boot_tests")]
+fn signal_thread_group_for_test(group: u64, sig: u32) -> usize {
+    let mut manager_guard = crate::process::manager();
+    let Some(manager) = manager_guard.as_mut() else {
+        return 0;
+    };
+    let target_pids: alloc::vec::Vec<_> = manager
+        .all_processes()
+        .into_iter()
+        .filter(|process| {
+            !process.is_terminated()
+                && process.thread_group_id.unwrap_or(process.id.as_u64()) == group
+        })
+        .map(|process| process.id)
+        .collect();
+    let mut reached = 0;
+    for pid in target_pids {
+        if let Some(process) = manager.get_process_mut(pid) {
+            process.signals.set_pending(sig);
+            reached += usize::from(process.signals.is_pending(sig));
+        }
+    }
+    reached
+}
+
+#[cfg(feature = "boot_tests")]
+fn take_pending_signal_for_test(pid: crate::process::ProcessId, sig: u32) -> bool {
+    let mut manager_guard = crate::process::manager();
+    let Some(manager) = manager_guard.as_mut() else {
+        return false;
+    };
+    let Some(process) = manager.get_process_mut(pid) else {
+        return false;
+    };
+    if process.is_terminated() || !process.signals.is_pending(sig) {
+        return false;
+    }
+    process.signals.clear_pending(sig);
+    true
+}
+
 #[cfg(feature = "boot_tests")]
 pub fn exec_detach_oracle_test() -> crate::test_framework::registry::TestResult {
     #[cfg(not(target_arch = "x86_64"))]
@@ -2589,6 +2633,9 @@ pub fn exec_detach_oracle_test() -> crate::test_framework::registry::TestResult 
     let mut success_detached = 0usize;
     let mut fresh_root = 0usize;
     let mut tgid_self = 0usize;
+    let mut old_group_reached_pre = 0usize;
+    let mut old_group_missed_post = 0usize;
+    let mut self_group_reached_post = 0usize;
     let mut first_failure: Option<&'static str> = None;
     let mut reclaim_pids = [0u64; 5];
     let mut reclaim_pid_count = 0usize;
@@ -2614,6 +2661,19 @@ pub fn exec_detach_oracle_test() -> crate::test_framework::registry::TestResult 
             manager.insert_process(member_pid, member);
         }
         bodies += 1;
+
+        let old_group_pre_count =
+            signal_thread_group_for_test(leader_pid.as_u64(), crate::signal::constants::SIGUSR1);
+        let member_reached_pre =
+            take_pending_signal_for_test(member_pid, crate::signal::constants::SIGUSR1);
+        let leader_reached_pre =
+            take_pending_signal_for_test(leader_pid, crate::signal::constants::SIGUSR1);
+        if old_group_pre_count == 2 && member_reached_pre && leader_reached_pre {
+            old_group_reached_pre += 1;
+        } else if first_failure.is_none() {
+            first_failure =
+                Some("a kill aimed at the pre-exec group failed to reach a still-member row");
+        }
 
         let failed_exec = {
             let mut manager_guard = crate::process::manager();
@@ -2798,6 +2858,29 @@ pub fn exec_detach_oracle_test() -> crate::test_framework::registry::TestResult 
             tgid_self += 1;
         }
 
+        let old_group_post_count =
+            signal_thread_group_for_test(leader_pid.as_u64(), crate::signal::constants::SIGUSR1);
+        let member_reached_from_old_group =
+            take_pending_signal_for_test(member_pid, crate::signal::constants::SIGUSR1);
+        let leader_reached_post =
+            take_pending_signal_for_test(leader_pid, crate::signal::constants::SIGUSR1);
+        if old_group_post_count == 1 && !member_reached_from_old_group && leader_reached_post {
+            old_group_missed_post += 1;
+        } else if first_failure.is_none() {
+            first_failure = Some("a kill aimed at the pre-exec group still reached the exec'd row");
+        }
+
+        let self_group_post_count =
+            signal_thread_group_for_test(member_pid.as_u64(), crate::signal::constants::SIGUSR1);
+        let member_reached_from_self_group =
+            take_pending_signal_for_test(member_pid, crate::signal::constants::SIGUSR1);
+        if self_group_post_count == 1 && member_reached_from_self_group {
+            self_group_reached_post += 1;
+        } else if first_failure.is_none() {
+            first_failure =
+                Some("a kill aimed at the post-exec group failed to reach the exec'd row");
+        }
+
         match retire_and_remove_owned_row(
             member_pid,
             "process manager unavailable for exec detach member cleanup",
@@ -2937,6 +3020,16 @@ pub fn exec_detach_oracle_test() -> crate::test_framework::registry::TestResult 
     if tgid_self != 2 && first_failure.is_none() {
         first_failure = Some("self thread-group ID count was not exact");
     }
+    if old_group_reached_pre != 2 && first_failure.is_none() {
+        first_failure =
+            Some("a kill aimed at the pre-exec group failed to reach a still-member row");
+    }
+    if old_group_missed_post != 2 && first_failure.is_none() {
+        first_failure = Some("a kill aimed at the pre-exec group still reached the exec'd row");
+    }
+    if self_group_reached_post != 2 && first_failure.is_none() {
+        first_failure = Some("a kill aimed at the post-exec group failed to reach the exec'd row");
+    }
     if roots_created != EXPECTED_ROOTS_CREATED && first_failure.is_none() {
         first_failure = Some("exec detach oracle did not create exactly five roots");
     }
@@ -2975,7 +3068,7 @@ pub fn exec_detach_oracle_test() -> crate::test_framework::registry::TestResult 
     #[cfg(target_arch = "x86_64")]
     let arch = "x86";
     crate::serial_println!(
-        "[EXEC_DETACH_ORACLE:{}:bodies={}:fail_preserved={}:sibling_refused={}:success_detached={}:fresh_root={}:tgid_self={}:custody_balance={}:leaf_residual={}:stack_residual={}]",
+        "[EXEC_DETACH_ORACLE:{}:bodies={}:fail_preserved={}:sibling_refused={}:success_detached={}:fresh_root={}:tgid_self={}:custody_balance={}:leaf_residual={}:stack_residual={}:old_group_reached_pre={}:old_group_missed_post={}:self_group_reached_post={}]",
         arch,
         bodies,
         fail_preserved,
@@ -2985,7 +3078,10 @@ pub fn exec_detach_oracle_test() -> crate::test_framework::registry::TestResult 
         tgid_self,
         custody_balance,
         leaf_residual,
-        stack_residual
+        stack_residual,
+        old_group_reached_pre,
+        old_group_missed_post,
+        self_group_reached_post
     );
     if let Some(reason) = first_failure {
         return TestResult::Fail(reason);

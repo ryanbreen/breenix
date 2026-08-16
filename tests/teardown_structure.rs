@@ -2745,7 +2745,7 @@ fn validate_x86_frame_custody_harness(script: &str) -> Result<(), ()> {
     const PT_CUSTODY_VECTOR: &str = "PT_CUSTODY_LITERAL='[PT_CUSTODY_COUNTERS:x86:recorded=14:no_proof=0:no_arch=0:terminated=1:undecided=1:retired=2:returned=14:lost=0:requeued=0]'";
     const PT_COHORT_VECTOR: &str = "PT_COHORT_LITERAL='[PT_RETIRE_COHORT:x86:children=64:retired=65:returned=642:recorded=577:lost=0:no_arch=0:undecided=0:mid_retire=0:balance=0]'";
     const PT_EXEC_COHORT_VECTOR: &str = "PT_EXEC_COHORT_LITERAL='[PT_EXEC_COHORT:x86:children=16:superseded=3:roots=64:returned=640:recorded=576:lost=0:leaf_recorded=192:leaf_released=192:leaf_returned=192:custody_refused=0:decref_unregistered=0:undecided=0:mid_retire=0:no_arch=0:balance=0]' # The returned and recorded table-frame fields are pinned from the measured run.";
-    const EXEC_DETACH_ORACLE_VECTOR: &str = "EXEC_DETACH_ORACLE_LITERAL='[EXEC_DETACH_ORACLE:x86:bodies=2:fail_preserved=2:sibling_refused=0:success_detached=2:fresh_root=2:tgid_self=2:custody_balance=0:leaf_residual=16:stack_residual=149]'";
+    const EXEC_DETACH_ORACLE_VECTOR: &str = "EXEC_DETACH_ORACLE_LITERAL='[EXEC_DETACH_ORACLE:x86:bodies=2:fail_preserved=2:sibling_refused=0:success_detached=2:fresh_root=2:tgid_self=2:custody_balance=0:leaf_residual=16:stack_residual=149:old_group_reached_pre=2:old_group_missed_post=2:self_group_reached_post=2]'";
     const CLONE_ADMISSION_ORACLE_VECTOR: &str = "CLONE_ADMISSION_ORACLE_LITERAL='[CLONE_ADMISSION_ORACLE:x86:admitted=1:refused=2:creating_refused=1:published_admitted=2:balance=0]'";
     const EXEC_FAILED_RELEASE_ORACLE_VECTOR: &str = "EXEC_FAILED_RELEASE_ORACLE_PATTERN='^\\[EXEC_FAILED_RELEASE_ORACLE:x86:used_before=[0-9]+:used_after=[0-9]+:recorded_pre=3:leaf_recorded=1:leaf_released=1:leaf_returned=1:tables_returned=4:roots_retired=1:undecided=0:live_refused=0\\]$'";
     const EXEC_FAILED_RELEASE_PROD_VECTOR: &str = "EXEC_FAILED_RELEASE_PROD_LITERAL='[EXEC_FAILED_RELEASE_PROD:x86:plain_err=true:plain_kept=true:argv_err=true:argv_kept=true:name_kept=true:balance=0:undecided=0:mid_retire=0:lost=0:custody_refused=0:decref_unregistered=0:double=0:stale=0:untracked=0:root_slot_refused=0]'";
@@ -3508,7 +3508,7 @@ fn validate_leaf_custody(sources: &[(String, String)]) -> Result<(), ()> {
 
 /// Q2's asymmetric cached-root proof is intentional: x86 has no per-thread
 /// cached CR3 writer. Discover assignments structurally, then require every
-/// writer to belong to the one aarch64 cache helper span.
+/// writer to belong to the one aarch64 setter used by both cache and clear.
 fn validate_cached_ttbr0_single_writer(sources: &[(String, String)]) -> Result<(), ()> {
     const ALLOWED_PATH: &str = "kernel/src/arch_impl/aarch64/context_switch.rs";
     let mut writers = Vec::new();
@@ -3524,7 +3524,7 @@ fn validate_cached_ttbr0_single_writer(sources: &[(String, String)]) -> Result<(
         return Err(());
     }
     let module = source(sources, ALLOWED_PATH);
-    function_span(module, "cache_thread_ttbr0")
+    function_span(module, "set_thread_cached_ttbr0")
         .contains(&writers[0].1)
         .then_some(())
         .ok_or(())
@@ -3958,7 +3958,7 @@ fn validate_process_page_table_runtime_oracle(sources: &[(String, String)]) -> R
         && harness.contains("[PT_CUSTODY_COUNTERS:x86:recorded=14:no_proof=0:no_arch=0:terminated=1:undecided=1:retired=2:returned=14:lost=0:requeued=0]")
         && harness.contains("[PT_RETIRE_COHORT:x86:children=64:retired=65:returned=642:recorded=577:lost=0:no_arch=0:undecided=0:mid_retire=0:balance=0]")
         && harness.contains("[PT_EXEC_COHORT:x86:children=16:superseded=3:roots=64:returned=640:recorded=576:lost=0:leaf_recorded=192:leaf_released=192:leaf_returned=192:custody_refused=0:decref_unregistered=0:undecided=0:mid_retire=0:no_arch=0:balance=0]")
-        && harness.contains("[EXEC_DETACH_ORACLE:x86:bodies=2:fail_preserved=2:sibling_refused=0:success_detached=2:fresh_root=2:tgid_self=2:custody_balance=0:leaf_residual=16:stack_residual=149]")
+        && harness.contains("[EXEC_DETACH_ORACLE:x86:bodies=2:fail_preserved=2:sibling_refused=0:success_detached=2:fresh_root=2:tgid_self=2:custody_balance=0:leaf_residual=16:stack_residual=149:old_group_reached_pre=2:old_group_missed_post=2:self_group_reached_post=2]")
         && harness.contains("[CLONE_ADMISSION_ORACLE:x86:admitted=1:refused=2:creating_refused=1:published_admitted=2:balance=0]")
         && harness
             .matches("page_table_custody_disposition_gate:PASS")
@@ -7201,7 +7201,8 @@ fn validate_reclaim_progress_topology_arms(process_task: &str) -> Result<(), &'s
         "age_63.epochs[age_advance_cpu]=age_63.epochs[age_advance_cpu].wrapping_add(63);",
         "boot_reclaim_locations(age_pid)!=(false,true)",
         "age_64.epochs[age_advance_cpu]=age_64.epochs[age_advance_cpu].wrapping_add(1);",
-        "RECLAIM_UNPARKED_AGE.aggregate().saturating_sub(age_before)!=1",
+        "letage_unpark_delta=trace::RECLAIM_UNPARKED_AGE.aggregate().saturating_sub(age_before);",
+        "ifage_unpark_delta!=1",
     ] {
         if !multi.contains(required) {
             return Err("reclaim gate multi-CPU age proposition was weakened");
@@ -7215,7 +7216,8 @@ fn validate_reclaim_progress_topology_arms(process_task: &str) -> Result<(), &'s
         "boot_push_parked(epoch_pid,epoch_record);",
         "epoch_advanced.epochs[epoch_cpu]=epoch_advanced.epochs[epoch_cpu].wrapping_add(1);",
         "unpark_sweep_with_snapshot(epoch_advanced,epoch_record.row_epoch_at_park);",
-        "RECLAIM_UNPARKED_EPOCH.aggregate().saturating_sub(epoch_before)!=1",
+        "letsingle_epoch_delta=trace::RECLAIM_UNPARKED_EPOCH.aggregate().saturating_sub(epoch_before);",
+        "ifsingle_epoch_delta!=1",
         "RECLAIM_UNPARKED_AGE.aggregate()!=age_before",
         "boot_reclaim_locations(epoch_pid)!=(true,false)",
     ] {
@@ -7237,6 +7239,27 @@ fn reclaim_progress_park_unpark_arms_follow_cpu_topology() {
 }
 
 #[test]
+fn oversized_reclaim_failures_name_every_root_proof_blocker() {
+    let process_task = repo_text("kernel/src/task/process_task.rs");
+    let gate = function_body(&process_task, "reclaim_progress_gate_test");
+
+    for field in [
+        ":root_proof_blocked_epoch_delta={}",
+        ":root_proof_blocked_hw_delta={}",
+        ":root_proof_blocked_shadow_delta={}",
+        ":root_proof_blocked_cached_delta={}",
+        ":root_proof_blocked_live_row_delta={}",
+        ":oversized_locations={:?}",
+    ] {
+        assert!(gate.contains(field), "oversized diagnostic lost {field}");
+    }
+    assert_eq!(gate.matches("fail_oversized_value!(").count(), 14);
+    assert_eq!(gate.matches("fail_oversized_debug!(").count(), 2);
+    assert!(gate.contains("let first_locations = boot_reclaim_locations(oversized_pid);"));
+    assert!(gate.contains("let final_locations = boot_reclaim_locations(oversized_pid);"));
+}
+
+#[test]
 fn reclaim_progress_topology_validator_rejects_arch_selection_and_a_skipped_counter() {
     let process_task = repo_text("kernel/src/task/process_task.rs");
     let arch_selected = process_task.replacen(
@@ -7247,9 +7270,9 @@ fn reclaim_progress_topology_validator_rejects_arch_selection_and_a_skipped_coun
     assert!(validate_reclaim_progress_topology_arms(&arch_selected).is_err());
 
     let skipped_counter = process_task.replacen(
-        "trace::RECLAIM_UNPARKED_EPOCH\n            .aggregate()\n            .saturating_sub(epoch_before)\n            != 1",
-        "trace::RECLAIM_UNPARKED_EPOCH.aggregate() == epoch_before",
-        2,
+        "let single_epoch_delta = trace::RECLAIM_UNPARKED_EPOCH\n            .aggregate()\n            .saturating_sub(epoch_before);",
+        "let single_epoch_delta = 1;",
+        1,
     );
     assert!(validate_reclaim_progress_topology_arms(&skipped_counter).is_err());
 }
