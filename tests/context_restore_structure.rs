@@ -10,6 +10,25 @@ fn repo_text(relative: &str) -> String {
         .unwrap_or_else(|_| panic!("read repository file {relative}"))
 }
 
+fn rust_sources_below(relative: &str) -> Vec<(PathBuf, String)> {
+    fn visit(path: &std::path::Path, sources: &mut Vec<(PathBuf, String)>) {
+        if path.is_dir() {
+            for entry in fs::read_dir(path).expect("read source directory") {
+                visit(&entry.expect("read source entry").path(), sources);
+            }
+        } else if path.extension().is_some_and(|extension| extension == "rs") {
+            sources.push((
+                path.to_path_buf(),
+                fs::read_to_string(path).expect("read Rust source"),
+            ));
+        }
+    }
+
+    let mut sources = Vec::new();
+    visit(&repo_root().join(relative), &mut sources);
+    sources
+}
+
 fn code_mask(source: &str) -> Vec<bool> {
     let bytes = source.as_bytes();
     let mut mask = vec![true; bytes.len()];
@@ -914,6 +933,47 @@ fn validate_blocked_syscall_dispatch_resolves_cr3(source: &str) -> Result<(), St
         );
     }
     let cr3_resolution = cr3_calls[0];
+    let unpublished_refusals =
+        identifier_offsets(process_block, &process_mask, "refuse_unpublished_dispatch");
+    if unpublished_refusals.len() != 1 || unpublished_refusals[0] >= cr3_resolution {
+        return Err(
+            "blocked-in-syscall dispatch does not refuse unpublished rows before CR3 resolution"
+                .to_string(),
+        );
+    }
+    let unpublished_arm = identifier_offsets(process_block, &process_mask, "if")
+        .into_iter()
+        .filter_map(|if_offset| {
+            let block = braced_block(process_block, &process_mask, if_offset)?;
+            let end = if_offset + block.len();
+            (unpublished_refusals[0] >= if_offset && unpublished_refusals[0] < end).then_some(block)
+        })
+        .min_by_key(|block| block.len())
+        .ok_or_else(|| "unpublished-row refusal call has no recovery arm".to_string())?;
+    let compact_unpublished_arm = normalized_code(unpublished_arm).replace(' ', "");
+    if identifier_offsets(
+        unpublished_arm,
+        &code_mask(unpublished_arm),
+        "set_terminated",
+    )
+    .len()
+        != 0
+        || !compact_unpublished_arm.contains("scheduler::set_need_resched();")
+        || !compact_unpublished_arm.contains("setup_idle_return(interrupt_frame);")
+        || !compact_unpublished_arm.contains("scheduler::switch_to_idle();")
+        || !compact_unpublished_arm.contains("process_memory::switch_to_kernel_page_table();")
+        || !compact_unpublished_arm.contains("return;")
+    {
+        return Err("blocked-in-syscall unpublished-row recovery is not retry-only".to_string());
+    }
+    for publisher in ["set_next_cr3", "Cr3"] {
+        if identifier_offsets(process_block, &process_mask, publisher)
+            .into_iter()
+            .any(|offset| offset < unpublished_refusals[0])
+        {
+            return Err("unpublished-row refusal occurs after a CR3 publish".to_string());
+        }
+    }
 
     let first_frame_mutation =
         qualified_zero_arg_call_offsets(process_block, "interrupt_frame", "as_mut")
@@ -1033,6 +1093,47 @@ fn validate_no_cr3_dispatch_fails_closed(source: &str) -> Result<(), String> {
             "restore must publish exactly one next CR3, found {}",
             cr3_writes.len()
         ));
+    }
+    let cr3_resolutions = identifier_offsets(restore, &restore_mask, "cr3_value");
+    let unpublished_refusals =
+        identifier_offsets(restore, &restore_mask, "refuse_unpublished_dispatch");
+    if cr3_resolutions.is_empty()
+        || unpublished_refusals.len() != 1
+        || unpublished_refusals[0] >= cr3_resolutions[0]
+        || cr3_writes
+            .iter()
+            .any(|write| *write < unpublished_refusals[0])
+        || identifier_offsets(restore, &restore_mask, "Cr3")
+            .into_iter()
+            .any(|write| write < unpublished_refusals[0])
+    {
+        return Err(
+            "normal userspace restore does not refuse unpublished rows before CR3 resolution and publication"
+                .to_string(),
+        );
+    }
+    let unpublished_arm = identifier_offsets(restore, &restore_mask, "if")
+        .into_iter()
+        .filter_map(|if_offset| {
+            let block = braced_block(restore, &restore_mask, if_offset)?;
+            let end = if_offset + block.len();
+            (unpublished_refusals[0] >= if_offset && unpublished_refusals[0] < end).then_some(block)
+        })
+        .min_by_key(|block| block.len())
+        .ok_or_else(|| "normal-restore unpublished refusal has no recovery arm".to_string())?;
+    let compact_unpublished_arm = normalized_code(unpublished_arm).replace(' ', "");
+    if !identifier_offsets(
+        unpublished_arm,
+        &code_mask(unpublished_arm),
+        "set_terminated",
+    )
+    .is_empty()
+        || !compact_unpublished_arm.contains("scheduler::set_need_resched();")
+        || !compact_unpublished_arm.contains("setup_idle_return(interrupt_frame);")
+        || !compact_unpublished_arm.contains("scheduler::switch_to_idle();")
+        || !compact_unpublished_arm.contains("return;")
+    {
+        return Err("normal-restore unpublished-row recovery is not retry-only".to_string());
     }
 
     let (cr3_if_offset, cr3_if_block) = identifier_offsets(restore, &restore_mask, "if")
@@ -1549,6 +1650,15 @@ fn synthetic_blocked_syscall_dispatch_source(dispatch_body: &str) -> String {
 
 fn valid_blocked_syscall_no_cr3_arm() -> &'static str {
     r#"
+        if refuse_unpublished_dispatch(process, thread_id, pid.as_u64()) {
+            scheduler::set_need_resched();
+            setup_idle_return(interrupt_frame);
+            scheduler::switch_to_idle();
+            unsafe {
+                crate::memory::process_memory::switch_to_kernel_page_table();
+            }
+            return;
+        }
         let process_cr3 = match process.cr3_value() {
             Some(cr3_value) => cr3_value,
             None => {
@@ -1652,6 +1762,13 @@ fn synthetic_no_cr3_restore_source(else_arm: &str) -> String {
     format!(
         r#"
         fn restore_userspace_thread_context() {{
+            if refuse_unpublished_dispatch(process, thread_id, pid.as_u64()) {{
+                scheduler::set_need_resched();
+                setup_idle_return(interrupt_frame);
+                scheduler::switch_to_idle();
+                return;
+            }}
+            let process_cr3 = process.cr3_value();
             if let Some(cr3_value) = process_cr3 {{
                 crate::per_cpu::set_next_cr3(cr3_value);
             }} else {{
@@ -1660,6 +1777,150 @@ fn synthetic_no_cr3_restore_source(else_arm: &str) -> String {
         }}
         "#
     )
+}
+
+fn validate_clone_publication_lifecycle() -> Result<(), String> {
+    let sources = rust_sources_below("kernel/src");
+    let mut ready_writes = Vec::new();
+    for (path, source) in &sources {
+        let mask = code_mask(source);
+        for (offset, _) in source.match_indices("ProcessState::Ready") {
+            if !mask.get(offset).copied().unwrap_or(false) {
+                continue;
+            }
+            let line_start = source[..offset]
+                .rfind('\n')
+                .map(|line| line + 1)
+                .unwrap_or(0);
+            let prefix = source[line_start..offset].trim_end();
+            let Some(operator) = prefix.as_bytes().last().copied() else {
+                continue;
+            };
+            if operator != b'=' {
+                continue;
+            }
+            let before_operator = prefix
+                .as_bytes()
+                .get(prefix.len().saturating_sub(2))
+                .copied();
+            if before_operator.is_some_and(|byte| matches!(byte, b'=' | b'!' | b'<' | b'>')) {
+                continue;
+            }
+            ready_writes.push(path.clone());
+        }
+    }
+    if ready_writes.is_empty()
+        || ready_writes
+            .iter()
+            .any(|path| !path.ends_with("kernel/src/process/process.rs"))
+    {
+        return Err("ProcessState::Ready writes escaped the lifecycle module".to_string());
+    }
+
+    let process = repo_text("kernel/src/process/process.rs");
+    let admits = function_body(&process, "admits_clone")
+        .ok_or_else(|| "missing Process::admits_clone".to_string())?;
+    let unpublished = function_body(&process, "is_unpublished")
+        .ok_or_else(|| "missing Process::is_unpublished".to_string())?;
+    let admits = normalized_code(admits).replace(' ', "");
+    let unpublished = normalized_code(unpublished).replace(' ', "");
+    if admits.contains("_=>")
+        || !admits.contains("matchself.state{")
+        || !admits.contains("ProcessState::Creating=>false")
+        || !admits.contains("ProcessState::Ready|ProcessState::Running|ProcessState::Blocked=>true")
+        || !admits.contains("ProcessState::Terminated(_)=>false")
+        || admits.contains("ProcessState::Creating=>true")
+        || admits.contains("ProcessState::Terminated(_)=>true")
+    {
+        return Err("admits_clone is not an exhaustive live-row predicate".to_string());
+    }
+    if unpublished.contains("_=>")
+        || !unpublished.contains("matchself.state{")
+        || !unpublished.contains("ProcessState::Creating=>true")
+        || !unpublished.contains("ProcessState::Ready=>false")
+        || !unpublished.contains("ProcessState::Running=>false")
+        || !unpublished.contains("ProcessState::Blocked=>false")
+        || !unpublished.contains("ProcessState::Terminated(_)=>false")
+        || unpublished.matches("=>true").count() != 1
+    {
+        return Err("is_unpublished does not accept exactly Creating".to_string());
+    }
+    Ok(())
+}
+
+fn validate_aarch64_row_unpublished_dispatch(source: &str) -> Result<(), String> {
+    let set_next = function_body(source, "set_next_ttbr0_for_thread")
+        .ok_or_else(|| "missing set_next_ttbr0_for_thread".to_string())?;
+    let set_next_mask = code_mask(set_next);
+    let refusal = identifier_offsets(set_next, &set_next_mask, "refuse_unpublished_dispatch");
+    let page_table = identifier_offsets(set_next, &set_next_mask, "page_table");
+    let inherited = identifier_offsets(set_next, &set_next_mask, "inherited_cr3");
+    if refusal.len() != 1
+        || page_table.is_empty()
+        || inherited.is_empty()
+        || refusal[0] >= page_table[0]
+        || refusal[0] >= inherited[0]
+        || !set_next.contains("return TtbrResult::RowUnpublished;")
+    {
+        return Err("aarch64 computes TTBR0 before refusing an unpublished row".to_string());
+    }
+
+    let enum_offset = source
+        .find("enum TtbrResult")
+        .ok_or_else(|| "missing TtbrResult enum".to_string())?;
+    let enum_body = braced_block(source, &code_mask(source), enum_offset)
+        .ok_or_else(|| "TtbrResult enum is not brace balanced".to_string())?;
+    if !enum_body.contains("RowUnpublished") {
+        return Err("TtbrResult lacks RowUnpublished".to_string());
+    }
+
+    let source_mask = code_mask(source);
+    let ttbr_matches: Vec<&str> = identifier_offsets(source, &source_mask, "match")
+        .into_iter()
+        .filter_map(|offset| braced_block(source, &source_mask, offset))
+        .filter(|block| {
+            let header = block.split_once('{').map_or(*block, |(header, _)| header);
+            header.contains("set_next_ttbr0_for_thread") || header.contains("ttbr_result")
+        })
+        .collect();
+    if ttbr_matches.len() != 3
+        || ttbr_matches
+            .iter()
+            .any(|block| !block.contains("TtbrResult::RowUnpublished"))
+    {
+        return Err("RowUnpublished is not handled at every TtbrResult match".to_string());
+    }
+    let refusal_body = function_body(source, "refuse_unpublished_dispatch")
+        .ok_or_else(|| "missing aarch64 unpublished-row predicate".to_string())?;
+    if !refusal_body.contains("USERSPACE_DISPATCH_CREATING_REFUSED.fetch_add")
+        || !source.contains("pub fn userspace_dispatch_creating_refused() -> u64")
+        || source
+            .matches("#[cfg(feature = \"boot_tests\")]\npub fn userspace_dispatch_creating_refused")
+            .count()
+            != 1
+    {
+        return Err("aarch64 unpublished-row counter is not readable".to_string());
+    }
+    Ok(())
+}
+
+#[test]
+fn clone_publication_lifecycle_is_closed() {
+    assert_eq!(validate_clone_publication_lifecycle(), Ok(()));
+}
+
+#[test]
+fn unpublished_dispatch_is_retry_only_on_both_architectures() {
+    let x86 = repo_text("kernel/src/interrupts/context_switch.rs");
+    let x86_refusal = function_body(&x86, "refuse_unpublished_dispatch")
+        .expect("missing x86 unpublished-row refusal predicate");
+    assert!(identifier_offsets(x86_refusal, &code_mask(x86_refusal), "set_terminated").is_empty());
+    assert_eq!(
+        validate_aarch64_row_unpublished_dispatch(&repo_text(
+            "kernel/src/arch_impl/aarch64/context_switch.rs"
+        )),
+        Ok(())
+    );
 }
 
 #[test]

@@ -635,7 +635,9 @@ extern "C" fn kernel_main_on_kernel_stack(arg: *mut core::ffi::c_void) -> ! {
     // epochs; placing them immediately after process::init() would spin forever.
     // The state-free fence check runs first. The reclaim-progress gate then owns
     // and returns quiescent deferred-reclaim queues. The retire cohort follows,
-    // and the exec cohort runs last because it supersedes populated address spaces.
+    // and the exec cohort runs last among page-table cohorts because it supersedes
+    // populated address spaces. The clone admission gate follows immediately so
+    // the publication transaction is ratcheted by the same fail-loud sequence.
     #[cfg(all(target_arch = "x86_64", feature = "boot_tests"))]
     {
         kernel::task::process_task::run_x86_retirement_fence_gate();
@@ -643,6 +645,7 @@ extern "C" fn kernel_main_on_kernel_stack(arg: *mut core::ffi::c_void) -> ! {
         kernel::tracing::providers::teardown::run_x86_retire_cohort_gate();
         kernel::tracing::providers::teardown::run_x86_exec_cohort_gate();
         kernel::tracing::providers::teardown::run_x86_exec_detach_gate();
+        kernel::tracing::providers::teardown::run_x86_clone_admission_gate();
     }
 
     kernel::tracing::providers::teardown::emit_root_custody_summary();

@@ -1861,6 +1861,7 @@ const TERMINATE_CALLS: &[(&str, &str, usize)] = &[
 #[rustfmt::skip]
 const TERMINATE_MINIMAL_CALLS: &[(&str, &str, usize)] = &[
     ("kernel/src/task/process_task.rs", "impl ProcessScheduler::fn handle_thread_exit", 1),
+    ("kernel/src/tracing/providers/teardown.rs", "#[cfg(feature=boot_tests)] fn clone_admission_oracle_test", 1),
 ];
 #[rustfmt::skip]
 const PRODUCTION_INIT_PID_SITES: &[(&str, &str, usize)] = &[
@@ -1890,6 +1891,7 @@ const RECLAIM_ENQUEUE_CALLS: &[(&str, &str, usize)] = &[
     ("kernel/src/task/process_task.rs", "#[cfg(feature=boot_tests)] fn reclaim_progress_gate_test", 2),
     ("kernel/src/tracing/providers/teardown.rs", "#[cfg(feature=boot_tests)] fn fork_exit_defer_reclaim_pairing_test", 1),
     ("kernel/src/tracing/providers/teardown.rs", "#[cfg(all(feature=boot_tests,target_arch=x86_64))] fn exec_supersede_cohort_test", 1),
+    ("kernel/src/tracing/providers/teardown.rs", "#[cfg(feature=boot_tests)] fn exec_detach_oracle_test::fn retire_and_remove_owned_row", 1),
 ];
 #[rustfmt::skip]
 const EXIT_PROCESS_AND_RETIRE_CALLS: &[(&str, &str, usize)] = &[
@@ -1912,6 +1914,8 @@ const EXIT_PROCESS_BY_PID_CALLS: &[(&str, &str, usize)] = &[
 const EXIT_PROCESS_FOR_TEARDOWN_TEST_CALLS: &[(&str, &str, usize)] = &[
     ("kernel/src/tracing/providers/teardown.rs", "#[cfg(feature=boot_tests)] fn fork_exit_defer_reclaim_pairing_test", 1),
     ("kernel/src/tracing/providers/teardown.rs", "#[cfg(all(feature=boot_tests,target_arch=x86_64))] fn exec_supersede_cohort_test", 1),
+    ("kernel/src/tracing/providers/teardown.rs", "#[cfg(feature=boot_tests)] fn exec_detach_oracle_test::fn exit_and_remove_unowned_row", 1),
+    ("kernel/src/tracing/providers/teardown.rs", "#[cfg(feature=boot_tests)] fn clone_admission_oracle_test::fn exit_and_remove_row", 1),
 ];
 #[rustfmt::skip]
 const BLOCKING_PRIMITIVES: &[(&str, &str, usize)] = &[
@@ -1946,6 +1950,7 @@ const RETURN_LEASE_PRODUCTION_CALLS: &[(&str, &str, usize)] = &[
 ];
 #[rustfmt::skip]
 const RETURN_LEASE_BOOT_FIXTURE_CALLS: &[(&str, &str, usize)] = &[
+    ("kernel/src/memory/frame_allocator.rs", "#[cfg(all(feature=boot_tests,target_arch=aarch64))] fn release_external_leaf_frames_for_teardown_test", 1),
     ("kernel/src/memory/frame_allocator_tests.rs", "fn frame_custody_refusal_gate_test", 6),
     ("kernel/src/memory/frame_allocator_tests.rs", "fn healthy_round_trip", 1),
     ("kernel/src/memory/frame_allocator_tests.rs", "fn restore_lease", 1),
@@ -2741,6 +2746,7 @@ fn validate_x86_frame_custody_harness(script: &str) -> Result<(), ()> {
     const PT_COHORT_VECTOR: &str = "PT_COHORT_LITERAL='[PT_RETIRE_COHORT:x86:children=64:retired=65:returned=642:recorded=577:lost=0:no_arch=0:undecided=0:mid_retire=0:balance=0]'";
     const PT_EXEC_COHORT_VECTOR: &str = "PT_EXEC_COHORT_LITERAL='[PT_EXEC_COHORT:x86:children=16:superseded=3:roots=64:returned=640:recorded=576:lost=0:leaf_recorded=192:leaf_released=192:leaf_returned=192:custody_refused=0:decref_unregistered=0:undecided=0:mid_retire=0:no_arch=0:balance=0]' # The returned and recorded table-frame fields are pinned from the measured run.";
     const EXEC_DETACH_ORACLE_VECTOR: &str = "EXEC_DETACH_ORACLE_LITERAL='[EXEC_DETACH_ORACLE:x86:bodies=2:fail_preserved=2:sibling_refused=0:success_detached=2:fresh_root=2:tgid_self=2:balance=0]'";
+    const CLONE_ADMISSION_ORACLE_VECTOR: &str = "CLONE_ADMISSION_ORACLE_LITERAL='[CLONE_ADMISSION_ORACLE:x86:admitted=1:refused=2:creating_refused=1:published_admitted=2:balance=0]'";
     const EXEC_FAILED_RELEASE_ORACLE_VECTOR: &str = "EXEC_FAILED_RELEASE_ORACLE_PATTERN='^\\[EXEC_FAILED_RELEASE_ORACLE:x86:used_before=[0-9]+:used_after=[0-9]+:recorded_pre=3:leaf_recorded=1:leaf_released=1:leaf_returned=1:tables_returned=4:roots_retired=1:undecided=0:live_refused=0\\]$'";
     const EXEC_FAILED_RELEASE_PROD_VECTOR: &str = "EXEC_FAILED_RELEASE_PROD_LITERAL='[EXEC_FAILED_RELEASE_PROD:x86:plain_err=true:plain_kept=true:argv_err=true:argv_kept=true:name_kept=true:balance=0:undecided=0:mid_retire=0:lost=0:custody_refused=0:decref_unregistered=0:double=0:stale=0:untracked=0:root_slot_refused=0]'";
     let exact_marker_count = |marker: &str| {
@@ -2785,6 +2791,7 @@ fn validate_x86_frame_custody_harness(script: &str) -> Result<(), ()> {
         && script.contains(PT_COHORT_VECTOR)
         && script.contains(PT_EXEC_COHORT_VECTOR)
         && script.contains(EXEC_DETACH_ORACLE_VECTOR)
+        && script.contains(CLONE_ADMISSION_ORACLE_VECTOR)
         && script.contains(EXEC_FAILED_RELEASE_ORACLE_VECTOR)
         && script.contains(EXEC_FAILED_RELEASE_PROD_VECTOR)
         && script.matches("frame_custody_refusal_gate:PASS").count() == 2
@@ -2792,16 +2799,19 @@ fn validate_x86_frame_custody_harness(script: &str) -> Result<(), ()> {
         && script.matches("x86_retire_cohort:PASS").count() == 2
         && script.matches("x86_exec_cohort:PASS").count() == 2
         && script.matches("exec_detach_oracle:PASS").count() == 2
+        && script.matches("clone_admission_oracle:PASS").count() == 2
         && exact_marker_count("frame_custody_refusal_gate")
         && exact_marker_count("page_table_custody_disposition_gate")
         && exact_marker_count("x86_retire_cohort")
         && exact_marker_count("x86_exec_cohort")
         && exact_marker_count("exec_detach_oracle")
+        && exact_marker_count("clone_admission_oracle")
         && script.contains("grep -qE \"$FRAME_CUSTODY_PATTERN\"")
         && script.contains("grep -qF -x \"$PT_CUSTODY_LITERAL\"")
         && script.contains("grep -qF -x \"$PT_COHORT_LITERAL\"")
         && script.contains("grep -qF -x \"$PT_EXEC_COHORT_LITERAL\"")
         && script.contains("grep -qF -x \"$EXEC_DETACH_ORACLE_LITERAL\"")
+        && script.contains("grep -qF -x \"$CLONE_ADMISSION_ORACLE_LITERAL\"")
         && script.contains("grep -qE \"$EXEC_FAILED_RELEASE_ORACLE_PATTERN\"")
         && script.contains("grep -qF -x \"$EXEC_FAILED_RELEASE_PROD_LITERAL\"")
         && script.contains("grep -h -E -c \"$FRAME_CUSTODY_PATTERN\"")
@@ -2809,6 +2819,7 @@ fn validate_x86_frame_custody_harness(script: &str) -> Result<(), ()> {
         && script.contains("grep -h -F -x -c \"$PT_COHORT_LITERAL\"")
         && script.contains("grep -h -F -x -c \"$PT_EXEC_COHORT_LITERAL\"")
         && script.contains("grep -h -F -x -c \"$EXEC_DETACH_ORACLE_LITERAL\"")
+        && script.contains("grep -h -F -x -c \"$CLONE_ADMISSION_ORACLE_LITERAL\"")
         && script.contains("grep -h -E -c \"$EXEC_FAILED_RELEASE_ORACLE_PATTERN\"")
         && script.contains("grep -h -F -x -c \"$EXEC_FAILED_RELEASE_PROD_LITERAL\"")
         && script.contains("-eq 1")
@@ -2893,7 +2904,7 @@ fn validate_frame_ledger_counter_inventory(provider: &str) -> Result<(), ()> {
         && EXPECTED
             .iter()
             .all(|counter| inventory.contains(&format!("&{counter},")))
-        && provider.contains("pub const COUNTER_COUNT: usize = 72;"))
+        && provider.contains("pub const COUNTER_COUNT: usize = 74;"))
     .then_some(())
     .ok_or(())
 }
@@ -3151,7 +3162,7 @@ fn validate_process_page_table_counter_inventory(sources: &[(String, String)]) -
         || !EXPECTED
             .iter()
             .all(|counter| inventory.contains(&format!("&{counter},")))
-        || !provider.contains("pub const COUNTER_COUNT: usize = 72;")
+        || !provider.contains("pub const COUNTER_COUNT: usize = 74;")
     {
         return Err(());
     }
@@ -3804,6 +3815,19 @@ fn validate_process_page_table_runtime_oracle(sources: &[(String, String)]) -> R
     {
         return Err(());
     }
+    let clone_registrations =
+        identifier_offsets(registry, &registry_mask, "clone_admission_oracle_test");
+    if clone_registrations.len() != 1 || registry.contains("clone_admission_oracle_test as") {
+        return Err(());
+    }
+    let clone_test_def =
+        enclosing_test_def(registry, &registry_mask, clone_registrations[0]).ok_or(())?;
+    if !clone_test_def.contains("name: \"clone_admission_oracle\"")
+        || !clone_test_def.contains("arch: Arch::Aarch64")
+        || !clone_test_def.contains("stage: TestStage::PostScheduler")
+    {
+        return Err(());
+    }
 
     let memory = source(sources, "kernel/src/memory/mod.rs");
     if code_offsets(
@@ -3842,6 +3866,16 @@ fn validate_process_page_table_runtime_oracle(sources: &[(String, String)]) -> R
         main,
         &code_mask(main),
         "teardown::run_x86_exec_detach_gate();",
+    )
+    .len()
+        != 1
+    {
+        return Err(());
+    }
+    if code_offsets(
+        main,
+        &code_mask(main),
+        "teardown::run_x86_clone_admission_gate();",
     )
     .len()
         != 1
@@ -3891,15 +3925,31 @@ fn validate_process_page_table_runtime_oracle(sources: &[(String, String)]) -> R
     {
         return Err(());
     }
+    let clone_wrapper = function_body(teardown, "run_x86_clone_admission_gate");
+    let clone_wrapper_mask = code_mask(clone_wrapper);
+    if call_offsets(
+        clone_wrapper,
+        &clone_wrapper_mask,
+        "clone_admission_oracle_test",
+    )
+    .len()
+        != 1
+        || !clone_wrapper.contains("assert!(result.is_pass()")
+        || clone_wrapper.contains("clone_admission_oracle:PASS")
+    {
+        return Err(());
+    }
     let harness = repo_text("docker/qemu/run-x86-boot-tests.sh");
     (harness.contains("page_table_custody_disposition_gate:PASS")
         && harness.contains("x86_retire_cohort:PASS")
         && harness.contains("x86_exec_cohort:PASS")
         && harness.contains("exec_detach_oracle:PASS")
+        && harness.contains("clone_admission_oracle:PASS")
         && harness.contains("[PT_CUSTODY_COUNTERS:x86:recorded=14:no_proof=0:no_arch=0:terminated=1:undecided=1:retired=2:returned=14:lost=0:requeued=0]")
         && harness.contains("[PT_RETIRE_COHORT:x86:children=64:retired=65:returned=642:recorded=577:lost=0:no_arch=0:undecided=0:mid_retire=0:balance=0]")
         && harness.contains("[PT_EXEC_COHORT:x86:children=16:superseded=3:roots=64:returned=640:recorded=576:lost=0:leaf_recorded=192:leaf_released=192:leaf_returned=192:custody_refused=0:decref_unregistered=0:undecided=0:mid_retire=0:no_arch=0:balance=0]")
         && harness.contains("[EXEC_DETACH_ORACLE:x86:bodies=2:fail_preserved=2:sibling_refused=0:success_detached=2:fresh_root=2:tgid_self=2:balance=0]")
+        && harness.contains("[CLONE_ADMISSION_ORACLE:x86:admitted=1:refused=2:creating_refused=1:published_admitted=2:balance=0]")
         && harness
             .matches("page_table_custody_disposition_gate:PASS")
             .count()
@@ -3907,10 +3957,12 @@ fn validate_process_page_table_runtime_oracle(sources: &[(String, String)]) -> R
         && harness.matches("x86_retire_cohort:PASS").count() == 2
         && harness.matches("x86_exec_cohort:PASS").count() == 2
         && harness.matches("exec_detach_oracle:PASS").count() == 2
+        && harness.matches("clone_admission_oracle:PASS").count() == 2
         && harness.matches("PT_CUSTODY_COUNTERS:x86:").count() == 1
         && harness.matches("PT_RETIRE_COHORT:x86:").count() == 1
         && harness.matches("PT_EXEC_COHORT:x86:").count() == 1
         && harness.matches("EXEC_DETACH_ORACLE:x86:").count() == 1
+        && harness.matches("CLONE_ADMISSION_ORACLE:x86:").count() == 1
         && harness.contains("grep -h -c 'Refusing to map'"))
         .then_some(())
         .ok_or(())
@@ -4064,8 +4116,8 @@ fn frame_ledger_return_and_initialization_ratchets_are_exact() {
     }
     check(
         &mut failures,
-        "COUNTER_COUNT is no longer 72",
-        provider.contains("pub const COUNTER_COUNT: usize = 72;"),
+        "COUNTER_COUNT is no longer 74",
+        provider.contains("pub const COUNTER_COUNT: usize = 74;"),
     );
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
@@ -4566,7 +4618,7 @@ fn all_phase_zero_counters_have_registered_readers_and_honest_runtime_gates() {
         .filter_map(|rest| rest.strip_suffix(','))
         .map(str::to_owned)
         .collect();
-    assert_eq!(declarations.len(), 72);
+    assert_eq!(declarations.len(), 74);
     assert_eq!(
         readers, declarations,
         "every counter must have an inventory reader"
@@ -6834,13 +6886,18 @@ fn validate_x86_direct_teardown_gates(
     let exec_detach_call = kernel_main
         .find("teardown::run_x86_exec_detach_gate();")
         .ok_or("missing direct x86 exec detach call")?;
+    let clone_admission_call = kernel_main
+        .find("teardown::run_x86_clone_admission_gate();")
+        .ok_or("missing direct x86 clone admission call")?;
     if !(retirement_call < progress_call
         && progress_call < cohort_call
         && cohort_call < exec_cohort_call
-        && exec_cohort_call < exec_detach_call)
+        && exec_cohort_call < exec_detach_call
+        && exec_detach_call < clone_admission_call)
         || !kernel_main.contains("The state-free fence check runs first")
         || !kernel_main.contains("The retire cohort follows")
-        || !kernel_main.contains("the exec cohort runs last because")
+        || !kernel_main.contains("the exec cohort runs last among page-table cohorts because")
+        || !kernel_main.contains("The clone admission gate follows immediately")
     {
         return Err("x86 teardown-gate ordering or rationale changed");
     }
@@ -6909,6 +6966,37 @@ fn validate_x86_direct_teardown_gates(
         || exec_detach_wrapper.contains("[TEST:process:exec_detach_oracle:PASS]")
     {
         return Err("exec detach PASS producer is no longer body-only");
+    }
+    let clone_body = function_body(teardown, "clone_admission_oracle_test");
+    let clone_wrapper = function_body(teardown, "run_x86_clone_admission_gate");
+    if call_offsets(
+        clone_wrapper,
+        &code_mask(clone_wrapper),
+        "clone_admission_oracle_test",
+    )
+    .len()
+        != 1
+        || !clone_wrapper.contains("assert!(result.is_pass()")
+        || clone_body
+            .matches("[TEST:process:clone_admission_oracle:PASS]")
+            .count()
+            != 1
+        || clone_wrapper.contains("[TEST:process:clone_admission_oracle:PASS]")
+    {
+        return Err("clone admission PASS producer is no longer body-only");
+    }
+    if harness
+        .matches("TEST:process:clone_admission_oracle:PASS")
+        .count()
+        != 2
+    {
+        return Err("x86 harness does not poll and count clone admission PASS");
+    }
+    let clone_count = harness
+        .find("grep -h -c '\\[TEST:process:clone_admission_oracle:PASS\\]'")
+        .ok_or("x86 harness lost clone admission exact PASS count")?;
+    if !harness[clone_count..].contains("-eq 1") {
+        return Err("x86 harness weakened clone admission exactly-once PASS count");
     }
     Ok(())
 }
@@ -7064,12 +7152,18 @@ fn validate_single_gate_producer_per_arch(main: &str, registry: &str) -> Result<
             "exec_detach_oracle_test",
             "teardown::run_x86_exec_detach_gate();",
         ),
+        (
+            "clone_admission_oracle_test",
+            "teardown::run_x86_clone_admission_gate();",
+        ),
     ] {
         let registration = format!(
             "func: crate::{}",
             if matches!(
                 function,
-                "fork_exit_defer_reclaim_pairing_test" | "exec_detach_oracle_test"
+                "fork_exit_defer_reclaim_pairing_test"
+                    | "exec_detach_oracle_test"
+                    | "clone_admission_oracle_test"
             ) {
                 format!("tracing::providers::teardown::{function}")
             } else {

@@ -63,12 +63,19 @@ pub fn sys_clone(
         None => return SyscallResult::Err(super::errno::ESRCH as u64),
     };
 
-    // Find the parent process
-    let (parent_pid, parent_cr3, parent_tg_id, parent_cwd, parent_fd_table) = {
-        let (pid, process) = match manager.find_process_by_thread_mut(thread_id) {
-            Some(p) => p,
-            None => return SyscallResult::Err(super::errno::ESRCH as u64),
-        };
+    // Find the parent process and admit the clone before copying any parent
+    // state out of the process-manager transaction.
+    let parent_pid = match manager.find_process_by_thread(thread_id) {
+        Some((pid, _)) => pid,
+        None => return SyscallResult::Err(super::errno::ESRCH as u64),
+    };
+    if !manager.admit_clone_into(parent_pid) {
+        return SyscallResult::Err(super::errno::EAGAIN as u64);
+    }
+    let (parent_cr3, parent_tg_id, parent_cwd, parent_fd_table) = {
+        let process = manager
+            .get_process(parent_pid)
+            .expect("admitted clone parent remains present under process-manager guard");
 
         // Get CR3 from page table or inherited_cr3
         let cr3 = if let Some(ref pt) = process.page_table {
@@ -76,20 +83,17 @@ pub fn sys_clone(
         } else if let Some(cr3) = process.inherited_cr3 {
             cr3
         } else {
-            log::error!("clone: parent process {} has no page table", pid.as_u64());
+            log::error!(
+                "clone: parent process {} has no page table",
+                parent_pid.as_u64()
+            );
             return SyscallResult::Err(super::errno::ENOMEM as u64);
         };
 
         // Thread group ID: inherit from parent or use parent's pid
-        let tg_id = process.thread_group_id.unwrap_or(pid.as_u64());
+        let tg_id = process.thread_group_id.unwrap_or(parent_pid.as_u64());
 
-        (
-            pid,
-            cr3,
-            tg_id,
-            process.cwd.clone(),
-            process.fd_table.clone(),
-        )
+        (cr3, tg_id, process.cwd.clone(), process.fd_table.clone())
     };
 
     // Allocate child process ID
@@ -163,7 +167,7 @@ pub fn sys_clone(
     let mut child_thread = Thread {
         id: child_thread_id,
         name: alloc::format!("clone-child-{}", child_thread_id),
-        state: crate::task::thread::ThreadState::Ready,
+        state: crate::task::thread::ThreadState::Blocked,
         context: child_context,
         stack_top: stack_top_addr,
         stack_bottom: stack_bottom_addr,
@@ -205,7 +209,6 @@ pub fn sys_clone(
         entry_point,
     );
     child_process.parent = Some(parent_pid);
-    child_process.state = crate::process::process::ProcessState::Ready;
     child_process.inherited_cr3 = Some(parent_cr3);
     child_process.thread_group_id = Some(parent_tg_id);
     child_process.cwd = parent_cwd;
@@ -231,10 +234,24 @@ pub fn sys_clone(
     // Write child TID to parent's tidptr (CLONE_PARENT_SETTID)
     // (handled by caller since we return the tid)
 
-    child_process.set_main_thread(child_thread);
+    child_process.attach_main_thread_unpublished(child_thread);
 
     // Add child to process manager
     manager.insert_process(child_pid, child_process);
+
+    // Publication is complete only after the row exists. Make both the row and
+    // its main thread runnable while the same process-manager guard is held.
+    {
+        let child = manager
+            .get_process_mut(child_pid)
+            .expect("clone child remains present immediately after insertion");
+        child.set_ready();
+        child
+            .main_thread
+            .as_mut()
+            .expect("clone child retains its attached main thread")
+            .state = crate::task::thread::ThreadState::Ready;
+    }
 
     // Add child process as parent's child
     if let Some(parent) = manager.get_process_mut(parent_pid) {

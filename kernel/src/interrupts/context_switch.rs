@@ -26,6 +26,8 @@ static FIRST_USERSPACE_ENTRY_ABORT_COUNT: AtomicU64 = AtomicU64::new(0);
 static FIRST_USERSPACE_ENTRY_ABORT_LOGGED: AtomicBool = AtomicBool::new(false);
 static USERSPACE_DISPATCH_NO_CR3_REFUSED: AtomicU64 = AtomicU64::new(0);
 static USERSPACE_DISPATCH_NO_CR3_LOGGED: AtomicBool = AtomicBool::new(false);
+static USERSPACE_DISPATCH_CREATING_REFUSED: AtomicU64 = AtomicU64::new(0);
+static USERSPACE_DISPATCH_CREATING_LOGGED: AtomicBool = AtomicBool::new(false);
 static DISPATCH_GUARD_UNAVAILABLE_STREAK: AtomicU64 = AtomicU64::new(0);
 static DISPATCH_GUARD_ESCALATION_LOGGED: AtomicBool = AtomicBool::new(false);
 const DISPATCH_GUARD_ESCALATION_THRESHOLD: u64 = 1024;
@@ -74,6 +76,34 @@ fn raw_serial_u64(mut value: u64) {
         raw_serial_char(digits[index]);
         index += 1;
     }
+}
+
+/// Third dispatch admission arm (tranche-2 P3). A row whose publication has not
+/// completed must never have CR3 armed for it. Cheap field read on a row the
+/// caller already holds; hot-path safe.
+#[inline]
+pub(crate) fn refuse_unpublished_dispatch(
+    process: &crate::process::process::Process,
+    thread_id: u64,
+    pid: u64,
+) -> bool {
+    if !process.is_unpublished() {
+        return false;
+    }
+    USERSPACE_DISPATCH_CREATING_REFUSED.fetch_add(1, Ordering::Relaxed);
+    if !USERSPACE_DISPATCH_CREATING_LOGGED.swap(true, Ordering::Relaxed) {
+        raw_serial_str("[PMGUARD] creating dispatch refused tid=");
+        raw_serial_u64(thread_id);
+        raw_serial_str(" pid=");
+        raw_serial_u64(pid);
+        raw_serial_str("\n");
+    }
+    true
+}
+
+#[cfg(feature = "boot_tests")]
+pub fn userspace_dispatch_creating_refused() -> u64 {
+    USERSPACE_DISPATCH_CREATING_REFUSED.load(Ordering::Relaxed)
 }
 
 #[inline(always)]
@@ -670,6 +700,15 @@ fn switch_to_thread(
         if let Some(mut manager_guard) = guard_option {
             if let Some(ref mut manager) = *manager_guard {
                 if let Some((pid, process)) = manager.find_process_by_thread_mut(thread_id) {
+                    if refuse_unpublished_dispatch(process, thread_id, pid.as_u64()) {
+                        crate::task::scheduler::set_need_resched();
+                        setup_idle_return(interrupt_frame);
+                        crate::task::scheduler::switch_to_idle();
+                        unsafe {
+                            crate::memory::process_memory::switch_to_kernel_page_table();
+                        }
+                        return;
+                    }
                     let process_cr3 = match process.cr3_value() {
                         Some(cr3_value) => cr3_value,
                         None => {
@@ -1136,6 +1175,12 @@ fn restore_userspace_thread_context(
         if let Some(ref mut manager) = *manager_guard {
             if let Some((pid, process)) = manager.find_process_by_thread_mut(thread_id) {
                 // Get CR3 before borrowing main_thread mutably
+                if refuse_unpublished_dispatch(process, thread_id, pid.as_u64()) {
+                    crate::task::scheduler::set_need_resched();
+                    setup_idle_return(interrupt_frame);
+                    crate::task::scheduler::switch_to_idle();
+                    return;
+                }
                 let process_cr3 = process.cr3_value();
 
                 if let Some(ref mut thread) = process.main_thread {

@@ -1076,6 +1076,20 @@ impl ProcessManager {
         ProcessId::new(self.next_pid.fetch_add(1, Ordering::SeqCst))
     }
 
+    /// Clone admission (tranche-2 P3 / DESIGN AC-7). The parent row's lifecycle is
+    /// examined inside the same process-manager transaction that publishes the
+    /// child, so no snapshot of it is ever carried across a guard drop. A missing
+    /// parent refuses for the same reason a dying one does.
+    pub fn admit_clone_into(&self, parent_pid: ProcessId) -> bool {
+        let admitted = self
+            .processes
+            .get(&parent_pid)
+            .map(Process::admits_clone)
+            .unwrap_or(false);
+        crate::tracing::providers::teardown::record_clone_admission(admitted);
+        admitted
+    }
+
     /// Insert a fully-constructed process into the manager
     pub fn insert_process(&mut self, pid: ProcessId, process: Process) {
         self.processes.insert(pid, process);
