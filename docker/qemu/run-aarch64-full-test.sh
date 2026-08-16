@@ -246,6 +246,53 @@ if [ -z "$FAIL_REASON" ]; then
     fi
 fi
 
+# --- Phase 1c: The exec-detach runtime proof must actually run (up to 30s) ---
+# clonevm_exec_test is launched by /sbin/init immediately after the exec smoke.
+# The kernel's ext2 test-binary loader is #[cfg(feature = "testing")] and this
+# gate builds boot_tests, so init is the only launch path in this profile; before
+# it existed the program was built and launched nowhere, and its absence was
+# invisible because no gate pinned its markers. Pin them: a silent skip (the
+# program missing from the image, or init not launching it) is now a hard failure.
+if [ -z "$FAIL_REASON" ]; then
+    echo ""
+    echo "Phase 1c: Running clonevm_exec_test (exec detach proof)..."
+    CLONEVM_OK=false
+    for i in $(seq 1 15); do
+        if grep -qF "CLONEVM_EXEC_TEST: ERROR" "$OUTPUT_DIR/serial.txt" 2>/dev/null; then
+            CLONEVM_ERROR=$(grep -F "CLONEVM_EXEC_TEST: ERROR" "$OUTPUT_DIR/serial.txt" | tail -1)
+            FAIL_REASON="Phase 1c: clonevm_exec_test reported an error ($CLONEVM_ERROR)"
+            break
+        fi
+        if FATAL=$(check_fatal); then
+            FAIL_REASON="Phase 1c: clonevm_exec_test never completed ($FATAL)"
+            break
+        fi
+        if grep -qF "CLONEVM_EXEC_TEST: PASS" "$OUTPUT_DIR/serial.txt" 2>/dev/null; then
+            CLONEVM_OK=true
+            break
+        fi
+        if ! kill -0 $QEMU_PID 2>/dev/null; then
+            FAIL_REASON="Phase 1c: clonevm_exec_test never completed (QEMU exited)"
+            break
+        fi
+        sleep 2
+    done
+
+    if ! $CLONEVM_OK && [ -z "$FAIL_REASON" ]; then
+        FAIL_REASON="Phase 1c: clonevm_exec_test never completed (30s timeout)"
+    fi
+
+    if $CLONEVM_OK && [ -z "$FAIL_REASON" ]; then
+        # The aarch64-only live-sibling arm must fire; on this arch a SKIP marker
+        # would mean the guard probe was compiled for the wrong target.
+        if ! grep -qF "CLONEVM_EXEC_TEST: live sibling refused exec" "$OUTPUT_DIR/serial.txt" 2>/dev/null; then
+            FAIL_REASON="Phase 1c: live-sibling refusal probe did not run"
+        else
+            echo "Phase 1c: PASS"
+        fi
+    fi
+fi
+
 # --- Phase 2: Verify services (10s) ---
 if [ -z "$FAIL_REASON" ] && ! $BOOT_TESTS_ONLY; then
     echo ""

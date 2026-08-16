@@ -20,6 +20,8 @@ fn main() {
     #[cfg(target_arch = "aarch64")]
     run_exec_smoke();
     #[cfg(target_arch = "aarch64")]
+    run_clonevm_exec_test();
+    #[cfg(target_arch = "aarch64")]
     run_wait_stress_if_enabled();
     #[cfg(target_arch = "aarch64")]
     run_trace_diag_probe_if_enabled();
@@ -67,6 +69,32 @@ fn run_exec_smoke() {
         }
         Err(error) => {
             print!("[EXEC_SMOKE:SPAWN_FAILED {}]\n", error);
+        }
+    }
+}
+
+/// Run the CLONE_VM exec oracle from init because the kernel ext2 test-binary loader is
+/// `testing`-only while the aarch64 gates build `boot_tests`. Init is therefore the only
+/// launch path present in the gate profile, which pins the program's own
+/// `CLONEVM_EXEC_TEST: PASS` marker.
+#[cfg(target_arch = "aarch64")]
+fn run_clonevm_exec_test() {
+    match spawn(b"/usr/local/test/bin/clonevm_exec_test\0") {
+        Ok(child_pid) => {
+            let mut status = 0i32;
+            let _ = waitpid(child_pid.raw() as i32, &mut status as *mut i32, 0);
+            let exit_code = (status >> 8) & 0xFF;
+            print!(
+                "[init] clonevm_exec_test exited pid={} code={}\n",
+                child_pid.raw(),
+                exit_code
+            );
+        }
+        Err(error) => {
+            print!(
+                "[init] Warning: failed to start clonevm_exec_test: {}\n",
+                error
+            );
         }
     }
 }

@@ -1190,6 +1190,17 @@ rule 5 exists to prevent. (This is also artifact §5.2's own reason for keeping 
 **Files.** `kernel/src/process/manager.rs`, `kernel/src/syscall/clone.rs`,
 `kernel/src/interrupts/context_switch.rs` (dispatch gate),
 `userspace/programs/src/clonevm_exec_test.rs`, plus `tests/context_restore_structure.rs`.
+*(Amended when P3 shipped, because the list as ratified could not produce the evidence the ACs
+demand. Added: `kernel/src/tracing/providers/teardown.rs` and `kernel/src/test_framework/registry.rs`
+for the two arch-neutral oracles and the aarch64 real-dispatch refusal oracle; `kernel/src/main.rs`
+and `userspace/programs/src/init.rs` for the x86 and aarch64 launch of `clonevm_exec_test`, which was
+built but launched nowhere — the aarch64 half has to live in `init` because the kernel's ext2
+test-binary loader is `#[cfg(feature = "testing")]` and every aarch64 gate builds `boot_tests`;
+`kernel/src/task/scheduler.rs` and `kernel/src/process/process.rs` for the x86 requeue of a refused
+dispatch and the boot-test publication fault injector; and
+`docker/qemu/run-x86-boot-tests.sh`, `docker/qemu/run-boot-parallel.sh`,
+`docker/qemu/run-aarch64-full-test.sh` and `tests/teardown_structure.rs` for the marker pins and the
+`EXPECTED_USERSPACE_EXITS` re-pins that standard-gate item 2 requires in the same PR.)*
 **Named split seam (rule 5, not a size rule): {exec detach} / {clone-exec admission + `Creating`
 dispatch arm}** — **named, NOT fired: this phase is ONE PR** (ledger row 4 = artifact §5.2's `T2-b`,
 whose revert story §5.2 writes out as one: *"delete the two field assignments **+ the admission
