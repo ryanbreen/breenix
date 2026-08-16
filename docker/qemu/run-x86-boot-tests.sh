@@ -19,13 +19,21 @@ COUNT="${1:-1}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BREENIX_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 FRAME_CUSTODY_PATTERN='^\[FRAME_CUSTODY_COUNTERS:x86:double=1:stale=1:never=1:untracked=1:duplicate=3:contended=[1-9][0-9]*\]$'
-PT_CUSTODY_LITERAL='[PT_CUSTODY_COUNTERS:x86:recorded=11:no_proof=0:no_arch=0:terminated=1:undecided=1:retired=1:returned=10:lost=0:requeued=0]'
+# The x86 failed-exec release oracle records one three-table hierarchy and retires it:
+# recorded rises by the hierarchy, returned by the hierarchy plus its root, and undecided deliberately does not move.
+PT_CUSTODY_LITERAL='[PT_CUSTODY_COUNTERS:x86:recorded=14:no_proof=0:no_arch=0:terminated=1:undecided=1:retired=2:returned=14:lost=0:requeued=0]'
 PT_COHORT_LITERAL='[PT_RETIRE_COHORT:x86:children=64:retired=65:returned=642:recorded=577:lost=0:no_arch=0:undecided=0:mid_retire=0:balance=0]'
 PT_EXEC_COHORT_LITERAL='[PT_EXEC_COHORT:x86:children=16:superseded=3:roots=64:returned=640:recorded=576:lost=0:leaf_recorded=192:leaf_released=192:leaf_returned=192:custody_refused=0:decref_unregistered=0:undecided=0:mid_retire=0:no_arch=0:balance=0]' # The returned and recorded table-frame fields are pinned from the measured run.
+# Absolute frame counts are boot-state dependent, so pin every delta exactly,
+# including the three-table recorded_pre hierarchy cost and computed tables_returned=4;
+# the in-kernel oracle asserts used_after == used_before, and a skipped/cfg'd-out block fails this gate.
+EXEC_FAILED_RELEASE_ORACLE_PATTERN='^\[EXEC_FAILED_RELEASE_ORACLE:x86:used_before=[0-9]+:used_after=[0-9]+:recorded_pre=3:leaf_recorded=1:leaf_released=1:leaf_returned=1:tables_returned=4:roots_retired=1:undecided=0:live_refused=0\]$'
+EXEC_FAILED_RELEASE_PROD_LITERAL='[EXEC_FAILED_RELEASE_PROD:x86:plain_err=true:plain_kept=true:argv_err=true:argv_kept=true:name_kept=true:balance=0:undecided=0:mid_retire=0:lost=0:custody_refused=0:decref_unregistered=0:double=0:stale=0:untracked=0:root_slot_refused=0]'
 # Ten launched test programs, 64 retire-cohort children, five loopback_wake_test
 # processes (parent, reader, peer, load, watchdog), and 16 exec-cohort children:
 # 10 + 64 + 5 + 16 = 95. This is a floor, checked >= by
-# scripts/x86-gate-verdict.sh; re-pin consciously.
+# scripts/x86-gate-verdict.sh; the production-path arm execs the cohort's
+# already-inserted parent and fails without launching a new userspace process; re-pin consciously.
 readonly EXPECTED_USERSPACE_EXITS=95
 
 cd "$BREENIX_ROOT"
@@ -89,6 +97,8 @@ for i in $(seq 1 "$COUNT"); do
                 "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
             && grep -qF -x "$PT_CUSTODY_LITERAL" \
                 "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
+            && grep -qE "$EXEC_FAILED_RELEASE_ORACLE_PATTERN" \
+                "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
             && grep -q '\[TEST:process:retirement_fence_gate:PASS\]' \
                 "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
             && grep -q '\[TEST:process:reclaim_progress_gate:PASS\]' \
@@ -100,6 +110,8 @@ for i in $(seq 1 "$COUNT"); do
             && grep -q '\[TEST:process:x86_exec_cohort:PASS\]' \
                 "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
             && grep -qF -x "$PT_EXEC_COHORT_LITERAL" \
+                "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
+            && grep -qF -x "$EXEC_FAILED_RELEASE_PROD_LITERAL" \
                 "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
             && grep -q '\[TEST:userspace:loopback_recv_wake:PASS\]' \
                 "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
@@ -153,9 +165,13 @@ for i in $(seq 1 "$COUNT"); do
         "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 1
     test "$(grep -h -F -x -c "$PT_CUSTODY_LITERAL" \
         "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 1
+    test "$(grep -h -E -c "$EXEC_FAILED_RELEASE_ORACLE_PATTERN" \
+        "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 1
     test "$(grep -h -F -x -c "$PT_COHORT_LITERAL" \
         "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 1
     test "$(grep -h -F -x -c "$PT_EXEC_COHORT_LITERAL" \
+        "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 1
+    test "$(grep -h -F -x -c "$EXEC_FAILED_RELEASE_PROD_LITERAL" \
         "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 1
     EXPECTED_EXITS="$EXPECTED_USERSPACE_EXITS" \
         "$BREENIX_ROOT/scripts/x86-gate-verdict.sh" "$OUTPUT_DIR"/serial_*.txt
@@ -165,6 +181,7 @@ for i in $(seq 1 "$COUNT"); do
     echo "$PT_CUSTODY_LITERAL"
     echo "$PT_COHORT_LITERAL"
     echo "$PT_EXEC_COHORT_LITERAL"
+    echo "$EXEC_FAILED_RELEASE_PROD_LITERAL"
     if grep -qE '\[BOOT_TESTS:FAIL|KERNEL PANIC|panic!' \
         "$OUTPUT_DIR"/serial_*.txt; then
         exit 1

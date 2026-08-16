@@ -19,6 +19,9 @@ pub const ELFCLASS64: u8 = 2;
 /// ELF data encoding (little-endian)
 pub const ELFDATA2LSB: u8 = 1;
 
+/// ELF machine type (x86-64)
+pub const EM_X86_64: u16 = 62;
+
 /// ELF file header
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]

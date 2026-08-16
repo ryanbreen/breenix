@@ -1967,8 +1967,8 @@ const PROCESS_PAGE_TABLE_ABANDON_SITES: &[(&str, &str, usize)] = &[
 #[rustfmt::skip]
 const PROCESS_PAGE_TABLE_RETIRE_SITES: &[(&str, &str, usize)] = &[
     ("kernel/src/memory/frame_allocator_tests.rs", "fn retire_with_free_list_contended", 1),
-    ("kernel/src/memory/process_memory.rs", "#[cfg(target_arch=aarch64)] impl Drop for UnpublishedPageTable::fn drop", 1),
     ("kernel/src/memory/process_memory.rs", "#[cfg(feature=boot_tests)] fn page_table_custody_disposition_gate_test", 1),
+    ("kernel/src/memory/process_memory.rs", "impl Drop for UnpublishedPageTable::fn drop", 1),
     ("kernel/src/memory/process_memory.rs", "impl ProcessPageTable::fn cleanup_for_exec", 1),
     ("kernel/src/task/process_task.rs", "#[cfg(feature=boot_tests)] fn reclaim_progress_gate_test", 4),
     ("kernel/src/task/process_task.rs", "impl PendingProcessReclaim::fn reclaim_bounded", 1),
@@ -1985,7 +1985,7 @@ const FRAME_LEDGER_INIT_CALLS: &[(&str, &str, usize)] = &[
 #[rustfmt::skip]
 const PROCESS_PAGE_TABLE_CONSTRUCTORS: &[(&str, &str, usize)] = &[
     ("kernel/src/arch_impl/aarch64/syscall_entry.rs", "fn sys_fork_aarch64", 1),
-    ("kernel/src/memory/process_memory.rs", "#[cfg(feature=boot_tests)] fn page_table_custody_disposition_gate_test", 5),
+    ("kernel/src/memory/process_memory.rs", "#[cfg(feature=boot_tests)] fn page_table_custody_disposition_gate_test", 6),
     ("kernel/src/process/manager.rs", "impl ProcessManager::#[cfg(target_arch=aarch64)] fn create_process", 1),
     ("kernel/src/process/manager.rs", "impl ProcessManager::#[cfg(target_arch=aarch64)] fn create_process_with_argv", 1),
     ("kernel/src/process/manager.rs", "impl ProcessManager::#[cfg(target_arch=aarch64)] fn exec_process", 1),
@@ -2737,9 +2737,11 @@ fn validate_no_vacuous_test_conditions(sources: &[(String, String)]) -> Result<(
 /// able to pre-empt it (review-sweep-r4 finding 4).
 fn validate_x86_frame_custody_harness(script: &str) -> Result<(), ()> {
     const FRAME_VECTOR: &str = "FRAME_CUSTODY_PATTERN='^\\[FRAME_CUSTODY_COUNTERS:x86:double=1:stale=1:never=1:untracked=1:duplicate=3:contended=[1-9][0-9]*\\]$'";
-    const PT_CUSTODY_VECTOR: &str = "PT_CUSTODY_LITERAL='[PT_CUSTODY_COUNTERS:x86:recorded=11:no_proof=0:no_arch=0:terminated=1:undecided=1:retired=1:returned=10:lost=0:requeued=0]'";
+    const PT_CUSTODY_VECTOR: &str = "PT_CUSTODY_LITERAL='[PT_CUSTODY_COUNTERS:x86:recorded=14:no_proof=0:no_arch=0:terminated=1:undecided=1:retired=2:returned=14:lost=0:requeued=0]'";
     const PT_COHORT_VECTOR: &str = "PT_COHORT_LITERAL='[PT_RETIRE_COHORT:x86:children=64:retired=65:returned=642:recorded=577:lost=0:no_arch=0:undecided=0:mid_retire=0:balance=0]'";
     const PT_EXEC_COHORT_VECTOR: &str = "PT_EXEC_COHORT_LITERAL='[PT_EXEC_COHORT:x86:children=16:superseded=3:roots=64:returned=640:recorded=576:lost=0:leaf_recorded=192:leaf_released=192:leaf_returned=192:custody_refused=0:decref_unregistered=0:undecided=0:mid_retire=0:no_arch=0:balance=0]' # The returned and recorded table-frame fields are pinned from the measured run.";
+    const EXEC_FAILED_RELEASE_ORACLE_VECTOR: &str = "EXEC_FAILED_RELEASE_ORACLE_PATTERN='^\\[EXEC_FAILED_RELEASE_ORACLE:x86:used_before=[0-9]+:used_after=[0-9]+:recorded_pre=3:leaf_recorded=1:leaf_released=1:leaf_returned=1:tables_returned=4:roots_retired=1:undecided=0:live_refused=0\\]$'";
+    const EXEC_FAILED_RELEASE_PROD_VECTOR: &str = "EXEC_FAILED_RELEASE_PROD_LITERAL='[EXEC_FAILED_RELEASE_PROD:x86:plain_err=true:plain_kept=true:argv_err=true:argv_kept=true:name_kept=true:balance=0:undecided=0:mid_retire=0:lost=0:custody_refused=0:decref_unregistered=0:double=0:stale=0:untracked=0:root_slot_refused=0]'";
     let exact_marker_count = |marker: &str| {
         let needle = format!("grep -h -c '\\[TEST:process:{marker}:PASS\\]'");
         script.find(&needle).is_some_and(|start| {
@@ -2781,6 +2783,8 @@ fn validate_x86_frame_custody_harness(script: &str) -> Result<(), ()> {
         && script.contains(PT_CUSTODY_VECTOR)
         && script.contains(PT_COHORT_VECTOR)
         && script.contains(PT_EXEC_COHORT_VECTOR)
+        && script.contains(EXEC_FAILED_RELEASE_ORACLE_VECTOR)
+        && script.contains(EXEC_FAILED_RELEASE_PROD_VECTOR)
         && script.matches("frame_custody_refusal_gate:PASS").count() == 2
         && script.matches("page_table_custody_disposition_gate:PASS").count() == 2
         && script.matches("x86_retire_cohort:PASS").count() == 2
@@ -2793,10 +2797,14 @@ fn validate_x86_frame_custody_harness(script: &str) -> Result<(), ()> {
         && script.contains("grep -qF -x \"$PT_CUSTODY_LITERAL\"")
         && script.contains("grep -qF -x \"$PT_COHORT_LITERAL\"")
         && script.contains("grep -qF -x \"$PT_EXEC_COHORT_LITERAL\"")
+        && script.contains("grep -qE \"$EXEC_FAILED_RELEASE_ORACLE_PATTERN\"")
+        && script.contains("grep -qF -x \"$EXEC_FAILED_RELEASE_PROD_LITERAL\"")
         && script.contains("grep -h -E -c \"$FRAME_CUSTODY_PATTERN\"")
         && script.contains("grep -h -F -x -c \"$PT_CUSTODY_LITERAL\"")
         && script.contains("grep -h -F -x -c \"$PT_COHORT_LITERAL\"")
         && script.contains("grep -h -F -x -c \"$PT_EXEC_COHORT_LITERAL\"")
+        && script.contains("grep -h -E -c \"$EXEC_FAILED_RELEASE_ORACLE_PATTERN\"")
+        && script.contains("grep -h -F -x -c \"$EXEC_FAILED_RELEASE_PROD_LITERAL\"")
         && script.contains("-eq 1")
         && script.contains("x86 frame-custody gate run")
         && script.matches("BOOT_TESTS:FAIL|KERNEL PANIC|panic!").count() == 2)
@@ -3371,18 +3379,21 @@ fn validate_leaf_custody(sources: &[(String, String)]) -> Result<(), ()> {
         return Err(());
     }
     let exec_bodies = module_function_bodies(manager);
-    let mut arm_execs = Vec::new();
+    let mut execs = Vec::new();
     for name in ["exec_process", "exec_process_with_argv"] {
         for body in exec_bodies.get(name).into_iter().flatten() {
-            if body.contains("[ARM64]") {
-                arm_execs.push(*body);
-            }
+            execs.push(*body);
         }
     }
-    if arm_execs.len() != 2 {
+    let arm_exec_count = execs.iter().filter(|body| body.contains("[ARM64]")).count();
+    let x86_exec_count = execs
+        .iter()
+        .filter(|body| !body.contains("[ARM64]"))
+        .count();
+    if execs.len() != 4 || arm_exec_count != 2 || x86_exec_count != 2 {
         return Err(());
     }
-    for body in arm_execs {
+    for body in execs {
         let guard = body.find("UnpublishedPageTable::new(").ok_or(())?;
         let load = body.find("load_elf_into_page_table(").ok_or(())?;
         let supersede = body.find("process.page_table.take()").ok_or(())?;
@@ -3407,6 +3418,8 @@ fn validate_leaf_custody(sources: &[(String, String)]) -> Result<(), ()> {
         "PT_TABLE_FRAMES_RETURNED.aggregate() != tables_returned_before + 4",
         "PT_ROOTS_RETIRED.aggregate() != roots_retired_before + 1",
         "[EXEC_FAILED_RELEASE_ORACLE:aarch64:",
+        "x86_corrupt_executable_fixture()",
+        "[EXEC_FAILED_RELEASE_ORACLE:x86:",
     ] {
         if !gate.contains(required) {
             return Err(());
@@ -3699,10 +3712,21 @@ fn validate_process_page_table_runtime_oracle(sources: &[(String, String)]) -> R
         || !gate.contains("!= returned_before + recorded as u64 + 1")
         || !gate.contains("PT_RETIRE_FRAMES_LOST.aggregate() != lost_before")
         || !gate.contains("PT_RETIRE_BUDGET_REQUEUED.aggregate() != requeued_before")
+        // The aarch64 F4 stays fixed at +4; x86 intentionally computes recorded custody plus its root.
+        || !gate.contains("x86_corrupt_executable_fixture()")
+        || !gate.contains("[EXEC_FAILED_RELEASE_ORACLE:x86:")
+        || !gate.contains("drop(unpublished);")
+        || !gate.contains("F4/x86: corrupt executable did not fail after its first mapping")
+        || !gate.contains("F4/x86: corrupt executable failed before it mapped a leaf")
+        || !gate.contains("!= tables_returned_before + recorded_pre + 1")
+        || !gate.contains("F4/x86: failed exec did not release unpublished custody exactly")
+        // The x86 table-frame expectation stays computed from recorded custody; a hard-coded hierarchy cost is a regression.
+        || gate.contains("recorded_pre + 4")
+        || gate.contains("recorded_pre = 3")
         || gate.contains("no_arch.abandon(AbandonReason::NoArchPipeline);")
         || gate.contains("after_no_arch[2] != after_drop[2] + 1")
         || !gate.contains("PT_TABLE_FRAMES_RETURNED.aggregate()")
-        || gate.matches("free_list_len_for_gate()").count() != 9
+        || gate.matches("free_list_len_for_gate()").count() != 11
         || gate.contains("&& false")
         || gate.contains("|| true")
     {
@@ -3794,7 +3818,7 @@ fn validate_process_page_table_runtime_oracle(sources: &[(String, String)]) -> R
     (harness.contains("page_table_custody_disposition_gate:PASS")
         && harness.contains("x86_retire_cohort:PASS")
         && harness.contains("x86_exec_cohort:PASS")
-        && harness.contains("[PT_CUSTODY_COUNTERS:x86:recorded=11:no_proof=0:no_arch=0:terminated=1:undecided=1:retired=1:returned=10:lost=0:requeued=0]")
+        && harness.contains("[PT_CUSTODY_COUNTERS:x86:recorded=14:no_proof=0:no_arch=0:terminated=1:undecided=1:retired=2:returned=14:lost=0:requeued=0]")
         && harness.contains("[PT_RETIRE_COHORT:x86:children=64:retired=65:returned=642:recorded=577:lost=0:no_arch=0:undecided=0:mid_retire=0:balance=0]")
         && harness.contains("[PT_EXEC_COHORT:x86:children=16:superseded=3:roots=64:returned=640:recorded=576:lost=0:leaf_recorded=192:leaf_released=192:leaf_returned=192:custody_refused=0:decref_unregistered=0:undecided=0:mid_retire=0:no_arch=0:balance=0]")
         && harness
@@ -5074,6 +5098,19 @@ fn aarch64_exit_kick_waits_are_progress_bounded() {
 fn deliberately_broken_variants_fail_the_ratchet() {
     let sources = rust_sources_below("kernel/src");
 
+    fn replace_nth(haystack: &str, needle: &str, replacement: &str, n: usize) -> String {
+        let mut start = 0;
+        for _ in 0..n {
+            let at = haystack[start..].find(needle).expect("occurrence") + start;
+            start = at + needle.len();
+        }
+        let at = haystack[start..].find(needle).expect("occurrence") + start;
+        let mut out = String::from(&haystack[..at]);
+        out.push_str(replacement);
+        out.push_str(&haystack[at + needle.len()..]);
+        out
+    }
+
     let broken_exit = with_synthetic_source(
         &sources,
         "kernel/src/synthetic_exit.rs",
@@ -5570,17 +5607,67 @@ fn deliberately_broken_variants_fail_the_ratchet() {
         format!("{}\nfn synthetic_leaf_bypass(frame: PhysFrame) {{ frame_incref(frame); }}", source(&sources, "kernel/src/process/fork.rs")),
     );
     assert!(validate_leaf_custody(&restored_fork_incref).is_err());
-    let early_exec_supersede = source(&sources, "kernel/src/process/manager.rs").replacen(
-        "crate::memory::process_memory::UnpublishedPageTable::new(",
-        "crate::memory::process_memory::ProcessPageTable::new_unchecked(",
+    // File order: n=0 is x86 exec_process, n=1 is x86 exec_process_with_argv,
+    // n=2 is aarch64 exec_process_with_argv, and n=3 is aarch64 exec_process.
+    for n in 0..4 {
+        let missing_exec_carrier = replace_nth(
+            process_manager,
+            "crate::memory::process_memory::UnpublishedPageTable::new(",
+            "crate::memory::process_memory::ProcessPageTable::new_unchecked(",
+            n,
+        );
+        let missing_exec_carrier = with_replaced_source(
+            &sources,
+            "kernel/src/process/manager.rs",
+            missing_exec_carrier,
+        );
+        assert!(validate_leaf_custody(&missing_exec_carrier).is_err());
+    }
+
+    // Restoring the pre-fix early take leaves a live x86 process without an
+    // address space when either exec body fails after page-table construction.
+    for n in 0..=1 {
+        let early_exec_take = replace_nth(
+            process_manager,
+            "let mut new_page_table = crate::memory::process_memory::UnpublishedPageTable::new(",
+            "let _early_take = process.page_table.take();\n        let mut new_page_table = crate::memory::process_memory::UnpublishedPageTable::new(",
+            n,
+        );
+        let early_exec_take =
+            with_replaced_source(&sources, "kernel/src/process/manager.rs", early_exec_take);
+        assert!(validate_leaf_custody(&early_exec_take).is_err());
+    }
+
+    let disabled_x86_release_oracle = process_memory.replacen(
+        "[EXEC_FAILED_RELEASE_ORACLE:x86:",
+        "[EXEC_FAILED_RELEASE_ORACLE:x86_disabled:",
         1,
     );
-    let early_exec_supersede = with_replaced_source(
+    let disabled_x86_release_oracle = with_replaced_source(
         &sources,
-        "kernel/src/process/manager.rs",
-        early_exec_supersede,
+        "kernel/src/memory/process_memory.rs",
+        disabled_x86_release_oracle,
     );
-    assert!(validate_leaf_custody(&early_exec_supersede).is_err());
+    assert!(validate_leaf_custody(&disabled_x86_release_oracle).is_err());
+    assert!(validate_process_page_table_runtime_oracle(&disabled_x86_release_oracle).is_err());
+
+    // The x86 headline return equality and leaf anti-vacuity guard are both
+    // load-bearing rather than documentary checks.
+    for (needle, replacement) in [
+        (
+            "!= tables_returned_before + recorded_pre + 1",
+            "!= tables_returned_before + recorded_pre + 1 && false",
+        ),
+        (
+            "!= leaf_recorded_before + 1 {",
+            "!= leaf_recorded_before + 1 && false {",
+        ),
+    ] {
+        let weakened = process_memory.replacen(needle, replacement, 1);
+        let weakened =
+            with_replaced_source(&sources, "kernel/src/memory/process_memory.rs", weakened);
+        assert!(validate_process_page_table_runtime_oracle(&weakened).is_err());
+    }
 
     // O2/G-H: weaken either exact counter assertion and the named validator fails.
     for (needle, replacement) in [
@@ -6435,6 +6522,26 @@ fn deliberately_broken_variants_fail_the_ratchet() {
     assert!(validate_no_vacuous_test_conditions(&vacuous_false_and).is_err());
 
     let harness = repo_text("docker/qemu/run-x86-boot-tests.sh");
+    let reverted_custody_pin = harness.replacen(
+        "PT_CUSTODY_LITERAL='[PT_CUSTODY_COUNTERS:x86:recorded=14:no_proof=0:no_arch=0:terminated=1:undecided=1:retired=2:returned=14:lost=0:requeued=0]'",
+        "PT_CUSTODY_LITERAL='[PT_CUSTODY_COUNTERS:x86:recorded=11:no_proof=0:no_arch=0:terminated=1:undecided=1:retired=1:returned=10:lost=0:requeued=0]'",
+        1,
+    );
+    assert_ne!(
+        reverted_custody_pin, harness,
+        "custody pin mutation must apply"
+    );
+    assert!(validate_x86_frame_custody_harness(&reverted_custody_pin).is_err());
+    let missing_prod_poll = harness.replacen(
+        "            && grep -qF -x \"$EXEC_FAILED_RELEASE_PROD_LITERAL\" \\\n                \"$OUTPUT_DIR\"/serial_*.txt 2>/dev/null \\\n",
+        "",
+        1,
+    );
+    assert_ne!(
+        missing_prod_poll, harness,
+        "production poll mutation must apply"
+    );
+    assert!(validate_x86_frame_custody_harness(&missing_prod_poll).is_err());
     assert!(validate_x86_frame_custody_harness(&harness.replace("-eq 1", "-ge 0")).is_err());
     assert!(validate_x86_frame_custody_harness(
         &harness.replace("\n    $passed\n", "\n    $passed || true\n")
@@ -6450,7 +6557,7 @@ fn deliberately_broken_variants_fail_the_ratchet() {
     .is_err());
     assert!(validate_x86_frame_custody_harness(
         &harness.replace(
-            "recorded=11:no_proof=0:no_arch=0:terminated=1:undecided=1:retired=1:returned=10:lost=0:requeued=0",
+            "recorded=14:no_proof=0:no_arch=0:terminated=1:undecided=1:retired=2:returned=14:lost=0:requeued=0",
             "recorded=3:no_proof=0:no_arch=1:terminated=1:undecided=1",
         )
     )

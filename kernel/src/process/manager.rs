@@ -2443,27 +2443,25 @@ impl ProcessManager {
             log::info!("exec_process: Executing on current process - special handling required");
         }
 
-        // Get the existing process
-        let process = self.processes.get_mut(&pid).ok_or("Process not found")?;
-
-        // Drain any pending old page tables from previous exec() calls.
-        // By this point, CR3 has definitely switched away from any old tables.
-        process.drain_old_page_tables();
-
         // For now, assume non-current processes are not actively running
-        // This is a simplification - in a real OS we'd check the scheduler state
         let is_scheduled = false;
 
-        // Get the main thread (we need to preserve its ID)
-        let main_thread = process
-            .main_thread
-            .as_ref()
-            .ok_or("Process has no main thread")?;
-        let thread_id = main_thread.id;
-        let _old_stack_top = main_thread.stack_top;
-
-        // Store old page table for proper cleanup
-        let old_page_table = process.page_table.take();
+        // Get thread ID before dropping the mutable borrow (needed for later updates).
+        // NOTE: We deliberately do NOT take the old page table here. Taking it early caused
+        // a use-after-free on exec failure: if any subsequent operation fails, the Err return
+        // would drop the old Box<ProcessPageTable>, freeing physical memory while CR3 still
+        // points to it. The old page table is taken later, after all fallible ops succeed.
+        let thread_id = {
+            let process = self.processes.get_mut(&pid).ok_or("Process not found")?;
+            // Drain any pending old page tables from previous exec() calls.
+            // By this point, CR3 has definitely switched away from any old tables.
+            process.drain_old_page_tables();
+            let main_thread = process
+                .main_thread
+                .as_ref()
+                .ok_or("Process has no main thread")?;
+            main_thread.id
+        };
 
         log::info!(
             "exec_process: Preserving thread ID {} for process {}",
@@ -2479,9 +2477,10 @@ impl ProcessManager {
 
         // Create a new page table for the new program
         log::info!("exec_process: Creating new page table...");
-        let mut new_page_table = Box::new(
+        let mut new_page_table = crate::memory::process_memory::UnpublishedPageTable::new(
             crate::memory::process_memory::ProcessPageTable::new()
                 .map_err(|_| "Failed to create new page table for exec")?,
+            pid.as_u64(),
         );
         log::info!("exec_process: New page table created successfully");
 
@@ -2574,6 +2573,14 @@ impl ProcessManager {
         )
         .map_err(|_| "Failed to create stack object")?;
 
+        // Re-borrow the process for the remaining updates.
+        // All fallible operations have succeeded — now it's safe to take the old page table.
+        let process = self
+            .processes
+            .get_mut(&pid)
+            .ok_or("Process not found during update")?;
+        let old_page_table = process.page_table.take();
+
         // Use our manually calculated stack top
         let new_stack_top = stack_top;
 
@@ -2613,7 +2620,7 @@ impl ProcessManager {
         );
 
         // Replace the page table with the new one containing the loaded program
-        process.page_table = Some(new_page_table);
+        process.page_table = Some(new_page_table.publish());
 
         // Replace the stack
         process.stack = Some(Box::new(new_stack));
@@ -2807,9 +2814,10 @@ impl ProcessManager {
 
         // Create a new page table for the new program
         log::info!("exec_process_with_argv: Creating new page table...");
-        let mut new_page_table = Box::new(
+        let mut new_page_table = crate::memory::process_memory::UnpublishedPageTable::new(
             crate::memory::process_memory::ProcessPageTable::new()
                 .map_err(|_| "Failed to create new page table for exec")?,
+            pid.as_u64(),
         );
 
         // Clear any user mappings that might have been copied
@@ -2936,7 +2944,7 @@ impl ProcessManager {
         process.fd_table.close_cloexec();
 
         // Replace the page table with the new one
-        process.page_table = Some(new_page_table);
+        process.page_table = Some(new_page_table.publish());
         process.stack = Some(Box::new(new_stack));
         process.user_stack_top = USER_STACK_TOP;
         process.user_stack_bottom = USER_STACK_TOP - USER_STACK_SIZE as u64;
