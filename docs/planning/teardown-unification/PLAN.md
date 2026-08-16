@@ -376,8 +376,14 @@ not a prediction about arguments not yet made. The PR that splits says so in its
      included), so a vanished, crashed or `exit(1)`-ing test program is a red gate by construction
      (PR #565; proven red three ways — injected `exit(1)`, injected segfault, vanished process).
    - **x86_64 custody boot-tests:** `docker/qemu/run-x86-boot-tests.sh` additionally pins the
-     frame/page-table custody counter lines (`FRAME_CUSTODY_COUNTERS`, `PT_CUSTODY_COUNTERS`,
-     `PT_RETIRE_COHORT`, `PT_EXEC_COHORT`) as literals. **This gate never retries a hung run** — a
+     frame/page-table custody counter lines as literals. **The script is the truth about which lines
+     are pinned, and it currently pins seven**: `FRAME_CUSTODY_COUNTERS`, `PT_CUSTODY_COUNTERS`,
+     `PT_RETIRE_COHORT`, `PT_EXEC_COHORT`, plus `EXEC_FAILED_RELEASE_ORACLE` and
+     `EXEC_FAILED_RELEASE_PROD` (added by #573/PR #582, which also re-pinned `PT_CUSTODY_COUNTERS` to
+     `recorded=14 … retired=2:returned=14`) and `EXEC_DETACH_ORACLE` (added by P3). A phase that
+     perturbs one re-pins it consciously, with a per-delta derivation showing each count change is its
+     mechanism's expected effect — never re-pin to green a red gate you do not understand.
+     **This gate never retries a hung run** — a
      blanket retry would swallow the wake regressions it exists to catch. Its `EXPECTED_EXITS` floor
      is a consciously re-pinned literal in the script; a phase that adds or removes a userspace test
      program re-pins it in the same PR.
@@ -1200,11 +1206,17 @@ because dispatch refuses `Creating` rows, so shipping either without the other i
 - Extended `clonevm_exec_test`: successful exec → both fields `None`, fresh root, effective
   TGID == pid, and a kill aimed at the **old** group cannot reach it; failed exec → both fields
   byte-identical to pre-exec.
-- "Fresh root" is **observed, not argued**: the exec-cohort per-PID oracle already in
-  `kernel/src/tracing/providers/teardown.rs` (`fork_exit_defer_reclaim_pairing_test`, `:1192`) and its
-  x86 counter line `PT_EXEC_COHORT` carry the assertion. Root ownership itself is enforced in-tree now
-  (`owned_root_slots`, `PT_ROOT_SLOT_REFUSED` fail-closed, receipt-carried superseded roots), so P3
-  consumes that machinery instead of building an argument on paper.
+- "Fresh root" is **observed, not argued**: the exec-cohort per-PID oracle in
+  `kernel/src/tracing/providers/teardown.rs` is `exec_supersede_cohort_test`, which emits the x86
+  counter line `PT_EXEC_COHORT`. *(This sentence previously named `fork_exit_defer_reclaim_pairing_test`,
+  `:1192` — a doc error: that function is the fork/exit defer-reclaim pairing oracle and emits no
+  `PT_EXEC_COHORT`. Corrected when P3 shipped.)* Because `exec_supersede_cohort_test` is
+  `#[cfg(all(feature = "boot_tests", target_arch = "x86_64"))]` it cannot carry AC-6's "both arches in
+  one commit" alone, so **P3 adds `exec_detach_oracle_test`**, an arch-neutral oracle that reads the
+  row's own `level_4_frame()` back after a real exec and compares it against the recorded pre-exec group
+  root, emitting `[EXEC_DETACH_ORACLE:<arch>:…]` on both arches. Root ownership itself is enforced
+  in-tree now (`owned_root_slots`, `PT_ROOT_SLOT_REFUSED` fail-closed, receipt-carried superseded
+  roots), so P3 consumes that machinery instead of building an argument on paper.
 - Futex behaviour across an exec verified explicitly (the group id falls back to pid — `futex.rs` is
   the main consumer). Deterministic clone-vs-exec race.
 - The exec-path lock order PR #577 ratcheted stays green: `[EXEC_LOCK_ORDER:VIOLATION:PM_HELD]` at
