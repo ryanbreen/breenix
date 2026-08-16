@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::PathBuf;
 
@@ -143,6 +144,13 @@ fn identifier_byte(byte: u8) -> bool {
     byte == b'_' || byte.is_ascii_alphanumeric() || !byte.is_ascii()
 }
 
+fn code_offsets(source: &str, mask: &[bool], needle: &str) -> Vec<usize> {
+    source
+        .match_indices(needle)
+        .filter_map(|(offset, _)| mask.get(offset).copied().unwrap_or(false).then_some(offset))
+        .collect()
+}
+
 fn identifier_offsets(source: &str, mask: &[bool], identifier: &str) -> Vec<usize> {
     let bytes = source.as_bytes();
     source
@@ -156,6 +164,72 @@ fn identifier_offsets(source: &str, mask: &[bool], identifier: &str) -> Vec<usiz
                     .is_some_and(|byte| identifier_byte(*byte))
                 && !bytes.get(end).is_some_and(|byte| identifier_byte(*byte)))
             .then_some(offset)
+        })
+        .collect()
+}
+
+fn call_offsets(source: &str, mask: &[bool], name: &str) -> Vec<usize> {
+    let bytes = source.as_bytes();
+    identifier_offsets(source, mask, name)
+        .into_iter()
+        .filter(|offset| {
+            let mut cursor = *offset + name.len();
+            while cursor < bytes.len() && (!mask[cursor] || bytes[cursor].is_ascii_whitespace()) {
+                cursor += 1;
+            }
+            bytes.get(cursor) == Some(&b'(')
+        })
+        .collect()
+}
+
+fn binding_offsets(source: &str, mask: &[bool], name: &str) -> Vec<usize> {
+    let bytes = source.as_bytes();
+    identifier_offsets(source, mask, "let")
+        .into_iter()
+        .filter(|let_offset| {
+            let mut cursor = *let_offset + "let".len();
+            while cursor < bytes.len() && (!mask[cursor] || bytes[cursor].is_ascii_whitespace()) {
+                cursor += 1;
+            }
+            if bytes
+                .get(cursor..cursor + "mut".len())
+                .is_some_and(|candidate| candidate == b"mut")
+                && !bytes
+                    .get(cursor + "mut".len())
+                    .is_some_and(|byte| identifier_byte(*byte))
+            {
+                cursor += "mut".len();
+                while cursor < bytes.len() && (!mask[cursor] || bytes[cursor].is_ascii_whitespace())
+                {
+                    cursor += 1;
+                }
+            }
+
+            let name_start = cursor;
+            while cursor < bytes.len() && mask[cursor] && identifier_byte(bytes[cursor]) {
+                cursor += 1;
+            }
+            &source[name_start..cursor] == name
+        })
+        .collect()
+}
+
+fn assigned_value_offsets(source: &str, mask: &[bool], value: &str) -> Vec<usize> {
+    let bytes = source.as_bytes();
+    code_offsets(source, mask, value)
+        .into_iter()
+        .filter(|offset| {
+            let mut cursor = *offset;
+            while cursor > 0 && (!mask[cursor - 1] || bytes[cursor - 1].is_ascii_whitespace()) {
+                cursor -= 1;
+            }
+            if cursor == 0 || bytes[cursor - 1] != b'=' {
+                return false;
+            }
+            !cursor
+                .checked_sub(2)
+                .and_then(|before| bytes.get(before))
+                .is_some_and(|byte| matches!(byte, b'=' | b'!' | b'<' | b'>'))
         })
         .collect()
 }
@@ -253,6 +327,42 @@ fn function_body<'a>(scope: &'a str, name: &str) -> Option<&'a str> {
         return braced_block(scope, &mask, brace);
     }
     None
+}
+
+/// Every `fn NAME(` definition in a module, keyed by name. Names may repeat
+/// (`cfg`-split, or same-named inherent methods on different types); every body
+/// is kept so a check over a name covers all of them.
+fn module_function_bodies(source: &str) -> BTreeMap<String, Vec<&str>> {
+    let mask = code_mask(source);
+    let bytes = source.as_bytes();
+    let mut bodies: BTreeMap<String, Vec<&str>> = BTreeMap::new();
+    for offset in identifier_offsets(source, &mask, "fn") {
+        let mut cursor = offset + "fn".len();
+        while cursor < bytes.len() && (!mask[cursor] || bytes[cursor].is_ascii_whitespace()) {
+            cursor += 1;
+        }
+        let name_start = cursor;
+        while cursor < bytes.len() && mask[cursor] && identifier_byte(bytes[cursor]) {
+            cursor += 1;
+        }
+        if cursor == name_start {
+            continue;
+        }
+        let name = &source[name_start..cursor];
+        // A signature terminated by `;` (trait requirement, extern block) has no
+        // body; taking the next brace would attribute a foreign body to it.
+        let brace = (cursor..bytes.len()).find(|index| mask[*index] && bytes[*index] == b'{');
+        let semicolon = (cursor..bytes.len()).find(|index| mask[*index] && bytes[*index] == b';');
+        let Some(brace) = brace else { continue };
+        if semicolon.is_some_and(|semicolon| semicolon < brace) {
+            continue;
+        }
+        let Some(body) = braced_block(source, &mask, brace) else {
+            continue;
+        };
+        bodies.entry(name.to_owned()).or_default().push(body);
+    }
+    bodies
 }
 
 fn assignment_to_false(body: &str, field: &str) -> bool {
@@ -1844,6 +1954,304 @@ fn validate_clone_publication_lifecycle() -> Result<(), String> {
         || unpublished.matches("=>true").count() != 1
     {
         return Err("is_unpublished does not accept exactly Creating".to_string());
+    }
+
+    let clone = repo_text("kernel/src/syscall/clone.rs");
+    let clone_body =
+        function_body(&clone, "sys_clone").ok_or_else(|| "missing sys_clone body".to_string())?;
+    let clone_mask = code_mask(clone_body);
+
+    let admission_calls = call_offsets(clone_body, &clone_mask, "admit_clone_into");
+    if admission_calls.len() != 1 {
+        return Err(format!(
+            "sys_clone must call admit_clone_into exactly once, found {}",
+            admission_calls.len()
+        ));
+    }
+    let admission = admission_calls[0];
+
+    let insert_calls = call_offsets(clone_body, &clone_mask, "insert_process");
+    if insert_calls.len() != 1 {
+        return Err(format!(
+            "sys_clone must call insert_process exactly once, found {}",
+            insert_calls.len()
+        ));
+    }
+    let insert = insert_calls[0];
+
+    let cwd_clones = call_offsets(clone_body, &clone_mask, "clone")
+        .into_iter()
+        .filter(|offset| {
+            let prefix = &clone_body[..*offset];
+            let prefix_mask = &clone_mask[..*offset];
+            identifier_offsets(prefix, prefix_mask, "cwd")
+                .last()
+                .is_some_and(|cwd| normalized_code(&clone_body[*cwd..*offset]) == "cwd.")
+        })
+        .collect::<Vec<_>>();
+    let fd_table_clones = call_offsets(clone_body, &clone_mask, "clone")
+        .into_iter()
+        .filter(|offset| {
+            let prefix = &clone_body[..*offset];
+            let prefix_mask = &clone_mask[..*offset];
+            identifier_offsets(prefix, prefix_mask, "fd_table")
+                .last()
+                .is_some_and(|fd_table| {
+                    normalized_code(&clone_body[*fd_table..*offset]) == "fd_table."
+                })
+        })
+        .collect::<Vec<_>>();
+    if cwd_clones.len() != 1 || fd_table_clones.len() != 1 {
+        return Err(format!(
+            "sys_clone must copy parent cwd and fd_table exactly once, found cwd={} fd_table={}",
+            cwd_clones.len(),
+            fd_table_clones.len()
+        ));
+    }
+    let parent_state_binding = identifier_offsets(clone_body, &clone_mask, "parent_cr3")
+        .first()
+        .copied()
+        .ok_or_else(|| "sys_clone has no parent-state copy block".to_string())?;
+    let parent_state_block = braced_block(clone_body, &clone_mask, parent_state_binding)
+        .ok_or_else(|| "sys_clone parent-state copy block is not brace balanced".to_string())?;
+    let parent_state_end = parent_state_binding + parent_state_block.len();
+    if !(parent_state_binding..parent_state_end).contains(&cwd_clones[0])
+        || !(parent_state_binding..parent_state_end).contains(&fd_table_clones[0])
+    {
+        return Err("sys_clone cwd/fd_table reads escaped the parent-state copy block".to_string());
+    }
+    if admission >= insert || admission >= parent_state_binding {
+        return Err(
+            "sys_clone admits the clone after deriving parent state or publishing the child"
+                .to_string(),
+        );
+    }
+
+    let admission_arm = identifier_offsets(clone_body, &clone_mask, "if")
+        .into_iter()
+        .find_map(|if_offset| {
+            let block = braced_block(clone_body, &clone_mask, if_offset)?;
+            let open = block.find('{')?;
+            (!call_offsets(
+                &block[..open],
+                &code_mask(&block[..open]),
+                "admit_clone_into",
+            )
+            .is_empty())
+            .then_some(block)
+        })
+        .ok_or_else(|| {
+            "sys_clone admission call is not the condition of a refusal arm".to_string()
+        })?;
+    let admission_arm_mask = code_mask(admission_arm);
+    let compact_admission_arm = normalized_code(admission_arm).replace(' ', "");
+    if identifier_offsets(admission_arm, &admission_arm_mask, "return").len() != 1
+        || identifier_offsets(admission_arm, &admission_arm_mask, "Err").len() != 1
+        || identifier_offsets(admission_arm, &admission_arm_mask, "EAGAIN").len() != 1
+        || !compact_admission_arm.contains("returnSyscallResult::Err(super::errno::EAGAINasu64);")
+    {
+        return Err("sys_clone admission refusal must return super::errno::EAGAIN".to_string());
+    }
+
+    let manager_guard_bindings = binding_offsets(clone_body, &clone_mask, "manager_guard");
+    if manager_guard_bindings.len() != 1 {
+        return Err(format!(
+            "sys_clone must bind manager_guard exactly once, found {}",
+            manager_guard_bindings.len()
+        ));
+    }
+    let manager_guard_statement_end = (manager_guard_bindings[0]..clone_body.len())
+        .find(|offset| clone_mask[*offset] && clone_body.as_bytes()[*offset] == b';')
+        .ok_or_else(|| "sys_clone manager_guard binding has no terminator".to_string())?;
+    if !normalized_code(&clone_body[manager_guard_bindings[0]..=manager_guard_statement_end])
+        .contains("crate::process::manager()")
+    {
+        return Err("sys_clone manager_guard is not bound from the process manager".to_string());
+    }
+    if manager_guard_bindings[0] >= admission {
+        return Err("sys_clone manager_guard is bound after clone admission".to_string());
+    }
+    if normalized_code(&clone_body[admission..insert])
+        .replace(' ', "")
+        .contains("drop(manager_guard)")
+    {
+        return Err(
+            "sys_clone drops manager_guard between clone admission and child publication"
+                .to_string(),
+        );
+    }
+
+    let child_thread_bindings = binding_offsets(clone_body, &clone_mask, "child_thread");
+    if child_thread_bindings.len() != 1 {
+        return Err(format!(
+            "sys_clone must construct child_thread exactly once, found {} bindings",
+            child_thread_bindings.len()
+        ));
+    }
+    let child_thread_literal = braced_block(clone_body, &clone_mask, child_thread_bindings[0])
+        .ok_or_else(|| "sys_clone child_thread binding has no Thread literal".to_string())?;
+    let child_thread_literal_mask = code_mask(child_thread_literal);
+    if code_offsets(
+        child_thread_literal,
+        &child_thread_literal_mask,
+        "crate::task::thread::ThreadState::Blocked",
+    )
+    .len()
+        != 1
+        || !normalized_code(child_thread_literal)
+            .replace(' ', "")
+            .contains("state:crate::task::thread::ThreadState::Blocked,")
+    {
+        return Err("sys_clone child Thread must be constructed Blocked".to_string());
+    }
+
+    let attach_calls = call_offsets(clone_body, &clone_mask, "attach_main_thread_unpublished");
+    if attach_calls.len() != 1 {
+        return Err(format!(
+            "sys_clone must call attach_main_thread_unpublished exactly once, found {}",
+            attach_calls.len()
+        ));
+    }
+    let set_main_thread_calls = call_offsets(clone_body, &clone_mask, "set_main_thread");
+    if !set_main_thread_calls.is_empty() {
+        return Err(format!(
+            "sys_clone must not call set_main_thread, found {} calls",
+            set_main_thread_calls.len()
+        ));
+    }
+    if !assigned_value_offsets(clone_body, &clone_mask, "ProcessState::Ready").is_empty() {
+        return Err(
+            "sys_clone writes ProcessState::Ready outside the lifecycle module".to_string(),
+        );
+    }
+
+    let set_ready_calls = call_offsets(clone_body, &clone_mask, "set_ready");
+    let runnable_thread_writes = assigned_value_offsets(
+        clone_body,
+        &clone_mask,
+        "crate::task::thread::ThreadState::Ready",
+    );
+    let manager_guard_drops = call_offsets(clone_body, &clone_mask, "drop")
+        .into_iter()
+        .filter(|offset| {
+            let statement_end = (*offset..clone_body.len())
+                .find(|index| clone_mask[*index] && clone_body.as_bytes()[*index] == b';')
+                .unwrap_or(clone_body.len());
+            normalized_code(&clone_body[*offset..statement_end]).replace(' ', "")
+                == "drop(manager_guard)"
+        })
+        .collect::<Vec<_>>();
+    let spawn_calls = call_offsets(clone_body, &clone_mask, "spawn");
+    let publication_steps = [
+        ("attach_main_thread_unpublished", attach_calls.as_slice()),
+        ("insert_process", insert_calls.as_slice()),
+        ("set_ready", set_ready_calls.as_slice()),
+        ("ThreadState::Ready", runnable_thread_writes.as_slice()),
+        ("drop(manager_guard)", manager_guard_drops.as_slice()),
+        ("spawn", spawn_calls.as_slice()),
+    ];
+    let mut publication_sequence = Vec::new();
+    for (name, offsets) in publication_steps {
+        if offsets.len() != 1 {
+            return Err(format!(
+                "sys_clone publication step {name} must appear exactly once, found {}",
+                offsets.len()
+            ));
+        }
+        publication_sequence.push((name, offsets[0]));
+    }
+    if let Some(link) = publication_sequence
+        .windows(2)
+        .find(|link| link[0].1 >= link[1].1)
+    {
+        return Err(format!(
+            "sys_clone publication sequence link broke: {} must precede {}",
+            link[0].0, link[1].0
+        ));
+    }
+
+    let manager = repo_text("kernel/src/process/manager.rs");
+    let manager_bodies = module_function_bodies(&manager);
+    let sibling_guard_definitions = manager_bodies
+        .get("find_live_clone_vm_sibling_holding_cr3")
+        .map_or(0, Vec::len);
+    if sibling_guard_definitions != 1 {
+        return Err(format!(
+            "find_live_clone_vm_sibling_holding_cr3 must be defined exactly once, found {sibling_guard_definitions}"
+        ));
+    }
+
+    // Issue #468 is open and this phase does not close it. Census this guard
+    // because it sits immediately adjacent to the exec-commit code this phase edits.
+    let mut exec_bodies = Vec::new();
+    for name in ["exec_process", "exec_process_with_argv"] {
+        for body in manager_bodies.get(name).into_iter().flatten() {
+            exec_bodies.push((name, *body));
+        }
+    }
+    let aarch64_exec_count = exec_bodies
+        .iter()
+        .filter(|(_, body)| body.contains("[ARM64]"))
+        .count();
+    let x86_exec_count = exec_bodies.len() - aarch64_exec_count;
+    if exec_bodies.len() != 4 || aarch64_exec_count != 2 || x86_exec_count != 2 {
+        return Err(format!(
+            "exec body census must be four total (two aarch64, two x86), found total={} aarch64={} x86={}",
+            exec_bodies.len(),
+            aarch64_exec_count,
+            x86_exec_count
+        ));
+    }
+    for (name, body) in exec_bodies {
+        let body_mask = code_mask(body);
+        let sibling_guard_calls =
+            call_offsets(body, &body_mask, "find_live_clone_vm_sibling_holding_cr3");
+        if !body.contains("[ARM64]") {
+            if !sibling_guard_calls.is_empty() {
+                return Err(format!(
+                    "x86 {name} must not call find_live_clone_vm_sibling_holding_cr3"
+                ));
+            }
+            continue;
+        }
+        if sibling_guard_calls.len() != 1 {
+            return Err(format!(
+                "aarch64 {name} must call find_live_clone_vm_sibling_holding_cr3 exactly once, found {}",
+                sibling_guard_calls.len()
+            ));
+        }
+        let allocation = code_offsets(body, &body_mask, "UnpublishedPageTable::new(");
+        if allocation.len() != 1 {
+            return Err(format!(
+                "aarch64 {name} must allocate one UnpublishedPageTable, found {}",
+                allocation.len()
+            ));
+        }
+        if sibling_guard_calls[0] >= allocation[0] {
+            return Err(format!(
+                "aarch64 {name} checks live CLONE_VM siblings after allocating its new address space"
+            ));
+        }
+        let guard_arm = identifier_offsets(body, &body_mask, "if")
+            .into_iter()
+            .find_map(|if_offset| {
+                let block = braced_block(body, &body_mask, if_offset)?;
+                let open = block.find('{')?;
+                (call_offsets(
+                    &block[..open],
+                    &code_mask(&block[..open]),
+                    "find_live_clone_vm_sibling_holding_cr3",
+                )
+                .len()
+                    == 1)
+                    .then_some(block)
+            })
+            .ok_or_else(|| format!("aarch64 {name} sibling check is not an if guard"))?;
+        if !normalized_code(guard_arm).contains("return Err(") {
+            return Err(format!(
+                "aarch64 {name} live-sibling guard does not return Err"
+            ));
+        }
     }
     Ok(())
 }
