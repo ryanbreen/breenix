@@ -1071,10 +1071,23 @@ fn validate_blocked_syscall_dispatch_resolves_cr3(source: &str) -> Result<(), St
         || !compact_unpublished_arm.contains("scheduler::set_need_resched();")
         || !compact_unpublished_arm.contains("setup_idle_return(interrupt_frame);")
         || !compact_unpublished_arm.contains("scheduler::switch_to_idle();")
+        || !compact_unpublished_arm.contains("scheduler::requeue_refused_dispatch(")
         || !compact_unpublished_arm.contains("process_memory::switch_to_kernel_page_table();")
         || !compact_unpublished_arm.contains("return;")
     {
         return Err("blocked-in-syscall unpublished-row recovery is not retry-only".to_string());
+    }
+    let switch_idle = compact_unpublished_arm
+        .find("scheduler::switch_to_idle();")
+        .ok_or_else(|| "unpublished-row recovery has no switch_to_idle".to_string())?;
+    let requeue = compact_unpublished_arm
+        .find("scheduler::requeue_refused_dispatch(")
+        .ok_or_else(|| "unpublished-row recovery has no refused-thread requeue".to_string())?;
+    let early_return = compact_unpublished_arm
+        .find("return;")
+        .ok_or_else(|| "unpublished-row recovery has no early return".to_string())?;
+    if !(switch_idle < requeue && requeue < early_return) {
+        return Err("blocked-in-syscall unpublished-row requeue is out of order".to_string());
     }
     for publisher in ["set_next_cr3", "Cr3"] {
         if identifier_offsets(process_block, &process_mask, publisher)
@@ -1241,9 +1254,22 @@ fn validate_no_cr3_dispatch_fails_closed(source: &str) -> Result<(), String> {
         || !compact_unpublished_arm.contains("scheduler::set_need_resched();")
         || !compact_unpublished_arm.contains("setup_idle_return(interrupt_frame);")
         || !compact_unpublished_arm.contains("scheduler::switch_to_idle();")
+        || !compact_unpublished_arm.contains("scheduler::requeue_refused_dispatch(")
         || !compact_unpublished_arm.contains("return;")
     {
         return Err("normal-restore unpublished-row recovery is not retry-only".to_string());
+    }
+    let switch_idle = compact_unpublished_arm
+        .find("scheduler::switch_to_idle();")
+        .ok_or_else(|| "normal-restore refusal has no switch_to_idle".to_string())?;
+    let requeue = compact_unpublished_arm
+        .find("scheduler::requeue_refused_dispatch(")
+        .ok_or_else(|| "normal-restore refusal has no refused-thread requeue".to_string())?;
+    let early_return = compact_unpublished_arm
+        .find("return;")
+        .ok_or_else(|| "normal-restore refusal has no early return".to_string())?;
+    if !(switch_idle < requeue && requeue < early_return) {
+        return Err("normal-restore unpublished-row requeue is out of order".to_string());
     }
 
     let (cr3_if_offset, cr3_if_block) = identifier_offsets(restore, &restore_mask, "if")
@@ -1764,6 +1790,7 @@ fn valid_blocked_syscall_no_cr3_arm() -> &'static str {
             scheduler::set_need_resched();
             setup_idle_return(interrupt_frame);
             scheduler::switch_to_idle();
+            scheduler::requeue_refused_dispatch(thread_id);
             unsafe {
                 crate::memory::process_memory::switch_to_kernel_page_table();
             }
@@ -1876,6 +1903,7 @@ fn synthetic_no_cr3_restore_source(else_arm: &str) -> String {
                 scheduler::set_need_resched();
                 setup_idle_return(interrupt_frame);
                 scheduler::switch_to_idle();
+                scheduler::requeue_refused_dispatch(thread_id);
                 return;
             }}
             let process_cr3 = process.cr3_value();

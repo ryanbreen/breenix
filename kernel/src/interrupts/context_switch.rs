@@ -704,6 +704,7 @@ fn switch_to_thread(
                         crate::task::scheduler::set_need_resched();
                         setup_idle_return(interrupt_frame);
                         crate::task::scheduler::switch_to_idle();
+                        crate::task::scheduler::requeue_refused_dispatch(thread_id);
                         unsafe {
                             crate::memory::process_memory::switch_to_kernel_page_table();
                         }
@@ -1179,6 +1180,7 @@ fn restore_userspace_thread_context(
                     crate::task::scheduler::set_need_resched();
                     setup_idle_return(interrupt_frame);
                     crate::task::scheduler::switch_to_idle();
+                    crate::task::scheduler::requeue_refused_dispatch(thread_id);
                     return;
                 }
                 let process_cr3 = process.cr3_value();

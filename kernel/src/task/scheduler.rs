@@ -4211,6 +4211,40 @@ pub fn switch_to_idle() {
     });
 }
 
+/// Make a thread that the dispatch path refused queue-reachable again.
+///
+/// x86_64 counterpart of the aarch64 `requeue_thread_after_save` call in the
+/// `RowUnpublished`/`PmLockBusy` dispatch arm: a retry-only refusal must leave the
+/// refused thread reachable, or it is stranded (neither current nor queued) forever.
+/// Callers must have already redirected this CPU to idle, so `current_thread` no
+/// longer names the refused thread.
+#[cfg(target_arch = "x86_64")]
+pub fn requeue_refused_dispatch(thread_id: u64) {
+    with_scheduler(|sched| {
+        if (0..MAX_CPUS).any(|cpu| sched.cpu_state[cpu].idle_thread == thread_id) {
+            return;
+        }
+        if (0..MAX_CPUS).any(|cpu| sched.cpu_state[cpu].current_thread == Some(thread_id)) {
+            return;
+        }
+        let Some(thread) = sched.get_thread(thread_id) else {
+            return;
+        };
+        if thread.state != ThreadState::Ready {
+            return;
+        }
+        if sched
+            .per_cpu_queues
+            .iter()
+            .any(|queue| queue.contains(&thread_id))
+        {
+            return;
+        }
+        let cpu = Scheduler::current_cpu_id();
+        sched.per_cpu_queues[cpu].push_back(thread_id);
+    });
+}
+
 /// Undo a dispatch the interrupt-return path could not complete: return the
 /// undispatched thread to the ready queue and restore the interrupted thread's
 /// pre-dispatch state. Only a runnable interrupted thread is transitioned back to
