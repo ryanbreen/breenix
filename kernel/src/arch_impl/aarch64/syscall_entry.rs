@@ -1176,9 +1176,14 @@ fn sys_exec_aarch64(
 
     let argv_slices: alloc::vec::Vec<&[u8]> = argv_vec.iter().map(|v| v.as_slice()).collect();
 
-    without_interrupts(|| {
+    let result = without_interrupts(|| {
         let mut manager_guard = crate::process::manager();
-        if let Some(ref mut manager) = *manager_guard {
+        let exec_result = {
+            let Some(manager) = manager_guard.as_mut() else {
+                log::error!("sys_exec_aarch64: Process manager not available");
+                return (-12_i64) as u64; // -ENOMEM
+            };
+
             // Trace: calling exec_process_with_argv (process manager)
             super::trace::trace_exec(b'M');
 
@@ -1189,122 +1194,135 @@ fn sys_exec_aarch64(
             // the normal syscall epilogue.
             super::switch_ttbr0_to_kernel();
 
-            match manager.exec_process_with_argv(
-                current_pid,
-                elf_data,
-                Some(&program_name),
-                &argv_slices,
-            ) {
-                Ok((new_entry_point, new_rsp)) => {
-                    // Trace: exec_process_with_argv succeeded
-                    super::trace::trace_exec(b'S');
+            manager.exec_process_with_argv(current_pid, elf_data, Some(&program_name), &argv_slices)
+        };
 
-                    log::info!(
-                            "sys_exec_aarch64: Successfully replaced process address space, entry point: {:#x}",
-                            new_entry_point
-                        );
-
-                    frame.elr = new_entry_point;
-
-                    unsafe {
-                        core::arch::asm!(
-                            "msr sp_el0, {}",
-                            in(reg) new_rsp,
-                            options(nomem, nostack)
-                        );
-                    }
-
-                    frame.x0 = 0;
-                    frame.x1 = 0;
-                    frame.x2 = 0;
-                    frame.x3 = 0;
-                    frame.x4 = 0;
-                    frame.x5 = 0;
-                    frame.x6 = 0;
-                    frame.x7 = 0;
-                    frame.x8 = 0;
-                    frame.x9 = 0;
-                    frame.x10 = 0;
-                    frame.x11 = 0;
-                    frame.x12 = 0;
-                    frame.x13 = 0;
-                    frame.x14 = 0;
-                    frame.x15 = 0;
-                    frame.x16 = 0;
-                    frame.x17 = 0;
-                    frame.x18 = 0;
-                    frame.x19 = 0;
-                    frame.x20 = 0;
-                    frame.x21 = 0;
-                    frame.x22 = 0;
-                    frame.x23 = 0;
-                    frame.x24 = 0;
-                    frame.x25 = 0;
-                    frame.x26 = 0;
-                    frame.x27 = 0;
-                    frame.x28 = 0;
-                    frame.x29 = 0;
-                    frame.x30 = 0;
-
-                    frame.spsr = 0x0; // EL0t, DAIF clear
-
-                    // Trace: frame registers zeroed, SPSR set
-                    super::trace::trace_exec(b'F');
-
-                    if let Some(process) = manager.get_process(current_pid) {
-                        if let Some(ref page_table) = process.page_table {
-                            let new_ttbr0 = page_table.level_4_frame().start_address().as_u64();
-                            log::info!("sys_exec_aarch64: Setting TTBR0_EL1 to {:#x}", new_ttbr0);
-                            unsafe {
-                                core::arch::asm!(
-                                    "dsb ishst",
-                                    "msr ttbr0_el1, {}",
-                                    "isb",
-                                    "tlbi vmalle1is",
-                                    "dsb ish",
-                                    "isb",
-                                    in(reg) new_ttbr0,
-                                    options(nostack)
-                                );
-                            }
-                            // Trace: TTBR0 page table switched
-                            super::trace::trace_exec(b'P');
-
-                            // CRITICAL: Update saved_process_cr3 so the assembly ERET
-                            // path doesn't restore the OLD (now-freed) page table.
-                            // Without this, the .Lrestore_saved_ttbr path in syscall_entry.S
-                            // switches TTBR0 back to the pre-exec page table, which has
-                            // been deallocated by exec_process_with_argv.
-                            unsafe {
-                                Aarch64PerCpu::set_saved_process_cr3(new_ttbr0);
-                            }
-                        }
-                    }
-
-                    log::info!(
-                        "sys_exec_aarch64: Frame updated - ELR={:#x}, SP_EL0={:#x}",
-                        frame.elr,
-                        new_rsp
-                    );
-                    // Trace: about to return 0 from exec syscall
-                    super::trace::trace_exec(b'R');
-
-                    0
-                }
-                Err(e) => {
-                    log::error!("sys_exec_aarch64: Failed to exec process: {}", e);
-                    if e == "exec blocked while CLONE_VM sibling shares old address space" {
-                        (-11_i64) as u64 // -EAGAIN
-                    } else {
-                        (-12_i64) as u64 // -ENOMEM
-                    }
-                }
+        let (new_entry_point, new_rsp, commit) = match exec_result {
+            Ok(value) => {
+                // Trace: exec_process_with_argv succeeded
+                super::trace::trace_exec(b'S');
+                value
             }
-        } else {
-            log::error!("sys_exec_aarch64: Process manager not available");
-            (-12_i64) as u64
+            Err(e) => {
+                log::error!("sys_exec_aarch64: Failed to exec process: {}", e);
+                // No receipt was produced, so there is nothing to commit; the guard drops on
+                // return from this closure.
+                return if e == "exec blocked while CLONE_VM sibling shares old address space" {
+                    (-11_i64) as u64 // -EAGAIN
+                } else {
+                    (-12_i64) as u64 // -ENOMEM
+                };
+            }
+        };
+
+        log::info!(
+            "sys_exec_aarch64: Successfully replaced process address space, entry point: {:#x}",
+            new_entry_point
+        );
+
+        let new_ttbr0 = commit.new_ttbr0();
+
+        // Release the process-manager lock BEFORE taking the scheduler lock: Level 1 (SCHEDULER)
+        // must never be acquired under Level 2 (PROCESS_MANAGER). Dropping the guard restores the
+        // *saved* DAIF, which the enclosing without_interrupts already masked, so interrupts stay
+        // masked across the whole window and this CPU cannot context-switch away.
+        drop(manager_guard);
+
+        commit.apply();
+
+        log::info!("sys_exec_aarch64: Setting TTBR0_EL1 to {:#x}", new_ttbr0);
+        unsafe {
+            core::arch::asm!(
+                "dsb ishst",
+                "msr ttbr0_el1, {}",
+                "isb",
+                "tlbi vmalle1is",
+                "dsb ish",
+                "isb",
+                in(reg) new_ttbr0,
+                options(nostack)
+            );
         }
-    })
+        // Trace: TTBR0 page table switched
+        super::trace::trace_exec(b'P');
+
+        // CRITICAL: Update saved_process_cr3 so the assembly ERET
+        // path doesn't restore the OLD (now-freed) page table.
+        // Without this, the .Lrestore_saved_ttbr path in syscall_entry.S
+        // switches TTBR0 back to the pre-exec page table, which has
+        // been deallocated by exec_process_with_argv.
+        unsafe {
+            Aarch64PerCpu::set_saved_process_cr3(new_ttbr0);
+        }
+
+        frame.elr = new_entry_point;
+
+        unsafe {
+            core::arch::asm!(
+                "msr sp_el0, {}",
+                in(reg) new_rsp,
+                options(nomem, nostack)
+            );
+        }
+
+        frame.x0 = 0;
+        frame.x1 = 0;
+        frame.x2 = 0;
+        frame.x3 = 0;
+        frame.x4 = 0;
+        frame.x5 = 0;
+        frame.x6 = 0;
+        frame.x7 = 0;
+        frame.x8 = 0;
+        frame.x9 = 0;
+        frame.x10 = 0;
+        frame.x11 = 0;
+        frame.x12 = 0;
+        frame.x13 = 0;
+        frame.x14 = 0;
+        frame.x15 = 0;
+        frame.x16 = 0;
+        frame.x17 = 0;
+        frame.x18 = 0;
+        frame.x19 = 0;
+        frame.x20 = 0;
+        frame.x21 = 0;
+        frame.x22 = 0;
+        frame.x23 = 0;
+        frame.x24 = 0;
+        frame.x25 = 0;
+        frame.x26 = 0;
+        frame.x27 = 0;
+        frame.x28 = 0;
+        frame.x29 = 0;
+        frame.x30 = 0;
+
+        frame.spsr = 0x0; // EL0t, DAIF clear
+
+        // Trace: frame registers zeroed, SPSR set
+        super::trace::trace_exec(b'F');
+
+        log::info!(
+            "sys_exec_aarch64: Frame updated - ELR={:#x}, SP_EL0={:#x}",
+            frame.elr,
+            new_rsp
+        );
+        // Trace: about to return 0 from exec syscall
+        super::trace::trace_exec(b'R');
+
+        0
+    });
+
+    // The exec lock-order counters are only live after an exec has actually run. This is the only
+    // site on the aarch64 boot path where a gate can observe `commits >= 1`; it sits OUTSIDE the
+    // masked window and outside the manager/scheduler critical sections, and exists only in
+    // boot_tests builds so the production exec path is untouched.
+    #[cfg(feature = "boot_tests")]
+    if result == 0 {
+        crate::test_framework::emit_exec_lock_order_counters();
+    }
+
+    result
 }
 
 /// Load ELF binary from ext2 filesystem path.

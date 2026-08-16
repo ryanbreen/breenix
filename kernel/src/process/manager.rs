@@ -3010,7 +3010,9 @@ impl ProcessManager {
 
     /// Replace a process's address space with a new program (exec) with argv support (ARM64)
     ///
-    /// Returns (entry_point, stack_pointer) on success.
+    /// Returns the entry point, stack pointer, and a scheduler commit receipt on success.
+    /// The caller must release the process-manager lock before applying the receipt so the
+    /// scheduler and process-manager locks are never nested in either direction.
     #[cfg(target_arch = "aarch64")]
     pub fn exec_process_with_argv(
         &mut self,
@@ -3018,7 +3020,7 @@ impl ProcessManager {
         elf_data: &[u8],
         program_name: Option<&str>,
         argv: &[&[u8]],
-    ) -> Result<(u64, u64), &'static str> {
+    ) -> Result<(u64, u64, crate::task::scheduler::ExecSchedCommit), &'static str> {
         use crate::arch_impl::aarch64::constants::USER_STACK_REGION_START;
         use crate::memory::arch_stub::{Page, PageTableFlags, Size4KiB};
 
@@ -3212,62 +3214,65 @@ impl ProcessManager {
         process.fd_table.close_cloexec();
 
         process.page_table = Some(new_page_table.publish());
+        let new_ttbr0 = process
+            .page_table
+            .as_ref()
+            .ok_or("exec [ARM64]: published page table missing")?
+            .level_4_frame()
+            .start_address()
+            .as_u64();
         process.stack = Some(Box::new(new_stack));
         process.user_stack_top = user_stack_top;
         process.user_stack_bottom = user_stack_top - USER_STACK_SIZE as u64;
 
-        if let Some(ref mut thread) = process.main_thread {
-            let preserved_kernel_stack_top = thread.kernel_stack_top;
+        let thread = process
+            .main_thread
+            .as_mut()
+            .ok_or("exec [ARM64]: process lost its main thread during update")?;
+        let preserved_kernel_stack_top = thread.kernel_stack_top;
 
-            let aligned_stack = initial_rsp & !0xF;
-            thread.context.elr_el1 = new_entry_point;
-            thread.context.sp_el0 = aligned_stack;
-            thread.context.spsr_el1 = 0x0;
-            thread.context.tpidr_el0 = initial_tpidr_el0.as_u64();
+        let aligned_stack = initial_rsp & !0xF;
+        thread.context.elr_el1 = new_entry_point;
+        thread.context.sp_el0 = aligned_stack;
+        thread.context.spsr_el1 = 0x0;
+        thread.context.tpidr_el0 = initial_tpidr_el0.as_u64();
 
-            thread.context.x0 = 0;
-            thread.context.x19 = 0;
-            thread.context.x20 = 0;
-            thread.context.x21 = 0;
-            thread.context.x22 = 0;
-            thread.context.x23 = 0;
-            thread.context.x24 = 0;
-            thread.context.x25 = 0;
-            thread.context.x26 = 0;
-            thread.context.x27 = 0;
-            thread.context.x28 = 0;
-            thread.context.x29 = 0;
-            thread.context.x30 = 0;
+        thread.context.x0 = 0;
+        thread.context.x19 = 0;
+        thread.context.x20 = 0;
+        thread.context.x21 = 0;
+        thread.context.x22 = 0;
+        thread.context.x23 = 0;
+        thread.context.x24 = 0;
+        thread.context.x25 = 0;
+        thread.context.x26 = 0;
+        thread.context.x27 = 0;
+        thread.context.x28 = 0;
+        thread.context.x29 = 0;
+        thread.context.x30 = 0;
 
-            thread.stack_top = stack_top;
-            thread.stack_bottom = stack_bottom;
-            thread.tls_block = initial_tpidr_el0;
-            thread.kernel_stack_top = preserved_kernel_stack_top;
-            thread.state = crate::task::thread::ThreadState::Ready;
+        thread.stack_top = stack_top;
+        thread.stack_bottom = stack_bottom;
+        thread.tls_block = initial_tpidr_el0;
+        thread.kernel_stack_top = preserved_kernel_stack_top;
+        thread.state = crate::task::thread::ThreadState::Ready;
 
-            log::info!(
-                "exec_process_with_argv [ARM64]: Updated thread {} context for new program",
-                thread_id
-            );
+        log::info!(
+            "exec_process_with_argv [ARM64]: Updated thread {} context for new program",
+            thread_id
+        );
 
-            // CRITICAL: Sync updated context to the scheduler's copy of this thread.
-            // The process manager and scheduler maintain SEPARATE Thread objects (cloned
-            // at process creation). Without this sync, the scheduler would restore stale
-            // context (e.g., elr_el1=0) on the next context switch, causing ELR=0x0 crashes.
-            let ctx = thread.context.clone();
-            let st = thread.stack_top;
-            let sb = thread.stack_bottom;
-            let kst = thread.kernel_stack_top;
-            let tls = thread.tls_block;
-            crate::task::scheduler::with_thread_mut(thread_id, |sched_thread| {
-                sched_thread.context = ctx;
-                sched_thread.stack_top = st;
-                sched_thread.stack_bottom = sb;
-                sched_thread.kernel_stack_top = kst;
-                sched_thread.tls_block = tls;
-                sched_thread.state = crate::task::thread::ThreadState::Ready;
-            });
-        }
+        // CRITICAL: Snapshot the updated context for the scheduler's separate Thread copy.
+        // The receipt is returned to the caller and committed only after the process-manager
+        // lock is released, preventing the scheduler and process-manager locks from nesting.
+        let ctx = thread.context.clone();
+        let st = thread.stack_top;
+        let sb = thread.stack_bottom;
+        let kst = thread.kernel_stack_top;
+        let tls = thread.tls_block;
+        let sched_commit = crate::task::scheduler::ExecSchedCommit::new(
+            thread_id, ctx, st, sb, kst, tls, new_ttbr0,
+        );
 
         if is_current_process {
             log::info!(
@@ -3297,7 +3302,7 @@ impl ProcessManager {
             self.ready_queue.push(pid);
         }
 
-        Ok((new_entry_point, initial_rsp))
+        Ok((new_entry_point, initial_rsp, sched_commit))
     }
 
     /// Replace a process's address space with a new program (exec) for ARM64
@@ -3307,7 +3312,8 @@ impl ProcessManager {
     /// program while keeping the same PID.
     ///
     /// The `program_name` parameter is optional - if provided, it updates the process name
-    /// to match the new program.
+    /// to match the new program. On success it also returns a scheduler commit receipt; the
+    /// caller must release the process-manager lock before applying that receipt.
     ///
     /// ARM64-specific details:
     /// - Uses TTBR0_EL1 for userspace page tables (kernel is always in TTBR1)
@@ -3321,7 +3327,7 @@ impl ProcessManager {
         pid: ProcessId,
         elf_data: &[u8],
         program_name: Option<&str>,
-    ) -> Result<u64, &'static str> {
+    ) -> Result<(u64, crate::task::scheduler::ExecSchedCommit), &'static str> {
         use crate::arch_impl::aarch64::constants::USER_STACK_REGION_START;
         use crate::memory::arch_stub::{Page, PageTableFlags, Size4KiB};
 
@@ -3518,6 +3524,13 @@ impl ProcessManager {
 
         // Replace the page table with the new one containing the loaded program
         process.page_table = Some(new_page_table.publish());
+        let new_ttbr0 = process
+            .page_table
+            .as_ref()
+            .ok_or("exec [ARM64]: published page table missing")?
+            .level_4_frame()
+            .start_address()
+            .as_u64();
 
         // Replace the stack
         process.stack = Some(Box::new(new_stack));
@@ -3525,70 +3538,68 @@ impl ProcessManager {
         process.user_stack_bottom = user_stack_top - USER_STACK_SIZE as u64;
 
         // Update the main thread context for the new program (ARM64-specific)
-        if let Some(ref mut thread) = process.main_thread {
-            // CRITICAL: Preserve the kernel stack - userspace threads need it for exceptions
-            let preserved_kernel_stack_top = thread.kernel_stack_top;
-            log::info!(
-                "exec_process [ARM64]: Preserving kernel stack top: {:?}",
-                preserved_kernel_stack_top
-            );
+        let thread = process
+            .main_thread
+            .as_mut()
+            .ok_or("exec [ARM64]: process lost its main thread during update")?;
+        // CRITICAL: Preserve the kernel stack - userspace threads need it for exceptions
+        let preserved_kernel_stack_top = thread.kernel_stack_top;
+        log::info!(
+            "exec_process [ARM64]: Preserving kernel stack top: {:?}",
+            preserved_kernel_stack_top
+        );
 
-            // Reset the CPU context for the new program (ARM64-specific registers)
-            // SP must be 16-byte aligned on ARM64
-            let aligned_stack = stack_top.as_u64() & !0xF;
+        // Reset the CPU context for the new program (ARM64-specific registers)
+        // SP must be 16-byte aligned on ARM64
+        let aligned_stack = stack_top.as_u64() & !0xF;
 
-            // Set ARM64-specific context fields
-            thread.context.elr_el1 = new_entry_point; // Entry point (PC on return)
-            thread.context.sp_el0 = aligned_stack; // User stack pointer
-            thread.context.spsr_el1 = 0x0; // EL0t mode with interrupts enabled
-            thread.context.tpidr_el0 = initial_tpidr_el0.as_u64();
+        // Set ARM64-specific context fields
+        thread.context.elr_el1 = new_entry_point; // Entry point (PC on return)
+        thread.context.sp_el0 = aligned_stack; // User stack pointer
+        thread.context.spsr_el1 = 0x0; // EL0t mode with interrupts enabled
+        thread.context.tpidr_el0 = initial_tpidr_el0.as_u64();
 
-            // Clear all general-purpose registers for security
-            thread.context.x0 = 0;
-            thread.context.x19 = 0;
-            thread.context.x20 = 0;
-            thread.context.x21 = 0;
-            thread.context.x22 = 0;
-            thread.context.x23 = 0;
-            thread.context.x24 = 0;
-            thread.context.x25 = 0;
-            thread.context.x26 = 0;
-            thread.context.x27 = 0;
-            thread.context.x28 = 0;
-            thread.context.x29 = 0; // Frame pointer
-            thread.context.x30 = 0; // Link register
+        // Clear all general-purpose registers for security
+        thread.context.x0 = 0;
+        thread.context.x19 = 0;
+        thread.context.x20 = 0;
+        thread.context.x21 = 0;
+        thread.context.x22 = 0;
+        thread.context.x23 = 0;
+        thread.context.x24 = 0;
+        thread.context.x25 = 0;
+        thread.context.x26 = 0;
+        thread.context.x27 = 0;
+        thread.context.x28 = 0;
+        thread.context.x29 = 0; // Frame pointer
+        thread.context.x30 = 0; // Link register
 
-            thread.stack_top = stack_top;
-            thread.stack_bottom = stack_bottom;
-            thread.tls_block = initial_tpidr_el0;
+        thread.stack_top = stack_top;
+        thread.stack_bottom = stack_bottom;
+        thread.tls_block = initial_tpidr_el0;
 
-            // Restore the preserved kernel stack
-            thread.kernel_stack_top = preserved_kernel_stack_top;
+        // Restore the preserved kernel stack
+        thread.kernel_stack_top = preserved_kernel_stack_top;
 
-            // Mark the thread as ready to run the new program
-            thread.state = crate::task::thread::ThreadState::Ready;
+        // Mark the thread as ready to run the new program
+        thread.state = crate::task::thread::ThreadState::Ready;
 
-            log::info!(
-                "exec_process [ARM64]: Updated thread {} context for new program",
-                thread_id
-            );
+        log::info!(
+            "exec_process [ARM64]: Updated thread {} context for new program",
+            thread_id
+        );
 
-            // CRITICAL: Sync updated context to the scheduler's copy of this thread.
-            // See exec_process_with_argv for detailed explanation of the dual-storage issue.
-            let ctx = thread.context.clone();
-            let st = thread.stack_top;
-            let sb = thread.stack_bottom;
-            let kst = thread.kernel_stack_top;
-            let tls = thread.tls_block;
-            crate::task::scheduler::with_thread_mut(thread_id, |sched_thread| {
-                sched_thread.context = ctx;
-                sched_thread.stack_top = st;
-                sched_thread.stack_bottom = sb;
-                sched_thread.kernel_stack_top = kst;
-                sched_thread.tls_block = tls;
-                sched_thread.state = crate::task::thread::ThreadState::Ready;
-            });
-        }
+        // CRITICAL: Snapshot the updated context for the scheduler's separate Thread copy.
+        // The receipt is returned to the caller and committed only after the process-manager
+        // lock is released, preventing the scheduler and process-manager locks from nesting.
+        let ctx = thread.context.clone();
+        let st = thread.stack_top;
+        let sb = thread.stack_bottom;
+        let kst = thread.kernel_stack_top;
+        let tls = thread.tls_block;
+        let sched_commit = crate::task::scheduler::ExecSchedCommit::new(
+            thread_id, ctx, st, sb, kst, tls, new_ttbr0,
+        );
 
         log::info!(
             "exec_process [ARM64]: Successfully replaced process {} address space",
@@ -3630,7 +3641,7 @@ impl ProcessManager {
         // Lock-free trace: exec exit
         crate::tracing::providers::process::trace_exec_exit(pid.as_u64() as u32);
 
-        Ok(new_entry_point)
+        Ok((new_entry_point, sched_commit))
     }
 
     /// Set up argc/argv/envp/auxv on the stack for a new process

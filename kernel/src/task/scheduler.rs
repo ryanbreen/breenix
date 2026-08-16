@@ -46,6 +46,8 @@
 //! the SERIAL1 contention is less severe. The `#[cfg(target_arch = "x86_64")]`
 //! guards on `log_serial_println!` calls in this file reflect that difference.
 
+#[cfg(target_arch = "aarch64")]
+use super::thread::{CpuContext, VirtAddr};
 use super::thread::{Thread, ThreadState};
 use crate::log_serial_println;
 use alloc::{boxed::Box, collections::BinaryHeap, collections::VecDeque};
@@ -3708,6 +3710,123 @@ where
             .as_mut()
             .and_then(|sched| sched.get_thread_mut(thread_id).map(f))
     })
+}
+
+/// Number of exec scheduler-side commits applied (floor oracle: proves the path ran).
+#[cfg(target_arch = "aarch64")]
+pub static EXEC_SCHED_COMMITS: AtomicU64 = AtomicU64::new(0);
+
+/// Times a commit ran while this CPU still owned the process-manager lock (must stay 0).
+#[cfg(target_arch = "aarch64")]
+pub static SCHED_AFTER_PM_VIOLATIONS: AtomicU64 = AtomicU64::new(0);
+
+/// Times a commit ran while the exec'd thread was NOT this CPU's current thread (must stay 0).
+#[cfg(target_arch = "aarch64")]
+pub static EXEC_COMMIT_UNPINNED: AtomicU64 = AtomicU64::new(0);
+
+/// Times a commit found no scheduler-side thread to write to (must stay 0).
+///
+/// The old in-manager `with_thread_mut` swallowed this case silently; the guaranteed consequence
+/// is that the exec'd thread keeps its pre-exec context and faults on the first restore (the
+/// historical `elr_el1 = 0` crash). Report it, never swallow it.
+#[cfg(target_arch = "aarch64")]
+pub static EXEC_COMMIT_MISSING_THREAD: AtomicU64 = AtomicU64::new(0);
+
+/// Scheduler-side half of an aarch64 exec, staged under the process-manager lock and
+/// committed after it is released.
+///
+/// `manager.rs` finalizes the process-manager copy of `main_thread`, snapshots it into this
+/// receipt, and returns it. The caller drops the process-manager guard and then calls
+/// [`ExecSchedCommit::apply`], which is the only place the SCHEDULER lock is taken for exec.
+/// This keeps the Level 1 (SCHEDULER) / Level 2 (PROCESS_MANAGER) hierarchy un-nested.
+#[cfg(target_arch = "aarch64")]
+#[must_use = "the scheduler-side exec state must be committed after the process-manager lock is released"]
+pub struct ExecSchedCommit {
+    thread_id: u64,
+    context: CpuContext,
+    stack_top: VirtAddr,
+    stack_bottom: VirtAddr,
+    kernel_stack_top: Option<VirtAddr>,
+    tls_block: VirtAddr,
+    new_ttbr0: u64,
+}
+
+#[cfg(target_arch = "aarch64")]
+impl ExecSchedCommit {
+    pub fn new(
+        thread_id: u64,
+        context: CpuContext,
+        stack_top: VirtAddr,
+        stack_bottom: VirtAddr,
+        kernel_stack_top: Option<VirtAddr>,
+        tls_block: VirtAddr,
+        new_ttbr0: u64,
+    ) -> Self {
+        Self {
+            thread_id,
+            context,
+            stack_top,
+            stack_bottom,
+            kernel_stack_top,
+            tls_block,
+            new_ttbr0,
+        }
+    }
+
+    pub fn new_ttbr0(&self) -> u64 {
+        self.new_ttbr0
+    }
+
+    pub fn apply(self) {
+        without_interrupts(|| {
+            // Oracle 1: the whole point of the receipt is that the process-manager lock is gone.
+            let pm_held = crate::process::process_manager_held_on_current_cpu();
+
+            // Oracle 2: the safety argument rests on the exec'd thread being this CPU's current
+            // thread (a current thread is in no run queue, so no peer can dispatch it in the gap).
+            let mut unpinned = false;
+            let mut applied = false;
+            {
+                let mut scheduler_lock = lock_scheduler();
+                if let Some(sched) = scheduler_lock.as_mut() {
+                    unpinned = sched.current_thread_id_inner() != Some(self.thread_id);
+                    if let Some(t) = sched.get_thread_mut(self.thread_id) {
+                        t.context = self.context;
+                        t.stack_top = self.stack_top;
+                        t.stack_bottom = self.stack_bottom;
+                        t.kernel_stack_top = self.kernel_stack_top;
+                        t.tls_block = self.tls_block;
+                        t.state = crate::task::thread::ThreadState::Ready;
+                        applied = true;
+                    }
+                }
+            }
+
+            if pm_held {
+                SCHED_AFTER_PM_VIOLATIONS.fetch_add(1, Ordering::Relaxed);
+                crate::arch_impl::aarch64::context_switch::raw_uart_str(
+                    "[EXEC_LOCK_ORDER:VIOLATION:PM_HELD]\n",
+                );
+            }
+            if unpinned {
+                EXEC_COMMIT_UNPINNED.fetch_add(1, Ordering::Relaxed);
+                crate::arch_impl::aarch64::context_switch::raw_uart_str(
+                    "[EXEC_LOCK_ORDER:VIOLATION:UNPINNED]\n",
+                );
+            }
+            if !applied {
+                EXEC_COMMIT_MISSING_THREAD.fetch_add(1, Ordering::Relaxed);
+                crate::arch_impl::aarch64::context_switch::raw_uart_str(
+                    "[EXEC_LOCK_ORDER:VIOLATION:NO_SCHED_THREAD]\n",
+                );
+            }
+            if applied && EXEC_SCHED_COMMITS.fetch_add(1, Ordering::Relaxed) == 0 {
+                crate::arch_impl::aarch64::context_switch::raw_uart_str(
+                    "[EXEC_LOCK_ORDER:FIRST_COMMIT]\n",
+                );
+            }
+        })
+    }
 }
 
 /// Wake a waitqueue waiter immediately from task context.

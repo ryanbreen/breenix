@@ -13,6 +13,12 @@ fn main() {
     let pid = getpid().map(|p| p.raw()).unwrap_or(0);
     print!("[init] Breenix init starting (PID {})\n", pid);
 
+    // The boot gates accept on the liveness service's marker: spawn it before the
+    // exec smoke so gate acceptance never sits behind a spawn+exec+wait round trip.
+    #[cfg(target_arch = "aarch64")]
+    start_liveness_service();
+    #[cfg(target_arch = "aarch64")]
+    run_exec_smoke();
     #[cfg(target_arch = "aarch64")]
     run_wait_stress_if_enabled();
     #[cfg(target_arch = "aarch64")]
@@ -44,6 +50,23 @@ fn main() {
                 };
                 let _ = libbreenix::time::nanosleep(&ts);
             }
+        }
+    }
+}
+
+/// Run the boot path's only execve caller. The aarch64 exec gate asserts on the launcher's
+/// post-wait marker, the target's success marker, and the kernel's first scheduler commit marker.
+#[cfg(target_arch = "aarch64")]
+fn run_exec_smoke() {
+    match spawn(b"/bin/exec_smoke\0") {
+        Ok(child_pid) => {
+            let mut status = 0i32;
+            let _ = waitpid(child_pid.raw() as i32, &mut status as *mut i32, 0);
+            let exit_code = (status >> 8) & 0xFF;
+            print!("[EXEC_SMOKE:LAUNCHER_EXIT code={}]\n", exit_code);
+        }
+        Err(error) => {
+            print!("[EXEC_SMOKE:SPAWN_FAILED {}]\n", error);
         }
     }
 }
@@ -174,12 +197,7 @@ fn run_boot_script() {
         // ARM64 Parallels boots from AHCI. Mirror the boot script's service
         // sequence directly from init so the standard desktop services are
         // always started even before bsh runs init.js.
-        const SERVICES: &[&[u8]] = &[
-            b"/bin/heartbeat\0",
-            b"/bin/xhci_counters\0",
-            b"/bin/bwm\0",
-            b"/sbin/telnetd\0",
-        ];
+        const SERVICES: &[&[u8]] = &[b"/bin/xhci_counters\0", b"/bin/bwm\0", b"/sbin/telnetd\0"];
         for path in SERVICES {
             if let Err(e) = spawn(path) {
                 print!("[init] Warning: failed to spawn service: {}\n", e);
@@ -227,6 +245,18 @@ fn start_bsshd() {
         }
         Err(_) => {
             print!("[init] Warning: failed to start bsshd\n");
+        }
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+fn start_liveness_service() {
+    match spawn(b"/bin/heartbeat\0") {
+        Ok(child_pid) => {
+            print!("[init] heartbeat started (PID {})\n", child_pid.raw());
+        }
+        Err(_) => {
+            print!("[init] Warning: failed to start heartbeat\n");
         }
     }
 }

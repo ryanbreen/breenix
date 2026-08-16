@@ -86,8 +86,8 @@ echo "Kernel: $KERNEL"
 echo "ext2 disk: $EXT2_DISK"
 echo ""
 
-# Start QEMU in background (120s total timeout — 84 tests need time)
-timeout 120 qemu-system-aarch64 \
+# Start QEMU in background (180s total timeout — 84 tests, the exec smoke, and the soak)
+timeout 180 qemu-system-aarch64 \
     -M virt,gic-version=3 -cpu max -m 512 -smp 4 \
     -kernel "$KERNEL" \
     -display none -no-reboot \
@@ -127,6 +127,10 @@ check_fatal() {
     fi
     if grep -qiE "Unhandled sync exception" "$serial" 2>/dev/null; then
         echo "Unhandled exception"
+        return 0
+    fi
+    if grep -qE "\[EXEC_LOCK_ORDER:VIOLATION" "$serial" 2>/dev/null; then
+        echo "Exec lock-order violation"
         return 0
     fi
     return 1
@@ -183,9 +187,61 @@ if ! $PHASE1_OK && [ -z "$FAIL_REASON" ]; then
     FAIL_REASON="Phase 1 timeout: tests did not complete within 90s"
 fi
 
+# --- Phase 1b: Exercise the init-driven exec path (up to 30s) ---
+if [ -z "$FAIL_REASON" ]; then
+    echo "Phase 1: PASS (${TESTS_PASSED}/${TESTS_TOTAL} tests)"
+    echo ""
+    echo "Phase 1b: Running exec smoke..."
+    EXEC_SMOKE_OK=false
+    for i in $(seq 1 15); do
+        if ! kill -0 $QEMU_PID 2>/dev/null; then
+            FAIL_REASON="Phase 1b: exec smoke never completed (QEMU exited)"
+            break
+        fi
+
+        EXEC_SMOKE_FAILURE=$(grep -E "\[EXEC_SMOKE:(EXEC_FAILED|TARGET_ARGV_FAIL|SPAWN_FAILED)" "$OUTPUT_DIR/serial.txt" 2>/dev/null | tail -1 || true)
+        if [ -n "$EXEC_SMOKE_FAILURE" ]; then
+            FAIL_REASON="Phase 1b: exec smoke never completed ($EXEC_SMOKE_FAILURE)"
+            break
+        fi
+        if FATAL=$(check_fatal); then
+            FAIL_REASON="Phase 1b: exec smoke never completed ($FATAL)"
+            break
+        fi
+        if grep -q "\[EXEC_SMOKE:TARGET_OK\]" "$OUTPUT_DIR/serial.txt" 2>/dev/null; then
+            EXEC_SMOKE_OK=true
+            break
+        fi
+        sleep 2
+    done
+
+    if ! $EXEC_SMOKE_OK && [ -z "$FAIL_REASON" ]; then
+        FAIL_REASON="Phase 1b: exec smoke never completed (30s timeout)"
+    fi
+
+    if $EXEC_SMOKE_OK && [ -z "$FAIL_REASON" ]; then
+        if ! grep -q "\[EXEC_LOCK_ORDER:FIRST_COMMIT\]" "$OUTPUT_DIR/serial.txt" 2>/dev/null; then
+            FAIL_REASON="Phase 1b: exec smoke never completed (missing [EXEC_LOCK_ORDER:FIRST_COMMIT])"
+        else
+            EXEC_COUNTER_LINE=$(grep -E "\[EXEC_LOCK_ORDER:commits=[0-9]+:pm_held=[0-9]+:unpinned=[0-9]+:missing=[0-9]+\]" "$OUTPUT_DIR/serial.txt" 2>/dev/null | tail -1 || true)
+            EXEC_COMMITS=$(echo "$EXEC_COUNTER_LINE" | sed -n 's/.*commits=\([0-9][0-9]*\).*/\1/p')
+            EXEC_PM_HELD=$(echo "$EXEC_COUNTER_LINE" | sed -n 's/.*pm_held=\([0-9][0-9]*\).*/\1/p')
+            EXEC_UNPINNED=$(echo "$EXEC_COUNTER_LINE" | sed -n 's/.*unpinned=\([0-9][0-9]*\).*/\1/p')
+            EXEC_MISSING=$(echo "$EXEC_COUNTER_LINE" | sed -n 's/.*missing=\([0-9][0-9]*\).*/\1/p')
+            if [ -z "$EXEC_COMMITS" ] || [ -z "$EXEC_PM_HELD" ] || [ -z "$EXEC_UNPINNED" ] || [ -z "$EXEC_MISSING" ] || \
+               [ "$EXEC_COMMITS" -lt 1 ] || [ "$EXEC_PM_HELD" -ne 0 ] || \
+               [ "$EXEC_UNPINNED" -ne 0 ] || [ "$EXEC_MISSING" -ne 0 ]; then
+                FAIL_REASON="Phase 1b: exec smoke counters invalid (observed: ${EXEC_COUNTER_LINE:-none})"
+            else
+                echo "  Exec smoke: $EXEC_COUNTER_LINE"
+                echo "Phase 1b: PASS"
+            fi
+        fi
+    fi
+fi
+
 # --- Phase 2: Verify services (10s) ---
 if [ -z "$FAIL_REASON" ] && ! $BOOT_TESTS_ONLY; then
-    echo "Phase 1: PASS (${TESTS_PASSED}/${TESTS_TOTAL} tests)"
     echo ""
     echo "Phase 2: Checking services..."
     SHELL_OK=false

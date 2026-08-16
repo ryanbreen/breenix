@@ -46,6 +46,14 @@ check_crash_markers() {
         echo "Soft lockup"
         return 0
     fi
+    if grep -qE "\[EXEC_LOCK_ORDER:VIOLATION" "$serial_file" 2>/dev/null; then
+        echo "Exec lock-order violation"
+        return 0
+    fi
+    if grep -qE "\[EXEC_SMOKE:(EXEC_FAILED|TARGET_ARGV_FAIL|SPAWN_FAILED)" "$serial_file" 2>/dev/null; then
+        echo "Exec smoke failure"
+        return 0
+    fi
     return 1
 }
 
@@ -85,22 +93,34 @@ run_single_test() {
         -serial file:"$OUTPUT_DIR/serial.txt" &
     local QEMU_PID=$!
 
-    # Wait for USERSPACE boot completion (20s timeout)
+    # Wait for USERSPACE boot completion and the init-driven exec smoke (24s timeout)
     # Accept any of:
     #   "breenix>" or "bsh " - shell prompt on serial (legacy/direct mode)
     #   "[bwm] Display:" - BWM window manager initialized (shell runs inside PTY)
     #   "[bcheck] Complete:" - bcheck self-test suite finished (headless/no-VirGL mode)
     #   "[heartbeat]" - the default ARM64 init service executed in userspace
     # DO NOT accept "Interactive Shell" - that's the KERNEL FALLBACK when userspace FAILS
+    local USERSPACE_COMPLETE=false
+    local EXEC_SMOKE_COMPLETE=false
+    local EXEC_FIRST_COMMIT=false
     local BOOT_COMPLETE=false
     local CRASH_TYPE=""
-    for i in $(seq 1 10); do
+    for i in $(seq 1 12); do
         if [ -f "$OUTPUT_DIR/serial.txt" ]; then
             if grep -qE "(breenix>|bsh |\[bwm\] Display:|\[bcheck\] Complete:|\[heartbeat\])" "$OUTPUT_DIR/serial.txt" 2>/dev/null; then
-                BOOT_COMPLETE=true
-                break
+                USERSPACE_COMPLETE=true
+            fi
+            if grep -q "\[EXEC_SMOKE:TARGET_OK\]" "$OUTPUT_DIR/serial.txt" 2>/dev/null; then
+                EXEC_SMOKE_COMPLETE=true
+            fi
+            if grep -q "\[EXEC_LOCK_ORDER:FIRST_COMMIT\]" "$OUTPUT_DIR/serial.txt" 2>/dev/null; then
+                EXEC_FIRST_COMMIT=true
             fi
             if CRASH_TYPE=$(check_crash_markers "$OUTPUT_DIR/serial.txt"); then
+                break
+            fi
+            if $USERSPACE_COMPLETE && $EXEC_SMOKE_COMPLETE && $EXEC_FIRST_COMMIT; then
+                BOOT_COMPLETE=true
                 break
             fi
         fi
@@ -125,7 +145,15 @@ run_single_test() {
         if [ -n "$CRASH_TYPE" ]; then
             echo "FAIL: $CRASH_TYPE ($LINES lines)"
         else
-            echo "FAIL: Userspace not detected ($LINES lines)"
+            if ! $USERSPACE_COMPLETE; then
+                echo "FAIL: userspace not observed ($LINES lines)"
+            fi
+            if ! $EXEC_SMOKE_COMPLETE; then
+                echo "FAIL: exec smoke not observed ($LINES lines)"
+            fi
+            if ! $EXEC_FIRST_COMMIT; then
+                echo "FAIL: exec first commit not observed ($LINES lines)"
+            fi
         fi
         return 1
     fi
