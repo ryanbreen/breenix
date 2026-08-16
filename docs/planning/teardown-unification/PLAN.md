@@ -381,7 +381,7 @@ not a prediction about arguments not yet made. The PR that splits says so in its
      blanket retry would swallow the wake regressions it exists to catch. Its `EXPECTED_EXITS` floor
      is a consciously re-pinned literal in the script; a phase that adds or removes a userspace test
      program re-pins it in the same PR.
-   - **aarch64 runtime gates:** `docker/qemu/run-aarch64-full-test.sh --rebuild --boot-tests-only`
+   - **aarch64 runtime gates:** `./docker/qemu/run-aarch64-full-test.sh --rebuild --boot-tests-only`
      must reach **`[BOOT_TESTS:PASS]`** over the registered suite, plus
      `docker/qemu/run-aarch64-boot-test-strict.sh`. `[BOOT_TESTS:PASS]` is *never* accepted on its
      own from a stage-advance path — `advance_stage_marker_only`
