@@ -163,9 +163,9 @@ repair adds or splits a PR.
 
 The first Codex Sol ratification refused endorsement (`ENDORSE: NO`) with 2 FATAL seams, 7 MAJOR,
 1 MINOR and 7 conditions. Phase labels in this table are **v2 labels**: the wait families are now
-P10a/b/c/d, so "P10c empties the allowlist" reads **P10d** today, and "16 PRs" reads **22** (§0's
-current ledger; the figure moved 16 → 17 in the v3 tranche pass and 17 → 22 in the 2026-08-16 rule-5
-reconciliation).
+P10a/b/c/d, so "P10c empties the allowlist" reads **P10d** today, and "16 PRs" reads **18** (§0's
+current ledger; the figure moved 16 → 17 in the v3 tranche pass and 17 → 18 when the 2026-08-16 repair
+split P5 into P5a and the held P5b).
 
 | Cond | What changed in this PLAN | Where |
 |---|---|---|
@@ -259,65 +259,95 @@ class (r23: fixed 3, introduced 4).
    "line budget", it is descriptive scale inherited from a pre-2026-08-11 revision — never a gate.**
    No PR is split, blocked, resized or reviewed differently because of one, and the same deletion has
    been applied to DESIGN (§7 OQ-8 and the §0.2 architectural ruling).
-5. **One revert story per phase**, written in the PR body before merge, and the phase's code must
-   actually be revertable alone (verified by `git revert` dry run on the merge commit). **This is
-   also the firing condition for every named split seam:** a seam fires when the PR in front of it
-   would carry **two** revert stories — two independently revertable mechanisms in one merge commit —
-   never because of a line count.
+5. **One revert story per PR**, written in the PR body before merge, and **each PR's** code must
+   actually be revertable alone (verified by `git revert` dry run on the merge commit). The unit is
+   the PR, not the phase: a phase that ships as more than one PR owes one written story per PR, and a
+   phase that ships as one PR owes exactly one. **This is also the firing condition for every named
+   split seam:** a seam fires when the PR in front of it would carry **two** revert stories — two
+   independently revertable mechanisms in one merge commit — never because of a line count.
+   **The plan does not pre-split on this rule.** Every phase in the ledger below is scoped as the
+   number of PRs its ratified shape names, with each PR's revert story written out in its own phase
+   section; a phase whose *implementation* genuinely produces two independent revert stories splits
+   **at implementation time**, and the PR that splits records the split as an in-text amendment to
+   the §0 ledger in the same pass. Splitting on paper, in advance of the code, is how a ratified
+   review surface silently doubles — so the seams below are **named** in the phase text and fire only
+   against real scope.
 
-### The honest PR ledger — 13 numbered phases, **22 PRs** (one of them, P5b, held) *(condition 6; updated by v3 closure D and by the 2026-08-16 rule-5 reconciliation)*
+### The honest PR ledger — 13 numbered phases, **18 PRs** (one of them, P5b, held) *(condition 6; updated by v3 closure D and by the 2026-08-16 repair pass)*
 
 v1 claimed "13 phases / 13 PRs" while splitting P9 into three; the first ratification counted 15 and
 called the contradiction a MAJOR. v2 said 16; v3 said 17. **The count rests on rule 5 alone** — one
 revert story per PR — now that rule 4's ceiling is gone: a PR splits when it would carry two revert
-stories, so the ledger's shape is a function of revertability, not of size. **That rule is now applied
-to the ledger itself, which is why the figure moved from 17 to 22.** Four phases say in their own text
-that two independently revertable mechanisms are already in scope — **P3**, **P4**, **P5a** and
-**P9** — so each of them is **two** rows below, not one. Nothing was added for size, and no phase was
-added, removed or renumbered; **P4 is restored to the ledger as its own phase**, per the
-re-ratification artifact §4.2/§5.2/§8, having been wrongly dissolved by the first repair pass.
+stories, so the ledger's shape is a function of revertability, not of size. The only movement from
+v3's 17 is **P5's split into P5a (ready) and P5b (held on #575)**. Nothing was added for size, and no
+phase was added, removed or renumbered; **P4 is restored to the ledger as its own phase**, per the
+re-ratification artifact §4.2/§5.2/§8, having been wrongly dissolved by an earlier repair pass.
 
-Every PR this plan commits to today is listed, and **there are no others**. Six phases (P1, P6a, P6b,
-P8, P11, and P2 as merged) carry a *named but unfired* seam: as scoped today each is one PR and its
-seam is a commit boundary — P2's is settled by history (it merged as one commit, PR #515), and the
-other five are re-tested when their own tranche is ratified against real scope. If one of those seams
-fires then, that phase becomes two rows and **this ledger is updated in the same pass** — the count is
-exact for what is written now, not a prediction about arguments not yet made. The PR that splits says
-so in its body.
+**Tranche 2 is three PRs, exactly as ratified.** An intermediate state of this repair pre-split P3,
+P4, P5a and P9 into two rows each on rule 5, which took tranche 2 to six PRs and the ledger to 22.
+**That is dropped back.** The operator's 2026-08-16 decision ratified the artifact's PR shape —
+`P3-RERATIFICATION-2026-08-15.md` §5.2 (`T2-b` = P3, `T2-c` = P4, `T2-d` = P5a) and §8 (*"the four-PR
+revised tranche (T2-a → T2-b → T2-c → T2-d, P5b deferred)"*) — and §5.2 fixes a **single** revert
+story for each by hand (`T2-b`: *"delete the two field assignments + the admission check"*; `T2-c`:
+*"its own revert story (per-site, each call site independent)"*). Rule 5 is not weakened by that: it
+is applied at implementation time rather than in advance. Each of those phases carries **one** written
+revert story in its own section, its seam stays **named** there, and if the implementation genuinely
+produces two independent stories it splits then and amends this ledger in the same pass. The identical
+criterion is applied to **P9** (tranche 3+, so not gated by this ratification) — one row, seam named
+in its phase text — so the ledger's unit is consistent end to end. **P5a's seam does not fire on the
+plan's own test in any case**: the would-be second PR migrates the init literals onto
+`designated_init()`, an accessor that does not exist until the would-be first PR lands, so reverting
+the first alone would leave calls to a deleted accessor. The dependency is one-way, so the revert has
+exactly one legal order — and a revert with one legal order is one story, which is precisely how P2's
+seam paragraph (PLAN, Phase 2) concludes *one* story from the same shape.
+
+Every PR this plan commits to today is listed, and **there are no others**. **Ten** phases carry a
+*named but unfired* seam: **P3**, **P4**, **P5a** and **P9**, held to implementation time by rule 5's
+no-pre-split clause above, plus **P1**, **P6a**, **P6b**, **P8**, **P11** and **P2 as merged**, which
+are one PR as scoped today with the seam as a commit boundary. P2's is settled by history (it merged
+as one commit, PR #515); the other nine are re-tested when their own tranche is ratified against real
+scope, and again when the PR is actually written. If one of those seams fires then, that phase becomes
+two rows and **this ledger is updated in the same pass** — the count is exact for what is written now,
+not a prediction about arguments not yet made. The PR that splits says so in its body.
 
 | # | PR | Phase |
 |---|---|---|
 | 1 | Teardown observability + call-site ratchet | P0 |
 | 2 | Retirement fence + RootProof taxonomy + drain restructure **+ pass cursor / park list** | P1 |
 | 3 | SPINE-1: SIGKILL stops eager-freeing **+ receipt custody across all 9 adapted sites** *(7 `exit_process` callers + 1 new SIGKILL arm + 1 PM-nested enqueue)* — **merged, PR #515** | P2 |
-| 4 | exec detach: clear `inherited_cr3`/`thread_group_id` at every exec commit, preserve on every failure | **P3** *(PR 1 of 2)* |
-| 5 | clone/exec admission: parent-`Live` validation + non-runnable publication + the `Creating` dispatch arm | **P3** *(PR 2 of 2)* |
-| 6 | Kernel-stack single-owner accounting (**AC-8**) across the five `Box::leak` sites — closes **#579** | **P4** *(PR 1 of 2)* |
-| 7 | Creation-path PM→SCHEDULER lock-order parity (#527's creation-path remainder) | **P4** *(PR 2 of 2)* |
-| 8 | Runtime init designation — PID-1 reservation + held-publication ticket | **P5a** *(PR 1 of 2)* |
-| 9 | Init literal migration onto `designated_init()` | **P5a** *(PR 2 of 2)* |
-| 10 | Init-group clone refusal | **P5b** — **HELD on #575** |
-| 11 | Reap/tombstone retention gate **+ two-event join** | **P6a** |
-| 12 | Exactly-once ledger (class A/B obligations + effect markers) | **P6b** |
-| 13 | FD closure leaves the PM lock | P7 |
-| 14 | Victim-owned `do_exit_current` + boundary hook | P8 |
-| 15 | Request-only scheduler termination **+ no-new-block interlock** | **P9** *(PR 1 of 2)* |
-| 16 | Group-scope cutover + seal | **P9** *(PR 2 of 2)* |
-| 17 | Killable wait: futex | **P10a** (was P9a) |
-| 18 | Killable wait: `WaitQueueHead` + stdin/TTY readers | **P10b** (was P9b) |
-| 19 | Killable wait: **`BlockedOnSignal` — `pause`/`sigsuspend`** *(NEW in v3 — closure D)* | **P10c** |
-| 20 | Killable wait: child-wait + timer/nanosleep + completion/I-O; **delete the legacy arm** | **P10d** (was P9c/P10c) |
-| 21 | Fatal-signal + fault convergence (intent-only delivery) | P11 |
-| 22 | Init death policy **+ group-membership drop check** | P12 |
+| 4 | exec detach **+ clone/exec admission**: clear `inherited_cr3`/`thread_group_id` at every exec commit and preserve on every failure; parent-`Live` validation + non-runnable publication + the `Creating` dispatch arm | **P3** — artifact `T2-b` |
+| 5 | Kernel-stack single-owner accounting (**AC-8**) across the five `Box::leak` sites **+ creation-path PM→SCHEDULER lock-order parity** (#527's creation-path remainder) — closes **#579** | **P4** — artifact `T2-c` |
+| 6 | Runtime init designation — PID-1 reservation + held-publication ticket **+ the init literal migration onto `designated_init()`** | **P5a** — artifact `T2-d` |
+| 7 | Init-group clone refusal | **P5b** — **HELD on #575** |
+| 8 | Reap/tombstone retention gate **+ two-event join** | **P6a** |
+| 9 | Exactly-once ledger (class A/B obligations + effect markers) | **P6b** |
+| 10 | FD closure leaves the PM lock | P7 |
+| 11 | Victim-owned `do_exit_current` + boundary hook | P8 |
+| 12 | Request-only scheduler termination **+ no-new-block interlock + group-scope cutover and seal** | **P9** |
+| 13 | Killable wait: futex | **P10a** (was P9a) |
+| 14 | Killable wait: `WaitQueueHead` + stdin/TTY readers | **P10b** (was P9b) |
+| 15 | Killable wait: **`BlockedOnSignal` — `pause`/`sigsuspend`** *(NEW in v3 — closure D)* | **P10c** |
+| 16 | Killable wait: child-wait + timer/nanosleep + completion/I-O; **delete the legacy arm** | **P10d** (was P9c/P10c) |
+| 17 | Fatal-signal + fault convergence (intent-only delivery) | P11 |
+| 18 | Init death policy **+ group-membership drop check** | P12 |
 
-> **The arithmetic, stated so it can be checked.** 22 rows = 22 PRs across 13 numbered phases, of
-> which **P5b is held on #575**, so 21 are buildable in sequence today. The movement from v3's 17 —
-> which carried **one** row each for P3, P4, P5 and P9 — is **+1** for P4's seam firing (v3 already
-> had a P4 row; rows 6 and 7 are that row split, and P3 simultaneously loses the half a prior repair
-> pass had folded into it, which is why P3 is two rows and not three), **+1** for P3's own seam,
-> **+2** for P5 (v3's single P5 row becomes P5a's two rows plus the held P5b row), and **+1** for
-> P9's. 17 + 1 + 1 + 2 + 1 = 22. **#573** is sequenced ahead of P3 but is **not** a
-> tranche-2 PR — it is PR-4b of **#470**, gated and evidenced on its own, and it is not in this count.
+> **The arithmetic, stated so it can be checked.** **18 rows = 18 PRs** across 13 numbered phases, of
+> which **P5b is held on #575**, so **17** are buildable in sequence today.
+>
+> **Summed out of the table, one row per phase-letter.** Ten phases carry no letter and contribute one
+> row each — P0 + P1 + P2 + P3 + P4 + P7 + P8 + P9 + P11 + P12 = **10**. Three phases are lettered:
+> P5a + P5b = **2**, P6a + P6b = **2**, P10a + P10b + P10c + P10d = **4**.
+> **10 + 2 + 2 + 4 = 18.** That is what turns 13 numbered phases into 18 PRs, and nothing else does:
+> no phase in this ledger is split into more than one row for any reason other than lettering.
+>
+> **Movement from v3's 17 is +1, and only +1.** v3 carried one row each for P3, P4, P5 and P9; three
+> of those are unchanged, and v3's single **P5** row becomes P5a's row plus the held P5b row.
+> **17 + 1 = 18.** (The intermediate 22 recorded during this repair came from pre-splitting P3, P4,
+> P5a and P9 on rule 5 before their code exists; that pre-split is dropped, per the note above.)
+>
+> **#573** is sequenced ahead of P3 but is **not** a tranche-2 PR — it is PR-4b of **#470**, gated and
+> evidenced on its own, and it is not in this count. Tranche 2 proper is therefore rows 4, 5 and 6 —
+> **three PRs** (artifact §5.2's `T2-b`, `T2-c`, `T2-d`), four counting `T2-a`/#573 ahead of them.
 
 ### Standard gate — run on EVERY phase, no exceptions
 
@@ -429,7 +459,7 @@ P4  ──> P8, P9                          (RESTORED as its own phase. "All ker
                                          two-epoch grace" — AC-8 — is what P8's last-reference
                                          decision and P9's group teardown assume when they let a row
                                          drop. The edge is satisfied INSIDE this plan by P4, whose
-                                         PR 1 closes #579; it is not deferred to an unscheduled
+                                         single PR closes #579; it is not deferred to an unscheduled
                                          issue. P4 has no edge to P3 in either direction: P3 owns the
                                          exec field pair, P4 owns the creation-path stacks and lock
                                          order, and they share no mechanism)
@@ -1148,19 +1178,23 @@ arming CR3/TTBR0.
 creation-path PM→SCHEDULER lock-order parity are **P4**, which stands as its own phase over its own
 three call sites (`creation.rs:67→85`, `creation.rs:185→202`, `boot/test_disk.rs:258→263`). They are
 not folded in here: P3 owns the exec field pair, P4 owns the creation-path stacks and lock order, they
-share no mechanism, and folding them would put two unrelated revert stories in one phase — the thing
-rule 5 exists to prevent.
+share no mechanism, and folding them would put two unrelated revert stories in one **PR** — the thing
+rule 5 exists to prevent. (This is also artifact §5.2's own reason for keeping `T2-c` out of `T2-b`.)
 
 **Files.** `kernel/src/process/manager.rs`, `kernel/src/syscall/clone.rs`,
 `kernel/src/interrupts/context_switch.rs` (dispatch gate),
 `userspace/programs/src/clonevm_exec_test.rs`, plus `tests/context_restore_structure.rs`.
-**Split seam (rule 5, not a size rule): {exec detach} / {clone-exec admission + `Creating` dispatch
-arm}** — two independently revertable mechanisms, so **the seam FIRES and this phase is two PRs**
-(ledger rows 4 and 5). Reverting the detach alone reopens wrong-victim-after-exec and leaves the
-admission intact; reverting the admission alone reopens publish-into-a-dying-parent and leaves the
-detach intact — neither depends on the other's code. The admission check and the dispatch arm are
-**one** story and never split: the non-runnable publication is only safe because dispatch refuses
-`Creating` rows, so shipping either without the other is a half-mechanism.
+**Named split seam (rule 5, not a size rule): {exec detach} / {clone-exec admission + `Creating`
+dispatch arm}** — **named, NOT fired: this phase is ONE PR** (ledger row 4 = artifact §5.2's `T2-b`,
+whose revert story §5.2 writes out as one: *"delete the two field assignments **+ the admission
+check**"*). The seam is a **commit** boundary inside that PR, detach first. The two mechanisms are
+separable in principle — reverting the detach alone would reopen wrong-victim-after-exec and leave the
+admission intact, reverting the admission alone would reopen publish-into-a-dying-parent and leave the
+detach intact — which is why the seam is named rather than deleted; but the plan does not pre-split on
+it (rule 5). If the implementation as written produces two genuinely independent revert stories, it
+splits **then** and amends the §0 ledger in the same pass. The admission check and the dispatch arm
+are **one** story and never split under any circumstance: the non-runnable publication is only safe
+because dispatch refuses `Creating` rows, so shipping either without the other is a half-mechanism.
 
 **Gate extras.**
 - Extended `clonevm_exec_test`: successful exec → both fields `None`, fresh root, effective
@@ -1192,10 +1226,13 @@ scheduler's *recorded* current rather than an authoritative identity. P3's admis
 inside the PM guard **on the calling path**, not remotely, and #560's failure mode is skew on a
 *blocking* path; the risk is named, tracked, and accepted for this tranche (§0.0).
 
-**Revert.** *(One story per PR, per rule 5.)* PR 1 — delete the two `= None` assignments at the exec
-commit points; the tree returns to today's stale-field behaviour. PR 2 — delete the parent-`Live`
-admission check, the non-runnable publication and the `Creating` dispatch arm together, restoring
-#570's two-arm dispatch verbatim.
+**Revert — one story, one PR** *(rule 5; artifact §5.2 `T2-b`).* Delete the two `= None` assignments
+at the exec commit points **and**, in the same revert, the parent-`Live` admission check with its
+non-runnable publication and the `Creating` dispatch arm — restoring #570's two-arm dispatch verbatim.
+The tree returns to today's stale-field behaviour and today's publish-into-a-dying-parent window
+together, in one `git revert` of the merge commit; nothing outside this phase consumes either
+mechanism, so no other phase's code is left dangling. Verified by a `git revert` dry run on the merge
+commit before merge, and written into the PR body first.
 
 ---
 
@@ -1204,11 +1241,12 @@ admission check, the non-runnable publication and the `Creating` dispatch arm to
 **This phase stands on its own** (re-ratification artifact §4.2, §5.2 T2-c, §8: *"Not dissolved… P4
 stands as its own phase, over its own three call sites… with AC-8's kernel-stack single-owner
 accounting gate kept as originally specified"*). An earlier repair pass dissolved it, folded the
-lock-order half into P3 and pushed AC-8 out onto **#579**; that is reversed here. Two independently
-revertable mechanisms live in this phase, so **its seam fires and it is two PRs** (ledger rows 6
-and 7), taken in this order.
+lock-order half into P3 and pushed AC-8 out onto **#579**; that is reversed here. It ships as **ONE
+PR** (ledger row 5 = artifact §5.2's `T2-c`, whose revert story §5.2 writes out as one: *"its own
+revert story — per-site, each call site independent"*), in two commits taken in the order below. Its
+named seam is described under **Files**; per rule 5 the plan does not pre-split on it.
 
-**Scope — PR 1, kernel-stack single ownership (AC-8). The leak surface is FIVE sites, not three.**
+**Scope — commit 1, kernel-stack single ownership (AC-8). The leak surface is FIVE sites, not three.**
 Re-read out of the tree at `2c7b8798`; `grep -n 'Box::leak' kernel/src/process/manager.rs` returns
 exactly five:
 
@@ -1253,7 +1291,7 @@ its body still describes the 3-site creation-path surface and is corrected to fi
 **#546** — owner-side `GuardedStack` reclamation of `External` **user**-stack frames — is a separate,
 *user*-stack item, stays tracked on its own, and does **not** substitute for AC-8.
 
-**Scope — PR 2, creation-path scheduler-registration parity.** Drop the PM guard **before** every
+**Scope — commit 2, creation-path scheduler-registration parity.** Drop the PM guard **before** every
 scheduler registration on the creation paths, removing the live PM→SCHEDULER nesting that is the
 remainder of **#527**'s class:
 
@@ -1270,14 +1308,18 @@ PR extends that ratchet's shape to the creation sites. #527 is closed as an issu
 creation-path remainder.
 
 **Files.** `kernel/src/process/manager.rs`, `kernel/src/task/thread.rs`,
-`kernel/src/memory/kernel_stack.rs`, `kernel/src/task/scheduler.rs` (PR 1);
+`kernel/src/memory/kernel_stack.rs`, `kernel/src/task/scheduler.rs` (commit 1);
 `kernel/src/process/creation.rs`, `kernel/src/boot/test_disk.rs`, `kernel/src/task/scheduler.rs`
-(PR 2); `tests/exec_lock_order_structure.rs` and `tests/teardown_structure.rs`.
-**Split seam (rule 5, not a size rule): {kernel-stack single ownership} / {creation-path lock-order
-parity}** — two independently revertable mechanisms, so **the seam fires**. Reverting the ownership
-change restores the leak and leaves the lock order fixed; reverting the lock-order change restores the
-nesting and leaves ownership fixed. Neither compiles against the other's code. PR 1 lands first
-because reaching the freed-row path (above) is what the ownership accounting must be gated against.
+(commit 2); `tests/exec_lock_order_structure.rs` and `tests/teardown_structure.rs`.
+**Named split seam (rule 5, not a size rule): {kernel-stack single ownership} / {creation-path
+lock-order parity}** — **named, NOT fired: this phase is ONE PR** (ledger row 5, artifact §5.2's
+`T2-c`). The seam is a **commit** boundary: ownership lands first, because reaching the freed-row path
+(above) is what the ownership accounting must be gated against. The two scopes are separable in
+principle — reverting the ownership change alone would restore the leak and leave the lock order
+fixed, reverting the lock-order change alone would restore the nesting and leave ownership fixed —
+which is why the seam is named; but the plan does not pre-split on it (rule 5). If the implementation
+produces two genuinely independent revert stories, it splits **then** and amends the §0 ledger in the
+same pass.
 
 **Gate extras.**
 1. **AC-8's accounting gate, as originally specified.** Ownership assertion after **every** creation
@@ -1293,13 +1335,13 @@ because reaching the freed-row path (above) is what the ownership accounting mus
 3. **The freed-row path is now reached, deliberately.** With ownership transferred, a reap that drops a
    row must not double-free the scheduler-owned stack: per-PID assertion that a stack slot returns to
    the pool exactly once per process death, driven by the same per-PID teardown oracle P0/P2 use.
-4. **Lock-order parity (PR 2):** the extended `exec_lock_order_structure` census fails on any
+4. **Lock-order parity (commit 2):** the extended `exec_lock_order_structure` census fails on any
    `scheduler::spawn` / `lock_scheduler` reachable with a PM guard live at the three creation sites,
    and the runtime marker `[EXEC_LOCK_ORDER:VIOLATION:PM_HELD]` stays at zero across the full gate.
 5. **Zero-warning builds and the standard gate**, both arches, plus Parallels 3×. `complete_fork`'s
    stale `#[allow(dead_code)]` (`manager.rs:1919`, two live callers at `:1490` and `:1634`) is removed
-   in PR 1 — it is a suppression against the repo's zero-tolerance standard on exactly the code this
-   PR rewrites.
+   in commit 1 — it is a suppression against the repo's zero-tolerance standard on exactly the code
+   this PR rewrites.
 
 **Strictly better.** A permanent per-process kernel-stack leak on the primary x86 **and** aarch64
 creation paths, and on both x86 fork paths, is gone; every kernel stack has exactly one owner and is
@@ -1315,10 +1357,14 @@ diagnosed bug**. What re-reading it produced was two previously unnamed live def
 (five sites, not three) and the #527-class nesting — which is why this phase carries real fixes rather
 than a uniformity chore.
 
-**Revert.** *(One story per PR, per rule 5.)* PR 1 — restore the five `Box::leak(Box::new(...))`
-calls and `kernel_stack_allocation: None` at each site; the leak returns and the freed-row path goes
-back to being unreachable. PR 2 — per-site: each of the three creation sites re-nests independently,
-and the ratchet extension is deleted with them.
+**Revert — one story, one PR** *(rule 5; artifact §5.2 `T2-c`, "per-site, each call site
+independent").* Restore the five `Box::leak(Box::new(...))` calls with `kernel_stack_allocation: None`
+at each site **and** re-nest the three creation sites, deleting the ratchet extension with them: the
+leak returns, the freed-row path goes back to being unreachable, and the PM→SCHEDULER nesting returns
+— one `git revert` of the merge commit, and the story is per-site all the way down, which is what
+makes an eight-site change revertable alone. Nothing outside this phase consumes the new ownership
+API. Verified by a `git revert` dry run on the merge commit before merge, and written into the PR body
+first.
 
 ---
 
@@ -1357,12 +1403,19 @@ touched.
 
 **Files.** `kernel/src/process/manager.rs`, `kernel/src/process/mod.rs`,
 `kernel/src/main_aarch64.rs`, `kernel/src/syscall/signal.rs`, `kernel/src/task/process_task.rs`.
-**Split seam (rule 5): {PID-1 reservation + held-publication ticket} / {literal migration}** — two
-independently revertable mechanisms, so **the seam FIRES and this phase is two PRs** (ledger rows 8
-and 9). PR 1 ships the reservation, the ticket and `designated_init` with its production validation as
-its live consumer (rule 2); PR 2 migrates the production init sites tabulated above, and their
-dependent reads, onto `designated_init()`. Reverting PR 2 restores the literals and leaves the reservation working;
-reverting PR 1 is only legal after PR 2 is reverted, and the PR bodies say so.
+**Named split seam (rule 5): {PID-1 reservation + held-publication ticket} / {literal migration}** —
+**named, and it does NOT fire: this phase is ONE PR** (ledger row 6 = artifact §5.2's `T2-d`). The two
+halves are **not** independently revertable, on the plan's own test — the same test P2's seam
+paragraph applies (*"the SIGKILL arm is `exit_process_and_retire(pid, -9)`, a function that does not
+exist until the custody half lands, so reverting the custody half alone would leave a call to a
+deleted wrapper. One revert story"*). Here the dependency is the same shape and runs one way: the
+literal migration calls `designated_init()`, an accessor that does not exist until the reservation
+half lands, so **reverting the reservation half alone would leave calls to a deleted accessor**. The
+dependency is one-way, which means the revert has exactly one legal order (migration out first,
+reservation second) — and a revert with one legal order is **one** revert story, not two. The seam
+survives as a **commit** boundary in that order: commit 1 ships the reservation, the ticket and
+`designated_init` with its production validation as its live consumer (rule 2); commit 2 migrates the
+production init sites tabulated above, and their dependent reads, onto `designated_init()`.
 
 **Gate extras.** Failure injection at **each** fallible stage after provisional PID selection:
 `designated_init() == None`, no row, and a retry succeeds as PID 1. This is now safe to gate: PR #558
@@ -1382,9 +1435,13 @@ death — deliberately, because bundling identity with policy is what killed fou
 recorded current thread. Decision is made inside the PM guard on the calling path; named and accepted
 for this tranche (§0.0).
 
-**Revert.** *(One story per PR, per rule 5.)* PR 2 — restore the literals at their four sites; nothing
-else moves. PR 1 — restore the `next_pid` base and delete `designated_init` with its ticket; the
-ticket is additive, so this is a clean deletion once PR 2 is out.
+**Revert — one story, one PR** *(rule 5; artifact §5.2 `T2-d`).* Restore the literals at their four
+production sites and their dependent reads, then restore the `next_pid` base and delete
+`designated_init` with its ticket — in that order, which is the only legal one, and that single fixed
+order is exactly why this is one story rather than two. The ticket is additive, so the deletion is
+clean once the literals are back. One `git revert` of the merge commit does the whole thing; no other
+phase consumes `designated_init()` until **P5b**, which is held and unmerged. Verified by a
+`git revert` dry run on the merge commit before merge, and written into the PR body first.
 
 ---
 
@@ -1905,12 +1962,16 @@ arms are exercised by this PR's own tests (rule 2), so nothing dormant lands.
 
 **Files.** `kernel/src/task/scheduler.rs`, `kernel/src/syscall/signal.rs`,
 `kernel/src/task/teardown.rs`, `kernel/src/process/manager.rs`, `kernel/src/syscall/clone.rs`,
-`kernel/src/task/waitqueue.rs` (the ninth interlock site). **Split seam (rule 5, not a size rule):
-{request API + kick plan + predicate + interlock} / {group scope + seal}** — two independently
-revertable mechanisms, so **the seam FIRES and this phase is two PRs** (ledger rows 15 and 16). PR 1's
-revert falls back to Phase 2's remote-marking behaviour with pid-scoped SIGKILL; PR 2's revert returns
-kill scope from the thread group to the single row and deletes the seal, leaving PR 1's request
-machinery intact.
+`kernel/src/task/waitqueue.rs` (the ninth interlock site). **Named split seam (rule 5, not a size
+rule): {request API + kick plan + predicate + interlock} / {group scope + seal}** — **named, NOT
+fired: this phase is ONE PR** (ledger row 12), on the same criterion tranche 2 uses. The dependency is
+one-way: the group-scope cutover consumes the request API, so reverting the request half alone would
+leave the group path calling a deleted API — the revert has exactly one legal order (group scope and
+seal out first, request machinery second), and a revert with one legal order is **one** revert story.
+The seam survives as a **commit** boundary in that order, and the plan does not pre-split on it; if
+the implementation produces two genuinely independent stories, it splits **then** and amends the §0
+ledger in the same pass. P9 is a tranche-3+ phase and is not gated by the tranche-2 ratification, but
+the ledger's exactness claim covers it, so the criterion is applied here identically.
 
 **Gate extras.** Two-CPU aarch64: kill a thread running remotely at EL0 and prove **its own TID**
 executes the exit commit, with zero post-request EL0 trace for the victim and `EXIT_VICTIM_OWNED > 0`.
@@ -1957,9 +2018,11 @@ correctness hole rather than a bound. Note also the new `P5 → P9` edge: this p
 group-scoped kill, so the init-sibling refusal must already be merged or P9 would hand userspace a
 way to kill init that `main` does not have.)*
 
-**Revert.** *(One story per PR, per rule 5.)* PR 2 — restore pid-scoped kill and delete the seal.
-PR 1 — restore the remote-marking body, i.e. fall back to Phase 2's already-safe behaviour, not to
-`main`.
+**Revert — one story, one PR** *(rule 5).* Restore pid-scoped kill and delete the seal, then restore
+the remote-marking body — in that order, which is the only legal one, and that fixed order is why this
+is one story. The fallback is to **Phase 2's already-safe behaviour, not to `main`**. One `git revert`
+of the merge commit; verified by a `git revert` dry run before merge and written into the PR body
+first.
 
 ---
 
