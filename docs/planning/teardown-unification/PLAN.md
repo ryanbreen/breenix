@@ -3,12 +3,12 @@
 Companion to `teardown-unification-DESIGN-v3.md`. Design-only: nothing below has been implemented and
 no gate result is claimed.
 
-**Status:** **Tranche-ratified document. Tranche 1 (P0+P1+P2): COMPLETE — merged to `main`. P2 (SPINE-1, #491's live UAF) shipped via PR #515, merge commit `6003c7a6758a51c4f2092f8a1e3a502432273795`; exit_kick_protocol_gate + fork_exit_defer_reclaim_pairing_test deterministic 100/100, 0 fault markers, beast x86 3/3. Later phases: design-debt register applies; sections may change before their tranche ratifies.**
+**Status:** **Tranche-ratified document. Tranche 1 (P0+P1+P2): COMPLETE — merged to `main`. P2 (SPINE-1, #491's live UAF) shipped via PR #515, merge commit `6003c7a6758a51c4f2092f8a1e3a502432273795`; exit_kick_protocol_gate + fork_exit_defer_reclaim_pairing_test deterministic 100/100, 0 fault markers, beast x86 3/3. Tranche 2 (P3 + P4 + P5a; P5b held on #575): **RE-RATIFIED, effective on pre-check pass (§2 condition 7)** — the operator ratified *proceeding per the re-ratification artifact* on 2026-08-16 (document repair → one adversarial pre-check → implementation); the ratification takes effect when this repaired text lands with a passing pre-check, and no tranche-2 phase is cleared for build before that. See §0.0. Later phases: design-debt register applies; sections may change before their tranche ratifies.**
 
-**Base:** `main` @ `eebc8868` (docs re-verified at `main` @ `c9efdcc7`; **re-verified again for v3 at
-`main` @ `985881a6`** — v2 of these documents merged, no kernel change. Every file:line below was read
-out of the tree at `985881a6`; five v2 citations that had drifted are corrected — see DESIGN §0.3
-for the table).
+**Base:** `main` @ `eebc8868` (docs re-verified at `main` @ `c9efdcc7`; re-verified for v3 at
+`main` @ `985881a6`; **tranche-2 sections re-anchored for v3.3 at `main` @ `2c7b8798`**, 2026-08-16 —
+every file:line in the tranche-2 phases, the DEBT-3/DEBT-4 register rows and the standard gate was
+re-read out of the tree at that SHA; the drifted set is tabulated in DESIGN §0.3.1).
 **Issues:** #491 (spine), #464, #471.
 
 ---
@@ -30,15 +30,17 @@ it un-skippable.
 > not enough; it must survive the same adversarial pre-check that produced the debt. A tranche may be
 > submitted while debts owned by *later* phases remain open, and only while that is true.
 >
-> **Tranche 1 = P0 + P1 + P2. It owns none of the seven debts below** (their owners are P6a, P6b,
-> P7, P8, P9, P10 and P12), which is precisely why it is submitted for ratification now.
+> **Tranche 1 = P0 + P1 + P2 (ratified, merged) and Tranche 2 = P3 + P4 + P5a (ratification decided
+> 2026-08-16, effective on this repair's pre-check pass; P5b held) each own none of the seven debts
+> below** (their owners are P6a, P6b, P7, P8, P9, P10 and P12), which is precisely why each could be
+> submitted while the register stands open.
 
 | Debt | Owner phase | What must be true before that phase's tranche can ratify | Source finding |
 |---|---|---|---|
 | **DEBT-1 — `Report` exactly-once is not achieved; it degrades to at-most-once in one window** | **P6b** | Two things, together. **(a) The R-19 window.** When an effect marker reads `started == 1 && finished == 0`, T4 cannot tell whether `record_exit` landed; the current ruling is `→ Completed` + `LEDGER_EFFECT_AMBIGUOUS{report}`, i.e. a *possibly missing* report. P6b must either close the window with a mechanism that makes the record step itself recoverable, **or** carry an explicit operator acceptance that this is the round's single at-most-once obligation, with the counter asserted `0` on every healthy boot and moved only by deliberate injection. A silent third option — restating exactly-once while shipping at-most-once — is what the pre-check rejected twice and is not available. **(b) `on_process_exit` split phasing.** The split into `claim_exit_slot` (pure atomics, PM-callable) + `record_exit` (reaches SERIAL via `finalize()` → `ktap::emit_summary`) must be shown not to reorder the registry-slot clear relative to the serial emission, and must land in the **same PR** as T4 — a recovery rule and the marker it reads must never be separated by a merge boundary | v3 pre-check and re-check, item **B NOT-CLOSED** (both passes, verbatim unchanged): *"R-19 permits missing report when `started==1 && finished==0`"*. DESIGN §1.6 (class-B `Report`), §6 R-19; PLAN P6b |
 | **DEBT-2 — `Fds` close replay safety needs a PER-DESCRIPTOR token; the endpoint-CAS `CloseTicket` design is REJECTED** | **P7** | The v3 repair made `endpoint_hangup` idempotent by a **CAS on the shared endpoint**. The re-check's new FATAL is that live close accounting in the pipe/PTY/TCP endpoints is **per-descriptor**: a `dup`'d descriptor is a second, legitimate decrement on the *same* endpoint, and an endpoint-level CAS would suppress it — trading a double-close for a leaked endpoint that never hangs up. **P7 must not implement the CAS as specified.** It must carry a replay token that is unique to the `(row, fd)` pair being closed and that survives the unlocked window, so that a *replayed exit-close of the same descriptor* is suppressed while a *legitimate close of a different descriptor on the same endpoint* still decrements. DESIGN §1.4/§1.6/§2.5 and PLAN P6b/P7 must be rewritten to that mechanism before P7's tranche is submitted, and P7's gate must include a `dup`-then-close-both workload that fails by construction under an endpoint CAS | v3 re-check, **NEW FATAL**: *"the CloseTicket repair assumes endpoint-level CAS idempotence despite current close accounting being per-descriptor; duplicated descriptors make the CAS unsafe and would suppress legitimate closes"*; re-check item **1 NOT-CLOSED**. Also flagged by the repair pass itself as unreviewed (*"nobody has checked the current endpoints can satisfy it"*) |
-| **DEBT-3 — the blocking-primitive inventory is NOT closed at nine** | **P9** | The no-new-block admission interlock is what makes the boundary-reachability classification a one-way door, and it is specified as living inside "the exact nine" primitives. Two live paths are outside that set: **`kernel/src/syscall/futex.rs:115`**, which publishes `ThreadState::Blocked` **directly**, bypassing every `Scheduler::block_current*` entry point, and **`kernel/src/task/scheduler.rs:2175-2194`**, which publishes I/O blocking through a primitive the inventory does not list. Either is enough for a victim to block *after* its exit request is published, which is exactly the hole the interlock exists to close. Before P9's tranche: each path is brought under the interlock **or** proven unreachable once a request is latched; P0's ratchet rule 2 (*"the blocking-primitive set is exactly the nine above"*) is restated to the corrected inventory; and DESIGN §1.5's one-way-door claim and §0.3's "inventory is declared CLOSED at four families" are restated to match | v3 pre-check and re-check, item **D NOT-CLOSED** (both passes, verbatim unchanged). DESIGN §0.3 (closure D), §1.5; PLAN P0 rule 2, P9 |
-| **DEBT-4 — the x86 reap path bypasses the tombstone gate** | **P6a** | P6a's whole claim is that a row is removed only by the **two-event join** (`reaped` ∧ `retired`, whichever writer sees the other flag set performs the removal). **`kernel/src/syscall/handlers.rs:3101` removes the row directly on the live x86 reap path**, so the join is not the only remover and the retention gate can pass on aarch64 while x86 still frees a row out from under an un-retired receipt. Before P6a's tranche: that site routes through the join, **or** P6a's retention gate is honestly re-scoped to aarch64 with the x86 divergence named in AC-12's evidence column, a ratchet pinning `handlers.rs:3101` by name, and a stated phase that closes it. Scoping the gate narrowly to avoid tripping on it, without naming it, is not available | v3 pre-check and re-check, item **B NOT-CLOSED** (second half, both passes): *"P6a omits the live x86 reap at `kernel/src/syscall/handlers.rs:3101`, which still removes the row directly"*. PLAN P6a |
+| **DEBT-3 — the blocking-primitive inventory is NOT closed at nine, and the surface is WIDER than the design recorded** | **P9** | The no-new-block admission interlock is what makes the boundary-reachability classification a one-way door, and it is specified as living inside "the exact nine" primitives. **Four** live publications sit outside that set, re-verified at `main` @ `2c7b8798`: **(1)** `kernel/src/syscall/futex.rs:115` writes `thread.state = ThreadState::Blocked` **directly**, bypassing every `Scheduler::block_current*` entry point (the state is re-read at `:130`); **(2)** `kernel/src/task/scheduler.rs:2607` publishes `ThreadState::BlockedOnIO` directly — the design cited `scheduler.rs:2175-2194`, which is now `unblock`'s wake predicate, not the publication; **(3)** `kernel/src/task/kthread.rs:151` `kthread_park()` writes `Blocked` at `:183` inside `with_scheduler` with no interlock, then drops the tid from the ready queue — **not in the design at all**; **(4)** `Thread::set_blocked()` (`kernel/src/task/thread.rs:902`, `#[allow(dead_code)]`) is a differently-named mutator whose only caller is `Scheduler::block_current` (`scheduler.rs:2099`, itself `#[allow(dead_code)]`) — a dead two-level pair that publishes `Blocked` outside the inventory's naming convention, and per the repo's zero-tolerance standard a **deletion**, not an interlock target. **The existing ratchet cannot see any of these**: `tests/teardown_structure.rs:2029` pins the family by NAME (`BLOCKING_NAME_PREFIXES = ["block_current", "prepare_to_wait"]`, `pub` definitions only), so a tenth `block_current*` cannot appear unnoticed, but a direct `thread.state = ThreadState::Blocked*` write — or a mutator named anything else — is invisible to it. Before P9's tranche: each path is brought under the interlock **or** proven unreachable once a request is latched; the ratchet gains a rule that catches direct state writes and not only names; the dead `set_blocked`/`block_current` pair is deleted; P0's ratchet rule 2 (*"the blocking-primitive set is exactly the nine above"*) is restated to the corrected inventory; and DESIGN §1.5's one-way-door claim and §0.3's "inventory is declared CLOSED at four families" are restated to match | v3 pre-check and re-check, item **D NOT-CLOSED** (both passes). Surface widened and re-anchored by the 2026-08-15 tranche-2 re-ratification (§3.2), tracked as **#580**. DESIGN §0.3 (closure D), §0.3.1, §1.5; PLAN P0 rule 2, P9 |
+| **DEBT-4 — the x86 reap path bypasses the tombstone gate** | **P6a** | P6a's whole claim is that a row is removed only by the **two-event join** (`reaped` ∧ `retired`, whichever writer sees the other flag set performs the removal). **`kernel/src/syscall/handlers.rs:3123`** (re-anchored at `2c7b8798`; the design said `:3101`) removes the row directly on the live x86 reap path, and its **byte-similar duplicate** at `kernel/src/syscall/wait.rs:386` does the same — so the join is not the only remover and the retention gate can pass on aarch64 while x86 still frees a row out from under an un-retired receipt. **Materially cheaper to close than when it was registered:** `ProcessManager::remove_process` is now a single four-line choke point (`manager.rs:1086-1090`) that already calls `note_process_row_removed()` → `ROW_REMOVAL_EPOCH` (`task/process_task.rs:355-357`), so **the join can be installed inside `remove_process` itself and cover both arches at once**, instead of the design's per-call-site chase. The two copies of the `complete_wait` reap block are a de-duplication seam worth taking in the same phase. (`task/process_task.rs:1807` is a third caller, but it is the `p1_row_epoch_gate` boot-test harness, not a live reap.) Before P6a's tranche: the removal routes through the join, **or** P6a's retention gate is honestly re-scoped to aarch64 with the x86 divergence named in AC-12's evidence column, a ratchet pinning both call sites by name, and a stated phase that closes it. Scoping the gate narrowly to avoid tripping on it, without naming it, is not available | v3 pre-check and re-check, item **B NOT-CLOSED** (second half, both passes): *"P6a omits the live x86 reap at `kernel/src/syscall/handlers.rs:3101`, which still removes the row directly"*; anchors and closure cost re-derived by the 2026-08-15 re-ratification (§3.2). PLAN P6a |
 | **DEBT-5 — `EXIT_BLOCK_REFUSED` post-migration semantics: it is NEVER asserted to zero** | **P10** *(a/b/c/d)* | The admission interlock is **permanent**, not scaffolding. Migration changes only the fate of a victim *already* blocked; it does not change the refusal owed to an already-latched victim trying to **enter** a migrated wait — which must stay refused, or migration manufactures cancellation work and reopens a lost-wakeup window between block and cancel. Therefore: **no gate anywhere may assert `EXIT_BLOCK_REFUSED{family} == 0`**, before or after migration. `EXIT_BLOCK_REFUSED{family}` is asserted **nonzero** in P9's own admission-race test and **re-asserted nonzero** in each of P10a-d; the migration evidence is the *pair* `EXIT_LEGACY_REMOTE_MARK{family} → 0` and `EXIT_WAIT_CANCELLED{family} → nonzero`. This debt is **repaired in the v3 text**; it is registered because it is a standing guard that a later phase can silently break, and because the failure mode (a "tidy-up" that asserts the counter to zero once migration is done) reads like cleanup | v3 pre-check, MAJOR item 5: *"P10's requirement that `EXIT_BLOCK_REFUSED{family}` hits zero post-migration contradicts the permanent admission interlock"*. DESIGN §1.5, §3 AC-11; PLAN P0 counter table, P9, P10a-d |
 | **DEBT-6 — P12's group-membership drop is scoped to EXTERNALLY-ORIGINATED signals only** | **P12** | The S1 group-seal check drops a fatal request when the designated init is a member of the **target group**. That drop applies to **`ExitIntent.origin == Signal` only** — sender-agnostic (a self-directed `kill(getpid())`/`raise` is still a signal and is still dropped, matching Linux's `sig_task_ignore`, which consults `SIGNAL_UNKILLABLE` and disposition and never the sender). **`ExitSyscall`** (init's own `exit_group`, or the exit of its last member) **and `FatalFault` BYPASS the membership test entirely**, so init's own exit still seals, latches and reaches the kernel-fatal panic. An unscoped check makes that panic path unreachable and the system hangs with init alive — a silent inversion of the policy. P12's gate must include the negative (a deliberate init `exit_group` still panics; a `FatalFault` injection still panics; an ordinary group kill still works) and record the unscoped-check pre-image. This debt is **repaired in the v3 text** and is registered because the failure is silent | v3 pre-check, MAJOR item 6: *"P12's group-membership signal drop isn't scoped to externally-originated signals; as written it would also suppress init's own `exit_group`, contradicting the required panic path"*. DESIGN §2.2 (End 2); PLAN P12 |
 | **DEBT-7 — P0 defer/reclaim evidence is aggregate-only, not per-PID causal pairing** | **P8** | P0's `TraceCounter` substrate stores only per-CPU scalar totals, so its nonzero workload delta can prove aggregate balancing but cannot prove that process X's defer is followed by process X's reclaim. Sampling live `TRACE_BUFFERS` is not an acceptable substitute: `iter_events()` requires tracing to be disabled, and disabling every provider during a boot test drops unrelated live-boot evidence. Before P8's tranche can ratify, add a race-free, bounded correlation mechanism keyed by PID and restore the stronger gate: every one of the test's 64 child PIDs has exactly one defer followed by exactly one reclaim. The mechanism must not sample live trace rings, disable tracing or providers system-wide, or add unbounded test storage; P8 owns this because it introduces the round's real per-PID boundary-observation infrastructure | P0 observability STRIP+SIMPLIFY review round 2, S1. `tracing/providers/teardown.rs`; `tracing/buffer.rs::iter_events`; PLAN P0 gate extra 1 and P8 |
@@ -161,7 +163,9 @@ repair adds or splits a PR.
 
 The first Codex Sol ratification refused endorsement (`ENDORSE: NO`) with 2 FATAL seams, 7 MAJOR,
 1 MINOR and 7 conditions. Phase labels in this table are **v2 labels**: the wait families are now
-P10a/b/c/d, so "P10c empties the allowlist" reads **P10d** today, and "16 PRs" reads **17**.
+P10a/b/c/d, so "P10c empties the allowlist" reads **P10d** today, and "16 PRs" reads **18** (§0's
+current ledger; the figure moved 16 → 17 in the v3 tranche pass and 17 → 18 when the 2026-08-16 repair
+split P5 into P5a and the held P5b).
 
 | Cond | What changed in this PLAN | Where |
 |---|---|---|
@@ -188,6 +192,49 @@ closure F re-wires.
 
 ---
 
+## 0.0 Ratification record
+
+| Tranche | Phases | Status |
+|---|---|---|
+| **Tranche 1** | P0 + P1 + P2 | **Ratified** (v3.1 pass, `ENDORSE: YES`) — **COMPLETE, merged to `main`** |
+| **Tranche 2** | **P3** (exec detach + clone/exec admission) + **P4** (kernel-stack ownership parity + creation-path lock-order parity) + **P5a** (init identity) | **RE-RATIFIED, effective on pre-check pass.** The operator's decision of **2026-08-16** ratified *proceeding per* `docs/planning/teardown-unification/P3-RERATIFICATION-2026-08-15.md` — document repair, then **one** adversarial pre-check against the repaired text, then implementation (artifact §5.3, §8). The ratification is effective the moment this repaired text lands with a **passing** pre-check; until then no tranche-2 phase is cleared for build (§2 condition 7). Assessed at `main` @ `1db23de0`; this repair re-anchored at `main` @ `2c7b8798` |
+| — | **P5b** (`sys_clone` init-group refusal) | **HELD** on **#575** — its acceptance evidence is a quiesce walk of the process map, and init does not reliably reach quiesce on the QEMU gates. Mechanism unchanged; only its gate is blocked |
+| **Tranche 3+** | P6a, P6b, P7, P8, P9, P10a-d, P11, P12 | **Uncleared.** Each arrives with its own tranche pass; the DESIGN-DEBT REGISTER gates any tranche containing a debt owner |
+
+**What "effective on pre-check pass" means, precisely.** The operator did not stamp a ratification on
+the text as it stood on 2026-08-16 — that text still carried the abolished size ceiling, a factually
+wrong claim about the fork paths, and a dissolved P4. What was ratified is the **course**: repair the
+documents, run one adversarial pre-check against the repaired text, then build. This document
+therefore records a **decision** with an unmet gate, not a completed ratification: the gate closes when
+the PR carrying this repair merges with its pre-check returning no blockers, and only then is any
+tranche-2 phase cleared for build. A status that outruns its own gate is exactly what §2 condition 7
+forbids ("condition 7 cannot be closed by the document that seeks the ratification").
+
+**What the 2026-08-16 decision supersedes.** Tranche 2 was refused across **six** adversarial
+rounds around 2026-08-10, after which the operator chose Option A — foundation-hardening first. Those
+six verdicts are **lost**: they lived only in a session scratchpad under `/private/tmp`, that session
+directory no longer exists, no `*tranche*` path survives anywhere under `/tmp` or `/private/tmp`, and
+no tranche-2 verdict was ever committed to the repo. They cannot be quoted, and this document does not
+pretend otherwise. The re-ratification artifact reconstructs seven probable grounds (G1–G7) from
+surviving evidence and dispositions them; five are closed outright by the foundation work
+(**#531/#534/#539/#542/#547/#549/#551/#557/#558/#565/#566/#570/#574/#577**), one is the size-ceiling
+policy conflict closed by deletion here, and one — **#560**, no authoritative executing-thread
+identity — is **open and accepted with eyes open** for this tranche (artifact §7 OQ-1, Position A):
+P3's and P5a's admission decisions are made inside the PM guard on the calling path, not remotely,
+and #560's failure mode is skew on a *blocking* path, which neither is.
+
+**Sequencing prerequisite.** **#573** (a failed/never-published exec leaks the entire half-built
+address space on x86) ships **before or with** P3. P3's gate asserts that `inherited_cr3` and
+`thread_group_id` are preserved byte-identically on **every** exec failure; that is exactly the path
+#573 leaks underneath. It is not part of tranche 2 proper — it gates and evidences on its own, scoped
+in `docs/planning/470-custody/PR4-RESCOPE.md`.
+
+**Standing obligation.** The ratified artifact and this record live in the repo, not in a scratchpad.
+The `/tmp` loss above already cost this campaign one full record; PR #571 exists because the same
+thing nearly happened to the #470 custody design.
+
+---
+
 ## 0. Phasing contract (this is the part that differs from every prior attempt)
 
 Five rules bind every phase. They exist because the two failure modes that killed prior rounds were
@@ -205,62 +252,160 @@ class (r23: fixed 3, introduced 4).
    a different hat.)*
 3. **Spine first.** #491's confirmed-live UAF closes in **Phase 2 of 13**, using only already-merged
    primitives — not behind ten prerequisite PRs.
-4. **Hard size ceiling.** PR #418 measured **5 files / 166 insertions / 70 deletions = 236 lines**.
-   Each PR targets **≤ ~230 changed non-generated lines across ≤ 5 production files**. Crossing it
-   means splitting at the named seam *before* review, not merging anyway. The ceiling is a gate.
-5. **One revert story per phase**, written in the PR body before merge, and the phase's code must
-   actually be revertable alone (verified by `git revert` dry run on the merge commit).
+4. **No size gate.** Operator ruling, 2026-08-11: *no line or file ceilings on fixes, ever — safety
+   seams are fine, size gates never.* A PR is as large as its correct fix requires. The named split
+   seams below survive as **safety** seams with a non-size firing condition, stated in rule 5.
+   **Where a phase section or an older changelog row still carries a rough line estimate or the words
+   "line budget", it is descriptive scale inherited from a pre-2026-08-11 revision — never a gate.**
+   No PR is split, blocked, resized or reviewed differently because of one, and the same deletion has
+   been applied to DESIGN (§7 OQ-8 and the §0.2 architectural ruling).
+5. **One revert story per PR**, written in the PR body before merge, and **each PR's** code must
+   actually be revertable alone (verified by `git revert` dry run on the merge commit). The unit is
+   the PR, not the phase: a phase that ships as more than one PR owes one written story per PR, and a
+   phase that ships as one PR owes exactly one. **This is also the firing condition for every named
+   split seam:** a seam fires when the PR in front of it would carry **two** revert stories — two
+   independently revertable mechanisms in one merge commit — never because of a line count.
+   **The plan does not pre-split on this rule.** Every phase in the ledger below is scoped as the
+   number of PRs its ratified shape names, with each PR's revert story written out in its own phase
+   section; a phase whose *implementation* genuinely produces two independent revert stories splits
+   **at implementation time**, and the PR that splits records the split as an in-text amendment to
+   the §0 ledger in the same pass. Splitting on paper, in advance of the code, is how a ratified
+   review surface silently doubles — so the seams below are **named** in the phase text and fire only
+   against real scope.
 
-### The honest PR ledger — 13 numbered phases, **17 PRs** *(condition 6; updated by v3 closure D)*
+### The honest PR ledger — 13 numbered phases, **18 PRs** (one of them, P5b, held) *(condition 6; updated by v3 closure D and by the 2026-08-16 repair pass)*
 
 v1 claimed "13 phases / 13 PRs" while splitting P9 into three; the first ratification counted 15 and
-called the contradiction a MAJOR. v2 said 16. Adding the wait family v2 omitted (`BlockedOnSignal`)
-as its own subphase makes the true figure **17 PRs**. Every one is listed; there are no others.
+called the contradiction a MAJOR. v2 said 16; v3 said 17. **The count rests on rule 5 alone** — one
+revert story per PR — now that rule 4's ceiling is gone: a PR splits when it would carry two revert
+stories, so the ledger's shape is a function of revertability, not of size. The only movement from
+v3's 17 is **P5's split into P5a (ready) and P5b (held on #575)**. Nothing was added for size, and no
+phase was added, removed or renumbered; **P4 is restored to the ledger as its own phase**, per the
+re-ratification artifact §4.2/§5.2/§8, having been wrongly dissolved by an earlier repair pass.
 
-| # | PR | Phase | Ceiling estimate |
-|---|---|---|---|
-| 1 | Teardown observability + call-site ratchet | P0 | ~200 lines / 3 files |
-| 2 | Retirement fence + RootProof taxonomy + drain restructure **+ pass cursor / park list** | P1 | ~210 lines / 5 files |
-| 3 | SPINE-1: SIGKILL stops eager-freeing **+ receipt custody across all 9 adapted sites** *(7 `exit_process` callers + 1 new SIGKILL arm + 1 PM-nested enqueue)* | P2 | ~230 lines / 5 files |
-| 4 | exec detach + clone/exec admission | P3 | ~150 lines / 4 files |
-| 5 | Kernel-stack ownership parity | P4 | ~150 lines / 5 files |
-| 6 | Runtime init designation (identity only) **+ init-group clone refusal** | P5 | ~200 lines / 5 files |
-| 7 | Reap/tombstone retention gate **+ two-event join** | **P6a** | ~190 lines / 5 files |
-| 8 | Exactly-once ledger (class A/B obligations + effect markers) | **P6b** | ~210 lines / 5 files |
-| 9 | FD closure leaves the PM lock | P7 | ~160 lines / 5 files |
-| 10 | Victim-owned `do_exit_current` + boundary hook | P8 | ~220 lines / 5 files |
-| 11 | Request-only scheduler termination + group cutover **+ no-new-block interlock** | **P9** (was P10) | ~230 lines / 5 files |
-| 12 | Killable wait: futex | **P10a** (was P9a) | ~150 lines / 4 files |
-| 13 | Killable wait: `WaitQueueHead` + stdin/TTY readers | **P10b** (was P9b) | ~150 lines / 4 files |
-| 14 | Killable wait: **`BlockedOnSignal` — `pause`/`sigsuspend`** *(NEW in v3 — closure D)* | **P10c** | ~170 lines / 4 files |
-| 15 | Killable wait: child-wait + timer/nanosleep + completion/I-O; **delete the legacy arm** | **P10d** (was P9c/P10c) | ~180 lines / 5 files |
-| 16 | Fatal-signal + fault convergence (intent-only delivery) | P11 | ~220 lines / 5 files |
-| 17 | Init death policy **+ group-membership drop check** | P12 | ~140 lines / 4 files |
+**Tranche 2 is three PRs, exactly as ratified.** An intermediate state of this repair pre-split P3,
+P4, P5a and P9 into two rows each on rule 5, which took tranche 2 to six PRs and the ledger to 22.
+**That is dropped back.** The operator's 2026-08-16 decision ratified the artifact's PR shape —
+`P3-RERATIFICATION-2026-08-15.md` §5.2 (`T2-b` = P3, `T2-c` = P4, `T2-d` = P5a) and §8 (*"the four-PR
+revised tranche (T2-a → T2-b → T2-c → T2-d, P5b deferred)"*) — and §5.2 fixes a **single** revert
+story for each by hand (`T2-b`: *"delete the two field assignments + the admission check"*; `T2-c`:
+*"its own revert story (per-site, each call site independent)"*). Rule 5 is not weakened by that: it
+is applied at implementation time rather than in advance. Each of those phases carries **one** written
+revert story in its own section, its seam stays **named** there, and if the implementation genuinely
+produces two independent stories it splits then and amends this ledger in the same pass. The identical
+criterion is applied to **P9** (tranche 3+, so not gated by this ratification) — one row, seam named
+in its phase text — so the ledger's unit is consistent end to end. **P5a's seam does not fire on the
+plan's own test in any case**: the would-be second PR migrates the init literals onto
+`designated_init()`, an accessor that does not exist until the would-be first PR lands, so reverting
+the first alone would leave calls to a deleted accessor. The dependency is one-way, so the revert has
+exactly one legal order — and a revert with one legal order is one story, which is precisely how P2's
+seam paragraph (PLAN, Phase 2) concludes *one* story from the same shape.
 
-> **Ceiling honesty (rule 4).** Five PRs now sit at or within ~10 lines of the ~230-line ceiling
-> (P1, P2, P6a, P6b, P9). Each states its named split seam in its own section; crossing the ceiling
-> means splitting at that seam **before** review, which would make the count 18-22 rather than 17.
-> That is the price of the closures and it is stated up front rather than discovered at review.
+Every PR this plan commits to today is listed, and **there are no others**. **Ten** phases carry a
+*named but unfired* seam: **P3**, **P4**, **P5a** and **P9**, held to implementation time by rule 5's
+no-pre-split clause above, plus **P1**, **P6a**, **P6b**, **P8**, **P11** and **P2 as merged**, which
+are one PR as scoped today with the seam as a commit boundary. P2's is settled by history (it merged
+as one commit, PR #515); the other nine are re-tested when their own tranche is ratified against real
+scope, and again when the PR is actually written. If one of those seams fires then, that phase becomes
+two rows and **this ledger is updated in the same pass** — the count is exact for what is written now,
+not a prediction about arguments not yet made. The PR that splits says so in its body.
+
+| # | PR | Phase |
+|---|---|---|
+| 1 | Teardown observability + call-site ratchet | P0 |
+| 2 | Retirement fence + RootProof taxonomy + drain restructure **+ pass cursor / park list** | P1 |
+| 3 | SPINE-1: SIGKILL stops eager-freeing **+ receipt custody across all 9 adapted sites** *(7 `exit_process` callers + 1 new SIGKILL arm + 1 PM-nested enqueue)* — **merged, PR #515** | P2 |
+| 4 | exec detach **+ clone/exec admission**: clear `inherited_cr3`/`thread_group_id` at every exec commit and preserve on every failure; parent-`Live` validation + non-runnable publication + the `Creating` dispatch arm | **P3** — artifact `T2-b` |
+| 5 | Kernel-stack single-owner accounting (**AC-8**) across the five `Box::leak` sites **+ creation-path PM→SCHEDULER lock-order parity** (#527's creation-path remainder) — closes **#579** | **P4** — artifact `T2-c` |
+| 6 | Runtime init designation — PID-1 reservation + held-publication ticket **+ the init literal migration onto `designated_init()`** | **P5a** — artifact `T2-d` |
+| 7 | Init-group clone refusal | **P5b** — **HELD on #575** |
+| 8 | Reap/tombstone retention gate **+ two-event join** | **P6a** |
+| 9 | Exactly-once ledger (class A/B obligations + effect markers) | **P6b** |
+| 10 | FD closure leaves the PM lock | P7 |
+| 11 | Victim-owned `do_exit_current` + boundary hook | P8 |
+| 12 | Request-only scheduler termination **+ no-new-block interlock + group-scope cutover and seal** | **P9** |
+| 13 | Killable wait: futex | **P10a** (was P9a) |
+| 14 | Killable wait: `WaitQueueHead` + stdin/TTY readers | **P10b** (was P9b) |
+| 15 | Killable wait: **`BlockedOnSignal` — `pause`/`sigsuspend`** *(NEW in v3 — closure D)* | **P10c** |
+| 16 | Killable wait: child-wait + timer/nanosleep + completion/I-O; **delete the legacy arm** | **P10d** (was P9c/P10c) |
+| 17 | Fatal-signal + fault convergence (intent-only delivery) | P11 |
+| 18 | Init death policy **+ group-membership drop check** | P12 |
+
+> **The arithmetic, stated so it can be checked.** **18 rows = 18 PRs** across 13 numbered phases, of
+> which **P5b is held on #575**, so **17** are buildable in sequence today.
+>
+> **Summed out of the table, one row per phase-letter.** Ten phases carry no letter and contribute one
+> row each — P0 + P1 + P2 + P3 + P4 + P7 + P8 + P9 + P11 + P12 = **10**. Three phases are lettered:
+> P5a + P5b = **2**, P6a + P6b = **2**, P10a + P10b + P10c + P10d = **4**.
+> **10 + 2 + 2 + 4 = 18.** That is what turns 13 numbered phases into 18 PRs, and nothing else does:
+> no phase in this ledger is split into more than one row for any reason other than lettering.
+>
+> **Movement from v3's 17 is +1, and only +1.** v3 carried one row each for P3, P4, P5 and P9; three
+> of those are unchanged, and v3's single **P5** row becomes P5a's row plus the held P5b row.
+> **17 + 1 = 18.** (The intermediate 22 recorded during this repair came from pre-splitting P3, P4,
+> P5a and P9 on rule 5 before their code exists; that pre-split is dropped, per the note above.)
+>
+> **#573** is sequenced ahead of P3 but is **not** a tranche-2 PR — it is PR-4b of **#470**, gated and
+> evidenced on its own, and it is not in this count. Tranche 2 proper is therefore rows 4, 5 and 6 —
+> **three PRs** (artifact §5.2's `T2-b`, `T2-c`, `T2-d`), four counting `T2-a`/#573 ahead of them.
 
 ### Standard gate — run on EVERY phase, no exceptions
 
 1. **Zero-warning builds** (all three configs; the grep must produce no output):
-   - `cargo build --release --features testing,external_test_bins --bin qemu-uefi`
-   - `cargo build --release --target aarch64-breenix.json -Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem -p kernel --bin kernel-aarch64`
+   - `cargo build --release --features testing,external_test_bins --bin qemu-uefi` (x86_64)
+   - `cargo build --release --target aarch64-breenix-kernel.json -Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem -p kernel --bin kernel-aarch64`
    - the aarch64 `ec0_fault_inject` config
-2. **QEMU boot/regression:** `./docker/qemu/run-boot-parallel.sh` (x86) +
-   `./docker/qemu/run-aarch64-full-test.sh --rebuild --boot-tests-only` (aarch64 `boot_tests`
-   runtime gates) plus the aarch64 native/strict boot test. The aarch64 runtime gate must reach
-   `[BOOT_TESTS:PASS]`; the ordinary boot paths must reach the
-   real `KERNEL_POST_TESTS_COMPLETE` marker. A marker printed before the behaviour under test is never
-   accepted as evidence. **QEMU concurrency capped at 4** per standing operator rule (batch 4 and 4,
-   never 8+). **Known pre-existing flake:** the `timer:time` family, currently emitted as
-   `timer:timer_quantum_reset_aarch64`, reproduced against plain-main kernel sources with this GICv3
-   gate runner in three consecutive runs: **PASS 84/84; PASS 84/84; FAIL 84/84** with
-   `[TEST:timer:timer_quantum_reset_aarch64:FAIL:reset_quantum did not increment counter - ARM64 reset is a no-op]`.
-   On that named failure only, retry the full command up to **two** times; any other failure, or the
-   same failure after both retries, is a hard failure. A tracking issue for the underlying timer
-   flake is still required.
+
+   > **The aarch64 kernel target is `aarch64-breenix-kernel.json` — soft-float — in every gate
+   > command, without exception.** `aarch64-breenix.json` is the *userspace* hard-float target;
+   > building the kernel with it re-arms **#528** (compiler-emitted NEON in kernel `.text` before the
+   > FPU trap is configured) at roughly 1-in-600 boots and produces false DATA_ABORTs that read as
+   > branch defects. Throwaway gate scripts did exactly this once. Every aarch64 gate therefore also
+   > runs `scripts/check-kernel-no-neon.sh` against the **kernel ELF it actually booted** — the guard
+   > objdumps every `.text*` section and fails on any non-allowlisted FP/SIMD load or store
+   > (`scripts/kernel-neon-allowlist.txt` is intentionally empty).
+2. **Boot/regression gates — the current matrix.** There is no GitHub Actions CI in this repo
+   (`.github/workflows` does not exist); every gate below is run explicitly and its output read.
+   - **x86_64 userspace verdict:** `docker/qemu/run-boot-parallel.sh` and
+     `docker/qemu/run-x86-boot-tests.sh` both score their serial logs through
+     **`scripts/x86-gate-verdict.sh`**, invoked with `EXPECTED_EXITS=<profile floor>`. The verdict
+     requires **all** of: `USERSPACE TEST COMPLETE` present; a parseable `TEST_TALLY:` line;
+     `exited >=` the profile's `EXPECTED_EXITS` floor; `nonzero == 0`; and the `failed=[…]` set inside
+     the two-way allowlist `scripts/x86-gate-allowlist.txt`. The tally is written exactly once per
+     real process death at the `Process::terminate`/`terminate_minimal` choke point (fault-kills
+     included), so a vanished, crashed or `exit(1)`-ing test program is a red gate by construction
+     (PR #565; proven red three ways — injected `exit(1)`, injected segfault, vanished process).
+   - **x86_64 custody boot-tests:** `docker/qemu/run-x86-boot-tests.sh` additionally pins the
+     frame/page-table custody counter lines (`FRAME_CUSTODY_COUNTERS`, `PT_CUSTODY_COUNTERS`,
+     `PT_RETIRE_COHORT`, `PT_EXEC_COHORT`) as literals. **This gate never retries a hung run** — a
+     blanket retry would swallow the wake regressions it exists to catch. Its `EXPECTED_EXITS` floor
+     is a consciously re-pinned literal in the script; a phase that adds or removes a userspace test
+     program re-pins it in the same PR.
+   - **aarch64 runtime gates:** `docker/qemu/run-aarch64-full-test.sh --rebuild --boot-tests-only`
+     must reach **`[BOOT_TESTS:PASS]`** over the registered suite, plus
+     `docker/qemu/run-aarch64-boot-test-strict.sh`. `[BOOT_TESTS:PASS]` is *never* accepted on its
+     own from a stage-advance path — `advance_stage_marker_only`
+     (`kernel/src/test_framework/executor.rs:126`) runs no tests and still emits it, carrying
+     whatever `[TESTS_COMPLETE:c/t]` progress happens to stand (`0/0` when nothing has run). The
+     runner script only reports those numbers; reading them is the human's job.
+   - **aarch64 soaks:** **100 clean cycles** and **100 starved cycles** (host-contended) of the
+     boot-test gate on `aarch64-breenix-kernel.json`, with the no-NEON guard run against the booted
+     ELF. Starvation is applied by the runner, not by a committed script; the cycle count and the
+     starvation method go in the PR body.
+   - **Parallels:** **3× mandatory for any kernel-path merge** (`./run.sh --parallels`, fresh
+     epoch-named VM, `prlctl stop --kill` between runs, serial log truncated before each boot).
+     QEMU-only evidence has already missed a deterministic boot fault (#525) — Parallels gates the
+     kernel path, not the other way round.
+   - **QEMU concurrency capped at 4** per standing operator rule (batch 4 and 4, never 8+).
+
+   **Pre-adjudicated flake signatures — currently exactly one.** **#555** (aarch64 softirq boot-test
+   flake under host starvation, ~1%) may be retried on that exact signature, up to two times, with
+   every occurrence recorded in the PR body. **Nothing else is pre-adjudicated.** The other live
+   flakes — **#512** (pairing-test per-PID reclaim proof), **#536** (`timer_delay` starved false-red,
+   recurs after #524), **#576** (~1/80 EL1 INSTRUCTION_ABORT during spawn), **#562** (aarch64
+   `--features testing` panics 5/5 in a ksoftirqd self-test) — are **hard failures**: each is RCA'd to
+   a root cause before the phase proceeds, never re-run until it disappears. The old
+   `timer:timer_quantum_reset_aarch64` allowance is gone; it was closed by PR #518.
 3. **Phase-specific assertions** below — every one an observed outcome (counter equality, actual
    `waitpid` status, zero fault markers). "The process was created" is never evidence, and **a
    counter equality that holds at zero is never evidence** (condition 6): every equality gate names
@@ -272,8 +417,19 @@ as its own subphase makes the true figure **17 PRs**. Every one is listed; there
    minimum, plus the retention measurement where noted. *(v3: 10c — the `BlockedOnSignal` family — does
    not change retention, but it does change kill timing for `pause`/`sigsuspend`, so it takes the soak
    too; the list reads 2, 6a, 6b, 7, 8, 9, 10c, 10d, 11.)*
-6. **Frozen-region hash gate:** all six gold-master regions byte-identical vs `main`; all five Tier-1
-   files byte-identical unless OQ-4 has been granted in writing.
+6. **Tier-1 byte-identity:** all five Tier-1 files (`syscall/handler.rs`, `syscall/time.rs`,
+   `syscall/entry.asm`, `interrupts/timer.rs`, `interrupts/timer_entry.asm`) byte-identical vs `main`
+   unless the operator has approved the change in writing. **Tier-2 files carry no such bar** —
+   operator ruling, 2026-08-12: `context_switch.rs`, `scheduler.rs`, `interrupts/mod.rs` and the rest
+   of Tier 2 are editable when the approach needs it, and a phase must not contort itself to avoid
+   them; the timing-safety constraints (no logging, no page-table walks, no contending locks, no heap,
+   <1000 cycles) still bind. *(The gold-master frozen-region hash gate that used to sit here was
+   removed from the tree by PR #520 on operator directive; nothing named `gold-master`, `GOLD_MASTER`
+   or `FROZEN` exists under `kernel/src`, `tests` or `scripts`, so gating on it was gating on nothing.)*
+   **Structural ratchets take its place** as the standing anti-regression bar: `tests/teardown_structure.rs`
+   (33 tests), `tests/context_restore_structure.rs` (46), `tests/exec_lock_order_structure.rs` (25),
+   `tests/dma_and_log_sink_structure.rs` (4) — all census-anchored (file + enclosing-item path +
+   occurrence count), no line pins. Every new tranche-2 invariant is ratcheted in one of them.
 7. **Cleanup:** all Parallels VMs stopped, all stray QEMU killed, before reporting the phase done.
 
 ### Dependency graph — re-derived *(condition 1)*
@@ -298,20 +454,30 @@ P3  ──> P8   *** MISSING IN v1 ***      (P8's last-reference decision and Ro
                                          presents a root the row does not own — DESIGN §2.3)
     ──> P9                              (exec detach before any group-scoped kill)
 
-P4  ──> P8, P9                          (all stacks scheduler-owned before any victim-owned exit or
-                                         request-only termination)
+P4  ──> P8, P9                          (RESTORED as its own phase. "All kernel stacks are
+                                         scheduler-owned, one owner each, freed only behind the
+                                         two-epoch grace" — AC-8 — is what P8's last-reference
+                                         decision and P9's group teardown assume when they let a row
+                                         drop. The edge is satisfied INSIDE this plan by P4, whose
+                                         single PR closes #579; it is not deferred to an unscheduled
+                                         issue. P4 has no edge to P3 in either direction: P3 owns the
+                                         exec field pair, P4 owns the creation-path stacks and lock
+                                         order, and they share no mechanism)
 
-P5  ──> P12                             (identity before policy — never bundled)
+P5a ──> P5b                             (the refusal consults designated_init(); identity first)
+
+P5b ──> P12                             (identity before policy — never bundled)
     ──> P9    *** NEW (closure E) ***    (P9 makes fatal signals THREAD-GROUP scoped. Today a kill
                                          aimed at a CLONE_VM sibling kills only that row; from P9 it
                                          seals and kills the whole group. If the designated init
                                          could be in that group, P9 would introduce a way to kill
                                          init that main does not have — a regression, which rule 1
-                                         forbids. P5's clone-admission refusal makes an init sibling
+                                         forbids. P5b's clone-admission refusal makes an init sibling
                                          unconstructible BEFORE the group scope exists, so P9 is
                                          strictly better than main at every commit. P12's
                                          group-membership drop check is the second end, not the
-                                         first)
+                                         first. P5b is HELD on #575, so if P9 arrives first it
+                                         waits here — the edge is not negotiable)
 
 P6a ──> P6b   *** NEW ***               (row must outlive obligations before Resources becomes
                                          row-resident — DESIGN §1.6)
@@ -359,8 +525,10 @@ P11 ──> P12                             (the unhandleable-fault latch produc
 
 **No parallel-merge path is claimed.** *(condition 6 — v1's "P3, P4, P5 can run in parallel with P2
 (disjoint files)" was false and is deleted.)* The production file lists overlap materially:
-`process/manager.rs` appears in P2, P3, P5, P6a, P6b, P7, P8, P9; `task/scheduler.rs` in P1, P2, P3,
-P4, P9, P10a/b/c; `syscall/signal.rs` in P2, P5, P9, P12; `task/process_task.rs` in P1, P2, P4, P6a,
+`process/manager.rs` appears in P2, P3, P4, P5a, P6a, P6b, P7, P8, P9; `task/scheduler.rs` in P1, P2,
+P4, P9, P10a/b/c; `interrupts/context_switch.rs` in P3; `process/creation.rs` and `boot/test_disk.rs`
+in P4; `syscall/clone.rs` in P3 and P5b;
+`syscall/signal.rs` in P2, P5a, P9, P12; `task/process_task.rs` in P1, P2, P5a, P6a,
 P6b, P7, P8. There is no pair of phases in this plan whose production files are disjoint enough to
 merge concurrently without rebasing the other, so **phases merge strictly sequentially in the order
 listed**. Reordering is permitted only where the graph above has no edge, and only one phase is in
@@ -398,7 +566,7 @@ the *exact current* bypass surface so any regression fails CI immediately.
 | `RECLAIM_ENQUEUE_UNDER_PM` *(new, cond. 3)* | `task/process_task.rs:140 enqueue_process_reclaim`, incremented when the PM-owner instrumentation says PM is live — true today at **both** call sites (`manager.rs:1152`, `process_task.rs:244`) | **yes on `main`** — this is the pre-existing violation P2 drives to 0 |
 | `PROOF_UNDER_QUEUE_LOCK` *(new, cond. 3)* | `task/process_task.rs:375-391` *(v3: span corrected)*, incremented if SCHEDULER or PM is acquired while `PENDING_PROCESS_RECLAIMS` is held | zero on `main` (both predicates are lock-free); P1 must keep it zero |
 | `RECEIPT_DROPPED_UNRETIRED` *(new, closure A)* | `RetirementReceipt::drop` — the self-healing destructor that re-enqueues instead of freeing | **declared zero until P2** (the type does not exist before then); asserted 0 from P2 onward |
-| `RECLAIM_PASS_SKIPPED`, `RECLAIM_PARKED`, `RECLAIM_UNPARKED{epoch\|row\|age}`, `RECLAIM_PARK_IMMEDIATE_UNPARK`, `RECLAIM_PARK_RESIDENT` *(new, closure C; split + immediate-unpark counter added by the v3 repair)* | the drain's pass-stamp check and the park/unpark transitions in `task/process_task.rs:375-391`; the `{row}` arm additionally keys on the global `ROW_REMOVAL_EPOCH` bumped by one relaxed increment inside `ProcessManager::remove_process` (`manager.rs:1102-1104`, and P6a's `remove_row`); the `{age}` arm keys on `PARK_AGE_BACKSTOP_EPOCHS = 64` **scheduling epochs** summed over `fence_at_park.online_mask` (no wall clock, no timestamp field) | **declared zero until P1** (the fields do not exist before then); P1 drives `RECLAIM_PASS_SKIPPED`/`RECLAIM_PARKED` and **each of the three `RECLAIM_UNPARKED` arms** nonzero, asserts `RECLAIM_PARK_IMMEDIATE_UNPARK == 0`, and asserts the gauge returns to 0 at quiesce having been observably nonzero mid-run |
+| `RECLAIM_PASS_SKIPPED`, `RECLAIM_PARKED`, `RECLAIM_UNPARKED{epoch\|row\|age}`, `RECLAIM_PARK_IMMEDIATE_UNPARK`, `RECLAIM_PARK_RESIDENT` *(new, closure C; split + immediate-unpark counter added by the v3 repair)* | the drain's pass-stamp check and the park/unpark transitions in `task/process_task.rs:375-391`; the `{row}` arm additionally keys on the global `ROW_REMOVAL_EPOCH` bumped by one relaxed increment inside `ProcessManager::remove_process` (`manager.rs:1086-1090`, and P6a's `remove_row`); the `{age}` arm keys on `PARK_AGE_BACKSTOP_EPOCHS = 64` **scheduling epochs** summed over `fence_at_park.online_mask` (no wall clock, no timestamp field) | **declared zero until P1** (the fields do not exist before then); P1 drives `RECLAIM_PASS_SKIPPED`/`RECLAIM_PARKED` and **each of the three `RECLAIM_UNPARKED` arms** nonzero, asserts `RECLAIM_PARK_IMMEDIATE_UNPARK == 0`, and asserts the gauge returns to 0 at quiesce having been observably nonzero mid-run |
 | `LEDGER_EFFECT_AMBIGUOUS{report}` *(new, closure B)* | T4's ruling branch when `report_marker.started == 1 && finished == 0` | **declared zero until P6b**; asserted 0 on every healthy boot, driven to a known value only by deliberate injection |
 | `TOMBSTONE_JOIN{reap_second}`, `TOMBSTONE_JOIN{retire_second}` *(new, closure B)* | the two removal branches of the two-event join in `ProcessManager` | **declared zero until P6a**; P6b asserts **both** nonzero in one run |
 | `EXIT_BLOCK_REFUSED{family}` *(new, closure D)* | the pre-block interlock inside the nine blocking primitives: `task/scheduler.rs:1726`, `:1897`, `:1916`, `:2065`, `:2153`, `:2218`, `:2227`, `:2386`, and `task/waitqueue.rs:52` | **declared zero until P9**; P9 drives it nonzero and **each P10x re-asserts its own family's value is still nonzero** — *v3 repair:* the interlock is permanent, so this counter never reaches 0; what falls to 0 per family is `EXIT_LEGACY_REMOTE_MARK{family}` |
@@ -453,9 +621,12 @@ what it is today:
    A tenth blocking primitive added without the interlock fails CI on arrival, which is what keeps
    the reachability predicate total after P9.
 
-   > ⚠ **DEBT-3 — this rule is written against an inventory that is not closed.**
-   > `syscall/futex.rs:115` (direct `ThreadState::Blocked` publish) and
-   > `task/scheduler.rs:2175-2194` (I/O blocking via an unlisted primitive) are outside the nine.
+   > ⚠ **DEBT-3 — this rule is written against an inventory that is not closed, and the rule's
+   > NAME-based shape is itself part of the gap (#580).** Four publications are outside the nine:
+   > `syscall/futex.rs:115` (direct `ThreadState::Blocked`), `task/scheduler.rs:2607` (direct
+   > `BlockedOnIO`), `task/kthread.rs:151` `kthread_park()` (writes `Blocked` at `:183`), and the dead
+   > `Thread::set_blocked()`/`Scheduler::block_current` pair (`thread.rs:902`, `scheduler.rs:2099`).
+   > A name-family census cannot see a direct `thread.state = ThreadState::Blocked*` write at all.
    > **P9 owns the closure**, and P9's tranche cannot ratify until this rule is restated to the
    > corrected inventory. P0 may still ship the rule as-is — it is a ratchet on today's set and
    > shipping it does not make the gap worse — but it must not be read as evidence the set is
@@ -649,9 +820,9 @@ users. Grace is still checked **first**.
 > with PM, SCHEDULER or the live queue held (DESIGN §4.3).
 
 **Files.** `kernel/src/task/scheduler.rs`, `kernel/src/task/process_task.rs`,
-`kernel/src/arch_impl/aarch64/ttbr0.rs`, tracing provider, targeted tests. **~210 lines, 3 commits —
-near the ceiling; the named split seam is {fence + RootProof taxonomy} / {drain restructure + pass
-cursor + park list}.**
+`kernel/src/arch_impl/aarch64/ttbr0.rs`, tracing provider, targeted tests. **3 commits; the named split seam (rule 5) is
+{fence + RootProof taxonomy} / {drain restructure + pass cursor + park list} — it fires if the two
+would land as two revert stories in one merge commit.**
 
 **Gate extras.** Unit injection with a zero online mask refuses reclaim; wrap-safe epoch comparison
 test; the existing epoch-before-stack-liveness ordering becomes a structural test; every refusal in a
@@ -825,11 +996,14 @@ upgrade a bool) — because `btrt::on_process_exit` has exactly one call site at
 **Files.** `kernel/src/syscall/signal.rs`, `kernel/src/process/manager.rs`,
 `kernel/src/task/scheduler.rs`, `kernel/src/task/process_task.rs`, plus the six fault sites in
 `kernel/src/arch_impl/aarch64/exception.rs`, `kernel/src/interrupts.rs` and
-`kernel/src/process/mod.rs`, tests. **~230 lines, 3 commits — AT the ceiling and over the 5-file
-target; the named split seam is {receipt custody + all nine adapted sites} / {SIGKILL arm +
-expedite helper + obligation seed}, and this PR is expected to take it.** *(v3 honesty: closure A
-made this phase bigger, and the plan says so up front rather than discovering it at review. Split
-before review, per rule 4.)*
+`kernel/src/process/mod.rs`, tests. **3 commits; the named seam (rule 5) is
+{receipt custody + all nine adapted sites} / {SIGKILL arm + expedite helper + obligation seed}, and it
+is a COMMIT seam, not a PR seam — it did not fire.** The two halves are not independently
+revertable: the SIGKILL arm *is* `exit_process_and_retire(pid, -9)`, a function that does not exist
+until the custody half lands, so reverting the custody half alone would leave a call to a deleted
+wrapper. One revert story, written out below, and P2 accordingly shipped as **one** merge commit
+(PR #515). *(v3 honesty: closure A made this phase bigger, and the plan says so up front rather than
+discovering it at review; the size is not what decides the seam — rule 4 is deleted.)*
 
 **Gate extras.** New `sigkill_teardown_test` (userspace): parent forks a child spinning at EL0;
 parent `kill(child, SIGKILL)`. Assert (a) `waitpid` reaps **-9**; (b) SIGCHLD arrived at kill time
@@ -888,7 +1062,7 @@ anyway, because one named victim against an initially empty table exercises neit
 collision. These two tests exist so that class of defect fails a gate instead of surviving one. Both
 land in the SAME PR as the slot protocol — a mechanism and the test that can falsify it are never
 separated by a merge boundary, the same rule P6b applies to T4 and its marker. Both are test code and
-do not consume the phase's production-line budget.)*
+neither carries a revert story of its own.)*
 
 5. **Sequential bucket reuse — a SECOND victim in the SAME bucket must still be observed.** After the
    single-victim assertions above complete for victim `V1`, the test forks a second victim `V2` chosen
@@ -966,75 +1140,322 @@ alone (rule 5), and it is why the split seam puts the custody refactor in its ow
 
 ## Phase 3 — exec detach + clone/exec admission *(#471 part 1)*
 
-**Scope.** At every exec commit point (after all fallible work, before PM release), set
-`process.inherited_cr3 = None` and `process.thread_group_id = None` alongside
+**Prerequisite: #573 ships before or with this phase.** P3 asserts that both detached fields survive
+**every** exec failure; on x86 a failed/never-published exec currently leaks the entire half-built
+address space, so without #573 that assertion holds over a path that is leaking underneath it.
+**#572** (`AlreadyTerminated` abandon bypasses custody, leaking table leases and all superseded exec
+roots — live at `manager.rs:1131-1136`) touches the same exec-root surface and is named here so the
+gate reads its counters rather than being surprised by them.
+
+**Scope — part 1, exec detach.** At every exec commit point (after all fallible work, before PM
+release), set `process.inherited_cr3 = None` and `process.thread_group_id = None` alongside
 `process.page_table = Some(new_page_table)`; preserve both on **every** exec failure. Keep the
-existing live-sibling guard. `sys_clone` validates the parent row is `Live` under the same PM
-transaction that publishes the child row; user-thread creation publishes the scheduler thread
-**non-runnable** until the row is published, and dispatch refuses `Creating` rows before arming TTBR0.
+existing live-sibling guard (`find_live_clone_vm_sibling_holding_cr3`, defined at `manager.rs:46`,
+called at `manager.rs:3063` and `:3368`) — it exists because **#468** is open, and this phase does not
+close #468. The defect is untouched on today's tree: across all of `kernel/src` there is exactly
+**one** write of `inherited_cr3 = Some(...)` (`syscall/clone.rs:209`) and **one** of
+`thread_group_id = Some(...)` (`clone.rs:210`); the only `None`s are the struct-literal defaults at
+`process/process.rs:337-338`. No exec path clears either field.
+
+**Scope — part 2, clone/exec admission.** `sys_clone` (`syscall/clone.rs:36`) validates the parent row
+is `Live` under the same PM transaction that publishes the child row — the guard is already taken at
+`clone.rs:60` and the TGID is already derived at `:84`. User-thread creation publishes the scheduler
+thread **non-runnable** until the row is published, and dispatch refuses `ProcessState::Creating` rows
+(`process/process.rs:54`, set at `:318`, cleared to `Ready` by `set_main_thread` — declared at `:350`,
+clearing write at `:352`) before
+arming CR3/TTBR0.
+
+> **The dispatch gate lives in `kernel/src/interrupts/context_switch.rs`, not `task/scheduler.rs`, and
+> its scope must be re-derived against PR #570.** #570 rewrote this exact site: a single unconditional
+> PM try-lock before `scheduler::schedule()` (`context_switch.rs:218`) with a refusal arm that neither
+> schedules nor rolls back, plus a second refusal arm for a thread whose address space is gone
+> (`USERSPACE_DISPATCH_NO_CR3_REFUSED`, `context_switch.rs:27`, incremented at `:676` and `:1193`),
+> both ratcheted in `tests/context_restore_structure.rs`. P3's `Creating` gate is a **third arm on an
+> already-refactored, already-ratcheted site** — it is written against #570's shape, and the ratchet is
+> extended, not re-invented.
+
+**What is NOT in this phase — the creation paths.** The kernel-stack ownership work (AC-8) and the
+creation-path PM→SCHEDULER lock-order parity are **P4**, which stands as its own phase over its own
+three call sites (`creation.rs:67→85`, `creation.rs:185→202`, `boot/test_disk.rs:258→263`). They are
+not folded in here: P3 owns the exec field pair, P4 owns the creation-path stacks and lock order, they
+share no mechanism, and folding them would put two unrelated revert stories in one **PR** — the thing
+rule 5 exists to prevent. (This is also artifact §5.2's own reason for keeping `T2-c` out of `T2-b`.)
 
 **Files.** `kernel/src/process/manager.rs`, `kernel/src/syscall/clone.rs`,
-`kernel/src/task/scheduler.rs` (dispatch gate), `userspace/programs/src/clonevm_exec_test.rs`.
-**~150 lines, 2 commits.**
+`kernel/src/interrupts/context_switch.rs` (dispatch gate),
+`userspace/programs/src/clonevm_exec_test.rs`, plus `tests/context_restore_structure.rs`.
+**Named split seam (rule 5, not a size rule): {exec detach} / {clone-exec admission + `Creating`
+dispatch arm}** — **named, NOT fired: this phase is ONE PR** (ledger row 4 = artifact §5.2's `T2-b`,
+whose revert story §5.2 writes out as one: *"delete the two field assignments **+ the admission
+check**"*). The seam is a **commit** boundary inside that PR, detach first. The two mechanisms are
+separable in principle — reverting the detach alone would reopen wrong-victim-after-exec and leave the
+admission intact, reverting the admission alone would reopen publish-into-a-dying-parent and leave the
+detach intact — which is why the seam is named rather than deleted; but the plan does not pre-split on
+it (rule 5). If the implementation as written produces two genuinely independent revert stories, it
+splits **then** and amends the §0 ledger in the same pass. The admission check and the dispatch arm
+are **one** story and never split under any circumstance: the non-runnable publication is only safe
+because dispatch refuses `Creating` rows, so shipping either without the other is a half-mechanism.
 
-**Gate extras.** Extended `clonevm_exec_test`: successful exec → both fields `None`, fresh root,
-effective TGID == pid, and a kill aimed at the **old** group cannot reach it; failed exec → both
-fields byte-identical to pre-exec. Futex behaviour across an exec verified explicitly (the group id
-falls back to pid — `futex.rs` is the main consumer). Deterministic clone-vs-exec race.
+**Gate extras.**
+- Extended `clonevm_exec_test`: successful exec → both fields `None`, fresh root, effective
+  TGID == pid, and a kill aimed at the **old** group cannot reach it; failed exec → both fields
+  byte-identical to pre-exec.
+- "Fresh root" is **observed, not argued**: the exec-cohort per-PID oracle already in
+  `kernel/src/tracing/providers/teardown.rs` (`fork_exit_defer_reclaim_pairing_test`, `:1192`) and its
+  x86 counter line `PT_EXEC_COHORT` carry the assertion. Root ownership itself is enforced in-tree now
+  (`owned_root_slots`, `PT_ROOT_SLOT_REFUSED` fail-closed, receipt-carried superseded roots), so P3
+  consumes that machinery instead of building an argument on paper.
+- Futex behaviour across an exec verified explicitly (the group id falls back to pid — `futex.rs` is
+  the main consumer). Deterministic clone-vs-exec race.
+- The exec-path lock order PR #577 ratcheted stays green: `[EXEC_LOCK_ORDER:VIOLATION:PM_HELD]` at
+  zero across the full gate, and `tests/exec_lock_order_structure.rs` (25 tests) unbroken by the new
+  commit-point code. *(Extending that ratchet to the creation sites is P4's gate, not this one.)*
 
-**Strictly better.** Closes the wrong-victim-after-exec defect that was one of the four blockers
-which killed PR #418's group sweep — *before* any group-scoped kill exists to trip over it.
+**Strictly better.** Closes the wrong-victim-after-exec defect that was one of the four blockers which
+killed PR #418's group sweep — *before* any group-scoped kill exists to trip over it.
 
 **Dependency note (v2, condition 4).** This phase is a hard prerequisite of **P8**, not only of P9:
 P8's last-reference decision and `RootProof` read the row's own root *and* `inherited_cr3`, so a row
 carrying a stale `inherited_cr3` past an exec would present a root it does not own (DESIGN §2.3). The
-`P3 → P8` edge is now in the graph; v1 omitted it.
+`P3 → P8` edge is in the graph; v1 omitted it. The `P4 → P8, P9` edge is **separate and also live** —
+it carries AC-8's "every kernel stack is scheduler-owned before a row can drop", which is P4's to
+satisfy, not this phase's.
 
-**Revert.** Delete the two assignments + the admission check; ~15 lines.
+**Accepted residual.** **#560** — blocking-syscall prologues identify the executing thread from the
+scheduler's *recorded* current rather than an authoritative identity. P3's admission decisions are made
+inside the PM guard **on the calling path**, not remotely, and #560's failure mode is skew on a
+*blocking* path; the risk is named, tracked, and accepted for this tranche (§0.0).
 
----
-
-## Phase 4 — Kernel-stack ownership parity for all three creation paths *(AC-8)*
-
-**Scope.** Centralize "clone the process-side thread and take `kernel_stack_allocation` into the
-scheduler copy", then apply it to the paths that never got it: fresh spawn (`creation.rs` ×2),
-direct init, `boot/test_disk.rs`, alongside the already-fixed fork and clone. A `Process` row can no
-longer synchronously drop a published stack — today the original thread's stack is freed ungated by
-`remove_process` at `waitpid` reap (`syscall/wait.rs:386` → `manager.rs:1102-1104`; *v3: both
-anchors corrected by one line*). Drop PM before
-every scheduler registration (removing the existing PM→scheduler nesting in the spawn/test-disk paths).
-
-**Files.** `kernel/src/process/creation.rs`, `kernel/src/main_aarch64.rs`,
-`kernel/src/boot/test_disk.rs`, `kernel/src/arch_impl/aarch64/syscall_entry.rs`,
-`kernel/src/task/scheduler.rs`. **~150 lines, 2 commits.**
-
-**Gate extras.** After **each** creation path, assert exactly one owner and that it is the scheduler
-copy. 1000-iteration fork/clone/spawn exit stress with stack-pool accounting (allocated == freed) and
-an allocator assertion that never selects a live slot. P0 ratchet extended: no
-`kernel_stack_allocation` mutation outside creation paths and `reclaim_terminated_threads`.
-
-**Strictly better.** Closes the third and last un-graced stack case; removes a PM→scheduler nesting.
-*Honesty note:* the input package reports the spawn asymmetry as **fact, not a diagnosed bug** — this
-phase closes it because uniformity is cheap and it is an AC, not because a UAF was demonstrated.
-*(v2:* the `remove_process` call site this phase protects against is itself replaced by P6a's
-tombstone gate; the two fixes meet at the same call site and P6a's gate extras re-run this phase's
-stack-accounting assertion.*)*
-
-**Revert.** Per-site; each call site is independent.
+**Revert — one story, one PR** *(rule 5; artifact §5.2 `T2-b`).* Delete the two `= None` assignments
+at the exec commit points **and**, in the same revert, the parent-`Live` admission check with its
+non-runnable publication and the `Creating` dispatch arm — restoring #570's two-arm dispatch verbatim.
+The tree returns to today's stale-field behaviour and today's publish-into-a-dying-parent window
+together, in one `git revert` of the merge commit; nothing outside this phase consumes either
+mechanism, so no other phase's code is left dangling. Verified by a `git revert` dry run on the merge
+commit before merge, and written into the PR body first.
 
 ---
 
-## Phase 5 — Runtime init designation, identity ONLY *(#464 part 1 — no fatal behaviour)*
+## Phase 4 — Kernel-stack ownership parity + creation-path lock order *(AC-8; closes #579 and #527's creation-path remainder)*
+
+**This phase stands on its own** (re-ratification artifact §4.2, §5.2 T2-c, §8: *"Not dissolved… P4
+stands as its own phase, over its own three call sites… with AC-8's kernel-stack single-owner
+accounting gate kept as originally specified"*). An earlier repair pass dissolved it, folded the
+lock-order half into P3 and pushed AC-8 out onto **#579**; that is reversed here. It ships as **ONE
+PR** (ledger row 5 = artifact §5.2's `T2-c`, whose revert story §5.2 writes out as one: *"its own
+revert story — per-site, each call site independent"*), in two commits taken in the order below. Its
+named seam is described under **Files**; per rule 5 the plan does not pre-split on it.
+
+**Scope — commit 1, kernel-stack single ownership (AC-8). The leak surface is FIVE sites, not three.**
+Re-read out of the tree at `2c7b8798`; `grep -n 'Box::leak' kernel/src/process/manager.rs` returns
+exactly five:
+
+| Site | Function | `cfg` | Today |
+|---|---|---|---|
+| `manager.rs:851` | `create_main_thread` variant | both | `Box::leak(Box::new(kernel_stack));`, `kernel_stack_allocation: None`, `// TODO: proper cleanup` |
+| `manager.rs:925` | `create_main_thread` variant | both | same |
+| `manager.rs:1010` | `create_main_thread` variant | both | same |
+| `manager.rs:1979` | `complete_fork` (fn at `:1920`) | **`#[cfg(target_arch = "x86_64")]`** | same |
+| `manager.rs:2323` | `fork_process_with_context` (fn at `:2148`) | **`#[cfg(target_arch = "x86_64")]`** | same, with `kernel_stack_allocation: None` at `:2339` |
+
+> **Correction of record — "fork already transfers correctly" is FALSE on x86_64.** The only fork site
+> that transfers is `manager.rs:1833`, inside `complete_fork_aarch64` (fn at `:1779`,
+> `#[cfg(target_arch = "aarch64")]`). On x86_64 **both** live fork paths leak the child's kernel stack
+> exactly as the creation constructors do: `fork_process_with_page_table` (`:1365`) and
+> `fork_process_with_parent_context` (`:1507`) reach `complete_fork` (at `:1490` / `:1634`), and
+> `fork_process` (`:1357`) reaches `fork_process_with_context`. The genuine correct-transfer contrast
+> sites are the CLONE_VM clones — `syscall/clone.rs:250-252` and
+> `arch_impl/aarch64/syscall_entry.rs:961` (`scheduler_thread.kernel_stack_allocation =
+> thread.kernel_stack_allocation.take()`) — **plus** `manager.rs:1833` on aarch64 only. Any statement
+> that P4's residue is "creation-path only" is wrong, and the earlier text that said so is struck.
+
+The work is an ownership design pass, not a mechanical `take()` sweep: at all five sites there is no
+allocation object left to transfer, because it was leaked at construction. The design question P4
+answers is **who owns a kernel stack whose thread is published to the scheduler as a `Thread::clone`**
+— `Thread::clone` drops the allocation (`task/thread.rs:514`, *"Can't clone kernel stack
+allocation"*), which is why the leak was introduced in the first place. AC-8's answer stands: the
+scheduler copy is the single owner, and the row's copy holds `None` **because ownership moved**, not
+because it was leaked.
+
+This also closes the freed-row hazard the phase was originally written against, which is
+**structurally live and merely unreached**: `remove_process` (`manager.rs:1086-1090`) drops the whole
+`Process` row → `Process::main_thread` (`process/process.rs:199`) → `Thread::kernel_stack_allocation`
+(`task/thread.rs:428`) → `impl Drop for KernelStack` (`memory/kernel_stack.rs:85-99`) returns the slot
+to the pool, and nothing in `kernel/src` ever clears `main_thread`. It is unreached today only because
+the leak means no row ever holds a `Some(KernelStack)` — an unratcheted coincidence, not a closure.
+Fixing the leak *reaches* that path, which is precisely why AC-8's accounting gate ships in the same
+PR rather than after it.
+
+**#579 is this PR's tracking issue and this PR closes it.** #579 was filed (correctly) for the leak;
+its body still describes the 3-site creation-path surface and is corrected to five on the issue.
+**#546** — owner-side `GuardedStack` reclamation of `External` **user**-stack frames — is a separate,
+*user*-stack item, stays tracked on its own, and does **not** substitute for AC-8.
+
+**Scope — commit 2, creation-path scheduler-registration parity.** Drop the PM guard **before** every
+scheduler registration on the creation paths, removing the live PM→SCHEDULER nesting that is the
+remainder of **#527**'s class:
+
+| PM guard taken | `scheduler::spawn` called under it |
+|---|---|
+| `kernel/src/process/creation.rs:67` | `:85` |
+| `kernel/src/process/creation.rs:185` | `:202` |
+| `kernel/src/boot/test_disk.rs:258` | `:263` |
+
+`scheduler::spawn` (`task/scheduler.rs:3444`) takes `lock_scheduler()` at `:3447`, so each of these is
+the identical PM-held→SCHEDULER ordering PR #577 fixed and ratcheted **for the exec path only**
+(`tests/exec_lock_order_structure.rs`, 25 tests, marker `[EXEC_LOCK_ORDER:VIOLATION:PM_HELD]`). This
+PR extends that ratchet's shape to the creation sites. #527 is closed as an issue; this is its
+creation-path remainder.
+
+**Files.** `kernel/src/process/manager.rs`, `kernel/src/task/thread.rs`,
+`kernel/src/memory/kernel_stack.rs`, `kernel/src/task/scheduler.rs` (commit 1);
+`kernel/src/process/creation.rs`, `kernel/src/boot/test_disk.rs`, `kernel/src/task/scheduler.rs`
+(commit 2); `tests/exec_lock_order_structure.rs` and `tests/teardown_structure.rs`.
+**Named split seam (rule 5, not a size rule): {kernel-stack single ownership} / {creation-path
+lock-order parity}** — **named, NOT fired: this phase is ONE PR** (ledger row 5, artifact §5.2's
+`T2-c`). The seam is a **commit** boundary: ownership lands first, because reaching the freed-row path
+(above) is what the ownership accounting must be gated against. The two scopes are separable in
+principle — reverting the ownership change alone would restore the leak and leave the lock order
+fixed, reverting the lock-order change alone would restore the nesting and leave ownership fixed —
+which is why the seam is named; but the plan does not pre-split on it (rule 5). If the implementation
+produces two genuinely independent revert stories, it splits **then** and amends the §0 ledger in the
+same pass.
+
+**Gate extras.**
+1. **AC-8's accounting gate, as originally specified.** Ownership assertion after **every** creation
+   path — exactly one owner, and it is the scheduler copy; a **1000-iteration** fork/clone/spawn/exit
+   stress with kernel-stack-pool accounting (`allocated == freed`, asserted as an equality that is
+   driven nonzero by the workload, never a vacuous zero); and an allocator assertion that never
+   selects a live slot.
+2. **All five sites are covered, and the ratchet pins the count.** `Box::leak(Box::new(kernel_stack))`
+   is asserted **absent** from `kernel/src/process/manager.rs` as an exact set (zero occurrences) in
+   `tests/teardown_structure.rs`, census-anchored by enclosing item, so a sixth cannot appear. The two
+   x86-only fork sites are exercised explicitly — the gate runs the x86 profile, since `:1979` and
+   `:2323` are `#[cfg(target_arch = "x86_64")]` and an aarch64-only run cannot see them.
+3. **The freed-row path is now reached, deliberately.** With ownership transferred, a reap that drops a
+   row must not double-free the scheduler-owned stack: per-PID assertion that a stack slot returns to
+   the pool exactly once per process death, driven by the same per-PID teardown oracle P0/P2 use.
+4. **Lock-order parity (commit 2):** the extended `exec_lock_order_structure` census fails on any
+   `scheduler::spawn` / `lock_scheduler` reachable with a PM guard live at the three creation sites,
+   and the runtime marker `[EXEC_LOCK_ORDER:VIOLATION:PM_HELD]` stays at zero across the full gate.
+5. **Zero-warning builds and the standard gate**, both arches, plus Parallels 3×. `complete_fork`'s
+   stale `#[allow(dead_code)]` (`manager.rs:1919`, two live callers at `:1490` and `:1634`) is removed
+   in commit 1 — it is a suppression against the repo's zero-tolerance standard on exactly the code
+   this PR rewrites.
+
+**Strictly better.** A permanent per-process kernel-stack leak on the primary x86 **and** aarch64
+creation paths, and on both x86 fork paths, is gone; every kernel stack has exactly one owner and is
+freed only behind the two-epoch retirement grace; and the last live PM→SCHEDULER nesting on the
+creation paths is removed. Nothing depends on a later phase for either argument.
+
+**Dependency note.** `P4 → P8, P9`: P8's last-reference decision and P9's group teardown both let a row
+drop while sibling threads may still be executing, and both assume every kernel stack is
+scheduler-owned and grace-gated. That edge is satisfied **inside this plan**, by this phase.
+
+*Honesty note, retained:* the original input package reported the spawn asymmetry as **fact, not a
+diagnosed bug**. What re-reading it produced was two previously unnamed live defects — the #579 leak
+(five sites, not three) and the #527-class nesting — which is why this phase carries real fixes rather
+than a uniformity chore.
+
+**Revert — one story, one PR** *(rule 5; artifact §5.2 `T2-c`, "per-site, each call site
+independent").* Restore the five `Box::leak(Box::new(...))` calls with `kernel_stack_allocation: None`
+at each site **and** re-nest the three creation sites, deleting the ratchet extension with them: the
+leak returns, the freed-row path goes back to being unreachable, and the PM→SCHEDULER nesting returns
+— one `git revert` of the merge commit, and the story is per-site all the way down, which is what
+makes an eight-site change revertable alone. Nothing outside this phase consumes the new ownership
+API. Verified by a `git revert` dry run on the merge commit before merge, and written into the PR body
+first.
+
+---
+
+## Phase 5a — Runtime init designation, identity ONLY *(#464 part 1 — no fatal behaviour)*
 
 **Scope.** `ProcessManager::designated_init: Option<ProcessId>` as the single authority. **Reserve
-PID 1** for the explicit init constructor; ordinary/test allocation starts at 2 (all four
-`next_pid.fetch_add` sites). Init is built off-table with provisional PID 1 through a
-**held-publication ticket**: fallible image → row inserted → scheduler thread created **not-yet-runnable**
-→ ticket returned → PM validates the ticket names a live PID 1 → `designated_init` set → thread
-published to the run queue. Production designation is **validated == PID 1 and refuses otherwise**.
-Migrate the three production literals (`manager.rs:1178`, `process_task.rs:226`, `:285`) and
-`signal.rs`'s `INIT_PID` (`syscall/signal.rs:26`, read at `:124` and `:397`) to the accessor.
-**No `#[cfg]` anywhere.** `init_shell.rs:1028` is not touched.
+PID 1** for the explicit init constructor; ordinary/test allocation starts at 2. Init is built
+off-table with provisional PID 1 through a **held-publication ticket**: fallible image → row inserted
+→ scheduler thread created **not-yet-runnable** → ticket returned → PM validates the ticket names a
+live PID 1 → `designated_init` set → thread published to the run queue. Production designation is
+**validated == PID 1 and refuses otherwise**. **No `#[cfg]` anywhere.** `init_shell.rs:1028` is not
+touched.
+
+**The two migration surfaces, re-counted at `2c7b8798` — both larger than the design recorded.**
+
+- **PID allocation: `next_pid` has EIGHT `fetch_add` sites, not four.** `next_pid` is
+  `AtomicU64::new(1)` (`manager.rs:118`); the allocation sites are `manager.rs:141`, `:378`, `:602`,
+  `:1076`, `:1419`, `:1561`, `:1704`, `:2169`. The reservation must cover all eight — a single missed
+  site hands PID 1 to an ordinary process and defeats the reservation silently.
+- **Init literals: four production sites plus five dependent reads** (the design recorded three, and
+  two of the three it named are not init literals at all).
+
+  | Site | What it is |
+  |---|---|
+  | `process/manager.rs:1165` | `let init_pid = ProcessId::new(1);` in the exit-path reparenting block; read at `:1166`, `:1176`, `:1179` |
+  | `task/process_task.rs:647` | `if pid == ProcessId::new(1)` — the "init has no children to reparent" test |
+  | `task/process_task.rs:720` | `let init_pid = ProcessId::new(1);` in the deferred reparent block; read at `:723`, `:726` |
+  | `syscall/signal.rs:26` | `const INIT_PID: u64 = 1;` — read at `:124` and `:402` |
+
+  The design's `task/process_task.rs:226` and `:285` are **not** init literals on any current tree:
+  `:226` is inside `live_row_names_root`/`any_live_root_matches` and `:285` is the
+  `BOOT_RECLAIM_FORCED_BLOCKER` static (`BOOT_RECLAIM_ADVANCE_AFTER_STEP_TWO` is two lines further at
+  `:287`). They are struck, not re-anchored.
+
+  The three test-only literals stay allowlisted **by name**: `test_userspace.rs:84`, `:203`, `:292`.
+
+**Files.** `kernel/src/process/manager.rs`, `kernel/src/process/mod.rs`,
+`kernel/src/main_aarch64.rs`, `kernel/src/syscall/signal.rs`, `kernel/src/task/process_task.rs`.
+**Named split seam (rule 5): {PID-1 reservation + held-publication ticket} / {literal migration}** —
+**named, and it does NOT fire: this phase is ONE PR** (ledger row 6 = artifact §5.2's `T2-d`). The two
+halves are **not** independently revertable, on the plan's own test — the same test P2's seam
+paragraph applies (*"the SIGKILL arm is `exit_process_and_retire(pid, -9)`, a function that does not
+exist until the custody half lands, so reverting the custody half alone would leave a call to a
+deleted wrapper. One revert story"*). Here the dependency is the same shape and runs one way: the
+literal migration calls `designated_init()`, an accessor that does not exist until the reservation
+half lands, so **reverting the reservation half alone would leave calls to a deleted accessor**. The
+dependency is one-way, which means the revert has exactly one legal order (migration out first,
+reservation second) — and a revert with one legal order is **one** revert story, not two. The seam
+survives as a **commit** boundary in that order: commit 1 ships the reservation, the ticket and
+`designated_init` with its production validation as its live consumer (rule 2); commit 2 migrates the
+production init sites tabulated above, and their dependent reads, onto `designated_init()`.
+
+**Gate extras.** Failure injection at **each** fallible stage after provisional PID selection:
+`designated_init() == None`, no row, and a retry succeeds as PID 1. This is now safe to gate: PR #558
+made every post-commit dispatch abort roll back (`abort_dispatch_and_resume` + `set_need_resched`,
+resume-thread state preserved), so a failure injected mid-publication no longer leaves a
+half-committed dispatch behind. Boot test: designated pid == 1 == the pid `init_shell` observes via
+`getpid()`. A build with no real init leaves designation unset and does **not** treat whichever
+process got a low PID as init. Existing orphan-reparent test still green. P0 ratchet allowlist shrinks
+to the three named `test_userspace.rs` sites, and pins all eight `next_pid` allocation sites so a
+ninth cannot appear unnoticed.
+
+**Strictly better.** Converts AC-5 from "convention plus a boot log line" into a structural guarantee,
+and makes a failed init creation deterministically retryable. Ships **no** behaviour change on init
+death — deliberately, because bundling identity with policy is what killed four prior attempts.
+
+**Accepted residual.** **#560**, as for P3: "is the caller init?" resolves the calling row through the
+recorded current thread. Decision is made inside the PM guard on the calling path; named and accepted
+for this tranche (§0.0).
+
+**Revert — one story, one PR** *(rule 5; artifact §5.2 `T2-d`).* Restore the literals at their four
+production sites and their dependent reads, then restore the `next_pid` base and delete
+`designated_init` with its ticket — in that order, which is the only legal one, and that single fixed
+order is exactly why this is one story rather than two. The ticket is additive, so the deletion is
+clean once the literals are back. One `git revert` of the merge commit does the whole thing; no other
+phase consumes `designated_init()` until **P5b**, which is held and unmerged. Verified by a
+`git revert` dry run on the merge commit before merge, and written into the PR body first.
+
+---
+
+## Phase 5b — `sys_clone` init-group refusal *(#464 part 2 — **HELD on #575**)*
+
+> **HELD, mechanism ratified, evidence blocked.** The refusal itself is two or three lines and lands
+> exactly where the design says. What is blocked is its **acceptance**: the gate extra below asserts
+> that *over a full boot, no row other than init itself ever carries init's effective TGID*, by walking
+> the process map **at quiesce** — and **#575** means init does not reliably reach quiesce on the QEMU
+> gates (`/bin/bwm` spawn returns EIO, the following `/sbin/telnetd` spawn never returns; long-standing
+> trackers **#427**, **#438**). A phase whose acceptance is a quiesce walk cannot be accepted while
+> quiesce is unreachable. P5b ships when #575 closes. The design's `P5 → P9` edge means P5b must land
+> before P9 regardless, so holding it does not extend the critical path unless P9 arrives first — and
+> if it does, P9 blocks on P5b, not the other way round.
 
 > **v3 (closure E, end 1) — `sys_clone` refuses to publish into the designated init's thread group.**
 > The re-ratification found a FATAL composition hole: P9 makes fatal signals **thread-group scoped**
@@ -1061,51 +1482,43 @@ Migrate the three production literals (`manager.rs:1178`, `process_task.rs:226`,
 > init returns `EINVAL`; `clone()` from any non-init process is unaffected), and it is observable
 > from the moment it lands rather than "activated by P9".
 
-**Files.** `kernel/src/process/manager.rs`, `kernel/src/process/mod.rs`,
-`kernel/src/main_aarch64.rs`, `kernel/src/syscall/signal.rs`, `kernel/src/task/process_task.rs`,
-`kernel/src/syscall/clone.rs` (the admission refusal). **~200 lines, 2 commits — six production
-files, one over the target; the named split seam is {PID-1 reservation + held-publication ticket} /
-{literal migration + clone admission}.**
+**Files.** `kernel/src/syscall/clone.rs` (the admission refusal), plus the P0 ratchet.
 
-**Gate extras.** Failure injection at **each** fallible stage after provisional PID selection:
-`designated_init() == None`, no row, and a retry succeeds as PID 1. Boot test: designated pid == 1 ==
-the pid `init_shell` observes via `getpid()`. A build with no real init leaves designation unset and
-does **not** treat whichever process got a low PID as init. Existing orphan-reparent test still green.
-P0 ratchet allowlist shrinks to the three named test sites.
-
-**v3 gate extras (closure E, end 1).** `clone()` issued from the designated init returns **`EINVAL`**
+**Gate extras (closure E, end 1).** `clone()` issued from the designated init returns **`EINVAL`**
 and creates no row; `clone()` from a non-designated process is unaffected (the existing CLONE_VM
 tests stay green unchanged); and **over a full boot, no row other than init itself ever carries
-init's effective TGID** — asserted by walking the process map at quiesce, not by a source grep. A
-build with no designated init exercises the `None` arm and refuses nothing.
+init's effective TGID** — asserted by walking the process map at quiesce, not by a source grep **(this
+is the assertion #575 blocks)**. A build with no designated init exercises the `None` arm and refuses
+nothing.
 
-**Strictly better.** Converts AC-5 from "convention plus a boot log line" into a structural guarantee,
-and makes a failed init creation deterministically retryable. Ships **no** behaviour change on init
-death — deliberately, because bundling identity with policy is what killed four prior attempts.
-*(v3: it also makes the init-sibling state unconstructible before any group-scoped kill exists, which
-is what keeps P9 strictly better than `main`. The refusal is an admission rule, not a death policy —
-bundling is still avoided.)*
+**Strictly better.** Makes the init-sibling state unconstructible before any group-scoped kill exists,
+which is what keeps P9 strictly better than `main`. The refusal is an admission rule, not a death
+policy — identity and policy stay unbundled.
 
-**Revert.** Restore the literals and the `next_pid` base; delete the clone refusal. The ticket is
-additive. *(Note: reverting P5 after P9 has merged would reopen the init group hole, so the revert
-story is "revert P5 only while P9 is unmerged" — recorded in the PR body per rule 5.)*
+**Revert.** Delete the clone refusal. *(Note: reverting P5b after P9 has merged would reopen the init
+group hole, so the revert story is "revert P5b only while P9 is unmerged" — recorded in the PR body
+per rule 5.)*
 
 ---
 
 ## Phase 6a — Reap/tombstone retention gate *(NEW in v2 — condition 2)*
 
 > ⚠ **DEBT-4 — the x86 reap path bypasses this phase's gate, and this phase owns the closure.**
-> `kernel/src/syscall/handlers.rs:3101` removes the process row **directly** on the live x86 reap
-> path, so the two-event join below is not the only remover: the retention gate can pass on aarch64
-> while x86 still frees a row out from under an un-retired receipt. Before this phase's tranche
-> ratifies, that site either routes through the join or the gate is honestly re-scoped to aarch64
-> with the divergence named in AC-12's evidence, a ratchet pinning `handlers.rs:3101`, and a stated
-> closing phase. See the DESIGN-DEBT REGISTER.
+> `kernel/src/syscall/handlers.rs:3123` removes the process row **directly** on the live x86 reap
+> path — as does its byte-similar duplicate at `kernel/src/syscall/wait.rs:386` — so the two-event
+> join below is not the only remover: the retention gate can pass on aarch64 while x86 still frees a
+> row out from under an un-retired receipt. Before this phase's tranche ratifies, those sites either
+> route through the join or the gate is honestly re-scoped to aarch64 with the divergence named in
+> AC-12's evidence, a ratchet pinning both sites by name, and a stated closing phase. **The join now
+> installs in one place:** `remove_process` is a four-line choke point (`manager.rs:1086-1090`) that
+> already bumps `ROW_REMOVAL_EPOCH` via `note_process_row_removed()` (`task/process_task.rs:355-357`),
+> so both arches are covered by one edit rather than a per-call-site chase. See the DESIGN-DEBT
+> REGISTER.
 
 **Scope.** Make a process row outlive its reap so that row-resident obligations cannot be destroyed
 before they are discharged. Today `waitpid`'s `complete_wait` (`kernel/src/syscall/wait.rs:335`)
 physically removes the row at `wait.rs:386` → `ProcessManager::remove_process`
-(`manager.rs:1102-1104`) — *(v3: both anchors corrected by one line against `985881a6`)* — which
+(`manager.rs:1086-1090`, re-anchored at `2c7b8798`) — which
 is exactly the seam the ratification flagged: P6b's `Resources` obligation **by construction outlives
 reap** (grace + RootProof are still pending when the parent collects the status — R-13).
 
@@ -1153,9 +1566,9 @@ reap** (grace + RootProof are still pending when the parent collects the status 
 >   wearing a different hat (rule 2).
 
 **Files.** `kernel/src/syscall/wait.rs`, `kernel/src/process/manager.rs`,
-`kernel/src/process/process.rs`, `kernel/src/task/process_task.rs`, tests. **~190 lines, 2 commits —
-near the ceiling; the named split seam is {`RowState` + liveness-predicate migration of the lookup
-call sites} / {two-event join + removal gate}.**
+`kernel/src/process/process.rs`, `kernel/src/task/process_task.rs`, tests. **2 commits; the named split seam (rule 5) is
+{`RowState` + liveness-predicate migration of the lookup call sites} / {two-event join + removal
+gate}.**
 
 **Gate extras.** (a) `waitpid` still returns the correct status and the parent's `children` list is
 still pruned — existing wait/orphan tests green unchanged. (b) `TOMBSTONE_RESIDENT` returns to **0**
@@ -1286,9 +1699,8 @@ write. `ExitLedger`'s `Resources` obligation subsumes design A's proposed separa
 
 **Files.** `kernel/src/process/process.rs`, `kernel/src/process/manager.rs`,
 `kernel/src/task/process_task.rs`, `kernel/src/test_framework/btrt.rs` (the
-`claim_exit_slot`/`record_exit` split), tracing provider, tests. **~210 lines, 3 commits — at the
-ceiling; the named split seam is {class-A fused transitions + ledger array} / {class-B markers +
-btrt split + T4 ruling}.**
+`claim_exit_slot`/`record_exit` split), tracing provider, tests. **3 commits; the named split seam (rule 5) is
+{class-A fused transitions + ledger array} / {class-B markers + btrt split + T4 ruling}.**
 
 **Gate extras.** Repeat matrix — exit→fault, SIGKILL→fault, fault→SIGKILL, repeated request/wait:
 exactly one SIGCHLD, one parent wake, one `btrt` report, and `waitpid` returns the **first** status.
@@ -1300,7 +1712,7 @@ row's `Report` obligation; assert exactly one `btrt` report and that the loser o
 not assumed). **Orphan-recovery test:** inject a claimer that dies between T2 and T3; assert
 `LEDGER_CLAIM_ORPHANED == 1`, the obligation returns to `Pending`, and the notification is ultimately
 delivered exactly once rather than lost. `TOMBSTONE_RESIDENT` still returns to 0 at quiesce with the
-ledger term of the removal gate now live. CoW frame accounting unchanged vs P5 for the same workload.
+ledger term of the removal gate now live. CoW frame accounting unchanged vs P5a for the same workload.
 
 **v3 gate extras (closure B) — every branch of the exactly-once argument is exercised:**
 1. **Class A has no `Claimed` state, observably.** Instrument the ledger reader to sample obligation
@@ -1438,7 +1850,7 @@ pivot to neutral stack → mark **only self** `Terminated` → schedule away.
 
 **Files.** new `kernel/src/task/teardown.rs`; `kernel/src/task/process_task.rs`,
 `kernel/src/arch_impl/aarch64/context_switch.rs` (Tier-2), `kernel/src/arch_impl/aarch64/syscall_entry.rs`,
-`kernel/src/process/manager.rs`. **~220 lines, 3 commits — at the ceiling; seam for splitting is
+`kernel/src/process/manager.rs`. **3 commits; the split seam (rule 5) is
 {trampoline + commit} / {boundary hook + normal-exit routing}.**
 
 **Gate extras.** **Hook liveness (the anti-dormancy gate): `EXIT_HOOK_ENTRIES > 0` and
@@ -1449,8 +1861,8 @@ unlocked (`FD_CLOSES_UNDER_PM == 0`, `RECLAIM_ENQUEUE_UNDER_PM == 0` still). Dis
 hook proving no logging, allocation, page-table walk, or contended lock on the return tail (Tier-2
 requirement). **x86_64 user-return audit (OQ-9): enumerate every user-return path and prove each
 reaches the common hook; if one bypasses it, halt and escalate for operator approval rather than
-patching Tier-1 syscall entry.** Soak. Frozen-region hashes unchanged (the hook is *outside* every
-frozen block).
+patching Tier-1 syscall entry.** Soak. All five Tier-1 files byte-identical (the hook is *outside*
+every Tier-1 file).
 
 **Strictly better.** The exit path becomes victim-owned for the most common death; a `Process` row
 never drops a published stack; slow work leaves the masked section on every normal exit.
@@ -1550,9 +1962,16 @@ arms are exercised by this PR's own tests (rule 2), so nothing dormant lands.
 
 **Files.** `kernel/src/task/scheduler.rs`, `kernel/src/syscall/signal.rs`,
 `kernel/src/task/teardown.rs`, `kernel/src/process/manager.rs`, `kernel/src/syscall/clone.rs`,
-`kernel/src/task/waitqueue.rs` (the ninth interlock site). **~230 lines, 3 commits — AT the ceiling
-and six production files; the named split seam is {request API + kick plan + predicate + interlock} /
-{group scope + seal}, and this PR is expected to take it.**
+`kernel/src/task/waitqueue.rs` (the ninth interlock site). **Named split seam (rule 5, not a size
+rule): {request API + kick plan + predicate + interlock} / {group scope + seal}** — **named, NOT
+fired: this phase is ONE PR** (ledger row 12), on the same criterion tranche 2 uses. The dependency is
+one-way: the group-scope cutover consumes the request API, so reverting the request half alone would
+leave the group path calling a deleted API — the revert has exactly one legal order (group scope and
+seal out first, request machinery second), and a revert with one legal order is **one** revert story.
+The seam survives as a **commit** boundary in that order, and the plan does not pre-split on it; if
+the implementation produces two genuinely independent stories, it splits **then** and amends the §0
+ledger in the same pass. P9 is a tranche-3+ phase and is not gated by the tranche-2 ratification, but
+the ledger's exactness claim covers it, so the criterion is applied here identically.
 
 **Gate extras.** Two-CPU aarch64: kill a thread running remotely at EL0 and prove **its own TID**
 executes the exit commit, with zero post-request EL0 trace for the victim and `EXIT_VICTIM_OWNED > 0`.
@@ -1573,10 +1992,11 @@ Deterministic clone-vs-seal barrier: the child is either in the batch or `sys_cl
    `block_current_for_compositor` and `block_current_for_io_with_timeout`, which no userspace test
    reaches directly.
 3. **Ratchet:** the blocking-primitive set is exactly the nine above; adding a tenth without the
-   interlock fails CI. ⚠ **DEBT-3 must be closed before this phase's tranche ratifies:**
-   `syscall/futex.rs:115` and `task/scheduler.rs:2175-2194` are live blocking publications outside
-   the nine, and a victim can still block after request publication through either. This gate as
-   written would pass while the hole stands.
+   interlock fails CI. ⚠ **DEBT-3 must be closed before this phase's tranche ratifies (#580):**
+   `syscall/futex.rs:115`, `task/scheduler.rs:2607`, `task/kthread.rs:151`/`:183` and the dead
+   `Thread::set_blocked()` pair are live blocking publications outside the nine, and a victim can
+   still block after request publication through any of them. This gate as written would pass while
+   the hole stands — and so would the ratchet, which pins names, not state writes.
 4. *(closure F; observation half named by the v3 tranche pass)* the group cutover's expedite evidence
    is **batch-attributed**: every `EXIT_SGI_SENT` event for a group kill carries the same batch id,
    the count matches the number of kicked members, and no event from an unrelated reschedule appears —
@@ -1598,8 +2018,11 @@ correctness hole rather than a bound. Note also the new `P5 → P9` edge: this p
 group-scoped kill, so the init-sibling refusal must already be merged or P9 would hand userspace a
 way to kill init that `main` does not have.)*
 
-**Revert.** Restore the remote-marking body and pid-scoped SIGKILL — i.e. fall back to Phase 2's
-already-safe behaviour, not to `main`.
+**Revert — one story, one PR** *(rule 5).* Restore pid-scoped kill and delete the seal, then restore
+the remote-marking body — in that order, which is the only legal one, and that fixed order is why this
+is one story. The fallback is to **Phase 2's already-safe behaviour, not to `main`**. One `git revert`
+of the merge commit; verified by a `git revert` dry run before merge and written into the PR body
+first.
 
 ---
 
@@ -1631,9 +2054,10 @@ and `tty/driver.rs:602-603` documents that the TTY unblock path already spans bo
 read) and `BlockedOnSignal`. Each of the four blocking functions runs its own HLT/re-check loop, so
 the migration is "the resumed loop gives a latched fatal request priority over the ordinary
 signal-arrived branch, deregisters, then branches to the trampoline" — the same shape as the other
-families, applied four times. *(Why it is not folded into 10b despite the TTY adjacency: four
-syscall entry points across both architectures would put 10b well over the ~150-line/4-file target.
-OQ-8 records the batching alternative for the operator.)*
+families, applied four times. *(Why it is not folded into 10b despite the TTY adjacency: the two
+families are separately revertable migrations, each with its own allowlist entry to remove, so
+batching them would put two revert stories in one merge commit — rule 5, and **not** any measure of
+size. DESIGN §7 OQ-8 states the same reason and records the batching alternative for the operator.)*
 
 **10d additionally deletes the legacy arm**: with the allowlist empty, `exit_request_is_boundary_reachable`
 becomes total, the remote-marking body of `terminate_process_threads` is deleted, and
@@ -1708,7 +2132,11 @@ the `P10d → P11` edge is now explicit in §0.
 
 **Files.** `kernel/src/signal/delivery.rs`, `kernel/src/arch_impl/aarch64/exception.rs`,
 `kernel/src/arch_impl/aarch64/context_switch.rs`, `kernel/src/interrupts/context_switch.rs` (Tier-2),
-`kernel/src/process/process.rs`. **~220 lines, 3 commits — split by architecture if it crosses.**
+`kernel/src/process/process.rs`. **3 commits; the named split seam (rule 5) is {intent-only delivery +
+`DeliverResult::Terminated` deletion} / {fault-site convergence onto the TID-attributed adapter} — it
+fires only if the two would land as two revert stories in one merge commit. Never by architecture and
+never by line count: an architecture split would ship the x86 half of one mechanism without the
+aarch64 half, which is a half-mechanism, not a revert story.**
 
 **Gate extras.** New `clonevm_fault_test`: a CLONE_VM child faults at EL0 → the **child** dies, the
 parent survives, `TEARDOWN_VICTIM_DIVERGENCE == 1`, no refault loop. **This test fails on `main`
@@ -1760,7 +2188,7 @@ four inlined fault bodies (preserved in the commit bodies); `Process::terminate`
   0, counted `INIT_FATAL_SIGNAL_DROPPED{group}`. The membership test runs in the **same PM
   acquisition** as the seal it guards, so a racing clone cannot slip past it (the clone either
   published before the transaction and is a member the test sees, or acquires PM afterwards and
-  finds a sealed group). This is defence in depth behind P5's clone-admission refusal, which already
+  finds a sealed group). This is defence in depth behind P5b's clone-admission refusal, which already
   makes an init sibling unconstructible; **neither end is load-bearing alone and both are separately
   tested**, so neither can rot in the other's shadow (residual R-18).
 - **v3 repair: the drop is scoped by REQUEST ORIGIN, or it swallows init's own `exit_group`.** As
@@ -1781,7 +2209,7 @@ four inlined fault bodies (preserved in the commit bodies); `Process::terminate`
   disposition, never the sender, so `kill(1, SIGKILL)` issued *by init itself* is dropped too — only
   `force`d kernel-only signals bypass, which is exactly the `FatalFault` row. `ExitSyscall` and
   `FatalFault` **bypass the membership test entirely**, so the kernel-fatal path is preserved by
-  construction rather than by the check happening not to fire. Note that P5's clone-admission refusal
+  construction rather than by the check happening not to fire. Note that P5b's clone-admission refusal
   makes init's group a singleton, so an `ExitSyscall`-origin request inside init's group can only
   have come from init — no sibling exists that could issue `exit_group` on init's behalf.
   A P0-style ratchet rule pins that `origin` is set at every `ExitIntent` construction site and that
@@ -1813,7 +2241,7 @@ test-build PID-1 process that is *not* designated exits normally.
    dropped: `INIT_FATAL_SIGNAL_DROPPED{group} == 1`, **nothing is sealed** (the group lifecycle stays
    `Open`, asserted directly), no member is marked, the send returns 0, and init survives.
 2. The **sibling** attack is proven unconstructible end-to-end rather than argued: the test attempts
-   `clone()` from init (refused with `EINVAL` by P5), then walks the process map at quiesce and
+   `clone()` from init (refused with `EINVAL` by P5b), then walks the process map at quiesce and
    asserts **no row other than init carries init's effective TGID**. The two ends are asserted
    separately so a regression in either is attributed correctly.
 3. A group kill aimed at an **ordinary** group is unaffected — the whole group dies, proving the
@@ -1835,8 +2263,8 @@ operates on, so it cannot be walked around through a sibling — the composition
 re-ratification found between P9's group scope and v2's row-scoped check.)*
 
 **Revert.** Delete the latch, the drop rule, the group-membership test and the escalation call;
-identity and the clone-admission refusal (P5) survive independently — which is the point of putting
-closure E's first end in P5.
+identity (P5a) and the clone-admission refusal (P5b) survive independently — which is the point of
+putting closure E's first end in P5.
 
 ---
 
@@ -1848,9 +2276,10 @@ closure E's first end in P5.
 | P1 | — | — | — | + grace cannot elapse unordered/empty; refusals attributable; no proof under the queue lock |
 | P1 *(v3)* | — | — | — | + the drain cannot livelock: bounded pass + park-until-epoch-advance |
 | **P2** | **live UAF closed** (remote-mark strength) | — | — | + quarantine, expedite, SIGCHLD on kill; + no reclaim enqueue under PM; **+ receipts cannot be dropped by any of the nine adapted sites (7 callers + SIGKILL arm + `handle_thread_exit`); + expedite evidence is teardown-attributed** |
-| P3 | ↑ | — | **detach done** | + wrong-victim-after-exec impossible |
-| P4 | ↑ | — | ↑ | + all three creation paths grace-protected |
-| P5 | ↑ | **identity done** | ↑ | + AC-1/4/5 structural; **+ init can never acquire a CLONE_VM sibling** |
+| P3 | ↑ | — | **detach done** | + wrong-victim-after-exec impossible; + a row can no longer be dispatched mid-creation |
+| **P4** | ↑ | — | ↑ | **+ AC-8 closed: every kernel stack has exactly one owner (the scheduler copy) and is freed only behind the two-epoch grace; the five-site `Box::leak` per-process leak is gone (#579), on both x86 fork paths as well as the three creation paths; + no PM→SCHEDULER nesting left on any creation path** |
+| P5a | ↑ | **identity done** | ↑ | + AC-1/4/5 structural (identity only; no behaviour change on init death) |
+| P5b *(held on #575)* | ↑ | ↑ | ↑ | **+ init can never acquire a CLONE_VM sibling** |
 | **P6a** | ↑ | ↑ | ↑ | + a row outlives its reap; removal is proof-gated **and has an explicit two-event trigger in both orders** |
 | P6b | ↑ | ↑ | ↑ | + exactly-once notification with a claim protocol (#418's own follow-up); **+ four obligations commit their effect with their completion, and the two that cannot carry effect markers with a stated winner** |
 | P7 | ↑ | ↑ | ↑ | + no FD/endpoint lock or alloc under PM on any exit |
@@ -1901,12 +2330,19 @@ passes and two pre-checks refused these documents as a whole, each time on items
 downstream of the ones ready to build; a single whole-document bar makes P0's readiness hostage to
 P12's argument. The gate is therefore **discharged per tranche**:
 
-- **Tranche 1 = P0 + P1 + P2** — submitted for ratification now. P0 and P1 are the two
+- **Tranche 1 = P0 + P1 + P2** — ratified (`ENDORSE: YES`) and **merged**. P0 and P1 are the two
   behaviour-preserving PRs the first reviewer called "the correct first two"; P2 is the phase that
-  closes #491's live UAF. They are cleared for build when **tranche 1's** pass returns `ENDORSE: YES`,
-  and not before.
+  closes #491's live UAF.
+- **Tranche 2 = P3 + P4 + P5a** — the operator **decided on 2026-08-16 to proceed** per
+  `P3-RERATIFICATION-2026-08-15.md`, after six refusals in August and the Option-A
+  foundation-hardening campaign that closed the substantive grounds. That decision ratifies the
+  *course* the artifact prescribes — repair the documents, run **one** adversarial pre-check against
+  the repaired text, then build (artifact §5.3, §8) — so tranche 2 is **RE-RATIFIED, effective on
+  pre-check pass**: the gate closes when this repair lands with a pre-check returning no blockers, and
+  not before. **P5b is held on #575** (§0.0). Tranche 2 owns none of the seven debts, so the
+  register's binding rule does not gate it — the same structural position tranche 1 was in.
 - **Every later phase remains uncleared** until its own tranche is submitted, pre-checked and
-  ratified. Ratifying tranche 1 grants nothing to P3 and beyond.
+  ratified. Ratifying tranche 2 grants nothing to P6a and beyond.
 - **The DESIGN-DEBT REGISTER gates the later tranches.** A tranche containing a debt's owner phase
   cannot be ratified until that debt's closure is *written into these documents and pre-checked*.
   Tranche 1 owns none of the seven debts, which is the entire reason it can be submitted while they
