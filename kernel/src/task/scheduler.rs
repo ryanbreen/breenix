@@ -3802,28 +3802,22 @@ impl ExecSchedCommit {
                 }
             }
 
+            // Gate-pinned lines must take the serial lock so a concurrent writer cannot
+            // tear their bytes. The scheduler guard above is already out of scope.
             if pm_held {
                 SCHED_AFTER_PM_VIOLATIONS.fetch_add(1, Ordering::Relaxed);
-                crate::arch_impl::aarch64::context_switch::raw_uart_str(
-                    "[EXEC_LOCK_ORDER:VIOLATION:PM_HELD]\n",
-                );
+                crate::serial_println!("[EXEC_LOCK_ORDER:VIOLATION:PM_HELD]");
             }
             if unpinned {
                 EXEC_COMMIT_UNPINNED.fetch_add(1, Ordering::Relaxed);
-                crate::arch_impl::aarch64::context_switch::raw_uart_str(
-                    "[EXEC_LOCK_ORDER:VIOLATION:UNPINNED]\n",
-                );
+                crate::serial_println!("[EXEC_LOCK_ORDER:VIOLATION:UNPINNED]");
             }
             if !applied {
                 EXEC_COMMIT_MISSING_THREAD.fetch_add(1, Ordering::Relaxed);
-                crate::arch_impl::aarch64::context_switch::raw_uart_str(
-                    "[EXEC_LOCK_ORDER:VIOLATION:NO_SCHED_THREAD]\n",
-                );
+                crate::serial_println!("[EXEC_LOCK_ORDER:VIOLATION:NO_SCHED_THREAD]");
             }
             if applied && EXEC_SCHED_COMMITS.fetch_add(1, Ordering::Relaxed) == 0 {
-                crate::arch_impl::aarch64::context_switch::raw_uart_str(
-                    "[EXEC_LOCK_ORDER:FIRST_COMMIT]\n",
-                );
+                crate::serial_println!("[EXEC_LOCK_ORDER:FIRST_COMMIT]");
             }
         })
     }

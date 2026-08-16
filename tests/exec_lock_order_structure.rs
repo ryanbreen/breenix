@@ -831,12 +831,47 @@ fn validate_exec_sched_commit(scheduler: &str) -> Result<(), String> {
             "ExecSchedCommit::apply is missing the no-scheduler-thread violation marker".to_owned(),
         );
     }
-    for forbidden in ["log::", "serial_println!"] {
+    for forbidden in ["log::"] {
         if !code_offsets(apply, &apply_mask, forbidden).is_empty() {
             return Err(format!(
                 "ExecSchedCommit::apply contains forbidden output path {forbidden}"
             ));
         }
+    }
+    if code_offsets(apply, &apply_mask, "crate::serial_println!").len() != 4 {
+        return Err(
+            "ExecSchedCommit::apply must emit all four gate markers through locked serial"
+                .to_owned(),
+        );
+    }
+    if !code_offsets(apply, &apply_mask, "raw_uart_str").is_empty() {
+        return Err("ExecSchedCommit::apply still uses the tearable raw UART writer".to_owned());
+    }
+    for marker in [
+        "[EXEC_LOCK_ORDER:VIOLATION:PM_HELD]",
+        "[EXEC_LOCK_ORDER:VIOLATION:UNPINNED]",
+        "[EXEC_LOCK_ORDER:VIOLATION:NO_SCHED_THREAD]",
+        "[EXEC_LOCK_ORDER:FIRST_COMMIT]",
+    ] {
+        if apply.matches(marker).count() != 1 {
+            return Err(format!(
+                "ExecSchedCommit::apply must preserve exactly one {marker} literal"
+            ));
+        }
+    }
+    let scheduler_lock_end = code_offsets(apply, &apply_mask, "scheduler_lock")
+        .into_iter()
+        .max()
+        .ok_or_else(|| "ExecSchedCommit::apply has no scheduler guard".to_owned())?;
+    let first_marker_write = code_offsets(apply, &apply_mask, "crate::serial_println!")
+        .into_iter()
+        .min()
+        .ok_or_else(|| "ExecSchedCommit::apply has no locked marker write".to_owned())?;
+    if scheduler_lock_end >= first_marker_write {
+        return Err(
+            "ExecSchedCommit::apply writes a gate marker before releasing its scheduler guard"
+                .to_owned(),
+        );
     }
     Ok(())
 }
