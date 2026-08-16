@@ -320,8 +320,10 @@ not of size. Tranche 2's own entries below already show the count moving for tha
    - **aarch64 runtime gates:** `docker/qemu/run-aarch64-full-test.sh --rebuild --boot-tests-only`
      must reach **`[BOOT_TESTS:PASS]`** over the registered suite, plus
      `docker/qemu/run-aarch64-boot-test-strict.sh`. `[BOOT_TESTS:PASS]` is *never* accepted on its
-     own from a stage-advance path — `advance_stage_marker_only` emits it alongside
-     `[TESTS_COMPLETE:0/0]`.
+     own from a stage-advance path — `advance_stage_marker_only`
+     (`kernel/src/test_framework/executor.rs:126`) runs no tests and still emits it, carrying
+     whatever `[TESTS_COMPLETE:c/t]` progress happens to stand (`0/0` when nothing has run). The
+     runner script only reports those numbers; reading them is the human's job.
    - **aarch64 soaks:** **100 clean cycles** and **100 starved cycles** (host-contended) of the
      boot-test gate on `aarch64-breenix-kernel.json`, with the no-NEON guard run against the booted
      ELF. Starvation is applied by the runner, not by a committed script; the cycle count and the
@@ -928,7 +930,7 @@ upgrade a bool) — because `btrt::on_process_exit` has exactly one call site at
 {receipt custody + all nine adapted sites} / {SIGKILL arm + expedite helper + obligation seed}, and
 this PR is expected to take it — two independent revert stories, not a line count.** *(v3 honesty: closure A
 made this phase bigger, and the plan says so up front rather than discovering it at review. Split
-before review, per rule 4.)*
+before review, per rule 5.)*
 
 **Gate extras.** New `sigkill_teardown_test` (userspace): parent forks a child spinning at EL0;
 parent `kill(child, SIGKILL)`. Assert (a) `waitpid` reaps **-9**; (b) SIGCHLD arrived at kill time
@@ -987,7 +989,7 @@ anyway, because one named victim against an initially empty table exercises neit
 collision. These two tests exist so that class of defect fails a gate instead of surviving one. Both
 land in the SAME PR as the slot protocol — a mechanism and the test that can falsify it are never
 separated by a merge boundary, the same rule P6b applies to T4 and its marker. Both are test code and
-do not consume the phase's production-line budget.)*
+neither carries a revert story of its own.)*
 
 5. **Sequential bucket reuse — a SECOND victim in the SAME bucket must still be observed.** After the
    single-victim assertions above complete for victim `V1`, the test forks a second victim `V2` chosen
@@ -1086,7 +1088,8 @@ close #468. The defect is untouched on today's tree: across all of `kernel/src` 
 is `Live` under the same PM transaction that publishes the child row — the guard is already taken at
 `clone.rs:60` and the TGID is already derived at `:84`. User-thread creation publishes the scheduler
 thread **non-runnable** until the row is published, and dispatch refuses `ProcessState::Creating` rows
-(`process/process.rs:54`, set at `:318`, cleared to `Ready` by `set_main_thread` at `:350`) before
+(`process/process.rs:54`, set at `:318`, cleared to `Ready` by `set_main_thread` — declared at `:350`,
+clearing write at `:352`) before
 arming CR3/TTBR0.
 
 > **The dispatch gate lives in `kernel/src/interrupts/context_switch.rs`, not `task/scheduler.rs`, and
@@ -1123,7 +1126,7 @@ permanently `Box::leak(Box::new(kernel_stack))` — `manager.rs:851`, `:925`, `:
 permanent per-process kernel-stack leak on the primary x86 and aarch64 creation paths, and it is also
 what *masks* the freed-row hazard the old P4 was written against. `remove_process`
 (`manager.rs:1086-1090`) drops the whole `Process` row → `Process::main_thread`
-(`process/process.rs:198`) → `Thread::kernel_stack_allocation` (`task/thread.rs:428`) →
+(`process/process.rs:199`) → `Thread::kernel_stack_allocation` (`task/thread.rs:428`) →
 `impl Drop for KernelStack` (`memory/kernel_stack.rs:85-99`) returns the slot to the pool, and nothing
 in `kernel/src` ever clears `main_thread`. **The hazard is structurally live and merely unreached** —
 unreached only because no row ever holds a `Some(KernelStack)`, which is an unratcheted coincidence,
@@ -1229,7 +1232,8 @@ touched.
 
   The design's `task/process_task.rs:226` and `:285` are **not** init literals on any current tree:
   `:226` is inside `live_row_names_root`/`any_live_root_matches` and `:285` is the
-  `BOOT_RECLAIM_ADVANCE_AFTER_STEP_TWO` static. They are struck, not re-anchored.
+  `BOOT_RECLAIM_FORCED_BLOCKER` static (`BOOT_RECLAIM_ADVANCE_AFTER_STEP_TWO` is two lines further at
+  `:287`). They are struck, not re-anchored.
 
   The three test-only literals stay allowlisted **by name**: `test_userspace.rs:84`, `:203`, `:292`.
 
