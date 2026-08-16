@@ -222,16 +222,14 @@ pub(crate) enum RetireProgress {
 
 pub(crate) const RETIRE_FRAME_BUDGET: u32 = 64;
 
-/// Owns an aarch64 address space until exec publishes it in a Process row.
+/// Owns an address space until exec publishes it in a Process row.
 /// Failure drops release leaves first, then tables and the root. This needs no
-/// hardware-liveness proof because the table has never been installed in TTBR0.
-#[cfg(target_arch = "aarch64")]
+/// hardware-liveness proof because it was never installed in TTBR0_EL1 or CR3.
 pub(crate) struct UnpublishedPageTable {
     page_table: Option<alloc::boxed::Box<ProcessPageTable>>,
     pid: u64,
 }
 
-#[cfg(target_arch = "aarch64")]
 impl UnpublishedPageTable {
     pub(crate) fn new(page_table: ProcessPageTable, pid: u64) -> Self {
         Self {
@@ -249,7 +247,6 @@ impl UnpublishedPageTable {
     }
 }
 
-#[cfg(target_arch = "aarch64")]
 impl core::ops::Deref for UnpublishedPageTable {
     type Target = ProcessPageTable;
 
@@ -258,14 +255,12 @@ impl core::ops::Deref for UnpublishedPageTable {
     }
 }
 
-#[cfg(target_arch = "aarch64")]
 impl core::ops::DerefMut for UnpublishedPageTable {
     fn deref_mut(&mut self) -> &mut Self::Target {
         self.as_mut()
     }
 }
 
-#[cfg(target_arch = "aarch64")]
 impl Drop for UnpublishedPageTable {
     fn drop(&mut self) {
         if let Some(page_table) = self.page_table.as_deref_mut() {
