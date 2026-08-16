@@ -47,7 +47,11 @@ BREENIX_PRINT_UEFI_IMAGE=1 cargo run --release \
 # ELFs with ./userspace/programs/build.sh when userspace or libs/libbreenix-libc changed.
 rm -f target/test_binaries.img
 cargo run -p xtask -- create-test-disk
-test -f target/ext2.img || ./scripts/create_ext2_disk.sh
+# The ext2 image carries the same userspace binaries, so rebuild it every run:
+# a cached image silently boots old programs, and a fresh program execv-ing its
+# own installed path can land in a stale copy of itself.
+rm -f target/ext2.img
+./scripts/create_ext2_disk.sh
 
 UEFI_IMG=$(ls -t target/release/build/breenix-*/out/breenix-uefi.img | head -1)
 test -n "$UEFI_IMG"

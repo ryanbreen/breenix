@@ -2748,6 +2748,16 @@ fn validate_x86_frame_custody_harness(script: &str) -> Result<(), ()> {
     const CLONE_ADMISSION_ORACLE_VECTOR: &str = "CLONE_ADMISSION_ORACLE_LITERAL='[CLONE_ADMISSION_ORACLE:x86:admitted=1:refused=2:creating_refused=1:published_admitted=2:balance=0]'";
     const EXEC_FAILED_RELEASE_ORACLE_VECTOR: &str = "EXEC_FAILED_RELEASE_ORACLE_PATTERN='^\\[EXEC_FAILED_RELEASE_ORACLE:x86:used_before=[0-9]+:used_after=[0-9]+:recorded_pre=3:leaf_recorded=1:leaf_released=1:leaf_returned=1:tables_returned=4:roots_retired=1:undecided=0:live_refused=0\\]$'";
     const EXEC_FAILED_RELEASE_PROD_VECTOR: &str = "EXEC_FAILED_RELEASE_PROD_LITERAL='[EXEC_FAILED_RELEASE_PROD:x86:plain_err=true:plain_kept=true:argv_err=true:argv_kept=true:name_kept=true:balance=0:undecided=0:mid_retire=0:lost=0:custody_refused=0:decref_unregistered=0:double=0:stale=0:untracked=0:root_slot_refused=0]'";
+    const BXTEST_DISK_REBUILD: &str =
+        "rm -f target/test_binaries.img\ncargo run -p xtask -- create-test-disk";
+    const EXT2_DISK_REBUILD: &str =
+        "rm -f target/ext2.img\n./scripts/create_ext2_disk.sh";
+    if script.contains("test -f target/ext2.img")
+        || !script.contains(BXTEST_DISK_REBUILD)
+        || !script.contains(EXT2_DISK_REBUILD)
+    {
+        return Err(());
+    }
     let exact_marker_count = |marker: &str| {
         let needle = format!("grep -h -c '\\[TEST:process:{marker}:PASS\\]'");
         script.find(&needle).is_some_and(|start| {
