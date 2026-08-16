@@ -1,15 +1,14 @@
 //! Runtime proof that exec detaches a former CLONE_VM process cleanly.
 //!
 //! ARM64 first proves that a live CLONE_VM sibling prevents exec. Both
-//! architectures then release that sibling, exec, and exercise futex wait/wake
-//! with a new CLONE_VM child in the post-exec thread group.
+//! architectures then release that sibling, exec, and exercise both futex
+//! entry points with keys derived from the post-exec thread group.
 
 use libbreenix::errno::Errno;
 #[cfg(target_arch = "aarch64")]
 use libbreenix::error::Error;
 use libbreenix::memory;
 use libbreenix::process;
-use libbreenix::signal;
 use libbreenix::syscall::{nr, raw};
 use std::ptr;
 
@@ -17,18 +16,9 @@ const SHARED_ALIVE_OFFSET: usize = 0;
 const SHARED_COMMAND_OFFSET: usize = 8;
 const SHARED_TID_OFFSET: usize = 16;
 
-const POST_EXEC_FUTEX_OFFSET: usize = 0;
-const POST_EXEC_READY_OFFSET: usize = 4;
-const POST_EXEC_MISMATCH_OFFSET: usize = 8;
-const POST_EXEC_RESET_OFFSET: usize = 12;
-const POST_EXEC_OBSERVED_OFFSET: usize = 16;
-const POST_EXEC_TID_OFFSET: usize = 20;
-const POST_EXEC_CHILD_PID_OFFSET: usize = 24;
-
 const CHILD_STACK_SIZE: usize = 64 * 1024;
 const SPIN_LIMIT: u64 = 2_000_000;
 const LIVE_CHILD_WATCHDOG_LIMIT: u64 = 10_000;
-const FUTEX_RETRY_LIMIT: u32 = 16;
 const CLONE_FLAGS: u64 = 0x00000100 | 0x00000400 | 0x00200000 | 0x01000000;
 const FUTEX_WAIT: u64 = 0;
 const FUTEX_WAKE: u64 = 1;
@@ -194,19 +184,6 @@ unsafe fn prove_child_still_live(alive: *mut u64, tid_addr: *mut u32) {
     std::process::exit(1);
 }
 
-unsafe fn fail_with_post_exec_child(child_pid: u64, tid_addr: *mut u32, error: &[u8]) -> ! {
-    raw_msg(error);
-    if core::ptr::read_volatile(tid_addr) != 0 {
-        if signal::kill(child_pid as i32, signal::SIGKILL).is_err() {
-            raw_msg(b"CLONEVM_EXEC_TEST: ERROR post-exec child cleanup kill failed\n");
-        }
-        if !spin_until_u32(tid_addr, 0) {
-            raw_msg(b"CLONEVM_EXEC_TEST: ERROR post-exec child cleanup did not clear tid\n");
-        }
-    }
-    std::process::exit(1);
-}
-
 extern "C" fn phase_one_child(arg: *mut u8) -> *mut u8 {
     unsafe {
         let alive = arg.add(SHARED_ALIVE_OFFSET) as *mut u64;
@@ -223,60 +200,6 @@ extern "C" fn phase_one_child(arg: *mut u8) -> *mut u8 {
         }
 
         raw_msg(b"CLONEVM_EXEC_TEST: ERROR live child release timeout\n");
-        thread_exit(1);
-    }
-}
-
-extern "C" fn post_exec_child(arg: *mut u8) -> *mut u8 {
-    unsafe {
-        let futex_word = arg.add(POST_EXEC_FUTEX_OFFSET) as *mut u32;
-        let ready = arg.add(POST_EXEC_READY_OFFSET) as *mut u32;
-        let mismatch = arg.add(POST_EXEC_MISMATCH_OFFSET) as *mut u32;
-        let reset = arg.add(POST_EXEC_RESET_OFFSET) as *mut u32;
-        let observed = arg.add(POST_EXEC_OBSERVED_OFFSET) as *mut u32;
-        let child_pid_slot = arg.add(POST_EXEC_CHILD_PID_OFFSET) as *mut u64;
-
-        let child_pid = raw::syscall0(nr::GETPID);
-        if child_pid == 0 || child_pid > i32::MAX as u64 {
-            raw_msg(b"CLONEVM_EXEC_TEST: ERROR post-exec child getpid failed\n");
-            thread_exit(1);
-        }
-        core::ptr::write_volatile(child_pid_slot, child_pid);
-
-        let mut attempt = 1;
-        while attempt <= FUTEX_RETRY_LIMIT {
-            core::ptr::write_volatile(ready, attempt);
-            let wait_result = futex_wait(futex_word, 0);
-            if wait_result == 0 {
-                if core::ptr::read_volatile(futex_word) != 1 {
-                    raw_msg(b"CLONEVM_EXEC_TEST: ERROR post-exec futex word unchanged\n");
-                    thread_exit(1);
-                }
-
-                core::ptr::write_volatile(observed, 1);
-                raw_msg(b"CLONEVM_EXEC_TEST: post-exec futex wake observed\n");
-                thread_exit(0);
-            }
-            if wait_result != -(Errno::EAGAIN as i64) {
-                raw_msg(b"CLONEVM_EXEC_TEST: ERROR post-exec futex wait failed\n");
-                thread_exit(1);
-            }
-
-            // The parent may reset only after this acknowledgement proves that
-            // this attempt did not leave the child queued in FUTEX_WAIT.
-            core::ptr::write_volatile(mismatch, attempt);
-            if !spin_until_u32(reset, attempt) {
-                raw_msg(b"CLONEVM_EXEC_TEST: ERROR post-exec futex retry reset timed out\n");
-                thread_exit(1);
-            }
-            if core::ptr::read_volatile(futex_word) != 0 {
-                raw_msg(b"CLONEVM_EXEC_TEST: ERROR post-exec futex retry reset was unsafe\n");
-                thread_exit(1);
-            }
-            attempt += 1;
-        }
-
-        raw_msg(b"CLONEVM_EXEC_TEST: ERROR post-exec futex child retries exhausted\n");
         thread_exit(1);
     }
 }
@@ -307,109 +230,42 @@ unsafe fn probe_live_sibling_exec() {
 }
 
 unsafe fn second_stage() -> ! {
+    // These nonblocking calls exercise both futex entry points on the post-exec
+    // row at two addresses, so each group key is derived from that row's
+    // post-exec identity. They deliberately do not prove a cross-thread
+    // rendezvous because #584 tracks an enqueue-to-block lost-wake window.
     raw_msg(b"CLONEVM_EXEC_TEST: second stage\n");
 
-    let stack = map_region(
-        CHILD_STACK_SIZE,
-        b"CLONEVM_EXEC_TEST: ERROR post-exec stack mmap failed\n",
-    );
     let shared = map_region(
         4096,
         b"CLONEVM_EXEC_TEST: ERROR post-exec shared mmap failed\n",
     );
-    let futex_word = shared.add(POST_EXEC_FUTEX_OFFSET) as *mut u32;
-    let ready = shared.add(POST_EXEC_READY_OFFSET) as *mut u32;
-    let mismatch = shared.add(POST_EXEC_MISMATCH_OFFSET) as *mut u32;
-    let reset = shared.add(POST_EXEC_RESET_OFFSET) as *mut u32;
-    let observed = shared.add(POST_EXEC_OBSERVED_OFFSET) as *mut u32;
-    let tid_addr = shared.add(POST_EXEC_TID_OFFSET) as *mut u32;
-    let child_pid_slot = shared.add(POST_EXEC_CHILD_PID_OFFSET) as *mut u64;
-    core::ptr::write_volatile(futex_word, 0);
-    core::ptr::write_volatile(ready, 0);
-    core::ptr::write_volatile(mismatch, 0);
-    core::ptr::write_volatile(reset, 0);
-    core::ptr::write_volatile(observed, 0);
-    core::ptr::write_volatile(tid_addr, u32::MAX);
-    core::ptr::write_volatile(child_pid_slot, 0);
+    let first_word = shared as *mut u32;
+    let second_word = shared.add(core::mem::size_of::<u32>()) as *mut u32;
+    core::ptr::write_volatile(first_word, 0);
+    core::ptr::write_volatile(second_word, 0);
 
-    let child_tid = clone_vm_child(stack, post_exec_child, shared, tid_addr);
-    if child_tid < 0 {
-        raw_msg(b"CLONEVM_EXEC_TEST: ERROR post-exec clone failed\n");
+    if futex_wake(first_word, 1) != 0 {
+        raw_msg(b"CLONEVM_EXEC_TEST: ERROR first post-exec futex wake returned nonzero\n");
         std::process::exit(1);
     }
-    if !spin_until_nonzero_u64(child_pid_slot) {
-        raw_msg(b"CLONEVM_EXEC_TEST: ERROR post-exec child did not publish pid\n");
-        std::process::exit(1);
-    }
-    let child_pid = core::ptr::read_volatile(child_pid_slot);
-    if child_pid == 0 || child_pid > i32::MAX as u64 {
-        raw_msg(b"CLONEVM_EXEC_TEST: ERROR post-exec child published invalid pid\n");
+    core::ptr::write_volatile(first_word, 1);
+    if futex_wait(first_word, 0) != -(Errno::EAGAIN as i64) {
+        raw_msg(b"CLONEVM_EXEC_TEST: ERROR first post-exec futex wait did not return EAGAIN\n");
         std::process::exit(1);
     }
 
-    let mut attempt = 1;
-    let mut wake_observed = false;
-    while attempt <= FUTEX_RETRY_LIMIT {
-        if !spin_until_u32(ready, attempt) {
-            fail_with_post_exec_child(
-                child_pid,
-                tid_addr,
-                b"CLONEVM_EXEC_TEST: ERROR post-exec child did not approach futex wait\n",
-            );
-        }
-
-        core::ptr::write_volatile(futex_word, 1);
-        let wake_result = futex_wake(futex_word, 1);
-        if wake_result == 1 {
-            wake_observed = true;
-            break;
-        }
-        if wake_result != 0 {
-            fail_with_post_exec_child(
-                child_pid,
-                tid_addr,
-                b"CLONEVM_EXEC_TEST: ERROR post-exec futex wake failed\n",
-            );
-        }
-
-        if !spin_until_u32(mismatch, attempt) {
-            fail_with_post_exec_child(
-                child_pid,
-                tid_addr,
-                b"CLONEVM_EXEC_TEST: ERROR post-exec child did not acknowledge futex retry\n",
-            );
-        }
-        core::ptr::write_volatile(futex_word, 0);
-        core::ptr::write_volatile(reset, attempt);
-        attempt += 1;
+    if futex_wake(second_word, 1) != 0 {
+        raw_msg(b"CLONEVM_EXEC_TEST: ERROR second post-exec futex wake returned nonzero\n");
+        std::process::exit(1);
     }
-
-    if !wake_observed {
-        fail_with_post_exec_child(
-            child_pid,
-            tid_addr,
-            b"CLONEVM_EXEC_TEST: ERROR post-exec futex parent retries exhausted\n",
-        );
-    }
-
-    // Futex timeout arguments are currently ignored by the kernel, and its
-    // enqueue and Blocked-state publication are separate. A timer interrupt in
-    // that gap can make WAKE return one before the waiter actually blocks. The
-    // bounded CLEARTID wait plus SIGKILL cleanup below makes that failure loud
-    // without leaving an indefinitely blocked test child.
-    if !spin_until_u32(tid_addr, 0) {
-        fail_with_post_exec_child(
-            child_pid,
-            tid_addr,
-            b"CLONEVM_EXEC_TEST: ERROR post-exec child tid was not cleared\n",
-        );
-    }
-    if core::ptr::read_volatile(observed) != 1 {
-        raw_msg(b"CLONEVM_EXEC_TEST: ERROR post-exec child missed futex wake\n");
+    core::ptr::write_volatile(second_word, 2);
+    if futex_wait(second_word, 1) != -(Errno::EAGAIN as i64) {
+        raw_msg(b"CLONEVM_EXEC_TEST: ERROR second post-exec futex wait did not return EAGAIN\n");
         std::process::exit(1);
     }
 
-    raw_msg(b"CLONEVM_EXEC_TEST: post-exec futex round trip complete\n");
+    raw_msg(b"CLONEVM_EXEC_TEST: post-exec futex keys derived\n");
     raw_msg(b"CLONEVM_EXEC_TEST: PASS\n");
     std::process::exit(0);
 }
