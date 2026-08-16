@@ -2121,6 +2121,84 @@ fn corrupt_executable_fixture() -> [u8; 180] {
     bytes
 }
 
+// The second segment is out of bounds so loading fails after one committed mapping.
+// Both virtual addresses stay in PML4[0] for deterministic x86 table custody.
+#[cfg(all(feature = "boot_tests", target_arch = "x86_64"))]
+pub(crate) fn x86_corrupt_executable_fixture() -> [u8; 180] {
+    use crate::elf::{
+        Elf64Header, Elf64ProgramHeader, SegmentType, ELFCLASS64, ELFDATA2LSB, ELF_MAGIC, EM_X86_64,
+    };
+
+    let header = Elf64Header {
+        magic: ELF_MAGIC,
+        class: ELFCLASS64,
+        data: ELFDATA2LSB,
+        version: 1,
+        osabi: 0,
+        abiversion: 0,
+        _pad: [0; 7],
+        elf_type: 2,
+        machine: EM_X86_64,
+        version2: 1,
+        entry: crate::memory::layout::USERSPACE_BASE,
+        phoff: 64,
+        shoff: 0,
+        flags: 0,
+        ehsize: 64,
+        phentsize: 56,
+        phnum: 2,
+        shentsize: 0,
+        shnum: 0,
+        shstrndx: 0,
+    };
+    let executable = Elf64ProgramHeader {
+        p_type: SegmentType::Load as u32,
+        p_flags: 5,
+        p_offset: 176,
+        p_vaddr: crate::memory::layout::USERSPACE_BASE,
+        p_paddr: 0,
+        p_filesz: 4,
+        p_memsz: 4096,
+        p_align: 4096,
+    };
+    let corrupt = Elf64ProgramHeader {
+        p_type: SegmentType::Load as u32,
+        p_flags: 5,
+        p_offset: 180,
+        p_vaddr: crate::memory::layout::USERSPACE_BASE + 0x20_0000,
+        p_paddr: 0,
+        p_filesz: 4,
+        p_memsz: 4096,
+        p_align: 4096,
+    };
+    let trailing = [0x90, 0x90, 0x90, 0x90];
+
+    let mut bytes = [0u8; 180];
+    unsafe {
+        core::ptr::copy_nonoverlapping(
+            &header as *const Elf64Header as *const u8,
+            bytes.as_mut_ptr(),
+            core::mem::size_of::<Elf64Header>(),
+        );
+        core::ptr::copy_nonoverlapping(
+            &executable as *const Elf64ProgramHeader as *const u8,
+            bytes.as_mut_ptr().add(64),
+            core::mem::size_of::<Elf64ProgramHeader>(),
+        );
+        core::ptr::copy_nonoverlapping(
+            &corrupt as *const Elf64ProgramHeader as *const u8,
+            bytes.as_mut_ptr().add(120),
+            core::mem::size_of::<Elf64ProgramHeader>(),
+        );
+        core::ptr::copy_nonoverlapping(
+            trailing.as_ptr(),
+            bytes.as_mut_ptr().add(176),
+            trailing.len(),
+        );
+    }
+    bytes
+}
+
 /// O2/G-H: drive the real classified-abandon and non-freeing Drop paths.
 #[cfg(feature = "boot_tests")]
 pub fn page_table_custody_disposition_gate_test() -> crate::test_framework::registry::TestResult {
@@ -2224,6 +2302,99 @@ pub fn page_table_custody_disposition_gate_test() -> crate::test_framework::regi
             || teardown::LEAF_DECREF_UNREGISTERED.aggregate() != unregistered_before
         {
             return TestResult::Fail("F4: failed exec did not release unpublished custody exactly");
+        }
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    {
+        use crate::tracing::providers::teardown;
+
+        let used_before = {
+            let stats = crate::memory::frame_allocator::memory_stats();
+            stats
+                .allocated_frames
+                .saturating_sub(crate::memory::frame_allocator::free_list_len_for_gate())
+        };
+        let leaf_recorded_before = teardown::LEAF_MAPPINGS_RECORDED.aggregate();
+        let leaf_released_before = teardown::LEAF_MAPPINGS_RELEASED.aggregate();
+        let leaf_returned_before = teardown::LEAF_FRAMES_RETURNED.aggregate();
+        let tables_returned_before = teardown::PT_TABLE_FRAMES_RETURNED.aggregate();
+        let roots_retired_before = teardown::PT_ROOTS_RETIRED.aggregate();
+        let undecided_before = teardown::PT_ROOT_DROPPED_UNDECIDED.aggregate();
+        let mid_retire_before = teardown::PT_ROOT_DROPPED_MID_RETIRE.aggregate();
+        let frames_lost_before = teardown::PT_RETIRE_FRAMES_LOST.aggregate();
+        let live_refused_before = teardown::FRAME_RETURN_REFUSED_LIVE_LEAF.aggregate();
+        let custody_refused_before = teardown::LEAF_CUSTODY_REFUSED.aggregate();
+        let decref_unregistered_before = teardown::LEAF_DECREF_UNREGISTERED.aggregate();
+        let root_slot_refused_before = teardown::PT_ROOT_SLOT_REFUSED.aggregate();
+        let double_before = teardown::FRAME_RETURN_REFUSED_DOUBLE.aggregate();
+        let stale_before = teardown::FRAME_RETURN_REFUSED_STALE.aggregate();
+        let untracked_before = teardown::FRAME_RETURN_REFUSED_UNTRACKED.aggregate();
+
+        let page_table = match ProcessPageTable::new() {
+            Ok(page_table) => page_table,
+            Err(_) => {
+                return TestResult::Fail("F4/x86: unpublished page-table construction failed")
+            }
+        };
+        let unpublished_pid = u64::MAX - 4;
+        let mut unpublished = UnpublishedPageTable::new(page_table, unpublished_pid);
+        let corrupt_elf = x86_corrupt_executable_fixture();
+        let failed_load = crate::elf::load_elf_into_page_table(&corrupt_elf, unpublished.as_mut());
+        match failed_load {
+            Err("Segment data out of bounds") => {}
+            _ => {
+                return TestResult::Fail(
+                    "F4/x86: corrupt executable did not fail after its first mapping",
+                )
+            }
+        }
+        if teardown::LEAF_MAPPINGS_RECORDED.aggregate() != leaf_recorded_before + 1 {
+            return TestResult::Fail("F4/x86: corrupt executable failed before it mapped a leaf");
+        }
+        let recorded_pre = unpublished.recorded_table_frames_for_gate() as u64;
+        drop(unpublished);
+
+        let used_after = {
+            let stats = crate::memory::frame_allocator::memory_stats();
+            stats
+                .allocated_frames
+                .saturating_sub(crate::memory::frame_allocator::free_list_len_for_gate())
+        };
+        crate::serial_println!(
+            "[EXEC_FAILED_RELEASE_ORACLE:x86:used_before={}:used_after={}:recorded_pre={}:leaf_recorded={}:leaf_released={}:leaf_returned={}:tables_returned={}:roots_retired={}:undecided={}:live_refused={}]",
+            used_before,
+            used_after,
+            recorded_pre,
+            teardown::LEAF_MAPPINGS_RECORDED.aggregate() - leaf_recorded_before,
+            teardown::LEAF_MAPPINGS_RELEASED.aggregate() - leaf_released_before,
+            teardown::LEAF_FRAMES_RETURNED.aggregate() - leaf_returned_before,
+            teardown::PT_TABLE_FRAMES_RETURNED.aggregate() - tables_returned_before,
+            teardown::PT_ROOTS_RETIRED.aggregate() - roots_retired_before,
+            teardown::PT_ROOT_DROPPED_UNDECIDED.aggregate() - undecided_before,
+            teardown::FRAME_RETURN_REFUSED_LIVE_LEAF.aggregate() - live_refused_before,
+        );
+        if used_after != used_before
+            || teardown::LEAF_MAPPINGS_RECORDED.aggregate() != leaf_recorded_before + 1
+            || teardown::LEAF_MAPPINGS_RELEASED.aggregate() != leaf_released_before + 1
+            || teardown::LEAF_FRAMES_RETURNED.aggregate() != leaf_returned_before + 1
+            || teardown::PT_TABLE_FRAMES_RETURNED.aggregate()
+                != tables_returned_before + recorded_pre + 1
+            || teardown::PT_ROOTS_RETIRED.aggregate() != roots_retired_before + 1
+            || teardown::PT_ROOT_DROPPED_UNDECIDED.aggregate() != undecided_before
+            || teardown::PT_ROOT_DROPPED_MID_RETIRE.aggregate() != mid_retire_before
+            || teardown::PT_RETIRE_FRAMES_LOST.aggregate() != frames_lost_before
+            || teardown::FRAME_RETURN_REFUSED_LIVE_LEAF.aggregate() != live_refused_before
+            || teardown::LEAF_CUSTODY_REFUSED.aggregate() != custody_refused_before
+            || teardown::LEAF_DECREF_UNREGISTERED.aggregate() != decref_unregistered_before
+            || teardown::PT_ROOT_SLOT_REFUSED.aggregate() != root_slot_refused_before
+            || teardown::FRAME_RETURN_REFUSED_DOUBLE.aggregate() != double_before
+            || teardown::FRAME_RETURN_REFUSED_STALE.aggregate() != stale_before
+            || teardown::FRAME_RETURN_REFUSED_UNTRACKED.aggregate() != untracked_before
+        {
+            return TestResult::Fail(
+                "F4/x86: failed exec did not release unpublished custody exactly",
+            );
         }
     }
 

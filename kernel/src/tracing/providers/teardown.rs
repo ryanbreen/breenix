@@ -1821,6 +1821,128 @@ pub fn exec_supersede_cohort_test() -> crate::test_framework::registry::TestResu
         manager.insert_process(parent_pid, parent_process);
     }
 
+    // #573 production-path arm: the real x86 exec bodies must release a
+    // never-published address space on failure and must not strip a live
+    // process of the address space it is still running on.
+    let corrupt = crate::memory::process_memory::x86_corrupt_executable_fixture();
+    let used_before = frame_allocator_used_frames();
+    let undecided_before = PT_ROOT_DROPPED_UNDECIDED.aggregate();
+    let mid_retire_before = PT_ROOT_DROPPED_MID_RETIRE.aggregate();
+    let lost_before = PT_RETIRE_FRAMES_LOST.aggregate();
+    let custody_refused_before = LEAF_CUSTODY_REFUSED.aggregate();
+    let decref_unregistered_before = LEAF_DECREF_UNREGISTERED.aggregate();
+    let double_before = FRAME_RETURN_REFUSED_DOUBLE.aggregate();
+    let stale_before = FRAME_RETURN_REFUSED_STALE.aggregate();
+    let untracked_before = FRAME_RETURN_REFUSED_UNTRACKED.aggregate();
+    let root_slot_refused_before = PT_ROOT_SLOT_REFUSED.aggregate();
+    let (plain, plain_kept, with_argv, argv_kept, name_kept) = {
+        let mut manager_guard = crate::process::manager();
+        let Some(manager) = manager_guard.as_mut() else {
+            return TestResult::Fail(
+                "process manager unavailable for failed exec production-path arm",
+            );
+        };
+        let plain = manager.exec_process(parent_pid, &corrupt, Some("corrupt_exec"));
+        let plain_kept = manager
+            .get_process(parent_pid)
+            .map(|process| process.page_table.is_some())
+            .unwrap_or(false);
+        let argv: [&[u8]; 1] = [b"corrupt_exec\0"];
+        let with_argv =
+            manager.exec_process_with_argv(parent_pid, &corrupt, Some("corrupt_exec"), &argv);
+        let argv_kept = manager
+            .get_process(parent_pid)
+            .map(|process| process.page_table.is_some())
+            .unwrap_or(false);
+        let name_kept = manager
+            .get_process(parent_pid)
+            .map(|process| process.name == "exec_cohort_parent")
+            .unwrap_or(false);
+        (plain, plain_kept, with_argv, argv_kept, name_kept)
+    };
+    let used_after = frame_allocator_used_frames();
+    let balance = used_after as i64 - used_before as i64;
+    let plain_err = matches!(plain, Err("Segment data out of bounds"));
+    let argv_err = matches!(with_argv, Err("Segment data out of bounds"));
+    let undecided_delta = PT_ROOT_DROPPED_UNDECIDED
+        .aggregate()
+        .saturating_sub(undecided_before);
+    let mid_retire_delta = PT_ROOT_DROPPED_MID_RETIRE
+        .aggregate()
+        .saturating_sub(mid_retire_before);
+    let lost_delta = PT_RETIRE_FRAMES_LOST
+        .aggregate()
+        .saturating_sub(lost_before);
+    let custody_refused_delta = LEAF_CUSTODY_REFUSED
+        .aggregate()
+        .saturating_sub(custody_refused_before);
+    let decref_unregistered_delta = LEAF_DECREF_UNREGISTERED
+        .aggregate()
+        .saturating_sub(decref_unregistered_before);
+    let double_delta = FRAME_RETURN_REFUSED_DOUBLE
+        .aggregate()
+        .saturating_sub(double_before);
+    let stale_delta = FRAME_RETURN_REFUSED_STALE
+        .aggregate()
+        .saturating_sub(stale_before);
+    let untracked_delta = FRAME_RETURN_REFUSED_UNTRACKED
+        .aggregate()
+        .saturating_sub(untracked_before);
+    let root_slot_refused_delta = PT_ROOT_SLOT_REFUSED
+        .aggregate()
+        .saturating_sub(root_slot_refused_before);
+    crate::serial_println!(
+        "[EXEC_FAILED_RELEASE_PROD:x86:plain_err={}:plain_kept={}:argv_err={}:argv_kept={}:name_kept={}:balance={}:undecided={}:mid_retire={}:lost={}:custody_refused={}:decref_unregistered={}:double={}:stale={}:untracked={}:root_slot_refused={}]",
+        plain_err,
+        plain_kept,
+        argv_err,
+        argv_kept,
+        name_kept,
+        balance,
+        undecided_delta,
+        mid_retire_delta,
+        lost_delta,
+        custody_refused_delta,
+        decref_unregistered_delta,
+        double_delta,
+        stale_delta,
+        untracked_delta,
+        root_slot_refused_delta,
+    );
+    if !plain_err {
+        return TestResult::Fail("exec_process did not fail on a corrupt executable");
+    }
+    if !plain_kept {
+        return TestResult::Fail(
+            "exec_process stripped a live process of its address space on failure",
+        );
+    }
+    if !argv_err {
+        return TestResult::Fail("exec_process_with_argv did not fail on a corrupt executable");
+    }
+    if !argv_kept {
+        return TestResult::Fail(
+            "exec_process_with_argv stripped a live process of its address space on failure",
+        );
+    }
+    if !name_kept {
+        return TestResult::Fail("a failed exec mutated the process identity");
+    }
+    if balance != 0 {
+        return TestResult::Fail("a failed x86 exec did not return its half-built address space");
+    }
+    if undecided_delta != 0
+        || mid_retire_delta != 0
+        || lost_delta != 0
+        || custody_refused_delta != 0
+        || decref_unregistered_delta != 0
+        || double_delta != 0
+        || stale_delta != 0
+        || untracked_delta != 0
+    {
+        return TestResult::Fail("a failed x86 exec left an unclassified or over-returned root");
+    }
+
     let pid_counts_guard = reset_boot_test_pid_counts();
     let allocator_used_before = frame_allocator_used_frames();
     let roots_retired_before = PT_ROOTS_RETIRED.aggregate();
