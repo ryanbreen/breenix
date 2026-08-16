@@ -1892,6 +1892,7 @@ const RECLAIM_ENQUEUE_CALLS: &[(&str, &str, usize)] = &[
     ("kernel/src/tracing/providers/teardown.rs", "#[cfg(feature=boot_tests)] fn fork_exit_defer_reclaim_pairing_test", 1),
     ("kernel/src/tracing/providers/teardown.rs", "#[cfg(all(feature=boot_tests,target_arch=x86_64))] fn exec_supersede_cohort_test", 1),
     ("kernel/src/tracing/providers/teardown.rs", "#[cfg(feature=boot_tests)] fn exec_detach_oracle_test::fn retire_and_remove_owned_row", 1),
+    ("kernel/src/tracing/providers/teardown.rs", "#[cfg(all(feature=boot_tests,target_arch=aarch64))] fn creating_dispatch_refusal_test::fn retire_and_remove_owned_row", 1),
 ];
 #[rustfmt::skip]
 const EXIT_PROCESS_AND_RETIRE_CALLS: &[(&str, &str, usize)] = &[
@@ -4686,6 +4687,117 @@ fn all_phase_zero_counters_have_registered_readers_and_honest_runtime_gates() {
     assert!(aarch64_gate.contains("cargo build --release --features boot_tests"));
     assert!(aarch64_gate.contains("--boot-tests-only"));
     assert!(aarch64_gate.contains("grep -q \"\\[BOOT_TESTS:PASS\\]\""));
+}
+
+#[test]
+fn creating_dispatch_refusal_oracle_is_registered_and_pinned() {
+    const PINNED: &str = "[CREATING_DISPATCH_ORACLE:aarch64:injected=1:refused_via_dispatch=1:requeue_retried=1:dispatched_after_publish=1:balance=0]";
+
+    let provider = repo_text("kernel/src/tracing/providers/teardown.rs");
+    let oracle = function_body(&provider, "creating_dispatch_refusal_test");
+    let oracle_mask = code_mask(oracle);
+    assert_eq!(oracle.matches(PINNED).count(), 1);
+    assert_eq!(
+        identifier_offsets(oracle, &oracle_mask, "spawn_on_cpu_for_test").len(),
+        1
+    );
+    assert_eq!(
+        identifier_offsets(oracle, &oracle_mask, "force_unpublished_for_test").len(),
+        1
+    );
+    assert!(identifier_offsets(oracle, &oracle_mask, "Thread::new_kernel").is_empty());
+    assert!(identifier_offsets(oracle, &oracle_mask, "set_main_thread").is_empty());
+    assert_eq!(
+        identifier_offsets(oracle, &oracle_mask, "CpuContext::new_kernel_thread").len(),
+        1
+    );
+    assert!(oracle.contains("process_thread.blocked_in_syscall = true;"));
+    assert!(identifier_offsets(oracle, &oracle_mask, "kernel_stack_allocation").is_empty());
+    assert!(identifier_offsets(oracle, &oracle_mask, "refuse_unpublished_dispatch").is_empty());
+    assert!(oracle.contains("if observed >= 2"));
+    assert!(oracle.contains("process.set_ready();"));
+    assert!(oracle.contains("process_thread.context.x1 = root;"));
+    assert!(oracle.contains("boot_root_reference_blockers(&reclaim)"));
+    assert!(oracle.contains("boot_restore_process_resources(process, reclaim)?"));
+    assert!(oracle.contains(
+        "creating-dispatch root retained a hardware/shadow/cached reference at retirement"
+    ));
+    for field in [
+        ":root_release_done={}",
+        ":probe_hw_clear={}",
+        ":probe_shadow_clear={}",
+        ":probe_cached_clear={}",
+        ":retire_hw_blocked={}",
+        ":retire_shadow_blocked={}",
+        ":retire_cached_blocked={}",
+    ] {
+        assert!(oracle.contains(field));
+    }
+    for (identifier, expected) in [
+        ("reclaim_progress_sample", 3),
+        ("nudge_retirement_grace_for_test", 2),
+        ("boot_reclaim_deferred_process_resources", 2),
+        ("reclaim_terminated_threads", 2),
+        ("boot_reclaim_queue_census", 1),
+    ] {
+        assert_eq!(
+            identifier_offsets(oracle, &oracle_mask, identifier).len(),
+            expected,
+            "creating-dispatch settle census changed for {identifier}"
+        );
+    }
+    let progress_sample = function_body(oracle, "reclaim_progress_sample");
+    let progress_sample_mask = code_mask(progress_sample);
+    for counter in [
+        "PT_RETIRE_BUDGET_REQUEUED",
+        "PT_TABLE_FRAMES_RETURNED",
+        "PT_ROOTS_RETIRED",
+        "TEARDOWN_RECLAIM",
+    ] {
+        assert_eq!(
+            identifier_offsets(progress_sample, &progress_sample_mask, counter).len(),
+            1,
+            "creating-dispatch settle counter census changed for {counter}"
+        );
+    }
+    assert!(oracle.contains("next_sample == settle_sample"));
+    assert!(oracle.contains("stable_rounds >= 3"));
+    assert_eq!(
+        identifier_offsets(oracle, &oracle_mask, "retirement_grace_target").len(),
+        1
+    );
+    assert_eq!(
+        identifier_offsets(oracle, &oracle_mask, "retirement_grace_elapsed").len(),
+        1
+    );
+    assert!(oracle.contains(":settle_rounds={}"));
+    assert!(oracle.contains("[TEST:process:creating_dispatch_refusal:PASS]"));
+
+    let probe_entry = function_body(&provider, "creating_dispatch_probe_entry");
+    assert!(probe_entry.contains("quiesce_probe_ttbr0_for_test(thread_id, root)"));
+    let context_switch = repo_text("kernel/src/arch_impl/aarch64/context_switch.rs");
+    let quiesce = function_body(&context_switch, "quiesce_probe_ttbr0_for_test");
+    assert!(quiesce.contains("super::ttbr0::quiesce_ttbr0_for_exit();"));
+    assert!(quiesce.contains("set_thread_cached_ttbr0(thread, 0);"));
+    assert!(quiesce.contains("local_ttbr0_root()"));
+    assert!(quiesce.contains("is_ttbr0_root_live_in_mask(root, 1 << cpu_id)"));
+
+    let registry = repo_text("kernel/src/test_framework/registry.rs");
+    let registry_mask = code_mask(&registry);
+    let registrations =
+        identifier_offsets(&registry, &registry_mask, "creating_dispatch_refusal_test");
+    assert_eq!(registrations.len(), 1);
+    let test_def = enclosing_test_def(&registry, &registry_mask, registrations[0])
+        .expect("creating-dispatch refusal registry entry");
+    assert!(test_def.contains("name: \"creating_dispatch_refusal\""));
+    assert!(test_def.contains("arch: Arch::Aarch64"));
+    assert!(test_def.contains("stage: TestStage::PostScheduler"));
+
+    let gate = repo_text("docker/qemu/run-aarch64-full-test.sh");
+    assert_eq!(gate.matches(PINNED).count(), 1);
+    assert!(
+        gate.contains("FAIL_REASON=\"Phase 1: missing creating-dispatch refusal oracle marker\"")
+    );
 }
 
 #[test]

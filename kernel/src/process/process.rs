@@ -400,6 +400,11 @@ impl Process {
         self.state = ProcessState::Ready;
     }
 
+    #[cfg(feature = "boot_tests")]
+    pub fn force_unpublished_for_test(&mut self) {
+        self.state = ProcessState::Creating;
+    }
+
     /// Terminate the process
     ///
     /// This sets the process state to Terminated and closes all file descriptors

@@ -1219,6 +1219,20 @@ because dispatch refuses `Creating` rows, so shipping either without the other i
   roots), so P3 consumes that machinery instead of building an argument on paper.
 - Futex behaviour across an exec verified explicitly (the group id falls back to pid — `futex.rs` is
   the main consumer). Deterministic clone-vs-exec race.
+- The `Creating` dispatch arm is proven by a **real dispatch**, not by calling its predicate.
+  *(Added when P3 shipped. A counter driven nonzero by a direct call to `refuse_unpublished_dispatch`
+  proves the predicate; rule 2 is about **arms**. `creating_dispatch_refusal_test` therefore injects
+  the fault the arm exists for — a row forced back to `ProcessState::Creating` while a real scheduler
+  thread bound to it is runnable on another CPU — and observes the refusal counter rise by **two**
+  through the actual dispatcher. Two, not one: the second refusal is only reachable if the first one
+  requeued the thread, so the count is the runtime evidence that the recovery arm is a retry and not a
+  strand. The row is then published and the thread observed to actually run.
+  `[CREATING_DISPATCH_ORACLE:aarch64:…]` is pinned by the aarch64 gate, and the ratchet forbids the
+  oracle from calling the predicate directly. The same round fixed the x86 arms, which redirected to
+  idle without requeueing the refused thread — `scheduler::switch_to_idle()` only rewrites
+  `cpu_state[cpu].current_thread`, so on x86 a refused thread was left neither current nor queued;
+  `scheduler::requeue_refused_dispatch` is the x86 counterpart of the aarch64 arm's
+  `requeue_thread_after_save`, and both ratchets now pin `switch_to_idle → requeue → return`.)*
 - The exec-path lock order PR #577 ratcheted stays green: `[EXEC_LOCK_ORDER:VIOLATION:PM_HELD]` at
   zero across the full gate, and `tests/exec_lock_order_structure.rs` (25 tests) unbroken by the new
   commit-point code. *(Extending that ratchet to the creation sites is P4's gate, not this one.)*

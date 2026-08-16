@@ -2,13 +2,13 @@
 # ARM64 Full System Test (Native QEMU)
 #
 # This test matches the manual workflow of running ./run.sh:
-#   Phase 1: Boot and run all 84 subsystem tests (wait for [BOOT_TESTS:PASS])
+#   Phase 1: Boot and run all 85 subsystem tests (wait for [BOOT_TESTS:PASS])
 #   Phase 2: Verify BWM shell is up and services launched
 #   Phase 3: Wait for bounce demo under GPU load (10+ seconds)
 #   Phase 4: Verify kernel is still alive — no crashes during sustained operation
 #
 # This is the REAL test. Unlike boot-test-native.sh which exits at the shell
-# prompt, this test waits for the full 84-test suite to complete and then
+# prompt, this test waits for the full 85-test suite to complete and then
 # monitors sustained operation under GPU load.
 #
 # Usage: ./run-aarch64-full-test.sh [--rebuild] [--boot-tests-only]
@@ -136,8 +136,8 @@ check_fatal() {
     return 1
 }
 
-# --- Phase 1: Run all 84 subsystem tests (up to 90s) ---
-echo "Phase 1: Running 84 subsystem tests..."
+# --- Phase 1: Run all 85 subsystem tests (up to 90s) ---
+echo "Phase 1: Running 85 subsystem tests..."
 echo "  (Waiting for [BOOT_TESTS:PASS] or [BOOT_TESTS:FAIL])"
 PHASE1_OK=false
 for i in $(seq 1 45); do  # 45 * 2s = 90s timeout
@@ -185,6 +185,12 @@ done
 
 if ! $PHASE1_OK && [ -z "$FAIL_REASON" ]; then
     FAIL_REASON="Phase 1 timeout: tests did not complete within 90s"
+fi
+
+if $PHASE1_OK && [ -z "$FAIL_REASON" ]; then
+    if ! grep -Fq '[CREATING_DISPATCH_ORACLE:aarch64:injected=1:refused_via_dispatch=1:requeue_retried=1:dispatched_after_publish=1:balance=0]' "$OUTPUT_DIR/serial.txt" 2>/dev/null; then
+        FAIL_REASON="Phase 1: missing creating-dispatch refusal oracle marker"
+    fi
 fi
 
 # --- Phase 1b: Exercise the init-driven exec path (up to 30s) ---
