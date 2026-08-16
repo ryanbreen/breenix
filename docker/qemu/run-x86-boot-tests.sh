@@ -32,11 +32,16 @@ CLONE_ADMISSION_ORACLE_LITERAL='[CLONE_ADMISSION_ORACLE:x86:admitted=1:refused=2
 EXEC_FAILED_RELEASE_ORACLE_PATTERN='^\[EXEC_FAILED_RELEASE_ORACLE:x86:used_before=[0-9]+:used_after=[0-9]+:recorded_pre=3:leaf_recorded=1:leaf_released=1:leaf_returned=1:tables_returned=4:roots_retired=1:undecided=0:live_refused=0\]$'
 EXEC_FAILED_RELEASE_PROD_LITERAL='[EXEC_FAILED_RELEASE_PROD:x86:plain_err=true:plain_kept=true:argv_err=true:argv_kept=true:name_kept=true:balance=0:undecided=0:mid_retire=0:lost=0:custody_refused=0:decref_unregistered=0:double=0:stale=0:untracked=0:root_slot_refused=0]'
 # Ten launched test programs, 64 retire-cohort children, five loopback_wake_test
-# processes (parent, reader, peer, load, watchdog), and 16 exec-cohort children:
-# 10 + 64 + 5 + 16 = 95. This is a floor, checked >= by
-# scripts/x86-gate-verdict.sh; the production-path arm execs the cohort's
-# already-inserted parent and fails without launching a new userspace process; re-pin consciously.
-readonly EXPECTED_USERSPACE_EXITS=95
+# processes (parent, reader, peer, load, watchdog), 16 exec-cohort children, one
+# clonevm_exec_test process (renamed by its second-stage exec), its phase-1
+# CLONE_VM child, and two clone-admission oracle rows:
+# 10 + 64 + 5 + 16 + 1 + 1 + 1 + 1 = 99. The exec-detach oracle contributes
+# zero because its rows use the deferred-reclaim path rather than the
+# Process::terminate / terminate_minimal tally choke point. This is a floor,
+# checked >= by scripts/x86-gate-verdict.sh; the production-path arm execs the
+# cohort's already-inserted parent and fails without launching a new userspace
+# process; re-pin consciously.
+readonly EXPECTED_USERSPACE_EXITS=99
 
 cd "$BREENIX_ROOT"
 cargo build --release --features boot_tests,testing,external_test_bins --bin qemu-uefi
