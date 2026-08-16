@@ -4,6 +4,8 @@
 #
 # Unlike run-aarch64-boot-test-native.sh which uses retries (masking failures),
 # this test counts every boot attempt. A single failure means the test fails.
+# A boot is accepted only after both userspace liveness and exec smoke completion.
+# Serial output from every failed iteration is preserved in a never-cleared directory.
 #
 # Usage: ./run-aarch64-boot-test-strict.sh [iterations]
 #        Default: 20 iterations
@@ -66,6 +68,30 @@ check_crash_markers() {
     return 1
 }
 
+report_failure() {
+    local iteration="$1"
+    local reason="$2"
+    local serial_file="$3"
+    local failure_dir="/tmp/breenix_aarch64_strict_failures"
+    local timestamp
+    local preserved_serial
+    local lines
+
+    mkdir -p "$failure_dir"
+    timestamp=$(date -u +%Y%m%dT%H%M%SZ)
+    preserved_serial="$failure_dir/${timestamp}-boot${iteration}.txt"
+    if [ -f "$serial_file" ]; then
+        cp "$serial_file" "$preserved_serial"
+        lines=$(wc -l < "$serial_file" 2>/dev/null | tr -d ' ' || echo 0)
+    else
+        # QEMU never opened the serial file: preserve the empty artifact anyway so
+        # "zero serial bytes" (the #569 silent-hang signature) is on the record.
+        : > "$preserved_serial"
+        lines=0
+    fi
+    echo "  [FAIL] Boot $iteration: $reason ($lines lines); serial: $preserved_serial"
+}
+
 run_single_test() {
     local iteration=$1
     local OUTPUT_DIR="/tmp/breenix_aarch64_strict_$iteration"
@@ -94,22 +120,32 @@ run_single_test() {
         -serial file:"$OUTPUT_DIR/serial.txt" &
     local QEMU_PID=$!
 
-    # Wait for USERSPACE boot completion (18s max, checking every 1.5s)
-    # Accept any of:
+    # Wait for userspace liveness AND exec smoke completion (18s max, checking every 1.5s)
+    # Accept any of these as the liveness condition:
     #   "breenix>" or "bsh " - shell prompt on serial (legacy/direct mode)
     #   "[bwm] Display:" - BWM window manager initialized (shell runs inside PTY)
     #   "[bcheck] Complete:" - bcheck self-test suite finished (headless/no-VirGL mode)
     #   "[heartbeat]" - the default ARM64 init service executed in userspace
+    # Also require "[EXEC_SMOKE:TARGET_OK]" as the exec completion condition.
     # DO NOT accept "Interactive Shell" - that's the KERNEL FALLBACK when userspace FAILS
-    local BOOT_COMPLETE=false
+    local USERSPACE_DETECTED=false
+    local EXEC_SMOKE_COMPLETE=false
     local CRASH_TYPE=""
-    for i in $(seq 1 12); do
+    # Named POLL, not i: the caller's loop variable is also i, and an unscoped
+    # inner i made the summary report the poll counter instead of the boot number.
+    local POLL
+    for POLL in $(seq 1 12); do
         if [ -f "$OUTPUT_DIR/serial.txt" ]; then
             if grep -qE "(breenix>|bsh |\[bwm\] Display:|\[bcheck\] Complete:|\[heartbeat\])" "$OUTPUT_DIR/serial.txt" 2>/dev/null; then
-                BOOT_COMPLETE=true
-                break
+                USERSPACE_DETECTED=true
+            fi
+            if grep -qF "[EXEC_SMOKE:TARGET_OK]" "$OUTPUT_DIR/serial.txt" 2>/dev/null; then
+                EXEC_SMOKE_COMPLETE=true
             fi
             if CRASH_TYPE=$(check_crash_markers "$OUTPUT_DIR/serial.txt"); then
+                break
+            fi
+            if $USERSPACE_DETECTED && $EXEC_SMOKE_COMPLETE; then
                 break
             fi
         fi
@@ -119,21 +155,25 @@ run_single_test() {
     kill $QEMU_PID 2>/dev/null || true
     wait $QEMU_PID 2>/dev/null || true
 
-    if $BOOT_COMPLETE; then
+    if $USERSPACE_DETECTED && $EXEC_SMOKE_COMPLETE; then
         # Even if boot appeared successful, scan for crash markers
         if CRASH_TYPE=$(check_crash_markers "$OUTPUT_DIR/serial.txt"); then
-            local LINES=$(wc -l < "$OUTPUT_DIR/serial.txt" 2>/dev/null || echo 0)
-            echo "  [FAIL] Boot $iteration: $CRASH_TYPE after boot ($LINES lines)"
+            report_failure "$iteration" "$CRASH_TYPE after boot" "$OUTPUT_DIR/serial.txt"
+            return 1
+        fi
+        if ! grep -qF "[EXEC_LOCK_ORDER:FIRST_COMMIT]" "$OUTPUT_DIR/serial.txt" 2>/dev/null; then
+            report_failure "$iteration" "Exec commit marker missing" "$OUTPUT_DIR/serial.txt"
             return 1
         fi
         echo "  [OK] Boot $iteration: SUCCESS"
         return 0
     else
-        local LINES=$(wc -l < "$OUTPUT_DIR/serial.txt" 2>/dev/null || echo 0)
         if [ -n "$CRASH_TYPE" ]; then
-            echo "  [FAIL] Boot $iteration: $CRASH_TYPE ($LINES lines)"
+            report_failure "$iteration" "$CRASH_TYPE" "$OUTPUT_DIR/serial.txt"
+        elif ! $USERSPACE_DETECTED; then
+            report_failure "$iteration" "Userspace not detected" "$OUTPUT_DIR/serial.txt"
         else
-            echo "  [FAIL] Boot $iteration: Userspace not detected ($LINES lines)"
+            report_failure "$iteration" "Exec smoke did not complete" "$OUTPUT_DIR/serial.txt"
         fi
         return 1
     fi

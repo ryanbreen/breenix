@@ -1010,8 +1010,31 @@ fn validate_exec_smoke_is_wired(
     if wait_stress.len() != 1 || smoke_calls[0] >= wait_stress[0] {
         return Err("init must run the exec smoke before wait stress".to_owned());
     }
+    let liveness_calls = code_offsets(main, &main_mask, "start_liveness_service()");
+    if liveness_calls.len() != 1 || liveness_calls[0] >= smoke_calls[0] {
+        return Err("init must spawn the liveness service before the exec smoke".to_owned());
+    }
+    let boot_services = code_offsets(main, &main_mask, "run_boot_script()");
+    // Init stalls in a later service spawn on the aarch64 QEMU gates, so anything
+    // after run_boot_script() never executes there.
+    if boot_services.len() != 1 || smoke_calls[0] >= boot_services[0] {
+        return Err("init must run the exec smoke before the remaining boot services".to_owned());
+    }
+    let reap_loops = code_offsets(main, &main_mask, "loop {");
+    if reap_loops.len() != 1 || smoke_calls[0] >= reap_loops[0] {
+        return Err("init must run the exec smoke before the reap loop".to_owned());
+    }
     if !main.contains("#[cfg(target_arch = \"aarch64\")]\n    run_exec_smoke();") {
         return Err("init main does not aarch64-gate run_exec_smoke".to_owned());
+    }
+
+    let liveness = function_body(init_rs, "start_liveness_service");
+    if !liveness.contains("spawn(b\"/bin/heartbeat\\0\")") {
+        return Err("start_liveness_service must spawn /bin/heartbeat".to_owned());
+    }
+    let boot_script = function_body(init_rs, "run_boot_script");
+    if boot_script.contains("b\"/bin/heartbeat\\0\"") {
+        return Err("run_boot_script must not spawn /bin/heartbeat".to_owned());
     }
 
     let smoke_fn_offset = init_rs
@@ -1367,6 +1390,93 @@ fn negative_exec_smoke_init_spawn_deletion_is_rejected() {
         1,
     );
     assert_ne!(mutated, init_rs, "init exec smoke spawn mutation applied");
+    assert!(validate_exec_smoke_is_wired(
+        &mutated,
+        &build_sh,
+        &cargo_toml,
+        &launcher_rs,
+        &target_rs,
+        &syscall_entry,
+    )
+    .is_err());
+}
+
+#[test]
+fn negative_exec_smoke_before_liveness_spawn_is_rejected() {
+    let init_rs = repo_text("userspace/programs/src/init.rs");
+    let build_sh = repo_text("userspace/programs/build.sh");
+    let cargo_toml = repo_text("userspace/programs/Cargo.toml");
+    let launcher_rs = repo_text("userspace/programs/src/exec_smoke.rs");
+    let target_rs = repo_text("userspace/programs/src/exec_smoke_target.rs");
+    let syscall_entry = repo_text("kernel/src/arch_impl/aarch64/syscall_entry.rs");
+    let smoke_call = "    #[cfg(target_arch = \"aarch64\")]\n    run_exec_smoke();\n";
+    let without_smoke = init_rs.replacen(smoke_call, "", 1);
+    let liveness_call = "    #[cfg(target_arch = \"aarch64\")]\n    start_liveness_service();\n";
+    let mutated = without_smoke.replacen(liveness_call, &format!("{smoke_call}{liveness_call}"), 1);
+    assert_ne!(
+        mutated, init_rs,
+        "exec smoke before liveness mutation applied"
+    );
+    assert!(validate_exec_smoke_is_wired(
+        &mutated,
+        &build_sh,
+        &cargo_toml,
+        &launcher_rs,
+        &target_rs,
+        &syscall_entry,
+    )
+    .is_err());
+}
+
+#[test]
+fn negative_exec_smoke_after_boot_services_is_rejected() {
+    let init_rs = repo_text("userspace/programs/src/init.rs");
+    let build_sh = repo_text("userspace/programs/build.sh");
+    let cargo_toml = repo_text("userspace/programs/Cargo.toml");
+    let launcher_rs = repo_text("userspace/programs/src/exec_smoke.rs");
+    let target_rs = repo_text("userspace/programs/src/exec_smoke_target.rs");
+    let syscall_entry = repo_text("kernel/src/arch_impl/aarch64/syscall_entry.rs");
+    let smoke_call = "    #[cfg(target_arch = \"aarch64\")]\n    run_exec_smoke();\n";
+    let without_smoke = init_rs.replacen(smoke_call, "", 1);
+    let mutated = without_smoke.replacen(
+        "    run_boot_script();\n",
+        &format!("    run_boot_script();\n{smoke_call}"),
+        1,
+    );
+    assert_ne!(
+        mutated, init_rs,
+        "exec smoke after boot services mutation applied"
+    );
+    assert!(validate_exec_smoke_is_wired(
+        &mutated,
+        &build_sh,
+        &cargo_toml,
+        &launcher_rs,
+        &target_rs,
+        &syscall_entry,
+    )
+    .is_err());
+}
+
+#[test]
+fn negative_exec_smoke_after_reap_loop_is_rejected() {
+    let init_rs = repo_text("userspace/programs/src/init.rs");
+    let build_sh = repo_text("userspace/programs/build.sh");
+    let cargo_toml = repo_text("userspace/programs/Cargo.toml");
+    let launcher_rs = repo_text("userspace/programs/src/exec_smoke.rs");
+    let target_rs = repo_text("userspace/programs/src/exec_smoke_target.rs");
+    let syscall_entry = repo_text("kernel/src/arch_impl/aarch64/syscall_entry.rs");
+    let smoke_call = "    #[cfg(target_arch = \"aarch64\")]\n    run_exec_smoke();\n";
+    let without_smoke = init_rs.replacen(smoke_call, "", 1);
+    let mutated = without_smoke.replacen(
+        "    }\n}\n\n///",
+        &format!("    }}\n{smoke_call}}}\n\n///"),
+        1,
+    );
+    assert_ne!(
+        mutated, init_rs,
+        "exec smoke after reap loop mutation applied"
+    );
     assert!(validate_exec_smoke_is_wired(
         &mutated,
         &build_sh,
