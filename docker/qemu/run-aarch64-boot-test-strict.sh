@@ -68,6 +68,59 @@ check_crash_markers() {
     return 1
 }
 
+# Score a finished boot ENTIRELY from the serial file it produced.
+#
+# The poll loop in run_single_test only decides WHEN TO STOP WAITING; it must
+# never decide the verdict. Its booleans latch on a grep that runs at most once
+# every 1.5s, so a marker that lands between the last grep and the kill is
+# present in the file while the boolean is still false — and the old code scored
+# that latched false as a boot failure. Everything the gate rejects is rejected
+# here, from the file, after QEMU is gone; nothing is loosened.
+#
+# Prints the failure reason and returns 1 when the boot is unacceptable; prints
+# nothing and returns 0 when it is acceptable.
+score_serial() {
+    local serial_file="$1"
+    local crash_type
+
+    if [ ! -f "$serial_file" ]; then
+        echo "Userspace not detected"
+        return 1
+    fi
+    if crash_type=$(check_crash_markers "$serial_file"); then
+        echo "$crash_type"
+        return 1
+    fi
+    if ! grep -qE "(breenix>|bsh |\[bwm\] Display:|\[bcheck\] Complete:|\[heartbeat\])" \
+        "$serial_file" 2>/dev/null; then
+        echo "Userspace not detected"
+        return 1
+    fi
+    if ! grep -qF "[EXEC_SMOKE:TARGET_OK]" "$serial_file" 2>/dev/null; then
+        echo "Exec smoke did not complete"
+        return 1
+    fi
+    if ! grep -qF "[EXEC_LOCK_ORDER:FIRST_COMMIT]" "$serial_file" 2>/dev/null; then
+        echo "Exec commit marker missing"
+        return 1
+    fi
+    return 0
+}
+
+# Scoring-only entry point: score an already-captured serial log and exit. This
+# exists so the scoring rules can be exercised against a preserved serial without
+# booting, which is how the "a serial containing every success marker scores as a
+# success" property is proven.
+if [ -n "${BREENIX_STRICT_SCORE_ONLY:-}" ]; then
+    if SCORE_REASON=$(score_serial "$BREENIX_STRICT_SCORE_ONLY"); then
+        echo "SCORE: PASS - $BREENIX_STRICT_SCORE_ONLY"
+        exit 0
+    else
+        echo "SCORE: FAIL - $SCORE_REASON ($BREENIX_STRICT_SCORE_ONLY)"
+        exit 1
+    fi
+fi
+
 report_failure() {
     local iteration="$1"
     local reason="$2"
@@ -155,28 +208,16 @@ run_single_test() {
     kill $QEMU_PID 2>/dev/null || true
     wait $QEMU_PID 2>/dev/null || true
 
-    if $USERSPACE_DETECTED && $EXEC_SMOKE_COMPLETE; then
-        # Even if boot appeared successful, scan for crash markers
-        if CRASH_TYPE=$(check_crash_markers "$OUTPUT_DIR/serial.txt"); then
-            report_failure "$iteration" "$CRASH_TYPE after boot" "$OUTPUT_DIR/serial.txt"
-            return 1
-        fi
-        if ! grep -qF "[EXEC_LOCK_ORDER:FIRST_COMMIT]" "$OUTPUT_DIR/serial.txt" 2>/dev/null; then
-            report_failure "$iteration" "Exec commit marker missing" "$OUTPUT_DIR/serial.txt"
-            return 1
-        fi
+    # The poll booleans above are a stop condition, not a verdict. Score the boot
+    # from the serial file QEMU actually left behind.
+    local FAIL_DETAIL
+    if FAIL_DETAIL=$(score_serial "$OUTPUT_DIR/serial.txt"); then
         echo "  [OK] Boot $iteration: SUCCESS"
         return 0
-    else
-        if [ -n "$CRASH_TYPE" ]; then
-            report_failure "$iteration" "$CRASH_TYPE" "$OUTPUT_DIR/serial.txt"
-        elif ! $USERSPACE_DETECTED; then
-            report_failure "$iteration" "Userspace not detected" "$OUTPUT_DIR/serial.txt"
-        else
-            report_failure "$iteration" "Exec smoke did not complete" "$OUTPUT_DIR/serial.txt"
-        fi
-        return 1
     fi
+
+    report_failure "$iteration" "$FAIL_DETAIL" "$OUTPUT_DIR/serial.txt"
+    return 1
 }
 
 echo "========================================="
