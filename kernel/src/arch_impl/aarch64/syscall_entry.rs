@@ -328,23 +328,17 @@ fn sys_exit_aarch64(exit_code: i32) -> u64 {
     if let Some(thread_id) = crate::task::scheduler::current_thread_id() {
         // Handle clear_child_tid for clone threads (CLONE_CHILD_CLEARTID).
         // Extract info under PM lock, but do NOT log while holding it.
-        let (pid_for_log, name_for_log, futex_info) = {
+        let (pid_for_log, name_for_log, clear_child_tid) = {
             let manager_guard = crate::process::manager();
             if let Some(ref manager) = *manager_guard {
                 if let Some((_pid, process)) = manager.find_process_by_thread(thread_id) {
                     let pid_val = _pid.as_u64();
                     let name_val = process.name.clone();
-                    let futex = process.clear_child_tid.map(|tid_addr| {
+                    let clear_child_tid = process.clear_child_tid.map(|tid_addr| {
                         let tg_id = process.thread_group_id.unwrap_or(pid_val);
-                        unsafe {
-                            let ptr = tid_addr as *mut u32;
-                            if !ptr.is_null() && tid_addr < 0x7FFF_FFFF_FFFF {
-                                core::ptr::write_volatile(ptr, 0);
-                            }
-                        }
                         (tg_id, tid_addr)
                     });
-                    (Some(pid_val), Some(name_val), futex)
+                    (Some(pid_val), Some(name_val), clear_child_tid)
                 } else {
                     (None, None, None)
                 }
@@ -353,8 +347,9 @@ fn sys_exit_aarch64(exit_code: i32) -> u64 {
             }
         }; // PM lock dropped here
 
-        // Futex wake outside PM lock
-        if let Some((tg_id, tid_addr)) = futex_info {
+        if let Some((tg_id, tid_addr)) = clear_child_tid {
+            let zero = 0u32;
+            let _ = crate::syscall::userptr::copy_to_user(tid_addr as *mut u32, &zero);
             crate::syscall::futex::futex_wake_for_thread_group(tg_id, tid_addr, u32::MAX);
         }
 

@@ -2018,6 +2018,11 @@ const THREAD_GROUP_WRITES: &[(&str, &str, usize)] = &[
     ("kernel/src/syscall/clone.rs", "fn sys_clone", 1),
 ];
 #[rustfmt::skip]
+const CLEAR_CHILD_TID_EXIT_SITES: &[(&str, &str, usize)] = &[
+    ("kernel/src/arch_impl/aarch64/syscall_entry.rs", "fn sys_exit_aarch64", 1),
+    ("kernel/src/syscall/handlers.rs", "fn sys_exit", 1),
+];
+#[rustfmt::skip]
 const BTRT_PROCESS_EXIT_REPORTS: &[(&str, &str, usize)] = &[
     ("kernel/src/task/process_task.rs", "impl ProcessScheduler::fn handle_thread_exit", 1),
 ];
@@ -2123,6 +2128,63 @@ fn validate_group_writes(sources: &[(String, String)]) -> Result<(), Vec<String>
         }),
         THREAD_GROUP_WRITES,
     )
+}
+
+fn clear_child_tid_read_offsets(source: &str, mask: &[bool]) -> Vec<usize> {
+    let assignments = assignment_offsets(source, mask, "clear_child_tid");
+    identifier_offsets(source, mask, "clear_child_tid")
+        .into_iter()
+        .filter(|offset| {
+            previous_code(source, mask, *offset)
+                .is_some_and(|previous| source.as_bytes()[previous] == b'.')
+                && !assignments.contains(offset)
+        })
+        .collect()
+}
+
+fn validate_clear_child_tid_exit_paths(
+    sources: &[(String, String)],
+) -> Result<(), Vec<String>> {
+    let reads = census(sources, clear_child_tid_read_offsets);
+    let mut failures = Vec::new();
+    record(
+        &mut failures,
+        "clear_child_tid exit readers",
+        validate_census(&reads, CLEAR_CHILD_TID_EXIT_SITES),
+    );
+
+    for (path, item, _) in CLEAR_CHILD_TID_EXIT_SITES {
+        let name = item.strip_prefix("fn ").expect("function census anchor");
+        let body = function_body(source(sources, path), name);
+        let mask = code_mask(body);
+        let read = clear_child_tid_read_offsets(body, &mask);
+        let copy = call_offsets(body, &mask, "copy_to_user");
+        let wake = call_offsets(body, &mask, "futex_wake_for_thread_group");
+        let teardown = call_offsets(body, &mask, "handle_thread_exit");
+        let raw_write = call_offsets(body, &mask, "write_volatile");
+        let manager = call_offsets(body, &mask, "manager");
+        let snapshot_end = code_offsets(body, &mask, "};");
+        let code = normalized_code(body);
+        if read.len() != 1
+            || copy.len() != 1
+            || wake.len() != 1
+            || teardown.len() != 1
+            || !raw_write.is_empty()
+            || manager.len() != 1
+            || !snapshot_end
+                .iter()
+                .any(|end| read[0] < *end && *end < copy[0])
+            || !code.contains("copy_to_user(tid_addr as *mut u32, &zero);")
+            || !code.contains("futex_wake_for_thread_group(tg_id, tid_addr, u32::MAX);")
+            || !(read[0] < copy[0] && copy[0] < wake[0] && wake[0] < teardown[0])
+        {
+            failures.push(format!(
+                "{path} :: {item} must snapshot clear_child_tid under PROCESS_MANAGER, then copy_to_user and futex-wake before teardown"
+            ));
+        }
+    }
+
+    failures.is_empty().then_some(()).ok_or(failures)
 }
 
 fn validate_exit_sgi_is_teardown_only(sources: &[(String, String)]) -> Result<(), ()> {
@@ -4139,6 +4201,12 @@ fn current_teardown_bypass_surface_is_exact() {
 
     record(
         &mut failures,
+        "per-architecture clear_child_tid exit handling",
+        validate_clear_child_tid_exit_paths(&sources),
+    );
+
+    record(
+        &mut failures,
         "Process::terminate callers",
         validate_census(
             &census(&sources, |source, mask| {
@@ -5371,6 +5439,22 @@ fn deliberately_broken_variants_fail_the_ratchet() {
         "fn rogue_exit(pm: &mut ProcessManager, pid: ProcessId) { pm.exit_process(pid, 0); }",
     );
     assert!(validate_exit_process_entry_points(&broken_exit).is_err());
+
+    let aarch64_exit = source(
+        &sources,
+        "kernel/src/arch_impl/aarch64/syscall_entry.rs",
+    );
+    let raw_clear = aarch64_exit.replacen(
+        "let _ = crate::syscall::userptr::copy_to_user(tid_addr as *mut u32, &zero);",
+        "unsafe { core::ptr::write_volatile(tid_addr as *mut u32, zero); }",
+        1,
+    );
+    let raw_clear = with_replaced_source(
+        &sources,
+        "kernel/src/arch_impl/aarch64/syscall_entry.rs",
+        raw_clear,
+    );
+    assert!(validate_clear_child_tid_exit_paths(&raw_clear).is_err());
 
     let broken_by_pid = with_synthetic_source(
         &sources,
