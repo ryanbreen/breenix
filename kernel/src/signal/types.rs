@@ -122,15 +122,13 @@ impl SignalAction {
 
     /// Check if handler ignores the signal
     #[inline]
-    #[allow(dead_code)] // Part of complete signal API, will be used for signal dispatch optimization
     pub fn is_ignore(&self) -> bool {
         self.handler == SIG_IGN
     }
 
     /// Check if handler is a user function
     #[inline]
-    #[allow(dead_code)] // Part of complete signal API, will be used for signal dispatch
-    pub fn is_user_handler(&self) -> bool {
+    pub fn is_handler(&self) -> bool {
         self.handler > SIG_IGN
     }
 }
@@ -185,10 +183,37 @@ impl SignalState {
         Self::default()
     }
 
-    /// Check if any signals are pending and not blocked
+    /// Check whether there is pending signal work for the delivery path to process.
+    ///
+    /// This deliberately includes ignored dispositions so the delivery path can clear them.
+    /// Issue #493 motivated splitting this from the EINTR predicate: a default-ignored
+    /// SIGCHLD is delivery work even though userspace will not observe it.
     #[inline]
     pub fn has_deliverable_signals(&self) -> bool {
         (self.pending & !self.blocked) != 0
+    }
+
+    /// Check whether a pending signal will actually be seen by userspace, so a blocking
+    /// syscall must abort with EINTR.
+    ///
+    /// Unlike [`Self::has_deliverable_signals`], this excludes explicit and default-ignored
+    /// dispositions. Issue #493 was motivated by a default-ignored SIGCHLD incorrectly
+    /// interrupting a blocking syscall.
+    #[inline]
+    pub fn has_interrupting_signals(&self) -> bool {
+        let mut pending = self.pending & !self.blocked;
+        while pending != 0 {
+            let sig = pending.trailing_zeros() + 1;
+            let action = self.get_handler(sig);
+            if !action.is_ignore()
+                && (action.is_handler()
+                    || (action.is_default() && default_action(sig) != SignalDefaultAction::Ignore))
+            {
+                return true;
+            }
+            pending &= pending - 1;
+        }
+        false
     }
 
     /// Get the next deliverable signal (lowest number first)
@@ -302,7 +327,7 @@ impl SignalState {
     pub fn exec_reset(&mut self) {
         self.pending = 0;
         for handler in self.handlers.iter_mut() {
-            if handler.is_user_handler() {
+            if handler.is_handler() {
                 *handler = SignalAction::default();
             }
             // SIG_IGN and SIG_DFL are preserved
