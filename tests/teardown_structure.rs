@@ -1892,7 +1892,7 @@ const RECLAIM_ENQUEUE_CALLS: &[(&str, &str, usize)] = &[
     ("kernel/src/tracing/providers/teardown.rs", "#[cfg(feature=boot_tests)] fn fork_exit_defer_reclaim_pairing_test", 1),
     ("kernel/src/tracing/providers/teardown.rs", "#[cfg(all(feature=boot_tests,target_arch=x86_64))] fn exec_supersede_cohort_test", 1),
     ("kernel/src/tracing/providers/teardown.rs", "#[cfg(feature=boot_tests)] fn exec_detach_oracle_test::fn retire_and_remove_owned_row", 1),
-    ("kernel/src/tracing/providers/teardown.rs", "#[cfg(all(feature=boot_tests,target_arch=aarch64))] fn creating_dispatch_refusal_test::fn retire_and_remove_owned_row", 1),
+    ("kernel/src/tracing/providers/teardown.rs", "#[cfg(feature=boot_tests)] fn creating_dispatch_retire_and_remove_owned_row", 1),
 ];
 #[rustfmt::skip]
 const EXIT_PROCESS_AND_RETIRE_CALLS: &[(&str, &str, usize)] = &[
@@ -2809,6 +2809,7 @@ fn validate_x86_frame_custody_harness(script: &str) -> Result<(), ()> {
     const PT_EXEC_COHORT_VECTOR: &str = "PT_EXEC_COHORT_LITERAL='[PT_EXEC_COHORT:x86:children=16:superseded=3:roots=64:returned=640:recorded=576:lost=0:leaf_recorded=192:leaf_released=192:leaf_returned=192:custody_refused=0:decref_unregistered=0:undecided=0:mid_retire=0:no_arch=0:balance=0]' # The returned and recorded table-frame fields are pinned from the measured run.";
     const EXEC_DETACH_ORACLE_VECTOR: &str = "EXEC_DETACH_ORACLE_LITERAL='[EXEC_DETACH_ORACLE:x86:bodies=2:fail_preserved=2:sibling_refused=0:success_detached=2:fresh_root=2:tgid_self=2:custody_balance=0:leaf_residual=16:stack_residual=149:old_group_reached_pre=2:old_group_missed_post=2:self_group_reached_post=2]'";
     const CLONE_ADMISSION_ORACLE_VECTOR: &str = "CLONE_ADMISSION_ORACLE_LITERAL='[CLONE_ADMISSION_ORACLE:x86:admitted=1:refused=2:creating_refused=1:published_admitted=2:balance=0]'";
+    const CREATING_DISPATCH_ORACLE_X86_VECTOR: &str = "CREATING_DISPATCH_ORACLE_X86_LITERAL='[CREATING_DISPATCH_ORACLE:x86:injected=1:refused_via_dispatch=1:requeue_retried=1:dispatched_after_publish=1:balance=0:leaf_residual=18446744073709551615:user_stack_residual=-9223372036854775808]'";
     const EXEC_FAILED_RELEASE_ORACLE_VECTOR: &str = "EXEC_FAILED_RELEASE_ORACLE_PATTERN='^\\[EXEC_FAILED_RELEASE_ORACLE:x86:used_before=[0-9]+:used_after=[0-9]+:recorded_pre=3:leaf_recorded=1:leaf_released=1:leaf_returned=1:tables_returned=4:roots_retired=1:undecided=0:live_refused=0\\]$'";
     const EXEC_FAILED_RELEASE_PROD_VECTOR: &str = "EXEC_FAILED_RELEASE_PROD_LITERAL='[EXEC_FAILED_RELEASE_PROD:x86:plain_err=true:plain_kept=true:argv_err=true:argv_kept=true:name_kept=true:balance=0:undecided=0:mid_retire=0:lost=0:custody_refused=0:decref_unregistered=0:double=0:stale=0:untracked=0:root_slot_refused=0]'";
     const BXTEST_DISK_REBUILD: &str =
@@ -2863,6 +2864,7 @@ fn validate_x86_frame_custody_harness(script: &str) -> Result<(), ()> {
         && script.contains(PT_COHORT_VECTOR)
         && script.contains(PT_EXEC_COHORT_VECTOR)
         && script.contains(EXEC_DETACH_ORACLE_VECTOR)
+        && script.contains(CREATING_DISPATCH_ORACLE_X86_VECTOR)
         && script.contains(CLONE_ADMISSION_ORACLE_VECTOR)
         && script.contains(EXEC_FAILED_RELEASE_ORACLE_VECTOR)
         && script.contains(EXEC_FAILED_RELEASE_PROD_VECTOR)
@@ -2872,18 +2874,21 @@ fn validate_x86_frame_custody_harness(script: &str) -> Result<(), ()> {
         && script.matches("x86_exec_cohort:PASS").count() == 2
         && script.matches("exec_detach_oracle:PASS").count() == 2
         && script.matches("clone_admission_oracle:PASS").count() == 2
+        && script.matches("creating_dispatch_refusal_x86:PASS").count() == 3
         && exact_marker_count("frame_custody_refusal_gate")
         && exact_marker_count("page_table_custody_disposition_gate")
         && exact_marker_count("x86_retire_cohort")
         && exact_marker_count("x86_exec_cohort")
         && exact_marker_count("exec_detach_oracle")
         && exact_marker_count("clone_admission_oracle")
+        && exact_marker_count("creating_dispatch_refusal_x86")
         && script.contains("grep -qE \"$FRAME_CUSTODY_PATTERN\"")
         && script.contains("grep -qF -x \"$PT_CUSTODY_LITERAL\"")
         && script.contains("grep -qF -x \"$PT_COHORT_LITERAL\"")
         && script.contains("grep -qF -x \"$PT_EXEC_COHORT_LITERAL\"")
         && script.contains("grep -qF -x \"$EXEC_DETACH_ORACLE_LITERAL\"")
         && script.contains("grep -qF -x \"$CLONE_ADMISSION_ORACLE_LITERAL\"")
+        && script.contains("grep -qF -x \"$CREATING_DISPATCH_ORACLE_X86_LITERAL\"")
         && script.contains("grep -qE \"$EXEC_FAILED_RELEASE_ORACLE_PATTERN\"")
         && script.contains("grep -qF -x \"$EXEC_FAILED_RELEASE_PROD_LITERAL\"")
         && script.contains("grep -h -E -c \"$FRAME_CUSTODY_PATTERN\"")
@@ -2892,8 +2897,11 @@ fn validate_x86_frame_custody_harness(script: &str) -> Result<(), ()> {
         && script.contains("grep -h -F -x -c \"$PT_EXEC_COHORT_LITERAL\"")
         && script.contains("grep -h -F -x -c \"$EXEC_DETACH_ORACLE_LITERAL\"")
         && script.contains("grep -h -F -x -c \"$CLONE_ADMISSION_ORACLE_LITERAL\"")
+        && script.contains("grep -h -F -x -c \"$CREATING_DISPATCH_ORACLE_X86_LITERAL\"")
         && script.contains("grep -h -E -c \"$EXEC_FAILED_RELEASE_ORACLE_PATTERN\"")
         && script.contains("grep -h -F -x -c \"$EXEC_FAILED_RELEASE_PROD_LITERAL\"")
+        && script.contains("fail \"missing x86 creating-dispatch refusal test PASS marker\"")
+        && script.contains("fail \"missing x86 creating-dispatch refusal oracle literal\"")
         && script.contains("-eq 1")
         && script.contains("x86 frame-custody gate run")
         && script.matches("BOOT_TESTS:FAIL|KERNEL PANIC|panic!").count() == 2)
@@ -4017,11 +4025,13 @@ fn validate_process_page_table_runtime_oracle(sources: &[(String, String)]) -> R
         && harness.contains("x86_exec_cohort:PASS")
         && harness.contains("exec_detach_oracle:PASS")
         && harness.contains("clone_admission_oracle:PASS")
+        && harness.contains("creating_dispatch_refusal_x86:PASS")
         && harness.contains("[PT_CUSTODY_COUNTERS:x86:recorded=14:no_proof=0:no_arch=0:terminated=1:undecided=1:retired=2:returned=14:lost=0:requeued=0]")
         && harness.contains("[PT_RETIRE_COHORT:x86:children=64:retired=65:returned=642:recorded=577:lost=0:no_arch=0:undecided=0:mid_retire=0:balance=0]")
         && harness.contains("[PT_EXEC_COHORT:x86:children=16:superseded=3:roots=64:returned=640:recorded=576:lost=0:leaf_recorded=192:leaf_released=192:leaf_returned=192:custody_refused=0:decref_unregistered=0:undecided=0:mid_retire=0:no_arch=0:balance=0]")
         && harness.contains("[EXEC_DETACH_ORACLE:x86:bodies=2:fail_preserved=2:sibling_refused=0:success_detached=2:fresh_root=2:tgid_self=2:custody_balance=0:leaf_residual=16:stack_residual=149:old_group_reached_pre=2:old_group_missed_post=2:self_group_reached_post=2]")
         && harness.contains("[CLONE_ADMISSION_ORACLE:x86:admitted=1:refused=2:creating_refused=1:published_admitted=2:balance=0]")
+        && harness.contains("[CREATING_DISPATCH_ORACLE:x86:injected=1:refused_via_dispatch=1:requeue_retried=1:dispatched_after_publish=1:balance=0:leaf_residual=18446744073709551615:user_stack_residual=-9223372036854775808]")
         && harness
             .matches("page_table_custody_disposition_gate:PASS")
             .count()
@@ -4030,11 +4040,13 @@ fn validate_process_page_table_runtime_oracle(sources: &[(String, String)]) -> R
         && harness.matches("x86_exec_cohort:PASS").count() == 2
         && harness.matches("exec_detach_oracle:PASS").count() == 2
         && harness.matches("clone_admission_oracle:PASS").count() == 2
+        && harness.matches("creating_dispatch_refusal_x86:PASS").count() == 3
         && harness.matches("PT_CUSTODY_COUNTERS:x86:").count() == 1
         && harness.matches("PT_RETIRE_COHORT:x86:").count() == 1
         && harness.matches("PT_EXEC_COHORT:x86:").count() == 1
         && harness.matches("EXEC_DETACH_ORACLE:x86:").count() == 1
         && harness.matches("CLONE_ADMISSION_ORACLE:x86:").count() == 1
+        && harness.matches("CREATING_DISPATCH_ORACLE:x86:").count() == 1
         && harness.contains("grep -h -c 'Refusing to map'"))
         .then_some(())
         .ok_or(())
@@ -4876,9 +4888,13 @@ fn creating_dispatch_refusal_oracle_is_registered_and_pinned() {
     assert!(oracle.contains("if observed >= 2"));
     assert!(oracle.contains("process.set_ready();"));
     assert!(oracle.contains("process_thread.context.x1 = root;"));
-    assert!(oracle.contains("boot_root_reference_blockers(&reclaim)"));
-    assert!(oracle.contains("boot_restore_process_resources(process, reclaim)?"));
-    assert!(oracle.contains(
+    let retire = function_body(
+        &provider,
+        "creating_dispatch_retire_and_remove_owned_row",
+    );
+    assert!(retire.contains("boot_root_reference_blockers(&reclaim)"));
+    assert!(retire.contains("boot_restore_process_resources(process, reclaim)?"));
+    assert!(retire.contains(
         "creating-dispatch root retained a hardware/shadow/cached reference at retirement"
     ));
     for field in [
@@ -4893,11 +4909,11 @@ fn creating_dispatch_refusal_oracle_is_registered_and_pinned() {
         assert!(oracle.contains(field));
     }
     for (identifier, expected) in [
-        ("reclaim_progress_sample", 3),
-        ("nudge_retirement_grace_for_test", 2),
-        ("boot_reclaim_deferred_process_resources", 2),
-        ("reclaim_terminated_threads", 2),
-        ("boot_reclaim_queue_census", 1),
+        ("creating_dispatch_retire_and_remove_owned_row", 1),
+        ("creating_dispatch_settle_reclaim", 1),
+        ("nudge_retirement_grace_for_test", 1),
+        ("boot_reclaim_deferred_process_resources", 1),
+        ("reclaim_terminated_threads", 1),
     ] {
         assert_eq!(
             identifier_offsets(oracle, &oracle_mask, identifier).len(),
@@ -4905,7 +4921,7 @@ fn creating_dispatch_refusal_oracle_is_registered_and_pinned() {
             "creating-dispatch settle census changed for {identifier}"
         );
     }
-    let progress_sample = function_body(oracle, "reclaim_progress_sample");
+    let progress_sample = function_body(&provider, "creating_dispatch_reclaim_progress_sample");
     let progress_sample_mask = code_mask(progress_sample);
     for counter in [
         "PT_RETIRE_BUDGET_REQUEUED",
@@ -4919,14 +4935,28 @@ fn creating_dispatch_refusal_oracle_is_registered_and_pinned() {
             "creating-dispatch settle counter census changed for {counter}"
         );
     }
-    assert!(oracle.contains("next_sample == settle_sample"));
-    assert!(oracle.contains("stable_rounds >= 3"));
+    let reclaim_once = function_body(&provider, "creating_dispatch_reclaim_once");
+    assert!(reclaim_once.contains("boot_reclaim_deferred_process_resources();"));
+    assert!(reclaim_once.contains("reclaim_terminated_threads();"));
+    let settle = function_body(&provider, "creating_dispatch_settle_reclaim");
+    let settle_mask = code_mask(settle);
     assert_eq!(
-        identifier_offsets(oracle, &oracle_mask, "retirement_grace_target").len(),
+        identifier_offsets(settle, &settle_mask, "creating_dispatch_reclaim_progress_sample")
+            .len(),
+        2
+    );
+    assert_eq!(
+        identifier_offsets(settle, &settle_mask, "creating_dispatch_reclaim_once").len(),
+        1
+    );
+    assert!(settle.contains("next_sample == settle_sample"));
+    assert!(settle.contains("stable_rounds >= 3"));
+    assert_eq!(
+        identifier_offsets(settle, &settle_mask, "retirement_grace_target").len(),
         1
     );
     assert_eq!(
-        identifier_offsets(oracle, &oracle_mask, "retirement_grace_elapsed").len(),
+        identifier_offsets(settle, &settle_mask, "retirement_grace_elapsed").len(),
         1
     );
     assert!(oracle.contains(":settle_rounds={}"));
@@ -4957,6 +4987,154 @@ fn creating_dispatch_refusal_oracle_is_registered_and_pinned() {
     assert!(
         gate.contains("FAIL_REASON=\"Phase 1: missing creating-dispatch refusal oracle marker\"")
     );
+}
+
+#[test]
+fn x86_creating_dispatch_refusal_oracle_is_registered_and_pinned() {
+    const FORMAT_STRING: &str = "[CREATING_DISPATCH_ORACLE:x86:injected=1:refused_via_dispatch=1:requeue_retried=1:dispatched_after_publish=1:balance=0:leaf_residual={}:user_stack_residual={}]";
+    const OBSERVED_ARGUMENTS: &str =
+        "\",\n        leaf_residual,\n        user_stack_residual\n    );";
+    const GATE_LITERAL_DECLARATION: &str = "CREATING_DISPATCH_ORACLE_X86_LITERAL='[CREATING_DISPATCH_ORACLE:x86:injected=1:refused_via_dispatch=1:requeue_retried=1:dispatched_after_publish=1:balance=0:leaf_residual=18446744073709551615:user_stack_residual=-9223372036854775808]'";
+
+    let provider = repo_text("kernel/src/tracing/providers/teardown.rs");
+    let oracle = function_body(&provider, "creating_dispatch_refusal_x86_test");
+    let oracle_mask = code_mask(oracle);
+    assert_eq!(oracle.matches(FORMAT_STRING).count(), 1);
+    let marker = oracle
+        .find(FORMAT_STRING)
+        .expect("x86 creating-dispatch observed marker format string");
+    assert!(
+        oracle[marker + FORMAT_STRING.len()..].starts_with(OBSERVED_ARGUMENTS),
+        "x86 creating-dispatch residual marker fields are not fed by the measured variables"
+    );
+
+    let diag = oracle
+        .find("[CREATING_DISPATCH_ORACLE_DIAG:x86:")
+        .expect("x86 creating-dispatch diagnostic marker");
+    assert!(diag < oracle.find("if settle_timed_out").expect("x86 settle verdict"));
+    assert!(
+        diag < oracle
+            .find("if let Some(reason) = first_failure")
+            .expect("x86 first-failure verdict")
+    );
+    for (constant, declaration, comparison) in [
+        (
+            "EXPECTED_X86_LEAF_RESIDUAL_REPLACE_AFTER_REMOTE_BOOT",
+            "const EXPECTED_X86_LEAF_RESIDUAL_REPLACE_AFTER_REMOTE_BOOT: u64 = u64::MAX;",
+            "if leaf_residual != EXPECTED_X86_LEAF_RESIDUAL_REPLACE_AFTER_REMOTE_BOOT",
+        ),
+        (
+            "EXPECTED_X86_USER_STACK_RESIDUAL_REPLACE_AFTER_REMOTE_BOOT",
+            "const EXPECTED_X86_USER_STACK_RESIDUAL_REPLACE_AFTER_REMOTE_BOOT: i64 = i64::MIN;",
+            "if user_stack_residual != EXPECTED_X86_USER_STACK_RESIDUAL_REPLACE_AFTER_REMOTE_BOOT",
+        ),
+    ] {
+        assert!(
+            oracle.contains(declaration),
+            "x86 creating-dispatch placeholder changed for {constant}"
+        );
+        let comparison_offset = oracle
+            .find(comparison)
+            .expect("x86 creating-dispatch residual exact-equality comparison");
+        assert!(
+            comparison_offset < diag,
+            "x86 creating-dispatch residual comparison moved after diagnostics for {constant}"
+        );
+        assert_eq!(
+            identifier_offsets(oracle, &oracle_mask, constant).len(),
+            2,
+            "x86 creating-dispatch residual constant census changed for {constant}"
+        );
+    }
+
+    assert!(
+        identifier_offsets(oracle, &oracle_mask, "refuse_unpublished_dispatch").is_empty(),
+        "x86 oracle must move the refusal counter only through real scheduler dispatch"
+    );
+    assert!(oracle.contains("if observed >= 2"));
+    assert_eq!(
+        identifier_offsets(oracle, &oracle_mask, "scheduler::spawn").len(),
+        1
+    );
+    assert_eq!(
+        identifier_offsets(oracle, &oracle_mask, "x86_valid_executable_fixture").len(),
+        1
+    );
+    assert_eq!(
+        identifier_offsets(oracle, &oracle_mask, "force_unpublished_for_test").len(),
+        1
+    );
+    assert_eq!(
+        identifier_offsets(oracle, &oracle_mask, "get_thread_tls_block").len(),
+        1
+    );
+    assert_eq!(
+        identifier_offsets(oracle, &oracle_mask, "creating_dispatch_retire_and_remove_owned_row")
+            .len(),
+        1
+    );
+    assert_eq!(
+        identifier_offsets(
+            oracle,
+            &oracle_mask,
+            "creating_dispatch_x86_scheduler_opportunity"
+        )
+        .len(),
+        2
+    );
+    assert!(oracle.contains("process_thread.blocked_in_syscall = true;"));
+    assert!(oracle.contains("process_thread.context.rdi = thread_id;"));
+    assert!(oracle.contains("process_thread.context.rsi = root;"));
+    assert!(oracle.contains("process_thread.privilege == ThreadPrivilege::User"));
+    assert!(oracle.contains("process_thread.saved_userspace_context.is_none()"));
+    assert!(oracle.contains("scheduler_thread.saved_userspace_context.is_none()"));
+    assert!(oracle.contains("process.set_ready();"));
+    assert!(oracle.contains("refusal_delta < 2"));
+
+    let probe = function_body(&provider, "creating_dispatch_probe_entry_x86");
+    let probe_mask = code_mask(probe);
+    for identifier in [
+        "switch_to_kernel_page_table",
+        "set_next_cr3",
+        "set_saved_process_cr3",
+        "set_terminated",
+        "set_need_resched",
+        "arch_halt_with_interrupts",
+    ] {
+        assert_eq!(
+            identifier_offsets(probe, &probe_mask, identifier).len(),
+            1,
+            "x86 creating-dispatch probe quiescence shape changed for {identifier}"
+        );
+    }
+    assert!(probe.contains("X86_CREATING_DISPATCH_PROBE_DISPATCHED.store(true"));
+
+    let registry = repo_text("kernel/src/test_framework/registry.rs");
+    let registry_mask = code_mask(&registry);
+    let registrations = identifier_offsets(
+        &registry,
+        &registry_mask,
+        "creating_dispatch_refusal_x86_test",
+    );
+    assert_eq!(registrations.len(), 1);
+    let test_def = enclosing_test_def(&registry, &registry_mask, registrations[0])
+        .expect("x86 creating-dispatch refusal registry entry");
+    assert!(test_def.contains("name: \"creating_dispatch_refusal_x86\""));
+    assert!(test_def.contains("arch: Arch::X86_64"));
+    assert!(test_def.contains("stage: TestStage::PostScheduler"));
+
+    let gate = repo_text("docker/qemu/run-x86-boot-tests.sh");
+    assert_eq!(gate.matches(GATE_LITERAL_DECLARATION).count(), 1);
+    assert_eq!(
+        gate.matches("creating_dispatch_refusal_x86:PASS").count(),
+        3
+    );
+    assert!(gate.contains(
+        "fail \"missing x86 creating-dispatch refusal test PASS marker\""
+    ));
+    assert!(gate.contains(
+        "fail \"missing x86 creating-dispatch refusal oracle literal\""
+    ));
 }
 
 #[test]

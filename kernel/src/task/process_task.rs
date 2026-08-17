@@ -1415,7 +1415,7 @@ pub(crate) fn boot_reclaim_locations(pid: u64) -> (bool, bool) {
 /// `RootProof` for a detached receipt. The creating-dispatch oracle uses this
 /// before it removes the row or publishes the receipt, so its fixture cannot
 /// make a still-referenced root available to a later boot test.
-#[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
+#[cfg(feature = "boot_tests")]
 pub(crate) fn boot_root_reference_blockers(reclaim: &PendingProcessReclaim) -> (bool, bool, bool) {
     let snapshot = scheduler::RetirementSnapshot::capture();
     (
@@ -1428,7 +1428,7 @@ pub(crate) fn boot_root_reference_blockers(reclaim: &PendingProcessReclaim) -> (
 /// Put a detached boot-test receipt back into its process row when a
 /// pre-retirement proof fails. Returning ownership is safer than dropping an
 /// undecided page table or publishing a root that is still referenced.
-#[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
+#[cfg(feature = "boot_tests")]
 pub(crate) fn boot_restore_process_resources(
     process: &mut crate::process::Process,
     mut reclaim: PendingProcessReclaim,

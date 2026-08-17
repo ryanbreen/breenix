@@ -42,6 +42,20 @@ const PROBE_ROOT_SHADOW_CLEAR: u64 = 1 << 2;
 #[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
 const PROBE_ROOT_CACHED_CLEAR: u64 = 1 << 3;
 
+#[cfg(all(feature = "boot_tests", target_arch = "x86_64"))]
+static X86_CREATING_DISPATCH_PROBE_DISPATCHED: core::sync::atomic::AtomicBool =
+    core::sync::atomic::AtomicBool::new(false);
+#[cfg(all(feature = "boot_tests", target_arch = "x86_64"))]
+static X86_CREATING_DISPATCH_ROOT_OBSERVATION: AtomicU64 = AtomicU64::new(0);
+#[cfg(all(feature = "boot_tests", target_arch = "x86_64"))]
+const X86_CREATING_DISPATCH_ROOT_RELEASE_DONE: u64 = 1 << 0;
+#[cfg(all(feature = "boot_tests", target_arch = "x86_64"))]
+const X86_CREATING_DISPATCH_ROOT_HARDWARE_CLEAR: u64 = 1 << 1;
+#[cfg(all(feature = "boot_tests", target_arch = "x86_64"))]
+const X86_CREATING_DISPATCH_ROOT_SHADOW_CLEAR: u64 = 1 << 2;
+#[cfg(all(feature = "boot_tests", target_arch = "x86_64"))]
+const X86_CREATING_DISPATCH_ROOT_CACHED_CLEAR: u64 = 1 << 3;
+
 #[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
 extern "C" fn creating_dispatch_probe_entry(thread_id: u64, root: u64) -> ! {
     crate::per_cpu_aarch64::preempt_disable();
@@ -66,6 +80,52 @@ extern "C" fn creating_dispatch_probe_entry(thread_id: u64, root: u64) -> ! {
         };
     PROBE_ROOT_RELEASE_OBSERVATION.store(observation, Ordering::Release);
     crate::arch_impl::aarch64::context_switch::schedule_terminated_from_exit(thread_id)
+}
+
+#[cfg(all(feature = "boot_tests", target_arch = "x86_64"))]
+extern "C" fn creating_dispatch_probe_entry_x86(thread_id: u64, root: u64) -> ! {
+    unsafe {
+        crate::arch_disable_interrupts();
+        crate::memory::process_memory::switch_to_kernel_page_table();
+    }
+    crate::per_cpu::set_next_cr3(0);
+    crate::per_cpu::set_saved_process_cr3(0);
+
+    let hardware_clear = x86_64::registers::control::Cr3::read()
+        .0
+        .start_address()
+        .as_u64()
+        != root;
+    let shadow_clear = crate::per_cpu::get_next_cr3() != root
+        && crate::per_cpu::get_saved_process_cr3() != root;
+    let cached_clear = crate::task::scheduler::with_thread_mut(thread_id, |thread| {
+        thread.set_terminated();
+        thread.cached_ttbr0 != root
+    })
+    .unwrap_or(false);
+    let observation = X86_CREATING_DISPATCH_ROOT_RELEASE_DONE
+        | if hardware_clear {
+            X86_CREATING_DISPATCH_ROOT_HARDWARE_CLEAR
+        } else {
+            0
+        }
+        | if shadow_clear {
+            X86_CREATING_DISPATCH_ROOT_SHADOW_CLEAR
+        } else {
+            0
+        }
+        | if cached_clear {
+            X86_CREATING_DISPATCH_ROOT_CACHED_CLEAR
+        } else {
+            0
+        };
+    X86_CREATING_DISPATCH_ROOT_OBSERVATION.store(observation, Ordering::Release);
+    X86_CREATING_DISPATCH_PROBE_DISPATCHED.store(true, Ordering::Release);
+    crate::task::scheduler::set_need_resched();
+
+    loop {
+        crate::arch_halt_with_interrupts();
+    }
 }
 
 #[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
@@ -3091,6 +3151,168 @@ pub fn exec_detach_oracle_test() -> crate::test_framework::registry::TestResult 
     TestResult::Pass
 }
 
+#[cfg(feature = "boot_tests")]
+fn creating_dispatch_reclaim_progress_sample() -> [u64; 4] {
+    [
+        PT_RETIRE_BUDGET_REQUEUED.aggregate(),
+        PT_TABLE_FRAMES_RETURNED.aggregate(),
+        PT_ROOTS_RETIRED.aggregate(),
+        TEARDOWN_RECLAIM.aggregate(),
+    ]
+}
+
+#[cfg(feature = "boot_tests")]
+fn creating_dispatch_reclaim_once() {
+    crate::task::process_task::boot_reclaim_deferred_process_resources();
+    #[cfg(target_arch = "aarch64")]
+    crate::task::scheduler::reclaim_terminated_threads();
+}
+
+#[cfg(all(feature = "boot_tests", target_arch = "x86_64"))]
+/// Block the test kthread for one timer tick so the single-CPU x86 gate must
+/// enter the real interrupt-return scheduler before it can sample again.
+fn creating_dispatch_x86_scheduler_opportunity() {
+    use crate::task::thread::ThreadState;
+
+    let Some(thread_id) = crate::task::scheduler::current_thread_id() else {
+        return;
+    };
+    let (seconds, nanoseconds) = crate::time::get_monotonic_time_ns();
+    let wake_time_ns = seconds
+        .saturating_mul(1_000_000_000)
+        .saturating_add(nanoseconds)
+        .saturating_add(1_000_000);
+    crate::task::scheduler::with_scheduler(|scheduler| {
+        scheduler.block_current_for_timer(wake_time_ns);
+    });
+    crate::task::scheduler::yield_current();
+
+    loop {
+        crate::arch_halt_with_interrupts();
+        let still_blocked = crate::task::scheduler::with_scheduler(|scheduler| {
+            scheduler
+                .get_thread(thread_id)
+                .is_some_and(|thread| thread.state == ThreadState::BlockedOnTimer)
+        })
+        .unwrap_or(false);
+        if !still_blocked {
+            break;
+        }
+    }
+}
+
+#[cfg(feature = "boot_tests")]
+fn creating_dispatch_settle_reclaim() -> (u64, bool) {
+    let settle_deadline =
+        retirement_oracle_clock_now().saturating_add(retirement_oracle_clock_delta(5_000));
+    let mut settle_rounds = 0u64;
+    let mut stable_rounds = 0u64;
+    let mut settle_sample = creating_dispatch_reclaim_progress_sample();
+    loop {
+        #[cfg(target_arch = "aarch64")]
+        let grace_target = crate::task::scheduler::retirement_grace_target();
+        crate::task::scheduler::nudge_retirement_grace_for_test();
+        #[cfg(target_arch = "aarch64")]
+        let grace_elapsed = loop {
+            if crate::task::scheduler::retirement_grace_elapsed(&grace_target) {
+                break true;
+            }
+            if retirement_oracle_clock_now() >= settle_deadline {
+                break false;
+            }
+            core::hint::spin_loop();
+        };
+        #[cfg(target_arch = "x86_64")]
+        let grace_elapsed = {
+            let boundary_deadline =
+                retirement_oracle_clock_now().saturating_add(retirement_oracle_clock_delta(1));
+            while retirement_oracle_clock_now() < boundary_deadline {
+                core::hint::spin_loop();
+            }
+            true
+        };
+        if !grace_elapsed {
+            return (settle_rounds, true);
+        }
+        creating_dispatch_reclaim_once();
+        core::sync::atomic::fence(Ordering::Acquire);
+        let next_sample = creating_dispatch_reclaim_progress_sample();
+        settle_rounds = settle_rounds.saturating_add(1);
+        if crate::task::process_task::boot_reclaim_queue_census() == (0, 0)
+            && next_sample == settle_sample
+        {
+            stable_rounds = stable_rounds.saturating_add(1);
+            if stable_rounds >= 3 {
+                return (settle_rounds, false);
+            }
+        } else {
+            stable_rounds = 0;
+        }
+        settle_sample = next_sample;
+        if retirement_oracle_clock_now() >= settle_deadline {
+            return (settle_rounds, true);
+        }
+        core::hint::spin_loop();
+    }
+}
+
+#[cfg(feature = "boot_tests")]
+fn creating_dispatch_retire_and_remove_owned_row(
+    pid: crate::process::ProcessId,
+    probe_reference_clear: [bool; 3],
+    retirement_blockers: &mut [bool; 3],
+) -> Result<(), &'static str> {
+    let reclaim = {
+        let mut manager_guard = crate::process::manager();
+        let Some(manager) = manager_guard.as_mut() else {
+            return Err("process manager unavailable for creating-dispatch cleanup");
+        };
+        let Some(process) = manager.get_process_mut(pid) else {
+            return Err("creating-dispatch row disappeared before cleanup");
+        };
+        crate::task::process_task::defer_process_resources(process)
+    };
+
+    let observed = crate::task::process_task::boot_root_reference_blockers(&reclaim);
+    *retirement_blockers = [
+        !probe_reference_clear[0] || observed.0,
+        !probe_reference_clear[1] || observed.1,
+        !probe_reference_clear[2] || observed.2,
+    ];
+    if retirement_blockers
+        .iter()
+        .copied()
+        .any(core::convert::identity)
+    {
+        let mut manager_guard = crate::process::manager();
+        let Some(manager) = manager_guard.as_mut() else {
+            return Err("process manager unavailable for creating-dispatch root restoration");
+        };
+        let Some(process) = manager.get_process_mut(pid) else {
+            return Err("creating-dispatch row disappeared before root restoration");
+        };
+        crate::task::process_task::boot_restore_process_resources(process, reclaim)?;
+        return Err(
+            "creating-dispatch root retained a hardware/shadow/cached reference at retirement",
+        );
+    }
+
+    {
+        let mut manager_guard = crate::process::manager();
+        let Some(manager) = manager_guard.as_mut() else {
+            return Err("process manager unavailable for creating-dispatch row removal");
+        };
+        let Some(process) = manager.get_process_mut(pid) else {
+            return Err("creating-dispatch row disappeared before removal");
+        };
+        crate::task::process_task::release_process_resources(process);
+        manager.remove_from_ready_queue(pid);
+        manager.remove_process(pid);
+    }
+    crate::task::process_task::enqueue_process_reclaim(reclaim);
+    Ok(())
+}
+
 #[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
 pub fn creating_dispatch_refusal_test() -> crate::test_framework::registry::TestResult {
     use crate::test_framework::registry::TestResult;
@@ -3107,71 +3329,6 @@ pub fn creating_dispatch_refusal_test() -> crate::test_framework::registry::Test
     /// exactly 16 frames heavier. This is the same issue #583 residual class
     /// pinned by `exec_detach_oracle_test`, and should reach zero with it.
     const EXPECTED_USER_STACK_RESIDUAL: i64 = 16;
-
-    fn reclaim_progress_sample() -> [u64; 4] {
-        [
-            PT_RETIRE_BUDGET_REQUEUED.aggregate(),
-            PT_TABLE_FRAMES_RETURNED.aggregate(),
-            PT_ROOTS_RETIRED.aggregate(),
-            TEARDOWN_RECLAIM.aggregate(),
-        ]
-    }
-
-    fn retire_and_remove_owned_row(
-        pid: crate::process::ProcessId,
-        probe_reference_clear: [bool; 3],
-        retirement_blockers: &mut [bool; 3],
-    ) -> Result<(), &'static str> {
-        let reclaim = {
-            let mut manager_guard = crate::process::manager();
-            let Some(manager) = manager_guard.as_mut() else {
-                return Err("process manager unavailable for creating-dispatch cleanup");
-            };
-            let Some(process) = manager.get_process_mut(pid) else {
-                return Err("creating-dispatch row disappeared before cleanup");
-            };
-            crate::task::process_task::defer_process_resources(process)
-        };
-
-        let observed = crate::task::process_task::boot_root_reference_blockers(&reclaim);
-        *retirement_blockers = [
-            !probe_reference_clear[0] || observed.0,
-            !probe_reference_clear[1] || observed.1,
-            !probe_reference_clear[2] || observed.2,
-        ];
-        if retirement_blockers
-            .iter()
-            .copied()
-            .any(core::convert::identity)
-        {
-            let mut manager_guard = crate::process::manager();
-            let Some(manager) = manager_guard.as_mut() else {
-                return Err("process manager unavailable for creating-dispatch root restoration");
-            };
-            let Some(process) = manager.get_process_mut(pid) else {
-                return Err("creating-dispatch row disappeared before root restoration");
-            };
-            crate::task::process_task::boot_restore_process_resources(process, reclaim)?;
-            return Err(
-                "creating-dispatch root retained a hardware/shadow/cached reference at retirement",
-            );
-        }
-
-        {
-            let mut manager_guard = crate::process::manager();
-            let Some(manager) = manager_guard.as_mut() else {
-                return Err("process manager unavailable for creating-dispatch row removal");
-            };
-            let Some(process) = manager.get_process_mut(pid) else {
-                return Err("creating-dispatch row disappeared before removal");
-            };
-            crate::task::process_task::release_process_resources(process);
-            manager.remove_from_ready_queue(pid);
-            manager.remove_process(pid);
-        }
-        crate::task::process_task::enqueue_process_reclaim(reclaim);
-        Ok(())
-    }
 
     let reclaim_owner = match crate::task::process_task::BootReclaimTestGuard::enter() {
         Ok(guard) => guard,
@@ -3314,8 +3471,11 @@ pub fn creating_dispatch_refusal_test() -> crate::test_framework::registry::Test
     };
 
     let mut retirement_blockers = [true; 3];
-    if let Err(reason) =
-        retire_and_remove_owned_row(pid, probe_reference_clear, &mut retirement_blockers)
+    if let Err(reason) = creating_dispatch_retire_and_remove_owned_row(
+        pid,
+        probe_reference_clear,
+        &mut retirement_blockers,
+    )
     {
         if first_failure.is_none() {
             first_failure = Some(reason);
@@ -3352,50 +3512,7 @@ pub fn creating_dispatch_refusal_test() -> crate::test_framework::registry::Test
     }
     crate::task::scheduler::clear_cpu_affinity_for_test(thread_id);
 
-    let settle_deadline =
-        retirement_oracle_clock_now().saturating_add(retirement_oracle_clock_delta(5_000));
-    let mut settle_rounds = 0u64;
-    let mut stable_rounds = 0u64;
-    let mut settle_sample = reclaim_progress_sample();
-    let mut settle_timed_out = false;
-    loop {
-        let grace_target = crate::task::scheduler::retirement_grace_target();
-        crate::task::scheduler::nudge_retirement_grace_for_test();
-        let grace_elapsed = loop {
-            if crate::task::scheduler::retirement_grace_elapsed(&grace_target) {
-                break true;
-            }
-            if retirement_oracle_clock_now() >= settle_deadline {
-                break false;
-            }
-            core::hint::spin_loop();
-        };
-        if !grace_elapsed {
-            settle_timed_out = true;
-            break;
-        }
-        crate::task::process_task::boot_reclaim_deferred_process_resources();
-        crate::task::scheduler::reclaim_terminated_threads();
-        core::sync::atomic::fence(Ordering::Acquire);
-        let next_sample = reclaim_progress_sample();
-        settle_rounds = settle_rounds.saturating_add(1);
-        if crate::task::process_task::boot_reclaim_queue_census() == (0, 0)
-            && next_sample == settle_sample
-        {
-            stable_rounds = stable_rounds.saturating_add(1);
-            if stable_rounds >= 3 {
-                break;
-            }
-        } else {
-            stable_rounds = 0;
-        }
-        settle_sample = next_sample;
-        if retirement_oracle_clock_now() >= settle_deadline {
-            settle_timed_out = true;
-            break;
-        }
-        core::hint::spin_loop();
-    }
+    let (settle_rounds, settle_timed_out) = creating_dispatch_settle_reclaim();
     core::sync::atomic::fence(Ordering::Acquire);
 
     let allocator_used_after = frame_allocator_used_frames();
@@ -3519,6 +3636,364 @@ pub fn creating_dispatch_refusal_test() -> crate::test_framework::registry::Test
         user_stack_residual
     );
     crate::serial_println!("[TEST:process:creating_dispatch_refusal:PASS]");
+    TestResult::Pass
+}
+
+#[cfg(all(feature = "boot_tests", target_arch = "x86_64"))]
+pub fn creating_dispatch_refusal_x86_test() -> crate::test_framework::registry::TestResult {
+    use crate::task::thread::{CpuContext, ThreadPrivilege, ThreadState};
+    use crate::test_framework::registry::TestResult;
+    use alloc::boxed::Box;
+    use x86_64::VirtAddr;
+
+    // REMOTE-BOOT PLACEHOLDERS: these deliberately impossible sentinels keep
+    // the gate red until a real x86 boot reports both measured values on the
+    // unconditional CREATING_DISPATCH_ORACLE_DIAG line. Replace the constants,
+    // the structural pins, and the gate literal together from that observation.
+    const EXPECTED_X86_LEAF_RESIDUAL_REPLACE_AFTER_REMOTE_BOOT: u64 = u64::MAX;
+    const EXPECTED_X86_USER_STACK_RESIDUAL_REPLACE_AFTER_REMOTE_BOOT: i64 = i64::MIN;
+
+    let reclaim_owner = match crate::task::process_task::BootReclaimTestGuard::enter() {
+        Ok(guard) => guard,
+        Err(_) => {
+            return TestResult::Fail(
+                "reclaim queues not quiescent at x86 creating-dispatch oracle start",
+            )
+        }
+    };
+    let allocator_used_before = frame_allocator_used_frames();
+    let table_frames_recorded_before = PT_TABLE_FRAMES_RECORDED.aggregate();
+    let table_frames_returned_before = PT_TABLE_FRAMES_RETURNED.aggregate();
+    let roots_retired_before = PT_ROOTS_RETIRED.aggregate();
+    let leaf_mappings_recorded_before = LEAF_MAPPINGS_RECORDED.aggregate();
+    let leaf_mappings_released_before = LEAF_MAPPINGS_RELEASED.aggregate();
+    let leaf_frames_returned_before = LEAF_FRAMES_RETURNED.aggregate();
+    let table_frames_lost_before = PT_RETIRE_FRAMES_LOST.aggregate();
+    let dropped_undecided_before = PT_ROOT_DROPPED_UNDECIDED.aggregate();
+    let dropped_mid_retire_before = PT_ROOT_DROPPED_MID_RETIRE.aggregate();
+    let no_arch_before = PT_ROOT_ABANDONED_NO_ARCH.aggregate();
+    let refusal_counters_before = [
+        FRAME_RETURN_REFUSED_DOUBLE.aggregate(),
+        FRAME_RETURN_REFUSED_STALE.aggregate(),
+        FRAME_RETURN_REFUSED_NEVER_ALLOCATED.aggregate(),
+        FRAME_RETURN_REFUSED_UNTRACKED.aggregate(),
+        FRAME_DUPLICATE_ALLOC_REFUSED.aggregate(),
+        FRAME_RETURN_REFUSED_LIVE_LEAF.aggregate(),
+        LEAF_DECREF_UNREGISTERED.aggregate(),
+        LEAF_CUSTODY_REFUSED.aggregate(),
+    ];
+
+    let valid = crate::memory::process_memory::x86_valid_executable_fixture();
+    let pid = {
+        let mut manager_guard = crate::process::manager();
+        let Some(manager) = manager_guard.as_mut() else {
+            return TestResult::Fail(
+                "process manager unavailable for x86 creating-dispatch process",
+            );
+        };
+        match manager.create_process(
+            alloc::string::String::from("creating_dispatch_probe_x86"),
+            &valid,
+        ) {
+            Ok(pid) => pid,
+            Err(_) => {
+                return TestResult::Fail("x86 creating-dispatch process creation failed");
+            }
+        }
+    };
+
+    let (thread_id, root, tls_block, injected, thread_box) = {
+        let mut manager_guard = crate::process::manager();
+        let Some(manager) = manager_guard.as_mut() else {
+            return TestResult::Fail(
+                "process manager unavailable for x86 creating-dispatch attach",
+            );
+        };
+        let Some(process) = manager.get_process_mut(pid) else {
+            return TestResult::Fail("x86 creating-dispatch row disappeared before probe attach");
+        };
+        let Some(root) = process
+            .page_table
+            .as_ref()
+            .map(|page_table| page_table.level_4_frame().start_address().as_u64())
+        else {
+            return TestResult::Fail("x86 creating-dispatch probe row had no page-table root");
+        };
+        let Some(process_thread) = process.main_thread.as_mut() else {
+            return TestResult::Fail("x86 creating-dispatch probe attach did not persist");
+        };
+        let thread_id = process_thread.id;
+        let tls_block = process_thread.tls_block;
+        let Some(kernel_stack_top) = process_thread.kernel_stack_top else {
+            return TestResult::Fail("x86 creating-dispatch main thread had no kernel stack");
+        };
+        // Keep the scheduler-visible privilege User so switch_to_thread reaches
+        // the blocked-in-syscall admission arm. Only the saved return frame is
+        // kernel-mode, which that arm restores after the process is published.
+        process_thread.context = CpuContext::new(
+            VirtAddr::new(creating_dispatch_probe_entry_x86 as usize as u64),
+            kernel_stack_top,
+            ThreadPrivilege::Kernel,
+        );
+        process_thread.context.rdi = thread_id;
+        process_thread.context.rsi = root;
+        process_thread.context.rflags = 0x202;
+        process_thread.blocked_in_syscall = true;
+        let thread_is_runnable_user_fixture = process_thread.privilege == ThreadPrivilege::User
+            && process_thread.state == ThreadState::Ready
+            && process_thread.saved_userspace_context.is_none();
+        let scheduler_thread = process_thread.clone();
+        process.force_unpublished_for_test();
+        let injected = process.is_unpublished()
+            && thread_is_runnable_user_fixture
+            && scheduler_thread.saved_userspace_context.is_none();
+        (thread_id, root, tls_block, injected, Box::new(scheduler_thread))
+    };
+    let tls_registered = !tls_block.is_null()
+        && crate::tls::get_thread_tls_block(thread_id).is_some_and(|registered| {
+            registered == tls_block
+        });
+
+    X86_CREATING_DISPATCH_PROBE_DISPATCHED.store(false, Ordering::Release);
+    X86_CREATING_DISPATCH_ROOT_OBSERVATION.store(0, Ordering::Release);
+    let refused_before =
+        crate::interrupts::context_switch::userspace_dispatch_creating_refused();
+    crate::task::scheduler::spawn(thread_box);
+
+    let refusal_deadline =
+        retirement_oracle_clock_now().saturating_add(retirement_oracle_clock_delta(5_000));
+    let refusal_delta = loop {
+        let observed =
+            crate::interrupts::context_switch::userspace_dispatch_creating_refused()
+                .saturating_sub(refused_before);
+        if observed >= 2 || retirement_oracle_clock_now() >= refusal_deadline {
+            break observed;
+        }
+        creating_dispatch_x86_scheduler_opportunity();
+    };
+    let dispatched_before_publish =
+        X86_CREATING_DISPATCH_PROBE_DISPATCHED.load(Ordering::Acquire);
+
+    {
+        let mut manager_guard = crate::process::manager();
+        let Some(manager) = manager_guard.as_mut() else {
+            return TestResult::Fail(
+                "process manager unavailable for x86 creating-dispatch publish",
+            );
+        };
+        let Some(process) = manager.get_process_mut(pid) else {
+            return TestResult::Fail("x86 creating-dispatch row disappeared before publication");
+        };
+        process.set_ready();
+    }
+
+    let dispatch_deadline =
+        retirement_oracle_clock_now().saturating_add(retirement_oracle_clock_delta(5_000));
+    while (!X86_CREATING_DISPATCH_PROBE_DISPATCHED.load(Ordering::Acquire)
+        || X86_CREATING_DISPATCH_ROOT_OBSERVATION.load(Ordering::Acquire)
+            & X86_CREATING_DISPATCH_ROOT_RELEASE_DONE
+            == 0)
+        && retirement_oracle_clock_now() < dispatch_deadline
+    {
+        creating_dispatch_x86_scheduler_opportunity();
+    }
+    let dispatched_after_publish = !dispatched_before_publish
+        && X86_CREATING_DISPATCH_PROBE_DISPATCHED.load(Ordering::Acquire);
+    let probe_root_observation =
+        X86_CREATING_DISPATCH_ROOT_OBSERVATION.load(Ordering::Acquire);
+    let probe_reference_clear = [
+        probe_root_observation & X86_CREATING_DISPATCH_ROOT_HARDWARE_CLEAR != 0,
+        probe_root_observation & X86_CREATING_DISPATCH_ROOT_SHADOW_CLEAR != 0,
+        probe_root_observation & X86_CREATING_DISPATCH_ROOT_CACHED_CLEAR != 0,
+    ];
+
+    let mut first_failure = if !injected {
+        Some("x86 creating-dispatch scheduler fixture was not a runnable unpublished user thread")
+    } else if !tls_registered {
+        Some("x86 creating-dispatch main-thread TLS registration was missing")
+    } else if refusal_delta == 0 {
+        Some("x86 creating row was not refused through scheduler dispatch")
+    } else if refusal_delta < 2 {
+        Some("x86 creating-dispatch refusal did not requeue for a real retry")
+    } else if dispatched_before_publish {
+        Some("x86 creating-dispatch probe ran before process publication")
+    } else if !dispatched_after_publish {
+        Some("x86 creating-dispatch probe did not run after process publication")
+    } else {
+        None
+    };
+
+    let mut retirement_blockers = [true; 3];
+    if let Err(reason) = creating_dispatch_retire_and_remove_owned_row(
+        pid,
+        probe_reference_clear,
+        &mut retirement_blockers,
+    ) {
+        if first_failure.is_none() {
+            first_failure = Some(reason);
+        }
+    }
+
+    let cleanup_deadline =
+        retirement_oracle_clock_now().saturating_add(retirement_oracle_clock_delta(5_000));
+    loop {
+        crate::task::scheduler::nudge_retirement_grace_for_test();
+        let boundary_deadline =
+            retirement_oracle_clock_now().saturating_add(retirement_oracle_clock_delta(1));
+        while retirement_oracle_clock_now() < boundary_deadline {
+            core::hint::spin_loop();
+        }
+        creating_dispatch_reclaim_once();
+        let process_reclaimed =
+            crate::task::process_task::boot_reclaim_locations(pid.as_u64()) == (false, false);
+        let thread_quiesced = crate::task::scheduler::with_scheduler(|scheduler| {
+            scheduler
+                .get_thread(thread_id)
+                .is_none_or(|thread| thread.state == ThreadState::Terminated)
+        })
+        .unwrap_or(false);
+        if process_reclaimed && thread_quiesced {
+            break;
+        }
+        if retirement_oracle_clock_now() >= cleanup_deadline {
+            if first_failure.is_none() {
+                first_failure = Some("x86 creating-dispatch deferred cleanup did not quiesce");
+            }
+            break;
+        }
+        core::hint::spin_loop();
+    }
+
+    let (settle_rounds, settle_timed_out) = creating_dispatch_settle_reclaim();
+    core::sync::atomic::fence(Ordering::Acquire);
+
+    let allocator_used_after = frame_allocator_used_frames();
+    let user_stack_residual = allocator_used_after as i64 - allocator_used_before as i64;
+    let table_frames_recorded_delta = PT_TABLE_FRAMES_RECORDED
+        .aggregate()
+        .saturating_sub(table_frames_recorded_before);
+    let table_frames_returned_delta = PT_TABLE_FRAMES_RETURNED
+        .aggregate()
+        .saturating_sub(table_frames_returned_before);
+    let roots_retired_delta = PT_ROOTS_RETIRED
+        .aggregate()
+        .saturating_sub(roots_retired_before);
+    let leaf_mappings_recorded_delta = LEAF_MAPPINGS_RECORDED
+        .aggregate()
+        .saturating_sub(leaf_mappings_recorded_before);
+    let leaf_mappings_released_delta = LEAF_MAPPINGS_RELEASED
+        .aggregate()
+        .saturating_sub(leaf_mappings_released_before);
+    let leaf_frames_returned_delta = LEAF_FRAMES_RETURNED
+        .aggregate()
+        .saturating_sub(leaf_frames_returned_before);
+    let leaf_residual = leaf_mappings_recorded_delta.saturating_sub(leaf_frames_returned_delta);
+    let table_frames_lost_delta = PT_RETIRE_FRAMES_LOST
+        .aggregate()
+        .saturating_sub(table_frames_lost_before);
+    let dropped_undecided_delta = PT_ROOT_DROPPED_UNDECIDED
+        .aggregate()
+        .saturating_sub(dropped_undecided_before);
+    let dropped_mid_retire_delta = PT_ROOT_DROPPED_MID_RETIRE
+        .aggregate()
+        .saturating_sub(dropped_mid_retire_before);
+    let no_arch_delta = PT_ROOT_ABANDONED_NO_ARCH
+        .aggregate()
+        .saturating_sub(no_arch_before);
+    let refusal_counters_after = [
+        FRAME_RETURN_REFUSED_DOUBLE.aggregate(),
+        FRAME_RETURN_REFUSED_STALE.aggregate(),
+        FRAME_RETURN_REFUSED_NEVER_ALLOCATED.aggregate(),
+        FRAME_RETURN_REFUSED_UNTRACKED.aggregate(),
+        FRAME_DUPLICATE_ALLOC_REFUSED.aggregate(),
+        FRAME_RETURN_REFUSED_LIVE_LEAF.aggregate(),
+        LEAF_DECREF_UNREGISTERED.aggregate(),
+        LEAF_CUSTODY_REFUSED.aggregate(),
+    ];
+    let refusal_balance = refusal_counters_after
+        .iter()
+        .zip(refusal_counters_before.iter())
+        .fold(0u64, |balance, (after, before)| {
+            balance.saturating_add((*after).abs_diff(*before))
+        });
+    let table_frames_recorded = table_frames_recorded_delta.saturating_add(1);
+    let custody_balance = table_frames_returned_delta
+        .abs_diff(table_frames_recorded)
+        .saturating_add(roots_retired_delta.abs_diff(1))
+        .saturating_add(table_frames_lost_delta)
+        .saturating_add(dropped_undecided_delta)
+        .saturating_add(dropped_mid_retire_delta)
+        .saturating_add(no_arch_delta)
+        .saturating_add(refusal_balance);
+    core::mem::drop(reclaim_owner);
+
+    if table_frames_returned_delta != table_frames_recorded && first_failure.is_none() {
+        first_failure = Some("x86 creating-dispatch table-frame custody equality failed");
+    }
+    if roots_retired_delta != 1 && first_failure.is_none() {
+        first_failure = Some("x86 creating-dispatch root custody equality failed");
+    }
+    if leaf_mappings_recorded_delta != leaf_mappings_released_delta && first_failure.is_none() {
+        first_failure = Some("x86 creating-dispatch leaf mapping release equality failed");
+    }
+    if (table_frames_lost_delta != 0
+        || dropped_undecided_delta != 0
+        || dropped_mid_retire_delta != 0
+        || no_arch_delta != 0)
+        && first_failure.is_none()
+    {
+        first_failure = Some("x86 creating-dispatch left an unclassified or lost root");
+    }
+    if refusal_counters_after != refusal_counters_before && first_failure.is_none() {
+        first_failure = Some("x86 creating-dispatch triggered an unexpected frame refusal");
+    }
+    if custody_balance != 0 && first_failure.is_none() {
+        first_failure = Some("x86 creating-dispatch custody balance was nonzero");
+    }
+    if leaf_residual != EXPECTED_X86_LEAF_RESIDUAL_REPLACE_AFTER_REMOTE_BOOT
+        && first_failure.is_none()
+    {
+        first_failure = Some("x86 creating-dispatch user-stack leaf residual changed");
+    }
+    if user_stack_residual != EXPECTED_X86_USER_STACK_RESIDUAL_REPLACE_AFTER_REMOTE_BOOT
+        && first_failure.is_none()
+    {
+        first_failure = Some("x86 creating-dispatch user-stack residual changed");
+    }
+
+    crate::serial_println!(
+        "[CREATING_DISPATCH_ORACLE_DIAG:x86:refusal_delta={}:leaf_residual={}:user_stack_residual={}:balance={}:settle_rounds={}:root={:#x}:root_release_done={}:probe_hw_clear={}:probe_shadow_clear={}:probe_cached_clear={}:retire_hw_blocked={}:retire_shadow_blocked={}:retire_cached_blocked={}:tls_registered={}]",
+        refusal_delta,
+        leaf_residual,
+        user_stack_residual,
+        custody_balance,
+        settle_rounds,
+        root,
+        usize::from(
+            probe_root_observation & X86_CREATING_DISPATCH_ROOT_RELEASE_DONE != 0
+        ),
+        usize::from(probe_reference_clear[0]),
+        usize::from(probe_reference_clear[1]),
+        usize::from(probe_reference_clear[2]),
+        usize::from(retirement_blockers[0]),
+        usize::from(retirement_blockers[1]),
+        usize::from(retirement_blockers[2]),
+        usize::from(tls_registered)
+    );
+    if settle_timed_out {
+        return TestResult::Fail(
+            "x86 creating-dispatch settle timed out before queues and counters stabilized",
+        );
+    }
+    if let Some(reason) = first_failure {
+        return TestResult::Fail(reason);
+    }
+
+    crate::serial_println!(
+        "[CREATING_DISPATCH_ORACLE:x86:injected=1:refused_via_dispatch=1:requeue_retried=1:dispatched_after_publish=1:balance=0:leaf_residual={}:user_stack_residual={}]",
+        leaf_residual,
+        user_stack_residual
+    );
     TestResult::Pass
 }
 

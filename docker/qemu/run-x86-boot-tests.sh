@@ -15,6 +15,11 @@
 
 set -euo pipefail
 
+fail() {
+    echo "x86 frame-custody gate: FAIL - $1"
+    exit 1
+}
+
 COUNT="${1:-1}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BREENIX_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
@@ -26,6 +31,10 @@ PT_COHORT_LITERAL='[PT_RETIRE_COHORT:x86:children=64:retired=65:returned=642:rec
 PT_EXEC_COHORT_LITERAL='[PT_EXEC_COHORT:x86:children=16:superseded=3:roots=64:returned=640:recorded=576:lost=0:leaf_recorded=192:leaf_released=192:leaf_returned=192:custody_refused=0:decref_unregistered=0:undecided=0:mid_retire=0:no_arch=0:balance=0]' # The returned and recorded table-frame fields are pinned from the measured run.
 EXEC_DETACH_ORACLE_LITERAL='[EXEC_DETACH_ORACLE:x86:bodies=2:fail_preserved=2:sibling_refused=0:success_detached=2:fresh_root=2:tgid_self=2:custody_balance=0:leaf_residual=16:stack_residual=149:old_group_reached_pre=2:old_group_missed_post=2:self_group_reached_post=2]'
 CLONE_ADMISSION_ORACLE_LITERAL='[CLONE_ADMISSION_ORACLE:x86:admitted=1:refused=2:creating_refused=1:published_admitted=2:balance=0]'
+# REMOTE-BOOT PLACEHOLDER: replace both residuals from the x86 DIAG line,
+# together with the kernel constants and structural pins. The impossible
+# sentinels deliberately keep this gate red until that measurement exists.
+CREATING_DISPATCH_ORACLE_X86_LITERAL='[CREATING_DISPATCH_ORACLE:x86:injected=1:refused_via_dispatch=1:requeue_retried=1:dispatched_after_publish=1:balance=0:leaf_residual=18446744073709551615:user_stack_residual=-9223372036854775808]'
 # Absolute frame counts are boot-state dependent, so pin every delta exactly,
 # including the three-table recorded_pre hierarchy cost and computed tables_returned=4;
 # the in-kernel oracle asserts used_after == used_before, and a skipped/cfg'd-out block fails this gate.
@@ -138,6 +147,10 @@ for i in $(seq 1 "$COUNT"); do
                 "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
             && grep -qF -x "$CLONE_ADMISSION_ORACLE_LITERAL" \
                 "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
+            && grep -q '\[TEST:process:creating_dispatch_refusal_x86:PASS\]' \
+                "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
+            && grep -qF -x "$CREATING_DISPATCH_ORACLE_X86_LITERAL" \
+                "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
             && grep -qF -x "$EXEC_FAILED_RELEASE_PROD_LITERAL" \
                 "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
             && grep -q '\[TEST:userspace:loopback_recv_wake:PASS\]' \
@@ -170,6 +183,12 @@ for i in $(seq 1 "$COUNT"); do
     kill "$RUNNER_PID" 2>/dev/null || true
     wait "$RUNNER_PID" 2>/dev/null || true
 
+    grep -q '\[TEST:process:creating_dispatch_refusal_x86:PASS\]' \
+        "$OUTPUT_DIR"/serial_*.txt \
+        || fail "missing x86 creating-dispatch refusal test PASS marker"
+    grep -qF -x "$CREATING_DISPATCH_ORACLE_X86_LITERAL" \
+        "$OUTPUT_DIR"/serial_*.txt \
+        || fail "missing x86 creating-dispatch refusal oracle literal"
     $passed
     test "$(grep -h -c '\[TEST:process:frame_custody_refusal_gate:PASS\]' \
         "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 1
@@ -186,6 +205,8 @@ for i in $(seq 1 "$COUNT"); do
     test "$(grep -h -c '\[TEST:process:exec_detach_oracle:PASS\]' \
         "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 1
     test "$(grep -h -c '\[TEST:process:clone_admission_oracle:PASS\]' \
+        "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 1
+    test "$(grep -h -c '\[TEST:process:creating_dispatch_refusal_x86:PASS\]' \
         "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 1
     # Four scheduling tests remain deferred on x86 until #567 is fixed:
     # loopback_recv_wake_when_idle, loopback_recv_wake_under_load,
@@ -208,6 +229,8 @@ for i in $(seq 1 "$COUNT"); do
         "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 1
     test "$(grep -h -F -x -c "$CLONE_ADMISSION_ORACLE_LITERAL" \
         "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 1
+    test "$(grep -h -F -x -c "$CREATING_DISPATCH_ORACLE_X86_LITERAL" \
+        "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 1
     test "$(grep -h -F -x -c "$EXEC_FAILED_RELEASE_PROD_LITERAL" \
         "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 1
     EXPECTED_EXITS="$EXPECTED_USERSPACE_EXITS" \
@@ -220,6 +243,7 @@ for i in $(seq 1 "$COUNT"); do
     echo "$PT_EXEC_COHORT_LITERAL"
     echo "$EXEC_DETACH_ORACLE_LITERAL"
     echo "$CLONE_ADMISSION_ORACLE_LITERAL"
+    echo "$CREATING_DISPATCH_ORACLE_X86_LITERAL"
     echo "$EXEC_FAILED_RELEASE_PROD_LITERAL"
     if grep -qE '\[BOOT_TESTS:FAIL|KERNEL PANIC|panic!' \
         "$OUTPUT_DIR"/serial_*.txt; then
