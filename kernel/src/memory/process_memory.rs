@@ -2050,7 +2050,7 @@ fn disposition_gate_counters() -> [u64; 9] {
 const X86_CUSTODY_SENTINEL_COUNT: usize = 3;
 
 #[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
-fn corrupt_executable_fixture() -> [u8; 180] {
+pub(crate) fn corrupt_executable_fixture() -> [u8; 180] {
     use crate::arch_impl::aarch64::elf::{
         flags, Elf64Header, Elf64ProgramHeader, SegmentType, ELFDATA2LSB, ELFCLASS64, ELF_MAGIC,
         EM_AARCH64,
@@ -2113,6 +2113,78 @@ fn corrupt_executable_fixture() -> [u8; 180] {
         );
         core::ptr::copy_nonoverlapping(
             &corrupt as *const Elf64ProgramHeader as *const u8,
+            bytes.as_mut_ptr().add(120),
+            core::mem::size_of::<Elf64ProgramHeader>(),
+        );
+    }
+    bytes[176..180].copy_from_slice(&[0x1f, 0x20, 0x03, 0xd5]);
+    bytes
+}
+
+#[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
+pub(crate) fn valid_executable_fixture() -> [u8; 180] {
+    use crate::arch_impl::aarch64::elf::{
+        flags, Elf64Header, Elf64ProgramHeader, SegmentType, ELFDATA2LSB, ELFCLASS64, ELF_MAGIC,
+        EM_AARCH64,
+    };
+
+    let header = Elf64Header {
+        magic: ELF_MAGIC,
+        class: ELFCLASS64,
+        data: ELFDATA2LSB,
+        version: 1,
+        osabi: 0,
+        abiversion: 0,
+        _pad: [0; 7],
+        elf_type: 2,
+        machine: EM_AARCH64,
+        version2: 1,
+        entry: 0x20_0000,
+        phoff: 64,
+        shoff: 0,
+        flags: 0,
+        ehsize: 64,
+        phentsize: 56,
+        phnum: 2,
+        shentsize: 0,
+        shnum: 0,
+        shstrndx: 0,
+    };
+    let executable = Elf64ProgramHeader {
+        p_type: SegmentType::Load as u32,
+        p_flags: flags::PF_R | flags::PF_X,
+        p_offset: 176,
+        p_vaddr: 0x20_0000,
+        p_paddr: 0,
+        p_filesz: 4,
+        p_memsz: 4096,
+        p_align: 4096,
+    };
+    let second = Elf64ProgramHeader {
+        p_type: SegmentType::Load as u32,
+        p_flags: flags::PF_R | flags::PF_X,
+        p_offset: 176,
+        p_vaddr: 0x40_0000,
+        p_paddr: 0,
+        p_filesz: 4,
+        p_memsz: 4096,
+        p_align: 4096,
+    };
+
+    let mut bytes = [0u8; 180];
+    unsafe {
+        core::ptr::copy_nonoverlapping(
+            &header as *const Elf64Header as *const u8,
+            bytes.as_mut_ptr(),
+            core::mem::size_of::<Elf64Header>(),
+        );
+        core::ptr::copy_nonoverlapping(
+            &executable as *const Elf64ProgramHeader as *const u8,
+            bytes.as_mut_ptr().add(64),
+            core::mem::size_of::<Elf64ProgramHeader>(),
+        );
+        core::ptr::copy_nonoverlapping(
+            &second as *const Elf64ProgramHeader as *const u8,
             bytes.as_mut_ptr().add(120),
             core::mem::size_of::<Elf64ProgramHeader>(),
         );
@@ -2187,6 +2259,83 @@ pub(crate) fn x86_corrupt_executable_fixture() -> [u8; 180] {
         );
         core::ptr::copy_nonoverlapping(
             &corrupt as *const Elf64ProgramHeader as *const u8,
+            bytes.as_mut_ptr().add(120),
+            core::mem::size_of::<Elf64ProgramHeader>(),
+        );
+        core::ptr::copy_nonoverlapping(
+            trailing.as_ptr(),
+            bytes.as_mut_ptr().add(176),
+            trailing.len(),
+        );
+    }
+    bytes
+}
+
+// Both virtual addresses stay in PML4[0] for deterministic x86 table custody.
+#[cfg(all(feature = "boot_tests", target_arch = "x86_64"))]
+pub(crate) fn x86_valid_executable_fixture() -> [u8; 180] {
+    use crate::elf::{
+        Elf64Header, Elf64ProgramHeader, SegmentType, ELFCLASS64, ELFDATA2LSB, ELF_MAGIC, EM_X86_64,
+    };
+
+    let header = Elf64Header {
+        magic: ELF_MAGIC,
+        class: ELFCLASS64,
+        data: ELFDATA2LSB,
+        version: 1,
+        osabi: 0,
+        abiversion: 0,
+        _pad: [0; 7],
+        elf_type: 2,
+        machine: EM_X86_64,
+        version2: 1,
+        entry: crate::memory::layout::USERSPACE_BASE,
+        phoff: 64,
+        shoff: 0,
+        flags: 0,
+        ehsize: 64,
+        phentsize: 56,
+        phnum: 2,
+        shentsize: 0,
+        shnum: 0,
+        shstrndx: 0,
+    };
+    let executable = Elf64ProgramHeader {
+        p_type: SegmentType::Load as u32,
+        p_flags: 5,
+        p_offset: 176,
+        p_vaddr: crate::memory::layout::USERSPACE_BASE,
+        p_paddr: 0,
+        p_filesz: 4,
+        p_memsz: 4096,
+        p_align: 4096,
+    };
+    let second = Elf64ProgramHeader {
+        p_type: SegmentType::Load as u32,
+        p_flags: 5,
+        p_offset: 176,
+        p_vaddr: crate::memory::layout::USERSPACE_BASE + 0x20_0000,
+        p_paddr: 0,
+        p_filesz: 4,
+        p_memsz: 4096,
+        p_align: 4096,
+    };
+    let trailing = [0x90, 0x90, 0x90, 0x90];
+
+    let mut bytes = [0u8; 180];
+    unsafe {
+        core::ptr::copy_nonoverlapping(
+            &header as *const Elf64Header as *const u8,
+            bytes.as_mut_ptr(),
+            core::mem::size_of::<Elf64Header>(),
+        );
+        core::ptr::copy_nonoverlapping(
+            &executable as *const Elf64ProgramHeader as *const u8,
+            bytes.as_mut_ptr().add(64),
+            core::mem::size_of::<Elf64ProgramHeader>(),
+        );
+        core::ptr::copy_nonoverlapping(
+            &second as *const Elf64ProgramHeader as *const u8,
             bytes.as_mut_ptr().add(120),
             core::mem::size_of::<Elf64ProgramHeader>(),
         );

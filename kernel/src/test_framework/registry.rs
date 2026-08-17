@@ -6312,6 +6312,28 @@ static PROCESS_TESTS: &[TestDef] = &[
         stage: TestStage::PostScheduler,
     },
     TestDef {
+        name: "exec_detach_oracle",
+        func: crate::tracing::providers::teardown::exec_detach_oracle_test,
+        arch: Arch::Aarch64,
+        timeout_ms: 30000,
+        stage: TestStage::PostScheduler,
+    },
+    TestDef {
+        name: "clone_admission_oracle",
+        func: crate::tracing::providers::teardown::clone_admission_oracle_test,
+        arch: Arch::Aarch64,
+        timeout_ms: 30000,
+        stage: TestStage::PostScheduler,
+    },
+    #[cfg(target_arch = "aarch64")]
+    TestDef {
+        name: "creating_dispatch_refusal",
+        func: crate::tracing::providers::teardown::creating_dispatch_refusal_test,
+        arch: Arch::Aarch64,
+        timeout_ms: 30000,
+        stage: TestStage::PostScheduler,
+    },
+    TestDef {
         name: "retirement_fence_gate",
         func: crate::task::process_task::retirement_fence_gate_test,
         arch: Arch::Aarch64,

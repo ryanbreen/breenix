@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::PathBuf;
 
@@ -8,6 +9,25 @@ fn repo_root() -> PathBuf {
 fn repo_text(relative: &str) -> String {
     fs::read_to_string(repo_root().join(relative))
         .unwrap_or_else(|_| panic!("read repository file {relative}"))
+}
+
+fn rust_sources_below(relative: &str) -> Vec<(PathBuf, String)> {
+    fn visit(path: &std::path::Path, sources: &mut Vec<(PathBuf, String)>) {
+        if path.is_dir() {
+            for entry in fs::read_dir(path).expect("read source directory") {
+                visit(&entry.expect("read source entry").path(), sources);
+            }
+        } else if path.extension().is_some_and(|extension| extension == "rs") {
+            sources.push((
+                path.to_path_buf(),
+                fs::read_to_string(path).expect("read Rust source"),
+            ));
+        }
+    }
+
+    let mut sources = Vec::new();
+    visit(&repo_root().join(relative), &mut sources);
+    sources
 }
 
 fn code_mask(source: &str) -> Vec<bool> {
@@ -124,6 +144,13 @@ fn identifier_byte(byte: u8) -> bool {
     byte == b'_' || byte.is_ascii_alphanumeric() || !byte.is_ascii()
 }
 
+fn code_offsets(source: &str, mask: &[bool], needle: &str) -> Vec<usize> {
+    source
+        .match_indices(needle)
+        .filter_map(|(offset, _)| mask.get(offset).copied().unwrap_or(false).then_some(offset))
+        .collect()
+}
+
 fn identifier_offsets(source: &str, mask: &[bool], identifier: &str) -> Vec<usize> {
     let bytes = source.as_bytes();
     source
@@ -137,6 +164,72 @@ fn identifier_offsets(source: &str, mask: &[bool], identifier: &str) -> Vec<usiz
                     .is_some_and(|byte| identifier_byte(*byte))
                 && !bytes.get(end).is_some_and(|byte| identifier_byte(*byte)))
             .then_some(offset)
+        })
+        .collect()
+}
+
+fn call_offsets(source: &str, mask: &[bool], name: &str) -> Vec<usize> {
+    let bytes = source.as_bytes();
+    identifier_offsets(source, mask, name)
+        .into_iter()
+        .filter(|offset| {
+            let mut cursor = *offset + name.len();
+            while cursor < bytes.len() && (!mask[cursor] || bytes[cursor].is_ascii_whitespace()) {
+                cursor += 1;
+            }
+            bytes.get(cursor) == Some(&b'(')
+        })
+        .collect()
+}
+
+fn binding_offsets(source: &str, mask: &[bool], name: &str) -> Vec<usize> {
+    let bytes = source.as_bytes();
+    identifier_offsets(source, mask, "let")
+        .into_iter()
+        .filter(|let_offset| {
+            let mut cursor = *let_offset + "let".len();
+            while cursor < bytes.len() && (!mask[cursor] || bytes[cursor].is_ascii_whitespace()) {
+                cursor += 1;
+            }
+            if bytes
+                .get(cursor..cursor + "mut".len())
+                .is_some_and(|candidate| candidate == b"mut")
+                && !bytes
+                    .get(cursor + "mut".len())
+                    .is_some_and(|byte| identifier_byte(*byte))
+            {
+                cursor += "mut".len();
+                while cursor < bytes.len() && (!mask[cursor] || bytes[cursor].is_ascii_whitespace())
+                {
+                    cursor += 1;
+                }
+            }
+
+            let name_start = cursor;
+            while cursor < bytes.len() && mask[cursor] && identifier_byte(bytes[cursor]) {
+                cursor += 1;
+            }
+            &source[name_start..cursor] == name
+        })
+        .collect()
+}
+
+fn assigned_value_offsets(source: &str, mask: &[bool], value: &str) -> Vec<usize> {
+    let bytes = source.as_bytes();
+    code_offsets(source, mask, value)
+        .into_iter()
+        .filter(|offset| {
+            let mut cursor = *offset;
+            while cursor > 0 && (!mask[cursor - 1] || bytes[cursor - 1].is_ascii_whitespace()) {
+                cursor -= 1;
+            }
+            if cursor == 0 || bytes[cursor - 1] != b'=' {
+                return false;
+            }
+            !cursor
+                .checked_sub(2)
+                .and_then(|before| bytes.get(before))
+                .is_some_and(|byte| matches!(byte, b'=' | b'!' | b'<' | b'>'))
         })
         .collect()
 }
@@ -234,6 +327,42 @@ fn function_body<'a>(scope: &'a str, name: &str) -> Option<&'a str> {
         return braced_block(scope, &mask, brace);
     }
     None
+}
+
+/// Every `fn NAME(` definition in a module, keyed by name. Names may repeat
+/// (`cfg`-split, or same-named inherent methods on different types); every body
+/// is kept so a check over a name covers all of them.
+fn module_function_bodies(source: &str) -> BTreeMap<String, Vec<&str>> {
+    let mask = code_mask(source);
+    let bytes = source.as_bytes();
+    let mut bodies: BTreeMap<String, Vec<&str>> = BTreeMap::new();
+    for offset in identifier_offsets(source, &mask, "fn") {
+        let mut cursor = offset + "fn".len();
+        while cursor < bytes.len() && (!mask[cursor] || bytes[cursor].is_ascii_whitespace()) {
+            cursor += 1;
+        }
+        let name_start = cursor;
+        while cursor < bytes.len() && mask[cursor] && identifier_byte(bytes[cursor]) {
+            cursor += 1;
+        }
+        if cursor == name_start {
+            continue;
+        }
+        let name = &source[name_start..cursor];
+        // A signature terminated by `;` (trait requirement, extern block) has no
+        // body; taking the next brace would attribute a foreign body to it.
+        let brace = (cursor..bytes.len()).find(|index| mask[*index] && bytes[*index] == b'{');
+        let semicolon = (cursor..bytes.len()).find(|index| mask[*index] && bytes[*index] == b';');
+        let Some(brace) = brace else { continue };
+        if semicolon.is_some_and(|semicolon| semicolon < brace) {
+            continue;
+        }
+        let Some(body) = braced_block(source, &mask, brace) else {
+            continue;
+        };
+        bodies.entry(name.to_owned()).or_default().push(body);
+    }
+    bodies
 }
 
 fn assignment_to_false(body: &str, field: &str) -> bool {
@@ -914,6 +1043,60 @@ fn validate_blocked_syscall_dispatch_resolves_cr3(source: &str) -> Result<(), St
         );
     }
     let cr3_resolution = cr3_calls[0];
+    let unpublished_refusals =
+        identifier_offsets(process_block, &process_mask, "refuse_unpublished_dispatch");
+    if unpublished_refusals.len() != 1 || unpublished_refusals[0] >= cr3_resolution {
+        return Err(
+            "blocked-in-syscall dispatch does not refuse unpublished rows before CR3 resolution"
+                .to_string(),
+        );
+    }
+    let unpublished_arm = identifier_offsets(process_block, &process_mask, "if")
+        .into_iter()
+        .filter_map(|if_offset| {
+            let block = braced_block(process_block, &process_mask, if_offset)?;
+            let end = if_offset + block.len();
+            (unpublished_refusals[0] >= if_offset && unpublished_refusals[0] < end).then_some(block)
+        })
+        .min_by_key(|block| block.len())
+        .ok_or_else(|| "unpublished-row refusal call has no recovery arm".to_string())?;
+    let compact_unpublished_arm = normalized_code(unpublished_arm).replace(' ', "");
+    if identifier_offsets(
+        unpublished_arm,
+        &code_mask(unpublished_arm),
+        "set_terminated",
+    )
+    .len()
+        != 0
+        || !compact_unpublished_arm.contains("scheduler::set_need_resched();")
+        || !compact_unpublished_arm.contains("setup_idle_return(interrupt_frame);")
+        || !compact_unpublished_arm.contains("scheduler::switch_to_idle();")
+        || !compact_unpublished_arm.contains("scheduler::requeue_refused_dispatch(")
+        || !compact_unpublished_arm.contains("process_memory::switch_to_kernel_page_table();")
+        || !compact_unpublished_arm.contains("return;")
+    {
+        return Err("blocked-in-syscall unpublished-row recovery is not retry-only".to_string());
+    }
+    let switch_idle = compact_unpublished_arm
+        .find("scheduler::switch_to_idle();")
+        .ok_or_else(|| "unpublished-row recovery has no switch_to_idle".to_string())?;
+    let requeue = compact_unpublished_arm
+        .find("scheduler::requeue_refused_dispatch(")
+        .ok_or_else(|| "unpublished-row recovery has no refused-thread requeue".to_string())?;
+    let early_return = compact_unpublished_arm
+        .find("return;")
+        .ok_or_else(|| "unpublished-row recovery has no early return".to_string())?;
+    if !(switch_idle < requeue && requeue < early_return) {
+        return Err("blocked-in-syscall unpublished-row requeue is out of order".to_string());
+    }
+    for publisher in ["set_next_cr3", "Cr3"] {
+        if identifier_offsets(process_block, &process_mask, publisher)
+            .into_iter()
+            .any(|offset| offset < unpublished_refusals[0])
+        {
+            return Err("unpublished-row refusal occurs after a CR3 publish".to_string());
+        }
+    }
 
     let first_frame_mutation =
         qualified_zero_arg_call_offsets(process_block, "interrupt_frame", "as_mut")
@@ -1033,6 +1216,60 @@ fn validate_no_cr3_dispatch_fails_closed(source: &str) -> Result<(), String> {
             "restore must publish exactly one next CR3, found {}",
             cr3_writes.len()
         ));
+    }
+    let cr3_resolutions = identifier_offsets(restore, &restore_mask, "cr3_value");
+    let unpublished_refusals =
+        identifier_offsets(restore, &restore_mask, "refuse_unpublished_dispatch");
+    if cr3_resolutions.is_empty()
+        || unpublished_refusals.len() != 1
+        || unpublished_refusals[0] >= cr3_resolutions[0]
+        || cr3_writes
+            .iter()
+            .any(|write| *write < unpublished_refusals[0])
+        || identifier_offsets(restore, &restore_mask, "Cr3")
+            .into_iter()
+            .any(|write| write < unpublished_refusals[0])
+    {
+        return Err(
+            "normal userspace restore does not refuse unpublished rows before CR3 resolution and publication"
+                .to_string(),
+        );
+    }
+    let unpublished_arm = identifier_offsets(restore, &restore_mask, "if")
+        .into_iter()
+        .filter_map(|if_offset| {
+            let block = braced_block(restore, &restore_mask, if_offset)?;
+            let end = if_offset + block.len();
+            (unpublished_refusals[0] >= if_offset && unpublished_refusals[0] < end).then_some(block)
+        })
+        .min_by_key(|block| block.len())
+        .ok_or_else(|| "normal-restore unpublished refusal has no recovery arm".to_string())?;
+    let compact_unpublished_arm = normalized_code(unpublished_arm).replace(' ', "");
+    if !identifier_offsets(
+        unpublished_arm,
+        &code_mask(unpublished_arm),
+        "set_terminated",
+    )
+    .is_empty()
+        || !compact_unpublished_arm.contains("scheduler::set_need_resched();")
+        || !compact_unpublished_arm.contains("setup_idle_return(interrupt_frame);")
+        || !compact_unpublished_arm.contains("scheduler::switch_to_idle();")
+        || !compact_unpublished_arm.contains("scheduler::requeue_refused_dispatch(")
+        || !compact_unpublished_arm.contains("return;")
+    {
+        return Err("normal-restore unpublished-row recovery is not retry-only".to_string());
+    }
+    let switch_idle = compact_unpublished_arm
+        .find("scheduler::switch_to_idle();")
+        .ok_or_else(|| "normal-restore refusal has no switch_to_idle".to_string())?;
+    let requeue = compact_unpublished_arm
+        .find("scheduler::requeue_refused_dispatch(")
+        .ok_or_else(|| "normal-restore refusal has no refused-thread requeue".to_string())?;
+    let early_return = compact_unpublished_arm
+        .find("return;")
+        .ok_or_else(|| "normal-restore refusal has no early return".to_string())?;
+    if !(switch_idle < requeue && requeue < early_return) {
+        return Err("normal-restore unpublished-row requeue is out of order".to_string());
     }
 
     let (cr3_if_offset, cr3_if_block) = identifier_offsets(restore, &restore_mask, "if")
@@ -1549,6 +1786,16 @@ fn synthetic_blocked_syscall_dispatch_source(dispatch_body: &str) -> String {
 
 fn valid_blocked_syscall_no_cr3_arm() -> &'static str {
     r#"
+        if refuse_unpublished_dispatch(process, thread_id, pid.as_u64()) {
+            scheduler::set_need_resched();
+            setup_idle_return(interrupt_frame);
+            scheduler::switch_to_idle();
+            scheduler::requeue_refused_dispatch(thread_id);
+            unsafe {
+                crate::memory::process_memory::switch_to_kernel_page_table();
+            }
+            return;
+        }
         let process_cr3 = match process.cr3_value() {
             Some(cr3_value) => cr3_value,
             None => {
@@ -1652,6 +1899,14 @@ fn synthetic_no_cr3_restore_source(else_arm: &str) -> String {
     format!(
         r#"
         fn restore_userspace_thread_context() {{
+            if refuse_unpublished_dispatch(process, thread_id, pid.as_u64()) {{
+                scheduler::set_need_resched();
+                setup_idle_return(interrupt_frame);
+                scheduler::switch_to_idle();
+                scheduler::requeue_refused_dispatch(thread_id);
+                return;
+            }}
+            let process_cr3 = process.cr3_value();
             if let Some(cr3_value) = process_cr3 {{
                 crate::per_cpu::set_next_cr3(cr3_value);
             }} else {{
@@ -1660,6 +1915,518 @@ fn synthetic_no_cr3_restore_source(else_arm: &str) -> String {
         }}
         "#
     )
+}
+
+fn validate_clone_publication_lifecycle() -> Result<(), String> {
+    let sources = rust_sources_below("kernel/src");
+    let mut ready_writes = Vec::new();
+    for (path, source) in &sources {
+        let mask = code_mask(source);
+        for (offset, _) in source.match_indices("ProcessState::Ready") {
+            if !mask.get(offset).copied().unwrap_or(false) {
+                continue;
+            }
+            let line_start = source[..offset]
+                .rfind('\n')
+                .map(|line| line + 1)
+                .unwrap_or(0);
+            let prefix = source[line_start..offset].trim_end();
+            let Some(operator) = prefix.as_bytes().last().copied() else {
+                continue;
+            };
+            if operator != b'=' {
+                continue;
+            }
+            let before_operator = prefix
+                .as_bytes()
+                .get(prefix.len().saturating_sub(2))
+                .copied();
+            if before_operator.is_some_and(|byte| matches!(byte, b'=' | b'!' | b'<' | b'>')) {
+                continue;
+            }
+            ready_writes.push(path.clone());
+        }
+    }
+    if ready_writes.is_empty()
+        || ready_writes
+            .iter()
+            .any(|path| !path.ends_with("kernel/src/process/process.rs"))
+    {
+        return Err("ProcessState::Ready writes escaped the lifecycle module".to_string());
+    }
+
+    let process = repo_text("kernel/src/process/process.rs");
+    let admits = function_body(&process, "admits_clone")
+        .ok_or_else(|| "missing Process::admits_clone".to_string())?;
+    let unpublished = function_body(&process, "is_unpublished")
+        .ok_or_else(|| "missing Process::is_unpublished".to_string())?;
+    let admits = normalized_code(admits).replace(' ', "");
+    let unpublished = normalized_code(unpublished).replace(' ', "");
+    if admits.contains("_=>")
+        || !admits.contains("matchself.state{")
+        || !admits.contains("ProcessState::Creating=>false")
+        || !admits.contains("ProcessState::Ready|ProcessState::Running|ProcessState::Blocked=>true")
+        || !admits.contains("ProcessState::Terminated(_)=>false")
+        || admits.contains("ProcessState::Creating=>true")
+        || admits.contains("ProcessState::Terminated(_)=>true")
+    {
+        return Err("admits_clone is not an exhaustive live-row predicate".to_string());
+    }
+    if unpublished.contains("_=>")
+        || !unpublished.contains("matchself.state{")
+        || !unpublished.contains("ProcessState::Creating=>true")
+        || !unpublished.contains("ProcessState::Ready=>false")
+        || !unpublished.contains("ProcessState::Running=>false")
+        || !unpublished.contains("ProcessState::Blocked=>false")
+        || !unpublished.contains("ProcessState::Terminated(_)=>false")
+        || unpublished.matches("=>true").count() != 1
+    {
+        return Err("is_unpublished does not accept exactly Creating".to_string());
+    }
+
+    let clone = repo_text("kernel/src/syscall/clone.rs");
+    let clone_body =
+        function_body(&clone, "sys_clone").ok_or_else(|| "missing sys_clone body".to_string())?;
+    let clone_mask = code_mask(clone_body);
+
+    let admission_calls = call_offsets(clone_body, &clone_mask, "admit_clone_into");
+    if admission_calls.len() != 1 {
+        return Err(format!(
+            "sys_clone must call admit_clone_into exactly once, found {}",
+            admission_calls.len()
+        ));
+    }
+    let admission = admission_calls[0];
+
+    let insert_calls = call_offsets(clone_body, &clone_mask, "insert_process");
+    if insert_calls.len() != 1 {
+        return Err(format!(
+            "sys_clone must call insert_process exactly once, found {}",
+            insert_calls.len()
+        ));
+    }
+    let insert = insert_calls[0];
+
+    let cwd_clones = call_offsets(clone_body, &clone_mask, "clone")
+        .into_iter()
+        .filter(|offset| {
+            let prefix = &clone_body[..*offset];
+            let prefix_mask = &clone_mask[..*offset];
+            identifier_offsets(prefix, prefix_mask, "cwd")
+                .last()
+                .is_some_and(|cwd| normalized_code(&clone_body[*cwd..*offset]) == "cwd.")
+        })
+        .collect::<Vec<_>>();
+    let fd_table_clones = call_offsets(clone_body, &clone_mask, "clone")
+        .into_iter()
+        .filter(|offset| {
+            let prefix = &clone_body[..*offset];
+            let prefix_mask = &clone_mask[..*offset];
+            identifier_offsets(prefix, prefix_mask, "fd_table")
+                .last()
+                .is_some_and(|fd_table| {
+                    normalized_code(&clone_body[*fd_table..*offset]) == "fd_table."
+                })
+        })
+        .collect::<Vec<_>>();
+    if cwd_clones.len() != 1 || fd_table_clones.len() != 1 {
+        return Err(format!(
+            "sys_clone must copy parent cwd and fd_table exactly once, found cwd={} fd_table={}",
+            cwd_clones.len(),
+            fd_table_clones.len()
+        ));
+    }
+    let parent_state_binding = identifier_offsets(clone_body, &clone_mask, "parent_cr3")
+        .first()
+        .copied()
+        .ok_or_else(|| "sys_clone has no parent-state copy block".to_string())?;
+    let parent_state_block = braced_block(clone_body, &clone_mask, parent_state_binding)
+        .ok_or_else(|| "sys_clone parent-state copy block is not brace balanced".to_string())?;
+    let parent_state_end = parent_state_binding + parent_state_block.len();
+    if !(parent_state_binding..parent_state_end).contains(&cwd_clones[0])
+        || !(parent_state_binding..parent_state_end).contains(&fd_table_clones[0])
+    {
+        return Err("sys_clone cwd/fd_table reads escaped the parent-state copy block".to_string());
+    }
+    if admission >= insert || admission >= parent_state_binding {
+        return Err(
+            "sys_clone admits the clone after deriving parent state or publishing the child"
+                .to_string(),
+        );
+    }
+
+    let admission_arm = identifier_offsets(clone_body, &clone_mask, "if")
+        .into_iter()
+        .find_map(|if_offset| {
+            let block = braced_block(clone_body, &clone_mask, if_offset)?;
+            let open = block.find('{')?;
+            (!call_offsets(
+                &block[..open],
+                &code_mask(&block[..open]),
+                "admit_clone_into",
+            )
+            .is_empty())
+            .then_some(block)
+        })
+        .ok_or_else(|| {
+            "sys_clone admission call is not the condition of a refusal arm".to_string()
+        })?;
+    let admission_arm_mask = code_mask(admission_arm);
+    let compact_admission_arm = normalized_code(admission_arm).replace(' ', "");
+    if identifier_offsets(admission_arm, &admission_arm_mask, "return").len() != 1
+        || identifier_offsets(admission_arm, &admission_arm_mask, "Err").len() != 1
+        || identifier_offsets(admission_arm, &admission_arm_mask, "EAGAIN").len() != 1
+        || !compact_admission_arm.contains("returnSyscallResult::Err(super::errno::EAGAINasu64);")
+    {
+        return Err("sys_clone admission refusal must return super::errno::EAGAIN".to_string());
+    }
+
+    let manager_guard_bindings = binding_offsets(clone_body, &clone_mask, "manager_guard");
+    if manager_guard_bindings.len() != 1 {
+        return Err(format!(
+            "sys_clone must bind manager_guard exactly once, found {}",
+            manager_guard_bindings.len()
+        ));
+    }
+    let manager_guard_statement_end = (manager_guard_bindings[0]..clone_body.len())
+        .find(|offset| clone_mask[*offset] && clone_body.as_bytes()[*offset] == b';')
+        .ok_or_else(|| "sys_clone manager_guard binding has no terminator".to_string())?;
+    if !normalized_code(&clone_body[manager_guard_bindings[0]..=manager_guard_statement_end])
+        .contains("crate::process::manager()")
+    {
+        return Err("sys_clone manager_guard is not bound from the process manager".to_string());
+    }
+    if manager_guard_bindings[0] >= admission {
+        return Err("sys_clone manager_guard is bound after clone admission".to_string());
+    }
+    if normalized_code(&clone_body[admission..insert])
+        .replace(' ', "")
+        .contains("drop(manager_guard)")
+    {
+        return Err(
+            "sys_clone drops manager_guard between clone admission and child publication"
+                .to_string(),
+        );
+    }
+
+    let child_thread_bindings = binding_offsets(clone_body, &clone_mask, "child_thread");
+    if child_thread_bindings.len() != 1 {
+        return Err(format!(
+            "sys_clone must construct child_thread exactly once, found {} bindings",
+            child_thread_bindings.len()
+        ));
+    }
+    let child_thread_literal = braced_block(clone_body, &clone_mask, child_thread_bindings[0])
+        .ok_or_else(|| "sys_clone child_thread binding has no Thread literal".to_string())?;
+    let child_thread_literal_mask = code_mask(child_thread_literal);
+    if code_offsets(
+        child_thread_literal,
+        &child_thread_literal_mask,
+        "crate::task::thread::ThreadState::Blocked",
+    )
+    .len()
+        != 1
+        || !normalized_code(child_thread_literal)
+            .replace(' ', "")
+            .contains("state:crate::task::thread::ThreadState::Blocked,")
+    {
+        return Err("sys_clone child Thread must be constructed Blocked".to_string());
+    }
+
+    let attach_calls = call_offsets(clone_body, &clone_mask, "attach_main_thread_unpublished");
+    if attach_calls.len() != 1 {
+        return Err(format!(
+            "sys_clone must call attach_main_thread_unpublished exactly once, found {}",
+            attach_calls.len()
+        ));
+    }
+    let set_main_thread_calls = call_offsets(clone_body, &clone_mask, "set_main_thread");
+    if !set_main_thread_calls.is_empty() {
+        return Err(format!(
+            "sys_clone must not call set_main_thread, found {} calls",
+            set_main_thread_calls.len()
+        ));
+    }
+    if !assigned_value_offsets(clone_body, &clone_mask, "ProcessState::Ready").is_empty() {
+        return Err(
+            "sys_clone writes ProcessState::Ready outside the lifecycle module".to_string(),
+        );
+    }
+
+    let set_ready_calls = call_offsets(clone_body, &clone_mask, "set_ready");
+    let runnable_thread_writes = assigned_value_offsets(
+        clone_body,
+        &clone_mask,
+        "crate::task::thread::ThreadState::Ready",
+    );
+    let manager_guard_drops = call_offsets(clone_body, &clone_mask, "drop")
+        .into_iter()
+        .filter(|offset| {
+            let statement_end = (*offset..clone_body.len())
+                .find(|index| clone_mask[*index] && clone_body.as_bytes()[*index] == b';')
+                .unwrap_or(clone_body.len());
+            normalized_code(&clone_body[*offset..statement_end]).replace(' ', "")
+                == "drop(manager_guard)"
+        })
+        .collect::<Vec<_>>();
+    let spawn_calls = call_offsets(clone_body, &clone_mask, "spawn");
+    let publication_steps = [
+        ("attach_main_thread_unpublished", attach_calls.as_slice()),
+        ("insert_process", insert_calls.as_slice()),
+        ("set_ready", set_ready_calls.as_slice()),
+        ("ThreadState::Ready", runnable_thread_writes.as_slice()),
+        ("drop(manager_guard)", manager_guard_drops.as_slice()),
+        ("spawn", spawn_calls.as_slice()),
+    ];
+    let mut publication_sequence = Vec::new();
+    for (name, offsets) in publication_steps {
+        if offsets.len() != 1 {
+            return Err(format!(
+                "sys_clone publication step {name} must appear exactly once, found {}",
+                offsets.len()
+            ));
+        }
+        publication_sequence.push((name, offsets[0]));
+    }
+    if let Some(link) = publication_sequence
+        .windows(2)
+        .find(|link| link[0].1 >= link[1].1)
+    {
+        return Err(format!(
+            "sys_clone publication sequence link broke: {} must precede {}",
+            link[0].0, link[1].0
+        ));
+    }
+
+    let manager = repo_text("kernel/src/process/manager.rs");
+    let manager_bodies = module_function_bodies(&manager);
+    let sibling_guard_definitions = manager_bodies
+        .get("find_live_clone_vm_sibling_holding_cr3")
+        .map_or(0, Vec::len);
+    if sibling_guard_definitions != 1 {
+        return Err(format!(
+            "find_live_clone_vm_sibling_holding_cr3 must be defined exactly once, found {sibling_guard_definitions}"
+        ));
+    }
+
+    // Issue #468 is open and this phase does not close it. Census this guard
+    // because it sits immediately adjacent to the exec-commit code this phase edits.
+    let mut exec_bodies = Vec::new();
+    for name in ["exec_process", "exec_process_with_argv"] {
+        for body in manager_bodies.get(name).into_iter().flatten() {
+            exec_bodies.push((name, *body));
+        }
+    }
+    let aarch64_exec_count = exec_bodies
+        .iter()
+        .filter(|(_, body)| body.contains("[ARM64]"))
+        .count();
+    let x86_exec_count = exec_bodies.len() - aarch64_exec_count;
+    if exec_bodies.len() != 4 || aarch64_exec_count != 2 || x86_exec_count != 2 {
+        return Err(format!(
+            "exec body census must be four total (two aarch64, two x86), found total={} aarch64={} x86={}",
+            exec_bodies.len(),
+            aarch64_exec_count,
+            x86_exec_count
+        ));
+    }
+    for (name, body) in exec_bodies {
+        let body_mask = code_mask(body);
+        let sibling_guard_calls =
+            call_offsets(body, &body_mask, "find_live_clone_vm_sibling_holding_cr3");
+        if !body.contains("[ARM64]") {
+            if !sibling_guard_calls.is_empty() {
+                return Err(format!(
+                    "x86 {name} must not call find_live_clone_vm_sibling_holding_cr3"
+                ));
+            }
+            continue;
+        }
+        if sibling_guard_calls.len() != 1 {
+            return Err(format!(
+                "aarch64 {name} must call find_live_clone_vm_sibling_holding_cr3 exactly once, found {}",
+                sibling_guard_calls.len()
+            ));
+        }
+        let allocation = code_offsets(body, &body_mask, "UnpublishedPageTable::new(");
+        if allocation.len() != 1 {
+            return Err(format!(
+                "aarch64 {name} must allocate one UnpublishedPageTable, found {}",
+                allocation.len()
+            ));
+        }
+        if sibling_guard_calls[0] >= allocation[0] {
+            return Err(format!(
+                "aarch64 {name} checks live CLONE_VM siblings after allocating its new address space"
+            ));
+        }
+        let guard_arm = identifier_offsets(body, &body_mask, "if")
+            .into_iter()
+            .find_map(|if_offset| {
+                let block = braced_block(body, &body_mask, if_offset)?;
+                let open = block.find('{')?;
+                (call_offsets(
+                    &block[..open],
+                    &code_mask(&block[..open]),
+                    "find_live_clone_vm_sibling_holding_cr3",
+                )
+                .len()
+                    == 1)
+                    .then_some(block)
+            })
+            .ok_or_else(|| format!("aarch64 {name} sibling check is not an if guard"))?;
+        if !normalized_code(guard_arm).contains("return Err(") {
+            return Err(format!(
+                "aarch64 {name} live-sibling guard does not return Err"
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_aarch64_row_unpublished_dispatch(source: &str) -> Result<(), String> {
+    let set_next = function_body(source, "set_next_ttbr0_for_thread")
+        .ok_or_else(|| "missing set_next_ttbr0_for_thread".to_string())?;
+    let set_next_mask = code_mask(set_next);
+    let refusal = identifier_offsets(set_next, &set_next_mask, "refuse_unpublished_dispatch");
+    let page_table = identifier_offsets(set_next, &set_next_mask, "page_table");
+    let inherited = identifier_offsets(set_next, &set_next_mask, "inherited_cr3");
+    if refusal.len() != 1
+        || page_table.is_empty()
+        || inherited.is_empty()
+        || refusal[0] >= page_table[0]
+        || refusal[0] >= inherited[0]
+        || !set_next.contains("return TtbrResult::RowUnpublished;")
+    {
+        return Err("aarch64 computes TTBR0 before refusing an unpublished row".to_string());
+    }
+
+    let enum_offset = source
+        .find("enum TtbrResult")
+        .ok_or_else(|| "missing TtbrResult enum".to_string())?;
+    let enum_body = braced_block(source, &code_mask(source), enum_offset)
+        .ok_or_else(|| "TtbrResult enum is not brace balanced".to_string())?;
+    if !enum_body.contains("RowUnpublished") {
+        return Err("TtbrResult lacks RowUnpublished".to_string());
+    }
+
+    let source_mask = code_mask(source);
+    let ttbr_matches: Vec<&str> = identifier_offsets(source, &source_mask, "match")
+        .into_iter()
+        .filter_map(|offset| braced_block(source, &source_mask, offset))
+        .filter(|block| {
+            let header = block.split_once('{').map_or(*block, |(header, _)| header);
+            header.contains("set_next_ttbr0_for_thread") || header.contains("ttbr_result")
+        })
+        .collect();
+    if ttbr_matches.len() != 3
+        || ttbr_matches
+            .iter()
+            .any(|block| !block.contains("TtbrResult::RowUnpublished"))
+    {
+        return Err("RowUnpublished is not handled at every TtbrResult match".to_string());
+    }
+    let refusal_body = function_body(source, "refuse_unpublished_dispatch")
+        .ok_or_else(|| "missing aarch64 unpublished-row predicate".to_string())?;
+    if !refusal_body.contains("USERSPACE_DISPATCH_CREATING_REFUSED.fetch_add")
+        || !source.contains("pub fn userspace_dispatch_creating_refused() -> u64")
+        || source
+            .matches("#[cfg(feature = \"boot_tests\")]\npub fn userspace_dispatch_creating_refused")
+            .count()
+            != 1
+    {
+        return Err("aarch64 unpublished-row counter is not readable".to_string());
+    }
+    Ok(())
+}
+
+fn validate_aarch64_failed_exec_ttbr0_rollback(source: &str) -> Result<(), String> {
+    let exec = function_body(source, "sys_exec_aarch64")
+        .ok_or_else(|| "missing sys_exec_aarch64".to_string())?;
+    let exec_mask = code_mask(exec);
+    let capture = call_offsets(exec, &exec_mask, "read_ttbr0_for_exec");
+    let switch = call_offsets(exec, &exec_mask, "switch_ttbr0_to_kernel");
+    let manager_exec = call_offsets(exec, &exec_mask, "exec_process_with_argv");
+    if capture.len() != 1
+        || switch.len() != 1
+        || manager_exec.len() != 1
+        || capture[0] >= switch[0]
+        || switch[0] >= manager_exec[0]
+    {
+        return Err(
+            "aarch64 exec must capture TTBR0 immediately before its fallible kernel-root transition"
+                .to_string(),
+        );
+    }
+
+    let err_offset = code_offsets(exec, &exec_mask, "Err(e) =>")
+        .into_iter()
+        .next()
+        .ok_or_else(|| "aarch64 exec result lacks an Err arm".to_string())?;
+    let err_arm = braced_block(exec, &exec_mask, err_offset)
+        .ok_or_else(|| "aarch64 exec Err arm is not brace balanced".to_string())?;
+    let err_mask = code_mask(err_arm);
+    let rollback = call_offsets(err_arm, &err_mask, "restore_ttbr0_after_failed_exec");
+    let returns = identifier_offsets(err_arm, &err_mask, "return");
+    if rollback.len() != 1
+        || returns.is_empty()
+        || rollback[0] >= returns[0]
+        || !normalized_code(err_arm)
+            .contains("restore_ttbr0_after_failed_exec(previous_ttbr0);")
+    {
+        return Err("aarch64 failed exec can return with the kernel TTBR0 installed".to_string());
+    }
+
+    let restore = function_body(source, "restore_ttbr0_after_failed_exec")
+        .ok_or_else(|| "missing failed-exec TTBR0 rollback helper".to_string())?;
+    let restore_mask = code_mask(restore);
+    if restore.matches("\"msr ttbr0_el1, {}\"").count() != 1
+        || restore.matches("\"tlbi vmalle1is\"").count() != 1
+        || call_offsets(restore, &restore_mask, "set_saved_process_cr3").len() != 1
+        || call_offsets(restore, &restore_mask, "set_next_cr3").len() != 1
+        || !normalized_code(restore).contains("set_next_cr3(0);")
+    {
+        return Err("failed-exec TTBR0 rollback does not restore hardware and both return shadows"
+            .to_string());
+    }
+
+    Ok(())
+}
+
+#[test]
+fn clone_publication_lifecycle_is_closed() {
+    assert_eq!(validate_clone_publication_lifecycle(), Ok(()));
+}
+
+#[test]
+fn unpublished_dispatch_is_retry_only_on_both_architectures() {
+    let x86 = repo_text("kernel/src/interrupts/context_switch.rs");
+    let x86_refusal = function_body(&x86, "refuse_unpublished_dispatch")
+        .expect("missing x86 unpublished-row refusal predicate");
+    assert!(identifier_offsets(x86_refusal, &code_mask(x86_refusal), "set_terminated").is_empty());
+    assert_eq!(
+        validate_aarch64_row_unpublished_dispatch(&repo_text(
+            "kernel/src/arch_impl/aarch64/context_switch.rs"
+        )),
+        Ok(())
+    );
+}
+
+#[test]
+fn aarch64_failed_exec_restores_the_pretransition_ttbr0() {
+    let source = repo_text("kernel/src/arch_impl/aarch64/syscall_entry.rs");
+    assert_eq!(validate_aarch64_failed_exec_ttbr0_rollback(&source), Ok(()));
+}
+
+#[test]
+fn aarch64_failed_exec_ttbr0_validator_rejects_missing_rollback() {
+    let source = repo_text("kernel/src/arch_impl/aarch64/syscall_entry.rs");
+    let mutant = source.replacen(
+        "restore_ttbr0_after_failed_exec(previous_ttbr0);",
+        "",
+        1,
+    );
+    assert!(validate_aarch64_failed_exec_ttbr0_rollback(&mutant).is_err());
 }
 
 #[test]

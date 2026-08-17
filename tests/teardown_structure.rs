@@ -1861,6 +1861,7 @@ const TERMINATE_CALLS: &[(&str, &str, usize)] = &[
 #[rustfmt::skip]
 const TERMINATE_MINIMAL_CALLS: &[(&str, &str, usize)] = &[
     ("kernel/src/task/process_task.rs", "impl ProcessScheduler::fn handle_thread_exit", 1),
+    ("kernel/src/tracing/providers/teardown.rs", "#[cfg(feature=boot_tests)] fn clone_admission_oracle_test", 1),
 ];
 #[rustfmt::skip]
 const PRODUCTION_INIT_PID_SITES: &[(&str, &str, usize)] = &[
@@ -1890,6 +1891,8 @@ const RECLAIM_ENQUEUE_CALLS: &[(&str, &str, usize)] = &[
     ("kernel/src/task/process_task.rs", "#[cfg(feature=boot_tests)] fn reclaim_progress_gate_test", 2),
     ("kernel/src/tracing/providers/teardown.rs", "#[cfg(feature=boot_tests)] fn fork_exit_defer_reclaim_pairing_test", 1),
     ("kernel/src/tracing/providers/teardown.rs", "#[cfg(all(feature=boot_tests,target_arch=x86_64))] fn exec_supersede_cohort_test", 1),
+    ("kernel/src/tracing/providers/teardown.rs", "#[cfg(feature=boot_tests)] fn exec_detach_oracle_test::fn retire_and_remove_owned_row", 1),
+    ("kernel/src/tracing/providers/teardown.rs", "#[cfg(all(feature=boot_tests,target_arch=aarch64))] fn creating_dispatch_refusal_test::fn retire_and_remove_owned_row", 1),
 ];
 #[rustfmt::skip]
 const EXIT_PROCESS_AND_RETIRE_CALLS: &[(&str, &str, usize)] = &[
@@ -1912,6 +1915,8 @@ const EXIT_PROCESS_BY_PID_CALLS: &[(&str, &str, usize)] = &[
 const EXIT_PROCESS_FOR_TEARDOWN_TEST_CALLS: &[(&str, &str, usize)] = &[
     ("kernel/src/tracing/providers/teardown.rs", "#[cfg(feature=boot_tests)] fn fork_exit_defer_reclaim_pairing_test", 1),
     ("kernel/src/tracing/providers/teardown.rs", "#[cfg(all(feature=boot_tests,target_arch=x86_64))] fn exec_supersede_cohort_test", 1),
+    ("kernel/src/tracing/providers/teardown.rs", "#[cfg(feature=boot_tests)] fn exec_detach_oracle_test::fn exit_and_remove_unowned_row", 1),
+    ("kernel/src/tracing/providers/teardown.rs", "#[cfg(feature=boot_tests)] fn clone_admission_oracle_test::fn exit_and_remove_row", 1),
 ];
 #[rustfmt::skip]
 const BLOCKING_PRIMITIVES: &[(&str, &str, usize)] = &[
@@ -2011,6 +2016,11 @@ const DEFERRED_RECLAIM_DRAIN_SITES: &[(&str, &str, usize)] = &[
 #[rustfmt::skip]
 const THREAD_GROUP_WRITES: &[(&str, &str, usize)] = &[
     ("kernel/src/syscall/clone.rs", "fn sys_clone", 1),
+];
+#[rustfmt::skip]
+const CLEAR_CHILD_TID_EXIT_SITES: &[(&str, &str, usize)] = &[
+    ("kernel/src/arch_impl/aarch64/syscall_entry.rs", "fn sys_exit_aarch64", 1),
+    ("kernel/src/syscall/handlers.rs", "fn sys_exit", 1),
 ];
 #[rustfmt::skip]
 const BTRT_PROCESS_EXIT_REPORTS: &[(&str, &str, usize)] = &[
@@ -2118,6 +2128,63 @@ fn validate_group_writes(sources: &[(String, String)]) -> Result<(), Vec<String>
         }),
         THREAD_GROUP_WRITES,
     )
+}
+
+fn clear_child_tid_read_offsets(source: &str, mask: &[bool]) -> Vec<usize> {
+    let assignments = assignment_offsets(source, mask, "clear_child_tid");
+    identifier_offsets(source, mask, "clear_child_tid")
+        .into_iter()
+        .filter(|offset| {
+            previous_code(source, mask, *offset)
+                .is_some_and(|previous| source.as_bytes()[previous] == b'.')
+                && !assignments.contains(offset)
+        })
+        .collect()
+}
+
+fn validate_clear_child_tid_exit_paths(
+    sources: &[(String, String)],
+) -> Result<(), Vec<String>> {
+    let reads = census(sources, clear_child_tid_read_offsets);
+    let mut failures = Vec::new();
+    record(
+        &mut failures,
+        "clear_child_tid exit readers",
+        validate_census(&reads, CLEAR_CHILD_TID_EXIT_SITES),
+    );
+
+    for (path, item, _) in CLEAR_CHILD_TID_EXIT_SITES {
+        let name = item.strip_prefix("fn ").expect("function census anchor");
+        let body = function_body(source(sources, path), name);
+        let mask = code_mask(body);
+        let read = clear_child_tid_read_offsets(body, &mask);
+        let copy = call_offsets(body, &mask, "copy_to_user");
+        let wake = call_offsets(body, &mask, "futex_wake_for_thread_group");
+        let teardown = call_offsets(body, &mask, "handle_thread_exit");
+        let raw_write = call_offsets(body, &mask, "write_volatile");
+        let manager = call_offsets(body, &mask, "manager");
+        let snapshot_end = code_offsets(body, &mask, "};");
+        let code = normalized_code(body);
+        if read.len() != 1
+            || copy.len() != 1
+            || wake.len() != 1
+            || teardown.len() != 1
+            || !raw_write.is_empty()
+            || manager.len() != 1
+            || !snapshot_end
+                .iter()
+                .any(|end| read[0] < *end && *end < copy[0])
+            || !code.contains("copy_to_user(tid_addr as *mut u32, &zero);")
+            || !code.contains("futex_wake_for_thread_group(tg_id, tid_addr, u32::MAX);")
+            || !(read[0] < copy[0] && copy[0] < wake[0] && wake[0] < teardown[0])
+        {
+            failures.push(format!(
+                "{path} :: {item} must snapshot clear_child_tid under PROCESS_MANAGER, then copy_to_user and futex-wake before teardown"
+            ));
+        }
+    }
+
+    failures.is_empty().then_some(()).ok_or(failures)
 }
 
 fn validate_exit_sgi_is_teardown_only(sources: &[(String, String)]) -> Result<(), ()> {
@@ -2740,8 +2807,20 @@ fn validate_x86_frame_custody_harness(script: &str) -> Result<(), ()> {
     const PT_CUSTODY_VECTOR: &str = "PT_CUSTODY_LITERAL='[PT_CUSTODY_COUNTERS:x86:recorded=14:no_proof=0:no_arch=0:terminated=1:undecided=1:retired=2:returned=14:lost=0:requeued=0]'";
     const PT_COHORT_VECTOR: &str = "PT_COHORT_LITERAL='[PT_RETIRE_COHORT:x86:children=64:retired=65:returned=642:recorded=577:lost=0:no_arch=0:undecided=0:mid_retire=0:balance=0]'";
     const PT_EXEC_COHORT_VECTOR: &str = "PT_EXEC_COHORT_LITERAL='[PT_EXEC_COHORT:x86:children=16:superseded=3:roots=64:returned=640:recorded=576:lost=0:leaf_recorded=192:leaf_released=192:leaf_returned=192:custody_refused=0:decref_unregistered=0:undecided=0:mid_retire=0:no_arch=0:balance=0]' # The returned and recorded table-frame fields are pinned from the measured run.";
+    const EXEC_DETACH_ORACLE_VECTOR: &str = "EXEC_DETACH_ORACLE_LITERAL='[EXEC_DETACH_ORACLE:x86:bodies=2:fail_preserved=2:sibling_refused=0:success_detached=2:fresh_root=2:tgid_self=2:custody_balance=0:leaf_residual=16:stack_residual=149:old_group_reached_pre=2:old_group_missed_post=2:self_group_reached_post=2]'";
+    const CLONE_ADMISSION_ORACLE_VECTOR: &str = "CLONE_ADMISSION_ORACLE_LITERAL='[CLONE_ADMISSION_ORACLE:x86:admitted=1:refused=2:creating_refused=1:published_admitted=2:balance=0]'";
     const EXEC_FAILED_RELEASE_ORACLE_VECTOR: &str = "EXEC_FAILED_RELEASE_ORACLE_PATTERN='^\\[EXEC_FAILED_RELEASE_ORACLE:x86:used_before=[0-9]+:used_after=[0-9]+:recorded_pre=3:leaf_recorded=1:leaf_released=1:leaf_returned=1:tables_returned=4:roots_retired=1:undecided=0:live_refused=0\\]$'";
     const EXEC_FAILED_RELEASE_PROD_VECTOR: &str = "EXEC_FAILED_RELEASE_PROD_LITERAL='[EXEC_FAILED_RELEASE_PROD:x86:plain_err=true:plain_kept=true:argv_err=true:argv_kept=true:name_kept=true:balance=0:undecided=0:mid_retire=0:lost=0:custody_refused=0:decref_unregistered=0:double=0:stale=0:untracked=0:root_slot_refused=0]'";
+    const BXTEST_DISK_REBUILD: &str =
+        "rm -f target/test_binaries.img\ncargo run -p xtask -- create-test-disk";
+    const EXT2_DISK_REBUILD: &str =
+        "rm -f target/ext2.img\n./scripts/create_ext2_disk.sh";
+    if script.contains("test -f target/ext2.img")
+        || !script.contains(BXTEST_DISK_REBUILD)
+        || !script.contains(EXT2_DISK_REBUILD)
+    {
+        return Err(());
+    }
     let exact_marker_count = |marker: &str| {
         let needle = format!("grep -h -c '\\[TEST:process:{marker}:PASS\\]'");
         script.find(&needle).is_some_and(|start| {
@@ -2783,26 +2862,36 @@ fn validate_x86_frame_custody_harness(script: &str) -> Result<(), ()> {
         && script.contains(PT_CUSTODY_VECTOR)
         && script.contains(PT_COHORT_VECTOR)
         && script.contains(PT_EXEC_COHORT_VECTOR)
+        && script.contains(EXEC_DETACH_ORACLE_VECTOR)
+        && script.contains(CLONE_ADMISSION_ORACLE_VECTOR)
         && script.contains(EXEC_FAILED_RELEASE_ORACLE_VECTOR)
         && script.contains(EXEC_FAILED_RELEASE_PROD_VECTOR)
         && script.matches("frame_custody_refusal_gate:PASS").count() == 2
         && script.matches("page_table_custody_disposition_gate:PASS").count() == 2
         && script.matches("x86_retire_cohort:PASS").count() == 2
         && script.matches("x86_exec_cohort:PASS").count() == 2
+        && script.matches("exec_detach_oracle:PASS").count() == 2
+        && script.matches("clone_admission_oracle:PASS").count() == 2
         && exact_marker_count("frame_custody_refusal_gate")
         && exact_marker_count("page_table_custody_disposition_gate")
         && exact_marker_count("x86_retire_cohort")
         && exact_marker_count("x86_exec_cohort")
+        && exact_marker_count("exec_detach_oracle")
+        && exact_marker_count("clone_admission_oracle")
         && script.contains("grep -qE \"$FRAME_CUSTODY_PATTERN\"")
         && script.contains("grep -qF -x \"$PT_CUSTODY_LITERAL\"")
         && script.contains("grep -qF -x \"$PT_COHORT_LITERAL\"")
         && script.contains("grep -qF -x \"$PT_EXEC_COHORT_LITERAL\"")
+        && script.contains("grep -qF -x \"$EXEC_DETACH_ORACLE_LITERAL\"")
+        && script.contains("grep -qF -x \"$CLONE_ADMISSION_ORACLE_LITERAL\"")
         && script.contains("grep -qE \"$EXEC_FAILED_RELEASE_ORACLE_PATTERN\"")
         && script.contains("grep -qF -x \"$EXEC_FAILED_RELEASE_PROD_LITERAL\"")
         && script.contains("grep -h -E -c \"$FRAME_CUSTODY_PATTERN\"")
         && script.contains("grep -h -F -x -c \"$PT_CUSTODY_LITERAL\"")
         && script.contains("grep -h -F -x -c \"$PT_COHORT_LITERAL\"")
         && script.contains("grep -h -F -x -c \"$PT_EXEC_COHORT_LITERAL\"")
+        && script.contains("grep -h -F -x -c \"$EXEC_DETACH_ORACLE_LITERAL\"")
+        && script.contains("grep -h -F -x -c \"$CLONE_ADMISSION_ORACLE_LITERAL\"")
         && script.contains("grep -h -E -c \"$EXEC_FAILED_RELEASE_ORACLE_PATTERN\"")
         && script.contains("grep -h -F -x -c \"$EXEC_FAILED_RELEASE_PROD_LITERAL\"")
         && script.contains("-eq 1")
@@ -2887,7 +2976,7 @@ fn validate_frame_ledger_counter_inventory(provider: &str) -> Result<(), ()> {
         && EXPECTED
             .iter()
             .all(|counter| inventory.contains(&format!("&{counter},")))
-        && provider.contains("pub const COUNTER_COUNT: usize = 72;"))
+        && provider.contains("pub const COUNTER_COUNT: usize = 74;"))
     .then_some(())
     .ok_or(())
 }
@@ -3145,7 +3234,7 @@ fn validate_process_page_table_counter_inventory(sources: &[(String, String)]) -
         || !EXPECTED
             .iter()
             .all(|counter| inventory.contains(&format!("&{counter},")))
-        || !provider.contains("pub const COUNTER_COUNT: usize = 72;")
+        || !provider.contains("pub const COUNTER_COUNT: usize = 74;")
     {
         return Err(());
     }
@@ -3390,6 +3479,8 @@ fn validate_leaf_custody(sources: &[(String, String)]) -> Result<(), ()> {
         .iter()
         .filter(|body| !body.contains("[ARM64]"))
         .count();
+    // Pin the census and both reset shapes: a fifth exec body, or any body that
+    // silently drops either half of the detach, must fail this ratchet.
     if execs.len() != 4 || arm_exec_count != 2 || x86_exec_count != 2 {
         return Err(());
     }
@@ -3404,6 +3495,38 @@ fn validate_leaf_custody(sources: &[(String, String)]) -> Result<(), ()> {
         {
             return Err(());
         }
+        let inherited_reset = body.find("process.inherited_cr3 = None;").ok_or(())?;
+        let thread_group_reset = body.find("process.thread_group_id = None;").ok_or(())?;
+        if inherited_reset < publish
+            || thread_group_reset < publish
+            || body.matches("process.inherited_cr3 = None;").count() != 1
+            || body.matches("process.thread_group_id = None;").count() != 1
+            || body.contains("process.inherited_cr3 = Some(")
+            || body.contains("process.thread_group_id = Some(")
+        {
+            return Err(());
+        }
+    }
+
+    // Census the writer shapes across production modules, not a known-name list:
+    // exec may clear the pair, but it must never become another group-join site.
+    let production_group_sources = [
+        source(sources, "kernel/src/syscall/clone.rs"),
+        manager,
+        source(sources, "kernel/src/process/process.rs"),
+    ];
+    if production_group_sources
+        .iter()
+        .map(|body| body.matches("thread_group_id = Some(").count())
+        .sum::<usize>()
+        != 1
+        || production_group_sources
+            .iter()
+            .map(|body| body.matches("inherited_cr3 = Some(").count())
+            .sum::<usize>()
+            != 1
+    {
+        return Err(());
     }
 
     let gate = function_body(process_memory, "page_table_custody_disposition_gate_test");
@@ -3447,7 +3570,7 @@ fn validate_leaf_custody(sources: &[(String, String)]) -> Result<(), ()> {
 
 /// Q2's asymmetric cached-root proof is intentional: x86 has no per-thread
 /// cached CR3 writer. Discover assignments structurally, then require every
-/// writer to belong to the one aarch64 cache helper span.
+/// writer to belong to the one aarch64 setter used by both cache and clear.
 fn validate_cached_ttbr0_single_writer(sources: &[(String, String)]) -> Result<(), ()> {
     const ALLOWED_PATH: &str = "kernel/src/arch_impl/aarch64/context_switch.rs";
     let mut writers = Vec::new();
@@ -3463,7 +3586,7 @@ fn validate_cached_ttbr0_single_writer(sources: &[(String, String)]) -> Result<(
         return Err(());
     }
     let module = source(sources, ALLOWED_PATH);
-    function_span(module, "cache_thread_ttbr0")
+    function_span(module, "set_thread_cached_ttbr0")
         .contains(&writers[0].1)
         .then_some(())
         .ok_or(())
@@ -3751,6 +3874,32 @@ fn validate_process_page_table_runtime_oracle(sources: &[(String, String)]) -> R
     {
         return Err(());
     }
+    let detach_registrations =
+        identifier_offsets(registry, &registry_mask, "exec_detach_oracle_test");
+    if detach_registrations.len() != 1 || registry.contains("exec_detach_oracle_test as") {
+        return Err(());
+    }
+    let detach_test_def =
+        enclosing_test_def(registry, &registry_mask, detach_registrations[0]).ok_or(())?;
+    if !detach_test_def.contains("name: \"exec_detach_oracle\"")
+        || !detach_test_def.contains("arch: Arch::Aarch64")
+        || !detach_test_def.contains("stage: TestStage::PostScheduler")
+    {
+        return Err(());
+    }
+    let clone_registrations =
+        identifier_offsets(registry, &registry_mask, "clone_admission_oracle_test");
+    if clone_registrations.len() != 1 || registry.contains("clone_admission_oracle_test as") {
+        return Err(());
+    }
+    let clone_test_def =
+        enclosing_test_def(registry, &registry_mask, clone_registrations[0]).ok_or(())?;
+    if !clone_test_def.contains("name: \"clone_admission_oracle\"")
+        || !clone_test_def.contains("arch: Arch::Aarch64")
+        || !clone_test_def.contains("stage: TestStage::PostScheduler")
+    {
+        return Err(());
+    }
 
     let memory = source(sources, "kernel/src/memory/mod.rs");
     if code_offsets(
@@ -3779,6 +3928,26 @@ fn validate_process_page_table_runtime_oracle(sources: &[(String, String)]) -> R
         main,
         &code_mask(main),
         "teardown::run_x86_exec_cohort_gate();",
+    )
+    .len()
+        != 1
+    {
+        return Err(());
+    }
+    if code_offsets(
+        main,
+        &code_mask(main),
+        "teardown::run_x86_exec_detach_gate();",
+    )
+    .len()
+        != 1
+    {
+        return Err(());
+    }
+    if code_offsets(
+        main,
+        &code_mask(main),
+        "teardown::run_x86_clone_admission_gate();",
     )
     .len()
         != 1
@@ -3814,22 +3983,58 @@ fn validate_process_page_table_runtime_oracle(sources: &[(String, String)]) -> R
     {
         return Err(());
     }
+    let exec_detach_wrapper = function_body(teardown, "run_x86_exec_detach_gate");
+    let detach_wrapper_mask = code_mask(exec_detach_wrapper);
+    if call_offsets(
+        exec_detach_wrapper,
+        &detach_wrapper_mask,
+        "exec_detach_oracle_test",
+    )
+    .len()
+        != 1
+        || !exec_detach_wrapper.contains("assert!(result.is_pass()")
+        || exec_detach_wrapper.contains("exec_detach_oracle:PASS")
+    {
+        return Err(());
+    }
+    let clone_wrapper = function_body(teardown, "run_x86_clone_admission_gate");
+    let clone_wrapper_mask = code_mask(clone_wrapper);
+    if call_offsets(
+        clone_wrapper,
+        &clone_wrapper_mask,
+        "clone_admission_oracle_test",
+    )
+    .len()
+        != 1
+        || !clone_wrapper.contains("assert!(result.is_pass()")
+        || clone_wrapper.contains("clone_admission_oracle:PASS")
+    {
+        return Err(());
+    }
     let harness = repo_text("docker/qemu/run-x86-boot-tests.sh");
     (harness.contains("page_table_custody_disposition_gate:PASS")
         && harness.contains("x86_retire_cohort:PASS")
         && harness.contains("x86_exec_cohort:PASS")
+        && harness.contains("exec_detach_oracle:PASS")
+        && harness.contains("clone_admission_oracle:PASS")
         && harness.contains("[PT_CUSTODY_COUNTERS:x86:recorded=14:no_proof=0:no_arch=0:terminated=1:undecided=1:retired=2:returned=14:lost=0:requeued=0]")
         && harness.contains("[PT_RETIRE_COHORT:x86:children=64:retired=65:returned=642:recorded=577:lost=0:no_arch=0:undecided=0:mid_retire=0:balance=0]")
         && harness.contains("[PT_EXEC_COHORT:x86:children=16:superseded=3:roots=64:returned=640:recorded=576:lost=0:leaf_recorded=192:leaf_released=192:leaf_returned=192:custody_refused=0:decref_unregistered=0:undecided=0:mid_retire=0:no_arch=0:balance=0]")
+        && harness.contains("[EXEC_DETACH_ORACLE:x86:bodies=2:fail_preserved=2:sibling_refused=0:success_detached=2:fresh_root=2:tgid_self=2:custody_balance=0:leaf_residual=16:stack_residual=149:old_group_reached_pre=2:old_group_missed_post=2:self_group_reached_post=2]")
+        && harness.contains("[CLONE_ADMISSION_ORACLE:x86:admitted=1:refused=2:creating_refused=1:published_admitted=2:balance=0]")
         && harness
             .matches("page_table_custody_disposition_gate:PASS")
             .count()
             == 2
         && harness.matches("x86_retire_cohort:PASS").count() == 2
         && harness.matches("x86_exec_cohort:PASS").count() == 2
+        && harness.matches("exec_detach_oracle:PASS").count() == 2
+        && harness.matches("clone_admission_oracle:PASS").count() == 2
         && harness.matches("PT_CUSTODY_COUNTERS:x86:").count() == 1
         && harness.matches("PT_RETIRE_COHORT:x86:").count() == 1
         && harness.matches("PT_EXEC_COHORT:x86:").count() == 1
+        && harness.matches("EXEC_DETACH_ORACLE:x86:").count() == 1
+        && harness.matches("CLONE_ADMISSION_ORACLE:x86:").count() == 1
         && harness.contains("grep -h -c 'Refusing to map'"))
         .then_some(())
         .ok_or(())
@@ -3983,8 +4188,8 @@ fn frame_ledger_return_and_initialization_ratchets_are_exact() {
     }
     check(
         &mut failures,
-        "COUNTER_COUNT is no longer 72",
-        provider.contains("pub const COUNTER_COUNT: usize = 72;"),
+        "COUNTER_COUNT is no longer 74",
+        provider.contains("pub const COUNTER_COUNT: usize = 74;"),
     );
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
@@ -3993,6 +4198,12 @@ fn frame_ledger_return_and_initialization_ratchets_are_exact() {
 fn current_teardown_bypass_surface_is_exact() {
     let sources = rust_sources_below("kernel/src");
     let mut failures = Vec::new();
+
+    record(
+        &mut failures,
+        "per-architecture clear_child_tid exit handling",
+        validate_clear_child_tid_exit_paths(&sources),
+    );
 
     record(
         &mut failures,
@@ -4485,7 +4696,7 @@ fn all_phase_zero_counters_have_registered_readers_and_honest_runtime_gates() {
         .filter_map(|rest| rest.strip_suffix(','))
         .map(str::to_owned)
         .collect();
-    assert_eq!(declarations.len(), 72);
+    assert_eq!(declarations.len(), 74);
     assert_eq!(
         readers, declarations,
         "every counter must have an inventory reader"
@@ -4544,6 +4755,208 @@ fn all_phase_zero_counters_have_registered_readers_and_honest_runtime_gates() {
     assert!(aarch64_gate.contains("cargo build --release --features boot_tests"));
     assert!(aarch64_gate.contains("--boot-tests-only"));
     assert!(aarch64_gate.contains("grep -q \"\\[BOOT_TESTS:PASS\\]\""));
+}
+
+#[test]
+fn exec_detach_oracle_pins_pre_exec_group_reachability_control() {
+    let provider = repo_text("kernel/src/tracing/providers/teardown.rs");
+    let oracle = function_body(&provider, "exec_detach_oracle_test");
+    let oracle_mask = code_mask(oracle);
+
+    assert_eq!(
+        identifier_offsets(oracle, &oracle_mask, "signal_thread_group_for_test").len(),
+        3,
+        "exec detach oracle must retain all three group-kill probes"
+    );
+    assert_eq!(
+        identifier_offsets(oracle, &oracle_mask, "take_pending_signal_for_test").len(),
+        5,
+        "exec detach oracle must retain all five signal-delivery observations"
+    );
+    assert_eq!(
+        code_offsets(oracle, &oracle_mask, "old_group_reached_pre += 1;").len(),
+        1,
+        "exec detach oracle must count the pre-exec reachability control exactly once"
+    );
+
+    let pre_exec_probe = oracle
+        .find("let old_group_pre_count =")
+        .expect("exec detach oracle pre-exec group-kill probe");
+    let failed_exec = oracle
+        .find("let failed_exec =")
+        .expect("exec detach oracle failed-exec arm");
+    let successful_exec = oracle
+        .find("let successful_exec =")
+        .expect("exec detach oracle successful-exec arm");
+    let post_exec_probe = oracle
+        .find("let old_group_post_count =")
+        .expect("exec detach oracle post-exec old-group probe");
+    assert!(
+        pre_exec_probe < failed_exec
+            && failed_exec < successful_exec
+            && successful_exec < post_exec_probe,
+        "exec detach group-kill controls are out of order"
+    );
+}
+
+#[test]
+fn creating_dispatch_refusal_oracle_is_registered_and_pinned() {
+    const FORMAT_STRING: &str = "[CREATING_DISPATCH_ORACLE:aarch64:injected=1:refused_via_dispatch=1:requeue_retried=1:dispatched_after_publish=1:balance=0:leaf_residual={}:user_stack_residual={}]";
+    const OBSERVED_ARGUMENTS: &str =
+        "\",\n        leaf_residual,\n        user_stack_residual\n    );";
+    const GATE_LITERAL: &str = "[CREATING_DISPATCH_ORACLE:aarch64:injected=1:refused_via_dispatch=1:requeue_retried=1:dispatched_after_publish=1:balance=0:leaf_residual=16:user_stack_residual=16]";
+
+    let provider = repo_text("kernel/src/tracing/providers/teardown.rs");
+    let oracle = function_body(&provider, "creating_dispatch_refusal_test");
+    let oracle_mask = code_mask(oracle);
+    assert_eq!(oracle.matches(FORMAT_STRING).count(), 1);
+    let marker = oracle
+        .find(FORMAT_STRING)
+        .expect("creating-dispatch observed marker format string");
+    assert!(
+        oracle[marker + FORMAT_STRING.len()..].starts_with(OBSERVED_ARGUMENTS),
+        "creating-dispatch residual marker fields are not fed by the measured variables"
+    );
+    let diag = oracle
+        .find("[CREATING_DISPATCH_ORACLE_DIAG:aarch64:")
+        .expect("creating-dispatch diagnostic marker");
+    for (constant, declaration, comparison) in [
+        (
+            "EXPECTED_LEAF_RESIDUAL",
+            "const EXPECTED_LEAF_RESIDUAL: u64 = 16;",
+            "if leaf_residual != EXPECTED_LEAF_RESIDUAL && first_failure.is_none() {",
+        ),
+        (
+            "EXPECTED_USER_STACK_RESIDUAL",
+            "const EXPECTED_USER_STACK_RESIDUAL: i64 = 16;",
+            "if user_stack_residual != EXPECTED_USER_STACK_RESIDUAL && first_failure.is_none() {",
+        ),
+    ] {
+        assert!(
+            oracle.contains(declaration),
+            "creating-dispatch residual constant changed for {constant}"
+        );
+        let comparison_offset = oracle
+            .find(comparison)
+            .expect("creating-dispatch residual comparison");
+        assert!(
+            comparison_offset < diag,
+            "creating-dispatch residual comparison moved after diagnostics for {constant}"
+        );
+        assert_eq!(
+            identifier_offsets(oracle, &oracle_mask, constant).len(),
+            2,
+            "creating-dispatch residual constant census changed for {constant}"
+        );
+    }
+    for (residual, expected) in [("leaf_residual", 4), ("user_stack_residual", 4)] {
+        assert_eq!(
+            identifier_offsets(oracle, &oracle_mask, residual).len(),
+            expected,
+            "creating-dispatch residual census changed for {residual}"
+        );
+    }
+    assert_eq!(
+        identifier_offsets(oracle, &oracle_mask, "spawn_on_cpu_for_test").len(),
+        1
+    );
+    assert_eq!(
+        identifier_offsets(oracle, &oracle_mask, "force_unpublished_for_test").len(),
+        1
+    );
+    assert!(identifier_offsets(oracle, &oracle_mask, "Thread::new_kernel").is_empty());
+    assert!(identifier_offsets(oracle, &oracle_mask, "set_main_thread").is_empty());
+    assert_eq!(
+        identifier_offsets(oracle, &oracle_mask, "CpuContext::new_kernel_thread").len(),
+        1
+    );
+    assert!(oracle.contains("process_thread.blocked_in_syscall = true;"));
+    assert!(identifier_offsets(oracle, &oracle_mask, "kernel_stack_allocation").is_empty());
+    assert!(identifier_offsets(oracle, &oracle_mask, "refuse_unpublished_dispatch").is_empty());
+    assert!(oracle.contains("if observed >= 2"));
+    assert!(oracle.contains("process.set_ready();"));
+    assert!(oracle.contains("process_thread.context.x1 = root;"));
+    assert!(oracle.contains("boot_root_reference_blockers(&reclaim)"));
+    assert!(oracle.contains("boot_restore_process_resources(process, reclaim)?"));
+    assert!(oracle.contains(
+        "creating-dispatch root retained a hardware/shadow/cached reference at retirement"
+    ));
+    for field in [
+        ":root_release_done={}",
+        ":probe_hw_clear={}",
+        ":probe_shadow_clear={}",
+        ":probe_cached_clear={}",
+        ":retire_hw_blocked={}",
+        ":retire_shadow_blocked={}",
+        ":retire_cached_blocked={}",
+    ] {
+        assert!(oracle.contains(field));
+    }
+    for (identifier, expected) in [
+        ("reclaim_progress_sample", 3),
+        ("nudge_retirement_grace_for_test", 2),
+        ("boot_reclaim_deferred_process_resources", 2),
+        ("reclaim_terminated_threads", 2),
+        ("boot_reclaim_queue_census", 1),
+    ] {
+        assert_eq!(
+            identifier_offsets(oracle, &oracle_mask, identifier).len(),
+            expected,
+            "creating-dispatch settle census changed for {identifier}"
+        );
+    }
+    let progress_sample = function_body(oracle, "reclaim_progress_sample");
+    let progress_sample_mask = code_mask(progress_sample);
+    for counter in [
+        "PT_RETIRE_BUDGET_REQUEUED",
+        "PT_TABLE_FRAMES_RETURNED",
+        "PT_ROOTS_RETIRED",
+        "TEARDOWN_RECLAIM",
+    ] {
+        assert_eq!(
+            identifier_offsets(progress_sample, &progress_sample_mask, counter).len(),
+            1,
+            "creating-dispatch settle counter census changed for {counter}"
+        );
+    }
+    assert!(oracle.contains("next_sample == settle_sample"));
+    assert!(oracle.contains("stable_rounds >= 3"));
+    assert_eq!(
+        identifier_offsets(oracle, &oracle_mask, "retirement_grace_target").len(),
+        1
+    );
+    assert_eq!(
+        identifier_offsets(oracle, &oracle_mask, "retirement_grace_elapsed").len(),
+        1
+    );
+    assert!(oracle.contains(":settle_rounds={}"));
+    assert!(oracle.contains("[TEST:process:creating_dispatch_refusal:PASS]"));
+
+    let probe_entry = function_body(&provider, "creating_dispatch_probe_entry");
+    assert!(probe_entry.contains("quiesce_probe_ttbr0_for_test(thread_id, root)"));
+    let context_switch = repo_text("kernel/src/arch_impl/aarch64/context_switch.rs");
+    let quiesce = function_body(&context_switch, "quiesce_probe_ttbr0_for_test");
+    assert!(quiesce.contains("super::ttbr0::quiesce_ttbr0_for_exit();"));
+    assert!(quiesce.contains("set_thread_cached_ttbr0(thread, 0);"));
+    assert!(quiesce.contains("local_ttbr0_root()"));
+    assert!(quiesce.contains("is_ttbr0_root_live_in_mask(root, 1 << cpu_id)"));
+
+    let registry = repo_text("kernel/src/test_framework/registry.rs");
+    let registry_mask = code_mask(&registry);
+    let registrations =
+        identifier_offsets(&registry, &registry_mask, "creating_dispatch_refusal_test");
+    assert_eq!(registrations.len(), 1);
+    let test_def = enclosing_test_def(&registry, &registry_mask, registrations[0])
+        .expect("creating-dispatch refusal registry entry");
+    assert!(test_def.contains("name: \"creating_dispatch_refusal\""));
+    assert!(test_def.contains("arch: Arch::Aarch64"));
+    assert!(test_def.contains("stage: TestStage::PostScheduler"));
+
+    let gate = repo_text("docker/qemu/run-aarch64-full-test.sh");
+    assert_eq!(gate.matches(GATE_LITERAL).count(), 1);
+    assert!(
+        gate.contains("FAIL_REASON=\"Phase 1: missing creating-dispatch refusal oracle marker\"")
+    );
 }
 
 #[test]
@@ -5117,6 +5530,22 @@ fn deliberately_broken_variants_fail_the_ratchet() {
         "fn rogue_exit(pm: &mut ProcessManager, pid: ProcessId) { pm.exit_process(pid, 0); }",
     );
     assert!(validate_exit_process_entry_points(&broken_exit).is_err());
+
+    let aarch64_exit = source(
+        &sources,
+        "kernel/src/arch_impl/aarch64/syscall_entry.rs",
+    );
+    let raw_clear = aarch64_exit.replacen(
+        "let _ = crate::syscall::userptr::copy_to_user(tid_addr as *mut u32, &zero);",
+        "unsafe { core::ptr::write_volatile(tid_addr as *mut u32, zero); }",
+        1,
+    );
+    let raw_clear = with_replaced_source(
+        &sources,
+        "kernel/src/arch_impl/aarch64/syscall_entry.rs",
+        raw_clear,
+    );
+    assert!(validate_clear_child_tid_exit_paths(&raw_clear).is_err());
 
     let broken_by_pid = with_synthetic_source(
         &sources,
@@ -6750,12 +7179,21 @@ fn validate_x86_direct_teardown_gates(
     let exec_cohort_call = kernel_main
         .find("teardown::run_x86_exec_cohort_gate();")
         .ok_or("missing direct x86 exec cohort call")?;
+    let exec_detach_call = kernel_main
+        .find("teardown::run_x86_exec_detach_gate();")
+        .ok_or("missing direct x86 exec detach call")?;
+    let clone_admission_call = kernel_main
+        .find("teardown::run_x86_clone_admission_gate();")
+        .ok_or("missing direct x86 clone admission call")?;
     if !(retirement_call < progress_call
         && progress_call < cohort_call
-        && cohort_call < exec_cohort_call)
+        && cohort_call < exec_cohort_call
+        && exec_cohort_call < exec_detach_call
+        && exec_detach_call < clone_admission_call)
         || !kernel_main.contains("The state-free fence check runs first")
         || !kernel_main.contains("The retire cohort follows")
-        || !kernel_main.contains("the exec cohort runs last because")
+        || !kernel_main.contains("the exec cohort runs last among page-table cohorts because")
+        || !kernel_main.contains("The clone admission gate follows immediately")
     {
         return Err("x86 teardown-gate ordering or rationale changed");
     }
@@ -6806,6 +7244,55 @@ fn validate_x86_direct_teardown_gates(
         || cohort_wrapper.contains("[TEST:process:x86_retire_cohort:PASS]")
     {
         return Err("cohort PASS producer is no longer body-only");
+    }
+    let exec_detach_body = function_body(teardown, "exec_detach_oracle_test");
+    let exec_detach_wrapper = function_body(teardown, "run_x86_exec_detach_gate");
+    if call_offsets(
+        exec_detach_wrapper,
+        &code_mask(exec_detach_wrapper),
+        "exec_detach_oracle_test",
+    )
+    .len()
+        != 1
+        || !exec_detach_wrapper.contains("assert!(result.is_pass()")
+        || exec_detach_body
+            .matches("[TEST:process:exec_detach_oracle:PASS]")
+            .count()
+            != 1
+        || exec_detach_wrapper.contains("[TEST:process:exec_detach_oracle:PASS]")
+    {
+        return Err("exec detach PASS producer is no longer body-only");
+    }
+    let clone_body = function_body(teardown, "clone_admission_oracle_test");
+    let clone_wrapper = function_body(teardown, "run_x86_clone_admission_gate");
+    if call_offsets(
+        clone_wrapper,
+        &code_mask(clone_wrapper),
+        "clone_admission_oracle_test",
+    )
+    .len()
+        != 1
+        || !clone_wrapper.contains("assert!(result.is_pass()")
+        || clone_body
+            .matches("[TEST:process:clone_admission_oracle:PASS]")
+            .count()
+            != 1
+        || clone_wrapper.contains("[TEST:process:clone_admission_oracle:PASS]")
+    {
+        return Err("clone admission PASS producer is no longer body-only");
+    }
+    if harness
+        .matches("TEST:process:clone_admission_oracle:PASS")
+        .count()
+        != 2
+    {
+        return Err("x86 harness does not poll and count clone admission PASS");
+    }
+    let clone_count = harness
+        .find("grep -h -c '\\[TEST:process:clone_admission_oracle:PASS\\]'")
+        .ok_or("x86 harness lost clone admission exact PASS count")?;
+    if !harness[clone_count..].contains("-eq 1") {
+        return Err("x86 harness weakened clone admission exactly-once PASS count");
     }
     Ok(())
 }
@@ -6889,7 +7376,8 @@ fn validate_reclaim_progress_topology_arms(process_task: &str) -> Result<(), &'s
         "age_63.epochs[age_advance_cpu]=age_63.epochs[age_advance_cpu].wrapping_add(63);",
         "boot_reclaim_locations(age_pid)!=(false,true)",
         "age_64.epochs[age_advance_cpu]=age_64.epochs[age_advance_cpu].wrapping_add(1);",
-        "RECLAIM_UNPARKED_AGE.aggregate().saturating_sub(age_before)!=1",
+        "letage_unpark_delta=trace::RECLAIM_UNPARKED_AGE.aggregate().saturating_sub(age_before);",
+        "ifage_unpark_delta!=1",
     ] {
         if !multi.contains(required) {
             return Err("reclaim gate multi-CPU age proposition was weakened");
@@ -6903,7 +7391,8 @@ fn validate_reclaim_progress_topology_arms(process_task: &str) -> Result<(), &'s
         "boot_push_parked(epoch_pid,epoch_record);",
         "epoch_advanced.epochs[epoch_cpu]=epoch_advanced.epochs[epoch_cpu].wrapping_add(1);",
         "unpark_sweep_with_snapshot(epoch_advanced,epoch_record.row_epoch_at_park);",
-        "RECLAIM_UNPARKED_EPOCH.aggregate().saturating_sub(epoch_before)!=1",
+        "letsingle_epoch_delta=trace::RECLAIM_UNPARKED_EPOCH.aggregate().saturating_sub(epoch_before);",
+        "ifsingle_epoch_delta!=1",
         "RECLAIM_UNPARKED_AGE.aggregate()!=age_before",
         "boot_reclaim_locations(epoch_pid)!=(true,false)",
     ] {
@@ -6925,6 +7414,27 @@ fn reclaim_progress_park_unpark_arms_follow_cpu_topology() {
 }
 
 #[test]
+fn oversized_reclaim_failures_name_every_root_proof_blocker() {
+    let process_task = repo_text("kernel/src/task/process_task.rs");
+    let gate = function_body(&process_task, "reclaim_progress_gate_test");
+
+    for field in [
+        ":root_proof_blocked_epoch_delta={}",
+        ":root_proof_blocked_hw_delta={}",
+        ":root_proof_blocked_shadow_delta={}",
+        ":root_proof_blocked_cached_delta={}",
+        ":root_proof_blocked_live_row_delta={}",
+        ":oversized_locations={:?}",
+    ] {
+        assert!(gate.contains(field), "oversized diagnostic lost {field}");
+    }
+    assert_eq!(gate.matches("fail_oversized_value!(").count(), 14);
+    assert_eq!(gate.matches("fail_oversized_debug!(").count(), 2);
+    assert!(gate.contains("let first_locations = boot_reclaim_locations(oversized_pid);"));
+    assert!(gate.contains("let final_locations = boot_reclaim_locations(oversized_pid);"));
+}
+
+#[test]
 fn reclaim_progress_topology_validator_rejects_arch_selection_and_a_skipped_counter() {
     let process_task = repo_text("kernel/src/task/process_task.rs");
     let arch_selected = process_task.replacen(
@@ -6935,9 +7445,9 @@ fn reclaim_progress_topology_validator_rejects_arch_selection_and_a_skipped_coun
     assert!(validate_reclaim_progress_topology_arms(&arch_selected).is_err());
 
     let skipped_counter = process_task.replacen(
-        "trace::RECLAIM_UNPARKED_EPOCH\n            .aggregate()\n            .saturating_sub(epoch_before)\n            != 1",
-        "trace::RECLAIM_UNPARKED_EPOCH.aggregate() == epoch_before",
-        2,
+        "let single_epoch_delta = trace::RECLAIM_UNPARKED_EPOCH\n            .aggregate()\n            .saturating_sub(epoch_before);",
+        "let single_epoch_delta = 1;",
+        1,
     );
     assert!(validate_reclaim_progress_topology_arms(&skipped_counter).is_err());
 }
@@ -6957,10 +7467,23 @@ fn validate_single_gate_producer_per_arch(main: &str, registry: &str) -> Result<
             "reclaim_progress_gate_test",
             "process_task::run_x86_reclaim_progress_gate();",
         ),
+        (
+            "exec_detach_oracle_test",
+            "teardown::run_x86_exec_detach_gate();",
+        ),
+        (
+            "clone_admission_oracle_test",
+            "teardown::run_x86_clone_admission_gate();",
+        ),
     ] {
         let registration = format!(
             "func: crate::{}",
-            if function == "fork_exit_defer_reclaim_pairing_test" {
+            if matches!(
+                function,
+                "fork_exit_defer_reclaim_pairing_test"
+                    | "exec_detach_oracle_test"
+                    | "clone_admission_oracle_test"
+            ) {
                 format!("tracing::providers::teardown::{function}")
             } else {
                 format!("task::process_task::{function}")

@@ -797,6 +797,22 @@ pub static TTBR_PROCESS_GONE_COUNT: AtomicU64 = AtomicU64::new(0);
 /// (PROCESS_MANAGER lock was contended during TTBR0 lookup).
 pub static TTBR_PM_LOCK_BUSY_COUNT: AtomicU64 = AtomicU64::new(0);
 
+static USERSPACE_DISPATCH_CREATING_REFUSED: AtomicU64 = AtomicU64::new(0);
+
+#[inline]
+pub(crate) fn refuse_unpublished_dispatch(process: &crate::process::process::Process) -> bool {
+    if !process.is_unpublished() {
+        return false;
+    }
+    USERSPACE_DISPATCH_CREATING_REFUSED.fetch_add(1, Ordering::Relaxed);
+    true
+}
+
+#[cfg(feature = "boot_tests")]
+pub fn userspace_dispatch_creating_refused() -> u64 {
+    USERSPACE_DISPATCH_CREATING_REFUSED.load(Ordering::Relaxed)
+}
+
 #[repr(align(64))]
 struct CacheLineAligned<T>(T);
 
@@ -2230,7 +2246,11 @@ fn inline_ret_dispatch_info_if_ready(
                         switch_ttbr0_if_needed(thread_id);
                         true
                     }
-                    TtbrResult::PmLockBusy | TtbrResult::ProcessGone => false,
+                    // An unpublished row and a contended PM transaction are both
+                    // temporary; retry either one on a later tick.
+                    TtbrResult::PmLockBusy
+                    | TtbrResult::RowUnpublished
+                    | TtbrResult::ProcessGone => false,
                 }
             } else {
                 true
@@ -2248,16 +2268,44 @@ fn inline_ret_dispatch_info_if_ready(
 }
 
 #[inline(always)]
-fn cache_thread_ttbr0(thread: &mut Thread) {
+fn set_thread_cached_ttbr0(thread: &mut Thread, ttbr0: u64) {
     if thread.owner_pid.is_none() {
         return;
     }
 
+    thread.cached_ttbr0 = ttbr0;
+}
+
+#[inline(always)]
+fn cache_thread_ttbr0(thread: &mut Thread) {
     let ttbr0: u64;
     unsafe {
         core::arch::asm!("mrs {}, ttbr0_el1", out(reg) ttbr0, options(nomem, nostack));
     }
-    thread.cached_ttbr0 = ttbr0;
+    set_thread_cached_ttbr0(thread, ttbr0);
+}
+
+/// Quiesce the creating-dispatch probe on the CPU that actually installed its
+/// process root, clear the scheduler copy, and report the three reference legs
+/// that deferred retirement relies on. This mirrors the real syscall-exit
+/// transition instead of letting the test-only kernel entry bypass it.
+#[cfg(feature = "boot_tests")]
+pub(crate) fn quiesce_probe_ttbr0_for_test(thread_id: u64, root: u64) -> (bool, bool, bool) {
+    super::ttbr0::quiesce_ttbr0_for_exit();
+
+    let cached_clear = crate::task::scheduler::with_scheduler(|scheduler| {
+        let Some(thread) = scheduler.get_thread_mut(thread_id) else {
+            return false;
+        };
+        set_thread_cached_ttbr0(thread, 0);
+        !super::ttbr0::roots_match(thread.cached_ttbr0, root)
+    })
+    .unwrap_or(false);
+    let hardware_clear = !super::ttbr0::roots_match(super::ttbr0::local_ttbr0_root(), root);
+    let cpu_id = Aarch64PerCpu::cpu_id() as usize;
+    let shadow_clear = !super::ttbr0::is_ttbr0_root_live_in_mask(root, 1 << cpu_id);
+
+    (hardware_clear, shadow_clear, cached_clear)
 }
 
 /// Save userspace context — called inside scheduler lock hold.
@@ -3152,8 +3200,12 @@ fn dispatch_thread_locked(
                 TtbrResult::Ok => {
                     switch_ttbr0_if_needed(thread_id);
                 }
-                TtbrResult::PmLockBusy => {
-                    TTBR_PM_LOCK_BUSY_COUNT.fetch_add(1, Ordering::Relaxed);
+                temporary @ (TtbrResult::PmLockBusy | TtbrResult::RowUnpublished) => {
+                    if temporary == TtbrResult::PmLockBusy {
+                        TTBR_PM_LOCK_BUSY_COUNT.fetch_add(1, Ordering::Relaxed);
+                    }
+                    // Both failures are temporary: PM may become available or the
+                    // row publisher may finish before the next timer tick.
                     // PM lock still held after retries — redirect to idle and requeue.
                     // CRITICAL: Update cpu_state BEFORE requeue_thread_after_save,
                     // because requeue checks cpu_state[].current_thread and silently
@@ -3354,8 +3406,12 @@ fn dispatch_thread_locked(
             TtbrResult::Ok => {
                 switch_ttbr0_if_needed(thread_id);
             }
-            TtbrResult::PmLockBusy => {
-                TTBR_PM_LOCK_BUSY_COUNT.fetch_add(1, Ordering::Relaxed);
+            temporary @ (TtbrResult::PmLockBusy | TtbrResult::RowUnpublished) => {
+                if temporary == TtbrResult::PmLockBusy {
+                    TTBR_PM_LOCK_BUSY_COUNT.fetch_add(1, Ordering::Relaxed);
+                }
+                // Both failures are temporary: PM may become available or the
+                // row publisher may finish before the next timer tick.
                 // PM lock still held after retries — redirect to idle and requeue.
                 // CRITICAL: Update cpu_state BEFORE requeue_thread_after_save,
                 // because requeue checks cpu_state[].current_thread and silently
@@ -4773,6 +4829,8 @@ enum TtbrResult {
     Ok,
     /// PM lock contended — temporary failure, safe to retry next tick.
     PmLockBusy,
+    /// The process row is still being published — temporary, retry next tick.
+    RowUnpublished,
     /// Process not found or has no page table — thread is orphaned.
     ProcessGone,
 }
@@ -4780,8 +4838,9 @@ enum TtbrResult {
 /// Determine and set the next TTBR0 value for a userspace thread.
 ///
 /// Returns `TtbrResult::Ok` on success, `PmLockBusy` if the PM lock is held
-/// (temporary, retry later), or `ProcessGone` if the thread's process no
-/// longer exists (permanent — thread should be terminated).
+/// (temporary, retry later), `RowUnpublished` if its process row has not
+/// finished publication (also temporary), or `ProcessGone` if the thread's
+/// process no longer exists (permanent — thread should be terminated).
 ///
 /// CRITICAL: Uses try_manager() (non-blocking) instead of manager() to prevent
 /// an AB-BA deadlock between PROCESS_MANAGER and SCHEDULER locks.
@@ -4796,6 +4855,10 @@ fn set_next_ttbr0_for_thread(thread_id: u64) -> TtbrResult {
 
     let next_ttbr0 = if let Some(ref manager) = *manager_guard {
         if let Some((_pid, process)) = manager.find_process_by_thread(thread_id) {
+            if refuse_unpublished_dispatch(process) {
+                drop(manager_guard);
+                return TtbrResult::RowUnpublished;
+            }
             process
                 .page_table
                 .as_ref()

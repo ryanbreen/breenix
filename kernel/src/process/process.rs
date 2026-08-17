@@ -352,6 +352,38 @@ impl Process {
         self.state = ProcessState::Ready;
     }
 
+    /// Attach the main thread while the row is still `Creating`. The row is only
+    /// marked `Ready` once it has been published into the manager, so no runnable
+    /// thread can ever refer to a row that does not yet exist.
+    pub fn attach_main_thread_unpublished(&mut self, thread: Thread) {
+        self.main_thread = Some(thread);
+    }
+
+    /// A row may acquire a new CLONE_VM group member only while it is live. A
+    /// `Creating` row has not finished publication (both exits from `Creating` -
+    /// `set_main_thread` and `set_ready` - write `Ready`), and a `Terminated` row is
+    /// already leaving; neither may gain a member behind the publisher's back.
+    pub fn admits_clone(&self) -> bool {
+        match self.state {
+            ProcessState::Creating => false,
+            ProcessState::Ready | ProcessState::Running | ProcessState::Blocked => true,
+            ProcessState::Terminated(_) => false,
+        }
+    }
+
+    /// A row whose publication has not completed must never have its address space
+    /// armed. Cheap field read: no lock, no allocation, no formatting, safe to call
+    /// from the dispatch path.
+    pub fn is_unpublished(&self) -> bool {
+        match self.state {
+            ProcessState::Creating => true,
+            ProcessState::Ready => false,
+            ProcessState::Running => false,
+            ProcessState::Blocked => false,
+            ProcessState::Terminated(_) => false,
+        }
+    }
+
     /// Mark process as running
     pub fn set_running(&mut self) {
         self.state = ProcessState::Running;
@@ -366,6 +398,11 @@ impl Process {
     /// Mark process as ready
     pub fn set_ready(&mut self) {
         self.state = ProcessState::Ready;
+    }
+
+    #[cfg(feature = "boot_tests")]
+    pub fn force_unpublished_for_test(&mut self) {
+        self.state = ProcessState::Creating;
     }
 
     /// Terminate the process

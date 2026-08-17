@@ -1076,6 +1076,20 @@ impl ProcessManager {
         ProcessId::new(self.next_pid.fetch_add(1, Ordering::SeqCst))
     }
 
+    /// Clone admission (tranche-2 P3 / DESIGN AC-7). The parent row's lifecycle is
+    /// examined inside the same process-manager transaction that publishes the
+    /// child, so no snapshot of it is ever carried across a guard drop. A missing
+    /// parent refuses for the same reason a dying one does.
+    pub fn admit_clone_into(&self, parent_pid: ProcessId) -> bool {
+        let admitted = self
+            .processes
+            .get(&parent_pid)
+            .map(Process::admits_clone)
+            .unwrap_or(false);
+        crate::tracing::providers::teardown::record_clone_admission(admitted);
+        admitted
+    }
+
     /// Insert a fully-constructed process into the manager
     pub fn insert_process(&mut self, pid: ProcessId, process: Process) {
         self.processes.insert(pid, process);
@@ -2621,6 +2635,14 @@ impl ProcessManager {
 
         // Replace the page table with the new one containing the loaded program
         process.page_table = Some(new_page_table.publish());
+        // Exec detach (tranche-2 P3 / DESIGN AC-6): the row now owns a brand-new
+        // address-space root, so it is no longer a CLONE_VM member of whatever
+        // thread group it was cloned into. Both fields are reset here — after
+        // every fallible step and before the process-manager guard is released —
+        // so that any exec that fails earlier leaves them byte-identical to their
+        // pre-exec values. The live-sibling guard above is unrelated and stays.
+        process.inherited_cr3 = None;
+        process.thread_group_id = None;
 
         // Replace the stack
         process.stack = Some(Box::new(new_stack));
@@ -2945,6 +2967,14 @@ impl ProcessManager {
 
         // Replace the page table with the new one
         process.page_table = Some(new_page_table.publish());
+        // Exec detach (tranche-2 P3 / DESIGN AC-6): the row now owns a brand-new
+        // address-space root, so it is no longer a CLONE_VM member of whatever
+        // thread group it was cloned into. Both fields are reset here — after
+        // every fallible step and before the process-manager guard is released —
+        // so that any exec that fails earlier leaves them byte-identical to their
+        // pre-exec values. The live-sibling guard above is unrelated and stays.
+        process.inherited_cr3 = None;
+        process.thread_group_id = None;
         process.stack = Some(Box::new(new_stack));
         process.user_stack_top = USER_STACK_TOP;
         process.user_stack_bottom = USER_STACK_TOP - USER_STACK_SIZE as u64;
@@ -3222,6 +3252,14 @@ impl ProcessManager {
         process.fd_table.close_cloexec();
 
         process.page_table = Some(new_page_table.publish());
+        // Exec detach (tranche-2 P3 / DESIGN AC-6): the row now owns a brand-new
+        // address-space root, so it is no longer a CLONE_VM member of whatever
+        // thread group it was cloned into. Both fields are reset here — after
+        // every fallible step and before the process-manager guard is released —
+        // so that any exec that fails earlier leaves them byte-identical to their
+        // pre-exec values. The live-sibling guard above is unrelated and stays.
+        process.inherited_cr3 = None;
+        process.thread_group_id = None;
         let new_ttbr0 = process
             .page_table
             .as_ref()
@@ -3532,6 +3570,14 @@ impl ProcessManager {
 
         // Replace the page table with the new one containing the loaded program
         process.page_table = Some(new_page_table.publish());
+        // Exec detach (tranche-2 P3 / DESIGN AC-6): the row now owns a brand-new
+        // address-space root, so it is no longer a CLONE_VM member of whatever
+        // thread group it was cloned into. Both fields are reset here — after
+        // every fallible step and before the process-manager guard is released —
+        // so that any exec that fails earlier leaves them byte-identical to their
+        // pre-exec values. The live-sibling guard above is unrelated and stays.
+        process.inherited_cr3 = None;
+        process.thread_group_id = None;
         let new_ttbr0 = process
             .page_table
             .as_ref()

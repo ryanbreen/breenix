@@ -328,23 +328,17 @@ fn sys_exit_aarch64(exit_code: i32) -> u64 {
     if let Some(thread_id) = crate::task::scheduler::current_thread_id() {
         // Handle clear_child_tid for clone threads (CLONE_CHILD_CLEARTID).
         // Extract info under PM lock, but do NOT log while holding it.
-        let (pid_for_log, name_for_log, futex_info) = {
+        let (pid_for_log, name_for_log, clear_child_tid) = {
             let manager_guard = crate::process::manager();
             if let Some(ref manager) = *manager_guard {
                 if let Some((_pid, process)) = manager.find_process_by_thread(thread_id) {
                     let pid_val = _pid.as_u64();
                     let name_val = process.name.clone();
-                    let futex = process.clear_child_tid.map(|tid_addr| {
+                    let clear_child_tid = process.clear_child_tid.map(|tid_addr| {
                         let tg_id = process.thread_group_id.unwrap_or(pid_val);
-                        unsafe {
-                            let ptr = tid_addr as *mut u32;
-                            if !ptr.is_null() && tid_addr < 0x7FFF_FFFF_FFFF {
-                                core::ptr::write_volatile(ptr, 0);
-                            }
-                        }
                         (tg_id, tid_addr)
                     });
-                    (Some(pid_val), Some(name_val), futex)
+                    (Some(pid_val), Some(name_val), clear_child_tid)
                 } else {
                     (None, None, None)
                 }
@@ -353,8 +347,9 @@ fn sys_exit_aarch64(exit_code: i32) -> u64 {
             }
         }; // PM lock dropped here
 
-        // Futex wake outside PM lock
-        if let Some((tg_id, tid_addr)) = futex_info {
+        if let Some((tg_id, tid_addr)) = clear_child_tid {
+            let zero = 0u32;
+            let _ = crate::syscall::userptr::copy_to_user(tid_addr as *mut u32, &zero);
             crate::syscall::futex::futex_wake_for_thread_group(tg_id, tid_addr, u32::MAX);
         }
 
@@ -1006,6 +1001,38 @@ fn sys_fork_aarch64(frame: &Aarch64ExceptionFrame) -> u64 {
 // Exec syscall implementation for ARM64
 // =============================================================================
 
+#[inline(always)]
+fn read_ttbr0_for_exec() -> u64 {
+    let ttbr0: u64;
+    unsafe {
+        core::arch::asm!("mrs {}, ttbr0_el1", out(reg) ttbr0, options(nomem, nostack));
+    }
+    ttbr0
+}
+
+#[inline(always)]
+fn restore_ttbr0_after_failed_exec(ttbr0: u64) {
+    debug_assert_ne!(ttbr0, 0);
+    if ttbr0 == 0 {
+        return;
+    }
+
+    unsafe {
+        core::arch::asm!(
+            "dsb ishst",
+            "msr ttbr0_el1, {}",
+            "isb",
+            "tlbi vmalle1is",
+            "dsb ish",
+            "isb",
+            in(reg) ttbr0,
+            options(nomem, nostack)
+        );
+        Aarch64PerCpu::set_saved_process_cr3(ttbr0);
+        Aarch64PerCpu::set_next_cr3(0);
+    }
+}
+
 /// sys_exec for ARM64 - Replace current process with a new program
 ///
 /// This function replaces the current process's address space with a new program.
@@ -1178,6 +1205,7 @@ fn sys_exec_aarch64(
 
     let result = without_interrupts(|| {
         let mut manager_guard = crate::process::manager();
+        let previous_ttbr0;
         let exec_result = {
             let Some(manager) = manager_guard.as_mut() else {
                 log::error!("sys_exec_aarch64: Process manager not available");
@@ -1189,9 +1217,10 @@ fn sys_exec_aarch64(
 
             // The manager may take the old process root after its final
             // fallible setup step. Install the shared kernel TTBR0 first so
-            // exec cannot retire the root currently active on this CPU. On an
-            // error, the unchanged saved_process_cr3 restores the old root in
-            // the normal syscall epilogue.
+            // exec cannot retire the root currently active on this CPU. Capture
+            // the exact hardware value so every error can roll this temporary
+            // transition back before the syscall handler returns.
+            previous_ttbr0 = read_ttbr0_for_exec();
             super::switch_ttbr0_to_kernel();
 
             manager.exec_process_with_argv(current_pid, elf_data, Some(&program_name), &argv_slices)
@@ -1204,6 +1233,7 @@ fn sys_exec_aarch64(
                 value
             }
             Err(e) => {
+                restore_ttbr0_after_failed_exec(previous_ttbr0);
                 log::error!("sys_exec_aarch64: Failed to exec process: {}", e);
                 // No receipt was produced, so there is nothing to commit; the guard drops on
                 // return from this closure.

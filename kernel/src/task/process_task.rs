@@ -1211,12 +1211,7 @@ impl BootReclaimTestGuard {
         BOOT_RECLAIM_TEST_OWNER
             .compare_exchange(0, owner, Ordering::AcqRel, Ordering::Acquire)
             .map_err(|_| "another reclaim injection is active")?;
-        let live_empty =
-            crate::arch_without_interrupts(|| PENDING_PROCESS_RECLAIMS.lock().is_empty());
-        let parked_empty =
-            crate::arch_without_interrupts(|| PARKED_PROCESS_RECLAIMS.lock().is_empty());
-        let queues_empty = live_empty && parked_empty;
-        if !queues_empty {
+        if boot_reclaim_queue_census() != (0, 0) {
             BOOT_RECLAIM_TEST_OWNER.store(0, Ordering::Release);
             return Err("reclaim queues were not quiescent before P1 gate");
         }
@@ -1416,6 +1411,48 @@ pub(crate) fn boot_reclaim_locations(pid: u64) -> (bool, bool) {
     (live, parked)
 }
 
+/// Observe the hardware, per-CPU shadow, and scheduler-cache legs consulted by
+/// `RootProof` for a detached receipt. The creating-dispatch oracle uses this
+/// before it removes the row or publishes the receipt, so its fixture cannot
+/// make a still-referenced root available to a later boot test.
+#[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
+pub(crate) fn boot_root_reference_blockers(reclaim: &PendingProcessReclaim) -> (bool, bool, bool) {
+    let snapshot = scheduler::RetirementSnapshot::capture();
+    (
+        reclaim.any_root_matches(local_hardware_root()),
+        shadow_root_is_live(reclaim, snapshot.online_mask),
+        reclaim.cached_root_is_live(),
+    )
+}
+
+/// Put a detached boot-test receipt back into its process row when a
+/// pre-retirement proof fails. Returning ownership is safer than dropping an
+/// undecided page table or publishing a root that is still referenced.
+#[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
+pub(crate) fn boot_restore_process_resources(
+    process: &mut crate::process::Process,
+    mut reclaim: PendingProcessReclaim,
+) -> Result<(), &'static str> {
+    if reclaim.pid != process.id.as_u64()
+        || process.page_table.is_some()
+        || !process.pending_old_page_tables.is_empty()
+    {
+        abandon_unqueued_reclaim(reclaim);
+        return Err("creating-dispatch detached-root restoration was not exclusive");
+    }
+    process.page_table = reclaim.page_table.take();
+    process.pending_old_page_tables = core::mem::take(&mut reclaim.old_page_tables);
+    Ok(())
+}
+
+#[cfg(feature = "boot_tests")]
+/// Return the live and parked deferred-reclaim queue lengths for boot-test quiescence proofs.
+pub(crate) fn boot_reclaim_queue_census() -> (usize, usize) {
+    let live = crate::arch_without_interrupts(|| PENDING_PROCESS_RECLAIMS.lock().len());
+    let parked = crate::arch_without_interrupts(|| PARKED_PROCESS_RECLAIMS.lock().len());
+    (live, parked)
+}
+
 #[cfg(feature = "boot_tests")]
 fn boot_force_blocker(pid: u64, blocker: Option<RootBlocker>) {
     BOOT_RECLAIM_FORCED_PID.store(pid, Ordering::Release);
@@ -1512,8 +1549,8 @@ pub fn retirement_fence_gate_test() -> crate::test_framework::registry::TestResu
     TestResult::Pass
 }
 
-#[cfg(all(feature = "boot_tests", target_arch = "x86_64"))]
-fn x86_root_blocker_counters() -> [u64; 5] {
+#[cfg(feature = "boot_tests")]
+fn root_blocker_counters() -> [u64; 5] {
     use crate::tracing::providers::teardown as trace;
 
     [
@@ -1538,7 +1575,7 @@ fn x86_forced_root_proof_case(pid: u64, blocker: RootBlocker) -> Result<(), &'st
         }
     };
     let (reclaim, recorded, _) = boot_page_table_reclaim(pid)?;
-    let blocker_before = x86_root_blocker_counters();
+    let blocker_before = root_blocker_counters();
     let returned_before = trace::PT_TABLE_FRAMES_RETURNED.aggregate();
     let retired_before = trace::PT_ROOTS_RETIRED.aggregate();
     let lost_before = trace::PT_RETIRE_FRAMES_LOST.aggregate();
@@ -1551,7 +1588,7 @@ fn x86_forced_root_proof_case(pid: u64, blocker: RootBlocker) -> Result<(), &'st
 
     let mut blocked_expected = blocker_before;
     blocked_expected[blocker_index] += 1;
-    if x86_root_blocker_counters() != blocked_expected
+    if root_blocker_counters() != blocked_expected
         || trace::PT_TABLE_FRAMES_RETURNED.aggregate() != returned_before
         || trace::PT_ROOTS_RETIRED.aggregate() != retired_before
         || trace::PT_RETIRE_FRAMES_LOST.aggregate() != lost_before
@@ -1562,7 +1599,7 @@ fn x86_forced_root_proof_case(pid: u64, blocker: RootBlocker) -> Result<(), &'st
     }
 
     boot_reclaim_deferred_process_resources();
-    if x86_root_blocker_counters() != blocked_expected
+    if root_blocker_counters() != blocked_expected
         || trace::PT_TABLE_FRAMES_RETURNED.aggregate() != returned_before + recorded as u64 + 1
         || trace::PT_ROOTS_RETIRED.aggregate() != retired_before + 1
         || trace::PT_RETIRE_FRAMES_LOST.aggregate() != lost_before
@@ -1579,7 +1616,7 @@ fn x86_shadow_proof_case(pid: u64) -> Result<(), &'static str> {
     use crate::tracing::providers::teardown as trace;
 
     let (reclaim, recorded, root) = boot_page_table_reclaim(pid)?;
-    let blocker_before = x86_root_blocker_counters();
+    let blocker_before = root_blocker_counters();
     let returned_before = trace::PT_TABLE_FRAMES_RETURNED.aggregate();
     let retired_before = trace::PT_ROOTS_RETIRED.aggregate();
     let lost_before = trace::PT_RETIRE_FRAMES_LOST.aggregate();
@@ -1592,7 +1629,7 @@ fn x86_shadow_proof_case(pid: u64) -> Result<(), &'static str> {
     crate::per_cpu::set_next_cr3(previous_next);
     let mut next_expected = blocker_before;
     next_expected[2] += 1;
-    if x86_root_blocker_counters() != next_expected
+    if root_blocker_counters() != next_expected
         || trace::PT_TABLE_FRAMES_RETURNED.aggregate() != returned_before
         || trace::PT_ROOTS_RETIRED.aggregate() != retired_before
         || trace::PT_RETIRE_FRAMES_LOST.aggregate() != lost_before
@@ -1612,7 +1649,7 @@ fn x86_shadow_proof_case(pid: u64) -> Result<(), &'static str> {
     }
     let mut saved_expected = blocker_before;
     saved_expected[2] += 2;
-    if x86_root_blocker_counters() != saved_expected
+    if root_blocker_counters() != saved_expected
         || trace::PT_TABLE_FRAMES_RETURNED.aggregate() != returned_before
         || trace::PT_ROOTS_RETIRED.aggregate() != retired_before
         || trace::PT_RETIRE_FRAMES_LOST.aggregate() != lost_before
@@ -1623,7 +1660,7 @@ fn x86_shadow_proof_case(pid: u64) -> Result<(), &'static str> {
     }
 
     boot_reclaim_deferred_process_resources();
-    if x86_root_blocker_counters() != saved_expected
+    if root_blocker_counters() != saved_expected
         || trace::PT_TABLE_FRAMES_RETURNED.aggregate() != returned_before + recorded as u64 + 1
         || trace::PT_ROOTS_RETIRED.aggregate() != retired_before + 1
         || trace::PT_RETIRE_FRAMES_LOST.aggregate() != lost_before
@@ -1643,6 +1680,82 @@ pub fn reclaim_progress_gate_test() -> crate::test_framework::registry::TestResu
     use crate::tracing::providers::teardown as trace;
     #[cfg(target_arch = "x86_64")]
     use x86_64::VirtAddr;
+
+    macro_rules! fail_gate_value {
+        ($stage:literal, $quantity:literal, $observed:expr, $expected:expr, $reason:literal) => {{
+            let observed = $observed;
+            let expected = $expected;
+            crate::serial_println!(
+                "[RECLAIM_PROGRESS_GATE_DIAG:{}:{}:observed={}:expected={}:difference={}]",
+                $stage,
+                $quantity,
+                observed,
+                expected,
+                (observed as u128).abs_diff(expected as u128)
+            );
+            return TestResult::Fail($reason);
+        }};
+    }
+
+    macro_rules! fail_gate_debug {
+        ($stage:literal, $quantity:literal, $observed:expr, $expected:expr, $reason:literal) => {{
+            crate::serial_println!(
+                "[RECLAIM_PROGRESS_GATE_DIAG:{}:{}:observed={:?}:expected={:?}]",
+                $stage,
+                $quantity,
+                $observed,
+                $expected
+            );
+            return TestResult::Fail($reason);
+        }};
+    }
+
+    macro_rules! fail_oversized_value {
+        ($stage:literal, $quantity:literal, $observed:expr, $expected:expr, $reason:literal,
+         $blockers_before:expr, $blockers_after:expr, $locations:expr) => {{
+            let observed = $observed;
+            let expected = $expected;
+            let blockers_before = $blockers_before;
+            let blockers_after = $blockers_after;
+            crate::serial_println!(
+                "[RECLAIM_PROGRESS_GATE_DIAG:{}:{}:observed={}:expected={}:difference={}:root_proof_blocked_epoch_delta={}:root_proof_blocked_hw_delta={}:root_proof_blocked_shadow_delta={}:root_proof_blocked_cached_delta={}:root_proof_blocked_live_row_delta={}:oversized_locations={:?}]",
+                $stage,
+                $quantity,
+                observed,
+                expected,
+                (observed as u128).abs_diff(expected as u128),
+                blockers_after[0].saturating_sub(blockers_before[0]),
+                blockers_after[1].saturating_sub(blockers_before[1]),
+                blockers_after[2].saturating_sub(blockers_before[2]),
+                blockers_after[3].saturating_sub(blockers_before[3]),
+                blockers_after[4].saturating_sub(blockers_before[4]),
+                $locations
+            );
+            return TestResult::Fail($reason);
+        }};
+    }
+
+    macro_rules! fail_oversized_debug {
+        ($stage:literal, $quantity:literal, $observed:expr, $expected:expr, $reason:literal,
+         $blockers_before:expr, $blockers_after:expr, $locations:expr) => {{
+            let blockers_before = $blockers_before;
+            let blockers_after = $blockers_after;
+            crate::serial_println!(
+                "[RECLAIM_PROGRESS_GATE_DIAG:{}:{}:observed={:?}:expected={:?}:root_proof_blocked_epoch_delta={}:root_proof_blocked_hw_delta={}:root_proof_blocked_shadow_delta={}:root_proof_blocked_cached_delta={}:root_proof_blocked_live_row_delta={}:oversized_locations={:?}]",
+                $stage,
+                $quantity,
+                $observed,
+                $expected,
+                blockers_after[0].saturating_sub(blockers_before[0]),
+                blockers_after[1].saturating_sub(blockers_before[1]),
+                blockers_after[2].saturating_sub(blockers_before[2]),
+                blockers_after[3].saturating_sub(blockers_before[3]),
+                blockers_after[4].saturating_sub(blockers_before[4]),
+                $locations
+            );
+            return TestResult::Fail($reason);
+        }};
+    }
 
     let _guard = match BootReclaimTestGuard::enter() {
         Ok(guard) => guard,
@@ -1694,24 +1807,113 @@ pub fn reclaim_progress_gate_test() -> crate::test_framework::registry::TestResu
             trace::FRAME_RETURN_REFUSED_UNTRACKED.aggregate(),
             trace::FRAME_RETURN_REFUSED_LIVE_LEAF.aggregate(),
         ];
-        if progress != crate::memory::process_memory::RetireProgress::Complete
-            || custody_frames.len() != recorded + 1
-            || trace::FRAME_LOST_CONTENDED
-                .aggregate()
-                .saturating_sub(allocator_lost_before)
-                < custody_frames.len() as u64
-            || trace::PT_RETIRE_FRAMES_LOST.aggregate()
-                != retire_lost_before + custody_frames.len() as u64
-            || trace::PT_TABLE_FRAMES_RETURNED.aggregate() != returned_before
-            || trace::PT_ROOTS_RETIRED.aggregate() != retired_before + 1
-            || trace::PT_ROOT_ABANDONED_NO_ARCH.aggregate() != no_arch_before
-            || trace::PT_ROOT_DROPPED_UNDECIDED.aggregate() != undecided_before
-            || refusals_after != refusals_before
-            || !repaired
-            || crate::memory::frame_allocator::free_list_len_for_gate()
-                != free_before + custody_frames.len()
-        {
-            return TestResult::Fail("E: x86 retirement contention was not isolated and repaired");
+        if progress != crate::memory::process_memory::RetireProgress::Complete {
+            fail_gate_debug!(
+                "E1",
+                "retire_progress",
+                progress,
+                crate::memory::process_memory::RetireProgress::Complete,
+                "E1: x86 contended retirement progress was not complete"
+            );
+        }
+        if custody_frames.len() != recorded + 1 {
+            fail_gate_value!(
+                "E2",
+                "custody_frame_count",
+                custody_frames.len(),
+                recorded + 1,
+                "E2: x86 contended retirement custody frame count was not exact"
+            );
+        }
+        let allocator_lost_delta = trace::FRAME_LOST_CONTENDED
+            .aggregate()
+            .saturating_sub(allocator_lost_before);
+        if allocator_lost_delta < custody_frames.len() as u64 {
+            fail_gate_value!(
+                "E3",
+                "frame_lost_contended_delta_minimum",
+                allocator_lost_delta,
+                custody_frames.len() as u64,
+                "E3: x86 contended allocator lost fewer frames than custody required"
+            );
+        }
+        let retire_lost_after = trace::PT_RETIRE_FRAMES_LOST.aggregate();
+        if retire_lost_after != retire_lost_before + custody_frames.len() as u64 {
+            fail_gate_value!(
+                "E4",
+                "pt_retire_frames_lost",
+                retire_lost_after,
+                retire_lost_before + custody_frames.len() as u64,
+                "E4: x86 contended retirement lost-frame total was not exact"
+            );
+        }
+        let returned_after = trace::PT_TABLE_FRAMES_RETURNED.aggregate();
+        if returned_after != returned_before {
+            fail_gate_value!(
+                "E5",
+                "pt_table_frames_returned",
+                returned_after,
+                returned_before,
+                "E5: x86 contended retirement returned a frame"
+            );
+        }
+        let retired_after = trace::PT_ROOTS_RETIRED.aggregate();
+        if retired_after != retired_before + 1 {
+            fail_gate_value!(
+                "E6",
+                "pt_roots_retired",
+                retired_after,
+                retired_before + 1,
+                "E6: x86 contended retirement root total was not exact"
+            );
+        }
+        let no_arch_after = trace::PT_ROOT_ABANDONED_NO_ARCH.aggregate();
+        if no_arch_after != no_arch_before {
+            fail_gate_value!(
+                "E7",
+                "pt_root_abandoned_no_arch",
+                no_arch_after,
+                no_arch_before,
+                "E7: x86 contended retirement changed no-arch abandonments"
+            );
+        }
+        let undecided_after = trace::PT_ROOT_DROPPED_UNDECIDED.aggregate();
+        if undecided_after != undecided_before {
+            fail_gate_value!(
+                "E8",
+                "pt_root_dropped_undecided",
+                undecided_after,
+                undecided_before,
+                "E8: x86 contended retirement changed undecided drops"
+            );
+        }
+        if refusals_after != refusals_before {
+            fail_gate_debug!(
+                "E9",
+                "frame_refusal_counters",
+                refusals_after,
+                refusals_before,
+                "E9: x86 contended retirement changed frame refusal counters"
+            );
+        }
+        if !repaired {
+            fail_gate_debug!(
+                "E10",
+                "all_custody_frames_republished",
+                repaired,
+                true,
+                "E10: x86 contended retirement did not republish every custody frame"
+            );
+        }
+        let free_after = crate::memory::frame_allocator::free_list_len_for_gate();
+        if free_after != free_before + custody_frames.len() {
+            fail_gate_value!(
+                "E11",
+                "free_list_length",
+                free_after,
+                free_before + custody_frames.len(),
+                "E11: x86 contended retirement did not restore the free list exactly"
+            );
         }
 
         let mut healthy = match crate::memory::process_memory::ProcessPageTable::new() {
@@ -1724,17 +1926,66 @@ pub fn reclaim_progress_gate_test() -> crate::test_framework::registry::TestResu
         let healthy_returned_before = trace::PT_TABLE_FRAMES_RETURNED.aggregate();
         let healthy_retired_before = trace::PT_ROOTS_RETIRED.aggregate();
         let mut healthy_budget = crate::memory::process_memory::RETIRE_FRAME_BUDGET;
-        if healthy.retire_bounded(BOOT_RECLAIM_PID_BASE + 91, &mut healthy_budget)
-            != crate::memory::process_memory::RetireProgress::Complete
-            || trace::PT_TABLE_FRAMES_RETURNED.aggregate()
-                != healthy_returned_before + healthy_recorded as u64 + 1
-            || trace::PT_ROOTS_RETIRED.aggregate() != healthy_retired_before + 1
-            || trace::PT_RETIRE_FRAMES_LOST.aggregate()
-                != retire_lost_before + custody_frames.len() as u64
-            || trace::PT_ROOT_ABANDONED_NO_ARCH.aggregate() != no_arch_before
-            || trace::PT_ROOT_DROPPED_UNDECIDED.aggregate() != undecided_before
-        {
-            return TestResult::Fail("E: healthy retirement did not recover after contention");
+        let healthy_progress =
+            healthy.retire_bounded(BOOT_RECLAIM_PID_BASE + 91, &mut healthy_budget);
+        if healthy_progress != crate::memory::process_memory::RetireProgress::Complete {
+            fail_gate_debug!(
+                "E12",
+                "healthy_retire_progress",
+                healthy_progress,
+                crate::memory::process_memory::RetireProgress::Complete,
+                "E12: healthy x86 retirement progress was not complete after contention"
+            );
+        }
+        let healthy_returned_after = trace::PT_TABLE_FRAMES_RETURNED.aggregate();
+        if healthy_returned_after != healthy_returned_before + healthy_recorded as u64 + 1 {
+            fail_gate_value!(
+                "E13",
+                "healthy_pt_table_frames_returned",
+                healthy_returned_after,
+                healthy_returned_before + healthy_recorded as u64 + 1,
+                "E13: healthy x86 retirement returned-frame total was not exact"
+            );
+        }
+        let healthy_retired_after = trace::PT_ROOTS_RETIRED.aggregate();
+        if healthy_retired_after != healthy_retired_before + 1 {
+            fail_gate_value!(
+                "E14",
+                "healthy_pt_roots_retired",
+                healthy_retired_after,
+                healthy_retired_before + 1,
+                "E14: healthy x86 retirement root total was not exact"
+            );
+        }
+        let healthy_lost_after = trace::PT_RETIRE_FRAMES_LOST.aggregate();
+        if healthy_lost_after != retire_lost_before + custody_frames.len() as u64 {
+            fail_gate_value!(
+                "E15",
+                "healthy_pt_retire_frames_lost",
+                healthy_lost_after,
+                retire_lost_before + custody_frames.len() as u64,
+                "E15: healthy x86 retirement changed the repaired lost-frame total"
+            );
+        }
+        let healthy_no_arch_after = trace::PT_ROOT_ABANDONED_NO_ARCH.aggregate();
+        if healthy_no_arch_after != no_arch_before {
+            fail_gate_value!(
+                "E16",
+                "healthy_pt_root_abandoned_no_arch",
+                healthy_no_arch_after,
+                no_arch_before,
+                "E16: healthy x86 retirement changed no-arch abandonments"
+            );
+        }
+        let healthy_undecided_after = trace::PT_ROOT_DROPPED_UNDECIDED.aggregate();
+        if healthy_undecided_after != undecided_before {
+            fail_gate_value!(
+                "E17",
+                "healthy_pt_root_dropped_undecided",
+                healthy_undecided_after,
+                undecided_before,
+                "E17: healthy x86 retirement changed undecided drops"
+            );
         }
     }
 
@@ -1746,30 +1997,109 @@ pub fn reclaim_progress_gate_test() -> crate::test_framework::registry::TestResu
     boot_reclaim_deferred_process_resources();
     let selections = BOOT_RECLAIM_PASS_SELECTIONS.load(Ordering::Relaxed);
     let pass_start = BOOT_RECLAIM_PASS_START.load(Ordering::Relaxed);
-    if selections != 2 || selections > pass_start || pass_start != 2 {
-        return TestResult::Fail("bounded reclaim pass selected a candidate twice");
+    if selections != 2 {
+        fail_gate_value!(
+            "P1A",
+            "reclaim_pass_selections",
+            selections,
+            2,
+            "P1A: bounded reclaim pass selection count was not exactly two"
+        );
     }
-    if boot_reclaim_locations(blocked_pid) != (true, false)
-        || boot_reclaim_locations(ready_pid) != (false, false)
-        || trace::TEARDOWN_RECLAIM
-            .aggregate()
-            .saturating_sub(reclaim_before)
-            != 1
-        || trace::RECLAIM_PASS_SKIPPED.aggregate() <= skipped_before
-    {
-        return TestResult::Fail("live-row refusal spun or starved a ready receipt");
+    if selections > pass_start {
+        fail_gate_value!(
+            "P1B",
+            "reclaim_pass_selections_maximum",
+            selections,
+            pass_start,
+            "P1B: bounded reclaim pass selected more candidates than its start census"
+        );
+    }
+    if pass_start != 2 {
+        fail_gate_value!(
+            "P1C",
+            "reclaim_pass_start",
+            pass_start,
+            2,
+            "P1C: bounded reclaim pass start census was not exactly two"
+        );
+    }
+    let blocked_locations = boot_reclaim_locations(blocked_pid);
+    if blocked_locations != (true, false) {
+        fail_gate_debug!(
+            "P1D",
+            "blocked_receipt_locations",
+            blocked_locations,
+            (true, false),
+            "P1D: live-row-refused receipt did not remain live-only"
+        );
+    }
+    let ready_locations = boot_reclaim_locations(ready_pid);
+    if ready_locations != (false, false) {
+        fail_gate_debug!(
+            "P1E",
+            "ready_receipt_locations",
+            ready_locations,
+            (false, false),
+            "P1E: ready receipt was not fully reclaimed"
+        );
+    }
+    let reclaim_delta = trace::TEARDOWN_RECLAIM
+        .aggregate()
+        .saturating_sub(reclaim_before);
+    if reclaim_delta != 1 {
+        fail_gate_value!(
+            "P1F",
+            "teardown_reclaim_delta",
+            reclaim_delta,
+            1,
+            "P1F: ready receipt changed the reclaim count by a non-unit amount"
+        );
+    }
+    let skipped_after = trace::RECLAIM_PASS_SKIPPED.aggregate();
+    if skipped_after <= skipped_before {
+        fail_gate_value!(
+            "P1G",
+            "reclaim_pass_skipped_minimum",
+            skipped_after,
+            skipped_before.wrapping_add(1),
+            "P1G: live-row refusal did not record a skipped candidate"
+        );
     }
     boot_reclaim_deferred_process_resources();
     BOOT_RECLAIM_ADVANCE_AFTER_STEP_TWO.store(1, Ordering::Release);
     boot_reclaim_deferred_process_resources();
-    if trace::RECLAIM_PARKED
+    let parked_delta = trace::RECLAIM_PARKED
         .aggregate()
-        .saturating_sub(parked_before)
-        != 1
-        || boot_reclaim_locations(blocked_pid) != (false, true)
-        || trace::RECLAIM_PARK_RESIDENT.aggregate() != resident_before.wrapping_add(1)
-    {
-        return TestResult::Fail("persistent live-row refusal did not park exactly at K=3");
+        .saturating_sub(parked_before);
+    if parked_delta != 1 {
+        fail_gate_value!(
+            "P1H",
+            "reclaim_parked_delta",
+            parked_delta,
+            1,
+            "P1H: persistent live-row refusal did not increment the parked count once"
+        );
+    }
+    let parked_locations = boot_reclaim_locations(blocked_pid);
+    if parked_locations != (false, true) {
+        fail_gate_debug!(
+            "P1I",
+            "parked_receipt_locations",
+            parked_locations,
+            (false, true),
+            "P1I: persistent live-row refusal did not become parked-only"
+        );
+    }
+    let resident_after_park = trace::RECLAIM_PARK_RESIDENT.aggregate();
+    if resident_after_park != resident_before.wrapping_add(1) {
+        fail_gate_value!(
+            "P1J",
+            "reclaim_park_resident",
+            resident_after_park,
+            resident_before.wrapping_add(1),
+            "P1J: persistent live-row refusal did not add exactly one resident park"
+        );
     }
 
     let unpark_before = trace::RECLAIM_UNPARKED_EPOCH
@@ -1809,13 +2139,27 @@ pub fn reclaim_progress_gate_test() -> crate::test_framework::registry::TestResu
     };
     let row_before = trace::RECLAIM_UNPARKED_ROW.aggregate();
     unpark_sweep_with_snapshot(park_snapshot, row_marker);
-    if trace::RECLAIM_UNPARKED_ROW
+    let row_unpark_delta = trace::RECLAIM_UNPARKED_ROW
         .aggregate()
-        .saturating_sub(row_before)
-        != 1
-        || boot_reclaim_locations(blocked_pid) != (true, false)
-    {
-        return TestResult::Fail("row-removal unpark arm did not fire");
+        .saturating_sub(row_before);
+    if row_unpark_delta != 1 {
+        fail_gate_value!(
+            "P1K",
+            "reclaim_unparked_row_delta",
+            row_unpark_delta,
+            1,
+            "P1K: row-removal unpark counter did not move by exactly one"
+        );
+    }
+    let row_unpark_locations = boot_reclaim_locations(blocked_pid);
+    if row_unpark_locations != (true, false) {
+        fail_gate_debug!(
+            "P1L",
+            "row_unpark_receipt_locations",
+            row_unpark_locations,
+            (true, false),
+            "P1L: row-removal unpark did not return the receipt to live-only"
+        );
     }
     boot_reclaim_deferred_process_resources();
 
@@ -1827,10 +2171,24 @@ pub fn reclaim_progress_gate_test() -> crate::test_framework::registry::TestResu
         for _ in 0..PROOF_FAILURES_BEFORE_PARK {
             boot_reclaim_deferred_process_resources();
         }
-        if boot_reclaim_locations(cached_pid) != (false, true)
-            || trace::RECLAIM_PARK_RESIDENT.aggregate() != resident_before.wrapping_add(1)
-        {
-            return TestResult::Fail("cached-root refusal did not become epoch-parked");
+        if boot_reclaim_locations(cached_pid) != (false, true) {
+            fail_gate_debug!(
+                "P1M",
+                "cached_receipt_locations",
+                boot_reclaim_locations(cached_pid),
+                (false, true),
+                "P1M: cached-root refusal did not become parked-only"
+            );
+        }
+        let cached_resident_after = trace::RECLAIM_PARK_RESIDENT.aggregate();
+        if cached_resident_after != resident_before.wrapping_add(1) {
+            fail_gate_value!(
+                "P1N",
+                "cached_reclaim_park_resident",
+                cached_resident_after,
+                resident_before.wrapping_add(1),
+                "P1N: cached-root refusal did not leave exactly one resident park"
+            );
         }
         boot_force_blocker(cached_pid, None);
         let (cached_snapshot, cached_row_epoch) = boot_last_park_snapshot();
@@ -1842,13 +2200,26 @@ pub fn reclaim_progress_gate_test() -> crate::test_framework::registry::TestResu
         }
         let epoch_before = trace::RECLAIM_UNPARKED_EPOCH.aggregate();
         unpark_sweep_with_snapshot(epoch_advanced, cached_row_epoch);
-        if trace::RECLAIM_UNPARKED_EPOCH
+        let cached_epoch_delta = trace::RECLAIM_UNPARKED_EPOCH
             .aggregate()
-            .saturating_sub(epoch_before)
-            != 1
-            || boot_reclaim_locations(cached_pid) != (true, false)
-        {
-            return TestResult::Fail("epoch unpark arm did not return the cached-root receipt");
+            .saturating_sub(epoch_before);
+        if cached_epoch_delta != 1 {
+            fail_gate_value!(
+                "P1O",
+                "cached_reclaim_unparked_epoch_delta",
+                cached_epoch_delta,
+                1,
+                "P1O: cached-root epoch unpark counter did not move by exactly one"
+            );
+        }
+        if boot_reclaim_locations(cached_pid) != (true, false) {
+            fail_gate_debug!(
+                "P1P",
+                "cached_epoch_unpark_locations",
+                boot_reclaim_locations(cached_pid),
+                (true, false),
+                "P1P: cached-root epoch unpark did not return the receipt to live-only"
+            );
         }
         boot_reclaim_deferred_process_resources();
     }
@@ -1875,13 +2246,26 @@ pub fn reclaim_progress_gate_test() -> crate::test_framework::registry::TestResu
         let age_before = trace::RECLAIM_UNPARKED_AGE.aggregate();
         unpark_sweep_with_snapshot(age_64, age_record.row_epoch_at_park);
         boot_reclaim_deferred_process_resources();
-        if trace::RECLAIM_UNPARKED_AGE
+        let age_unpark_delta = trace::RECLAIM_UNPARKED_AGE
             .aggregate()
-            .saturating_sub(age_before)
-            != 1
-            || boot_reclaim_locations(age_pid) != (true, false)
-        {
-            return TestResult::Fail("age arm did not re-prove the receipt at epoch sum 64");
+            .saturating_sub(age_before);
+        if age_unpark_delta != 1 {
+            fail_gate_value!(
+                "P1Q",
+                "reclaim_unparked_age_delta",
+                age_unpark_delta,
+                1,
+                "P1Q: age unpark counter did not move by exactly one at epoch sum 64"
+            );
+        }
+        if boot_reclaim_locations(age_pid) != (true, false) {
+            fail_gate_debug!(
+                "P1R",
+                "age_unpark_receipt_locations",
+                boot_reclaim_locations(age_pid),
+                (true, false),
+                "P1R: age unpark did not return the receipt to live-only at epoch sum 64"
+            );
         }
         boot_force_blocker(age_pid, None);
         boot_reclaim_deferred_process_resources();
@@ -1900,14 +2284,35 @@ pub fn reclaim_progress_gate_test() -> crate::test_framework::registry::TestResu
         epoch_advanced.epochs[epoch_cpu] = epoch_advanced.epochs[epoch_cpu].wrapping_add(1);
         unpark_sweep_with_snapshot(epoch_advanced, epoch_record.row_epoch_at_park);
         boot_reclaim_deferred_process_resources();
-        if trace::RECLAIM_UNPARKED_EPOCH
+        let single_epoch_delta = trace::RECLAIM_UNPARKED_EPOCH
             .aggregate()
-            .saturating_sub(epoch_before)
-            != 1
-            || trace::RECLAIM_UNPARKED_AGE.aggregate() != age_before
-            || boot_reclaim_locations(epoch_pid) != (true, false)
-        {
-            return TestResult::Fail("single-CPU advance did not unpark through the epoch arm alone");
+            .saturating_sub(epoch_before);
+        if single_epoch_delta != 1 {
+            fail_gate_value!(
+                "P1S",
+                "single_cpu_reclaim_unparked_epoch_delta",
+                single_epoch_delta,
+                1,
+                "P1S: single-CPU epoch unpark counter did not move by exactly one"
+            );
+        }
+        if trace::RECLAIM_UNPARKED_AGE.aggregate() != age_before {
+            fail_gate_value!(
+                "P1T",
+                "single_cpu_reclaim_unparked_age",
+                trace::RECLAIM_UNPARKED_AGE.aggregate(),
+                age_before,
+                "P1T: single-CPU epoch advance also moved the age counter"
+            );
+        }
+        if boot_reclaim_locations(epoch_pid) != (true, false) {
+            fail_gate_debug!(
+                "P1U",
+                "single_cpu_epoch_unpark_locations",
+                boot_reclaim_locations(epoch_pid),
+                (true, false),
+                "P1U: single-CPU epoch unpark did not return the receipt to live-only"
+            );
         }
         boot_force_blocker(epoch_pid, None);
         boot_reclaim_deferred_process_resources();
@@ -1929,10 +2334,25 @@ pub fn reclaim_progress_gate_test() -> crate::test_framework::registry::TestResu
             boot_force_blocker(pid, Some(blocker));
             boot_push_live(pid);
             boot_reclaim_deferred_process_resources();
-            if counter.aggregate().saturating_sub(before) != 1
-                || boot_reclaim_locations(pid) != (true, false)
-            {
-                return TestResult::Fail("forced RootProof refusal lost its detached receipt");
+            let blocker_delta = counter.aggregate().saturating_sub(before);
+            if blocker_delta != 1 {
+                fail_gate_value!(
+                    "P1V",
+                    "forced_root_proof_counter_delta",
+                    blocker_delta,
+                    1,
+                    "P1V: forced RootProof refusal counter did not move by exactly one"
+                );
+            }
+            let blocker_locations = boot_reclaim_locations(pid);
+            if blocker_locations != (true, false) {
+                fail_gate_debug!(
+                    "P1W",
+                    "forced_root_proof_receipt_locations",
+                    blocker_locations,
+                    (true, false),
+                    "P1W: forced RootProof refusal lost its detached receipt"
+                );
             }
             boot_force_blocker(pid, None);
             boot_reclaim_deferred_process_resources();
@@ -1973,14 +2393,37 @@ pub fn reclaim_progress_gate_test() -> crate::test_framework::registry::TestResu
         boot_push_live(BOOT_RECLAIM_PID_BASE + 32 + offset);
     }
     boot_reclaim_deferred_process_resources();
-    if BOOT_RECLAIM_PASS_START.load(Ordering::Relaxed) != 8
-        || BOOT_RECLAIM_PASS_SELECTIONS.load(Ordering::Relaxed) != 8
-        || trace::TEARDOWN_RECLAIM
-            .aggregate()
-            .saturating_sub(full_before)
-            != 8
-    {
-        return TestResult::Fail("pass cursor acted as a reclaim cap");
+    let full_pass_start = BOOT_RECLAIM_PASS_START.load(Ordering::Relaxed);
+    if full_pass_start != 8 {
+        fail_gate_value!(
+            "P1X",
+            "full_reclaim_pass_start",
+            full_pass_start,
+            8,
+            "P1X: full reclaim pass start census was not exactly eight"
+        );
+    }
+    let full_pass_selections = BOOT_RECLAIM_PASS_SELECTIONS.load(Ordering::Relaxed);
+    if full_pass_selections != 8 {
+        fail_gate_value!(
+            "P1Y",
+            "full_reclaim_pass_selections",
+            full_pass_selections,
+            8,
+            "P1Y: full reclaim pass did not select exactly eight receipts"
+        );
+    }
+    let full_reclaim_delta = trace::TEARDOWN_RECLAIM
+        .aggregate()
+        .saturating_sub(full_before);
+    if full_reclaim_delta != 8 {
+        fail_gate_value!(
+            "P1Z",
+            "full_reclaim_teardown_delta",
+            full_reclaim_delta,
+            8,
+            "P1Z: full reclaim pass did not reclaim exactly eight receipts"
+        );
     }
 
     // O2/F: the fixture derives a hierarchy larger than the production budget.
@@ -2001,6 +2444,7 @@ pub fn reclaim_progress_gate_test() -> crate::test_framework::registry::TestResu
     let lost_before = trace::PT_RETIRE_FRAMES_LOST.aggregate();
     let no_arch_before = trace::PT_ROOT_ABANDONED_NO_ARCH.aggregate();
     let undecided_before = trace::PT_ROOT_DROPPED_UNDECIDED.aggregate();
+    let first_blockers_before = root_blocker_counters();
     #[cfg(target_arch = "x86_64")]
     let oversized_refusals_before = [
         trace::FRAME_RETURN_REFUSED_DOUBLE.aggregate(),
@@ -2012,37 +2456,223 @@ pub fn reclaim_progress_gate_test() -> crate::test_framework::registry::TestResu
     let reclaimed_before = trace::TEARDOWN_RECLAIM.aggregate();
     crate::arch_without_interrupts(|| PENDING_PROCESS_RECLAIMS.lock().push(oversized));
     boot_reclaim_deferred_process_resources();
-    if trace::PT_RETIRE_BUDGET_REQUEUED
+    let first_blockers_after = root_blocker_counters();
+    let first_locations = boot_reclaim_locations(oversized_pid);
+    let first_budget_delta = trace::PT_RETIRE_BUDGET_REQUEUED
         .aggregate()
-        .saturating_sub(budget_before)
-        != 1
-        || trace::PT_TABLE_FRAMES_RETURNED
-            .aggregate()
-            .saturating_sub(returned_before)
-            != crate::memory::process_memory::RETIRE_FRAME_BUDGET as u64
-        || trace::PT_ROOTS_RETIRED.aggregate() != roots_before
-        || trace::PT_RETIRE_FRAMES_LOST.aggregate() != lost_before
-        || trace::PT_ROOT_ABANDONED_NO_ARCH.aggregate() != no_arch_before
-        || trace::PT_ROOT_DROPPED_UNDECIDED.aggregate() != undecided_before
-        || trace::TEARDOWN_RECLAIM.aggregate() != reclaimed_before
-        || boot_reclaim_locations(oversized_pid) != (true, false)
-    {
-        return TestResult::Fail("F: oversized retirement did not requeue at its exact budget");
+        .saturating_sub(budget_before);
+    if first_budget_delta != 1 {
+        fail_oversized_value!(
+            "F1",
+            "pt_retire_budget_requeued_delta",
+            first_budget_delta,
+            1,
+            "F1: oversized first pass budget-requeue delta was not exactly one",
+            first_blockers_before,
+            first_blockers_after,
+            first_locations
+        );
     }
+    let first_returned_delta = trace::PT_TABLE_FRAMES_RETURNED
+        .aggregate()
+        .saturating_sub(returned_before);
+    if first_returned_delta != crate::memory::process_memory::RETIRE_FRAME_BUDGET as u64 {
+        fail_oversized_value!(
+            "F2",
+            "pt_table_frames_returned_delta",
+            first_returned_delta,
+            crate::memory::process_memory::RETIRE_FRAME_BUDGET as u64,
+            "F2: oversized first pass returned-frame delta did not equal the budget",
+            first_blockers_before,
+            first_blockers_after,
+            first_locations
+        );
+    }
+    let first_roots_after = trace::PT_ROOTS_RETIRED.aggregate();
+    if first_roots_after != roots_before {
+        fail_oversized_value!(
+            "F3",
+            "pt_roots_retired",
+            first_roots_after,
+            roots_before,
+            "F3: oversized first pass moved the retired-root total",
+            first_blockers_before,
+            first_blockers_after,
+            first_locations
+        );
+    }
+    let first_lost_after = trace::PT_RETIRE_FRAMES_LOST.aggregate();
+    if first_lost_after != lost_before {
+        fail_oversized_value!(
+            "F4",
+            "pt_retire_frames_lost",
+            first_lost_after,
+            lost_before,
+            "F4: oversized first pass moved the lost-frame total",
+            first_blockers_before,
+            first_blockers_after,
+            first_locations
+        );
+    }
+    let first_no_arch_after = trace::PT_ROOT_ABANDONED_NO_ARCH.aggregate();
+    if first_no_arch_after != no_arch_before {
+        fail_oversized_value!(
+            "F5",
+            "pt_root_abandoned_no_arch",
+            first_no_arch_after,
+            no_arch_before,
+            "F5: oversized first pass moved the no-arch abandonment total",
+            first_blockers_before,
+            first_blockers_after,
+            first_locations
+        );
+    }
+    let first_undecided_after = trace::PT_ROOT_DROPPED_UNDECIDED.aggregate();
+    if first_undecided_after != undecided_before {
+        fail_oversized_value!(
+            "F6",
+            "pt_root_dropped_undecided",
+            first_undecided_after,
+            undecided_before,
+            "F6: oversized first pass moved the undecided-drop total",
+            first_blockers_before,
+            first_blockers_after,
+            first_locations
+        );
+    }
+    let first_reclaimed_after = trace::TEARDOWN_RECLAIM.aggregate();
+    if first_reclaimed_after != reclaimed_before {
+        fail_oversized_value!(
+            "F7",
+            "teardown_reclaim",
+            first_reclaimed_after,
+            reclaimed_before,
+            "F7: oversized first pass moved the completed-reclaim total",
+            first_blockers_before,
+            first_blockers_after,
+            first_locations
+        );
+    }
+    if first_locations != (true, false) {
+        fail_oversized_debug!(
+            "F8",
+            "oversized_receipt_locations",
+            first_locations,
+            (true, false),
+            "F8: oversized first pass did not requeue the receipt live-only",
+            first_blockers_before,
+            first_blockers_after,
+            first_locations
+        );
+    }
+    let final_blockers_before = first_blockers_after;
     boot_reclaim_deferred_process_resources();
-    if trace::PT_RETIRE_BUDGET_REQUEUED.aggregate() != budget_before + 1
-        || trace::PT_TABLE_FRAMES_RETURNED
-            .aggregate()
-            .saturating_sub(returned_before)
-            != oversized_recorded as u64 + 1
-        || trace::PT_ROOTS_RETIRED.aggregate() != roots_before + 1
-        || trace::PT_RETIRE_FRAMES_LOST.aggregate() != lost_before
-        || trace::PT_ROOT_ABANDONED_NO_ARCH.aggregate() != no_arch_before
-        || trace::PT_ROOT_DROPPED_UNDECIDED.aggregate() != undecided_before
-        || trace::TEARDOWN_RECLAIM.aggregate() != reclaimed_before + 1
-        || boot_reclaim_locations(oversized_pid) != (false, false)
-    {
-        return TestResult::Fail("F: oversized retirement did not complete after re-proof");
+    let final_blockers_after = root_blocker_counters();
+    let final_locations = boot_reclaim_locations(oversized_pid);
+    let final_budget_after = trace::PT_RETIRE_BUDGET_REQUEUED.aggregate();
+    if final_budget_after != budget_before + 1 {
+        fail_oversized_value!(
+            "F9",
+            "pt_retire_budget_requeued",
+            final_budget_after,
+            budget_before + 1,
+            "F9: oversized completion changed the budget-requeue total",
+            final_blockers_before,
+            final_blockers_after,
+            final_locations
+        );
+    }
+    let final_returned_delta = trace::PT_TABLE_FRAMES_RETURNED
+        .aggregate()
+        .saturating_sub(returned_before);
+    if final_returned_delta != oversized_recorded as u64 + 1 {
+        fail_oversized_value!(
+            "F10",
+            "pt_table_frames_returned_delta",
+            final_returned_delta,
+            oversized_recorded as u64 + 1,
+            "F10: oversized completion returned-frame delta was not exact",
+            final_blockers_before,
+            final_blockers_after,
+            final_locations
+        );
+    }
+    let final_roots_after = trace::PT_ROOTS_RETIRED.aggregate();
+    if final_roots_after != roots_before + 1 {
+        fail_oversized_value!(
+            "F11",
+            "pt_roots_retired",
+            final_roots_after,
+            roots_before + 1,
+            "F11: oversized completion retired-root total was not exact",
+            final_blockers_before,
+            final_blockers_after,
+            final_locations
+        );
+    }
+    let final_lost_after = trace::PT_RETIRE_FRAMES_LOST.aggregate();
+    if final_lost_after != lost_before {
+        fail_oversized_value!(
+            "F12",
+            "pt_retire_frames_lost",
+            final_lost_after,
+            lost_before,
+            "F12: oversized completion moved the lost-frame total",
+            final_blockers_before,
+            final_blockers_after,
+            final_locations
+        );
+    }
+    let final_no_arch_after = trace::PT_ROOT_ABANDONED_NO_ARCH.aggregate();
+    if final_no_arch_after != no_arch_before {
+        fail_oversized_value!(
+            "F13",
+            "pt_root_abandoned_no_arch",
+            final_no_arch_after,
+            no_arch_before,
+            "F13: oversized completion moved the no-arch abandonment total",
+            final_blockers_before,
+            final_blockers_after,
+            final_locations
+        );
+    }
+    let final_undecided_after = trace::PT_ROOT_DROPPED_UNDECIDED.aggregate();
+    if final_undecided_after != undecided_before {
+        fail_oversized_value!(
+            "F14",
+            "pt_root_dropped_undecided",
+            final_undecided_after,
+            undecided_before,
+            "F14: oversized completion moved the undecided-drop total",
+            final_blockers_before,
+            final_blockers_after,
+            final_locations
+        );
+    }
+    let final_reclaimed_after = trace::TEARDOWN_RECLAIM.aggregate();
+    if final_reclaimed_after != reclaimed_before + 1 {
+        fail_oversized_value!(
+            "F15",
+            "teardown_reclaim",
+            final_reclaimed_after,
+            reclaimed_before + 1,
+            "F15: oversized completion reclaim total was not exact",
+            final_blockers_before,
+            final_blockers_after,
+            final_locations
+        );
+    }
+    if final_locations != (false, false) {
+        fail_oversized_debug!(
+            "F16",
+            "oversized_receipt_locations",
+            final_locations,
+            (false, false),
+            "F16: oversized completion left the receipt queued",
+            final_blockers_before,
+            final_blockers_after,
+            final_locations
+        );
     }
     #[cfg(target_arch = "x86_64")]
     if [
@@ -2070,24 +2700,97 @@ pub fn reclaim_progress_gate_test() -> crate::test_framework::registry::TestResu
     let interrupted_no_arch_before = trace::PT_ROOT_ABANDONED_NO_ARCH.aggregate();
     let interrupted_undecided_before = trace::PT_ROOT_DROPPED_UNDECIDED.aggregate();
     let mut budget = crate::memory::process_memory::RETIRE_FRAME_BUDGET;
-    if interrupted.retire_bounded(BOOT_RECLAIM_PID_BASE + 101, &mut budget)
-        != crate::memory::process_memory::RetireProgress::Budgeted
-        || interrupted_recorded <= crate::memory::process_memory::RETIRE_FRAME_BUDGET as usize
-    {
-        return TestResult::Fail("I: oversized retirement did not stop at its budget");
+    let interrupted_progress = interrupted.retire_bounded(BOOT_RECLAIM_PID_BASE + 101, &mut budget);
+    if interrupted_progress != crate::memory::process_memory::RetireProgress::Budgeted {
+        fail_gate_debug!(
+            "I1",
+            "interrupted_retire_progress",
+            interrupted_progress,
+            crate::memory::process_memory::RetireProgress::Budgeted,
+            "I1: interrupted oversized retirement did not stop budgeted"
+        );
+    }
+    if interrupted_recorded <= crate::memory::process_memory::RETIRE_FRAME_BUDGET as usize {
+        fail_gate_value!(
+            "I2",
+            "interrupted_recorded_frames_minimum",
+            interrupted_recorded,
+            crate::memory::process_memory::RETIRE_FRAME_BUDGET as usize + 1,
+            "I2: interrupted oversized fixture did not exceed the retirement budget"
+        );
     }
     drop(interrupted);
-    if trace::PT_ROOT_DROPPED_MID_RETIRE.aggregate() != mid_before + 1
-        || trace::FRAME_RETURN_REFUSED_DOUBLE.aggregate() != double_before
-        || trace::PT_TABLE_FRAMES_RETURNED.aggregate()
-            != interrupted_returned_before
-                + crate::memory::process_memory::RETIRE_FRAME_BUDGET as u64
-        || trace::PT_ROOTS_RETIRED.aggregate() != interrupted_roots_before
-        || trace::PT_RETIRE_FRAMES_LOST.aggregate() != interrupted_lost_before
-        || trace::PT_ROOT_ABANDONED_NO_ARCH.aggregate() != interrupted_no_arch_before
-        || trace::PT_ROOT_DROPPED_UNDECIDED.aggregate() != interrupted_undecided_before
+    let interrupted_mid_after = trace::PT_ROOT_DROPPED_MID_RETIRE.aggregate();
+    if interrupted_mid_after != mid_before + 1 {
+        fail_gate_value!(
+            "I3",
+            "pt_root_dropped_mid_retire",
+            interrupted_mid_after,
+            mid_before + 1,
+            "I3: interrupted retirement did not record exactly one mid-retire drop"
+        );
+    }
+    let interrupted_double_after = trace::FRAME_RETURN_REFUSED_DOUBLE.aggregate();
+    if interrupted_double_after != double_before {
+        fail_gate_value!(
+            "I4",
+            "frame_return_refused_double",
+            interrupted_double_after,
+            double_before,
+            "I4: interrupted retirement moved the double-return refusal total"
+        );
+    }
+    let interrupted_returned_after = trace::PT_TABLE_FRAMES_RETURNED.aggregate();
+    if interrupted_returned_after
+        != interrupted_returned_before + crate::memory::process_memory::RETIRE_FRAME_BUDGET as u64
     {
-        return TestResult::Fail("I: interrupted retirement did not fail closed");
+        fail_gate_value!(
+            "I5",
+            "pt_table_frames_returned",
+            interrupted_returned_after,
+            interrupted_returned_before + crate::memory::process_memory::RETIRE_FRAME_BUDGET as u64,
+            "I5: interrupted retirement returned-frame total did not stop at the budget"
+        );
+    }
+    let interrupted_roots_after = trace::PT_ROOTS_RETIRED.aggregate();
+    if interrupted_roots_after != interrupted_roots_before {
+        fail_gate_value!(
+            "I6",
+            "pt_roots_retired",
+            interrupted_roots_after,
+            interrupted_roots_before,
+            "I6: interrupted retirement moved the retired-root total"
+        );
+    }
+    let interrupted_lost_after = trace::PT_RETIRE_FRAMES_LOST.aggregate();
+    if interrupted_lost_after != interrupted_lost_before {
+        fail_gate_value!(
+            "I7",
+            "pt_retire_frames_lost",
+            interrupted_lost_after,
+            interrupted_lost_before,
+            "I7: interrupted retirement moved the lost-frame total"
+        );
+    }
+    let interrupted_no_arch_after = trace::PT_ROOT_ABANDONED_NO_ARCH.aggregate();
+    if interrupted_no_arch_after != interrupted_no_arch_before {
+        fail_gate_value!(
+            "I8",
+            "pt_root_abandoned_no_arch",
+            interrupted_no_arch_after,
+            interrupted_no_arch_before,
+            "I8: interrupted retirement moved the no-arch abandonment total"
+        );
+    }
+    let interrupted_undecided_after = trace::PT_ROOT_DROPPED_UNDECIDED.aggregate();
+    if interrupted_undecided_after != interrupted_undecided_before {
+        fail_gate_value!(
+            "I9",
+            "pt_root_dropped_undecided",
+            interrupted_undecided_after,
+            interrupted_undecided_before,
+            "I9: interrupted retirement moved the undecided-drop total"
+        );
     }
 
     // O2/J: completion is terminal; a second call has no accounting effect.
@@ -2102,11 +2805,25 @@ pub fn reclaim_progress_gate_test() -> crate::test_framework::registry::TestResu
         return TestResult::Fail("J: initial root retirement did not complete");
     }
     let terminal_before = trace::snapshot();
-    if completed.retire_bounded(BOOT_RECLAIM_PID_BASE + 102, &mut budget)
-        != crate::memory::process_memory::RetireProgress::Complete
-        || trace::snapshot() != terminal_before
-    {
-        return TestResult::Fail("J: completed retirement was not idempotent");
+    let terminal_progress = completed.retire_bounded(BOOT_RECLAIM_PID_BASE + 102, &mut budget);
+    if terminal_progress != crate::memory::process_memory::RetireProgress::Complete {
+        fail_gate_debug!(
+            "J2",
+            "terminal_retire_progress",
+            terminal_progress,
+            crate::memory::process_memory::RetireProgress::Complete,
+            "J2: completed retirement did not remain terminal"
+        );
+    }
+    let terminal_after = trace::snapshot();
+    if terminal_after != terminal_before {
+        fail_gate_debug!(
+            "J3",
+            "terminal_counter_snapshot",
+            terminal_after,
+            terminal_before,
+            "J3: completed retirement changed a teardown counter on its second call"
+        );
     }
 
     #[cfg(target_arch = "x86_64")]
@@ -2149,18 +2866,77 @@ pub fn reclaim_progress_gate_test() -> crate::test_framework::registry::TestResu
             enqueue_process_reclaim(refused);
             drop(reserve_failure);
         }
-        if trace::PT_ROOT_ABANDONED_NO_ARCH.aggregate() != no_arch_before + 1
-            || trace::PT_TABLE_FRAMES_RETURNED.aggregate() != returned_before
-            || trace::PT_ROOTS_RETIRED.aggregate() != retired_before
-            || trace::PT_RETIRE_FRAMES_LOST.aggregate() != lost_before
-            || trace::PT_ROOT_DROPPED_UNDECIDED.aggregate() != undecided_before
-            || crate::memory::frame_allocator::memory_stats()
-                .allocated_frames
-                .saturating_sub(crate::memory::frame_allocator::free_list_len_for_gate())
-                != refused_used_before
-            || boot_reclaim_locations(refused_pid) != (false, false)
-        {
-            return TestResult::Fail("Q: x86 enqueue reservation failure did not fail closed");
+        let refused_no_arch_after = trace::PT_ROOT_ABANDONED_NO_ARCH.aggregate();
+        if refused_no_arch_after != no_arch_before + 1 {
+            fail_gate_value!(
+                "Q1",
+                "pt_root_abandoned_no_arch",
+                refused_no_arch_after,
+                no_arch_before + 1,
+                "Q1: x86 reservation failure did not add one no-arch abandonment"
+            );
+        }
+        let refused_returned_after = trace::PT_TABLE_FRAMES_RETURNED.aggregate();
+        if refused_returned_after != returned_before {
+            fail_gate_value!(
+                "Q2",
+                "pt_table_frames_returned",
+                refused_returned_after,
+                returned_before,
+                "Q2: x86 reservation failure moved the returned-frame total"
+            );
+        }
+        let refused_retired_after = trace::PT_ROOTS_RETIRED.aggregate();
+        if refused_retired_after != retired_before {
+            fail_gate_value!(
+                "Q3",
+                "pt_roots_retired",
+                refused_retired_after,
+                retired_before,
+                "Q3: x86 reservation failure moved the retired-root total"
+            );
+        }
+        let refused_lost_after = trace::PT_RETIRE_FRAMES_LOST.aggregate();
+        if refused_lost_after != lost_before {
+            fail_gate_value!(
+                "Q4",
+                "pt_retire_frames_lost",
+                refused_lost_after,
+                lost_before,
+                "Q4: x86 reservation failure moved the lost-frame total"
+            );
+        }
+        let refused_undecided_after = trace::PT_ROOT_DROPPED_UNDECIDED.aggregate();
+        if refused_undecided_after != undecided_before {
+            fail_gate_value!(
+                "Q5",
+                "pt_root_dropped_undecided",
+                refused_undecided_after,
+                undecided_before,
+                "Q5: x86 reservation failure moved the undecided-drop total"
+            );
+        }
+        let refused_used_after = crate::memory::frame_allocator::memory_stats()
+            .allocated_frames
+            .saturating_sub(crate::memory::frame_allocator::free_list_len_for_gate());
+        if refused_used_after != refused_used_before {
+            fail_gate_value!(
+                "Q6",
+                "frame_allocator_used_frames",
+                refused_used_after,
+                refused_used_before,
+                "Q6: x86 reservation failure changed used-frame accounting"
+            );
+        }
+        let refused_locations = boot_reclaim_locations(refused_pid);
+        if refused_locations != (false, false) {
+            fail_gate_debug!(
+                "Q7",
+                "refused_receipt_locations",
+                refused_locations,
+                (false, false),
+                "Q7: x86 reservation failure left a receipt queued"
+            );
         }
 
         let healthy_pid = BOOT_RECLAIM_PID_BASE + 104;
@@ -2170,22 +2946,87 @@ pub fn reclaim_progress_gate_test() -> crate::test_framework::registry::TestResu
         };
         enqueue_process_reclaim(healthy);
         boot_reclaim_deferred_process_resources();
-        if trace::PT_ROOT_ABANDONED_NO_ARCH.aggregate() != no_arch_before + 1
-            || trace::PT_TABLE_FRAMES_RETURNED.aggregate()
-                != returned_before + healthy_recorded as u64 + 1
-            || trace::PT_ROOTS_RETIRED.aggregate() != retired_before + 1
-            || trace::PT_RETIRE_FRAMES_LOST.aggregate() != lost_before
-            || trace::PT_ROOT_DROPPED_UNDECIDED.aggregate() != undecided_before
-            || boot_reclaim_locations(healthy_pid) != (false, false)
-        {
-            return TestResult::Fail("Q: healthy enqueue remained impaired after reservation failure");
+        let recovery_no_arch_after = trace::PT_ROOT_ABANDONED_NO_ARCH.aggregate();
+        if recovery_no_arch_after != no_arch_before + 1 {
+            fail_gate_value!(
+                "Q8",
+                "healthy_pt_root_abandoned_no_arch",
+                recovery_no_arch_after,
+                no_arch_before + 1,
+                "Q8: healthy x86 enqueue changed the prior no-arch abandonment total"
+            );
+        }
+        let recovery_returned_after = trace::PT_TABLE_FRAMES_RETURNED.aggregate();
+        if recovery_returned_after != returned_before + healthy_recorded as u64 + 1 {
+            fail_gate_value!(
+                "Q9",
+                "healthy_pt_table_frames_returned",
+                recovery_returned_after,
+                returned_before + healthy_recorded as u64 + 1,
+                "Q9: healthy x86 enqueue returned-frame total was not exact"
+            );
+        }
+        let recovery_retired_after = trace::PT_ROOTS_RETIRED.aggregate();
+        if recovery_retired_after != retired_before + 1 {
+            fail_gate_value!(
+                "Q10",
+                "healthy_pt_roots_retired",
+                recovery_retired_after,
+                retired_before + 1,
+                "Q10: healthy x86 enqueue retired-root total was not exact"
+            );
+        }
+        let recovery_lost_after = trace::PT_RETIRE_FRAMES_LOST.aggregate();
+        if recovery_lost_after != lost_before {
+            fail_gate_value!(
+                "Q11",
+                "healthy_pt_retire_frames_lost",
+                recovery_lost_after,
+                lost_before,
+                "Q11: healthy x86 enqueue moved the lost-frame total"
+            );
+        }
+        let recovery_undecided_after = trace::PT_ROOT_DROPPED_UNDECIDED.aggregate();
+        if recovery_undecided_after != undecided_before {
+            fail_gate_value!(
+                "Q12",
+                "healthy_pt_root_dropped_undecided",
+                recovery_undecided_after,
+                undecided_before,
+                "Q12: healthy x86 enqueue moved the undecided-drop total"
+            );
+        }
+        let healthy_locations = boot_reclaim_locations(healthy_pid);
+        if healthy_locations != (false, false) {
+            fail_gate_debug!(
+                "Q13",
+                "healthy_receipt_locations",
+                healthy_locations,
+                (false, false),
+                "Q13: healthy x86 enqueue left a receipt queued"
+            );
         }
     }
 
-    if trace::RECLAIM_PARK_RESIDENT.aggregate() != resident_before
-        || trace::PROOF_UNDER_QUEUE_LOCK.aggregate() != proof_lock_before
-    {
-        return TestResult::Fail("P1 reclaim gate left residents or nested proof locks");
+    let final_resident = trace::RECLAIM_PARK_RESIDENT.aggregate();
+    if final_resident != resident_before {
+        fail_gate_value!(
+            "P1AA",
+            "reclaim_park_resident",
+            final_resident,
+            resident_before,
+            "P1AA: reclaim progress gate left a resident parked receipt"
+        );
+    }
+    let final_proof_lock = trace::PROOF_UNDER_QUEUE_LOCK.aggregate();
+    if final_proof_lock != proof_lock_before {
+        fail_gate_value!(
+            "P1AB",
+            "proof_under_queue_lock",
+            final_proof_lock,
+            proof_lock_before,
+            "P1AB: reclaim progress gate changed nested proof-lock violations"
+        );
     }
     TestResult::Pass
 }

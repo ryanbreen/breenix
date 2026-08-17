@@ -3802,28 +3802,22 @@ impl ExecSchedCommit {
                 }
             }
 
+            // Gate-pinned lines must take the serial lock so a concurrent writer cannot
+            // tear their bytes. The scheduler guard above is already out of scope.
             if pm_held {
                 SCHED_AFTER_PM_VIOLATIONS.fetch_add(1, Ordering::Relaxed);
-                crate::arch_impl::aarch64::context_switch::raw_uart_str(
-                    "[EXEC_LOCK_ORDER:VIOLATION:PM_HELD]\n",
-                );
+                crate::serial_println!("[EXEC_LOCK_ORDER:VIOLATION:PM_HELD]");
             }
             if unpinned {
                 EXEC_COMMIT_UNPINNED.fetch_add(1, Ordering::Relaxed);
-                crate::arch_impl::aarch64::context_switch::raw_uart_str(
-                    "[EXEC_LOCK_ORDER:VIOLATION:UNPINNED]\n",
-                );
+                crate::serial_println!("[EXEC_LOCK_ORDER:VIOLATION:UNPINNED]");
             }
             if !applied {
                 EXEC_COMMIT_MISSING_THREAD.fetch_add(1, Ordering::Relaxed);
-                crate::arch_impl::aarch64::context_switch::raw_uart_str(
-                    "[EXEC_LOCK_ORDER:VIOLATION:NO_SCHED_THREAD]\n",
-                );
+                crate::serial_println!("[EXEC_LOCK_ORDER:VIOLATION:NO_SCHED_THREAD]");
             }
             if applied && EXEC_SCHED_COMMITS.fetch_add(1, Ordering::Relaxed) == 0 {
-                crate::arch_impl::aarch64::context_switch::raw_uart_str(
-                    "[EXEC_LOCK_ORDER:FIRST_COMMIT]\n",
-                );
+                crate::serial_println!("[EXEC_LOCK_ORDER:FIRST_COMMIT]");
             }
         })
     }
@@ -4214,6 +4208,40 @@ pub fn switch_to_idle() {
             "Exception handler: Switched scheduler to idle thread {}",
             idle_id
         );
+    });
+}
+
+/// Make a thread that the dispatch path refused queue-reachable again.
+///
+/// x86_64 counterpart of the aarch64 `requeue_thread_after_save` call in the
+/// `RowUnpublished`/`PmLockBusy` dispatch arm: a retry-only refusal must leave the
+/// refused thread reachable, or it is stranded (neither current nor queued) forever.
+/// Callers must have already redirected this CPU to idle, so `current_thread` no
+/// longer names the refused thread.
+#[cfg(target_arch = "x86_64")]
+pub fn requeue_refused_dispatch(thread_id: u64) {
+    with_scheduler(|sched| {
+        if (0..MAX_CPUS).any(|cpu| sched.cpu_state[cpu].idle_thread == thread_id) {
+            return;
+        }
+        if (0..MAX_CPUS).any(|cpu| sched.cpu_state[cpu].current_thread == Some(thread_id)) {
+            return;
+        }
+        let Some(thread) = sched.get_thread(thread_id) else {
+            return;
+        };
+        if thread.state != ThreadState::Ready {
+            return;
+        }
+        if sched
+            .per_cpu_queues
+            .iter()
+            .any(|queue| queue.contains(&thread_id))
+        {
+            return;
+        }
+        let cpu = Scheduler::current_cpu_id();
+        sched.per_cpu_queues[cpu].push_back(thread_id);
     });
 }
 

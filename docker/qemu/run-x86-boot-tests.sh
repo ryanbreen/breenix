@@ -24,17 +24,24 @@ FRAME_CUSTODY_PATTERN='^\[FRAME_CUSTODY_COUNTERS:x86:double=1:stale=1:never=1:un
 PT_CUSTODY_LITERAL='[PT_CUSTODY_COUNTERS:x86:recorded=14:no_proof=0:no_arch=0:terminated=1:undecided=1:retired=2:returned=14:lost=0:requeued=0]'
 PT_COHORT_LITERAL='[PT_RETIRE_COHORT:x86:children=64:retired=65:returned=642:recorded=577:lost=0:no_arch=0:undecided=0:mid_retire=0:balance=0]'
 PT_EXEC_COHORT_LITERAL='[PT_EXEC_COHORT:x86:children=16:superseded=3:roots=64:returned=640:recorded=576:lost=0:leaf_recorded=192:leaf_released=192:leaf_returned=192:custody_refused=0:decref_unregistered=0:undecided=0:mid_retire=0:no_arch=0:balance=0]' # The returned and recorded table-frame fields are pinned from the measured run.
+EXEC_DETACH_ORACLE_LITERAL='[EXEC_DETACH_ORACLE:x86:bodies=2:fail_preserved=2:sibling_refused=0:success_detached=2:fresh_root=2:tgid_self=2:custody_balance=0:leaf_residual=16:stack_residual=149:old_group_reached_pre=2:old_group_missed_post=2:self_group_reached_post=2]'
+CLONE_ADMISSION_ORACLE_LITERAL='[CLONE_ADMISSION_ORACLE:x86:admitted=1:refused=2:creating_refused=1:published_admitted=2:balance=0]'
 # Absolute frame counts are boot-state dependent, so pin every delta exactly,
 # including the three-table recorded_pre hierarchy cost and computed tables_returned=4;
 # the in-kernel oracle asserts used_after == used_before, and a skipped/cfg'd-out block fails this gate.
 EXEC_FAILED_RELEASE_ORACLE_PATTERN='^\[EXEC_FAILED_RELEASE_ORACLE:x86:used_before=[0-9]+:used_after=[0-9]+:recorded_pre=3:leaf_recorded=1:leaf_released=1:leaf_returned=1:tables_returned=4:roots_retired=1:undecided=0:live_refused=0\]$'
 EXEC_FAILED_RELEASE_PROD_LITERAL='[EXEC_FAILED_RELEASE_PROD:x86:plain_err=true:plain_kept=true:argv_err=true:argv_kept=true:name_kept=true:balance=0:undecided=0:mid_retire=0:lost=0:custody_refused=0:decref_unregistered=0:double=0:stale=0:untracked=0:root_slot_refused=0]'
 # Ten launched test programs, 64 retire-cohort children, five loopback_wake_test
-# processes (parent, reader, peer, load, watchdog), and 16 exec-cohort children:
-# 10 + 64 + 5 + 16 = 95. This is a floor, checked >= by
-# scripts/x86-gate-verdict.sh; the production-path arm execs the cohort's
-# already-inserted parent and fails without launching a new userspace process; re-pin consciously.
-readonly EXPECTED_USERSPACE_EXITS=95
+# processes (parent, reader, peer, load, watchdog), 16 exec-cohort children, one
+# clonevm_exec_test process (renamed by its second-stage exec), its phase-1
+# CLONE_VM child, and two clone-admission oracle rows:
+# 10 + 64 + 5 + 16 + 1 + 1 + 1 + 1 = 99. The exec-detach oracle contributes
+# zero because its rows use the deferred-reclaim path rather than the
+# Process::terminate / terminate_minimal tally choke point. This is a floor,
+# checked >= by scripts/x86-gate-verdict.sh; the production-path arm execs the
+# cohort's already-inserted parent and fails without launching a new userspace
+# process; re-pin consciously.
+readonly EXPECTED_USERSPACE_EXITS=99
 
 cd "$BREENIX_ROOT"
 cargo build --release --features boot_tests,testing,external_test_bins --bin qemu-uefi
@@ -45,7 +52,11 @@ BREENIX_PRINT_UEFI_IMAGE=1 cargo run --release \
 # ELFs with ./userspace/programs/build.sh when userspace or libs/libbreenix-libc changed.
 rm -f target/test_binaries.img
 cargo run -p xtask -- create-test-disk
-test -f target/ext2.img || ./scripts/create_ext2_disk.sh
+# The ext2 image carries the same userspace binaries, so rebuild it every run:
+# a cached image silently boots old programs, and a fresh program execv-ing its
+# own installed path can land in a stale copy of itself.
+rm -f target/ext2.img
+./scripts/create_ext2_disk.sh
 
 UEFI_IMG=$(ls -t target/release/build/breenix-*/out/breenix-uefi.img | head -1)
 test -n "$UEFI_IMG"
@@ -88,6 +99,14 @@ for i in $(seq 1 "$COUNT"); do
     # deliver the same FIN, so the mechanism-level necessity proof is the
     # aarch64 deterministic registry suite (loopback_recv_wake_when_idle /
     # loopback_recv_wake_under_load), which is red on main.
+    # The poll loop kills QEMU the moment it breaks, so it must never break on a
+    # marker the kernel prints BEFORE the one the verdict needs. `TEST_TALLY:` is
+    # emitted first and `TEST RUNNER: All tests passed` / `TEST RUNNER: FAILED`
+    # last (kernel/src/syscall/handlers.rs), so breaking on the tally alone raced
+    # the terminal marker and scored a healthy boot as
+    # "nonzero=0 but the all-tests-passed marker is absent". Wait for the terminal
+    # verdict marker itself; either polarity ends the wait, and the failing
+    # polarity is still rejected downstream by scripts/x86-gate-verdict.sh.
     for _ in $(seq 1 900); do
         if grep -q '\[TEST:process:frame_custody_refusal_gate:PASS\]' \
             "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
@@ -111,11 +130,21 @@ for i in $(seq 1 "$COUNT"); do
                 "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
             && grep -qF -x "$PT_EXEC_COHORT_LITERAL" \
                 "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
+            && grep -q '\[TEST:process:exec_detach_oracle:PASS\]' \
+                "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
+            && grep -qF -x "$EXEC_DETACH_ORACLE_LITERAL" \
+                "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
+            && grep -q '\[TEST:process:clone_admission_oracle:PASS\]' \
+                "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
+            && grep -qF -x "$CLONE_ADMISSION_ORACLE_LITERAL" \
+                "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
             && grep -qF -x "$EXEC_FAILED_RELEASE_PROD_LITERAL" \
                 "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
             && grep -q '\[TEST:userspace:loopback_recv_wake:PASS\]' \
                 "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
             && grep -q 'TEST_TALLY:' \
+                "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
+            && grep -qE 'TEST RUNNER: (All tests passed|FAILED)' \
                 "$OUTPUT_DIR"/serial_*.txt 2>/dev/null; then
             passed=true
             break
@@ -154,6 +183,10 @@ for i in $(seq 1 "$COUNT"); do
         "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 1
     test "$(grep -h -c '\[TEST:process:x86_exec_cohort:PASS\]' \
         "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 1
+    test "$(grep -h -c '\[TEST:process:exec_detach_oracle:PASS\]' \
+        "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 1
+    test "$(grep -h -c '\[TEST:process:clone_admission_oracle:PASS\]' \
+        "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 1
     # Four scheduling tests remain deferred on x86 until #567 is fixed:
     # loopback_recv_wake_when_idle, loopback_recv_wake_under_load,
     # loopback_pump_does_not_busy_spin, and tcp_final_ack_survives_accept_publish_race.
@@ -171,6 +204,10 @@ for i in $(seq 1 "$COUNT"); do
         "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 1
     test "$(grep -h -F -x -c "$PT_EXEC_COHORT_LITERAL" \
         "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 1
+    test "$(grep -h -F -x -c "$EXEC_DETACH_ORACLE_LITERAL" \
+        "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 1
+    test "$(grep -h -F -x -c "$CLONE_ADMISSION_ORACLE_LITERAL" \
+        "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 1
     test "$(grep -h -F -x -c "$EXEC_FAILED_RELEASE_PROD_LITERAL" \
         "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 1
     EXPECTED_EXITS="$EXPECTED_USERSPACE_EXITS" \
@@ -181,6 +218,8 @@ for i in $(seq 1 "$COUNT"); do
     echo "$PT_CUSTODY_LITERAL"
     echo "$PT_COHORT_LITERAL"
     echo "$PT_EXEC_COHORT_LITERAL"
+    echo "$EXEC_DETACH_ORACLE_LITERAL"
+    echo "$CLONE_ADMISSION_ORACLE_LITERAL"
     echo "$EXEC_FAILED_RELEASE_PROD_LITERAL"
     if grep -qE '\[BOOT_TESTS:FAIL|KERNEL PANIC|panic!' \
         "$OUTPUT_DIR"/serial_*.txt; then

@@ -197,7 +197,7 @@ closure F re-wires.
 | Tranche | Phases | Status |
 |---|---|---|
 | **Tranche 1** | P0 + P1 + P2 | **Ratified** (v3.1 pass, `ENDORSE: YES`) — **COMPLETE, merged to `main`** |
-| **Tranche 2** | **P3** (exec detach + clone/exec admission) + **P4** (kernel-stack ownership parity + creation-path lock-order parity) + **P5a** (init identity) | **RE-RATIFIED, effective on pre-check pass.** The operator's decision of **2026-08-16** ratified *proceeding per* `docs/planning/teardown-unification/P3-RERATIFICATION-2026-08-15.md` — document repair, then **one** adversarial pre-check against the repaired text, then implementation (artifact §5.3, §8). The ratification is effective the moment this repaired text lands with a **passing** pre-check; until then no tranche-2 phase is cleared for build (§2 condition 7). Assessed at `main` @ `1db23de0`; this repair re-anchored at `main` @ `2c7b8798` |
+| **Tranche 2** | **P3** (exec detach + clone/exec admission) + **P4** (kernel-stack ownership parity + creation-path lock-order parity) + **P5a** (init identity) | **RE-RATIFIED, effective on pre-check pass.** The operator's decision of **2026-08-16** ratified *proceeding per* `docs/planning/teardown-unification/P3-RERATIFICATION-2026-08-15.md` — document repair, then **one** adversarial pre-check against the repaired text, then implementation (artifact §5.3, §8). The ratification is effective the moment this repaired text lands with a **passing** pre-check; until then no tranche-2 phase is cleared for build (§2 condition 7). Assessed at `main` @ `1db23de0`; this repair re-anchored at `main` @ `2c7b8798`. **P3 landed, PR #587** — P4 and P5a remain uncleared for build |
 | — | **P5b** (`sys_clone` init-group refusal) | **HELD** on **#575** — its acceptance evidence is a quiesce walk of the process map, and init does not reliably reach quiesce on the QEMU gates. Mechanism unchanged; only its gate is blocked |
 | **Tranche 3+** | P6a, P6b, P7, P8, P9, P10a-d, P11, P12 | **Uncleared.** Each arrives with its own tranche pass; the DESIGN-DEBT REGISTER gates any tranche containing a debt owner |
 
@@ -315,7 +315,7 @@ not a prediction about arguments not yet made. The PR that splits says so in its
 | 1 | Teardown observability + call-site ratchet | P0 |
 | 2 | Retirement fence + RootProof taxonomy + drain restructure **+ pass cursor / park list** | P1 |
 | 3 | SPINE-1: SIGKILL stops eager-freeing **+ receipt custody across all 9 adapted sites** *(7 `exit_process` callers + 1 new SIGKILL arm + 1 PM-nested enqueue)* — **merged, PR #515** | P2 |
-| 4 | exec detach **+ clone/exec admission**: clear `inherited_cr3`/`thread_group_id` at every exec commit and preserve on every failure; parent-`Live` validation + non-runnable publication + the `Creating` dispatch arm | **P3** — artifact `T2-b` |
+| 4 | exec detach **+ clone/exec admission**: clear `inherited_cr3`/`thread_group_id` at every exec commit and preserve on every failure; parent-`Live` validation + non-runnable publication + the `Creating` dispatch arm — **landed, PR #587** | **P3** — artifact `T2-b` |
 | 5 | Kernel-stack single-owner accounting (**AC-8**) across the five `Box::leak` sites **+ creation-path PM→SCHEDULER lock-order parity** (#527's creation-path remainder) — closes **#579** | **P4** — artifact `T2-c` |
 | 6 | Runtime init designation — PID-1 reservation + held-publication ticket **+ the init literal migration onto `designated_init()`** | **P5a** — artifact `T2-d` |
 | 7 | Init-group clone refusal | **P5b** — **HELD on #575** |
@@ -376,8 +376,14 @@ not a prediction about arguments not yet made. The PR that splits says so in its
      included), so a vanished, crashed or `exit(1)`-ing test program is a red gate by construction
      (PR #565; proven red three ways — injected `exit(1)`, injected segfault, vanished process).
    - **x86_64 custody boot-tests:** `docker/qemu/run-x86-boot-tests.sh` additionally pins the
-     frame/page-table custody counter lines (`FRAME_CUSTODY_COUNTERS`, `PT_CUSTODY_COUNTERS`,
-     `PT_RETIRE_COHORT`, `PT_EXEC_COHORT`) as literals. **This gate never retries a hung run** — a
+     frame/page-table custody counter lines as literals. **The script is the truth about which lines
+     are pinned, and it currently pins seven**: `FRAME_CUSTODY_COUNTERS`, `PT_CUSTODY_COUNTERS`,
+     `PT_RETIRE_COHORT`, `PT_EXEC_COHORT`, plus `EXEC_FAILED_RELEASE_ORACLE` and
+     `EXEC_FAILED_RELEASE_PROD` (added by #573/PR #582, which also re-pinned `PT_CUSTODY_COUNTERS` to
+     `recorded=14 … retired=2:returned=14`) and `EXEC_DETACH_ORACLE` (added by P3). A phase that
+     perturbs one re-pins it consciously, with a per-delta derivation showing each count change is its
+     mechanism's expected effect — never re-pin to green a red gate you do not understand.
+     **This gate never retries a hung run** — a
      blanket retry would swallow the wake regressions it exists to catch. Its `EXPECTED_EXITS` floor
      is a consciously re-pinned literal in the script; a phase that adds or removes a userspace test
      program re-pins it in the same PR.
@@ -1184,6 +1190,17 @@ rule 5 exists to prevent. (This is also artifact §5.2's own reason for keeping 
 **Files.** `kernel/src/process/manager.rs`, `kernel/src/syscall/clone.rs`,
 `kernel/src/interrupts/context_switch.rs` (dispatch gate),
 `userspace/programs/src/clonevm_exec_test.rs`, plus `tests/context_restore_structure.rs`.
+*(Amended when P3 shipped, because the list as ratified could not produce the evidence the ACs
+demand. Added: `kernel/src/tracing/providers/teardown.rs` and `kernel/src/test_framework/registry.rs`
+for the two arch-neutral oracles and the aarch64 real-dispatch refusal oracle; `kernel/src/main.rs`
+and `userspace/programs/src/init.rs` for the x86 and aarch64 launch of `clonevm_exec_test`, which was
+built but launched nowhere — the aarch64 half has to live in `init` because the kernel's ext2
+test-binary loader is `#[cfg(feature = "testing")]` and every aarch64 gate builds `boot_tests`;
+`kernel/src/task/scheduler.rs` and `kernel/src/process/process.rs` for the x86 requeue of a refused
+dispatch and the boot-test publication fault injector; and
+`docker/qemu/run-x86-boot-tests.sh`, `docker/qemu/run-boot-parallel.sh`,
+`docker/qemu/run-aarch64-full-test.sh` and `tests/teardown_structure.rs` for the marker pins and the
+`EXPECTED_USERSPACE_EXITS` re-pins that standard-gate item 2 requires in the same PR.)*
 **Named split seam (rule 5, not a size rule): {exec detach} / {clone-exec admission + `Creating`
 dispatch arm}** — **named, NOT fired: this phase is ONE PR** (ledger row 4 = artifact §5.2's `T2-b`,
 whose revert story §5.2 writes out as one: *"delete the two field assignments **+ the admission
@@ -1199,14 +1216,66 @@ because dispatch refuses `Creating` rows, so shipping either without the other i
 **Gate extras.**
 - Extended `clonevm_exec_test`: successful exec → both fields `None`, fresh root, effective
   TGID == pid, and a kill aimed at the **old** group cannot reach it; failed exec → both fields
-  byte-identical to pre-exec.
-- "Fresh root" is **observed, not argued**: the exec-cohort per-PID oracle already in
-  `kernel/src/tracing/providers/teardown.rs` (`fork_exit_defer_reclaim_pairing_test`, `:1192`) and its
-  x86 counter line `PT_EXEC_COHORT` carry the assertion. Root ownership itself is enforced in-tree now
-  (`owned_root_slots`, `PT_ROOT_SLOT_REFUSED` fail-closed, receipt-carried superseded roots), so P3
-  consumes that machinery instead of building an argument on paper.
+  byte-identical to pre-exec. *(Where each half of this lives, recorded when P3 shipped: the
+  userspace program carries the deterministic exec, the live-sibling refusal and the post-exec futex
+  keys; the field, root, TGID and **kill-reachability** observations are made in the kernel by
+  `exec_detach_oracle_test`, on both arches. The kill half cannot be driven from userspace at P3
+  because no group-scoped kill **syscall** exists until P9 — `sys_kill` is pid-scoped — and the only
+  userspace row that could carry a foreign group id is a `CLONE_VM` child, whose exec the live-sibling
+  guard refuses while its group leader is alive and whose leader cannot be retired first without
+  exercising the open **#468** address-space refcount defect inside the gate. So the oracle aims the
+  kill the way P9's sweep will: it selects victims with the production membership expression
+  `thread_group_id.unwrap_or(pid)` — the same one `sys_clone` derives a child's group from and
+  `futex.rs::current_thread_group_id` reads — and delivers a real signal through the row's own
+  `SignalState`, exactly as `sys_kill`'s non-`SIGKILL` path does. Three counters carry it, each exactly
+  2 (one per exec body) on both arches: `old_group_reached_pre` (the anti-vacuity control — the row
+  IS reachable while it is still a member), `old_group_missed_post` (the assertion), and
+  `self_group_reached_post` (the positive control — the delivery path still works after the exec, so
+  the miss is detachment and not a broken probe).)*
+- "Fresh root" is **observed, not argued**: the exec-cohort per-PID oracle in
+  `kernel/src/tracing/providers/teardown.rs` is `exec_supersede_cohort_test`, which emits the x86
+  counter line `PT_EXEC_COHORT`. *(This sentence previously named `fork_exit_defer_reclaim_pairing_test`,
+  `:1192` — a doc error: that function is the fork/exit defer-reclaim pairing oracle and emits no
+  `PT_EXEC_COHORT`. Corrected when P3 shipped.)* Because `exec_supersede_cohort_test` is
+  `#[cfg(all(feature = "boot_tests", target_arch = "x86_64"))]` it cannot carry AC-6's "both arches in
+  one commit" alone, so **P3 adds `exec_detach_oracle_test`**, an arch-neutral oracle that reads the
+  row's own `level_4_frame()` back after a real exec and compares it against the recorded pre-exec group
+  root, emitting `[EXEC_DETACH_ORACLE:<arch>:…]` on both arches. Root ownership itself is enforced
+  in-tree now (`owned_root_slots`, `PT_ROOT_SLOT_REFUSED` fail-closed, receipt-carried superseded
+  roots), so P3 consumes that machinery instead of building an argument on paper.
 - Futex behaviour across an exec verified explicitly (the group id falls back to pid — `futex.rs` is
   the main consumer). Deterministic clone-vs-exec race.
+- The `Creating` dispatch arm is proven by a **real dispatch**, not by calling its predicate.
+  *(Added when P3 shipped. A counter driven nonzero by a direct call to `refuse_unpublished_dispatch`
+  proves the predicate; rule 2 is about **arms**. `creating_dispatch_refusal_test` therefore injects
+  the fault the arm exists for — a row forced back to `ProcessState::Creating` while a real scheduler
+  thread bound to it is runnable on another CPU — and observes the refusal counter rise by **two**
+  through the actual dispatcher. Two, not one: the second refusal is only reachable if the first one
+  requeued the thread, so the count is the runtime evidence that the recovery arm is a retry and not a
+  strand. The row is then published and the thread observed to actually run.
+  `[CREATING_DISPATCH_ORACLE:aarch64:…]` is pinned by the aarch64 gate, and the ratchet forbids the
+  oracle from calling the predicate directly. The same round fixed the x86 arms, which redirected to
+  idle without requeueing the refused thread — `scheduler::switch_to_idle()` only rewrites
+  `cpu_state[cpu].current_thread`, so on x86 a refused thread was left neither current nor queued;
+  `scheduler::requeue_refused_dispatch` is the x86 counterpart of the aarch64 arm's
+  `requeue_thread_after_save`, and both ratchets now pin `switch_to_idle → requeue → return`.
+  **Disclosed asymmetry (deviation D13): the real-dispatch proof exists on aarch64 only; the x86 arm
+  is structurally-pinned-only, and cannot be runtime-proven until #567 is fixed.** x86 does not run
+  the boot-test registry at all — its `[BOOT_TESTS:PASS]` is emitted by `advance_stage_marker_only`
+  on the syscall path, and every x86 custody oracle is an explicit `run_x86_*_gate()` driver called
+  from `kernel_main_on_kernel_stack` — correction: that call site runs with interrupts **enabled**
+  (`kernel/src/main.rs:600-652`, the IF=1 driver-post-init self-test window the in-tree comment says
+  the gates need precisely because they require live timer ticks and scheduler epochs), not disabled
+  as an earlier draft of this clause and commit 98233a3c's message both stated; the true barrier is
+  open #567's poisoned-resume hazard in that same IF=1 window — a thread resumed after a boot-time
+  yield/spawn can come back with a corrupted CPU context (garbage RIP, `#GP`, or a page fault reading
+  a poisoned/`0x44…`-filled frame) rather than genuinely being unable to dispatch. #567 documents that
+  window as actively fatal to any scheduling event ("spawns a kthread and lets it be scheduled … can
+  resume with a corrupted CPU context and die"), which is why four scheduling tests are already
+  deferred there. A real x86 `Creating` dispatch therefore requires the exact mechanism #567 names as
+  broken. This is disclosed rather than worked around: no gate FAIL condition was relaxed for it, the
+  two x86 arms keep their exact ordering pins, and the vector design is recorded on #567 to be built
+  when #567 closes.)*
 - The exec-path lock order PR #577 ratcheted stays green: `[EXEC_LOCK_ORDER:VIOLATION:PM_HELD]` at
   zero across the full gate, and `tests/exec_lock_order_structure.rs` (25 tests) unbroken by the new
   commit-point code. *(Extending that ratchet to the creation sites is P4's gate, not this one.)*

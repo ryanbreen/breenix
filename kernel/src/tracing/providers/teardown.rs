@@ -28,6 +28,45 @@ static EXIT_KICK_TEST_HOOK_RESERVED: AtomicU64 = AtomicU64::new(0);
 static EXIT_KICK_TEST_HOOK_RELEASE: AtomicU64 = AtomicU64::new(1);
 #[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
 static EXIT_KICK_TEST_HOOK_CPU: AtomicU64 = AtomicU64::new(u64::MAX);
+#[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
+static PROBE_DISPATCHED: core::sync::atomic::AtomicBool =
+    core::sync::atomic::AtomicBool::new(false);
+#[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
+static PROBE_ROOT_RELEASE_OBSERVATION: AtomicU64 = AtomicU64::new(0);
+#[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
+const PROBE_ROOT_RELEASE_DONE: u64 = 1 << 0;
+#[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
+const PROBE_ROOT_HARDWARE_CLEAR: u64 = 1 << 1;
+#[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
+const PROBE_ROOT_SHADOW_CLEAR: u64 = 1 << 2;
+#[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
+const PROBE_ROOT_CACHED_CLEAR: u64 = 1 << 3;
+
+#[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
+extern "C" fn creating_dispatch_probe_entry(thread_id: u64, root: u64) -> ! {
+    crate::per_cpu_aarch64::preempt_disable();
+    PROBE_DISPATCHED.store(true, Ordering::Release);
+    let (hardware_clear, shadow_clear, cached_clear) =
+        crate::arch_impl::aarch64::context_switch::quiesce_probe_ttbr0_for_test(thread_id, root);
+    let observation = PROBE_ROOT_RELEASE_DONE
+        | if hardware_clear {
+            PROBE_ROOT_HARDWARE_CLEAR
+        } else {
+            0
+        }
+        | if shadow_clear {
+            PROBE_ROOT_SHADOW_CLEAR
+        } else {
+            0
+        }
+        | if cached_clear {
+            PROBE_ROOT_CACHED_CLEAR
+        } else {
+            0
+        };
+    PROBE_ROOT_RELEASE_OBSERVATION.store(observation, Ordering::Release);
+    crate::arch_impl::aarch64::context_switch::schedule_terminated_from_exit(thread_id)
+}
 
 #[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
 const KTHREAD_EXIT_PROGRESS_SLOT_COUNT: usize = 64;
@@ -492,6 +531,8 @@ counter!(
     "Mappings refused into inherited root slots"
 );
 counter!(PT_SHADOW_ROOT_CLEARED, "Saved x86 process roots cleared");
+counter!(CLONE_ADMISSION_ADMITTED, "Clone admissions accepted");
+counter!(CLONE_ADMISSION_REFUSED, "Clone admissions refused");
 
 // Declaration-only until the phase named in PLAN.md. These intentionally have
 // no trace_count! producer yet.
@@ -520,7 +561,7 @@ counter!(
     "Fatal group signals dropped for init"
 );
 
-pub const COUNTER_COUNT: usize = 72;
+pub const COUNTER_COUNT: usize = 74;
 
 /// The registration and normal-context reader inventory. Keeping one inventory
 /// makes a write-only counter structurally impossible without changing the P0
@@ -584,6 +625,8 @@ pub static COUNTERS: [&TraceCounter; COUNTER_COUNT] = [
     &PT_RETIRE_BUDGET_REQUEUED,
     &PT_ROOT_SLOT_REFUSED,
     &PT_SHADOW_ROOT_CLEARED,
+    &CLONE_ADMISSION_ADMITTED,
+    &CLONE_ADMISSION_REFUSED,
     &RECLAIM_PASS_SKIPPED,
     &RECLAIM_PARKED,
     &RECLAIM_UNPARKED_EPOCH,
@@ -1011,6 +1054,25 @@ pub fn record_exit_request(already_terminated: bool) {
     } else {
         crate::trace_count!(EXIT_FIRST_REQUESTS);
     }
+}
+
+#[inline(always)]
+pub fn record_clone_admission(admitted: bool) {
+    if admitted {
+        crate::trace_count!(CLONE_ADMISSION_ADMITTED);
+    } else {
+        crate::trace_count!(CLONE_ADMISSION_REFUSED);
+    }
+}
+
+#[cfg(feature = "boot_tests")]
+pub fn clone_admission_admitted() -> u64 {
+    CLONE_ADMISSION_ADMITTED.aggregate()
+}
+
+#[cfg(feature = "boot_tests")]
+pub fn clone_admission_refused() -> u64 {
+    CLONE_ADMISSION_REFUSED.aggregate()
 }
 
 static RECLAIM_PROOF_DEPTH: [AtomicU64; crate::tracing::MAX_CPUS] =
@@ -2308,6 +2370,1443 @@ pub fn exec_supersede_cohort_test() -> crate::test_framework::registry::TestResu
     TestResult::Pass
 }
 
+/// Deliver `sig` to every row a group-scoped kill aimed at `group` would select.
+/// Membership is the production predicate: thread_group_id.unwrap_or(pid) == group.
+/// Returns the number of live rows the signal actually reached.
+#[cfg(feature = "boot_tests")]
+fn signal_thread_group_for_test(group: u64, sig: u32) -> usize {
+    let mut manager_guard = crate::process::manager();
+    let Some(manager) = manager_guard.as_mut() else {
+        return 0;
+    };
+    let target_pids: alloc::vec::Vec<_> = manager
+        .all_processes()
+        .into_iter()
+        .filter(|process| {
+            !process.is_terminated()
+                && process.thread_group_id.unwrap_or(process.id.as_u64()) == group
+        })
+        .map(|process| process.id)
+        .collect();
+    let mut reached = 0;
+    for pid in target_pids {
+        if let Some(process) = manager.get_process_mut(pid) {
+            process.signals.set_pending(sig);
+            reached += usize::from(process.signals.is_pending(sig));
+        }
+    }
+    reached
+}
+
+#[cfg(feature = "boot_tests")]
+fn take_pending_signal_for_test(pid: crate::process::ProcessId, sig: u32) -> bool {
+    let mut manager_guard = crate::process::manager();
+    let Some(manager) = manager_guard.as_mut() else {
+        return false;
+    };
+    let Some(process) = manager.get_process_mut(pid) else {
+        return false;
+    };
+    if process.is_terminated() || !process.signals.is_pending(sig) {
+        return false;
+    }
+    process.signals.clear_pending(sig);
+    true
+}
+
+#[cfg(feature = "boot_tests")]
+pub fn exec_detach_oracle_test() -> crate::test_framework::registry::TestResult {
+    #[cfg(not(target_arch = "x86_64"))]
+    use crate::memory::arch_stub::VirtAddr;
+    use crate::test_framework::registry::TestResult;
+    #[cfg(target_arch = "x86_64")]
+    use x86_64::VirtAddr;
+
+    // All per-architecture residuals below are manifestations of issue #583:
+    // `GuardedStack::drop` does not reclaim user stack frames. They are counted
+    // rather than freed because a counted leak beats an over-free; closing #583
+    // should drive all of them to zero.
+    #[cfg(target_arch = "aarch64")]
+    const EXPECTED_LEAF_RESIDUAL: u64 = 16;
+    #[cfg(target_arch = "x86_64")]
+    const EXPECTED_LEAF_RESIDUAL: u64 = 16;
+    #[cfg(target_arch = "aarch64")]
+    const EXPECTED_STACK_RESIDUAL: i64 = 18;
+    #[cfg(target_arch = "x86_64")]
+    const EXPECTED_STACK_RESIDUAL: i64 = 149;
+    const EXPECTED_ROOTS_CREATED: u64 = 5;
+
+    fn test_user_entry() {}
+
+    fn process_row(pid: crate::process::ProcessId, name: &'static str) -> crate::process::Process {
+        let entry = VirtAddr::new(0x0040_0000);
+        let stack_top = VirtAddr::new(0x0080_0000);
+        let stack_bottom = VirtAddr::new(0x007f_0000);
+        let tls = VirtAddr::new(0x0001_0000);
+        let mut process =
+            crate::process::Process::new(pid, alloc::string::String::from(name), entry);
+        let mut thread = crate::task::thread::Thread::new(
+            alloc::string::String::from(name),
+            test_user_entry,
+            stack_top,
+            stack_bottom,
+            tls,
+            crate::task::thread::ThreadPrivilege::Kernel,
+        );
+        thread.owner_pid = Some(pid.as_u64());
+        process.set_main_thread(thread);
+        process
+    }
+
+    fn mark_clone_vm_member(
+        process: &mut crate::process::Process,
+        leader_root: u64,
+        leader_pid: crate::process::ProcessId,
+    ) {
+        assert!(process.inherited_cr3.replace(leader_root).is_none());
+        assert!(process
+            .thread_group_id
+            .replace(leader_pid.as_u64())
+            .is_none());
+    }
+
+    fn invoke_exec(
+        manager: &mut crate::process::ProcessManager,
+        pid: crate::process::ProcessId,
+        elf: &[u8],
+        with_argv: bool,
+    ) -> Result<(), &'static str> {
+        if with_argv {
+            let argv: [&[u8]; 1] = [b"exec_detach_oracle\0"];
+            manager
+                .exec_process_with_argv(pid, elf, Some("exec_detach_oracle"), &argv)
+                .map(|_| ())
+        } else {
+            manager
+                .exec_process(pid, elf, Some("exec_detach_oracle"))
+                .map(|_| ())
+        }
+    }
+
+    fn exit_and_remove_unowned_row(
+        pid: crate::process::ProcessId,
+        unavailable_reason: &'static str,
+        missing_reason: &'static str,
+    ) -> Result<(), &'static str> {
+        let thread_id = {
+            let manager_guard = crate::process::manager();
+            let Some(manager) = manager_guard.as_ref() else {
+                return Err(unavailable_reason);
+            };
+            manager
+                .get_process(pid)
+                .and_then(|process| process.main_thread.as_ref())
+                .map(|thread| thread.id)
+                .ok_or(missing_reason)?
+        };
+        crate::process::exit_process_for_teardown_test(pid, 0);
+        crate::task::process_task::ProcessScheduler::handle_thread_exit(thread_id, 0);
+        let mut manager_guard = crate::process::manager();
+        let Some(manager) = manager_guard.as_mut() else {
+            return Err(unavailable_reason);
+        };
+        if !manager
+            .get_process(pid)
+            .map(|process| process.is_terminated())
+            .unwrap_or(false)
+        {
+            return Err(missing_reason);
+        }
+        manager.remove_from_ready_queue(pid);
+        manager.remove_process(pid);
+        Ok(())
+    }
+
+    fn retire_and_remove_owned_row(
+        pid: crate::process::ProcessId,
+        unavailable_reason: &'static str,
+        missing_reason: &'static str,
+    ) -> Result<(), &'static str> {
+        let reclaim = {
+            let mut manager_guard = crate::process::manager();
+            let Some(manager) = manager_guard.as_mut() else {
+                return Err(unavailable_reason);
+            };
+            let reclaim = {
+                let Some(process) = manager.get_process_mut(pid) else {
+                    return Err(missing_reason);
+                };
+                let reclaim = crate::task::process_task::defer_process_resources(process);
+                crate::task::process_task::release_process_resources(process);
+                reclaim
+            };
+            manager.remove_from_ready_queue(pid);
+            manager.remove_process(pid);
+            reclaim
+        };
+        crate::task::process_task::enqueue_process_reclaim(reclaim);
+        let cleanup_deadline =
+            retirement_oracle_clock_now().saturating_add(retirement_oracle_clock_delta(5_000));
+        while crate::task::process_task::boot_reclaim_locations(pid.as_u64()) != (false, false) {
+            crate::task::scheduler::nudge_retirement_grace_for_test();
+            let boundary_deadline =
+                retirement_oracle_clock_now().saturating_add(retirement_oracle_clock_delta(1));
+            while retirement_oracle_clock_now() < boundary_deadline {
+                core::hint::spin_loop();
+            }
+            crate::task::process_task::boot_reclaim_deferred_process_resources();
+            if retirement_oracle_clock_now() >= cleanup_deadline {
+                return Err("exec detach owned-row deferred cleanup did not quiesce");
+            }
+        }
+        Ok(())
+    }
+
+    let reclaim_owner = match crate::task::process_task::BootReclaimTestGuard::enter() {
+        Ok(guard) => guard,
+        Err(_) => {
+            return TestResult::Fail("reclaim queues not quiescent at exec detach oracle start")
+        }
+    };
+    let allocator_used_before = frame_allocator_used_frames();
+    let table_frames_recorded_before = PT_TABLE_FRAMES_RECORDED.aggregate();
+    let table_frames_returned_before = PT_TABLE_FRAMES_RETURNED.aggregate();
+    let roots_retired_before = PT_ROOTS_RETIRED.aggregate();
+    let leaf_mappings_recorded_before = LEAF_MAPPINGS_RECORDED.aggregate();
+    let leaf_mappings_released_before = LEAF_MAPPINGS_RELEASED.aggregate();
+    let leaf_frames_returned_before = LEAF_FRAMES_RETURNED.aggregate();
+    let table_frames_lost_before = PT_RETIRE_FRAMES_LOST.aggregate();
+    let dropped_undecided_before = PT_ROOT_DROPPED_UNDECIDED.aggregate();
+    let dropped_mid_retire_before = PT_ROOT_DROPPED_MID_RETIRE.aggregate();
+    let no_arch_before = PT_ROOT_ABANDONED_NO_ARCH.aggregate();
+    let refusal_counters_before = [
+        FRAME_RETURN_REFUSED_DOUBLE.aggregate(),
+        FRAME_RETURN_REFUSED_STALE.aggregate(),
+        FRAME_RETURN_REFUSED_NEVER_ALLOCATED.aggregate(),
+        FRAME_RETURN_REFUSED_UNTRACKED.aggregate(),
+        FRAME_DUPLICATE_ALLOC_REFUSED.aggregate(),
+        FRAME_RETURN_REFUSED_LIVE_LEAF.aggregate(),
+        LEAF_DECREF_UNREGISTERED.aggregate(),
+        LEAF_CUSTODY_REFUSED.aggregate(),
+    ];
+
+    #[cfg(target_arch = "aarch64")]
+    let corrupt = crate::memory::process_memory::corrupt_executable_fixture();
+    #[cfg(target_arch = "x86_64")]
+    let corrupt = crate::memory::process_memory::x86_corrupt_executable_fixture();
+    #[cfg(target_arch = "aarch64")]
+    let valid = crate::memory::process_memory::valid_executable_fixture();
+    #[cfg(target_arch = "x86_64")]
+    let valid = crate::memory::process_memory::x86_valid_executable_fixture();
+
+    let leader_pid = {
+        let mut manager_guard = crate::process::manager();
+        let Some(manager) = manager_guard.as_mut() else {
+            return TestResult::Fail("process manager unavailable for exec detach leader insert");
+        };
+        match manager.create_process(alloc::string::String::from("exec_detach_leader"), &valid) {
+            Ok(pid) => pid,
+            Err(_) => return TestResult::Fail("exec detach leader page-table allocation failed"),
+        }
+    };
+    let mut roots_created = 1u64;
+    let leader_root = {
+        let manager_guard = crate::process::manager();
+        let Some(manager) = manager_guard.as_ref() else {
+            return TestResult::Fail("process manager unavailable for exec detach leader root");
+        };
+        let Some(page_table) = manager
+            .get_process(leader_pid)
+            .and_then(|process| process.page_table.as_ref())
+        else {
+            return TestResult::Fail("exec detach leader row has no page table");
+        };
+        page_table.level_4_frame().start_address().as_u64()
+    };
+
+    let mut bodies = 0usize;
+    let mut fail_preserved = 0usize;
+    #[cfg(target_arch = "aarch64")]
+    let mut sibling_refused = 0usize;
+    #[cfg(target_arch = "x86_64")]
+    let sibling_refused = 0usize;
+    let mut success_detached = 0usize;
+    let mut fresh_root = 0usize;
+    let mut tgid_self = 0usize;
+    let mut old_group_reached_pre = 0usize;
+    let mut old_group_missed_post = 0usize;
+    let mut self_group_reached_post = 0usize;
+    let mut first_failure: Option<&'static str> = None;
+    let mut reclaim_pids = [0u64; 5];
+    let mut reclaim_pid_count = 0usize;
+
+    for body in 0..2 {
+        let with_argv = body == 1;
+        let member_pid = {
+            let manager_guard = crate::process::manager();
+            let Some(manager) = manager_guard.as_ref() else {
+                return TestResult::Fail("process manager unavailable for exec detach member PID");
+            };
+            manager.allocate_pid()
+        };
+        let mut member = process_row(member_pid, "exec_detach_member");
+        mark_clone_vm_member(&mut member, leader_root, leader_pid);
+        {
+            let mut manager_guard = crate::process::manager();
+            let Some(manager) = manager_guard.as_mut() else {
+                return TestResult::Fail(
+                    "process manager unavailable for exec detach member insert",
+                );
+            };
+            manager.insert_process(member_pid, member);
+        }
+        bodies += 1;
+
+        let old_group_pre_count =
+            signal_thread_group_for_test(leader_pid.as_u64(), crate::signal::constants::SIGUSR1);
+        let member_reached_pre =
+            take_pending_signal_for_test(member_pid, crate::signal::constants::SIGUSR1);
+        let leader_reached_pre =
+            take_pending_signal_for_test(leader_pid, crate::signal::constants::SIGUSR1);
+        if old_group_pre_count == 2 && member_reached_pre && leader_reached_pre {
+            old_group_reached_pre += 1;
+        } else if first_failure.is_none() {
+            first_failure =
+                Some("a kill aimed at the pre-exec group failed to reach a still-member row");
+        }
+
+        let failed_exec = {
+            let mut manager_guard = crate::process::manager();
+            let Some(manager) = manager_guard.as_mut() else {
+                return TestResult::Fail("process manager unavailable for exec detach failure arm");
+            };
+            invoke_exec(manager, member_pid, &corrupt, with_argv)
+        };
+        let (failed_inherited_cr3, failed_thread_group_id) = {
+            let manager_guard = crate::process::manager();
+            let Some(manager) = manager_guard.as_ref() else {
+                return TestResult::Fail(
+                    "process manager unavailable for exec detach failure observation",
+                );
+            };
+            match manager.get_process(member_pid) {
+                Some(process) => (process.inherited_cr3, process.thread_group_id),
+                None => {
+                    if first_failure.is_none() {
+                        first_failure = Some("exec detach member disappeared after failed exec");
+                    }
+                    (None, None)
+                }
+            }
+        };
+        let failure_error_exact = matches!(failed_exec, Err("Segment data out of bounds"));
+        if failure_error_exact {
+            roots_created = roots_created.saturating_add(1);
+        }
+        let failure_inherited_preserved = failed_inherited_cr3 == Some(leader_root);
+        let failure_tgid_preserved = failed_thread_group_id == Some(leader_pid.as_u64());
+        if !failure_error_exact && first_failure.is_none() {
+            first_failure = Some("exec detach corrupt fixture did not fail at segment bounds");
+        }
+        if !failure_inherited_preserved && first_failure.is_none() {
+            first_failure = Some("failed exec mutated inherited_cr3");
+        }
+        if !failure_tgid_preserved && first_failure.is_none() {
+            first_failure = Some("failed exec mutated thread_group_id");
+        }
+        if failure_error_exact && failure_inherited_preserved && failure_tgid_preserved {
+            fail_preserved += 1;
+        }
+
+        #[cfg(target_arch = "aarch64")]
+        {
+            let sibling_pid = {
+                let manager_guard = crate::process::manager();
+                let Some(manager) = manager_guard.as_ref() else {
+                    return TestResult::Fail(
+                        "process manager unavailable for exec detach sibling PID",
+                    );
+                };
+                manager.allocate_pid()
+            };
+            let mut sibling = process_row(sibling_pid, "exec_detach_sibling");
+            mark_clone_vm_member(&mut sibling, leader_root, leader_pid);
+            {
+                let mut manager_guard = crate::process::manager();
+                let Some(manager) = manager_guard.as_mut() else {
+                    return TestResult::Fail(
+                        "process manager unavailable for exec detach sibling insert",
+                    );
+                };
+                manager.insert_process(sibling_pid, sibling);
+            }
+
+            let refused_exec = {
+                let mut manager_guard = crate::process::manager();
+                let Some(manager) = manager_guard.as_mut() else {
+                    return TestResult::Fail(
+                        "process manager unavailable for exec detach sibling arm",
+                    );
+                };
+                invoke_exec(manager, member_pid, &valid, with_argv)
+            };
+            let (refused_inherited_cr3, refused_thread_group_id) = {
+                let manager_guard = crate::process::manager();
+                let Some(manager) = manager_guard.as_ref() else {
+                    return TestResult::Fail(
+                        "process manager unavailable for exec detach sibling observation",
+                    );
+                };
+                match manager.get_process(member_pid) {
+                    Some(process) => (process.inherited_cr3, process.thread_group_id),
+                    None => {
+                        if first_failure.is_none() {
+                            first_failure =
+                                Some("exec detach member disappeared after sibling refusal");
+                        }
+                        (None, None)
+                    }
+                }
+            };
+            let sibling_error_exact = matches!(
+                refused_exec,
+                Err("exec blocked while CLONE_VM sibling shares old address space")
+            );
+            let sibling_inherited_preserved = refused_inherited_cr3 == Some(leader_root);
+            let sibling_tgid_preserved = refused_thread_group_id == Some(leader_pid.as_u64());
+            if !sibling_error_exact && first_failure.is_none() {
+                first_failure = Some("live CLONE_VM sibling did not block exec");
+            }
+            if !sibling_inherited_preserved && first_failure.is_none() {
+                first_failure = Some("sibling-refused exec mutated inherited_cr3");
+            }
+            if !sibling_tgid_preserved && first_failure.is_none() {
+                first_failure = Some("sibling-refused exec mutated thread_group_id");
+            }
+            if sibling_error_exact && sibling_inherited_preserved && sibling_tgid_preserved {
+                sibling_refused += 1;
+            }
+
+            match exit_and_remove_unowned_row(
+                sibling_pid,
+                "process manager unavailable for exec detach sibling cleanup",
+                "exec detach sibling disappeared before cleanup",
+            ) {
+                Ok(()) => {
+                    reclaim_pids[reclaim_pid_count] = sibling_pid.as_u64();
+                    reclaim_pid_count += 1;
+                }
+                Err(reason) if first_failure.is_none() => first_failure = Some(reason),
+                Err(_) => {}
+            }
+        }
+
+        let successful_exec = {
+            let mut manager_guard = crate::process::manager();
+            let Some(manager) = manager_guard.as_mut() else {
+                return TestResult::Fail("process manager unavailable for exec detach success arm");
+            };
+            invoke_exec(manager, member_pid, &valid, with_argv)
+        };
+        let mut detached = false;
+        let mut root_is_fresh = false;
+        let mut effective_tgid_is_self = false;
+        {
+            let manager_guard = crate::process::manager();
+            let Some(manager) = manager_guard.as_ref() else {
+                return TestResult::Fail(
+                    "process manager unavailable for exec detach success observation",
+                );
+            };
+            if let Some(process) = manager.get_process(member_pid) {
+                detached = process.inherited_cr3.is_none() && process.thread_group_id.is_none();
+                root_is_fresh = process
+                    .page_table
+                    .as_ref()
+                    .map(|page_table| {
+                        page_table.level_4_frame().start_address().as_u64() != leader_root
+                    })
+                    .unwrap_or(false);
+                effective_tgid_is_self =
+                    process.thread_group_id.unwrap_or(member_pid.as_u64()) == member_pid.as_u64();
+            } else if first_failure.is_none() {
+                first_failure = Some("exec detach member disappeared after successful exec");
+            }
+        }
+        if successful_exec.is_err() && first_failure.is_none() {
+            first_failure = Some("valid exec fixture did not commit");
+        }
+        if successful_exec.is_ok() {
+            roots_created = roots_created.saturating_add(1);
+        }
+        if !detached && first_failure.is_none() {
+            first_failure = Some("successful exec did not clear both CLONE_VM fields");
+        }
+        if !root_is_fresh && first_failure.is_none() {
+            first_failure = Some("successful exec did not publish an observed fresh root");
+        }
+        if !effective_tgid_is_self && first_failure.is_none() {
+            first_failure = Some("successful exec effective thread-group ID was not self");
+        }
+        if successful_exec.is_ok() && detached {
+            success_detached += 1;
+        }
+        if successful_exec.is_ok() && root_is_fresh {
+            fresh_root += 1;
+        }
+        if successful_exec.is_ok() && effective_tgid_is_self {
+            tgid_self += 1;
+        }
+
+        let old_group_post_count =
+            signal_thread_group_for_test(leader_pid.as_u64(), crate::signal::constants::SIGUSR1);
+        let member_reached_from_old_group =
+            take_pending_signal_for_test(member_pid, crate::signal::constants::SIGUSR1);
+        let leader_reached_post =
+            take_pending_signal_for_test(leader_pid, crate::signal::constants::SIGUSR1);
+        if old_group_post_count == 1 && !member_reached_from_old_group && leader_reached_post {
+            old_group_missed_post += 1;
+        } else if first_failure.is_none() {
+            first_failure = Some("a kill aimed at the pre-exec group still reached the exec'd row");
+        }
+
+        let self_group_post_count =
+            signal_thread_group_for_test(member_pid.as_u64(), crate::signal::constants::SIGUSR1);
+        let member_reached_from_self_group =
+            take_pending_signal_for_test(member_pid, crate::signal::constants::SIGUSR1);
+        if self_group_post_count == 1 && member_reached_from_self_group {
+            self_group_reached_post += 1;
+        } else if first_failure.is_none() {
+            first_failure =
+                Some("a kill aimed at the post-exec group failed to reach the exec'd row");
+        }
+
+        match retire_and_remove_owned_row(
+            member_pid,
+            "process manager unavailable for exec detach member cleanup",
+            "exec detach member disappeared before cleanup",
+        ) {
+            Ok(()) => {
+                reclaim_pids[reclaim_pid_count] = member_pid.as_u64();
+                reclaim_pid_count += 1;
+            }
+            Err(reason) if first_failure.is_none() => first_failure = Some(reason),
+            Err(_) => {}
+        }
+    }
+
+    match retire_and_remove_owned_row(
+        leader_pid,
+        "process manager unavailable for exec detach leader cleanup",
+        "exec detach leader disappeared before cleanup",
+    ) {
+        Ok(()) => {
+            reclaim_pids[reclaim_pid_count] = leader_pid.as_u64();
+            reclaim_pid_count += 1;
+        }
+        Err(reason) if first_failure.is_none() => first_failure = Some(reason),
+        Err(_) => {}
+    }
+
+    let quiesce_deadline =
+        retirement_oracle_clock_now().saturating_add(retirement_oracle_clock_delta(5_000));
+    loop {
+        crate::task::scheduler::nudge_retirement_grace_for_test();
+        let boundary_deadline =
+            retirement_oracle_clock_now().saturating_add(retirement_oracle_clock_delta(1));
+        while retirement_oracle_clock_now() < boundary_deadline {
+            core::hint::spin_loop();
+        }
+        crate::task::process_task::boot_reclaim_deferred_process_resources();
+        if reclaim_pids[..reclaim_pid_count]
+            .iter()
+            .all(|pid| crate::task::process_task::boot_reclaim_locations(*pid) == (false, false))
+        {
+            break;
+        }
+        if retirement_oracle_clock_now() >= quiesce_deadline {
+            if first_failure.is_none() {
+                first_failure = Some("exec detach deferred cleanup did not quiesce");
+            }
+            break;
+        }
+        core::hint::spin_loop();
+    }
+    core::sync::atomic::fence(Ordering::Acquire);
+
+    let allocator_used_after = frame_allocator_used_frames();
+    let stack_residual = allocator_used_after as i64 - allocator_used_before as i64;
+    let table_frames_recorded_delta = PT_TABLE_FRAMES_RECORDED
+        .aggregate()
+        .saturating_sub(table_frames_recorded_before);
+    let table_frames_returned_delta = PT_TABLE_FRAMES_RETURNED
+        .aggregate()
+        .saturating_sub(table_frames_returned_before);
+    let roots_retired_delta = PT_ROOTS_RETIRED
+        .aggregate()
+        .saturating_sub(roots_retired_before);
+    let leaf_mappings_recorded_delta = LEAF_MAPPINGS_RECORDED
+        .aggregate()
+        .saturating_sub(leaf_mappings_recorded_before);
+    let leaf_mappings_released_delta = LEAF_MAPPINGS_RELEASED
+        .aggregate()
+        .saturating_sub(leaf_mappings_released_before);
+    let leaf_frames_returned_delta = LEAF_FRAMES_RETURNED
+        .aggregate()
+        .saturating_sub(leaf_frames_returned_before);
+    // The page-table mapping records are released, but external GuardedStack
+    // frames are not returned until issue #583 is closed.
+    let leaf_residual = leaf_mappings_recorded_delta.saturating_sub(leaf_frames_returned_delta);
+    let table_frames_lost_delta = PT_RETIRE_FRAMES_LOST
+        .aggregate()
+        .saturating_sub(table_frames_lost_before);
+    let dropped_undecided_delta = PT_ROOT_DROPPED_UNDECIDED
+        .aggregate()
+        .saturating_sub(dropped_undecided_before);
+    let dropped_mid_retire_delta = PT_ROOT_DROPPED_MID_RETIRE
+        .aggregate()
+        .saturating_sub(dropped_mid_retire_before);
+    let no_arch_delta = PT_ROOT_ABANDONED_NO_ARCH
+        .aggregate()
+        .saturating_sub(no_arch_before);
+    let refusal_counters_after = [
+        FRAME_RETURN_REFUSED_DOUBLE.aggregate(),
+        FRAME_RETURN_REFUSED_STALE.aggregate(),
+        FRAME_RETURN_REFUSED_NEVER_ALLOCATED.aggregate(),
+        FRAME_RETURN_REFUSED_UNTRACKED.aggregate(),
+        FRAME_DUPLICATE_ALLOC_REFUSED.aggregate(),
+        FRAME_RETURN_REFUSED_LIVE_LEAF.aggregate(),
+        LEAF_DECREF_UNREGISTERED.aggregate(),
+        LEAF_CUSTODY_REFUSED.aggregate(),
+    ];
+    let refusal_balance = refusal_counters_after
+        .iter()
+        .zip(refusal_counters_before.iter())
+        .fold(0u64, |balance, (after, before)| {
+            balance.saturating_add((*after).abs_diff(*before))
+        });
+    // PT_TABLE_FRAMES_RECORDED counts intermediate tables; roots have their own
+    // custody count and are included in PT_TABLE_FRAMES_RETURNED.
+    let table_frames_recorded = table_frames_recorded_delta.saturating_add(roots_created);
+    let custody_balance = table_frames_returned_delta
+        .abs_diff(table_frames_recorded)
+        .saturating_add(roots_retired_delta.abs_diff(roots_created))
+        .saturating_add(table_frames_lost_delta)
+        .saturating_add(dropped_undecided_delta)
+        .saturating_add(dropped_mid_retire_delta)
+        .saturating_add(no_arch_delta)
+        .saturating_add(refusal_balance);
+    core::mem::drop(reclaim_owner);
+    if bodies != 2 && first_failure.is_none() {
+        first_failure = Some("exec detach oracle did not exercise both exec bodies");
+    }
+    if fail_preserved != 2 && first_failure.is_none() {
+        first_failure = Some("failed exec preservation count was not exact");
+    }
+    #[cfg(target_arch = "aarch64")]
+    if sibling_refused != 2 && first_failure.is_none() {
+        first_failure = Some("live-sibling refusal count was not exact");
+    }
+    #[cfg(target_arch = "x86_64")]
+    if sibling_refused != 0 && first_failure.is_none() {
+        first_failure = Some("x86 unexpectedly exercised the aarch64 sibling guard");
+    }
+    if success_detached != 2 && first_failure.is_none() {
+        first_failure = Some("successful exec detach count was not exact");
+    }
+    if fresh_root != 2 && first_failure.is_none() {
+        first_failure = Some("fresh exec root count was not exact");
+    }
+    if tgid_self != 2 && first_failure.is_none() {
+        first_failure = Some("self thread-group ID count was not exact");
+    }
+    if old_group_reached_pre != 2 && first_failure.is_none() {
+        first_failure =
+            Some("a kill aimed at the pre-exec group failed to reach a still-member row");
+    }
+    if old_group_missed_post != 2 && first_failure.is_none() {
+        first_failure = Some("a kill aimed at the pre-exec group still reached the exec'd row");
+    }
+    if self_group_reached_post != 2 && first_failure.is_none() {
+        first_failure = Some("a kill aimed at the post-exec group failed to reach the exec'd row");
+    }
+    if roots_created != EXPECTED_ROOTS_CREATED && first_failure.is_none() {
+        first_failure = Some("exec detach oracle did not create exactly five roots");
+    }
+    if table_frames_returned_delta != table_frames_recorded && first_failure.is_none() {
+        first_failure = Some("exec detach table-frame custody equality failed");
+    }
+    if roots_retired_delta != roots_created && first_failure.is_none() {
+        first_failure = Some("exec detach root custody equality failed");
+    }
+    if leaf_mappings_recorded_delta != leaf_mappings_released_delta && first_failure.is_none() {
+        first_failure = Some("exec detach leaf mapping release equality failed");
+    }
+    if (table_frames_lost_delta != 0
+        || dropped_undecided_delta != 0
+        || dropped_mid_retire_delta != 0
+        || no_arch_delta != 0)
+        && first_failure.is_none()
+    {
+        first_failure = Some("exec detach left an unclassified or lost root");
+    }
+    if refusal_counters_after != refusal_counters_before && first_failure.is_none() {
+        first_failure = Some("exec detach triggered an unexpected frame refusal");
+    }
+    if custody_balance != 0 && first_failure.is_none() {
+        first_failure = Some("exec detach custody balance was nonzero");
+    }
+    if leaf_residual != EXPECTED_LEAF_RESIDUAL && first_failure.is_none() {
+        first_failure = Some("exec detach user-stack leaf residual changed");
+    }
+    if stack_residual != EXPECTED_STACK_RESIDUAL && first_failure.is_none() {
+        first_failure = Some("exec detach user-stack residual changed");
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    let arch = "aarch64";
+    #[cfg(target_arch = "x86_64")]
+    let arch = "x86";
+    crate::serial_println!(
+        "[EXEC_DETACH_ORACLE:{}:bodies={}:fail_preserved={}:sibling_refused={}:success_detached={}:fresh_root={}:tgid_self={}:custody_balance={}:leaf_residual={}:stack_residual={}:old_group_reached_pre={}:old_group_missed_post={}:self_group_reached_post={}]",
+        arch,
+        bodies,
+        fail_preserved,
+        sibling_refused,
+        success_detached,
+        fresh_root,
+        tgid_self,
+        custody_balance,
+        leaf_residual,
+        stack_residual,
+        old_group_reached_pre,
+        old_group_missed_post,
+        self_group_reached_post
+    );
+    if let Some(reason) = first_failure {
+        return TestResult::Fail(reason);
+    }
+
+    crate::serial_println!("[TEST:process:exec_detach_oracle:PASS]");
+    TestResult::Pass
+}
+
+#[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
+pub fn creating_dispatch_refusal_test() -> crate::test_framework::registry::TestResult {
+    use crate::test_framework::registry::TestResult;
+    use alloc::boxed::Box;
+
+    /// This oracle creates exactly one real process row through
+    /// `manager.create_process(...)`; its 64 KiB user stack is 16 x 4 KiB
+    /// frames. `GuardedStack::drop` does not reclaim them (issue #583), so all
+    /// 16 mappings remain recorded instead of returned. Counted rather than
+    /// freed is deliberate: a counted leak beats an over-free. Closing #583
+    /// should drive this and the exec-detach residuals to zero together.
+    const EXPECTED_LEAF_RESIDUAL: u64 = 16;
+    /// The same unreclaimed 16 x 4 KiB user-stack frames leave the allocator
+    /// exactly 16 frames heavier. This is the same issue #583 residual class
+    /// pinned by `exec_detach_oracle_test`, and should reach zero with it.
+    const EXPECTED_USER_STACK_RESIDUAL: i64 = 16;
+
+    fn reclaim_progress_sample() -> [u64; 4] {
+        [
+            PT_RETIRE_BUDGET_REQUEUED.aggregate(),
+            PT_TABLE_FRAMES_RETURNED.aggregate(),
+            PT_ROOTS_RETIRED.aggregate(),
+            TEARDOWN_RECLAIM.aggregate(),
+        ]
+    }
+
+    fn retire_and_remove_owned_row(
+        pid: crate::process::ProcessId,
+        probe_reference_clear: [bool; 3],
+        retirement_blockers: &mut [bool; 3],
+    ) -> Result<(), &'static str> {
+        let reclaim = {
+            let mut manager_guard = crate::process::manager();
+            let Some(manager) = manager_guard.as_mut() else {
+                return Err("process manager unavailable for creating-dispatch cleanup");
+            };
+            let Some(process) = manager.get_process_mut(pid) else {
+                return Err("creating-dispatch row disappeared before cleanup");
+            };
+            crate::task::process_task::defer_process_resources(process)
+        };
+
+        let observed = crate::task::process_task::boot_root_reference_blockers(&reclaim);
+        *retirement_blockers = [
+            !probe_reference_clear[0] || observed.0,
+            !probe_reference_clear[1] || observed.1,
+            !probe_reference_clear[2] || observed.2,
+        ];
+        if retirement_blockers
+            .iter()
+            .copied()
+            .any(core::convert::identity)
+        {
+            let mut manager_guard = crate::process::manager();
+            let Some(manager) = manager_guard.as_mut() else {
+                return Err("process manager unavailable for creating-dispatch root restoration");
+            };
+            let Some(process) = manager.get_process_mut(pid) else {
+                return Err("creating-dispatch row disappeared before root restoration");
+            };
+            crate::task::process_task::boot_restore_process_resources(process, reclaim)?;
+            return Err(
+                "creating-dispatch root retained a hardware/shadow/cached reference at retirement",
+            );
+        }
+
+        {
+            let mut manager_guard = crate::process::manager();
+            let Some(manager) = manager_guard.as_mut() else {
+                return Err("process manager unavailable for creating-dispatch row removal");
+            };
+            let Some(process) = manager.get_process_mut(pid) else {
+                return Err("creating-dispatch row disappeared before removal");
+            };
+            crate::task::process_task::release_process_resources(process);
+            manager.remove_from_ready_queue(pid);
+            manager.remove_process(pid);
+        }
+        crate::task::process_task::enqueue_process_reclaim(reclaim);
+        Ok(())
+    }
+
+    let reclaim_owner = match crate::task::process_task::BootReclaimTestGuard::enter() {
+        Ok(guard) => guard,
+        Err(_) => {
+            return TestResult::Fail(
+                "reclaim queues not quiescent at creating-dispatch oracle start",
+            )
+        }
+    };
+    let allocator_used_before = frame_allocator_used_frames();
+    let table_frames_recorded_before = PT_TABLE_FRAMES_RECORDED.aggregate();
+    let table_frames_returned_before = PT_TABLE_FRAMES_RETURNED.aggregate();
+    let roots_retired_before = PT_ROOTS_RETIRED.aggregate();
+    let leaf_mappings_recorded_before = LEAF_MAPPINGS_RECORDED.aggregate();
+    let leaf_mappings_released_before = LEAF_MAPPINGS_RELEASED.aggregate();
+    let leaf_frames_returned_before = LEAF_FRAMES_RETURNED.aggregate();
+    let table_frames_lost_before = PT_RETIRE_FRAMES_LOST.aggregate();
+    let dropped_undecided_before = PT_ROOT_DROPPED_UNDECIDED.aggregate();
+    let dropped_mid_retire_before = PT_ROOT_DROPPED_MID_RETIRE.aggregate();
+    let no_arch_before = PT_ROOT_ABANDONED_NO_ARCH.aggregate();
+    let refusal_counters_before = [
+        FRAME_RETURN_REFUSED_DOUBLE.aggregate(),
+        FRAME_RETURN_REFUSED_STALE.aggregate(),
+        FRAME_RETURN_REFUSED_NEVER_ALLOCATED.aggregate(),
+        FRAME_RETURN_REFUSED_UNTRACKED.aggregate(),
+        FRAME_DUPLICATE_ALLOC_REFUSED.aggregate(),
+        FRAME_RETURN_REFUSED_LIVE_LEAF.aggregate(),
+        LEAF_DECREF_UNREGISTERED.aggregate(),
+        LEAF_CUSTODY_REFUSED.aggregate(),
+    ];
+
+    let valid = crate::memory::process_memory::valid_executable_fixture();
+    let pid = {
+        let mut manager_guard = crate::process::manager();
+        let Some(manager) = manager_guard.as_mut() else {
+            return TestResult::Fail("process manager unavailable for creating-dispatch process");
+        };
+        match manager.create_process(
+            alloc::string::String::from("creating_dispatch_probe"),
+            &valid,
+        ) {
+            Ok(pid) => pid,
+            Err(_) => {
+                return TestResult::Fail("creating-dispatch process creation failed");
+            }
+        }
+    };
+
+    let (thread_id, root, thread_box) = {
+        let mut manager_guard = crate::process::manager();
+        let Some(manager) = manager_guard.as_mut() else {
+            return TestResult::Fail("process manager unavailable for creating-dispatch attach");
+        };
+        let Some(process) = manager.get_process_mut(pid) else {
+            return TestResult::Fail("creating-dispatch row disappeared before probe attach");
+        };
+        let Some(root) = process
+            .page_table
+            .as_ref()
+            .map(|page_table| page_table.level_4_frame().start_address().as_u64())
+        else {
+            return TestResult::Fail("creating-dispatch probe row had no page-table root");
+        };
+        let Some(process_thread) = process.main_thread.as_mut() else {
+            return TestResult::Fail("creating-dispatch probe attach did not persist");
+        };
+        let thread_id = process_thread.id;
+        let Some(kernel_stack_top) = process_thread.kernel_stack_top else {
+            return TestResult::Fail("creating-dispatch main thread had no kernel stack");
+        };
+        process_thread.context = crate::task::thread::CpuContext::new_kernel_thread(
+            creating_dispatch_probe_entry as u64,
+            kernel_stack_top.as_u64(),
+        );
+        process_thread.context.x0 = thread_id;
+        process_thread.context.x1 = root;
+        process_thread.blocked_in_syscall = true;
+        let scheduler_thread = process_thread.clone();
+        process.force_unpublished_for_test();
+        (thread_id, root, Box::new(scheduler_thread))
+    };
+
+    PROBE_DISPATCHED.store(false, Ordering::Release);
+    PROBE_ROOT_RELEASE_OBSERVATION.store(0, Ordering::Release);
+    let refused_before =
+        crate::arch_impl::aarch64::context_switch::userspace_dispatch_creating_refused();
+    crate::task::scheduler::spawn_on_cpu_for_test(thread_box, 1);
+
+    let refusal_deadline =
+        retirement_oracle_clock_now().saturating_add(retirement_oracle_clock_delta(5_000));
+    let refusal_delta = loop {
+        let observed =
+            crate::arch_impl::aarch64::context_switch::userspace_dispatch_creating_refused()
+                .saturating_sub(refused_before);
+        if observed >= 2 || retirement_oracle_clock_now() >= refusal_deadline {
+            break observed;
+        }
+        core::hint::spin_loop();
+    };
+    let dispatched_before_publish = PROBE_DISPATCHED.load(Ordering::Acquire);
+
+    {
+        let mut manager_guard = crate::process::manager();
+        let Some(manager) = manager_guard.as_mut() else {
+            return TestResult::Fail("process manager unavailable for creating-dispatch publish");
+        };
+        let Some(process) = manager.get_process_mut(pid) else {
+            return TestResult::Fail("creating-dispatch row disappeared before publication");
+        };
+        process.set_ready();
+    }
+
+    let dispatch_deadline =
+        retirement_oracle_clock_now().saturating_add(retirement_oracle_clock_delta(5_000));
+    while (!PROBE_DISPATCHED.load(Ordering::Acquire)
+        || PROBE_ROOT_RELEASE_OBSERVATION.load(Ordering::Acquire) & PROBE_ROOT_RELEASE_DONE == 0)
+        && retirement_oracle_clock_now() < dispatch_deadline
+    {
+        core::hint::spin_loop();
+    }
+    let dispatched_after_publish =
+        !dispatched_before_publish && PROBE_DISPATCHED.load(Ordering::Acquire);
+    let probe_root_observation = PROBE_ROOT_RELEASE_OBSERVATION.load(Ordering::Acquire);
+    let probe_reference_clear = [
+        probe_root_observation & PROBE_ROOT_HARDWARE_CLEAR != 0,
+        probe_root_observation & PROBE_ROOT_SHADOW_CLEAR != 0,
+        probe_root_observation & PROBE_ROOT_CACHED_CLEAR != 0,
+    ];
+
+    let mut first_failure = if refusal_delta == 0 {
+        Some("creating row was not refused through scheduler dispatch")
+    } else if refusal_delta < 2 {
+        Some("creating-dispatch refusal did not requeue for a real retry")
+    } else if dispatched_before_publish {
+        Some("creating-dispatch probe ran before process publication")
+    } else if !dispatched_after_publish {
+        Some("creating-dispatch probe did not run after process publication")
+    } else {
+        None
+    };
+
+    let mut retirement_blockers = [true; 3];
+    if let Err(reason) =
+        retire_and_remove_owned_row(pid, probe_reference_clear, &mut retirement_blockers)
+    {
+        if first_failure.is_none() {
+            first_failure = Some(reason);
+        }
+    }
+
+    let cleanup_deadline =
+        retirement_oracle_clock_now().saturating_add(retirement_oracle_clock_delta(5_000));
+    loop {
+        crate::task::scheduler::nudge_retirement_grace_for_test();
+        let boundary_deadline =
+            retirement_oracle_clock_now().saturating_add(retirement_oracle_clock_delta(1));
+        while retirement_oracle_clock_now() < boundary_deadline {
+            core::hint::spin_loop();
+        }
+        crate::task::process_task::boot_reclaim_deferred_process_resources();
+        crate::task::scheduler::reclaim_terminated_threads();
+        let process_reclaimed =
+            crate::task::process_task::boot_reclaim_locations(pid.as_u64()) == (false, false);
+        let thread_reclaimed = crate::task::scheduler::with_scheduler(|scheduler| {
+            scheduler.get_thread(thread_id).is_none()
+        })
+        .unwrap_or(false);
+        if process_reclaimed && thread_reclaimed {
+            break;
+        }
+        if retirement_oracle_clock_now() >= cleanup_deadline {
+            if first_failure.is_none() {
+                first_failure = Some("creating-dispatch deferred cleanup did not quiesce");
+            }
+            break;
+        }
+        core::hint::spin_loop();
+    }
+    crate::task::scheduler::clear_cpu_affinity_for_test(thread_id);
+
+    let settle_deadline =
+        retirement_oracle_clock_now().saturating_add(retirement_oracle_clock_delta(5_000));
+    let mut settle_rounds = 0u64;
+    let mut stable_rounds = 0u64;
+    let mut settle_sample = reclaim_progress_sample();
+    let mut settle_timed_out = false;
+    loop {
+        let grace_target = crate::task::scheduler::retirement_grace_target();
+        crate::task::scheduler::nudge_retirement_grace_for_test();
+        let grace_elapsed = loop {
+            if crate::task::scheduler::retirement_grace_elapsed(&grace_target) {
+                break true;
+            }
+            if retirement_oracle_clock_now() >= settle_deadline {
+                break false;
+            }
+            core::hint::spin_loop();
+        };
+        if !grace_elapsed {
+            settle_timed_out = true;
+            break;
+        }
+        crate::task::process_task::boot_reclaim_deferred_process_resources();
+        crate::task::scheduler::reclaim_terminated_threads();
+        core::sync::atomic::fence(Ordering::Acquire);
+        let next_sample = reclaim_progress_sample();
+        settle_rounds = settle_rounds.saturating_add(1);
+        if crate::task::process_task::boot_reclaim_queue_census() == (0, 0)
+            && next_sample == settle_sample
+        {
+            stable_rounds = stable_rounds.saturating_add(1);
+            if stable_rounds >= 3 {
+                break;
+            }
+        } else {
+            stable_rounds = 0;
+        }
+        settle_sample = next_sample;
+        if retirement_oracle_clock_now() >= settle_deadline {
+            settle_timed_out = true;
+            break;
+        }
+        core::hint::spin_loop();
+    }
+    core::sync::atomic::fence(Ordering::Acquire);
+
+    let allocator_used_after = frame_allocator_used_frames();
+    let user_stack_residual = allocator_used_after as i64 - allocator_used_before as i64;
+    let table_frames_recorded_delta = PT_TABLE_FRAMES_RECORDED
+        .aggregate()
+        .saturating_sub(table_frames_recorded_before);
+    let table_frames_returned_delta = PT_TABLE_FRAMES_RETURNED
+        .aggregate()
+        .saturating_sub(table_frames_returned_before);
+    let roots_retired_delta = PT_ROOTS_RETIRED
+        .aggregate()
+        .saturating_sub(roots_retired_before);
+    let leaf_mappings_recorded_delta = LEAF_MAPPINGS_RECORDED
+        .aggregate()
+        .saturating_sub(leaf_mappings_recorded_before);
+    let leaf_mappings_released_delta = LEAF_MAPPINGS_RELEASED
+        .aggregate()
+        .saturating_sub(leaf_mappings_released_before);
+    let leaf_frames_returned_delta = LEAF_FRAMES_RETURNED
+        .aggregate()
+        .saturating_sub(leaf_frames_returned_before);
+    let leaf_residual = leaf_mappings_recorded_delta.saturating_sub(leaf_frames_returned_delta);
+    let table_frames_lost_delta = PT_RETIRE_FRAMES_LOST
+        .aggregate()
+        .saturating_sub(table_frames_lost_before);
+    let dropped_undecided_delta = PT_ROOT_DROPPED_UNDECIDED
+        .aggregate()
+        .saturating_sub(dropped_undecided_before);
+    let dropped_mid_retire_delta = PT_ROOT_DROPPED_MID_RETIRE
+        .aggregate()
+        .saturating_sub(dropped_mid_retire_before);
+    let no_arch_delta = PT_ROOT_ABANDONED_NO_ARCH
+        .aggregate()
+        .saturating_sub(no_arch_before);
+    let refusal_counters_after = [
+        FRAME_RETURN_REFUSED_DOUBLE.aggregate(),
+        FRAME_RETURN_REFUSED_STALE.aggregate(),
+        FRAME_RETURN_REFUSED_NEVER_ALLOCATED.aggregate(),
+        FRAME_RETURN_REFUSED_UNTRACKED.aggregate(),
+        FRAME_DUPLICATE_ALLOC_REFUSED.aggregate(),
+        FRAME_RETURN_REFUSED_LIVE_LEAF.aggregate(),
+        LEAF_DECREF_UNREGISTERED.aggregate(),
+        LEAF_CUSTODY_REFUSED.aggregate(),
+    ];
+    let refusal_balance = refusal_counters_after
+        .iter()
+        .zip(refusal_counters_before.iter())
+        .fold(0u64, |balance, (after, before)| {
+            balance.saturating_add((*after).abs_diff(*before))
+        });
+    let table_frames_recorded = table_frames_recorded_delta.saturating_add(1);
+    let custody_balance = table_frames_returned_delta
+        .abs_diff(table_frames_recorded)
+        .saturating_add(roots_retired_delta.abs_diff(1))
+        .saturating_add(table_frames_lost_delta)
+        .saturating_add(dropped_undecided_delta)
+        .saturating_add(dropped_mid_retire_delta)
+        .saturating_add(no_arch_delta)
+        .saturating_add(refusal_balance);
+    core::mem::drop(reclaim_owner);
+
+    if table_frames_returned_delta != table_frames_recorded && first_failure.is_none() {
+        first_failure = Some("creating-dispatch table-frame custody equality failed");
+    }
+    if roots_retired_delta != 1 && first_failure.is_none() {
+        first_failure = Some("creating-dispatch root custody equality failed");
+    }
+    if leaf_mappings_recorded_delta != leaf_mappings_released_delta && first_failure.is_none() {
+        first_failure = Some("creating-dispatch leaf mapping release equality failed");
+    }
+    if (table_frames_lost_delta != 0
+        || dropped_undecided_delta != 0
+        || dropped_mid_retire_delta != 0
+        || no_arch_delta != 0)
+        && first_failure.is_none()
+    {
+        first_failure = Some("creating-dispatch left an unclassified or lost root");
+    }
+    if refusal_counters_after != refusal_counters_before && first_failure.is_none() {
+        first_failure = Some("creating-dispatch triggered an unexpected frame refusal");
+    }
+    if custody_balance != 0 && first_failure.is_none() {
+        first_failure = Some("creating-dispatch custody balance was nonzero");
+    }
+    if leaf_residual != EXPECTED_LEAF_RESIDUAL && first_failure.is_none() {
+        first_failure = Some("creating-dispatch user-stack leaf residual changed");
+    }
+    if user_stack_residual != EXPECTED_USER_STACK_RESIDUAL && first_failure.is_none() {
+        first_failure = Some("creating-dispatch user-stack residual changed");
+    }
+
+    crate::serial_println!(
+        "[CREATING_DISPATCH_ORACLE_DIAG:aarch64:refusal_delta={}:leaf_residual={}:user_stack_residual={}:balance={}:settle_rounds={}:root={:#x}:root_release_done={}:probe_hw_clear={}:probe_shadow_clear={}:probe_cached_clear={}:retire_hw_blocked={}:retire_shadow_blocked={}:retire_cached_blocked={}]",
+        refusal_delta,
+        leaf_residual,
+        user_stack_residual,
+        custody_balance,
+        settle_rounds,
+        root,
+        usize::from(probe_root_observation & PROBE_ROOT_RELEASE_DONE != 0),
+        usize::from(probe_reference_clear[0]),
+        usize::from(probe_reference_clear[1]),
+        usize::from(probe_reference_clear[2]),
+        usize::from(retirement_blockers[0]),
+        usize::from(retirement_blockers[1]),
+        usize::from(retirement_blockers[2])
+    );
+    if settle_timed_out {
+        return TestResult::Fail(
+            "creating-dispatch settle timed out before queues and counters stabilized",
+        );
+    }
+    if let Some(reason) = first_failure {
+        return TestResult::Fail(reason);
+    }
+
+    crate::serial_println!(
+        "[CREATING_DISPATCH_ORACLE:aarch64:injected=1:refused_via_dispatch=1:requeue_retried=1:dispatched_after_publish=1:balance=0:leaf_residual={}:user_stack_residual={}]",
+        leaf_residual,
+        user_stack_residual
+    );
+    crate::serial_println!("[TEST:process:creating_dispatch_refusal:PASS]");
+    TestResult::Pass
+}
+
+#[cfg(feature = "boot_tests")]
+pub fn clone_admission_oracle_test() -> crate::test_framework::registry::TestResult {
+    #[cfg(not(target_arch = "x86_64"))]
+    use crate::memory::arch_stub::VirtAddr;
+    use crate::test_framework::registry::TestResult;
+    #[cfg(target_arch = "x86_64")]
+    use x86_64::VirtAddr;
+
+    fn test_user_entry() {}
+
+    fn test_thread(
+        pid: crate::process::ProcessId,
+        name: &'static str,
+        state: crate::task::thread::ThreadState,
+    ) -> crate::task::thread::Thread {
+        let mut thread = crate::task::thread::Thread::new(
+            alloc::string::String::from(name),
+            test_user_entry,
+            VirtAddr::new(0x0080_0000),
+            VirtAddr::new(0x007f_0000),
+            VirtAddr::new(0x0001_0000),
+            crate::task::thread::ThreadPrivilege::Kernel,
+        );
+        thread.owner_pid = Some(pid.as_u64());
+        thread.state = state;
+        thread
+    }
+
+    fn published_dispatch_refused(process: &crate::process::Process) -> bool {
+        #[cfg(target_arch = "x86_64")]
+        {
+            let thread_id = process
+                .main_thread
+                .as_ref()
+                .map(|thread| thread.id)
+                .unwrap_or(0);
+            crate::interrupts::context_switch::refuse_unpublished_dispatch(
+                process,
+                thread_id,
+                process.id.as_u64(),
+            )
+        }
+        #[cfg(target_arch = "aarch64")]
+        {
+            // The aarch64 predicate is the exact check used by
+            // set_next_ttbr0_for_thread before it reads either TTBR0 source.
+            crate::arch_impl::aarch64::context_switch::refuse_unpublished_dispatch(process)
+        }
+    }
+
+    fn creating_refused_count() -> u64 {
+        #[cfg(target_arch = "x86_64")]
+        {
+            crate::interrupts::context_switch::userspace_dispatch_creating_refused()
+        }
+        #[cfg(target_arch = "aarch64")]
+        {
+            crate::arch_impl::aarch64::context_switch::userspace_dispatch_creating_refused()
+        }
+    }
+
+    fn exit_and_remove_row(
+        pid: crate::process::ProcessId,
+        unavailable_reason: &'static str,
+        missing_reason: &'static str,
+    ) -> Result<(), &'static str> {
+        let thread_id = {
+            let manager_guard = crate::process::manager();
+            let Some(manager) = manager_guard.as_ref() else {
+                return Err(unavailable_reason);
+            };
+            manager
+                .get_process(pid)
+                .and_then(|process| process.main_thread.as_ref())
+                .map(|thread| thread.id)
+                .ok_or(missing_reason)?
+        };
+        crate::process::exit_process_for_teardown_test(pid, 0);
+        crate::task::process_task::ProcessScheduler::handle_thread_exit(thread_id, 0);
+        let mut manager_guard = crate::process::manager();
+        let Some(manager) = manager_guard.as_mut() else {
+            return Err(unavailable_reason);
+        };
+        manager.remove_from_ready_queue(pid);
+        manager.remove_process(pid);
+        Ok(())
+    }
+
+    let reclaim_owner = match crate::task::process_task::BootReclaimTestGuard::enter() {
+        Ok(guard) => guard,
+        Err(_) => {
+            return TestResult::Fail("reclaim queues not quiescent at clone admission oracle start")
+        }
+    };
+    let allocator_used_before = frame_allocator_used_frames();
+    let admitted_before = clone_admission_admitted();
+    let refused_before = clone_admission_refused();
+    let creating_before = creating_refused_count();
+    let mut first_failure: Option<&'static str> = None;
+
+    let (row_a_pid, live_admitted, terminated_refused, missing_refused) = {
+        let mut manager_guard = crate::process::manager();
+        let Some(manager) = manager_guard.as_mut() else {
+            return TestResult::Fail("process manager unavailable for clone admission rows");
+        };
+        let row_a_pid = manager.allocate_pid();
+        let mut row_a = crate::process::Process::new(
+            row_a_pid,
+            alloc::string::String::from("clone_admission_a"),
+            VirtAddr::new(0x0040_0000),
+        );
+        row_a.set_main_thread(test_thread(
+            row_a_pid,
+            "clone_admission_a_main",
+            crate::task::thread::ThreadState::Ready,
+        ));
+        manager.insert_process(row_a_pid, row_a);
+        let live_admitted = manager.admit_clone_into(row_a_pid);
+        if let Some(row_a) = manager.get_process_mut(row_a_pid) {
+            row_a.terminate_minimal(0);
+        }
+        let terminated_refused = !manager.admit_clone_into(row_a_pid);
+        let missing_pid = manager.allocate_pid();
+        let missing_refused = !manager.admit_clone_into(missing_pid);
+        (
+            row_a_pid,
+            live_admitted,
+            terminated_refused,
+            missing_refused,
+        )
+    };
+
+    if !live_admitted {
+        first_failure = Some("live row refused clone admission");
+    }
+    if !terminated_refused && first_failure.is_none() {
+        first_failure = Some("terminated row admitted clone");
+    }
+    if !missing_refused && first_failure.is_none() {
+        first_failure = Some("missing row admitted clone");
+    }
+
+    let row_b_pid = {
+        let manager_guard = crate::process::manager();
+        let Some(manager) = manager_guard.as_ref() else {
+            return TestResult::Fail("process manager unavailable for clone admission row B PID");
+        };
+        manager.allocate_pid()
+    };
+    let mut row_b = crate::process::Process::new(
+        row_b_pid,
+        alloc::string::String::from("clone_admission_b"),
+        VirtAddr::new(0x0040_0000),
+    );
+    row_b.attach_main_thread_unpublished(test_thread(
+        row_b_pid,
+        "clone_admission_b_unpublished",
+        crate::task::thread::ThreadState::Blocked,
+    ));
+
+    let creating_refused = published_dispatch_refused(&row_b);
+    let creating_after = creating_refused_count();
+    let mut published_admitted = 0u64;
+
+    row_b.set_ready();
+    let ready_before = creating_refused_count();
+    if !published_dispatch_refused(&row_b) && creating_refused_count() == ready_before {
+        published_admitted += 1;
+    } else if first_failure.is_none() {
+        first_failure = Some("set_ready row was refused as unpublished");
+    }
+
+    row_b.state = crate::process::ProcessState::Creating;
+    row_b.set_main_thread(test_thread(
+        row_b_pid,
+        "clone_admission_b_published",
+        crate::task::thread::ThreadState::Ready,
+    ));
+    let main_thread_before = creating_refused_count();
+    if !published_dispatch_refused(&row_b) && creating_refused_count() == main_thread_before {
+        published_admitted += 1;
+    } else if first_failure.is_none() {
+        first_failure = Some("set_main_thread row was refused as unpublished");
+    }
+
+    if (!creating_refused || creating_after.saturating_sub(creating_before) != 1)
+        && first_failure.is_none()
+    {
+        first_failure = Some("creating row refusal was not exact");
+    }
+
+    {
+        let mut manager_guard = crate::process::manager();
+        let Some(manager) = manager_guard.as_mut() else {
+            return TestResult::Fail(
+                "process manager unavailable for clone admission row B insert",
+            );
+        };
+        manager.insert_process(row_b_pid, row_b);
+    }
+
+    for (pid, unavailable_reason, missing_reason) in [
+        (
+            row_a_pid,
+            "process manager unavailable for clone admission row A cleanup",
+            "clone admission row A disappeared before cleanup",
+        ),
+        (
+            row_b_pid,
+            "process manager unavailable for clone admission row B cleanup",
+            "clone admission row B disappeared before cleanup",
+        ),
+    ] {
+        match exit_and_remove_row(pid, unavailable_reason, missing_reason) {
+            Ok(()) => {}
+            Err(reason) if first_failure.is_none() => first_failure = Some(reason),
+            Err(_) => {}
+        }
+    }
+
+    let quiesce_deadline =
+        retirement_oracle_clock_now().saturating_add(retirement_oracle_clock_delta(5_000));
+    while [row_a_pid, row_b_pid].iter().any(|pid| {
+        crate::task::process_task::boot_reclaim_locations(pid.as_u64()) != (false, false)
+    }) {
+        crate::task::scheduler::nudge_retirement_grace_for_test();
+        let boundary_deadline =
+            retirement_oracle_clock_now().saturating_add(retirement_oracle_clock_delta(1));
+        while retirement_oracle_clock_now() < boundary_deadline {
+            core::hint::spin_loop();
+        }
+        crate::task::process_task::boot_reclaim_deferred_process_resources();
+        if retirement_oracle_clock_now() >= quiesce_deadline {
+            if first_failure.is_none() {
+                first_failure = Some("clone admission deferred cleanup did not quiesce");
+            }
+            break;
+        }
+    }
+    core::sync::atomic::fence(Ordering::Acquire);
+
+    let admitted = clone_admission_admitted().saturating_sub(admitted_before);
+    let refused = clone_admission_refused().saturating_sub(refused_before);
+    let creating_refused = creating_refused_count().saturating_sub(creating_before);
+    let allocator_used_after = frame_allocator_used_frames();
+    let balance = allocator_used_after as i64 - allocator_used_before as i64;
+    core::mem::drop(reclaim_owner);
+
+    if admitted != 1 && first_failure.is_none() {
+        first_failure = Some("clone admitted counter delta was not exact");
+    }
+    if refused != 2 && first_failure.is_none() {
+        first_failure = Some("clone refused counter delta was not exact");
+    }
+    if creating_refused != 1 && first_failure.is_none() {
+        first_failure = Some("creating-refused counter delta was not exact");
+    }
+    if published_admitted != 2 && first_failure.is_none() {
+        first_failure = Some("published dispatch admission count was not exact");
+    }
+    if balance != 0 && first_failure.is_none() {
+        first_failure = Some("clone admission oracle did not return frame accounting to baseline");
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    let arch = "aarch64";
+    #[cfg(target_arch = "x86_64")]
+    let arch = "x86";
+    crate::serial_println!(
+        "[CLONE_ADMISSION_ORACLE:{}:admitted={}:refused={}:creating_refused={}:published_admitted={}:balance={}]",
+        arch,
+        admitted,
+        refused,
+        creating_refused,
+        published_admitted,
+        balance
+    );
+    if let Some(reason) = first_failure {
+        return TestResult::Fail(reason);
+    }
+
+    crate::serial_println!("[TEST:process:clone_admission_oracle:PASS]");
+    TestResult::Pass
+}
+
 #[cfg(all(feature = "boot_tests", target_arch = "x86_64"))]
 pub fn run_x86_exec_cohort_gate() {
     crate::serial_println!("[TEST:process:x86_exec_cohort:START]");
@@ -2316,6 +3815,26 @@ pub fn run_x86_exec_cohort_gate() {
         crate::serial_println!("[TEST:process:x86_exec_cohort:FAIL:{:?}]", result);
     }
     assert!(result.is_pass(), "x86 exec cohort gate failed");
+}
+
+#[cfg(all(feature = "boot_tests", target_arch = "x86_64"))]
+pub fn run_x86_exec_detach_gate() {
+    crate::serial_println!("[TEST:process:exec_detach_oracle:START]");
+    let result = exec_detach_oracle_test();
+    if !result.is_pass() {
+        crate::serial_println!("[TEST:process:exec_detach_oracle:FAIL:{:?}]", result);
+    }
+    assert!(result.is_pass(), "x86 exec detach oracle gate failed");
+}
+
+#[cfg(all(feature = "boot_tests", target_arch = "x86_64"))]
+pub fn run_x86_clone_admission_gate() {
+    crate::serial_println!("[TEST:process:clone_admission_oracle:START]");
+    let result = clone_admission_oracle_test();
+    if !result.is_pass() {
+        crate::serial_println!("[TEST:process:clone_admission_oracle:FAIL:{:?}]", result);
+    }
+    assert!(result.is_pass(), "x86 clone admission oracle gate failed");
 }
 
 // P20 retains its calibrated 45s local ceiling, but both it and P17 consume

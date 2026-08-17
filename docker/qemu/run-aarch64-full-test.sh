@@ -2,13 +2,13 @@
 # ARM64 Full System Test (Native QEMU)
 #
 # This test matches the manual workflow of running ./run.sh:
-#   Phase 1: Boot and run all 84 subsystem tests (wait for [BOOT_TESTS:PASS])
+#   Phase 1: Boot and run all 85 subsystem tests (wait for [BOOT_TESTS:PASS])
 #   Phase 2: Verify BWM shell is up and services launched
 #   Phase 3: Wait for bounce demo under GPU load (10+ seconds)
 #   Phase 4: Verify kernel is still alive — no crashes during sustained operation
 #
 # This is the REAL test. Unlike boot-test-native.sh which exits at the shell
-# prompt, this test waits for the full 84-test suite to complete and then
+# prompt, this test waits for the full 85-test suite to complete and then
 # monitors sustained operation under GPU load.
 #
 # Usage: ./run-aarch64-full-test.sh [--rebuild] [--boot-tests-only]
@@ -136,8 +136,8 @@ check_fatal() {
     return 1
 }
 
-# --- Phase 1: Run all 84 subsystem tests (up to 90s) ---
-echo "Phase 1: Running 84 subsystem tests..."
+# --- Phase 1: Run all 85 subsystem tests (up to 90s) ---
+echo "Phase 1: Running 85 subsystem tests..."
 echo "  (Waiting for [BOOT_TESTS:PASS] or [BOOT_TESTS:FAIL])"
 PHASE1_OK=false
 for i in $(seq 1 45); do  # 45 * 2s = 90s timeout
@@ -185,6 +185,12 @@ done
 
 if ! $PHASE1_OK && [ -z "$FAIL_REASON" ]; then
     FAIL_REASON="Phase 1 timeout: tests did not complete within 90s"
+fi
+
+if $PHASE1_OK && [ -z "$FAIL_REASON" ]; then
+    if ! grep -Fq '[CREATING_DISPATCH_ORACLE:aarch64:injected=1:refused_via_dispatch=1:requeue_retried=1:dispatched_after_publish=1:balance=0:leaf_residual=16:user_stack_residual=16]' "$OUTPUT_DIR/serial.txt" 2>/dev/null; then
+        FAIL_REASON="Phase 1: missing creating-dispatch refusal oracle marker"
+    fi
 fi
 
 # --- Phase 1b: Exercise the init-driven exec path (up to 30s) ---
@@ -236,6 +242,53 @@ if [ -z "$FAIL_REASON" ]; then
                 echo "  Exec smoke: $EXEC_COUNTER_LINE"
                 echo "Phase 1b: PASS"
             fi
+        fi
+    fi
+fi
+
+# --- Phase 1c: The exec-detach runtime proof must actually run (up to 30s) ---
+# clonevm_exec_test is launched by /sbin/init immediately after the exec smoke.
+# The kernel's ext2 test-binary loader is #[cfg(feature = "testing")] and this
+# gate builds boot_tests, so init is the only launch path in this profile; before
+# it existed the program was built and launched nowhere, and its absence was
+# invisible because no gate pinned its markers. Pin them: a silent skip (the
+# program missing from the image, or init not launching it) is now a hard failure.
+if [ -z "$FAIL_REASON" ]; then
+    echo ""
+    echo "Phase 1c: Running clonevm_exec_test (exec detach proof)..."
+    CLONEVM_OK=false
+    for i in $(seq 1 15); do
+        if grep -qF "CLONEVM_EXEC_TEST: ERROR" "$OUTPUT_DIR/serial.txt" 2>/dev/null; then
+            CLONEVM_ERROR=$(grep -F "CLONEVM_EXEC_TEST: ERROR" "$OUTPUT_DIR/serial.txt" | tail -1)
+            FAIL_REASON="Phase 1c: clonevm_exec_test reported an error ($CLONEVM_ERROR)"
+            break
+        fi
+        if FATAL=$(check_fatal); then
+            FAIL_REASON="Phase 1c: clonevm_exec_test never completed ($FATAL)"
+            break
+        fi
+        if grep -qF "CLONEVM_EXEC_TEST: PASS" "$OUTPUT_DIR/serial.txt" 2>/dev/null; then
+            CLONEVM_OK=true
+            break
+        fi
+        if ! kill -0 $QEMU_PID 2>/dev/null; then
+            FAIL_REASON="Phase 1c: clonevm_exec_test never completed (QEMU exited)"
+            break
+        fi
+        sleep 2
+    done
+
+    if ! $CLONEVM_OK && [ -z "$FAIL_REASON" ]; then
+        FAIL_REASON="Phase 1c: clonevm_exec_test never completed (30s timeout)"
+    fi
+
+    if $CLONEVM_OK && [ -z "$FAIL_REASON" ]; then
+        # The aarch64-only live-sibling arm must fire; on this arch a SKIP marker
+        # would mean the guard probe was compiled for the wrong target.
+        if ! grep -qF "CLONEVM_EXEC_TEST: live sibling refused exec" "$OUTPUT_DIR/serial.txt" 2>/dev/null; then
+            FAIL_REASON="Phase 1c: live-sibling refusal probe did not run"
+        else
+            echo "Phase 1c: PASS"
         fi
     fi
 fi
