@@ -188,7 +188,7 @@ if ! $PHASE1_OK && [ -z "$FAIL_REASON" ]; then
 fi
 
 if $PHASE1_OK && [ -z "$FAIL_REASON" ]; then
-    if ! grep -Fq '[CREATING_DISPATCH_ORACLE:aarch64:injected=1:refused_via_dispatch=1:requeue_retried=1:dispatched_after_publish=1:balance=0]' "$OUTPUT_DIR/serial.txt" 2>/dev/null; then
+    if ! grep -Fq '[CREATING_DISPATCH_ORACLE:aarch64:injected=1:refused_via_dispatch=1:requeue_retried=1:dispatched_after_publish=1:balance=0:leaf_residual=16:user_stack_residual=16]' "$OUTPUT_DIR/serial.txt" 2>/dev/null; then
         FAIL_REASON="Phase 1: missing creating-dispatch refusal oracle marker"
     fi
 fi

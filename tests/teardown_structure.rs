@@ -4801,12 +4801,61 @@ fn exec_detach_oracle_pins_pre_exec_group_reachability_control() {
 
 #[test]
 fn creating_dispatch_refusal_oracle_is_registered_and_pinned() {
-    const PINNED: &str = "[CREATING_DISPATCH_ORACLE:aarch64:injected=1:refused_via_dispatch=1:requeue_retried=1:dispatched_after_publish=1:balance=0]";
+    const FORMAT_STRING: &str = "[CREATING_DISPATCH_ORACLE:aarch64:injected=1:refused_via_dispatch=1:requeue_retried=1:dispatched_after_publish=1:balance=0:leaf_residual={}:user_stack_residual={}]";
+    const OBSERVED_ARGUMENTS: &str =
+        "\",\n        leaf_residual,\n        user_stack_residual\n    );";
+    const GATE_LITERAL: &str = "[CREATING_DISPATCH_ORACLE:aarch64:injected=1:refused_via_dispatch=1:requeue_retried=1:dispatched_after_publish=1:balance=0:leaf_residual=16:user_stack_residual=16]";
 
     let provider = repo_text("kernel/src/tracing/providers/teardown.rs");
     let oracle = function_body(&provider, "creating_dispatch_refusal_test");
     let oracle_mask = code_mask(oracle);
-    assert_eq!(oracle.matches(PINNED).count(), 1);
+    assert_eq!(oracle.matches(FORMAT_STRING).count(), 1);
+    let marker = oracle
+        .find(FORMAT_STRING)
+        .expect("creating-dispatch observed marker format string");
+    assert!(
+        oracle[marker + FORMAT_STRING.len()..].starts_with(OBSERVED_ARGUMENTS),
+        "creating-dispatch residual marker fields are not fed by the measured variables"
+    );
+    let diag = oracle
+        .find("[CREATING_DISPATCH_ORACLE_DIAG:aarch64:")
+        .expect("creating-dispatch diagnostic marker");
+    for (constant, declaration, comparison) in [
+        (
+            "EXPECTED_LEAF_RESIDUAL",
+            "const EXPECTED_LEAF_RESIDUAL: u64 = 16;",
+            "if leaf_residual != EXPECTED_LEAF_RESIDUAL && first_failure.is_none() {",
+        ),
+        (
+            "EXPECTED_USER_STACK_RESIDUAL",
+            "const EXPECTED_USER_STACK_RESIDUAL: i64 = 16;",
+            "if user_stack_residual != EXPECTED_USER_STACK_RESIDUAL && first_failure.is_none() {",
+        ),
+    ] {
+        assert!(
+            oracle.contains(declaration),
+            "creating-dispatch residual constant changed for {constant}"
+        );
+        let comparison_offset = oracle
+            .find(comparison)
+            .expect("creating-dispatch residual comparison");
+        assert!(
+            comparison_offset < diag,
+            "creating-dispatch residual comparison moved after diagnostics for {constant}"
+        );
+        assert_eq!(
+            identifier_offsets(oracle, &oracle_mask, constant).len(),
+            2,
+            "creating-dispatch residual constant census changed for {constant}"
+        );
+    }
+    for (residual, expected) in [("leaf_residual", 4), ("user_stack_residual", 4)] {
+        assert_eq!(
+            identifier_offsets(oracle, &oracle_mask, residual).len(),
+            expected,
+            "creating-dispatch residual census changed for {residual}"
+        );
+    }
     assert_eq!(
         identifier_offsets(oracle, &oracle_mask, "spawn_on_cpu_for_test").len(),
         1
@@ -4904,7 +4953,7 @@ fn creating_dispatch_refusal_oracle_is_registered_and_pinned() {
     assert!(test_def.contains("stage: TestStage::PostScheduler"));
 
     let gate = repo_text("docker/qemu/run-aarch64-full-test.sh");
-    assert_eq!(gate.matches(PINNED).count(), 1);
+    assert_eq!(gate.matches(GATE_LITERAL).count(), 1);
     assert!(
         gate.contains("FAIL_REASON=\"Phase 1: missing creating-dispatch refusal oracle marker\"")
     );

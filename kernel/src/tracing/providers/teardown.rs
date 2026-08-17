@@ -3096,6 +3096,18 @@ pub fn creating_dispatch_refusal_test() -> crate::test_framework::registry::Test
     use crate::test_framework::registry::TestResult;
     use alloc::boxed::Box;
 
+    /// This oracle creates exactly one real process row through
+    /// `manager.create_process(...)`; its 64 KiB user stack is 16 x 4 KiB
+    /// frames. `GuardedStack::drop` does not reclaim them (issue #583), so all
+    /// 16 mappings remain recorded instead of returned. Counted rather than
+    /// freed is deliberate: a counted leak beats an over-free. Closing #583
+    /// should drive this and the exec-detach residuals to zero together.
+    const EXPECTED_LEAF_RESIDUAL: u64 = 16;
+    /// The same unreclaimed 16 x 4 KiB user-stack frames leave the allocator
+    /// exactly 16 frames heavier. This is the same issue #583 residual class
+    /// pinned by `exec_detach_oracle_test`, and should reach zero with it.
+    const EXPECTED_USER_STACK_RESIDUAL: i64 = 16;
+
     fn reclaim_progress_sample() -> [u64; 4] {
         [
             PT_RETIRE_BUDGET_REQUEUED.aggregate(),
@@ -3469,6 +3481,12 @@ pub fn creating_dispatch_refusal_test() -> crate::test_framework::registry::Test
     if custody_balance != 0 && first_failure.is_none() {
         first_failure = Some("creating-dispatch custody balance was nonzero");
     }
+    if leaf_residual != EXPECTED_LEAF_RESIDUAL && first_failure.is_none() {
+        first_failure = Some("creating-dispatch user-stack leaf residual changed");
+    }
+    if user_stack_residual != EXPECTED_USER_STACK_RESIDUAL && first_failure.is_none() {
+        first_failure = Some("creating-dispatch user-stack residual changed");
+    }
 
     crate::serial_println!(
         "[CREATING_DISPATCH_ORACLE_DIAG:aarch64:refusal_delta={}:leaf_residual={}:user_stack_residual={}:balance={}:settle_rounds={}:root={:#x}:root_release_done={}:probe_hw_clear={}:probe_shadow_clear={}:probe_cached_clear={}:retire_hw_blocked={}:retire_shadow_blocked={}:retire_cached_blocked={}]",
@@ -3495,7 +3513,11 @@ pub fn creating_dispatch_refusal_test() -> crate::test_framework::registry::Test
         return TestResult::Fail(reason);
     }
 
-    crate::serial_println!("[CREATING_DISPATCH_ORACLE:aarch64:injected=1:refused_via_dispatch=1:requeue_retried=1:dispatched_after_publish=1:balance=0]");
+    crate::serial_println!(
+        "[CREATING_DISPATCH_ORACLE:aarch64:injected=1:refused_via_dispatch=1:requeue_retried=1:dispatched_after_publish=1:balance=0:leaf_residual={}:user_stack_residual={}]",
+        leaf_residual,
+        user_stack_residual
+    );
     crate::serial_println!("[TEST:process:creating_dispatch_refusal:PASS]");
     TestResult::Pass
 }
