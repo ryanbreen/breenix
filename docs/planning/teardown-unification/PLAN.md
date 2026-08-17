@@ -1258,7 +1258,18 @@ because dispatch refuses `Creating` rows, so shipping either without the other i
   idle without requeueing the refused thread — `scheduler::switch_to_idle()` only rewrites
   `cpu_state[cpu].current_thread`, so on x86 a refused thread was left neither current nor queued;
   `scheduler::requeue_refused_dispatch` is the x86 counterpart of the aarch64 arm's
-  `requeue_thread_after_save`, and both ratchets now pin `switch_to_idle → requeue → return`.)*
+  `requeue_thread_after_save`, and both ratchets now pin `switch_to_idle → requeue → return`.
+  **Disclosed asymmetry (deviation D13): the real-dispatch proof exists on aarch64 only; the x86 arm
+  is structurally-pinned-only, and cannot be runtime-proven until #567 is fixed.** x86 does not run
+  the boot-test registry at all — its `[BOOT_TESTS:PASS]` is emitted by `advance_stage_marker_only`
+  on the syscall path, and every x86 custody oracle is an explicit `run_x86_*_gate()` driver called
+  from `kernel_main_on_kernel_stack` with interrupts disabled, where `yield_current()` only sets
+  `need_resched` and no dispatch can occur. #567 documents that window as actively fatal to any
+  scheduling event ("spawns a kthread and lets it be scheduled … can resume with a corrupted CPU
+  context and die"), which is why four scheduling tests are already deferred there. A real x86
+  `Creating` dispatch therefore requires the exact mechanism #567 names as broken. This is disclosed
+  rather than worked around: no gate FAIL condition was relaxed for it, the two x86 arms keep their
+  exact ordering pins, and the vector design is recorded on #567 to be built when #567 closes.)*
 - The exec-path lock order PR #577 ratcheted stays green: `[EXEC_LOCK_ORDER:VIOLATION:PM_HELD]` at
   zero across the full gate, and `tests/exec_lock_order_structure.rs` (25 tests) unbroken by the new
   commit-point code. *(Extending that ratchet to the creation sites is P4's gate, not this one.)*
