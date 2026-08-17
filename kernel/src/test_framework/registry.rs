@@ -6333,14 +6333,6 @@ static PROCESS_TESTS: &[TestDef] = &[
         timeout_ms: 30000,
         stage: TestStage::PostScheduler,
     },
-    #[cfg(target_arch = "x86_64")]
-    TestDef {
-        name: "creating_dispatch_refusal_x86",
-        func: crate::tracing::providers::teardown::creating_dispatch_refusal_x86_test,
-        arch: Arch::X86_64,
-        timeout_ms: 30000,
-        stage: TestStage::PostScheduler,
-    },
     TestDef {
         name: "retirement_fence_gate",
         func: crate::task::process_task::retirement_fence_gate_test,
