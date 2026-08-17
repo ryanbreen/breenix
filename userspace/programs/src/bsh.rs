@@ -2176,7 +2176,7 @@ impl LineEditor {
 // Shell modes
 // ---------------------------------------------------------------------------
 
-fn run_repl() {
+fn prepare_shell_context() -> Context {
     // Make the shell a process group leader so we can manage foreground groups
     let _ = libbreenix::process::setpgid(0, 0);
 
@@ -2189,17 +2189,18 @@ fn run_repl() {
 
     // Load startup scripts
     load_rc_file(&mut ctx, "/etc/bshrc");
+    ctx
+}
 
-    // If we're the init shell, run the boot script and exit.
-    // PID 2 is the serialized boot path; PID 3 covers older init ordering where
-    // bsshd was forked before bsh.
-    // Spawned services get reparented to init (PID 1) for zombie reaping.
-    if let Ok(pid) = libbreenix::process::getpid() {
-        if pid.raw() == 2 || pid.raw() == 3 {
-            load_rc_file(&mut ctx, "/etc/init.js");
-            return;
-        }
-    }
+fn run_init_shell() {
+    let mut ctx = prepare_shell_context();
+    let _ = io::stdout().write_all(b"[bsh] init shell: loading /etc/init.js\n");
+    let _ = io::stdout().flush();
+    load_rc_file(&mut ctx, "/etc/init.js");
+}
+
+fn run_repl() {
+    let mut ctx = prepare_shell_context();
 
     let _ = io::stdout().write_all(b"breenish v0.5.0 -- ECMAScript shell for Breenix\n");
     let _ = io::stdout().flush();
@@ -2570,6 +2571,10 @@ fn main() {
     } else if args.len() == 3 && args[1] == "-e" {
         // -e 'code': evaluate string
         run_string(&args[2]);
+    } else if args.len() == 2 && args[1] == "--init-shell" {
+        // Init confers this role with this argument and nothing else, never a PID value, so
+        // process renumbering cannot change which shell runs the boot script.
+        run_init_shell();
     } else if args.len() == 2 {
         // script file
         run_file(&args[1]);

@@ -22,9 +22,6 @@ type Cpu = crate::arch_impl::x86_64::X86Cpu;
 #[cfg(target_arch = "aarch64")]
 type Cpu = crate::arch_impl::aarch64::Aarch64Cpu;
 
-/// Process ID of the init process (cannot receive signals from kill -1)
-const INIT_PID: u64 = 1;
-
 /// Userspace address limit - addresses must be below this to be valid userspace (x86_64)
 #[cfg(target_arch = "x86_64")]
 const USER_SPACE_END: u64 = 0x0000_8000_0000_0000;
@@ -35,7 +32,7 @@ const USER_SPACE_END: u64 = 0x0000_8000_0000_0000;
 /// * `pid` - Target process ID or special values:
 ///   * pid > 0: Send to process with that PID
 ///   * pid == 0: Send to all processes in caller's process group
-///   * pid == -1: Send to all processes caller can signal (except init)
+///   * pid == -1: Send to all processes caller can signal (except the designated init, if any)
 ///   * pid < -1: Send to all processes in process group abs(pid)
 /// * `sig` - Signal number to send (1-64), or 0 to check if target exists
 ///
@@ -65,7 +62,8 @@ pub fn sys_kill(pid: i64, sig: i32) -> SyscallResult {
         // Send to all processes in caller's process group
         send_signal_to_caller_process_group(sig)
     } else if pid == -1 {
-        // Send to all processes the caller can signal (except init)
+        // Send to all processes the caller can signal. The designated init is excluded when one
+        // exists; with no designated init, no process is excluded by identity.
         send_signal_to_all_processes(sig)
     } else {
         // pid < -1: Send to process group abs(pid)
@@ -117,11 +115,13 @@ fn check_target_exists(pid: i64) -> SyscallResult {
         }
         SyscallResult::Err(3) // ESRCH - No such process group
     } else if pid == -1 {
-        // Check if any signalable process exists (excluding init)
+        // Check if any signalable process exists, excluding the designated init when present.
         let manager_guard = manager();
         if let Some(ref manager) = *manager_guard {
+            let designated_init = manager.designated_init();
             for process in manager.all_processes() {
-                if process.id.as_u64() != INIT_PID && !process.is_terminated() {
+                // With no designated init, no process is excluded by identity.
+                if Some(process.id) != designated_init && !process.is_terminated() {
                     return SyscallResult::Ok(0);
                 }
             }
@@ -374,11 +374,11 @@ fn send_signal_to_process_group(pgid: ProcessId, sig: u32) -> SyscallResult {
     }
 }
 
-/// Send a signal to all processes the caller can signal (except init)
+/// Send a signal to all processes the caller can signal (except the designated init)
 ///
 /// This implements kill(-1, sig) - sends the signal to all processes
 /// for which the calling process has permission to send signals,
-/// except for the init process (PID 1).
+/// except for the designated init process. If no init is designated, no process is excluded.
 ///
 /// # Returns
 /// * 0 on success (signal sent to at least one process)
@@ -390,16 +390,17 @@ fn send_signal_to_all_processes(sig: u32) -> SyscallResult {
         signal_name(sig)
     );
 
-    // Collect PIDs of all signalable processes (excluding init)
+    // Collect PIDs of all signalable processes, excluding the designated init when present.
     let target_pids: alloc::vec::Vec<ProcessId> = {
         let manager_guard = manager();
         if let Some(ref manager) = *manager_guard {
+            let designated_init = manager.designated_init();
             manager
                 .all_processes()
                 .iter()
                 .filter(|p| {
-                    // Exclude init process and terminated processes
-                    p.id.as_u64() != INIT_PID && !p.is_terminated()
+                    // With no designated init, no process is excluded by identity.
+                    Some(p.id) != designated_init && !p.is_terminated()
                 })
                 .map(|p| p.id)
                 .collect()

@@ -7,7 +7,7 @@
 # host runs QEMU natively (as docker/qemu/run-x86-boot-tests.sh already does) and
 # has no Docker daemon, so hard-requiring `docker run` made this gate
 # unconditionally red there — and because the launch was backgrounded with its
-# output discarded, the missing binary surfaced only as a 120s "TIMEOUT" with no
+# output discarded, the missing binary surfaced only as a marker-wait "TIMEOUT" with no
 # serial output. Select the runner, and make a failed launch say so.
 
 set -e
@@ -126,7 +126,7 @@ done
 # Wait for all to complete: retain the early kthread subsystem checks, then wait
 # for the userspace TEST_TALLY and require the computed x86 gate verdict. This
 # proves the full pinned test-program cohort ran and exited successfully.
-echo "Waiting for kthread tests to complete (120s timeout)..."
+echo "Waiting for kthread tests to complete (900s timeout)..."
 PASSED=0
 FAILED=0
 
@@ -134,11 +134,15 @@ for i in $(seq 1 $COUNT); do
     OUTPUT_DIR="/tmp/breenix_boot_$i"
     FOUND=false
 
-    # Wait up to 120 seconds for kthread markers. A runner that died before
-    # producing any output is reported as a launch failure with its log, not as
-    # an indistinguishable timeout.
     LAUNCH_FAILED=false
-    for j in $(seq 1 120); do
+    # Use a 900s bound to match run-x86-boot-tests.sh: a shorter bound scores a
+    # slow-but-healthy boot as failed. This changes only how long the gate waits;
+    # a missing marker, a dead runner, and a failing x86-gate-verdict.sh verdict
+    # still fail the gate exactly as before. Measured on the beast x86 VM: 120s
+    # fails identically on main and this branch; 600s passes with exited=100.
+    # A runner that died before producing any output is reported as a launch
+    # failure with its log, not as an indistinguishable timeout.
+    for j in $(seq 1 900); do
         if grep -q "KTHREAD JOIN TEST: Completed" "$OUTPUT_DIR/serial_kernel.txt" 2>/dev/null; then
             FOUND=true
             break

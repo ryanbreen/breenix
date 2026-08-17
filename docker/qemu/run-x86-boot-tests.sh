@@ -26,6 +26,11 @@ PT_COHORT_LITERAL='[PT_RETIRE_COHORT:x86:children=64:retired=65:returned=642:rec
 PT_EXEC_COHORT_LITERAL='[PT_EXEC_COHORT:x86:children=16:superseded=3:roots=64:returned=640:recorded=576:lost=0:leaf_recorded=192:leaf_released=192:leaf_returned=192:custody_refused=0:decref_unregistered=0:undecided=0:mid_retire=0:no_arch=0:balance=0]' # The returned and recorded table-frame fields are pinned from the measured run.
 EXEC_DETACH_ORACLE_LITERAL='[EXEC_DETACH_ORACLE:x86:bodies=2:fail_preserved=2:sibling_refused=0:success_detached=2:fresh_root=2:tgid_self=2:custody_balance=0:leaf_residual=16:stack_residual=149:old_group_reached_pre=2:old_group_missed_post=2:self_group_reached_post=2]'
 CLONE_ADMISSION_ORACLE_LITERAL='[CLONE_ADMISSION_ORACLE:x86:admitted=1:refused=2:creating_refused=1:published_admitted=2:balance=0]'
+# Every field is a delta the oracle drives itself in the same run except
+# reserved_collisions, which is the absolute boot-wide count of ordinary
+# allocations that landed on the reserved init PID and must be zero.
+# construct_residual is the counted frame residue of the two construction-failure arms read off a measured green run, and it is architecture-specific (4 on x86, 2 on aarch64) because the two page-table constructors record different table-frame counts.
+INIT_DESIGNATION_ORACLE_LITERAL='[INIT_DESIGNATION_ORACLE:x86:construct_failed=2:construct_undecided=2:construct_residual=4:refused=4:accepted=1:published=1:retired=1:held_error_removals=1:reparented=1:reparent_skipped=1:ordinary_allocated=5:reserved_collisions=0:designation_balance=0]'
 # Absolute frame counts are boot-state dependent, so pin every delta exactly,
 # including the three-table recorded_pre hierarchy cost and computed tables_returned=4;
 # the in-kernel oracle asserts used_after == used_before, and a skipped/cfg'd-out block fails this gate.
@@ -34,14 +39,18 @@ EXEC_FAILED_RELEASE_PROD_LITERAL='[EXEC_FAILED_RELEASE_PROD:x86:plain_err=true:p
 # Ten launched test programs, 64 retire-cohort children, five loopback_wake_test
 # processes (parent, reader, peer, load, watchdog), 16 exec-cohort children, one
 # clonevm_exec_test process (renamed by its second-stage exec), its phase-1
-# CLONE_VM child, and two clone-admission oracle rows:
-# 10 + 64 + 5 + 16 + 1 + 1 + 1 + 1 = 99. The exec-detach oracle contributes
+# CLONE_VM child, two clone-admission oracle rows, and one init designation
+# oracle terminated-row refusal (arm A5), which is that oracle's only row that
+# passes through terminate_minimal. Its other synthetic rows are removed with
+# remove_process and contribute nothing, while its two construction-failure
+# arms create no row at all:
+# 10 + 64 + 5 + 16 + 1 + 1 + 1 + 1 + 1 = 100. The exec-detach oracle contributes
 # zero because its rows use the deferred-reclaim path rather than the
 # Process::terminate / terminate_minimal tally choke point. This is a floor,
 # checked >= by scripts/x86-gate-verdict.sh; the production-path arm execs the
 # cohort's already-inserted parent and fails without launching a new userspace
 # process; re-pin consciously.
-readonly EXPECTED_USERSPACE_EXITS=99
+readonly EXPECTED_USERSPACE_EXITS=100
 
 cd "$BREENIX_ROOT"
 cargo build --release --features boot_tests,testing,external_test_bins --bin qemu-uefi
@@ -138,6 +147,10 @@ for i in $(seq 1 "$COUNT"); do
                 "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
             && grep -qF -x "$CLONE_ADMISSION_ORACLE_LITERAL" \
                 "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
+            && grep -q '\[TEST:process:init_designation_oracle:PASS\]' \
+                "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
+            && grep -qF -x "$INIT_DESIGNATION_ORACLE_LITERAL" \
+                "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
             && grep -qF -x "$EXEC_FAILED_RELEASE_PROD_LITERAL" \
                 "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
             && grep -q '\[TEST:userspace:loopback_recv_wake:PASS\]' \
@@ -187,6 +200,8 @@ for i in $(seq 1 "$COUNT"); do
         "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 1
     test "$(grep -h -c '\[TEST:process:clone_admission_oracle:PASS\]' \
         "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 1
+    test "$(grep -h -c '\[TEST:process:init_designation_oracle:PASS\]' \
+        "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 1
     # Four scheduling tests remain deferred on x86 until #567 is fixed:
     # loopback_recv_wake_when_idle, loopback_recv_wake_under_load,
     # loopback_pump_does_not_busy_spin, and tcp_final_ack_survives_accept_publish_race.
@@ -208,6 +223,8 @@ for i in $(seq 1 "$COUNT"); do
         "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 1
     test "$(grep -h -F -x -c "$CLONE_ADMISSION_ORACLE_LITERAL" \
         "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 1
+    test "$(grep -h -F -x -c "$INIT_DESIGNATION_ORACLE_LITERAL" \
+        "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 1
     test "$(grep -h -F -x -c "$EXEC_FAILED_RELEASE_PROD_LITERAL" \
         "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 1
     EXPECTED_EXITS="$EXPECTED_USERSPACE_EXITS" \
@@ -220,6 +237,7 @@ for i in $(seq 1 "$COUNT"); do
     echo "$PT_EXEC_COHORT_LITERAL"
     echo "$EXEC_DETACH_ORACLE_LITERAL"
     echo "$CLONE_ADMISSION_ORACLE_LITERAL"
+    echo "$INIT_DESIGNATION_ORACLE_LITERAL"
     echo "$EXEC_FAILED_RELEASE_PROD_LITERAL"
     if grep -qE '\[BOOT_TESTS:FAIL|KERNEL PANIC|panic!' \
         "$OUTPUT_DIR"/serial_*.txt; then

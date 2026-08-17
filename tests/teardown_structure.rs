@@ -1266,8 +1266,8 @@ fn impl_segment(header: &str, mask: &[bool], keyword: usize) -> String {
 }
 
 /// How an item declared by `header` is named in an anchor: `fn NAME`,
-/// `impl TYPE`, `impl TRAIT for TYPE`, `mod NAME` or `trait NAME`, prefixed by
-/// its `#[cfg(...)]` attribute when it has one.
+/// `impl TYPE`, `impl TRAIT for TYPE`, `mod NAME`, `trait NAME` or
+/// `struct NAME`, prefixed by its `#[cfg(...)]` attribute when it has one.
 fn item_segment(header: &str, mask: &[bool]) -> Option<String> {
     let bytes = header.as_bytes();
     let named = |keyword: usize, length: usize| -> Option<String> {
@@ -1290,7 +1290,7 @@ fn item_segment(header: &str, mask: &[bool]) -> Option<String> {
         .filter_map(|offset| named(offset, "fn".len()).map(|name| (offset, format!("fn {name}"))))
         .next_back()
         .or_else(|| {
-            ["impl", "mod", "trait"]
+            ["impl", "mod", "trait", "struct"]
                 .into_iter()
                 .flat_map(|keyword| {
                     identifier_offsets(header, mask, keyword)
@@ -1308,7 +1308,7 @@ fn item_segment(header: &str, mask: &[bool]) -> Option<String> {
     Some(format!("{}{segment}", header_cfg(header, mask, keyword)))
 }
 
-/// Every `fn` / `impl` / `mod` / `trait` block in the file, as
+/// Every `fn` / `impl` / `mod` / `trait` / `struct` block in the file, as
 /// `(open brace offset, close brace offset, anchor segment)`.
 fn item_spans(source: &str, mask: &[bool]) -> Vec<(usize, usize, String)> {
     let bytes = source.as_bytes();
@@ -1620,6 +1620,544 @@ fn check(failures: &mut Vec<String>, label: &str, holds: bool) {
     }
 }
 
+fn typed_u64_constant_definition_offsets(
+    source: &str,
+    mask: &[bool],
+    name: &str,
+) -> Vec<usize> {
+    identifier_offsets(source, mask, name)
+        .into_iter()
+        .filter(|offset| {
+            preceded_by_keyword(source, mask, *offset, "const")
+                && code_follows(source, mask, offset + name.len(), ":u64=")
+        })
+        .collect()
+}
+
+/// Every integer constant definition whose dynamically discovered name contains
+/// both INIT and PID and whose value has the literal init-PID shape.
+fn hardcoded_init_pid_constant_offsets(source: &str, mask: &[bool]) -> Vec<usize> {
+    let bytes = source.as_bytes();
+    identifier_offsets(source, mask, "const")
+        .into_iter()
+        .filter_map(|offset| {
+            let name_start = next_code(source, mask, offset + "const".len())?;
+            let mut name_end = name_start;
+            while bytes
+                .get(name_end)
+                .is_some_and(|byte| identifier_byte(*byte) && mask[name_end])
+            {
+                name_end += 1;
+            }
+            let name = &source[name_start..name_end];
+            (name.contains("INIT")
+                && name.contains("PID")
+                && (code_follows(source, mask, name_end, ":u64=1;")
+                    || code_follows(source, mask, name_end, ":usize=1;")))
+            .then_some(offset)
+        })
+        .collect()
+}
+
+fn method_comparison_offsets(
+    source: &str,
+    mask: &[bool],
+    method: &str,
+    literal: &str,
+) -> Vec<usize> {
+    let bytes = source.as_bytes();
+    identifier_offsets(source, mask, method)
+        .into_iter()
+        .filter(|offset| {
+            previous_code(source, mask, *offset).is_some_and(|dot| bytes[dot] == b'.')
+                && (code_follows(
+                    source,
+                    mask,
+                    offset + method.len(),
+                    &format!("()=={literal}"),
+                ) || code_follows(
+                    source,
+                    mask,
+                    offset + method.len(),
+                    &format!("()!={literal}"),
+                ))
+        })
+        .collect()
+}
+
+fn direct_init_pid_comparison_offsets(source: &str, mask: &[bool]) -> Vec<usize> {
+    let mut offsets = method_comparison_offsets(source, mask, "as_u64", "1");
+    offsets.extend(method_comparison_offsets(source, mask, "raw", "1"));
+    offsets.extend(
+        identifier_offsets(source, mask, "ProcessId")
+            .into_iter()
+            .filter(|offset| {
+                code_follows(source, mask, offset + "ProcessId".len(), "::new(1)")
+            }),
+    );
+    offsets.sort_unstable();
+    offsets
+}
+
+fn self_field_assignment_offsets(source: &str, mask: &[bool], field: &str) -> Vec<usize> {
+    let bytes = source.as_bytes();
+    assignment_offsets(source, mask, field)
+        .into_iter()
+        .filter(|offset| {
+            previous_code(source, mask, *offset).is_some_and(|dot| {
+                bytes[dot] == b'.'
+                    && preceding_identifier(source, mask, dot).as_deref() == Some("self")
+            })
+        })
+        .collect()
+}
+
+/// Struct literal sites for `name`, excluding the struct item, its impl block,
+/// and `let Type { .. }` destructuring patterns.
+fn struct_literal_offsets(source: &str, mask: &[bool], name: &str) -> Vec<usize> {
+    identifier_offsets(source, mask, name)
+        .into_iter()
+        .filter(|offset| code_follows(source, mask, offset + name.len(), "{"))
+        .filter(|offset| {
+            !["struct", "impl", "let"]
+                .iter()
+                .any(|keyword| preceded_by_keyword(source, mask, *offset, keyword))
+        })
+        .collect()
+}
+
+fn struct_item_header_and_body<'a>(source: &'a str, name: &str) -> Option<(&'a str, &'a str)> {
+    let mask = code_mask(source);
+    let definitions: Vec<_> = identifier_offsets(source, &mask, name)
+        .into_iter()
+        .filter(|offset| preceded_by_keyword(source, &mask, *offset, "struct"))
+        .collect();
+    let name_offset = *definitions.as_slice().first()?;
+    if definitions.len() != 1 {
+        return None;
+    }
+    let keyword_end = previous_code(source, &mask, name_offset)?;
+    let keyword_start = keyword_end + 1 - "struct".len();
+    let body = braced_block(source, &mask, keyword_start)?;
+    let open = keyword_start
+        + body
+            .find('{')
+            .expect("struct item returned by braced_block has an opening brace");
+    let header_start = source[..keyword_start]
+        .rfind(|character| matches!(character, ';' | '}'))
+        .map_or(0, |delimiter| delimiter + 1);
+    Some((&source[header_start..open], body))
+}
+
+fn derive_carries(header: &str, trait_name: &str) -> bool {
+    let mask = code_mask(header);
+    let bytes = header.as_bytes();
+    code_offsets(header, &mask, "#[derive")
+        .into_iter()
+        .any(|offset| {
+            let Some(open) = (offset..bytes.len()).find(|index| mask[*index] && bytes[*index] == b'[')
+            else {
+                return false;
+            };
+            let Some(close) = matching_bracket(bytes, &mask, open) else {
+                return false;
+            };
+            let attribute = &header[open..=close];
+            !identifier_offsets(attribute, &code_mask(attribute), trait_name).is_empty()
+        })
+}
+
+fn impl_has_public_new(source: &str, type_name: &str) -> bool {
+    let mask = code_mask(source);
+    rendered_item_spans(&item_spans(source, &mask))
+        .into_iter()
+        .filter(|(_, _, path)| path == &format!("impl {type_name}"))
+        .any(|(open, close, _)| {
+            let body = &source[open..=close];
+            let body_mask = code_mask(body);
+            identifier_offsets(body, &body_mask, "pub")
+                .into_iter()
+                .any(|offset| {
+                    code_follows(body, &body_mask, offset, "pubfnnew(")
+                        || code_follows(body, &body_mask, offset, "pubfnnew<")
+                })
+        })
+}
+
+fn constant_item_with_attributes<'a>(source: &'a str, name: &str) -> Option<&'a str> {
+    let mask = code_mask(source);
+    let definitions = typed_u64_constant_definition_offsets(source, &mask, name);
+    let offset = *definitions.as_slice().first()?;
+    if definitions.len() != 1 {
+        return None;
+    }
+    let start = source[..offset]
+        .rfind(|character| matches!(character, ';' | '}'))
+        .map_or(0, |delimiter| delimiter + 1);
+    let end = statement_end(source, &mask, offset);
+    (end < source.len()).then(|| &source[start..=end])
+}
+
+fn validate_hardcoded_init_pid_constants(
+    sources: &[(String, String)],
+) -> Result<(), Vec<String>> {
+    validate_census(
+        &census(sources, hardcoded_init_pid_constant_offsets),
+        HARDCODED_INIT_PID_CONSTANTS,
+    )
+}
+
+fn validate_direct_init_pid_comparisons(
+    sources: &[(String, String)],
+) -> Result<(), Vec<String>> {
+    validate_census(
+        &census(sources, direct_init_pid_comparison_offsets),
+        DIRECT_INIT_PID_COMPARISONS,
+    )
+}
+
+fn validate_init_designation_authority(
+    sources: &[(String, String)],
+) -> Result<(), Vec<String>> {
+    let mut failures = Vec::new();
+    record(
+        &mut failures,
+        "designated_init field declaration census changed",
+        validate_census(
+            &census(sources, |source, mask| {
+                identifier_offsets(source, mask, "designated_init")
+                    .into_iter()
+                    .filter(|offset| {
+                        code_follows(
+                            source,
+                            mask,
+                            offset + "designated_init".len(),
+                            ":Option<ProcessId>,",
+                        )
+                    })
+                    .collect()
+            }),
+            DESIGNATED_INIT_FIELD_DECLARATIONS,
+        ),
+    );
+    record(
+        &mut failures,
+        "designated_init writer census changed",
+        validate_census(
+            &census(sources, |source, mask| {
+                self_field_assignment_offsets(source, mask, "designated_init")
+            }),
+            DESIGNATED_INIT_WRITES,
+        ),
+    );
+    record(
+        &mut failures,
+        "InitDesignationTicket construction census changed",
+        validate_census(
+            &census(sources, |source, mask| {
+                struct_literal_offsets(source, mask, "InitDesignationTicket")
+            }),
+            INIT_DESIGNATION_TICKET_CONSTRUCTIONS,
+        ),
+    );
+    record(
+        &mut failures,
+        "InitPublication construction census changed",
+        validate_census(
+            &census(sources, |source, mask| {
+                struct_literal_offsets(source, mask, "InitPublication")
+            }),
+            INIT_PUBLICATION_CONSTRUCTIONS,
+        ),
+    );
+
+    let manager = source(sources, "kernel/src/process/manager.rs");
+    for type_name in ["InitDesignationTicket", "InitPublication"] {
+        match struct_item_header_and_body(manager, type_name) {
+            Some((header, body)) => {
+                check(
+                    &mut failures,
+                    &format!("{type_name} derives Clone or Copy"),
+                    !derive_carries(header, "Clone") && !derive_carries(header, "Copy"),
+                );
+                let fields = block_statements(body).expect("struct item body");
+                check(
+                    &mut failures,
+                    &format!("{type_name} has a public field"),
+                    identifier_offsets(fields, &code_mask(fields), "pub").is_empty(),
+                );
+            }
+            None => failures.push(format!("{type_name} struct item is not unique")),
+        }
+        check(
+            &mut failures,
+            &format!("{type_name} gained a public new constructor"),
+            !impl_has_public_new(manager, type_name),
+        );
+    }
+    failures.is_empty().then_some(()).ok_or(failures)
+}
+
+/// The map methods that can neither add nor drop a process row (`get_mut` hands out a mutable row,
+/// never a mutable row *set*). Anything NOT on this list is treated as a row-set mutation, so an
+/// unfamiliar method is red until it is pinned: the defect this census exists for was a second
+/// `self.processes.remove(` site, on `hold_init_publication`'s error path, that no census could see.
+const PROCESS_ROW_MAP_READERS: &[&str] = &[
+    "get",
+    "get_mut",
+    "iter",
+    "iter_mut",
+    "keys",
+    "values",
+    "values_mut",
+    "len",
+    "is_empty",
+    "contains_key",
+    "range",
+    "first_key_value",
+    "last_key_value",
+];
+
+fn process_row_map_mutation_offsets(source: &str, mask: &[bool]) -> Vec<(usize, String)> {
+    let bytes = source.as_bytes();
+    identifier_offsets(source, mask, "processes")
+        .into_iter()
+        .filter_map(|offset| {
+            let receiver_dot = previous_code(source, mask, offset)?;
+            if bytes[receiver_dot] != b'.'
+                || preceding_identifier(source, mask, receiver_dot).as_deref() != Some("self")
+            {
+                return None;
+            }
+
+            let Some(method_dot) = next_code(source, mask, offset + "processes".len()) else {
+                return Some((offset, "raw-binding".to_owned()));
+            };
+            if bytes[method_dot] != b'.' {
+                return Some((offset, "raw-binding".to_owned()));
+            }
+            let Some(method_start) = next_code(source, mask, method_dot + 1) else {
+                return Some((offset, "raw-binding".to_owned()));
+            };
+            if !identifier_byte(bytes[method_start]) {
+                return Some((offset, "raw-binding".to_owned()));
+            }
+            let mut method_end = method_start;
+            while method_end < bytes.len() && mask[method_end] && identifier_byte(bytes[method_end])
+            {
+                method_end += 1;
+            }
+            if !next_code(source, mask, method_end).is_some_and(|open| bytes[open] == b'(') {
+                return Some((offset, "raw-binding".to_owned()));
+            }
+            let method = &source[method_start..method_end];
+            (!PROCESS_ROW_MAP_READERS.contains(&method)).then(|| (offset, method.to_owned()))
+        })
+        .collect()
+}
+
+fn process_row_map_mutation_census(sources: &[(String, String)]) -> Census {
+    census_tagged(sources, process_row_map_mutation_offsets)
+}
+
+fn process_row_map_field_is_private(manager: &str) -> bool {
+    let Some((_header, body)) = struct_item_header_and_body(manager, "ProcessManager") else {
+        return false;
+    };
+    let Some(fields) = block_statements(body) else {
+        return false;
+    };
+    let mask = code_mask(fields);
+    let declarations: Vec<_> = identifier_offsets(fields, &mask, "processes")
+        .into_iter()
+        .filter(|offset| {
+            code_follows(
+                fields,
+                &mask,
+                offset + "processes".len(),
+                ":BTreeMap<ProcessId,Process>,",
+            )
+        })
+        .collect();
+    if declarations.len() != 1 {
+        return false;
+    }
+    let declaration = declarations[0];
+    let start = previous_code(fields, &mask, declaration)
+        .and_then(|before| {
+            (0..before)
+                .rev()
+                .find(|index| mask[*index] && fields.as_bytes()[*index] == b',')
+        })
+        .map_or(0, |comma| comma + 1);
+    identifier_offsets(
+        &fields[start..declaration],
+        &code_mask(&fields[start..declaration]),
+        "pub",
+    )
+    .is_empty()
+}
+
+fn mutable_process_row_map_borrow_offsets(source: &str, mask: &[bool]) -> Vec<usize> {
+    code_offsets(source, mask, "&")
+        .into_iter()
+        .filter(|offset| code_follows(source, mask, *offset, "&mutself.processes"))
+        .collect()
+}
+
+fn definition_name_at(
+    source: &str,
+    mask: &[bool],
+    definition: usize,
+    body_brace: usize,
+) -> Option<String> {
+    let bytes = source.as_bytes();
+    let name_start = next_code(source, mask, definition + "fn".len())?;
+    let mut name_end = name_start;
+    while name_end < body_brace && mask[name_end] && identifier_byte(bytes[name_end]) {
+        name_end += 1;
+    }
+    (name_end > name_start).then(|| source[name_start..name_end].to_owned())
+}
+
+fn validate_init_builder_insert_terminality(manager: &str) -> Result<(), Vec<String>> {
+    let mask = code_mask(manager);
+    let roots: BTreeSet<String> = definition_prefix_offsets(manager, &mask, "create_init_process")
+        .into_iter()
+        .filter_map(|(definition, body_brace)| {
+            definition_name_at(manager, &mask, definition, body_brace)
+        })
+        .collect();
+    let root_refs: Vec<_> = roots.iter().map(String::as_str).collect();
+    let reached = transitively_called_functions(manager, &root_refs);
+    let bodies = module_function_bodies(manager);
+    let mut builders = Vec::new();
+    for name in reached {
+        for body in bodies.get(&name).into_iter().flatten() {
+            let body_mask = code_mask(body);
+            if process_row_map_mutation_offsets(body, &body_mask)
+                .iter()
+                .any(|(_, method)| method == "insert")
+            {
+                builders.push((name.clone(), *body));
+            }
+        }
+    }
+
+    let mut failures = Vec::new();
+    let builder_names: BTreeSet<_> = builders.iter().map(|(name, _)| name.as_str()).collect();
+    check(
+        &mut failures,
+        "create_init_process call-graph resolved fewer than two row builders",
+        builder_names.len() >= 2,
+    );
+    for (name, body) in builders {
+        let body_mask = code_mask(body);
+        let insertions: Vec<_> = process_row_map_mutation_offsets(body, &body_mask)
+            .into_iter()
+            .filter_map(|(offset, method)| (method == "insert").then_some(offset))
+            .collect();
+        check(
+            &mut failures,
+            &format!("init row builder {name} does not contain exactly one process-row insert"),
+            insertions.len() == 1,
+        );
+        let Some(insert) = insertions.first().copied() else {
+            continue;
+        };
+        let end = statement_end(body, &body_mask, insert);
+        let Some(after) = body.get(end.saturating_add(1)..) else {
+            failures.push(format!(
+                "init row builder {name} insert statement is unterminated"
+            ));
+            continue;
+        };
+        let after_mask = code_mask(after);
+        check(
+            &mut failures,
+            &format!("init row builder {name} has a `?` fallible step after row insertion"),
+            code_offsets(after, &after_mask, "?").is_empty(),
+        );
+        check(
+            &mut failures,
+            &format!("init row builder {name} has `return Err` after row insertion"),
+            identifier_offsets(after, &after_mask, "return")
+                .into_iter()
+                .all(|offset| !code_follows(after, &after_mask, offset, "returnErr(")),
+        );
+        check(
+            &mut failures,
+            &format!("init row builder {name} has `Err(` after row insertion"),
+            call_offsets(after, &after_mask, "Err").is_empty(),
+        );
+        check(
+            &mut failures,
+            &format!("init row builder {name} has `.map_err(` after row insertion"),
+            method_call_offsets(after, &after_mask, "map_err").is_empty(),
+        );
+        check(
+            &mut failures,
+            &format!("init row builder {name} mutates the process-row map after insertion"),
+            process_row_map_mutation_offsets(after, &after_mask).is_empty(),
+        );
+    }
+    failures.is_empty().then_some(()).ok_or(failures)
+}
+
+fn init_identity_mechanism_items<'a>(
+    manager: &'a str,
+) -> Result<BTreeMap<String, &'a str>, String> {
+    const SPAN_ITEMS: [&str; 10] = [
+        "struct InitDesignationTicket",
+        "impl InitDesignationTicket",
+        "struct InitPublication",
+        "impl InitPublication",
+        "impl ProcessManager::fn allocate_ordinary_pid",
+        "impl ProcessManager::fn hold_init_publication",
+        "impl ProcessManager::fn designated_init",
+        "impl ProcessManager::fn designate_init",
+        "impl ProcessManager::fn publish_init",
+        "impl ProcessManager::fn reparent_children_to_init",
+    ];
+
+    let mut items = BTreeMap::new();
+    for name in ["RESERVED_INIT_PID", "FIRST_ORDINARY_PID"] {
+        let body = constant_item_with_attributes(manager, name)
+            .ok_or_else(|| format!("missing or duplicate mechanism item const {name}"))?;
+        items.insert(format!("const {name}"), body);
+    }
+
+    let mask = code_mask(manager);
+    let spans = rendered_item_spans(&item_spans(manager, &mask));
+    for expected in SPAN_ITEMS {
+        let matching: Vec<_> = spans
+            .iter()
+            .filter(|(_, _, path)| path == expected)
+            .collect();
+        if matching.len() != 1 {
+            return Err(format!(
+                "mechanism item {expected} occurred {} times",
+                matching.len()
+            ));
+        }
+        let (open, close, _) = matching[0];
+        items.insert(expected.to_owned(), &manager[*open..=*close]);
+    }
+    Ok(items)
+}
+
+fn validate_init_identity_mechanism_is_cfg_free(manager: &str) -> Result<(), Vec<String>> {
+    let items = init_identity_mechanism_items(manager).map_err(|failure| vec![failure])?;
+    let failures: Vec<_> = items
+        .into_iter()
+        .filter_map(|(name, body)| {
+            (!code_offsets(body, &code_mask(body), "#[cfg").is_empty())
+                .then(|| format!("{name} contains #[cfg"))
+        })
+        .collect();
+    failures.is_empty().then_some(()).ok_or(failures)
+}
+
 #[test]
 fn item_path_is_cfg_and_impl_scoped() {
     let fixture = r##"
@@ -1862,15 +2400,69 @@ const TERMINATE_CALLS: &[(&str, &str, usize)] = &[
 const TERMINATE_MINIMAL_CALLS: &[(&str, &str, usize)] = &[
     ("kernel/src/task/process_task.rs", "impl ProcessScheduler::fn handle_thread_exit", 1),
     ("kernel/src/tracing/providers/teardown.rs", "#[cfg(feature=boot_tests)] fn clone_admission_oracle_test", 1),
+    ("kernel/src/tracing/providers/teardown.rs", "#[cfg(feature=boot_tests)] fn init_designation_oracle_test", 1),
 ];
 #[rustfmt::skip]
-const PRODUCTION_INIT_PID_SITES: &[(&str, &str, usize)] = &[
-    ("kernel/src/process/manager.rs", "impl ProcessManager::fn exit_process_locked", 1),
-    ("kernel/src/task/process_task.rs", "impl ProcessScheduler::fn handle_thread_exit", 2),
-];
+const PRODUCTION_INIT_PID_SITES: &[(&str, &str, usize)] = &[];
 #[rustfmt::skip]
 const TEST_INIT_PID_SITES: &[(&str, &str, usize)] = &[
     ("kernel/src/test_userspace.rs", "fn test_minimal_userspace", 3),
+];
+#[rustfmt::skip]
+const NEXT_PID_FETCH_ADD_SITES: &[(&str, &str, usize)] = &[
+    ("kernel/src/process/manager.rs", "impl ProcessManager::fn allocate_ordinary_pid", 1),
+];
+#[rustfmt::skip]
+const ALLOCATE_ORDINARY_PID_CALLS: &[(&str, &str, usize)] = &[
+    ("kernel/src/process/manager.rs", "impl ProcessManager::#[cfg(target_arch=aarch64)] fn create_process", 1),
+    ("kernel/src/process/manager.rs", "impl ProcessManager::#[cfg(target_arch=aarch64)] fn create_process_with_argv", 1),
+    ("kernel/src/process/manager.rs", "impl ProcessManager::#[cfg(target_arch=aarch64)] fn fork_process_aarch64", 1),
+    ("kernel/src/process/manager.rs", "impl ProcessManager::#[cfg(target_arch=x86_64)] fn create_process", 1),
+    ("kernel/src/process/manager.rs", "impl ProcessManager::#[cfg(target_arch=x86_64)] fn fork_process_with_context", 1),
+    ("kernel/src/process/manager.rs", "impl ProcessManager::#[cfg(target_arch=x86_64)] fn fork_process_with_page_table", 1),
+    ("kernel/src/process/manager.rs", "impl ProcessManager::#[cfg(target_arch=x86_64)] fn fork_process_with_parent_context", 1),
+    ("kernel/src/process/manager.rs", "impl ProcessManager::fn allocate_pid", 1),
+];
+#[rustfmt::skip]
+const INIT_PID_CONSTANT_DEFINITION: &[(&str, &str, usize)] = &[
+    ("kernel/src/process/manager.rs", "", 1),
+];
+#[rustfmt::skip]
+const HARDCODED_INIT_PID_CONSTANTS: &[(&str, &str, usize)] = &[
+    ("kernel/src/process/manager.rs", "", 1),
+];
+#[rustfmt::skip]
+const DIRECT_INIT_PID_COMPARISONS: &[(&str, &str, usize)] = &[
+    ("kernel/src/test_userspace.rs", "fn test_minimal_userspace", 3),
+];
+#[rustfmt::skip]
+const DESIGNATED_INIT_FIELD_DECLARATIONS: &[(&str, &str, usize)] = &[
+    ("kernel/src/process/manager.rs", "struct ProcessManager", 1),
+];
+#[rustfmt::skip]
+const DESIGNATED_INIT_WRITES: &[(&str, &str, usize)] = &[
+    ("kernel/src/process/manager.rs", "impl ProcessManager::fn designate_init", 1),
+    ("kernel/src/process/manager.rs", "impl ProcessManager::fn remove_process", 1),
+];
+#[rustfmt::skip]
+const INIT_DESIGNATION_TICKET_CONSTRUCTIONS: &[(&str, &str, usize)] = &[
+    ("kernel/src/process/manager.rs", "impl ProcessManager::fn hold_init_publication", 1),
+];
+#[rustfmt::skip]
+const INIT_PUBLICATION_CONSTRUCTIONS: &[(&str, &str, usize)] = &[
+    ("kernel/src/process/manager.rs", "impl ProcessManager::fn designate_init", 1),
+];
+#[rustfmt::skip]
+const PROCESS_ROW_MAP_MUTATIONS: &[(&str, &str, usize)] = &[
+    ("kernel/src/process/manager.rs", "impl ProcessManager::#[cfg(target_arch=aarch64)] fn build_process_with_argv_at => insert", 1),
+    ("kernel/src/process/manager.rs", "impl ProcessManager::#[cfg(target_arch=aarch64)] fn complete_fork_aarch64 => insert", 1),
+    ("kernel/src/process/manager.rs", "impl ProcessManager::#[cfg(target_arch=aarch64)] fn create_process => insert", 1),
+    ("kernel/src/process/manager.rs", "impl ProcessManager::#[cfg(target_arch=x86_64)] fn build_process_at => insert", 1),
+    ("kernel/src/process/manager.rs", "impl ProcessManager::#[cfg(target_arch=x86_64)] fn complete_fork => insert", 1),
+    ("kernel/src/process/manager.rs", "impl ProcessManager::#[cfg(target_arch=x86_64)] fn fork_process_with_context => insert", 1),
+    ("kernel/src/process/manager.rs", "impl ProcessManager::fn debug_processes => raw-binding", 1),
+    ("kernel/src/process/manager.rs", "impl ProcessManager::fn insert_process => insert", 1),
+    ("kernel/src/process/manager.rs", "impl ProcessManager::fn remove_process => remove", 1),
 ];
 #[rustfmt::skip]
 const QUARANTINE_CALLS: &[(&str, &str, usize)] = &[
@@ -1992,10 +2584,10 @@ const PROCESS_PAGE_TABLE_CONSTRUCTORS: &[(&str, &str, usize)] = &[
     ("kernel/src/arch_impl/aarch64/syscall_entry.rs", "fn sys_fork_aarch64", 1),
     ("kernel/src/memory/process_memory.rs", "#[cfg(feature=boot_tests)] fn page_table_custody_disposition_gate_test", 6),
     ("kernel/src/process/manager.rs", "impl ProcessManager::#[cfg(target_arch=aarch64)] fn create_process", 1),
-    ("kernel/src/process/manager.rs", "impl ProcessManager::#[cfg(target_arch=aarch64)] fn create_process_with_argv", 1),
+    ("kernel/src/process/manager.rs", "impl ProcessManager::#[cfg(target_arch=aarch64)] fn build_process_with_argv_at", 1),
     ("kernel/src/process/manager.rs", "impl ProcessManager::#[cfg(target_arch=aarch64)] fn exec_process", 1),
     ("kernel/src/process/manager.rs", "impl ProcessManager::#[cfg(target_arch=aarch64)] fn exec_process_with_argv", 1),
-    ("kernel/src/process/manager.rs", "impl ProcessManager::#[cfg(target_arch=x86_64)] fn create_process", 1),
+    ("kernel/src/process/manager.rs", "impl ProcessManager::#[cfg(target_arch=x86_64)] fn build_process_at", 1),
     ("kernel/src/process/manager.rs", "impl ProcessManager::#[cfg(target_arch=x86_64)] fn exec_process", 1),
     ("kernel/src/process/manager.rs", "impl ProcessManager::#[cfg(target_arch=x86_64)] fn exec_process_with_argv", 1),
     ("kernel/src/process/manager.rs", "impl ProcessManager::#[cfg(target_arch=x86_64)] fn fork_process_with_context", 1),
@@ -2976,7 +3568,7 @@ fn validate_frame_ledger_counter_inventory(provider: &str) -> Result<(), ()> {
         && EXPECTED
             .iter()
             .all(|counter| inventory.contains(&format!("&{counter},")))
-        && provider.contains("pub const COUNTER_COUNT: usize = 74;"))
+        && provider.contains("pub const COUNTER_COUNT: usize = 82;"))
     .then_some(())
     .ok_or(())
 }
@@ -3234,7 +3826,7 @@ fn validate_process_page_table_counter_inventory(sources: &[(String, String)]) -
         || !EXPECTED
             .iter()
             .all(|counter| inventory.contains(&format!("&{counter},")))
-        || !provider.contains("pub const COUNTER_COUNT: usize = 74;")
+        || !provider.contains("pub const COUNTER_COUNT: usize = 82;")
     {
         return Err(());
     }
@@ -4188,8 +4780,8 @@ fn frame_ledger_return_and_initialization_ratchets_are_exact() {
     }
     check(
         &mut failures,
-        "COUNTER_COUNT is no longer 74",
-        provider.contains("pub const COUNTER_COUNT: usize = 74;"),
+        "COUNTER_COUNT is no longer 82",
+        provider.contains("pub const COUNTER_COUNT: usize = 82;"),
     );
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
@@ -4295,6 +4887,313 @@ fn current_teardown_bypass_surface_is_exact() {
         validate_reclaim_enqueue_callers(&sources),
     );
     assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+#[test]
+fn init_pid_reservation_is_single_sourced() {
+    let sources = rust_sources_below("kernel/src");
+    let next_pid_allocations = census(&sources, |source, mask| {
+        identifier_offsets(source, mask, "next_pid")
+            .into_iter()
+            .filter(|offset| {
+                code_follows(
+                    source,
+                    mask,
+                    offset + "next_pid".len(),
+                    ".fetch_add(",
+                )
+            })
+            .collect()
+    });
+    if let Err(diff) = validate_census(&next_pid_allocations, NEXT_PID_FETCH_ADD_SITES) {
+        panic!("next_pid.fetch_add census changed\n{}", diff.join("\n"));
+    }
+
+    let allocation_calls = census(&sources, |source, mask| {
+        call_offsets(source, mask, "allocate_ordinary_pid")
+    });
+    if let Err(diff) = validate_census(&allocation_calls, ALLOCATE_ORDINARY_PID_CALLS) {
+        panic!(
+            "allocate_ordinary_pid call-site census changed\n{}",
+            diff.join("\n")
+        );
+    }
+
+    let manager = source(&sources, "kernel/src/process/manager.rs");
+    let new_body = function_body(manager, "new");
+    let new_mask = code_mask(new_body);
+    assert_eq!(
+        code_offsets(
+            new_body,
+            &new_mask,
+            "AtomicU64::new(FIRST_ORDINARY_PID)"
+        )
+        .len(),
+        1,
+        "ProcessManager::new must initialize next_pid from FIRST_ORDINARY_PID"
+    );
+    assert!(
+        code_offsets(new_body, &new_mask, "AtomicU64::new(1)").is_empty(),
+        "ProcessManager::new regained a numeric init-PID initializer"
+    );
+
+    for name in ["RESERVED_INIT_PID", "FIRST_ORDINARY_PID"] {
+        let definitions = census(&sources, |source, mask| {
+            typed_u64_constant_definition_offsets(source, mask, name)
+        });
+        if let Err(diff) = validate_census(&definitions, INIT_PID_CONSTANT_DEFINITION) {
+            panic!("{name} definition census changed\n{}", diff.join("\n"));
+        }
+    }
+}
+
+#[test]
+fn hardcoded_init_pid_shapes_are_confined_to_the_reservation() {
+    let sources = rust_sources_below("kernel/src");
+    if let Err(diff) = validate_hardcoded_init_pid_constants(&sources) {
+        panic!("hardcoded init-PID constant family changed\n{}", diff.join("\n"));
+    }
+    if let Err(diff) = validate_direct_init_pid_comparisons(&sources) {
+        panic!("direct init-PID comparison family changed\n{}", diff.join("\n"));
+    }
+
+    let extra_constant = with_synthetic_source(
+        &sources,
+        "kernel/src/synthetic_init_pid_constant.rs",
+        "const INIT_PID: u64 = 1;",
+    );
+    assert!(validate_hardcoded_init_pid_constants(&extra_constant).is_err());
+
+    let extra_comparison = with_synthetic_source(
+        &sources,
+        "kernel/src/synthetic_init_pid_comparison.rs",
+        "fn rogue(process: &Process) { if process.id.as_u64() == 1 {} }",
+    );
+    assert!(validate_direct_init_pid_comparisons(&extra_comparison).is_err());
+}
+
+#[test]
+fn init_designation_authority_is_closed() {
+    let sources = rust_sources_below("kernel/src");
+    if let Err(failures) = validate_init_designation_authority(&sources) {
+        panic!("{}", failures.join("\n"));
+    }
+
+    let forged_ticket = with_synthetic_source(
+        &sources,
+        "kernel/src/synthetic_init_designation_ticket.rs",
+        "fn forge(pid: ProcessId, main_thread: Box<Thread>) { let _ = InitDesignationTicket { provisional_pid: pid, main_thread }; }",
+    );
+    assert!(validate_init_designation_authority(&forged_ticket).is_err());
+
+    let manager = source(&sources, "kernel/src/process/manager.rs");
+    let extra_writer = manager.replacen(
+        "        self.create_init_process_at(",
+        "        self.designated_init = Some(pid);\n        self.create_init_process_at(",
+        1,
+    );
+    assert_ne!(extra_writer, manager, "create_init_process injection anchor");
+    let extra_writer = with_replaced_source(
+        &sources,
+        "kernel/src/process/manager.rs",
+        extra_writer,
+    );
+    assert!(validate_init_designation_authority(&extra_writer).is_err());
+}
+
+#[test]
+fn process_row_map_mutations_are_authority_scoped() {
+    let sources = rust_sources_below("kernel/src");
+    let mut failures = Vec::new();
+    record(
+        &mut failures,
+        "process-row map mutation census changed",
+        validate_census(
+            &process_row_map_mutation_census(&sources),
+            PROCESS_ROW_MAP_MUTATIONS,
+        ),
+    );
+
+    let manager = source(&sources, "kernel/src/process/manager.rs");
+    check(
+        &mut failures,
+        "ProcessManager::processes is no longer a private field",
+        process_row_map_field_is_private(manager),
+    );
+    let mutable_borrows = census(&sources, mutable_process_row_map_borrow_offsets);
+    record(
+        &mut failures,
+        "the process-row map gained a mutable alias",
+        validate_census(&mutable_borrows, &[]),
+    );
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+
+    let raw_removal = manager.replacen(
+        "        self.remove_process(provisional_pid);",
+        "        self.processes.remove(&provisional_pid);",
+        1,
+    );
+    assert_ne!(raw_removal, manager, "F1 raw-removal injection anchor");
+    let raw_removal = with_replaced_source(&sources, "kernel/src/process/manager.rs", raw_removal);
+    let raw_removal_failures = validate_census(
+        &process_row_map_mutation_census(&raw_removal),
+        PROCESS_ROW_MAP_MUTATIONS,
+    )
+    .expect_err("F1 raw removal escaped the process-row census");
+    eprintln!(
+        "F1 raw-removal mutation:\n{}",
+        raw_removal_failures.join("\n")
+    );
+    assert_eq!(
+        raw_removal_failures,
+        ["+ kernel/src/process/manager.rs :: impl ProcessManager::fn hold_init_publication => remove  (1 occurrences, expected none)"]
+    );
+
+    let retained = manager.replacen(
+        "    pub fn remove_process(&mut self, pid: ProcessId) {",
+        "    pub fn remove_process(&mut self, pid: ProcessId) {\n        self.processes.retain(|_, _| true);",
+        1,
+    );
+    assert_ne!(retained, manager, "process-row retain injection anchor");
+    let retained = with_replaced_source(&sources, "kernel/src/process/manager.rs", retained);
+    let retained_failures = validate_census(
+        &process_row_map_mutation_census(&retained),
+        PROCESS_ROW_MAP_MUTATIONS,
+    )
+    .expect_err("differently-shaped row mutation escaped the process-row census");
+    eprintln!(
+        "F1 differently-shaped mutation:\n{}",
+        retained_failures.join("\n")
+    );
+    assert_eq!(
+        retained_failures,
+        ["+ kernel/src/process/manager.rs :: impl ProcessManager::fn remove_process => retain  (1 occurrences, expected none)"]
+    );
+}
+
+#[test]
+fn init_row_builders_insert_only_after_all_fallible_steps() {
+    let sources = rust_sources_below("kernel/src");
+    let manager = source(&sources, "kernel/src/process/manager.rs");
+    if let Err(failures) = validate_init_builder_insert_terminality(manager) {
+        panic!("{}", failures.join("\n"));
+    }
+
+    let fallible_after = manager.replacen(
+        "        self.processes.insert(pid, process);\n        Ok(())",
+        "        self.processes.insert(pid, process);\n        self.map_kernel_pages_for_process(pid)?;\n        Ok(())",
+        1,
+    );
+    assert_ne!(
+        fallible_after, manager,
+        "post-insert fallible-step injection anchor"
+    );
+    let fallible_after_failures = validate_init_builder_insert_terminality(&fallible_after)
+        .expect_err("a fallible step after init-row insertion escaped the terminality ratchet");
+    eprintln!(
+        "F2 post-insert fallible-step mutation:\n{}",
+        fallible_after_failures.join("\n")
+    );
+    assert_eq!(
+        fallible_after_failures,
+        ["init row builder build_process_at has a `?` fallible step after row insertion"]
+    );
+
+    let hoisted = manager.replacen(
+        "        let thread = self.create_main_thread(&mut process, stack_top)?;",
+        "        self.processes.insert(pid, process);\n        let thread = self.create_main_thread(&mut process, stack_top)?;",
+        1,
+    );
+    assert_ne!(hoisted, manager, "init-row insert hoist anchor");
+    let moved = hoisted.replacen(
+        "        self.processes.insert(pid, process);\n        Ok(())",
+        "        Ok(())",
+        1,
+    );
+    assert_ne!(moved, hoisted, "terminal init-row insert removal anchor");
+    let moved_failures = validate_init_builder_insert_terminality(&moved).expect_err(
+        "an init-row insert hoisted above a fallible step escaped the terminality ratchet",
+    );
+    eprintln!("F2 hoisted-insert mutation:\n{}", moved_failures.join("\n"));
+    assert_eq!(
+        moved_failures,
+        ["init row builder build_process_at has a `?` fallible step after row insertion"]
+    );
+}
+
+#[test]
+fn init_identity_mechanism_is_cfg_free() {
+    let sources = rust_sources_below("kernel/src");
+    let manager = source(&sources, "kernel/src/process/manager.rs");
+    if let Err(failures) = validate_init_identity_mechanism_is_cfg_free(manager) {
+        panic!("{}", failures.join("\n"));
+    }
+
+    let conditional = manager.replacen(
+        "        let raw = self.next_pid.fetch_add(1, Ordering::SeqCst);",
+        "        #[cfg(feature = \"testing\")]\n        let raw = self.next_pid.fetch_add(1, Ordering::SeqCst);",
+        1,
+    );
+    assert_ne!(conditional, manager, "allocate_ordinary_pid injection anchor");
+    assert!(validate_init_identity_mechanism_is_cfg_free(&conditional).is_err());
+}
+
+#[test]
+fn init_shell_role_is_conferred_by_argument_not_pid() {
+    let bsh = repo_text("userspace/programs/src/bsh.rs");
+    let bsh_mask = code_mask(&bsh);
+    assert!(method_comparison_offsets(&bsh, &bsh_mask, "raw", "2").is_empty());
+    assert!(method_comparison_offsets(&bsh, &bsh_mask, "raw", "3").is_empty());
+    let dispatch = function_body(&bsh, "main");
+    assert!(call_offsets(dispatch, &code_mask(dispatch), "getpid").is_empty());
+    assert_eq!(bsh.matches("\"--init-shell\"").count(), 1);
+    assert_eq!(
+        definition_offsets(&bsh, &bsh_mask, "run_init_shell").len(),
+        1
+    );
+    assert_eq!(
+        function_body(&bsh, "run_init_shell")
+            .matches("load_rc_file(&mut ctx, \"/etc/init.js\")")
+            .count(),
+        1
+    );
+
+    let init = repo_text("userspace/programs/src/init.rs");
+    assert_eq!(init.matches("b\"--init-shell\\0\"").count(), 1);
+    let legacy_init_shell = repo_text("userspace/programs/src/init_shell.rs");
+    assert_eq!(
+        legacy_init_shell
+            .matches("getpid().map(|p| p.raw()).unwrap_or(0) != 1")
+            .count(),
+        1
+    );
+
+    let main = repo_text("kernel/src/main.rs");
+    assert_eq!(
+        call_offsets(
+            &main,
+            &code_mask(&main),
+            "run_x86_init_designation_gate"
+        )
+        .len(),
+        1
+    );
+    let registry = repo_text("kernel/src/test_framework/registry.rs");
+    let registry_mask = code_mask(&registry);
+    let registry_entries = registry
+        .match_indices("name: \"init_designation_oracle\"")
+        .filter(|(offset, _)| enclosing_test_def(&registry, &registry_mask, *offset).is_some())
+        .count();
+    assert_eq!(registry_entries, 1);
+
+    let harness = repo_text("docker/qemu/run-x86-boot-tests.sh");
+    assert!(
+        harness
+            .matches("TEST:process:init_designation_oracle:PASS")
+            .count()
+            >= 2
+    );
+    assert!(harness.matches("INIT_DESIGNATION_ORACLE_LITERAL").count() >= 3);
 }
 
 #[test]
@@ -4696,7 +5595,7 @@ fn all_phase_zero_counters_have_registered_readers_and_honest_runtime_gates() {
         .filter_map(|rest| rest.strip_suffix(','))
         .map(str::to_owned)
         .collect();
-    assert_eq!(declarations.len(), 74);
+    assert_eq!(declarations.len(), 82);
     assert_eq!(
         readers, declarations,
         "every counter must have an inventory reader"

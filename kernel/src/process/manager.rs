@@ -22,6 +22,37 @@ use crate::elf;
 use crate::memory::process_memory::{AbandonReason, ProcessPageTable};
 use crate::task::thread::Thread;
 
+/// The process ID reserved for init. Never handed out by ordinary allocation.
+pub const RESERVED_INIT_PID: u64 = 1;
+/// The first process ID ordinary and test allocation may hand out.
+pub const FIRST_ORDINARY_PID: u64 = 2;
+
+/// Proof that an init row exists off the run queue with a provisional PID. Constructed
+/// only by the init constructors below and consumed only by `designate_init`; the ticket
+/// owns the row's main thread, so the thread cannot reach a run queue before designation.
+pub struct InitDesignationTicket {
+    provisional_pid: ProcessId,
+    main_thread: Box<Thread>,
+}
+
+impl InitDesignationTicket {
+    pub fn provisional_pid(&self) -> ProcessId {
+        self.provisional_pid
+    }
+}
+
+/// Proof that designation succeeded. The only way to obtain the init thread for publication.
+pub struct InitPublication {
+    pid: ProcessId,
+    main_thread: Box<Thread>,
+}
+
+impl InitPublication {
+    pub fn pid(&self) -> ProcessId {
+        self.pid
+    }
+}
+
 /// Process manager handles all processes in the system
 pub struct ProcessManager {
     /// All processes indexed by PID
@@ -35,6 +66,9 @@ pub struct ProcessManager {
 
     /// Queue of ready processes
     ready_queue: Vec<ProcessId>,
+
+    /// The process row currently designated as init.
+    designated_init: Option<ProcessId>,
 
     /// Next available process base address (for virtual address allocation)
     #[allow(dead_code)]
@@ -115,11 +149,132 @@ impl ProcessManager {
         ProcessManager {
             processes: BTreeMap::new(),
             current_pid: None,
-            next_pid: AtomicU64::new(1), // PIDs start at 1 (0 is kernel)
+            // PID 0 is the kernel and PID 1 is reserved for init.
+            next_pid: AtomicU64::new(FIRST_ORDINARY_PID),
             ready_queue: Vec::new(),
+            designated_init: None,
             // Start process virtual addresses at USERSPACE_BASE, with 16MB spacing
             next_process_base: VirtAddr::new(crate::memory::layout::USERSPACE_BASE),
         }
+    }
+
+    fn allocate_ordinary_pid(&self) -> ProcessId {
+        let raw = self.next_pid.fetch_add(1, Ordering::SeqCst);
+        crate::tracing::providers::teardown::record_ordinary_pid_allocation(raw, RESERVED_INIT_PID);
+        ProcessId::new(raw)
+    }
+
+    /// Take the just-built row at `provisional_pid` off the publication path and return the
+    /// ticket that must be redeemed before it can run. The row must exist and must not be on
+    /// the ready queue. The ticket returned here is validated at designation, not here.
+    pub fn hold_init_publication(
+        &mut self,
+        provisional_pid: ProcessId,
+    ) -> Result<InitDesignationTicket, &'static str> {
+        // The failure path retires the row through `remove_process`, never with a raw
+        // `self.processes.remove`: only `remove_process` clears `designated_init` when the row
+        // being removed is the designated one and bumps ROW_REMOVAL_EPOCH for a parked reclaimer.
+        // A raw removal here would leave `designated_init` naming a row that no longer exists.
+        let main_thread = self
+            .processes
+            .get(&provisional_pid)
+            .and_then(|process| process.main_thread.as_ref())
+            .map(|main_thread| Box::new(main_thread.clone()));
+        let Some(main_thread) = main_thread else {
+            self.remove_process(provisional_pid);
+            return Err("init row has no main thread");
+        };
+
+        debug_assert!(!self.ready_queue.contains(&provisional_pid));
+        self.ready_queue.retain(|pid| *pid != provisional_pid);
+
+        Ok(InitDesignationTicket {
+            provisional_pid,
+            main_thread,
+        })
+    }
+
+    /// The single authority on which row is init.
+    pub fn designated_init(&self) -> Option<ProcessId> {
+        self.designated_init
+    }
+
+    /// Redeem a held-publication ticket. Production designation is validated == the reserved
+    /// init PID and refuses otherwise. Refusal consumes the ticket and leaves the row in place
+    /// for the caller to tear down; it never sets the authority.
+    pub fn designate_init(
+        &mut self,
+        ticket: InitDesignationTicket,
+    ) -> Result<InitPublication, &'static str> {
+        let InitDesignationTicket {
+            provisional_pid: pid,
+            main_thread,
+        } = ticket;
+
+        if pid.as_u64() != RESERVED_INIT_PID {
+            crate::tracing::providers::teardown::record_init_designation(false);
+            return Err("init designation PID is not reserved");
+        }
+        if self
+            .processes
+            .get(&pid)
+            .map(|process| process.is_terminated())
+            .unwrap_or(true)
+        {
+            crate::tracing::providers::teardown::record_init_designation(false);
+            return Err("init designation row is missing or terminated");
+        }
+        if self.designated_init.is_some() {
+            crate::tracing::providers::teardown::record_init_designation(false);
+            return Err("init is already designated");
+        }
+
+        self.designated_init = Some(pid);
+        crate::tracing::providers::teardown::record_init_designation(true);
+        Ok(InitPublication { pid, main_thread })
+    }
+
+    /// Publish the designated init row. Returns its main thread for the arch's terminal step
+    /// (aarch64 hands it to `scheduler::spawn_as_current`; x86 rows run off the ready queue).
+    pub fn publish_init(&mut self, publication: InitPublication) -> Box<Thread> {
+        if !self.ready_queue.contains(&publication.pid) {
+            self.ready_queue.push(publication.pid);
+        }
+        crate::tracing::providers::teardown::record_init_publication();
+        publication.main_thread
+    }
+
+    /// Reparent `children` onto the designated init. With no designated init there is nothing
+    /// to reparent onto and the children keep their existing parent -- the defined behaviour on
+    /// a build with no real init. Returns whether reparenting actually ran.
+    pub fn reparent_children_to_init(
+        &mut self,
+        exiting: ProcessId,
+        children: &[ProcessId],
+    ) -> bool {
+        if children.is_empty() {
+            return false;
+        }
+
+        let Some(init) = self.designated_init else {
+            crate::tracing::providers::teardown::record_init_reparent(children.len(), false);
+            return false;
+        };
+        if exiting == init {
+            crate::tracing::providers::teardown::record_init_reparent(children.len(), false);
+            return false;
+        }
+
+        for child in children {
+            if let Some(process) = self.processes.get_mut(child) {
+                process.parent = Some(init);
+            }
+        }
+        if let Some(process) = self.processes.get_mut(&init) {
+            process.children.extend_from_slice(children);
+        }
+        crate::tracing::providers::teardown::record_init_reparent(children.len(), true);
+        true
     }
 
     /// Create a new process from an ELF binary
@@ -130,6 +285,23 @@ impl ProcessManager {
         name: String,
         elf_data: &[u8],
     ) -> Result<ProcessId, &'static str> {
+        let pid = self.allocate_ordinary_pid();
+        self.build_process_at(pid, name, elf_data)?;
+        crate::serial_println!(
+            "manager.create_process: Adding PID {} to ready queue",
+            pid.as_u64()
+        );
+        self.ready_queue.push(pid);
+        Ok(pid)
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    fn build_process_at(
+        &mut self,
+        pid: ProcessId,
+        name: String,
+        elf_data: &[u8],
+    ) -> Result<(), &'static str> {
         crate::serial_println!(
             "manager.create_process: ENTRY - name='{}', elf_size={}",
             name,
@@ -138,7 +310,6 @@ impl ProcessManager {
 
         // Generate a new PID
         crate::serial_println!("manager.create_process: Generating PID");
-        let pid = ProcessId::new(self.next_pid.fetch_add(1, Ordering::SeqCst));
         crate::serial_println!("manager.create_process: Generated PID {}", pid.as_u64());
 
         // Create a new page table for this process
@@ -333,24 +504,36 @@ impl ProcessManager {
         process.set_main_thread(thread);
         crate::serial_println!("manager.create_process: Main thread set on process");
 
-        // Add to ready queue
-        crate::serial_println!(
-            "manager.create_process: Adding PID {} to ready queue",
-            pid.as_u64()
-        );
-        self.ready_queue.push(pid);
-
         // Insert into process table
         crate::serial_println!("manager.create_process: Inserting process into process table");
-        self.processes.insert(pid, process);
-
         log::info!("Created process {} (PID {})", name, pid.as_u64());
         crate::serial_println!(
             "manager.create_process: SUCCESS - returning PID {}",
             pid.as_u64()
         );
 
-        Ok(pid)
+        self.processes.insert(pid, process);
+        Ok(())
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    pub fn create_init_process_at(
+        &mut self,
+        provisional_pid: ProcessId,
+        name: String,
+        elf_data: &[u8],
+    ) -> Result<InitDesignationTicket, &'static str> {
+        self.build_process_at(provisional_pid, name, elf_data)?;
+        self.hold_init_publication(provisional_pid)
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    pub fn create_init_process(
+        &mut self,
+        name: String,
+        elf_data: &[u8],
+    ) -> Result<InitDesignationTicket, &'static str> {
+        self.create_init_process_at(ProcessId::new(RESERVED_INIT_PID), name, elf_data)
     }
 
     /// Create a new process from an ELF binary (ARM64 version)
@@ -375,7 +558,7 @@ impl ProcessManager {
         );
 
         // Generate a new PID
-        let pid = ProcessId::new(self.next_pid.fetch_add(1, Ordering::SeqCst));
+        let pid = self.allocate_ordinary_pid();
         crate::serial_println!(
             "manager.create_process [ARM64]: Generated PID {}",
             pid.as_u64()
@@ -588,6 +771,20 @@ impl ProcessManager {
         elf_data: &[u8],
         argv: &[&[u8]],
     ) -> Result<ProcessId, &'static str> {
+        let pid = self.allocate_ordinary_pid();
+        self.build_process_with_argv_at(pid, name, elf_data, argv)?;
+        self.ready_queue.push(pid);
+        Ok(pid)
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    fn build_process_with_argv_at(
+        &mut self,
+        pid: ProcessId,
+        name: String,
+        elf_data: &[u8],
+        argv: &[&[u8]],
+    ) -> Result<(), &'static str> {
         // For ARM64, stack allocation uses arch_stub::ThreadPrivilege
         use crate::memory::arch_stub::ThreadPrivilege as StackPrivilege;
 
@@ -598,8 +795,7 @@ impl ProcessManager {
             argv.len()
         );
 
-        // Generate a new PID
-        let pid = ProcessId::new(self.next_pid.fetch_add(1, Ordering::SeqCst));
+        // Report the PID selected by the caller.
         crate::serial_println!(
             "manager.create_process_with_argv [ARM64]: Generated PID {}",
             pid.as_u64()
@@ -731,10 +927,6 @@ impl ProcessManager {
         )?;
         process.set_main_thread(thread);
 
-        // Add to ready queue and insert into process table
-        self.ready_queue.push(pid);
-        self.processes.insert(pid, process);
-
         log::info!(
             "ARM64: Created process {} (PID {}) with argc={}",
             name,
@@ -746,7 +938,35 @@ impl ProcessManager {
             pid.as_u64()
         );
 
-        Ok(pid)
+        self.processes.insert(pid, process);
+        Ok(())
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    pub fn create_init_process_with_argv_at(
+        &mut self,
+        provisional_pid: ProcessId,
+        name: String,
+        elf_data: &[u8],
+        argv: &[&[u8]],
+    ) -> Result<InitDesignationTicket, &'static str> {
+        self.build_process_with_argv_at(provisional_pid, name, elf_data, argv)?;
+        self.hold_init_publication(provisional_pid)
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    pub fn create_init_process_with_argv(
+        &mut self,
+        name: String,
+        elf_data: &[u8],
+        argv: &[&[u8]],
+    ) -> Result<InitDesignationTicket, &'static str> {
+        self.create_init_process_with_argv_at(
+            ProcessId::new(RESERVED_INIT_PID),
+            name,
+            elf_data,
+            argv,
+        )
     }
 
     /// Spawn a new process from an ELF binary, inheriting parent attributes.
@@ -1073,7 +1293,7 @@ impl ProcessManager {
 
     /// Allocate a new process ID
     pub fn allocate_pid(&self) -> ProcessId {
-        ProcessId::new(self.next_pid.fetch_add(1, Ordering::SeqCst))
+        self.allocate_ordinary_pid()
     }
 
     /// Clone admission (tranche-2 P3 / DESIGN AC-7). The parent row's lifecycle is
@@ -1099,6 +1319,10 @@ impl ProcessManager {
     /// Called after waitpid() has collected the exit status.
     pub fn remove_process(&mut self, pid: ProcessId) {
         if self.processes.remove(&pid).is_some() {
+            if self.designated_init == Some(pid) {
+                self.designated_init = None;
+                crate::tracing::providers::teardown::record_init_designation_retired();
+            }
             crate::task::process_task::note_process_row_removed();
         }
     }
@@ -1175,27 +1399,14 @@ impl ProcessManager {
             crate::syscall::graphics::cleanup_windows_for_pid(pid.as_u64());
         }
 
-        // Reparent children to init (PID 1)
-        let init_pid = ProcessId::new(1);
-        if pid != init_pid {
-            let children: Vec<ProcessId> = self
-                .processes
-                .get(&pid)
-                .map(|p| p.children.clone())
-                .unwrap_or_default();
-
-            if !children.is_empty() {
-                for &child_pid in &children {
-                    if let Some(child) = self.processes.get_mut(&child_pid) {
-                        child.parent = Some(init_pid);
-                    }
-                }
-                if let Some(init) = self.processes.get_mut(&init_pid) {
-                    init.children.extend(children.iter());
-                }
-                if let Some(exiting) = self.processes.get_mut(&pid) {
-                    exiting.children.clear();
-                }
+        let children: Vec<ProcessId> = self
+            .processes
+            .get(&pid)
+            .map(|p| p.children.clone())
+            .unwrap_or_default();
+        if self.reparent_children_to_init(pid, &children) {
+            if let Some(exiting) = self.processes.get_mut(&pid) {
+                exiting.children.clear();
             }
         }
 
@@ -1430,7 +1641,7 @@ impl ProcessManager {
         };
 
         // Allocate a new PID for the child
-        let child_pid = ProcessId::new(self.next_pid.fetch_add(1, Ordering::SeqCst));
+        let child_pid = self.allocate_ordinary_pid();
 
         log::info!(
             "Forking process {} '{}' -> child PID {}",
@@ -1572,7 +1783,7 @@ impl ProcessManager {
         };
 
         // Allocate a new PID for the child
-        let child_pid = ProcessId::new(self.next_pid.fetch_add(1, Ordering::SeqCst));
+        let child_pid = self.allocate_ordinary_pid();
 
         log::info!(
             "Forking process {} '{}' -> child PID {}",
@@ -1715,7 +1926,7 @@ impl ProcessManager {
         };
 
         // Allocate a new PID for the child
-        let child_pid = ProcessId::new(self.next_pid.fetch_add(1, Ordering::SeqCst));
+        let child_pid = self.allocate_ordinary_pid();
 
         // NOTE: No logging in this function — it runs under PM lock which disables
         // interrupts on ARM64. Acquiring the logger lock here can deadlock if another
@@ -2180,7 +2391,7 @@ impl ProcessManager {
             .clone();
 
         // Allocate a new PID for the child
-        let child_pid = ProcessId::new(self.next_pid.fetch_add(1, Ordering::SeqCst));
+        let child_pid = self.allocate_ordinary_pid();
 
         log::info!(
             "Forking process {} '{}' -> child PID {}",

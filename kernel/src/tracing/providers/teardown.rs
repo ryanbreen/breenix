@@ -533,6 +533,29 @@ counter!(
 counter!(PT_SHADOW_ROOT_CLEARED, "Saved x86 process roots cleared");
 counter!(CLONE_ADMISSION_ADMITTED, "Clone admissions accepted");
 counter!(CLONE_ADMISSION_REFUSED, "Clone admissions refused");
+counter!(
+    INIT_ORDINARY_PID_ALLOCATIONS,
+    "Ordinary process IDs allocated from next_pid"
+);
+counter!(
+    INIT_RESERVED_PID_COLLISIONS,
+    "Ordinary allocations that landed on the reserved init PID"
+);
+counter!(INIT_DESIGNATION_ACCEPTED, "Init designations accepted");
+counter!(INIT_DESIGNATION_REFUSED, "Init designations refused");
+counter!(
+    INIT_DESIGNATION_RETIRED,
+    "Init designations retired with their row"
+);
+counter!(INIT_PUBLICATIONS, "Init rows published after designation");
+counter!(
+    INIT_REPARENT_CHILDREN,
+    "Children reparented onto the designated init"
+);
+counter!(
+    INIT_REPARENT_SKIPPED_NO_INIT,
+    "Reparent requests skipped because no init is designated"
+);
 
 // Declaration-only until the phase named in PLAN.md. These intentionally have
 // no trace_count! producer yet.
@@ -561,7 +584,7 @@ counter!(
     "Fatal group signals dropped for init"
 );
 
-pub const COUNTER_COUNT: usize = 74;
+pub const COUNTER_COUNT: usize = 82;
 
 /// The registration and normal-context reader inventory. Keeping one inventory
 /// makes a write-only counter structurally impossible without changing the P0
@@ -627,6 +650,14 @@ pub static COUNTERS: [&TraceCounter; COUNTER_COUNT] = [
     &PT_SHADOW_ROOT_CLEARED,
     &CLONE_ADMISSION_ADMITTED,
     &CLONE_ADMISSION_REFUSED,
+    &INIT_ORDINARY_PID_ALLOCATIONS,
+    &INIT_RESERVED_PID_COLLISIONS,
+    &INIT_DESIGNATION_ACCEPTED,
+    &INIT_DESIGNATION_REFUSED,
+    &INIT_DESIGNATION_RETIRED,
+    &INIT_PUBLICATIONS,
+    &INIT_REPARENT_CHILDREN,
+    &INIT_REPARENT_SKIPPED_NO_INIT,
     &RECLAIM_PASS_SKIPPED,
     &RECLAIM_PARKED,
     &RECLAIM_UNPARKED_EPOCH,
@@ -1065,6 +1096,42 @@ pub fn record_clone_admission(admitted: bool) {
     }
 }
 
+#[inline(always)]
+pub fn record_ordinary_pid_allocation(raw_pid: u64, reserved_init_pid: u64) {
+    crate::trace_count!(INIT_ORDINARY_PID_ALLOCATIONS);
+    if raw_pid == reserved_init_pid {
+        crate::trace_count!(INIT_RESERVED_PID_COLLISIONS);
+    }
+}
+
+#[inline(always)]
+pub fn record_init_designation(accepted: bool) {
+    if accepted {
+        crate::trace_count!(INIT_DESIGNATION_ACCEPTED);
+    } else {
+        crate::trace_count!(INIT_DESIGNATION_REFUSED);
+    }
+}
+
+#[inline(always)]
+pub fn record_init_designation_retired() {
+    crate::trace_count!(INIT_DESIGNATION_RETIRED);
+}
+
+#[inline(always)]
+pub fn record_init_publication() {
+    crate::trace_count!(INIT_PUBLICATIONS);
+}
+
+#[inline(always)]
+pub fn record_init_reparent(children: usize, designated: bool) {
+    if designated {
+        crate::trace_count_add!(INIT_REPARENT_CHILDREN, children as u64);
+    } else {
+        crate::trace_count!(INIT_REPARENT_SKIPPED_NO_INIT);
+    }
+}
+
 #[cfg(feature = "boot_tests")]
 pub fn clone_admission_admitted() -> u64 {
     CLONE_ADMISSION_ADMITTED.aggregate()
@@ -1073,6 +1140,45 @@ pub fn clone_admission_admitted() -> u64 {
 #[cfg(feature = "boot_tests")]
 pub fn clone_admission_refused() -> u64 {
     CLONE_ADMISSION_REFUSED.aggregate()
+}
+
+#[cfg(feature = "boot_tests")]
+pub fn init_ordinary_pid_allocations() -> u64 {
+    INIT_ORDINARY_PID_ALLOCATIONS.aggregate()
+}
+
+pub fn init_reserved_pid_collisions_total() -> u64 {
+    INIT_RESERVED_PID_COLLISIONS.aggregate()
+}
+
+#[cfg(feature = "boot_tests")]
+pub fn init_designation_accepted() -> u64 {
+    INIT_DESIGNATION_ACCEPTED.aggregate()
+}
+
+#[cfg(feature = "boot_tests")]
+pub fn init_designation_refused() -> u64 {
+    INIT_DESIGNATION_REFUSED.aggregate()
+}
+
+#[cfg(feature = "boot_tests")]
+pub fn init_designation_retired() -> u64 {
+    INIT_DESIGNATION_RETIRED.aggregate()
+}
+
+#[cfg(feature = "boot_tests")]
+pub fn init_publications() -> u64 {
+    INIT_PUBLICATIONS.aggregate()
+}
+
+#[cfg(feature = "boot_tests")]
+pub fn init_reparent_children() -> u64 {
+    INIT_REPARENT_CHILDREN.aggregate()
+}
+
+#[cfg(feature = "boot_tests")]
+pub fn init_reparent_skipped_no_init() -> u64 {
+    INIT_REPARENT_SKIPPED_NO_INIT.aggregate()
 }
 
 static RECLAIM_PROOF_DEPTH: [AtomicU64; crate::tracing::MAX_CPUS] =
@@ -3807,6 +3913,616 @@ pub fn clone_admission_oracle_test() -> crate::test_framework::registry::TestRes
     TestResult::Pass
 }
 
+#[cfg(feature = "boot_tests")]
+pub fn init_designation_oracle_test() -> crate::test_framework::registry::TestResult {
+    #[cfg(not(target_arch = "x86_64"))]
+    use crate::memory::arch_stub::VirtAddr;
+    use crate::test_framework::registry::TestResult;
+    #[cfg(target_arch = "x86_64")]
+    use x86_64::VirtAddr;
+
+    fn test_user_entry() {}
+
+    fn test_thread(
+        pid: crate::process::ProcessId,
+        name: &'static str,
+    ) -> crate::task::thread::Thread {
+        let mut thread = crate::task::thread::Thread::new(
+            alloc::string::String::from(name),
+            test_user_entry,
+            VirtAddr::new(0x0080_0000),
+            VirtAddr::new(0x007f_0000),
+            VirtAddr::new(0x0001_0000),
+            crate::task::thread::ThreadPrivilege::Kernel,
+        );
+        thread.owner_pid = Some(pid.as_u64());
+        thread.state = crate::task::thread::ThreadState::Ready;
+        thread
+    }
+
+    fn synthetic_row(
+        pid: crate::process::ProcessId,
+        name: &'static str,
+        thread_name: &'static str,
+    ) -> crate::process::Process {
+        let mut row = crate::process::Process::new(
+            pid,
+            alloc::string::String::from(name),
+            VirtAddr::new(0x0040_0000),
+        );
+        row.set_main_thread(test_thread(pid, thread_name));
+        row
+    }
+
+    fn too_small_image() -> [u8; 8] {
+        [0; 8]
+    }
+
+    fn out_of_bounds_segment_image() -> [u8; 120] {
+        #[cfg(target_arch = "x86_64")]
+        let machine = 0x3eu16;
+        #[cfg(target_arch = "aarch64")]
+        let machine = 0xb7u16;
+
+        let mut image = [0u8; 120];
+        image[0..4].copy_from_slice(&[0x7f, b'E', b'L', b'F']);
+        image[4] = 2;
+        image[5] = 1;
+        image[6] = 1;
+        image[16..18].copy_from_slice(&2u16.to_le_bytes());
+        image[18..20].copy_from_slice(&machine.to_le_bytes());
+        image[20..24].copy_from_slice(&1u32.to_le_bytes());
+        image[24..32].copy_from_slice(&0x0040_0000u64.to_le_bytes());
+        image[32..40].copy_from_slice(&64u64.to_le_bytes());
+        image[52..54].copy_from_slice(&64u16.to_le_bytes());
+        image[54..56].copy_from_slice(&56u16.to_le_bytes());
+        image[56..58].copy_from_slice(&1u16.to_le_bytes());
+
+        image[64..68].copy_from_slice(&1u32.to_le_bytes());
+        image[68..72].copy_from_slice(&5u32.to_le_bytes());
+        image[72..80].copy_from_slice(&120u64.to_le_bytes());
+        image[80..88].copy_from_slice(&0x0040_0000u64.to_le_bytes());
+        image[88..96].copy_from_slice(&0x0040_0000u64.to_le_bytes());
+        image[96..104].copy_from_slice(&1u64.to_le_bytes());
+        image[104..112].copy_from_slice(&1u64.to_le_bytes());
+        image[112..120].copy_from_slice(&4096u64.to_le_bytes());
+        image
+    }
+
+    let reclaim_owner = match crate::task::process_task::BootReclaimTestGuard::enter() {
+        Ok(guard) => guard,
+        Err(_) => {
+            return TestResult::Fail(
+                "reclaim queues not quiescent at init designation oracle start",
+            )
+        }
+    };
+    let construct_used_before = frame_allocator_used_frames();
+    let construct_undecided_before = PT_ROOT_DROPPED_UNDECIDED.aggregate();
+    let accepted_before = init_designation_accepted();
+    let refused_before = init_designation_refused();
+    let retired_before = init_designation_retired();
+    let publications_before = init_publications();
+    let reparent_children_before = init_reparent_children();
+    let reparent_skipped_before = init_reparent_skipped_no_init();
+    let ordinary_allocations_before = init_ordinary_pid_allocations();
+    let reserved = crate::process::ProcessId::new(crate::process::RESERVED_INIT_PID);
+    let mut construct_failed = 0u64;
+    let mut refused = 0u64;
+    let mut accepted = 0u64;
+    let mut published = 0u64;
+    let mut retired = 0u64;
+    let mut held_error_removals = 0u64;
+    let mut reparented = 0u64;
+    let mut reparent_skipped = 0u64;
+    let ordinary_allocated_expected = 5u64;
+    let mut first_failure: Option<&'static str> = None;
+
+    // A1: reject an image before the loader has a complete ELF header.
+    {
+        let image = too_small_image();
+        let mut manager_guard = crate::process::manager();
+        let Some(manager) = manager_guard.as_mut() else {
+            return TestResult::Fail("process manager unavailable for init designation A1");
+        };
+        #[cfg(target_arch = "x86_64")]
+        let construction = manager.create_init_process(
+            alloc::string::String::from("init_oracle_a1"),
+            &image,
+        );
+        #[cfg(target_arch = "aarch64")]
+        let construction = {
+            let argv = [b"/sbin/init".as_slice()];
+            manager.create_init_process_with_argv(
+                alloc::string::String::from("init_oracle_a1"),
+                &image,
+                &argv,
+            )
+        };
+        match construction {
+            Err(_) => construct_failed += 1,
+            Ok(_) if first_failure.is_none() => {
+                first_failure = Some("init designation A1 constructor unexpectedly succeeded")
+            }
+            Ok(_) => {}
+        }
+        if manager.get_process(reserved).is_some() && first_failure.is_none() {
+            first_failure = Some("init designation A1 left a reserved process row");
+        }
+        if manager.designated_init().is_some() && first_failure.is_none() {
+            first_failure = Some("init designation A1 changed the init designation");
+        }
+        manager.remove_process(reserved);
+    }
+
+    // A2: reject a PT_LOAD whose file data lies outside the image, after the
+    // process page table has been constructed.
+    {
+        let image = out_of_bounds_segment_image();
+        let mut manager_guard = crate::process::manager();
+        let Some(manager) = manager_guard.as_mut() else {
+            return TestResult::Fail("process manager unavailable for init designation A2");
+        };
+        #[cfg(target_arch = "x86_64")]
+        let construction = manager.create_init_process(
+            alloc::string::String::from("init_oracle_a2"),
+            &image,
+        );
+        #[cfg(target_arch = "aarch64")]
+        let construction = {
+            let argv = [b"/sbin/init".as_slice()];
+            manager.create_init_process_with_argv(
+                alloc::string::String::from("init_oracle_a2"),
+                &image,
+                &argv,
+            )
+        };
+        match construction {
+            Err("Segment data out of bounds") => construct_failed += 1,
+            Err(_) => {
+                construct_failed += 1;
+                if first_failure.is_none() {
+                    first_failure = Some("init designation A2 returned the wrong loader error");
+                }
+            }
+            Ok(_) if first_failure.is_none() => {
+                first_failure = Some("init designation A2 constructor unexpectedly succeeded")
+            }
+            Ok(_) => {}
+        }
+        if manager.get_process(reserved).is_some() && first_failure.is_none() {
+            first_failure = Some("init designation A2 left a reserved process row");
+        }
+        if manager.designated_init().is_some() && first_failure.is_none() {
+            first_failure = Some("init designation A2 changed the init designation");
+        }
+        manager.remove_process(reserved);
+    }
+
+    let construct_used_after = frame_allocator_used_frames();
+    let designation_used_before = construct_used_after;
+    let construct_residual = construct_used_after as i64 - construct_used_before as i64;
+    let construct_undecided = PT_ROOT_DROPPED_UNDECIDED
+        .aggregate()
+        .saturating_sub(construct_undecided_before);
+
+    // A3: a ticket for an ordinary PID cannot designate init.
+    {
+        let mut manager_guard = crate::process::manager();
+        let Some(manager) = manager_guard.as_mut() else {
+            return TestResult::Fail("process manager unavailable for init designation A3");
+        };
+        let probe = manager.allocate_pid();
+        if probe.as_u64() < crate::process::FIRST_ORDINARY_PID && first_failure.is_none() {
+            first_failure = Some("init designation A3 ordinary PID used the reserved range");
+        }
+        manager.insert_process(
+            probe,
+            synthetic_row(probe, "init_oracle_a3", "init_oracle_a3_main"),
+        );
+        match manager.hold_init_publication(probe) {
+            Ok(ticket) => match manager.designate_init(ticket) {
+                Err(_) => refused += 1,
+                Ok(_) if first_failure.is_none() => {
+                    first_failure = Some("init designation A3 accepted an ordinary PID")
+                }
+                Ok(_) => {}
+            },
+            Err(_) if first_failure.is_none() => {
+                first_failure = Some("init designation A3 failed to issue a ticket")
+            }
+            Err(_) => {}
+        }
+        if manager.designated_init().is_some() && first_failure.is_none() {
+            first_failure = Some("init designation A3 changed the init designation");
+        }
+        manager.remove_process(probe);
+    }
+
+    // A4: a ticket cannot outlive the row it names.
+    {
+        let mut manager_guard = crate::process::manager();
+        let Some(manager) = manager_guard.as_mut() else {
+            return TestResult::Fail("process manager unavailable for init designation A4");
+        };
+        manager.insert_process(
+            reserved,
+            synthetic_row(reserved, "init_oracle_a4", "init_oracle_a4_main"),
+        );
+        match manager.hold_init_publication(reserved) {
+            Ok(ticket) => {
+                manager.remove_process(reserved);
+                match manager.designate_init(ticket) {
+                    Err(_) => refused += 1,
+                    Ok(_) if first_failure.is_none() => {
+                        first_failure = Some("init designation A4 accepted a missing row")
+                    }
+                    Ok(_) => {}
+                }
+            }
+            Err(_) if first_failure.is_none() => {
+                first_failure = Some("init designation A4 failed to issue a ticket")
+            }
+            Err(_) => {}
+        }
+        if manager.designated_init().is_some() && first_failure.is_none() {
+            first_failure = Some("init designation A4 changed the init designation");
+        }
+    }
+
+    // A5: a terminated reserved row cannot be designated.
+    {
+        let mut manager_guard = crate::process::manager();
+        let Some(manager) = manager_guard.as_mut() else {
+            return TestResult::Fail("process manager unavailable for init designation A5");
+        };
+        manager.insert_process(
+            reserved,
+            synthetic_row(reserved, "init_oracle_a5", "init_oracle_a5_main"),
+        );
+        match manager.hold_init_publication(reserved) {
+            Ok(ticket) => {
+                if let Some(row) = manager.get_process_mut(reserved) {
+                    row.terminate_minimal(0);
+                } else if first_failure.is_none() {
+                    first_failure = Some("init designation A5 row disappeared before termination");
+                }
+                match manager.designate_init(ticket) {
+                    Err(_) => refused += 1,
+                    Ok(_) if first_failure.is_none() => {
+                        first_failure = Some("init designation A5 accepted a terminated row")
+                    }
+                    Ok(_) => {}
+                }
+            }
+            Err(_) if first_failure.is_none() => {
+                first_failure = Some("init designation A5 failed to issue a ticket")
+            }
+            Err(_) => {}
+        }
+        if manager.designated_init().is_some() && first_failure.is_none() {
+            first_failure = Some("init designation A5 changed the init designation");
+        }
+        manager.remove_from_ready_queue(reserved);
+        manager.remove_process(reserved);
+    }
+
+    // A6: a clean reserved row is designated and published exactly once.
+    {
+        let mut manager_guard = crate::process::manager();
+        let Some(manager) = manager_guard.as_mut() else {
+            return TestResult::Fail("process manager unavailable for init designation A6");
+        };
+        manager.insert_process(
+            reserved,
+            synthetic_row(reserved, "init_oracle_a6", "init_oracle_a6_main"),
+        );
+        match manager.hold_init_publication(reserved) {
+            Ok(ticket) => {
+                if manager.remove_from_ready_queue(reserved) && first_failure.is_none() {
+                    first_failure = Some("held init row reached the run queue before designation");
+                }
+                match manager.designate_init(ticket) {
+                    Ok(publication) => {
+                        if manager.remove_from_ready_queue(reserved) && first_failure.is_none() {
+                            first_failure =
+                                Some("designated init row reached the run queue before publication");
+                        }
+                        accepted += 1;
+                        if publication.pid() != reserved && first_failure.is_none() {
+                            first_failure =
+                                Some("init designation A6 publication named the wrong PID");
+                        }
+                        if manager.designated_init() != Some(reserved) && first_failure.is_none() {
+                            first_failure = Some("init designation A6 did not install the authority");
+                        }
+                        let thread = manager.publish_init(publication);
+                        published += 1;
+                        if !manager.remove_from_ready_queue(reserved) && first_failure.is_none() {
+                            first_failure = Some("init designation A6 publication missed the ready queue");
+                        }
+                        drop(thread);
+                    }
+                    Err(_) if first_failure.is_none() => {
+                        first_failure = Some("init designation A6 refused a clean reserved row")
+                    }
+                    Err(_) => {}
+                }
+            }
+            Err(_) if first_failure.is_none() => {
+                first_failure = Some("init designation A6 failed to issue a ticket")
+            }
+            Err(_) => {}
+        }
+    }
+
+    // A7: designation is single-assignment while the designated row is live.
+    {
+        let mut manager_guard = crate::process::manager();
+        let Some(manager) = manager_guard.as_mut() else {
+            return TestResult::Fail("process manager unavailable for init designation A7");
+        };
+        match manager.hold_init_publication(reserved) {
+            Ok(ticket) => match manager.designate_init(ticket) {
+                Err(_) => refused += 1,
+                Ok(_) if first_failure.is_none() => {
+                    first_failure = Some("init designation A7 accepted re-designation")
+                }
+                Ok(_) => {}
+            },
+            Err(_) if first_failure.is_none() => {
+                first_failure = Some("init designation A7 failed to issue a ticket")
+            }
+            Err(_) => {}
+        }
+        if manager.designated_init() != Some(reserved) && first_failure.is_none() {
+            first_failure = Some("init designation A7 disturbed the installed authority");
+        }
+    }
+
+    // A8: live children are reparented onto the designated init row.
+    let (parent_pid, child_pid) = {
+        let mut manager_guard = crate::process::manager();
+        let Some(manager) = manager_guard.as_mut() else {
+            return TestResult::Fail("process manager unavailable for init designation A8");
+        };
+        let parent_pid = manager.allocate_pid();
+        let child_pid = manager.allocate_pid();
+        if parent_pid.as_u64() < crate::process::FIRST_ORDINARY_PID && first_failure.is_none() {
+            first_failure = Some("init designation A8 parent PID used the reserved range");
+        }
+        if child_pid.as_u64() < crate::process::FIRST_ORDINARY_PID && first_failure.is_none() {
+            first_failure = Some("init designation A8 child PID used the reserved range");
+        }
+        let mut parent = synthetic_row(
+            parent_pid,
+            "init_oracle_a8_parent",
+            "init_oracle_a8_parent_main",
+        );
+        parent.children = alloc::vec![child_pid];
+        let mut child = synthetic_row(
+            child_pid,
+            "init_oracle_a8_child",
+            "init_oracle_a8_child_main",
+        );
+        child.parent = Some(parent_pid);
+        manager.insert_process(parent_pid, parent);
+        manager.insert_process(child_pid, child);
+        if !manager.reparent_children_to_init(parent_pid, &[child_pid])
+            && first_failure.is_none()
+        {
+            first_failure = Some("init designation A8 reparent operation reported no change");
+        }
+        if manager
+            .get_process(child_pid)
+            .and_then(|row| row.parent)
+            != Some(reserved)
+            && first_failure.is_none()
+        {
+            first_failure = Some("init designation A8 did not reparent the child");
+        }
+        if !manager
+            .get_process(reserved)
+            .map(|row| row.children.contains(&child_pid))
+            .unwrap_or(false)
+            && first_failure.is_none()
+        {
+            first_failure = Some("init designation A8 did not attach the child to init");
+        }
+        reparented += 1;
+        (parent_pid, child_pid)
+    };
+
+    // A9: reaping the designated row retires the authority.
+    {
+        let mut manager_guard = crate::process::manager();
+        let Some(manager) = manager_guard.as_mut() else {
+            return TestResult::Fail("process manager unavailable for init designation A9");
+        };
+        manager.remove_process(reserved);
+        if manager.designated_init().is_some() && first_failure.is_none() {
+            first_failure = Some("init designation A9 did not retire the authority");
+        }
+        retired += 1;
+    }
+
+    // A10: without a designated init, reparenting is a defined no-op.
+    let (parent2, child2) = {
+        let mut manager_guard = crate::process::manager();
+        let Some(manager) = manager_guard.as_mut() else {
+            return TestResult::Fail("process manager unavailable for init designation A10");
+        };
+        let parent2 = manager.allocate_pid();
+        let child2 = manager.allocate_pid();
+        if parent2.as_u64() < crate::process::FIRST_ORDINARY_PID && first_failure.is_none() {
+            first_failure = Some("init designation A10 parent PID used the reserved range");
+        }
+        if child2.as_u64() < crate::process::FIRST_ORDINARY_PID && first_failure.is_none() {
+            first_failure = Some("init designation A10 child PID used the reserved range");
+        }
+        let parent = synthetic_row(
+            parent2,
+            "init_oracle_a10_parent",
+            "init_oracle_a10_parent_main",
+        );
+        let mut child = synthetic_row(
+            child2,
+            "init_oracle_a10_child",
+            "init_oracle_a10_child_main",
+        );
+        child.parent = Some(parent2);
+        manager.insert_process(parent2, parent);
+        manager.insert_process(child2, child);
+        if manager.reparent_children_to_init(parent2, &[child2]) && first_failure.is_none() {
+            first_failure = Some("init designation A10 reparent operation reported a change");
+        }
+        if manager.get_process(child2).and_then(|row| row.parent) != Some(parent2)
+            && first_failure.is_none()
+        {
+            first_failure = Some("init designation A10 changed the child parent without init");
+        }
+        reparent_skipped += 1;
+        (parent2, child2)
+    };
+
+    // A11: a threadless row fails ticket construction and is removed through the row authority.
+    {
+        let mut manager_guard = crate::process::manager();
+        let Some(manager) = manager_guard.as_mut() else {
+            return TestResult::Fail("process manager unavailable for init designation A11");
+        };
+        let epoch_before = crate::task::process_task::boot_row_removal_epoch();
+        manager.insert_process(
+            reserved,
+            crate::process::Process::new(
+                reserved,
+                alloc::string::String::from("init_oracle_a11"),
+                VirtAddr::new(0x0040_0000),
+            ),
+        );
+        match manager.hold_init_publication(reserved) {
+            Ok(ticket) => {
+                drop(ticket);
+                if first_failure.is_none() {
+                    first_failure =
+                        Some("init designation A11 issued a ticket for a threadless row");
+                }
+            }
+            Err(_) => held_error_removals += 1,
+        }
+        if manager.get_process(reserved).is_some() && first_failure.is_none() {
+            first_failure = Some("init designation A11 left the threadless row behind");
+        }
+        if crate::task::process_task::boot_row_removal_epoch() - epoch_before != 1
+            && first_failure.is_none()
+        {
+            first_failure =
+                Some("init designation A11 removed the row without the row-removal epoch bump");
+        }
+        if manager.designated_init().is_some() && first_failure.is_none() {
+            first_failure = Some("init designation A11 disturbed the init designation");
+        }
+    }
+
+    // Remove all synthetic rows and prove the oracle leaves no init identity behind.
+    {
+        let mut manager_guard = crate::process::manager();
+        let Some(manager) = manager_guard.as_mut() else {
+            return TestResult::Fail("process manager unavailable for init designation cleanup");
+        };
+        for pid in [parent_pid, child_pid, parent2, child2] {
+            manager.remove_process(pid);
+        }
+        if manager.get_process(reserved).is_some() && first_failure.is_none() {
+            first_failure = Some("init designation cleanup left the reserved row live");
+        }
+        if manager.designated_init().is_some() && first_failure.is_none() {
+            first_failure = Some("init designation cleanup left the authority installed");
+        }
+    }
+
+    let accepted_delta = init_designation_accepted().saturating_sub(accepted_before);
+    let refused_delta = init_designation_refused().saturating_sub(refused_before);
+    let retired_delta = init_designation_retired().saturating_sub(retired_before);
+    let publications_delta = init_publications().saturating_sub(publications_before);
+    let reparent_children_delta =
+        init_reparent_children().saturating_sub(reparent_children_before);
+    let reparent_skipped_delta =
+        init_reparent_skipped_no_init().saturating_sub(reparent_skipped_before);
+    let ordinary_allocated =
+        init_ordinary_pid_allocations().saturating_sub(ordinary_allocations_before);
+    let reserved_collisions = init_reserved_pid_collisions_total();
+    let designation_used_after = frame_allocator_used_frames();
+    let designation_balance = designation_used_after as i64 - designation_used_before as i64;
+    core::mem::drop(reclaim_owner);
+
+    if accepted_delta != 1 && first_failure.is_none() {
+        first_failure = Some("init designation accepted counter delta was not exact");
+    }
+    if refused_delta != 4 && first_failure.is_none() {
+        first_failure = Some("init designation refused counter delta was not exact");
+    }
+    if retired_delta != 1 && first_failure.is_none() {
+        first_failure = Some("init designation retired counter delta was not exact");
+    }
+    if publications_delta != 1 && first_failure.is_none() {
+        first_failure = Some("init designation publication counter delta was not exact");
+    }
+    if reparent_children_delta != 1 && first_failure.is_none() {
+        first_failure = Some("init designation reparent counter delta was not exact");
+    }
+    if reparent_skipped_delta != 1 && first_failure.is_none() {
+        first_failure = Some("init designation skipped-reparent counter delta was not exact");
+    }
+    if ordinary_allocated != ordinary_allocated_expected && first_failure.is_none() {
+        first_failure = Some("init designation ordinary PID allocation delta was not exact");
+    }
+    if reserved_collisions != 0 && first_failure.is_none() {
+        first_failure = Some("ordinary PID allocation collided with the reserved init PID");
+    }
+    if construct_undecided != 2 && first_failure.is_none() {
+        first_failure = Some("init designation construction undecided-drop delta was not exact");
+    }
+    if construct_residual < 0 && first_failure.is_none() {
+        first_failure = Some("init designation failed construction over-freed frames");
+    }
+    if designation_balance != 0 && first_failure.is_none() {
+        first_failure = Some("init designation synthetic arms changed frame accounting");
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    let arch = "aarch64";
+    #[cfg(target_arch = "x86_64")]
+    let arch = "x86";
+    // `construct_residual` is the counted (never freed, never double-freed) frame residue of
+    // the two failed constructions. It is a pre-existing property of the process-creation
+    // failure path, not something P5a introduces; `construct_undecided` proves that residue is
+    // counted rather than lost.
+    crate::serial_println!(
+        "[INIT_DESIGNATION_ORACLE:{}:construct_failed={}:construct_undecided={}:construct_residual={}:refused={}:accepted={}:published={}:retired={}:held_error_removals={}:reparented={}:reparent_skipped={}:ordinary_allocated={}:reserved_collisions={}:designation_balance={}]",
+        arch,
+        construct_failed,
+        construct_undecided,
+        construct_residual,
+        refused,
+        accepted,
+        published,
+        retired,
+        held_error_removals,
+        reparented,
+        reparent_skipped,
+        ordinary_allocated,
+        reserved_collisions,
+        designation_balance
+    );
+    if let Some(reason) = first_failure {
+        return TestResult::Fail(reason);
+    }
+
+    crate::serial_println!("[TEST:process:init_designation_oracle:PASS]");
+    TestResult::Pass
+}
+
 #[cfg(all(feature = "boot_tests", target_arch = "x86_64"))]
 pub fn run_x86_exec_cohort_gate() {
     crate::serial_println!("[TEST:process:x86_exec_cohort:START]");
@@ -3835,6 +4551,19 @@ pub fn run_x86_clone_admission_gate() {
         crate::serial_println!("[TEST:process:clone_admission_oracle:FAIL:{:?}]", result);
     }
     assert!(result.is_pass(), "x86 clone admission oracle gate failed");
+}
+
+#[cfg(all(feature = "boot_tests", target_arch = "x86_64"))]
+pub fn run_x86_init_designation_gate() {
+    crate::serial_println!("[TEST:process:init_designation_oracle:START]");
+    let result = init_designation_oracle_test();
+    if !result.is_pass() {
+        crate::serial_println!(
+            "[TEST:process:init_designation_oracle:FAIL:{:?}]",
+            result
+        );
+    }
+    assert!(result.is_pass(), "x86 init designation oracle gate failed");
 }
 
 // P20 retains its calibrated 45s local ceiling, but both it and P17 consume
