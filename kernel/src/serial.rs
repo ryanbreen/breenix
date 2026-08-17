@@ -71,6 +71,11 @@ pub fn add_serial_byte(byte: u8) {
 }
 
 pub fn write_byte(byte: u8) {
+    write_bytes_atomic(core::slice::from_ref(&byte));
+}
+
+/// Write one caller-defined output unit while holding the serial lock once.
+pub fn write_bytes_atomic(bytes: &[u8]) {
     // CRITICAL: Check if interrupts are currently enabled
     // We must NOT re-enable interrupts if they were disabled by syscall entry
     let irq_enabled = crate::arch_interrupts_enabled();
@@ -80,8 +85,12 @@ pub fn write_byte(byte: u8) {
         crate::arch_disable_interrupts();
     }
 
-    SERIAL1.lock().send(byte);
-    crate::log_buffer::capture_byte(byte);
+    let mut serial = SERIAL1.lock();
+    for &byte in bytes {
+        serial.send(byte);
+        crate::log_buffer::capture_byte(byte);
+    }
+    drop(serial);
 
     // Only re-enable if they were enabled before
     // This prevents race condition in syscall handler where interrupts must stay disabled
