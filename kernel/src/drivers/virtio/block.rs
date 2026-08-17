@@ -377,12 +377,15 @@ impl VirtioBlockDevice {
             BLOCK_EARLY_COMPLETION_TIMEOUT_NS
         };
 
-        let result = self.completion.wait_timeout(token, timeout_ns);
+        // The request is already published to the device, so abandoning this
+        // wait would leave a device slot and its DMA buffers live.
+        let result = self
+            .completion
+            .wait_timeout_uninterruptible(token, timeout_ns);
 
         match result {
             Ok(true) => Ok(()),
-            Ok(false) => Err("Block request timed out"),
-            Err(_eintr) => Err("Block request interrupted"),
+            Ok(false) | Err(_) => Err("Block request timed out"),
         }
     }
 

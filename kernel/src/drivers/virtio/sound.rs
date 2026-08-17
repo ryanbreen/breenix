@@ -153,7 +153,6 @@ impl SoundQueueCompletion {
         &self,
         token: u32,
         timeout_error: &'static str,
-        interrupted_error: &'static str,
     ) -> Result<(), &'static str> {
         let scheduler_thread_present = crate::task::scheduler::current_thread_id().is_some();
         let timeout_ns = if scheduler_thread_present {
@@ -162,10 +161,14 @@ impl SoundQueueCompletion {
             SOUND_EARLY_COMPLETION_TIMEOUT_NS
         };
 
-        match self.completion.wait_timeout(token, timeout_ns) {
+        // The request is already published to the device, so abandoning this
+        // wait would leave a device slot and its DMA buffers live.
+        match self
+            .completion
+            .wait_timeout_uninterruptible(token, timeout_ns)
+        {
             Ok(true) => Ok(()),
-            Ok(false) => Err(timeout_error),
-            Err(_eintr) => Err(interrupted_error),
+            Ok(false) | Err(_) => Err(timeout_error),
         }
     }
 
@@ -420,7 +423,6 @@ impl VirtioSoundDevice {
         if let Err(e) = self.ctrl_completion.wait_for_completion(
             completion_token,
             "Sound control command timeout",
-            "Sound control command interrupted",
         ) {
             request_guard.keep_locked();
             return Err(e);
@@ -601,7 +603,6 @@ impl VirtioSoundDevice {
         if let Err(e) = self.tx_completion.wait_for_completion(
             completion_token,
             "Sound TX timeout",
-            "Sound TX interrupted",
         ) {
             request_guard.keep_locked();
             return Err(e);

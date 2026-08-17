@@ -157,15 +157,15 @@ impl BlockMmioCompletion {
         &self,
         token: u32,
         timeout_error: &'static str,
-        interrupted_error: &'static str,
     ) -> Result<(), &'static str> {
+        // The request is already published to the device, so abandoning this
+        // wait would leave a device slot and its DMA buffers live.
         match self
             .completion
-            .wait_timeout(token, BLOCK_MMIO_COMPLETION_TIMEOUT_NS)
+            .wait_timeout_uninterruptible(token, BLOCK_MMIO_COMPLETION_TIMEOUT_NS)
         {
             Ok(true) => Ok(()),
-            Ok(false) => Err(timeout_error),
-            Err(_eintr) => Err(interrupted_error),
+            Ok(false) | Err(_) => Err(timeout_error),
         }
     }
 
@@ -767,7 +767,6 @@ pub fn read_sector(
     if let Err(e) = completion.wait_for_completion(
         completion_token,
         "Block MMIO read timeout",
-        "Block MMIO read interrupted",
     ) {
         request_guard.keep_locked();
         return Err(e);
@@ -897,7 +896,6 @@ pub fn write_sector(
     if let Err(e) = completion.wait_for_completion(
         completion_token,
         "Block MMIO write timeout",
-        "Block MMIO write interrupted",
     ) {
         request_guard.keep_locked();
         return Err(e);

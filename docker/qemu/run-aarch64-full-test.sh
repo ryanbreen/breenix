@@ -197,6 +197,47 @@ if $PHASE1_OK && [ -z "$FAIL_REASON" ]; then
     fi
 fi
 
+# --- Phase 1a: Pin the init-driven block request lifetime oracle (up to 30s) ---
+if [ -z "$FAIL_REASON" ]; then
+    echo ""
+    echo "Phase 1a: Waiting for block EINTR oracle..."
+    BLOCK_EINTR_ORACLE_OK=false
+    for i in $(seq 1 15); do
+        if grep -qF "[BLOCK_EINTR_ORACLE:FAIL" "$OUTPUT_DIR/serial.txt" 2>/dev/null; then
+            BLOCK_EINTR_ORACLE_LINE=$(grep -F "[BLOCK_EINTR_ORACLE:FAIL" "$OUTPUT_DIR/serial.txt" 2>/dev/null | tail -1)
+            FAIL_REASON="Phase 1a: block EINTR oracle failed ($BLOCK_EINTR_ORACLE_LINE)"
+            break
+        fi
+        if grep -qF "[BLOCK_EINTR_ORACLE:" "$OUTPUT_DIR/serial.txt" 2>/dev/null; then
+            BLOCK_EINTR_ORACLE_OK=true
+            break
+        fi
+        if FATAL=$(check_fatal); then
+            FAIL_REASON="Phase 1a: block EINTR oracle never completed ($FATAL)"
+            break
+        fi
+        if ! kill -0 $QEMU_PID 2>/dev/null; then
+            FAIL_REASON="Phase 1a: block EINTR oracle never completed (QEMU exited)"
+            break
+        fi
+        sleep 2
+    done
+
+    if ! $BLOCK_EINTR_ORACLE_OK && [ -z "$FAIL_REASON" ]; then
+        FAIL_REASON="Phase 1a: block EINTR oracle marker absent (30s timeout)"
+    fi
+
+    if $BLOCK_EINTR_ORACLE_OK && [ -z "$FAIL_REASON" ]; then
+        BLOCK_EINTR_ORACLE_LINE=$(grep -F "[BLOCK_EINTR_ORACLE:" "$OUTPUT_DIR/serial.txt" 2>/dev/null | tail -1)
+        if echo "$BLOCK_EINTR_ORACLE_LINE" | grep -qF "[BLOCK_EINTR_ORACLE:FAIL"; then
+            FAIL_REASON="Phase 1a: block EINTR oracle failed ($BLOCK_EINTR_ORACLE_LINE)"
+        else
+            echo "  Observed: $BLOCK_EINTR_ORACLE_LINE"
+            echo "Phase 1a: PASS"
+        fi
+    fi
+fi
+
 # --- Phase 1b: Exercise the init-driven exec path (up to 30s) ---
 if [ -z "$FAIL_REASON" ]; then
     echo "Phase 1: PASS (${TESTS_PASSED}/${TESTS_TOTAL} tests)"

@@ -116,6 +116,9 @@ STD_BINARIES=(
     "exec_smoke"
     "exec_smoke_target"
 
+    # #575 block-EINTR oracle
+    "block_eintr_oracle"
+
     # Phase 1: No-fork programs
     "syscall_enosys"
     "clock_gettime_test"
