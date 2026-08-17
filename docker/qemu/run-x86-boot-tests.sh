@@ -30,7 +30,7 @@ CLONE_ADMISSION_ORACLE_LITERAL='[CLONE_ADMISSION_ORACLE:x86:admitted=1:refused=2
 # reserved_collisions, which is the absolute boot-wide count of ordinary
 # allocations that landed on the reserved init PID and must be zero.
 # construct_residual is the counted frame residue of the two construction-failure arms read off a measured green run, and it is architecture-specific (4 on x86, 2 on aarch64) because the two page-table constructors record different table-frame counts.
-INIT_DESIGNATION_ORACLE_LITERAL='[INIT_DESIGNATION_ORACLE:x86:construct_failed=2:construct_undecided=2:construct_residual=4:refused=4:accepted=1:published=1:retired=1:reparented=1:reparent_skipped=1:ordinary_allocated=5:reserved_collisions=0:designation_balance=0]'
+INIT_DESIGNATION_ORACLE_LITERAL='[INIT_DESIGNATION_ORACLE:x86:construct_failed=2:construct_undecided=2:construct_residual=4:refused=4:accepted=1:published=1:retired=1:held_error_removals=1:reparented=1:reparent_skipped=1:ordinary_allocated=5:reserved_collisions=0:designation_balance=0]'
 # Absolute frame counts are boot-state dependent, so pin every delta exactly,
 # including the three-table recorded_pre hierarchy cost and computed tables_returned=4;
 # the in-kernel oracle asserts used_after == used_before, and a skipped/cfg'd-out block fails this gate.

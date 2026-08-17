@@ -356,6 +356,13 @@ pub(crate) fn note_process_row_removed() {
     ROW_REMOVAL_EPOCH.fetch_add(1, Ordering::Relaxed);
 }
 
+/// Boot-test-only reader for the row-removal epoch, so an oracle can prove a removal went
+/// through `ProcessManager::remove_process` rather than a raw map removal.
+#[cfg(feature = "boot_tests")]
+pub(crate) fn boot_row_removal_epoch() -> u64 {
+    ROW_REMOVAL_EPOCH.load(Ordering::Relaxed)
+}
+
 /// Consume x86 exec-superseded roots at exit with a per-frame retirement budget,
 /// counting the walk when it runs under the process-manager lock. This is the
 /// x86 producer for TEARDOWN_MASKED_FRAMES_WALKED: a deferred exit that walks

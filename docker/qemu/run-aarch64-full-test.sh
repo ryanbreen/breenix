@@ -192,7 +192,7 @@ if $PHASE1_OK && [ -z "$FAIL_REASON" ]; then
         FAIL_REASON="Phase 1: missing creating-dispatch refusal oracle marker"
     elif ! grep -Fq '[TEST:process:init_designation_oracle:PASS]' "$OUTPUT_DIR/serial.txt" 2>/dev/null; then
         FAIL_REASON="Phase 1: missing init designation oracle PASS marker"
-    elif ! grep -Fq '[INIT_DESIGNATION_ORACLE:aarch64:construct_failed=2:construct_undecided=2:construct_residual=2:refused=4:accepted=1:published=1:retired=1:reparented=1:reparent_skipped=1:ordinary_allocated=5:reserved_collisions=0:designation_balance=0]' "$OUTPUT_DIR/serial.txt" 2>/dev/null; then
+    elif ! grep -Fq '[INIT_DESIGNATION_ORACLE:aarch64:construct_failed=2:construct_undecided=2:construct_residual=2:refused=4:accepted=1:published=1:retired=1:held_error_removals=1:reparented=1:reparent_skipped=1:ordinary_allocated=5:reserved_collisions=0:designation_balance=0]' "$OUTPUT_DIR/serial.txt" 2>/dev/null; then
         FAIL_REASON="Phase 1: missing init designation oracle counter marker"
     fi
 fi
@@ -298,6 +298,11 @@ if [ -z "$FAIL_REASON" ]; then
 fi
 
 # --- Phase 1d: init identity ---
+# AC-8 retry evidence: oracle arms A1 and A2 fail construction at the reserved PID before
+# production launch_init_from_elf succeeds and designates that PID in the same aarch64 boot.
+# Their serial ordering makes the Phase 1d construction a retry after both reserved-PID failures.
+# Phase 1d then proves designated PID == userspace-observed PID == 1 with no reserved collision.
+# The x86 oracle exercises only the ticket path over synthetic rows; x86 has no constructor retry.
 if [ -z "$FAIL_REASON" ]; then
     INIT_DESIGNATION_LINE=$(grep -E '\[INIT_DESIGNATION:aarch64:designated_pid=[0-9]+:reserved_collisions=[0-9]+\]' "$OUTPUT_DIR/serial.txt" 2>/dev/null | tail -1 || true)
     if [ -z "$INIT_DESIGNATION_LINE" ]; then

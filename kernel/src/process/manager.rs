@@ -171,16 +171,18 @@ impl ProcessManager {
         &mut self,
         provisional_pid: ProcessId,
     ) -> Result<InitDesignationTicket, &'static str> {
-        let main_thread = match self
+        // The failure path retires the row through `remove_process`, never with a raw
+        // `self.processes.remove`: only `remove_process` clears `designated_init` when the row
+        // being removed is the designated one and bumps ROW_REMOVAL_EPOCH for a parked reclaimer.
+        // A raw removal here would leave `designated_init` naming a row that no longer exists.
+        let main_thread = self
             .processes
             .get(&provisional_pid)
             .and_then(|process| process.main_thread.as_ref())
-        {
-            Some(main_thread) => Box::new(main_thread.clone()),
-            None => {
-                self.processes.remove(&provisional_pid);
-                return Err("init row has no main thread");
-            }
+            .map(|main_thread| Box::new(main_thread.clone()));
+        let Some(main_thread) = main_thread else {
+            self.remove_process(provisional_pid);
+            return Err("init row has no main thread");
         };
 
         debug_assert!(!self.ready_queue.contains(&provisional_pid));

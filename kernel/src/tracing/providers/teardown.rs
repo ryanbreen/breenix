@@ -4012,6 +4012,7 @@ pub fn init_designation_oracle_test() -> crate::test_framework::registry::TestRe
     let mut accepted = 0u64;
     let mut published = 0u64;
     let mut retired = 0u64;
+    let mut held_error_removals = 0u64;
     let mut reparented = 0u64;
     let mut reparent_skipped = 0u64;
     let ordinary_allocated_expected = 5u64;
@@ -4384,6 +4385,45 @@ pub fn init_designation_oracle_test() -> crate::test_framework::registry::TestRe
         (parent2, child2)
     };
 
+    // A11: a threadless row fails ticket construction and is removed through the row authority.
+    {
+        let mut manager_guard = crate::process::manager();
+        let Some(manager) = manager_guard.as_mut() else {
+            return TestResult::Fail("process manager unavailable for init designation A11");
+        };
+        let epoch_before = crate::task::process_task::boot_row_removal_epoch();
+        manager.insert_process(
+            reserved,
+            crate::process::Process::new(
+                reserved,
+                alloc::string::String::from("init_oracle_a11"),
+                VirtAddr::new(0x0040_0000),
+            ),
+        );
+        match manager.hold_init_publication(reserved) {
+            Ok(ticket) => {
+                drop(ticket);
+                if first_failure.is_none() {
+                    first_failure =
+                        Some("init designation A11 issued a ticket for a threadless row");
+                }
+            }
+            Err(_) => held_error_removals += 1,
+        }
+        if manager.get_process(reserved).is_some() && first_failure.is_none() {
+            first_failure = Some("init designation A11 left the threadless row behind");
+        }
+        if crate::task::process_task::boot_row_removal_epoch() - epoch_before != 1
+            && first_failure.is_none()
+        {
+            first_failure =
+                Some("init designation A11 removed the row without the row-removal epoch bump");
+        }
+        if manager.designated_init().is_some() && first_failure.is_none() {
+            first_failure = Some("init designation A11 disturbed the init designation");
+        }
+    }
+
     // Remove all synthetic rows and prove the oracle leaves no init identity behind.
     {
         let mut manager_guard = crate::process::manager();
@@ -4459,7 +4499,7 @@ pub fn init_designation_oracle_test() -> crate::test_framework::registry::TestRe
     // failure path, not something P5a introduces; `construct_undecided` proves that residue is
     // counted rather than lost.
     crate::serial_println!(
-        "[INIT_DESIGNATION_ORACLE:{}:construct_failed={}:construct_undecided={}:construct_residual={}:refused={}:accepted={}:published={}:retired={}:reparented={}:reparent_skipped={}:ordinary_allocated={}:reserved_collisions={}:designation_balance={}]",
+        "[INIT_DESIGNATION_ORACLE:{}:construct_failed={}:construct_undecided={}:construct_residual={}:refused={}:accepted={}:published={}:retired={}:held_error_removals={}:reparented={}:reparent_skipped={}:ordinary_allocated={}:reserved_collisions={}:designation_balance={}]",
         arch,
         construct_failed,
         construct_undecided,
@@ -4468,6 +4508,7 @@ pub fn init_designation_oracle_test() -> crate::test_framework::registry::TestRe
         accepted,
         published,
         retired,
+        held_error_removals,
         reparented,
         reparent_skipped,
         ordinary_allocated,
