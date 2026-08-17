@@ -197,7 +197,7 @@ closure F re-wires.
 | Tranche | Phases | Status |
 |---|---|---|
 | **Tranche 1** | P0 + P1 + P2 | **Ratified** (v3.1 pass, `ENDORSE: YES`) — **COMPLETE, merged to `main`** |
-| **Tranche 2** | **P3** (exec detach + clone/exec admission) + **P4** (kernel-stack ownership parity + creation-path lock-order parity) + **P5a** (init identity) | **RE-RATIFIED, effective on pre-check pass.** The operator's decision of **2026-08-16** ratified *proceeding per* `docs/planning/teardown-unification/P3-RERATIFICATION-2026-08-15.md` — document repair, then **one** adversarial pre-check against the repaired text, then implementation (artifact §5.3, §8). The ratification is effective the moment this repaired text lands with a **passing** pre-check; until then no tranche-2 phase is cleared for build (§2 condition 7). Assessed at `main` @ `1db23de0`; this repair re-anchored at `main` @ `2c7b8798`. **P3 landed, PR #587** — P4 and P5a remain uncleared for build |
+| **Tranche 2** | **P3** (exec detach + clone/exec admission) + **P4** (kernel-stack ownership parity + creation-path lock-order parity) + **P5a** (init identity) | **RE-RATIFIED, effective on pre-check pass.** The operator's decision of **2026-08-16** ratified *proceeding per* `docs/planning/teardown-unification/P3-RERATIFICATION-2026-08-15.md` — document repair, then **one** adversarial pre-check against the repaired text, then implementation (artifact §5.3, §8). The ratification is effective the moment this repaired text lands with a **passing** pre-check; until then no tranche-2 phase is cleared for build (§2 condition 7). Assessed at `main` @ `1db23de0`; this repair re-anchored at `main` @ `2c7b8798`. **P3 landed, PR #587; P5a landed, PR #590** — P4 remains uncleared for build |
 | — | **P5b** (`sys_clone` init-group refusal) | **HELD** on **#575** — its acceptance evidence is a quiesce walk of the process map, and init does not reliably reach quiesce on the QEMU gates. Mechanism unchanged; only its gate is blocked |
 | **Tranche 3+** | P6a, P6b, P7, P8, P9, P10a-d, P11, P12 | **Uncleared.** Each arrives with its own tranche pass; the DESIGN-DEBT REGISTER gates any tranche containing a debt owner |
 
@@ -317,7 +317,7 @@ not a prediction about arguments not yet made. The PR that splits says so in its
 | 3 | SPINE-1: SIGKILL stops eager-freeing **+ receipt custody across all 9 adapted sites** *(7 `exit_process` callers + 1 new SIGKILL arm + 1 PM-nested enqueue)* — **merged, PR #515** | P2 |
 | 4 | exec detach **+ clone/exec admission**: clear `inherited_cr3`/`thread_group_id` at every exec commit and preserve on every failure; parent-`Live` validation + non-runnable publication + the `Creating` dispatch arm — **landed, PR #587** | **P3** — artifact `T2-b` |
 | 5 | Kernel-stack single-owner accounting (**AC-8**) across the five `Box::leak` sites **+ creation-path PM→SCHEDULER lock-order parity** (#527's creation-path remainder) — closes **#579** | **P4** — artifact `T2-c` |
-| 6 | Runtime init designation — PID-1 reservation + held-publication ticket **+ the init literal migration onto `designated_init()`** | **P5a** — artifact `T2-d` |
+| 6 | Runtime init designation — PID-1 reservation + held-publication ticket **+ the init literal migration onto `designated_init()`** — **landed, PR #590** | **P5a** — artifact `T2-d` |
 | 7 | Init-group clone refusal | **P5b** — **HELD on #575** |
 | 8 | Reap/tombstone retention gate **+ two-event join** | **P6a** |
 | 9 | Exactly-once ledger (class A/B obligations + effect markers) | **P6b** |
