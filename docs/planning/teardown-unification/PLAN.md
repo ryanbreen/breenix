@@ -1263,13 +1263,19 @@ because dispatch refuses `Creating` rows, so shipping either without the other i
   is structurally-pinned-only, and cannot be runtime-proven until #567 is fixed.** x86 does not run
   the boot-test registry at all — its `[BOOT_TESTS:PASS]` is emitted by `advance_stage_marker_only`
   on the syscall path, and every x86 custody oracle is an explicit `run_x86_*_gate()` driver called
-  from `kernel_main_on_kernel_stack` with interrupts disabled, where `yield_current()` only sets
-  `need_resched` and no dispatch can occur. #567 documents that window as actively fatal to any
-  scheduling event ("spawns a kthread and lets it be scheduled … can resume with a corrupted CPU
-  context and die"), which is why four scheduling tests are already deferred there. A real x86
-  `Creating` dispatch therefore requires the exact mechanism #567 names as broken. This is disclosed
-  rather than worked around: no gate FAIL condition was relaxed for it, the two x86 arms keep their
-  exact ordering pins, and the vector design is recorded on #567 to be built when #567 closes.)*
+  from `kernel_main_on_kernel_stack` — correction: that call site runs with interrupts **enabled**
+  (`kernel/src/main.rs:600-652`, the IF=1 driver-post-init self-test window the in-tree comment says
+  the gates need precisely because they require live timer ticks and scheduler epochs), not disabled
+  as an earlier draft of this clause and commit 98233a3c's message both stated; the true barrier is
+  open #567's poisoned-resume hazard in that same IF=1 window — a thread resumed after a boot-time
+  yield/spawn can come back with a corrupted CPU context (garbage RIP, `#GP`, or a page fault reading
+  a poisoned/`0x44…`-filled frame) rather than genuinely being unable to dispatch. #567 documents that
+  window as actively fatal to any scheduling event ("spawns a kthread and lets it be scheduled … can
+  resume with a corrupted CPU context and die"), which is why four scheduling tests are already
+  deferred there. A real x86 `Creating` dispatch therefore requires the exact mechanism #567 names as
+  broken. This is disclosed rather than worked around: no gate FAIL condition was relaxed for it, the
+  two x86 arms keep their exact ordering pins, and the vector design is recorded on #567 to be built
+  when #567 closes.)*
 - The exec-path lock order PR #577 ratcheted stays green: `[EXEC_LOCK_ORDER:VIOLATION:PM_HELD]` at
   zero across the full gate, and `tests/exec_lock_order_structure.rs` (25 tests) unbroken by the new
   commit-point code. *(Extending that ratchet to the creation sites is P4's gate, not this one.)*
