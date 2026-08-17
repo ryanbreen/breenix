@@ -20,6 +20,7 @@ const NO_COMPLETED_DESC: u32 = u32::MAX;
 
 struct SoundMmioRequestGate {
     locked: AtomicBool,
+    wedged: AtomicBool,
     waiters: WaitQueueHead,
 }
 
@@ -32,11 +33,16 @@ impl SoundMmioRequestGate {
     const fn new() -> Self {
         Self {
             locked: AtomicBool::new(false),
+            wedged: AtomicBool::new(false),
             waiters: WaitQueueHead::new(),
         }
     }
 
     fn lock(&self) -> Result<SoundMmioRequestGuard<'_>, &'static str> {
+        if self.wedged.load(Ordering::Acquire) {
+            return Err("Sound MMIO device wedged after an abandoned request");
+        }
+
         loop {
             if self
                 .locked
@@ -61,10 +67,19 @@ impl SoundMmioRequestGate {
                 return Err("Sound MMIO request already in progress");
             }
 
+            if self.wedged.load(Ordering::Acquire) {
+                self.waiters.finish_wait();
+                return Err("Sound MMIO device wedged after an abandoned request");
+            }
+
             if self.locked.load(Ordering::Acquire) {
                 crate::task::waitqueue::schedule_current_wait();
             }
             self.waiters.finish_wait();
+
+            if self.wedged.load(Ordering::Acquire) {
+                return Err("Sound MMIO device wedged after an abandoned request");
+            }
         }
     }
 
@@ -75,8 +90,10 @@ impl SoundMmioRequestGate {
 }
 
 impl SoundMmioRequestGuard<'_> {
-    fn keep_locked(&mut self) {
+    fn wedge(&mut self) {
         self.release_on_drop = false;
+        self.gate.wedged.store(true, Ordering::Release);
+        self.gate.waiters.wake_up();
     }
 }
 
@@ -554,7 +571,7 @@ fn send_ctrl_command(
         completion_token,
         "Sound MMIO control command timeout",
     ) {
-        request_guard.keep_locked();
+        request_guard.wedge();
         return Err(e);
     }
 
@@ -775,7 +792,7 @@ pub fn write_pcm(data: &[u8]) -> Result<usize, &'static str> {
         completion_token,
         "Sound MMIO TX timeout",
     ) {
-        request_guard.keep_locked();
+        request_guard.wedge();
         return Err(e);
     }
 

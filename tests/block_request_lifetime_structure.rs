@@ -340,3 +340,348 @@ fn block_eintr_oracle_marker_is_pinned_in_the_gates() {
         missing.join(", ")
     );
 }
+
+const KEEP_LOCKED_IDENTIFIER: &str = "keep_locked";
+
+/// Adding a guard `wedge()` call site must force explicit review of every
+/// abandoned-request path rather than silently expanding the quarantine set.
+const DRIVER_GUARD_WEDGE_CALL_POPULATION: usize = 9;
+
+fn is_identifier_byte(byte: u8) -> bool {
+    byte == b'_' || byte.is_ascii_alphanumeric()
+}
+
+fn code_identifier_occurrences(source: &str, identifier: &str) -> Vec<usize> {
+    code_occurrences(source, identifier)
+        .into_iter()
+        .filter(|offset| {
+            let before = offset
+                .checked_sub(1)
+                .and_then(|index| source.as_bytes().get(index))
+                .copied();
+            let after = source.as_bytes().get(offset + identifier.len()).copied();
+            before.is_none_or(|byte| !is_identifier_byte(byte))
+                && after.is_none_or(|byte| !is_identifier_byte(byte))
+        })
+        .collect()
+}
+
+fn code_method_call_occurrences(source: &str, method: &str) -> Vec<usize> {
+    code_identifier_occurrences(source, method)
+        .into_iter()
+        .filter(|offset| {
+            let bytes = source.as_bytes();
+            let mut before = *offset;
+            while before != 0 && bytes[before - 1].is_ascii_whitespace() {
+                before -= 1;
+            }
+            let mut after = offset + method.len();
+            while bytes
+                .get(after)
+                .is_some_and(|byte| byte.is_ascii_whitespace())
+            {
+                after += 1;
+            }
+            before != 0 && bytes[before - 1] == b'.' && bytes.get(after) == Some(&b'(')
+        })
+        .collect()
+}
+
+fn masked_code(source: &str) -> String {
+    let mask = code_mask(source);
+    let bytes: Vec<u8> = source
+        .as_bytes()
+        .iter()
+        .zip(mask)
+        .map(|(byte, is_code)| if is_code { *byte } else { b' ' })
+        .collect();
+    String::from_utf8(bytes).expect("masked Rust source remains UTF-8")
+}
+
+fn compact_code(source: &str) -> String {
+    masked_code(source)
+        .bytes()
+        .filter(|byte| !byte.is_ascii_whitespace())
+        .map(char::from)
+        .collect()
+}
+
+fn matching_brace(source: &str, open: usize) -> Option<usize> {
+    let mut depth = 0usize;
+    for (relative, byte) in source.as_bytes()[open..].iter().enumerate() {
+        match byte {
+            b'{' => depth += 1,
+            b'}' => {
+                depth = depth.checked_sub(1)?;
+                if depth == 0 {
+                    return Some(open + relative);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn skip_ascii_whitespace(source: &str, mut offset: usize) -> usize {
+    while source
+        .as_bytes()
+        .get(offset)
+        .is_some_and(|byte| byte.is_ascii_whitespace())
+    {
+        offset += 1;
+    }
+    offset
+}
+
+fn identifier_at(source: &str, offset: usize) -> Option<(&str, usize)> {
+    let bytes = source.as_bytes();
+    if !bytes
+        .get(offset)
+        .is_some_and(|byte| *byte == b'_' || byte.is_ascii_alphabetic())
+    {
+        return None;
+    }
+    let mut end = offset + 1;
+    while bytes.get(end).is_some_and(|byte| is_identifier_byte(*byte)) {
+        end += 1;
+    }
+    Some((&source[offset..end], end))
+}
+
+fn struct_definitions(source: &str) -> Vec<(&str, usize, usize)> {
+    let mut definitions = Vec::new();
+    for offset in code_identifier_occurrences(source, "struct") {
+        let name_start = skip_ascii_whitespace(source, offset + "struct".len());
+        let Some((name, _name_end)) = identifier_at(source, name_start) else {
+            continue;
+        };
+        let Some(open_relative) = source[name_start..].find('{') else {
+            continue;
+        };
+        let open = name_start + open_relative;
+        let Some(close) = matching_brace(source, open) else {
+            continue;
+        };
+        definitions.push((name, open + 1, close));
+    }
+    definitions
+}
+
+fn guard_gate_type<'a>(source: &'a str, body_start: usize, body_end: usize) -> Option<&'a str> {
+    let body = &source[body_start..body_end];
+    for gate_offset in code_identifier_occurrences(body, "gate") {
+        let mut cursor = skip_ascii_whitespace(body, gate_offset + "gate".len());
+        if body.as_bytes().get(cursor) != Some(&b':') {
+            continue;
+        }
+        cursor = skip_ascii_whitespace(body, cursor + 1);
+        if body.as_bytes().get(cursor) != Some(&b'&') {
+            continue;
+        }
+        cursor = skip_ascii_whitespace(body, cursor + 1);
+        if body.as_bytes().get(cursor) == Some(&b'\'') {
+            let (_, lifetime_end) = identifier_at(body, cursor + 1)?;
+            cursor = skip_ascii_whitespace(body, lifetime_end);
+        }
+        if let Some((gate_type, _)) = identifier_at(body, cursor) {
+            return Some(gate_type);
+        }
+    }
+    None
+}
+
+fn impl_bodies_for_type(source: &str, type_name: &str) -> Vec<(usize, usize)> {
+    let mut bodies = Vec::new();
+    for offset in code_identifier_occurrences(source, "impl") {
+        let Some(open_relative) = source[offset..].find('{') else {
+            continue;
+        };
+        let open = offset + open_relative;
+        if code_identifier_occurrences(&source[offset..open], type_name).is_empty() {
+            continue;
+        }
+        if let Some(close) = matching_brace(source, open) {
+            bodies.push((open + 1, close));
+        }
+    }
+    bodies
+}
+
+fn previous_identifier(source: &str, offset: usize) -> Option<&str> {
+    let bytes = source.as_bytes();
+    let mut end = offset;
+    while end != 0 && bytes[end - 1].is_ascii_whitespace() {
+        end -= 1;
+    }
+    let mut start = end;
+    while start != 0 && is_identifier_byte(bytes[start - 1]) {
+        start -= 1;
+    }
+    (start != end).then_some(&source[start..end])
+}
+
+fn method_bodies(
+    source: &str,
+    impl_start: usize,
+    impl_end: usize,
+    method_name: &str,
+) -> Vec<(usize, usize)> {
+    let mut bodies = Vec::new();
+    let impl_body = &source[impl_start..impl_end];
+    for relative in code_identifier_occurrences(impl_body, method_name) {
+        let name_offset = impl_start + relative;
+        if previous_identifier(source, name_offset) != Some("fn") {
+            continue;
+        }
+        let Some(open_relative) = source[name_offset..impl_end].find('{') else {
+            continue;
+        };
+        let open = name_offset + open_relative;
+        if let Some(close) = matching_brace(source, open) {
+            bodies.push((open + 1, close));
+        }
+    }
+    bodies
+}
+
+fn wedge_gate_types(source: &str) -> std::collections::BTreeSet<String> {
+    let masked = masked_code(source);
+    let mut gate_types = std::collections::BTreeSet::new();
+
+    for (guard_type, body_start, body_end) in struct_definitions(&masked) {
+        let Some(gate_type) = guard_gate_type(&masked, body_start, body_end) else {
+            continue;
+        };
+        let has_real_wedge = impl_bodies_for_type(&masked, guard_type)
+            .into_iter()
+            .flat_map(|(start, end)| method_bodies(&masked, start, end, "wedge"))
+            .any(|(start, end)| {
+                compact_code(&masked[start..end]).contains("self.gate.wedged.store(")
+            });
+        if has_real_wedge {
+            gate_types.insert(gate_type.to_string());
+        }
+    }
+
+    gate_types
+}
+
+fn validate_gate_poison_source(label: &str, source: &str) -> Result<(), String> {
+    let keep_locked = code_identifier_occurrences(source, KEEP_LOCKED_IDENTIFIER);
+    if !keep_locked.is_empty() {
+        return Err(format!(
+            "{label} contains {} keep_locked identifier(s)",
+            keep_locked.len()
+        ));
+    }
+
+    let masked = masked_code(source);
+    for gate_type in wedge_gate_types(source) {
+        let lock_reads_wedged = impl_bodies_for_type(&masked, &gate_type)
+            .into_iter()
+            .flat_map(|(start, end)| method_bodies(&masked, start, end, "lock"))
+            .any(|(start, end)| compact_code(&masked[start..end]).contains("self.wedged.load("));
+        if !lock_reads_wedged {
+            return Err(format!(
+                "{label}: gate {gate_type} has a wedge path but lock() never reads wedged"
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+fn driver_rust_sources() -> Vec<(String, String)> {
+    discover_files(&repo_root().join("kernel/src/drivers"), "rs")
+        .into_iter()
+        .map(|path| {
+            let source = fs::read_to_string(&path)
+                .unwrap_or_else(|_| panic!("read driver source {}", path.display()));
+            let label = path
+                .strip_prefix(repo_root())
+                .unwrap_or(&path)
+                .display()
+                .to_string();
+            (label, source)
+        })
+        .collect()
+}
+
+#[test]
+fn drivers_have_no_unpaired_keep_locked_escape() {
+    let sources = driver_rust_sources();
+    let sites: Vec<String> = sources
+        .iter()
+        .flat_map(|(label, source)| {
+            code_identifier_occurrences(source, KEEP_LOCKED_IDENTIFIER)
+                .into_iter()
+                .map(move |offset| format!("{label}:{}", line_number(source, offset)))
+        })
+        .collect();
+    assert!(
+        sites.is_empty(),
+        "keep_locked is forbidden under discovered driver sources: {}",
+        sites.join(", ")
+    );
+}
+
+#[test]
+fn driver_guard_wedge_call_population_is_pinned() {
+    let sources = driver_rust_sources();
+    let wedge_calls: usize = sources
+        .iter()
+        .map(|(_, source)| code_method_call_occurrences(source, "wedge").len())
+        .sum();
+    assert_eq!(
+        wedge_calls,
+        DRIVER_GUARD_WEDGE_CALL_POPULATION,
+        "guard wedge-call census changed across {} discovered driver Rust files",
+        sources.len()
+    );
+}
+
+#[test]
+fn every_wedged_driver_gate_refuses_inside_lock() {
+    let sources = driver_rust_sources();
+    let violations: Vec<String> = sources
+        .iter()
+        .filter_map(|(label, source)| validate_gate_poison_source(label, source).err())
+        .collect();
+    assert!(
+        violations.is_empty(),
+        "driver gate-poison validation failed: {}",
+        violations.join("; ")
+    );
+}
+
+#[test]
+fn gate_poison_validator_rejects_synthetic_regressions() {
+    let missing_lock_check = r#"
+        struct SyntheticRequestGate { locked: AtomicBool, wedged: AtomicBool }
+        struct SyntheticRequestGuard<'a> { gate: &'a SyntheticRequestGate }
+        impl SyntheticRequestGate {
+            fn lock(&self) { self.locked.load(Ordering::Acquire); }
+        }
+        impl SyntheticRequestGuard<'_> {
+            fn wedge(&mut self) {
+                self.gate.wedged.store(true, Ordering::Release);
+            }
+        }
+    "#;
+    let missing_error = validate_gate_poison_source("missing.rs", missing_lock_check)
+        .expect_err("a wedged gate whose lock ignores wedged must be rejected");
+    assert!(
+        missing_error.contains("SyntheticRequestGate")
+            && missing_error.contains("lock() never reads wedged"),
+        "validator returned the wrong missing-lock diagnostic: {missing_error}"
+    );
+
+    let keep_locked_source = "impl Guard { fn keep_locked(&mut self) {} }";
+    let keep_error = validate_gate_poison_source("keep.rs", keep_locked_source)
+        .expect_err("keep_locked must be rejected by construction");
+    assert!(
+        keep_error.contains("keep_locked"),
+        "validator returned the wrong keep_locked diagnostic: {keep_error}"
+    );
+}

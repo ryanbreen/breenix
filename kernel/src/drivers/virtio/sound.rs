@@ -19,6 +19,7 @@ const SOUND_TEST_SILENCE: [u8; 16_384] = [0; 16_384];
 
 struct SoundRequestGate {
     locked: AtomicBool,
+    wedged: AtomicBool,
     waiters: crate::task::waitqueue::WaitQueueHead,
 }
 
@@ -31,11 +32,16 @@ impl SoundRequestGate {
     const fn new() -> Self {
         Self {
             locked: AtomicBool::new(false),
+            wedged: AtomicBool::new(false),
             waiters: crate::task::waitqueue::WaitQueueHead::new(),
         }
     }
 
     fn lock(&self) -> Result<SoundRequestGuard<'_>, &'static str> {
+        if self.wedged.load(Ordering::Acquire) {
+            return Err("Sound device wedged after an abandoned request");
+        }
+
         loop {
             if self
                 .locked
@@ -60,10 +66,19 @@ impl SoundRequestGate {
                 return Err("Sound request already in progress");
             }
 
+            if self.wedged.load(Ordering::Acquire) {
+                self.waiters.finish_wait();
+                return Err("Sound device wedged after an abandoned request");
+            }
+
             if self.locked.load(Ordering::Acquire) {
                 crate::task::waitqueue::schedule_current_wait();
             }
             self.waiters.finish_wait();
+
+            if self.wedged.load(Ordering::Acquire) {
+                return Err("Sound device wedged after an abandoned request");
+            }
         }
     }
 
@@ -74,8 +89,10 @@ impl SoundRequestGate {
 }
 
 impl SoundRequestGuard<'_> {
-    fn keep_locked(&mut self) {
+    fn wedge(&mut self) {
         self.release_on_drop = false;
+        self.gate.wedged.store(true, Ordering::Release);
+        self.gate.waiters.wake_up();
     }
 }
 
@@ -424,7 +441,7 @@ impl VirtioSoundDevice {
             completion_token,
             "Sound control command timeout",
         ) {
-            request_guard.keep_locked();
+            request_guard.wedge();
             return Err(e);
         }
 
@@ -604,7 +621,7 @@ impl VirtioSoundDevice {
             completion_token,
             "Sound TX timeout",
         ) {
-            request_guard.keep_locked();
+            request_guard.wedge();
             return Err(e);
         }
 

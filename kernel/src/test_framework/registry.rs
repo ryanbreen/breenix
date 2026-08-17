@@ -5948,6 +5948,14 @@ static FILESYSTEM_TESTS: &[TestDef] = &[
         timeout_ms: 5000,
         stage: TestStage::EarlyBoot,
     },
+    #[cfg(target_arch = "aarch64")]
+    TestDef {
+        name: "block_wedge_oracle",
+        func: crate::drivers::virtio::block_mmio::block_wedge_oracle_test,
+        arch: Arch::Aarch64,
+        timeout_ms: 2000,
+        stage: TestStage::PostScheduler,
+    },
 ];
 
 /// Network subsystem tests (Phase 4k)

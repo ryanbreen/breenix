@@ -33,6 +33,7 @@ const NO_COMPLETED_STATUS: u32 = u32::MAX;
 
 struct BlockRequestGate {
     locked: AtomicBool,
+    wedged: AtomicBool,
     waiters: crate::task::waitqueue::WaitQueueHead,
 }
 
@@ -45,11 +46,16 @@ impl BlockRequestGate {
     const fn new() -> Self {
         Self {
             locked: AtomicBool::new(false),
+            wedged: AtomicBool::new(false),
             waiters: crate::task::waitqueue::WaitQueueHead::new(),
         }
     }
 
     fn lock(&self) -> Result<BlockRequestGuard<'_>, &'static str> {
+        if self.wedged.load(Ordering::Acquire) {
+            return Err("Block device wedged after an abandoned request");
+        }
+
         loop {
             if self
                 .locked
@@ -74,10 +80,19 @@ impl BlockRequestGate {
                 return Err("Block request already in progress");
             }
 
+            if self.wedged.load(Ordering::Acquire) {
+                self.waiters.finish_wait();
+                return Err("Block device wedged after an abandoned request");
+            }
+
             if self.locked.load(Ordering::Acquire) {
                 crate::task::waitqueue::schedule_current_wait();
             }
             self.waiters.finish_wait();
+
+            if self.wedged.load(Ordering::Acquire) {
+                return Err("Block device wedged after an abandoned request");
+            }
         }
     }
 
@@ -88,8 +103,10 @@ impl BlockRequestGate {
 }
 
 impl BlockRequestGuard<'_> {
-    fn keep_locked(mut self) {
+    fn wedge(mut self) {
         self.release_on_drop = false;
+        self.gate.wedged.store(true, Ordering::Release);
+        self.gate.waiters.wake_up();
     }
 }
 
@@ -511,7 +528,7 @@ impl VirtioBlockDevice {
         self.device.notify_queue(0);
 
         if let Err(e) = self.wait_for_completion(completion_token) {
-            request_guard.keep_locked();
+            request_guard.wedge();
             return Err(e);
         }
 
@@ -599,7 +616,7 @@ impl VirtioBlockDevice {
         self.device.notify_queue(0);
 
         if let Err(e) = self.wait_for_completion(completion_token) {
-            request_guard.keep_locked();
+            request_guard.wedge();
             return Err(e);
         }
 
