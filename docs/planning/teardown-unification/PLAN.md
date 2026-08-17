@@ -439,11 +439,11 @@ not a prediction about arguments not yet made. The PR that splits says so in its
    **seven** such suites, not the four this list used to name (coordinator ruling R11, 2026-08-17);
    counts are re-derived at the head of every phase rather than treated as fixed, and the suite set
    is what `tests/*_structure.rs` matches, never a closed literal list — the #549/#551/#527-r1
-   lesson. As of P5a landing: `tests/teardown_structure.rs` (**41**, was 36 before P5a's five new
+   lesson. As of P5a landing: `tests/teardown_structure.rs` (**43**, was 36 before P5a's seven new
    init-identity tests), `tests/context_restore_structure.rs` (**50**),
    `tests/exec_lock_order_structure.rs` (**25**), `tests/dma_and_log_sink_structure.rs` (**4**),
    `tests/loopback_pump_structure.rs` (**57**), `tests/net_lock_structure.rs` (**19**),
-   `tests/exit_tally_structure.rs` (**6**) — 202 tests, all census-anchored (file +
+   `tests/exit_tally_structure.rs` (**6**) — 204 tests, all census-anchored (file +
    enclosing-item path + occurrence count), no line pins. Every new tranche-2 invariant is
    ratcheted in one of them.
 7. **Cleanup:** all Parallels VMs stopped, all stray QEMU killed, before reporting the phase done.

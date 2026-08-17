@@ -1898,6 +1898,212 @@ fn validate_init_designation_authority(
     failures.is_empty().then_some(()).ok_or(failures)
 }
 
+/// The map methods that can neither add nor drop a process row (`get_mut` hands out a mutable row,
+/// never a mutable row *set*). Anything NOT on this list is treated as a row-set mutation, so an
+/// unfamiliar method is red until it is pinned: the defect this census exists for was a second
+/// `self.processes.remove(` site, on `hold_init_publication`'s error path, that no census could see.
+const PROCESS_ROW_MAP_READERS: &[&str] = &[
+    "get",
+    "get_mut",
+    "iter",
+    "iter_mut",
+    "keys",
+    "values",
+    "values_mut",
+    "len",
+    "is_empty",
+    "contains_key",
+    "range",
+    "first_key_value",
+    "last_key_value",
+];
+
+fn process_row_map_mutation_offsets(source: &str, mask: &[bool]) -> Vec<(usize, String)> {
+    let bytes = source.as_bytes();
+    identifier_offsets(source, mask, "processes")
+        .into_iter()
+        .filter_map(|offset| {
+            let receiver_dot = previous_code(source, mask, offset)?;
+            if bytes[receiver_dot] != b'.'
+                || preceding_identifier(source, mask, receiver_dot).as_deref() != Some("self")
+            {
+                return None;
+            }
+
+            let Some(method_dot) = next_code(source, mask, offset + "processes".len()) else {
+                return Some((offset, "raw-binding".to_owned()));
+            };
+            if bytes[method_dot] != b'.' {
+                return Some((offset, "raw-binding".to_owned()));
+            }
+            let Some(method_start) = next_code(source, mask, method_dot + 1) else {
+                return Some((offset, "raw-binding".to_owned()));
+            };
+            if !identifier_byte(bytes[method_start]) {
+                return Some((offset, "raw-binding".to_owned()));
+            }
+            let mut method_end = method_start;
+            while method_end < bytes.len() && mask[method_end] && identifier_byte(bytes[method_end])
+            {
+                method_end += 1;
+            }
+            if !next_code(source, mask, method_end).is_some_and(|open| bytes[open] == b'(') {
+                return Some((offset, "raw-binding".to_owned()));
+            }
+            let method = &source[method_start..method_end];
+            (!PROCESS_ROW_MAP_READERS.contains(&method)).then(|| (offset, method.to_owned()))
+        })
+        .collect()
+}
+
+fn process_row_map_mutation_census(sources: &[(String, String)]) -> Census {
+    census_tagged(sources, process_row_map_mutation_offsets)
+}
+
+fn process_row_map_field_is_private(manager: &str) -> bool {
+    let Some((_header, body)) = struct_item_header_and_body(manager, "ProcessManager") else {
+        return false;
+    };
+    let Some(fields) = block_statements(body) else {
+        return false;
+    };
+    let mask = code_mask(fields);
+    let declarations: Vec<_> = identifier_offsets(fields, &mask, "processes")
+        .into_iter()
+        .filter(|offset| {
+            code_follows(
+                fields,
+                &mask,
+                offset + "processes".len(),
+                ":BTreeMap<ProcessId,Process>,",
+            )
+        })
+        .collect();
+    if declarations.len() != 1 {
+        return false;
+    }
+    let declaration = declarations[0];
+    let start = previous_code(fields, &mask, declaration)
+        .and_then(|before| {
+            (0..before)
+                .rev()
+                .find(|index| mask[*index] && fields.as_bytes()[*index] == b',')
+        })
+        .map_or(0, |comma| comma + 1);
+    identifier_offsets(
+        &fields[start..declaration],
+        &code_mask(&fields[start..declaration]),
+        "pub",
+    )
+    .is_empty()
+}
+
+fn mutable_process_row_map_borrow_offsets(source: &str, mask: &[bool]) -> Vec<usize> {
+    code_offsets(source, mask, "&")
+        .into_iter()
+        .filter(|offset| code_follows(source, mask, *offset, "&mutself.processes"))
+        .collect()
+}
+
+fn definition_name_at(
+    source: &str,
+    mask: &[bool],
+    definition: usize,
+    body_brace: usize,
+) -> Option<String> {
+    let bytes = source.as_bytes();
+    let name_start = next_code(source, mask, definition + "fn".len())?;
+    let mut name_end = name_start;
+    while name_end < body_brace && mask[name_end] && identifier_byte(bytes[name_end]) {
+        name_end += 1;
+    }
+    (name_end > name_start).then(|| source[name_start..name_end].to_owned())
+}
+
+fn validate_init_builder_insert_terminality(manager: &str) -> Result<(), Vec<String>> {
+    let mask = code_mask(manager);
+    let roots: BTreeSet<String> = definition_prefix_offsets(manager, &mask, "create_init_process")
+        .into_iter()
+        .filter_map(|(definition, body_brace)| {
+            definition_name_at(manager, &mask, definition, body_brace)
+        })
+        .collect();
+    let root_refs: Vec<_> = roots.iter().map(String::as_str).collect();
+    let reached = transitively_called_functions(manager, &root_refs);
+    let bodies = module_function_bodies(manager);
+    let mut builders = Vec::new();
+    for name in reached {
+        for body in bodies.get(&name).into_iter().flatten() {
+            let body_mask = code_mask(body);
+            if process_row_map_mutation_offsets(body, &body_mask)
+                .iter()
+                .any(|(_, method)| method == "insert")
+            {
+                builders.push((name.clone(), *body));
+            }
+        }
+    }
+
+    let mut failures = Vec::new();
+    let builder_names: BTreeSet<_> = builders.iter().map(|(name, _)| name.as_str()).collect();
+    check(
+        &mut failures,
+        "create_init_process call-graph resolved fewer than two row builders",
+        builder_names.len() >= 2,
+    );
+    for (name, body) in builders {
+        let body_mask = code_mask(body);
+        let insertions: Vec<_> = process_row_map_mutation_offsets(body, &body_mask)
+            .into_iter()
+            .filter_map(|(offset, method)| (method == "insert").then_some(offset))
+            .collect();
+        check(
+            &mut failures,
+            &format!("init row builder {name} does not contain exactly one process-row insert"),
+            insertions.len() == 1,
+        );
+        let Some(insert) = insertions.first().copied() else {
+            continue;
+        };
+        let end = statement_end(body, &body_mask, insert);
+        let Some(after) = body.get(end.saturating_add(1)..) else {
+            failures.push(format!(
+                "init row builder {name} insert statement is unterminated"
+            ));
+            continue;
+        };
+        let after_mask = code_mask(after);
+        check(
+            &mut failures,
+            &format!("init row builder {name} has a `?` fallible step after row insertion"),
+            code_offsets(after, &after_mask, "?").is_empty(),
+        );
+        check(
+            &mut failures,
+            &format!("init row builder {name} has `return Err` after row insertion"),
+            identifier_offsets(after, &after_mask, "return")
+                .into_iter()
+                .all(|offset| !code_follows(after, &after_mask, offset, "returnErr(")),
+        );
+        check(
+            &mut failures,
+            &format!("init row builder {name} has `Err(` after row insertion"),
+            call_offsets(after, &after_mask, "Err").is_empty(),
+        );
+        check(
+            &mut failures,
+            &format!("init row builder {name} has `.map_err(` after row insertion"),
+            method_call_offsets(after, &after_mask, "map_err").is_empty(),
+        );
+        check(
+            &mut failures,
+            &format!("init row builder {name} mutates the process-row map after insertion"),
+            process_row_map_mutation_offsets(after, &after_mask).is_empty(),
+        );
+    }
+    failures.is_empty().then_some(()).ok_or(failures)
+}
+
 fn init_identity_mechanism_items<'a>(
     manager: &'a str,
 ) -> Result<BTreeMap<String, &'a str>, String> {
@@ -2245,6 +2451,18 @@ const INIT_DESIGNATION_TICKET_CONSTRUCTIONS: &[(&str, &str, usize)] = &[
 #[rustfmt::skip]
 const INIT_PUBLICATION_CONSTRUCTIONS: &[(&str, &str, usize)] = &[
     ("kernel/src/process/manager.rs", "impl ProcessManager::fn designate_init", 1),
+];
+#[rustfmt::skip]
+const PROCESS_ROW_MAP_MUTATIONS: &[(&str, &str, usize)] = &[
+    ("kernel/src/process/manager.rs", "impl ProcessManager::#[cfg(target_arch=aarch64)] fn build_process_with_argv_at => insert", 1),
+    ("kernel/src/process/manager.rs", "impl ProcessManager::#[cfg(target_arch=aarch64)] fn complete_fork_aarch64 => insert", 1),
+    ("kernel/src/process/manager.rs", "impl ProcessManager::#[cfg(target_arch=aarch64)] fn create_process => insert", 1),
+    ("kernel/src/process/manager.rs", "impl ProcessManager::#[cfg(target_arch=x86_64)] fn build_process_at => insert", 1),
+    ("kernel/src/process/manager.rs", "impl ProcessManager::#[cfg(target_arch=x86_64)] fn complete_fork => insert", 1),
+    ("kernel/src/process/manager.rs", "impl ProcessManager::#[cfg(target_arch=x86_64)] fn fork_process_with_context => insert", 1),
+    ("kernel/src/process/manager.rs", "impl ProcessManager::fn debug_processes => raw-binding", 1),
+    ("kernel/src/process/manager.rs", "impl ProcessManager::fn insert_process => insert", 1),
+    ("kernel/src/process/manager.rs", "impl ProcessManager::fn remove_process => remove", 1),
 ];
 #[rustfmt::skip]
 const QUARANTINE_CALLS: &[(&str, &str, usize)] = &[
@@ -4781,6 +4999,126 @@ fn init_designation_authority_is_closed() {
         extra_writer,
     );
     assert!(validate_init_designation_authority(&extra_writer).is_err());
+}
+
+#[test]
+fn process_row_map_mutations_are_authority_scoped() {
+    let sources = rust_sources_below("kernel/src");
+    let mut failures = Vec::new();
+    record(
+        &mut failures,
+        "process-row map mutation census changed",
+        validate_census(
+            &process_row_map_mutation_census(&sources),
+            PROCESS_ROW_MAP_MUTATIONS,
+        ),
+    );
+
+    let manager = source(&sources, "kernel/src/process/manager.rs");
+    check(
+        &mut failures,
+        "ProcessManager::processes is no longer a private field",
+        process_row_map_field_is_private(manager),
+    );
+    let mutable_borrows = census(&sources, mutable_process_row_map_borrow_offsets);
+    record(
+        &mut failures,
+        "the process-row map gained a mutable alias",
+        validate_census(&mutable_borrows, &[]),
+    );
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+
+    let raw_removal = manager.replacen(
+        "        self.remove_process(provisional_pid);",
+        "        self.processes.remove(&provisional_pid);",
+        1,
+    );
+    assert_ne!(raw_removal, manager, "F1 raw-removal injection anchor");
+    let raw_removal = with_replaced_source(&sources, "kernel/src/process/manager.rs", raw_removal);
+    let raw_removal_failures = validate_census(
+        &process_row_map_mutation_census(&raw_removal),
+        PROCESS_ROW_MAP_MUTATIONS,
+    )
+    .expect_err("F1 raw removal escaped the process-row census");
+    eprintln!(
+        "F1 raw-removal mutation:\n{}",
+        raw_removal_failures.join("\n")
+    );
+    assert_eq!(
+        raw_removal_failures,
+        ["+ kernel/src/process/manager.rs :: impl ProcessManager::fn hold_init_publication => remove  (1 occurrences, expected none)"]
+    );
+
+    let retained = manager.replacen(
+        "    pub fn remove_process(&mut self, pid: ProcessId) {",
+        "    pub fn remove_process(&mut self, pid: ProcessId) {\n        self.processes.retain(|_, _| true);",
+        1,
+    );
+    assert_ne!(retained, manager, "process-row retain injection anchor");
+    let retained = with_replaced_source(&sources, "kernel/src/process/manager.rs", retained);
+    let retained_failures = validate_census(
+        &process_row_map_mutation_census(&retained),
+        PROCESS_ROW_MAP_MUTATIONS,
+    )
+    .expect_err("differently-shaped row mutation escaped the process-row census");
+    eprintln!(
+        "F1 differently-shaped mutation:\n{}",
+        retained_failures.join("\n")
+    );
+    assert_eq!(
+        retained_failures,
+        ["+ kernel/src/process/manager.rs :: impl ProcessManager::fn remove_process => retain  (1 occurrences, expected none)"]
+    );
+}
+
+#[test]
+fn init_row_builders_insert_only_after_all_fallible_steps() {
+    let sources = rust_sources_below("kernel/src");
+    let manager = source(&sources, "kernel/src/process/manager.rs");
+    if let Err(failures) = validate_init_builder_insert_terminality(manager) {
+        panic!("{}", failures.join("\n"));
+    }
+
+    let fallible_after = manager.replacen(
+        "        self.processes.insert(pid, process);\n        Ok(())",
+        "        self.processes.insert(pid, process);\n        self.map_kernel_pages_for_process(pid)?;\n        Ok(())",
+        1,
+    );
+    assert_ne!(
+        fallible_after, manager,
+        "post-insert fallible-step injection anchor"
+    );
+    let fallible_after_failures = validate_init_builder_insert_terminality(&fallible_after)
+        .expect_err("a fallible step after init-row insertion escaped the terminality ratchet");
+    eprintln!(
+        "F2 post-insert fallible-step mutation:\n{}",
+        fallible_after_failures.join("\n")
+    );
+    assert_eq!(
+        fallible_after_failures,
+        ["init row builder build_process_at has a `?` fallible step after row insertion"]
+    );
+
+    let hoisted = manager.replacen(
+        "        let thread = self.create_main_thread(&mut process, stack_top)?;",
+        "        self.processes.insert(pid, process);\n        let thread = self.create_main_thread(&mut process, stack_top)?;",
+        1,
+    );
+    assert_ne!(hoisted, manager, "init-row insert hoist anchor");
+    let moved = hoisted.replacen(
+        "        self.processes.insert(pid, process);\n        Ok(())",
+        "        Ok(())",
+        1,
+    );
+    assert_ne!(moved, hoisted, "terminal init-row insert removal anchor");
+    let moved_failures = validate_init_builder_insert_terminality(&moved).expect_err(
+        "an init-row insert hoisted above a fallible step escaped the terminality ratchet",
+    );
+    eprintln!("F2 hoisted-insert mutation:\n{}", moved_failures.join("\n"));
+    assert_eq!(
+        moved_failures,
+        ["init row builder build_process_at has a `?` fallible step after row insertion"]
+    );
 }
 
 #[test]
