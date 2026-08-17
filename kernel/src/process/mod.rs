@@ -12,6 +12,7 @@ pub mod manager;
 pub mod process;
 
 pub use manager::ProcessManager;
+pub use manager::{InitDesignationTicket, InitPublication, FIRST_ORDINARY_PID, RESERVED_INIT_PID};
 pub use process::{Process, ProcessId, ProcessState};
 
 /// Result of entering process teardown through the receipt-custody wrapper.

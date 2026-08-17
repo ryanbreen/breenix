@@ -112,14 +112,30 @@ fn launch_init_from_elf(
     // The path (e.g., "/bin/init_shell") becomes argv[0]
     let argv: [&[u8]; 1] = [path.as_bytes()];
 
-    let pid = {
+    let (pid, init_thread, designated_pid_raw, reserved_collisions) = {
         let mut manager_guard = kernel::process::manager();
         if let Some(ref mut manager) = *manager_guard {
-            manager.create_process_with_argv(String::from(proc_name), &elf_data, &argv)?
+            let ticket =
+                manager.create_init_process_with_argv(String::from(proc_name), &elf_data, &argv)?;
+            let publication = manager.designate_init(ticket)?;
+            let pid = publication.pid();
+            let init_thread = manager.publish_init(publication);
+            let designated_pid_raw = manager
+                .designated_init()
+                .ok_or("init designation missing after publication")?
+                .as_u64();
+            let reserved_collisions =
+                kernel::tracing::providers::teardown::init_reserved_pid_collisions_total();
+            (pid, init_thread, designated_pid_raw, reserved_collisions)
         } else {
             return Err("process manager not initialized");
         }
     };
+    kernel::serial_println!(
+        "[INIT_DESIGNATION:aarch64:designated_pid={}:reserved_collisions={}]",
+        designated_pid_raw,
+        reserved_collisions
+    );
 
     // Advance test stage to ProcessContext - a user process now exists with an fd_table
     // This allows tests that need process context (like sys_socket) to run
@@ -133,7 +149,7 @@ fn launch_init_from_elf(
         }
     }
 
-    let (entry_point, user_sp, ttbr0_phys, main_thread_id, main_thread_clone) = {
+    let (entry_point, user_sp, ttbr0_phys, main_thread_id) = {
         let manager_guard = kernel::process::manager();
         if let Some(ref manager) = *manager_guard {
             if let Some(process) = manager.get_process(pid) {
@@ -152,7 +168,7 @@ fn launch_init_from_elf(
                     .level_4_frame()
                     .start_address()
                     .as_u64();
-                (entry, sp, ttbr0, thread.id, thread.clone())
+                (entry, sp, ttbr0, thread.id)
             } else {
                 return Err("process not found after creation");
             }
@@ -170,7 +186,7 @@ fn launch_init_from_elf(
     kernel::per_cpu_aarch64::preempt_enable();
 
     // Register the userspace thread with the scheduler as the current running thread.
-    kernel::task::scheduler::spawn_as_current(alloc::boxed::Box::new(main_thread_clone));
+    kernel::task::scheduler::spawn_as_current(init_thread);
     kernel::drivers::ahci::emit_polling_attribution_once_if_scheduler_ready();
 
     // CRITICAL: Reset ALL idle threads' saved contexts to point to idle_loop_arm64.

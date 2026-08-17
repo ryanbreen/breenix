@@ -190,6 +190,10 @@ fi
 if $PHASE1_OK && [ -z "$FAIL_REASON" ]; then
     if ! grep -Fq '[CREATING_DISPATCH_ORACLE:aarch64:injected=1:refused_via_dispatch=1:requeue_retried=1:dispatched_after_publish=1:balance=0:leaf_residual=16:user_stack_residual=16]' "$OUTPUT_DIR/serial.txt" 2>/dev/null; then
         FAIL_REASON="Phase 1: missing creating-dispatch refusal oracle marker"
+    elif ! grep -Fq '[TEST:process:init_designation_oracle:PASS]' "$OUTPUT_DIR/serial.txt" 2>/dev/null; then
+        FAIL_REASON="Phase 1: missing init designation oracle PASS marker"
+    elif ! grep -Fq '[INIT_DESIGNATION_ORACLE:aarch64:construct_failed=2:construct_undecided=2:construct_residual=2:refused=4:accepted=1:published=1:retired=1:reparented=1:reparent_skipped=1:ordinary_allocated=5:reserved_collisions=0:designation_balance=0]' "$OUTPUT_DIR/serial.txt" 2>/dev/null; then
+        FAIL_REASON="Phase 1: missing init designation oracle counter marker"
     fi
 fi
 
@@ -289,6 +293,36 @@ if [ -z "$FAIL_REASON" ]; then
             FAIL_REASON="Phase 1c: live-sibling refusal probe did not run"
         else
             echo "Phase 1c: PASS"
+        fi
+    fi
+fi
+
+# --- Phase 1d: init identity ---
+if [ -z "$FAIL_REASON" ]; then
+    INIT_DESIGNATION_LINE=$(grep -E '\[INIT_DESIGNATION:aarch64:designated_pid=[0-9]+:reserved_collisions=[0-9]+\]' "$OUTPUT_DIR/serial.txt" 2>/dev/null | tail -1 || true)
+    if [ -z "$INIT_DESIGNATION_LINE" ]; then
+        FAIL_REASON="Phase 1d: init designation marker is absent"
+    else
+        INIT_DESIGNATED_PID=$(echo "$INIT_DESIGNATION_LINE" | sed -n 's/.*designated_pid=\([0-9][0-9]*\):reserved_collisions=.*/\1/p')
+        INIT_RESERVED_COLLISIONS=$(echo "$INIT_DESIGNATION_LINE" | sed -n 's/.*reserved_collisions=\([0-9][0-9]*\).*/\1/p')
+    fi
+
+    INIT_USERSPACE_LINE=$(grep -E '\[init\] Breenix init starting \(PID [0-9]+\)' "$OUTPUT_DIR/serial.txt" 2>/dev/null | tail -1 || true)
+    if [ -z "$INIT_USERSPACE_LINE" ] && [ -z "$FAIL_REASON" ]; then
+        FAIL_REASON="Phase 1d: userspace init PID marker is absent"
+    elif [ -n "$INIT_USERSPACE_LINE" ]; then
+        INIT_USERSPACE_PID=$(echo "$INIT_USERSPACE_LINE" | sed -n 's/.*\[init\] Breenix init starting (PID \([0-9][0-9]*\)).*/\1/p')
+    fi
+
+    if [ -z "$FAIL_REASON" ]; then
+        if [ "$INIT_DESIGNATED_PID" -ne "$INIT_USERSPACE_PID" ]; then
+            FAIL_REASON="Phase 1d: designated init PID $INIT_DESIGNATED_PID does not match userspace PID $INIT_USERSPACE_PID"
+        elif [ "$INIT_DESIGNATED_PID" -ne 1 ]; then
+            FAIL_REASON="Phase 1d: designated init PID is $INIT_DESIGNATED_PID, expected 1"
+        elif [ "$INIT_RESERVED_COLLISIONS" -ne 0 ]; then
+            FAIL_REASON="Phase 1d: reserved init PID collision count is $INIT_RESERVED_COLLISIONS, expected 0"
+        else
+            echo "Phase 1d: PASS (init designated and observed as PID $INIT_DESIGNATED_PID)"
         fi
     fi
 fi
