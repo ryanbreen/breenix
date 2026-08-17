@@ -1,11 +1,11 @@
 //! Breenix init process (/sbin/init) - std version
 //!
-//! PID 1 - runs bsh (no arguments), then starts background services and reaps zombies.
-//! bsh detects it's the init shell (PID 2) and loads /etc/init.js.
+//! PID 1 - runs bsh as the init shell, then starts background services and reaps zombies.
+//! Init confers the init-shell role by passing `--init-shell`; no PID value is part of that
+//! contract.
 
 #[cfg(target_arch = "aarch64")]
 use libbreenix::fs;
-#[cfg(target_arch = "aarch64")]
 use libbreenix::process::spawnv;
 use libbreenix::process::{getpid, spawn, waitpid};
 
@@ -236,7 +236,15 @@ fn run_boot_script() {
     }
 
     #[cfg(not(target_arch = "aarch64"))]
-    match spawn(b"/bin/bsh\0") {
+    let path = b"/bin/bsh\0";
+    #[cfg(not(target_arch = "aarch64"))]
+    let arg0 = b"bsh\0";
+    #[cfg(not(target_arch = "aarch64"))]
+    let arg1 = b"--init-shell\0";
+    #[cfg(not(target_arch = "aarch64"))]
+    let argv = [arg0.as_ptr(), arg1.as_ptr(), core::ptr::null()];
+    #[cfg(not(target_arch = "aarch64"))]
+    match spawnv(path, argv.as_ptr()) {
         Ok(child_pid) => {
             let child_raw = child_pid.raw() as i32;
             let mut status: i32 = 0;

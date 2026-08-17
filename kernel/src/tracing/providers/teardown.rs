@@ -4217,27 +4217,37 @@ pub fn init_designation_oracle_test() -> crate::test_framework::registry::TestRe
             synthetic_row(reserved, "init_oracle_a6", "init_oracle_a6_main"),
         );
         match manager.hold_init_publication(reserved) {
-            Ok(ticket) => match manager.designate_init(ticket) {
-                Ok(publication) => {
-                    accepted += 1;
-                    if publication.pid() != reserved && first_failure.is_none() {
-                        first_failure = Some("init designation A6 publication named the wrong PID");
-                    }
-                    if manager.designated_init() != Some(reserved) && first_failure.is_none() {
-                        first_failure = Some("init designation A6 did not install the authority");
-                    }
-                    let thread = manager.publish_init(publication);
-                    published += 1;
-                    if !manager.remove_from_ready_queue(reserved) && first_failure.is_none() {
-                        first_failure = Some("init designation A6 publication missed the ready queue");
-                    }
-                    drop(thread);
+            Ok(ticket) => {
+                if manager.remove_from_ready_queue(reserved) && first_failure.is_none() {
+                    first_failure = Some("held init row reached the run queue before designation");
                 }
-                Err(_) if first_failure.is_none() => {
-                    first_failure = Some("init designation A6 refused a clean reserved row")
+                match manager.designate_init(ticket) {
+                    Ok(publication) => {
+                        if manager.remove_from_ready_queue(reserved) && first_failure.is_none() {
+                            first_failure =
+                                Some("designated init row reached the run queue before publication");
+                        }
+                        accepted += 1;
+                        if publication.pid() != reserved && first_failure.is_none() {
+                            first_failure =
+                                Some("init designation A6 publication named the wrong PID");
+                        }
+                        if manager.designated_init() != Some(reserved) && first_failure.is_none() {
+                            first_failure = Some("init designation A6 did not install the authority");
+                        }
+                        let thread = manager.publish_init(publication);
+                        published += 1;
+                        if !manager.remove_from_ready_queue(reserved) && first_failure.is_none() {
+                            first_failure = Some("init designation A6 publication missed the ready queue");
+                        }
+                        drop(thread);
+                    }
+                    Err(_) if first_failure.is_none() => {
+                        first_failure = Some("init designation A6 refused a clean reserved row")
+                    }
+                    Err(_) => {}
                 }
-                Err(_) => {}
-            },
+            }
             Err(_) if first_failure.is_none() => {
                 first_failure = Some("init designation A6 failed to issue a ticket")
             }

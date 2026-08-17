@@ -1397,27 +1397,14 @@ impl ProcessManager {
             crate::syscall::graphics::cleanup_windows_for_pid(pid.as_u64());
         }
 
-        // Reparent children to init (PID 1)
-        let init_pid = ProcessId::new(1);
-        if pid != init_pid {
-            let children: Vec<ProcessId> = self
-                .processes
-                .get(&pid)
-                .map(|p| p.children.clone())
-                .unwrap_or_default();
-
-            if !children.is_empty() {
-                for &child_pid in &children {
-                    if let Some(child) = self.processes.get_mut(&child_pid) {
-                        child.parent = Some(init_pid);
-                    }
-                }
-                if let Some(init) = self.processes.get_mut(&init_pid) {
-                    init.children.extend(children.iter());
-                }
-                if let Some(exiting) = self.processes.get_mut(&pid) {
-                    exiting.children.clear();
-                }
+        let children: Vec<ProcessId> = self
+            .processes
+            .get(&pid)
+            .map(|p| p.children.clone())
+            .unwrap_or_default();
+        if self.reparent_children_to_init(pid, &children) {
+            if let Some(exiting) = self.processes.get_mut(&pid) {
+                exiting.children.clear();
             }
         }
 

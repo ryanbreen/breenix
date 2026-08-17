@@ -1266,8 +1266,8 @@ fn impl_segment(header: &str, mask: &[bool], keyword: usize) -> String {
 }
 
 /// How an item declared by `header` is named in an anchor: `fn NAME`,
-/// `impl TYPE`, `impl TRAIT for TYPE`, `mod NAME` or `trait NAME`, prefixed by
-/// its `#[cfg(...)]` attribute when it has one.
+/// `impl TYPE`, `impl TRAIT for TYPE`, `mod NAME`, `trait NAME` or
+/// `struct NAME`, prefixed by its `#[cfg(...)]` attribute when it has one.
 fn item_segment(header: &str, mask: &[bool]) -> Option<String> {
     let bytes = header.as_bytes();
     let named = |keyword: usize, length: usize| -> Option<String> {
@@ -1290,7 +1290,7 @@ fn item_segment(header: &str, mask: &[bool]) -> Option<String> {
         .filter_map(|offset| named(offset, "fn".len()).map(|name| (offset, format!("fn {name}"))))
         .next_back()
         .or_else(|| {
-            ["impl", "mod", "trait"]
+            ["impl", "mod", "trait", "struct"]
                 .into_iter()
                 .flat_map(|keyword| {
                     identifier_offsets(header, mask, keyword)
@@ -1308,7 +1308,7 @@ fn item_segment(header: &str, mask: &[bool]) -> Option<String> {
     Some(format!("{}{segment}", header_cfg(header, mask, keyword)))
 }
 
-/// Every `fn` / `impl` / `mod` / `trait` block in the file, as
+/// Every `fn` / `impl` / `mod` / `trait` / `struct` block in the file, as
 /// `(open brace offset, close brace offset, anchor segment)`.
 fn item_spans(source: &str, mask: &[bool]) -> Vec<(usize, usize, String)> {
     let bytes = source.as_bytes();
@@ -1620,6 +1620,338 @@ fn check(failures: &mut Vec<String>, label: &str, holds: bool) {
     }
 }
 
+fn typed_u64_constant_definition_offsets(
+    source: &str,
+    mask: &[bool],
+    name: &str,
+) -> Vec<usize> {
+    identifier_offsets(source, mask, name)
+        .into_iter()
+        .filter(|offset| {
+            preceded_by_keyword(source, mask, *offset, "const")
+                && code_follows(source, mask, offset + name.len(), ":u64=")
+        })
+        .collect()
+}
+
+/// Every integer constant definition whose dynamically discovered name contains
+/// both INIT and PID and whose value has the literal init-PID shape.
+fn hardcoded_init_pid_constant_offsets(source: &str, mask: &[bool]) -> Vec<usize> {
+    let bytes = source.as_bytes();
+    identifier_offsets(source, mask, "const")
+        .into_iter()
+        .filter_map(|offset| {
+            let name_start = next_code(source, mask, offset + "const".len())?;
+            let mut name_end = name_start;
+            while bytes
+                .get(name_end)
+                .is_some_and(|byte| identifier_byte(*byte) && mask[name_end])
+            {
+                name_end += 1;
+            }
+            let name = &source[name_start..name_end];
+            (name.contains("INIT")
+                && name.contains("PID")
+                && (code_follows(source, mask, name_end, ":u64=1;")
+                    || code_follows(source, mask, name_end, ":usize=1;")))
+            .then_some(offset)
+        })
+        .collect()
+}
+
+fn method_comparison_offsets(
+    source: &str,
+    mask: &[bool],
+    method: &str,
+    literal: &str,
+) -> Vec<usize> {
+    let bytes = source.as_bytes();
+    identifier_offsets(source, mask, method)
+        .into_iter()
+        .filter(|offset| {
+            previous_code(source, mask, *offset).is_some_and(|dot| bytes[dot] == b'.')
+                && (code_follows(
+                    source,
+                    mask,
+                    offset + method.len(),
+                    &format!("()=={literal}"),
+                ) || code_follows(
+                    source,
+                    mask,
+                    offset + method.len(),
+                    &format!("()!={literal}"),
+                ))
+        })
+        .collect()
+}
+
+fn direct_init_pid_comparison_offsets(source: &str, mask: &[bool]) -> Vec<usize> {
+    let mut offsets = method_comparison_offsets(source, mask, "as_u64", "1");
+    offsets.extend(method_comparison_offsets(source, mask, "raw", "1"));
+    offsets.extend(
+        identifier_offsets(source, mask, "ProcessId")
+            .into_iter()
+            .filter(|offset| {
+                code_follows(source, mask, offset + "ProcessId".len(), "::new(1)")
+            }),
+    );
+    offsets.sort_unstable();
+    offsets
+}
+
+fn self_field_assignment_offsets(source: &str, mask: &[bool], field: &str) -> Vec<usize> {
+    let bytes = source.as_bytes();
+    assignment_offsets(source, mask, field)
+        .into_iter()
+        .filter(|offset| {
+            previous_code(source, mask, *offset).is_some_and(|dot| {
+                bytes[dot] == b'.'
+                    && preceding_identifier(source, mask, dot).as_deref() == Some("self")
+            })
+        })
+        .collect()
+}
+
+/// Struct literal sites for `name`, excluding the struct item, its impl block,
+/// and `let Type { .. }` destructuring patterns.
+fn struct_literal_offsets(source: &str, mask: &[bool], name: &str) -> Vec<usize> {
+    identifier_offsets(source, mask, name)
+        .into_iter()
+        .filter(|offset| code_follows(source, mask, offset + name.len(), "{"))
+        .filter(|offset| {
+            !["struct", "impl", "let"]
+                .iter()
+                .any(|keyword| preceded_by_keyword(source, mask, *offset, keyword))
+        })
+        .collect()
+}
+
+fn struct_item_header_and_body<'a>(source: &'a str, name: &str) -> Option<(&'a str, &'a str)> {
+    let mask = code_mask(source);
+    let definitions: Vec<_> = identifier_offsets(source, &mask, name)
+        .into_iter()
+        .filter(|offset| preceded_by_keyword(source, &mask, *offset, "struct"))
+        .collect();
+    let name_offset = *definitions.as_slice().first()?;
+    if definitions.len() != 1 {
+        return None;
+    }
+    let keyword_end = previous_code(source, &mask, name_offset)?;
+    let keyword_start = keyword_end + 1 - "struct".len();
+    let body = braced_block(source, &mask, keyword_start)?;
+    let open = keyword_start
+        + body
+            .find('{')
+            .expect("struct item returned by braced_block has an opening brace");
+    let header_start = source[..keyword_start]
+        .rfind(|character| matches!(character, ';' | '}'))
+        .map_or(0, |delimiter| delimiter + 1);
+    Some((&source[header_start..open], body))
+}
+
+fn derive_carries(header: &str, trait_name: &str) -> bool {
+    let mask = code_mask(header);
+    let bytes = header.as_bytes();
+    code_offsets(header, &mask, "#[derive")
+        .into_iter()
+        .any(|offset| {
+            let Some(open) = (offset..bytes.len()).find(|index| mask[*index] && bytes[*index] == b'[')
+            else {
+                return false;
+            };
+            let Some(close) = matching_bracket(bytes, &mask, open) else {
+                return false;
+            };
+            let attribute = &header[open..=close];
+            !identifier_offsets(attribute, &code_mask(attribute), trait_name).is_empty()
+        })
+}
+
+fn impl_has_public_new(source: &str, type_name: &str) -> bool {
+    let mask = code_mask(source);
+    rendered_item_spans(&item_spans(source, &mask))
+        .into_iter()
+        .filter(|(_, _, path)| path == &format!("impl {type_name}"))
+        .any(|(open, close, _)| {
+            let body = &source[open..=close];
+            let body_mask = code_mask(body);
+            identifier_offsets(body, &body_mask, "pub")
+                .into_iter()
+                .any(|offset| {
+                    code_follows(body, &body_mask, offset, "pubfnnew(")
+                        || code_follows(body, &body_mask, offset, "pubfnnew<")
+                })
+        })
+}
+
+fn constant_item_with_attributes<'a>(source: &'a str, name: &str) -> Option<&'a str> {
+    let mask = code_mask(source);
+    let definitions = typed_u64_constant_definition_offsets(source, &mask, name);
+    let offset = *definitions.as_slice().first()?;
+    if definitions.len() != 1 {
+        return None;
+    }
+    let start = source[..offset]
+        .rfind(|character| matches!(character, ';' | '}'))
+        .map_or(0, |delimiter| delimiter + 1);
+    let end = statement_end(source, &mask, offset);
+    (end < source.len()).then(|| &source[start..=end])
+}
+
+fn validate_hardcoded_init_pid_constants(
+    sources: &[(String, String)],
+) -> Result<(), Vec<String>> {
+    validate_census(
+        &census(sources, hardcoded_init_pid_constant_offsets),
+        HARDCODED_INIT_PID_CONSTANTS,
+    )
+}
+
+fn validate_direct_init_pid_comparisons(
+    sources: &[(String, String)],
+) -> Result<(), Vec<String>> {
+    validate_census(
+        &census(sources, direct_init_pid_comparison_offsets),
+        DIRECT_INIT_PID_COMPARISONS,
+    )
+}
+
+fn validate_init_designation_authority(
+    sources: &[(String, String)],
+) -> Result<(), Vec<String>> {
+    let mut failures = Vec::new();
+    record(
+        &mut failures,
+        "designated_init field declaration census changed",
+        validate_census(
+            &census(sources, |source, mask| {
+                identifier_offsets(source, mask, "designated_init")
+                    .into_iter()
+                    .filter(|offset| {
+                        code_follows(
+                            source,
+                            mask,
+                            offset + "designated_init".len(),
+                            ":Option<ProcessId>,",
+                        )
+                    })
+                    .collect()
+            }),
+            DESIGNATED_INIT_FIELD_DECLARATIONS,
+        ),
+    );
+    record(
+        &mut failures,
+        "designated_init writer census changed",
+        validate_census(
+            &census(sources, |source, mask| {
+                self_field_assignment_offsets(source, mask, "designated_init")
+            }),
+            DESIGNATED_INIT_WRITES,
+        ),
+    );
+    record(
+        &mut failures,
+        "InitDesignationTicket construction census changed",
+        validate_census(
+            &census(sources, |source, mask| {
+                struct_literal_offsets(source, mask, "InitDesignationTicket")
+            }),
+            INIT_DESIGNATION_TICKET_CONSTRUCTIONS,
+        ),
+    );
+    record(
+        &mut failures,
+        "InitPublication construction census changed",
+        validate_census(
+            &census(sources, |source, mask| {
+                struct_literal_offsets(source, mask, "InitPublication")
+            }),
+            INIT_PUBLICATION_CONSTRUCTIONS,
+        ),
+    );
+
+    let manager = source(sources, "kernel/src/process/manager.rs");
+    for type_name in ["InitDesignationTicket", "InitPublication"] {
+        match struct_item_header_and_body(manager, type_name) {
+            Some((header, body)) => {
+                check(
+                    &mut failures,
+                    &format!("{type_name} derives Clone or Copy"),
+                    !derive_carries(header, "Clone") && !derive_carries(header, "Copy"),
+                );
+                let fields = block_statements(body).expect("struct item body");
+                check(
+                    &mut failures,
+                    &format!("{type_name} has a public field"),
+                    identifier_offsets(fields, &code_mask(fields), "pub").is_empty(),
+                );
+            }
+            None => failures.push(format!("{type_name} struct item is not unique")),
+        }
+        check(
+            &mut failures,
+            &format!("{type_name} gained a public new constructor"),
+            !impl_has_public_new(manager, type_name),
+        );
+    }
+    failures.is_empty().then_some(()).ok_or(failures)
+}
+
+fn init_identity_mechanism_items<'a>(
+    manager: &'a str,
+) -> Result<BTreeMap<String, &'a str>, String> {
+    const SPAN_ITEMS: [&str; 10] = [
+        "struct InitDesignationTicket",
+        "impl InitDesignationTicket",
+        "struct InitPublication",
+        "impl InitPublication",
+        "impl ProcessManager::fn allocate_ordinary_pid",
+        "impl ProcessManager::fn hold_init_publication",
+        "impl ProcessManager::fn designated_init",
+        "impl ProcessManager::fn designate_init",
+        "impl ProcessManager::fn publish_init",
+        "impl ProcessManager::fn reparent_children_to_init",
+    ];
+
+    let mut items = BTreeMap::new();
+    for name in ["RESERVED_INIT_PID", "FIRST_ORDINARY_PID"] {
+        let body = constant_item_with_attributes(manager, name)
+            .ok_or_else(|| format!("missing or duplicate mechanism item const {name}"))?;
+        items.insert(format!("const {name}"), body);
+    }
+
+    let mask = code_mask(manager);
+    let spans = rendered_item_spans(&item_spans(manager, &mask));
+    for expected in SPAN_ITEMS {
+        let matching: Vec<_> = spans
+            .iter()
+            .filter(|(_, _, path)| path == expected)
+            .collect();
+        if matching.len() != 1 {
+            return Err(format!(
+                "mechanism item {expected} occurred {} times",
+                matching.len()
+            ));
+        }
+        let (open, close, _) = matching[0];
+        items.insert(expected.to_owned(), &manager[*open..=*close]);
+    }
+    Ok(items)
+}
+
+fn validate_init_identity_mechanism_is_cfg_free(manager: &str) -> Result<(), Vec<String>> {
+    let items = init_identity_mechanism_items(manager).map_err(|failure| vec![failure])?;
+    let failures: Vec<_> = items
+        .into_iter()
+        .filter_map(|(name, body)| {
+            (!code_offsets(body, &code_mask(body), "#[cfg").is_empty())
+                .then(|| format!("{name} contains #[cfg"))
+        })
+        .collect();
+    failures.is_empty().then_some(()).ok_or(failures)
+}
+
 #[test]
 fn item_path_is_cfg_and_impl_scoped() {
     let fixture = r##"
@@ -1862,15 +2194,57 @@ const TERMINATE_CALLS: &[(&str, &str, usize)] = &[
 const TERMINATE_MINIMAL_CALLS: &[(&str, &str, usize)] = &[
     ("kernel/src/task/process_task.rs", "impl ProcessScheduler::fn handle_thread_exit", 1),
     ("kernel/src/tracing/providers/teardown.rs", "#[cfg(feature=boot_tests)] fn clone_admission_oracle_test", 1),
+    ("kernel/src/tracing/providers/teardown.rs", "#[cfg(feature=boot_tests)] fn init_designation_oracle_test", 1),
 ];
 #[rustfmt::skip]
-const PRODUCTION_INIT_PID_SITES: &[(&str, &str, usize)] = &[
-    ("kernel/src/process/manager.rs", "impl ProcessManager::fn exit_process_locked", 1),
-    ("kernel/src/task/process_task.rs", "impl ProcessScheduler::fn handle_thread_exit", 2),
-];
+const PRODUCTION_INIT_PID_SITES: &[(&str, &str, usize)] = &[];
 #[rustfmt::skip]
 const TEST_INIT_PID_SITES: &[(&str, &str, usize)] = &[
     ("kernel/src/test_userspace.rs", "fn test_minimal_userspace", 3),
+];
+#[rustfmt::skip]
+const NEXT_PID_FETCH_ADD_SITES: &[(&str, &str, usize)] = &[
+    ("kernel/src/process/manager.rs", "impl ProcessManager::fn allocate_ordinary_pid", 1),
+];
+#[rustfmt::skip]
+const ALLOCATE_ORDINARY_PID_CALLS: &[(&str, &str, usize)] = &[
+    ("kernel/src/process/manager.rs", "impl ProcessManager::#[cfg(target_arch=aarch64)] fn create_process", 1),
+    ("kernel/src/process/manager.rs", "impl ProcessManager::#[cfg(target_arch=aarch64)] fn create_process_with_argv", 1),
+    ("kernel/src/process/manager.rs", "impl ProcessManager::#[cfg(target_arch=aarch64)] fn fork_process_aarch64", 1),
+    ("kernel/src/process/manager.rs", "impl ProcessManager::#[cfg(target_arch=x86_64)] fn create_process", 1),
+    ("kernel/src/process/manager.rs", "impl ProcessManager::#[cfg(target_arch=x86_64)] fn fork_process_with_context", 1),
+    ("kernel/src/process/manager.rs", "impl ProcessManager::#[cfg(target_arch=x86_64)] fn fork_process_with_page_table", 1),
+    ("kernel/src/process/manager.rs", "impl ProcessManager::#[cfg(target_arch=x86_64)] fn fork_process_with_parent_context", 1),
+    ("kernel/src/process/manager.rs", "impl ProcessManager::fn allocate_pid", 1),
+];
+#[rustfmt::skip]
+const INIT_PID_CONSTANT_DEFINITION: &[(&str, &str, usize)] = &[
+    ("kernel/src/process/manager.rs", "", 1),
+];
+#[rustfmt::skip]
+const HARDCODED_INIT_PID_CONSTANTS: &[(&str, &str, usize)] = &[
+    ("kernel/src/process/manager.rs", "", 1),
+];
+#[rustfmt::skip]
+const DIRECT_INIT_PID_COMPARISONS: &[(&str, &str, usize)] = &[
+    ("kernel/src/test_userspace.rs", "fn test_minimal_userspace", 3),
+];
+#[rustfmt::skip]
+const DESIGNATED_INIT_FIELD_DECLARATIONS: &[(&str, &str, usize)] = &[
+    ("kernel/src/process/manager.rs", "struct ProcessManager", 1),
+];
+#[rustfmt::skip]
+const DESIGNATED_INIT_WRITES: &[(&str, &str, usize)] = &[
+    ("kernel/src/process/manager.rs", "impl ProcessManager::fn designate_init", 1),
+    ("kernel/src/process/manager.rs", "impl ProcessManager::fn remove_process", 1),
+];
+#[rustfmt::skip]
+const INIT_DESIGNATION_TICKET_CONSTRUCTIONS: &[(&str, &str, usize)] = &[
+    ("kernel/src/process/manager.rs", "impl ProcessManager::fn hold_init_publication", 1),
+];
+#[rustfmt::skip]
+const INIT_PUBLICATION_CONSTRUCTIONS: &[(&str, &str, usize)] = &[
+    ("kernel/src/process/manager.rs", "impl ProcessManager::fn designate_init", 1),
 ];
 #[rustfmt::skip]
 const QUARANTINE_CALLS: &[(&str, &str, usize)] = &[
@@ -1992,10 +2366,10 @@ const PROCESS_PAGE_TABLE_CONSTRUCTORS: &[(&str, &str, usize)] = &[
     ("kernel/src/arch_impl/aarch64/syscall_entry.rs", "fn sys_fork_aarch64", 1),
     ("kernel/src/memory/process_memory.rs", "#[cfg(feature=boot_tests)] fn page_table_custody_disposition_gate_test", 6),
     ("kernel/src/process/manager.rs", "impl ProcessManager::#[cfg(target_arch=aarch64)] fn create_process", 1),
-    ("kernel/src/process/manager.rs", "impl ProcessManager::#[cfg(target_arch=aarch64)] fn create_process_with_argv", 1),
+    ("kernel/src/process/manager.rs", "impl ProcessManager::#[cfg(target_arch=aarch64)] fn build_process_with_argv_at", 1),
     ("kernel/src/process/manager.rs", "impl ProcessManager::#[cfg(target_arch=aarch64)] fn exec_process", 1),
     ("kernel/src/process/manager.rs", "impl ProcessManager::#[cfg(target_arch=aarch64)] fn exec_process_with_argv", 1),
-    ("kernel/src/process/manager.rs", "impl ProcessManager::#[cfg(target_arch=x86_64)] fn create_process", 1),
+    ("kernel/src/process/manager.rs", "impl ProcessManager::#[cfg(target_arch=x86_64)] fn build_process_at", 1),
     ("kernel/src/process/manager.rs", "impl ProcessManager::#[cfg(target_arch=x86_64)] fn exec_process", 1),
     ("kernel/src/process/manager.rs", "impl ProcessManager::#[cfg(target_arch=x86_64)] fn exec_process_with_argv", 1),
     ("kernel/src/process/manager.rs", "impl ProcessManager::#[cfg(target_arch=x86_64)] fn fork_process_with_context", 1),
@@ -2976,7 +3350,7 @@ fn validate_frame_ledger_counter_inventory(provider: &str) -> Result<(), ()> {
         && EXPECTED
             .iter()
             .all(|counter| inventory.contains(&format!("&{counter},")))
-        && provider.contains("pub const COUNTER_COUNT: usize = 74;"))
+        && provider.contains("pub const COUNTER_COUNT: usize = 82;"))
     .then_some(())
     .ok_or(())
 }
@@ -3234,7 +3608,7 @@ fn validate_process_page_table_counter_inventory(sources: &[(String, String)]) -
         || !EXPECTED
             .iter()
             .all(|counter| inventory.contains(&format!("&{counter},")))
-        || !provider.contains("pub const COUNTER_COUNT: usize = 74;")
+        || !provider.contains("pub const COUNTER_COUNT: usize = 82;")
     {
         return Err(());
     }
@@ -4188,8 +4562,8 @@ fn frame_ledger_return_and_initialization_ratchets_are_exact() {
     }
     check(
         &mut failures,
-        "COUNTER_COUNT is no longer 74",
-        provider.contains("pub const COUNTER_COUNT: usize = 74;"),
+        "COUNTER_COUNT is no longer 82",
+        provider.contains("pub const COUNTER_COUNT: usize = 82;"),
     );
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
@@ -4295,6 +4669,193 @@ fn current_teardown_bypass_surface_is_exact() {
         validate_reclaim_enqueue_callers(&sources),
     );
     assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+#[test]
+fn init_pid_reservation_is_single_sourced() {
+    let sources = rust_sources_below("kernel/src");
+    let next_pid_allocations = census(&sources, |source, mask| {
+        identifier_offsets(source, mask, "next_pid")
+            .into_iter()
+            .filter(|offset| {
+                code_follows(
+                    source,
+                    mask,
+                    offset + "next_pid".len(),
+                    ".fetch_add(",
+                )
+            })
+            .collect()
+    });
+    if let Err(diff) = validate_census(&next_pid_allocations, NEXT_PID_FETCH_ADD_SITES) {
+        panic!("next_pid.fetch_add census changed\n{}", diff.join("\n"));
+    }
+
+    let allocation_calls = census(&sources, |source, mask| {
+        call_offsets(source, mask, "allocate_ordinary_pid")
+    });
+    if let Err(diff) = validate_census(&allocation_calls, ALLOCATE_ORDINARY_PID_CALLS) {
+        panic!(
+            "allocate_ordinary_pid call-site census changed\n{}",
+            diff.join("\n")
+        );
+    }
+
+    let manager = source(&sources, "kernel/src/process/manager.rs");
+    let new_body = function_body(manager, "new");
+    let new_mask = code_mask(new_body);
+    assert_eq!(
+        code_offsets(
+            new_body,
+            &new_mask,
+            "AtomicU64::new(FIRST_ORDINARY_PID)"
+        )
+        .len(),
+        1,
+        "ProcessManager::new must initialize next_pid from FIRST_ORDINARY_PID"
+    );
+    assert!(
+        code_offsets(new_body, &new_mask, "AtomicU64::new(1)").is_empty(),
+        "ProcessManager::new regained a numeric init-PID initializer"
+    );
+
+    for name in ["RESERVED_INIT_PID", "FIRST_ORDINARY_PID"] {
+        let definitions = census(&sources, |source, mask| {
+            typed_u64_constant_definition_offsets(source, mask, name)
+        });
+        if let Err(diff) = validate_census(&definitions, INIT_PID_CONSTANT_DEFINITION) {
+            panic!("{name} definition census changed\n{}", diff.join("\n"));
+        }
+    }
+}
+
+#[test]
+fn hardcoded_init_pid_shapes_are_confined_to_the_reservation() {
+    let sources = rust_sources_below("kernel/src");
+    if let Err(diff) = validate_hardcoded_init_pid_constants(&sources) {
+        panic!("hardcoded init-PID constant family changed\n{}", diff.join("\n"));
+    }
+    if let Err(diff) = validate_direct_init_pid_comparisons(&sources) {
+        panic!("direct init-PID comparison family changed\n{}", diff.join("\n"));
+    }
+
+    let extra_constant = with_synthetic_source(
+        &sources,
+        "kernel/src/synthetic_init_pid_constant.rs",
+        "const INIT_PID: u64 = 1;",
+    );
+    assert!(validate_hardcoded_init_pid_constants(&extra_constant).is_err());
+
+    let extra_comparison = with_synthetic_source(
+        &sources,
+        "kernel/src/synthetic_init_pid_comparison.rs",
+        "fn rogue(process: &Process) { if process.id.as_u64() == 1 {} }",
+    );
+    assert!(validate_direct_init_pid_comparisons(&extra_comparison).is_err());
+}
+
+#[test]
+fn init_designation_authority_is_closed() {
+    let sources = rust_sources_below("kernel/src");
+    if let Err(failures) = validate_init_designation_authority(&sources) {
+        panic!("{}", failures.join("\n"));
+    }
+
+    let forged_ticket = with_synthetic_source(
+        &sources,
+        "kernel/src/synthetic_init_designation_ticket.rs",
+        "fn forge(pid: ProcessId, main_thread: Box<Thread>) { let _ = InitDesignationTicket { provisional_pid: pid, main_thread }; }",
+    );
+    assert!(validate_init_designation_authority(&forged_ticket).is_err());
+
+    let manager = source(&sources, "kernel/src/process/manager.rs");
+    let extra_writer = manager.replacen(
+        "        self.create_init_process_at(",
+        "        self.designated_init = Some(pid);\n        self.create_init_process_at(",
+        1,
+    );
+    assert_ne!(extra_writer, manager, "create_init_process injection anchor");
+    let extra_writer = with_replaced_source(
+        &sources,
+        "kernel/src/process/manager.rs",
+        extra_writer,
+    );
+    assert!(validate_init_designation_authority(&extra_writer).is_err());
+}
+
+#[test]
+fn init_identity_mechanism_is_cfg_free() {
+    let sources = rust_sources_below("kernel/src");
+    let manager = source(&sources, "kernel/src/process/manager.rs");
+    if let Err(failures) = validate_init_identity_mechanism_is_cfg_free(manager) {
+        panic!("{}", failures.join("\n"));
+    }
+
+    let conditional = manager.replacen(
+        "        let raw = self.next_pid.fetch_add(1, Ordering::SeqCst);",
+        "        #[cfg(feature = \"testing\")]\n        let raw = self.next_pid.fetch_add(1, Ordering::SeqCst);",
+        1,
+    );
+    assert_ne!(conditional, manager, "allocate_ordinary_pid injection anchor");
+    assert!(validate_init_identity_mechanism_is_cfg_free(&conditional).is_err());
+}
+
+#[test]
+fn init_shell_role_is_conferred_by_argument_not_pid() {
+    let bsh = repo_text("userspace/programs/src/bsh.rs");
+    let bsh_mask = code_mask(&bsh);
+    assert!(method_comparison_offsets(&bsh, &bsh_mask, "raw", "2").is_empty());
+    assert!(method_comparison_offsets(&bsh, &bsh_mask, "raw", "3").is_empty());
+    let dispatch = function_body(&bsh, "main");
+    assert!(call_offsets(dispatch, &code_mask(dispatch), "getpid").is_empty());
+    assert_eq!(bsh.matches("\"--init-shell\"").count(), 1);
+    assert_eq!(
+        definition_offsets(&bsh, &bsh_mask, "run_init_shell").len(),
+        1
+    );
+    assert_eq!(
+        function_body(&bsh, "run_init_shell")
+            .matches("load_rc_file(&mut ctx, \"/etc/init.js\")")
+            .count(),
+        1
+    );
+
+    let init = repo_text("userspace/programs/src/init.rs");
+    assert_eq!(init.matches("b\"--init-shell\\0\"").count(), 1);
+    let legacy_init_shell = repo_text("userspace/programs/src/init_shell.rs");
+    assert_eq!(
+        legacy_init_shell
+            .matches("getpid().map(|p| p.raw()).unwrap_or(0) != 1")
+            .count(),
+        1
+    );
+
+    let main = repo_text("kernel/src/main.rs");
+    assert_eq!(
+        call_offsets(
+            &main,
+            &code_mask(&main),
+            "run_x86_init_designation_gate"
+        )
+        .len(),
+        1
+    );
+    let registry = repo_text("kernel/src/test_framework/registry.rs");
+    let registry_mask = code_mask(&registry);
+    let registry_entries = registry
+        .match_indices("name: \"init_designation_oracle\"")
+        .filter(|(offset, _)| enclosing_test_def(&registry, &registry_mask, *offset).is_some())
+        .count();
+    assert_eq!(registry_entries, 1);
+
+    let harness = repo_text("docker/qemu/run-x86-boot-tests.sh");
+    assert!(
+        harness
+            .matches("TEST:process:init_designation_oracle:PASS")
+            .count()
+            >= 2
+    );
+    assert!(harness.matches("INIT_DESIGNATION_ORACLE_LITERAL").count() >= 3);
 }
 
 #[test]
@@ -4696,7 +5257,7 @@ fn all_phase_zero_counters_have_registered_readers_and_honest_runtime_gates() {
         .filter_map(|rest| rest.strip_suffix(','))
         .map(str::to_owned)
         .collect();
-    assert_eq!(declarations.len(), 74);
+    assert_eq!(declarations.len(), 82);
     assert_eq!(
         readers, declarations,
         "every counter must have an inventory reader"

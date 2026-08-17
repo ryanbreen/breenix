@@ -636,6 +636,7 @@ impl ProcessScheduler {
         // Phase 1: Under PM lock — minimal work only
         let phase1_result = {
             if let Some(ref mut manager) = *crate::process::manager() {
+                let designated_init = manager.designated_init();
                 if let Some((pid, process)) = manager.find_process_by_thread_mut(thread_id) {
                     let already_terminated = process.is_terminated();
                     crate::tracing::providers::teardown::record_exit_request(already_terminated);
@@ -644,7 +645,7 @@ impl ProcessScheduler {
                     }
                     let parent_pid = process.parent;
                     let process_name = process.name.clone();
-                    let children = if pid == ProcessId::new(1) {
+                    let children = if designated_init == Some(pid) {
                         alloc::vec::Vec::new()
                     } else {
                         core::mem::take(&mut process.children)
@@ -715,18 +716,7 @@ impl ProcessScheduler {
                         }
                     }
 
-                    // Reparent children to init (PID 1)
-                    if !children.is_empty() {
-                        let init_pid = ProcessId::new(1);
-                        for &child_pid in &children {
-                            if let Some(child) = manager.get_process_mut(child_pid) {
-                                child.parent = Some(init_pid);
-                            }
-                        }
-                        if let Some(init) = manager.get_process_mut(init_pid) {
-                            init.children.extend(children.iter());
-                        }
-                    }
+                    manager.reparent_children_to_init(pid, &children);
 
                     Some((
                         pid,

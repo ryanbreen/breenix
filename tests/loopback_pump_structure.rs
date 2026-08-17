@@ -835,11 +835,11 @@ fn validate_x86_gate_requires_the_loopback_regression_tests(source: &str) -> Res
         return Err("x86 gate still treats the boot-window counter marker as proof".to_string());
     }
     if source
-        .matches("readonly EXPECTED_USERSPACE_EXITS=99")
+        .matches("readonly EXPECTED_USERSPACE_EXITS=100")
         .count()
         != 1
     {
-        return Err("x86 gate does not pin the 99 expected userspace exits".to_string());
+        return Err("x86 gate does not pin the 100 expected userspace exits".to_string());
     }
     for rationale in [
         "B1",
@@ -1559,8 +1559,8 @@ fn x86_gate_validator_rejects_missing_userspace_failure_trap() {
 fn x86_gate_validator_rejects_lower_userspace_exit_pin() {
     let source = repo_text("docker/qemu/run-x86-boot-tests.sh");
     let mutated = source.replacen(
+        "readonly EXPECTED_USERSPACE_EXITS=100",
         "readonly EXPECTED_USERSPACE_EXITS=99",
-        "readonly EXPECTED_USERSPACE_EXITS=98",
         1,
     );
     assert_ne!(mutated, source, "userspace exit-pin mutation must apply");

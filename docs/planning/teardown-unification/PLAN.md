@@ -377,10 +377,13 @@ not a prediction about arguments not yet made. The PR that splits says so in its
      (PR #565; proven red three ways — injected `exit(1)`, injected segfault, vanished process).
    - **x86_64 custody boot-tests:** `docker/qemu/run-x86-boot-tests.sh` additionally pins the
      frame/page-table custody counter lines as literals. **The script is the truth about which lines
-     are pinned, and it currently pins seven**: `FRAME_CUSTODY_COUNTERS`, `PT_CUSTODY_COUNTERS`,
+     are pinned, and it pins nine as of P5a**: `FRAME_CUSTODY_COUNTERS`, `PT_CUSTODY_COUNTERS`,
      `PT_RETIRE_COHORT`, `PT_EXEC_COHORT`, plus `EXEC_FAILED_RELEASE_ORACLE` and
      `EXEC_FAILED_RELEASE_PROD` (added by #573/PR #582, which also re-pinned `PT_CUSTODY_COUNTERS` to
-     `recorded=14 … retired=2:returned=14`) and `EXEC_DETACH_ORACLE` (added by P3). A phase that
+     `recorded=14 … retired=2:returned=14`), `EXEC_DETACH_ORACLE` **and `CLONE_ADMISSION_ORACLE`**
+     (both added by P3/PR #587 — this inventory previously said "seven" and omitted the second,
+     corrected by coordinator ruling R11, 2026-08-17), and `INIT_DESIGNATION_ORACLE` (added by P5a).
+     A phase that
      perturbs one re-pins it consciously, with a per-delta derivation showing each count change is its
      mechanism's expected effect — never re-pin to green a red gate you do not understand.
      **This gate never retries a hung run** — a
@@ -432,10 +435,17 @@ not a prediction about arguments not yet made. The PR that splits says so in its
    <1000 cycles) still bind. *(The gold-master frozen-region hash gate that used to sit here was
    removed from the tree by PR #520 on operator directive; nothing named `gold-master`, `GOLD_MASTER`
    or `FROZEN` exists under `kernel/src`, `tests` or `scripts`, so gating on it was gating on nothing.)*
-   **Structural ratchets take its place** as the standing anti-regression bar: `tests/teardown_structure.rs`
-   (33 tests), `tests/context_restore_structure.rs` (46), `tests/exec_lock_order_structure.rs` (25),
-   `tests/dma_and_log_sink_structure.rs` (4) — all census-anchored (file + enclosing-item path +
-   occurrence count), no line pins. Every new tranche-2 invariant is ratcheted in one of them.
+   **Structural ratchets take its place** as the standing anti-regression bar. The tree carries
+   **seven** such suites, not the four this list used to name (coordinator ruling R11, 2026-08-17);
+   counts are re-derived at the head of every phase rather than treated as fixed, and the suite set
+   is what `tests/*_structure.rs` matches, never a closed literal list — the #549/#551/#527-r1
+   lesson. As of P5a landing: `tests/teardown_structure.rs` (**41**, was 36 before P5a's five new
+   init-identity tests), `tests/context_restore_structure.rs` (**50**),
+   `tests/exec_lock_order_structure.rs` (**25**), `tests/dma_and_log_sink_structure.rs` (**4**),
+   `tests/loopback_pump_structure.rs` (**57**), `tests/net_lock_structure.rs` (**19**),
+   `tests/exit_tally_structure.rs` (**6**) — 202 tests, all census-anchored (file +
+   enclosing-item path + occurrence count), no line pins. Every new tranche-2 invariant is
+   ratcheted in one of them.
 7. **Cleanup:** all Parallels VMs stopped, all stray QEMU killed, before reporting the phase done.
 
 ### Dependency graph — re-derived *(condition 1)*
@@ -1443,9 +1453,21 @@ first.
 PID 1** for the explicit init constructor; ordinary/test allocation starts at 2. Init is built
 off-table with provisional PID 1 through a **held-publication ticket**: fallible image → row inserted
 → scheduler thread created **not-yet-runnable** → ticket returned → PM validates the ticket names a
-live PID 1 → `designated_init` set → thread published to the run queue. Production designation is
+live PID 1 → `designated_init` set → thread published. Production designation is
 **validated == PID 1 and refuses otherwise**. **No `#[cfg]` anywhere.** `init_shell.rs:1028` is not
 touched.
+
+> **The ticket's terminal step, defined against the arch's actual production shape** *(coordinator
+> ruling R8, 2026-08-17, resolving the P5a marshal brief's planContradiction PC-3).* The sentence
+> above originally read "thread published **to the run queue**". The only production init
+> constructor, `launch_init_from_elf` (`kernel/src/main_aarch64.rs`), never publishes to a run
+> queue: it hands the thread to `kernel::task::scheduler::spawn_as_current` and ERETs into init
+> from the boot thread. The terminal step is therefore **defined as the transition that makes PID 1
+> current or schedulable in the arch's real shape** — on aarch64 `spawn_as_current` + ERET, on
+> x86 the manager's ready-queue push that `create_process` already performs. The ticket is redeemed
+> before either can happen, which is the invariant that matters; forcing a run-queue publish onto
+> the aarch64 boot path would be a behaviour change and is out of P5a's scope. The PM still
+> validates that the ticket names a live PID 1 before designating.
 
 **The two migration surfaces, re-counted at `2c7b8798` — both larger than the design recorded.**
 
@@ -1496,9 +1518,40 @@ process got a low PID as init. Existing orphan-reparent test still green. P0 rat
 to the three named `test_userspace.rs` sites, and pins all eight `next_pid` allocation sites so a
 ninth cannot appear unnoticed.
 
+> **The P0 ratchet must census the init-PID constant *family*, not one literal** *(coordinator
+> ruling R10, 2026-08-17, resolving PC-2).* The implementing census searches for the literal text
+> `ProcessId::new(1)`, which cannot see `syscall/signal.rs`'s `const INIT_PID: u64 = 1;`, nor a
+> direct `as_u64() == 1` / `raw() != 1` comparison. P5a widens it to a **shape** census over the
+> family — bare `u64`/`usize` constants equal to 1 whose name reads as an init PID, plus direct
+> equality comparisons against 1 on a PID accessor — allowing exactly the single reservation
+> constant and the three allowlisted test sites. Per the #549/#551/#527-r1 lesson the census is a
+> shape, never a closed list of names, and it carries its own anti-vacuity control: reintroducing
+> `const INIT_PID: u64 = 1;` in a synthetic production source must turn it red.
+
+> **The userspace init-shell contract is part of this phase** *(coordinator ruling R7, 2026-08-17,
+> resolving PC-1).* The scope paragraph's premise — that `init_shell.rs:1028` is the only userspace
+> PID contract, so leaving it untouched means no second contract can drift — is false.
+> `userspace/programs/src/bsh.rs` also decided it was the boot shell by testing
+> `getpid() == 2 || getpid() == 3`, a magic-PID contract that reserving PID 1 renumbers straight
+> through, silently, with `/etc/init.js` and the whole service chain as the casualty. P5a replaces
+> it with a renumbering-proof contract: **init confers the init-shell role by passing
+> `--init-shell`, and nothing else does** — no PID value participates. `init_shell.rs:1028` still is
+> not touched, and the ratchet pins both facts. The Files list therefore also includes
+> `userspace/programs/src/bsh.rs`, `userspace/programs/src/init.rs` and `kernel/src/main.rs` (the
+> x86 direct-call oracle site, ruling R9).
+
 **Strictly better.** Converts AC-5 from "convention plus a boot log line" into a structural guarantee,
 and makes a failed init creation deterministically retryable. Ships **no** behaviour change on init
 death — deliberately, because bundling identity with policy is what killed four prior attempts.
+
+> **Two behaviour changes the phase does ship, named rather than glossed.** (1) Ordinary PIDs shift
+> by one on every profile, and on the aarch64 `boot_tests` profile init now really does receive
+> PID 1 (it did not before, because the PostScheduler oracles allocated first) — that is the point
+> of the reservation, and AC-9 is what proves it. (2) Reparenting is now defined against the
+> authority: with a designated init, children move onto it exactly as before; with **no** designated
+> init the children keep their existing parent instead of being pointed at a PID-1 row that does not
+> exist. Nothing reaps them either way on a no-init build, but the new behaviour is the defined one
+> and the oracle drives both arms in the same run.
 
 **Accepted residual.** **#560**, as for P3: "is the caller init?" resolves the calling row through the
 recorded current thread. Decision is made inside the PM guard on the calling path; named and accepted
