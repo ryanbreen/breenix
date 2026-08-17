@@ -21,7 +21,6 @@ fn test_kernel_builds() {
     let result = Command::new("cargo")
         .current_dir(&kernel_dir)
         .args(&[
-            "+nightly",
             "build",
             "-Zbuild-std=core,compiler_builtins,alloc",
             "-Zbuild-std-features=compiler-builtins-mem",
@@ -54,7 +53,6 @@ fn test_kernel_builds_with_testing_feature() {
     let result = Command::new("cargo")
         .current_dir(&kernel_dir)
         .args(&[
-            "+nightly",
             "build",
             "-Zbuild-std=core,compiler_builtins,alloc",
             "-Zbuild-std-features=compiler-builtins-mem",
