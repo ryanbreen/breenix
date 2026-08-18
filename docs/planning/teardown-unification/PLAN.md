@@ -397,6 +397,16 @@ not a prediction about arguments not yet made. The PR that splits says so in its
      (`kernel/src/test_framework/executor.rs:126`) runs no tests and still emits it, carrying
      whatever `[TESTS_COMPLETE:c/t]` progress happens to stand (`0/0` when nothing has run). The
      runner script only reports those numbers; reading them is the human's job.
+   - **aarch64 init service-sequence gate:** `docker/qemu/run-aarch64-service-sequence-gate.sh`,
+     whose **default is 25 boots per CPU profile** — operator directive, 2026-08-18, raised from
+     the old 10-boot smoke so an unqualified run is already a meaningful sample; the #575 round
+     gate remains `--boots 100 --profile both`. **The script is the truth about which buckets it
+     classifies and which of them fail the gate** — read `classify_serial` and the gate condition
+     in the script rather than any list here, which goes stale (the #549/#551/#527-r1 lesson).
+     As of PR #600 it fails on `575`, `596` or `UNATTRIBUTED` and reports the `CTX596` divergence
+     census without gating on it; a `596` boot is an EL1 `DATA_ABORT` (`from_el0=0`) **or** a
+     `[CTX596_ORACLE:FAIL` line, and a boot that never emitted `[CTX596_ORACLE:ARMED` is
+     `UNATTRIBUTED`, never GREEN by omission.
    - **aarch64 soaks:** **100 clean cycles** and **100 starved cycles** (host-contended) of the
      boot-test gate on `aarch64-breenix-kernel.json`, with the no-NEON guard run against the booted
      ELF. Starvation is applied by the runner, not by a committed script; the cycle count and the

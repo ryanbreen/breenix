@@ -169,6 +169,65 @@ fn raw_uart_hex_u32(value: u32) {
     }
 }
 
+/// EL1 faults can interrupt code that already holds SCHEDULER. Fatal diagnostics
+/// therefore consult only the per-CPU published pointer and never take that lock.
+#[inline(always)]
+fn current_thread_lock_free() -> Option<&'static crate::task::thread::Thread> {
+    let thread_ptr =
+        crate::arch_impl::aarch64::percpu::Aarch64PerCpu::current_thread_ptr()
+            as *const crate::task::thread::Thread;
+    if thread_ptr.is_null() {
+        None
+    } else {
+        Some(unsafe { &*thread_ptr })
+    }
+}
+
+#[cold]
+#[inline(never)]
+fn dump_el1_fatal_frame_and_dispatch_trace(
+    label: &str,
+    frame: &Aarch64ExceptionFrame,
+    esr: u64,
+    far: u64,
+    cpu_id: usize,
+) {
+    use crate::arch_impl::aarch64::context_switch::{raw_uart_dec, raw_uart_hex, raw_uart_str};
+
+    let sp_at_crash = frame as *const _ as u64 + 272;
+    raw_uart_str("\n[FATAL_REGS] label=");
+    raw_uart_str(label);
+    raw_uart_str(" cpu=");
+    raw_uart_dec(cpu_id as u64);
+    raw_uart_str(" spsr=");
+    raw_uart_hex(frame.spsr);
+    raw_uart_str(" esr=");
+    raw_uart_hex(esr);
+    raw_uart_str(" far=");
+    raw_uart_hex(far);
+    raw_uart_str(" elr=");
+    raw_uart_hex(frame.elr);
+    raw_uart_str(" sp=");
+    raw_uart_hex(sp_at_crash);
+
+    let registers = unsafe { core::slice::from_raw_parts(&frame.x0 as *const u64, 31) };
+    for (register, value) in registers.iter().enumerate() {
+        if register % 4 == 0 {
+            raw_uart_str("\n  ");
+        } else {
+            raw_uart_str(" ");
+        }
+        raw_uart_str("x");
+        raw_uart_dec(register as u64);
+        raw_uart_str("=");
+        raw_uart_hex(*value);
+    }
+    raw_uart_str("\n  DISPATCH_TRACE cpu=");
+    raw_uart_dec(cpu_id as u64);
+    raw_uart_str(":\n");
+    crate::arch_impl::aarch64::context_switch::dump_dispatch_trace(cpu_id);
+}
+
 #[cold]
 #[inline(never)]
 fn dump_el1_first_fault(
@@ -236,6 +295,8 @@ fn dump_el1_first_fault(
         raw_uart_hex(*value);
     }
     raw_uart_str("\n");
+
+    crate::arch_impl::aarch64::context_switch::dump_dispatch_trace(cpu_id);
 
     crate::arch_impl::aarch64::context_switch::dump_all_save_skew_snapshots();
     crate::task::scheduler::dump_cpu_state_history_postmortem(cpu_id);
@@ -649,6 +710,13 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                 // the faulting code path (null deref, wild pointer, use-after-free)
                 if !from_el0 {
                     let cpu_id = crate::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id();
+                    dump_el1_fatal_frame_and_dispatch_trace(
+                        "DATA_ABORT",
+                        frame_ref,
+                        esr,
+                        far,
+                        cpu_id as usize,
+                    );
                     raw_uart_str(" cpu=");
                     raw_uart_dec(cpu_id as u64);
                     raw_uart_str("\n  x19=");
@@ -666,13 +734,13 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                     // SP at crash = frame address + 272 (exception frame size)
                     raw_uart_str(" sp=");
                     raw_uart_hex(frame as u64 + 272);
-                    if let Some(tid) = crate::task::scheduler::current_thread_id() {
+                    let current_thread = current_thread_lock_free();
+                    if let Some(thread) = current_thread {
+                        let tid = thread.id();
                         raw_uart_str(" tid=");
                         raw_uart_dec(tid);
-                        crate::task::scheduler::with_thread_mut(tid, |thread| {
-                            raw_uart_str(" name=");
-                            raw_uart_str(&thread.name);
-                        });
+                        raw_uart_str(" name=");
+                        raw_uart_str(&thread.name);
                     }
 
                     // Per-CPU state diagnostic: shows whether kernel_stack_top and
@@ -695,14 +763,13 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                     raw_uart_hex(user_rsp);
 
                     // Check thread's expected kernel_stack_top from scheduler
-                    if let Some(tid) = crate::task::scheduler::current_thread_id() {
-                        let thread_kst = crate::task::scheduler::with_thread_mut(tid, |thread| {
-                            thread.kernel_stack_top.map(|v| v.as_u64()).unwrap_or(0)
-                        });
-                        if let Some(kst) = thread_kst {
-                            raw_uart_str(" thread_kst=");
-                            raw_uart_hex(kst);
-                        }
+                    if let Some(thread) = current_thread {
+                        let thread_kst = thread
+                            .kernel_stack_top
+                            .map(|value| value.as_u64())
+                            .unwrap_or(0);
+                        raw_uart_str(" thread_kst=");
+                        raw_uart_hex(thread_kst);
                     }
 
                     let (armed_port, armed_cmd, isr_port, isr_cmd, waiter_tid) =
@@ -856,8 +923,13 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
             dump_fatal_postmortem_once("DATA_ABORT");
             drop(fatal_uart_guard);
 
-            // Mark scheduler thread as terminated (best effort)
-            terminate_current_scheduler_thread();
+            // EL1 may have faulted while holding SCHEDULER, so termination is
+            // non-blocking there. Preserve the established EL0 path exactly.
+            if from_el0 {
+                terminate_current_scheduler_thread();
+            } else if let Some(thread) = current_thread_lock_free() {
+                crate::task::scheduler::terminate_thread_best_effort(thread.id());
+            }
             crate::task::scheduler::set_need_resched();
 
             // CRITICAL: Set frame values BEFORE switch_to_idle_best_effort() —
@@ -906,46 +978,51 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                 raw_uart_char(if from_el0 { b'1' } else { b'0' });
 
                 if !from_el0 {
-                    if let Some(tid) = crate::task::scheduler::current_thread_id() {
-                        crate::task::scheduler::with_thread_mut(tid, |thread| {
-                            if thread.inline_schedule_saved_sp != 0 {
-                                let current_sp = frame as u64 + 272;
-                                let current_slot20 = unsafe {
-                                    core::ptr::read_volatile((current_sp + 0x20) as *const u64)
-                                };
-                                let saved_slot20 = unsafe {
-                                    core::ptr::read_volatile(
-                                        (thread.inline_schedule_saved_sp + 0x20) as *const u64,
-                                    )
-                                };
-                                raw_uart_str("\n[EL1_INLINE_ABORT] tid=");
-                                raw_uart_dec(tid);
-                                raw_uart_str(" x29=");
-                                raw_uart_hex(frame_ref.x29);
-                                raw_uart_str(" x30=");
-                                raw_uart_hex(frame_ref.x30);
-                                raw_uart_str(" sp=");
-                                raw_uart_hex(current_sp);
-                                raw_uart_str(" slot20=");
-                                raw_uart_hex(current_slot20);
-                                raw_uart_str(" saved_sp=");
-                                raw_uart_hex(thread.inline_schedule_saved_sp);
-                                raw_uart_str(" saved_lr=");
-                                raw_uart_hex(thread.inline_schedule_caller_lr);
-                                raw_uart_str(" saved_slot20=");
-                                raw_uart_hex(saved_slot20);
-                                crate::tracing::record_event(
-                                    crate::tracing::TraceEventType::EL1_INLINE_ABORT,
-                                    0,
-                                    frame_ref.x30 as u32,
-                                );
-                            }
-                        });
+                    let cpu_id =
+                        crate::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id() as usize;
+                    dump_el1_fatal_frame_and_dispatch_trace(
+                        "INSTRUCTION_ABORT",
+                        frame_ref,
+                        esr,
+                        far,
+                        cpu_id,
+                    );
+                    if let Some(thread) = current_thread_lock_free() {
+                        if thread.inline_schedule_saved_sp != 0 {
+                            let current_sp = frame as u64 + 272;
+                            let current_slot20 = unsafe {
+                                core::ptr::read_volatile((current_sp + 0x20) as *const u64)
+                            };
+                            let saved_slot20 = unsafe {
+                                core::ptr::read_volatile(
+                                    (thread.inline_schedule_saved_sp + 0x20) as *const u64,
+                                )
+                            };
+                            raw_uart_str("\n[EL1_INLINE_ABORT] tid=");
+                            raw_uart_dec(thread.id());
+                            raw_uart_str(" x29=");
+                            raw_uart_hex(frame_ref.x29);
+                            raw_uart_str(" x30=");
+                            raw_uart_hex(frame_ref.x30);
+                            raw_uart_str(" sp=");
+                            raw_uart_hex(current_sp);
+                            raw_uart_str(" slot20=");
+                            raw_uart_hex(current_slot20);
+                            raw_uart_str(" saved_sp=");
+                            raw_uart_hex(thread.inline_schedule_saved_sp);
+                            raw_uart_str(" saved_lr=");
+                            raw_uart_hex(thread.inline_schedule_caller_lr);
+                            raw_uart_str(" saved_slot20=");
+                            raw_uart_hex(saved_slot20);
+                            crate::tracing::record_event(
+                                crate::tracing::TraceEventType::EL1_INLINE_ABORT,
+                                0,
+                                frame_ref.x30 as u32,
+                            );
+                        }
                     }
 
                     if frame_ref.elr < 0x1000 {
-                        let cpu_id =
-                            crate::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id() as usize;
                         crate::tracing::record_event(
                             crate::tracing::TraceEventType::FATAL_CPU_TRACE_MARKER,
                             0,
@@ -1005,13 +1082,12 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                     raw_uart_hex(frame_ref.elr);
                     raw_uart_str(" from EL1 cpu=");
                     raw_uart_dec(cpu_id as u64);
-                    if let Some(tid) = crate::task::scheduler::current_thread_id() {
+                    let current_thread = current_thread_lock_free();
+                    if let Some(thread) = current_thread {
                         raw_uart_str(" tid=");
-                        raw_uart_dec(tid);
-                        crate::task::scheduler::with_thread_mut(tid, |thread| {
-                            raw_uart_str(" name=");
-                            raw_uart_str(&thread.name);
-                        });
+                        raw_uart_dec(thread.id());
+                        raw_uart_str(" name=");
+                        raw_uart_str(&thread.name);
                     }
                     // Full register dump — ALL registers, not just a subset
                     raw_uart_str("\n  x0=");
@@ -1109,14 +1185,13 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                     raw_uart_str(" last_dispatch_spsr=");
                     raw_uart_hex(dispatch_spsr);
 
-                    if let Some(tid) = crate::task::scheduler::current_thread_id() {
-                        let thread_kst = crate::task::scheduler::with_thread_mut(tid, |thread| {
-                            thread.kernel_stack_top.map(|v| v.as_u64()).unwrap_or(0)
-                        });
-                        if let Some(kst) = thread_kst {
-                            raw_uart_str(" thread_kst=");
-                            raw_uart_hex(kst);
-                        }
+                    if let Some(thread) = current_thread {
+                        let thread_kst = thread
+                            .kernel_stack_top
+                            .map(|value| value.as_u64())
+                            .unwrap_or(0);
+                        raw_uart_str(" thread_kst=");
+                        raw_uart_hex(thread_kst);
                     }
 
                     // Stack classification
@@ -1223,7 +1298,13 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                 frame as u64,
                 from_el0,
             );
-            terminate_current_scheduler_thread();
+            // EL1 may have faulted while holding SCHEDULER, so termination is
+            // non-blocking there. Preserve the established EL0 path exactly.
+            if from_el0 {
+                terminate_current_scheduler_thread();
+            } else if let Some(thread) = current_thread_lock_free() {
+                crate::task::scheduler::terminate_thread_best_effort(thread.id());
+            }
             crate::task::scheduler::set_need_resched();
             frame_ref.elr = crate::arch_impl::aarch64::idle_loop_arm64 as *const () as u64;
             frame_ref.spsr = 0x5; // EL1h, DAIF clear (interrupts enabled)
@@ -1256,6 +1337,17 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                 raw_uart_str(" from_el0=");
                 raw_uart_char(if from_el0 { b'1' } else { b'0' });
                 raw_uart_str("\n");
+            }
+            if !from_el0 {
+                let cpu_id =
+                    crate::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id() as usize;
+                dump_el1_fatal_frame_and_dispatch_trace(
+                    "SP_ALIGN",
+                    frame_ref,
+                    esr,
+                    far,
+                    cpu_id,
+                );
             }
             if from_el0 {
                 crate::trace_count!(crate::tracing::providers::teardown::TEARDOWN_ENTRY_FAULT);
@@ -1305,6 +1397,15 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                 raw_uart_str(" cpu=");
                 raw_uart_dec(cpu_id as u64);
                 if verbose {
+                    if !from_el0 {
+                        dump_el1_fatal_frame_and_dispatch_trace(
+                            "PC_ALIGN",
+                            frame_ref,
+                            esr,
+                            far,
+                            cpu_id as usize,
+                        );
+                    }
                     let dispatch_elr =
                         crate::arch_impl::aarch64::percpu::Aarch64PerCpu::dispatch_elr();
                     let dispatch_spsr =
@@ -1320,25 +1421,42 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                     raw_uart_hex(frame_ref.x0);
                     raw_uart_str(" x1=");
                     raw_uart_hex(frame_ref.x1);
-                    if let Some(tid) = crate::task::scheduler::current_thread_id() {
-                        raw_uart_str("\n  current_tid=");
-                        raw_uart_dec(tid);
-                        if let Some(dump) = crate::task::scheduler::try_dump_state() {
-                            if let Some(thread) = dump.threads.iter().find(|t| t.id == tid) {
-                                raw_uart_str(" owner_pid=");
-                                raw_uart_dec(thread.owner_pid);
-                                raw_uart_str(" bis=");
-                                raw_uart_char(if thread.blocked_in_syscall {
-                                    b'1'
-                                } else {
-                                    b'0'
-                                });
-                                raw_uart_str(" saved_elr=");
-                                raw_uart_hex(thread.elr_el1);
-                                raw_uart_str(" saved_x30=");
-                                raw_uart_hex(thread.x30);
+                    if from_el0 {
+                        if let Some(tid) = crate::task::scheduler::current_thread_id() {
+                            raw_uart_str("\n  current_tid=");
+                            raw_uart_dec(tid);
+                            if let Some(dump) = crate::task::scheduler::try_dump_state() {
+                                if let Some(thread) = dump.threads.iter().find(|t| t.id == tid) {
+                                    raw_uart_str(" owner_pid=");
+                                    raw_uart_dec(thread.owner_pid);
+                                    raw_uart_str(" bis=");
+                                    raw_uart_char(if thread.blocked_in_syscall {
+                                        b'1'
+                                    } else {
+                                        b'0'
+                                    });
+                                    raw_uart_str(" saved_elr=");
+                                    raw_uart_hex(thread.elr_el1);
+                                    raw_uart_str(" saved_x30=");
+                                    raw_uart_hex(thread.x30);
+                                }
                             }
                         }
+                    } else if let Some(thread) = current_thread_lock_free() {
+                        raw_uart_str("\n  current_tid=");
+                        raw_uart_dec(thread.id());
+                        raw_uart_str(" owner_pid=");
+                        raw_uart_dec(thread.owner_pid.unwrap_or(0));
+                        raw_uart_str(" bis=");
+                        raw_uart_char(if thread.blocked_in_syscall {
+                            b'1'
+                        } else {
+                            b'0'
+                        });
+                        raw_uart_str(" saved_elr=");
+                        raw_uart_hex(thread.context.elr_el1);
+                        raw_uart_str(" saved_x30=");
+                        raw_uart_hex(thread.context.x30);
                     }
                     raw_uart_str("\n  last_dispatch_elr=");
                     raw_uart_hex(dispatch_elr);
@@ -1493,26 +1611,18 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                 raw_uart_hex(frame_ref.x30);
                 raw_uart_str("\n");
 
-                // Optional [FATAL_THREAD]: the currently-dispatched thread's
-                // saved_by_inline_schedule flag and saved context.elr_el1. Read via
-                // try_dump_state() (SCHEDULER.try_lock — returns None instead of
-                // blocking, so it can NEVER deadlock; documented interrupt-safe) and
-                // is already used by the PC_ALIGN fatal handler above. We only read
-                // the current thread's entry.
-                if let Some(tid) = crate::task::scheduler::current_thread_id() {
-                    if let Some(dump) = crate::task::scheduler::try_dump_state() {
-                        if let Some(thread) = dump.threads.iter().find(|t| t.id == tid) {
-                            raw_uart_str("[FATAL_THREAD] tid=");
-                            raw_uart_dec(tid);
-                            raw_uart_str(" saved_by_inline_schedule=");
-                            raw_uart_dec(if thread.saved_by_inline_schedule { 1 } else { 0 });
-                            raw_uart_str(" ctx_elr_el1=");
-                            raw_uart_hex(thread.elr_el1);
-                            raw_uart_str("\n");
-                        }
-                    } else {
-                        raw_uart_str("[FATAL_THREAD] scheduler lock busy; thread state skipped\n");
-                    }
+                // This fatal dump runs with DAIF masked on an exception-report path
+                // that an EL1 fault can reach, so it must consult only the per-CPU
+                // published thread pointer and never take the SCHEDULER lock (#597).
+                if let Some(thread) = current_thread_lock_free() {
+                    let tid = thread.id();
+                    raw_uart_str("[FATAL_THREAD] tid=");
+                    raw_uart_dec(tid);
+                    raw_uart_str(" saved_by_inline_schedule=");
+                    raw_uart_dec(if thread.saved_by_inline_schedule { 1 } else { 0 });
+                    raw_uart_str(" ctx_elr_el1=");
+                    raw_uart_hex(thread.context.elr_el1);
+                    raw_uart_str("\n");
                 }
 
                 // [SAVE_SKEW]: lock-free per-CPU record from the context-save path

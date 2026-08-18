@@ -2,13 +2,19 @@
 # ARM64 init service-sequence soak gate for #575.
 #
 # The round gate for #575 is a 100-cycle run of this script per CPU profile
-# (`--boots 100`). The default of 10 is for local iteration only.
+# (`--boots 100`). The DEFAULT is 25 boots per profile — operator directive,
+# 2026-08-18 — so an unqualified local run is already a meaningful sample
+# rather than the old 10-boot smoke.
 # Keep the observation window well above the ~11 s service-sequence completion
 # point so a wedged boot is unambiguously distinguishable from a slow one.
+#
+# This script is the truth about which buckets it classifies and which of them
+# fail the gate; read the classify_serial function and the gate condition below
+# rather than any external list, which goes stale.
 
 set -e
 
-BOOTS=10
+BOOTS=25
 PROFILE=both
 IOPS=2000
 BOOT_TIMEOUT=45
@@ -211,6 +217,19 @@ classify_serial() {
     local silent_reason
     local last_line
 
+    # #596's runtime oracle is unconditional: an inline-saved context whose
+    # recorded resume PC is not its inline-save x30 is a defect no matter what
+    # else the boot did, so it is consulted before every other signature.
+    if grep -qF "[CTX596_ORACLE:FAIL" "$serial_file" 2>/dev/null; then
+        CLASS_BUCKET="596"
+        CLASS_REASON="inline-save resume-point oracle failed: $(grep -o '\[CTX596_ORACLE:FAIL:[a-z_]*' "$serial_file" | head -1)"
+        return
+    fi
+    if grep -qE "\[DATA_ABORT\].*from_el0=0" "$serial_file" 2>/dev/null; then
+        CLASS_BUCKET="596"
+        CLASS_REASON="EL1 data abort: $(grep -E "\[DATA_ABORT\].*from_el0=0" "$serial_file" | head -1 | sed 's/[[:space:]]*$//')"
+        return
+    fi
     if grep -qF "[BLOCK_EINTR_ORACLE:FAIL" "$serial_file" 2>/dev/null; then
         CLASS_BUCKET="575"
         CLASS_REASON="block EINTR oracle reported failure"
@@ -244,6 +263,13 @@ classify_serial() {
         CLASS_REASON="oracle marker absent"
         return
     fi
+    # Anti-vacuity: a boot that never armed the #596 oracle cannot be scored
+    # against it, so it is never GREEN by omission.
+    if ! grep -qF "[CTX596_ORACLE:ARMED" "$serial_file" 2>/dev/null; then
+        CLASS_BUCKET="UNATTRIBUTED"
+        CLASS_REASON="#596 inline-save resume-point oracle never armed"
+        return
+    fi
     if grep -qF "[init] Boot script completed" "$serial_file" 2>/dev/null \
         && grep -qF "create_process_with_argv [ARM64]: ENTRY - name='telnetd'" "$serial_file" 2>/dev/null \
         && grep -qF "[spawn] path='/bin/bounce'" "$serial_file" 2>/dev/null; then
@@ -260,8 +286,11 @@ classify_serial() {
 TOTAL_575=0
 TOTAL_576=0
 TOTAL_589=0
+TOTAL_596=0
 TOTAL_GREEN=0
 TOTAL_UNATTRIBUTED=0
+TOTAL_DIVERGENCE_BOOTS=0
+TOTAL_DIVERGENCE_LINES=0
 TOTAL_BOOTS=0
 PROFILE_COUNT=0
 ANY_GATE_FAILURE=0
@@ -271,9 +300,12 @@ print_census() {
     local count_575="$2"
     local count_576="$3"
     local count_589="$4"
-    local count_green="$5"
-    local count_unattributed="$6"
-    local count_boots="$7"
+    local count_596="$5"
+    local count_green="$6"
+    local count_unattributed="$7"
+    local count_boots="$8"
+    local divergence_boots="$9"
+    local divergence_lines="${10}"
     local green_rate
 
     green_rate=$(awk -v green="$count_green" -v boots="$count_boots" \
@@ -283,9 +315,15 @@ print_census() {
     printf '  %-13s %d\n' "575" "$count_575"
     printf '  %-13s %d\n' "576" "$count_576"
     printf '  %-13s %d\n' "589" "$count_589"
+    printf '  %-13s %d\n' "596" "$count_596"
     printf '  %-13s %d\n' "GREEN" "$count_green"
     printf '  %-13s %d\n' "UNATTRIBUTED" "$count_unattributed"
     echo "  GREEN rate: $count_green/$count_boots ($green_rate%) — not a gate today: #589 and #576 are open and intercept boots"
+    # Reported, never gated: the #596 mechanism counter. A nonzero divergence
+    # count with bucket 596 at zero is the production evidence that an
+    # inline-saved context really is ERET-dispatched carrying a stale ELR and
+    # that the repair neutralises it (coordinator ruling R20).
+    echo "  CTX596 divergence: $divergence_lines marker line(s) across $divergence_boots/$count_boots boot(s) — reported, not gated"
 }
 
 run_profile() {
@@ -295,8 +333,12 @@ run_profile() {
     local count_575=0
     local count_576=0
     local count_589=0
+    local count_596=0
     local count_green=0
     local count_unattributed=0
+    local divergence_boots=0
+    local divergence_lines=0
+    local boot_divergence
     local boot
     local serial_file
     local writable_disk
@@ -309,7 +351,7 @@ run_profile() {
     local census_sum
 
     mkdir -p "$profile_dir"
-    printf 'boot\tbucket\tend\tseconds\treason\tserial\n' > "$census_file"
+    printf 'boot\tbucket\tend\tseconds\tctx596_divergence\treason\tserial\n' > "$census_file"
     echo ""
     echo "Profile $cpu_profile: running $BOOTS sequential boots"
 
@@ -364,6 +406,16 @@ run_profile() {
                 kill "$QEMU_PID" 2>/dev/null || true
                 break
             fi
+            if grep -qF "[CTX596_ORACLE:FAIL" "$serial_file" 2>/dev/null; then
+                boot_end="early"
+                kill "$QEMU_PID" 2>/dev/null || true
+                break
+            fi
+            if grep -qE "\[DATA_ABORT\].*from_el0=0" "$serial_file" 2>/dev/null; then
+                boot_end="early"
+                kill "$QEMU_PID" 2>/dev/null || true
+                break
+            fi
             if green_sequence_complete "$serial_file"; then
                 boot_end="early"
                 kill "$QEMU_PID" 2>/dev/null || true
@@ -384,11 +436,19 @@ run_profile() {
         rm -f "$writable_disk"
         CURRENT_DISK=""
 
+        boot_divergence=$(grep -cF "[CTX596_ELR_DIVERGENCE]" "$serial_file" 2>/dev/null | tr -d ' ')
+        boot_divergence=${boot_divergence:-0}
+        divergence_lines=$((divergence_lines + boot_divergence))
+        if [ "$boot_divergence" -ne 0 ]; then
+            divergence_boots=$((divergence_boots + 1))
+        fi
+
         classify_serial "$serial_file"
         case "$CLASS_BUCKET" in
             575) count_575=$((count_575 + 1)) ;;
             576) count_576=$((count_576 + 1)) ;;
             589) count_589=$((count_589 + 1)) ;;
+            596) count_596=$((count_596 + 1)) ;;
             GREEN) count_green=$((count_green + 1)) ;;
             UNATTRIBUTED) count_unattributed=$((count_unattributed + 1)) ;;
             *)
@@ -396,31 +456,35 @@ run_profile() {
                 exit 1
                 ;;
         esac
-        printf '%s\t%s\t%s\t%s\t%s (qemu_status=%s)\t%s\n' \
-            "$boot" "$CLASS_BUCKET" "$boot_end" "$boot_seconds" "$CLASS_REASON" "$qemu_status" "$serial_file" >> "$census_file"
-        echo "  Boot $boot/$BOOTS: $CLASS_BUCKET — $CLASS_REASON [$boot_end, ${boot_seconds}s]"
+        printf '%s\t%s\t%s\t%s\t%s\t%s (qemu_status=%s)\t%s\n' \
+            "$boot" "$CLASS_BUCKET" "$boot_end" "$boot_seconds" "$boot_divergence" \
+            "$CLASS_REASON" "$qemu_status" "$serial_file" >> "$census_file"
+        echo "  Boot $boot/$BOOTS: $CLASS_BUCKET — $CLASS_REASON [$boot_end, ${boot_seconds}s, ctx596_divergence=$boot_divergence]"
     done
 
-    census_sum=$((count_575 + count_576 + count_589 + count_green + count_unattributed))
+    census_sum=$((count_575 + count_576 + count_589 + count_596 + count_green + count_unattributed))
     if [ "$census_sum" -ne "$BOOTS" ]; then
         echo "FATAL: $cpu_profile bucket census sums to $census_sum, expected $BOOTS"
         exit 1
     fi
 
-    print_census "Profile $cpu_profile" "$count_575" "$count_576" "$count_589" \
-        "$count_green" "$count_unattributed" "$BOOTS"
+    print_census "Profile $cpu_profile" "$count_575" "$count_576" "$count_589" "$count_596" \
+        "$count_green" "$count_unattributed" "$BOOTS" "$divergence_boots" "$divergence_lines"
 
     # The GREEN rate is census-only because open #589 and #576 intercept boots; ratchet it into the gate when both land.
-    if [ "$count_575" -ne 0 ] || [ "$count_unattributed" -ne 0 ]; then
+    if [ "$count_575" -ne 0 ] || [ "$count_596" -ne 0 ] || [ "$count_unattributed" -ne 0 ]; then
         ANY_GATE_FAILURE=1
-        echo "Profile $cpu_profile gate: FAILED (575=$count_575, UNATTRIBUTED=$count_unattributed)"
+        echo "Profile $cpu_profile gate: FAILED (575=$count_575, 596=$count_596, UNATTRIBUTED=$count_unattributed)"
     else
-        echo "Profile $cpu_profile gate: PASSED (575=0, UNATTRIBUTED=0)"
+        echo "Profile $cpu_profile gate: PASSED (575=0, 596=0, UNATTRIBUTED=0)"
     fi
 
     TOTAL_575=$((TOTAL_575 + count_575))
     TOTAL_576=$((TOTAL_576 + count_576))
     TOTAL_589=$((TOTAL_589 + count_589))
+    TOTAL_596=$((TOTAL_596 + count_596))
+    TOTAL_DIVERGENCE_BOOTS=$((TOTAL_DIVERGENCE_BOOTS + divergence_boots))
+    TOTAL_DIVERGENCE_LINES=$((TOTAL_DIVERGENCE_LINES + divergence_lines))
     TOTAL_GREEN=$((TOTAL_GREEN + count_green))
     TOTAL_UNATTRIBUTED=$((TOTAL_UNATTRIBUTED + count_unattributed))
     TOTAL_BOOTS=$((TOTAL_BOOTS + BOOTS))
@@ -447,22 +511,23 @@ case "$PROFILE" in
         ;;
 esac
 
-TOTAL_SUM=$((TOTAL_575 + TOTAL_576 + TOTAL_589 + TOTAL_GREEN + TOTAL_UNATTRIBUTED))
+TOTAL_SUM=$((TOTAL_575 + TOTAL_576 + TOTAL_589 + TOTAL_596 + TOTAL_GREEN + TOTAL_UNATTRIBUTED))
 EXPECTED_TOTAL=$((BOOTS * PROFILE_COUNT))
 if [ "$TOTAL_SUM" -ne "$EXPECTED_TOTAL" ] || [ "$TOTAL_BOOTS" -ne "$EXPECTED_TOTAL" ]; then
     echo "FATAL: total bucket census sums to $TOTAL_SUM for $TOTAL_BOOTS recorded boots; expected $EXPECTED_TOTAL"
     exit 1
 fi
 
-print_census "Total" "$TOTAL_575" "$TOTAL_576" "$TOTAL_589" \
-    "$TOTAL_GREEN" "$TOTAL_UNATTRIBUTED" "$TOTAL_BOOTS"
+print_census "Total" "$TOTAL_575" "$TOTAL_576" "$TOTAL_589" "$TOTAL_596" \
+    "$TOTAL_GREEN" "$TOTAL_UNATTRIBUTED" "$TOTAL_BOOTS" "$TOTAL_DIVERGENCE_BOOTS" \
+    "$TOTAL_DIVERGENCE_LINES"
 
 if [ "$ANY_GATE_FAILURE" -ne 0 ]; then
     echo ""
     echo "ARM64 #575 SERVICE SEQUENCE GATE: FAILED"
     echo "Non-GREEN boots:"
     for census_file in "$OUTPUT_DIR"/*/census.tsv; do
-        awk -F '\t' 'NR > 1 && $2 != "GREEN" { printf "  %s: %s — %s [%s, %ss]\n", $6, $2, $5, $3, $4 }' "$census_file"
+        awk -F '\t' 'NR > 1 && $2 != "GREEN" { printf "  %s: %s — %s [%s, %ss]\n", $7, $2, $6, $3, $4 }' "$census_file"
     done
     echo "Preserved serials:"
     find "$OUTPUT_DIR" -type f -name 'serial-*.txt' -print | sort | sed 's/^/  /'

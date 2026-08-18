@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::PathBuf;
 
@@ -363,6 +363,326 @@ fn module_function_bodies(source: &str) -> BTreeMap<String, Vec<&str>> {
         bodies.entry(name.to_owned()).or_default().push(body);
     }
     bodies
+}
+
+// Structural ratchets below use `(repo-relative path, canonical item path)`
+// plus occurrence count. Reflowing or moving code inside an item is free;
+// adding, removing, relocating, or feature-gating a site changes the census.
+type Anchor = (String, String);
+type Census = BTreeMap<Anchor, usize>;
+
+fn next_code(source: &str, mask: &[bool], from: usize) -> Option<usize> {
+    let bytes = source.as_bytes();
+    (from..bytes.len()).find(|index| mask[*index] && !bytes[*index].is_ascii_whitespace())
+}
+
+fn previous_code(source: &str, mask: &[bool], before: usize) -> Option<usize> {
+    let bytes = source.as_bytes();
+    (0..before)
+        .rev()
+        .find(|index| mask[*index] && !bytes[*index].is_ascii_whitespace())
+}
+
+fn preceded_by_keyword(source: &str, mask: &[bool], offset: usize, keyword: &str) -> bool {
+    let bytes = source.as_bytes();
+    let Some(end) = previous_code(source, mask, offset) else {
+        return false;
+    };
+    if !identifier_byte(bytes[end]) {
+        return false;
+    }
+    let mut start = end;
+    while start > 0 && mask[start - 1] && identifier_byte(bytes[start - 1]) {
+        start -= 1;
+    }
+    &source[start..end + 1] == keyword
+}
+
+fn header_cfg(header: &str, mask: &[bool], keyword: usize) -> String {
+    let bytes = header.as_bytes();
+    let mut attributes = Vec::new();
+    for offset in code_offsets(header, mask, "#[cfg") {
+        if offset >= keyword {
+            break;
+        }
+        let Some(paren) = next_code(header, mask, offset + "#[cfg".len()) else {
+            continue;
+        };
+        if bytes[paren] != b'(' {
+            continue;
+        }
+        let mut depth = 0usize;
+        for close in offset..bytes.len() {
+            match bytes[close] {
+                b'[' => depth += 1,
+                b']' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        let compact: String = header[offset..close + 1]
+                            .chars()
+                            .filter(|character| !character.is_whitespace() && *character != '"')
+                            .collect();
+                        attributes.push(compact);
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    if attributes.is_empty() {
+        return String::new();
+    }
+    format!("{} ", attributes.join(" "))
+}
+
+fn impl_segment(header: &str, mask: &[bool], keyword: usize) -> String {
+    let kept: Vec<u8> = header.as_bytes()[keyword..]
+        .iter()
+        .zip(&mask[keyword..])
+        .filter_map(|(byte, code)| code.then_some(*byte))
+        .collect();
+    let text = String::from_utf8_lossy(&kept)
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    match text.find(" where ") {
+        Some(clause) => text[..clause].to_owned(),
+        None => text,
+    }
+}
+
+fn item_segment(header: &str, mask: &[bool]) -> Option<String> {
+    let bytes = header.as_bytes();
+    let named = |keyword: usize, length: usize| -> Option<String> {
+        let mut cursor = keyword + length;
+        while cursor < bytes.len() && (!mask[cursor] || bytes[cursor].is_ascii_whitespace()) {
+            cursor += 1;
+        }
+        let start = cursor;
+        while cursor < bytes.len() && mask[cursor] && identifier_byte(bytes[cursor]) {
+            cursor += 1;
+        }
+        (cursor > start).then(|| header[start..cursor].to_owned())
+    };
+
+    let declaration = identifier_offsets(header, mask, "fn")
+        .into_iter()
+        .filter_map(|offset| named(offset, "fn".len()).map(|name| (offset, format!("fn {name}"))))
+        .next_back()
+        .or_else(|| {
+            ["impl", "mod", "trait", "struct"]
+                .into_iter()
+                .flat_map(|keyword| {
+                    identifier_offsets(header, mask, keyword)
+                        .into_iter()
+                        .map(move |offset| (keyword, offset))
+                })
+                .max_by_key(|(_, offset)| *offset)
+                .and_then(|(keyword, offset)| match keyword {
+                    "impl" => Some((offset, impl_segment(header, mask, offset))),
+                    _ => named(offset, keyword.len())
+                        .map(|name| (offset, format!("{keyword} {name}"))),
+                })
+        });
+    let (keyword, segment) = declaration?;
+    Some(format!("{}{segment}", header_cfg(header, mask, keyword)))
+}
+
+fn item_spans(source: &str, mask: &[bool]) -> Vec<(usize, usize, String)> {
+    let bytes = source.as_bytes();
+    let mut spans = Vec::new();
+    let mut stack: Vec<(usize, usize)> = Vec::new();
+    let mut header = 0usize;
+    let mut paren_depth = 0usize;
+    let mut bracket_depth = 0usize;
+    for index in 0..bytes.len() {
+        if !mask[index] {
+            continue;
+        }
+        match bytes[index] {
+            b'(' => paren_depth += 1,
+            b')' => paren_depth = paren_depth.saturating_sub(1),
+            b'[' => bracket_depth += 1,
+            b']' => bracket_depth = bracket_depth.saturating_sub(1),
+            b'{' => {
+                stack.push((index, header));
+                header = index + 1;
+            }
+            b'}' => {
+                if let Some((open, start)) = stack.pop() {
+                    if let Some(segment) = item_segment(&source[start..open], &mask[start..open]) {
+                        spans.push((open, index, segment));
+                    }
+                }
+                header = index + 1;
+            }
+            b';' if paren_depth == 0 && bracket_depth == 0 => header = index + 1,
+            _ => {}
+        }
+    }
+    spans
+}
+
+fn rendered_item_spans(spans: &[(usize, usize, String)]) -> Vec<(usize, usize, String)> {
+    let mut ordered = spans.to_vec();
+    ordered.sort_by_key(|(open, _, _)| *open);
+
+    let mut stack: Vec<(usize, String)> = Vec::new();
+    let mut rendered = Vec::with_capacity(ordered.len());
+    for (open, close, segment) in ordered {
+        while stack
+            .last()
+            .is_some_and(|(ancestor_close, _)| *ancestor_close < open)
+        {
+            stack.pop();
+        }
+        let path = match stack.last() {
+            Some((_, parent)) => format!("{parent}::{segment}"),
+            None => segment,
+        };
+        stack.push((close, path.clone()));
+        rendered.push((open, close, path));
+    }
+
+    let mut path_counts: BTreeMap<String, usize> = BTreeMap::new();
+    for (_, _, path) in &rendered {
+        *path_counts.entry(path.clone()).or_default() += 1;
+    }
+    for (_, _, path) in &mut rendered {
+        if path_counts.get(path).is_some_and(|count| *count > 1) {
+            path.push_str(" [duplicate item path]");
+        }
+    }
+    rendered
+}
+
+fn item_path_at(spans: &[(usize, usize, String)], offset: usize) -> String {
+    spans
+        .iter()
+        .filter(|(open, close, _)| *open <= offset && offset <= *close)
+        .max_by_key(|(open, _, _)| *open)
+        .map(|(_, _, path)| path.clone())
+        .unwrap_or_default()
+}
+
+fn census_tagged<F>(sources: &[(String, String)], mut matcher: F) -> Census
+where
+    F: FnMut(&str, &[bool]) -> Vec<(usize, String)>,
+{
+    let mut census = Census::new();
+    for (path, source) in sources {
+        let mask = code_mask(source);
+        let matches = matcher(source, &mask);
+        if matches.is_empty() {
+            continue;
+        }
+        let spans = rendered_item_spans(&item_spans(source, &mask));
+        for (offset, tag) in matches {
+            let mut item = item_path_at(&spans, offset);
+            if !tag.is_empty() {
+                item = format!("{item} => {tag}");
+            }
+            *census.entry((path.clone(), item)).or_default() += 1;
+        }
+    }
+    census
+}
+
+fn census<F>(sources: &[(String, String)], mut matcher: F) -> Census
+where
+    F: FnMut(&str, &[bool]) -> Vec<usize>,
+{
+    census_tagged(sources, |source, mask| {
+        matcher(source, mask)
+            .into_iter()
+            .map(|offset| (offset, String::new()))
+            .collect()
+    })
+}
+
+fn expected_census(anchors: &[(&str, &str, usize)]) -> Census {
+    let mut census = Census::new();
+    for (path, item, count) in anchors {
+        let anchor = ((*path).to_owned(), (*item).to_owned());
+        assert!(
+            census.insert(anchor, *count).is_none(),
+            "duplicate census anchor {path} :: {item}"
+        );
+    }
+    census
+}
+
+fn census_diff(actual: &Census, anchors: &[(&str, &str, usize)]) -> Vec<String> {
+    let expected = expected_census(anchors);
+    let mut diff = Vec::new();
+    for (anchor, count) in actual {
+        match expected.get(anchor) {
+            None => diff.push(format!(
+                "+ {} :: {}  ({count} occurrences, expected none)",
+                anchor.0, anchor.1
+            )),
+            Some(want) if want != count => diff.push(format!(
+                "~ {} :: {}  (expected {want}, found {count})",
+                anchor.0, anchor.1
+            )),
+            Some(_) => {}
+        }
+    }
+    for (anchor, count) in &expected {
+        if !actual.contains_key(anchor) {
+            diff.push(format!(
+                "- {} :: {}  (expected {count}, found none)",
+                anchor.0, anchor.1
+            ));
+        }
+    }
+    diff
+}
+
+fn validate_census(actual: &Census, anchors: &[(&str, &str, usize)]) -> Result<(), Vec<String>> {
+    let diff = census_diff(actual, anchors);
+    diff.is_empty().then_some(()).ok_or(diff)
+}
+
+fn definition_span(
+    source: &str,
+    mask: &[bool],
+    offset: usize,
+    end: usize,
+) -> Option<(usize, usize)> {
+    let bytes = source.as_bytes();
+    let keyword = previous_code(source, mask, offset)?;
+    if !preceded_by_keyword(source, mask, offset, "fn") {
+        return None;
+    }
+    let keyword = keyword + 1 - "fn".len();
+    let mut paren_depth = 0usize;
+    let mut bracket_depth = 0usize;
+    for index in end..bytes.len() {
+        if !mask[index] {
+            continue;
+        }
+        match bytes[index] {
+            b'(' => paren_depth += 1,
+            b')' => paren_depth = paren_depth.checked_sub(1)?,
+            b'[' => bracket_depth += 1,
+            b']' => bracket_depth = bracket_depth.checked_sub(1)?,
+            b'{' if paren_depth == 0 && bracket_depth == 0 => {
+                return Some((keyword, index));
+            }
+            b';' if paren_depth == 0 && bracket_depth == 0 => return None,
+            _ => {}
+        }
+    }
+    None
+}
+
+fn definition_offsets(source: &str, mask: &[bool], name: &str) -> Vec<(usize, usize)> {
+    identifier_offsets(source, mask, name)
+        .into_iter()
+        .filter_map(|offset| definition_span(source, mask, offset, offset + name.len()))
+        .collect()
 }
 
 fn assignment_to_false(body: &str, field: &str) -> bool {
@@ -2393,6 +2713,280 @@ fn validate_aarch64_failed_exec_ttbr0_rollback(source: &str) -> Result<(), Strin
     Ok(())
 }
 
+const AARCH64_CONTEXT_SWITCH: &str = "kernel/src/arch_impl/aarch64/context_switch.rs";
+const INLINE_ASM_ANCHOR: &str = "global_asm aarch64_inline_schedule_switch";
+
+#[rustfmt::skip]
+const INLINE_ASM_X30_SAVES: &[(&str, &str, usize)] = &[
+    (AARCH64_CONTEXT_SWITCH, INLINE_ASM_ANCHOR, 1),
+];
+#[rustfmt::skip]
+const INLINE_ELR_OFFSET_ASSERTS: &[(&str, &str, usize)] = &[
+    (AARCH64_CONTEXT_SWITCH, "", 1),
+];
+#[rustfmt::skip]
+const INLINE_RESUME_SELECTOR_SITES: &[(&str, &str, usize)] = &[
+    (AARCH64_CONTEXT_SWITCH, "fn restore_kernel_context_inline", 1),
+];
+#[rustfmt::skip]
+const CTX596_ORACLE_FAIL_SITES: &[(&str, &str, usize)] = &[
+    (AARCH64_CONTEXT_SWITCH, "fn check_inline_save_resume_point", 1),
+    (AARCH64_CONTEXT_SWITCH, "fn check_inline_eret_resume_pc", 1),
+];
+#[rustfmt::skip]
+const INLINE_ELR_DIVERGENCE_COUNTER_SITES: &[(&str, &str, usize)] = &[
+    (AARCH64_CONTEXT_SWITCH, "", 1),
+    (AARCH64_CONTEXT_SWITCH, "fn record_inline_elr_divergence", 1),
+];
+#[rustfmt::skip]
+const INLINE_ELR_DIVERGENCE_MARKER_SITES: &[(&str, &str, usize)] = &[
+    (AARCH64_CONTEXT_SWITCH, "fn record_inline_elr_divergence", 1),
+];
+#[rustfmt::skip]
+const FORCE_ERET_DISPATCH_DEFINITIONS: &[(&str, &str, usize)] = &[
+    (AARCH64_CONTEXT_SWITCH, "#[cfg(feature=force_eret_dispatch_596)] fn inline_ret_dispatch_info_if_ready", 1),
+    (AARCH64_CONTEXT_SWITCH, "#[cfg(not(feature=force_eret_dispatch_596))] fn inline_ret_dispatch_info_if_ready", 1),
+];
+#[rustfmt::skip]
+const INLINE_TRAMPOLINE_REPAIRS: &[(&str, &str, usize)] = &[
+    (AARCH64_CONTEXT_SWITCH, "fn inline_schedule_trampoline", 1),
+];
+
+fn context_switch_sources(source: &str) -> Vec<(String, String)> {
+    vec![(AARCH64_CONTEXT_SWITCH.to_owned(), source.to_owned())]
+}
+
+fn census_error(actual: &Census, expected: &[(&str, &str, usize)]) -> Result<(), String> {
+    validate_census(actual, expected).map_err(|diff| diff.join("\n"))
+}
+
+fn literal_offsets(source: &str, literal: &str) -> Vec<usize> {
+    source
+        .match_indices(literal)
+        .map(|(offset, _)| offset)
+        .collect()
+}
+
+fn statement_bounds(source: &str, mask: &[bool], offset: usize) -> Option<(usize, usize)> {
+    let bytes = source.as_bytes();
+    let start = (0..offset)
+        .rev()
+        .find(|index| mask[*index] && matches!(bytes[*index], b';' | b'{' | b'}'))
+        .map_or(0, |delimiter| delimiter + 1);
+    let end = (offset..bytes.len()).find(|index| mask[*index] && bytes[*index] == b';')?;
+    Some((start, end + 1))
+}
+
+fn compact_statement_at(source: &str, mask: &[bool], offset: usize) -> Option<String> {
+    let (start, end) = statement_bounds(source, mask, offset)?;
+    Some(normalized_code(&source[start..end]).replace(' ', ""))
+}
+
+fn resume_pc_frame_assignment_offsets(source: &str, mask: &[bool]) -> Vec<usize> {
+    assigned_value_offsets(source, mask, "resume_pc")
+        .into_iter()
+        .filter(|offset| {
+            compact_statement_at(source, mask, *offset)
+                .is_some_and(|statement| statement.contains("frame.elr=resume_pc"))
+        })
+        .collect()
+}
+
+fn global_asm_body_for_symbol<'a>(source: &'a str, symbol: &str) -> Option<&'a str> {
+    let label = source.find(&format!("{symbol}:"))?;
+    let invocation = source[..label].rfind("core::arch::global_asm!(")?;
+    let raw_open = invocation + source[invocation..label].find("r#\"")? + "r#\"".len();
+    let raw_close = label + source[label..].find("\"#\n);")?;
+    Some(&source[raw_open..raw_close])
+}
+
+fn anchored_count(path: &str, item: &str, count: usize) -> Census {
+    let mut result = Census::new();
+    if count != 0 {
+        result.insert((path.to_owned(), item.to_owned()), count);
+    }
+    result
+}
+
+fn validate_inline_asm_resume_store(source: &str) -> Result<(), String> {
+    let asm = global_asm_body_for_symbol(source, "aarch64_inline_schedule_switch")
+        .ok_or_else(|| "missing aarch64_inline_schedule_switch global_asm block".to_string())?;
+    let x30_saves = asm.matches("stp x29, x30, [x0,").count();
+    let resume_stores = asm.matches("str x30, [x0, #264]").count();
+    census_error(
+        &anchored_count(AARCH64_CONTEXT_SWITCH, INLINE_ASM_ANCHOR, x30_saves),
+        INLINE_ASM_X30_SAVES,
+    )?;
+    if resume_stores < x30_saves {
+        return Err(format!(
+            "{AARCH64_CONTEXT_SWITCH} :: {INLINE_ASM_ANCHOR} stores x30 in {x30_saves} callee-saved blocks but publishes only {resume_stores} resume PCs"
+        ));
+    }
+    Ok(())
+}
+
+fn offset_assert_offsets(source: &str, mask: &[bool]) -> Vec<usize> {
+    identifier_offsets(source, mask, "elr_el1")
+        .into_iter()
+        .filter(|offset| {
+            compact_statement_at(source, mask, *offset).is_some_and(|statement| {
+                statement
+                    == "const_:()=assert!(core::mem::offset_of!(CpuContext,elr_el1)==264);"
+            })
+        })
+        .collect()
+}
+
+fn validate_inline_elr_offset_assert(source: &str) -> Result<(), String> {
+    let sources = context_switch_sources(source);
+    census_error(
+        &census(&sources, offset_assert_offsets),
+        INLINE_ELR_OFFSET_ASSERTS,
+    )
+}
+
+fn resume_selector_span(source: &str, mask: &[bool]) -> Option<(usize, usize)> {
+    let bytes = source.as_bytes();
+    identifier_offsets(source, mask, "resume_pc")
+        .into_iter()
+        .filter(|offset| preceded_by_keyword(source, mask, *offset, "let"))
+        .find_map(|resume_pc| {
+            let let_end = previous_code(source, mask, resume_pc)?;
+            let start = let_end + 1 - "let".len();
+            let end = (resume_pc..bytes.len())
+                .find(|index| mask[*index] && bytes[*index] == b';')?
+                + 1;
+            normalized_code(&source[start..end])
+                .replace(' ', "")
+                .contains("ifthread.saved_by_inline_schedule")
+                .then_some((start, end))
+        })
+}
+
+fn resume_selector_offsets(source: &str, mask: &[bool], identifier: &str) -> Vec<usize> {
+    const SELECTOR: &str = "letresume_pc=ifthread.saved_by_inline_schedule{thread.context.x30}else{thread.context.elr_el1};";
+    let Some((start, end)) = resume_selector_span(source, mask) else {
+        return Vec::new();
+    };
+    if normalized_code(&source[start..end]).replace(' ', "") != SELECTOR {
+        return Vec::new();
+    }
+    identifier_offsets(&source[start..end], &mask[start..end], identifier)
+        .into_iter()
+        .map(|offset| start + offset)
+        .collect()
+}
+
+fn validate_inline_eret_resume_selector(source: &str) -> Result<(), String> {
+    let sources = context_switch_sources(source);
+    for identifier in ["saved_by_inline_schedule", "x30", "elr_el1"] {
+        census_error(
+            &census(&sources, |source, mask| {
+                resume_selector_offsets(source, mask, identifier)
+            }),
+            INLINE_RESUME_SELECTOR_SITES,
+        )
+        .map_err(|error| format!("resume selector {identifier}: {error}"))?;
+    }
+    census_error(
+        &census(&sources, resume_pc_frame_assignment_offsets),
+        INLINE_RESUME_SELECTOR_SITES,
+    )
+    .map_err(|error| format!("frame ELR assignment: {error}"))?;
+
+    let mut direct_elr_resumes = census(&sources, |source, mask| {
+        identifier_offsets(source, mask, "elr_el1")
+            .into_iter()
+            .filter(|offset| {
+                compact_statement_at(source, mask, *offset).is_some_and(|statement| {
+                    statement.contains("frame.elr=thread.context.elr_el1")
+                })
+            })
+            .collect()
+    });
+    direct_elr_resumes.retain(|(_, item), _| item == "fn restore_kernel_context_inline");
+    if !direct_elr_resumes.is_empty() {
+        return Err(format!(
+            "direct inline-ambiguous ERET resume sites remain: {direct_elr_resumes:?}"
+        ));
+    }
+    Ok(())
+}
+
+fn definition_census(source: &str, name: &str) -> Census {
+    let sources = context_switch_sources(source);
+    census(&sources, |source, mask| {
+        definition_offsets(source, mask, name)
+            .into_iter()
+            .map(|(_, brace)| brace)
+            .collect()
+    })
+}
+
+fn definition_is_cfg_gated(source: &str, identifier: &str) -> bool {
+    let mask = code_mask(source);
+    identifier_offsets(source, &mask, identifier)
+        .into_iter()
+        .filter(|offset| {
+            rendered_item_spans(&item_spans(source, &mask))
+                .iter()
+                .all(|(open, close, _)| *offset < *open || *offset > *close)
+        })
+        .any(|offset| {
+            statement_bounds(source, &mask, offset).is_some_and(|(start, _)| {
+                !code_offsets(&source[start..offset], &mask[start..offset], "#[cfg").is_empty()
+            })
+        })
+}
+
+fn validate_ctx596_oracle_liveness(source: &str) -> Result<(), String> {
+    let sources = context_switch_sources(source);
+    census_error(
+        &census(&sources, |source, _| {
+            literal_offsets(source, "CTX596_ORACLE:FAIL")
+        }),
+        CTX596_ORACLE_FAIL_SITES,
+    )?;
+    census_error(
+        &census(&sources, |source, mask| {
+            identifier_offsets(source, mask, "INLINE_ELR_DIVERGENCE")
+        }),
+        INLINE_ELR_DIVERGENCE_COUNTER_SITES,
+    )?;
+    census_error(
+        &census(&sources, |source, _| {
+            literal_offsets(source, "[CTX596_ELR_DIVERGENCE]")
+        }),
+        INLINE_ELR_DIVERGENCE_MARKER_SITES,
+    )?;
+    if definition_is_cfg_gated(source, "INLINE_ELR_DIVERGENCE") {
+        return Err("INLINE_ELR_DIVERGENCE definition is feature-gated".to_string());
+    }
+    census_error(
+        &definition_census(source, "inline_ret_dispatch_info_if_ready"),
+        FORCE_ERET_DISPATCH_DEFINITIONS,
+    )
+}
+
+fn trampoline_repair_offsets(source: &str, mask: &[bool]) -> Vec<usize> {
+    identifier_offsets(source, mask, "elr_el1")
+        .into_iter()
+        .filter(|offset| {
+            compact_statement_at(source, mask, *offset).is_some_and(|statement| {
+                statement == "old_thread.context.elr_el1=old_thread.context.x30;"
+            })
+        })
+        .collect()
+}
+
+fn validate_inline_trampoline_repair(source: &str) -> Result<(), String> {
+    let sources = context_switch_sources(source);
+    census_error(
+        &census(&sources, trampoline_repair_offsets),
+        INLINE_TRAMPOLINE_REPAIRS,
+    )
+}
+
 #[test]
 fn clone_publication_lifecycle_is_closed() {
     assert_eq!(validate_clone_publication_lifecycle(), Ok(()));
@@ -2427,6 +3021,106 @@ fn aarch64_failed_exec_ttbr0_validator_rejects_missing_rollback() {
         1,
     );
     assert!(validate_aarch64_failed_exec_ttbr0_rollback(&mutant).is_err());
+}
+
+#[test]
+fn aarch64_inline_save_blocks_publish_their_resume_pc() {
+    let source = repo_text(AARCH64_CONTEXT_SWITCH);
+    assert_eq!(validate_inline_asm_resume_store(&source), Ok(()));
+
+    let mutant = source.replacen("    str x30, [x0, #264]\n", "", 1);
+    assert_ne!(mutant, source, "inline ELR store mutation anchor");
+    assert!(validate_inline_asm_resume_store(&mutant).is_err());
+}
+
+#[test]
+fn aarch64_inline_elr_slot_has_one_durable_layout_assert() {
+    let source = repo_text(AARCH64_CONTEXT_SWITCH);
+    assert_eq!(validate_inline_elr_offset_assert(&source), Ok(()));
+
+    let mutant = source.replacen(
+        "const _: () = assert!(core::mem::offset_of!(CpuContext, elr_el1) == 264);\n",
+        "",
+        1,
+    );
+    assert_ne!(mutant, source, "inline ELR offset mutation anchor");
+    assert!(validate_inline_elr_offset_assert(&mutant).is_err());
+}
+
+#[test]
+fn aarch64_eret_resume_selection_disambiguates_inline_saves() {
+    let source = repo_text(AARCH64_CONTEXT_SWITCH);
+    assert_eq!(validate_inline_eret_resume_selector(&source), Ok(()));
+
+    let mutant = source.replacen(
+        "let resume_pc = if thread.saved_by_inline_schedule {",
+        "let resume_pc = if false && thread.saved_by_inline_schedule {",
+        1,
+    );
+    assert_ne!(mutant, source, "inline resume selector mutation anchor");
+    assert!(validate_inline_eret_resume_selector(&mutant).is_err());
+}
+
+#[test]
+fn ctx596_oracles_are_permanent_while_forcing_stays_feature_gated() {
+    let source = repo_text(AARCH64_CONTEXT_SWITCH);
+    assert_eq!(validate_ctx596_oracle_liveness(&source), Ok(()));
+
+    let missing_oracle = source.replacen("CTX596_ORACLE:FAIL", "CTX596_ORACLE:REMOVED", 1);
+    assert_ne!(missing_oracle, source, "CTX596 oracle mutation anchor");
+    assert!(validate_ctx596_oracle_liveness(&missing_oracle).is_err());
+
+    let gated_oracle = source.replacen(
+        "#[inline(always)]\nfn check_inline_save_resume_point",
+        "#[cfg(feature = \"force_eret_dispatch_596\")]\n#[inline(always)]\nfn check_inline_save_resume_point",
+        1,
+    );
+    assert_ne!(gated_oracle, source, "CTX596 oracle cfg mutation anchor");
+    assert!(validate_ctx596_oracle_liveness(&gated_oracle).is_err());
+
+    let missing_divergence = source.replacen(
+        "[CTX596_ELR_DIVERGENCE]",
+        "[CTX596_ELR_DIVERGENCE_REMOVED]",
+        1,
+    );
+    assert_ne!(
+        missing_divergence, source,
+        "CTX596 divergence marker mutation anchor"
+    );
+    assert!(validate_ctx596_oracle_liveness(&missing_divergence).is_err());
+
+    let gated_counter = source.replacen(
+        "crate::define_trace_counter!(\n    INLINE_ELR_DIVERGENCE,",
+        "#[cfg(feature = \"force_eret_dispatch_596\")]\ncrate::define_trace_counter!(\n    INLINE_ELR_DIVERGENCE,",
+        1,
+    );
+    assert_ne!(gated_counter, source, "CTX596 counter cfg mutation anchor");
+    assert!(validate_ctx596_oracle_liveness(&gated_counter).is_err());
+
+    let ungated_forcing = source.replacen(
+        "#[cfg(feature = \"force_eret_dispatch_596\")]\nfn inline_ret_dispatch_info_if_ready",
+        "fn inline_ret_dispatch_info_if_ready",
+        1,
+    );
+    assert_ne!(
+        ungated_forcing, source,
+        "CTX596 forced-dispatch cfg mutation anchor"
+    );
+    assert!(validate_ctx596_oracle_liveness(&ungated_forcing).is_err());
+}
+
+#[test]
+fn inline_schedule_trampoline_retains_the_redundant_elr_guard() {
+    let source = repo_text(AARCH64_CONTEXT_SWITCH);
+    assert_eq!(validate_inline_trampoline_repair(&source), Ok(()));
+
+    let mutant = source.replacen(
+        "        old_thread.context.elr_el1 = old_thread.context.x30;\n",
+        "",
+        1,
+    );
+    assert_ne!(mutant, source, "inline trampoline repair mutation anchor");
+    assert!(validate_inline_trampoline_repair(&mutant).is_err());
 }
 
 #[test]
@@ -3048,4 +3742,680 @@ fn switch_dispatch_rollback_validator_rejects_rollback_after_return() {
 #[test]
 fn rollback_return_alternation_rejects_return_without_commitment() {
     assert!(validate_rollback_return_alternation("return;", "synthetic region").is_err());
+}
+
+const FATAL_EXCEPTION_PATH: &str = "kernel/src/arch_impl/aarch64/exception.rs";
+const SCHEDULER_PATH: &str = "kernel/src/task/scheduler.rs";
+
+#[derive(Clone, Debug)]
+struct SourceFunction {
+    name: String,
+    name_offset: usize,
+    open: usize,
+    close: usize,
+    is_public: bool,
+    is_extern_entry: bool,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct LexicalBlock {
+    open: usize,
+    close: usize,
+    el0_guarded: bool,
+}
+
+fn compact_code(fragment: &str) -> String {
+    normalized_code(fragment)
+        .chars()
+        .filter(|character| !character.is_whitespace())
+        .collect()
+}
+
+fn header_is_positive_el0_guard(header: &str) -> bool {
+    let compact = compact_code(header);
+    let Some(condition) = compact.strip_prefix("if") else {
+        return false;
+    };
+    if condition.contains("||")
+        || condition.contains("from_el0==false")
+        || condition.contains("false==from_el0")
+        || condition.contains("from_el0!=true")
+        || condition.contains("true!=from_el0")
+    {
+        return false;
+    }
+
+    let condition_mask = code_mask(condition);
+    identifier_offsets(condition, &condition_mask, "from_el0")
+        .into_iter()
+        .any(|offset| {
+            let bytes = condition.as_bytes();
+            let mut cursor = offset;
+            while cursor > 0 && bytes[cursor - 1] == b'(' {
+                cursor -= 1;
+            }
+            cursor == 0 || bytes[cursor - 1] != b'!'
+        })
+}
+
+fn lexical_blocks(source: &str, mask: &[bool]) -> Vec<LexicalBlock> {
+    let bytes = source.as_bytes();
+    let mut blocks = Vec::new();
+    let mut stack = Vec::new();
+    let mut header_start = 0usize;
+
+    for index in 0..bytes.len() {
+        if !mask[index] {
+            continue;
+        }
+        match bytes[index] {
+            b'{' => {
+                let el0_guarded = header_is_positive_el0_guard(&source[header_start..index]);
+                stack.push((index, el0_guarded));
+                header_start = index + 1;
+            }
+            b'}' => {
+                if let Some((open, el0_guarded)) = stack.pop() {
+                    blocks.push(LexicalBlock {
+                        open,
+                        close: index,
+                        el0_guarded,
+                    });
+                }
+                header_start = index + 1;
+            }
+            b';' => header_start = index + 1,
+            _ => {}
+        }
+    }
+    blocks
+}
+
+fn source_functions(source: &str, mask: &[bool], blocks: &[LexicalBlock]) -> Vec<SourceFunction> {
+    let bytes = source.as_bytes();
+    let mut functions = Vec::new();
+
+    for fn_offset in identifier_offsets(source, mask, "fn") {
+        let mut cursor = fn_offset + "fn".len();
+        while cursor < bytes.len() && (!mask[cursor] || bytes[cursor].is_ascii_whitespace()) {
+            cursor += 1;
+        }
+        let name_offset = cursor;
+        while cursor < bytes.len() && mask[cursor] && identifier_byte(bytes[cursor]) {
+            cursor += 1;
+        }
+        if cursor == name_offset {
+            continue;
+        }
+        let Some((_, open)) = definition_span(source, mask, name_offset, cursor) else {
+            continue;
+        };
+        let Some(block) = blocks.iter().find(|block| block.open == open) else {
+            continue;
+        };
+        let header_start = (0..fn_offset)
+            .rev()
+            .find(|index| mask[*index] && matches!(bytes[*index], b';' | b'{' | b'}'))
+            .map_or(0, |delimiter| delimiter + 1);
+        let header = &source[header_start..open];
+        let header_mask = code_mask(header);
+        let relative_fn = fn_offset - header_start;
+        let is_public = identifier_offsets(header, &header_mask, "pub")
+            .into_iter()
+            .any(|offset| offset < relative_fn);
+        let is_extern_entry = is_public
+            && identifier_offsets(header, &header_mask, "extern")
+                .into_iter()
+                .any(|offset| offset < relative_fn);
+
+        functions.push(SourceFunction {
+            name: source[name_offset..cursor].to_owned(),
+            name_offset,
+            open,
+            close: block.close,
+            is_public,
+            is_extern_entry,
+        });
+    }
+    functions
+}
+
+fn derived_blocking_scheduler_accessors(
+    scheduler_source: &str,
+) -> Result<BTreeSet<String>, String> {
+    let mask = code_mask(scheduler_source);
+    let blocks = lexical_blocks(scheduler_source, &mask);
+    let functions = source_functions(scheduler_source, &mask, &blocks);
+    let bodies = module_function_bodies(scheduler_source);
+    let mut blocking = BTreeSet::new();
+
+    if bodies.contains_key("lock_scheduler") {
+        blocking.insert("lock_scheduler".to_string());
+    }
+    for function in functions.iter().filter(|function| function.is_public) {
+        if bodies.get(&function.name).is_some_and(|definitions| {
+            definitions.iter().any(|body| {
+                let body_mask = code_mask(body);
+                !call_offsets(body, &body_mask, "lock_scheduler").is_empty()
+            })
+        }) {
+            blocking.insert(function.name.clone());
+        }
+    }
+
+    if blocking.is_empty() {
+        return Err("blocking scheduler accessor derivation is empty".to_string());
+    }
+    let missing: Vec<_> = ["current_thread_id", "with_scheduler", "with_thread_mut"]
+        .into_iter()
+        .filter(|anchor| !blocking.contains(*anchor))
+        .collect();
+    if !missing.is_empty() {
+        return Err(format!(
+            "blocking scheduler accessor derivation missing anchors: {}",
+            missing.join(", ")
+        ));
+    }
+    if blocking.contains("try_dump_state") {
+        return Err("try_dump_state was misclassified as blocking".to_string());
+    }
+    Ok(blocking)
+}
+
+fn call_is_el0_guarded(blocks: &[LexicalBlock], offset: usize) -> bool {
+    blocks
+        .iter()
+        .any(|block| block.el0_guarded && block.open < offset && offset < block.close)
+}
+
+fn enclosing_function<'a>(
+    functions: &'a [SourceFunction],
+    offset: usize,
+) -> Option<&'a SourceFunction> {
+    functions
+        .iter()
+        .filter(|function| function.open < offset && offset < function.close)
+        .max_by_key(|function| function.open)
+}
+
+fn el0_only_functions(
+    exception_source: &str,
+    mask: &[bool],
+    blocks: &[LexicalBlock],
+    functions: &[SourceFunction],
+) -> BTreeSet<String> {
+    let names: BTreeSet<_> = functions
+        .iter()
+        .map(|function| function.name.clone())
+        .collect();
+    let definition_names: BTreeSet<_> = functions
+        .iter()
+        .map(|function| function.name_offset)
+        .collect();
+    let entry_points: BTreeSet<_> = functions
+        .iter()
+        .filter(|function| function.is_extern_entry)
+        .map(|function| function.name.clone())
+        .collect();
+    let call_sites: BTreeMap<_, _> = names
+        .iter()
+        .map(|name| {
+            let calls = call_offsets(exception_source, mask, name)
+                .into_iter()
+                .filter(|offset| !definition_names.contains(offset))
+                .collect::<Vec<_>>();
+            (name.clone(), calls)
+        })
+        .collect();
+
+    let mut el0_only = BTreeSet::new();
+    loop {
+        let newly_el0_only: Vec<_> = call_sites
+            .iter()
+            .filter(|(name, calls)| {
+                !entry_points.contains(*name)
+                    && !calls.is_empty()
+                    && calls.iter().all(|offset| {
+                        call_is_el0_guarded(blocks, *offset)
+                            || enclosing_function(functions, *offset)
+                                .is_some_and(|caller| el0_only.contains(&caller.name))
+                    })
+            })
+            .map(|(name, _)| name.clone())
+            .filter(|name| !el0_only.contains(name))
+            .collect();
+        if newly_el0_only.is_empty() {
+            break;
+        }
+        el0_only.extend(newly_el0_only);
+    }
+    el0_only
+}
+
+fn blocking_calls(
+    source: &str,
+    mask: &[bool],
+    blocking: &BTreeSet<String>,
+) -> Vec<(usize, String)> {
+    let mut calls = Vec::new();
+    for accessor in blocking {
+        calls.extend(
+            call_offsets(source, mask, accessor)
+                .into_iter()
+                .map(|offset| (offset, accessor.clone())),
+        );
+    }
+    calls.sort_unstable();
+    calls
+}
+
+fn scanned_fatal_sources(
+    exception_source: &str,
+    scheduler_source: &str,
+    aarch64_sources: &[(String, String)],
+) -> Vec<(String, String)> {
+    let mut sources: Vec<_> = aarch64_sources
+        .iter()
+        .filter(|(path, _)| path != FATAL_EXCEPTION_PATH && path != SCHEDULER_PATH)
+        .cloned()
+        .collect();
+    sources.push((FATAL_EXCEPTION_PATH.to_owned(), exception_source.to_owned()));
+    sources.push((SCHEDULER_PATH.to_owned(), scheduler_source.to_owned()));
+    sources.sort_by(|left, right| left.0.cmp(&right.0));
+    sources
+}
+
+fn resolved_callees_in_range(
+    source: &str,
+    mask: &[bool],
+    definition_names: &BTreeSet<usize>,
+    resolved_names: &BTreeSet<String>,
+    open: usize,
+    close: usize,
+) -> BTreeSet<String> {
+    resolved_names
+        .iter()
+        .filter(|name| {
+            call_offsets(source, mask, name).into_iter().any(|offset| {
+                open < offset && offset < close && !definition_names.contains(&offset)
+            })
+        })
+        .cloned()
+        .collect()
+}
+
+fn derived_fatal_callees(
+    exception_source: &str,
+    exception_mask: &[bool],
+    exception_blocks: &[LexicalBlock],
+    exception_functions: &[SourceFunction],
+    el0_only: &BTreeSet<String>,
+    scanned_sources: &[(String, String)],
+) -> Result<BTreeSet<String>, String> {
+    let resolved_names: BTreeSet<_> = scanned_sources
+        .iter()
+        .flat_map(|(_, source)| module_function_bodies(source).into_keys())
+        .collect();
+    let exception_definition_names: BTreeSet<_> = exception_functions
+        .iter()
+        .map(|function| function.name_offset)
+        .collect();
+
+    // Seeds are derived from every resolved call site that the existing
+    // exception-region analysis says an EL1 exception can reach.
+    let mut fatal_callees: BTreeSet<_> = resolved_names
+        .iter()
+        .filter(|name| {
+            call_offsets(exception_source, exception_mask, name)
+                .into_iter()
+                .filter(|offset| !exception_definition_names.contains(offset))
+                .any(|offset| {
+                    !call_is_el0_guarded(exception_blocks, offset)
+                        && !enclosing_function(exception_functions, offset)
+                            .is_some_and(|function| el0_only.contains(&function.name))
+                })
+        })
+        .cloned()
+        .collect();
+
+    // Follow only callees whose definitions are inside the bounded source
+    // domain. This is deliberately a downward closure: callers of a fatal
+    // emitter do not become fatal merely because they can invoke it.
+    loop {
+        let mut newly_reached = BTreeSet::new();
+        for (_, source) in scanned_sources {
+            let mask = code_mask(source);
+            let blocks = lexical_blocks(source, &mask);
+            let functions = source_functions(source, &mask, &blocks);
+            let definition_names: BTreeSet<_> = functions
+                .iter()
+                .map(|function| function.name_offset)
+                .collect();
+            for function in functions
+                .iter()
+                .filter(|function| fatal_callees.contains(&function.name))
+            {
+                newly_reached.extend(resolved_callees_in_range(
+                    source,
+                    &mask,
+                    &definition_names,
+                    &resolved_names,
+                    function.open,
+                    function.close,
+                ));
+            }
+        }
+        newly_reached.retain(|name| !fatal_callees.contains(name));
+        if newly_reached.is_empty() {
+            break;
+        }
+        fatal_callees.extend(newly_reached);
+    }
+
+    if fatal_callees.is_empty() {
+        return Err("fatal-callee derivation is empty".to_string());
+    }
+    let missing: Vec<_> = [
+        "dump_el1_fatal_frame_and_dispatch_trace",
+        "dump_all_save_skew_snapshots",
+        "dump_dispatch_trace",
+        "dump_cpu_state_history_postmortem",
+    ]
+    .into_iter()
+    .filter(|anchor| !fatal_callees.contains(*anchor))
+    .collect();
+    if !missing.is_empty() {
+        return Err(format!(
+            "fatal-callee derivation missing anchors: {}",
+            missing.join(", ")
+        ));
+    }
+
+    // Neither ordinary function is reachable in the callee direction from an
+    // EL1-reachable fatal region: one is a syscall, the other a thread-context
+    // placement diagnostic. This precision assertion is not an allowlist.
+    let unexpected: Vec<_> = ["sys_fork_aarch64", "dump_thread_placement"]
+        .into_iter()
+        .filter(|name| fatal_callees.contains(*name))
+        .collect();
+    if !unexpected.is_empty() {
+        return Err(format!(
+            "fatal-callee derivation reached ordinary functions: {}",
+            unexpected.join(", ")
+        ));
+    }
+
+    Ok(fatal_callees)
+}
+
+fn validate_fatal_scheduler_accessor_census(
+    exception_source: &str,
+    scheduler_source: &str,
+    aarch64_sources: &[(String, String)],
+) -> Result<(), String> {
+    let blocking = derived_blocking_scheduler_accessors(scheduler_source)?;
+    let exception_sources = vec![(FATAL_EXCEPTION_PATH.to_owned(), exception_source.to_owned())];
+    let total_blocking_calls = census(&exception_sources, |source, mask| {
+        blocking_calls(source, mask, &blocking)
+            .into_iter()
+            .map(|(offset, _)| offset)
+            .collect()
+    })
+    .values()
+    .sum::<usize>();
+    if total_blocking_calls == 0 {
+        return Err("exception.rs blocking-accessor call-site census is empty".to_string());
+    }
+
+    let exception_mask = code_mask(exception_source);
+    let exception_blocks = lexical_blocks(exception_source, &exception_mask);
+    let exception_functions =
+        source_functions(exception_source, &exception_mask, &exception_blocks);
+    let el0_only = el0_only_functions(
+        exception_source,
+        &exception_mask,
+        &exception_blocks,
+        &exception_functions,
+    );
+    let mut violations = census_tagged(&exception_sources, |source, mask| {
+        blocking_calls(source, mask, &blocking)
+            .into_iter()
+            .filter(|(offset, _)| {
+                !call_is_el0_guarded(&exception_blocks, *offset)
+                    && !enclosing_function(&exception_functions, *offset)
+                        .is_some_and(|function| el0_only.contains(&function.name))
+            })
+            .collect()
+    });
+
+    let scanned_sources =
+        scanned_fatal_sources(exception_source, scheduler_source, aarch64_sources);
+    let fatal_callees = derived_fatal_callees(
+        exception_source,
+        &exception_mask,
+        &exception_blocks,
+        &exception_functions,
+        &el0_only,
+        &scanned_sources,
+    )?;
+    let external_sources: Vec<_> = scanned_sources
+        .iter()
+        .filter(|(path, _)| path != FATAL_EXCEPTION_PATH)
+        .cloned()
+        .collect();
+    let external_violations = census_tagged(&external_sources, |source, mask| {
+        let blocks = lexical_blocks(source, mask);
+        let functions = source_functions(source, mask, &blocks);
+        let mut calls = BTreeSet::new();
+        for function in functions
+            .iter()
+            .filter(|function| fatal_callees.contains(&function.name))
+        {
+            let body = &source[function.open..=function.close];
+            let body_mask = code_mask(body);
+            for (offset, accessor) in blocking_calls(body, &body_mask, &blocking) {
+                calls.insert((function.open + offset, accessor));
+            }
+        }
+        calls.into_iter().collect()
+    });
+    violations.extend(external_violations);
+
+    census_error(&violations, &[])
+}
+
+fn aarch64_sources_with_exception(exception_source: &str) -> Vec<(String, String)> {
+    let root = repo_root();
+    let mut sources: Vec<_> = rust_sources_below("kernel/src/arch_impl/aarch64")
+        .into_iter()
+        .map(|(path, source)| {
+            let relative = path
+                .strip_prefix(&root)
+                .expect("AArch64 source below repository root")
+                .to_string_lossy()
+                .into_owned();
+            let source = if relative == FATAL_EXCEPTION_PATH {
+                exception_source.to_owned()
+            } else {
+                source
+            };
+            (relative, source)
+        })
+        .collect();
+    sources.sort_by(|left, right| left.0.cmp(&right.0));
+    sources
+}
+
+#[test]
+fn fatal_exception_reports_never_take_blocking_scheduler_accessors() {
+    let exception_source = repo_text(FATAL_EXCEPTION_PATH);
+    let scheduler_source = repo_text(SCHEDULER_PATH);
+    let aarch64_sources = aarch64_sources_with_exception(&exception_source);
+    assert_eq!(
+        validate_fatal_scheduler_accessor_census(
+            &exception_source,
+            &scheduler_source,
+            &aarch64_sources,
+        ),
+        Ok(())
+    );
+}
+
+#[test]
+fn fatal_scheduler_census_m_a_rejects_blocking_call_at_fixed_site() {
+    let exception_source = repo_text(FATAL_EXCEPTION_PATH);
+    let scheduler_source = repo_text(SCHEDULER_PATH);
+    let marker = exception_source
+        .find("\"[FATAL_THREAD] tid=\"")
+        .expect("M-A [FATAL_THREAD] marker");
+    let call = exception_source[..marker]
+        .rfind("current_thread_lock_free()")
+        .expect("M-A fixed-site lock-free call");
+    let mask = code_mask(&exception_source);
+    let (statement_start, statement_end) =
+        statement_bounds(&exception_source, &mask, call).expect("M-A enclosing statement");
+    assert!(statement_start <= call && call < statement_end);
+
+    let mut mutant = exception_source.clone();
+    mutant.replace_range(
+        call..call + "current_thread_lock_free()".len(),
+        "crate::task::scheduler::current_thread_id()",
+    );
+    assert_ne!(
+        mutant, exception_source,
+        "M-A fixed [FATAL_THREAD] lock-free lookup mutation anchor"
+    );
+    let aarch64_sources = aarch64_sources_with_exception(&mutant);
+    assert_eq!(
+        validate_fatal_scheduler_accessor_census(&mutant, &scheduler_source, &aarch64_sources),
+        Err("+ kernel/src/arch_impl/aarch64/exception.rs :: fn handle_sync_exception => current_thread_id  (1 occurrences, expected none)\n+ kernel/src/task/scheduler.rs :: fn current_thread_id => lock_scheduler  (1 occurrences, expected none)".to_string())
+    );
+}
+
+#[test]
+fn fatal_scheduler_census_m_b_rejects_blocking_call_in_direct_fatal_callee() {
+    let exception_source = repo_text(FATAL_EXCEPTION_PATH);
+    let scheduler_source = repo_text(SCHEDULER_PATH);
+    assert!(
+        function_body(&exception_source, "dump_el1_fatal_frame_and_dispatch_trace").is_some(),
+        "M-B direct fatal-callee body anchor"
+    );
+    let mask = code_mask(&exception_source);
+    let (_, open) = definition_offsets(
+        &exception_source,
+        &mask,
+        "dump_el1_fatal_frame_and_dispatch_trace",
+    )
+    .into_iter()
+    .next()
+    .expect("M-B direct fatal-callee definition anchor");
+
+    let mut mutant = exception_source.clone();
+    mutant.insert_str(
+        open + 1,
+        "\n    let _ = crate::task::scheduler::current_thread_id();",
+    );
+    assert_ne!(
+        mutant, exception_source,
+        "M-B direct fatal-callee insertion mutation anchor"
+    );
+    let aarch64_sources = aarch64_sources_with_exception(&mutant);
+    assert_eq!(
+        validate_fatal_scheduler_accessor_census(&mutant, &scheduler_source, &aarch64_sources),
+        Err("+ kernel/src/arch_impl/aarch64/exception.rs :: fn dump_el1_fatal_frame_and_dispatch_trace => current_thread_id  (1 occurrences, expected none)\n+ kernel/src/task/scheduler.rs :: fn current_thread_id => lock_scheduler  (1 occurrences, expected none)".to_string())
+    );
+}
+
+#[test]
+fn fatal_scheduler_census_m_c_rejects_broken_blocking_accessor_derivation() {
+    let exception_source = repo_text(FATAL_EXCEPTION_PATH);
+    let scheduler_source = repo_text(SCHEDULER_PATH);
+    let mutant = scheduler_source.replace("lock_scheduler(", "renamed_lock_scheduler(");
+    assert_ne!(
+        mutant, scheduler_source,
+        "M-C lock_scheduler derivation mutation anchor"
+    );
+    let aarch64_sources = aarch64_sources_with_exception(&exception_source);
+    assert_eq!(
+        validate_fatal_scheduler_accessor_census(&exception_source, &mutant, &aarch64_sources),
+        Err("blocking scheduler accessor derivation is empty".to_string())
+    );
+}
+
+#[test]
+fn fatal_scheduler_census_m_e_rejects_blocking_call_in_transitive_callee() {
+    let exception_source = repo_text(FATAL_EXCEPTION_PATH);
+    let scheduler_source = repo_text(SCHEDULER_PATH);
+    assert!(
+        function_body(&scheduler_source, "dump_cpu_state_history_postmortem").is_some(),
+        "M-E transitive fatal-callee body anchor"
+    );
+    let mask = code_mask(&scheduler_source);
+    let (_, open) = definition_offsets(
+        &scheduler_source,
+        &mask,
+        "dump_cpu_state_history_postmortem",
+    )
+    .into_iter()
+    .next()
+    .expect("M-E transitive fatal-callee definition anchor");
+
+    let mut mutant = scheduler_source.clone();
+    mutant.insert_str(
+        open + 1,
+        "\n    let _ = crate::task::scheduler::current_thread_id();",
+    );
+    assert_ne!(
+        mutant, scheduler_source,
+        "M-E transitive fatal-callee insertion mutation anchor"
+    );
+    let aarch64_sources = aarch64_sources_with_exception(&exception_source);
+    assert_eq!(
+        validate_fatal_scheduler_accessor_census(&exception_source, &mutant, &aarch64_sources),
+        Err("+ kernel/src/task/scheduler.rs :: #[cfg(target_arch=aarch64)] fn dump_cpu_state_history_postmortem => current_thread_id  (1 occurrences, expected none)\n+ kernel/src/task/scheduler.rs :: fn current_thread_id => lock_scheduler  (1 occurrences, expected none)".to_string())
+    );
+}
+
+#[test]
+fn fatal_scheduler_census_m_f_rejects_broken_fatal_callee_derivation() {
+    let exception_source = repo_text(FATAL_EXCEPTION_PATH);
+    let scheduler_source = repo_text(SCHEDULER_PATH);
+    let mask = code_mask(&exception_source);
+    let blocks = lexical_blocks(&exception_source, &mask);
+    let functions = source_functions(&exception_source, &mask, &blocks);
+    let definition_name = functions
+        .iter()
+        .find(|function| function.name == "dump_el1_fatal_frame_and_dispatch_trace")
+        .map(|function| function.name_offset)
+        .expect("M-F fatal-callee definition anchor");
+    let mut calls: Vec<_> = call_offsets(
+        &exception_source,
+        &mask,
+        "dump_el1_fatal_frame_and_dispatch_trace",
+    )
+    .into_iter()
+    .filter(|offset| *offset != definition_name)
+    .collect();
+    assert!(!calls.is_empty(), "M-F fatal-region call anchors");
+
+    let mut mutant = exception_source.clone();
+    calls.sort_unstable_by(|left, right| right.cmp(left));
+    for offset in calls {
+        mutant.replace_range(
+            offset..offset + "dump_el1_fatal_frame_and_dispatch_trace".len(),
+            "removed_el1_fatal_frame_and_dispatch_trace",
+        );
+    }
+    assert_ne!(
+        mutant, exception_source,
+        "M-F fatal-callee derivation mutation anchor"
+    );
+    let aarch64_sources = aarch64_sources_with_exception(&mutant);
+    assert_eq!(
+        validate_fatal_scheduler_accessor_census(&mutant, &scheduler_source, &aarch64_sources),
+        Err(
+            "fatal-callee derivation missing anchors: dump_el1_fatal_frame_and_dispatch_trace"
+                .to_string()
+        )
+    );
 }
