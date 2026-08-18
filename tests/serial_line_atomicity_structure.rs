@@ -809,6 +809,16 @@ fn validate_raw_serial_primitive_census(sources: &[(String, String)]) -> Result<
 const UNLOCKED_MULTI_BYTE_WRITE_ANCHORS: &[(&str, &str, usize)] = &[
     (
         "kernel/src/arch_impl/aarch64/context_switch.rs",
+        "fn check_inline_eret_resume_pc",
+        5,
+    ),
+    (
+        "kernel/src/arch_impl/aarch64/context_switch.rs",
+        "fn check_inline_save_resume_point",
+        7,
+    ),
+    (
+        "kernel/src/arch_impl/aarch64/context_switch.rs",
         "fn check_need_resched_and_switch_arm64",
         4,
     ),
@@ -904,6 +914,11 @@ const UNLOCKED_MULTI_BYTE_WRITE_ANCHORS: &[(&str, &str, usize)] = &[
     ),
     (
         "kernel/src/arch_impl/aarch64/context_switch.rs",
+        "fn record_inline_elr_divergence",
+        6,
+    ),
+    (
+        "kernel/src/arch_impl/aarch64/context_switch.rs",
         "fn restore_kernel_context_inline",
         13,
     ),
@@ -929,6 +944,11 @@ const UNLOCKED_MULTI_BYTE_WRITE_ANCHORS: &[(&str, &str, usize)] = &[
     ),
     (
         "kernel/src/arch_impl/aarch64/exception.rs",
+        "fn dump_el1_fatal_frame_and_dispatch_trace",
+        13,
+    ),
+    (
+        "kernel/src/arch_impl/aarch64/exception.rs",
         "fn dump_el1_first_fault",
         23,
     ),
@@ -950,7 +970,7 @@ const UNLOCKED_MULTI_BYTE_WRITE_ANCHORS: &[(&str, &str, usize)] = &[
     (
         "kernel/src/arch_impl/aarch64/exception.rs",
         "fn handle_sync_exception",
-        192,
+        196,
     ),
     (
         "kernel/src/arch_impl/aarch64/exception.rs",

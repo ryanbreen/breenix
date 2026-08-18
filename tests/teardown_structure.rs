@@ -2948,13 +2948,13 @@ fn validate_p5b_gate_script_pins(
         "EL1 data abort (#596)",
         "TOTAL_DATA_ABORT=0",
         "DATA_ABORT) count_data_abort=$((count_data_abort + 1)) ;;",
-        "census_sum=$((count_575 + count_576 + count_data_abort + count_589 + count_p5b + count_green + count_unattributed))",
-        "[ \"$count_575\" -ne 0 ] || [ \"$count_data_abort\" -ne 0 ] || [ \"$count_p5b\" -ne 0 ] || [ \"$count_unattributed\" -ne 0 ]",
+        "census_sum=$((count_575 + count_576 + count_data_abort + count_589 + count_596 + count_p5b + count_green + count_unattributed))",
+        "[ \"$count_575\" -ne 0 ] || [ \"$count_data_abort\" -ne 0 ] || [ \"$count_596\" -ne 0 ] || [ \"$count_p5b\" -ne 0 ] || [ \"$count_unattributed\" -ne 0 ]",
         "quiesce_rows_floor=8",
         "[ \"$quiesce_rows\" -lt \"$quiesce_rows_floor\" ]",
         "TOTAL_P5B=$((TOTAL_P5B + count_p5b))",
         "TOTAL_DATA_ABORT=$((TOTAL_DATA_ABORT + count_data_abort))",
-        "TOTAL_SUM=$((TOTAL_575 + TOTAL_576 + TOTAL_DATA_ABORT + TOTAL_589 + TOTAL_P5B + TOTAL_GREEN + TOTAL_UNATTRIBUTED))",
+        "TOTAL_SUM=$((TOTAL_575 + TOTAL_576 + TOTAL_DATA_ABORT + TOTAL_589 + TOTAL_596 + TOTAL_P5B + TOTAL_GREEN + TOTAL_UNATTRIBUTED))",
         "P5b whole-boot-walk denominator",
     ] {
         check(
