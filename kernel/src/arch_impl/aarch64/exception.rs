@@ -225,11 +225,8 @@ fn dump_el1_first_fault(
 
     let registers = unsafe { core::slice::from_raw_parts(&frame.x0 as *const u64, 31) };
     for (register, value) in registers.iter().enumerate() {
-        if register % 4 == 0 {
-            raw_uart_str("\n  ");
-        } else {
-            raw_uart_str(" ");
-        }
+        let separator = if register % 4 == 0 { "\n  " } else { " " };
+        raw_uart_str(separator);
         raw_uart_str("x");
         raw_uart_dec(register as u64);
         raw_uart_str("=");

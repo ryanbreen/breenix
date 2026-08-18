@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -8,6 +9,34 @@ fn repo_root() -> PathBuf {
 fn repo_text(relative: &str) -> String {
     fs::read_to_string(repo_root().join(relative))
         .unwrap_or_else(|_| panic!("read repository file {relative}"))
+}
+
+fn kernel_sources() -> Vec<(String, String)> {
+    let root = repo_root();
+    rust_sources_under(&root.join("kernel/src"))
+        .into_iter()
+        .map(|path| {
+            let relative = path
+                .strip_prefix(&root)
+                .expect("kernel source below repository root")
+                .to_string_lossy()
+                .replace('\\', "/");
+            let source = fs::read_to_string(&path)
+                .unwrap_or_else(|_| panic!("read repository file {}", path.display()));
+            (relative, source)
+        })
+        .collect()
+}
+
+fn with_synthetic_source(
+    sources: &[(String, String)],
+    path: &str,
+    synthetic_source: &str,
+) -> Vec<(String, String)> {
+    let mut perturbed = sources.to_vec();
+    perturbed.push((path.to_owned(), synthetic_source.to_owned()));
+    perturbed.sort_by(|left, right| left.0.cmp(&right.0));
+    perturbed
 }
 
 fn code_mask(source: &str) -> Vec<bool> {
@@ -141,6 +170,84 @@ fn identifier_offsets(source: &str, mask: &[bool], identifier: &str) -> Vec<usiz
         .collect()
 }
 
+fn code_offsets(source: &str, mask: &[bool], needle: &str) -> Vec<usize> {
+    source
+        .match_indices(needle)
+        .filter_map(|(offset, _)| mask.get(offset).copied().unwrap_or(false).then_some(offset))
+        .collect()
+}
+
+fn all_identifiers<'a>(source: &'a str, mask: &[bool]) -> Vec<(usize, &'a str)> {
+    let bytes = source.as_bytes();
+    let mut identifiers = Vec::new();
+    let mut cursor = 0usize;
+    while cursor < bytes.len() {
+        if !mask[cursor]
+            || !identifier_byte(bytes[cursor])
+            || cursor
+                .checked_sub(1)
+                .is_some_and(|before| mask[before] && identifier_byte(bytes[before]))
+        {
+            cursor += 1;
+            continue;
+        }
+        let start = cursor;
+        while cursor < bytes.len() && mask[cursor] && identifier_byte(bytes[cursor]) {
+            cursor += 1;
+        }
+        identifiers.push((start, &source[start..cursor]));
+    }
+    identifiers
+}
+
+fn next_code(source: &str, mask: &[bool], from: usize) -> Option<usize> {
+    let bytes = source.as_bytes();
+    (from..bytes.len()).find(|index| mask[*index] && !bytes[*index].is_ascii_whitespace())
+}
+
+fn previous_code(source: &str, mask: &[bool], before: usize) -> Option<usize> {
+    let bytes = source.as_bytes();
+    (0..before)
+        .rev()
+        .find(|index| mask[*index] && !bytes[*index].is_ascii_whitespace())
+}
+
+fn preceded_by_keyword(source: &str, mask: &[bool], offset: usize, keyword: &str) -> bool {
+    let bytes = source.as_bytes();
+    let Some(end) = previous_code(source, mask, offset) else {
+        return false;
+    };
+    if !identifier_byte(bytes[end]) {
+        return false;
+    }
+    let mut start = end;
+    while start > 0 && mask[start - 1] && identifier_byte(bytes[start - 1]) {
+        start -= 1;
+    }
+    &source[start..end + 1] == keyword
+}
+
+fn matching_brace(source: &str, mask: &[bool], open: usize) -> Option<usize> {
+    let bytes = source.as_bytes();
+    let mut depth = 0usize;
+    for index in open..bytes.len() {
+        if !mask[index] {
+            continue;
+        }
+        match bytes[index] {
+            b'{' => depth += 1,
+            b'}' => {
+                depth = depth.checked_sub(1)?;
+                if depth == 0 {
+                    return Some(index);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
 fn braced_block<'a>(source: &'a str, mask: &[bool], start: usize) -> Option<&'a str> {
     let bytes = source.as_bytes();
     let open = (start..bytes.len()).find(|index| mask[*index] && bytes[*index] == b'{')?;
@@ -206,6 +313,686 @@ fn rust_sources_under(directory: &Path) -> Vec<PathBuf> {
     collect(directory, &mut sources);
     sources.sort();
     sources
+}
+
+type Anchor = (String, String);
+type Census = BTreeMap<Anchor, usize>;
+
+fn header_cfg(header: &str, mask: &[bool], keyword: usize) -> String {
+    let bytes = header.as_bytes();
+    let mut attributes = Vec::new();
+    for offset in code_offsets(header, mask, "#[cfg") {
+        if offset >= keyword {
+            break;
+        }
+        let Some(paren) = next_code(header, mask, offset + "#[cfg".len()) else {
+            continue;
+        };
+        if bytes[paren] != b'(' {
+            continue;
+        }
+        let mut depth = 0usize;
+        for close in offset..bytes.len() {
+            match bytes[close] {
+                b'[' => depth += 1,
+                b']' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        let compact: String = header[offset..close + 1]
+                            .chars()
+                            .filter(|character| !character.is_whitespace() && *character != '"')
+                            .collect();
+                        attributes.push(compact);
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    if attributes.is_empty() {
+        String::new()
+    } else {
+        format!("{} ", attributes.join(" "))
+    }
+}
+
+fn impl_segment(header: &str, mask: &[bool], keyword: usize) -> String {
+    let kept: Vec<u8> = header.as_bytes()[keyword..]
+        .iter()
+        .zip(&mask[keyword..])
+        .filter_map(|(byte, code)| code.then_some(*byte))
+        .collect();
+    let text = String::from_utf8_lossy(&kept)
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    match text.find(" where ") {
+        Some(clause) => text[..clause].to_owned(),
+        None => text,
+    }
+}
+
+fn item_segment(header: &str, mask: &[bool]) -> Option<String> {
+    let bytes = header.as_bytes();
+    let named = |keyword: usize, length: usize| -> Option<String> {
+        let mut cursor = keyword + length;
+        while cursor < bytes.len() && (!mask[cursor] || bytes[cursor].is_ascii_whitespace()) {
+            cursor += 1;
+        }
+        let start = cursor;
+        while cursor < bytes.len() && mask[cursor] && identifier_byte(bytes[cursor]) {
+            cursor += 1;
+        }
+        (cursor > start).then(|| header[start..cursor].to_owned())
+    };
+
+    let declaration = identifier_offsets(header, mask, "fn")
+        .into_iter()
+        .filter_map(|offset| named(offset, "fn".len()).map(|name| (offset, format!("fn {name}"))))
+        .next_back()
+        .or_else(|| {
+            ["impl", "mod", "trait", "struct"]
+                .into_iter()
+                .flat_map(|keyword| {
+                    identifier_offsets(header, mask, keyword)
+                        .into_iter()
+                        .map(move |offset| (keyword, offset))
+                })
+                .max_by_key(|(_, offset)| *offset)
+                .and_then(|(keyword, offset)| match keyword {
+                    "impl" => Some((offset, impl_segment(header, mask, offset))),
+                    _ => named(offset, keyword.len())
+                        .map(|name| (offset, format!("{keyword} {name}"))),
+                })
+        });
+    let (keyword, segment) = declaration?;
+    Some(format!("{}{segment}", header_cfg(header, mask, keyword)))
+}
+
+fn item_spans(source: &str, mask: &[bool]) -> Vec<(usize, usize, String)> {
+    let bytes = source.as_bytes();
+    let mut spans = Vec::new();
+    let mut stack: Vec<(usize, usize)> = Vec::new();
+    let mut header = 0usize;
+    let mut paren_depth = 0usize;
+    let mut bracket_depth = 0usize;
+    for index in 0..bytes.len() {
+        if !mask[index] {
+            continue;
+        }
+        match bytes[index] {
+            b'(' => paren_depth += 1,
+            b')' => paren_depth = paren_depth.saturating_sub(1),
+            b'[' => bracket_depth += 1,
+            b']' => bracket_depth = bracket_depth.saturating_sub(1),
+            b'{' => {
+                stack.push((index, header));
+                header = index + 1;
+            }
+            b'}' => {
+                if let Some((open, start)) = stack.pop() {
+                    if let Some(segment) = item_segment(&source[start..open], &mask[start..open]) {
+                        spans.push((open, index, segment));
+                    }
+                }
+                header = index + 1;
+            }
+            b';' if paren_depth == 0 && bracket_depth == 0 => header = index + 1,
+            _ => {}
+        }
+    }
+    spans
+}
+
+fn rendered_item_spans(spans: &[(usize, usize, String)]) -> Vec<(usize, usize, String)> {
+    let mut ordered = spans.to_vec();
+    ordered.sort_by_key(|(open, _, _)| *open);
+
+    let mut stack: Vec<(usize, String)> = Vec::new();
+    let mut rendered = Vec::with_capacity(ordered.len());
+    for (open, close, segment) in ordered {
+        while stack
+            .last()
+            .is_some_and(|(ancestor_close, _)| *ancestor_close < open)
+        {
+            stack.pop();
+        }
+        let path = match stack.last() {
+            Some((_, parent)) => format!("{parent}::{segment}"),
+            None => segment,
+        };
+        stack.push((close, path.clone()));
+        rendered.push((open, close, path));
+    }
+
+    let mut path_counts: BTreeMap<String, usize> = BTreeMap::new();
+    for (_, _, path) in &rendered {
+        *path_counts.entry(path.clone()).or_default() += 1;
+    }
+    for (_, _, path) in &mut rendered {
+        if path_counts.get(path).is_some_and(|count| *count > 1) {
+            path.push_str(" [duplicate item path]");
+        }
+    }
+    rendered
+}
+
+fn item_path_at(spans: &[(usize, usize, String)], offset: usize) -> String {
+    spans
+        .iter()
+        .filter(|(open, close, _)| *open <= offset && offset <= *close)
+        .max_by_key(|(open, _, _)| *open)
+        .map(|(_, _, path)| path.clone())
+        .unwrap_or_default()
+}
+
+fn census<F>(sources: &[(String, String)], mut matcher: F) -> Census
+where
+    F: FnMut(&str, &[bool]) -> Vec<usize>,
+{
+    let mut census = Census::new();
+    for (path, source) in sources {
+        let mask = code_mask(source);
+        let matches = matcher(source, &mask);
+        if matches.is_empty() {
+            continue;
+        }
+        let spans = rendered_item_spans(&item_spans(source, &mask));
+        for offset in matches {
+            *census
+                .entry((path.clone(), item_path_at(&spans, offset)))
+                .or_default() += 1;
+        }
+    }
+    census
+}
+
+fn expected_census(anchors: &[(&str, &str, usize)]) -> Census {
+    let mut census = Census::new();
+    for (path, item, count) in anchors {
+        let anchor = ((*path).to_owned(), (*item).to_owned());
+        assert!(
+            census.insert(anchor, *count).is_none(),
+            "duplicate census anchor {path} :: {item}"
+        );
+    }
+    census
+}
+
+fn census_diff(actual: &Census, anchors: &[(&str, &str, usize)]) -> Vec<String> {
+    let expected = expected_census(anchors);
+    let mut diff = Vec::new();
+    for (anchor, count) in actual {
+        match expected.get(anchor) {
+            None => diff.push(format!(
+                "+ {} :: {}  ({count} occurrences, expected none)",
+                anchor.0, anchor.1
+            )),
+            Some(want) if want != count => diff.push(format!(
+                "~ {} :: {}  (expected {want}, found {count})",
+                anchor.0, anchor.1
+            )),
+            Some(_) => {}
+        }
+    }
+    for (anchor, count) in &expected {
+        if !actual.contains_key(anchor) {
+            diff.push(format!(
+                "- {} :: {}  (expected {count}, found none)",
+                anchor.0, anchor.1
+            ));
+        }
+    }
+    diff
+}
+
+fn validate_census(actual: &Census, anchors: &[(&str, &str, usize)]) -> Result<(), Vec<String>> {
+    let diff = census_diff(actual, anchors);
+    diff.is_empty().then_some(()).ok_or(diff)
+}
+
+fn construct_body_span(
+    source: &str,
+    mask: &[bool],
+    keyword_offset: usize,
+    keyword: &str,
+) -> Option<(usize, usize)> {
+    let bytes = source.as_bytes();
+    let mut paren_depth = 0usize;
+    let mut bracket_depth = 0usize;
+    let mut saw_in = keyword != "for";
+    let start = keyword_offset + keyword.len();
+    for index in start..bytes.len() {
+        if !mask[index] {
+            continue;
+        }
+        match bytes[index] {
+            b'(' => paren_depth += 1,
+            b')' => paren_depth = paren_depth.checked_sub(1)?,
+            b'[' => bracket_depth += 1,
+            b']' => bracket_depth = bracket_depth.checked_sub(1)?,
+            b'{' if paren_depth == 0 && bracket_depth == 0 && saw_in => {
+                return matching_brace(source, mask, index).map(|close| (index, close));
+            }
+            b';' if paren_depth == 0 && bracket_depth == 0 => return None,
+            _ if paren_depth == 0 && bracket_depth == 0 && keyword == "for" => {
+                saw_in |= bytes.get(index..index + 2) == Some(b"in")
+                    && mask.get(index + 1).copied().unwrap_or(false)
+                    && !index
+                        .checked_sub(1)
+                        .and_then(|before| bytes.get(before))
+                        .is_some_and(|byte| identifier_byte(*byte))
+                    && !bytes
+                        .get(index + 2)
+                        .is_some_and(|byte| identifier_byte(*byte));
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn loop_body_spans(source: &str, mask: &[bool]) -> Vec<(usize, usize)> {
+    let mut spans = Vec::new();
+    for keyword in ["for", "while", "loop"] {
+        for offset in identifier_offsets(source, mask, keyword) {
+            if let Some(span) = construct_body_span(source, mask, offset, keyword) {
+                spans.push(span);
+            }
+        }
+    }
+    spans
+}
+
+fn identifier_is_call(source: &str, mask: &[bool], offset: usize, name: &str) -> bool {
+    let bytes = source.as_bytes();
+    next_code(source, mask, offset + name.len()).is_some_and(|open| bytes[open] == b'(')
+        && !preceded_by_keyword(source, mask, offset, "fn")
+}
+
+fn unlocked_multi_byte_write_calls<'a>(source: &'a str, mask: &[bool]) -> Vec<(usize, &'a str)> {
+    let loops = loop_body_spans(source, mask);
+    all_identifiers(source, mask)
+        .into_iter()
+        .filter(|(offset, name)| {
+            if !name.starts_with("raw_") || !identifier_is_call(source, mask, *offset, name) {
+                return false;
+            }
+            if name.contains("str") || name.contains("bytes") {
+                return true;
+            }
+            name.contains("char")
+                && loops
+                    .iter()
+                    .any(|(open, close)| *open < *offset && *offset < *close)
+        })
+        .collect()
+}
+
+fn unlocked_multi_byte_write_census(sources: &[(String, String)]) -> Census {
+    census(sources, |source, mask| {
+        unlocked_multi_byte_write_calls(source, mask)
+            .into_iter()
+            .map(|(offset, _)| offset)
+            .collect()
+    })
+}
+
+const UNLOCKED_MULTI_BYTE_WRITE_ANCHORS: &[(&str, &str, usize)] = &[
+    (
+        "kernel/src/arch_impl/aarch64/context_switch.rs",
+        "fn check_need_resched_and_switch_arm64",
+        4,
+    ),
+    (
+        "kernel/src/arch_impl/aarch64/context_switch.rs",
+        "fn dispatch_thread_locked",
+        13,
+    ),
+    (
+        "kernel/src/arch_impl/aarch64/context_switch.rs",
+        "fn dump_all_dispatch_mismatch_snapshots",
+        7,
+    ),
+    (
+        "kernel/src/arch_impl/aarch64/context_switch.rs",
+        "fn dump_all_eret_frame_anomaly_snapshots",
+        9,
+    ),
+    (
+        "kernel/src/arch_impl/aarch64/context_switch.rs",
+        "fn dump_all_eret_guard_records",
+        5,
+    ),
+    (
+        "kernel/src/arch_impl/aarch64/context_switch.rs",
+        "fn dump_all_idle_redirect_histories",
+        13,
+    ),
+    (
+        "kernel/src/arch_impl/aarch64/context_switch.rs",
+        "fn dump_all_inline_save_skew_snapshots",
+        7,
+    ),
+    (
+        "kernel/src/arch_impl/aarch64/context_switch.rs",
+        "fn dump_all_last_dispatched_tids",
+        4,
+    ),
+    (
+        "kernel/src/arch_impl/aarch64/context_switch.rs",
+        "fn dump_all_save_skew_snapshots",
+        11,
+    ),
+    (
+        "kernel/src/arch_impl/aarch64/context_switch.rs",
+        "fn dump_dispatch_trace",
+        12,
+    ),
+    (
+        "kernel/src/arch_impl/aarch64/context_switch.rs",
+        "fn dump_stack_pivot_alias_history",
+        9,
+    ),
+    (
+        "kernel/src/arch_impl/aarch64/context_switch.rs",
+        "fn emit_el0_entry_marker",
+        2,
+    ),
+    (
+        "kernel/src/arch_impl/aarch64/context_switch.rs",
+        "fn emit_schedule_boot_marker",
+        1,
+    ),
+    (
+        "kernel/src/arch_impl/aarch64/context_switch.rs",
+        "fn log_bad_thread_sp",
+        11,
+    ),
+    (
+        "kernel/src/arch_impl/aarch64/context_switch.rs",
+        "fn log_idle_thread_context",
+        11,
+    ),
+    (
+        "kernel/src/arch_impl/aarch64/context_switch.rs",
+        "fn log_last_defer_requeue_snapshot",
+        9,
+    ),
+    (
+        "kernel/src/arch_impl/aarch64/context_switch.rs",
+        "fn raw_uart_dec",
+        1,
+    ),
+    (
+        "kernel/src/arch_impl/aarch64/context_switch.rs",
+        "fn raw_uart_hex",
+        2,
+    ),
+    (
+        "kernel/src/arch_impl/aarch64/context_switch.rs",
+        "fn raw_uart_str",
+        1,
+    ),
+    (
+        "kernel/src/arch_impl/aarch64/context_switch.rs",
+        "fn restore_kernel_context_inline",
+        13,
+    ),
+    (
+        "kernel/src/arch_impl/aarch64/context_switch.rs",
+        "fn save_kernel_context_inline",
+        22,
+    ),
+    (
+        "kernel/src/arch_impl/aarch64/context_switch.rs",
+        "fn save_userspace_context_inline",
+        11,
+    ),
+    (
+        "kernel/src/arch_impl/aarch64/context_switch.rs",
+        "fn set_next_ttbr0_for_thread",
+        6,
+    ),
+    (
+        "kernel/src/arch_impl/aarch64/exception.rs",
+        "fn defer_current_user_thread_sigsegv_exit",
+        6,
+    ),
+    (
+        "kernel/src/arch_impl/aarch64/exception.rs",
+        "fn dump_el1_first_fault",
+        23,
+    ),
+    (
+        "kernel/src/arch_impl/aarch64/exception.rs",
+        "fn dump_fatal_postmortem_once",
+        6,
+    ),
+    (
+        "kernel/src/arch_impl/aarch64/exception.rs",
+        "fn dump_fatal_postmortem_section",
+        1,
+    ),
+    (
+        "kernel/src/arch_impl/aarch64/exception.rs",
+        "fn dump_stack_classification",
+        6,
+    ),
+    (
+        "kernel/src/arch_impl/aarch64/exception.rs",
+        "fn handle_sync_exception",
+        192,
+    ),
+    (
+        "kernel/src/arch_impl/aarch64/exception.rs",
+        "fn raw_uart_hex_u32",
+        2,
+    ),
+    (
+        "kernel/src/arch_impl/aarch64/timer_interrupt.rs",
+        "fn dump_lockup_state",
+        60,
+    ),
+    (
+        "kernel/src/arch_impl/aarch64/timer_interrupt.rs",
+        "fn dump_trace_counters",
+        10,
+    ),
+    (
+        "kernel/src/arch_impl/aarch64/timer_interrupt.rs",
+        "fn print_hex_u64",
+        1,
+    ),
+    (
+        "kernel/src/arch_impl/aarch64/timer_interrupt.rs",
+        "fn print_timer_count_decimal",
+        1,
+    ),
+    (
+        "kernel/src/arch_impl/aarch64/timer_interrupt.rs",
+        "fn raw_serial_str",
+        1,
+    ),
+    (
+        "kernel/src/arch_impl/aarch64/timer_interrupt.rs",
+        "fn timer_interrupt_handler",
+        6,
+    ),
+    (
+        "kernel/src/interrupts/context_switch.rs",
+        "fn check_need_resched_and_switch",
+        4,
+    ),
+    (
+        "kernel/src/interrupts/context_switch.rs",
+        "fn note_dispatch_guard_unavailable",
+        5,
+    ),
+    (
+        "kernel/src/interrupts/context_switch.rs",
+        "fn raw_serial_u64",
+        1,
+    ),
+    (
+        "kernel/src/interrupts/context_switch.rs",
+        "fn refuse_unpublished_dispatch",
+        3,
+    ),
+    (
+        "kernel/src/interrupts/context_switch.rs",
+        "fn restore_userspace_thread_context",
+        10,
+    ),
+    (
+        "kernel/src/interrupts/context_switch.rs",
+        "fn switch_to_thread",
+        10,
+    ),
+    (
+        "kernel/src/syscall/handler.rs",
+        "fn emit_ring3_syscall_marker",
+        2,
+    ),
+    (
+        "kernel/src/task/scheduler.rs",
+        "#[cfg(target_arch=aarch64)] fn dump_cpu_state_history",
+        9,
+    ),
+    (
+        "kernel/src/test_framework/registry.rs",
+        "fn test_serial_output",
+        1,
+    ),
+    ("kernel/src/tracing/output.rs", "fn dump_all_buffers", 6),
+    ("kernel/src/tracing/output.rs", "fn dump_buffer", 7),
+    ("kernel/src/tracing/output.rs", "fn dump_counters", 11),
+    ("kernel/src/tracing/output.rs", "fn dump_event_summary", 6),
+    ("kernel/src/tracing/output.rs", "fn dump_latest_events", 3),
+    ("kernel/src/tracing/output.rs", "fn dump_on_panic", 2),
+    ("kernel/src/tracing/output.rs", "fn dump_providers", 7),
+    (
+        "kernel/src/tracing/output.rs",
+        "fn format_event_to_serial",
+        7,
+    ),
+    ("kernel/src/tracing/output.rs", "fn raw_serial_dec", 1),
+    ("kernel/src/tracing/output.rs", "fn raw_serial_hex", 2),
+    ("kernel/src/tracing/output.rs", "fn raw_serial_hex16", 1),
+    ("kernel/src/tracing/output.rs", "fn raw_serial_str", 1),
+    (
+        "kernel/src/tty/driver.rs",
+        "impl TtyDevice::fn send_signal_to_foreground_nonblock",
+        1,
+    ),
+    (
+        "kernel/src/tty/driver.rs",
+        "impl TtyDevice::fn send_signal_to_process_nonblock",
+        1,
+    ),
+];
+
+fn validate_unlocked_multi_byte_write_census(
+    sources: &[(String, String)],
+) -> Result<(), Vec<String>> {
+    validate_census(
+        &unlocked_multi_byte_write_census(sources),
+        UNLOCKED_MULTI_BYTE_WRITE_ANCHORS,
+    )
+}
+
+fn condition_has_modulo_integer_literal(
+    source: &str,
+    mask: &[bool],
+    start: usize,
+    end: usize,
+) -> bool {
+    let bytes = source.as_bytes();
+    (start..end).any(|percent| {
+        if !mask[percent] || bytes[percent] != b'%' {
+            return false;
+        }
+        let Some(mut literal) = next_code(source, mask, percent + 1) else {
+            return false;
+        };
+        while literal < end && bytes[literal] == b'(' {
+            let Some(next) = next_code(source, mask, literal + 1) else {
+                return false;
+            };
+            literal = next;
+        }
+        literal < end && bytes[literal].is_ascii_digit()
+    })
+}
+
+fn periodic_guard_body_spans(source: &str, mask: &[bool]) -> Vec<(usize, usize)> {
+    let bytes = source.as_bytes();
+    let mut spans = Vec::new();
+    for offset in identifier_offsets(source, mask, "if") {
+        let condition_start = offset + "if".len();
+        let mut paren_depth = 0usize;
+        let mut bracket_depth = 0usize;
+        for open in condition_start..bytes.len() {
+            if !mask[open] {
+                continue;
+            }
+            match bytes[open] {
+                b'(' => paren_depth += 1,
+                b')' => paren_depth = paren_depth.saturating_sub(1),
+                b'[' => bracket_depth += 1,
+                b']' => bracket_depth = bracket_depth.saturating_sub(1),
+                b'{' if paren_depth == 0 && bracket_depth == 0 => {
+                    if condition_has_modulo_integer_literal(source, mask, condition_start, open) {
+                        if let Some(close) = matching_brace(source, mask, open) {
+                            spans.push((open, close));
+                        }
+                    }
+                    break;
+                }
+                b';' if paren_depth == 0 && bracket_depth == 0 => break,
+                _ => {}
+            }
+        }
+    }
+    spans
+}
+
+fn validate_no_periodic_unlocked_multi_byte_writes(
+    sources: &[(String, String)],
+) -> Result<(), Vec<String>> {
+    let mut violations: BTreeMap<(String, String, String), usize> = BTreeMap::new();
+    for (path, source) in sources {
+        let mask = code_mask(source);
+        let guards = periodic_guard_body_spans(source, &mask);
+        if guards.is_empty() {
+            continue;
+        }
+        let spans = rendered_item_spans(&item_spans(source, &mask));
+        for (offset, writer) in unlocked_multi_byte_write_calls(source, &mask) {
+            if guards
+                .iter()
+                .any(|(open, close)| *open < offset && offset < *close)
+            {
+                *violations
+                    .entry((
+                        path.clone(),
+                        item_path_at(&spans, offset),
+                        writer.to_owned(),
+                    ))
+                    .or_default() += 1;
+            }
+        }
+    }
+    let errors: Vec<String> = violations
+        .into_iter()
+        .map(|((path, item, writer), count)| {
+            format!(
+                "{path} :: {item}: {count} call(s) to {writer} under a modulo-integer periodic guard"
+            )
+        })
+        .collect();
+    errors.is_empty().then_some(()).ok_or(errors)
 }
 
 fn serial_module_sources() -> Vec<(PathBuf, String)> {
@@ -316,5 +1103,61 @@ fn tty_validator_rejects_per_byte_serial_writes() {
     assert_eq!(
         validate_tty_source(synthetic),
         Err("TtyDevice::write_bytes calls write_byte")
+    );
+}
+
+#[test]
+fn unlocked_multi_byte_serial_write_census_is_pinned() {
+    assert_eq!(
+        validate_unlocked_multi_byte_write_census(&kernel_sources()),
+        Ok(())
+    );
+}
+
+#[test]
+fn census_validator_rejects_a_synthetic_unlocked_multi_byte_writer() {
+    let sources = with_synthetic_source(
+        &kernel_sources(),
+        "kernel/src/synthetic_unlocked_writer.rs",
+        r#"
+            fn synthetic_unlocked_writer(message: &[u8]) {
+                raw_uart_bytes(message);
+            }
+        "#,
+    );
+    assert_eq!(
+        validate_unlocked_multi_byte_write_census(&sources),
+        Err(vec![
+            "+ kernel/src/synthetic_unlocked_writer.rs :: fn synthetic_unlocked_writer  (1 occurrences, expected none)".to_owned()
+        ])
+    );
+}
+
+#[test]
+fn unlocked_multi_byte_serial_writes_are_never_periodic() {
+    assert_eq!(
+        validate_no_periodic_unlocked_multi_byte_writes(&kernel_sources()),
+        Ok(())
+    );
+}
+
+#[test]
+fn periodic_guard_validator_rejects_a_synthetic_unlocked_writer() {
+    let sources = vec![(
+        "kernel/src/synthetic_periodic_writer.rs".to_owned(),
+        r#"
+            fn synthetic_periodic_writer(tick: u64) {
+                if (tick % (5_000u64)) == 0 {
+                    raw_uart_bytes(b"tick");
+                }
+            }
+        "#
+        .to_owned(),
+    )];
+    assert_eq!(
+        validate_no_periodic_unlocked_multi_byte_writes(&sources),
+        Err(vec![
+            "kernel/src/synthetic_periodic_writer.rs :: fn synthetic_periodic_writer: 1 call(s) to raw_uart_bytes under a modulo-integer periodic guard".to_owned()
+        ])
     );
 }
