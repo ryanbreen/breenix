@@ -18,6 +18,27 @@ const CLONE_FILES: u64 = 0x00000400;
 const CLONE_CHILD_CLEARTID: u64 = 0x00200000;
 const CLONE_CHILD_SETTID: u64 = 0x01000000;
 
+/// P5b: the designated init cannot acquire `CLONE_VM` siblings.
+///
+/// The sole consultation of the init authority on the clone path. `derived_tg_id` is the
+/// parent's *effective* thread-group id (`thread_group_id.unwrap_or(pid)`), and init's is
+/// derived the same way, so the comparison is group-to-group and never pid-to-pid. With no
+/// designated init this refuses nothing, which is the defined behaviour of a build with no
+/// real init.
+pub fn refuses_init_group_clone(
+    manager: &crate::process::ProcessManager,
+    derived_tg_id: u64,
+) -> bool {
+    let Some(init) = manager.designated_init() else {
+        return false;
+    };
+    let init_tg_id = manager
+        .get_process(init)
+        .and_then(|process| process.thread_group_id)
+        .unwrap_or(init.as_u64());
+    derived_tg_id == init_tg_id
+}
+
 /// sys_clone - create a new thread sharing the parent's address space
 ///
 /// Breenix extension: instead of the standard Linux clone semantics where both
@@ -95,6 +116,19 @@ pub fn sys_clone(
 
         (cr3, tg_id, process.cwd.clone(), process.fd_table.clone())
     };
+
+    // P5b: refuse a CLONE_VM join into the designated init's thread group. This returns
+    // above `allocate_pid`, so a refused clone allocates nothing and creates no row.
+    if refuses_init_group_clone(manager, parent_tg_id) {
+        crate::tracing::providers::teardown::record_init_group_refusal();
+        #[cfg(feature = "boot_tests")]
+        let walk = crate::tracing::providers::teardown::init_group_walk_census(manager);
+        // The walk emits on serial; drop the process-manager guard before any output.
+        drop(manager_guard);
+        #[cfg(feature = "boot_tests")]
+        crate::tracing::providers::teardown::emit_init_group_walk(walk);
+        return SyscallResult::Err(super::errno::EINVAL as u64);
+    }
 
     // Allocate child process ID
     let child_pid = manager.allocate_pid();
