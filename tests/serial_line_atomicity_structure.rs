@@ -639,6 +639,173 @@ fn unlocked_multi_byte_write_census(sources: &[(String, String)]) -> Census {
     })
 }
 
+fn function_spans(source: &str, mask: &[bool]) -> Vec<(usize, usize)> {
+    item_spans(source, mask)
+        .into_iter()
+        .filter_map(|(open, close, item)| {
+            (item.starts_with("fn ") || item.contains("] fn ")).then_some((open, close))
+        })
+        .collect()
+}
+
+fn enclosing_function_span(spans: &[(usize, usize)], offset: usize) -> Option<(usize, usize)> {
+    spans
+        .iter()
+        .filter(|(open, close)| *open <= offset && offset <= *close)
+        .max_by_key(|(open, _)| *open)
+        .copied()
+}
+
+fn compact_code(source: &str, mask: &[bool], start: usize, end: usize) -> String {
+    source.as_bytes()[start..end]
+        .iter()
+        .zip(&mask[start..end])
+        .filter_map(|(byte, code)| {
+            (*code && !byte.is_ascii_whitespace()).then_some(char::from(*byte))
+        })
+        .collect()
+}
+
+fn hex_literal_offsets(source: &str, mask: &[bool], value: u64) -> Vec<usize> {
+    let bytes = source.as_bytes();
+    let mut offsets = Vec::new();
+    let mut cursor = 0usize;
+    while cursor + 2 < bytes.len() {
+        let starts_hex = mask[cursor]
+            && bytes[cursor] == b'0'
+            && matches!(bytes[cursor + 1], b'x' | b'X')
+            && mask[cursor + 1]
+            && !cursor
+                .checked_sub(1)
+                .and_then(|before| bytes.get(before))
+                .is_some_and(|byte| identifier_byte(*byte));
+        if !starts_hex {
+            cursor += 1;
+            continue;
+        }
+
+        let start = cursor;
+        cursor += 2;
+        let digits = cursor;
+        while cursor < bytes.len()
+            && mask[cursor]
+            && (bytes[cursor].is_ascii_hexdigit() || bytes[cursor] == b'_')
+        {
+            cursor += 1;
+        }
+        let normalized: String = source[digits..cursor]
+            .chars()
+            .filter(|character| *character != '_')
+            .collect();
+        if !normalized.is_empty()
+            && u64::from_str_radix(&normalized, 16).is_ok_and(|literal| literal == value)
+        {
+            offsets.push(start);
+        }
+    }
+    offsets
+}
+
+fn span_has_member_write_call(source: &str, mask: &[bool], (open, close): (usize, usize)) -> bool {
+    identifier_offsets(source, mask, "write")
+        .into_iter()
+        .filter(|offset| open < *offset && *offset < close)
+        .any(|offset| {
+            identifier_is_call(source, mask, offset, "write")
+                && previous_code(source, mask, offset)
+                    .is_some_and(|dot| source.as_bytes()[dot] == b'.')
+        })
+}
+
+fn raw_serial_primitive_write_offsets(source: &str, mask: &[bool]) -> Vec<usize> {
+    let functions = function_spans(source, mask);
+    let uart_helpers = identifier_offsets(source, mask, "uart_virt")
+        .into_iter()
+        .filter(|offset| identifier_is_call(source, mask, *offset, "uart_virt"))
+        .collect::<Vec<_>>();
+    let mut writes = identifier_offsets(source, mask, "write_volatile")
+        .into_iter()
+        .filter(|offset| identifier_is_call(source, mask, *offset, "write_volatile"))
+        .filter(|offset| {
+            let Some((open, close)) = enclosing_function_span(&functions, *offset) else {
+                return false;
+            };
+            uart_helpers
+                .iter()
+                .any(|helper| open < *helper && *helper < close)
+        })
+        .collect::<Vec<_>>();
+
+    for port in hex_literal_offsets(source, mask, 0x3f8) {
+        let Some(function) = enclosing_function_span(&functions, port) else {
+            continue;
+        };
+        let prefix = compact_code(source, mask, function.0, port);
+        let constructs_port =
+            prefix.ends_with("Port::new(") || prefix.ends_with("Port::<u8>::new(");
+        if constructs_port && span_has_member_write_call(source, mask, function) {
+            writes.push(port);
+        }
+    }
+
+    writes.sort_unstable();
+    writes
+}
+
+fn raw_serial_primitive_census(sources: &[(String, String)]) -> Census {
+    census(sources, raw_serial_primitive_write_offsets)
+}
+
+const RAW_SERIAL_PRIMITIVE_ANCHORS: &[(&str, &str, usize)] = &[
+    (
+        "kernel/src/arch_impl/aarch64/context_switch.rs",
+        "fn raw_uart_char",
+        1,
+    ),
+    ("kernel/src/arch_impl/aarch64/smp.rs", "fn raw_uart_char", 1),
+    (
+        "kernel/src/arch_impl/aarch64/syscall_entry.rs",
+        "fn emit_el0_syscall_marker",
+        1,
+    ),
+    (
+        "kernel/src/graphics/particles.rs",
+        "fn animation_thread_entry::fn raw_char",
+        1,
+    ),
+    (
+        "kernel/src/interrupts/context_switch.rs",
+        "fn raw_serial_char",
+        1,
+    ),
+    (
+        "kernel/src/interrupts/context_switch.rs",
+        "fn raw_serial_str",
+        1,
+    ),
+    ("kernel/src/per_cpu.rs", "fn can_schedule", 1),
+    (
+        "kernel/src/serial.rs",
+        "fn emergency_print::impl fmt::Write for EmergencySerial::fn write_str",
+        1,
+    ),
+    ("kernel/src/serial_aarch64.rs", "fn raw_serial_char", 2),
+    ("kernel/src/serial_aarch64.rs", "fn raw_serial_str", 2),
+    (
+        "kernel/src/syscall/handler.rs",
+        "fn raw_serial_str_local",
+        1,
+    ),
+    ("kernel/src/tracing/output.rs", "fn raw_serial_char", 2),
+];
+
+fn validate_raw_serial_primitive_census(sources: &[(String, String)]) -> Result<(), Vec<String>> {
+    validate_census(
+        &raw_serial_primitive_census(sources),
+        RAW_SERIAL_PRIMITIVE_ANCHORS,
+    )
+}
+
 const UNLOCKED_MULTI_BYTE_WRITE_ANCHORS: &[(&str, &str, usize)] = &[
     (
         "kernel/src/arch_impl/aarch64/context_switch.rs",
@@ -1115,6 +1282,14 @@ fn unlocked_multi_byte_serial_write_census_is_pinned() {
 }
 
 #[test]
+fn raw_serial_primitive_census_is_pinned() {
+    assert_eq!(
+        validate_raw_serial_primitive_census(&kernel_sources()),
+        Ok(())
+    );
+}
+
+#[test]
 fn census_validator_rejects_a_synthetic_unlocked_multi_byte_writer() {
     let sources = with_synthetic_source(
         &kernel_sources(),
@@ -1129,6 +1304,28 @@ fn census_validator_rejects_a_synthetic_unlocked_multi_byte_writer() {
         validate_unlocked_multi_byte_write_census(&sources),
         Err(vec![
             "+ kernel/src/synthetic_unlocked_writer.rs :: fn synthetic_unlocked_writer  (1 occurrences, expected none)".to_owned()
+        ])
+    );
+}
+
+#[test]
+fn primitive_census_validator_rejects_a_differently_named_uart_writer() {
+    let sources = with_synthetic_source(
+        &kernel_sources(),
+        "kernel/src/synthetic_uart_primitive.rs",
+        r#"
+            fn uart_emit_line(byte: u8) {
+                let uart = crate::platform_config::uart_virt();
+                unsafe {
+                    core::ptr::write_volatile(uart as *mut u8, byte);
+                }
+            }
+        "#,
+    );
+    assert_eq!(
+        validate_raw_serial_primitive_census(&sources),
+        Err(vec![
+            "+ kernel/src/synthetic_uart_primitive.rs :: fn uart_emit_line  (1 occurrences, expected none)".to_owned()
         ])
     );
 }
