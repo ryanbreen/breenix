@@ -4009,17 +4009,143 @@ fn blocking_calls(
     calls
 }
 
-fn dump_shape(name: &str) -> bool {
-    name.starts_with("dump_") || name.contains("postmortem") || name.contains("fatal_")
+fn scanned_fatal_sources(
+    exception_source: &str,
+    scheduler_source: &str,
+    aarch64_sources: &[(String, String)],
+) -> Vec<(String, String)> {
+    let mut sources: Vec<_> = aarch64_sources
+        .iter()
+        .filter(|(path, _)| path != FATAL_EXCEPTION_PATH && path != SCHEDULER_PATH)
+        .cloned()
+        .collect();
+    sources.push((FATAL_EXCEPTION_PATH.to_owned(), exception_source.to_owned()));
+    sources.push((SCHEDULER_PATH.to_owned(), scheduler_source.to_owned()));
+    sources.sort_by(|left, right| left.0.cmp(&right.0));
+    sources
 }
 
-fn merge_census_without_double_counting(target: &mut Census, source: Census) {
-    for (anchor, count) in source {
-        target
-            .entry(anchor)
-            .and_modify(|existing| *existing = (*existing).max(count))
-            .or_insert(count);
+fn resolved_callees_in_range(
+    source: &str,
+    mask: &[bool],
+    definition_names: &BTreeSet<usize>,
+    resolved_names: &BTreeSet<String>,
+    open: usize,
+    close: usize,
+) -> BTreeSet<String> {
+    resolved_names
+        .iter()
+        .filter(|name| {
+            call_offsets(source, mask, name).into_iter().any(|offset| {
+                open < offset && offset < close && !definition_names.contains(&offset)
+            })
+        })
+        .cloned()
+        .collect()
+}
+
+fn derived_fatal_callees(
+    exception_source: &str,
+    exception_mask: &[bool],
+    exception_blocks: &[LexicalBlock],
+    exception_functions: &[SourceFunction],
+    el0_only: &BTreeSet<String>,
+    scanned_sources: &[(String, String)],
+) -> Result<BTreeSet<String>, String> {
+    let resolved_names: BTreeSet<_> = scanned_sources
+        .iter()
+        .flat_map(|(_, source)| module_function_bodies(source).into_keys())
+        .collect();
+    let exception_definition_names: BTreeSet<_> = exception_functions
+        .iter()
+        .map(|function| function.name_offset)
+        .collect();
+
+    // Seeds are derived from every resolved call site that the existing
+    // exception-region analysis says an EL1 exception can reach.
+    let mut fatal_callees: BTreeSet<_> = resolved_names
+        .iter()
+        .filter(|name| {
+            call_offsets(exception_source, exception_mask, name)
+                .into_iter()
+                .filter(|offset| !exception_definition_names.contains(offset))
+                .any(|offset| {
+                    !call_is_el0_guarded(exception_blocks, offset)
+                        && !enclosing_function(exception_functions, offset)
+                            .is_some_and(|function| el0_only.contains(&function.name))
+                })
+        })
+        .cloned()
+        .collect();
+
+    // Follow only callees whose definitions are inside the bounded source
+    // domain. This is deliberately a downward closure: callers of a fatal
+    // emitter do not become fatal merely because they can invoke it.
+    loop {
+        let mut newly_reached = BTreeSet::new();
+        for (_, source) in scanned_sources {
+            let mask = code_mask(source);
+            let blocks = lexical_blocks(source, &mask);
+            let functions = source_functions(source, &mask, &blocks);
+            let definition_names: BTreeSet<_> = functions
+                .iter()
+                .map(|function| function.name_offset)
+                .collect();
+            for function in functions
+                .iter()
+                .filter(|function| fatal_callees.contains(&function.name))
+            {
+                newly_reached.extend(resolved_callees_in_range(
+                    source,
+                    &mask,
+                    &definition_names,
+                    &resolved_names,
+                    function.open,
+                    function.close,
+                ));
+            }
+        }
+        newly_reached.retain(|name| !fatal_callees.contains(name));
+        if newly_reached.is_empty() {
+            break;
+        }
+        fatal_callees.extend(newly_reached);
     }
+
+    if fatal_callees.is_empty() {
+        return Err("fatal-callee derivation is empty".to_string());
+    }
+    let missing: Vec<_> = [
+        "dump_el1_fatal_frame_and_dispatch_trace",
+        "dump_all_save_skew_snapshots",
+        "dump_dispatch_trace",
+        "dump_cpu_state_history_postmortem",
+    ]
+    .into_iter()
+    .filter(|anchor| !fatal_callees.contains(*anchor))
+    .collect();
+    if !missing.is_empty() {
+        return Err(format!(
+            "fatal-callee derivation missing anchors: {}",
+            missing.join(", ")
+        ));
+    }
+
+    // Neither ordinary function is reachable in the callee direction from an
+    // EL1-reachable fatal region: one is a syscall, the other a thread-context
+    // placement diagnostic. This precision assertion is not an allowlist.
+    let unexpected: Vec<_> = ["sys_fork_aarch64", "dump_thread_placement"]
+        .into_iter()
+        .filter(|name| fatal_callees.contains(*name))
+        .collect();
+    if !unexpected.is_empty() {
+        return Err(format!(
+            "fatal-callee derivation reached ordinary functions: {}",
+            unexpected.join(", ")
+        ));
+    }
+
+    Ok(fatal_callees)
 }
 
 fn validate_fatal_scheduler_accessor_census(
@@ -4062,47 +4188,28 @@ fn validate_fatal_scheduler_accessor_census(
             .collect()
     });
 
-    let mut dump_sources: Vec<_> = aarch64_sources
+    let scanned_sources =
+        scanned_fatal_sources(exception_source, scheduler_source, aarch64_sources);
+    let fatal_callees = derived_fatal_callees(
+        exception_source,
+        &exception_mask,
+        &exception_blocks,
+        &exception_functions,
+        &el0_only,
+        &scanned_sources,
+    )?;
+    let external_sources: Vec<_> = scanned_sources
         .iter()
-        .filter(|(path, _)| path != FATAL_EXCEPTION_PATH && path != SCHEDULER_PATH)
+        .filter(|(path, _)| path != FATAL_EXCEPTION_PATH)
         .cloned()
         .collect();
-    dump_sources.push((FATAL_EXCEPTION_PATH.to_owned(), exception_source.to_owned()));
-    dump_sources.push((SCHEDULER_PATH.to_owned(), scheduler_source.to_owned()));
-    dump_sources.sort_by(|left, right| left.0.cmp(&right.0));
-
-    let discovered_dump_shapes: BTreeSet<_> = dump_sources
-        .iter()
-        .flat_map(|(_, source)| {
-            module_function_bodies(source)
-                .into_keys()
-                .filter(|name| dump_shape(name))
-        })
-        .collect();
-    if discovered_dump_shapes.is_empty() {
-        return Err("dump-shape helper derivation is empty".to_string());
-    }
-    let missing_dump_anchors: Vec<_> = [
-        "dump_el1_first_fault",
-        "dump_el1_fatal_frame_and_dispatch_trace",
-    ]
-    .into_iter()
-    .filter(|anchor| !discovered_dump_shapes.contains(*anchor))
-    .collect();
-    if !missing_dump_anchors.is_empty() {
-        return Err(format!(
-            "dump-shape helper derivation missing anchors: {}",
-            missing_dump_anchors.join(", ")
-        ));
-    }
-
-    let dump_violations = census_tagged(&dump_sources, |source, mask| {
+    let external_violations = census_tagged(&external_sources, |source, mask| {
         let blocks = lexical_blocks(source, mask);
         let functions = source_functions(source, mask, &blocks);
         let mut calls = BTreeSet::new();
         for function in functions
             .iter()
-            .filter(|function| dump_shape(&function.name))
+            .filter(|function| fatal_callees.contains(&function.name))
         {
             let body = &source[function.open..=function.close];
             let body_mask = code_mask(body);
@@ -4112,7 +4219,7 @@ fn validate_fatal_scheduler_accessor_census(
         }
         calls.into_iter().collect()
     });
-    merge_census_without_double_counting(&mut violations, dump_violations);
+    violations.extend(external_violations);
 
     census_error(&violations, &[])
 }
@@ -4155,7 +4262,7 @@ fn fatal_exception_reports_never_take_blocking_scheduler_accessors() {
 }
 
 #[test]
-fn fatal_scheduler_census_rejects_blocking_call_at_fixed_site() {
+fn fatal_scheduler_census_m_a_rejects_blocking_call_at_fixed_site() {
     let exception_source = repo_text(FATAL_EXCEPTION_PATH);
     let scheduler_source = repo_text(SCHEDULER_PATH);
     let marker = exception_source
@@ -4181,17 +4288,17 @@ fn fatal_scheduler_census_rejects_blocking_call_at_fixed_site() {
     let aarch64_sources = aarch64_sources_with_exception(&mutant);
     assert_eq!(
         validate_fatal_scheduler_accessor_census(&mutant, &scheduler_source, &aarch64_sources),
-        Err("+ kernel/src/arch_impl/aarch64/exception.rs :: fn handle_sync_exception => current_thread_id  (1 occurrences, expected none)".to_string())
+        Err("+ kernel/src/arch_impl/aarch64/exception.rs :: fn handle_sync_exception => current_thread_id  (1 occurrences, expected none)\n+ kernel/src/task/scheduler.rs :: fn current_thread_id => lock_scheduler  (1 occurrences, expected none)".to_string())
     );
 }
 
 #[test]
-fn fatal_scheduler_census_rejects_blocking_call_in_dump_shape() {
+fn fatal_scheduler_census_m_b_rejects_blocking_call_in_direct_fatal_callee() {
     let exception_source = repo_text(FATAL_EXCEPTION_PATH);
     let scheduler_source = repo_text(SCHEDULER_PATH);
     assert!(
         function_body(&exception_source, "dump_el1_fatal_frame_and_dispatch_trace").is_some(),
-        "M-B dump-shape helper body anchor"
+        "M-B direct fatal-callee body anchor"
     );
     let mask = code_mask(&exception_source);
     let (_, open) = definition_offsets(
@@ -4201,7 +4308,7 @@ fn fatal_scheduler_census_rejects_blocking_call_in_dump_shape() {
     )
     .into_iter()
     .next()
-    .expect("M-B dump-shape helper definition anchor");
+    .expect("M-B direct fatal-callee definition anchor");
 
     let mut mutant = exception_source.clone();
     mutant.insert_str(
@@ -4210,17 +4317,17 @@ fn fatal_scheduler_census_rejects_blocking_call_in_dump_shape() {
     );
     assert_ne!(
         mutant, exception_source,
-        "M-B dump-shape helper insertion mutation anchor"
+        "M-B direct fatal-callee insertion mutation anchor"
     );
     let aarch64_sources = aarch64_sources_with_exception(&mutant);
     assert_eq!(
         validate_fatal_scheduler_accessor_census(&mutant, &scheduler_source, &aarch64_sources),
-        Err("+ kernel/src/arch_impl/aarch64/exception.rs :: fn dump_el1_fatal_frame_and_dispatch_trace => current_thread_id  (1 occurrences, expected none)".to_string())
+        Err("+ kernel/src/arch_impl/aarch64/exception.rs :: fn dump_el1_fatal_frame_and_dispatch_trace => current_thread_id  (1 occurrences, expected none)\n+ kernel/src/task/scheduler.rs :: fn current_thread_id => lock_scheduler  (1 occurrences, expected none)".to_string())
     );
 }
 
 #[test]
-fn fatal_scheduler_census_rejects_broken_blocking_accessor_derivation() {
+fn fatal_scheduler_census_m_c_rejects_broken_blocking_accessor_derivation() {
     let exception_source = repo_text(FATAL_EXCEPTION_PATH);
     let scheduler_source = repo_text(SCHEDULER_PATH);
     let mutant = scheduler_source.replace("lock_scheduler(", "renamed_lock_scheduler(");
@@ -4232,5 +4339,83 @@ fn fatal_scheduler_census_rejects_broken_blocking_accessor_derivation() {
     assert_eq!(
         validate_fatal_scheduler_accessor_census(&exception_source, &mutant, &aarch64_sources),
         Err("blocking scheduler accessor derivation is empty".to_string())
+    );
+}
+
+#[test]
+fn fatal_scheduler_census_m_e_rejects_blocking_call_in_transitive_callee() {
+    let exception_source = repo_text(FATAL_EXCEPTION_PATH);
+    let scheduler_source = repo_text(SCHEDULER_PATH);
+    assert!(
+        function_body(&scheduler_source, "dump_cpu_state_history_postmortem").is_some(),
+        "M-E transitive fatal-callee body anchor"
+    );
+    let mask = code_mask(&scheduler_source);
+    let (_, open) = definition_offsets(
+        &scheduler_source,
+        &mask,
+        "dump_cpu_state_history_postmortem",
+    )
+    .into_iter()
+    .next()
+    .expect("M-E transitive fatal-callee definition anchor");
+
+    let mut mutant = scheduler_source.clone();
+    mutant.insert_str(
+        open + 1,
+        "\n    let _ = crate::task::scheduler::current_thread_id();",
+    );
+    assert_ne!(
+        mutant, scheduler_source,
+        "M-E transitive fatal-callee insertion mutation anchor"
+    );
+    let aarch64_sources = aarch64_sources_with_exception(&exception_source);
+    assert_eq!(
+        validate_fatal_scheduler_accessor_census(&exception_source, &mutant, &aarch64_sources),
+        Err("+ kernel/src/task/scheduler.rs :: #[cfg(target_arch=aarch64)] fn dump_cpu_state_history_postmortem => current_thread_id  (1 occurrences, expected none)\n+ kernel/src/task/scheduler.rs :: fn current_thread_id => lock_scheduler  (1 occurrences, expected none)".to_string())
+    );
+}
+
+#[test]
+fn fatal_scheduler_census_m_f_rejects_broken_fatal_callee_derivation() {
+    let exception_source = repo_text(FATAL_EXCEPTION_PATH);
+    let scheduler_source = repo_text(SCHEDULER_PATH);
+    let mask = code_mask(&exception_source);
+    let blocks = lexical_blocks(&exception_source, &mask);
+    let functions = source_functions(&exception_source, &mask, &blocks);
+    let definition_name = functions
+        .iter()
+        .find(|function| function.name == "dump_el1_fatal_frame_and_dispatch_trace")
+        .map(|function| function.name_offset)
+        .expect("M-F fatal-callee definition anchor");
+    let mut calls: Vec<_> = call_offsets(
+        &exception_source,
+        &mask,
+        "dump_el1_fatal_frame_and_dispatch_trace",
+    )
+    .into_iter()
+    .filter(|offset| *offset != definition_name)
+    .collect();
+    assert!(!calls.is_empty(), "M-F fatal-region call anchors");
+
+    let mut mutant = exception_source.clone();
+    calls.sort_unstable_by(|left, right| right.cmp(left));
+    for offset in calls {
+        mutant.replace_range(
+            offset..offset + "dump_el1_fatal_frame_and_dispatch_trace".len(),
+            "removed_el1_fatal_frame_and_dispatch_trace",
+        );
+    }
+    assert_ne!(
+        mutant, exception_source,
+        "M-F fatal-callee derivation mutation anchor"
+    );
+    let aarch64_sources = aarch64_sources_with_exception(&mutant);
+    assert_eq!(
+        validate_fatal_scheduler_accessor_census(&mutant, &scheduler_source, &aarch64_sources),
+        Err(
+            "fatal-callee derivation missing anchors: dump_el1_fatal_frame_and_dispatch_trace"
+                .to_string()
+        )
     );
 }
