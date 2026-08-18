@@ -406,11 +406,22 @@ not a prediction about arguments not yet made. The PR that splits says so in its
      `docker/qemu/run-aarch64-boot-test-native.sh`, `docker/qemu/run-aarch64-full-test.sh`, and
      `docker/qemu/run-aarch64-service-sequence-gate.sh` collectively pin `INIT_DESIGNATION` +
      `INIT_DESIGNATION_ORACLE`, `CREATING_DISPATCH_ORACLE`, `BLOCK_WEDGE_ORACLE`,
-     `BLOCK_EINTR_ORACLE`, the abort/panic hard-fails, and P5b's
+     `BLOCK_EINTR_ORACLE`, the abort/panic hard-fails, `CTX596_ORACLE` (#596), and P5b's
      `INIT_GROUP_REFUSAL_ORACLE` / `INIT_GROUP_REFUSAL` / `INIT_GROUP_WALK` /
      `INIT_GROUP_CHILD_RAN` set. **The scripts are the truth about what is pinned; this list is a
      snapshot as of this PR. Re-derive it at the head of every phase and repair the prose in the same
      PR rather than trusting it.**
+   - **aarch64 init service-sequence gate:** `docker/qemu/run-aarch64-service-sequence-gate.sh`,
+     whose **default is 25 boots per CPU profile** — operator directive, 2026-08-18, raised from
+     the old 10-boot smoke so an unqualified run is already a meaningful sample; the #575 round
+     gate remains `--boots 100 --profile both`. **The script is the truth about which buckets it
+     classifies and which of them fail the gate** — read `classify_serial` and the gate condition
+     in the script rather than any list here, which goes stale (the #549/#551/#527-r1 lesson).
+     As of this PR it fails on `575`, `DATA_ABORT`, `596`, `P5B`, or `UNATTRIBUTED`, and reports
+     (never gates on) `576`/`589` and the `CTX596` divergence census; a `596` boot is an EL1
+     `DATA_ABORT` (`from_el0=0`) **or** a `[CTX596_ORACLE:FAIL` line, a `P5B` boot is a completed
+     service sequence whose init-group quiesce-refusal markers are missing/short/failed, and a boot
+     that never emitted `[CTX596_ORACLE:ARMED` is `UNATTRIBUTED`, never GREEN by omission.
    - **aarch64 soaks:** **100 clean cycles** and **100 starved cycles** (host-contended) of the
      boot-test gate on `aarch64-breenix-kernel.json`, with the no-NEON guard run against the booted
      ELF. Starvation is applied by the runner, not by a committed script; the cycle count and the

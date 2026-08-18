@@ -4320,6 +4320,26 @@ pub fn abort_dispatch_and_resume(aborted_thread_id: u64, resume_thread_id: u64) 
     });
 }
 
+/// Best-effort thread termination for EL1 crash recovery.
+///
+/// A fatal exception may interrupt a context that already owns SCHEDULER, so
+/// this helper refuses to wait for the lock and leaves cleanup to a later path.
+#[cfg(target_arch = "aarch64")]
+pub fn terminate_thread_best_effort(thread_id: u64) -> bool {
+    let Some(mut scheduler_lock) = try_lock_scheduler() else {
+        return false;
+    };
+    let Some(sched) = scheduler_lock.as_mut() else {
+        return false;
+    };
+
+    if let Some(thread) = sched.get_thread_mut(thread_id) {
+        thread.set_terminated();
+    }
+    sched.remove_from_ready_queue(thread_id);
+    true
+}
+
 /// Best-effort switch to idle — uses try_lock to avoid deadlock in crash handlers.
 ///
 /// When an INSTRUCTION_ABORT or DATA_ABORT occurs from EL1, the SCHEDULER lock
