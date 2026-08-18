@@ -247,8 +247,28 @@ classify_serial() {
     if grep -qF "[init] Boot script completed" "$serial_file" 2>/dev/null \
         && grep -qF "create_process_with_argv [ARM64]: ENTRY - name='telnetd'" "$serial_file" 2>/dev/null \
         && grep -qF "[spawn] path='/bin/bounce'" "$serial_file" 2>/dev/null; then
+        if ! grep -qF "[INIT_GROUP_REFUSAL:aarch64:phase=quiesce:probe1=-22:probe2=-22:expected=-22]" "$serial_file" 2>/dev/null; then
+            CLASS_BUCKET="P5B"
+            CLASS_REASON="init-group quiesce refusal marker missing"
+            return
+        fi
+        if ! grep -qE '^\[INIT_GROUP_WALK:aarch64:rows=[0-9]+:init_tgid_rows=1:foreign_tgid_rows=0:refused=4:verdict=PASS\]$' "$serial_file" 2>/dev/null; then
+            CLASS_BUCKET="P5B"
+            CLASS_REASON="init-group quiesce walk marker missing"
+            return
+        fi
+        if grep -qE '\[INIT_GROUP_WALK:.*verdict=FAIL' "$serial_file" 2>/dev/null; then
+            CLASS_BUCKET="P5B"
+            CLASS_REASON="init-group walk reported verdict=FAIL"
+            return
+        fi
+        if grep -qF "[INIT_GROUP_CHILD_RAN]" "$serial_file" 2>/dev/null; then
+            CLASS_BUCKET="P5B"
+            CLASS_REASON="refused init-group child ran"
+            return
+        fi
         CLASS_BUCKET="GREEN"
-        CLASS_REASON="all service-sequence markers observed"
+        CLASS_REASON="all service-sequence and P5b markers observed"
         return
     fi
 
@@ -260,6 +280,7 @@ classify_serial() {
 TOTAL_575=0
 TOTAL_576=0
 TOTAL_589=0
+TOTAL_P5B=0
 TOTAL_GREEN=0
 TOTAL_UNATTRIBUTED=0
 TOTAL_BOOTS=0
@@ -271,9 +292,10 @@ print_census() {
     local count_575="$2"
     local count_576="$3"
     local count_589="$4"
-    local count_green="$5"
-    local count_unattributed="$6"
-    local count_boots="$7"
+    local count_p5b="$5"
+    local count_green="$6"
+    local count_unattributed="$7"
+    local count_boots="$8"
     local green_rate
 
     green_rate=$(awk -v green="$count_green" -v boots="$count_boots" \
@@ -283,6 +305,7 @@ print_census() {
     printf '  %-13s %d\n' "575" "$count_575"
     printf '  %-13s %d\n' "576" "$count_576"
     printf '  %-13s %d\n' "589" "$count_589"
+    printf '  %-13s %d\n' "P5B" "$count_p5b"
     printf '  %-13s %d\n' "GREEN" "$count_green"
     printf '  %-13s %d\n' "UNATTRIBUTED" "$count_unattributed"
     echo "  GREEN rate: $count_green/$count_boots ($green_rate%) — not a gate today: #589 and #576 are open and intercept boots"
@@ -295,6 +318,7 @@ run_profile() {
     local count_575=0
     local count_576=0
     local count_589=0
+    local count_p5b=0
     local count_green=0
     local count_unattributed=0
     local boot
@@ -389,6 +413,7 @@ run_profile() {
             575) count_575=$((count_575 + 1)) ;;
             576) count_576=$((count_576 + 1)) ;;
             589) count_589=$((count_589 + 1)) ;;
+            P5B) count_p5b=$((count_p5b + 1)) ;;
             GREEN) count_green=$((count_green + 1)) ;;
             UNATTRIBUTED) count_unattributed=$((count_unattributed + 1)) ;;
             *)
@@ -401,26 +426,28 @@ run_profile() {
         echo "  Boot $boot/$BOOTS: $CLASS_BUCKET — $CLASS_REASON [$boot_end, ${boot_seconds}s]"
     done
 
-    census_sum=$((count_575 + count_576 + count_589 + count_green + count_unattributed))
+    census_sum=$((count_575 + count_576 + count_589 + count_p5b + count_green + count_unattributed))
     if [ "$census_sum" -ne "$BOOTS" ]; then
         echo "FATAL: $cpu_profile bucket census sums to $census_sum, expected $BOOTS"
         exit 1
     fi
 
     print_census "Profile $cpu_profile" "$count_575" "$count_576" "$count_589" \
-        "$count_green" "$count_unattributed" "$BOOTS"
+        "$count_p5b" "$count_green" "$count_unattributed" "$BOOTS"
 
-    # The GREEN rate is census-only because open #589 and #576 intercept boots; ratchet it into the gate when both land.
-    if [ "$count_575" -ne 0 ] || [ "$count_unattributed" -ne 0 ]; then
+    # The GREEN rate is census-only because open #589 and #576 intercept boots;
+    # its GREEN denominator is now also the P5b whole-boot-walk denominator.
+    if [ "$count_575" -ne 0 ] || [ "$count_p5b" -ne 0 ] || [ "$count_unattributed" -ne 0 ]; then
         ANY_GATE_FAILURE=1
-        echo "Profile $cpu_profile gate: FAILED (575=$count_575, UNATTRIBUTED=$count_unattributed)"
+        echo "Profile $cpu_profile gate: FAILED (575=$count_575, P5B=$count_p5b, UNATTRIBUTED=$count_unattributed)"
     else
-        echo "Profile $cpu_profile gate: PASSED (575=0, UNATTRIBUTED=0)"
+        echo "Profile $cpu_profile gate: PASSED (575=0, P5B=0, UNATTRIBUTED=0)"
     fi
 
     TOTAL_575=$((TOTAL_575 + count_575))
     TOTAL_576=$((TOTAL_576 + count_576))
     TOTAL_589=$((TOTAL_589 + count_589))
+    TOTAL_P5B=$((TOTAL_P5B + count_p5b))
     TOTAL_GREEN=$((TOTAL_GREEN + count_green))
     TOTAL_UNATTRIBUTED=$((TOTAL_UNATTRIBUTED + count_unattributed))
     TOTAL_BOOTS=$((TOTAL_BOOTS + BOOTS))
@@ -447,7 +474,7 @@ case "$PROFILE" in
         ;;
 esac
 
-TOTAL_SUM=$((TOTAL_575 + TOTAL_576 + TOTAL_589 + TOTAL_GREEN + TOTAL_UNATTRIBUTED))
+TOTAL_SUM=$((TOTAL_575 + TOTAL_576 + TOTAL_589 + TOTAL_P5B + TOTAL_GREEN + TOTAL_UNATTRIBUTED))
 EXPECTED_TOTAL=$((BOOTS * PROFILE_COUNT))
 if [ "$TOTAL_SUM" -ne "$EXPECTED_TOTAL" ] || [ "$TOTAL_BOOTS" -ne "$EXPECTED_TOTAL" ]; then
     echo "FATAL: total bucket census sums to $TOTAL_SUM for $TOTAL_BOOTS recorded boots; expected $EXPECTED_TOTAL"
@@ -455,7 +482,7 @@ if [ "$TOTAL_SUM" -ne "$EXPECTED_TOTAL" ] || [ "$TOTAL_BOOTS" -ne "$EXPECTED_TOT
 fi
 
 print_census "Total" "$TOTAL_575" "$TOTAL_576" "$TOTAL_589" \
-    "$TOTAL_GREEN" "$TOTAL_UNATTRIBUTED" "$TOTAL_BOOTS"
+    "$TOTAL_P5B" "$TOTAL_GREEN" "$TOTAL_UNATTRIBUTED" "$TOTAL_BOOTS"
 
 if [ "$ANY_GATE_FAILURE" -ne 0 ]; then
     echo ""

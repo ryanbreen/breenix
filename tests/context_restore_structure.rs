@@ -1917,7 +1917,7 @@ fn synthetic_no_cr3_restore_source(else_arm: &str) -> String {
     )
 }
 
-fn validate_clone_publication_lifecycle() -> Result<(), String> {
+fn validate_clone_publication_lifecycle(clone: &str) -> Result<(), String> {
     let sources = rust_sources_below("kernel/src");
     let mut ready_writes = Vec::new();
     for (path, source) in &sources {
@@ -1984,9 +1984,8 @@ fn validate_clone_publication_lifecycle() -> Result<(), String> {
         return Err("is_unpublished does not accept exactly Creating".to_string());
     }
 
-    let clone = repo_text("kernel/src/syscall/clone.rs");
     let clone_body =
-        function_body(&clone, "sys_clone").ok_or_else(|| "missing sys_clone body".to_string())?;
+        function_body(clone, "sys_clone").ok_or_else(|| "missing sys_clone body".to_string())?;
     let clone_mask = code_mask(clone_body);
 
     let admission_calls = call_offsets(clone_body, &clone_mask, "admit_clone_into");
@@ -2099,10 +2098,51 @@ fn validate_clone_publication_lifecycle() -> Result<(), String> {
     if manager_guard_bindings[0] >= admission {
         return Err("sys_clone manager_guard is bound after clone admission".to_string());
     }
-    if normalized_code(&clone_body[admission..insert])
-        .replace(' ', "")
-        .contains("drop(manager_guard)")
+
+    let manager_guard_drops = call_offsets(clone_body, &clone_mask, "drop")
+        .into_iter()
+        .filter(|offset| {
+            let statement_end = (*offset..clone_body.len())
+                .find(|index| clone_mask[*index] && clone_body.as_bytes()[*index] == b';')
+                .unwrap_or(clone_body.len());
+            normalized_code(&clone_body[*offset..statement_end]).replace(' ', "")
+                == "drop(manager_guard)"
+        })
+        .collect::<Vec<_>>();
+    let (init_refusal_start, init_refusal_arm) = identifier_offsets(clone_body, &clone_mask, "if")
+        .into_iter()
+        .find_map(|if_offset| {
+            let block = braced_block(clone_body, &clone_mask, if_offset)?;
+            let open = block.find('{')?;
+            (call_offsets(
+                &block[..open],
+                &code_mask(&block[..open]),
+                "refuses_init_group_clone",
+            )
+            .len()
+                == 1)
+                .then_some((if_offset, block))
+        })
+        .ok_or_else(|| "sys_clone init-group refusal is not an if guard".to_string())?;
+    let init_refusal_range = init_refusal_start..init_refusal_start + init_refusal_arm.len();
+    let init_refusal_mask = code_mask(init_refusal_arm);
+    let compact_init_refusal = normalized_code(init_refusal_arm).replace(' ', "");
+    if manager_guard_drops
+        .iter()
+        .filter(|drop| init_refusal_range.contains(drop))
+        .count()
+        != 1
+        || identifier_offsets(init_refusal_arm, &init_refusal_mask, "return").len() != 1
+        || !compact_init_refusal
+            .contains("returnSyscallResult::Err(super::errno::EINVALasu64);")
     {
+        return Err(
+            "sys_clone init-group refusal must drop the guard and return EINVAL".to_string(),
+        );
+    }
+    if manager_guard_drops.iter().any(|drop| {
+        admission < *drop && *drop < insert && !init_refusal_range.contains(drop)
+    }) {
         return Err(
             "sys_clone drops manager_guard between clone admission and child publication"
                 .to_string(),
@@ -2159,15 +2199,9 @@ fn validate_clone_publication_lifecycle() -> Result<(), String> {
         &clone_mask,
         "crate::task::thread::ThreadState::Ready",
     );
-    let manager_guard_drops = call_offsets(clone_body, &clone_mask, "drop")
+    let publication_manager_guard_drops = manager_guard_drops
         .into_iter()
-        .filter(|offset| {
-            let statement_end = (*offset..clone_body.len())
-                .find(|index| clone_mask[*index] && clone_body.as_bytes()[*index] == b';')
-                .unwrap_or(clone_body.len());
-            normalized_code(&clone_body[*offset..statement_end]).replace(' ', "")
-                == "drop(manager_guard)"
-        })
+        .filter(|drop| !init_refusal_range.contains(drop))
         .collect::<Vec<_>>();
     let spawn_calls = call_offsets(clone_body, &clone_mask, "spawn");
     let publication_steps = [
@@ -2175,7 +2209,10 @@ fn validate_clone_publication_lifecycle() -> Result<(), String> {
         ("insert_process", insert_calls.as_slice()),
         ("set_ready", set_ready_calls.as_slice()),
         ("ThreadState::Ready", runnable_thread_writes.as_slice()),
-        ("drop(manager_guard)", manager_guard_drops.as_slice()),
+        (
+            "drop(manager_guard)",
+            publication_manager_guard_drops.as_slice(),
+        ),
         ("spawn", spawn_calls.as_slice()),
     ];
     let mut publication_sequence = Vec::new();
@@ -2395,7 +2432,22 @@ fn validate_aarch64_failed_exec_ttbr0_rollback(source: &str) -> Result<(), Strin
 
 #[test]
 fn clone_publication_lifecycle_is_closed() {
-    assert_eq!(validate_clone_publication_lifecycle(), Ok(()));
+    let clone = repo_text("kernel/src/syscall/clone.rs");
+    assert_eq!(validate_clone_publication_lifecycle(&clone), Ok(()));
+
+    let refusal = clone
+        .find("if refuses_init_group_clone(manager, parent_tg_id) {")
+        .expect("init-group refusal arm");
+    let return_offset = clone[refusal..]
+        .find("return SyscallResult::Err(super::errno::EINVAL as u64);")
+        .map(|offset| refusal + offset)
+        .expect("init-group refusal return");
+    let mut nonterminal_refusal = clone.clone();
+    nonterminal_refusal.replace_range(
+        return_offset..return_offset + "return".len(),
+        "let _ignored =",
+    );
+    assert!(validate_clone_publication_lifecycle(&nonterminal_refusal).is_err());
 }
 
 #[test]

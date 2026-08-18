@@ -4690,13 +4690,15 @@ pub fn init_group_refusal_oracle_test() -> crate::test_framework::registry::Test
 
         // A0: no designation means every effective thread-group ID is admitted.
         let other = manager.allocate_pid();
-        let none_probes = 3u64;
+        let mut none_probes = 0u64;
         let mut none_refusals = 0u64;
         for derived_tg_id in [crate::process::RESERVED_INIT_PID, other.as_u64(), u64::MAX] {
-            none_refusals += u64::from(crate::syscall::clone::refuses_init_group_clone(
+            let refused = crate::syscall::clone::refuses_init_group_clone(
                 manager,
                 derived_tg_id,
-            ));
+            );
+            none_probes += 1;
+            none_refusals += u64::from(refused);
         }
 
         // Install and publish a synthetic designated init row.
@@ -4745,14 +4747,13 @@ pub fn init_group_refusal_oracle_test() -> crate::test_framework::registry::Test
             ),
         );
         let missing_other = manager.allocate_pid();
-        let nonit_probes = 2u64;
-        let nonit_refusals = u64::from(crate::syscall::clone::refuses_init_group_clone(
-            manager,
-            other.as_u64(),
-        )) + u64::from(crate::syscall::clone::refuses_init_group_clone(
-            manager,
-            missing_other.as_u64(),
-        ));
+        let mut nonit_probes = 0u64;
+        let mut nonit_refusals = 0u64;
+        for derived_tg_id in [other.as_u64(), missing_other.as_u64()] {
+            let refused = crate::syscall::clone::refuses_init_group_clone(manager, derived_tg_id);
+            nonit_probes += 1;
+            nonit_refusals += u64::from(refused);
+        }
 
         // A3: compare the effective group IDs, never the designated init's PID.
         const INIT_GROUP_ALIAS: u64 = 0x5000_0000_0000_0001;

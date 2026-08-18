@@ -2605,9 +2605,33 @@ const DEFERRED_RECLAIM_DRAIN_SITES: &[(&str, &str, usize)] = &[
     ("kernel/src/interrupts/context_switch.rs", "fn idle_loop", 1),
     ("kernel/src/process/mod.rs", "fn exit_process_and_retire", 1),
 ];
+/// Whole-tree writes include the boot-test alias arm. The separate production
+/// subset check in the page-table validator remains fixed to clone.rs +
+/// manager.rs + process.rs and exactly one non-`None` write.
 #[rustfmt::skip]
 const THREAD_GROUP_WRITES: &[(&str, &str, usize)] = &[
     ("kernel/src/syscall/clone.rs", "fn sys_clone", 1),
+    ("kernel/src/tracing/providers/teardown.rs", "#[cfg(feature=boot_tests)] fn init_group_refusal_oracle_test", 1),
+];
+/// `call_offsets` excludes the `refuses_init_group_clone` definition itself, so
+/// this census contains consultations only.
+#[rustfmt::skip]
+const INIT_GROUP_REFUSAL_CONSULTATIONS: &[(&str, &str, usize)] = &[
+    ("kernel/src/syscall/clone.rs", "fn sys_clone", 1),
+    ("kernel/src/tracing/providers/teardown.rs", "#[cfg(feature=boot_tests)] fn init_group_refusal_oracle_test", 5),
+];
+/// `call_offsets` excludes the `designated_init` definition itself. Production
+/// readers and `boot_tests`-only oracle readers remain separate shape anchors.
+#[rustfmt::skip]
+const DESIGNATED_INIT_READS: &[(&str, &str, usize)] = &[
+    ("kernel/src/main_aarch64.rs", "#[cfg(target_arch=aarch64)] fn launch_init_from_elf", 1),
+    ("kernel/src/syscall/clone.rs", "fn refuses_init_group_clone", 1),
+    ("kernel/src/syscall/signal.rs", "fn check_target_exists", 1),
+    ("kernel/src/syscall/signal.rs", "fn send_signal_to_all_processes", 1),
+    ("kernel/src/task/process_task.rs", "impl ProcessScheduler::fn handle_thread_exit", 1),
+    ("kernel/src/tracing/providers/teardown.rs", "#[cfg(feature=boot_tests)] fn init_designation_oracle_test", 10),
+    ("kernel/src/tracing/providers/teardown.rs", "#[cfg(feature=boot_tests)] fn init_group_refusal_oracle_test", 2),
+    ("kernel/src/tracing/providers/teardown.rs", "#[cfg(feature=boot_tests)] fn init_group_walk_census", 1),
 ];
 #[rustfmt::skip]
 const CLEAR_CHILD_TID_EXIT_SITES: &[(&str, &str, usize)] = &[
@@ -2720,6 +2744,218 @@ fn validate_group_writes(sources: &[(String, String)]) -> Result<(), Vec<String>
         }),
         THREAD_GROUP_WRITES,
     )
+}
+
+fn validate_init_group_refusal_consultations(
+    sources: &[(String, String)],
+) -> Result<(), Vec<String>> {
+    validate_census(
+        &census(sources, |source, mask| {
+            call_offsets(source, mask, "refuses_init_group_clone")
+        }),
+        INIT_GROUP_REFUSAL_CONSULTATIONS,
+    )
+}
+
+fn validate_designated_init_reads(
+    sources: &[(String, String)],
+) -> Result<(), Vec<String>> {
+    validate_census(
+        &census(sources, |source, mask| {
+            call_offsets(source, mask, "designated_init")
+        }),
+        DESIGNATED_INIT_READS,
+    )
+}
+
+fn validate_init_group_refusal_ordering(clone: &str) -> Result<(), ()> {
+    let body = function_body(clone, "sys_clone");
+    let mask = code_mask(body);
+    let effective_group = code_offsets(body, &mask, "thread_group_id.unwrap_or(");
+    let refusal = call_offsets(body, &mask, "refuses_init_group_clone");
+    let allocation = call_offsets(body, &mask, "allocate_pid");
+
+    (effective_group.len() == 1
+        && refusal.len() == 1
+        && allocation.len() == 1
+        && effective_group[0] < refusal[0]
+        && refusal[0] < allocation[0])
+        .then_some(())
+        .ok_or(())
+}
+
+fn validate_init_group_refusal_oracle_pins(
+    sources: &[(String, String)],
+) -> Result<(), ()> {
+    let registry = source(sources, "kernel/src/test_framework/registry.rs");
+    let registry_mask = code_mask(registry);
+    let registrations =
+        identifier_offsets(registry, &registry_mask, "init_group_refusal_oracle_test");
+    if registrations.len() != 1 || registry.contains("init_group_refusal_oracle_test as") {
+        return Err(());
+    }
+    let test_def = enclosing_test_def(registry, &registry_mask, registrations[0]).ok_or(())?;
+    if !test_def.contains("name: \"init_group_refusal_oracle\"")
+        || !test_def.contains("arch: Arch::Aarch64")
+        || !test_def.contains("stage: TestStage::PostScheduler")
+    {
+        return Err(());
+    }
+
+    let main = source(sources, "kernel/src/main.rs");
+    (code_offsets(
+        main,
+        &code_mask(main),
+        "teardown::run_x86_init_group_refusal_gate();",
+    )
+    .len()
+        == 1)
+        .then_some(())
+        .ok_or(())
+}
+
+const P5B_GATE_SCRIPT_PATHS: [&str; 5] = [
+    "docker/qemu/run-aarch64-boot-test-strict.sh",
+    "docker/qemu/run-aarch64-boot-test-native.sh",
+    "docker/qemu/run-aarch64-full-test.sh",
+    "docker/qemu/run-x86-boot-tests.sh",
+    "docker/qemu/run-aarch64-service-sequence-gate.sh",
+];
+
+fn p5b_gate_script_sources() -> Vec<(String, String)> {
+    P5B_GATE_SCRIPT_PATHS
+        .iter()
+        .map(|path| ((*path).to_owned(), repo_text(path)))
+        .collect()
+}
+
+fn validate_p5b_gate_script_pins(
+    scripts: &[(String, String)],
+) -> Result<(), Vec<String>> {
+    let mut failures = Vec::new();
+    let aarch64_literal = "INIT_GROUP_REFUSAL_ORACLE_LITERAL='[INIT_GROUP_REFUSAL_ORACLE:aarch64:none_probes=3:none_refusals=0:init_refused=1:alias_refused=1:alias_pid_refused=0:nonit_probes=2:nonit_refusals=0:rows_delta=0:refusal_counter_delta=0:designation_residual=0:balance=0]'";
+    let x86_literal = "INIT_GROUP_REFUSAL_ORACLE_LITERAL='[INIT_GROUP_REFUSAL_ORACLE:x86:none_probes=3:none_refusals=0:init_refused=1:alias_refused=1:alias_pid_refused=0:nonit_probes=2:nonit_refusals=0:rows_delta=0:refusal_counter_delta=0:designation_residual=0:balance=0]'";
+    let early = "[INIT_GROUP_REFUSAL:aarch64:phase=early:probe1=-22:probe2=-22:expected=-22]";
+    let early_walk = "^\\[INIT_GROUP_WALK:aarch64:rows=[0-9]+:init_tgid_rows=1:foreign_tgid_rows=0:refused=2:verdict=PASS\\]$";
+    let quiesce = "[INIT_GROUP_REFUSAL:aarch64:phase=quiesce:probe1=-22:probe2=-22:expected=-22]";
+    let quiesce_walk = "^\\[INIT_GROUP_WALK:aarch64:rows=[0-9]+:init_tgid_rows=1:foreign_tgid_rows=0:refused=4:verdict=PASS\\]$";
+
+    for path in [
+        "docker/qemu/run-aarch64-boot-test-strict.sh",
+        "docker/qemu/run-aarch64-boot-test-native.sh",
+    ] {
+        let script = source(scripts, path);
+        for pin in [
+            aarch64_literal,
+            "grep -qF -x \"$INIT_GROUP_REFUSAL_ORACLE_LITERAL\"",
+            early,
+            early_walk,
+            "[INIT_GROUP_WALK:.*verdict=FAIL",
+            "[INIT_GROUP_CHILD_RAN]",
+            "pins the early probe",
+        ] {
+            check(
+                &mut failures,
+                &format!("{path} lost P5b pin {pin}"),
+                script.contains(pin),
+            );
+        }
+        for pin in [aarch64_literal, early, early_walk, "verdict=FAIL", "[INIT_GROUP_CHILD_RAN]"] {
+            check(
+                &mut failures,
+                &format!("{path} P5b pin count changed for {pin}"),
+                script.matches(pin).count() == 1,
+            );
+        }
+    }
+
+    let full = source(scripts, "docker/qemu/run-aarch64-full-test.sh");
+    let oracle = "[INIT_GROUP_REFUSAL_ORACLE:aarch64:none_probes=3:none_refusals=0:init_refused=1:alias_refused=1:alias_pid_refused=0:nonit_probes=2:nonit_refusals=0:rows_delta=0:refusal_counter_delta=0:designation_residual=0:balance=0]";
+    check(
+        &mut failures,
+        "run-aarch64-full-test.sh lost the Phase 1 oracle pin",
+        full.matches(oracle).count() == 1,
+    );
+    match (
+        full.find("# --- Phase 1e:"),
+        full.find("# --- Phase 2: Verify services"),
+    ) {
+        (Some(phase_1e), Some(phase_2)) if phase_1e < phase_2 => {
+            let phase = &full[phase_1e..phase_2];
+            for pin in [
+                "Phase 1e: init-group refusal whole-boot assertion",
+                "for i in $(seq 1 30); do",
+                "sleep 2",
+                quiesce,
+                quiesce_walk,
+                "[INIT_GROUP_WALK:.*verdict=FAIL",
+                "[INIT_GROUP_CHILD_RAN]",
+                "Observed: $INIT_GROUP_WALK_LINE",
+            ] {
+                check(
+                    &mut failures,
+                    &format!("run-aarch64-full-test.sh Phase 1e lost P5b pin {pin}"),
+                    phase.contains(pin),
+                );
+            }
+        }
+        _ => failures.push("Phase 1e moved behind the boot-tests-only exit boundary".to_owned()),
+    }
+
+    let x86 = source(scripts, "docker/qemu/run-x86-boot-tests.sh");
+    for pin in [
+        x86_literal,
+        "TEST:process:init_group_refusal_oracle:PASS",
+        "grep -qF -x \"$INIT_GROUP_REFUSAL_ORACLE_LITERAL\"",
+        "INIT_GROUP_WALK_COUNT=$(awk",
+        "test \"$INIT_GROUP_WALK_COUNT\" -eq 0",
+        "x86 has no production designated init",
+    ] {
+        check(
+            &mut failures,
+            &format!("run-x86-boot-tests.sh lost P5b pin {pin}"),
+            x86.contains(pin),
+        );
+    }
+    check(
+        &mut failures,
+        "x86 init-group refusal PASS poll/count pair changed",
+        x86.matches("TEST:process:init_group_refusal_oracle:PASS")
+            .count()
+            == 2,
+    );
+    check(
+        &mut failures,
+        "x86 init-group refusal literal definition count changed",
+        x86.matches(x86_literal).count() == 1,
+    );
+
+    let service = source(
+        scripts,
+        "docker/qemu/run-aarch64-service-sequence-gate.sh",
+    );
+    for pin in [
+        quiesce,
+        quiesce_walk,
+        "[INIT_GROUP_WALK:.*verdict=FAIL",
+        "[INIT_GROUP_CHILD_RAN]",
+        "CLASS_BUCKET=\"P5B\"",
+        "TOTAL_P5B=0",
+        "P5B) count_p5b=$((count_p5b + 1)) ;;",
+        "census_sum=$((count_575 + count_576 + count_589 + count_p5b + count_green + count_unattributed))",
+        "[ \"$count_575\" -ne 0 ] || [ \"$count_p5b\" -ne 0 ] || [ \"$count_unattributed\" -ne 0 ]",
+        "TOTAL_P5B=$((TOTAL_P5B + count_p5b))",
+        "TOTAL_SUM=$((TOTAL_575 + TOTAL_576 + TOTAL_589 + TOTAL_P5B + TOTAL_GREEN + TOTAL_UNATTRIBUTED))",
+        "P5b whole-boot-walk denominator",
+    ] {
+        check(
+            &mut failures,
+            &format!("run-aarch64-service-sequence-gate.sh lost P5b pin {pin}"),
+            service.contains(pin),
+        );
+    }
+
+    failures.is_empty().then_some(()).ok_or(failures)
 }
 
 fn clear_child_tid_read_offsets(source: &str, mask: &[bool]) -> Vec<usize> {
@@ -3568,7 +3804,7 @@ fn validate_frame_ledger_counter_inventory(provider: &str) -> Result<(), ()> {
         && EXPECTED
             .iter()
             .all(|counter| inventory.contains(&format!("&{counter},")))
-        && provider.contains("pub const COUNTER_COUNT: usize = 82;"))
+        && provider.contains("pub const COUNTER_COUNT: usize = 83;"))
     .then_some(())
     .ok_or(())
 }
@@ -3826,7 +4062,7 @@ fn validate_process_page_table_counter_inventory(sources: &[(String, String)]) -
         || !EXPECTED
             .iter()
             .all(|counter| inventory.contains(&format!("&{counter},")))
-        || !provider.contains("pub const COUNTER_COUNT: usize = 82;")
+        || !provider.contains("pub const COUNTER_COUNT: usize = 83;")
     {
         return Err(());
     }
@@ -4780,8 +5016,8 @@ fn frame_ledger_return_and_initialization_ratchets_are_exact() {
     }
     check(
         &mut failures,
-        "COUNTER_COUNT is no longer 82",
-        provider.contains("pub const COUNTER_COUNT: usize = 82;"),
+        "COUNTER_COUNT is no longer 83",
+        provider.contains("pub const COUNTER_COUNT: usize = 83;"),
     );
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
@@ -5197,6 +5433,20 @@ fn init_shell_role_is_conferred_by_argument_not_pid() {
 }
 
 #[test]
+fn init_group_refusal_oracle_is_registered_and_directly_reachable() {
+    let sources = rust_sources_below("kernel/src");
+    assert!(validate_init_group_refusal_oracle_pins(&sources).is_ok());
+}
+
+#[test]
+fn p5b_gate_scripts_keep_refusal_evidence_pinned() {
+    let scripts = p5b_gate_script_sources();
+    if let Err(failures) = validate_p5b_gate_script_pins(&scripts) {
+        panic!("{}", failures.join("\n"));
+    }
+}
+
+#[test]
 fn v3_structural_closures_are_exact() {
     let sources = rust_sources_below("kernel/src");
     let mut failures = Vec::new();
@@ -5212,8 +5462,26 @@ fn v3_structural_closures_are_exact() {
     );
     record(
         &mut failures,
-        "thread_group_id production writers changed",
+        "thread_group_id writers changed",
         validate_group_writes(&sources),
+    );
+    record(
+        &mut failures,
+        "init-group refusal consultations changed",
+        validate_init_group_refusal_consultations(&sources),
+    );
+    record(
+        &mut failures,
+        "designated-init readers changed",
+        validate_designated_init_reads(&sources),
+    );
+    record_unit(
+        &mut failures,
+        "init-group refusal moved outside the pre-allocation window",
+        validate_init_group_refusal_ordering(source(
+            &sources,
+            "kernel/src/syscall/clone.rs",
+        )),
     );
     record(
         &mut failures,
@@ -5595,7 +5863,7 @@ fn all_phase_zero_counters_have_registered_readers_and_honest_runtime_gates() {
         .filter_map(|rest| rest.strip_suffix(','))
         .map(str::to_owned)
         .collect();
-    assert_eq!(declarations.len(), 82);
+    assert_eq!(declarations.len(), 83);
     assert_eq!(
         readers, declarations,
         "every counter must have an inventory reader"
@@ -6487,6 +6755,101 @@ fn deliberately_broken_variants_fail_the_ratchet() {
         "fn rogue_group(thread: &mut Thread) { thread.thread_group_id = Some(1); }",
     );
     assert!(validate_group_writes(&broken_group_write).is_err());
+
+    let rogue_refusal_consultation = with_synthetic_source(
+        &sources,
+        "kernel/src/synthetic_init_group_refusal.rs",
+        "fn rogue_refusal(manager: &ProcessManager) { let _ = refuses_init_group_clone(manager, 1); }",
+    );
+    assert!(validate_init_group_refusal_consultations(&rogue_refusal_consultation).is_err());
+
+    let rogue_designated_init_reader = with_synthetic_source(
+        &sources,
+        "kernel/src/synthetic_designated_init_reader.rs",
+        "fn rogue_reader(manager: &ProcessManager) { let _ = manager.designated_init(); }",
+    );
+    assert!(validate_designated_init_reads(&rogue_designated_init_reader).is_err());
+
+    let clone = source(&sources, "kernel/src/syscall/clone.rs");
+    let moved_refusal = clone
+        .replacen(
+            "let child_pid = manager.allocate_pid();",
+            "let child_pid = preallocated_child_pid;",
+            1,
+        )
+        .replacen(
+            "if refuses_init_group_clone(manager, parent_tg_id) {",
+            "let preallocated_child_pid = manager.allocate_pid();\n    if refuses_init_group_clone(manager, parent_tg_id) {",
+            1,
+        );
+    assert_ne!(moved_refusal, clone, "refusal-ordering mutation anchor");
+    assert!(validate_init_group_refusal_ordering(&moved_refusal).is_err());
+
+    let deleted_refusal = clone.replacen(
+        "if refuses_init_group_clone(manager, parent_tg_id) {",
+        "if false {",
+        1,
+    );
+    assert_ne!(deleted_refusal, clone, "refusal-deletion mutation anchor");
+    assert!(validate_init_group_refusal_ordering(&deleted_refusal).is_err());
+    let deleted_refusal = with_replaced_source(
+        &sources,
+        "kernel/src/syscall/clone.rs",
+        deleted_refusal,
+    );
+    assert!(validate_init_group_refusal_consultations(&deleted_refusal).is_err());
+
+    let registry = source(&sources, "kernel/src/test_framework/registry.rs");
+    let renamed_refusal_registration = registry.replacen(
+        "name: \"init_group_refusal_oracle\"",
+        "name: \"init_group_refusal_oracle_renamed\"",
+        1,
+    );
+    assert_ne!(
+        renamed_refusal_registration, registry,
+        "init-group refusal registration mutation anchor"
+    );
+    let renamed_refusal_registration = with_replaced_source(
+        &sources,
+        "kernel/src/test_framework/registry.rs",
+        renamed_refusal_registration,
+    );
+    assert!(validate_init_group_refusal_oracle_pins(&renamed_refusal_registration).is_err());
+
+    let main = source(&sources, "kernel/src/main.rs");
+    let missing_x86_refusal_call = main.replacen(
+        "teardown::run_x86_init_group_refusal_gate();",
+        "/* init-group refusal gate removed */",
+        1,
+    );
+    assert_ne!(
+        missing_x86_refusal_call, main,
+        "x86 init-group refusal call mutation anchor"
+    );
+    let missing_x86_refusal_call = with_replaced_source(
+        &sources,
+        "kernel/src/main.rs",
+        missing_x86_refusal_call,
+    );
+    assert!(validate_init_group_refusal_oracle_pins(&missing_x86_refusal_call).is_err());
+
+    let scripts = p5b_gate_script_sources();
+    let strict = source(
+        &scripts,
+        "docker/qemu/run-aarch64-boot-test-strict.sh",
+    );
+    let stripped_p5b_pin = strict.replacen(
+        "grep -qF -x \"$INIT_GROUP_REFUSAL_ORACLE_LITERAL\"",
+        "grep -qF \"[unrelated-marker]\"",
+        1,
+    );
+    assert_ne!(stripped_p5b_pin, strict, "P5b gate-pin mutation anchor");
+    let stripped_p5b_pin = with_replaced_source(
+        &scripts,
+        "docker/qemu/run-aarch64-boot-test-strict.sh",
+        stripped_p5b_pin,
+    );
+    assert!(validate_p5b_gate_script_pins(&stripped_p5b_pin).is_err());
 
     let scheduler = source(&sources, "kernel/src/task/scheduler.rs");
     let broken_scheduler = scheduler.replacen(
