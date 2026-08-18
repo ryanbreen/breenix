@@ -45,6 +45,23 @@ service-sequence soak on the branch put it at 10/60 (17%), matching `main`'s 1/6
 
 Both files are byte-for-byte copies of the serials preserved from the run.
 
+## The gate slot's independent round-2 200-boot run — #596 recurred, verdict FAILED
+
+The Mac gate slot ran its own, independent 200-boot service-sequence run at this same head
+(`24d63412`). It hit **#596 once** (`cortex-a72` boot 86) and **#576 twice** (`cortex-a72` boot 52,
+`max` boot 90). That run's own gate verdict was **FAILED**. This is separate from the implementer's
+200-boot run tallied above (159 GREEN / 0 `#596`), which was run independently and does not average
+away this recurrence.
+
+| File | Gate run | Bucket | Signature |
+|---|---|---|---|
+| `gateslot-dataabort-cortexa72-boot86-596-r2.txt` | gate-slot 200-boot service-sequence run, `cortex-a72` boot 86/100 | `DATA_ABORT` (#596) | `[DATA_ABORT] FAR=0x8 ELR=0xffff00004046c344 ESR=0x96000005 DFSC=0x5 … cpu=1` — field-exact match to the implementer's `dataabort-schedule-from-kernel-cortexa72-boot55.txt` exhibit above. |
+| `gateslot-576-instrabort-cortexa72-boot52-r2.txt` | same run, `cortex-a72` boot 52/100 | `#576` | `[INSTRUCTION_ABORT] FAR=0x0 ELR=0x0 ESR=0x86000005 IFSC=0x5 … from_el0=0` |
+| `gateslot-576-instrabort-max-boot90-r2.txt` | same run, `max` boot 90/100 | `#576` | `[INSTRUCTION_ABORT] FAR=0x0 ELR=0x0 ESR=0x86000005 IFSC=0x5 … from_el0=0` |
+
+#596 is filed but **not** pre-adjudicated (per R17's flake law), so any recurrence blocks the gate.
+P5b is held for merge until #596 is fixed; see the PR body's status line.
+
 ## Attributable non-green — open #576
 
 | File | Gate run | Signature |
