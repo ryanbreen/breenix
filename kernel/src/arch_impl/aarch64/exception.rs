@@ -1611,26 +1611,18 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                 raw_uart_hex(frame_ref.x30);
                 raw_uart_str("\n");
 
-                // Optional [FATAL_THREAD]: the currently-dispatched thread's
-                // saved_by_inline_schedule flag and saved context.elr_el1. Read via
-                // try_dump_state() (SCHEDULER.try_lock — returns None instead of
-                // blocking, so it can NEVER deadlock; documented interrupt-safe) and
-                // is already used by the PC_ALIGN fatal handler above. We only read
-                // the current thread's entry.
-                if let Some(tid) = crate::task::scheduler::current_thread_id() {
-                    if let Some(dump) = crate::task::scheduler::try_dump_state() {
-                        if let Some(thread) = dump.threads.iter().find(|t| t.id == tid) {
-                            raw_uart_str("[FATAL_THREAD] tid=");
-                            raw_uart_dec(tid);
-                            raw_uart_str(" saved_by_inline_schedule=");
-                            raw_uart_dec(if thread.saved_by_inline_schedule { 1 } else { 0 });
-                            raw_uart_str(" ctx_elr_el1=");
-                            raw_uart_hex(thread.elr_el1);
-                            raw_uart_str("\n");
-                        }
-                    } else {
-                        raw_uart_str("[FATAL_THREAD] scheduler lock busy; thread state skipped\n");
-                    }
+                // This fatal dump runs with DAIF masked on an exception-report path
+                // that an EL1 fault can reach, so it must consult only the per-CPU
+                // published thread pointer and never take the SCHEDULER lock (#597).
+                if let Some(thread) = current_thread_lock_free() {
+                    let tid = thread.id();
+                    raw_uart_str("[FATAL_THREAD] tid=");
+                    raw_uart_dec(tid);
+                    raw_uart_str(" saved_by_inline_schedule=");
+                    raw_uart_dec(if thread.saved_by_inline_schedule { 1 } else { 0 });
+                    raw_uart_str(" ctx_elr_el1=");
+                    raw_uart_hex(thread.context.elr_el1);
+                    raw_uart_str("\n");
                 }
 
                 // [SAVE_SKEW]: lock-free per-CPU record from the context-save path

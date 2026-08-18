@@ -3110,10 +3110,10 @@ impl Scheduler {
 
     /// Emit where a thread sits in the scheduler for placement diagnostics.
     ///
-    /// The scheduler state is snapshotted under one lock acquisition, then
-    /// emitted after the lock is released so serial output cannot invert the
-    /// scheduler/serial lock ordering. This is diagnostic-only and intended
-    /// for thread context.
+    /// The scheduler state is snapshotted only if a nonblocking lock attempt
+    /// succeeds, then emitted after the guard is released so serial output
+    /// cannot invert the scheduler/serial lock ordering. Fatal diagnostics can
+    /// reach this helper, so it must never wait for SCHEDULER (#597).
     fn dump_thread_placement(tid: u64, label: &str) {
         const QUEUE_PREVIEW: usize = 4;
 
@@ -3131,7 +3131,9 @@ impl Scheduler {
             need_resched: [bool; MAX_CPUS],
         }
 
-        let snapshot = with_scheduler(|scheduler| {
+        let snapshot = (|| {
+            let scheduler_lock = try_lock_scheduler()?;
+            let scheduler = scheduler_lock.as_ref()?;
             let mut snapshot = PlacementSnapshot {
                 state: scheduler.get_thread(tid).map(|thread| thread.state),
                 current_cpus: [false; MAX_CPUS],
@@ -3186,8 +3188,8 @@ impl Scheduler {
                 }
             }
 
-            snapshot
-        });
+            Some(snapshot)
+        })();
 
         let Some(snapshot) = snapshot else {
             crate::serial_println!(
