@@ -208,8 +208,12 @@ green_sequence_complete() {
 # cannot be blamed on a missing marker; the unattributed bucket is for reds nobody has filed.
 classify_serial() {
     local serial_file="$1"
+    local data_abort_line
     local silent_reason
     local last_line
+    local quiesce_rows
+    local quiesce_rows_floor
+    local quiesce_walk_line
 
     if grep -qF "[BLOCK_EINTR_ORACLE:FAIL" "$serial_file" 2>/dev/null; then
         CLASS_BUCKET="575"
@@ -232,6 +236,12 @@ classify_serial() {
         CLASS_REASON="instruction abort"
         return
     fi
+    if grep -qF "[DATA_ABORT]" "$serial_file" 2>/dev/null; then
+        data_abort_line=$(grep -F "[DATA_ABORT]" "$serial_file" 2>/dev/null | head -1 | sed 's/[[:space:]]*$//')
+        CLASS_BUCKET="DATA_ABORT"
+        CLASS_REASON="EL1 data abort (#596): ${data_abort_line}"
+        return
+    fi
     # The serial console emits CRLF; trim trailing whitespace before exact comparisons and reports.
     last_line=$(grep -F "CLONEVM_EXEC_TEST" "$serial_file" 2>/dev/null | tail -1 | sed 's/[[:space:]]*$//' || true)
     if [ "$last_line" = "CLONEVM_EXEC_TEST: live sibling refused exec" ]; then
@@ -252,9 +262,20 @@ classify_serial() {
             CLASS_REASON="init-group quiesce refusal marker missing"
             return
         fi
-        if ! grep -qE '^\[INIT_GROUP_WALK:aarch64:rows=[0-9]+:init_tgid_rows=1:foreign_tgid_rows=0:refused=4:verdict=PASS\]$' "$serial_file" 2>/dev/null; then
+        quiesce_walk_line=$(grep -E '^\[INIT_GROUP_WALK:aarch64:rows=[0-9]+:init_tgid_rows=1:foreign_tgid_rows=0:refused=4:verdict=PASS\]$' "$serial_file" 2>/dev/null | tail -1 || true)
+        if [ -z "$quiesce_walk_line" ]; then
             CLASS_BUCKET="P5B"
             CLASS_REASON="init-group quiesce walk marker missing"
+            return
+        fi
+        quiesce_rows=$(echo "$quiesce_walk_line" | sed -n 's/^\[INIT_GROUP_WALK:aarch64:rows=\([0-9][0-9]*\):.*/\1/p')
+        # The preserved GREEN service-sequence exhibit has rows=11.  A floor of
+        # 8 leaves three rows of headroom for a legitimately shorter service set
+        # while making the vacuous rows=1 case a hard failure.
+        quiesce_rows_floor=8
+        if [ -z "$quiesce_rows" ] || [ "$quiesce_rows" -lt "$quiesce_rows_floor" ]; then
+            CLASS_BUCKET="P5B"
+            CLASS_REASON="init-group quiesce walk rows ${quiesce_rows:-<missing>} below floor $quiesce_rows_floor"
             return
         fi
         if grep -qE '\[INIT_GROUP_WALK:.*verdict=FAIL' "$serial_file" 2>/dev/null; then
@@ -279,6 +300,7 @@ classify_serial() {
 
 TOTAL_575=0
 TOTAL_576=0
+TOTAL_DATA_ABORT=0
 TOTAL_589=0
 TOTAL_P5B=0
 TOTAL_GREEN=0
@@ -291,11 +313,12 @@ print_census() {
     local label="$1"
     local count_575="$2"
     local count_576="$3"
-    local count_589="$4"
-    local count_p5b="$5"
-    local count_green="$6"
-    local count_unattributed="$7"
-    local count_boots="$8"
+    local count_data_abort="$4"
+    local count_589="$5"
+    local count_p5b="$6"
+    local count_green="$7"
+    local count_unattributed="$8"
+    local count_boots="$9"
     local green_rate
 
     green_rate=$(awk -v green="$count_green" -v boots="$count_boots" \
@@ -304,6 +327,7 @@ print_census() {
     echo "$label census"
     printf '  %-13s %d\n' "575" "$count_575"
     printf '  %-13s %d\n' "576" "$count_576"
+    printf '  %-13s %d\n' "DATA_ABORT" "$count_data_abort"
     printf '  %-13s %d\n' "589" "$count_589"
     printf '  %-13s %d\n' "P5B" "$count_p5b"
     printf '  %-13s %d\n' "GREEN" "$count_green"
@@ -317,6 +341,7 @@ run_profile() {
     local census_file="$profile_dir/census.tsv"
     local count_575=0
     local count_576=0
+    local count_data_abort=0
     local count_589=0
     local count_p5b=0
     local count_green=0
@@ -388,6 +413,11 @@ run_profile() {
                 kill "$QEMU_PID" 2>/dev/null || true
                 break
             fi
+            if grep -qF "[DATA_ABORT]" "$serial_file" 2>/dev/null; then
+                boot_end="early"
+                kill "$QEMU_PID" 2>/dev/null || true
+                break
+            fi
             if green_sequence_complete "$serial_file"; then
                 boot_end="early"
                 kill "$QEMU_PID" 2>/dev/null || true
@@ -412,6 +442,7 @@ run_profile() {
         case "$CLASS_BUCKET" in
             575) count_575=$((count_575 + 1)) ;;
             576) count_576=$((count_576 + 1)) ;;
+            DATA_ABORT) count_data_abort=$((count_data_abort + 1)) ;;
             589) count_589=$((count_589 + 1)) ;;
             P5B) count_p5b=$((count_p5b + 1)) ;;
             GREEN) count_green=$((count_green + 1)) ;;
@@ -426,26 +457,27 @@ run_profile() {
         echo "  Boot $boot/$BOOTS: $CLASS_BUCKET — $CLASS_REASON [$boot_end, ${boot_seconds}s]"
     done
 
-    census_sum=$((count_575 + count_576 + count_589 + count_p5b + count_green + count_unattributed))
+    census_sum=$((count_575 + count_576 + count_data_abort + count_589 + count_p5b + count_green + count_unattributed))
     if [ "$census_sum" -ne "$BOOTS" ]; then
         echo "FATAL: $cpu_profile bucket census sums to $census_sum, expected $BOOTS"
         exit 1
     fi
 
-    print_census "Profile $cpu_profile" "$count_575" "$count_576" "$count_589" \
+    print_census "Profile $cpu_profile" "$count_575" "$count_576" "$count_data_abort" "$count_589" \
         "$count_p5b" "$count_green" "$count_unattributed" "$BOOTS"
 
     # The GREEN rate is census-only because open #589 and #576 intercept boots;
     # its GREEN denominator is now also the P5b whole-boot-walk denominator.
-    if [ "$count_575" -ne 0 ] || [ "$count_p5b" -ne 0 ] || [ "$count_unattributed" -ne 0 ]; then
+    if [ "$count_575" -ne 0 ] || [ "$count_data_abort" -ne 0 ] || [ "$count_p5b" -ne 0 ] || [ "$count_unattributed" -ne 0 ]; then
         ANY_GATE_FAILURE=1
-        echo "Profile $cpu_profile gate: FAILED (575=$count_575, P5B=$count_p5b, UNATTRIBUTED=$count_unattributed)"
+        echo "Profile $cpu_profile gate: FAILED (575=$count_575, DATA_ABORT=$count_data_abort, P5B=$count_p5b, UNATTRIBUTED=$count_unattributed)"
     else
-        echo "Profile $cpu_profile gate: PASSED (575=0, P5B=0, UNATTRIBUTED=0)"
+        echo "Profile $cpu_profile gate: PASSED (575=0, DATA_ABORT=0, P5B=0, UNATTRIBUTED=0)"
     fi
 
     TOTAL_575=$((TOTAL_575 + count_575))
     TOTAL_576=$((TOTAL_576 + count_576))
+    TOTAL_DATA_ABORT=$((TOTAL_DATA_ABORT + count_data_abort))
     TOTAL_589=$((TOTAL_589 + count_589))
     TOTAL_P5B=$((TOTAL_P5B + count_p5b))
     TOTAL_GREEN=$((TOTAL_GREEN + count_green))
@@ -474,14 +506,14 @@ case "$PROFILE" in
         ;;
 esac
 
-TOTAL_SUM=$((TOTAL_575 + TOTAL_576 + TOTAL_589 + TOTAL_P5B + TOTAL_GREEN + TOTAL_UNATTRIBUTED))
+TOTAL_SUM=$((TOTAL_575 + TOTAL_576 + TOTAL_DATA_ABORT + TOTAL_589 + TOTAL_P5B + TOTAL_GREEN + TOTAL_UNATTRIBUTED))
 EXPECTED_TOTAL=$((BOOTS * PROFILE_COUNT))
 if [ "$TOTAL_SUM" -ne "$EXPECTED_TOTAL" ] || [ "$TOTAL_BOOTS" -ne "$EXPECTED_TOTAL" ]; then
     echo "FATAL: total bucket census sums to $TOTAL_SUM for $TOTAL_BOOTS recorded boots; expected $EXPECTED_TOTAL"
     exit 1
 fi
 
-print_census "Total" "$TOTAL_575" "$TOTAL_576" "$TOTAL_589" \
+print_census "Total" "$TOTAL_575" "$TOTAL_576" "$TOTAL_DATA_ABORT" "$TOTAL_589" \
     "$TOTAL_P5B" "$TOTAL_GREEN" "$TOTAL_UNATTRIBUTED" "$TOTAL_BOOTS"
 
 if [ "$ANY_GATE_FAILURE" -ne 0 ]; then

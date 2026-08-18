@@ -407,8 +407,15 @@ if [ -z "$FAIL_REASON" ]; then
 
     if $INIT_GROUP_QUIESCE_OK && [ -z "$FAIL_REASON" ]; then
         INIT_GROUP_WALK_LINE=$(grep -E '^\[INIT_GROUP_WALK:aarch64:rows=[0-9]+:init_tgid_rows=1:foreign_tgid_rows=0:refused=4:verdict=PASS\]$' "$OUTPUT_DIR/serial.txt" 2>/dev/null | tail -1 || true)
+        INIT_GROUP_WALK_ROWS=$(echo "$INIT_GROUP_WALK_LINE" | sed -n 's/^\[INIT_GROUP_WALK:aarch64:rows=\([0-9][0-9]*\):.*/\1/p')
+        # The green Phase 1e full-test run observed rows=11.  A floor of 8
+        # leaves three rows of headroom for a legitimately shorter service set
+        # while making the vacuous rows=1 case a hard failure.
+        INIT_GROUP_WALK_ROWS_FLOOR=8
         if [ -z "$INIT_GROUP_WALK_LINE" ]; then
             FAIL_REASON="Phase 1e: init-group refusal quiesce walk marker absent"
+        elif [ -z "$INIT_GROUP_WALK_ROWS" ] || [ "$INIT_GROUP_WALK_ROWS" -lt "$INIT_GROUP_WALK_ROWS_FLOOR" ]; then
+            FAIL_REASON="Phase 1e: init-group refusal quiesce walk rows ${INIT_GROUP_WALK_ROWS:-<missing>} below floor $INIT_GROUP_WALK_ROWS_FLOOR"
         elif grep -qE '\[INIT_GROUP_WALK:.*verdict=FAIL' "$OUTPUT_DIR/serial.txt" 2>/dev/null; then
             FAIL_REASON="Phase 1e: init-group walk reported failure"
         elif grep -qF "[INIT_GROUP_CHILD_RAN]" "$OUTPUT_DIR/serial.txt" 2>/dev/null; then

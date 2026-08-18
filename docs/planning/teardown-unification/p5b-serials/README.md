@@ -27,6 +27,15 @@ were swapped in and out so nothing but the code differed, alternating arms acros
 `main` reds at the same signature, so this is #589 and not a P5b regression. The 60-boot
 service-sequence soak on the branch put it at 10/60 (17%), matching `main`'s 1/6 in the A/B.
 
+## Round-2 blocker exhibits
+
+| File | Gate run | Bucket | What it proves |
+|---|---|---|---|
+| `dataabort-schedule-from-kernel-cortexa72-boot55.txt` | 200-boot service-sequence run, `cortex-a72` boot 55/100 | `DATA_ABORT` (#596; formerly misattributed to `P5B`) | The boot reached all three service markers and then took an EL1 data abort at `schedule_from_kernel`; a crash must be classified before any late P5b marker check. The fault lands entirely in context-switch code byte-identical to `main`. |
+| `serial-interleave-max-boot33.txt` | same service-sequence run, `max` boot 33/100 | `P5B` false red (B2) | The unlocked periodic timer writer byte-interleaved with the pinned quiesce walk, producing `[INIT_GROUP_WALK...[timer] cp0:reu0 tficusks=ed1=4:verdict=P0000`; deleting that IRQ-path writer removes a permanent false-red source. |
+
+Both files are byte-for-byte copies of the serials preserved from the run.
+
 ## Mutation exhibits (each turned `run-aarch64-boot-test-strict.sh` red)
 
 | File | Mutation | Observed |
