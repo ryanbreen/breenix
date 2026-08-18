@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::PathBuf;
 
@@ -3742,4 +3742,495 @@ fn switch_dispatch_rollback_validator_rejects_rollback_after_return() {
 #[test]
 fn rollback_return_alternation_rejects_return_without_commitment() {
     assert!(validate_rollback_return_alternation("return;", "synthetic region").is_err());
+}
+
+const FATAL_EXCEPTION_PATH: &str = "kernel/src/arch_impl/aarch64/exception.rs";
+const SCHEDULER_PATH: &str = "kernel/src/task/scheduler.rs";
+
+#[derive(Clone, Debug)]
+struct SourceFunction {
+    name: String,
+    name_offset: usize,
+    open: usize,
+    close: usize,
+    is_public: bool,
+    is_extern_entry: bool,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct LexicalBlock {
+    open: usize,
+    close: usize,
+    el0_guarded: bool,
+}
+
+fn compact_code(fragment: &str) -> String {
+    normalized_code(fragment)
+        .chars()
+        .filter(|character| !character.is_whitespace())
+        .collect()
+}
+
+fn header_is_positive_el0_guard(header: &str) -> bool {
+    let compact = compact_code(header);
+    let Some(condition) = compact.strip_prefix("if") else {
+        return false;
+    };
+    if condition.contains("||")
+        || condition.contains("from_el0==false")
+        || condition.contains("false==from_el0")
+        || condition.contains("from_el0!=true")
+        || condition.contains("true!=from_el0")
+    {
+        return false;
+    }
+
+    let condition_mask = code_mask(condition);
+    identifier_offsets(condition, &condition_mask, "from_el0")
+        .into_iter()
+        .any(|offset| {
+            let bytes = condition.as_bytes();
+            let mut cursor = offset;
+            while cursor > 0 && bytes[cursor - 1] == b'(' {
+                cursor -= 1;
+            }
+            cursor == 0 || bytes[cursor - 1] != b'!'
+        })
+}
+
+fn lexical_blocks(source: &str, mask: &[bool]) -> Vec<LexicalBlock> {
+    let bytes = source.as_bytes();
+    let mut blocks = Vec::new();
+    let mut stack = Vec::new();
+    let mut header_start = 0usize;
+
+    for index in 0..bytes.len() {
+        if !mask[index] {
+            continue;
+        }
+        match bytes[index] {
+            b'{' => {
+                let el0_guarded = header_is_positive_el0_guard(&source[header_start..index]);
+                stack.push((index, el0_guarded));
+                header_start = index + 1;
+            }
+            b'}' => {
+                if let Some((open, el0_guarded)) = stack.pop() {
+                    blocks.push(LexicalBlock {
+                        open,
+                        close: index,
+                        el0_guarded,
+                    });
+                }
+                header_start = index + 1;
+            }
+            b';' => header_start = index + 1,
+            _ => {}
+        }
+    }
+    blocks
+}
+
+fn source_functions(source: &str, mask: &[bool], blocks: &[LexicalBlock]) -> Vec<SourceFunction> {
+    let bytes = source.as_bytes();
+    let mut functions = Vec::new();
+
+    for fn_offset in identifier_offsets(source, mask, "fn") {
+        let mut cursor = fn_offset + "fn".len();
+        while cursor < bytes.len() && (!mask[cursor] || bytes[cursor].is_ascii_whitespace()) {
+            cursor += 1;
+        }
+        let name_offset = cursor;
+        while cursor < bytes.len() && mask[cursor] && identifier_byte(bytes[cursor]) {
+            cursor += 1;
+        }
+        if cursor == name_offset {
+            continue;
+        }
+        let Some((_, open)) = definition_span(source, mask, name_offset, cursor) else {
+            continue;
+        };
+        let Some(block) = blocks.iter().find(|block| block.open == open) else {
+            continue;
+        };
+        let header_start = (0..fn_offset)
+            .rev()
+            .find(|index| mask[*index] && matches!(bytes[*index], b';' | b'{' | b'}'))
+            .map_or(0, |delimiter| delimiter + 1);
+        let header = &source[header_start..open];
+        let header_mask = code_mask(header);
+        let relative_fn = fn_offset - header_start;
+        let is_public = identifier_offsets(header, &header_mask, "pub")
+            .into_iter()
+            .any(|offset| offset < relative_fn);
+        let is_extern_entry = is_public
+            && identifier_offsets(header, &header_mask, "extern")
+                .into_iter()
+                .any(|offset| offset < relative_fn);
+
+        functions.push(SourceFunction {
+            name: source[name_offset..cursor].to_owned(),
+            name_offset,
+            open,
+            close: block.close,
+            is_public,
+            is_extern_entry,
+        });
+    }
+    functions
+}
+
+fn derived_blocking_scheduler_accessors(
+    scheduler_source: &str,
+) -> Result<BTreeSet<String>, String> {
+    let mask = code_mask(scheduler_source);
+    let blocks = lexical_blocks(scheduler_source, &mask);
+    let functions = source_functions(scheduler_source, &mask, &blocks);
+    let bodies = module_function_bodies(scheduler_source);
+    let mut blocking = BTreeSet::new();
+
+    if bodies.contains_key("lock_scheduler") {
+        blocking.insert("lock_scheduler".to_string());
+    }
+    for function in functions.iter().filter(|function| function.is_public) {
+        if bodies.get(&function.name).is_some_and(|definitions| {
+            definitions.iter().any(|body| {
+                let body_mask = code_mask(body);
+                !call_offsets(body, &body_mask, "lock_scheduler").is_empty()
+            })
+        }) {
+            blocking.insert(function.name.clone());
+        }
+    }
+
+    if blocking.is_empty() {
+        return Err("blocking scheduler accessor derivation is empty".to_string());
+    }
+    let missing: Vec<_> = ["current_thread_id", "with_scheduler", "with_thread_mut"]
+        .into_iter()
+        .filter(|anchor| !blocking.contains(*anchor))
+        .collect();
+    if !missing.is_empty() {
+        return Err(format!(
+            "blocking scheduler accessor derivation missing anchors: {}",
+            missing.join(", ")
+        ));
+    }
+    if blocking.contains("try_dump_state") {
+        return Err("try_dump_state was misclassified as blocking".to_string());
+    }
+    Ok(blocking)
+}
+
+fn call_is_el0_guarded(blocks: &[LexicalBlock], offset: usize) -> bool {
+    blocks
+        .iter()
+        .any(|block| block.el0_guarded && block.open < offset && offset < block.close)
+}
+
+fn enclosing_function<'a>(
+    functions: &'a [SourceFunction],
+    offset: usize,
+) -> Option<&'a SourceFunction> {
+    functions
+        .iter()
+        .filter(|function| function.open < offset && offset < function.close)
+        .max_by_key(|function| function.open)
+}
+
+fn el0_only_functions(
+    exception_source: &str,
+    mask: &[bool],
+    blocks: &[LexicalBlock],
+    functions: &[SourceFunction],
+) -> BTreeSet<String> {
+    let names: BTreeSet<_> = functions
+        .iter()
+        .map(|function| function.name.clone())
+        .collect();
+    let definition_names: BTreeSet<_> = functions
+        .iter()
+        .map(|function| function.name_offset)
+        .collect();
+    let entry_points: BTreeSet<_> = functions
+        .iter()
+        .filter(|function| function.is_extern_entry)
+        .map(|function| function.name.clone())
+        .collect();
+    let call_sites: BTreeMap<_, _> = names
+        .iter()
+        .map(|name| {
+            let calls = call_offsets(exception_source, mask, name)
+                .into_iter()
+                .filter(|offset| !definition_names.contains(offset))
+                .collect::<Vec<_>>();
+            (name.clone(), calls)
+        })
+        .collect();
+
+    let mut el0_only = BTreeSet::new();
+    loop {
+        let newly_el0_only: Vec<_> = call_sites
+            .iter()
+            .filter(|(name, calls)| {
+                !entry_points.contains(*name)
+                    && !calls.is_empty()
+                    && calls.iter().all(|offset| {
+                        call_is_el0_guarded(blocks, *offset)
+                            || enclosing_function(functions, *offset)
+                                .is_some_and(|caller| el0_only.contains(&caller.name))
+                    })
+            })
+            .map(|(name, _)| name.clone())
+            .filter(|name| !el0_only.contains(name))
+            .collect();
+        if newly_el0_only.is_empty() {
+            break;
+        }
+        el0_only.extend(newly_el0_only);
+    }
+    el0_only
+}
+
+fn blocking_calls(
+    source: &str,
+    mask: &[bool],
+    blocking: &BTreeSet<String>,
+) -> Vec<(usize, String)> {
+    let mut calls = Vec::new();
+    for accessor in blocking {
+        calls.extend(
+            call_offsets(source, mask, accessor)
+                .into_iter()
+                .map(|offset| (offset, accessor.clone())),
+        );
+    }
+    calls.sort_unstable();
+    calls
+}
+
+fn dump_shape(name: &str) -> bool {
+    name.starts_with("dump_") || name.contains("postmortem") || name.contains("fatal_")
+}
+
+fn merge_census_without_double_counting(target: &mut Census, source: Census) {
+    for (anchor, count) in source {
+        target
+            .entry(anchor)
+            .and_modify(|existing| *existing = (*existing).max(count))
+            .or_insert(count);
+    }
+}
+
+fn validate_fatal_scheduler_accessor_census(
+    exception_source: &str,
+    scheduler_source: &str,
+    aarch64_sources: &[(String, String)],
+) -> Result<(), String> {
+    let blocking = derived_blocking_scheduler_accessors(scheduler_source)?;
+    let exception_sources = vec![(FATAL_EXCEPTION_PATH.to_owned(), exception_source.to_owned())];
+    let total_blocking_calls = census(&exception_sources, |source, mask| {
+        blocking_calls(source, mask, &blocking)
+            .into_iter()
+            .map(|(offset, _)| offset)
+            .collect()
+    })
+    .values()
+    .sum::<usize>();
+    if total_blocking_calls == 0 {
+        return Err("exception.rs blocking-accessor call-site census is empty".to_string());
+    }
+
+    let exception_mask = code_mask(exception_source);
+    let exception_blocks = lexical_blocks(exception_source, &exception_mask);
+    let exception_functions =
+        source_functions(exception_source, &exception_mask, &exception_blocks);
+    let el0_only = el0_only_functions(
+        exception_source,
+        &exception_mask,
+        &exception_blocks,
+        &exception_functions,
+    );
+    let mut violations = census_tagged(&exception_sources, |source, mask| {
+        blocking_calls(source, mask, &blocking)
+            .into_iter()
+            .filter(|(offset, _)| {
+                !call_is_el0_guarded(&exception_blocks, *offset)
+                    && !enclosing_function(&exception_functions, *offset)
+                        .is_some_and(|function| el0_only.contains(&function.name))
+            })
+            .collect()
+    });
+
+    let mut dump_sources: Vec<_> = aarch64_sources
+        .iter()
+        .filter(|(path, _)| path != FATAL_EXCEPTION_PATH && path != SCHEDULER_PATH)
+        .cloned()
+        .collect();
+    dump_sources.push((FATAL_EXCEPTION_PATH.to_owned(), exception_source.to_owned()));
+    dump_sources.push((SCHEDULER_PATH.to_owned(), scheduler_source.to_owned()));
+    dump_sources.sort_by(|left, right| left.0.cmp(&right.0));
+
+    let discovered_dump_shapes: BTreeSet<_> = dump_sources
+        .iter()
+        .flat_map(|(_, source)| {
+            module_function_bodies(source)
+                .into_keys()
+                .filter(|name| dump_shape(name))
+        })
+        .collect();
+    if discovered_dump_shapes.is_empty() {
+        return Err("dump-shape helper derivation is empty".to_string());
+    }
+    let missing_dump_anchors: Vec<_> = [
+        "dump_el1_first_fault",
+        "dump_el1_fatal_frame_and_dispatch_trace",
+    ]
+    .into_iter()
+    .filter(|anchor| !discovered_dump_shapes.contains(*anchor))
+    .collect();
+    if !missing_dump_anchors.is_empty() {
+        return Err(format!(
+            "dump-shape helper derivation missing anchors: {}",
+            missing_dump_anchors.join(", ")
+        ));
+    }
+
+    let dump_violations = census_tagged(&dump_sources, |source, mask| {
+        let blocks = lexical_blocks(source, mask);
+        let functions = source_functions(source, mask, &blocks);
+        let mut calls = BTreeSet::new();
+        for function in functions
+            .iter()
+            .filter(|function| dump_shape(&function.name))
+        {
+            let body = &source[function.open..=function.close];
+            let body_mask = code_mask(body);
+            for (offset, accessor) in blocking_calls(body, &body_mask, &blocking) {
+                calls.insert((function.open + offset, accessor));
+            }
+        }
+        calls.into_iter().collect()
+    });
+    merge_census_without_double_counting(&mut violations, dump_violations);
+
+    census_error(&violations, &[])
+}
+
+fn aarch64_sources_with_exception(exception_source: &str) -> Vec<(String, String)> {
+    let root = repo_root();
+    let mut sources: Vec<_> = rust_sources_below("kernel/src/arch_impl/aarch64")
+        .into_iter()
+        .map(|(path, source)| {
+            let relative = path
+                .strip_prefix(&root)
+                .expect("AArch64 source below repository root")
+                .to_string_lossy()
+                .into_owned();
+            let source = if relative == FATAL_EXCEPTION_PATH {
+                exception_source.to_owned()
+            } else {
+                source
+            };
+            (relative, source)
+        })
+        .collect();
+    sources.sort_by(|left, right| left.0.cmp(&right.0));
+    sources
+}
+
+#[test]
+fn fatal_exception_reports_never_take_blocking_scheduler_accessors() {
+    let exception_source = repo_text(FATAL_EXCEPTION_PATH);
+    let scheduler_source = repo_text(SCHEDULER_PATH);
+    let aarch64_sources = aarch64_sources_with_exception(&exception_source);
+    assert_eq!(
+        validate_fatal_scheduler_accessor_census(
+            &exception_source,
+            &scheduler_source,
+            &aarch64_sources,
+        ),
+        Ok(())
+    );
+}
+
+#[test]
+fn fatal_scheduler_census_rejects_blocking_call_at_fixed_site() {
+    let exception_source = repo_text(FATAL_EXCEPTION_PATH);
+    let scheduler_source = repo_text(SCHEDULER_PATH);
+    let marker = exception_source
+        .find("\"[FATAL_THREAD] tid=\"")
+        .expect("M-A [FATAL_THREAD] marker");
+    let call = exception_source[..marker]
+        .rfind("current_thread_lock_free()")
+        .expect("M-A fixed-site lock-free call");
+    let mask = code_mask(&exception_source);
+    let (statement_start, statement_end) =
+        statement_bounds(&exception_source, &mask, call).expect("M-A enclosing statement");
+    assert!(statement_start <= call && call < statement_end);
+
+    let mut mutant = exception_source.clone();
+    mutant.replace_range(
+        call..call + "current_thread_lock_free()".len(),
+        "crate::task::scheduler::current_thread_id()",
+    );
+    assert_ne!(
+        mutant, exception_source,
+        "M-A fixed [FATAL_THREAD] lock-free lookup mutation anchor"
+    );
+    let aarch64_sources = aarch64_sources_with_exception(&mutant);
+    assert_eq!(
+        validate_fatal_scheduler_accessor_census(&mutant, &scheduler_source, &aarch64_sources),
+        Err("+ kernel/src/arch_impl/aarch64/exception.rs :: fn handle_sync_exception => current_thread_id  (1 occurrences, expected none)".to_string())
+    );
+}
+
+#[test]
+fn fatal_scheduler_census_rejects_blocking_call_in_dump_shape() {
+    let exception_source = repo_text(FATAL_EXCEPTION_PATH);
+    let scheduler_source = repo_text(SCHEDULER_PATH);
+    assert!(
+        function_body(&exception_source, "dump_el1_fatal_frame_and_dispatch_trace").is_some(),
+        "M-B dump-shape helper body anchor"
+    );
+    let mask = code_mask(&exception_source);
+    let (_, open) = definition_offsets(
+        &exception_source,
+        &mask,
+        "dump_el1_fatal_frame_and_dispatch_trace",
+    )
+    .into_iter()
+    .next()
+    .expect("M-B dump-shape helper definition anchor");
+
+    let mut mutant = exception_source.clone();
+    mutant.insert_str(
+        open + 1,
+        "\n    let _ = crate::task::scheduler::current_thread_id();",
+    );
+    assert_ne!(
+        mutant, exception_source,
+        "M-B dump-shape helper insertion mutation anchor"
+    );
+    let aarch64_sources = aarch64_sources_with_exception(&mutant);
+    assert_eq!(
+        validate_fatal_scheduler_accessor_census(&mutant, &scheduler_source, &aarch64_sources),
+        Err("+ kernel/src/arch_impl/aarch64/exception.rs :: fn dump_el1_fatal_frame_and_dispatch_trace => current_thread_id  (1 occurrences, expected none)".to_string())
+    );
+}
+
+#[test]
+fn fatal_scheduler_census_rejects_broken_blocking_accessor_derivation() {
+    let exception_source = repo_text(FATAL_EXCEPTION_PATH);
+    let scheduler_source = repo_text(SCHEDULER_PATH);
+    let mutant = scheduler_source.replace("lock_scheduler(", "renamed_lock_scheduler(");
+    assert_ne!(
+        mutant, scheduler_source,
+        "M-C lock_scheduler derivation mutation anchor"
+    );
+    let aarch64_sources = aarch64_sources_with_exception(&exception_source);
+    assert_eq!(
+        validate_fatal_scheduler_accessor_census(&exception_source, &mutant, &aarch64_sources),
+        Err("blocking scheduler accessor derivation is empty".to_string())
+    );
 }
