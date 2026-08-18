@@ -9,6 +9,91 @@ use libbreenix::fs;
 use libbreenix::process::spawnv;
 use libbreenix::process::{getpid, spawn, waitpid};
 
+#[cfg(target_arch = "aarch64")]
+const INIT_GROUP_PROBE_STACK_SIZE: usize = 4096;
+
+#[cfg(target_arch = "aarch64")]
+#[repr(align(16))]
+struct InitGroupProbeStack([u8; INIT_GROUP_PROBE_STACK_SIZE]);
+
+#[cfg(target_arch = "aarch64")]
+static mut INIT_GROUP_PROBE_STACK_ONE: InitGroupProbeStack =
+    InitGroupProbeStack([0; INIT_GROUP_PROBE_STACK_SIZE]);
+#[cfg(target_arch = "aarch64")]
+static mut INIT_GROUP_PROBE_STACK_TWO: InitGroupProbeStack =
+    InitGroupProbeStack([0; INIT_GROUP_PROBE_STACK_SIZE]);
+
+/// The refused clone's entry point. It exists only so a regression is loud: if the kernel
+/// ever admits an init-group clone the child writes `[INIT_GROUP_CHILD_RAN]` and parks,
+/// which every gate rejects. It deliberately does not exit -- init must stay legible when
+/// the refusal is absent.
+#[cfg(target_arch = "aarch64")]
+extern "C" fn init_group_probe_child(_arg: *mut u8) -> ! {
+    const CHILD_RAN: &[u8] = b"[INIT_GROUP_CHILD_RAN]\n";
+
+    unsafe {
+        core::arch::asm!(
+            "svc #0",
+            in("x8") 64u64,
+            inlateout("x0") 1u64 => _,
+            in("x1") CHILD_RAN.as_ptr() as u64,
+            in("x2") CHILD_RAN.len() as u64,
+            options(nostack),
+        );
+        loop {
+            core::arch::asm!(
+                "svc #0",
+                in("x8") 124u64,
+                inlateout("x0") 0u64 => _,
+                options(nostack),
+            );
+        }
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+unsafe fn init_group_probe_clone(stack: *mut u8, flags: u64) -> i64 {
+    let stack_top = (stack as usize + INIT_GROUP_PROBE_STACK_SIZE) & !0xF;
+    let ret: i64;
+    core::arch::asm!(
+        "svc #0",
+        in("x8") 220u64,
+        inlateout("x0") flags => ret,
+        in("x1") stack_top as u64,
+        in("x2") init_group_probe_child as usize as u64,
+        in("x3") 0u64,
+        in("x4") 0u64,
+        options(nostack),
+    );
+    ret
+}
+
+/// The designated init cannot acquire `CLONE_VM` siblings; both probes must return
+/// `-EINVAL` (-22). The kernel emits the process-map walk from the refusal arm, so the
+/// "early" pair drives walks 1-2 and the "quiesce" pair drives walks 3-4 of every boot.
+#[cfg(target_arch = "aarch64")]
+fn run_init_group_refusal_probe(phase: &str) {
+    const CLONE_VM: u64 = 0x100;
+    const CLONE_FILES: u64 = 0x400;
+
+    let ret_one = unsafe {
+        init_group_probe_clone(
+            core::ptr::addr_of_mut!(INIT_GROUP_PROBE_STACK_ONE.0).cast::<u8>(),
+            CLONE_VM,
+        )
+    };
+    let ret_two = unsafe {
+        init_group_probe_clone(
+            core::ptr::addr_of_mut!(INIT_GROUP_PROBE_STACK_TWO.0).cast::<u8>(),
+            CLONE_VM | CLONE_FILES,
+        )
+    };
+    print!(
+        "[INIT_GROUP_REFUSAL:aarch64:phase={}:probe1={}:probe2={}:expected=-22]\n",
+        phase, ret_one, ret_two
+    );
+}
+
 fn main() {
     let pid = getpid().map(|p| p.raw()).unwrap_or(0);
     print!("[init] Breenix init starting (PID {})\n", pid);
@@ -17,6 +102,8 @@ fn main() {
     // exec smoke so gate acceptance never sits behind a spawn+exec+wait round trip.
     #[cfg(target_arch = "aarch64")]
     start_liveness_service();
+    #[cfg(target_arch = "aarch64")]
+    run_init_group_refusal_probe("early");
     #[cfg(target_arch = "aarch64")]
     run_block_eintr_oracle();
     #[cfg(target_arch = "aarch64")]
@@ -33,6 +120,8 @@ fn main() {
     start_bounce();
     #[cfg(target_arch = "aarch64")]
     run_bssh_autorun_if_enabled();
+    #[cfg(target_arch = "aarch64")]
+    run_init_group_refusal_probe("quiesce");
 
     // Reap zombies forever
     let mut status: i32 = 0;

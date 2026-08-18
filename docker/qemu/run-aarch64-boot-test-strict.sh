@@ -21,6 +21,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BREENIX_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 # construct_residual is the counted frame residue of the two construction-failure arms read off a measured green run, and it is architecture-specific (4 on x86, 2 on aarch64) because the two page-table constructors record different table-frame counts.
 INIT_DESIGNATION_ORACLE_LITERAL='[INIT_DESIGNATION_ORACLE:aarch64:construct_failed=2:construct_undecided=2:construct_residual=2:refused=4:accepted=1:published=1:retired=1:held_error_removals=1:reparented=1:reparent_skipped=1:ordinary_allocated=5:reserved_collisions=0:designation_balance=0]'
+INIT_GROUP_REFUSAL_ORACLE_LITERAL='[INIT_GROUP_REFUSAL_ORACLE:aarch64:none_probes=3:none_refusals=0:init_refused=1:alias_refused=1:alias_pid_refused=0:nonit_probes=2:nonit_refusals=0:rows_delta=0:refusal_counter_delta=0:designation_residual=0:balance=0]'
 
 # Find the ARM64 kernel
 KERNEL="$BREENIX_ROOT/target/aarch64-breenix-kernel/release/kernel-aarch64"
@@ -120,6 +121,28 @@ score_serial() {
     fi
     if ! grep -qF -x "$INIT_DESIGNATION_ORACLE_LITERAL" "$serial_file" 2>/dev/null; then
         echo "Init designation oracle counter marker missing"
+        return 1
+    fi
+    if ! grep -qF -x "$INIT_GROUP_REFUSAL_ORACLE_LITERAL" "$serial_file" 2>/dev/null; then
+        echo "Init-group refusal oracle counter marker missing"
+        return 1
+    fi
+    # This gate kills QEMU shortly after exec smoke, so it pins the early probe
+    # pair only; the full-system and service-sequence gates pin the quiesce pair.
+    if ! grep -qF "[INIT_GROUP_REFUSAL:aarch64:phase=early:probe1=-22:probe2=-22:expected=-22]" "$serial_file" 2>/dev/null; then
+        echo "Init-group early refusal marker missing"
+        return 1
+    fi
+    if ! grep -qE '^\[INIT_GROUP_WALK:aarch64:rows=[0-9]+:init_tgid_rows=1:foreign_tgid_rows=0:refused=2:verdict=PASS\]$' "$serial_file" 2>/dev/null; then
+        echo "Init-group early walk marker missing"
+        return 1
+    fi
+    if grep -qE '\[INIT_GROUP_WALK:.*verdict=FAIL' "$serial_file" 2>/dev/null; then
+        echo "Init-group walk reported failure"
+        return 1
+    fi
+    if grep -qF "[INIT_GROUP_CHILD_RAN]" "$serial_file" 2>/dev/null; then
+        echo "Refused init-group child ran"
         return 1
     fi
     return 0

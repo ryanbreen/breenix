@@ -111,7 +111,10 @@ while [ "$SECONDS" -lt "$deadline" ]; do
     if [ "$soft_lockup_seen" = "1" ] && [ "$SECONDS" -ge "$post_lockup_deadline" ]; then
         break
     fi
-    if [ "$soft_lockup_seen" = "0" ] && grep -q "\\[timer\\] cpu0 ticks=" "$serial_path" 2>/dev/null; then
+    # The periodic raw tick line was removed because an unlocked multi-byte
+    # write in timer IRQ context could corrupt line-atomic console output.  The
+    # one-time lock-free EL0 marker still shows that the boot reached userspace.
+    if [ "$soft_lockup_seen" = "0" ] && grep -q "EL0_SYSCALL:" "$serial_path" 2>/dev/null; then
         break
     fi
     sleep 1
@@ -121,7 +124,7 @@ prlctl list -i "$VM_NAME" >"$OUT_DIR/vm-info.after.txt"
 cp "$serial_path" "$OUT_DIR/serial.log"
 
 rg -n \
-    "EL0_SYSCALL|\\[SCHED\\] queue_empty|SOFT LOCKUP DETECTED|Ready queue length:|Ready queue:|tid=[0-9]+ state=|SYSCALL_TOTAL:|IRQ_TOTAL:|CTX_SWITCH_TOTAL:|TIMER_TICK_TOTAL:|Timer IRQ count:|\\[timer\\] cpu0 ticks=" \
+    "EL0_SYSCALL|\\[SCHED\\] queue_empty|SOFT LOCKUP DETECTED|Ready queue length:|Ready queue:|tid=[0-9]+ state=|SYSCALL_TOTAL:|IRQ_TOTAL:|CTX_SWITCH_TOTAL:|TIMER_TICK_TOTAL:|Timer IRQ count:" \
     "$OUT_DIR/serial.log" >"$OUT_DIR/serial.signals.txt" || true
 
 tail -n 120 "$OUT_DIR/serial.log" >"$OUT_DIR/serial.tail.txt" || true
@@ -132,9 +135,6 @@ if grep -q "SOFT LOCKUP DETECTED" "$OUT_DIR/serial.log"; then
 fi
 
 queue_empty_lines="$(grep -c "\\[SCHED\\] queue_empty" "$OUT_DIR/serial.log" 2>/dev/null || true)"
-last_timer_tick="$(
-    sed -n 's/.*\[timer\] cpu0 ticks=\([0-9][0-9]*\).*/\1/p' "$OUT_DIR/serial.log" | tail -n 1
-)"
 timer_irq_count="$(
     sed -n 's/.*Timer IRQ count:  *\([0-9][0-9]*\).*/\1/p' "$OUT_DIR/serial.log" | tail -n 1
 )"
@@ -151,11 +151,10 @@ soft_lockup=${soft_lockup}
 queue_empty_lines=${queue_empty_lines}
 first_stuck_tid=${stuck_tid:-none}
 timer_irq_count=${timer_irq_count:-none}
-last_cpu0_tick=${last_timer_tick:-none}
 
 Interpretation:
-- If soft_lockup=1 and last_cpu0_tick is still increasing, CPU0 timer delivery
-  remained live after scheduler progress stopped.
+- If soft_lockup=1 and timer_irq_count is concrete, the soft-lockup dump
+  captured CPU0 timer delivery at the point scheduler progress stopped.
 - If queue_empty_lines>0 with a concrete stuck tid, at least one Ready thread
   became unreachable from all run queues/current-thread/deferred-requeue slots.
 EOF

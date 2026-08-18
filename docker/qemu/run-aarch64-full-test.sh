@@ -194,6 +194,8 @@ if $PHASE1_OK && [ -z "$FAIL_REASON" ]; then
         FAIL_REASON="Phase 1: missing init designation oracle PASS marker"
     elif ! grep -Fq '[INIT_DESIGNATION_ORACLE:aarch64:construct_failed=2:construct_undecided=2:construct_residual=2:refused=4:accepted=1:published=1:retired=1:held_error_removals=1:reparented=1:reparent_skipped=1:ordinary_allocated=5:reserved_collisions=0:designation_balance=0]' "$OUTPUT_DIR/serial.txt" 2>/dev/null; then
         FAIL_REASON="Phase 1: missing init designation oracle counter marker"
+    elif ! grep -Fq '[INIT_GROUP_REFUSAL_ORACLE:aarch64:none_probes=3:none_refusals=0:init_refused=1:alias_refused=1:alias_pid_refused=0:nonit_probes=2:nonit_refusals=0:rows_delta=0:refusal_counter_delta=0:designation_residual=0:balance=0]' "$OUTPUT_DIR/serial.txt" 2>/dev/null; then
+        FAIL_REASON="Phase 1: missing init-group refusal oracle counter marker"
     elif ! grep -Eq '\[BLOCK_WEDGE_ORACLE:locked=1:wedged=1:refused=1:parked=0:refuse_ms=[0-9]+\]' "$OUTPUT_DIR/serial.txt" 2>/dev/null; then
         FAIL_REASON="Phase 1: missing block wedge oracle counter marker"
     fi
@@ -371,6 +373,56 @@ if [ -z "$FAIL_REASON" ]; then
             FAIL_REASON="Phase 1d: reserved init PID collision count is $INIT_RESERVED_COLLISIONS, expected 0"
         else
             echo "Phase 1d: PASS (init designated and observed as PID $INIT_DESIGNATED_PID)"
+        fi
+    fi
+fi
+
+# --- Phase 1e: init-group refusal whole-boot assertion (up to 60s) ---
+# The process map is walked with init's full service set live. `foreign_tgid_rows=0`
+# is the acceptance quantity, while `init_tgid_rows=1` forbids a vacuous pass over
+# an empty map.
+if [ -z "$FAIL_REASON" ]; then
+    echo ""
+    echo "Phase 1e: Waiting for init-group refusal quiesce proof..."
+    INIT_GROUP_QUIESCE_OK=false
+    for i in $(seq 1 30); do
+        if FATAL=$(check_fatal); then
+            FAIL_REASON="Phase 1e: init-group refusal quiesce proof never completed ($FATAL)"
+            break
+        fi
+        if ! kill -0 $QEMU_PID 2>/dev/null; then
+            FAIL_REASON="Phase 1e: init-group refusal quiesce proof never completed (QEMU exited)"
+            break
+        fi
+        if grep -qF "[INIT_GROUP_REFUSAL:aarch64:phase=quiesce:probe1=-22:probe2=-22:expected=-22]" "$OUTPUT_DIR/serial.txt" 2>/dev/null; then
+            INIT_GROUP_QUIESCE_OK=true
+            break
+        fi
+        sleep 2
+    done
+
+    if ! $INIT_GROUP_QUIESCE_OK && [ -z "$FAIL_REASON" ]; then
+        FAIL_REASON="Phase 1e: init-group refusal quiesce marker absent (60s timeout)"
+    fi
+
+    if $INIT_GROUP_QUIESCE_OK && [ -z "$FAIL_REASON" ]; then
+        INIT_GROUP_WALK_LINE=$(grep -E '^\[INIT_GROUP_WALK:aarch64:rows=[0-9]+:init_tgid_rows=1:foreign_tgid_rows=0:refused=4:verdict=PASS\]$' "$OUTPUT_DIR/serial.txt" 2>/dev/null | tail -1 || true)
+        INIT_GROUP_WALK_ROWS=$(echo "$INIT_GROUP_WALK_LINE" | sed -n 's/^\[INIT_GROUP_WALK:aarch64:rows=\([0-9][0-9]*\):.*/\1/p')
+        # The green Phase 1e full-test run observed rows=11.  A floor of 8
+        # leaves three rows of headroom for a legitimately shorter service set
+        # while making the vacuous rows=1 case a hard failure.
+        INIT_GROUP_WALK_ROWS_FLOOR=8
+        if [ -z "$INIT_GROUP_WALK_LINE" ]; then
+            FAIL_REASON="Phase 1e: init-group refusal quiesce walk marker absent"
+        elif [ -z "$INIT_GROUP_WALK_ROWS" ] || [ "$INIT_GROUP_WALK_ROWS" -lt "$INIT_GROUP_WALK_ROWS_FLOOR" ]; then
+            FAIL_REASON="Phase 1e: init-group refusal quiesce walk rows ${INIT_GROUP_WALK_ROWS:-<missing>} below floor $INIT_GROUP_WALK_ROWS_FLOOR"
+        elif grep -qE '\[INIT_GROUP_WALK:.*verdict=FAIL' "$OUTPUT_DIR/serial.txt" 2>/dev/null; then
+            FAIL_REASON="Phase 1e: init-group walk reported failure"
+        elif grep -qF "[INIT_GROUP_CHILD_RAN]" "$OUTPUT_DIR/serial.txt" 2>/dev/null; then
+            FAIL_REASON="Phase 1e: refused init-group child ran"
+        else
+            echo "  Observed: $INIT_GROUP_WALK_LINE"
+            echo "Phase 1e: PASS"
         fi
     fi
 fi

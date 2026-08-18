@@ -13,6 +13,7 @@ set -e
 MAX_RETRIES=5
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BREENIX_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+INIT_GROUP_REFUSAL_ORACLE_LITERAL='[INIT_GROUP_REFUSAL_ORACLE:aarch64:none_probes=3:none_refusals=0:init_refused=1:alias_refused=1:alias_pid_refused=0:nonit_probes=2:nonit_refusals=0:rows_delta=0:refusal_counter_delta=0:designation_residual=0:balance=0]'
 
 # Find the ARM64 kernel
 KERNEL="$BREENIX_ROOT/target/aarch64-breenix-kernel/release/kernel-aarch64"
@@ -144,6 +145,28 @@ run_single_test() {
         fi
         if grep -qF "[BLOCK_EINTR_ORACLE:FAIL" "$OUTPUT_DIR/serial.txt" 2>/dev/null; then
             echo "FAIL: block EINTR oracle reported failure"
+            return 1
+        fi
+        if ! grep -qF -x "$INIT_GROUP_REFUSAL_ORACLE_LITERAL" "$OUTPUT_DIR/serial.txt" 2>/dev/null; then
+            echo "FAIL: init-group refusal oracle counter marker missing"
+            return 1
+        fi
+        # This gate kills QEMU shortly after exec smoke, so it pins the early probe
+        # pair only; the full-system and service-sequence gates pin the quiesce pair.
+        if ! grep -qF "[INIT_GROUP_REFUSAL:aarch64:phase=early:probe1=-22:probe2=-22:expected=-22]" "$OUTPUT_DIR/serial.txt" 2>/dev/null; then
+            echo "FAIL: init-group early refusal marker missing"
+            return 1
+        fi
+        if ! grep -qE '^\[INIT_GROUP_WALK:aarch64:rows=[0-9]+:init_tgid_rows=1:foreign_tgid_rows=0:refused=2:verdict=PASS\]$' "$OUTPUT_DIR/serial.txt" 2>/dev/null; then
+            echo "FAIL: init-group early walk marker missing"
+            return 1
+        fi
+        if grep -qE '\[INIT_GROUP_WALK:.*verdict=FAIL' "$OUTPUT_DIR/serial.txt" 2>/dev/null; then
+            echo "FAIL: init-group walk reported failure"
+            return 1
+        fi
+        if grep -qF "[INIT_GROUP_CHILD_RAN]" "$OUTPUT_DIR/serial.txt" 2>/dev/null; then
+            echo "FAIL: refused init-group child ran"
             return 1
         fi
         echo "SUCCESS"

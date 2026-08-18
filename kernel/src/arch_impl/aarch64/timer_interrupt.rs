@@ -524,29 +524,6 @@ pub extern "C" fn timer_interrupt_handler(frame: *const Aarch64ExceptionFrame) {
         }
     }
 
-    // CPU 0 only: periodic tick count reporting every 5000 ticks (~5 seconds)
-    if cpu_id == 0 {
-        let count = TIMER_TICK_COUNT[0].load(Ordering::Relaxed);
-        if count > 0 && count % 5000 == 0 {
-            crate::serial_aarch64::raw_serial_str(b"[timer] cpu0 ticks=");
-            let mut n = count;
-            let mut buf = [0u8; 20];
-            let mut i = 20usize;
-            if n == 0 {
-                i -= 1;
-                buf[i] = b'0';
-            } else {
-                while n > 0 {
-                    i -= 1;
-                    buf[i] = b'0' + (n % 10) as u8;
-                    n /= 10;
-                }
-            }
-            crate::serial_aarch64::raw_serial_str(&buf[i..]);
-            crate::serial_aarch64::raw_serial_str(b"\n");
-        }
-    }
-
     // CPU0 divergence regression alarm.
     //
     // Installed by PR #334 (2026-04-22) after the CPU0 user-guard dispatch

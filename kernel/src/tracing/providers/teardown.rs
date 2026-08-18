@@ -533,6 +533,7 @@ counter!(
 counter!(PT_SHADOW_ROOT_CLEARED, "Saved x86 process roots cleared");
 counter!(CLONE_ADMISSION_ADMITTED, "Clone admissions accepted");
 counter!(CLONE_ADMISSION_REFUSED, "Clone admissions refused");
+counter!(CLONE_INIT_GROUP_REFUSED, "CLONE_VM joins refused into the designated init group");
 counter!(
     INIT_ORDINARY_PID_ALLOCATIONS,
     "Ordinary process IDs allocated from next_pid"
@@ -584,7 +585,7 @@ counter!(
     "Fatal group signals dropped for init"
 );
 
-pub const COUNTER_COUNT: usize = 82;
+pub const COUNTER_COUNT: usize = 83;
 
 /// The registration and normal-context reader inventory. Keeping one inventory
 /// makes a write-only counter structurally impossible without changing the P0
@@ -650,6 +651,7 @@ pub static COUNTERS: [&TraceCounter; COUNTER_COUNT] = [
     &PT_SHADOW_ROOT_CLEARED,
     &CLONE_ADMISSION_ADMITTED,
     &CLONE_ADMISSION_REFUSED,
+    &CLONE_INIT_GROUP_REFUSED,
     &INIT_ORDINARY_PID_ALLOCATIONS,
     &INIT_RESERVED_PID_COLLISIONS,
     &INIT_DESIGNATION_ACCEPTED,
@@ -1087,6 +1089,7 @@ pub fn record_exit_request(already_terminated: bool) {
     }
 }
 
+/// `CLONE_ADMISSION_ADMITTED` counts lifecycle admissions of the parent row, not published children: `admit_clone_into` runs upstream of the P5b init-group refusal, so `published_clone_children = CLONE_ADMISSION_ADMITTED - CLONE_INIT_GROUP_REFUSED - later resource failures`.
 #[inline(always)]
 pub fn record_clone_admission(admitted: bool) {
     if admitted {
@@ -1094,6 +1097,11 @@ pub fn record_clone_admission(admitted: bool) {
     } else {
         crate::trace_count!(CLONE_ADMISSION_REFUSED);
     }
+}
+
+#[inline(always)]
+pub fn record_init_group_refusal() {
+    crate::trace_count!(CLONE_INIT_GROUP_REFUSED);
 }
 
 #[inline(always)]
@@ -1140,6 +1148,86 @@ pub fn clone_admission_admitted() -> u64 {
 #[cfg(feature = "boot_tests")]
 pub fn clone_admission_refused() -> u64 {
     CLONE_ADMISSION_REFUSED.aggregate()
+}
+
+#[cfg(feature = "boot_tests")]
+pub fn init_group_refusals_total() -> u64 {
+    CLONE_INIT_GROUP_REFUSED.aggregate()
+}
+
+#[cfg(feature = "boot_tests")]
+pub struct InitGroupWalk {
+    rows: usize,
+    init_tgid_rows: usize,
+    foreign_tgid_rows: usize,
+    init_row_present: bool,
+    refused: u64,
+}
+
+#[cfg(feature = "boot_tests")]
+pub fn init_group_walk_census(manager: &crate::process::ProcessManager) -> InitGroupWalk {
+    let Some(init) = manager.designated_init() else {
+        return InitGroupWalk {
+            rows: 0,
+            init_tgid_rows: 0,
+            foreign_tgid_rows: 0,
+            init_row_present: false,
+            refused: 0,
+        };
+    };
+    let init_tg_id = manager
+        .get_process(init)
+        .and_then(|process| process.thread_group_id)
+        .unwrap_or(init.as_u64());
+    let init_row_present = manager.get_process(init).is_some();
+    let mut rows = 0;
+    let mut init_tgid_rows = 0;
+    let mut foreign_tgid_rows = 0;
+
+    for (pid, process) in manager.iter_processes() {
+        rows += 1;
+        let effective_tg_id = process.thread_group_id.unwrap_or(pid.as_u64());
+        if effective_tg_id == init_tg_id {
+            init_tgid_rows += 1;
+            if pid != init {
+                foreign_tgid_rows += 1;
+            }
+        }
+    }
+
+    InitGroupWalk {
+        rows,
+        init_tgid_rows,
+        foreign_tgid_rows,
+        init_row_present,
+        refused: CLONE_INIT_GROUP_REFUSED.aggregate(),
+    }
+}
+
+#[cfg(feature = "boot_tests")]
+pub fn emit_init_group_walk(walk: InitGroupWalk) {
+    let verdict = if walk.init_row_present
+        && walk.rows >= 1
+        && walk.init_tgid_rows == 1
+        && walk.foreign_tgid_rows == 0
+    {
+        "PASS"
+    } else {
+        "FAIL"
+    };
+    #[cfg(target_arch = "aarch64")]
+    let arch = "aarch64";
+    #[cfg(target_arch = "x86_64")]
+    let arch = "x86";
+    crate::serial_println!(
+        "[INIT_GROUP_WALK:{}:rows={}:init_tgid_rows={}:foreign_tgid_rows={}:refused={}:verdict={}]",
+        arch,
+        walk.rows,
+        walk.init_tgid_rows,
+        walk.foreign_tgid_rows,
+        walk.refused,
+        verdict
+    );
 }
 
 #[cfg(feature = "boot_tests")]
@@ -4523,6 +4611,260 @@ pub fn init_designation_oracle_test() -> crate::test_framework::registry::TestRe
     TestResult::Pass
 }
 
+#[cfg(feature = "boot_tests")]
+pub fn init_group_refusal_oracle_test() -> crate::test_framework::registry::TestResult {
+    #[cfg(not(target_arch = "x86_64"))]
+    use crate::memory::arch_stub::VirtAddr;
+    use crate::test_framework::registry::TestResult;
+    #[cfg(target_arch = "x86_64")]
+    use x86_64::VirtAddr;
+
+    fn test_user_entry() {}
+
+    fn test_thread(
+        pid: crate::process::ProcessId,
+        name: &'static str,
+    ) -> crate::task::thread::Thread {
+        let mut thread = crate::task::thread::Thread::new(
+            alloc::string::String::from(name),
+            test_user_entry,
+            VirtAddr::new(0x0080_0000),
+            VirtAddr::new(0x007f_0000),
+            VirtAddr::new(0x0001_0000),
+            crate::task::thread::ThreadPrivilege::Kernel,
+        );
+        thread.owner_pid = Some(pid.as_u64());
+        thread.state = crate::task::thread::ThreadState::Ready;
+        thread
+    }
+
+    fn synthetic_row(
+        pid: crate::process::ProcessId,
+        name: &'static str,
+        thread_name: &'static str,
+    ) -> crate::process::Process {
+        let mut row = crate::process::Process::new(
+            pid,
+            alloc::string::String::from(name),
+            VirtAddr::new(0x0040_0000),
+        );
+        row.set_main_thread(test_thread(pid, thread_name));
+        row
+    }
+
+    let reclaim_owner = match crate::task::process_task::BootReclaimTestGuard::enter() {
+        Ok(guard) => guard,
+        Err(_) => {
+            return TestResult::Fail(
+                "reclaim queues not quiescent at init group refusal oracle start",
+            )
+        }
+    };
+    let allocator_used_before = frame_allocator_used_frames();
+    let refusal_counter_before = init_group_refusals_total();
+    let reserved = crate::process::ProcessId::new(crate::process::RESERVED_INIT_PID);
+    let mut first_failure: Option<&'static str> = None;
+
+    let (
+        none_probes,
+        none_refusals,
+        init_refused,
+        alias_refused,
+        alias_pid_refused,
+        nonit_probes,
+        nonit_refusals,
+        rows_before,
+        rows_after,
+        designation_residual,
+    ) = {
+        let mut manager_guard = crate::process::manager();
+        let Some(manager) = manager_guard.as_mut() else {
+            return TestResult::Fail("process manager unavailable for init group refusal oracle");
+        };
+        if manager.designated_init().is_some() {
+            return TestResult::Fail(
+                "a designation was already installed at init group refusal oracle start",
+            );
+        }
+        let rows_before = manager.process_count();
+
+        // A0: no designation means every effective thread-group ID is admitted.
+        let other = manager.allocate_pid();
+        let mut none_probes = 0u64;
+        let mut none_refusals = 0u64;
+        for derived_tg_id in [crate::process::RESERVED_INIT_PID, other.as_u64(), u64::MAX] {
+            let refused = crate::syscall::clone::refuses_init_group_clone(
+                manager,
+                derived_tg_id,
+            );
+            none_probes += 1;
+            none_refusals += u64::from(refused);
+        }
+
+        // Install and publish a synthetic designated init row.
+        manager.insert_process(
+            reserved,
+            synthetic_row(
+                reserved,
+                "init_group_refusal_init",
+                "init_group_refusal_init_main",
+            ),
+        );
+        match manager.hold_init_publication(reserved) {
+            Ok(ticket) => match manager.designate_init(ticket) {
+                Ok(publication) => {
+                    let thread = manager.publish_init(publication);
+                    if !manager.remove_from_ready_queue(reserved) && first_failure.is_none() {
+                        first_failure =
+                            Some("init group refusal publication missed the synthetic ready queue");
+                    }
+                    drop(thread);
+                }
+                Err(_) if first_failure.is_none() => {
+                    first_failure = Some("init group refusal synthetic designation was refused")
+                }
+                Err(_) => {}
+            },
+            Err(_) if first_failure.is_none() => {
+                first_failure = Some("init group refusal synthetic ticket was refused")
+            }
+            Err(_) => {}
+        }
+
+        // A1: init's own effective group is refused.
+        let init_refused = u64::from(crate::syscall::clone::refuses_init_group_clone(
+            manager,
+            crate::process::RESERVED_INIT_PID,
+        ));
+
+        // A2: ordinary and absent non-init groups remain admitted.
+        manager.insert_process(
+            other,
+            synthetic_row(
+                other,
+                "init_group_refusal_other",
+                "init_group_refusal_other_main",
+            ),
+        );
+        let missing_other = manager.allocate_pid();
+        let mut nonit_probes = 0u64;
+        let mut nonit_refusals = 0u64;
+        for derived_tg_id in [other.as_u64(), missing_other.as_u64()] {
+            let refused = crate::syscall::clone::refuses_init_group_clone(manager, derived_tg_id);
+            nonit_probes += 1;
+            nonit_refusals += u64::from(refused);
+        }
+
+        // A3: compare the effective group IDs, never the designated init's PID.
+        const INIT_GROUP_ALIAS: u64 = 0x5000_0000_0000_0001;
+        if let Some(init_row) = manager.get_process_mut(reserved) {
+            init_row.thread_group_id = Some(INIT_GROUP_ALIAS);
+        } else if first_failure.is_none() {
+            first_failure = Some("init group refusal synthetic init row disappeared");
+        }
+        let alias_refused = u64::from(crate::syscall::clone::refuses_init_group_clone(
+            manager,
+            INIT_GROUP_ALIAS,
+        ));
+        let alias_pid_refused = u64::from(crate::syscall::clone::refuses_init_group_clone(
+            manager,
+            crate::process::RESERVED_INIT_PID,
+        ));
+        if let Some(init_row) = manager.get_process_mut(reserved) {
+            init_row.thread_group_id = None;
+        } else if first_failure.is_none() {
+            first_failure = Some("init group refusal synthetic init row vanished before restore");
+        }
+
+        manager.remove_from_ready_queue(other);
+        manager.remove_process(other);
+        manager.remove_from_ready_queue(reserved);
+        manager.remove_process(reserved);
+
+        let rows_after = manager.process_count();
+        let designation_residual = usize::from(manager.designated_init().is_some());
+        (
+            none_probes,
+            none_refusals,
+            init_refused,
+            alias_refused,
+            alias_pid_refused,
+            nonit_probes,
+            nonit_refusals,
+            rows_before,
+            rows_after,
+            designation_residual,
+        )
+    };
+
+    let refusal_counter_after = init_group_refusals_total();
+    let refusal_counter_delta = refusal_counter_after as i64 - refusal_counter_before as i64;
+    let rows_delta = rows_after as i64 - rows_before as i64;
+    let allocator_used_after = frame_allocator_used_frames();
+    let balance = allocator_used_after as i64 - allocator_used_before as i64;
+    core::mem::drop(reclaim_owner);
+
+    if none_probes != 3 && first_failure.is_none() {
+        first_failure = Some("init group refusal None-arm probe count was not exact");
+    }
+    if none_refusals != 0 && first_failure.is_none() {
+        first_failure = Some("init group refusal None arm refused a group");
+    }
+    if init_refused != 1 && first_failure.is_none() {
+        first_failure = Some("init group refusal did not refuse the designated init group");
+    }
+    if alias_refused != 1 && first_failure.is_none() {
+        first_failure = Some("init group refusal did not refuse init's effective alias group");
+    }
+    if alias_pid_refused != 0 && first_failure.is_none() {
+        first_failure = Some("init group refusal compared against init's PID instead of its group");
+    }
+    if nonit_probes != 2 && first_failure.is_none() {
+        first_failure = Some("init group refusal non-init probe count was not exact");
+    }
+    if nonit_refusals != 0 && first_failure.is_none() {
+        first_failure = Some("init group refusal rejected a non-init group");
+    }
+    if rows_delta != 0 && first_failure.is_none() {
+        first_failure = Some("init group refusal oracle left synthetic process rows");
+    }
+    if refusal_counter_delta != 0 && first_failure.is_none() {
+        first_failure = Some("init group refusal predicate moved the production counter");
+    }
+    if designation_residual != 0 && first_failure.is_none() {
+        first_failure = Some("init group refusal oracle left the designation installed");
+    }
+    if balance != 0 && first_failure.is_none() {
+        first_failure = Some("init group refusal oracle changed frame accounting");
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    let arch = "aarch64";
+    #[cfg(target_arch = "x86_64")]
+    let arch = "x86";
+    crate::serial_println!(
+        "[INIT_GROUP_REFUSAL_ORACLE:{}:none_probes={}:none_refusals={}:init_refused={}:alias_refused={}:alias_pid_refused={}:nonit_probes={}:nonit_refusals={}:rows_delta={}:refusal_counter_delta={}:designation_residual={}:balance={}]",
+        arch,
+        none_probes,
+        none_refusals,
+        init_refused,
+        alias_refused,
+        alias_pid_refused,
+        nonit_probes,
+        nonit_refusals,
+        rows_delta,
+        refusal_counter_delta,
+        designation_residual,
+        balance
+    );
+    if let Some(reason) = first_failure {
+        return TestResult::Fail(reason);
+    }
+
+    crate::serial_println!("[TEST:process:init_group_refusal_oracle:PASS]");
+    TestResult::Pass
+}
+
 #[cfg(all(feature = "boot_tests", target_arch = "x86_64"))]
 pub fn run_x86_exec_cohort_gate() {
     crate::serial_println!("[TEST:process:x86_exec_cohort:START]");
@@ -4564,6 +4906,19 @@ pub fn run_x86_init_designation_gate() {
         );
     }
     assert!(result.is_pass(), "x86 init designation oracle gate failed");
+}
+
+#[cfg(all(feature = "boot_tests", target_arch = "x86_64"))]
+pub fn run_x86_init_group_refusal_gate() {
+    crate::serial_println!("[TEST:process:init_group_refusal_oracle:START]");
+    let result = init_group_refusal_oracle_test();
+    if !result.is_pass() {
+        crate::serial_println!(
+            "[TEST:process:init_group_refusal_oracle:FAIL:{:?}]",
+            result
+        );
+    }
+    assert!(result.is_pass(), "x86 init group refusal oracle gate failed");
 }
 
 // P20 retains its calibrated 45s local ceiling, but both it and P17 consume

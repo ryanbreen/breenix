@@ -50,11 +50,7 @@ pub fn animation_thread_entry() {
 
     raw_char(b'>'); // Systems OK, entering loop
 
-    let mut frame_counter: u64 = 0;
-
     loop {
-        frame_counter = frame_counter.wrapping_add(1);
-
         // Update physics (if we can get the lock)
         if let Some(system) = PARTICLE_SYSTEM.get() {
             if let Some(mut sys) = system.try_lock() {
@@ -80,11 +76,6 @@ pub fn animation_thread_entry() {
 
         // Wake the render thread so it can flush our pixel changes
         super::render_task::wake_render_thread();
-
-        // Progress marker every 500 frames
-        if frame_counter % 500 == 0 {
-            raw_char(b'*');
-        }
 
         // Spin delay - timer interrupts will preempt us naturally
         // ~200k iterations at 1GHz ≈ 200µs per frame ≈ 5000 fps max

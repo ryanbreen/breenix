@@ -3,7 +3,7 @@
 Companion to `teardown-unification-DESIGN-v3.md`. Design-only: nothing below has been implemented and
 no gate result is claimed.
 
-**Status:** **Tranche-ratified document. Tranche 1 (P0+P1+P2): COMPLETE — merged to `main`. P2 (SPINE-1, #491's live UAF) shipped via PR #515, merge commit `6003c7a6758a51c4f2092f8a1e3a502432273795`; exit_kick_protocol_gate + fork_exit_defer_reclaim_pairing_test deterministic 100/100, 0 fault markers, beast x86 3/3. Tranche 2 (P3 + P4 + P5a; P5b held on #575): **RE-RATIFIED, effective on pre-check pass (§2 condition 7)** — the operator ratified *proceeding per the re-ratification artifact* on 2026-08-16 (document repair → one adversarial pre-check → implementation); the ratification takes effect when this repaired text lands with a passing pre-check, and no tranche-2 phase is cleared for build before that. See §0.0. Later phases: design-debt register applies; sections may change before their tranche ratifies.**
+**Status:** **Tranche-ratified document. Tranche 1 (P0+P1+P2): COMPLETE — merged to `main`. P2 (SPINE-1, #491's live UAF) shipped via PR #515, merge commit `6003c7a6758a51c4f2092f8a1e3a502432273795`; exit_kick_protocol_gate + fork_exit_defer_reclaim_pairing_test deterministic 100/100, 0 fault markers, beast x86 3/3. Tranche 2 (P3 + P4 + P5a; #575 CLOSED by PR #594, merge `4f64be15`; P5b hold released by coordinator ruling R14 and P5b built and in review as PR #595): **RE-RATIFIED, effective on pre-check pass (§2 condition 7)** — the operator ratified *proceeding per the re-ratification artifact* on 2026-08-16 (document repair → one adversarial pre-check → implementation); the ratification takes effect when this repaired text lands with a passing pre-check, and no tranche-2 phase is cleared for build before that. See §0.0. Later phases: design-debt register applies; sections may change before their tranche ratifies.**
 
 **Base:** `main` @ `eebc8868` (docs re-verified at `main` @ `c9efdcc7`; re-verified for v3 at
 `main` @ `985881a6`; **tranche-2 sections re-anchored for v3.3 at `main` @ `2c7b8798`**, 2026-08-16 —
@@ -31,7 +31,8 @@ it un-skippable.
 > submitted while debts owned by *later* phases remain open, and only while that is true.
 >
 > **Tranche 1 = P0 + P1 + P2 (ratified, merged) and Tranche 2 = P3 + P4 + P5a (ratification decided
-> 2026-08-16, effective on this repair's pre-check pass; P5b held) each own none of the seven debts
+> 2026-08-16, effective on this repair's pre-check pass; #575 CLOSED by PR #594, P5b's hold released
+> by coordinator ruling R14, and P5b built and in review as PR #595) each own none of the seven debts
 > below** (their owners are P6a, P6b, P7, P8, P9, P10 and P12), which is precisely why each could be
 > submitted while the register stands open.
 
@@ -49,7 +50,7 @@ it un-skippable.
 carry no further obligation are recorded in the changelogs, not here: the seven-vs-nine caller count
 (closed by the three-class taxonomy — DESIGN §1.7), the reversed P6a join gates, the Report-marker
 phasing contradiction, and `parked_at` freshness. The design's *accepted* risks live in DESIGN §6 as
-residuals R-1…R-21; a residual is a risk taken with eyes open, a **debt is an unfinished argument**,
+residuals R-1…R-22; a residual is a risk taken with eyes open, a **debt is an unfinished argument**,
 and the two are deliberately kept in separate lists.
 
 ---
@@ -197,8 +198,8 @@ closure F re-wires.
 | Tranche | Phases | Status |
 |---|---|---|
 | **Tranche 1** | P0 + P1 + P2 | **Ratified** (v3.1 pass, `ENDORSE: YES`) — **COMPLETE, merged to `main`** |
-| **Tranche 2** | **P3** (exec detach + clone/exec admission) + **P4** (kernel-stack ownership parity + creation-path lock-order parity) + **P5a** (init identity) | **RE-RATIFIED, effective on pre-check pass.** The operator's decision of **2026-08-16** ratified *proceeding per* `docs/planning/teardown-unification/P3-RERATIFICATION-2026-08-15.md` — document repair, then **one** adversarial pre-check against the repaired text, then implementation (artifact §5.3, §8). The ratification is effective the moment this repaired text lands with a **passing** pre-check; until then no tranche-2 phase is cleared for build (§2 condition 7). Assessed at `main` @ `1db23de0`; this repair re-anchored at `main` @ `2c7b8798`. **P3 landed, PR #587; P5a landed, PR #590** — P4 remains uncleared for build |
-| — | **P5b** (`sys_clone` init-group refusal) | **HELD** on **#575** — its acceptance evidence is a quiesce walk of the process map, and init does not reliably reach quiesce on the QEMU gates. Mechanism unchanged; only its gate is blocked |
+| **Tranche 2** | **P3** (exec detach + clone/exec admission) + **P4** (kernel-stack ownership parity + creation-path lock-order parity) + **P5a** (init identity) | **RE-RATIFIED, effective on pre-check pass.** The operator's decision of **2026-08-16** ratified *proceeding per* `docs/planning/teardown-unification/P3-RERATIFICATION-2026-08-15.md` — document repair, then **one** adversarial pre-check against the repaired text, then implementation (artifact §5.3, §8). The ratification is effective the moment this repaired text lands with a **passing** pre-check; until then no tranche-2 phase is cleared for build (§2 condition 7). Assessed at `main` @ `1db23de0`; this repair re-anchored at `main` @ `2c7b8798`. **P3 landed, PR #587; P5a landed, PR #590; P5b landed, PR #595** — P4 is ratified but unbuilt |
+| — | **P5b** (`sys_clone` init-group refusal) | **LANDED, PR #595.** **#575** closed by PR **#594** (merge `4f64be15`); the quiesce point is now measurable and measured by `docker/qemu/run-aarch64-service-sequence-gate.sh`. P5b was cleared for build by coordinator ruling **R14**, then held a second time on **#596** (a pre-existing aarch64 register-corruption-shaped fault found during round-2 gating, proven byte-identical to `main`); #596 was fixed and merged to `main` first (PR #600, `elr_el1` write in the inline schedule save), after which P5b merged `main` into its branch and re-verified at the merged head — service-sequence gate at the new 25-boots/profile default (50 boots): `596=0, P5B=0, UNATTRIBUTED=0`, GREEN 40/50, `#589`(9)/`#576`(1) attributed and pre-existing; all ten structural suites green; one aarch64 boot-test pass. **Tranche 2 is not complete now that P5b has landed:** **P4 (T2-c) is ratified-but-unbuilt and runs as the next campaign** (coordinator ruling **R18**). No dependency edge was violated by building P5a and P5b ahead of it: P4 only has `P4 ──> P8, P9` edges |
 | **Tranche 3+** | P6a, P6b, P7, P8, P9, P10a-d, P11, P12 | **Uncleared.** Each arrives with its own tranche pass; the DESIGN-DEBT REGISTER gates any tranche containing a debt owner |
 
 **What "effective on pre-check pass" means, precisely.** The operator did not stamp a ratification on
@@ -273,7 +274,7 @@ class (r23: fixed 3, introduced 4).
    review surface silently doubles — so the seams below are **named** in the phase text and fire only
    against real scope.
 
-### The honest PR ledger — 13 numbered phases, **18 PRs** (one of them, P5b, held) *(condition 6; updated by v3 closure D and by the 2026-08-16 repair pass)*
+### The honest PR ledger — 13 numbered phases, **18 PRs** (P5b built and in review as PR #595) *(condition 6; updated by v3 closure D and by the 2026-08-16 repair pass)*
 
 v1 claimed "13 phases / 13 PRs" while splitting P9 into three; the first ratification counted 15 and
 called the contradiction a MAJOR. v2 said 16; v3 said 17. **The count rests on rule 5 alone** — one
@@ -318,7 +319,7 @@ not a prediction about arguments not yet made. The PR that splits says so in its
 | 4 | exec detach **+ clone/exec admission**: clear `inherited_cr3`/`thread_group_id` at every exec commit and preserve on every failure; parent-`Live` validation + non-runnable publication + the `Creating` dispatch arm — **landed, PR #587** | **P3** — artifact `T2-b` |
 | 5 | Kernel-stack single-owner accounting (**AC-8**) across the five `Box::leak` sites **+ creation-path PM→SCHEDULER lock-order parity** (#527's creation-path remainder) — closes **#579** | **P4** — artifact `T2-c` |
 | 6 | Runtime init designation — PID-1 reservation + held-publication ticket **+ the init literal migration onto `designated_init()`** — **landed, PR #590** | **P5a** — artifact `T2-d` |
-| 7 | Init-group clone refusal | **P5b** — **HELD on #575** |
+| 7 | Init-group clone refusal | **P5b** — **LANDED, PR #595**; #575 CLOSED by PR #594 (merge `4f64be15`), hold released by coordinator ruling R14; second hold on #596 cleared by #596's fix (PR #600) merging first |
 | 8 | Reap/tombstone retention gate **+ two-event join** | **P6a** |
 | 9 | Exactly-once ledger (class A/B obligations + effect markers) | **P6b** |
 | 10 | FD closure leaves the PM lock | P7 |
@@ -331,8 +332,9 @@ not a prediction about arguments not yet made. The PR that splits says so in its
 | 17 | Fatal-signal + fault convergence (intent-only delivery) | P11 |
 | 18 | Init death policy **+ group-membership drop check** | P12 |
 
-> **The arithmetic, stated so it can be checked.** **18 rows = 18 PRs** across 13 numbered phases, of
-> which **P5b is held on #575**, so **17** are buildable in sequence today.
+> **The arithmetic, stated so it can be checked.** **18 rows = 18 PRs** across 13 numbered phases.
+> #575 is CLOSED, coordinator ruling R14 released P5b's hold, and P5b is already built and in review
+> as PR #595, so **all 18** are buildable in sequence today.
 >
 > **Summed out of the table, one row per phase-letter.** Ten phases carry no letter and contribute one
 > row each — P0 + P1 + P2 + P3 + P4 + P7 + P8 + P9 + P11 + P12 = **10**. Three phases are lettered:
@@ -376,13 +378,16 @@ not a prediction about arguments not yet made. The PR that splits says so in its
      included), so a vanished, crashed or `exit(1)`-ing test program is a red gate by construction
      (PR #565; proven red three ways — injected `exit(1)`, injected segfault, vanished process).
    - **x86_64 custody boot-tests:** `docker/qemu/run-x86-boot-tests.sh` additionally pins the
-     frame/page-table custody counter lines as literals. **The script is the truth about which lines
-     are pinned, and it pins nine as of P5a**: `FRAME_CUSTODY_COUNTERS`, `PT_CUSTODY_COUNTERS`,
+     frame/page-table custody counter lines as literals. **The scripts are the truth about what is
+     pinned; this list is a snapshot as of this PR. Re-derive it at the head of every phase and repair
+     the prose in the same PR rather than trusting it.** It pins ten as of P5b:
+     `FRAME_CUSTODY_COUNTERS`, `PT_CUSTODY_COUNTERS`,
      `PT_RETIRE_COHORT`, `PT_EXEC_COHORT`, plus `EXEC_FAILED_RELEASE_ORACLE` and
      `EXEC_FAILED_RELEASE_PROD` (added by #573/PR #582, which also re-pinned `PT_CUSTODY_COUNTERS` to
      `recorded=14 … retired=2:returned=14`), `EXEC_DETACH_ORACLE` **and `CLONE_ADMISSION_ORACLE`**
      (both added by P3/PR #587 — this inventory previously said "seven" and omitted the second,
-     corrected by coordinator ruling R11, 2026-08-17), and `INIT_DESIGNATION_ORACLE` (added by P5a).
+     corrected by coordinator ruling R11, 2026-08-17), `INIT_DESIGNATION_ORACLE` (added by P5a), and
+     `INIT_GROUP_REFUSAL_ORACLE` (P5b's addition).
      A phase that
      perturbs one re-pins it consciously, with a per-delta derivation showing each count change is its
      mechanism's expected effect — never re-pin to green a red gate you do not understand.
@@ -397,16 +402,26 @@ not a prediction about arguments not yet made. The PR that splits says so in its
      (`kernel/src/test_framework/executor.rs:126`) runs no tests and still emits it, carrying
      whatever `[TESTS_COMPLETE:c/t]` progress happens to stand (`0/0` when nothing has run). The
      runner script only reports those numbers; reading them is the human's job.
+   - **aarch64 pin inventory:** `docker/qemu/run-aarch64-boot-test-strict.sh`,
+     `docker/qemu/run-aarch64-boot-test-native.sh`, `docker/qemu/run-aarch64-full-test.sh`, and
+     `docker/qemu/run-aarch64-service-sequence-gate.sh` collectively pin `INIT_DESIGNATION` +
+     `INIT_DESIGNATION_ORACLE`, `CREATING_DISPATCH_ORACLE`, `BLOCK_WEDGE_ORACLE`,
+     `BLOCK_EINTR_ORACLE`, the abort/panic hard-fails, `CTX596_ORACLE` (#596), and P5b's
+     `INIT_GROUP_REFUSAL_ORACLE` / `INIT_GROUP_REFUSAL` / `INIT_GROUP_WALK` /
+     `INIT_GROUP_CHILD_RAN` set. **The scripts are the truth about what is pinned; this list is a
+     snapshot as of this PR. Re-derive it at the head of every phase and repair the prose in the same
+     PR rather than trusting it.**
    - **aarch64 init service-sequence gate:** `docker/qemu/run-aarch64-service-sequence-gate.sh`,
      whose **default is 25 boots per CPU profile** — operator directive, 2026-08-18, raised from
      the old 10-boot smoke so an unqualified run is already a meaningful sample; the #575 round
      gate remains `--boots 100 --profile both`. **The script is the truth about which buckets it
      classifies and which of them fail the gate** — read `classify_serial` and the gate condition
      in the script rather than any list here, which goes stale (the #549/#551/#527-r1 lesson).
-     As of PR #600 it fails on `575`, `596` or `UNATTRIBUTED` and reports the `CTX596` divergence
-     census without gating on it; a `596` boot is an EL1 `DATA_ABORT` (`from_el0=0`) **or** a
-     `[CTX596_ORACLE:FAIL` line, and a boot that never emitted `[CTX596_ORACLE:ARMED` is
-     `UNATTRIBUTED`, never GREEN by omission.
+     As of this PR it fails on `575`, `DATA_ABORT`, `596`, `P5B`, or `UNATTRIBUTED`, and reports
+     (never gates on) `576`/`589` and the `CTX596` divergence census; a `596` boot is an EL1
+     `DATA_ABORT` (`from_el0=0`) **or** a `[CTX596_ORACLE:FAIL` line, a `P5B` boot is a completed
+     service sequence whose init-group quiesce-refusal markers are missing/short/failed, and a boot
+     that never emitted `[CTX596_ORACLE:ARMED` is `UNATTRIBUTED`, never GREEN by omission.
    - **aarch64 soaks:** **100 clean cycles** and **100 starved cycles** (host-contended) of the
      boot-test gate on `aarch64-breenix-kernel.json`, with the no-NEON guard run against the booted
      ELF. Starvation is applied by the runner, not by a committed script; the cycle count and the
@@ -417,14 +432,17 @@ not a prediction about arguments not yet made. The PR that splits says so in its
      kernel path, not the other way round.
    - **QEMU concurrency capped at 4** per standing operator rule (batch 4 and 4, never 8+).
 
-   **Pre-adjudicated flake signatures — currently exactly one.** **#555** (aarch64 softirq boot-test
-   flake under host starvation, ~1%) may be retried on that exact signature, up to two times, with
-   every occurrence recorded in the PR body. **Nothing else is pre-adjudicated.** The other live
-   flakes — **#512** (pairing-test per-PID reclaim proof), **#536** (`timer_delay` starved false-red,
-   recurs after #524), **#576** (~1/80 EL1 INSTRUCTION_ABORT during spawn), **#562** (aarch64
-   `--features testing` panics 5/5 in a ksoftirqd self-test) — are **hard failures**: each is RCA'd to
-   a root cause before the phase proceeds, never re-run until it disappears. The old
-   `timer:timer_quantum_reset_aarch64` allowance is gone; it was closed by PR #518.
+   **Operating flake law (coordinator ruling R17).** The pre-adjudicated attributable set is
+   **exactly five field-exact signatures: #555, #536, #576, #586 and #589**. A red matching one of
+   those five is attributable: record the issue citation, the tally and a preserved serial. **Any
+   other signature — filed or not — blocks the phase until the coordinator pre-adjudicates that
+   exact signature.** #512 and #562 remain filed hard failures, not tolerated signatures. #596 is
+   also filed — `aarch64: EL1 DATA_ABORT in schedule_from_kernel from a zeroed callee-saved register
+   after resume` — and receives **no tolerance**: the service-sequence gate fails on its `DATA_ABORT`
+   bucket. #555's exact aarch64 softirq-under-starvation signature retains its **≤2 retry allowance**;
+   it is the only retry allowance. This resolves the old-text collision with
+   `docker/qemu/run-aarch64-service-sequence-gate.sh`, which already buckets #576 and #589 as
+   attributable non-green outcomes while the prose called them hard failures.
 3. **Phase-specific assertions** below — every one an observed outcome (counter equality, actual
    `waitpid` status, zero fault markers). "The process was created" is never evidence, and **a
    counter equality that holds at zero is never evidence** (condition 6): every equality gate names
@@ -446,14 +464,17 @@ not a prediction about arguments not yet made. The PR that splits says so in its
    removed from the tree by PR #520 on operator directive; nothing named `gold-master`, `GOLD_MASTER`
    or `FROZEN` exists under `kernel/src`, `tests` or `scripts`, so gating on it was gating on nothing.)*
    **Structural ratchets take its place** as the standing anti-regression bar. The tree carries
-   **seven** such suites, not the four this list used to name (coordinator ruling R11, 2026-08-17);
+   **ten** such suites, not the four this list used to name (coordinator ruling R11, 2026-08-17);
    counts are re-derived at the head of every phase rather than treated as fixed, and the suite set
    is what `tests/*_structure.rs` matches, never a closed literal list — the #549/#551/#527-r1
-   lesson. As of P5a landing: `tests/teardown_structure.rs` (**43**, was 36 before P5a's seven new
-   init-identity tests), `tests/context_restore_structure.rs` (**50**),
+   lesson. As of this PR: `tests/teardown_structure.rs` (**45**),
+   `tests/context_restore_structure.rs` (**50**),
    `tests/exec_lock_order_structure.rs` (**25**), `tests/dma_and_log_sink_structure.rs` (**4**),
    `tests/loopback_pump_structure.rs` (**57**), `tests/net_lock_structure.rs` (**19**),
-   `tests/exit_tally_structure.rs` (**6**) — 204 tests, all census-anchored (file +
+   `tests/exit_tally_structure.rs` (**6**), `tests/block_request_lifetime_structure.rs` (**11**),
+   `tests/serial_line_atomicity_structure.rs` (**3**) and
+   `tests/signal_eintr_predicate_structure.rs` (**2**) — the latter three added by #594 — **222 tests**,
+   all census-anchored (file +
    enclosing-item path + occurrence count), no line pins. Every new tranche-2 invariant is
    ratcheted in one of them.
 7. **Cleanup:** all Parallels VMs stopped, all stray QEMU killed, before reporting the phase done.
@@ -502,8 +523,9 @@ P5b ──> P12                             (identity before policy — never bu
                                          unconstructible BEFORE the group scope exists, so P9 is
                                          strictly better than main at every commit. P12's
                                          group-membership drop check is the second end, not the
-                                         first. P5b is HELD on #575, so if P9 arrives first it
-                                         waits here — the edge is not negotiable)
+                                         first. #575 is CLOSED, coordinator ruling R14 released the
+                                         hold, and P5b is built and in review as PR #595; P9 still
+                                         waits for P5b to merge — the edge is not negotiable)
 
 P6a ──> P6b   *** NEW ***               (row must outlive obligations before Resources becomes
                                          row-resident — DESIGN §1.6)
@@ -1571,23 +1593,21 @@ for this tranche (§0.0).
 production sites and their dependent reads, then restore the `next_pid` base and delete
 `designated_init` with its ticket — in that order, which is the only legal one, and that single fixed
 order is exactly why this is one story rather than two. The ticket is additive, so the deletion is
-clean once the literals are back. One `git revert` of the merge commit does the whole thing; no other
-phase consumes `designated_init()` until **P5b**, which is held and unmerged. Verified by a
-`git revert` dry run on the merge commit before merge, and written into the PR body first.
+clean once the literals are back. One `git revert` of the merge commit did the whole thing at the
+P5a boundary, when no later phase consumed `designated_init()`. At this head, P5b's
+`clone.rs::refuses_init_group_clone` is exactly that consumer: #575 is CLOSED, coordinator ruling
+R14 released the hold, and P5b is built and in review as PR #595, not merged. The legal current
+revert order is therefore P5b first, then P5a. The P5a merge commit's standalone revert was verified
+by a `git revert` dry run before merge and written into the PR body first.
 
 ---
 
-## Phase 5b — `sys_clone` init-group refusal *(#464 part 2 — **HELD on #575**)*
+## Phase 5b — `sys_clone` init-group refusal *(#464 part 2 — **shipped**)*
 
-> **HELD, mechanism ratified, evidence blocked.** The refusal itself is two or three lines and lands
-> exactly where the design says. What is blocked is its **acceptance**: the gate extra below asserts
-> that *over a full boot, no row other than init itself ever carries init's effective TGID*, by walking
-> the process map **at quiesce** — and **#575** means init does not reliably reach quiesce on the QEMU
-> gates (`/bin/bwm` spawn returns EIO, the following `/sbin/telnetd` spawn never returns; long-standing
-> trackers **#427**, **#438**). A phase whose acceptance is a quiesce walk cannot be accepted while
-> quiesce is unreachable. P5b ships when #575 closes. The design's `P5 → P9` edge means P5b must land
-> before P9 regardless, so holding it does not extend the critical path unless P9 arrives first — and
-> if it does, P9 blocks on P5b, not the other way round.
+> **SHIPPED — mechanism and evidence live.** The hold's single release condition was “#575 closes.”
+> #575 is closed by PR #594 (merge `4f64be15`), and the acceptance walk now runs at the quiesce point
+> that #594's `docker/qemu/run-aarch64-service-sequence-gate.sh` defines. The design's `P5 → P9`
+> edge means P5b must land before P9 regardless.
 
 > **v3 (closure E, end 1) — `sys_clone` refuses to publish into the designated init's thread group.**
 > The re-ratification found a FATAL composition hole: P9 makes fatal signals **thread-group scoped**
@@ -1597,8 +1617,11 @@ phase consumes `designated_init()` until **P5b**, which is held and unmerged. Ve
 > `P5 → P9` graph edge, which exists because without it P9 would introduce a way to kill init that
 > `main` does not have.
 >
-> `sys_clone` (`syscall/clone.rs:36`) already derives the parent's effective TGID at `:84`
-> (`process.thread_group_id.unwrap_or(pid.as_u64())`) **inside the live PM guard taken at `:60`**.
+> `sys_clone` (`kernel/src/syscall/clone.rs`) already derives the parent's effective TGID
+> (`process.thread_group_id.unwrap_or(pid.as_u64())`) **inside the live PM guard it already holds**.
+> *(This paragraph carried `:36`/`:84`/`:60` line pins that were stale by ten lines within one phase;
+> the ratchet anchors this ordering as a shape — derivation before refusal before `allocate_pid` —
+> and prose must not re-introduce line pins.)*
 > Immediately after that derivation, if `designated_init()` is `Some(init)` and the derived TGID
 > equals init's effective TGID, return **`EINVAL`**. Two or three lines, in the guard that is already
 > held, with the authority this phase introduces.
@@ -1606,22 +1629,37 @@ phase consumes `designated_init()` until **P5b**, which is held and unmerged. Ve
 > **This is a deliberate, documented ABI restriction:** *the designated init cannot acquire `CLONE_VM`
 > siblings.* Nothing in-tree clones from init; a multi-threaded init would need its own design pass
 > for group-scoped death regardless. There is exactly **one** production write of a non-`None`
-> `thread_group_id` (`syscall/clone.rs:210`), so this refusal is the complete admission surface, and
-> P0's ratchet pins that write site by name so a second one cannot appear unnoticed. Recorded as
+> `thread_group_id` (in `sys_clone`), so this refusal is the complete admission surface, and
+> P0's ratchet pins that write site as a census keyed `(file, enclosing-item path, count)` with a
+> synthetic negative control, so a second one cannot appear unnoticed. Recorded as
 > residual **R-18** with the maintenance obligation attached.
 >
 > *Not dormant (rule 2):* the refusal has a live caller and a live test in this PR (`clone()` from
 > init returns `EINVAL`; `clone()` from any non-init process is unaffected), and it is observable
 > from the moment it lands rather than "activated by P9".
 
-**Files.** `kernel/src/syscall/clone.rs` (the admission refusal), plus the P0 ratchet.
+**Files.** `kernel/src/syscall/clone.rs` (the refusal),
+`kernel/src/tracing/providers/teardown.rs` (counter, whole-boot walk, oracle and x86 gate),
+`kernel/src/test_framework/registry.rs` (aarch64 registration), `kernel/src/main.rs` (x86 direct-call
+site), `userspace/programs/src/init.rs` (the real-init clone probe, early and at quiesce),
+`tests/teardown_structure.rs` (the P0 ratchet),
+`tests/context_restore_structure.rs` (the terminal-refusal guard-drop proof that preserves the
+fallthrough publication lifecycle), and
+`docker/qemu/run-aarch64-boot-test-strict.sh`, `docker/qemu/run-aarch64-boot-test-native.sh`,
+`docker/qemu/run-aarch64-full-test.sh`, `docker/qemu/run-x86-boot-tests.sh` and
+`docker/qemu/run-aarch64-service-sequence-gate.sh`. The original two-file list predated rule 2's
+live-caller-and-live-test obligation; the “two or three lines” framing elsewhere in this section is
+descriptive of the refusal alone, never a scope bar (size gates were abolished 2026-08-11).
 
 **Gate extras (closure E, end 1).** `clone()` issued from the designated init returns **`EINVAL`**
 and creates no row; `clone()` from a non-designated process is unaffected (the existing CLONE_VM
 tests stay green unchanged); and **over a full boot, no row other than init itself ever carries
 init's effective TGID** — asserted by walking the process map at quiesce, not by a source grep **(this
-is the assertion #575 blocks)**. A build with no designated init exercises the `None` arm and refuses
+is the acceptance assertion #575 had blocked)**. A build with no designated init exercises the `None` arm and refuses
 nothing.
+The whole-boot walk's denominator is GREEN boots of the service-sequence gate — boots that reach
+quiesce — with a floor of **50 qualifying boots**; a boot that reaches quiesce without the walk marker
+is a hard red in the new `P5B` bucket, never a skip.
 
 **Strictly better.** Makes the init-sibling state unconstructible before any group-scoped kill exists,
 which is what keeps P9 strictly better than `main`. The refusal is an admission rule, not a death
@@ -2411,7 +2449,7 @@ putting closure E's first end in P5.
 | P3 | ↑ | — | **detach done** | + wrong-victim-after-exec impossible; + a row can no longer be dispatched mid-creation |
 | **P4** | ↑ | — | ↑ | **+ AC-8 closed: every kernel stack has exactly one owner (the scheduler copy) and is freed only behind the two-epoch grace; the five-site `Box::leak` per-process leak is gone (#579), on both x86 fork paths as well as the three creation paths; + no PM→SCHEDULER nesting left on any creation path** |
 | P5a | ↑ | **identity done** | ↑ | + AC-1/4/5 structural (identity only; no behaviour change on init death) |
-| P5b *(held on #575)* | ↑ | ↑ | ↑ | **+ init can never acquire a CLONE_VM sibling** |
+| P5b *(#575 CLOSED; hold released by R14; built and in review as PR #595)* | ↑ | ↑ | ↑ | **+ init can never acquire a CLONE_VM sibling** |
 | **P6a** | ↑ | ↑ | ↑ | + a row outlives its reap; removal is proof-gated **and has an explicit two-event trigger in both orders** |
 | P6b | ↑ | ↑ | ↑ | + exactly-once notification with a claim protocol (#418's own follow-up); **+ four obligations commit their effect with their completion, and the two that cannot carry effect markers with a stated winner** |
 | P7 | ↑ | ↑ | ↑ | + no FD/endpoint lock or alloc under PM on any exit |
@@ -2471,7 +2509,8 @@ P12's argument. The gate is therefore **discharged per tranche**:
   *course* the artifact prescribes — repair the documents, run **one** adversarial pre-check against
   the repaired text, then build (artifact §5.3, §8) — so tranche 2 is **RE-RATIFIED, effective on
   pre-check pass**: the gate closes when this repair lands with a pre-check returning no blockers, and
-  not before. **P5b is held on #575** (§0.0). Tranche 2 owns none of the seven debts, so the
+  not before. **#575 is CLOSED by PR #594 (merge `4f64be15`); coordinator ruling R14 released P5b's
+  hold, and P5b is built and in review as PR #595, not merged** (§0.0). Tranche 2 owns none of the seven debts, so the
   register's binding rule does not gate it — the same structural position tranche 1 was in.
 - **Every later phase remains uncleared** until its own tranche is submitted, pre-checked and
   ratified. Ratifying tranche 2 grants nothing to P6a and beyond.
