@@ -45,6 +45,16 @@ service-sequence soak on the branch put it at 10/60 (17%), matching `main`'s 1/6
 
 Both files are byte-for-byte copies of the serials preserved from the run.
 
+## Attributable non-green — open #576
+
+| File | Gate run | Signature |
+|---|---|---|
+| `576-svcseq-max-boot75-r2.txt` | round-2 200-boot service-sequence run, `max` boot 75/100 | `[INSTRUCTION_ABORT] FAR=0x0 ELR=0x0 ESR=0x86000005 IFSC=0x5 … from_el0=0` |
+
+Field-exact **#576**, the sole non-`589` red of the round-2 200-boot run. Distinct from #596 in every
+field: instruction fetch rather than data access, `ESR=0x86000005` rather than `0x96000005`, and a
+null `ELR`/`FAR` rather than a valid `.text` `ELR`.
+
 ## Mutation exhibits (each turned `run-aarch64-boot-test-strict.sh` red)
 
 | File | Mutation | Observed |
