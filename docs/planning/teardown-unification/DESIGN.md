@@ -54,7 +54,7 @@ it un-skippable.
 carry no further obligation are recorded in the changelogs, not here: the seven-vs-nine caller count
 (closed by the three-class taxonomy — DESIGN §1.7), the reversed P6a join gates, the Report-marker
 phasing contradiction, and `parked_at` freshness. The design's *accepted* risks live in DESIGN §6 as
-residuals R-1…R-21; a residual is a risk taken with eyes open, a **debt is an unfinished argument**,
+residuals R-1…R-22; a residual is a risk taken with eyes open, a **debt is an unfinished argument**,
 and the two are deliberately kept in separate lists.
 
 ---
@@ -127,7 +127,9 @@ v3 closes them as seven lettered items.
 
 **New residuals disclosed by these closures rather than hidden:** R-18 (init-sibling belt-and-braces),
 R-19 (the one irreducible `Report` ambiguity window and why the ruling is "do not re-run"), R-20
-(parked receipts are a bounded, counted, visible stall rather than a silent one).
+(parked receipts are a bounded, counted, visible stall rather than a silent one), R-21 (the P2-era
+expedite observation proxy and its demolition date), and R-22 (P3's one terminal init-refusal
+guard-drop carve-out, explicitly not precedent).
 
 ### v3 repair — seven gaps closed against the v3 pre-check *(this revision; nothing else changed)*
 
@@ -1992,11 +1994,19 @@ report possibly missing, and the AC-12 equality fails loudly", not "an obligatio
 **R-18. Init's group protection is belt-and-braces, and the belt is an ABI restriction.** *(new, v3,
 closure E.)* End 1 (clone admission refusing to publish into the designated init's thread group,
 `EINVAL`) is a **deliberate and documented ABI restriction**: Breenix's designated init cannot have
-`CLONE_VM` siblings. Nothing in-tree clones from init and a multi-threaded init would need its own
-design pass, so the cost today is zero — but it *is* a restriction, and if init ever legitimately
-needs siblings, end 1 is what must be revisited. End 2 (the group-membership drop in S1's seal) is
-what keeps the system safe in the meantime, and it is the guard that must never be removed as
-"redundant". Both ends are separately tested so neither can silently rot into the other's shadow.
+`CLONE_VM` siblings. Production init now exercises that restriction twice per aarch64 boot — once
+early and once at quiesce — and each probe invocation issues both a `CLONE_VM` clone and a
+`CLONE_VM | CLONE_FILES` clone. The permanent shipping cost is therefore **four deliberately refused
+clone syscalls per aarch64 boot**. These calls are target-gated for aarch64 but deliberately are not
+feature-gated: phasing rule 2 requires the production path, not a test-only build, to be the live
+caller of the refusal. A later phase may retire the probes only by providing replacement
+production-path exercise and equivalent whole-boot evidence for the admission rule, or by replacing
+the restriction with a separately reviewed multi-threaded-init design and an equivalent proof that
+the init-group kill bypass remains closed. A multi-threaded init would need that design pass, so if
+init ever legitimately needs siblings, end 1 is what must be revisited. End 2 (the group-membership
+drop in S1's seal) is what keeps the system safe in the meantime, and it is the guard that must never
+be removed as "redundant". Both ends are separately tested so neither can silently rot into the
+other's shadow.
 
 **R-19. `Report` has one irreducible ambiguity window, and we rule against re-running.** *(⚠ Tracked
 as **DEBT-1**, owner **P6b** — this residual is the reason `Report` is at-most-once rather than
@@ -2046,6 +2056,17 @@ whose only fault is already fatal. The residual is bounded by construction: the 
 both counters are **deleted in P8**, in the same PR that introduces the hook, so the round never
 carries two observation mechanisms past the phase that unifies them. A P8 that keeps the bucket table
 alive is the failure mode this residual exists to make visible.
+
+**R-22. P3's admission-to-publication guard-custody invariant has one terminal refusal carve-out.**
+P3's structural rule ordinarily permits no `manager_guard` drop between clone admission and child
+publication. P5b narrowed it at exactly one place: the init-group refusal arm must drop the guard
+before returning `EINVAL`, because that terminal path publishes no child and must release PM custody
+before it exits. `tests/context_restore_structure.rs` keeps the exception honest by requiring exactly
+one `drop(manager_guard)`, exactly one `return`, and the `EINVAL` result inside that arm; its mutation
+control replaces the `return` with a non-terminal binding and must make the suite red. The invariant's
+purpose therefore survives — the refusal publishes nothing — but the exception is a recorded
+residual in a custody-adjacent ratchet, **not precedent**: no later phase may cite it to drop the guard
+on another admission-to-publication path.
 
 ---
 

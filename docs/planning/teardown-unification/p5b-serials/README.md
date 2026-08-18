@@ -9,12 +9,21 @@ described, per the campaign's standing rule.
 |---|---|---|
 | `589-fulltest-phase1c-20260817-230637.txt` | `run-aarch64-full-test.sh --boot-tests-only` | Phase 1c 30s timeout |
 | `589-fulltest-phase1c-20260817-235600.txt` | same | same |
+| `589-fulltest-phase1c-r2-attempt1.txt` | same, round 2 | Phase 1c 30s timeout |
+| `589-fulltest-phase1c-r2-attempt2.txt` | same, round 2 | Phase 1c 30s timeout |
 | `589-servicesequence-soak-max.txt` | `run-aarch64-service-sequence-gate.sh` | bucketed `589` by the gate's own classifier |
 
 All match **#589** field-exactly: `CLONEVM_EXEC_TEST: live sibling refused exec` is the last CLONEVM
 line, the sibling's `[syscall] exit(0) … name=thread-N` never appears, and heartbeats keep their ~1s
 cadence to the timeout. The parent is spinning in `wait_for_zero_u32` on the pre-exec
 `clear_child_tid` handshake while the sibling is never scheduled.
+
+**Round-2 full-test tally at this head: 1 PASS, 2 attributable #589 reds.** Three
+`run-aarch64-full-test.sh --boot-tests-only` runs were made. Attempts 1 and 2 are the two preserved
+round-2 files above: both red at Phase 1c with `CLONEVM_EXEC_TEST: live sibling refused exec` as the
+last `CLONEVM_EXEC_TEST` line, no `[syscall] exit(0) … name=thread-N`, heartbeats continuing through
+the timeout, and zero fault markers. The third run passed **105/105**, including Phase 1e PASS with
+`INIT_GROUP_WALK` at `rows=11`.
 
 **Attribution measurement (interleaved A/B, this Mac, unloaded).** Prebuilt kernel + ext2 image pairs
 were swapped in and out so nothing but the code differed, alternating arms across six rounds:

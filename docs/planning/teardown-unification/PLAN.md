@@ -3,7 +3,7 @@
 Companion to `teardown-unification-DESIGN-v3.md`. Design-only: nothing below has been implemented and
 no gate result is claimed.
 
-**Status:** **Tranche-ratified document. Tranche 1 (P0+P1+P2): COMPLETE — merged to `main`. P2 (SPINE-1, #491's live UAF) shipped via PR #515, merge commit `6003c7a6758a51c4f2092f8a1e3a502432273795`; exit_kick_protocol_gate + fork_exit_defer_reclaim_pairing_test deterministic 100/100, 0 fault markers, beast x86 3/3. Tranche 2 (P3 + P4 + P5a; P5b held on #575): **RE-RATIFIED, effective on pre-check pass (§2 condition 7)** — the operator ratified *proceeding per the re-ratification artifact* on 2026-08-16 (document repair → one adversarial pre-check → implementation); the ratification takes effect when this repaired text lands with a passing pre-check, and no tranche-2 phase is cleared for build before that. See §0.0. Later phases: design-debt register applies; sections may change before their tranche ratifies.**
+**Status:** **Tranche-ratified document. Tranche 1 (P0+P1+P2): COMPLETE — merged to `main`. P2 (SPINE-1, #491's live UAF) shipped via PR #515, merge commit `6003c7a6758a51c4f2092f8a1e3a502432273795`; exit_kick_protocol_gate + fork_exit_defer_reclaim_pairing_test deterministic 100/100, 0 fault markers, beast x86 3/3. Tranche 2 (P3 + P4 + P5a; #575 CLOSED by PR #594, merge `4f64be15`; P5b hold released by coordinator ruling R14 and P5b built and in review as PR #595): **RE-RATIFIED, effective on pre-check pass (§2 condition 7)** — the operator ratified *proceeding per the re-ratification artifact* on 2026-08-16 (document repair → one adversarial pre-check → implementation); the ratification takes effect when this repaired text lands with a passing pre-check, and no tranche-2 phase is cleared for build before that. See §0.0. Later phases: design-debt register applies; sections may change before their tranche ratifies.**
 
 **Base:** `main` @ `eebc8868` (docs re-verified at `main` @ `c9efdcc7`; re-verified for v3 at
 `main` @ `985881a6`; **tranche-2 sections re-anchored for v3.3 at `main` @ `2c7b8798`**, 2026-08-16 —
@@ -31,7 +31,8 @@ it un-skippable.
 > submitted while debts owned by *later* phases remain open, and only while that is true.
 >
 > **Tranche 1 = P0 + P1 + P2 (ratified, merged) and Tranche 2 = P3 + P4 + P5a (ratification decided
-> 2026-08-16, effective on this repair's pre-check pass; P5b held) each own none of the seven debts
+> 2026-08-16, effective on this repair's pre-check pass; #575 CLOSED by PR #594, P5b's hold released
+> by coordinator ruling R14, and P5b built and in review as PR #595) each own none of the seven debts
 > below** (their owners are P6a, P6b, P7, P8, P9, P10 and P12), which is precisely why each could be
 > submitted while the register stands open.
 
@@ -49,7 +50,7 @@ it un-skippable.
 carry no further obligation are recorded in the changelogs, not here: the seven-vs-nine caller count
 (closed by the three-class taxonomy — DESIGN §1.7), the reversed P6a join gates, the Report-marker
 phasing contradiction, and `parked_at` freshness. The design's *accepted* risks live in DESIGN §6 as
-residuals R-1…R-21; a residual is a risk taken with eyes open, a **debt is an unfinished argument**,
+residuals R-1…R-22; a residual is a risk taken with eyes open, a **debt is an unfinished argument**,
 and the two are deliberately kept in separate lists.
 
 ---
@@ -273,7 +274,7 @@ class (r23: fixed 3, introduced 4).
    review surface silently doubles — so the seams below are **named** in the phase text and fire only
    against real scope.
 
-### The honest PR ledger — 13 numbered phases, **18 PRs** (one of them, P5b, held) *(condition 6; updated by v3 closure D and by the 2026-08-16 repair pass)*
+### The honest PR ledger — 13 numbered phases, **18 PRs** (P5b built and in review as PR #595) *(condition 6; updated by v3 closure D and by the 2026-08-16 repair pass)*
 
 v1 claimed "13 phases / 13 PRs" while splitting P9 into three; the first ratification counted 15 and
 called the contradiction a MAJOR. v2 said 16; v3 said 17. **The count rests on rule 5 alone** — one
@@ -318,7 +319,7 @@ not a prediction about arguments not yet made. The PR that splits says so in its
 | 4 | exec detach **+ clone/exec admission**: clear `inherited_cr3`/`thread_group_id` at every exec commit and preserve on every failure; parent-`Live` validation + non-runnable publication + the `Creating` dispatch arm — **landed, PR #587** | **P3** — artifact `T2-b` |
 | 5 | Kernel-stack single-owner accounting (**AC-8**) across the five `Box::leak` sites **+ creation-path PM→SCHEDULER lock-order parity** (#527's creation-path remainder) — closes **#579** | **P4** — artifact `T2-c` |
 | 6 | Runtime init designation — PID-1 reservation + held-publication ticket **+ the init literal migration onto `designated_init()`** — **landed, PR #590** | **P5a** — artifact `T2-d` |
-| 7 | Init-group clone refusal | **P5b** — **HELD on #575** |
+| 7 | Init-group clone refusal | **P5b** — **BUILT, IN REVIEW as PR #595**; #575 CLOSED by PR #594 (merge `4f64be15`), hold released by coordinator ruling R14 |
 | 8 | Reap/tombstone retention gate **+ two-event join** | **P6a** |
 | 9 | Exactly-once ledger (class A/B obligations + effect markers) | **P6b** |
 | 10 | FD closure leaves the PM lock | P7 |
@@ -331,8 +332,9 @@ not a prediction about arguments not yet made. The PR that splits says so in its
 | 17 | Fatal-signal + fault convergence (intent-only delivery) | P11 |
 | 18 | Init death policy **+ group-membership drop check** | P12 |
 
-> **The arithmetic, stated so it can be checked.** **18 rows = 18 PRs** across 13 numbered phases, of
-> which **P5b is held on #575**, so **17** are buildable in sequence today.
+> **The arithmetic, stated so it can be checked.** **18 rows = 18 PRs** across 13 numbered phases.
+> #575 is CLOSED, coordinator ruling R14 released P5b's hold, and P5b is already built and in review
+> as PR #595, so **all 18** are buildable in sequence today.
 >
 > **Summed out of the table, one row per phase-letter.** Ten phases carry no letter and contribute one
 > row each — P0 + P1 + P2 + P3 + P4 + P7 + P8 + P9 + P11 + P12 = **10**. Three phases are lettered:
@@ -419,13 +421,17 @@ not a prediction about arguments not yet made. The PR that splits says so in its
      kernel path, not the other way round.
    - **QEMU concurrency capped at 4** per standing operator rule (batch 4 and 4, never 8+).
 
-   **Operating flake law (coordinator ruling R17).** A red whose signature matches an **open filed
-   issue field-exactly** is *attributable*: record the issue citation, the tally and a preserved
-   serial. A signature nobody has filed **blocks** the phase until it is RCA'd or filed. The currently
-   filed set is **#555, #536, #576, #586 and #589**. #555's exact aarch64 softirq-under-starvation
-   signature retains its **≤2 retry allowance**; it is the only retry allowance. This resolves the
-   old-text collision with `docker/qemu/run-aarch64-service-sequence-gate.sh`, which already buckets
-   #576 and #589 as attributable non-green outcomes while the prose called them hard failures.
+   **Operating flake law (coordinator ruling R17).** The pre-adjudicated attributable set is
+   **exactly five field-exact signatures: #555, #536, #576, #586 and #589**. A red matching one of
+   those five is attributable: record the issue citation, the tally and a preserved serial. **Any
+   other signature — filed or not — blocks the phase until the coordinator pre-adjudicates that
+   exact signature.** #512 and #562 remain filed hard failures, not tolerated signatures. #596 is
+   also filed — `aarch64: EL1 DATA_ABORT in schedule_from_kernel from a zeroed callee-saved register
+   after resume` — and receives **no tolerance**: the service-sequence gate fails on its `DATA_ABORT`
+   bucket. #555's exact aarch64 softirq-under-starvation signature retains its **≤2 retry allowance**;
+   it is the only retry allowance. This resolves the old-text collision with
+   `docker/qemu/run-aarch64-service-sequence-gate.sh`, which already buckets #576 and #589 as
+   attributable non-green outcomes while the prose called them hard failures.
 3. **Phase-specific assertions** below — every one an observed outcome (counter equality, actual
    `waitpid` status, zero fault markers). "The process was created" is never evidence, and **a
    counter equality that holds at zero is never evidence** (condition 6): every equality gate names
@@ -506,8 +512,9 @@ P5b ──> P12                             (identity before policy — never bu
                                          unconstructible BEFORE the group scope exists, so P9 is
                                          strictly better than main at every commit. P12's
                                          group-membership drop check is the second end, not the
-                                         first. P5b is HELD on #575, so if P9 arrives first it
-                                         waits here — the edge is not negotiable)
+                                         first. #575 is CLOSED, coordinator ruling R14 released the
+                                         hold, and P5b is built and in review as PR #595; P9 still
+                                         waits for P5b to merge — the edge is not negotiable)
 
 P6a ──> P6b   *** NEW ***               (row must outlive obligations before Resources becomes
                                          row-resident — DESIGN §1.6)
@@ -1575,9 +1582,12 @@ for this tranche (§0.0).
 production sites and their dependent reads, then restore the `next_pid` base and delete
 `designated_init` with its ticket — in that order, which is the only legal one, and that single fixed
 order is exactly why this is one story rather than two. The ticket is additive, so the deletion is
-clean once the literals are back. One `git revert` of the merge commit does the whole thing; no other
-phase consumes `designated_init()` until **P5b**, which is held and unmerged. Verified by a
-`git revert` dry run on the merge commit before merge, and written into the PR body first.
+clean once the literals are back. One `git revert` of the merge commit did the whole thing at the
+P5a boundary, when no later phase consumed `designated_init()`. At this head, P5b's
+`clone.rs::refuses_init_group_clone` is exactly that consumer: #575 is CLOSED, coordinator ruling
+R14 released the hold, and P5b is built and in review as PR #595, not merged. The legal current
+revert order is therefore P5b first, then P5a. The P5a merge commit's standalone revert was verified
+by a `git revert` dry run before merge and written into the PR body first.
 
 ---
 
@@ -2428,7 +2438,7 @@ putting closure E's first end in P5.
 | P3 | ↑ | — | **detach done** | + wrong-victim-after-exec impossible; + a row can no longer be dispatched mid-creation |
 | **P4** | ↑ | — | ↑ | **+ AC-8 closed: every kernel stack has exactly one owner (the scheduler copy) and is freed only behind the two-epoch grace; the five-site `Box::leak` per-process leak is gone (#579), on both x86 fork paths as well as the three creation paths; + no PM→SCHEDULER nesting left on any creation path** |
 | P5a | ↑ | **identity done** | ↑ | + AC-1/4/5 structural (identity only; no behaviour change on init death) |
-| P5b *(held on #575)* | ↑ | ↑ | ↑ | **+ init can never acquire a CLONE_VM sibling** |
+| P5b *(#575 CLOSED; hold released by R14; built and in review as PR #595)* | ↑ | ↑ | ↑ | **+ init can never acquire a CLONE_VM sibling** |
 | **P6a** | ↑ | ↑ | ↑ | + a row outlives its reap; removal is proof-gated **and has an explicit two-event trigger in both orders** |
 | P6b | ↑ | ↑ | ↑ | + exactly-once notification with a claim protocol (#418's own follow-up); **+ four obligations commit their effect with their completion, and the two that cannot carry effect markers with a stated winner** |
 | P7 | ↑ | ↑ | ↑ | + no FD/endpoint lock or alloc under PM on any exit |
@@ -2488,7 +2498,8 @@ P12's argument. The gate is therefore **discharged per tranche**:
   *course* the artifact prescribes — repair the documents, run **one** adversarial pre-check against
   the repaired text, then build (artifact §5.3, §8) — so tranche 2 is **RE-RATIFIED, effective on
   pre-check pass**: the gate closes when this repair lands with a pre-check returning no blockers, and
-  not before. **P5b is held on #575** (§0.0). Tranche 2 owns none of the seven debts, so the
+  not before. **#575 is CLOSED by PR #594 (merge `4f64be15`); coordinator ruling R14 released P5b's
+  hold, and P5b is built and in review as PR #595, not merged** (§0.0). Tranche 2 owns none of the seven debts, so the
   register's binding rule does not gate it — the same structural position tranche 1 was in.
 - **Every later phase remains uncleared** until its own tranche is submitted, pre-checked and
   ratified. Ratifying tranche 2 grants nothing to P6a and beyond.
