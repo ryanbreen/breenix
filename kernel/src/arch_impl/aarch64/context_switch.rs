@@ -20,7 +20,7 @@
 
 use core::mem::MaybeUninit;
 use core::ops::Deref;
-use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 
 use super::exception_frame::Aarch64ExceptionFrame;
 use super::percpu::Aarch64PerCpu;
@@ -71,6 +71,18 @@ const TRACE_CTX_DIAG_DEFER_MAIN_DRAIN: u16 = 8;
 const TRACE_CTX_DIAG_DEFER_STORE: u16 = 9;
 const TRACE_CTX_DIAG_DEFER_EVICT: u16 = 10;
 const TRACE_CTX_DIAG_RET_TO_KERNEL_CONTEXT: u16 = 11;
+
+crate::define_trace_counter!(
+    INLINE_ELR_DIVERGENCE,
+    "inline-saved thread ERET-dispatched whose pre-save ELR differed from its inline-save resume PC (#596 mechanism)"
+);
+crate::define_trace_counter!(
+    INLINE_SCHED_NULL_FALLBACK,
+    "inline_schedule_trampoline observed a null scheduler_ptr and took the force-unlock idle fallback (#596 open question B)"
+);
+
+static CTX596_ORACLE_EMISSIONS: AtomicU32 = AtomicU32::new(0);
+static CTX596_DIVERGENCE_EMISSIONS: AtomicU32 = AtomicU32::new(0);
 
 #[inline]
 fn dispatch_spsr(spsr: u64) -> u64 {
@@ -2174,8 +2186,79 @@ fn log_idle_thread_context(tag: &str, thread: &Thread, sp: u64, elr: u64, x30: u
 fn clear_inline_schedule_state(thread: &mut Thread) {
     thread.saved_by_inline_schedule = false;
     thread.inline_schedule_spsr = 0;
+    thread.inline_schedule_prev_elr = 0;
     thread.inline_schedule_saved_sp = 0;
     thread.inline_schedule_caller_lr = 0;
+}
+
+#[inline(always)]
+fn check_inline_save_resume_point(thread: &Thread, site: u64) {
+    if !thread.saved_by_inline_schedule || thread.context.elr_el1 == thread.context.x30 {
+        return;
+    }
+    if CTX596_ORACLE_EMISSIONS.fetch_add(1, Ordering::Relaxed) >= 8 {
+        return;
+    }
+
+    raw_uart_str("\n[CTX596_ORACLE:FAIL:save_elr_mismatch:tid=");
+    raw_uart_dec(thread.id());
+    raw_uart_str(":site=");
+    raw_uart_dec(site);
+    raw_uart_str(":cpu=");
+    raw_uart_dec(Aarch64PerCpu::cpu_id() as u64);
+    raw_uart_str(":ctx_elr=");
+    raw_uart_hex(thread.context.elr_el1);
+    raw_uart_str(":x30=");
+    raw_uart_hex(thread.context.x30);
+    raw_uart_str(":prev_elr=");
+    raw_uart_hex(thread.inline_schedule_prev_elr);
+    raw_uart_str("]\n");
+}
+
+#[inline(always)]
+fn check_inline_eret_resume_pc(thread: &Thread, frame_elr: u64) {
+    if !thread.saved_by_inline_schedule || frame_elr == thread.context.x30 {
+        return;
+    }
+    if CTX596_ORACLE_EMISSIONS.fetch_add(1, Ordering::Relaxed) >= 8 {
+        return;
+    }
+
+    raw_uart_str("\n[CTX596_ORACLE:FAIL:eret_resume_pc:tid=");
+    raw_uart_dec(thread.id());
+    raw_uart_str(":cpu=");
+    raw_uart_dec(Aarch64PerCpu::cpu_id() as u64);
+    raw_uart_str(":frame_elr=");
+    raw_uart_hex(frame_elr);
+    raw_uart_str(":x30=");
+    raw_uart_hex(thread.context.x30);
+    raw_uart_str("]\n");
+}
+
+#[inline(always)]
+fn record_inline_elr_divergence(thread: &Thread) {
+    if !thread.saved_by_inline_schedule
+        || thread.inline_schedule_prev_elr == thread.context.x30
+    {
+        return;
+    }
+
+    crate::trace_count!(INLINE_ELR_DIVERGENCE);
+    if CTX596_DIVERGENCE_EMISSIONS.fetch_add(1, Ordering::Relaxed) >= 8 {
+        return;
+    }
+
+    raw_uart_str("\n[CTX596_ELR_DIVERGENCE] tid=");
+    raw_uart_dec(thread.id());
+    raw_uart_str(" cpu=");
+    raw_uart_dec(Aarch64PerCpu::cpu_id() as u64);
+    raw_uart_str(" prev_elr=");
+    raw_uart_hex(thread.inline_schedule_prev_elr);
+    raw_uart_str(" x30=");
+    raw_uart_hex(thread.context.x30);
+    raw_uart_str(" ctx_elr=");
+    raw_uart_hex(thread.context.elr_el1);
+    raw_uart_str("\n");
 }
 
 #[inline(always)]
@@ -2194,6 +2277,7 @@ fn take_inline_ret_dispatch_info(
     // mid-function ELR that may require stale volatile registers.
     let resume_pc = thread.context.x30;
     let saved_by_inline_schedule = thread.saved_by_inline_schedule;
+    check_inline_save_resume_point(thread, 1);
     thread.context.elr_el1 = resume_pc;
     let kst = thread.kernel_stack_top;
     let sp_el0 = thread.context.sp_el0;
@@ -2227,6 +2311,20 @@ fn take_inline_ret_dispatch_info(
 }
 
 #[inline(always)]
+#[cfg(feature = "force_eret_dispatch_596")]
+fn inline_ret_dispatch_info_if_ready(
+    _sched: &mut Scheduler,
+    _thread_id: u64,
+) -> Option<(*mut u8, *const CpuContext, u64, Option<crate::task::thread::VirtAddr>, u64, u64, u64, u64)>
+{
+    // This forces only a production-reachable ERET path (PmLockBusy,
+    // RowUnpublished, ProcessGone, is_idle, or !has_started); it invents
+    // no new scheduler or thread state.
+    None
+}
+
+#[inline(always)]
+#[cfg(not(feature = "force_eret_dispatch_596"))]
 fn inline_ret_dispatch_info_if_ready(
     sched: &mut Scheduler,
     thread_id: u64,
@@ -2613,6 +2711,11 @@ fn restore_kernel_context_inline(
         thread.context.spsr_el1 = kernel_dispatch_spsr(thread.context.spsr_el1);
     }
 
+    if has_started {
+        check_inline_save_resume_point(thread, 2);
+        record_inline_elr_divergence(thread);
+    }
+
     // Validate ELR before restoring any registers.
     // If the context is corrupt, return false immediately — the caller will
     // redirect to idle and update cpu_state so that the next preemption
@@ -2744,6 +2847,7 @@ fn restore_kernel_context_inline(
         // On Parallels, kernel runs identity-mapped at physical addresses
         // (KERNEL_PHYS_BASE..KERNEL_PHYS_LIMIT), so we must accept both.
         frame.elr = thread.context.elr_el1;
+        check_inline_eret_resume_pc(thread, frame.elr);
         thread.context.spsr_el1 = kernel_dispatch_spsr(thread.context.spsr_el1);
         frame.spsr = dispatch_spsr(thread.context.spsr_el1); // Restore saved processor state
     } else {
@@ -3081,6 +3185,7 @@ fn reset_idle_continuation_locked(
     let idle_addr = idle_loop_arm64 as *const () as u64;
     thread.saved_by_inline_schedule = false;
     thread.inline_schedule_spsr = 0;
+    thread.inline_schedule_prev_elr = 0;
     thread.inline_schedule_saved_sp = 0;
     thread.inline_schedule_caller_lr = 0;
     thread.context.sp = idle_sp;
@@ -4189,6 +4294,7 @@ extern "C" fn inline_schedule_trampoline() -> ! {
     cpu0_breadcrumb(cpu_id, 31); // after reading INLINE_SCHEDULE_STATE
 
     if sched_ptr.is_null() {
+        crate::trace_count!(INLINE_SCHED_NULL_FALLBACK);
         inline_schedule_breadcrumb(cpu_id, INLINE_BC_NULL_FALLBACK, 0);
         unsafe {
             inline_schedule_breadcrumb(cpu_id, INLINE_BC_FORCE_UNLOCK_RET, 1);
@@ -4640,6 +4746,7 @@ pub fn schedule_from_kernel() {
             old_thread.context.sp_el0 = read_sp_el0();
             old_thread.context.tpidr_el0 = read_tpidr_el0();
             old_thread.inline_schedule_spsr = kernel_dispatch_spsr(saved_daif & 0x3C0);
+            old_thread.inline_schedule_prev_elr = old_thread.context.elr_el1;
             old_thread.inline_schedule_caller_lr =
                 unsafe { core::ptr::read_volatile((schedule_sp + 0x20) as *const u64) };
             old_thread.inline_schedule_saved_sp = schedule_sp;

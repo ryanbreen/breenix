@@ -1098,6 +1098,7 @@ impl ProcessManager {
             blocked_in_syscall: false,
             saved_by_inline_schedule: false,
             inline_schedule_spsr: 0,
+            inline_schedule_prev_elr: 0,
             inline_schedule_caller_lr: 0,
             inline_schedule_saved_sp: 0,
             saved_userspace_context: None,
@@ -1177,6 +1178,7 @@ impl ProcessManager {
             blocked_in_syscall: false,
             saved_by_inline_schedule: false,
             inline_schedule_spsr: 0,
+            inline_schedule_prev_elr: 0,
             inline_schedule_caller_lr: 0,
             inline_schedule_saved_sp: 0,
             saved_userspace_context: None,
@@ -1261,6 +1263,7 @@ impl ProcessManager {
             blocked_in_syscall: false,
             saved_by_inline_schedule: false,
             inline_schedule_spsr: 0,
+            inline_schedule_prev_elr: 0,
             inline_schedule_caller_lr: 0,
             inline_schedule_saved_sp: 0,
             saved_userspace_context: None,
@@ -2083,6 +2086,7 @@ impl ProcessManager {
         // either constructor.
         child_thread.saved_by_inline_schedule = false;
         child_thread.inline_schedule_spsr = 0;
+        child_thread.inline_schedule_prev_elr = 0;
         child_thread.inline_schedule_caller_lr = 0;
         child_thread.inline_schedule_saved_sp = 0;
 
@@ -2571,6 +2575,7 @@ impl ProcessManager {
                 blocked_in_syscall: false,
                 saved_by_inline_schedule: false,
                 inline_schedule_spsr: 0,
+                inline_schedule_prev_elr: 0,
                 inline_schedule_caller_lr: 0,
                 inline_schedule_saved_sp: 0,
                 saved_userspace_context: None,

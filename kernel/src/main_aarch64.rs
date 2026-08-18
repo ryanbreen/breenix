@@ -466,6 +466,19 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
     serial_println!("========================================");
     serial_println!();
 
+    // #596 anti-vacuity: name the inline-save resume-point oracle and whether
+    // the forced-ERET repro knob is compiled in. Emitted after serial init, so
+    // a boot that reaches serial at all is scored against the oracle.
+    #[cfg(feature = "boot_tests")]
+    serial_println!(
+        "[CTX596_ORACLE:ARMED:force_eret={}]",
+        if cfg!(feature = "force_eret_dispatch_596") {
+            1
+        } else {
+            0
+        }
+    );
+
     // Diagnostic: verify this code is reached (no format args = no alloc issues)
     serial_println!("[boot] DIAG_MARKER_XHCI_A");
     let hcrst_raw = kernel::platform_config::xhci_hcrst_done_raw();
