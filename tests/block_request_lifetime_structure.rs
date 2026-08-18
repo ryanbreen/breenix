@@ -347,6 +347,15 @@ const KEEP_LOCKED_IDENTIFIER: &str = "keep_locked";
 /// abandoned-request path rather than silently expanding the quarantine set.
 const DRIVER_GUARD_WEDGE_CALL_POPULATION: usize = 9;
 
+/// Every `release_on_drop = false` assignment marks an arm that intentionally keeps a driver
+/// gate locked past guard drop. Each such arm MUST also latch `wedged` in the same method body
+/// (via a `.wedged.store(` call) so a future locker is refused rather than hanging silently.
+/// Pinning this population forces explicit review of any new such arm, regardless of what the
+/// enclosing method is named.
+const DRIVER_RELEASE_ON_DROP_FALSE_POPULATION: usize = 4;
+const RELEASE_ON_DROP_FALSE_ASSIGNMENT: &str = "release_on_drop = false";
+const WEDGED_STORE_CALL: &str = ".wedged.store(";
+
 fn is_identifier_byte(byte: u8) -> bool {
     byte == b'_' || byte.is_ascii_alphanumeric()
 }
@@ -447,6 +456,42 @@ fn identifier_at(source: &str, offset: usize) -> Option<(&str, usize)> {
         end += 1;
     }
     Some((&source[offset..end], end))
+}
+
+fn enclosing_fn_body(source: &str, offset: usize) -> Option<(usize, usize)> {
+    let mut innermost = None;
+
+    for fn_offset in code_identifier_occurrences(source, "fn") {
+        let Some(open_relative) = source[fn_offset + "fn".len()..].find('{') else {
+            continue;
+        };
+        let open = fn_offset + "fn".len() + open_relative;
+        let Some(close) = matching_brace(source, open) else {
+            continue;
+        };
+        if !(open < offset && offset < close) {
+            continue;
+        }
+
+        let candidate = (open + 1, close);
+        if innermost.is_none_or(|(start, end)| candidate.1 - candidate.0 < end - start) {
+            innermost = Some(candidate);
+        }
+    }
+
+    innermost
+}
+
+fn fn_name_for_body(source: &str, body_start: usize) -> Option<&str> {
+    let open = body_start.checked_sub(1)?;
+    code_identifier_occurrences(source, "fn")
+        .into_iter()
+        .find_map(|fn_offset| {
+            let name_start = skip_ascii_whitespace(source, fn_offset + "fn".len());
+            let (name, name_end) = identifier_at(source, name_start)?;
+            let open_relative = source[name_end..].find('{')?;
+            (name_end + open_relative == open).then_some(name)
+        })
 }
 
 fn struct_definitions(source: &str) -> Vec<(&str, usize, usize)> {
@@ -592,6 +637,30 @@ fn validate_gate_poison_source(label: &str, source: &str) -> Result<(), String> 
     Ok(())
 }
 
+fn validate_release_on_drop_pairing(label: &str, source: &str) -> Result<(), String> {
+    let masked = masked_code(source);
+    for offset in code_occurrences(&masked, RELEASE_ON_DROP_FALSE_ASSIGNMENT) {
+        let line = line_number(source, offset);
+        let Some((body_start, body_end)) = enclosing_fn_body(&masked, offset) else {
+            return Err(format!(
+                "{label}:{line}: `{RELEASE_ON_DROP_FALSE_ASSIGNMENT}` assignment has no enclosing method body"
+            ));
+        };
+        if compact_code(&masked[body_start..body_end]).contains(WEDGED_STORE_CALL) {
+            continue;
+        }
+
+        let method = fn_name_for_body(&masked, body_start)
+            .map(|name| format!("method `{name}`"))
+            .unwrap_or_else(|| "enclosing method".to_string());
+        return Err(format!(
+            "{label}:{line}: {method} contains unpaired `{RELEASE_ON_DROP_FALSE_ASSIGNMENT}` assignment without a `{WEDGED_STORE_CALL}` call"
+        ));
+    }
+
+    Ok(())
+}
+
 fn driver_rust_sources() -> Vec<(String, String)> {
     discover_files(&repo_root().join("kernel/src/drivers"), "rs")
         .into_iter()
@@ -642,6 +711,21 @@ fn driver_guard_wedge_call_population_is_pinned() {
 }
 
 #[test]
+fn driver_release_on_drop_false_population_is_pinned() {
+    let sources = driver_rust_sources();
+    let assignments: usize = sources
+        .iter()
+        .map(|(_, source)| code_occurrences(source, RELEASE_ON_DROP_FALSE_ASSIGNMENT).len())
+        .sum();
+    assert_eq!(
+        assignments,
+        DRIVER_RELEASE_ON_DROP_FALSE_POPULATION,
+        "release_on_drop-false census changed across {} discovered driver Rust files",
+        sources.len()
+    );
+}
+
+#[test]
 fn every_wedged_driver_gate_refuses_inside_lock() {
     let sources = driver_rust_sources();
     let violations: Vec<String> = sources
@@ -651,6 +735,20 @@ fn every_wedged_driver_gate_refuses_inside_lock() {
     assert!(
         violations.is_empty(),
         "driver gate-poison validation failed: {}",
+        violations.join("; ")
+    );
+}
+
+#[test]
+fn every_release_on_drop_false_arm_latches_wedged() {
+    let sources = driver_rust_sources();
+    let violations: Vec<String> = sources
+        .iter()
+        .filter_map(|(label, source)| validate_release_on_drop_pairing(label, source).err())
+        .collect();
+    assert!(
+        violations.is_empty(),
+        "driver release_on_drop pairing validation failed: {}",
         violations.join("; ")
     );
 }
@@ -684,4 +782,35 @@ fn gate_poison_validator_rejects_synthetic_regressions() {
         keep_error.contains("keep_locked"),
         "validator returned the wrong keep_locked diagnostic: {keep_error}"
     );
+
+    let unpaired_retain = r#"
+        struct SyntheticRetainGuard { gate: SyntheticRetainGate, release_on_drop: bool }
+        struct SyntheticRetainGate { wedged: AtomicBool }
+        impl SyntheticRetainGuard {
+            fn retain(mut self) {
+                self.release_on_drop = false;
+            }
+        }
+    "#;
+    let retain_error = validate_release_on_drop_pairing("retain.rs", unpaired_retain)
+        .expect_err("an unpaired release_on_drop assignment must be rejected");
+    assert!(
+        retain_error.contains("retain.rs:")
+            && retain_error.contains("method `retain`")
+            && retain_error.contains(RELEASE_ON_DROP_FALSE_ASSIGNMENT),
+        "validator returned the wrong unpaired-assignment diagnostic: {retain_error}"
+    );
+
+    let paired_retain = r#"
+        struct SyntheticRetainGuard { gate: SyntheticRetainGate, release_on_drop: bool }
+        struct SyntheticRetainGate { wedged: AtomicBool }
+        impl SyntheticRetainGuard {
+            fn retain(mut self) {
+                self.release_on_drop = false;
+                self.gate.wedged.store(true, Ordering::Release);
+            }
+        }
+    "#;
+    validate_release_on_drop_pairing("paired.rs", paired_retain)
+        .expect("a release_on_drop assignment paired with wedged.store must be accepted");
 }
