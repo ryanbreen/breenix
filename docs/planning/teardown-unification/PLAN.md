@@ -403,7 +403,7 @@ not a prediction about arguments not yet made. The PR that splits says so in its
      gate remains `--boots 100 --profile both`. **The script is the truth about which buckets it
      classifies and which of them fail the gate** — read `classify_serial` and the gate condition
      in the script rather than any list here, which goes stale (the #549/#551/#527-r1 lesson).
-     As of PR #598 it fails on `575`, `596` or `UNATTRIBUTED` and reports the `CTX596` divergence
+     As of PR #600 it fails on `575`, `596` or `UNATTRIBUTED` and reports the `CTX596` divergence
      census without gating on it; a `596` boot is an EL1 `DATA_ABORT` (`from_el0=0`) **or** a
      `[CTX596_ORACLE:FAIL` line, and a boot that never emitted `[CTX596_ORACLE:ARMED` is
      `UNATTRIBUTED`, never GREEN by omission.
