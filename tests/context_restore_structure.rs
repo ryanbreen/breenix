@@ -365,6 +365,326 @@ fn module_function_bodies(source: &str) -> BTreeMap<String, Vec<&str>> {
     bodies
 }
 
+// Structural ratchets below use `(repo-relative path, canonical item path)`
+// plus occurrence count. Reflowing or moving code inside an item is free;
+// adding, removing, relocating, or feature-gating a site changes the census.
+type Anchor = (String, String);
+type Census = BTreeMap<Anchor, usize>;
+
+fn next_code(source: &str, mask: &[bool], from: usize) -> Option<usize> {
+    let bytes = source.as_bytes();
+    (from..bytes.len()).find(|index| mask[*index] && !bytes[*index].is_ascii_whitespace())
+}
+
+fn previous_code(source: &str, mask: &[bool], before: usize) -> Option<usize> {
+    let bytes = source.as_bytes();
+    (0..before)
+        .rev()
+        .find(|index| mask[*index] && !bytes[*index].is_ascii_whitespace())
+}
+
+fn preceded_by_keyword(source: &str, mask: &[bool], offset: usize, keyword: &str) -> bool {
+    let bytes = source.as_bytes();
+    let Some(end) = previous_code(source, mask, offset) else {
+        return false;
+    };
+    if !identifier_byte(bytes[end]) {
+        return false;
+    }
+    let mut start = end;
+    while start > 0 && mask[start - 1] && identifier_byte(bytes[start - 1]) {
+        start -= 1;
+    }
+    &source[start..end + 1] == keyword
+}
+
+fn header_cfg(header: &str, mask: &[bool], keyword: usize) -> String {
+    let bytes = header.as_bytes();
+    let mut attributes = Vec::new();
+    for offset in code_offsets(header, mask, "#[cfg") {
+        if offset >= keyword {
+            break;
+        }
+        let Some(paren) = next_code(header, mask, offset + "#[cfg".len()) else {
+            continue;
+        };
+        if bytes[paren] != b'(' {
+            continue;
+        }
+        let mut depth = 0usize;
+        for close in offset..bytes.len() {
+            match bytes[close] {
+                b'[' => depth += 1,
+                b']' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        let compact: String = header[offset..close + 1]
+                            .chars()
+                            .filter(|character| !character.is_whitespace() && *character != '"')
+                            .collect();
+                        attributes.push(compact);
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    if attributes.is_empty() {
+        return String::new();
+    }
+    format!("{} ", attributes.join(" "))
+}
+
+fn impl_segment(header: &str, mask: &[bool], keyword: usize) -> String {
+    let kept: Vec<u8> = header.as_bytes()[keyword..]
+        .iter()
+        .zip(&mask[keyword..])
+        .filter_map(|(byte, code)| code.then_some(*byte))
+        .collect();
+    let text = String::from_utf8_lossy(&kept)
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    match text.find(" where ") {
+        Some(clause) => text[..clause].to_owned(),
+        None => text,
+    }
+}
+
+fn item_segment(header: &str, mask: &[bool]) -> Option<String> {
+    let bytes = header.as_bytes();
+    let named = |keyword: usize, length: usize| -> Option<String> {
+        let mut cursor = keyword + length;
+        while cursor < bytes.len() && (!mask[cursor] || bytes[cursor].is_ascii_whitespace()) {
+            cursor += 1;
+        }
+        let start = cursor;
+        while cursor < bytes.len() && mask[cursor] && identifier_byte(bytes[cursor]) {
+            cursor += 1;
+        }
+        (cursor > start).then(|| header[start..cursor].to_owned())
+    };
+
+    let declaration = identifier_offsets(header, mask, "fn")
+        .into_iter()
+        .filter_map(|offset| named(offset, "fn".len()).map(|name| (offset, format!("fn {name}"))))
+        .next_back()
+        .or_else(|| {
+            ["impl", "mod", "trait", "struct"]
+                .into_iter()
+                .flat_map(|keyword| {
+                    identifier_offsets(header, mask, keyword)
+                        .into_iter()
+                        .map(move |offset| (keyword, offset))
+                })
+                .max_by_key(|(_, offset)| *offset)
+                .and_then(|(keyword, offset)| match keyword {
+                    "impl" => Some((offset, impl_segment(header, mask, offset))),
+                    _ => named(offset, keyword.len())
+                        .map(|name| (offset, format!("{keyword} {name}"))),
+                })
+        });
+    let (keyword, segment) = declaration?;
+    Some(format!("{}{segment}", header_cfg(header, mask, keyword)))
+}
+
+fn item_spans(source: &str, mask: &[bool]) -> Vec<(usize, usize, String)> {
+    let bytes = source.as_bytes();
+    let mut spans = Vec::new();
+    let mut stack: Vec<(usize, usize)> = Vec::new();
+    let mut header = 0usize;
+    let mut paren_depth = 0usize;
+    let mut bracket_depth = 0usize;
+    for index in 0..bytes.len() {
+        if !mask[index] {
+            continue;
+        }
+        match bytes[index] {
+            b'(' => paren_depth += 1,
+            b')' => paren_depth = paren_depth.saturating_sub(1),
+            b'[' => bracket_depth += 1,
+            b']' => bracket_depth = bracket_depth.saturating_sub(1),
+            b'{' => {
+                stack.push((index, header));
+                header = index + 1;
+            }
+            b'}' => {
+                if let Some((open, start)) = stack.pop() {
+                    if let Some(segment) = item_segment(&source[start..open], &mask[start..open]) {
+                        spans.push((open, index, segment));
+                    }
+                }
+                header = index + 1;
+            }
+            b';' if paren_depth == 0 && bracket_depth == 0 => header = index + 1,
+            _ => {}
+        }
+    }
+    spans
+}
+
+fn rendered_item_spans(spans: &[(usize, usize, String)]) -> Vec<(usize, usize, String)> {
+    let mut ordered = spans.to_vec();
+    ordered.sort_by_key(|(open, _, _)| *open);
+
+    let mut stack: Vec<(usize, String)> = Vec::new();
+    let mut rendered = Vec::with_capacity(ordered.len());
+    for (open, close, segment) in ordered {
+        while stack
+            .last()
+            .is_some_and(|(ancestor_close, _)| *ancestor_close < open)
+        {
+            stack.pop();
+        }
+        let path = match stack.last() {
+            Some((_, parent)) => format!("{parent}::{segment}"),
+            None => segment,
+        };
+        stack.push((close, path.clone()));
+        rendered.push((open, close, path));
+    }
+
+    let mut path_counts: BTreeMap<String, usize> = BTreeMap::new();
+    for (_, _, path) in &rendered {
+        *path_counts.entry(path.clone()).or_default() += 1;
+    }
+    for (_, _, path) in &mut rendered {
+        if path_counts.get(path).is_some_and(|count| *count > 1) {
+            path.push_str(" [duplicate item path]");
+        }
+    }
+    rendered
+}
+
+fn item_path_at(spans: &[(usize, usize, String)], offset: usize) -> String {
+    spans
+        .iter()
+        .filter(|(open, close, _)| *open <= offset && offset <= *close)
+        .max_by_key(|(open, _, _)| *open)
+        .map(|(_, _, path)| path.clone())
+        .unwrap_or_default()
+}
+
+fn census_tagged<F>(sources: &[(String, String)], mut matcher: F) -> Census
+where
+    F: FnMut(&str, &[bool]) -> Vec<(usize, String)>,
+{
+    let mut census = Census::new();
+    for (path, source) in sources {
+        let mask = code_mask(source);
+        let matches = matcher(source, &mask);
+        if matches.is_empty() {
+            continue;
+        }
+        let spans = rendered_item_spans(&item_spans(source, &mask));
+        for (offset, tag) in matches {
+            let mut item = item_path_at(&spans, offset);
+            if !tag.is_empty() {
+                item = format!("{item} => {tag}");
+            }
+            *census.entry((path.clone(), item)).or_default() += 1;
+        }
+    }
+    census
+}
+
+fn census<F>(sources: &[(String, String)], mut matcher: F) -> Census
+where
+    F: FnMut(&str, &[bool]) -> Vec<usize>,
+{
+    census_tagged(sources, |source, mask| {
+        matcher(source, mask)
+            .into_iter()
+            .map(|offset| (offset, String::new()))
+            .collect()
+    })
+}
+
+fn expected_census(anchors: &[(&str, &str, usize)]) -> Census {
+    let mut census = Census::new();
+    for (path, item, count) in anchors {
+        let anchor = ((*path).to_owned(), (*item).to_owned());
+        assert!(
+            census.insert(anchor, *count).is_none(),
+            "duplicate census anchor {path} :: {item}"
+        );
+    }
+    census
+}
+
+fn census_diff(actual: &Census, anchors: &[(&str, &str, usize)]) -> Vec<String> {
+    let expected = expected_census(anchors);
+    let mut diff = Vec::new();
+    for (anchor, count) in actual {
+        match expected.get(anchor) {
+            None => diff.push(format!(
+                "+ {} :: {}  ({count} occurrences, expected none)",
+                anchor.0, anchor.1
+            )),
+            Some(want) if want != count => diff.push(format!(
+                "~ {} :: {}  (expected {want}, found {count})",
+                anchor.0, anchor.1
+            )),
+            Some(_) => {}
+        }
+    }
+    for (anchor, count) in &expected {
+        if !actual.contains_key(anchor) {
+            diff.push(format!(
+                "- {} :: {}  (expected {count}, found none)",
+                anchor.0, anchor.1
+            ));
+        }
+    }
+    diff
+}
+
+fn validate_census(actual: &Census, anchors: &[(&str, &str, usize)]) -> Result<(), Vec<String>> {
+    let diff = census_diff(actual, anchors);
+    diff.is_empty().then_some(()).ok_or(diff)
+}
+
+fn definition_span(
+    source: &str,
+    mask: &[bool],
+    offset: usize,
+    end: usize,
+) -> Option<(usize, usize)> {
+    let bytes = source.as_bytes();
+    let keyword = previous_code(source, mask, offset)?;
+    if !preceded_by_keyword(source, mask, offset, "fn") {
+        return None;
+    }
+    let keyword = keyword + 1 - "fn".len();
+    let mut paren_depth = 0usize;
+    let mut bracket_depth = 0usize;
+    for index in end..bytes.len() {
+        if !mask[index] {
+            continue;
+        }
+        match bytes[index] {
+            b'(' => paren_depth += 1,
+            b')' => paren_depth = paren_depth.checked_sub(1)?,
+            b'[' => bracket_depth += 1,
+            b']' => bracket_depth = bracket_depth.checked_sub(1)?,
+            b'{' if paren_depth == 0 && bracket_depth == 0 => {
+                return Some((keyword, index));
+            }
+            b';' if paren_depth == 0 && bracket_depth == 0 => return None,
+            _ => {}
+        }
+    }
+    None
+}
+
+fn definition_offsets(source: &str, mask: &[bool], name: &str) -> Vec<(usize, usize)> {
+    identifier_offsets(source, mask, name)
+        .into_iter()
+        .filter_map(|offset| definition_span(source, mask, offset, offset + name.len()))
+        .collect()
+}
+
 fn assignment_to_false(body: &str, field: &str) -> bool {
     let mask = code_mask(body);
     let bytes = body.as_bytes();
@@ -2393,6 +2713,280 @@ fn validate_aarch64_failed_exec_ttbr0_rollback(source: &str) -> Result<(), Strin
     Ok(())
 }
 
+const AARCH64_CONTEXT_SWITCH: &str = "kernel/src/arch_impl/aarch64/context_switch.rs";
+const INLINE_ASM_ANCHOR: &str = "global_asm aarch64_inline_schedule_switch";
+
+#[rustfmt::skip]
+const INLINE_ASM_X30_SAVES: &[(&str, &str, usize)] = &[
+    (AARCH64_CONTEXT_SWITCH, INLINE_ASM_ANCHOR, 1),
+];
+#[rustfmt::skip]
+const INLINE_ELR_OFFSET_ASSERTS: &[(&str, &str, usize)] = &[
+    (AARCH64_CONTEXT_SWITCH, "", 1),
+];
+#[rustfmt::skip]
+const INLINE_RESUME_SELECTOR_SITES: &[(&str, &str, usize)] = &[
+    (AARCH64_CONTEXT_SWITCH, "fn restore_kernel_context_inline", 1),
+];
+#[rustfmt::skip]
+const CTX596_ORACLE_FAIL_SITES: &[(&str, &str, usize)] = &[
+    (AARCH64_CONTEXT_SWITCH, "fn check_inline_save_resume_point", 1),
+    (AARCH64_CONTEXT_SWITCH, "fn check_inline_eret_resume_pc", 1),
+];
+#[rustfmt::skip]
+const INLINE_ELR_DIVERGENCE_COUNTER_SITES: &[(&str, &str, usize)] = &[
+    (AARCH64_CONTEXT_SWITCH, "", 1),
+    (AARCH64_CONTEXT_SWITCH, "fn record_inline_elr_divergence", 1),
+];
+#[rustfmt::skip]
+const INLINE_ELR_DIVERGENCE_MARKER_SITES: &[(&str, &str, usize)] = &[
+    (AARCH64_CONTEXT_SWITCH, "fn record_inline_elr_divergence", 1),
+];
+#[rustfmt::skip]
+const FORCE_ERET_DISPATCH_DEFINITIONS: &[(&str, &str, usize)] = &[
+    (AARCH64_CONTEXT_SWITCH, "#[cfg(feature=force_eret_dispatch_596)] fn inline_ret_dispatch_info_if_ready", 1),
+    (AARCH64_CONTEXT_SWITCH, "#[cfg(not(feature=force_eret_dispatch_596))] fn inline_ret_dispatch_info_if_ready", 1),
+];
+#[rustfmt::skip]
+const INLINE_TRAMPOLINE_REPAIRS: &[(&str, &str, usize)] = &[
+    (AARCH64_CONTEXT_SWITCH, "fn inline_schedule_trampoline", 1),
+];
+
+fn context_switch_sources(source: &str) -> Vec<(String, String)> {
+    vec![(AARCH64_CONTEXT_SWITCH.to_owned(), source.to_owned())]
+}
+
+fn census_error(actual: &Census, expected: &[(&str, &str, usize)]) -> Result<(), String> {
+    validate_census(actual, expected).map_err(|diff| diff.join("\n"))
+}
+
+fn literal_offsets(source: &str, literal: &str) -> Vec<usize> {
+    source
+        .match_indices(literal)
+        .map(|(offset, _)| offset)
+        .collect()
+}
+
+fn statement_bounds(source: &str, mask: &[bool], offset: usize) -> Option<(usize, usize)> {
+    let bytes = source.as_bytes();
+    let start = (0..offset)
+        .rev()
+        .find(|index| mask[*index] && matches!(bytes[*index], b';' | b'{' | b'}'))
+        .map_or(0, |delimiter| delimiter + 1);
+    let end = (offset..bytes.len()).find(|index| mask[*index] && bytes[*index] == b';')?;
+    Some((start, end + 1))
+}
+
+fn compact_statement_at(source: &str, mask: &[bool], offset: usize) -> Option<String> {
+    let (start, end) = statement_bounds(source, mask, offset)?;
+    Some(normalized_code(&source[start..end]).replace(' ', ""))
+}
+
+fn resume_pc_frame_assignment_offsets(source: &str, mask: &[bool]) -> Vec<usize> {
+    assigned_value_offsets(source, mask, "resume_pc")
+        .into_iter()
+        .filter(|offset| {
+            compact_statement_at(source, mask, *offset)
+                .is_some_and(|statement| statement.contains("frame.elr=resume_pc"))
+        })
+        .collect()
+}
+
+fn global_asm_body_for_symbol<'a>(source: &'a str, symbol: &str) -> Option<&'a str> {
+    let label = source.find(&format!("{symbol}:"))?;
+    let invocation = source[..label].rfind("core::arch::global_asm!(")?;
+    let raw_open = invocation + source[invocation..label].find("r#\"")? + "r#\"".len();
+    let raw_close = label + source[label..].find("\"#\n);")?;
+    Some(&source[raw_open..raw_close])
+}
+
+fn anchored_count(path: &str, item: &str, count: usize) -> Census {
+    let mut result = Census::new();
+    if count != 0 {
+        result.insert((path.to_owned(), item.to_owned()), count);
+    }
+    result
+}
+
+fn validate_inline_asm_resume_store(source: &str) -> Result<(), String> {
+    let asm = global_asm_body_for_symbol(source, "aarch64_inline_schedule_switch")
+        .ok_or_else(|| "missing aarch64_inline_schedule_switch global_asm block".to_string())?;
+    let x30_saves = asm.matches("stp x29, x30, [x0,").count();
+    let resume_stores = asm.matches("str x30, [x0, #264]").count();
+    census_error(
+        &anchored_count(AARCH64_CONTEXT_SWITCH, INLINE_ASM_ANCHOR, x30_saves),
+        INLINE_ASM_X30_SAVES,
+    )?;
+    if resume_stores < x30_saves {
+        return Err(format!(
+            "{AARCH64_CONTEXT_SWITCH} :: {INLINE_ASM_ANCHOR} stores x30 in {x30_saves} callee-saved blocks but publishes only {resume_stores} resume PCs"
+        ));
+    }
+    Ok(())
+}
+
+fn offset_assert_offsets(source: &str, mask: &[bool]) -> Vec<usize> {
+    identifier_offsets(source, mask, "elr_el1")
+        .into_iter()
+        .filter(|offset| {
+            compact_statement_at(source, mask, *offset).is_some_and(|statement| {
+                statement
+                    == "const_:()=assert!(core::mem::offset_of!(CpuContext,elr_el1)==264);"
+            })
+        })
+        .collect()
+}
+
+fn validate_inline_elr_offset_assert(source: &str) -> Result<(), String> {
+    let sources = context_switch_sources(source);
+    census_error(
+        &census(&sources, offset_assert_offsets),
+        INLINE_ELR_OFFSET_ASSERTS,
+    )
+}
+
+fn resume_selector_span(source: &str, mask: &[bool]) -> Option<(usize, usize)> {
+    let bytes = source.as_bytes();
+    identifier_offsets(source, mask, "resume_pc")
+        .into_iter()
+        .filter(|offset| preceded_by_keyword(source, mask, *offset, "let"))
+        .find_map(|resume_pc| {
+            let let_end = previous_code(source, mask, resume_pc)?;
+            let start = let_end + 1 - "let".len();
+            let end = (resume_pc..bytes.len())
+                .find(|index| mask[*index] && bytes[*index] == b';')?
+                + 1;
+            normalized_code(&source[start..end])
+                .replace(' ', "")
+                .contains("ifthread.saved_by_inline_schedule")
+                .then_some((start, end))
+        })
+}
+
+fn resume_selector_offsets(source: &str, mask: &[bool], identifier: &str) -> Vec<usize> {
+    const SELECTOR: &str = "letresume_pc=ifthread.saved_by_inline_schedule{thread.context.x30}else{thread.context.elr_el1};";
+    let Some((start, end)) = resume_selector_span(source, mask) else {
+        return Vec::new();
+    };
+    if normalized_code(&source[start..end]).replace(' ', "") != SELECTOR {
+        return Vec::new();
+    }
+    identifier_offsets(&source[start..end], &mask[start..end], identifier)
+        .into_iter()
+        .map(|offset| start + offset)
+        .collect()
+}
+
+fn validate_inline_eret_resume_selector(source: &str) -> Result<(), String> {
+    let sources = context_switch_sources(source);
+    for identifier in ["saved_by_inline_schedule", "x30", "elr_el1"] {
+        census_error(
+            &census(&sources, |source, mask| {
+                resume_selector_offsets(source, mask, identifier)
+            }),
+            INLINE_RESUME_SELECTOR_SITES,
+        )
+        .map_err(|error| format!("resume selector {identifier}: {error}"))?;
+    }
+    census_error(
+        &census(&sources, resume_pc_frame_assignment_offsets),
+        INLINE_RESUME_SELECTOR_SITES,
+    )
+    .map_err(|error| format!("frame ELR assignment: {error}"))?;
+
+    let mut direct_elr_resumes = census(&sources, |source, mask| {
+        identifier_offsets(source, mask, "elr_el1")
+            .into_iter()
+            .filter(|offset| {
+                compact_statement_at(source, mask, *offset).is_some_and(|statement| {
+                    statement.contains("frame.elr=thread.context.elr_el1")
+                })
+            })
+            .collect()
+    });
+    direct_elr_resumes.retain(|(_, item), _| item == "fn restore_kernel_context_inline");
+    if !direct_elr_resumes.is_empty() {
+        return Err(format!(
+            "direct inline-ambiguous ERET resume sites remain: {direct_elr_resumes:?}"
+        ));
+    }
+    Ok(())
+}
+
+fn definition_census(source: &str, name: &str) -> Census {
+    let sources = context_switch_sources(source);
+    census(&sources, |source, mask| {
+        definition_offsets(source, mask, name)
+            .into_iter()
+            .map(|(_, brace)| brace)
+            .collect()
+    })
+}
+
+fn definition_is_cfg_gated(source: &str, identifier: &str) -> bool {
+    let mask = code_mask(source);
+    identifier_offsets(source, &mask, identifier)
+        .into_iter()
+        .filter(|offset| {
+            rendered_item_spans(&item_spans(source, &mask))
+                .iter()
+                .all(|(open, close, _)| *offset < *open || *offset > *close)
+        })
+        .any(|offset| {
+            statement_bounds(source, &mask, offset).is_some_and(|(start, _)| {
+                !code_offsets(&source[start..offset], &mask[start..offset], "#[cfg").is_empty()
+            })
+        })
+}
+
+fn validate_ctx596_oracle_liveness(source: &str) -> Result<(), String> {
+    let sources = context_switch_sources(source);
+    census_error(
+        &census(&sources, |source, _| {
+            literal_offsets(source, "CTX596_ORACLE:FAIL")
+        }),
+        CTX596_ORACLE_FAIL_SITES,
+    )?;
+    census_error(
+        &census(&sources, |source, mask| {
+            identifier_offsets(source, mask, "INLINE_ELR_DIVERGENCE")
+        }),
+        INLINE_ELR_DIVERGENCE_COUNTER_SITES,
+    )?;
+    census_error(
+        &census(&sources, |source, _| {
+            literal_offsets(source, "[CTX596_ELR_DIVERGENCE]")
+        }),
+        INLINE_ELR_DIVERGENCE_MARKER_SITES,
+    )?;
+    if definition_is_cfg_gated(source, "INLINE_ELR_DIVERGENCE") {
+        return Err("INLINE_ELR_DIVERGENCE definition is feature-gated".to_string());
+    }
+    census_error(
+        &definition_census(source, "inline_ret_dispatch_info_if_ready"),
+        FORCE_ERET_DISPATCH_DEFINITIONS,
+    )
+}
+
+fn trampoline_repair_offsets(source: &str, mask: &[bool]) -> Vec<usize> {
+    identifier_offsets(source, mask, "elr_el1")
+        .into_iter()
+        .filter(|offset| {
+            compact_statement_at(source, mask, *offset).is_some_and(|statement| {
+                statement == "old_thread.context.elr_el1=old_thread.context.x30;"
+            })
+        })
+        .collect()
+}
+
+fn validate_inline_trampoline_repair(source: &str) -> Result<(), String> {
+    let sources = context_switch_sources(source);
+    census_error(
+        &census(&sources, trampoline_repair_offsets),
+        INLINE_TRAMPOLINE_REPAIRS,
+    )
+}
+
 #[test]
 fn clone_publication_lifecycle_is_closed() {
     assert_eq!(validate_clone_publication_lifecycle(), Ok(()));
@@ -2427,6 +3021,106 @@ fn aarch64_failed_exec_ttbr0_validator_rejects_missing_rollback() {
         1,
     );
     assert!(validate_aarch64_failed_exec_ttbr0_rollback(&mutant).is_err());
+}
+
+#[test]
+fn aarch64_inline_save_blocks_publish_their_resume_pc() {
+    let source = repo_text(AARCH64_CONTEXT_SWITCH);
+    assert_eq!(validate_inline_asm_resume_store(&source), Ok(()));
+
+    let mutant = source.replacen("    str x30, [x0, #264]\n", "", 1);
+    assert_ne!(mutant, source, "inline ELR store mutation anchor");
+    assert!(validate_inline_asm_resume_store(&mutant).is_err());
+}
+
+#[test]
+fn aarch64_inline_elr_slot_has_one_durable_layout_assert() {
+    let source = repo_text(AARCH64_CONTEXT_SWITCH);
+    assert_eq!(validate_inline_elr_offset_assert(&source), Ok(()));
+
+    let mutant = source.replacen(
+        "const _: () = assert!(core::mem::offset_of!(CpuContext, elr_el1) == 264);\n",
+        "",
+        1,
+    );
+    assert_ne!(mutant, source, "inline ELR offset mutation anchor");
+    assert!(validate_inline_elr_offset_assert(&mutant).is_err());
+}
+
+#[test]
+fn aarch64_eret_resume_selection_disambiguates_inline_saves() {
+    let source = repo_text(AARCH64_CONTEXT_SWITCH);
+    assert_eq!(validate_inline_eret_resume_selector(&source), Ok(()));
+
+    let mutant = source.replacen(
+        "let resume_pc = if thread.saved_by_inline_schedule {",
+        "let resume_pc = if false && thread.saved_by_inline_schedule {",
+        1,
+    );
+    assert_ne!(mutant, source, "inline resume selector mutation anchor");
+    assert!(validate_inline_eret_resume_selector(&mutant).is_err());
+}
+
+#[test]
+fn ctx596_oracles_are_permanent_while_forcing_stays_feature_gated() {
+    let source = repo_text(AARCH64_CONTEXT_SWITCH);
+    assert_eq!(validate_ctx596_oracle_liveness(&source), Ok(()));
+
+    let missing_oracle = source.replacen("CTX596_ORACLE:FAIL", "CTX596_ORACLE:REMOVED", 1);
+    assert_ne!(missing_oracle, source, "CTX596 oracle mutation anchor");
+    assert!(validate_ctx596_oracle_liveness(&missing_oracle).is_err());
+
+    let gated_oracle = source.replacen(
+        "#[inline(always)]\nfn check_inline_save_resume_point",
+        "#[cfg(feature = \"force_eret_dispatch_596\")]\n#[inline(always)]\nfn check_inline_save_resume_point",
+        1,
+    );
+    assert_ne!(gated_oracle, source, "CTX596 oracle cfg mutation anchor");
+    assert!(validate_ctx596_oracle_liveness(&gated_oracle).is_err());
+
+    let missing_divergence = source.replacen(
+        "[CTX596_ELR_DIVERGENCE]",
+        "[CTX596_ELR_DIVERGENCE_REMOVED]",
+        1,
+    );
+    assert_ne!(
+        missing_divergence, source,
+        "CTX596 divergence marker mutation anchor"
+    );
+    assert!(validate_ctx596_oracle_liveness(&missing_divergence).is_err());
+
+    let gated_counter = source.replacen(
+        "crate::define_trace_counter!(\n    INLINE_ELR_DIVERGENCE,",
+        "#[cfg(feature = \"force_eret_dispatch_596\")]\ncrate::define_trace_counter!(\n    INLINE_ELR_DIVERGENCE,",
+        1,
+    );
+    assert_ne!(gated_counter, source, "CTX596 counter cfg mutation anchor");
+    assert!(validate_ctx596_oracle_liveness(&gated_counter).is_err());
+
+    let ungated_forcing = source.replacen(
+        "#[cfg(feature = \"force_eret_dispatch_596\")]\nfn inline_ret_dispatch_info_if_ready",
+        "fn inline_ret_dispatch_info_if_ready",
+        1,
+    );
+    assert_ne!(
+        ungated_forcing, source,
+        "CTX596 forced-dispatch cfg mutation anchor"
+    );
+    assert!(validate_ctx596_oracle_liveness(&ungated_forcing).is_err());
+}
+
+#[test]
+fn inline_schedule_trampoline_retains_the_redundant_elr_guard() {
+    let source = repo_text(AARCH64_CONTEXT_SWITCH);
+    assert_eq!(validate_inline_trampoline_repair(&source), Ok(()));
+
+    let mutant = source.replacen(
+        "        old_thread.context.elr_el1 = old_thread.context.x30;\n",
+        "",
+        1,
+    );
+    assert_ne!(mutant, source, "inline trampoline repair mutation anchor");
+    assert!(validate_inline_trampoline_repair(&mutant).is_err());
 }
 
 #[test]
