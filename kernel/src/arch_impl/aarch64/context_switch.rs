@@ -571,6 +571,9 @@ aarch64_inline_schedule_switch:
     stp x29, x30, [x0, #232]
     mov x3, sp
     str x3, [x0, #248]
+    // Both dispatch consumers must agree by construction: x30 is the only
+    // architecturally valid resume PC for this callee-saved-only context.
+    str x30, [x0, #264]
 
     mov sp, x1
     br x2
@@ -796,6 +799,7 @@ const _: () = assert!(core::mem::offset_of!(CpuContext, x19) == 152);
 const _: () = assert!(core::mem::offset_of!(CpuContext, x29) == 232);
 const _: () = assert!(core::mem::offset_of!(CpuContext, x30) == 240);
 const _: () = assert!(core::mem::offset_of!(CpuContext, sp) == 248);
+const _: () = assert!(core::mem::offset_of!(CpuContext, elr_el1) == 264);
 const _: () = assert!(core::mem::offset_of!(Aarch64ExceptionFrame, x16) == 128);
 const _: () = assert!(core::mem::offset_of!(Aarch64ExceptionFrame, x30) == 240);
 const _: () = assert!(core::mem::offset_of!(Aarch64ExceptionFrame, elr) == 248);
@@ -2732,12 +2736,19 @@ fn restore_kernel_context_inline(
     fn is_kernel_addr(addr: u64) -> bool {
         addr >= KERNEL_VIRT_BASE || (addr >= KERNEL_PHYS_BASE && addr < KERNEL_PHYS_LIMIT)
     }
+    let resume_pc = if thread.saved_by_inline_schedule {
+        // Inline save captures only x19..x30 + SP, so x30 is its sole valid
+        // architectural resume point. Exception-saved contexts keep ELR_EL1.
+        thread.context.x30
+    } else {
+        thread.context.elr_el1
+    };
     let elr_valid = if !has_started {
         // First run: x30 must be a valid kernel address
         is_kernel_addr(thread.context.x30)
     } else {
-        // Resume: elr_el1 must be in kernel space or zero (handled below)
-        is_kernel_addr(thread.context.elr_el1) || thread.context.elr_el1 == 0
+        // Resume PC must be in kernel space or zero (handled below).
+        is_kernel_addr(resume_pc) || resume_pc == 0
     };
     trace_ctx_diag(
         TRACE_CTX_DIAG_RESTORE_KERNEL_PRE,
@@ -2841,19 +2852,19 @@ fn restore_kernel_context_inline(
     if !has_started {
         frame.elr = thread.context.x30; // First run: jump to entry point
         frame.spsr = kernel_dispatch_spsr(thread.context.spsr_el1);
-    } else if is_kernel_addr(thread.context.elr_el1) {
+    } else if is_kernel_addr(resume_pc) {
         // Resume: return to where we left off.
         // On QEMU, kernel addresses are >= KERNEL_VIRT_BASE (HHDM).
         // On Parallels, kernel runs identity-mapped at physical addresses
         // (KERNEL_PHYS_BASE..KERNEL_PHYS_LIMIT), so we must accept both.
-        frame.elr = thread.context.elr_el1;
+        frame.elr = resume_pc;
         check_inline_eret_resume_pc(thread, frame.elr);
         thread.context.spsr_el1 = kernel_dispatch_spsr(thread.context.spsr_el1);
         frame.spsr = dispatch_spsr(thread.context.spsr_el1); // Restore saved processor state
     } else {
         // elr_el1 == 0 or not a valid kernel address — redirect to idle
         raw_uart_str("WARN: bad elr=");
-        raw_uart_hex(thread.context.elr_el1);
+        raw_uart_hex(resume_pc);
         raw_uart_str(" for started kthread tid=");
         raw_uart_dec(thread_id);
         raw_uart_str(", redirecting to idle\n");
@@ -4350,8 +4361,8 @@ extern "C" fn inline_schedule_trampoline() -> ! {
     let sched = unsafe { &mut *sched_ptr };
 
     if let Some(old_thread) = sched.get_thread_mut(old_id) {
-        // Resume after the inline-switch helper call when this thread is
-        // eventually scheduled again.
+        // Redundant with the assembly save above and retained deliberately as
+        // a Rust-side guard for the inline resume-point invariant.
         old_thread.context.elr_el1 = old_thread.context.x30;
     }
 
