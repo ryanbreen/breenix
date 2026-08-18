@@ -18,6 +18,8 @@ fn main() {
     #[cfg(target_arch = "aarch64")]
     start_liveness_service();
     #[cfg(target_arch = "aarch64")]
+    run_block_eintr_oracle();
+    #[cfg(target_arch = "aarch64")]
     run_exec_smoke();
     #[cfg(target_arch = "aarch64")]
     run_clonevm_exec_test();
@@ -52,6 +54,31 @@ fn main() {
                 };
                 let _ = libbreenix::time::nanosleep(&ts);
             }
+        }
+    }
+}
+
+/// Run the #575 block-EINTR oracle first: its marker is a hard gate condition on every
+/// `boot_tests` boot, and #589/#576 intercept init later in the sequence, so nothing
+/// already-filed may preempt it.
+#[cfg(target_arch = "aarch64")]
+fn run_block_eintr_oracle() {
+    match spawn(b"/bin/block_eintr_oracle\0") {
+        Ok(child_pid) => {
+            let mut status = 0i32;
+            let _ = waitpid(child_pid.raw() as i32, &mut status as *mut i32, 0);
+            let exit_code = (status >> 8) & 0xFF;
+            print!(
+                "[init] block_eintr_oracle exited pid={} code={}\n",
+                child_pid.raw(),
+                exit_code
+            );
+        }
+        Err(error) => {
+            print!(
+                "[init] Warning: failed to start block_eintr_oracle: {}\n",
+                error
+            );
         }
     }
 }

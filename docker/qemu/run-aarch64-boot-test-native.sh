@@ -138,6 +138,14 @@ run_single_test() {
             echo "FAIL: $CRASH_TYPE after boot ($LINES lines)"
             return 1
         fi
+        if ! grep -qF "[BLOCK_EINTR_ORACLE:" "$OUTPUT_DIR/serial.txt" 2>/dev/null; then
+            echo "FAIL: block EINTR oracle marker missing"
+            return 1
+        fi
+        if grep -qF "[BLOCK_EINTR_ORACLE:FAIL" "$OUTPUT_DIR/serial.txt" 2>/dev/null; then
+            echo "FAIL: block EINTR oracle reported failure"
+            return 1
+        fi
         echo "SUCCESS"
         return 0
     else

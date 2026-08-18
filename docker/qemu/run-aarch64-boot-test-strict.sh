@@ -106,6 +106,14 @@ score_serial() {
         echo "Exec commit marker missing"
         return 1
     fi
+    if ! grep -qF "[BLOCK_EINTR_ORACLE:" "$serial_file" 2>/dev/null; then
+        echo "Block EINTR oracle marker missing"
+        return 1
+    fi
+    if grep -qF "[BLOCK_EINTR_ORACLE:FAIL" "$serial_file" 2>/dev/null; then
+        echo "Block EINTR oracle reported failure"
+        return 1
+    fi
     if ! grep -qF "[INIT_DESIGNATION:aarch64:designated_pid=1:reserved_collisions=0]" "$serial_file" 2>/dev/null; then
         echo "Init designation marker missing"
         return 1

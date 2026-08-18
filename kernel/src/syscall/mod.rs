@@ -579,7 +579,7 @@ pub fn check_signals_for_eintr() -> Option<i32> {
     let mut interrupted = false;
     if let Some(ref manager) = *manager_guard {
         if let Some((_pid, process)) = manager.find_process_by_thread(thread_id) {
-            if crate::signal::delivery::has_deliverable_signals(process) {
+            if crate::signal::delivery::has_interrupting_signals(process) {
                 interrupted = true;
             }
         }

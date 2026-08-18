@@ -194,6 +194,49 @@ if $PHASE1_OK && [ -z "$FAIL_REASON" ]; then
         FAIL_REASON="Phase 1: missing init designation oracle PASS marker"
     elif ! grep -Fq '[INIT_DESIGNATION_ORACLE:aarch64:construct_failed=2:construct_undecided=2:construct_residual=2:refused=4:accepted=1:published=1:retired=1:held_error_removals=1:reparented=1:reparent_skipped=1:ordinary_allocated=5:reserved_collisions=0:designation_balance=0]' "$OUTPUT_DIR/serial.txt" 2>/dev/null; then
         FAIL_REASON="Phase 1: missing init designation oracle counter marker"
+    elif ! grep -Eq '\[BLOCK_WEDGE_ORACLE:locked=1:wedged=1:refused=1:parked=0:refuse_ms=[0-9]+\]' "$OUTPUT_DIR/serial.txt" 2>/dev/null; then
+        FAIL_REASON="Phase 1: missing block wedge oracle counter marker"
+    fi
+fi
+
+# --- Phase 1a: Pin the init-driven block request lifetime oracle (up to 30s) ---
+if [ -z "$FAIL_REASON" ]; then
+    echo ""
+    echo "Phase 1a: Waiting for block EINTR oracle..."
+    BLOCK_EINTR_ORACLE_OK=false
+    for i in $(seq 1 15); do
+        if grep -qF "[BLOCK_EINTR_ORACLE:FAIL" "$OUTPUT_DIR/serial.txt" 2>/dev/null; then
+            BLOCK_EINTR_ORACLE_LINE=$(grep -F "[BLOCK_EINTR_ORACLE:FAIL" "$OUTPUT_DIR/serial.txt" 2>/dev/null | tail -1)
+            FAIL_REASON="Phase 1a: block EINTR oracle failed ($BLOCK_EINTR_ORACLE_LINE)"
+            break
+        fi
+        if grep -qF "[BLOCK_EINTR_ORACLE:" "$OUTPUT_DIR/serial.txt" 2>/dev/null; then
+            BLOCK_EINTR_ORACLE_OK=true
+            break
+        fi
+        if FATAL=$(check_fatal); then
+            FAIL_REASON="Phase 1a: block EINTR oracle never completed ($FATAL)"
+            break
+        fi
+        if ! kill -0 $QEMU_PID 2>/dev/null; then
+            FAIL_REASON="Phase 1a: block EINTR oracle never completed (QEMU exited)"
+            break
+        fi
+        sleep 2
+    done
+
+    if ! $BLOCK_EINTR_ORACLE_OK && [ -z "$FAIL_REASON" ]; then
+        FAIL_REASON="Phase 1a: block EINTR oracle marker absent (30s timeout)"
+    fi
+
+    if $BLOCK_EINTR_ORACLE_OK && [ -z "$FAIL_REASON" ]; then
+        BLOCK_EINTR_ORACLE_LINE=$(grep -F "[BLOCK_EINTR_ORACLE:" "$OUTPUT_DIR/serial.txt" 2>/dev/null | tail -1)
+        if echo "$BLOCK_EINTR_ORACLE_LINE" | grep -qF "[BLOCK_EINTR_ORACLE:FAIL"; then
+            FAIL_REASON="Phase 1a: block EINTR oracle failed ($BLOCK_EINTR_ORACLE_LINE)"
+        else
+            echo "  Observed: $BLOCK_EINTR_ORACLE_LINE"
+            echo "Phase 1a: PASS"
+        fi
     fi
 fi
 

@@ -339,12 +339,21 @@ pub fn get_received_byte() -> Option<u8> {
 /// any code on another CPU holding SCHEDULER that tries to log would
 /// create a SERIAL1 → SCHEDULER / SCHEDULER → SERIAL1 deadlock.
 pub fn write_byte(byte: u8) {
+    write_bytes_atomic(core::slice::from_ref(&byte));
+}
+
+/// Write one caller-defined output unit while holding the serial lock once.
+pub fn write_bytes_atomic(bytes: &[u8]) {
     let daif_before: u64;
     unsafe {
         core::arch::asm!("mrs {}, DAIF", out(reg) daif_before, options(nomem, nostack));
         core::arch::asm!("msr DAIFSet, #0x3", options(nomem, nostack));
     }
-    SERIAL1.lock().send(byte);
+    let mut serial = SERIAL1.lock();
+    for &byte in bytes {
+        serial.send(byte);
+    }
+    drop(serial);
     unsafe {
         core::arch::asm!("msr DAIF, {}", in(reg) daif_before, options(nomem, nostack));
     }

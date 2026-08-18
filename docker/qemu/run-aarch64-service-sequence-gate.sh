@@ -1,0 +1,475 @@
+#!/bin/bash
+# ARM64 init service-sequence soak gate for #575.
+#
+# The round gate for #575 is a 100-cycle run of this script per CPU profile
+# (`--boots 100`). The default of 10 is for local iteration only.
+# Keep the observation window well above the ~11 s service-sequence completion
+# point so a wedged boot is unambiguously distinguishable from a slow one.
+
+set -e
+
+BOOTS=10
+PROFILE=both
+IOPS=2000
+BOOT_TIMEOUT=45
+REBUILD=false
+
+usage() {
+    echo "Usage: $0 [--boots N] [--profile max|cortex-a72|both] [--iops N] [--timeout S] [--rebuild]"
+}
+
+require_value() {
+    if [ "$#" -lt 2 ]; then
+        echo "Error: $1 requires a value"
+        usage
+        exit 2
+    fi
+}
+
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --boots)
+            require_value "$@"
+            BOOTS="$2"
+            shift 2
+            ;;
+        --profile)
+            require_value "$@"
+            PROFILE="$2"
+            shift 2
+            ;;
+        --iops)
+            require_value "$@"
+            IOPS="$2"
+            shift 2
+            ;;
+        --timeout)
+            require_value "$@"
+            BOOT_TIMEOUT="$2"
+            shift 2
+            ;;
+        --rebuild)
+            REBUILD=true
+            shift
+            ;;
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        *)
+            echo "Error: unknown option $1"
+            usage
+            exit 2
+            ;;
+    esac
+done
+
+case "$BOOTS" in
+    ''|*[!0-9]*) echo "Error: --boots must be a positive integer"; exit 2 ;;
+esac
+if [ "$BOOTS" -eq 0 ]; then
+    echo "Error: --boots must be a positive integer"
+    exit 2
+fi
+
+case "$IOPS" in
+    ''|*[!0-9]*) echo "Error: --iops must be a non-negative integer"; exit 2 ;;
+esac
+
+case "$BOOT_TIMEOUT" in
+    ''|*[!0-9]*) echo "Error: --timeout must be a positive integer"; exit 2 ;;
+esac
+if [ "$BOOT_TIMEOUT" -eq 0 ]; then
+    echo "Error: --timeout must be a positive integer"
+    exit 2
+fi
+
+case "$PROFILE" in
+    max|cortex-a72|both) ;;
+    *) echo "Error: --profile must be max, cortex-a72, or both"; exit 2 ;;
+esac
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+BREENIX_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+
+if $REBUILD; then
+    echo "Building ARM64 kernel with boot_tests feature..."
+    (cd "$BREENIX_ROOT" && cargo build --release --features boot_tests \
+        --target aarch64-breenix-kernel.json \
+        -Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem \
+        -p kernel --bin kernel-aarch64 2>&1)
+    echo "Build complete."
+    echo ""
+fi
+
+KERNEL="$BREENIX_ROOT/target/aarch64-breenix-kernel/release/kernel-aarch64"
+if [ ! -f "$KERNEL" ]; then
+    echo "Error: No ARM64 kernel found at $KERNEL"
+    echo "Build with: cargo build --release --features boot_tests --target aarch64-breenix-kernel.json -Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem -p kernel --bin kernel-aarch64"
+    exit 1
+fi
+
+"$BREENIX_ROOT/scripts/check-kernel-no-neon.sh" "$KERNEL"
+
+EXT2_DISK="$BREENIX_ROOT/target/ext2-aarch64.img"
+if [ ! -f "$EXT2_DISK" ]; then
+    echo "Error: ext2 disk not found at $EXT2_DISK"
+    exit 1
+fi
+
+RUN_STAMP="$(date -u +%Y%m%dT%H%M%SZ)-$$"
+OUTPUT_DIR="${OUTPUT_DIR:-/tmp/breenix_aarch64_service_sequence_gate_$RUN_STAMP}"
+mkdir -p "$OUTPUT_DIR"
+
+QEMU_PID=""
+CURRENT_DISK=""
+cleanup() {
+    if [ -n "$QEMU_PID" ]; then
+        kill "$QEMU_PID" 2>/dev/null || true
+        wait "$QEMU_PID" 2>/dev/null || true
+    fi
+    if [ -n "$CURRENT_DISK" ] && [ -f "$CURRENT_DISK" ]; then
+        rm -f "$CURRENT_DISK"
+    fi
+}
+trap cleanup EXIT
+
+CLASS_BUCKET=""
+CLASS_REASON=""
+
+silent_spawn_reason() {
+    local serial_file="$1"
+    local spawn_record
+    local line_number
+    local spawn_line
+    local path
+    local name
+    local next_line
+    local last_line
+    local segment
+    local entry_segment
+    local heartbeat_count
+
+    grep -nF "[spawn] path='" "$serial_file" 2>/dev/null | while IFS= read -r spawn_record; do
+        line_number=${spawn_record%%:*}
+        spawn_line=${spawn_record#*:}
+        path=$(echo "$spawn_line" | sed -n "s/.*\[spawn\] path='\([^']*\)'.*/\1/p")
+        [ -n "$path" ] || continue
+        name=${path##*/}
+
+        next_line=$(awk -v start="$line_number" \
+            'NR > start && index($0, "[spawn] path=") { print NR; exit }' "$serial_file")
+        if [ -n "$next_line" ]; then
+            last_line=$((next_line - 1))
+        else
+            last_line=$(awk 'END { print NR }' "$serial_file")
+        fi
+        segment=$(sed -n "${line_number},${last_line}p" "$serial_file")
+        entry_segment=$(sed -n "${line_number},\$p" "$serial_file")
+
+        if echo "$entry_segment" | grep -qF "create_process_with_argv [ARM64]: ENTRY - name='$name'"; then
+            continue
+        fi
+        if echo "$segment" | grep -qE "\[spawn\] Failed|\[init\].*(failed|Failed)"; then
+            continue
+        fi
+
+        heartbeat_count=$(awk -v start="$line_number" \
+            'NR > start && index($0, "[heartbeat]") { count++ } END { print count + 0 }' \
+            "$serial_file")
+        # Five heartbeats prove the kernel stayed alive; a shorter tail may be timeout truncation.
+        if [ "$heartbeat_count" -lt 5 ]; then
+            continue
+        fi
+
+        echo "spawn never returned: path='$path'"
+        return 0
+    done || true
+}
+
+green_sequence_complete() {
+    local serial_file="$1"
+    local bounce_line
+    local heartbeat_count
+
+    grep -qF "[init] Boot script completed" "$serial_file" 2>/dev/null \
+        && grep -qF "create_process_with_argv [ARM64]: ENTRY - name='telnetd'" "$serial_file" 2>/dev/null \
+        && grep -qF "[spawn] path='/bin/bounce'" "$serial_file" 2>/dev/null || return 1
+
+    bounce_line=$(grep -nF "[spawn] path='/bin/bounce'" "$serial_file" | head -1 | cut -d: -f1)
+    [ -n "$bounce_line" ] || return 1
+    heartbeat_count=$(awk -v start="$bounce_line" \
+        'NR > start && index($0, "[heartbeat]") { count++ } END { print count + 0 }' \
+        "$serial_file")
+    [ "$heartbeat_count" -ge 5 ]
+}
+
+# Consult filed signatures first: a boot that died from a filed defect before init ran
+# cannot be blamed on a missing marker; the unattributed bucket is for reds nobody has filed.
+classify_serial() {
+    local serial_file="$1"
+    local silent_reason
+    local last_line
+
+    if grep -qF "[BLOCK_EINTR_ORACLE:FAIL" "$serial_file" 2>/dev/null; then
+        CLASS_BUCKET="575"
+        CLASS_REASON="block EINTR oracle reported failure"
+        return
+    fi
+    if grep -qF "failed to spawn service: EIO" "$serial_file" 2>/dev/null; then
+        CLASS_BUCKET="575"
+        CLASS_REASON="service spawn returned EIO"
+        return
+    fi
+    silent_reason=$(silent_spawn_reason "$serial_file")
+    if [ -n "$silent_reason" ]; then
+        CLASS_BUCKET="575"
+        CLASS_REASON="$silent_reason"
+        return
+    fi
+    if grep -qF "[INSTRUCTION_ABORT]" "$serial_file" 2>/dev/null; then
+        CLASS_BUCKET="576"
+        CLASS_REASON="instruction abort"
+        return
+    fi
+    # The serial console emits CRLF; trim trailing whitespace before exact comparisons and reports.
+    last_line=$(grep -F "CLONEVM_EXEC_TEST" "$serial_file" 2>/dev/null | tail -1 | sed 's/[[:space:]]*$//' || true)
+    if [ "$last_line" = "CLONEVM_EXEC_TEST: live sibling refused exec" ]; then
+        CLASS_BUCKET="589"
+        CLASS_REASON="live sibling refused exec"
+        return
+    fi
+    if ! grep -qF "[BLOCK_EINTR_ORACLE:" "$serial_file" 2>/dev/null; then
+        CLASS_BUCKET="UNATTRIBUTED"
+        CLASS_REASON="oracle marker absent"
+        return
+    fi
+    if grep -qF "[init] Boot script completed" "$serial_file" 2>/dev/null \
+        && grep -qF "create_process_with_argv [ARM64]: ENTRY - name='telnetd'" "$serial_file" 2>/dev/null \
+        && grep -qF "[spawn] path='/bin/bounce'" "$serial_file" 2>/dev/null; then
+        CLASS_BUCKET="GREEN"
+        CLASS_REASON="all service-sequence markers observed"
+        return
+    fi
+
+    last_line=$(grep -vF "[heartbeat]" "$serial_file" 2>/dev/null | awk 'NF { line = $0 } END { print line }' | sed 's/[[:space:]]*$//')
+    CLASS_BUCKET="UNATTRIBUTED"
+    CLASS_REASON="last non-heartbeat serial line: ${last_line:-<none>}"
+}
+
+TOTAL_575=0
+TOTAL_576=0
+TOTAL_589=0
+TOTAL_GREEN=0
+TOTAL_UNATTRIBUTED=0
+TOTAL_BOOTS=0
+PROFILE_COUNT=0
+ANY_GATE_FAILURE=0
+
+print_census() {
+    local label="$1"
+    local count_575="$2"
+    local count_576="$3"
+    local count_589="$4"
+    local count_green="$5"
+    local count_unattributed="$6"
+    local count_boots="$7"
+    local green_rate
+
+    green_rate=$(awk -v green="$count_green" -v boots="$count_boots" \
+        'BEGIN { printf "%.1f", (boots == 0 ? 0 : green * 100 / boots) }')
+    echo ""
+    echo "$label census"
+    printf '  %-13s %d\n' "575" "$count_575"
+    printf '  %-13s %d\n' "576" "$count_576"
+    printf '  %-13s %d\n' "589" "$count_589"
+    printf '  %-13s %d\n' "GREEN" "$count_green"
+    printf '  %-13s %d\n' "UNATTRIBUTED" "$count_unattributed"
+    echo "  GREEN rate: $count_green/$count_boots ($green_rate%) — not a gate today: #589 and #576 are open and intercept boots"
+}
+
+run_profile() {
+    local cpu_profile="$1"
+    local profile_dir="$OUTPUT_DIR/$cpu_profile"
+    local census_file="$profile_dir/census.tsv"
+    local count_575=0
+    local count_576=0
+    local count_589=0
+    local count_green=0
+    local count_unattributed=0
+    local boot
+    local serial_file
+    local writable_disk
+    local drive_opts
+    local qemu_status
+    local boot_end
+    local boot_seconds
+    local boot_start
+    local sleep_seconds
+    local census_sum
+
+    mkdir -p "$profile_dir"
+    printf 'boot\tbucket\tend\tseconds\treason\tserial\n' > "$census_file"
+    echo ""
+    echo "Profile $cpu_profile: running $BOOTS sequential boots"
+
+    for boot in $(seq 1 "$BOOTS"); do
+        serial_file="$profile_dir/serial-$boot.txt"
+        writable_disk="$profile_dir/ext2-writable-$boot.img"
+        : > "$serial_file"
+        cp "$EXT2_DISK" "$writable_disk"
+        CURRENT_DISK="$writable_disk"
+
+        drive_opts="if=none,id=ext2,format=raw,file=$writable_disk"
+        if [ "$IOPS" -ne 0 ]; then
+            drive_opts="$drive_opts,throttling.iops-total=$IOPS"
+        fi
+
+        qemu-system-aarch64 \
+            -M virt,gic-version=3 -cpu "$cpu_profile" -m 512 -smp 4 \
+            -kernel "$KERNEL" \
+            -display none -no-reboot \
+            -device virtio-gpu-device \
+            -device virtio-keyboard-device \
+            -device virtio-tablet-device \
+            -device virtio-blk-device,drive=ext2 \
+            -drive "$drive_opts" \
+            -device virtio-net-device,netdev=net0 \
+            -netdev user,id=net0 \
+            -serial file:"$serial_file" &
+        QEMU_PID=$!
+
+        boot_end="timeout"
+        boot_start=$SECONDS
+        while :; do
+            boot_seconds=$((SECONDS - boot_start))
+            if [ "$boot_seconds" -ge "$BOOT_TIMEOUT" ]; then
+                kill "$QEMU_PID" 2>/dev/null || true
+                break
+            fi
+            sleep_seconds=$((BOOT_TIMEOUT - boot_seconds))
+            if [ "$sleep_seconds" -gt 2 ]; then
+                sleep_seconds=2
+            fi
+            sleep "$sleep_seconds"
+            boot_seconds=$((SECONDS - boot_start))
+
+            if grep -qF "[BLOCK_EINTR_ORACLE:FAIL" "$serial_file" 2>/dev/null; then
+                boot_end="early"
+                kill "$QEMU_PID" 2>/dev/null || true
+                break
+            fi
+            if grep -qF "[INSTRUCTION_ABORT]" "$serial_file" 2>/dev/null; then
+                boot_end="early"
+                kill "$QEMU_PID" 2>/dev/null || true
+                break
+            fi
+            if green_sequence_complete "$serial_file"; then
+                boot_end="early"
+                kill "$QEMU_PID" 2>/dev/null || true
+                break
+            fi
+            if [ "$boot_seconds" -ge "$BOOT_TIMEOUT" ]; then
+                boot_seconds=$((SECONDS - boot_start))
+                kill "$QEMU_PID" 2>/dev/null || true
+                break
+            fi
+        done
+
+        set +e
+        wait "$QEMU_PID"
+        qemu_status=$?
+        set -e
+        QEMU_PID=""
+        rm -f "$writable_disk"
+        CURRENT_DISK=""
+
+        classify_serial "$serial_file"
+        case "$CLASS_BUCKET" in
+            575) count_575=$((count_575 + 1)) ;;
+            576) count_576=$((count_576 + 1)) ;;
+            589) count_589=$((count_589 + 1)) ;;
+            GREEN) count_green=$((count_green + 1)) ;;
+            UNATTRIBUTED) count_unattributed=$((count_unattributed + 1)) ;;
+            *)
+                echo "Internal error: unknown bucket '$CLASS_BUCKET' for $serial_file"
+                exit 1
+                ;;
+        esac
+        printf '%s\t%s\t%s\t%s\t%s (qemu_status=%s)\t%s\n' \
+            "$boot" "$CLASS_BUCKET" "$boot_end" "$boot_seconds" "$CLASS_REASON" "$qemu_status" "$serial_file" >> "$census_file"
+        echo "  Boot $boot/$BOOTS: $CLASS_BUCKET — $CLASS_REASON [$boot_end, ${boot_seconds}s]"
+    done
+
+    census_sum=$((count_575 + count_576 + count_589 + count_green + count_unattributed))
+    if [ "$census_sum" -ne "$BOOTS" ]; then
+        echo "FATAL: $cpu_profile bucket census sums to $census_sum, expected $BOOTS"
+        exit 1
+    fi
+
+    print_census "Profile $cpu_profile" "$count_575" "$count_576" "$count_589" \
+        "$count_green" "$count_unattributed" "$BOOTS"
+
+    # The GREEN rate is census-only because open #589 and #576 intercept boots; ratchet it into the gate when both land.
+    if [ "$count_575" -ne 0 ] || [ "$count_unattributed" -ne 0 ]; then
+        ANY_GATE_FAILURE=1
+        echo "Profile $cpu_profile gate: FAILED (575=$count_575, UNATTRIBUTED=$count_unattributed)"
+    else
+        echo "Profile $cpu_profile gate: PASSED (575=0, UNATTRIBUTED=0)"
+    fi
+
+    TOTAL_575=$((TOTAL_575 + count_575))
+    TOTAL_576=$((TOTAL_576 + count_576))
+    TOTAL_589=$((TOTAL_589 + count_589))
+    TOTAL_GREEN=$((TOTAL_GREEN + count_green))
+    TOTAL_UNATTRIBUTED=$((TOTAL_UNATTRIBUTED + count_unattributed))
+    TOTAL_BOOTS=$((TOTAL_BOOTS + BOOTS))
+    PROFILE_COUNT=$((PROFILE_COUNT + 1))
+}
+
+echo "========================================="
+echo "ARM64 #575 Service Sequence Gate"
+echo "========================================="
+echo "Kernel: $KERNEL"
+echo "ext2 disk: $EXT2_DISK"
+echo "Boots per profile: $BOOTS"
+echo "Profile selection: $PROFILE"
+echo "Block IOPS throttle: $IOPS"
+echo "Per-boot timeout: ${BOOT_TIMEOUT}s"
+echo "Output: $OUTPUT_DIR"
+
+case "$PROFILE" in
+    max) run_profile max ;;
+    cortex-a72) run_profile cortex-a72 ;;
+    both)
+        run_profile max
+        run_profile cortex-a72
+        ;;
+esac
+
+TOTAL_SUM=$((TOTAL_575 + TOTAL_576 + TOTAL_589 + TOTAL_GREEN + TOTAL_UNATTRIBUTED))
+EXPECTED_TOTAL=$((BOOTS * PROFILE_COUNT))
+if [ "$TOTAL_SUM" -ne "$EXPECTED_TOTAL" ] || [ "$TOTAL_BOOTS" -ne "$EXPECTED_TOTAL" ]; then
+    echo "FATAL: total bucket census sums to $TOTAL_SUM for $TOTAL_BOOTS recorded boots; expected $EXPECTED_TOTAL"
+    exit 1
+fi
+
+print_census "Total" "$TOTAL_575" "$TOTAL_576" "$TOTAL_589" \
+    "$TOTAL_GREEN" "$TOTAL_UNATTRIBUTED" "$TOTAL_BOOTS"
+
+if [ "$ANY_GATE_FAILURE" -ne 0 ]; then
+    echo ""
+    echo "ARM64 #575 SERVICE SEQUENCE GATE: FAILED"
+    echo "Non-GREEN boots:"
+    for census_file in "$OUTPUT_DIR"/*/census.tsv; do
+        awk -F '\t' 'NR > 1 && $2 != "GREEN" { printf "  %s: %s — %s [%s, %ss]\n", $6, $2, $5, $3, $4 }' "$census_file"
+    done
+    echo "Preserved serials:"
+    find "$OUTPUT_DIR" -type f -name 'serial-*.txt' -print | sort | sed 's/^/  /'
+    exit 1
+fi
+
+echo ""
+echo "ARM64 #575 SERVICE SEQUENCE GATE: PASSED"
+echo "Preserved serials: $OUTPUT_DIR"
+exit 0

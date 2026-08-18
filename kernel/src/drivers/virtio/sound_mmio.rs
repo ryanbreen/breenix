@@ -20,6 +20,7 @@ const NO_COMPLETED_DESC: u32 = u32::MAX;
 
 struct SoundMmioRequestGate {
     locked: AtomicBool,
+    wedged: AtomicBool,
     waiters: WaitQueueHead,
 }
 
@@ -32,11 +33,16 @@ impl SoundMmioRequestGate {
     const fn new() -> Self {
         Self {
             locked: AtomicBool::new(false),
+            wedged: AtomicBool::new(false),
             waiters: WaitQueueHead::new(),
         }
     }
 
     fn lock(&self) -> Result<SoundMmioRequestGuard<'_>, &'static str> {
+        if self.wedged.load(Ordering::Acquire) {
+            return Err("Sound MMIO device wedged after an abandoned request");
+        }
+
         loop {
             if self
                 .locked
@@ -61,10 +67,19 @@ impl SoundMmioRequestGate {
                 return Err("Sound MMIO request already in progress");
             }
 
+            if self.wedged.load(Ordering::Acquire) {
+                self.waiters.finish_wait();
+                return Err("Sound MMIO device wedged after an abandoned request");
+            }
+
             if self.locked.load(Ordering::Acquire) {
                 crate::task::waitqueue::schedule_current_wait();
             }
             self.waiters.finish_wait();
+
+            if self.wedged.load(Ordering::Acquire) {
+                return Err("Sound MMIO device wedged after an abandoned request");
+            }
         }
     }
 
@@ -75,8 +90,10 @@ impl SoundMmioRequestGate {
 }
 
 impl SoundMmioRequestGuard<'_> {
-    fn keep_locked(&mut self) {
+    fn wedge(&mut self) {
         self.release_on_drop = false;
+        self.gate.wedged.store(true, Ordering::Release);
+        self.gate.waiters.wake_up();
     }
 }
 
@@ -147,15 +164,15 @@ impl SoundMmioQueueCompletion {
         &self,
         token: u32,
         timeout_error: &'static str,
-        interrupted_error: &'static str,
     ) -> Result<(), &'static str> {
+        // The request is already published to the device, so abandoning this
+        // wait would leave a device slot and its DMA buffers live.
         match self
             .completion
-            .wait_timeout(token, SOUND_MMIO_COMPLETION_TIMEOUT_NS)
+            .wait_timeout_uninterruptible(token, SOUND_MMIO_COMPLETION_TIMEOUT_NS)
         {
             Ok(true) => Ok(()),
-            Ok(false) => Err(timeout_error),
-            Err(_eintr) => Err(interrupted_error),
+            Ok(false) | Err(_) => Err(timeout_error),
         }
     }
 
@@ -553,9 +570,8 @@ fn send_ctrl_command(
     if let Err(e) = CTRL_COMPLETION.wait_for_completion(
         completion_token,
         "Sound MMIO control command timeout",
-        "Sound MMIO control command interrupted",
     ) {
-        request_guard.keep_locked();
+        request_guard.wedge();
         return Err(e);
     }
 
@@ -775,9 +791,8 @@ pub fn write_pcm(data: &[u8]) -> Result<usize, &'static str> {
     if let Err(e) = TX_COMPLETION.wait_for_completion(
         completion_token,
         "Sound MMIO TX timeout",
-        "Sound MMIO TX interrupted",
     ) {
-        request_guard.keep_locked();
+        request_guard.wedge();
         return Err(e);
     }
 

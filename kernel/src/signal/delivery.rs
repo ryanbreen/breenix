@@ -11,12 +11,26 @@ use super::constants::*;
 use super::types::*;
 use crate::process::{Process, ProcessState};
 
-/// Check if a process has any deliverable signals
+/// Check whether there is pending signal work for the delivery path to process.
 ///
-/// This is a fast O(1) check suitable for the hot path in context_switch.rs
+/// This includes ignored dispositions so delivery can clear them. Issue #493 motivated
+/// separating this from the EINTR predicate when a default-ignored SIGCHLD interrupted a
+/// blocking syscall despite never being observed by userspace.
+///
+/// This is a fast O(1) check suitable for the hot path in context_switch.rs.
 #[inline]
 pub fn has_deliverable_signals(process: &Process) -> bool {
     process.signals.has_deliverable_signals()
+}
+
+/// Check whether a pending signal will actually be seen by userspace, so a blocking syscall
+/// must abort with EINTR.
+///
+/// Explicit and default-ignored dispositions do not count. Issue #493 was motivated by a
+/// default-ignored SIGCHLD incorrectly interrupting a blocking syscall.
+#[inline]
+pub fn has_interrupting_signals(process: &Process) -> bool {
+    process.signals.has_interrupting_signals()
 }
 
 /// Result of signal delivery

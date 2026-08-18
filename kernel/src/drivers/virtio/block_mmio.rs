@@ -19,11 +19,13 @@ pub const MAX_BLOCK_DEVICES: usize = 2;
 
 const VIRTIO_IRQ_BASE: u32 = 48;
 const BLOCK_MMIO_COMPLETION_TIMEOUT_NS: u64 = 5_000_000_000;
+const BLOCK_MMIO_WEDGED_ERROR: &str = "Block MMIO device wedged after an abandoned request";
 const NO_COMPLETED_DESC: u32 = u32::MAX;
 const NO_COMPLETED_STATUS: u32 = u32::MAX;
 
 struct BlockMmioRequestGate {
     locked: AtomicBool,
+    wedged: AtomicBool,
     waiters: WaitQueueHead,
 }
 
@@ -36,11 +38,16 @@ impl BlockMmioRequestGate {
     const fn new() -> Self {
         Self {
             locked: AtomicBool::new(false),
+            wedged: AtomicBool::new(false),
             waiters: WaitQueueHead::new(),
         }
     }
 
     fn lock(&self) -> Result<BlockMmioRequestGuard<'_>, &'static str> {
+        if self.wedged.load(Ordering::Acquire) {
+            return Err(BLOCK_MMIO_WEDGED_ERROR);
+        }
+
         loop {
             if self
                 .locked
@@ -65,10 +72,19 @@ impl BlockMmioRequestGate {
                 return Err("Block MMIO request already in progress");
             }
 
+            if self.wedged.load(Ordering::Acquire) {
+                self.waiters.finish_wait();
+                return Err(BLOCK_MMIO_WEDGED_ERROR);
+            }
+
             if self.locked.load(Ordering::Acquire) {
                 crate::task::waitqueue::schedule_current_wait();
             }
             self.waiters.finish_wait();
+
+            if self.wedged.load(Ordering::Acquire) {
+                return Err(BLOCK_MMIO_WEDGED_ERROR);
+            }
         }
     }
 
@@ -79,8 +95,10 @@ impl BlockMmioRequestGate {
 }
 
 impl BlockMmioRequestGuard<'_> {
-    fn keep_locked(mut self) {
+    fn wedge(mut self) {
         self.release_on_drop = false;
+        self.gate.wedged.store(true, Ordering::Release);
+        self.gate.waiters.wake_up();
     }
 }
 
@@ -97,6 +115,217 @@ fn block_mmio_request_gate_can_sleep() -> bool {
     crate::task::scheduler::current_thread_id().is_some()
         && crate::per_cpu_aarch64::preempt_count() > 0
         && crate::arch_impl::aarch64::timer_interrupt::is_initialized()
+}
+
+#[cfg(feature = "boot_tests")]
+const BLOCK_WEDGE_ORACLE_IDLE: u32 = 0;
+#[cfg(feature = "boot_tests")]
+const BLOCK_WEDGE_ORACLE_SLEEP_PERMITTED: u32 = 1;
+#[cfg(feature = "boot_tests")]
+const BLOCK_WEDGE_ORACLE_REFUSED: u32 = 2;
+#[cfg(feature = "boot_tests")]
+const BLOCK_WEDGE_ORACLE_BAD_CONTEXT: u32 = 3;
+#[cfg(feature = "boot_tests")]
+const BLOCK_WEDGE_ORACLE_WRONG_RESULT: u32 = 4;
+#[cfg(feature = "boot_tests")]
+const BLOCK_WEDGE_ORACLE_BOUND_NS: u64 = 100_000_000;
+#[cfg(feature = "boot_tests")]
+const BLOCK_WEDGE_ORACLE_SETUP_NS: u64 = 500_000_000;
+
+#[cfg(feature = "boot_tests")]
+static BLOCK_WEDGE_ORACLE_GATE: BlockMmioRequestGate = BlockMmioRequestGate::new();
+#[cfg(feature = "boot_tests")]
+static BLOCK_WEDGE_ORACLE_PARKED_STATE: AtomicU32 = AtomicU32::new(BLOCK_WEDGE_ORACLE_IDLE);
+#[cfg(feature = "boot_tests")]
+static BLOCK_WEDGE_ORACLE_REFUSE_STATE: AtomicU32 = AtomicU32::new(BLOCK_WEDGE_ORACLE_IDLE);
+#[cfg(feature = "boot_tests")]
+static BLOCK_WEDGE_ORACLE_REFUSE_START_NS: core::sync::atomic::AtomicU64 =
+    core::sync::atomic::AtomicU64::new(0);
+#[cfg(feature = "boot_tests")]
+static BLOCK_WEDGE_ORACLE_REFUSE_ELAPSED_NS: core::sync::atomic::AtomicU64 =
+    core::sync::atomic::AtomicU64::new(0);
+
+#[cfg(feature = "boot_tests")]
+struct BlockWedgeOracleSleepContext;
+
+#[cfg(feature = "boot_tests")]
+impl BlockWedgeOracleSleepContext {
+    fn enter() -> Option<Self> {
+        if crate::per_cpu_aarch64::preempt_count() != 0 {
+            return None;
+        }
+        crate::per_cpu_aarch64::preempt_disable();
+        if !block_mmio_request_gate_can_sleep() {
+            crate::per_cpu_aarch64::preempt_enable();
+            return None;
+        }
+        Some(Self)
+    }
+}
+
+#[cfg(feature = "boot_tests")]
+impl Drop for BlockWedgeOracleSleepContext {
+    fn drop(&mut self) {
+        crate::per_cpu_aarch64::preempt_enable();
+    }
+}
+
+#[cfg(feature = "boot_tests")]
+fn block_wedge_oracle_now_ns() -> u64 {
+    let (seconds, nanos) = crate::time::get_monotonic_time_ns();
+    seconds.saturating_mul(1_000_000_000).saturating_add(nanos)
+}
+
+#[cfg(feature = "boot_tests")]
+fn block_wedge_oracle_wait_until(deadline_ns: u64, mut condition: impl FnMut() -> bool) -> bool {
+    while block_wedge_oracle_now_ns() < deadline_ns {
+        if condition() {
+            return true;
+        }
+        crate::arch_halt_with_interrupts();
+    }
+    condition()
+}
+
+/// Exercise the production MMIO block request gate without touching a real device.
+#[cfg(feature = "boot_tests")]
+pub(crate) fn block_wedge_oracle_test() -> crate::test_framework::registry::TestResult {
+    use crate::task::kthread::{kthread_has_exited_for_test, kthread_join, kthread_run};
+    use crate::test_framework::registry::TestResult;
+
+    BLOCK_WEDGE_ORACLE_PARKED_STATE.store(BLOCK_WEDGE_ORACLE_IDLE, Ordering::Release);
+    BLOCK_WEDGE_ORACLE_REFUSE_STATE.store(BLOCK_WEDGE_ORACLE_IDLE, Ordering::Release);
+    BLOCK_WEDGE_ORACLE_REFUSE_START_NS.store(0, Ordering::Release);
+    BLOCK_WEDGE_ORACLE_REFUSE_ELAPSED_NS.store(0, Ordering::Release);
+
+    let request_guard = match BLOCK_WEDGE_ORACLE_GATE.lock() {
+        Ok(guard) => guard,
+        Err(_) => return TestResult::Fail("block wedge oracle could not take the initial lock"),
+    };
+
+    let parked_handle = match kthread_run(
+        || {
+            let Some(_sleep_context) = BlockWedgeOracleSleepContext::enter() else {
+                BLOCK_WEDGE_ORACLE_PARKED_STATE
+                    .store(BLOCK_WEDGE_ORACLE_BAD_CONTEXT, Ordering::Release);
+                return;
+            };
+            BLOCK_WEDGE_ORACLE_PARKED_STATE
+                .store(BLOCK_WEDGE_ORACLE_SLEEP_PERMITTED, Ordering::Release);
+            match BLOCK_WEDGE_ORACLE_GATE.lock() {
+                Err(BLOCK_MMIO_WEDGED_ERROR) => BLOCK_WEDGE_ORACLE_PARKED_STATE
+                    .store(BLOCK_WEDGE_ORACLE_REFUSED, Ordering::Release),
+                Err(_) | Ok(_) => BLOCK_WEDGE_ORACLE_PARKED_STATE
+                    .store(BLOCK_WEDGE_ORACLE_WRONG_RESULT, Ordering::Release),
+            }
+        },
+        "block_wedge_parked",
+    ) {
+        Ok(handle) => handle,
+        Err(_) => return TestResult::Fail("block wedge oracle could not spawn parked requester"),
+    };
+
+    let setup_deadline = block_wedge_oracle_now_ns().saturating_add(BLOCK_WEDGE_ORACLE_SETUP_NS);
+    let waiter_parked = block_wedge_oracle_wait_until(setup_deadline, || {
+        BLOCK_WEDGE_ORACLE_GATE.waiters.has_waiters()
+            || BLOCK_WEDGE_ORACLE_PARKED_STATE.load(Ordering::Acquire)
+                >= BLOCK_WEDGE_ORACLE_BAD_CONTEXT
+    });
+    if BLOCK_WEDGE_ORACLE_PARKED_STATE.load(Ordering::Acquire)
+        == BLOCK_WEDGE_ORACLE_BAD_CONTEXT
+    {
+        return TestResult::Fail("block wedge oracle parked lock was not sleep-permitted");
+    }
+    if !waiter_parked || !BLOCK_WEDGE_ORACLE_GATE.waiters.has_waiters() {
+        return TestResult::Fail(
+            "block wedge oracle requester never parked on the real wait queue",
+        );
+    }
+
+    request_guard.wedge();
+
+    let wake_deadline = block_wedge_oracle_now_ns().saturating_add(BLOCK_WEDGE_ORACLE_BOUND_NS);
+    if !block_wedge_oracle_wait_until(wake_deadline, || {
+        kthread_has_exited_for_test(&parked_handle)
+    }) {
+        return TestResult::Fail("block wedge oracle did not release an already parked requester");
+    }
+    if !matches!(kthread_join(&parked_handle), Ok(0))
+        || BLOCK_WEDGE_ORACLE_PARKED_STATE.load(Ordering::Acquire) != BLOCK_WEDGE_ORACLE_REFUSED
+        || BLOCK_WEDGE_ORACLE_GATE.waiters.has_waiters()
+    {
+        return TestResult::Fail("block wedge oracle left a parked requester behind");
+    }
+
+    let refuse_handle = match kthread_run(
+        || {
+            let Some(_sleep_context) = BlockWedgeOracleSleepContext::enter() else {
+                BLOCK_WEDGE_ORACLE_REFUSE_STATE
+                    .store(BLOCK_WEDGE_ORACLE_BAD_CONTEXT, Ordering::Release);
+                return;
+            };
+            let started_at = block_wedge_oracle_now_ns();
+            BLOCK_WEDGE_ORACLE_REFUSE_START_NS.store(started_at, Ordering::Release);
+            BLOCK_WEDGE_ORACLE_REFUSE_STATE
+                .store(BLOCK_WEDGE_ORACLE_SLEEP_PERMITTED, Ordering::Release);
+            let result = BLOCK_WEDGE_ORACLE_GATE.lock();
+            let elapsed_ns = block_wedge_oracle_now_ns().saturating_sub(started_at);
+            BLOCK_WEDGE_ORACLE_REFUSE_ELAPSED_NS.store(elapsed_ns, Ordering::Release);
+            match result {
+                Err(BLOCK_MMIO_WEDGED_ERROR) => BLOCK_WEDGE_ORACLE_REFUSE_STATE
+                    .store(BLOCK_WEDGE_ORACLE_REFUSED, Ordering::Release),
+                Err(_) | Ok(_) => BLOCK_WEDGE_ORACLE_REFUSE_STATE
+                    .store(BLOCK_WEDGE_ORACLE_WRONG_RESULT, Ordering::Release),
+            }
+        },
+        "block_wedge_refuse",
+    ) {
+        Ok(handle) => handle,
+        Err(_) => return TestResult::Fail("block wedge oracle could not spawn second requester"),
+    };
+
+    let start_deadline = block_wedge_oracle_now_ns().saturating_add(BLOCK_WEDGE_ORACLE_SETUP_NS);
+    if !block_wedge_oracle_wait_until(start_deadline, || {
+        BLOCK_WEDGE_ORACLE_REFUSE_STATE.load(Ordering::Acquire) != BLOCK_WEDGE_ORACLE_IDLE
+    }) {
+        return TestResult::Fail("block wedge oracle second requester never ran");
+    }
+    let state = BLOCK_WEDGE_ORACLE_REFUSE_STATE.load(Ordering::Acquire);
+    if state == BLOCK_WEDGE_ORACLE_BAD_CONTEXT {
+        return TestResult::Fail("block wedge oracle second lock was not sleep-permitted");
+    }
+
+    let refuse_deadline = BLOCK_WEDGE_ORACLE_REFUSE_START_NS
+        .load(Ordering::Acquire)
+        .saturating_add(BLOCK_WEDGE_ORACLE_BOUND_NS);
+    if !block_wedge_oracle_wait_until(refuse_deadline, || {
+        BLOCK_WEDGE_ORACLE_REFUSE_STATE.load(Ordering::Acquire)
+            != BLOCK_WEDGE_ORACLE_SLEEP_PERMITTED
+    }) {
+        return TestResult::Fail("block wedge oracle second requester parked behind the dead gate");
+    }
+    let exit_deadline = block_wedge_oracle_now_ns().saturating_add(BLOCK_WEDGE_ORACLE_BOUND_NS);
+    if !block_wedge_oracle_wait_until(exit_deadline, || {
+        kthread_has_exited_for_test(&refuse_handle)
+    }) {
+        return TestResult::Fail("block wedge oracle second requester did not exit in time");
+    }
+    if !matches!(kthread_join(&refuse_handle), Ok(0))
+        || BLOCK_WEDGE_ORACLE_REFUSE_STATE.load(Ordering::Acquire) != BLOCK_WEDGE_ORACLE_REFUSED
+    {
+        return TestResult::Fail("block wedge oracle second lock returned the wrong result");
+    }
+
+    let refuse_ns = BLOCK_WEDGE_ORACLE_REFUSE_ELAPSED_NS.load(Ordering::Acquire);
+    if refuse_ns >= BLOCK_WEDGE_ORACLE_BOUND_NS {
+        return TestResult::Fail("block wedge oracle refusal exceeded 100 ms");
+    }
+    let refuse_ms = refuse_ns / 1_000_000;
+    crate::serial_println!(
+        "[BLOCK_WEDGE_ORACLE:locked=1:wedged=1:refused=1:parked=0:refuse_ms={}]",
+        refuse_ms
+    );
+    TestResult::Pass
 }
 
 struct BlockMmioCompletion {
@@ -157,15 +386,15 @@ impl BlockMmioCompletion {
         &self,
         token: u32,
         timeout_error: &'static str,
-        interrupted_error: &'static str,
     ) -> Result<(), &'static str> {
+        // The request is already published to the device, so abandoning this
+        // wait would leave a device slot and its DMA buffers live.
         match self
             .completion
-            .wait_timeout(token, BLOCK_MMIO_COMPLETION_TIMEOUT_NS)
+            .wait_timeout_uninterruptible(token, BLOCK_MMIO_COMPLETION_TIMEOUT_NS)
         {
             Ok(true) => Ok(()),
-            Ok(false) => Err(timeout_error),
-            Err(_eintr) => Err(interrupted_error),
+            Ok(false) | Err(_) => Err(timeout_error),
         }
     }
 
@@ -767,9 +996,8 @@ pub fn read_sector(
     if let Err(e) = completion.wait_for_completion(
         completion_token,
         "Block MMIO read timeout",
-        "Block MMIO read interrupted",
     ) {
-        request_guard.keep_locked();
+        request_guard.wedge();
         return Err(e);
     }
 
@@ -897,9 +1125,8 @@ pub fn write_sector(
     if let Err(e) = completion.wait_for_completion(
         completion_token,
         "Block MMIO write timeout",
-        "Block MMIO write interrupted",
     ) {
-        request_guard.keep_locked();
+        request_guard.wedge();
         return Err(e);
     }
 

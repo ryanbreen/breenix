@@ -35,6 +35,15 @@ const EAGAIN: i32 = 11;
 /// Static list of thread IDs blocked waiting for TTY input
 static BLOCKED_READERS: Mutex<VecDeque<u64>> = Mutex::new(VecDeque::new());
 
+/// Maximum UART bytes emitted while interrupts are masked for one TTY write.
+const SERIAL_ATOMIC_OUTPUT_BYTES: usize = 256;
+
+fn for_each_line_segment(buf: &[u8], mut visit: impl FnMut(&[u8])) {
+    for segment in buf.split_inclusive(|byte| *byte == b'\n') {
+        visit(segment);
+    }
+}
+
 // =============================================================================
 // Test-only Signal Tracking
 //
@@ -358,41 +367,42 @@ impl TtyDevice {
         let termios = self.ldisc.lock().termios().clone();
         let do_onlcr = termios.is_opost() && termios.is_onlcr();
 
-        // Write to serial and queue for deferred framebuffer rendering.
-        // Both architectures use the render queue — it's lock-free on the
-        // producer side and never drops data unless the buffer overflows.
-        // The render queue is preferred over direct framebuffer writes
-        // because try_lock() can silently drop entire buffers on lock contention.
-        for &c in buf {
-            if do_onlcr && c == b'\n' {
-                crate::serial::write_byte(b'\r');
-                #[cfg(any(target_arch = "aarch64", feature = "interactive"))]
-                let _ = crate::graphics::render_queue::queue_byte(b'\r');
-            }
-            crate::serial::write_byte(c);
-            #[cfg(any(target_arch = "aarch64", feature = "interactive"))]
-            let _ = crate::graphics::render_queue::queue_byte(c);
-        }
-    }
+        // Each lock acquisition covers at most one line and one bounded UART
+        // chunk, never the whole userspace buffer. Build ONLCR expansion before
+        // entering the serial primitive so CR-LF stays in the same atomic write.
+        for_each_line_segment(buf, |line| {
+            let mut expanded = [0u8; SERIAL_ATOMIC_OUTPUT_BYTES];
+            let mut expanded_len = 0usize;
 
-    /// Write a single byte using pre-fetched termios settings
-    ///
-    /// This is the inner loop for write_bytes - no locking is done here,
-    /// the caller must provide the termios settings.
-    ///
-    /// Framebuffer rendering is deferred via the render queue.
-    #[allow(dead_code)]
-    #[inline]
-    fn output_byte_with_termios(&self, c: u8, termios: &Termios) {
-        // Handle NL -> CR-NL translation if OPOST and ONLCR are set
-        if termios.is_opost() && termios.is_onlcr() && c == b'\n' {
-            crate::serial::write_byte(b'\r');
-            #[cfg(any(target_arch = "aarch64", feature = "interactive"))]
-            let _ = crate::graphics::render_queue::queue_byte(b'\r');
-        }
-        crate::serial::write_byte(c);
-        #[cfg(any(target_arch = "aarch64", feature = "interactive"))]
-        let _ = crate::graphics::render_queue::queue_byte(c);
+            for &c in line {
+                let output_len = if do_onlcr && c == b'\n' { 2 } else { 1 };
+                if expanded_len + output_len > expanded.len() {
+                    crate::serial::write_bytes_atomic(&expanded[..expanded_len]);
+                    expanded_len = 0;
+                }
+                if output_len == 2 {
+                    expanded[expanded_len] = b'\r';
+                    expanded_len += 1;
+                }
+                expanded[expanded_len] = c;
+                expanded_len += 1;
+            }
+
+            if expanded_len != 0 {
+                crate::serial::write_bytes_atomic(&expanded[..expanded_len]);
+            }
+
+            // Both architectures use the render queue — it's lock-free on the
+            // producer side and never drops data unless the buffer overflows.
+            for &c in line {
+                if do_onlcr && c == b'\n' {
+                    #[cfg(any(target_arch = "aarch64", feature = "interactive"))]
+                    let _ = crate::graphics::render_queue::queue_byte(b'\r');
+                }
+                #[cfg(any(target_arch = "aarch64", feature = "interactive"))]
+                let _ = crate::graphics::render_queue::queue_byte(c);
+            }
+        });
     }
 
     /// Write a character to the terminal output (non-blocking)

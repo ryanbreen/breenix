@@ -1521,11 +1521,13 @@ fn disable_transient_irq_after_wait(state: &XhciState, transient: bool) {
     }
 }
 
-fn finish_completion_wait(result: Result<bool, i32>, timeout_msg: &'static str) -> Result<(), &'static str> {
+fn finish_completion_wait(
+    result: Result<bool, i32>,
+    timeout_msg: &'static str,
+) -> Result<(), &'static str> {
     match result {
         Ok(true) => Ok(()),
-        Ok(false) => Err(timeout_msg),
-        Err(_) => Err("XHCI completion interrupted"),
+        Ok(false) | Err(_) => Err(timeout_msg),
     }
 }
 
@@ -1545,7 +1547,9 @@ fn submit_command_and_wait(state: &XhciState, trb: Trb) -> Result<Trb, &'static 
     ring_doorbell(state, 0, 0);
 
     let transient_irq = enable_irq_for_wait(state);
-    let wait = XHCI_COMMAND_COMPLETION.wait_timeout(
+    // The command is already published to the device, so abandoning this
+    // wait would leave a device slot and its DMA buffers live.
+    let wait = XHCI_COMMAND_COMPLETION.wait_timeout_uninterruptible(
         XHCI_COMPLETION_TOKEN,
         XHCI_COMPLETION_TIMEOUT_NS,
     );
@@ -1574,7 +1578,9 @@ fn wait_for_prepared_transfer(state: &XhciState) -> Result<Trb, &'static str> {
     }
 
     let transient_irq = enable_irq_for_wait(state);
-    let wait = XHCI_TRANSFER_COMPLETION.wait_timeout(
+    // The transfer is already published to the device, so abandoning this
+    // wait would leave a device slot and its DMA buffers live.
+    let wait = XHCI_TRANSFER_COMPLETION.wait_timeout_uninterruptible(
         XHCI_COMPLETION_TOKEN,
         XHCI_COMPLETION_TIMEOUT_NS,
     );

@@ -275,6 +275,10 @@ path = "src/exec_smoke.rs"
 name = "exec_smoke_target"
 path = "src/exec_smoke_target.rs"
 
+[[bin]]
+name = "block_eintr_oracle"
+path = "src/block_eintr_oracle.rs"
+
 # Additional test programs
 [[bin]]
 name = "alarm_test"
