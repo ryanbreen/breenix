@@ -952,9 +952,8 @@ fn sys_fork_aarch64(frame: &Aarch64ExceptionFrame) -> u64 {
             let child_info = if let Some(ref mut manager) = *manager_guard {
                 manager.get_process_mut(child_pid).and_then(|p| {
                     p.main_thread.as_mut().map(|t| {
-                        let mut scheduler_thread = t.clone();
-                        scheduler_thread.kernel_stack_allocation = t.kernel_stack_allocation.take();
-                        (t.id, scheduler_thread)
+                        let thread_id = t.id;
+                        (thread_id, Box::new(t.publish_to_scheduler()))
                     })
                 })
             } else {
@@ -966,9 +965,9 @@ fn sys_fork_aarch64(frame: &Aarch64ExceptionFrame) -> u64 {
             drop(manager_guard);
             crate::serial_aarch64::raw_serial_char(b'9'); // Fork: PM lock dropped
 
-            if let Some((child_thread_id, child_thread_clone)) = child_info {
+            if let Some((child_thread_id, child_thread)) = child_info {
                 crate::serial_aarch64::raw_serial_char(b'S'); // Fork: calling spawn_front
-                crate::task::scheduler::spawn_front(Box::new(child_thread_clone));
+                crate::task::scheduler::spawn_front(child_thread);
                 crate::tracing::providers::process::trace_spawn_front(
                     current_thread_id as u16,
                     child_thread_id as u16,
@@ -1670,22 +1669,27 @@ fn sys_spawn_aarch64(path_ptr: u64, argv_ptr: u64) -> u64 {
             // Add the child's main thread to the scheduler so it actually runs.
             // create_process_with_argv stores the thread on the Process but does
             // NOT enqueue it — we must do that here, mirroring create_user_process.
-            let scheduled = {
-                let manager_guard = crate::process::manager();
-                if let Some(ref manager) = *manager_guard {
-                    if let Some(process) = manager.get_process(pid) {
-                        if let Some(ref main_thread) = process.main_thread {
-                            crate::task::scheduler::spawn(Box::new(main_thread.clone()));
-                            true
+            let scheduler_thread = {
+                let mut manager_guard = crate::process::manager();
+                if let Some(ref mut manager) = *manager_guard {
+                    if let Some(process) = manager.get_process_mut(pid) {
+                        if let Some(ref mut main_thread) = process.main_thread {
+                            Some(Box::new(main_thread.publish_to_scheduler()))
                         } else {
-                            false
+                            None
                         }
                     } else {
-                        false
+                        None
                     }
                 } else {
-                    false
+                    None
                 }
+            };
+            let scheduled = if let Some(thread) = scheduler_thread {
+                crate::task::scheduler::spawn(thread);
+                true
+            } else {
+                false
             };
             if scheduled {
                 crate::serial_println!("[spawn] Success: child PID {} scheduled", pid.as_u64());

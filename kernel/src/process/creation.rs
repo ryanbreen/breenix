@@ -60,15 +60,15 @@ pub fn create_user_process(name: String, elf_data: &[u8]) -> Result<ProcessId, &
     // Note: spawn() already has its own interrupt protection, so we don't need
     // to wrap this part
     crate::serial_println!("create_user_process: About to add thread to scheduler");
-    {
+    let publication = {
         crate::serial_println!(
             "create_user_process: Acquiring process manager for thread scheduling"
         );
-        let manager_guard = crate::process::manager();
+        let mut manager_guard = crate::process::manager();
         crate::serial_println!("create_user_process: Got process manager lock for scheduling");
-        if let Some(ref manager) = *manager_guard {
-            if let Some(process) = manager.get_process(pid) {
-                if let Some(ref main_thread) = process.main_thread {
+        if let Some(ref mut manager) = *manager_guard {
+            if let Some(process) = manager.get_process_mut(pid) {
+                if let Some(ref mut main_thread) = process.main_thread {
                     // Verify it's a user thread
                     if main_thread.privilege == crate::task::thread::ThreadPrivilege::User {
                         log::info!(
@@ -80,48 +80,55 @@ pub fn create_user_process(name: String, elf_data: &[u8]) -> Result<ProcessId, &
                             "create_user_process: Calling scheduler::spawn for thread {}",
                             main_thread.id
                         );
-                        // Add directly to scheduler - no spawn thread needed!
-                        // Note: spawn() internally uses without_interrupts
-                        crate::task::scheduler::spawn(Box::new(main_thread.clone()));
-                        crate::serial_println!("create_user_process: scheduler::spawn completed");
-
-                        // Set this process as the foreground process group for the console TTY
-                        // This ensures Ctrl+C (SIGINT) and other TTY signals go to this process
-                        // Note: TTY is only available on x86_64 currently
-                        #[cfg(target_arch = "x86_64")]
-                        if let Some(tty) = crate::tty::console() {
-                            tty.set_foreground_pgrp(pid.as_u64());
-                            log::debug!(
-                                "create_user_process: Set PID {} as foreground pgrp for TTY",
-                                pid.as_u64()
-                            );
-                        }
-
-                        // REMOVED: set_next_cr3() call - CR3 switching happens during scheduling,
-                        // not during process creation. The context_switch.rs::setup_first_userspace_entry()
-                        // function handles CR3 switching when the thread is actually scheduled to run.
-
-                        log::info!(
-                            "create_user_process: User thread {} enqueued for scheduling",
-                            main_thread.id
-                        );
+                        let thread_id = main_thread.id;
+                        Ok((Box::new(main_thread.publish_to_scheduler()), thread_id))
                     } else {
                         log::error!(
                             "create_user_process: Thread {} is not a user thread!",
                             main_thread.id
                         );
-                        return Err("Created thread is not a user thread");
+                        Err("Created thread is not a user thread")
                     }
                 } else {
-                    return Err("Process has no main thread");
+                    Err("Process has no main thread")
                 }
             } else {
-                return Err("Failed to find created process");
+                Err("Failed to find created process")
             }
         } else {
-            return Err("Process manager not available");
+            Err("Process manager not available")
         }
+    };
+    let (scheduler_thread, thread_id) = match publication {
+        Ok(publication) => publication,
+        Err(error) => return Err(error),
+    };
+
+    // Add directly to scheduler - no spawn thread needed!
+    // Note: spawn() internally uses without_interrupts
+    crate::task::scheduler::spawn(scheduler_thread);
+    crate::serial_println!("create_user_process: scheduler::spawn completed");
+
+    // Set this process as the foreground process group for the console TTY
+    // This ensures Ctrl+C (SIGINT) and other TTY signals go to this process
+    // Note: TTY is only available on x86_64 currently
+    #[cfg(target_arch = "x86_64")]
+    if let Some(tty) = crate::tty::console() {
+        tty.set_foreground_pgrp(pid.as_u64());
+        log::debug!(
+            "create_user_process: Set PID {} as foreground pgrp for TTY",
+            pid.as_u64()
+        );
     }
+
+    // REMOVED: set_next_cr3() call - CR3 switching happens during scheduling,
+    // not during process creation. The context_switch.rs::setup_first_userspace_entry()
+    // function handles CR3 switching when the thread is actually scheduled to run.
+
+    log::info!(
+        "create_user_process: User thread {} enqueued for scheduling",
+        thread_id
+    );
 
     log::info!(
         "create_user_process: Successfully created user process {} without spawn mechanism",
@@ -178,15 +185,15 @@ pub fn create_user_process(name: String, elf_data: &[u8]) -> Result<ProcessId, &
 
     // Add the thread directly to scheduler as a user thread
     crate::serial_println!("create_user_process: About to add thread to scheduler");
-    {
+    let publication = {
         crate::serial_println!(
             "create_user_process: Acquiring process manager for thread scheduling"
         );
-        let manager_guard = crate::process::manager();
+        let mut manager_guard = crate::process::manager();
         crate::serial_println!("create_user_process: Got process manager lock for scheduling");
-        if let Some(ref manager) = *manager_guard {
-            if let Some(process) = manager.get_process(pid) {
-                if let Some(ref main_thread) = process.main_thread {
+        if let Some(ref mut manager) = *manager_guard {
+            if let Some(process) = manager.get_process_mut(pid) {
+                if let Some(ref mut main_thread) = process.main_thread {
                     // Verify it's a user thread
                     if main_thread.privilege == crate::task::thread::ThreadPrivilege::User {
                         log::info!(
@@ -198,41 +205,48 @@ pub fn create_user_process(name: String, elf_data: &[u8]) -> Result<ProcessId, &
                             "create_user_process: Calling scheduler::spawn for thread {}",
                             main_thread.id
                         );
-                        // Add directly to scheduler - no spawn thread needed!
-                        crate::task::scheduler::spawn(Box::new(main_thread.clone()));
-                        crate::serial_println!("create_user_process: scheduler::spawn completed");
-
-                        // Set this process as the foreground process group for the console TTY
-                        // This ensures Ctrl+C (SIGINT) and other TTY signals go to this process
-                        if let Some(tty) = crate::tty::console() {
-                            tty.set_foreground_pgrp(pid.as_u64());
-                            log::debug!(
-                                "create_user_process: Set PID {} as foreground pgrp for TTY (ARM64)",
-                                pid.as_u64()
-                            );
-                        }
-
-                        log::info!(
-                            "create_user_process: User thread {} enqueued for scheduling",
-                            main_thread.id
-                        );
+                        let thread_id = main_thread.id;
+                        Ok((Box::new(main_thread.publish_to_scheduler()), thread_id))
                     } else {
                         log::error!(
                             "create_user_process: Thread {} is not a user thread!",
                             main_thread.id
                         );
-                        return Err("Created thread is not a user thread");
+                        Err("Created thread is not a user thread")
                     }
                 } else {
-                    return Err("Process has no main thread");
+                    Err("Process has no main thread")
                 }
             } else {
-                return Err("Failed to find created process");
+                Err("Failed to find created process")
             }
         } else {
-            return Err("Process manager not available");
+            Err("Process manager not available")
         }
+    };
+    let (scheduler_thread, thread_id) = match publication {
+        Ok(publication) => publication,
+        Err(error) => return Err(error),
+    };
+
+    // Add directly to scheduler - no spawn thread needed!
+    crate::task::scheduler::spawn(scheduler_thread);
+    crate::serial_println!("create_user_process: scheduler::spawn completed");
+
+    // Set this process as the foreground process group for the console TTY
+    // This ensures Ctrl+C (SIGINT) and other TTY signals go to this process
+    if let Some(tty) = crate::tty::console() {
+        tty.set_foreground_pgrp(pid.as_u64());
+        log::debug!(
+            "create_user_process: Set PID {} as foreground pgrp for TTY (ARM64)",
+            pid.as_u64()
+        );
     }
+
+    log::info!(
+        "create_user_process: User thread {} enqueued for scheduling",
+        thread_id
+    );
 
     log::info!(
         "create_user_process: Successfully created user process {} (ARM64)",

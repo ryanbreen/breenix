@@ -51,6 +51,12 @@ check_crash_markers() {
         echo "Exec lock-order violation"
         return 0
     fi
+    # This profile does not run the boot-test oracle that emits the injected
+    # marker, so it pins only the forbidden [CREATION_LOCK_ORDER:VIOLATION:PM_HELD].
+    if grep -qE "\[CREATION_LOCK_ORDER:VIOLATION" "$serial_file" 2>/dev/null; then
+        echo "Creation lock-order violation"
+        return 0
+    fi
     if grep -qE "\[EXEC_SMOKE:(EXEC_FAILED|TARGET_ARGV_FAIL|SPAWN_FAILED)" "$serial_file" 2>/dev/null; then
         echo "Exec smoke failure"
         return 0

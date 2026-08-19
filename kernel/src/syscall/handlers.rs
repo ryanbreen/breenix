@@ -1838,6 +1838,10 @@ fn sys_fork_with_parent_context(parent_context: crate::task::thread::CpuContext)
         // Drop the lock before creating page table to avoid deadlock
         drop(manager_guard);
 
+        // Reclaim scheduler-owned kernel stacks before consuming another finite
+        // kernel-stack pool slot.
+        crate::task::scheduler::reclaim_terminated_threads();
+
         // Create the child page table BEFORE re-acquiring the lock
         // This avoids deadlock during memory allocation
         log::info!("sys_fork: Creating page table for child process");
@@ -1860,10 +1864,11 @@ fn sys_fork_with_parent_context(parent_context: crate::task::thread::CpuContext)
             ) {
                 Ok(child_pid) => {
                     // Get the child's thread ID to add to scheduler
-                    if let Some(child_process) = manager.get_process(child_pid) {
-                        if let Some(child_thread) = &child_process.main_thread {
+                    if let Some(child_process) = manager.get_process_mut(child_pid) {
+                        if let Some(child_thread) = &mut child_process.main_thread {
                             let child_thread_id = child_thread.id;
-                            let child_thread_clone = child_thread.clone();
+                            let child_thread =
+                                Box::new(child_thread.publish_to_scheduler());
 
                             // Drop the lock before spawning to avoid issues
                             drop(manager_guard);
@@ -1873,7 +1878,7 @@ fn sys_fork_with_parent_context(parent_context: crate::task::thread::CpuContext)
                                 "sys_fork: Spawning child thread {} to scheduler",
                                 child_thread_id
                             );
-                            crate::task::scheduler::spawn_front(Box::new(child_thread_clone));
+                            crate::task::scheduler::spawn_front(child_thread);
                             log::info!("sys_fork: Child thread spawned successfully");
 
                             log::info!("sys_fork: Fork successful - parent {} gets child PID {}, thread {}", 

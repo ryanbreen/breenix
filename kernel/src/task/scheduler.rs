@@ -659,7 +659,6 @@ const CPU_STALL_TICKS: u64 = 20;
 /// after the in-flight exception return and its old-stack restore completed.
 static SCHEDULING_EPOCHS: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(0) }; MAX_CPUS];
 
-#[cfg(target_arch = "aarch64")]
 #[derive(Clone, Copy)]
 struct RetirementGrace {
     thread_id: u64,
@@ -763,7 +762,6 @@ pub(crate) fn retirement_grace_target() -> RetirementFence {
     RetirementSnapshot::capture().target_after(2)
 }
 
-#[cfg(target_arch = "aarch64")]
 pub(crate) fn retirement_grace_elapsed(target: &RetirementFence) -> bool {
     RetirementSnapshot::capture().fence_elapsed(target)
 }
@@ -1017,8 +1015,7 @@ pub struct Scheduler {
     /// wake_expired_timers validates each entry before acting on it.
     timer_heap: BinaryHeap<Reverse<(u64, u64)>>,
 
-    /// Per-thread all-CPU grace targets for AArch64 stack reclamation.
-    #[cfg(target_arch = "aarch64")]
+    /// Per-thread all-CPU grace targets for kernel-stack reclamation.
     retirement_grace: alloc::vec::Vec<RetirementGrace>,
 }
 
@@ -1064,7 +1061,6 @@ impl Scheduler {
             per_cpu_queues,
             cpu_state,
             timer_heap: BinaryHeap::new(),
-            #[cfg(target_arch = "aarch64")]
             retirement_grace: alloc::vec::Vec::new(),
         };
 
@@ -1228,11 +1224,10 @@ impl Scheduler {
 
     /// Drop terminated threads only after their stack is architecturally dead.
     ///
-    /// ARM64 userspace kernel stacks are owned by scheduler threads because the
+    /// Userspace kernel stacks are owned by scheduler threads because the
     /// scheduler clone can outlive the process-table copy until it has fully
     /// disappeared from CPU current/previous slots.
-    #[cfg(target_arch = "aarch64")]
-    pub fn reclaim_terminated_threads(&mut self) {
+    pub fn reclaim_terminated_threads(&mut self) -> alloc::vec::Vec<alloc::boxed::Box<Thread>> {
         for queue in self.per_cpu_queues.iter_mut() {
             queue.retain(|&thread_id| self.threads.iter().any(|thread| thread.id() == thread_id));
         }
@@ -1265,9 +1260,12 @@ impl Scheduler {
             .collect();
         let graces = &self.retirement_grace;
         let mut reclaimed_ids = alloc::vec::Vec::new();
-        self.threads.retain(|thread| {
+        let mut retained_threads = alloc::vec::Vec::with_capacity(self.threads.len());
+        let mut reclaimed_threads = alloc::vec::Vec::new();
+        for thread in self.threads.drain(..) {
             if thread.state != ThreadState::Terminated || idle_ids.contains(&thread.id()) {
-                return true;
+                retained_threads.push(thread);
+                continue;
             }
 
             let grace_elapsed = graces
@@ -1276,24 +1274,28 @@ impl Scheduler {
                 .map(|grace| retirement_grace_elapsed(&grace.after_epoch))
                 .unwrap_or(false);
             if !grace_elapsed {
-                return true;
+                retained_threads.push(thread);
+                continue;
             }
             if thread
                 .kernel_stack_top
                 .map(|top| crate::memory::kernel_stack::is_kernel_stack_slot_live(top.as_u64()))
                 .unwrap_or(false)
             {
-                return true;
+                retained_threads.push(thread);
+                continue;
             }
 
             reclaimed_ids.push(thread.id());
-            false
-        });
+            reclaimed_threads.push(thread);
+        }
+        self.threads = retained_threads;
         self.retirement_grace
             .retain(|grace| !reclaimed_ids.contains(&grace.thread_id));
         for queue in self.per_cpu_queues.iter_mut() {
             queue.retain(|thread_id| !reclaimed_ids.contains(thread_id));
         }
+        reclaimed_threads
     }
 
     /// Add a thread as the current running thread without scheduling.
@@ -3442,6 +3444,7 @@ pub fn register_cpu_idle_thread(cpu_id: usize, idle_thread: Box<Thread>) {
 
 /// Add a thread to the scheduler
 pub fn spawn(thread: Box<Thread>) {
+    note_scheduler_publication();
     // Disable interrupts to prevent timer interrupt deadlock
     without_interrupts(|| {
         let mut scheduler_lock = lock_scheduler();
@@ -3485,6 +3488,7 @@ pub(crate) fn spawn_on_cpu_for_test(thread: Box<Thread>, cpu: usize) {
 /// Add a thread to the front of the ready queue.
 /// Used for fork children so they run before other queued threads.
 pub fn spawn_front(thread: Box<Thread>) {
+    note_scheduler_publication();
     without_interrupts(|| {
         let mut scheduler_lock = lock_scheduler();
         if let Some(scheduler) = scheduler_lock.as_mut() {
@@ -3507,14 +3511,16 @@ pub fn spawn_front(thread: Box<Thread>) {
     });
 }
 
-#[cfg(target_arch = "aarch64")]
 pub fn reclaim_terminated_threads() {
-    without_interrupts(|| {
+    let reclaimed_threads = without_interrupts(|| {
         let mut scheduler_lock = lock_scheduler();
         if let Some(scheduler) = scheduler_lock.as_mut() {
-            scheduler.reclaim_terminated_threads();
+            scheduler.reclaim_terminated_threads()
+        } else {
+            alloc::vec::Vec::new()
         }
     });
+    drop(reclaimed_threads);
 }
 
 /// Add a thread as the current running thread without scheduling.
@@ -3525,6 +3531,7 @@ pub fn reclaim_terminated_threads() {
 /// This allows the thread to run without the scheduler trying to preempt it.
 #[allow(dead_code)]
 pub fn spawn_as_current(thread: Box<Thread>) {
+    note_scheduler_publication();
     without_interrupts(|| {
         let mut scheduler_lock = lock_scheduler();
         if let Some(scheduler) = scheduler_lock.as_mut() {
@@ -3710,6 +3717,60 @@ where
             .as_mut()
             .and_then(|sched| sched.get_thread_mut(thread_id).map(f))
     })
+}
+
+static CREATION_PUBLICATIONS: AtomicU64 = AtomicU64::new(0);
+static CREATION_PUBLICATIONS_PM_HELD: AtomicU64 = AtomicU64::new(0);
+static CREATION_PUBLICATIONS_PM_HELD_INJECTED: AtomicU64 = AtomicU64::new(0);
+
+#[inline]
+fn account_creation_publication_pm_held() -> bool {
+    let pm_held = crate::process::process_manager_held_on_current_cpu();
+    if pm_held {
+        CREATION_PUBLICATIONS_PM_HELD.fetch_add(1, Ordering::Relaxed);
+    }
+    pm_held
+}
+
+/// Publishing a thread to the scheduler while this CPU still holds the
+/// process-manager lock is the PM->SCHEDULER nesting PR #577 removed from the
+/// exec path. Detect it at the publication seam so the creation paths carry the
+/// same evidence the exec commit path does.
+#[inline]
+fn note_scheduler_publication() {
+    CREATION_PUBLICATIONS.fetch_add(1, Ordering::Relaxed);
+    if account_creation_publication_pm_held() {
+        crate::serial_println!("[CREATION_LOCK_ORDER:VIOLATION:PM_HELD]");
+    }
+}
+
+/// Drive the publication-seam lock-order detector deliberately, through the same
+/// process-manager-held predicate the production seam uses, so the production
+/// counter's zero is asserted against a demonstrated ability to fire.
+#[cfg(feature = "boot_tests")]
+pub fn probe_publication_lock_order_injection() -> bool {
+    let pm_held = account_creation_publication_pm_held();
+    if pm_held {
+        CREATION_PUBLICATIONS_PM_HELD_INJECTED.fetch_add(1, Ordering::Relaxed);
+        crate::serial_println!("[CREATION_LOCK_ORDER:INJECTED:PM_HELD]");
+    }
+    pm_held
+}
+
+#[derive(Clone, Copy)]
+pub struct CreationLockOrderCounters {
+    pub publications: u64,
+    pub pm_held: u64,
+    pub pm_held_injected: u64,
+}
+
+/// Read by the boot-test oracle.
+pub fn creation_lock_order_counters() -> CreationLockOrderCounters {
+    CreationLockOrderCounters {
+        publications: CREATION_PUBLICATIONS.load(Ordering::Relaxed),
+        pm_held: CREATION_PUBLICATIONS_PM_HELD.load(Ordering::Relaxed),
+        pm_held_injected: CREATION_PUBLICATIONS_PM_HELD_INJECTED.load(Ordering::Relaxed),
+    }
 }
 
 /// Number of exec scheduler-side commits applied (floor oracle: proves the path ran).

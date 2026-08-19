@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -9,6 +9,44 @@ fn repo_root() -> PathBuf {
 fn repo_text(relative: &str) -> String {
     fs::read_to_string(repo_root().join(relative))
         .unwrap_or_else(|_| panic!("read repository file {relative}"))
+}
+
+fn rust_sources_below(relative: &str) -> Vec<(String, String)> {
+    fn visit(root: &Path, dir: &Path, out: &mut Vec<(String, String)>) {
+        for entry in fs::read_dir(dir).expect("read source directory") {
+            let path = entry.expect("read directory entry").path();
+            if path.is_dir() {
+                visit(root, &path, out);
+            } else if path.extension().is_some_and(|extension| extension == "rs") {
+                let relative = path
+                    .strip_prefix(root)
+                    .expect("source below repository root")
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                out.push((
+                    relative,
+                    fs::read_to_string(path).expect("read Rust source"),
+                ));
+            }
+        }
+    }
+
+    let root = repo_root();
+    let mut sources = Vec::new();
+    visit(&root, &root.join(relative), &mut sources);
+    sources.sort_by(|left, right| left.0.cmp(&right.0));
+    sources
+}
+
+fn with_synthetic_source(
+    sources: &[(String, String)],
+    path: &str,
+    synthetic_source: &str,
+) -> Vec<(String, String)> {
+    let mut perturbed = sources.to_vec();
+    perturbed.push((path.to_owned(), synthetic_source.to_owned()));
+    perturbed.sort_by(|left, right| left.0.cmp(&right.0));
+    perturbed
 }
 
 fn code_mask(source: &str) -> Vec<bool> {
@@ -170,6 +208,42 @@ fn braced_block<'a>(source: &'a str, mask: &[bool], start: usize) -> Option<&'a 
         }
     }
     None
+}
+
+fn matching_paren(source: &str, mask: &[bool], open: usize) -> Option<usize> {
+    let bytes = source.as_bytes();
+    let mut depth = 0usize;
+    for index in open..bytes.len() {
+        if !mask[index] {
+            continue;
+        }
+        match bytes[index] {
+            b'(' => depth += 1,
+            b')' => {
+                depth = depth.checked_sub(1)?;
+                if depth == 0 {
+                    return Some(index);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn block_statements(block: &str) -> Option<&str> {
+    let mask = code_mask(block);
+    let open = (0..block.len()).find(|index| mask[*index] && block.as_bytes()[*index] == b'{')?;
+    let close = block.len().checked_sub(1)?;
+    (block.as_bytes()[close] == b'}' && open < close).then(|| &block[open + 1..close])
+}
+
+fn compact_code(fragment: &str) -> String {
+    fragment
+        .bytes()
+        .zip(code_mask(fragment))
+        .filter_map(|(byte, code)| (code && !byte.is_ascii_whitespace()).then_some(byte as char))
+        .collect()
 }
 
 /// Every `fn NAME(` definition in a module, keyed by name. Names may repeat
@@ -1174,6 +1248,341 @@ fn insert_in_arm64_exec(manager: &str, function_name: &str, insertion: &str) -> 
     mutated
 }
 
+fn validate_creation_publication_seams(scheduler: &str) -> Result<(), String> {
+    let functions = module_function_bodies(scheduler);
+    for name in ["spawn", "spawn_front", "spawn_as_current"] {
+        let bodies = functions.get(name).map(Vec::as_slice).unwrap_or(&[]);
+        if bodies.len() != 1 {
+            return Err(format!(
+                "scheduler publication entry `{name}` must be unique, found {}",
+                bodies.len()
+            ));
+        }
+        let body = bodies[0];
+        let mask = code_mask(body);
+        let notes = code_offsets(body, &mask, "note_scheduler_publication()");
+        let critical_sections = code_offsets(body, &mask, "without_interrupts(");
+        if notes.len() != 1 || critical_sections.len() != 1 || notes[0] >= critical_sections[0] {
+            return Err(format!(
+                "{name} must publish exactly once before entering without_interrupts"
+            ));
+        }
+        let statements = block_statements(body)
+            .ok_or_else(|| format!("{name} does not have a braced function body"))?;
+        if !compact_code(statements).starts_with("note_scheduler_publication();") {
+            return Err(format!(
+                "note_scheduler_publication() is not the first statement of {name}"
+            ));
+        }
+    }
+    Ok(())
+}
+
+type PublicationCensus = BTreeMap<(String, String), usize>;
+
+/// An empty expected set means no creation publication may occur while a
+/// process-manager binding is live; the validator separately requires a
+/// non-empty population of functions containing both mechanisms.
+const CREATION_PUBLICATION_UNDER_PM_GUARD: &[(&str, &str, usize)] = &[];
+
+fn enclosing_block_close(source: &str, mask: &[bool], offset: usize) -> Option<usize> {
+    (0..offset)
+        .filter(|open| mask[*open] && source.as_bytes()[*open] == b'{')
+        .filter_map(|open| {
+            let block = braced_block(source, mask, open)?;
+            let close = open + block.len() - 1;
+            (offset < close).then_some((open, close))
+        })
+        .max_by_key(|(open, _)| *open)
+        .map(|(_, close)| close)
+}
+
+fn manager_binding_name(body: &str, manager_call: usize) -> Result<String, String> {
+    let prefix = &body[..manager_call];
+    let mask = code_mask(prefix);
+    let statement_start = (0..prefix.len())
+        .rev()
+        .find(|offset| mask[*offset] && matches!(prefix.as_bytes()[*offset], b';' | b'{' | b'}'))
+        .map(|offset| offset + 1)
+        .unwrap_or(0);
+    let let_offset = identifier_offsets(prefix, &mask, "let")
+        .into_iter()
+        .filter(|offset| *offset >= statement_start)
+        .next_back()
+        .ok_or_else(|| "crate::process::manager() is not bound by let".to_owned())?;
+    let equals = (let_offset + "let".len()..manager_call)
+        .find(|offset| mask[*offset] && prefix.as_bytes()[*offset] == b'=')
+        .ok_or_else(|| "process-manager let binding has no assignment".to_owned())?;
+    let pattern = &prefix[let_offset + "let".len()..equals];
+    let pattern_mask = code_mask(pattern);
+    let bytes = pattern.as_bytes();
+    let mut cursor = 0usize;
+    while cursor < bytes.len() {
+        if !pattern_mask[cursor] || !(bytes[cursor] == b'_' || bytes[cursor].is_ascii_alphabetic())
+        {
+            cursor += 1;
+            continue;
+        }
+        let start = cursor;
+        cursor += 1;
+        while cursor < bytes.len() && pattern_mask[cursor] && identifier_byte(bytes[cursor]) {
+            cursor += 1;
+        }
+        let candidate = &pattern[start..cursor];
+        if !matches!(candidate, "mut" | "ref" | "let") {
+            return Ok(candidate.to_owned());
+        }
+    }
+    Err("process-manager let binding has no guard identifier".to_owned())
+}
+
+fn guard_is_explicitly_dropped(
+    body: &str,
+    mask: &[bool],
+    guard: &str,
+    after: usize,
+    before: usize,
+) -> bool {
+    identifier_offsets(body, mask, "drop")
+        .into_iter()
+        .filter(|offset| *offset > after && *offset < before)
+        .any(|offset| {
+            let Some(open) = next_code_non_whitespace(body, mask, offset + "drop".len()) else {
+                return false;
+            };
+            if body.as_bytes()[open] != b'(' {
+                return false;
+            }
+            let Some(close) = matching_paren(body, mask, open) else {
+                return false;
+            };
+            compact_code(&body[open + 1..close]) == guard
+        })
+}
+
+fn validate_creation_publications_release_process_manager(
+    sources: &[(String, String)],
+) -> Result<(), String> {
+    let mut offenders = PublicationCensus::new();
+    let mut candidate_functions = 0usize;
+    for (path, source) in sources {
+        for (name, bodies) in module_function_bodies(source) {
+            let duplicate = bodies.len() > 1;
+            for body in bodies {
+                let mask = code_mask(body);
+                let manager_calls = code_offsets(body, &mask, "crate::process::manager()");
+                let mut spawn_calls = Vec::new();
+                for publication in [
+                    "scheduler::spawn(",
+                    "scheduler::spawn_front(",
+                    "scheduler::spawn_as_current(",
+                ] {
+                    spawn_calls.extend(code_offsets(body, &mask, publication));
+                }
+                spawn_calls.sort_unstable();
+                if manager_calls.is_empty() || spawn_calls.is_empty() {
+                    continue;
+                }
+                candidate_functions += 1;
+                let item = if duplicate {
+                    format!("fn {name} [duplicate item path]")
+                } else {
+                    format!("fn {name}")
+                };
+                let mut bindings = Vec::new();
+                for manager_call in manager_calls {
+                    let guard = manager_binding_name(body, manager_call)
+                        .map_err(|error| format!("{path} :: {item}: {error}"))?;
+                    let scope_close = enclosing_block_close(body, &mask, manager_call)
+                        .ok_or_else(|| format!("{path} :: {item}: manager binding has no scope"))?;
+                    bindings.push((manager_call, scope_close, guard));
+                }
+                for spawn_call in spawn_calls {
+                    let guard_live = bindings.iter().any(|(manager_call, scope_close, guard)| {
+                        *manager_call < spawn_call
+                            && spawn_call < *scope_close
+                            && !guard_is_explicitly_dropped(
+                                body,
+                                &mask,
+                                guard,
+                                *manager_call,
+                                spawn_call,
+                            )
+                    });
+                    if guard_live {
+                        *offenders.entry((path.clone(), item.clone())).or_default() += 1;
+                    }
+                }
+            }
+        }
+    }
+    if candidate_functions == 0 {
+        return Err(
+            "creation publication guard census became vacuous: no function contained both mechanisms"
+                .to_owned(),
+        );
+    }
+
+    let mut expected = PublicationCensus::new();
+    for (path, item, count) in CREATION_PUBLICATION_UNDER_PM_GUARD {
+        expected.insert(((*path).to_owned(), (*item).to_owned()), *count);
+    }
+    if offenders != expected {
+        let details = offenders
+            .into_iter()
+            .map(|((path, item), count)| format!("{path} :: {item} ({count} offending calls)"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        return Err(format!(
+            "creation publication occurred under a live process-manager guard\n{details}"
+        ));
+    }
+    Ok(())
+}
+
+fn validate_creation_lock_order_marker(scheduler: &str, teardown: &str) -> Result<(), String> {
+    const PRODUCTION_MARKER: &str = "[CREATION_LOCK_ORDER:VIOLATION:PM_HELD]";
+    const INJECTION_MARKER: &str = "[CREATION_LOCK_ORDER:INJECTED:PM_HELD]";
+    const EXEC_MARKER: &str = "[EXEC_LOCK_ORDER:VIOLATION:PM_HELD]";
+    const SHARED_HELPER: &str = "account_creation_publication_pm_held";
+    const PM_HELD_PREDICATE: &str = "crate::process::process_manager_held_on_current_cpu()";
+    if PRODUCTION_MARKER == INJECTION_MARKER || PRODUCTION_MARKER == EXEC_MARKER {
+        return Err("creation lock-order markers are not distinct".to_owned());
+    }
+    if scheduler.matches(PRODUCTION_MARKER).count() != 1
+        || scheduler.matches(INJECTION_MARKER).count() != 1
+        || scheduler.matches(EXEC_MARKER).count() != 1
+    {
+        return Err(
+            "creation injection, violation, or exec marker is not uniquely pinned".to_owned(),
+        );
+    }
+    let functions = module_function_bodies(scheduler);
+    let unique_body = |name: &str| -> Result<&str, String> {
+        let bodies = functions.get(name).map(Vec::as_slice).unwrap_or(&[]);
+        if bodies.len() != 1 {
+            return Err(format!(
+                "{name} must exist exactly once, found {}",
+                bodies.len()
+            ));
+        }
+        Ok(bodies[0])
+    };
+    let helper = unique_body(SHARED_HELPER)?;
+    let helper_mask = code_mask(helper);
+    if code_offsets(helper, &helper_mask, PM_HELD_PREDICATE).len() != 1
+        || code_offsets(
+            helper,
+            &helper_mask,
+            "CREATION_PUBLICATIONS_PM_HELD.fetch_add",
+        )
+        .len()
+            != 1
+    {
+        return Err(
+            "shared creation publication helper must own the predicate and PM-held accounting"
+                .to_owned(),
+        );
+    }
+    let helper_statements = block_statements(helper)
+        .ok_or_else(|| "shared creation publication helper has no body".to_owned())?;
+    if !compact_code(helper_statements).ends_with("pm_held") {
+        return Err("shared creation publication helper does not return its predicate".to_owned());
+    }
+
+    let note = unique_body("note_scheduler_publication")?;
+    let note_mask = code_mask(note);
+    let probe = unique_body("probe_publication_lock_order_injection")?;
+    let probe_mask = code_mask(probe);
+    let helper_call = format!("{SHARED_HELPER}()");
+    for (name, body, mask) in [
+        ("note_scheduler_publication", note, note_mask.as_slice()),
+        (
+            "probe_publication_lock_order_injection",
+            probe,
+            probe_mask.as_slice(),
+        ),
+    ] {
+        if code_offsets(body, mask, &helper_call).len() != 1 {
+            return Err(format!(
+                "{name} must call the shared creation helper exactly once"
+            ));
+        }
+        if !code_offsets(body, mask, PM_HELD_PREDICATE).is_empty() {
+            return Err(format!(
+                "{name} duplicates the process-manager-held predicate"
+            ));
+        }
+    }
+    if note.matches(PRODUCTION_MARKER).count() != 1 || note.contains(INJECTION_MARKER) {
+        return Err("creation PM-held marker left the publication seam".to_owned());
+    }
+    if probe.matches(INJECTION_MARKER).count() != 1 || probe.contains(PRODUCTION_MARKER) {
+        return Err("injection probe does not own its distinct marker".to_owned());
+    }
+    if code_offsets(
+        probe,
+        &probe_mask,
+        "CREATION_PUBLICATIONS_PM_HELD_INJECTED.fetch_add",
+    )
+    .len()
+        != 1
+    {
+        return Err("injection probe does not account its injected PM-held event".to_owned());
+    }
+    let probe_statements = block_statements(probe)
+        .ok_or_else(|| "creation publication injection probe has no body".to_owned())?;
+    if !compact_code(probe_statements).ends_with("pm_held") {
+        return Err(
+            "creation publication injection probe does not return the predicate".to_owned(),
+        );
+    }
+    unique_body("creation_lock_order_counters")?;
+
+    let oracle = function_body(teardown, "kernel_stack_ownership_oracle_test");
+    let oracle_mask = code_mask(oracle);
+    if code_offsets(
+        oracle,
+        &oracle_mask,
+        "crate::task::scheduler::creation_lock_order_counters()",
+    )
+    .len()
+        != 2
+    {
+        return Err(
+            "kernel-stack ownership oracle must read creation counters around the injection"
+                .to_owned(),
+        );
+    }
+    for needle in [
+        "crate::task::scheduler::probe_publication_lock_order_injection()",
+        "if !injection_saw_pm_held",
+        "if injected_delta != 1",
+        "if measurements.sched_pm_held_production != 0",
+        "if measurements.sched_pm_held_injected != 1",
+    ] {
+        if code_offsets(oracle, &oracle_mask, needle).len() != 1 {
+            return Err(format!(
+                "kernel-stack ownership oracle does not uniquely pin `{needle}`"
+            ));
+        }
+    }
+    const ORACLE_FIELDS: &str =
+        ":sched_publications={}:sched_pm_held_production={}:sched_pm_held_injected={}:balance={}]";
+    if oracle.matches(ORACLE_FIELDS).count() != 1 {
+        return Err(
+            "kernel-stack ownership oracle lock-order fields are not uniquely pinned".to_owned(),
+        );
+    }
+    if code_offsets(oracle, &oracle_mask, "creation_counters.pm_held_injected").len() != 2 {
+        return Err(
+            "kernel-stack ownership oracle does not read the injected counter for production subtraction and reporting"
+                .to_owned(),
+        );
+    }
+    Ok(())
+}
+
 #[test]
 fn arm64_exec_bodies_never_touch_the_scheduler_lock() {
     let manager = repo_text("kernel/src/process/manager.rs");
@@ -1364,10 +1773,18 @@ fn negative_exec_sched_commit_without_must_use_is_rejected() {
 #[test]
 fn negative_exec_sched_commit_without_pm_guard_is_rejected() {
     let scheduler = repo_text("kernel/src/task/scheduler.rs");
-    let mutated = scheduler.replacen(
-        "let pm_held = crate::process::process_manager_held_on_current_cpu();",
+    let predicate = "let pm_held = crate::process::process_manager_held_on_current_cpu();";
+    let apply_start = scheduler
+        .find("pub fn apply(self)")
+        .expect("ExecSchedCommit::apply start");
+    let predicate_start = apply_start
+        + scheduler[apply_start..]
+            .find(predicate)
+            .expect("ExecSchedCommit::apply PM-held predicate");
+    let mut mutated = scheduler.clone();
+    mutated.replace_range(
+        predicate_start..predicate_start + predicate.len(),
         "let pm_held = false;",
-        1,
     );
     assert_ne!(mutated, scheduler, "PM guard mutation applied");
     assert!(validate_exec_sched_commit(&mutated).is_err());
@@ -1531,4 +1948,119 @@ fn negative_full_gate_without_exec_smoke_target_grep_is_rejected() {
     let mutated = full_test.replacen("\\[EXEC_SMOKE:TARGET_OK\\]", "\\[EXEC_SMOKE:REMOVED\\]", 1);
     assert_ne!(mutated, full_test, "exec smoke grep mutation applied");
     assert!(validate_boot_verdict_and_gate_scripts(&executor, &mutated, &native_test).is_err());
+}
+
+#[test]
+fn creation_publication_seams_are_first_and_unique() {
+    validate_creation_publication_seams(&repo_text("kernel/src/task/scheduler.rs"))
+        .expect("creation publication seams");
+}
+
+#[test]
+fn negative_creation_publication_after_without_interrupts_is_rejected() {
+    let scheduler = repo_text("kernel/src/task/scheduler.rs");
+    let mutated = scheduler.replacen(
+        "pub fn spawn(thread: Box<Thread>) {\n    note_scheduler_publication();",
+        "pub fn spawn(thread: Box<Thread>) {\n    without_interrupts(|| {});\n    note_scheduler_publication();",
+        1,
+    );
+    assert_ne!(mutated, scheduler, "publication-order mutation applied");
+    assert!(validate_creation_publication_seams(&mutated).is_err());
+}
+
+#[test]
+fn creation_paths_release_process_manager_before_publication() {
+    validate_creation_publications_release_process_manager(&rust_sources_below("kernel/src"))
+        .expect("creation publication process-manager guard census");
+}
+
+#[test]
+fn negative_creation_publication_inside_process_manager_scope_is_rejected() {
+    let sources = rust_sources_below("kernel/src");
+    let mutated = with_synthetic_source(
+        &sources,
+        "kernel/src/synthetic_creation_inversion.rs",
+        r#"
+            fn publish_inside_guard(thread: Box<Thread>) {
+                let mut manager_guard = crate::process::manager();
+                if let Some(manager) = manager_guard.as_mut() {
+                    manager.observe_creation();
+                    crate::task::scheduler::spawn(thread);
+                }
+            }
+        "#,
+    );
+    let error = validate_creation_publications_release_process_manager(&mutated)
+        .expect_err("publication under a live process-manager guard escaped the census");
+    assert!(
+        error.contains("kernel/src/synthetic_creation_inversion.rs :: fn publish_inside_guard"),
+        "offender failure did not name its file and item: {error}"
+    );
+}
+
+#[test]
+fn creation_lock_order_marker_and_oracle_reader_are_pinned() {
+    validate_creation_lock_order_marker(
+        &repo_text("kernel/src/task/scheduler.rs"),
+        &repo_text("kernel/src/tracing/providers/teardown.rs"),
+    )
+    .expect("creation lock-order marker");
+}
+
+#[test]
+fn negative_creation_marker_reusing_exec_marker_is_rejected() {
+    let scheduler = repo_text("kernel/src/task/scheduler.rs");
+    let teardown = repo_text("kernel/src/tracing/providers/teardown.rs");
+    let mutated = scheduler.replacen(
+        "[CREATION_LOCK_ORDER:VIOLATION:PM_HELD]",
+        "[EXEC_LOCK_ORDER:VIOLATION:PM_HELD]",
+        1,
+    );
+    assert_ne!(mutated, scheduler, "creation marker reuse mutation applied");
+    assert!(validate_creation_lock_order_marker(&mutated, &teardown).is_err());
+}
+
+#[test]
+fn negative_creation_injection_reusing_production_marker_is_rejected() {
+    let scheduler = repo_text("kernel/src/task/scheduler.rs");
+    let teardown = repo_text("kernel/src/tracing/providers/teardown.rs");
+    let mutated = scheduler.replacen(
+        "[CREATION_LOCK_ORDER:INJECTED:PM_HELD]",
+        "[CREATION_LOCK_ORDER:VIOLATION:PM_HELD]",
+        1,
+    );
+    assert_ne!(
+        mutated, scheduler,
+        "injection marker reuse mutation applied"
+    );
+    assert!(validate_creation_lock_order_marker(&mutated, &teardown).is_err());
+}
+
+#[test]
+fn negative_creation_injection_duplicating_predicate_is_rejected() {
+    let scheduler = repo_text("kernel/src/task/scheduler.rs");
+    let teardown = repo_text("kernel/src/tracing/providers/teardown.rs");
+    let mutated = scheduler.replacen(
+        "let pm_held = account_creation_publication_pm_held();",
+        "let pm_held = crate::process::process_manager_held_on_current_cpu();",
+        1,
+    );
+    assert_ne!(mutated, scheduler, "duplicated predicate mutation applied");
+    assert!(validate_creation_lock_order_marker(&mutated, &teardown).is_err());
+}
+
+#[test]
+fn negative_creation_oracle_without_injected_assertion_is_rejected() {
+    let scheduler = repo_text("kernel/src/task/scheduler.rs");
+    let teardown = repo_text("kernel/src/tracing/providers/teardown.rs");
+    let mutated = teardown.replacen(
+        "if measurements.sched_pm_held_injected != 1 {",
+        "if measurements.sched_pm_held_production != 0 {",
+        1,
+    );
+    assert_ne!(
+        mutated, teardown,
+        "injected assertion removal mutation applied"
+    );
+    assert!(validate_creation_lock_order_marker(&scheduler, &mutated).is_err());
 }

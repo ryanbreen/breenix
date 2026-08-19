@@ -1556,6 +1556,7 @@ fn check_and_deliver_signals_for_current_thread(
 pub fn idle_loop() -> ! {
     loop {
         crate::task::process_task::reclaim_deferred_process_resources();
+        crate::task::scheduler::reclaim_terminated_threads();
         // Try to flush any pending IRQ logs while idle
         crate::irq_log::flush_local_try();
         // CRITICAL: Use enable_and_hlt() instead of just hlt()

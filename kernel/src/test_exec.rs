@@ -271,19 +271,29 @@ pub fn test_exec_real_userspace() {
 
                         // Add back to ready queue and schedule
                         x86_64::instructions::interrupts::without_interrupts(|| {
-                            let mut manager_guard = crate::process::manager();
-                            if let Some(ref mut manager) = *manager_guard {
-                                manager.add_to_ready_queue(pid);
-                                log::info!("✓ Process {} added back to ready queue", pid.as_u64());
+                            let scheduler_thread = {
+                                let mut manager_guard = crate::process::manager();
+                                if let Some(ref mut manager) = *manager_guard {
+                                    manager.add_to_ready_queue(pid);
+                                    log::info!(
+                                        "✓ Process {} added back to ready queue",
+                                        pid.as_u64()
+                                    );
 
-                                if let Some(process) = manager.get_process(pid) {
-                                    if let Some(ref main_thread) = process.main_thread {
-                                        crate::task::scheduler::spawn(alloc::boxed::Box::new(
-                                            main_thread.clone(),
-                                        ));
-                                        log::info!("✓ hello_time.elf scheduled for execution");
-                                    }
+                                    manager.get_process_mut(pid).and_then(|process| {
+                                        process.main_thread.as_mut().map(|main_thread| {
+                                            alloc::boxed::Box::new(
+                                                main_thread.publish_to_scheduler(),
+                                            )
+                                        })
+                                    })
+                                } else {
+                                    None
                                 }
+                            };
+                            if let Some(thread) = scheduler_thread {
+                                crate::task::scheduler::spawn(thread);
+                                log::info!("✓ hello_time.elf scheduled for execution");
                             }
                         });
                     }
@@ -420,25 +430,30 @@ pub fn test_shell_fork_exec() {
 
                             // Add child back to ready queue
                             x86_64::instructions::interrupts::without_interrupts(|| {
-                                let mut manager_guard = crate::process::manager();
-                                if let Some(ref mut manager) = *manager_guard {
-                                    manager.add_to_ready_queue(child_pid);
-                                    log::info!(
-                                        "✓ Child {} added back to ready queue",
-                                        child_pid.as_u64()
-                                    );
+                                let scheduler_thread = {
+                                    let mut manager_guard = crate::process::manager();
+                                    if let Some(ref mut manager) = *manager_guard {
+                                        manager.add_to_ready_queue(child_pid);
+                                        log::info!(
+                                            "✓ Child {} added back to ready queue",
+                                            child_pid.as_u64()
+                                        );
 
-                                    // Schedule the child
-                                    if let Some(process) = manager.get_process(child_pid) {
-                                        if let Some(ref main_thread) = process.main_thread {
-                                            crate::task::scheduler::spawn(alloc::boxed::Box::new(
-                                                main_thread.clone(),
-                                            ));
-                                            log::info!(
-                                                "✓ hello_time command scheduled for execution"
-                                            );
-                                        }
+                                        // Schedule the child
+                                        manager.get_process_mut(child_pid).and_then(|process| {
+                                            process.main_thread.as_mut().map(|main_thread| {
+                                                alloc::boxed::Box::new(
+                                                    main_thread.publish_to_scheduler(),
+                                                )
+                                            })
+                                        })
+                                    } else {
+                                        None
                                     }
+                                };
+                                if let Some(thread) = scheduler_thread {
+                                    crate::task::scheduler::spawn(thread);
+                                    log::info!("✓ hello_time command scheduled for execution");
                                 }
                             });
 
@@ -562,27 +577,32 @@ pub fn test_exec_without_scheduling() {
 
                 // Now add process back to ready queue after exec
                 x86_64::instructions::interrupts::without_interrupts(|| {
-                    let mut manager_guard = crate::process::manager();
-                    if let Some(ref mut manager) = *manager_guard {
-                        // Add back to ready queue
-                        manager.add_to_ready_queue(pid);
+                    let scheduler_thread = {
+                        let mut manager_guard = crate::process::manager();
+                        if let Some(ref mut manager) = *manager_guard {
+                            // Add back to ready queue
+                            manager.add_to_ready_queue(pid);
+                            log::info!(
+                                "✓ Process {} added back to ready queue after exec",
+                                pid.as_u64()
+                            );
+
+                            // Also need to spawn the thread
+                            manager.get_process_mut(pid).and_then(|process| {
+                                process.main_thread.as_mut().map(|main_thread| {
+                                    alloc::boxed::Box::new(main_thread.publish_to_scheduler())
+                                })
+                            })
+                        } else {
+                            None
+                        }
+                    };
+                    if let Some(thread) = scheduler_thread {
+                        crate::task::scheduler::spawn(thread);
                         log::info!(
-                            "✓ Process {} added back to ready queue after exec",
+                            "✓ Process {} thread scheduled with exec'd program",
                             pid.as_u64()
                         );
-
-                        // Also need to spawn the thread
-                        if let Some(process) = manager.get_process(pid) {
-                            if let Some(ref main_thread) = process.main_thread {
-                                crate::task::scheduler::spawn(alloc::boxed::Box::new(
-                                    main_thread.clone(),
-                                ));
-                                log::info!(
-                                    "✓ Process {} thread scheduled with exec'd program",
-                                    pid.as_u64()
-                                );
-                            }
-                        }
                     }
                 });
             }

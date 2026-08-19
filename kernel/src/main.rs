@@ -639,9 +639,11 @@ extern "C" fn kernel_main_on_kernel_stack(arg: *mut core::ffi::c_void) -> ! {
     // populated address spaces. The clone admission gate follows immediately so
     // the publication transaction is ratcheted by the same fail-loud sequence.
     // The init designation transaction follows because it touches the reserved PID and leaves
-    // the designation cleared. The init-group refusal gate runs last because it is the only gate
+    // the designation cleared. The init-group refusal gate follows because it is the only gate
     // that installs a designation and then clears it, and the rest of the boot still asserts no
-    // real init.
+    // real init. The ownership gate runs last among boot-test gates because its 1000-iteration
+    // stress churns the kernel-stack pool and frame allocator after every gate that pins absolute
+    // frame or page-table custody counts.
     #[cfg(all(target_arch = "x86_64", feature = "boot_tests"))]
     {
         kernel::task::process_task::run_x86_retirement_fence_gate();
@@ -652,6 +654,7 @@ extern "C" fn kernel_main_on_kernel_stack(arg: *mut core::ffi::c_void) -> ! {
         kernel::tracing::providers::teardown::run_x86_clone_admission_gate();
         kernel::tracing::providers::teardown::run_x86_init_designation_gate();
         kernel::tracing::providers::teardown::run_x86_init_group_refusal_gate();
+        kernel::tracing::providers::teardown::run_x86_kernel_stack_ownership_gate();
     }
 
     kernel::tracing::providers::teardown::emit_root_custody_summary();

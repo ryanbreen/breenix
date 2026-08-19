@@ -726,6 +726,7 @@ struct BootTestPidCountSlot {
     table_frames_returned: AtomicU64,
     table_frames_lost: AtomicU64,
     roots_retired: AtomicU64,
+    kernel_stack_slot_returns: AtomicU64,
 }
 
 #[cfg(feature = "boot_tests")]
@@ -745,6 +746,7 @@ impl BootTestPidCountSlot {
             table_frames_returned: AtomicU64::new(0),
             table_frames_lost: AtomicU64::new(0),
             roots_retired: AtomicU64::new(0),
+            kernel_stack_slot_returns: AtomicU64::new(0),
         }
     }
 }
@@ -779,6 +781,7 @@ enum BootTestPidCountKind {
     TableFrameReturned,
     TableFrameLost,
     RootRetired,
+    KernelStackSlotReturn,
 }
 
 #[cfg(feature = "boot_tests")]
@@ -830,6 +833,10 @@ fn record_boot_test_pid_count(pid: u64, kind: BootTestPidCountKind) {
                 BootTestPidCountKind::RootRetired => {
                     slot.roots_retired.fetch_add(1, Ordering::Release);
                 }
+                BootTestPidCountKind::KernelStackSlotReturn => {
+                    slot.kernel_stack_slot_returns
+                        .fetch_add(1, Ordering::Release);
+                }
             }
             return;
         }
@@ -856,6 +863,7 @@ fn reset_boot_test_pid_counts() -> BootTestPidCountsGuard {
         slot.table_frames_returned.store(0, Ordering::Relaxed);
         slot.table_frames_lost.store(0, Ordering::Relaxed);
         slot.roots_retired.store(0, Ordering::Relaxed);
+        slot.kernel_stack_slot_returns.store(0, Ordering::Relaxed);
     }
     BOOT_TEST_PID_COUNTS_ACTIVE.store(1, Ordering::Release);
     BootTestPidCountsGuard
@@ -891,6 +899,7 @@ struct BootTestPidCounts {
     table_frames_returned: u64,
     table_frames_lost: u64,
     roots_retired: u64,
+    kernel_stack_slot_returns: u64,
 }
 
 #[cfg(feature = "boot_tests")]
@@ -907,6 +916,7 @@ fn boot_test_pid_counts(pid: u64) -> BootTestPidCounts {
                 table_frames_returned: slot.table_frames_returned.load(Ordering::Relaxed),
                 table_frames_lost: slot.table_frames_lost.load(Ordering::Relaxed),
                 roots_retired: slot.roots_retired.load(Ordering::Relaxed),
+                kernel_stack_slot_returns: slot.kernel_stack_slot_returns.load(Ordering::Relaxed),
             };
         }
         if slot_pid == 0 {
@@ -973,6 +983,15 @@ pub fn record_reclaim(pid: u64) {
     crate::trace_event!(TEARDOWN_PROVIDER, TEARDOWN_RECLAIM_EVENT, pid as u32);
     #[cfg(feature = "boot_tests")]
     record_boot_test_pid_count(pid, BootTestPidCountKind::Reclaim);
+}
+
+#[inline(always)]
+pub fn record_kernel_stack_slot_return(pid: u64) {
+    // Called from `KernelStack::drop`; keep this allocation-free and lock-light.
+    #[cfg(feature = "boot_tests")]
+    record_boot_test_pid_count(pid, BootTestPidCountKind::KernelStackSlotReturn);
+    #[cfg(not(feature = "boot_tests"))]
+    let _ = pid;
 }
 
 #[inline(always)]
@@ -1046,6 +1065,7 @@ pub struct TeardownPidEvidence {
     pub bucket_published_count: u64,
     pub bucket_observed_count: u64,
     pub bucket_collision_count: u64,
+    pub kernel_stack_slot_returns: u64,
 }
 
 #[cfg(feature = "boot_tests")]
@@ -1072,6 +1092,7 @@ pub fn teardown_pid_evidence(pid: u64) -> Option<TeardownPidEvidence> {
         bucket_published_count: EXIT_KICK_BUCKET_PUBLISH_COUNTS[bucket].load(Ordering::Acquire),
         bucket_observed_count: EXIT_KICK_BUCKET_OBSERVED_COUNTS[bucket].load(Ordering::Acquire),
         bucket_collision_count: EXIT_KICK_BUCKET_COLLISION_COUNTS[bucket].load(Ordering::Acquire),
+        kernel_stack_slot_returns: slot.kernel_stack_slot_returns.load(Ordering::Acquire),
     })
 }
 
@@ -1491,13 +1512,9 @@ pub fn fork_exit_defer_reclaim_pairing_test() -> crate::test_framework::registry
     let stack_top = VirtAddr::new(0x0080_0000);
     let stack_bottom = VirtAddr::new(0x007f_0000);
     let tls = VirtAddr::new(0x0001_0000);
-    #[cfg(target_arch = "aarch64")]
+    // These synthetic threads are never dispatched, so no CPU ever names their
+    // kernel-stack slots and `KernelStack::drop`'s liveness guard cannot refuse.
     let parent_privilege = crate::task::thread::ThreadPrivilege::User;
-    #[cfg(target_arch = "x86_64")]
-    // The x86 fork helper intentionally Box::leak's a kernel-stack allocation
-    // for userspace children. This fixture never dispatches its synthetic
-    // threads, so kernel privilege isolates O4 to the page-table lifecycle.
-    let parent_privilege = crate::task::thread::ThreadPrivilege::Kernel;
     let mut parent_process = crate::process::Process::new(
         parent_pid,
         alloc::string::String::from("teardown_pairing_parent"),
@@ -1661,13 +1678,14 @@ pub fn fork_exit_defer_reclaim_pairing_test() -> crate::test_framework::registry
                 Ok(pid) => pid,
                 Err(_) => return TestResult::Fail("pairing fork failed"),
             };
-            let Some(child_tid) = manager
-                .get_process(child_pid)
-                .and_then(|process| process.main_thread.as_ref())
-                .map(|thread| thread.id)
+            let Some(child_thread) = manager
+                .get_process_mut(child_pid)
+                .and_then(|process| process.main_thread.as_mut())
             else {
                 return TestResult::Fail("pairing child has no main thread");
             };
+            let child_tid = child_thread.id;
+            let published = child_thread.publish_to_scheduler();
             #[cfg(target_arch = "x86_64")]
             if let Some(old_page_table) = pending_old_page_table.take() {
                 let Some(child_process) = manager.get_process_mut(child_pid) else {
@@ -1675,7 +1693,7 @@ pub fn fork_exit_defer_reclaim_pairing_test() -> crate::test_framework::registry
                 };
                 child_process.pending_old_page_tables.push(old_page_table);
             }
-            (child_pid, child_tid)
+            (child_pid, child_tid, published)
         };
 
         pairing_child_pids[pairing_child_count] = child.0.as_u64();
@@ -1708,6 +1726,7 @@ pub fn fork_exit_defer_reclaim_pairing_test() -> crate::test_framework::registry
                 parent.children.retain(|pid| *pid != child.0);
             }
         }
+        core::mem::drop(child.2);
     }
 
     let quiesce_deadline = retirement_oracle_clock_now()
@@ -1768,6 +1787,10 @@ pub fn fork_exit_defer_reclaim_pairing_test() -> crate::test_framework::registry
         .aggregate()
         .saturating_sub(refusal_counters_before[5]);
     let expected_leaves = (RETIRE_SENTINEL_SUBTREES * pairing_child_pids.len()) as u64;
+    let kstack_returns = pairing_child_pids
+        .iter()
+        .map(|pid| boot_test_pid_counts(*pid).kernel_stack_slot_returns)
+        .sum::<u64>();
     #[cfg(target_arch = "x86_64")]
     let cohort_recorded = expected_tables * pairing_child_pids.len() as u64
         + expected_pending_old_tables;
@@ -1775,13 +1798,14 @@ pub fn fork_exit_defer_reclaim_pairing_test() -> crate::test_framework::registry
     let allocator_balance = allocator_used_after as i64 - allocator_used_before as i64;
     #[cfg(target_arch = "aarch64")]
     crate::serial_println!(
-        "[PT_RETIRE_ORACLE:aarch64:cycles=64:used_before={}:used_after={}:expected_tables={}:roots={}:returned={}:lost={}]",
+        "[PT_RETIRE_ORACLE:aarch64:cycles=64:used_before={}:used_after={}:expected_tables={}:roots={}:returned={}:lost={}:kstack_returns={}]",
         allocator_used_before,
         allocator_used_after,
         expected_tables,
         roots_retired_delta,
         table_frames_returned_delta,
-        table_frames_lost_delta
+        table_frames_lost_delta,
+        kstack_returns
     );
     #[cfg(target_arch = "aarch64")]
     crate::serial_println!(
@@ -1845,6 +1869,12 @@ pub fn fork_exit_defer_reclaim_pairing_test() -> crate::test_framework::registry
         if counts.table_frames_lost != 0 {
             return TestResult::Fail("retire cohort per-PID frame loss was nonzero");
         }
+        if counts.kernel_stack_slot_returns != 1 {
+            return TestResult::Fail("retire cohort per-PID kernel-stack return was not exact");
+        }
+    }
+    if kstack_returns != pairing_child_pids.len() as u64 {
+        return TestResult::Fail("retire cohort kernel-stack return population was not exact");
     }
     let dropped_undecided_delta = PT_ROOT_DROPPED_UNDECIDED
         .aggregate()
@@ -2000,7 +2030,7 @@ pub fn fork_exit_defer_reclaim_pairing_test() -> crate::test_framework::registry
     {
         crate::serial_println!("[TEST:process:x86_retire_cohort:PASS]");
         crate::serial_println!(
-            "[PT_RETIRE_COHORT:x86:children={}:retired={}:returned={}:recorded={}:lost={}:no_arch={}:undecided={}:mid_retire={}:balance={}]",
+            "[PT_RETIRE_COHORT:x86:children={}:retired={}:returned={}:recorded={}:lost={}:no_arch={}:undecided={}:mid_retire={}:kstack_returns={}:balance={}]",
             pairing_child_pids.len(),
             roots_retired_delta,
             table_frames_returned_delta,
@@ -2009,6 +2039,7 @@ pub fn fork_exit_defer_reclaim_pairing_test() -> crate::test_framework::registry
             no_arch_delta,
             dropped_undecided_delta,
             dropped_mid_retire_delta,
+            kstack_returns,
             allocator_balance
         );
     }
@@ -2616,18 +2647,28 @@ pub fn exec_detach_oracle_test() -> crate::test_framework::registry::TestResult 
     #[cfg(target_arch = "x86_64")]
     use x86_64::VirtAddr;
 
-    // All per-architecture residuals below are manifestations of issue #583:
-    // `GuardedStack::drop` does not reclaim user stack frames. They are counted
-    // rather than freed because a counted leak beats an over-free; closing #583
-    // should drive all of them to zero.
+    // The leaf residual below remains a manifestation of issue #583:
+    // `GuardedStack::drop` does not reclaim user-stack frames. `stack_residual`
+    // used to include a kernel-stack component too; `KernelStack::drop` now
+    // releases that component, leaving the user-stack residue still owned by
+    // #583.
     #[cfg(target_arch = "aarch64")]
     const EXPECTED_LEAF_RESIDUAL: u64 = 16;
     #[cfg(target_arch = "x86_64")]
     const EXPECTED_LEAF_RESIDUAL: u64 = 16;
+    // Residual measured before kernel-stack frames were released in
+    // `KernelStack::drop`.
+    #[cfg(target_arch = "aarch64")]
+    const EXPECTED_STACK_RESIDUAL_PRE_KSTACK_RELEASE: i64 = 18;
+    #[cfg(target_arch = "x86_64")]
+    const EXPECTED_STACK_RESIDUAL_PRE_KSTACK_RELEASE: i64 = 149;
+    // x86: 149 - 128 * 1 = 21 (one stack dropped in the window, 128 frames per
+    // stack). aarch64: 18 - 0 = 18 because HHDM-preallocated stacks release no
+    // frames.
     #[cfg(target_arch = "aarch64")]
     const EXPECTED_STACK_RESIDUAL: i64 = 18;
     #[cfg(target_arch = "x86_64")]
-    const EXPECTED_STACK_RESIDUAL: i64 = 149;
+    const EXPECTED_STACK_RESIDUAL: i64 = 21;
     const EXPECTED_ROOTS_CREATED: u64 = 5;
 
     fn test_user_entry() {}
@@ -2762,6 +2803,7 @@ pub fn exec_detach_oracle_test() -> crate::test_framework::registry::TestResult 
             return TestResult::Fail("reclaim queues not quiescent at exec detach oracle start")
         }
     };
+    let kstack_pool_before = crate::memory::kernel_stack::kernel_stack_pool_counters();
     let allocator_used_before = frame_allocator_used_frames();
     let table_frames_recorded_before = PT_TABLE_FRAMES_RECORDED.aggregate();
     let table_frames_returned_before = PT_TABLE_FRAMES_RETURNED.aggregate();
@@ -3129,7 +3171,14 @@ pub fn exec_detach_oracle_test() -> crate::test_framework::registry::TestResult 
     core::sync::atomic::fence(Ordering::Acquire);
 
     let allocator_used_after = frame_allocator_used_frames();
+    let kstack_pool_after = crate::memory::kernel_stack::kernel_stack_pool_counters();
     let stack_residual = allocator_used_after as i64 - allocator_used_before as i64;
+    let Some(kstack_frames_released) = kstack_pool_after
+        .frames_released
+        .checked_sub(kstack_pool_before.frames_released)
+    else {
+        return TestResult::Fail("exec detach kernel-stack release counter regressed");
+    };
     let table_frames_recorded_delta = PT_TABLE_FRAMES_RECORDED
         .aggregate()
         .saturating_sub(table_frames_recorded_before);
@@ -3253,6 +3302,16 @@ pub fn exec_detach_oracle_test() -> crate::test_framework::registry::TestResult 
     if leaf_residual != EXPECTED_LEAF_RESIDUAL && first_failure.is_none() {
         first_failure = Some("exec detach user-stack leaf residual changed");
     }
+    if EXPECTED_STACK_RESIDUAL_PRE_KSTACK_RELEASE - stack_residual != kstack_frames_released as i64
+        && first_failure.is_none()
+    {
+        first_failure =
+            Some("exec detach residual movement was not exactly kernel-stack frame release");
+    }
+    #[cfg(target_arch = "x86_64")]
+    if kstack_frames_released % 128 != 0 && first_failure.is_none() {
+        first_failure = Some("exec detach released a partial x86 kernel stack");
+    }
     if stack_residual != EXPECTED_STACK_RESIDUAL && first_failure.is_none() {
         first_failure = Some("exec detach user-stack residual changed");
     }
@@ -3262,7 +3321,7 @@ pub fn exec_detach_oracle_test() -> crate::test_framework::registry::TestResult 
     #[cfg(target_arch = "x86_64")]
     let arch = "x86";
     crate::serial_println!(
-        "[EXEC_DETACH_ORACLE:{}:bodies={}:fail_preserved={}:sibling_refused={}:success_detached={}:fresh_root={}:tgid_self={}:custody_balance={}:leaf_residual={}:stack_residual={}:old_group_reached_pre={}:old_group_missed_post={}:self_group_reached_post={}]",
+        "[EXEC_DETACH_ORACLE:{}:bodies={}:fail_preserved={}:sibling_refused={}:success_detached={}:fresh_root={}:tgid_self={}:custody_balance={}:leaf_residual={}:stack_residual={}:kstack_frames_released={}:old_group_reached_pre={}:old_group_missed_post={}:self_group_reached_post={}]",
         arch,
         bodies,
         fail_preserved,
@@ -3273,6 +3332,7 @@ pub fn exec_detach_oracle_test() -> crate::test_framework::registry::TestResult 
         custody_balance,
         leaf_residual,
         stack_residual,
+        kstack_frames_released,
         old_group_reached_pre,
         old_group_missed_post,
         self_group_reached_post
@@ -4865,6 +4925,959 @@ pub fn init_group_refusal_oracle_test() -> crate::test_framework::registry::Test
     TestResult::Pass
 }
 
+#[cfg(feature = "boot_tests")]
+pub fn kernel_stack_ownership_oracle_test() -> crate::test_framework::registry::TestResult {
+    #[cfg(not(target_arch = "x86_64"))]
+    use crate::memory::arch_stub::VirtAddr;
+    use crate::test_framework::registry::TestResult;
+    #[cfg(target_arch = "x86_64")]
+    use x86_64::VirtAddr;
+
+    const OWNERSHIP_STRESS_ITERATIONS: usize = 1000;
+    const OWNERSHIP_STRESS_WARMUPS: usize = 8;
+
+    #[derive(Default)]
+    struct Measurements {
+        creation_rows: u64,
+        creation_owned: u64,
+        one_owner: u64,
+        two_owner: u64,
+        zero_owner: u64,
+        fork_rows: u64,
+        fork_owned: u64,
+        slot_returns_exact_one: u64,
+        slot_alloc_delta: u64,
+        slot_free_delta: u64,
+        slot_balance: i64,
+        frames_mapped_delta: u64,
+        frames_released_delta: u64,
+        frame_balance: i64,
+        frame_used_delta: i64,
+        frame_used_bounded: u64,
+        live_checks: u64,
+        live_refusals_production: u64,
+        live_refusals_injected: u64,
+        drop_refused_live: u64,
+        pte_overwrite_refusals: u64,
+        pub_pooled: u64,
+        pub_sched_owned: u64,
+        pub_row_residual: u64,
+        pub_unowned: u64,
+        classifier_sched_owned: u64,
+        classifier_row_residual: u64,
+        classifier_unowned: u64,
+        classifier_not_pooled: u64,
+        sched_publications: u64,
+        sched_pm_held_production: u64,
+        sched_pm_held_injected: u64,
+    }
+
+    fn note_failure(
+        first_failure: &mut Option<&'static str>,
+        violations: &mut u64,
+        reason: &'static str,
+    ) {
+        *violations = violations.saturating_add(1);
+        if first_failure.is_none() {
+            *first_failure = Some(reason);
+        }
+    }
+
+    fn create_ownership_stress_row(
+        iteration: usize,
+    ) -> Result<crate::task::thread::Thread, &'static str> {
+        let pid = crate::process::ProcessId::new(0x4b53_0000 + iteration as u64);
+        let mut process = crate::process::Process::new(
+            pid,
+            alloc::string::String::from("kernel_stack_ownership_stress"),
+            VirtAddr::new(0x0040_0000),
+        );
+        let stack_top = VirtAddr::new(0x0080_0000);
+        let mut manager_guard = crate::process::manager();
+        let manager = manager_guard
+            .as_mut()
+            .ok_or("process manager unavailable during ownership constructor stress")?;
+        #[cfg(target_arch = "x86_64")]
+        {
+            manager.create_main_thread_for_ownership_stress(&mut process, stack_top)
+        }
+        #[cfg(target_arch = "aarch64")]
+        {
+            let tls = VirtAddr::new(0);
+            if iteration % 2 == 0 {
+                manager.create_main_thread_for_ownership_stress(&mut process, stack_top, tls)
+            } else {
+                manager.create_main_thread_with_sp_for_ownership_stress(
+                    &mut process,
+                    stack_top,
+                    VirtAddr::new(stack_top.as_u64() - 16),
+                    tls,
+                )
+            }
+        }
+    }
+
+    fn retire_and_remove_owned_row(pid: crate::process::ProcessId) -> Result<(), &'static str> {
+        let reclaim = {
+            let mut manager_guard = crate::process::manager();
+            let manager = manager_guard
+                .as_mut()
+                .ok_or("process manager unavailable during ownership row retirement")?;
+            let reclaim = {
+                let process = manager
+                    .get_process_mut(pid)
+                    .ok_or("ownership row disappeared before retirement")?;
+                let reclaim = crate::task::process_task::defer_process_resources(process);
+                crate::task::process_task::release_process_resources(process);
+                reclaim
+            };
+            manager.remove_from_ready_queue(pid);
+            manager.remove_process(pid);
+            reclaim
+        };
+        crate::task::process_task::enqueue_process_reclaim(reclaim);
+        let cleanup_deadline =
+            retirement_oracle_clock_now().saturating_add(retirement_oracle_clock_delta(5_000));
+        while crate::task::process_task::boot_reclaim_locations(pid.as_u64()) != (false, false) {
+            crate::task::scheduler::nudge_retirement_grace_for_test();
+            let boundary_deadline =
+                retirement_oracle_clock_now().saturating_add(retirement_oracle_clock_delta(1));
+            while retirement_oracle_clock_now() < boundary_deadline {
+                core::hint::spin_loop();
+            }
+            crate::task::process_task::boot_reclaim_deferred_process_resources();
+            if retirement_oracle_clock_now() >= cleanup_deadline {
+                return Err("ownership deferred cleanup did not quiesce");
+            }
+        }
+        Ok(())
+    }
+
+    let mut measurements = Measurements::default();
+    let mut first_failure = None;
+    let mut violations = 0u64;
+
+    // Arm A: drive every production classifier verdict against a genuine pool VA.
+    match crate::memory::kernel_stack::allocate_kernel_stack() {
+        Ok(stack) => {
+            let pooled_top = stack.top().as_u64();
+            if crate::memory::kernel_stack::classify_kernel_stack_ownership(
+                Some(pooled_top),
+                true,
+                false,
+            ) == crate::memory::kernel_stack::KernelStackOwnership::SchedulerOwned
+            {
+                measurements.classifier_sched_owned += 1;
+            }
+            if crate::memory::kernel_stack::classify_kernel_stack_ownership(
+                Some(pooled_top),
+                true,
+                true,
+            ) == crate::memory::kernel_stack::KernelStackOwnership::RowResidual
+            {
+                measurements.classifier_row_residual += 1;
+            }
+            if crate::memory::kernel_stack::classify_kernel_stack_ownership(
+                Some(pooled_top),
+                false,
+                false,
+            ) == crate::memory::kernel_stack::KernelStackOwnership::Unowned
+            {
+                measurements.classifier_unowned += 1;
+            }
+            if crate::memory::kernel_stack::classify_kernel_stack_ownership(None, false, false)
+                == crate::memory::kernel_stack::KernelStackOwnership::NotPooled
+            {
+                measurements.classifier_not_pooled += 1;
+            }
+            core::mem::drop(stack);
+        }
+        Err(_) => note_failure(
+            &mut first_failure,
+            &mut violations,
+            "classifier could not allocate a genuine pooled kernel stack",
+        ),
+    }
+
+    // Arm B: inject one known-live candidate through the allocator's real guard.
+    let guard_before = crate::memory::kernel_stack::kernel_stack_pool_counters();
+    let injection_saw_live = match crate::memory::kernel_stack::current_live_stack_top_for_test() {
+        Some(stack_top) => crate::memory::kernel_stack::probe_live_slot_guard_injection(stack_top),
+        None => {
+            note_failure(
+                &mut first_failure,
+                &mut violations,
+                "live-slot guard had no current live stack top",
+            );
+            false
+        }
+    };
+    if !injection_saw_live {
+        note_failure(
+            &mut first_failure,
+            &mut violations,
+            "live-slot guard accepted the injected live stack",
+        );
+    }
+
+    // Arm C warm-up: use the exact production constructor/publication lifecycle,
+    // but keep allocator growth and one-time TLS-vector growth out of the sample.
+    let mut warmups_completed = 0u64;
+    for iteration in 0..OWNERSHIP_STRESS_WARMUPS {
+        match create_ownership_stress_row(iteration) {
+            Ok(mut row) => {
+                let row_owned = row.kernel_stack_allocation.is_some()
+                    && row.kernel_stack_top.is_some_and(|top| {
+                        crate::memory::kernel_stack::is_kernel_stack_va(top.as_u64())
+                    });
+                let published = row.publish_to_scheduler();
+                let moved_once = row.kernel_stack_allocation.is_none()
+                    && published.kernel_stack_allocation.is_some();
+                if !row_owned {
+                    note_failure(
+                        &mut first_failure,
+                        &mut violations,
+                        "ownership warm-up constructor did not return a pooled owner",
+                    );
+                }
+                if !moved_once {
+                    note_failure(
+                        &mut first_failure,
+                        &mut violations,
+                        "ownership warm-up publication did not move exactly one owner",
+                    );
+                }
+                core::mem::drop(published);
+                core::mem::drop(row);
+                warmups_completed += 1;
+            }
+            Err(_) => note_failure(
+                &mut first_failure,
+                &mut violations,
+                "ownership warm-up production constructor failed",
+            ),
+        }
+    }
+
+    let stress_before = crate::memory::kernel_stack::kernel_stack_pool_counters();
+    let frame_used_before = frame_allocator_used_frames();
+    #[cfg(target_arch = "aarch64")]
+    let mut aarch_plain_constructors = 0u64;
+    #[cfg(target_arch = "aarch64")]
+    let mut aarch_sp_constructors = 0u64;
+
+    for iteration in 0..OWNERSHIP_STRESS_ITERATIONS {
+        let row_result = create_ownership_stress_row(iteration);
+        let mut row = match row_result {
+            Ok(row) => row,
+            Err(_) => {
+                note_failure(
+                    &mut first_failure,
+                    &mut violations,
+                    "ownership stress production constructor failed",
+                );
+                continue;
+            }
+        };
+        measurements.creation_rows += 1;
+        #[cfg(target_arch = "aarch64")]
+        if iteration % 2 == 0 {
+            aarch_plain_constructors += 1;
+        } else {
+            aarch_sp_constructors += 1;
+        }
+
+        if row.kernel_stack_allocation.is_some()
+            && row
+                .kernel_stack_top
+                .is_some_and(|top| crate::memory::kernel_stack::is_kernel_stack_va(top.as_u64()))
+        {
+            measurements.creation_owned += 1;
+        } else {
+            note_failure(
+                &mut first_failure,
+                &mut violations,
+                "ownership stress constructor returned a row without a pooled owner",
+            );
+        }
+
+        let published = row.publish_to_scheduler();
+        match (
+            row.kernel_stack_allocation.is_some(),
+            published.kernel_stack_allocation.is_some(),
+        ) {
+            (false, true) => measurements.one_owner += 1,
+            (true, true) => measurements.two_owner += 1,
+            (false, false) => measurements.zero_owner += 1,
+            (true, false) => note_failure(
+                &mut first_failure,
+                &mut violations,
+                "ownership stress left the only owner in the process row",
+            ),
+        }
+        core::mem::drop(published);
+        core::mem::drop(row);
+    }
+
+    let stress_after = crate::memory::kernel_stack::kernel_stack_pool_counters();
+    let frame_used_after = frame_allocator_used_frames();
+    measurements.slot_alloc_delta = stress_after
+        .slots_allocated
+        .saturating_sub(stress_before.slots_allocated);
+    measurements.slot_free_delta = stress_after
+        .slots_freed
+        .saturating_sub(stress_before.slots_freed);
+    measurements.slot_balance =
+        measurements.slot_alloc_delta as i64 - measurements.slot_free_delta as i64;
+    measurements.frames_mapped_delta = stress_after
+        .frames_mapped
+        .saturating_sub(stress_before.frames_mapped);
+    measurements.frames_released_delta = stress_after
+        .frames_released
+        .saturating_sub(stress_before.frames_released);
+    measurements.frame_balance =
+        measurements.frames_mapped_delta as i64 - measurements.frames_released_delta as i64;
+    measurements.frame_used_delta = frame_used_after as i64 - frame_used_before as i64;
+    measurements.frame_used_bounded = u64::from(measurements.frame_used_delta < 128);
+    measurements.drop_refused_live = stress_after
+        .drop_refused_live
+        .saturating_sub(stress_before.drop_refused_live);
+    measurements.pte_overwrite_refusals = stress_after
+        .pte_overwrite_refusals
+        .saturating_sub(stress_before.pte_overwrite_refusals);
+
+    // Arm D: exercise every architecture's production fork constructor, then
+    // prove one PID-stamped slot return after publishing and destroying the child.
+    let reclaim_owner = crate::task::process_task::BootReclaimTestGuard::enter();
+    match reclaim_owner {
+        Ok(reclaim_owner) => {
+            let pid_counts_guard = reset_boot_test_pid_counts();
+            let parent_page_table = crate::memory::process_memory::ProcessPageTable::new();
+            match parent_page_table {
+                Ok(parent_page_table) => {
+                    let parent_pid = {
+                        let manager_guard = crate::process::manager();
+                        manager_guard.as_ref().map(|manager| manager.allocate_pid())
+                    };
+                    match parent_pid {
+                        Some(parent_pid) => {
+                            fn fork_parent_entry() {}
+                            let mut parent_process = crate::process::Process::new(
+                                parent_pid,
+                                alloc::string::String::from("kernel_stack_ownership_parent"),
+                                VirtAddr::new(0x0040_0000),
+                            );
+                            let mut parent_thread = crate::task::thread::Thread::new(
+                                alloc::string::String::from("kernel_stack_ownership_parent_main"),
+                                fork_parent_entry,
+                                VirtAddr::new(0x0080_0000),
+                                VirtAddr::new(0x007f_0000),
+                                VirtAddr::new(0x0001_0000),
+                                crate::task::thread::ThreadPrivilege::User,
+                            );
+                            parent_thread.owner_pid = Some(parent_pid.as_u64());
+                            #[cfg(target_arch = "aarch64")]
+                            let parent_context = parent_thread.context.clone();
+                            parent_process.page_table =
+                                Some(alloc::boxed::Box::new(parent_page_table));
+                            parent_process.set_main_thread(parent_thread);
+                            {
+                                let mut manager_guard = crate::process::manager();
+                                if let Some(manager) = manager_guard.as_mut() {
+                                    manager.insert_process(parent_pid, parent_process);
+                                } else {
+                                    note_failure(
+                                        &mut first_failure,
+                                        &mut violations,
+                                        "process manager unavailable for ownership parent insert",
+                                    );
+                                }
+                            }
+
+                            #[cfg(target_arch = "x86_64")]
+                            let expected_fork_rows = 2usize;
+                            #[cfg(target_arch = "aarch64")]
+                            let expected_fork_rows = 1usize;
+                            for fork_index in 0..expected_fork_rows {
+                                #[cfg(target_arch = "x86_64")]
+                                let child_pid_result = if fork_index == 0 {
+                                    match crate::memory::process_memory::ProcessPageTable::new() {
+                                        Ok(child_page_table) => {
+                                            let mut manager_guard = crate::process::manager();
+                                            manager_guard
+                                                .as_mut()
+                                                .ok_or("process manager unavailable for complete_fork ownership arm")
+                                                .and_then(|manager| {
+                                                    manager.fork_process_with_page_table(
+                                                        parent_pid,
+                                                        None,
+                                                        None,
+                                                        alloc::boxed::Box::new(child_page_table),
+                                                    )
+                                                })
+                                        }
+                                        Err(_) => Err(
+                                            "complete_fork ownership page-table allocation failed",
+                                        ),
+                                    }
+                                } else {
+                                    let mut manager_guard = crate::process::manager();
+                                    manager_guard
+                                        .as_mut()
+                                        .ok_or("process manager unavailable for fork_process_with_context ownership arm")
+                                        .and_then(|manager| {
+                                            manager.fork_process_with_context(parent_pid, None)
+                                        })
+                                };
+                                #[cfg(target_arch = "aarch64")]
+                                let child_pid_result = if fork_index != 0 {
+                                    Err("aarch64 ownership fork count exceeded one")
+                                } else {
+                                    match crate::memory::process_memory::ProcessPageTable::new() {
+                                        Ok(child_page_table) => {
+                                            let mut manager_guard = crate::process::manager();
+                                            manager_guard
+                                                .as_mut()
+                                                .ok_or("process manager unavailable for aarch64 ownership fork")
+                                                .and_then(|manager| {
+                                                    manager.fork_process_aarch64(
+                                                        parent_pid,
+                                                        parent_context.clone(),
+                                                        alloc::boxed::Box::new(child_page_table),
+                                                    )
+                                                })
+                                        }
+                                        Err(_) => Err(
+                                            "aarch64 ownership fork page-table allocation failed",
+                                        ),
+                                    }
+                                };
+
+                                let child_pid = match child_pid_result {
+                                    Ok(child_pid) => child_pid,
+                                    Err(_) => {
+                                        note_failure(
+                                            &mut first_failure,
+                                            &mut violations,
+                                            "ownership fork constructor failed",
+                                        );
+                                        continue;
+                                    }
+                                };
+                                measurements.fork_rows += 1;
+                                let published = {
+                                    let mut manager_guard = crate::process::manager();
+                                    match manager_guard
+                                        .as_mut()
+                                        .and_then(|manager| manager.get_process_mut(child_pid))
+                                        .and_then(|process| process.main_thread.as_mut())
+                                    {
+                                        Some(row) => {
+                                            if row.kernel_stack_allocation.is_some()
+                                                && row.kernel_stack_top.is_some_and(|top| {
+                                                    crate::memory::kernel_stack::is_kernel_stack_va(
+                                                        top.as_u64(),
+                                                    )
+                                                })
+                                            {
+                                                measurements.fork_owned += 1;
+                                            } else {
+                                                note_failure(
+                                                    &mut first_failure,
+                                                    &mut violations,
+                                                    "ownership fork row did not hold a pooled allocation",
+                                                );
+                                            }
+                                            let published = row.publish_to_scheduler();
+                                            if row.kernel_stack_allocation.is_some()
+                                                || published.kernel_stack_allocation.is_none()
+                                            {
+                                                note_failure(
+                                                    &mut first_failure,
+                                                    &mut violations,
+                                                    "ownership fork publication did not move exactly one owner",
+                                                );
+                                            }
+                                            Some(published)
+                                        }
+                                        None => {
+                                            note_failure(
+                                                &mut first_failure,
+                                                &mut violations,
+                                                "ownership fork child row had no main thread",
+                                            );
+                                            None
+                                        }
+                                    }
+                                };
+
+                                match teardown_pid_evidence(child_pid.as_u64()) {
+                                    Some(evidence) if evidence.kernel_stack_slot_returns == 0 => {}
+                                    Some(_) => note_failure(
+                                        &mut first_failure,
+                                        &mut violations,
+                                        "ownership fork PID had a slot return before process death",
+                                    ),
+                                    None => note_failure(
+                                        &mut first_failure,
+                                        &mut violations,
+                                        "ownership fork PID evidence slot was unavailable",
+                                    ),
+                                }
+                                core::mem::drop(published);
+                                {
+                                    let mut manager_guard = crate::process::manager();
+                                    if let Some(parent) = manager_guard
+                                        .as_mut()
+                                        .and_then(|manager| manager.get_process_mut(parent_pid))
+                                    {
+                                        parent.children.retain(|pid| *pid != child_pid);
+                                    }
+                                }
+                                if retire_and_remove_owned_row(child_pid).is_err() {
+                                    note_failure(
+                                        &mut first_failure,
+                                        &mut violations,
+                                        "ownership fork child cleanup failed",
+                                    );
+                                }
+                                match teardown_pid_evidence(child_pid.as_u64()) {
+                                    Some(evidence) if evidence.kernel_stack_slot_returns == 1 => {
+                                        measurements.slot_returns_exact_one += 1;
+                                    }
+                                    Some(_) => note_failure(
+                                        &mut first_failure,
+                                        &mut violations,
+                                        "ownership fork PID slot-return count was not exactly one",
+                                    ),
+                                    None => note_failure(
+                                        &mut first_failure,
+                                        &mut violations,
+                                        "ownership fork PID evidence disappeared after cleanup",
+                                    ),
+                                }
+                            }
+
+                            if retire_and_remove_owned_row(parent_pid).is_err() {
+                                note_failure(
+                                    &mut first_failure,
+                                    &mut violations,
+                                    "ownership parent cleanup failed",
+                                );
+                            }
+                        }
+                        None => note_failure(
+                            &mut first_failure,
+                            &mut violations,
+                            "process manager unavailable for ownership parent PID",
+                        ),
+                    }
+                }
+                Err(_) => note_failure(
+                    &mut first_failure,
+                    &mut violations,
+                    "ownership parent page-table allocation failed",
+                ),
+            }
+            core::mem::drop(pid_counts_guard);
+            core::mem::drop(reclaim_owner);
+        }
+        Err(_) => note_failure(
+            &mut first_failure,
+            &mut violations,
+            "reclaim queues not quiescent at ownership oracle start",
+        ),
+    }
+
+    // Arm E: prove the creation publication lock-order detector can observe a
+    // process-manager guard held by this CPU.
+    let creation_counters_before = crate::task::scheduler::creation_lock_order_counters();
+    let guard = crate::process::manager();
+    let injection_saw_pm_held =
+        crate::task::scheduler::probe_publication_lock_order_injection();
+    drop(guard);
+    let creation_counters = crate::task::scheduler::creation_lock_order_counters();
+    let injected_delta = creation_counters
+        .pm_held_injected
+        .saturating_sub(creation_counters_before.pm_held_injected);
+    if !injection_saw_pm_held {
+        note_failure(
+            &mut first_failure,
+            &mut violations,
+            "publication lock-order detector could not see this CPU's process-manager guard",
+        );
+    }
+    if injected_delta != 1 {
+        note_failure(
+            &mut first_failure,
+            &mut violations,
+            "injected publication PM-held counter did not rise by exactly one",
+        );
+    }
+
+    // Read boot-wide production counters only after all oracle workloads have
+    // completed.
+    let final_pool = crate::memory::kernel_stack::kernel_stack_pool_counters();
+    measurements.live_checks = final_pool.live_slot_checks;
+    measurements.live_refusals_injected = final_pool
+        .live_slot_refusals_injected
+        .saturating_sub(guard_before.live_slot_refusals_injected);
+    measurements.live_refusals_production = final_pool
+        .live_slot_refusals
+        .saturating_sub(final_pool.live_slot_refusals_injected);
+    measurements.pub_pooled = final_pool.publications_pooled;
+    measurements.pub_sched_owned = final_pool.publications_scheduler_owned;
+    measurements.pub_row_residual = final_pool.publications_row_residual;
+    measurements.pub_unowned = final_pool.publications_unowned;
+    measurements.sched_publications = creation_counters.publications;
+    measurements.sched_pm_held_production =
+        creation_counters.pm_held - creation_counters.pm_held_injected;
+    measurements.sched_pm_held_injected = creation_counters.pm_held_injected;
+
+    if measurements.classifier_sched_owned != 1 {
+        note_failure(
+            &mut first_failure,
+            &mut violations,
+            "classifier SchedulerOwned arm was not exact",
+        );
+    }
+    if measurements.classifier_row_residual != 1 {
+        note_failure(
+            &mut first_failure,
+            &mut violations,
+            "classifier RowResidual arm was not exact",
+        );
+    }
+    if measurements.classifier_unowned != 1 {
+        note_failure(
+            &mut first_failure,
+            &mut violations,
+            "classifier Unowned arm was not exact",
+        );
+    }
+    if measurements.classifier_not_pooled != 1 {
+        note_failure(
+            &mut first_failure,
+            &mut violations,
+            "classifier NotPooled arm was not exact",
+        );
+    }
+    if warmups_completed != OWNERSHIP_STRESS_WARMUPS as u64 {
+        note_failure(
+            &mut first_failure,
+            &mut violations,
+            "ownership warm-up count was not exact",
+        );
+    }
+    if measurements.creation_rows != OWNERSHIP_STRESS_ITERATIONS as u64 {
+        note_failure(
+            &mut first_failure,
+            &mut violations,
+            "ownership stress creation row count was not exact",
+        );
+    }
+    if measurements.creation_owned != OWNERSHIP_STRESS_ITERATIONS as u64 {
+        note_failure(
+            &mut first_failure,
+            &mut violations,
+            "ownership stress owned row count was not exact",
+        );
+    }
+    if measurements.one_owner != OWNERSHIP_STRESS_ITERATIONS as u64 {
+        note_failure(
+            &mut first_failure,
+            &mut violations,
+            "ownership stress one-owner count was not exact",
+        );
+    }
+    if measurements.two_owner != 0 {
+        note_failure(
+            &mut first_failure,
+            &mut violations,
+            "ownership stress observed two owners",
+        );
+    }
+    if measurements.zero_owner != 0 {
+        note_failure(
+            &mut first_failure,
+            &mut violations,
+            "ownership stress observed zero owners",
+        );
+    }
+    #[cfg(target_arch = "aarch64")]
+    if aarch_plain_constructors != 500 {
+        note_failure(
+            &mut first_failure,
+            &mut violations,
+            "aarch64 plain constructor count was not exact",
+        );
+    }
+    #[cfg(target_arch = "aarch64")]
+    if aarch_sp_constructors != 500 {
+        note_failure(
+            &mut first_failure,
+            &mut violations,
+            "aarch64 explicit-SP constructor count was not exact",
+        );
+    }
+    #[cfg(target_arch = "x86_64")]
+    let expected_fork_rows = 2u64;
+    #[cfg(target_arch = "aarch64")]
+    let expected_fork_rows = 1u64;
+    if measurements.fork_rows != expected_fork_rows {
+        note_failure(
+            &mut first_failure,
+            &mut violations,
+            "ownership fork row count was not exact",
+        );
+    }
+    if measurements.fork_owned != expected_fork_rows {
+        note_failure(
+            &mut first_failure,
+            &mut violations,
+            "ownership fork owned count was not exact",
+        );
+    }
+    if measurements.slot_returns_exact_one != expected_fork_rows {
+        note_failure(
+            &mut first_failure,
+            &mut violations,
+            "ownership fork exact slot-return population was not exact",
+        );
+    }
+    if measurements.slot_alloc_delta < OWNERSHIP_STRESS_ITERATIONS as u64 {
+        note_failure(
+            &mut first_failure,
+            &mut violations,
+            "ownership stress slot allocation workload was too small",
+        );
+    }
+    if measurements.slot_free_delta < OWNERSHIP_STRESS_ITERATIONS as u64 {
+        note_failure(
+            &mut first_failure,
+            &mut violations,
+            "ownership stress slot return workload was too small",
+        );
+    }
+    if measurements.slot_alloc_delta != measurements.slot_free_delta {
+        note_failure(
+            &mut first_failure,
+            &mut violations,
+            "ownership stress slot allocation/free equality failed",
+        );
+    }
+    if measurements.slot_balance != 0 {
+        note_failure(
+            &mut first_failure,
+            &mut violations,
+            "ownership stress slot balance was nonzero",
+        );
+    }
+    if measurements.frames_mapped_delta != measurements.frames_released_delta {
+        note_failure(
+            &mut first_failure,
+            &mut violations,
+            "ownership stress mapped/released frame equality failed",
+        );
+    }
+    if measurements.frame_balance != 0 {
+        note_failure(
+            &mut first_failure,
+            &mut violations,
+            "ownership stress frame balance was nonzero",
+        );
+    }
+    #[cfg(target_arch = "x86_64")]
+    if measurements.frames_mapped_delta != 128 * measurements.slot_alloc_delta {
+        note_failure(
+            &mut first_failure,
+            &mut violations,
+            "x86 ownership stress did not map 128 frames per stack",
+        );
+    }
+    #[cfg(target_arch = "aarch64")]
+    if measurements.frames_mapped_delta != 0 {
+        // AArch64 kernel stacks are HHDM-preallocated and therefore legitimately
+        // map no frames during allocation.
+        note_failure(
+            &mut first_failure,
+            &mut violations,
+            "aarch64 ownership stress unexpectedly mapped frames",
+        );
+    }
+    #[cfg(target_arch = "aarch64")]
+    if measurements.frames_released_delta != 0 {
+        // The paired release count is legitimately zero for the same HHDM pool.
+        note_failure(
+            &mut first_failure,
+            &mut violations,
+            "aarch64 ownership stress unexpectedly released frames",
+        );
+    }
+    if measurements.frame_used_delta >= 128 {
+        note_failure(
+            &mut first_failure,
+            &mut violations,
+            "ownership stress orphaned at least one stack of frames",
+        );
+    }
+    if measurements.frame_used_bounded != 1 {
+        note_failure(
+            &mut first_failure,
+            &mut violations,
+            "ownership stress frame-used bound flag was not asserted",
+        );
+    }
+    if measurements.drop_refused_live != 0 {
+        note_failure(
+            &mut first_failure,
+            &mut violations,
+            "ownership stress drop liveness refusal counter moved",
+        );
+    }
+    if measurements.pte_overwrite_refusals != 0 {
+        note_failure(
+            &mut first_failure,
+            &mut violations,
+            "ownership stress PTE overwrite refusal counter moved",
+        );
+    }
+    if measurements.live_checks == 0 {
+        note_failure(
+            &mut first_failure,
+            &mut violations,
+            "kernel-stack live-slot checks had no allocation workload",
+        );
+    }
+    if final_pool.live_slot_refusals < final_pool.live_slot_refusals_injected {
+        note_failure(
+            &mut first_failure,
+            &mut violations,
+            "injected live-slot refusals exceeded total refusals",
+        );
+    }
+    if measurements.live_refusals_production != 0 {
+        note_failure(
+            &mut first_failure,
+            &mut violations,
+            "production allocator selected a live kernel-stack slot",
+        );
+    }
+    if measurements.live_refusals_injected != 1 {
+        note_failure(
+            &mut first_failure,
+            &mut violations,
+            "injected live-slot refusal delta was not exactly one",
+        );
+    }
+    if final_pool.publications == 0 {
+        note_failure(
+            &mut first_failure,
+            &mut violations,
+            "kernel-stack publication workload was absent",
+        );
+    }
+    if measurements.pub_pooled == 0 {
+        note_failure(
+            &mut first_failure,
+            &mut violations,
+            "pooled kernel-stack publication workload was absent",
+        );
+    }
+    if measurements.pub_sched_owned != measurements.pub_pooled {
+        note_failure(
+            &mut first_failure,
+            &mut violations,
+            "pooled publications were not all scheduler-owned",
+        );
+    }
+    if measurements.pub_row_residual != 0 {
+        note_failure(
+            &mut first_failure,
+            &mut violations,
+            "a publication retained row ownership",
+        );
+    }
+    if measurements.pub_unowned != 0 {
+        note_failure(
+            &mut first_failure,
+            &mut violations,
+            "a pooled publication had no owner",
+        );
+    }
+    if measurements.sched_publications == 0 {
+        note_failure(
+            &mut first_failure,
+            &mut violations,
+            "scheduler publication workload was absent",
+        );
+    }
+    if measurements.sched_pm_held_production != 0 {
+        note_failure(
+            &mut first_failure,
+            &mut violations,
+            "production scheduler publication occurred while PM was held",
+        );
+    }
+    if measurements.sched_pm_held_injected != 1 {
+        note_failure(
+            &mut first_failure,
+            &mut violations,
+            "injected scheduler publication PM-held count was not exactly one",
+        );
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    let arch = "aarch64";
+    #[cfg(target_arch = "x86_64")]
+    let arch = "x86";
+    let balance = violations;
+    crate::serial_println!(
+        "[KSTACK_OWNER_ORACLE:{}:creation_rows={}:creation_owned={}:one_owner={}:two_owner={}:zero_owner={}:fork_rows={}:fork_owned={}:slot_returns_exact_one={}:slot_alloc_delta={}:slot_free_delta={}:slot_balance={}:frames_mapped_delta={}:frames_released_delta={}:frame_balance={}:frame_used_delta={}:frame_used_bounded={}:live_checks={}:live_refusals_production={}:live_refusals_injected={}:drop_refused_live={}:pte_overwrite_refusals={}:pub_pooled={}:pub_sched_owned={}:pub_row_residual={}:pub_unowned={}:classifier_sched_owned={}:classifier_row_residual={}:classifier_unowned={}:classifier_not_pooled={}:sched_publications={}:sched_pm_held_production={}:sched_pm_held_injected={}:balance={}]",
+        arch,
+        measurements.creation_rows,
+        measurements.creation_owned,
+        measurements.one_owner,
+        measurements.two_owner,
+        measurements.zero_owner,
+        measurements.fork_rows,
+        measurements.fork_owned,
+        measurements.slot_returns_exact_one,
+        measurements.slot_alloc_delta,
+        measurements.slot_free_delta,
+        measurements.slot_balance,
+        measurements.frames_mapped_delta,
+        measurements.frames_released_delta,
+        measurements.frame_balance,
+        measurements.frame_used_delta,
+        measurements.frame_used_bounded,
+        measurements.live_checks,
+        measurements.live_refusals_production,
+        measurements.live_refusals_injected,
+        measurements.drop_refused_live,
+        measurements.pte_overwrite_refusals,
+        measurements.pub_pooled,
+        measurements.pub_sched_owned,
+        measurements.pub_row_residual,
+        measurements.pub_unowned,
+        measurements.classifier_sched_owned,
+        measurements.classifier_row_residual,
+        measurements.classifier_unowned,
+        measurements.classifier_not_pooled,
+        measurements.sched_publications,
+        measurements.sched_pm_held_production,
+        measurements.sched_pm_held_injected,
+        balance
+    );
+
+    if balance != 0 {
+        return TestResult::Fail(
+            first_failure.unwrap_or("kernel-stack ownership balance was nonzero"),
+        );
+    }
+    TestResult::Pass
+}
+
 #[cfg(all(feature = "boot_tests", target_arch = "x86_64"))]
 pub fn run_x86_exec_cohort_gate() {
     crate::serial_println!("[TEST:process:x86_exec_cohort:START]");
@@ -4913,12 +5926,28 @@ pub fn run_x86_init_group_refusal_gate() {
     crate::serial_println!("[TEST:process:init_group_refusal_oracle:START]");
     let result = init_group_refusal_oracle_test();
     if !result.is_pass() {
+        crate::serial_println!("[TEST:process:init_group_refusal_oracle:FAIL:{:?}]", result);
+    }
+    assert!(
+        result.is_pass(),
+        "x86 init group refusal oracle gate failed"
+    );
+}
+
+#[cfg(all(feature = "boot_tests", target_arch = "x86_64"))]
+pub fn run_x86_kernel_stack_ownership_gate() {
+    crate::serial_println!("[TEST:process:kernel_stack_ownership_oracle:START]");
+    let result = kernel_stack_ownership_oracle_test();
+    if !result.is_pass() {
         crate::serial_println!(
-            "[TEST:process:init_group_refusal_oracle:FAIL:{:?}]",
+            "[TEST:process:kernel_stack_ownership_oracle:FAIL:{:?}]",
             result
         );
     }
-    assert!(result.is_pass(), "x86 init group refusal oracle gate failed");
+    assert!(
+        result.is_pass(),
+        "x86 kernel-stack ownership oracle gate failed"
+    );
 }
 
 // P20 retains its calibrated 45s local ceiling, but both it and P17 consume

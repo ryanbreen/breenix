@@ -22,9 +22,12 @@ FRAME_CUSTODY_PATTERN='^\[FRAME_CUSTODY_COUNTERS:x86:double=1:stale=1:never=1:un
 # The x86 failed-exec release oracle records one three-table hierarchy and retires it:
 # recorded rises by the hierarchy, returned by the hierarchy plus its root, and undecided deliberately does not move.
 PT_CUSTODY_LITERAL='[PT_CUSTODY_COUNTERS:x86:recorded=14:no_proof=0:no_arch=0:terminated=1:undecided=1:retired=2:returned=14:lost=0:requeued=0]'
-PT_COHORT_LITERAL='[PT_RETIRE_COHORT:x86:children=64:retired=65:returned=642:recorded=577:lost=0:no_arch=0:undecided=0:mid_retire=0:balance=0]'
+# One kernel-stack slot returns per child death across this 64-child cohort, so kstack_returns == children.
+PT_COHORT_LITERAL='[PT_RETIRE_COHORT:x86:children=64:retired=65:returned=642:recorded=577:lost=0:no_arch=0:undecided=0:mid_retire=0:kstack_returns=64:balance=0]'
 PT_EXEC_COHORT_LITERAL='[PT_EXEC_COHORT:x86:children=16:superseded=3:roots=64:returned=640:recorded=576:lost=0:leaf_recorded=192:leaf_released=192:leaf_returned=192:custody_refused=0:decref_unregistered=0:undecided=0:mid_retire=0:no_arch=0:balance=0]' # The returned and recorded table-frame fields are pinned from the measured run.
-EXEC_DETACH_ORACLE_LITERAL='[EXEC_DETACH_ORACLE:x86:bodies=2:fail_preserved=2:sibling_refused=0:success_detached=2:fresh_root=2:tgid_self=2:custody_balance=0:leaf_residual=16:stack_residual=149:old_group_reached_pre=2:old_group_missed_post=2:self_group_reached_post=2]'
+# KernelStack::drop now unmaps the x86 stack VA range and releases its 128 frames; exactly one stack is allocated and dropped in this window, so 149 - 128 * 1 = 21.
+# kstack_frames_released proves that arithmetic in-kernel: the oracle asserts 149 - stack_residual == kstack_frames_released, preventing silent drift.
+EXEC_DETACH_ORACLE_LITERAL='[EXEC_DETACH_ORACLE:x86:bodies=2:fail_preserved=2:sibling_refused=0:success_detached=2:fresh_root=2:tgid_self=2:custody_balance=0:leaf_residual=16:stack_residual=21:kstack_frames_released=128:old_group_reached_pre=2:old_group_missed_post=2:self_group_reached_post=2]'
 CLONE_ADMISSION_ORACLE_LITERAL='[CLONE_ADMISSION_ORACLE:x86:admitted=1:refused=2:creating_refused=1:published_admitted=2:balance=0]'
 # Every field is a delta the oracle drives itself in the same run except
 # reserved_collisions, which is the absolute boot-wide count of ordinary
@@ -37,7 +40,15 @@ INIT_GROUP_REFUSAL_ORACLE_LITERAL='[INIT_GROUP_REFUSAL_ORACLE:x86:none_probes=3:
 # the in-kernel oracle asserts used_after == used_before, and a skipped/cfg'd-out block fails this gate.
 EXEC_FAILED_RELEASE_ORACLE_PATTERN='^\[EXEC_FAILED_RELEASE_ORACLE:x86:used_before=[0-9]+:used_after=[0-9]+:recorded_pre=3:leaf_recorded=1:leaf_released=1:leaf_returned=1:tables_returned=4:roots_retired=1:undecided=0:live_refused=0\]$'
 EXEC_FAILED_RELEASE_PROD_LITERAL='[EXEC_FAILED_RELEASE_PROD:x86:plain_err=true:plain_kept=true:argv_err=true:argv_kept=true:name_kept=true:balance=0:undecided=0:mid_retire=0:lost=0:custody_refused=0:decref_unregistered=0:double=0:stale=0:untracked=0:root_slot_refused=0]'
-# Ten oracle/counter lines are pinned field-exactly by the success chain below.
+# Creation/fork/slot/frame/refusal/classifier/balance fields are oracle-driven and exact.
+# live_checks is nonzero because every allocation evaluates the guard; pub_pooled and pub_sched_owned are nonzero boot-wide totals whose exact values depend on process creation, while the oracle asserts they are equal and both publication residuals are zero.
+# sched_publications is a nonzero boot-wide driver for sched_pm_held_production=0.
+# frame_used_delta is boot-state dependent because of heap growth during the stress; the oracle asserts it is strictly less than 128 frames, one x86 kernel stack's worth.
+KSTACK_OWNER_ORACLE_PATTERN='^\[KSTACK_OWNER_ORACLE:x86:creation_rows=1000:creation_owned=1000:one_owner=1000:two_owner=0:zero_owner=0:fork_rows=2:fork_owned=2:slot_returns_exact_one=2:slot_alloc_delta=1000:slot_free_delta=1000:slot_balance=0:frames_mapped_delta=128000:frames_released_delta=128000:frame_balance=0:frame_used_delta=[0-9]+:frame_used_bounded=1:live_checks=[1-9][0-9]*:live_refusals_production=0:live_refusals_injected=1:drop_refused_live=0:pte_overwrite_refusals=0:pub_pooled=[1-9][0-9]*:pub_sched_owned=[1-9][0-9]*:pub_row_residual=0:pub_unowned=0:classifier_sched_owned=1:classifier_row_residual=1:classifier_unowned=1:classifier_not_pooled=1:sched_publications=[1-9][0-9]*:sched_pm_held_production=0:sched_pm_held_injected=1:balance=0\]$'
+# The boot-test oracle deliberately drives the detector exactly once; the forbidden exact marker is separately pinned absent below.
+CREATION_LOCK_ORDER_INJECTED_LITERAL='[CREATION_LOCK_ORDER:INJECTED:PM_HELD]'
+CREATION_LOCK_ORDER_VIOLATION_LITERAL='[CREATION_LOCK_ORDER:VIOLATION:PM_HELD]'
+# Eleven oracle/counter lines are pinned by the success chain below; fields are exact except for the bounded boot-state-dependent KSTACK_OWNER fields documented above.
 # Ten launched test programs, 64 retire-cohort children, five loopback_wake_test
 # processes (parent, reader, peer, load, watchdog), 16 exec-cohort children, one
 # clonevm_exec_test process (renamed by its second-stage exec), its phase-1
@@ -159,6 +170,10 @@ for i in $(seq 1 "$COUNT"); do
                 "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
             && grep -qF -x "$EXEC_FAILED_RELEASE_PROD_LITERAL" \
                 "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
+            && grep -qE "$KSTACK_OWNER_ORACLE_PATTERN" \
+                "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
+            && grep -qF -x "$CREATION_LOCK_ORDER_INJECTED_LITERAL" \
+                "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
             && grep -q '\[TEST:userspace:loopback_recv_wake:PASS\]' \
                 "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
             && grep -q 'TEST_TALLY:' \
@@ -169,6 +184,12 @@ for i in $(seq 1 "$COUNT"); do
             break
         fi
         if grep -qE '\[BOOT_TESTS:FAIL|KERNEL PANIC|panic!' \
+            "$OUTPUT_DIR"/serial_*.txt 2>/dev/null; then
+            break
+        fi
+        # The scheduler publication seam emits this prefix if it publishes while
+        # the process-manager lock is held on that CPU; fail early on any variant.
+        if grep -qF '[CREATION_LOCK_ORDER:VIOLATION' \
             "$OUTPUT_DIR"/serial_*.txt 2>/dev/null; then
             break
         fi
@@ -237,6 +258,12 @@ for i in $(seq 1 "$COUNT"); do
         "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 1
     test "$(grep -h -F -x -c "$EXEC_FAILED_RELEASE_PROD_LITERAL" \
         "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 1
+    test "$(grep -h -E -c "$KSTACK_OWNER_ORACLE_PATTERN" \
+        "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 1
+    test "$(grep -h -F -x -c "$CREATION_LOCK_ORDER_INJECTED_LITERAL" \
+        "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 1
+    test "$(grep -h -F -x -c "$CREATION_LOCK_ORDER_VIOLATION_LITERAL" \
+        "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 0
     # x86 has no production designated init, so the runtime refusal never fires
     # and the whole-boot walk is legitimately zero here; this is the `None`-arm
     # evidence, not the whole-boot-walk evidence, and it becomes non-zero only
@@ -248,6 +275,8 @@ for i in $(seq 1 "$COUNT"); do
         "$BREENIX_ROOT/scripts/x86-gate-verdict.sh" "$OUTPUT_DIR"/serial_*.txt
     COUNTER_LINE=$(grep -hE "$FRAME_CUSTODY_PATTERN" \
         "$OUTPUT_DIR"/serial_*.txt | tail -1)
+    KSTACK_OWNER_LINE=$(grep -hE "$KSTACK_OWNER_ORACLE_PATTERN" \
+        "$OUTPUT_DIR"/serial_*.txt | tail -1)
     echo "$COUNTER_LINE"
     echo "$PT_CUSTODY_LITERAL"
     echo "$PT_COHORT_LITERAL"
@@ -257,6 +286,8 @@ for i in $(seq 1 "$COUNT"); do
     echo "$INIT_DESIGNATION_ORACLE_LITERAL"
     echo "$INIT_GROUP_REFUSAL_ORACLE_LITERAL"
     echo "$EXEC_FAILED_RELEASE_PROD_LITERAL"
+    echo "$KSTACK_OWNER_LINE"
+    echo "$CREATION_LOCK_ORDER_INJECTED_LITERAL"
     if grep -qE '\[BOOT_TESTS:FAIL|KERNEL PANIC|panic!' \
         "$OUTPUT_DIR"/serial_*.txt; then
         exit 1
@@ -266,6 +297,12 @@ for i in $(seq 1 "$COUNT"); do
         exit 1
     fi
     if grep -qE '\[TEST:userspace:[^]]*:FAIL' \
+        "$OUTPUT_DIR"/serial_*.txt; then
+        exit 1
+    fi
+    # Absence is meaningful because KSTACK_OWNER_ORACLE pins a nonzero
+    # sched_publications driver and the injected marker proves the detector fires.
+    if grep -qF '[CREATION_LOCK_ORDER:VIOLATION' \
         "$OUTPUT_DIR"/serial_*.txt; then
         exit 1
     fi

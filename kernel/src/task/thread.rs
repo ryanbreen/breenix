@@ -515,7 +515,9 @@ impl Clone for Thread {
             stack_top: self.stack_top,
             stack_bottom: self.stack_bottom,
             kernel_stack_top: self.kernel_stack_top,
-            kernel_stack_allocation: None, // Can't clone kernel stack allocation
+            // Kernel stacks cannot be cloned. Use `publish_to_scheduler` when
+            // publishing a process-table row so ownership moves to the copy.
+            kernel_stack_allocation: None,
             tls_block: self.tls_block,
             priority: self.priority,
             time_slice: self.time_slice,
@@ -539,6 +541,29 @@ impl Clone for Thread {
 }
 
 impl Thread {
+    /// Produce the scheduler's publication copy of a process-table row thread,
+    /// moving sole ownership of the kernel-stack allocation to that copy.
+    ///
+    /// `Thread::clone` cannot clone a `KernelStack`, so a naive publish would drop
+    /// the allocation. Ownership therefore MOVES: the scheduler copy is the single
+    /// owner and is freed only behind the scheduler's two-epoch retirement grace;
+    /// the row's copy is left holding `None` because ownership moved, not because
+    /// it leaked.
+    pub fn publish_to_scheduler(&mut self) -> Thread {
+        let mut published = self.clone();
+        published.kernel_stack_allocation = self.kernel_stack_allocation.take();
+        if let Some(allocation) = published.kernel_stack_allocation.as_mut() {
+            allocation.set_owner_pid(self.owner_pid);
+        }
+        let ownership = crate::memory::kernel_stack::classify_kernel_stack_ownership(
+            published.kernel_stack_top.map(|top| top.as_u64()),
+            published.kernel_stack_allocation.is_some(),
+            self.kernel_stack_allocation.is_some(),
+        );
+        crate::memory::kernel_stack::note_publication(ownership);
+        published
+    }
+
     // =========================================================================
     // x86_64-specific constructors
     // =========================================================================
