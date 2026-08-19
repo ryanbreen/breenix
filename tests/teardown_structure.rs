@@ -2458,7 +2458,8 @@ const PROCESS_ROW_MAP_MUTATIONS: &[(&str, &str, usize)] = &[
     ("kernel/src/process/manager.rs", "impl ProcessManager::#[cfg(target_arch=aarch64)] fn complete_fork_aarch64 => insert", 1),
     ("kernel/src/process/manager.rs", "impl ProcessManager::#[cfg(target_arch=aarch64)] fn create_process => insert", 1),
     ("kernel/src/process/manager.rs", "impl ProcessManager::#[cfg(target_arch=x86_64)] fn build_process_at => insert", 1),
-    ("kernel/src/process/manager.rs", "impl ProcessManager::#[cfg(target_arch=x86_64)] fn complete_fork => insert", 1),
+    // `complete_fork` is testing-only, so replacing its stale dead-code suppression with honest feature gating moved only this item path.
+    ("kernel/src/process/manager.rs", "impl ProcessManager::#[cfg(all(target_arch=x86_64,feature=testing))] fn complete_fork => insert", 1),
     ("kernel/src/process/manager.rs", "impl ProcessManager::#[cfg(target_arch=x86_64)] fn fork_process_with_context => insert", 1),
     ("kernel/src/process/manager.rs", "impl ProcessManager::fn debug_processes => raw-binding", 1),
     ("kernel/src/process/manager.rs", "impl ProcessManager::fn insert_process => insert", 1),
@@ -2471,9 +2472,17 @@ const QUARANTINE_CALLS: &[(&str, &str, usize)] = &[
 ];
 #[rustfmt::skip]
 const KERNEL_STACK_MUTATIONS: &[(&str, &str, usize)] = &[
-    ("kernel/src/arch_impl/aarch64/syscall_entry.rs", "fn sys_fork_aarch64", 1),
+    // Hand-written fork/clone transfers collapsed into `publish_to_scheduler`; this census keeps it the only ownership-moving API.
     ("kernel/src/process/manager.rs", "impl ProcessManager::#[cfg(target_arch=aarch64)] fn complete_fork_aarch64", 1),
-    ("kernel/src/syscall/clone.rs", "fn sys_clone", 1),
+    ("kernel/src/process/manager.rs", "impl ProcessManager::#[cfg(all(target_arch=x86_64,feature=testing))] fn complete_fork", 1),
+    ("kernel/src/task/thread.rs", "impl Thread::fn publish_to_scheduler", 1),
+];
+/// The four legitimate leaks convert owned vectors into static test-binary
+/// slices; the non-empty companion proves the empty `Box::leak(Box::new(`
+/// census can still see real `Box::leak(` sites.
+#[rustfmt::skip]
+const BOX_LEAK_CALLS: &[(&str, &str, usize)] = &[
+    ("kernel/src/userspace_test.rs", "#[cfg(feature=testing)] fn get_test_binary_static", 4),
 ];
 #[rustfmt::skip]
 const RECLAIM_ENQUEUE_CALLS: &[(&str, &str, usize)] = &[
@@ -2484,6 +2493,8 @@ const RECLAIM_ENQUEUE_CALLS: &[(&str, &str, usize)] = &[
     ("kernel/src/tracing/providers/teardown.rs", "#[cfg(feature=boot_tests)] fn fork_exit_defer_reclaim_pairing_test", 1),
     ("kernel/src/tracing/providers/teardown.rs", "#[cfg(all(feature=boot_tests,target_arch=x86_64))] fn exec_supersede_cohort_test", 1),
     ("kernel/src/tracing/providers/teardown.rs", "#[cfg(feature=boot_tests)] fn exec_detach_oracle_test::fn retire_and_remove_owned_row", 1),
+    // The kernel-stack ownership oracle now retires its owned fixture row through the same deferred-reclaim helper shape as the existing oracles.
+    ("kernel/src/tracing/providers/teardown.rs", "#[cfg(feature=boot_tests)] fn kernel_stack_ownership_oracle_test::fn retire_and_remove_owned_row", 1),
     ("kernel/src/tracing/providers/teardown.rs", "#[cfg(all(feature=boot_tests,target_arch=aarch64))] fn creating_dispatch_refusal_test::fn retire_and_remove_owned_row", 1),
 ];
 #[rustfmt::skip]
@@ -2597,6 +2608,8 @@ const PROCESS_PAGE_TABLE_CONSTRUCTORS: &[(&str, &str, usize)] = &[
     ("kernel/src/task/process_task.rs", "#[cfg(feature=boot_tests)] fn reclaim_progress_gate_test", 3),
     ("kernel/src/tracing/providers/teardown.rs", "#[cfg(feature=boot_tests)] fn fork_exit_defer_reclaim_pairing_test", 4),
     ("kernel/src/tracing/providers/teardown.rs", "#[cfg(all(feature=boot_tests,target_arch=x86_64))] fn exec_supersede_cohort_test", 3),
+    // The ownership oracle constructs the fork arm's parent page table plus one page table for each of its two fork children.
+    ("kernel/src/tracing/providers/teardown.rs", "#[cfg(feature=boot_tests)] fn kernel_stack_ownership_oracle_test", 3),
 ];
 #[rustfmt::skip]
 const DEFERRED_RECLAIM_DRAIN_SITES: &[(&str, &str, usize)] = &[
@@ -2962,6 +2975,115 @@ fn validate_p5b_gate_script_pins(
             &format!("run-aarch64-service-sequence-gate.sh lost P5b pin {pin}"),
             service.contains(pin),
         );
+    }
+
+    failures.is_empty().then_some(()).ok_or(failures)
+}
+
+const KSTACK_GATE_SCRIPT_PATHS: [&str; 4] = [
+    "docker/qemu/run-x86-boot-tests.sh",
+    "docker/qemu/run-aarch64-full-test.sh",
+    "docker/qemu/run-aarch64-boot-test-strict.sh",
+    "docker/qemu/run-aarch64-boot-test-native.sh",
+];
+
+fn kstack_gate_script_sources() -> Vec<(String, String)> {
+    KSTACK_GATE_SCRIPT_PATHS
+        .iter()
+        .map(|path| ((*path).to_owned(), repo_text(path)))
+        .collect()
+}
+
+fn validate_kstack_gate_script_pins(
+    scripts: &[(String, String)],
+) -> Result<(), Vec<String>> {
+    let mut failures = Vec::new();
+    let injected = "[CREATION_LOCK_ORDER:INJECTED:PM_HELD]";
+    let violation = "[CREATION_LOCK_ORDER:VIOLATION:PM_HELD]";
+    let x86_owner_pattern = "KSTACK_OWNER_ORACLE_PATTERN='^\\[KSTACK_OWNER_ORACLE:x86:creation_rows=1000:creation_owned=1000:one_owner=1000:two_owner=0:zero_owner=0:fork_rows=2:fork_owned=2:slot_returns_exact_one=2:slot_alloc_delta=1000:slot_free_delta=1000:slot_balance=0:frames_mapped_delta=128000:frames_released_delta=128000:frame_balance=0:frame_used_delta=[0-9]+:frame_used_bounded=1:live_checks=[1-9][0-9]*:live_refusals_production=0:live_refusals_injected=1:drop_refused_live=0:pte_overwrite_refusals=0:pub_pooled=[1-9][0-9]*:pub_sched_owned=[1-9][0-9]*:pub_row_residual=0:pub_unowned=0:classifier_sched_owned=1:classifier_row_residual=1:classifier_unowned=1:classifier_not_pooled=1:sched_publications=[1-9][0-9]*:sched_pm_held_production=0:sched_pm_held_injected=1:balance=0\\]$'";
+    let aarch64_owner_pattern = "KSTACK_OWNER_ORACLE_PATTERN='^\\[KSTACK_OWNER_ORACLE:aarch64:creation_rows=1000:creation_owned=1000:one_owner=1000:two_owner=0:zero_owner=0:fork_rows=1:fork_owned=1:slot_returns_exact_one=1:slot_alloc_delta=1000:slot_free_delta=1000:slot_balance=0:frames_mapped_delta=0:frames_released_delta=0:frame_balance=0:frame_used_delta=[0-9]+:frame_used_bounded=1:live_checks=[1-9][0-9]*:live_refusals_production=0:live_refusals_injected=1:drop_refused_live=0:pte_overwrite_refusals=0:pub_pooled=[1-9][0-9]*:pub_sched_owned=[1-9][0-9]*:pub_row_residual=0:pub_unowned=0:classifier_sched_owned=1:classifier_row_residual=1:classifier_unowned=1:classifier_not_pooled=1:sched_publications=[1-9][0-9]*:sched_pm_held_production=0:sched_pm_held_injected=1:balance=0\\]$'";
+
+    let x86 = source(scripts, "docker/qemu/run-x86-boot-tests.sh");
+    for pin in [
+        "grep -qE \"$KSTACK_OWNER_ORACLE_PATTERN\"",
+        "grep -h -E -c \"$KSTACK_OWNER_ORACLE_PATTERN\"",
+        "KSTACK_OWNER_LINE=$(grep -hE \"$KSTACK_OWNER_ORACLE_PATTERN\"",
+        "echo \"$KSTACK_OWNER_LINE\"",
+        "grep -qF '[CREATION_LOCK_ORDER:VIOLATION'",
+        "grep -qF -x \"$CREATION_LOCK_ORDER_INJECTED_LITERAL\"",
+        "grep -h -F -x -c \"$CREATION_LOCK_ORDER_INJECTED_LITERAL\"",
+        "grep -h -F -x -c \"$CREATION_LOCK_ORDER_VIOLATION_LITERAL\"",
+        injected,
+        violation,
+    ] {
+        check(
+            &mut failures,
+            &format!("run-x86-boot-tests.sh lost kernel-stack gate pin {pin}"),
+            x86.contains(pin),
+        );
+    }
+    check(
+        &mut failures,
+        "run-x86-boot-tests.sh kernel-stack owner pattern changed",
+        x86.matches(x86_owner_pattern).count() == 1,
+    );
+    let exec_detach = x86
+        .lines()
+        .find(|line| line.starts_with("EXEC_DETACH_ORACLE_LITERAL="))
+        .unwrap_or_default();
+    check(
+        &mut failures,
+        "x86 EXEC_DETACH_ORACLE pin lost kstack_frames_released",
+        exec_detach.contains("kstack_frames_released="),
+    );
+    let retire_cohort = x86
+        .lines()
+        .find(|line| line.starts_with("PT_COHORT_LITERAL="))
+        .unwrap_or_default();
+    check(
+        &mut failures,
+        "x86 PT_RETIRE_COHORT pin lost kstack_returns",
+        retire_cohort.contains("[PT_RETIRE_COHORT:x86:")
+            && retire_cohort.contains("kstack_returns="),
+    );
+
+    let full = source(scripts, "docker/qemu/run-aarch64-full-test.sh");
+    for pin in [
+        "grep -Eq \"$KSTACK_OWNER_ORACLE_PATTERN\"",
+        "grep -qF '[CREATION_LOCK_ORDER:VIOLATION'",
+        "Creation lock-order violation",
+        "grep -Fxc \"$CREATION_LOCK_ORDER_INJECTED_LITERAL\"",
+        injected,
+        violation,
+    ] {
+        check(
+            &mut failures,
+            &format!("run-aarch64-full-test.sh lost kernel-stack gate pin {pin}"),
+            full.contains(pin),
+        );
+    }
+    check(
+        &mut failures,
+        "run-aarch64-full-test.sh kernel-stack owner pattern changed",
+        full.matches(aarch64_owner_pattern).count() == 1,
+    );
+
+    for path in [
+        "docker/qemu/run-aarch64-boot-test-strict.sh",
+        "docker/qemu/run-aarch64-boot-test-native.sh",
+    ] {
+        let script = source(scripts, path);
+        for pin in [
+            "grep -qE \"\\[CREATION_LOCK_ORDER:VIOLATION\"",
+            "Creation lock-order violation",
+            violation,
+        ] {
+            check(
+                &mut failures,
+                &format!("{path} lost creation lock-order violation pin {pin}"),
+                script.contains(pin),
+            );
+        }
     }
 
     failures.is_empty().then_some(()).ok_or(failures)
@@ -3642,9 +3764,9 @@ fn validate_no_vacuous_test_conditions(sources: &[(String, String)]) -> Result<(
 fn validate_x86_frame_custody_harness(script: &str) -> Result<(), ()> {
     const FRAME_VECTOR: &str = "FRAME_CUSTODY_PATTERN='^\\[FRAME_CUSTODY_COUNTERS:x86:double=1:stale=1:never=1:untracked=1:duplicate=3:contended=[1-9][0-9]*\\]$'";
     const PT_CUSTODY_VECTOR: &str = "PT_CUSTODY_LITERAL='[PT_CUSTODY_COUNTERS:x86:recorded=14:no_proof=0:no_arch=0:terminated=1:undecided=1:retired=2:returned=14:lost=0:requeued=0]'";
-    const PT_COHORT_VECTOR: &str = "PT_COHORT_LITERAL='[PT_RETIRE_COHORT:x86:children=64:retired=65:returned=642:recorded=577:lost=0:no_arch=0:undecided=0:mid_retire=0:balance=0]'";
+    const PT_COHORT_VECTOR: &str = "PT_COHORT_LITERAL='[PT_RETIRE_COHORT:x86:children=64:retired=65:returned=642:recorded=577:lost=0:no_arch=0:undecided=0:mid_retire=0:kstack_returns=64:balance=0]'";
     const PT_EXEC_COHORT_VECTOR: &str = "PT_EXEC_COHORT_LITERAL='[PT_EXEC_COHORT:x86:children=16:superseded=3:roots=64:returned=640:recorded=576:lost=0:leaf_recorded=192:leaf_released=192:leaf_returned=192:custody_refused=0:decref_unregistered=0:undecided=0:mid_retire=0:no_arch=0:balance=0]' # The returned and recorded table-frame fields are pinned from the measured run.";
-    const EXEC_DETACH_ORACLE_VECTOR: &str = "EXEC_DETACH_ORACLE_LITERAL='[EXEC_DETACH_ORACLE:x86:bodies=2:fail_preserved=2:sibling_refused=0:success_detached=2:fresh_root=2:tgid_self=2:custody_balance=0:leaf_residual=16:stack_residual=149:old_group_reached_pre=2:old_group_missed_post=2:self_group_reached_post=2]'";
+    const EXEC_DETACH_ORACLE_VECTOR: &str = "EXEC_DETACH_ORACLE_LITERAL='[EXEC_DETACH_ORACLE:x86:bodies=2:fail_preserved=2:sibling_refused=0:success_detached=2:fresh_root=2:tgid_self=2:custody_balance=0:leaf_residual=16:stack_residual=21:kstack_frames_released=128:old_group_reached_pre=2:old_group_missed_post=2:self_group_reached_post=2]'";
     const CLONE_ADMISSION_ORACLE_VECTOR: &str = "CLONE_ADMISSION_ORACLE_LITERAL='[CLONE_ADMISSION_ORACLE:x86:admitted=1:refused=2:creating_refused=1:published_admitted=2:balance=0]'";
     const EXEC_FAILED_RELEASE_ORACLE_VECTOR: &str = "EXEC_FAILED_RELEASE_ORACLE_PATTERN='^\\[EXEC_FAILED_RELEASE_ORACLE:x86:used_before=[0-9]+:used_after=[0-9]+:recorded_pre=3:leaf_recorded=1:leaf_released=1:leaf_returned=1:tables_returned=4:roots_retired=1:undecided=0:live_refused=0\\]$'";
     const EXEC_FAILED_RELEASE_PROD_VECTOR: &str = "EXEC_FAILED_RELEASE_PROD_LITERAL='[EXEC_FAILED_RELEASE_PROD:x86:plain_err=true:plain_kept=true:argv_err=true:argv_kept=true:name_kept=true:balance=0:undecided=0:mid_retire=0:lost=0:custody_refused=0:decref_unregistered=0:double=0:stale=0:untracked=0:root_slot_refused=0]'";
@@ -4627,7 +4749,9 @@ fn validate_pr1c_retirement_oracles(sources: &[(String, String)]) -> Result<(), 
         "let allocator_balance = allocator_used_after as i64 - allocator_used_before as i64;",
         "|| no_arch_delta != 0",
         "[TEST:process:x86_retire_cohort:PASS]",
-        "[PT_RETIRE_COHORT:x86:children={}:retired={}:returned={}:recorded={}:lost={}:no_arch={}:undecided={}:mid_retire={}:balance={}]",
+        "[PT_RETIRE_COHORT:x86:children={}:retired={}:returned={}:recorded={}:lost={}:no_arch={}:undecided={}:mid_retire={}:kstack_returns={}:balance={}]",
+        ":kstack_returns={}",
+        "if kstack_returns != pairing_child_pids.len() as u64 {",
         "pairing sentinel hierarchy cost changed between children",
     ] {
         if !gate.contains(required) {
@@ -4855,9 +4979,9 @@ fn validate_process_page_table_runtime_oracle(sources: &[(String, String)]) -> R
         && harness.contains("exec_detach_oracle:PASS")
         && harness.contains("clone_admission_oracle:PASS")
         && harness.contains("[PT_CUSTODY_COUNTERS:x86:recorded=14:no_proof=0:no_arch=0:terminated=1:undecided=1:retired=2:returned=14:lost=0:requeued=0]")
-        && harness.contains("[PT_RETIRE_COHORT:x86:children=64:retired=65:returned=642:recorded=577:lost=0:no_arch=0:undecided=0:mid_retire=0:balance=0]")
+        && harness.contains("[PT_RETIRE_COHORT:x86:children=64:retired=65:returned=642:recorded=577:lost=0:no_arch=0:undecided=0:mid_retire=0:kstack_returns=64:balance=0]")
         && harness.contains("[PT_EXEC_COHORT:x86:children=16:superseded=3:roots=64:returned=640:recorded=576:lost=0:leaf_recorded=192:leaf_released=192:leaf_returned=192:custody_refused=0:decref_unregistered=0:undecided=0:mid_retire=0:no_arch=0:balance=0]")
-        && harness.contains("[EXEC_DETACH_ORACLE:x86:bodies=2:fail_preserved=2:sibling_refused=0:success_detached=2:fresh_root=2:tgid_self=2:custody_balance=0:leaf_residual=16:stack_residual=149:old_group_reached_pre=2:old_group_missed_post=2:self_group_reached_post=2]")
+        && harness.contains("[EXEC_DETACH_ORACLE:x86:bodies=2:fail_preserved=2:sibling_refused=0:success_detached=2:fresh_root=2:tgid_self=2:custody_balance=0:leaf_residual=16:stack_residual=21:kstack_frames_released=128:old_group_reached_pre=2:old_group_missed_post=2:self_group_reached_post=2]")
         && harness.contains("[CLONE_ADMISSION_ORACLE:x86:admitted=1:refused=2:creating_refused=1:published_admitted=2:balance=0]")
         && harness
             .matches("page_table_custody_disposition_gate:PASS")
@@ -5453,6 +5577,33 @@ fn p5b_gate_scripts_keep_refusal_evidence_pinned() {
     if let Err(failures) = validate_p5b_gate_script_pins(&scripts) {
         panic!("{}", failures.join("\n"));
     }
+}
+
+#[test]
+fn kernel_stack_gate_scripts_keep_ownership_evidence_pinned() {
+    let scripts = kstack_gate_script_sources();
+    if let Err(failures) = validate_kstack_gate_script_pins(&scripts) {
+        panic!("{}", failures.join("\n"));
+    }
+}
+
+#[test]
+fn kernel_stack_gate_validator_rejects_a_deleted_pin() {
+    let scripts = kstack_gate_script_sources();
+    let x86 = source(&scripts, "docker/qemu/run-x86-boot-tests.sh");
+    let pin_line = x86
+        .lines()
+        .find(|line| line.starts_with("KSTACK_OWNER_ORACLE_PATTERN="))
+        .expect("x86 kernel-stack owner pin mutation anchor");
+    let pin_with_newline = format!("{pin_line}\n");
+    let deleted_pin = x86.replacen(&pin_with_newline, "", 1);
+    assert_ne!(deleted_pin, x86, "x86 kernel-stack owner pin deletion");
+    let deleted_pin = with_replaced_source(
+        &scripts,
+        "docker/qemu/run-x86-boot-tests.sh",
+        deleted_pin,
+    );
+    assert!(validate_kstack_gate_script_pins(&deleted_pin).is_err());
 }
 
 #[test]
@@ -7437,8 +7588,8 @@ fn deliberately_broken_variants_fail_the_ratchet() {
         assert!(validate_pr1c_retirement_oracles(&weakened).is_err());
     }
     let unbalanced_x86_marker = provider.replacen(
-        "mid_retire={}:balance={}]",
-        "mid_retire={}:balance=unchecked]",
+        "mid_retire={}:kstack_returns={}:balance={}]",
+        "mid_retire={}:kstack_returns={}:balance=unchecked]",
         1,
     );
     let unbalanced_x86_marker = with_replaced_source(
@@ -8264,7 +8415,7 @@ fn deliberately_broken_variants_fail_the_ratchet() {
     .is_err());
     assert!(validate_x86_frame_custody_harness(
         &harness.replace(
-            "[PT_RETIRE_COHORT:x86:children=64:retired=65:returned=642:recorded=577:lost=0:no_arch=0:undecided=0:mid_retire=0:balance=0]",
+            "[PT_RETIRE_COHORT:x86:children=64:retired=65:returned=642:recorded=577:lost=0:no_arch=0:undecided=0:mid_retire=0:kstack_returns=64:balance=0]",
             "[PT_RETIRE_COHORT:x86:.*]",
         )
     )
@@ -8964,7 +9115,7 @@ fn validate_x86_leaf_timing_oracle_is_live(
         || !cohort.contains("TEARDOWN_MASKED_FRAMES_WALKED")
         || !cohort.contains("!= 0")
         || !harness.contains(
-            "PT_COHORT_LITERAL='[PT_RETIRE_COHORT:x86:children=64:retired=65:returned=642:recorded=577:lost=0:no_arch=0:undecided=0:mid_retire=0:balance=0]'",
+            "PT_COHORT_LITERAL='[PT_RETIRE_COHORT:x86:children=64:retired=65:returned=642:recorded=577:lost=0:no_arch=0:undecided=0:mid_retire=0:kstack_returns=64:balance=0]'",
         )
     {
         return Err(());
@@ -8998,7 +9149,7 @@ fn leaf_timing_oracle_validator_rejects_an_empty_old_root_fixture() {
             if TEARDOWN_MASKED_FRAMES_WALKED.aggregate() != 0 { fail(); }
         }
     "#;
-    let harness = "PT_COHORT_LITERAL='[PT_RETIRE_COHORT:x86:children=64:retired=65:returned=642:recorded=577:lost=0:no_arch=0:undecided=0:mid_retire=0:balance=0]'";
+    let harness = "PT_COHORT_LITERAL='[PT_RETIRE_COHORT:x86:children=64:retired=65:returned=642:recorded=577:lost=0:no_arch=0:undecided=0:mid_retire=0:kstack_returns=64:balance=0]'";
     assert!(validate_x86_leaf_timing_oracle_is_live(process, teardown, harness).is_err());
 }
 
@@ -9201,4 +9352,369 @@ fn rust_fork_library_override_validator_rejects_hardcoded_paths() {
         bail!("Forked Rust library not found at {}. Set {}", path, RUST_FORK_LIBRARY_ENV);
     "#;
     assert!(validate_rust_fork_library_override(hardcoded_build_script, hardcoded_xtask).is_err());
+}
+
+fn validate_box_leak_censuses(sources: &[(String, String)]) -> Result<(), String> {
+    let owned_value_leaks = census(sources, |source, mask| {
+        code_offsets(source, mask, "Box::leak(Box::new(")
+    });
+    validate_census(&owned_value_leaks, &[])
+        .map_err(|diff| format!("Box::leak(Box::new( census changed\n{}", diff.join("\n")))?;
+
+    let all_box_leaks = census(sources, |source, mask| {
+        code_offsets(source, mask, "Box::leak(")
+    });
+    if all_box_leaks.is_empty() {
+        return Err("Box::leak companion census became vacuous".to_owned());
+    }
+    validate_census(&all_box_leaks, BOX_LEAK_CALLS)
+        .map_err(|diff| format!("Box::leak companion census changed\n{}", diff.join("\n")))
+}
+
+fn validate_kernel_stack_ownership_gate_launch(main: &str, registry: &str) -> Result<(), String> {
+    const X86_CALL: &str = "teardown::run_x86_kernel_stack_ownership_gate();";
+    let main_mask = code_mask(main);
+    if code_offsets(main, &main_mask, X86_CALL).len() != 1 {
+        return Err("x86 kernel-stack ownership gate launch is not unique".to_owned());
+    }
+    let kernel_main = function_body(main, "kernel_main_on_kernel_stack");
+    if code_offsets(kernel_main, &code_mask(kernel_main), X86_CALL).len() != 1 {
+        return Err("x86 kernel-stack ownership gate left kernel_main_on_kernel_stack".to_owned());
+    }
+
+    let registry_mask = code_mask(registry);
+    let registrations = identifier_offsets(
+        registry,
+        &registry_mask,
+        "kernel_stack_ownership_oracle_test",
+    );
+    if registrations.len() != 1
+        || registry
+            .matches("name: \"kernel_stack_ownership_oracle\"")
+            .count()
+            != 1
+    {
+        return Err("aarch64 kernel-stack ownership registration is not unique".to_owned());
+    }
+    let entry = enclosing_test_def(registry, &registry_mask, registrations[0])
+        .ok_or_else(|| "kernel-stack ownership function is not inside a TestDef".to_owned())?;
+    if entry
+        .matches("name: \"kernel_stack_ownership_oracle\"")
+        .count()
+        != 1
+        || entry
+            .matches(
+                "func: crate::tracing::providers::teardown::kernel_stack_ownership_oracle_test",
+            )
+            .count()
+            != 1
+        || !entry.contains("arch: Arch::Aarch64")
+        || entry.contains("arch: Arch::Any")
+        || entry.contains("arch: Arch::X86_64")
+    {
+        return Err(
+            "kernel-stack ownership TestDef changed name, target, or architecture".to_owned(),
+        );
+    }
+    Ok(())
+}
+
+fn code_offset_once(source: &str, needle: &str) -> Result<usize, String> {
+    let offsets = code_offsets(source, &code_mask(source), needle);
+    if offsets.len() != 1 {
+        return Err(format!(
+            "expected exactly one `{needle}`, found {}",
+            offsets.len()
+        ));
+    }
+    Ok(offsets[0])
+}
+
+fn check_kernel_stack_drop_release_order(kernel_stack: &str) -> Result<(), String> {
+    let drop_body = function_body(kernel_stack, "drop");
+    let drop_mask = code_mask(drop_body);
+    let live_checks = code_offsets(drop_body, &drop_mask, "if is_kernel_stack_slot_live(");
+    if live_checks.len() != 2 {
+        return Err(format!(
+            "KernelStack::drop must have two runtime live-slot refusals, found {}",
+            live_checks.len()
+        ));
+    }
+    let aarch64_bitmap_clear = code_offset_once(drop_body, "aarch64::free_kernel_stack(")?;
+    let unmap = code_offset_once(drop_body, "unmap_kernel_page(")?;
+    let deallocate = code_offset_once(drop_body, "deallocate_frame(")?;
+    let x86_bitmap_clear = code_offset_once(drop_body, "free_stack_slot(")?;
+    if !(live_checks[0] < aarch64_bitmap_clear
+        && aarch64_bitmap_clear < live_checks[1]
+        && live_checks[1] < unmap
+        && live_checks[1] < deallocate
+        && live_checks[1] < x86_bitmap_clear)
+    {
+        return Err("KernelStack::drop releases a slot before refusing a live owner".to_owned());
+    }
+    for live_check in live_checks {
+        let refusal = braced_block(drop_body, &drop_mask, live_check)
+            .ok_or_else(|| "KernelStack::drop live-slot refusal is not braced".to_owned())?;
+        if !refusal.contains("KSTACK_DROP_REFUSED_LIVE.fetch_add(") || !refusal.contains("return;")
+        {
+            return Err(
+                "KernelStack::drop live-slot check is not a fail-closed refusal".to_owned(),
+            );
+        }
+    }
+    Ok(())
+}
+
+fn check_kernel_stack_map_refusal_order(kernel_page_table: &str) -> Result<(), String> {
+    let map_body = function_body(kernel_page_table, "map_kernel_page");
+    let map_mask = code_mask(map_body);
+    let refusals = code_offsets(
+        map_body,
+        &map_mask,
+        "if crate::memory::kernel_stack::is_kernel_stack_va(",
+    );
+    if refusals.len() != 1 {
+        return Err(format!(
+            "map_kernel_page must have one kernel-stack PTE refusal, found {}",
+            refusals.len()
+        ));
+    }
+    let refusal = braced_block(map_body, &map_mask, refusals[0])
+        .ok_or_else(|| "map_kernel_page refusal is not braced".to_owned())?;
+    if !refusal.contains("PageTableFlags::PRESENT")
+        || !refusal.contains("note_kernel_stack_pte_overwrite_refused()")
+        || !refusal.contains("return Err(")
+    {
+        return Err("map_kernel_page present-PTE check is not a counted refusal".to_owned());
+    }
+    let set_frame = code_offset_once(
+        map_body,
+        "pt[pt_index as usize].set_frame(page_frame, flags)",
+    )?;
+    if refusals[0] >= set_frame {
+        return Err(
+            "map_kernel_page installs a kernel-stack PTE before refusing overwrite".to_owned(),
+        );
+    }
+    Ok(())
+}
+
+fn check_kernel_stack_allocator_live_guards(kernel_stack: &str) -> Result<(), String> {
+    let functions = module_function_bodies(kernel_stack);
+    let guarded_allocators: Vec<_> = functions
+        .get("allocate_kernel_stack")
+        .into_iter()
+        .flatten()
+        .filter(|body| body.contains("KSTACK_LIVE_SLOT_CHECKS.fetch_add("))
+        .copied()
+        .collect();
+    if guarded_allocators.len() != 2 {
+        return Err(format!(
+            "expected guarded x86 and aarch64 allocators, found {}",
+            guarded_allocators.len()
+        ));
+    }
+    for body in guarded_allocators {
+        let mask = code_mask(body);
+        let runtime_checks = code_offsets(body, &mask, "if is_kernel_stack_slot_live(");
+        if runtime_checks.len() != 1 {
+            return Err("kernel-stack allocator live-slot guard is not one runtime if".to_owned());
+        }
+        let refusal = braced_block(body, &mask, runtime_checks[0])
+            .ok_or_else(|| "kernel-stack allocator live-slot guard is not braced".to_owned())?;
+        if !refusal.contains("KSTACK_LIVE_SLOT_REFUSALS.fetch_add(")
+            || !refusal.contains("return Err(")
+        {
+            return Err(
+                "kernel-stack allocator live-slot guard does not count and return Err".to_owned(),
+            );
+        }
+        for debug_assertion in code_offsets(body, &mask, "debug_assert!") {
+            let Some(open) = next_code(body, &mask, debug_assertion + "debug_assert!".len()) else {
+                return Err("kernel-stack allocator has a malformed debug_assert!".to_owned());
+            };
+            let Some(close) = matching_paren(body, &mask, open) else {
+                return Err("kernel-stack allocator has an unterminated debug_assert!".to_owned());
+            };
+            if !code_offsets(
+                &body[open + 1..close],
+                &code_mask(&body[open + 1..close]),
+                "is_kernel_stack_slot_live",
+            )
+            .is_empty()
+            {
+                return Err("kernel-stack live-slot guard regressed to debug_assert!".to_owned());
+            }
+        }
+    }
+    Ok(())
+}
+
+fn check_reclaimed_threads_drop_after_unlock(scheduler: &str) -> Result<(), String> {
+    let functions = module_function_bodies(scheduler);
+    let wrappers: Vec<_> = functions
+        .get("reclaim_terminated_threads")
+        .into_iter()
+        .flatten()
+        .filter(|body| body.contains("without_interrupts("))
+        .copied()
+        .collect();
+    if wrappers.len() != 1 {
+        return Err(format!(
+            "expected one free reclaim_terminated_threads wrapper, found {}",
+            wrappers.len()
+        ));
+    }
+    let body = wrappers[0];
+    let mask = code_mask(body);
+    let binding = code_offset_once(body, "let reclaimed_threads =")?;
+    let without = code_offset_once(body, "without_interrupts(")?;
+    let drop_reclaimed = code_offset_once(body, "drop(reclaimed_threads)")?;
+    let open = next_code(body, &mask, without + "without_interrupts".len())
+        .ok_or_else(|| "without_interrupts call has no argument list".to_owned())?;
+    let close = matching_paren(body, &mask, open)
+        .ok_or_else(|| "without_interrupts call has no closing parenthesis".to_owned())?;
+    if !(binding < without && close < drop_reclaimed) {
+        return Err(
+            "reclaimed Box<Thread> values are not bound and dropped outside without_interrupts"
+                .to_owned(),
+        );
+    }
+    Ok(())
+}
+
+fn validate_kernel_stack_release_mechanism(
+    kernel_stack: &str,
+    kernel_page_table: &str,
+    scheduler: &str,
+) -> Result<(), String> {
+    check_kernel_stack_drop_release_order(kernel_stack)?;
+    check_kernel_stack_map_refusal_order(kernel_page_table)?;
+    check_kernel_stack_allocator_live_guards(kernel_stack)?;
+    check_reclaimed_threads_drop_after_unlock(scheduler)
+}
+
+#[test]
+fn box_leak_box_new_census_is_empty_and_nonvacuous() {
+    validate_box_leak_censuses(&rust_sources_below("kernel/src")).expect("Box::leak censuses");
+}
+
+#[test]
+fn box_leak_box_new_census_rejects_a_sixth_site() {
+    let sources = rust_sources_below("kernel/src");
+    let sixth = with_synthetic_source(
+        &sources,
+        "kernel/src/synthetic_sixth_box_leak.rs",
+        "fn sixth_box_leak() { let leaked = Box::leak(Box::new(6u8)); consume(leaked); }",
+    );
+    assert!(validate_box_leak_censuses(&sixth).is_err());
+}
+
+#[test]
+fn kernel_stack_ownership_gate_launch_is_exact() {
+    validate_kernel_stack_ownership_gate_launch(
+        &repo_text("kernel/src/main.rs"),
+        &repo_text("kernel/src/test_framework/registry.rs"),
+    )
+    .expect("kernel-stack ownership gate launch");
+}
+
+#[test]
+fn kernel_stack_ownership_gate_launch_validator_rejects_missing_producers() {
+    let main = repo_text("kernel/src/main.rs");
+    let registry = repo_text("kernel/src/test_framework/registry.rs");
+    let missing_x86 = main.replacen(
+        "teardown::run_x86_kernel_stack_ownership_gate();",
+        "teardown::run_x86_kernel_stack_ownership_gate_removed();",
+        1,
+    );
+    assert_ne!(missing_x86, main, "x86 launch mutation applied");
+    assert!(validate_kernel_stack_ownership_gate_launch(&missing_x86, &registry).is_err());
+
+    let missing_aarch64 = registry.replacen(
+        "func: crate::tracing::providers::teardown::kernel_stack_ownership_oracle_test",
+        "func: crate::tracing::providers::teardown::kernel_stack_ownership_oracle_removed",
+        1,
+    );
+    assert_ne!(missing_aarch64, registry, "aarch64 launch mutation applied");
+    assert!(validate_kernel_stack_ownership_gate_launch(&main, &missing_aarch64).is_err());
+}
+
+#[test]
+fn kernel_stack_release_ordering_is_structural() {
+    validate_kernel_stack_release_mechanism(
+        &repo_text("kernel/src/memory/kernel_stack.rs"),
+        &repo_text("kernel/src/memory/kernel_page_table.rs"),
+        &repo_text("kernel/src/task/scheduler.rs"),
+    )
+    .expect("kernel-stack release mechanism");
+}
+
+#[test]
+fn kernel_stack_release_validator_rejects_unsafe_mutations() {
+    let kernel_stack = repo_text("kernel/src/memory/kernel_stack.rs");
+    let kernel_page_table = repo_text("kernel/src/memory/kernel_page_table.rs");
+    let scheduler = repo_text("kernel/src/task/scheduler.rs");
+
+    let free_before_check = kernel_stack.replacen(
+        "        #[cfg(target_arch = \"x86_64\")]\n        {\n            if is_kernel_stack_slot_live(self.top.as_u64()) {",
+        "        #[cfg(target_arch = \"x86_64\")]\n        {\n            free_stack_slot(self.index);\n            if is_kernel_stack_slot_live(self.top.as_u64()) {",
+        1,
+    );
+    assert_ne!(
+        free_before_check, kernel_stack,
+        "Drop order mutation applied"
+    );
+    assert!(validate_kernel_stack_release_mechanism(
+        &free_before_check,
+        &kernel_page_table,
+        &scheduler,
+    )
+    .is_err());
+
+    let map_before_refusal = kernel_page_table.replacen(
+        "    if crate::memory::kernel_stack::is_kernel_stack_va(virt.as_u64())",
+        "    pt[pt_index as usize].set_frame(page_frame, flags);\n\n    if crate::memory::kernel_stack::is_kernel_stack_va(virt.as_u64())",
+        1,
+    );
+    assert_ne!(
+        map_before_refusal, kernel_page_table,
+        "map order mutation applied"
+    );
+    assert!(validate_kernel_stack_release_mechanism(
+        &kernel_stack,
+        &map_before_refusal,
+        &scheduler,
+    )
+    .is_err());
+
+    let runtime_guard = "    if is_kernel_stack_slot_live(stack_top.as_u64()) {\n        KSTACK_LIVE_SLOT_REFUSALS.fetch_add(1, Ordering::Relaxed);\n        free_stack_slot(index);\n        return Err(\"kernel-stack allocator selected a live slot\");\n    }";
+    let debug_only = kernel_stack.replacen(
+        runtime_guard,
+        "    debug_assert!(!is_kernel_stack_slot_live(stack_top.as_u64()));",
+        1,
+    );
+    assert_ne!(
+        debug_only, kernel_stack,
+        "allocator debug_assert mutation applied"
+    );
+    assert!(
+        validate_kernel_stack_release_mechanism(&debug_only, &kernel_page_table, &scheduler,)
+            .is_err()
+    );
+
+    let drop_under_lock = r#"
+        fn reclaim_terminated_threads() {
+            without_interrupts(|| {
+                let reclaimed_threads = scheduler.reclaim_terminated_threads();
+                drop(reclaimed_threads);
+            });
+        }
+    "#;
+    assert!(validate_kernel_stack_release_mechanism(
+        &kernel_stack,
+        &kernel_page_table,
+        drop_under_lock,
+    )
+    .is_err());
 }

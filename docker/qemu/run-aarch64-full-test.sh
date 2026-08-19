@@ -21,6 +21,14 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BREENIX_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+# Creation/fork/slot/refusal/classifier/balance fields are oracle-driven and exact.
+# aarch64 frames_mapped_delta and frames_released_delta are legitimately 0 because its HHDM-preallocated kernel stacks map no frames, which the oracle asserts in-kernel.
+# live_checks is nonzero because every allocation evaluates the guard; pub_pooled and pub_sched_owned are nonzero boot-wide totals whose exact values depend on process creation, while the oracle asserts they are equal and both publication residuals are zero.
+# sched_publications is a nonzero boot-wide driver for sched_pm_held_production=0. frame_used_delta varies with heap growth, while the oracle asserts it is strictly less than one 128-frame kernel stack.
+KSTACK_OWNER_ORACLE_PATTERN='^\[KSTACK_OWNER_ORACLE:aarch64:creation_rows=1000:creation_owned=1000:one_owner=1000:two_owner=0:zero_owner=0:fork_rows=1:fork_owned=1:slot_returns_exact_one=1:slot_alloc_delta=1000:slot_free_delta=1000:slot_balance=0:frames_mapped_delta=0:frames_released_delta=0:frame_balance=0:frame_used_delta=[0-9]+:frame_used_bounded=1:live_checks=[1-9][0-9]*:live_refusals_production=0:live_refusals_injected=1:drop_refused_live=0:pte_overwrite_refusals=0:pub_pooled=[1-9][0-9]*:pub_sched_owned=[1-9][0-9]*:pub_row_residual=0:pub_unowned=0:classifier_sched_owned=1:classifier_row_residual=1:classifier_unowned=1:classifier_not_pooled=1:sched_publications=[1-9][0-9]*:sched_pm_held_production=0:sched_pm_held_injected=1:balance=0\]$'
+# The boot-test oracle drives this injection exactly once; its forbidden detector output is pinned absent below.
+CREATION_LOCK_ORDER_INJECTED_LITERAL='[CREATION_LOCK_ORDER:INJECTED:PM_HELD]'
+CREATION_LOCK_ORDER_VIOLATION_LITERAL='[CREATION_LOCK_ORDER:VIOLATION:PM_HELD]'
 
 # Parse args
 REBUILD=false
@@ -133,6 +141,10 @@ check_fatal() {
         echo "Exec lock-order violation"
         return 0
     fi
+    if grep -qF '[CREATION_LOCK_ORDER:VIOLATION' "$serial" 2>/dev/null; then
+        echo "Creation lock-order violation"
+        return 0
+    fi
     return 1
 }
 
@@ -188,7 +200,16 @@ if ! $PHASE1_OK && [ -z "$FAIL_REASON" ]; then
 fi
 
 if $PHASE1_OK && [ -z "$FAIL_REASON" ]; then
-    if ! grep -Fq '[CREATING_DISPATCH_ORACLE:aarch64:injected=1:refused_via_dispatch=1:requeue_retried=1:dispatched_after_publish=1:balance=0:leaf_residual=16:user_stack_residual=16]' "$OUTPUT_DIR/serial.txt" 2>/dev/null; then
+    # The scheduler publication seam emits this prefix if publication happens
+    # while the process-manager lock is held on the same CPU. Its absence is
+    # driven by the nonzero sched_publications field and the injected marker.
+    if grep -qF '[CREATION_LOCK_ORDER:VIOLATION' "$OUTPUT_DIR/serial.txt" 2>/dev/null; then
+        FAIL_REASON="Phase 1: creation lock-order violation detected (forbidden $CREATION_LOCK_ORDER_VIOLATION_LITERAL)"
+    elif [ "$(grep -Fxc "$CREATION_LOCK_ORDER_INJECTED_LITERAL" "$OUTPUT_DIR/serial.txt" 2>/dev/null || true)" -ne 1 ]; then
+        FAIL_REASON="Phase 1: creation lock-order detector injection marker count is not exactly one"
+    elif ! grep -Eq "$KSTACK_OWNER_ORACLE_PATTERN" "$OUTPUT_DIR/serial.txt" 2>/dev/null; then
+        FAIL_REASON="Phase 1: missing or malformed aarch64 kernel-stack ownership oracle marker"
+    elif ! grep -Fq '[CREATING_DISPATCH_ORACLE:aarch64:injected=1:refused_via_dispatch=1:requeue_retried=1:dispatched_after_publish=1:balance=0:leaf_residual=16:user_stack_residual=16]' "$OUTPUT_DIR/serial.txt" 2>/dev/null; then
         FAIL_REASON="Phase 1: missing creating-dispatch refusal oracle marker"
     elif ! grep -Fq '[TEST:process:init_designation_oracle:PASS]' "$OUTPUT_DIR/serial.txt" 2>/dev/null; then
         FAIL_REASON="Phase 1: missing init designation oracle PASS marker"
