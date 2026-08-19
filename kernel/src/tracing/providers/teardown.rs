@@ -726,6 +726,7 @@ struct BootTestPidCountSlot {
     table_frames_returned: AtomicU64,
     table_frames_lost: AtomicU64,
     roots_retired: AtomicU64,
+    kernel_stack_slot_returns: AtomicU64,
 }
 
 #[cfg(feature = "boot_tests")]
@@ -745,6 +746,7 @@ impl BootTestPidCountSlot {
             table_frames_returned: AtomicU64::new(0),
             table_frames_lost: AtomicU64::new(0),
             roots_retired: AtomicU64::new(0),
+            kernel_stack_slot_returns: AtomicU64::new(0),
         }
     }
 }
@@ -779,6 +781,7 @@ enum BootTestPidCountKind {
     TableFrameReturned,
     TableFrameLost,
     RootRetired,
+    KernelStackSlotReturn,
 }
 
 #[cfg(feature = "boot_tests")]
@@ -830,6 +833,10 @@ fn record_boot_test_pid_count(pid: u64, kind: BootTestPidCountKind) {
                 BootTestPidCountKind::RootRetired => {
                     slot.roots_retired.fetch_add(1, Ordering::Release);
                 }
+                BootTestPidCountKind::KernelStackSlotReturn => {
+                    slot.kernel_stack_slot_returns
+                        .fetch_add(1, Ordering::Release);
+                }
             }
             return;
         }
@@ -856,6 +863,7 @@ fn reset_boot_test_pid_counts() -> BootTestPidCountsGuard {
         slot.table_frames_returned.store(0, Ordering::Relaxed);
         slot.table_frames_lost.store(0, Ordering::Relaxed);
         slot.roots_retired.store(0, Ordering::Relaxed);
+        slot.kernel_stack_slot_returns.store(0, Ordering::Relaxed);
     }
     BOOT_TEST_PID_COUNTS_ACTIVE.store(1, Ordering::Release);
     BootTestPidCountsGuard
@@ -891,6 +899,7 @@ struct BootTestPidCounts {
     table_frames_returned: u64,
     table_frames_lost: u64,
     roots_retired: u64,
+    kernel_stack_slot_returns: u64,
 }
 
 #[cfg(feature = "boot_tests")]
@@ -907,6 +916,7 @@ fn boot_test_pid_counts(pid: u64) -> BootTestPidCounts {
                 table_frames_returned: slot.table_frames_returned.load(Ordering::Relaxed),
                 table_frames_lost: slot.table_frames_lost.load(Ordering::Relaxed),
                 roots_retired: slot.roots_retired.load(Ordering::Relaxed),
+                kernel_stack_slot_returns: slot.kernel_stack_slot_returns.load(Ordering::Relaxed),
             };
         }
         if slot_pid == 0 {
@@ -973,6 +983,15 @@ pub fn record_reclaim(pid: u64) {
     crate::trace_event!(TEARDOWN_PROVIDER, TEARDOWN_RECLAIM_EVENT, pid as u32);
     #[cfg(feature = "boot_tests")]
     record_boot_test_pid_count(pid, BootTestPidCountKind::Reclaim);
+}
+
+#[inline(always)]
+pub fn record_kernel_stack_slot_return(pid: u64) {
+    // Called from `KernelStack::drop`; keep this allocation-free and lock-light.
+    #[cfg(feature = "boot_tests")]
+    record_boot_test_pid_count(pid, BootTestPidCountKind::KernelStackSlotReturn);
+    #[cfg(not(feature = "boot_tests"))]
+    let _ = pid;
 }
 
 #[inline(always)]
@@ -1046,6 +1065,7 @@ pub struct TeardownPidEvidence {
     pub bucket_published_count: u64,
     pub bucket_observed_count: u64,
     pub bucket_collision_count: u64,
+    pub kernel_stack_slot_returns: u64,
 }
 
 #[cfg(feature = "boot_tests")]
@@ -1072,6 +1092,7 @@ pub fn teardown_pid_evidence(pid: u64) -> Option<TeardownPidEvidence> {
         bucket_published_count: EXIT_KICK_BUCKET_PUBLISH_COUNTS[bucket].load(Ordering::Acquire),
         bucket_observed_count: EXIT_KICK_BUCKET_OBSERVED_COUNTS[bucket].load(Ordering::Acquire),
         bucket_collision_count: EXIT_KICK_BUCKET_COLLISION_COUNTS[bucket].load(Ordering::Acquire),
+        kernel_stack_slot_returns: slot.kernel_stack_slot_returns.load(Ordering::Acquire),
     })
 }
 

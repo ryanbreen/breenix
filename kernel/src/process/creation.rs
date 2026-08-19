@@ -64,11 +64,11 @@ pub fn create_user_process(name: String, elf_data: &[u8]) -> Result<ProcessId, &
         crate::serial_println!(
             "create_user_process: Acquiring process manager for thread scheduling"
         );
-        let manager_guard = crate::process::manager();
+        let mut manager_guard = crate::process::manager();
         crate::serial_println!("create_user_process: Got process manager lock for scheduling");
-        if let Some(ref manager) = *manager_guard {
-            if let Some(process) = manager.get_process(pid) {
-                if let Some(ref main_thread) = process.main_thread {
+        if let Some(ref mut manager) = *manager_guard {
+            if let Some(process) = manager.get_process_mut(pid) {
+                if let Some(ref mut main_thread) = process.main_thread {
                     // Verify it's a user thread
                     if main_thread.privilege == crate::task::thread::ThreadPrivilege::User {
                         log::info!(
@@ -82,7 +82,9 @@ pub fn create_user_process(name: String, elf_data: &[u8]) -> Result<ProcessId, &
                         );
                         // Add directly to scheduler - no spawn thread needed!
                         // Note: spawn() internally uses without_interrupts
-                        crate::task::scheduler::spawn(Box::new(main_thread.clone()));
+                        crate::task::scheduler::spawn(Box::new(
+                            main_thread.publish_to_scheduler(),
+                        ));
                         crate::serial_println!("create_user_process: scheduler::spawn completed");
 
                         // Set this process as the foreground process group for the console TTY
@@ -182,11 +184,11 @@ pub fn create_user_process(name: String, elf_data: &[u8]) -> Result<ProcessId, &
         crate::serial_println!(
             "create_user_process: Acquiring process manager for thread scheduling"
         );
-        let manager_guard = crate::process::manager();
+        let mut manager_guard = crate::process::manager();
         crate::serial_println!("create_user_process: Got process manager lock for scheduling");
-        if let Some(ref manager) = *manager_guard {
-            if let Some(process) = manager.get_process(pid) {
-                if let Some(ref main_thread) = process.main_thread {
+        if let Some(ref mut manager) = *manager_guard {
+            if let Some(process) = manager.get_process_mut(pid) {
+                if let Some(ref mut main_thread) = process.main_thread {
                     // Verify it's a user thread
                     if main_thread.privilege == crate::task::thread::ThreadPrivilege::User {
                         log::info!(
@@ -199,7 +201,9 @@ pub fn create_user_process(name: String, elf_data: &[u8]) -> Result<ProcessId, &
                             main_thread.id
                         );
                         // Add directly to scheduler - no spawn thread needed!
-                        crate::task::scheduler::spawn(Box::new(main_thread.clone()));
+                        crate::task::scheduler::spawn(Box::new(
+                            main_thread.publish_to_scheduler(),
+                        ));
                         crate::serial_println!("create_user_process: scheduler::spawn completed");
 
                         // Set this process as the foreground process group for the console TTY

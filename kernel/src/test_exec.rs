@@ -276,10 +276,10 @@ pub fn test_exec_real_userspace() {
                                 manager.add_to_ready_queue(pid);
                                 log::info!("✓ Process {} added back to ready queue", pid.as_u64());
 
-                                if let Some(process) = manager.get_process(pid) {
-                                    if let Some(ref main_thread) = process.main_thread {
+                                if let Some(process) = manager.get_process_mut(pid) {
+                                    if let Some(ref mut main_thread) = process.main_thread {
                                         crate::task::scheduler::spawn(alloc::boxed::Box::new(
-                                            main_thread.clone(),
+                                            main_thread.publish_to_scheduler(),
                                         ));
                                         log::info!("✓ hello_time.elf scheduled for execution");
                                     }
@@ -429,10 +429,10 @@ pub fn test_shell_fork_exec() {
                                     );
 
                                     // Schedule the child
-                                    if let Some(process) = manager.get_process(child_pid) {
-                                        if let Some(ref main_thread) = process.main_thread {
+                                    if let Some(process) = manager.get_process_mut(child_pid) {
+                                        if let Some(ref mut main_thread) = process.main_thread {
                                             crate::task::scheduler::spawn(alloc::boxed::Box::new(
-                                                main_thread.clone(),
+                                                main_thread.publish_to_scheduler(),
                                             ));
                                             log::info!(
                                                 "✓ hello_time command scheduled for execution"
@@ -572,10 +572,10 @@ pub fn test_exec_without_scheduling() {
                         );
 
                         // Also need to spawn the thread
-                        if let Some(process) = manager.get_process(pid) {
-                            if let Some(ref main_thread) = process.main_thread {
+                        if let Some(process) = manager.get_process_mut(pid) {
+                            if let Some(ref mut main_thread) = process.main_thread {
                                 crate::task::scheduler::spawn(alloc::boxed::Box::new(
-                                    main_thread.clone(),
+                                    main_thread.publish_to_scheduler(),
                                 ));
                                 log::info!(
                                     "✓ Process {} thread scheduled with exec'd program",

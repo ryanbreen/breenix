@@ -659,7 +659,6 @@ const CPU_STALL_TICKS: u64 = 20;
 /// after the in-flight exception return and its old-stack restore completed.
 static SCHEDULING_EPOCHS: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(0) }; MAX_CPUS];
 
-#[cfg(target_arch = "aarch64")]
 #[derive(Clone, Copy)]
 struct RetirementGrace {
     thread_id: u64,
@@ -763,7 +762,6 @@ pub(crate) fn retirement_grace_target() -> RetirementFence {
     RetirementSnapshot::capture().target_after(2)
 }
 
-#[cfg(target_arch = "aarch64")]
 pub(crate) fn retirement_grace_elapsed(target: &RetirementFence) -> bool {
     RetirementSnapshot::capture().fence_elapsed(target)
 }
@@ -1017,8 +1015,7 @@ pub struct Scheduler {
     /// wake_expired_timers validates each entry before acting on it.
     timer_heap: BinaryHeap<Reverse<(u64, u64)>>,
 
-    /// Per-thread all-CPU grace targets for AArch64 stack reclamation.
-    #[cfg(target_arch = "aarch64")]
+    /// Per-thread all-CPU grace targets for kernel-stack reclamation.
     retirement_grace: alloc::vec::Vec<RetirementGrace>,
 }
 
@@ -1064,7 +1061,6 @@ impl Scheduler {
             per_cpu_queues,
             cpu_state,
             timer_heap: BinaryHeap::new(),
-            #[cfg(target_arch = "aarch64")]
             retirement_grace: alloc::vec::Vec::new(),
         };
 
@@ -1228,11 +1224,10 @@ impl Scheduler {
 
     /// Drop terminated threads only after their stack is architecturally dead.
     ///
-    /// ARM64 userspace kernel stacks are owned by scheduler threads because the
+    /// Userspace kernel stacks are owned by scheduler threads because the
     /// scheduler clone can outlive the process-table copy until it has fully
     /// disappeared from CPU current/previous slots.
-    #[cfg(target_arch = "aarch64")]
-    pub fn reclaim_terminated_threads(&mut self) {
+    pub fn reclaim_terminated_threads(&mut self) -> alloc::vec::Vec<alloc::boxed::Box<Thread>> {
         for queue in self.per_cpu_queues.iter_mut() {
             queue.retain(|&thread_id| self.threads.iter().any(|thread| thread.id() == thread_id));
         }
@@ -1265,9 +1260,12 @@ impl Scheduler {
             .collect();
         let graces = &self.retirement_grace;
         let mut reclaimed_ids = alloc::vec::Vec::new();
-        self.threads.retain(|thread| {
+        let mut retained_threads = alloc::vec::Vec::with_capacity(self.threads.len());
+        let mut reclaimed_threads = alloc::vec::Vec::new();
+        for thread in self.threads.drain(..) {
             if thread.state != ThreadState::Terminated || idle_ids.contains(&thread.id()) {
-                return true;
+                retained_threads.push(thread);
+                continue;
             }
 
             let grace_elapsed = graces
@@ -1276,24 +1274,28 @@ impl Scheduler {
                 .map(|grace| retirement_grace_elapsed(&grace.after_epoch))
                 .unwrap_or(false);
             if !grace_elapsed {
-                return true;
+                retained_threads.push(thread);
+                continue;
             }
             if thread
                 .kernel_stack_top
                 .map(|top| crate::memory::kernel_stack::is_kernel_stack_slot_live(top.as_u64()))
                 .unwrap_or(false)
             {
-                return true;
+                retained_threads.push(thread);
+                continue;
             }
 
             reclaimed_ids.push(thread.id());
-            false
-        });
+            reclaimed_threads.push(thread);
+        }
+        self.threads = retained_threads;
         self.retirement_grace
             .retain(|grace| !reclaimed_ids.contains(&grace.thread_id));
         for queue in self.per_cpu_queues.iter_mut() {
             queue.retain(|thread_id| !reclaimed_ids.contains(thread_id));
         }
+        reclaimed_threads
     }
 
     /// Add a thread as the current running thread without scheduling.
@@ -3507,14 +3509,16 @@ pub fn spawn_front(thread: Box<Thread>) {
     });
 }
 
-#[cfg(target_arch = "aarch64")]
 pub fn reclaim_terminated_threads() {
-    without_interrupts(|| {
+    let reclaimed_threads = without_interrupts(|| {
         let mut scheduler_lock = lock_scheduler();
         if let Some(scheduler) = scheduler_lock.as_mut() {
-            scheduler.reclaim_terminated_threads();
+            scheduler.reclaim_terminated_threads()
+        } else {
+            alloc::vec::Vec::new()
         }
     });
+    drop(reclaimed_threads);
 }
 
 /// Add a thread as the current running thread without scheduling.

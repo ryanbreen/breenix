@@ -177,9 +177,9 @@ impl ProcessManager {
         // A raw removal here would leave `designated_init` naming a row that no longer exists.
         let main_thread = self
             .processes
-            .get(&provisional_pid)
-            .and_then(|process| process.main_thread.as_ref())
-            .map(|main_thread| Box::new(main_thread.clone()));
+            .get_mut(&provisional_pid)
+            .and_then(|process| process.main_thread.as_mut())
+            .map(|main_thread| Box::new(main_thread.publish_to_scheduler()));
         let Some(main_thread) = main_thread else {
             self.remove_process(provisional_pid);
             return Err("init row has no main thread");
@@ -1066,10 +1066,6 @@ impl ProcessManager {
             kernel_stack_top
         );
 
-        // Store the kernel stack - it will be dropped when the thread is destroyed
-        // For now, we'll leak it - TODO: proper cleanup
-        Box::leak(Box::new(kernel_stack));
-
         // Set up initial context for userspace
         // CRITICAL: RSP must point WITHIN the mapped stack region, not past it
         // The stack grows down, so we start RSP at (stack_top - 16) for alignment
@@ -1088,7 +1084,7 @@ impl ProcessManager {
             stack_top,
             stack_bottom,
             kernel_stack_top: Some(kernel_stack_top),
-            kernel_stack_allocation: None, // Kernel stack for userspace thread not managed here
+            kernel_stack_allocation: Some(kernel_stack),
             tls_block: actual_tls_block,
             priority: 128,
             time_slice: 10,
@@ -1141,10 +1137,6 @@ impl ProcessManager {
             kernel_stack_top.as_u64()
         );
 
-        // Store the kernel stack - it will be dropped when the thread is destroyed
-        // For now, we'll leak it - TODO: proper cleanup
-        Box::leak(Box::new(kernel_stack));
-
         // Set up initial context for userspace
         // On ARM64, SP should be 16-byte aligned.
         // CRITICAL: stack_top is the exclusive end of the stack mapping. The page
@@ -1168,7 +1160,7 @@ impl ProcessManager {
             stack_top,
             stack_bottom,
             kernel_stack_top: Some(kernel_stack_top),
-            kernel_stack_allocation: None, // Kernel stack for userspace thread not managed here
+            kernel_stack_allocation: Some(kernel_stack),
             tls_block: initial_tpidr_el0,
             priority: 128,
             time_slice: 10,
@@ -1228,9 +1220,6 @@ impl ProcessManager {
             kernel_stack_top.as_u64()
         );
 
-        // Store the kernel stack - it will be dropped when the thread is destroyed
-        Box::leak(Box::new(kernel_stack));
-
         // Set up initial context for userspace
         // Use the provided initial_sp which points to argc on the stack
         // setup_argv_on_stack() already ensures 16-byte alignment (ARM64 ABI requirement)
@@ -1253,7 +1242,7 @@ impl ProcessManager {
             stack_top,
             stack_bottom,
             kernel_stack_top: Some(kernel_stack_top),
-            kernel_stack_allocation: None,
+            kernel_stack_allocation: Some(kernel_stack),
             tls_block: initial_tpidr_el0,
             priority: 128,
             time_slice: 10,
@@ -1275,6 +1264,36 @@ impl ProcessManager {
         };
 
         Ok(thread)
+    }
+
+    #[cfg(all(feature = "boot_tests", target_arch = "x86_64"))]
+    pub(crate) fn create_main_thread_for_ownership_stress(
+        &mut self,
+        process: &mut Process,
+        stack_top: VirtAddr,
+    ) -> Result<Thread, &'static str> {
+        self.create_main_thread(process, stack_top)
+    }
+
+    #[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
+    pub(crate) fn create_main_thread_for_ownership_stress(
+        &mut self,
+        process: &mut Process,
+        stack_top: VirtAddr,
+        initial_tpidr_el0: VirtAddr,
+    ) -> Result<Thread, &'static str> {
+        self.create_main_thread(process, stack_top, initial_tpidr_el0)
+    }
+
+    #[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
+    pub(crate) fn create_main_thread_with_sp_for_ownership_stress(
+        &mut self,
+        process: &mut Process,
+        stack_top: VirtAddr,
+        initial_sp: VirtAddr,
+        initial_tpidr_el0: VirtAddr,
+    ) -> Result<Thread, &'static str> {
+        self.create_main_thread_with_sp(process, stack_top, initial_sp, initial_tpidr_el0)
     }
 
     /// Get the current process ID
@@ -2144,8 +2163,7 @@ impl ProcessManager {
     /// If `parent_context_override` is provided, it will be used for the child's context
     /// instead of the stale values from `parent_thread.context`.
     /// Note: Uses architecture-specific register names
-    #[cfg(target_arch = "x86_64")]
-    #[allow(dead_code)]
+    #[cfg(all(target_arch = "x86_64", feature = "testing"))]
     fn complete_fork(
         &mut self,
         parent_pid: ProcessId,
@@ -2188,7 +2206,7 @@ impl ProcessManager {
         }
 
         // Allocate a kernel stack for the child thread (userspace threads need kernel stacks)
-        let child_kernel_stack_top =
+        let (child_kernel_stack_top, child_kernel_stack_allocation) =
             if parent_thread.privilege == crate::task::thread::ThreadPrivilege::User {
                 // Use the new global kernel stack allocator
                 let kernel_stack =
@@ -2203,16 +2221,17 @@ impl ProcessManager {
                     kernel_stack_top
                 );
 
-                // Store the kernel stack (we'll need to manage this properly later)
-                // For now, we'll leak it - TODO: proper cleanup
-                Box::leak(Box::new(kernel_stack));
-
-                kernel_stack_top
+                (Some(kernel_stack_top), Some(kernel_stack))
             } else {
                 // Kernel threads don't need separate kernel stacks
-                parent_thread
-                    .kernel_stack_top
-                    .unwrap_or(parent_thread.stack_top)
+                (
+                    Some(
+                        parent_thread
+                            .kernel_stack_top
+                            .unwrap_or(parent_thread.stack_top),
+                    ),
+                    None,
+                )
             };
 
         // Create the child's main thread
@@ -2232,9 +2251,11 @@ impl ProcessManager {
             parent_thread.privilege,
         );
 
-        // Set the ID and kernel stack separately
+        // Set the ID, kernel stack, and owning process separately.
         child_thread.id = child_thread_id;
-        child_thread.kernel_stack_top = Some(child_kernel_stack_top);
+        child_thread.kernel_stack_top = child_kernel_stack_top;
+        child_thread.kernel_stack_allocation = child_kernel_stack_allocation;
+        child_thread.owner_pid = Some(child_pid.as_u64());
 
         // Copy parent's thread context
         // CRITICAL: Use parent_context_override if provided - this contains the ACTUAL
@@ -2538,7 +2559,7 @@ impl ProcessManager {
             }
 
             // Allocate a kernel stack for the child thread (userspace threads need kernel stacks)
-            let child_kernel_stack_top =
+            let (child_kernel_stack_top, child_kernel_stack_allocation) =
                 if parent_thread.privilege == crate::task::thread::ThreadPrivilege::User {
                     let kernel_stack = crate::memory::kernel_stack::allocate_kernel_stack()
                         .map_err(|e| {
@@ -2547,13 +2568,10 @@ impl ProcessManager {
                         })?;
                     let kernel_stack_top = kernel_stack.top();
 
-                    // Store the kernel stack (we'll need to manage this properly later)
-                    // For now, we'll leak it - TODO: proper cleanup
-                    Box::leak(Box::new(kernel_stack));
-
-                    Some(kernel_stack_top)
+                    (Some(kernel_stack_top), Some(kernel_stack))
                 } else {
-                    None
+                    // Move kernel-stack ownership without changing which threads have a kernel stack.
+                    (None, None)
                 };
 
             // Create the child thread manually to use specific ID
@@ -2565,7 +2583,7 @@ impl ProcessManager {
                 stack_top: child_stack_top,
                 stack_bottom: parent_thread.stack_bottom,
                 kernel_stack_top: child_kernel_stack_top,
-                kernel_stack_allocation: None,
+                kernel_stack_allocation: child_kernel_stack_allocation,
                 tls_block: child_tls_block,
                 priority: parent_thread.priority,
                 time_slice: parent_thread.time_slice,

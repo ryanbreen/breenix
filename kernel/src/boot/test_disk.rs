@@ -255,12 +255,12 @@ pub fn run_userspace_from_disk(
 
     // Register the thread with the scheduler so fork() can find it
     {
-        let manager_guard = crate::process::manager();
-        if let Some(ref manager) = *manager_guard {
-            if let Some(process) = manager.get_process(pid) {
-                if let Some(thread) = &process.main_thread {
+        let mut manager_guard = crate::process::manager();
+        if let Some(ref mut manager) = *manager_guard {
+            if let Some(process) = manager.get_process_mut(pid) {
+                if let Some(thread) = &mut process.main_thread {
                     crate::serial_println!("[boot] Spawning thread {} to scheduler", thread.id);
-                    crate::task::scheduler::spawn(Box::new(thread.clone()));
+                    crate::task::scheduler::spawn(Box::new(thread.publish_to_scheduler()));
                     // Set this as the current thread
                     crate::task::scheduler::set_current_thread(thread.id);
                 }

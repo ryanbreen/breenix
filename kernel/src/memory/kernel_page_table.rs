@@ -212,6 +212,15 @@ pub unsafe fn map_kernel_page(
     let pt_virt = phys_mem_offset + pt_frame.start_address().as_u64();
     let pt = &mut *(pt_virt.as_mut_ptr() as *mut PageTable);
 
+    if crate::memory::kernel_stack::is_kernel_stack_va(virt.as_u64())
+        && pt[pt_index as usize]
+            .flags()
+            .contains(PageTableFlags::PRESENT)
+    {
+        crate::memory::kernel_stack::note_kernel_stack_pte_overwrite_refused();
+        return Err("map_kernel_page: refusing to overwrite a present kernel-stack PTE");
+    }
+
     // Map the page
     let page_frame: PhysFrame<Size4KiB> = PhysFrame::containing_address(phys);
     pt[pt_index as usize].set_frame(page_frame, flags);
@@ -243,6 +252,86 @@ pub unsafe fn map_kernel_page(
     );
 
     Ok(())
+}
+
+/// Remove a page from the global kernel address space.
+///
+/// Intermediate page-table frames remain installed so a later occupant can
+/// reuse the hierarchy without allocating it again.
+///
+/// # Safety
+/// Caller must ensure the virtual address is in kernel space and that removing
+/// the mapping cannot race an architectural user of the page.
+pub unsafe fn unmap_kernel_page(virt: VirtAddr) -> Result<Option<PhysFrame>, &'static str> {
+    if virt.as_u64() < 0xFFFF_8000_0000_0000 {
+        return Err("unmap_kernel_page called with non-kernel address");
+    }
+
+    let phys_mem_offset = PHYS_MEM_OFFSET.ok_or("Physical memory offset not initialized")?;
+    let kernel_pdpt_frame = KERNEL_PDPT_FRAME
+        .lock()
+        .ok_or("Kernel PDPT not initialized")?;
+
+    let pml4_frame = if let Some(master_frame) = MASTER_KERNEL_PML4.lock().clone() {
+        master_frame
+    } else {
+        let (current_frame, _) = Cr3::read();
+        current_frame
+    };
+
+    let pml4_virt = phys_mem_offset + pml4_frame.start_address().as_u64();
+    let pml4 = &mut *(pml4_virt.as_mut_ptr() as *mut PageTable);
+
+    let pml4_index = (virt.as_u64() >> 39) & 0x1FF;
+    let pdpt_index = (virt.as_u64() >> 30) & 0x1FF;
+    let pd_index = (virt.as_u64() >> 21) & 0x1FF;
+    let pt_index = (virt.as_u64() >> 12) & 0x1FF;
+
+    let pdpt_frame = if pml4_index >= 256 {
+        let entry = &pml4[pml4_index as usize];
+        if pml4_index == 402 || pml4_index == 403 {
+            if entry.is_unused() {
+                return Err("PML4 entry for kernel/IST stacks is not initialized");
+            }
+            entry.frame().unwrap()
+        } else {
+            kernel_pdpt_frame
+        }
+    } else {
+        return Err("unmap_kernel_page called for low-half address");
+    };
+
+    let pdpt_virt = phys_mem_offset + pdpt_frame.start_address().as_u64();
+    let pdpt = &mut *(pdpt_virt.as_mut_ptr() as *mut PageTable);
+    if pdpt[pdpt_index as usize].is_unused() {
+        return Ok(None);
+    }
+    let pd_frame = pdpt[pdpt_index as usize].frame().unwrap();
+
+    let pd_virt = phys_mem_offset + pd_frame.start_address().as_u64();
+    let pd = &mut *(pd_virt.as_mut_ptr() as *mut PageTable);
+    if pd[pd_index as usize].is_unused() {
+        return Ok(None);
+    }
+    let pt_frame = pd[pd_index as usize].frame().unwrap();
+
+    let pt_virt = phys_mem_offset + pt_frame.start_address().as_u64();
+    let pt = &mut *(pt_virt.as_mut_ptr() as *mut PageTable);
+    let entry = &mut pt[pt_index as usize];
+    if entry.is_unused() {
+        return Ok(None);
+    }
+
+    let frame = PhysFrame::containing_address(entry.addr());
+    entry.set_unused();
+
+    #[cfg(not(target_arch = "x86_64"))]
+    use crate::memory::arch_stub::tlb;
+    #[cfg(target_arch = "x86_64")]
+    use x86_64::instructions::tlb;
+    tlb::flush(virt);
+
+    Ok(Some(frame))
 }
 
 /// Update all existing processes to use the global kernel page tables
