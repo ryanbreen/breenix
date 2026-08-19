@@ -467,13 +467,14 @@ not a prediction about arguments not yet made. The PR that splits says so in its
    **ten** such suites, not the four this list used to name (coordinator ruling R11, 2026-08-17);
    counts are re-derived at the head of every phase rather than treated as fixed, and the suite set
    is what `tests/*_structure.rs` matches, never a closed literal list — the #549/#551/#527-r1
-   lesson. As of this PR: `tests/teardown_structure.rs` (**45**),
-   `tests/context_restore_structure.rs` (**50**),
-   `tests/exec_lock_order_structure.rs` (**25**), `tests/dma_and_log_sink_structure.rs` (**4**),
+   lesson. Re-derived as of P4 (`a7be1604`, measured via `cargo test --test <name> -- --list`):
+   `tests/teardown_structure.rs` (**53**),
+   `tests/context_restore_structure.rs` (**61**),
+   `tests/exec_lock_order_structure.rs` (**34**), `tests/dma_and_log_sink_structure.rs` (**4**),
    `tests/loopback_pump_structure.rs` (**57**), `tests/net_lock_structure.rs` (**19**),
    `tests/exit_tally_structure.rs` (**6**), `tests/block_request_lifetime_structure.rs` (**11**),
-   `tests/serial_line_atomicity_structure.rs` (**3**) and
-   `tests/signal_eintr_predicate_structure.rs` (**2**) — the latter three added by #594 — **222 tests**,
+   `tests/serial_line_atomicity_structure.rs` (**9**) and
+   `tests/signal_eintr_predicate_structure.rs` (**2**) — the latter three added by #594 — **256 tests**,
    all census-anchored (file +
    enclosing-item path + occurrence count), no line pins. Every new tranche-2 invariant is
    ratcheted in one of them.
