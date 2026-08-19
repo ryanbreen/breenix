@@ -1358,16 +1358,25 @@ revert story — per-site, each call site independent"*), in two commits taken i
 named seam is described under **Files**; per rule 5 the plan does not pre-split on it.
 
 **Scope — commit 1, kernel-stack single ownership (AC-8). The leak surface is FIVE sites, not three.**
-Re-read out of the tree at `2c7b8798`; `grep -n 'Box::leak' kernel/src/process/manager.rs` returns
-exactly five:
+Re-read out of the tree at `b344e4f2` (the P4 build anchor; the table below was first written against
+`2c7b8798` and its `cfg` column was wrong at both SHAs — see the correction under it);
+`grep -n 'Box::leak' kernel/src/process/manager.rs` returns exactly five:
 
-| Site | Function | `cfg` | Today |
+| Site (`b344e4f2`) | Function | `cfg` | Today |
 |---|---|---|---|
-| `manager.rs:851` | `create_main_thread` variant | both | `Box::leak(Box::new(kernel_stack));`, `kernel_stack_allocation: None`, `// TODO: proper cleanup` |
-| `manager.rs:925` | `create_main_thread` variant | both | same |
-| `manager.rs:1010` | `create_main_thread` variant | both | same |
-| `manager.rs:1979` | `complete_fork` (fn at `:1920`) | **`#[cfg(target_arch = "x86_64")]`** | same |
-| `manager.rs:2323` | `fork_process_with_context` (fn at `:2148`) | **`#[cfg(target_arch = "x86_64")]`** | same, with `kernel_stack_allocation: None` at `:2339` |
+| `manager.rs:1071` | `create_main_thread` (fn `:1024`) | **`#[cfg(target_arch = "x86_64")]`** (`:1023`) | `Box::leak(Box::new(kernel_stack));`, `kernel_stack_allocation: None`, `// TODO: proper cleanup` |
+| `manager.rs:1146` | `create_main_thread` (fn `:1119`) | **`#[cfg(target_arch = "aarch64")]`** (`:1118`) | same |
+| `manager.rs:1232` | `create_main_thread_with_sp` (fn `:1205`) | **`#[cfg(target_arch = "aarch64")]`** (`:1204`) | same |
+| `manager.rs:2208` | `complete_fork` (fn at `:2149`) | **`#[cfg(target_arch = "x86_64")]`** | same |
+| `manager.rs:2552` | `fork_process_with_context` (fn at `:2377`) | **`#[cfg(target_arch = "x86_64")]`** | same, with `kernel_stack_allocation: None` at `:2568` |
+
+> **Correction of record — the `cfg` column above previously read "both" for the three
+> `create_main_thread*` rows. That was an authoring error, not drift: at `2c7b8798` and at `b344e4f2`
+> alike, zero of the five sites are compiled on both architectures.** The split is **3 x86-only /
+> 2 aarch64-only**. The coverage conclusion that follows from the corrected table is therefore
+> stronger than the one gate extra 2 originally drew: **both profiles are mandatory, and neither alone
+> covers the surface** — an x86-only run cannot see `:1146`/`:1232` any more than an aarch64-only run
+> can see `:1071`/`:2208`/`:2552`. (Coordinator ruling **R21**, P4 build pass.)
 
 > **Correction of record — "fork already transfers correctly" is FALSE on x86_64.** The only fork site
 > that transfers is `manager.rs:1833`, inside `complete_fork_aarch64` (fn at `:1779`,
@@ -1437,18 +1446,46 @@ same pass.
    path — exactly one owner, and it is the scheduler copy; a **1000-iteration** fork/clone/spawn/exit
    stress with kernel-stack-pool accounting (`allocated == freed`, asserted as an equality that is
    driven nonzero by the workload, never a vacuous zero); and an allocator assertion that never
-   selects a live slot.
-2. **All five sites are covered, and the ratchet pins the count.** `Box::leak(Box::new(kernel_stack))`
-   is asserted **absent** from `kernel/src/process/manager.rs` as an exact set (zero occurrences) in
-   `tests/teardown_structure.rs`, census-anchored by enclosing item, so a sixth cannot appear. The two
-   x86-only fork sites are exercised explicitly — the gate runs the x86 profile, since `:1979` and
-   `:2323` are `#[cfg(target_arch = "x86_64")]` and an aarch64-only run cannot see them.
+   selects a live slot. **The live-slot assertion is a counted *release-mode* check on BOTH arches,
+   not the `debug_assert!` that stood at `kernel_stack.rs:337` (coordinator ruling R25):** no
+   `[profile]` section sets `debug-assertions` in this tree, so every `--release` gate build compiled
+   that assertion out and it had never gated anything. Its refusal counter is driven nonzero by a
+   designated injection arm that runs the same predicate against a known-live slot, and the production
+   refusal count is asserted zero against that nonzero driver.
+   **The stress additionally asserts frame steady-state, not only slot-pool equality (R23):** on x86 a
+   kernel stack costs 128 physical frames, so `frames_mapped == frames_released` across the window and
+   a bounded frame-allocator delta are what prove the 1000 reuses did not orphan a stack's frames.
+2. **All five sites are covered, and the ratchet pins the count.** `Box::leak(Box::new(...))` is
+   censused across **`kernel/src`** as `(file, enclosing item, count)` triples in
+   `tests/teardown_structure.rs`; `kernel/src/process/manager.rs` contributes **no rows**, which is how
+   "zero occurrences" is expressed, and the `kernel/src`-wide scope is what makes "a sixth cannot
+   appear" true anywhere in the kernel rather than only in one file (coordinator ruling **R27**).
+   The census's two remaining candidate rows — `kernel/src/task/spawn.rs`'s *user*-stack leaks inside
+   `#[allow(dead_code)] spawn_userspace_from_elf` — are **deleted with their functions** under the
+   repo's zero-tolerance dead-code standard rather than being carried as expected rows.
+   **Both profiles are run** — three sites are x86-only and two are aarch64-only (see the corrected
+   table above), so neither profile alone sees the whole surface.
 3. **The freed-row path is now reached, deliberately.** With ownership transferred, a reap that drops a
    row must not double-free the scheduler-owned stack: per-PID assertion that a stack slot returns to
    the pool exactly once per process death, driven by the same per-PID teardown oracle P0/P2 use.
 4. **Lock-order parity (commit 2):** the extended `exec_lock_order_structure` census fails on any
-   `scheduler::spawn` / `lock_scheduler` reachable with a PM guard live at the three creation sites,
-   and the runtime marker `[EXEC_LOCK_ORDER:VIOLATION:PM_HELD]` stays at zero across the full gate.
+   `scheduler::spawn` / `lock_scheduler` reachable with a PM guard live at the creation sites, and a
+   runtime marker stays at zero across the full gate.
+   **Correction (coordinator ruling R24):** the marker named here was `[EXEC_LOCK_ORDER:VIOLATION:PM_HELD]`,
+   which is emitted from exactly one place — `ExecSchedCommit::apply` on the **exec commit** path.
+   No creation site could ever make it nonzero, before or after the fix, so asserting it at zero was
+   precisely the condition-6 vacuity the standard gate forbids. P4 therefore adds the same
+   `process_manager_held_on_current_cpu()` detection to the scheduler **publication seam**
+   (`spawn` / `spawn_front` / `spawn_as_current`), emits a **distinct** creation-class marker
+   `[CREATION_LOCK_ORDER:VIOLATION:PM_HELD]`, pins its absence in **both** arches' gate scripts (no x86
+   script read the exec marker at all), and proves it can fire with a designated mutation that re-nests
+   one creation site. The counter line carries `publications` as the nonzero driver alongside
+   `pm_held=0`.
+   **The creation-site count is SIX, not three:** the PLAN's table names `creation.rs:67→85`,
+   `creation.rs:185→202` and `boot/test_disk.rs:258→263`; the tree also carries three publications of
+   the identical class in `kernel/src/test_exec.rs` and one in
+   `arch_impl/aarch64/syscall_entry.rs::sys_spawn_aarch64`, each calling `scheduler::spawn` inside a
+   live process-manager guard. All are fixed in the same pass.
 5. **Zero-warning builds and the standard gate**, both arches, plus Parallels 3×. `complete_fork`'s
    stale `#[allow(dead_code)]` (`manager.rs:1919`, two live callers at `:1490` and `:1634`) is removed
    in commit 1 — it is a suppression against the repo's zero-tolerance standard on exactly the code
