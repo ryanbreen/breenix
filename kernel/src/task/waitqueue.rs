@@ -16,6 +16,17 @@ pub struct Waiter {
     tid: u64,
 }
 
+/// Result of attempting to prepare a checked wait.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PrepareOutcome {
+    /// The condition did not match while the waitqueue lock was held.
+    Mismatch,
+    /// The waiter was enqueued and its blocked state was published.
+    Queued,
+    /// The waiter could not be published and was removed again.
+    PublishFailed,
+}
+
 impl Waiter {
     pub const fn new(tid: u64) -> Self {
         Self { tid }
@@ -80,6 +91,45 @@ impl WaitQueueHead {
         }
     }
 
+    /// Check a condition, enqueue the current thread, and publish its timed
+    /// I/O wait state while holding the waitqueue lock.
+    pub(crate) fn prepare_to_wait_checked<F: FnOnce() -> bool>(
+        &self,
+        state: ThreadState,
+        wake_time_ns: Option<u64>,
+        cond: F,
+    ) -> PrepareOutcome {
+        if state != ThreadState::BlockedOnIO {
+            return PrepareOutcome::PublishFailed;
+        }
+
+        let Some(tid) = crate::task::scheduler::current_thread_id() else {
+            return PrepareOutcome::PublishFailed;
+        };
+
+        self.with_waiters(|waiters| {
+            if !cond() {
+                return PrepareOutcome::Mismatch;
+            }
+
+            if !waiters.iter().any(|waiter| waiter.tid == tid) {
+                waiters.push_back(Waiter::new(tid));
+            }
+
+            let published = crate::task::scheduler::with_scheduler(|sched| {
+                sched.block_current_for_io_with_timeout(wake_time_ns)
+            })
+            .unwrap_or(false);
+
+            if published {
+                PrepareOutcome::Queued
+            } else {
+                waiters.retain(|waiter| waiter.tid != tid);
+                PrepareOutcome::PublishFailed
+            }
+        })
+    }
+
     /// Remove the current thread from the waitqueue and normalize syscall state.
     ///
     /// This mirrors Linux `finish_wait`: a thread that was prepared but never
@@ -118,6 +168,37 @@ impl WaitQueueHead {
                 wake_waiter(waiter);
             }
         });
+    }
+
+    /// Wake up to `max` waiters while holding the waitqueue lock.
+    pub fn wake_up_n(&self, max: u32) -> u32 {
+        let mut woken = 0;
+        self.with_waiters(|waiters| {
+            while woken < max {
+                let Some(waiter) = waiters.pop_front() else {
+                    break;
+                };
+                wake_waiter(waiter);
+                woken += 1;
+            }
+        });
+        woken
+    }
+
+    /// Remove a specific waiter under the waitqueue lock.
+    pub fn take_waiter(&self, tid: u64) -> bool {
+        let mut removed = false;
+        self.with_waiters(|waiters| {
+            waiters.retain(|waiter| {
+                if waiter.tid == tid {
+                    removed = true;
+                    false
+                } else {
+                    true
+                }
+            });
+        });
+        removed
     }
 
     /// Return whether the queue currently has waiters.
@@ -160,6 +241,11 @@ impl WaitQueueHead {
 
     #[cfg(test)]
     fn waiter_count_for_test(&self) -> usize {
+        self.with_waiters(|waiters| waiters.len())
+    }
+
+    #[cfg(feature = "boot_tests")]
+    pub(crate) fn waiter_count(&self) -> usize {
         self.with_waiters(|waiters| waiters.len())
     }
 
@@ -263,5 +349,27 @@ mod tests {
 
         assert_eq!(waiters.len(), 2);
         assert_eq!(waitq.waiter_count_for_test(), 0);
+    }
+
+    #[test]
+    fn take_waiter_removes_only_the_requested_tid() {
+        let waitq = WaitQueueHead::new();
+
+        waitq.push_waiter_for_test(1);
+        waitq.push_waiter_for_test(2);
+
+        assert!(waitq.take_waiter(1));
+        assert!(!waitq.take_waiter(1));
+        assert!(!waitq.contains_waiter_for_test(1));
+        assert!(waitq.contains_waiter_for_test(2));
+    }
+
+    #[test]
+    fn wake_up_n_zero_does_not_consume_waiters() {
+        let waitq = WaitQueueHead::new();
+
+        waitq.push_waiter_for_test(1);
+        assert_eq!(waitq.wake_up_n(0), 0);
+        assert_eq!(waitq.waiter_count_for_test(), 1);
     }
 }

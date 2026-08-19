@@ -2642,7 +2642,7 @@ impl Scheduler {
     /// The done-check and this call must happen in the same with_scheduler()
     /// invocation to prevent the ISR from racing between the check and the block.
     pub fn block_current_for_io(&mut self) {
-        self.block_current_for_io_with_timeout(None);
+        let _ = self.block_current_for_io_with_timeout(None);
     }
 
     /// Block the current thread for device I/O, optionally with a timeout.
@@ -2650,7 +2650,7 @@ impl Scheduler {
     /// A timed BlockedOnIO wait is used by completions: the ISR wakes it via
     /// unblock_for_io(), while the timer path wakes it by observing
     /// wake_time_ns without clearing blocked_in_syscall prematurely.
-    pub fn block_current_for_io_with_timeout(&mut self, wake_time_ns: Option<u64>) {
+    pub fn block_current_for_io_with_timeout(&mut self, wake_time_ns: Option<u64>) -> bool {
         if let Some(current_id) = self.publish_current_io_wait_state_inner(wake_time_ns) {
             // Insert into timer heap if a timeout was specified
             if let Some(wt) = wake_time_ns {
@@ -2660,6 +2660,9 @@ impl Scheduler {
             for q in self.per_cpu_queues.iter_mut() {
                 q.retain(|&id| id != current_id);
             }
+            true
+        } else {
+            false
         }
     }
 
