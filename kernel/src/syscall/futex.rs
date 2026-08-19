@@ -58,8 +58,8 @@ pub fn sys_futex(
     let cmd = op & FUTEX_CMD_MASK;
 
     match cmd {
-        FUTEX_WAIT => futex_wait(uaddr, val),
-        FUTEX_WAKE => futex_wake(uaddr, val),
+        FUTEX_WAIT => futex_wait(uaddr, val, _val3),
+        FUTEX_WAKE => futex_wake(uaddr, val, _val3),
         _ => {
             log::warn!("futex: unsupported operation {}", cmd);
             SyscallResult::Err(super::errno::ENOSYS as u64)
@@ -72,7 +72,7 @@ pub fn sys_futex(
 /// Returns 0 on success (woken by FUTEX_WAKE).
 /// Returns -EAGAIN if *uaddr != val.
 /// Returns -EINTR if interrupted by a signal.
-fn futex_wait(uaddr: u64, expected_val: u32) -> SyscallResult {
+fn futex_wait(uaddr: u64, expected_val: u32, _val3: u32) -> SyscallResult {
     // Validate user pointer
     if uaddr == 0 || uaddr % 4 != 0 {
         return SyscallResult::Err(super::errno::EINVAL as u64);
@@ -88,6 +88,14 @@ fn futex_wait(uaddr: u64, expected_val: u32) -> SyscallResult {
         None => return SyscallResult::Err(super::errno::ESRCH as u64),
     };
 
+    #[cfg(feature = "boot_tests")]
+    let oracle_stage = crate::syscall::futex_oracle::arm_from_val3(_val3);
+    #[cfg(feature = "boot_tests")]
+    let oracle_deadline = oracle_stage
+        .map(|stage| crate::syscall::futex_oracle::record_arm(stage, tg_id, uaddr));
+    #[cfg(feature = "boot_tests")]
+    let mut oracle_enqueued = false;
+
     // CRITICAL: The check-and-block must be atomic with respect to FUTEX_WAKE.
     // On single-core Breenix, disabling interrupts is sufficient.
     // We read the user value and add to the wait queue under the futex lock.
@@ -95,18 +103,58 @@ fn futex_wait(uaddr: u64, expected_val: u32) -> SyscallResult {
         // Read the current value at uaddr
         let current_val = match unsafe { read_user_u32(uaddr) } {
             Some(v) => v,
-            None => return SyscallResult::Err(super::errno::EFAULT as u64),
+            None => {
+                #[cfg(feature = "boot_tests")]
+                oracle_finish(
+                    oracle_stage,
+                    oracle_enqueued,
+                    tg_id,
+                    uaddr,
+                    thread_id,
+                    crate::syscall::futex_oracle::OracleRet::Efault,
+                );
+                return SyscallResult::Err(super::errno::EFAULT as u64);
+            }
         };
 
         // If value doesn't match expected, return EAGAIN (spurious wakeup semantics)
         if current_val != expected_val {
+            #[cfg(feature = "boot_tests")]
+            oracle_finish(
+                oracle_stage,
+                oracle_enqueued,
+                tg_id,
+                uaddr,
+                thread_id,
+                crate::syscall::futex_oracle::OracleRet::Eagain,
+            );
             return SyscallResult::Err(super::errno::EAGAIN as u64);
         }
 
         // Value matches - add to wait queue and block
         let key = (tg_id, uaddr);
+
+        #[cfg(feature = "boot_tests")]
+        if oracle_stage == Some(crate::syscall::futex_oracle::Stage::S1) {
+            // Oracle seam: immediately before the enqueue.
+            crate::syscall::futex_oracle::stage1_drive(tg_id, uaddr, expected_val);
+        }
+
         let mut queues = FUTEX_QUEUES.lock();
         queues.entry(key).or_insert_with(Vec::new).push(thread_id);
+    }
+
+    #[cfg(feature = "boot_tests")]
+    {
+        oracle_enqueued = true;
+        if let Some(stage) = oracle_stage {
+            crate::syscall::futex_oracle::record_enqueued(stage);
+        }
+    }
+
+    #[cfg(feature = "boot_tests")]
+    if oracle_stage == Some(crate::syscall::futex_oracle::Stage::S2) {
+        crate::syscall::futex_oracle::stage2_drive(tg_id, uaddr);
     }
 
     // Block the current thread
@@ -158,7 +206,51 @@ fn futex_wait(uaddr: u64, expected_val: u32) -> SyscallResult {
                 }
             });
 
+            #[cfg(feature = "boot_tests")]
+            oracle_finish(
+                oracle_stage,
+                oracle_enqueued,
+                tg_id,
+                uaddr,
+                thread_id,
+                crate::syscall::futex_oracle::OracleRet::Eintr,
+            );
             return SyscallResult::Err(super::errno::EINTR as u64);
+        }
+
+        #[cfg(feature = "boot_tests")]
+        if let Some(stage) = oracle_stage {
+            if crate::syscall::futex_oracle::deadline_passed(oracle_deadline.unwrap()) {
+                crate::syscall::futex_oracle::record_parked(stage);
+
+                let key = (tg_id, uaddr);
+                {
+                    let mut queues = FUTEX_QUEUES.lock();
+                    if let Some(waiters) = queues.get_mut(&key) {
+                        waiters.retain(|&id| id != thread_id);
+                        if waiters.is_empty() {
+                            queues.remove(&key);
+                        }
+                    }
+                }
+
+                crate::task::scheduler::with_scheduler(|sched| {
+                    if let Some(thread) = sched.current_thread_mut() {
+                        thread.blocked_in_syscall = false;
+                        thread.set_ready();
+                    }
+                });
+
+                oracle_finish(
+                    oracle_stage,
+                    oracle_enqueued,
+                    tg_id,
+                    uaddr,
+                    thread_id,
+                    crate::syscall::futex_oracle::OracleRet::Rescued,
+                );
+                return SyscallResult::Ok(0);
+            }
         }
 
         // Power-efficient wait
@@ -177,13 +269,28 @@ fn futex_wait(uaddr: u64, expected_val: u32) -> SyscallResult {
         }
     });
 
+    #[cfg(feature = "boot_tests")]
+    oracle_finish(
+        oracle_stage,
+        oracle_enqueued,
+        tg_id,
+        uaddr,
+        thread_id,
+        crate::syscall::futex_oracle::OracleRet::Zero,
+    );
+
     SyscallResult::Ok(0)
 }
 
 /// FUTEX_WAKE: Wake up to `val` threads waiting on the futex at uaddr.
 ///
 /// Returns the number of threads woken.
-fn futex_wake(uaddr: u64, max_wake: u32) -> SyscallResult {
+fn futex_wake(uaddr: u64, max_wake: u32, _val3: u32) -> SyscallResult {
+    #[cfg(feature = "boot_tests")]
+    if crate::syscall::futex_oracle::is_report(_val3) {
+        crate::syscall::futex_oracle::report();
+        return SyscallResult::Ok(0);
+    }
     if uaddr == 0 || uaddr % 4 != 0 {
         return SyscallResult::Err(super::errno::EINVAL as u64);
     }
@@ -250,6 +357,44 @@ pub fn futex_wake_for_thread_group(tg_id: u64, uaddr: u64, max_wake: u32) -> u32
     }
 
     woken
+}
+
+#[cfg(feature = "boot_tests")]
+pub(crate) fn oracle_queue_residual(keys: [(u64, u64); 3]) -> u64 {
+    let queues = FUTEX_QUEUES.lock();
+    keys.iter()
+        .filter_map(|key| queues.get(key))
+        .map(|waiters| waiters.len() as u64)
+        .sum()
+}
+
+#[cfg(feature = "boot_tests")]
+pub(crate) fn oracle_waiter_present(tg_id: u64, uaddr: u64, thread_id: u64) -> bool {
+    let queues = FUTEX_QUEUES.lock();
+    queues
+        .get(&(tg_id, uaddr))
+        .is_some_and(|waiters| waiters.contains(&thread_id))
+}
+
+#[cfg(feature = "boot_tests")]
+fn oracle_finish(
+    stage: Option<crate::syscall::futex_oracle::Stage>,
+    enqueued: bool,
+    tg_id: u64,
+    uaddr: u64,
+    thread_id: u64,
+    ret: crate::syscall::futex_oracle::OracleRet,
+) {
+    if let Some(stage) = stage {
+        crate::syscall::futex_oracle::record_return(
+            stage,
+            ret,
+            crate::syscall::futex_oracle::elapsed_since_arm(stage),
+        );
+        if enqueued && !oracle_waiter_present(tg_id, uaddr, thread_id) {
+            crate::syscall::futex_oracle::record_left(stage);
+        }
+    }
 }
 
 /// Read a u32 from user-space memory. Returns None if the address is invalid.

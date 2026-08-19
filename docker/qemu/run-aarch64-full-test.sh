@@ -263,6 +263,45 @@ if [ -z "$FAIL_REASON" ]; then
     fi
 fi
 
+# --- Phase 1a2: Pin the deterministic futex handoff oracle ---
+# driven=2 proves both waiter-owned wake seams ran; the return/wake/park fields
+# expose D1/D2, ETIMEDOUT plus the bounded elapsed window exposes D4, and the
+# residual/balance fields prove the rescue path left no queue state behind.
+if [ -z "$FAIL_REASON" ]; then
+    echo ""
+    echo "Phase 1a2: Waiting for futex handoff oracle..."
+    FUTEX_HANDOFF_ORACLE_OK=false
+    for i in $(seq 1 15); do
+        if grep -qF -x '[FUTEX_HANDOFF_ORACLE:aarch64:driven=2:stage1_ret=EAGAIN:stage1_wake=0:stage1_parked=0:stage2_ret=0:stage2_wake=1:stage2_parked=0:stage3_ret=ETIMEDOUT:stage3_elapsed_ok=1:rescues=0:queue_residual=0:balance=0]' "$OUTPUT_DIR/serial.txt" 2>/dev/null; then
+            FUTEX_HANDOFF_ORACLE_OK=true
+            break
+        fi
+        if grep -qF '[FUTEX_HANDOFF_ORACLE:' "$OUTPUT_DIR/serial.txt" 2>/dev/null; then
+            FUTEX_HANDOFF_ORACLE_LINE=$(grep -F '[FUTEX_HANDOFF_ORACLE:' "$OUTPUT_DIR/serial.txt" 2>/dev/null | tail -1)
+            FAIL_REASON="Phase 1a2: futex handoff oracle failed ($FUTEX_HANDOFF_ORACLE_LINE)"
+            break
+        fi
+        if FATAL=$(check_fatal); then
+            FAIL_REASON="Phase 1a2: futex handoff oracle never completed ($FATAL)"
+            break
+        fi
+        if ! kill -0 $QEMU_PID 2>/dev/null; then
+            FAIL_REASON="Phase 1a2: futex handoff oracle never completed (QEMU exited)"
+            break
+        fi
+        sleep 2
+    done
+
+    if ! $FUTEX_HANDOFF_ORACLE_OK && [ -z "$FAIL_REASON" ]; then
+        FAIL_REASON="Phase 1a2: futex handoff oracle marker absent (30s timeout)"
+    fi
+
+    if $FUTEX_HANDOFF_ORACLE_OK && [ -z "$FAIL_REASON" ]; then
+        echo "  Observed: [FUTEX_HANDOFF_ORACLE:aarch64:driven=2:stage1_ret=EAGAIN:stage1_wake=0:stage1_parked=0:stage2_ret=0:stage2_wake=1:stage2_parked=0:stage3_ret=ETIMEDOUT:stage3_elapsed_ok=1:rescues=0:queue_residual=0:balance=0]"
+        echo "Phase 1a2: PASS"
+    fi
+fi
+
 # --- Phase 1b: Exercise the init-driven exec path (up to 30s) ---
 if [ -z "$FAIL_REASON" ]; then
     echo "Phase 1: PASS (${TESTS_PASSED}/${TESTS_TOTAL} tests)"

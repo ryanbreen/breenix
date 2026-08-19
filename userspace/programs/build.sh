@@ -118,6 +118,8 @@ STD_BINARIES=(
 
     # #575 block-EINTR oracle
     "block_eintr_oracle"
+    # #584 futex handoff oracle
+    "futex_handoff_oracle"
 
     # Phase 1: No-fork programs
     "syscall_enosys"

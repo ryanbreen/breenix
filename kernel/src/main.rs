@@ -1078,6 +1078,8 @@ fn kernel_main_continue() -> ! {
             kernel::userspace_test::get_test_binary("loopback_wake_test");
         let clonevm_exec_test_buf =
             kernel::userspace_test::get_test_binary("clonevm_exec_test");
+        let futex_handoff_oracle_buf =
+            kernel::userspace_test::get_test_binary("futex_handoff_oracle");
 
         x86_64::instructions::interrupts::without_interrupts(|| {
             use alloc::string::String;
@@ -1281,6 +1283,24 @@ fn kernel_main_continue() -> ! {
                     }
                     Err(e) => {
                         log::error!("Failed to create clonevm_exec_test process: {}", e);
+                    }
+                }
+            }
+
+            {
+                serial_println!("RING3_SMOKE: creating futex_handoff_oracle userspace process");
+                match process::creation::create_user_process(
+                    String::from("futex_handoff_oracle"),
+                    &futex_handoff_oracle_buf,
+                ) {
+                    Ok(pid) => {
+                        log::info!(
+                            "Created futex_handoff_oracle process with PID {}",
+                            pid.as_u64()
+                        );
+                    }
+                    Err(e) => {
+                        log::error!("Failed to create futex_handoff_oracle process: {}", e);
                     }
                 }
             }

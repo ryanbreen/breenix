@@ -35,6 +35,9 @@ CLONE_ADMISSION_ORACLE_LITERAL='[CLONE_ADMISSION_ORACLE:x86:admitted=1:refused=2
 # construct_residual is the counted frame residue of the two construction-failure arms read off a measured green run, and it is architecture-specific (4 on x86, 2 on aarch64) because the two page-table constructors record different table-frame counts.
 INIT_DESIGNATION_ORACLE_LITERAL='[INIT_DESIGNATION_ORACLE:x86:construct_failed=2:construct_undecided=2:construct_residual=4:refused=4:accepted=1:published=1:retired=1:held_error_removals=1:reparented=1:reparent_skipped=1:ordinary_allocated=5:reserved_collisions=0:designation_balance=0]'
 INIT_GROUP_REFUSAL_ORACLE_LITERAL='[INIT_GROUP_REFUSAL_ORACLE:x86:none_probes=3:none_refusals=0:init_refused=1:alias_refused=1:alias_pid_refused=0:nonit_probes=2:nonit_refusals=0:rows_delta=0:refusal_counter_delta=0:designation_residual=0:balance=0]'
+# driven=2 proves both handoff seams ran; the stage return/wake/park fields expose
+# D1/D2, the timeout result/elapsed bit exposes D4, and residual/balance prove cleanup.
+FUTEX_HANDOFF_ORACLE_LITERAL='[FUTEX_HANDOFF_ORACLE:x86:driven=2:stage1_ret=EAGAIN:stage1_wake=0:stage1_parked=0:stage2_ret=0:stage2_wake=1:stage2_parked=0:stage3_ret=ETIMEDOUT:stage3_elapsed_ok=1:rescues=0:queue_residual=0:balance=0]'
 # Absolute frame counts are boot-state dependent, so pin every delta exactly,
 # including the three-table recorded_pre hierarchy cost and computed tables_returned=4;
 # the in-kernel oracle asserts used_after == used_before, and a skipped/cfg'd-out block fails this gate.
@@ -49,7 +52,7 @@ KSTACK_OWNER_ORACLE_PATTERN='^\[KSTACK_OWNER_ORACLE:x86:creation_rows=1000:creat
 CREATION_LOCK_ORDER_INJECTED_LITERAL='[CREATION_LOCK_ORDER:INJECTED:PM_HELD]'
 CREATION_LOCK_ORDER_VIOLATION_LITERAL='[CREATION_LOCK_ORDER:VIOLATION:PM_HELD]'
 # Eleven oracle/counter lines are pinned by the success chain below; fields are exact except for the bounded boot-state-dependent KSTACK_OWNER fields documented above.
-# Ten launched test programs, 64 retire-cohort children, five loopback_wake_test
+# Ten launched test programs, one futex_handoff_oracle, 64 retire-cohort children, five loopback_wake_test
 # processes (parent, reader, peer, load, watchdog), 16 exec-cohort children, one
 # clonevm_exec_test process (renamed by its second-stage exec), its phase-1
 # CLONE_VM child, two clone-admission oracle rows, and one init designation
@@ -57,13 +60,13 @@ CREATION_LOCK_ORDER_VIOLATION_LITERAL='[CREATION_LOCK_ORDER:VIOLATION:PM_HELD]'
 # passes through terminate_minimal. Its other synthetic rows are removed with
 # remove_process and contribute nothing, while its two construction-failure
 # arms create no row at all:
-# 10 + 64 + 5 + 16 + 1 + 1 + 1 + 1 + 1 = 100. The exec-detach oracle contributes
+# 10 + 1 + 64 + 5 + 16 + 1 + 1 + 1 + 1 + 1 = 101. The exec-detach oracle contributes
 # zero because its rows use the deferred-reclaim path rather than the
 # Process::terminate / terminate_minimal tally choke point. This is a floor,
 # checked >= by scripts/x86-gate-verdict.sh; the production-path arm execs the
 # cohort's already-inserted parent and fails without launching a new userspace
 # process; re-pin consciously.
-readonly EXPECTED_USERSPACE_EXITS=100
+readonly EXPECTED_USERSPACE_EXITS=101
 
 cd "$BREENIX_ROOT"
 cargo build --release --features boot_tests,testing,external_test_bins --bin qemu-uefi
@@ -256,6 +259,8 @@ for i in $(seq 1 "$COUNT"); do
         "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 1
     test "$(grep -h -F -x -c "$INIT_GROUP_REFUSAL_ORACLE_LITERAL" \
         "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 1
+    test "$(grep -h -F -x -c "$FUTEX_HANDOFF_ORACLE_LITERAL" \
+        "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 1
     test "$(grep -h -F -x -c "$EXEC_FAILED_RELEASE_PROD_LITERAL" \
         "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 1
     test "$(grep -h -E -c "$KSTACK_OWNER_ORACLE_PATTERN" \
@@ -285,6 +290,7 @@ for i in $(seq 1 "$COUNT"); do
     echo "$CLONE_ADMISSION_ORACLE_LITERAL"
     echo "$INIT_DESIGNATION_ORACLE_LITERAL"
     echo "$INIT_GROUP_REFUSAL_ORACLE_LITERAL"
+    echo "$FUTEX_HANDOFF_ORACLE_LITERAL"
     echo "$EXEC_FAILED_RELEASE_PROD_LITERAL"
     echo "$KSTACK_OWNER_LINE"
     echo "$CREATION_LOCK_ORDER_INJECTED_LITERAL"

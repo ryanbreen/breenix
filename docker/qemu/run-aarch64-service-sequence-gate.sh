@@ -97,6 +97,7 @@ esac
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BREENIX_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+FUTEX_HANDOFF_ORACLE_LITERAL='[FUTEX_HANDOFF_ORACLE:aarch64:driven=2:stage1_ret=EAGAIN:stage1_wake=0:stage1_parked=0:stage2_ret=0:stage2_wake=1:stage2_parked=0:stage3_ret=ETIMEDOUT:stage3_elapsed_ok=1:rescues=0:queue_residual=0:balance=0]'
 
 if $REBUILD; then
     echo "Building ARM64 kernel with boot_tests feature..."
@@ -484,6 +485,14 @@ run_profile() {
         QEMU_PID=""
         rm -f "$writable_disk"
         CURRENT_DISK=""
+
+        # driven=2 proves both handoff seams ran; D1/D2 are exposed by the
+        # stage return/wake/park fields, D4 by ETIMEDOUT and its elapsed bound,
+        # and residual/balance prove that no rescue queue state leaked.
+        if ! grep -qF -x "$FUTEX_HANDOFF_ORACLE_LITERAL" "$serial_file" 2>/dev/null; then
+            ANY_GATE_FAILURE=1
+            echo "  Boot $boot/$BOOTS: futex handoff oracle marker missing or failed"
+        fi
 
         boot_divergence=$(grep -cF "[CTX596_ELR_DIVERGENCE]" "$serial_file" 2>/dev/null | tr -d ' ')
         boot_divergence=${boot_divergence:-0}
