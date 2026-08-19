@@ -396,6 +396,8 @@ if [ -z "$FAIL_REASON" ]; then
         # would mean the guard probe was compiled for the wrong target.
         if ! grep -qF "CLONEVM_EXEC_TEST: live sibling refused exec" "$OUTPUT_DIR/serial.txt" 2>/dev/null; then
             FAIL_REASON="Phase 1c: live-sibling refusal probe did not run"
+        elif ! grep -qF "CLONEVM_EXEC_TEST: post-exec rendezvous complete" "$OUTPUT_DIR/serial.txt" 2>/dev/null; then
+            FAIL_REASON="Phase 1c: post-exec rendezvous did not complete"
         else
             echo "Phase 1c: PASS"
         fi
