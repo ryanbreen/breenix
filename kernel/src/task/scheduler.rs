@@ -3444,6 +3444,7 @@ pub fn register_cpu_idle_thread(cpu_id: usize, idle_thread: Box<Thread>) {
 
 /// Add a thread to the scheduler
 pub fn spawn(thread: Box<Thread>) {
+    note_scheduler_publication();
     // Disable interrupts to prevent timer interrupt deadlock
     without_interrupts(|| {
         let mut scheduler_lock = lock_scheduler();
@@ -3487,6 +3488,7 @@ pub(crate) fn spawn_on_cpu_for_test(thread: Box<Thread>, cpu: usize) {
 /// Add a thread to the front of the ready queue.
 /// Used for fork children so they run before other queued threads.
 pub fn spawn_front(thread: Box<Thread>) {
+    note_scheduler_publication();
     without_interrupts(|| {
         let mut scheduler_lock = lock_scheduler();
         if let Some(scheduler) = scheduler_lock.as_mut() {
@@ -3529,6 +3531,7 @@ pub fn reclaim_terminated_threads() {
 /// This allows the thread to run without the scheduler trying to preempt it.
 #[allow(dead_code)]
 pub fn spawn_as_current(thread: Box<Thread>) {
+    note_scheduler_publication();
     without_interrupts(|| {
         let mut scheduler_lock = lock_scheduler();
         if let Some(scheduler) = scheduler_lock.as_mut() {
@@ -3714,6 +3717,60 @@ where
             .as_mut()
             .and_then(|sched| sched.get_thread_mut(thread_id).map(f))
     })
+}
+
+static CREATION_PUBLICATIONS: AtomicU64 = AtomicU64::new(0);
+static CREATION_PUBLICATIONS_PM_HELD: AtomicU64 = AtomicU64::new(0);
+static CREATION_PUBLICATIONS_PM_HELD_INJECTED: AtomicU64 = AtomicU64::new(0);
+
+#[inline]
+fn account_creation_publication_pm_held() -> bool {
+    let pm_held = crate::process::process_manager_held_on_current_cpu();
+    if pm_held {
+        CREATION_PUBLICATIONS_PM_HELD.fetch_add(1, Ordering::Relaxed);
+    }
+    pm_held
+}
+
+/// Publishing a thread to the scheduler while this CPU still holds the
+/// process-manager lock is the PM->SCHEDULER nesting PR #577 removed from the
+/// exec path. Detect it at the publication seam so the creation paths carry the
+/// same evidence the exec commit path does.
+#[inline]
+fn note_scheduler_publication() {
+    CREATION_PUBLICATIONS.fetch_add(1, Ordering::Relaxed);
+    if account_creation_publication_pm_held() {
+        crate::serial_println!("[CREATION_LOCK_ORDER:VIOLATION:PM_HELD]");
+    }
+}
+
+/// Drive the publication-seam lock-order detector deliberately, through the same
+/// process-manager-held predicate the production seam uses, so the production
+/// counter's zero is asserted against a demonstrated ability to fire.
+#[cfg(feature = "boot_tests")]
+pub fn probe_publication_lock_order_injection() -> bool {
+    let pm_held = account_creation_publication_pm_held();
+    if pm_held {
+        CREATION_PUBLICATIONS_PM_HELD_INJECTED.fetch_add(1, Ordering::Relaxed);
+        crate::serial_println!("[CREATION_LOCK_ORDER:INJECTED:PM_HELD]");
+    }
+    pm_held
+}
+
+#[derive(Clone, Copy)]
+pub struct CreationLockOrderCounters {
+    pub publications: u64,
+    pub pm_held: u64,
+    pub pm_held_injected: u64,
+}
+
+/// Read by the boot-test oracle.
+pub fn creation_lock_order_counters() -> CreationLockOrderCounters {
+    CreationLockOrderCounters {
+        publications: CREATION_PUBLICATIONS.load(Ordering::Relaxed),
+        pm_held: CREATION_PUBLICATIONS_PM_HELD.load(Ordering::Relaxed),
+        pm_held_injected: CREATION_PUBLICATIONS_PM_HELD_INJECTED.load(Ordering::Relaxed),
+    }
 }
 
 /// Number of exec scheduler-side commits applied (floor oracle: proves the path ran).

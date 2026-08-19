@@ -1669,24 +1669,27 @@ fn sys_spawn_aarch64(path_ptr: u64, argv_ptr: u64) -> u64 {
             // Add the child's main thread to the scheduler so it actually runs.
             // create_process_with_argv stores the thread on the Process but does
             // NOT enqueue it — we must do that here, mirroring create_user_process.
-            let scheduled = {
+            let scheduler_thread = {
                 let mut manager_guard = crate::process::manager();
                 if let Some(ref mut manager) = *manager_guard {
                     if let Some(process) = manager.get_process_mut(pid) {
                         if let Some(ref mut main_thread) = process.main_thread {
-                            crate::task::scheduler::spawn(Box::new(
-                                main_thread.publish_to_scheduler(),
-                            ));
-                            true
+                            Some(Box::new(main_thread.publish_to_scheduler()))
                         } else {
-                            false
+                            None
                         }
                     } else {
-                        false
+                        None
                     }
                 } else {
-                    false
+                    None
                 }
+            };
+            let scheduled = if let Some(thread) = scheduler_thread {
+                crate::task::scheduler::spawn(thread);
+                true
+            } else {
+                false
             };
             if scheduled {
                 crate::serial_println!("[spawn] Success: child PID {} scheduled", pid.as_u64());
