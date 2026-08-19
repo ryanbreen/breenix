@@ -1390,6 +1390,14 @@ fn item_path_at(spans: &[(usize, usize, String)], offset: usize) -> String {
         .unwrap_or_default()
 }
 
+fn item_body_for_path<'a>(source: &'a str, path: &str) -> Option<&'a str> {
+    let mask = code_mask(source);
+    rendered_item_spans(&item_spans(source, &mask))
+        .into_iter()
+        .find(|(_, _, item)| item == path)
+        .map(|(open, close, _)| &source[open..=close])
+}
+
 /// Every match of `matcher`, bucketed by enclosing item. A non-empty tag is
 /// appended to the item path, so a matcher can put a payload (the abandon
 /// reason) into the key instead of re-reading a pinned line.
@@ -3143,6 +3151,324 @@ fn validate_clear_child_tid_exit_paths(
         }
     }
 
+    failures.is_empty().then_some(()).ok_or(failures)
+}
+
+fn expected_value_comparison_offsets(source: &str, mask: &[bool]) -> Vec<usize> {
+    let bytes = source.as_bytes();
+    identifier_offsets(source, mask, "expected_val")
+        .into_iter()
+        .filter(|offset| {
+            let before = previous_code(source, mask, *offset);
+            let after = next_code(source, mask, offset + "expected_val".len());
+            before.is_some_and(|index| matches!(bytes[index], b'=' | b'!' | b'<' | b'>'))
+                || after.is_some_and(|index| matches!(bytes[index], b'=' | b'!' | b'<' | b'>'))
+        })
+        .collect()
+}
+
+fn call_argument<'a>(source: &'a str, mask: &[bool], call: usize, name: &str) -> Option<&'a str> {
+    let bytes = source.as_bytes();
+    let open = next_code(source, mask, call + name.len())?;
+    if bytes.get(open) != Some(&b'(') {
+        return None;
+    }
+    let mut depth = 0usize;
+    for close in open..bytes.len() {
+        if !mask[close] {
+            continue;
+        }
+        match bytes[close] {
+            b'(' => depth += 1,
+            b')' => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    return Some(&source[open + 1..close]);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn validate_futex_wait_atomicity(sources: &[(String, String)]) -> Result<(), Vec<String>> {
+    let futex = source(sources, "kernel/src/syscall/futex.rs");
+    let body = function_body(futex, "futex_wait");
+    let mask = code_mask(body);
+    let prepares = call_offsets(body, &mask, "prepare_to_wait_checked");
+    let mut failures = Vec::new();
+    check(
+        &mut failures,
+        "futex_wait must contain exactly one prepare_to_wait_checked call",
+        prepares.len() == 1,
+    );
+    if let Some(prepare) = prepares.first() {
+        let argument = call_argument(body, &mask, *prepare, "prepare_to_wait_checked");
+        let argument_mask = argument.map(code_mask);
+        let in_argument = argument
+            .zip(argument_mask.as_deref())
+            .map(|(argument, mask)| expected_value_comparison_offsets(argument, mask).len())
+            == Some(1);
+        check(
+            &mut failures,
+            "futex_wait must compare the user word inside prepare_to_wait_checked's closure",
+            in_argument,
+        );
+        let before_prepare = expected_value_comparison_offsets(
+            &body[..*prepare],
+            &code_mask(&body[..*prepare]),
+        );
+        check(
+            &mut failures,
+            "futex_wait must not compare expected_val before prepare_to_wait_checked",
+            before_prepare.is_empty(),
+        );
+    }
+    failures.is_empty().then_some(()).ok_or(failures)
+}
+
+fn validate_futex_queue_value_type(sources: &[(String, String)]) -> Result<(), Vec<String>> {
+    let futex = source(sources, "kernel/src/syscall/futex.rs");
+    let mask = code_mask(futex);
+    let declarations = census(
+        &[("kernel/src/syscall/futex.rs".to_owned(), futex.to_owned())],
+        |source, mask| code_offsets(source, mask, "static FUTEX_QUEUES:"),
+    );
+    let mut failures = Vec::new();
+    record(
+        &mut failures,
+        "FUTEX_QUEUES declaration shape",
+        validate_census(
+            &declarations,
+            &[("kernel/src/syscall/futex.rs", "", 1)],
+        ),
+    );
+    let declaration = normalized_code(
+        &futex[code_offsets(futex, &mask, "static FUTEX_QUEUES:")
+            .first()
+            .copied()
+            .unwrap_or(0)..],
+    );
+    check(
+        &mut failures,
+        "FUTEX_QUEUES must map keys to WaitQueueHead",
+        declaration.contains("static FUTEX_QUEUES: Mutex<BTreeMap<FutexKey, WaitQueueHead>>"),
+    );
+    check(
+        &mut failures,
+        "FUTEX_QUEUES must not use a bare waiter list",
+        !declaration.contains("static FUTEX_QUEUES: Mutex<BTreeMap<FutexKey, Vec"),
+    );
+    failures.is_empty().then_some(()).ok_or(failures)
+}
+
+fn sleeping_publication_names() -> [&'static str; 6] {
+    [
+        "block_current_for_timer",
+        "block_current_for_io",
+        "block_current_for_io_with_timeout",
+        "prepare_to_wait",
+        "prepare_to_wait_checked",
+        "publish_current_io_wait_state",
+    ]
+}
+
+fn validate_sleeping_preempt_discipline(
+    sources: &[(String, String)],
+) -> Result<(), Vec<String>> {
+    let mut failures = Vec::new();
+    let sleeping_calls = census(&sources, |source, mask| {
+        sleeping_publication_names()
+            .into_iter()
+            .flat_map(|name| call_offsets(source, mask, name))
+            .collect()
+    });
+    for ((path, item), _) in sleeping_calls {
+        let body = item_body_for_path(source(sources, &path), &item)
+            .unwrap_or_else(|| panic!("missing sleeping function item {path} :: {item}"));
+        let mask = code_mask(body);
+        let publication_offsets: Vec<_> = sleeping_publication_names()
+            .into_iter()
+            .flat_map(|name| call_offsets(body, &mask, name))
+            .collect();
+        let mut loops: Vec<_> = ["loop", "while", "for"]
+            .into_iter()
+            .flat_map(|keyword| identifier_offsets(body, &mask, keyword))
+            .collect();
+        loops.sort_unstable();
+        let Some(first_loop) = loops.first().copied() else {
+            continue;
+        };
+        if !publication_offsets
+            .iter()
+            .any(|publication| *publication < first_loop)
+        {
+            continue;
+        }
+        let enables = call_offsets(body, &mask, "preempt_enable");
+        let disables = call_offsets(body, &mask, "preempt_disable");
+        let disciplined = enables.first().is_some_and(|enable| *enable < first_loop)
+            && disables.last().is_some_and(|disable| *disable > first_loop);
+        if !disciplined {
+            failures.push(format!(
+                "{path} :: {item} must enable preemption before its first sleep loop and disable it after"
+            ));
+        }
+    }
+    failures.is_empty().then_some(()).ok_or(failures)
+}
+
+fn futex_map_lock_users(sources: &[(String, String)]) -> Vec<(String, String, String)> {
+    let futex = source(sources, "kernel/src/syscall/futex.rs");
+    let body_mask = code_mask(futex);
+    identifier_offsets(futex, &body_mask, "FUTEX_QUEUES")
+        .into_iter()
+        .filter(|offset| {
+            let Some(dot) = next_code(futex, &body_mask, *offset + "FUTEX_QUEUES".len()) else {
+                return false;
+            };
+            let Some(lock) = next_code(futex, &body_mask, dot + 1) else {
+                return false;
+            };
+            let Some(open) = next_code(futex, &body_mask, lock + "lock".len()) else {
+                return false;
+            };
+            &futex[dot..=dot] == "."
+                && futex[lock..].starts_with("lock")
+                && futex.as_bytes()[open] == b'('
+        })
+        .filter_map(|offset| {
+            let spans = rendered_item_spans(&item_spans(futex, &body_mask));
+            let item = item_path_at(&spans, offset);
+            item_body_for_path(futex, &item).map(|body| {
+                (
+                    "kernel/src/syscall/futex.rs".to_owned(),
+                    item,
+                    body.to_owned(),
+                )
+            })
+        })
+        .collect()
+}
+
+fn validate_futex_lock_order(sources: &[(String, String)]) -> Result<(), Vec<String>> {
+    let mut failures = Vec::new();
+    let mut seen = BTreeSet::new();
+    for (path, item, body) in futex_map_lock_users(sources) {
+        if !seen.insert(item.to_owned()) {
+            continue;
+        }
+        let mask = code_mask(&body);
+        let has_group_id = !call_offsets(&body, &mask, "current_thread_group_id").is_empty();
+        let has_group_key = !identifier_offsets(&body, &mask, "tg_id").is_empty();
+        if !(has_group_id || has_group_key) {
+            continue;
+        }
+        let group_calls = call_offsets(&body, &mask, "current_thread_group_id");
+        let locks = code_offsets(&body, &mask, "FUTEX_QUEUES.lock()");
+        let group_identity = group_calls.last().copied().or_else(|| {
+            identifier_offsets(&body, &mask, "tg_id")
+                .into_iter()
+                .next()
+        });
+        let valid = group_identity
+            .zip(locks.first())
+            .is_some_and(|(group, lock)| {
+                group < *lock
+                    && identifier_offsets(&body[group..*lock], &code_mask(&body[group..*lock]), "manager")
+                        .is_empty()
+            });
+        if !valid {
+            failures.push(format!(
+                "{path} :: {item} must resolve group identity before FUTEX_QUEUES without manager held"
+            ));
+        }
+    }
+    failures.is_empty().then_some(()).ok_or(failures)
+}
+
+fn no_logging_offsets(source: &str, mask: &[bool]) -> Vec<usize> {
+    ["log::", "serial_println!", "println!", "format!"]
+        .into_iter()
+        .flat_map(|needle| code_offsets(source, mask, needle))
+        .collect()
+}
+
+fn validate_futex_wait_wake_logging(sources: &[(String, String)]) -> Result<(), Vec<String>> {
+    let mut failures = Vec::new();
+    let mut seen = BTreeSet::new();
+    for (path, item, body) in futex_map_lock_users(sources) {
+        if !seen.insert(item.to_owned()) {
+            continue;
+        }
+        let mask = code_mask(&body);
+        if !no_logging_offsets(&body, &mask).is_empty() {
+            failures.push(format!("{path} :: {item} must not log on the futex wait/wake path"));
+        }
+    }
+
+    let waitqueue = source(sources, "kernel/src/task/waitqueue.rs");
+    let waitqueue_mask = code_mask(waitqueue);
+    for (open, close, item) in rendered_item_spans(&item_spans(waitqueue, &waitqueue_mask)) {
+        if !item.starts_with("impl WaitQueueHead::fn ") {
+            continue;
+        }
+        let name = item.strip_prefix("impl WaitQueueHead::fn ").unwrap_or_default();
+        if !(name.starts_with("prepare_to_wait")
+            || name.starts_with("wake_up")
+            || name.starts_with("take_waiter"))
+        {
+            continue;
+        }
+        let body = &waitqueue[open..=close];
+        if !no_logging_offsets(body, &code_mask(body)).is_empty() {
+            failures.push(format!(
+                "kernel/src/task/waitqueue.rs :: {item} must not log on the futex wait/wake path"
+            ));
+        }
+    }
+    failures.is_empty().then_some(()).ok_or(failures)
+}
+
+fn validate_futex_oracle_marker_and_gate_pins(
+    sources: &[(String, String)],
+) -> Result<(), Vec<String>> {
+    let oracle = source(sources, "kernel/src/syscall/futex_oracle.rs");
+    let oracle_sites = census(
+        &[("kernel/src/syscall/futex_oracle.rs".to_owned(), oracle.to_owned())],
+        |source, mask| identifier_offsets(source, mask, "serial_println"),
+    );
+    let mut failures = Vec::new();
+    record(
+        &mut failures,
+        "futex oracle marker emission shape",
+        validate_census(
+            &oracle_sites,
+            &[("kernel/src/syscall/futex_oracle.rs", "fn report", 1)],
+        ),
+    );
+    check(
+        &mut failures,
+        "futex oracle must emit the exact marker prefix",
+        oracle.matches("[FUTEX_HANDOFF_ORACLE:").count() == 1,
+    );
+
+    for path in [
+        "docker/qemu/run-aarch64-full-test.sh",
+        "docker/qemu/run-aarch64-boot-test-strict.sh",
+        "docker/qemu/run-aarch64-service-sequence-gate.sh",
+        "docker/qemu/run-x86-boot-tests.sh",
+    ] {
+        let gate = repo_text(path);
+        let pins_marker = gate.contains("[FUTEX_HANDOFF_ORACLE:");
+        let pins_with_grep = gate.contains("grep") && gate.contains("FUTEX_HANDOFF_ORACLE");
+        check(
+            &mut failures,
+            &format!("{path} must grep for the futex oracle marker"),
+            pins_marker && pins_with_grep,
+        );
+    }
     failures.is_empty().then_some(()).ok_or(failures)
 }
 
@@ -5160,6 +5486,60 @@ fn current_teardown_bypass_surface_is_exact() {
     let sources = rust_sources_below("kernel/src");
     let mut failures = Vec::new();
 
+    // This ratchet catches a future futex implementation that separates the user-word
+    // comparison from enqueue/publication, reopening the check-to-sleep lost-wake window.
+    record(
+        &mut failures,
+        "futex wait check/enqueue atomicity",
+        validate_futex_wait_atomicity(&sources),
+    );
+
+    // This ratchet catches a second unsynchronised waiter container replacing the scheduler-
+    // integrated queue head, which would let wake and teardown paths disagree about ownership.
+    record(
+        &mut failures,
+        "futex queue value type",
+        validate_futex_queue_value_type(&sources),
+    );
+
+    // This ratchet catches any newly discovered sleeping syscall that schedules while the
+    // syscall-entry preempt count remains elevated, which can starve timer-driven wakeups.
+    let mut sleeping_sources = rust_sources_below("kernel/src/syscall");
+    sleeping_sources.push((
+        "kernel/src/task/waitqueue.rs".to_owned(),
+        source(&sources, "kernel/src/task/waitqueue.rs").to_owned(),
+    ));
+    sleeping_sources.sort_by(|left, right| left.0.cmp(&right.0));
+    record(
+        &mut failures,
+        "sleeping syscall preempt discipline",
+        validate_sleeping_preempt_discipline(&sleeping_sources),
+    );
+
+    // This ratchet catches reacquiring the process-manager lock after group-key lookup and
+    // before the futex map lock, preserving the documented manager -> map lock ordering.
+    record(
+        &mut failures,
+        "futex map lock order",
+        validate_futex_lock_order(&sources),
+    );
+
+    // This ratchet catches diagnostic output re-entering the logger on the wait/wake path,
+    // where formatting or logger locks can perturb the synchronization being measured.
+    record(
+        &mut failures,
+        "futex wait/wake logging discipline",
+        validate_futex_wait_wake_logging(&sources),
+    );
+
+    // This ratchet catches a kernel oracle marker or gate grep being removed, which would let
+    // a boot gate pass without proving that the load-bearing futex self-check actually ran.
+    record(
+        &mut failures,
+        "futex oracle marker and gate pins",
+        validate_futex_oracle_marker_and_gate_pins(&sources),
+    );
+
     record(
         &mut failures,
         "per-architecture clear_child_tid exit handling",
@@ -6850,6 +7230,122 @@ fn deliberately_broken_variants_fail_the_ratchet() {
         out.push_str(&haystack[at + needle.len()..]);
         out
     }
+
+    let report_vacuity = |label: &str, result: Result<(), Vec<String>>| {
+        let failures = result.expect_err("deliberately broken futex variant unexpectedly passed");
+        eprintln!("vacuity check {label}: {}", failures.join(" | "));
+    };
+
+    // Moving an expected-value comparison before the checked prepare call must be rejected,
+    // proving the atomicity ratchet is sensitive to the original lost-wake regression shape.
+    let futex = source(&sources, "kernel/src/syscall/futex.rs");
+    let broken_atomicity = futex.replacen(
+        "let mut value_matches = false;",
+        "let mut value_matches = false; let broken_comparison = expected_val == 0;",
+        1,
+    );
+    report_vacuity(
+        "check/enqueue atomicity",
+        validate_futex_wait_atomicity(&with_replaced_source(
+            &sources,
+            "kernel/src/syscall/futex.rs",
+            broken_atomicity,
+        )),
+    );
+
+    // Replacing the queue-head value with a bare vector must be rejected, proving the
+    // declaration shape cannot silently reintroduce an unsynchronised waiter list.
+    let broken_queue_type = futex.replacen("WaitQueueHead>>", "Vec<u64>>", 1);
+    report_vacuity(
+        "queue value type",
+        validate_futex_queue_value_type(&with_replaced_source(
+            &sources,
+            "kernel/src/syscall/futex.rs",
+            broken_queue_type,
+        )),
+    );
+
+    // Removing the futex wait loop's preempt enable must be rejected, proving the derived
+    // sleeping-function census does not pass merely because a loop and publication call exist.
+    let broken_preempt = futex
+        .replace("crate::per_cpu_aarch64::preempt_enable();", "")
+        .replace("crate::per_cpu::preempt_enable();", "");
+    let broken_preempt_sources = with_replaced_source(
+        &sources,
+        "kernel/src/syscall/futex.rs",
+        broken_preempt,
+    );
+    let mut broken_sleeping_sources = rust_sources_below("kernel/src/syscall");
+    broken_sleeping_sources.push((
+        "kernel/src/task/waitqueue.rs".to_owned(),
+        source(&sources, "kernel/src/task/waitqueue.rs").to_owned(),
+    ));
+    broken_sleeping_sources.sort_by(|left, right| left.0.cmp(&right.0));
+    let broken_sleeping_sources = broken_sleeping_sources
+        .into_iter()
+        .map(|(path, contents)| {
+            if path == "kernel/src/syscall/futex.rs" {
+                (
+                    path,
+                    source(&broken_preempt_sources, "kernel/src/syscall/futex.rs").to_owned(),
+                )
+            } else {
+                (path, contents)
+            }
+        })
+        .collect::<Vec<_>>();
+    report_vacuity(
+        "sleeping preempt discipline",
+        validate_sleeping_preempt_discipline(&broken_sleeping_sources),
+    );
+
+    // Inserting a manager acquisition between group lookup and map locking must be rejected,
+    // proving the lock-order ratchet catches the deadlock-prone inversion directly.
+    let broken_lock_order = futex.replacen(
+        "let key = (tg_id, uaddr);\n    let mut queues = FUTEX_QUEUES.lock();",
+        "let key = (tg_id, uaddr);\n    let _manager = crate::process::manager();\n    let mut queues = FUTEX_QUEUES.lock();",
+        1,
+    );
+    report_vacuity(
+        "futex lock order",
+        validate_futex_lock_order(&with_replaced_source(
+            &sources,
+            "kernel/src/syscall/futex.rs",
+            broken_lock_order,
+        )),
+    );
+
+    // Adding a logger call to futex_wake must be rejected, proving the wait/wake path remains
+    // free of timing-changing output and logger-lock reentrancy.
+    let broken_logging = futex.replacen(
+        "    if uaddr == 0 || uaddr % 4 != 0 {",
+        "    log::debug!(\"broken futex path\");\n\n    if uaddr == 0 || uaddr % 4 != 0 {",
+        1,
+    );
+    report_vacuity(
+        "wait/wake logging discipline",
+        validate_futex_wait_wake_logging(&with_replaced_source(
+            &sources,
+            "kernel/src/syscall/futex.rs",
+            broken_logging,
+        )),
+    );
+
+    // Removing the oracle's exact prefix must be rejected, proving a gate cannot silently
+    // lose the load-bearing self-check while retaining only unrelated boot markers.
+    let broken_oracle = source(&sources, "kernel/src/syscall/futex_oracle.rs").replacen(
+        "[FUTEX_HANDOFF_ORACLE:{}:",
+        "[FUTEX_HANDOFF_ORACLE_REMOVED:{}:",
+        1,
+    );
+    report_vacuity(
+        "oracle marker and gate pins",
+        validate_futex_oracle_marker_and_gate_pins(&with_replaced_source(
+            &sources,
+            "kernel/src/syscall/futex_oracle.rs",
+            broken_oracle,
+        )),
+    );
 
     let broken_exit = with_synthetic_source(
         &sources,
