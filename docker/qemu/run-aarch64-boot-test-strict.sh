@@ -42,6 +42,56 @@ if [ ! -f "$KERNEL" ]; then
     exit 1
 fi
 
+# Durable #528 guard: the kernel MUST be soft-float. Fail fast if it was built
+# with the NEON hardfloat target (aarch64-breenix.json) — that re-arms #528.
+# (set -e aborts the gate if the guard trips.)
+#
+# This gate is the kernel-merge gate and it was the ONLY aarch64 gate without
+# this guard: the full-system, production-profile and service-sequence gates all
+# carried it, so a NEON-target kernel could be merged through the one gate that
+# decides merges while the others would have caught it. Found while pinning the
+# feature-profile guard below, which asserts the two preflights run in order.
+"$BREENIX_ROOT/scripts/check-kernel-no-neon.sh" "$KERNEL"
+
+# Durable feature-profile guard. This gate pins markers that ONLY a
+# `--features boot_tests` kernel emits, so a kernel built in any other profile
+# fails every boot on "marker missing" and the run reads as a kernel regression.
+#
+# `cargo` keeps one cached artifact per feature set and hardlinks the requested
+# one into this single output path in about 0.06 s, with no recompilation and no
+# output worth reading. ANY `cargo test` in the same session therefore replaces
+# this binary silently — `cargo test --test kernel_no_neon_guard` builds the
+# kernel with NO features by design — and the next gate boots the wrong kernel.
+# Measured: an acceptance battery that ran the structural suites and then this
+# gate scored 0/6, every boot on "Futex handoff oracle marker missing or failed",
+# against a production kernel that was never asked to emit it. Refuse instead.
+require_boot_tests_kernel() {
+    local kernel="$1"
+    local marker
+    local missing=""
+
+    # A census of marker literals rather than one sentinel: a single marker
+    # changing profile must not be able to disarm this guard quietly.
+    for marker in '[SCHED_STRAND_ORACLE:' '[STRAND_INJECT_ORACLE:' '[FUTEX_HANDOFF_ORACLE:' '[CTX596_ORACLE:' '[BOOT_TESTS:'; do
+        if ! grep -aqF "$marker" "$kernel" 2>/dev/null; then
+            missing="$missing $marker"
+        fi
+    done
+
+    if [ -n "$missing" ]; then
+        echo "Error: $kernel was not built with --features boot_tests."
+        echo "  Missing boot_tests-only marker literal(s):$missing"
+        echo "  This gate pins those markers, so every boot would fail on 'marker missing'."
+        echo "  Rebuild with:"
+        echo "    cargo build --release --features boot_tests --target aarch64-breenix-kernel.json -Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem -p kernel --bin kernel-aarch64"
+        echo "  NOTE: any 'cargo test' in this session rebuilds the kernel WITHOUT boot_tests and"
+        echo "  silently swaps this binary in a fraction of a second. Build after testing, not before."
+        exit 1
+    fi
+}
+
+require_boot_tests_kernel "$KERNEL"
+
 # Find ext2 disk (required for userspace)
 EXT2_DISK="$BREENIX_ROOT/target/ext2-aarch64.img"
 if [ ! -f "$EXT2_DISK" ]; then

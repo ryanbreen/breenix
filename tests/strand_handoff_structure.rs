@@ -16,6 +16,8 @@ const MIN_INSTRUCTION_ABORT_REFUSAL_REASONS: usize = 3;
 const MIN_609_SIGNATURE_GUARDS: usize = 5;
 /// Each gate must reject both strand marker families; additional rejections are welcome.
 const MIN_STRANDED_FORBIDDEN_REJECTIONS: usize = 2;
+/// More discriminating markers are welcome; dropping one quietly disarms the profile guard.
+const MIN_BOOT_TESTS_PROFILE_MARKERS: usize = 5;
 /// The strict gate scores once while polling and again for the final verdict.
 const MIN_STRICT_GATE_SCORE_SERIAL_CALLS: usize = 2;
 
@@ -594,6 +596,92 @@ fn full_test_rejects_post_run_stranded_markers() {
             .any(|line| line.contains("STRAND_INJECT_ORACLE")),
         "full test must reject a post-run stranded injection-oracle marker"
     );
+}
+
+#[test]
+fn boot_tests_gates_refuse_a_wrong_profile_kernel() {
+    for (gate_name, gate_path) in [
+        ("service-sequence gate", SERVICE_SEQUENCE_GATE_PATH),
+        ("strict gate", STRICT_GATE_PATH),
+        ("full test", FULL_TEST_PATH),
+    ] {
+        let gate = repo_text(gate_path);
+        let guard = shell_function_body(&gate, "require_boot_tests_kernel");
+        assert!(
+            !guard.trim().is_empty(),
+            "{gate_name} boot-tests profile guard body census"
+        );
+
+        let marker_line = guard
+            .lines()
+            .map(str::trim)
+            .find(|line| line.starts_with("for marker in ") && line.ends_with("; do"))
+            .unwrap_or_else(|| panic!("{gate_name} boot-tests profile marker census"));
+        let markers: Vec<_> = marker_line.split('\'').skip(1).step_by(2).collect();
+        assert!(
+            markers.len() >= MIN_BOOT_TESTS_PROFILE_MARKERS,
+            "{gate_name} boot-tests profile marker census shrank: {} < {}",
+            markers.len(),
+            MIN_BOOT_TESTS_PROFILE_MARKERS
+        );
+        assert!(
+            markers
+                .iter()
+                .all(|marker| marker.starts_with('[') && marker.ends_with(':')),
+            "{gate_name} boot-tests profile marker census must contain only bracketed, colon-terminated kernel marker prefixes"
+        );
+
+        let marker_loop = guard[guard
+            .find(marker_line)
+            .unwrap_or_else(|| panic!("{gate_name} boot-tests profile marker loop"))..]
+            .split_once("\n    done")
+            .map(|(body, _)| body)
+            .unwrap_or_else(|| panic!("{gate_name} boot-tests profile marker loop terminator"));
+        assert!(
+            marker_loop.lines().map(str::trim).any(|line| {
+                line.starts_with(r#"if ! grep -aqF "$marker" "$kernel""#)
+            }),
+            "{gate_name} boot-tests profile guard must inspect the kernel with binary-safe fixed-string grep"
+        );
+        assert_eq!(
+            shell_exact_line_occurrences(marker_loop, r#"missing="$missing $marker""#),
+            1,
+            "{gate_name} boot-tests profile guard must record every missing marker"
+        );
+        let missing_arm = guard
+            .split_once(r#"if [ -n "$missing" ]; then"#)
+            .and_then(|(_, tail)| tail.split_once("\n    fi"))
+            .map(|(arm, _)| arm)
+            .unwrap_or_else(|| panic!("{gate_name} missing-marker refusal arm"));
+        assert_eq!(
+            shell_exact_line_occurrences(missing_arm, "exit 1"),
+            1,
+            "{gate_name} must exit non-zero when a boot-tests profile marker is missing"
+        );
+
+        let guard_invocation = r#"require_boot_tests_kernel "$KERNEL""#;
+        assert_eq!(
+            shell_exact_line_occurrences(&gate, guard_invocation),
+            1,
+            "{gate_name} must invoke the boot-tests profile guard exactly once at top level"
+        );
+        assert!(
+            gate.lines().any(|line| line == guard_invocation),
+            "{gate_name} boot-tests profile guard invocation must remain top level"
+        );
+
+        let no_neon_invocation = r#""$BREENIX_ROOT/scripts/check-kernel-no-neon.sh" "$KERNEL""#;
+        let no_neon_offset = gate
+            .find(no_neon_invocation)
+            .unwrap_or_else(|| panic!("{gate_name} no-NEON preflight"));
+        let profile_guard_offset = gate
+            .find(guard_invocation)
+            .unwrap_or_else(|| panic!("{gate_name} boot-tests profile preflight"));
+        assert!(
+            profile_guard_offset > no_neon_offset,
+            "{gate_name} must run the no-NEON preflight before the boot-tests profile guard"
+        );
+    }
 }
 
 #[test]

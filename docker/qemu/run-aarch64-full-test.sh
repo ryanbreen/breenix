@@ -73,6 +73,43 @@ fi
 # (set -e aborts the test if the guard trips.)
 "$BREENIX_ROOT/scripts/check-kernel-no-neon.sh" "$KERNEL"
 
+# Durable feature-profile guard, the twin of the #528 guard above. This test pins
+# markers that ONLY a `--features boot_tests` kernel emits, so without --rebuild
+# a kernel left behind in another profile fails every phase on "marker missing"
+# and reads as a kernel regression.
+#
+# `cargo` keeps one cached artifact per feature set and hardlinks the requested
+# one into this single output path in about 0.06 s, with no recompilation and no
+# output worth reading. ANY `cargo test` in the same session therefore replaces
+# this binary silently — `cargo test --test kernel_no_neon_guard` builds the
+# kernel with NO features by design — and the next gate boots the wrong kernel.
+require_boot_tests_kernel() {
+    local kernel="$1"
+    local marker
+    local missing=""
+
+    # A census of marker literals rather than one sentinel: a single marker
+    # changing profile must not be able to disarm this guard quietly.
+    for marker in '[SCHED_STRAND_ORACLE:' '[STRAND_INJECT_ORACLE:' '[FUTEX_HANDOFF_ORACLE:' '[CTX596_ORACLE:' '[BOOT_TESTS:'; do
+        if ! grep -aqF "$marker" "$kernel" 2>/dev/null; then
+            missing="$missing $marker"
+        fi
+    done
+
+    if [ -n "$missing" ]; then
+        echo "Error: $kernel was not built with --features boot_tests."
+        echo "  Missing boot_tests-only marker literal(s):$missing"
+        echo "  This test pins those markers, so every phase would fail on 'marker missing'."
+        echo "  Re-run with --rebuild, or build with:"
+        echo "    cargo build --release --features boot_tests --target aarch64-breenix-kernel.json -Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem -p kernel --bin kernel-aarch64"
+        echo "  NOTE: any 'cargo test' in this session rebuilds the kernel WITHOUT boot_tests and"
+        echo "  silently swaps this binary in a fraction of a second. Build after testing, not before."
+        exit 1
+    fi
+}
+
+require_boot_tests_kernel "$KERNEL"
+
 # Find ext2 disk
 EXT2_DISK="$BREENIX_ROOT/target/ext2-aarch64.img"
 if [ ! -f "$EXT2_DISK" ]; then

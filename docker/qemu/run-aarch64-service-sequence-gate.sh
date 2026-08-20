@@ -123,6 +123,51 @@ fi
 
 "$BREENIX_ROOT/scripts/check-kernel-no-neon.sh" "$KERNEL"
 
+# Durable feature-profile guard, and it is the twin of the #528 guard above: this
+# gate pins markers that ONLY a `--features boot_tests` kernel emits, so a kernel
+# built in any other profile fails every single boot on "marker missing" and the
+# run reads exactly like a kernel regression.
+#
+# That is not hypothetical, and it is not a mistake anyone makes visibly. `cargo`
+# keeps one cached artifact per feature set and hardlinks the requested one into
+# this single output path in about 0.06 s with no recompilation and no output
+# worth reading. So ANY `cargo test` run in the same session silently replaces
+# this binary — `cargo test --test kernel_no_neon_guard` builds the kernel with
+# NO features by design — and the very next gate boots the wrong kernel. It was
+# found exactly that way: a local acceptance battery ran the structural suites
+# and then this gate, and produced 0/6 on the strict gate and 21 consecutive
+# "futex handoff oracle marker missing" boots here, all of them against a
+# production kernel that had never been asked to emit those markers.
+#
+# Refusing to boot is the only honest response. Fifty boots of an attributable-
+# looking false red is worse than no run at all.
+require_boot_tests_kernel() {
+    local kernel="$1"
+    local marker
+    local missing=""
+
+    # A census of boot_tests-only marker literals, not a single sentinel: one
+    # marker moving profile would otherwise silently disarm this guard.
+    for marker in '[SCHED_STRAND_ORACLE:' '[STRAND_INJECT_ORACLE:' '[FUTEX_HANDOFF_ORACLE:' '[CTX596_ORACLE:' '[BOOT_TESTS:'; do
+        if ! grep -aqF "$marker" "$kernel" 2>/dev/null; then
+            missing="$missing $marker"
+        fi
+    done
+
+    if [ -n "$missing" ]; then
+        echo "Error: $kernel was not built with --features boot_tests."
+        echo "  Missing boot_tests-only marker literal(s):$missing"
+        echo "  This gate pins those markers, so every boot would fail on 'marker missing'."
+        echo "  Rebuild with:"
+        echo "    cargo build --release --features boot_tests --target aarch64-breenix-kernel.json -Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem -p kernel --bin kernel-aarch64"
+        echo "  NOTE: any 'cargo test' in this session rebuilds the kernel WITHOUT boot_tests and"
+        echo "  silently swaps this binary in a fraction of a second. Build after testing, not before."
+        exit 1
+    fi
+}
+
+require_boot_tests_kernel "$KERNEL"
+
 EXT2_DISK="$BREENIX_ROOT/target/ext2-aarch64.img"
 if [ ! -f "$EXT2_DISK" ]; then
     echo "Error: ext2 disk not found at $EXT2_DISK"

@@ -2842,12 +2842,32 @@ const P5B_GATE_SCRIPT_PATHS: [&str; 5] = [
     "docker/qemu/run-x86-boot-tests.sh",
     "docker/qemu/run-aarch64-service-sequence-gate.sh",
 ];
+const MIN_SERVICE_SEQUENCE_BUCKET_ARMS: usize = 9;
 
 fn p5b_gate_script_sources() -> Vec<(String, String)> {
     P5B_GATE_SCRIPT_PATHS
         .iter()
         .map(|path| ((*path).to_owned(), repo_text(path)))
         .collect()
+}
+
+fn shell_arithmetic_sum_terms<'a>(source: &'a str, assignment: &str) -> Option<BTreeSet<&'a str>> {
+    let prefix = format!("{assignment}=$((");
+    let mut expressions = source.match_indices(&prefix).filter_map(|(offset, _)| {
+        let tail = &source[offset + prefix.len()..];
+        tail.find("))").map(|end| &tail[..end])
+    });
+    let expression = expressions.next()?;
+    if expressions.next().is_some() {
+        return None;
+    }
+    Some(
+        expression
+            .split('+')
+            .map(str::trim)
+            .filter(|term| !term.is_empty())
+            .collect(),
+    )
 }
 
 fn validate_p5b_gate_script_pins(
@@ -2969,19 +2989,155 @@ fn validate_p5b_gate_script_pins(
         "EL1 data abort (#596)",
         "TOTAL_DATA_ABORT=0",
         "DATA_ABORT) count_data_abort=$((count_data_abort + 1)) ;;",
-        "census_sum=$((count_575 + count_576 + count_data_abort + count_589 + count_596 + count_p5b + count_green + count_unattributed))",
         "[ \"$count_575\" -ne 0 ] || [ \"$count_data_abort\" -ne 0 ] || [ \"$count_596\" -ne 0 ] || [ \"$count_p5b\" -ne 0 ] || [ \"$count_unattributed\" -ne 0 ]",
         "quiesce_rows_floor=8",
         "[ \"$quiesce_rows\" -lt \"$quiesce_rows_floor\" ]",
         "TOTAL_P5B=$((TOTAL_P5B + count_p5b))",
         "TOTAL_DATA_ABORT=$((TOTAL_DATA_ABORT + count_data_abort))",
-        "TOTAL_SUM=$((TOTAL_575 + TOTAL_576 + TOTAL_DATA_ABORT + TOTAL_589 + TOTAL_596 + TOTAL_P5B + TOTAL_GREEN + TOTAL_UNATTRIBUTED))",
         "P5b whole-boot-walk denominator",
     ] {
         check(
             &mut failures,
             &format!("run-aarch64-service-sequence-gate.sh lost P5b pin {pin}"),
             service.contains(pin),
+        );
+    }
+
+    let run_profile = service
+        .split_once("run_profile() {")
+        .and_then(|(_, tail)| tail.split_once("\n}\n").map(|(body, _)| body));
+    check(
+        &mut failures,
+        "run-aarch64-service-sequence-gate.sh lost the run_profile body",
+        run_profile.is_some(),
+    );
+    let classifier_dispatch = run_profile.and_then(|body| {
+        body.split_once("case \"$CLASS_BUCKET\" in")
+            .and_then(|(_, tail)| tail.split_once("esac").map(|(dispatch, _)| dispatch))
+    });
+    check(
+        &mut failures,
+        "run-aarch64-service-sequence-gate.sh lost the run_profile CLASS_BUCKET dispatch",
+        classifier_dispatch.is_some(),
+    );
+
+    let bucket_arms = classifier_dispatch
+        .map(|dispatch| {
+            dispatch
+                .lines()
+                .filter_map(|line| {
+                    let line = line.trim();
+                    if line.starts_with('#') {
+                        return None;
+                    }
+                    let (bucket, update) = line.split_once(')')?;
+                    let bucket = bucket.trim();
+                    let update = update.trim();
+                    (!bucket.is_empty()
+                        && bucket != "*"
+                        && !bucket.bytes().any(|byte| byte.is_ascii_whitespace())
+                        && update.ends_with(";;"))
+                    .then_some((bucket, update))
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    check(
+        &mut failures,
+        "run-aarch64-service-sequence-gate.sh CLASS_BUCKET arm census is empty",
+        !bucket_arms.is_empty(),
+    );
+    check(
+        &mut failures,
+        &format!(
+            "run-aarch64-service-sequence-gate.sh CLASS_BUCKET arm census fell below {MIN_SERVICE_SEQUENCE_BUCKET_ARMS}"
+        ),
+        bucket_arms.len() >= MIN_SERVICE_SEQUENCE_BUCKET_ARMS,
+    );
+
+    let mut bucket_counters = Vec::new();
+    for (bucket, update) in bucket_arms {
+        let counter = update
+            .split_once('=')
+            .map(|(counter, _)| counter.trim())
+            .filter(|counter| {
+                counter
+                    .strip_prefix("count_")
+                    .is_some_and(|suffix| {
+                        !suffix.is_empty()
+                            && suffix
+                                .bytes()
+                                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+                    })
+            });
+        match counter {
+            Some(counter) => bucket_counters.push((bucket, counter)),
+            None => failures.push(format!(
+                "run-aarch64-service-sequence-gate.sh bucket {bucket} arm does not name a count_* counter"
+            )),
+        }
+    }
+
+    let census_terms = run_profile.and_then(|body| shell_arithmetic_sum_terms(body, "census_sum"));
+    check(
+        &mut failures,
+        "run-aarch64-service-sequence-gate.sh lost the census_sum arithmetic expression",
+        census_terms.is_some(),
+    );
+    let total_terms = shell_arithmetic_sum_terms(service, "TOTAL_SUM");
+    check(
+        &mut failures,
+        "run-aarch64-service-sequence-gate.sh lost the TOTAL_SUM arithmetic expression",
+        total_terms.is_some(),
+    );
+
+    for (bucket, counter) in bucket_counters {
+        if !census_terms
+            .as_ref()
+            .is_some_and(|terms| terms.contains(counter))
+        {
+            failures.push(format!(
+                "run-aarch64-service-sequence-gate.sh bucket {bucket} counter {counter} is missing from census_sum"
+            ));
+        }
+        let total_counter = format!(
+            "TOTAL_{}",
+            counter
+                .strip_prefix("count_")
+                .expect("validated classifier counter")
+                .to_ascii_uppercase()
+        );
+        if !total_terms
+            .as_ref()
+            .is_some_and(|terms| terms.contains(total_counter.as_str()))
+        {
+            failures.push(format!(
+                "run-aarch64-service-sequence-gate.sh bucket {bucket} counter {total_counter} is missing from TOTAL_SUM"
+            ));
+        }
+    }
+
+    for (counter, total_counter) in [
+        ("count_p5b", "TOTAL_P5B"),
+        ("count_data_abort", "TOTAL_DATA_ABORT"),
+    ] {
+        check(
+            &mut failures,
+            &format!(
+                "run-aarch64-service-sequence-gate.sh lost explicit P5b subject counter {counter} from census_sum"
+            ),
+            census_terms
+                .as_ref()
+                .is_some_and(|terms| terms.contains(counter)),
+        );
+        check(
+            &mut failures,
+            &format!(
+                "run-aarch64-service-sequence-gate.sh lost explicit P5b subject counter {total_counter} from TOTAL_SUM"
+            ),
+            total_terms
+                .as_ref()
+                .is_some_and(|terms| terms.contains(total_counter)),
         );
     }
 
@@ -7811,6 +7967,22 @@ fn deliberately_broken_variants_fail_the_ratchet() {
         stripped_p5b_pin,
     );
     assert!(validate_p5b_gate_script_pins(&stripped_p5b_pin).is_err());
+
+    let service = source(
+        &scripts,
+        "docker/qemu/run-aarch64-service-sequence-gate.sh",
+    );
+    let missing_census_bucket = service.replacen(" + count_609", "", 1);
+    assert_ne!(
+        missing_census_bucket, service,
+        "service-sequence census-sum mutation anchor"
+    );
+    let missing_census_bucket = with_replaced_source(
+        &scripts,
+        "docker/qemu/run-aarch64-service-sequence-gate.sh",
+        missing_census_bucket,
+    );
+    assert!(validate_p5b_gate_script_pins(&missing_census_bucket).is_err());
 
     let scheduler = source(&sources, "kernel/src/task/scheduler.rs");
     let broken_scheduler = scheduler.replacen(
