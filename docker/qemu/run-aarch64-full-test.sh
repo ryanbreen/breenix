@@ -26,6 +26,12 @@ BREENIX_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 # live_checks is nonzero because every allocation evaluates the guard; pub_pooled and pub_sched_owned are nonzero boot-wide totals whose exact values depend on process creation, while the oracle asserts they are equal and both publication residuals are zero.
 # sched_publications is a nonzero boot-wide driver for sched_pm_held_production=0. frame_used_delta varies with heap growth, while the oracle asserts it is strictly less than one 128-frame kernel stack.
 KSTACK_OWNER_ORACLE_PATTERN='^\[KSTACK_OWNER_ORACLE:aarch64:creation_rows=1000:creation_owned=1000:one_owner=1000:two_owner=0:zero_owner=0:fork_rows=1:fork_owned=1:slot_returns_exact_one=1:slot_alloc_delta=1000:slot_free_delta=1000:slot_balance=0:frames_mapped_delta=0:frames_released_delta=0:frame_balance=0:frame_used_delta=[0-9]+:frame_used_bounded=1:live_checks=[1-9][0-9]*:live_refusals_production=0:live_refusals_injected=1:drop_refused_live=0:pte_overwrite_refusals=0:pub_pooled=[1-9][0-9]*:pub_sched_owned=[1-9][0-9]*:pub_row_residual=0:pub_unowned=0:classifier_sched_owned=1:classifier_row_residual=1:classifier_unowned=1:classifier_not_pooled=1:sched_publications=[1-9][0-9]*:sched_pm_held_production=0:sched_pm_held_injected=1:balance=0\]$'
+# driven=2 proves both waiter-owned wake seams ran; stage1/2 return, wake, and
+# park fields expose D1/D2. stage3_elapsed_ok=1 proves no early timeout return;
+# stage3_ret=ETIMEDOUT plus rescues=0 proves the backstop did not end this wait.
+# stage3_elapsed_ms reports the measured duration, and residual/balance prove cleanup.
+# This marker is emitted from a syscall while the scheduler trace stream is live, so its line can carry a prefix.
+FUTEX_HANDOFF_ORACLE_PATTERN='\[FUTEX_HANDOFF_ORACLE:aarch64:driven=2:stage1_ret=EAGAIN:stage1_wake=0:stage1_parked=0:stage2_ret=0:stage2_wake=1:stage2_parked=0:stage3_ret=ETIMEDOUT:stage3_elapsed_ok=1:stage3_elapsed_ms=[0-9]+:rescues=0:queue_residual=0:balance=0\]'
 # The boot-test oracle drives this injection exactly once; its forbidden detector output is pinned absent below.
 CREATION_LOCK_ORDER_INJECTED_LITERAL='[CREATION_LOCK_ORDER:INJECTED:PM_HELD]'
 CREATION_LOCK_ORDER_VIOLATION_LITERAL='[CREATION_LOCK_ORDER:VIOLATION:PM_HELD]'
@@ -263,6 +269,45 @@ if [ -z "$FAIL_REASON" ]; then
     fi
 fi
 
+# --- Phase 1a2: Pin the deterministic futex handoff oracle ---
+# The pattern keeps every kernel-behaviour field exact while allowing only the
+# measured stage3_elapsed_ms field to vary with emulator wall-clock speed.
+if [ -z "$FAIL_REASON" ]; then
+    echo ""
+    echo "Phase 1a2: Waiting for futex handoff oracle..."
+    FUTEX_HANDOFF_ORACLE_OK=false
+    for i in $(seq 1 15); do
+        if grep -qE "$FUTEX_HANDOFF_ORACLE_PATTERN" "$OUTPUT_DIR/serial.txt" 2>/dev/null; then
+            FUTEX_HANDOFF_ORACLE_OK=true
+            FUTEX_HANDOFF_ORACLE_LINE=$(grep -E "$FUTEX_HANDOFF_ORACLE_PATTERN" "$OUTPUT_DIR/serial.txt" 2>/dev/null | tail -1)
+            break
+        fi
+        if grep -qF '[FUTEX_HANDOFF_ORACLE:' "$OUTPUT_DIR/serial.txt" 2>/dev/null; then
+            FUTEX_HANDOFF_ORACLE_LINE=$(grep -F '[FUTEX_HANDOFF_ORACLE:' "$OUTPUT_DIR/serial.txt" 2>/dev/null | tail -1)
+            FAIL_REASON="Phase 1a2: futex handoff oracle failed ($FUTEX_HANDOFF_ORACLE_LINE)"
+            break
+        fi
+        if FATAL=$(check_fatal); then
+            FAIL_REASON="Phase 1a2: futex handoff oracle never completed ($FATAL)"
+            break
+        fi
+        if ! kill -0 $QEMU_PID 2>/dev/null; then
+            FAIL_REASON="Phase 1a2: futex handoff oracle never completed (QEMU exited)"
+            break
+        fi
+        sleep 2
+    done
+
+    if ! $FUTEX_HANDOFF_ORACLE_OK && [ -z "$FAIL_REASON" ]; then
+        FAIL_REASON="Phase 1a2: futex handoff oracle marker absent (30s timeout)"
+    fi
+
+    if $FUTEX_HANDOFF_ORACLE_OK && [ -z "$FAIL_REASON" ]; then
+        echo "  Observed: $FUTEX_HANDOFF_ORACLE_LINE"
+        echo "Phase 1a2: PASS"
+    fi
+fi
+
 # --- Phase 1b: Exercise the init-driven exec path (up to 30s) ---
 if [ -z "$FAIL_REASON" ]; then
     echo "Phase 1: PASS (${TESTS_PASSED}/${TESTS_TOTAL} tests)"
@@ -357,6 +402,8 @@ if [ -z "$FAIL_REASON" ]; then
         # would mean the guard probe was compiled for the wrong target.
         if ! grep -qF "CLONEVM_EXEC_TEST: live sibling refused exec" "$OUTPUT_DIR/serial.txt" 2>/dev/null; then
             FAIL_REASON="Phase 1c: live-sibling refusal probe did not run"
+        elif ! grep -qF "CLONEVM_EXEC_TEST: post-exec rendezvous complete" "$OUTPUT_DIR/serial.txt" 2>/dev/null; then
+            FAIL_REASON="Phase 1c: post-exec rendezvous did not complete"
         else
             echo "Phase 1c: PASS"
         fi

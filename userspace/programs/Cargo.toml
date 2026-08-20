@@ -279,6 +279,10 @@ path = "src/exec_smoke_target.rs"
 name = "block_eintr_oracle"
 path = "src/block_eintr_oracle.rs"
 
+[[bin]]
+name = "futex_handoff_oracle"
+path = "src/futex_handoff_oracle.rs"
+
 # Additional test programs
 [[bin]]
 name = "alarm_test"

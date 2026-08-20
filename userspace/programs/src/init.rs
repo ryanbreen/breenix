@@ -107,6 +107,8 @@ fn main() {
     #[cfg(target_arch = "aarch64")]
     run_block_eintr_oracle();
     #[cfg(target_arch = "aarch64")]
+    run_futex_handoff_oracle();
+    #[cfg(target_arch = "aarch64")]
     run_exec_smoke();
     #[cfg(target_arch = "aarch64")]
     run_clonevm_exec_test();
@@ -166,6 +168,30 @@ fn run_block_eintr_oracle() {
         Err(error) => {
             print!(
                 "[init] Warning: failed to start block_eintr_oracle: {}\n",
+                error
+            );
+        }
+    }
+}
+
+/// Run the deterministic #584 futex handoff oracle. The kernel emits the verdict marker;
+/// this launcher only records the child exit for boot-log debuggability.
+#[cfg(target_arch = "aarch64")]
+fn run_futex_handoff_oracle() {
+    match spawn(b"/bin/futex_handoff_oracle\0") {
+        Ok(child_pid) => {
+            let mut status = 0i32;
+            let _ = waitpid(child_pid.raw() as i32, &mut status as *mut i32, 0);
+            let exit_code = (status >> 8) & 0xFF;
+            print!(
+                "[init] futex_handoff_oracle exited pid={} code={}\n",
+                child_pid.raw(),
+                exit_code
+            );
+        }
+        Err(error) => {
+            print!(
+                "[init] Warning: failed to start futex_handoff_oracle: {}\n",
                 error
             );
         }

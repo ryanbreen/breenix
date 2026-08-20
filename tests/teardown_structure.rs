@@ -1390,6 +1390,14 @@ fn item_path_at(spans: &[(usize, usize, String)], offset: usize) -> String {
         .unwrap_or_default()
 }
 
+fn item_body_for_path<'a>(source: &'a str, path: &str) -> Option<&'a str> {
+    let mask = code_mask(source);
+    rendered_item_spans(&item_spans(source, &mask))
+        .into_iter()
+        .find(|(_, _, item)| item == path)
+        .map(|(open, close, _)| &source[open..=close])
+}
+
 /// Every match of `matcher`, bucketed by enclosing item. A non-empty tag is
 /// appended to the item path, so a matcher can put a payload (the abandon
 /// reason) into the key instead of re-reading a pinned line.
@@ -2921,7 +2929,7 @@ fn validate_p5b_gate_script_pins(
     for pin in [
         x86_literal,
         "TEST:process:init_group_refusal_oracle:PASS",
-        "grep -qF -x \"$INIT_GROUP_REFUSAL_ORACLE_LITERAL\"",
+        "grep -qF \"$INIT_GROUP_REFUSAL_ORACLE_LITERAL\"",
         "INIT_GROUP_WALK_COUNT=$(awk",
         "test \"$INIT_GROUP_WALK_COUNT\" -eq 0",
         "x86 has no production designated init",
@@ -3000,7 +3008,7 @@ fn validate_kstack_gate_script_pins(
     let mut failures = Vec::new();
     let injected = "[CREATION_LOCK_ORDER:INJECTED:PM_HELD]";
     let violation = "[CREATION_LOCK_ORDER:VIOLATION:PM_HELD]";
-    let x86_owner_pattern = "KSTACK_OWNER_ORACLE_PATTERN='^\\[KSTACK_OWNER_ORACLE:x86:creation_rows=1000:creation_owned=1000:one_owner=1000:two_owner=0:zero_owner=0:fork_rows=2:fork_owned=2:slot_returns_exact_one=2:slot_alloc_delta=1000:slot_free_delta=1000:slot_balance=0:frames_mapped_delta=128000:frames_released_delta=128000:frame_balance=0:frame_used_delta=[0-9]+:frame_used_bounded=1:live_checks=[1-9][0-9]*:live_refusals_production=0:live_refusals_injected=1:drop_refused_live=0:pte_overwrite_refusals=0:pub_pooled=[1-9][0-9]*:pub_sched_owned=[1-9][0-9]*:pub_row_residual=0:pub_unowned=0:classifier_sched_owned=1:classifier_row_residual=1:classifier_unowned=1:classifier_not_pooled=1:sched_publications=[1-9][0-9]*:sched_pm_held_production=0:sched_pm_held_injected=1:balance=0\\]$'";
+    let x86_owner_pattern = "KSTACK_OWNER_ORACLE_PATTERN='\\[KSTACK_OWNER_ORACLE:x86:creation_rows=1000:creation_owned=1000:one_owner=1000:two_owner=0:zero_owner=0:fork_rows=2:fork_owned=2:slot_returns_exact_one=2:slot_alloc_delta=1000:slot_free_delta=1000:slot_balance=0:frames_mapped_delta=128000:frames_released_delta=128000:frame_balance=0:frame_used_delta=[0-9]+:frame_used_bounded=1:live_checks=[1-9][0-9]*:live_refusals_production=0:live_refusals_injected=1:drop_refused_live=0:pte_overwrite_refusals=0:pub_pooled=[1-9][0-9]*:pub_sched_owned=[1-9][0-9]*:pub_row_residual=0:pub_unowned=0:classifier_sched_owned=1:classifier_row_residual=1:classifier_unowned=1:classifier_not_pooled=1:sched_publications=[1-9][0-9]*:sched_pm_held_production=0:sched_pm_held_injected=1:balance=0\\]'";
     let aarch64_owner_pattern = "KSTACK_OWNER_ORACLE_PATTERN='^\\[KSTACK_OWNER_ORACLE:aarch64:creation_rows=1000:creation_owned=1000:one_owner=1000:two_owner=0:zero_owner=0:fork_rows=1:fork_owned=1:slot_returns_exact_one=1:slot_alloc_delta=1000:slot_free_delta=1000:slot_balance=0:frames_mapped_delta=0:frames_released_delta=0:frame_balance=0:frame_used_delta=[0-9]+:frame_used_bounded=1:live_checks=[1-9][0-9]*:live_refusals_production=0:live_refusals_injected=1:drop_refused_live=0:pte_overwrite_refusals=0:pub_pooled=[1-9][0-9]*:pub_sched_owned=[1-9][0-9]*:pub_row_residual=0:pub_unowned=0:classifier_sched_owned=1:classifier_row_residual=1:classifier_unowned=1:classifier_not_pooled=1:sched_publications=[1-9][0-9]*:sched_pm_held_production=0:sched_pm_held_injected=1:balance=0\\]$'";
 
     let x86 = source(scripts, "docker/qemu/run-x86-boot-tests.sh");
@@ -3010,9 +3018,9 @@ fn validate_kstack_gate_script_pins(
         "KSTACK_OWNER_LINE=$(grep -hE \"$KSTACK_OWNER_ORACLE_PATTERN\"",
         "echo \"$KSTACK_OWNER_LINE\"",
         "grep -qF '[CREATION_LOCK_ORDER:VIOLATION'",
-        "grep -qF -x \"$CREATION_LOCK_ORDER_INJECTED_LITERAL\"",
-        "grep -h -F -x -c \"$CREATION_LOCK_ORDER_INJECTED_LITERAL\"",
-        "grep -h -F -x -c \"$CREATION_LOCK_ORDER_VIOLATION_LITERAL\"",
+        "grep -qF \"$CREATION_LOCK_ORDER_INJECTED_LITERAL\"",
+        "grep -h -F -c \"$CREATION_LOCK_ORDER_INJECTED_LITERAL\"",
+        "grep -h -F -c \"$CREATION_LOCK_ORDER_VIOLATION_LITERAL\"",
         injected,
         violation,
     ] {
@@ -3143,6 +3151,553 @@ fn validate_clear_child_tid_exit_paths(
         }
     }
 
+    failures.is_empty().then_some(()).ok_or(failures)
+}
+
+fn expected_value_comparison_offsets(source: &str, mask: &[bool]) -> Vec<usize> {
+    let bytes = source.as_bytes();
+    identifier_offsets(source, mask, "expected_val")
+        .into_iter()
+        .filter(|offset| {
+            let before = previous_code(source, mask, *offset);
+            let after = next_code(source, mask, offset + "expected_val".len());
+            before.is_some_and(|index| matches!(bytes[index], b'=' | b'!' | b'<' | b'>'))
+                || after.is_some_and(|index| matches!(bytes[index], b'=' | b'!' | b'<' | b'>'))
+        })
+        .collect()
+}
+
+fn call_argument<'a>(source: &'a str, mask: &[bool], call: usize, name: &str) -> Option<&'a str> {
+    let bytes = source.as_bytes();
+    let open = next_code(source, mask, call + name.len())?;
+    if bytes.get(open) != Some(&b'(') {
+        return None;
+    }
+    let mut depth = 0usize;
+    for close in open..bytes.len() {
+        if !mask[close] {
+            continue;
+        }
+        match bytes[close] {
+            b'(' => depth += 1,
+            b')' => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    return Some(&source[open + 1..close]);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn validate_futex_wait_atomicity(sources: &[(String, String)]) -> Result<(), Vec<String>> {
+    let futex = source(sources, "kernel/src/syscall/futex.rs");
+    let body = function_body(futex, "futex_wait");
+    let mask = code_mask(body);
+    let prepares = call_offsets(body, &mask, "prepare_to_wait_checked");
+    let mut failures = Vec::new();
+    check(
+        &mut failures,
+        "futex_wait must contain exactly one prepare_to_wait_checked call",
+        prepares.len() == 1,
+    );
+    if let Some(prepare) = prepares.first() {
+        let argument = call_argument(body, &mask, *prepare, "prepare_to_wait_checked");
+        let argument_mask = argument.map(code_mask);
+        let in_argument = argument
+            .zip(argument_mask.as_deref())
+            .map(|(argument, mask)| expected_value_comparison_offsets(argument, mask).len())
+            == Some(1);
+        check(
+            &mut failures,
+            "futex_wait must compare the user word inside prepare_to_wait_checked's closure",
+            in_argument,
+        );
+        let before_prepare = expected_value_comparison_offsets(
+            &body[..*prepare],
+            &code_mask(&body[..*prepare]),
+        );
+        check(
+            &mut failures,
+            "futex_wait must not compare expected_val before prepare_to_wait_checked",
+            before_prepare.is_empty(),
+        );
+    }
+    failures.is_empty().then_some(()).ok_or(failures)
+}
+
+fn validate_futex_queue_value_type(sources: &[(String, String)]) -> Result<(), Vec<String>> {
+    let futex = source(sources, "kernel/src/syscall/futex.rs");
+    let mask = code_mask(futex);
+    let declarations = census(
+        &[("kernel/src/syscall/futex.rs".to_owned(), futex.to_owned())],
+        |source, mask| code_offsets(source, mask, "static FUTEX_QUEUES:"),
+    );
+    let mut failures = Vec::new();
+    record(
+        &mut failures,
+        "FUTEX_QUEUES declaration shape",
+        validate_census(
+            &declarations,
+            &[("kernel/src/syscall/futex.rs", "", 1)],
+        ),
+    );
+    let declaration = normalized_code(
+        &futex[code_offsets(futex, &mask, "static FUTEX_QUEUES:")
+            .first()
+            .copied()
+            .unwrap_or(0)..],
+    );
+    check(
+        &mut failures,
+        "FUTEX_QUEUES must map keys to WaitQueueHead",
+        declaration.contains("static FUTEX_QUEUES: Mutex<BTreeMap<FutexKey, WaitQueueHead>>"),
+    );
+    check(
+        &mut failures,
+        "FUTEX_QUEUES must not use a bare waiter list",
+        !declaration.contains("static FUTEX_QUEUES: Mutex<BTreeMap<FutexKey, Vec"),
+    );
+    failures.is_empty().then_some(()).ok_or(failures)
+}
+
+fn sleeping_publication_names() -> [&'static str; 6] {
+    [
+        "block_current_for_timer",
+        "block_current_for_io",
+        "block_current_for_io_with_timeout",
+        "prepare_to_wait",
+        "prepare_to_wait_checked",
+        "publish_current_io_wait_state",
+    ]
+}
+
+fn validate_sleeping_preempt_discipline(
+    sources: &[(String, String)],
+) -> Result<(), Vec<String>> {
+    let mut failures = Vec::new();
+    let sleeping_calls = census(&sources, |source, mask| {
+        sleeping_publication_names()
+            .into_iter()
+            .flat_map(|name| call_offsets(source, mask, name))
+            .collect()
+    });
+    for ((path, item), _) in sleeping_calls {
+        let body = item_body_for_path(source(sources, &path), &item)
+            .unwrap_or_else(|| panic!("missing sleeping function item {path} :: {item}"));
+        let mask = code_mask(body);
+        let publication_offsets: Vec<_> = sleeping_publication_names()
+            .into_iter()
+            .flat_map(|name| call_offsets(body, &mask, name))
+            .collect();
+        let mut loops: Vec<_> = ["loop", "while", "for"]
+            .into_iter()
+            .flat_map(|keyword| identifier_offsets(body, &mask, keyword))
+            .collect();
+        loops.sort_unstable();
+        let Some(first_loop) = loops.first().copied() else {
+            continue;
+        };
+        if !publication_offsets
+            .iter()
+            .any(|publication| *publication < first_loop)
+        {
+            continue;
+        }
+        let enables = call_offsets(body, &mask, "preempt_enable");
+        let disables = call_offsets(body, &mask, "preempt_disable");
+        let disciplined = enables.first().is_some_and(|enable| *enable < first_loop)
+            && disables.last().is_some_and(|disable| *disable > first_loop);
+        if !disciplined {
+            failures.push(format!(
+                "{path} :: {item} must enable preemption before its first sleep loop and disable it after"
+            ));
+        }
+    }
+    failures.is_empty().then_some(()).ok_or(failures)
+}
+
+fn futex_map_lock_users(sources: &[(String, String)]) -> Vec<(String, String, String)> {
+    let futex = source(sources, "kernel/src/syscall/futex.rs");
+    let body_mask = code_mask(futex);
+    identifier_offsets(futex, &body_mask, "FUTEX_QUEUES")
+        .into_iter()
+        .filter(|offset| {
+            let Some(dot) = next_code(futex, &body_mask, *offset + "FUTEX_QUEUES".len()) else {
+                return false;
+            };
+            let Some(lock) = next_code(futex, &body_mask, dot + 1) else {
+                return false;
+            };
+            let Some(open) = next_code(futex, &body_mask, lock + "lock".len()) else {
+                return false;
+            };
+            &futex[dot..=dot] == "."
+                && futex[lock..].starts_with("lock")
+                && futex.as_bytes()[open] == b'('
+        })
+        .filter_map(|offset| {
+            let spans = rendered_item_spans(&item_spans(futex, &body_mask));
+            let item = item_path_at(&spans, offset);
+            item_body_for_path(futex, &item).map(|body| {
+                (
+                    "kernel/src/syscall/futex.rs".to_owned(),
+                    item,
+                    body.to_owned(),
+                )
+            })
+        })
+        .collect()
+}
+
+fn validate_futex_lock_order(sources: &[(String, String)]) -> Result<(), Vec<String>> {
+    let mut failures = Vec::new();
+    let mut seen = BTreeSet::new();
+    for (path, item, body) in futex_map_lock_users(sources) {
+        if !seen.insert(item.to_owned()) {
+            continue;
+        }
+        let mask = code_mask(&body);
+        let has_group_id = !call_offsets(&body, &mask, "current_thread_group_id").is_empty();
+        let has_group_key = !identifier_offsets(&body, &mask, "tg_id").is_empty();
+        if !(has_group_id || has_group_key) {
+            continue;
+        }
+        let group_calls = call_offsets(&body, &mask, "current_thread_group_id");
+        let locks = code_offsets(&body, &mask, "FUTEX_QUEUES.lock()");
+        let group_identity = group_calls.last().copied().or_else(|| {
+            identifier_offsets(&body, &mask, "tg_id")
+                .into_iter()
+                .next()
+        });
+        let valid = group_identity
+            .zip(locks.first())
+            .is_some_and(|(group, lock)| {
+                group < *lock
+                    && identifier_offsets(&body[group..*lock], &code_mask(&body[group..*lock]), "manager")
+                        .is_empty()
+            });
+        if !valid {
+            failures.push(format!(
+                "{path} :: {item} must resolve group identity before FUTEX_QUEUES without manager held"
+            ));
+        }
+    }
+    failures.is_empty().then_some(()).ok_or(failures)
+}
+
+fn no_logging_offsets(source: &str, mask: &[bool]) -> Vec<usize> {
+    ["log::", "serial_println!", "println!", "format!"]
+        .into_iter()
+        .flat_map(|needle| code_offsets(source, mask, needle))
+        .collect()
+}
+
+fn validate_futex_wait_wake_logging(sources: &[(String, String)]) -> Result<(), Vec<String>> {
+    let mut failures = Vec::new();
+    let mut seen = BTreeSet::new();
+    for (path, item, body) in futex_map_lock_users(sources) {
+        if !seen.insert(item.to_owned()) {
+            continue;
+        }
+        let mask = code_mask(&body);
+        if !no_logging_offsets(&body, &mask).is_empty() {
+            failures.push(format!("{path} :: {item} must not log on the futex wait/wake path"));
+        }
+    }
+
+    let waitqueue = source(sources, "kernel/src/task/waitqueue.rs");
+    let waitqueue_mask = code_mask(waitqueue);
+    for (open, close, item) in rendered_item_spans(&item_spans(waitqueue, &waitqueue_mask)) {
+        if !item.starts_with("impl WaitQueueHead::fn ") {
+            continue;
+        }
+        let name = item.strip_prefix("impl WaitQueueHead::fn ").unwrap_or_default();
+        if !(name.starts_with("prepare_to_wait")
+            || name.starts_with("wake_up")
+            || name.starts_with("take_waiter"))
+        {
+            continue;
+        }
+        let body = &waitqueue[open..=close];
+        if !no_logging_offsets(body, &code_mask(body)).is_empty() {
+            failures.push(format!(
+                "kernel/src/task/waitqueue.rs :: {item} must not log on the futex wait/wake path"
+            ));
+        }
+    }
+    failures.is_empty().then_some(()).ok_or(failures)
+}
+
+fn validate_futex_driver_self_limiting_and_prod_gate(
+    driver: &str,
+    gate: &str,
+    sources: &[(String, String)],
+) -> Result<(), Vec<String>> {
+    fn split_top_level_commas(arguments: &str) -> Vec<&str> {
+        let mask = code_mask(arguments);
+        let bytes = arguments.as_bytes();
+        let mut start = 0usize;
+        let mut paren_depth = 0usize;
+        let mut bracket_depth = 0usize;
+        let mut brace_depth = 0usize;
+        let mut split = Vec::new();
+
+        for index in 0..bytes.len() {
+            if !mask[index] {
+                continue;
+            }
+            match bytes[index] {
+                b'(' => paren_depth += 1,
+                b')' => paren_depth = paren_depth.saturating_sub(1),
+                b'[' => bracket_depth += 1,
+                b']' => bracket_depth = bracket_depth.saturating_sub(1),
+                b'{' => brace_depth += 1,
+                b'}' => brace_depth = brace_depth.saturating_sub(1),
+                b',' if paren_depth == 0 && bracket_depth == 0 && brace_depth == 0 => {
+                    split.push(&arguments[start..index]);
+                    start = index + 1;
+                }
+                _ => {}
+            }
+        }
+        let tail = &arguments[start..];
+        if !tail.trim().is_empty() {
+            split.push(tail);
+        }
+        split
+    }
+
+    let mut failures = Vec::new();
+    let main = function_body(driver, "main");
+    let main_mask = code_mask(main);
+    let calls = call_offsets(main, &main_mask, "futex");
+    let mut parsed_calls = Vec::new();
+    for call in &calls {
+        match call_argument(main, &main_mask, *call, "futex") {
+            Some(arguments) => {
+                let split = split_top_level_commas(arguments);
+                if split.len() != 5 {
+                    failures.push(format!(
+                        "driver futex call has {} arguments: {}",
+                        split.len(),
+                        arguments.split_whitespace().collect::<Vec<_>>().join(" ")
+                    ));
+                }
+                parsed_calls.push((*call, split));
+            }
+            None => failures.push("driver contains an unparseable futex call".to_owned()),
+        }
+    }
+
+    check(
+        &mut failures,
+        "every driver futex call must have five arguments",
+        parsed_calls.len() == calls.len()
+            && parsed_calls
+                .iter()
+                .all(|(_, arguments)| arguments.len() == 5),
+    );
+
+    let wait_calls = parsed_calls
+        .iter()
+        .filter(|(_, arguments)| {
+            arguments
+                .get(1)
+                .is_some_and(|operation| operation.trim() == "FUTEX_WAIT")
+        })
+        .collect::<Vec<_>>();
+    check(
+        &mut failures,
+        "driver must retain at least two FUTEX_WAIT calls",
+        wait_calls.len() >= 2,
+    );
+    check(
+        &mut failures,
+        "every driver FUTEX_WAIT must carry a nonzero timeout pointer",
+        wait_calls.iter().all(|(_, arguments)| {
+            arguments
+                .get(3)
+                .is_some_and(|timeout| timeout.trim() != "0")
+        }),
+    );
+
+    check(
+        &mut failures,
+        "the driver's first futex call must be the FUTEX_WAIT probe",
+        parsed_calls.first().is_some_and(|(_, arguments)| {
+            arguments.len() == 5
+                && arguments[1].trim() == "FUTEX_WAIT"
+                && arguments[4].trim() == "PROBE"
+        }),
+    );
+    check(
+        &mut failures,
+        "the seam-absent guard must exit before the driver's second futex call",
+        calls.first().zip(calls.get(1)).is_some_and(|(first, second)| {
+            let between = &main[*first..*second];
+            !code_offsets(between, &code_mask(between), "process::exit(0)").is_empty()
+        }),
+    );
+    check(
+        &mut failures,
+        "driver must contain exactly one seam-absent marker literal",
+        driver
+            .matches("[FUTEX_HANDOFF_ORACLE_DRIVER:seam_absent:")
+            .count()
+            == 1,
+    );
+
+    let oracle = source(sources, "kernel/src/syscall/futex_oracle.rs");
+    let oracle_mask = code_mask(oracle);
+    check(
+        &mut failures,
+        "kernel futex oracle must define is_probe",
+        code_offsets(oracle, &oracle_mask, "fn is_probe(").len() == 1,
+    );
+    check(
+        &mut failures,
+        "kernel futex oracle must define PROBE_ACK",
+        typed_u64_constant_definition_offsets(oracle, &oracle_mask, "PROBE_ACK").len() == 1,
+    );
+
+    let futex_wait = function_body(source(sources, "kernel/src/syscall/futex.rs"), "futex_wait");
+    let futex_wait_mask = code_mask(futex_wait);
+    check(
+        &mut failures,
+        "futex_wait must reference is_probe exactly once",
+        identifier_offsets(futex_wait, &futex_wait_mask, "is_probe").len() == 1,
+    );
+    check(
+        &mut failures,
+        "futex_wait must reference PROBE_ACK exactly once",
+        identifier_offsets(futex_wait, &futex_wait_mask, "PROBE_ACK").len() == 1,
+    );
+
+    let production_build_lines = gate
+        .lines()
+        .filter(|line| {
+            line.contains("cargo build") && line.contains("--target aarch64-breenix-kernel.json")
+        })
+        .collect::<Vec<_>>();
+    check(
+        &mut failures,
+        "production gate must run exactly one soft-float aarch64 kernel build",
+        production_build_lines.len() == 1,
+    );
+    check(
+        &mut failures,
+        "production gate kernel build must not enable features",
+        !production_build_lines.is_empty()
+            && production_build_lines
+                .iter()
+                .all(|line| !line.contains("--features")),
+    );
+    check(
+        &mut failures,
+        "production gate must run the durable no-NEON guard",
+        gate.contains("scripts/check-kernel-no-neon.sh"),
+    );
+    check(
+        &mut failures,
+        "production gate must pin and count the seam-absent timeout marker",
+        gate.lines().any(|line| {
+            line.trim()
+                == "PROD_SEAM_ABSENT_LITERAL='[FUTEX_HANDOFF_ORACLE_DRIVER:seam_absent:probe=-110]'"
+        }) && gate.contains("grep -F -c \"$literal\"")
+            && gate.contains(
+                "PROD_SEAM_ABSENT_COUNT=$(marker_count \"$SERIAL_FILE\" \"$PROD_SEAM_ABSENT_LITERAL\")",
+            ),
+    );
+    check(
+        &mut failures,
+        "production gate must require the boot_tests-only kernel marker count to be zero",
+        gate.lines().any(|line| {
+            line.trim() == "KERNEL_ORACLE_LITERAL='[FUTEX_HANDOFF_ORACLE:'"
+        }) && gate.contains(
+            "KERNEL_ORACLE_COUNT=$(marker_count \"$SERIAL_FILE\" \"$KERNEL_ORACLE_LITERAL\")",
+        ) && gate.contains("[ \"$KERNEL_ORACLE_COUNT\" -eq 0 ]"),
+    );
+    check(
+        &mut failures,
+        "production gate must pin init resuming after futex_handoff_oracle",
+        gate.lines().any(|line| {
+            line.trim() == "INIT_EXIT_LITERAL='[init] futex_handoff_oracle exited pid='"
+        }) && gate.contains("INIT_EXIT_COUNT=$(marker_count \"$SERIAL_FILE\" \"$INIT_EXIT_LITERAL\")")
+            && gate.contains("[ \"$INIT_EXIT_COUNT\" -ge 1 ]"),
+    );
+    check(
+        &mut failures,
+        "production gate must pin bsshd reaching its listening state",
+        gate.lines()
+            .any(|line| line.trim() == "BSSHD_LITERAL='bsshd: listening'")
+            && gate.contains("BSSHD_COUNT=$(marker_count \"$SERIAL_FILE\" \"$BSSHD_LITERAL\")")
+            && gate.contains("[ \"$BSSHD_COUNT\" -ge 1 ]"),
+    );
+
+    failures.is_empty().then_some(()).ok_or(failures)
+}
+
+fn validate_futex_oracle_marker_and_gate_pins(
+    sources: &[(String, String)],
+) -> Result<(), Vec<String>> {
+    let oracle = source(sources, "kernel/src/syscall/futex_oracle.rs");
+    let oracle_sites = census(
+        &[("kernel/src/syscall/futex_oracle.rs".to_owned(), oracle.to_owned())],
+        |source, mask| identifier_offsets(source, mask, "serial_println"),
+    );
+    let mut failures = Vec::new();
+    record(
+        &mut failures,
+        "futex oracle marker emission shape",
+        validate_census(
+            &oracle_sites,
+            &[("kernel/src/syscall/futex_oracle.rs", "fn report", 1)],
+        ),
+    );
+    check(
+        &mut failures,
+        "futex oracle must emit the exact marker prefix",
+        oracle.matches("[FUTEX_HANDOFF_ORACLE:").count() == 1,
+    );
+    check(
+        &mut failures,
+        "futex oracle must report the measured stage3 elapsed milliseconds",
+        oracle.contains("stage3_elapsed_ok={}:stage3_elapsed_ms={}:"),
+    );
+
+    for path in [
+        "docker/qemu/run-aarch64-full-test.sh",
+        "docker/qemu/run-aarch64-boot-test-strict.sh",
+        "docker/qemu/run-aarch64-service-sequence-gate.sh",
+        "docker/qemu/run-x86-boot-tests.sh",
+    ] {
+        let gate = repo_text(path);
+        let pins_marker = gate.contains("[FUTEX_HANDOFF_ORACLE:");
+        let pins_with_grep = gate.contains("grep") && gate.contains("FUTEX_HANDOFF_ORACLE");
+        let pins_measured_elapsed = gate.contains("stage3_elapsed_ms=[0-9]+");
+        let futex_pattern = gate
+            .lines()
+            .find(|line| line.starts_with("FUTEX_HANDOFF_ORACLE_PATTERN="))
+            .unwrap_or("");
+        let pins_substring_ere = futex_pattern.contains("FUTEX_HANDOFF_ORACLE_PATTERN='\\[")
+            && futex_pattern.contains(":balance=0\\]'")
+            && !futex_pattern.contains("FUTEX_HANDOFF_ORACLE_PATTERN='^\\[")
+            && !futex_pattern.contains("\\]$'")
+            && (gate.contains("grep -qE") || gate.contains("grep -h -E"));
+        check(
+            &mut failures,
+            &format!("{path} must grep for the futex oracle marker"),
+            pins_marker && pins_with_grep,
+        );
+        check(
+            &mut failures,
+            &format!("{path} must pin only the measured futex elapsed field as variable"),
+            pins_measured_elapsed && pins_substring_ere,
+        );
+    }
     failures.is_empty().then_some(()).ok_or(failures)
 }
 
@@ -3762,13 +4317,13 @@ fn validate_no_vacuous_test_conditions(sources: &[(String, String)]) -> Result<(
 /// executed bare (so a false verdict ends the run), and no early or zero exit
 /// able to pre-empt it (review-sweep-r4 finding 4).
 fn validate_x86_frame_custody_harness(script: &str) -> Result<(), ()> {
-    const FRAME_VECTOR: &str = "FRAME_CUSTODY_PATTERN='^\\[FRAME_CUSTODY_COUNTERS:x86:double=1:stale=1:never=1:untracked=1:duplicate=3:contended=[1-9][0-9]*\\]$'";
+    const FRAME_VECTOR: &str = "FRAME_CUSTODY_PATTERN='\\[FRAME_CUSTODY_COUNTERS:x86:double=1:stale=1:never=1:untracked=1:duplicate=3:contended=[1-9][0-9]*\\]'";
     const PT_CUSTODY_VECTOR: &str = "PT_CUSTODY_LITERAL='[PT_CUSTODY_COUNTERS:x86:recorded=14:no_proof=0:no_arch=0:terminated=1:undecided=1:retired=2:returned=14:lost=0:requeued=0]'";
     const PT_COHORT_VECTOR: &str = "PT_COHORT_LITERAL='[PT_RETIRE_COHORT:x86:children=64:retired=65:returned=642:recorded=577:lost=0:no_arch=0:undecided=0:mid_retire=0:kstack_returns=64:balance=0]'";
     const PT_EXEC_COHORT_VECTOR: &str = "PT_EXEC_COHORT_LITERAL='[PT_EXEC_COHORT:x86:children=16:superseded=3:roots=64:returned=640:recorded=576:lost=0:leaf_recorded=192:leaf_released=192:leaf_returned=192:custody_refused=0:decref_unregistered=0:undecided=0:mid_retire=0:no_arch=0:balance=0]' # The returned and recorded table-frame fields are pinned from the measured run.";
     const EXEC_DETACH_ORACLE_VECTOR: &str = "EXEC_DETACH_ORACLE_LITERAL='[EXEC_DETACH_ORACLE:x86:bodies=2:fail_preserved=2:sibling_refused=0:success_detached=2:fresh_root=2:tgid_self=2:custody_balance=0:leaf_residual=16:stack_residual=21:kstack_frames_released=128:old_group_reached_pre=2:old_group_missed_post=2:self_group_reached_post=2]'";
     const CLONE_ADMISSION_ORACLE_VECTOR: &str = "CLONE_ADMISSION_ORACLE_LITERAL='[CLONE_ADMISSION_ORACLE:x86:admitted=1:refused=2:creating_refused=1:published_admitted=2:balance=0]'";
-    const EXEC_FAILED_RELEASE_ORACLE_VECTOR: &str = "EXEC_FAILED_RELEASE_ORACLE_PATTERN='^\\[EXEC_FAILED_RELEASE_ORACLE:x86:used_before=[0-9]+:used_after=[0-9]+:recorded_pre=3:leaf_recorded=1:leaf_released=1:leaf_returned=1:tables_returned=4:roots_retired=1:undecided=0:live_refused=0\\]$'";
+    const EXEC_FAILED_RELEASE_ORACLE_VECTOR: &str = "EXEC_FAILED_RELEASE_ORACLE_PATTERN='\\[EXEC_FAILED_RELEASE_ORACLE:x86:used_before=[0-9]+:used_after=[0-9]+:recorded_pre=3:leaf_recorded=1:leaf_released=1:leaf_returned=1:tables_returned=4:roots_retired=1:undecided=0:live_refused=0\\]'";
     const EXEC_FAILED_RELEASE_PROD_VECTOR: &str = "EXEC_FAILED_RELEASE_PROD_LITERAL='[EXEC_FAILED_RELEASE_PROD:x86:plain_err=true:plain_kept=true:argv_err=true:argv_kept=true:name_kept=true:balance=0:undecided=0:mid_retire=0:lost=0:custody_refused=0:decref_unregistered=0:double=0:stale=0:untracked=0:root_slot_refused=0]'";
     const BXTEST_DISK_REBUILD: &str =
         "rm -f target/test_binaries.img\ncargo run -p xtask -- create-test-disk";
@@ -3838,21 +4393,21 @@ fn validate_x86_frame_custody_harness(script: &str) -> Result<(), ()> {
         && exact_marker_count("exec_detach_oracle")
         && exact_marker_count("clone_admission_oracle")
         && script.contains("grep -qE \"$FRAME_CUSTODY_PATTERN\"")
-        && script.contains("grep -qF -x \"$PT_CUSTODY_LITERAL\"")
-        && script.contains("grep -qF -x \"$PT_COHORT_LITERAL\"")
-        && script.contains("grep -qF -x \"$PT_EXEC_COHORT_LITERAL\"")
-        && script.contains("grep -qF -x \"$EXEC_DETACH_ORACLE_LITERAL\"")
-        && script.contains("grep -qF -x \"$CLONE_ADMISSION_ORACLE_LITERAL\"")
+        && script.contains("grep -qF \"$PT_CUSTODY_LITERAL\"")
+        && script.contains("grep -qF \"$PT_COHORT_LITERAL\"")
+        && script.contains("grep -qF \"$PT_EXEC_COHORT_LITERAL\"")
+        && script.contains("grep -qF \"$EXEC_DETACH_ORACLE_LITERAL\"")
+        && script.contains("grep -qF \"$CLONE_ADMISSION_ORACLE_LITERAL\"")
         && script.contains("grep -qE \"$EXEC_FAILED_RELEASE_ORACLE_PATTERN\"")
-        && script.contains("grep -qF -x \"$EXEC_FAILED_RELEASE_PROD_LITERAL\"")
+        && script.contains("grep -qF \"$EXEC_FAILED_RELEASE_PROD_LITERAL\"")
         && script.contains("grep -h -E -c \"$FRAME_CUSTODY_PATTERN\"")
-        && script.contains("grep -h -F -x -c \"$PT_CUSTODY_LITERAL\"")
-        && script.contains("grep -h -F -x -c \"$PT_COHORT_LITERAL\"")
-        && script.contains("grep -h -F -x -c \"$PT_EXEC_COHORT_LITERAL\"")
-        && script.contains("grep -h -F -x -c \"$EXEC_DETACH_ORACLE_LITERAL\"")
-        && script.contains("grep -h -F -x -c \"$CLONE_ADMISSION_ORACLE_LITERAL\"")
+        && script.contains("grep -h -F -c \"$PT_CUSTODY_LITERAL\"")
+        && script.contains("grep -h -F -c \"$PT_COHORT_LITERAL\"")
+        && script.contains("grep -h -F -c \"$PT_EXEC_COHORT_LITERAL\"")
+        && script.contains("grep -h -F -c \"$EXEC_DETACH_ORACLE_LITERAL\"")
+        && script.contains("grep -h -F -c \"$CLONE_ADMISSION_ORACLE_LITERAL\"")
         && script.contains("grep -h -E -c \"$EXEC_FAILED_RELEASE_ORACLE_PATTERN\"")
-        && script.contains("grep -h -F -x -c \"$EXEC_FAILED_RELEASE_PROD_LITERAL\"")
+        && script.contains("grep -h -F -c \"$EXEC_FAILED_RELEASE_PROD_LITERAL\"")
         && script.contains("-eq 1")
         && script.contains("x86 frame-custody gate run")
         && script.matches("BOOT_TESTS:FAIL|KERNEL PANIC|panic!").count() == 2)
@@ -5159,6 +5714,73 @@ fn frame_ledger_return_and_initialization_ratchets_are_exact() {
 fn current_teardown_bypass_surface_is_exact() {
     let sources = rust_sources_below("kernel/src");
     let mut failures = Vec::new();
+
+    // This ratchet catches a future futex implementation that separates the user-word
+    // comparison from enqueue/publication, reopening the check-to-sleep lost-wake window.
+    record(
+        &mut failures,
+        "futex wait check/enqueue atomicity",
+        validate_futex_wait_atomicity(&sources),
+    );
+
+    // This ratchet catches a second unsynchronised waiter container replacing the scheduler-
+    // integrated queue head, which would let wake and teardown paths disagree about ownership.
+    record(
+        &mut failures,
+        "futex queue value type",
+        validate_futex_queue_value_type(&sources),
+    );
+
+    // This ratchet catches any newly discovered sleeping syscall that schedules while the
+    // syscall-entry preempt count remains elevated, which can starve timer-driven wakeups.
+    let mut sleeping_sources = rust_sources_below("kernel/src/syscall");
+    sleeping_sources.push((
+        "kernel/src/task/waitqueue.rs".to_owned(),
+        source(&sources, "kernel/src/task/waitqueue.rs").to_owned(),
+    ));
+    sleeping_sources.sort_by(|left, right| left.0.cmp(&right.0));
+    record(
+        &mut failures,
+        "sleeping syscall preempt discipline",
+        validate_sleeping_preempt_discipline(&sleeping_sources),
+    );
+
+    // This ratchet catches reacquiring the process-manager lock after group-key lookup and
+    // before the futex map lock, preserving the documented manager -> map lock ordering.
+    record(
+        &mut failures,
+        "futex map lock order",
+        validate_futex_lock_order(&sources),
+    );
+
+    // This ratchet catches diagnostic output re-entering the logger on the wait/wake path,
+    // where formatting or logger locks can perturb the synchronization being measured.
+    record(
+        &mut failures,
+        "futex wait/wake logging discipline",
+        validate_futex_wait_wake_logging(&sources),
+    );
+
+    // This ratchet catches the oracle driver losing its arming handshake or wait bounds,
+    // which let a production image block init on boot_tests-only plumbing, and catches the
+    // negative-control gate losing the profile or markers that make it a control at all.
+    record(
+        &mut failures,
+        "futex oracle driver self-limiting and production-profile gate",
+        validate_futex_driver_self_limiting_and_prod_gate(
+            &repo_text("userspace/programs/src/futex_handoff_oracle.rs"),
+            &repo_text("docker/qemu/run-aarch64-prod-profile-boot-test.sh"),
+            &sources,
+        ),
+    );
+
+    // This ratchet catches a kernel oracle marker or gate grep being removed, which would let
+    // a boot gate pass without proving that the load-bearing futex self-check actually ran.
+    record(
+        &mut failures,
+        "futex oracle marker and gate pins",
+        validate_futex_oracle_marker_and_gate_pins(&sources),
+    );
 
     record(
         &mut failures,
@@ -6851,6 +7473,185 @@ fn deliberately_broken_variants_fail_the_ratchet() {
         out
     }
 
+    let report_vacuity = |label: &str, result: Result<(), Vec<String>>| {
+        let failures = result.expect_err("deliberately broken futex variant unexpectedly passed");
+        eprintln!("vacuity check {label}: {}", failures.join(" | "));
+    };
+
+    // Moving an expected-value comparison before the checked prepare call must be rejected,
+    // proving the atomicity ratchet is sensitive to the original lost-wake regression shape.
+    let futex = source(&sources, "kernel/src/syscall/futex.rs");
+    let broken_atomicity = futex.replacen(
+        "let mut value_matches = false;",
+        "let mut value_matches = false; let broken_comparison = expected_val == 0;",
+        1,
+    );
+    report_vacuity(
+        "check/enqueue atomicity",
+        validate_futex_wait_atomicity(&with_replaced_source(
+            &sources,
+            "kernel/src/syscall/futex.rs",
+            broken_atomicity,
+        )),
+    );
+
+    // Replacing the queue-head value with a bare vector must be rejected, proving the
+    // declaration shape cannot silently reintroduce an unsynchronised waiter list.
+    let broken_queue_type = futex.replacen("WaitQueueHead>>", "Vec<u64>>", 1);
+    report_vacuity(
+        "queue value type",
+        validate_futex_queue_value_type(&with_replaced_source(
+            &sources,
+            "kernel/src/syscall/futex.rs",
+            broken_queue_type,
+        )),
+    );
+
+    // Removing the futex wait loop's preempt enable must be rejected, proving the derived
+    // sleeping-function census does not pass merely because a loop and publication call exist.
+    let broken_preempt = futex
+        .replace("crate::per_cpu_aarch64::preempt_enable();", "")
+        .replace("crate::per_cpu::preempt_enable();", "");
+    let broken_preempt_sources = with_replaced_source(
+        &sources,
+        "kernel/src/syscall/futex.rs",
+        broken_preempt,
+    );
+    let mut broken_sleeping_sources = rust_sources_below("kernel/src/syscall");
+    broken_sleeping_sources.push((
+        "kernel/src/task/waitqueue.rs".to_owned(),
+        source(&sources, "kernel/src/task/waitqueue.rs").to_owned(),
+    ));
+    broken_sleeping_sources.sort_by(|left, right| left.0.cmp(&right.0));
+    let broken_sleeping_sources = broken_sleeping_sources
+        .into_iter()
+        .map(|(path, contents)| {
+            if path == "kernel/src/syscall/futex.rs" {
+                (
+                    path,
+                    source(&broken_preempt_sources, "kernel/src/syscall/futex.rs").to_owned(),
+                )
+            } else {
+                (path, contents)
+            }
+        })
+        .collect::<Vec<_>>();
+    report_vacuity(
+        "sleeping preempt discipline",
+        validate_sleeping_preempt_discipline(&broken_sleeping_sources),
+    );
+
+    // Inserting a manager acquisition between group lookup and map locking must be rejected,
+    // proving the lock-order ratchet catches the deadlock-prone inversion directly.
+    let broken_lock_order = futex.replacen(
+        "let key = (tg_id, uaddr);\n    let mut queues = FUTEX_QUEUES.lock();",
+        "let key = (tg_id, uaddr);\n    let _manager = crate::process::manager();\n    let mut queues = FUTEX_QUEUES.lock();",
+        1,
+    );
+    report_vacuity(
+        "futex lock order",
+        validate_futex_lock_order(&with_replaced_source(
+            &sources,
+            "kernel/src/syscall/futex.rs",
+            broken_lock_order,
+        )),
+    );
+
+    // Adding a logger call to futex_wake must be rejected, proving the wait/wake path remains
+    // free of timing-changing output and logger-lock reentrancy.
+    let broken_logging = futex.replacen(
+        "    if uaddr == 0 || uaddr % 4 != 0 {",
+        "    log::debug!(\"broken futex path\");\n\n    if uaddr == 0 || uaddr % 4 != 0 {",
+        1,
+    );
+    report_vacuity(
+        "wait/wake logging discipline",
+        validate_futex_wait_wake_logging(&with_replaced_source(
+            &sources,
+            "kernel/src/syscall/futex.rs",
+            broken_logging,
+        )),
+    );
+
+    // Removing the oracle's exact prefix must be rejected, proving a gate cannot silently
+    // lose the load-bearing self-check while retaining only unrelated boot markers.
+    let broken_oracle = source(&sources, "kernel/src/syscall/futex_oracle.rs").replacen(
+        "[FUTEX_HANDOFF_ORACLE:{}:",
+        "[FUTEX_HANDOFF_ORACLE_REMOVED:{}:",
+        1,
+    );
+    report_vacuity(
+        "oracle marker and gate pins",
+        validate_futex_oracle_marker_and_gate_pins(&with_replaced_source(
+            &sources,
+            "kernel/src/syscall/futex_oracle.rs",
+            broken_oracle,
+        )),
+    );
+
+    let driver = repo_text("userspace/programs/src/futex_handoff_oracle.rs");
+    let gate = repo_text("docker/qemu/run-aarch64-prod-profile-boot-test.sh");
+
+    // Removing a handoff-stage timeout must be rejected, proving every wait remains bounded
+    // even if the driver and boot_tests-only seam drift after the handshake.
+    let broken_untimed_driver = driver.replacen(
+        "let stage1 = futex(word0, FUTEX_WAIT, 42, backstop_ptr, STAGE1);",
+        "let stage1 = futex(word0, FUTEX_WAIT, 42, 0, STAGE1);",
+        1,
+    );
+    report_vacuity(
+        "futex driver untimed handoff stage",
+        validate_futex_driver_self_limiting_and_prod_gate(
+            &broken_untimed_driver,
+            &gate,
+            &sources,
+        ),
+    );
+
+    // Removing the handshake guard's exit must be rejected, proving an unarmed kernel cannot
+    // reach the later waits after its probe times out.
+    let broken_handshake_exit = driver.replacen("            process::exit(0);", "", 1);
+    report_vacuity(
+        "futex driver seam-absent exit",
+        validate_futex_driver_self_limiting_and_prod_gate(
+            &broken_handshake_exit,
+            &gate,
+            &sources,
+        ),
+    );
+
+    // Adding boot_tests to the build must be rejected, proving the negative control continues
+    // to exercise the featureless profile shipped to production.
+    let broken_prod_profile = gate.replacen(
+        "cargo build --release --target aarch64-breenix-kernel.json",
+        "cargo build --release --features boot_tests --target aarch64-breenix-kernel.json",
+        1,
+    );
+    report_vacuity(
+        "production gate armed build profile",
+        validate_futex_driver_self_limiting_and_prod_gate(
+            &driver,
+            &broken_prod_profile,
+            &sources,
+        ),
+    );
+
+    // Renaming the bsshd accept pin must be rejected, proving a driver exit alone cannot make
+    // the production-profile boot gate pass before init reaches the service.
+    let broken_bsshd_pin = gate.replacen(
+        "BSSHD_LITERAL='bsshd: listening'",
+        "BSSHD_LITERAL='bsshd: listening_REMOVED'",
+        1,
+    );
+    report_vacuity(
+        "production gate bsshd accept pin",
+        validate_futex_driver_self_limiting_and_prod_gate(
+            &driver,
+            &broken_bsshd_pin,
+            &sources,
+        ),
+    );
+
     let broken_exit = with_synthetic_source(
         &sources,
         "kernel/src/synthetic_exit.rs",
@@ -8384,7 +9185,7 @@ fn deliberately_broken_variants_fail_the_ratchet() {
     );
     assert!(validate_x86_frame_custody_harness(&reverted_custody_pin).is_err());
     let missing_prod_poll = harness.replacen(
-        "            && grep -qF -x \"$EXEC_FAILED_RELEASE_PROD_LITERAL\" \\\n                \"$OUTPUT_DIR\"/serial_*.txt 2>/dev/null \\\n",
+        "            && grep -qF \"$EXEC_FAILED_RELEASE_PROD_LITERAL\" \\\n                \"$OUTPUT_DIR\"/serial_*.txt 2>/dev/null \\\n",
         "",
         1,
     );

@@ -34,6 +34,8 @@ pub mod epoll;
 pub mod fifo;
 pub mod fs;
 pub mod futex;
+#[cfg(feature = "boot_tests")]
+pub mod futex_oracle;
 pub mod graphics;
 pub mod handlers;
 pub mod ioctl;

@@ -10,11 +10,20 @@ use libbreenix::error::Error;
 use libbreenix::memory;
 use libbreenix::process;
 use libbreenix::syscall::{nr, raw};
+use libbreenix::time::now_monotonic;
+use libbreenix::Timespec;
 use std::ptr;
 
 const SHARED_ALIVE_OFFSET: usize = 0;
 const SHARED_COMMAND_OFFSET: usize = 8;
 const SHARED_TID_OFFSET: usize = 16;
+const RENDEZVOUS_OFFSET: usize = 24;
+const READY_OFFSET: usize = 28;
+const SECOND_READY_OFFSET: usize = 32;
+const CHILD_STATUS_OFFSET: usize = 36;
+const RELEASE_OFFSET: usize = 40;
+const NEVER_WOKEN_OFFSET: usize = 44;
+const RENDEZVOUS_TID_OFFSET: usize = 48;
 
 const CHILD_STACK_SIZE: usize = 64 * 1024;
 const SPIN_LIMIT: u64 = 2_000_000;
@@ -67,6 +76,22 @@ unsafe fn thread_exit(code: u64) -> ! {
 
 unsafe fn futex_wait(word: *mut u32, expected: u32) -> i64 {
     raw::syscall6(nr::FUTEX, word as u64, FUTEX_WAIT, expected as u64, 0, 0, 0) as i64
+}
+
+unsafe fn futex_wait_with_timeout(
+    word: *mut u32,
+    expected: u32,
+    timeout: *const Timespec,
+) -> i64 {
+    raw::syscall6(
+        nr::FUTEX,
+        word as u64,
+        FUTEX_WAIT,
+        expected as u64,
+        timeout as u64,
+        0,
+        0,
+    ) as i64
 }
 
 unsafe fn futex_wake(word: *mut u32, count: u32) -> i64 {
@@ -164,6 +189,55 @@ unsafe fn wait_for_zero_u32(address: *mut u32, error: &[u8]) {
     std::process::exit(1);
 }
 
+unsafe fn wait_for_nonzero_u32(address: *mut u32, error: &[u8]) {
+    let mut iteration = 0;
+    while iteration < SPIN_LIMIT {
+        if core::ptr::read_volatile(address) != 0 {
+            return;
+        }
+        sys_yield();
+        iteration += 1;
+    }
+
+    raw_msg(error);
+    std::process::exit(1);
+}
+
+unsafe fn wait_for_child_status(address: *mut u32, expected: u32, error: &[u8]) {
+    let mut iteration = 0;
+    while iteration < SPIN_LIMIT {
+        let status = core::ptr::read_volatile(address);
+        if status == expected {
+            return;
+        }
+        if status == u32::MAX {
+            raw_msg(error);
+            std::process::exit(1);
+        }
+        sys_yield();
+        iteration += 1;
+    }
+
+    raw_msg(error);
+    std::process::exit(1);
+}
+
+unsafe fn monotonic_ns(error: &[u8]) -> u64 {
+    let timestamp = match now_monotonic() {
+        Ok(timestamp) => timestamp,
+        Err(error_value) => {
+            drop(error_value);
+            raw_msg(error);
+            std::process::exit(1);
+        }
+    };
+    if timestamp.tv_sec < 0 || timestamp.tv_nsec < 0 || timestamp.tv_nsec >= 1_000_000_000 {
+        raw_msg(error);
+        std::process::exit(1);
+    }
+    timestamp.tv_sec as u64 * 1_000_000_000 + timestamp.tv_nsec as u64
+}
+
 unsafe fn prove_child_still_live(alive: *mut u64, tid_addr: *mut u32) {
     let mut consecutive_observations = 0;
     let mut iteration = 0;
@@ -182,6 +256,45 @@ unsafe fn prove_child_still_live(alive: *mut u64, tid_addr: *mut u32) {
 
     raw_msg(b"CLONEVM_EXEC_TEST: ERROR child was not live before exec probe\n");
     std::process::exit(1);
+}
+
+extern "C" fn post_exec_rendezvous_child(arg: *mut u8) -> *mut u8 {
+    unsafe {
+        let rendezvous = arg.add(RENDEZVOUS_OFFSET) as *mut u32;
+        let ready = arg.add(READY_OFFSET) as *mut u32;
+        let second_word = arg.add(core::mem::size_of::<u32>()) as *mut u32;
+        let second_ready = arg.add(SECOND_READY_OFFSET) as *mut u32;
+        let child_status = arg.add(CHILD_STATUS_OFFSET) as *mut u32;
+        let release = arg.add(RELEASE_OFFSET) as *mut u32;
+
+        if !spin_until_u32(ready, 1) {
+            core::ptr::write_volatile(child_status, u32::MAX);
+            raw_msg(b"CLONEVM_EXEC_TEST: ERROR sibling did not observe parent wait readiness\n");
+            thread_exit(1);
+        }
+        core::ptr::write_volatile(rendezvous, 1);
+        if futex_wake(rendezvous, 1) != 1 {
+            core::ptr::write_volatile(child_status, u32::MAX);
+            raw_msg(b"CLONEVM_EXEC_TEST: ERROR sibling wake of parent failed\n");
+            thread_exit(1);
+        }
+        core::ptr::write_volatile(child_status, 1);
+
+        core::ptr::write_volatile(second_ready, 1);
+        if futex_wait(second_word, 0) != 0 {
+            core::ptr::write_volatile(child_status, u32::MAX);
+            raw_msg(b"CLONEVM_EXEC_TEST: ERROR sibling wait was not woken by parent\n");
+            thread_exit(1);
+        }
+        core::ptr::write_volatile(child_status, 2);
+
+        if !spin_until_u32(release, 1) {
+            core::ptr::write_volatile(child_status, u32::MAX);
+            raw_msg(b"CLONEVM_EXEC_TEST: ERROR sibling release timed out\n");
+            thread_exit(1);
+        }
+        thread_exit(0);
+    }
 }
 
 extern "C" fn phase_one_child(arg: *mut u8) -> *mut u8 {
@@ -232,8 +345,7 @@ unsafe fn probe_live_sibling_exec() {
 unsafe fn second_stage() -> ! {
     // These nonblocking calls exercise both futex entry points on the post-exec
     // row at two addresses, so each group key is derived from that row's
-    // post-exec identity. They deliberately do not prove a cross-thread
-    // rendezvous because #584 tracks an enqueue-to-block lost-wake window.
+    // post-exec identity.
     raw_msg(b"CLONEVM_EXEC_TEST: second stage\n");
 
     let shared = map_region(
@@ -264,6 +376,83 @@ unsafe fn second_stage() -> ! {
         raw_msg(b"CLONEVM_EXEC_TEST: ERROR second post-exec futex wait did not return EAGAIN\n");
         std::process::exit(1);
     }
+
+    let rendezvous = shared.add(RENDEZVOUS_OFFSET) as *mut u32;
+    let ready = shared.add(READY_OFFSET) as *mut u32;
+    let second_ready = shared.add(SECOND_READY_OFFSET) as *mut u32;
+    let child_status = shared.add(CHILD_STATUS_OFFSET) as *mut u32;
+    let release = shared.add(RELEASE_OFFSET) as *mut u32;
+    let never_woken = shared.add(NEVER_WOKEN_OFFSET) as *mut u32;
+    let tid_addr = shared.add(RENDEZVOUS_TID_OFFSET) as *mut u32;
+    core::ptr::write_volatile(rendezvous, 0);
+    core::ptr::write_volatile(second_word, 0);
+    core::ptr::write_volatile(ready, 0);
+    core::ptr::write_volatile(second_ready, 0);
+    core::ptr::write_volatile(child_status, 0);
+    core::ptr::write_volatile(release, 0);
+    core::ptr::write_volatile(never_woken, 0);
+    core::ptr::write_volatile(tid_addr, u32::MAX);
+
+    let sibling_stack = map_region(
+        CHILD_STACK_SIZE,
+        b"CLONEVM_EXEC_TEST: ERROR rendezvous stack mmap failed\n",
+    );
+    if clone_vm_child(sibling_stack, post_exec_rendezvous_child, shared, tid_addr) < 0 {
+        raw_msg(b"CLONEVM_EXEC_TEST: ERROR rendezvous clone failed\n");
+        std::process::exit(1);
+    }
+
+    core::ptr::write_volatile(ready, 1);
+    if futex_wait(rendezvous, 0) != 0 {
+        raw_msg(b"CLONEVM_EXEC_TEST: ERROR parent wait was not woken by sibling\n");
+        std::process::exit(1);
+    }
+    wait_for_child_status(
+        child_status,
+        1,
+        b"CLONEVM_EXEC_TEST: ERROR sibling did not complete parent wake\n",
+    );
+
+    wait_for_nonzero_u32(
+        second_ready,
+        b"CLONEVM_EXEC_TEST: ERROR sibling did not report second wait readiness\n",
+    );
+    if futex_wake(second_word, 1) != 1 {
+        raw_msg(b"CLONEVM_EXEC_TEST: ERROR parent wake of sibling failed\n");
+        std::process::exit(1);
+    }
+    wait_for_child_status(
+        child_status,
+        2,
+        b"CLONEVM_EXEC_TEST: ERROR sibling did not complete parent wake handoff\n",
+    );
+
+    let timeout = Timespec {
+        tv_sec: 0,
+        tv_nsec: 50_000_000,
+    };
+    let timeout_start = monotonic_ns(
+        b"CLONEVM_EXEC_TEST: ERROR monotonic clock failed before futex timeout\n",
+    );
+    if futex_wait_with_timeout(never_woken, 0, &timeout) != -(Errno::ETIMEDOUT as i64) {
+        raw_msg(b"CLONEVM_EXEC_TEST: ERROR futex timeout did not return ETIMEDOUT\n");
+        std::process::exit(1);
+    }
+    let elapsed = monotonic_ns(
+        b"CLONEVM_EXEC_TEST: ERROR monotonic clock failed after futex timeout\n",
+    )
+    .saturating_sub(timeout_start);
+    if elapsed < 50_000_000 {
+        raw_msg(b"CLONEVM_EXEC_TEST: ERROR futex timeout elapsed less than 50ms\n");
+        std::process::exit(1);
+    }
+
+    core::ptr::write_volatile(release, 1);
+    wait_for_zero_u32(
+        tid_addr,
+        b"CLONEVM_EXEC_TEST: ERROR rendezvous child tid was not cleared after release\n",
+    );
+    raw_msg(b"CLONEVM_EXEC_TEST: post-exec rendezvous complete\n");
 
     raw_msg(b"CLONEVM_EXEC_TEST: post-exec futex keys derived\n");
     raw_msg(b"CLONEVM_EXEC_TEST: PASS\n");
