@@ -384,10 +384,11 @@ and would invalidate the battery it was measured beside.
   full-test runs; the first item for a follow-up slot, since fixing it rebuilds the ext2 image.
 * **#593** — Phase 2 of the full-system test can never pass headless on aarch64. Until it is fixed,
   "the full test passes" is not an available claim on this architecture for any branch.
-* **The wrong-profile kernel trap is fixed in the three aarch64 gates that pin `boot_tests` markers,
-  and nowhere else.** Any other script that boots
-  `target/aarch64-breenix-kernel/release/kernel-aarch64` while expecting a particular feature profile
-  is still exposed, and `cargo test` will still swap that binary silently underneath it.
-* **`tests/kernel_no_neon_guard.rs` still rebuilds the kernel with no features as a side effect of
-  `cargo test`.** The gates now refuse the result rather than booting it, which is the safe outcome,
-  but the side effect itself remains and will keep surprising anyone who builds before testing.
+* **#611** — `cargo test` silently swaps the aarch64 gate kernel to a no-features build. Filed with
+  the measured evidence. The three gates that pin `boot_tests` markers now refuse the result rather
+  than booting it, which is the safe outcome and turns a fifty-boot false red into an immediate
+  error, but the hazard itself is untouched: any other script that boots
+  `target/aarch64-breenix-kernel/release/kernel-aarch64` expecting a particular feature profile is
+  still exposed, and building before testing still leaves the wrong kernel on disk. The issue
+  suggests giving the no-neon guard its own `--target-dir` so the shared artifact path is never
+  disturbed — removing the hazard instead of detecting it.
