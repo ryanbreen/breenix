@@ -216,6 +216,41 @@ green_sequence_complete() {
     [ "$heartbeat_count" -ge 5 ]
 }
 
+# Print the DISTINCT set of EL1 instruction-abort field signatures found in a
+# serial, one "far elr esr" per line, sorted and deduplicated. Prints nothing
+# when no abort record can be parsed at all.
+#
+# Both record sources are read and UNIONED rather than ranked, because neither is
+# authoritative and they can disagree:
+#
+#   * the "[INSTRUCTION_ABORT] FAR=... ELR=... ESR=..." header, which a heartbeat
+#     line spliced into it can render unparseable;
+#   * the "[FATAL_REGS] label=INSTRUCTION_ABORT ... esr=... far=... elr=..." dump,
+#     which survives that splice (and vice versa).
+#
+# Preferring one source over the other silently picks a winner when they differ.
+# That is not a theoretical concern: partition arm A's serial-10 carries header
+# FAR=0x0 ELR=0x0 (byte-identical to #576's filed signature) and FATAL_REGS
+# far=0x0 elr=0x4ba for the SAME fault on the SAME CPU, so a header-first reader
+# files a divergent-state abort under #576 — a tolerated bucket — which is the
+# exact "new signature invisible by construction" failure this classifier exists
+# to remove. Two records of one fault that disagree describe a CPU state that
+# changed between them; that is not the filed single-shot signature and the
+# caller must not attribute it. Taking the union, and letting the caller require
+# a single-element set, makes the disagreement itself disqualifying.
+instruction_abort_signatures() {
+    local serial_file="$1"
+
+    {
+        grep -ahoE '\[INSTRUCTION_ABORT\] FAR=0x[0-9a-f]+ ELR=0x[0-9a-f]+ ESR=0x[0-9a-f]+' \
+            "$serial_file" 2>/dev/null \
+            | sed -E 's/.*FAR=(0x[0-9a-f]+) ELR=(0x[0-9a-f]+) ESR=(0x[0-9a-f]+).*/\1 \2 \3/'
+        grep -ahoE 'label=INSTRUCTION_ABORT[^=]*=[0-9]+ spsr=0x[0-9a-f]+ esr=0x[0-9a-f]+ far=0x[0-9a-f]+ elr=0x[0-9a-f]+' \
+            "$serial_file" 2>/dev/null \
+            | sed -E 's/.* esr=(0x[0-9a-f]+) far=(0x[0-9a-f]+) elr=(0x[0-9a-f]+).*/\2 \3 \1/'
+    } | sort -u
+}
+
 # Consult filed signatures first: a boot that died from a filed defect before init ran
 # cannot be blamed on a missing marker; the unattributed bucket is for reds nobody has filed.
 classify_serial() {
@@ -227,6 +262,8 @@ classify_serial() {
     local quiesce_rows_floor
     local quiesce_walk_line
     local stranded_strand_line
+    local instruction_abort_signature
+    local instruction_abort_variants
 
     # #596's runtime oracle is unconditional: an inline-saved context whose
     # recorded resume PC is not its inline-save x30 is a defect no matter what
@@ -257,9 +294,35 @@ classify_serial() {
         CLASS_REASON="$silent_reason"
         return
     fi
+    # Instruction aborts are attributed BY FIELD SIGNATURE, never by exception
+    # type. #576 is filed as exactly FAR=0x0 ELR=0x0 ESR=0x86000005; bucketing
+    # every [INSTRUCTION_ABORT] as 576 made a different signature invisible by
+    # construction, which is how a FAR=ELR=0x80000000 regression rode into a
+    # tolerated bucket. Anything that does not match a filed signature — or whose
+    # fields cannot be read at all — is UNATTRIBUTED, which this gate FAILS on.
+    #
+    # The match is on the WHOLE SET of records the serial carries, not on a
+    # first-found record: a boot earns the tolerated #576 bucket only when every
+    # abort record it emitted names one and the same filed signature. A serial
+    # carrying two different signatures, or one fault whose two records disagree,
+    # is UNATTRIBUTED — otherwise a novel signature could ride in behind a
+    # matching one and the tolerated bucket would hide it again.
     if grep -qF "[INSTRUCTION_ABORT]" "$serial_file" 2>/dev/null; then
-        CLASS_BUCKET="576"
-        CLASS_REASON="instruction abort"
+        instruction_abort_signature=$(instruction_abort_signatures "$serial_file")
+        instruction_abort_variants=$(printf '%s' "$instruction_abort_signature" | grep -c . || true)
+        if [ "$instruction_abort_variants" -eq 0 ]; then
+            CLASS_BUCKET="UNATTRIBUTED"
+            CLASS_REASON="instruction abort whose FAR/ELR/ESR fields could not be read from the serial"
+        elif [ "$instruction_abort_variants" -gt 1 ]; then
+            CLASS_BUCKET="UNATTRIBUTED"
+            CLASS_REASON="instruction abort records disagree, so no single signature describes this boot: far/elr/esr = $(printf '%s' "$instruction_abort_signature" | paste -sd '|' -)"
+        elif [ "$instruction_abort_signature" = "0x0 0x0 0x86000005" ]; then
+            CLASS_BUCKET="576"
+            CLASS_REASON="instruction abort matching the filed #576 signature (FAR=0x0 ELR=0x0 ESR=0x86000005)"
+        else
+            CLASS_BUCKET="UNATTRIBUTED"
+            CLASS_REASON="instruction abort matches no filed signature: far/elr/esr = $instruction_abort_signature"
+        fi
         return
     fi
     if grep -qF "[DATA_ABORT]" "$serial_file" 2>/dev/null; then

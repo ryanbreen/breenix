@@ -36,7 +36,9 @@ STRAND_INJECT_ORACLE_PATTERN='\[STRAND_INJECT_ORACLE:aarch64:legA_exercised=1:le
 KERNEL="$BREENIX_ROOT/target/aarch64-breenix-kernel/release/kernel-aarch64"
 if [ ! -f "$KERNEL" ]; then
     echo "Error: No ARM64 kernel found. Build with:"
-    echo "  cargo build --release --target aarch64-breenix-kernel.json -Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem -p kernel --bin kernel-aarch64"
+    # This gate pins boot_tests-only markers (the oracle counters and both strand
+    # oracles); a kernel built without the feature fails it spuriously.
+    echo "  cargo build --release --features boot_tests --target aarch64-breenix-kernel.json -Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem -p kernel --bin kernel-aarch64"
     exit 1
 fi
 
@@ -132,6 +134,21 @@ score_serial() {
     fi
     if ! grep -qE "$FUTEX_HANDOFF_ORACLE_PATTERN" "$serial_file" 2>/dev/null; then
         echo "Futex handoff oracle marker missing or failed"
+        return 1
+    fi
+    # FORBIDDEN PATTERNS, scanned over the WHOLE serial, before the presence
+    # checks below. The census is cumulative and emitted on a fixed cadence from
+    # t≈3s, so every boot that survives three seconds always contains a clean
+    # `stranded=0` line; a presence check alone therefore cannot fail on a strand
+    # that first appears at t=10s. These two greps are what make ruling (b)'s
+    # "hard-fails on stranded>0" true on the kernel-merge gate. They add failure
+    # conditions and remove none.
+    if grep -qE '\[SCHED_STRAND_ORACLE:[^]]*:stranded=[1-9][0-9]*:' "$serial_file" 2>/dev/null; then
+        echo "Scheduler strand census reported stranded work ($(grep -E '\[SCHED_STRAND_ORACLE:[^]]*:stranded=[1-9][0-9]*:' "$serial_file" | tail -1))"
+        return 1
+    fi
+    if grep -qE '\[STRAND_INJECT_ORACLE:[^]]*:stranded=[1-9][0-9]*\]' "$serial_file" 2>/dev/null; then
+        echo "Scheduler strand injection oracle reported stranded work ($(grep -E '\[STRAND_INJECT_ORACLE:[^]]*:stranded=[1-9][0-9]*\]' "$serial_file" | tail -1))"
         return 1
     fi
     if ! grep -qE "$SCHED_STRAND_ORACLE_PATTERN" "$serial_file" 2>/dev/null; then

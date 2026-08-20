@@ -615,6 +615,25 @@ kill $QEMU_PID 2>/dev/null || true
 wait $QEMU_PID 2>/dev/null || true
 unset QEMU_PID
 
+# --- Post-run forbidden-pattern scan over the WHOLE serial ---
+#
+# Phase 1a3's strand check runs inside a poll loop that breaks the instant both
+# green patterns match, so a strand first observed after that instant was never
+# scored. The census is cumulative and emitted every 5s for the life of the
+# boot, so the only scan that can see a late strand is one that runs over the
+# finished file. This adds failure conditions; it relaxes none, and it runs even
+# when every phase above passed.
+if [ -f "$OUTPUT_DIR/serial.txt" ]; then
+    if grep -qE '\[SCHED_STRAND_ORACLE:[^]]*:stranded=[1-9][0-9]*:' "$OUTPUT_DIR/serial.txt" 2>/dev/null; then
+        STRAND_LINE=$(grep -E '\[SCHED_STRAND_ORACLE:[^]]*:stranded=[1-9][0-9]*:' "$OUTPUT_DIR/serial.txt" | tail -1)
+        FAIL_REASON="${FAIL_REASON:-Post-run scan: scheduler strand census reported stranded work ($STRAND_LINE)}"
+    fi
+    if grep -qE '\[STRAND_INJECT_ORACLE:[^]]*:stranded=[1-9][0-9]*\]' "$OUTPUT_DIR/serial.txt" 2>/dev/null; then
+        STRAND_LINE=$(grep -E '\[STRAND_INJECT_ORACLE:[^]]*:stranded=[1-9][0-9]*\]' "$OUTPUT_DIR/serial.txt" | tail -1)
+        FAIL_REASON="${FAIL_REASON:-Post-run scan: scheduler strand injection oracle reported stranded work ($STRAND_LINE)}"
+    fi
+fi
+
 # --- Report ---
 echo ""
 TOTAL_LINES=$(wc -l < "$OUTPUT_DIR/serial.txt" 2>/dev/null | tr -d ' ')

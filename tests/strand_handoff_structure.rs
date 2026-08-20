@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::fs;
 use std::path::PathBuf;
 
@@ -5,7 +6,14 @@ const SCHEDULER_PATH: &str = "kernel/src/task/scheduler.rs";
 const CONTEXT_SWITCH_PATH: &str = "kernel/src/arch_impl/aarch64/context_switch.rs";
 const STRAND_ORACLE_PATH: &str = "kernel/src/task/strand_oracle.rs";
 const EXECUTOR_PATH: &str = "kernel/src/test_framework/executor.rs";
+const SERVICE_SEQUENCE_GATE_PATH: &str = "docker/qemu/run-aarch64-service-sequence-gate.sh";
+const STRICT_GATE_PATH: &str = "docker/qemu/run-aarch64-boot-test-strict.sh";
+const FULL_TEST_PATH: &str = "docker/qemu/run-aarch64-full-test.sh";
 const MIN_REQUEUE_EARLY_RETURN_GUARDS: usize = 6;
+/// New instruction-abort refusal reasons are welcome; losing one is not.
+const MIN_INSTRUCTION_ABORT_REFUSAL_REASONS: usize = 3;
+/// Each gate must reject both strand marker families; additional rejections are welcome.
+const MIN_STRANDED_FORBIDDEN_REJECTIONS: usize = 2;
 
 fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -223,6 +231,34 @@ fn code_occurrences(source: &str, needle: &str) -> Vec<usize> {
         .collect()
 }
 
+fn shell_function_body<'a>(source: &'a str, name: &str) -> &'a str {
+    let declaration = format!("\n{name}() {{\n");
+    let body_start = source
+        .find(&declaration)
+        .map(|offset| offset + declaration.len())
+        .unwrap_or_else(|| panic!("shell function {name} not found"));
+    let body_end = source[body_start..]
+        .find("\n}\n")
+        .map(|offset| body_start + offset)
+        .unwrap_or_else(|| panic!("shell function {name} closing brace not found"));
+    &source[body_start..body_end]
+}
+
+fn shell_exact_line_occurrences(source: &str, needle: &str) -> usize {
+    source
+        .lines()
+        .filter(|line| line.trim() == needle)
+        .count()
+}
+
+fn stranded_rejection_lines(source: &str) -> Vec<&str> {
+    source
+        .lines()
+        .map(str::trim)
+        .filter(|line| line.starts_with("if grep -qE ") && line.contains("stranded=[1-9]"))
+        .collect()
+}
+
 fn u64_constant_initializer(source: &str, name: &str) -> String {
     let (masked, mask) = code_source(source);
     assert!(
@@ -259,6 +295,168 @@ fn u64_expression(source: &str, expression: &str) -> u64 {
 fn u64_constant(source: &str, name: &str) -> u64 {
     let initializer = u64_constant_initializer(source, name);
     u64_expression(source, &initializer)
+}
+
+#[test]
+fn service_sequence_instruction_abort_signatures_are_set_shaped() {
+    let gate = repo_text(SERVICE_SEQUENCE_GATE_PATH);
+    let signatures = shell_function_body(&gate, "instruction_abort_signatures");
+    assert!(
+        !signatures.trim().is_empty(),
+        "instruction_abort_signatures body census"
+    );
+
+    let record_greps: Vec<_> = signatures
+        .lines()
+        .map(str::trim)
+        .filter(|line| line.starts_with("grep ") && line.contains("INSTRUCTION_ABORT"))
+        .collect();
+    assert!(
+        record_greps
+            .iter()
+            .any(|line| line.contains(r"\[INSTRUCTION_ABORT\] FAR=")),
+        "instruction_abort_signatures must consult the abort header record"
+    );
+    assert!(
+        record_greps
+            .iter()
+            .any(|line| line.contains("label=INSTRUCTION_ABORT")),
+        "instruction_abort_signatures must consult the FATAL_REGS record"
+    );
+    assert_eq!(
+        shell_exact_line_occurrences(signatures, "} | sort -u"),
+        1,
+        "instruction_abort_signatures must deduplicate the record union with sort -u"
+    );
+    assert!(
+        !signatures.contains("head -1"),
+        "instruction_abort_signatures must not prefer the first abort record with head -1"
+    );
+}
+
+#[test]
+fn service_sequence_instruction_abort_classifier_is_single_signature() {
+    let gate = repo_text(SERVICE_SEQUENCE_GATE_PATH);
+    let classifier = shell_function_body(&gate, "classify_serial");
+    assert!(
+        !classifier.trim().is_empty(),
+        "classify_serial body census"
+    );
+
+    let arm_start = classifier
+        .find(r#"    if grep -qF "[INSTRUCTION_ABORT]""#)
+        .expect("instruction-abort classifier arm");
+    let arm_tail = &classifier[arm_start..];
+    let arm_end = arm_tail
+        .find("\n    fi\n")
+        .map(|offset| offset + "\n    fi\n".len())
+        .expect("instruction-abort classifier arm terminator");
+    let abort_arm = &arm_tail[..arm_end];
+    assert!(
+        !abort_arm.trim().is_empty(),
+        "instruction-abort classifier arm census"
+    );
+    assert!(
+        abort_arm.contains("instruction_abort_signatures \"$serial_file\""),
+        "instruction-abort classifier must call instruction_abort_signatures"
+    );
+    assert!(
+        abort_arm.contains(r#"[ "$instruction_abort_variants" -gt 1 ]"#),
+        "instruction-abort classifier must refuse a multi-element signature set"
+    );
+
+    let arm_lines: Vec<_> = abort_arm.lines().map(str::trim).collect();
+    let refusal_reasons: HashSet<_> = arm_lines
+        .windows(2)
+        .filter(|pair| pair[0] == r#"CLASS_BUCKET="UNATTRIBUTED""#)
+        .filter_map(|pair| pair[1].strip_prefix("CLASS_REASON="))
+        .collect();
+    assert!(
+        refusal_reasons.len() >= MIN_INSTRUCTION_ABORT_REFUSAL_REASONS,
+        "instruction-abort refusal-reason census shrank: {} < {}",
+        refusal_reasons.len(),
+        MIN_INSTRUCTION_ABORT_REFUSAL_REASONS
+    );
+    assert_eq!(
+        shell_exact_line_occurrences(&gate, r#"CLASS_BUCKET="576""#),
+        1,
+        "service-sequence gate must have exactly one tolerated CLASS_BUCKET=\"576\" assignment"
+    );
+}
+
+#[test]
+fn strict_gate_rejects_stranded_markers_from_finished_serial() {
+    let gate = repo_text(STRICT_GATE_PATH);
+    let score_serial = shell_function_body(&gate, "score_serial");
+    assert!(!score_serial.trim().is_empty(), "score_serial body census");
+
+    let rejections = stranded_rejection_lines(score_serial);
+    assert!(
+        rejections.len() >= MIN_STRANDED_FORBIDDEN_REJECTIONS,
+        "strict-gate stranded rejection census shrank: {} < {}",
+        rejections.len(),
+        MIN_STRANDED_FORBIDDEN_REJECTIONS
+    );
+    assert!(
+        rejections
+            .iter()
+            .any(|line| line.contains("SCHED_STRAND_ORACLE")),
+        "strict gate must reject a stranded scheduler-census marker"
+    );
+    assert!(
+        rejections
+            .iter()
+            .any(|line| line.contains("STRAND_INJECT_ORACLE")),
+        "strict gate must reject a stranded injection-oracle marker"
+    );
+}
+
+#[test]
+fn full_test_rejects_post_run_stranded_markers() {
+    let gate = repo_text(FULL_TEST_PATH);
+    let cleanup = "wait $QEMU_PID 2>/dev/null || true\nunset QEMU_PID\n";
+    let post_run = gate
+        .split_once(cleanup)
+        .map(|(_, tail)| tail)
+        .expect("full-test QEMU exit cleanup anchor");
+    assert!(!post_run.trim().is_empty(), "full-test post-run census");
+
+    let rejections = stranded_rejection_lines(post_run);
+    assert!(
+        rejections.len() >= MIN_STRANDED_FORBIDDEN_REJECTIONS,
+        "full-test post-run stranded rejection census shrank: {} < {}",
+        rejections.len(),
+        MIN_STRANDED_FORBIDDEN_REJECTIONS
+    );
+    assert!(
+        rejections
+            .iter()
+            .any(|line| line.contains("SCHED_STRAND_ORACLE")),
+        "full test must reject a post-run stranded scheduler-census marker"
+    );
+    assert!(
+        rejections
+            .iter()
+            .any(|line| line.contains("STRAND_INJECT_ORACLE")),
+        "full test must reject a post-run stranded injection-oracle marker"
+    );
+}
+
+#[test]
+fn strict_gate_build_hint_enables_boot_tests() {
+    let gate = repo_text(STRICT_GATE_PATH);
+    let build_hints: Vec<_> = gate
+        .lines()
+        .map(str::trim)
+        .filter(|line| line.starts_with("echo ") && line.contains("cargo build"))
+        .collect();
+    assert!(!build_hints.is_empty(), "strict-gate build-hint census");
+    assert!(
+        build_hints
+            .iter()
+            .any(|line| line.contains("--features boot_tests")),
+        "strict gate build hint must enable --features boot_tests"
+    );
 }
 
 #[test]
