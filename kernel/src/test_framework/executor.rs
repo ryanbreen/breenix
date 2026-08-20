@@ -97,35 +97,6 @@ pub fn current_stage() -> TestStage {
     TestStage::from_u8(CURRENT_STAGE.load(Ordering::Acquire)).unwrap_or(TestStage::SerialBoot)
 }
 
-#[cfg(not(target_arch = "aarch64"))]
-fn emit_boot_test_verdict(completed: u32, total: u32, failed: u32, lock_order_clean: bool) {
-    // x86 has no oracle kthread: take the final synchronous sample and emit
-    // its one marker immediately before the verdict.
-    crate::task::strand_oracle::sample_now();
-    crate::task::strand_oracle::report_x86_once();
-
-    if failed == 0 && lock_order_clean {
-        serial_println!("[TESTS_COMPLETE:{}/{}]", completed, total);
-        serial_println!("[BOOT_TESTS:PASS]");
-    } else {
-        serial_println!("[TESTS_COMPLETE:{}/{}:FAILED:{}]", completed, total, failed);
-        let verdict_failures = failed + u32::from(!lock_order_clean);
-        serial_println!("[BOOT_TESTS:FAIL:{}]", verdict_failures);
-    }
-}
-
-#[cfg(target_arch = "aarch64")]
-fn emit_boot_test_verdict(completed: u32, total: u32, failed: u32, lock_order_clean: bool) {
-    if failed == 0 && lock_order_clean {
-        serial_println!("[TESTS_COMPLETE:{}/{}]", completed, total);
-        serial_println!("[BOOT_TESTS:PASS]");
-    } else {
-        serial_println!("[TESTS_COMPLETE:{}/{}:FAILED:{}]", completed, total, failed);
-        let verdict_failures = failed + u32::from(!lock_order_clean);
-        serial_println!("[BOOT_TESTS:FAIL:{}]", verdict_failures);
-    }
-}
-
 /// Advance to a new stage and run any tests waiting for that stage
 ///
 /// Call this at appropriate points in the boot sequence:
@@ -173,7 +144,20 @@ pub fn advance_stage_marker_only(stage: TestStage) {
     // Emit completion marker since no tests run
     let (completed, total, failed) = get_overall_progress();
     let lock_order_clean = emit_exec_lock_order_counters();
-    emit_boot_test_verdict(completed, total, failed, lock_order_clean);
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        crate::task::strand_oracle::sample_now();
+        crate::task::strand_oracle::report_x86_once();
+    }
+
+    if failed == 0 && lock_order_clean {
+        serial_println!("[TESTS_COMPLETE:{}/{}]", completed, total);
+        serial_println!("[BOOT_TESTS:PASS]");
+    } else {
+        serial_println!("[TESTS_COMPLETE:{}/{}:FAILED:{}]", completed, total, failed);
+        let verdict_failures = failed + u32::from(!lock_order_clean);
+        serial_println!("[BOOT_TESTS:FAIL:{}]", verdict_failures);
+    }
 }
 
 /// Run all registered tests in parallel (EarlyBoot stage only)
@@ -323,7 +307,20 @@ fn run_staged_tests(target_stage: TestStage) -> u32 {
 
     if all_complete {
         let lock_order_clean = emit_exec_lock_order_counters();
-        emit_boot_test_verdict(completed, total, failed, lock_order_clean);
+        #[cfg(not(target_arch = "aarch64"))]
+        {
+            crate::task::strand_oracle::sample_now();
+            crate::task::strand_oracle::report_x86_once();
+        }
+
+        if failed == 0 && lock_order_clean {
+            serial_println!("[TESTS_COMPLETE:{}/{}]", completed, total);
+            serial_println!("[BOOT_TESTS:PASS]");
+        } else {
+            serial_println!("[TESTS_COMPLETE:{}/{}:FAILED:{}]", completed, total, failed);
+            let verdict_failures = failed + u32::from(!lock_order_clean);
+            serial_println!("[BOOT_TESTS:FAIL:{}]", verdict_failures);
+        }
     } else {
         serial_println!(
             "[STAGE:{}:COMPLETE:{}/{}]",
