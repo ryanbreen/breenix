@@ -241,19 +241,6 @@ classify_serial() {
         CLASS_REASON="EL1 data abort: $(grep -E "\[DATA_ABORT\].*from_el0=0" "$serial_file" | head -1 | sed 's/[[:space:]]*$//')"
         return
     fi
-    stranded_strand_line=$(grep -E '\[SCHED_STRAND_ORACLE:[^]]*:stranded=[1-9][0-9]*:' \
-        "$serial_file" 2>/dev/null | tail -1 || true)
-    if [ -n "$stranded_strand_line" ]; then
-        CLASS_BUCKET="589"
-        CLASS_REASON="scheduler strand census reported stranded work: $stranded_strand_line"
-        return
-    fi
-    if grep -qE '\[STRAND_INJECT_ORACLE:[^]]*:stranded=[1-9][0-9]*\]' \
-        "$serial_file" 2>/dev/null; then
-        CLASS_BUCKET="589"
-        CLASS_REASON="strand injection oracle reported stranded work: $(grep -E '\[STRAND_INJECT_ORACLE:[^]]*:stranded=[1-9][0-9]*\]' "$serial_file" | tail -1)"
-        return
-    fi
     if grep -qF "[BLOCK_EINTR_ORACLE:FAIL" "$serial_file" 2>/dev/null; then
         CLASS_BUCKET="575"
         CLASS_REASON="block EINTR oracle reported failure"
@@ -286,6 +273,20 @@ classify_serial() {
     if [ "$last_line" = "CLONEVM_EXEC_TEST: live sibling refused exec" ]; then
         CLASS_BUCKET="589"
         CLASS_REASON="live sibling refused exec"
+        return
+    fi
+    # A crashed boot's cleanup can strand a thread; attribute strands to #589 only if no crash came first.
+    stranded_strand_line=$(grep -E '\[SCHED_STRAND_ORACLE:[^]]*:stranded=[1-9][0-9]*:' \
+        "$serial_file" 2>/dev/null | tail -1 || true)
+    if [ -n "$stranded_strand_line" ]; then
+        CLASS_BUCKET="589"
+        CLASS_REASON="scheduler strand census reported stranded work: $stranded_strand_line"
+        return
+    fi
+    if grep -qE '\[STRAND_INJECT_ORACLE:[^]]*:stranded=[1-9][0-9]*\]' \
+        "$serial_file" 2>/dev/null; then
+        CLASS_BUCKET="589"
+        CLASS_REASON="strand injection oracle reported stranded work: $(grep -E '\[STRAND_INJECT_ORACLE:[^]]*:stranded=[1-9][0-9]*\]' "$serial_file" | tail -1)"
         return
     fi
     if ! grep -qF "[BLOCK_EINTR_ORACLE:" "$serial_file" 2>/dev/null; then

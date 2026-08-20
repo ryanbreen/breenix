@@ -239,6 +239,16 @@ if $PHASE1_OK && [ -z "$FAIL_REASON" ]; then
     echo "Phase 1a3: Waiting for scheduler strand oracles..."
     STRAND_ORACLES_OK=false
     for i in $(seq 1 40); do
+        if grep -qF "[INSTRUCTION_ABORT]" "$OUTPUT_DIR/serial.txt" 2>/dev/null; then
+            INSTRUCTION_ABORT_LINE=$(grep -F "[INSTRUCTION_ABORT]" "$OUTPUT_DIR/serial.txt" 2>/dev/null | tail -1)
+            FAIL_REASON="Phase 1a3: INSTRUCTION_ABORT reported ($INSTRUCTION_ABORT_LINE)"
+            break
+        fi
+        if grep -qF "[DATA_ABORT]" "$OUTPUT_DIR/serial.txt" 2>/dev/null; then
+            DATA_ABORT_LINE=$(grep -F "[DATA_ABORT]" "$OUTPUT_DIR/serial.txt" 2>/dev/null | tail -1)
+            FAIL_REASON="Phase 1a3: DATA_ABORT reported ($DATA_ABORT_LINE)"
+            break
+        fi
         if grep -qE '\[SCHED_STRAND_ORACLE:[^]]*:stranded=[1-9][0-9]*:' "$OUTPUT_DIR/serial.txt" 2>/dev/null; then
             STRAND_LINE=$(grep -E '\[SCHED_STRAND_ORACLE:[^]]*:stranded=[1-9][0-9]*:' "$OUTPUT_DIR/serial.txt" 2>/dev/null | tail -1)
             FAIL_REASON="Phase 1a3: scheduler strand census reported stranded work ($STRAND_LINE)"
