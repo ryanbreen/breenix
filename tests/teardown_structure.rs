@@ -3431,6 +3431,215 @@ fn validate_futex_wait_wake_logging(sources: &[(String, String)]) -> Result<(), 
     failures.is_empty().then_some(()).ok_or(failures)
 }
 
+fn validate_futex_driver_self_limiting_and_prod_gate(
+    driver: &str,
+    gate: &str,
+    sources: &[(String, String)],
+) -> Result<(), Vec<String>> {
+    fn split_top_level_commas(arguments: &str) -> Vec<&str> {
+        let mask = code_mask(arguments);
+        let bytes = arguments.as_bytes();
+        let mut start = 0usize;
+        let mut paren_depth = 0usize;
+        let mut bracket_depth = 0usize;
+        let mut brace_depth = 0usize;
+        let mut split = Vec::new();
+
+        for index in 0..bytes.len() {
+            if !mask[index] {
+                continue;
+            }
+            match bytes[index] {
+                b'(' => paren_depth += 1,
+                b')' => paren_depth = paren_depth.saturating_sub(1),
+                b'[' => bracket_depth += 1,
+                b']' => bracket_depth = bracket_depth.saturating_sub(1),
+                b'{' => brace_depth += 1,
+                b'}' => brace_depth = brace_depth.saturating_sub(1),
+                b',' if paren_depth == 0 && bracket_depth == 0 && brace_depth == 0 => {
+                    split.push(&arguments[start..index]);
+                    start = index + 1;
+                }
+                _ => {}
+            }
+        }
+        let tail = &arguments[start..];
+        if !tail.trim().is_empty() {
+            split.push(tail);
+        }
+        split
+    }
+
+    let mut failures = Vec::new();
+    let main = function_body(driver, "main");
+    let main_mask = code_mask(main);
+    let calls = call_offsets(main, &main_mask, "futex");
+    let mut parsed_calls = Vec::new();
+    for call in &calls {
+        match call_argument(main, &main_mask, *call, "futex") {
+            Some(arguments) => {
+                let split = split_top_level_commas(arguments);
+                if split.len() != 5 {
+                    failures.push(format!(
+                        "driver futex call has {} arguments: {}",
+                        split.len(),
+                        arguments.split_whitespace().collect::<Vec<_>>().join(" ")
+                    ));
+                }
+                parsed_calls.push((*call, split));
+            }
+            None => failures.push("driver contains an unparseable futex call".to_owned()),
+        }
+    }
+
+    check(
+        &mut failures,
+        "every driver futex call must have five arguments",
+        parsed_calls.len() == calls.len()
+            && parsed_calls
+                .iter()
+                .all(|(_, arguments)| arguments.len() == 5),
+    );
+
+    let wait_calls = parsed_calls
+        .iter()
+        .filter(|(_, arguments)| {
+            arguments
+                .get(1)
+                .is_some_and(|operation| operation.trim() == "FUTEX_WAIT")
+        })
+        .collect::<Vec<_>>();
+    check(
+        &mut failures,
+        "driver must retain at least two FUTEX_WAIT calls",
+        wait_calls.len() >= 2,
+    );
+    check(
+        &mut failures,
+        "every driver FUTEX_WAIT must carry a nonzero timeout pointer",
+        wait_calls.iter().all(|(_, arguments)| {
+            arguments
+                .get(3)
+                .is_some_and(|timeout| timeout.trim() != "0")
+        }),
+    );
+
+    check(
+        &mut failures,
+        "the driver's first futex call must be the FUTEX_WAIT probe",
+        parsed_calls.first().is_some_and(|(_, arguments)| {
+            arguments.len() == 5
+                && arguments[1].trim() == "FUTEX_WAIT"
+                && arguments[4].trim() == "PROBE"
+        }),
+    );
+    check(
+        &mut failures,
+        "the seam-absent guard must exit before the driver's second futex call",
+        calls.first().zip(calls.get(1)).is_some_and(|(first, second)| {
+            let between = &main[*first..*second];
+            !code_offsets(between, &code_mask(between), "process::exit(0)").is_empty()
+        }),
+    );
+    check(
+        &mut failures,
+        "driver must contain exactly one seam-absent marker literal",
+        driver
+            .matches("[FUTEX_HANDOFF_ORACLE_DRIVER:seam_absent:")
+            .count()
+            == 1,
+    );
+
+    let oracle = source(sources, "kernel/src/syscall/futex_oracle.rs");
+    let oracle_mask = code_mask(oracle);
+    check(
+        &mut failures,
+        "kernel futex oracle must define is_probe",
+        code_offsets(oracle, &oracle_mask, "fn is_probe(").len() == 1,
+    );
+    check(
+        &mut failures,
+        "kernel futex oracle must define PROBE_ACK",
+        typed_u64_constant_definition_offsets(oracle, &oracle_mask, "PROBE_ACK").len() == 1,
+    );
+
+    let futex_wait = function_body(source(sources, "kernel/src/syscall/futex.rs"), "futex_wait");
+    let futex_wait_mask = code_mask(futex_wait);
+    check(
+        &mut failures,
+        "futex_wait must reference is_probe exactly once",
+        identifier_offsets(futex_wait, &futex_wait_mask, "is_probe").len() == 1,
+    );
+    check(
+        &mut failures,
+        "futex_wait must reference PROBE_ACK exactly once",
+        identifier_offsets(futex_wait, &futex_wait_mask, "PROBE_ACK").len() == 1,
+    );
+
+    let production_build_lines = gate
+        .lines()
+        .filter(|line| {
+            line.contains("cargo build") && line.contains("--target aarch64-breenix-kernel.json")
+        })
+        .collect::<Vec<_>>();
+    check(
+        &mut failures,
+        "production gate must run exactly one soft-float aarch64 kernel build",
+        production_build_lines.len() == 1,
+    );
+    check(
+        &mut failures,
+        "production gate kernel build must not enable features",
+        !production_build_lines.is_empty()
+            && production_build_lines
+                .iter()
+                .all(|line| !line.contains("--features")),
+    );
+    check(
+        &mut failures,
+        "production gate must run the durable no-NEON guard",
+        gate.contains("scripts/check-kernel-no-neon.sh"),
+    );
+    check(
+        &mut failures,
+        "production gate must pin and count the seam-absent timeout marker",
+        gate.lines().any(|line| {
+            line.trim()
+                == "PROD_SEAM_ABSENT_LITERAL='[FUTEX_HANDOFF_ORACLE_DRIVER:seam_absent:probe=-110]'"
+        }) && gate.contains("grep -F -c \"$literal\"")
+            && gate.contains(
+                "PROD_SEAM_ABSENT_COUNT=$(marker_count \"$SERIAL_FILE\" \"$PROD_SEAM_ABSENT_LITERAL\")",
+            ),
+    );
+    check(
+        &mut failures,
+        "production gate must require the boot_tests-only kernel marker count to be zero",
+        gate.lines().any(|line| {
+            line.trim() == "KERNEL_ORACLE_LITERAL='[FUTEX_HANDOFF_ORACLE:'"
+        }) && gate.contains(
+            "KERNEL_ORACLE_COUNT=$(marker_count \"$SERIAL_FILE\" \"$KERNEL_ORACLE_LITERAL\")",
+        ) && gate.contains("[ \"$KERNEL_ORACLE_COUNT\" -eq 0 ]"),
+    );
+    check(
+        &mut failures,
+        "production gate must pin init resuming after futex_handoff_oracle",
+        gate.lines().any(|line| {
+            line.trim() == "INIT_EXIT_LITERAL='[init] futex_handoff_oracle exited pid='"
+        }) && gate.contains("INIT_EXIT_COUNT=$(marker_count \"$SERIAL_FILE\" \"$INIT_EXIT_LITERAL\")")
+            && gate.contains("[ \"$INIT_EXIT_COUNT\" -ge 1 ]"),
+    );
+    check(
+        &mut failures,
+        "production gate must pin bsshd reaching its listening state",
+        gate.lines()
+            .any(|line| line.trim() == "BSSHD_LITERAL='bsshd: listening'")
+            && gate.contains("BSSHD_COUNT=$(marker_count \"$SERIAL_FILE\" \"$BSSHD_LITERAL\")")
+            && gate.contains("[ \"$BSSHD_COUNT\" -ge 1 ]"),
+    );
+
+    failures.is_empty().then_some(()).ok_or(failures)
+}
+
 fn validate_futex_oracle_marker_and_gate_pins(
     sources: &[(String, String)],
 ) -> Result<(), Vec<String>> {
@@ -5552,6 +5761,19 @@ fn current_teardown_bypass_surface_is_exact() {
         validate_futex_wait_wake_logging(&sources),
     );
 
+    // This ratchet catches the oracle driver losing its arming handshake or wait bounds,
+    // which let a production image block init on boot_tests-only plumbing, and catches the
+    // negative-control gate losing the profile or markers that make it a control at all.
+    record(
+        &mut failures,
+        "futex oracle driver self-limiting and production-profile gate",
+        validate_futex_driver_self_limiting_and_prod_gate(
+            &repo_text("userspace/programs/src/futex_handoff_oracle.rs"),
+            &repo_text("docker/qemu/run-aarch64-prod-profile-boot-test.sh"),
+            &sources,
+        ),
+    );
+
     // This ratchet catches a kernel oracle marker or gate grep being removed, which would let
     // a boot gate pass without proving that the load-bearing futex self-check actually ran.
     record(
@@ -7365,6 +7587,69 @@ fn deliberately_broken_variants_fail_the_ratchet() {
             "kernel/src/syscall/futex_oracle.rs",
             broken_oracle,
         )),
+    );
+
+    let driver = repo_text("userspace/programs/src/futex_handoff_oracle.rs");
+    let gate = repo_text("docker/qemu/run-aarch64-prod-profile-boot-test.sh");
+
+    // Removing a handoff-stage timeout must be rejected, proving every wait remains bounded
+    // even if the driver and boot_tests-only seam drift after the handshake.
+    let broken_untimed_driver = driver.replacen(
+        "let stage1 = futex(word0, FUTEX_WAIT, 42, backstop_ptr, STAGE1);",
+        "let stage1 = futex(word0, FUTEX_WAIT, 42, 0, STAGE1);",
+        1,
+    );
+    report_vacuity(
+        "futex driver untimed handoff stage",
+        validate_futex_driver_self_limiting_and_prod_gate(
+            &broken_untimed_driver,
+            &gate,
+            &sources,
+        ),
+    );
+
+    // Removing the handshake guard's exit must be rejected, proving an unarmed kernel cannot
+    // reach the later waits after its probe times out.
+    let broken_handshake_exit = driver.replacen("            process::exit(0);", "", 1);
+    report_vacuity(
+        "futex driver seam-absent exit",
+        validate_futex_driver_self_limiting_and_prod_gate(
+            &broken_handshake_exit,
+            &gate,
+            &sources,
+        ),
+    );
+
+    // Adding boot_tests to the build must be rejected, proving the negative control continues
+    // to exercise the featureless profile shipped to production.
+    let broken_prod_profile = gate.replacen(
+        "cargo build --release --target aarch64-breenix-kernel.json",
+        "cargo build --release --features boot_tests --target aarch64-breenix-kernel.json",
+        1,
+    );
+    report_vacuity(
+        "production gate armed build profile",
+        validate_futex_driver_self_limiting_and_prod_gate(
+            &driver,
+            &broken_prod_profile,
+            &sources,
+        ),
+    );
+
+    // Renaming the bsshd accept pin must be rejected, proving a driver exit alone cannot make
+    // the production-profile boot gate pass before init reaches the service.
+    let broken_bsshd_pin = gate.replacen(
+        "BSSHD_LITERAL='bsshd: listening'",
+        "BSSHD_LITERAL='bsshd: listening_REMOVED'",
+        1,
+    );
+    report_vacuity(
+        "production gate bsshd accept pin",
+        validate_futex_driver_self_limiting_and_prod_gate(
+            &driver,
+            &broken_bsshd_pin,
+            &sources,
+        ),
     );
 
     let broken_exit = with_synthetic_source(
