@@ -13,14 +13,26 @@ pub const STRAND_DWELL_MS: u64 = 2_000;
 
 static STARTED: AtomicBool = AtomicBool::new(false);
 
-/// Round-B rollback counters are wired into the marker now and remain zero in
-/// Round A. Production and exercised resolution are intentionally separate so
-/// a test-only recovery leg cannot inflate the production count.
+/// Handoff rollback counters are wired into the marker. Production and
+/// exercised resolution are intentionally separate so a test-only recovery leg
+/// cannot inflate the production count; `resolved_previous` is the total count
+/// of outgoing-marker rollbacks.
 pub static RESOLVED_PRODUCTION: AtomicU64 = AtomicU64::new(0);
 pub static RESOLVED_EXERCISED: AtomicU64 = AtomicU64::new(0);
+pub static RESOLVED_PREVIOUS: AtomicU64 = AtomicU64::new(0);
 
 #[cfg(target_arch = "aarch64")]
 pub(crate) fn note_pending_next_resolved(tid: u64) {
+    if tid == VICTIM_TID.load(Ordering::Acquire) {
+        RESOLVED_EXERCISED.fetch_add(1, Ordering::Relaxed);
+    } else {
+        RESOLVED_PRODUCTION.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+pub(crate) fn note_previous_thread_resolved(tid: u64) {
+    RESOLVED_PREVIOUS.fetch_add(1, Ordering::Relaxed);
     if tid == VICTIM_TID.load(Ordering::Acquire) {
         RESOLVED_EXERCISED.fetch_add(1, Ordering::Relaxed);
     } else {
@@ -44,11 +56,19 @@ const INJECT_B_FIRED: u64 = 6;
 const INJECT_B_SCORED_RECOVERED: u64 = 7;
 #[cfg(target_arch = "aarch64")]
 const INJECT_B_SCORED_LOST: u64 = 8;
+#[cfg(target_arch = "aarch64")]
+const INJECT_C_ARMED: u64 = 9;
+#[cfg(target_arch = "aarch64")]
+const INJECT_C_FIRED: u64 = 10;
+#[cfg(target_arch = "aarch64")]
+const INJECT_C_SCORED_RECOVERED: u64 = 11;
+#[cfg(target_arch = "aarch64")]
+const INJECT_C_SCORED_LOST: u64 = 12;
 
 #[cfg(target_arch = "aarch64")]
 const INJECT_SCORE_WAIT_MS: u64 = 2_000;
 #[cfg(target_arch = "aarch64")]
-const INJECT_DEADLINE_MS: u64 = 6_000;
+const INJECT_DEADLINE_MS: u64 = 10_000;
 
 #[cfg(target_arch = "aarch64")]
 static VICTIM_TID: AtomicU64 = AtomicU64::new(0);
@@ -66,26 +86,37 @@ static INJECT_REPORT_EMITTED: AtomicBool = AtomicBool::new(false);
 pub(crate) enum InjectionLeg {
     A,
     B,
+    C,
 }
 
 /// Consume the one-shot test arm for the selected victim.
 ///
 /// This function is called from `inline_schedule_trampoline` immediately
-/// after its state reads. It deliberately contains only the two relaxed loads
-/// needed to identify the event, comparisons, and one compare-exchange. The
-/// state transition itself records which leg fired; the victim TID is already
-/// the published event record.
+/// after its state reads. It deliberately contains only the relaxed loads
+/// needed to identify the event, comparisons, and one compare-exchange. Leg C
+/// additionally checks the outgoing ID and requeue intent; the victim TID is
+/// already the published event record.
 #[cfg(target_arch = "aarch64")]
-pub(crate) fn inject_if_armed(new_id: u64) -> Option<InjectionLeg> {
+pub(crate) fn inject_if_armed(
+    old_id: u64,
+    new_id: u64,
+    should_requeue_old: bool,
+) -> Option<InjectionLeg> {
     let armed = INJECT_ARMED.load(Ordering::Relaxed);
     let victim_tid = VICTIM_TID.load(Ordering::Relaxed);
-    if new_id != victim_tid {
+    let matches_event = match armed {
+        INJECT_A_ARMED | INJECT_B_ARMED => new_id == victim_tid,
+        INJECT_C_ARMED => old_id == victim_tid && should_requeue_old,
+        _ => false,
+    };
+    if !matches_event {
         return None;
     }
 
     let (next, leg) = match armed {
         INJECT_A_ARMED => (INJECT_A_FIRED, InjectionLeg::A),
         INJECT_B_ARMED => (INJECT_B_FIRED, InjectionLeg::B),
+        INJECT_C_ARMED => (INJECT_C_FIRED, InjectionLeg::C),
         _ => return None,
     };
     INJECT_ARMED
@@ -126,6 +157,8 @@ struct InjectionScoring {
     a_deadline_ms: u64,
     b_baseline: u64,
     b_deadline_ms: u64,
+    c_baseline: u64,
+    c_deadline_ms: u64,
 }
 
 fn monotonic_now_ns() -> u64 {
@@ -236,7 +269,7 @@ fn report_strand(
     overflow: u64,
 ) {
     crate::serial_println!(
-        "[SCHED_STRAND_ORACLE:{}:samples={}:checked={}:stranded={}:running_shape={}:ready_shape={}:resolved_production={}:resolved_exercised={}:worst_dwell_ms={}:overflow={}]",
+        "[SCHED_STRAND_ORACLE:{}:samples={}:checked={}:stranded={}:running_shape={}:ready_shape={}:resolved_production={}:resolved_exercised={}:resolved_previous={}:worst_dwell_ms={}:overflow={}]",
         if cfg!(target_arch = "aarch64") {
             "aarch64"
         } else {
@@ -249,6 +282,7 @@ fn report_strand(
         ready_shape,
         RESOLVED_PRODUCTION.load(Ordering::Acquire),
         RESOLVED_EXERCISED.load(Ordering::Acquire),
+        RESOLVED_PREVIOUS.load(Ordering::Acquire),
         worst_dwell_ms,
         overflow,
     );
@@ -279,9 +313,24 @@ fn update_injection_scoring(now_ms: u64, scoring: &mut InjectionScoring) {
         } else if now_ms >= scoring.b_deadline_ms {
             let recovered = VICTIM_PROGRESS.load(Ordering::Acquire) > scoring.b_baseline;
             if recovered {
-                INJECT_ARMED.store(INJECT_B_SCORED_RECOVERED, Ordering::Release);
+                INJECT_ARMED.store(INJECT_C_ARMED, Ordering::Release);
             } else {
                 INJECT_ARMED.store(INJECT_B_SCORED_LOST, Ordering::Release);
+            }
+        }
+    }
+
+    let state = INJECT_ARMED.load(Ordering::Acquire);
+    if state == INJECT_C_FIRED {
+        if scoring.c_deadline_ms == 0 {
+            scoring.c_baseline = VICTIM_PROGRESS.load(Ordering::Acquire);
+            scoring.c_deadline_ms = now_ms.saturating_add(INJECT_SCORE_WAIT_MS);
+        } else if now_ms >= scoring.c_deadline_ms {
+            let recovered = VICTIM_PROGRESS.load(Ordering::Acquire) > scoring.c_baseline;
+            if recovered {
+                INJECT_ARMED.store(INJECT_C_SCORED_RECOVERED, Ordering::Release);
+            } else {
+                INJECT_ARMED.store(INJECT_C_SCORED_LOST, Ordering::Release);
             }
         }
     }
@@ -291,30 +340,34 @@ fn update_injection_scoring(now_ms: u64, scoring: &mut InjectionScoring) {
 fn injection_marker_ready(now_ms: u64) -> bool {
     let state = INJECT_ARMED.load(Ordering::Acquire);
     let b_scored = state == INJECT_B_SCORED_RECOVERED || state == INJECT_B_SCORED_LOST;
+    let c_scored = state == INJECT_C_SCORED_RECOVERED || state == INJECT_C_SCORED_LOST;
     let a_scored_lost = state == INJECT_A_SCORED_LOST;
     let deadline = INJECT_DEADLINE.load(Ordering::Acquire);
-    a_scored_lost || b_scored || (deadline != 0 && now_ms >= deadline)
+    a_scored_lost || c_scored || (b_scored && state == INJECT_B_SCORED_LOST)
+        || (deadline != 0 && now_ms >= deadline)
 }
 
 #[cfg(target_arch = "aarch64")]
 fn report_injection() {
     let state = INJECT_ARMED.load(Ordering::Acquire);
     let leg_a_exercised = state >= INJECT_A_FIRED;
-    let leg_a_recovered = state == INJECT_B_ARMED
-        || state == INJECT_B_FIRED
-        || state == INJECT_B_SCORED_RECOVERED
-        || state == INJECT_B_SCORED_LOST;
+    let leg_a_recovered = state >= INJECT_B_ARMED;
     let leg_b_exercised = state >= INJECT_B_FIRED;
-    let leg_b_recovered = state == INJECT_B_SCORED_RECOVERED;
+    let leg_b_recovered = state >= INJECT_C_ARMED;
+    let leg_c_exercised = state >= INJECT_C_FIRED;
+    let leg_c_recovered = state == INJECT_C_SCORED_RECOVERED;
     let stranded = u64::from(leg_a_exercised && !leg_a_recovered)
-        + u64::from(leg_b_exercised && !leg_b_recovered);
+        + u64::from(leg_b_exercised && !leg_b_recovered)
+        + u64::from(leg_c_exercised && !leg_c_recovered);
 
     crate::serial_println!(
-        "[STRAND_INJECT_ORACLE:aarch64:legA_exercised={}:legA_recovered={}:legB_exercised={}:legB_recovered={}:stranded={}]",
+        "[STRAND_INJECT_ORACLE:aarch64:legA_exercised={}:legA_recovered={}:legB_exercised={}:legB_recovered={}:legC_exercised={}:legC_recovered={}:stranded={}]",
         u64::from(leg_a_exercised),
         u64::from(leg_a_recovered),
         u64::from(leg_b_exercised),
         u64::from(leg_b_recovered),
+        u64::from(leg_c_exercised),
+        u64::from(leg_c_recovered),
         stranded,
     );
 }
@@ -330,7 +383,7 @@ fn strand_victim() {
 
     while monotonic_now_ms() < deadline {
         let state = INJECT_ARMED.load(Ordering::Acquire);
-        if state == INJECT_B_SCORED_RECOVERED || state == INJECT_B_SCORED_LOST {
+        if state == INJECT_C_SCORED_RECOVERED || state == INJECT_C_SCORED_LOST {
             break;
         }
         super::scheduler::yield_current();
