@@ -3,6 +3,8 @@ use std::path::PathBuf;
 
 const SCHEDULER_PATH: &str = "kernel/src/task/scheduler.rs";
 const CONTEXT_SWITCH_PATH: &str = "kernel/src/arch_impl/aarch64/context_switch.rs";
+const STRAND_ORACLE_PATH: &str = "kernel/src/task/strand_oracle.rs";
+const EXECUTOR_PATH: &str = "kernel/src/test_framework/executor.rs";
 const MIN_REQUEUE_EARLY_RETURN_GUARDS: usize = 6;
 const MIN_CONTEXT_PREVIOUS_RESOLVER_CALLS: usize = 3;
 
@@ -330,5 +332,66 @@ fn strand_handoff_structure_is_pinned_without_line_numbers() {
     assert!(
         scheduler_mask.iter().any(|is_code| *is_code),
         "scheduler source census must inspect code, not an empty mask"
+    );
+}
+
+#[test]
+fn outgoing_cleanup_refuses_live_incoming_and_deferred_ownership() {
+    let scheduler = repo_text(SCHEDULER_PATH);
+    let resolver = function_body(&scheduler, "resolve_exception_cleanup_previous_thread");
+    assert!(
+        !code_occurrences(resolver, "pending_next").is_empty(),
+        "outgoing cleanup must refuse a thread published as pending_next"
+    );
+    assert!(
+        !code_occurrences(resolver, "deferred_requeue_contains").is_empty(),
+        "outgoing cleanup must refuse a thread held in deferred requeue"
+    );
+}
+
+#[test]
+fn x86_strand_oracle_is_synchronous_and_sampled_by_the_executor() {
+    let oracle = repo_text(STRAND_ORACLE_PATH);
+    let sample = function_body(&oracle, "sample_now");
+    let sample_once = function_body(&oracle, "sample_once");
+    assert!(
+        !code_occurrences(sample, "sample_once").is_empty(),
+        "sample_now must use the shared sampling implementation"
+    );
+    assert!(
+        !code_occurrences(sample_once, "collect_strand_census").is_empty(),
+        "sample_now must collect one scheduler census"
+    );
+    assert!(
+        !code_occurrences(sample_once, "update_dwell").is_empty(),
+        "sample_now must share the kthread dwell bookkeeping"
+    );
+    for forbidden in [
+        "block_current_for_timer",
+        "yield_current",
+        "arch_halt_with_interrupts",
+        "serial_println",
+    ] {
+        assert!(
+            code_occurrences(sample, forbidden).is_empty(),
+            "sample_now must not contain {forbidden}"
+        );
+    }
+
+    let start = function_body(&oracle, "start");
+    assert!(
+        start.contains("#[cfg(target_arch = \"aarch64\")]\n    {")
+            && start.contains("kthread_run(strand_oracle_thread"),
+        "the oracle kthread must be inside the aarch64-only start block"
+    );
+
+    let executor = repo_text(EXECUTOR_PATH);
+    assert!(
+        code_occurrences(&executor, "strand_oracle::sample_now()").len() >= 2,
+        "the executor must sample at stage/completion boundaries and before verdict"
+    );
+    assert!(
+        !code_occurrences(&executor, "strand_oracle::report_x86_once()").is_empty(),
+        "the executor must emit the x86 oracle once from the verdict path"
     );
 }

@@ -3553,8 +3553,21 @@ impl Scheduler {
         let is_current = (0..MAX_CPUS).any(|c| self.cpu_state[c].current_thread == Some(previous));
         let is_other_deferred =
             (0..MAX_CPUS).any(|c| c != cpu && self.cpu_state[c].previous_thread == Some(previous));
+        let is_pending_next = self
+            .cpu_state
+            .iter()
+            .any(|state| state.pending_next == Some(previous));
+        let is_deferred_requeue =
+            crate::arch_impl::aarch64::context_switch::deferred_requeue_contains(previous);
 
-        if is_ready && !is_idle && !is_queued && !is_current && !is_other_deferred {
+        if is_ready
+            && !is_idle
+            && !is_queued
+            && !is_current
+            && !is_other_deferred
+            && !is_pending_next
+            && !is_deferred_requeue
+        {
             self.per_cpu_queues[cpu].push_back(previous);
             ENQUEUE_DEFERRED_DRAINED_OK.fetch_add(1, Ordering::Relaxed);
             set_need_resched();
