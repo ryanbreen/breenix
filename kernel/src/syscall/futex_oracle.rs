@@ -24,12 +24,18 @@ pub enum OracleRet {
     Other,
 }
 
+const PROBE_SENTINEL: u32 = 0x4655_5850;
 const STAGE1_SENTINEL: u32 = 0x4655_5831;
 const STAGE2_SENTINEL: u32 = 0x4655_5832;
 const STAGE3_SENTINEL: u32 = 0x4655_5833;
 const REPORT_SENTINEL: u32 = 0x4655_5852;
 const STAGE3_REQUEST_NS: u64 = 50_000_000;
 const BACKSTOP_NS: u64 = 1_000_000_000;
+
+/// Success value returned to the driver's stage-0 arming probe. No ordinary
+/// FUTEX_WAIT returns a non-zero success, so the driver can distinguish an
+/// armed kernel from an unarmed one without ever blocking.
+pub const PROBE_ACK: u64 = 0x4655_5850;
 
 static STAGE1_TG_ID: AtomicU64 = AtomicU64::new(0);
 static STAGE1_UADDR: AtomicU64 = AtomicU64::new(0);
@@ -78,6 +84,10 @@ pub fn arm_from_val3(val3: u32) -> Option<Stage> {
         STAGE3_SENTINEL => Some(Stage::S3),
         _ => None,
     }
+}
+
+pub fn is_probe(val3: u32) -> bool {
+    val3 == PROBE_SENTINEL
 }
 
 pub fn is_report(val3: u32) -> bool {

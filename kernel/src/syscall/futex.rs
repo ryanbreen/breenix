@@ -69,6 +69,15 @@ pub fn sys_futex(
 /// FUTEX_WAIT: atomically check *uaddr == expected_val and enqueue the
 /// current thread if it matches.
 fn futex_wait(uaddr: u64, expected_val: u32, timeout_ptr: u64, _val3: u32) -> SyscallResult {
+    // Arming handshake for the #584 oracle driver. This arm is compiled in only
+    // where the oracle seam itself is; a production kernel ignores val3, honours
+    // the probe's timeout and returns ETIMEDOUT, which is how the driver learns
+    // the seam is absent and skips instead of blocking init forever.
+    #[cfg(feature = "boot_tests")]
+    if crate::syscall::futex_oracle::is_probe(_val3) {
+        return SyscallResult::Ok(crate::syscall::futex_oracle::PROBE_ACK);
+    }
+
     if uaddr == 0 || uaddr % 4 != 0 {
         return SyscallResult::Err(super::errno::EINVAL as u64);
     }
