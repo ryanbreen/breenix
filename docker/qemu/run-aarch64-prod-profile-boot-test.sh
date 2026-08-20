@@ -18,6 +18,10 @@ PROD_SEAM_ABSENT_LITERAL='[FUTEX_HANDOFF_ORACLE_DRIVER:seam_absent:probe=-110]'
 KERNEL_ORACLE_LITERAL='[FUTEX_HANDOFF_ORACLE:'
 # This proves init resumed after waiting for the self-limiting driver.
 INIT_EXIT_LITERAL='[init] futex_handoff_oracle exited pid='
+# This proves init's earlier oracle also completes on the unarmed profile.
+BLOCK_EINTR_ORACLE_LITERAL='[BLOCK_EINTR_ORACLE:'
+# This proves init's earlier oracle did not self-report a failure.
+BLOCK_EINTR_ORACLE_FAIL_LITERAL='[BLOCK_EINTR_ORACLE:FAIL'
 # This proves init progressed through to the production SSH service.
 BSSHD_LITERAL='bsshd: listening'
 # Any one of these literals means the production boot crashed or locked up.
@@ -51,6 +55,8 @@ print_observed_values() {
     echo "Observed seam-absent marker count: $(marker_count "$serial_file" "$PROD_SEAM_ABSENT_LITERAL")"
     echo "Observed kernel oracle marker count: $(marker_count "$serial_file" "$KERNEL_ORACLE_LITERAL")"
     echo "Observed init-resumed marker count: $(marker_count "$serial_file" "$INIT_EXIT_LITERAL")"
+    echo "Observed block EINTR oracle marker count: $(marker_count "$serial_file" "$BLOCK_EINTR_ORACLE_LITERAL")"
+    echo "Observed block EINTR oracle failure count: $(marker_count "$serial_file" "$BLOCK_EINTR_ORACLE_FAIL_LITERAL")"
     echo "Observed bsshd marker count: $(marker_count "$serial_file" "$BSSHD_LITERAL")"
     echo "Observed crash marker count: $(crash_count "$serial_file")"
     if [ -f "$serial_file" ]; then
@@ -183,6 +189,8 @@ QEMU_PID=""
 PROD_SEAM_ABSENT_COUNT=$(marker_count "$SERIAL_FILE" "$PROD_SEAM_ABSENT_LITERAL")
 KERNEL_ORACLE_COUNT=$(marker_count "$SERIAL_FILE" "$KERNEL_ORACLE_LITERAL")
 INIT_EXIT_COUNT=$(marker_count "$SERIAL_FILE" "$INIT_EXIT_LITERAL")
+BLOCK_EINTR_ORACLE_COUNT=$(marker_count "$SERIAL_FILE" "$BLOCK_EINTR_ORACLE_LITERAL")
+BLOCK_EINTR_ORACLE_FAIL_COUNT=$(marker_count "$SERIAL_FILE" "$BLOCK_EINTR_ORACLE_FAIL_LITERAL")
 BSSHD_COUNT=$(marker_count "$SERIAL_FILE" "$BSSHD_LITERAL")
 CRASH_COUNT=$(crash_count "$SERIAL_FILE")
 
@@ -196,6 +204,14 @@ CRASH_COUNT=$(crash_count "$SERIAL_FILE")
 }
 [ "$INIT_EXIT_COUNT" -ge 1 ] || {
     echo "FAIL: init never resumed past futex_handoff_oracle"
+    exit 1
+}
+[ "$BLOCK_EINTR_ORACLE_COUNT" -ge 1 ] || {
+    echo "FAIL: Block EINTR oracle marker missing"
+    exit 1
+}
+[ "$BLOCK_EINTR_ORACLE_FAIL_COUNT" -eq 0 ] || {
+    echo "FAIL: Block EINTR oracle reported failure"
     exit 1
 }
 [ "$BSSHD_COUNT" -ge 1 ] || {
@@ -212,5 +228,7 @@ echo "Observed: $(grep -F -m 1 "$PROD_SEAM_ABSENT_LITERAL" "$SERIAL_FILE")"
 echo "Observed: $(grep -F -m 1 "$INIT_EXIT_LITERAL" "$SERIAL_FILE")"
 echo "Observed: $(grep -F -m 1 "$BSSHD_LITERAL" "$SERIAL_FILE")"
 echo "Observed kernel oracle marker count: $KERNEL_ORACLE_COUNT"
+echo "Observed block EINTR oracle marker count: $BLOCK_EINTR_ORACLE_COUNT"
+echo "Observed block EINTR oracle failure count: $BLOCK_EINTR_ORACLE_FAIL_COUNT"
 echo "Observed crash marker count: $CRASH_COUNT"
 cleanup 0
