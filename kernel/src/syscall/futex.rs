@@ -212,11 +212,6 @@ fn futex_wait(uaddr: u64, expected_val: u32, timeout_ptr: u64, _val3: u32) -> Sy
                 crate::syscall::futex_oracle::stage2_drive(tg_id, uaddr);
             }
 
-            #[cfg(target_arch = "aarch64")]
-            crate::per_cpu_aarch64::preempt_enable();
-            #[cfg(target_arch = "x86_64")]
-            crate::per_cpu::preempt_enable();
-
             #[cfg(feature = "boot_tests")]
             let mut oracle_parked = false;
             let mut signal_pending = false;
@@ -253,11 +248,6 @@ fn futex_wait(uaddr: u64, expected_val: u32, timeout_ptr: u64, _val3: u32) -> Sy
                 crate::task::scheduler::yield_current();
                 Cpu::halt_with_interrupts();
             }
-
-            #[cfg(target_arch = "aarch64")]
-            crate::per_cpu_aarch64::preempt_disable();
-            #[cfg(target_arch = "x86_64")]
-            crate::per_cpu::preempt_disable();
 
             let removed_by_me = {
                 let mut queues = FUTEX_QUEUES.lock();
