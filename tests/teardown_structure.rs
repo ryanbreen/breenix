@@ -2929,7 +2929,7 @@ fn validate_p5b_gate_script_pins(
     for pin in [
         x86_literal,
         "TEST:process:init_group_refusal_oracle:PASS",
-        "grep -qF -x \"$INIT_GROUP_REFUSAL_ORACLE_LITERAL\"",
+        "grep -qF \"$INIT_GROUP_REFUSAL_ORACLE_LITERAL\"",
         "INIT_GROUP_WALK_COUNT=$(awk",
         "test \"$INIT_GROUP_WALK_COUNT\" -eq 0",
         "x86 has no production designated init",
@@ -3008,7 +3008,7 @@ fn validate_kstack_gate_script_pins(
     let mut failures = Vec::new();
     let injected = "[CREATION_LOCK_ORDER:INJECTED:PM_HELD]";
     let violation = "[CREATION_LOCK_ORDER:VIOLATION:PM_HELD]";
-    let x86_owner_pattern = "KSTACK_OWNER_ORACLE_PATTERN='^\\[KSTACK_OWNER_ORACLE:x86:creation_rows=1000:creation_owned=1000:one_owner=1000:two_owner=0:zero_owner=0:fork_rows=2:fork_owned=2:slot_returns_exact_one=2:slot_alloc_delta=1000:slot_free_delta=1000:slot_balance=0:frames_mapped_delta=128000:frames_released_delta=128000:frame_balance=0:frame_used_delta=[0-9]+:frame_used_bounded=1:live_checks=[1-9][0-9]*:live_refusals_production=0:live_refusals_injected=1:drop_refused_live=0:pte_overwrite_refusals=0:pub_pooled=[1-9][0-9]*:pub_sched_owned=[1-9][0-9]*:pub_row_residual=0:pub_unowned=0:classifier_sched_owned=1:classifier_row_residual=1:classifier_unowned=1:classifier_not_pooled=1:sched_publications=[1-9][0-9]*:sched_pm_held_production=0:sched_pm_held_injected=1:balance=0\\]$'";
+    let x86_owner_pattern = "KSTACK_OWNER_ORACLE_PATTERN='\\[KSTACK_OWNER_ORACLE:x86:creation_rows=1000:creation_owned=1000:one_owner=1000:two_owner=0:zero_owner=0:fork_rows=2:fork_owned=2:slot_returns_exact_one=2:slot_alloc_delta=1000:slot_free_delta=1000:slot_balance=0:frames_mapped_delta=128000:frames_released_delta=128000:frame_balance=0:frame_used_delta=[0-9]+:frame_used_bounded=1:live_checks=[1-9][0-9]*:live_refusals_production=0:live_refusals_injected=1:drop_refused_live=0:pte_overwrite_refusals=0:pub_pooled=[1-9][0-9]*:pub_sched_owned=[1-9][0-9]*:pub_row_residual=0:pub_unowned=0:classifier_sched_owned=1:classifier_row_residual=1:classifier_unowned=1:classifier_not_pooled=1:sched_publications=[1-9][0-9]*:sched_pm_held_production=0:sched_pm_held_injected=1:balance=0\\]'";
     let aarch64_owner_pattern = "KSTACK_OWNER_ORACLE_PATTERN='^\\[KSTACK_OWNER_ORACLE:aarch64:creation_rows=1000:creation_owned=1000:one_owner=1000:two_owner=0:zero_owner=0:fork_rows=1:fork_owned=1:slot_returns_exact_one=1:slot_alloc_delta=1000:slot_free_delta=1000:slot_balance=0:frames_mapped_delta=0:frames_released_delta=0:frame_balance=0:frame_used_delta=[0-9]+:frame_used_bounded=1:live_checks=[1-9][0-9]*:live_refusals_production=0:live_refusals_injected=1:drop_refused_live=0:pte_overwrite_refusals=0:pub_pooled=[1-9][0-9]*:pub_sched_owned=[1-9][0-9]*:pub_row_residual=0:pub_unowned=0:classifier_sched_owned=1:classifier_row_residual=1:classifier_unowned=1:classifier_not_pooled=1:sched_publications=[1-9][0-9]*:sched_pm_held_production=0:sched_pm_held_injected=1:balance=0\\]$'";
 
     let x86 = source(scripts, "docker/qemu/run-x86-boot-tests.sh");
@@ -3018,9 +3018,9 @@ fn validate_kstack_gate_script_pins(
         "KSTACK_OWNER_LINE=$(grep -hE \"$KSTACK_OWNER_ORACLE_PATTERN\"",
         "echo \"$KSTACK_OWNER_LINE\"",
         "grep -qF '[CREATION_LOCK_ORDER:VIOLATION'",
-        "grep -qF -x \"$CREATION_LOCK_ORDER_INJECTED_LITERAL\"",
-        "grep -h -F -x -c \"$CREATION_LOCK_ORDER_INJECTED_LITERAL\"",
-        "grep -h -F -x -c \"$CREATION_LOCK_ORDER_VIOLATION_LITERAL\"",
+        "grep -qF \"$CREATION_LOCK_ORDER_INJECTED_LITERAL\"",
+        "grep -h -F -c \"$CREATION_LOCK_ORDER_INJECTED_LITERAL\"",
+        "grep -h -F -c \"$CREATION_LOCK_ORDER_VIOLATION_LITERAL\"",
         injected,
         violation,
     ] {
@@ -4108,13 +4108,13 @@ fn validate_no_vacuous_test_conditions(sources: &[(String, String)]) -> Result<(
 /// executed bare (so a false verdict ends the run), and no early or zero exit
 /// able to pre-empt it (review-sweep-r4 finding 4).
 fn validate_x86_frame_custody_harness(script: &str) -> Result<(), ()> {
-    const FRAME_VECTOR: &str = "FRAME_CUSTODY_PATTERN='^\\[FRAME_CUSTODY_COUNTERS:x86:double=1:stale=1:never=1:untracked=1:duplicate=3:contended=[1-9][0-9]*\\]$'";
+    const FRAME_VECTOR: &str = "FRAME_CUSTODY_PATTERN='\\[FRAME_CUSTODY_COUNTERS:x86:double=1:stale=1:never=1:untracked=1:duplicate=3:contended=[1-9][0-9]*\\]'";
     const PT_CUSTODY_VECTOR: &str = "PT_CUSTODY_LITERAL='[PT_CUSTODY_COUNTERS:x86:recorded=14:no_proof=0:no_arch=0:terminated=1:undecided=1:retired=2:returned=14:lost=0:requeued=0]'";
     const PT_COHORT_VECTOR: &str = "PT_COHORT_LITERAL='[PT_RETIRE_COHORT:x86:children=64:retired=65:returned=642:recorded=577:lost=0:no_arch=0:undecided=0:mid_retire=0:kstack_returns=64:balance=0]'";
     const PT_EXEC_COHORT_VECTOR: &str = "PT_EXEC_COHORT_LITERAL='[PT_EXEC_COHORT:x86:children=16:superseded=3:roots=64:returned=640:recorded=576:lost=0:leaf_recorded=192:leaf_released=192:leaf_returned=192:custody_refused=0:decref_unregistered=0:undecided=0:mid_retire=0:no_arch=0:balance=0]' # The returned and recorded table-frame fields are pinned from the measured run.";
     const EXEC_DETACH_ORACLE_VECTOR: &str = "EXEC_DETACH_ORACLE_LITERAL='[EXEC_DETACH_ORACLE:x86:bodies=2:fail_preserved=2:sibling_refused=0:success_detached=2:fresh_root=2:tgid_self=2:custody_balance=0:leaf_residual=16:stack_residual=21:kstack_frames_released=128:old_group_reached_pre=2:old_group_missed_post=2:self_group_reached_post=2]'";
     const CLONE_ADMISSION_ORACLE_VECTOR: &str = "CLONE_ADMISSION_ORACLE_LITERAL='[CLONE_ADMISSION_ORACLE:x86:admitted=1:refused=2:creating_refused=1:published_admitted=2:balance=0]'";
-    const EXEC_FAILED_RELEASE_ORACLE_VECTOR: &str = "EXEC_FAILED_RELEASE_ORACLE_PATTERN='^\\[EXEC_FAILED_RELEASE_ORACLE:x86:used_before=[0-9]+:used_after=[0-9]+:recorded_pre=3:leaf_recorded=1:leaf_released=1:leaf_returned=1:tables_returned=4:roots_retired=1:undecided=0:live_refused=0\\]$'";
+    const EXEC_FAILED_RELEASE_ORACLE_VECTOR: &str = "EXEC_FAILED_RELEASE_ORACLE_PATTERN='\\[EXEC_FAILED_RELEASE_ORACLE:x86:used_before=[0-9]+:used_after=[0-9]+:recorded_pre=3:leaf_recorded=1:leaf_released=1:leaf_returned=1:tables_returned=4:roots_retired=1:undecided=0:live_refused=0\\]'";
     const EXEC_FAILED_RELEASE_PROD_VECTOR: &str = "EXEC_FAILED_RELEASE_PROD_LITERAL='[EXEC_FAILED_RELEASE_PROD:x86:plain_err=true:plain_kept=true:argv_err=true:argv_kept=true:name_kept=true:balance=0:undecided=0:mid_retire=0:lost=0:custody_refused=0:decref_unregistered=0:double=0:stale=0:untracked=0:root_slot_refused=0]'";
     const BXTEST_DISK_REBUILD: &str =
         "rm -f target/test_binaries.img\ncargo run -p xtask -- create-test-disk";
@@ -4184,21 +4184,21 @@ fn validate_x86_frame_custody_harness(script: &str) -> Result<(), ()> {
         && exact_marker_count("exec_detach_oracle")
         && exact_marker_count("clone_admission_oracle")
         && script.contains("grep -qE \"$FRAME_CUSTODY_PATTERN\"")
-        && script.contains("grep -qF -x \"$PT_CUSTODY_LITERAL\"")
-        && script.contains("grep -qF -x \"$PT_COHORT_LITERAL\"")
-        && script.contains("grep -qF -x \"$PT_EXEC_COHORT_LITERAL\"")
-        && script.contains("grep -qF -x \"$EXEC_DETACH_ORACLE_LITERAL\"")
-        && script.contains("grep -qF -x \"$CLONE_ADMISSION_ORACLE_LITERAL\"")
+        && script.contains("grep -qF \"$PT_CUSTODY_LITERAL\"")
+        && script.contains("grep -qF \"$PT_COHORT_LITERAL\"")
+        && script.contains("grep -qF \"$PT_EXEC_COHORT_LITERAL\"")
+        && script.contains("grep -qF \"$EXEC_DETACH_ORACLE_LITERAL\"")
+        && script.contains("grep -qF \"$CLONE_ADMISSION_ORACLE_LITERAL\"")
         && script.contains("grep -qE \"$EXEC_FAILED_RELEASE_ORACLE_PATTERN\"")
-        && script.contains("grep -qF -x \"$EXEC_FAILED_RELEASE_PROD_LITERAL\"")
+        && script.contains("grep -qF \"$EXEC_FAILED_RELEASE_PROD_LITERAL\"")
         && script.contains("grep -h -E -c \"$FRAME_CUSTODY_PATTERN\"")
-        && script.contains("grep -h -F -x -c \"$PT_CUSTODY_LITERAL\"")
-        && script.contains("grep -h -F -x -c \"$PT_COHORT_LITERAL\"")
-        && script.contains("grep -h -F -x -c \"$PT_EXEC_COHORT_LITERAL\"")
-        && script.contains("grep -h -F -x -c \"$EXEC_DETACH_ORACLE_LITERAL\"")
-        && script.contains("grep -h -F -x -c \"$CLONE_ADMISSION_ORACLE_LITERAL\"")
+        && script.contains("grep -h -F -c \"$PT_CUSTODY_LITERAL\"")
+        && script.contains("grep -h -F -c \"$PT_COHORT_LITERAL\"")
+        && script.contains("grep -h -F -c \"$PT_EXEC_COHORT_LITERAL\"")
+        && script.contains("grep -h -F -c \"$EXEC_DETACH_ORACLE_LITERAL\"")
+        && script.contains("grep -h -F -c \"$CLONE_ADMISSION_ORACLE_LITERAL\"")
         && script.contains("grep -h -E -c \"$EXEC_FAILED_RELEASE_ORACLE_PATTERN\"")
-        && script.contains("grep -h -F -x -c \"$EXEC_FAILED_RELEASE_PROD_LITERAL\"")
+        && script.contains("grep -h -F -c \"$EXEC_FAILED_RELEASE_PROD_LITERAL\"")
         && script.contains("-eq 1")
         && script.contains("x86 frame-custody gate run")
         && script.matches("BOOT_TESTS:FAIL|KERNEL PANIC|panic!").count() == 2)
@@ -8900,7 +8900,7 @@ fn deliberately_broken_variants_fail_the_ratchet() {
     );
     assert!(validate_x86_frame_custody_harness(&reverted_custody_pin).is_err());
     let missing_prod_poll = harness.replacen(
-        "            && grep -qF -x \"$EXEC_FAILED_RELEASE_PROD_LITERAL\" \\\n                \"$OUTPUT_DIR\"/serial_*.txt 2>/dev/null \\\n",
+        "            && grep -qF \"$EXEC_FAILED_RELEASE_PROD_LITERAL\" \\\n                \"$OUTPUT_DIR\"/serial_*.txt 2>/dev/null \\\n",
         "",
         1,
     );

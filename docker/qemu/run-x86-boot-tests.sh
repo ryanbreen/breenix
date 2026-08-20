@@ -18,7 +18,11 @@ set -euo pipefail
 COUNT="${1:-1}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BREENIX_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-FRAME_CUSTODY_PATTERN='^\[FRAME_CUSTODY_COUNTERS:x86:double=1:stale=1:never=1:untracked=1:duplicate=3:contended=[1-9][0-9]*\]$'
+# The x86 serial console carries the scheduler's single-character trace stream
+# on the same port as kernel and userspace output, so any marker line can carry
+# a prefix. The markers are self-delimiting (`[...]` or a unique sentence), so
+# a substring match is still exact; do not re-anchor these.
+FRAME_CUSTODY_PATTERN='\[FRAME_CUSTODY_COUNTERS:x86:double=1:stale=1:never=1:untracked=1:duplicate=3:contended=[1-9][0-9]*\]'
 # The x86 failed-exec release oracle records one three-table hierarchy and retires it:
 # recorded rises by the hierarchy, returned by the hierarchy plus its root, and undecided deliberately does not move.
 PT_CUSTODY_LITERAL='[PT_CUSTODY_COUNTERS:x86:recorded=14:no_proof=0:no_arch=0:terminated=1:undecided=1:retired=2:returned=14:lost=0:requeued=0]'
@@ -44,13 +48,13 @@ FUTEX_HANDOFF_ORACLE_PATTERN='\[FUTEX_HANDOFF_ORACLE:x86:driven=2:stage1_ret=EAG
 # Absolute frame counts are boot-state dependent, so pin every delta exactly,
 # including the three-table recorded_pre hierarchy cost and computed tables_returned=4;
 # the in-kernel oracle asserts used_after == used_before, and a skipped/cfg'd-out block fails this gate.
-EXEC_FAILED_RELEASE_ORACLE_PATTERN='^\[EXEC_FAILED_RELEASE_ORACLE:x86:used_before=[0-9]+:used_after=[0-9]+:recorded_pre=3:leaf_recorded=1:leaf_released=1:leaf_returned=1:tables_returned=4:roots_retired=1:undecided=0:live_refused=0\]$'
+EXEC_FAILED_RELEASE_ORACLE_PATTERN='\[EXEC_FAILED_RELEASE_ORACLE:x86:used_before=[0-9]+:used_after=[0-9]+:recorded_pre=3:leaf_recorded=1:leaf_released=1:leaf_returned=1:tables_returned=4:roots_retired=1:undecided=0:live_refused=0\]'
 EXEC_FAILED_RELEASE_PROD_LITERAL='[EXEC_FAILED_RELEASE_PROD:x86:plain_err=true:plain_kept=true:argv_err=true:argv_kept=true:name_kept=true:balance=0:undecided=0:mid_retire=0:lost=0:custody_refused=0:decref_unregistered=0:double=0:stale=0:untracked=0:root_slot_refused=0]'
 # Creation/fork/slot/frame/refusal/classifier/balance fields are oracle-driven and exact.
 # live_checks is nonzero because every allocation evaluates the guard; pub_pooled and pub_sched_owned are nonzero boot-wide totals whose exact values depend on process creation, while the oracle asserts they are equal and both publication residuals are zero.
 # sched_publications is a nonzero boot-wide driver for sched_pm_held_production=0.
 # frame_used_delta is boot-state dependent because of heap growth during the stress; the oracle asserts it is strictly less than 128 frames, one x86 kernel stack's worth.
-KSTACK_OWNER_ORACLE_PATTERN='^\[KSTACK_OWNER_ORACLE:x86:creation_rows=1000:creation_owned=1000:one_owner=1000:two_owner=0:zero_owner=0:fork_rows=2:fork_owned=2:slot_returns_exact_one=2:slot_alloc_delta=1000:slot_free_delta=1000:slot_balance=0:frames_mapped_delta=128000:frames_released_delta=128000:frame_balance=0:frame_used_delta=[0-9]+:frame_used_bounded=1:live_checks=[1-9][0-9]*:live_refusals_production=0:live_refusals_injected=1:drop_refused_live=0:pte_overwrite_refusals=0:pub_pooled=[1-9][0-9]*:pub_sched_owned=[1-9][0-9]*:pub_row_residual=0:pub_unowned=0:classifier_sched_owned=1:classifier_row_residual=1:classifier_unowned=1:classifier_not_pooled=1:sched_publications=[1-9][0-9]*:sched_pm_held_production=0:sched_pm_held_injected=1:balance=0\]$'
+KSTACK_OWNER_ORACLE_PATTERN='\[KSTACK_OWNER_ORACLE:x86:creation_rows=1000:creation_owned=1000:one_owner=1000:two_owner=0:zero_owner=0:fork_rows=2:fork_owned=2:slot_returns_exact_one=2:slot_alloc_delta=1000:slot_free_delta=1000:slot_balance=0:frames_mapped_delta=128000:frames_released_delta=128000:frame_balance=0:frame_used_delta=[0-9]+:frame_used_bounded=1:live_checks=[1-9][0-9]*:live_refusals_production=0:live_refusals_injected=1:drop_refused_live=0:pte_overwrite_refusals=0:pub_pooled=[1-9][0-9]*:pub_sched_owned=[1-9][0-9]*:pub_row_residual=0:pub_unowned=0:classifier_sched_owned=1:classifier_row_residual=1:classifier_unowned=1:classifier_not_pooled=1:sched_publications=[1-9][0-9]*:sched_pm_held_production=0:sched_pm_held_injected=1:balance=0\]'
 # The boot-test oracle deliberately drives the detector exactly once; the forbidden exact marker is separately pinned absent below.
 CREATION_LOCK_ORDER_INJECTED_LITERAL='[CREATION_LOCK_ORDER:INJECTED:PM_HELD]'
 CREATION_LOCK_ORDER_VIOLATION_LITERAL='[CREATION_LOCK_ORDER:VIOLATION:PM_HELD]'
@@ -142,7 +146,7 @@ for i in $(seq 1 "$COUNT"); do
                 "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
             && grep -q '\[TEST:process:page_table_custody_disposition_gate:PASS\]' \
                 "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
-            && grep -qF -x "$PT_CUSTODY_LITERAL" \
+            && grep -qF "$PT_CUSTODY_LITERAL" \
                 "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
             && grep -qE "$EXEC_FAILED_RELEASE_ORACLE_PATTERN" \
                 "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
@@ -152,33 +156,33 @@ for i in $(seq 1 "$COUNT"); do
                 "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
             && grep -q '\[TEST:process:x86_retire_cohort:PASS\]' \
                 "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
-            && grep -qF -x "$PT_COHORT_LITERAL" \
+            && grep -qF "$PT_COHORT_LITERAL" \
                 "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
             && grep -q '\[TEST:process:x86_exec_cohort:PASS\]' \
                 "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
-            && grep -qF -x "$PT_EXEC_COHORT_LITERAL" \
+            && grep -qF "$PT_EXEC_COHORT_LITERAL" \
                 "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
             && grep -q '\[TEST:process:exec_detach_oracle:PASS\]' \
                 "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
-            && grep -qF -x "$EXEC_DETACH_ORACLE_LITERAL" \
+            && grep -qF "$EXEC_DETACH_ORACLE_LITERAL" \
                 "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
             && grep -q '\[TEST:process:clone_admission_oracle:PASS\]' \
                 "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
-            && grep -qF -x "$CLONE_ADMISSION_ORACLE_LITERAL" \
+            && grep -qF "$CLONE_ADMISSION_ORACLE_LITERAL" \
                 "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
             && grep -q '\[TEST:process:init_designation_oracle:PASS\]' \
                 "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
-            && grep -qF -x "$INIT_DESIGNATION_ORACLE_LITERAL" \
+            && grep -qF "$INIT_DESIGNATION_ORACLE_LITERAL" \
                 "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
             && grep -q '\[TEST:process:init_group_refusal_oracle:PASS\]' \
                 "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
-            && grep -qF -x "$INIT_GROUP_REFUSAL_ORACLE_LITERAL" \
+            && grep -qF "$INIT_GROUP_REFUSAL_ORACLE_LITERAL" \
                 "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
-            && grep -qF -x "$EXEC_FAILED_RELEASE_PROD_LITERAL" \
+            && grep -qF "$EXEC_FAILED_RELEASE_PROD_LITERAL" \
                 "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
             && grep -qE "$KSTACK_OWNER_ORACLE_PATTERN" \
                 "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
-            && grep -qF -x "$CREATION_LOCK_ORDER_INJECTED_LITERAL" \
+            && grep -qF "$CREATION_LOCK_ORDER_INJECTED_LITERAL" \
                 "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
             && grep -q '\[TEST:userspace:loopback_recv_wake:PASS\]' \
                 "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
@@ -246,38 +250,34 @@ for i in $(seq 1 "$COUNT"); do
         "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 1
     test "$(grep -h -E -c "$FRAME_CUSTODY_PATTERN" \
         "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 1
-    test "$(grep -h -F -x -c "$PT_CUSTODY_LITERAL" \
+    test "$(grep -h -F -c "$PT_CUSTODY_LITERAL" \
         "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 1
     test "$(grep -h -E -c "$EXEC_FAILED_RELEASE_ORACLE_PATTERN" \
         "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 1
-    test "$(grep -h -F -x -c "$PT_COHORT_LITERAL" \
+    test "$(grep -h -F -c "$PT_COHORT_LITERAL" \
         "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 1
-    test "$(grep -h -F -x -c "$PT_EXEC_COHORT_LITERAL" \
+    test "$(grep -h -F -c "$PT_EXEC_COHORT_LITERAL" \
         "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 1
-    test "$(grep -h -F -x -c "$EXEC_DETACH_ORACLE_LITERAL" \
+    test "$(grep -h -F -c "$EXEC_DETACH_ORACLE_LITERAL" \
         "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 1
-    test "$(grep -h -F -x -c "$CLONE_ADMISSION_ORACLE_LITERAL" \
+    test "$(grep -h -F -c "$CLONE_ADMISSION_ORACLE_LITERAL" \
         "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 1
-    test "$(grep -h -F -x -c "$INIT_DESIGNATION_ORACLE_LITERAL" \
+    test "$(grep -h -F -c "$INIT_DESIGNATION_ORACLE_LITERAL" \
         "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 1
-    test "$(grep -h -F -x -c "$INIT_GROUP_REFUSAL_ORACLE_LITERAL" \
+    test "$(grep -h -F -c "$INIT_GROUP_REFUSAL_ORACLE_LITERAL" \
         "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 1
     test "$(grep -h -E -c "$FUTEX_HANDOFF_ORACLE_PATTERN" \
         "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 1
-    # This is the only userspace-emitted whole-line pin here: the TTY adds CR,
-    # so trim trailing whitespace before the exact comparison; kernel markers
-    # beside it are LF-only and retain their direct -x pins.
-    test "$(grep -h -F 'CLONEVM_EXEC_TEST: post-exec rendezvous complete' \
-        "$OUTPUT_DIR"/serial_*.txt | sed 's/[[:space:]]*$//' | \
-        grep -F -x -c 'CLONEVM_EXEC_TEST: post-exec rendezvous complete' | \
+    test "$(grep -h -F -c 'CLONEVM_EXEC_TEST: post-exec rendezvous complete' \
+        "$OUTPUT_DIR"/serial_*.txt | \
         awk '{ total += $1 } END { print total + 0 }')" -eq 1
-    test "$(grep -h -F -x -c "$EXEC_FAILED_RELEASE_PROD_LITERAL" \
+    test "$(grep -h -F -c "$EXEC_FAILED_RELEASE_PROD_LITERAL" \
         "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 1
     test "$(grep -h -E -c "$KSTACK_OWNER_ORACLE_PATTERN" \
         "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 1
-    test "$(grep -h -F -x -c "$CREATION_LOCK_ORDER_INJECTED_LITERAL" \
+    test "$(grep -h -F -c "$CREATION_LOCK_ORDER_INJECTED_LITERAL" \
         "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 1
-    test "$(grep -h -F -x -c "$CREATION_LOCK_ORDER_VIOLATION_LITERAL" \
+    test "$(grep -h -F -c "$CREATION_LOCK_ORDER_VIOLATION_LITERAL" \
         "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 0
     # x86 has no production designated init, so the runtime refusal never fires
     # and the whole-boot walk is legitimately zero here; this is the `None`-arm
