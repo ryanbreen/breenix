@@ -3536,7 +3536,7 @@ impl Scheduler {
     }
 
     #[cfg(target_arch = "aarch64")]
-    pub(crate) fn resolve_exception_cleanup_previous_thread(&mut self, cpu: usize) {
+    fn resolve_exception_cleanup_previous_thread(&mut self, cpu: usize) {
         if cpu >= MAX_CPUS {
             return;
         }
@@ -3553,31 +3553,11 @@ impl Scheduler {
         let is_current = (0..MAX_CPUS).any(|c| self.cpu_state[c].current_thread == Some(previous));
         let is_other_deferred =
             (0..MAX_CPUS).any(|c| c != cpu && self.cpu_state[c].previous_thread == Some(previous));
-        let is_pending_next = self
-            .cpu_state
-            .iter()
-            .any(|state| state.pending_next == Some(previous));
-        let is_deferred_requeue =
-            crate::arch_impl::aarch64::context_switch::deferred_requeue_contains(previous);
 
-        if is_ready
-            && !is_idle
-            && !is_queued
-            && !is_current
-            && !is_other_deferred
-            && !is_pending_next
-            && !is_deferred_requeue
-        {
-            if let Some(thread) = self.get_thread_mut(previous) {
-                if thread.saved_by_inline_schedule {
-                    thread.context.elr_el1 = thread.context.x30;
-                }
-            }
+        if is_ready && !is_idle && !is_queued && !is_current && !is_other_deferred {
             self.per_cpu_queues[cpu].push_back(previous);
             ENQUEUE_DEFERRED_DRAINED_OK.fetch_add(1, Ordering::Relaxed);
             set_need_resched();
-            #[cfg(feature = "boot_tests")]
-            crate::task::strand_oracle::note_previous_thread_resolved(previous);
         }
 
         self.cpu_state[cpu].previous_thread = None;
@@ -3591,7 +3571,7 @@ impl Scheduler {
     /// back to its idle thread so we do not save an idle-loop frame into the
     /// previously running user thread.
     #[cfg(target_arch = "aarch64")]
-    fn fix_exception_cleanup_cpu_state_inner(&mut self, resolve_previous_thread: bool) {
+    pub fn fix_exception_cleanup_cpu_state(&mut self) {
         let cpu = Self::current_cpu_id();
         let idle = self.cpu_state[cpu].idle_thread;
         let current = self.cpu_state[cpu].current_thread.unwrap_or(0xDEAD);
@@ -3599,20 +3579,8 @@ impl Scheduler {
             record_cpu_state_change(cpu, 9, current, idle);
             self.cpu_state[cpu].current_thread = Some(idle);
         }
-        if resolve_previous_thread {
-            self.resolve_exception_cleanup_previous_thread(cpu);
-        }
+        self.resolve_exception_cleanup_previous_thread(cpu);
         set_cpu_idle(cpu, true);
-    }
-
-    #[cfg(target_arch = "aarch64")]
-    pub fn fix_exception_cleanup_cpu_state(&mut self) {
-        self.fix_exception_cleanup_cpu_state_inner(true);
-    }
-
-    #[cfg(all(target_arch = "aarch64", feature = "boot_tests"))]
-    pub(crate) fn fix_exception_cleanup_cpu_state_without_previous_thread(&mut self) {
-        self.fix_exception_cleanup_cpu_state_inner(false);
     }
 }
 

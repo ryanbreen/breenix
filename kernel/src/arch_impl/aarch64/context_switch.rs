@@ -3675,10 +3675,8 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
                     thread.saved_by_inline_schedule,
                 );
             }
+            sched.cpu_state[cpu_id].previous_thread = None;
             sched.requeue_thread_after_save(deferred_tid);
-            // The deferred drain owns the normal-path marker. Resolve only a
-            // previous-thread marker that survived that drain.
-            sched.resolve_exception_cleanup_previous_thread(cpu_id);
         }
         drop(guard);
         true
@@ -3766,10 +3764,9 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
 
     // 1. Process deferred requeue from PREVIOUS context switch.
     //    May have already been processed above (for the preempt_count > 0 path).
-    //    The deferred drain owns the normal-path previous-thread marker.
-    //    Resolve only a marker that survives the drain. If deferred_tid was
-    //    already processed, requeue_thread_after_save is a no-op (thread
-    //    already in queue).
+    //    Clear previous_thread unconditionally. If deferred_tid was already
+    //    processed, requeue_thread_after_save is a no-op (thread already in queue).
+    sched.cpu_state[cpu_id].previous_thread = None;
     if deferred_tid != 0 {
         if !deferred_already_processed {
             let deferred_thread = sched.get_thread(deferred_tid);
@@ -3798,7 +3795,6 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
         }
         sched.requeue_thread_after_save(deferred_tid);
     }
-    sched.resolve_exception_cleanup_previous_thread(cpu_id);
 
     // 2. Check if current thread is blocked or terminated
     //
@@ -4306,16 +4302,13 @@ extern "C" fn inline_schedule_trampoline() -> ! {
     let new_id = state.new_thread_id.load(Ordering::Relaxed);
     let should_requeue_old = state.should_requeue_old.swap(false, Ordering::Relaxed);
 
-    // Boot-test-only stimulus: consume the scheduler pointer exactly as an
-    // early slot consumer would. The hook does no I/O, allocation, locking, or
-    // scheduler work. Legs A/B exercise incoming rollback; leg C exercises
-    // outgoing rollback.
+    // Round-A-only test stimulus: consume the scheduler pointer exactly as an
+    // early slot consumer would. The hook itself is two relaxed loads, a
+    // compare, and one one-shot CAS; it does no I/O, allocation, locking, or
+    // scheduler work. The returned B flag is the future rollback suppression
+    // seam, carried through this trampoline without changing Round-A behavior.
     #[cfg(feature = "boot_tests")]
-    let injected_leg = crate::task::strand_oracle::inject_if_armed(
-        old_id,
-        new_id,
-        should_requeue_old,
-    );
+    let injected_leg = crate::task::strand_oracle::inject_if_armed(new_id);
     #[cfg(feature = "boot_tests")]
     let sched_ptr = if injected_leg.is_some() {
         core::ptr::null_mut()
@@ -4329,13 +4322,6 @@ extern "C" fn inline_schedule_trampoline() -> ! {
     );
     #[cfg(not(feature = "boot_tests"))]
     let inline_rollback_suppressed = false;
-    #[cfg(feature = "boot_tests")]
-    let previous_rollback_suppressed = matches!(
-        injected_leg,
-        Some(crate::task::strand_oracle::InjectionLeg::C)
-    );
-    #[cfg(not(feature = "boot_tests"))]
-    let previous_rollback_suppressed = false;
 
     let state_extra =
         ((if sched_ptr.is_null() { 0u16 } else { 1u16 }) << 8)
@@ -4380,12 +4366,7 @@ extern "C" fn inline_schedule_trampoline() -> ! {
             if !inline_rollback_suppressed {
                 sched.resolve_pending_next_locked(cpu_id);
             }
-            if previous_rollback_suppressed {
-                #[cfg(feature = "boot_tests")]
-                sched.fix_exception_cleanup_cpu_state_without_previous_thread();
-            } else {
-                sched.fix_exception_cleanup_cpu_state();
-            }
+            sched.fix_exception_cleanup_cpu_state();
             reset_idle_continuation_locked(sched, cpu_id, idle_id, idle_sp);
             idle_sp
         })
@@ -4435,8 +4416,6 @@ extern "C" fn inline_schedule_trampoline() -> ! {
 
     sched.commit_cpu_state_after_save(new_id);
     cpu0_breadcrumb(cpu_id, 32); // after commit_cpu_state_after_save
-    // This path resolves the outgoing thread itself on the next two lines, so
-    // this clear is paired with a requeue rather than dropping it.
     sched.cpu_state[cpu_id].previous_thread = None;
     if should_requeue_old || old_ready_after_save {
         sched.requeue_thread_after_save(old_id);
@@ -4716,6 +4695,7 @@ pub fn schedule_from_kernel() {
     } else {
         0
     };
+    sched.cpu_state[cpu_id].previous_thread = None;
     if deferred_tid != 0 {
         let deferred_thread = sched.get_thread(deferred_tid);
         trace_defer_requeue(
@@ -4726,9 +4706,6 @@ pub fn schedule_from_kernel() {
         );
         sched.requeue_thread_after_save(deferred_tid);
     }
-    // The deferred slot drain owns the normal-path marker; resolve only an
-    // orphaned previous-thread marker left after the drain.
-    sched.resolve_exception_cleanup_previous_thread(cpu_id);
 
     let real_thread_ptr = Aarch64PerCpu::current_thread_ptr();
     // Captured once here, before the scheduling decision below: whether idle

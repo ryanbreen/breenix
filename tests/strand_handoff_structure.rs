@@ -6,7 +6,6 @@ const CONTEXT_SWITCH_PATH: &str = "kernel/src/arch_impl/aarch64/context_switch.r
 const STRAND_ORACLE_PATH: &str = "kernel/src/task/strand_oracle.rs";
 const EXECUTOR_PATH: &str = "kernel/src/test_framework/executor.rs";
 const MIN_REQUEUE_EARLY_RETURN_GUARDS: usize = 6;
-const MIN_CONTEXT_PREVIOUS_RESOLVER_CALLS: usize = 3;
 
 fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -290,38 +289,6 @@ fn strand_handoff_structure_is_pinned_without_line_numbers() {
     );
 
     let context_switch = repo_text(CONTEXT_SWITCH_PATH);
-    let bare_previous_clears = code_occurrences(&context_switch, "previous_thread = None");
-    assert!(
-        bare_previous_clears.len() <= 1,
-        "context-switch bare previous-thread clears grew beyond the paired-requeue allowance"
-    );
-    if bare_previous_clears.len() == 1 {
-        let trampoline = function_body(&context_switch, "inline_schedule_trampoline");
-        assert!(
-            !code_occurrences(&trampoline, "requeue_thread_after_save(").is_empty(),
-            "the remaining bare previous-thread clear must be paired with a requeue"
-        );
-    }
-    assert!(
-        code_occurrences(
-            &context_switch,
-            "resolve_exception_cleanup_previous_thread("
-        )
-        .len()
-            >= MIN_CONTEXT_PREVIOUS_RESOLVER_CALLS,
-        "context-switch previous-thread resolver call-site census shrank"
-    );
-
-    let resolver = function_body(&scheduler, "resolve_exception_cleanup_previous_thread");
-    assert!(
-        !code_occurrences(resolver, "push_back").is_empty(),
-        "previous-thread resolver still requeues"
-    );
-    assert!(
-        !code_occurrences(resolver, "previous_thread = None").is_empty(),
-        "previous-thread resolver still clears its marker"
-    );
-
     let trampoline = function_body(&context_switch, "inline_schedule_trampoline");
     let null_branch = braced_block_after(&trampoline, "if sched_ptr.is_null()");
     assert!(
@@ -332,20 +299,6 @@ fn strand_handoff_structure_is_pinned_without_line_numbers() {
     assert!(
         scheduler_mask.iter().any(|is_code| *is_code),
         "scheduler source census must inspect code, not an empty mask"
-    );
-}
-
-#[test]
-fn outgoing_cleanup_refuses_live_incoming_and_deferred_ownership() {
-    let scheduler = repo_text(SCHEDULER_PATH);
-    let resolver = function_body(&scheduler, "resolve_exception_cleanup_previous_thread");
-    assert!(
-        !code_occurrences(resolver, "pending_next").is_empty(),
-        "outgoing cleanup must refuse a thread published as pending_next"
-    );
-    assert!(
-        !code_occurrences(resolver, "deferred_requeue_contains").is_empty(),
-        "outgoing cleanup must refuse a thread held in deferred requeue"
     );
 }
 
