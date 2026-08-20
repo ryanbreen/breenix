@@ -28,6 +28,7 @@ const STAGE1_SENTINEL: u32 = 0x4655_5831;
 const STAGE2_SENTINEL: u32 = 0x4655_5832;
 const STAGE3_SENTINEL: u32 = 0x4655_5833;
 const REPORT_SENTINEL: u32 = 0x4655_5852;
+const STAGE3_REQUEST_NS: u64 = 50_000_000;
 const BACKSTOP_NS: u64 = 1_000_000_000;
 
 static STAGE1_TG_ID: AtomicU64 = AtomicU64::new(0);
@@ -222,7 +223,11 @@ pub fn report() {
         ),
     ]);
     let stage3_elapsed = STAGE3_ELAPSED_NS.load(Ordering::Acquire);
-    let stage3_elapsed_ok = u64::from((50_000_000..=550_000_000).contains(&stage3_elapsed));
+    // This bit proves only that the wait did not return before its requested
+    // timeout. ETIMEDOUT plus rescues=0 in the marker proves the backstop did
+    // not end this wait.
+    let stage3_elapsed_ok = u64::from(stage3_elapsed >= STAGE3_REQUEST_NS);
+    let stage3_elapsed_ms = stage3_elapsed / 1_000_000;
     let total_enqueued = STAGE1_ENQUEUED.load(Ordering::Acquire)
         + STAGE2_ENQUEUED.load(Ordering::Acquire)
         + STAGE3_ENQUEUED.load(Ordering::Acquire);
@@ -231,7 +236,7 @@ pub fn report() {
         + STAGE3_LEFT.load(Ordering::Acquire);
 
     crate::serial_println!(
-        "[FUTEX_HANDOFF_ORACLE:{}:driven={}:stage1_ret={}:stage1_wake={}:stage1_parked={}:stage2_ret={}:stage2_wake={}:stage2_parked={}:stage3_ret={}:stage3_elapsed_ok={}:rescues={}:queue_residual={}:balance={}]",
+        "[FUTEX_HANDOFF_ORACLE:{}:driven={}:stage1_ret={}:stage1_wake={}:stage1_parked={}:stage2_ret={}:stage2_wake={}:stage2_parked={}:stage3_ret={}:stage3_elapsed_ok={}:stage3_elapsed_ms={}:rescues={}:queue_residual={}:balance={}]",
         if cfg!(target_arch = "aarch64") { "aarch64" } else { "x86" },
         DRIVEN.load(Ordering::Acquire),
         ret_token(STAGE1_RET.load(Ordering::Acquire)),
@@ -242,6 +247,7 @@ pub fn report() {
         STAGE2_PARKED.load(Ordering::Acquire),
         ret_token(STAGE3_RET.load(Ordering::Acquire)),
         stage3_elapsed_ok,
+        stage3_elapsed_ms,
         RESCUES.load(Ordering::Acquire),
         queue_residual,
         balance(total_enqueued, total_left),

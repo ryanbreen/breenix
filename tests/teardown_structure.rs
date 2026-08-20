@@ -3453,6 +3453,11 @@ fn validate_futex_oracle_marker_and_gate_pins(
         "futex oracle must emit the exact marker prefix",
         oracle.matches("[FUTEX_HANDOFF_ORACLE:").count() == 1,
     );
+    check(
+        &mut failures,
+        "futex oracle must report the measured stage3 elapsed milliseconds",
+        oracle.contains("stage3_elapsed_ok={}:stage3_elapsed_ms={}:"),
+    );
 
     for path in [
         "docker/qemu/run-aarch64-full-test.sh",
@@ -3463,10 +3468,19 @@ fn validate_futex_oracle_marker_and_gate_pins(
         let gate = repo_text(path);
         let pins_marker = gate.contains("[FUTEX_HANDOFF_ORACLE:");
         let pins_with_grep = gate.contains("grep") && gate.contains("FUTEX_HANDOFF_ORACLE");
+        let pins_measured_elapsed = gate.contains("stage3_elapsed_ms=[0-9]+");
+        let pins_anchored_ere = gate.contains("FUTEX_HANDOFF_ORACLE_PATTERN='^\\[")
+            && gate.contains("\\]$'")
+            && (gate.contains("grep -qE") || gate.contains("grep -h -E"));
         check(
             &mut failures,
             &format!("{path} must grep for the futex oracle marker"),
             pins_marker && pins_with_grep,
+        );
+        check(
+            &mut failures,
+            &format!("{path} must pin only the measured futex elapsed field as variable"),
+            pins_measured_elapsed && pins_anchored_ere,
         );
     }
     failures.is_empty().then_some(()).ok_or(failures)
