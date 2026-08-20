@@ -223,7 +223,7 @@ fn code_occurrences(source: &str, needle: &str) -> Vec<usize> {
         .collect()
 }
 
-fn u64_constant(source: &str, name: &str) -> u64 {
+fn u64_constant_initializer(source: &str, name: &str) -> String {
     let (masked, mask) = code_source(source);
     assert!(
         mask.iter().any(|is_code| *is_code),
@@ -237,11 +237,28 @@ fn u64_constant(source: &str, name: &str) -> u64 {
         .find(';')
         .map(|relative| value_start + relative)
         .unwrap_or_else(|| panic!("constant terminator for {name}"));
-    masked[value_start..value_end]
-        .trim()
-        .replace('_', "")
-        .parse()
-        .unwrap_or_else(|_| panic!("u64 literal for {name}"))
+    let initializer = masked[value_start..value_end].trim();
+    assert!(!initializer.is_empty(), "constant initializer for {name}");
+    initializer.to_owned()
+}
+
+fn u64_expression(source: &str, expression: &str) -> u64 {
+    let expression = expression.trim();
+    if let Some((left, right)) = expression.split_once('+') {
+        return u64_expression(source, left).saturating_add(u64_expression(source, right));
+    }
+    if let Some((left, right)) = expression.split_once('*') {
+        return u64_expression(source, left).saturating_mul(u64_expression(source, right));
+    }
+    if let Ok(value) = expression.replace('_', "").parse() {
+        return value;
+    }
+    u64_constant(source, expression)
+}
+
+fn u64_constant(source: &str, name: &str) -> u64 {
+    let initializer = u64_constant_initializer(source, name);
+    u64_expression(source, &initializer)
 }
 
 #[test]
@@ -464,5 +481,70 @@ fn first_strand_census_precedes_the_steady_state_cadence() {
     assert!(
         first_report_ms < report_period_ms,
         "first strand census must precede the steady-state cadence"
+    );
+}
+
+#[test]
+fn strand_victim_parks_on_the_sample_timer() {
+    let oracle = repo_text(STRAND_ORACLE_PATH);
+    let victim = function_body(&oracle, "strand_victim");
+    assert!(!victim.trim().is_empty(), "strand_victim body census");
+    let (_, victim_mask) = code_source(victim);
+    assert!(
+        victim_mask.iter().any(|is_code| *is_code),
+        "strand_victim census must inspect code"
+    );
+    assert!(
+        code_occurrences(victim, "schedule_from_kernel").is_empty(),
+        "strand_victim must not drive the inline schedule path"
+    );
+    assert!(
+        code_occurrences(victim, "yield_current").is_empty(),
+        "strand_victim must not yield directly"
+    );
+    assert!(
+        !code_occurrences(victim, "sleep_sample_period()").is_empty(),
+        "strand_victim must park on the sample timer"
+    );
+}
+
+#[test]
+fn injection_report_cap_preserves_in_flight_scoring_windows() {
+    let oracle = repo_text(STRAND_ORACLE_PATH);
+    let report_cap_initializer = u64_constant_initializer(&oracle, "INJECT_REPORT_CAP_MS");
+    assert!(
+        !code_occurrences(&report_cap_initializer, "INJECT_DEADLINE_MS").is_empty(),
+        "report cap initializer must include the firing deadline"
+    );
+    assert!(
+        !code_occurrences(&report_cap_initializer, "INJECT_SCORE_WAIT_MS").is_empty(),
+        "report cap initializer must include the scoring window"
+    );
+
+    let report_cap_ms = u64_constant(&oracle, "INJECT_REPORT_CAP_MS");
+    let deadline_ms = u64_constant(&oracle, "INJECT_DEADLINE_MS");
+    let score_wait_ms = u64_constant(&oracle, "INJECT_SCORE_WAIT_MS");
+    assert!(
+        report_cap_ms >= deadline_ms.saturating_add(2 * score_wait_ms),
+        "report cap must leave two full scoring windows after the firing deadline"
+    );
+
+    let marker_ready = function_body(&oracle, "injection_marker_ready");
+    assert!(
+        !marker_ready.trim().is_empty(),
+        "injection_marker_ready body census"
+    );
+    let (_, marker_ready_mask) = code_source(marker_ready);
+    assert!(
+        marker_ready_mask.iter().any(|is_code| *is_code),
+        "injection_marker_ready census must inspect code"
+    );
+    assert!(
+        !code_occurrences(marker_ready, "INJECT_A_FIRED").is_empty(),
+        "marker readiness must consult leg A's mid-scoring state"
+    );
+    assert!(
+        !code_occurrences(marker_ready, "INJECT_B_FIRED").is_empty(),
+        "marker readiness must consult leg B's mid-scoring state"
     );
 }

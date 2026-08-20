@@ -58,9 +58,11 @@ const STRAND_FIRST_REPORT_MS: u64 = 500;
 const STRAND_REPORT_PERIOD_MS: u64 = 5_000;
 
 #[cfg(target_arch = "aarch64")]
-const INJECT_SCORE_WAIT_MS: u64 = 2_000;
+const INJECT_SCORE_WAIT_MS: u64 = 1_000;
 #[cfg(target_arch = "aarch64")]
 const INJECT_DEADLINE_MS: u64 = 6_000;
+#[cfg(target_arch = "aarch64")]
+const INJECT_REPORT_CAP_MS: u64 = INJECT_DEADLINE_MS + 2 * INJECT_SCORE_WAIT_MS;
 
 #[cfg(target_arch = "aarch64")]
 static VICTIM_TID: AtomicU64 = AtomicU64::new(0);
@@ -435,10 +437,24 @@ fn update_injection_scoring(now_ms: u64, scoring: &mut InjectionScoring) {
 #[cfg(target_arch = "aarch64")]
 fn injection_marker_ready(now_ms: u64) -> bool {
     let state = INJECT_ARMED.load(Ordering::Acquire);
-    let b_scored = state == INJECT_B_SCORED_RECOVERED || state == INJECT_B_SCORED_LOST;
-    let a_scored_lost = state == INJECT_A_SCORED_LOST;
     let deadline = INJECT_DEADLINE.load(Ordering::Acquire);
-    a_scored_lost || b_scored || (deadline != 0 && now_ms >= deadline)
+    if deadline == 0 {
+        return false;
+    }
+
+    let terminal = state == INJECT_A_SCORED_LOST
+        || state == INJECT_B_SCORED_RECOVERED
+        || state == INJECT_B_SCORED_LOST;
+    if terminal {
+        return true;
+    }
+
+    let report_cap_ms = deadline.saturating_add(2 * INJECT_SCORE_WAIT_MS);
+    if now_ms >= report_cap_ms {
+        return true;
+    }
+
+    now_ms >= deadline && state != INJECT_A_FIRED && state != INJECT_B_FIRED
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -470,18 +486,25 @@ fn strand_victim() {
         return;
     };
     VICTIM_TID.store(tid, Ordering::Release);
-    let deadline = monotonic_now_ms().saturating_add(INJECT_DEADLINE_MS);
+    let start = monotonic_now_ms();
+    let deadline = start.saturating_add(INJECT_DEADLINE_MS);
+    let report_cap_ms = start.saturating_add(INJECT_REPORT_CAP_MS);
     INJECT_DEADLINE.store(deadline, Ordering::Release);
 
-    while monotonic_now_ms() < deadline {
+    // The old yield_current() + schedule_from_kernel() +
+    // arch_halt_with_interrupts() body drove the inline schedule path at roughly
+    // 1 kHz for six seconds. A 50-boot control arm with injection fully disarmed
+    // but this loop running reproduced the whole collateral bucket (7 aborts and
+    // 4 hangs in 49 boots), versus 1 abort in 50 without the loop. Its drive rate
+    // is not part of this oracle: the victim only needs to be dispatchable and
+    // make observable forward progress.
+    while monotonic_now_ms() < report_cap_ms {
         let state = INJECT_ARMED.load(Ordering::Acquire);
         if state == INJECT_B_SCORED_RECOVERED || state == INJECT_B_SCORED_LOST {
             break;
         }
-        super::scheduler::yield_current();
-        crate::arch_impl::aarch64::context_switch::schedule_from_kernel();
         VICTIM_PROGRESS.fetch_add(1, Ordering::AcqRel);
-        crate::arch_halt_with_interrupts();
+        sleep_sample_period();
     }
 }
 
