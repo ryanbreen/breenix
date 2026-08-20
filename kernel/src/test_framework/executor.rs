@@ -156,6 +156,8 @@ pub fn advance_stage_marker_only(stage: TestStage) {
 /// tests complete. Later stages run via advance_to_stage().
 /// Returns the total number of failed tests.
 pub fn run_all_tests() -> u32 {
+    crate::task::strand_oracle::start();
+
     // Use serial_println! for test markers (works on both x86_64 and ARM64)
     // log::info!() is silently discarded on ARM64 due to lack of logger backend
     serial_println!("[BOOT_TESTS:START]");

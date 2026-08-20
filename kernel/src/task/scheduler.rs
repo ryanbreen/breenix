@@ -49,6 +49,8 @@
 #[cfg(target_arch = "aarch64")]
 use super::thread::{CpuContext, VirtAddr};
 use super::thread::{Thread, ThreadState};
+#[cfg(feature = "boot_tests")]
+use super::thread::ThreadPrivilege;
 use crate::log_serial_println;
 use alloc::{boxed::Box, collections::BinaryHeap, collections::VecDeque};
 use core::cmp::Reverse;
@@ -492,6 +494,117 @@ pub struct SchedulerDumpInfo {
     pub per_cpu_previous: [u64; 8], // previous_thread per CPU (0 = none)
     pub threads: alloc::vec::Vec<ThreadDumpEntry>,
     pub ready_queue_ids: alloc::vec::Vec<u64>,
+}
+
+/// Maximum number of unreachable runnable threads retained by one strand-oracle
+/// census. The detector keeps the corresponding dwell state in a fixed-size
+/// array as well, so sampling never allocates while holding SCHEDULER.
+#[cfg(feature = "boot_tests")]
+pub const STRAND_CENSUS_CAPACITY: usize = 16;
+
+#[cfg(feature = "boot_tests")]
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum StrandShape {
+    Running,
+    Ready,
+}
+
+#[cfg(feature = "boot_tests")]
+#[derive(Clone, Copy)]
+pub struct StrandCandidate {
+    pub tid: u64,
+    pub shape: StrandShape,
+    pub privilege: ThreadPrivilege,
+    pub state: ThreadState,
+}
+
+#[cfg(feature = "boot_tests")]
+#[derive(Clone, Copy)]
+pub struct StrandCensus {
+    pub checked: u64,
+    pub candidates: usize,
+    pub overflow: u64,
+}
+
+/// Collect one fixed-size strand census under the scheduler lock.
+///
+/// The caller owns the array and processes it after this function returns, so
+/// dwell bookkeeping and serial output are both outside the lock hold. The
+/// only AArch64-specific reachability source is the lock-free deferred-requeue
+/// slot; the rest of the census is shared with x86_64.
+#[cfg(feature = "boot_tests")]
+pub fn collect_strand_census(
+    out: &mut [StrandCandidate; STRAND_CENSUS_CAPACITY],
+) -> Option<StrandCensus> {
+    with_scheduler(|scheduler| {
+        let mut checked = 0u64;
+        let mut candidates = 0usize;
+        let mut overflow = 0u64;
+
+        for thread in scheduler.threads.iter() {
+            let shape = match thread.state {
+                ThreadState::Running => StrandShape::Running,
+                ThreadState::Ready => StrandShape::Ready,
+                _ => continue,
+            };
+            let tid = thread.id();
+            if scheduler
+                .cpu_state
+                .iter()
+                .any(|cpu| cpu.idle_thread == tid)
+            {
+                continue;
+            }
+
+            checked += 1;
+            let current = scheduler
+                .cpu_state
+                .iter()
+                .any(|cpu| cpu.current_thread == Some(tid));
+            let queued = scheduler
+                .per_cpu_queues
+                .iter()
+                .any(|queue| queue.contains(&tid));
+
+            let previous = scheduler
+                .cpu_state
+                .iter()
+                .any(|cpu| cpu.previous_thread == Some(tid));
+
+            let pending_next = scheduler
+                .cpu_state
+                .iter()
+                .any(|cpu| cpu.pending_next == Some(tid));
+
+            #[cfg(target_arch = "aarch64")]
+            let deferred = crate::arch_impl::aarch64::context_switch::
+                deferred_requeue_contains(tid);
+            #[cfg(not(target_arch = "aarch64"))]
+            let deferred = false;
+
+            if current || queued || previous || pending_next || deferred {
+                continue;
+            }
+
+            if candidates < STRAND_CENSUS_CAPACITY {
+                out[candidates] = StrandCandidate {
+                    tid,
+                    shape,
+                    privilege: thread.privilege,
+                    state: thread.state,
+                };
+                candidates += 1;
+            } else {
+                overflow += 1;
+            }
+        }
+
+        StrandCensus {
+            checked,
+            candidates,
+            overflow,
+        }
+    })
 }
 
 /// Lock-free-consumer liveness snapshot for watchdog diagnostics.
@@ -993,6 +1106,10 @@ pub(crate) struct CpuSchedulerState {
     /// completed and the stack is free).
     #[cfg_attr(not(target_arch = "aarch64"), allow(dead_code))]
     pub(crate) previous_thread: Option<u64>,
+    /// Incoming thread published by schedule_deferred_requeue but not yet
+    /// committed after its context save.
+    #[cfg_attr(not(target_arch = "aarch64"), allow(dead_code))]
+    pub(crate) pending_next: Option<u64>,
     /// Most recent tick at which this CPU entered a scheduling path.
     pub(crate) last_schedule_ticks: u64,
 }
@@ -1029,6 +1146,7 @@ impl Scheduler {
             current_thread: None,
             idle_thread: 0,
             previous_thread: None,
+            pending_next: None,
             last_schedule_ticks: 0,
         };
         let mut cpu_state = [EMPTY_STATE; MAX_CPUS];
@@ -1041,6 +1159,7 @@ impl Scheduler {
             current_thread: Some(idle_id),
             idle_thread: idle_id,
             previous_thread: None,
+            pending_next: None,
             last_schedule_ticks: crate::time::get_ticks(),
         };
 
@@ -1702,6 +1821,53 @@ impl Scheduler {
         }
     }
 
+    #[cfg(target_arch = "aarch64")]
+    pub(crate) fn resolve_pending_next_locked(&mut self, cpu: usize) {
+        let Some(tid) = self.cpu_state[cpu].pending_next.take() else {
+            return;
+        };
+
+        if self
+            .cpu_state
+            .iter()
+            .any(|state| state.idle_thread == tid)
+            || self
+                .cpu_state
+                .iter()
+                .any(|state| state.current_thread == Some(tid))
+            || self
+                .per_cpu_queues
+                .iter()
+                .any(|queue| queue.contains(&tid))
+            || self
+                .cpu_state
+                .iter()
+                .any(|state| state.previous_thread == Some(tid))
+            || crate::arch_impl::aarch64::context_switch::deferred_requeue_contains(
+                tid,
+            )
+        {
+            return;
+        }
+
+        let Some(state) = self.get_thread(tid).map(|thread| thread.state) else {
+            return;
+        };
+        if !matches!(state, ThreadState::Running | ThreadState::Ready) {
+            return;
+        }
+
+        let Some(thread) = self.get_thread_mut(tid) else {
+            return;
+        };
+        thread.set_ready();
+        self.per_cpu_queues[cpu].push_back(tid);
+        crate::per_cpu_aarch64::set_need_resched(true);
+        self.send_resched_ipi();
+        #[cfg(feature = "boot_tests")]
+        crate::task::strand_oracle::note_pending_next_resolved(tid);
+    }
+
     /// Schedule the next thread, but do NOT add the old thread to the ready queue.
     ///
     /// This is used on ARM64 SMP to prevent a race condition where another CPU
@@ -1720,6 +1886,7 @@ impl Scheduler {
         let cpu = Self::current_cpu_id();
         self.cpu_state[cpu].last_schedule_ticks = crate::time::get_ticks();
         self.reclaim_unschedulable_cpu_queues();
+        self.resolve_pending_next_locked(cpu);
 
         let current_is_idle =
             self.cpu_state[cpu].current_thread == Some(self.cpu_state[cpu].idle_thread);
@@ -2010,6 +2177,7 @@ impl Scheduler {
             next.set_running();
             next.run_start_ticks = crate::time::get_ticks();
         }
+        self.cpu_state[current_cpu].pending_next = Some(next_thread_id);
 
         // Update per-CPU idle flag (lock-free, used by timer handler)
         let is_switching_to_idle = next_thread_id == self.cpu_state[current_cpu].idle_thread;
@@ -2039,6 +2207,9 @@ impl Scheduler {
         let old_val = self.cpu_state[cpu].current_thread.unwrap_or(0xDEAD);
         record_cpu_state_change(cpu, 1, old_val, new_thread_id);
         self.cpu_state[cpu].current_thread = Some(new_thread_id);
+        if self.cpu_state[cpu].pending_next == Some(new_thread_id) {
+            self.cpu_state[cpu].pending_next = None;
+        }
     }
 
     /// Add a thread to the ready queue after its context has been saved.
@@ -2074,18 +2245,36 @@ impl Scheduler {
         if self.is_in_deferred_requeue(thread_id) {
             return;
         }
-        // Safety checks: only requeue if the thread is in Ready state and not already queued.
+        // Safety checks: only requeue if the thread is runnable and not already queued.
         // Also handle the deferred-window race: if unblock_for_io() fired while the thread
         // was in the deferred slot (set Ready but couldn't enqueue), enqueue it now.
-        if let Some(thread) = self.get_thread(thread_id) {
-            if thread.state != ThreadState::Ready {
-                return; // Thread state changed (terminated/blocked) - don't requeue
+        let publish_running = if let Some(thread) = self.get_thread(thread_id) {
+            match thread.state {
+                ThreadState::Ready => false,
+                ThreadState::Running => {
+                    // A pending_next entry is a live ownership record: its CPU
+                    // will commit this thread or roll it back at its next scheduler entry.
+                    if self
+                        .cpu_state
+                        .iter()
+                        .any(|state| state.pending_next == Some(thread_id))
+                    {
+                        return;
+                    }
+                    true
+                }
+                _ => return, // Thread state changed (terminated/blocked) - don't requeue
             }
         } else {
             return;
-        }
+        };
         let in_any_queue = self.per_cpu_queues.iter().any(|q| q.contains(&thread_id));
         if !in_any_queue {
+            if publish_running {
+                if let Some(thread) = self.get_thread_mut(thread_id) {
+                    thread.set_ready();
+                }
+            }
             let cpu = Self::current_cpu_id();
             self.per_cpu_queues[cpu].push_back(thread_id);
             ENQUEUE_DEFERRED_DRAINED_OK.fetch_add(1, Ordering::Relaxed);
