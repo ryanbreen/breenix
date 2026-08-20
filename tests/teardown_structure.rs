@@ -3469,8 +3469,14 @@ fn validate_futex_oracle_marker_and_gate_pins(
         let pins_marker = gate.contains("[FUTEX_HANDOFF_ORACLE:");
         let pins_with_grep = gate.contains("grep") && gate.contains("FUTEX_HANDOFF_ORACLE");
         let pins_measured_elapsed = gate.contains("stage3_elapsed_ms=[0-9]+");
-        let pins_anchored_ere = gate.contains("FUTEX_HANDOFF_ORACLE_PATTERN='^\\[")
-            && gate.contains("\\]$'")
+        let futex_pattern = gate
+            .lines()
+            .find(|line| line.starts_with("FUTEX_HANDOFF_ORACLE_PATTERN="))
+            .unwrap_or("");
+        let pins_substring_ere = futex_pattern.contains("FUTEX_HANDOFF_ORACLE_PATTERN='\\[")
+            && futex_pattern.contains(":balance=0\\]'")
+            && !futex_pattern.contains("FUTEX_HANDOFF_ORACLE_PATTERN='^\\[")
+            && !futex_pattern.contains("\\]$'")
             && (gate.contains("grep -qE") || gate.contains("grep -h -E"));
         check(
             &mut failures,
@@ -3480,7 +3486,7 @@ fn validate_futex_oracle_marker_and_gate_pins(
         check(
             &mut failures,
             &format!("{path} must pin only the measured futex elapsed field as variable"),
-            pins_measured_elapsed && pins_anchored_ere,
+            pins_measured_elapsed && pins_substring_ere,
         );
     }
     failures.is_empty().then_some(()).ok_or(failures)

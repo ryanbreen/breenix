@@ -101,7 +101,8 @@ BREENIX_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 # expose D1/D2. stage3_elapsed_ok=1 proves no early timeout return, while
 # stage3_ret=ETIMEDOUT plus rescues=0 proves the backstop did not end this wait.
 # stage3_elapsed_ms is the measured duration; residual/balance prove cleanup.
-FUTEX_HANDOFF_ORACLE_PATTERN='^\[FUTEX_HANDOFF_ORACLE:aarch64:driven=2:stage1_ret=EAGAIN:stage1_wake=0:stage1_parked=0:stage2_ret=0:stage2_wake=1:stage2_parked=0:stage3_ret=ETIMEDOUT:stage3_elapsed_ok=1:stage3_elapsed_ms=[0-9]+:rescues=0:queue_residual=0:balance=0\]$'
+# This marker is emitted from a syscall while the scheduler trace stream is live, so its line can carry a prefix.
+FUTEX_HANDOFF_ORACLE_PATTERN='\[FUTEX_HANDOFF_ORACLE:aarch64:driven=2:stage1_ret=EAGAIN:stage1_wake=0:stage1_parked=0:stage2_ret=0:stage2_wake=1:stage2_parked=0:stage3_ret=ETIMEDOUT:stage3_elapsed_ok=1:stage3_elapsed_ms=[0-9]+:rescues=0:queue_residual=0:balance=0\]'
 
 if $REBUILD; then
     echo "Building ARM64 kernel with boot_tests feature..."

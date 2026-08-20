@@ -30,7 +30,8 @@ KSTACK_OWNER_ORACLE_PATTERN='^\[KSTACK_OWNER_ORACLE:aarch64:creation_rows=1000:c
 # park fields expose D1/D2. stage3_elapsed_ok=1 proves no early timeout return;
 # stage3_ret=ETIMEDOUT plus rescues=0 proves the backstop did not end this wait.
 # stage3_elapsed_ms reports the measured duration, and residual/balance prove cleanup.
-FUTEX_HANDOFF_ORACLE_PATTERN='^\[FUTEX_HANDOFF_ORACLE:aarch64:driven=2:stage1_ret=EAGAIN:stage1_wake=0:stage1_parked=0:stage2_ret=0:stage2_wake=1:stage2_parked=0:stage3_ret=ETIMEDOUT:stage3_elapsed_ok=1:stage3_elapsed_ms=[0-9]+:rescues=0:queue_residual=0:balance=0\]$'
+# This marker is emitted from a syscall while the scheduler trace stream is live, so its line can carry a prefix.
+FUTEX_HANDOFF_ORACLE_PATTERN='\[FUTEX_HANDOFF_ORACLE:aarch64:driven=2:stage1_ret=EAGAIN:stage1_wake=0:stage1_parked=0:stage2_ret=0:stage2_wake=1:stage2_parked=0:stage3_ret=ETIMEDOUT:stage3_elapsed_ok=1:stage3_elapsed_ms=[0-9]+:rescues=0:queue_residual=0:balance=0\]'
 # The boot-test oracle drives this injection exactly once; its forbidden detector output is pinned absent below.
 CREATION_LOCK_ORDER_INJECTED_LITERAL='[CREATION_LOCK_ORDER:INJECTED:PM_HELD]'
 CREATION_LOCK_ORDER_VIOLATION_LITERAL='[CREATION_LOCK_ORDER:VIOLATION:PM_HELD]'
