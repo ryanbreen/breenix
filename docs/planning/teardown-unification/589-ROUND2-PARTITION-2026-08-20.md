@@ -199,7 +199,55 @@ reproduce in 10 branch boots or 10 `main` boots. On this differential the branch
 `main` on x86 — it is one gate failure better — and the branch's only x86-visible change is the
 census sampler. Nothing here is branch-attributable.
 
-## 6. What remains open
+## 6. The acceptance battery at HEAD, and what it uncovered
+
+Run against `18dcb2ef` on one host in one session. Production and `boot_tests` profiles both rebuild
+with zero Breenix warnings (the single warning in each log is the toolchain's future-incompat note
+about `core` from the build-std source, not kernel code); `check-kernel-no-neon.sh` PASS on both;
+nine structural suites green (`strand_handoff` 13, `exec_lock_order` 34, `context_restore` 61,
+`teardown` 53, `block_request_lifetime` 11, `net_lock` 19, `loopback_pump` 57, `kernel_no_neon_guard`
+1); the production-profile gate PASSES with both new markers pinned absent; beast runs
+`run-boot-parallel.sh 5` twice at this HEAD, 5/5 and 5/5.
+
+**Service-sequence gate, 25 boots per profile: 48/50 GREEN, `589=0`, `596=0`, `DATA_ABORT=0`,
+`575=0`, no `0x80000000` bucket, one tolerated `576` at its filed field-exact signature — and one
+UNATTRIBUTED, which fails the gate.** The round-1 collateral is gone; the gate is red on something
+else.
+
+That something else is a real early-boot stall, now filed as **#609**: the boot-test executor reaches
+`[SUBSYSTEM:memory:early:COMPLETE:24/24]` and the `network:early` subsystem kthread never emits its
+first marker, while the kernel stays alive and the strand census keeps sampling `stranded=0` for the
+full timeout. `run_staged_tests` spawns every subsystem kthread before joining any, so the missing
+thread was created and never dispatched — a lost dispatch that **this branch's own census does not
+see**: `worst_dwell_ms=0` with roughly two threads examined per sample. That blind spot is recorded
+in #609 and it qualifies every "stranded=0" claim in this document.
+
+Attribution of #609 is **open**. A same-session interleaved control against `main` `e377e7a8` —
+alternating boots, byte-identical QEMU arguments — gave 0/20 per arm unstarved and 0/25 per arm under
+ten `nice -n 19` hogs. At the observed 2-3% rate that control has no power; it is not evidence that
+`main` is clean. Pooled with the partition arms (main 0/95, branch 2/171) Fisher gives p ≈ 0.5. It is
+deliberately not bucketed into #576, #575, #586 or #589.
+
+The strict gate — the kernel-merge gate — was **structurally unable to pass**, on this branch and on
+`main` alike, and this battery is what found it. Its poll loop broke as soon as a userspace liveness
+pattern and `[EXEC_SMOKE:TARGET_OK]` were present (about 0.5 s and 4.4 s of uptime), killed QEMU, and
+only then scored the serial for the block EINTR oracle, the futex handoff oracle and both strand
+markers — all emitted later. Measured 0/20. The repair makes the loop poll `score_serial` itself, so
+the stop condition and the scoring criteria cannot drift apart; `score_serial` is a strict superset
+of the two conditions it replaces. The gate goes to 5/6, with the remaining failure being #609. Until
+#609 is fixed the strict gate cannot reach its required 100%.
+
+The full-system test is not green on aarch64 for a reason that predates this work: **#593**, filed,
+says init's aarch64 boot script spawns no terminal, so Phase 2 can never pass headless. Three runs at
+this HEAD reach Phase 2 and time out there. `main`'s kernel, run through the same script from its own
+worktree, dies earlier — `Phase 1c: clonevm_exec_test never completed (30s timeout)`, i.e. #589
+itself. One of four branch runs failed at Phase 1c with `ERROR sibling wake of parent failed`; that
+is **#610**, a TOCTOU in the test program (the parent publishes readiness before it blocks, so the
+sibling's `FUTEX_WAKE` legitimately finds no waiter and its `!= 1` assertion fires) — a false red, not
+a kernel wake loss, and not fixed here because changing userspace test source rebuilds the ext2 image
+and would invalidate the battery it was measured beside.
+
+## 7. What remains open
 
 * **#607** — the null-`scheduler_ptr` branch does not repair the outgoing thread's resume point and
   does not requeue it. Untouched here deliberately; round 1 measured that a naive outgoing rollback
@@ -210,3 +258,9 @@ census sampler. Nothing here is branch-attributable.
   to this family and are present on `main`-behaviour controls.
 * **Fix 1's independent necessity** is not separately measured (arm D isolates it but is confounded by
   the victim drive it was measured against). It is retained on design grounds and pinned structurally.
+* **#609** — the `network:early` subsystem kthread never dispatched, ~2-3%, unattributed, and blind
+  to the strand census. This is what keeps both the service-sequence gate and the strict gate red.
+* **#610** — the `clonevm_exec_test` post-exec rendezvous race, a false red at roughly 1 in 4
+  full-test runs; the first item for a follow-up slot, since fixing it rebuilds the ext2 image.
+* **#593** — Phase 2 of the full-system test can never pass headless on aarch64. Until it is fixed,
+  "the full test passes" is not an available claim on this architecture for any branch.

@@ -14,6 +14,8 @@ const MIN_REQUEUE_EARLY_RETURN_GUARDS: usize = 6;
 const MIN_INSTRUCTION_ABORT_REFUSAL_REASONS: usize = 3;
 /// Each gate must reject both strand marker families; additional rejections are welcome.
 const MIN_STRANDED_FORBIDDEN_REJECTIONS: usize = 2;
+/// The strict gate scores once while polling and again for the final verdict.
+const MIN_STRICT_GATE_SCORE_SERIAL_CALLS: usize = 2;
 
 fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -408,6 +410,71 @@ fn strict_gate_rejects_stranded_markers_from_finished_serial() {
             .iter()
             .any(|line| line.contains("STRAND_INJECT_ORACLE")),
         "strict gate must reject a stranded injection-oracle marker"
+    );
+}
+
+#[test]
+fn strict_gate_poll_loop_stops_only_on_crash_or_complete_score() {
+    let gate = repo_text(STRICT_GATE_PATH);
+    let run_single_test = shell_function_body(&gate, "run_single_test");
+    assert!(
+        !run_single_test.trim().is_empty(),
+        "run_single_test body census"
+    );
+
+    let poll_tail = run_single_test
+        .split_once("for POLL in $(seq 1 12); do\n")
+        .map(|(_, tail)| tail)
+        .expect("strict-gate poll-loop anchor");
+    let (poll_loop, after_poll_loop) = poll_tail
+        .split_once("\n    done\n")
+        .expect("strict-gate poll-loop terminator");
+    assert!(!poll_loop.trim().is_empty(), "strict-gate poll-loop census");
+
+    let poll_lines: Vec<_> = poll_loop.lines().map(str::trim).collect();
+    let break_count = poll_lines.iter().filter(|line| **line == "break").count();
+    assert!(break_count > 0, "strict-gate poll-loop break census");
+    let approved_break_count = poll_lines
+        .windows(2)
+        .filter(|pair| pair[1] == "break")
+        .filter(|pair| {
+            pair[0].starts_with("if ")
+                && (pair[0].contains("check_crash_markers")
+                    || pair[0].contains("score_serial"))
+        })
+        .count();
+    assert!(
+        approved_break_count == break_count,
+        "strict-gate poll-loop break census found {break_count} breaks but only \
+         {approved_break_count} are guarded by check_crash_markers or score_serial"
+    );
+
+    let poll_score_calls = poll_lines
+        .iter()
+        .filter(|line| line.starts_with("if ") && line.contains("score_serial \""))
+        .count();
+    assert!(
+        poll_score_calls > 0,
+        "strict-gate poll loop must break on score_serial"
+    );
+    assert!(
+        after_poll_loop
+            .lines()
+            .map(str::trim)
+            .any(|line| line.starts_with("if ") && line.contains("score_serial \"")),
+        "strict gate must score serial again after the poll loop for the verdict"
+    );
+
+    let score_serial_calls = gate
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.starts_with('#') && line.contains("score_serial \""))
+        .count();
+    assert!(
+        score_serial_calls >= MIN_STRICT_GATE_SCORE_SERIAL_CALLS,
+        "strict-gate score_serial call census shrank: {} < {}",
+        score_serial_calls,
+        MIN_STRICT_GATE_SCORE_SERIAL_CALLS
     );
 }
 
