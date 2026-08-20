@@ -266,24 +266,36 @@ run_single_test() {
     #   "[heartbeat]" - the default ARM64 init service executed in userspace
     # Also require "[EXEC_SMOKE:TARGET_OK]" as the exec completion condition.
     # DO NOT accept "Interactive Shell" - that's the KERNEL FALLBACK when userspace FAILS
-    local USERSPACE_DETECTED=false
-    local EXEC_SMOKE_COMPLETE=false
     local CRASH_TYPE=""
     # Named POLL, not i: the caller's loop variable is also i, and an unscoped
     # inner i made the summary report the poll counter instead of the boot number.
     local POLL
+    #
+    # THE STOP CONDITION IS score_serial ITSELF, not a narrower pair of liveness
+    # patterns.
+    #
+    # This loop used to break as soon as a userspace liveness pattern and
+    # [EXEC_SMOKE:TARGET_OK] were both present, kill QEMU, and only then score the
+    # serial. Those two land at roughly 0.5 s and 4.4 s of uptime; every other
+    # marker score_serial requires — the futex handoff oracle (~5.8 s), the block
+    # EINTR oracle (~5.8 s), the strand census and the strand injection oracle —
+    # is emitted afterwards. The gate therefore killed the VM before the evidence
+    # it scores could exist and failed every boot on "marker missing", including
+    # on main: a stop condition narrower than the scoring criteria is a gate that
+    # cannot pass. It also made the forbidden-pattern scans below unreachable — a
+    # late strand cannot appear in a serial that was truncated at 4.4 s.
+    #
+    # Polling score_serial keeps the two in sync by construction: whatever the
+    # scoring criteria grow to require, the loop waits for it. This only ever
+    # extends the capture window. It accepts nothing score_serial would reject —
+    # the verdict below is still a fresh score of the serial QEMU left behind —
+    # and the crash-marker break and the wall-clock bound are unchanged.
     for POLL in $(seq 1 12); do
         if [ -f "$OUTPUT_DIR/serial.txt" ]; then
-            if grep -qE "(breenix>|bsh |\[bwm\] Display:|\[bcheck\] Complete:|\[heartbeat\])" "$OUTPUT_DIR/serial.txt" 2>/dev/null; then
-                USERSPACE_DETECTED=true
-            fi
-            if grep -qF "[EXEC_SMOKE:TARGET_OK]" "$OUTPUT_DIR/serial.txt" 2>/dev/null; then
-                EXEC_SMOKE_COMPLETE=true
-            fi
             if CRASH_TYPE=$(check_crash_markers "$OUTPUT_DIR/serial.txt"); then
                 break
             fi
-            if $USERSPACE_DETECTED && $EXEC_SMOKE_COMPLETE; then
+            if score_serial "$OUTPUT_DIR/serial.txt" >/dev/null 2>&1; then
                 break
             fi
         fi
