@@ -175,6 +175,39 @@ change below makes any *other* instruction abort a hard gate failure rather than
 
 No FAIL condition was relaxed, no threshold lowered, no literal loosened.
 
+### The #609 arm (coordinator ruling R30)
+
+R30 pre-adjudicates #609 by FIELD signature as an *attributed* non-green, at its filed ~3% rate, and
+directs that the classifier carry a tightly-keyed arm for it. `is_609_network_early_stall` in
+`run-aarch64-service-sequence-gate.sh` is that arm. Five clauses, every one required, every one a
+shape rather than a name list: memory:early reached COMPLETE; the network:early kthread emitted
+**nothing at all** (zero `[SUBSYSTEM:network:...]` and zero `[TEST:network:...]` lines — a kthread
+that was dispatched and then wedged prints its own `:START` first, which is what separates "never got
+a first instruction" from "ran and hung"); no `[STAGE:early:COMPLETE`; no abort, panic or lockup of
+any kind; and a strand census still sampling into the hundreds with `stranded=0`. The arm is
+consulted **last** of the attributing arms, after every abort signature and both strand arms, so a
+boot can only reach it by having crashed nowhere and stranded nothing.
+
+The arm was measured against **every preserved serial in this campaign — 476 of them, spanning all
+seven partition arms and both acceptance batteries**. It moves exactly three boots, all of them out
+of UNATTRIBUTED: `proof-ss25/cortex-a72/serial-18` and `partition-armA/max/serial-8` and `serial-21`
+— and armA is the main-scheduler-behaviour arm, which is the same 2/50 the filing already reports for
+it. **84 UNATTRIBUTED boots remain unattributed**, including the entire U1 early-boot-stall family,
+which the arm refuses on its first clause: those boots die *before* memory:early completes. No boot
+that was already attributed to any bucket moved. The arm absorbs nothing.
+
+Because a pre-adjudication by rate is only honest if the rate is enforced, the gate computes a
+ceiling — `max(1, ceil(0.06 × total boots))`, i.e. twice the filed rate with a floor of one, giving 3
+at the default 50 boots — and **FAILS the run when the #609 count exceeds it**. At p=0.03 a 50-boot
+run crosses that line about 6% of the time, so crossing it means a materially higher rate rather than
+ordinary variance. The boots stay attributed; the run stops being covered. `#609` is reported in
+every per-profile and total census and is listed among the non-GREEN boots exactly as before.
+
+The strict gate is deliberately **not** given this arm. It is the kernel-merge gate and requires
+100%; #576 already hard-fails it despite being pre-adjudicated, so the precedent is that
+pre-adjudicated signatures are tolerated where buckets exist and adjudicated externally where they do
+not. Adding a tolerance there would be a FAIL-condition relaxation that R30 does not ask for.
+
 ## 5. x86 differential (review B3)
 
 `main` was rebuilt from a **fresh clone** (`git clone --no-local` of the branch checkout, `main`
@@ -199,7 +232,89 @@ reproduce in 10 branch boots or 10 `main` boots. On this differential the branch
 `main` on x86 — it is one gate failure better — and the branch's only x86-visible change is the
 census sampler. Nothing here is branch-attributable.
 
-## 6. The acceptance battery at HEAD, and what it uncovered
+### The wrong-profile kernel trap (found while re-running the battery)
+
+Re-running the battery at HEAD produced **0/6 on the strict gate** and **21 consecutive
+"futex handoff oracle marker missing" boots** on the service-sequence gate. Neither was a kernel
+regression. Both gates were booting a **production** kernel.
+
+`cargo` keeps one cached artifact per feature set and hardlinks the requested one into the single
+path `target/aarch64-breenix-kernel/release/kernel-aarch64`. Switching profiles takes **0.06 s, with
+no recompilation and no output worth reading** — the file's size changes and its mtime moves
+*backwards*. `tests/kernel_no_neon_guard.rs` builds that kernel with **no features**, by design. So
+running the structural suites silently replaces the boot_tests kernel with a production one, and
+every gate that runs afterwards boots the wrong binary and fails on markers the kernel was never
+asked to emit. The failures are indistinguishable from a real regression: they name a specific
+oracle, they are perfectly reproducible, and they are 100% wrong.
+
+The battery in §6 escaped it only by luck of ordering — its `--rebuild` full test happened to sit
+between the suites and the service-sequence gate and rebuilt the boot_tests kernel. Move the full
+test to the end, as any reasonable person would, and the whole run is garbage.
+
+Fixed at source rather than by reordering a script. `require_boot_tests_kernel` is now a preflight in
+`run-aarch64-service-sequence-gate.sh`, `run-aarch64-boot-test-strict.sh` and
+`run-aarch64-full-test.sh`, sitting immediately after the existing `#528` no-neon guard and reading
+the same way: it greps the kernel **binary** for a census of five boot_tests-only marker literals
+(`[SCHED_STRAND_ORACLE:`, `[STRAND_INJECT_ORACLE:`, `[FUTEX_HANDOFF_ORACLE:`, `[CTX596_ORACLE:`,
+`[BOOT_TESTS:` — each verified present in a boot_tests build and absent from a production build) and
+exits 1 before booting anything if any is missing. Fifty boots of an attributable-looking false red
+is worse than no run at all.
+
+The guard corrected its own first draft: `[BLOCK_EINTR_ORACLE:` was in the initial census and the
+guard immediately refused a known-good boot_tests kernel over it. It was right to — that marker is
+emitted from **userspace** (`userspace/programs/src/block_eintr_oracle.rs`), lives in the ext2 image,
+and was never in the kernel binary at all. It is not a kernel-profile discriminator and was removed.
+
+This is the campaign's own binding lesson recurring: test wiring must be proven to EXECUTE in the
+gate's actual feature profile. Here the wiring was correct and the *binary* was wrong.
+
+## 6. The acceptance battery at the final HEAD
+
+Re-run in the correct order (production build -> production-profile gate -> structural suites ->
+`boot_tests` build -> QEMU gates), on one host in one session, against `e5d47c81`.
+
+| step | result |
+|---|---|
+| production profile build | zero Breenix warnings |
+| production-profile gate | **PASS** |
+| eight structural suites | **251 green, 0 failed, zero warnings** (`strand_handoff` 15, `exec_lock_order` 34, `context_restore` 61, `teardown` 53, `block_request_lifetime` 11, `net_lock` 19, `loopback_pump` 57, `kernel_no_neon_guard` 1) |
+| `boot_tests` profile build | zero Breenix warnings |
+| `check-kernel-no-neon.sh` | **PASS** on both profiles |
+| strict gate (kernel-merge gate), 6 boots | **6/6, 100% PASS** |
+| service-sequence gate, 25 boots per profile | **PASS** |
+| full-system test `--rebuild` | Phase 1 **106/106**, Phases 1b/1c/1d/1e all PASS, **Phase 2 fails on #593** |
+
+The single warning in each build log is the toolchain's future-incompat note about `core` from the
+build-std source, not kernel code.
+
+**Service-sequence gate: 49/50 GREEN and the gate PASSES.**
+
+```
+575 0   576 1   DATA_ABORT 0   589 0   596 0   609 0   P5B 0   GREEN 49   UNATTRIBUTED 0
+```
+
+`max` was 25/25 with every bucket at zero. The one non-GREEN boot is `cortex-a72` boot 15, an
+instruction abort whose field set is exactly `FAR=0x0 ELR=0x0 ESR=0x86000005` — #576's filed
+signature, matched field-exactly by the round-2 classifier rather than by exception type. **No
+`0x80000000` bucket, no #596-class data abort, no #575-shape stall, no #589, and nothing
+UNATTRIBUTED.** The round-1 collateral is gone and this run required no #609 tolerance at all.
+
+The strict gate reaching 6/6 is the first clean run of the kernel-merge gate in this campaign; note
+that at #609's filed ~2-3% a six-boot run is clean about 85% of the time, so this is consistent with
+#609 still being open rather than evidence it is fixed.
+
+The full-system test's Phase 2 failure is **#593**, filed and pre-existing: init's aarch64 boot
+script spawns no terminal, so "shell not detected" is unreachable-by-construction headless on this
+architecture for any branch, `main` included. Everything before it passed, including Phase 1c —
+#610's TOCTOU false red did not fire this run.
+
+x86 was measured on beast at `993687d8`, and no kernel code changed between there and `e5d47c81`
+(only aarch64 gate scripts, host-side structural tests and this document): `run-boot-parallel.sh 5`
+twice gave 4/5 then 5/5, the one failure being `loopback_wake_test_child:15,loopback_wake_test:1` —
+the pre-adjudicated #586 family, and the same signature `main` produced in the §5 differential. Zero
+`sys_read` spin-hangs in either arm. Zero build warnings.
+
+## 6b. The earlier acceptance battery, and what it uncovered
 
 Run against `18dcb2ef` on one host in one session. Production and `boot_tests` profiles both rebuild
 with zero Breenix warnings (the single warning in each log is the toolchain's future-incompat note
@@ -258,9 +373,21 @@ and would invalidate the battery it was measured beside.
   to this family and are present on `main`-behaviour controls.
 * **Fix 1's independent necessity** is not separately measured (arm D isolates it but is confounded by
   the victim drive it was measured against). It is retained on design grounds and pinned structurally.
-* **#609** — the `network:early` subsystem kthread never dispatched, ~2-3%, unattributed, and blind
-  to the strand census. This is what keeps both the service-sequence gate and the strict gate red.
+* **#609** — the `network:early` subsystem kthread never dispatched, ~2-3%, and blind to the strand
+  census (`worst_dwell_ms=0`, roughly two threads examined per sample). No longer *unattributed*:
+  coordinator ruling R30 pre-adjudicates it by field signature, the service-sequence classifier has a
+  tightly-keyed arm for it, and the gate enforces a rate ceiling so the attribution cannot quietly
+  grow. It did not occur at all in the final 50-boot run, which is unremarkable at its filed rate.
+  The defect itself is untouched here, and the census blind spot it exposes qualifies every
+  "stranded=0" claim in this document.
 * **#610** — the `clonevm_exec_test` post-exec rendezvous race, a false red at roughly 1 in 4
   full-test runs; the first item for a follow-up slot, since fixing it rebuilds the ext2 image.
 * **#593** — Phase 2 of the full-system test can never pass headless on aarch64. Until it is fixed,
   "the full test passes" is not an available claim on this architecture for any branch.
+* **The wrong-profile kernel trap is fixed in the three aarch64 gates that pin `boot_tests` markers,
+  and nowhere else.** Any other script that boots
+  `target/aarch64-breenix-kernel/release/kernel-aarch64` while expecting a particular feature profile
+  is still exposed, and `cargo test` will still swap that binary silently underneath it.
+* **`tests/kernel_no_neon_guard.rs` still rebuilds the kernel with no features as a side effect of
+  `cargo test`.** The gates now refuse the result rather than booting it, which is the safe outcome,
+  but the side effect itself remains and will keep surprising anyone who builds before testing.
