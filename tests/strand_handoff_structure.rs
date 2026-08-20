@@ -12,6 +12,8 @@ const FULL_TEST_PATH: &str = "docker/qemu/run-aarch64-full-test.sh";
 const MIN_REQUEUE_EARLY_RETURN_GUARDS: usize = 6;
 /// New instruction-abort refusal reasons are welcome; losing one is not.
 const MIN_INSTRUCTION_ABORT_REFUSAL_REASONS: usize = 3;
+/// Additional #609 clauses are welcome; dropping one is how a tolerated bucket starts absorbing unfiled failures.
+const MIN_609_SIGNATURE_GUARDS: usize = 5;
 /// Each gate must reject both strand marker families; additional rejections are welcome.
 const MIN_STRANDED_FORBIDDEN_REJECTIONS: usize = 2;
 /// The strict gate scores once while polling and again for the final verdict.
@@ -383,6 +385,91 @@ fn service_sequence_instruction_abort_classifier_is_single_signature() {
         shell_exact_line_occurrences(&gate, r#"CLASS_BUCKET="576""#),
         1,
         "service-sequence gate must have exactly one tolerated CLASS_BUCKET=\"576\" assignment"
+    );
+}
+
+#[test]
+fn service_sequence_609_arm_is_field_keyed_and_rate_bounded() {
+    let gate = repo_text(SERVICE_SEQUENCE_GATE_PATH);
+    let signature = shell_function_body(&gate, "is_609_network_early_stall");
+    assert!(
+        !signature.trim().is_empty(),
+        "is_609_network_early_stall body census"
+    );
+
+    let signature_guards = signature
+        .lines()
+        .filter(|line| line.contains("grep "))
+        .count();
+    assert!(
+        signature_guards >= MIN_609_SIGNATURE_GUARDS,
+        "#609 signature-guard census shrank: {} < {}",
+        signature_guards,
+        MIN_609_SIGNATURE_GUARDS
+    );
+    assert!(
+        signature.contains("[SUBSYSTEM:memory:early:COMPLETE:"),
+        "#609 signature must require memory:early completion"
+    );
+    assert!(
+        signature.contains("(TEST|SUBSYSTEM):network:"),
+        "#609 signature must require complete network:early silence"
+    );
+    assert!(
+        signature.contains("[STAGE:early:COMPLETE"),
+        "#609 signature must require an unfinished early stage"
+    );
+    assert!(
+        signature.contains(r"(DATA|INSTRUCTION)_ABORT\]|KERNEL PANIC|panic!"),
+        "#609 signature must reject abort and panic evidence"
+    );
+    assert!(
+        signature.contains("stranded=0"),
+        "#609 signature must require a clean live strand census"
+    );
+
+    assert_eq!(
+        shell_exact_line_occurrences(&gate, r#"CLASS_BUCKET="609""#),
+        1,
+        "service-sequence gate must have exactly one tolerated CLASS_BUCKET=\"609\" assignment"
+    );
+
+    let classifier = shell_function_body(&gate, "classify_serial");
+    let arm_609_offset = classifier
+        .find("is_609_network_early_stall")
+        .expect("#609 classifier arm");
+    let strand_bucket_offsets: Vec<_> = classifier
+        .match_indices(r#"CLASS_BUCKET="589""#)
+        .map(|(offset, _)| offset)
+        .collect();
+    assert!(
+        !strand_bucket_offsets.is_empty(),
+        "classify_serial must retain its strand-attribution arms"
+    );
+    assert!(
+        strand_bucket_offsets
+            .iter()
+            .all(|offset| arm_609_offset > *offset),
+        "#609 classification must remain after every strand-attribution arm"
+    );
+
+    assert!(
+        gate.contains("TOTAL_609_CEILING=$("),
+        "#609 attribution must retain a computed run-wide rate ceiling"
+    );
+    let ceiling_arm_start = gate
+        .find(r#"if [ "$TOTAL_609" -gt "$TOTAL_609_CEILING" ]; then"#)
+        .expect("#609 rate-ceiling comparison");
+    let ceiling_arm_tail = &gate[ceiling_arm_start..];
+    let ceiling_arm_end = ceiling_arm_tail
+        .find("\nfi\n")
+        .map(|offset| offset + "\nfi\n".len())
+        .expect("#609 rate-ceiling arm terminator");
+    let ceiling_arm = &ceiling_arm_tail[..ceiling_arm_end];
+    assert_eq!(
+        shell_exact_line_occurrences(ceiling_arm, "ANY_GATE_FAILURE=1"),
+        1,
+        "exceeding the #609 rate ceiling must fail the service-sequence gate"
     );
 }
 
