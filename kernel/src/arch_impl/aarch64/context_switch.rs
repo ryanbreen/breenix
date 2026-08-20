@@ -4302,13 +4302,26 @@ extern "C" fn inline_schedule_trampoline() -> ! {
     let new_id = state.new_thread_id.load(Ordering::Relaxed);
     let should_requeue_old = state.should_requeue_old.swap(false, Ordering::Relaxed);
 
-    // Round-A-only test stimulus: consume the scheduler pointer exactly as an
-    // early slot consumer would. The hook itself is two relaxed loads, a
-    // compare, and one one-shot CAS; it does no I/O, allocation, locking, or
-    // scheduler work. The returned B flag is the future rollback suppression
-    // seam, carried through this trampoline without changing Round-A behavior.
+    // The forced null-`scheduler_ptr` branch below never applies the outgoing
+    // thread's `elr_el1 = x30` resume-point repair and never requeues it (#607),
+    // so arming it over a live outgoing thread corrupts that thread rather than
+    // the incoming publication this oracle tests. Arm only when the outgoing
+    // thread is this CPU's own idle thread: the same branch re-establishes idle
+    // through reset_idle_continuation_locked, so the stimulus abandons exactly
+    // the published-but-uncommitted incoming selection and nothing else.
     #[cfg(feature = "boot_tests")]
-    let injected_leg = crate::task::strand_oracle::inject_if_armed(new_id);
+    let injected_leg = if sched_ptr.is_null() {
+        None
+    } else {
+        // This CPU owns the leaked scheduler guard on this path, so the
+        // pointer is live and this is one load and one compare.
+        let idle_id = unsafe { (*sched_ptr).cpu_state[cpu_id].idle_thread };
+        if idle_id == old_id {
+            crate::task::strand_oracle::inject_if_armed(new_id)
+        } else {
+            None
+        }
+    };
     #[cfg(feature = "boot_tests")]
     let sched_ptr = if injected_leg.is_some() {
         core::ptr::null_mut()

@@ -303,6 +303,59 @@ fn strand_handoff_structure_is_pinned_without_line_numbers() {
 }
 
 #[test]
+fn injection_stimulus_is_gated_by_the_idle_outgoing_thread() {
+    let context_switch = repo_text(CONTEXT_SWITCH_PATH);
+    let trampoline = function_body(&context_switch, "inline_schedule_trampoline");
+    assert!(
+        !trampoline.trim().is_empty(),
+        "inline_schedule_trampoline body census"
+    );
+    let (_, trampoline_mask) = code_source(trampoline);
+    assert!(
+        trampoline_mask.iter().any(|is_code| *is_code),
+        "inline_schedule_trampoline census must inspect code"
+    );
+
+    let idle_loads = code_occurrences(trampoline, "cpu_state[cpu_id].idle_thread");
+    assert!(
+        !idle_loads.is_empty(),
+        "injection gate reads this CPU's idle_thread"
+    );
+    let idle_comparisons = code_occurrences(trampoline, "idle_id == old_id");
+    assert!(
+        !idle_comparisons.is_empty(),
+        "injection gate compares idle_thread identity with the outgoing id"
+    );
+    assert!(
+        idle_loads[0] < idle_comparisons[0],
+        "idle_thread load must introduce the outgoing-id comparison"
+    );
+
+    let injection_guard = braced_block_after(trampoline, "if idle_id == old_id");
+    assert!(
+        !injection_guard.trim().is_empty(),
+        "idle outgoing injection guard body census"
+    );
+    assert!(
+        !code_occurrences(injection_guard, "inject_if_armed(").is_empty(),
+        "inject_if_armed must be inside the idle outgoing guard"
+    );
+
+    let trampoline_start = context_switch
+        .find(trampoline)
+        .expect("inline_schedule_trampoline body position");
+    let comparison_start = trampoline_start + idle_comparisons[0];
+    let injection_calls = code_occurrences(&context_switch, "inject_if_armed(");
+    assert!(!injection_calls.is_empty(), "inject_if_armed call census");
+    assert!(
+        injection_calls
+            .iter()
+            .all(|call_offset| *call_offset > comparison_start),
+        "every inject_if_armed call must follow the idle/outgoing comparison"
+    );
+}
+
+#[test]
 fn x86_strand_oracle_is_synchronous_and_sampled_by_the_executor() {
     let oracle = repo_text(STRAND_ORACLE_PATH);
     let sample = function_body(&oracle, "sample_now");
