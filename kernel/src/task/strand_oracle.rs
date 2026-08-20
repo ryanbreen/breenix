@@ -48,6 +48,16 @@ const INJECT_B_SCORED_RECOVERED: u64 = 7;
 const INJECT_B_SCORED_LOST: u64 = 8;
 
 #[cfg(target_arch = "aarch64")]
+/// First census emission: early enough that a boot which dies in the first
+/// seconds still carries one, so "stranded=0 in every gate boot" is a claim
+/// about every boot rather than only the ones that survived the detector's
+/// first report.
+const STRAND_FIRST_REPORT_MS: u64 = 500;
+#[cfg(target_arch = "aarch64")]
+/// Steady-state census cadence after the first emission.
+const STRAND_REPORT_PERIOD_MS: u64 = 5_000;
+
+#[cfg(target_arch = "aarch64")]
 const INJECT_SCORE_WAIT_MS: u64 = 2_000;
 #[cfg(target_arch = "aarch64")]
 const INJECT_DEADLINE_MS: u64 = 6_000;
@@ -508,7 +518,8 @@ fn strand_oracle_thread() {
     let mut state = OracleState::new();
     let mut first_attribution_reported = false;
     let mut strand_nonzero_reported = false;
-    let mut next_strand_report_ms = monotonic_now_ms().saturating_add(3_000);
+    let mut next_strand_report_ms =
+        monotonic_now_ms().saturating_add(STRAND_FIRST_REPORT_MS);
     let mut injection_scoring = InjectionScoring::default();
 
     loop {
@@ -546,7 +557,7 @@ fn strand_oracle_thread() {
                 strand_nonzero_reported = true;
             }
             if now_ms >= next_strand_report_ms {
-                next_strand_report_ms = now_ms.saturating_add(5_000);
+                next_strand_report_ms = now_ms.saturating_add(STRAND_REPORT_PERIOD_MS);
             }
         }
 

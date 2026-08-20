@@ -1823,7 +1823,7 @@ impl Scheduler {
 
     #[cfg(target_arch = "aarch64")]
     pub(crate) fn resolve_pending_next_locked(&mut self, cpu: usize) {
-        let Some(tid) = self.cpu_state[cpu].pending_next.take() else {
+        let Some(tid) = self.cpu_state[cpu].pending_next else {
             return;
         };
 
@@ -1861,6 +1861,7 @@ impl Scheduler {
             return;
         };
         thread.set_ready();
+        let _ = self.cpu_state[cpu].pending_next.take();
         self.per_cpu_queues[cpu].push_back(tid);
         crate::per_cpu_aarch64::set_need_resched(true);
         self.send_resched_ipi();

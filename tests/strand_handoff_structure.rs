@@ -223,6 +223,27 @@ fn code_occurrences(source: &str, needle: &str) -> Vec<usize> {
         .collect()
 }
 
+fn u64_constant(source: &str, name: &str) -> u64 {
+    let (masked, mask) = code_source(source);
+    assert!(
+        mask.iter().any(|is_code| *is_code),
+        "constant source census must inspect code"
+    );
+    let declaration = format!("const {name}: u64 =");
+    let anchors = code_occurrences(source, &declaration);
+    assert_eq!(anchors.len(), 1, "constant declaration anchor for {name}");
+    let value_start = anchors[0] + declaration.len();
+    let value_end = masked[value_start..]
+        .find(';')
+        .map(|relative| value_start + relative)
+        .unwrap_or_else(|| panic!("constant terminator for {name}"));
+    masked[value_start..value_end]
+        .trim()
+        .replace('_', "")
+        .parse()
+        .unwrap_or_else(|_| panic!("u64 literal for {name}"))
+}
+
 #[test]
 fn strand_handoff_structure_is_pinned_without_line_numbers() {
     let scheduler = repo_text(SCHEDULER_PATH);
@@ -399,5 +420,49 @@ fn x86_strand_oracle_is_synchronous_and_sampled_by_the_executor() {
     assert!(
         !code_occurrences(&executor, "strand_oracle::report_x86_once()").is_empty(),
         "the executor must emit the x86 oracle once from the verdict path"
+    );
+}
+
+#[test]
+fn pending_next_is_taken_only_after_rollback_refusals() {
+    let scheduler = repo_text(SCHEDULER_PATH);
+    let resolver = function_body(&scheduler, "resolve_pending_next_locked");
+    assert!(
+        !resolver.trim().is_empty(),
+        "resolve_pending_next_locked body census"
+    );
+    let (_, resolver_mask) = code_source(resolver);
+    assert!(
+        resolver_mask.iter().any(|is_code| *is_code),
+        "resolve_pending_next_locked census must inspect code"
+    );
+
+    let refusal_returns = code_occurrences(resolver, "return;");
+    assert!(
+        !refusal_returns.is_empty(),
+        "resolve_pending_next_locked refusal return census"
+    );
+    let pending_takes = code_occurrences(resolver, "pending_next.take()");
+    assert!(
+        !pending_takes.is_empty(),
+        "resolve_pending_next_locked pending_next take census"
+    );
+    let last_refusal_return = *refusal_returns.last().expect("last refusal return");
+    assert!(
+        pending_takes
+            .iter()
+            .all(|take_offset| *take_offset > last_refusal_return),
+        "pending_next must be taken only after every refusal return"
+    );
+}
+
+#[test]
+fn first_strand_census_precedes_the_steady_state_cadence() {
+    let oracle = repo_text(STRAND_ORACLE_PATH);
+    let first_report_ms = u64_constant(&oracle, "STRAND_FIRST_REPORT_MS");
+    let report_period_ms = u64_constant(&oracle, "STRAND_REPORT_PERIOD_MS");
+    assert!(
+        first_report_ms < report_period_ms,
+        "first strand census must precede the steady-state cadence"
     );
 }
