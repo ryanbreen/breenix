@@ -35,6 +35,9 @@ FUTEX_HANDOFF_ORACLE_PATTERN='\[FUTEX_HANDOFF_ORACLE:aarch64:driven=2:stage1_ret
 # The boot-test oracle drives this injection exactly once; its forbidden detector output is pinned absent below.
 CREATION_LOCK_ORDER_INJECTED_LITERAL='[CREATION_LOCK_ORDER:INJECTED:PM_HELD]'
 CREATION_LOCK_ORDER_VIOLATION_LITERAL='[CREATION_LOCK_ORDER:VIOLATION:PM_HELD]'
+# resolved_production may be zero once #605's early-slot-consumption defect is fixed; deterministic resolved_exercised proves the resolver ran.
+SCHED_STRAND_ORACLE_PATTERN='\[SCHED_STRAND_ORACLE:aarch64:samples=[1-9][0-9]*:checked=[1-9][0-9]*:stranded=0:running_shape=[0-9]+:ready_shape=[0-9]+:resolved_production=[0-9]+:resolved_exercised=[1-9][0-9]*:worst_dwell_ms=[0-9]+:overflow=[0-9]+\]'
+STRAND_INJECT_ORACLE_PATTERN='\[STRAND_INJECT_ORACLE:aarch64:legA_exercised=1:legA_recovered=1:legB_exercised=1:legB_recovered=1:stranded=0\]'
 
 # Parse args
 REBUILD=false
@@ -225,6 +228,46 @@ if $PHASE1_OK && [ -z "$FAIL_REASON" ]; then
         FAIL_REASON="Phase 1: missing init-group refusal oracle counter marker"
     elif ! grep -Eq '\[BLOCK_WEDGE_ORACLE:locked=1:wedged=1:refused=1:parked=0:refuse_ms=[0-9]+\]' "$OUTPUT_DIR/serial.txt" 2>/dev/null; then
         FAIL_REASON="Phase 1: missing block wedge oracle counter marker"
+    fi
+fi
+
+# The strand detector deliberately emits its first census about three seconds
+# after it starts, independently of boot-test completion. Give that fixed
+# cadence time to produce both required markers before scoring the boot.
+if $PHASE1_OK && [ -z "$FAIL_REASON" ]; then
+    echo ""
+    echo "Phase 1a3: Waiting for scheduler strand oracles..."
+    STRAND_ORACLES_OK=false
+    for i in $(seq 1 40); do
+        if grep -qE '\[SCHED_STRAND_ORACLE:[^]]*:stranded=[1-9][0-9]*:' "$OUTPUT_DIR/serial.txt" 2>/dev/null; then
+            STRAND_LINE=$(grep -E '\[SCHED_STRAND_ORACLE:[^]]*:stranded=[1-9][0-9]*:' "$OUTPUT_DIR/serial.txt" 2>/dev/null | tail -1)
+            FAIL_REASON="Phase 1a3: scheduler strand census reported stranded work ($STRAND_LINE)"
+            break
+        fi
+        if grep -qE '\[STRAND_INJECT_ORACLE:[^]]*:stranded=[1-9][0-9]*\]' "$OUTPUT_DIR/serial.txt" 2>/dev/null; then
+            STRAND_LINE=$(grep -E '\[STRAND_INJECT_ORACLE:[^]]*:stranded=[1-9][0-9]*\]' "$OUTPUT_DIR/serial.txt" 2>/dev/null | tail -1)
+            FAIL_REASON="Phase 1a3: scheduler strand injection oracle reported stranded work ($STRAND_LINE)"
+            break
+        fi
+        if grep -qE "$SCHED_STRAND_ORACLE_PATTERN" "$OUTPUT_DIR/serial.txt" 2>/dev/null \
+            && grep -qE "$STRAND_INJECT_ORACLE_PATTERN" "$OUTPUT_DIR/serial.txt" 2>/dev/null; then
+            STRAND_ORACLES_OK=true
+            break
+        fi
+        if ! kill -0 $QEMU_PID 2>/dev/null; then
+            FAIL_REASON="Phase 1a3: scheduler strand oracles never completed (QEMU exited)"
+            break
+        fi
+        sleep 1
+    done
+
+    if ! $STRAND_ORACLES_OK && [ -z "$FAIL_REASON" ]; then
+        FAIL_REASON="Phase 1a3: scheduler strand oracle marker absent (40s timeout)"
+    fi
+    if $STRAND_ORACLES_OK && [ -z "$FAIL_REASON" ]; then
+        echo "  Observed: $(grep -E "$SCHED_STRAND_ORACLE_PATTERN" "$OUTPUT_DIR/serial.txt" | tail -1)"
+        echo "  Observed: $(grep -E "$STRAND_INJECT_ORACLE_PATTERN" "$OUTPUT_DIR/serial.txt" | tail -1)"
+        echo "Phase 1a3: PASS"
     fi
 fi
 

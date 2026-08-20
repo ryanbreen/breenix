@@ -226,6 +226,7 @@ classify_serial() {
     local quiesce_rows
     local quiesce_rows_floor
     local quiesce_walk_line
+    local stranded_strand_line
 
     # #596's runtime oracle is unconditional: an inline-saved context whose
     # recorded resume PC is not its inline-save x30 is a defect no matter what
@@ -238,6 +239,19 @@ classify_serial() {
     if grep -qE "\[DATA_ABORT\].*from_el0=0" "$serial_file" 2>/dev/null; then
         CLASS_BUCKET="596"
         CLASS_REASON="EL1 data abort: $(grep -E "\[DATA_ABORT\].*from_el0=0" "$serial_file" | head -1 | sed 's/[[:space:]]*$//')"
+        return
+    fi
+    stranded_strand_line=$(grep -E '\[SCHED_STRAND_ORACLE:[^]]*:stranded=[1-9][0-9]*:' \
+        "$serial_file" 2>/dev/null | tail -1 || true)
+    if [ -n "$stranded_strand_line" ]; then
+        CLASS_BUCKET="589"
+        CLASS_REASON="scheduler strand census reported stranded work: $stranded_strand_line"
+        return
+    fi
+    if grep -qE '\[STRAND_INJECT_ORACLE:[^]]*:stranded=[1-9][0-9]*\]' \
+        "$serial_file" 2>/dev/null; then
+        CLASS_BUCKET="589"
+        CLASS_REASON="strand injection oracle reported stranded work: $(grep -E '\[STRAND_INJECT_ORACLE:[^]]*:stranded=[1-9][0-9]*\]' "$serial_file" | tail -1)"
         return
     fi
     if grep -qF "[BLOCK_EINTR_ORACLE:FAIL" "$serial_file" 2>/dev/null; then
@@ -318,6 +332,12 @@ classify_serial() {
         if grep -qF "[INIT_GROUP_CHILD_RAN]" "$serial_file" 2>/dev/null; then
             CLASS_BUCKET="P5B"
             CLASS_REASON="refused init-group child ran"
+            return
+        fi
+        if ! grep -qF "[SCHED_STRAND_ORACLE:" "$serial_file" 2>/dev/null \
+            || ! grep -qF "[STRAND_INJECT_ORACLE:" "$serial_file" 2>/dev/null; then
+            CLASS_BUCKET="UNATTRIBUTED"
+            CLASS_REASON="scheduler strand oracle marker absent"
             return
         fi
         CLASS_BUCKET="GREEN"

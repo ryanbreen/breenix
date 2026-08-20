@@ -16,6 +16,10 @@ BREENIX_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 PROD_SEAM_ABSENT_LITERAL='[FUTEX_HANDOFF_ORACLE_DRIVER:seam_absent:probe=-110]'
 # This boot_tests-only kernel marker must be wholly absent from the unarmed run.
 KERNEL_ORACLE_LITERAL='[FUTEX_HANDOFF_ORACLE:'
+# These boot_tests-only scheduler strand markers must also be absent from the
+# shipped production profile.
+SCHED_STRAND_ORACLE_LITERAL='[SCHED_STRAND_ORACLE:'
+STRAND_INJECT_ORACLE_LITERAL='[STRAND_INJECT_ORACLE:'
 # This proves init resumed after waiting for the self-limiting driver.
 INIT_EXIT_LITERAL='[init] futex_handoff_oracle exited pid='
 # This proves init's earlier oracle also completes on the unarmed profile.
@@ -54,6 +58,8 @@ print_observed_values() {
     local serial_file="$1"
     echo "Observed seam-absent marker count: $(marker_count "$serial_file" "$PROD_SEAM_ABSENT_LITERAL")"
     echo "Observed kernel oracle marker count: $(marker_count "$serial_file" "$KERNEL_ORACLE_LITERAL")"
+    echo "Observed scheduler strand oracle marker count: $(marker_count "$serial_file" "$SCHED_STRAND_ORACLE_LITERAL")"
+    echo "Observed strand injection oracle marker count: $(marker_count "$serial_file" "$STRAND_INJECT_ORACLE_LITERAL")"
     echo "Observed init-resumed marker count: $(marker_count "$serial_file" "$INIT_EXIT_LITERAL")"
     echo "Observed block EINTR oracle marker count: $(marker_count "$serial_file" "$BLOCK_EINTR_ORACLE_LITERAL")"
     echo "Observed block EINTR oracle failure count: $(marker_count "$serial_file" "$BLOCK_EINTR_ORACLE_FAIL_LITERAL")"
@@ -188,6 +194,8 @@ QEMU_PID=""
 
 PROD_SEAM_ABSENT_COUNT=$(marker_count "$SERIAL_FILE" "$PROD_SEAM_ABSENT_LITERAL")
 KERNEL_ORACLE_COUNT=$(marker_count "$SERIAL_FILE" "$KERNEL_ORACLE_LITERAL")
+SCHED_STRAND_ORACLE_COUNT=$(marker_count "$SERIAL_FILE" "$SCHED_STRAND_ORACLE_LITERAL")
+STRAND_INJECT_ORACLE_COUNT=$(marker_count "$SERIAL_FILE" "$STRAND_INJECT_ORACLE_LITERAL")
 INIT_EXIT_COUNT=$(marker_count "$SERIAL_FILE" "$INIT_EXIT_LITERAL")
 BLOCK_EINTR_ORACLE_COUNT=$(marker_count "$SERIAL_FILE" "$BLOCK_EINTR_ORACLE_LITERAL")
 BLOCK_EINTR_ORACLE_FAIL_COUNT=$(marker_count "$SERIAL_FILE" "$BLOCK_EINTR_ORACLE_FAIL_LITERAL")
@@ -200,6 +208,14 @@ CRASH_COUNT=$(crash_count "$SERIAL_FILE")
 }
 [ "$KERNEL_ORACLE_COUNT" -eq 0 ] || {
     echo "FAIL: boot_tests-only kernel oracle marker was present"
+    exit 1
+}
+[ "$SCHED_STRAND_ORACLE_COUNT" -eq 0 ] || {
+    echo "FAIL: boot_tests-only scheduler strand oracle marker was present"
+    exit 1
+}
+[ "$STRAND_INJECT_ORACLE_COUNT" -eq 0 ] || {
+    echo "FAIL: boot_tests-only strand injection oracle marker was present"
     exit 1
 }
 [ "$INIT_EXIT_COUNT" -ge 1 ] || {
