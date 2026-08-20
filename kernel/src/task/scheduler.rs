@@ -3568,6 +3568,11 @@ impl Scheduler {
             && !is_pending_next
             && !is_deferred_requeue
         {
+            if let Some(thread) = self.get_thread_mut(previous) {
+                if thread.saved_by_inline_schedule {
+                    thread.context.elr_el1 = thread.context.x30;
+                }
+            }
             self.per_cpu_queues[cpu].push_back(previous);
             ENQUEUE_DEFERRED_DRAINED_OK.fetch_add(1, Ordering::Relaxed);
             set_need_resched();
