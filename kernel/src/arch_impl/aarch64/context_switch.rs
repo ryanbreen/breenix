@@ -89,6 +89,12 @@ fn dispatch_spsr(spsr: u64) -> u64 {
     spsr & !SPSR_DAIF_IRQ_BIT
 }
 
+/// Whether this CPU can enter the scheduler from its current preemption state.
+#[inline(always)]
+pub fn can_dispatch_here() -> bool {
+    (Aarch64PerCpu::preempt_count() & PREEMPT_GUARD_MASK) == 0
+}
+
 #[inline]
 fn kernel_dispatch_spsr(spsr: u64) -> u64 {
     ((spsr & !SPSR_MODE_MASK) | SPSR_EL1H) & !SPSR_DAIF_IRQ_BIT
@@ -4678,11 +4684,18 @@ fn cpu0_breadcrumb(cpu_id: usize, id: u64) {
     }
 }
 
-pub fn schedule_from_kernel() {
+/// Run teardown that may invoke destructors, allocate, or take locks.
+///
+/// Callers must invoke this before entering any interrupt-masked scheduling
+/// window; `schedule_from_kernel` deliberately contains no reclamation work.
+#[inline]
+pub fn run_deferred_reclamation() {
     crate::task::process_task::drain_deferred_fault_sigsegv_exits();
     crate::task::process_task::reclaim_deferred_process_resources();
     crate::task::scheduler::reclaim_terminated_threads();
+}
 
+pub fn schedule_from_kernel() {
     let saved_daif = read_daif();
     let cpu_id = Aarch64PerCpu::cpu_id() as usize;
     cpu0_breadcrumb(cpu_id, 1); // entry
@@ -5158,6 +5171,8 @@ pub extern "C" fn idle_loop_arm64() -> ! {
     // Breadcrumb 50: CPU 0 reached the idle loop after ERET dispatch
     cpu0_breadcrumb(cpu_id, 50);
     loop {
+        run_deferred_reclamation();
+
         unsafe {
             // Match Linux's generic idle rule: after deciding whether sleep is
             // allowed, do not re-enable interrupts until the sleep instruction

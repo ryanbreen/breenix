@@ -261,10 +261,12 @@ impl PendingProcessReclaim {
     }
 }
 
-static PENDING_PROCESS_RECLAIMS: spin::Mutex<alloc::vec::Vec<PendingProcessReclaim>> =
-    spin::Mutex::new(alloc::vec::Vec::new());
-static PARKED_PROCESS_RECLAIMS: spin::Mutex<alloc::vec::Vec<PendingProcessReclaim>> =
-    spin::Mutex::new(alloc::vec::Vec::new());
+static PENDING_PROCESS_RECLAIMS: crate::irq_safe_mutex::IrqSafeMutex<
+    alloc::vec::Vec<PendingProcessReclaim>,
+> = crate::irq_safe_mutex::IrqSafeMutex::new(alloc::vec::Vec::new());
+static PARKED_PROCESS_RECLAIMS: crate::irq_safe_mutex::IrqSafeMutex<
+    alloc::vec::Vec<PendingProcessReclaim>,
+> = crate::irq_safe_mutex::IrqSafeMutex::new(alloc::vec::Vec::new());
 static RECLAIM_PASS_ID: AtomicU32 = AtomicU32::new(0);
 static ROW_REMOVAL_EPOCH: AtomicU64 = AtomicU64::new(0);
 

@@ -312,6 +312,18 @@ pub enum UnblockOutcome {
 /// Global scheduler instance
 static SCHEDULER: Mutex<Option<Scheduler>> = Mutex::new(None);
 
+#[cfg(target_arch = "aarch64")]
+#[inline(always)]
+fn arch_can_dispatch_here() -> bool {
+    crate::arch_impl::aarch64::context_switch::can_dispatch_here()
+}
+
+#[cfg(not(target_arch = "aarch64"))]
+#[inline(always)]
+fn arch_can_dispatch_here() -> bool {
+    true
+}
+
 #[cfg(all(target_arch = "aarch64", feature = "boot_tests"))]
 static BOOT_TEST_CPU_AFFINITY: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(0) }; MAX_CPUS];
 
@@ -1296,21 +1308,29 @@ impl Scheduler {
         }
     }
 
-    /// Whether a CPU is online and entering the scheduler often enough to
-    /// dispatch newly runnable work. The current CPU always accepts wakeups.
+    /// Whether a CPU is online and able to dispatch newly runnable work.
+    ///
+    /// The current CPU is accepted immediately only when its architecture can
+    /// enter the scheduler; otherwise it is judged by the same external
+    /// scheduler-entry staleness test as every peer.
     #[inline(always)]
     fn cpu_accepts_wakeups(&self, cpu: usize) -> bool {
-        let online_cpus = self.online_cpu_count();
-        let current_cpu = Self::current_cpu_id();
-        if cpu >= online_cpus {
+        if cpu >= self.online_cpu_count() {
             return false;
         }
-        if cpu == current_cpu {
+        if cpu == Self::current_cpu_id() && arch_can_dispatch_here() {
             return true;
         }
 
+        !self.cpu_dispatch_stale(cpu)
+    }
+
+    /// The staleness test, judged from outside the CPU: has it entered the
+    /// scheduler recently enough to dispatch newly runnable work?
+    #[inline(always)]
+    fn cpu_dispatch_stale(&self, cpu: usize) -> bool {
         let last_schedule_ticks = self.cpu_state[cpu].last_schedule_ticks;
-        crate::time::get_ticks().wrapping_sub(last_schedule_ticks) <= CPU_STALL_TICKS
+        crate::time::get_ticks().wrapping_sub(last_schedule_ticks) > CPU_STALL_TICKS
     }
 
     /// Migrate runnable work from offline or stalled CPUs onto this CPU.
@@ -3853,6 +3873,7 @@ pub fn spawn_as_current(thread: Box<Thread>) {
 /// Perform scheduling inline from Rust kernel context (AArch64).
 #[cfg(target_arch = "aarch64")]
 pub fn schedule() {
+    crate::arch_impl::aarch64::context_switch::run_deferred_reclamation();
     crate::arch_impl::aarch64::context_switch::schedule_from_kernel();
 }
 

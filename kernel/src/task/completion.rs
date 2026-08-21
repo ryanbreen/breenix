@@ -345,7 +345,10 @@ impl Completion {
                     trace_wait_timeout_stage(0);
 
                     #[cfg(target_arch = "aarch64")]
-                    crate::arch_impl::aarch64::context_switch::schedule_from_kernel();
+                    {
+                        crate::arch_impl::aarch64::context_switch::run_deferred_reclamation();
+                        crate::arch_impl::aarch64::context_switch::schedule_from_kernel();
+                    }
                     #[cfg(not(target_arch = "aarch64"))]
                     Cpu::halt_with_interrupts();
 

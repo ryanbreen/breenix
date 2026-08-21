@@ -264,6 +264,87 @@ fn normalized_code(fragment: &str) -> String {
         .join(" ")
 }
 
+/// Every named `static` and its declared type, without depending on line layout.
+fn static_declaration_types(source: &str) -> BTreeMap<String, Vec<String>> {
+    let mask = code_mask(source);
+    let bytes = source.as_bytes();
+    let mut declarations: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for static_offset in identifier_offsets(source, &mask, "static") {
+        let Some(mut cursor) = next_code(source, &mask, static_offset + "static".len()) else {
+            continue;
+        };
+        if source[cursor..].starts_with("mut")
+            && identifier_offsets(source, &mask, "mut").contains(&cursor)
+        {
+            let Some(after_mut) = next_code(source, &mask, cursor + "mut".len()) else {
+                continue;
+            };
+            cursor = after_mut;
+        }
+        if !identifier_byte(bytes[cursor]) {
+            continue;
+        }
+        let name_start = cursor;
+        while cursor < bytes.len() && mask[cursor] && identifier_byte(bytes[cursor]) {
+            cursor += 1;
+        }
+        let name = &source[name_start..cursor];
+        let Some(colon) = next_code(source, &mask, cursor) else {
+            continue;
+        };
+        if bytes[colon] != b':' {
+            continue;
+        }
+        let Some(type_start) = next_code(source, &mask, colon + 1) else {
+            continue;
+        };
+        let mut paren_depth = 0usize;
+        let mut bracket_depth = 0usize;
+        let mut brace_depth = 0usize;
+        let mut angle_depth = 0usize;
+        let mut type_end = None;
+        for index in type_start..bytes.len() {
+            if !mask[index] {
+                continue;
+            }
+            match bytes[index] {
+                b'(' => paren_depth += 1,
+                b')' => paren_depth = paren_depth.saturating_sub(1),
+                b'[' => bracket_depth += 1,
+                b']' => bracket_depth = bracket_depth.saturating_sub(1),
+                b'{' => brace_depth += 1,
+                b'}' => brace_depth = brace_depth.saturating_sub(1),
+                b'<' => angle_depth += 1,
+                b'>' => angle_depth = angle_depth.saturating_sub(1),
+                b'=' if paren_depth == 0
+                    && bracket_depth == 0
+                    && brace_depth == 0
+                    && angle_depth == 0 =>
+                {
+                    type_end = Some(index);
+                    break;
+                }
+                _ => {}
+            }
+        }
+        if let Some(type_end) = type_end {
+            declarations
+                .entry(name.to_owned())
+                .or_default()
+                .push(normalized_code(&source[type_start..type_end]));
+        }
+    }
+    declarations
+}
+
+fn irqsave_wrapper_type(declared_type: &str) -> bool {
+    let compact = declared_type.replace(' ', "").to_ascii_lowercase();
+    compact.contains("irq")
+        && (compact.contains("mutex") || compact.contains("lock"))
+        && !compact.starts_with("mutex<")
+        && !compact.starts_with("spin::mutex<")
+}
+
 /// The statements inside a brace-matched block returned by `braced_block`.
 fn block_statements(block: &str) -> Option<&str> {
     let mask = code_mask(block);
@@ -1450,6 +1531,66 @@ fn call_offsets(source: &str, mask: &[bool], name: &str) -> Vec<usize> {
         .collect()
 }
 
+fn direct_call_names(source: &str) -> BTreeSet<String> {
+    let mask = code_mask(source);
+    let bytes = source.as_bytes();
+    let mut calls = BTreeSet::new();
+    let mut cursor = 0usize;
+    while cursor < bytes.len() {
+        if !mask[cursor]
+            || !(bytes[cursor] == b'_'
+                || bytes[cursor].is_ascii_alphabetic()
+                || !bytes[cursor].is_ascii())
+        {
+            cursor += 1;
+            continue;
+        }
+        let start = cursor;
+        cursor += 1;
+        while cursor < bytes.len() && mask[cursor] && identifier_byte(bytes[cursor]) {
+            cursor += 1;
+        }
+        if next_code(source, &mask, cursor).is_some_and(|open| bytes[open] == b'(')
+            && !preceded_by_keyword(source, &mask, start, "fn")
+        {
+            calls.insert(source[start..cursor].to_owned());
+        }
+    }
+    calls
+}
+
+fn call_is_immediately_preceded_by(
+    source: &str,
+    mask: &[bool],
+    call_offset: usize,
+    predecessor: &str,
+) -> bool {
+    let Some(predecessor_offset) = call_offsets(source, mask, predecessor)
+        .into_iter()
+        .filter(|offset| *offset < call_offset)
+        .next_back()
+    else {
+        return false;
+    };
+    let Some(open) = next_code(source, mask, predecessor_offset + predecessor.len()) else {
+        return false;
+    };
+    let Some(close) = matching_paren(source, mask, open) else {
+        return false;
+    };
+    let Some(semicolon) = next_code(source, mask, close + 1) else {
+        return false;
+    };
+    if source.as_bytes()[semicolon] != b';' {
+        return false;
+    }
+
+    let separator = normalized_code(&source[semicolon + 1..call_offset]).replace(' ', "");
+    separator
+        .bytes()
+        .all(|byte| byte == b':' || byte == b'_' || byte.is_ascii_alphanumeric())
+}
+
 /// Offsets of method calls `.name(`.
 fn method_call_offsets(source: &str, mask: &[bool], name: &str) -> Vec<usize> {
     let bytes = source.as_bytes();
@@ -1464,6 +1605,86 @@ fn method_call_offsets(source: &str, mask: &[bool], name: &str) -> Vec<usize> {
                 })
         })
         .collect()
+}
+
+/// Lexical class ratchet: direct `.lock()` calls on named statics in `Drop`
+/// bodies, one level deep. It intentionally does not follow the call graph, so
+/// a destructor that calls a helper which locks remains outside this analysis.
+fn validate_drop_static_locks_are_irq_safe(
+    sources: &[(String, String)],
+) -> Result<(), Vec<String>> {
+    let declarations: Vec<_> = sources
+        .iter()
+        .map(|(path, source)| (path, static_declaration_types(source)))
+        .collect();
+    let mut locked_statics = BTreeSet::new();
+
+    for (path, source) in sources {
+        let mask = code_mask(source);
+        let spans = rendered_item_spans(&item_spans(source, &mask));
+        for lock_offset in method_call_offsets(source, &mask, "lock") {
+            let item = item_path_at(&spans, lock_offset);
+            if !item.contains("impl Drop for ") || !item.ends_with("::fn drop") {
+                continue;
+            }
+            let Some(dot) = previous_code(source, &mask, lock_offset) else {
+                continue;
+            };
+            if source.as_bytes()[dot] != b'.' {
+                continue;
+            }
+            let Some(static_name) = preceding_identifier(source, &mask, dot) else {
+                continue;
+            };
+            let named_static_shape = static_name.bytes().any(|byte| byte.is_ascii_uppercase())
+                && static_name
+                    .bytes()
+                    .all(|byte| byte == b'_' || byte.is_ascii_uppercase() || byte.is_ascii_digit());
+            if !named_static_shape {
+                continue;
+            }
+
+            let local_types = static_declaration_types(source);
+            let declared_types: Vec<_> = match local_types.get(&static_name) {
+                Some(local) => local.clone(),
+                None => declarations
+                    .iter()
+                    .flat_map(|(_, module)| {
+                        module.get(&static_name).into_iter().flatten().cloned()
+                    })
+                    .collect(),
+            };
+            if declared_types.is_empty() {
+                locked_statics.insert((
+                    path.clone(),
+                    item.clone(),
+                    static_name,
+                    "<unresolved static type>".to_owned(),
+                ));
+                continue;
+            }
+            for declared_type in declared_types {
+                locked_statics.insert((
+                    path.clone(),
+                    item.clone(),
+                    static_name.clone(),
+                    declared_type,
+                ));
+            }
+        }
+    }
+
+    let failures: Vec<_> = locked_statics
+        .into_iter()
+        .filter_map(|(path, item, static_name, declared_type)| {
+            (!irqsave_wrapper_type(&declared_type)).then(|| {
+                format!(
+                    "{path}: {item} locks {static_name}, declared as non-irqsave {declared_type}"
+                )
+            })
+        })
+        .collect();
+    failures.is_empty().then_some(()).ok_or(failures)
 }
 
 /// Assignment sites for one field identifier, excluding comparisons. This is
@@ -2621,7 +2842,7 @@ const PROCESS_PAGE_TABLE_CONSTRUCTORS: &[(&str, &str, usize)] = &[
 ];
 #[rustfmt::skip]
 const DEFERRED_RECLAIM_DRAIN_SITES: &[(&str, &str, usize)] = &[
-    ("kernel/src/arch_impl/aarch64/context_switch.rs", "fn schedule_from_kernel", 1),
+    ("kernel/src/arch_impl/aarch64/context_switch.rs", "fn run_deferred_reclamation", 1),
     ("kernel/src/arch_impl/aarch64/syscall_entry.rs", "fn sys_fork_aarch64", 1),
     ("kernel/src/interrupts/context_switch.rs", "fn idle_loop", 1),
     ("kernel/src/process/mod.rs", "fn exit_process_and_retire", 1),
@@ -10715,4 +10936,258 @@ fn kernel_stack_release_validator_rejects_unsafe_mutations() {
         drop_under_lock,
     )
     .is_err());
+}
+
+#[test]
+fn arm64_stack_bitmap_is_irqsafe_by_type_and_release_order() {
+    let irq_safe_mutex = repo_text("kernel/src/irq_safe_mutex.rs");
+    let kernel_stack = repo_text("kernel/src/memory/kernel_stack.rs");
+    let mask = code_mask(&kernel_stack);
+    let module_offset = code_offsets(&kernel_stack, &mask, "mod aarch64")
+        .into_iter()
+        .next()
+        .expect("aarch64 kernel-stack module");
+    let module = braced_block(&kernel_stack, &mask, module_offset).expect("aarch64 module body");
+
+    let declarations = static_declaration_types(module);
+    let bitmap_type = declarations
+        .get("ARM64_STACK_BITMAP")
+        .filter(|declarations| declarations.len() == 1)
+        .and_then(|declarations| declarations.first())
+        .expect("one ARM64_STACK_BITMAP declaration");
+    assert!(
+        irqsave_wrapper_type(bitmap_type),
+        "ARM64_STACK_BITMAP must be declared with an irqsave wrapper, found {bitmap_type}"
+    );
+
+    let module_mask = code_mask(module);
+    let bare_bitmap_lock_sites: usize = declarations
+        .iter()
+        .filter(|(name, types)| {
+            name.contains("BITMAP")
+                && types.iter().any(|declared_type| {
+                    let compact = declared_type.replace(' ', "");
+                    compact.starts_with("Mutex<") || compact.starts_with("spin::Mutex<")
+                })
+        })
+        .map(|(name, _)| {
+            identifier_offsets(module, &module_mask, name)
+                .into_iter()
+                .filter(|offset| code_follows(module, &module_mask, offset + name.len(), ".lock()"))
+                .count()
+        })
+        .sum();
+    assert_eq!(
+        bare_bitmap_lock_sites, 0,
+        "a bare spin::Mutex-typed bitmap must have no lock acquisition sites"
+    );
+
+    let irq_mutex_mask = code_mask(&irq_safe_mutex);
+    let guard_drop = rendered_item_spans(&item_spans(&irq_safe_mutex, &irq_mutex_mask))
+        .into_iter()
+        .find(|(_, _, path)| {
+            path.contains("impl<T> Drop for IrqSafeMutexGuard") && path.ends_with("::fn drop")
+        })
+        .map(|(open, close, _)| &irq_safe_mutex[open..=close])
+        .expect("IrqSafeMutexGuard Drop body");
+    let release = call_offsets(guard_drop, &code_mask(guard_drop), "drop");
+    assert_eq!(release.len(), 1, "guard Drop must explicitly release once");
+    let restore = call_offsets(guard_drop, &code_mask(guard_drop), "restore")
+        .into_iter()
+        .next()
+        .expect("guard Drop restores the saved interrupt state");
+    assert!(
+        release[0] < restore,
+        "the inner mutex guard must be released before DAIF is restored"
+    );
+    let restore_state = function_body(&irq_safe_mutex, "restore");
+    assert!(
+        restore_state.contains("msr daif, {}"),
+        "the aarch64 restore path must restore the saved DAIF"
+    );
+
+    let save_and_mask = function_body(&irq_safe_mutex, "save_and_mask");
+    let save = save_and_mask.find("mrs {}, daif").expect("lock saves DAIF");
+    let mask_irq = save_and_mask
+        .find("msr daifset, #3")
+        .expect("lock masks IRQ and FIQ before acquisition");
+    let acquire = function_body(&irq_safe_mutex, "lock");
+    assert!(
+        save < mask_irq,
+        "DAIF save must precede IRQ and FIQ masking"
+    );
+    assert!(
+        acquire.find("save_and_mask").expect("interrupt-state acquisition")
+            < code_offsets(&acquire, &code_mask(&acquire), "inner.lock")
+                .into_iter()
+                .next()
+                .expect("inner mutex acquisition"),
+        "DAIF save and IRQ/FIQ masking must precede the inner mutex acquisition"
+    );
+}
+
+#[test]
+fn drop_body_static_locks_are_irqsafe_by_derived_census() {
+    let sources = rust_sources_below("kernel/src");
+    validate_drop_static_locks_are_irq_safe(&sources)
+        .unwrap_or_else(|failures| panic!("{}", failures.join("\n")));
+
+    let irq_mutex_definitions: usize = sources
+        .iter()
+        .map(|(_, source)| {
+            code_offsets(source, &code_mask(source), "struct IrqSafeMutex<T>").len()
+        })
+        .sum();
+    let irq_guard_definitions: usize = sources
+        .iter()
+        .map(|(_, source)| {
+            code_offsets(
+                source,
+                &code_mask(source),
+                "struct IrqSafeMutexGuard<'a, T>",
+            )
+            .len()
+        })
+        .sum();
+    assert_eq!(
+        (irq_mutex_definitions, irq_guard_definitions),
+        (1, 1),
+        "the irqsave invariant must have exactly one mutex and guard type"
+    );
+
+    let irq_safe_mutex = source(&sources, "kernel/src/irq_safe_mutex.rs");
+    let irq_mutex_impl = irq_safe_mutex
+        .find("impl<T> IrqSafeMutex<T>")
+        .expect("IrqSafeMutex implementation");
+    let lock = function_body(&irq_safe_mutex[irq_mutex_impl..], "lock");
+    let save_and_mask = call_offsets(lock, &code_mask(lock), "save_and_mask");
+    let inner_lock = method_call_offsets(lock, &code_mask(lock), "lock");
+    assert_eq!(
+        (save_and_mask.len(), inner_lock.len()),
+        (1, 1),
+        "IrqSafeMutex::lock must mask once and acquire its inner mutex once"
+    );
+    assert!(
+        save_and_mask[0] < inner_lock[0],
+        "IrqSafeMutex::lock must mask interrupts before the inner acquisition"
+    );
+
+    let irq_guard_drop = irq_safe_mutex
+        .find("impl<T> Drop for IrqSafeMutexGuard")
+        .map(|offset| function_body(&irq_safe_mutex[offset..], "drop"))
+        .expect("IrqSafeMutexGuard Drop implementation");
+    let release = call_offsets(irq_guard_drop, &code_mask(irq_guard_drop), "drop");
+    let restore = call_offsets(irq_guard_drop, &code_mask(irq_guard_drop), "restore");
+    assert_eq!(
+        (release.len(), restore.len()),
+        (1, 1),
+        "IrqSafeMutexGuard::drop must release once and restore once"
+    );
+    assert!(
+        release[0] < restore[0],
+        "IrqSafeMutexGuard must release the inner guard before restoring interrupts"
+    );
+
+    let synthetic = with_synthetic_source(
+        &sources,
+        "kernel/src/synthetic_drop_lock.rs",
+        r#"
+        static SYNTHETIC_DROP_LOCK: spin::Mutex<()> = spin::Mutex::new(());
+        struct SyntheticDropGuard;
+        impl Drop for SyntheticDropGuard {
+            fn drop(&mut self) {
+                let _guard = SYNTHETIC_DROP_LOCK.lock();
+            }
+        }
+        "#,
+    );
+    assert!(
+        validate_drop_static_locks_are_irq_safe(&synthetic).is_err(),
+        "a newly introduced bare static lock in any Drop body must fail the derived census"
+    );
+}
+
+#[test]
+fn aarch64_reclamation_stays_outside_the_masked_scheduler_window() {
+    let context_switch = repo_text("kernel/src/arch_impl/aarch64/context_switch.rs");
+    let reclamation = function_body(&context_switch, "run_deferred_reclamation");
+    let reclamation_calls = direct_call_names(reclamation);
+    assert_eq!(
+        reclamation_calls.len(),
+        3,
+        "run_deferred_reclamation must retain its three teardown operations"
+    );
+
+    let schedule = function_body(&context_switch, "schedule_from_kernel");
+    let schedule_mask = code_mask(schedule);
+    for reclamation in reclamation_calls
+        .iter()
+        .map(String::as_str)
+        .chain(core::iter::once("run_deferred_reclamation"))
+    {
+        assert!(
+            call_offsets(schedule, &schedule_mask, reclamation).is_empty(),
+            "schedule_from_kernel must not call {reclamation}"
+        );
+    }
+
+    let idle = function_body(&context_switch, "idle_loop_arm64");
+    let idle_mask = code_mask(idle);
+    let loop_offset = identifier_offsets(idle, &idle_mask, "loop")
+        .into_iter()
+        .next()
+        .expect("idle loop body");
+    let loop_body = braced_block(idle, &idle_mask, loop_offset).expect("matched idle loop body");
+    let reclaim_calls = call_offsets(
+        loop_body,
+        &code_mask(loop_body),
+        "run_deferred_reclamation",
+    );
+    assert_eq!(
+        reclaim_calls.len(),
+        1,
+        "idle_loop_arm64 must reclaim exactly once per loop iteration"
+    );
+    let mask_offsets: Vec<_> = loop_body.match_indices("msr daifset, #0xf").collect();
+    assert_eq!(
+        mask_offsets.len(),
+        1,
+        "the idle loop must retain one all-masked window entry"
+    );
+    assert!(
+        reclaim_calls[0] < mask_offsets[0].0,
+        "idle reclamation must remain textually before the all-masked window"
+    );
+}
+
+#[test]
+fn every_external_schedule_from_kernel_call_reclaims_immediately_beforehand() {
+    let sources = rust_sources_below("kernel/src");
+    let mut schedule_sites = 0usize;
+    let mut paired_sites = 0usize;
+    for (path, source) in &sources {
+        if path == "kernel/src/arch_impl/aarch64/context_switch.rs" {
+            continue;
+        }
+        let mask = code_mask(source);
+        for call_offset in call_offsets(source, &mask, "schedule_from_kernel") {
+            schedule_sites += 1;
+            if call_is_immediately_preceded_by(
+                source,
+                &mask,
+                call_offset,
+                "run_deferred_reclamation",
+            ) {
+                paired_sites += 1;
+            }
+        }
+    }
+    assert!(
+        schedule_sites > 0,
+        "external schedule_from_kernel coverage must be non-vacuous"
+    );
+    assert_eq!(
+        schedule_sites, paired_sites,
+        "every external schedule_from_kernel caller must immediately run deferred reclamation"
+    );
 }

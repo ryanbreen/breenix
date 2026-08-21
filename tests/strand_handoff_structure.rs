@@ -279,6 +279,25 @@ fn code_occurrences(source: &str, needle: &str) -> Vec<usize> {
         .collect()
 }
 
+fn function_bodies<'a>(source: &'a str, name: &str) -> Vec<&'a str> {
+    let (masked, mask) = code_source(source);
+    identifier_offsets(&masked, &mask, name)
+        .into_iter()
+        .filter_map(|name_offset| {
+            masked[..name_offset]
+                .rsplit_once("fn")
+                .is_some_and(|(_, suffix)| suffix.trim().is_empty())
+                .then(|| {
+                    let open = masked[name_offset + name.len()..]
+                        .find('{')
+                        .map(|offset| name_offset + name.len() + offset)
+                        .expect("function opening brace");
+                    braced_body(source, &masked, open)
+                })
+        })
+        .collect()
+}
+
 fn shell_function_body<'a>(source: &'a str, name: &str) -> &'a str {
     let declaration = format!("\n{name}() {{\n");
     let body_start = source
@@ -1356,5 +1375,113 @@ fn injection_report_cap_preserves_in_flight_scoring_windows() {
     assert!(
         !code_occurrences(marker_ready, "INJECT_B_FIRED").is_empty(),
         "marker readiness must consult leg B's mid-scoring state"
+    );
+}
+
+#[test]
+fn wakeup_placement_requires_local_dispatchability() {
+    let scheduler = repo_text(SCHEDULER_PATH);
+    let context_switch = repo_text(CONTEXT_SWITCH_PATH);
+
+    let accepts = function_body(&scheduler, "cpu_accepts_wakeups");
+    let compact_accepts: String = code_source(accepts)
+        .0
+        .chars()
+        .filter(|character| !character.is_whitespace())
+        .collect();
+    assert!(
+        compact_accepts.contains(
+            "ifcpu==Self::current_cpu_id()&&arch_can_dispatch_here(){returntrue;}"
+        ),
+        "the current CPU fast path must be conditional on architecture dispatchability"
+    );
+    assert_eq!(
+        code_occurrences(accepts, "arch_can_dispatch_here").len(),
+        1,
+        "cpu_accepts_wakeups must consult dispatchability exactly once"
+    );
+    assert_eq!(
+        code_occurrences(accepts, "return true").len(),
+        1,
+        "cpu_accepts_wakeups must not regain an unconditional current-CPU return"
+    );
+    assert_eq!(
+        code_occurrences(accepts, "cpu_dispatch_stale").len(),
+        1,
+        "a non-dispatchable current CPU must fall through to peer-style staleness"
+    );
+
+    let stale = function_body(&scheduler, "cpu_dispatch_stale");
+    assert!(
+        code_occurrences(stale, "current_cpu_id").is_empty(),
+        "the outside-CPU staleness predicate must not identify the observer CPU"
+    );
+    assert_eq!(
+        code_occurrences(stale, "self.cpu_state[cpu].last_schedule_ticks").len(),
+        1,
+        "cpu_dispatch_stale must read the target CPU's scheduling timestamp"
+    );
+    assert_eq!(
+        code_occurrences(stale, "wrapping_sub(last_schedule_ticks)").len(),
+        1,
+        "cpu_dispatch_stale must compare elapsed ticks with wrapping arithmetic"
+    );
+
+    let dispatch_bodies = function_bodies(&scheduler, "arch_can_dispatch_here");
+    assert_eq!(
+        dispatch_bodies.len(),
+        2,
+        "arch_can_dispatch_here must have aarch64 and non-aarch64 definitions"
+    );
+    let arm_body = dispatch_bodies
+        .iter()
+        .find(|body| !code_occurrences(body, "context_switch::can_dispatch_here").is_empty())
+        .expect("aarch64 dispatchability delegates to context_switch");
+    assert!(
+        code_occurrences(arm_body, "PREEMPT_GUARD_MASK").is_empty()
+            && !arm_body.contains("0x"),
+        "the scheduler wrapper must not duplicate the aarch64 preemption mask"
+    );
+    let non_arm_bodies = dispatch_bodies
+        .iter()
+        .filter(|body| {
+            let (code, _) = code_source(body);
+            code.split_whitespace().collect::<String>() == "true"
+        })
+        .count();
+    assert_eq!(
+        non_arm_bodies, 1,
+        "the non-aarch64 dispatchability predicate must preserve true"
+    );
+
+    let compact_scheduler: String = scheduler
+        .chars()
+        .filter(|character| !character.is_whitespace())
+        .collect();
+    assert!(
+        compact_scheduler.contains(
+            "#[cfg(not(target_arch=\"aarch64\"))]#[inline(always)]fnarch_can_dispatch_here()->bool{true}"
+        ),
+        "the true arch_can_dispatch_here body must be the non-aarch64 arm"
+    );
+
+    let context_predicate = function_body(&context_switch, "can_dispatch_here");
+    assert_eq!(
+        code_occurrences(context_predicate, "PREEMPT_GUARD_MASK").len(),
+        1,
+        "aarch64 dispatchability must derive from the shared guard mask"
+    );
+    assert_eq!(
+        code_occurrences(context_predicate, "preempt_count").len(),
+        1,
+        "aarch64 dispatchability must be a pure per-CPU preemption-count read"
+    );
+    let compact_context: String = context_switch
+        .chars()
+        .filter(|character| !character.is_whitespace())
+        .collect();
+    assert!(
+        compact_context.contains("#[inline(always)]pubfncan_dispatch_here()->bool"),
+        "the shared aarch64 predicate must remain public and always-inline"
     );
 }

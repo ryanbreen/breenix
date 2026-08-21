@@ -421,8 +421,8 @@ mod aarch64 {
         VirtAddr, KSTACK_LIVE_SLOT_CHECKS, KSTACK_LIVE_SLOT_REFUSALS,
         KSTACK_SLOTS_ALLOCATED,
     };
+    use crate::irq_safe_mutex::IrqSafeMutex;
     use core::sync::atomic::Ordering;
-    use spin::Mutex;
 
     /// ARM64 kernel stack base (in high-half direct map)
     /// Physical range: 0x5420_0000 .. 0x5620_0000 (32MB for kernel stacks)
@@ -450,7 +450,9 @@ mod aarch64 {
     pub(crate) const ARM64_MAX_KERNEL_STACKS: usize =
         ((ARM64_KERNEL_STACK_END - ARM64_KERNEL_STACK_BASE) / ARM64_STACK_SLOT_SIZE) as usize;
     const ARM64_BITMAP_SIZE: usize = (ARM64_MAX_KERNEL_STACKS + 63) / 64;
-    static ARM64_STACK_BITMAP: Mutex<[u64; ARM64_BITMAP_SIZE]> = Mutex::new([0; ARM64_BITMAP_SIZE]);
+
+    static ARM64_STACK_BITMAP: IrqSafeMutex<[u64; ARM64_BITMAP_SIZE]> =
+        IrqSafeMutex::new([0; ARM64_BITMAP_SIZE]);
 
     /// A kernel stack allocation for ARM64
     #[derive(Debug)]
