@@ -41,7 +41,7 @@ it un-skippable.
 | **DEBT-1 — `Report` exactly-once is not achieved; it degrades to at-most-once in one window** | **P6b** | Two things, together. **(a) The R-19 window.** When an effect marker reads `started == 1 && finished == 0`, T4 cannot tell whether `record_exit` landed; the current ruling is `→ Completed` + `LEDGER_EFFECT_AMBIGUOUS{report}`, i.e. a *possibly missing* report. P6b must either close the window with a mechanism that makes the record step itself recoverable, **or** carry an explicit operator acceptance that this is the round's single at-most-once obligation, with the counter asserted `0` on every healthy boot and moved only by deliberate injection. A silent third option — restating exactly-once while shipping at-most-once — is what the pre-check rejected twice and is not available. **(b) `on_process_exit` split phasing.** The split into `claim_exit_slot` (pure atomics, PM-callable) + `record_exit` (reaches SERIAL via `finalize()` → `ktap::emit_summary`) must be shown not to reorder the registry-slot clear relative to the serial emission, and must land in the **same PR** as T4 — a recovery rule and the marker it reads must never be separated by a merge boundary | v3 pre-check and re-check, item **B NOT-CLOSED** (both passes, verbatim unchanged): *"R-19 permits missing report when `started==1 && finished==0`"*. DESIGN §1.6 (class-B `Report`), §6 R-19; PLAN P6b |
 | **DEBT-2 — `Fds` close replay safety needs a PER-DESCRIPTOR token; the endpoint-CAS `CloseTicket` design is REJECTED** | **P7** | The v3 repair made `endpoint_hangup` idempotent by a **CAS on the shared endpoint**. The re-check's new FATAL is that live close accounting in the pipe/PTY/TCP endpoints is **per-descriptor**: a `dup`'d descriptor is a second, legitimate decrement on the *same* endpoint, and an endpoint-level CAS would suppress it — trading a double-close for a leaked endpoint that never hangs up. **P7 must not implement the CAS as specified.** It must carry a replay token that is unique to the `(row, fd)` pair being closed and that survives the unlocked window, so that a *replayed exit-close of the same descriptor* is suppressed while a *legitimate close of a different descriptor on the same endpoint* still decrements. DESIGN §1.4/§1.6/§2.5 and PLAN P6b/P7 must be rewritten to that mechanism before P7's tranche is submitted, and P7's gate must include a `dup`-then-close-both workload that fails by construction under an endpoint CAS | v3 re-check, **NEW FATAL**: *"the CloseTicket repair assumes endpoint-level CAS idempotence despite current close accounting being per-descriptor; duplicated descriptors make the CAS unsafe and would suppress legitimate closes"*; re-check item **1 NOT-CLOSED**. Also flagged by the repair pass itself as unreviewed (*"nobody has checked the current endpoints can satisfy it"*) |
 | **DEBT-3 — the blocking-primitive inventory is NOT closed at nine, and the surface is WIDER than the design recorded** | **P9** | The no-new-block admission interlock is what makes the boundary-reachability classification a one-way door, and it is specified as living inside "the exact nine" primitives. **Four** live publications sit outside that set, re-verified at `main` @ `2c7b8798`: **(1)** `kernel/src/syscall/futex.rs:115` writes `thread.state = ThreadState::Blocked` **directly**, bypassing every `Scheduler::block_current*` entry point (the state is re-read at `:130`); **(2)** `kernel/src/task/scheduler.rs:2607` publishes `ThreadState::BlockedOnIO` directly — the design cited `scheduler.rs:2175-2194`, which is now `unblock`'s wake predicate, not the publication; **(3)** `kernel/src/task/kthread.rs:151` `kthread_park()` writes `Blocked` at `:183` inside `with_scheduler` with no interlock, then drops the tid from the ready queue — **not in the design at all**; **(4)** `Thread::set_blocked()` (`kernel/src/task/thread.rs:902`, `#[allow(dead_code)]`) is a differently-named mutator whose only caller is `Scheduler::block_current` (`scheduler.rs:2099`, itself `#[allow(dead_code)]`) — a dead two-level pair that publishes `Blocked` outside the inventory's naming convention, and per the repo's zero-tolerance standard a **deletion**, not an interlock target. **The existing ratchet cannot see any of these**: `tests/teardown_structure.rs:2029` pins the family by NAME (`BLOCKING_NAME_PREFIXES = ["block_current", "prepare_to_wait"]`, `pub` definitions only), so a tenth `block_current*` cannot appear unnoticed, but a direct `thread.state = ThreadState::Blocked*` write — or a mutator named anything else — is invisible to it. Before P9's tranche: each path is brought under the interlock **or** proven unreachable once a request is latched; the ratchet gains a rule that catches direct state writes and not only names; the dead `set_blocked`/`block_current` pair is deleted; P0's ratchet rule 2 (*"the blocking-primitive set is exactly the nine above"*) is restated to the corrected inventory; and DESIGN §1.5's one-way-door claim and §0.3's "inventory is declared CLOSED at four families" are restated to match | v3 pre-check and re-check, item **D NOT-CLOSED** (both passes). Surface widened and re-anchored by the 2026-08-15 tranche-2 re-ratification (§3.2), tracked as **#580**. DESIGN §0.3 (closure D), §0.3.1, §1.5; PLAN P0 rule 2, P9 |
-| **DEBT-4 — the x86 reap path bypasses the tombstone gate** | **P6a** | P6a's whole claim is that a row is removed only by the **two-event join** (`reaped` ∧ `retired`, whichever writer sees the other flag set performs the removal). **`kernel/src/syscall/handlers.rs:3123`** (re-anchored at `2c7b8798`; the design said `:3101`) removes the row directly on the live x86 reap path, and its **byte-similar duplicate** at `kernel/src/syscall/wait.rs:386` does the same — so the join is not the only remover and the retention gate can pass on aarch64 while x86 still frees a row out from under an un-retired receipt. **Materially cheaper to close than when it was registered:** `ProcessManager::remove_process` is now a single four-line choke point (`manager.rs:1086-1090`) that already calls `note_process_row_removed()` → `ROW_REMOVAL_EPOCH` (`task/process_task.rs:355-357`), so **the join can be installed inside `remove_process` itself and cover both arches at once**, instead of the design's per-call-site chase. The two copies of the `complete_wait` reap block are a de-duplication seam worth taking in the same phase. (`task/process_task.rs:1807` is a third caller, but it is the `p1_row_epoch_gate` boot-test harness, not a live reap.) Before P6a's tranche: the removal routes through the join, **or** P6a's retention gate is honestly re-scoped to aarch64 with the x86 divergence named in AC-12's evidence column, a ratchet pinning both call sites by name, and a stated phase that closes it. Scoping the gate narrowly to avoid tripping on it, without naming it, is not available | v3 pre-check and re-check, item **B NOT-CLOSED** (second half, both passes): *"P6a omits the live x86 reap at `kernel/src/syscall/handlers.rs:3101`, which still removes the row directly"*; anchors and closure cost re-derived by the 2026-08-15 re-ratification (§3.2). PLAN P6a |
+| **DEBT-4 — the x86 reap path bypasses the tombstone gate, and the blast radius is 24 call sites, not four** | **P6a** | P6a's whole claim is that a row is removed only by the **two-event join** (`reaped` ∧ `retired`, whichever writer sees the other flag set performs the removal). **`kernel/src/syscall/handlers.rs:3128`** (re-derived at `174e5227`; the design said `:3101`, the v3 register said `:3123`) removes the row directly on the live x86 reap path, inside `complete_wait` at `:3064`, and its **byte-similar duplicate** at `kernel/src/syscall/wait.rs:386` (inside `complete_wait` at `:335`) does the same — so the join is not the only remover and the retention gate can pass on aarch64 while x86 still frees a row out from under an un-retired receipt. **The choke point is real and the join still installs in one place:** `ProcessManager::remove_process` is **nine lines at `manager.rs:1342-1350`** — not the "four-line choke point at `:1086-1090`" this row used to claim, and not the "eleven lines at `:1342-1352`" a 2026-08-20 correction pass claimed; it now also clears `designated_init` via `record_init_designation_retired()` (P5a) as well as bumping `ROW_REMOVAL_EPOCH` through `note_process_row_removed()` (`task/process_task.rs:355-356`, static `:269`), so **both arches are still covered by one edit** rather than a per-call-site chase, and `tests/teardown_structure.rs` already pins that premise four ways: `ROW_REMOVAL_EPOCH_BUMPS` (`:2667-2669`), `DESIGNATED_INIT_WRITES` (`:2451-2454`), `PROCESS_ROW_MAP_MUTATIONS` (`:2463-2474`, the `remove_process => remove` entry), and the body check at `:6713-6717`. **What is materially larger than this row ever recorded: there are 24 call sites, not four.** Twenty are in `kernel/src/tracing/providers/teardown.rs` (`1581, 1724, 1983, 2001, 2403, 2571, 2756, 2779, 3424, 3863, 4203, 4247, 4287, 4302, 4355, 4490, 4582, 4840, 4842, 5035`), all `boot_tests`-gated in-kernel oracles, and **each of the eight oracles that owns them emits a counter line pinned as a literal by a merge gate on one or both arches** — so a broken oracle is a red gate, not a quiet test failure. The four outside it are the two live reaps above, **`manager.rs:184`** (the P5a creation-failure retire of a provisional PID-1 reservation, comment `:174-177`: *"only `remove_process` clears `designated_init`"* — **not a reap, and it must be exempted from the join or it strands a permanent tombstone**), and `task/process_task.rs:2134` (the `p1_row_epoch_gate` harness, not a live reap). The liveness-query census is likewise **32 raw `self.processes.get*(&…)` sites in `manager.rs`** (9 immutable + 23 `get_mut`), not the nine a prior pass recorded — every one of them in scope for P6a's gate extra (c). Before P6a's tranche: the removal routes through the join **and** P6a's scope text enumerates the treatment of all 24 callers by class (reap / oracle reap stand-in / synthetic fixture / creation-failure retire), **or** P6a's retention gate is honestly re-scoped to aarch64 with the x86 divergence named in AC-12's evidence column, a ratchet pinning the call sites by census shape, and a stated phase that closes it. **#540** is an independent, unresolved evidence gap on the x86 leg — the x86 harness has no gate mode that exercises process exit/teardown with counter visibility (`mode=full` hangs; `completion.rs` has no x86_64 timeout) — so P6a's x86 retention claim may have no gate mode to execute in at all; it is named here as a gap, not as re-pin work. Scoping the gate narrowly to avoid tripping on any of this, without naming it, is not available | v3 pre-check and re-check, item **B NOT-CLOSED** (second half, both passes): *"P6a omits the live x86 reap at `kernel/src/syscall/handlers.rs:3101`, which still removes the row directly"*; anchors and closure cost re-derived by the 2026-08-15 re-ratification (§3.2), then corrected again by the tranche-3 ratification artifact (`TRANCHE3-RATIFICATION-2026-08-20.md` R3/R4/R5) and re-verified in full at `main` @ `174e5227`. PLAN P6a |
 | **DEBT-5 — `EXIT_BLOCK_REFUSED` post-migration semantics: it is NEVER asserted to zero** | **P10** *(a/b/c/d)* | The admission interlock is **permanent**, not scaffolding. Migration changes only the fate of a victim *already* blocked; it does not change the refusal owed to an already-latched victim trying to **enter** a migrated wait — which must stay refused, or migration manufactures cancellation work and reopens a lost-wakeup window between block and cancel. Therefore: **no gate anywhere may assert `EXIT_BLOCK_REFUSED{family} == 0`**, before or after migration. `EXIT_BLOCK_REFUSED{family}` is asserted **nonzero** in P9's own admission-race test and **re-asserted nonzero** in each of P10a-d; the migration evidence is the *pair* `EXIT_LEGACY_REMOTE_MARK{family} → 0` and `EXIT_WAIT_CANCELLED{family} → nonzero`. This debt is **repaired in the v3 text**; it is registered because it is a standing guard that a later phase can silently break, and because the failure mode (a "tidy-up" that asserts the counter to zero once migration is done) reads like cleanup | v3 pre-check, MAJOR item 5: *"P10's requirement that `EXIT_BLOCK_REFUSED{family}` hits zero post-migration contradicts the permanent admission interlock"*. DESIGN §1.5, §3 AC-11; PLAN P0 counter table, P9, P10a-d |
 | **DEBT-6 — P12's group-membership drop is scoped to EXTERNALLY-ORIGINATED signals only** | **P12** | The S1 group-seal check drops a fatal request when the designated init is a member of the **target group**. That drop applies to **`ExitIntent.origin == Signal` only** — sender-agnostic (a self-directed `kill(getpid())`/`raise` is still a signal and is still dropped, matching Linux's `sig_task_ignore`, which consults `SIGNAL_UNKILLABLE` and disposition and never the sender). **`ExitSyscall`** (init's own `exit_group`, or the exit of its last member) **and `FatalFault` BYPASS the membership test entirely**, so init's own exit still seals, latches and reaches the kernel-fatal panic. An unscoped check makes that panic path unreachable and the system hangs with init alive — a silent inversion of the policy. P12's gate must include the negative (a deliberate init `exit_group` still panics; a `FatalFault` injection still panics; an ordinary group kill still works) and record the unscoped-check pre-image. This debt is **repaired in the v3 text** and is registered because the failure is silent | v3 pre-check, MAJOR item 6: *"P12's group-membership signal drop isn't scoped to externally-originated signals; as written it would also suppress init's own `exit_group`, contradicting the required panic path"*. DESIGN §2.2 (End 2); PLAN P12 |
 | **DEBT-7 — P0 defer/reclaim evidence is aggregate-only, not per-PID causal pairing** | **P8** | P0's `TraceCounter` substrate stores only per-CPU scalar totals, so its nonzero workload delta can prove aggregate balancing but cannot prove that process X's defer is followed by process X's reclaim. Sampling live `TRACE_BUFFERS` is not an acceptable substitute: `iter_events()` requires tracing to be disabled, and disabling every provider during a boot test drops unrelated live-boot evidence. Before P8's tranche can ratify, add a race-free, bounded correlation mechanism keyed by PID and restore the stronger gate: every one of the test's 64 child PIDs has exactly one defer followed by exactly one reclaim. The mechanism must not sample live trace rings, disable tracing or providers system-wide, or add unbounded test storage; P8 owns this because it introduces the round's real per-PID boundary-observation infrastructure | P0 observability STRIP+SIMPLIFY review round 2, S1. `tracing/providers/teardown.rs`; `tracing/buffer.rs::iter_events`; PLAN P0 gate extra 1 and P8 |
@@ -367,8 +367,15 @@ not a prediction about arguments not yet made. The PR that splits says so in its
    > runs `scripts/check-kernel-no-neon.sh` against the **kernel ELF it actually booted** — the guard
    > objdumps every `.text*` section and fails on any non-allowlisted FP/SIMD load or store
    > (`scripts/kernel-neon-allowlist.txt` is intentionally empty).
-2. **Boot/regression gates — the current matrix.** There is no GitHub Actions CI in this repo
-   (`.github/workflows` does not exist); every gate below is run explicitly and its output read.
+2. **Boot/regression gates — the current matrix, re-derived at `174e5227` (post-#604, post-#614).**
+   There is no GitHub Actions CI in this repo (`.github/workflows` does not exist); every gate below
+   is run explicitly and its output read. **Two merges landed after this section was last written and
+   both rebuilt parts of it**: **#604** (`e377e7a8`, futex wait/wake atomicity, #584) added the
+   `FUTEX_HANDOFF_ORACLE` pin on both arches and created a fifth aarch64 gate script,
+   `docker/qemu/run-aarch64-prod-profile-boot-test.sh`; **#614** (`c0820bad`, deferred-requeue drift,
+   #589) added the strand oracles and their pins, the `#611` kernel-swap preflight, the eleventh
+   structural suite, the `#609` rate ceiling, and #599's strict-gate scoring repair.
+
    - **x86_64 userspace verdict:** `docker/qemu/run-boot-parallel.sh` and
      `docker/qemu/run-x86-boot-tests.sh` both score their serial logs through
      **`scripts/x86-gate-verdict.sh`**, invoked with `EXPECTED_EXITS=<profile floor>`. The verdict
@@ -379,23 +386,30 @@ not a prediction about arguments not yet made. The PR that splits says so in its
      included), so a vanished, crashed or `exit(1)`-ing test program is a red gate by construction
      (PR #565; proven red three ways — injected `exit(1)`, injected segfault, vanished process).
    - **x86_64 custody boot-tests:** `docker/qemu/run-x86-boot-tests.sh` additionally pins the
-     frame/page-table custody counter lines as literals. **The scripts are the truth about what is
+     frame/page-table/oracle counter lines as literals. **The scripts are the truth about what is
      pinned; this list is a snapshot as of this PR. Re-derive it at the head of every phase and repair
-     the prose in the same PR rather than trusting it.** It pins ten as of P5b:
-     `FRAME_CUSTODY_COUNTERS`, `PT_CUSTODY_COUNTERS`,
-     `PT_RETIRE_COHORT`, `PT_EXEC_COHORT`, plus `EXEC_FAILED_RELEASE_ORACLE` and
-     `EXEC_FAILED_RELEASE_PROD` (added by #573/PR #582, which also re-pinned `PT_CUSTODY_COUNTERS` to
-     `recorded=14 … retired=2:returned=14`), `EXEC_DETACH_ORACLE` **and `CLONE_ADMISSION_ORACLE`**
-     (both added by P3/PR #587 — this inventory previously said "seven" and omitted the second,
-     corrected by coordinator ruling R11, 2026-08-17), `INIT_DESIGNATION_ORACLE` (added by P5a), and
-     `INIT_GROUP_REFUSAL_ORACLE` (P5b's addition).
-     A phase that
-     perturbs one re-pins it consciously, with a per-delta derivation showing each count change is its
-     mechanism's expected effect — never re-pin to green a red gate you do not understand.
-     **This gate never retries a hung run** — a
+     the prose in the same PR rather than trusting it.** It pins **fifteen** as of `174e5227` — the
+     prose said "ten" and the script's own comment (`:62`) said "eleven"; both were stale, which is
+     the third time a literal count in this document has gone stale and the reason the census rule
+     above exists. Thirteen are consumed by the success chain (`:146-188`):
+     `FRAME_CUSTODY_COUNTERS`, `PT_CUSTODY_COUNTERS`, `EXEC_FAILED_RELEASE_ORACLE`,
+     `PT_RETIRE_COHORT`, `PT_EXEC_COHORT`, `EXEC_DETACH_ORACLE`, `CLONE_ADMISSION_ORACLE`,
+     `INIT_DESIGNATION_ORACLE`, `INIT_GROUP_REFUSAL_ORACLE`, `SCHED_STRAND_ORACLE` (#614),
+     `EXEC_FAILED_RELEASE_PROD`, `KSTACK_OWNER_ORACLE`, `CREATION_LOCK_ORDER:INJECTED`; two more are
+     consumed by the exactly-once block — `FUTEX_HANDOFF_ORACLE` (`:274`, added by #604) and
+     `CREATION_LOCK_ORDER:VIOLATION` (`:285`). A phase that perturbs one re-pins it consciously, with
+     a per-delta derivation showing each count change is its mechanism's expected effect — never
+     re-pin to green a red gate you do not understand. **This gate never retries a hung run** — a
      blanket retry would swallow the wake regressions it exists to catch. Its `EXPECTED_EXITS` floor
-     is a consciously re-pinned literal in the script; a phase that adds or removes a userspace test
-     program re-pins it in the same PR.
+     (`:77`, currently **101**) is a consciously re-pinned literal; a phase
+     that adds or removes a userspace test program re-pins it in the same PR.
+     **This gate runs on beast only, and it is not authoritative until two open defects are disclosed
+     alongside it: #564** (the x86 gate wrapper is untracked and never repacks the userspace test
+     disk, so it can boot stale binaries) **and #567** (x86 kernel-thread resume corrupts saved
+     context in the pre-userspace boot window). **#540** — no x86 gate mode exercises process
+     exit/teardown with counter visibility, `mode=full` hangs on a missing `completion.rs` x86_64
+     timeout — is why an x86 *teardown* claim may have no mode to execute in at all; it binds P6a
+     directly.
    - **aarch64 runtime gates:** `./docker/qemu/run-aarch64-full-test.sh --rebuild --boot-tests-only`
      must reach **`[BOOT_TESTS:PASS]`** over the registered suite, plus
      `docker/qemu/run-aarch64-boot-test-strict.sh`. `[BOOT_TESTS:PASS]` is *never* accepted on its
@@ -403,26 +417,58 @@ not a prediction about arguments not yet made. The PR that splits says so in its
      (`kernel/src/test_framework/executor.rs:126`) runs no tests and still emits it, carrying
      whatever `[TESTS_COMPLETE:c/t]` progress happens to stand (`0/0` when nothing has run). The
      runner script only reports those numbers; reading them is the human's job.
-   - **aarch64 pin inventory:** `docker/qemu/run-aarch64-boot-test-strict.sh`,
-     `docker/qemu/run-aarch64-boot-test-native.sh`, `docker/qemu/run-aarch64-full-test.sh`, and
-     `docker/qemu/run-aarch64-service-sequence-gate.sh` collectively pin `INIT_DESIGNATION` +
-     `INIT_DESIGNATION_ORACLE`, `CREATING_DISPATCH_ORACLE`, `BLOCK_WEDGE_ORACLE`,
-     `BLOCK_EINTR_ORACLE`, the abort/panic hard-fails, `CTX596_ORACLE` (#596), and P5b's
-     `INIT_GROUP_REFUSAL_ORACLE` / `INIT_GROUP_REFUSAL` / `INIT_GROUP_WALK` /
-     `INIT_GROUP_CHILD_RAN` set. **The scripts are the truth about what is pinned; this list is a
-     snapshot as of this PR. Re-derive it at the head of every phase and repair the prose in the same
-     PR rather than trusting it.**
+   - **Kernel-swap preflight (#611, added by #614).** `require_boot_tests_kernel()` greps the booted
+     kernel ELF for a **census of five `boot_tests`-only marker literals** — `[SCHED_STRAND_ORACLE:`,
+     `[STRAND_INJECT_ORACLE:`, `[FUTEX_HANDOFF_ORACLE:`, `[CTX596_ORACLE:`, `[BOOT_TESTS:` — and
+     refuses a wrong-profile kernel rather than reporting 20 marker-missing failures. It is a census,
+     not a sentinel, precisely so one marker changing profile cannot silently disarm it. Present in
+     **three** gates: `run-aarch64-boot-test-strict.sh` (def `:68`, invoke `:93`),
+     `run-aarch64-full-test.sh` (def `:86`, invoke `:111`), `run-aarch64-service-sequence-gate.sh`
+     (def `:144`, invoke `:169`). **Absent from `run-aarch64-boot-test-native.sh` and
+     `run-aarch64-prod-profile-boot-test.sh`** — those two can still boot a wrong-profile kernel, and
+     any phase relying on their evidence says so.
+   - **#528 no-NEON guard.** Runs against the kernel ELF actually booted in **five** scripts:
+     strict `:54`, service-sequence `:124`, full-test `:74`, prod-profile `:136`, native `:29`. #614
+     closed the gap where the kernel-merge gate was the only aarch64 gate without it.
+   - **aarch64 pin inventory:** the five aarch64 gate scripts collectively pin `INIT_DESIGNATION` +
+     `INIT_DESIGNATION_ORACLE`, `INIT_GROUP_REFUSAL_ORACLE` / `INIT_GROUP_REFUSAL` /
+     `INIT_GROUP_WALK` / `INIT_GROUP_CHILD_RAN`, `CREATING_DISPATCH_ORACLE`, `BLOCK_WEDGE_ORACLE`,
+     `BLOCK_EINTR_ORACLE`, `CTX596_ORACLE` (#596), the abort/panic hard-fails, and — added by #604
+     and #614 — `FUTEX_HANDOFF_ORACLE` (strict `:30`), `SCHED_STRAND_ORACLE` (`:32`) and
+     `STRAND_INJECT_ORACLE` (`:33`). **The scripts are the truth about what is pinned; this list is a
+     snapshot as of this PR. Re-derive it at the head of every phase.**
+   - **aarch64 kernel-merge gate:** `docker/qemu/run-aarch64-boot-test-strict.sh`,
+     `ITERATIONS=${1:-20}` (`:19`), **100% required** (`:376`), `exit 1` on any failure (`:421`).
+     Since #614 its **scoring is its own stop condition** — a stop condition narrower than the
+     scoring criteria is a gate that stops before it can go red (`:334-339`), and `score_serial()`
+     (`:152`) is exercisable against a preserved serial via `BREENIX_STRICT_SCORE_ONLY` (`:249-255`).
+     **This gate is deliberately given no #609 tolerance arm** (`589-ROUND2-PARTITION-2026-08-20.md:206-209`):
+     *"It is the kernel-merge gate and requires 100%; #576 already hard-fails it despite being
+     pre-adjudicated."* **#599 is still filed OPEN and should be closed against `18dcb2ef`/`96d429a3`.**
    - **aarch64 init service-sequence gate:** `docker/qemu/run-aarch64-service-sequence-gate.sh`,
-     whose **default is 25 boots per CPU profile** — operator directive, 2026-08-18, raised from
-     the old 10-boot smoke so an unqualified run is already a meaningful sample; the #575 round
-     gate remains `--boots 100 --profile both`. **The script is the truth about which buckets it
-     classifies and which of them fail the gate** — read `classify_serial` and the gate condition
-     in the script rather than any list here, which goes stale (the #549/#551/#527-r1 lesson).
-     As of this PR it fails on `575`, `DATA_ABORT`, `596`, `P5B`, or `UNATTRIBUTED`, and reports
-     (never gates on) `576`/`589` and the `CTX596` divergence census; a `596` boot is an EL1
-     `DATA_ABORT` (`from_el0=0`) **or** a `[CTX596_ORACLE:FAIL` line, a `P5B` boot is a completed
-     service sequence whose init-group quiesce-refusal markers are missing/short/failed, and a boot
-     that never emitted `[CTX596_ORACLE:ARMED` is `UNATTRIBUTED`, never GREEN by omission.
+     default **25 boots per CPU profile** (`:17-18`, `PROFILE=both` → 50 boots) — operator directive
+     2026-08-18; the #575 round gate remains `--boots 100 --profile both`. **The script is the truth
+     about which buckets it classifies and which of them fail the gate** — read `classify_serial` and
+     the gate condition rather than any list here, which goes stale. As of `174e5227` it classifies
+     ten buckets (`575`, `576`, `589`, `596`, `609`, `612`, `DATA_ABORT`, `P5B`, `GREEN`,
+     `UNATTRIBUTED`) and fails on `575`, `DATA_ABORT`, `596`, `612`, `P5B` or `UNATTRIBUTED` (`:744`).
+     `#609` is not in the per-profile condition because its pre-adjudication is a **rate**: a run-wide
+     ceiling `max(1, ceil(0.06 × boots))` = **3 at the default 50** is enforced once at the end
+     (`:805`, `:812`), and exceeding it FAILS the run (`:816`).
+     > ⚠ **The `589` bucket is keyed to a CLOSED issue.** #589 closed 2026-08-21; three classify arms
+     > (`:436` live-sibling-refused-exec, `:444` strand census stranded, `:450` strand-injection
+     > stranded) still route to a `589` bucket that is **excluded from the FAIL condition**, so
+     > whatever now lands in that signature is absorbed silently. This is the same defect class
+     > `3f9eb7b3` was written to fix for #596. **T3-S item 0 retires or re-keys it**; until then no
+     > phase may read a green service-sequence run as evidence about strand behaviour. The script's
+     > own GREEN-rate commentary (`:571`, `:738`) also still calls #589 open and is repaired with it.
+   - **aarch64 production-profile gate (new, #604):** `docker/qemu/run-aarch64-prod-profile-boot-test.sh`
+     is the negative control for #584/B1 — it proves the futex handoff seam is **absent** in the
+     production profile (`[FUTEX_HANDOFF_ORACLE_DRIVER:seam_absent:probe=-110]`, `:16`) while the
+     kernel oracle, strand oracles, `BLOCK_EINTR_ORACLE` and `bsshd: listening` markers are counted
+     and the crash-marker pattern (`:32`) hard-fails. **#598 is a live, reproduced (1/25) flake inside
+     this gate** — a `BLOCK_EINTR_ORACLE` stage-2 SIGCHLD assertion with no barrier — and this gate is
+     not read as sound until it is fixed or pre-adjudicated.
    - **aarch64 soaks:** **100 clean cycles** and **100 starved cycles** (host-contended) of the
      boot-test gate on `aarch64-breenix-kernel.json`, with the no-NEON guard run against the booted
      ELF. Starvation is applied by the runner, not by a committed script; the cycle count and the
@@ -432,18 +478,30 @@ not a prediction about arguments not yet made. The PR that splits says so in its
      QEMU-only evidence has already missed a deterministic boot fault (#525) — Parallels gates the
      kernel path, not the other way round.
    - **QEMU concurrency capped at 4** per standing operator rule (batch 4 and 4, never 8+).
+   - **What this matrix cannot do today, stated so no phase walks into it blind.** The kernel-merge
+     gate cannot reach a clean verdict while **#609 and #576 are both open**; T3-S scopes #609 and not
+     #576, so the reachable ceiling after T3-S is ~78% clean per 20-boot battery, not 100%
+     (`TRANCHE3-RATIFICATION-2026-08-20.md` §5). The service-sequence GREEN *rate* is not a gate while
+     #576 intercepts boots and the stale `589` bucket masks its own signature drift. The aarch64
+     full-system test's Phase 2 can never pass headless while **#593** stands. **#592** is red on
+     `main` today (`kernel_build_test` bypasses the pinned toolchain with `cargo +nightly`) and was
+     represented nowhere in this matrix. **#540** leaves the x86 teardown leg with no executing gate
+     mode.
 
-   **Operating flake law (coordinator ruling R17).** The pre-adjudicated attributable set is
-   **exactly five field-exact signatures: #555, #536, #576, #586 and #589**. A red matching one of
-   those five is attributable: record the issue citation, the tally and a preserved serial. **Any
-   other signature — filed or not — blocks the phase until the coordinator pre-adjudicates that
+   **Operating flake law (coordinator ruling R17, amended).** The pre-adjudicated attributable set is
+   **exactly five field-exact signatures: #555, #536, #576, #586 and #609**. **#589 is CLOSED
+   (2026-08-21) and is removed from the tolerated set** — it must not appear as "open/tolerated" in
+   any prose or script, and its classifier bucket is retired or re-keyed by T3-S item 0. **#609 takes
+   the slot it vacates** by coordinator ruling R30, bounded to its field signature (`network:early`
+   subsystem kthread never dispatched after `memory:early` completed) and to the service-sequence
+   gate's run-wide rate ceiling; **the kernel-merge gate is given no #609 arm at all.** A red matching
+   one of the five is attributable: record the issue citation, the tally and a preserved serial.
+   **Any other signature — filed or not — blocks the phase until the coordinator pre-adjudicates that
    exact signature.** #512 and #562 remain filed hard failures, not tolerated signatures. #596 is
-   also filed — `aarch64: EL1 DATA_ABORT in schedule_from_kernel from a zeroed callee-saved register
-   after resume` — and receives **no tolerance**: the service-sequence gate fails on its `DATA_ABORT`
-   bucket. #555's exact aarch64 softirq-under-starvation signature retains its **≤2 retry allowance**;
-   it is the only retry allowance. This resolves the old-text collision with
-   `docker/qemu/run-aarch64-service-sequence-gate.sh`, which already buckets #576 and #589 as
-   attributable non-green outcomes while the prose called them hard failures.
+   fixed (PR #600) and receives no tolerance: the service-sequence gate fails on its `DATA_ABORT` and
+   `CTX596_ORACLE:FAIL` arms. #612 and #613 are filed and bucketed but **not** tolerated. #555's exact
+   aarch64 softirq-under-starvation signature retains its **≤2 retry allowance**; it is the only
+   retry allowance.
 3. **Phase-specific assertions** below — every one an observed outcome (counter equality, actual
    `waitpid` status, zero fault markers). "The process was created" is never evidence, and **a
    counter equality that holds at zero is never evidence** (condition 6): every equality gate names
@@ -465,20 +523,27 @@ not a prediction about arguments not yet made. The PR that splits says so in its
    removed from the tree by PR #520 on operator directive; nothing named `gold-master`, `GOLD_MASTER`
    or `FROZEN` exists under `kernel/src`, `tests` or `scripts`, so gating on it was gating on nothing.)*
    **Structural ratchets take its place** as the standing anti-regression bar. The tree carries
-   **ten** such suites, not the four this list used to name (coordinator ruling R11, 2026-08-17);
-   counts are re-derived at the head of every phase rather than treated as fixed, and the suite set
-   is what `tests/*_structure.rs` matches, never a closed literal list — the #549/#551/#527-r1
-   lesson. Re-derived as of P4 (`a7be1604`, measured via `cargo test --test <name> -- --list`):
+   **eleven** such suites (coordinator ruling R11, 2026-08-17 counted ten; `strand_handoff_structure.rs`
+   was added by #614 at `e5d47c81`); counts are re-derived at the head of every phase rather than
+   treated as fixed, and the suite set is what `tests/*_structure.rs` matches, **never a closed
+   literal list** — the #549/#551/#527-r1 lesson, which this list has now been bitten by twice.
+   Re-derived at `174e5227`:
    `tests/teardown_structure.rs` (**53**),
    `tests/context_restore_structure.rs` (**61**),
    `tests/exec_lock_order_structure.rs` (**34**), `tests/dma_and_log_sink_structure.rs` (**4**),
    `tests/loopback_pump_structure.rs` (**57**), `tests/net_lock_structure.rs` (**19**),
    `tests/exit_tally_structure.rs` (**6**), `tests/block_request_lifetime_structure.rs` (**11**),
-   `tests/serial_line_atomicity_structure.rs` (**9**) and
-   `tests/signal_eintr_predicate_structure.rs` (**2**) — the latter three added by #594 — **256 tests**,
-   all census-anchored (file +
-   enclosing-item path + occurrence count), no line pins. Every new tranche-2 invariant is
-   ratcheted in one of them.
+   `tests/serial_line_atomicity_structure.rs` (**9**), `tests/signal_eintr_predicate_structure.rs`
+   (**2**) and `tests/strand_handoff_structure.rs` (**15**, added by #614) — **271 tests**,
+   all census-anchored (file + enclosing-item path + occurrence count), no line pins. Every new
+   invariant is ratcheted in one of them.
+   > **How this count was taken, and the trap in taking it.** The ten pre-#614 figures above are
+   > `#[test]`-attribute censuses that reproduce the previously *measured* 256 exactly, which is why
+   > the method is trusted here. `cargo test --test <name> -- --list` remains the authoritative
+   > measurement, but **it rebuilds the kernel without `boot_tests` and silently swaps the binary the
+   > aarch64 gates boot** (`docker/qemu/run-aarch64-service-sequence-gate.sh:164-166`; the #611
+   > preflight exists because this already happened). Take the `--list` measurement when no gate run
+   > is in flight, and rebuild the `boot_tests` kernel afterwards — build after testing, not before.
 7. **Cleanup:** all Parallels VMs stopped, all stray QEMU killed, before reporting the phase done.
 
 ### Dependency graph — re-derived *(condition 1)*
@@ -616,7 +681,7 @@ the *exact current* bypass surface so any regression fails CI immediately.
 | `RECLAIM_ENQUEUE_UNDER_PM` *(new, cond. 3)* | `task/process_task.rs:140 enqueue_process_reclaim`, incremented when the PM-owner instrumentation says PM is live — true today at **both** call sites (`manager.rs:1152`, `process_task.rs:244`) | **yes on `main`** — this is the pre-existing violation P2 drives to 0 |
 | `PROOF_UNDER_QUEUE_LOCK` *(new, cond. 3)* | `task/process_task.rs:375-391` *(v3: span corrected)*, incremented if SCHEDULER or PM is acquired while `PENDING_PROCESS_RECLAIMS` is held | zero on `main` (both predicates are lock-free); P1 must keep it zero |
 | `RECEIPT_DROPPED_UNRETIRED` *(new, closure A)* | `RetirementReceipt::drop` — the self-healing destructor that re-enqueues instead of freeing | **declared zero until P2** (the type does not exist before then); asserted 0 from P2 onward |
-| `RECLAIM_PASS_SKIPPED`, `RECLAIM_PARKED`, `RECLAIM_UNPARKED{epoch\|row\|age}`, `RECLAIM_PARK_IMMEDIATE_UNPARK`, `RECLAIM_PARK_RESIDENT` *(new, closure C; split + immediate-unpark counter added by the v3 repair)* | the drain's pass-stamp check and the park/unpark transitions in `task/process_task.rs:375-391`; the `{row}` arm additionally keys on the global `ROW_REMOVAL_EPOCH` bumped by one relaxed increment inside `ProcessManager::remove_process` (`manager.rs:1086-1090`, and P6a's `remove_row`); the `{age}` arm keys on `PARK_AGE_BACKSTOP_EPOCHS = 64` **scheduling epochs** summed over `fence_at_park.online_mask` (no wall clock, no timestamp field) | **declared zero until P1** (the fields do not exist before then); P1 drives `RECLAIM_PASS_SKIPPED`/`RECLAIM_PARKED` and **each of the three `RECLAIM_UNPARKED` arms** nonzero, asserts `RECLAIM_PARK_IMMEDIATE_UNPARK == 0`, and asserts the gauge returns to 0 at quiesce having been observably nonzero mid-run |
+| `RECLAIM_PASS_SKIPPED`, `RECLAIM_PARKED`, `RECLAIM_UNPARKED{epoch\|row\|age}`, `RECLAIM_PARK_IMMEDIATE_UNPARK`, `RECLAIM_PARK_RESIDENT` *(new, closure C; split + immediate-unpark counter added by the v3 repair)* | the drain's pass-stamp check and the park/unpark transitions in `task/process_task.rs:375-391`; the `{row}` arm additionally keys on the global `ROW_REMOVAL_EPOCH` bumped by one relaxed increment inside `ProcessManager::remove_process` (`manager.rs:1342-1350`, and P6a's `remove_row`); the `{age}` arm keys on `PARK_AGE_BACKSTOP_EPOCHS = 64` **scheduling epochs** summed over `fence_at_park.online_mask` (no wall clock, no timestamp field) | **declared zero until P1** (the fields do not exist before then); P1 drives `RECLAIM_PASS_SKIPPED`/`RECLAIM_PARKED` and **each of the three `RECLAIM_UNPARKED` arms** nonzero, asserts `RECLAIM_PARK_IMMEDIATE_UNPARK == 0`, and asserts the gauge returns to 0 at quiesce having been observably nonzero mid-run |
 | `LEDGER_EFFECT_AMBIGUOUS{report}` *(new, closure B)* | T4's ruling branch when `report_marker.started == 1 && finished == 0` | **declared zero until P6b**; asserted 0 on every healthy boot, driven to a known value only by deliberate injection |
 | `TOMBSTONE_JOIN{reap_second}`, `TOMBSTONE_JOIN{retire_second}` *(new, closure B)* | the two removal branches of the two-event join in `ProcessManager` | **declared zero until P6a**; P6b asserts **both** nonzero in one run |
 | `EXIT_BLOCK_REFUSED{family}` *(new, closure D)* | the pre-block interlock inside the nine blocking primitives: `task/scheduler.rs:1726`, `:1897`, `:1916`, `:2065`, `:2153`, `:2218`, `:2227`, `:2386`, and `task/waitqueue.rs:52` | **declared zero until P9**; P9 drives it nonzero and **each P10x re-asserts its own family's value is still nonzero** — *v3 repair:* the interlock is permanent, so this counter never reaches 0; what falls to 0 per family is `EXIT_LEGACY_REMOTE_MARK{family}` |
@@ -1400,7 +1465,7 @@ scheduler copy is the single owner, and the row's copy holds `None` **because ow
 because it was leaked.
 
 This also closes the freed-row hazard the phase was originally written against, which is
-**structurally live and merely unreached**: `remove_process` (`manager.rs:1086-1090`) drops the whole
+**structurally live and merely unreached**: `remove_process` (`manager.rs:1342-1350`) drops the whole
 `Process` row → `Process::main_thread` (`process/process.rs:199`) → `Thread::kernel_stack_allocation`
 (`task/thread.rs:428`) → `impl Drop for KernelStack` (`memory/kernel_stack.rs:85-99`) returns the slot
 to the pool, and nothing in `kernel/src` ever clears `main_thread`. It is unreached today only because
@@ -1712,22 +1777,26 @@ per rule 5.)*
 
 ## Phase 6a — Reap/tombstone retention gate *(NEW in v2 — condition 2)*
 
-> ⚠ **DEBT-4 — the x86 reap path bypasses this phase's gate, and this phase owns the closure.**
-> `kernel/src/syscall/handlers.rs:3123` removes the process row **directly** on the live x86 reap
-> path — as does its byte-similar duplicate at `kernel/src/syscall/wait.rs:386` — so the two-event
-> join below is not the only remover: the retention gate can pass on aarch64 while x86 still frees a
-> row out from under an un-retired receipt. Before this phase's tranche ratifies, those sites either
-> route through the join or the gate is honestly re-scoped to aarch64 with the divergence named in
-> AC-12's evidence, a ratchet pinning both sites by name, and a stated closing phase. **The join now
-> installs in one place:** `remove_process` is a four-line choke point (`manager.rs:1086-1090`) that
-> already bumps `ROW_REMOVAL_EPOCH` via `note_process_row_removed()` (`task/process_task.rs:355-357`),
-> so both arches are covered by one edit rather than a per-call-site chase. See the DESIGN-DEBT
-> REGISTER.
+> ⚠ **DEBT-4 — the x86 reap path bypasses this phase's gate, this phase owns the closure, and the
+> surface is 24 call sites.**
+> `kernel/src/syscall/handlers.rs:3128` removes the process row **directly** on the live x86 reap
+> path (inside `complete_wait` at `:3064`) — as does its byte-similar duplicate at
+> `kernel/src/syscall/wait.rs:386` (inside `complete_wait` at `:335`) — so the two-event join below is
+> not the only remover: the retention gate can pass on aarch64 while x86 still frees a row out from
+> under an un-retired receipt. Before this phase's tranche ratifies, those sites either route through
+> the join or the gate is honestly re-scoped to aarch64 with the divergence named in AC-12's evidence,
+> a ratchet pinning the sites by census shape, and a stated closing phase. **The join still installs
+> in one place:** `remove_process` is a **nine-line** choke point (`manager.rs:1342-1350`) that
+> already bumps `ROW_REMOVAL_EPOCH` via `note_process_row_removed()` (`task/process_task.rs:355-356`)
+> and clears `designated_init` (P5a), so both arches are covered by one edit rather than a
+> per-call-site chase. **But the caller census is 24, not four** — see "Blast radius" below — and
+> **#540** means the x86 leg may have no gate mode to execute the resulting retention claim in. See
+> the DESIGN-DEBT REGISTER.
 
 **Scope.** Make a process row outlive its reap so that row-resident obligations cannot be destroyed
 before they are discharged. Today `waitpid`'s `complete_wait` (`kernel/src/syscall/wait.rs:335`)
 physically removes the row at `wait.rs:386` → `ProcessManager::remove_process`
-(`manager.rs:1086-1090`, re-anchored at `2c7b8798`) — which
+(`manager.rs:1342-1350`, re-derived at `174e5227`) — which
 is exactly the seam the ratification flagged: P6b's `Resources` obligation **by construction outlives
 reap** (grace + RootProof are still pending when the parent collects the status — R-13).
 
@@ -1779,13 +1848,93 @@ reap** (grace + RootProof are still pending when the parent collects the status 
 {`RowState` + liveness-predicate migration of the lookup call sites} / {two-event join + removal
 gate}.**
 
+**Blast radius, re-derived at `174e5227` — 24 callers and 32 liveness lookups, not four and nine.**
+Both figures this phase previously carried were wrong, and the correction itself was wrong once
+before it was right (`TRANCHE3-RATIFICATION-2026-08-20.md` R3/R4/R5). The census below is
+tree-verified; re-derive it again at the head of the build, because these anchors move.
+
+`grep -rn "remove_process(" kernel/` returns 25 lines: one definition (`manager.rs:1342`) and **24
+call sites**, in four classes, each of which needs an explicit disposition in the PR body:
+
+1. **Live reaps (2)** — `syscall/wait.rs:386` and `syscall/handlers.rs:3128`. These are what the
+   two-event join is for: they record the reap and transition `Zombie → Tombstone`. DEBT-4's whole
+   subject.
+2. **Creation-failure retire (1)** — `manager.rs:184`, inside `hold_init_publication` (`:170`). A
+   provisional PID-1 reservation whose row has no main thread is retired here, and the source comment
+   (`:174-177`) records that `remove_process` is the *only* legal way to do it because it is the sole
+   clearer of `designated_init`. **This row was never reaped and will never be retired**, so under the
+   join it strands as a permanent tombstone unless the degenerate arm (`:1768-1770`) is explicitly
+   extended to cover a row that dies before it ever became live. Name the treatment; do not leave it
+   to the implementer.
+3. **In-kernel oracle callers (20)** — all in `kernel/src/tracing/providers/teardown.rs`
+   (`1581, 1724, 1983, 2001, 2403, 2571, 2756, 2779, 3424, 3863, 4203, 4247, 4287, 4302, 4355, 4490,
+   4582, 4840, 4842, 5035`), `boot_tests`-gated, spread across **eight** oracle tests:
+   `fork_exit_defer_reclaim_pairing_test` (4 sites), `exec_supersede_cohort_test` (2),
+   `exec_detach_oracle_test` (2), `creating_dispatch_refusal_test` (1),
+   `clone_admission_oracle_test` (1), `init_designation_oracle_test` (**7**),
+   `init_group_refusal_oracle_test` (2), `kernel_stack_ownership_oracle_test` (1).
+   **These are not inert test code.** Each of the eight emits a counter line that a merge gate pins as
+   a literal — `PT_RETIRE_COHORT`, `PT_EXEC_COHORT`, `EXEC_DETACH_ORACLE`, `CREATING_DISPATCH_ORACLE`,
+   `CLONE_ADMISSION_ORACLE`, `INIT_DESIGNATION_ORACLE`, `INIT_GROUP_REFUSAL_ORACLE`,
+   `KSTACK_OWNER_ORACLE` — on x86 (`docker/qemu/run-x86-boot-tests.sh`) and, for the two init
+   oracles, on aarch64 as well (`run-aarch64-boot-test-strict.sh:23-24`). A tombstone that outlives
+   an oracle's accounting window turns a pinned literal red on both arches. Within the 20 there are
+   two structurally different cases: **reap stand-ins** on rows that really exited (the "baseline
+   reap"/"exec cohort reap" sites), which must participate in the join, and **synthetic-fixture
+   teardown** on fabricated rows that never ran (`:4840`/`:4842` remove a fabricated init row and a
+   reserved-PID row), which have no retirement event to join against at all.
+4. **Harness (1)** — `task/process_task.rs:2134`, the `p1_row_epoch_gate` fixture, which inserts a row
+   and immediately removes it to observe `ROW_REMOVAL_EPOCH`. Not a live reap; it must keep bumping the
+   epoch or P1's parked-reclaimer gate stops being driven.
+
+**Liveness-lookup census (gate extra (c)'s real surface): 32 raw sites in `manager.rs`** — 9
+`self.processes.get(&…)` and 23 `self.processes.get_mut(&…)` — plus the named accessors
+`get_process` (`:1353`), `find_process_by_thread`/`_mut`, `find_process_by_cr3`/`_mut`. A tombstoned
+row must be invisible through all of them, and "we migrated the named accessors" is not the gate.
+
+**Four ratchet obligations move with this phase**, all in `tests/teardown_structure.rs` and all
+census-shaped (file + enclosing-item path + occurrence count), never line pins:
+`ROW_REMOVAL_EPOCH_BUMPS` (`:2667-2669`), `DESIGNATED_INIT_WRITES` (`:2451-2454`),
+`PROCESS_ROW_MAP_MUTATIONS` (`:2463-2474`, the `remove_process => remove` entry), and the body check
+at `:6713-6717`, which asserts `remove_process`'s body still contains `self.processes.remove(&pid)`.
+That last one **fails by construction the moment P6a lands** — it is the tripwire that proves this
+phase's central edit happened, and P6a re-derives all four in the same PR rather than deleting them.
+
+**#540 — the x86 evidence gap, named as a gap.** The x86 test harness has **no gate mode that
+exercises process exit/teardown with counter visibility**: `mode=full` hangs because `completion.rs`
+carries no x86_64 timeout. That is confirmed OPEN and it is not re-pin work — it means P6a's x86
+retention claim may have **no gate mode to execute in at all**. Either #540 is fixed first, or P6a's
+x86 evidence column says exactly what was and was not observed on x86 and names the phase that
+closes it. Structural pins are not a substitute for an executed gate, and this document does not
+pretend otherwise.
+
+**Adjacent open issues that will move literals under this phase, none of them blocking:** **#583**
+(`GuardedStack::drop` does not reclaim user-stack frames) is the source of every pinned residual —
+`EXPECTED_STACK_RESIDUAL_PRE_KSTACK_RELEASE` (`teardown.rs:2662` aarch64 = 18, `:2664` x86 = 149) and
+`EXPECTED_STACK_RESIDUAL` (`:2669` = 18, `:2671` = 21), asserted `:3305`/`:3315`, emitted in the
+`EXEC_DETACH_ORACLE` line at `:3324-3334`; sibling constant
+`EXPECTED_USER_STACK_RESIDUAL` **defined `teardown.rs:3363` (= 16), asserted `:3741`**; **#546** (owner-side
+`GuardedStack` reclamation of External user-stack frames) is #583's sibling on the same frames and
+re-pins with it; **#588** (counted frame residue on creation failure) lands on the `manager.rs:184`
+path in class 2 above; **#572** (AlreadyTerminated abandon paths bypass custody) sits on the same
+exit path P6a and P8 share. Every literal these move is re-pinned with a per-delta derivation, never
+re-pinned to green a red gate.
+
 **Gate extras.** (a) `waitpid` still returns the correct status and the parent's `children` list is
 still pruned — existing wait/orphan tests green unchanged. (b) `TOMBSTONE_RESIDENT` returns to **0**
 at quiesce after a 64-child fork/exit/reap workload, having been **observably nonzero mid-run** (both
 halves asserted — a gauge that is always zero proves nothing). (c) A pid whose row is tombstoned is
-not returned by any live-process lookup: negative tests for `kill(pid)` → `ESRCH`, `waitpid` repeat →
-`ECHILD`, and procfs absence. (d) PID reuse does not hand out a tombstoned pid. (e) P4's stack-pool
-accounting re-run (allocated == freed) now that reap no longer drops the row. **Soak + retention
+not returned by **any** live-process lookup — and "any" is the
+32-site raw census plus the named accessors enumerated under Blast radius, not the named accessors
+alone: negative tests for `kill(pid)` → `ESRCH`, `waitpid` repeat → `ECHILD`, and procfs absence,
+with the enumeration reproduced in the PR body. (d) PID reuse does not hand out a tombstoned pid. (e) P4's stack-pool
+accounting re-run (allocated == freed) now that reap no longer drops the row,
+**and** a re-derivation of every residual literal #583/#546 pin — `EXPECTED_STACK_RESIDUAL_PRE_KSTACK_RELEASE`
+and `EXPECTED_STACK_RESIDUAL` (`teardown.rs:2661-2671`, asserted `:3305`/`:3315`, emitted `:3324-3334`)
+and `EXPECTED_USER_STACK_RESIDUAL` (`:3363`, asserted `:3741`) —
+each change shown to be this mechanism's expected effect. **Plus: all eight in-kernel oracles listed
+under Blast radius still emit their pinned counter lines unchanged, or their re-pins are derived
+per-delta on both arches.** **Soak + retention
 measurement** (this phase changes retention by construction).
 
 **v3 gate extras (closure B) — both join orders must be observed in one run:**
