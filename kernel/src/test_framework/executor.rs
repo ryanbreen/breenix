@@ -114,6 +114,8 @@ pub fn advance_to_stage(stage: TestStage) -> u32 {
 
     serial_println!("[STAGE:{}:ADVANCE]", stage.name());
     CURRENT_STAGE.store(stage as u8, Ordering::Release);
+    #[cfg(not(target_arch = "aarch64"))]
+    crate::task::strand_oracle::sample_now();
 
     // Run any tests that were waiting for this stage
     run_staged_tests(stage)
@@ -132,6 +134,8 @@ pub fn advance_stage_marker_only(stage: TestStage) {
 
     serial_println!("[STAGE:{}:ADVANCE]", stage.name());
     CURRENT_STAGE.store(stage as u8, Ordering::Release);
+    #[cfg(not(target_arch = "aarch64"))]
+    crate::task::strand_oracle::sample_now();
 
     // Note: We don't call run_staged_tests() here because we're in syscall context.
     // Tests for this stage should verify the stage was reached via other means
@@ -140,6 +144,12 @@ pub fn advance_stage_marker_only(stage: TestStage) {
     // Emit completion marker since no tests run
     let (completed, total, failed) = get_overall_progress();
     let lock_order_clean = emit_exec_lock_order_counters();
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        crate::task::strand_oracle::sample_now();
+        crate::task::strand_oracle::report_x86_once();
+    }
+
     if failed == 0 && lock_order_clean {
         serial_println!("[TESTS_COMPLETE:{}/{}]", completed, total);
         serial_println!("[BOOT_TESTS:PASS]");
@@ -156,10 +166,14 @@ pub fn advance_stage_marker_only(stage: TestStage) {
 /// tests complete. Later stages run via advance_to_stage().
 /// Returns the total number of failed tests.
 pub fn run_all_tests() -> u32 {
+    crate::task::strand_oracle::start();
+
     // Use serial_println! for test markers (works on both x86_64 and ARM64)
     // log::info!() is silently discarded on ARM64 due to lack of logger backend
     serial_println!("[BOOT_TESTS:START]");
     serial_println!("[STAGE:{}:ADVANCE]", TestStage::SerialBoot.name());
+    #[cfg(not(target_arch = "aarch64"))]
+    crate::task::strand_oracle::sample_now();
 
     // Initialize graphical display if framebuffer is available
     super::display::init();
@@ -222,12 +236,16 @@ pub fn run_all_tests() -> u32 {
     // Run ordinary EarlyBoot tests with subsystem-level parallelism.
     serial_println!("[STAGE:{}:ADVANCE]", TestStage::EarlyBoot.name());
     CURRENT_STAGE.store(TestStage::EarlyBoot as u8, Ordering::Release);
+    #[cfg(not(target_arch = "aarch64"))]
+    crate::task::strand_oracle::sample_now();
     let early_failures = run_staged_tests(TestStage::EarlyBoot);
 
     // Now advance to PostScheduler stage - by this point kthreads are working
     // (we just used them to run EarlyBoot tests)
     serial_println!("[STAGE:{}:ADVANCE]", TestStage::PostScheduler.name());
     CURRENT_STAGE.store(TestStage::PostScheduler as u8, Ordering::Release);
+    #[cfg(not(target_arch = "aarch64"))]
+    crate::task::strand_oracle::sample_now();
     let post_failures = run_staged_tests(TestStage::PostScheduler);
 
     serial_failures + early_failures + post_failures
@@ -281,12 +299,20 @@ fn run_staged_tests(target_stage: TestStage) -> u32 {
 
     // Emit stage summary
     let (completed, total, failed) = get_overall_progress();
+    #[cfg(not(target_arch = "aarch64"))]
+    crate::task::strand_oracle::sample_now();
 
     // Check if all tests are complete
     let all_complete = completed == total;
 
     if all_complete {
         let lock_order_clean = emit_exec_lock_order_counters();
+        #[cfg(not(target_arch = "aarch64"))]
+        {
+            crate::task::strand_oracle::sample_now();
+            crate::task::strand_oracle::report_x86_once();
+        }
+
         if failed == 0 && lock_order_clean {
             serial_println!("[TESTS_COMPLETE:{}/{}]", completed, total);
             serial_println!("[BOOT_TESTS:PASS]");

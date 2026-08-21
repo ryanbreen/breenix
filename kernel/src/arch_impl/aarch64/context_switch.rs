@@ -867,6 +867,14 @@ static DEFERRED_REQUEUE: CacheLineAligned<[AtomicU64; 8]> = CacheLineAligned([
     AtomicU64::new(0),
 ]);
 
+/// Lock-free read of the per-CPU deferred slots used by the handoff resolver
+/// and the boot-test strand census.
+pub(crate) fn deferred_requeue_contains(thread_id: u64) -> bool {
+    DEFERRED_REQUEUE
+        .iter()
+        .any(|slot| slot.load(Ordering::Acquire) == thread_id)
+}
+
 static LAST_DEFER_REQUEUE_INFO: CacheLineAligned<[AtomicU64; 8]> =
     CacheLineAligned([const { AtomicU64::new(0) }; 8]);
 static LAST_DEFER_REQUEUE_SP: CacheLineAligned<[AtomicU64; 8]> =
@@ -4294,8 +4302,53 @@ extern "C" fn inline_schedule_trampoline() -> ! {
     let new_id = state.new_thread_id.load(Ordering::Relaxed);
     let should_requeue_old = state.should_requeue_old.swap(false, Ordering::Relaxed);
 
+    // The forced null-`scheduler_ptr` branch below never applies the outgoing
+    // thread's `elr_el1 = x30` resume-point repair and never requeues it (#607),
+    // so arming it over a live outgoing thread corrupts that thread rather than
+    // the incoming publication this oracle tests. Arm only when the outgoing
+    // thread is this CPU's own idle thread: the same branch re-establishes idle
+    // through reset_idle_continuation_locked, so the stimulus abandons exactly
+    // the published-but-uncommitted incoming selection and nothing else.
+    #[cfg(feature = "boot_tests")]
+    let injected_leg = if sched_ptr.is_null() {
+        None
+    } else {
+        // This CPU owns the leaked scheduler guard on this path, so the
+        // pointer is live and this is one load and one compare.
+        let idle_id = unsafe { (*sched_ptr).cpu_state[cpu_id].idle_thread };
+        if idle_id == old_id {
+            crate::task::strand_oracle::inject_if_armed(new_id)
+        } else {
+            None
+        }
+    };
+    #[cfg(feature = "boot_tests")]
+    let sched_ptr = if injected_leg.is_some() {
+        core::ptr::null_mut()
+    } else {
+        sched_ptr
+    };
+    #[cfg(feature = "boot_tests")]
+    let inline_rollback_suppressed = matches!(
+        injected_leg,
+        Some(crate::task::strand_oracle::InjectionLeg::B)
+    );
+    #[cfg(not(feature = "boot_tests"))]
+    let inline_rollback_suppressed = false;
+
     let state_extra =
-        ((if sched_ptr.is_null() { 0u16 } else { 1u16 }) << 8) | should_requeue_old as u16;
+        ((if sched_ptr.is_null() { 0u16 } else { 1u16 }) << 8)
+            | should_requeue_old as u16
+            | {
+                #[cfg(feature = "boot_tests")]
+                {
+                    (inline_rollback_suppressed as u16) << 1
+                }
+                #[cfg(not(feature = "boot_tests"))]
+                {
+                    0
+                }
+            };
     inline_schedule_breadcrumb(cpu_id, INLINE_BC_STATE_SWAP, state_extra);
     inline_schedule_breadcrumb(
         cpu_id,
@@ -4323,6 +4376,9 @@ extern "C" fn inline_schedule_trampoline() -> ! {
             // Persist the exact normalized stack value used by the live pivot.
             // Use the current idle ID from this lock hold, never either stale
             // handoff ID.
+            if !inline_rollback_suppressed {
+                sched.resolve_pending_next_locked(cpu_id);
+            }
             sched.fix_exception_cleanup_cpu_state();
             reset_idle_continuation_locked(sched, cpu_id, idle_id, idle_sp);
             idle_sp

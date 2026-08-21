@@ -28,14 +28,69 @@ INIT_GROUP_REFUSAL_ORACLE_LITERAL='[INIT_GROUP_REFUSAL_ORACLE:aarch64:none_probe
 # stage3_elapsed_ms is the measured duration; residual/balance prove cleanup.
 # This marker is emitted from a syscall while the scheduler trace stream is live, so its line can carry a prefix.
 FUTEX_HANDOFF_ORACLE_PATTERN='\[FUTEX_HANDOFF_ORACLE:aarch64:driven=2:stage1_ret=EAGAIN:stage1_wake=0:stage1_parked=0:stage2_ret=0:stage2_wake=1:stage2_parked=0:stage3_ret=ETIMEDOUT:stage3_elapsed_ok=1:stage3_elapsed_ms=[0-9]+:rescues=0:queue_residual=0:balance=0\]'
+# resolved_production may be zero once #605's early-slot-consumption defect is fixed; deterministic resolved_exercised proves the resolver ran.
+SCHED_STRAND_ORACLE_PATTERN='\[SCHED_STRAND_ORACLE:aarch64:samples=[1-9][0-9]*:checked=[1-9][0-9]*:stranded=0:running_shape=[0-9]+:ready_shape=[0-9]+:resolved_production=[0-9]+:resolved_exercised=[1-9][0-9]*:worst_dwell_ms=[0-9]+:overflow=[0-9]+\]'
+STRAND_INJECT_ORACLE_PATTERN='\[STRAND_INJECT_ORACLE:aarch64:legA_exercised=1:legA_recovered=1:legB_exercised=1:legB_recovered=1:stranded=0\]'
 
 # Find the ARM64 kernel
 KERNEL="$BREENIX_ROOT/target/aarch64-breenix-kernel/release/kernel-aarch64"
 if [ ! -f "$KERNEL" ]; then
     echo "Error: No ARM64 kernel found. Build with:"
-    echo "  cargo build --release --target aarch64-breenix-kernel.json -Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem -p kernel --bin kernel-aarch64"
+    # This gate pins boot_tests-only markers (the oracle counters and both strand
+    # oracles); a kernel built without the feature fails it spuriously.
+    echo "  cargo build --release --features boot_tests --target aarch64-breenix-kernel.json -Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem -p kernel --bin kernel-aarch64"
     exit 1
 fi
+
+# Durable #528 guard: the kernel MUST be soft-float. Fail fast if it was built
+# with the NEON hardfloat target (aarch64-breenix.json) — that re-arms #528.
+# (set -e aborts the gate if the guard trips.)
+#
+# This gate is the kernel-merge gate and it was the ONLY aarch64 gate without
+# this guard: the full-system, production-profile and service-sequence gates all
+# carried it, so a NEON-target kernel could be merged through the one gate that
+# decides merges while the others would have caught it. Found while pinning the
+# feature-profile guard below, which asserts the two preflights run in order.
+"$BREENIX_ROOT/scripts/check-kernel-no-neon.sh" "$KERNEL"
+
+# Durable feature-profile guard. This gate pins markers that ONLY a
+# `--features boot_tests` kernel emits, so a kernel built in any other profile
+# fails every boot on "marker missing" and the run reads as a kernel regression.
+#
+# `cargo` keeps one cached artifact per feature set and hardlinks the requested
+# one into this single output path in about 0.06 s, with no recompilation and no
+# output worth reading. ANY `cargo test` in the same session therefore replaces
+# this binary silently — `cargo test --test kernel_no_neon_guard` builds the
+# kernel with NO features by design — and the next gate boots the wrong kernel.
+# Measured: an acceptance battery that ran the structural suites and then this
+# gate scored 0/6, every boot on "Futex handoff oracle marker missing or failed",
+# against a production kernel that was never asked to emit it. Refuse instead.
+require_boot_tests_kernel() {
+    local kernel="$1"
+    local marker
+    local missing=""
+
+    # A census of marker literals rather than one sentinel: a single marker
+    # changing profile must not be able to disarm this guard quietly.
+    for marker in '[SCHED_STRAND_ORACLE:' '[STRAND_INJECT_ORACLE:' '[FUTEX_HANDOFF_ORACLE:' '[CTX596_ORACLE:' '[BOOT_TESTS:'; do
+        if ! grep -aqF "$marker" "$kernel" 2>/dev/null; then
+            missing="$missing $marker"
+        fi
+    done
+
+    if [ -n "$missing" ]; then
+        echo "Error: $kernel was not built with --features boot_tests."
+        echo "  Missing boot_tests-only marker literal(s):$missing"
+        echo "  This gate pins those markers, so every boot would fail on 'marker missing'."
+        echo "  Rebuild with:"
+        echo "    cargo build --release --features boot_tests --target aarch64-breenix-kernel.json -Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem -p kernel --bin kernel-aarch64"
+        echo "  NOTE: any 'cargo test' in this session rebuilds the kernel WITHOUT boot_tests and"
+        echo "  silently swaps this binary in a fraction of a second. Build after testing, not before."
+        exit 1
+    fi
+}
+
+require_boot_tests_kernel "$KERNEL"
 
 # Find ext2 disk (required for userspace)
 EXT2_DISK="$BREENIX_ROOT/target/ext2-aarch64.img"
@@ -129,6 +184,29 @@ score_serial() {
     fi
     if ! grep -qE "$FUTEX_HANDOFF_ORACLE_PATTERN" "$serial_file" 2>/dev/null; then
         echo "Futex handoff oracle marker missing or failed"
+        return 1
+    fi
+    # FORBIDDEN PATTERNS, scanned over the WHOLE serial, before the presence
+    # checks below. The census is cumulative and emitted on a fixed cadence from
+    # t≈3s, so every boot that survives three seconds always contains a clean
+    # `stranded=0` line; a presence check alone therefore cannot fail on a strand
+    # that first appears at t=10s. These two greps are what make ruling (b)'s
+    # "hard-fails on stranded>0" true on the kernel-merge gate. They add failure
+    # conditions and remove none.
+    if grep -qE '\[SCHED_STRAND_ORACLE:[^]]*:stranded=[1-9][0-9]*:' "$serial_file" 2>/dev/null; then
+        echo "Scheduler strand census reported stranded work ($(grep -E '\[SCHED_STRAND_ORACLE:[^]]*:stranded=[1-9][0-9]*:' "$serial_file" | tail -1))"
+        return 1
+    fi
+    if grep -qE '\[STRAND_INJECT_ORACLE:[^]]*:stranded=[1-9][0-9]*\]' "$serial_file" 2>/dev/null; then
+        echo "Scheduler strand injection oracle reported stranded work ($(grep -E '\[STRAND_INJECT_ORACLE:[^]]*:stranded=[1-9][0-9]*\]' "$serial_file" | tail -1))"
+        return 1
+    fi
+    if ! grep -qE "$SCHED_STRAND_ORACLE_PATTERN" "$serial_file" 2>/dev/null; then
+        echo "Scheduler strand census oracle marker missing or failed"
+        return 1
+    fi
+    if ! grep -qE "$STRAND_INJECT_ORACLE_PATTERN" "$serial_file" 2>/dev/null; then
+        echo "Scheduler strand injection oracle marker missing or failed"
         return 1
     fi
     if ! grep -qF "[INIT_DESIGNATION:aarch64:designated_pid=1:reserved_collisions=0]" "$serial_file" 2>/dev/null; then
@@ -238,24 +316,36 @@ run_single_test() {
     #   "[heartbeat]" - the default ARM64 init service executed in userspace
     # Also require "[EXEC_SMOKE:TARGET_OK]" as the exec completion condition.
     # DO NOT accept "Interactive Shell" - that's the KERNEL FALLBACK when userspace FAILS
-    local USERSPACE_DETECTED=false
-    local EXEC_SMOKE_COMPLETE=false
     local CRASH_TYPE=""
     # Named POLL, not i: the caller's loop variable is also i, and an unscoped
     # inner i made the summary report the poll counter instead of the boot number.
     local POLL
+    #
+    # THE STOP CONDITION IS score_serial ITSELF, not a narrower pair of liveness
+    # patterns.
+    #
+    # This loop used to break as soon as a userspace liveness pattern and
+    # [EXEC_SMOKE:TARGET_OK] were both present, kill QEMU, and only then score the
+    # serial. Those two land at roughly 0.5 s and 4.4 s of uptime; every other
+    # marker score_serial requires — the futex handoff oracle (~5.8 s), the block
+    # EINTR oracle (~5.8 s), the strand census and the strand injection oracle —
+    # is emitted afterwards. The gate therefore killed the VM before the evidence
+    # it scores could exist and failed every boot on "marker missing", including
+    # on main: a stop condition narrower than the scoring criteria is a gate that
+    # cannot pass. It also made the forbidden-pattern scans below unreachable — a
+    # late strand cannot appear in a serial that was truncated at 4.4 s.
+    #
+    # Polling score_serial keeps the two in sync by construction: whatever the
+    # scoring criteria grow to require, the loop waits for it. This only ever
+    # extends the capture window. It accepts nothing score_serial would reject —
+    # the verdict below is still a fresh score of the serial QEMU left behind —
+    # and the crash-marker break and the wall-clock bound are unchanged.
     for POLL in $(seq 1 12); do
         if [ -f "$OUTPUT_DIR/serial.txt" ]; then
-            if grep -qE "(breenix>|bsh |\[bwm\] Display:|\[bcheck\] Complete:|\[heartbeat\])" "$OUTPUT_DIR/serial.txt" 2>/dev/null; then
-                USERSPACE_DETECTED=true
-            fi
-            if grep -qF "[EXEC_SMOKE:TARGET_OK]" "$OUTPUT_DIR/serial.txt" 2>/dev/null; then
-                EXEC_SMOKE_COMPLETE=true
-            fi
             if CRASH_TYPE=$(check_crash_markers "$OUTPUT_DIR/serial.txt"); then
                 break
             fi
-            if $USERSPACE_DETECTED && $EXEC_SMOKE_COMPLETE; then
+            if score_serial "$OUTPUT_DIR/serial.txt" >/dev/null 2>&1; then
                 break
             fi
         fi
