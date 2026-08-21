@@ -297,17 +297,42 @@ instruction_abort_signatures() {
     } | sort -u
 }
 
+# Same shape as instruction_abort_signatures() above, but for EL1
+# ([DATA_ABORT] ... from_el0=0) data aborts: prints the distinct set of
+# "far esr" field signatures (union of the [DATA_ABORT] header and the
+# [FATAL_REGS] dump, deduplicated) so the caller can require a single,
+# field-exact match rather than treating every EL1 data abort as one bucket.
+data_abort_signatures() {
+    local serial_file="$1"
+
+    {
+        grep -ahoE '\[DATA_ABORT\] FAR=0x[0-9a-f]+ ELR=0x[0-9a-f]+ ESR=0x[0-9a-f]+[^[:alnum:]].*from_el0=0' \
+            "$serial_file" 2>/dev/null \
+            | sed -E 's/.*FAR=(0x[0-9a-f]+) ELR=0x[0-9a-f]+ ESR=(0x[0-9a-f]+).*/\1 \2/'
+        grep -ahoE 'label=DATA_ABORT[^=]*=[0-9]+ spsr=0x[0-9a-f]+ esr=0x[0-9a-f]+ far=0x[0-9a-f]+ elr=0x[0-9a-f]+' \
+            "$serial_file" 2>/dev/null \
+            | sed -E 's/.* esr=(0x[0-9a-f]+) far=(0x[0-9a-f]+) elr=0x[0-9a-f]+.*/\2 \1/'
+    } | sort -u
+}
+
 # Return 0 when this serial carries the filed #609 signature: the network:early
 # subsystem kthread was created and then never dispatched.
 #
-# THIS DETECTOR NO LONGER CARRIES A TOLERANCE (coordinator ruling R33). #609 was
-# pre-adjudicated at a filed ~3% rate under R30, with a run-wide rate ceiling as
-# the bound. That pre-adjudication is retired: the forced arm built for #609
-# falsified the RCA mechanism it was meant to prove (the CPU-0-pinned stimulus
-# armed 20/20 and dispatched 0/20, because CPU 0 runs the whole boot-test window
-# under preempt_disable()), and 290 non-forcing boots on main produced zero
-# occurrences. The class is not reproducible here at the filed rate, so a boot
-# that DOES carry this shape is new information and must red the gate.
+# THIS DETECTOR NO LONGER CARRIES A TOLERANCE (coordinator ruling R33, correction
+# under R34). #609 was pre-adjudicated at a filed ~3% rate under R30, with a
+# run-wide rate ceiling as the bound. That pre-adjudication is retired — but the
+# reason is NOT that the class stopped reproducing. R33 read a forcing arm's
+# negative result as a falsification of the RCA mechanism; that reading was
+# wrong (the CPU-0-pinned stimulus armed 20/20 but was never JOINED by anything,
+# so HITS=0 was the only outcome it could ever report, healthy kernel or broken
+# one alike) and R33's "290 non-forcing boots, zero occurrences" claim was
+# contradicted by this branch's own 100-boot/profile clean gate an hour before
+# that claim was written up (see #609 R34 correction comment and
+# 609-RCA-RETRACTION-2026-08-21.md). #609 reproduces at ~1/100 on this branch's
+# own gate. The tolerance stays removed because it should never have been a
+# tolerated bucket for an unfixed, UNTOLERATED defect — not because the class
+# went away. A boot that carries this shape is a real recurrence and must red
+# the gate.
 #
 # The detector is kept — deleting it would send a recurrence to UNATTRIBUTED with
 # a generic reason — but its bucket is now a hard FAIL in run_profile, exactly
@@ -367,6 +392,8 @@ classify_serial() {
     local stranded_strand_line
     local instruction_abort_signature
     local instruction_abort_variants
+    local data_abort_signature
+    local data_abort_variants
 
     # #596's runtime oracle is unconditional: an inline-saved context whose
     # recorded resume PC is not its inline-save x30 is a defect no matter what
@@ -376,16 +403,40 @@ classify_serial() {
         CLASS_REASON="inline-save resume-point oracle failed: $(grep -o '\[CTX596_ORACLE:FAIL:[a-z_]*' "$serial_file" | head -1)"
         return
     fi
-    # This is a CATCH-ALL for any EL1 (from_el0=0) data abort that is not the
-    # #596 oracle's own FAIL line above — it is NOT "#596" (#596 is CLOSED; its
-    # own arm is the one above and is the only thing that bucket name should
-    # mean). The wild-context data abort this arm has actually caught (small-
-    # garbage FAR, garbage callee-saved register file, near
-    # schedule_deferred_requeue) is filed as #612; it buckets there so a
-    # gate-failing red is never silently attributed to a closed issue.
-    if grep -qE "\[DATA_ABORT\].*from_el0=0" "$serial_file" 2>/dev/null; then
-        CLASS_BUCKET="612"
-        CLASS_REASON="EL1 data abort (#612, catch-all — not #596, which is closed): $(grep -E "\[DATA_ABORT\].*from_el0=0" "$serial_file" | head -1 | sed 's/[[:space:]]*$//')"
+    # EL1 (from_el0=0) data aborts are attributed BY FIELD SIGNATURE, never by
+    # exception type (ruling R34; this arm used to be a catch-all for ANY
+    # [DATA_ABORT] ... from_el0=0 line, bucketed as #612 regardless of FAR/ESR —
+    # exactly the "new signature invisible by construction" failure the
+    # instruction-abort arm below was already built to avoid for #576. #622 is
+    # the proof: FAR=0x200 ESR=0x96000005 rode into the #612 bucket, which is
+    # filed at the field-exact FAR=0x292 ESR=0x96000021. #596 is handled above
+    # and is excluded from this arm entirely (its own oracle already returned).
+    #
+    # The match is on the WHOLE SET of records the serial carries, matching
+    # instruction_abort_signatures()'s discipline above: a serial carrying two
+    # different signatures, or one fault whose two records disagree, is
+    # UNATTRIBUTED rather than guessed at — even #612, the one bucket below
+    # that is a named FAIL rather than UNATTRIBUTED, only earns that name on an
+    # unambiguous single-signature match.
+    if grep -qF "[DATA_ABORT]" "$serial_file" 2>/dev/null && grep -qE "\[DATA_ABORT\].*from_el0=0" "$serial_file" 2>/dev/null; then
+        data_abort_signature=$(data_abort_signatures "$serial_file")
+        data_abort_variants=$(printf '%s' "$data_abort_signature" | grep -c . || true)
+        if [ "$data_abort_variants" -eq 0 ]; then
+            CLASS_BUCKET="UNATTRIBUTED"
+            CLASS_REASON="EL1 data abort whose FAR/ESR fields could not be read from the serial"
+        elif [ "$data_abort_variants" -gt 1 ]; then
+            CLASS_BUCKET="UNATTRIBUTED"
+            CLASS_REASON="EL1 data abort records disagree, so no single signature describes this boot: far/esr = $(printf '%s' "$data_abort_signature" | paste -sd '|' -)"
+        elif [ "$data_abort_signature" = "0x292 0x96000021" ]; then
+            CLASS_BUCKET="612"
+            CLASS_REASON="EL1 data abort matching the filed #612 signature (FAR=0x292 ESR=0x96000021)"
+        elif [ "$data_abort_signature" = "0x200 0x96000005" ]; then
+            CLASS_BUCKET="UNATTRIBUTED"
+            CLASS_REASON="EL1 data abort matching the filed #622 signature (FAR=0x200 ESR=0x96000005) — not #612, and not tolerated"
+        else
+            CLASS_BUCKET="UNATTRIBUTED"
+            CLASS_REASON="EL1 data abort matches no filed signature: far/esr = $data_abort_signature"
+        fi
         return
     fi
     if grep -qF "[BLOCK_EINTR_ORACLE:FAIL" "$serial_file" 2>/dev/null; then
