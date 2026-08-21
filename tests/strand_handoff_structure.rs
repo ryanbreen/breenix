@@ -440,20 +440,115 @@ fn service_sequence_609_arm_is_field_keyed_and_rate_bounded() {
     let arm_609_offset = classifier
         .find("is_609_network_early_stall")
         .expect("#609 classifier arm");
-    let strand_bucket_offsets: Vec<_> = classifier
-        .match_indices(r#"CLASS_BUCKET="589""#)
-        .map(|(offset, _)| offset)
+    // Field-key this ratchet: #589 was closed and its bucket renamed, and a name-pinned
+    // ratchet would go green if a rename dropped both strand-attribution arms entirely.
+    let strand_fields = [
+        (
+            "scheduler strand census",
+            r"\[SCHED_STRAND_ORACLE:[^]]*:stranded=[1-9][0-9]*:",
+        ),
+        (
+            "strand injection oracle",
+            r"\[STRAND_INJECT_ORACLE:[^]]*:stranded=[1-9][0-9]*\]",
+        ),
+    ];
+    let strand_arms: Vec<_> = strand_fields
+        .iter()
+        .map(|(field, predicate)| {
+            let predicate_offset = classifier
+                .find(predicate)
+                .unwrap_or_else(|| panic!("classify_serial must retain its nonzero {field} arm"));
+            let arm_tail = &classifier[predicate_offset..];
+            let arm_end = arm_tail
+                .find("\n    fi\n")
+                .map(|offset| offset + "\n    fi\n".len())
+                .unwrap_or_else(|| panic!("{field} classifier arm terminator"));
+            let arm = &arm_tail[..arm_end];
+            let bucket_assignments: Vec<_> = arm
+                .lines()
+                .map(str::trim)
+                .filter_map(|line| {
+                    line.strip_prefix("CLASS_BUCKET=\"")
+                        .and_then(|bucket| bucket.strip_suffix('"'))
+                })
+                .collect();
+            assert_eq!(
+                bucket_assignments.len(),
+                1,
+                "{field} classifier arm must assign exactly one bucket"
+            );
+            (
+                field,
+                predicate_offset + arm_end,
+                bucket_assignments[0],
+            )
+        })
         .collect();
     assert!(
-        !strand_bucket_offsets.is_empty(),
-        "classify_serial must retain its strand-attribution arms"
-    );
-    assert!(
-        strand_bucket_offsets
+        strand_arms
             .iter()
-            .all(|offset| arm_609_offset > *offset),
-        "#609 classification must remain after every strand-attribution arm"
+            .all(|(_, arm_end, _)| arm_609_offset > *arm_end),
+        "#609 classification must remain strictly after both field-keyed strand-attribution arms"
     );
+
+    let run_profile = shell_function_body(&gate, "run_profile");
+    let classifier_dispatch = run_profile
+        .split_once(r#"case "$CLASS_BUCKET" in"#)
+        .and_then(|(_, tail)| tail.split_once("esac").map(|(dispatch, _)| dispatch))
+        .expect("run_profile CLASS_BUCKET dispatch");
+    let bucket_counters: Vec<_> = classifier_dispatch
+        .lines()
+        .filter_map(|line| {
+            let line = line.trim();
+            if line.starts_with('#') {
+                return None;
+            }
+            let (bucket, update) = line.split_once(')')?;
+            let bucket = bucket.trim();
+            let update = update.trim();
+            if bucket.is_empty()
+                || bucket == "*"
+                || bucket.bytes().any(|byte| byte.is_ascii_whitespace())
+                || !update.ends_with(";;")
+            {
+                return None;
+            }
+            let counter = update.split_once('=').map(|(counter, _)| counter.trim())?;
+            counter
+                .strip_prefix("count_")
+                .filter(|suffix| {
+                    !suffix.is_empty()
+                        && suffix
+                            .bytes()
+                            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+                })
+                .map(|_| (bucket, counter))
+        })
+        .collect();
+    let fail_conditions: Vec<_> = run_profile
+        .lines()
+        .map(str::trim)
+        .filter(|line| line.starts_with(r#"if [ "$count_"#) && line.ends_with("; then"))
+        .collect();
+    assert_eq!(
+        fail_conditions.len(),
+        1,
+        "run_profile must retain exactly one per-profile count_* FAIL condition"
+    );
+    let fail_condition = fail_conditions[0];
+    for (field, _, bucket) in strand_arms {
+        let counter = bucket_counters
+            .iter()
+            .find_map(|(dispatch_bucket, counter)| (*dispatch_bucket == bucket).then_some(*counter))
+            .unwrap_or_else(|| {
+                panic!("{field} bucket {bucket} must map to a count_* counter in run_profile")
+            });
+        let failing_term = format!(r#"[ "${counter}" -ne 0 ]"#);
+        assert!(
+            fail_condition.contains(&failing_term),
+            "{field} bucket {bucket} counter {counter} must remain in run_profile's per-profile FAIL condition"
+        );
+    }
 
     assert!(
         gate.contains("TOTAL_609_CEILING=$("),

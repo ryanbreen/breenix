@@ -430,24 +430,27 @@ classify_serial() {
         CLASS_REASON="EL1 data abort (#596): ${data_abort_line}"
         return
     fi
+    # #589 is closed. A non-failing bucket keyed to a closed issue hides live reds;
+    # both a strand census/injection report of stranded work and a live sibling
+    # refusing exec are real defects that whoever sees them must file, not absorb.
     # The serial console emits CRLF; trim trailing whitespace before exact comparisons and reports.
     last_line=$(grep -F "CLONEVM_EXEC_TEST" "$serial_file" 2>/dev/null | tail -1 | sed 's/[[:space:]]*$//' || true)
     if [ "$last_line" = "CLONEVM_EXEC_TEST: live sibling refused exec" ]; then
-        CLASS_BUCKET="589"
+        CLASS_BUCKET="CLONE_EXEC"
         CLASS_REASON="live sibling refused exec"
         return
     fi
-    # A crashed boot's cleanup can strand a thread; attribute strands to #589 only if no crash came first.
+    # A crashed boot's cleanup can strand a thread; attribute strands only if no crash came first.
     stranded_strand_line=$(grep -E '\[SCHED_STRAND_ORACLE:[^]]*:stranded=[1-9][0-9]*:' \
         "$serial_file" 2>/dev/null | tail -1 || true)
     if [ -n "$stranded_strand_line" ]; then
-        CLASS_BUCKET="589"
+        CLASS_BUCKET="STRAND"
         CLASS_REASON="scheduler strand census reported stranded work: $stranded_strand_line"
         return
     fi
     if grep -qE '\[STRAND_INJECT_ORACLE:[^]]*:stranded=[1-9][0-9]*\]' \
         "$serial_file" 2>/dev/null; then
-        CLASS_BUCKET="589"
+        CLASS_BUCKET="STRAND"
         CLASS_REASON="strand injection oracle reported stranded work: $(grep -E '\[STRAND_INJECT_ORACLE:[^]]*:stranded=[1-9][0-9]*\]' "$serial_file" | tail -1)"
         return
     fi
@@ -524,7 +527,8 @@ classify_serial() {
 TOTAL_575=0
 TOTAL_576=0
 TOTAL_DATA_ABORT=0
-TOTAL_589=0
+TOTAL_CLONE_EXEC=0
+TOTAL_STRAND=0
 TOTAL_596=0
 TOTAL_612=0
 TOTAL_609=0
@@ -542,16 +546,17 @@ print_census() {
     local count_575="$2"
     local count_576="$3"
     local count_data_abort="$4"
-    local count_589="$5"
-    local count_596="$6"
-    local count_612="$7"
-    local count_609="$8"
-    local count_p5b="$9"
-    local count_green="${10}"
-    local count_unattributed="${11}"
-    local count_boots="${12}"
-    local divergence_boots="${13}"
-    local divergence_lines="${14}"
+    local count_clone_exec="$5"
+    local count_strand="$6"
+    local count_596="$7"
+    local count_612="$8"
+    local count_609="$9"
+    local count_p5b="${10}"
+    local count_green="${11}"
+    local count_unattributed="${12}"
+    local count_boots="${13}"
+    local divergence_boots="${14}"
+    local divergence_lines="${15}"
     local green_rate
 
     green_rate=$(awk -v green="$count_green" -v boots="$count_boots" \
@@ -561,14 +566,15 @@ print_census() {
     printf '  %-13s %d\n' "575" "$count_575"
     printf '  %-13s %d\n' "576" "$count_576"
     printf '  %-13s %d\n' "DATA_ABORT" "$count_data_abort"
-    printf '  %-13s %d\n' "589" "$count_589"
+    printf '  %-13s %d\n' "CLONE_EXEC" "$count_clone_exec"
+    printf '  %-13s %d\n' "STRAND" "$count_strand"
     printf '  %-13s %d\n' "596" "$count_596"
     printf '  %-13s %d\n' "612" "$count_612"
     printf '  %-13s %d\n' "609" "$count_609"
     printf '  %-13s %d\n' "P5B" "$count_p5b"
     printf '  %-13s %d\n' "GREEN" "$count_green"
     printf '  %-13s %d\n' "UNATTRIBUTED" "$count_unattributed"
-    echo "  GREEN rate: $count_green/$count_boots ($green_rate%) — not a gate today: #589 and #576 are open and intercept boots"
+    echo "  GREEN rate: $count_green/$count_boots ($green_rate%) — census-only: #589 is closed and CLONE_EXEC/STRAND are gate-failing; #576 remains open and intercepts boots"
     # Reported, never gated: the #596 mechanism counter. A nonzero divergence
     # count with bucket 596 at zero is the production evidence that an
     # inline-saved context really is ERET-dispatched carrying a stale ELR and
@@ -583,7 +589,8 @@ run_profile() {
     local count_575=0
     local count_576=0
     local count_data_abort=0
-    local count_589=0
+    local count_clone_exec=0
+    local count_strand=0
     local count_596=0
     local count_612=0
     local count_609=0
@@ -707,7 +714,8 @@ run_profile() {
             575) count_575=$((count_575 + 1)) ;;
             576) count_576=$((count_576 + 1)) ;;
             DATA_ABORT) count_data_abort=$((count_data_abort + 1)) ;;
-            589) count_589=$((count_589 + 1)) ;;
+            CLONE_EXEC) count_clone_exec=$((count_clone_exec + 1)) ;;
+            STRAND) count_strand=$((count_strand + 1)) ;;
             596) count_596=$((count_596 + 1)) ;;
             612) count_612=$((count_612 + 1)) ;;
             609) count_609=$((count_609 + 1)) ;;
@@ -725,32 +733,34 @@ run_profile() {
         echo "  Boot $boot/$BOOTS: $CLASS_BUCKET — $CLASS_REASON [$boot_end, ${boot_seconds}s, ctx596_divergence=$boot_divergence]"
     done
 
-    census_sum=$((count_575 + count_576 + count_data_abort + count_589 + count_596 + count_612 + count_609 + count_p5b + count_green + count_unattributed))
+    census_sum=$((count_575 + count_576 + count_data_abort + count_clone_exec + count_strand + count_596 + count_612 + count_609 + count_p5b + count_green + count_unattributed))
     if [ "$census_sum" -ne "$BOOTS" ]; then
         echo "FATAL: $cpu_profile bucket census sums to $census_sum, expected $BOOTS"
         exit 1
     fi
 
-    print_census "Profile $cpu_profile" "$count_575" "$count_576" "$count_data_abort" "$count_589" \
-        "$count_596" "$count_612" "$count_609" "$count_p5b" "$count_green" "$count_unattributed" "$BOOTS" \
+    print_census "Profile $cpu_profile" "$count_575" "$count_576" "$count_data_abort" "$count_clone_exec" \
+        "$count_strand" "$count_596" "$count_612" "$count_609" "$count_p5b" "$count_green" "$count_unattributed" "$BOOTS" \
         "$divergence_boots" "$divergence_lines"
 
-    # The GREEN rate is census-only because open #589 and #576 intercept boots;
+    # #589 is closed; its CLONE_EXEC and STRAND shapes now fail this gate. The
+    # GREEN rate stays census-only because open #576 still intercepts boots;
     # its GREEN denominator is now also the P5b whole-boot-walk denominator.
     # #609 is not in this per-profile condition because its pre-adjudication is a
     # RATE, and a rate is only meaningful over the whole run; it is enforced once,
     # against every boot the run produced, after the last profile finishes.
-    if [ "$count_575" -ne 0 ] || [ "$count_data_abort" -ne 0 ] || [ "$count_596" -ne 0 ] || [ "$count_612" -ne 0 ] || [ "$count_p5b" -ne 0 ] || [ "$count_unattributed" -ne 0 ]; then
+    if [ "$count_575" -ne 0 ] || [ "$count_data_abort" -ne 0 ] || [ "$count_clone_exec" -ne 0 ] || [ "$count_strand" -ne 0 ] || [ "$count_596" -ne 0 ] || [ "$count_612" -ne 0 ] || [ "$count_p5b" -ne 0 ] || [ "$count_unattributed" -ne 0 ]; then
         ANY_GATE_FAILURE=1
-        echo "Profile $cpu_profile gate: FAILED (575=$count_575, DATA_ABORT=$count_data_abort, 596=$count_596, 612=$count_612, P5B=$count_p5b, UNATTRIBUTED=$count_unattributed)"
+        echo "Profile $cpu_profile gate: FAILED (575=$count_575, DATA_ABORT=$count_data_abort, CLONE_EXEC=$count_clone_exec, STRAND=$count_strand, 596=$count_596, 612=$count_612, P5B=$count_p5b, UNATTRIBUTED=$count_unattributed)"
     else
-        echo "Profile $cpu_profile gate: PASSED (575=0, DATA_ABORT=0, 596=0, 612=0, P5B=0, UNATTRIBUTED=0; 609=$count_609 pending the run-wide rate ceiling)"
+        echo "Profile $cpu_profile gate: PASSED (575=0, DATA_ABORT=0, CLONE_EXEC=0, STRAND=0, 596=0, 612=0, P5B=0, UNATTRIBUTED=0; 609=$count_609 pending the run-wide rate ceiling)"
     fi
 
     TOTAL_575=$((TOTAL_575 + count_575))
     TOTAL_576=$((TOTAL_576 + count_576))
     TOTAL_DATA_ABORT=$((TOTAL_DATA_ABORT + count_data_abort))
-    TOTAL_589=$((TOTAL_589 + count_589))
+    TOTAL_CLONE_EXEC=$((TOTAL_CLONE_EXEC + count_clone_exec))
+    TOTAL_STRAND=$((TOTAL_STRAND + count_strand))
     TOTAL_596=$((TOTAL_596 + count_596))
     TOTAL_612=$((TOTAL_612 + count_612))
     TOTAL_609=$((TOTAL_609 + count_609))
@@ -783,15 +793,15 @@ case "$PROFILE" in
         ;;
 esac
 
-TOTAL_SUM=$((TOTAL_575 + TOTAL_576 + TOTAL_DATA_ABORT + TOTAL_589 + TOTAL_596 + TOTAL_612 + TOTAL_609 + TOTAL_P5B + TOTAL_GREEN + TOTAL_UNATTRIBUTED))
+TOTAL_SUM=$((TOTAL_575 + TOTAL_576 + TOTAL_DATA_ABORT + TOTAL_CLONE_EXEC + TOTAL_STRAND + TOTAL_596 + TOTAL_612 + TOTAL_609 + TOTAL_P5B + TOTAL_GREEN + TOTAL_UNATTRIBUTED))
 EXPECTED_TOTAL=$((BOOTS * PROFILE_COUNT))
 if [ "$TOTAL_SUM" -ne "$EXPECTED_TOTAL" ] || [ "$TOTAL_BOOTS" -ne "$EXPECTED_TOTAL" ]; then
     echo "FATAL: total bucket census sums to $TOTAL_SUM for $TOTAL_BOOTS recorded boots; expected $EXPECTED_TOTAL"
     exit 1
 fi
 
-print_census "Total" "$TOTAL_575" "$TOTAL_576" "$TOTAL_DATA_ABORT" "$TOTAL_589" \
-    "$TOTAL_596" "$TOTAL_612" "$TOTAL_609" "$TOTAL_P5B" "$TOTAL_GREEN" "$TOTAL_UNATTRIBUTED" "$TOTAL_BOOTS" \
+print_census "Total" "$TOTAL_575" "$TOTAL_576" "$TOTAL_DATA_ABORT" "$TOTAL_CLONE_EXEC" \
+    "$TOTAL_STRAND" "$TOTAL_596" "$TOTAL_612" "$TOTAL_609" "$TOTAL_P5B" "$TOTAL_GREEN" "$TOTAL_UNATTRIBUTED" "$TOTAL_BOOTS" \
     "$TOTAL_DIVERGENCE_BOOTS" "$TOTAL_DIVERGENCE_LINES"
 
 # #609's pre-adjudication is a bounded attribution, never a blanket excuse:

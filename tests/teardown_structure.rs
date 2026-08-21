@@ -2989,7 +2989,7 @@ fn validate_p5b_gate_script_pins(
         "EL1 data abort (#596)",
         "TOTAL_DATA_ABORT=0",
         "DATA_ABORT) count_data_abort=$((count_data_abort + 1)) ;;",
-        "[ \"$count_575\" -ne 0 ] || [ \"$count_data_abort\" -ne 0 ] || [ \"$count_596\" -ne 0 ] || [ \"$count_612\" -ne 0 ] || [ \"$count_p5b\" -ne 0 ] || [ \"$count_unattributed\" -ne 0 ]",
+        "[ \"$count_575\" -ne 0 ] || [ \"$count_data_abort\" -ne 0 ] || [ \"$count_clone_exec\" -ne 0 ] || [ \"$count_strand\" -ne 0 ] || [ \"$count_596\" -ne 0 ] || [ \"$count_612\" -ne 0 ] || [ \"$count_p5b\" -ne 0 ] || [ \"$count_unattributed\" -ne 0 ]",
         "quiesce_rows_floor=8",
         "[ \"$quiesce_rows\" -lt \"$quiesce_rows_floor\" ]",
         "TOTAL_P5B=$((TOTAL_P5B + count_p5b))",
