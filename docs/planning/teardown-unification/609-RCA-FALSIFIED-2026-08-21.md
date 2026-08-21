@@ -80,9 +80,44 @@ at the filed rate. Both preserved #609 serials are from `fix/589-deferred-requeu
    narrows the set of runs the gate passes, so this is a tightening.
 3. **The strand census is widened** — the identity-keyed idle skip is replaced by a parked
    predicate, and a `worst_nonprogress_ms` axis is added — proven by a synthetic in-kernel injection
-   rather than by the falsified mechanism. See the census-widening commit and its oracle.
+   rather than by the falsified mechanism. Be explicit about what it does NOT do: the widening
+   cannot detect #609's own failure, because at the moment the hypothesised loss completes the CPU
+   genuinely is parked in its idle loop, so no parked predicate can see it. It is worth landing
+   because the census's `stranded=0` was never evidence of health for this class and should stop
+   being read that way.
 4. **#609 stays OPEN and untolerated.** The mechanism is unknown; the class is simply not
    reproducible on main at the filed rate, and the next occurrence is now a gate red with evidence.
+
+## Acceptance measured on the final tree
+
+| check | result |
+|---|---|
+| structural suites (13 targets, incl. strand-handoff 20 and teardown 53) | all green, zero warnings |
+| aarch64 production-profile build + no-NEON | zero project warnings; PASS (0 FP/SIMD in .text) |
+| aarch64 `boot_tests` build + no-NEON | zero project warnings; PASS |
+| `run-aarch64-boot-test-strict.sh 6` | 6/6 SUCCESS |
+| `run-aarch64-service-sequence-gate.sh --boots 25 --profile both` | PASSED — 50/50 GREEN, every bucket 0 including the now-hard-failing 609 |
+| `run-aarch64-prod-profile-boot-test.sh` | PASS (futex seam absent, 0 crash markers, 2 block-EINTR oracle markers, 0 failures) |
+| `run-aarch64-full-test.sh --rebuild` | Phase 1 107/107 and Phases 1a–1e all PASS; **Phase 2 red, attributed to open #593** |
+| x86 custody gate on beast (`run-x86-boot-tests.sh 1`) | PASS, every oracle literal matched |
+
+Two attributed reds, neither silenced:
+
+* **#593** — `run-aarch64-full-test.sh` Phase 2 fails `shell not detected`. Structural and
+  pre-existing: init's aarch64 `run_boot_script()` spawns the fixed service list and returns without
+  ever spawning `/bin/bsh`, so Phase 2 cannot pass on any branch. Not touched, not relaxed.
+* The only build "warning" on either profile is Cargo's future-incompatibility summary for the
+  pinned nightly's own `core` crate. No Breenix crate emits a diagnostic.
+
+**A vacuity caught and closed mid-round.** The census-widening oracle was first registered as a
+`TestDef` with `arch: Arch::Any`, and the round's write-up claimed it covered both architectures.
+The x86 gate disproved that: the x86 boot-test executor emits `[TESTS_COMPLETE:0/0]` and runs no
+staged tests, so zero `[CENSUS_WIDEN_ORACLE:` lines appeared. The probe was factored out and is now
+driven on x86 from `advance_stage_marker_only`'s non-aarch64 verdict block — the block that
+demonstrably executes, since its `[SCHED_STRAND_ORACLE:x86:...]` marker is what that gate has always
+matched — and the x86 gate now requires exactly one PASS line. Measured after the fix:
+`[CENSUS_WIDEN_ORACLE:x86:baseline_reported=0:armed_reported=1:tid=1202:shape=running:nonprogress_axis=1:PASS]`.
+Registering a test is not the same as proving it runs in the gate's actual profile.
 
 ## By-catch, filed as its own issues
 
