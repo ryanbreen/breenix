@@ -14,6 +14,7 @@ const MIN_REQUEUE_EARLY_RETURN_GUARDS: usize = 6;
 const MIN_INSTRUCTION_ABORT_REFUSAL_REASONS: usize = 3;
 /// Additional #609 clauses are welcome; dropping one is how a tolerated bucket starts absorbing unfiled failures.
 const MIN_609_SIGNATURE_GUARDS: usize = 5;
+const MAX_NON_FAILING_SERVICE_SEQUENCE_BUCKETS: usize = 2;
 /// Each gate must reject both strand marker families; additional rejections are welcome.
 const MIN_STRANDED_FORBIDDEN_REJECTIONS: usize = 2;
 /// More discriminating markers are welcome; dropping one quietly disarms the profile guard.
@@ -390,8 +391,12 @@ fn service_sequence_instruction_abort_classifier_is_single_signature() {
     );
 }
 
+/// Coordinator ruling R33 retired #609's rate pre-adjudication after its forced arm
+/// falsified the RCA mechanism: stimulus armed 20/20 and dispatched 0/20, while 290
+/// non-forcing boots on main produced zero occurrences. Any recurrence must now red
+/// the gate and yield a fresh serial.
 #[test]
-fn service_sequence_609_arm_is_field_keyed_and_rate_bounded() {
+fn service_sequence_609_arm_is_field_keyed_and_untolerated() {
     let gate = repo_text(SERVICE_SEQUENCE_GATE_PATH);
     let signature = shell_function_body(&gate, "is_609_network_early_stall");
     assert!(
@@ -438,8 +443,28 @@ fn service_sequence_609_arm_is_field_keyed_and_rate_bounded() {
 
     let classifier = shell_function_body(&gate, "classify_serial");
     let arm_609_offset = classifier
-        .find("is_609_network_early_stall")
+        .find(r#"is_609_network_early_stall "$serial_file""#)
         .expect("#609 classifier arm");
+    let arm_609_tail = &classifier[arm_609_offset..];
+    let arm_609_end = arm_609_tail
+        .find("\n    fi\n")
+        .map(|offset| offset + "\n    fi\n".len())
+        .expect("#609 classifier arm terminator");
+    let arm_609 = &arm_609_tail[..arm_609_end];
+    let bucket_609_assignments: Vec<_> = arm_609
+        .lines()
+        .map(str::trim)
+        .filter_map(|line| {
+            line.strip_prefix("CLASS_BUCKET=\"")
+                .and_then(|bucket| bucket.strip_suffix('"'))
+        })
+        .collect();
+    assert_eq!(
+        bucket_609_assignments.len(),
+        1,
+        "#609 classifier arm must assign exactly one bucket"
+    );
+    let bucket_609 = bucket_609_assignments[0];
     // Field-key this ratchet: #589 was closed and its bucket renamed, and a name-pinned
     // ratchet would go green if a rename dropped both strand-attribution arms entirely.
     let strand_fields = [
@@ -550,23 +575,72 @@ fn service_sequence_609_arm_is_field_keyed_and_rate_bounded() {
         );
     }
 
+    let counter_609 = bucket_counters
+        .iter()
+        .find_map(|(bucket, counter)| (*bucket == bucket_609).then_some(*counter))
+        .unwrap_or_else(|| {
+            panic!("#609 bucket {bucket_609} must map to a count_* counter in run_profile")
+        });
+    let failing_609_term = format!(r#"[ "${counter_609}" -ne 0 ]"#);
     assert!(
-        gate.contains("TOTAL_609_CEILING=$("),
-        "#609 attribution must retain a computed run-wide rate ceiling"
+        fail_condition.contains(&failing_609_term),
+        "#609 bucket {bucket_609} counter {counter_609} must remain in run_profile's per-profile FAIL condition"
     );
-    let ceiling_arm_start = gate
-        .find(r#"if [ "$TOTAL_609" -gt "$TOTAL_609_CEILING" ]; then"#)
-        .expect("#609 rate-ceiling comparison");
-    let ceiling_arm_tail = &gate[ceiling_arm_start..];
-    let ceiling_arm_end = ceiling_arm_tail
-        .find("\nfi\n")
-        .map(|offset| offset + "\nfi\n".len())
-        .expect("#609 rate-ceiling arm terminator");
-    let ceiling_arm = &ceiling_arm_tail[..ceiling_arm_end];
+
+    assert!(
+        !gate.contains("TOTAL_609_CEILING"),
+        "#609's retired run-wide rate-ceiling token must not survive anywhere in the gate"
+    );
+    assert!(
+        !gate.contains("_CEILING="),
+        "service-sequence gate must not contain any per-class _CEILING= assignment"
+    );
+
+    let classifier_buckets: HashSet<_> = classifier
+        .lines()
+        .map(str::trim)
+        .filter_map(|line| {
+            line.strip_prefix("CLASS_BUCKET=\"")
+                .and_then(|bucket| bucket.strip_suffix('"'))
+        })
+        .collect();
+    assert!(
+        !classifier_buckets.is_empty(),
+        "classify_serial bucket census"
+    );
+    let (failing_buckets, non_failing_buckets): (HashSet<_>, HashSet<_>) =
+        classifier_buckets.iter().copied().partition(|bucket| {
+            let counter = bucket_counters
+                .iter()
+                .find_map(|(dispatch_bucket, counter)| {
+                    (*dispatch_bucket == *bucket).then_some(*counter)
+                })
+                .unwrap_or_else(|| {
+                    panic!(
+                        "classify_serial bucket {} must map to a count_* counter in run_profile",
+                        *bucket
+                    )
+                });
+            let failing_term = format!(r#"[ "${counter}" -ne 0 ]"#);
+            fail_condition.contains(&failing_term)
+        });
     assert_eq!(
-        shell_exact_line_occurrences(ceiling_arm, "ANY_GATE_FAILURE=1"),
-        1,
-        "exceeding the #609 rate ceiling must fail the service-sequence gate"
+        non_failing_buckets.len(),
+        MAX_NON_FAILING_SERVICE_SEQUENCE_BUCKETS,
+        "service-sequence non-failing bucket census changed to {non_failing_buckets:?}; a new non-failing bucket is a new tolerance and needs a coordinator ruling"
+    );
+    assert_eq!(
+        non_failing_buckets,
+        HashSet::from(["GREEN", "576"]),
+        "service-sequence gate may pass only the healthy GREEN bucket and open pre-adjudicated bucket 576"
+    );
+    assert!(
+        failing_buckets.contains(bucket_609),
+        "#609 bucket {bucket_609} must be in the failing bucket census"
+    );
+    assert!(
+        !non_failing_buckets.contains(bucket_609),
+        "#609 bucket {bucket_609} must not be in the non-failing bucket census"
     );
 }
 

@@ -299,12 +299,21 @@ instruction_abort_signatures() {
 # Return 0 when this serial carries the filed #609 signature: the network:early
 # subsystem kthread was created and then never dispatched.
 #
-# #609 is pre-adjudicated as an attributed non-green (coordinator ruling R30) at
-# its filed ~3% rate, so it earns a NAMED bucket instead of UNATTRIBUTED — but it
-# earns it only on the FIELD signature, and the rate ceiling enforced after the
-# last profile is what stops the attribution becoming an unlimited excuse. Every
-# clause below is a shape, never a name list, and every one of them must hold;
-# anything that misses one falls through to UNATTRIBUTED, which fails this gate.
+# THIS DETECTOR NO LONGER CARRIES A TOLERANCE (coordinator ruling R33). #609 was
+# pre-adjudicated at a filed ~3% rate under R30, with a run-wide rate ceiling as
+# the bound. That pre-adjudication is retired: the forced arm built for #609
+# falsified the RCA mechanism it was meant to prove (the CPU-0-pinned stimulus
+# armed 20/20 and dispatched 0/20, because CPU 0 runs the whole boot-test window
+# under preempt_disable()), and 290 non-forcing boots on main produced zero
+# occurrences. The class is not reproducible here at the filed rate, so a boot
+# that DOES carry this shape is new information and must red the gate.
+#
+# The detector is kept — deleting it would send a recurrence to UNATTRIBUTED with
+# a generic reason — but its bucket is now a hard FAIL in run_profile, exactly
+# like STRAND and CLONE_EXEC. Every clause below is a shape, never a name list,
+# and every one of them must hold; anything that misses one falls through to
+# UNATTRIBUTED, which also fails this gate. Either way a recurrence is a red with
+# a preserved serial.
 #
 #   * memory:early ran to COMPLETE, so the early stage really was executing and
 #     this is not a boot that died before the test framework started;
@@ -321,9 +330,10 @@ instruction_abort_signatures() {
 #     runs; the clause is repeated here so the arm still cannot absorb a crash if
 #     it is ever reordered;
 #   * the kernel stayed alive to the wall clock: the strand census kept sampling
-#     into the hundreds and never saw a strand. That clean census is itself part
-#     of the filed signature — #609 records that the census cannot see this class
-#     of lost dispatch (worst_dwell_ms=0, ~2 threads examined per sample), so a
+#     into the hundreds and never saw a strand. That clean census is part of the
+#     filed signature — #609 records that the identity-keyed census could not see
+#     this class of lost dispatch (worst_dwell_ms=0, ~2 threads examined per
+#     sample); the census widening landed this round narrows that blind spot, so a
 #     clean census here is evidence of the blind spot, not of health.
 is_609_network_early_stall() {
     local serial_file="$1"
@@ -456,10 +466,11 @@ classify_serial() {
     fi
     # Deliberately LAST of the attributing arms: every abort signature and both
     # strand arms have already been consulted, so a boot can only reach #609 by
-    # having crashed nowhere and stranded nothing.
+    # having crashed nowhere and stranded nothing. This arm names the shape; it
+    # does not excuse it — bucket 609 is a gate FAIL (R33).
     if is_609_network_early_stall "$serial_file"; then
         CLASS_BUCKET="609"
-        CLASS_REASON="network:early subsystem kthread never dispatched after memory:early completed (#609); census: $(grep -ahoE '\[SCHED_STRAND_ORACLE:[^]]*\]' "$serial_file" | tail -1)"
+        CLASS_REASON="network:early subsystem kthread never dispatched after memory:early completed (#609, UNTOLERATED); census: $(grep -ahoE '\[SCHED_STRAND_ORACLE:[^]]*\]' "$serial_file" | tail -1)"
         return
     fi
     if ! grep -qF "[BLOCK_EINTR_ORACLE:" "$serial_file" 2>/dev/null; then
@@ -574,7 +585,7 @@ print_census() {
     printf '  %-13s %d\n' "P5B" "$count_p5b"
     printf '  %-13s %d\n' "GREEN" "$count_green"
     printf '  %-13s %d\n' "UNATTRIBUTED" "$count_unattributed"
-    echo "  GREEN rate: $count_green/$count_boots ($green_rate%) — census-only: #589 is closed and CLONE_EXEC/STRAND are gate-failing; #576 remains open and intercepts boots"
+    echo "  GREEN rate: $count_green/$count_boots ($green_rate%) — census-only: #589 is closed and CLONE_EXEC/STRAND/609 are gate-failing; #576 remains open and intercepts boots"
     # Reported, never gated: the #596 mechanism counter. A nonzero divergence
     # count with bucket 596 at zero is the production evidence that an
     # inline-saved context really is ERET-dispatched carrying a stale ELR and
@@ -746,14 +757,14 @@ run_profile() {
     # #589 is closed; its CLONE_EXEC and STRAND shapes now fail this gate. The
     # GREEN rate stays census-only because open #576 still intercepts boots;
     # its GREEN denominator is now also the P5b whole-boot-walk denominator.
-    # #609 is not in this per-profile condition because its pre-adjudication is a
-    # RATE, and a rate is only meaningful over the whole run; it is enforced once,
-    # against every boot the run produced, after the last profile finishes.
-    if [ "$count_575" -ne 0 ] || [ "$count_data_abort" -ne 0 ] || [ "$count_clone_exec" -ne 0 ] || [ "$count_strand" -ne 0 ] || [ "$count_596" -ne 0 ] || [ "$count_612" -ne 0 ] || [ "$count_p5b" -ne 0 ] || [ "$count_unattributed" -ne 0 ]; then
+    # #609 joined this condition under R33: its rate pre-adjudication is retired,
+    # so a single boot carrying the shape fails the profile immediately instead of
+    # being deferred to a run-wide ceiling.
+    if [ "$count_575" -ne 0 ] || [ "$count_data_abort" -ne 0 ] || [ "$count_clone_exec" -ne 0 ] || [ "$count_strand" -ne 0 ] || [ "$count_596" -ne 0 ] || [ "$count_612" -ne 0 ] || [ "$count_609" -ne 0 ] || [ "$count_p5b" -ne 0 ] || [ "$count_unattributed" -ne 0 ]; then
         ANY_GATE_FAILURE=1
-        echo "Profile $cpu_profile gate: FAILED (575=$count_575, DATA_ABORT=$count_data_abort, CLONE_EXEC=$count_clone_exec, STRAND=$count_strand, 596=$count_596, 612=$count_612, P5B=$count_p5b, UNATTRIBUTED=$count_unattributed)"
+        echo "Profile $cpu_profile gate: FAILED (575=$count_575, DATA_ABORT=$count_data_abort, CLONE_EXEC=$count_clone_exec, STRAND=$count_strand, 596=$count_596, 612=$count_612, 609=$count_609, P5B=$count_p5b, UNATTRIBUTED=$count_unattributed)"
     else
-        echo "Profile $cpu_profile gate: PASSED (575=0, DATA_ABORT=0, CLONE_EXEC=0, STRAND=0, 596=0, 612=0, P5B=0, UNATTRIBUTED=0; 609=$count_609 pending the run-wide rate ceiling)"
+        echo "Profile $cpu_profile gate: PASSED (575=0, DATA_ABORT=0, CLONE_EXEC=0, STRAND=0, 596=0, 612=0, 609=0, P5B=0, UNATTRIBUTED=0)"
     fi
 
     TOTAL_575=$((TOTAL_575 + count_575))
@@ -804,28 +815,14 @@ print_census "Total" "$TOTAL_575" "$TOTAL_576" "$TOTAL_DATA_ABORT" "$TOTAL_CLONE
     "$TOTAL_STRAND" "$TOTAL_596" "$TOTAL_612" "$TOTAL_609" "$TOTAL_P5B" "$TOTAL_GREEN" "$TOTAL_UNATTRIBUTED" "$TOTAL_BOOTS" \
     "$TOTAL_DIVERGENCE_BOOTS" "$TOTAL_DIVERGENCE_LINES"
 
-# #609's pre-adjudication is a bounded attribution, never a blanket excuse:
-# coordinator ruling R30 tolerates it "at its ~3% rate" and says a materially
-# higher rate is a NEW defect to investigate, not a bucket to grow. This gate
-# therefore enforces the rate itself rather than trusting a reader to notice.
-#
-# The trip point is twice the filed rate, with a floor of one boot so a short run
-# is never failed by a single occurrence:
-#
-#   ceiling = max(1, ceil(0.06 * total boots))  ->  3 at the default 50 boots.
-#
-# At the filed p=0.03 a 50-boot run exceeds three #609 boots about 6% of the
-# time, so crossing the line means a materially higher rate rather than ordinary
-# binomial variance. Exceeding the ceiling FAILS this gate — the boots stay
-# attributed, but the run stops being covered by the pre-adjudication.
-TOTAL_609_CEILING=$(awk -v boots="$TOTAL_BOOTS" \
-    'BEGIN { ceiling = int(boots * 6 / 100); if ((boots * 6) % 100 != 0) ceiling++; if (ceiling < 1) ceiling = 1; print ceiling }')
-if [ "$TOTAL_609" -gt "$TOTAL_609_CEILING" ]; then
-    ANY_GATE_FAILURE=1
-    echo ""
-    echo "#609 RATE CEILING EXCEEDED: $TOTAL_609 of $TOTAL_BOOTS boots carry the #609 stall signature, ceiling $TOTAL_609_CEILING (twice the filed ~3% rate)."
-    echo "  The pre-adjudication covers #609 at its filed rate only. This run is materially above it and must be investigated as new."
-fi
+# The #609 run-wide rate ceiling that used to live here is DELETED (R33). A rate
+# ceiling is a tolerance: it let up to ceil(0.06 * boots) boots carry the shape
+# and still pass. #609's mechanism theory was falsified by its own forced arm and
+# the class did not occur once in 290 non-forcing boots on main, so there is no
+# rate left to tolerate. Every occurrence now fails the profile it happened in,
+# via count_609 in run_profile's FAIL condition, and its serial is preserved by
+# the failure report below. Removing the tolerance is a tightening: the set of
+# runs this gate passes is strictly smaller than before.
 
 if [ "$ANY_GATE_FAILURE" -ne 0 ]; then
     echo ""
