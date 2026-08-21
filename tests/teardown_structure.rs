@@ -7639,7 +7639,13 @@ fn aarch64_exit_kick_waits_are_progress_bounded() {
             .count(),
         2
     );
-    assert!(!clear_affinity.contains("#[cfg("));
+    assert_eq!(
+        clear_affinity
+            .matches("#[cfg(target_arch = \"aarch64\")]")
+            .count(),
+        2,
+        "arch-neutral affinity cleanup must retain both aarch64-only exit-progress records"
+    );
 
     let main = repo_text("kernel/src/main_aarch64.rs");
     let compact_main: String = main.chars().filter(|ch| !ch.is_whitespace()).collect();

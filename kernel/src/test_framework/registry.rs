@@ -3398,61 +3398,147 @@ fn test_wakes_are_placed_on_online_cpus() -> TestResult {
     })
 }
 
-/// Prove that the strand census widens idle-thread disposability by scheduler
-/// state and reports its independent nonprogress axis.
+const CENSUS_WIDEN_DWELL_MS: u64 = 40;
+const CENSUS_WIDEN_JOIN_MS: u64 = 40;
+const CENSUS_WIDEN_RETIRE_ROUNDS: usize = 128;
+static CENSUS_WIDEN_PROBE_RUNS: AtomicU64 = AtomicU64::new(0);
+
+/// Prove that the strand census reports a real Ready thread queued on a CPU
+/// that has stopped entering the scheduler.
 pub fn run_census_widen_oracle() -> bool {
+    use crate::task::kthread::{
+        kthread_has_exited_for_test, kthread_join, kthread_run_on_cpu_for_test,
+    };
     use crate::task::scheduler::{
-        arm_census_widen_injection, collect_strand_census, disarm_census_widen_injection,
+        collect_strand_census, release_cpu_affine_thread_for_test, stale_peer_cpu_for_test,
         StrandCandidate, StrandShape, STRAND_CENSUS_CAPACITY,
     };
     use crate::task::thread::{ThreadPrivilege, ThreadState};
 
-    let tid = crate::task::scheduler::current_thread_id().unwrap_or(0);
-    let mut candidates = [StrandCandidate {
-        tid: 0,
-        shape: StrandShape::Running,
-        privilege: ThreadPrivilege::Kernel,
-        state: ThreadState::Running,
-    }; STRAND_CENSUS_CAPACITY];
+    if let Some(arm_target) = stale_peer_cpu_for_test() {
+        let mut candidates = [StrandCandidate {
+            tid: 0,
+            shape: StrandShape::Running,
+            privilege: ThreadPrivilege::Kernel,
+            state: ThreadState::Running,
+        }; STRAND_CENSUS_CAPACITY];
+        let mut baseline_nonprogress = [0u64; STRAND_CENSUS_CAPACITY];
+        let baseline = collect_strand_census(&mut candidates, &mut baseline_nonprogress);
 
-    disarm_census_widen_injection();
-    let baseline = collect_strand_census(&mut candidates);
-    let baseline_reported = baseline.is_some_and(|census| {
-        candidates
-            .iter()
-            .take(census.candidates)
-            .any(|candidate| candidate.tid == tid)
-    });
+        CENSUS_WIDEN_PROBE_RUNS.store(0, AtomicOrdering::Release);
+        let slot_returns_before =
+            crate::memory::kernel_stack::kernel_stack_pool_counters().slots_freed;
+        let handle = kthread_run_on_cpu_for_test(
+            || {
+                CENSUS_WIDEN_PROBE_RUNS.fetch_add(1, AtomicOrdering::AcqRel);
+            },
+            "census-widen-probe",
+            arm_target,
+        );
 
-    let armed_once = arm_census_widen_injection(tid);
-    let armed = armed_once
-        .then(|| collect_strand_census(&mut candidates))
-        .flatten();
-    disarm_census_widen_injection();
+        let mut tid = 0u64;
+        let mut baseline_reported = true;
+        let mut armed_reported = false;
+        let mut queued_nondispatching = 0u64;
+        let mut queued_nondispatch_ms = 0u64;
+        let mut cpu_silence_ms = 0u64;
+        let mut joined = false;
+        let mut retired = false;
 
-    let armed_reported = armed.is_some_and(|census| {
-        candidates
-            .iter()
-            .take(census.candidates)
-            .any(|candidate| candidate.tid == tid)
-    });
-    let nonprogress_axis = armed.is_some_and(|census| census.worst_nonprogress_ms != 0);
-    let passed = !baseline_reported && armed_reported && nonprogress_axis;
+        if let Ok(handle) = handle {
+            tid = handle.tid();
+            baseline_reported = baseline.is_none_or(|baseline| {
+                baseline.checked == 0
+                    || baseline.queued_on_nondispatching_cpu != 0
+                    || baseline.worst_queued_nondispatch_ms != 0
+                    || baseline_nonprogress[..baseline.nonprogress].contains(&tid)
+            });
+
+            let dwell_start = crate::time::get_ticks();
+            while !kthread_has_exited_for_test(&handle)
+                && crate::time::get_ticks().wrapping_sub(dwell_start) < CENSUS_WIDEN_DWELL_MS
+            {
+                crate::arch_halt();
+            }
+
+            let mut armed_nonprogress = [0u64; STRAND_CENSUS_CAPACITY];
+            let armed = collect_strand_census(&mut candidates, &mut armed_nonprogress);
+            if let Some(armed) = armed {
+                armed_reported = armed_nonprogress[..armed.nonprogress].contains(&tid);
+                queued_nondispatching = armed.queued_on_nondispatching_cpu;
+                queued_nondispatch_ms = armed.worst_queued_nondispatch_ms;
+                cpu_silence_ms = armed.worst_cpu_scheduler_silence_ms;
+            }
+
+            if release_cpu_affine_thread_for_test(tid) {
+                let join_start = crate::time::get_ticks();
+                loop {
+                    if kthread_has_exited_for_test(&handle) {
+                        joined = kthread_join(&handle).is_ok();
+                        break;
+                    }
+                    if crate::time::get_ticks().wrapping_sub(join_start) >= CENSUS_WIDEN_JOIN_MS {
+                        break;
+                    }
+                    crate::arch_halt();
+                }
+            }
+
+            // Seed the all-CPU retirement grace, then let scheduler boundaries
+            // advance around each halt before trying reclamation again. Do not
+            // return a passing verdict while this probe's pooled stack return is
+            // still outstanding: the next process test measures these counters.
+            crate::task::scheduler::reclaim_terminated_threads();
+            for _ in 0..CENSUS_WIDEN_RETIRE_ROUNDS {
+                if crate::memory::kernel_stack::kernel_stack_pool_counters().slots_freed
+                    > slot_returns_before
+                {
+                    retired = true;
+                    break;
+                }
+                crate::task::scheduler::nudge_retirement_grace_for_test();
+                crate::arch_halt();
+                crate::task::scheduler::reclaim_terminated_threads();
+            }
+        }
+
+        let passed = !baseline_reported
+            && armed_reported
+            && queued_nondispatching >= 1
+            && queued_nondispatch_ms >= 1
+            && cpu_silence_ms >= 1
+            && joined
+            && retired;
+        crate::serial_println!(
+            "[CENSUS_WIDEN_ORACLE:{}:arm_target={}:baseline_reported={}:armed_reported={}:tid={}:shape=ready_queued_nondispatching:queued_nondispatching={}:queued_nondispatch_ms={}:cpu_silence_ms={}:joined={}:retired={}:{}]",
+            if cfg!(target_arch = "aarch64") {
+                "aarch64"
+            } else {
+                "x86"
+            },
+            arm_target,
+            u64::from(baseline_reported),
+            u64::from(armed_reported),
+            tid,
+            queued_nondispatching,
+            queued_nondispatch_ms,
+            cpu_silence_ms,
+            u64::from(joined),
+            u64::from(retired),
+            if passed { "PASS" } else { "FAIL" },
+        );
+        return passed;
+    }
+
     crate::serial_println!(
-        "[CENSUS_WIDEN_ORACLE:{}:baseline_reported={}:armed_reported={}:tid={}:shape=running:nonprogress_axis={}:{}]",
+        "[CENSUS_WIDEN_ORACLE:{}:arm_target=none:baseline_reported=1:armed_reported=0:tid=0:shape=ready_queued_nondispatching:queued_nondispatching=0:queued_nondispatch_ms=0:cpu_silence_ms=0:joined=0:retired=0:FAIL]",
         if cfg!(target_arch = "aarch64") {
             "aarch64"
         } else {
             "x86"
         },
-        u64::from(baseline_reported),
-        u64::from(armed_reported),
-        tid,
-        u64::from(nonprogress_axis),
-        if passed { "PASS" } else { "FAIL" },
     );
-
-    passed
+    false
 }
 
 fn test_census_widen_oracle() -> TestResult {
@@ -6413,6 +6499,13 @@ static PROCESS_TESTS: &[TestDef] = &[
         stage: TestStage::PostScheduler,
     },
     TestDef {
+        name: "census_widen_oracle",
+        func: test_census_widen_oracle,
+        arch: Arch::Any,
+        timeout_ms: 2000,
+        stage: TestStage::PostScheduler,
+    },
+    TestDef {
         name: "kernel_stack_ownership_oracle",
         func: crate::tracing::providers::teardown::kernel_stack_ownership_oracle_test,
         arch: Arch::Aarch64,
@@ -6502,13 +6595,6 @@ static SYSCALL_TESTS: &[TestDef] = &[
 /// - kthread_spawn_verify: Verify kthread spawning works
 /// - workqueue_operational: Verify workqueue is operational
 static SCHEDULER_TESTS: &[TestDef] = &[
-    TestDef {
-        name: "census_widen_oracle",
-        func: test_census_widen_oracle,
-        arch: Arch::Any,
-        timeout_ms: 2000,
-        stage: TestStage::PostScheduler,
-    },
     TestDef {
         name: "wakes_are_placed_on_online_cpus",
         func: test_wakes_are_placed_on_online_cpus,

@@ -1,6 +1,8 @@
 use std::collections::HashSet;
 use std::fs;
+use std::io::Write;
 use std::path::PathBuf;
+use std::process::{Command, Stdio};
 
 const SCHEDULER_PATH: &str = "kernel/src/task/scheduler.rs";
 const CONTEXT_SWITCH_PATH: &str = "kernel/src/arch_impl/aarch64/context_switch.rs";
@@ -25,6 +27,12 @@ const MIN_BOOT_TESTS_PROFILE_MARKERS: usize = 6;
 const MIN_STRICT_GATE_SCORE_SERIAL_CALLS: usize = 2;
 /// Dormancy currently has two axes and ordinary reachability has five.
 const MIN_CENSUS_DISPOSABILITY_REACHABILITY_DIMENSIONS: usize = 7;
+/// Running/queued nonprogress and scheduler-silence fields are all independent
+/// evidence. New axes are welcome, but this derived field census may not shrink.
+const MIN_CENSUS_PROGRESS_AXES: usize = 6;
+/// Complete-marker patterns plus direct classifier greps across both marker
+/// families. This is a shape floor, not a script-name allowlist.
+const MIN_ORACLE_GATE_PATTERNS: usize = 8;
 
 fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -214,6 +222,34 @@ fn function_body<'a>(source: &'a str, name: &str) -> &'a str {
     braced_body(source, &masked, open)
 }
 
+fn struct_body<'a>(source: &'a str, name: &str) -> &'a str {
+    let (masked, mask) = code_source(source);
+    let name_offset = identifier_offsets(&masked, &mask, name)
+        .into_iter()
+        .find(|offset| {
+            masked[..*offset]
+                .rsplit_once("struct")
+                .is_some_and(|(_, suffix)| suffix.trim().is_empty())
+        })
+        .unwrap_or_else(|| panic!("struct {name} not found"));
+    let open = masked[name_offset + name.len()..]
+        .find('{')
+        .map(|offset| name_offset + name.len() + offset)
+        .expect("struct opening brace");
+    braced_body(source, &masked, open)
+}
+
+fn declared_public_fields<'a>(source: &'a str, name: &str) -> Vec<&'a str> {
+    struct_body(source, name)
+        .lines()
+        .filter_map(|line| {
+            line.trim()
+                .strip_prefix("pub ")
+                .and_then(|field| field.split_once(':').map(|(name, _)| name.trim()))
+        })
+        .collect()
+}
+
 fn braced_block_after<'a>(source: &'a str, needle: &str) -> &'a str {
     let (masked, mask) = code_source(source);
     let offset = masked
@@ -316,6 +352,130 @@ fn shell_exact_line_occurrences(source: &str, needle: &str) -> usize {
         .lines()
         .filter(|line| line.trim() == needle)
         .count()
+}
+
+fn rust_source_tree(relative: &str) -> String {
+    fn visit(path: &std::path::Path, out: &mut String) {
+        let mut entries: Vec<_> = fs::read_dir(path)
+            .unwrap_or_else(|_| panic!("read source directory {}", path.display()))
+            .map(|entry| entry.expect("source directory entry").path())
+            .collect();
+        entries.sort();
+        for entry in entries {
+            if entry.is_dir() {
+                visit(&entry, out);
+            } else if entry.extension().is_some_and(|extension| extension == "rs") {
+                out.push_str(
+                    &fs::read_to_string(&entry)
+                        .unwrap_or_else(|_| panic!("read source file {}", entry.display())),
+                );
+                out.push('\n');
+            }
+        }
+    }
+
+    let mut source = String::new();
+    visit(&repo_root().join(relative), &mut source);
+    source
+}
+
+fn marker_format<'a>(function: &'a str, family: &str) -> &'a str {
+    let anchor = format!("\"[{family}:");
+    function
+        .lines()
+        .find_map(|line| {
+            let start = line.find(&anchor)? + 1;
+            let tail = &line[start..];
+            let end = tail.find("\",")?;
+            Some(&tail[..end])
+        })
+        .unwrap_or_else(|| panic!("{family} emitted format string"))
+}
+
+fn render_positional_format(format: &str, values: &[&str]) -> String {
+    let mut rendered = String::new();
+    let mut remainder = format;
+    for value in values {
+        let (before, after) = remainder
+            .split_once("{}")
+            .expect("format placeholder for structural marker sample");
+        rendered.push_str(before);
+        rendered.push_str(value);
+        remainder = after;
+    }
+    assert!(
+        !remainder.contains("{}"),
+        "structural marker sample omitted format arguments"
+    );
+    rendered.push_str(remainder);
+    rendered
+}
+
+fn shell_ere_matches(pattern: &str, marker: &str) -> bool {
+    let mut child = Command::new("grep")
+        .args(["-Eq", pattern])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn grep for gate-pattern structural check");
+    child
+        .stdin
+        .take()
+        .expect("grep stdin")
+        .write_all(marker.as_bytes())
+        .expect("write emitted marker sample");
+    child.wait().expect("wait for grep").success()
+}
+
+fn quoted_segment_containing<'a>(line: &'a str, needle: &str) -> Option<&'a str> {
+    for quote in ['\'', '"'] {
+        if let Some(segment) = line
+            .split(quote)
+            .skip(1)
+            .step_by(2)
+            .find(|segment| segment.contains(needle))
+        {
+            return Some(segment);
+        }
+    }
+    None
+}
+
+fn registered_test_location(source: &str, test_name: &str) -> (String, String, usize) {
+    let registration = format!("name: \"{test_name}\"");
+    let registrations: Vec<_> = source.match_indices(&registration).collect();
+    assert_eq!(
+        registrations.len(),
+        1,
+        "registered test {test_name} must have exactly one TestDef"
+    );
+    let registration_offset = registrations[0].0;
+    let declaration_offset = source[..registration_offset]
+        .rfind("static ")
+        .unwrap_or_else(|| panic!("static test array for {test_name}"));
+    let declaration = &source[declaration_offset + "static ".len()..];
+    let array_name = declaration
+        .split_once(':')
+        .map(|(name, _)| name.trim())
+        .unwrap_or_else(|| panic!("static test array name for {test_name}"));
+
+    let subsystem_block = source
+        .split("Subsystem {")
+        .skip(1)
+        .find(|block| block.contains(&format!("tests: {array_name},")))
+        .unwrap_or_else(|| panic!("subsystem block for {array_name}"));
+    let subsystem_id = subsystem_block
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("id: SubsystemId::"))
+        .and_then(|tail| tail.strip_suffix(','))
+        .unwrap_or_else(|| panic!("subsystem id for {array_name}"));
+
+    (
+        array_name.to_string(),
+        subsystem_id.to_string(),
+        registration_offset,
+    )
 }
 
 fn stranded_rejection_lines(source: &str) -> Vec<&str> {
@@ -451,17 +611,16 @@ fn service_sequence_instruction_abort_classifier_is_single_signature() {
     );
 }
 
-/// Coordinator ruling R33 retired #609's rate pre-adjudication after its forced arm
-/// falsified the RCA mechanism: stimulus armed 20/20 and dispatched 0/20, while 290
-/// non-forcing boots on main produced zero occurrences. Any recurrence must now red
-/// the gate and yield a fresh serial.
+/// #609 is a hard-failing EarlyBoot-stage stall. Its detector is keyed to the
+/// stage boundary so a wedge cannot evade attribution by stalling before one
+/// arbitrarily selected subsystem marker.
 #[test]
 fn service_sequence_609_arm_is_field_keyed_and_untolerated() {
     let gate = repo_text(SERVICE_SEQUENCE_GATE_PATH);
-    let signature = shell_function_body(&gate, "is_609_network_early_stall");
+    let signature = shell_function_body(&gate, "is_609_early_boot_stage_stall");
     assert!(
         !signature.trim().is_empty(),
-        "is_609_network_early_stall body census"
+        "is_609_early_boot_stage_stall body census"
     );
 
     let signature_guards = signature
@@ -475,12 +634,8 @@ fn service_sequence_609_arm_is_field_keyed_and_untolerated() {
         MIN_609_SIGNATURE_GUARDS
     );
     assert!(
-        signature.contains("[SUBSYSTEM:memory:early:COMPLETE:"),
-        "#609 signature must require memory:early completion"
-    );
-    assert!(
-        signature.contains("(TEST|SUBSYSTEM):network:"),
-        "#609 signature must require complete network:early silence"
+        signature.contains("[STAGE:early:ADVANCE]"),
+        "#609 signature must require the EarlyBoot stage boundary to advance"
     );
     assert!(
         signature.contains("[STAGE:early:COMPLETE"),
@@ -494,6 +649,14 @@ fn service_sequence_609_arm_is_field_keyed_and_untolerated() {
         signature.contains("stranded=0"),
         "#609 signature must require a clean live strand census"
     );
+    assert!(
+        signature.contains("[TESTS_COMPLETE:"),
+        "#609 signature must reject boots that completed their tests"
+    );
+    assert!(
+        !signature.contains("SUBSYSTEM:memory:") && !signature.contains(":network:"),
+        "#609 attribution must be stage-shaped, not subsystem-shaped"
+    );
 
     assert_eq!(
         shell_exact_line_occurrences(&gate, r#"CLASS_BUCKET="609""#),
@@ -503,7 +666,7 @@ fn service_sequence_609_arm_is_field_keyed_and_untolerated() {
 
     let classifier = shell_function_body(&gate, "classify_serial");
     let arm_609_offset = classifier
-        .find(r#"is_609_network_early_stall "$serial_file""#)
+        .find(r#"is_609_early_boot_stage_stall "$serial_file""#)
         .expect("#609 classifier arm");
     let arm_609_tail = &classifier[arm_609_offset..];
     let arm_609_end = arm_609_tail
@@ -610,6 +773,17 @@ fn service_sequence_609_arm_is_field_keyed_and_untolerated() {
                 .map(|_| (bucket, counter))
         })
         .collect();
+    let census_sum = run_profile
+        .lines()
+        .map(str::trim)
+        .find(|line| line.starts_with("census_sum=$(("))
+        .expect("run_profile bucket-census sum identity");
+    for (_, counter) in &bucket_counters {
+        assert!(
+            census_sum.contains(*counter),
+            "classifier counter {counter} must remain in the per-profile bucket-census sum identity"
+        );
+    }
     let fail_conditions: Vec<_> = run_profile
         .lines()
         .map(str::trim)
@@ -701,6 +875,51 @@ fn service_sequence_609_arm_is_field_keyed_and_untolerated() {
     assert!(
         !non_failing_buckets.contains(bucket_609),
         "#609 bucket {bucket_609} must not be in the non-failing bucket census"
+    );
+
+    let boot_test_fail_offset = classifier
+        .find("[BOOT_TESTS:FAIL")
+        .expect("aggregate boot-test failure classifier arm");
+    let boot_test_fail_tail = &classifier[boot_test_fail_offset..];
+    let boot_test_fail_end = boot_test_fail_tail
+        .find("\n    fi\n")
+        .map(|offset| offset + "\n    fi\n".len())
+        .expect("aggregate boot-test failure arm terminator");
+    let boot_test_fail_arm = &boot_test_fail_tail[..boot_test_fail_end];
+    assert!(
+        boot_test_fail_arm.contains(r#"CLASS_BUCKET="BOOT_TEST_FAIL""#)
+            && boot_test_fail_arm.contains("boot_test_fail_line"),
+        "service-sequence boot-test failures must have a named bucket and carry the first failing test field signature"
+    );
+    let prior_oracle_failure = classifier
+        .find(r"\[CENSUS_WIDEN_ORACLE:[^]]*:FAIL\]")
+        .expect("census-oracle failure attribution arm");
+    assert!(
+        prior_oracle_failure < boot_test_fail_offset && boot_test_fail_offset < arm_609_offset,
+        "BOOT_TEST_FAIL must follow crash/oracle attribution and precede later generic/stall classification"
+    );
+    assert!(
+        failing_buckets.contains("BOOT_TEST_FAIL"),
+        "BOOT_TEST_FAIL must remain a hard-failing per-profile bucket"
+    );
+}
+
+#[test]
+fn strict_gate_rejects_aggregate_boot_test_failures_with_a_field_signature() {
+    let gate = repo_text(STRICT_GATE_PATH);
+    let score_serial = shell_function_body(&gate, "score_serial");
+    let aggregate_fail = score_serial
+        .find("[BOOT_TESTS:FAIL")
+        .expect("strict scorer BOOT_TESTS failure arm");
+    let first_presence_check = score_serial
+        .find("if ! grep -qE \"(breenix>")
+        .expect("strict scorer first presence check");
+    assert!(
+        aggregate_fail < first_presence_check
+            && score_serial.contains(r"\[TESTS_COMPLETE:[^]]*:FAILED:[1-9][0-9]*\]")
+            && score_serial.contains(r"\[TEST:[^]]*:FAIL:[^]]*\]")
+            && score_serial.contains("Boot test failure: ${boot_test_fail_line"),
+        "strict scoring must reject either aggregate failure marker before presence checks and report the first failing test field signature"
     );
 }
 
@@ -1118,9 +1337,10 @@ fn x86_census_widen_oracle_is_one_shot_in_the_live_verdict_path() {
     );
     let probe = function_body(&registry, "run_census_widen_oracle");
     for required in [
-        "disarm_census_widen_injection()",
-        "collect_strand_census(&mut candidates)",
-        "arm_census_widen_injection(tid)",
+        "stale_peer_cpu_for_test()",
+        "collect_strand_census(&mut candidates, &mut baseline_nonprogress)",
+        "kthread_run_on_cpu_for_test",
+        "release_cpu_affine_thread_for_test",
         "[CENSUS_WIDEN_ORACLE:",
         "passed",
     ] {
@@ -1234,38 +1454,257 @@ fn strand_marker_reports_dwell_and_nonprogress_axes() {
     let oracle = repo_text(STRAND_ORACLE_PATH);
     let report = function_body(&oracle, "report_strand");
     assert!(
-        report.contains(":worst_dwell_ms={}:overflow={}:worst_nonprogress_ms={}]"),
-        "strand marker must carry both dwell and nonprogress axes"
+        report.contains(":worst_dwell_ms={}:overflow={}:worst_nonprogress_ms={}:nonprogress={}:queued_on_nondispatching_cpu={}:worst_queued_nondispatch_ms={}:worst_cpu_scheduler_silence_ms={}:worst_silence_cpu={}]"),
+        "strand marker must append every census progress axis after the existing fields"
     );
 }
 
 #[test]
-fn census_widen_injection_has_two_legs_and_is_boot_tests_only() {
+fn census_widen_oracle_has_real_disarmed_and_armed_legs() {
     let scheduler = repo_text(SCHEDULER_PATH);
     let registry = repo_text(TEST_REGISTRY_PATH);
     let probe = function_body(&registry, "run_census_widen_oracle");
     let census_calls = code_occurrences(probe, "collect_strand_census(");
-    let arm_calls = code_occurrences(probe, "let armed_once = arm_census_widen_injection(");
-    let disarm_calls = code_occurrences(probe, "disarm_census_widen_injection(");
+    let spawn_calls = code_occurrences(probe, "kthread_run_on_cpu_for_test(");
+    let target_calls = code_occurrences(probe, "stale_peer_cpu_for_test()");
+    let release_calls = code_occurrences(probe, "release_cpu_affine_thread_for_test(");
     assert!(
         census_calls.len() >= 2
-            && !arm_calls.is_empty()
-            && disarm_calls.len() >= 2
-            && census_calls[0] < arm_calls[0]
-            && arm_calls[0] < census_calls[1]
-            && census_calls[1] < disarm_calls[disarm_calls.len() - 1],
-        "census widening oracle must retain disarmed-baseline and armed census legs: \
-         census={census_calls:?} arm={arm_calls:?} disarm={disarm_calls:?}"
+            && spawn_calls.len() == 1
+            && target_calls.len() == 1
+            && release_calls.len() == 1
+            && target_calls[0] < census_calls[0]
+            && census_calls[0] < spawn_calls[0]
+            && spawn_calls[0] < census_calls[1]
+            && census_calls[1] < release_calls[0],
+        "census widening oracle must retain target-selected baseline/spawn/armed/release ordering: \
+         target={target_calls:?} census={census_calls:?} spawn={spawn_calls:?} release={release_calls:?}"
     );
     assert!(
         probe.contains("baseline_reported={}:armed_reported={}"),
         "census widening marker must report both anti-vacuity legs"
     );
+    let spawn_end = probe[spawn_calls[0]..]
+        .find("let mut tid")
+        .map(|offset| spawn_calls[0] + offset)
+        .expect("forced-placement call terminator");
+    let spawn_call = &probe[spawn_calls[0]..spawn_end];
     assert!(
-        scheduler.contains("#[cfg(feature = \"boot_tests\")]\nstatic CENSUS_WIDEN_INJECT_TID")
-            && scheduler
-                .contains("#[cfg(feature = \"boot_tests\")]\npub fn arm_census_widen_injection"),
-        "census widening arming state and entry point must compile out of production builds"
+        code_occurrences(spawn_call, "arm_target").len() == 1,
+        "forced placement must consume the scheduler-selected arm target"
+    );
+    assert!(
+        probe.contains("baseline.checked == 0")
+            && probe.contains("baseline.queued_on_nondispatching_cpu != 0")
+            && probe.contains("baseline.worst_queued_nondispatch_ms != 0")
+            && probe.contains("baseline_nonprogress[..baseline.nonprogress].contains(&tid)"),
+        "the disarmed leg must fail closed on vacuity, dirty queued axes, or probe presence"
+    );
+    assert!(
+        probe.contains("kthread_has_exited_for_test")
+            && probe.contains("arch_halt()")
+            && probe.contains("kthread_join"),
+        "the real probe must dwell and join through bounded exit polling"
+    );
+    assert!(
+        probe.contains("for _ in 0..CENSUS_WIDEN_RETIRE_ROUNDS")
+            && probe.contains("reclaim_terminated_threads()")
+            && probe.contains("nudge_retirement_grace_for_test()")
+            && probe.contains("kernel_stack_pool_counters().slots_freed")
+            && probe.contains("&& retired")
+            && probe.contains(":joined={}:retired={}:{}]"),
+        "the real probe must boundedly reclaim its terminated thread, prove the stack-slot return, and pin retired in the verdict marker"
+    );
+    let retirement_nudge = function_body(&scheduler, "nudge_retirement_grace_for_test");
+    assert!(
+        retirement_nudge.contains("for cpu in 0..online.min(MAX_CPUS)")
+            && retirement_nudge.contains("gic::send_sgi(SGI_RESCHEDULE as u8, cpu as u8)")
+            && !retirement_nudge.contains("scheduler.send_resched_ipi()"),
+        "the retirement grace nudge must reach every online peer directly; the idle-only scheduler wake helper can skip the probe's stale owner"
+    );
+
+    let kernel_sources = rust_source_tree("kernel/src");
+    assert!(
+        code_occurrences(&kernel_sources, "CENSUS_WIDEN_INJECT").is_empty()
+            && code_occurrences(&kernel_sources, "arm_census_widen_injection").is_empty()
+            && code_occurrences(&kernel_sources, "disarm_census_widen_injection").is_empty(),
+        "no census view-injection state or API may exist anywhere in kernel/src"
+    );
+
+    let stale_target = function_body(&scheduler, "stale_peer_cpu_for_test");
+    assert!(
+        stale_target.contains("cpu != current_cpu")
+            && stale_target.contains("scheduler.cpu_dispatch_stale(cpu)"),
+        "the scheduler must choose a non-current stale CPU without a literal target"
+    );
+}
+
+/// Both oracles observe global kernel-stack allocation/return counters. They must
+/// share one subsystem kthread so their sequential registration order prevents a
+/// census-probe stack lifetime from straddling the ownership stress window.
+#[test]
+fn census_and_kernel_stack_ownership_oracles_share_a_subsystem_in_safe_order() {
+    let registry = repo_text(TEST_REGISTRY_PATH);
+    let (census_array, census_subsystem, census_offset) =
+        registered_test_location(&registry, "census_widen_oracle");
+    let (ownership_array, ownership_subsystem, ownership_offset) =
+        registered_test_location(&registry, "kernel_stack_ownership_oracle");
+
+    assert_eq!(
+        census_subsystem, ownership_subsystem,
+        "census and ownership oracles must derive to the same subsystem id"
+    );
+    assert_eq!(
+        census_array, ownership_array,
+        "one subsystem id must retain both oracle registrations in one sequential test array"
+    );
+    assert!(
+        census_offset < ownership_offset,
+        "census oracle must run before the ownership oracle in their shared subsystem"
+    );
+}
+
+#[test]
+fn strand_census_progress_axes_and_ordering_cannot_shrink() {
+    let scheduler = repo_text(SCHEDULER_PATH);
+    let fields = declared_public_fields(&scheduler, "StrandCensus");
+    let progress_axes: Vec<_> = fields
+        .iter()
+        .copied()
+        .filter(|field| {
+            field.contains("nonprogress")
+                || field.contains("nondispatch")
+                || field.contains("silence")
+        })
+        .collect();
+    assert!(
+        progress_axes.len() >= MIN_CENSUS_PROGRESS_AXES,
+        "declared StrandCensus progress-axis floor shrank: {progress_axes:?}"
+    );
+
+    let census = function_body(&scheduler, "collect_strand_census");
+    assert_eq!(
+        code_occurrences(census, "!injected &&").len(),
+        0,
+        "the census must contain zero injection short-circuits"
+    );
+    assert_eq!(
+        code_occurrences(&scheduler, "CENSUS_WIDEN_INJECT").len(),
+        0,
+        "the scheduler must contain zero census-injection identifiers"
+    );
+
+    let online_bound = code_occurrences(census, "for cpu in 0..online_cpu_count");
+    assert_eq!(
+        online_bound.len(),
+        1,
+        "CPU-silence sampling must iterate exactly the derived online CPU count"
+    );
+    let silence_scan = braced_block_after(census, "for cpu in 0..online_cpu_count");
+    assert!(
+        silence_scan.contains("cpu_state[cpu].last_schedule_ticks"),
+        "each online CPU must contribute its scheduler-silence timestamp"
+    );
+
+    let queued_scan = census
+        .find("queued_on_nondispatching_cpu += 1")
+        .expect("queued nondispatching thread scan");
+    let reachability = census
+        .find("let reachability_dimensions =")
+        .expect("reachability continue anchor");
+    assert!(
+        queued_scan < reachability,
+        "queued-thread nonprogress scan must precede the reachability continue"
+    );
+}
+
+#[test]
+fn every_oracle_gate_pattern_matches_the_emitted_format() {
+    let scheduler_oracle = repo_text(STRAND_ORACLE_PATH);
+    let scheduler_format = marker_format(
+        function_body(&scheduler_oracle, "report_strand"),
+        "SCHED_STRAND_ORACLE",
+    );
+    let registry = repo_text(TEST_REGISTRY_PATH);
+    let census_format = marker_format(
+        function_body(&registry, "run_census_widen_oracle"),
+        "CENSUS_WIDEN_ORACLE",
+    );
+
+    let mut checked_patterns = 0usize;
+    let qemu_dir = repo_root().join("docker/qemu");
+    for entry in fs::read_dir(qemu_dir).expect("read docker/qemu") {
+        let path = entry.expect("gate script entry").path();
+        if path.extension().is_none_or(|extension| extension != "sh") {
+            continue;
+        }
+        let gate = fs::read_to_string(&path)
+            .unwrap_or_else(|_| panic!("read gate script {}", path.display()));
+        for line in gate.lines() {
+            for (family, format) in [
+                ("SCHED_STRAND_ORACLE", scheduler_format),
+                ("CENSUS_WIDEN_ORACLE", census_format),
+            ] {
+                let assignment = line.starts_with(&format!("{family}_PATTERN="));
+                if !assignment && !(line.contains("grep") && line.contains(family)) {
+                    continue;
+                }
+                if !assignment && line.contains(&format!("${family}_PATTERN")) {
+                    continue;
+                }
+                let pattern = quoted_segment_containing(line, family)
+                    .unwrap_or_else(|| panic!("quoted {family} grep in {}", path.display()));
+                if pattern.starts_with('$') {
+                    continue;
+                }
+                let arch = if pattern.contains("x86") {
+                    "x86"
+                } else {
+                    "aarch64"
+                };
+                let marker = if family == "SCHED_STRAND_ORACLE" {
+                    let stranded = if pattern.contains("stranded=[1-9]") {
+                        "1"
+                    } else {
+                        "0"
+                    };
+                    render_positional_format(
+                        format,
+                        &[
+                            arch, "1000", "1", stranded, "1", "1", "1", "1", "1", "0", "1",
+                            "1", "1", "1", "1", "1",
+                        ],
+                    )
+                } else {
+                    let verdict = if pattern.contains("FAIL") {
+                        "FAIL"
+                    } else {
+                        "PASS"
+                    };
+                    render_positional_format(
+                        format,
+                        &[
+                            arch, "1", "0", "1", "1", "1", "1", "1", "1", "1", verdict,
+                        ],
+                    )
+                };
+                let matches = if line.contains("grep") && line.contains("-qF") {
+                    marker.contains(pattern)
+                } else {
+                    shell_ere_matches(pattern, &marker)
+                };
+                assert!(
+                    matches,
+                    "gate pattern in {} stopped matching emitted {family} format: {pattern}",
+                    path.display()
+                );
+                checked_patterns += 1;
+            }
+        }
+    }
+    assert!(
+        checked_patterns >= MIN_ORACLE_GATE_PATTERNS,
+        "oracle gate-pattern census shrank: {checked_patterns} < {MIN_ORACLE_GATE_PATTERNS}"
     );
 }
 

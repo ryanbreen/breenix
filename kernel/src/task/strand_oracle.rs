@@ -143,6 +143,11 @@ struct OracleState {
     ready_shape: u64,
     worst_dwell_ms: u64,
     worst_nonprogress_ms: u64,
+    nonprogress: usize,
+    queued_on_nondispatching_cpu: u64,
+    worst_queued_nondispatch_ms: u64,
+    worst_cpu_scheduler_silence_ms: u64,
+    worst_silence_cpu: u64,
     overflow: u64,
     #[cfg(target_arch = "aarch64")]
     first_strand: Option<FirstStrand>,
@@ -159,6 +164,11 @@ impl OracleState {
             ready_shape: 0,
             worst_dwell_ms: 0,
             worst_nonprogress_ms: 0,
+            nonprogress: 0,
+            queued_on_nondispatching_cpu: 0,
+            worst_queued_nondispatch_ms: 0,
+            worst_cpu_scheduler_silence_ms: 0,
+            worst_silence_cpu: 0,
             overflow: 0,
             #[cfg(target_arch = "aarch64")]
             first_strand: None,
@@ -270,12 +280,24 @@ fn sample_once(state: &mut OracleState) {
         privilege: ThreadPrivilege::Kernel,
         state: ThreadState::Running,
     }; STRAND_CENSUS_CAPACITY];
+    let mut nonprogress = [0u64; STRAND_CENSUS_CAPACITY];
 
-    if let Some(census) = collect_strand_census(&mut candidates) {
+    if let Some(census) = collect_strand_census(&mut candidates, &mut nonprogress) {
         state.samples += 1;
         state.checked += census.checked;
         state.overflow += census.overflow;
         state.worst_nonprogress_ms = state.worst_nonprogress_ms.max(census.worst_nonprogress_ms);
+        state.nonprogress = state.nonprogress.max(census.nonprogress);
+        state.queued_on_nondispatching_cpu = state
+            .queued_on_nondispatching_cpu
+            .max(census.queued_on_nondispatching_cpu);
+        state.worst_queued_nondispatch_ms = state
+            .worst_queued_nondispatch_ms
+            .max(census.worst_queued_nondispatch_ms);
+        if census.worst_cpu_scheduler_silence_ms > state.worst_cpu_scheduler_silence_ms {
+            state.worst_cpu_scheduler_silence_ms = census.worst_cpu_scheduler_silence_ms;
+            state.worst_silence_cpu = census.worst_silence_cpu;
+        }
         update_dwell(
             &candidates,
             census,
@@ -329,6 +351,11 @@ pub fn report_x86_once() {
             state.worst_dwell_ms,
             state.overflow,
             state.worst_nonprogress_ms,
+            state.nonprogress,
+            state.queued_on_nondispatching_cpu,
+            state.worst_queued_nondispatch_ms,
+            state.worst_cpu_scheduler_silence_ms,
+            state.worst_silence_cpu,
         )
     }) else {
         return;
@@ -339,8 +366,8 @@ pub fn report_x86_once() {
         .is_ok()
     {
         report_strand(
-            report.0, report.1, report.2, report.3, report.4, report.5, report.6,
-            report.7,
+            report.0, report.1, report.2, report.3, report.4, report.5, report.6, report.7,
+            report.8, report.9, report.10, report.11, report.12,
         );
     }
 }
@@ -387,9 +414,14 @@ fn report_strand(
     worst_dwell_ms: u64,
     overflow: u64,
     worst_nonprogress_ms: u64,
+    nonprogress: usize,
+    queued_on_nondispatching_cpu: u64,
+    worst_queued_nondispatch_ms: u64,
+    worst_cpu_scheduler_silence_ms: u64,
+    worst_silence_cpu: u64,
 ) {
     crate::serial_println!(
-        "[SCHED_STRAND_ORACLE:{}:samples={}:checked={}:stranded={}:running_shape={}:ready_shape={}:resolved_production={}:resolved_exercised={}:worst_dwell_ms={}:overflow={}:worst_nonprogress_ms={}]",
+        "[SCHED_STRAND_ORACLE:{}:samples={}:checked={}:stranded={}:running_shape={}:ready_shape={}:resolved_production={}:resolved_exercised={}:worst_dwell_ms={}:overflow={}:worst_nonprogress_ms={}:nonprogress={}:queued_on_nondispatching_cpu={}:worst_queued_nondispatch_ms={}:worst_cpu_scheduler_silence_ms={}:worst_silence_cpu={}]",
         if cfg!(target_arch = "aarch64") {
             "aarch64"
         } else {
@@ -405,6 +437,11 @@ fn report_strand(
         worst_dwell_ms,
         overflow,
         worst_nonprogress_ms,
+        nonprogress,
+        queued_on_nondispatching_cpu,
+        worst_queued_nondispatch_ms,
+        worst_cpu_scheduler_silence_ms,
+        worst_silence_cpu,
     );
 }
 
@@ -548,8 +585,7 @@ fn strand_oracle_thread() {
     let mut state = OracleState::new();
     let mut first_attribution_reported = false;
     let mut strand_nonzero_reported = false;
-    let mut next_strand_report_ms =
-        monotonic_now_ms().saturating_add(STRAND_FIRST_REPORT_MS);
+    let mut next_strand_report_ms = monotonic_now_ms().saturating_add(STRAND_FIRST_REPORT_MS);
     let mut injection_scoring = InjectionScoring::default();
 
     loop {
@@ -583,6 +619,11 @@ fn strand_oracle_thread() {
                 state.worst_dwell_ms,
                 state.overflow,
                 state.worst_nonprogress_ms,
+                state.nonprogress,
+                state.queued_on_nondispatching_cpu,
+                state.worst_queued_nondispatch_ms,
+                state.worst_cpu_scheduler_silence_ms,
+                state.worst_silence_cpu,
             );
             if immediate_strand_report {
                 strand_nonzero_reported = true;

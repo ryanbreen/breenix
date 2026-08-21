@@ -309,6 +309,7 @@ classify_serial() {
     local instruction_abort_signature
     local instruction_abort_variants
     local oracle_fail_line
+    local boot_test_fail_line
     local last_line
     local lega_line
     local legb_line
@@ -366,6 +367,15 @@ classify_serial() {
             | head -1 | sed 's/[[:space:]]*$//')
         CLASS="ORACLE_FAIL"
         CLASS_REASON="block EINTR oracle failure: $oracle_fail_line"
+        return
+    fi
+
+    if grep -qF '[BOOT_TESTS:FAIL' "$serial_file" 2>/dev/null \
+        || grep -qE '\[TESTS_COMPLETE:[^]]*:FAILED:[1-9][0-9]*\]' "$serial_file" 2>/dev/null; then
+        boot_test_fail_line=$(grep -ahoE '\[TEST:[^]]*:FAIL:[^]]*\]' \
+            "$serial_file" 2>/dev/null | head -1 || true)
+        CLASS="ORACLE_FAIL"
+        CLASS_REASON="boot test failure: ${boot_test_fail_line:-[TEST:<missing>:FAIL:<missing>]}"
         return
     fi
 

@@ -103,7 +103,7 @@ BREENIX_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 # stage3_elapsed_ms is the measured duration; residual/balance prove cleanup.
 # This marker is emitted from a syscall while the scheduler trace stream is live, so its line can carry a prefix.
 FUTEX_HANDOFF_ORACLE_PATTERN='\[FUTEX_HANDOFF_ORACLE:aarch64:driven=2:stage1_ret=EAGAIN:stage1_wake=0:stage1_parked=0:stage2_ret=0:stage2_wake=1:stage2_parked=0:stage3_ret=ETIMEDOUT:stage3_elapsed_ok=1:stage3_elapsed_ms=[0-9]+:rescues=0:queue_residual=0:balance=0\]'
-CENSUS_WIDEN_ORACLE_PATTERN='\[CENSUS_WIDEN_ORACLE:aarch64:baseline_reported=0:armed_reported=1:tid=[1-9][0-9]*:shape=running:nonprogress_axis=1:PASS\]'
+CENSUS_WIDEN_ORACLE_PATTERN='\[CENSUS_WIDEN_ORACLE:aarch64:arm_target=[0-9]+:baseline_reported=0:armed_reported=1:tid=[1-9][0-9]*:shape=ready_queued_nondispatching:queued_nondispatching=[1-9][0-9]*:queued_nondispatch_ms=[1-9][0-9]*:cpu_silence_ms=[1-9][0-9]*:joined=1:retired=1:PASS\]'
 
 if $REBUILD; then
     echo "Building ARM64 kernel with boot_tests feature..."
@@ -315,60 +315,19 @@ data_abort_signatures() {
     } | sort -u
 }
 
-# Return 0 when this serial carries the filed #609 signature: the network:early
-# subsystem kthread was created and then never dispatched.
-#
-# THIS DETECTOR NO LONGER CARRIES A TOLERANCE (coordinator ruling R33, correction
-# under R34). #609 was pre-adjudicated at a filed ~3% rate under R30, with a
-# run-wide rate ceiling as the bound. That pre-adjudication is retired — but the
-# reason is NOT that the class stopped reproducing. R33 read a forcing arm's
-# negative result as a falsification of the RCA mechanism; that reading was
-# wrong (the CPU-0-pinned stimulus armed 20/20 but was never JOINED by anything,
-# so HITS=0 was the only outcome it could ever report, healthy kernel or broken
-# one alike) and R33's "290 non-forcing boots, zero occurrences" claim was
-# contradicted by this branch's own 100-boot/profile clean gate an hour before
-# that claim was written up (see #609 R34 correction comment and
-# 609-RCA-RETRACTION-2026-08-21.md). #609 reproduces at ~1/100 on this branch's
-# own gate. The tolerance stays removed because it should never have been a
-# tolerated bucket for an unfixed, UNTOLERATED defect — not because the class
-# went away. A boot that carries this shape is a real recurrence and must red
-# the gate.
-#
-# The detector is kept — deleting it would send a recurrence to UNATTRIBUTED with
-# a generic reason — but its bucket is now a hard FAIL in run_profile, exactly
-# like STRAND and CLONE_EXEC. Every clause below is a shape, never a name list,
-# and every one of them must hold; anything that misses one falls through to
-# UNATTRIBUTED, which also fails this gate. Either way a recurrence is a red with
-# a preserved serial.
-#
-#   * memory:early ran to COMPLETE, so the early stage really was executing and
-#     this is not a boot that died before the test framework started;
-#   * the network:early kthread emitted NOTHING — zero [SUBSYSTEM:network:...]
-#     lines and zero [TEST:network:...] lines. A dispatched-then-wedged kthread
-#     prints its own :START first, so total silence is the discriminator between
-#     "never got a first instruction" and "ran and hung", and it is counted as a
-#     line census over both marker forms rather than against the name of any
-#     particular network test;
-#   * the stage consequently never completed — no [STAGE:early:COMPLETE — so the
-#     join really is still outstanding;
-#   * no abort, panic or lockup of ANY kind. #609 is a stall, not a crash. The
-#     classifier has already consulted every abort signature by the time this
-#     runs; the clause is repeated here so the arm still cannot absorb a crash if
-#     it is ever reordered;
-#   * the kernel stayed alive to the wall clock: the strand census kept sampling
-#     into the hundreds and never saw a strand. That clean census is part of the
-#     filed signature — #609 records that the identity-keyed census could not see
-#     this class of lost dispatch (worst_dwell_ms=0, ~2 threads examined per
-#     sample); the census widening landed this round narrows that blind spot, so a
-#     clean census here is evidence of the blind spot, not of health.
-is_609_network_early_stall() {
+# Return 0 when EarlyBoot advanced but never completed while the kernel stayed
+# alive and the scheduler oracle continued sampling. This is the widened #609
+# stage-boundary signature: it includes wedges that occur before any particular
+# early subsystem completes. It remains a hard FAIL and is deliberately ordered
+# after crash and oracle-failure attribution in classify_serial.
+is_609_early_boot_stage_stall() {
     local serial_file="$1"
 
-    grep -qF "[SUBSYSTEM:memory:early:COMPLETE:" "$serial_file" 2>/dev/null || return 1
-    if grep -qE '\[(TEST|SUBSYSTEM):network:' "$serial_file" 2>/dev/null; then
+    grep -qF "[STAGE:early:ADVANCE]" "$serial_file" 2>/dev/null || return 1
+    if grep -qF "[STAGE:early:COMPLETE" "$serial_file" 2>/dev/null; then
         return 1
     fi
-    if grep -qF "[STAGE:early:COMPLETE" "$serial_file" 2>/dev/null; then
+    if grep -qF "[TESTS_COMPLETE:" "$serial_file" 2>/dev/null; then
         return 1
     fi
     if grep -qiE '\[(DATA|INSTRUCTION)_ABORT\]|KERNEL PANIC|panic!|soft lockup detected|Unhandled sync exception' \
@@ -394,6 +353,7 @@ classify_serial() {
     local instruction_abort_variants
     local data_abort_signature
     local data_abort_variants
+    local boot_test_fail_line
 
     # #596's runtime oracle is unconditional: an inline-saved context whose
     # recorded resume PC is not its inline-save x30 is a defect no matter what
@@ -521,13 +481,24 @@ classify_serial() {
         CLASS_REASON="census widening mutation oracle failed: $(grep -E '\[CENSUS_WIDEN_ORACLE:[^]]*:FAIL\]' "$serial_file" | tail -1)"
         return
     fi
+    # Preserve prior crash and oracle attribution above. A remaining aggregate
+    # boot-test failure gets its own hard-failing bucket and field signature;
+    # it must never fall through to a generic missing-marker classification.
+    if grep -qF "[BOOT_TESTS:FAIL" "$serial_file" 2>/dev/null \
+        || grep -qE '\[TESTS_COMPLETE:[^]]*:FAILED:[1-9][0-9]*\]' "$serial_file" 2>/dev/null; then
+        boot_test_fail_line=$(grep -ahoE '\[TEST:[^]]*:FAIL:[^]]*\]' \
+            "$serial_file" 2>/dev/null | head -1 || true)
+        CLASS_BUCKET="BOOT_TEST_FAIL"
+        CLASS_REASON="boot test failure: ${boot_test_fail_line:-[TEST:<missing>:FAIL:<missing>]}"
+        return
+    fi
     # Deliberately LAST of the attributing arms: every abort signature and both
     # strand arms have already been consulted, so a boot can only reach #609 by
     # having crashed nowhere and stranded nothing. This arm names the shape; it
     # does not excuse it — bucket 609 is a gate FAIL (R33).
-    if is_609_network_early_stall "$serial_file"; then
+    if is_609_early_boot_stage_stall "$serial_file"; then
         CLASS_BUCKET="609"
-        CLASS_REASON="network:early subsystem kthread never dispatched after memory:early completed (#609, UNTOLERATED); census: $(grep -ahoE '\[SCHED_STRAND_ORACLE:[^]]*\]' "$serial_file" | tail -1)"
+        CLASS_REASON="EarlyBoot stage advanced and never completed (#609, UNTOLERATED); census: $(grep -ahoE '\[SCHED_STRAND_ORACLE:[^]]*\]' "$serial_file" | tail -1)"
         return
     fi
     if ! grep -qF "[BLOCK_EINTR_ORACLE:" "$serial_file" 2>/dev/null; then
@@ -602,6 +573,7 @@ TOTAL_576=0
 TOTAL_DATA_ABORT=0
 TOTAL_CLONE_EXEC=0
 TOTAL_STRAND=0
+TOTAL_BOOT_TEST_FAIL=0
 TOTAL_596=0
 TOTAL_612=0
 TOTAL_609=0
@@ -621,15 +593,16 @@ print_census() {
     local count_data_abort="$4"
     local count_clone_exec="$5"
     local count_strand="$6"
-    local count_596="$7"
-    local count_612="$8"
-    local count_609="$9"
-    local count_p5b="${10}"
-    local count_green="${11}"
-    local count_unattributed="${12}"
-    local count_boots="${13}"
-    local divergence_boots="${14}"
-    local divergence_lines="${15}"
+    local count_boot_test_fail="$7"
+    local count_596="$8"
+    local count_612="$9"
+    local count_609="${10}"
+    local count_p5b="${11}"
+    local count_green="${12}"
+    local count_unattributed="${13}"
+    local count_boots="${14}"
+    local divergence_boots="${15}"
+    local divergence_lines="${16}"
     local green_rate
 
     green_rate=$(awk -v green="$count_green" -v boots="$count_boots" \
@@ -641,6 +614,7 @@ print_census() {
     printf '  %-13s %d\n' "DATA_ABORT" "$count_data_abort"
     printf '  %-13s %d\n' "CLONE_EXEC" "$count_clone_exec"
     printf '  %-13s %d\n' "STRAND" "$count_strand"
+    printf '  %-13s %d\n' "BOOT_TEST_FAIL" "$count_boot_test_fail"
     printf '  %-13s %d\n' "596" "$count_596"
     printf '  %-13s %d\n' "612" "$count_612"
     printf '  %-13s %d\n' "609" "$count_609"
@@ -664,6 +638,7 @@ run_profile() {
     local count_data_abort=0
     local count_clone_exec=0
     local count_strand=0
+    local count_boot_test_fail=0
     local count_596=0
     local count_612=0
     local count_609=0
@@ -789,6 +764,7 @@ run_profile() {
             DATA_ABORT) count_data_abort=$((count_data_abort + 1)) ;;
             CLONE_EXEC) count_clone_exec=$((count_clone_exec + 1)) ;;
             STRAND) count_strand=$((count_strand + 1)) ;;
+            BOOT_TEST_FAIL) count_boot_test_fail=$((count_boot_test_fail + 1)) ;;
             596) count_596=$((count_596 + 1)) ;;
             612) count_612=$((count_612 + 1)) ;;
             609) count_609=$((count_609 + 1)) ;;
@@ -806,14 +782,14 @@ run_profile() {
         echo "  Boot $boot/$BOOTS: $CLASS_BUCKET — $CLASS_REASON [$boot_end, ${boot_seconds}s, ctx596_divergence=$boot_divergence]"
     done
 
-    census_sum=$((count_575 + count_576 + count_data_abort + count_clone_exec + count_strand + count_596 + count_612 + count_609 + count_p5b + count_green + count_unattributed))
+    census_sum=$((count_575 + count_576 + count_data_abort + count_clone_exec + count_strand + count_boot_test_fail + count_596 + count_612 + count_609 + count_p5b + count_green + count_unattributed))
     if [ "$census_sum" -ne "$BOOTS" ]; then
         echo "FATAL: $cpu_profile bucket census sums to $census_sum, expected $BOOTS"
         exit 1
     fi
 
     print_census "Profile $cpu_profile" "$count_575" "$count_576" "$count_data_abort" "$count_clone_exec" \
-        "$count_strand" "$count_596" "$count_612" "$count_609" "$count_p5b" "$count_green" "$count_unattributed" "$BOOTS" \
+        "$count_strand" "$count_boot_test_fail" "$count_596" "$count_612" "$count_609" "$count_p5b" "$count_green" "$count_unattributed" "$BOOTS" \
         "$divergence_boots" "$divergence_lines"
 
     # #589 is closed; its CLONE_EXEC and STRAND shapes now fail this gate. The
@@ -822,11 +798,11 @@ run_profile() {
     # #609 joined this condition under R33: its rate pre-adjudication is retired,
     # so a single boot carrying the shape fails the profile immediately instead of
     # being deferred to a run-wide ceiling.
-    if [ "$count_575" -ne 0 ] || [ "$count_data_abort" -ne 0 ] || [ "$count_clone_exec" -ne 0 ] || [ "$count_strand" -ne 0 ] || [ "$count_596" -ne 0 ] || [ "$count_612" -ne 0 ] || [ "$count_609" -ne 0 ] || [ "$count_p5b" -ne 0 ] || [ "$count_unattributed" -ne 0 ]; then
+    if [ "$count_575" -ne 0 ] || [ "$count_data_abort" -ne 0 ] || [ "$count_clone_exec" -ne 0 ] || [ "$count_strand" -ne 0 ] || [ "$count_boot_test_fail" -ne 0 ] || [ "$count_596" -ne 0 ] || [ "$count_612" -ne 0 ] || [ "$count_609" -ne 0 ] || [ "$count_p5b" -ne 0 ] || [ "$count_unattributed" -ne 0 ]; then
         ANY_GATE_FAILURE=1
-        echo "Profile $cpu_profile gate: FAILED (575=$count_575, DATA_ABORT=$count_data_abort, CLONE_EXEC=$count_clone_exec, STRAND=$count_strand, 596=$count_596, 612=$count_612, 609=$count_609, P5B=$count_p5b, UNATTRIBUTED=$count_unattributed)"
+        echo "Profile $cpu_profile gate: FAILED (575=$count_575, DATA_ABORT=$count_data_abort, CLONE_EXEC=$count_clone_exec, STRAND=$count_strand, BOOT_TEST_FAIL=$count_boot_test_fail, 596=$count_596, 612=$count_612, 609=$count_609, P5B=$count_p5b, UNATTRIBUTED=$count_unattributed)"
     else
-        echo "Profile $cpu_profile gate: PASSED (575=0, DATA_ABORT=0, CLONE_EXEC=0, STRAND=0, 596=0, 612=0, 609=0, P5B=0, UNATTRIBUTED=0)"
+        echo "Profile $cpu_profile gate: PASSED (575=0, DATA_ABORT=0, CLONE_EXEC=0, STRAND=0, BOOT_TEST_FAIL=0, 596=0, 612=0, 609=0, P5B=0, UNATTRIBUTED=0)"
     fi
 
     TOTAL_575=$((TOTAL_575 + count_575))
@@ -834,6 +810,7 @@ run_profile() {
     TOTAL_DATA_ABORT=$((TOTAL_DATA_ABORT + count_data_abort))
     TOTAL_CLONE_EXEC=$((TOTAL_CLONE_EXEC + count_clone_exec))
     TOTAL_STRAND=$((TOTAL_STRAND + count_strand))
+    TOTAL_BOOT_TEST_FAIL=$((TOTAL_BOOT_TEST_FAIL + count_boot_test_fail))
     TOTAL_596=$((TOTAL_596 + count_596))
     TOTAL_612=$((TOTAL_612 + count_612))
     TOTAL_609=$((TOTAL_609 + count_609))
@@ -866,7 +843,7 @@ case "$PROFILE" in
         ;;
 esac
 
-TOTAL_SUM=$((TOTAL_575 + TOTAL_576 + TOTAL_DATA_ABORT + TOTAL_CLONE_EXEC + TOTAL_STRAND + TOTAL_596 + TOTAL_612 + TOTAL_609 + TOTAL_P5B + TOTAL_GREEN + TOTAL_UNATTRIBUTED))
+TOTAL_SUM=$((TOTAL_575 + TOTAL_576 + TOTAL_DATA_ABORT + TOTAL_CLONE_EXEC + TOTAL_STRAND + TOTAL_BOOT_TEST_FAIL + TOTAL_596 + TOTAL_612 + TOTAL_609 + TOTAL_P5B + TOTAL_GREEN + TOTAL_UNATTRIBUTED))
 EXPECTED_TOTAL=$((BOOTS * PROFILE_COUNT))
 if [ "$TOTAL_SUM" -ne "$EXPECTED_TOTAL" ] || [ "$TOTAL_BOOTS" -ne "$EXPECTED_TOTAL" ]; then
     echo "FATAL: total bucket census sums to $TOTAL_SUM for $TOTAL_BOOTS recorded boots; expected $EXPECTED_TOTAL"
@@ -874,7 +851,7 @@ if [ "$TOTAL_SUM" -ne "$EXPECTED_TOTAL" ] || [ "$TOTAL_BOOTS" -ne "$EXPECTED_TOT
 fi
 
 print_census "Total" "$TOTAL_575" "$TOTAL_576" "$TOTAL_DATA_ABORT" "$TOTAL_CLONE_EXEC" \
-    "$TOTAL_STRAND" "$TOTAL_596" "$TOTAL_612" "$TOTAL_609" "$TOTAL_P5B" "$TOTAL_GREEN" "$TOTAL_UNATTRIBUTED" "$TOTAL_BOOTS" \
+    "$TOTAL_STRAND" "$TOTAL_BOOT_TEST_FAIL" "$TOTAL_596" "$TOTAL_612" "$TOTAL_609" "$TOTAL_P5B" "$TOTAL_GREEN" "$TOTAL_UNATTRIBUTED" "$TOTAL_BOOTS" \
     "$TOTAL_DIVERGENCE_BOOTS" "$TOTAL_DIVERGENCE_LINES"
 
 # The #609 run-wide rate ceiling that used to live here is DELETED (R33). A rate

@@ -61,7 +61,7 @@ where
     kthread_run_with(func, name, scheduler::spawn)
 }
 
-#[cfg(all(target_arch = "aarch64", feature = "boot_tests"))]
+#[cfg(feature = "boot_tests")]
 pub(crate) fn kthread_run_on_cpu_for_test<F>(
     func: F,
     name: &str,
@@ -241,7 +241,7 @@ pub fn kthread_unpark(handle: &KthreadHandle) {
 /// wakeup on a secondary CPU surfaces as an actionable test failure rather than
 /// a silent harness hang. This is a pure read; it changes no production
 /// behavior and matches the SeqCst ordering `kthread_join` uses.
-#[cfg(all(target_arch = "aarch64", feature = "boot_tests"))]
+#[cfg(feature = "boot_tests")]
 pub(crate) fn kthread_has_exited_for_test(handle: &KthreadHandle) -> bool {
     handle.inner.exited.load(Ordering::SeqCst)
 }
@@ -292,7 +292,7 @@ pub fn kthread_exit(code: i32) -> ! {
     #[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
     crate::tracing::providers::teardown::record_kthread_exit_stage_for_test(handle.inner.tid);
 
-    #[cfg(all(target_arch = "aarch64", feature = "boot_tests"))]
+    #[cfg(feature = "boot_tests")]
     scheduler::clear_cpu_affinity_for_test(handle.inner.tid);
 
     // Keep termination and exit publication interrupt-free: a scheduling pass

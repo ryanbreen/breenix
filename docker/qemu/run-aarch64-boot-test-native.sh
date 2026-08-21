@@ -150,6 +150,13 @@ run_single_test() {
             echo "FAIL: $CRASH_TYPE after boot ($LINES lines)"
             return 1
         fi
+        if grep -qF '[BOOT_TESTS:FAIL' "$OUTPUT_DIR/serial.txt" 2>/dev/null \
+            || grep -qE '\[TESTS_COMPLETE:[^]]*:FAILED:[1-9][0-9]*\]' "$OUTPUT_DIR/serial.txt" 2>/dev/null; then
+            BOOT_TEST_FAIL_LINE=$(grep -ahoE '\[TEST:[^]]*:FAIL:[^]]*\]' \
+                "$OUTPUT_DIR/serial.txt" 2>/dev/null | head -1 || true)
+            echo "FAIL: boot test failure: ${BOOT_TEST_FAIL_LINE:-[TEST:<missing>:FAIL:<missing>]}"
+            return 1
+        fi
         if ! grep -qF "[BLOCK_EINTR_ORACLE:" "$OUTPUT_DIR/serial.txt" 2>/dev/null; then
             echo "FAIL: block EINTR oracle marker missing"
             return 1
