@@ -323,6 +323,7 @@ classify_serial() {
     local crash_line
     local instruction_abort_signature
     local instruction_abort_variants
+    local oracle_fail_line
     local last_line
 
     if crash_detected "$serial_file"; then
@@ -352,6 +353,19 @@ classify_serial() {
         return
     fi
 
+    # This arm exists even though green boots end at [BOOT_TESTS:PASS]: the
+    # block EINTR oracle fires later in the service sequence, so green boots
+    # normally never reach it, but every stall and every crash-free hang this
+    # runner leaves alive to the wall clock does. A #575 oracle failure must
+    # never be absorbed by a bucket that is about something else.
+    if grep -qF '[BLOCK_EINTR_ORACLE:FAIL' "$serial_file" 2>/dev/null; then
+        oracle_fail_line=$(grep -F '[BLOCK_EINTR_ORACLE:FAIL' "$serial_file" 2>/dev/null \
+            | head -1 | sed 's/[[:space:]]*$//')
+        CLASS="ORACLE_FAIL"
+        CLASS_REASON="block EINTR oracle failure: $oracle_fail_line"
+        return
+    fi
+
     if is_force609_stall "$serial_file"; then
         CLASS="STALL"
         CLASS_REASON="forced CPU-0 dispatch left the EarlyBoot join outstanding"
@@ -374,6 +388,7 @@ classify_serial() {
 COUNT_STALL=0
 COUNT_CRASH_576=0
 COUNT_CRASH_UNATTRIBUTED=0
+COUNT_ORACLE_FAIL=0
 COUNT_GREEN=0
 COUNT_OTHER=0
 COUNT_ARMED=0
@@ -432,6 +447,11 @@ for boot in $(seq 1 "$BOOTS"); do
             kill "$QEMU_PID" 2>/dev/null || true
             break
         fi
+        if grep -qF '[BLOCK_EINTR_ORACLE:FAIL' "$SERIAL_FILE" 2>/dev/null; then
+            BOOT_END="early"
+            kill "$QEMU_PID" 2>/dev/null || true
+            break
+        fi
         if grep -qF '[BOOT_TESTS:PASS]' "$SERIAL_FILE" 2>/dev/null; then
             BOOT_END="early"
             kill "$QEMU_PID" 2>/dev/null || true
@@ -479,6 +499,7 @@ for boot in $(seq 1 "$BOOTS"); do
         STALL) COUNT_STALL=$((COUNT_STALL + 1)) ;;
         CRASH:576) COUNT_CRASH_576=$((COUNT_CRASH_576 + 1)) ;;
         CRASH:UNATTRIBUTED) COUNT_CRASH_UNATTRIBUTED=$((COUNT_CRASH_UNATTRIBUTED + 1)) ;;
+        ORACLE_FAIL) COUNT_ORACLE_FAIL=$((COUNT_ORACLE_FAIL + 1)) ;;
         GREEN) COUNT_GREEN=$((COUNT_GREEN + 1)) ;;
         OTHER) COUNT_OTHER=$((COUNT_OTHER + 1)) ;;
         *) echo "Internal error: unknown class '$CLASS' for $SERIAL_FILE"; exit 1 ;;
@@ -494,12 +515,12 @@ for boot in $(seq 1 "$BOOTS"); do
 
     NONCONFORMING_BOOT=false
     if [ "$EXPECT" = "stall" ]; then
-        if [ "$CLASS" != "STALL" ] || [ "$ARMED" != "true" ]; then
+        if [ "$CLASS" != "STALL" ] || [ "$CLASS" = "ORACLE_FAIL" ] || [ "$ARMED" != "true" ]; then
             NONCONFORMING_BOOT=true
         fi
     else
         case "$CLASS" in
-            STALL|CRASH:UNATTRIBUTED|OTHER) NONCONFORMING_BOOT=true ;;
+            STALL|CRASH:UNATTRIBUTED|ORACLE_FAIL|OTHER) NONCONFORMING_BOOT=true ;;
         esac
     fi
     if $NONCONFORMING_BOOT; then
@@ -509,7 +530,7 @@ for boot in $(seq 1 "$BOOTS"); do
 done
 
 COUNT_CRASH=$((COUNT_CRASH_576 + COUNT_CRASH_UNATTRIBUTED))
-CENSUS_SUM=$((COUNT_STALL + COUNT_CRASH + COUNT_GREEN + COUNT_OTHER))
+CENSUS_SUM=$((COUNT_STALL + COUNT_CRASH + COUNT_ORACLE_FAIL + COUNT_GREEN + COUNT_OTHER))
 if [ "$CENSUS_SUM" -ne "$BOOTS" ]; then
     echo "FATAL: class census sums to $CENSUS_SUM, expected $BOOTS"
     echo "Output directory: $OUTPUT_DIR"
@@ -525,6 +546,7 @@ printf '  %-22s %d\n' "STALL" "$COUNT_STALL"
 printf '  %-22s %d\n' "CRASH:576" "$COUNT_CRASH_576"
 printf '  %-22s %d\n' "CRASH:UNATTRIBUTED" "$COUNT_CRASH_UNATTRIBUTED"
 printf '  %-22s %d\n' "CRASH total" "$COUNT_CRASH"
+printf '  %-22s %d\n' "ORACLE_FAIL" "$COUNT_ORACLE_FAIL"
 printf '  %-22s %d\n' "GREEN" "$COUNT_GREEN"
 printf '  %-22s %d\n' "OTHER" "$COUNT_OTHER"
 printf '  %-22s %s/%s\n' "armed" "$COUNT_ARMED" "$BOOTS"
@@ -535,17 +557,19 @@ if [ "$EXPECT" = "stall" ]; then
     if [ "$COUNT_STALL" -eq "$BOOTS" ] \
         && [ "$COUNT_ARMED" -eq "$BOOTS" ] \
         && [ "$COUNT_CRASH" -eq 0 ] \
+        && [ "$COUNT_ORACLE_FAIL" -eq 0 ] \
         && [ "$COUNT_OTHER" -eq 0 ]; then
         VERDICT=PASS
     fi
-    echo "Expectation stall requires STALL=boots, armed=boots, CRASH=0, and OTHER=0."
+    echo "Expectation stall requires STALL=boots, armed=boots, CRASH=0, ORACLE_FAIL=0, and OTHER=0."
 else
     if [ "$COUNT_STALL" -eq 0 ] \
         && [ "$COUNT_CRASH_UNATTRIBUTED" -eq 0 ] \
+        && [ "$COUNT_ORACLE_FAIL" -eq 0 ] \
         && [ "$COUNT_OTHER" -eq 0 ]; then
         VERDICT=PASS
     fi
-    echo "Expectation clean requires STALL=0, CRASH:UNATTRIBUTED=0, and OTHER=0."
+    echo "Expectation clean requires STALL=0, CRASH:UNATTRIBUTED=0, ORACLE_FAIL=0, and OTHER=0."
     echo "CRASH:576 is reported and tolerated as the pre-adjudicated EL1 NULL-PC signature (FAR=0x0 ELR=0x0 ESR=0x86000005)."
 fi
 
