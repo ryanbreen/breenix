@@ -3398,6 +3398,67 @@ fn test_wakes_are_placed_on_online_cpus() -> TestResult {
     })
 }
 
+/// Prove that the strand census widens idle-thread disposability by scheduler
+/// state and reports its independent nonprogress axis.
+fn test_census_widen_oracle() -> TestResult {
+    use crate::task::scheduler::{
+        arm_census_widen_injection, collect_strand_census, disarm_census_widen_injection,
+        StrandCandidate, StrandShape, STRAND_CENSUS_CAPACITY,
+    };
+    use crate::task::thread::{ThreadPrivilege, ThreadState};
+
+    let tid = crate::task::scheduler::current_thread_id().unwrap_or(0);
+    let mut candidates = [StrandCandidate {
+        tid: 0,
+        shape: StrandShape::Running,
+        privilege: ThreadPrivilege::Kernel,
+        state: ThreadState::Running,
+    }; STRAND_CENSUS_CAPACITY];
+
+    disarm_census_widen_injection();
+    let baseline = collect_strand_census(&mut candidates);
+    let baseline_reported = baseline.is_some_and(|census| {
+        candidates
+            .iter()
+            .take(census.candidates)
+            .any(|candidate| candidate.tid == tid)
+    });
+
+    let armed_once = arm_census_widen_injection(tid);
+    let armed = armed_once
+        .then(|| collect_strand_census(&mut candidates))
+        .flatten();
+    disarm_census_widen_injection();
+
+    let armed_reported = armed.is_some_and(|census| {
+        candidates
+            .iter()
+            .take(census.candidates)
+            .any(|candidate| candidate.tid == tid)
+    });
+    let nonprogress_axis = armed.is_some_and(|census| census.worst_nonprogress_ms != 0);
+    let passed = !baseline_reported && armed_reported && nonprogress_axis;
+    crate::serial_println!(
+        "[CENSUS_WIDEN_ORACLE:{}:baseline_reported={}:armed_reported={}:tid={}:shape=running:nonprogress_axis={}:{}]",
+        if cfg!(target_arch = "aarch64") {
+            "aarch64"
+        } else {
+            "x86"
+        },
+        u64::from(baseline_reported),
+        u64::from(armed_reported),
+        tid,
+        u64::from(nonprogress_axis),
+        if passed { "PASS" } else { "FAIL" },
+    );
+
+    if passed {
+        TestResult::Pass
+    } else {
+        TestResult::Fail("census widening mutation oracle failed")
+    }
+}
+
 /// Test kernel thread creation.
 ///
 /// This tests the kthread subsystem by creating a simple kernel thread,
@@ -6437,6 +6498,13 @@ static SYSCALL_TESTS: &[TestDef] = &[
 /// - kthread_spawn_verify: Verify kthread spawning works
 /// - workqueue_operational: Verify workqueue is operational
 static SCHEDULER_TESTS: &[TestDef] = &[
+    TestDef {
+        name: "census_widen_oracle",
+        func: test_census_widen_oracle,
+        arch: Arch::Any,
+        timeout_ms: 2000,
+        stage: TestStage::PostScheduler,
+    },
     TestDef {
         name: "wakes_are_placed_on_online_cpus",
         func: test_wakes_are_placed_on_online_cpus,

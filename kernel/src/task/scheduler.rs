@@ -524,6 +524,40 @@ pub struct StrandCensus {
     pub checked: u64,
     pub candidates: usize,
     pub overflow: u64,
+    pub worst_nonprogress_ms: u64,
+}
+
+/// One-shot census-only view injection. Zero means disarmed.
+#[cfg(feature = "boot_tests")]
+static CENSUS_WIDEN_INJECT_TID: AtomicU64 = AtomicU64::new(0);
+
+/// Arm one census-only view injection for a live, nonzero thread ID.
+#[cfg(feature = "boot_tests")]
+pub fn arm_census_widen_injection(tid: u64) -> bool {
+    tid != 0
+        && CENSUS_WIDEN_INJECT_TID
+            .compare_exchange(0, tid, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+}
+
+/// Disarm the census-only view injection without changing scheduler state.
+#[cfg(feature = "boot_tests")]
+pub fn disarm_census_widen_injection() {
+    CENSUS_WIDEN_INJECT_TID.store(0, Ordering::Release);
+}
+
+/// Return the CPU whose registered idle thread has `tid`.
+///
+/// CPU 0's idle slot is registered by `Scheduler::new`, including when its
+/// real idle TID is zero. A zero idle TID in any later CPU slot is the
+/// `EMPTY_STATE` sentinel, not a registration.
+#[cfg(feature = "boot_tests")]
+fn registered_idle_cpu(scheduler: &Scheduler, tid: u64) -> Option<usize> {
+    scheduler
+        .cpu_state
+        .iter()
+        .enumerate()
+        .position(|(cpu_id, cpu)| (cpu_id == 0 || cpu.idle_thread != 0) && cpu.idle_thread == tid)
 }
 
 /// Collect one fixed-size strand census under the scheduler lock.
@@ -540,6 +574,9 @@ pub fn collect_strand_census(
         let mut checked = 0u64;
         let mut candidates = 0usize;
         let mut overflow = 0u64;
+        let mut worst_nonprogress_ms = 0u64;
+        let now_ticks = crate::time::get_ticks();
+        let injected_tid = CENSUS_WIDEN_INJECT_TID.load(Ordering::Acquire);
 
         for thread in scheduler.threads.iter() {
             let shape = match thread.state {
@@ -548,41 +585,81 @@ pub fn collect_strand_census(
                 _ => continue,
             };
             let tid = thread.id();
-            if scheduler
-                .cpu_state
-                .iter()
-                .any(|cpu| cpu.idle_thread == tid)
-            {
+            let injected = injected_tid != 0 && injected_tid == tid;
+            let actual_idle_cpu = registered_idle_cpu(scheduler, tid);
+            let idle_cpu = if injected {
+                Some(Scheduler::current_cpu_id())
+            } else {
+                actual_idle_cpu
+            };
+            let dormant_idle = idle_cpu.is_some_and(|cpu_id| {
+                if injected {
+                    return false;
+                }
+                let cpu = &scheduler.cpu_state[cpu_id];
+                #[cfg(target_arch = "aarch64")]
+                let parked = is_cpu_idle(cpu_id);
+                #[cfg(not(target_arch = "aarch64"))]
+                let parked = false;
+                let dormancy_dimensions = [
+                    parked,
+                    cpu.current_thread
+                        .is_some_and(|current_tid| current_tid != tid),
+                ];
+                dormancy_dimensions.into_iter().any(|dormant| dormant)
+            });
+            if dormant_idle {
                 continue;
             }
 
             checked += 1;
-            let current = scheduler
-                .cpu_state
-                .iter()
-                .any(|cpu| cpu.current_thread == Some(tid));
-            let queued = scheduler
-                .per_cpu_queues
-                .iter()
-                .any(|queue| queue.contains(&tid));
+            let current = !injected
+                && scheduler
+                    .cpu_state
+                    .iter()
+                    .any(|cpu| cpu.current_thread == Some(tid));
+            let queued = !injected
+                && scheduler
+                    .per_cpu_queues
+                    .iter()
+                    .any(|queue| queue.contains(&tid));
 
-            let previous = scheduler
-                .cpu_state
-                .iter()
-                .any(|cpu| cpu.previous_thread == Some(tid));
+            let previous = !injected
+                && scheduler
+                    .cpu_state
+                    .iter()
+                    .any(|cpu| cpu.previous_thread == Some(tid));
 
-            let pending_next = scheduler
-                .cpu_state
-                .iter()
-                .any(|cpu| cpu.pending_next == Some(tid));
+            let pending_next = !injected
+                && scheduler
+                    .cpu_state
+                    .iter()
+                    .any(|cpu| cpu.pending_next == Some(tid));
 
             #[cfg(target_arch = "aarch64")]
-            let deferred = crate::arch_impl::aarch64::context_switch::
-                deferred_requeue_contains(tid);
+            let deferred = !injected
+                && crate::arch_impl::aarch64::context_switch::deferred_requeue_contains(tid);
             #[cfg(not(target_arch = "aarch64"))]
             let deferred = false;
 
-            if current || queued || previous || pending_next || deferred {
+            if thread.state == ThreadState::Running && actual_idle_cpu.is_none() && !current {
+                let nonprogress_ms = now_ticks.saturating_sub(thread.run_start_ticks);
+                // The injected view represents a thread that has already
+                // failed to make progress; retain one millisecond of evidence
+                // even when both census passes occur in the same timer tick.
+                let nonprogress_ms = if injected {
+                    nonprogress_ms.max(1)
+                } else {
+                    nonprogress_ms
+                };
+                worst_nonprogress_ms = worst_nonprogress_ms.max(nonprogress_ms);
+            }
+
+            let reachability_dimensions = [current, queued, previous, pending_next, deferred];
+            if reachability_dimensions
+                .into_iter()
+                .any(|reachable| reachable)
+            {
                 continue;
             }
 
@@ -603,6 +680,7 @@ pub fn collect_strand_census(
             checked,
             candidates,
             overflow,
+            worst_nonprogress_ms,
         }
     })
 }

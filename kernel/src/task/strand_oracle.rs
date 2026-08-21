@@ -142,6 +142,7 @@ struct OracleState {
     running_shape: u64,
     ready_shape: u64,
     worst_dwell_ms: u64,
+    worst_nonprogress_ms: u64,
     overflow: u64,
     #[cfg(target_arch = "aarch64")]
     first_strand: Option<FirstStrand>,
@@ -157,6 +158,7 @@ impl OracleState {
             running_shape: 0,
             ready_shape: 0,
             worst_dwell_ms: 0,
+            worst_nonprogress_ms: 0,
             overflow: 0,
             #[cfg(target_arch = "aarch64")]
             first_strand: None,
@@ -273,6 +275,7 @@ fn sample_once(state: &mut OracleState) {
         state.samples += 1;
         state.checked += census.checked;
         state.overflow += census.overflow;
+        state.worst_nonprogress_ms = state.worst_nonprogress_ms.max(census.worst_nonprogress_ms);
         update_dwell(
             &candidates,
             census,
@@ -325,6 +328,7 @@ pub fn report_x86_once() {
             state.ready_shape,
             state.worst_dwell_ms,
             state.overflow,
+            state.worst_nonprogress_ms,
         )
     }) else {
         return;
@@ -336,6 +340,7 @@ pub fn report_x86_once() {
     {
         report_strand(
             report.0, report.1, report.2, report.3, report.4, report.5, report.6,
+            report.7,
         );
     }
 }
@@ -381,9 +386,10 @@ fn report_strand(
     ready_shape: u64,
     worst_dwell_ms: u64,
     overflow: u64,
+    worst_nonprogress_ms: u64,
 ) {
     crate::serial_println!(
-        "[SCHED_STRAND_ORACLE:{}:samples={}:checked={}:stranded={}:running_shape={}:ready_shape={}:resolved_production={}:resolved_exercised={}:worst_dwell_ms={}:overflow={}]",
+        "[SCHED_STRAND_ORACLE:{}:samples={}:checked={}:stranded={}:running_shape={}:ready_shape={}:resolved_production={}:resolved_exercised={}:worst_dwell_ms={}:overflow={}:worst_nonprogress_ms={}]",
         if cfg!(target_arch = "aarch64") {
             "aarch64"
         } else {
@@ -398,6 +404,7 @@ fn report_strand(
         RESOLVED_EXERCISED.load(Ordering::Acquire),
         worst_dwell_ms,
         overflow,
+        worst_nonprogress_ms,
     );
 }
 
@@ -575,6 +582,7 @@ fn strand_oracle_thread() {
                 state.ready_shape,
                 state.worst_dwell_ms,
                 state.overflow,
+                state.worst_nonprogress_ms,
             );
             if immediate_strand_report {
                 strand_nonzero_reported = true;

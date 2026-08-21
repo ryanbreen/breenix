@@ -18,9 +18,11 @@ const MAX_NON_FAILING_SERVICE_SEQUENCE_BUCKETS: usize = 2;
 /// Each gate must reject both strand marker families; additional rejections are welcome.
 const MIN_STRANDED_FORBIDDEN_REJECTIONS: usize = 2;
 /// More discriminating markers are welcome; dropping one quietly disarms the profile guard.
-const MIN_BOOT_TESTS_PROFILE_MARKERS: usize = 5;
+const MIN_BOOT_TESTS_PROFILE_MARKERS: usize = 6;
 /// The strict gate scores once while polling and again for the final verdict.
 const MIN_STRICT_GATE_SCORE_SERIAL_CALLS: usize = 2;
+/// Dormancy currently has two axes and ordinary reachability has five.
+const MIN_CENSUS_DISPOSABILITY_REACHABILITY_DIMENSIONS: usize = 7;
 
 fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -223,6 +225,43 @@ fn braced_block_after<'a>(source: &'a str, needle: &str) -> &'a str {
         .map(|relative| offset + needle.len() + relative)
         .expect("branch opening brace");
     braced_body(source, &masked, open)
+}
+
+fn bracketed_block_after<'a>(source: &'a str, needle: &str) -> &'a str {
+    let (masked, mask) = code_source(source);
+    let offset = masked
+        .match_indices(needle)
+        .filter(|(offset, _)| mask[*offset..*offset + needle.len()].iter().all(|v| *v))
+        .last()
+        .map(|(offset, _)| offset)
+        .unwrap_or_else(|| panic!("missing source anchor {needle}"));
+    let open = masked[offset + needle.len()..]
+        .find('[')
+        .map(|relative| offset + needle.len() + relative)
+        .expect("array opening bracket");
+    let bytes = masked.as_bytes();
+    let mut depth = 0usize;
+    for index in open..bytes.len() {
+        match bytes[index] {
+            b'[' => depth += 1,
+            b']' => {
+                depth -= 1;
+                if depth == 0 {
+                    return &source[open + 1..index];
+                }
+            }
+            _ => {}
+        }
+    }
+    panic!("unclosed source array")
+}
+
+fn comma_separated_shape_count(source: &str) -> usize {
+    let (masked, _) = code_source(source);
+    masked
+        .split(',')
+        .filter(|dimension| !dimension.trim().is_empty())
+        .count()
 }
 
 fn code_occurrences(source: &str, needle: &str) -> Vec<usize> {
@@ -1046,6 +1085,81 @@ fn x86_strand_oracle_is_synchronous_and_sampled_by_the_executor() {
     assert!(
         !code_occurrences(&executor, "strand_oracle::report_x86_once()").is_empty(),
         "the executor must emit the x86 oracle once from the verdict path"
+    );
+}
+
+#[test]
+fn strand_census_disposability_and_reachability_dimensions_cannot_shrink() {
+    let scheduler = repo_text(SCHEDULER_PATH);
+    let census = function_body(&scheduler, "collect_strand_census");
+    let dormancy = bracketed_block_after(census, "let dormancy_dimensions =");
+    let reachability = bracketed_block_after(census, "let reachability_dimensions =");
+    let dimensions =
+        comma_separated_shape_count(dormancy) + comma_separated_shape_count(reachability);
+    assert!(
+        dimensions >= MIN_CENSUS_DISPOSABILITY_REACHABILITY_DIMENSIONS,
+        "strand-census disposability/reachability dimension floor shrank: {dimensions} < \
+         {MIN_CENSUS_DISPOSABILITY_REACHABILITY_DIMENSIONS}"
+    );
+}
+
+#[test]
+fn idle_disposability_is_parked_state_not_bare_tid_identity() {
+    let scheduler = repo_text(SCHEDULER_PATH);
+    let census = function_body(&scheduler, "collect_strand_census");
+    let dormant_guard = braced_block_after(census, "let dormant_idle =");
+    assert!(
+        !code_occurrences(dormant_guard, "is_cpu_idle(").is_empty(),
+        "idle disposability must consult the scheduler's parked-state predicate"
+    );
+    assert!(
+        !code_occurrences(dormant_guard, "current_thread").is_empty()
+            && !code_occurrences(dormant_guard, "current_tid != tid").is_empty(),
+        "idle disposability must recognize a dormant idle thread while another thread runs"
+    );
+    assert!(
+        code_occurrences(census, ".any(|cpu| cpu.idle_thread == tid)").is_empty(),
+        "the census must not restore the bare idle-TID identity skip"
+    );
+}
+
+#[test]
+fn strand_marker_reports_dwell_and_nonprogress_axes() {
+    let oracle = repo_text(STRAND_ORACLE_PATH);
+    let report = function_body(&oracle, "report_strand");
+    assert!(
+        report.contains(":worst_dwell_ms={}:overflow={}:worst_nonprogress_ms={}]"),
+        "strand marker must carry both dwell and nonprogress axes"
+    );
+}
+
+#[test]
+fn census_widen_injection_has_two_legs_and_is_boot_tests_only() {
+    let scheduler = repo_text(SCHEDULER_PATH);
+    let registry = repo_text("kernel/src/test_framework/registry.rs");
+    let probe = function_body(&registry, "test_census_widen_oracle");
+    let census_calls = code_occurrences(probe, "collect_strand_census(");
+    let arm_calls = code_occurrences(probe, "let armed_once = arm_census_widen_injection(");
+    let disarm_calls = code_occurrences(probe, "disarm_census_widen_injection(");
+    assert!(
+        census_calls.len() >= 2
+            && !arm_calls.is_empty()
+            && disarm_calls.len() >= 2
+            && census_calls[0] < arm_calls[0]
+            && arm_calls[0] < census_calls[1]
+            && census_calls[1] < disarm_calls[disarm_calls.len() - 1],
+        "census widening oracle must retain disarmed-baseline and armed census legs: \
+         census={census_calls:?} arm={arm_calls:?} disarm={disarm_calls:?}"
+    );
+    assert!(
+        probe.contains("baseline_reported={}:armed_reported={}"),
+        "census widening marker must report both anti-vacuity legs"
+    );
+    assert!(
+        scheduler.contains("#[cfg(feature = \"boot_tests\")]\nstatic CENSUS_WIDEN_INJECT_TID")
+            && scheduler
+                .contains("#[cfg(feature = \"boot_tests\")]\npub fn arm_census_widen_injection"),
+        "census widening arming state and entry point must compile out of production builds"
     );
 }
 

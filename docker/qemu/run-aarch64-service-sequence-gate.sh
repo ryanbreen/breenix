@@ -103,6 +103,7 @@ BREENIX_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 # stage3_elapsed_ms is the measured duration; residual/balance prove cleanup.
 # This marker is emitted from a syscall while the scheduler trace stream is live, so its line can carry a prefix.
 FUTEX_HANDOFF_ORACLE_PATTERN='\[FUTEX_HANDOFF_ORACLE:aarch64:driven=2:stage1_ret=EAGAIN:stage1_wake=0:stage1_parked=0:stage2_ret=0:stage2_wake=1:stage2_parked=0:stage3_ret=ETIMEDOUT:stage3_elapsed_ok=1:stage3_elapsed_ms=[0-9]+:rescues=0:queue_residual=0:balance=0\]'
+CENSUS_WIDEN_ORACLE_PATTERN='\[CENSUS_WIDEN_ORACLE:aarch64:baseline_reported=0:armed_reported=1:tid=[1-9][0-9]*:shape=running:nonprogress_axis=1:PASS\]'
 
 if $REBUILD; then
     echo "Building ARM64 kernel with boot_tests feature..."
@@ -148,7 +149,7 @@ require_boot_tests_kernel() {
 
     # A census of boot_tests-only marker literals, not a single sentinel: one
     # marker moving profile would otherwise silently disarm this guard.
-    for marker in '[SCHED_STRAND_ORACLE:' '[STRAND_INJECT_ORACLE:' '[FUTEX_HANDOFF_ORACLE:' '[CTX596_ORACLE:' '[BOOT_TESTS:'; do
+    for marker in '[SCHED_STRAND_ORACLE:' '[STRAND_INJECT_ORACLE:' '[CENSUS_WIDEN_ORACLE:' '[FUTEX_HANDOFF_ORACLE:' '[CTX596_ORACLE:' '[BOOT_TESTS:'; do
         if ! grep -aqF "$marker" "$kernel" 2>/dev/null; then
             missing="$missing $marker"
         fi
@@ -464,6 +465,11 @@ classify_serial() {
         CLASS_REASON="strand injection oracle reported stranded work: $(grep -E '\[STRAND_INJECT_ORACLE:[^]]*:stranded=[1-9][0-9]*\]' "$serial_file" | tail -1)"
         return
     fi
+    if grep -qE '\[CENSUS_WIDEN_ORACLE:[^]]*:FAIL\]' "$serial_file" 2>/dev/null; then
+        CLASS_BUCKET="STRAND"
+        CLASS_REASON="census widening mutation oracle failed: $(grep -E '\[CENSUS_WIDEN_ORACLE:[^]]*:FAIL\]' "$serial_file" | tail -1)"
+        return
+    fi
     # Deliberately LAST of the attributing arms: every abort signature and both
     # strand arms have already been consulted, so a boot can only reach #609 by
     # having crashed nowhere and stranded nothing. This arm names the shape; it
@@ -523,6 +529,11 @@ classify_serial() {
             || ! grep -qF "[STRAND_INJECT_ORACLE:" "$serial_file" 2>/dev/null; then
             CLASS_BUCKET="UNATTRIBUTED"
             CLASS_REASON="scheduler strand oracle marker absent"
+            return
+        fi
+        if ! grep -qE "$CENSUS_WIDEN_ORACLE_PATTERN" "$serial_file" 2>/dev/null; then
+            CLASS_BUCKET="UNATTRIBUTED"
+            CLASS_REASON="census widening mutation oracle marker absent or failed"
             return
         fi
         CLASS_BUCKET="GREEN"
