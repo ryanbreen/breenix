@@ -68,8 +68,6 @@ fn test_ring3_smoke() {
         "Kernel panicked during Ring 3 test"
     );
 
-    // Check for POST completion (required for valid test)
-    let post_complete = output.contains("🎯 KERNEL_POST_TESTS_COMPLETE 🎯");
     // For Ring 3 smoke test, we focus on Ring 3 evidence rather than POST completion
     // since Ring 3 execution can work even if other tests fail
 

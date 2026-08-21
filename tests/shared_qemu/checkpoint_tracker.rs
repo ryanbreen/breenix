@@ -106,18 +106,6 @@ impl CheckpointTracker {
         )
     }
 
-    /// Extract checkpoint name from a log line if present
-    ///
-    /// Format: [ INFO] kernel: [CHECKPOINT:name]
-    fn extract_checkpoint(line: &str) -> Option<String> {
-        if let Some(start) = line.find("[CHECKPOINT:") {
-            if let Some(end) = line[start..].find(']') {
-                let checkpoint = &line[start + 12..start + end];
-                return Some(checkpoint.to_string());
-            }
-        }
-        None
-    }
 }
 
 #[cfg(test)]
@@ -169,7 +157,7 @@ mod tests {
         // Create a checkpoint with 100ms timeout
         let checkpoints = vec![("FAST".to_string(), Duration::from_millis(100))];
 
-        let mut tracker = CheckpointTracker::new(test_file, checkpoints);
+        let tracker = CheckpointTracker::new(test_file, checkpoints);
 
         // Wait for timeout
         std::thread::sleep(Duration::from_millis(150));

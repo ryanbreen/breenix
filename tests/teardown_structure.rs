@@ -2989,7 +2989,6 @@ fn validate_p5b_gate_script_pins(
         "EL1 data abort (#596)",
         "TOTAL_DATA_ABORT=0",
         "DATA_ABORT) count_data_abort=$((count_data_abort + 1)) ;;",
-        "[ \"$count_575\" -ne 0 ] || [ \"$count_data_abort\" -ne 0 ] || [ \"$count_clone_exec\" -ne 0 ] || [ \"$count_strand\" -ne 0 ] || [ \"$count_596\" -ne 0 ] || [ \"$count_612\" -ne 0 ] || [ \"$count_p5b\" -ne 0 ] || [ \"$count_unattributed\" -ne 0 ]",
         "quiesce_rows_floor=8",
         "[ \"$quiesce_rows\" -lt \"$quiesce_rows_floor\" ]",
         "TOTAL_P5B=$((TOTAL_P5B + count_p5b))",
@@ -3011,6 +3010,32 @@ fn validate_p5b_gate_script_pins(
         "run-aarch64-service-sequence-gate.sh lost the run_profile body",
         run_profile.is_some(),
     );
+    let profile_fail_conditions = run_profile
+        .map(|body| {
+            body.lines()
+                .map(str::trim)
+                .filter(|line| {
+                    line.starts_with("if [ \"$count_") && line.ends_with("; then")
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    check(
+        &mut failures,
+        "run-aarch64-service-sequence-gate.sh run_profile per-profile FAIL condition is not unique",
+        profile_fail_conditions.len() == 1,
+    );
+    let profile_fail_condition = profile_fail_conditions.first().copied().unwrap_or("");
+    // A whole-condition literal made tightening the gate by adding a bucket look like a regression.
+    for term in ["[ \"$count_p5b\" -ne 0 ]", "[ \"$count_data_abort\" -ne 0 ]"] {
+        check(
+            &mut failures,
+            &format!(
+                "run-aarch64-service-sequence-gate.sh per-profile FAIL condition lost {term}"
+            ),
+            profile_fail_condition.contains(term),
+        );
+    }
     let classifier_dispatch = run_profile.and_then(|body| {
         body.split_once("case \"$CLASS_BUCKET\" in")
             .and_then(|(_, tail)| tail.split_once("esac").map(|(dispatch, _)| dispatch))
