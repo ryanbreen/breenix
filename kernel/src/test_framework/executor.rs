@@ -36,6 +36,8 @@
 
 use alloc::format;
 use alloc::vec::Vec;
+#[cfg(all(target_arch = "aarch64", feature = "force_609"))]
+use core::sync::atomic::AtomicBool;
 use core::sync::atomic::{AtomicU8, Ordering};
 
 use super::progress::{
@@ -49,6 +51,12 @@ use crate::task::kthread::{kthread_join, kthread_run, KthreadHandle};
 /// Current boot stage - tests with stage <= this can run
 static CURRENT_STAGE: AtomicU8 = AtomicU8::new(TestStage::SerialBoot as u8);
 
+#[cfg(all(target_arch = "aarch64", feature = "force_609"))]
+static FORCE_609_ARMED: AtomicBool = AtomicBool::new(false);
+
+#[cfg(all(target_arch = "aarch64", feature = "force_609"))]
+static FORCE_609_HITS: AtomicU64 = AtomicU64::new(0);
+
 /// Track which tests have already run (by subsystem + test index)
 /// This is a simple bitmap: each subsystem gets 64 bits (max 64 tests per subsystem)
 static TESTS_RUN: [AtomicU64; SubsystemId::COUNT] = {
@@ -57,6 +65,52 @@ static TESTS_RUN: [AtomicU64; SubsystemId::COUNT] = {
 };
 
 use core::sync::atomic::AtomicU64;
+
+/// Arm the one-shot #609 stimulus against CPU 0's own bootstrap/idle slot.
+///
+/// This targets the thing under test and no production subsystem. It is armed once and dispatched
+/// once, with no yield/schedule/halt drive loop. Its body takes no lock, allocates nothing, and
+/// prints nothing. The entire stimulus is compiled out unless `--features force_609` is requested.
+#[cfg(all(target_arch = "aarch64", feature = "force_609"))]
+#[inline(always)]
+fn arm_force_609_once() {
+    if FORCE_609_ARMED
+        .compare_exchange(false, true, Ordering::Relaxed, Ordering::Relaxed)
+        .is_err()
+    {
+        return;
+    }
+
+    serial_println!("[FORCE609:ARMED]");
+    if crate::task::kthread::kthread_run_on_cpu_for_test(
+        || {
+            FORCE_609_HITS.fetch_add(1, Ordering::Relaxed);
+        },
+        "force609",
+        0,
+    )
+    .is_err()
+    {
+        serial_println!("[FORCE609:SPAWN_ERROR]");
+    }
+}
+
+#[cfg(not(all(target_arch = "aarch64", feature = "force_609")))]
+#[inline(always)]
+fn arm_force_609_once() {}
+
+#[cfg(all(target_arch = "aarch64", feature = "force_609"))]
+#[inline(always)]
+fn report_force_609_hits() {
+    serial_println!(
+        "[FORCE609:HITS={}]",
+        FORCE_609_HITS.load(Ordering::Relaxed)
+    );
+}
+
+#[cfg(not(all(target_arch = "aarch64", feature = "force_609")))]
+#[inline(always)]
+fn report_force_609_hits() {}
 
 /// Emit the aarch64 exec lock-order counters.
 ///
@@ -274,6 +328,9 @@ fn run_staged_tests(target_stage: TestStage) -> u32 {
             &thread_name,
         ) {
             Ok(handle) => {
+                if target_stage == TestStage::EarlyBoot {
+                    arm_force_609_once();
+                }
                 log::debug!(
                     "Spawned test thread for {}:{} ({} tests)",
                     subsystem.name,
@@ -295,6 +352,9 @@ fn run_staged_tests(target_stage: TestStage) -> u32 {
     // Wait for all test threads to complete
     for (id, handle) in handles {
         total_failed += join_test_thread(id, handle);
+    }
+    if target_stage == TestStage::EarlyBoot {
+        report_force_609_hits();
     }
 
     // Emit stage summary
