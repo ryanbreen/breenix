@@ -3400,7 +3400,7 @@ fn test_wakes_are_placed_on_online_cpus() -> TestResult {
 
 /// Prove that the strand census widens idle-thread disposability by scheduler
 /// state and reports its independent nonprogress axis.
-fn test_census_widen_oracle() -> TestResult {
+pub fn run_census_widen_oracle() -> bool {
     use crate::task::scheduler::{
         arm_census_widen_injection, collect_strand_census, disarm_census_widen_injection,
         StrandCandidate, StrandShape, STRAND_CENSUS_CAPACITY,
@@ -3452,7 +3452,11 @@ fn test_census_widen_oracle() -> TestResult {
         if passed { "PASS" } else { "FAIL" },
     );
 
-    if passed {
+    passed
+}
+
+fn test_census_widen_oracle() -> TestResult {
+    if run_census_widen_oracle() {
         TestResult::Pass
     } else {
         TestResult::Fail("census widening mutation oracle failed")

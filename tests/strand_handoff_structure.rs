@@ -6,6 +6,8 @@ const SCHEDULER_PATH: &str = "kernel/src/task/scheduler.rs";
 const CONTEXT_SWITCH_PATH: &str = "kernel/src/arch_impl/aarch64/context_switch.rs";
 const STRAND_ORACLE_PATH: &str = "kernel/src/task/strand_oracle.rs";
 const EXECUTOR_PATH: &str = "kernel/src/test_framework/executor.rs";
+const TEST_REGISTRY_PATH: &str = "kernel/src/test_framework/registry.rs";
+const X86_BOOT_GATE_PATH: &str = "docker/qemu/run-x86-boot-tests.sh";
 const SERVICE_SEQUENCE_GATE_PATH: &str = "docker/qemu/run-aarch64-service-sequence-gate.sh";
 const STRICT_GATE_PATH: &str = "docker/qemu/run-aarch64-boot-test-strict.sh";
 const FULL_TEST_PATH: &str = "docker/qemu/run-aarch64-full-test.sh";
@@ -1089,6 +1091,91 @@ fn x86_strand_oracle_is_synchronous_and_sampled_by_the_executor() {
 }
 
 #[test]
+fn x86_census_widen_oracle_is_one_shot_in_the_live_verdict_path() {
+    let registry = repo_text(TEST_REGISTRY_PATH);
+    assert!(
+        registry.contains("pub fn run_census_widen_oracle() -> bool"),
+        "the census-widening probe must expose its boolean verdict to the x86 driver"
+    );
+    let probe = function_body(&registry, "run_census_widen_oracle");
+    for required in [
+        "disarm_census_widen_injection()",
+        "collect_strand_census(&mut candidates)",
+        "arm_census_widen_injection(tid)",
+        "[CENSUS_WIDEN_ORACLE:",
+        "passed",
+    ] {
+        assert!(
+            probe.contains(required),
+            "the callable census-widening probe must retain {required}"
+        );
+    }
+    let test_def = function_body(&registry, "test_census_widen_oracle");
+    assert!(
+        !code_occurrences(test_def, "run_census_widen_oracle()").is_empty(),
+        "the registered aarch64 test must keep calling the factored probe"
+    );
+
+    let executor = repo_text(EXECUTOR_PATH);
+    let driver = function_body(&executor, "run_census_widen_oracle_x86_once");
+    assert!(
+        !code_occurrences(driver, "compare_exchange(false, true").is_empty(),
+        "the x86 census-widening driver must use an atomic one-shot"
+    );
+    assert_eq!(
+        code_occurrences(driver, "registry::run_census_widen_oracle()").len(),
+        1,
+        "the one-shot driver must have exactly one probe call site"
+    );
+
+    let marker_only = function_body(&executor, "advance_stage_marker_only");
+    let cfg_anchor = "#[cfg(not(target_arch = \"aarch64\"))]";
+    let cfg_offset = marker_only
+        .rfind(cfg_anchor)
+        .expect("x86 verdict cfg block");
+    let (masked_marker_only, _) = code_source(marker_only);
+    let cfg_open = masked_marker_only[cfg_offset + cfg_anchor.len()..]
+        .find('{')
+        .map(|relative| cfg_offset + cfg_anchor.len() + relative)
+        .expect("x86 verdict cfg opening brace");
+    let x86_verdict = braced_body(marker_only, &masked_marker_only, cfg_open);
+    let sample = code_occurrences(x86_verdict, "strand_oracle::sample_now()");
+    let census = code_occurrences(x86_verdict, "run_census_widen_oracle_x86_once()");
+    let report = code_occurrences(x86_verdict, "strand_oracle::report_x86_once()");
+    assert_eq!(sample.len(), 1, "x86 verdict block final sample census");
+    assert_eq!(census.len(), 1, "x86 verdict block census-oracle driver census");
+    assert_eq!(report.len(), 1, "x86 verdict block strand report census");
+    assert!(
+        sample[0] < census[0] && census[0] < report[0],
+        "the census-widening probe must run after the final sample and before the strand report"
+    );
+
+    let gate = repo_text(X86_BOOT_GATE_PATH);
+    let pattern = gate
+        .lines()
+        .find(|line| line.starts_with("CENSUS_WIDEN_ORACLE_PATTERN="))
+        .expect("x86 gate census-widening pattern constant");
+    assert!(
+        pattern.contains("CENSUS_WIDEN_ORACLE:x86:") && pattern.ends_with(":PASS\\]'"),
+        "the x86 gate pattern must accept only the passing x86 census-widening marker"
+    );
+    assert!(
+        gate.contains("&& grep -qE \"$CENSUS_WIDEN_ORACLE_PATTERN\""),
+        "the x86 poll verdict must require the census-widening marker"
+    );
+    let exact_count = gate
+        .find("test \"$(grep -h -E -c \"$CENSUS_WIDEN_ORACLE_PATTERN\"")
+        .expect("x86 gate exact census-widening marker count");
+    assert!(
+        gate[exact_count..]
+            .lines()
+            .take(2)
+            .any(|line| line.contains("-eq 1")),
+        "the x86 final verdict must require exactly one passing census-widening marker"
+    );
+}
+
+#[test]
 fn strand_census_disposability_and_reachability_dimensions_cannot_shrink() {
     let scheduler = repo_text(SCHEDULER_PATH);
     let census = function_body(&scheduler, "collect_strand_census");
@@ -1136,8 +1223,8 @@ fn strand_marker_reports_dwell_and_nonprogress_axes() {
 #[test]
 fn census_widen_injection_has_two_legs_and_is_boot_tests_only() {
     let scheduler = repo_text(SCHEDULER_PATH);
-    let registry = repo_text("kernel/src/test_framework/registry.rs");
-    let probe = function_body(&registry, "test_census_widen_oracle");
+    let registry = repo_text(TEST_REGISTRY_PATH);
+    let probe = function_body(&registry, "run_census_widen_oracle");
     let census_calls = code_occurrences(probe, "collect_strand_census(");
     let arm_calls = code_occurrences(probe, "let armed_once = arm_census_widen_injection(");
     let disarm_calls = code_occurrences(probe, "disarm_census_widen_injection(");

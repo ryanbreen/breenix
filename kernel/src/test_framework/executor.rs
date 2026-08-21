@@ -49,6 +49,11 @@ use crate::task::kthread::{kthread_join, kthread_run, KthreadHandle};
 /// Current boot stage - tests with stage <= this can run
 static CURRENT_STAGE: AtomicU8 = AtomicU8::new(TestStage::SerialBoot as u8);
 
+/// The marker-only x86 stage path can emit more than one verdict per boot.
+#[cfg(not(target_arch = "aarch64"))]
+static X86_CENSUS_WIDEN_ORACLE_RAN: core::sync::atomic::AtomicBool =
+    core::sync::atomic::AtomicBool::new(false);
+
 /// Track which tests have already run (by subsystem + test index)
 /// This is a simple bitmap: each subsystem gets 64 bits (max 64 tests per subsystem)
 static TESTS_RUN: [AtomicU64; SubsystemId::COUNT] = {
@@ -95,6 +100,16 @@ pub fn emit_exec_lock_order_counters() -> bool {
 /// Get the current test stage
 pub fn current_stage() -> TestStage {
     TestStage::from_u8(CURRENT_STAGE.load(Ordering::Acquire)).unwrap_or(TestStage::SerialBoot)
+}
+
+#[cfg(not(target_arch = "aarch64"))]
+fn run_census_widen_oracle_x86_once() {
+    if X86_CENSUS_WIDEN_ORACLE_RAN
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_ok()
+    {
+        super::registry::run_census_widen_oracle();
+    }
 }
 
 /// Advance to a new stage and run any tests waiting for that stage
@@ -147,6 +162,7 @@ pub fn advance_stage_marker_only(stage: TestStage) {
     #[cfg(not(target_arch = "aarch64"))]
     {
         crate::task::strand_oracle::sample_now();
+        run_census_widen_oracle_x86_once();
         crate::task::strand_oracle::report_x86_once();
     }
 
