@@ -365,9 +365,16 @@ classify_serial() {
         CLASS_REASON="inline-save resume-point oracle failed: $(grep -o '\[CTX596_ORACLE:FAIL:[a-z_]*' "$serial_file" | head -1)"
         return
     fi
+    # This is a CATCH-ALL for any EL1 (from_el0=0) data abort that is not the
+    # #596 oracle's own FAIL line above — it is NOT "#596" (#596 is CLOSED; its
+    # own arm is the one above and is the only thing that bucket name should
+    # mean). The wild-context data abort this arm has actually caught (small-
+    # garbage FAR, garbage callee-saved register file, near
+    # schedule_deferred_requeue) is filed as #612; it buckets there so a
+    # gate-failing red is never silently attributed to a closed issue.
     if grep -qE "\[DATA_ABORT\].*from_el0=0" "$serial_file" 2>/dev/null; then
-        CLASS_BUCKET="596"
-        CLASS_REASON="EL1 data abort: $(grep -E "\[DATA_ABORT\].*from_el0=0" "$serial_file" | head -1 | sed 's/[[:space:]]*$//')"
+        CLASS_BUCKET="612"
+        CLASS_REASON="EL1 data abort (#612, catch-all — not #596, which is closed): $(grep -E "\[DATA_ABORT\].*from_el0=0" "$serial_file" | head -1 | sed 's/[[:space:]]*$//')"
         return
     fi
     if grep -qF "[BLOCK_EINTR_ORACLE:FAIL" "$serial_file" 2>/dev/null; then
@@ -519,6 +526,7 @@ TOTAL_576=0
 TOTAL_DATA_ABORT=0
 TOTAL_589=0
 TOTAL_596=0
+TOTAL_612=0
 TOTAL_609=0
 TOTAL_P5B=0
 TOTAL_GREEN=0
@@ -536,13 +544,14 @@ print_census() {
     local count_data_abort="$4"
     local count_589="$5"
     local count_596="$6"
-    local count_609="$7"
-    local count_p5b="$8"
-    local count_green="$9"
-    local count_unattributed="${10}"
-    local count_boots="${11}"
-    local divergence_boots="${12}"
-    local divergence_lines="${13}"
+    local count_612="$7"
+    local count_609="$8"
+    local count_p5b="$9"
+    local count_green="${10}"
+    local count_unattributed="${11}"
+    local count_boots="${12}"
+    local divergence_boots="${13}"
+    local divergence_lines="${14}"
     local green_rate
 
     green_rate=$(awk -v green="$count_green" -v boots="$count_boots" \
@@ -554,6 +563,7 @@ print_census() {
     printf '  %-13s %d\n' "DATA_ABORT" "$count_data_abort"
     printf '  %-13s %d\n' "589" "$count_589"
     printf '  %-13s %d\n' "596" "$count_596"
+    printf '  %-13s %d\n' "612" "$count_612"
     printf '  %-13s %d\n' "609" "$count_609"
     printf '  %-13s %d\n' "P5B" "$count_p5b"
     printf '  %-13s %d\n' "GREEN" "$count_green"
@@ -575,6 +585,7 @@ run_profile() {
     local count_data_abort=0
     local count_589=0
     local count_596=0
+    local count_612=0
     local count_609=0
     local count_p5b=0
     local count_green=0
@@ -698,6 +709,7 @@ run_profile() {
             DATA_ABORT) count_data_abort=$((count_data_abort + 1)) ;;
             589) count_589=$((count_589 + 1)) ;;
             596) count_596=$((count_596 + 1)) ;;
+            612) count_612=$((count_612 + 1)) ;;
             609) count_609=$((count_609 + 1)) ;;
             P5B) count_p5b=$((count_p5b + 1)) ;;
             GREEN) count_green=$((count_green + 1)) ;;
@@ -713,14 +725,14 @@ run_profile() {
         echo "  Boot $boot/$BOOTS: $CLASS_BUCKET — $CLASS_REASON [$boot_end, ${boot_seconds}s, ctx596_divergence=$boot_divergence]"
     done
 
-    census_sum=$((count_575 + count_576 + count_data_abort + count_589 + count_596 + count_609 + count_p5b + count_green + count_unattributed))
+    census_sum=$((count_575 + count_576 + count_data_abort + count_589 + count_596 + count_612 + count_609 + count_p5b + count_green + count_unattributed))
     if [ "$census_sum" -ne "$BOOTS" ]; then
         echo "FATAL: $cpu_profile bucket census sums to $census_sum, expected $BOOTS"
         exit 1
     fi
 
     print_census "Profile $cpu_profile" "$count_575" "$count_576" "$count_data_abort" "$count_589" \
-        "$count_596" "$count_609" "$count_p5b" "$count_green" "$count_unattributed" "$BOOTS" \
+        "$count_596" "$count_612" "$count_609" "$count_p5b" "$count_green" "$count_unattributed" "$BOOTS" \
         "$divergence_boots" "$divergence_lines"
 
     # The GREEN rate is census-only because open #589 and #576 intercept boots;
@@ -728,11 +740,11 @@ run_profile() {
     # #609 is not in this per-profile condition because its pre-adjudication is a
     # RATE, and a rate is only meaningful over the whole run; it is enforced once,
     # against every boot the run produced, after the last profile finishes.
-    if [ "$count_575" -ne 0 ] || [ "$count_data_abort" -ne 0 ] || [ "$count_596" -ne 0 ] || [ "$count_p5b" -ne 0 ] || [ "$count_unattributed" -ne 0 ]; then
+    if [ "$count_575" -ne 0 ] || [ "$count_data_abort" -ne 0 ] || [ "$count_596" -ne 0 ] || [ "$count_612" -ne 0 ] || [ "$count_p5b" -ne 0 ] || [ "$count_unattributed" -ne 0 ]; then
         ANY_GATE_FAILURE=1
-        echo "Profile $cpu_profile gate: FAILED (575=$count_575, DATA_ABORT=$count_data_abort, 596=$count_596, P5B=$count_p5b, UNATTRIBUTED=$count_unattributed)"
+        echo "Profile $cpu_profile gate: FAILED (575=$count_575, DATA_ABORT=$count_data_abort, 596=$count_596, 612=$count_612, P5B=$count_p5b, UNATTRIBUTED=$count_unattributed)"
     else
-        echo "Profile $cpu_profile gate: PASSED (575=0, DATA_ABORT=0, 596=0, P5B=0, UNATTRIBUTED=0; 609=$count_609 pending the run-wide rate ceiling)"
+        echo "Profile $cpu_profile gate: PASSED (575=0, DATA_ABORT=0, 596=0, 612=0, P5B=0, UNATTRIBUTED=0; 609=$count_609 pending the run-wide rate ceiling)"
     fi
 
     TOTAL_575=$((TOTAL_575 + count_575))
@@ -740,6 +752,7 @@ run_profile() {
     TOTAL_DATA_ABORT=$((TOTAL_DATA_ABORT + count_data_abort))
     TOTAL_589=$((TOTAL_589 + count_589))
     TOTAL_596=$((TOTAL_596 + count_596))
+    TOTAL_612=$((TOTAL_612 + count_612))
     TOTAL_609=$((TOTAL_609 + count_609))
     TOTAL_P5B=$((TOTAL_P5B + count_p5b))
     TOTAL_DIVERGENCE_BOOTS=$((TOTAL_DIVERGENCE_BOOTS + divergence_boots))
@@ -770,7 +783,7 @@ case "$PROFILE" in
         ;;
 esac
 
-TOTAL_SUM=$((TOTAL_575 + TOTAL_576 + TOTAL_DATA_ABORT + TOTAL_589 + TOTAL_596 + TOTAL_609 + TOTAL_P5B + TOTAL_GREEN + TOTAL_UNATTRIBUTED))
+TOTAL_SUM=$((TOTAL_575 + TOTAL_576 + TOTAL_DATA_ABORT + TOTAL_589 + TOTAL_596 + TOTAL_612 + TOTAL_609 + TOTAL_P5B + TOTAL_GREEN + TOTAL_UNATTRIBUTED))
 EXPECTED_TOTAL=$((BOOTS * PROFILE_COUNT))
 if [ "$TOTAL_SUM" -ne "$EXPECTED_TOTAL" ] || [ "$TOTAL_BOOTS" -ne "$EXPECTED_TOTAL" ]; then
     echo "FATAL: total bucket census sums to $TOTAL_SUM for $TOTAL_BOOTS recorded boots; expected $EXPECTED_TOTAL"
@@ -778,7 +791,7 @@ if [ "$TOTAL_SUM" -ne "$EXPECTED_TOTAL" ] || [ "$TOTAL_BOOTS" -ne "$EXPECTED_TOT
 fi
 
 print_census "Total" "$TOTAL_575" "$TOTAL_576" "$TOTAL_DATA_ABORT" "$TOTAL_589" \
-    "$TOTAL_596" "$TOTAL_609" "$TOTAL_P5B" "$TOTAL_GREEN" "$TOTAL_UNATTRIBUTED" "$TOTAL_BOOTS" \
+    "$TOTAL_596" "$TOTAL_612" "$TOTAL_609" "$TOTAL_P5B" "$TOTAL_GREEN" "$TOTAL_UNATTRIBUTED" "$TOTAL_BOOTS" \
     "$TOTAL_DIVERGENCE_BOOTS" "$TOTAL_DIVERGENCE_LINES"
 
 # #609's pre-adjudication is a bounded attribution, never a blanket excuse:

@@ -75,9 +75,9 @@ Every arm is a complete 50-boot run. Counts are out of 50.
 | **INSTRUCTION_ABORT `FAR=ELR=0x0 ESR=0x86000005`** (filed #576) | 0 | 0 | 0 | 2 | 1 | 1 | 1 | pre-existing #576 at roughly its filed rate; amplified by the same drive |
 | **INSTRUCTION_ABORT, other field sets** (`ESR=0x82000005`, `0x8600000d`, `0x8600000e` with a kernel-stack PC, `far=0x0 elr=0x4ba`) | 0 | 1 | **0** | 2 | 2 | 2 | **0** | **stimulus-artifact — fixed**; now classified UNATTRIBUTED instead of being absorbed into #576 |
 | **DATA_ABORT `FAR=0x1f0–0x290` at `check_need_resched_and_switch_arm64+0x4d04/+0x4d50`** | 0 | 0 | **0** | 6 | 4 | 3 | **0** | **stimulus-artifact — fixed**; the site is a `threads` walk (`ldr xN,[x,#0x198]`) reading a garbage element pointer |
-| **DATA_ABORT, wild FAR / wild ELR** (e.g. `far=0xfff7000242c7a464` at `schedule_deferred_requeue+0x774`) | 0 | 0 | 1 | 1 | 1 | 2 | **0** | **pre-existing background** wild-context fault (#596/#605 family); present on the resolver-only control |
+| **DATA_ABORT, wild FAR / wild ELR** (e.g. `far=0xfff7000242c7a464` at `schedule_deferred_requeue+0x774`) | 0 | 0 | 1 | 1 | 1 | 2 | **0** | **NOT fixed — filed as #612.** Recurs at the final r2 HEAD (1/400 in the §6 400-boot battery, field-exact FAR=0x292 ELR≈`schedule_deferred_requeue` ESR=0x96000021, garbage callee-saved register file), still present on the resolver-only control (arm B, 1/50). #605/#607 are recorded as open-family context, not a proven mechanism link; do not attribute to closed #596 |
 | **#575-shape** `spawn never returned` | 0 | 0 | **0** | 1 | 0 | 1 | **0** | **stimulus-artifact — fixed**; NOT a regression of closed #575 |
-| **U1 — early-boot stall, ~200–250 line serial, no `FUTEX_HANDOFF_ORACLE`/`BLOCK_EINTR_ORACLE`, census clean** | **0** | 2 | **0** | 5 | 5 | 9 | **0** | **stimulus/detector-artifact — fixed**; absent from pure `main`, absent from the resolver-only control, absent once the victim is parked |
+| **U1 — early-boot stall, ~200–250 line serial, no `FUTEX_HANDOFF_ORACLE`/`BLOCK_EINTR_ORACLE`, census clean** | **0** | 2 | **0** | 5 | 5 | 9 | **0** | **NOT fixed at the final r2 HEAD.** The stimulus-driven volume this table measured is gone (absent from pure `main`, the resolver-only control, and once the victim is parked), but the underlying class recurs at background rate: 1/200 starved-leg boots in the §6 400-boot battery, a `memory:early`-stuck variant with the same "census reports `stranded=0`" blind spot. Noted against #609 (comment appended, signature widened to "any subsystem kthread") rather than re-filed |
 | **U2 — `IDLE_CTX_SAVE_K`/`IDLE_CTX_RESTORE` ping-pong hang, ~36k lines** | 0 | 0 | **0** | 4 | 0 | 0 | **0** | **stimulus-artifact — fixed**; the #606-class lost wake, driven by the stimulus |
 | **x86 `clonevm_exec_test` second-stage `sys_read` spin** | see §5 | — | — | — | — | — | — | **pre-existing log line; the hang did not reproduce — filed as #608** |
 
@@ -314,6 +314,57 @@ twice gave 4/5 then 5/5, the one failure being `loopback_wake_test_child:15,loop
 the pre-adjudicated #586 family, and the same signature `main` produced in the §5 differential. Zero
 `sys_read` spin-hangs in either arm. Zero build warnings.
 
+### 6a. Round-2 mac gate slot — 400-boot clean+starved battery at `33f68f52`
+
+The mac gate slot's round-2 pass ran the full battery (not just the 25-boot service-sequence check
+above) against `fix/589-deferred-requeue-drift` @ `33f68f52` — the doc-commit HEAD, byte-identical
+kernel code to `e5d47c81`. This record was originally dropped when only the 25-boot PASS was folded
+in; both results below belong beside it.
+
+| step | result |
+|---|---|
+| `run-aarch64-full-test.sh --boot-tests-only --rebuild` | PASS, 106/106, oracle markers present |
+| production-profile gate | PASS, 0 leaked `boot_tests`-only markers |
+| service-sequence gate, 25/profile | **PASS — 50/50 GREEN**, every bucket zero |
+| clean-gate, 100/profile (idle host) | **FAILED** — `575=0 576=1 DATA_ABORT=0 589=0 596=1 609=1 P5B=0 GREEN=196 UNATTRIBUTED=1` (out of 200; `589=0` throughout) |
+| starved-gate, 100/profile (10× `yes` hogs, `nice -n 19`) | **FAILED** — `575=0 576=0 DATA_ABORT=0 589=0 596=0 609=0 P5B=0 GREEN=198 UNATTRIBUTED=2` (out of 200; `589=0` and `596=0` throughout) |
+| strict gate, 3×20 | **60/60, 100% PASS** |
+| Parallels, 3× fresh VM | **3/3 green**, 0 fault/abort/panic markers, all VMs stopped and verified |
+
+The two FAILED gate runs are not a regression of this branch's own target buckets (`589` is 0/400
+across both legs) but they are real, non-pre-adjudicated reds, none of which is waved:
+
+* **Clean, max/boot 37 — bucket `596`** (now `612`): `[DATA_ABORT] FAR=0x292 ELR=0xffff00004040a52c
+  ESR=0x96000021 DFSC=0x21 TTBR0=0x40200000 from_el0=0`. Filed as **#612** (§2 row, §7). Preserved:
+  `preserved-serials-r2/clean100-max-boot37-596.txt`.
+* **Clean, max/boot 17 — bucket `UNATTRIBUTED`**: two disagreeing INSTRUCTION_ABORT records in one
+  serial, `far/elr/esr = 0x0 0x0 0x86000005 | 0x10 0x321c0508eb09039f 0x86000005`. Correctly
+  UNATTRIBUTED by classifier design (a disagreement is never folded into a tolerated bucket). Filed as
+  **#613** together with the starved/boot-64 occurrence below. Preserved:
+  `preserved-serials-r2/clean100-max-boot17-UNATTRIBUTED.txt`.
+* **Clean, cortex-a72/boot 88 — bucket `576`**: field-exact match to the filed #576 signature.
+  Tolerated, no action.
+* **Starved, max/boot 64 — bucket `UNATTRIBUTED`**: disagreeing INSTRUCTION_ABORT records,
+  `far/elr/esr = 0x0 0x28 0x86000005 | 0xffff000054242320 0xffff000054242320 0x8600000e`. Filed as
+  **#613** (same class as clean/boot 17). Preserved:
+  `preserved-serials-r2/starved100-max-boot64-UNATTRIBUTED.txt`.
+* **Starved, cortex-a72/boot 13 — bucket `UNATTRIBUTED`**: `oracle marker absent`, 45 s timeout. The
+  serial shows `SUBSYSTEM:scheduler:early:COMPLETE:4/4` but `SUBSYSTEM:memory:early` never emits its
+  own `COMPLETE` line, while `[SCHED_STRAND_ORACLE:...:stranded=0:...]` keeps sampling cleanly for the
+  whole timeout — the same "census does not see it" shape #609 already documents for `network:early`,
+  on a different subsystem. Noted as a comment against **#609** recommending the signature be widened
+  to any subsystem kthread rather than filed under a fourth number. Preserved:
+  `preserved-serials-r2/starved100-cortex-boot13-UNATTRIBUTED-timeout.txt`.
+
+`609=1` in the clean leg is within its filed rate and the run-wide ceiling and is not itself a gate
+failure. Total across the 400-boot battery: 394/400 GREEN (98.5%), zero `#589` recurrences, zero
+classic `#576`-signature deviations beyond the one tolerated hit, one novel `612`-bucket `DATA_ABORT`,
+three `UNATTRIBUTED` boots (two disagreeing-abort-record pairs, one starved-leg early-boot stall) —
+all now attributed to a filed issue (#612 or #613) or noted against an existing one (#609), none
+waved. `609` at `1/400` and the `612`/`UNATTRIBUTED` hits are all below the gate's own tolerance
+ceilings and do not change the round's landing verdict; they are recorded here so the durable record
+matches what the gate actually produced rather than only its cleanest 25-boot slice.
+
 ## 6b. The earlier acceptance battery, and what it uncovered
 
 Run against `18dcb2ef` on one host in one session. Production and `boot_tests` profiles both rebuild
@@ -368,9 +419,14 @@ and would invalidate the battery it was measured beside.
   does not requeue it. Untouched here deliberately; round 1 measured that a naive outgoing rollback
   trades a hang for a crash. Fix 1 above stops the *test stimulus* from exercising it on live threads;
   it does not fix the production path.
-* **#605 / #596** — the already-consumed handoff slot and the inline-save resume-point divergence.
-  The ~1/50 wild-FAR fault at `schedule_deferred_requeue+0x774` and the #576-signature aborts belong
-  to this family and are present on `main`-behaviour controls.
+* **#605 / #607** — the already-consumed handoff slot and the outgoing-thread marker cleared without
+  requeuing. `#596` itself is CLOSED (by #600) and must not be used as a bucket name for anything
+  still open; the #576-signature aborts and the wild-FAR fault below are recorded as sharing this
+  open family's region, not as proven instances of a single mechanism.
+* **#612** — the wild-context EL1 `DATA_ABORT` near `schedule_deferred_requeue` (small-garbage FAR,
+  garbage callee-saved register file, `ESR=0x96000021`). Filed from the §6 400-boot battery at 1/400,
+  present on the resolver-only control (arm B) at 1/50. The service-sequence gate's `612` bucket
+  (distinct from the `596` bucket, which is now the `CTX596_ORACLE` oracle only) keys to this issue.
 * **Fix 1's independent necessity** is not separately measured (arm D isolates it but is confounded by
   the victim drive it was measured against). It is retained on design grounds and pinned structurally.
 * **#609** — the `network:early` subsystem kthread never dispatched, ~2-3%, and blind to the strand
@@ -379,7 +435,9 @@ and would invalidate the battery it was measured beside.
   tightly-keyed arm for it, and the gate enforces a rate ceiling so the attribution cannot quietly
   grow. It did not occur at all in the final 50-boot run, which is unremarkable at its filed rate.
   The defect itself is untouched here, and the census blind spot it exposes qualifies every
-  "stranded=0" claim in this document.
+  "stranded=0" claim in this document. A `memory:early`-stuck variant of the same class (1/200 in the
+  §6 400-boot starved leg, same census blind spot) is noted as a comment on #609 with a recommendation
+  to widen its signature to any subsystem kthread rather than fork a new issue per subsystem.
 * **#610** — the `clonevm_exec_test` post-exec rendezvous race, a false red at roughly 1 in 4
   full-test runs; the first item for a follow-up slot, since fixing it rebuilds the ext2 image.
 * **#593** — Phase 2 of the full-system test can never pass headless on aarch64. Until it is fixed,
