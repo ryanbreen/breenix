@@ -75,6 +75,26 @@ where
     })
 }
 
+/// Test-only: run a kernel thread published through the production placement
+/// path, pinned afterwards to whichever CPU that path selected. The selected
+/// CPU is reported through `placed_cpu`.
+#[cfg(all(target_arch = "aarch64", feature = "arm_a_609"))]
+pub(crate) fn kthread_run_pinned_where_placed_for_test<F>(
+    func: F,
+    name: &str,
+    placed_cpu: &core::sync::atomic::AtomicUsize,
+) -> Result<KthreadHandle, KthreadError>
+where
+    F: FnOnce() + Send + 'static,
+{
+    kthread_run_with(func, name, move |thread| {
+        placed_cpu.store(
+            scheduler::spawn_pinned_where_placed_for_test(thread),
+            Ordering::Release,
+        );
+    })
+}
+
 fn kthread_run_with<F, S>(func: F, name: &str, spawn_thread: S) -> Result<KthreadHandle, KthreadError>
 where
     F: FnOnce() + Send + 'static,

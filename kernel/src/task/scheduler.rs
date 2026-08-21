@@ -3756,6 +3756,42 @@ pub(crate) fn spawn_on_cpu_for_test(thread: Box<Thread>, cpu: usize) {
     });
 }
 
+/// Test-only placement oracle: publish through the PRODUCTION placement path,
+/// then pin the thread to whatever CPU that path chose.
+///
+/// This is the arm-A stimulus for #609. It deliberately does NOT choose a CPU:
+/// `add_thread` runs `least_loaded_cpu()` exactly as production does, and only
+/// afterwards is the resulting queue recorded in the existing boot-test affinity
+/// table, so peers stop rescuing the thread off it. The pin is symmetric — it
+/// names whichever CPU placement picked, never CPU 0 specifically — so the arm
+/// asks one question and nothing else: can the CPU that placement chose
+/// actually dispatch this thread? Weakening or removing the pin would make the
+/// arm measure the rescue instead of the placement, so the pin never moves.
+///
+/// Returns the CPU the production placement path selected.
+#[cfg(all(target_arch = "aarch64", feature = "arm_a_609"))]
+pub(crate) fn spawn_pinned_where_placed_for_test(thread: Box<Thread>) -> usize {
+    note_scheduler_publication();
+    without_interrupts(|| {
+        let thread_id = thread.id();
+        let mut scheduler_lock = lock_scheduler();
+        let scheduler = scheduler_lock
+            .as_mut()
+            .expect("scheduler not initialized for the placement oracle");
+        scheduler.add_thread(thread);
+        let placed_cpu = scheduler
+            .per_cpu_queues
+            .iter()
+            .position(|queue| queue.contains(&thread_id))
+            .unwrap_or_else(Scheduler::current_cpu_id);
+        BOOT_TEST_CPU_AFFINITY[placed_cpu].store(thread_id, Ordering::Release);
+        NEED_RESCHED.store(true, Ordering::Relaxed);
+        crate::per_cpu_aarch64::set_need_resched(true);
+        scheduler.send_resched_ipi();
+        placed_cpu
+    })
+}
+
 /// Add a thread to the front of the ready queue.
 /// Used for fork children so they run before other queued threads.
 pub fn spawn_front(thread: Box<Thread>) {
