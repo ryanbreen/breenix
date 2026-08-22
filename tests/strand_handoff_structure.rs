@@ -334,6 +334,16 @@ fn function_bodies<'a>(source: &'a str, name: &str) -> Vec<&'a str> {
         .collect()
 }
 
+fn preceding_nonempty_line(source: &str, offset: usize) -> &str {
+    let line_start = source[..offset].rfind('\n').map_or(0, |index| index + 1);
+    source[..line_start]
+        .lines()
+        .rev()
+        .find(|line| !line.trim().is_empty())
+        .map(str::trim)
+        .expect("source line before identifier")
+}
+
 fn shell_function_body<'a>(source: &'a str, name: &str) -> &'a str {
     let declaration = format!("\n{name}() {{\n");
     let body_start = source
@@ -608,6 +618,111 @@ fn service_sequence_instruction_abort_classifier_is_single_signature() {
         shell_exact_line_occurrences(&gate, r#"CLASS_BUCKET="576""#),
         1,
         "service-sequence gate must have exactly one tolerated CLASS_BUCKET=\"576\" assignment"
+    );
+}
+
+#[test]
+fn service_sequence_pc_align_and_panic_classifiers_are_field_keyed_before_fallbacks() {
+    let gate = repo_text(SERVICE_SEQUENCE_GATE_PATH);
+
+    let pc_align_signatures = shell_function_body(&gate, "pc_align_signatures");
+    assert!(
+        pc_align_signatures.contains(r"\[PC_ALIGN\] ELR=0x")
+            && pc_align_signatures.contains("FAR=0x")
+            && pc_align_signatures.contains("from_el0=[01]")
+            && pc_align_signatures.contains("} | sort -u")
+            && !pc_align_signatures.contains("head -1"),
+        "PC_ALIGN signatures must collect and deduplicate every readable ELR/FAR/from_el0 triple"
+    );
+
+    let panic_signatures = shell_function_body(&gate, "kernel_panic_signatures");
+    assert!(
+        panic_signatures.contains("panicked at ")
+            && panic_signatures.contains("location")
+            && panic_signatures.contains("message")
+            && panic_signatures.contains("sort -u"),
+        "kernel panic signatures must retain the verbatim panic location and message"
+    );
+
+    let classifier = shell_function_body(&gate, "classify_serial");
+    let ctx596_offset = classifier
+        .find(r#"if grep -qF "[CTX596_ORACLE:FAIL""#)
+        .expect("#596 classifier arm");
+    let last_existing_bucket_offset = classifier
+        .find("[BOOT_TESTS:FAIL")
+        .expect("last pre-existing named-bucket arm");
+    let pc_align_offset = classifier
+        .find(r#"if grep -qF "[PC_ALIGN]""#)
+        .expect("PC_ALIGN classifier arm");
+    let panic_offset = classifier
+        .find(r#"if grep -qF "KERNEL PANIC""#)
+        .expect("kernel panic classifier arm");
+    let arm_609_offset = classifier
+        .find(r#"is_609_early_boot_stage_stall "$serial_file""#)
+        .expect("#609 classifier arm");
+    let generic_offsets = [
+        classifier
+            .find(r#"if ! grep -qF "[BLOCK_EINTR_ORACLE:""#)
+            .expect("generic oracle-marker arm"),
+        classifier
+            .find(r#"if ! grep -qF "[CTX596_ORACLE:ARMED""#)
+            .expect("generic #596 anti-vacuity arm"),
+        classifier
+            .find(r#"last_line=$(grep -vF "[heartbeat]""#)
+            .expect("generic last-line arm"),
+    ];
+    assert!(
+        ctx596_offset < last_existing_bucket_offset
+            && last_existing_bucket_offset < pc_align_offset
+            && pc_align_offset < panic_offset
+            && panic_offset < arm_609_offset
+            && generic_offsets.iter().all(|offset| panic_offset < *offset),
+        "PC_ALIGN and kernel panic field attribution must follow every existing named bucket, preserve PC_ALIGN precedence, and precede #609 plus every generic arm"
+    );
+
+    let pc_align_arm = &classifier[pc_align_offset..panic_offset];
+    let pc_align_buckets: Vec<_> = pc_align_arm
+        .lines()
+        .filter(|line| line.trim().starts_with("CLASS_BUCKET="))
+        .collect();
+    let pc_align_reasons = pc_align_arm
+        .lines()
+        .filter(|line| line.trim().starts_with("CLASS_REASON="))
+        .count();
+    assert!(
+        pc_align_arm.contains("pc_align_signatures \"$serial_file\"")
+            && pc_align_arm.contains(r#"[ "$pc_align_variants" -gt 1 ]"#)
+            && pc_align_arm.contains("#625")
+            && pc_align_arm.contains("ELR=0x4b5 FAR=0x5 from_el0=1")
+            && !pc_align_buckets.is_empty()
+            && pc_align_buckets.len() == pc_align_reasons
+            && pc_align_buckets
+                .iter()
+                .all(|line| line.trim() == r#"CLASS_BUCKET="UNATTRIBUTED""#),
+        "PC_ALIGN must require one field signature, name filed #625 exactly, and remain hard-failing"
+    );
+
+    let panic_arm = &classifier[panic_offset..arm_609_offset];
+    let panic_buckets: Vec<_> = panic_arm
+        .lines()
+        .filter(|line| line.trim().starts_with("CLASS_BUCKET="))
+        .collect();
+    let panic_reasons = panic_arm
+        .lines()
+        .filter(|line| line.trim().starts_with("CLASS_REASON="))
+        .count();
+    assert!(
+        panic_arm.contains("kernel_panic_signatures \"$serial_file\"")
+            && panic_arm.contains("$kernel_panic_signature")
+            && panic_arm.contains("location=${kernel_panic_location:-<missing>}")
+            && panic_arm.contains("message=${kernel_panic_message:-<missing>}")
+            && panic_arm.contains("${kernel_panic_marker:-<missing>}")
+            && !panic_buckets.is_empty()
+            && panic_buckets.len() == panic_reasons
+            && panic_buckets
+                .iter()
+                .all(|line| line.trim() == r#"CLASS_BUCKET="UNATTRIBUTED""#),
+        "kernel panics must report their location/message fields (or the readable marker) and remain hard-failing"
     );
 }
 
@@ -1336,19 +1451,47 @@ fn x86_census_widen_oracle_is_one_shot_in_the_live_verdict_path() {
         "the census-widening probe must expose its boolean verdict to the x86 driver"
     );
     let probe = function_body(&registry, "run_census_widen_oracle");
+    let x86_leg = braced_block_after(probe, "#[cfg(not(target_arch");
     for required in [
-        "stale_peer_cpu_for_test()",
         "collect_strand_census(&mut candidates, &mut baseline_nonprogress)",
-        "kthread_run_on_cpu_for_test",
-        "release_cpu_affine_thread_for_test",
-        "[CENSUS_WIDEN_ORACLE:",
-        "passed",
+        "collect_strand_census(&mut candidates, &mut confirmation_nonprogress)",
+        "arm=none",
+        "reason=uniprocessor_no_dispatching_peer",
+        "baseline_reported={}",
+        "axes={}",
+        "SKIP",
     ] {
         assert!(
-            probe.contains(required),
-            "the callable census-widening probe must retain {required}"
+            x86_leg.contains(required),
+            "the x86 census-only leg must retain {required}"
         );
     }
+    for forbidden in [
+        "stale_peer_cpu_for_test",
+        "kthread_run_on_cpu_for_test",
+        "release_cpu_affine_thread_for_test",
+        "kthread_join",
+    ] {
+        assert!(
+            code_occurrences(x86_leg, forbidden).is_empty(),
+            "the unarmed x86 census leg must not contain {forbidden}"
+        );
+    }
+    assert!(
+        !x86_leg.contains(":PASS"),
+        "the x86 census-only marker must never claim PASS"
+    );
+    assert_eq!(
+        code_occurrences(x86_leg, "collect_strand_census(").len(),
+        2,
+        "the x86 leg must compute both disarmed census passes"
+    );
+    assert!(
+        probe.contains("x86 computes both disarmed census passes")
+            && probe.contains("aarch64's real-thread arm does")
+            && probe.contains("not a passing result"),
+        "the oracle must disclose that x86 does not prove the widening"
+    );
     let test_def = function_body(&registry, "test_census_widen_oracle");
     assert!(
         !code_occurrences(test_def, "run_census_widen_oracle()").is_empty(),
@@ -1390,27 +1533,28 @@ fn x86_census_widen_oracle_is_one_shot_in_the_live_verdict_path() {
     );
 
     let gate = repo_text(X86_BOOT_GATE_PATH);
-    let pattern = gate
+    let literal = gate
         .lines()
-        .find(|line| line.starts_with("CENSUS_WIDEN_ORACLE_PATTERN="))
-        .expect("x86 gate census-widening pattern constant");
-    assert!(
-        pattern.contains("CENSUS_WIDEN_ORACLE:x86:") && pattern.ends_with(":PASS\\]'"),
-        "the x86 gate pattern must accept only the passing x86 census-widening marker"
+        .find(|line| line.starts_with("CENSUS_WIDEN_ORACLE_LITERAL="))
+        .expect("x86 gate census-widening literal constant");
+    assert_eq!(
+        literal,
+        "CENSUS_WIDEN_ORACLE_LITERAL='[CENSUS_WIDEN_ORACLE:x86:arm=none:reason=uniprocessor_no_dispatching_peer:baseline_reported=0:axes=6:SKIP]'",
+        "the x86 gate must literally pin the disclosed non-PASS verdict"
     );
     assert!(
-        gate.contains("&& grep -qE \"$CENSUS_WIDEN_ORACLE_PATTERN\""),
-        "the x86 poll verdict must require the census-widening marker"
+        gate.contains("&& grep -qF \"$CENSUS_WIDEN_ORACLE_LITERAL\""),
+        "the x86 poll verdict must require the literal census SKIP marker"
     );
     let exact_count = gate
-        .find("test \"$(grep -h -E -c \"$CENSUS_WIDEN_ORACLE_PATTERN\"")
-        .expect("x86 gate exact census-widening marker count");
+        .find("test \"$(grep -h -F -c \"$CENSUS_WIDEN_ORACLE_LITERAL\"")
+        .expect("x86 gate exact census SKIP marker count");
     assert!(
         gate[exact_count..]
             .lines()
             .take(2)
             .any(|line| line.contains("-eq 1")),
-        "the x86 final verdict must require exactly one passing census-widening marker"
+        "the x86 final verdict must require exactly one disclosed census SKIP marker"
     );
 }
 
@@ -1460,10 +1604,11 @@ fn strand_marker_reports_dwell_and_nonprogress_axes() {
 }
 
 #[test]
-fn census_widen_oracle_has_real_disarmed_and_armed_legs() {
+fn aarch64_census_widen_oracle_has_real_disarmed_and_armed_legs() {
     let scheduler = repo_text(SCHEDULER_PATH);
     let registry = repo_text(TEST_REGISTRY_PATH);
-    let probe = function_body(&registry, "run_census_widen_oracle");
+    let callable = function_body(&registry, "run_census_widen_oracle");
+    let probe = braced_block_after(callable, "#[cfg(target_arch");
     let census_calls = code_occurrences(probe, "collect_strand_census(");
     let spawn_calls = code_occurrences(probe, "kthread_run_on_cpu_for_test(");
     let target_calls = code_occurrences(probe, "stale_peer_cpu_for_test()");
@@ -1511,9 +1656,19 @@ fn census_widen_oracle_has_real_disarmed_and_armed_legs() {
             && probe.contains("reclaim_terminated_threads()")
             && probe.contains("nudge_retirement_grace_for_test()")
             && probe.contains("kernel_stack_pool_counters().slots_freed")
-            && probe.contains("&& retired")
             && probe.contains(":joined={}:retired={}:{}]"),
-        "the real probe must boundedly reclaim its terminated thread, prove the stack-slot return, and pin retired in the verdict marker"
+        "the real probe must keep its bounded retirement attempt and report the observed evidence"
+    );
+    let passed_start = probe.find("let passed =").expect("oracle verdict expression");
+    let passed_end = probe[passed_start..]
+        .find("crate::serial_println!")
+        .map(|offset| passed_start + offset)
+        .expect("oracle marker after verdict expression");
+    let passed_expression = &probe[passed_start..passed_end];
+    assert!(
+        passed_expression.contains("&& joined")
+            && code_occurrences(passed_expression, "retired").is_empty(),
+        "joined is controlled proof that the probe ran and exited; asynchronous retirement evidence must not gate PASS"
     );
     let retirement_nudge = function_body(&scheduler, "nudge_retirement_grace_for_test");
     assert!(
@@ -1539,9 +1694,9 @@ fn census_widen_oracle_has_real_disarmed_and_armed_legs() {
     );
 }
 
-/// Both oracles observe global kernel-stack allocation/return counters. They must
-/// share one subsystem kthread so their sequential registration order prevents a
-/// census-probe stack lifetime from straddling the ownership stress window.
+/// Both oracles observe global kernel-stack allocation/return counters. The census
+/// probe must run last in their shared subsystem so its stack allocation starts
+/// only after every earlier ownership-accounting window has closed.
 #[test]
 fn census_and_kernel_stack_ownership_oracles_share_a_subsystem_in_safe_order() {
     let registry = repo_text(TEST_REGISTRY_PATH);
@@ -1559,9 +1714,142 @@ fn census_and_kernel_stack_ownership_oracles_share_a_subsystem_in_safe_order() {
         "one subsystem id must retain both oracle registrations in one sequential test array"
     );
     assert!(
-        census_offset < ownership_offset,
-        "census oracle must run before the ownership oracle in their shared subsystem"
+        ownership_offset < census_offset,
+        "kernel-stack ownership accounting must close before the census probe starts"
     );
+    assert!(
+        registry[census_offset..]
+            .lines()
+            .take(5)
+            .any(|line| line.trim() == "arch: Arch::Aarch64,"),
+        "the registered real-thread oracle must remain aarch64-only"
+    );
+
+    let array_declaration = format!("static {census_array}: &[TestDef] = &[");
+    let array_start = registry
+        .find(&array_declaration)
+        .map(|offset| offset + array_declaration.len())
+        .expect("derived shared test array declaration");
+    let array_end = registry[array_start..]
+        .find("\n];")
+        .map(|offset| array_start + offset)
+        .expect("derived shared test array terminator");
+    let array_body = &registry[array_start..array_end];
+    let registration_offsets: Vec<_> = array_body
+        .match_indices("name: \"")
+        .map(|(offset, _)| array_start + offset)
+        .collect();
+    assert_eq!(
+        registration_offsets.last().copied(),
+        Some(census_offset),
+        "census oracle must remain the last registered test in its derived subsystem array"
+    );
+}
+
+#[test]
+fn census_real_thread_arm_and_forced_placement_helpers_are_aarch64_only() {
+    const AARCH64_BOOT_TEST_CFG: &str =
+        "#[cfg(all(target_arch = \"aarch64\", feature = \"boot_tests\"))]";
+
+    let registry = repo_text(TEST_REGISTRY_PATH);
+    let callable = function_body(&registry, "run_census_widen_oracle");
+    let aarch64_leg = braced_block_after(callable, "#[cfg(target_arch");
+    let x86_leg = braced_block_after(callable, "#[cfg(not(target_arch");
+    for required in [
+        "stale_peer_cpu_for_test()",
+        "kthread_run_on_cpu_for_test(",
+        "release_cpu_affine_thread_for_test(",
+        "kthread_has_exited_for_test",
+        "kthread_join",
+        ":joined={}:retired={}:{}]",
+    ] {
+        assert!(
+            aarch64_leg.contains(required),
+            "the aarch64 real-thread arm must retain {required}"
+        );
+        assert!(
+            code_occurrences(x86_leg, required).is_empty(),
+            "the x86 census-only leg must not compile {required}"
+        );
+    }
+
+    let scheduler = repo_text(SCHEDULER_PATH);
+    for declaration in [
+        "static BOOT_TEST_CPU_AFFINITY:",
+        "fn retain_cpu_affine_test_thread(",
+        "pub(crate) fn clear_cpu_affinity_for_test(",
+        "fn add_thread_on_cpu_for_test(",
+        "pub fn stale_peer_cpu_for_test(",
+        "pub(crate) fn spawn_on_cpu_for_test(",
+        "pub fn release_cpu_affine_thread_for_test(",
+    ] {
+        let offset = scheduler
+            .find(declaration)
+            .unwrap_or_else(|| panic!("forced-placement declaration {declaration}"));
+        assert_eq!(
+            preceding_nonempty_line(&scheduler, offset),
+            AARCH64_BOOT_TEST_CFG,
+            "{declaration} must be compiled only for aarch64 boot tests"
+        );
+    }
+    for offset in code_occurrences(&scheduler, "retain_cpu_affine_test_thread(") {
+        assert_eq!(
+            preceding_nonempty_line(&scheduler, offset),
+            AARCH64_BOOT_TEST_CFG,
+            "every affinity-retention hook must disappear from x86 scheduler paths"
+        );
+    }
+
+    let kthread = repo_text("kernel/src/task/kthread.rs");
+    let run_on_cpu = kthread
+        .find("pub(crate) fn kthread_run_on_cpu_for_test<")
+        .expect("forced-placement kthread helper");
+    assert_eq!(
+        preceding_nonempty_line(&kthread, run_on_cpu),
+        AARCH64_BOOT_TEST_CFG,
+        "the forced-placement kthread helper must be aarch64-only"
+    );
+    let clear_affinity_call = kthread
+        .find("scheduler::clear_cpu_affinity_for_test(")
+        .expect("kthread affinity cleanup call");
+    assert_eq!(
+        preceding_nonempty_line(&kthread, clear_affinity_call),
+        AARCH64_BOOT_TEST_CFG,
+        "kthread exit must not compile affinity cleanup into x86"
+    );
+}
+
+#[test]
+fn cpu_affinity_zero_sentinel_is_never_a_thread_id() {
+    let scheduler = repo_text(SCHEDULER_PATH);
+    let retain = function_body(&scheduler, "retain_cpu_affine_test_thread");
+    let refusal_offset = retain
+        .find("if thread_id == 0")
+        .expect("thread-zero affinity refusal");
+    let target_lookup_offset = retain
+        .find("let target_cpu = BOOT_TEST_CPU_AFFINITY")
+        .expect("affinity-table lookup");
+    let refusal = braced_block_after(retain, "if thread_id == 0");
+    assert!(
+        refusal.contains("return false;") && refusal_offset < target_lookup_offset,
+        "tid 0 must be refused before scanning zero-sentinel affinity slots"
+    );
+}
+
+#[test]
+fn every_aarch64_census_gate_requires_joined_but_accepts_reported_retirement_evidence() {
+    for gate_path in [SERVICE_SEQUENCE_GATE_PATH, STRICT_GATE_PATH] {
+        let gate = repo_text(gate_path);
+        let pattern = gate
+            .lines()
+            .find(|line| line.starts_with("CENSUS_WIDEN_ORACLE_PATTERN="))
+            .unwrap_or_else(|| panic!("census-widening pattern in {gate_path}"));
+        assert!(
+            pattern.contains(":joined=1:retired=[01]:PASS\\]'")
+                && !pattern.contains(":joined=[01]:"),
+            "{gate_path} must require joined=1 and PASS without promising asynchronous retirement"
+        );
+    }
 }
 
 #[test]
@@ -1580,6 +1868,25 @@ fn strand_census_progress_axes_and_ordering_cannot_shrink() {
     assert!(
         progress_axes.len() >= MIN_CENSUS_PROGRESS_AXES,
         "declared StrandCensus progress-axis floor shrank: {progress_axes:?}"
+    );
+    let runtime_axis_count = scheduler
+        .lines()
+        .find_map(|line| {
+            line.trim()
+                .strip_prefix("pub const STRAND_CENSUS_PROGRESS_AXES: usize = ")
+                .and_then(|value| value.strip_suffix(';'))
+                .and_then(|value| value.parse::<usize>().ok())
+        })
+        .expect("runtime strand-census progress-axis count");
+    assert_eq!(
+        runtime_axis_count,
+        progress_axes.len(),
+        "the x86 marker's runtime axis count must equal the declaration-derived census"
+    );
+    let x86_gate = repo_text(X86_BOOT_GATE_PATH);
+    assert!(
+        x86_gate.contains(&format!(":axes={runtime_axis_count}:SKIP]'")),
+        "the literal x86 SKIP marker must expose the declaration-derived axis count"
     );
 
     let census = function_body(&scheduler, "collect_strand_census");
@@ -1649,7 +1956,10 @@ fn every_oracle_gate_pattern_matches_the_emitted_format() {
                 if !assignment && !(line.contains("grep") && line.contains(family)) {
                     continue;
                 }
-                if !assignment && line.contains(&format!("${family}_PATTERN")) {
+                if !assignment
+                    && (line.contains(&format!("${family}_PATTERN"))
+                        || line.contains(&format!("${family}_LITERAL")))
+                {
                     continue;
                 }
                 let pattern = quoted_segment_containing(line, family)

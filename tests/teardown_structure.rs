@@ -7643,8 +7643,15 @@ fn aarch64_exit_kick_waits_are_progress_bounded() {
         clear_affinity
             .matches("#[cfg(target_arch = \"aarch64\")]")
             .count(),
-        2,
-        "arch-neutral affinity cleanup must retain both aarch64-only exit-progress records"
+        0,
+        "the aarch64-only affinity cleanup does not need nested architecture guards"
+    );
+    assert!(
+        scheduler.contains(
+            "#[cfg(all(target_arch = \"aarch64\", feature = \"boot_tests\"))]\n\
+             pub(crate) fn clear_cpu_affinity_for_test"
+        ),
+        "affinity cleanup and both exit-progress records must be compiled only for aarch64 boot tests"
     );
 
     let main = repo_text("kernel/src/main_aarch64.rs");

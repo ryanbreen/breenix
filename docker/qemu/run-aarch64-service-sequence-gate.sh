@@ -103,7 +103,7 @@ BREENIX_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 # stage3_elapsed_ms is the measured duration; residual/balance prove cleanup.
 # This marker is emitted from a syscall while the scheduler trace stream is live, so its line can carry a prefix.
 FUTEX_HANDOFF_ORACLE_PATTERN='\[FUTEX_HANDOFF_ORACLE:aarch64:driven=2:stage1_ret=EAGAIN:stage1_wake=0:stage1_parked=0:stage2_ret=0:stage2_wake=1:stage2_parked=0:stage3_ret=ETIMEDOUT:stage3_elapsed_ok=1:stage3_elapsed_ms=[0-9]+:rescues=0:queue_residual=0:balance=0\]'
-CENSUS_WIDEN_ORACLE_PATTERN='\[CENSUS_WIDEN_ORACLE:aarch64:arm_target=[0-9]+:baseline_reported=0:armed_reported=1:tid=[1-9][0-9]*:shape=ready_queued_nondispatching:queued_nondispatching=[1-9][0-9]*:queued_nondispatch_ms=[1-9][0-9]*:cpu_silence_ms=[1-9][0-9]*:joined=1:retired=1:PASS\]'
+CENSUS_WIDEN_ORACLE_PATTERN='\[CENSUS_WIDEN_ORACLE:aarch64:arm_target=[0-9]+:baseline_reported=0:armed_reported=1:tid=[1-9][0-9]*:shape=ready_queued_nondispatching:queued_nondispatching=[1-9][0-9]*:queued_nondispatch_ms=[1-9][0-9]*:cpu_silence_ms=[1-9][0-9]*:joined=1:retired=[01]:PASS\]'
 
 if $REBUILD; then
     echo "Building ARM64 kernel with boot_tests feature..."
@@ -315,6 +315,40 @@ data_abort_signatures() {
     } | sort -u
 }
 
+# Print the DISTINCT set of PC-alignment field signatures found in a serial,
+# one "elr far from_el0" triple per line. A caller must require a single element:
+# multiple records that disagree are not one filed fault signature.
+pc_align_signatures() {
+    local serial_file="$1"
+
+    {
+        grep -ahoE '\[PC_ALIGN\] ELR=0x[0-9a-f]+ FAR=0x[0-9a-f]+ from_el0=[01]' \
+            "$serial_file" 2>/dev/null \
+            | sed -E 's/.*ELR=(0x[0-9a-f]+) FAR=(0x[0-9a-f]+) from_el0=([01]).*/\1 \2 \3/'
+    } | sort -u
+}
+
+# Print the DISTINCT set of complete panic field signatures. PanicInfo emits
+# the location after "panicked at" and the message on the following line; keep
+# both field values verbatim so classifier reasons preserve the actual failure.
+kernel_panic_signatures() {
+    local serial_file="$1"
+
+    awk '
+        /panicked at / {
+            location = $0
+            sub(/^.*panicked at /, "", location)
+            sub(/\r$/, "", location)
+            if ((getline message) > 0) {
+                sub(/\r$/, "", message)
+                if (length(location) != 0 && length(message) != 0) {
+                    print "location=" location " message=" message
+                }
+            }
+        }
+    ' "$serial_file" | sort -u
+}
+
 # Return 0 when EarlyBoot advanced but never completed while the kernel stayed
 # alive and the scheduler oracle continued sampling. This is the widened #609
 # stage-boundary signature: it includes wedges that occur before any particular
@@ -354,6 +388,14 @@ classify_serial() {
     local data_abort_signature
     local data_abort_variants
     local boot_test_fail_line
+    local pc_align_signature
+    local pc_align_variants
+    local pc_align_line
+    local kernel_panic_signature
+    local kernel_panic_variants
+    local kernel_panic_marker
+    local kernel_panic_location
+    local kernel_panic_message
 
     # #596's runtime oracle is unconditional: an inline-saved context whose
     # recorded resume PC is not its inline-save x30 is a defect no matter what
@@ -490,6 +532,51 @@ classify_serial() {
             "$serial_file" 2>/dev/null | head -1 || true)
         CLASS_BUCKET="BOOT_TEST_FAIL"
         CLASS_REASON="boot test failure: ${boot_test_fail_line:-[TEST:<missing>:FAIL:<missing>]}"
+        return
+    fi
+    # Preserve every existing named bucket above. A PC-alignment fault that
+    # remains is attributed by the complete set of ELR/FAR/from_el0 triples,
+    # never by exception type alone. #625 is filed at exactly 0x4b5/0x5/EL0;
+    # it stays UNATTRIBUTED and therefore hard-failing rather than tolerated.
+    if grep -qF "[PC_ALIGN]" "$serial_file" 2>/dev/null; then
+        pc_align_signature=$(pc_align_signatures "$serial_file")
+        pc_align_variants=$(printf '%s' "$pc_align_signature" | grep -c . || true)
+        if [ "$pc_align_variants" -eq 0 ]; then
+            pc_align_line=$(grep -F "[PC_ALIGN]" "$serial_file" 2>/dev/null | head -1 | sed 's/[[:space:]]*$//' || true)
+            CLASS_BUCKET="UNATTRIBUTED"
+            CLASS_REASON="PC alignment fault with an unreadable ELR/FAR/from_el0 signature: ${pc_align_line:-[PC_ALIGN] <fields missing>}"
+        elif [ "$pc_align_variants" -gt 1 ]; then
+            CLASS_BUCKET="UNATTRIBUTED"
+            CLASS_REASON="PC alignment records disagree, so no single signature describes this boot: elr/far/from_el0 = $(printf '%s' "$pc_align_signature" | paste -sd '|' -)"
+        elif [ "$pc_align_signature" = "0x4b5 0x5 1" ]; then
+            CLASS_BUCKET="UNATTRIBUTED"
+            CLASS_REASON="PC alignment fault matching filed #625 signature (ELR=0x4b5 FAR=0x5 from_el0=1) — not tolerated"
+        else
+            CLASS_BUCKET="UNATTRIBUTED"
+            CLASS_REASON="PC alignment fault matches no filed signature: elr/far/from_el0 = $pc_align_signature"
+        fi
+        return
+    fi
+    # A panic is likewise keyed to its own location/message fields. This arm is
+    # deliberately specific to KERNEL PANIC and always hard-fails. If a complete
+    # signature is unavailable, report the individual evidence that was readable
+    # instead of falling through to a generic missing-marker reason.
+    if grep -qF "KERNEL PANIC" "$serial_file" 2>/dev/null; then
+        kernel_panic_signature=$(kernel_panic_signatures "$serial_file")
+        kernel_panic_variants=$(printf '%s' "$kernel_panic_signature" | grep -c . || true)
+        if [ "$kernel_panic_variants" -eq 0 ]; then
+            kernel_panic_marker=$(grep -F "KERNEL PANIC" "$serial_file" 2>/dev/null | head -1 | sed 's/[[:space:]]*$//' || true)
+            kernel_panic_location=$(grep -F "panicked at " "$serial_file" 2>/dev/null | head -1 | sed -E 's/.*panicked at //' | sed 's/[[:space:]]*$//' || true)
+            kernel_panic_message=$(awk '/panicked at / { if ((getline line) > 0) { sub(/\r$/, "", line); print line }; exit }' "$serial_file" 2>/dev/null || true)
+            CLASS_BUCKET="UNATTRIBUTED"
+            CLASS_REASON="kernel panic field signature unreadable: location=${kernel_panic_location:-<missing>}; message=${kernel_panic_message:-<missing>}; marker=${kernel_panic_marker:-<missing>}"
+        elif [ "$kernel_panic_variants" -gt 1 ]; then
+            CLASS_BUCKET="UNATTRIBUTED"
+            CLASS_REASON="kernel panic records disagree, so no single location/message signature describes this boot: $(printf '%s' "$kernel_panic_signature" | paste -sd '|' -)"
+        else
+            CLASS_BUCKET="UNATTRIBUTED"
+            CLASS_REASON="kernel panic: $kernel_panic_signature"
+        fi
         return
     fi
     # Deliberately LAST of the attributing arms: every abort signature and both

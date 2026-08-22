@@ -324,7 +324,7 @@ fn arch_can_dispatch_here() -> bool {
     true
 }
 
-#[cfg(feature = "boot_tests")]
+#[cfg(all(target_arch = "aarch64", feature = "boot_tests"))]
 static BOOT_TEST_CPU_AFFINITY: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(0) }; MAX_CPUS];
 
 #[inline(always)]
@@ -341,12 +341,17 @@ fn try_lock_scheduler() -> Option<spin::MutexGuard<'static, Option<Scheduler>>> 
     Some(guard)
 }
 
-#[cfg(feature = "boot_tests")]
+#[cfg(all(target_arch = "aarch64", feature = "boot_tests"))]
 fn retain_cpu_affine_test_thread(
     queue: &mut VecDeque<u64>,
     thread_id: u64,
     current_cpu: usize,
 ) -> bool {
+    // Zero means "no pinned thread" in BOOT_TEST_CPU_AFFINITY; it is a sentinel,
+    // not a recorded affinity for the bootstrap thread whose real tid is also 0.
+    if thread_id == 0 {
+        return false;
+    }
     let target_cpu = BOOT_TEST_CPU_AFFINITY
         .iter()
         .position(|slot| slot.load(Ordering::Acquire) == thread_id);
@@ -357,14 +362,12 @@ fn retain_cpu_affine_test_thread(
     true
 }
 
-#[cfg(feature = "boot_tests")]
+#[cfg(all(target_arch = "aarch64", feature = "boot_tests"))]
 pub(crate) fn clear_cpu_affinity_for_test(thread_id: u64) {
-    #[cfg(target_arch = "aarch64")]
     crate::tracing::providers::teardown::record_kthread_exit_stage_for_test(thread_id);
     for slot in BOOT_TEST_CPU_AFFINITY.iter() {
         let _ = slot.compare_exchange(thread_id, 0, Ordering::AcqRel, Ordering::Relaxed);
     }
-    #[cfg(target_arch = "aarch64")]
     crate::tracing::providers::teardown::record_kthread_exit_stage_for_test(thread_id);
 }
 
@@ -551,6 +554,11 @@ pub struct StrandCensus {
     pub worst_silence_cpu: u64,
 }
 
+/// Independent nonprogress/nondispatch/silence fields declared by `StrandCensus`.
+/// Structural tests keep this runtime value equal to the declaration-derived count.
+#[cfg(feature = "boot_tests")]
+pub const STRAND_CENSUS_PROGRESS_AXES: usize = 6;
+
 /// Return the CPU whose registered idle thread has `tid`.
 ///
 /// CPU 0's idle slot is registered by `Scheduler::new`, including when its
@@ -715,7 +723,7 @@ pub fn collect_strand_census(
 }
 
 /// Select a non-current CPU whose scheduler-entry timestamp is stale.
-#[cfg(feature = "boot_tests")]
+#[cfg(all(target_arch = "aarch64", feature = "boot_tests"))]
 pub fn stale_peer_cpu_for_test() -> Option<usize> {
     with_scheduler(|scheduler| {
         let current_cpu = Scheduler::current_cpu_id();
@@ -1381,7 +1389,7 @@ impl Scheduler {
                 let Some(thread_id) = self.per_cpu_queues[cpu].pop_front() else {
                     break;
                 };
-                #[cfg(feature = "boot_tests")]
+                #[cfg(all(target_arch = "aarch64", feature = "boot_tests"))]
                 if retain_cpu_affine_test_thread(
                     &mut self.per_cpu_queues[cpu],
                     thread_id,
@@ -1431,7 +1439,7 @@ impl Scheduler {
         self.add_thread_inner(thread, true);
     }
 
-    #[cfg(feature = "boot_tests")]
+    #[cfg(all(target_arch = "aarch64", feature = "boot_tests"))]
     fn add_thread_on_cpu_for_test(&mut self, thread: Box<Thread>, cpu: usize) {
         debug_assert!(cpu < MAX_CPUS);
         let thread_id = thread.id();
@@ -1741,7 +1749,7 @@ impl Scheduler {
                     let Some(n) = self.per_cpu_queues[steal_cpu].pop_front() else {
                         break;
                     };
-                    #[cfg(feature = "boot_tests")]
+                    #[cfg(all(target_arch = "aarch64", feature = "boot_tests"))]
                     if retain_cpu_affine_test_thread(
                         &mut self.per_cpu_queues[steal_cpu],
                         n,
@@ -1800,7 +1808,7 @@ impl Scheduler {
                             continue;
                         }
                         if let Some(n) = self.per_cpu_queues[steal_cpu].pop_front() {
-                            #[cfg(feature = "boot_tests")]
+                            #[cfg(all(target_arch = "aarch64", feature = "boot_tests"))]
                             if retain_cpu_affine_test_thread(
                                 &mut self.per_cpu_queues[steal_cpu],
                                 n,
@@ -2149,7 +2157,7 @@ impl Scheduler {
                     let Some(n) = self.per_cpu_queues[steal_cpu].pop_front() else {
                         break;
                     };
-                    #[cfg(feature = "boot_tests")]
+                    #[cfg(all(target_arch = "aarch64", feature = "boot_tests"))]
                     if retain_cpu_affine_test_thread(
                         &mut self.per_cpu_queues[steal_cpu],
                         n,
@@ -2207,7 +2215,7 @@ impl Scheduler {
                             continue;
                         }
                         if let Some(n) = self.per_cpu_queues[steal_cpu].pop_front() {
-                            #[cfg(feature = "boot_tests")]
+                            #[cfg(all(target_arch = "aarch64", feature = "boot_tests"))]
                             if retain_cpu_affine_test_thread(
                                 &mut self.per_cpu_queues[steal_cpu],
                                 n,
@@ -3787,7 +3795,7 @@ pub fn spawn(thread: Box<Thread>) {
 }
 
 /// Test-only deterministic placement for concurrent protocol gates.
-#[cfg(feature = "boot_tests")]
+#[cfg(all(target_arch = "aarch64", feature = "boot_tests"))]
 pub(crate) fn spawn_on_cpu_for_test(thread: Box<Thread>, cpu: usize) {
     without_interrupts(|| {
         let thread_id = thread.id();
@@ -3798,18 +3806,13 @@ pub(crate) fn spawn_on_cpu_for_test(thread: Box<Thread>, cpu: usize) {
         BOOT_TEST_CPU_AFFINITY[cpu].store(thread_id, Ordering::Release);
         scheduler.add_thread_on_cpu_for_test(thread, cpu);
         NEED_RESCHED.store(true, Ordering::Relaxed);
-        #[cfg(target_arch = "x86_64")]
-        crate::per_cpu::set_need_resched(true);
-        #[cfg(target_arch = "aarch64")]
-        {
-            crate::per_cpu_aarch64::set_need_resched(true);
-            scheduler.send_resched_ipi_to_cpu(cpu);
-        }
+        crate::per_cpu_aarch64::set_need_resched(true);
+        scheduler.send_resched_ipi_to_cpu(cpu);
     });
 }
 
 /// Release a forced-placement probe and make it runnable on this CPU.
-#[cfg(feature = "boot_tests")]
+#[cfg(all(target_arch = "aarch64", feature = "boot_tests"))]
 pub fn release_cpu_affine_thread_for_test(thread_id: u64) -> bool {
     without_interrupts(|| {
         let mut scheduler_lock = lock_scheduler();
