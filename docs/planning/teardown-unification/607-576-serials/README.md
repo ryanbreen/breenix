@@ -280,7 +280,7 @@ The round-2 *confirm* slot ran the full acceptance battery — clean-gate 100/pr
 starved-gate 100/profile (200 boots, 14 host `yes` hogs @ `nice -n 19`), and strict 3×20 — on
 `fix/607-576-zero-pc-family` @ `2a2eeefc` (round-2 fix `972a0832` plus the round-2 docs commits).
 Six of those boots are preserved here, under `round2-gates/`, because they are the evidence behind
-coordinator ruling **R41** and behind three new filed issues. (The sixth — strict run 1 boot 10,
+coordinator ruling **R41** and behind two new filed issues. (The sixth — strict run 1 boot 10,
 `[DATA_ABORT] FAR=0x210 ELR=0x0 ESR=0x96000005` — was quoted verbatim in its filing but not
 preserved in-repo at the time; that gap was closed under coordinator ruling R43 by copying it in
 from its volatile `/tmp` capture, `strict3x20-run1-boot10-dataabort-far0x210-96000005.txt`.) Recipe
