@@ -241,7 +241,9 @@ pub fn kthread_unpark(handle: &KthreadHandle) {
 /// wakeup on a secondary CPU surfaces as an actionable test failure rather than
 /// a silent harness hang. This is a pure read; it changes no production
 /// behavior and matches the SeqCst ordering `kthread_join` uses.
-#[cfg(feature = "boot_tests")]
+/// The arch term is load-bearing: every call site is aarch64-gated, and widening
+/// it dirties the x86 `boot_tests` build.
+#[cfg(all(target_arch = "aarch64", feature = "boot_tests"))]
 pub(crate) fn kthread_has_exited_for_test(handle: &KthreadHandle) -> bool {
     handle.inner.exited.load(Ordering::SeqCst)
 }
