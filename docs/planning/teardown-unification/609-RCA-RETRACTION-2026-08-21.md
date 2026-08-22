@@ -295,6 +295,7 @@ gates produced zero. P(0 wedges | p = 0.013) ≈ 0.002.
 | **service-sequence gate `--boots 25 --profile both` (R37 re-leg)** | see §6.4 |
 | arm A `--expect clean --boots 100 --profile cortex-a72 --starved` (r2) | 99 GREEN / 1 `ORACLE_FAIL` — the kernel-stack ownership red, now **#628** |
 | **arm A `--expect clean --boots 100 --profile cortex-a72 --starved` (R37 re-run)** | **100/100 GREEN, verdict PASS**, `slot_balance=0` on all 100 |
+| x86 frame-custody gate (beast, R37, at the final commit `8642f558`) | **PASS** — and the gate host's own `boot_tests,testing,external_test_bins --bin qemu-uefi` build is **zero warnings** there, which is where R2-B3's warning was found |
 | x86 frame-custody gate (beast, r2) | 8/8 PASS across 2x + 3-batch + strict 3x, with `[CENSUS_WIDEN_ORACLE:x86:arm=none:reason=uniprocessor_no_dispatching_peer:...:SKIP]` pinned literally |
 | x86 `run-boot-parallel.sh 5` floor gate (beast, r2 + R37 A/B) | see §6.3 |
 
