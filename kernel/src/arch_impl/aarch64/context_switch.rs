@@ -4448,7 +4448,26 @@ extern "C" fn inline_schedule_trampoline() -> ! {
             if !inline_rollback_suppressed {
                 sched.resolve_pending_next_locked(cpu_id);
             }
+
+            let old_ready_after_save = if old_id != idle_id {
+                if let Some(old_thread) = sched.get_thread_mut(old_id) {
+                    // Redundant with the assembly save above and retained
+                    // deliberately as a Rust-side guard for the inline resume
+                    // point invariant.
+                    old_thread.context.elr_el1 = old_thread.context.x30;
+                }
+                sched
+                    .get_thread(old_id)
+                    .map(|thread| thread.state == ThreadState::Ready)
+                    .unwrap_or(false)
+            } else {
+                false
+            };
             sched.fix_exception_cleanup_cpu_state();
+            if old_id != idle_id && (should_requeue_old || old_ready_after_save) {
+                sched.requeue_thread_after_save(old_id);
+            }
+            sched.cpu_state[cpu_id].previous_thread = None;
             reset_idle_continuation_locked(sched, cpu_id, idle_id, idle_sp);
             idle_sp
         })
