@@ -257,7 +257,7 @@ pub fn record_resume_pc_refusal(
     };
     raw_uart_str("[RESUME_PC_REFUSED:source=");
     raw_uart_str(resume_pc_source_name(source));
-    raw_uart_str(":el=");
+    raw_uart_str(":el0=");
     raw_uart_dec(u64::from(el0));
     raw_uart_str(":tid=");
     raw_uart_dec(tid);
@@ -290,7 +290,7 @@ pub fn record_resume_pc_refusal_locked(
         return;
     };
     crate::serial_println!(
-        "[RESUME_PC_REFUSED:source={}:el={}:tid={}:pc=0x{:x}:x29=0x{:x}:x30=0x{:x}:sp=0x{:x}:spsr=0x{:x}:cpu={}]",
+        "[RESUME_PC_REFUSED:source={}:el0={}:tid={}:pc=0x{:x}:x29=0x{:x}:x30=0x{:x}:sp=0x{:x}:spsr=0x{:x}:cpu={}]",
         resume_pc_source_name(source),
         u64::from(el0),
         tid,

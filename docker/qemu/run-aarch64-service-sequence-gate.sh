@@ -714,6 +714,8 @@ TOTAL_DIVERGENCE_BOOTS=0
 TOTAL_DIVERGENCE_LINES=0
 TOTAL_REFUSAL_BOOTS=0
 TOTAL_REFUSAL_LINES=0
+TOTAL_RESUME_PC_REFUSAL_BOOTS=0
+TOTAL_RESUME_PC_REFUSAL_LINES=0
 TOTAL_BOOTS=0
 PROFILE_COUNT=0
 ANY_GATE_FAILURE=0
@@ -739,6 +741,8 @@ print_census() {
     local divergence_lines="${18}"
     local refusal_boots="${19}"
     local refusal_lines="${20}"
+    local resume_pc_refusal_boots="${21}"
+    local resume_pc_refusal_lines="${22}"
     local green_rate
 
     green_rate=$(awk -v green="$count_green" -v boots="$count_boots" \
@@ -769,6 +773,7 @@ print_census() {
     # job. Nonzero refusals together with zero #576-shape boots are production
     # confirmation of that guard and name a producer to chase, not a regression.
     echo "  RET dispatch refused: $refusal_lines marker line(s) across $refusal_boots/$count_boots boot(s) — reported, not gated"
+    echo "  Resume PC refused: $resume_pc_refusal_lines marker line(s) across $resume_pc_refusal_boots/$count_boots boot(s) — reported, not gated"
 }
 
 run_profile() {
@@ -793,8 +798,11 @@ run_profile() {
     local divergence_lines=0
     local refusal_boots=0
     local refusal_lines=0
+    local resume_pc_refusal_boots=0
+    local resume_pc_refusal_lines=0
     local boot_divergence
     local boot_refusals
+    local boot_resume_pc_refusals
     local boot
     local serial_file
     local writable_disk
@@ -807,7 +815,7 @@ run_profile() {
     local census_sum
 
     mkdir -p "$profile_dir"
-    printf 'boot\tbucket\tend\tseconds\tctx596_divergence\treason\tserial\tret_dispatch_refusals\n' > "$census_file"
+    printf 'boot\tbucket\tend\tseconds\tctx596_divergence\treason\tserial\tret_dispatch_refusals\tresume_pc_refusals\n' > "$census_file"
     echo ""
     echo "Profile $cpu_profile: running $BOOTS sequential boots"
 
@@ -909,6 +917,15 @@ run_profile() {
         if [ "$boot_refusals" -ne 0 ]; then
             refusal_boots=$((refusal_boots + 1))
         fi
+        # Report-only census in this PR: this counts the refusal arm that
+        # replaced four unequal resume-PC admission tests. Removing the 635
+        # tolerance and hard-failing production refusals is the follow-on.
+        boot_resume_pc_refusals=$(grep -cF "[RESUME_PC_REFUSED:" "$serial_file" 2>/dev/null | tr -d ' ')
+        boot_resume_pc_refusals=${boot_resume_pc_refusals:-0}
+        resume_pc_refusal_lines=$((resume_pc_refusal_lines + boot_resume_pc_refusals))
+        if [ "$boot_resume_pc_refusals" -ne 0 ]; then
+            resume_pc_refusal_boots=$((resume_pc_refusal_boots + 1))
+        fi
 
         classify_serial "$serial_file"
         case "$CLASS_BUCKET" in
@@ -931,10 +948,10 @@ run_profile() {
                 exit 1
                 ;;
         esac
-        printf '%s\t%s\t%s\t%s\t%s\t%s (qemu_status=%s)\t%s\t%s\n' \
+        printf '%s\t%s\t%s\t%s\t%s\t%s (qemu_status=%s)\t%s\t%s\t%s\n' \
             "$boot" "$CLASS_BUCKET" "$boot_end" "$boot_seconds" "$boot_divergence" \
-            "$CLASS_REASON" "$qemu_status" "$serial_file" "$boot_refusals" >> "$census_file"
-        echo "  Boot $boot/$BOOTS: $CLASS_BUCKET — $CLASS_REASON [$boot_end, ${boot_seconds}s, ctx596_divergence=$boot_divergence, ret_dispatch_refusals=$boot_refusals]"
+            "$CLASS_REASON" "$qemu_status" "$serial_file" "$boot_refusals" "$boot_resume_pc_refusals" >> "$census_file"
+        echo "  Boot $boot/$BOOTS: $CLASS_BUCKET — $CLASS_REASON [$boot_end, ${boot_seconds}s, ctx596_divergence=$boot_divergence, ret_dispatch_refusals=$boot_refusals, resume_pc_refusals=$boot_resume_pc_refusals]"
     done
 
     census_sum=$((count_575 + count_576 + count_626 + count_635 + count_data_abort + count_clone_exec + count_strand + count_boot_test_fail + count_596 + count_612 + count_609 + count_p5b + count_green + count_unattributed))
@@ -945,7 +962,8 @@ run_profile() {
 
     print_census "Profile $cpu_profile" "$count_575" "$count_576" "$count_626" "$count_635" "$count_data_abort" "$count_clone_exec" \
         "$count_strand" "$count_boot_test_fail" "$count_596" "$count_612" "$count_609" "$count_p5b" "$count_green" "$count_unattributed" "$BOOTS" \
-        "$divergence_boots" "$divergence_lines" "$refusal_boots" "$refusal_lines"
+        "$divergence_boots" "$divergence_lines" "$refusal_boots" "$refusal_lines" \
+        "$resume_pc_refusal_boots" "$resume_pc_refusal_lines"
 
     # #589 is closed; its CLONE_EXEC and STRAND shapes now fail this gate. The
     # GREEN rate stays census-only reporting; open #576 and #626 remain named
@@ -982,6 +1000,8 @@ run_profile() {
     TOTAL_DIVERGENCE_LINES=$((TOTAL_DIVERGENCE_LINES + divergence_lines))
     TOTAL_REFUSAL_BOOTS=$((TOTAL_REFUSAL_BOOTS + refusal_boots))
     TOTAL_REFUSAL_LINES=$((TOTAL_REFUSAL_LINES + refusal_lines))
+    TOTAL_RESUME_PC_REFUSAL_BOOTS=$((TOTAL_RESUME_PC_REFUSAL_BOOTS + resume_pc_refusal_boots))
+    TOTAL_RESUME_PC_REFUSAL_LINES=$((TOTAL_RESUME_PC_REFUSAL_LINES + resume_pc_refusal_lines))
     TOTAL_GREEN=$((TOTAL_GREEN + count_green))
     TOTAL_UNATTRIBUTED=$((TOTAL_UNATTRIBUTED + count_unattributed))
     TOTAL_BOOTS=$((TOTAL_BOOTS + BOOTS))
@@ -1017,7 +1037,8 @@ fi
 
 print_census "Total" "$TOTAL_575" "$TOTAL_576" "$TOTAL_626" "$TOTAL_635" "$TOTAL_DATA_ABORT" "$TOTAL_CLONE_EXEC" \
     "$TOTAL_STRAND" "$TOTAL_BOOT_TEST_FAIL" "$TOTAL_596" "$TOTAL_612" "$TOTAL_609" "$TOTAL_P5B" "$TOTAL_GREEN" "$TOTAL_UNATTRIBUTED" "$TOTAL_BOOTS" \
-    "$TOTAL_DIVERGENCE_BOOTS" "$TOTAL_DIVERGENCE_LINES" "$TOTAL_REFUSAL_BOOTS" "$TOTAL_REFUSAL_LINES"
+    "$TOTAL_DIVERGENCE_BOOTS" "$TOTAL_DIVERGENCE_LINES" "$TOTAL_REFUSAL_BOOTS" "$TOTAL_REFUSAL_LINES" \
+    "$TOTAL_RESUME_PC_REFUSAL_BOOTS" "$TOTAL_RESUME_PC_REFUSAL_LINES"
 
 # The #609 run-wide rate ceiling that used to live here is DELETED (R33) and
 # stays deleted (R37). A rate ceiling is a tolerance: it let up to

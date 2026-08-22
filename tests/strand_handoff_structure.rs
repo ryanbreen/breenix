@@ -21,7 +21,7 @@ const MIN_INSTRUCTION_ABORT_REFUSAL_REASONS: usize = 3;
 const PRIOR_NAMED_INSTRUCTION_ABORT_ARMS: usize = 1;
 /// Additional #609 clauses are welcome; dropping one is how a tolerated bucket starts absorbing unfiled failures.
 const MIN_609_SIGNATURE_GUARDS: usize = 5;
-const EXPECTED_NON_FAILING_SERVICE_SEQUENCE_BUCKETS: usize = 1;
+const EXPECTED_NON_FAILING_SERVICE_SEQUENCE_BUCKETS: usize = 2;
 /// Each gate must reject both strand marker families; additional rejections are welcome.
 const MIN_STRANDED_FORBIDDEN_REJECTIONS: usize = 2;
 /// More discriminating markers are welcome; dropping one quietly disarms the profile guard.
@@ -1050,7 +1050,11 @@ fn service_sequence_609_arm_is_field_keyed_and_untolerated() {
     );
     assert!(
         non_failing_buckets.contains("GREEN"),
-        "the sole non-failing service-sequence bucket must be the healthy GREEN result"
+        "the healthy GREEN result must remain non-failing"
+    );
+    assert!(
+        non_failing_buckets.contains("635"),
+        "the authorized 635 ATTRIBUTED bucket must remain report-only in this change"
     );
     assert!(
         failing_buckets.contains(bucket_609),
@@ -1227,6 +1231,22 @@ fn service_sequence_ret_dispatch_refusals_are_counted_and_reported_not_gated() {
             && !fail_conditions[0].contains(profile_boot_counter)
             && !fail_conditions[0].contains("refusal"),
         "ret-dispatch refusal observations must appear in no per-profile FAIL condition"
+    );
+}
+
+#[test]
+fn service_sequence_resume_pc_refusals_are_counted_exactly_once_per_boot() {
+    let gate = repo_text(SERVICE_SEQUENCE_GATE_PATH);
+    let run_profile = shell_function_body(&gate, "run_profile");
+    let refusal_count_lines: Vec<_> = run_profile
+        .lines()
+        .map(str::trim)
+        .filter(|line| line.contains(r#"grep -cF "[RESUME_PC_REFUSED:""#))
+        .collect();
+    assert_eq!(
+        refusal_count_lines.len(),
+        1,
+        "run_profile must count RESUME_PC_REFUSED marker lines exactly once per boot"
     );
 }
 

@@ -1531,34 +1531,6 @@ fn call_offsets(source: &str, mask: &[bool], name: &str) -> Vec<usize> {
         .collect()
 }
 
-fn direct_call_names(source: &str) -> BTreeSet<String> {
-    let mask = code_mask(source);
-    let bytes = source.as_bytes();
-    let mut calls = BTreeSet::new();
-    let mut cursor = 0usize;
-    while cursor < bytes.len() {
-        if !mask[cursor]
-            || !(bytes[cursor] == b'_'
-                || bytes[cursor].is_ascii_alphabetic()
-                || !bytes[cursor].is_ascii())
-        {
-            cursor += 1;
-            continue;
-        }
-        let start = cursor;
-        cursor += 1;
-        while cursor < bytes.len() && mask[cursor] && identifier_byte(bytes[cursor]) {
-            cursor += 1;
-        }
-        if next_code(source, &mask, cursor).is_some_and(|open| bytes[open] == b'(')
-            && !preceded_by_keyword(source, &mask, start, "fn")
-        {
-            calls.insert(source[start..cursor].to_owned());
-        }
-    }
-    calls
-}
-
 fn call_is_immediately_preceded_by(
     source: &str,
     mask: &[bool],
@@ -11120,22 +11092,35 @@ fn drop_body_static_locks_are_irqsafe_by_derived_census() {
     );
 }
 
+const REQUIRED_DEFERRED_RECLAMATION_CALLS: [&str; 3] = [
+    "drain_deferred_fault_sigsegv_exits",
+    "reclaim_deferred_process_resources",
+    "reclaim_terminated_threads",
+];
+
+fn validate_run_deferred_reclamation_census(context_switch: &str) -> Result<(), String> {
+    let reclamation = function_body(context_switch, "run_deferred_reclamation");
+    let reclamation_mask = code_mask(reclamation);
+    for reclamation_call in REQUIRED_DEFERRED_RECLAMATION_CALLS {
+        let count = call_offsets(reclamation, &reclamation_mask, reclamation_call).len();
+        if count != 1 {
+            return Err(format!(
+                "run_deferred_reclamation must call {reclamation_call} exactly once, found {count}"
+            ));
+        }
+    }
+    Ok(())
+}
+
 #[test]
 fn aarch64_reclamation_stays_outside_the_masked_scheduler_window() {
     let context_switch = repo_text("kernel/src/arch_impl/aarch64/context_switch.rs");
-    let reclamation = function_body(&context_switch, "run_deferred_reclamation");
-    let reclamation_calls = direct_call_names(reclamation);
-    assert_eq!(
-        reclamation_calls.len(),
-        3,
-        "run_deferred_reclamation must retain its three teardown operations"
-    );
+    assert_eq!(validate_run_deferred_reclamation_census(&context_switch), Ok(()));
 
     let schedule = function_body(&context_switch, "schedule_from_kernel");
     let schedule_mask = code_mask(schedule);
-    for reclamation in reclamation_calls
-        .iter()
-        .map(String::as_str)
+    for reclamation in REQUIRED_DEFERRED_RECLAMATION_CALLS
+        .into_iter()
         .chain(core::iter::once("run_deferred_reclamation"))
     {
         assert!(
@@ -11171,6 +11156,30 @@ fn aarch64_reclamation_stays_outside_the_masked_scheduler_window() {
         reclaim_calls[0] < mask_offsets[0].0,
         "idle reclamation must remain textually before the all-masked window"
     );
+}
+
+#[test]
+fn deferred_reclamation_census_rejects_each_missing_teardown_operation() {
+    let context_switch = repo_text("kernel/src/arch_impl/aarch64/context_switch.rs");
+    let reclamation = function_body(&context_switch, "run_deferred_reclamation");
+    let reclamation_start = context_switch
+        .find(reclamation)
+        .expect("run_deferred_reclamation body offset");
+    for reclamation_call in REQUIRED_DEFERRED_RECLAMATION_CALLS {
+        let call = format!("{reclamation_call}();");
+        let call_in_body = reclamation
+            .find(&call)
+            .unwrap_or_else(|| panic!("{reclamation_call} mutation anchor"));
+        let mut mutant = context_switch.clone();
+        mutant.replace_range(
+            reclamation_start + call_in_body..reclamation_start + call_in_body + call.len(),
+            "",
+        );
+        assert!(
+            validate_run_deferred_reclamation_census(&mutant).is_err(),
+            "removing {reclamation_call} must fail the reclamation census"
+        );
+    }
 }
 
 #[test]

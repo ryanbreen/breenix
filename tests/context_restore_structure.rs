@@ -30,6 +30,29 @@ fn rust_sources_below(relative: &str) -> Vec<(PathBuf, String)> {
     sources
 }
 
+fn text_sources_below(relative: &str) -> Vec<(String, String)> {
+    fn visit(root: &std::path::Path, path: &std::path::Path, sources: &mut Vec<(String, String)>) {
+        if path.is_dir() {
+            for entry in fs::read_dir(path).expect("read source directory") {
+                visit(root, &entry.expect("read source entry").path(), sources);
+            }
+        } else if let Ok(source) = fs::read_to_string(path) {
+            let relative = path
+                .strip_prefix(root)
+                .expect("source below repository root")
+                .to_string_lossy()
+                .into_owned();
+            sources.push((relative, source));
+        }
+    }
+
+    let root = repo_root();
+    let mut sources = Vec::new();
+    visit(&root, &root.join(relative), &mut sources);
+    sources.sort_by(|left, right| left.0.cmp(&right.0));
+    sources
+}
+
 fn code_mask(source: &str) -> Vec<bool> {
     let bytes = source.as_bytes();
     let mut mask = vec![true; bytes.len()];
@@ -2828,8 +2851,362 @@ fn global_asm_body_for_symbol<'a>(source: &'a str, symbol: &str) -> Option<&'a s
     let label = source.find(&format!("{symbol}:"))?;
     let invocation = source[..label].rfind("core::arch::global_asm!(")?;
     let raw_open = invocation + source[invocation..label].find("r#\"")? + "r#\"".len();
-    let raw_close = label + source[label..].find("\"#\n);")?;
+    let raw_close = source[label..]
+        .match_indices("\"#")
+        .find_map(|(relative_close, _)| {
+            let bytes = source.as_bytes();
+            let mut cursor = label + relative_close + "\"#".len();
+            while bytes
+                .get(cursor)
+                .is_some_and(|byte| byte.is_ascii_whitespace())
+            {
+                cursor += 1;
+            }
+            let mut closing_parens = 0usize;
+            while bytes.get(cursor) == Some(&b')') {
+                closing_parens += 1;
+                cursor += 1;
+                while bytes
+                    .get(cursor)
+                    .is_some_and(|byte| byte.is_ascii_whitespace())
+                {
+                    cursor += 1;
+                }
+            }
+            (closing_parens >= 1 && bytes.get(cursor) == Some(&b';'))
+                .then_some(label + relative_close)
+        })?;
     Some(&source[raw_open..raw_close])
+}
+
+const RESUME_PC_GUARD_INCLUDE: &str =
+    "kernel/src/arch_impl/aarch64/resume_pc_guard.inc";
+const RESUME_PC_ASSEMBLY_ROOT: &str = "kernel/src/arch_impl/aarch64";
+const SYSCALL_ENTRY_ASM: &str = "kernel/src/arch_impl/aarch64/syscall_entry.S";
+const BOOT_ASM: &str = "kernel/src/arch_impl/aarch64/boot.S";
+
+#[rustfmt::skip]
+const RESUME_PC_EL1_INVOCATIONS: &[(&str, &str, usize)] = &[
+    (SYSCALL_ENTRY_ASM, "assembly RESUME_PC_EL1_OK", 1),
+    (BOOT_ASM, "assembly RESUME_PC_EL1_OK", 2),
+    (AARCH64_CONTEXT_SWITCH, "assembly RESUME_PC_EL1_OK", 2),
+];
+
+#[rustfmt::skip]
+const RESUME_PC_EL0_INVOCATIONS: &[(&str, &str, usize)] = &[
+    (SYSCALL_ENTRY_ASM, "assembly RESUME_PC_EL0_OK", 1),
+    (BOOT_ASM, "assembly RESUME_PC_EL0_OK", 2),
+    (AARCH64_CONTEXT_SWITCH, "assembly RESUME_PC_EL0_OK", 1),
+];
+
+#[rustfmt::skip]
+const USER_FRAME_ELR_PRODUCERS: &[(&str, &str, usize)] = &[
+    (AARCH64_CONTEXT_SWITCH, "fn restore_userspace_context_inline", 1),
+    (AARCH64_CONTEXT_SWITCH, "fn setup_first_entry_inline", 1),
+];
+
+#[derive(Clone, Debug)]
+struct AssemblyMacroInvocation {
+    offset: usize,
+    arguments: Vec<String>,
+}
+
+fn assembly_line_code(line: &str) -> &str {
+    line.split_once("//").map_or(line, |(code, _)| code).trim()
+}
+
+fn assembly_macro_invocations(source: &str, name: &str) -> Vec<AssemblyMacroInvocation> {
+    let mut invocations = Vec::new();
+    let mut line_offset = 0usize;
+    for line in source.split_inclusive('\n') {
+        let code = assembly_line_code(line);
+        let first = code.split_whitespace().next();
+        if first == Some(name) {
+            let arguments = code[name.len()..]
+                .split(',')
+                .map(str::trim)
+                .filter(|argument| !argument.is_empty())
+                .map(str::to_owned)
+                .collect();
+            let name_in_line = line.find(name).expect("assembly macro token in source line");
+            invocations.push(AssemblyMacroInvocation {
+                offset: line_offset + name_in_line,
+                arguments,
+            });
+        }
+        line_offset += line.len();
+    }
+    invocations
+}
+
+fn assembly_macro_census(sources: &[(String, String)], name: &str) -> Census {
+    let mut result = Census::new();
+    for (path, source) in sources {
+        let count = assembly_macro_invocations(source, name).len();
+        if count != 0 {
+            result.insert((path.clone(), format!("assembly {name}")), count);
+        }
+    }
+    result
+}
+
+fn validate_resume_pc_macro_definitions(source: &str) -> Result<(), String> {
+    for name in [
+        "RESUME_PC_EL1_OK",
+        "RESUME_PC_EL0_OK",
+        "RESUME_PC_RECORD",
+        "RESUME_PC_RECORD_NOFRAME",
+    ] {
+        let definitions = source
+            .lines()
+            .map(assembly_line_code)
+            .filter(|line| {
+                let mut fields = line.split_whitespace();
+                fields.next() == Some(".macro")
+                    && fields.next().is_some_and(|field| field.trim_end_matches(',') == name)
+            })
+            .count();
+        if definitions != 1 {
+            return Err(format!(
+                "{RESUME_PC_GUARD_INCLUDE} must define .macro {name} exactly once, found {definitions}"
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_resume_pc_macro_census(
+    sources: &[(String, String)],
+    name: &str,
+    expected: &[(&str, &str, usize)],
+) -> Result<(), String> {
+    census_error(&assembly_macro_census(sources, name), expected)
+}
+
+fn assembly_line_is_label_or_directive(line: &str) -> bool {
+    line.is_empty()
+        || line.ends_with(':')
+        || line.starts_with('.')
+        || line.starts_with("/*")
+        || line.starts_with('*')
+        || line.starts_with("*/")
+}
+
+fn validate_no_private_resume_pc_admission(
+    sources: &[(String, String)],
+) -> Result<(), String> {
+    for (path, source) in sources {
+        let invocations = assembly_macro_invocations(source, "RESUME_PC_EL1_OK");
+        if invocations.is_empty() {
+            continue;
+        }
+        let resume_pcs: BTreeSet<_> = invocations
+            .iter()
+            .filter_map(|invocation| invocation.arguments.first().cloned())
+            .collect();
+        let admission_targets: BTreeSet<_> = invocations
+            .iter()
+            .filter_map(|invocation| invocation.arguments.last().cloned())
+            .collect();
+
+        let mut in_macro = false;
+        let mut lines = Vec::new();
+        for source_line in source.lines() {
+            let line = assembly_line_code(source_line);
+            if line.starts_with(".macro ") {
+                in_macro = true;
+            }
+            lines.push((line, in_macro));
+            if line == ".endm" {
+                in_macro = false;
+            }
+        }
+
+        for (index, (line, line_in_macro)) in lines.iter().enumerate() {
+            if *line_in_macro {
+                continue;
+            }
+            let mut fields = line.split_whitespace();
+            if fields.next() != Some("cmp") {
+                continue;
+            }
+            let compared_pc = fields
+                .next()
+                .map(|operand| operand.trim_end_matches(','));
+            if !compared_pc.is_some_and(|pc| resume_pcs.contains(pc)) {
+                continue;
+            }
+
+            let next_instruction = lines[index + 1..]
+                .iter()
+                .find(|(candidate, candidate_in_macro)| {
+                    !*candidate_in_macro && !assembly_line_is_label_or_directive(candidate)
+                })
+                .map(|(candidate, _)| *candidate);
+            let Some(next_instruction) = next_instruction else {
+                continue;
+            };
+            let mut branch_fields = next_instruction.split_whitespace();
+            let branch = branch_fields.next();
+            let target = branch_fields
+                .next()
+                .map(|operand| operand.trim_end_matches(','));
+            if matches!(branch, Some("b.hs" | "b.lo"))
+                && target.is_some_and(|target| admission_targets.contains(target))
+            {
+                return Err(format!(
+                    "{path} privately admits a resume PC with `{line}` followed by `{next_instruction}`"
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn direct_user_frame_elr_assignment_offsets(source: &str, mask: &[bool]) -> Vec<usize> {
+    assigned_value_offsets(source, mask, "thread.context.elr_el1")
+        .into_iter()
+        .filter(|offset| {
+            compact_statement_at(source, mask, *offset)
+                .is_some_and(|statement| statement == "frame.elr=thread.context.elr_el1;")
+        })
+        .collect()
+}
+
+fn validate_user_resume_pc_producers(source: &str) -> Result<(), String> {
+    let sources = context_switch_sources(source);
+    census_error(
+        &census(&sources, direct_user_frame_elr_assignment_offsets),
+        USER_FRAME_ELR_PRODUCERS,
+    )?;
+
+    for producer in [
+        "restore_userspace_context_inline",
+        "setup_first_entry_inline",
+    ] {
+        let body = function_body(source, producer)
+            .ok_or_else(|| format!("missing fn {producer}"))?;
+        let mask = code_mask(body);
+        let guards = call_offsets(body, &mask, "resume_pc_is_user_dispatchable");
+        if guards.len() != 1 {
+            return Err(format!(
+                "{producer} must call resume_pc_is_user_dispatchable exactly once, found {}",
+                guards.len()
+            ));
+        }
+        let guard = guards[0];
+        let guarded_return = identifier_offsets(body, &mask, "if")
+            .into_iter()
+            .find_map(|if_offset| {
+                let open = (if_offset..body.len())
+                    .find(|offset| mask[*offset] && body.as_bytes()[*offset] == b'{')?;
+                if !(if_offset < guard && guard < open) {
+                    return None;
+                }
+                let condition = normalized_code(&body[if_offset + "if".len()..open])
+                    .replace(' ', "");
+                if !condition.starts_with("!resume_pc_is_user_dispatchable(") {
+                    return None;
+                }
+                let block = braced_block(body, &mask, open)?;
+                normalized_code(block)
+                    .contains("return false;")
+                    .then_some(())
+            })
+            .is_some();
+        if !guarded_return {
+            return Err(format!(
+                "{producer} resume-PC predicate must guard an early return false"
+            ));
+        }
+        let assignments = direct_user_frame_elr_assignment_offsets(body, &mask);
+        if assignments.len() != 1 || assignments[0] <= guard {
+            return Err(format!(
+                "{producer} must assign frame.elr from thread.context.elr_el1 once after its guard"
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn call_expression_close(source: &str, mask: &[bool], call: usize, name: &str) -> Option<usize> {
+    let open = next_code(source, mask, call + name.len())?;
+    if source.as_bytes()[open] != b'(' {
+        return None;
+    }
+    let mut depth = 0usize;
+    for index in open..source.len() {
+        if !mask[index] {
+            continue;
+        }
+        match source.as_bytes()[index] {
+            b'(' => depth += 1,
+            b')' => {
+                depth = depth.checked_sub(1)?;
+                if depth == 0 {
+                    return Some(index);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn validate_user_resume_pc_verdict_consumers(source: &str) -> Result<(), String> {
+    let mask = code_mask(source);
+    for producer in [
+        "restore_userspace_context_inline",
+        "setup_first_entry_inline",
+    ] {
+        let definitions = definition_offsets(source, &mask, producer);
+        let [(definition, open)] = definitions.as_slice() else {
+            return Err(format!(
+                "{producer} must have exactly one definition, found {}",
+                definitions.len()
+            ));
+        };
+        let signature = normalized_code(&source[*definition..*open]).replace(' ', "");
+        if !signature.contains(")->bool") {
+            return Err(format!("{producer} must return bool"));
+        }
+
+        let calls: Vec<_> = call_offsets(source, &mask, producer)
+            .into_iter()
+            .filter(|offset| !preceded_by_keyword(source, &mask, *offset, "fn"))
+            .collect();
+        if calls.is_empty() {
+            return Err(format!("{producer} must have at least one call site"));
+        }
+        for call in calls {
+            let close = call_expression_close(source, &mask, call, producer)
+                .ok_or_else(|| format!("unbalanced {producer} call"))?;
+            if next_code(source, &mask, close + 1)
+                .is_some_and(|next| source.as_bytes()[next] == b';')
+            {
+                return Err(format!("{producer} verdict is discarded as a statement"));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_user_resume_pc_predicate_is_independent(source: &str) -> Result<(), String> {
+    let body = function_body(source, "resume_pc_is_user_dispatchable")
+        .ok_or_else(|| "missing fn resume_pc_is_user_dispatchable".to_string())?;
+    let mask = code_mask(body);
+    for forbidden in [
+        "resume_pc_is_dispatchable",
+        "__kernel_text_start",
+        "__kernel_text_end",
+    ] {
+        if !identifier_offsets(body, &mask, forbidden).is_empty() {
+            return Err(format!(
+                "resume_pc_is_user_dispatchable must not reference {forbidden}"
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn anchored_count(path: &str, item: &str, count: usize) -> Census {
@@ -3185,6 +3562,194 @@ fn aarch64_inline_save_blocks_publish_their_resume_pc() {
     let mutant = source.replacen("    str x30, [x0, #264]\n", "", 1);
     assert_ne!(mutant, source, "inline ELR store mutation anchor");
     assert!(validate_inline_asm_resume_store(&mutant).is_err());
+}
+
+#[test]
+fn shared_resume_pc_macros_each_have_one_definition() {
+    let source = repo_text(RESUME_PC_GUARD_INCLUDE);
+    assert_eq!(validate_resume_pc_macro_definitions(&source), Ok(()));
+
+    for name in [
+        "RESUME_PC_EL1_OK",
+        "RESUME_PC_EL0_OK",
+        "RESUME_PC_RECORD",
+        "RESUME_PC_RECORD_NOFRAME",
+    ] {
+        let mutant = format!("{source}\n.macro {name}\n.endm\n");
+        assert!(
+            validate_resume_pc_macro_definitions(&mutant).is_err(),
+            "a second .macro {name} definition must fail the definition census"
+        );
+    }
+}
+
+#[test]
+fn every_el1_resume_pc_consumer_uses_the_shared_admission_macro() {
+    let sources = text_sources_below(RESUME_PC_ASSEMBLY_ROOT);
+    assert_eq!(
+        validate_resume_pc_macro_census(
+            &sources,
+            "RESUME_PC_EL1_OK",
+            RESUME_PC_EL1_INVOCATIONS,
+        ),
+        Ok(())
+    );
+    assert_eq!(validate_no_private_resume_pc_admission(&sources), Ok(()));
+
+    // Derive both the resume-PC register and admission target from each file's
+    // macro invocation. The mutation therefore has no pinned line or closed
+    // list of today's admission-label names.
+    for path in [SYSCALL_ENTRY_ASM, BOOT_ASM, AARCH64_CONTEXT_SWITCH] {
+        let mut mutant = sources.clone();
+        let (_, source) = mutant
+            .iter_mut()
+            .find(|(candidate, _)| candidate == path)
+            .unwrap_or_else(|| panic!("missing resume-PC assembly source {path}"));
+        let invocation = assembly_macro_invocations(source, "RESUME_PC_EL1_OK")
+            .into_iter()
+            .next()
+            .unwrap_or_else(|| panic!("missing RESUME_PC_EL1_OK invocation in {path}"));
+        let resume_pc = invocation.arguments.first().expect("resume-PC macro argument");
+        let admission = invocation
+            .arguments
+            .last()
+            .expect("resume-PC admission-label argument");
+        let line_start = source[..invocation.offset]
+            .rfind('\n')
+            .map_or(0, |newline| newline + 1);
+        source.insert_str(
+            line_start,
+            &format!("    cmp {resume_pc}, #0x1000\n    b.hs {admission}\n"),
+        );
+        assert!(
+            validate_no_private_resume_pc_admission(&mutant).is_err(),
+            "a private cmp/b.hs admission pair in {path} must fail"
+        );
+    }
+}
+
+#[test]
+fn every_el0_resume_pc_consumer_has_a_shared_admission_arm() {
+    let sources = text_sources_below(RESUME_PC_ASSEMBLY_ROOT);
+    assert_eq!(
+        validate_resume_pc_macro_census(
+            &sources,
+            "RESUME_PC_EL0_OK",
+            RESUME_PC_EL0_INVOCATIONS,
+        ),
+        Ok(())
+    );
+
+    for (path, source) in &sources {
+        for invocation in assembly_macro_invocations(source, "RESUME_PC_EL0_OK") {
+            let mut mutant = sources.clone();
+            let (_, mutant_source) = mutant
+                .iter_mut()
+                .find(|(candidate, _)| candidate == path)
+                .expect("mutated resume-PC assembly source");
+            mutant_source.replace_range(
+                invocation.offset..invocation.offset + "RESUME_PC_EL0_OK".len(),
+                "REMOVED_RESUME_PC_EL0_OK",
+            );
+            assert!(
+                validate_resume_pc_macro_census(
+                    &mutant,
+                    "RESUME_PC_EL0_OK",
+                    RESUME_PC_EL0_INVOCATIONS,
+                )
+                .is_err(),
+                "removing any EL0 admission arm from {path} must fail the census"
+            );
+        }
+    }
+}
+
+#[test]
+fn userspace_resume_pc_producers_refuse_before_publishing_frame_elr() {
+    let source = repo_text(AARCH64_CONTEXT_SWITCH);
+    assert_eq!(validate_user_resume_pc_producers(&source), Ok(()));
+
+    for producer in [
+        "restore_userspace_context_inline",
+        "setup_first_entry_inline",
+    ] {
+        let body = function_body(&source, producer).expect("userspace resume-PC producer");
+        let body_start = source.find(body).expect("producer body offset");
+        let mask = code_mask(body);
+        let guard = call_offsets(body, &mask, "resume_pc_is_user_dispatchable")
+            .into_iter()
+            .next()
+            .expect("producer resume-PC guard");
+        let mut missing_guard = source.clone();
+        missing_guard.replace_range(
+            body_start + guard..body_start + guard + "resume_pc_is_user_dispatchable".len(),
+            "removed_resume_pc_is_user_dispatchable",
+        );
+        assert!(
+            validate_user_resume_pc_producers(&missing_guard).is_err(),
+            "deleting {producer}'s guard must fail"
+        );
+
+        let assignment = "frame.elr = thread.context.elr_el1;";
+        let assignment_in_body = body.find(assignment).expect("producer ELR assignment");
+        let mut write_first = source.clone();
+        write_first.replace_range(
+            body_start + assignment_in_body..body_start + assignment_in_body + assignment.len(),
+            "",
+        );
+        let body_open = body_start + body.find('{').expect("producer body brace") + 1;
+        write_first.insert_str(body_open, &format!("\n    {assignment}"));
+        assert!(
+            validate_user_resume_pc_producers(&write_first).is_err(),
+            "moving {producer}'s frame.elr assignment above its guard must fail"
+        );
+    }
+}
+
+#[test]
+fn every_userspace_resume_pc_producer_verdict_is_consumed() {
+    let source = repo_text(AARCH64_CONTEXT_SWITCH);
+    assert_eq!(validate_user_resume_pc_verdict_consumers(&source), Ok(()));
+    let mask = code_mask(&source);
+
+    for producer in [
+        "restore_userspace_context_inline",
+        "setup_first_entry_inline",
+    ] {
+        for call in call_offsets(&source, &mask, producer)
+            .into_iter()
+            .filter(|offset| !preceded_by_keyword(&source, &mask, *offset, "fn"))
+        {
+            let close = call_expression_close(&source, &mask, call, producer)
+                .expect("producer call expression");
+            let mut mutant = source.clone();
+            mutant.insert(close + 1, ';');
+            assert!(
+                validate_user_resume_pc_verdict_consumers(&mutant).is_err(),
+                "turning a {producer} call site into a bare statement must fail"
+            );
+        }
+    }
+}
+
+#[test]
+fn userspace_resume_pc_predicate_stays_outside_the_kernel_text_window() {
+    let source = repo_text(AARCH64_CONTEXT_SWITCH);
+    assert_eq!(validate_user_resume_pc_predicate_is_independent(&source), Ok(()));
+
+    // Parallels identity-maps kernel text around 0x4008_0000, overlapping the
+    // 0x4000_0000/0x4100_0000 ranges where userspace programs are linked. The
+    // EL0 predicate must therefore never reuse the kernel-text-window test.
+    let body = function_body(&source, "resume_pc_is_user_dispatchable")
+        .expect("userspace resume-PC predicate");
+    let body_start = source.find(body).expect("userspace predicate body offset");
+    let expression = body.find("addr >=").expect("userspace predicate expression");
+    let mut mutant = source.clone();
+    mutant.insert_str(
+        body_start + expression,
+        "resume_pc_is_dispatchable(addr) && ",
+    );
+    assert!(validate_user_resume_pc_predicate_is_independent(&mutant).is_err());
 }
 
 #[test]
