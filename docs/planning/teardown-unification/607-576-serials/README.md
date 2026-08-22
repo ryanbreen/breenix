@@ -290,7 +290,7 @@ soft-float target, 45 s per-boot timeout, `IOPS=2000` for the throttled legs.
 | `round2-gates/clean100-max-DISPATCH-8600000e-serial-37.txt:684` | clean100, max, boot 37 | `[INSTRUCTION_ABORT] FAR=0xffff000054243f00 ELR=0xffff000054243f00 ESR=0x8600000e IFSC=0xe TTBR0=0x1000044137000 from_el0=0`, `x29=x30=` the same value, **zero** `[RET_DISPATCH_REFUSED:` lines anywhere in the boot | **#635** — the field face this PR's own round-1 fix was meant to close, reproduced on the fixed tree at the same rate (see R41 below) |
 | `round2-gates/clean100-cortex-a72-613-disagreeing-serial-18.txt:721,1038,1090,1201` | clean100, cortex-a72, boot 18 | three disagreeing instruction-abort records on one boot (`0x0/0x0/0x86000005`, `0xffff…0048/0x0/0x8600000e`, then a serial-torn pair) | **#613** — pre-adjudicated disagreeing-record-pair shape, now with a third record on the same boot |
 | `round2-gates/starved100-max-613-disagree-serial-74.txt:848` | starved100, max, boot 74 | `[INSTRUCTION_ABORT] FAR=0xffff000040800008 ELR=0x40 ESR=0x8600000e IFSC=0xe from_el0=0` disagreeing with a second record at the same FAR, different ELR | **#613** |
-| `round2-gates/starved100-max-NEW-heap-alloc-panic-serial-90.txt:695-698` | starved100, max, boot 90 | `KERNEL PANIC!` / `panicked at .../linked_list_allocator-0.10.5/src/hole.rs:554:9: Freed node (0xffff00005038e0f0) aliases existing hole (0xffff00005038e0f0[104])! Bad free?`, boot then times out | **NEW, filed** — see "New issues filed from this battery" below |
+| `round2-gates/starved100-max-NEW-heap-alloc-panic-serial-90.txt:695-698` | starved100, max, boot 90 | `KERNEL PANIC!` / `panicked at .../linked_list_allocator-0.10.5/src/hole.rs:554:9: Freed node (0xffff00005038e0f0) aliases existing hole (0xffff00005038e0f0[104])! Bad free?`, boot then times out | **#638**, filed — see "New issues filed from this battery" below |
 | `round2-gates/starved100-cortex-a72-timeout-strand-serial-97.txt` | starved100, cortex-a72, boot 97 | plain 45 s timeout, no fault/panic marker anywhere; last line is a healthy `[SCHED_STRAND_ORACLE:...stranded=0...]` dump | **Ruled a benign starvation artifact, not a defect** — see below |
 
 ## Ruling on serial-97 (bare timeout under starvation)
@@ -306,15 +306,15 @@ non-GREEN boots this battery produced.
 
 ## New issues filed from this battery
 
-* **Heap corruption panic** (`round2-gates/starved100-max-NEW-heap-alloc-panic-serial-90.txt`) —
-  `linked_list_allocator` `hole.rs:554` `"Freed node ... aliases existing hole ...! Bad free?"` under
+* **#638 — heap corruption panic** (`round2-gates/starved100-max-NEW-heap-alloc-panic-serial-90.txt`)
+  — `linked_list_allocator` `hole.rs:554` `"Freed node ... aliases existing hole ...! Bad free?"` under
   starvation, never observed on `main` (0/300 in the round-2 main baseline) and not in the
   pre-adjudicated list. Filed and cross-referenced against #633/#635/#637 as producer-family-suspect:
   a stale or double free is exactly the class that would leave a stale context image sitting in a
   reused kernel stack page, which is what the #635 family's producer needs to exist.
-* **`[DATA_ABORT] FAR=0x210 ELR=0x0 ESR=0x96000005`** (strict run 1, boot 10) — matches no filed
-  signature; #612's own signature is FAR in the `0x292` region with `ESR=0x96000021`, a different ESR.
-  Quoted verbatim in its filing; not preserved as a separate file here (see above).
+* **#639 — `[DATA_ABORT] FAR=0x210 ELR=0x0 ESR=0x96000005`** (strict run 1, boot 10) — matches no
+  filed signature; #612's own signature is FAR in the `0x292` region with `ESR=0x96000021`, a
+  different ESR. Quoted verbatim in its filing; not preserved as a separate file here (see above).
 
 ## R41 — the #635 discriminator is producer-shape, not path-proof
 
