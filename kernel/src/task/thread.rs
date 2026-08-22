@@ -541,6 +541,17 @@ impl Clone for Thread {
 }
 
 impl Thread {
+    /// Clear the classification and diagnostics owned by an inline scheduler
+    /// save. Call this whenever a fresh context replaces that saved context.
+    #[cfg(target_arch = "aarch64")]
+    pub(crate) fn clear_inline_schedule_state(&mut self) {
+        self.saved_by_inline_schedule = false;
+        self.inline_schedule_spsr = 0;
+        self.inline_schedule_prev_elr = 0;
+        self.inline_schedule_saved_sp = 0;
+        self.inline_schedule_caller_lr = 0;
+    }
+
     /// Produce the scheduler's publication copy of a process-table row thread,
     /// moving sole ownership of the kernel-stack allocation to that copy.
     ///

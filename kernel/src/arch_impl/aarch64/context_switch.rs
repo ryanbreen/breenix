@@ -83,12 +83,23 @@ crate::define_trace_counter!(
 
 static CTX596_ORACLE_EMISSIONS: AtomicU32 = AtomicU32::new(0);
 static CTX596_DIVERGENCE_EMISSIONS: AtomicU32 = AtomicU32::new(0);
+static RET_DISPATCH_REFUSAL_EMISSIONS: AtomicU32 = AtomicU32::new(0);
 
-/// Production census for invalid ret-dispatch resume PCs. The guard that
-/// increments these counters lands in the next commit; the feature-gated
-/// oracle reads them now so its red test is committed before the fix.
+/// Production census for invalid ret-dispatch resume PCs. The feature-gated
+/// oracle also reads these counters to prove its designated victim was refused.
 pub static RET_DISPATCH_REFUSALS: AtomicU64 = AtomicU64::new(0);
 pub static RET_DISPATCH_REFUSED_TID: AtomicU64 = AtomicU64::new(0);
+
+/// A saved kernel resume PC may be either in the high virtual mapping used by
+/// QEMU or in the identity-mapped physical RAM range used by Parallels.
+#[inline(always)]
+fn resume_pc_is_dispatchable(addr: u64) -> bool {
+    const KERNEL_VIRT_BASE: u64 = 0xFFFF_0000_0000_0000;
+    const KERNEL_PHYS_BASE: u64 = 0x4008_0000;
+    const KERNEL_PHYS_LIMIT: u64 = 0xC000_0000;
+
+    addr >= KERNEL_VIRT_BASE || (addr >= KERNEL_PHYS_BASE && addr < KERNEL_PHYS_LIMIT)
+}
 
 #[inline]
 fn dispatch_spsr(spsr: u64) -> u64 {
@@ -615,6 +626,11 @@ aarch64_ret_to_kernel_context:
     mov sp, x2
     msr daifclr, #3
     isb
+    cmp x1, #0x1000
+    b.hs 1f
+    adrp x1, idle_loop_arm64
+    add x1, x1, :lo12:idle_loop_arm64
+1:
     br x1
 
 .global aarch64_enter_exception_frame
@@ -2208,11 +2224,7 @@ fn log_idle_thread_context(tag: &str, thread: &Thread, sp: u64, elr: u64, x30: u
 
 #[inline(always)]
 fn clear_inline_schedule_state(thread: &mut Thread) {
-    thread.saved_by_inline_schedule = false;
-    thread.inline_schedule_spsr = 0;
-    thread.inline_schedule_prev_elr = 0;
-    thread.inline_schedule_saved_sp = 0;
-    thread.inline_schedule_caller_lr = 0;
+    thread.clear_inline_schedule_state();
 }
 
 #[inline(always)]
@@ -2300,6 +2312,31 @@ fn take_inline_ret_dispatch_info(
     // it must resume at the safe post-inline-switch return target, not a
     // mid-function ELR that may require stale volatile registers.
     let resume_pc = thread.context.x30;
+    if !resume_pc_is_dispatchable(resume_pc) {
+        let thread_id = thread.id();
+        RET_DISPATCH_REFUSED_TID.store(thread_id, Ordering::Relaxed);
+        RET_DISPATCH_REFUSALS.fetch_add(1, Ordering::Release);
+        if RET_DISPATCH_REFUSAL_EMISSIONS.fetch_add(1, Ordering::Relaxed) < 8 {
+            raw_uart_str("[RET_DISPATCH_REFUSED:tid=");
+            raw_uart_dec(thread_id);
+            raw_uart_str(":cpu=");
+            raw_uart_dec(Aarch64PerCpu::cpu_id() as u64);
+            raw_uart_str(":x30=");
+            raw_uart_hex(thread.context.x30);
+            raw_uart_str(":elr=");
+            raw_uart_hex(thread.context.elr_el1);
+            raw_uart_str(":sp=");
+            raw_uart_hex(thread.context.sp);
+            raw_uart_str(":has_started=");
+            raw_uart_dec(u64::from(thread.has_started));
+            raw_uart_str(":bis=");
+            raw_uart_dec(u64::from(thread.saved_by_inline_schedule));
+            raw_uart_str(":priv=");
+            raw_uart_dec(u64::from(thread.privilege == ThreadPrivilege::Kernel));
+            raw_uart_str("]\n");
+        }
+        return None;
+    }
     let saved_by_inline_schedule = thread.saved_by_inline_schedule;
     check_inline_save_resume_point(thread, 1);
     thread.context.elr_el1 = resume_pc;
@@ -2751,13 +2788,6 @@ fn restore_kernel_context_inline(
     // On Parallels, the UEFI loader jumps to kernel_main at a physical
     // address and the kernel runs identity-mapped, so function pointers
     // resolve to physical addresses in the RAM range (0x40080000+).
-    const KERNEL_VIRT_BASE: u64 = 0xFFFF_0000_0000_0000;
-    const KERNEL_PHYS_BASE: u64 = 0x4008_0000;
-    const KERNEL_PHYS_LIMIT: u64 = 0xC000_0000;
-    #[inline]
-    fn is_kernel_addr(addr: u64) -> bool {
-        addr >= KERNEL_VIRT_BASE || (addr >= KERNEL_PHYS_BASE && addr < KERNEL_PHYS_LIMIT)
-    }
     let resume_pc = if thread.saved_by_inline_schedule {
         // Inline save captures only x19..x30 + SP, so x30 is its sole valid
         // architectural resume point. Exception-saved contexts keep ELR_EL1.
@@ -2767,10 +2797,10 @@ fn restore_kernel_context_inline(
     };
     let elr_valid = if !has_started {
         // First run: x30 must be a valid kernel address
-        is_kernel_addr(thread.context.x30)
+        resume_pc_is_dispatchable(thread.context.x30)
     } else {
         // Resume PC must be in kernel space or zero (handled below).
-        is_kernel_addr(resume_pc) || resume_pc == 0
+        resume_pc_is_dispatchable(resume_pc) || resume_pc == 0
     };
     trace_ctx_diag(
         TRACE_CTX_DIAG_RESTORE_KERNEL_PRE,
@@ -2874,7 +2904,7 @@ fn restore_kernel_context_inline(
     if !has_started {
         frame.elr = thread.context.x30; // First run: jump to entry point
         frame.spsr = kernel_dispatch_spsr(thread.context.spsr_el1);
-    } else if is_kernel_addr(resume_pc) {
+    } else if resume_pc_is_dispatchable(resume_pc) {
         // Resume: return to where we left off.
         // On QEMU, kernel addresses are >= KERNEL_VIRT_BASE (HHDM).
         // On Parallels, kernel runs identity-mapped at physical addresses
@@ -3216,11 +3246,7 @@ fn reset_idle_continuation_locked(
     };
 
     let idle_addr = idle_loop_arm64 as *const () as u64;
-    thread.saved_by_inline_schedule = false;
-    thread.inline_schedule_spsr = 0;
-    thread.inline_schedule_prev_elr = 0;
-    thread.inline_schedule_saved_sp = 0;
-    thread.inline_schedule_caller_lr = 0;
+    thread.clear_inline_schedule_state();
     thread.context.sp = idle_sp;
     thread.context.elr_el1 = idle_addr;
     thread.context.x30 = idle_addr;

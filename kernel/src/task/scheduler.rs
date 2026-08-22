@@ -4244,6 +4244,7 @@ impl ExecSchedCommit {
                         #[cfg(feature = "ret_zero_pc_oracle_exec")]
                         crate::task::ret_zero_pc_oracle::inject_exec_commit_if_armed(t);
                         t.context = self.context;
+                        t.clear_inline_schedule_state();
                         t.stack_top = self.stack_top;
                         t.stack_bottom = self.stack_bottom;
                         t.kernel_stack_top = self.kernel_stack_top;

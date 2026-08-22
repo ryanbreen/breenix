@@ -937,6 +937,17 @@ const UNLOCKED_MULTI_BYTE_WRITE_ANCHORS: &[(&str, &str, usize)] = &[
         "fn set_next_ttbr0_for_thread",
         6,
     ),
+    // `take_inline_ret_dispatch_info` and the two ret-zero-PC oracle injectors
+    // emit dispatch-path markers while the scheduler lock is held, so the
+    // locked writer is unavailable. All three are one-shot or emission-capped,
+    // never periodic. `[RET_DISPATCH_REFUSED:` is a service-sequence census
+    // only, never a gate condition: a torn line can only under-count the
+    // reported number, not flip a verdict.
+    (
+        "kernel/src/arch_impl/aarch64/context_switch.rs",
+        "fn take_inline_ret_dispatch_info",
+        9,
+    ),
     (
         "kernel/src/arch_impl/aarch64/exception.rs",
         "fn defer_current_user_thread_sigsegv_exit",
