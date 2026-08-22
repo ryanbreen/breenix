@@ -271,3 +271,74 @@ production-profile boot test (which builds *without* `boot_tests`) during it har
 kernel onto `target/aarch64-breenix-kernel/release/kernel-aarch64`, the landmine
 `run-aarch64-service-sequence-gate.sh:146-153` documents. The kernel was rebuilt with `boot_tests`
 and the gate re-run with nothing else touching the tree.
+
+---
+
+# Round 2 confirm — the production gate battery (`round2-gates/`, T3-G PR2, R41)
+
+The round-2 *confirm* slot ran the full acceptance battery — clean-gate 100/profile (200 boots),
+starved-gate 100/profile (200 boots, 14 host `yes` hogs @ `nice -n 19`), and strict 3×20 — on
+`fix/607-576-zero-pc-family` @ `2a2eeefc` (round-2 fix `972a0832` plus the round-2 docs commits).
+Five of those boots are preserved here, under `round2-gates/`, because they are the evidence behind
+coordinator ruling **R41** and behind two new filed issues. (A sixth red — strict run 1 boot 10,
+`[DATA_ABORT] FAR=0x210 ELR=0x0 ESR=0x96000005` — is **not** preserved here; it is quoted verbatim
+in its filing instead.) Recipe is unchanged from the sections above: `-cpu {max,cortex-a72} -smp 4`,
+soft-float target, 45 s per-boot timeout, `IOPS=2000` for the throttled legs.
+
+| file | leg / boot | record | attribution |
+|---|---|---|---|
+| `round2-gates/clean100-max-DISPATCH-8600000e-serial-37.txt:684` | clean100, max, boot 37 | `[INSTRUCTION_ABORT] FAR=0xffff000054243f00 ELR=0xffff000054243f00 ESR=0x8600000e IFSC=0xe TTBR0=0x1000044137000 from_el0=0`, `x29=x30=` the same value, **zero** `[RET_DISPATCH_REFUSED:` lines anywhere in the boot | **#635** — the field face this PR's own round-1 fix was meant to close, reproduced on the fixed tree at the same rate (see R41 below) |
+| `round2-gates/clean100-cortex-a72-613-disagreeing-serial-18.txt:721,1038,1090,1201` | clean100, cortex-a72, boot 18 | three disagreeing instruction-abort records on one boot (`0x0/0x0/0x86000005`, `0xffff…0048/0x0/0x8600000e`, then a serial-torn pair) | **#613** — pre-adjudicated disagreeing-record-pair shape, now with a third record on the same boot |
+| `round2-gates/starved100-max-613-disagree-serial-74.txt:848` | starved100, max, boot 74 | `[INSTRUCTION_ABORT] FAR=0xffff000040800008 ELR=0x40 ESR=0x8600000e IFSC=0xe from_el0=0` disagreeing with a second record at the same FAR, different ELR | **#613** |
+| `round2-gates/starved100-max-NEW-heap-alloc-panic-serial-90.txt:695-698` | starved100, max, boot 90 | `KERNEL PANIC!` / `panicked at .../linked_list_allocator-0.10.5/src/hole.rs:554:9: Freed node (0xffff00005038e0f0) aliases existing hole (0xffff00005038e0f0[104])! Bad free?`, boot then times out | **NEW, filed** — see "New issues filed from this battery" below |
+| `round2-gates/starved100-cortex-a72-timeout-strand-serial-97.txt` | starved100, cortex-a72, boot 97 | plain 45 s timeout, no fault/panic marker anywhere; last line is a healthy `[SCHED_STRAND_ORACLE:...stranded=0...]` dump | **Ruled a benign starvation artifact, not a defect** — see below |
+
+## Ruling on serial-97 (bare timeout under starvation)
+
+`starved100-cortex-a72-timeout-strand-serial-97.txt` carries no `[INSTRUCTION_ABORT]`, no
+`[DATA_ABORT]`, no `[PC_ALIGN]`, no `KERNEL PANIC`, and no oracle `FAIL` of any kind — the boot simply
+ran past the 45 s window under the leg's 14 host `yes` hogs at `nice -n 19` (heartbeats visible to
+`uptime_ms=43825`, boot times for this leg run ~30-39 s idle-equivalent vs ~16-19 s unloaded). The
+last live evidence is a clean `[SCHED_STRAND_ORACLE:...stranded=0...]` census. This is **ruled a
+benign starvation-timing artifact of the host load this leg deliberately applies, not a kernel
+defect**, and is **not filed as an issue**. It is preserved here only because it is one of the five
+non-GREEN boots this battery produced.
+
+## New issues filed from this battery
+
+* **Heap corruption panic** (`round2-gates/starved100-max-NEW-heap-alloc-panic-serial-90.txt`) —
+  `linked_list_allocator` `hole.rs:554` `"Freed node ... aliases existing hole ...! Bad free?"` under
+  starvation, never observed on `main` (0/300 in the round-2 main baseline) and not in the
+  pre-adjudicated list. Filed and cross-referenced against #633/#635/#637 as producer-family-suspect:
+  a stale or double free is exactly the class that would leave a stale context image sitting in a
+  reused kernel stack page, which is what the #635 family's producer needs to exist.
+* **`[DATA_ABORT] FAR=0x210 ELR=0x0 ESR=0x96000005`** (strict run 1, boot 10) — matches no filed
+  signature; #612's own signature is FAR in the `0x292` region with `ESR=0x96000021`, a different ESR.
+  Quoted verbatim in its filing; not preserved as a separate file here (see above).
+
+## R41 — the #635 discriminator is producer-shape, not path-proof
+
+`clean100-max-DISPATCH-8600000e-serial-37.txt`'s capture is **byte-identical** to the three pre-fix
+round-1 captures (`ESR=0x8600000e`, `IFSC=0xe`, `FAR == ELR`, `spsr` with the same DAIF+mode bits,
+`x17=0x4bc` — the faulting thread's own tid, the #633 tid-in-a-scratch-register fingerprint) — and it
+carries **zero** `[RET_DISPATCH_REFUSED:` lines, across all 450 round-2 gate boots. The ret-dispatch
+entry this PR narrows always refuses and always records a non-text resume PC when it declines one, so
+a stack PC reaching the fault this way could not be silent. Coordinator ruling **R41** (binding): the
+register-file shape (`x29==x30`, consecutive callee-saved stack slots) that round 1 treated as a
+dispatch-vs-epilogue discriminator is **not a path discriminator** — this recurrence proves the whole
+face is reachable through the ERET epilogue too, whose `>= KERNEL_VIRT_BASE` guard a kernel-stack PC
+passes. The entire `0x8600000e` FAR==ELR kernel-address family is therefore a **field-keyed bucket
+ATTRIBUTED to #635** at its measured ~1% rate — a temporary, authorized tolerance in
+`docker/qemu/run-aarch64-service-sequence-gate.sh`, removed by the producer-family PR that closes
+#635 at source. The ERET epilogue itself is **deliberately not hardened** in this PR: it is the
+hottest resume path in the kernel, and a redirect-on-refusal there would strand the thread and destroy
+the `[FATAL_REGS]` evidence the producer-side RCA needs.
+
+Baseline verdict (round-2 main-baseline slot, `main` @ `9602d6d4`, 300 boots): **BRANCH-CAUSED
+SURFACING**, with both qualifiers disclosed plainly. `main` produced one `ESR=0x8600000e` hit in 300
+boots, but it was one link in a messier, cascading multi-fault crash with a register file corrupted by
+concurrent serial output from another CPU — unclassifiable, and not the clean single-shape
+`FAR==ELR` capture this branch produces. `ddd03a11`'s strand-to-ret-dispatch conversion resumes a
+thread that `main` silently **strands** instead; the pre-existing corruption then faults loudly rather
+than sitting inert. At the branch's measured rate (4/400 ≈ 1%), the probability of 0 hits in 300 main
+boots is ≈5% — suggestive, not conclusive, and stated as such rather than overclaimed.
