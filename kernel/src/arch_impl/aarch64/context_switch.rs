@@ -97,6 +97,7 @@ pub static RESUME_PC_REFUSALS: AtomicU64 = AtomicU64::new(0);
 pub static RESUME_PC_REFUSED_TID: AtomicU64 = AtomicU64::new(0);
 pub static RESUME_PC_REFUSED_PC: AtomicU64 = AtomicU64::new(0);
 pub static RESUME_PC_REFUSED_SOURCES: AtomicU64 = AtomicU64::new(0);
+pub static RESUME_PC_EL0_ASM_REFUSALS: AtomicU64 = AtomicU64::new(0);
 
 pub const RESUME_PC_SOURCE_SYNC_EPILOGUE: u64 = 1;
 pub const RESUME_PC_SOURCE_IRQ_EPILOGUE: u64 = 2;
@@ -194,12 +195,13 @@ fn census_resume_pc(source_idx: usize, addr: u64) {
 }
 
 /// Snapshot the aggregate resume-PC refusal counters.
-pub fn resume_pc_refusal_snapshot() -> (u64, u64, u64, u64) {
+pub fn resume_pc_refusal_snapshot() -> (u64, u64, u64, u64, u64) {
     (
         RESUME_PC_REFUSALS.load(Ordering::Acquire),
         RESUME_PC_REFUSED_TID.load(Ordering::Acquire),
         RESUME_PC_REFUSED_PC.load(Ordering::Acquire),
         RESUME_PC_REFUSED_SOURCES.load(Ordering::Acquire),
+        RESUME_PC_EL0_ASM_REFUSALS.load(Ordering::Acquire),
     )
 }
 
@@ -209,6 +211,9 @@ fn record_resume_pc_refusal_common(source: u64, tid: u64, pc: u64) -> Option<(u6
     RESUME_PC_REFUSED_TID.store(tid, Ordering::Release);
     RESUME_PC_REFUSED_PC.store(pc, Ordering::Release);
     RESUME_PC_REFUSED_SOURCES.fetch_or(1u64 << (source & 0xF), Ordering::Release);
+    if source & RESUME_PC_SOURCE_EL0_FLAG != 0 {
+        RESUME_PC_EL0_ASM_REFUSALS.fetch_add(1, Ordering::Release);
+    }
 
     if RESUME_PC_REFUSAL_EMISSIONS.fetch_add(1, Ordering::Relaxed) >= 16 {
         return None;
@@ -3325,9 +3330,11 @@ fn restore_userspace_context_inline(
         any(
             feature = "resume_pc_el0_kernel_oracle",
             feature = "resume_pc_el0_tid_oracle"
-        )
+        ),
+        not(feature = "resume_pc_el0_frame_oracle")
     ))]
-    crate::task::ret_zero_pc_oracle::inject_el0_resume_pc_if_armed(thread);
+    let saved_el0_resume_pc =
+        crate::task::ret_zero_pc_oracle::inject_el0_resume_pc_if_armed(thread);
 
     frame.x0 = thread.context.x0;
     frame.x1 = thread.context.x1;
@@ -3384,6 +3391,16 @@ fn restore_userspace_context_inline(
             options(nomem, nostack)
         );
     }
+
+    #[cfg(all(
+        target_arch = "aarch64",
+        any(
+            feature = "resume_pc_el0_kernel_oracle",
+            feature = "resume_pc_el0_tid_oracle"
+        ),
+        not(feature = "resume_pc_el0_frame_oracle")
+    ))]
+    crate::task::ret_zero_pc_oracle::restore_el0_resume_pc(thread, saved_el0_resume_pc);
 }
 
 /// Set up first userspace entry — called inside scheduler lock hold.
@@ -3393,9 +3410,11 @@ fn setup_first_entry_inline(thread: &mut Thread, frame: &mut Aarch64ExceptionFra
         any(
             feature = "resume_pc_el0_kernel_oracle",
             feature = "resume_pc_el0_tid_oracle"
-        )
+        ),
+        not(feature = "resume_pc_el0_frame_oracle")
     ))]
-    crate::task::ret_zero_pc_oracle::inject_el0_resume_pc_if_armed(thread);
+    let saved_el0_resume_pc =
+        crate::task::ret_zero_pc_oracle::inject_el0_resume_pc_if_armed(thread);
 
     // Set return address to entry point
     census_resume_pc(2, thread.context.elr_el1);
@@ -3455,6 +3474,16 @@ fn setup_first_entry_inline(thread: &mut Thread, frame: &mut Aarch64ExceptionFra
             options(nomem, nostack)
         );
     }
+
+    #[cfg(all(
+        target_arch = "aarch64",
+        any(
+            feature = "resume_pc_el0_kernel_oracle",
+            feature = "resume_pc_el0_tid_oracle"
+        ),
+        not(feature = "resume_pc_el0_frame_oracle")
+    ))]
+    crate::task::ret_zero_pc_oracle::restore_el0_resume_pc(thread, saved_el0_resume_pc);
 }
 
 // =============================================================================
@@ -4046,7 +4075,17 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
         // exception — don't context switch now.
         #[cfg(all(
             target_arch = "aarch64",
-            any(feature = "resume_pc_el1_oracle", feature = "eret_zero_pc_oracle")
+            any(
+                feature = "resume_pc_el1_oracle",
+                feature = "eret_zero_pc_oracle",
+                all(
+                    feature = "resume_pc_el0_frame_oracle",
+                    any(
+                        feature = "resume_pc_el0_kernel_oracle",
+                        feature = "resume_pc_el0_tid_oracle"
+                    )
+                )
+            )
         ))]
         crate::task::ret_zero_pc_oracle::inject_el1_frame_resume_pc_if_armed(frame);
         return;
@@ -4116,7 +4155,17 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
         // Deferred requeue was already processed above.
         #[cfg(all(
             target_arch = "aarch64",
-            any(feature = "resume_pc_el1_oracle", feature = "eret_zero_pc_oracle")
+            any(
+                feature = "resume_pc_el1_oracle",
+                feature = "eret_zero_pc_oracle",
+                all(
+                    feature = "resume_pc_el0_frame_oracle",
+                    any(
+                        feature = "resume_pc_el0_kernel_oracle",
+                        feature = "resume_pc_el0_tid_oracle"
+                    )
+                )
+            )
         ))]
         crate::task::ret_zero_pc_oracle::inject_el1_frame_resume_pc_if_armed(frame);
         return;
@@ -4177,7 +4226,17 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
             }
             #[cfg(all(
                 target_arch = "aarch64",
-                any(feature = "resume_pc_el1_oracle", feature = "eret_zero_pc_oracle")
+                any(
+                    feature = "resume_pc_el1_oracle",
+                    feature = "eret_zero_pc_oracle",
+                    all(
+                        feature = "resume_pc_el0_frame_oracle",
+                        any(
+                            feature = "resume_pc_el0_kernel_oracle",
+                            feature = "resume_pc_el0_tid_oracle"
+                        )
+                    )
+                )
             ))]
             crate::task::ret_zero_pc_oracle::inject_el1_frame_resume_pc_if_armed(frame);
             return;
@@ -4191,7 +4250,17 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
         None => {
             #[cfg(all(
                 target_arch = "aarch64",
-                any(feature = "resume_pc_el1_oracle", feature = "eret_zero_pc_oracle")
+                any(
+                    feature = "resume_pc_el1_oracle",
+                    feature = "eret_zero_pc_oracle",
+                    all(
+                        feature = "resume_pc_el0_frame_oracle",
+                        any(
+                            feature = "resume_pc_el0_kernel_oracle",
+                            feature = "resume_pc_el0_tid_oracle"
+                        )
+                    )
+                )
             ))]
             crate::task::ret_zero_pc_oracle::inject_el1_frame_resume_pc_if_armed(frame);
             return;
@@ -4276,7 +4345,17 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
         }
         #[cfg(all(
             target_arch = "aarch64",
-            any(feature = "resume_pc_el1_oracle", feature = "eret_zero_pc_oracle")
+            any(
+                feature = "resume_pc_el1_oracle",
+                feature = "eret_zero_pc_oracle",
+                all(
+                    feature = "resume_pc_el0_frame_oracle",
+                    any(
+                        feature = "resume_pc_el0_kernel_oracle",
+                        feature = "resume_pc_el0_tid_oracle"
+                    )
+                )
+            )
         ))]
         crate::task::ret_zero_pc_oracle::inject_el1_frame_resume_pc_if_armed(frame);
         return;
@@ -4302,7 +4381,17 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
         }
         #[cfg(all(
             target_arch = "aarch64",
-            any(feature = "resume_pc_el1_oracle", feature = "eret_zero_pc_oracle")
+            any(
+                feature = "resume_pc_el1_oracle",
+                feature = "eret_zero_pc_oracle",
+                all(
+                    feature = "resume_pc_el0_frame_oracle",
+                    any(
+                        feature = "resume_pc_el0_kernel_oracle",
+                        feature = "resume_pc_el0_tid_oracle"
+                    )
+                )
+            )
         ))]
         crate::task::ret_zero_pc_oracle::inject_el1_frame_resume_pc_if_armed(frame);
         return;
@@ -4324,7 +4413,17 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
         }
         #[cfg(all(
             target_arch = "aarch64",
-            any(feature = "resume_pc_el1_oracle", feature = "eret_zero_pc_oracle")
+            any(
+                feature = "resume_pc_el1_oracle",
+                feature = "eret_zero_pc_oracle",
+                all(
+                    feature = "resume_pc_el0_frame_oracle",
+                    any(
+                        feature = "resume_pc_el0_kernel_oracle",
+                        feature = "resume_pc_el0_tid_oracle"
+                    )
+                )
+            )
         ))]
         crate::task::ret_zero_pc_oracle::inject_el1_frame_resume_pc_if_armed(frame);
         return;
@@ -4665,7 +4764,17 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
     }
     #[cfg(all(
         target_arch = "aarch64",
-        any(feature = "resume_pc_el1_oracle", feature = "eret_zero_pc_oracle")
+        any(
+            feature = "resume_pc_el1_oracle",
+            feature = "eret_zero_pc_oracle",
+            all(
+                feature = "resume_pc_el0_frame_oracle",
+                any(
+                    feature = "resume_pc_el0_kernel_oracle",
+                    feature = "resume_pc_el0_tid_oracle"
+                )
+            )
+        )
     ))]
     crate::task::ret_zero_pc_oracle::inject_el1_frame_resume_pc_if_armed(frame);
 }

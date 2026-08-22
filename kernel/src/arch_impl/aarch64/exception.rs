@@ -662,7 +662,17 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                     frame_ref.elr += 4;
                     #[cfg(all(
                         target_arch = "aarch64",
-                        any(feature = "resume_pc_el1_oracle", feature = "eret_zero_pc_oracle")
+                        any(
+                            feature = "resume_pc_el1_oracle",
+                            feature = "eret_zero_pc_oracle",
+                            all(
+                                feature = "resume_pc_el0_frame_oracle",
+                                any(
+                                    feature = "resume_pc_el0_kernel_oracle",
+                                    feature = "resume_pc_el0_tid_oracle"
+                                )
+                            )
+                        )
                     ))]
                     crate::task::ret_zero_pc_oracle::inject_el1_frame_resume_pc_if_armed(
                         frame_ref,
@@ -676,7 +686,17 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                 // CoW fault handled successfully, return to userspace
                 #[cfg(all(
                     target_arch = "aarch64",
-                    any(feature = "resume_pc_el1_oracle", feature = "eret_zero_pc_oracle")
+                    any(
+                        feature = "resume_pc_el1_oracle",
+                        feature = "eret_zero_pc_oracle",
+                        all(
+                            feature = "resume_pc_el0_frame_oracle",
+                            any(
+                                feature = "resume_pc_el0_kernel_oracle",
+                                feature = "resume_pc_el0_tid_oracle"
+                            )
+                        )
+                    )
                 ))]
                 crate::task::ret_zero_pc_oracle::inject_el1_frame_resume_pc_if_armed(unsafe {
                     &mut *frame
@@ -927,7 +947,17 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                     crate::task::scheduler::switch_to_idle();
                     #[cfg(all(
                         target_arch = "aarch64",
-                        any(feature = "resume_pc_el1_oracle", feature = "eret_zero_pc_oracle")
+                        any(
+                            feature = "resume_pc_el1_oracle",
+                            feature = "eret_zero_pc_oracle",
+                            all(
+                                feature = "resume_pc_el0_frame_oracle",
+                                any(
+                                    feature = "resume_pc_el0_kernel_oracle",
+                                    feature = "resume_pc_el0_tid_oracle"
+                                )
+                            )
+                        )
                     ))]
                     crate::task::ret_zero_pc_oracle::inject_el1_frame_resume_pc_if_armed(frame_ref);
                     return;
@@ -1306,7 +1336,17 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                     crate::task::scheduler::switch_to_idle();
                     #[cfg(all(
                         target_arch = "aarch64",
-                        any(feature = "resume_pc_el1_oracle", feature = "eret_zero_pc_oracle")
+                        any(
+                            feature = "resume_pc_el1_oracle",
+                            feature = "eret_zero_pc_oracle",
+                            all(
+                                feature = "resume_pc_el0_frame_oracle",
+                                any(
+                                    feature = "resume_pc_el0_kernel_oracle",
+                                    feature = "resume_pc_el0_tid_oracle"
+                                )
+                            )
+                        )
                     ))]
                     crate::task::ret_zero_pc_oracle::inject_el1_frame_resume_pc_if_armed(frame_ref);
                     return;
@@ -1740,7 +1780,17 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
     }
     #[cfg(all(
         target_arch = "aarch64",
-        any(feature = "resume_pc_el1_oracle", feature = "eret_zero_pc_oracle")
+        any(
+            feature = "resume_pc_el1_oracle",
+            feature = "eret_zero_pc_oracle",
+            all(
+                feature = "resume_pc_el0_frame_oracle",
+                any(
+                    feature = "resume_pc_el0_kernel_oracle",
+                    feature = "resume_pc_el0_tid_oracle"
+                )
+            )
+        )
     ))]
     crate::task::ret_zero_pc_oracle::inject_el1_frame_resume_pc_if_armed(unsafe { &mut *frame });
 }

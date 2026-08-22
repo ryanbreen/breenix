@@ -36,6 +36,7 @@ resume_pc_el1_oracle = ["boot_tests"]
 eret_zero_pc_oracle = ["boot_tests"]
 resume_pc_el0_kernel_oracle = ["boot_tests"]
 resume_pc_el0_tid_oracle = ["boot_tests"]
+resume_pc_el0_frame_oracle = ["boot_tests"]
 resume_pc_oracle_disarm = ["boot_tests"]
 arm_a_609 = ["boot_tests"]  # #609 arm-A placement oracle
 btrt = []  # Boot Test Result Table (structured test results)

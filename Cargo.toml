@@ -17,6 +17,7 @@ resume_pc_el1_oracle = ["boot_tests", "kernel/resume_pc_el1_oracle"]
 eret_zero_pc_oracle = ["boot_tests", "kernel/eret_zero_pc_oracle"]
 resume_pc_el0_kernel_oracle = ["boot_tests", "kernel/resume_pc_el0_kernel_oracle"]
 resume_pc_el0_tid_oracle = ["boot_tests", "kernel/resume_pc_el0_tid_oracle"]
+resume_pc_el0_frame_oracle = ["boot_tests", "kernel/resume_pc_el0_frame_oracle"]
 resume_pc_oracle_disarm = ["boot_tests", "kernel/resume_pc_oracle_disarm"]
 btrt = ["kernel/btrt"]  # Boot Test Result Table (structured test results)
 kthread_test_only = ["kernel/kthread_test_only"]  # Run only kthread tests and exit
