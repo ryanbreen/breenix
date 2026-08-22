@@ -22,6 +22,8 @@ pub mod context;
 // (requires architecture-specific interrupt control, provided by arch_impl)
 pub mod scheduler;
 #[cfg(feature = "boot_tests")]
+pub mod ret_zero_pc_oracle;
+#[cfg(feature = "boot_tests")]
 pub mod strand_oracle;
 
 // Kernel threads and workqueues - work on both x86_64 and aarch64

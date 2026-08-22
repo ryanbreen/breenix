@@ -937,6 +937,17 @@ const UNLOCKED_MULTI_BYTE_WRITE_ANCHORS: &[(&str, &str, usize)] = &[
         "fn set_next_ttbr0_for_thread",
         6,
     ),
+    // `take_inline_ret_dispatch_info` and the four ret-dispatch oracle injectors
+    // emit dispatch-path markers while the scheduler lock is held, so the
+    // locked writer is unavailable. All five are one-shot or emission-capped,
+    // never periodic. `[RET_DISPATCH_REFUSED:` is a service-sequence census
+    // only, never a gate condition: a torn line can only under-count the
+    // reported number, not flip a verdict.
+    (
+        "kernel/src/arch_impl/aarch64/context_switch.rs",
+        "fn take_inline_ret_dispatch_info",
+        10,
+    ),
     (
         "kernel/src/arch_impl/aarch64/exception.rs",
         "fn defer_current_user_thread_sigsegv_exit",
@@ -1041,6 +1052,26 @@ const UNLOCKED_MULTI_BYTE_WRITE_ANCHORS: &[(&str, &str, usize)] = &[
         "kernel/src/syscall/handler.rs",
         "fn emit_ring3_syscall_marker",
         2,
+    ),
+    (
+        "kernel/src/task/ret_zero_pc_oracle.rs",
+        "#[cfg(all(target_arch=aarch64,feature=ret_zero_pc_oracle_exec))] fn inject_exec_commit_if_armed",
+        2,
+    ),
+    (
+        "kernel/src/task/ret_zero_pc_oracle.rs",
+        "#[cfg(all(target_arch=aarch64,feature=ret_zero_pc_oracle))] fn inject_ret_zero_pc_if_armed",
+        3,
+    ),
+    (
+        "kernel/src/task/ret_zero_pc_oracle.rs",
+        "#[cfg(all(target_arch=aarch64,feature=ret_stack_pc_oracle))] fn inject_ret_stack_pc_if_armed",
+        4,
+    ),
+    (
+        "kernel/src/task/ret_zero_pc_oracle.rs",
+        "#[cfg(all(target_arch=aarch64,feature=ret_floor_oracle))] fn inject_ret_floor_if_armed",
+        3,
     ),
     (
         "kernel/src/task/scheduler.rs",

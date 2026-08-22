@@ -1,0 +1,1380 @@
+EOS
+========================================
+  Breenix ARM64 Kernel Starting
+  BUILD_ID: 006a8991273433
+========================================
+
+[CTX596_ORACLE:ARMED:force_eret=0]
+[boot] DIAG_MARKER_XHCI_A
+[boot] DIAG_MARKER_XHCI_B
+[boot] DIAG_MARKER_XHCI_C
+[boot] loader xhci_hcrst_raw=0x0 ecam=0x0
+[boot] Current exception level: EL1
+[boot] MMU already enabled (high-half kernel)
+[boot] Initializing memory management (0x44000000-0x50000000)...
+[boot] Memory management ready
+[boot] Initializing Generic Timer...
+[boot] Timer frequency: 62500000 Hz (62 MHz)
+[boot] Initializing PL031 RTC...
+[boot] Current timestamp: 528500
+[boot] Initializing GIC...
+[gic] GICR probe 0x080a0000: WAKER=0x00000006 <<< VALID
+[gic] GICR base mismatch: loader=0x00000000, using=0x080a0000
+[gic] GICD_CTLR wrote 0x53, readback=0x53
+[gic] GICR_IGROUPR0: wrote 0xFFFFFFFF, readback=0xffffffff
+[gic] EOImode=1 (split EOI/DIR) - non-VMware path
+[gic] ICC_CTLR_EL1: 0x8c00 -> 0x8c02 (EOImode=1)
+[boot] GIC initialized (version 3)
+[boot] Enabling UART interrupts...
+[boot] Enabling GIC IRQ 33 (UART0)...
+[uart] IMSC: 0x0 -> 0x50 (verify: 0x50)
+[uart] FR=0x90 (RXFE=1), RIS=0x20
+[gic] IRQ 33 state (GICv3):
+  enabled=true, group1=true, pending=false
+  priority=0xa0, GICD_CTLR=0x53
+  ICC_PMR=0xf0
+[boot] UART interrupts enabled
+[boot] Enabling interrupts...
+[boot] Interrupts enabled: true
+[boot] QEMU PCI ECAM configured at 0x4010000000
+[boot] Initializing device drivers...
+[drivers] Initializing driver subsystem...
+[drivers] Hybrid mode: VirtIO MMIO + PCI AHCI
+[drivers] Found VirtIO MMIO device: network (ID=1, version=1)
+[drivers] Found VirtIO MMIO device: block (ID=2, version=1)
+[drivers] Found VirtIO MMIO device: input (ID=18, version=1)
+[drivers] Found VirtIO MMIO device: input (ID=18, version=1)
+[drivers] Found VirtIO MMIO device: GPU (ID=16, version=1)
+[drivers] Found 5 VirtIO MMIO devices
+[virtio-blk] Searching for block devices...
+[virtio-blk] Found block device 0 at 0xa003800
+[virtio-blk] Device 0 version: 1
+[virtio-blk] Device 0 capacity: 524288 sectors (256 MB)
+[virtio-blk] Device 0 queue max size: 1024
+[virtio-blk] Device 0 using v1 (legacy) queue setup at PFN 0x4120b
+[virtio-blk] Block MMIO IRQ 76 enabled for device 0
+[virtio-blk] Block device 0 initialized successfully
+[virtio-blk] Initialized 1 block device(s)
+[drivers] VirtIO block driver initialized
+[virtio-net] Searching for network device...
+[virtio-net] Found network device at 0xa003600 (slot 27)
+[virtio-net] Device version: 1
+[virtio-net] MAC address: 52:54:00:12:34:56
+[virtio-net] RX queue max size: 1024
+[virtio-net] TX queue max size: 1024
+[virtio-net] Network device initialized successfully
+[virtio-net] Network device IRQ 75 (will enable after net init)
+[drivers] VirtIO network driver initialized
+[virtio-net] Device test - MAC: 52:54:00:12:34:56
+[virtio-net] Test passed!
+[virtio-gpu] Searching for GPU device...
+[virtio-gpu] Found GPU device at 0xa003e00
+[virtio-gpu] Device version: 1
+[virtio-gpu] Control queue max size: 1024
+[virtio-gpu] Display: 1280x800
+[virtio-gpu] GPU device initialized successfully
+[drivers] VirtIO GPU driver initialized
+[virtio-gpu] Device test - Display: 1280x800
+[virtio-gpu] Test passed!
+[virtio-sound] Searching for sound device...
+[drivers] VirtIO sound driver init failed: No VirtIO Sound device found
+[drivers] Driver subsystem initialized (MMIO)
+[drivers] PCI ECAM at 0x4010000000, enumerating PCI bus...
+[drivers] Found 1 PCI devices
+[pci] 00:00.0 [1b36:0008] class=06/00
+[drivers] AHCI PCI init failed: No AHCI controller found
+[drivers] Driver subsystem initialized (hybrid MMIO+PCI)
+[boot] Found 6 devices
+[drivers] Running post-init self-tests...
+[virtio-blk] Testing read of sector 0...
+[virtio-blk] Sector 0 data: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 ...
+[virtio-blk] Read test passed!
+[boot] Initializing network stack...
+[net] Initializing network stack...
+[net] MAC address: 52:54:00:12:34:56
+NET: IP address: 10.0.2.15
+NET: Gateway: 10.0.2.2
+Network stack initialized
+NET: Sending ARP request for gateway 10.0.2.2
+ARP request sent successfully
+NET: Gateway ARP not resolved during init; will resolve via IRQ path
+NET: Sending ICMP echo request to gateway 10.0.2.2
+NET: ARP cache miss for 10.0.2.2, sending ARP request
+NET: Failed to send ping: ArpMiss: reply will populate cache via IRQ
+NET: Network initialization complete
+[virtio-net] Enabling IRQ 75 for network device
+NET: pre-primed NetRx softirq for bootstrap callback re-enable
+[boot] Initializing filesystem...
+[ext2] Using VirtIO block device (524288 sectors)
+[boot] ext2 root filesystem mounted
+[boot] No home filesystem: No home block device available (expected at device index 3 or 1) (continuing)
+[boot] devfs initialized at /dev
+[boot] devptsfs initialized at /dev/pts
+[boot] CPU detected: ARM Cortex-A72
+[boot] procfs initialized at /proc
+[boot] TTY subsystem initialized
+[boot] Initializing graphics...
+[virtio-gpu] GPU device already initialized
+[arm64-fb] Shell framebuffer initialized: 1280x800
+[graphics] Framebuffer: 1280x800
+[graphics] Particle system initialized
+[render_queue] Initialized (64KB buffer)
+[graphics] Split-screen terminal UI initialized
+[boot] Initializing VirtIO keyboard...
+[virtio-input] Searching for input devices (ID=18)...
+[virtio-input] Slot 27 at 0xa003600: device_id=1
+[virtio-input] Slot 28 at 0xa003800: device_id=2
+[virtio-input] Slot 29 at 0xa003a00: device_id=18
+[virtio-input] Found tablet at 0xa003a00 (slot 29, supports EV_ABS)
+[virtio-input] Tablet device version: 1
+[virtio-input] Event queue max size: 1024
+[virtio-input] Enabling IRQ 77 for tablet
+[virtio-input] Tablet initialized (16 buffers)
+[virtio-input] Slot 30 at 0xa003c00: device_id=18
+[virtio-input] Found keyboard at 0xa003c00 (slot 30, no EV_ABS)
+[virtio-input] Keyboard device version: 1
+[virtio-input] Event queue max size: 1024
+[virtio-input] Enabling IRQ 78 for keyboard
+[virtio-input] Keyboard initialized (64 buffers)
+[virtio-input] Slot 31 at 0xa003e00: device_id=16
+[boot] VirtIO keyboard initialized
+[boot] Initializing per-CPU data...
+[boot] Per-CPU data initialized
+[boot] Initializing process manager...
+[boot] Process manager initialized
+[boot] Initializing scheduler...
+[boot] Scheduler initialized
+[boot] Workqueue subsystem initialized
+[boot] Softirq subsystem initialized
+[boot] Render thread spawned (tid=4)
+[boot] Tracing subsystem initialized and enabled
+[boot] Pre-loading /sbin/init from ext2 (before timer)...
+[net] ICMP echo reply received from 10.0.2.2 seq=1
+[boot] Init binary pre-loaded: 298328 bytes
+[xhci] post-activation: MSI_EVENT_COUNT=0 EVENT_COUNT=0 POLL_COUNT=0 SPI_ACTIVATED=false
+[boot] Initializing timer interrupt...
+[timer] Timer configured for ~1000 Hz (62500 ticks per interrupt)
+[timer] Using virtual timer (PPI 27)
+[boot] Timer interrupt initialized
+[smp] CPU 0 MPIDR=0x80000000, stack_base=0x43000000
+[smp] Probing secondary CPUs via PSCI...
+[smp] CPU 1: P1SCI CP@U_ON1 sucAcess (raw_status=B0C)
+[smp] CPU 2:D PSCI CPU_ON succ2E@1AesBCs (reaw_sFtatusD=0)EeFGG
+3[smp]1 2CPU 3: PSCI C@1ABCPUD_ON success (raw_status=0)
+[EeFgG3ic] EOImode=1 (split EOI/DIR) - non-VMT1ware path
+[gic] EOImode=1 (split EOI/DIR) - non-VMware path
+[gic] EOImode=1 (split EOI/DIR) - non-VMware path
+[gic] ICC_CTLR_EL1: 0x8c00 -> 0x8c02 (EOImode=1)
+[gic] ICC_CTLR_EL1: 0x8c00 -> 0x8c02 (EOImode=1)
+[gic] ICC_CTLR_EL1: 0x8c00 -> 0x8c02 (EOImode=1)
+[smp] CPU 4 attempt 1/4: HVC64 failed (ret=-2), trying HVC32...
+[smp] PSCI CPU_ON failed for CPU 4 after 1 attempts: ret=-2 (MPIDR=0x4 entry=0x400802b8)
+[smp] CPU 4: PSCI CPU_ON failed (ret=-2), stopping probe
+T2[smp] 4 CPUs online
+[boot] Running parallel boot tests...
+T3[BOOT_TESTS:START]
+[STAGE:serial:ADVANCE]
+[BOOT_TESTS:TOTAL:107]
+[BOOT_TESTS:SERIAL_BOOT:2]
+[BOOT_TESTS:EARLY_BOOT:89]
+[BOOT_TESTS:STAGED:18 tests waiting for later stages]
+T4T5T6T7T8T9[SUBSYSTEM:process:serial:START]
+[TEST:process:frame_custody_refusal_gate:START]
+T0[TEST:process:frame_custody_refusal_gate:PASS]
+[TEST:process:page_table_custody_disposition_gate:START]
+[EXEC_FAILED_RELEASE_ORACLE:aarch64:used_before=1:used_after=1:leaf_recorded=1:leaf_released=1:leaf_returned=1:tables_returned=4:roots_retired=1:live_refused=0]
+[TEST:process:page_table_custody_disposition_gate:PASS]
+[SUBSYSTEM:process:serial:COMPLETE:2/2]
+[STAGE:serial:COMPLETE:2/107]
+[STAGE:early:ADVANCE]
+[SUBSYSTEM:memory:early:START]
+[TEST:memory:framework_sanity:START]
+[TEST:memory:framework_sanity:PASS]
+[SUBSYSTEM:scheduler:early:START]
+[TEST:scheduler:wakes_are_placed_on_online_cpus:START]
+[TEST:scheduler:wakes_are_placed_on_online_cpus:PASS]
+[SUBSYSTEM:network:early:START]
+[TEST:network:network_stack_init:START]
+[SUBSYSTEM:interrupts:early:START]
+[TEST:interrupts:interrupt_controller_init:START]
+[TEST:network:network_stack_init:PASS]
+[TEST:interrupts:interrupt_controller_init:PASS]
+[SUBSYSTEM:filesystem:early:START]
+[TEST:filesystem:vfs_init:START]
+[TEST:filesystem:vfs_init:PASS]
+[SUBSYSTEM:process:early:START]
+[TEST:process:deferred_fault_ring_overflow_injection:START]
+[SUBSYSTEM:syscall:early:START]
+[TEST:syscall:syscall_dispatch:START]
+[TEST:syscall:syscall_dispatch:PASS]
+[TEST:process:deferred_fault_ring_overflow_injection:PASS]
+[SUBSYSTEM:ipc:early:START]
+[TEST:ipc:pipe_buffer_basic:START]
+[TEST:ipc:pipe_buffer_basic:PASS]
+[SUBSYSTEM:logging:early:START]
+[SUBSYSTEM:system:early:START]
+[TEST:system:boot_sequence:START]
+[TEST:logging:logging_init:START]
+[TEST:system:boot_sequence:PASS]
+[TEST:logging:logging_init:PASS]
+[SUBSYSTEM:timer:early:START]
+[TEST:timer:timer_init:START]
+[TEST:timer:timer_init:PASS]
+[TEST:memory:heap_alloc_basic:START]
+[TEST:memory:heap_alloc_basic:PASS]
+[TEST:interrupts:irq_enable_disable:START]
+[TEST:interrupts:irq_enable_disable:PASS]
+[TEST:memory:frame_allocator:START]
+[TEST:memory:frame_allocator:PASS]
+[TEST:network:virtio_net_probe:START]
+[TEST:network:virtio_net_probe:PASS]
+[TEST:process:process_manager_init:START]
+[TEST:process:process_manager_init:PASS]
+[TEST:network:socket_creation:START]
+[TEST:network:socket_creation:PASS]
+[TEST:process:scheduler_init:START]
+[TEST:process:scheduler_init:PASS]
+[TEST:scheduler:executor_exists:START]
+[TEST:scheduler:executor_exists:PASS]
+[TEST:process:thread_creation:START]
+[TEST:process:thread_creation:PASS]
+[TEST:system:system_stability:START]
+[TEST:system:system_stability:PASS]
+[TEST:ipc:pipe_eof:START]
+[TEST:ipc:pipe_eof:PASS]
+[TEST:system:kernel_heap:START]
+[TEST:system:kernel_heap:PASS]
+[TEST:interrupts:timer_interrupt_running:START]
+[TEST:interrupts:timer_interrupt_running:PASS]
+[TEST:system:tty_foreground_pgrp:START]
+[TEST:system:tty_foreground_pgrp:PASS]
+[TEST:filesystem:devfs_mounted:START]
+[TEST:filesystem:devfs_mounted:PASS]
+[SUBSYSTEM:system:early:COMPLETE:4/4]
+[TEST:logging:log_levels:START]
+[TEST:logging:log_levels:PASS]
+[SCHED_STRAND_ORACLE:aarch64:samples=7:checked=93:stranded=0:running_shape=0:ready_shape=0:resolved_production=0:resolved_exercised=0:worst_dwell_ms=0:overflow=0:worst_nonprogress_ms=0:nonprogress=0:queued_on_nondispatching_cpu=0:worst_queued_nondispatch_ms=0:worst_cpu_scheduler_silence_ms=390:worst_silence_cpu=0]
+[TEST:ipc:pipe_broken:START]
+[TEST:ipc:pipe_broken:PASS]
+[TEST:network:tcp_socket_creation:START]
+[TEST:network:tcp_socket_creation:PASS]
+[TEST:interrupts:keyboard_irq_setup:START]
+[TEST:interrupts:keyboard_irq_setup:PASS]
+[TEST:timer:timer_ticks:START]
+[TEST:timer:timer_ticks:PASS]
+[TEST:process:signal_delivery_infrastructure:START]
+[TEST:process:signal_delivery_infrastructure:PASS]
+[TEST:filesystem:file_open_close:START]
+[TEST:filesystem:file_open_close:PASS]
+[TEST:process:arm64_signal_frame_conversion:START]
+[TEST:process:arm64_signal_frame_conversion:PASS]
+[TEST:memory:heap_large_alloc:START]
+[TEST:memory:heap_large_alloc:PASS]
+[TEST:logging:serial_output:START]
+[LOGGING_TEST] Serial test ARM64
+[TEST:logging:serial_output:PASS]
+[TEST:memory:heap_many_small:START]
+[TEST:memory:heap_many_small:PASS]
+[TEST:interrupts:exception_vectors:START]
+[TEST:interrupts:exception_vectors:PASS]
+[TEST:timer:timer_delay:START]
+[TEST:timer:timer_delay:PASS]
+[TEST:syscall:arm64_pty_ioctl_path:START]
+manager.create_process [ARM64]: ENTRY - name='pty_ioctl_test', elf_size=276816
+manager.create_process [ARM64]: Generated PID 2
+manager.create_process [ARM64]: Creating ProcessPageTable
+manager.create_process [ARM64]: ProcessPageTable created
+manager.create_process [ARM64]: Loading ELF into page table
+manager.create_process [ARM64]: ELF loaded, entry=0x4000e0b0
+manager.create_process [ARM64]: Creating Process struct
+manager.create_process [ARM64]: Process struct created, heap_start=0x40017000
+manager.create_process [ARM64]: Allocating user stack
+manager.create_process [ARM64]: Stack physical range 0x4401e000-0x4402e000
+manager.create_process [ARM64]: User stack will be at 0xfffffeff0000-0xffffff000000
+manager.create_process [ARM64]: Mapping user stack into process page table
+manager.create_process [ARM64]: map_user_stack_to_process user_bottom=0xfffffeff0000 user_top=0xffffff000000 phys_bottom=0x4401e000
+manager.create_process [ARM64]: User stack mapped successfully
+manager.create_process [ARM64]: Creating main thread
+manager.create_process [ARM64]: Main thread created
+manager.create_process [ARM64]: Main thread set on process
+manager.create_process [ARM64]: Adding PID 2 to ready queue
+manager.create_process [ARM64]: Inserting process into process table
+manager.create_process [ARM64]: SUCCESS - returning PID 2
+[TEST:syscall:arm64_pty_ioctl_path:PASS]
+[TEST:filesystem:directory_list:START]
+[TEST:filesystem:directory_list:PASS]
+[SUBSYSTEM:process:early:COMPLETE:6/6]
+[TEST:scheduler:async_waker:START]
+[TEST:scheduler:async_waker:PASS]
+[SUBSYSTEM:logging:early:COMPLETE:3/3]
+[TEST:scheduler:future_basics:START]
+[TEST:scheduler:future_basics:PASS]
+[TEST:ipc:pipe_wake_mechanism:START]
+[TEST:ipc:pipe_wake_mechanism:PASS]
+[SUBSYSTEM:scheduler:early:COMPLETE:4/4]
+[TEST:ipc:fd_table_creation:START]
+[TEST:ipc:fd_table_creation:PASS]
+[TEST:interrupts:exception_handlers:START]
+[TEST:interrupts:exception_handlers:PASS]
+[TEST:timer:timer_monotonic:START]
+[TEST:timer:timer_monotonic:PASS]
+[TEST:syscall:arm64_socket_reset_quantum:START]
+[TEST:syscall:arm64_socket_reset_quantum:PASS]
+[TEST:interrupts:breakpoint:START]
+[exception] Breakpoint (BRK #0) at 0xffff0000405692a8
+[TEST:interrupts:breakpoint:PASS]
+[TEST:network:loopback:START]
+[TEST:network:loopback:PASS]
+[TEST:interrupts:softirq_aarch64:START]
+[TEST:interrupts:softirq_aarch64:PASS]
+[TEST:memory:cow_flags_aarch64:START]
+[TEST:memory:cow_flags_aarch64:PASS]
+[TEST:network:loopback_wake_loss_counters_are_zero:START]
+[TEST:network:loopback_wake_loss_counters_are_zero:PASS]
+[TEST:filesystem:filesystem_syscalls_aarch64:START]
+[SUBSYSTEM:interrupts:early:COMPLETE:8/8]
+[TEST:ipc:fd_alloc_close:START]
+[TEST:ipc:fd_alloc_close:PASS]
+[TEST:network:loopback_recv_wake_when_idle:START]
+[TEST:timer:timer_quantum_reset_aarch64:START]
+[TEST:timer:timer_quantum_reset_aarch64:PASS]
+[TEST:filesystem:filesystem_syscalls_aarch64:PASS]
+[SUBSYSTEM:syscall:early:COMPLETE:3/3]
+[TEST:ipc:create_pipe:START]
+[TEST:ipc:create_pipe:PASS]
+[TEST:memory:guard_page_exists:START]
+[TEST:memory:guard_page_exists:PASS]
+[TEST:ipc:pty_support_aarch64:START]
+[TEST:ipc:pty_support_aarch64:PASS]
+[TEST:memory:stack_layout:START]
+[TEST:memory:stack_layout:PASS]
+[TEST:filesystem:virtio_blk_multi_read:START]
+[virtio-blk] Starting multi-read stress test (10 reads)...
+[virtio-blk] Read 1 of 10 complete
+[virtio-blk] Read 2 of 10 complete
+[virtio-blk] Read 3 of 10 complete
+[virtio-blk] Read 4 of 10 complete
+[virtio-blk] Read 5 of 10 complete
+[virtio-blk] Read 6 of 10 complete
+[virtio-blk] Read 7 of 10 complete
+[virtio-blk] Read 8 of 10 complete
+[virtio-blk] Read 9 of 10 complete
+[virtio-blk] Read 10 of 10 complete
+[virtio-blk] Multi-read stress test passed!
+[TEST:filesystem:virtio_blk_multi_read:PASS]
+[SUBSYSTEM:ipc:early:COMPLETE:8/8]
+[TEST:memory:stack_allocation:START]
+[TEST:memory:stack_allocation:PASS]
+[SUBSYSTEM:timer:early:COMPLETE:5/5]
+[TEST:memory:user_stack_base:START]
+[TEST:memory:user_stack_base:PASS]
+[TEST:filesystem:virtio_blk_sequential_read:START]
+[virtio-blk] Testing sequential read of sectors 0-31...
+[virtio-blk] Read sectors 0-7 OK (avail_idx wrap count: 0)
+[virtio-blk] Read sectors 0-15 OK (avail_idx wrap count: 1)
+[virtio-blk] Read sectors 0-23 OK (avail_idx wrap count: 1)
+[TEST:memory:user_stack_size:START]
+[TEST:memory:user_stack_size:PASS]
+[virtio-blk] Read sectors 0-31 OK (avail_idx wrap count: 2)
+[virtio-blk] Sequential read test passed! (32 sectors, 2 queue wraps)
+[TEST:filesystem:virtio_blk_sequential_read:PASS]
+[TEST:memory:user_stack_top:START]
+[TEST:memory:user_stack_top:PASS]
+[TEST:filesystem:virtio_blk_write_read_verify:START]
+[virtio-blk] Testing write-read-verify cycle...
+[virtio-blk] Device capacity: 524288 sectors
+[virtio-blk] Reading original data from sector 1000...
+[virtio-blk] Original first 16 bytes: [00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00]
+[virtio-blk] Test pattern first 16 bytes: [aa, 01, aa, 03, aa, 05, aa, 07, aa, 09, aa, 0b, aa, 0d, aa, 0f]
+[virtio-blk] Writing test pattern to sector 1000...
+[virtio-blk] Write succeeded
+[virtio-blk] Reading back sector 1000...
+[virtio-blk] Readback first 16 bytes: [aa, 01, aa, 03, aa, 05, aa, 07, aa, 09, aa, 0b, aa, 0d, aa, 0f]
+[virtio-blk] Restoring original data to sector 1000...
+[virtio-blk] Write-read-verify test passed! All 512 bytes match.
+[TEST:filesystem:virtio_blk_write_read_verify:PASS]
+[TEST:memory:user_stack_guard:START]
+[TEST:memory:user_stack_guard:PASS]
+[TEST:memory:user_stack_alignment:START]
+[TEST:memory:user_stack_alignment:PASS]
+[TEST:filesystem:virtio_blk_invalid_sector:START]
+[virtio-blk] Testing invalid sector read...
+[virtio-blk] Device capacity: 524288 sectors
+[virtio-blk] Invalid sector correctly rejected: Sector out of range
+[virtio-blk] Invalid sector test passed!
+[TEST:filesystem:virtio_blk_invalid_sector:PASS]
+[TEST:memory:kernel_stack_base:START]
+[TEST:memory:kernel_stack_base:PASS]
+[TEST:memory:kernel_stack_size:START]
+[TEST:memory:kernel_stack_size:PASS]
+[TEST:network:loopback_recv_wake_when_idle:PASS]
+[TEST:filesystem:virtio_blk_uninitialized_read:START]
+[virtio-blk] Testing uninitialized device handling...
+[virtio-blk] Device is initialized (expected during normal boot)
+[virtio-blk] Verified: read_sector checks BLOCK_DEVICE.is_none() and returns error
+[virtio-blk] Uninitialized test passed (device was already initialized)!
+[TEST:filesystem:virtio_blk_uninitialized_read:PASS]
+[TEST:memory:kernel_stack_top:START]
+[TEST:memory:kernel_stack_top:PASS]
+[SUBSYSTEM:filesystem:early:COMPLETE:10/10]
+[TEST:memory:kernel_stack_guard:START]
+[TEST:memory:kernel_stack_guard:PASS]
+[TEST:network:loopback_recv_wake_under_load:START]
+[TEST:memory:kernel_stack_alignment:START]
+[TEST:memory:kernel_stack_alignment:PASS]
+[TEST:memory:stack_in_range:START]
+[TEST:memory:stack_in_range:PASS]
+[TEST:memory:stack_grows_down:START]
+[TEST:memory:stack_grows_down:PASS]
+[TEST:memory:stack_depth:START]
+[TEST:memory:stack_depth:PASS]
+[TEST:memory:stack_frame_size:START]
+[TEST:memory:stack_frame_size:PASS]
+[TEST:memory:stack_red_zone:START]
+[TEST:memory:stack_red_zone:PASS]
+[SUBSYSTEM:memory:early:COMPLETE:24/24]
+[TEST:network:loopback_recv_wake_under_load:PASS]
+[TEST:network:loopback_pump_does_not_busy_spin:START]
+[TEST:network:loopback_pump_does_not_busy_spin:PASS]
+[TEST:network:tcp_final_ack_survives_accept_publish_race:START]
+[TEST:network:tcp_final_ack_survives_accept_publish_race:PASS]
+[TEST:network:arm64_net_softirq_registration:START]
+[TEST:network:arm64_net_softirq_registration:PASS]
+[TEST:network:net_lock_guard_masks_interrupt_source:START]
+[TEST:network:net_lock_guard_masks_interrupt_source:PASS]
+[SUBSYSTEM:network:early:COMPLETE:12/12]
+[STAGE:early:COMPLETE:89/107]
+[STAGE:sched:ADVANCE]
+[SUBSYSTEM:scheduler:sched:START]
+[TEST:scheduler:kthread_spawn_verify:START]
+[SUBSYSTEM:filesystem:sched:START]
+[TEST:filesystem:block_wedge_oracle:START]
+[SUBSYSTEM:process:sched:START]
+[TEST:process:fork_exit_defer_reclaim_pairing_test:START]
+[TEST:scheduler:kthread_spawn_verify:PASS]
+[BLOCK_WEDGE_ORACLE:locked=1:wedged=1:refused=1:parked=0:refuse_ms=0]
+[TEST:filesystem:block_wedge_oracle:PASS]
+[TEST:scheduler:workqueue_operational:START]
+[TEST:scheduler:workqueue_operational:PASS]
+[SUBSYSTEM:filesystem:sched:COMPLETE:1/1]
+[PT_RETIRE_ORACLE:aarch64:cycles=64:used_before=53:used_after=53:expected_tables=9:roots=64:returned=640:lost=0:kstack_returns=64]
+[PT_LEAF_ORACLE:aarch64:cycles=64:expected=192:recorded=192:released=192:returned=192:live_refused=0:used_before=53:used_after=53]
+[TEST:process:fork_exit_defer_reclaim_pairing_test:PASS]
+[SUBSYSTEM:scheduler:sched:COMPLETE:2/2]
+[TEST:process:exec_detach_oracle:START]
+manager.create_process [ARM64]: ENTRY - name='exec_detach_leader', elf_size=180
+manager.create_process [ARM64]: Generated PID 69
+manager.create_process [ARM64]: Creating ProcessPageTable
+manager.create_process [ARM64]: ProcessPageTable created
+manager.create_process [ARM64]: Loading ELF into page table
+manager.create_process [ARM64]: ELF loaded, entry=0x200000
+manager.create_process [ARM64]: Creating Process struct
+manager.create_process [ARM64]: Process struct created, heap_start=0x401000
+manager.create_process [ARM64]: Allocating user stack
+manager.create_process [ARM64]: Stack physical range 0x4404c000-0x4405c000
+manager.create_process [ARM64]: User stack will be at 0xfffffeff0000-0xffffff000000
+manager.create_process [ARM64]: Mapping user stack into process page table
+manager.create_process [ARM64]: map_user_stack_to_process user_bottom=0xfffffeff0000 user_top=0xffffff000000 phys_bottom=0x4404c000
+manager.create_process [ARM64]: User stack mapped successfully
+manager.create_process [ARM64]: Creating main thread
+manager.create_process [ARM64]: Main thread created
+manager.create_process [ARM64]: Main thread set on process
+manager.create_process [ARM64]: Adding PID 69 to ready queue
+manager.create_process [ARM64]: Inserting process into process table
+manager.create_process [ARM64]: SUCCESS - returning PID 69
+[EXEC_DETACH_ORACLE:aarch64:bodies=2:fail_preserved=2:sibling_refused=2:success_detached=2:fresh_root=2:tgid_self=2:custody_balance=0:leaf_residual=16:stack_residual=18:kstack_frames_released=0:old_group_reached_pre=2:old_group_missed_post=2:self_group_reached_post=2]
+[TEST:process:exec_detach_oracle:PASS]
+[TEST:process:exec_detach_oracle:PASS]
+[TEST:process:clone_admission_oracle:START]
+[CLONE_ADMISSION_ORACLE:aarch64:admitted=1:refused=2:creating_refused=1:published_admitted=2:balance=0]
+[TEST:process:clone_admission_oracle:PASS]
+[TEST:process:clone_admission_oracle:PASS]
+[TEST:process:init_designation_oracle:START]
+manager.create_process_with_argv [ARM64]: ENTRY - name='init_oracle_a1', elf_size=8, argc=1
+manager.create_process_with_argv [ARM64]: Generated PID 1
+manager.create_process_with_argv [ARM64]: Creating ProcessPageTable
+manager.create_process_with_argv [ARM64]: Loading ELF into page table
+manager.create_process_with_argv [ARM64]: ENTRY - name='init_oracle_a2', elf_size=120, argc=1
+manager.create_process_with_argv [ARM64]: Generated PID 1
+manager.create_process_with_argv [ARM64]: Creating ProcessPageTable
+manager.create_process_with_argv [ARM64]: Loading ELF into page table
+[INIT_DESIGNATION_ORACLE:aarch64:construct_failed=2:construct_undecided=2:construct_residual=2:refused=4:accepted=1:published=1:retired=1:held_error_removals=1:reparented=1:reparent_skipped=1:ordinary_allocated=5:reserved_collisions=0:designation_balance=0]
+[TEST:process:init_designation_oracle:PASS]
+[TEST:process:init_designation_oracle:PASS]
+[TEST:process:init_group_refusal_oracle:START]
+[INIT_GROUP_REFUSAL_ORACLE:aarch64:none_probes=3:none_refusals=0:init_refused=1:alias_refused=1:alias_pid_refused=0:nonit_probes=2:nonit_refusals=0:rows_delta=0:refusal_counter_delta=0:designation_residual=0:balance=0]
+[TEST:process:init_group_refusal_oracle:PASS]
+[TEST:process:init_group_refusal_oracle:PASS]
+[TEST:process:kernel_stack_ownership_oracle:START]
+[CREATION_LOCK_ORDER:INJECTED:PM_HELD]
+[KSTACK_OWNER_ORACLE:aarch64:creation_rows=1000:creation_owned=1000:one_owner=1000:two_owner=0:zero_owner=0:fork_rows=1:fork_owned=1:slot_returns_exact_one=1:slot_alloc_delta=1000:slot_free_delta=1000:slot_balance=0:frames_mapped_delta=0:frames_released_delta=0:frame_balance=0:frame_used_delta=0:frame_used_bounded=1:live_checks=1106:live_refusals_production=0:live_refusals_injected=1:drop_refused_live=0:pte_overwrite_refusals=0:pub_pooled=1073:pub_sched_owned=1073:pub_row_residual=0:pub_unowned=0:classifier_sched_owned=1:classifier_row_residual=1:classifier_unowned=1:classifier_not_pooled=1:sched_publications=28:sched_pm_held_production=0:sched_pm_held_injected=1:balance=0]
+[TEST:process:kernel_stack_ownership_oracle:PASS]
+[TEST:process:creating_dispatch_refusal:START]
+manager.create_process [ARM64]: ENTRY - name='creating_dispatch_probe', elf_size=180
+manager.create_process [ARM64]: Generated PID 86
+manager.create_process [ARM64]: Creating ProcessPageTable
+manager.create_process [ARM64]: ProcessPageTable created
+manager.create_process [ARM64]: Loading ELF into page table
+manager.create_process [ARM64]: ELF loaded, entry=0x200000
+manager.create_process [ARM64]: Creating Process struct
+manager.create_process [ARM64]: Process struct created, heap_start=0x401000
+manager.create_process [ARM64]: Allocating user stack
+manager.create_process [ARM64]: Stack physical range 0x4405c000-0x4406c000
+manager.create_process [ARM64]: User stack will be at 0xfffffeff0000-0xffffff000000
+manager.create_process [ARM64]: Mapping user stack into process page table
+manager.create_process [ARM64]: map_user_stack_to_process user_bottom=0xfffffeff0000 user_top=0xffffff000000 phys_bottom=0x4405c000
+manager.create_process [ARM64]: User stack mapped successfully
+manager.create_process [ARM64]: Creating main thread
+manager.create_process [ARM64]: Main thread created
+manager.create_process [ARM64]: Main thread set on process
+manager.create_process [ARM64]: Adding PID 86 to ready queue
+manager.create_process [ARM64]: Inserting process into process table
+manager.create_process [ARM64]: SUCCESS - returning PID 86
+[CREATING_DISPATCH_ORACLE_DIAG:aarch64:refusal_delta=2:leaf_residual=16:user_stack_residual=16:balance=0:settle_rounds=3:root=0x44046000:root_release_done=1:probe_hw_clear=1:probe_shadow_clear=1:probe_cached_clear=1:retire_hw_blocked=0:retire_shadow_blocked=0:retire_cached_blocked=0]
+[CREATING_DISPATCH_ORACLE:aarch64:injected=1:refused_via_dispatch=1:requeue_retried=1:dispatched_after_publish=1:balance=0:leaf_residual=16:user_stack_residual=16]
+[TEST:process:creating_dispatch_refusal:PASS]
+[TEST:process:creating_dispatch_refusal:PASS]
+[TEST:process:retirement_fence_gate:START]
+[TEST:process:retirement_fence_gate:PASS]
+[TEST:process:reclaim_progress_gate:START]
+[TEST:process:reclaim_progress_gate:PASS]
+[TEST:process:exit_kick_protocol_gate:START]
+[TEST:process:exit_kick_protocol_gate:PASS]
+[TEST:process:census_widen_oracle:START]
+[CENSUS_WIDEN_ORACLE:aarch64:arm_target=0:baseline_reported=0:armed_reported=1:tid=1200:shape=ready_queued_nondispatching:queued_nondispatching=1:queued_nondispatch_ms=1904:cpu_silence_ms=1904:joined=1:retired=1:PASS]
+[TEST:process:census_widen_oracle:PASS]
+[SUBSYSTEM:process:sched:COMPLETE:11/11]
+[STAGE:sched:COMPLETE:103/107]
+[boot] All boot tests passed!
+[PT_ROOT_CUSTODY:no_proof=2:no_arch=0:terminated=1:undecided=3:mid_retire=1:retired=76]
+
+========================================
+  Breenix ARM64 Boot Complete!
+========================================
+
+Hello from ARM64!
+
+[boot] Launching init from pre-loaded ELF...
+manager.create_process_with_argv [ARM64]: ENTRY - name='init', elf_size=298328, argc=1
+manager.create_process_with_argv [ARM64]: Generated PID 1
+manager.create_process_with_argv [ARM64]: Creating ProcessPageTable
+manager.create_process_with_argv [ARM64]: Loading ELF into page table
+manager.create_process_with_argv [ARM64]: ELF loaded, entry=0x4000f4f4
+manager.create_process_with_argv [ARM64]: Allocating user stack
+manager.create_process_with_argv [ARM64]: User stack will be at 0xfffffeff0000-0xffffff000000
+manager.create_process_with_argv [ARM64]: argc/argv set up on stack, SP=0xfffffefffed0
+manager.create_process_with_argv [ARM64]: SUCCESS - returning PID 1
+[INIT_DESIGNATION:aarch64:designated_pid=1:reserved_collisions=0]
+[STAGE:proc:ADVANCE]
+[SUBSYSTEM:ipc:proc:START]
+[TEST:ipc:telnetd_dependencies_aarch64:START]
+[SUBSYSTEM:process:proc:START]
+[TEST:ipc:telnetd_dependencies_aarch64:PASS]
+[TEST:process:current_thread_exists:START]
+[TEST:process:current_thread_exists:PASS]
+[SUBSYSTEM:ipc:proc:COMPLETE:1/1]
+[TEST:process:process_list_populated:START]
+[TEST:process:process_list_populated:PASS]
+[TEST:process:frame_custody_healthy_counters:START]
+[TEST:process:frame_custody_healthy_counters:PASS]
+[SUBSYSTEM:process:proc:COMPLETE:3/3]
+[EXEC_LOCK_ORDER:commits=0:pm_held=0:unpinned=0:missing=0]
+[TESTS_COMPLETE:107/107]
+[BOOT_TESTS:PASS]
+[boot] Reset 4 idle thread contexts (CPUs online: 4)
+EL0_SYSCALL: First syscall from userspace (SPSR confirms EL0)
+[ OK ] syscall path verified
+[STAGE:user:ADVANCE]
+[EXEC_LOCK_ORDER:commits=0:pm_held=0:unpinned=0:missing=0]
+[TESTS_COMPLETE:107/107]
+[BOOT_TESTS:PASS]
+[init] Breenix init starting (PID 1)
+[spawn] path='/bin/heartbeat'
+manager.create_process_with_argv [ARM64]: ENTRY - name='heartbeat', elf_size=303616, argc=1
+manager.create_process_with_argv [ARM64]: Generated PID 88
+manager.create_process_with_argv [ARM64]: Creating ProcessPageTable
+manager.create_process_with_argv [ARM64]: Loading ELF into page table
+manager.create_process_with_argv [ARM64]: ELF loaded, entry=0x4000f85c
+manager.create_process_with_argv [ARM64]: Allocating user stack
+manager.create_process_with_argv [ARM64]: User stack will be at 0xfffffeff0000-0xffffff000000
+manager.create_process_with_argv [ARM64]: argc/argv set up on stack, SP=0xfffffefffed0
+manager.create_process_with_argv [ARM64]: SUCCESS - returning PID 88
+[spawn] Created child PID 88 for parent PID 1
+[spawn] Success: child PID 88 scheduled
+[init] heartbeat started (PID 88)
+[INIT_GROUP_WALK:aarch64:rows=3:init_tgid_rows=1:foreign_tgid_rows=0:refused=1:verdict=PASS]
+[INIT_GROUP_WALK:aarch64:rows=3:init_tgid_rows=1:foreign_tgid_rows=0:refused=2:verdict=PASS]
+[INIT_GROUP_REFUSAL:aarch64:phase=early:probe1=-22:probe2=-22:expected=-22]
+[spawn] path='/bin/block_eintr_oracle'
+[heartbeat] tid=1204 uptime_ms=3187 kbd_nonzero=0
+manager.create_process_with_argv [ARM64]: ENTRY - name='block_eintr_oracle', elf_size=304752, argc=1
+manager.create_process_with_argv [ARM64]: Generated PID 89
+manager.create_process_with_argv [ARM64]: Creating ProcessPageTable
+manager.create_process_with_argv [ARM64]: Loading ELF into page table
+manager.create_process_with_argv [ARM64]: ELF loaded, entry=0x4000f938
+manager.create_process_with_argv [ARM64]: Allocating user stack
+manager.create_process_with_argv [ARM64]: User stack will be at 0xfffffeff0000-0xffffff000000
+manager.create_process_with_argv [ARM64]: argc/argv set up on stack, SP=0xfffffefffed0
+manager.create_process_with_argv [ARM64]: SUCCESS - returning PID 89
+[spawn] Created child PID 89 for parent PID 1
+[spawn] Success: child PID 89 scheduled
+F123456789SC[syscall] exit(0) pid=90 name=block_eintr_oracle_child_90
+[heartbeat] tid=1204 uptime_ms=4195 kbd_nonzero=0
+[STRAND_INJECT_ORACLE:aarch64:legA_exercised=1:legA_recovered=1:legB_exercised=1:legB_recovered=1:stranded=0]
+F123456789SC[heartbeat] tid=1204 uptime_ms=5201 kbd_nonzero=0
+[syscall] exit(0) pid=91 name=block_eintr_oracle_child_91
+[SCHED_STRAND_ORACLE:aarch64:samples=102:checked=507:stranded=0:running_shape=0:ready_shape=0:resolved_production=2:resolved_exercised=2:worst_dwell_ms=0:overflow=0:worst_nonprogress_ms=0:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1867:worst_cpu_scheduler_silence_ms=1922:worst_silence_cpu=0]
+[heartbeat] tid=1204 uptime_ms=6204 kbd_nonzero=0
+[BLOCK_EINTR_ORACLE:PASS:stages=2:reads=4:short=0:eintr=0:handled=1]
+[BLOCK_EINTR_ORACLE:PASS:stages=2:reads=4:short=0:eintr=0:handled=1]
+[syscall] exit(0) pid=89 name=block_eintr_oracle
+[init] block_eintr_oracle exited pid=89 code=0
+[spawn] path='/bin/futex_handoff_oracle'
+manager.create_process_with_argv [ARM64]: ENTRY - name='futex_handoff_oracle', elf_size=291984, argc=1
+manager.create_process_with_argv [ARM64]: Generated PID 92
+manager.create_process_with_argv [ARM64]: Creating ProcessPageTable
+manager.create_process_with_argv [ARM64]: Loading ELF into page table
+manager.create_process_with_argv [ARM64]: ELF loaded, entry=0x4000ef08
+manager.create_process_with_argv [ARM64]: Allocating user stack
+manager.create_process_with_argv [ARM64]: User stack will be at 0xfffffeff0000-0xffffff000000
+manager.create_process_with_argv [ARM64]: argc/argv set up on stack, SP=0xfffffefffec0
+manager.create_process_with_argv [ARM64]: SUCCESS - returning PID 92
+[spawn] Created child PID 92 for parent PID 1
+[spawn] Success: child PID 92 scheduled
+[FUTEX_HANDOFF_ORACLE:aarch64:driven=2:stage1_ret=EAGAIN:stage1_wake=0:stage1_parked=0:stage2_ret=0:stage2_wake=1:stage2_parked=0:stage3_ret=ETIMEDOUT:stage3_elapsed_ok=1:stage3_elapsed_ms=50:rescues=0:queue_residual=0:balance=0]
+[FUTEX_HANDOFF_ORACLE_DRIVER:s1=-11:s2=0:s3=-110]
+[syscall] exit(0) pid=92 name=futex_handoff_oracle
+[init] futex_handoff_oracle exited pid=92 code=0
+[spawn] path='/bin/exec_smoke'
+[heartbeat] tid=1204 uptime_ms=7205 kbd_nonzero=0
+manager.create_process_with_argv [ARM64]: ENTRY - name='exec_smoke', elf_size=290928, argc=1
+manager.create_process_with_argv [ARM64]: Generated PID 93
+manager.create_process_with_argv [ARM64]: Creating ProcessPageTable
+manager.create_process_with_argv [ARM64]: Loading ELF into page table
+manager.create_process_with_argv [ARM64]: ELF loaded, entry=0x4000eb40
+manager.create_process_with_argv [ARM64]: Allocating user stack
+manager.create_process_with_argv [ARM64]: User stack will be at 0xfffffeff0000-0xffffff000000
+manager.create_process_with_argv [ARM64]: argc/argv set up on stack, SP=0xfffffefffed0
+manager.create_process_with_argv [ARM64]: SUCCESS - returning PID 93
+[spawn] Created child PID 93 for parent PID 1
+[spawn] Success: child PID 93 scheduled
+[EXEC_SMOKE:LAUNCH]
+[EXEC_LOCK_ORDER:FIRST_COMMIT]
+[EXEC_LOCK_ORDER:commits=1:pm_held=0:unpinned=0:missing=0]
+[EXEC_SMOKE:TARGET_ENTER argc=2]
+[EXEC_SMOKE:TARGET_OK]
+[syscall] exit(0) pid=93 name=/bin/exec_smoke_target
+[EXEC_SMOKE:LAUNCHER_EXIT code=0]
+[spawn] path='/usr/local/test/bin/clonevm_exec_test'
+manager.create_process_with_argv [ARM64]: ENTRY - name='clonevm_exec_test', elf_size=289136, argc=1
+manager.create_process_with_argv [ARM64]: Generated PID 94
+manager.create_process_with_argv [ARM64]: Creating ProcessPageTable
+manager.create_process_with_argv [ARM64]: Loading ELF into page table
+manager.create_process_with_argv [ARM64]: ELF loaded, entry=0x4000f56c
+manager.create_process_with_argv [ARM64]: Allocating user stack
+manager.create_process_with_argv [ARM64]: User stack will be at 0xfffffeff0000-0xffffff000000
+manager.create_process_with_argv [ARM64]: argc/argv set up on stack, SP=0xfffffefffec0
+manager.create_process_with_argv [ARM64]: SUCCESS - returning PID 94
+[spawn] Created child PID 94 for parent PID 1
+[spawn] Success: child PID 94 scheduled
+CLONEVM_EXEC_TEST: start
+CLONEVM_EXEC_TEST: child live
+[heartbeat] tid=1204 uptime_ms=8207 kbd_nonzero=0
+CLONEVM_EXEC_TEST: live sibling refused exec
+[syscall] exit(0) pid=95 name=thread-95
+CLONEVM_EXEC_TEST: child exited
+[EXEC_LOCK_ORDER:commits=2:pm_held=0:unpinned=0:missing=0]
+CLONEVM_EXEC_TEST: second stage
+[syscall] exit(0) pid=96 name=thread-96
+CLONEVM_EXEC_TEST: post-exec rendezvous complete
+CLONEVM_EXEC_TEST: post-exec futex keys derived
+CLONEVM_EXEC_TEST: PASS
+[syscall] exit(0) pid=94 name=/usr/local/test/bin/clonevm_exec_test
+[init] clonevm_exec_test exited pid=94 code=0
+[spawn] path='/bin/bsshd'
+
+[PC_ALIGN] ELR=0x4b1 FAR=0x7 from_el0=0 cpu=3
+[FATAL_REGS] label=PC_ALIGN cpu=3 spsr=0x1 esr=0x8a000000 far=0x7 elr=0x4b1 sp=0xffff000054264030
+  x0=0x0 x1=0x0 x2=0x0 x3=0x0
+  x4=0x0 x5=0x0 x6=0x0 x7=0x0
+  x8=0x0 x9=0x0 x10=0x0 x11=0x0
+  x12=0x0 x13=0x0 x14=0x0 x15=0x0
+  x16=0x0 x17=0x0 x18=0x0 x19=0x0
+  x20=0x0 x21=0x0 x22=0x0 x23=0x0
+  x24=0x0 x25=0x0 x26=0x0 x27=0xffff00004049e5b4
+  x28=0x5 x29=0x0 x30=0x0
+  DISPATCH_TRACE cpu=3:
+  [0] K old=7->tid=1201 elr=0xffff00004045cb84 spsr=0x60000305 x30=0xffff00004049c3d0 sp=0xffff000054264010
+  [1] I old=1201->tid=7 elr=0xffff00004049e5b4 spsr=0x5 x30=0x0 sp=0xffff000043800000
+  [2] I old=1201->tid=7 elr=0xffff00004049e5b4 spsr=0x5 x30=0x0 sp=0xffff000043800000
+  [3] K old=7->tid=1201 elr=0xffff00004045cb84 spsr=0x80000305 x30=0xffff00004049c3d0 sp=0xffff000054264010
+  [4] I old=1201->tid=7 elr=0xffff00004049e5b4 spsr=0x5 x30=0x0 sp=0xffff000043800000
+  [5] K old=7->tid=1201 elr=0xffff00004049b2a8 spsr=0x60000305 x30=0xffff0000404cdaa4 sp=0xffff000054264010
+  [6] I old=1201->tid=7 elr=0xffff00004049e5b4 spsr=0x5 x30=0x0 sp=0xffff000043800000
+  [7] K old=7->tid=1201 elr=0xffff00004049b2a8 spsr=0x60000305 x30=0xffff0000404cdaa4 sp=0xffff000054264010
+ sp=0xffff000054264030
+  x29=0x1 x30=0x0 x0=0x0 x1=0x0
+  current_tid=1201 owner_pid=1 bis=1 saved_elr=0xffff00004045cb84 saved_x30=0xffff00004049c3d0
+  last_dispatch_elr=0xffff0000404514b8 last_dispatch_spsr=0x80000005
+  stack[0]=0xffff0000404cdaa4 stack[1]=0xffff000054264080 stack[2]=0xffff00004121c810 stack[3]=0x3b9aca00
+
+[INSTRUCTION_ABORT] FAR=0xffff000040800048 ELR=0xffff00004040b064 ESR=0x8600000e IFSC=0xe TTBR0=0x100004406c000 from_el0=0
+[FATAL_REGS] label=INSTRUCTION_ABORT cpu=3 spsr=0x0 esr=0x8600000e far=0xffff000040800048 elr=0x0 sp=0xffff000054263f20
+  x0=0xffff000040800008 x1=0x4b1 x2=0x1 x3=0xffff000054263f00
+  x4=0x5 x5=0xffff000040800210 x6=0xffff00004040a300 x7=0xffff00005039a810
+  x8=0xffff000040800040 x9=0xffff00005032c538 x10=0xffff000040800008 x11=0x3c0
+  x12=0x4b1 x13=0x5 x14=0xffff0000404c6001 x15=0xffff000040800208
+  x16=0xffff000040888000 x17=0x1 x18=0xffff000040848a00 x19=0xffff000040584ac8
+  x20=0x4040 x21=0x3b9aca00 x22=0xffff000040848000 x23=0xffff000040800008
+  x24=0x0 x25=0xffff00005038dc10 x26=0xffff000040800000 x27=0x300
+  x28=0xffff000040800008 x29=0x0 x30=0x0
+  DISPATCH_TRACE cpu=3:
+  [0] K old=7->tid=1201 elr=0xffff00004045cb84 spsr=0x60000305 x30=0xffff00004049c3d0 sp=0xffff000054264010
+  [1] I old=1201->tid=7 elr=0xffff00004049e5b4 spsr=0x5 x30=0x0 sp=0xffff000043800000
+  [2] I old=1201->tid=7 elr=0xffff00004049e5b4 spsr=0x5 x30=0x0 sp=0xffff000043800000
+  [3] K old=7->tid=1201 elr=0xffff00004045cb84 spsr=0x80000305 x30=0xffff00004049c3d0 sp=0xffff000054264010
+  [4] I old=1201->tid=7 elr=0xffff00004049e5b4 spsr=0x5 x30=0x0 sp=0xffff000043800000
+  [5] K old=7->tid=1201 elr=0xffff00004049b2a8 spsr=0x60000305 x30=0xffff0000404cdaa4 sp=0xffff000054264010
+  [6] I old=1201->tid=7 elr=0xffff00004049e5b4 spsr=0x5 x30=0x0 sp=0xffff000043800000
+  [7] K old=7->tid=1201 elr=0xffff00004049b2a8 spsr=0x60000305 x30=0xffff0000404cdaa4 sp=0xffff000054264010
+[FATAL_POSTMORTEM] cpu=3 label=INSTRUCTION_ABORT
+  Deferred requeue snapshots:
+[DEFER_SNAP] cpu=0 stage=5 tid=1201 aux=0 flags=0xe02 sp=0x54264010 elr=0x4049b2a8 x30=0x404cdaa4
+[DEFER_SNAP] cpu=1 stage=5 tid=5 aux=0 flags=0x401 sp=0x43400000 elr=0x4049e5b4 x30=0x4049e5b4
+[DEFER_SNAP] cpu=2 stage=5 tid=1201 aux=0 flags=0xe02 sp=0x54264010 elr=0x4045cb84 x30=0x4049c3d0
+[DEFER_SNAP] cpu=3 stage=3 tid=7 aux=0 flags=0x401 sp=0x43800000 elr=0x4049e5b4 x30=0x4049e5b4
+
+  Idle redirect histories:
+[IDLE_REDIRECT_HISTORY] cpu=0 last=64 total=9284
+  [9220] reason=1(IDLE_DISPATCH) idle_thread=0 current_thread=0->0
+  [9221] reason=1(IDLE_DISPATCH) idle_thread=0 current_thread=0->0
+  [9222] reason=1(IDLE_DISPATCH) idle_thread=0 current_thread=0->0
+  [9223] reason=1(IDLE_DISPATCH) idle_thread=0 current_thread=0->0
+  [9224] reason=1(IDLE_DISPATCH) idle_thread=0 current_thread=0->0
+  [9225] reason=1(IDLE_DISPATCH) idle_thread=0 current_thread=0->0
+  [9226] reason=1(IDLE_DISPATCH) idle_thread=0 current_thread=0->0
+  [9227] reason=1(IDLE_DISPATCH) idle_thread=0 current_thread=0->0
+  [9228] reason=1(IDLE_DISPATCH) idle_thread=0 current_thread=0->0
+  [9229] reason=1(IDLE_DISPATCH) idle_thread=0 current_thread=0->0
+  [9230] reason=1(IDLE_DISPATCH) idle_thread=0 current_thread=0->0
+  [9231] reason=1(IDLE_DISPATCH) idle_thread=0 current_thread=0->0
+  [9232] reason=1(IDLE_DISPATCH) idle_thread=0 current_thread=0->0
+  [9233] reason=1(IDLE_DISPATCH) idle_thread=0 current_thread=0->0
+  [9234] reason=1(IDLE_DISPATCH) idle_thread=0 current_thread=0->0
+  [9235] reason=1(IDLE_DISPATCH) idle_thread=0 current_thread=0->0
+  [9236] reason=1(IDLE_DISPATCH) idle_thread=0 current_thread=0->0
+  [9237] reason=1(IDLE_DISPATCH) idle_thread=0 current_thread=0->0
+  [9238] reason=1(IDLE_DISPATCH) idle_thread=0 current_thread=0->0
+  [9239] reason=1(IDLE_DISPATCH) idle_thread=0 current_thread=0->0
+  [9240] reason=1(IDLE_DISPATCH) idle_thread=0 current_thread=0->0
+  [9241] reason=1(IDLE_DISPATCH) idle_thread=0 current_thread=0->0
+  [9242] reason=1(IDLE_DISPATCH) idle_thread=0 current_thread=0->0
+  [9243] reason=1(IDLE_DISPATCH) idle_thread=0 current_thread=0->0
+  [9244] reason=1(IDLE_DISPATCH) idle_thread=0 current_thread=0->0
+  [9245] reason=1(IDLE_DISPATCH) idle_thread=0 current_thread=0->0
+  [9246] reason=1(IDLE_DISPATCH) idle_thread=0 current_thread=0->0
+  [9247] reason=1(IDLE_DISPATCH) idle_thread=0 current_thread=0->0
+  [9248] reason=1(IDLE_DISPATCH) idle_thread=0 current_thread=0->0
+  [9249] reason=1(IDLE_DISPATCH) idle_thread=0 current_thread=0->0
+  [9250] reason=1(IDLE_DISPATCH) idle_thread=0 current_thread=0->0
+  [9251] reason=1(IDLE_DISPATCH) idle_thread=0 current_thread=0->0
+  [9252] reason=1(IDLE_DISPATCH) idle_thread=0 current_thread=0->0
+  [9253] reason=1(IDLE_DISPATCH) idle_thread=0 current_thread=0->0
+  [9254] reason=1(IDLE_DISPATCH) idle_thread=0 current_thread=0->0
+  [9255] reason=1(IDLE_DISPATCH) idle_thread=0 current_thread=0->0
+  [9256] reason=1(IDLE_DISPATCH) idle_thread=0 current_thread=0->0
+  [9257] reason=1(IDLE_DISPATCH) idle_thread=0 current_thread=0->0
+  [9258] reason=1(IDLE_DISPATCH) idle_thread=0 current_thread=0->0
+  [9259] reason=1(IDLE_DISPATCH) idle_thread=0 current_thread=0->0
+  [9260] reason=1(IDLE_DISPATCH) idle_thread=0 current_thread=0->0
+  [9261] reason=1(IDLE_DISPATCH) idle_thread=0 current_thread=0->0
+  [9262] reason=1(IDLE_DISPATCH) idle_thread=0 current_thread=0->0
+  [9263] reason=1(IDLE_DISPATCH) idle_thread=0 current_thread=0->0
+  [9264] reason=1(IDLE_DISPATCH) idle_thread=0 current_thread=0->0
+  [9265] reason=1(IDLE_DISPATCH) idle_thread=0 current_thread=0->0
+  [9266] reason=1(IDLE_DISPATCH) idle_thread=0 current_thread=0->0
+  [9267] reason=1(IDLE_DISPATCH) idle_thread=0 current_thread=0->0
+  [9268] reason=1(IDLE_DISPATCH) idle_thread=0 current_thread=0->0
+  [9269] reason=1(IDLE_DISPATCH) idle_thread=0 current_thread=0->0
+  [9270] reason=1(IDLE_DISPATCH) idle_thread=0 current_thread=0->0
+  [9271] reason=1(IDLE_DISPATCH) idle_thread=0 current_thread=0->0
+  [9272] reason=1(IDLE_DISPATCH) idle_thread=0 current_thread=0->0
+  [9273] reason=1(IDLE_DISPATCH) idle_thread=0 current_thread=0->0
+  [9274] reason=1(IDLE_DISPATCH) idle_thread=0 current_thread=0->0
+  [9275] reason=1(IDLE_DISPATCH) idle_thread=0 current_thread=0->0
+  [9276] reason=1(IDLE_DISPATCH) idle_thread=0 current_thread=0->0
+  [9277] reason=1(IDLE_DISPATCH) idle_thread=0 current_thread=0->0
+  [9278] reason=1(IDLE_DISPATCH) idle_thread=0 current_thread=0->0
+  [9279] reason=1(IDLE_DISPATCH) idle_thread=0 current_thread=0->0
+  [9280] reason=1(IDLE_DISPATCH) idle_thread=0 current_thread=0->0
+  [9281] reason=1(IDLE_DISPATCH) idle_thread=0 current_thread=0->0
+  [9282] reason=1(IDLE_DISPATCH) idle_thread=0 current_thread=0->0
+  [9283] reason=1(IDLE_DISPATCH) idle_thread=0 current_thread=0->0
+[IDLE_REDIRECT_HISTORY] cpu=1 last=64 total=3522
+  [3458] reason=1(IDLE_DISPATCH) idle_thread=5 current_thread=5->5
+  [3459] reason=1(IDLE_DISPATCH) idle_thread=5 current_thread=5->5
+  [3460] reason=1(IDLE_DISPATCH) idle_thread=5 current_thread=5->5
+  [3461] reason=1(IDLE_DISPATCH) idle_thread=5 current_thread=5->5
+  [3462] reason=1(IDLE_DISPATCH) idle_thread=5 current_thread=5->5
+  [3463] reason=1(IDLE_DISPATCH) idle_thread=5 current_thread=5->5
+  [3464] reason=1(IDLE_DISPATCH) idle_thread=5 current_thread=5->5
+  [3465] reason=1(IDLE_DISPATCH) idle_thread=5 current_thread=5->5
+  [3466] reason=1(IDLE_DISPATCH) idle_thread=5 current_thread=5->5
+  [3467] reason=1(IDLE_DISPATCH) idle_thread=5 current_thread=5->5
+  [3468] reason=1(IDLE_DISPATCH) idle_thread=5 current_thread=5->5
+  [3469] reason=1(IDLE_DISPATCH) idle_thread=5 current_thread=5->5
+  [3470] reason=1(IDLE_DISPATCH) idle_thread=5 current_thread=5->5
+  [3471] reason=1(IDLE_DISPATCH) idle_thread=5 current_thread=5->5
+  [3472] reason=1(IDLE_DISPATCH) idle_thread=5 current_thread=5->5
+  [3473] reason=1(IDLE_DISPATCH) idle_thread=5 current_thread=5->5
+  [3474] reason=1(IDLE_DISPATCH) idle_thread=5 current_thread=5->5
+  [3475] reason=1(IDLE_DISPATCH) idle_thread=5 current_thread=5->5
+  [3476] reason=1(IDLE_DISPATCH) idle_thread=5 current_thread=5->5
+  [3477] reason=1(IDLE_DISPATCH) idle_thread=5 current_thread=5->5
+  [3478] reason=1(IDLE_DISPATCH) idle_thread=5 current_thread=5->5
+  [3479] reason=1(IDLE_DISPATCH) idle_thread=5 current_thread=5->5
+  [3480] reason=1(IDLE_DISPATCH) idle_thread=5 current_thread=5->5
+  [3481] reason=1(IDLE_DISPATCH) idle_thread=5 current_thread=5->5
+  [3482] reason=1(IDLE_DISPATCH) idle_thread=5 current_thread=5->5
+  [3483] reason=1(IDLE_DISPATCH) idle_thread=5 current_thread=5->5
+  [3484] reason=1(IDLE_DISPATCH) idle_thread=5 current_thread=5->5
+  [3485] reason=1(IDLE_DISPATCH) idle_thread=5 current_thread=5->5
+  [3486] reason=1(IDLE_DISPATCH) idle_thread=5 current_thread=5->5
+  [3487] reason=1(IDLE_DISPATCH) idle_thread=5 current_thread=5->5
+  [3488] reason=1(IDLE_DISPATCH) idle_thread=5 current_thread=5->5
+  [3489] reason=1(IDLE_DISPATCH) idle_thread=5 current_thread=5->5
+  [3490] reason=1(IDLE_DISPATCH) idle_thread=5 current_thread=5->5
+  [3491] reason=1(IDLE_DISPATCH) idle_thread=5 current_thread=5->5
+  [3492] reason=1(IDLE_DISPATCH) idle_thread=5 current_thread=5->5
+  [3493] reason=1(IDLE_DISPATCH) idle_thread=5 current_thread=5->5
+  [3494] reason=1(IDLE_DISPATCH) idle_thread=5 current_thread=5->5
+  [3495] reason=1(IDLE_DISPATCH) idle_thread=5 current_thread=5->5
+  [3496] reason=1(IDLE_DISPATCH) idle_thread=5 current_thread=5->5
+  [3497] reason=1(IDLE_DISPATCH) idle_thread=5 current_thread=5->5
+  [3498] reason=1(IDLE_DISPATCH) idle_thread=5 current_thread=5->5
+  [3499] reason=1(IDLE_DISPATCH) idle_thread=5 current_thread=5->5
+  [3500] reason=1(IDLE_DISPATCH) idle_thread=5 current_thread=5->5
+  [3501] reason=1(IDLE_DISPATCH) idle_thread=5 current_thread=5->5
+  [3502] reason=1(IDLE_DISPATCH) idle_thread=5 current_thread=5->5
+  [3503] reason=1(IDLE_DISPATCH) idle_thread=5 current_thread=5->5
+  [3504] reason=1(IDLE_DISPATCH) idle_thread=5 current_thread=5->5
+  [3505] reason=1(IDLE_DISPATCH) idle_thread=5 current_thread=5->5
+  [3506] reason=1(IDLE_DISPATCH) idle_thread=5 current_thread=5->5
+  [3507] reason=1(IDLE_DISPATCH) idle_thread=5 current_thread=5->5
+  [3508] reason=1(IDLE_DISPATCH) idle_thread=5 current_thread=5->5
+  [3509] reason=1(IDLE_DISPATCH) idle_thread=5 current_thread=5->5
+  [3510] reason=1(IDLE_DISPATCH) idle_thread=5 current_thread=5->5
+  [3511] reason=1(IDLE_DISPATCH) idle_thread=5 current_thread=5->5
+  [3512] reason=1(IDLE_DISPATCH) idle_thread=5 current_thread=5->5
+  [3513] reason=1(IDLE_DISPATCH) idle_thread=5 current_thread=5->5
+  [3514] reason=1(IDLE_DISPATCH) idle_thread=5 current_thread=5->5
+  [3515] reason=1(IDLE_DISPATCH) idle_thread=5 current_thread=5->5
+  [3516] reason=1(IDLE_DISPATCH) idle_thread=5 current_thread=5->5
+  [3517] reason=1(IDLE_DISPATCH) idle_thread=5 current_thread=5->5
+  [3518] reason=1(IDLE_DISPATCH) idle_thread=5 current_thread=5->5
+  [3519] reason=1(IDLE_DISPATCH) idle_thread=5 current_thread=5->5
+  [3520] reason=1(IDLE_DISPATCH) idle_thread=5 current_thread=5->5
+  [3521] reason=1(IDLE_DISPATCH) idle_thread=5 current_thread=5->5
+[IDLE_REDIRECT_HISTORY] cpu=2 last=64 total=3656
+  [3592] reason=1(IDLE_DISPATCH) idle_thread=6 current_thread=6->6
+  [3593] reason=1(IDLE_DISPATCH) idle_thread=6 current_thread=6->6
+  [3594] reason=1(IDLE_DISPATCH) idle_thread=6 current_thread=6->6
+  [3595] reason=1(IDLE_DISPATCH) idle_thread=6 current_thread=6->6
+  [3596] reason=1(IDLE_DISPATCH) idle_thread=6 current_thread=6->6
+  [3597] reason=1(IDLE_DISPATCH) idle_thread=6 current_thread=6->6
+  [3598] reason=1(IDLE_DISPATCH) idle_thread=6 current_thread=6->6
+  [3599] reason=1(IDLE_DISPATCH) idle_thread=6 current_thread=6->6
+  [3600] reason=1(IDLE_DISPATCH) idle_thread=6 current_thread=6->6
+  [3601] reason=1(IDLE_DISPATCH) idle_thread=6 current_thread=6->6
+  [3602] reason=1(IDLE_DISPATCH) idle_thread=6 current_thread=6->6
+  [3603] reason=1(IDLE_DISPATCH) idle_thread=6 current_thread=6->6
+  [3604] reason=1(IDLE_DISPATCH) idle_thread=6 current_thread=6->6
+  [3605] reason=1(IDLE_DISPATCH) idle_thread=6 current_thread=6->6
+  [3606] reason=1(IDLE_DISPATCH) idle_thread=6 current_thread=6->6
+  [3607] reason=1(IDLE_DISPATCH) idle_thread=6 current_thread=6->6
+  [3608] reason=1(IDLE_DISPATCH) idle_thread=6 current_thread=6->6
+  [3609] reason=1(IDLE_DISPATCH) idle_thread=6 current_thread=6->6
+  [3610] reason=1(IDLE_DISPATCH) idle_thread=6 current_thread=6->6
+  [3611] reason=1(IDLE_DISPATCH) idle_thread=6 current_thread=6->6
+  [3612] reason=1(IDLE_DISPATCH) idle_thread=6 current_thread=6->6
+  [3613] reason=1(IDLE_DISPATCH) idle_thread=6 current_thread=6->6
+  [3614] reason=1(IDLE_DISPATCH) idle_thread=6 current_thread=6->6
+  [3615] reason=1(IDLE_DISPATCH) idle_thread=6 current_thread=6->6
+  [3616] reason=1(IDLE_DISPATCH) idle_thread=6 current_thread=6->6
+  [3617] reason=1(IDLE_DISPATCH) idle_thread=6 current_thread=6->6
+  [3618] reason=1(IDLE_DISPATCH) idle_thread=6 current_thread=6->6
+  [3619] reason=1(IDLE_DISPATCH) idle_thread=6 current_thread=6->6
+  [3620] reason=1(IDLE_DISPATCH) idle_thread=6 current_thread=6->6
+  [3621] reason=1(IDLE_DISPATCH) idle_thread=6 current_thread=6->6
+  [3622] reason=1(IDLE_DISPATCH) idle_thread=6 current_thread=6->6
+  [3623] reason=1(IDLE_DISPATCH) idle_thread=6 current_thread=6->6
+  [3624] reason=1(IDLE_DISPATCH) idle_thread=6 current_thread=6->6
+  [3625] reason=1(IDLE_DISPATCH) idle_thread=6 current_thread=6->6
+  [3626] reason=1(IDLE_DISPATCH) idle_thread=6 current_thread=6->6
+  [3627] reason=1(IDLE_DISPATCH) idle_thread=6 current_thread=6->6
+  [3628] reason=1(IDLE_DISPATCH) idle_thread=6 current_thread=6->6
+  [3629] reason=1(IDLE_DISPATCH) idle_thread=6 current_thread=6->6
+  [3630] reason=1(IDLE_DISPATCH) idle_thread=6 current_thread=6->6
+  [3631] reason=1(IDLE_DISPATCH) idle_thread=6 current_thread=6->6
+  [3632] reason=1(IDLE_DISPATCH) idle_thread=6 current_thread=6->6
+  [3633] reason=1(IDLE_DISPATCH) idle_thread=6 current_thread=6->6
+  [3634] reason=1(IDLE_DISPATCH) idle_thread=6 current_thread=6->6
+  [3635] reason=1(IDLE_DISPATCH) idle_thread=6 current_thread=6->6
+  [3636] reason=1(IDLE_DISPATCH) idle_thread=6 current_thread=6->6
+  [3637] reason=1(IDLE_DISPATCH) idle_thread=6 current_thread=6->6
+  [3638] reason=1(IDLE_DISPATCH) idle_thread=6 current_thread=6->6
+  [3639] reason=1(IDLE_DISPATCH) idle_thread=6 current_thread=6->6
+  [3640] reason=1(IDLE_DISPATCH) idle_thread=6 current_thread=6->6
+  [3641] reason=1(IDLE_DISPATCH) idle_thread=6 current_thread=6->6
+  [3642] reason=1(IDLE_DISPATCH) idle_thread=6 current_thread=6->6
+  [3643] reason=1(IDLE_DISPATCH) idle_thread=6 current_thread=6->6
+  [3644] reason=1(IDLE_DISPATCH) idle_thread=6 current_thread=6->6
+  [3645] reason=1(IDLE_DISPATCH) idle_thread=6 current_thread=6->6
+  [3646] reason=1(IDLE_DISPATCH) idle_thread=6 current_thread=6->6
+  [3647] reason=1(IDLE_DISPATCH) idle_thread=6 current_thread=6->6
+  [3648] reason=1(IDLE_DISPATCH) idle_thread=6 current_thread=6->6
+  [3649] reason=1(IDLE_DISPATCH) idle_thread=6 current_thread=6->6
+  [3650] reason=1(IDLE_DISPATCH) idle_thread=6 current_thread=6->6
+  [3651] reason=1(IDLE_DISPATCH) idle_thread=6 current_thread=6->6
+  [3652] reason=1(IDLE_DISPATCH) idle_thread=6 current_thread=6->6
+  [3653] reason=1(IDLE_DISPATCH) idle_thread=6 current_thread=6->6
+  [3654] reason=1(IDLE_DISPATCH) idle_thread=6 current_thread=6->6
+  [3655] reason=1(IDLE_DISPATCH) idle_thread=6 current_thread=6->6
+[IDLE_REDIRECT_HISTORY] cpu=3 last=64 total=3823
+  [3759] reason=1(IDLE_DISPATCH) idle_thread=7 current_thread=7->7
+  [3760] reason=1(IDLE_DISPATCH) idle_thread=7 current_thread=7->7
+  [3761] reason=1(IDLE_DISPATCH) idle_thread=7 current_thread=7->7
+  [3762] reason=1(IDLE_DISPATCH) idle_thread=7 current_thread=7->7
+  [3763] reason=1(IDLE_DISPATCH) idle_thread=7 current_thread=7->7
+  [3764] reason=1(IDLE_DISPATCH) idle_thread=7 current_thread=7->7
+  [3765] reason=1(IDLE_DISPATCH) idle_thread=7 current_thread=7->7
+  [3766] reason=1(IDLE_DISPATCH) idle_thread=7 current_thread=7->7
+  [3767] reason=1(IDLE_DISPATCH) idle_thread=7 current_thread=7->7
+  [3768] reason=1(IDLE_DISPATCH) idle_thread=7 current_thread=7->7
+  [3769] reason=1(IDLE_DISPATCH) idle_thread=7 current_thread=7->7
+  [3770] reason=1(IDLE_DISPATCH) idle_thread=7 current_thread=7->7
+  [3771] reason=1(IDLE_DISPATCH) idle_thread=7 current_thread=7->7
+  [3772] reason=1(IDLE_DISPATCH) idle_thread=7 current_thread=7->7
+  [3773] reason=1(IDLE_DISPATCH) idle_thread=7 current_thread=7->7
+  [3774] reason=1(IDLE_DISPATCH) idle_thread=7 current_thread=7->7
+  [3775] reason=1(IDLE_DISPATCH) idle_thread=7 current_thread=7->7
+  [3776] reason=1(IDLE_DISPATCH) idle_thread=7 current_thread=7->7
+  [3777] reason=1(IDLE_DISPATCH) idle_thread=7 current_thread=7->7
+  [3778] reason=1(IDLE_DISPATCH) idle_thread=7 current_thread=7->7
+  [3779] reason=1(IDLE_DISPATCH) idle_thread=7 current_thread=7->7
+  [3780] reason=1(IDLE_DISPATCH) idle_thread=7 current_thread=7->7
+  [3781] reason=1(IDLE_DISPATCH) idle_thread=7 current_thread=7->7
+  [3782] reason=1(IDLE_DISPATCH) idle_thread=7 current_thread=7->7
+  [3783] reason=1(IDLE_DISPATCH) idle_thread=7 current_thread=7->7
+  [3784] reason=1(IDLE_DISPATCH) idle_thread=7 current_thread=7->7
+  [3785] reason=1(IDLE_DISPATCH) idle_thread=7 current_thread=7->7
+  [3786] reason=1(IDLE_DISPATCH) idle_thread=7 current_thread=7->7
+  [3787] reason=1(IDLE_DISPATCH) idle_thread=7 current_thread=7->7
+  [3788] reason=1(IDLE_DISPATCH) idle_thread=7 current_thread=7->7
+  [3789] reason=1(IDLE_DISPATCH) idle_thread=7 current_thread=7->7
+  [3790] reason=1(IDLE_DISPATCH) idle_thread=7 current_thread=7->7
+  [3791] reason=1(IDLE_DISPATCH) idle_thread=7 current_thread=7->7
+  [3792] reason=1(IDLE_DISPATCH) idle_thread=7 current_thread=7->7
+  [3793] reason=1(IDLE_DISPATCH) idle_thread=7 current_thread=7->7
+  [3794] reason=1(IDLE_DISPATCH) idle_thread=7 current_thread=7->7
+  [3795] reason=1(IDLE_DISPATCH) idle_thread=7 current_thread=7->7
+  [3796] reason=1(IDLE_DISPATCH) idle_thread=7 current_thread=7->7
+  [3797] reason=1(IDLE_DISPATCH) idle_thread=7 current_thread=7->7
+  [3798] reason=1(IDLE_DISPATCH) idle_thread=7 current_thread=7->7
+  [3799] reason=1(IDLE_DISPATCH) idle_thread=7 current_thread=7->7
+  [3800] reason=1(IDLE_DISPATCH) idle_thread=7 current_thread=7->7
+  [3801] reason=1(IDLE_DISPATCH) idle_thread=7 current_thread=7->7
+  [3802] reason=1(IDLE_DISPATCH) idle_thread=7 current_thread=7->7
+  [3803] reason=1(IDLE_DISPATCH) idle_thread=7 current_thread=7->7
+  [3804] reason=1(IDLE_DISPATCH) idle_thread=7 current_thread=7->7
+  [3805] reason=1(IDLE_DISPATCH) idle_thread=7 current_thread=7->7
+  [3806] reason=1(IDLE_DISPATCH) idle_thread=7 current_thread=7->7
+  [3807] reason=1(IDLE_DISPATCH) idle_thread=7 current_thread=7->7
+  [3808] reason=1(IDLE_DISPATCH) idle_thread=7 current_thread=7->7
+  [3809] reason=1(IDLE_DISPATCH) idle_thread=7 current_thread=7->7
+  [3810] reason=1(IDLE_DISPATCH) idle_thread=7 current_thread=7->7
+  [3811] reason=1(IDLE_DISPATCH) idle_thread=7 current_thread=7->7
+  [3812] reason=1(IDLE_DISPATCH) idle_thread=7 current_thread=7->7
+  [3813] reason=1(IDLE_DISPATCH) idle_thread=7 current_thread=7->7
+  [3814] reason=1(IDLE_DISPATCH) idle_thread=7 current_thread=7->7
+  [3815] reason=1(IDLE_DISPATCH) idle_thread=7 current_thread=7->7
+  [3816] reason=1(IDLE_DISPATCH) idle_thread=7 current_thread=7->7
+  [3817] reason=1(IDLE_DISPATCH) idle_thread=7 current_thread=7->7
+  [3818] reason=1(IDLE_DISPATCH) idle_thread=7 current_thread=7->7
+  [3819] reason=1(IDLE_DISPATCH) idle_thread=7 current_thread=7->7
+  [3820] reason=1(IDLE_DISPATCH) idle_thread=7 current_thread=7->7
+  [3821] reason=1(IDLE_DISPATCH) idle_thread=7 current_thread=7->7
+  [3822] reason=1(IDLE_DISPATCH) idle_thread=7 current_thread=7->7
+
+  Stack pivot alias histories:
+
+  Save-skew slots:
+[SAVE_SKEW] none recorded on any cpu
+
+  Inline save-[shekaertbweat] ti ds=l12o04 uptimet_ms=9s215 kbd:_
+nonzero=0
+[INLINE_SAVE_SKEW] none recorded on any cpu
+
+  Stack-half boundary canaries:
+    cpu=0 intact=1
+    cpu=1 intact=1
+    cpu=2 intact=1
+    cpu=3 intact=1
+    cpu=4 intact=1
+    cpu=5 intact=1
+    cpu=6 intact=1
+    cpu=7 intact=1
+
+  Last-dispatched tids:
+[LAST_DISPATCHED_TID] cpu=0 tid=1201 kstack_slot=5
+[LAST_DISPATCHED_TID] cpu=1 tid=4 kstack_slot=2
+[LAST_DISPATCHED_TID] cpu=2 tid=1201 kstack_slot=5
+[LAST_DISPATCHED_TID] cpu=3 tid=1201 kstack_slot=5
+[LAST_DISPATCHED_TID] cpu=4 tid=0
+[LAST_DISPATCHED_TID] cpu=5 tid=0
+[LAST_DISPATCHED_TID] cpu=6 tid=0
+[LAST_DISPATCHED_TID] cpu=7 tid=0
+
+[INSTRUCTION_ABORT] FAR=0x0 ELR=0x0 ESR=0x86000005 IFSC=0x5 TTBR0=0x100004406c000 from_el0=0
+[FATAL_REGS] label=INSTRUCTION_ABORT cpu=3 spsr=0x0 esr=0x86000005 far=0x0 elr=0x0 sp=0xffff000054263b00
+  x0=0x0 x1=0x0 x2=0x0 x3=0x0
+  x4=0x0 x5=0x0 x6=0x0 x7=0x0
+  x8=0x0 x9=0x0 x10=0x0 x11=0x0
+  x12=0x0 x13=0x0 x14=0x0 x15=0x0
+  x16=0x0 x17=0x0 x18=0x0 x19=0x0
+  x20=0x0 x21=0x0 x22=0x0 x23=0x0
+  x24=0x0 x25=0x0 x26=0x0 x27=0x0
+  x28=0x0 x29=0x0 x30=0x0
+  DISPATCH_TRACE cpu=3:
+  [0] K old=7->tid=1201 elr=0xffff00004045cb84 spsr=0x60000305 x30=0xffff00004049c3d0 sp=0xffff000054264010
+  [1] I old=1201->tid=7 elr=0xffff00004049e5b4 spsr=0x5 x30=0x0 sp=0xffff000043800000
+  [2] I old=1201->tid=7 elr=0xffff00004049e5b4 spsr=0x5 x30=0x0 sp=0xffff000043800000
+  [3] K old=7->tid=1201 elr=0xffff00004045cb84 spsr=0x80000305 x30=0xffff00004049c3d0 sp=0xffff000054264010
+  [4] I old=1201->tid=7 elr=0xffff00004049e5b4 spsr=0x5 x30=0x0 sp=0xffff000043800000
+  [5] K old=7->tid=1201 elr=0xffff00004049b2a8 spsr=0x60000305 x30=0xffff0000404cdaa4 sp=0xffff000054264010
+  [6] I old=1201->tid=7 elr=0xffff00004049e5b4 spsr=0x5 x30=0x0 sp=0xffff000043800000
+  [7] K old=7->tid=1201 elr=0xffff00004049b2a8 spsr=0x60000305 x30=0xffff0000404cdaa4 sp=0xffff000054264010
+[TRACE] === CPU 3 Buffer ===
+[TRACE] Events: 1024 (write_idx=791217, dropped=790193)
+[TRACE] CPU3 idx=689 ts=571473687 type=0xff46 SCHED_DIAG_STAGE stage<<16|tid=65543
+[TRACE] CPU3 idx=690 ts=571473750 type=0xff47 SCHED_DIAG_TID_PAIR old_tid<<16|new_tid=458752
+[TRACE] CPU3 idx=691 ts=571473750 type=0xff48 SCHED_DIAG_FLAGS flags=2
+[TRACE] CPU3 idx=692 ts=571473937 type=0xff46 SCHED_DIAG_STAGE stage<<16|tid=196615
+[TRACE] CPU3 idx=693 ts=571474000 type=0xff47 SCHED_DIAG_TID_PAIR old_tid<<16|new_tid=458759
+[TRACE] CPU3 idx=694 ts=571474000 type=0xff48 SCHED_DIAG_FLAGS flags=0
+[TRACE] CPU3 idx=695 ts=571474000 type=0xff46 SCHED_DIAG_STAGE stage<<16|tid=327687
+[TRACE] CPU3 idx=696 ts=571474000 type=0xff47 SCHED_DIAG_TID_PAIR old_tid<<16|new_tid=458759
+[TRACE] CPU3 idx=697 ts=571474000 type=0xff48 SCHED_DIAG_FLAGS flags=0
+[TRACE] CPU3 idx=698 ts=571474250 type=0xff46 SCHED_DIAG_STAGE stage<<16|tid=65543
+[TRACE] CPU3 idx=699 ts=571474250 type=0xff47 SCHED_DIAG_TID_PAIR old_tid<<16|new_tid=458752
+[TRACE] CPU3 idx=700 ts=571474250 type=0xff48 SCHED_DIAG_FLAGS flags=2
+[TRACE] CPU3 idx=701 ts=571474875 type=0xff46 SCHED_DIAG_STAGE stage<<16|tid=196615
+[TRACE] CPU3 idx=702 ts=571474875 type=0xff47 SCHED_DIAG_TID_PAIR old_tid<<16|new_tid=458759
+[TRACE] CPU3 idx=703 ts=571474875 type=0xff48 SCHED_DIAG_FLAGS flags=0
+[TRACE] CPU3 idx=704 ts=571474875 type=0xff46 SCHED_DIAG_STAGE stage<<16|tid=327687
+[TRACE] CPU3 idx=705 ts=571474875 type=0xff47 SCHED_DIAG_TID_PAIR old_tid<<16|new_tid=458759
+[TRACE] CPU3 idx=706 ts=571474937 type=0xff48 SCHED_DIAG_FLAGS flags=0
+[TRACE] CPU3 idx=707 ts=571475187 type=0xff46 SCHED_DIAG_STAGE stage<<16|tid=65543
+[TRACE] CPU3 idx=708 ts=571475187 type=0xff47 SCHED_DIAG_TID_PAIR old_tid<<16|new_tid=458752
+[TRACE] CPU3 idx=709 ts=571475187 type=0xff48 SCHED_DIAG_FLAGS flags=2
+[TRACE] CPU3 idx=710 ts=571475437 type=0xff46 SCHED_DIAG_STAGE stage<<16|tid=196615
+[TRACE] CPU3 idx=711 ts=571475437 type=0xff47 SCHED_DIAG_TID_PAIR old_tid<<16|new_tid=458759
+[TRACE] CPU3 idx=712 ts=571475437 type=0xff48 SCHED_DIAG_FLAGS flags=0
+[TRACE] CPU3 idx=713 ts=571475437 type=0xff46 SCHED_DIAG_STAGE stage<<16|tid=327687
+[TRACE] CPU3 idx=714 ts=571475437 type=0xff47 SCHED_DIAG_TID_PAIR old_tid<<16|new_tid=458759
+[TRACE] CPU3 idx=715 ts=571475437 type=0xff48 SCHED_DIAG_FLAGS flags=0
+[TRACE] CPU3 idx=716 ts=571475750 type=0xff46 SCHED_DIAG_STAGE stage<<16|tid=65543
+[TRACE] CPU3 idx=717 ts=571475750 type=0xff47 SCHED_DIAG_TID_PAIR old_tid<<16|new_tid=458752
+[TRACE] CPU3 idx=718 ts=571475750 type=0xff48 SCHED_DIAG_FLAGS flags=2
+
+[INSTRUCTION_ABORT] FAR=0x0 ELR=0x0 ESR=0x86000005 IFSC=0x5 TTBR0=0x100004406c000 from_el0=0
+[FATAL_REGS] label=INSTRUCTION_ABORT cpu=3 spsr=0x0 esr=0x86000005 far=0x0 elr=0x0 sp=0xffff0000542636b0
+  x0=0x0 x1=0x0 x2=0x0 x3=0x0
+  x4=0x0 x5=0x0 x6=0x0 x7=0x0
+  x8=0x0 x9=0x0 x10=0x0 x11=0x0
+  x12=0x0 x13=0x0 x14=0x0 x15=0x0
+  x16=0x0 x17=0x0 x18=0x0 x19=0x0
+  x20=0x0 x21=0x0 x22=0x0 x23=0x0
+  x24=0x0 x25=0x0 x26=0x0 x27=0x0
+  x28=0x0 x29=0x0 x30=0x0
+  DISPATCH_TRACE cpu=3:
+  [0] K old=7->tid=1201 elr=0xffff00004045cb84 spsr=0x60000305 x30=0xffff00004049c3d0 sp=0xffff000054264010
+  [1] I old=1201->tid=7 elr=0xffff00004049e5b4 spsr=0x5 x30=0x0 sp=0xffff000043800000
+  [2] I old=1201->tid=7 elr=0xffff00004049e5b4 spsr=0x5 x30=0x0 sp=0xffff000043800000
+  [3] K old=7->tid=1201 elr=0xffff00004045cb84 spsr=0x80000305 x30=0xffff00004049c3d0 sp=0xffff000054264010
+  [4] I old=1201->tid=7 elr=0xffff00004049e5b4 spsr=0x5 x30=0x0 sp=0xffff000043800000
+  [5] K old=7->tid=1201 elr=0xffff00004049b2a8 spsr=0x60000305 x30=0xffff0000404cdaa4 sp=0xffff000054264010
+  [6] I old=1201->tid=7 elr=0xffff00004049e5b4 spsr=0x5 x30=0x0 sp=0xffff000043800000
+  [7] K old=7->tid=1201 elr=0xffff00004049b2a8 spsr=0x60000305 x30=0xffff0000404cdaa4 sp=0xffff000054264010
+[TRACE] === CPU 3 Buffer ===
+[TRACE] Events: 1024 (write_idx=791219, dropped=790195)
+[TRACE] CPU3 idx=691 ts=571473750 type=0xff48 SCHED_DIAG_FLAGS flags=2
+[TRACE] CPU3 idx=692 ts=571473937 type=0xff46 SCHED_DIAG_STAGE stage<<16|tid=196615
+[TRACE] CPU3 idx=693 ts=571474000 type=0xff47 SCHED_DIAG_TID_PAIR old_tid<<16|new_tid=458759
+[TRACE] CPU3 idx=694 ts=571474000 type=0xff48 SCHED_DIAG_FLAGS flags=0
+[TRACE] CPU3 idx=695 ts=571474000 type=0xff46 SCHED_DIAG_STAGE stage<<16|tid=327687
+[TRACE] CPU3 idx=696 ts=571474000 type=0xff47 SCHED_DIAG_TID_PAIR old_tid<<16|new_tid=458759
+[TRACE] CPU3 idx=697 ts=571474000 type=0xff48 SCHED_DIAG_FLAGS flags=0
+[TRACE] CPU3 idx=698 ts=571474250 type=0xff46 SCHED_DIAG_STAGE stage<<16|tid=65543
+[TRACE] CPU3 idx=699 ts=571474250 type=0xff47 SCHED_DIAG_TID_PAIR old_tid<<16|new_tid=458752
+[TRACE] CPU3 idx=700 ts=571474250 type=0xff48 SCHED_DIAG_FLAGS flags=2
+[TRACE] CPU3 idx=701 ts=571474875 type=0xff46 SCHED_DIAG_STAGE stage<<16|tid=196615
+[TRACE] CPU3 idx=702 ts=571474875 type=0xff47 SCHED_DIAG_TID_PAIR old_tid<<16|new_tid=458759
+[TRACE] CPU3 idx=703 ts=571474875 type=0xff48 SCHED_DIAG_FLAGS flags=0
+[TRACE] CPU3 idx=704 ts=571474875 type=0xff46 SCHED_DIAG_STAGE stage<<16|tid=327687
+[TRACE] CPU3 idx=705 ts=571474875 type=0xff47 SCHED_DIAG_TID_PAIR old_tid<<16|new_tid=458759
+[TRACE] CPU3 idx=706 ts=571474937 type=0xff48 SCHED_DIAG_FLAGS flags=0
+[TRACE] CPU3 idx=707 ts=571475187 type=0xff46 SCHED_DIAG_STAGE stage<<16|tid=65543
+[TRACE] CPU3 idx=708 ts=571475187 type=0xff47 SCHED_DIAG_TID_PAIR old_tid<<16|new_tid=458752
+[TRACE] CPU3 idx=709 ts=571475187 type=0xff48 SCHED_DIAG_FLAGS flags=2
+[TRACE] CPU3 idx=710 ts=571475437 type=0xff46 SCHED_DIAG_STAGE stage<<16|tid=196615
+[TRACE] CPU3 idx=711 ts=571475437 type=0xff47 SCHED_DIAG_TID_PAIR old_tid<<16|new_tid=458759
+[TRACE] CPU3 idx=712 ts=571475437 type=0xff48 SCHED_DIAG_FLAGS flags=0
+[TRACE] CPU3 idx=713 ts=571475437 type=0xff46 SCHED_DIAG_STAGE stage<<16|tid=327687
+[TRACE] CPU3 idx=714 ts=571475437 type=0xff47 SCHED_DIAG_TID_PAIR old_tid<<16|new_tid=458759
+[TRACE] CPU3 idx=715 ts=571475437 type=0xff48 SCHED_DIAG_FLAGS flags=0
+[TRACE] CPU3 idx=716 ts=571475750 type=0xff46 SCHED_DIAG_STAGE stage<<16|tid=65543
+[TRACE] CPU3 idx=717 ts=571475750 type=0xff47 SCHED_DIAG_TID_PAIR old_tid<<16|new_tid=458752
+[TRACE] CPU3 idx=718 ts=571475750 type=0xff48 SCHED_DIAG_FLAGS flags=2
+[TRACE] CPU3 idx=719 ts=571475937 type=0xff46 SCHED_DIAG_STAGE stage<<16|tid=196615
+[TRACE] CPU3 idx=720 ts=571476000 type=0xff47 SCHED_DIAG_TID_PAIR old_tid<<16|new_tid=458759
+[TRACE] CPU3 idx=721 ts=571476000 type=0xff48 SCHED_DIAG_FLAGS flags=0
+[TRACE] CPU3 idx=722 ts=571476000 type=0xff46 SCHED_DIAG_STAGE stage<<16|tid=327687
+[TRACE] CPU3 idx=723 ts=571476000 type=0xff47 SCHED_DIAG_TID_PAIR old_tid<<16|new_tid=458759
+[TRACE] CPU3 idx=724 ts=571476000 type=0xff48 SCHED_DIAG_FLAGS flags=0
+[TRACE] CPU3 idx=725 ts=571476250 type=0xff46 SCHED_DIAG_STAGE stage<<16|tid=65543
+[TRACE] CPU3 idx=726 ts=571476250 type=0xff47 SCHED_DIAG_TID_PAIR old_tid<<16|new_tid=458752
+[TRACE] CPU3 idx=727 ts=571476250 type=0xff48 SCHED_DIAG_FLAGS flags=2
+[TRACE] CPU3 idx=728 ts=571476500 type=0xff46 SCHED_DIAG_STAGE stage<<16|tid=196615
+[TRACE] CPU3 idx=729 ts=571476500 type=0xff47 SCHED_DIAG_TID_PAIR old_tid<<16|new_tid=458759
+[TRACE] CPU3 idx=730 ts=571476500 type=0xff48 SCHED_DIAG_FLAGS flags=0
+[TRACE] CPU3 idx=731 ts=571476500 type=0xff46 SCHED_DIAG_STAGE stage<<16|tid=327687
+[TRACE] CPU3 idx=732 ts=571476500 type=0xff47 SCHED_DIAG_TID_PAIR old_tid<<16|new_tid=458759
+[TRACE] CPU3 idx=733 ts=571476500 type=0xff48 SCHED_DIAG_FLAGS flags=0
+[TRACE] CPU3 idx=734 ts=571476812 type=0xff46 SCHED_DIAG_STAGE stage<<16|tid=65543
+[TRACE] CPU3 idx=735 ts=571476812 type=0xff47 SCHED_DIAG_TID_PAIR old_tid<<16|new_tid=458752
+[TRACE] CPU3 idx=736 ts=571476812 type=0xff48 SCHED_DIAG_FLAGS flags=2
+[TRACE] CPU3 idx=737 ts=571477000 type=0xff46 SCHED_DIAG_STAGE stage<<16|tid=196615
+[TRACE] CPU3 idx=738 ts=571477000 type=0xff47 SCHED_DIAG_TID_PAIR old_tid<<16|new_tid=458759
+[TRACE] CPU3 idx=739 ts=571477000 type=0xff48 SCHED_DIAG_FLAGS flags=0
+[TRACE] CPU3 idx=740 ts=571477000 type=0xff46 SCHED_DIAG_STAGE stage<<16|tid=327687
+[TRACE] CPU3 idx=741 ts=571477000 type=0xff47 SCHED_DIAG_TID_PAIR old_tid<<16|new_tid=458759
+[TRACE] CPU3 idx=742 ts=571477062 type=0xff48 SCHED_DIAG_FLAGS flags=0
+[TRACE] CPU3 idx=743 ts=571477312 type=0xff46 SCHED_DIAG_STAGE stage<<16|tid=65543
+[TRACE] CPU3 idx=744 ts=571477312 type=0xff47 SCHED_DIAG_TID_PAIR old_tid<<16|new_tid=458752
+[TRACE] CPU3 idx=745 ts=571477312 type=0xff48 SCHED_DIAG_FLAGS flags=2
+[TRACE] CPU3 idx=746 ts=571477500 type=0xff46 SCHED_DIAG_STAGE stage<<16|tid=196615
+[TRACE] CPU3 idx=747 ts=571477500 type=0xff47 SCHED_DIAG_TID_PAIR old_tid<<16|new_tid=458759
+[TRACE] CPU3 idx=748 ts=571477562 type=0xff48 SCHED_DIAG_FLAGS flags=0
+[TRACE] CPU3 idx=749 ts=571477562 type=0xff46 SCHED_DIAG_STAGE stage<<16|tid=327687
+[TRACE] CPU3 idx=750 ts=571477562 type=0xff47 SCHED_DIAG_TID_PAIR old_tid<<16|new_tid=458759
+[TRACE] CPU3 idx=751 ts=571477562 type=0xff48 SCHED_DIAG_FLAGS flags=0
+[TRACE] CPU3 idx=752 ts=571477812 type=0xff46 SCHED_DIAG_STAGE stage<<16|tid=65543
+[TRACE] CPU3 idx=753 ts=571477812 type=0xff47 SCHED_DIAG_TID_PAIR old_tid<<16|new_tid=458752
+[TRACE] CPU3 idx=754 ts=571477812 type=0xff48 SCHED_DIAG_FLAGS flags=2
+[TRACE] CPU3 idx=755 ts=571478062 type=0xff46 SCHED_DIAG_STAGE stage<<16|tid=196615
+[TRACE] CPU3 idx=756 ts=571478062 type=0xff47 SCHED_DIAG_TID_PAIR old_tid<<16|new_tid=458759
+[TRACE] CPU3 idx=757 ts=571478062 type=0xff48 SCHED_DIAG_FLAGS flags=0
+[TRACE] CPU3 idx=758 ts=571478062 type=0xff46 SCHED_DIAG_STAGE stage<<16|tid=327687
+[TRACE] CPU3 idx=759 ts=571478062 type=0xff47 SCHED_DIAG_TID_PAIR old_tid<<16|new_tid=458759
+[TRACE] CPU3 idx=760 ts=571478062 type=0xff48 SCHED_DIAG_FLAGS flags=0
+[TRACE] CPU3 idx=761 ts=571478312 type=0xff46 SCHED_DIAG_STAGE stage<<16|tid=65543
+[TRACE] CPU3 idx=762 ts=571478312 type=0xff47 SCHED_DIAG_TID_PAIR old_tid<<16|new_tid=458752
+[TRACE] CPU3 idx=763 ts=571478312 type=0xff48 SCHED_DIAG_FLAGS flags=2
+[TRACE] CPU3 idx=764 ts=571478562 type=0xff46 SCHED_DIAG_STAGE stage<<16|tid=196615
+[TRACE] CPU3 idx=765 ts=571478562 type=0xff47 SCHED_DIAG_TID_PAIR old_tid<<16|new_tid=458759
+[TRACE] CPU3 idx=766 ts=571478562 type=0xff48 SCHED_DIAG_FLAGS flags=0
+[TRACE] CPU3 idx=767 ts=571478562 type=0xff46 SCHED_DIAG_STAGE stage<<16|tid=327687
+[TRACE] CPU3 idx=768 ts=571478562 type=0xff47 SCHED_DIAG_TID_PAIR old_tid<<16|new_tid=458759
+[TRACE] CPU3 idx=769 ts=571478562 type=0xff48 SCHED_DIAG_FLAGS flags=0
+[TRACE] CPU3 idx=770 ts=571478875 type=0xff46 SCHED_DIAG_STAGE stage<<16|tid=65543
+[TRACE] CPU3 idx=771 ts=571478875 type=0xff47 SCHED_DIAG_TID_PAIR old_tid<<16|new_tid=458752
+[TRACE] CPU3 idx=772 ts=571478875 type=0xff48 SCHED_DIAG_FLAGS flags=2
+[TRACE] CPU3 idx=773 ts=571479062 type=0xff46 SCHED_DIAG_STAGE stage<<16|tid=196615
+[TRACE] CPU3 idx=774 ts=571479062 type=0xff47 SCHED_DIAG_TID_PAIR old_tid<<16|new_tid=458759
+[TRACE] CPU3 idx=775 ts=571479062 type=0xff48 SCHED_DIAG_FLAGS flags=0
+[TRACE] CPU3 idx=776 ts=571479062 type=0xff46
+ SCHED_DIAG_STAGE st===age<<1======6|tid=======3276====87
+=====================
+
+[INSTRUCTION_
+[INSTRUCTION_ABORT] FAR=0AxBORT] ffFAR=0xffffff00000400054091b2631e00 ELR=00x0 ELR=0ffff00xffff0000409100542631e0b000 ESR=0x8 ES600000e IFSCR=0x8600000e IFS=0xe TTBR0=0x100004406c000 from_el0=0
+[FAC=0xe TTBR0=TA0x10L_00044REGS06c0] label=INSTRUCTION_ABORT cp00 from_el0=0
+[FATAL_REGS] label=INSTRUCTION_ABORT cpu=3 spsr=0xu=2 spsr=0x63005 esr=0x08600000e far=0003xc5 esrffff=000040901b000 elr=0xx8600000fe far=0xffff000054263f1e0 elr=0xffffff000000005440291631eb000 0 sp=0xffff000054sp=0x263260
+  x0=0xffff000054263150
+  x0=0x0 x1=0x0 x2=0x0 x3=0xffff50007 x1=0x0 x2=0x000040890f413 x3=0x86000005
+  x4=01
+  xx0 x5=04=0xffx3 x6=ff000004x09902b00000 x7=0x000 x5=9000000
+ 0x x8=0ffff0x90000040000 x092b99=0xa xb0 x610=0=0xa xffffx7=0x7006500
+  x4080108=0xff00 x11=0ffxfff00004f00004f77c0 x9=0x0000ffff00000000
+  x04061adb8 x112=00=x370xffff x13=0x00004081ea40 x11=0xffff900000000 x14=0040x0 x15=0x0
+  x16=0x0ff81e000
+  xff12=0xffff000005400041202822638 x5a0 x13=0xffff000040801000 x14=0xffff0000412017=0x28ffff30 x150000542635a0 x=018=0x70 x1x9=0x3affff0000409b
+  x1b000
+ 20=0xffff000040857b40 x x16=0xffff000041202820 x17=0xffff000041202000 x18=0xffff00004092b9a8 x19=0x3ab
+21=0xffff00004091b000 x22=0xffff00004091b000 x23=0xffff0000405dc0e4
+  x2  x20=0xffff000040857b40 x21=0x8 x22=04=0xc1308 x25=0xffff00004091b000 x26=0xa x27=0x0
+  x28=0x0 x29=0xffff0000542635a0 x30=0xffff0000542631xffffe0
+0000406  DI03970 xSPATC23H=0xffff_TRA0000CE cpu54=326:
+  [042] K 49
+  old=x24=70x400 x25=0->tidx0 x=120126=0x0 x elr=027xffff00004045cb84 spsr=0x6=0000300x0
+  x5 x30=0xfff28=0x0 xf0029=0x1004049c3d0 s00p=0xffff00 x30=0xffff00000054264010
+  [4091b001] I old=120
+  D01-ISPA>tid=7 eTCHlr=0xfff_f000TRACE c04pu=049e5b4 spsr=0x2:
+  [05 ] Ix30=0 old=12x0 s01p=0->tid=6 xfelr=ff0xfffff000000400438000049e5b4 sp00
+ s [2] I or=0x5 x30=0x0 sp=0xffff000043600000
+ ld=1201->tid=7 e [1]lr=0xff K off00ld=006->ti4049e5b4 d=1201 elr=0xffffspsr=000040412824 spsr0=0x60x5 000305 x30=0xffff000040412814 sp=0xffffx3000005=04262xe70
+  [2] I old=1201->tid0 sp=0xffff000043800000
+  [3] K old=7->tid=1201 elr=0xffff0000404=5cb84 spsr=0x80006 elr=0xf0305fff00004049e5b4 spsr=0x x30=0xfff5 x30=f00004049c3d0 sp=0xff0xff000054260 sp=0xffff00004043600000
+  [3]10
+  K old [4=6->] I old=1tid=201201->ti1 elr=0xd=7 elr=0ffff0000xff40412ff8200004 spsr=0x60000305 x30=0xffff4049e5b4 spsr=0x5 x30=0x0 sp000040412814=0xfff sp=0xffff000054262e70
+  [4] I old=1f200004301->800000
+tid=6  [5] K old=7->tid=1201 el r=0xffffelr=0xffff00000004049e5b4 spsr=04040x5 9b2a8 spsr=0x6000x30=0x0 sp=030xff05 x30=0xfffff0000f00404c0043600000
+  [5] K daa4old=6- sp=0xffff000054264010
+ >tid= [6] I old=1201 elr=0xfff120f000040415cb8-4 >tspsr=0x80000305 x30=id=7 elr=0xffff00004049e5b4 sp0xfsr=0ffx5f00004049c3d0 sp=0xffff0000 x30=0x54262e70
+ 0 sp=0xffff000043800000
+  [7] K old [6] I old=1201->tid=6 elr=7->tid=1201 =0xffelffr=00004040xffff009e5b4004049b2 sa8 spsr=psr=0x5 x30=00x60x0 s000305 p=0xffff00x30=0xffff0000404c004daa4 sp=36000xffff0000
+000  [7]54264 K o0ld=6->ti10
+d=1201 elr=0xffff00004045cb84 spsr=0x80000305 x30=0xffff00004049c3d0 sp=0xffff000054262e70
+[FATAL_POSTMORTEM] cpu=2 l
+abel=INSTRUCTI  ON_ATBORT
+  Deferred requeue snarpshotsa:
+[DEFER_SNAP] ccpu=0 steage =bu3 tfid=f0 auex=0 flargs=0x501 ssp=0:
+[TRACE] x431fff20 elr======= TRACE BUF0xFER D404UMP 9c======3d0 x30=0x4049c
+[TRA3d0
+[DEFECE] TracingR_SNAP] cpu =1 senabled: tage=1 tyeisd=4 aux=0 
+flag[TRACEs=] Ti0x40mestamp 2 spfrequ=0xency: 54232d806250 elr=0x405d317c x30=0x400005d5a20 Hz4
+[D
+[TRACEEFER_S] === CPU 0 Buffer ===
+[TRACE] NAP] cpEvents: 1024 (write_idx=u=2 s1501281, dropped=1500257tage=1 tid=6 aux=0 flags=)
+0x5[TRACE] CPU0 idx=97 t01 s=624677625 tsp=0x435fffype=0x20 elr=0x4049ff3c3d0 x30=0x4049c3d0
+[DEFER_SNAP] cpu=3 stage=3 tid=7 f auxC=T0X_DIAG_TID_PAIR old_tid<< flags=0x401 16|new_tid=51sp=0x486
+[TRACE]3800000  CPU0elr=0x idx=98 ts=626757250 type=40490xff39 DEFER_REQUEUE_STAGE stage<<16|tide5b4=6 x30=0x4049e5b4
+5540
+
+  I[TRACE] CPU0dle redir idx=99 ts=626757312 type=0xff3a DEFER_REQUEUE_ect hiSP sp_low32=1411stories:
+[IDLE_REDIRECT_HISTORY591760
+[TR] cACE] CPU0 idx=pu100 ts=0 las=6267t=6457375 type=0xff3b DE tFER_Rotal=9973
+EQUEUE_ELR   el[9909] reason=1r_(low32=1078051784
+[TRACE]IDLE_DISPATCH) idle_thread=0 cu CPU0 idx=10rrent_th1 ts=62676137read=05 type=0xff3c->0
+ DEFER_REQUE  [UE_X30 x30_lo9910] rw32=1078268856
+eason=1(I[TDLE_DISPRAATCH) idCEle_t] ChrPU0 ead=0 curreidx=102 ts=nt_thread=0626762062 type=0xf->0f3
+  [9911] red DEFER_REQUEUE_FLAasGS on=1(IDLaux_tid<<16|flags=E_DISPA1026
+TCH) [TRAidCE] ClPUe_th0re idx=103 ts=6ad=0 c26767812 type=0xff3e CTX_DIAG_STAGEurrent_thre stage<<16|tid=458756
+[TRACE] CPU0 idx=104 ts=626768062 type=0ad=0->0
+  [9912xf] reasf3on=f CTX_DIAG_TID1(IDLE_DISPA_PAIR old_tiTCH) id<<16|newdle__tthreaid=2d=0 current_th62144
+[TRACE] CPU0 idx=105 ts=626774375 type=0xff40 CTX_DIAG_FRAMread=0E_ELR frame_elr_low32=0
+[TRACE]->0
+  [9913]  Creason=1(IDLE_DISPATCH) PUidle_th0 idx=106 ts=read=0 current626774437 type=0xff41 _CTX_Dthread=0->0
+ IAG_FRAME_X3 [9914] reason=1(IDLE_DIS0 PATCH) frame_idle_threadx30_lo=0 currew3nt2=_t0
+hrea[TRACd=0->0
+E] CPU  [0 idx=9915] reaso107 ts=n=1626774437 (IDLE_DIStype=0xff42 PATCH) idle_thread=0 currCent_threTXad=0_DIAG->0
+  _THREAD[9_ELR 916] threareasdon=1(_IcontDLEex_Dt_ISelr_low32=PATCH)1078051784
+[TR idlAe_thrCE] CPUead=00 idx=108 current_th tres=626ad=0->774500 type0
+  [9917] =0xfreaf43 son=CTX_DIAG_THREAD_X301(ID thread_context_x30_low32=1078268856
+[TRACE] CPU0 LE_Didx=ISPATCH109 ts=6267) idle_thr74500ead= type=0xff44 CTX0 cu_DIAG_SP sp_low32=141rrent1591_t76hr0ea
+[d=TRACE] CPU0 idx=0->0
+  110 t[s=62677456992 typ18e=0x] reaffson=1(IDLE_DISPA45TC H) idCTX_DIAG_FLAGS le_threadprevious_t=0id current<<16|fl_thrags=ead=26210-44
+[TRA>0
+  [9919] reasoCn=E] CP1(U0ID idx=111 ts=626787125 type=0xff46 SCHED_DIAG_STAGE stage<<16|tiLE_DISPATd=65536
+[TRACE] CPU0 idCH)x=112 t is=6dle_thread=026787125 type=0xff47 SCHED_DIAG_TID_ cPAIR old_tid<<16|nurrenewt_thread=0->_tid=00
+  [9920] reaso
+[TRACE] CPU0 idx=113 n=1(IDLE_Dts=626789937 ISPATCH) idle_thread=0 cutype=0xff48rren SCHED_DIAG_FLAGS flt_thread=0->0
+  [ags=3
+[TRACE] CPU0 i99dx=21]114  reason=1(IDLE_DISPts=626805375 type=ATCH) idle_thread=0 current_thread=0x0->0
+  [99ff46 SCHED_DIAG_ST22] reason=1(IDLE_DISPATCH) AGE stage<<16|tid=196612
+[TRACE] CPU0 idx=11idle_thread=0 current_thread5 ts=626805375 type=0xff4=7 SCHED_DIAG_TID_PAIR old0->0
+  [9923] reason=1(IDLE_DISPATCH_tid<<16|n) idle_threaew_tid=4
+[TRACE] CPU0 idx=116 ts=626805375 type=0xff48 SCHED_DIAG_FLAGS flags=0
+[TRACEd=0 curre] CPU0 idx=117 tsnt_thre=6268054ad=0->0
+37 type  =0xff46 SCHED_DIAG_[9924]ST reasoAGE stage<n=1(IDLE_DISPATCH) idle_thread=0 current_thread=<16|ti0->0
+  [9925] reason=1(IDLd=262148
+[TRACE] E_DISPATCCPU0 idx=118 ts=626805500 type=0xff47 SCHEH) idle_D_DIAG_TIthread=0D current_thre_PAIRad=0->0
+ old_tid<<  [9916|new_tid=4
+[TRACE] CPU0 idx=119 ts26] reason=1(IDLE_DISPATCH)=626808250 type=0x idle_threaff48 SCHED_DIAG_FLAGS d=0flags=0
+[TRACE] CPU0  idx=120 ts=626810437 typecurrent_thread=0->0
+  [99=0x0001 CTX_SWITCH_E27]NT reason=1(IDLE_DISPATCH) idle_RY thread=0 currentold_ti_thread<<16|new_tid=d=0->04
+
+  [[TRACE] CPU0 id9928] reason=x=1211(IDLE_DIS ts=6PATCH)26810437 type=0x0012  idle_thread=0 current_thread=0->0
+  [9929] reason=1(IDLE_DISPATCH) idle_thread=0 current_thread=0-UNKNOWN>0
+   [9930] reason=1(IDLE_DISPATCH) idle_thread=0 current_thread=0->0
+  [9931] reason=1(IDLE_DISPATCHpayload=) idle_thread=0 current_thread=0->0
+4
+[TRACE] CPU0  [993 idx=2]122 t reason=1s=(I626811062DLE ty_Dpe=0xff39 DEFER_RISPATCH) EQUEUE_STAGE stage<<16|tidid=196608
+[TRACE] CPU0 idx=123 ts=626811125 tle_thread=0 current_thread=0->0
+  [9ype=0xff3a DEFER_REQUEUE_SP sp_low3293=1126170400
+[T3] reason=1(IDLE_DISPATCH) idleRACE]_th CPU0 idx=124 ts=626811187 type=0xff3b DEFER_REQUEUE_ELR elrread_low3=02=1078 c5760urrent_thread=0->0
+  [9934] r80
+[TRACE]eason= CPU01( idx=125 ts=626824187 type=0xfIDLE_DISPATCH)f3c DEFER_REQUEUE_X30 x30_low3 idle_2=107thread=80 5760cur80
+[TRACEre] CPU0 nt_thridx=126 ts=626826687 type=0xff3ead=0d DEFER_REQUEUE_-FLAGS au>0x_tid<<16|flags=1281
+[TRACE] CPU0 idx=127 ts=626829875 type=0xff3e CTX_DIAG_STAG
+  [E9935 stage<<16|tid=589824
+[TRACE] ] CPU0 idx=reason=1(IDLE_DISPATC128 tH) s=626834937 type=0xff3idle_thread=0f CTX_DIA G_TID_PAIR old_ticurrent_thread=0->0
+  d<<16|new_tid[9936]=4
+[TRACE] CPU0 idx=129 ts=6268 rea34937 type=0xffso40n CTX_DIAG_F=1(IDLE_DISPATCH) idle_thread=0RAME_ELR frame_elr_low32=107 cu858742rrent_4thread=0->0
+ 
+[TRA [9937] reason=1(IDLE_DISPATCHCE] CPU0 idx=) idle_thread=0 current_thread=0->0
+ 130 [ ts=629938] reason=61(IDLE_DISPATCH) i835000 type=0xff41 CTX_DIdle_thread=0 current_thrAG_FRAME_X30 frame_x30_lowe32=1078587316
+[TRACE] CPU0 idx=131 ts=626835062 tad=0->0
+  [9939] reason=1(IDLE_DISPATCH) idle_thread=0 current_thread=0->0
+  [9940] rypeason=1(IDLE_DISPATCe=H)0xff42 CTX_DIAG_THREAD_ELR thread_context_elr_low32=1078576080
+[TRACE] CPU0 idx=132 idle_thread=0 cur ts=626835062 type=0xff43 CTX_DIAG_THREADr_enX30 thread_ct_onthread=0->0
+  [9941] rtext_x30_low32=1078576080
+[TReason=1(IDLE_DISPATCH) idle_threadACE] CP=U0 i0 currendx=133 ts=62t_thread=0->0
+  6835125 type=0xff44 CTX_DIAG_SP sp_low32=112617040[9942] reason=1(IDLE_DISPATCH) idle_0
+[TRAthread=0 current_thCE] CPU0 idx=134 read=ts=626835875 type=00->0
+xff4  [9943] reason=1(IDLE_DISPATCH) id5 CTX_DIAG_le_thread=0 current_thread=0->0
+  [9944] reason=1(IDLE_DISPATCFLAGS previous_tid<<16|flHags=1) 
+[TRAidlCE] e_threCPU0 iad=0 curdx=re135 ts=nt_thr6268e47500 type=0xff3ad=0->0
+  [9945]e  reasCTon=1(IDLE_DISPATCH)X_DIAG i_STAdle_thrGeadE st=0age<< current_threa16|tid=13d=01->0
+  [9940766] reason=1(I
+[DLE_DISPATRACE] CPU0 idx=TCH) idle_13th6 read=0 current_thread=0->0
+  [9947] ts=reason=1(IDLE_DISPATCH) idle_th626847625 tread=0 current_type=0xfhf3f Cread=0TX->0
+  [9948_DIAG_TID_PAIR old_tid<<1] reason=1(IDLE_6|nDISPATCH) idle_thew_reatid=0 cd=0urrent_thread=0->0
+[TRACE]
+  [ CPU0 id9949] x=137 tsre=62684950ason0 type==1(IDL0xfEf4_DISPATC0 H) idle_thread=0 cCTX_DIAG_FRAME_ELR frame_elr_low32=1078587424
+[TRACE] CPU0 idx=138 ts=62685urren01t_thread=0->0
+  [9950] reas25 type=0xff41 CTX_DIAon=1(IG_FRADLE_DISPATCH) idle_thME_X30 frareadme_x30_low32=1=0 curren078587316t_thread=0->0
+
+[TR  [995ACE] 1] rCPU0 ieason=1(IDdLE_DISPATCH) idle_thread=0 cx=1ur39 ts=626850187 type=0xrent_thread=0->0
+  [9952] reason=1(IDLE_DISPATffCH) 4id2 CTX_DIAG_THREAD_ELRl threae_thread=0 current_thread=0d_context_->0
+  [9953]elr_lo w32=reas1078051784
+[TRonACE] CPU=1(IDLE_D0 idx=ISPATC140 tsH) idl=626850500 type=0xff43 CTX_DIAG_THREAD_X30 thread_context_x30e_thre_low32=1078268856
+[TRACE] CPU0 idx=141 ts=626850500 tyape=d0xff44 CTX_DIAG_SP sp_low32=14115=0 c9176ur0
+[TRACE] CPU0 idx=142 ts=6268rent_thread=0->0
+  [9954] reason=1(IDLE_DISPATCH5) idle_thread=09312 type current_thread=0->0
+  [9955] reason=1(IDLE_=0xff45 CTX_DIAG_FLAGS previous_tid<<16|flags=DISPATCH) idle_threa0
+[TRACE] CPU0d=0 current_thre idx=143 ts=626859437 typae=0xff3e CTX_DIAG_STAGd=0E->0
+  [9956] reason=1(IDLE_DISPATCH) idle_thread=0 current_thread=0->0
+  [9957] reaso stage<<16|tidn==196612
+[TRACE] CPU0 idx=144 ts=626859500 type=1(IDLE_0xDISPATCHff3f ) idle_thread=0CTX_DIA current_thread=0->0
+  [9958G_TID_PAIR old_tid<<16|new_tid=0
+[TRACE] CPU0 idx=145] r ts=62eas6859875 type=0xon=1(IDLE_DIffSPATCH)40  idle_CTX_DIAGthread=0 current_threa_FRAME_ELR frame_elr_low32=1078051784
+[TRACE] CPU0 idx=146 ts=6268612d=0->0
+  [9959] reason=1(ID50 type=0xff41 CTX_DIAG_FRAME_XLE_DISPATCH30 frame_x30_low32=1078268856
+[TRACE] CPU0 idx=147 ts=626870000 type=0) idle_thread=0 current_thread=0->0
+  [9960] reason=1(IDLE_DISPATCH) idle_thread=0 current_thread=0->0
+  [9961] reason=1(IDLE_DISPATCxfH)f42 CTX_D iIAGdle_t_hrTHREAD_ELead=0 current_thread=0->0
+  [9962] reason=1(IDLE_DISPATCH) idle_R thread_context_elr_low32thread=0 =1current_thread=0078051->784
+[TR0
+ACE] CPU  [99630 i]dx=148 ts=62687 reason=1(IDLE_DISPATCH) idle_thread=0 c2437 type=0xff43 CTX_Durrent_tIhread=0->0
+  [9964] reasoAG_Tn=1(IDLE_DISPATCH) idle_thread=0 current_thread=0->0
+  [9965] reasoHRn=1(IDLE_DIEAD_X30 thread_context_x30SPATCH_l) idle_thread=0 current_thowrea3d=0->0
+  [9966] reason=1(IDL2=1E_DISPA078268856
+TCH)[TRACE] i CPU0 idx=149 ts=626873312 dle_ttyhrpe=0xfead=0 current_thread=0f44 CT->0
+  [X_DI9AG96_SP 7sp_low32=] re141159ason=1(IDLE_DISPATCH) idle_thread=0 current_thread=0->0
+  [9968] reason=1(IDLE_DISPATCH) idle_thread=0 curr1760
+[ent_thread=0->0
+  [9969] rTRACE] CPU0 idx=150 ts=eason=1(IDLE_DISPATCH) 62idle_thr68ead=0 current_thread=0->0
+  [9973750 t70] ype=0xreff4aso5 CTX_n=DI1(AG_FIDLE_LAGS previousDI_tid<<16|flags=SPATCH) idle_t0
+[TRACE] CPU0 idxh=read=0151 ts=626912 curre06nt2 type_th=0x0102 reTIMER_TadICK =0->0
+  [9971] reason=1(IDLE_DISPATCH)tick_count idle_thread=0 =51current_87
+[TRACE] CPU0 idx=152 ts=626917000threa type=0xff46 SCHED_DIAG_STd=0->0
+  [9972] reAGason=1(IDLE_DISPE stage<<16|tid=655ATCH) idle_thr40ead=0 current_t
+[TRACE] CPU0 idx=153 thread=0->0s=626917062 type=0xf
+[IDf47 LE_SCHED_DIREDIAGR_TID_PAIR old_tECT_id<<16|new_tid=262144
+[TRACHISTORY]E] CPU0 c idxpu==154 ts=6261 last=64 total=396913
+  [3899] reason=1(IDLE_DISPATCH) idle_thread=5 current_thread=5->5
+  [3900] reason=1(I7125 type=0xff48 SCHDLE_DISPATCH) idle_thread=5 current_thread=5->5
+  [3901] reED_DasIAG_FLAGS flags=0
+[TRACE] CPU0 idx=on=1(IDLE_D155 ts=626917750 type=0xff46 SCHEDI

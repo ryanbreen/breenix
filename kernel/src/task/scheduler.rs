@@ -4241,12 +4241,17 @@ impl ExecSchedCommit {
                 if let Some(sched) = scheduler_lock.as_mut() {
                     unpinned = sched.current_thread_id_inner() != Some(self.thread_id);
                     if let Some(t) = sched.get_thread_mut(self.thread_id) {
+                        #[cfg(feature = "ret_zero_pc_oracle_exec")]
+                        crate::task::ret_zero_pc_oracle::inject_exec_commit_if_armed(t);
                         t.context = self.context;
+                        t.clear_inline_schedule_state();
                         t.stack_top = self.stack_top;
                         t.stack_bottom = self.stack_bottom;
                         t.kernel_stack_top = self.kernel_stack_top;
                         t.tls_block = self.tls_block;
                         t.state = crate::task::thread::ThreadState::Ready;
+                        #[cfg(feature = "ret_zero_pc_oracle_exec")]
+                        crate::task::ret_zero_pc_oracle::record_exec_commit_inline_state(t);
                         applied = true;
                     }
                 }

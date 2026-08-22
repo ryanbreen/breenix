@@ -287,7 +287,7 @@ green_sequence_complete() {
 # That is not a theoretical concern: partition arm A's serial-10 carries header
 # FAR=0x0 ELR=0x0 (byte-identical to #576's filed signature) and FATAL_REGS
 # far=0x0 elr=0x4ba for the SAME fault on the SAME CPU, so a header-first reader
-# files a divergent-state abort under #576 — a tolerated bucket — which is the
+# files a divergent-state abort under #576 — a named bucket — which is the
 # exact "new signature invisible by construction" failure this classifier exists
 # to remove. Two records of one fault that disagree describe a CPU state that
 # changed between them; that is not the filed single-shot signature and the
@@ -394,6 +394,9 @@ classify_serial() {
     local stranded_strand_line
     local instruction_abort_signature
     local instruction_abort_variants
+    local instruction_abort_far
+    local instruction_abort_elr
+    local instruction_abort_esr
     local data_abort_signature
     local data_abort_variants
     local boot_test_fail_line
@@ -467,18 +470,19 @@ classify_serial() {
         return
     fi
     # Instruction aborts are attributed BY FIELD SIGNATURE, never by exception
-    # type. #576 is filed as exactly FAR=0x0 ELR=0x0 ESR=0x86000005; bucketing
-    # every [INSTRUCTION_ABORT] as 576 made a different signature invisible by
-    # construction, which is how a FAR=ELR=0x80000000 regression rode into a
-    # tolerated bucket. Anything that does not match a filed signature — or whose
-    # fields cannot be read at all — is UNATTRIBUTED, which this gate FAILS on.
+    # type. #576 is filed as exactly FAR=0x0 ELR=0x0 ESR=0x86000005, and #626
+    # is filed separately as FAR=0x0 ELR=0x0 ESR=0x8600000d. Bucketing every
+    # [INSTRUCTION_ABORT] as 576 made different signatures invisible by
+    # construction. Anything that does not match one of these filed signatures
+    # — or whose fields cannot be read at all — is UNATTRIBUTED, which this gate
+    # FAILS on. Both named buckets are also gate failures.
     #
     # The match is on the WHOLE SET of records the serial carries, not on a
-    # first-found record: a boot earns the tolerated #576 bucket only when every
-    # abort record it emitted names one and the same filed signature. A serial
+    # first-found record: a boot earns a named bucket only when every abort
+    # record it emitted names one and the same filed signature. A serial
     # carrying two different signatures, or one fault whose two records disagree,
     # is UNATTRIBUTED — otherwise a novel signature could ride in behind a
-    # matching one and the tolerated bucket would hide it again.
+    # matching one and the named bucket would hide it again.
     if grep -qF "[INSTRUCTION_ABORT]" "$serial_file" 2>/dev/null; then
         instruction_abort_signature=$(instruction_abort_signatures "$serial_file")
         instruction_abort_variants=$(printf '%s' "$instruction_abort_signature" | grep -c . || true)
@@ -491,6 +495,34 @@ classify_serial() {
         elif [ "$instruction_abort_signature" = "0x0 0x0 0x86000005" ]; then
             CLASS_BUCKET="576"
             CLASS_REASON="instruction abort matching the filed #576 signature (FAR=0x0 ELR=0x0 ESR=0x86000005)"
+        elif [ "$instruction_abort_signature" = "0x0 0x0 0x8600000d" ]; then
+            CLASS_BUCKET="626"
+            CLASS_REASON="instruction abort matching the filed #626 signature (FAR=0x0 ELR=0x0 ESR=0x8600000d)"
+        elif instruction_abort_far=$(printf '%s' "$instruction_abort_signature" | cut -d' ' -f1) \
+            && instruction_abort_elr=$(printf '%s' "$instruction_abort_signature" | cut -d' ' -f2) \
+            && instruction_abort_esr=$(printf '%s' "$instruction_abort_signature" | cut -d' ' -f3) \
+            && [ "$instruction_abort_far" = "$instruction_abort_elr" ] \
+            && [ "$instruction_abort_far" != "0x0" ] \
+            && [ "$instruction_abort_esr" = "0x8600000e" ] \
+            && [[ "$instruction_abort_far" =~ ^0xffff[0-9a-f]+$ ]]; then
+            # #635's field-keyed family: ESR=0x8600000e with FAR == ELR (the
+            # SAME hex string in both positions, never 0x0 — #576 and #626
+            # above already claimed FAR=ELR=0x0) and a canonical kernel
+            # high-half address. Coordinator ruling R41 (2026-08-22, T3-G
+            # PR2): the register-file shape (x29==x30, consecutive
+            # callee-saved slots) once looked like a dispatch-vs-epilogue
+            # discriminator, but a byte-identical recurrence with zero
+            # ret-dispatch refusals in the SAME boot proved the shape is
+            # producer-family, not path-proof — the fix in this PR narrows
+            # the ret-dispatch consumer and cannot see this face's producer.
+            # This is a TEMPORARY, AUTHORIZED, field-keyed tolerance at the
+            # documented ~1% rate (#635), attributed and reported but not
+            # gate-failing, to be REMOVED by the producer-family PR
+            # (#633/#635/#637) that closes #635 at source — it must never be
+            # widened or treated as a template for tolerating a different
+            # signature.
+            CLASS_BUCKET="635"
+            CLASS_REASON="instruction abort matching the #635 kernel-stack-PC family (FAR=ELR=$instruction_abort_far ESR=0x8600000e) — ATTRIBUTED, non-failing, ~1% documented rate, pending the producer-family fix"
         else
             CLASS_BUCKET="UNATTRIBUTED"
             CLASS_REASON="instruction abort matches no filed signature: far/elr/esr = $instruction_abort_signature"
@@ -666,6 +698,8 @@ classify_serial() {
 
 TOTAL_575=0
 TOTAL_576=0
+TOTAL_626=0
+TOTAL_635=0
 TOTAL_DATA_ABORT=0
 TOTAL_CLONE_EXEC=0
 TOTAL_STRAND=0
@@ -678,6 +712,8 @@ TOTAL_GREEN=0
 TOTAL_UNATTRIBUTED=0
 TOTAL_DIVERGENCE_BOOTS=0
 TOTAL_DIVERGENCE_LINES=0
+TOTAL_REFUSAL_BOOTS=0
+TOTAL_REFUSAL_LINES=0
 TOTAL_BOOTS=0
 PROFILE_COUNT=0
 ANY_GATE_FAILURE=0
@@ -686,19 +722,23 @@ print_census() {
     local label="$1"
     local count_575="$2"
     local count_576="$3"
-    local count_data_abort="$4"
-    local count_clone_exec="$5"
-    local count_strand="$6"
-    local count_boot_test_fail="$7"
-    local count_596="$8"
-    local count_612="$9"
-    local count_609="${10}"
-    local count_p5b="${11}"
-    local count_green="${12}"
-    local count_unattributed="${13}"
-    local count_boots="${14}"
-    local divergence_boots="${15}"
-    local divergence_lines="${16}"
+    local count_626="$4"
+    local count_635="$5"
+    local count_data_abort="$6"
+    local count_clone_exec="$7"
+    local count_strand="$8"
+    local count_boot_test_fail="$9"
+    local count_596="${10}"
+    local count_612="${11}"
+    local count_609="${12}"
+    local count_p5b="${13}"
+    local count_green="${14}"
+    local count_unattributed="${15}"
+    local count_boots="${16}"
+    local divergence_boots="${17}"
+    local divergence_lines="${18}"
+    local refusal_boots="${19}"
+    local refusal_lines="${20}"
     local green_rate
 
     green_rate=$(awk -v green="$count_green" -v boots="$count_boots" \
@@ -707,6 +747,8 @@ print_census() {
     echo "$label census"
     printf '  %-13s %d\n' "575" "$count_575"
     printf '  %-13s %d\n' "576" "$count_576"
+    printf '  %-13s %d\n' "626" "$count_626"
+    printf '  %-13s %d\n' "635" "$count_635"
     printf '  %-13s %d\n' "DATA_ABORT" "$count_data_abort"
     printf '  %-13s %d\n' "CLONE_EXEC" "$count_clone_exec"
     printf '  %-13s %d\n' "STRAND" "$count_strand"
@@ -717,12 +759,16 @@ print_census() {
     printf '  %-13s %d\n' "P5B" "$count_p5b"
     printf '  %-13s %d\n' "GREEN" "$count_green"
     printf '  %-13s %d\n' "UNATTRIBUTED" "$count_unattributed"
-    echo "  GREEN rate: $count_green/$count_boots ($green_rate%) — census-only: #589 is closed and CLONE_EXEC/STRAND/609 are gate-failing; #576 remains open and intercepts boots"
+    echo "  GREEN rate: $count_green/$count_boots ($green_rate%) — census-only: every non-GREEN bucket is gate-failing, including the open #576 and #626 defects, EXCEPT #635 (a temporary, authorized, field-keyed attribution at its documented ~1% rate, reported here and never gating — see classify_serial)"
     # Reported, never gated: the #596 mechanism counter. A nonzero divergence
     # count with bucket 596 at zero is the production evidence that an
     # inline-saved context really is ERET-dispatched carrying a stale ELR and
     # that the repair neutralises it (coordinator ruling R20).
     echo "  CTX596 divergence: $divergence_lines marker line(s) across $divergence_boots/$count_boots boot(s) — reported, not gated"
+    # Reported, never gated: a refusal is the resume-PC validation doing its
+    # job. Nonzero refusals together with zero #576-shape boots are production
+    # confirmation of that guard and name a producer to chase, not a regression.
+    echo "  RET dispatch refused: $refusal_lines marker line(s) across $refusal_boots/$count_boots boot(s) — reported, not gated"
 }
 
 run_profile() {
@@ -731,6 +777,8 @@ run_profile() {
     local census_file="$profile_dir/census.tsv"
     local count_575=0
     local count_576=0
+    local count_626=0
+    local count_635=0
     local count_data_abort=0
     local count_clone_exec=0
     local count_strand=0
@@ -743,7 +791,10 @@ run_profile() {
     local count_unattributed=0
     local divergence_boots=0
     local divergence_lines=0
+    local refusal_boots=0
+    local refusal_lines=0
     local boot_divergence
+    local boot_refusals
     local boot
     local serial_file
     local writable_disk
@@ -756,7 +807,7 @@ run_profile() {
     local census_sum
 
     mkdir -p "$profile_dir"
-    printf 'boot\tbucket\tend\tseconds\tctx596_divergence\treason\tserial\n' > "$census_file"
+    printf 'boot\tbucket\tend\tseconds\tctx596_divergence\treason\tserial\tret_dispatch_refusals\n' > "$census_file"
     echo ""
     echo "Profile $cpu_profile: running $BOOTS sequential boots"
 
@@ -852,11 +903,19 @@ run_profile() {
         if [ "$boot_divergence" -ne 0 ]; then
             divergence_boots=$((divergence_boots + 1))
         fi
+        boot_refusals=$(grep -cF "[RET_DISPATCH_REFUSED:" "$serial_file" 2>/dev/null | tr -d ' ')
+        boot_refusals=${boot_refusals:-0}
+        refusal_lines=$((refusal_lines + boot_refusals))
+        if [ "$boot_refusals" -ne 0 ]; then
+            refusal_boots=$((refusal_boots + 1))
+        fi
 
         classify_serial "$serial_file"
         case "$CLASS_BUCKET" in
             575) count_575=$((count_575 + 1)) ;;
             576) count_576=$((count_576 + 1)) ;;
+            626) count_626=$((count_626 + 1)) ;;
+            635) count_635=$((count_635 + 1)) ;;
             DATA_ABORT) count_data_abort=$((count_data_abort + 1)) ;;
             CLONE_EXEC) count_clone_exec=$((count_clone_exec + 1)) ;;
             STRAND) count_strand=$((count_strand + 1)) ;;
@@ -872,37 +931,45 @@ run_profile() {
                 exit 1
                 ;;
         esac
-        printf '%s\t%s\t%s\t%s\t%s\t%s (qemu_status=%s)\t%s\n' \
+        printf '%s\t%s\t%s\t%s\t%s\t%s (qemu_status=%s)\t%s\t%s\n' \
             "$boot" "$CLASS_BUCKET" "$boot_end" "$boot_seconds" "$boot_divergence" \
-            "$CLASS_REASON" "$qemu_status" "$serial_file" >> "$census_file"
-        echo "  Boot $boot/$BOOTS: $CLASS_BUCKET — $CLASS_REASON [$boot_end, ${boot_seconds}s, ctx596_divergence=$boot_divergence]"
+            "$CLASS_REASON" "$qemu_status" "$serial_file" "$boot_refusals" >> "$census_file"
+        echo "  Boot $boot/$BOOTS: $CLASS_BUCKET — $CLASS_REASON [$boot_end, ${boot_seconds}s, ctx596_divergence=$boot_divergence, ret_dispatch_refusals=$boot_refusals]"
     done
 
-    census_sum=$((count_575 + count_576 + count_data_abort + count_clone_exec + count_strand + count_boot_test_fail + count_596 + count_612 + count_609 + count_p5b + count_green + count_unattributed))
+    census_sum=$((count_575 + count_576 + count_626 + count_635 + count_data_abort + count_clone_exec + count_strand + count_boot_test_fail + count_596 + count_612 + count_609 + count_p5b + count_green + count_unattributed))
     if [ "$census_sum" -ne "$BOOTS" ]; then
         echo "FATAL: $cpu_profile bucket census sums to $census_sum, expected $BOOTS"
         exit 1
     fi
 
-    print_census "Profile $cpu_profile" "$count_575" "$count_576" "$count_data_abort" "$count_clone_exec" \
+    print_census "Profile $cpu_profile" "$count_575" "$count_576" "$count_626" "$count_635" "$count_data_abort" "$count_clone_exec" \
         "$count_strand" "$count_boot_test_fail" "$count_596" "$count_612" "$count_609" "$count_p5b" "$count_green" "$count_unattributed" "$BOOTS" \
-        "$divergence_boots" "$divergence_lines"
+        "$divergence_boots" "$divergence_lines" "$refusal_boots" "$refusal_lines"
 
     # #589 is closed; its CLONE_EXEC and STRAND shapes now fail this gate. The
-    # GREEN rate stays census-only because open #576 still intercepts boots;
-    # its GREEN denominator is now also the P5b whole-boot-walk denominator.
+    # GREEN rate stays census-only reporting; open #576 and #626 remain named
+    # defect attributions, but neither is a tolerance. Its GREEN denominator is
+    # also the P5b whole-boot-walk denominator.
     # #609 joined this condition under R33: its rate pre-adjudication is retired,
     # so a single boot carrying the shape fails the profile immediately instead of
     # being deferred to a run-wide ceiling.
-    if [ "$count_575" -ne 0 ] || [ "$count_data_abort" -ne 0 ] || [ "$count_clone_exec" -ne 0 ] || [ "$count_strand" -ne 0 ] || [ "$count_boot_test_fail" -ne 0 ] || [ "$count_596" -ne 0 ] || [ "$count_612" -ne 0 ] || [ "$count_609" -ne 0 ] || [ "$count_p5b" -ne 0 ] || [ "$count_unattributed" -ne 0 ]; then
+    # #635 is DELIBERATELY EXCLUDED from this condition (R41, T3-G PR2): it is a
+    # temporary, authorized, field-keyed ATTRIBUTED tolerance at its documented
+    # ~1% rate, counted and printed below but never gate-failing, until the
+    # producer-family PR removes it. Every other bucket's FAIL behavior is
+    # unchanged by this addition.
+    if [ "$count_575" -ne 0 ] || [ "$count_576" -ne 0 ] || [ "$count_626" -ne 0 ] || [ "$count_data_abort" -ne 0 ] || [ "$count_clone_exec" -ne 0 ] || [ "$count_strand" -ne 0 ] || [ "$count_boot_test_fail" -ne 0 ] || [ "$count_596" -ne 0 ] || [ "$count_612" -ne 0 ] || [ "$count_609" -ne 0 ] || [ "$count_p5b" -ne 0 ] || [ "$count_unattributed" -ne 0 ]; then
         ANY_GATE_FAILURE=1
-        echo "Profile $cpu_profile gate: FAILED (575=$count_575, DATA_ABORT=$count_data_abort, CLONE_EXEC=$count_clone_exec, STRAND=$count_strand, BOOT_TEST_FAIL=$count_boot_test_fail, 596=$count_596, 612=$count_612, 609=$count_609, P5B=$count_p5b, UNATTRIBUTED=$count_unattributed)"
+        echo "Profile $cpu_profile gate: FAILED (575=$count_575, 576=$count_576, 626=$count_626, 635=$count_635 [ATTRIBUTED, non-failing], DATA_ABORT=$count_data_abort, CLONE_EXEC=$count_clone_exec, STRAND=$count_strand, BOOT_TEST_FAIL=$count_boot_test_fail, 596=$count_596, 612=$count_612, 609=$count_609, P5B=$count_p5b, UNATTRIBUTED=$count_unattributed)"
     else
-        echo "Profile $cpu_profile gate: PASSED (575=0, DATA_ABORT=0, CLONE_EXEC=0, STRAND=0, BOOT_TEST_FAIL=0, 596=0, 612=0, 609=0, P5B=0, UNATTRIBUTED=0)"
+        echo "Profile $cpu_profile gate: PASSED (575=0, 576=0, 626=0, 635=$count_635 [ATTRIBUTED, non-failing], DATA_ABORT=0, CLONE_EXEC=0, STRAND=0, BOOT_TEST_FAIL=0, 596=0, 612=0, 609=0, P5B=0, UNATTRIBUTED=0)"
     fi
 
     TOTAL_575=$((TOTAL_575 + count_575))
     TOTAL_576=$((TOTAL_576 + count_576))
+    TOTAL_626=$((TOTAL_626 + count_626))
+    TOTAL_635=$((TOTAL_635 + count_635))
     TOTAL_DATA_ABORT=$((TOTAL_DATA_ABORT + count_data_abort))
     TOTAL_CLONE_EXEC=$((TOTAL_CLONE_EXEC + count_clone_exec))
     TOTAL_STRAND=$((TOTAL_STRAND + count_strand))
@@ -913,6 +980,8 @@ run_profile() {
     TOTAL_P5B=$((TOTAL_P5B + count_p5b))
     TOTAL_DIVERGENCE_BOOTS=$((TOTAL_DIVERGENCE_BOOTS + divergence_boots))
     TOTAL_DIVERGENCE_LINES=$((TOTAL_DIVERGENCE_LINES + divergence_lines))
+    TOTAL_REFUSAL_BOOTS=$((TOTAL_REFUSAL_BOOTS + refusal_boots))
+    TOTAL_REFUSAL_LINES=$((TOTAL_REFUSAL_LINES + refusal_lines))
     TOTAL_GREEN=$((TOTAL_GREEN + count_green))
     TOTAL_UNATTRIBUTED=$((TOTAL_UNATTRIBUTED + count_unattributed))
     TOTAL_BOOTS=$((TOTAL_BOOTS + BOOTS))
@@ -939,16 +1008,16 @@ case "$PROFILE" in
         ;;
 esac
 
-TOTAL_SUM=$((TOTAL_575 + TOTAL_576 + TOTAL_DATA_ABORT + TOTAL_CLONE_EXEC + TOTAL_STRAND + TOTAL_BOOT_TEST_FAIL + TOTAL_596 + TOTAL_612 + TOTAL_609 + TOTAL_P5B + TOTAL_GREEN + TOTAL_UNATTRIBUTED))
+TOTAL_SUM=$((TOTAL_575 + TOTAL_576 + TOTAL_626 + TOTAL_635 + TOTAL_DATA_ABORT + TOTAL_CLONE_EXEC + TOTAL_STRAND + TOTAL_BOOT_TEST_FAIL + TOTAL_596 + TOTAL_612 + TOTAL_609 + TOTAL_P5B + TOTAL_GREEN + TOTAL_UNATTRIBUTED))
 EXPECTED_TOTAL=$((BOOTS * PROFILE_COUNT))
 if [ "$TOTAL_SUM" -ne "$EXPECTED_TOTAL" ] || [ "$TOTAL_BOOTS" -ne "$EXPECTED_TOTAL" ]; then
     echo "FATAL: total bucket census sums to $TOTAL_SUM for $TOTAL_BOOTS recorded boots; expected $EXPECTED_TOTAL"
     exit 1
 fi
 
-print_census "Total" "$TOTAL_575" "$TOTAL_576" "$TOTAL_DATA_ABORT" "$TOTAL_CLONE_EXEC" \
+print_census "Total" "$TOTAL_575" "$TOTAL_576" "$TOTAL_626" "$TOTAL_635" "$TOTAL_DATA_ABORT" "$TOTAL_CLONE_EXEC" \
     "$TOTAL_STRAND" "$TOTAL_BOOT_TEST_FAIL" "$TOTAL_596" "$TOTAL_612" "$TOTAL_609" "$TOTAL_P5B" "$TOTAL_GREEN" "$TOTAL_UNATTRIBUTED" "$TOTAL_BOOTS" \
-    "$TOTAL_DIVERGENCE_BOOTS" "$TOTAL_DIVERGENCE_LINES"
+    "$TOTAL_DIVERGENCE_BOOTS" "$TOTAL_DIVERGENCE_LINES" "$TOTAL_REFUSAL_BOOTS" "$TOTAL_REFUSAL_LINES"
 
 # The #609 run-wide rate ceiling that used to live here is DELETED (R33) and
 # stays deleted (R37). A rate ceiling is a tolerance: it let up to

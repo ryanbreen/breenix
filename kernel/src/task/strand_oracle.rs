@@ -14,6 +14,7 @@ use super::thread::{ThreadPrivilege, ThreadState};
 pub const STRAND_DWELL_MS: u64 = 2_000;
 
 static STARTED: AtomicBool = AtomicBool::new(false);
+static STRANDED_COUNT: AtomicU64 = AtomicU64::new(0);
 
 /// Round-B rollback counters are wired into the marker now and remain zero in
 /// Round A. Production and exercised resolution are intentionally separate so
@@ -313,6 +314,12 @@ fn sample_once(state: &mut OracleState) {
     }
 }
 
+/// Return the detector's accumulated stranded-thread count without running a
+/// second census.
+pub(crate) fn stranded_count() -> u64 {
+    STRANDED_COUNT.load(Ordering::Acquire)
+}
+
 #[cfg(not(target_arch = "aarch64"))]
 fn with_x86_oracle_state<R>(f: impl FnOnce(&mut OracleState) -> R) -> Option<R> {
     if X86_ORACLE_STATE_BUSY
@@ -420,6 +427,7 @@ fn report_strand(
     worst_cpu_scheduler_silence_ms: u64,
     worst_silence_cpu: u64,
 ) {
+    STRANDED_COUNT.store(stranded, Ordering::Release);
     crate::serial_println!(
         "[SCHED_STRAND_ORACLE:{}:samples={}:checked={}:stranded={}:running_shape={}:ready_shape={}:resolved_production={}:resolved_exercised={}:worst_dwell_ms={}:overflow={}:worst_nonprogress_ms={}:nonprogress={}:queued_on_nondispatching_cpu={}:worst_queued_nondispatch_ms={}:worst_cpu_scheduler_silence_ms={}:worst_silence_cpu={}]",
         if cfg!(target_arch = "aarch64") {
@@ -429,7 +437,7 @@ fn report_strand(
         },
         samples,
         checked,
-        stranded,
+        stranded_count(),
         running_shape,
         ready_shape,
         RESOLVED_PRODUCTION.load(Ordering::Acquire),
@@ -553,7 +561,7 @@ fn strand_victim() {
 }
 
 #[cfg(target_arch = "aarch64")]
-fn sleep_sample_period() {
+pub(crate) fn sleep_sample_period() {
     let Some(tid) = super::scheduler::current_thread_id() else {
         crate::arch_halt_with_interrupts();
         return;
@@ -564,6 +572,16 @@ fn sleep_sample_period() {
             scheduler.block_current_for_timer(wake_time_ns);
         }
     });
+    #[cfg(feature = "ret_zero_pc_oracle")]
+    if crate::task::ret_zero_pc_oracle::is_retzero_subject(tid) {
+        // The zero-PC victim must be saved by the cooperative inline path so
+        // its next dispatch reaches the ret consumer under test. All other
+        // oracle threads retain the ordinary timer-driven yield below.
+        super::scheduler::schedule();
+    } else {
+        super::scheduler::yield_current();
+    }
+    #[cfg(not(feature = "ret_zero_pc_oracle"))]
     super::scheduler::yield_current();
 
     loop {
@@ -656,6 +674,8 @@ pub fn start() {
             VICTIM_TID.store(victim.tid(), Ordering::Release);
             VICTIM_PROGRESS.store(0, Ordering::Release);
             INJECT_ARMED.store(INJECT_A_ARMED, Ordering::Release);
+            #[cfg(feature = "strand_inject_live_outgoing")]
+            crate::task::ret_zero_pc_oracle::note_live_outgoing_armed();
         }
         let _ = super::kthread::kthread_run(strand_oracle_thread, "strand-oracle");
     }

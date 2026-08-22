@@ -7,6 +7,7 @@ use std::process::{Command, Stdio};
 const SCHEDULER_PATH: &str = "kernel/src/task/scheduler.rs";
 const CONTEXT_SWITCH_PATH: &str = "kernel/src/arch_impl/aarch64/context_switch.rs";
 const STRAND_ORACLE_PATH: &str = "kernel/src/task/strand_oracle.rs";
+const RET_ZERO_PC_ORACLE_PATH: &str = "kernel/src/task/ret_zero_pc_oracle.rs";
 const EXECUTOR_PATH: &str = "kernel/src/test_framework/executor.rs";
 const TEST_REGISTRY_PATH: &str = "kernel/src/test_framework/registry.rs";
 const X86_BOOT_GATE_PATH: &str = "docker/qemu/run-x86-boot-tests.sh";
@@ -16,9 +17,11 @@ const FULL_TEST_PATH: &str = "docker/qemu/run-aarch64-full-test.sh";
 const MIN_REQUEUE_EARLY_RETURN_GUARDS: usize = 6;
 /// New instruction-abort refusal reasons are welcome; losing one is not.
 const MIN_INSTRUCTION_ABORT_REFUSAL_REASONS: usize = 3;
+/// #576 was the sole named instruction-abort signature before #626 attribution.
+const PRIOR_NAMED_INSTRUCTION_ABORT_ARMS: usize = 1;
 /// Additional #609 clauses are welcome; dropping one is how a tolerated bucket starts absorbing unfiled failures.
 const MIN_609_SIGNATURE_GUARDS: usize = 5;
-const MAX_NON_FAILING_SERVICE_SEQUENCE_BUCKETS: usize = 2;
+const EXPECTED_NON_FAILING_SERVICE_SEQUENCE_BUCKETS: usize = 1;
 /// Each gate must reject both strand marker families; additional rejections are welcome.
 const MIN_STRANDED_FORBIDDEN_REJECTIONS: usize = 2;
 /// More discriminating markers are welcome; dropping one quietly disarms the profile guard.
@@ -603,6 +606,51 @@ fn service_sequence_instruction_abort_classifier_is_single_signature() {
     );
 
     let arm_lines: Vec<_> = abort_arm.lines().map(str::trim).collect();
+    let named_signature_prefix = r#"elif [ "$instruction_abort_signature" = ""#;
+    let named_signature_suffix = r#"" ]; then"#;
+    let named_signature_branches: Vec<_> = arm_lines
+        .iter()
+        .enumerate()
+        .filter_map(|(index, line)| {
+            line.strip_prefix(named_signature_prefix)
+                .and_then(|signature| signature.strip_suffix(named_signature_suffix))
+                .map(|signature| (index, signature))
+        })
+        .collect();
+    assert_eq!(
+        named_signature_branches.len(),
+        PRIOR_NAMED_INSTRUCTION_ABORT_ARMS + 1,
+        "the instruction-abort classifier must add exactly one named field-signature arm"
+    );
+    let mut named_buckets = HashSet::new();
+    for (branch_index, signature) in named_signature_branches {
+        let fields: Vec<_> = signature.split_ascii_whitespace().collect();
+        assert_eq!(
+            fields.len(),
+            3,
+            "named instruction-abort signatures must carry FAR/ELR/ESR fields"
+        );
+        assert!(
+            fields.iter().all(|field| {
+                field.strip_prefix("0x").is_some_and(|digits| {
+                    !digits.is_empty() && digits.bytes().all(|byte| byte.is_ascii_hexdigit())
+                })
+            }),
+            "named instruction-abort signature fields must be exact hexadecimal values: {signature}"
+        );
+        let bucket = arm_lines
+            .get(branch_index + 1)
+            .and_then(|line| line.strip_prefix("CLASS_BUCKET=\"")?.strip_suffix('"'))
+            .expect("field-exact instruction-abort arm must assign one bucket directly");
+        assert_ne!(
+            bucket, "UNATTRIBUTED",
+            "field-exact instruction-abort arms must be named"
+        );
+        assert!(
+            named_buckets.insert(bucket),
+            "field-exact instruction-abort arms must name distinct buckets"
+        );
+    }
     let refusal_reasons: HashSet<_> = arm_lines
         .windows(2)
         .filter(|pair| pair[0] == r#"CLASS_BUCKET="UNATTRIBUTED""#)
@@ -617,7 +665,12 @@ fn service_sequence_instruction_abort_classifier_is_single_signature() {
     assert_eq!(
         shell_exact_line_occurrences(&gate, r#"CLASS_BUCKET="576""#),
         1,
-        "service-sequence gate must have exactly one tolerated CLASS_BUCKET=\"576\" assignment"
+        "service-sequence gate must have exactly one named CLASS_BUCKET=\"576\" assignment"
+    );
+    assert_eq!(
+        shell_exact_line_occurrences(&gate, r#"CLASS_BUCKET="626""#),
+        1,
+        "service-sequence gate must have exactly one named CLASS_BUCKET=\"626\" assignment"
     );
 }
 
@@ -776,7 +829,7 @@ fn service_sequence_609_arm_is_field_keyed_and_untolerated() {
     assert_eq!(
         shell_exact_line_occurrences(&gate, r#"CLASS_BUCKET="609""#),
         1,
-        "service-sequence gate must have exactly one tolerated CLASS_BUCKET=\"609\" assignment"
+        "service-sequence gate must have exactly one named CLASS_BUCKET=\"609\" assignment"
     );
 
     let classifier = shell_function_body(&gate, "classify_serial");
@@ -910,6 +963,23 @@ fn service_sequence_609_arm_is_field_keyed_and_untolerated() {
         "run_profile must retain exactly one per-profile count_* FAIL condition"
     );
     let fail_condition = fail_conditions[0];
+    for required_failing_bucket in ["576", "626"] {
+        let counter = bucket_counters
+            .iter()
+            .find_map(|(bucket, counter)| {
+                (*bucket == required_failing_bucket).then_some(*counter)
+            })
+            .unwrap_or_else(|| {
+                panic!(
+                    "required instruction-abort bucket {required_failing_bucket} must map to a count_* counter"
+                )
+            });
+        let failing_term = format!(r#"[ "${counter}" -ne 0 ]"#);
+        assert!(
+            fail_condition.contains(&failing_term),
+            "instruction-abort bucket {required_failing_bucket} counter {counter} must remain in run_profile's per-profile FAIL condition"
+        );
+    }
     for (field, _, bucket) in strand_arms {
         let counter = bucket_counters
             .iter()
@@ -975,13 +1045,12 @@ fn service_sequence_609_arm_is_field_keyed_and_untolerated() {
         });
     assert_eq!(
         non_failing_buckets.len(),
-        MAX_NON_FAILING_SERVICE_SEQUENCE_BUCKETS,
+        EXPECTED_NON_FAILING_SERVICE_SEQUENCE_BUCKETS,
         "service-sequence non-failing bucket census changed to {non_failing_buckets:?}; a new non-failing bucket is a new tolerance and needs a coordinator ruling"
     );
-    assert_eq!(
-        non_failing_buckets,
-        HashSet::from(["GREEN", "576"]),
-        "service-sequence gate may pass only the healthy GREEN bucket and open pre-adjudicated bucket 576"
+    assert!(
+        non_failing_buckets.contains("GREEN"),
+        "the sole non-failing service-sequence bucket must be the healthy GREEN result"
     );
     assert!(
         failing_buckets.contains(bucket_609),
@@ -1016,6 +1085,148 @@ fn service_sequence_609_arm_is_field_keyed_and_untolerated() {
     assert!(
         failing_buckets.contains("BOOT_TEST_FAIL"),
         "BOOT_TEST_FAIL must remain a hard-failing per-profile bucket"
+    );
+}
+
+#[test]
+fn service_sequence_ret_dispatch_refusals_are_counted_and_reported_not_gated() {
+    let gate = repo_text(SERVICE_SEQUENCE_GATE_PATH);
+    let run_profile = shell_function_body(&gate, "run_profile");
+    let refusal_count_lines: Vec<_> = run_profile
+        .lines()
+        .map(str::trim)
+        .filter(|line| line.contains(r#"grep -cF "[RET_DISPATCH_REFUSED:""#))
+        .collect();
+    assert_eq!(
+        refusal_count_lines.len(),
+        1,
+        "run_profile must count RET_DISPATCH_REFUSED marker lines exactly once per boot"
+    );
+    let boot_counter = refusal_count_lines[0]
+        .split_once('=')
+        .map(|(counter, _)| counter)
+        .expect("per-boot refusal counter assignment");
+
+    let profile_accumulators: Vec<_> = run_profile
+        .lines()
+        .map(str::trim)
+        .filter_map(|line| {
+            let (counter, expression) = line.split_once("=$((")?;
+            expression
+                .contains(&format!("+ {boot_counter}"))
+                .then_some(counter)
+        })
+        .collect();
+    assert_eq!(
+        profile_accumulators.len(),
+        1,
+        "the per-boot refusal count must feed exactly one per-profile line accumulator"
+    );
+    let profile_line_counter = profile_accumulators[0];
+
+    let refusal_boot_conditions: Vec<_> = run_profile
+        .lines()
+        .map(str::trim)
+        .enumerate()
+        .filter(|(_, line)| {
+            *line == format!(r#"if [ "${boot_counter}" -ne 0 ]; then"#)
+        })
+        .collect();
+    assert_eq!(
+        refusal_boot_conditions.len(),
+        1,
+        "the refusal census must count boots with one or more marker lines"
+    );
+    let profile_boot_counter = run_profile
+        .lines()
+        .map(str::trim)
+        .nth(refusal_boot_conditions[0].0 + 1)
+        .and_then(|line| {
+            let (counter, expression) = line.split_once("=$((")?;
+            expression
+                .contains(&format!("{counter} + 1"))
+                .then_some(counter)
+        })
+        .expect("per-profile refusal-boot accumulator");
+
+    let boot_reports: Vec<_> = run_profile
+        .lines()
+        .map(str::trim)
+        .filter(|line| line.contains("ret_dispatch_refusals=$"))
+        .collect();
+    assert_eq!(
+        boot_reports.len(),
+        1,
+        "the per-boot report must print the refusal-line count exactly once"
+    );
+    assert!(
+        boot_reports[0].contains(&format!("${boot_counter}")),
+        "the per-boot refusal report must print the derived marker counter"
+    );
+
+    let census_header = run_profile
+        .lines()
+        .map(str::trim)
+        .find(|line| line.starts_with("printf 'boot\\t"))
+        .expect("per-boot census header");
+    assert!(
+        census_header.contains("ret_dispatch_refusals"),
+        "the per-boot census artifact must retain the refusal count"
+    );
+
+    let print_census = shell_function_body(&gate, "print_census");
+    let profile_reports: Vec<_> = print_census
+        .lines()
+        .map(str::trim)
+        .filter(|line| line.contains("RET dispatch refused:"))
+        .collect();
+    assert_eq!(
+        profile_reports.len(),
+        1,
+        "print_census must report the ret-dispatch refusal census exactly once"
+    );
+    assert!(
+        profile_reports[0].contains(&format!("${profile_line_counter}"))
+            && profile_reports[0].contains(&format!("${profile_boot_counter}/$count_boots"))
+            && profile_reports[0].contains("marker line(s) across")
+            && profile_reports[0].contains("reported, not gated"),
+        "the profile refusal census must print the derived line accumulator with reported-only framing"
+    );
+    let census_echoes: Vec<_> = print_census
+        .lines()
+        .map(str::trim)
+        .filter(|line| line.starts_with("echo "))
+        .collect();
+    let divergence_report = census_echoes
+        .iter()
+        .position(|line| line.contains("CTX596 divergence:"))
+        .expect("CTX596 divergence census output");
+    let refusal_report = census_echoes
+        .iter()
+        .position(|line| line.contains("RET dispatch refused:"))
+        .expect("ret-dispatch refusal census output");
+    assert_eq!(
+        refusal_report,
+        divergence_report + 1,
+        "ret-dispatch refusals must print immediately after CTX596 divergence"
+    );
+
+    let fail_conditions: Vec<_> = run_profile
+        .lines()
+        .map(str::trim)
+        .filter(|line| line.starts_with(r#"if [ "$count_"#) && line.ends_with("; then"))
+        .collect();
+    assert_eq!(
+        fail_conditions.len(),
+        1,
+        "run_profile must retain exactly one per-profile count_* FAIL condition"
+    );
+    assert!(
+        !fail_conditions[0].contains(boot_counter)
+            && !fail_conditions[0].contains(profile_line_counter)
+            && !fail_conditions[0].contains(profile_boot_counter)
+            && !fail_conditions[0].contains("refusal"),
+        "ret-dispatch refusal observations must appear in no per-profile FAIL condition"
     );
 }
 
@@ -1344,7 +1555,7 @@ fn strand_handoff_structure_is_pinned_without_line_numbers() {
 }
 
 #[test]
-fn injection_stimulus_is_gated_by_the_idle_outgoing_thread() {
+fn injection_stimulus_default_is_idle_gated_and_live_widening_is_cfg_only() {
     let context_switch = repo_text(CONTEXT_SWITCH_PATH);
     let trampoline = function_body(&context_switch, "inline_schedule_trampoline");
     assert!(
@@ -1372,27 +1583,92 @@ fn injection_stimulus_is_gated_by_the_idle_outgoing_thread() {
         "idle_thread load must introduce the outgoing-id comparison"
     );
 
-    let injection_guard = braced_block_after(trampoline, "if idle_id == old_id");
+    let default_cfg = "#[cfg(not(feature = \"strand_inject_live_outgoing\"))]";
+    let widened_cfg = "#[cfg(feature = \"strand_inject_live_outgoing\")]";
+    let default_arms: Vec<_> = trampoline.match_indices(default_cfg).map(|(at, _)| at).collect();
+    let widened_arms: Vec<_> = trampoline.match_indices(widened_cfg).map(|(at, _)| at).collect();
+    assert_eq!(
+        default_arms.len() + widened_arms.len(),
+        2,
+        "the live-outgoing stimulus must have exactly two cfg-guarded shapes"
+    );
+    assert_eq!(
+        default_arms.len(),
+        1,
+        "the feature-off idle-only stimulus shape must be unique"
+    );
+    assert_eq!(
+        widened_arms.len(),
+        1,
+        "the feature-on live-outgoing stimulus shape must be unique"
+    );
+    assert!(
+        default_arms[0] < widened_arms[0],
+        "the unchanged default stimulus shape must precede its widened cfg peer"
+    );
+
+    let default_arm = &trampoline[default_arms[0]..widened_arms[0]];
+    let widened_arm = &trampoline[widened_arms[0]..];
+    let injection_guard = braced_block_after(default_arm, "if idle_id == old_id");
     assert!(
         !injection_guard.trim().is_empty(),
-        "idle outgoing injection guard body census"
+        "default idle-outgoing injection guard body census"
     );
     assert!(
         !code_occurrences(injection_guard, "inject_if_armed(").is_empty(),
-        "inject_if_armed must be inside the idle outgoing guard"
+        "the default inject_if_armed call must remain inside the idle-outgoing guard"
+    );
+    assert_eq!(
+        code_occurrences(default_arm, "inject_if_armed(").len(),
+        1,
+        "the default cfg arm must contain exactly one injection call"
+    );
+    assert_eq!(
+        code_occurrences(widened_arm, "inject_if_armed(").len(),
+        1,
+        "the live-outgoing cfg arm must contain exactly one injection call"
+    );
+    assert!(
+        code_occurrences(widened_arm, "idle_id == old_id").is_empty(),
+        "only the explicit live-outgoing cfg arm may omit the idle comparison"
+    );
+    assert_eq!(
+        code_occurrences(widened_arm, "is_strand_live_driver(old_id)").len(),
+        1,
+        "the widened arm must drop only the dedicated no-wakeup driver"
+    );
+    let widened_fired = braced_block_after(widened_arm, "if live_outgoing_injected");
+    let fired_notes = code_occurrences(widened_fired, "note_live_outgoing_fired(");
+    let recovery_owner_clears = code_occurrences(
+        widened_fired,
+        "cpu_state[cpu_id].previous_thread = None",
+    );
+    assert_eq!(
+        fired_notes.len(),
+        1,
+        "the widened arm must record its one live-outgoing injection"
+    );
+    assert_eq!(
+        recovery_owner_clears.len(),
+        1,
+        "the widened arm must remove the independent exception-cleanup recovery owner"
+    );
+    assert!(
+        fired_notes[0] < recovery_owner_clears[0],
+        "the widened arm may clear the recovery owner only after its injection fired"
     );
 
-    let trampoline_start = context_switch
-        .find(trampoline)
-        .expect("inline_schedule_trampoline body position");
-    let comparison_start = trampoline_start + idle_comparisons[0];
-    let injection_calls = code_occurrences(&context_switch, "inject_if_armed(");
-    assert!(!injection_calls.is_empty(), "inject_if_armed call census");
+    let oracle = repo_text(RET_ZERO_PC_ORACLE_PATH);
+    let driver = function_body(&oracle, "strand_live_driver");
+    let publish = code_occurrences(driver, "LIVE_DRIVER_TID.store(");
+    let schedules = code_occurrences(driver, "scheduler::schedule()");
+    let sleeps = code_occurrences(driver, "strand_oracle::sleep_sample_period()");
+    assert_eq!(publish.len(), 1, "the driver must publish its own TID once");
+    assert_eq!(schedules.len(), 1, "the driver must have one runnable handoff site");
+    assert_eq!(sleeps.len(), 1, "the driver must have one post-resume throttle");
     assert!(
-        injection_calls
-            .iter()
-            .all(|call_offset| *call_offset > comparison_start),
-        "every inject_if_armed call must follow the idle/outgoing comparison"
+        publish[0] < schedules[0] && schedules[0] < sleeps[0],
+        "the driver must publish, schedule while runnable, then install its next timer only after resuming"
     );
 }
 

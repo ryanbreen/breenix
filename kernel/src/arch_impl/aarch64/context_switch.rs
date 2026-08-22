@@ -83,6 +83,36 @@ crate::define_trace_counter!(
 
 static CTX596_ORACLE_EMISSIONS: AtomicU32 = AtomicU32::new(0);
 static CTX596_DIVERGENCE_EMISSIONS: AtomicU32 = AtomicU32::new(0);
+static RET_DISPATCH_REFUSAL_EMISSIONS: AtomicU32 = AtomicU32::new(0);
+
+/// Production census for invalid ret-dispatch resume PCs. The feature-gated
+/// oracle also reads these counters to prove its designated victim was refused.
+pub static RET_DISPATCH_REFUSALS: AtomicU64 = AtomicU64::new(0);
+pub static RET_DISPATCH_REFUSED_TID: AtomicU64 = AtomicU64::new(0);
+
+/// A saved kernel resume PC must name an aligned instruction in kernel text.
+#[inline(always)]
+fn resume_pc_is_dispatchable(addr: u64) -> bool {
+    extern "C" {
+        static __kernel_text_start: u8;
+        static __kernel_text_end: u8;
+    }
+
+    const KERNEL_VIRT_OFFSET: u64 = 0xFFFF_0000_0000_0000;
+    let text_start = core::ptr::addr_of!(__kernel_text_start) as u64;
+    let text_end = core::ptr::addr_of!(__kernel_text_end) as u64;
+    let higher_alias = addr.wrapping_add(KERNEL_VIRT_OFFSET);
+    let lower_alias = addr.wrapping_sub(KERNEL_VIRT_OFFSET);
+
+    // WHY: llvm-objdump shows a PC-relative ADR for the text start and an
+    // ADRP+ADD pair for the text end, so both follow the mapping executing this
+    // code. Saved PCs may still be spelled in the counterpart alias; admit it,
+    // but only through another text-sized window.
+    addr & 0x3 == 0
+        && ((addr >= text_start && addr < text_end)
+            || (higher_alias >= text_start && higher_alias < text_end)
+            || (lower_alias >= text_start && lower_alias < text_end))
+}
 
 #[inline]
 fn dispatch_spsr(spsr: u64) -> u64 {
@@ -609,6 +639,13 @@ aarch64_ret_to_kernel_context:
     mov sp, x2
     msr daifclr, #3
     isb
+    adrp x16, __kernel_text_start
+    add x16, x16, :lo12:__kernel_text_start
+    cmp x1, x16
+    b.hs 1f
+    adrp x1, idle_loop_arm64
+    add x1, x1, :lo12:idle_loop_arm64
+1:
     br x1
 
 .global aarch64_enter_exception_frame
@@ -2202,11 +2239,7 @@ fn log_idle_thread_context(tag: &str, thread: &Thread, sp: u64, elr: u64, x30: u
 
 #[inline(always)]
 fn clear_inline_schedule_state(thread: &mut Thread) {
-    thread.saved_by_inline_schedule = false;
-    thread.inline_schedule_spsr = 0;
-    thread.inline_schedule_prev_elr = 0;
-    thread.inline_schedule_saved_sp = 0;
-    thread.inline_schedule_caller_lr = 0;
+    thread.clear_inline_schedule_state();
 }
 
 #[inline(always)]
@@ -2294,6 +2327,33 @@ fn take_inline_ret_dispatch_info(
     // it must resume at the safe post-inline-switch return target, not a
     // mid-function ELR that may require stale volatile registers.
     let resume_pc = thread.context.x30;
+    if !resume_pc_is_dispatchable(resume_pc) {
+        let thread_id = thread.id();
+        RET_DISPATCH_REFUSED_TID.store(thread_id, Ordering::Relaxed);
+        RET_DISPATCH_REFUSALS.fetch_add(1, Ordering::Release);
+        if RET_DISPATCH_REFUSAL_EMISSIONS.fetch_add(1, Ordering::Relaxed) < 8 {
+            raw_uart_str("[RET_DISPATCH_REFUSED:tid=");
+            raw_uart_dec(thread_id);
+            raw_uart_str(":pc=");
+            raw_uart_hex(resume_pc);
+            raw_uart_str(":cpu=");
+            raw_uart_dec(Aarch64PerCpu::cpu_id() as u64);
+            raw_uart_str(":x30=");
+            raw_uart_hex(thread.context.x30);
+            raw_uart_str(":elr=");
+            raw_uart_hex(thread.context.elr_el1);
+            raw_uart_str(":sp=");
+            raw_uart_hex(thread.context.sp);
+            raw_uart_str(":has_started=");
+            raw_uart_dec(u64::from(thread.has_started));
+            raw_uart_str(":bis=");
+            raw_uart_dec(u64::from(thread.saved_by_inline_schedule));
+            raw_uart_str(":priv=");
+            raw_uart_dec(u64::from(thread.privilege == ThreadPrivilege::Kernel));
+            raw_uart_str("]\n");
+        }
+        return None;
+    }
     let saved_by_inline_schedule = thread.saved_by_inline_schedule;
     check_inline_save_resume_point(thread, 1);
     thread.context.elr_el1 = resume_pc;
@@ -2379,6 +2439,10 @@ fn inline_ret_dispatch_info_if_ready(
         return None;
     }
 
+    #[cfg(feature = "ret_zero_pc_oracle")]
+    crate::task::ret_zero_pc_oracle::inject_ret_zero_pc_if_armed(sched, thread_id);
+    #[cfg(all(target_arch = "aarch64", feature = "ret_stack_pc_oracle"))]
+    crate::task::ret_zero_pc_oracle::inject_ret_stack_pc_if_armed(sched, thread_id);
     sched.get_thread_mut(thread_id)
         .and_then(take_inline_ret_dispatch_info)
 }
@@ -2743,13 +2807,6 @@ fn restore_kernel_context_inline(
     // On Parallels, the UEFI loader jumps to kernel_main at a physical
     // address and the kernel runs identity-mapped, so function pointers
     // resolve to physical addresses in the RAM range (0x40080000+).
-    const KERNEL_VIRT_BASE: u64 = 0xFFFF_0000_0000_0000;
-    const KERNEL_PHYS_BASE: u64 = 0x4008_0000;
-    const KERNEL_PHYS_LIMIT: u64 = 0xC000_0000;
-    #[inline]
-    fn is_kernel_addr(addr: u64) -> bool {
-        addr >= KERNEL_VIRT_BASE || (addr >= KERNEL_PHYS_BASE && addr < KERNEL_PHYS_LIMIT)
-    }
     let resume_pc = if thread.saved_by_inline_schedule {
         // Inline save captures only x19..x30 + SP, so x30 is its sole valid
         // architectural resume point. Exception-saved contexts keep ELR_EL1.
@@ -2759,10 +2816,10 @@ fn restore_kernel_context_inline(
     };
     let elr_valid = if !has_started {
         // First run: x30 must be a valid kernel address
-        is_kernel_addr(thread.context.x30)
+        resume_pc_is_dispatchable(thread.context.x30)
     } else {
         // Resume PC must be in kernel space or zero (handled below).
-        is_kernel_addr(resume_pc) || resume_pc == 0
+        resume_pc_is_dispatchable(resume_pc) || resume_pc == 0
     };
     trace_ctx_diag(
         TRACE_CTX_DIAG_RESTORE_KERNEL_PRE,
@@ -2866,7 +2923,7 @@ fn restore_kernel_context_inline(
     if !has_started {
         frame.elr = thread.context.x30; // First run: jump to entry point
         frame.spsr = kernel_dispatch_spsr(thread.context.spsr_el1);
-    } else if is_kernel_addr(resume_pc) {
+    } else if resume_pc_is_dispatchable(resume_pc) {
         // Resume: return to where we left off.
         // On QEMU, kernel addresses are >= KERNEL_VIRT_BASE (HHDM).
         // On Parallels, kernel runs identity-mapped at physical addresses
@@ -3208,11 +3265,7 @@ fn reset_idle_continuation_locked(
     };
 
     let idle_addr = idle_loop_arm64 as *const () as u64;
-    thread.saved_by_inline_schedule = false;
-    thread.inline_schedule_spsr = 0;
-    thread.inline_schedule_prev_elr = 0;
-    thread.inline_schedule_saved_sp = 0;
-    thread.inline_schedule_caller_lr = 0;
+    thread.clear_inline_schedule_state();
     thread.context.sp = idle_sp;
     thread.context.elr_el1 = idle_addr;
     thread.context.x30 = idle_addr;
@@ -4116,6 +4169,9 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
         drop(guard);
         crate::arch_impl::aarch64::timer_interrupt::reset_quantum();
         crate::arch_impl::aarch64::timer_interrupt::rearm_timer();
+        #[cfg(all(target_arch = "aarch64", feature = "ret_floor_oracle"))]
+        let resume_pc =
+            crate::task::ret_zero_pc_oracle::inject_ret_floor_if_armed(new_id, resume_pc);
         unsafe {
             aarch64_ret_to_kernel_context(ctx_ptr, resume_pc);
         }
@@ -4308,14 +4364,11 @@ extern "C" fn inline_schedule_trampoline() -> ! {
     let new_id = state.new_thread_id.load(Ordering::Relaxed);
     let should_requeue_old = state.should_requeue_old.swap(false, Ordering::Relaxed);
 
-    // The forced null-`scheduler_ptr` branch below never applies the outgoing
-    // thread's `elr_el1 = x30` resume-point repair and never requeues it (#607),
-    // so arming it over a live outgoing thread corrupts that thread rather than
-    // the incoming publication this oracle tests. Arm only when the outgoing
-    // thread is this CPU's own idle thread: the same branch re-establishes idle
-    // through reset_idle_continuation_locked, so the stimulus abandons exactly
-    // the published-but-uncommitted incoming selection and nothing else.
+    // Keep the default one-shot stimulus scoped to an idle outgoing handoff.
+    // The live-outgoing feature below widens it specifically to exercise the
+    // fallback's outgoing-thread transaction.
     #[cfg(feature = "boot_tests")]
+    #[cfg(not(feature = "strand_inject_live_outgoing"))]
     let injected_leg = if sched_ptr.is_null() {
         None
     } else {
@@ -4327,6 +4380,38 @@ extern "C" fn inline_schedule_trampoline() -> ! {
         } else {
             None
         }
+    };
+    #[cfg(feature = "boot_tests")]
+    #[cfg(feature = "strand_inject_live_outgoing")]
+    let injected_leg = if sched_ptr.is_null() {
+        None
+    } else {
+        // The feature deliberately widens the one-shot stimulus to a live
+        // outgoing handoff so the null-pointer fallback must finish that
+        // outgoing transaction as well as roll back the incoming selection.
+        let idle_id = unsafe { (*sched_ptr).cpu_state[cpu_id].idle_thread };
+        let outgoing_is_live = idle_id != old_id;
+        let injected_leg = if outgoing_is_live
+            && crate::task::ret_zero_pc_oracle::is_strand_live_driver(old_id)
+        {
+            crate::task::strand_oracle::inject_if_armed(new_id)
+        } else {
+            None
+        };
+        let live_outgoing_injected = injected_leg.is_some();
+        if live_outgoing_injected {
+            crate::task::ret_zero_pc_oracle::note_live_outgoing_fired(
+                old_id,
+                !outgoing_is_live,
+            );
+            // Test-only: remove the exception-cleanup recovery owner while
+            // this CPU still owns the scheduler lock. The fallback itself
+            // must complete the saved affirmative outgoing requeue intent.
+            unsafe {
+                (*sched_ptr).cpu_state[cpu_id].previous_thread = None;
+            }
+        }
+        injected_leg
     };
     #[cfg(feature = "boot_tests")]
     let sched_ptr = if injected_leg.is_some() {
@@ -4385,7 +4470,26 @@ extern "C" fn inline_schedule_trampoline() -> ! {
             if !inline_rollback_suppressed {
                 sched.resolve_pending_next_locked(cpu_id);
             }
+
+            let old_ready_after_save = if old_id != idle_id {
+                if let Some(old_thread) = sched.get_thread_mut(old_id) {
+                    // Redundant with the assembly save above and retained
+                    // deliberately as a Rust-side guard for the inline resume
+                    // point invariant.
+                    old_thread.context.elr_el1 = old_thread.context.x30;
+                }
+                sched
+                    .get_thread(old_id)
+                    .map(|thread| thread.state == ThreadState::Ready)
+                    .unwrap_or(false)
+            } else {
+                false
+            };
             sched.fix_exception_cleanup_cpu_state();
+            if old_id != idle_id && (should_requeue_old || old_ready_after_save) {
+                sched.requeue_thread_after_save(old_id);
+            }
+            sched.cpu_state[cpu_id].previous_thread = None;
             reset_idle_continuation_locked(sched, cpu_id, idle_id, idle_sp);
             idle_sp
         })
@@ -4536,6 +4640,9 @@ extern "C" fn inline_schedule_trampoline() -> ! {
             unsafe { (*ctx_ptr).elr_el1 },
             resume_sp,
         );
+        #[cfg(all(target_arch = "aarch64", feature = "ret_floor_oracle"))]
+        let resume_pc =
+            crate::task::ret_zero_pc_oracle::inject_ret_floor_if_armed(new_id, resume_pc);
         unsafe {
             aarch64_ret_to_kernel_context(ctx_ptr, resume_pc);
         }

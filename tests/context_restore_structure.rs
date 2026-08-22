@@ -2784,11 +2784,6 @@ const FORCE_ERET_DISPATCH_DEFINITIONS: &[(&str, &str, usize)] = &[
     (AARCH64_CONTEXT_SWITCH, "#[cfg(feature=force_eret_dispatch_596)] fn inline_ret_dispatch_info_if_ready", 1),
     (AARCH64_CONTEXT_SWITCH, "#[cfg(not(feature=force_eret_dispatch_596))] fn inline_ret_dispatch_info_if_ready", 1),
 ];
-#[rustfmt::skip]
-const INLINE_TRAMPOLINE_REPAIRS: &[(&str, &str, usize)] = &[
-    (AARCH64_CONTEXT_SWITCH, "fn inline_schedule_trampoline", 1),
-];
-
 fn context_switch_sources(source: &str) -> Vec<(String, String)> {
     vec![(AARCH64_CONTEXT_SWITCH.to_owned(), source.to_owned())]
 }
@@ -3016,12 +3011,119 @@ fn trampoline_repair_offsets(source: &str, mask: &[bool]) -> Vec<usize> {
         .collect()
 }
 
+fn brace_depth_before(source: &str, mask: &[bool], offset: usize) -> usize {
+    source.as_bytes()[..offset]
+        .iter()
+        .zip(&mask[..offset])
+        .fold(0usize, |depth, (byte, code)| {
+            if !code {
+                depth
+            } else {
+                match byte {
+                    b'{' => depth + 1,
+                    b'}' => depth.saturating_sub(1),
+                    _ => depth,
+                }
+            }
+        })
+}
+
+fn braced_block_bounds(source: &str, mask: &[bool], start: usize) -> Option<(usize, usize)> {
+    let open =
+        (start..source.len()).find(|index| mask[*index] && source.as_bytes()[*index] == b'{')?;
+    let block = braced_block(source, mask, start)?;
+    Some((open, start + block.len() - 1))
+}
+
+fn identifier_starts_at(source: &str, mask: &[bool], offset: usize, identifier: &str) -> bool {
+    identifier_offsets(source, mask, identifier)
+        .into_iter()
+        .any(|candidate| candidate == offset)
+}
+
 fn validate_inline_trampoline_repair(source: &str) -> Result<(), String> {
-    let sources = context_switch_sources(source);
-    census_error(
-        &census(&sources, trampoline_repair_offsets),
-        INLINE_TRAMPOLINE_REPAIRS,
-    )
+    let trampoline = function_body(source, "inline_schedule_trampoline")
+        .ok_or_else(|| "missing fn inline_schedule_trampoline".to_string())?;
+    let mask = code_mask(trampoline);
+    let bytes = trampoline.as_bytes();
+
+    let fallback_guards: Vec<(usize, usize)> = identifier_offsets(trampoline, &mask, "if")
+        .into_iter()
+        .filter(|if_offset| {
+            brace_depth_before(trampoline, &mask, *if_offset) == 1
+                && previous_code(trampoline, &mask, *if_offset)
+                    .is_some_and(|before| matches!(bytes[before], b'{' | b'}' | b';'))
+        })
+        .filter_map(|if_offset| {
+            let (open, close) = braced_block_bounds(trampoline, &mask, if_offset)?;
+            (normalized_predicate(&trampoline[if_offset + "if".len()..open])
+                == "sched_ptr.is_null()")
+                .then_some((open, close))
+        })
+        .collect();
+    let &[(fallback_open, fallback_close)] = fallback_guards.as_slice() else {
+        return Err(format!(
+            "inline_schedule_trampoline must have one top-level scheduler_ptr-null fallback guard, found {}",
+            fallback_guards.len()
+        ));
+    };
+
+    let mut arms = vec![(
+        "scheduler_ptr-null fallback".to_string(),
+        &trampoline[fallback_open + 1..fallback_close],
+    )];
+    let mut cursor = fallback_close + 1;
+    let mut branch_number = 2usize;
+    let mut has_final_else = false;
+    loop {
+        let Some(else_offset) = next_code(trampoline, &mask, cursor) else {
+            break;
+        };
+        if !identifier_starts_at(trampoline, &mask, else_offset, "else") {
+            break;
+        }
+        let after_else = next_code(trampoline, &mask, else_offset + "else".len())
+            .ok_or_else(|| "unterminated scheduler_ptr-null fallback else".to_string())?;
+        if identifier_starts_at(trampoline, &mask, after_else, "if") {
+            let (open, close) = braced_block_bounds(trampoline, &mask, after_else)
+                .ok_or_else(|| "scheduler_ptr-null fallback else-if has no body".to_string())?;
+            arms.push((
+                format!("scheduler_ptr fallback branch {branch_number}"),
+                &trampoline[open + 1..close],
+            ));
+            branch_number += 1;
+            cursor = close + 1;
+            continue;
+        }
+        if bytes[after_else] != b'{' {
+            return Err("scheduler_ptr-null fallback else has no body".to_string());
+        }
+        let (_, close) = braced_block_bounds(trampoline, &mask, after_else)
+            .ok_or_else(|| "scheduler_ptr-null fallback else has no body".to_string())?;
+        arms.push((
+            "scheduler_ptr non-null else".to_string(),
+            &trampoline[after_else + 1..close],
+        ));
+        cursor = close + 1;
+        has_final_else = true;
+        break;
+    }
+    if !has_final_else {
+        arms.push((
+            "scheduler_ptr non-null fallthrough".to_string(),
+            &trampoline[cursor..trampoline.len() - 1],
+        ));
+    }
+
+    for (label, arm) in arms {
+        let count = trampoline_repair_offsets(arm, &code_mask(arm)).len();
+        if count != 1 {
+            return Err(format!(
+                "inline_schedule_trampoline {label} arm must carry exactly one old-thread ELR normalization, found {count}"
+            ));
+        }
+    }
+    Ok(())
 }
 
 #[test]
@@ -3166,13 +3268,36 @@ fn inline_schedule_trampoline_retains_the_redundant_elr_guard() {
     let source = repo_text(AARCH64_CONTEXT_SWITCH);
     assert_eq!(validate_inline_trampoline_repair(&source), Ok(()));
 
-    let mutant = source.replacen(
-        "        old_thread.context.elr_el1 = old_thread.context.x30;\n",
-        "",
+    let repair = "old_thread.context.elr_el1 = old_thread.context.x30;";
+    let fallback_repair = source
+        .find(repair)
+        .expect("inline trampoline fallback repair mutation anchor");
+    let normal_repair = source
+        .rfind(repair)
+        .expect("inline trampoline normal repair mutation anchor");
+    assert_ne!(
+        fallback_repair, normal_repair,
+        "inline trampoline repair arms must have distinct anchors"
+    );
+
+    let mut missing_fallback_repair = source.clone();
+    missing_fallback_repair.replace_range(fallback_repair..fallback_repair + repair.len(), "");
+    assert!(validate_inline_trampoline_repair(&missing_fallback_repair).is_err());
+
+    let mut missing_normal_repair = source.clone();
+    missing_normal_repair.replace_range(normal_repair..normal_repair + repair.len(), "");
+    assert!(validate_inline_trampoline_repair(&missing_normal_repair).is_err());
+
+    let third_arm_without_repair = source.replacen(
+        "    }\n\n    let sched = unsafe { &mut *sched_ptr };",
+        "    } else if old_id == new_id {\n        core::hint::spin_loop();\n    }\n\n    let sched = unsafe { &mut *sched_ptr };",
         1,
     );
-    assert_ne!(mutant, source, "inline trampoline repair mutation anchor");
-    assert!(validate_inline_trampoline_repair(&mutant).is_err());
+    assert_ne!(
+        third_arm_without_repair, source,
+        "inline trampoline third-arm mutation anchor"
+    );
+    assert!(validate_inline_trampoline_repair(&third_arm_without_repair).is_err());
 }
 
 #[test]
