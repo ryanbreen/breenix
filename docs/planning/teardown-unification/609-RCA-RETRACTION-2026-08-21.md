@@ -284,19 +284,19 @@ gates produced zero. P(0 wedges | p = 0.013) ≈ 0.002.
 
 | gate | result |
 |---|---|
-| structural suites, re-run at the R37 tree: teardown 57, context_restore 61, loopback_pump 57, exec_lock_order 34, strand_handoff 29, net_lock 19, block_request_lifetime 12, serial_line_atomicity 9, exit_tally 6, dma_and_log_sink 4, signal_eintr_predicate 2, kernel_no_neon_guard 1 | **291 passed, 0 failed** |
+| structural suites, re-run at the R37 tree (R37): teardown 57, context_restore 61, loopback_pump 57, exec_lock_order 34, strand_handoff 29, net_lock 19, block_request_lifetime 12, serial_line_atomicity 9, exit_tally 6, dma_and_log_sink 4, signal_eintr_predicate 2, kernel_no_neon_guard 1 | **291 passed, 0 failed** |
 | aarch64 production / `boot_tests` / `arm_a_609` builds, each forced (`aarch64-breenix-kernel.json` only) | zero repository warnings; `check-kernel-no-neon.sh` PASS on each |
 | x86 `testing,external_test_bins` and `boot_tests,testing,external_test_bins`, each forced | zero warnings — the second **only after R37/B3**: `kthread_has_exited_for_test` had been widened from `#[cfg(all(target_arch = "aarch64", feature = "boot_tests"))]` to `#[cfg(feature = "boot_tests")]` while every call site stayed aarch64-gated, so the x86 custody gate's own build carried a dead-code warning. The arch term is restored, with the reason in the doc comment. |
 | `run-aarch64-boot-test-strict.sh 6` (r2) | 6/6 |
 | **`run-aarch64-boot-test-strict.sh 20` (R37 re-leg)** | **20/20 SUCCESS** |
 | `run-aarch64-boot-test-strict.sh 20` (r2 run 2) | 19/20 — one `FUTEX_HANDOFF` red, now **#627** |
-| `run-aarch64-prod-profile-boot-test.sh` | PASS — futex seam absent, 0 crash markers |
+| `run-aarch64-prod-profile-boot-test.sh` (r2) | PASS — futex seam absent, 0 crash markers |
 | service-sequence gate `--boots 25 --profile both` (r2) | `609=0/50`, `BOOT_TEST_FAIL=0/50`, every other bucket 0, GREEN 49/50; the one red is **#626**, attributed by field signature and not tolerated |
 | **service-sequence gate `--boots 25 --profile both` (R37 re-leg)** | see §6.4 |
 | arm A `--expect clean --boots 100 --profile cortex-a72 --starved` (r2) | 99 GREEN / 1 `ORACLE_FAIL` — the kernel-stack ownership red, now **#628** |
 | **arm A `--expect clean --boots 100 --profile cortex-a72 --starved` (R37 re-run)** | **100/100 GREEN, verdict PASS**, `slot_balance=0` on all 100 |
-| x86 frame-custody gate (beast) | 8/8 PASS across 2x + 3-batch + strict 3x, with `[CENSUS_WIDEN_ORACLE:x86:arm=none:reason=uniprocessor_no_dispatching_peer:...:SKIP]` pinned literally |
-| x86 `run-boot-parallel.sh 5` floor gate (beast) | see §6.3 |
+| x86 frame-custody gate (beast, r2) | 8/8 PASS across 2x + 3-batch + strict 3x, with `[CENSUS_WIDEN_ORACLE:x86:arm=none:reason=uniprocessor_no_dispatching_peer:...:SKIP]` pinned literally |
+| x86 `run-boot-parallel.sh 5` floor gate (beast, r2 + R37 A/B) | see §6.3 |
 
 ### 6.3 The x86 floor-gate leg, adjudicated against a control (R37/B4)
 
