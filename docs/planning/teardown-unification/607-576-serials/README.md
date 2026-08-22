@@ -342,3 +342,45 @@ concurrent serial output from another CPU — unclassifiable, and not the clean 
 thread that `main` silently **strands** instead; the pre-existing corruption then faults loudly rather
 than sitting inert. At the branch's measured rate (4/400 ≈ 1%), the probability of 0 hits in 300 main
 boots is ≈5% — suggestive, not conclusive, and stated as such rather than overclaimed.
+
+---
+
+# Landing round — the end-of-RAM external-abort face (new, pre-existing)
+
+`ss25-r175277c7-cortexa72-boot5-external-abort-endofram-96000010.txt` — boot 5, `-cpu cortex-a72`, of
+`run-aarch64-service-sequence-gate.sh --boots 25 --profile both` on `fix/607-576-zero-pc-family` @
+`175277c7` (docs/gate-script-only commits — no kernel source changed since the round-2 confirm
+battery). Run directory:
+`/tmp/breenix_aarch64_service_sequence_gate_20260822T183541Z-83559/cortex-a72/`, census line:
+
+```
+5	UNATTRIBUTED	early	12	0	EL1 data abort matches no filed signature: far/esr = 0xffff000060000000 0x96000010 (qemu_status=0)	.../cortex-a72/serial-5.txt	0
+```
+
+The fault record itself, at `serial-5.txt:5424-5425`:
+
+```
+[DATA_ABORT] FAR=0xffff000060000000 ELR=0xffff00004040af94 ESR=0x96000010 DFSC=0x10 TTBR0=0x100004406c000 from_el0=0
+[FATAL_REGS] label=DATA_ABORT cpu=3 spsr=0xa00003c5 esr=0x96000010 far=0xffff000060000000 elr=0xffff00004040af94 sp=0xffff000054274f60
+```
+
+**Coordinator ruling R42 (binding):** "the new EL1 DATA_ABORT (FAR=0xffff000060000000 = exactly
+end-of-RAM on the 512MB QEMU virt machine; ELR=0xffff00004040af94 in kernel text; ESR=0x96000010
+DFSC=0x10 synchronous EXTERNAL abort; from_el0=0; FAR!=ELR so NOT the #635 family) is a rare
+pre-existing face newly sampled, not plausibly caused by this round's docs/gate-script-only commits:
+kernel source is identical to the 450-boot round-2 battery (0 occurrences) and 300 main-baseline boots
+(0 occurrences). Disposition: file as its own issue with the preserved serial; pre-adjudicate at the
+rare observed rate (1/50 this run, 0/750 prior); add to PR #634's known-faces table; note as a
+candidate wild/off-by-one-pointer symptom on the PR3 producer-RCA trail (an end-of-RAM dereference is
+pointer-corruption-adjacent). Landing PROCEEDS on the round-2 battery evidence — no re-run."
+
+Filed as **#640** (see the issue for the full field set, the rate statement, and the wild-pointer-
+candidate cross-reference to #633/#635/#637/#638).
+
+**Disclosed, not separately adjudicated:** this same boot also carries an earlier, unrelated fatal
+event on a different CPU — `[UNHANDLED_EC] cpu=2 EC=0xe ELR=0xffff00004059c2a8` at `:696`
+(`esr=0x3a000000`, `far=0x0`), which the kernel's postmortem path recovered from before the cpu=3
+`DATA_ABORT` above occurred later in the same boot. R42's ruling addresses only the DATA_ABORT the
+gate's own classifier scored `UNATTRIBUTED`; the `UNHANDLED_EC` is not scored by the census script's
+current classifier and is not filed here. Recorded for completeness since it is in the preserved
+serial.
