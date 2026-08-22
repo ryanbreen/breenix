@@ -142,6 +142,15 @@ fi
 #
 # Refusing to boot is the only honest response. Fifty boots of an attributable-
 # looking false red is worse than no run at all.
+#
+# R37 landmine (2026-08-22): the validation below happens only once at startup.
+# In a fraction of a second, cargo hardlinks the artifact for the requested
+# feature set onto the one target/aarch64-breenix-kernel/release/kernel-aarch64
+# path. Thus somebody starting cargo build or cargo test during this gate can
+# replace the kernel between boots without another guard check. That race cost
+# r2 14 false CONTROL_FAIL boots before discovery. Do not build while any gate
+# is booting; when failures suggest the kernel changed shape, check the binary
+# mtime against this run's start time before treating the evidence as real.
 require_boot_tests_kernel() {
     local kernel="$1"
     local marker

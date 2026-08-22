@@ -143,6 +143,16 @@ fi
 #
 # Refusing to boot is the only honest response. Fifty boots of an attributable-
 # looking false red is worse than no run at all.
+#
+# Landmine recorded 2026-08-22 (R37): this guard runs once, before the campaign.
+# Cargo can hardlink whichever feature-set artifact it was asked for into the
+# single target/aarch64-breenix-kernel/release/kernel-aarch64 output in a
+# fraction of a second. A cargo build or cargo test launched by anyone while
+# boots are in flight can therefore swap the kernel underneath this runner;
+# this start-only check will not notice. The r2 round burned 14 boots as false
+# CONTROL_FAIL results this way. Never build while a gate is booting. If the
+# kernel suddenly appears to change shape, compare its mtime with the run start
+# time before trusting the failures.
 require_boot_tests_kernel() {
     local kernel="$1"
     local marker
