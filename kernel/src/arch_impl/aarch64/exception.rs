@@ -29,6 +29,11 @@ pub static CPU0_LAST_SYNC_FAR: AtomicU64 = AtomicU64::new(0);
 pub static CPU0_LAST_SYNC_ELR: AtomicU64 = AtomicU64::new(0);
 static PC_ALIGN_VERBOSE_CAPTURED: AtomicBool = AtomicBool::new(false);
 static FATAL_POSTMORTEM_CAPTURED: [AtomicBool; 8] = [const { AtomicBool::new(false) }; 8];
+pub(crate) fn any_fatal_postmortem_captured() -> bool {
+    FATAL_POSTMORTEM_CAPTURED
+        .iter()
+        .any(|flag| flag.load(Ordering::Acquire))
+}
 static FATAL_POSTMORTEM_SECTIONS_CLAIMED: [AtomicU64; 8] =
     [const { AtomicU64::new(0) }; 8];
 static EL1_UNHANDLED_FAULT_LATCHED: [AtomicBool; 8] = [const { AtomicBool::new(false) }; 8];

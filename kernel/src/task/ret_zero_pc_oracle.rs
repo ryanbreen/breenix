@@ -383,13 +383,19 @@ fn report_ret_floor() {
     let fired = FLOOR_FIRED.load(Ordering::Acquire);
     let victim_tid = FLOOR_VICTIM_TID.load(Ordering::Acquire);
     let injected_pc = FLOOR_INJECTED_PC.load(Ordering::Acquire);
-    let passed = armed == 1 && fired == 1;
+    let fatal = if crate::arch_impl::aarch64::exception::any_fatal_postmortem_captured() {
+        1
+    } else {
+        0
+    };
+    let passed = armed == 1 && fired == 1 && fatal == 0;
     crate::serial_println!(
-        "[RET_FLOOR_ORACLE:aarch64:leg=F:armed={}:fired={}:victim_tid={}:injected_pc=0x{:x}:{}]",
+        "[RET_FLOOR_ORACLE:aarch64:leg=F:armed={}:fired={}:victim_tid={}:injected_pc=0x{:x}:fatal={}:{}]",
         armed,
         fired,
         victim_tid,
         injected_pc,
+        fatal,
         if passed { "PASS" } else { "FAIL" },
     );
 }
