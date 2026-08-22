@@ -249,3 +249,25 @@ where the loader enters `kernel_main` at a physical address. The counterpart ali
 a second window anyway, so a PC spelled the other way is not refused for its spelling. The live text
 window on this build is `[0xffff000040400000, 0xffff000040600000)`; #635's `0xffff000054243f00` is
 outside both windows.
+
+## Round-2 service-sequence gate — the two reds it produced
+
+`run-aarch64-service-sequence-gate.sh --boots 25 --profile both` on `71cceff0`: **48/50 GREEN, 2
+`UNATTRIBUTED`, gate FAILED**. Full log: `gate-r2-ss25-clean-run.log`.
+
+| file | profile / boot | record | attribution |
+|---|---|---|---|
+| `gate-r2-ss25-max-boot11-pcalign-elr5-633.txt:684` | max, 11 | `[PC_ALIGN] ELR=0x5 FAR=0x5 from_el0=0 cpu=1`, `x30=0x5`, `x29=0x1f`, `spsr=0x20000005`, `DISPATCH_TRACE[0] U old=5` | **#633**. `0x5` is thread id 5, which is that CPU's *outgoing* tid at the preceding dispatch — the rule the `0x4b1`/`0x4b5`/`0x4b7` captures also fit, made obvious by a tid too small to be anything else. |
+| `gate-r2-ss25-cortexa72-boot7-el0-kernel-pc-8200000e.txt:632` | cortex-a72, 7 | `[INSTRUCTION_ABORT] FAR=0xffff000040800000 ELR=0xffff000040800000 ESR=0x8200000e IFSC=0xe from_el0=1`, victim SIGSEGVs | **#637**, filed for it. EC=0x20 is an abort from a *lower* EL: a userspace thread resumed at a kernel address, past `__kernel_text_end`. A second value shape in the "EL0 resume PCs are unvalidated" gap. |
+
+Neither is reachable by this round's predicates, and the run proves it rather than asserting it:
+across all 50 boots there are **zero** `[RET_DISPATCH_REFUSED:` lines and **zero**
+`WARN: bad elr … redirecting to idle` lines, so neither predicate returned false once. `0x5` is below
+both versions of the assembly floor, so that transfer never went through
+`aarch64_ret_to_kernel_context`; `from_el0=1` puts the other on a path this round does not touch.
+
+An earlier run of the same gate was discarded at boot 9 rather than reported: starting the
+production-profile boot test (which builds *without* `boot_tests`) during it hardlinked a different
+kernel onto `target/aarch64-breenix-kernel/release/kernel-aarch64`, the landmine
+`run-aarch64-service-sequence-gate.sh:146-153` documents. The kernel was rebuilt with `boot_tests`
+and the gate re-run with nothing else touching the tree.
