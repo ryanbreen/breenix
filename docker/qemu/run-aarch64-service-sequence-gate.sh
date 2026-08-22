@@ -941,14 +941,25 @@ print_census "Total" "$TOTAL_575" "$TOTAL_576" "$TOTAL_DATA_ABORT" "$TOTAL_CLONE
     "$TOTAL_STRAND" "$TOTAL_BOOT_TEST_FAIL" "$TOTAL_596" "$TOTAL_612" "$TOTAL_609" "$TOTAL_P5B" "$TOTAL_GREEN" "$TOTAL_UNATTRIBUTED" "$TOTAL_BOOTS" \
     "$TOTAL_DIVERGENCE_BOOTS" "$TOTAL_DIVERGENCE_LINES"
 
-# The #609 run-wide rate ceiling that used to live here is DELETED (R33). A rate
-# ceiling is a tolerance: it let up to ceil(0.06 * boots) boots carry the shape
-# and still pass. #609's mechanism theory was falsified by its own forced arm and
-# the class did not occur once in 290 non-forcing boots on main, so there is no
-# rate left to tolerate. Every occurrence now fails the profile it happened in,
-# via count_609 in run_profile's FAIL condition, and its serial is preserved by
-# the failure report below. Removing the tolerance is a tightening: the set of
-# runs this gate passes is strictly smaller than before.
+# The #609 run-wide rate ceiling that used to live here is DELETED (R33) and
+# stays deleted (R37). A rate ceiling is a tolerance: it let up to
+# ceil(0.06 * boots) boots carry the shape and still pass. The justification
+# recorded here previously — that the mechanism was "falsified by its own forced
+# arm" and that "the class did not occur once in 290 non-forcing boots on main" —
+# is RETRACTED and must not be re-cited: the forced arm was unjoined and could
+# not emit the signature on a healthy or a broken kernel alike, and the class was
+# afterwards reproduced ~1.3% over ~560 boots on this same -cpu cortex-a72 -smp 4
+# IOPS-2000 setup (7 wedges, 6 captured live under GDB).
+# The real justification is the fix: #609 is root-caused (an ARM64_STACK_BITMAP
+# holder preempted mid-critical-section, orphaning a lock that CPU 0 then spins on
+# with preemption disabled while idle peers spin on it with all interrupts masked)
+# and repaired at source on this branch — irqsave guard type on the bitmap,
+# reclamation hoisted out of the idle loop's masked window, and a placement rule
+# that stops parking work on a CPU that cannot dispatch it. A fixed defect has no
+# rate left to tolerate: every occurrence now fails the profile it happened in via
+# count_609 in run_profile's FAIL condition, and its serial is preserved by the
+# failure report below. Removing the tolerance is a tightening: the set of runs
+# this gate passes is strictly smaller than before.
 
 if [ "$ANY_GATE_FAILURE" -ne 0 ]; then
     echo ""
