@@ -343,7 +343,7 @@ fn handle_unhandled_el1_exception(frame: &Aarch64ExceptionFrame, ec: u32, esr: u
 /// kernel stack, causing the idle thread to run on a stack that may be freed
 /// during process cleanup.
 #[inline(always)]
-fn set_idle_stack_for_eret() {
+pub(crate) fn set_idle_stack_for_eret() {
     use crate::arch_impl::aarch64::percpu::Aarch64PerCpu;
 
     let cpu_id = Aarch64PerCpu::cpu_id() as usize;

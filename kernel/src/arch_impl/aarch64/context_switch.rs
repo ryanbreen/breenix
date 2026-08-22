@@ -152,6 +152,15 @@ fn resume_pc_is_dispatchable(addr: u64) -> bool {
             || (lower_alias >= text_start && lower_alias < text_end))
 }
 
+/// A saved userspace resume PC must be aligned, above the reserved low range,
+/// and outside the kernel's high half. It is deliberately NOT tested against
+/// the kernel-text window: on Parallels the kernel is identity-mapped into the
+/// same range user programs are linked at.
+#[inline(always)]
+fn resume_pc_is_user_dispatchable(addr: u64) -> bool {
+    addr >= 0x1000 && addr & 0x3 == 0 && addr < 0xFFFF_0000_0000_0000
+}
+
 fn resume_pc_source_name(id: u64) -> &'static str {
     match id & 0xF {
         RESUME_PC_SOURCE_SYNC_EPILOGUE => "sync-epilogue",
@@ -306,16 +315,50 @@ pub fn drain_asm_resume_pc_refusals() {
         if claimed_source == 0 {
             continue;
         }
+        let tid = last_dispatched_tid(cpu_id).unwrap_or(0);
         record_resume_pc_refusal_locked(
             claimed_source,
-            last_dispatched_tid(cpu_id).unwrap_or(0),
+            tid,
             elr,
             x29,
             x30,
             sp,
             spsr,
         );
+        if tid != 0 {
+            crate::task::scheduler::with_scheduler(|sched| {
+                let is_idle = sched
+                    .cpu_state
+                    .iter()
+                    .any(|state| state.idle_thread == tid);
+                if !is_idle {
+                    if let Some(thread) = sched.get_thread_mut(tid) {
+                        thread.set_terminated();
+                    }
+                    sched.remove_from_ready_queue(tid);
+                }
+            });
+        }
     }
+}
+
+/// Cold EL0 refusal target entered by ERET at EL1h on the CPU-owned idle stack.
+#[no_mangle]
+pub extern "C" fn aarch64_resume_pc_refused_el0() -> ! {
+    let cpu_id = Aarch64PerCpu::cpu_id() as usize;
+    let victim = last_dispatched_tid(cpu_id).unwrap_or(0);
+    if victim != 0 {
+        let _ = crate::task::process_task::defer_fault_sigsegv_exit(victim);
+        crate::task::scheduler::with_scheduler(|sched| {
+            if let Some(thread) = sched.get_thread_mut(victim) {
+                thread.set_terminated();
+            }
+        });
+    }
+    crate::arch_impl::aarch64::exception::set_idle_stack_for_eret();
+    crate::task::scheduler::switch_to_idle();
+    crate::task::scheduler::set_need_resched();
+    crate::arch_impl::aarch64::idle_loop_arm64()
 }
 
 /// Emit non-zero producer-classification rows for every CPU.
@@ -874,8 +917,19 @@ fn trace_resched_tail(stage: u16, expected_tid: u64) {
     );
 }
 
-core::arch::global_asm!(
+core::arch::global_asm!(concat!(
+    include_str!("resume_pc_guard.inc"),
     r#"
+.equ KERNEL_VIRT_BASE, 0xFFFF000000000000
+.equ PERCPU_ERET_GUARD_ELR, 120
+.equ PERCPU_ERET_GUARD_SPSR, 128
+.equ PERCPU_ERET_GUARD_SOURCE, 136
+.equ PERCPU_ERET_GUARD_X29, 152
+.equ PERCPU_ERET_GUARD_X30, 160
+.equ PERCPU_ERET_GUARD_SP, 168
+.equ PERCPU_ERET_GUARD_COUNT, 176
+.equ PERCPU_IDLE_STACK_TOP, 184
+
 .section .text
 .global aarch64_inline_schedule_switch
 .type aarch64_inline_schedule_switch, @function
@@ -931,10 +985,11 @@ aarch64_ret_to_kernel_context:
     mov sp, x2
     msr daifclr, #3
     isb
-    adrp x16, __kernel_text_start
-    add x16, x16, :lo12:__kernel_text_start
-    cmp x1, x16
-    b.hs 1f
+    RESUME_PC_EL1_OK x1, x2, x3, x16, 1f
+    mrs x17, tpidr_el1
+    cbz x17, 9f
+    RESUME_PC_RECORD_NOFRAME x17, x1, 5, x2, x3
+9:
     adrp x1, idle_loop_arm64
     add x1, x1, :lo12:idle_loop_arm64
 1:
@@ -983,13 +1038,38 @@ aarch64_enter_exception_frame:
     add x16, x16, :lo12:CPU0_BREADCRUMB_CTL
     str x17, [x16]
 8:
-    cmp x1, #0x1000
-    b.hs 1f
+    ldr x2, [sp, #256]
+    and x3, x2, #0xF
+    cbz x3, .Ldispatch_el0_check
+    RESUME_PC_EL1_OK x1, x3, x16, x17, .Ldispatch_elr_ok
+    b .Ldispatch_el1_refuse
+
+.Ldispatch_el0_check:
+    RESUME_PC_EL0_OK x1, x3, .Ldispatch_elr_ok
+
+.Ldispatch_el0_refuse:
+    mrs x16, tpidr_el1
+    cbz x16, .Ldispatch_el0_guard_recorded
+    RESUME_PC_RECORD x16, sp, x1, x2, 20, x3, x17
+.Ldispatch_el0_guard_recorded:
+    adrp x1, aarch64_resume_pc_refused_el0
+    add x1, x1, :lo12:aarch64_resume_pc_refused_el0
+    str x1, [sp, #248]
+    mov x2, #0x5
+    str x2, [sp, #256]
+    b .Ldispatch_elr_ok
+
+.Ldispatch_el1_refuse:
+    mrs x16, tpidr_el1
+    cbz x16, .Ldispatch_el1_guard_recorded
+    RESUME_PC_RECORD x16, sp, x1, x2, 4, x3, x17
+.Ldispatch_el1_guard_recorded:
     adrp x1, idle_loop_arm64
     add x1, x1, :lo12:idle_loop_arm64
     str x1, [sp, #248]
     mov x2, #0x5
     str x2, [sp, #256]
+.Ldispatch_elr_ok:
 1:
     mrs x16, mpidr_el1
     and x16, x16, #0xFF
@@ -1117,7 +1197,7 @@ aarch64_enter_exception_frame:
     ldr x16, [x16, #96]      // x16 = saved frame.x16
     eret
 "#
-);
+));
 
 extern "C" {
     fn aarch64_inline_schedule_switch(
@@ -3324,7 +3404,7 @@ fn restore_kernel_context_inline(
 fn restore_userspace_context_inline(
     thread: &mut Thread,
     frame: &mut Aarch64ExceptionFrame,
-) {
+) -> bool {
     #[cfg(all(
         target_arch = "aarch64",
         any(
@@ -3371,6 +3451,18 @@ fn restore_userspace_context_inline(
     // Restore program counter and status
     census_resume_pc(1, thread.context.elr_el1);
     census_resume_pc(3, thread.context.x30);
+    if !resume_pc_is_user_dispatchable(thread.context.elr_el1) {
+        record_resume_pc_refusal(
+            RESUME_PC_SOURCE_EL0_RESTORE,
+            thread.id(),
+            thread.context.elr_el1,
+            thread.context.x29,
+            thread.context.x30,
+            thread.context.sp,
+            thread.context.spsr_el1,
+        );
+        return false;
+    }
     frame.elr = thread.context.elr_el1;
     frame.spsr = dispatch_spsr(thread.context.spsr_el1) & !SPSR_MODE_MASK;
 
@@ -3401,10 +3493,11 @@ fn restore_userspace_context_inline(
         not(feature = "resume_pc_el0_frame_oracle")
     ))]
     crate::task::ret_zero_pc_oracle::restore_el0_resume_pc(thread, saved_el0_resume_pc);
+    true
 }
 
 /// Set up first userspace entry — called inside scheduler lock hold.
-fn setup_first_entry_inline(thread: &mut Thread, frame: &mut Aarch64ExceptionFrame) {
+fn setup_first_entry_inline(thread: &mut Thread, frame: &mut Aarch64ExceptionFrame) -> bool {
     #[cfg(all(
         target_arch = "aarch64",
         any(
@@ -3418,6 +3511,18 @@ fn setup_first_entry_inline(thread: &mut Thread, frame: &mut Aarch64ExceptionFra
 
     // Set return address to entry point
     census_resume_pc(2, thread.context.elr_el1);
+    if !resume_pc_is_user_dispatchable(thread.context.elr_el1) {
+        record_resume_pc_refusal(
+            RESUME_PC_SOURCE_EL0_FIRST_ENTRY,
+            thread.id(),
+            thread.context.elr_el1,
+            thread.context.x29,
+            thread.context.x30,
+            thread.context.sp,
+            thread.context.spsr_el1,
+        );
+        return false;
+    }
     frame.elr = thread.context.elr_el1;
 
     // SPSR for EL0t (userspace, interrupts enabled)
@@ -3484,6 +3589,7 @@ fn setup_first_entry_inline(thread: &mut Thread, frame: &mut Aarch64ExceptionFra
         not(feature = "resume_pc_el0_frame_oracle")
     ))]
     crate::task::ret_zero_pc_oracle::restore_el0_resume_pc(thread, saved_el0_resume_pc);
+    true
 }
 
 // =============================================================================
@@ -3900,16 +4006,37 @@ fn dispatch_thread_locked(
         //
         // Background: docs/planning/cpu0-user-guard-autopsy/README.md.
 
-        if !has_started {
+        let restore_ok = if !has_started {
             if let Some(thread) = sched.get_thread_mut(thread_id) {
                 thread.has_started = true;
-                setup_first_entry_inline(thread, frame);
+                setup_first_entry_inline(thread, frame)
+            } else {
+                false
             }
         } else {
             if let Some(thread) = sched.get_thread_mut(thread_id) {
-                restore_userspace_context_inline(thread, frame);
+                restore_userspace_context_inline(thread, frame)
+            } else {
+                false
             }
+        };
 
+        if !restore_ok {
+            let _ = crate::task::process_task::defer_fault_sigsegv_exit(thread_id);
+            if let Some(thread) = sched.get_thread_mut(thread_id) {
+                thread.state = ThreadState::Terminated;
+            }
+            let current_before = setup_idle_return_locked(sched, frame, cpu_id);
+            record_idle_redirect(
+                sched,
+                cpu_id,
+                IdleRedirectReason::UserBadContext,
+                current_before,
+            );
+            return;
+        }
+
+        if has_started {
             // SAFETY GUARD: Check for corrupted ELR before committing to dispatch.
             if frame.elr < 0x1000 || (frame.spsr & 0xF) != 0 {
                 let context_sp = sched

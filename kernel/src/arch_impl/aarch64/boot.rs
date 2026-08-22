@@ -10,5 +10,8 @@
 
 use core::arch::global_asm;
 
-// Include the boot assembly
-global_asm!(include_str!("boot.S"));
+// Include the shared resume-PC guard macros and boot assembly as one unit.
+global_asm!(concat!(
+    include_str!("resume_pc_guard.inc"),
+    include_str!("boot.S")
+));
