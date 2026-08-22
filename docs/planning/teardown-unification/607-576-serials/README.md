@@ -279,11 +279,14 @@ and the gate re-run with nothing else touching the tree.
 The round-2 *confirm* slot ran the full acceptance battery — clean-gate 100/profile (200 boots),
 starved-gate 100/profile (200 boots, 14 host `yes` hogs @ `nice -n 19`), and strict 3×20 — on
 `fix/607-576-zero-pc-family` @ `2a2eeefc` (round-2 fix `972a0832` plus the round-2 docs commits).
-Five of those boots are preserved here, under `round2-gates/`, because they are the evidence behind
-coordinator ruling **R41** and behind two new filed issues. (A sixth red — strict run 1 boot 10,
-`[DATA_ABORT] FAR=0x210 ELR=0x0 ESR=0x96000005` — is **not** preserved here; it is quoted verbatim
-in its filing instead.) Recipe is unchanged from the sections above: `-cpu {max,cortex-a72} -smp 4`,
-soft-float target, 45 s per-boot timeout, `IOPS=2000` for the throttled legs.
+Six of those boots are preserved here, under `round2-gates/`, because they are the evidence behind
+coordinator ruling **R41** and behind three new filed issues. (The sixth — strict run 1 boot 10,
+`[DATA_ABORT] FAR=0x210 ELR=0x0 ESR=0x96000005` — was quoted verbatim in its filing but not
+preserved in-repo at the time; that gap was closed under coordinator ruling R43 by copying it in
+from its volatile `/tmp` capture, `strict3x20-run1-boot10-dataabort-far0x210-96000005.txt`.) Recipe
+is unchanged from the sections above: `-cpu {max,cortex-a72} -smp 4`, soft-float target, 45 s
+per-boot timeout, `IOPS=2000` for the throttled legs; the strict leg is the mac kernel-merge gate,
+3 runs of 20 boots each.
 
 | file | leg / boot | record | attribution |
 |---|---|---|---|
@@ -292,6 +295,7 @@ soft-float target, 45 s per-boot timeout, `IOPS=2000` for the throttled legs.
 | `round2-gates/starved100-max-613-disagree-serial-74.txt:848` | starved100, max, boot 74 | `[INSTRUCTION_ABORT] FAR=0xffff000040800008 ELR=0x40 ESR=0x8600000e IFSC=0xe from_el0=0` disagreeing with a second record at the same FAR, different ELR | **#613** |
 | `round2-gates/starved100-max-NEW-heap-alloc-panic-serial-90.txt:695-698` | starved100, max, boot 90 | `KERNEL PANIC!` / `panicked at .../linked_list_allocator-0.10.5/src/hole.rs:554:9: Freed node (0xffff00005038e0f0) aliases existing hole (0xffff00005038e0f0[104])! Bad free?`, boot then times out | **#638**, filed — see "New issues filed from this battery" below |
 | `round2-gates/starved100-cortex-a72-timeout-strand-serial-97.txt` | starved100, cortex-a72, boot 97 | plain 45 s timeout, no fault/panic marker anywhere; last line is a healthy `[SCHED_STRAND_ORACLE:...stranded=0...]` dump | **Ruled a benign starvation artifact, not a defect** — see below |
+| `round2-gates/strict3x20-run1-boot10-dataabort-far0x210-96000005.txt:611` | strict 3×20, run 1, boot 10 | `[DATA_ABORT] FAR=0x210 ELR=0x0 ESR=0x96000005 DFSC=0x5 TTBR0=0x100004406c000 from_el0=0`, `[FATAL_REGS]` itself wild (`spsr=0xffff000040800008`, a kernel address in SPSR), `x0==x19==0x4b1==1201` (a live tid in a scratch register) | **#639**, filed — matches no other filed `DATA_ABORT` signature (not #612, whose ESR is `0x96000021`); preserved late per R43, see below |
 
 ## Ruling on serial-97 (bare timeout under starvation)
 
@@ -301,7 +305,7 @@ ran past the 45 s window under the leg's 14 host `yes` hogs at `nice -n 19` (hea
 `uptime_ms=43825`, boot times for this leg run ~30-39 s idle-equivalent vs ~16-19 s unloaded). The
 last live evidence is a clean `[SCHED_STRAND_ORACLE:...stranded=0...]` census. This is **ruled a
 benign starvation-timing artifact of the host load this leg deliberately applies, not a kernel
-defect**, and is **not filed as an issue**. It is preserved here only because it is one of the five
+defect**, and is **not filed as an issue**. It is preserved here only because it is one of the six
 non-GREEN boots this battery produced.
 
 ## New issues filed from this battery
@@ -314,7 +318,17 @@ non-GREEN boots this battery produced.
   reused kernel stack page, which is what the #635 family's producer needs to exist.
 * **#639 — `[DATA_ABORT] FAR=0x210 ELR=0x0 ESR=0x96000005`** (strict run 1, boot 10) — matches no
   filed signature; #612's own signature is FAR in the `0x292` region with `ESR=0x96000021`, a
-  different ESR. Quoted verbatim in its filing; not preserved as a separate file here (see above).
+  different ESR. Quoted verbatim in its filing; **preserved late, under R43** (below).
+
+### R43 — the #639 serial's late preservation
+
+At filing time this serial existed only as a volatile capture at
+`/tmp/breenix_aarch64_strict_failures/20260822T175333Z-boot10.txt` and #639's own "Evidence" section
+disclosed that gap rather than hiding it. Coordinator ruling **R43 (binding)** required closing it
+before that `/tmp` path aged out: the file is copied in byte-for-byte as
+`round2-gates/strict3x20-run1-boot10-dataabort-far0x210-96000005.txt`, and the fault record at line
+611 (`[DATA_ABORT] FAR=0x210 ELR=0x0 ESR=0x96000005 ...`) matches #639's quoted text verbatim. #639
+itself is updated to point at the in-repo path.
 
 ## R41 — the #635 discriminator is producer-shape, not path-proof
 
