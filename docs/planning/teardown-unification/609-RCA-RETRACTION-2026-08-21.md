@@ -278,7 +278,7 @@ OTHER=0`, and a class census that does not sum to the boot count is a FATAL exit
 
 Field-leg closure is statistical and adequately powered: the wedge hunt measured ~1.3 % over ~560
 boots on the same setup; 500+ post-fix boots across the clean, starved, service-sequence and strict
-gates produced zero. P(0 wedges | p = 0.013) ≈ 0.002.
+gates produced zero. P(0 wedges | p = 0.013, n = 500) ≈ 0.0014.
 
 ### 6.2 Battery at the final tree
 
