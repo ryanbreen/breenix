@@ -7,6 +7,7 @@ const DRIVER_COMPLETION_WAIT_POPULATION: usize = 8;
 const INTERRUPTIBLE_WAIT: &str = ".wait_timeout(";
 const UNINTERRUPTIBLE_WAIT: &str = ".wait_timeout_uninterruptible(";
 const BLOCK_EINTR_ORACLE_PREFIX: &str = "[BLOCK_EINTR_ORACLE:";
+const BOOT_TEST_FAIL_PREFIX: &str = "[BOOT_TESTS:FAIL";
 
 fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -336,6 +337,58 @@ fn block_eintr_oracle_marker_is_pinned_in_the_gates() {
     assert!(
         missing.is_empty(),
         "oracle marker missing from {} of {discovered_count} discovered aarch64 gate scripts: {}",
+        missing.len(),
+        missing.join(", ")
+    );
+}
+
+#[test]
+fn every_discovered_aarch64_boot_tests_gate_rejects_boot_test_failures() {
+    let gates = discover_aarch64_oracle_gates();
+    let discovered_count = gates.len();
+    assert!(
+        discovered_count != 0,
+        "discovered 0 aarch64 boot_tests/full-kernel gate scripts"
+    );
+
+    let missing: Vec<String> = gates
+        .iter()
+        .filter_map(|path| {
+            let source = fs::read_to_string(path)
+                .unwrap_or_else(|_| panic!("read aarch64 gate {}", path.display()));
+            let lines: Vec<_> = source.lines().collect();
+            let rejects = lines.iter().enumerate().any(|(index, line)| {
+                let normalized = line.replace("\\[", "[");
+                if line.trim_start().starts_with('#')
+                    || !line.contains("grep")
+                    || !normalized.contains(BOOT_TEST_FAIL_PREFIX)
+                {
+                    return false;
+                }
+                lines[index..lines.len().min(index + 8)]
+                    .iter()
+                    .map(|line| line.trim())
+                    .any(|line| {
+                        line == "return 1"
+                            || line == "exit 1"
+                            || line.starts_with("FAIL_REASON=")
+                            || line.starts_with("CLASS_BUCKET=\"BOOT_TEST_FAIL\"")
+                            || line.starts_with("CLASS=\"BOOT_TEST_FAIL\"")
+                            || line.starts_with("CLASS=\"ORACLE_FAIL\"")
+                    })
+            });
+            (!rejects).then(|| {
+                path.strip_prefix(repo_root())
+                    .unwrap_or(path)
+                    .display()
+                    .to_string()
+            })
+        })
+        .collect();
+
+    assert!(
+        missing.is_empty(),
+        "{} of {discovered_count} discovered aarch64 boot_tests gates do not explicitly reject {BOOT_TEST_FAIL_PREFIX}: {}",
         missing.len(),
         missing.join(", ")
     );

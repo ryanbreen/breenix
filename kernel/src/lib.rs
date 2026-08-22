@@ -37,6 +37,7 @@ pub mod tls;
 #[cfg(target_arch = "aarch64")]
 pub use arch_impl::aarch64::elf;
 pub mod ipc;
+pub mod irq_safe_mutex;
 #[cfg(target_arch = "x86_64")]
 pub mod irq_log;
 #[cfg(target_arch = "x86_64")]

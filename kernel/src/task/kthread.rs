@@ -75,6 +75,26 @@ where
     })
 }
 
+/// Test-only: run a kernel thread published through the production placement
+/// path, pinned afterwards to whichever CPU that path selected. The selected
+/// CPU is reported through `placed_cpu`.
+#[cfg(all(target_arch = "aarch64", feature = "arm_a_609"))]
+pub(crate) fn kthread_run_pinned_where_placed_for_test<F>(
+    func: F,
+    name: &str,
+    placed_cpu: &core::sync::atomic::AtomicUsize,
+) -> Result<KthreadHandle, KthreadError>
+where
+    F: FnOnce() + Send + 'static,
+{
+    kthread_run_with(func, name, move |thread| {
+        placed_cpu.store(
+            scheduler::spawn_pinned_where_placed_for_test(thread),
+            Ordering::Release,
+        );
+    })
+}
+
 fn kthread_run_with<F, S>(func: F, name: &str, spawn_thread: S) -> Result<KthreadHandle, KthreadError>
 where
     F: FnOnce() + Send + 'static,
@@ -221,6 +241,8 @@ pub fn kthread_unpark(handle: &KthreadHandle) {
 /// wakeup on a secondary CPU surfaces as an actionable test failure rather than
 /// a silent harness hang. This is a pure read; it changes no production
 /// behavior and matches the SeqCst ordering `kthread_join` uses.
+/// The arch term is load-bearing: every call site is aarch64-gated, and widening
+/// it dirties the x86 `boot_tests` build.
 #[cfg(all(target_arch = "aarch64", feature = "boot_tests"))]
 pub(crate) fn kthread_has_exited_for_test(handle: &KthreadHandle) -> bool {
     handle.inner.exited.load(Ordering::SeqCst)

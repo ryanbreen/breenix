@@ -312,6 +312,18 @@ pub enum UnblockOutcome {
 /// Global scheduler instance
 static SCHEDULER: Mutex<Option<Scheduler>> = Mutex::new(None);
 
+#[cfg(target_arch = "aarch64")]
+#[inline(always)]
+fn arch_can_dispatch_here() -> bool {
+    crate::arch_impl::aarch64::context_switch::can_dispatch_here()
+}
+
+#[cfg(not(target_arch = "aarch64"))]
+#[inline(always)]
+fn arch_can_dispatch_here() -> bool {
+    true
+}
+
 #[cfg(all(target_arch = "aarch64", feature = "boot_tests"))]
 static BOOT_TEST_CPU_AFFINITY: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(0) }; MAX_CPUS];
 
@@ -335,6 +347,11 @@ fn retain_cpu_affine_test_thread(
     thread_id: u64,
     current_cpu: usize,
 ) -> bool {
+    // Zero means "no pinned thread" in BOOT_TEST_CPU_AFFINITY; it is a sentinel,
+    // not a recorded affinity for the bootstrap thread whose real tid is also 0.
+    if thread_id == 0 {
+        return false;
+    }
     let target_cpu = BOOT_TEST_CPU_AFFINITY
         .iter()
         .position(|slot| slot.load(Ordering::Acquire) == thread_id);
@@ -524,6 +541,36 @@ pub struct StrandCensus {
     pub checked: u64,
     pub candidates: usize,
     pub overflow: u64,
+    pub worst_nonprogress_ms: u64,
+    pub nonprogress: usize,
+    pub queued_on_nondispatching_cpu: u64,
+    /// Longest queued nonprogress interval, derived from the owning CPU's
+    /// scheduler silence rather than a per-thread enqueue stamp. A true
+    /// `ready_since_ticks` would require a write at all 23 per-CPU queue push
+    /// sites, several on the context-switch hot path; the derived form measures
+    /// the same nonprogress without adding a hot-path write.
+    pub worst_queued_nondispatch_ms: u64,
+    pub worst_cpu_scheduler_silence_ms: u64,
+    pub worst_silence_cpu: u64,
+}
+
+/// Independent nonprogress/nondispatch/silence fields declared by `StrandCensus`.
+/// Structural tests keep this runtime value equal to the declaration-derived count.
+#[cfg(feature = "boot_tests")]
+pub const STRAND_CENSUS_PROGRESS_AXES: usize = 6;
+
+/// Return the CPU whose registered idle thread has `tid`.
+///
+/// CPU 0's idle slot is registered by `Scheduler::new`, including when its
+/// real idle TID is zero. A zero idle TID in any later CPU slot is the
+/// `EMPTY_STATE` sentinel, not a registration.
+#[cfg(feature = "boot_tests")]
+fn registered_idle_cpu(scheduler: &Scheduler, tid: u64) -> Option<usize> {
+    scheduler
+        .cpu_state
+        .iter()
+        .enumerate()
+        .position(|(cpu_id, cpu)| (cpu_id == 0 || cpu.idle_thread != 0) && cpu.idle_thread == tid)
 }
 
 /// Collect one fixed-size strand census under the scheduler lock.
@@ -535,11 +582,28 @@ pub struct StrandCensus {
 #[cfg(feature = "boot_tests")]
 pub fn collect_strand_census(
     out: &mut [StrandCandidate; STRAND_CENSUS_CAPACITY],
+    nonprogress_out: &mut [u64; STRAND_CENSUS_CAPACITY],
 ) -> Option<StrandCensus> {
     with_scheduler(|scheduler| {
         let mut checked = 0u64;
         let mut candidates = 0usize;
         let mut overflow = 0u64;
+        let mut worst_nonprogress_ms = 0u64;
+        let mut nonprogress = 0usize;
+        let mut queued_on_nondispatching_cpu = 0u64;
+        let mut worst_queued_nondispatch_ms = 0u64;
+        let mut worst_cpu_scheduler_silence_ms = 0u64;
+        let mut worst_silence_cpu = 0u64;
+        let now_ticks = crate::time::get_ticks();
+        let online_cpu_count = scheduler.online_cpu_count();
+
+        for cpu in 0..online_cpu_count {
+            let silence_ms = now_ticks.wrapping_sub(scheduler.cpu_state[cpu].last_schedule_ticks);
+            if silence_ms > worst_cpu_scheduler_silence_ms {
+                worst_cpu_scheduler_silence_ms = silence_ms;
+                worst_silence_cpu = cpu as u64;
+            }
+        }
 
         for thread in scheduler.threads.iter() {
             let shape = match thread.state {
@@ -548,11 +612,21 @@ pub fn collect_strand_census(
                 _ => continue,
             };
             let tid = thread.id();
-            if scheduler
-                .cpu_state
-                .iter()
-                .any(|cpu| cpu.idle_thread == tid)
-            {
+            let actual_idle_cpu = registered_idle_cpu(scheduler, tid);
+            let dormant_idle = actual_idle_cpu.is_some_and(|cpu_id| {
+                let cpu = &scheduler.cpu_state[cpu_id];
+                #[cfg(target_arch = "aarch64")]
+                let parked = is_cpu_idle(cpu_id);
+                #[cfg(not(target_arch = "aarch64"))]
+                let parked = false;
+                let dormancy_dimensions = [
+                    parked,
+                    cpu.current_thread
+                        .is_some_and(|current_tid| current_tid != tid),
+                ];
+                dormancy_dimensions.into_iter().any(|dormant| dormant)
+            });
+            if dormant_idle {
                 continue;
             }
 
@@ -561,10 +635,32 @@ pub fn collect_strand_census(
                 .cpu_state
                 .iter()
                 .any(|cpu| cpu.current_thread == Some(tid));
-            let queued = scheduler
-                .per_cpu_queues
-                .iter()
-                .any(|queue| queue.contains(&tid));
+            let mut queued = false;
+            let mut queued_nondispatch_cpu = None;
+            for cpu in 0..MAX_CPUS {
+                if !scheduler.per_cpu_queues[cpu].contains(&tid) {
+                    continue;
+                }
+                queued = true;
+                if thread.state == ThreadState::Ready
+                    && queued_nondispatch_cpu.is_none()
+                    && (cpu >= online_cpu_count || scheduler.cpu_dispatch_stale(cpu))
+                {
+                    queued_nondispatch_cpu = Some(cpu);
+                }
+            }
+
+            if let Some(cpu) = queued_nondispatch_cpu {
+                queued_on_nondispatching_cpu += 1;
+                let queued_nondispatch_ms =
+                    now_ticks.wrapping_sub(scheduler.cpu_state[cpu].last_schedule_ticks);
+                worst_queued_nondispatch_ms =
+                    worst_queued_nondispatch_ms.max(queued_nondispatch_ms);
+                if nonprogress < STRAND_CENSUS_CAPACITY {
+                    nonprogress_out[nonprogress] = tid;
+                    nonprogress += 1;
+                }
+            }
 
             let previous = scheduler
                 .cpu_state
@@ -577,12 +673,25 @@ pub fn collect_strand_census(
                 .any(|cpu| cpu.pending_next == Some(tid));
 
             #[cfg(target_arch = "aarch64")]
-            let deferred = crate::arch_impl::aarch64::context_switch::
-                deferred_requeue_contains(tid);
+            let deferred =
+                crate::arch_impl::aarch64::context_switch::deferred_requeue_contains(tid);
             #[cfg(not(target_arch = "aarch64"))]
             let deferred = false;
 
-            if current || queued || previous || pending_next || deferred {
+            if thread.state == ThreadState::Running && actual_idle_cpu.is_none() && !current {
+                let nonprogress_ms = now_ticks.saturating_sub(thread.run_start_ticks);
+                worst_nonprogress_ms = worst_nonprogress_ms.max(nonprogress_ms);
+                if nonprogress < STRAND_CENSUS_CAPACITY {
+                    nonprogress_out[nonprogress] = tid;
+                    nonprogress += 1;
+                }
+            }
+
+            let reachability_dimensions = [current, queued, previous, pending_next, deferred];
+            if reachability_dimensions
+                .into_iter()
+                .any(|reachable| reachable)
+            {
                 continue;
             }
 
@@ -603,8 +712,24 @@ pub fn collect_strand_census(
             checked,
             candidates,
             overflow,
+            worst_nonprogress_ms,
+            nonprogress,
+            queued_on_nondispatching_cpu,
+            worst_queued_nondispatch_ms,
+            worst_cpu_scheduler_silence_ms,
+            worst_silence_cpu,
         }
     })
+}
+
+/// Select a non-current CPU whose scheduler-entry timestamp is stale.
+#[cfg(all(target_arch = "aarch64", feature = "boot_tests"))]
+pub fn stale_peer_cpu_for_test() -> Option<usize> {
+    with_scheduler(|scheduler| {
+        let current_cpu = Scheduler::current_cpu_id();
+        (0..MAX_CPUS).find(|&cpu| cpu != current_cpu && scheduler.cpu_dispatch_stale(cpu))
+    })
+    .flatten()
 }
 
 /// Lock-free-consumer liveness snapshot for watchdog diagnostics.
@@ -1218,21 +1343,29 @@ impl Scheduler {
         }
     }
 
-    /// Whether a CPU is online and entering the scheduler often enough to
-    /// dispatch newly runnable work. The current CPU always accepts wakeups.
+    /// Whether a CPU is online and able to dispatch newly runnable work.
+    ///
+    /// The current CPU is accepted immediately only when its architecture can
+    /// enter the scheduler; otherwise it is judged by the same external
+    /// scheduler-entry staleness test as every peer.
     #[inline(always)]
     fn cpu_accepts_wakeups(&self, cpu: usize) -> bool {
-        let online_cpus = self.online_cpu_count();
-        let current_cpu = Self::current_cpu_id();
-        if cpu >= online_cpus {
+        if cpu >= self.online_cpu_count() {
             return false;
         }
-        if cpu == current_cpu {
+        if cpu == Self::current_cpu_id() && arch_can_dispatch_here() {
             return true;
         }
 
+        !self.cpu_dispatch_stale(cpu)
+    }
+
+    /// The staleness test, judged from outside the CPU: has it entered the
+    /// scheduler recently enough to dispatch newly runnable work?
+    #[inline(always)]
+    fn cpu_dispatch_stale(&self, cpu: usize) -> bool {
         let last_schedule_ticks = self.cpu_state[cpu].last_schedule_ticks;
-        crate::time::get_ticks().wrapping_sub(last_schedule_ticks) <= CPU_STALL_TICKS
+        crate::time::get_ticks().wrapping_sub(last_schedule_ticks) > CPU_STALL_TICKS
     }
 
     /// Migrate runnable work from offline or stalled CPUs onto this CPU.
@@ -3678,6 +3811,68 @@ pub(crate) fn spawn_on_cpu_for_test(thread: Box<Thread>, cpu: usize) {
     });
 }
 
+/// Release a forced-placement probe and make it runnable on this CPU.
+#[cfg(all(target_arch = "aarch64", feature = "boot_tests"))]
+pub fn release_cpu_affine_thread_for_test(thread_id: u64) -> bool {
+    without_interrupts(|| {
+        let mut scheduler_lock = lock_scheduler();
+        let scheduler = scheduler_lock
+            .as_mut()
+            .expect("scheduler not initialized for test release");
+        clear_cpu_affinity_for_test(thread_id);
+        if !scheduler
+            .get_thread(thread_id)
+            .is_some_and(|thread| thread.state == ThreadState::Ready)
+        {
+            return false;
+        }
+
+        for queue in scheduler.per_cpu_queues.iter_mut() {
+            queue.retain(|queued_tid| *queued_tid != thread_id);
+        }
+        let current_cpu = Scheduler::current_cpu_id();
+        scheduler.per_cpu_queues[current_cpu].push_back(thread_id);
+        set_need_resched();
+        true
+    })
+}
+
+/// Test-only placement oracle: publish through the PRODUCTION placement path,
+/// then pin the thread to whatever CPU that path chose.
+///
+/// This is the arm-A stimulus for #609. It deliberately does NOT choose a CPU:
+/// `add_thread` runs `least_loaded_cpu()` exactly as production does, and only
+/// afterwards is the resulting queue recorded in the existing boot-test affinity
+/// table, so peers stop rescuing the thread off it. The pin is symmetric — it
+/// names whichever CPU placement picked, never CPU 0 specifically — so the arm
+/// asks one question and nothing else: can the CPU that placement chose
+/// actually dispatch this thread? Weakening or removing the pin would make the
+/// arm measure the rescue instead of the placement, so the pin never moves.
+///
+/// Returns the CPU the production placement path selected.
+#[cfg(all(target_arch = "aarch64", feature = "arm_a_609"))]
+pub(crate) fn spawn_pinned_where_placed_for_test(thread: Box<Thread>) -> usize {
+    note_scheduler_publication();
+    without_interrupts(|| {
+        let thread_id = thread.id();
+        let mut scheduler_lock = lock_scheduler();
+        let scheduler = scheduler_lock
+            .as_mut()
+            .expect("scheduler not initialized for the placement oracle");
+        scheduler.add_thread(thread);
+        let placed_cpu = scheduler
+            .per_cpu_queues
+            .iter()
+            .position(|queue| queue.contains(&thread_id))
+            .unwrap_or_else(Scheduler::current_cpu_id);
+        BOOT_TEST_CPU_AFFINITY[placed_cpu].store(thread_id, Ordering::Release);
+        NEED_RESCHED.store(true, Ordering::Relaxed);
+        crate::per_cpu_aarch64::set_need_resched(true);
+        scheduler.send_resched_ipi();
+        placed_cpu
+    })
+}
+
 /// Add a thread to the front of the ready queue.
 /// Used for fork children so they run before other queued threads.
 pub fn spawn_front(thread: Box<Thread>) {
@@ -3739,6 +3934,7 @@ pub fn spawn_as_current(thread: Box<Thread>) {
 /// Perform scheduling inline from Rust kernel context (AArch64).
 #[cfg(target_arch = "aarch64")]
 pub fn schedule() {
+    crate::arch_impl::aarch64::context_switch::run_deferred_reclamation();
     crate::arch_impl::aarch64::context_switch::schedule_from_kernel();
 }
 
@@ -4799,11 +4995,23 @@ pub fn run_scheduler_tests() {
     }
 }
 
-/// Drive real scheduler boundaries on every idle online CPU for the Phase-0
-/// teardown grace-period boot test.
+/// Drive real scheduler boundaries on every online CPU for teardown grace-period
+/// boot tests. This must not use the idle-only wake helper: a retiring thread's
+/// last recorded owner can still appear non-idle until that CPU crosses a
+/// scheduler boundary and republishes its live-stack snapshot.
 #[cfg(feature = "boot_tests")]
 pub fn nudge_retirement_grace_for_test() {
     #[cfg(target_arch = "aarch64")]
-    let _ = with_scheduler(|scheduler| scheduler.send_resched_ipi());
+    {
+        use crate::arch_impl::aarch64::{constants::SGI_RESCHEDULE, gic, smp};
+
+        let current_cpu = Scheduler::current_cpu_id();
+        let online = smp::cpus_online() as usize;
+        for cpu in 0..online.min(MAX_CPUS) {
+            if cpu != current_cpu {
+                gic::send_sgi(SGI_RESCHEDULE as u8, cpu as u8);
+            }
+        }
+    }
     set_need_resched();
 }

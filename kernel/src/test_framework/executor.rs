@@ -49,6 +49,11 @@ use crate::task::kthread::{kthread_join, kthread_run, KthreadHandle};
 /// Current boot stage - tests with stage <= this can run
 static CURRENT_STAGE: AtomicU8 = AtomicU8::new(TestStage::SerialBoot as u8);
 
+/// The marker-only x86 stage path can emit more than one verdict per boot.
+#[cfg(not(target_arch = "aarch64"))]
+static X86_CENSUS_WIDEN_ORACLE_RAN: core::sync::atomic::AtomicBool =
+    core::sync::atomic::AtomicBool::new(false);
+
 /// Track which tests have already run (by subsystem + test index)
 /// This is a simple bitmap: each subsystem gets 64 bits (max 64 tests per subsystem)
 static TESTS_RUN: [AtomicU64; SubsystemId::COUNT] = {
@@ -95,6 +100,16 @@ pub fn emit_exec_lock_order_counters() -> bool {
 /// Get the current test stage
 pub fn current_stage() -> TestStage {
     TestStage::from_u8(CURRENT_STAGE.load(Ordering::Acquire)).unwrap_or(TestStage::SerialBoot)
+}
+
+#[cfg(not(target_arch = "aarch64"))]
+fn run_census_widen_oracle_x86_once() {
+    if X86_CENSUS_WIDEN_ORACLE_RAN
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_ok()
+    {
+        super::registry::run_census_widen_oracle();
+    }
 }
 
 /// Advance to a new stage and run any tests waiting for that stage
@@ -147,6 +162,7 @@ pub fn advance_stage_marker_only(stage: TestStage) {
     #[cfg(not(target_arch = "aarch64"))]
     {
         crate::task::strand_oracle::sample_now();
+        run_census_widen_oracle_x86_once();
         crate::task::strand_oracle::report_x86_once();
     }
 
@@ -251,10 +267,114 @@ pub fn run_all_tests() -> u32 {
     serial_failures + early_failures + post_failures
 }
 
+#[cfg(all(target_arch = "aarch64", feature = "arm_a_609"))]
+mod arm_a_609 {
+    use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+    use crate::task::kthread::{
+        kthread_has_exited_for_test, kthread_run, kthread_run_pinned_where_placed_for_test,
+        KthreadHandle,
+    };
+    use crate::{arch_halt, serial_println};
+
+    const ARM_A_609_DEADLINE_MS: u64 = 4000;
+
+    static ARM_A_609_RAN: AtomicBool = AtomicBool::new(false);
+    static LEGA_BODY_RAN: AtomicUsize = AtomicUsize::new(0);
+    static LEGB_BODY_RAN: AtomicUsize = AtomicUsize::new(0);
+
+    fn bounded_join(handle: &KthreadHandle) -> Option<u64> {
+        let start = crate::time::get_ticks();
+        loop {
+            if kthread_has_exited_for_test(handle) {
+                return Some(crate::time::get_ticks().saturating_sub(start));
+            }
+            if crate::time::get_ticks().saturating_sub(start) >= ARM_A_609_DEADLINE_MS {
+                return None;
+            }
+            arch_halt();
+        }
+    }
+
+    pub(super) fn arm_once() {
+        if ARM_A_609_RAN
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return;
+        }
+
+        serial_println!("[ARMA609:ARMED]");
+
+        match kthread_run(
+            || {
+                LEGB_BODY_RAN.fetch_add(1, Ordering::SeqCst);
+            },
+            "arma609_legb",
+        ) {
+            Ok(handle) => {
+                let tid = handle.tid();
+                let waited = bounded_join(&handle);
+                serial_println!(
+                    "[ARMA609:LEGB:tid={}:cpu=-1:joined={}:waited_ms={}:body_ran={}]",
+                    tid,
+                    usize::from(waited.is_some()),
+                    waited.unwrap_or(ARM_A_609_DEADLINE_MS),
+                    LEGB_BODY_RAN.load(Ordering::SeqCst)
+                );
+            }
+            Err(_) => serial_println!("[ARMA609:LEGB:SPAWN_ERROR]"),
+        }
+
+        let placed = AtomicUsize::new(usize::MAX);
+        match kthread_run_pinned_where_placed_for_test(
+            || {
+                LEGA_BODY_RAN.fetch_add(1, Ordering::SeqCst);
+            },
+            "arma609_lega",
+            &placed,
+        ) {
+            Ok(handle) => {
+                crate::task::scheduler::dump_thread_placement(handle.tid(), "ARMA609_LEGA");
+                let tid = handle.tid();
+                let waited = bounded_join(&handle);
+                serial_println!(
+                    "[ARMA609:LEGA:tid={}:cpu={}:joined={}:waited_ms={}:body_ran={}]",
+                    tid,
+                    placed.load(Ordering::Acquire),
+                    usize::from(waited.is_some()),
+                    waited.unwrap_or(ARM_A_609_DEADLINE_MS),
+                    LEGA_BODY_RAN.load(Ordering::SeqCst)
+                );
+            }
+            Err(_) => serial_println!("[ARMA609:LEGA:SPAWN_ERROR]"),
+        }
+    }
+
+    pub(super) fn report_late() {
+        serial_println!(
+            "[ARMA609:LATE:lega_body_ran={}:legb_body_ran={}]",
+            LEGA_BODY_RAN.load(Ordering::SeqCst),
+            LEGB_BODY_RAN.load(Ordering::SeqCst)
+        );
+    }
+}
+
+#[cfg(not(all(target_arch = "aarch64", feature = "arm_a_609")))]
+mod arm_a_609 {
+    pub(super) fn arm_once() {}
+
+    pub(super) fn report_late() {}
+}
+
 /// Run tests for a specific stage (and mark them as run)
 fn run_staged_tests(target_stage: TestStage) -> u32 {
     let mut handles: Vec<(SubsystemId, KthreadHandle)> = Vec::new();
     let mut total_failed = 0u32;
+
+    if target_stage == TestStage::EarlyBoot {
+        arm_a_609::arm_once();
+    }
 
     for subsystem in SUBSYSTEMS.iter() {
         // Count tests that match architecture AND stage
@@ -295,6 +415,10 @@ fn run_staged_tests(target_stage: TestStage) -> u32 {
     // Wait for all test threads to complete
     for (id, handle) in handles {
         total_failed += join_test_thread(id, handle);
+    }
+
+    if target_stage == TestStage::EarlyBoot {
+        arm_a_609::report_late();
     }
 
     // Emit stage summary

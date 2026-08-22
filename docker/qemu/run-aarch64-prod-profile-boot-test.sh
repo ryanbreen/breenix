@@ -202,6 +202,13 @@ BLOCK_EINTR_ORACLE_FAIL_COUNT=$(marker_count "$SERIAL_FILE" "$BLOCK_EINTR_ORACLE
 BSSHD_COUNT=$(marker_count "$SERIAL_FILE" "$BSSHD_LITERAL")
 CRASH_COUNT=$(crash_count "$SERIAL_FILE")
 
+if grep -qF '[BOOT_TESTS:FAIL' "$SERIAL_FILE" 2>/dev/null; then
+    BOOT_TEST_FAIL_LINE=$(grep -ahoE '\[TEST:[^]]*:FAIL:[^]]*\]' \
+        "$SERIAL_FILE" 2>/dev/null | head -1 || true)
+    echo "FAIL: boot test failure: ${BOOT_TEST_FAIL_LINE:-[TEST:<missing>:FAIL:<missing>]}"
+    exit 1
+fi
+
 [ "$PROD_SEAM_ABSENT_COUNT" -eq 1 ] || {
     echo "FAIL: seam-absent timeout marker count must be exactly one"
     exit 1

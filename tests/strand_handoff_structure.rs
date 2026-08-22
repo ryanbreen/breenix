@@ -1,11 +1,15 @@
 use std::collections::HashSet;
 use std::fs;
+use std::io::Write;
 use std::path::PathBuf;
+use std::process::{Command, Stdio};
 
 const SCHEDULER_PATH: &str = "kernel/src/task/scheduler.rs";
 const CONTEXT_SWITCH_PATH: &str = "kernel/src/arch_impl/aarch64/context_switch.rs";
 const STRAND_ORACLE_PATH: &str = "kernel/src/task/strand_oracle.rs";
 const EXECUTOR_PATH: &str = "kernel/src/test_framework/executor.rs";
+const TEST_REGISTRY_PATH: &str = "kernel/src/test_framework/registry.rs";
+const X86_BOOT_GATE_PATH: &str = "docker/qemu/run-x86-boot-tests.sh";
 const SERVICE_SEQUENCE_GATE_PATH: &str = "docker/qemu/run-aarch64-service-sequence-gate.sh";
 const STRICT_GATE_PATH: &str = "docker/qemu/run-aarch64-boot-test-strict.sh";
 const FULL_TEST_PATH: &str = "docker/qemu/run-aarch64-full-test.sh";
@@ -14,12 +18,21 @@ const MIN_REQUEUE_EARLY_RETURN_GUARDS: usize = 6;
 const MIN_INSTRUCTION_ABORT_REFUSAL_REASONS: usize = 3;
 /// Additional #609 clauses are welcome; dropping one is how a tolerated bucket starts absorbing unfiled failures.
 const MIN_609_SIGNATURE_GUARDS: usize = 5;
+const MAX_NON_FAILING_SERVICE_SEQUENCE_BUCKETS: usize = 2;
 /// Each gate must reject both strand marker families; additional rejections are welcome.
 const MIN_STRANDED_FORBIDDEN_REJECTIONS: usize = 2;
 /// More discriminating markers are welcome; dropping one quietly disarms the profile guard.
-const MIN_BOOT_TESTS_PROFILE_MARKERS: usize = 5;
+const MIN_BOOT_TESTS_PROFILE_MARKERS: usize = 6;
 /// The strict gate scores once while polling and again for the final verdict.
 const MIN_STRICT_GATE_SCORE_SERIAL_CALLS: usize = 2;
+/// Dormancy currently has two axes and ordinary reachability has five.
+const MIN_CENSUS_DISPOSABILITY_REACHABILITY_DIMENSIONS: usize = 7;
+/// Running/queued nonprogress and scheduler-silence fields are all independent
+/// evidence. New axes are welcome, but this derived field census may not shrink.
+const MIN_CENSUS_PROGRESS_AXES: usize = 6;
+/// Complete-marker patterns plus direct classifier greps across both marker
+/// families. This is a shape floor, not a script-name allowlist.
+const MIN_ORACLE_GATE_PATTERNS: usize = 8;
 
 fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -209,6 +222,34 @@ fn function_body<'a>(source: &'a str, name: &str) -> &'a str {
     braced_body(source, &masked, open)
 }
 
+fn struct_body<'a>(source: &'a str, name: &str) -> &'a str {
+    let (masked, mask) = code_source(source);
+    let name_offset = identifier_offsets(&masked, &mask, name)
+        .into_iter()
+        .find(|offset| {
+            masked[..*offset]
+                .rsplit_once("struct")
+                .is_some_and(|(_, suffix)| suffix.trim().is_empty())
+        })
+        .unwrap_or_else(|| panic!("struct {name} not found"));
+    let open = masked[name_offset + name.len()..]
+        .find('{')
+        .map(|offset| name_offset + name.len() + offset)
+        .expect("struct opening brace");
+    braced_body(source, &masked, open)
+}
+
+fn declared_public_fields<'a>(source: &'a str, name: &str) -> Vec<&'a str> {
+    struct_body(source, name)
+        .lines()
+        .filter_map(|line| {
+            line.trim()
+                .strip_prefix("pub ")
+                .and_then(|field| field.split_once(':').map(|(name, _)| name.trim()))
+        })
+        .collect()
+}
+
 fn braced_block_after<'a>(source: &'a str, needle: &str) -> &'a str {
     let (masked, mask) = code_source(source);
     let offset = masked
@@ -224,6 +265,43 @@ fn braced_block_after<'a>(source: &'a str, needle: &str) -> &'a str {
     braced_body(source, &masked, open)
 }
 
+fn bracketed_block_after<'a>(source: &'a str, needle: &str) -> &'a str {
+    let (masked, mask) = code_source(source);
+    let offset = masked
+        .match_indices(needle)
+        .filter(|(offset, _)| mask[*offset..*offset + needle.len()].iter().all(|v| *v))
+        .last()
+        .map(|(offset, _)| offset)
+        .unwrap_or_else(|| panic!("missing source anchor {needle}"));
+    let open = masked[offset + needle.len()..]
+        .find('[')
+        .map(|relative| offset + needle.len() + relative)
+        .expect("array opening bracket");
+    let bytes = masked.as_bytes();
+    let mut depth = 0usize;
+    for index in open..bytes.len() {
+        match bytes[index] {
+            b'[' => depth += 1,
+            b']' => {
+                depth -= 1;
+                if depth == 0 {
+                    return &source[open + 1..index];
+                }
+            }
+            _ => {}
+        }
+    }
+    panic!("unclosed source array")
+}
+
+fn comma_separated_shape_count(source: &str) -> usize {
+    let (masked, _) = code_source(source);
+    masked
+        .split(',')
+        .filter(|dimension| !dimension.trim().is_empty())
+        .count()
+}
+
 fn code_occurrences(source: &str, needle: &str) -> Vec<usize> {
     let (masked, mask) = code_source(source);
     masked
@@ -235,6 +313,35 @@ fn code_occurrences(source: &str, needle: &str) -> Vec<usize> {
                 .then_some(offset)
         })
         .collect()
+}
+
+fn function_bodies<'a>(source: &'a str, name: &str) -> Vec<&'a str> {
+    let (masked, mask) = code_source(source);
+    identifier_offsets(&masked, &mask, name)
+        .into_iter()
+        .filter_map(|name_offset| {
+            masked[..name_offset]
+                .rsplit_once("fn")
+                .is_some_and(|(_, suffix)| suffix.trim().is_empty())
+                .then(|| {
+                    let open = masked[name_offset + name.len()..]
+                        .find('{')
+                        .map(|offset| name_offset + name.len() + offset)
+                        .expect("function opening brace");
+                    braced_body(source, &masked, open)
+                })
+        })
+        .collect()
+}
+
+fn preceding_nonempty_line(source: &str, offset: usize) -> &str {
+    let line_start = source[..offset].rfind('\n').map_or(0, |index| index + 1);
+    source[..line_start]
+        .lines()
+        .rev()
+        .find(|line| !line.trim().is_empty())
+        .map(str::trim)
+        .expect("source line before identifier")
 }
 
 fn shell_function_body<'a>(source: &'a str, name: &str) -> &'a str {
@@ -255,6 +362,130 @@ fn shell_exact_line_occurrences(source: &str, needle: &str) -> usize {
         .lines()
         .filter(|line| line.trim() == needle)
         .count()
+}
+
+fn rust_source_tree(relative: &str) -> String {
+    fn visit(path: &std::path::Path, out: &mut String) {
+        let mut entries: Vec<_> = fs::read_dir(path)
+            .unwrap_or_else(|_| panic!("read source directory {}", path.display()))
+            .map(|entry| entry.expect("source directory entry").path())
+            .collect();
+        entries.sort();
+        for entry in entries {
+            if entry.is_dir() {
+                visit(&entry, out);
+            } else if entry.extension().is_some_and(|extension| extension == "rs") {
+                out.push_str(
+                    &fs::read_to_string(&entry)
+                        .unwrap_or_else(|_| panic!("read source file {}", entry.display())),
+                );
+                out.push('\n');
+            }
+        }
+    }
+
+    let mut source = String::new();
+    visit(&repo_root().join(relative), &mut source);
+    source
+}
+
+fn marker_format<'a>(function: &'a str, family: &str) -> &'a str {
+    let anchor = format!("\"[{family}:");
+    function
+        .lines()
+        .find_map(|line| {
+            let start = line.find(&anchor)? + 1;
+            let tail = &line[start..];
+            let end = tail.find("\",")?;
+            Some(&tail[..end])
+        })
+        .unwrap_or_else(|| panic!("{family} emitted format string"))
+}
+
+fn render_positional_format(format: &str, values: &[&str]) -> String {
+    let mut rendered = String::new();
+    let mut remainder = format;
+    for value in values {
+        let (before, after) = remainder
+            .split_once("{}")
+            .expect("format placeholder for structural marker sample");
+        rendered.push_str(before);
+        rendered.push_str(value);
+        remainder = after;
+    }
+    assert!(
+        !remainder.contains("{}"),
+        "structural marker sample omitted format arguments"
+    );
+    rendered.push_str(remainder);
+    rendered
+}
+
+fn shell_ere_matches(pattern: &str, marker: &str) -> bool {
+    let mut child = Command::new("grep")
+        .args(["-Eq", pattern])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn grep for gate-pattern structural check");
+    child
+        .stdin
+        .take()
+        .expect("grep stdin")
+        .write_all(marker.as_bytes())
+        .expect("write emitted marker sample");
+    child.wait().expect("wait for grep").success()
+}
+
+fn quoted_segment_containing<'a>(line: &'a str, needle: &str) -> Option<&'a str> {
+    for quote in ['\'', '"'] {
+        if let Some(segment) = line
+            .split(quote)
+            .skip(1)
+            .step_by(2)
+            .find(|segment| segment.contains(needle))
+        {
+            return Some(segment);
+        }
+    }
+    None
+}
+
+fn registered_test_location(source: &str, test_name: &str) -> (String, String, usize) {
+    let registration = format!("name: \"{test_name}\"");
+    let registrations: Vec<_> = source.match_indices(&registration).collect();
+    assert_eq!(
+        registrations.len(),
+        1,
+        "registered test {test_name} must have exactly one TestDef"
+    );
+    let registration_offset = registrations[0].0;
+    let declaration_offset = source[..registration_offset]
+        .rfind("static ")
+        .unwrap_or_else(|| panic!("static test array for {test_name}"));
+    let declaration = &source[declaration_offset + "static ".len()..];
+    let array_name = declaration
+        .split_once(':')
+        .map(|(name, _)| name.trim())
+        .unwrap_or_else(|| panic!("static test array name for {test_name}"));
+
+    let subsystem_block = source
+        .split("Subsystem {")
+        .skip(1)
+        .find(|block| block.contains(&format!("tests: {array_name},")))
+        .unwrap_or_else(|| panic!("subsystem block for {array_name}"));
+    let subsystem_id = subsystem_block
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("id: SubsystemId::"))
+        .and_then(|tail| tail.strip_suffix(','))
+        .unwrap_or_else(|| panic!("subsystem id for {array_name}"));
+
+    (
+        array_name.to_string(),
+        subsystem_id.to_string(),
+        registration_offset,
+    )
 }
 
 fn stranded_rejection_lines(source: &str) -> Vec<&str> {
@@ -391,12 +622,120 @@ fn service_sequence_instruction_abort_classifier_is_single_signature() {
 }
 
 #[test]
-fn service_sequence_609_arm_is_field_keyed_and_rate_bounded() {
+fn service_sequence_pc_align_and_panic_classifiers_are_field_keyed_before_fallbacks() {
     let gate = repo_text(SERVICE_SEQUENCE_GATE_PATH);
-    let signature = shell_function_body(&gate, "is_609_network_early_stall");
+
+    let pc_align_signatures = shell_function_body(&gate, "pc_align_signatures");
+    assert!(
+        pc_align_signatures.contains(r"\[PC_ALIGN\] ELR=0x")
+            && pc_align_signatures.contains("FAR=0x")
+            && pc_align_signatures.contains("from_el0=[01]")
+            && pc_align_signatures.contains("} | sort -u")
+            && !pc_align_signatures.contains("head -1"),
+        "PC_ALIGN signatures must collect and deduplicate every readable ELR/FAR/from_el0 triple"
+    );
+
+    let panic_signatures = shell_function_body(&gate, "kernel_panic_signatures");
+    assert!(
+        panic_signatures.contains("panicked at ")
+            && panic_signatures.contains("location")
+            && panic_signatures.contains("message")
+            && panic_signatures.contains("sort -u"),
+        "kernel panic signatures must retain the verbatim panic location and message"
+    );
+
+    let classifier = shell_function_body(&gate, "classify_serial");
+    let ctx596_offset = classifier
+        .find(r#"if grep -qF "[CTX596_ORACLE:FAIL""#)
+        .expect("#596 classifier arm");
+    let last_existing_bucket_offset = classifier
+        .find("[BOOT_TESTS:FAIL")
+        .expect("last pre-existing named-bucket arm");
+    let pc_align_offset = classifier
+        .find(r#"if grep -qF "[PC_ALIGN]""#)
+        .expect("PC_ALIGN classifier arm");
+    let panic_offset = classifier
+        .find(r#"if grep -qF "KERNEL PANIC""#)
+        .expect("kernel panic classifier arm");
+    let arm_609_offset = classifier
+        .find(r#"is_609_early_boot_stage_stall "$serial_file""#)
+        .expect("#609 classifier arm");
+    let generic_offsets = [
+        classifier
+            .find(r#"if ! grep -qF "[BLOCK_EINTR_ORACLE:""#)
+            .expect("generic oracle-marker arm"),
+        classifier
+            .find(r#"if ! grep -qF "[CTX596_ORACLE:ARMED""#)
+            .expect("generic #596 anti-vacuity arm"),
+        classifier
+            .find(r#"last_line=$(grep -vF "[heartbeat]""#)
+            .expect("generic last-line arm"),
+    ];
+    assert!(
+        ctx596_offset < last_existing_bucket_offset
+            && last_existing_bucket_offset < pc_align_offset
+            && pc_align_offset < panic_offset
+            && panic_offset < arm_609_offset
+            && generic_offsets.iter().all(|offset| panic_offset < *offset),
+        "PC_ALIGN and kernel panic field attribution must follow every existing named bucket, preserve PC_ALIGN precedence, and precede #609 plus every generic arm"
+    );
+
+    let pc_align_arm = &classifier[pc_align_offset..panic_offset];
+    let pc_align_buckets: Vec<_> = pc_align_arm
+        .lines()
+        .filter(|line| line.trim().starts_with("CLASS_BUCKET="))
+        .collect();
+    let pc_align_reasons = pc_align_arm
+        .lines()
+        .filter(|line| line.trim().starts_with("CLASS_REASON="))
+        .count();
+    assert!(
+        pc_align_arm.contains("pc_align_signatures \"$serial_file\"")
+            && pc_align_arm.contains(r#"[ "$pc_align_variants" -gt 1 ]"#)
+            && pc_align_arm.contains("#625")
+            && pc_align_arm.contains("ELR=0x4b5 FAR=0x5 from_el0=1")
+            && !pc_align_buckets.is_empty()
+            && pc_align_buckets.len() == pc_align_reasons
+            && pc_align_buckets
+                .iter()
+                .all(|line| line.trim() == r#"CLASS_BUCKET="UNATTRIBUTED""#),
+        "PC_ALIGN must require one field signature, name filed #625 exactly, and remain hard-failing"
+    );
+
+    let panic_arm = &classifier[panic_offset..arm_609_offset];
+    let panic_buckets: Vec<_> = panic_arm
+        .lines()
+        .filter(|line| line.trim().starts_with("CLASS_BUCKET="))
+        .collect();
+    let panic_reasons = panic_arm
+        .lines()
+        .filter(|line| line.trim().starts_with("CLASS_REASON="))
+        .count();
+    assert!(
+        panic_arm.contains("kernel_panic_signatures \"$serial_file\"")
+            && panic_arm.contains("$kernel_panic_signature")
+            && panic_arm.contains("location=${kernel_panic_location:-<missing>}")
+            && panic_arm.contains("message=${kernel_panic_message:-<missing>}")
+            && panic_arm.contains("${kernel_panic_marker:-<missing>}")
+            && !panic_buckets.is_empty()
+            && panic_buckets.len() == panic_reasons
+            && panic_buckets
+                .iter()
+                .all(|line| line.trim() == r#"CLASS_BUCKET="UNATTRIBUTED""#),
+        "kernel panics must report their location/message fields (or the readable marker) and remain hard-failing"
+    );
+}
+
+/// #609 is a hard-failing EarlyBoot-stage stall. Its detector is keyed to the
+/// stage boundary so a wedge cannot evade attribution by stalling before one
+/// arbitrarily selected subsystem marker.
+#[test]
+fn service_sequence_609_arm_is_field_keyed_and_untolerated() {
+    let gate = repo_text(SERVICE_SEQUENCE_GATE_PATH);
+    let signature = shell_function_body(&gate, "is_609_early_boot_stage_stall");
     assert!(
         !signature.trim().is_empty(),
-        "is_609_network_early_stall body census"
+        "is_609_early_boot_stage_stall body census"
     );
 
     let signature_guards = signature
@@ -410,12 +749,8 @@ fn service_sequence_609_arm_is_field_keyed_and_rate_bounded() {
         MIN_609_SIGNATURE_GUARDS
     );
     assert!(
-        signature.contains("[SUBSYSTEM:memory:early:COMPLETE:"),
-        "#609 signature must require memory:early completion"
-    );
-    assert!(
-        signature.contains("(TEST|SUBSYSTEM):network:"),
-        "#609 signature must require complete network:early silence"
+        signature.contains("[STAGE:early:ADVANCE]"),
+        "#609 signature must require the EarlyBoot stage boundary to advance"
     );
     assert!(
         signature.contains("[STAGE:early:COMPLETE"),
@@ -429,6 +764,14 @@ fn service_sequence_609_arm_is_field_keyed_and_rate_bounded() {
         signature.contains("stranded=0"),
         "#609 signature must require a clean live strand census"
     );
+    assert!(
+        signature.contains("[TESTS_COMPLETE:"),
+        "#609 signature must reject boots that completed their tests"
+    );
+    assert!(
+        !signature.contains("SUBSYSTEM:memory:") && !signature.contains(":network:"),
+        "#609 attribution must be stage-shaped, not subsystem-shaped"
+    );
 
     assert_eq!(
         shell_exact_line_occurrences(&gate, r#"CLASS_BUCKET="609""#),
@@ -438,40 +781,260 @@ fn service_sequence_609_arm_is_field_keyed_and_rate_bounded() {
 
     let classifier = shell_function_body(&gate, "classify_serial");
     let arm_609_offset = classifier
-        .find("is_609_network_early_stall")
+        .find(r#"is_609_early_boot_stage_stall "$serial_file""#)
         .expect("#609 classifier arm");
-    let strand_bucket_offsets: Vec<_> = classifier
-        .match_indices(r#"CLASS_BUCKET="589""#)
-        .map(|(offset, _)| offset)
+    let arm_609_tail = &classifier[arm_609_offset..];
+    let arm_609_end = arm_609_tail
+        .find("\n    fi\n")
+        .map(|offset| offset + "\n    fi\n".len())
+        .expect("#609 classifier arm terminator");
+    let arm_609 = &arm_609_tail[..arm_609_end];
+    let bucket_609_assignments: Vec<_> = arm_609
+        .lines()
+        .map(str::trim)
+        .filter_map(|line| {
+            line.strip_prefix("CLASS_BUCKET=\"")
+                .and_then(|bucket| bucket.strip_suffix('"'))
+        })
+        .collect();
+    assert_eq!(
+        bucket_609_assignments.len(),
+        1,
+        "#609 classifier arm must assign exactly one bucket"
+    );
+    let bucket_609 = bucket_609_assignments[0];
+    // Field-key this ratchet: #589 was closed and its bucket renamed, and a name-pinned
+    // ratchet would go green if a rename dropped both strand-attribution arms entirely.
+    let strand_fields = [
+        (
+            "scheduler strand census",
+            r"\[SCHED_STRAND_ORACLE:[^]]*:stranded=[1-9][0-9]*:",
+        ),
+        (
+            "strand injection oracle",
+            r"\[STRAND_INJECT_ORACLE:[^]]*:stranded=[1-9][0-9]*\]",
+        ),
+    ];
+    let strand_arms: Vec<_> = strand_fields
+        .iter()
+        .map(|(field, predicate)| {
+            let predicate_offset = classifier
+                .find(predicate)
+                .unwrap_or_else(|| panic!("classify_serial must retain its nonzero {field} arm"));
+            let arm_tail = &classifier[predicate_offset..];
+            let arm_end = arm_tail
+                .find("\n    fi\n")
+                .map(|offset| offset + "\n    fi\n".len())
+                .unwrap_or_else(|| panic!("{field} classifier arm terminator"));
+            let arm = &arm_tail[..arm_end];
+            let bucket_assignments: Vec<_> = arm
+                .lines()
+                .map(str::trim)
+                .filter_map(|line| {
+                    line.strip_prefix("CLASS_BUCKET=\"")
+                        .and_then(|bucket| bucket.strip_suffix('"'))
+                })
+                .collect();
+            assert_eq!(
+                bucket_assignments.len(),
+                1,
+                "{field} classifier arm must assign exactly one bucket"
+            );
+            (
+                field,
+                predicate_offset + arm_end,
+                bucket_assignments[0],
+            )
+        })
         .collect();
     assert!(
-        !strand_bucket_offsets.is_empty(),
-        "classify_serial must retain its strand-attribution arms"
-    );
-    assert!(
-        strand_bucket_offsets
+        strand_arms
             .iter()
-            .all(|offset| arm_609_offset > *offset),
-        "#609 classification must remain after every strand-attribution arm"
+            .all(|(_, arm_end, _)| arm_609_offset > *arm_end),
+        "#609 classification must remain strictly after both field-keyed strand-attribution arms"
+    );
+
+    let run_profile = shell_function_body(&gate, "run_profile");
+    let classifier_dispatch = run_profile
+        .split_once(r#"case "$CLASS_BUCKET" in"#)
+        .and_then(|(_, tail)| tail.split_once("esac").map(|(dispatch, _)| dispatch))
+        .expect("run_profile CLASS_BUCKET dispatch");
+    let bucket_counters: Vec<_> = classifier_dispatch
+        .lines()
+        .filter_map(|line| {
+            let line = line.trim();
+            if line.starts_with('#') {
+                return None;
+            }
+            let (bucket, update) = line.split_once(')')?;
+            let bucket = bucket.trim();
+            let update = update.trim();
+            if bucket.is_empty()
+                || bucket == "*"
+                || bucket.bytes().any(|byte| byte.is_ascii_whitespace())
+                || !update.ends_with(";;")
+            {
+                return None;
+            }
+            let counter = update.split_once('=').map(|(counter, _)| counter.trim())?;
+            counter
+                .strip_prefix("count_")
+                .filter(|suffix| {
+                    !suffix.is_empty()
+                        && suffix
+                            .bytes()
+                            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+                })
+                .map(|_| (bucket, counter))
+        })
+        .collect();
+    let census_sum = run_profile
+        .lines()
+        .map(str::trim)
+        .find(|line| line.starts_with("census_sum=$(("))
+        .expect("run_profile bucket-census sum identity");
+    for (_, counter) in &bucket_counters {
+        assert!(
+            census_sum.contains(*counter),
+            "classifier counter {counter} must remain in the per-profile bucket-census sum identity"
+        );
+    }
+    let fail_conditions: Vec<_> = run_profile
+        .lines()
+        .map(str::trim)
+        .filter(|line| line.starts_with(r#"if [ "$count_"#) && line.ends_with("; then"))
+        .collect();
+    assert_eq!(
+        fail_conditions.len(),
+        1,
+        "run_profile must retain exactly one per-profile count_* FAIL condition"
+    );
+    let fail_condition = fail_conditions[0];
+    for (field, _, bucket) in strand_arms {
+        let counter = bucket_counters
+            .iter()
+            .find_map(|(dispatch_bucket, counter)| (*dispatch_bucket == bucket).then_some(*counter))
+            .unwrap_or_else(|| {
+                panic!("{field} bucket {bucket} must map to a count_* counter in run_profile")
+            });
+        let failing_term = format!(r#"[ "${counter}" -ne 0 ]"#);
+        assert!(
+            fail_condition.contains(&failing_term),
+            "{field} bucket {bucket} counter {counter} must remain in run_profile's per-profile FAIL condition"
+        );
+    }
+
+    let counter_609 = bucket_counters
+        .iter()
+        .find_map(|(bucket, counter)| (*bucket == bucket_609).then_some(*counter))
+        .unwrap_or_else(|| {
+            panic!("#609 bucket {bucket_609} must map to a count_* counter in run_profile")
+        });
+    let failing_609_term = format!(r#"[ "${counter_609}" -ne 0 ]"#);
+    assert!(
+        fail_condition.contains(&failing_609_term),
+        "#609 bucket {bucket_609} counter {counter_609} must remain in run_profile's per-profile FAIL condition"
     );
 
     assert!(
-        gate.contains("TOTAL_609_CEILING=$("),
-        "#609 attribution must retain a computed run-wide rate ceiling"
+        !gate.contains("TOTAL_609_CEILING"),
+        "#609's retired run-wide rate-ceiling token must not survive anywhere in the gate"
     );
-    let ceiling_arm_start = gate
-        .find(r#"if [ "$TOTAL_609" -gt "$TOTAL_609_CEILING" ]; then"#)
-        .expect("#609 rate-ceiling comparison");
-    let ceiling_arm_tail = &gate[ceiling_arm_start..];
-    let ceiling_arm_end = ceiling_arm_tail
-        .find("\nfi\n")
-        .map(|offset| offset + "\nfi\n".len())
-        .expect("#609 rate-ceiling arm terminator");
-    let ceiling_arm = &ceiling_arm_tail[..ceiling_arm_end];
+    assert!(
+        !gate.contains("_CEILING="),
+        "service-sequence gate must not contain any per-class _CEILING= assignment"
+    );
+
+    let classifier_buckets: HashSet<_> = classifier
+        .lines()
+        .map(str::trim)
+        .filter_map(|line| {
+            line.strip_prefix("CLASS_BUCKET=\"")
+                .and_then(|bucket| bucket.strip_suffix('"'))
+        })
+        .collect();
+    assert!(
+        !classifier_buckets.is_empty(),
+        "classify_serial bucket census"
+    );
+    let (failing_buckets, non_failing_buckets): (HashSet<_>, HashSet<_>) =
+        classifier_buckets.iter().copied().partition(|bucket| {
+            let counter = bucket_counters
+                .iter()
+                .find_map(|(dispatch_bucket, counter)| {
+                    (*dispatch_bucket == *bucket).then_some(*counter)
+                })
+                .unwrap_or_else(|| {
+                    panic!(
+                        "classify_serial bucket {} must map to a count_* counter in run_profile",
+                        *bucket
+                    )
+                });
+            let failing_term = format!(r#"[ "${counter}" -ne 0 ]"#);
+            fail_condition.contains(&failing_term)
+        });
     assert_eq!(
-        shell_exact_line_occurrences(ceiling_arm, "ANY_GATE_FAILURE=1"),
-        1,
-        "exceeding the #609 rate ceiling must fail the service-sequence gate"
+        non_failing_buckets.len(),
+        MAX_NON_FAILING_SERVICE_SEQUENCE_BUCKETS,
+        "service-sequence non-failing bucket census changed to {non_failing_buckets:?}; a new non-failing bucket is a new tolerance and needs a coordinator ruling"
+    );
+    assert_eq!(
+        non_failing_buckets,
+        HashSet::from(["GREEN", "576"]),
+        "service-sequence gate may pass only the healthy GREEN bucket and open pre-adjudicated bucket 576"
+    );
+    assert!(
+        failing_buckets.contains(bucket_609),
+        "#609 bucket {bucket_609} must be in the failing bucket census"
+    );
+    assert!(
+        !non_failing_buckets.contains(bucket_609),
+        "#609 bucket {bucket_609} must not be in the non-failing bucket census"
+    );
+
+    let boot_test_fail_offset = classifier
+        .find("[BOOT_TESTS:FAIL")
+        .expect("aggregate boot-test failure classifier arm");
+    let boot_test_fail_tail = &classifier[boot_test_fail_offset..];
+    let boot_test_fail_end = boot_test_fail_tail
+        .find("\n    fi\n")
+        .map(|offset| offset + "\n    fi\n".len())
+        .expect("aggregate boot-test failure arm terminator");
+    let boot_test_fail_arm = &boot_test_fail_tail[..boot_test_fail_end];
+    assert!(
+        boot_test_fail_arm.contains(r#"CLASS_BUCKET="BOOT_TEST_FAIL""#)
+            && boot_test_fail_arm.contains("boot_test_fail_line"),
+        "service-sequence boot-test failures must have a named bucket and carry the first failing test field signature"
+    );
+    let prior_oracle_failure = classifier
+        .find(r"\[CENSUS_WIDEN_ORACLE:[^]]*:FAIL\]")
+        .expect("census-oracle failure attribution arm");
+    assert!(
+        prior_oracle_failure < boot_test_fail_offset && boot_test_fail_offset < arm_609_offset,
+        "BOOT_TEST_FAIL must follow crash/oracle attribution and precede later generic/stall classification"
+    );
+    assert!(
+        failing_buckets.contains("BOOT_TEST_FAIL"),
+        "BOOT_TEST_FAIL must remain a hard-failing per-profile bucket"
+    );
+}
+
+#[test]
+fn strict_gate_rejects_aggregate_boot_test_failures_with_a_field_signature() {
+    let gate = repo_text(STRICT_GATE_PATH);
+    let score_serial = shell_function_body(&gate, "score_serial");
+    let aggregate_fail = score_serial
+        .find("[BOOT_TESTS:FAIL")
+        .expect("strict scorer BOOT_TESTS failure arm");
+    let first_presence_check = score_serial
+        .find("if ! grep -qE \"(breenix>")
+        .expect("strict scorer first presence check");
+    assert!(
+        aggregate_fail < first_presence_check
+            && score_serial.contains(r"\[TESTS_COMPLETE:[^]]*:FAILED:[1-9][0-9]*\]")
+            && score_serial.contains(r"\[TEST:[^]]*:FAIL:[^]]*\]")
+            && score_serial.contains("Boot test failure: ${boot_test_fail_line"),
+        "strict scoring must reject either aggregate failure marker before presence checks and report the first failing test field signature"
     );
 }
 
@@ -881,6 +1444,581 @@ fn x86_strand_oracle_is_synchronous_and_sampled_by_the_executor() {
 }
 
 #[test]
+fn x86_census_widen_oracle_is_one_shot_in_the_live_verdict_path() {
+    let registry = repo_text(TEST_REGISTRY_PATH);
+    assert!(
+        registry.contains("pub fn run_census_widen_oracle() -> bool"),
+        "the census-widening probe must expose its boolean verdict to the x86 driver"
+    );
+    let probe = function_body(&registry, "run_census_widen_oracle");
+    let x86_leg = braced_block_after(probe, "#[cfg(not(target_arch");
+    for required in [
+        "collect_strand_census(&mut candidates, &mut baseline_nonprogress)",
+        "collect_strand_census(&mut candidates, &mut confirmation_nonprogress)",
+        "arm=none",
+        "reason=uniprocessor_no_dispatching_peer",
+        "baseline_reported={}",
+        "axes={}",
+        "SKIP",
+    ] {
+        assert!(
+            x86_leg.contains(required),
+            "the x86 census-only leg must retain {required}"
+        );
+    }
+    for forbidden in [
+        "stale_peer_cpu_for_test",
+        "kthread_run_on_cpu_for_test",
+        "release_cpu_affine_thread_for_test",
+        "kthread_join",
+    ] {
+        assert!(
+            code_occurrences(x86_leg, forbidden).is_empty(),
+            "the unarmed x86 census leg must not contain {forbidden}"
+        );
+    }
+    assert!(
+        !x86_leg.contains(":PASS"),
+        "the x86 census-only marker must never claim PASS"
+    );
+    assert_eq!(
+        code_occurrences(x86_leg, "collect_strand_census(").len(),
+        2,
+        "the x86 leg must compute both disarmed census passes"
+    );
+    assert!(
+        probe.contains("x86 computes both disarmed census passes")
+            && probe.contains("aarch64's real-thread arm does")
+            && probe.contains("not a passing result"),
+        "the oracle must disclose that x86 does not prove the widening"
+    );
+    let test_def = function_body(&registry, "test_census_widen_oracle");
+    assert!(
+        !code_occurrences(test_def, "run_census_widen_oracle()").is_empty(),
+        "the registered aarch64 test must keep calling the factored probe"
+    );
+
+    let executor = repo_text(EXECUTOR_PATH);
+    let driver = function_body(&executor, "run_census_widen_oracle_x86_once");
+    assert!(
+        !code_occurrences(driver, "compare_exchange(false, true").is_empty(),
+        "the x86 census-widening driver must use an atomic one-shot"
+    );
+    assert_eq!(
+        code_occurrences(driver, "registry::run_census_widen_oracle()").len(),
+        1,
+        "the one-shot driver must have exactly one probe call site"
+    );
+
+    let marker_only = function_body(&executor, "advance_stage_marker_only");
+    let cfg_anchor = "#[cfg(not(target_arch = \"aarch64\"))]";
+    let cfg_offset = marker_only
+        .rfind(cfg_anchor)
+        .expect("x86 verdict cfg block");
+    let (masked_marker_only, _) = code_source(marker_only);
+    let cfg_open = masked_marker_only[cfg_offset + cfg_anchor.len()..]
+        .find('{')
+        .map(|relative| cfg_offset + cfg_anchor.len() + relative)
+        .expect("x86 verdict cfg opening brace");
+    let x86_verdict = braced_body(marker_only, &masked_marker_only, cfg_open);
+    let sample = code_occurrences(x86_verdict, "strand_oracle::sample_now()");
+    let census = code_occurrences(x86_verdict, "run_census_widen_oracle_x86_once()");
+    let report = code_occurrences(x86_verdict, "strand_oracle::report_x86_once()");
+    assert_eq!(sample.len(), 1, "x86 verdict block final sample census");
+    assert_eq!(census.len(), 1, "x86 verdict block census-oracle driver census");
+    assert_eq!(report.len(), 1, "x86 verdict block strand report census");
+    assert!(
+        sample[0] < census[0] && census[0] < report[0],
+        "the census-widening probe must run after the final sample and before the strand report"
+    );
+
+    let gate = repo_text(X86_BOOT_GATE_PATH);
+    let literal = gate
+        .lines()
+        .find(|line| line.starts_with("CENSUS_WIDEN_ORACLE_LITERAL="))
+        .expect("x86 gate census-widening literal constant");
+    assert_eq!(
+        literal,
+        "CENSUS_WIDEN_ORACLE_LITERAL='[CENSUS_WIDEN_ORACLE:x86:arm=none:reason=uniprocessor_no_dispatching_peer:baseline_reported=0:axes=6:SKIP]'",
+        "the x86 gate must literally pin the disclosed non-PASS verdict"
+    );
+    assert!(
+        gate.contains("&& grep -qF \"$CENSUS_WIDEN_ORACLE_LITERAL\""),
+        "the x86 poll verdict must require the literal census SKIP marker"
+    );
+    let exact_count = gate
+        .find("test \"$(grep -h -F -c \"$CENSUS_WIDEN_ORACLE_LITERAL\"")
+        .expect("x86 gate exact census SKIP marker count");
+    assert!(
+        gate[exact_count..]
+            .lines()
+            .take(2)
+            .any(|line| line.contains("-eq 1")),
+        "the x86 final verdict must require exactly one disclosed census SKIP marker"
+    );
+}
+
+#[test]
+fn strand_census_disposability_and_reachability_dimensions_cannot_shrink() {
+    let scheduler = repo_text(SCHEDULER_PATH);
+    let census = function_body(&scheduler, "collect_strand_census");
+    let dormancy = bracketed_block_after(census, "let dormancy_dimensions =");
+    let reachability = bracketed_block_after(census, "let reachability_dimensions =");
+    let dimensions =
+        comma_separated_shape_count(dormancy) + comma_separated_shape_count(reachability);
+    assert!(
+        dimensions >= MIN_CENSUS_DISPOSABILITY_REACHABILITY_DIMENSIONS,
+        "strand-census disposability/reachability dimension floor shrank: {dimensions} < \
+         {MIN_CENSUS_DISPOSABILITY_REACHABILITY_DIMENSIONS}"
+    );
+}
+
+#[test]
+fn idle_disposability_is_parked_state_not_bare_tid_identity() {
+    let scheduler = repo_text(SCHEDULER_PATH);
+    let census = function_body(&scheduler, "collect_strand_census");
+    let dormant_guard = braced_block_after(census, "let dormant_idle =");
+    assert!(
+        !code_occurrences(dormant_guard, "is_cpu_idle(").is_empty(),
+        "idle disposability must consult the scheduler's parked-state predicate"
+    );
+    assert!(
+        !code_occurrences(dormant_guard, "current_thread").is_empty()
+            && !code_occurrences(dormant_guard, "current_tid != tid").is_empty(),
+        "idle disposability must recognize a dormant idle thread while another thread runs"
+    );
+    assert!(
+        code_occurrences(census, ".any(|cpu| cpu.idle_thread == tid)").is_empty(),
+        "the census must not restore the bare idle-TID identity skip"
+    );
+}
+
+#[test]
+fn strand_marker_reports_dwell_and_nonprogress_axes() {
+    let oracle = repo_text(STRAND_ORACLE_PATH);
+    let report = function_body(&oracle, "report_strand");
+    assert!(
+        report.contains(":worst_dwell_ms={}:overflow={}:worst_nonprogress_ms={}:nonprogress={}:queued_on_nondispatching_cpu={}:worst_queued_nondispatch_ms={}:worst_cpu_scheduler_silence_ms={}:worst_silence_cpu={}]"),
+        "strand marker must append every census progress axis after the existing fields"
+    );
+}
+
+#[test]
+fn aarch64_census_widen_oracle_has_real_disarmed_and_armed_legs() {
+    let scheduler = repo_text(SCHEDULER_PATH);
+    let registry = repo_text(TEST_REGISTRY_PATH);
+    let callable = function_body(&registry, "run_census_widen_oracle");
+    let probe = braced_block_after(callable, "#[cfg(target_arch");
+    let census_calls = code_occurrences(probe, "collect_strand_census(");
+    let spawn_calls = code_occurrences(probe, "kthread_run_on_cpu_for_test(");
+    let target_calls = code_occurrences(probe, "stale_peer_cpu_for_test()");
+    let release_calls = code_occurrences(probe, "release_cpu_affine_thread_for_test(");
+    assert!(
+        census_calls.len() >= 2
+            && spawn_calls.len() == 1
+            && target_calls.len() == 1
+            && release_calls.len() == 1
+            && target_calls[0] < census_calls[0]
+            && census_calls[0] < spawn_calls[0]
+            && spawn_calls[0] < census_calls[1]
+            && census_calls[1] < release_calls[0],
+        "census widening oracle must retain target-selected baseline/spawn/armed/release ordering: \
+         target={target_calls:?} census={census_calls:?} spawn={spawn_calls:?} release={release_calls:?}"
+    );
+    assert!(
+        probe.contains("baseline_reported={}:armed_reported={}"),
+        "census widening marker must report both anti-vacuity legs"
+    );
+    let spawn_end = probe[spawn_calls[0]..]
+        .find("let mut tid")
+        .map(|offset| spawn_calls[0] + offset)
+        .expect("forced-placement call terminator");
+    let spawn_call = &probe[spawn_calls[0]..spawn_end];
+    assert!(
+        code_occurrences(spawn_call, "arm_target").len() == 1,
+        "forced placement must consume the scheduler-selected arm target"
+    );
+    assert!(
+        probe.contains("baseline.checked == 0")
+            && probe.contains("baseline.queued_on_nondispatching_cpu != 0")
+            && probe.contains("baseline.worst_queued_nondispatch_ms != 0")
+            && probe.contains("baseline_nonprogress[..baseline.nonprogress].contains(&tid)"),
+        "the disarmed leg must fail closed on vacuity, dirty queued axes, or probe presence"
+    );
+    assert!(
+        probe.contains("kthread_has_exited_for_test")
+            && probe.contains("arch_halt()")
+            && probe.contains("kthread_join"),
+        "the real probe must dwell and join through bounded exit polling"
+    );
+    assert!(
+        probe.contains("for _ in 0..CENSUS_WIDEN_RETIRE_ROUNDS")
+            && probe.contains("reclaim_terminated_threads()")
+            && probe.contains("nudge_retirement_grace_for_test()")
+            && probe.contains("kernel_stack_pool_counters().slots_freed")
+            && probe.contains(":joined={}:retired={}:{}]"),
+        "the real probe must keep its bounded retirement attempt and report the observed evidence"
+    );
+    let passed_start = probe.find("let passed =").expect("oracle verdict expression");
+    let passed_end = probe[passed_start..]
+        .find("crate::serial_println!")
+        .map(|offset| passed_start + offset)
+        .expect("oracle marker after verdict expression");
+    let passed_expression = &probe[passed_start..passed_end];
+    assert!(
+        passed_expression.contains("&& joined")
+            && code_occurrences(passed_expression, "retired").is_empty(),
+        "joined is controlled proof that the probe ran and exited; asynchronous retirement evidence must not gate PASS"
+    );
+    let retirement_nudge = function_body(&scheduler, "nudge_retirement_grace_for_test");
+    assert!(
+        retirement_nudge.contains("for cpu in 0..online.min(MAX_CPUS)")
+            && retirement_nudge.contains("gic::send_sgi(SGI_RESCHEDULE as u8, cpu as u8)")
+            && !retirement_nudge.contains("scheduler.send_resched_ipi()"),
+        "the retirement grace nudge must reach every online peer directly; the idle-only scheduler wake helper can skip the probe's stale owner"
+    );
+
+    let kernel_sources = rust_source_tree("kernel/src");
+    assert!(
+        code_occurrences(&kernel_sources, "CENSUS_WIDEN_INJECT").is_empty()
+            && code_occurrences(&kernel_sources, "arm_census_widen_injection").is_empty()
+            && code_occurrences(&kernel_sources, "disarm_census_widen_injection").is_empty(),
+        "no census view-injection state or API may exist anywhere in kernel/src"
+    );
+
+    let stale_target = function_body(&scheduler, "stale_peer_cpu_for_test");
+    assert!(
+        stale_target.contains("cpu != current_cpu")
+            && stale_target.contains("scheduler.cpu_dispatch_stale(cpu)"),
+        "the scheduler must choose a non-current stale CPU without a literal target"
+    );
+}
+
+/// Both oracles observe global kernel-stack allocation/return counters. The census
+/// probe must run last in their shared subsystem so its stack allocation starts
+/// only after every earlier ownership-accounting window has closed.
+#[test]
+fn census_and_kernel_stack_ownership_oracles_share_a_subsystem_in_safe_order() {
+    let registry = repo_text(TEST_REGISTRY_PATH);
+    let (census_array, census_subsystem, census_offset) =
+        registered_test_location(&registry, "census_widen_oracle");
+    let (ownership_array, ownership_subsystem, ownership_offset) =
+        registered_test_location(&registry, "kernel_stack_ownership_oracle");
+
+    assert_eq!(
+        census_subsystem, ownership_subsystem,
+        "census and ownership oracles must derive to the same subsystem id"
+    );
+    assert_eq!(
+        census_array, ownership_array,
+        "one subsystem id must retain both oracle registrations in one sequential test array"
+    );
+    assert!(
+        ownership_offset < census_offset,
+        "kernel-stack ownership accounting must close before the census probe starts"
+    );
+    assert!(
+        registry[census_offset..]
+            .lines()
+            .take(5)
+            .any(|line| line.trim() == "arch: Arch::Aarch64,"),
+        "the registered real-thread oracle must remain aarch64-only"
+    );
+
+    let array_declaration = format!("static {census_array}: &[TestDef] = &[");
+    let array_start = registry
+        .find(&array_declaration)
+        .map(|offset| offset + array_declaration.len())
+        .expect("derived shared test array declaration");
+    let array_end = registry[array_start..]
+        .find("\n];")
+        .map(|offset| array_start + offset)
+        .expect("derived shared test array terminator");
+    let array_body = &registry[array_start..array_end];
+    let registration_offsets: Vec<_> = array_body
+        .match_indices("name: \"")
+        .map(|(offset, _)| array_start + offset)
+        .collect();
+    assert_eq!(
+        registration_offsets.last().copied(),
+        Some(census_offset),
+        "census oracle must remain the last registered test in its derived subsystem array"
+    );
+}
+
+#[test]
+fn census_real_thread_arm_and_forced_placement_helpers_are_aarch64_only() {
+    const AARCH64_BOOT_TEST_CFG: &str =
+        "#[cfg(all(target_arch = \"aarch64\", feature = \"boot_tests\"))]";
+
+    let registry = repo_text(TEST_REGISTRY_PATH);
+    let callable = function_body(&registry, "run_census_widen_oracle");
+    let aarch64_leg = braced_block_after(callable, "#[cfg(target_arch");
+    let x86_leg = braced_block_after(callable, "#[cfg(not(target_arch");
+    for required in [
+        "stale_peer_cpu_for_test()",
+        "kthread_run_on_cpu_for_test(",
+        "release_cpu_affine_thread_for_test(",
+        "kthread_has_exited_for_test",
+        "kthread_join",
+        ":joined={}:retired={}:{}]",
+    ] {
+        assert!(
+            aarch64_leg.contains(required),
+            "the aarch64 real-thread arm must retain {required}"
+        );
+        assert!(
+            code_occurrences(x86_leg, required).is_empty(),
+            "the x86 census-only leg must not compile {required}"
+        );
+    }
+
+    let scheduler = repo_text(SCHEDULER_PATH);
+    for declaration in [
+        "static BOOT_TEST_CPU_AFFINITY:",
+        "fn retain_cpu_affine_test_thread(",
+        "pub(crate) fn clear_cpu_affinity_for_test(",
+        "fn add_thread_on_cpu_for_test(",
+        "pub fn stale_peer_cpu_for_test(",
+        "pub(crate) fn spawn_on_cpu_for_test(",
+        "pub fn release_cpu_affine_thread_for_test(",
+    ] {
+        let offset = scheduler
+            .find(declaration)
+            .unwrap_or_else(|| panic!("forced-placement declaration {declaration}"));
+        assert_eq!(
+            preceding_nonempty_line(&scheduler, offset),
+            AARCH64_BOOT_TEST_CFG,
+            "{declaration} must be compiled only for aarch64 boot tests"
+        );
+    }
+    for offset in code_occurrences(&scheduler, "retain_cpu_affine_test_thread(") {
+        assert_eq!(
+            preceding_nonempty_line(&scheduler, offset),
+            AARCH64_BOOT_TEST_CFG,
+            "every affinity-retention hook must disappear from x86 scheduler paths"
+        );
+    }
+
+    let kthread = repo_text("kernel/src/task/kthread.rs");
+    let run_on_cpu = kthread
+        .find("pub(crate) fn kthread_run_on_cpu_for_test<")
+        .expect("forced-placement kthread helper");
+    assert_eq!(
+        preceding_nonempty_line(&kthread, run_on_cpu),
+        AARCH64_BOOT_TEST_CFG,
+        "the forced-placement kthread helper must be aarch64-only"
+    );
+    let clear_affinity_call = kthread
+        .find("scheduler::clear_cpu_affinity_for_test(")
+        .expect("kthread affinity cleanup call");
+    assert_eq!(
+        preceding_nonempty_line(&kthread, clear_affinity_call),
+        AARCH64_BOOT_TEST_CFG,
+        "kthread exit must not compile affinity cleanup into x86"
+    );
+}
+
+#[test]
+fn cpu_affinity_zero_sentinel_is_never_a_thread_id() {
+    let scheduler = repo_text(SCHEDULER_PATH);
+    let retain = function_body(&scheduler, "retain_cpu_affine_test_thread");
+    let refusal_offset = retain
+        .find("if thread_id == 0")
+        .expect("thread-zero affinity refusal");
+    let target_lookup_offset = retain
+        .find("let target_cpu = BOOT_TEST_CPU_AFFINITY")
+        .expect("affinity-table lookup");
+    let refusal = braced_block_after(retain, "if thread_id == 0");
+    assert!(
+        refusal.contains("return false;") && refusal_offset < target_lookup_offset,
+        "tid 0 must be refused before scanning zero-sentinel affinity slots"
+    );
+}
+
+#[test]
+fn every_aarch64_census_gate_requires_joined_but_accepts_reported_retirement_evidence() {
+    for gate_path in [SERVICE_SEQUENCE_GATE_PATH, STRICT_GATE_PATH] {
+        let gate = repo_text(gate_path);
+        let pattern = gate
+            .lines()
+            .find(|line| line.starts_with("CENSUS_WIDEN_ORACLE_PATTERN="))
+            .unwrap_or_else(|| panic!("census-widening pattern in {gate_path}"));
+        assert!(
+            pattern.contains(":joined=1:retired=[01]:PASS\\]'")
+                && !pattern.contains(":joined=[01]:"),
+            "{gate_path} must require joined=1 and PASS without promising asynchronous retirement"
+        );
+    }
+}
+
+#[test]
+fn strand_census_progress_axes_and_ordering_cannot_shrink() {
+    let scheduler = repo_text(SCHEDULER_PATH);
+    let fields = declared_public_fields(&scheduler, "StrandCensus");
+    let progress_axes: Vec<_> = fields
+        .iter()
+        .copied()
+        .filter(|field| {
+            field.contains("nonprogress")
+                || field.contains("nondispatch")
+                || field.contains("silence")
+        })
+        .collect();
+    assert!(
+        progress_axes.len() >= MIN_CENSUS_PROGRESS_AXES,
+        "declared StrandCensus progress-axis floor shrank: {progress_axes:?}"
+    );
+    let runtime_axis_count = scheduler
+        .lines()
+        .find_map(|line| {
+            line.trim()
+                .strip_prefix("pub const STRAND_CENSUS_PROGRESS_AXES: usize = ")
+                .and_then(|value| value.strip_suffix(';'))
+                .and_then(|value| value.parse::<usize>().ok())
+        })
+        .expect("runtime strand-census progress-axis count");
+    assert_eq!(
+        runtime_axis_count,
+        progress_axes.len(),
+        "the x86 marker's runtime axis count must equal the declaration-derived census"
+    );
+    let x86_gate = repo_text(X86_BOOT_GATE_PATH);
+    assert!(
+        x86_gate.contains(&format!(":axes={runtime_axis_count}:SKIP]'")),
+        "the literal x86 SKIP marker must expose the declaration-derived axis count"
+    );
+
+    let census = function_body(&scheduler, "collect_strand_census");
+    assert_eq!(
+        code_occurrences(census, "!injected &&").len(),
+        0,
+        "the census must contain zero injection short-circuits"
+    );
+    assert_eq!(
+        code_occurrences(&scheduler, "CENSUS_WIDEN_INJECT").len(),
+        0,
+        "the scheduler must contain zero census-injection identifiers"
+    );
+
+    let online_bound = code_occurrences(census, "for cpu in 0..online_cpu_count");
+    assert_eq!(
+        online_bound.len(),
+        1,
+        "CPU-silence sampling must iterate exactly the derived online CPU count"
+    );
+    let silence_scan = braced_block_after(census, "for cpu in 0..online_cpu_count");
+    assert!(
+        silence_scan.contains("cpu_state[cpu].last_schedule_ticks"),
+        "each online CPU must contribute its scheduler-silence timestamp"
+    );
+
+    let queued_scan = census
+        .find("queued_on_nondispatching_cpu += 1")
+        .expect("queued nondispatching thread scan");
+    let reachability = census
+        .find("let reachability_dimensions =")
+        .expect("reachability continue anchor");
+    assert!(
+        queued_scan < reachability,
+        "queued-thread nonprogress scan must precede the reachability continue"
+    );
+}
+
+#[test]
+fn every_oracle_gate_pattern_matches_the_emitted_format() {
+    let scheduler_oracle = repo_text(STRAND_ORACLE_PATH);
+    let scheduler_format = marker_format(
+        function_body(&scheduler_oracle, "report_strand"),
+        "SCHED_STRAND_ORACLE",
+    );
+    let registry = repo_text(TEST_REGISTRY_PATH);
+    let census_format = marker_format(
+        function_body(&registry, "run_census_widen_oracle"),
+        "CENSUS_WIDEN_ORACLE",
+    );
+
+    let mut checked_patterns = 0usize;
+    let qemu_dir = repo_root().join("docker/qemu");
+    for entry in fs::read_dir(qemu_dir).expect("read docker/qemu") {
+        let path = entry.expect("gate script entry").path();
+        if path.extension().is_none_or(|extension| extension != "sh") {
+            continue;
+        }
+        let gate = fs::read_to_string(&path)
+            .unwrap_or_else(|_| panic!("read gate script {}", path.display()));
+        for line in gate.lines() {
+            for (family, format) in [
+                ("SCHED_STRAND_ORACLE", scheduler_format),
+                ("CENSUS_WIDEN_ORACLE", census_format),
+            ] {
+                let assignment = line.starts_with(&format!("{family}_PATTERN="));
+                if !assignment && !(line.contains("grep") && line.contains(family)) {
+                    continue;
+                }
+                if !assignment
+                    && (line.contains(&format!("${family}_PATTERN"))
+                        || line.contains(&format!("${family}_LITERAL")))
+                {
+                    continue;
+                }
+                let pattern = quoted_segment_containing(line, family)
+                    .unwrap_or_else(|| panic!("quoted {family} grep in {}", path.display()));
+                if pattern.starts_with('$') {
+                    continue;
+                }
+                let arch = if pattern.contains("x86") {
+                    "x86"
+                } else {
+                    "aarch64"
+                };
+                let marker = if family == "SCHED_STRAND_ORACLE" {
+                    let stranded = if pattern.contains("stranded=[1-9]") {
+                        "1"
+                    } else {
+                        "0"
+                    };
+                    render_positional_format(
+                        format,
+                        &[
+                            arch, "1000", "1", stranded, "1", "1", "1", "1", "1", "0", "1",
+                            "1", "1", "1", "1", "1",
+                        ],
+                    )
+                } else {
+                    let verdict = if pattern.contains("FAIL") {
+                        "FAIL"
+                    } else {
+                        "PASS"
+                    };
+                    render_positional_format(
+                        format,
+                        &[
+                            arch, "1", "0", "1", "1", "1", "1", "1", "1", "1", verdict,
+                        ],
+                    )
+                };
+                let matches = if line.contains("grep") && line.contains("-qF") {
+                    marker.contains(pattern)
+                } else {
+                    shell_ere_matches(pattern, &marker)
+                };
+                assert!(
+                    matches,
+                    "gate pattern in {} stopped matching emitted {family} format: {pattern}",
+                    path.display()
+                );
+                checked_patterns += 1;
+            }
+        }
+    }
+    assert!(
+        checked_patterns >= MIN_ORACLE_GATE_PATTERNS,
+        "oracle gate-pattern census shrank: {checked_patterns} < {MIN_ORACLE_GATE_PATTERNS}"
+    );
+}
+
+#[test]
 fn pending_next_is_taken_only_after_rollback_refusals() {
     let scheduler = repo_text(SCHEDULER_PATH);
     let resolver = function_body(&scheduler, "resolve_pending_next_locked");
@@ -986,5 +2124,113 @@ fn injection_report_cap_preserves_in_flight_scoring_windows() {
     assert!(
         !code_occurrences(marker_ready, "INJECT_B_FIRED").is_empty(),
         "marker readiness must consult leg B's mid-scoring state"
+    );
+}
+
+#[test]
+fn wakeup_placement_requires_local_dispatchability() {
+    let scheduler = repo_text(SCHEDULER_PATH);
+    let context_switch = repo_text(CONTEXT_SWITCH_PATH);
+
+    let accepts = function_body(&scheduler, "cpu_accepts_wakeups");
+    let compact_accepts: String = code_source(accepts)
+        .0
+        .chars()
+        .filter(|character| !character.is_whitespace())
+        .collect();
+    assert!(
+        compact_accepts.contains(
+            "ifcpu==Self::current_cpu_id()&&arch_can_dispatch_here(){returntrue;}"
+        ),
+        "the current CPU fast path must be conditional on architecture dispatchability"
+    );
+    assert_eq!(
+        code_occurrences(accepts, "arch_can_dispatch_here").len(),
+        1,
+        "cpu_accepts_wakeups must consult dispatchability exactly once"
+    );
+    assert_eq!(
+        code_occurrences(accepts, "return true").len(),
+        1,
+        "cpu_accepts_wakeups must not regain an unconditional current-CPU return"
+    );
+    assert_eq!(
+        code_occurrences(accepts, "cpu_dispatch_stale").len(),
+        1,
+        "a non-dispatchable current CPU must fall through to peer-style staleness"
+    );
+
+    let stale = function_body(&scheduler, "cpu_dispatch_stale");
+    assert!(
+        code_occurrences(stale, "current_cpu_id").is_empty(),
+        "the outside-CPU staleness predicate must not identify the observer CPU"
+    );
+    assert_eq!(
+        code_occurrences(stale, "self.cpu_state[cpu].last_schedule_ticks").len(),
+        1,
+        "cpu_dispatch_stale must read the target CPU's scheduling timestamp"
+    );
+    assert_eq!(
+        code_occurrences(stale, "wrapping_sub(last_schedule_ticks)").len(),
+        1,
+        "cpu_dispatch_stale must compare elapsed ticks with wrapping arithmetic"
+    );
+
+    let dispatch_bodies = function_bodies(&scheduler, "arch_can_dispatch_here");
+    assert_eq!(
+        dispatch_bodies.len(),
+        2,
+        "arch_can_dispatch_here must have aarch64 and non-aarch64 definitions"
+    );
+    let arm_body = dispatch_bodies
+        .iter()
+        .find(|body| !code_occurrences(body, "context_switch::can_dispatch_here").is_empty())
+        .expect("aarch64 dispatchability delegates to context_switch");
+    assert!(
+        code_occurrences(arm_body, "PREEMPT_GUARD_MASK").is_empty()
+            && !arm_body.contains("0x"),
+        "the scheduler wrapper must not duplicate the aarch64 preemption mask"
+    );
+    let non_arm_bodies = dispatch_bodies
+        .iter()
+        .filter(|body| {
+            let (code, _) = code_source(body);
+            code.split_whitespace().collect::<String>() == "true"
+        })
+        .count();
+    assert_eq!(
+        non_arm_bodies, 1,
+        "the non-aarch64 dispatchability predicate must preserve true"
+    );
+
+    let compact_scheduler: String = scheduler
+        .chars()
+        .filter(|character| !character.is_whitespace())
+        .collect();
+    assert!(
+        compact_scheduler.contains(
+            "#[cfg(not(target_arch=\"aarch64\"))]#[inline(always)]fnarch_can_dispatch_here()->bool{true}"
+        ),
+        "the true arch_can_dispatch_here body must be the non-aarch64 arm"
+    );
+
+    let context_predicate = function_body(&context_switch, "can_dispatch_here");
+    assert_eq!(
+        code_occurrences(context_predicate, "PREEMPT_GUARD_MASK").len(),
+        1,
+        "aarch64 dispatchability must derive from the shared guard mask"
+    );
+    assert_eq!(
+        code_occurrences(context_predicate, "preempt_count").len(),
+        1,
+        "aarch64 dispatchability must be a pure per-CPU preemption-count read"
+    );
+    let compact_context: String = context_switch
+        .chars()
+        .filter(|character| !character.is_whitespace())
+        .collect();
+    assert!(
+        compact_context.contains("#[inline(always)]pubfncan_dispatch_here()->bool"),
+        "the shared aarch64 predicate must remain public and always-inline"
     );
 }

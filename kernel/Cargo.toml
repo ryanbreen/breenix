@@ -27,6 +27,7 @@ test = false
 testing = []
 boot_tests = []  # Parallel boot test framework
 force_eret_dispatch_596 = ["boot_tests"]  # #596 forced-repro knob
+arm_a_609 = ["boot_tests"]  # #609 arm-A placement oracle
 btrt = []  # Boot Test Result Table (structured test results)
 kthread_test_only = ["testing"]  # Run only kthread tests and exit
 xhci_linux_harness = []  # Build and use the Linux C-based xHCI harness

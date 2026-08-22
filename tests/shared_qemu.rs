@@ -238,6 +238,7 @@ pub fn get_kernel_output() -> &'static str {
 }
 
 /// Extract timestamps from kernel log lines for timer-related tests
+#[allow(dead_code)] // Shared API: only timer/interrupt integration crates consume it.
 pub fn extract_timestamps(output: &str) -> Vec<f64> {
     output
         .lines()
@@ -254,35 +255,4 @@ pub fn extract_timestamps(output: &str) -> Vec<f64> {
             }
         })
         .collect()
-}
-
-/// Check if kernel output contains all expected POST initialization messages
-pub fn validate_post_completion(output: &str) -> Result<(), Vec<String>> {
-    let required_messages = [
-        "Kernel entry point reached",
-        "Serial port initialized",
-        "Logger fully initialized",
-        "GDT initialized",
-        "IDT loaded successfully",
-        "Memory management initialized",
-        "Timer initialized",
-        "Keyboard queue initialized",
-        "PIC initialized",
-        "Interrupts enabled!",
-        "🎯 KERNEL_POST_TESTS_COMPLETE 🎯",
-    ];
-
-    let mut missing = Vec::new();
-
-    for message in &required_messages {
-        if !output.contains(message) {
-            missing.push(message.to_string());
-        }
-    }
-
-    if missing.is_empty() {
-        Ok(())
-    } else {
-        Err(missing)
-    }
 }
