@@ -84,6 +84,12 @@ crate::define_trace_counter!(
 static CTX596_ORACLE_EMISSIONS: AtomicU32 = AtomicU32::new(0);
 static CTX596_DIVERGENCE_EMISSIONS: AtomicU32 = AtomicU32::new(0);
 
+/// Production census for invalid ret-dispatch resume PCs. The guard that
+/// increments these counters lands in the next commit; the feature-gated
+/// oracle reads them now so its red test is committed before the fix.
+pub static RET_DISPATCH_REFUSALS: AtomicU64 = AtomicU64::new(0);
+pub static RET_DISPATCH_REFUSED_TID: AtomicU64 = AtomicU64::new(0);
+
 #[inline]
 fn dispatch_spsr(spsr: u64) -> u64 {
     spsr & !SPSR_DAIF_IRQ_BIT
@@ -2379,6 +2385,8 @@ fn inline_ret_dispatch_info_if_ready(
         return None;
     }
 
+    #[cfg(feature = "ret_zero_pc_oracle")]
+    crate::task::ret_zero_pc_oracle::inject_ret_zero_pc_if_armed(sched, thread_id);
     sched.get_thread_mut(thread_id)
         .and_then(take_inline_ret_dispatch_info)
 }
@@ -4308,14 +4316,11 @@ extern "C" fn inline_schedule_trampoline() -> ! {
     let new_id = state.new_thread_id.load(Ordering::Relaxed);
     let should_requeue_old = state.should_requeue_old.swap(false, Ordering::Relaxed);
 
-    // The forced null-`scheduler_ptr` branch below never applies the outgoing
-    // thread's `elr_el1 = x30` resume-point repair and never requeues it (#607),
-    // so arming it over a live outgoing thread corrupts that thread rather than
-    // the incoming publication this oracle tests. Arm only when the outgoing
-    // thread is this CPU's own idle thread: the same branch re-establishes idle
-    // through reset_idle_continuation_locked, so the stimulus abandons exactly
-    // the published-but-uncommitted incoming selection and nothing else.
+    // Keep the default one-shot stimulus scoped to an idle outgoing handoff.
+    // The live-outgoing feature below widens it specifically to exercise the
+    // fallback's outgoing-thread transaction.
     #[cfg(feature = "boot_tests")]
+    #[cfg(not(feature = "strand_inject_live_outgoing"))]
     let injected_leg = if sched_ptr.is_null() {
         None
     } else {
@@ -4327,6 +4332,38 @@ extern "C" fn inline_schedule_trampoline() -> ! {
         } else {
             None
         }
+    };
+    #[cfg(feature = "boot_tests")]
+    #[cfg(feature = "strand_inject_live_outgoing")]
+    let injected_leg = if sched_ptr.is_null() {
+        None
+    } else {
+        // The feature deliberately widens the one-shot stimulus to a live
+        // outgoing handoff so the null-pointer fallback must finish that
+        // outgoing transaction as well as roll back the incoming selection.
+        let idle_id = unsafe { (*sched_ptr).cpu_state[cpu_id].idle_thread };
+        let outgoing_is_live = idle_id != old_id;
+        let injected_leg = if outgoing_is_live
+            && crate::task::ret_zero_pc_oracle::is_strand_live_driver(old_id)
+        {
+            crate::task::strand_oracle::inject_if_armed(new_id)
+        } else {
+            None
+        };
+        let live_outgoing_injected = injected_leg.is_some();
+        if live_outgoing_injected {
+            crate::task::ret_zero_pc_oracle::note_live_outgoing_fired(
+                old_id,
+                !outgoing_is_live,
+            );
+            // Test-only: remove the exception-cleanup recovery owner while
+            // this CPU still owns the scheduler lock. The fallback itself
+            // must complete the saved affirmative outgoing requeue intent.
+            unsafe {
+                (*sched_ptr).cpu_state[cpu_id].previous_thread = None;
+            }
+        }
+        injected_leg
     };
     #[cfg(feature = "boot_tests")]
     let sched_ptr = if injected_leg.is_some() {

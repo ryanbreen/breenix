@@ -1043,6 +1043,16 @@ const UNLOCKED_MULTI_BYTE_WRITE_ANCHORS: &[(&str, &str, usize)] = &[
         2,
     ),
     (
+        "kernel/src/task/ret_zero_pc_oracle.rs",
+        "#[cfg(all(target_arch=aarch64,feature=ret_zero_pc_oracle_exec))] fn inject_exec_commit_if_armed",
+        2,
+    ),
+    (
+        "kernel/src/task/ret_zero_pc_oracle.rs",
+        "#[cfg(all(target_arch=aarch64,feature=ret_zero_pc_oracle))] fn inject_ret_zero_pc_if_armed",
+        3,
+    ),
+    (
         "kernel/src/task/scheduler.rs",
         "#[cfg(target_arch=aarch64)] fn dump_cpu_state_history",
         9,

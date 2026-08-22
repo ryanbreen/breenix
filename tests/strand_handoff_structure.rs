@@ -7,6 +7,7 @@ use std::process::{Command, Stdio};
 const SCHEDULER_PATH: &str = "kernel/src/task/scheduler.rs";
 const CONTEXT_SWITCH_PATH: &str = "kernel/src/arch_impl/aarch64/context_switch.rs";
 const STRAND_ORACLE_PATH: &str = "kernel/src/task/strand_oracle.rs";
+const RET_ZERO_PC_ORACLE_PATH: &str = "kernel/src/task/ret_zero_pc_oracle.rs";
 const EXECUTOR_PATH: &str = "kernel/src/test_framework/executor.rs";
 const TEST_REGISTRY_PATH: &str = "kernel/src/test_framework/registry.rs";
 const X86_BOOT_GATE_PATH: &str = "docker/qemu/run-x86-boot-tests.sh";
@@ -1344,7 +1345,7 @@ fn strand_handoff_structure_is_pinned_without_line_numbers() {
 }
 
 #[test]
-fn injection_stimulus_is_gated_by_the_idle_outgoing_thread() {
+fn injection_stimulus_default_is_idle_gated_and_live_widening_is_cfg_only() {
     let context_switch = repo_text(CONTEXT_SWITCH_PATH);
     let trampoline = function_body(&context_switch, "inline_schedule_trampoline");
     assert!(
@@ -1372,27 +1373,92 @@ fn injection_stimulus_is_gated_by_the_idle_outgoing_thread() {
         "idle_thread load must introduce the outgoing-id comparison"
     );
 
-    let injection_guard = braced_block_after(trampoline, "if idle_id == old_id");
+    let default_cfg = "#[cfg(not(feature = \"strand_inject_live_outgoing\"))]";
+    let widened_cfg = "#[cfg(feature = \"strand_inject_live_outgoing\")]";
+    let default_arms: Vec<_> = trampoline.match_indices(default_cfg).map(|(at, _)| at).collect();
+    let widened_arms: Vec<_> = trampoline.match_indices(widened_cfg).map(|(at, _)| at).collect();
+    assert_eq!(
+        default_arms.len() + widened_arms.len(),
+        2,
+        "the live-outgoing stimulus must have exactly two cfg-guarded shapes"
+    );
+    assert_eq!(
+        default_arms.len(),
+        1,
+        "the feature-off idle-only stimulus shape must be unique"
+    );
+    assert_eq!(
+        widened_arms.len(),
+        1,
+        "the feature-on live-outgoing stimulus shape must be unique"
+    );
+    assert!(
+        default_arms[0] < widened_arms[0],
+        "the unchanged default stimulus shape must precede its widened cfg peer"
+    );
+
+    let default_arm = &trampoline[default_arms[0]..widened_arms[0]];
+    let widened_arm = &trampoline[widened_arms[0]..];
+    let injection_guard = braced_block_after(default_arm, "if idle_id == old_id");
     assert!(
         !injection_guard.trim().is_empty(),
-        "idle outgoing injection guard body census"
+        "default idle-outgoing injection guard body census"
     );
     assert!(
         !code_occurrences(injection_guard, "inject_if_armed(").is_empty(),
-        "inject_if_armed must be inside the idle outgoing guard"
+        "the default inject_if_armed call must remain inside the idle-outgoing guard"
+    );
+    assert_eq!(
+        code_occurrences(default_arm, "inject_if_armed(").len(),
+        1,
+        "the default cfg arm must contain exactly one injection call"
+    );
+    assert_eq!(
+        code_occurrences(widened_arm, "inject_if_armed(").len(),
+        1,
+        "the live-outgoing cfg arm must contain exactly one injection call"
+    );
+    assert!(
+        code_occurrences(widened_arm, "idle_id == old_id").is_empty(),
+        "only the explicit live-outgoing cfg arm may omit the idle comparison"
+    );
+    assert_eq!(
+        code_occurrences(widened_arm, "is_strand_live_driver(old_id)").len(),
+        1,
+        "the widened arm must drop only the dedicated no-wakeup driver"
+    );
+    let widened_fired = braced_block_after(widened_arm, "if live_outgoing_injected");
+    let fired_notes = code_occurrences(widened_fired, "note_live_outgoing_fired(");
+    let recovery_owner_clears = code_occurrences(
+        widened_fired,
+        "cpu_state[cpu_id].previous_thread = None",
+    );
+    assert_eq!(
+        fired_notes.len(),
+        1,
+        "the widened arm must record its one live-outgoing injection"
+    );
+    assert_eq!(
+        recovery_owner_clears.len(),
+        1,
+        "the widened arm must remove the independent exception-cleanup recovery owner"
+    );
+    assert!(
+        fired_notes[0] < recovery_owner_clears[0],
+        "the widened arm may clear the recovery owner only after its injection fired"
     );
 
-    let trampoline_start = context_switch
-        .find(trampoline)
-        .expect("inline_schedule_trampoline body position");
-    let comparison_start = trampoline_start + idle_comparisons[0];
-    let injection_calls = code_occurrences(&context_switch, "inject_if_armed(");
-    assert!(!injection_calls.is_empty(), "inject_if_armed call census");
+    let oracle = repo_text(RET_ZERO_PC_ORACLE_PATH);
+    let driver = function_body(&oracle, "strand_live_driver");
+    let publish = code_occurrences(driver, "LIVE_DRIVER_TID.store(");
+    let schedules = code_occurrences(driver, "scheduler::schedule()");
+    let sleeps = code_occurrences(driver, "strand_oracle::sleep_sample_period()");
+    assert_eq!(publish.len(), 1, "the driver must publish its own TID once");
+    assert_eq!(schedules.len(), 1, "the driver must have one runnable handoff site");
+    assert_eq!(sleeps.len(), 1, "the driver must have one post-resume throttle");
     assert!(
-        injection_calls
-            .iter()
-            .all(|call_offset| *call_offset > comparison_start),
-        "every inject_if_armed call must follow the idle/outgoing comparison"
+        publish[0] < schedules[0] && schedules[0] < sleeps[0],
+        "the driver must publish, schedule while runnable, then install its next timer only after resuming"
     );
 }
 
