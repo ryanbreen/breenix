@@ -220,17 +220,19 @@ pub fn eret_guard_record_full(cpu_id: usize) -> Option<(u64, u64, u64, u64, u64,
     Some((source, elr, spsr, x29, x30, sp, count))
 }
 
-/// Clear the ERET-guard validity word after its record has been consumed.
-pub fn eret_guard_clear_source(cpu_id: usize) {
+/// Exclusively claim the ERET-guard validity word after reading its record.
+pub fn eret_guard_claim_source(cpu_id: usize) -> u64 {
     if cpu_id >= crate::arch_impl::aarch64::constants::MAX_CPUS {
-        return;
+        return 0;
     }
 
     let cpu_data = unsafe { &raw mut ALL_CPU_DATA[cpu_id] };
-    core::sync::atomic::fence(Ordering::Release);
-    unsafe {
-        core::ptr::write_volatile(core::ptr::addr_of_mut!((*cpu_data).eret_guard_source), 0);
-    }
+    let source = unsafe {
+        core::sync::atomic::AtomicU64::from_ptr(core::ptr::addr_of_mut!(
+            (*cpu_data).eret_guard_source
+        ))
+    };
+    source.swap(0, Ordering::AcqRel)
 }
 
 /// Read the fixed idle/exception stack top recorded for `cpu_id`.

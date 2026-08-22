@@ -20,6 +20,8 @@ use crate::arch_impl::traits::SyscallFrame;
 
 /// Per-CPU sync exception counter: detects if a CPU is stuck in an infinite fault loop.
 pub static SYNC_EXCEPTION_COUNT: [AtomicU64; 8] = [const { AtomicU64::new(0) }; 8];
+/// Number of instruction aborts and PC-alignment faults taken from EL0.
+pub static EL0_INSTRUCTION_FAULTS: AtomicU64 = AtomicU64::new(0);
 
 /// CPU 0 last sync exception ESR (Exception Syndrome Register).
 pub static CPU0_LAST_SYNC_ESR: AtomicU64 = AtomicU64::new(0);
@@ -966,6 +968,9 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
             let frame_ref = unsafe { &mut *frame };
             let ifsc = (iss & 0x3F) as u16;
             let from_el0 = (frame_ref.spsr & 0xF) == 0;
+            if from_el0 {
+                EL0_INSTRUCTION_FAULTS.fetch_add(1, Ordering::Relaxed);
+            }
             let fatal_uart_guard = if from_el0 {
                 None
             } else {
@@ -1404,6 +1409,9 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
         0x22 => {
             let frame_ref = unsafe { &mut *frame };
             let from_el0 = (frame_ref.spsr & 0xF) == 0;
+            if from_el0 {
+                EL0_INSTRUCTION_FAULTS.fetch_add(1, Ordering::Relaxed);
+            }
             let verbose = PC_ALIGN_VERBOSE_CAPTURED
                 .compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed)
                 .is_ok();

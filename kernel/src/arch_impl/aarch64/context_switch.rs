@@ -106,10 +106,18 @@ pub const RESUME_PC_SOURCE_RET_DISPATCH: u64 = 5;
 pub const RESUME_PC_SOURCE_EL0_RESTORE: u64 = 6;
 pub const RESUME_PC_SOURCE_EL0_FIRST_ENTRY: u64 = 7;
 pub const RESUME_PC_SOURCE_EL1_RESTORE: u64 = 8;
+pub const RESUME_PC_SOURCE_EL0_DISPATCH_GUARD: u64 = 9;
 pub const RESUME_PC_SOURCE_EL0_FLAG: u64 = 0x10;
 
 const RESUME_PC_CENSUS_SOURCES: usize = 5;
 const RESUME_PC_CENSUS_CLASSES: usize = 5;
+const RESUME_PC_CENSUS_SOURCE_NAMES: [&str; RESUME_PC_CENSUS_SOURCES] = [
+    "el1-restore-frame-elr",
+    "el0-restore-frame-elr",
+    "el0-first-entry-frame-elr",
+    "ctx-x30",
+    "ctx-elr-el1",
+];
 static RESUME_PC_CENSUS: [
     [[AtomicU32; RESUME_PC_CENSUS_CLASSES]; RESUME_PC_CENSUS_SOURCES];
     crate::arch_impl::aarch64::constants::MAX_CPUS
@@ -153,6 +161,7 @@ fn resume_pc_source_name(id: u64) -> &'static str {
         RESUME_PC_SOURCE_EL0_RESTORE => "el0-restore",
         RESUME_PC_SOURCE_EL0_FIRST_ENTRY => "el0-first-entry",
         RESUME_PC_SOURCE_EL1_RESTORE => "el1-restore",
+        RESUME_PC_SOURCE_EL0_DISPATCH_GUARD => "el0-dispatch-guard",
         _ => "unknown",
     }
 }
@@ -194,7 +203,32 @@ pub fn resume_pc_refusal_snapshot() -> (u64, u64, u64, u64) {
     )
 }
 
-/// Record and emit a bounded diagnostic for a resume-PC refusal.
+fn record_resume_pc_refusal_common(source: u64, tid: u64, pc: u64) -> Option<(u64, bool)> {
+    let cpu_id = Aarch64PerCpu::cpu_id() as u64;
+    RESUME_PC_REFUSALS.fetch_add(1, Ordering::Release);
+    RESUME_PC_REFUSED_TID.store(tid, Ordering::Release);
+    RESUME_PC_REFUSED_PC.store(pc, Ordering::Release);
+    RESUME_PC_REFUSED_SOURCES.fetch_or(1u64 << (source & 0xF), Ordering::Release);
+
+    if RESUME_PC_REFUSAL_EMISSIONS.fetch_add(1, Ordering::Relaxed) >= 16 {
+        return None;
+    }
+
+    let source_id = source & 0xF;
+    let el0 = if source_id <= RESUME_PC_SOURCE_DISPATCH_ERET {
+        source & RESUME_PC_SOURCE_EL0_FLAG != 0
+    } else {
+        matches!(
+            source_id,
+            RESUME_PC_SOURCE_EL0_RESTORE
+                | RESUME_PC_SOURCE_EL0_FIRST_ENTRY
+                | RESUME_PC_SOURCE_EL0_DISPATCH_GUARD
+        )
+    };
+    Some((cpu_id, el0))
+}
+
+/// Record and emit a bounded lock-free diagnostic for a resume-PC refusal.
 pub fn record_resume_pc_refusal(
     source: u64,
     tid: u64,
@@ -204,23 +238,8 @@ pub fn record_resume_pc_refusal(
     sp: u64,
     spsr: u64,
 ) {
-    RESUME_PC_REFUSALS.fetch_add(1, Ordering::Release);
-    RESUME_PC_REFUSED_TID.store(tid, Ordering::Release);
-    RESUME_PC_REFUSED_PC.store(pc, Ordering::Release);
-    RESUME_PC_REFUSED_SOURCES.fetch_or(1u64 << (source & 0xF), Ordering::Release);
-
-    if RESUME_PC_REFUSAL_EMISSIONS.fetch_add(1, Ordering::Relaxed) >= 16 {
+    let Some((cpu_id, el0)) = record_resume_pc_refusal_common(source, tid, pc) else {
         return;
-    }
-
-    let source_id = source & 0xF;
-    let el0 = if source_id <= RESUME_PC_SOURCE_DISPATCH_ERET {
-        source & RESUME_PC_SOURCE_EL0_FLAG != 0
-    } else {
-        matches!(
-            source_id,
-            RESUME_PC_SOURCE_EL0_RESTORE | RESUME_PC_SOURCE_EL0_FIRST_ENTRY
-        )
     };
     raw_uart_str("[RESUME_PC_REFUSED:source=");
     raw_uart_str(resume_pc_source_name(source));
@@ -239,20 +258,51 @@ pub fn record_resume_pc_refusal(
     raw_uart_str(":spsr=");
     raw_uart_hex(spsr);
     raw_uart_str(":cpu=");
-    raw_uart_dec(Aarch64PerCpu::cpu_id() as u64);
+    raw_uart_dec(cpu_id);
     raw_uart_str("]\n");
+}
+
+/// Record and emit a bounded serialized diagnostic for a cold-path refusal.
+pub fn record_resume_pc_refusal_locked(
+    source: u64,
+    tid: u64,
+    pc: u64,
+    x29: u64,
+    x30: u64,
+    sp: u64,
+    spsr: u64,
+) {
+    let Some((cpu_id, el0)) = record_resume_pc_refusal_common(source, tid, pc) else {
+        return;
+    };
+    crate::serial_println!(
+        "[RESUME_PC_REFUSED:source={}:el={}:tid={}:pc=0x{:x}:x29=0x{:x}:x30=0x{:x}:sp=0x{:x}:spsr=0x{:x}:cpu={}]",
+        resume_pc_source_name(source),
+        u64::from(el0),
+        tid,
+        pc,
+        x29,
+        x30,
+        sp,
+        spsr,
+        cpu_id,
+    );
 }
 
 /// Drain all per-CPU refusal records published by assembly ERET guards.
 pub fn drain_asm_resume_pc_refusals() {
     for cpu_id in 0..crate::arch_impl::aarch64::constants::MAX_CPUS {
-        let Some((source, elr, spsr, x29, x30, sp, _count)) =
+        let Some((_source, elr, spsr, x29, x30, sp, _count)) =
             crate::per_cpu_aarch64::eret_guard_record_full(cpu_id)
         else {
             continue;
         };
-        record_resume_pc_refusal(
-            source,
+        let claimed_source = crate::per_cpu_aarch64::eret_guard_claim_source(cpu_id);
+        if claimed_source == 0 {
+            continue;
+        }
+        record_resume_pc_refusal_locked(
+            claimed_source,
             last_dispatched_tid(cpu_id).unwrap_or(0),
             elr,
             x29,
@@ -260,22 +310,13 @@ pub fn drain_asm_resume_pc_refusals() {
             sp,
             spsr,
         );
-        crate::per_cpu_aarch64::eret_guard_clear_source(cpu_id);
     }
 }
 
 /// Emit non-zero producer-classification rows for every CPU.
 pub fn emit_resume_pc_census() {
-    const SOURCE_NAMES: [&str; RESUME_PC_CENSUS_SOURCES] = [
-        "el1-restore-frame-elr",
-        "el0-restore-frame-elr",
-        "el0-first-entry-frame-elr",
-        "ctx-x30",
-        "ctx-elr-el1",
-    ];
-
     for cpu_id in 0..crate::arch_impl::aarch64::constants::MAX_CPUS {
-        for (source_idx, source_name) in SOURCE_NAMES.iter().enumerate() {
+        for (source_idx, source_name) in RESUME_PC_CENSUS_SOURCE_NAMES.iter().enumerate() {
             let row = &RESUME_PC_CENSUS[cpu_id][source_idx];
             let text = row[0].load(Ordering::Relaxed);
             let kstack = row[1].load(Ordering::Relaxed);
@@ -305,6 +346,34 @@ pub fn emit_resume_pc_census() {
     }
 }
 
+/// Emit non-zero producer-classification rows with whole-line serialization.
+pub fn emit_resume_pc_census_locked() {
+    for cpu_id in 0..crate::arch_impl::aarch64::constants::MAX_CPUS {
+        for (source_idx, source_name) in RESUME_PC_CENSUS_SOURCE_NAMES.iter().enumerate() {
+            let row = &RESUME_PC_CENSUS[cpu_id][source_idx];
+            let text = row[0].load(Ordering::Relaxed);
+            let kstack = row[1].load(Ordering::Relaxed);
+            let uva = row[2].load(Ordering::Relaxed);
+            let smallint = row[3].load(Ordering::Relaxed);
+            let other = row[4].load(Ordering::Relaxed);
+            if text == 0 && kstack == 0 && uva == 0 && smallint == 0 && other == 0 {
+                continue;
+            }
+
+            crate::serial_println!(
+                "[RESUME_PC_CENSUS:cpu={}:source={}:text={}:kstack={}:uva={}:smallint={}:other={}]",
+                cpu_id,
+                source_name,
+                text,
+                kstack,
+                uva,
+                smallint,
+                other,
+            );
+        }
+    }
+}
+
 fn emit_resume_pc_census_if_due() {
     const EMIT_INTERVAL_NS: u64 = 10_000_000_000;
     const MAX_EMISSIONS: u32 = 6;
@@ -329,7 +398,7 @@ fn emit_resume_pc_census_if_due() {
     if RESUME_PC_CENSUS_EMISSIONS.fetch_add(1, Ordering::AcqRel) >= MAX_EMISSIONS {
         return;
     }
-    emit_resume_pc_census();
+    emit_resume_pc_census_locked();
 }
 
 #[inline]
@@ -3819,7 +3888,7 @@ fn dispatch_thread_locked(
                     .map(|thread| thread.context.sp)
                     .unwrap_or(0);
                 record_resume_pc_refusal(
-                    RESUME_PC_SOURCE_EL0_RESTORE,
+                    RESUME_PC_SOURCE_EL0_DISPATCH_GUARD,
                     thread_id,
                     frame.elr,
                     frame.x29,

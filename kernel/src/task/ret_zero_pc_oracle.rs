@@ -393,18 +393,42 @@ pub(crate) fn inject_el0_resume_pc_if_armed(thread: &mut Thread) {
     if EL0_LIVE.load(Ordering::Acquire) != 1 {
         return;
     }
-    if EL0_INJECTIONS.load(Ordering::Acquire) != 0 {
-        return;
-    }
     if thread.privilege != super::thread::ThreadPrivilege::User || thread.owner_pid.is_none() {
         return;
     }
 
     let thread_id = thread.id();
-    EL0_VICTIM_TID.store(thread_id, Ordering::Release);
+    let victim_tid = match EL0_VICTIM_TID.compare_exchange(
+        0,
+        thread_id,
+        Ordering::AcqRel,
+        Ordering::Acquire,
+    ) {
+        Ok(_) => thread_id,
+        Err(victim_tid) => victim_tid,
+    };
+    if thread_id != victim_tid {
+        return;
+    }
+
     EL0_OPPORTUNITIES.fetch_add(1, Ordering::AcqRel);
     #[cfg(not(feature = "resume_pc_oracle_disarm"))]
     {
+        if crate::arch_impl::aarch64::context_switch::RESUME_PC_REFUSED_SOURCES
+            .load(Ordering::Acquire)
+            & ((1 << 6) | (1 << 7))
+            != 0
+        {
+            return;
+        }
+        let Ok(injection_index) = EL0_INJECTIONS.fetch_update(
+            Ordering::AcqRel,
+            Ordering::Acquire,
+            |injections| (injections < 16).then_some(injections + 1),
+        ) else {
+            return;
+        };
+
         #[cfg(feature = "resume_pc_el0_kernel_oracle")]
         let injected =
             core::ptr::addr_of!(crate::arch_impl::aarch64::context_switch::RESUME_PC_REFUSALS)
@@ -424,19 +448,22 @@ pub(crate) fn inject_el0_resume_pc_if_armed(thread: &mut Thread) {
 
         thread.context.elr_el1 = injected;
         EL0_INJECTED_PC.store(injected, Ordering::Release);
-        EL0_INJECTIONS.fetch_add(1, Ordering::AcqRel);
 
-        let cpu_id = crate::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id() as u64;
-        use crate::arch_impl::aarch64::context_switch::{raw_uart_dec, raw_uart_hex, raw_uart_str};
-        raw_uart_str("[RESUME_PC_EL0_ORACLE:aarch64:leg=");
-        raw_uart_str(leg);
-        raw_uart_str(":FIRED:tid=");
-        raw_uart_dec(thread_id);
-        raw_uart_str(":cpu=");
-        raw_uart_dec(cpu_id);
-        raw_uart_str(":injected_pc=");
-        raw_uart_hex(injected);
-        raw_uart_str("]\n");
+        if injection_index == 0 {
+            let cpu_id = crate::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id() as u64;
+            use crate::arch_impl::aarch64::context_switch::{
+                raw_uart_dec, raw_uart_hex, raw_uart_str,
+            };
+            raw_uart_str("[RESUME_PC_EL0_ORACLE:aarch64:leg=");
+            raw_uart_str(leg);
+            raw_uart_str(":FIRED:tid=");
+            raw_uart_dec(thread_id);
+            raw_uart_str(":cpu=");
+            raw_uart_dec(cpu_id);
+            raw_uart_str(":injected_pc=");
+            raw_uart_hex(injected);
+            raw_uart_str("]\n");
+        }
     }
 }
 
@@ -728,15 +755,20 @@ fn report_el1_resume_pc() {
     let victim_tid = EL1_VICTIM_TID.load(Ordering::Acquire);
     let (refused, _refused_tid, refused_pc, refused_sources) =
         crate::arch_impl::aarch64::context_switch::resume_pc_refusal_snapshot();
+    let el0_faults =
+        crate::arch_impl::aarch64::exception::EL0_INSTRUCTION_FAULTS.load(Ordering::Acquire);
     let fatal = u64::from(crate::arch_impl::aarch64::exception::any_fatal_postmortem_captured());
     #[cfg(not(feature = "resume_pc_oracle_disarm"))]
-    let passed =
-        armed == 1 && opportunities >= 1 && injected >= 1 && refused >= injected && fatal == 0;
+    let passed = armed == 1
+        && opportunities >= 1
+        && injected >= 1
+        && (refused_sources & 0b1_1110) != 0
+        && fatal == 0;
     #[cfg(feature = "resume_pc_oracle_disarm")]
     let passed = armed == 1 && opportunities >= 1 && injected == 0 && refused == 0 && fatal == 0;
 
     crate::serial_println!(
-        "[RESUME_PC_EL1_ORACLE:aarch64:leg={}:armed={}:live={}:opportunities={}:injected={}:injected_pc=0x{:x}:victim_tid={}:refused={}:refused_sources=0x{:x}:refused_pc=0x{:x}:fatal={}:{}]",
+        "[RESUME_PC_EL1_ORACLE:aarch64:leg={}:armed={}:live={}:opportunities={}:injected={}:injected_pc=0x{:x}:victim_tid={}:refused={}:refused_sources=0x{:x}:refused_pc=0x{:x}:el0_faults={}:fatal={}:{}]",
         leg,
         armed,
         live,
@@ -747,6 +779,7 @@ fn report_el1_resume_pc() {
         refused,
         refused_sources,
         refused_pc,
+        el0_faults,
         fatal,
         if passed { "PASS" } else { "FAIL" },
     );
@@ -776,14 +809,25 @@ fn report_el0_resume_pc() {
     let victim_tid = EL0_VICTIM_TID.load(Ordering::Acquire);
     let (refused, _refused_tid, refused_pc, refused_sources) =
         crate::arch_impl::aarch64::context_switch::resume_pc_refusal_snapshot();
+    let el0_faults =
+        crate::arch_impl::aarch64::exception::EL0_INSTRUCTION_FAULTS.load(Ordering::Acquire);
     let fatal = u64::from(crate::arch_impl::aarch64::exception::any_fatal_postmortem_captured());
     #[cfg(not(feature = "resume_pc_oracle_disarm"))]
-    let passed = armed == 1 && injected == 1 && refused >= 1 && fatal == 0;
+    let passed = armed == 1
+        && injected >= 1
+        && (refused_sources & ((1 << 6) | (1 << 7))) != 0
+        && el0_faults == 0
+        && fatal == 0;
     #[cfg(feature = "resume_pc_oracle_disarm")]
-    let passed = armed == 1 && opportunities >= 1 && injected == 0 && refused == 0 && fatal == 0;
+    let passed = armed == 1
+        && opportunities >= 1
+        && injected == 0
+        && refused == 0
+        && el0_faults == 0
+        && fatal == 0;
 
     crate::serial_println!(
-        "[RESUME_PC_EL0_ORACLE:aarch64:leg={}:armed={}:live={}:opportunities={}:injected={}:injected_pc=0x{:x}:victim_tid={}:refused={}:refused_sources=0x{:x}:refused_pc=0x{:x}:fatal={}:{}]",
+        "[RESUME_PC_EL0_ORACLE:aarch64:leg={}:armed={}:live={}:opportunities={}:injected={}:injected_pc=0x{:x}:victim_tid={}:refused={}:refused_sources=0x{:x}:refused_pc=0x{:x}:el0_faults={}:fatal={}:{}]",
         leg,
         armed,
         live,
@@ -794,6 +838,7 @@ fn report_el0_resume_pc() {
         refused,
         refused_sources,
         refused_pc,
+        el0_faults,
         fatal,
         if passed { "PASS" } else { "FAIL" },
     );
