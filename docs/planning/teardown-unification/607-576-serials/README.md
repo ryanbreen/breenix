@@ -106,3 +106,146 @@ and `.../instrabort-esr8600000d-ifsc0d-max-ssgate-boot7.txt` carry the `[PC_ALIG
 `0x4b5 = 1205` and `0x4b7 = 1207`, each the just-spawned child's tid, on the same CPU 2 at the same SP
 `0xffff000054286420` at the same spawn phase. That face is filed as **#633** and is not claimed by
 this PR. The second of those two serials is also #626's own capture.
+
+---
+
+# Round 2 — the garbage-kernel-PC face (#635)
+
+Round 1 closed the `PC == 0` face and left the `PC == <some other kernel address>` face of the same
+consumer fail-open: its predicate admitted the whole upper half of the address space and its assembly
+floor admitted anything at or above `0x1000`, so a kernel **stack** address passed both. The round-1
+gate then produced exactly that, 3 times byte-identically on two CPU profiles. Round 2 narrows the
+predicate to the kernel text window and raises the assembly floor to the same lower bound.
+
+Two commits are referenced below:
+
+* **`972a0832`** — the round-2 fix. Text-range predicate, raised assembly floor, `:pc=` in the
+  refusal record, and the two new self-test legs.
+* The mutations are temporary edits on top of `972a0832`, applied one at a time in a scratch
+  worktree, measured, and reverted. Nothing measured here is committed except the serials.
+
+Boot recipe is unchanged from the sections above (`-cpu cortex-a72 -smp 4`, 60 s, soft-float target).
+
+## The field face this round is about
+
+Three clean-gate boots on `fix/607-576-zero-pc-family` @ `c9c75c3b`, preserved here as the reason the
+round exists:
+
+| file | profile | record |
+|---|---|---|
+| `gate-clean100-cortexa72-boot3-stackpc-8600000e.txt` | cortex-a72 | `FAR=0xffff000054243f00 ELR=0xffff000054243f00 ESR=0x8600000e IFSC=0xe`, `spsr=0x20000305`, `x29 == x30 ==` the same value |
+| `gate-clean100-cortexa72-boot37-stackpc-8600000e.txt` | cortex-a72 | byte-identical |
+| `gate-clean100-max-boot30-stackpc-8600000e.txt` | max | same, `spsr=0x20002305` (bit 13 `ALLINT`, which `max` implements and `cortex-a72` does not; DAIF and mode identical) |
+| `gate-starved100-max-boot3-disagreeing-pair-613.txt` | max | **not** this face — a disagreeing record *pair*, filed as #613; kept here because its second record shares the ESR/IFSC at different addresses, and because it carries the EL1 `[PC_ALIGN] ELR=0x4b1` record appended to #633 |
+
+Filed as **#635**. The producer stays open there; this round closes the consumer.
+
+## Leg T — `--features boot_tests,ret_stack_pc_oracle` — #635's face by construction
+
+The self-test writes the designated victim thread's own saved `sp` into `context.x30`, once, under
+the scheduler lock, at the same hook leg K uses. That is a value the round-1 predicate accepts and
+the round-2 predicate refuses.
+
+| file | tree | what it shows |
+|---|---|---|
+| `mutation-1-rust-bound-reverted-legT-red.txt` | `972a0832` + the Rust bound reverted to its round-1 body, assembly floor left raised | `[RET_STACK_PC_ORACLE:…:refused=0:refused_tid=0:FAIL]` and `[INSTRUCTION_ABORT] FAR=0xffff000054265f00 ELR=0xffff000054265f00 ESR=0x8600000e`, `[FATAL_REGS] cpu=1 spsr=0x20000305 … x30=0xffff000054265f00`, `x16=0xffff000040400000` |
+| `legT-green-stack-pc-refused.txt` | `972a0832` | `[RET_DISPATCH_REFUSED:tid=10:pc=0xffff000054265f00:…]`, `[RET_STACK_PC_ORACLE:…:refused=1:refused_tid=10:PASS]`, no abort |
+| `legT-green-repeat1-no-collateral.txt`, `legT-green-repeat2-no-collateral.txt` | `972a0832` | the same green, twice more, and `[BOOT_TESTS:PASS]` |
+
+The red boot's field set — `ESR=0x8600000e`, `IFSC=0xe`, `FAR == ELR == x30`, `spsr=0x20000305`,
+`from_el0=0` — is #635's, produced from a single-field write. **Scoped honestly:** the field capture
+additionally has `x29 == x30` and `sp` 0x2c0 below the PC, because there a whole shifted region was
+restored into the callee-saved file; this construct writes one field, so its `x29` and `sp` differ.
+What is reproduced is the transfer and its resulting fault, not the producer's write pattern.
+
+`x16=0xffff000040400000` in that dump is `__kernel_text_start` — the raised assembly floor loading
+its bound, and correctly letting the value through, since a stack address is above kernel text. That
+is the direct evidence that the assembly floor cannot catch this face and the Rust predicate must.
+
+**Collateral, disclosed:** 1 of the 3 green boots (`legT-green-stack-pc-refused.txt`) also carries
+`[TEST:process:kernel_stack_ownership_oracle:FAIL:ownership stress slot allocation/free equality
+failed]` with `slot_alloc_delta=1000:slot_free_delta=1001:slot_balance=-1` — one *more* free than
+alloc inside the census window, which is what a thread allocated before the window and reaped inside
+it looks like; the leg's own designated victim is exactly such a thread, and its verdict line lands
+between that test's `START` and its measurement. The same boot reads `two_owner=0`, `zero_owner=0`,
+`drop_refused_live=0`, `pte_overwrite_refusals=0`, `frame_balance=0` — no double ownership, no
+over-free of a live slot. The other 2 of 3 read `slot_free_delta=1000:slot_balance=0` and
+`[BOOT_TESTS:PASS]`, and the disarmed control at the same commit is clean, so this is the stimulus
+perturbing that test's window, not a property of the fix.
+
+## Leg F — `--features boot_tests,ret_floor_oracle` — what the assembly floor alone is worth
+
+The assembly floor exists for the window *between* the Rust predicate and the branch, so this leg
+substitutes `resume_pc = 0x0100_0000` at the two call sites of `aarch64_ret_to_kernel_context`, after
+the predicate has already accepted the real value. `0x0100_0000` is above the round-1 floor
+(`#0x1000`) and below `__kernel_text_start`, so the raise is the only variable between the two boots.
+
+| file | tree | what it shows |
+|---|---|---|
+| `mutation-2-asm-bound-lowered-legF-red.txt` | `972a0832` + the assembly bound lowered back to `cmp x1, #0x1000` | at `:183`, immediately after the substitution: `[FATAL_REGS] label=INSTRUCTION_ABORT cpu=3 spsr=0x20000305 esr=0x8600000d far=0x1000000 elr=0x1000000`, `[FATAL_POSTMORTEM] cpu=3` at `:200`, and leg F `fatal=1 … FAIL` at `:2892` |
+| `legF-green-floor-contained.txt` | `972a0832` | no abort at `0x1000000` anywhere, leg F `fatal=0 … PASS` at `:490`, `[BOOT_TESTS:PASS]` — **and see the disclosure below** |
+
+Leg F's verdict reads `any_fatal_postmortem_captured()` as well as `armed`/`fired`, because the
+kernel survives the substituted dispatch in both configurations — a liveness-only predicate printed
+`PASS` on both sides and could not discriminate. The abort record and the postmortem flag are what
+separate them. The `fatal` term only covers what happened *before* the leg reports, which is
+sufficient here: the red boot's abort lands at `:183` and the report at `:2892`.
+
+In the red serial the `[INSTRUCTION_ABORT] FAR=… ELR=… ESR=…` header line is torn by interleaved
+output and only the `[FATAL_REGS]` record survives intact. The service-sequence gate's
+`instruction_abort_signatures()` unions both record forms, so a boot in this state still classifies
+field-exactly; the same thing happened to leg K's round-1 red serial.
+
+## Disclosure — #635's abort family was observed once on the fixed tree
+
+`legF-green-floor-contained.txt:716`, on `972a0832` with both round-2 nets in place, after that
+boot's `[BOOT_TESTS:PASS]`:
+
+```
+[INSTRUCTION_ABORT] FAR=0xffff000054276f28 ELR=0xffff000054276f28 ESR=0x8600000e IFSC=0xe TTBR0=0x100004406c000 from_el0=0
+[FATAL_REGS] label=INSTRUCTION_ABORT cpu=0 spsr=0x20000305 ... sp=0xffff000054276ef0
+  x16=0x0 x17=0x4b3 ... x25=0x4b3 ... x28=0x0 x29=0x1 x30=0xffff000054276f28
+```
+
+Same ESR/IFSC and the same `FAR == ELR == x30 ==` a kernel stack address as #635. **The round-2
+containment therefore must not be read as closing #635**, and this PR does not claim it does.
+
+The register file says why, and it is worth recording: here `x29 = 0x1` — *not* equal to `x30`, unlike
+#635's field captures where `x29 == x30` and `x19`/`x26`/`x29`/`x30`/`x20`/`x27`/`x21` held six
+*consecutive* stack slots. And `x30` is `sp + 0x38`, a slot inside the faulting frame itself. That is
+the shape of an ordinary compiled epilogue — `ldp x29, x30, [sp, #0x38]` — reloading a saved-LR slot
+that something had overwritten, and then `ret`. No dispatch helper is involved in such a transfer and
+no resume-PC predicate can see it, which is consistent with the fix being at the consumer while the
+producer stays open on #635. `x17 == x25 == 0x4b3 == 1203`, a live tid, is the #633 tid-as-value
+signature appearing in the same register file.
+
+What round 2 does prove about this consumer is mutation 1: with the text-range bound removed, the
+ret-based dispatch *does* transfer to a stack PC and produce this exact field set; with it in place it
+refuses and names the thread. Whether the ret dispatch is also a producer of the field occurrences is
+not settled by either serial.
+
+## Control
+
+`control-r2-disarmed-972a0832.txt` — `972a0832` built with `--features boot_tests` and **neither**
+new feature: 0 `[INSTRUCTION_ABORT]`, 0 `[RET_DISPATCH_REFUSED:`, 0 `[TEST:…:FAIL:…]`,
+`[BOOT_TESTS:PASS]`. The two new stimuli manufacture no unrelated collateral.
+
+## What the two round-2 mutations prove
+
+| mutation | net removed | result | therefore |
+|---|---|---|---|
+| 1 | the Rust text-range bound (reverted to round 1's address-space bound) | leg T `refused=0:FAIL` **and** #635's field set | the text-range narrowing is what closes the garbage-kernel-PC face; the assembly floor structurally cannot, because a stack address is above kernel text |
+| 2 | the raised assembly floor (lowered back to `#0x1000`) | leg F `fatal=1:FAIL` **and** `[INSTRUCTION_ABORT] ELR=0x1000000` | the raise is load-bearing for values between `0x1000` and kernel text — the `<tid>`-as-PC range of #633 among them — in the window the Rust predicate does not cover |
+
+Round 1's mutations A and B still stand for leg K and are unchanged by this round.
+
+## Alias finding
+
+`rust-objdump` on the built `kernel-aarch64` shows the inlined predicate materialising its bounds
+PC-relatively — `adr x10, 0xffff000040400000` for `__kernel_text_start` (the linker relaxed the
+`ADRP+ADD`) and `adrp x9 / add x9, x9, #0x0` for `__kernel_text_end` — so the window follows whichever
+alias is executing: the high-half HHDM alias on QEMU, the identity-mapped physical alias on Parallels,
+where the loader enters `kernel_main` at a physical address. The counterpart alias is admitted through
+a second window anyway, so a PC spelled the other way is not refused for its spelling. The live text
+window on this build is `[0xffff000040400000, 0xffff000040600000)`; #635's `0xffff000054243f00` is
+outside both windows.
