@@ -84,11 +84,40 @@ crate::define_trace_counter!(
 static CTX596_ORACLE_EMISSIONS: AtomicU32 = AtomicU32::new(0);
 static CTX596_DIVERGENCE_EMISSIONS: AtomicU32 = AtomicU32::new(0);
 static RET_DISPATCH_REFUSAL_EMISSIONS: AtomicU32 = AtomicU32::new(0);
+static RESUME_PC_REFUSAL_EMISSIONS: AtomicU32 = AtomicU32::new(0);
+static RESUME_PC_CENSUS_LAST_EMIT_NS: AtomicU64 = AtomicU64::new(0);
+static RESUME_PC_CENSUS_EMISSIONS: AtomicU32 = AtomicU32::new(0);
 
 /// Production census for invalid ret-dispatch resume PCs. The feature-gated
 /// oracle also reads these counters to prove its designated victim was refused.
 pub static RET_DISPATCH_REFUSALS: AtomicU64 = AtomicU64::new(0);
 pub static RET_DISPATCH_REFUSED_TID: AtomicU64 = AtomicU64::new(0);
+
+pub static RESUME_PC_REFUSALS: AtomicU64 = AtomicU64::new(0);
+pub static RESUME_PC_REFUSED_TID: AtomicU64 = AtomicU64::new(0);
+pub static RESUME_PC_REFUSED_PC: AtomicU64 = AtomicU64::new(0);
+pub static RESUME_PC_REFUSED_SOURCES: AtomicU64 = AtomicU64::new(0);
+
+pub const RESUME_PC_SOURCE_SYNC_EPILOGUE: u64 = 1;
+pub const RESUME_PC_SOURCE_IRQ_EPILOGUE: u64 = 2;
+pub const RESUME_PC_SOURCE_SYSCALL_EPILOGUE: u64 = 3;
+pub const RESUME_PC_SOURCE_DISPATCH_ERET: u64 = 4;
+pub const RESUME_PC_SOURCE_RET_DISPATCH: u64 = 5;
+pub const RESUME_PC_SOURCE_EL0_RESTORE: u64 = 6;
+pub const RESUME_PC_SOURCE_EL0_FIRST_ENTRY: u64 = 7;
+pub const RESUME_PC_SOURCE_EL1_RESTORE: u64 = 8;
+pub const RESUME_PC_SOURCE_EL0_FLAG: u64 = 0x10;
+
+const RESUME_PC_CENSUS_SOURCES: usize = 5;
+const RESUME_PC_CENSUS_CLASSES: usize = 5;
+static RESUME_PC_CENSUS: [
+    [[AtomicU32; RESUME_PC_CENSUS_CLASSES]; RESUME_PC_CENSUS_SOURCES];
+    crate::arch_impl::aarch64::constants::MAX_CPUS
+] = [const {
+    [const {
+        [const { AtomicU32::new(0) }; RESUME_PC_CENSUS_CLASSES]
+    }; RESUME_PC_CENSUS_SOURCES]
+}; crate::arch_impl::aarch64::constants::MAX_CPUS];
 
 /// A saved kernel resume PC must name an aligned instruction in kernel text.
 #[inline(always)]
@@ -112,6 +141,195 @@ fn resume_pc_is_dispatchable(addr: u64) -> bool {
         && ((addr >= text_start && addr < text_end)
             || (higher_alias >= text_start && higher_alias < text_end)
             || (lower_alias >= text_start && lower_alias < text_end))
+}
+
+fn resume_pc_source_name(id: u64) -> &'static str {
+    match id & 0xF {
+        RESUME_PC_SOURCE_SYNC_EPILOGUE => "sync-epilogue",
+        RESUME_PC_SOURCE_IRQ_EPILOGUE => "irq-epilogue",
+        RESUME_PC_SOURCE_SYSCALL_EPILOGUE => "syscall-epilogue",
+        RESUME_PC_SOURCE_DISPATCH_ERET => "dispatch-eret",
+        RESUME_PC_SOURCE_RET_DISPATCH => "ret-dispatch",
+        RESUME_PC_SOURCE_EL0_RESTORE => "el0-restore",
+        RESUME_PC_SOURCE_EL0_FIRST_ENTRY => "el0-first-entry",
+        RESUME_PC_SOURCE_EL1_RESTORE => "el1-restore",
+        _ => "unknown",
+    }
+}
+
+#[inline(always)]
+fn resume_pc_class(addr: u64) -> usize {
+    if resume_pc_is_dispatchable(addr) {
+        0
+    } else if crate::memory::kernel_stack::addr_in_kernel_stack_pool(addr) {
+        1
+    } else if (0x1000..0xFFFF_0000_0000_0000).contains(&addr) {
+        2
+    } else if addr < 0x1000 {
+        3
+    } else {
+        4
+    }
+}
+
+#[inline(always)]
+fn census_resume_pc(source_idx: usize, addr: u64) {
+    let cpu_id = Aarch64PerCpu::cpu_id() as usize;
+    if cpu_id >= crate::arch_impl::aarch64::constants::MAX_CPUS
+        || source_idx >= RESUME_PC_CENSUS_SOURCES
+    {
+        return;
+    }
+    RESUME_PC_CENSUS[cpu_id][source_idx][resume_pc_class(addr)]
+        .fetch_add(1, Ordering::Relaxed);
+}
+
+/// Snapshot the aggregate resume-PC refusal counters.
+pub fn resume_pc_refusal_snapshot() -> (u64, u64, u64, u64) {
+    (
+        RESUME_PC_REFUSALS.load(Ordering::Acquire),
+        RESUME_PC_REFUSED_TID.load(Ordering::Acquire),
+        RESUME_PC_REFUSED_PC.load(Ordering::Acquire),
+        RESUME_PC_REFUSED_SOURCES.load(Ordering::Acquire),
+    )
+}
+
+/// Record and emit a bounded diagnostic for a resume-PC refusal.
+pub fn record_resume_pc_refusal(
+    source: u64,
+    tid: u64,
+    pc: u64,
+    x29: u64,
+    x30: u64,
+    sp: u64,
+    spsr: u64,
+) {
+    RESUME_PC_REFUSALS.fetch_add(1, Ordering::Release);
+    RESUME_PC_REFUSED_TID.store(tid, Ordering::Release);
+    RESUME_PC_REFUSED_PC.store(pc, Ordering::Release);
+    RESUME_PC_REFUSED_SOURCES.fetch_or(1u64 << (source & 0xF), Ordering::Release);
+
+    if RESUME_PC_REFUSAL_EMISSIONS.fetch_add(1, Ordering::Relaxed) >= 16 {
+        return;
+    }
+
+    let source_id = source & 0xF;
+    let el0 = if source_id <= RESUME_PC_SOURCE_DISPATCH_ERET {
+        source & RESUME_PC_SOURCE_EL0_FLAG != 0
+    } else {
+        matches!(
+            source_id,
+            RESUME_PC_SOURCE_EL0_RESTORE | RESUME_PC_SOURCE_EL0_FIRST_ENTRY
+        )
+    };
+    raw_uart_str("[RESUME_PC_REFUSED:source=");
+    raw_uart_str(resume_pc_source_name(source));
+    raw_uart_str(":el=");
+    raw_uart_dec(u64::from(el0));
+    raw_uart_str(":tid=");
+    raw_uart_dec(tid);
+    raw_uart_str(":pc=");
+    raw_uart_hex(pc);
+    raw_uart_str(":x29=");
+    raw_uart_hex(x29);
+    raw_uart_str(":x30=");
+    raw_uart_hex(x30);
+    raw_uart_str(":sp=");
+    raw_uart_hex(sp);
+    raw_uart_str(":spsr=");
+    raw_uart_hex(spsr);
+    raw_uart_str(":cpu=");
+    raw_uart_dec(Aarch64PerCpu::cpu_id() as u64);
+    raw_uart_str("]\n");
+}
+
+/// Drain all per-CPU refusal records published by assembly ERET guards.
+pub fn drain_asm_resume_pc_refusals() {
+    for cpu_id in 0..crate::arch_impl::aarch64::constants::MAX_CPUS {
+        let Some((source, elr, spsr, x29, x30, sp, _count)) =
+            crate::per_cpu_aarch64::eret_guard_record_full(cpu_id)
+        else {
+            continue;
+        };
+        record_resume_pc_refusal(
+            source,
+            last_dispatched_tid(cpu_id).unwrap_or(0),
+            elr,
+            x29,
+            x30,
+            sp,
+            spsr,
+        );
+        crate::per_cpu_aarch64::eret_guard_clear_source(cpu_id);
+    }
+}
+
+/// Emit non-zero producer-classification rows for every CPU.
+pub fn emit_resume_pc_census() {
+    const SOURCE_NAMES: [&str; RESUME_PC_CENSUS_SOURCES] = [
+        "el1-restore-frame-elr",
+        "el0-restore-frame-elr",
+        "el0-first-entry-frame-elr",
+        "ctx-x30",
+        "ctx-elr-el1",
+    ];
+
+    for cpu_id in 0..crate::arch_impl::aarch64::constants::MAX_CPUS {
+        for (source_idx, source_name) in SOURCE_NAMES.iter().enumerate() {
+            let row = &RESUME_PC_CENSUS[cpu_id][source_idx];
+            let text = row[0].load(Ordering::Relaxed);
+            let kstack = row[1].load(Ordering::Relaxed);
+            let uva = row[2].load(Ordering::Relaxed);
+            let smallint = row[3].load(Ordering::Relaxed);
+            let other = row[4].load(Ordering::Relaxed);
+            if text == 0 && kstack == 0 && uva == 0 && smallint == 0 && other == 0 {
+                continue;
+            }
+
+            raw_uart_str("[RESUME_PC_CENSUS:cpu=");
+            raw_uart_dec(cpu_id as u64);
+            raw_uart_str(":source=");
+            raw_uart_str(source_name);
+            raw_uart_str(":text=");
+            raw_uart_dec(text as u64);
+            raw_uart_str(":kstack=");
+            raw_uart_dec(kstack as u64);
+            raw_uart_str(":uva=");
+            raw_uart_dec(uva as u64);
+            raw_uart_str(":smallint=");
+            raw_uart_dec(smallint as u64);
+            raw_uart_str(":other=");
+            raw_uart_dec(other as u64);
+            raw_uart_str("]\n");
+        }
+    }
+}
+
+fn emit_resume_pc_census_if_due() {
+    const EMIT_INTERVAL_NS: u64 = 10_000_000_000;
+    const MAX_EMISSIONS: u32 = 6;
+
+    if RESUME_PC_CENSUS_EMISSIONS.load(Ordering::Acquire) >= MAX_EMISSIONS {
+        return;
+    }
+    let (seconds, nanos) = crate::time::get_monotonic_time_ns();
+    let now_ns = seconds
+        .saturating_mul(1_000_000_000)
+        .saturating_add(nanos);
+    let last_ns = RESUME_PC_CENSUS_LAST_EMIT_NS.load(Ordering::Acquire);
+    if now_ns.saturating_sub(last_ns) < EMIT_INTERVAL_NS {
+        return;
+    }
+    if RESUME_PC_CENSUS_LAST_EMIT_NS
+        .compare_exchange(last_ns, now_ns, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        return;
+    }
+    if RESUME_PC_CENSUS_EMISSIONS.fetch_add(1, Ordering::AcqRel) >= MAX_EMISSIONS {
+        return;
+    }
+    emit_resume_pc_census();
 }
 
 #[inline]
@@ -1675,7 +1893,9 @@ pub fn dump_all_last_dispatched_tids() {
 /// Dump the last branch-only ERET invariant redirect captured on each CPU.
 pub fn dump_all_eret_guard_records() {
     for cpu_id in 0..crate::arch_impl::aarch64::constants::MAX_CPUS {
-        let Some((source, elr, spsr)) = crate::per_cpu_aarch64::eret_guard_record(cpu_id) else {
+        let Some((source, elr, spsr, x29, x30, sp, count)) =
+            crate::per_cpu_aarch64::eret_guard_record_full(cpu_id)
+        else {
             continue;
         };
         raw_uart_str("[ERET_GUARD_REDIRECT] cpu=");
@@ -1686,6 +1906,14 @@ pub fn dump_all_eret_guard_records() {
         raw_uart_hex(elr);
         raw_uart_str(" spsr=");
         raw_uart_hex(spsr);
+        raw_uart_str(" x29=");
+        raw_uart_hex(x29);
+        raw_uart_str(" x30=");
+        raw_uart_hex(x30);
+        raw_uart_str(" sp=");
+        raw_uart_hex(sp);
+        raw_uart_str(" count=");
+        raw_uart_dec(count);
         raw_uart_str("\n");
     }
 }
@@ -2327,8 +2555,19 @@ fn take_inline_ret_dispatch_info(
     // it must resume at the safe post-inline-switch return target, not a
     // mid-function ELR that may require stale volatile registers.
     let resume_pc = thread.context.x30;
+    census_resume_pc(3, resume_pc);
+    census_resume_pc(4, thread.context.elr_el1);
     if !resume_pc_is_dispatchable(resume_pc) {
         let thread_id = thread.id();
+        record_resume_pc_refusal(
+            RESUME_PC_SOURCE_RET_DISPATCH,
+            thread_id,
+            resume_pc,
+            thread.context.x29,
+            thread.context.x30,
+            thread.context.sp,
+            thread.context.spsr_el1,
+        );
         RET_DISPATCH_REFUSED_TID.store(thread_id, Ordering::Relaxed);
         RET_DISPATCH_REFUSALS.fetch_add(1, Ordering::Release);
         if RET_DISPATCH_REFUSAL_EMISSIONS.fetch_add(1, Ordering::Relaxed) < 8 {
@@ -2814,6 +3053,9 @@ fn restore_kernel_context_inline(
     } else {
         thread.context.elr_el1
     };
+    census_resume_pc(0, resume_pc);
+    census_resume_pc(3, thread.context.x30);
+    census_resume_pc(4, thread.context.elr_el1);
     let elr_valid = if !has_started {
         // First run: x30 must be a valid kernel address
         resume_pc_is_dispatchable(thread.context.x30)
@@ -2836,6 +3078,15 @@ fn restore_kernel_context_inline(
     );
 
     if !elr_valid {
+        record_resume_pc_refusal(
+            RESUME_PC_SOURCE_EL1_RESTORE,
+            thread_id,
+            resume_pc,
+            thread.context.x29,
+            thread.context.x30,
+            thread.context.sp,
+            thread.context.spsr_el1,
+        );
         raw_uart_str("\n!!! BUG: invalid context for kernel dispatch tid=");
         raw_uart_dec(thread_id);
         raw_uart_str("\n  elr_el1=");
@@ -2934,6 +3185,15 @@ fn restore_kernel_context_inline(
         frame.spsr = dispatch_spsr(thread.context.spsr_el1); // Restore saved processor state
     } else {
         // elr_el1 == 0 or not a valid kernel address — redirect to idle
+        record_resume_pc_refusal(
+            RESUME_PC_SOURCE_EL1_RESTORE,
+            thread_id,
+            resume_pc,
+            thread.context.x29,
+            thread.context.x30,
+            thread.context.sp,
+            thread.context.spsr_el1,
+        );
         raw_uart_str("WARN: bad elr=");
         raw_uart_hex(resume_pc);
         raw_uart_str(" for started kthread tid=");
@@ -2991,6 +3251,15 @@ fn restore_userspace_context_inline(
     thread: &mut Thread,
     frame: &mut Aarch64ExceptionFrame,
 ) {
+    #[cfg(all(
+        target_arch = "aarch64",
+        any(
+            feature = "resume_pc_el0_kernel_oracle",
+            feature = "resume_pc_el0_tid_oracle"
+        )
+    ))]
+    crate::task::ret_zero_pc_oracle::inject_el0_resume_pc_if_armed(thread);
+
     frame.x0 = thread.context.x0;
     frame.x1 = thread.context.x1;
     frame.x2 = thread.context.x2;
@@ -3024,6 +3293,8 @@ fn restore_userspace_context_inline(
     frame.x30 = thread.context.x30;
 
     // Restore program counter and status
+    census_resume_pc(1, thread.context.elr_el1);
+    census_resume_pc(3, thread.context.x30);
     frame.elr = thread.context.elr_el1;
     frame.spsr = dispatch_spsr(thread.context.spsr_el1) & !SPSR_MODE_MASK;
 
@@ -3048,7 +3319,17 @@ fn restore_userspace_context_inline(
 
 /// Set up first userspace entry — called inside scheduler lock hold.
 fn setup_first_entry_inline(thread: &mut Thread, frame: &mut Aarch64ExceptionFrame) {
+    #[cfg(all(
+        target_arch = "aarch64",
+        any(
+            feature = "resume_pc_el0_kernel_oracle",
+            feature = "resume_pc_el0_tid_oracle"
+        )
+    ))]
+    crate::task::ret_zero_pc_oracle::inject_el0_resume_pc_if_armed(thread);
+
     // Set return address to entry point
+    census_resume_pc(2, thread.context.elr_el1);
     frame.elr = thread.context.elr_el1;
 
     // SPSR for EL0t (userspace, interrupts enabled)
@@ -3533,6 +3814,19 @@ fn dispatch_thread_locked(
 
             // SAFETY GUARD: Check for corrupted ELR before committing to dispatch.
             if frame.elr < 0x1000 || (frame.spsr & 0xF) != 0 {
+                let context_sp = sched
+                    .get_thread(thread_id)
+                    .map(|thread| thread.context.sp)
+                    .unwrap_or(0);
+                record_resume_pc_refusal(
+                    RESUME_PC_SOURCE_EL0_RESTORE,
+                    thread_id,
+                    frame.elr,
+                    frame.x29,
+                    frame.x30,
+                    context_sp,
+                    frame.spsr,
+                );
                 raw_uart_str("\n[BUG] dispatch_thread: bad context tid=");
                 raw_uart_dec(thread_id);
                 raw_uart_str(" elr=");
@@ -3681,6 +3975,11 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
     if (preempt_count & 0x10000000) != 0 {
         // PREEMPT_ACTIVE: in the middle of returning from a previous
         // exception — don't context switch now.
+        #[cfg(all(
+            target_arch = "aarch64",
+            any(feature = "resume_pc_el1_oracle", feature = "eret_zero_pc_oracle")
+        ))]
+        crate::task::ret_zero_pc_oracle::inject_el1_frame_resume_pc_if_armed(frame);
         return;
     }
 
@@ -3746,6 +4045,11 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
     if (preempt_count & PREEMPT_GUARD_MASK) != 0 {
         // Kernel or interrupt context is not safe to preempt.
         // Deferred requeue was already processed above.
+        #[cfg(all(
+            target_arch = "aarch64",
+            any(feature = "resume_pc_el1_oracle", feature = "eret_zero_pc_oracle")
+        ))]
+        crate::task::ret_zero_pc_oracle::inject_el1_frame_resume_pc_if_armed(frame);
         return;
     }
 
@@ -3802,6 +4106,11 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
                 check_and_deliver_signals_for_current_thread_arm64(frame);
                 ensure_user_rsp_scratch_for_el0();
             }
+            #[cfg(all(
+                target_arch = "aarch64",
+                any(feature = "resume_pc_el1_oracle", feature = "eret_zero_pc_oracle")
+            ))]
+            crate::task::ret_zero_pc_oracle::inject_el1_frame_resume_pc_if_armed(frame);
             return;
         }
     }
@@ -3810,7 +4119,14 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
     let mut guard = crate::task::scheduler::lock_for_context_switch();
     let sched = match guard.as_mut() {
         Some(s) => s,
-        None => return,
+        None => {
+            #[cfg(all(
+                target_arch = "aarch64",
+                any(feature = "resume_pc_el1_oracle", feature = "eret_zero_pc_oracle")
+            ))]
+            crate::task::ret_zero_pc_oracle::inject_el1_frame_resume_pc_if_armed(frame);
+            return;
+        }
     };
 
     if exception_cleanup_context {
@@ -3889,6 +4205,11 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
             check_and_deliver_signals_for_current_thread_arm64(frame);
             ensure_user_rsp_scratch_for_el0();
         }
+        #[cfg(all(
+            target_arch = "aarch64",
+            any(feature = "resume_pc_el1_oracle", feature = "eret_zero_pc_oracle")
+        ))]
+        crate::task::ret_zero_pc_oracle::inject_el1_frame_resume_pc_if_armed(frame);
         return;
     }
 
@@ -3910,6 +4231,11 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
             check_and_deliver_signals_for_current_thread_arm64(frame);
             ensure_user_rsp_scratch_for_el0();
         }
+        #[cfg(all(
+            target_arch = "aarch64",
+            any(feature = "resume_pc_el1_oracle", feature = "eret_zero_pc_oracle")
+        ))]
+        crate::task::ret_zero_pc_oracle::inject_el1_frame_resume_pc_if_armed(frame);
         return;
     }
 
@@ -3927,6 +4253,11 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
             check_and_deliver_signals_for_current_thread_arm64(frame);
             ensure_user_rsp_scratch_for_el0();
         }
+        #[cfg(all(
+            target_arch = "aarch64",
+            any(feature = "resume_pc_el1_oracle", feature = "eret_zero_pc_oracle")
+        ))]
+        crate::task::ret_zero_pc_oracle::inject_el1_frame_resume_pc_if_armed(frame);
         return;
     }
 
@@ -4263,6 +4594,11 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
     if let Some(trace_tid) = trace_eret_tid {
         trace_resched_tail(TRACE_RESCHED_TAIL_BEFORE_RETURN, trace_tid);
     }
+    #[cfg(all(
+        target_arch = "aarch64",
+        any(feature = "resume_pc_el1_oracle", feature = "eret_zero_pc_oracle")
+    ))]
+    crate::task::ret_zero_pc_oracle::inject_el1_frame_resume_pc_if_armed(frame);
 }
 
 /// Final scheduler handoff for an exiting AArch64 thread.
@@ -4797,6 +5133,8 @@ fn cpu0_breadcrumb(cpu_id: usize, id: u64) {
 /// window; `schedule_from_kernel` deliberately contains no reclamation work.
 #[inline]
 pub fn run_deferred_reclamation() {
+    drain_asm_resume_pc_refusals();
+    emit_resume_pc_census_if_due();
     crate::task::process_task::drain_deferred_fault_sigsegv_exits();
     crate::task::process_task::reclaim_deferred_process_resources();
     crate::task::scheduler::reclaim_terminated_threads();

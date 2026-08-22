@@ -640,6 +640,12 @@ pub(crate) use aarch64::{
     ARM64_MAX_KERNEL_STACKS, ARM64_STACK_SLOT_SIZE,
 };
 
+#[cfg(target_arch = "aarch64")]
+#[inline(always)]
+pub(crate) fn addr_in_kernel_stack_pool(addr: u64) -> bool {
+    addr >= ARM64_KERNEL_STACK_BASE && addr <= ARM64_KERNEL_STACK_END
+}
+
 pub(crate) fn is_kernel_stack_va(addr: u64) -> bool {
     #[cfg(target_arch = "x86_64")]
     {

@@ -524,6 +524,7 @@ fn dump_fatal_postmortem_once(label: &str) {
     dump_fatal_postmortem_section(cpu_id, 6, "\n  Last-dispatched tids:\n", || {
         crate::arch_impl::aarch64::context_switch::dump_all_last_dispatched_tids();
         crate::arch_impl::aarch64::context_switch::dump_all_eret_guard_records();
+        crate::arch_impl::aarch64::context_switch::emit_resume_pc_census();
     });
     dump_fatal_postmortem_section(cpu_id, 7, "\n  Trace buffers:\n", || {
         crate::tracing::dump_all_buffers();
@@ -657,6 +658,13 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                     // Advance ELR past the faulting load instruction (always 4 bytes on ARM64).
                     let frame_ref = unsafe { &mut *frame };
                     frame_ref.elr += 4;
+                    #[cfg(all(
+                        target_arch = "aarch64",
+                        any(feature = "resume_pc_el1_oracle", feature = "eret_zero_pc_oracle")
+                    ))]
+                    crate::task::ret_zero_pc_oracle::inject_el1_frame_resume_pc_if_armed(
+                        frame_ref,
+                    );
                     return;
                 }
             }
@@ -664,6 +672,13 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
             // Try to handle as CoW fault first
             if handle_cow_fault_arm64(far, iss) {
                 // CoW fault handled successfully, return to userspace
+                #[cfg(all(
+                    target_arch = "aarch64",
+                    any(feature = "resume_pc_el1_oracle", feature = "eret_zero_pc_oracle")
+                ))]
+                crate::task::ret_zero_pc_oracle::inject_el1_frame_resume_pc_if_armed(unsafe {
+                    &mut *frame
+                });
                 return;
             }
 
@@ -908,6 +923,11 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
 
                     set_idle_stack_for_eret();
                     crate::task::scheduler::switch_to_idle();
+                    #[cfg(all(
+                        target_arch = "aarch64",
+                        any(feature = "resume_pc_el1_oracle", feature = "eret_zero_pc_oracle")
+                    ))]
+                    crate::task::ret_zero_pc_oracle::inject_el1_frame_resume_pc_if_armed(frame_ref);
                     return;
                 }
             }
@@ -1279,6 +1299,11 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
 
                     set_idle_stack_for_eret();
                     crate::task::scheduler::switch_to_idle();
+                    #[cfg(all(
+                        target_arch = "aarch64",
+                        any(feature = "resume_pc_el1_oracle", feature = "eret_zero_pc_oracle")
+                    ))]
+                    crate::task::ret_zero_pc_oracle::inject_el1_frame_resume_pc_if_armed(frame_ref);
                     return;
                 }
             }
@@ -1705,6 +1730,11 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
             crate::task::scheduler::switch_to_idle_best_effort();
         }
     }
+    #[cfg(all(
+        target_arch = "aarch64",
+        any(feature = "resume_pc_el1_oracle", feature = "eret_zero_pc_oracle")
+    ))]
+    crate::task::ret_zero_pc_oracle::inject_el1_frame_resume_pc_if_armed(unsafe { &mut *frame });
 }
 
 /// Syscall numbers (Linux/Breenix ABI compatible)

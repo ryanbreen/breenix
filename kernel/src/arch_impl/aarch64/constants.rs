@@ -174,6 +174,21 @@ pub const PERCPU_ERET_GUARD_SPSR_OFFSET: usize = 128;
 /// Offset of the ERET guard source tag, published after ELR/SPSR.
 pub const PERCPU_ERET_GUARD_SOURCE_OFFSET: usize = 136;
 
+/// Offset of X29 captured by an assembly ERET invariant redirect.
+pub const PERCPU_ERET_GUARD_X29_OFFSET: usize = 152;
+
+/// Offset of X30 captured by an assembly ERET invariant redirect.
+pub const PERCPU_ERET_GUARD_X30_OFFSET: usize = 160;
+
+/// Offset of SP captured by an assembly ERET invariant redirect.
+pub const PERCPU_ERET_GUARD_SP_OFFSET: usize = 168;
+
+/// Offset of the assembly ERET invariant redirect count.
+pub const PERCPU_ERET_GUARD_COUNT_OFFSET: usize = 176;
+
+/// Offset of the fixed per-CPU idle/exception stack top.
+pub const PERCPU_IDLE_STACK_TOP_OFFSET: usize = 184;
+
 // ============================================================================
 // Preempt Count Bit Layout (Linux-compatible)
 // ============================================================================

@@ -9,7 +9,11 @@
         feature = "ret_zero_pc_oracle_exec",
         feature = "ret_stack_pc_oracle",
         feature = "ret_floor_oracle",
-        feature = "strand_inject_live_outgoing"
+        feature = "strand_inject_live_outgoing",
+        feature = "resume_pc_el1_oracle",
+        feature = "eret_zero_pc_oracle",
+        feature = "resume_pc_el0_kernel_oracle",
+        feature = "resume_pc_el0_tid_oracle"
     )
 ))]
 use core::sync::atomic::{AtomicU64, Ordering};
@@ -21,6 +25,20 @@ use core::sync::atomic::{AtomicU64, Ordering};
 use super::scheduler::Scheduler;
 #[cfg(all(target_arch = "aarch64", feature = "ret_zero_pc_oracle_exec"))]
 use super::thread::Thread;
+#[cfg(all(
+    target_arch = "aarch64",
+    any(
+        feature = "resume_pc_el0_kernel_oracle",
+        feature = "resume_pc_el0_tid_oracle"
+    ),
+    not(feature = "ret_zero_pc_oracle_exec")
+))]
+use super::thread::Thread;
+#[cfg(all(
+    target_arch = "aarch64",
+    any(feature = "resume_pc_el1_oracle", feature = "eret_zero_pc_oracle")
+))]
+use crate::arch_impl::aarch64::exception_frame::Aarch64ExceptionFrame;
 #[cfg(all(target_arch = "aarch64", feature = "ret_zero_pc_oracle"))]
 static RET_ARMED: AtomicU64 = AtomicU64::new(0);
 #[cfg(all(target_arch = "aarch64", feature = "ret_zero_pc_oracle"))]
@@ -83,6 +101,91 @@ static LIVE_OUTGOING: AtomicU64 = AtomicU64::new(0);
 static LIVE_OUTGOING_TID: AtomicU64 = AtomicU64::new(0);
 #[cfg(all(target_arch = "aarch64", feature = "strand_inject_live_outgoing"))]
 static LIVE_DRIVER_TID: AtomicU64 = AtomicU64::new(0);
+
+#[cfg(all(
+    target_arch = "aarch64",
+    any(feature = "resume_pc_el1_oracle", feature = "eret_zero_pc_oracle")
+))]
+static EL1_ARMED: AtomicU64 = AtomicU64::new(0);
+#[cfg(all(
+    target_arch = "aarch64",
+    any(feature = "resume_pc_el1_oracle", feature = "eret_zero_pc_oracle")
+))]
+static EL1_LIVE: AtomicU64 = AtomicU64::new(0);
+#[cfg(all(
+    target_arch = "aarch64",
+    any(feature = "resume_pc_el1_oracle", feature = "eret_zero_pc_oracle")
+))]
+static EL1_OPPORTUNITIES: AtomicU64 = AtomicU64::new(0);
+#[cfg(all(
+    target_arch = "aarch64",
+    any(feature = "resume_pc_el1_oracle", feature = "eret_zero_pc_oracle")
+))]
+static EL1_INJECTIONS: AtomicU64 = AtomicU64::new(0);
+#[cfg(all(
+    target_arch = "aarch64",
+    any(feature = "resume_pc_el1_oracle", feature = "eret_zero_pc_oracle")
+))]
+static EL1_INJECTED_PC: AtomicU64 = AtomicU64::new(0);
+#[cfg(all(
+    target_arch = "aarch64",
+    any(feature = "resume_pc_el1_oracle", feature = "eret_zero_pc_oracle")
+))]
+static EL1_VICTIM_TID: AtomicU64 = AtomicU64::new(0);
+#[cfg(all(
+    target_arch = "aarch64",
+    any(feature = "resume_pc_el1_oracle", feature = "eret_zero_pc_oracle")
+))]
+static EL1_VICTIM_PROGRESS: AtomicU64 = AtomicU64::new(0);
+
+#[cfg(all(
+    target_arch = "aarch64",
+    any(
+        feature = "resume_pc_el0_kernel_oracle",
+        feature = "resume_pc_el0_tid_oracle"
+    )
+))]
+static EL0_ARMED: AtomicU64 = AtomicU64::new(0);
+#[cfg(all(
+    target_arch = "aarch64",
+    any(
+        feature = "resume_pc_el0_kernel_oracle",
+        feature = "resume_pc_el0_tid_oracle"
+    )
+))]
+static EL0_LIVE: AtomicU64 = AtomicU64::new(0);
+#[cfg(all(
+    target_arch = "aarch64",
+    any(
+        feature = "resume_pc_el0_kernel_oracle",
+        feature = "resume_pc_el0_tid_oracle"
+    )
+))]
+static EL0_OPPORTUNITIES: AtomicU64 = AtomicU64::new(0);
+#[cfg(all(
+    target_arch = "aarch64",
+    any(
+        feature = "resume_pc_el0_kernel_oracle",
+        feature = "resume_pc_el0_tid_oracle"
+    )
+))]
+static EL0_INJECTIONS: AtomicU64 = AtomicU64::new(0);
+#[cfg(all(
+    target_arch = "aarch64",
+    any(
+        feature = "resume_pc_el0_kernel_oracle",
+        feature = "resume_pc_el0_tid_oracle"
+    )
+))]
+static EL0_INJECTED_PC: AtomicU64 = AtomicU64::new(0);
+#[cfg(all(
+    target_arch = "aarch64",
+    any(
+        feature = "resume_pc_el0_kernel_oracle",
+        feature = "resume_pc_el0_tid_oracle"
+    )
+))]
+static EL0_VICTIM_TID: AtomicU64 = AtomicU64::new(0);
 
 #[cfg(all(target_arch = "aarch64", feature = "ret_zero_pc_oracle"))]
 pub(crate) fn inject_ret_zero_pc_if_armed(sched: &mut Scheduler, thread_id: u64) {
@@ -229,6 +332,154 @@ pub(crate) fn is_strand_live_driver(thread_id: u64) -> bool {
     thread_id == LIVE_DRIVER_TID.load(Ordering::Acquire)
 }
 
+#[cfg(all(
+    target_arch = "aarch64",
+    any(feature = "resume_pc_el1_oracle", feature = "eret_zero_pc_oracle")
+))]
+pub(crate) fn inject_el1_frame_resume_pc_if_armed(frame: &mut Aarch64ExceptionFrame) {
+    if EL1_LIVE.load(Ordering::Acquire) != 1 {
+        return;
+    }
+    if frame.spsr & 0xF == 0 {
+        return;
+    }
+    if EL1_INJECTIONS.load(Ordering::Acquire) >= 3 {
+        return;
+    }
+
+    let cpu_id = crate::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id() as usize;
+    let victim_tid = EL1_VICTIM_TID.load(Ordering::Acquire);
+    if crate::arch_impl::aarch64::context_switch::last_dispatched_tid(cpu_id) != Some(victim_tid) {
+        return;
+    }
+
+    EL1_OPPORTUNITIES.fetch_add(1, Ordering::AcqRel);
+    #[cfg(not(feature = "resume_pc_oracle_disarm"))]
+    {
+        #[cfg(feature = "resume_pc_el1_oracle")]
+        let injected = frame as *mut Aarch64ExceptionFrame as u64 + 0x10;
+        #[cfg(all(not(feature = "resume_pc_el1_oracle"), feature = "eret_zero_pc_oracle"))]
+        let injected = 0;
+        #[cfg(feature = "resume_pc_el1_oracle")]
+        let leg = "P";
+        #[cfg(all(not(feature = "resume_pc_el1_oracle"), feature = "eret_zero_pc_oracle"))]
+        let leg = "Z";
+
+        frame.elr = injected;
+        EL1_INJECTED_PC.store(injected, Ordering::Release);
+        EL1_INJECTIONS.fetch_add(1, Ordering::AcqRel);
+
+        use crate::arch_impl::aarch64::context_switch::{raw_uart_dec, raw_uart_hex, raw_uart_str};
+        raw_uart_str("[RESUME_PC_EL1_ORACLE:aarch64:leg=");
+        raw_uart_str(leg);
+        raw_uart_str(":FIRED:tid=");
+        raw_uart_dec(victim_tid);
+        raw_uart_str(":cpu=");
+        raw_uart_dec(cpu_id as u64);
+        raw_uart_str(":injected_pc=");
+        raw_uart_hex(injected);
+        raw_uart_str("]\n");
+    }
+}
+
+#[cfg(all(
+    target_arch = "aarch64",
+    any(
+        feature = "resume_pc_el0_kernel_oracle",
+        feature = "resume_pc_el0_tid_oracle"
+    )
+))]
+pub(crate) fn inject_el0_resume_pc_if_armed(thread: &mut Thread) {
+    if EL0_LIVE.load(Ordering::Acquire) != 1 {
+        return;
+    }
+    if EL0_INJECTIONS.load(Ordering::Acquire) != 0 {
+        return;
+    }
+    if thread.privilege != super::thread::ThreadPrivilege::User || thread.owner_pid.is_none() {
+        return;
+    }
+
+    let thread_id = thread.id();
+    EL0_VICTIM_TID.store(thread_id, Ordering::Release);
+    EL0_OPPORTUNITIES.fetch_add(1, Ordering::AcqRel);
+    #[cfg(not(feature = "resume_pc_oracle_disarm"))]
+    {
+        #[cfg(feature = "resume_pc_el0_kernel_oracle")]
+        let injected =
+            core::ptr::addr_of!(crate::arch_impl::aarch64::context_switch::RESUME_PC_REFUSALS)
+                as u64;
+        #[cfg(all(
+            not(feature = "resume_pc_el0_kernel_oracle"),
+            feature = "resume_pc_el0_tid_oracle"
+        ))]
+        let injected = thread_id;
+        #[cfg(feature = "resume_pc_el0_kernel_oracle")]
+        let leg = "UK";
+        #[cfg(all(
+            not(feature = "resume_pc_el0_kernel_oracle"),
+            feature = "resume_pc_el0_tid_oracle"
+        ))]
+        let leg = "UT";
+
+        thread.context.elr_el1 = injected;
+        EL0_INJECTED_PC.store(injected, Ordering::Release);
+        EL0_INJECTIONS.fetch_add(1, Ordering::AcqRel);
+
+        let cpu_id = crate::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id() as u64;
+        use crate::arch_impl::aarch64::context_switch::{raw_uart_dec, raw_uart_hex, raw_uart_str};
+        raw_uart_str("[RESUME_PC_EL0_ORACLE:aarch64:leg=");
+        raw_uart_str(leg);
+        raw_uart_str(":FIRED:tid=");
+        raw_uart_dec(thread_id);
+        raw_uart_str(":cpu=");
+        raw_uart_dec(cpu_id);
+        raw_uart_str(":injected_pc=");
+        raw_uart_hex(injected);
+        raw_uart_str("]\n");
+    }
+}
+
+#[cfg(all(
+    target_arch = "aarch64",
+    any(feature = "resume_pc_el1_oracle", feature = "eret_zero_pc_oracle")
+))]
+fn resume_pc_victim() {
+    loop {
+        EL1_VICTIM_PROGRESS.fetch_add(1, Ordering::AcqRel);
+        for _ in 0..200_000 {
+            core::hint::spin_loop();
+        }
+        super::scheduler::schedule();
+        super::strand_oracle::sleep_sample_period();
+    }
+}
+
+#[cfg(all(
+    target_arch = "aarch64",
+    any(feature = "resume_pc_el1_oracle", feature = "eret_zero_pc_oracle")
+))]
+fn arm_el1_resume_pc_oracle() {
+    while monotonic_now_ms() < 6_000 {
+        super::strand_oracle::sleep_sample_period();
+    }
+    EL1_LIVE.store(1, Ordering::Release);
+}
+
+#[cfg(all(
+    target_arch = "aarch64",
+    any(
+        feature = "resume_pc_el0_kernel_oracle",
+        feature = "resume_pc_el0_tid_oracle"
+    )
+))]
+fn arm_el0_resume_pc_oracle() {
+    while monotonic_now_ms() < 6_000 {
+        super::strand_oracle::sleep_sample_period();
+    }
+    EL0_LIVE.store(1, Ordering::Release);
+}
+
 #[cfg(all(target_arch = "aarch64", feature = "ret_zero_pc_oracle"))]
 fn retzero_victim() {
     loop {
@@ -279,7 +530,11 @@ fn strand_live_driver() {
         feature = "ret_zero_pc_oracle_exec",
         feature = "ret_stack_pc_oracle",
         feature = "ret_floor_oracle",
-        feature = "strand_inject_live_outgoing"
+        feature = "strand_inject_live_outgoing",
+        feature = "resume_pc_el1_oracle",
+        feature = "eret_zero_pc_oracle",
+        feature = "resume_pc_el0_kernel_oracle",
+        feature = "resume_pc_el0_tid_oracle"
     )
 ))]
 fn monotonic_now_ms() -> u64 {
@@ -296,7 +551,11 @@ fn monotonic_now_ms() -> u64 {
         feature = "ret_zero_pc_oracle_exec",
         feature = "ret_stack_pc_oracle",
         feature = "ret_floor_oracle",
-        feature = "strand_inject_live_outgoing"
+        feature = "strand_inject_live_outgoing",
+        feature = "resume_pc_el1_oracle",
+        feature = "eret_zero_pc_oracle",
+        feature = "resume_pc_el0_kernel_oracle",
+        feature = "resume_pc_el0_tid_oracle"
     )
 ))]
 fn every_compiled_test_fired() -> bool {
@@ -318,6 +577,17 @@ fn every_compiled_test_fired() -> bool {
     }
     #[cfg(feature = "strand_inject_live_outgoing")]
     if LIVE_FIRED.load(Ordering::Acquire) == 0 {
+        return false;
+    }
+    #[cfg(any(feature = "resume_pc_el1_oracle", feature = "eret_zero_pc_oracle"))]
+    if EL1_OPPORTUNITIES.load(Ordering::Acquire) == 0 {
+        return false;
+    }
+    #[cfg(any(
+        feature = "resume_pc_el0_kernel_oracle",
+        feature = "resume_pc_el0_tid_oracle"
+    ))]
+    if EL0_OPPORTUNITIES.load(Ordering::Acquire) == 0 {
         return false;
     }
     true
@@ -442,12 +712,105 @@ fn report_live_outgoing() {
 
 #[cfg(all(
     target_arch = "aarch64",
+    any(feature = "resume_pc_el1_oracle", feature = "eret_zero_pc_oracle")
+))]
+fn report_el1_resume_pc() {
+    #[cfg(feature = "resume_pc_el1_oracle")]
+    let leg = "P";
+    #[cfg(all(not(feature = "resume_pc_el1_oracle"), feature = "eret_zero_pc_oracle"))]
+    let leg = "Z";
+
+    let armed = EL1_ARMED.load(Ordering::Acquire);
+    let live = EL1_LIVE.load(Ordering::Acquire);
+    let opportunities = EL1_OPPORTUNITIES.load(Ordering::Acquire);
+    let injected = EL1_INJECTIONS.load(Ordering::Acquire);
+    let injected_pc = EL1_INJECTED_PC.load(Ordering::Acquire);
+    let victim_tid = EL1_VICTIM_TID.load(Ordering::Acquire);
+    let (refused, _refused_tid, refused_pc, refused_sources) =
+        crate::arch_impl::aarch64::context_switch::resume_pc_refusal_snapshot();
+    let fatal = u64::from(crate::arch_impl::aarch64::exception::any_fatal_postmortem_captured());
+    #[cfg(not(feature = "resume_pc_oracle_disarm"))]
+    let passed =
+        armed == 1 && opportunities >= 1 && injected >= 1 && refused >= injected && fatal == 0;
+    #[cfg(feature = "resume_pc_oracle_disarm")]
+    let passed = armed == 1 && opportunities >= 1 && injected == 0 && refused == 0 && fatal == 0;
+
+    crate::serial_println!(
+        "[RESUME_PC_EL1_ORACLE:aarch64:leg={}:armed={}:live={}:opportunities={}:injected={}:injected_pc=0x{:x}:victim_tid={}:refused={}:refused_sources=0x{:x}:refused_pc=0x{:x}:fatal={}:{}]",
+        leg,
+        armed,
+        live,
+        opportunities,
+        injected,
+        injected_pc,
+        victim_tid,
+        refused,
+        refused_sources,
+        refused_pc,
+        fatal,
+        if passed { "PASS" } else { "FAIL" },
+    );
+}
+
+#[cfg(all(
+    target_arch = "aarch64",
+    any(
+        feature = "resume_pc_el0_kernel_oracle",
+        feature = "resume_pc_el0_tid_oracle"
+    )
+))]
+fn report_el0_resume_pc() {
+    #[cfg(feature = "resume_pc_el0_kernel_oracle")]
+    let leg = "UK";
+    #[cfg(all(
+        not(feature = "resume_pc_el0_kernel_oracle"),
+        feature = "resume_pc_el0_tid_oracle"
+    ))]
+    let leg = "UT";
+
+    let armed = EL0_ARMED.load(Ordering::Acquire);
+    let live = EL0_LIVE.load(Ordering::Acquire);
+    let opportunities = EL0_OPPORTUNITIES.load(Ordering::Acquire);
+    let injected = EL0_INJECTIONS.load(Ordering::Acquire);
+    let injected_pc = EL0_INJECTED_PC.load(Ordering::Acquire);
+    let victim_tid = EL0_VICTIM_TID.load(Ordering::Acquire);
+    let (refused, _refused_tid, refused_pc, refused_sources) =
+        crate::arch_impl::aarch64::context_switch::resume_pc_refusal_snapshot();
+    let fatal = u64::from(crate::arch_impl::aarch64::exception::any_fatal_postmortem_captured());
+    #[cfg(not(feature = "resume_pc_oracle_disarm"))]
+    let passed = armed == 1 && injected == 1 && refused >= 1 && fatal == 0;
+    #[cfg(feature = "resume_pc_oracle_disarm")]
+    let passed = armed == 1 && opportunities >= 1 && injected == 0 && refused == 0 && fatal == 0;
+
+    crate::serial_println!(
+        "[RESUME_PC_EL0_ORACLE:aarch64:leg={}:armed={}:live={}:opportunities={}:injected={}:injected_pc=0x{:x}:victim_tid={}:refused={}:refused_sources=0x{:x}:refused_pc=0x{:x}:fatal={}:{}]",
+        leg,
+        armed,
+        live,
+        opportunities,
+        injected,
+        injected_pc,
+        victim_tid,
+        refused,
+        refused_sources,
+        refused_pc,
+        fatal,
+        if passed { "PASS" } else { "FAIL" },
+    );
+}
+
+#[cfg(all(
+    target_arch = "aarch64",
     any(
         feature = "ret_zero_pc_oracle",
         feature = "ret_zero_pc_oracle_exec",
         feature = "ret_stack_pc_oracle",
         feature = "ret_floor_oracle",
-        feature = "strand_inject_live_outgoing"
+        feature = "strand_inject_live_outgoing",
+        feature = "resume_pc_el1_oracle",
+        feature = "eret_zero_pc_oracle",
+        feature = "resume_pc_el0_kernel_oracle",
+        feature = "resume_pc_el0_tid_oracle"
     )
 ))]
 fn retzero_oracle_thread() {
@@ -457,7 +820,25 @@ fn retzero_oracle_thread() {
     const SETTLE_MS: u64 = 2_000;
     #[cfg(feature = "ret_zero_pc_oracle_exec")]
     const HARD_CAP_MS: u64 = 40_000;
-    #[cfg(not(feature = "ret_zero_pc_oracle_exec"))]
+    #[cfg(all(
+        not(feature = "ret_zero_pc_oracle_exec"),
+        any(
+            feature = "resume_pc_el1_oracle",
+            feature = "eret_zero_pc_oracle",
+            feature = "resume_pc_el0_kernel_oracle",
+            feature = "resume_pc_el0_tid_oracle"
+        )
+    ))]
+    const HARD_CAP_MS: u64 = 30_000;
+    #[cfg(all(
+        not(feature = "ret_zero_pc_oracle_exec"),
+        not(any(
+            feature = "resume_pc_el1_oracle",
+            feature = "eret_zero_pc_oracle",
+            feature = "resume_pc_el0_kernel_oracle",
+            feature = "resume_pc_el0_tid_oracle"
+        ))
+    ))]
     const HARD_CAP_MS: u64 = 14_000;
 
     let start_ms = monotonic_now_ms();
@@ -480,6 +861,13 @@ fn retzero_oracle_thread() {
             report_ret_floor();
             #[cfg(feature = "strand_inject_live_outgoing")]
             report_live_outgoing();
+            #[cfg(any(feature = "resume_pc_el1_oracle", feature = "eret_zero_pc_oracle"))]
+            report_el1_resume_pc();
+            #[cfg(any(
+                feature = "resume_pc_el0_kernel_oracle",
+                feature = "resume_pc_el0_tid_oracle"
+            ))]
+            report_el0_resume_pc();
             return;
         }
         super::strand_oracle::sleep_sample_period();
@@ -496,7 +884,11 @@ pub fn start() {
             feature = "ret_zero_pc_oracle_exec",
             feature = "ret_stack_pc_oracle",
             feature = "ret_floor_oracle",
-            feature = "strand_inject_live_outgoing"
+            feature = "strand_inject_live_outgoing",
+            feature = "resume_pc_el1_oracle",
+            feature = "eret_zero_pc_oracle",
+            feature = "resume_pc_el0_kernel_oracle",
+            feature = "resume_pc_el0_tid_oracle"
         )
     ))]
     {
@@ -517,6 +909,22 @@ pub fn start() {
         }
         #[cfg(feature = "strand_inject_live_outgoing")]
         let _ = super::kthread::kthread_run(strand_live_driver, "strand-live-driver");
+        #[cfg(any(feature = "resume_pc_el1_oracle", feature = "eret_zero_pc_oracle"))]
+        {
+            if let Ok(victim) = super::kthread::kthread_run(resume_pc_victim, "resume-pc-victim") {
+                EL1_VICTIM_TID.store(victim.tid(), Ordering::Release);
+                EL1_ARMED.store(1, Ordering::Release);
+            }
+            let _ = super::kthread::kthread_run(arm_el1_resume_pc_oracle, "resume-pc-arm");
+        }
+        #[cfg(any(
+            feature = "resume_pc_el0_kernel_oracle",
+            feature = "resume_pc_el0_tid_oracle"
+        ))]
+        {
+            EL0_ARMED.store(1, Ordering::Release);
+            let _ = super::kthread::kthread_run(arm_el0_resume_pc_oracle, "resume-pc-el0-arm");
+        }
         let _ = super::kthread::kthread_run(retzero_oracle_thread, "retzero-oracle");
     }
 }
