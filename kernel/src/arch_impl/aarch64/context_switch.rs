@@ -90,15 +90,28 @@ static RET_DISPATCH_REFUSAL_EMISSIONS: AtomicU32 = AtomicU32::new(0);
 pub static RET_DISPATCH_REFUSALS: AtomicU64 = AtomicU64::new(0);
 pub static RET_DISPATCH_REFUSED_TID: AtomicU64 = AtomicU64::new(0);
 
-/// A saved kernel resume PC may be either in the high virtual mapping used by
-/// QEMU or in the identity-mapped physical RAM range used by Parallels.
+/// A saved kernel resume PC must name an aligned instruction in kernel text.
 #[inline(always)]
 fn resume_pc_is_dispatchable(addr: u64) -> bool {
-    const KERNEL_VIRT_BASE: u64 = 0xFFFF_0000_0000_0000;
-    const KERNEL_PHYS_BASE: u64 = 0x4008_0000;
-    const KERNEL_PHYS_LIMIT: u64 = 0xC000_0000;
+    extern "C" {
+        static __kernel_text_start: u8;
+        static __kernel_text_end: u8;
+    }
 
-    addr >= KERNEL_VIRT_BASE || (addr >= KERNEL_PHYS_BASE && addr < KERNEL_PHYS_LIMIT)
+    const KERNEL_VIRT_OFFSET: u64 = 0xFFFF_0000_0000_0000;
+    let text_start = core::ptr::addr_of!(__kernel_text_start) as u64;
+    let text_end = core::ptr::addr_of!(__kernel_text_end) as u64;
+    let higher_alias = addr.wrapping_add(KERNEL_VIRT_OFFSET);
+    let lower_alias = addr.wrapping_sub(KERNEL_VIRT_OFFSET);
+
+    // WHY: llvm-objdump shows a PC-relative ADR for the text start and an
+    // ADRP+ADD pair for the text end, so both follow the mapping executing this
+    // code. Saved PCs may still be spelled in the counterpart alias; admit it,
+    // but only through another text-sized window.
+    addr & 0x3 == 0
+        && ((addr >= text_start && addr < text_end)
+            || (higher_alias >= text_start && higher_alias < text_end)
+            || (lower_alias >= text_start && lower_alias < text_end))
 }
 
 #[inline]
@@ -626,7 +639,9 @@ aarch64_ret_to_kernel_context:
     mov sp, x2
     msr daifclr, #3
     isb
-    cmp x1, #0x1000
+    adrp x16, __kernel_text_start
+    add x16, x16, :lo12:__kernel_text_start
+    cmp x1, x16
     b.hs 1f
     adrp x1, idle_loop_arm64
     add x1, x1, :lo12:idle_loop_arm64
@@ -2319,6 +2334,8 @@ fn take_inline_ret_dispatch_info(
         if RET_DISPATCH_REFUSAL_EMISSIONS.fetch_add(1, Ordering::Relaxed) < 8 {
             raw_uart_str("[RET_DISPATCH_REFUSED:tid=");
             raw_uart_dec(thread_id);
+            raw_uart_str(":pc=");
+            raw_uart_hex(resume_pc);
             raw_uart_str(":cpu=");
             raw_uart_dec(Aarch64PerCpu::cpu_id() as u64);
             raw_uart_str(":x30=");
@@ -2424,6 +2441,8 @@ fn inline_ret_dispatch_info_if_ready(
 
     #[cfg(feature = "ret_zero_pc_oracle")]
     crate::task::ret_zero_pc_oracle::inject_ret_zero_pc_if_armed(sched, thread_id);
+    #[cfg(all(target_arch = "aarch64", feature = "ret_stack_pc_oracle"))]
+    crate::task::ret_zero_pc_oracle::inject_ret_stack_pc_if_armed(sched, thread_id);
     sched.get_thread_mut(thread_id)
         .and_then(take_inline_ret_dispatch_info)
 }
@@ -4150,6 +4169,9 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
         drop(guard);
         crate::arch_impl::aarch64::timer_interrupt::reset_quantum();
         crate::arch_impl::aarch64::timer_interrupt::rearm_timer();
+        #[cfg(all(target_arch = "aarch64", feature = "ret_floor_oracle"))]
+        let resume_pc =
+            crate::task::ret_zero_pc_oracle::inject_ret_floor_if_armed(new_id, resume_pc);
         unsafe {
             aarch64_ret_to_kernel_context(ctx_ptr, resume_pc);
         }
@@ -4618,6 +4640,9 @@ extern "C" fn inline_schedule_trampoline() -> ! {
             unsafe { (*ctx_ptr).elr_el1 },
             resume_sp,
         );
+        #[cfg(all(target_arch = "aarch64", feature = "ret_floor_oracle"))]
+        let resume_pc =
+            crate::task::ret_zero_pc_oracle::inject_ret_floor_if_armed(new_id, resume_pc);
         unsafe {
             aarch64_ret_to_kernel_context(ctx_ptr, resume_pc);
         }
