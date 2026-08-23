@@ -3918,15 +3918,24 @@ pub fn spawn_front(thread: Box<Thread>) {
 }
 
 pub fn reclaim_terminated_threads() {
-    let reclaimed_threads = without_interrupts(|| {
-        let mut scheduler_lock = lock_scheduler();
-        if let Some(scheduler) = scheduler_lock.as_mut() {
-            scheduler.reclaim_terminated_threads()
-        } else {
-            alloc::vec::Vec::new()
-        }
+    // The reclaimed control blocks are freed INSIDE the masked region. Dropping
+    // a `Box<Thread>` runs the heap free, and a timer interrupt taken part-way
+    // through that free builds its exception frame on whatever stack this call
+    // is standing on — which, for a reaper running on a borrowed or
+    // just-released stack, is exactly the window this campaign is closing.
+    // Masking covers the free; the inner scope ends the scheduler lock guard
+    // first, so the free still never runs under the scheduler lock.
+    without_interrupts(|| {
+        let reclaimed_threads = {
+            let mut scheduler_lock = lock_scheduler();
+            if let Some(scheduler) = scheduler_lock.as_mut() {
+                scheduler.reclaim_terminated_threads()
+            } else {
+                alloc::vec::Vec::new()
+            }
+        };
+        drop(reclaimed_threads);
     });
-    drop(reclaimed_threads);
 }
 
 /// Add a thread as the current running thread without scheduling.

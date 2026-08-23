@@ -243,6 +243,12 @@ pub const KERNEL_STACK_SIZE: usize = 512 * 1024;
 /// This value is part of the boot.S stack layout contract and must not change.
 pub const PERCPU_STACK_STRIDE: u64 = 0x20_0000;
 
+/// `log2(PERCPU_STACK_STRIDE)`, so slot attribution is a shift rather than a
+/// division on the dispatch path.
+pub const PERCPU_STACK_STRIDE_SHIFT: u32 = 21;
+
+const _: () = assert!(PERCPU_STACK_STRIDE == 1 << PERCPU_STACK_STRIDE_SHIFT);
+
 /// Size of the lower, scheduler-owned half of each per-CPU stack slot.
 pub const PERCPU_SCHED_STACK_SIZE: u64 = 0x10_0000;
 
@@ -332,6 +338,86 @@ pub fn percpu_stack_boundary_canary_is_intact(cpu: usize) -> bool {
         core::ptr::read_volatile(percpu_sched_stack_top(cpu) as *const u64)
             == PERCPU_STACK_BOUNDARY_CANARY
     }
+}
+
+// ============================================================================
+// Per-CPU Stack Ownership Record
+// ============================================================================
+
+/// Distinctive constant in the ownership record's first word (ASCII "STKOWNER").
+///
+/// Stored XORed with the owning CPU index so that a record whose two words were
+/// written at different times, or by something that is not
+/// `publish_percpu_stack_owner`, does not read back as a valid owner.
+pub const PERCPU_STACK_OWNER_MAGIC: u64 = 0x5354_4B4F_574E_4552;
+
+/// Address of a CPU's two-`u64` stack-ownership record.
+///
+/// The record sits in the 16 bytes directly above the existing half-boundary
+/// canary word, at the very bottom of the idle/exception half. It is NOT at the
+/// top of the slot because `boot.S` computes each secondary CPU's initial SP
+/// itself (`sp = SMP_STACK_BASE_PHYS + (cpu_id + 1) * 0x20_0000`): the slot top
+/// is part of the boot contract and is not ours to move in this change. The
+/// bottom is the only 16 bytes of the half that ordinary downward stack growth
+/// cannot reach without first destroying the boundary canary, which is already
+/// checked in the fatal postmortem.
+#[inline]
+pub fn percpu_stack_owner_sentinel(cpu: usize) -> u64 {
+    percpu_kernel_stack_bottom(cpu) + 8
+}
+
+/// Stamp `cpu`'s ownership of its own idle/exception stack half.
+///
+/// Called from `per_cpu_aarch64::init_cpu` on the CPU itself, before that CPU's
+/// first guarded stack-top install.
+pub fn publish_percpu_stack_owner(cpu: usize) {
+    if cpu >= MAX_CPUS {
+        return;
+    }
+    let record = percpu_stack_owner_sentinel(cpu) as *mut u64;
+    unsafe {
+        core::ptr::write_volatile(record, PERCPU_STACK_OWNER_MAGIC ^ cpu as u64);
+        core::ptr::write_volatile(record.add(1), cpu as u64);
+    }
+}
+
+/// The CPU that published ownership of `slot`, or `None` when the slot carries
+/// no well-formed record.
+///
+/// Both words must agree — `word0 ^ MAGIC == word1` — and name a CPU in range.
+/// Anything else (all zeroes before publication, a half-written record, stack
+/// data that overran the boundary) reads as unpublished rather than as some
+/// arbitrary CPU.
+pub fn percpu_stack_published_owner(slot: usize) -> Option<usize> {
+    if slot >= MAX_CPUS {
+        return None;
+    }
+    let record = percpu_stack_owner_sentinel(slot) as *const u64;
+    let word0 = unsafe { core::ptr::read_volatile(record) };
+    let word1 = unsafe { core::ptr::read_volatile(record.add(1)) };
+    let owner = word0 ^ PERCPU_STACK_OWNER_MAGIC;
+    if owner != word1 || owner >= MAX_CPUS as u64 {
+        return None;
+    }
+    Some(owner as usize)
+}
+
+/// The per-CPU stack slot an address belongs to, or `None` outside the region.
+///
+/// Stack tops are exclusive upper bounds — `percpu_kernel_stack_top(cpu)` is
+/// `base + (cpu + 1) * PERCPU_STACK_STRIDE`, one past the last byte of slot
+/// `cpu` — so the region is treated as `(base, base + size]` and attribution
+/// uses the last addressable byte below the value. A half-open `[base, ...)`
+/// test with a plain `(value - base) / stride` would put every legitimate
+/// own-slot top in the NEXT slot and push the last slot's top out of the region
+/// entirely. Two comparisons and a shift: this runs on the dispatch path.
+#[inline]
+pub fn percpu_stack_slot_of(addr: u64) -> Option<usize> {
+    let base = percpu_stack_region_base();
+    if addr <= base || addr > base + PERCPU_STACK_REGION_SIZE as u64 {
+        return None;
+    }
+    Some(((addr - 1 - base) >> PERCPU_STACK_STRIDE_SHIFT) as usize)
 }
 
 /// Legacy constant for compile-time contexts (diagnostics). Uses the default

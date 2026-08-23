@@ -18,10 +18,89 @@ use crate::arch_impl::aarch64::constants::{
     PERCPU_TSS_OFFSET, PERCPU_USER_RSP_SCRATCH_OFFSET, PREEMPT_ACTIVE, SOFTIRQ_DISABLE_OFFSET,
     SOFTIRQ_MASK, SOFTIRQ_OFFSET,
 };
+use crate::arch_impl::aarch64::constants::{percpu_stack_published_owner, percpu_stack_slot_of};
 use crate::arch_impl::traits::PerCpuOps;
-use core::sync::atomic::{compiler_fence, AtomicU32, Ordering};
+use core::panic::Location;
+use core::sync::atomic::{compiler_fence, AtomicU32, AtomicU64, Ordering};
 
 pub struct Aarch64PerCpu;
+
+// =============================================================================
+// Per-CPU stack-top ownership check
+// =============================================================================
+
+/// Monotonic count of stack-top installs refused because the address named a
+/// slot this CPU does not own. Never reset.
+pub static PERCPU_STACK_ALIEN_REFUSALS: AtomicU64 = AtomicU64::new(0);
+
+/// Emission budget for the whole boot. The refusal record is written with
+/// `raw_uart_*` from the dispatch path, so it is bounded exactly like the
+/// resume-PC refusal record.
+static PERCPU_STACK_ALIEN_EMISSIONS: AtomicU64 = AtomicU64::new(0);
+
+/// Maximum `[PERCPU_STACK_ALIEN:` records emitted per boot.
+const PERCPU_STACK_ALIEN_EMISSION_CAP: u64 = 16;
+
+/// Total stack-top installs refused for naming another CPU's slot.
+pub fn percpu_stack_alien_refusals() -> u64 {
+    PERCPU_STACK_ALIEN_REFUSALS.load(Ordering::Acquire)
+}
+
+/// Decide whether a per-CPU stack-top install may proceed, and record it when
+/// it may not.
+///
+/// Three outcomes, in the order they are cheapest to decide:
+///
+/// * The address is outside the per-CPU stack region entirely — an ordinary
+///   heap-backed thread kernel stack, or CPU 0's platform boot stack on
+///   Parallels. This is the common case and costs two comparisons.
+/// * The address names THIS CPU's own slot, and the slot's published owner is
+///   this CPU or nothing at all. Accepting an unpublished slot is what keeps
+///   very early boot working, and it is not a hole: an address naming a
+///   different CPU's slot is refused on the arithmetic alone, before the
+///   published owner is even consulted.
+/// * Anything else is refused. The previous value stays in place — a leaked
+///   stack is always better than a shared one, and substituting or redirecting
+///   would hide the defect that produced the address.
+///
+/// `site` is threaded in from the setter's own `#[track_caller]` location so
+/// the record names the code that asked for the install, not the setter.
+fn percpu_stack_install_permitted(addr: u64, site: &'static Location<'static>) -> bool {
+    let Some(slot) = percpu_stack_slot_of(addr) else {
+        return true;
+    };
+    let cpu = <Aarch64PerCpu as PerCpuOps>::cpu_id() as usize;
+    let published = percpu_stack_published_owner(slot);
+    if slot == cpu && published.map_or(true, |owner| owner == cpu) {
+        return true;
+    }
+
+    PERCPU_STACK_ALIEN_REFUSALS.fetch_add(1, Ordering::Release);
+    if PERCPU_STACK_ALIEN_EMISSIONS.fetch_add(1, Ordering::Relaxed)
+        < PERCPU_STACK_ALIEN_EMISSION_CAP
+    {
+        use crate::arch_impl::aarch64::context_switch::{
+            last_dispatched_tid, raw_uart_dec, raw_uart_hex, raw_uart_str,
+        };
+        raw_uart_str("[PERCPU_STACK_ALIEN:cpu=");
+        raw_uart_dec(cpu as u64);
+        raw_uart_str(":owner=");
+        match published {
+            Some(owner) => raw_uart_dec(owner as u64),
+            None => raw_uart_str("unpublished"),
+        }
+        raw_uart_str(":sp=");
+        raw_uart_hex(addr);
+        raw_uart_str(":tid=");
+        raw_uart_dec(last_dispatched_tid(cpu).unwrap_or(0));
+        raw_uart_str(":site=");
+        raw_uart_str(site.file());
+        raw_uart_str(":");
+        raw_uart_dec(u64::from(site.line()));
+        raw_uart_str("]\n");
+    }
+    false
+}
 
 /// Read TPIDR_EL1 (per-CPU data base pointer)
 #[inline(always)]
@@ -118,8 +197,15 @@ impl PerCpuOps for Aarch64PerCpu {
     }
 
     /// Set the kernel stack top for this CPU
+    ///
+    /// Refuses an address belonging to another CPU's per-CPU stack slot; see
+    /// `percpu_stack_install_permitted`.
     #[inline]
+    #[track_caller]
     unsafe fn set_kernel_stack_top(addr: u64) {
+        if !percpu_stack_install_permitted(addr, Location::caller()) {
+            return;
+        }
         percpu_write_u64(PERCPU_KERNEL_STACK_TOP_OFFSET, addr);
         crate::task::percpu_stack_oracle::note_stack_top_install(addr);
     }
@@ -370,8 +456,15 @@ impl Aarch64PerCpu {
     }
 
     /// Set the user SP scratch value.
+    ///
+    /// Refuses an address belonging to another CPU's per-CPU stack slot; see
+    /// `percpu_stack_install_permitted`.
     #[inline(always)]
+    #[track_caller]
     pub unsafe fn set_user_rsp_scratch(sp: u64) {
+        if !percpu_stack_install_permitted(sp, Location::caller()) {
+            return;
+        }
         percpu_write_u64(PERCPU_USER_RSP_SCRATCH_OFFSET, sp);
         crate::task::percpu_stack_oracle::note_stack_top_install(sp);
     }

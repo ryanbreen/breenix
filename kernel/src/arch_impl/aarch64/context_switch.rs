@@ -2751,20 +2751,81 @@ pub fn raw_uart_dec(val: u64) {
     }
 }
 
+/// True when the frame in hand will ERET to EL0.
+///
+/// `boot.S` chooses the ERET stack from the FRAME's SPSR: `M[3:0] == 0` selects
+/// the per-CPU `kernel_stack_top` slot (offset 16), anything else selects
+/// `user_rsp_scratch` (offset 40) or the nested slot (offset 48). `from_el0`
+/// records the level the exception was TAKEN from, and a redirect can rewrite
+/// `frame.spsr` to an EL1 value after that, so only the frame answers the
+/// question that decides which slot the hardware will read.
+#[inline(always)]
+fn frame_returns_to_el0(frame: &Aarch64ExceptionFrame) -> bool {
+    (frame.spsr & SPSR_MODE_MASK) == 0
+}
+
 /// Ensure user_rsp_scratch is set to kernel_stack_top when returning to EL0.
 ///
 /// The boot.S ERET path sets SP from user_rsp_scratch before ERET. After ERET
 /// to EL0, SP_EL1 retains this value. When the next exception fires from EL0,
 /// hardware pushes the exception frame at SP_EL1. If user_rsp_scratch is wrong
 /// (e.g., stale boot stack), frames get pushed on the wrong stack.
+///
+/// Conditioned on the frame's PENDING exception level, not on the level the
+/// exception was taken from: installing a kernel stack top into the EL0 scratch
+/// slot for a frame that is about to ERET to EL1 puts a kernel stack pointer
+/// where the hardware will not read it, and leaves the value that IS read stale.
 #[inline(always)]
-fn ensure_user_rsp_scratch_for_el0() {
+fn ensure_user_rsp_scratch_for_el0(frame: &Aarch64ExceptionFrame) {
+    if !frame_returns_to_el0(frame) {
+        note_user_rsp_scratch_el(false);
+        return;
+    }
+    note_user_rsp_scratch_el(true);
     let kst = Aarch64PerCpu::kernel_stack_top();
     if kst != 0 {
         unsafe {
             Aarch64PerCpu::set_user_rsp_scratch(kst);
         }
     }
+}
+
+/// EL0-conditioned `user_rsp_scratch` install census.
+///
+/// The two counters are the read-back assertion on the (pending EL, installed
+/// SP) pair: every install this boot followed a frame that really was returning
+/// to EL0, and every skip followed one that was not.
+#[cfg(feature = "boot_tests")]
+static USER_RSP_SCRATCH_EL0_INSTALLS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "boot_tests")]
+static USER_RSP_SCRATCH_EL1_SKIPPED: AtomicU64 = AtomicU64::new(0);
+
+#[cfg(feature = "boot_tests")]
+#[inline(always)]
+fn note_user_rsp_scratch_el(pending_el0: bool) {
+    if pending_el0 {
+        USER_RSP_SCRATCH_EL0_INSTALLS.fetch_add(1, Ordering::Relaxed);
+    } else {
+        USER_RSP_SCRATCH_EL1_SKIPPED.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+#[cfg(not(feature = "boot_tests"))]
+#[inline(always)]
+fn note_user_rsp_scratch_el(_pending_el0: bool) {}
+
+/// Emit the EL census once, at the end of the boot-test sequence.
+#[cfg(feature = "boot_tests")]
+pub fn report_user_rsp_scratch_el_census() {
+    static REPORTED: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+    if REPORTED.swap(true, Ordering::AcqRel) {
+        return;
+    }
+    crate::serial_println!(
+        "[USER_RSP_SCRATCH_EL_CENSUS:el0_installs={}:el1_skipped={}]",
+        USER_RSP_SCRATCH_EL0_INSTALLS.load(Ordering::Acquire),
+        USER_RSP_SCRATCH_EL1_SKIPPED.load(Ordering::Acquire),
+    );
 }
 
 #[inline(always)]
@@ -4445,9 +4506,18 @@ fn dispatch_thread_locked(
             );
         }
 
-        // CRITICAL: Set user_rsp_scratch to this thread's kernel stack top.
-        unsafe {
-            Aarch64PerCpu::set_user_rsp_scratch(Aarch64PerCpu::kernel_stack_top());
+        // CRITICAL: Set user_rsp_scratch to this thread's kernel stack top —
+        // but only when this frame is actually going to ERET to EL0. boot.S
+        // reads the slot selected by the FRAME's SPSR, so a frame whose SPSR a
+        // redirect has already rewritten to an EL1 value must not have a kernel
+        // stack top written into the EL0 scratch slot.
+        if frame_returns_to_el0(frame) {
+            note_user_rsp_scratch_el(true);
+            unsafe {
+                Aarch64PerCpu::set_user_rsp_scratch(Aarch64PerCpu::kernel_stack_top());
+            }
+        } else {
+            note_user_rsp_scratch_el(false);
         }
         crate::task::percpu_stack_oracle::note_user_dispatch_stack_install(cpu_id);
     }
@@ -4629,7 +4699,7 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
             // will be corrected on the next tick that does acquire the lock.
             if from_el0 {
                 check_and_deliver_signals_for_current_thread_arm64(frame);
-                ensure_user_rsp_scratch_for_el0();
+                ensure_user_rsp_scratch_for_el0(frame);
             }
             #[cfg(all(
                 target_arch = "aarch64",
@@ -4748,7 +4818,7 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
         drop(guard);
         if from_el0 {
             check_and_deliver_signals_for_current_thread_arm64(frame);
-            ensure_user_rsp_scratch_for_el0();
+            ensure_user_rsp_scratch_for_el0(frame);
         }
         #[cfg(all(
             target_arch = "aarch64",
@@ -4784,7 +4854,7 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
         drop(guard);
         if from_el0 {
             check_and_deliver_signals_for_current_thread_arm64(frame);
-            ensure_user_rsp_scratch_for_el0();
+            ensure_user_rsp_scratch_for_el0(frame);
         }
         #[cfg(all(
             target_arch = "aarch64",
@@ -4816,7 +4886,7 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
         drop(guard);
         if from_el0 {
             check_and_deliver_signals_for_current_thread_arm64(frame);
-            ensure_user_rsp_scratch_for_el0();
+            ensure_user_rsp_scratch_for_el0(frame);
         }
         #[cfg(all(
             target_arch = "aarch64",

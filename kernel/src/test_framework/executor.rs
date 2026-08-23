@@ -97,6 +97,20 @@ pub fn emit_exec_lock_order_counters() -> bool {
     true
 }
 
+/// Emit the aarch64 EL-conditioned `user_rsp_scratch` install census.
+///
+/// Called from the LAST boot-test verdict — the marker-only Userspace-stage
+/// path, reached from the first confirmed EL0 syscall. The earlier
+/// ProcessContext verdict runs before any exception has been taken from EL0, so
+/// reporting there would print two zeroes and measure nothing.
+#[cfg(all(target_arch = "aarch64", feature = "boot_tests"))]
+fn emit_user_rsp_scratch_el_census() {
+    crate::arch_impl::aarch64::context_switch::report_user_rsp_scratch_el_census();
+}
+
+#[cfg(not(all(target_arch = "aarch64", feature = "boot_tests")))]
+fn emit_user_rsp_scratch_el_census() {}
+
 /// Get the current test stage
 pub fn current_stage() -> TestStage {
     TestStage::from_u8(CURRENT_STAGE.load(Ordering::Acquire)).unwrap_or(TestStage::SerialBoot)
@@ -159,6 +173,7 @@ pub fn advance_stage_marker_only(stage: TestStage) {
     // Emit completion marker since no tests run
     let (completed, total, failed) = get_overall_progress();
     let lock_order_clean = emit_exec_lock_order_counters();
+    emit_user_rsp_scratch_el_census();
     #[cfg(not(target_arch = "aarch64"))]
     {
         crate::task::strand_oracle::sample_now();
