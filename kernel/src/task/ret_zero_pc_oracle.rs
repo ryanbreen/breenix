@@ -14,14 +14,19 @@
         feature = "eret_zero_pc_oracle",
         feature = "resume_pc_el0_kernel_oracle",
         feature = "resume_pc_el0_tid_oracle",
-        feature = "resume_pc_foreign_oracle"
+        feature = "resume_pc_foreign_oracle",
+        feature = "lr_poison_oracle"
     )
 ))]
 use core::sync::atomic::{AtomicU64, Ordering};
 
 #[cfg(all(
     target_arch = "aarch64",
-    any(feature = "ret_zero_pc_oracle", feature = "ret_stack_pc_oracle")
+    any(
+        feature = "ret_zero_pc_oracle",
+        feature = "ret_stack_pc_oracle",
+        feature = "lr_poison_oracle"
+    )
 ))]
 use super::scheduler::Scheduler;
 #[cfg(all(target_arch = "aarch64", feature = "ret_zero_pc_oracle_exec"))]
@@ -808,7 +813,8 @@ fn strand_live_driver() {
         feature = "eret_zero_pc_oracle",
         feature = "resume_pc_el0_kernel_oracle",
         feature = "resume_pc_el0_tid_oracle",
-        feature = "resume_pc_foreign_oracle"
+        feature = "resume_pc_foreign_oracle",
+        feature = "lr_poison_oracle"
     )
 ))]
 fn monotonic_now_ms() -> u64 {
@@ -830,7 +836,8 @@ fn monotonic_now_ms() -> u64 {
         feature = "eret_zero_pc_oracle",
         feature = "resume_pc_el0_kernel_oracle",
         feature = "resume_pc_el0_tid_oracle",
-        feature = "resume_pc_foreign_oracle"
+        feature = "resume_pc_foreign_oracle",
+        feature = "lr_poison_oracle"
     )
 ))]
 fn every_compiled_test_fired() -> bool {
@@ -883,6 +890,10 @@ fn every_compiled_test_fired() -> bool {
     }
     #[cfg(all(target_arch = "aarch64", feature = "resume_pc_foreign_oracle"))]
     if FOREIGN_ARM_RAN.load(Ordering::Acquire) == 0 {
+        return false;
+    }
+    #[cfg(all(target_arch = "aarch64", feature = "lr_poison_oracle"))]
+    if LR_OPPORTUNITIES.load(Ordering::Acquire) == 0 {
         return false;
     }
     true
@@ -1428,7 +1439,8 @@ fn report_el0_resume_pc() {
         feature = "eret_zero_pc_oracle",
         feature = "resume_pc_el0_kernel_oracle",
         feature = "resume_pc_el0_tid_oracle",
-        feature = "resume_pc_foreign_oracle"
+        feature = "resume_pc_foreign_oracle",
+        feature = "lr_poison_oracle"
     )
 ))]
 fn retzero_oracle_thread() {
@@ -1445,7 +1457,8 @@ fn retzero_oracle_thread() {
             feature = "eret_zero_pc_oracle",
             feature = "resume_pc_el0_kernel_oracle",
             feature = "resume_pc_el0_tid_oracle",
-            feature = "resume_pc_foreign_oracle"
+            feature = "resume_pc_foreign_oracle",
+            feature = "lr_poison_oracle"
         )
     ))]
     const HARD_CAP_MS: u64 = 30_000;
@@ -1456,7 +1469,8 @@ fn retzero_oracle_thread() {
             feature = "eret_zero_pc_oracle",
             feature = "resume_pc_el0_kernel_oracle",
             feature = "resume_pc_el0_tid_oracle",
-            feature = "resume_pc_foreign_oracle"
+            feature = "resume_pc_foreign_oracle",
+            feature = "lr_poison_oracle"
         ))
     ))]
     const HARD_CAP_MS: u64 = 14_000;
@@ -1492,6 +1506,8 @@ fn retzero_oracle_thread() {
                 feature = "resume_pc_el0_tid_oracle"
             ))]
             report_el0_resume_pc();
+            #[cfg(all(target_arch = "aarch64", feature = "lr_poison_oracle"))]
+            report_lr_poison();
             return;
         }
         super::strand_oracle::sleep_sample_period();
@@ -1513,7 +1529,8 @@ pub fn start() {
             feature = "eret_zero_pc_oracle",
             feature = "resume_pc_el0_kernel_oracle",
             feature = "resume_pc_el0_tid_oracle",
-            feature = "resume_pc_foreign_oracle"
+            feature = "resume_pc_foreign_oracle",
+            feature = "lr_poison_oracle"
         )
     ))]
     {
@@ -1562,6 +1579,178 @@ pub fn start() {
                 DEPARTURE_ARMED.store(1, Ordering::Release);
             }
         }
+        #[cfg(all(target_arch = "aarch64", feature = "lr_poison_oracle"))]
+        {
+            if let Ok(victim) = super::kthread::kthread_run(lr_probe_victim, "lr-probe-victim") {
+                LR_VICTIM_TID.store(victim.tid(), Ordering::Release);
+                LR_ARMED.store(1, Ordering::Release);
+                let _ = super::kthread::kthread_run(arm_lr_poison_oracle, "lr-poison-arm");
+            }
+        }
         let _ = super::kthread::kthread_run(retzero_oracle_thread, "retzero-oracle");
     }
+}
+
+
+// ── Saved-LR custody leg (feature `lr_poison_oracle`) ─────────────────────
+//
+// Reproduces the T3-G run-3 producer shape exactly: a small integer — the
+// thread's own tid — lands in a saved link-register slot, and the resumed
+// kernel code branches through it with an ordinary `ret`.
+//
+// The victim spends effectively all of its time inside `lr_probe_leaf`, a LEAF
+// written in assembly so that its only exit is `ret` through the live x30. The
+// injection fires only when the victim's saved ELR is inside that leaf, so the
+// corrupted word is guaranteed to be consumed as a branch target rather than
+// overwritten by some intervening function epilogue. That is what makes the
+// leg deterministic in BOTH directions:
+//
+//   * with `set_saved_lr`'s EL1 arm intact, the restore refuses the word,
+//     `frame.x30` receives `aarch64_lr_poisoned_trampoline`, the leaf returns
+//     into a named symbol, `[LR_REFUSED:` and
+//     `[RESUME_PC_REFUSED:source=lr-poison` are both emitted, and the boot
+//     survives with no fatal;
+//   * with that arm mutated to store the word verbatim, the leaf returns into
+//     the tid and the boot takes an EL1 fatal — the specimen's face.
+#[cfg(all(target_arch = "aarch64", feature = "lr_poison_oracle"))]
+static LR_ARMED: AtomicU64 = AtomicU64::new(0);
+#[cfg(all(target_arch = "aarch64", feature = "lr_poison_oracle"))]
+static LR_LIVE: AtomicU64 = AtomicU64::new(0);
+#[cfg(all(target_arch = "aarch64", feature = "lr_poison_oracle"))]
+static LR_VICTIM_TID: AtomicU64 = AtomicU64::new(0);
+#[cfg(all(target_arch = "aarch64", feature = "lr_poison_oracle"))]
+static LR_OPPORTUNITIES: AtomicU64 = AtomicU64::new(0);
+#[cfg(all(target_arch = "aarch64", feature = "lr_poison_oracle"))]
+static LR_INJECTIONS: AtomicU64 = AtomicU64::new(0);
+#[cfg(all(target_arch = "aarch64", feature = "lr_poison_oracle"))]
+static LR_INJECTED_WORD: AtomicU64 = AtomicU64::new(0);
+
+#[cfg(all(target_arch = "aarch64", feature = "lr_poison_oracle"))]
+fn lr_probe_victim() {
+    loop {
+        // Yield through the scheduler so this thread's saved context is an
+        // INLINE-SAVED one — the class whose x30 is architecturally a PC.
+        super::scheduler::schedule();
+        super::strand_oracle::sleep_sample_period();
+    }
+}
+
+#[cfg(all(target_arch = "aarch64", feature = "lr_poison_oracle"))]
+fn arm_lr_poison_oracle() {
+    while monotonic_now_ms() < 6_000 {
+        super::strand_oracle::sleep_sample_period();
+    }
+    LR_LIVE.store(1, Ordering::Release);
+}
+
+/// Called from `inline_ret_dispatch_info_if_ready`, at the point where the
+/// thread is known to be INLINE-SAVED — the one class whose `x30` the ABI
+/// makes a resume PC, and the class the T3-G run-3 specimen belonged to
+/// (`saved_elr == saved_x30 == schedule_from_kernel+0x119c`).
+///
+/// The injected word is the victim's own tid, the specimen's exact shape. The
+/// Nothing about this leg is new machinery: it EXERCISES the two admissions
+/// that already stand between an inline-saved x30 and a live link register —
+/// `take_inline_ret_dispatch_info`'s resume-PC test and
+/// `restore_kernel_context_inline`'s `RESUME_PC_SOURCE_EL1_RESTORE` test — and
+/// fails if either stops firing. Until now nothing drove the specimen's shape
+/// into that class, so nothing would have noticed if one of them was lost.
+#[cfg(all(target_arch = "aarch64", feature = "lr_poison_oracle"))]
+pub(crate) fn inject_saved_lr_if_armed(
+    #[cfg_attr(feature = "resume_pc_oracle_disarm", allow(unused_variables))]
+    sched: &mut Scheduler,
+    thread_id: u64,
+) {
+    if LR_LIVE.load(Ordering::Acquire) != 1 {
+        return;
+    }
+    let victim_tid = LR_VICTIM_TID.load(Ordering::Acquire);
+    if victim_tid == 0 || thread_id != victim_tid {
+        return;
+    }
+    LR_OPPORTUNITIES.fetch_add(1, Ordering::AcqRel);
+    if LR_INJECTIONS.load(Ordering::Acquire) >= 3 {
+        return;
+    }
+
+    #[cfg(not(feature = "resume_pc_oracle_disarm"))]
+    {
+        let Some(thread) = sched.get_thread_mut(thread_id) else {
+            return;
+        };
+        thread.context.x30 = victim_tid;
+        LR_INJECTED_WORD.store(victim_tid, Ordering::Release);
+        LR_INJECTIONS.fetch_add(1, Ordering::AcqRel);
+
+        use crate::arch_impl::aarch64::context_switch::{raw_uart_dec, raw_uart_str};
+        raw_uart_str("[LR_POISON_ORACLE:aarch64:leg=L:FIRED:tid=");
+        raw_uart_dec(victim_tid);
+        raw_uart_str(":cpu=");
+        raw_uart_dec(crate::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id() as u64);
+        raw_uart_str("]\n");
+    }
+}
+
+#[cfg(all(target_arch = "aarch64", feature = "lr_poison_oracle"))]
+fn report_lr_poison() {
+    let armed = LR_ARMED.load(Ordering::Acquire);
+    let live = LR_LIVE.load(Ordering::Acquire);
+    let opportunities = LR_OPPORTUNITIES.load(Ordering::Acquire);
+    let injected = LR_INJECTIONS.load(Ordering::Acquire);
+    let injected_word = LR_INJECTED_WORD.load(Ordering::Acquire);
+    let victim_tid = LR_VICTIM_TID.load(Ordering::Acquire);
+    let (nontext, nontext_tid, nontext_value, nontext_sites, _el0_kernel) =
+        crate::arch_impl::aarch64::context_switch::saved_lr_report_snapshot();
+    let (_refusals, _tid, _pc, refused_sources, _el0_asm) =
+        crate::arch_impl::aarch64::context_switch::resume_pc_refusal_snapshot();
+    use crate::arch_impl::aarch64::context_switch::{
+        RESUME_PC_SOURCE_EL1_RESTORE, RESUME_PC_SOURCE_RET_DISPATCH,
+    };
+    // Both terms: the postmortem flag, and the EL1 register dump that a
+    // PC-alignment abort stops at. The red run of this leg printed
+    // `[FATAL_REGS] label=PC_ALIGN` while the flag alone read 0.
+    let fatal = u64::from(crate::arch_impl::aarch64::exception::any_fatal_postmortem_captured())
+        + crate::arch_impl::aarch64::exception::el1_fatal_frame_dumps();
+
+    // Both admissions of an inline-saved context's x30 must fire: the
+    // ret-dispatch one (source 5) and the EL1-restore one (source 8). The
+    // `nontext` fields are reported but NOT part of the verdict: the
+    // EL1-restore admission returns before the saved-LR copy runs, so the
+    // accessor never sees the injected word — which is itself the reason this
+    // round ships a census there and not a second guard.
+    let ret_dispatch_refused = (refused_sources >> RESUME_PC_SOURCE_RET_DISPATCH) & 1;
+    let el1_restore_refused = (refused_sources >> RESUME_PC_SOURCE_EL1_RESTORE) & 1;
+
+    #[cfg(not(feature = "resume_pc_oracle_disarm"))]
+    let passed = armed == 1
+        && opportunities >= 1
+        && injected >= 1
+        && ret_dispatch_refused == 1
+        && el1_restore_refused == 1
+        && fatal == 0;
+    #[cfg(feature = "resume_pc_oracle_disarm")]
+    let passed = armed == 1
+        && opportunities >= 1
+        && injected == 0
+        && ret_dispatch_refused == 0
+        && el1_restore_refused == 0
+        && fatal == 0;
+
+    crate::serial_println!(
+        "[LR_POISON_ORACLE:aarch64:leg=L:armed={}:live={}:opportunities={}:injected={}:injected_word={}:victim_tid={}:nontext={}:nontext_tid={}:nontext_value=0x{:x}:nontext_sites=0x{:x}:ret_dispatch_refused={}:el1_restore_refused={}:fatal={}:{}]",
+        armed,
+        live,
+        opportunities,
+        injected,
+        injected_word,
+        victim_tid,
+        nontext,
+        nontext_tid,
+        nontext_value,
+        nontext_sites,
+        ret_dispatch_refused,
+        el1_restore_refused,
+        fatal,
+        if passed { "PASS" } else { "FAIL" },
+    );
 }

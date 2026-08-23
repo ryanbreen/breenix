@@ -968,6 +968,23 @@ const UNLOCKED_MULTI_BYTE_WRITE_ANCHORS: &[(&str, &str, usize)] = &[
         "fn take_inline_ret_dispatch_info",
         10,
     ),
+    // Saved-LR custody, PR-B round 3. `set_saved_lr` reports an EL1 saved link
+    // register that is not a kernel PC and `record_ret_stage_refusal` reports a
+    // ret-dispatch staging copy that disagreed with what was admitted; both run
+    // inside a dispatch with the scheduler lock held, so the locked writer is
+    // unavailable, and both are emission-capped at 8 per boot rather than
+    // periodic. `[LR_NONTEXT:` is census only. `[RET_STAGE_REFUSED:` IS a gate
+    // condition, and a torn line can only under-count it, never invent one.
+    (
+        "kernel/src/arch_impl/aarch64/context_switch.rs",
+        "fn set_saved_lr",
+        6,
+    ),
+    (
+        "kernel/src/arch_impl/aarch64/context_switch.rs",
+        "fn record_ret_stage_refusal",
+        6,
+    ),
     (
         "kernel/src/arch_impl/aarch64/exception.rs",
         "fn defer_current_user_thread_sigsegv_exit",
@@ -986,7 +1003,7 @@ const UNLOCKED_MULTI_BYTE_WRITE_ANCHORS: &[(&str, &str, usize)] = &[
     (
         "kernel/src/arch_impl/aarch64/exception.rs",
         "fn dump_fatal_postmortem_once",
-        8,
+        16,
     ),
     (
         "kernel/src/arch_impl/aarch64/exception.rs",
@@ -1089,6 +1106,11 @@ const UNLOCKED_MULTI_BYTE_WRITE_ANCHORS: &[(&str, &str, usize)] = &[
     (
         "kernel/src/task/ret_zero_pc_oracle.rs",
         "#[cfg(all(target_arch=aarch64,feature=ret_zero_pc_oracle))] fn inject_ret_zero_pc_if_armed",
+        3,
+    ),
+    (
+        "kernel/src/task/ret_zero_pc_oracle.rs",
+        "#[cfg(all(target_arch=aarch64,feature=lr_poison_oracle))] fn inject_saved_lr_if_armed",
         3,
     ),
     (

@@ -6291,3 +6291,386 @@ fn init_cpu_publishes_both_idle_stack_top_and_stack_ownership() {
         );
     }
 }
+
+
+// ── Saved link-register custody (PR-B round 3) ───────────────────────────────
+//
+// The campaign hardened every ARCHITECTURAL resume PC — the word that reaches
+// ELR_EL1 — and left the DEFERRED one, the link register, with no custody at
+// all. These pin the repair: one accessor owns every copy into a saved-LR
+// slot, its EL1 arm substitutes a named trampoline instead of storing an
+// inadmissible word, its EL0 arm never substitutes at all, and the ret-based
+// dispatch restores bytes it copied under the scheduler lock rather than
+// re-reading a raw pointer into the scheduler's Vec after the guard is gone.
+
+const AARCH64_CONTEXT_PATH: &str = "kernel/src/arch_impl/aarch64/context.rs";
+const THREAD_PATH: &str = "kernel/src/task/thread.rs";
+
+/// Every `<lhs>.x30 = <rhs>;` statement in a source, as (offset, statement).
+fn saved_lr_assignments(source: &str, mask: &[bool]) -> Vec<(usize, String)> {
+    let bytes = source.as_bytes();
+    let mut found = Vec::new();
+    for offset in code_offsets(source, mask, ".x30") {
+        let mut cursor = offset + ".x30".len();
+        while cursor < bytes.len() && (!mask[cursor] || bytes[cursor].is_ascii_whitespace()) {
+            cursor += 1;
+        }
+        // An assignment, not a comparison (`==`) and not a read.
+        if bytes.get(cursor) != Some(&b'=') || bytes.get(cursor + 1) == Some(&b'=') {
+            continue;
+        }
+        let mut end = cursor;
+        while end < bytes.len() && !(mask[end] && bytes[end] == b';') {
+            end += 1;
+        }
+        found.push((offset, normalized_code(&source[cursor + 1..end])));
+    }
+    found
+}
+
+/// Call sites of `name`, excluding its own declarations (`extern "C" { fn .. }`
+/// and definitions), which `call_offsets` cannot tell apart from a call.
+fn invocation_offsets(source: &str, mask: &[bool], name: &str) -> Vec<usize> {
+    call_offsets(source, mask, name)
+        .into_iter()
+        .filter(|offset| !preceded_by_keyword(source, mask, *offset, "fn"))
+        .collect()
+}
+
+/// A word may enter a saved link-register slot only through `set_saved_lr`.
+///
+/// The dangerous shape is a COPY: a word read out of one saved slot and
+/// written into another, propagating whatever the first slot held without any
+/// hop being able to tell a return address from a tid. Kernel-authored
+/// constants (`0`, the idle entry point) are not copies — the kernel chose
+/// those values — and are left alone deliberately; what must not exist is a
+/// direct `<slot>.x30 = <other>.x30` anywhere in the two aarch64 files that
+/// perform the save/restore, because that is precisely the chain the run-3
+/// specimen's `0x19` travelled.
+#[test]
+fn saved_lr_copies_route_through_the_single_accessor() {
+    let mut scanned = 0usize;
+    let mut direct_copies: Vec<String> = Vec::new();
+    let mut accessor_calls = 0usize;
+
+    for path in [CONTEXT_SWITCH_PATH, AARCH64_CONTEXT_PATH] {
+        let source = repo_text(path);
+        let mask = code_mask(&source);
+        accessor_calls += call_offsets(&source, &mask, "set_saved_lr").len();
+        for (offset, rhs) in saved_lr_assignments(&source, &mask) {
+            scanned += 1;
+            if rhs.contains(".x30") {
+                direct_copies.push(format!("{path} @{offset}: .x30 = {rhs}"));
+            }
+        }
+    }
+
+    // Anti-vacuity: the scanner must actually see saved-LR assignments, or a
+    // rename would make this test pass by finding nothing at all.
+    assert!(
+        scanned >= 3,
+        "the saved-LR assignment scan found only {scanned} statements across \
+         {CONTEXT_SWITCH_PATH} and {AARCH64_CONTEXT_PATH}; the scan is vacuous"
+    );
+    assert!(
+        direct_copies.is_empty(),
+        "a saved link register is copied without going through `set_saved_lr`: {direct_copies:?}"
+    );
+    assert!(
+        accessor_calls >= 6,
+        "expected every saved-LR producer to call `set_saved_lr` (4 dispatch producers + 2 HAL \
+         helpers); found {accessor_calls} call(s)"
+    );
+}
+
+/// The accessor classifies and reports; it never substitutes.
+///
+/// The repair this round was scoped for would have replaced an inadmissible
+/// word with a named trampoline. Production falsified that at every producer:
+/// at EL0 the word is user data the kernel must preserve verbatim; at an
+/// exception-saved EL1 producer it is a live register a kernel function may be
+/// using as a scratch temporary (measured: a kernel heap address archived and
+/// restored for tid 29, `0x28` and `0x0b2d05e0` for tid 32); and for the one
+/// class where x30 IS architecturally a PC — an inline-saved context — both
+/// dispatch paths already refuse it upstream of this copy, which the ratchet
+/// below pins.
+#[test]
+fn set_saved_lr_classifies_and_reports_without_substituting() {
+    let source = repo_text(CONTEXT_SWITCH_PATH);
+    let body = function_body(&source, "set_saved_lr")
+        .unwrap_or_else(|| panic!("`set_saved_lr` body not found in {CONTEXT_SWITCH_PATH}"));
+    let normalized = normalized_code(body);
+
+    assert!(
+        normalized.contains("census_resume_pc(which.census_index(el), value); *slot = value;"),
+        "`set_saved_lr` must census the word and store it verbatim before any classification; \
+         found: {normalized}"
+    );
+    assert_eq!(
+        normalized.matches("*slot =").count(),
+        1,
+        "`set_saved_lr` writes the slot more than once; the accessor must have exactly one \
+         store, and it must be the caller's word"
+    );
+    assert!(
+        !normalized.contains("trampoline"),
+        "`set_saved_lr` references a substitute; the negative result above says every producer \
+         it serves owns its word"
+    );
+    assert!(
+        body.contains("[LR_NONTEXT:site="),
+        "`set_saved_lr` does not report an EL1 word that is not a PC"
+    );
+    for counter in [
+        "SAVED_LR_NONTEXT.fetch_add",
+        "SAVED_LR_NONTEXT_SITES.fetch_or",
+        "SAVED_LR_EL0_KERNEL_ADDR.fetch_add",
+    ] {
+        assert!(
+            normalized.contains(counter),
+            "`set_saved_lr` no longer maintains `{counter}`"
+        );
+    }
+
+    // Nothing in the tree may install a branch target in a saved-LR slot.
+    let sources = rust_sources_below("kernel/src/arch_impl/aarch64");
+    for (path, source) in &sources {
+        assert!(
+            !source.contains("aarch64_lr_poisoned_trampoline"),
+            "{} still carries the poison trampoline; it was removed as unreachable",
+            path.display()
+        );
+    }
+}
+
+/// The word that IS architecturally a resume PC is admitted on both dispatch
+/// paths, upstream of the saved-LR copy.
+///
+/// An inline-saved context's x30 is the return address of the
+/// `bl aarch64_inline_schedule_switch` by construction, so a non-PC word there
+/// is a corruption — and it is the T3-G run-3 specimen's class
+/// (`saved_elr == saved_x30 == schedule_from_kernel+0x119c`). Two admissions
+/// stand in front of it and nothing exercised either with that shape until leg
+/// L; this pins both so neither can be lost quietly.
+#[test]
+fn an_inline_saved_resume_pc_is_admitted_on_both_dispatch_paths() {
+    let source = repo_text(CONTEXT_SWITCH_PATH);
+
+    let take = function_body(&source, "take_inline_ret_dispatch_info").unwrap_or_else(|| {
+        panic!("`take_inline_ret_dispatch_info` body not found in {CONTEXT_SWITCH_PATH}")
+    });
+    let take_normalized = normalized_code(take);
+    assert!(
+        take_normalized.contains("let resume_pc = thread.context.x30;"),
+        "the ret-based dispatch no longer takes its resume PC from the saved link register"
+    );
+    assert!(
+        take_normalized.contains("if !resume_pc_is_dispatchable(resume_pc)"),
+        "the ret-based dispatch no longer admits its resume PC"
+    );
+    assert!(
+        take_normalized.contains("RESUME_PC_SOURCE_RET_DISPATCH"),
+        "the ret-based dispatch refusal no longer carries its own source id"
+    );
+
+    let restore = function_body(&source, "restore_kernel_context_inline").unwrap_or_else(|| {
+        panic!("`restore_kernel_context_inline` body not found in {CONTEXT_SWITCH_PATH}")
+    });
+    let restore_normalized = normalized_code(restore);
+    assert!(
+        restore_normalized
+            .contains("let resume_pc = if thread.saved_by_inline_schedule { thread.context.x30 }"),
+        "the EL1 restore no longer derives an inline-saved context's resume PC from x30, so the \
+         saved link register of that class would reach a frame unadmitted"
+    );
+    assert!(
+        restore_normalized.contains("RESUME_PC_SOURCE_EL1_RESTORE"),
+        "the EL1 restore no longer records its refusal under its own source id"
+    );
+    assert!(
+        restore_normalized.contains("if !elr_valid"),
+        "the EL1 restore no longer refuses on its admission result"
+    );
+}
+
+/// The EL1 admission is exactly three classes, and the set is pinned as a set.
+///
+/// Widening it (a fourth disjunct) or narrowing it (dropping the user-address
+/// class, which refuses the live user link register the syscall entry stub has
+/// not archived yet) both redden this.
+#[test]
+fn saved_lr_admission_is_the_three_named_classes() {
+    let source = repo_text(CONTEXT_SWITCH_PATH);
+    let body = function_body(&source, "saved_lr_is_admissible").unwrap_or_else(|| {
+        panic!("`saved_lr_is_admissible` body not found in {CONTEXT_SWITCH_PATH}")
+    });
+    let normalized = normalized_code(body);
+    let mut classes: Vec<&str> = normalized
+        .trim()
+        .trim_start_matches('{')
+        .trim_end_matches('}')
+        .trim()
+        .trim_end_matches(';')
+        .split("||")
+        .map(str::trim)
+        .collect();
+    classes.sort_unstable();
+    assert_eq!(
+        classes,
+        [
+            "resume_pc_is_dispatchable(value)",
+            "resume_pc_is_user_dispatchable(value)",
+            "value == SAVED_LR_NONE",
+        ],
+        "the EL1 saved-LR admission is no longer exactly {{kernel text, the no-return sentinel, \
+         a plausible user address}}; found: {classes:?}"
+    );
+}
+
+/// The ret-based dispatch restores a copy taken under the scheduler lock.
+///
+/// Before this, the admitted word and the restored word were two different
+/// reads: `take_inline_ret_dispatch_info` admitted `thread.context.x30` under
+/// the lock and returned `&thread.context`, and the assembly re-read that
+/// memory after `drop(guard)` — an unguarded raw pointer into the scheduler's
+/// `threads` Vec, across a window a growth, an element shift or a row free
+/// could move.
+#[test]
+fn ret_dispatch_restores_a_staged_copy_taken_under_the_scheduler_lock() {
+    let source = repo_text(CONTEXT_SWITCH_PATH);
+    let mask = code_mask(&source);
+
+    let take = function_body(&source, "take_inline_ret_dispatch_info").unwrap_or_else(|| {
+        panic!("`take_inline_ret_dispatch_info` body not found in {CONTEXT_SWITCH_PATH}")
+    });
+    let take_mask = code_mask(take);
+    assert!(
+        !call_offsets(take, &take_mask, "stage_ret_dispatch_context").is_empty(),
+        "`take_inline_ret_dispatch_info` does not stage the context it hands to the assembly"
+    );
+    assert!(
+        !normalized_code(take).contains("&thread.context as *const CpuContext"),
+        "`take_inline_ret_dispatch_info` still hands out a raw pointer into the scheduler's \
+         thread row; the admitted word and the restored word are two reads again"
+    );
+
+    let stage = function_body(&source, "stage_ret_dispatch_context").unwrap_or_else(|| {
+        panic!("`stage_ret_dispatch_context` body not found in {CONTEXT_SWITCH_PATH}")
+    });
+    let stage_normalized = normalized_code(stage);
+    assert!(
+        stage_normalized.contains("identity_is_intact()"),
+        "`stage_ret_dispatch_context` does not check that the source row still carries a live \
+         CpuContext identity word"
+    );
+    assert!(
+        stage_normalized.contains("(*staged).ctx = context.clone();"),
+        "`stage_ret_dispatch_context` does not copy the context into the per-CPU staging slot"
+    );
+    assert!(
+        stage_normalized.contains("if staged_x30 != resume_pc"),
+        "`stage_ret_dispatch_context` does not compare the staged link register against the \
+         admitted resume PC"
+    );
+
+    // No dispatch site may dereference the context pointer at all: the whole
+    // point is that nothing reads through it outside the assembly restore.
+    assert!(
+        !normalized_code(&source).contains("(*ctx_ptr)"),
+        "a ret-dispatch site dereferences the context pointer in Rust; the value it needs must \
+         be read from the live row under the lock instead"
+    );
+
+    let calls = invocation_offsets(&source, &mask, "aarch64_ret_to_kernel_context");
+    assert_eq!(
+        calls.len(),
+        2,
+        "expected exactly two ret-dispatch call sites (the IRQ path and the inline-schedule \
+         trampoline); found {}",
+        calls.len()
+    );
+}
+
+/// Both ret-dispatch sites record their own dispatch-trace row.
+///
+/// `record_dispatch` had two call sites, both on the ERET path, so the ring's
+/// newest entry named whatever was ERET-dispatched before a ret dispatch. In
+/// the run-3 specimen that entry named idle while `current_tid` read the
+/// ret-dispatched thread, and the ring was read as though it named the last
+/// dispatch.
+#[test]
+fn ret_dispatch_sites_record_an_r_path_dispatch_row() {
+    let source = repo_text(CONTEXT_SWITCH_PATH);
+    let mask = code_mask(&source);
+
+    let ret_calls = invocation_offsets(&source, &mask, "aarch64_ret_to_kernel_context");
+    // `code_mask` blanks char literals, so the row marker is found in the raw
+    // text; `b'R',` occurs nowhere else in this file.
+    let r_rows: Vec<usize> = source.match_indices("b'R',").map(|(at, _)| at).collect();
+    assert_eq!(
+        r_rows.len(),
+        ret_calls.len(),
+        "expected one 'R' dispatch-trace row per ret-dispatch site; found {} row(s) for {} \
+         site(s)",
+        r_rows.len(),
+        ret_calls.len()
+    );
+
+    for call in &ret_calls {
+        let preceding = r_rows.iter().filter(|row| *row < call).count();
+        let earlier_calls = ret_calls.iter().filter(|other| *other < call).count();
+        assert!(
+            preceding > earlier_calls,
+            "the ret-dispatch site at byte {call} is not preceded by its own 'R' dispatch-trace \
+             row"
+        );
+    }
+
+    let dumper = function_body(&source, "dump_dispatch_trace")
+        .unwrap_or_else(|| panic!("`dump_dispatch_trace` body not found in {CONTEXT_SWITCH_PATH}"));
+    assert!(
+        dumper.contains("raw_uart_char(e.path)"),
+        "`dump_dispatch_trace` no longer prints the path character, so an 'R' row would be \
+         indistinguishable from a 'K' one"
+    );
+}
+
+/// The shape of a saved context is a compile-time fact, size included.
+///
+/// Offset asserts pin where a field starts and say nothing about what follows
+/// it. The identity word sits after every offset the assembly knows, so only a
+/// size assert makes its position a fact — and the identity word is what the
+/// ret-dispatch admission uses to refuse a pointer that no longer names a live
+/// `CpuContext`.
+#[test]
+fn saved_context_layout_and_identity_are_compile_time_facts() {
+    let source = repo_text(CONTEXT_SWITCH_PATH);
+    let normalized = normalized_code(&source);
+    for assertion in [
+        "core::mem::size_of::<CpuContext>() == 296",
+        "core::mem::size_of::<Aarch64ExceptionFrame>() == 264",
+        "core::mem::offset_of!(CpuContext, magic) == 288",
+    ] {
+        assert!(
+            normalized.contains(assertion),
+            "{CONTEXT_SWITCH_PATH} no longer const-asserts `{assertion}`"
+        );
+    }
+
+    let thread = repo_text(THREAD_PATH);
+    let thread_normalized = normalized_code(&thread);
+    assert!(
+        thread_normalized.contains("pub const CPU_CONTEXT_MAGIC: u64 ="),
+        "{THREAD_PATH} no longer defines the CpuContext identity word"
+    );
+    assert!(
+        thread_normalized.contains("self.magic == CPU_CONTEXT_MAGIC"),
+        "{THREAD_PATH} no longer tests the CpuContext identity word"
+    );
+    let stamps = thread.matches("magic: CPU_CONTEXT_MAGIC").count();
+    assert!(
+        stamps >= 3,
+        "expected every aarch64 CpuContext constructor to stamp the identity word; found \
+         {stamps} stamp(s)"
+    );
+}

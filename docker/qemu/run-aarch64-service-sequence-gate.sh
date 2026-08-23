@@ -801,6 +801,10 @@ print_census() {
     local resume_pc_refusal_lines="${23}"
     local stack_alien_boots="${24}"
     local stack_alien_lines="${25}"
+    local stage_refusal_boots="${26}"
+    local stage_refusal_lines="${27}"
+    local lr_nontext_boots="${28}"
+    local lr_nontext_lines="${29}"
     local green_rate
 
     green_rate=$(awk -v green="$count_green" -v boots="$count_boots" \
@@ -853,6 +857,23 @@ print_census() {
     # whole-context-corrupt abort. Same standard as the resume-PC refusal: a
     # defect to file, not a number to watch.
     echo "  Per-CPU stack alien: $stack_alien_lines marker line(s) across $stack_alien_boots/$count_boots boot(s) — gate-failing"
+    # GATED, on the same argument once more. [RET_STAGE_REFUSED: is emitted
+    # when the ret-dispatch staging copy disagrees with the word that was
+    # admitted under the scheduler lock, or when the source row carries no live
+    # CpuContext identity word. Either means a dispatch was about to restore
+    # bytes that are not the bytes it admitted; there is no benign reading, and
+    # this gate builds no oracle feature that could manufacture one.
+    echo "  Ret-dispatch staging refused: $stage_refusal_lines marker line(s) across $stage_refusal_boots/$count_boots boot(s) — gate-failing"
+    # REPORTED, NOT GATED, and the distinction is the point. [LR_NONTEXT: names
+    # an EL1 saved link register that is not a kernel PC. Production says that
+    # is routine rather than defective: x30 is a general-purpose register a
+    # kernel function may use as a scratch temporary once it has stored its own
+    # return address, and one boot of this branch archived a kernel heap
+    # address (tid 29) while others archived 0x28 and 0x0b2d05e0 (tid 32). The
+    # count is evidence for the producer-corruption hunt, not a verdict — the
+    # words that ARE architecturally resume PCs are admitted elsewhere and
+    # counted as [RESUME_PC_REFUSED:.
+    echo "  Saved-LR non-PC words: $lr_nontext_lines marker line(s) across $lr_nontext_boots/$count_boots boot(s) — reported, not gated"
 }
 
 run_profile() {
@@ -882,10 +903,16 @@ run_profile() {
     local resume_pc_refusal_lines=0
     local stack_alien_boots=0
     local stack_alien_lines=0
+    local stage_refusal_boots=0
+    local stage_refusal_lines=0
+    local lr_nontext_boots=0
+    local lr_nontext_lines=0
     local boot_divergence
     local boot_refusals
     local boot_resume_pc_refusals
     local boot_stack_aliens
+    local boot_stage_refusals
+    local boot_lr_nontext
     local boot
     local serial_file
     local writable_disk
@@ -1018,6 +1045,22 @@ run_profile() {
         if [ "$boot_stack_aliens" -ne 0 ]; then
             stack_alien_boots=$((stack_alien_boots + 1))
         fi
+        # Counted per boot and GATED, same argument: a ret-dispatch staging copy
+        # that did not match the word admitted under the scheduler lock.
+        boot_stage_refusals=$(grep -cF "[RET_STAGE_REFUSED:" "$serial_file" 2>/dev/null | tr -d ' ')
+        boot_stage_refusals=${boot_stage_refusals:-0}
+        stage_refusal_lines=$((stage_refusal_lines + boot_stage_refusals))
+        if [ "$boot_stage_refusals" -ne 0 ]; then
+            stage_refusal_boots=$((stage_refusal_boots + 1))
+        fi
+        # Counted per boot and REPORTED: an EL1 saved link register that is not
+        # a kernel PC. Routine, not defective — see print_census.
+        boot_lr_nontext=$(grep -cF "[LR_NONTEXT:" "$serial_file" 2>/dev/null | tr -d ' ')
+        boot_lr_nontext=${boot_lr_nontext:-0}
+        lr_nontext_lines=$((lr_nontext_lines + boot_lr_nontext))
+        if [ "$boot_lr_nontext" -ne 0 ]; then
+            lr_nontext_boots=$((lr_nontext_boots + 1))
+        fi
 
         classify_serial "$serial_file"
         case "$CLASS_BUCKET" in
@@ -1041,10 +1084,10 @@ run_profile() {
                 exit 1
                 ;;
         esac
-        printf '%s\t%s\t%s\t%s\t%s\t%s (qemu_status=%s)\t%s\t%s\t%s\t%s\n' \
+        printf '%s\t%s\t%s\t%s\t%s\t%s (qemu_status=%s)\t%s\t%s\t%s\t%s\t%s\n' \
             "$boot" "$CLASS_BUCKET" "$boot_end" "$boot_seconds" "$boot_divergence" \
-            "$CLASS_REASON" "$qemu_status" "$serial_file" "$boot_refusals" "$boot_resume_pc_refusals" "$boot_stack_aliens" >> "$census_file"
-        echo "  Boot $boot/$BOOTS: $CLASS_BUCKET — $CLASS_REASON [$boot_end, ${boot_seconds}s, ctx596_divergence=$boot_divergence, ret_dispatch_refusals=$boot_refusals, resume_pc_refusals=$boot_resume_pc_refusals, percpu_stack_aliens=$boot_stack_aliens]"
+            "$CLASS_REASON" "$qemu_status" "$serial_file" "$boot_refusals" "$boot_resume_pc_refusals" "$boot_stack_aliens" "$boot_stage_refusals" "$boot_lr_nontext" >> "$census_file"
+        echo "  Boot $boot/$BOOTS: $CLASS_BUCKET — $CLASS_REASON [$boot_end, ${boot_seconds}s, ctx596_divergence=$boot_divergence, ret_dispatch_refusals=$boot_refusals, resume_pc_refusals=$boot_resume_pc_refusals, percpu_stack_aliens=$boot_stack_aliens, ret_stage_refusals=$boot_stage_refusals, lr_nontext=$boot_lr_nontext]"
     done
 
     census_sum=$((count_575 + count_576 + count_626 + count_635 + count_641 + count_data_abort + count_clone_exec + count_strand + count_boot_test_fail + count_596 + count_612 + count_609 + count_p5b + count_green + count_unattributed))
@@ -1057,7 +1100,9 @@ run_profile() {
         "$count_strand" "$count_boot_test_fail" "$count_596" "$count_612" "$count_609" "$count_p5b" "$count_green" "$count_unattributed" "$BOOTS" \
         "$divergence_boots" "$divergence_lines" "$refusal_boots" "$refusal_lines" \
         "$resume_pc_refusal_boots" "$resume_pc_refusal_lines" \
-        "$stack_alien_boots" "$stack_alien_lines"
+        "$stack_alien_boots" "$stack_alien_lines" \
+        "$stage_refusal_boots" "$stage_refusal_lines" \
+        "$lr_nontext_boots" "$lr_nontext_lines"
 
     # #589 is closed; its CLONE_EXEC and STRAND shapes now fail this gate. The
     # GREEN rate stays census-only reporting; open #576 and #626 remain named
@@ -1087,11 +1132,11 @@ run_profile() {
     # come from a production dispatch whose resume PC failed admission — the EL0
     # arm of the same fault family as the filed #633 and #637 faces. It is a
     # defect to file, not a number to watch.
-    if [ "$count_575" -ne 0 ] || [ "$count_576" -ne 0 ] || [ "$count_626" -ne 0 ] || [ "$count_635" -ne 0 ] || [ "$count_641" -ne 0 ] || [ "$count_data_abort" -ne 0 ] || [ "$count_clone_exec" -ne 0 ] || [ "$count_strand" -ne 0 ] || [ "$count_boot_test_fail" -ne 0 ] || [ "$count_596" -ne 0 ] || [ "$count_612" -ne 0 ] || [ "$count_609" -ne 0 ] || [ "$count_p5b" -ne 0 ] || [ "$count_unattributed" -ne 0 ] || [ "$resume_pc_refusal_lines" -ne 0 ] || [ "$stack_alien_lines" -ne 0 ]; then
+    if [ "$count_575" -ne 0 ] || [ "$count_576" -ne 0 ] || [ "$count_626" -ne 0 ] || [ "$count_635" -ne 0 ] || [ "$count_641" -ne 0 ] || [ "$count_data_abort" -ne 0 ] || [ "$count_clone_exec" -ne 0 ] || [ "$count_strand" -ne 0 ] || [ "$count_boot_test_fail" -ne 0 ] || [ "$count_596" -ne 0 ] || [ "$count_612" -ne 0 ] || [ "$count_609" -ne 0 ] || [ "$count_p5b" -ne 0 ] || [ "$count_unattributed" -ne 0 ] || [ "$resume_pc_refusal_lines" -ne 0 ] || [ "$stack_alien_lines" -ne 0 ] || [ "$stage_refusal_lines" -ne 0 ]; then
         ANY_GATE_FAILURE=1
-        echo "Profile $cpu_profile gate: FAILED (575=$count_575, 576=$count_576, 626=$count_626, 635=$count_635, 641=$count_641, DATA_ABORT=$count_data_abort, CLONE_EXEC=$count_clone_exec, STRAND=$count_strand, BOOT_TEST_FAIL=$count_boot_test_fail, 596=$count_596, 612=$count_612, 609=$count_609, P5B=$count_p5b, UNATTRIBUTED=$count_unattributed, RESUME_PC_REFUSED=$resume_pc_refusal_lines, PERCPU_STACK_ALIEN=$stack_alien_lines)"
+        echo "Profile $cpu_profile gate: FAILED (575=$count_575, 576=$count_576, 626=$count_626, 635=$count_635, 641=$count_641, DATA_ABORT=$count_data_abort, CLONE_EXEC=$count_clone_exec, STRAND=$count_strand, BOOT_TEST_FAIL=$count_boot_test_fail, 596=$count_596, 612=$count_612, 609=$count_609, P5B=$count_p5b, UNATTRIBUTED=$count_unattributed, RESUME_PC_REFUSED=$resume_pc_refusal_lines, PERCPU_STACK_ALIEN=$stack_alien_lines, RET_STAGE_REFUSED=$stage_refusal_lines)"
     else
-        echo "Profile $cpu_profile gate: PASSED (575=0, 576=0, 626=0, 635=0, 641=0, DATA_ABORT=0, CLONE_EXEC=0, STRAND=0, BOOT_TEST_FAIL=0, 596=0, 612=0, 609=0, P5B=0, UNATTRIBUTED=0, RESUME_PC_REFUSED=0, PERCPU_STACK_ALIEN=0)"
+        echo "Profile $cpu_profile gate: PASSED (575=0, 576=0, 626=0, 635=0, 641=0, DATA_ABORT=0, CLONE_EXEC=0, STRAND=0, BOOT_TEST_FAIL=0, 596=0, 612=0, 609=0, P5B=0, UNATTRIBUTED=0, RESUME_PC_REFUSED=0, PERCPU_STACK_ALIEN=0, RET_STAGE_REFUSED=0)"
     fi
 
     TOTAL_575=$((TOTAL_575 + count_575))

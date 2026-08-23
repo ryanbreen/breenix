@@ -1313,6 +1313,92 @@ fn service_sequence_resume_pc_refusals_fail_the_profile() {
     );
 }
 
+/// A ret-dispatch staging refusal is emitted only by production dispatch in
+/// this gate's feature profile, so a non-zero count is a defect and must fail
+/// the profile rather than be watched — the same standard the resume-PC
+/// refusal and the per-CPU stack alien are held to, and for the same reason.
+///
+/// `[RET_STAGE_REFUSED:` means a dispatch was about to restore bytes that are
+/// not the bytes it admitted under the scheduler lock, or that the source row
+/// carried no live `CpuContext` identity word. There is no benign reading.
+///
+/// `[LR_NONTEXT:` is the counter-example held next to it deliberately: an EL1
+/// saved link register that is not a kernel PC is ROUTINE (x30 is a
+/// general-purpose register a kernel function may use as a scratch temporary),
+/// so it is reported and must NOT be gated. Pinning both together is what
+/// stops a later edit from quietly swapping their status.
+#[test]
+fn service_sequence_ret_stage_refusals_fail_the_profile_and_nontext_words_do_not() {
+    let gate = repo_text(SERVICE_SEQUENCE_GATE_PATH);
+    let run_profile = shell_function_body(&gate, "run_profile");
+
+    // Both counters are derived from their grep lines, so a rename is followed
+    // rather than evaded.
+    let mut counters = Vec::new();
+    for marker in [r#"grep -cF "[RET_STAGE_REFUSED:""#, r#"grep -cF "[LR_NONTEXT:""#] {
+        let line = run_profile
+            .lines()
+            .map(str::trim)
+            .find(|line| line.contains(marker))
+            .unwrap_or_else(|| panic!("no per-boot count of {marker} in run_profile"));
+        let boot_counter = line
+            .split_once('=')
+            .map(|(counter, _)| counter.to_owned())
+            .expect("per-boot counter assignment");
+        let profile_counter = run_profile
+            .lines()
+            .map(str::trim)
+            .find_map(|line| {
+                let (counter, expression) = line.split_once("=$((")?;
+                expression
+                    .contains(&format!("+ {boot_counter}"))
+                    .then_some(counter.to_owned())
+            })
+            .unwrap_or_else(|| panic!("no per-profile accumulator for {boot_counter}"));
+        counters.push(profile_counter);
+    }
+    let (staging, nontext) = (&counters[0], &counters[1]);
+
+    let fail_conditions: Vec<_> = run_profile
+        .lines()
+        .map(str::trim)
+        .filter(|line| line.starts_with(r#"if [ "$count_"#) && line.ends_with("; then"))
+        .collect();
+    assert_eq!(
+        fail_conditions.len(),
+        1,
+        "run_profile must retain exactly one per-profile FAIL condition"
+    );
+    assert!(
+        fail_conditions[0].contains(&format!(r#"[ "${staging}" -ne 0 ]"#)),
+        "a non-zero production ret-dispatch staging refusal must fail the profile"
+    );
+    assert!(
+        !fail_conditions[0].contains(&format!(r#"[ "${nontext}" -ne 0 ]"#)),
+        "a saved-LR non-PC word must NOT fail the profile; it is routine, and gating it would \
+         redden clean boots"
+    );
+
+    let print_census = shell_function_body(&gate, "print_census");
+    for (counter, expected) in [(staging, "gate-failing"), (nontext, "reported, not gated")] {
+        let reports: Vec<_> = print_census
+            .lines()
+            .map(str::trim)
+            .filter(|line| line.contains(&format!("${counter}")))
+            .collect();
+        assert_eq!(
+            reports.len(),
+            1,
+            "expected exactly one census line mentioning ${counter}"
+        );
+        assert!(
+            reports[0].contains(expected),
+            "the census line for ${counter} must say \"{expected}\": {}",
+            reports[0]
+        );
+    }
+}
+
 /// The per-CPU stack custody record is emitted only by production dispatch in
 /// this gate's feature profile, so a non-zero count is a defect and must fail
 /// the profile rather than be watched — the same standard the resume-PC refusal
