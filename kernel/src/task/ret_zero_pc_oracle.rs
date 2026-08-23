@@ -1089,6 +1089,11 @@ fn report_el1_resume_pc() {
     let victim_tid = EL1_VICTIM_TID.load(Ordering::Acquire);
     let (refused, _refused_tid, refused_pc, refused_sources, _el0_asm_refused) =
         crate::arch_impl::aarch64::context_switch::resume_pc_refusal_snapshot();
+    // Review note N8: `injected` counts injections, `refused` counts DRAINED
+    // records, and the per-CPU record slot holds one entry — two refusals
+    // between drains coalesce. `guard_events` is the per-arm execution count,
+    // which does not coalesce, so the arithmetic is readable from the verdict.
+    let guard_events = crate::per_cpu_aarch64::eret_guard_events_total();
     let el0_faults =
         crate::arch_impl::aarch64::exception::EL0_INSTRUCTION_FAULTS.load(Ordering::Acquire);
     let fatal = u64::from(crate::arch_impl::aarch64::exception::any_fatal_postmortem_captured());
@@ -1097,12 +1102,18 @@ fn report_el1_resume_pc() {
         && opportunities >= 1
         && injected >= 1
         && (refused_sources & 0b1_1110) != 0
+        && guard_events >= refused
         && fatal == 0;
     #[cfg(feature = "resume_pc_oracle_disarm")]
-    let passed = armed == 1 && opportunities >= 1 && injected == 0 && refused == 0 && fatal == 0;
+    let passed = armed == 1
+        && opportunities >= 1
+        && injected == 0
+        && refused == 0
+        && guard_events >= refused
+        && fatal == 0;
 
     crate::serial_println!(
-        "[RESUME_PC_EL1_ORACLE:aarch64:leg={}:armed={}:live={}:opportunities={}:injected={}:injected_pc=0x{:x}:victim_tid={}:refused={}:refused_sources=0x{:x}:refused_pc=0x{:x}:el0_faults={}:fatal={}:{}]",
+        "[RESUME_PC_EL1_ORACLE:aarch64:leg={}:armed={}:live={}:opportunities={}:injected={}:injected_pc=0x{:x}:victim_tid={}:refused={}:guard_events={}:refused_sources=0x{:x}:refused_pc=0x{:x}:el0_faults={}:fatal={}:{}]",
         leg,
         armed,
         live,
@@ -1111,6 +1122,7 @@ fn report_el1_resume_pc() {
         injected_pc,
         victim_tid,
         refused,
+        guard_events,
         refused_sources,
         refused_pc,
         el0_faults,

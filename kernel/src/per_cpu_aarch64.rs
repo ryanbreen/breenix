@@ -220,6 +220,22 @@ pub fn eret_guard_record_full(cpu_id: usize) -> Option<(u64, u64, u64, u64, u64,
     Some((source, elr, spsr, x29, x30, sp, count))
 }
 
+/// Total refusal-arm executions recorded across all CPUs.
+///
+/// Each arm increments its CPU's counter before publishing, so this does not
+/// coalesce the way the single-entry record slot does. It is the denominator
+/// that explains a drained-refusal count lower than an injection count.
+pub fn eret_guard_events_total() -> u64 {
+    let mut total = 0u64;
+    for cpu_id in 0..crate::arch_impl::aarch64::constants::MAX_CPUS {
+        let cpu_data = unsafe { &raw const ALL_CPU_DATA[cpu_id] };
+        total = total.saturating_add(unsafe {
+            core::ptr::read_volatile(core::ptr::addr_of!((*cpu_data).eret_guard_count))
+        });
+    }
+    total
+}
+
 /// Exclusively claim the ERET-guard validity word after reading its record.
 pub fn eret_guard_claim_source(cpu_id: usize) -> u64 {
     if cpu_id >= crate::arch_impl::aarch64::constants::MAX_CPUS {

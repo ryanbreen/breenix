@@ -11098,6 +11098,16 @@ const REQUIRED_DEFERRED_RECLAMATION_CALLS: [&str; 3] = [
     "reclaim_terminated_threads",
 ];
 
+/// Count anchor for the total number of operations in `run_deferred_reclamation`.
+///
+/// The named census below proves the three teardown operations are each present
+/// exactly once; this anchor is what stops a FOURTH operation from being added
+/// to the idle-path reclamation sequence without anyone deciding to. Bumping it
+/// is the deliberate act of adding work to that sequence — review note N3, whose
+/// defect was that the round-1 rewrite of this test dropped the total bound and
+/// let two new calls in silently.
+const EXPECTED_DEFERRED_RECLAMATION_STATEMENTS: usize = 5;
+
 fn validate_run_deferred_reclamation_census(context_switch: &str) -> Result<(), String> {
     let reclamation = function_body(context_switch, "run_deferred_reclamation");
     let reclamation_mask = code_mask(reclamation);
@@ -11108,6 +11118,17 @@ fn validate_run_deferred_reclamation_census(context_switch: &str) -> Result<(), 
                 "run_deferred_reclamation must call {reclamation_call} exactly once, found {count}"
             ));
         }
+    }
+    let statements = reclamation
+        .char_indices()
+        .filter(|(offset, character)| {
+            *character == ';' && reclamation_mask.get(*offset).copied().unwrap_or(false)
+        })
+        .count();
+    if statements != EXPECTED_DEFERRED_RECLAMATION_STATEMENTS {
+        return Err(format!(
+            "run_deferred_reclamation must contain exactly {EXPECTED_DEFERRED_RECLAMATION_STATEMENTS} operations, found {statements}"
+        ));
     }
     Ok(())
 }
@@ -11180,6 +11201,29 @@ fn deferred_reclamation_census_rejects_each_missing_teardown_operation() {
             "removing {reclamation_call} must fail the reclamation census"
         );
     }
+}
+
+#[test]
+fn deferred_reclamation_census_rejects_an_added_operation() {
+    let context_switch = repo_text("kernel/src/arch_impl/aarch64/context_switch.rs");
+    assert_eq!(validate_run_deferred_reclamation_census(&context_switch), Ok(()));
+
+    let reclamation = function_body(&context_switch, "run_deferred_reclamation");
+    let reclamation_start = context_switch
+        .find(reclamation)
+        .expect("run_deferred_reclamation body offset");
+    let anchor = reclamation
+        .find("reclaim_terminated_threads")
+        .expect("reclamation mutation anchor");
+    let mut mutant = context_switch.clone();
+    mutant.insert_str(
+        reclamation_start + anchor,
+        "reclaim_additional_resources();\n    crate::task::scheduler::",
+    );
+    assert!(
+        validate_run_deferred_reclamation_census(&mutant).is_err(),
+        "the census must reject an operation added to the idle reclamation sequence"
+    );
 }
 
 #[test]
