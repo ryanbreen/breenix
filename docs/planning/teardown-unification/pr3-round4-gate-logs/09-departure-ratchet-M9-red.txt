@@ -1,0 +1,5 @@
+test aarch64_refusal_drain_repoints_this_cpus_current_thread_before_terminating ... ok
+test aarch64_refusal_drain_acts_only_after_it_has_departed_the_victim_stack ... FAILED
+test aarch64_refusal_drain_acts_only_on_records_this_cpu_published ... ok
+the drain may only act once it has left the victim's kernel stack: set_terminated is not dominated by the departure test
+test result: FAILED. 71 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 24.60s

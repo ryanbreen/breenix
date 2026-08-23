@@ -1,0 +1,5 @@
+test aarch64_refusal_drain_repoints_this_cpus_current_thread_before_terminating ... ok
+test aarch64_refusal_drain_acts_only_after_it_has_departed_the_victim_stack ... ok
+test aarch64_refusal_drain_acts_only_on_records_this_cpu_published ... FAILED
+assertion `left == right` failed: the drain may only act on records the draining CPU published: expected exactly one `if` comparing cpu_id against drain_cpu; found 0
+test result: FAILED. 71 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 24.71s
