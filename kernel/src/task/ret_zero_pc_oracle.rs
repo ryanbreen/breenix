@@ -931,18 +931,30 @@ fn report_ret_floor() {
         crate::arch_impl::aarch64::context_switch::RESUME_PC_CUSTODY_CHECKS.load(Ordering::Acquire);
     let custody_blind =
         crate::arch_impl::aarch64::context_switch::RESUME_PC_CUSTODY_BLIND.load(Ordering::Acquire);
+    let current_dangling = crate::arch_impl::aarch64::context_switch::RESUME_PC_CURRENT_DANGLING
+        .load(Ordering::Acquire);
+    let current_repointed = crate::arch_impl::aarch64::context_switch::RESUME_PC_CURRENT_REPOINTED
+        .load(Ordering::Acquire);
     let fatal = if crate::arch_impl::aarch64::exception::any_fatal_postmortem_captured() {
         1
     } else {
         0
     };
     #[cfg(not(feature = "resume_pc_oracle_disarm"))]
+    // The refused ret-dispatch had already published its victim as this CPU's
+    // current thread. `current_dangling >= 1` is the anti-vacuity half: the
+    // hazard has to actually occur in this leg, or the repoint proves nothing.
+    // `current_repointed == current_dangling` is the fix: every occurrence was
+    // repointed at idle before the thread was marked Terminated, so no reclaim
+    // can free a Box this CPU still publishes as current.
     let passed = armed == 1
         && fired == 1
         && ret_dispatch_arm == 1
         && refused_tid == victim_tid
         && custody_checks >= 1
         && custody_blind == 0
+        && current_dangling >= 1
+        && current_repointed == current_dangling
         && fatal == 0;
     #[cfg(feature = "resume_pc_oracle_disarm")]
     let passed = armed == 1
@@ -952,9 +964,11 @@ fn report_ret_floor() {
         && refused_tid == 0
         && custody_checks == 0
         && custody_blind == 0
+        && current_dangling == 0
+        && current_repointed == 0
         && fatal == 0;
     crate::serial_println!(
-        "[RET_FLOOR_ORACLE:aarch64:leg=F:armed={}:fired={}:opportunities={}:victim_tid={}:injected_pc=0x{:x}:refused={}:refused_tid={}:refused_sources=0x{:x}:ret_dispatch_arm={}:custody_checks={}:custody_blind={}:fatal={}:{}]",
+        "[RET_FLOOR_ORACLE:aarch64:leg=F:armed={}:fired={}:opportunities={}:victim_tid={}:injected_pc=0x{:x}:refused={}:refused_tid={}:refused_sources=0x{:x}:ret_dispatch_arm={}:custody_checks={}:custody_blind={}:current_dangling={}:current_repointed={}:fatal={}:{}]",
         armed,
         fired,
         opportunities,
@@ -966,6 +980,8 @@ fn report_ret_floor() {
         ret_dispatch_arm,
         custody_checks,
         custody_blind,
+        current_dangling,
+        current_repointed,
         fatal,
         if passed { "PASS" } else { "FAIL" },
     );
