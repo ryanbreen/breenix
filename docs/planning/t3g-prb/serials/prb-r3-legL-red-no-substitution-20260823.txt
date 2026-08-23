@@ -1,0 +1,2222 @@
+EOS
+========================================
+  Breenix ARM64 Kernel Starting
+  BUILD_ID: 006a8b35ea2381
+========================================
+
+[CTX596_ORACLE:ARMED:force_eret=0]
+[boot] DIAG_MARKER_XHCI_A
+[boot] DIAG_MARKER_XHCI_B
+[boot] DIAG_MARKER_XHCI_C
+[boot] loader xhci_hcrst_raw=0x0 ecam=0x0
+[boot] Current exception level: EL1
+[boot] MMU already enabled (high-half kernel)
+[boot] Initializing memory management (0x44000000-0x50000000)...
+[boot] Memory management ready
+[boot] Initializing Generic Timer...
+[boot] Timer frequency: 62500000 Hz (62 MHz)
+[boot] Initializing PL031 RTC...
+[boot] Current timestamp: 518562
+[boot] Initializing GIC...
+[gic] GICR probe 0x080a0000: WAKER=0x00000006 <<< VALID
+[gic] GICR base mismatch: loader=0x00000000, using=0x080a0000
+[gic] GICD_CTLR wrote 0x53, readback=0x53
+[gic] GICR_IGROUPR0: wrote 0xFFFFFFFF, readback=0xffffffff
+[gic] EOImode=1 (split EOI/DIR) - non-VMware path
+[gic] ICC_CTLR_EL1: 0x8c00 -> 0x8c02 (EOImode=1)
+[boot] GIC initialized (version 3)
+[boot] Enabling UART interrupts...
+[boot] Enabling GIC IRQ 33 (UART0)...
+[uart] IMSC: 0x0 -> 0x50 (verify: 0x50)
+[uart] FR=0x90 (RXFE=1), RIS=0x20
+[gic] IRQ 33 state (GICv3):
+  enabled=true, group1=true, pending=false
+  priority=0xa0, GICD_CTLR=0x53
+  ICC_PMR=0xf0
+[boot] UART interrupts enabled
+[boot] Enabling interrupts...
+[boot] Interrupts enabled: true
+[boot] QEMU PCI ECAM configured at 0x4010000000
+[boot] Initializing device drivers...
+[drivers] Initializing driver subsystem...
+[drivers] Hybrid mode: VirtIO MMIO + PCI AHCI
+[drivers] Found VirtIO MMIO device: network (ID=1, version=1)
+[drivers] Found VirtIO MMIO device: block (ID=2, version=1)
+[drivers] Found VirtIO MMIO device: input (ID=18, version=1)
+[drivers] Found VirtIO MMIO device: input (ID=18, version=1)
+[drivers] Found VirtIO MMIO device: GPU (ID=16, version=1)
+[drivers] Found 5 VirtIO MMIO devices
+[virtio-blk] Searching for block devices...
+[virtio-blk] Found block device 0 at 0xa003800
+[virtio-blk] Device 0 version: 1
+[virtio-blk] Device 0 capacity: 524288 sectors (256 MB)
+[virtio-blk] Device 0 queue max size: 1024
+[virtio-blk] Device 0 using v1 (legacy) queue setup at PFN 0x41237
+[virtio-blk] Block MMIO IRQ 76 enabled for device 0
+[virtio-blk] Block device 0 initialized successfully
+[virtio-blk] Initialized 1 block device(s)
+[drivers] VirtIO block driver initialized
+[virtio-net] Searching for network device...
+[virtio-net] Found network device at 0xa003600 (slot 27)
+[virtio-net] Device version: 1
+[virtio-net] MAC address: 52:54:00:12:34:56
+[virtio-net] RX queue max size: 1024
+[virtio-net] TX queue max size: 1024
+[virtio-net] Network device initialized successfully
+[virtio-net] Network device IRQ 75 (will enable after net init)
+[drivers] VirtIO network driver initialized
+[virtio-net] Device test - MAC: 52:54:00:12:34:56
+[virtio-net] Test passed!
+[virtio-gpu] Searching for GPU device...
+[virtio-gpu] Found GPU device at 0xa003e00
+[virtio-gpu] Device version: 1
+[virtio-gpu] Control queue max size: 1024
+[virtio-gpu] Display: 1280x800
+[virtio-gpu] GPU device initialized successfully
+[drivers] VirtIO GPU driver initialized
+[virtio-gpu] Device test - Display: 1280x800
+[virtio-gpu] Test passed!
+[virtio-sound] Searching for sound device...
+[drivers] VirtIO sound driver init failed: No VirtIO Sound device found
+[drivers] Driver subsystem initialized (MMIO)
+[drivers] PCI ECAM at 0x4010000000, enumerating PCI bus...
+[drivers] Found 1 PCI devices
+[pci] 00:00.0 [1b36:0008] class=06/00
+[drivers] AHCI PCI init failed: No AHCI controller found
+[drivers] Driver subsystem initialized (hybrid MMIO+PCI)
+[boot] Found 6 devices
+[drivers] Running post-init self-tests...
+[virtio-blk] Testing read of sector 0...
+[virtio-blk] Sector 0 data: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 ...
+[virtio-blk] Read test passed!
+[boot] Initializing network stack...
+[net] Initializing network stack...
+[net] MAC address: 52:54:00:12:34:56
+NET: IP address: 10.0.2.15
+NET: Gateway: 10.0.2.2
+Network stack initialized
+NET: Sending ARP request for gateway 10.0.2.2
+ARP request sent successfully
+NET: Gateway ARP not resolved during init; will resolve via IRQ path
+NET: Sending ICMP echo request to gateway 10.0.2.2
+NET: ARP cache miss for 10.0.2.2, sending ARP request
+NET: Failed to send ping: ArpMiss: reply will populate cache via IRQ
+NET: Network initialization complete
+[virtio-net] Enabling IRQ 75 for network device
+NET: pre-primed NetRx softirq for bootstrap callback re-enable
+[boot] Initializing filesystem...
+[ext2] Using VirtIO block device (524288 sectors)
+[boot] ext2 root filesystem mounted
+[boot] No home filesystem: No home block device available (expected at device index 3 or 1) (continuing)
+[boot] devfs initialized at /dev
+[boot] devptsfs initialized at /dev/pts
+[boot] CPU detected: ARM Cortex-A72
+[boot] procfs initialized at /proc
+[boot] TTY subsystem initialized
+[boot] Initializing graphics...
+[virtio-gpu] GPU device already initialized
+[arm64-fb] Shell framebuffer initialized: 1280x800
+[graphics] Framebuffer: 1280x800
+[graphics] Particle system initialized
+[render_queue] Initialized (64KB buffer)
+[graphics] Split-screen terminal UI initialized
+[boot] Initializing VirtIO keyboard...
+[virtio-input] Searching for input devices (ID=18)...
+[virtio-input] Slot 27 at 0xa003600: device_id=1
+[virtio-input] Slot 28 at 0xa003800: device_id=2
+[virtio-input] Slot 29 at 0xa003a00: device_id=18
+[virtio-input] Found tablet at 0xa003a00 (slot 29, supports EV_ABS)
+[virtio-input] Tablet device version: 1
+[virtio-input] Event queue max size: 1024
+[virtio-input] Enabling IRQ 77 for tablet
+[virtio-input] Tablet initialized (16 buffers)
+[virtio-input] Slot 30 at 0xa003c00: device_id=18
+[virtio-input] Found keyboard at 0xa003c00 (slot 30, no EV_ABS)
+[virtio-input] Keyboard device version: 1
+[virtio-input] Event queue max size: 1024
+[virtio-input] Enabling IRQ 78 for keyboard
+[virtio-input] Keyboard initialized (64 buffers)
+[virtio-input] Slot 31 at 0xa003e00: device_id=16
+[boot] VirtIO keyboard initialized
+[boot] Initializing per-CPU data...
+[boot] Per-CPU data initialized
+[boot] Initializing process manager...
+[boot] Process manager initialized
+[boot] Initializing scheduler...
+[boot] Scheduler initialized
+[boot] Workqueue subsystem initialized
+[boot] Softirq subsystem initialized
+[boot] Render thread spawned (tid=4)
+[boot] Tracing subsystem initialized and enabled
+[boot] Pre-loading /sbin/init from ext2 (before timer)...
+[net] ICMP echo reply received from 10.0.2.2 seq=1
+[boot] Init binary pre-loaded: 298328 bytes
+[xhci] post-activation: MSI_EVENT_COUNT=0 EVENT_COUNT=0 POLL_COUNT=0 SPI_ACTIVATED=false
+[boot] Initializing timer interrupt...
+[timer] Timer configured for ~1000 Hz (62500 ticks per interrupt)
+[timer] Using virtual timer (PPI 27)
+[boot] Timer interrupt initialized
+[smp] CPU 0 MPIDR=0x80000000, stack_base=0x43000000
+[smp] Probing secondary CPUs via PSCI...
+1[smp] CPU 1@: PSCI CPU_ON1 success (raw_status=A0)
+[smp] CPU 2: PSCI B2@1ABCCCPU_ON success (raw_stDatus=0)E
+e[smp3]F@1AGDEB2 CPU eF3: CPSCIG CPU_O1NDEeFG suc3cess (raw_status=0)
+[gic] EOImode=1 (split EOI/DIR) - non-VMware path
+[Tgic] EOI1mode=1 (split EOI/DIR) - non-VMware path
+[gic] EOImode=1 (split EOI/DIR) - non-VMware path
+[gic] ICC_CTLR_EL1: 0x8c00 -> 0x8c02 (EOImode=1)
+[gic] ICC_CTLR_EL1: 0x8c00 -> 0x8c02 (EOImode=1)
+[gic] ICC_CTLR_EL1: 0x8c00 -> 0x8c02 (EOImode=1)
+[smp] CPU 4 attempt 1/4: HVC64 failed (ret=-2), trying HVC32...
+[smp] PSCI CPU_ON failed for CPU 4 after 1 attempts: ret=-2 (MPIDR=0x4 entry=0x400802b8)
+[smp] CPU 4: PSCI CPU_ON failed (ret=-2), stopping probe
+[smp] 4 CPUs online
+[boot] Running parallel boot tests...
+T2T3T4[BOOT_TESTS:START]
+[STAGE:serial:ADVANCE]
+[BOOT_TESTS:TOTAL:107]
+[BOOT_TESTS:SERIAL_BOOT:2]
+[BOOT_TESTS:EARLY_BOOT:89]
+[BOOT_TESTS:STAGED:18 tests waiting for later stages]
+T5T6T7T8T9T0[SUBSYSTEM:process:serial:START]
+[TEST:process:frame_custody_refusal_gate:START]
+[TEST:process:frame_custody_refusal_gate:PASS]
+[TEST:process:page_table_custody_disposition_gate:START]
+[EXEC_FAILED_RELEASE_ORACLE:aarch64:used_before=1:used_after=1:leaf_recorded=1:leaf_released=1:leaf_returned=1:tables_returned=4:roots_retired=1:live_refused=0]
+[TEST:process:page_table_custody_disposition_gate:PASS]
+[SUBSYSTEM:process:serial:COMPLETE:2/2]
+[STAGE:serial:COMPLETE:2/107]
+[STAGE:early:ADVANCE]
+[SUBSYSTEM:memory:early:START]
+[TEST:memory:framework_sanity:START]
+[TEST:memory:framework_sanity:PASS]
+[SUBSYSTEM:interrupts:early:START]
+[TEST:interrupts:interrupt_controller_init:START]
+[SUBSYSTEM:network:early:START]
+[TEST:network:network_stack_init:START]
+[TEST:interrupts:interrupt_controller_init:PASS]
+[TEST:network:network_stack_init:PASS]
+[SUBSYSTEM:ipc:early:START]
+[TEST:ipc:pipe_buffer_basic:START]
+[TEST:ipc:pipe_buffer_basic:PASS]
+[SUBSYSTEM:timer:early:START]
+[TEST:timer:timer_init:START]
+[TEST:timer:timer_init:PASS]
+[SUBSYSTEM:filesystem:early:START]
+[TEST:filesystem:vfs_init:START]
+[TEST:filesystem:vfs_init:PASS]
+[SUBSYSTEM:syscall:early:START]
+[TEST:syscall:syscall_dispatch:START]
+[TEST:syscall:syscall_dispatch:PASS]
+[SUBSYSTEM:system:early:START]
+[TEST:system:boot_sequence:START]
+[TEST:system:boot_sequence:PASS]
+[SUBSYSTEM:process:early:START]
+[TEST:process:deferred_fault_ring_overflow_injection:START]
+[TEST:process:deferred_fault_ring_overflow_injection:PASS]
+[SUBSYSTEM:logging:early:START]
+[TEST:logging:logging_init:START]
+[TEST:logging:logging_init:PASS]
+[SUBSYSTEM:scheduler:early:START]
+[TEST:scheduler:wakes_are_placed_on_online_cpus:START]
+[TEST:scheduler:wakes_are_placed_on_online_cpus:PASS]
+[TEST:memory:heap_alloc_basic:START]
+[TEST:memory:heap_alloc_basic:PASS]
+[TEST:scheduler:executor_exists:START]
+[TEST:scheduler:executor_exists:PASS]
+[TEST:system:system_stability:START]
+[TEST:system:system_stability:PASS]
+[TEST:filesystem:devfs_mounted:START]
+[TEST:filesystem:devfs_mounted:PASS]
+[TEST:system:kernel_heap:START]
+[TEST:system:kernel_heap:PASS]
+[TEST:interrupts:irq_enable_disable:START]
+[TEST:interrupts:irq_enable_disable:PASS]
+[TEST:system:tty_foreground_pgrp:START]
+[TEST:system:tty_foreground_pgrp:PASS]
+[TEST:scheduler:async_waker:START]
+[TEST:scheduler:async_waker:PASS]
+[TEST:memory:frame_allocator:START]
+[TEST:memory:frame_allocator:PASS]
+[TEST:timer:timer_ticks:START]
+[TEST:timer:timer_ticks:PASS]
+[TEST:interrupts:timer_interrupt_running:START]
+[SUBSYSTEM:system:early:COMPLETE:4/4]
+[TEST:interrupts:timer_interrupt_running:PASS]
+[TEST:logging:log_levels:START]
+[TEST:logging:log_levels:PASS]
+[TEST:ipc:pipe_eof:START]
+[TEST:ipc:pipe_eof:PASS]
+[SCHED_STRAND_ORACLE:aarch64:samples=8:checked=116:stranded=0:running_shape=0:ready_shape=0:resolved_production=0:resolved_exercised=0:worst_dwell_ms=0:overflow=0:worst_nonprogress_ms=0:nonprogress=0:queued_on_nondispatching_cpu=0:worst_queued_nondispatch_ms=0:worst_cpu_scheduler_silence_ms=422:worst_silence_cpu=0]
+[TEST:logging:serial_output:START]
+[LOGGING_TEST] Serial test ARM64
+[TEST:logging:serial_output:PASS]
+[TEST:timer:timer_delay:START]
+[TEST:timer:timer_delay:PASS]
+[TEST:network:virtio_net_probe:START]
+[TEST:network:virtio_net_probe:PASS]
+[TEST:scheduler:future_basics:START]
+[TEST:scheduler:future_basics:PASS]
+[TEST:timer:timer_monotonic:START]
+[TEST:timer:timer_monotonic:PASS]
+[TEST:filesystem:file_open_close:START]
+[TEST:filesystem:file_open_close:PASS]
+[TEST:timer:timer_quantum_reset_aarch64:START]
+[TEST:timer:timer_quantum_reset_aarch64:PASS]
+[TEST:syscall:arm64_pty_ioctl_path:START]
+manager.create_process [ARM64]: ENTRY - name='pty_ioctl_test', elf_size=276816
+manager.create_process [ARM64]: Generated PID 2
+manager.create_process [ARM64]: Creating ProcessPageTable
+manager.create_process [ARM64]: ProcessPageTable created
+manager.create_process [ARM64]: Loading ELF into page table
+manager.create_process [ARM64]: ELF loaded, entry=0x4000e0b0
+manager.create_process [ARM64]: Creating Process struct
+manager.create_process [ARM64]: Process struct created, heap_start=0x40017000
+manager.create_process [ARM64]: Allocating user stack
+manager.create_process [ARM64]: Stack physical range 0x4401e000-0x4402e000
+manager.create_process [ARM64]: User stack will be at 0xfffffeff0000-0xffffff000000
+manager.create_process [ARM64]: Mapping user stack into process page table
+manager.create_process [ARM64]: map_user_stack_to_process user_bottom=0xfffffeff0000 user_top=0xffffff000000 phys_bottom=0x4401e000
+manager.create_process [ARM64]: User stack mapped successfully
+manager.create_process [ARM64]: Creating main thread
+manager.create_process [ARM64]: Main thread created
+manager.create_process [ARM64]: Main thread set on process
+manager.create_process [ARM64]: Adding PID 2 to ready queue
+manager.create_process [ARM64]: Inserting process into process table
+manager.create_process [ARM64]: SUCCESS - returning PID 2
+[TEST:syscall:arm64_pty_ioctl_path:PASS]
+[TEST:interrupts:keyboard_irq_setup:START]
+[TEST:interrupts:keyboard_irq_setup:PASS]
+[TEST:network:socket_creation:START]
+[TEST:network:socket_creation:PASS]
+[TEST:ipc:pipe_broken:START]
+[TEST:ipc:pipe_broken:PASS]
+[TEST:network:tcp_socket_creation:START]
+[TEST:network:tcp_socket_creation:PASS]
+[SUBSYSTEM:scheduler:early:COMPLETE:4/4]
+[TEST:network:loopback:START]
+[TEST:network:loopback:PASS]
+[TEST:interrupts:exception_vectors:START]
+[TEST:interrupts:exception_vectors:PASS]
+[TEST:syscall:arm64_socket_reset_quantum:START]
+[TEST:syscall:arm64_socket_reset_quantum:PASS]
+[TEST:ipc:pipe_wake_mechanism:START]
+[TEST:ipc:pipe_wake_mechanism:PASS]
+[TEST:process:process_manager_init:START]
+[TEST:process:process_manager_init:PASS]
+[SUBSYSTEM:syscall:early:COMPLETE:3/3]
+[TEST:process:scheduler_init:START]
+[TEST:process:scheduler_init:PASS]
+[TEST:network:loopback_wake_loss_counters_are_zero:START]
+[TEST:network:loopback_wake_loss_counters_are_zero:PASS]
+[TEST:process:thread_creation:START]
+[TEST:process:thread_creation:PASS]
+[SUBSYSTEM:timer:early:COMPLETE:5/5]
+[TEST:memory:heap_large_alloc:START]
+[TEST:interrupts:exception_handlers:START]
+[TEST:interrupts:exception_handlers:PASS]
+[TEST:network:loopback_recv_wake_when_idle:START]
+[TEST:ipc:fd_table_creation:START]
+[TEST:ipc:fd_table_creation:PASS]
+[TEST:memory:heap_large_alloc:PASS]
+[TEST:filesystem:directory_list:START]
+[TEST:filesystem:directory_list:PASS]
+[TEST:memory:heap_many_small:START]
+[TEST:memory:heap_many_small:PASS]
+[TEST:process:signal_delivery_infrastructure:START]
+[TEST:process:signal_delivery_infrastructure:PASS]
+[TEST:ipc:fd_alloc_close:START]
+[TEST:ipc:fd_alloc_close:PASS]
+[TEST:memory:cow_flags_aarch64:START]
+[TEST:memory:cow_flags_aarch64:PASS]
+[TEST:ipc:create_pipe:START]
+[TEST:ipc:create_pipe:PASS]
+[TEST:filesystem:filesystem_syscalls_aarch64:START]
+[SUBSYSTEM:logging:early:COMPLETE:3/3]
+[TEST:process:arm64_signal_frame_conversion:START]
+[TEST:process:arm64_signal_frame_conversion:PASS]
+[TEST:ipc:pty_support_aarch64:START]
+[TEST:ipc:pty_support_aarch64:PASS]
+[SUBSYSTEM:process:early:COMPLETE:6/6]
+[TEST:filesystem:filesystem_syscalls_aarch64:PASS]
+[TEST:memory:guard_page_exists:START]
+[TEST:memory:guard_page_exists:PASS]
+[TEST:filesystem:virtio_blk_multi_read:START]
+[virtio-blk] Starting multi-read stress test (10 reads)...
+[virtio-blk] Read 1 of 10 complete
+[virtio-blk] Read 2 of 10 complete
+[virtio-blk] Read 3 of 10 complete
+[virtio-blk] Read 4 of 10 complete
+[virtio-blk] Read 5 of 10 complete
+[virtio-blk] Read 6 of 10 complete
+[virtio-blk] Read 7 of 10 complete
+[virtio-blk] Read 8 of 10 complete
+[virtio-blk] Read 9 of 10 complete
+[virtio-blk] Read 10 of 10 complete
+[virtio-blk] Multi-read stress test passed!
+[TEST:filesystem:virtio_blk_multi_read:PASS]
+[SUBSYSTEM:ipc:early:COMPLETE:8/8]
+[TEST:filesystem:virtio_blk_sequential_read:START]
+[virtio-blk] Testing sequential read of sectors 0-31...
+[virtio-blk] Read sectors 0-7 OK (avail_idx wrap count: 0)
+[virtio-blk] Read sectors 0-15 OK (avail_idx wrap count: 1)
+[virtio-blk] Read sectors 0-23 OK (avail_idx wrap count: 1)
+[virtio-blk] Read sectors 0-31 OK (avail_idx wrap count: 2)
+[virtio-blk] Sequential read test passed! (32 sectors, 2 queue wraps)
+[TEST:filesystem:virtio_blk_sequential_read:PASS]
+[TEST:network:loopback_recv_wake_when_idle:PASS]
+[TEST:memory:stack_layout:START]
+[TEST:memory:stack_layout:PASS]
+[TEST:network:loopback_recv_wake_under_load:START]
+[TEST:interrupts:breakpoint:START]
+[exception] Breakpoint (BRK #0) at 0xffff0000405485ec
+[TEST:interrupts:breakpoint:PASS]
+[TEST:memory:stack_allocation:START]
+[TEST:memory:stack_allocation:PASS]
+[TEST:memory:user_stack_base:START]
+[TEST:memory:user_stack_base:PASS]
+[TEST:memory:user_stack_size:START]
+[TEST:memory:user_stack_size:PASS]
+[TEST:interrupts:softirq_aarch64:START]
+[TEST:interrupts:softirq_aarch64:PASS]
+[TEST:filesystem:virtio_blk_write_read_verify:START]
+[virtio-blk] Testing write-read-verify cycle...
+[virtio-blk] Device capacity: 524288 sectors
+[virtio-blk] Reading original data from sector 1000...
+[virtio-blk] Original first 16 bytes: [00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00]
+[virtio-blk] Test pattern first 16 bytes: [aa, 01, aa, 03, aa, 05, aa, 07, aa, 09, aa, 0b, aa, 0d, aa, 0f]
+[virtio-blk] Writing test pattern to sector 1000...
+[virtio-blk] Write succeeded
+[virtio-blk] Reading back sector 1000...
+[virtio-blk] Readback first 16 bytes: [aa, 01, aa, 03, aa, 05, aa, 07, aa, 09, aa, 0b, aa, 0d, aa, 0f]
+[virtio-blk] Restoring original data to sector 1000...
+[virtio-blk] Write-read-verify test passed! All 512 bytes match.
+[TEST:filesystem:virtio_blk_write_read_verify:PASS]
+[TEST:memory:user_stack_top:START]
+[TEST:memory:user_stack_top:PASS]
+[SUBSYSTEM:interrupts:early:COMPLETE:8/8]
+[TEST:filesystem:virtio_blk_invalid_sector:START]
+[virtio-blk] Testing invalid sector read...
+[virtio-blk] Device capacity: 524288 sectors
+[virtio-blk] Invalid sector correctly rejected: Sector out of range
+[virtio-blk] Invalid sector test passed!
+[TEST:filesystem:virtio_blk_invalid_sector:PASS]
+[TEST:memory:user_stack_guard:START]
+[TEST:memory:user_stack_guard:PASS]
+[TEST:memory:user_stack_alignment:START]
+[TEST:memory:user_stack_alignment:PASS]
+[TEST:filesystem:virtio_blk_uninitialized_read:START]
+[virtio-blk] Testing uninitialized device handling...
+[virtio-blk] Device is initialized (expected during normal boot)
+[virtio-blk] Verified: read_sector checks BLOCK_DEVICE.is_none() and returns error
+[virtio-blk] Uninitialized test passed (device was already initialized)!
+[TEST:filesystem:virtio_blk_uninitialized_read:PASS]
+[TEST:memory:kernel_stack_base:START]
+[TEST:memory:kernel_stack_base:PASS]
+[SUBSYSTEM:filesystem:early:COMPLETE:10/10]
+[TEST:memory:kernel_stack_size:START]
+[TEST:memory:kernel_stack_size:PASS]
+[TEST:memory:kernel_stack_top:START]
+[TEST:memory:kernel_stack_top:PASS]
+[TEST:memory:kernel_stack_guard:START]
+[TEST:memory:kernel_stack_guard:PASS]
+[TEST:memory:kernel_stack_alignment:START]
+[TEST:memory:kernel_stack_alignment:PASS]
+[TEST:network:loopback_recv_wake_under_load:PASS]
+[TEST:memory:stack_in_range:START]
+[TEST:memory:stack_in_range:PASS]
+[TEST:memory:stack_grows_down:START]
+[TEST:memory:stack_grows_down:PASS]
+[TEST:memory:stack_depth:START]
+[TEST:memory:stack_depth:PASS]
+[TEST:network:loopback_pump_does_not_busy_spin:START]
+[TEST:memory:stack_frame_size:START]
+[TEST:memory:stack_frame_size:PASS]
+[TEST:memory:stack_red_zone:START]
+[TEST:memory:stack_red_zone:PASS]
+[SUBSYSTEM:memory:early:COMPLETE:24/24]
+[TEST:network:loopback_pump_does_not_busy_spin:PASS]
+[TEST:network:tcp_final_ack_survives_accept_publish_race:START]
+[TEST:network:tcp_final_ack_survives_accept_publish_race:PASS]
+[TEST:network:arm64_net_softirq_registration:START]
+[TEST:network:arm64_net_softirq_registration:PASS]
+[TEST:network:net_lock_guard_masks_interrupt_source:START]
+[TEST:network:net_lock_guard_masks_interrupt_source:PASS]
+[SUBSYSTEM:network:early:COMPLETE:12/12]
+[STAGE:early:COMPLETE:89/107]
+[STAGE:sched:ADVANCE]
+[SUBSYSTEM:scheduler:sched:START]
+[TEST:scheduler:kthread_spawn_verify:START]
+[SUBSYSTEM:filesystem:sched:START]
+[TEST:filesystem:block_wedge_oracle:START]
+[SUBSYSTEM:process:sched:START]
+[TEST:process:fork_exit_defer_reclaim_pairing_test:START]
+[TEST:scheduler:kthread_spawn_verify:PASS]
+[BLOCK_WEDGE_ORACLE:locked=1:wedged=1:refused=1:parked=0:refuse_ms=0]
+[TEST:filesystem:block_wedge_oracle:PASS]
+[TEST:scheduler:workqueue_operational:START]
+[TEST:scheduler:workqueue_operational:PASS]
+[SUBSYSTEM:filesystem:sched:COMPLETE:1/1]
+[PT_RETIRE_ORACLE:aarch64:cycles=64:used_before=53:used_after=53:expected_tables=9:roots=64:returned=640:lost=0:kstack_returns=64]
+[PT_LEAF_ORACLE:aarch64:cycles=64:expected=192:recorded=192:released=192:returned=192:live_refused=0:used_before=53:used_after=53]
+[TEST:process:fork_exit_defer_reclaim_pairing_test:PASS]
+[SUBSYSTEM:scheduler:sched:COMPLETE:2/2]
+[TEST:process:exec_detach_oracle:START]
+manager.create_process [ARM64]: ENTRY - name='exec_detach_leader', elf_size=180
+manager.create_process [ARM64]: Generated PID 69
+manager.create_process [ARM64]: Creating ProcessPageTable
+manager.create_process [ARM64]: ProcessPageTable created
+manager.create_process [ARM64]: Loading ELF into page table
+manager.create_process [ARM64]: ELF loaded, entry=0x200000
+manager.create_process [ARM64]: Creating Process struct
+manager.create_process [ARM64]: Process struct created, heap_start=0x401000
+manager.create_process [ARM64]: Allocating user stack
+manager.create_process [ARM64]: Stack physical range 0x4404c000-0x4405c000
+manager.create_process [ARM64]: User stack will be at 0xfffffeff0000-0xffffff000000
+manager.create_process [ARM64]: Mapping user stack into process page table
+manager.create_process [ARM64]: map_user_stack_to_process user_bottom=0xfffffeff0000 user_top=0xffffff000000 phys_bottom=0x4404c000
+manager.create_process [ARM64]: User stack mapped successfully
+manager.create_process [ARM64]: Creating main thread
+manager.create_process [ARM64]: Main thread created
+manager.create_process [ARM64]: Main thread set on process
+manager.create_process [ARM64]: Adding PID 69 to ready queue
+manager.create_process [ARM64]: Inserting process into process table
+manager.create_process [ARM64]: SUCCESS - returning PID 69
+[EXEC_DETACH_ORACLE:aarch64:bodies=2:fail_preserved=2:sibling_refused=2:success_detached=2:fresh_root=2:tgid_self=2:custody_balance=0:leaf_residual=16:stack_residual=18:kstack_frames_released=0:old_group_reached_pre=2:old_group_missed_post=2:self_group_reached_post=2]
+[TEST:process:exec_detach_oracle:PASS]
+[TEST:process:exec_detach_oracle:PASS]
+[TEST:process:clone_admission_oracle:START]
+[CLONE_ADMISSION_ORACLE:aarch64:admitted=1:refused=2:creating_refused=1:published_admitted=2:balance=0]
+[TEST:process:clone_admission_oracle:PASS]
+[TEST:process:clone_admission_oracle:PASS]
+[TEST:process:init_designation_oracle:START]
+manager.create_process_with_argv [ARM64]: ENTRY - name='init_oracle_a1', elf_size=8, argc=1
+manager.create_process_with_argv [ARM64]: Generated PID 1
+manager.create_process_with_argv [ARM64]: Creating ProcessPageTable
+manager.create_process_with_argv [ARM64]: Loading ELF into page table
+manager.create_process_with_argv [ARM64]: ENTRY - name='init_oracle_a2', elf_size=120, argc=1
+manager.create_process_with_argv [ARM64]: Generated PID 1
+manager.create_process_with_argv [ARM64]: Creating ProcessPageTable
+manager.create_process_with_argv [ARM64]: Loading ELF into page table
+[INIT_DESIGNATION_ORACLE:aarch64:construct_failed=2:construct_undecided=2:construct_residual=2:refused=4:accepted=1:published=1:retired=1:held_error_removals=1:reparented=1:reparent_skipped=1:ordinary_allocated=5:reserved_collisions=0:designation_balance=0]
+[TEST:process:init_designation_oracle:PASS]
+[TEST:process:init_designation_oracle:PASS]
+[TEST:process:init_group_refusal_oracle:START]
+[INIT_GROUP_REFUSAL_ORACLE:aarch64:none_probes=3:none_refusals=0:init_refused=1:alias_refused=1:alias_pid_refused=0:nonit_probes=2:nonit_refusals=0:rows_delta=0:refusal_counter_delta=0:designation_residual=0:balance=0]
+[TEST:process:init_group_refusal_oracle:PASS]
+[TEST:process:init_group_refusal_oracle:PASS]
+[TEST:process:kernel_stack_ownership_oracle:START]
+[CREATION_LOCK_ORDER:INJECTED:PM_HELD]
+[KSTACK_OWNER_ORACLE:aarch64:creation_rows=1000:creation_owned=1000:one_owner=1000:two_owner=0:zero_owner=0:fork_rows=1:fork_owned=1:slot_returns_exact_one=1:slot_alloc_delta=1000:slot_free_delta=1000:slot_balance=0:frames_mapped_delta=0:frames_released_delta=0:frame_balance=0:frame_used_delta=0:frame_used_bounded=1:live_checks=1109:live_refusals_production=0:live_refusals_injected=1:drop_refused_live=0:pte_overwrite_refusals=0:pub_pooled=1073:pub_sched_owned=1073:pub_row_residual=0:pub_unowned=0:classifier_sched_owned=1:classifier_row_residual=1:classifier_unowned=1:classifier_not_pooled=1:sched_publications=31:sched_pm_held_production=0:sched_pm_held_injected=1:balance=0]
+[TEST:process:kernel_stack_ownership_oracle:PASS]
+[TEST:process:creating_dispatch_refusal:START]
+manager.create_process [ARM64]: ENTRY - name='creating_dispatch_probe', elf_size=180
+manager.create_process [ARM64]: Generated PID 86
+manager.create_process [ARM64]: Creating ProcessPageTable
+manager.create_process [ARM64]: ProcessPageTable created
+manager.create_process [ARM64]: Loading ELF into page table
+manager.create_process [ARM64]: ELF loaded, entry=0x200000
+manager.create_process [ARM64]: Creating Process struct
+manager.create_process [ARM64]: Process struct created, heap_start=0x401000
+manager.create_process [ARM64]: Allocating user stack
+manager.create_process [ARM64]: Stack physical range 0x4405c000-0x4406c000
+manager.create_process [ARM64]: User stack will be at 0xfffffeff0000-0xffffff000000
+manager.create_process [ARM64]: Mapping user stack into process page table
+manager.create_process [ARM64]: map_user_stack_to_process user_bottom=0xfffffeff0000 user_top=0xffffff000000 phys_bottom=0x4405c000
+manager.create_process [ARM64]: User stack mapped successfully
+manager.create_process [ARM64]: Creating main thread
+manager.create_process [ARM64]: Main thread created
+manager.create_process [ARM64]: Main thread set on process
+manager.create_process [ARM64]: Adding PID 86 to ready queue
+manager.create_process [ARM64]: Inserting process into process table
+manager.create_process [ARM64]: SUCCESS - returning PID 86
+[CREATING_DISPATCH_ORACLE_DIAG:aarch64:refusal_delta=37:leaf_residual=16:user_stack_residual=16:balance=0:settle_rounds=3:root=0x44046000:root_release_done=1:probe_hw_clear=1:probe_shadow_clear=1:probe_cached_clear=1:retire_hw_blocked=0:retire_shadow_blocked=0:retire_cached_blocked=0]
+[CREATING_DISPATCH_ORACLE:aarch64:injected=1:refused_via_dispatch=1:requeue_retried=1:dispatched_after_publish=1:balance=0:leaf_residual=16:user_stack_residual=16]
+[TEST:process:creating_dispatch_refusal:PASS]
+[TEST:process:creating_dispatch_refusal:PASS]
+[TEST:process:retirement_fence_gate:START]
+[TEST:process:retirement_fence_gate:PASS]
+[TEST:process:reclaim_progress_gate:START]
+[TEST:process:reclaim_progress_gate:PASS]
+[TEST:process:exit_kick_protocol_gate:START]
+[TEST:process:exit_kick_protocol_gate:PASS]
+[TEST:process:census_widen_oracle:START]
+[CENSUS_WIDEN_ORACLE:aarch64:arm_target=0:baseline_reported=0:armed_reported=1:tid=1203:shape=ready_queued_nondispatching:queued_nondispatching=1:queued_nondispatch_ms=1806:cpu_silence_ms=1806:joined=1:retired=1:PASS]
+[TEST:process:census_widen_oracle:PASS]
+[SUBSYSTEM:process:sched:COMPLETE:11/11]
+[STAGE:sched:COMPLETE:103/107]
+[boot] All boot tests passed!
+[PT_ROOT_CUSTODY:no_proof=2:no_arch=0:terminated=1:undecided=3:mid_retire=1:retired=76]
+
+========================================
+  Breenix ARM64 Boot Complete!
+========================================
+
+Hello from ARM64!
+
+[boot] Launching init from pre-loaded ELF...
+manager.create_process_with_argv [ARM64]: ENTRY - name='init', elf_size=298328, argc=1
+manager.create_process_with_argv [ARM64]: Generated PID 1
+manager.create_process_with_argv [ARM64]: Creating ProcessPageTable
+manager.create_process_with_argv [ARM64]: Loading ELF into page table
+manager.create_process_with_argv [ARM64]: ELF loaded, entry=0x4000f4f4
+manager.create_process_with_argv [ARM64]: Allocating user stack
+manager.create_process_with_argv [ARM64]: User stack will be at 0xfffffeff0000-0xffffff000000
+manager.create_process_with_argv [ARM64]: argc/argv set up on stack, SP=0xfffffefffed0
+manager.create_process_with_argv [ARM64]: SUCCESS - returning PID 1
+[INIT_DESIGNATION:aarch64:designated_pid=1:reserved_collisions=0]
+[STAGE:proc:ADVANCE]
+[SUBSYSTEM:process:proc:START]
+[TEST:process:current_thread_exists:START]
+[SUBSYSTEM:ipc:proc:START]
+[TEST:ipc:telnetd_dependencies_aarch64:START]
+[TEST:process:current_thread_exists:PASS]
+[TEST:ipc:telnetd_dependencies_aarch64:PASS]
+[TEST:process:process_list_populated:START]
+[TEST:process:process_list_populated:PASS]
+[TEST:process:frame_custody_healthy_counters:START]
+[TEST:process:frame_custody_healthy_counters:PASS]
+[SUBSYSTEM:ipc:proc:COMPLETE:1/1]
+[SUBSYSTEM:process:proc:COMPLETE:3/3]
+[EXEC_LOCK_ORDER:commits=0:pm_held=0:unpinned=0:missing=0]
+[TESTS_COMPLETE:107/107]
+[BOOT_TESTS:PASS]
+[boot] Reset 4 idle thread contexts (CPUs online: 4)
+EL0_SYSCALL: First syscall from userspace (SPSR confirms EL0)
+[ OK ] syscall path verified
+[STAGE:user:ADVANCE]
+[EXEC_LOCK_ORDER:commits=0:pm_held=0:unpinned=0:missing=0]
+[USER_RSP_SCRATCH_EL_CENSUS:el0_installs=1:el1_skipped=0]
+[TESTS_COMPLETE:107/107]
+[BOOT_TESTS:PASS]
+[init] Breenix init starting (PID 1)
+[spawn] path='/bin/heartbeat'
+manager.create_process_with_argv [ARM64]: ENTRY - name='heartbeat', elf_size=303616, argc=1
+manager.create_process_with_argv [ARM64]: Generated PID 88
+manager.create_process_with_argv [ARM64]: Creating ProcessPageTable
+manager.create_process_with_argv [ARM64]: Loading ELF into page table
+manager.create_process_with_argv [ARM64]: ELF loaded, entry=0x4000f85c
+manager.create_process_with_argv [ARM64]: Allocating user stack
+manager.create_process_with_argv [ARM64]: User stack will be at 0xfffffeff0000-0xffffff000000
+manager.create_process_with_argv [ARM64]: argc/argv set up on stack, SP=0xfffffefffed0
+manager.create_process_with_argv [ARM64]: SUCCESS - returning PID 88
+[spawn] Created child PID 88 for parent PID 1
+[spawn] Success: child PID 88 scheduled
+[init] heartbeat started (PID 88)
+[INIT_GROUP_WALK:aarch64:rows=3:init_tgid_rows=1:foreign_tgid_rows=0:refused=1:verdict=PASS]
+[INIT_GROUP_WALK:aarch64:rows=3:init_tgid_rows=1:foreign_tgid_rows=0:refused=2:verdict=PASS]
+[INIT_GROUP_REFUSAL:aarch64:phase=early:probe1=-22:probe2=-22:expected=-22]
+[spawn] path='/bin/block_eintr_oracle'
+[heartbeat] tid=1207 uptime_ms=3193 kbd_nonzero=0
+manager.create_process_with_argv [ARM64]: ENTRY - name='block_eintr_oracle', elf_size=304752, argc=1
+manager.create_process_with_argv [ARM64]: Generated PID 89
+manager.create_process_with_argv [ARM64]: Creating ProcessPageTable
+manager.create_process_with_argv [ARM64]: Loading ELF into page table
+manager.create_process_with_argv [ARM64]: ELF loaded, entry=0x4000f938
+manager.create_process_with_argv [ARM64]: Allocating user stack
+manager.create_process_with_argv [ARM64]: User stack will be at 0xfffffeff0000-0xffffff000000
+manager.create_process_with_argv [ARM64]: argc/argv set up on stack, SP=0xfffffefffed0
+manager.create_process_with_argv [ARM64]: SUCCESS - returning PID 89
+[spawn] Created child PID 89 for parent PID 1
+[spawn] Success: child PID 89 scheduled
+F123456789SC[syscall] exit(0) pid=90 name=block_eintr_oracle_child_90
+[heartbeat] tid=1207 uptime_ms=4206 kbd_nonzero=0
+[STRAND_INJECT_ORACLE:aarch64:legA_exercised=1:legA_recovered=1:legB_exercised=1:legB_recovered=1:stranded=0]
+[heartbeat] tid=1207 uptime_ms=5208 kbd_nonzero=0
+F123456789SC[syscall] exit(0) pid=91 name=block_eintr_oracle_child_91
+[SCHED_STRAND_ORACLE:aarch64:samples=103:checked=580:stranded=0:running_shape=0:ready_shape=0:resolved_production=4:resolved_exercised=2:worst_dwell_ms=0:overflow=0:worst_nonprogress_ms=0:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=6210 kbd_nonzero=0
+[LR_POISON_ORACLE:aarch64:leg=L:FIRED:tid=10:cpu=1]
+[LR_REFUSED:site=restore-el1:tid=10:lr=0xa:poison=0xffff00004041e220:cpu=1]
+
+[PC_ALIGN] ELR=0xa FAR=0xa from_el0=0 cpu=1
+[FATAL_REGS] label=PC_ALIGN cpu=1 spsr=0x60000005 esr=0x8a000000 far=0xa elr=0xa sp=0xffff000054265fd0
+  x0=0x0 x1=0xffff000054265f58 x2=0x3b9aca0 x3=0x0
+  x4=0x0 x5=0x0 x6=0x0 x7=0x0
+  x8=0x0 x9=0x0 x10=0xffff000040800000 x11=0x0
+  x12=0xffff0000408826f8 x13=0xffff00005032c5d0 x14=0x28 x15=0xffff00005032cb10
+  x16=0xa x17=0x3ed2a18 x18=0xffff000054200000 x19=0x1
+  x20=0xffff000040690240 x21=0x0 x22=0x0 x23=0x0
+  x24=0x0 x25=0x0 x26=0x0 x27=0x0
+  x28=0x0 x29=0x0 x30=0xa
+  DISPATCH_TRACE cpu=1:
+  [0] I old=1208->tid=7 elr=0xffff000040467df8 spsr=0x5 x30=0x0 sp=0xffff000043400000
+  [1] R old=7->tid=1208 elr=0xffff0000404659f8 spsr=0x0 x30=0xffff0000404659f8 sp=0xffff0000542db400
+  [2] I old=1208->tid=7 elr=0xffff000040467df8 spsr=0x5 x30=0x0 sp=0xffff000043400000
+  [3] K old=7->tid=1208 elr=0xffff00004041e170 spsr=0x20000305 x30=0xffff0000404659f8 sp=0xffff0000542db400
+  [4] I old=1208->tid=7 elr=0xffff000040467df8 spsr=0x5 x30=0x0 sp=0xffff000043400000
+  [5] K old=7->tid=10 elr=0xffff000040593dd4 spsr=0x80000005 x30=0xffff000040593dc8 sp=0xffff000054265fb0
+  [6] I old=10->tid=7 elr=0xffff000040467df8 spsr=0x5 x30=0x0 sp=0xffff000043400000
+  [7] K old=7->tid=10 elr=0xffff00004041e5a0 spsr=0x20000005 x30=0xa sp=0xffff000054265fd0
+ sp=0xffff000054265fd0
+  x29=0x0 x30=0xa x0=0x0 x1=0xffff000054265f58
+  current_tid=10 owner_pid=0 bis=0 saved_elr=0xffff00004041e5a0 saved_x30=0xa
+  last_dispatch_elr=0xffff00004041e5a0 last_dispatch_spsr=0x20000005
+  stack[0]=0xffff00004059c228 stack[1]=0x0 stack[2]=0xffff0000405aa88c stack[3]=0xffff0000405aa88c
+[BLOCK_EINTR_ORACLE:PASS:stages=2:reads=4:short=0:eintr=0:handled=1]
+[BLOCK_EINTR_ORACLE:PASS:stages=2:reads=4:short=0:eintr=0:handled=1]
+[syscall] exit(0) pid=89 name=block_eintr_oracle
+[init] block_eintr_oracle exited pid=89 code=0
+[spawn] path='/bin/futex_handoff_oracle'
+[heartbeat] tid=1207 uptime_ms=7219 kbd_nonzero=0
+manager.create_process_with_argv [ARM64]: ENTRY - name='futex_handoff_oracle', elf_size=291984, argc=1
+manager.create_process_with_argv [ARM64]: Generated PID 92
+manager.create_process_with_argv [ARM64]: Creating ProcessPageTable
+manager.create_process_with_argv [ARM64]: Loading ELF into page table
+manager.create_process_with_argv [ARM64]: ELF loaded, entry=0x4000ef08
+manager.create_process_with_argv [ARM64]: Allocating user stack
+manager.create_process_with_argv [ARM64]: User stack will be at 0xfffffeff0000-0xffffff000000
+manager.create_process_with_argv [ARM64]: argc/argv set up on stack, SP=0xfffffefffec0
+manager.create_process_with_argv [ARM64]: SUCCESS - returning PID 92
+[spawn] Created child PID 92 for parent PID 1
+[spawn] Success: child PID 92 scheduled
+[FUTEX_HANDOFF_ORACLE:aarch64:driven=2:stage1_ret=EAGAIN:stage1_wake=0:stage1_parked=0:stage2_ret=0:stage2_wake=1:stage2_parked=0:stage3_ret=ETIMEDOUT:stage3_elapsed_ok=1:stage3_elapsed_ms=54:rescues=0:queue_residual=0:balance=0]
+[FUTEX_HANDOFF_ORACLE_DRIVER:s1=-11:s2=0:s3=-110]
+[syscall] exit(0) pid=92 name=futex_handoff_oracle
+[init] futex_handoff_oracle exited pid=92 code=0
+[spawn] path='/bin/exec_smoke'
+manager.create_process_with_argv [ARM64]: ENTRY - name='exec_smoke', elf_size=290928, argc=1
+manager.create_process_with_argv [ARM64]: Generated PID 93
+manager.create_process_with_argv [ARM64]: Creating ProcessPageTable
+manager.create_process_with_argv [ARM64]: Loading ELF into page table
+manager.create_process_with_argv [ARM64]: ELF loaded, entry=0x4000eb40
+manager.create_process_with_argv [ARM64]: Allocating user stack
+manager.create_process_with_argv [ARM64]: User stack will be at 0xfffffeff0000-0xffffff000000
+manager.create_process_with_argv [ARM64]: argc/argv set up on stack, SP=0xfffffefffed0
+manager.create_process_with_argv [ARM64]: SUCCESS - returning PID 93
+[spawn] Created child PID 93 for parent PID 1
+[spawn] Success: child PID 93 scheduled
+[EXEC_SMOKE:LAUNCH]
+[heartbeat] tid=1207 uptime_ms=8220 kbd_nonzero=0
+[EXEC_LOCK_ORDER:FIRST_COMMIT]
+[EXEC_LOCK_ORDER:commits=1:pm_held=0:unpinned=0:missing=0]
+[EXEC_SMOKE:TARGET_ENTER argc=2]
+[LR_POISON_ORACLE:aarch64:leg=L:armed=1:live=1:opportunities=1:injected=1:injected_word=10:victim_tid=10:lr_refusals=1:lr_refused_tid=10:lr_refused_value=0xa:lr_sites=0x2:poison_taken=0:fatal=0:FAIL]
+[SCHED_STRAND_FIRST:tid=10:shape=running:priv=kernel:state=1:dwell_ms=2026]
+[SCHED_STRAND_ORACLE:aarch64:samples=155:checked=775:stranded=1:running_shape=1:ready_shape=0:resolved_production=5:resolved_exercised=2:worst_dwell_ms=2026:overflow=0:worst_nonprogress_ms=1031:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[EXEC_SMOKE:TARGET_OK]
+[syscall] exit(0) pid=93 name=/bin/exec_smoke_target
+[EXEC_SMOKE:LAUNCHER_EXIT code=0]
+[spawn] path='/usr/local/test/bin/clonevm_exec_test'
+manager.create_process_with_argv [ARM64]: ENTRY - name='clonevm_exec_test', elf_size=289136, argc=1
+manager.create_process_with_argv [ARM64]: Generated PID 94
+manager.create_process_with_argv [ARM64]: Creating ProcessPageTable
+manager.create_process_with_argv [ARM64]: Loading ELF into page table
+manager.create_process_with_argv [ARM64]: ELF loaded, entry=0x4000f56c
+manager.create_process_with_argv [ARM64]: Allocating user stack
+manager.create_process_with_argv [ARM64]: User stack will be at 0xfffffeff0000-0xffffff000000
+manager.create_process_with_argv [ARM64]: argc/argv set up on stack, SP=0xfffffefffec0
+manager.create_process_with_argv [ARM64]: SUCCESS - returning PID 94
+[spawn] Created child PID 94 for parent PID 1
+[spawn] Success: child PID 94 scheduled
+CLONEVM_EXEC_TEST: start
+CLONEVM_EXEC_TEST: child live
+[heartbeat] tid=1207 uptime_ms=9221 kbd_nonzero=0
+CLONEVM_EXEC_TEST: live sibling refused exec
+[syscall] exit(0) pid=95 name=thread-95
+CLONEVM_EXEC_TEST: child exited
+[EXEC_LOCK_ORDER:commits=2:pm_held=0:unpinned=0:missing=0]
+CLONEVM_EXEC_TEST: second stage
+[RESUME_PC_CENSUS:cpu=0:source=el1-restore-frame-elr:text=4699:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=0:source=el0-restore-frame-elr:text=0:kstack=0:uva=240:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=0:source=el0-first-entry-frame-elr:text=0:kstack=0:uva=1:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=0:source=ctx-x30:text=10175:kstack=0:uva=73:smallint=167:other=0]
+[RESUME_PC_CENSUS:cpu=0:source=ctx-elr-el1:text=10175:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=0:source=lr-save-el1:text=4792:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=0:source=lr-restore-el1:text=4699:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=0:source=lr-save-el0:text=0:kstack=0:uva=82:smallint=166:other=0]
+[RESUME_PC_CENSUS:cpu=0:source=lr-restore-el0:text=0:kstack=0:uva=73:smallint=167:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=el1-restore-frame-elr:text=3318:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=el0-restore-frame-elr:text=0:kstack=0:uva=284:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=el0-first-entry-frame-elr:text=0:kstack=0:uva=2:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=ctx-x30:text=4555:kstack=0:uva=69:smallint=216:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=ctx-elr-el1:text=4555:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=lr-save-el1:text=3215:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=lr-restore-el1:text=3317:kstack=0:uva=0:smallint=1:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=lr-save-el0:text=0:kstack=0:uva=59:smallint=216:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=lr-restore-el0:text=0:kstack=0:uva=69:smallint=216:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=el1-restore-frame-elr:text=3476:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=el0-restore-frame-elr:text=0:kstack=0:uva=328:smallint=0:other=0]
+[syscall] exit(0) pid=96 name=thread-96
+CLONEVM_EXEC_TEST: post-exec rendezvous complete
+CLONEVM_EXEC_TEST: post-exec futex keys derived
+CLONEVM_EXEC_TEST: PASS
+[syscall] exit(0) pid=94 name=/usr/local/test/bin/clonevm_exec_test
+[init] clonevm_exec_test exited pid=94 code=0
+[spawn] path='/bin/bsshd'
+[heartbeat] tid=1207 uptime_ms=10232 kbd_nonzero=0
+[SCHED_STRAND_ORACLE:aarch64:samples=202:checked=971:stranded=1:running_shape=1:ready_shape=0:resolved_production=8:resolved_exercised=2:worst_dwell_ms=4402:overflow=0:worst_nonprogress_ms=2188:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+manager.create_process_with_argv [ARM64]: ENTRY - name='bsshd', elf_size=455240, argc=1
+manager.create_process_with_argv [ARM64]: Generated PID 97
+manager.create_process_with_argv [ARM64]: Creating ProcessPageTable
+manager.create_process_with_argv [ARM64]: Loading ELF into page table
+manager.create_process_with_argv [ARM64]: ELF loaded, entry=0x4001d6c0
+manager.create_process_with_argv [ARM64]: Allocating user stack
+manager.create_process_with_argv [ARM64]: User stack will be at 0xfffffeff0000-0xffffff000000
+manager.create_process_with_argv [ARM64]: argc/argv set up on stack, SP=0xfffffefffed0
+manager.create_process_with_argv [ARM64]: SUCCESS - returning PID 97
+[spawn] Created child PID 97 for parent PID 1
+[spawn] Success: child PID 97 scheduled
+[init] bsshd started (PID 97)
+[spawn] path='/bin/xhci_counters'
+bsshd: starting on port 2222
+bsshd: listening on 0.0.0.0:2222
+[heartbeat] tid=1207 uptime_ms=11237 kbd_nonzero=0
+manager.create_process_with_argv [ARM64]: ENTRY - name='xhci_counters', elf_size=292264, argc=1
+manager.create_process_with_argv [ARM64]: Generated PID 98
+manager.create_process_with_argv [ARM64]: Creating ProcessPageTable
+manager.create_process_with_argv [ARM64]: Loading ELF into page table
+manager.create_process_with_argv [ARM64]: ELF loaded, entry=0x4000f140
+manager.create_process_with_argv [ARM64]: Allocating user stack
+manager.create_process_with_argv [ARM64]: User stack will be at 0xfffffeff0000-0xffffff000000
+manager.create_process_with_argv [ARM64]: argc/argv set up on stack, SP=0xfffffefffed0
+manager.create_process_with_argv [ARM64]: SUCCESS - returning PID 98
+[spawn] Created child PID 98 for parent PID 1
+[spawn] Success: child PID 98 scheduled
+[spawn] path='/bin/bwm'
+[xhci-counters] XHCI_MSI_EVENT_TOTAL=0
+[xhci-counters] XHCI_IRQ_ENTRY_TOTAL=0
+[xhci-counters] XHCI_LOCK_CONTENDED_TOTAL=0
+[xhci-counters] KBD_NONZERO_TOTAL=0
+[syscall] exit(0) pid=98 name=xhci_counters
+[heartbeat] tid=1207 uptime_ms=12239 kbd_nonzero=0
+manager.create_process_with_argv [ARM64]: ENTRY - name='bwm', elf_size=428144, argc=1
+manager.create_process_with_argv [ARM64]: Generated PID 99
+manager.create_process_with_argv [ARM64]: Creating ProcessPageTable
+manager.create_process_with_argv [ARM64]: Loading ELF into page table
+manager.create_process_with_argv [ARM64]: ELF loaded, entry=0x40018bf8
+manager.create_process_with_argv [ARM64]: Allocating user stack
+manager.create_process_with_argv [ARM64]: User stack will be at 0xfffffeff0000-0xffffff000000
+manager.create_process_with_argv [ARM64]: argc/argv set up on stack, SP=0xfffffefffee0
+manager.create_process_with_argv [ARM64]: SUCCESS - returning PID 99
+[spawn] Created child PID 99 for parent PID 1
+[spawn] Success: child PID 99 scheduled
+[spawn] path='/sbin/telnetd'
+[bwm] Breenix Window Manager starting... (v2-chromeless-skip)
+manager.create_process_with_argv [ARM64]: ENTRY - name='telnetd', elf_size=298232, argc=1
+manager.create_process_with_argv [ARM64]: Generated PID 100
+manager.create_process_with_argv [ARM64]: Creating ProcessPageTable
+manager.create_process_with_argv [ARM64]: Loading ELF into page table
+manager.create_process_with_argv [ARM64]: ELF loaded, entry=0x4000f930
+manager.create_process_with_argv [ARM64]: Allocating user stack
+manager.create_process_with_argv [ARM64]: User stack will be at 0xfffffeff0000-0xffffff000000
+manager.create_process_with_argv [ARM64]: argc/argv set up on stack, SP=0xfffffefffed0
+manager.create_process_with_argv [ARM64]: SUCCESS - returning PID 100
+[spawn] Created child PID 100 for parent PID 1
+[spawn] Success: child PID 100 scheduled
+TELNETD_STARTING
+TELNETD_LISTENING
+[init] Boot script completed
+[spawn] path='/bin/bounce'
+
+[CTX596_ELR_DIVERGENCE] tid=1204 cpu=1 prev_elr=0xffff00004041277c x30=0xffff0000404659f8 ctx_elr=0xffff0000404659f8
+
+[INLINE_SAVE_OVERWRITE] tid=1204 sp=0xffff000054297000 old_sp=0xffff000054297000 saved_sp=0xffff000054297000 delta=0x0 saved_lr=0xffff00004047a0d0 saved_slot20=0xffff00004047a0d0 slot20=0xffff00004047a0d0 elr=0xffff0000404659f8 x30=0xffff0000404659f8
+[heartbeat] tid=1207 uptime_ms=13242 kbd_nonzero=0
+manager.create_process_with_argv [ARM64]: ENTRY - name='bounce', elf_size=388200, argc=1
+manager.create_process_with_argv [ARM64]: Generated PID 101
+manager.create_process_with_argv [ARM64]: Creating ProcessPageTable
+manager.create_process_with_argv [ARM64]: Loading ELF into page table
+manager.create_process_with_argv [ARM64]: ELF loaded, entry=0x400188f4
+manager.create_process_with_argv [ARM64]: Allocating user stack
+manager.create_process_with_argv [ARM64]: User stack will be at 0xfffffeff0000-0xffffff000000
+manager.create_process_with_argv [ARM64]: argc/argv set up on stack, SP=0xfffffefffed0
+manager.create_process_with_argv [ARM64]: SUCCESS - returning PID 101
+[spawn] Created child PID 101 for parent PID 1
+[spawn] Success: child PID 101 scheduled
+[init] bounce started (PID 101)
+[INIT_GROUP_WALK:aarch64:rows=12:init_tgid_rows=1:foreign_tgid_rows=0:refused=3:verdict=PASS]
+[INIT_GROUP_WALK:aarch64:rows=12:init_tgid_rows=1:foreign_tgid_rows=0:refused=4:verdict=PASS]
+[INIT_GROUP_REFUSAL:aarch64:phase=quiesce:probe1=-22:probe2=-22:expected=-22]
+[init] Process 90 exited (code 0)
+[init] Process 91 exited (code 0)
+[init] Process 95 exited (code 0)
+Bounce spheres demo starting (for Gus!) [boot_id=0000000317514540]
+[init] Process 96 exited (code 0)
+[init] Process 98 exited (code 0)
+[window] create_window_buffer: 400x300 (480000 bytes, 118 pages)
+[window] Created buffer id=1 for pid=101: 400x300 at virt=0x7ffffdf86000 phys=0x44281000
+[bounce] Window mode: id=1 400x300 [boot_id=0000000317514540]
+[bwm] ERROR: GPU compositing required
+[syscall] exit(1) pid=99 name=bwm
+[init] Process 99 exited (code 1)
+[heartbeat] tid=1207 uptime_ms=14243 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=15245 kbd_nonzero=0
+[SCHED_STRAND_ORACLE:aarch64:samples=300:checked=1308:stranded=1:running_shape=1:ready_shape=0:resolved_production=12:resolved_exercised=2:worst_dwell_ms=9443:overflow=0:worst_nonprogress_ms=5140:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=16247 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=17248 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=18249 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=19250 kbd_nonzero=0
+[RESUME_PC_CENSUS:cpu=0:source=el1-restore-frame-elr:text=6899:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=0:source=el0-restore-frame-elr:text=0:kstack=0:uva=275:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=0:source=el0-first-entry-frame-elr:text=0:kstack=0:uva=1:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=0:source=ctx-x30:text=15535:kstack=0:uva=108:smallint=167:other=0]
+[RESUME_PC_CENSUS:cpu=0:source=ctx-elr-el1:text=15535:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=0:source=lr-save-el1:text=7063:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=0:source=lr-restore-el1:text=6900:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=0:source=lr-save-el0:text=0:kstack=0:uva=118:smallint=166:other=0]
+[RESUME_PC_CENSUS:cpu=0:source=lr-restore-el0:text=0:kstack=0:uva=108:smallint=167:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=el1-restore-frame-elr:text=4767:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=el0-restore-frame-elr:text=0:kstack=0:uva=315:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=el0-first-entry-frame-elr:text=0:kstack=0:uva=3:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=ctx-x30:text=6559:kstack=0:uva=99:smallint=216:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=ctx-elr-el1:text=6559:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=lr-save-el1:text=4636:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=lr-restore-el1:text=4766:kstack=0:uva=0:smallint=1:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=lr-save-el0:text=0:kstack=0:uva=83:smallint=216:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=lr-restore-el0:text=0:kstack=0:uva=99:smallint=216:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=el1-restore-frame-elr:text=5051:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=el0-restore-frame-elr:text=0:kstack=0:uva=339:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=el0-first-entry-frame-elr:text=0:kstack=0:uva=2:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=ctx-x30:text=7228:kstack=0:uva=74:smallint=265:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=ctx-elr-el1:text=7228:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=lr-save-el1:text=5047:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=lr-restore-el1:text=5051:kstack=0:uva=0:smallint=0:other=0]
+[heartbeat] tid=1207 uptime_ms=20251 kbd_nonzero=0
+[PT_ROOT_CUSTODY:no_proof=10:no_arch=0:terminated=1:undecided=3:mid_retire=1:retired=78]
+[net-rx-counters] sample=1 begin
+[net-rx-counters] sample=1 NET_RX_MSI_TOTAL: 0
+[net-rx-counters] sample=1 NET_RX_RING_DRAIN_TOTAL: 0
+[net-rx-counters] sample=1 NET_RX_FRAME_TOTAL: 3 (cpu0=3)
+[net-rx-counters] sample=1 NET_RX_ARP_TOTAL: 2 (cpu0=2)
+[net-rx-counters] sample=1 NET_RX_ETHERTYPE_OTHER_TOTAL: 0
+[net-rx-counters] sample=1 NET_RX_SOFTIRQ_ENTRY_TOTAL: 2 (cpu0=1, cpu1=1)
+[net-rx-counters] sample=1 NET_RX_SOFTIRQ_EXIT_TOTAL: 2 (cpu0=1, cpu1=1)
+[net-rx-counters] sample=1 NET_RX_REENTRANT_SKIP_TOTAL: 0
+[net-rx-counters] sample=1 NET_RX_GUARD_RELEASE_TOTAL: 2 (cpu0=1, cpu1=1)
+[net-rx-counters] sample=1 NET_RX_REARM_CHECK_TOTAL: 0
+[net-rx-counters] sample=1 NET_RX_REARM_RACE_TOTAL: 0
+[net-rx-counters] sample=1 NET_RX_REARM_ARMED_TOTAL: 0
+[net-rx-counters] sample=1 NET_PCI_IRQ_RAISED_NETRX: 0
+[net-rx-counters] sample=1 GIC_SPI55_ACK_TOTAL: 0
+[net-rx-counters] sample=1 end
+[SCHED_STRAND_ORACLE:aarch64:samples=398:checked=1602:stranded=1:running_shape=1:ready_shape=0:resolved_production=12:resolved_exercised=2:worst_dwell_ms=14480:overflow=0:worst_nonprogress_ms=8574:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=21257 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=22263 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=23265 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=24266 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=25268 kbd_nonzero=0
+[SCHED_STRAND_ORACLE:aarch64:samples=495:checked=1893:stranded=1:running_shape=1:ready_shape=0:resolved_production=12:resolved_exercised=2:worst_dwell_ms=19500:overflow=0:worst_nonprogress_ms=11810:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=26278 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=27279 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=28282 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=29282 kbd_nonzero=0
+[RESUME_PC_CENSUS:cpu=0:source=el1-restore-frame-elr:text=7456:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=0:source=el0-restore-frame-elr:text=0:kstack=0:uva=275:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=0:source=el0-first-entry-frame-elr:text=0:kstack=0:uva=1:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=0:source=ctx-x30:text=16092:kstack=0:uva=108:smallint=167:other=0]
+[RESUME_PC_CENSUS:cpu=0:source=ctx-elr-el1:text=16092:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=0:source=lr-save-el1:text=7620:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=0:source=lr-restore-el1:text=7456:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=0:source=lr-save-el0:text=0:kstack=0:uva=118:smallint=166:other=0]
+[RESUME_PC_CENSUS:cpu=0:source=lr-restore-el0:text=0:kstack=0:uva=108:smallint=167:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=el1-restore-frame-elr:text=5352:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=el0-restore-frame-elr:text=0:kstack=0:uva=315:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=el0-first-entry-frame-elr:text=0:kstack=0:uva=3:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=ctx-x30:text=7144:kstack=0:uva=99:smallint=216:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=ctx-elr-el1:text=7144:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=lr-save-el1:text=5221:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=lr-restore-el1:text=5351:kstack=0:uva=0:smallint=1:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=lr-save-el0:text=0:kstack=0:uva=83:smallint=216:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=lr-restore-el0:text=0:kstack=0:uva=99:smallint=216:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=el1-restore-frame-elr:text=5641:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=el0-restore-frame-elr:text=0:kstack=0:uva=339:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=el0-first-entry-frame-elr:text=0:kstack=0:uva=2:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=ctx-x30:text=7818:kstack=0:uva=74:smallint=265:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=ctx-elr-el1:text=7818:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=lr-save-el1:text=5637:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=lr-restore-el1:text=5641:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=lr-save-el0:text=0:kstack=0:uva=62:smallint=262:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=lr-restore-el0:text=0:kstack=0:uva=74:smallint=265:other=0]
+[RESUME_PC_CENSUS:cpu=3:source=el1-restore-frame-elr:text=5881:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=3:source=el0-restore-frame-elr:text=0:kstack=0:uva=374:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=3:source=el0-first-entry-frame-elr:text=0:kstack=0:uva=4:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=3:source=ctx-x30:text=8008:kstack=0:uva=91:smallint=283:other=0]
+[RESUME_PC_CENSUS:cpu=3:source=ctx-elr-el1:text=8008:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=3:source=lr-save-el1:text=5854:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=3:source=lr-restore-el1:text=5881:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=3:source=lr-save-el0:text=0:kstack=0:uva=90:smallint=282:other=0]
+[RESUME_PC_CENSUS:cpu=3:source=lr-restore-el0:text=0:kstack=0:uva=91:smallint=283:other=0]
+[heartbeat] tid=1207 uptime_ms=30284 kbd_nonzero=0
+[PT_ROOT_CUSTODY:no_proof=10:no_arch=0:terminated=1:undecided=3:mid_retire=1:retired=78]
+[net-rx-counters] sample=2 begin
+[net-rx-counters] sample=2 NET_RX_MSI_TOTAL: 0
+[net-rx-counters] sample=2 NET_RX_RING_DRAIN_TOTAL: 0
+[net-rx-counters] sample=2 NET_RX_FRAME_TOTAL: 3 (cpu0=3)
+[net-rx-counters] sample=2 NET_RX_ARP_TOTAL: 2 (cpu0=2)
+[net-rx-counters] sample=2 NET_RX_ETHERTYPE_OTHER_TOTAL: 0
+[net-rx-counters] sample=2 NET_RX_SOFTIRQ_ENTRY_TOTAL: 2 (cpu0=1, cpu1=1)
+[net-rx-counters] sample=2 NET_RX_SOFTIRQ_EXIT_TOTAL: 2 (cpu0=1, cpu1=1)
+[net-rx-counters] sample=2 NET_RX_REENTRANT_SKIP_TOTAL: 0
+[net-rx-counters] sample=2 NET_RX_GUARD_RELEASE_TOTAL: 2 (cpu0=1, cpu1=1)
+[net-rx-counters] sample=2 NET_RX_REARM_CHECK_TOTAL: 0
+[net-rx-counters] sample=2 NET_RX_REARM_RACE_TOTAL: 0
+[net-rx-counters] sample=2 NET_RX_REARM_ARMED_TOTAL: 0
+[net-rx-counters] sample=2 NET_PCI_IRQ_RAISED_NETRX: 0
+[net-rx-counters] sample=2 GIC_SPI55_ACK_TOTAL: 0
+[net-rx-counters] sample=2 end
+[SCHED_STRAND_ORACLE:aarch64:samples=592:checked=2185:stranded=1:running_shape=1:ready_shape=0:resolved_production=12:resolved_exercised=2:worst_dwell_ms=24500:overflow=0:worst_nonprogress_ms=15215:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=31304 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=32305 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=33314 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=34316 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=35320 kbd_nonzero=0
+[SCHED_STRAND_ORACLE:aarch64:samples=689:checked=2476:stranded=1:running_shape=1:ready_shape=0:resolved_production=12:resolved_exercised=2:worst_dwell_ms=29512:overflow=0:worst_nonprogress_ms=18592:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=36322 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=37323 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=38325 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=39327 kbd_nonzero=0
+[RESUME_PC_CENSUS:cpu=0:source=el1-restore-frame-elr:text=7890:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=0:source=el0-restore-frame-elr:text=0:kstack=0:uva=275:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=0:source=el0-first-entry-frame-elr:text=0:kstack=0:uva=1:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=0:source=ctx-x30:text=16526:kstack=0:uva=108:smallint=167:other=0]
+[RESUME_PC_CENSUS:cpu=0:source=ctx-elr-el1:text=16526:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=0:source=lr-save-el1:text=8053:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=0:source=lr-restore-el1:text=7890:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=0:source=lr-save-el0:text=0:kstack=0:uva=118:smallint=166:other=0]
+[RESUME_PC_CENSUS:cpu=0:source=lr-restore-el0:text=0:kstack=0:uva=108:smallint=167:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=el1-restore-frame-elr:text=6050:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=el0-restore-frame-elr:text=0:kstack=0:uva=315:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=el0-first-entry-frame-elr:text=0:kstack=0:uva=3:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=ctx-x30:text=7842:kstack=0:uva=99:smallint=216:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=ctx-elr-el1:text=7842:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=lr-save-el1:text=5919:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=lr-restore-el1:text=6049:kstack=0:uva=0:smallint=1:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=lr-save-el0:text=0:kstack=0:uva=83:smallint=216:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=lr-restore-el0:text=0:kstack=0:uva=99:smallint=216:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=el1-restore-frame-elr:text=6277:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=el0-restore-frame-elr:text=0:kstack=0:uva=340:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=el0-first-entry-frame-elr:text=0:kstack=0:uva=2:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=ctx-x30:text=8454:kstack=0:uva=75:smallint=265:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=ctx-elr-el1:text=8454:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=lr-save-el1:text=6273:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=lr-restore-el1:text=6277:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=lr-save-el0:text=0:kstack=0:uva=63:smallint=262:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=lr-restore-el0:text=0:kstack=0:uva=75:smallint=265:other=0]
+[RESUME_PC_CENSUS:cpu=3:source=el1-restore-frame-elr:text=6480:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=3:source=el0-restore-frame-elr:text=0:kstack=0:uva=374:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=3:source=el0-first-entry-frame-elr:text=0:kstack=0:uva=4:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=3:source=ctx-x30:text=8607:kstack=0:uva=91:smallint=283:other=0]
+[RESUME_PC_CENSUS:cpu=3:source=ctx-elr-el1:text=8607:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=3:source=lr-save-el1:text=6453:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=3:source=lr-restore-el1:text=6480:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=3:source=lr-save-el0:text=0:kstack=0:uva=90:smallint=282:other=0]
+[RESUME_PC_CENSUS:cpu=3:source=lr-restore-el0:text=0:kstack=0:uva=91:smallint=283:other=0]
+[heartbeat] tid=1207 uptime_ms=40328 kbd_nonzero=0
+[PT_ROOT_CUSTODY:no_proof=10:no_arch=0:terminated=1:undecided=3:mid_retire=1:retired=78]
+[net-rx-counters] sample=3 begin
+[net-rx-counters] sample=3 NET_RX_MSI_TOTAL: 0
+[net-rx-counters] sample=3 NET_RX_RING_DRAIN_TOTAL: 0
+[net-rx-counters] sample=3 NET_RX_FRAME_TOTAL: 3 (cpu0=3)
+[net-rx-counters] sample=3 NET_RX_ARP_TOTAL: 2 (cpu0=2)
+[net-rx-counters] sample=3 NET_RX_ETHERTYPE_OTHER_TOTAL: 0
+[net-rx-counters] sample=3 NET_RX_SOFTIRQ_ENTRY_TOTAL: 2 (cpu0=1, cpu1=1)
+[net-rx-counters] sample=3 NET_RX_SOFTIRQ_EXIT_TOTAL: 2 (cpu0=1, cpu1=1)
+[net-rx-counters] sample=3 NET_RX_REENTRANT_SKIP_TOTAL: 0
+[net-rx-counters] sample=3 NET_RX_GUARD_RELEASE_TOTAL: 2 (cpu0=1, cpu1=1)
+[net-rx-counters] sample=3 NET_RX_REARM_CHECK_TOTAL: 0
+[net-rx-counters] sample=3 NET_RX_REARM_RACE_TOTAL: 0
+[net-rx-counters] sample=3 NET_RX_REARM_ARMED_TOTAL: 0
+[net-rx-counters] sample=3 NET_PCI_IRQ_RAISED_NETRX: 0
+[net-rx-counters] sample=3 GIC_SPI55_ACK_TOTAL: 0
+[net-rx-counters] sample=3 end
+[SCHED_STRAND_ORACLE:aarch64:samples=786:checked=2767:stranded=1:running_shape=1:ready_shape=0:resolved_production=12:resolved_exercised=2:worst_dwell_ms=34529:overflow=0:worst_nonprogress_ms=21947:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=41338 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=42339 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=43341 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=44342 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=45343 kbd_nonzero=0
+[SCHED_STRAND_ORACLE:aarch64:samples=884:checked=3061:stranded=1:running_shape=1:ready_shape=0:resolved_production=12:resolved_exercised=2:worst_dwell_ms=39575:overflow=0:worst_nonprogress_ms=25288:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=46345 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=47346 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=48348 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=49349 kbd_nonzero=0
+[RESUME_PC_CENSUS:cpu=0:source=el1-restore-frame-elr:text=8443:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=0:source=el0-restore-frame-elr:text=0:kstack=0:uva=275:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=0:source=el0-first-entry-frame-elr:text=0:kstack=0:uva=1:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=0:source=ctx-x30:text=17079:kstack=0:uva=108:smallint=167:other=0]
+[RESUME_PC_CENSUS:cpu=0:source=ctx-elr-el1:text=17079:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=0:source=lr-save-el1:text=8607:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=0:source=lr-restore-el1:text=8443:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=0:source=lr-save-el0:text=0:kstack=0:uva=118:smallint=166:other=0]
+[RESUME_PC_CENSUS:cpu=0:source=lr-restore-el0:text=0:kstack=0:uva=108:smallint=167:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=el1-restore-frame-elr:text=6558:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=el0-restore-frame-elr:text=0:kstack=0:uva=315:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=el0-first-entry-frame-elr:text=0:kstack=0:uva=3:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=ctx-x30:text=8350:kstack=0:uva=99:smallint=216:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=ctx-elr-el1:text=8350:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=lr-save-el1:text=6427:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=lr-restore-el1:text=6557:kstack=0:uva=0:smallint=1:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=lr-save-el0:text=0:kstack=0:uva=83:smallint=216:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=lr-restore-el0:text=0:kstack=0:uva=99:smallint=216:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=el1-restore-frame-elr:text=6800:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=el0-restore-frame-elr:text=0:kstack=0:uva=340:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=el0-first-entry-frame-elr:text=0:kstack=0:uva=2:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=ctx-x30:text=8977:kstack=0:uva=75:smallint=265:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=ctx-elr-el1:text=8977:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=lr-save-el1:text=6795:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=lr-restore-el1:text=6800:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=lr-save-el0:text=0:kstack=0:uva=63:smallint=262:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=lr-restore-el0:text=0:kstack=0:uva=75:smallint=265:other=0]
+[RESUME_PC_CENSUS:cpu=3:source=el1-restore-frame-elr:text=6990:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=3:source=el0-restore-frame-elr:text=0:kstack=0:uva=374:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=3:source=el0-first-entry-frame-elr:text=0:kstack=0:uva=4:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=3:source=ctx-x30:text=9117:kstack=0:uva=91:smallint=283:other=0]
+[RESUME_PC_CENSUS:cpu=3:source=ctx-elr-el1:text=9117:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=3:source=lr-save-el1:text=6963:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=3:source=lr-restore-el1:text=6990:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=3:source=lr-save-el0:text=0:kstack=0:uva=90:smallint=282:other=0]
+[RESUME_PC_CENSUS:cpu=3:source=lr-restore-el0:text=0:kstack=0:uva=91:smallint=283:other=0]
+[heartbeat] tid=1207 uptime_ms=50351 kbd_nonzero=0
+[PT_ROOT_CUSTODY:no_proof=10:no_arch=0:terminated=1:undecided=3:mid_retire=1:retired=78]
+[net-rx-counters] sample=4 begin
+[net-rx-counters] sample=4 NET_RX_MSI_TOTAL: 0
+[net-rx-counters] sample=4 NET_RX_RING_DRAIN_TOTAL: 0
+[net-rx-counters] sample=4 NET_RX_FRAME_TOTAL: 3 (cpu0=3)
+[net-rx-counters] sample=4 NET_RX_ARP_TOTAL: 2 (cpu0=2)
+[net-rx-counters] sample=4 NET_RX_ETHERTYPE_OTHER_TOTAL: 0
+[net-rx-counters] sample=4 NET_RX_SOFTIRQ_ENTRY_TOTAL: 2 (cpu0=1, cpu1=1)
+[net-rx-counters] sample=4 NET_RX_SOFTIRQ_EXIT_TOTAL: 2 (cpu0=1, cpu1=1)
+[net-rx-counters] sample=4 NET_RX_REENTRANT_SKIP_TOTAL: 0
+[net-rx-counters] sample=4 NET_RX_GUARD_RELEASE_TOTAL: 2 (cpu0=1, cpu1=1)
+[net-rx-counters] sample=4 NET_RX_REARM_CHECK_TOTAL: 0
+[net-rx-counters] sample=4 NET_RX_REARM_RACE_TOTAL: 0
+[net-rx-counters] sample=4 NET_RX_REARM_ARMED_TOTAL: 0
+[net-rx-counters] sample=4 NET_PCI_IRQ_RAISED_NETRX: 0
+[net-rx-counters] sample=4 GIC_SPI55_ACK_TOTAL: 0
+[net-rx-counters] sample=4 end
+[SCHED_STRAND_ORACLE:aarch64:samples=981:checked=3352:stranded=1:running_shape=1:ready_shape=0:resolved_production=12:resolved_exercised=2:worst_dwell_ms=44600:overflow=0:worst_nonprogress_ms=28557:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=51357 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=52357 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=53359 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=54360 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=55363 kbd_nonzero=0
+[SCHED_STRAND_ORACLE:aarch64:samples=1078:checked=3643:stranded=1:running_shape=1:ready_shape=0:resolved_production=12:resolved_exercised=2:worst_dwell_ms=49600:overflow=0:worst_nonprogress_ms=31981:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=56364 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=57365 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=58369 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=59374 kbd_nonzero=0
+[RESUME_PC_CENSUS:cpu=0:source=el1-restore-frame-elr:text=8995:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=0:source=el0-restore-frame-elr:text=0:kstack=0:uva=275:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=0:source=el0-first-entry-frame-elr:text=0:kstack=0:uva=1:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=0:source=ctx-x30:text=17631:kstack=0:uva=108:smallint=167:other=0]
+[RESUME_PC_CENSUS:cpu=0:source=ctx-elr-el1:text=17631:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=0:source=lr-save-el1:text=9159:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=0:source=lr-restore-el1:text=8995:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=0:source=lr-save-el0:text=0:kstack=0:uva=118:smallint=166:other=0]
+[RESUME_PC_CENSUS:cpu=0:source=lr-restore-el0:text=0:kstack=0:uva=108:smallint=167:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=el1-restore-frame-elr:text=7130:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=el0-restore-frame-elr:text=0:kstack=0:uva=315:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=el0-first-entry-frame-elr:text=0:kstack=0:uva=3:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=ctx-x30:text=8923:kstack=0:uva=99:smallint=216:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=ctx-elr-el1:text=8923:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=lr-save-el1:text=6999:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=lr-restore-el1:text=7130:kstack=0:uva=0:smallint=1:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=lr-save-el0:text=0:kstack=0:uva=83:smallint=216:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=lr-restore-el0:text=0:kstack=0:uva=99:smallint=216:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=el1-restore-frame-elr:text=7439:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=el0-restore-frame-elr:text=0:kstack=0:uva=340:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=el0-first-entry-frame-elr:text=0:kstack=0:uva=2:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=ctx-x30:text=9616:kstack=0:uva=75:smallint=265:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=ctx-elr-el1:text=9616:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=lr-save-el1:text=7435:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=lr-restore-el1:text=7439:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=lr-save-el0:text=0:kstack=0:uva=63:smallint=262:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=lr-restore-el0:text=0:kstack=0:uva=75:smallint=265:other=0]
+[RESUME_PC_CENSUS:cpu=3:source=el1-restore-frame-elr:text=7543:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=3:source=el0-restore-frame-elr:text=0:kstack=0:uva=374:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=3:source=el0-first-entry-frame-elr:text=0:kstack=0:uva=4:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=3:source=ctx-x30:text=9670:kstack=0:uva=91:smallint=283:other=0]
+[RESUME_PC_CENSUS:cpu=3:source=ctx-elr-el1:text=9670:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=3:source=lr-save-el1:text=7516:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=3:source=lr-restore-el1:text=7543:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=3:source=lr-save-el0:text=0:kstack=0:uva=90:smallint=282:other=0]
+[RESUME_PC_CENSUS:cpu=3:source=lr-restore-el0:text=0:kstack=0:uva=91:smallint=283:other=0]
+[heartbeat] tid=1207 uptime_ms=60376 kbd_nonzero=0
+[PT_ROOT_CUSTODY:no_proof=10:no_arch=0:terminated=1:undecided=3:mid_retire=1:retired=78]
+[net-rx-counters] sample=5 begin
+[net-rx-counters] sample=5 NET_RX_MSI_TOTAL: 0
+[net-rx-counters] sample=5 NET_RX_RING_DRAIN_TOTAL: 0
+[net-rx-counters] sample=5 NET_RX_FRAME_TOTAL: 3 (cpu0=3)
+[net-rx-counters] sample=5 NET_RX_ARP_TOTAL: 2 (cpu0=2)
+[net-rx-counters] sample=5 NET_RX_ETHERTYPE_OTHER_TOTAL: 0
+[net-rx-counters] sample=5 NET_RX_SOFTIRQ_ENTRY_TOTAL: 2 (cpu0=1, cpu1=1)
+[net-rx-counters] sample=5 NET_RX_SOFTIRQ_EXIT_TOTAL: 2 (cpu0=1, cpu1=1)
+[net-rx-counters] sample=5 NET_RX_REENTRANT_SKIP_TOTAL: 0
+[net-rx-counters] sample=5 NET_RX_GUARD_RELEASE_TOTAL: 2 (cpu0=1, cpu1=1)
+[net-rx-counters] sample=5 NET_RX_REARM_CHECK_TOTAL: 0
+[net-rx-counters] sample=5 NET_RX_REARM_RACE_TOTAL: 0
+[net-rx-counters] sample=5 NET_RX_REARM_ARMED_TOTAL: 0
+[net-rx-counters] sample=5 NET_PCI_IRQ_RAISED_NETRX: 0
+[net-rx-counters] sample=5 GIC_SPI55_ACK_TOTAL: 0
+[net-rx-counters] sample=5 end
+[SCHED_STRAND_ORACLE:aarch64:samples=1176:checked=3937:stranded=1:running_shape=1:ready_shape=0:resolved_production=12:resolved_exercised=2:worst_dwell_ms=54646:overflow=0:worst_nonprogress_ms=35347:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=61380 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=62387 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=63389 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=64390 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=65395 kbd_nonzero=0
+[SCHED_STRAND_ORACLE:aarch64:samples=1273:checked=4229:stranded=1:running_shape=1:ready_shape=0:resolved_production=12:resolved_exercised=2:worst_dwell_ms=59655:overflow=0:worst_nonprogress_ms=38630:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=66397 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=67400 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=68402 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=69403 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=70405 kbd_nonzero=0
+[PT_ROOT_CUSTODY:no_proof=10:no_arch=0:terminated=1:undecided=3:mid_retire=1:retired=78]
+[net-rx-counters] sample=6 begin
+[net-rx-counters] sample=6 NET_RX_MSI_TOTAL: 0
+[net-rx-counters] sample=6 NET_RX_RING_DRAIN_TOTAL: 0
+[net-rx-counters] sample=6 NET_RX_FRAME_TOTAL: 3 (cpu0=3)
+[net-rx-counters] sample=6 NET_RX_ARP_TOTAL: 2 (cpu0=2)
+[net-rx-counters] sample=6 NET_RX_ETHERTYPE_OTHER_TOTAL: 0
+[net-rx-counters] sample=6 NET_RX_SOFTIRQ_ENTRY_TOTAL: 2 (cpu0=1, cpu1=1)
+[net-rx-counters] sample=6 NET_RX_SOFTIRQ_EXIT_TOTAL: 2 (cpu0=1, cpu1=1)
+[net-rx-counters] sample=6 NET_RX_REENTRANT_SKIP_TOTAL: 0
+[net-rx-counters] sample=6 NET_RX_GUARD_RELEASE_TOTAL: 2 (cpu0=1, cpu1=1)
+[net-rx-counters] sample=6 NET_RX_REARM_CHECK_TOTAL: 0
+[net-rx-counters] sample=6 NET_RX_REARM_RACE_TOTAL: 0
+[net-rx-counters] sample=6 NET_RX_REARM_ARMED_TOTAL: 0
+[net-rx-counters] sample=6 NET_PCI_IRQ_RAISED_NETRX: 0
+[net-rx-counters] sample=6 GIC_SPI55_ACK_TOTAL: 0
+[net-rx-counters] sample=6 end
+[SCHED_STRAND_ORACLE:aarch64:samples=1370:checked=4520:stranded=1:running_shape=1:ready_shape=0:resolved_production=12:resolved_exercised=2:worst_dwell_ms=64675:overflow=0:worst_nonprogress_ms=41916:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=71411 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=72417 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=73418 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=74420 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=75422 kbd_nonzero=0
+[SCHED_STRAND_ORACLE:aarch64:samples=1467:checked=4811:stranded=1:running_shape=1:ready_shape=0:resolved_production=12:resolved_exercised=2:worst_dwell_ms=69686:overflow=0:worst_nonprogress_ms=45162:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=76423 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=77426 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=78428 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=79430 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=80432 kbd_nonzero=0
+[PT_ROOT_CUSTODY:no_proof=10:no_arch=0:terminated=1:undecided=3:mid_retire=1:retired=78]
+[net-rx-counters] sample=7 begin
+[net-rx-counters] sample=7 NET_RX_MSI_TOTAL: 0
+[net-rx-counters] sample=7 NET_RX_RING_DRAIN_TOTAL: 0
+[net-rx-counters] sample=7 NET_RX_FRAME_TOTAL: 3 (cpu0=3)
+[net-rx-counters] sample=7 NET_RX_ARP_TOTAL: 2 (cpu0=2)
+[net-rx-counters] sample=7 NET_RX_ETHERTYPE_OTHER_TOTAL: 0
+[net-rx-counters] sample=7 NET_RX_SOFTIRQ_ENTRY_TOTAL: 2 (cpu0=1, cpu1=1)
+[net-rx-counters] sample=7 NET_RX_SOFTIRQ_EXIT_TOTAL: 2 (cpu0=1, cpu1=1)
+[net-rx-counters] sample=7 NET_RX_REENTRANT_SKIP_TOTAL: 0
+[net-rx-counters] sample=7 NET_RX_GUARD_RELEASE_TOTAL: 2 (cpu0=1, cpu1=1)
+[net-rx-counters] sample=7 NET_RX_REARM_CHECK_TOTAL: 0
+[net-rx-counters] sample=7 NET_RX_REARM_RACE_TOTAL: 0
+[net-rx-counters] sample=7 NET_RX_REARM_ARMED_TOTAL: 0
+[net-rx-counters] sample=7 NET_PCI_IRQ_RAISED_NETRX: 0
+[net-rx-counters] sample=7 GIC_SPI55_ACK_TOTAL: 0
+[net-rx-counters] sample=7 end
+[SCHED_STRAND_ORACLE:aarch64:samples=1565:checked=5106:stranded=1:running_shape=1:ready_shape=0:resolved_production=12:resolved_exercised=2:worst_dwell_ms=74709:overflow=0:worst_nonprogress_ms=48544:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=81447 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=82448 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=83450 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=84451 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=85452 kbd_nonzero=0
+[SCHED_STRAND_ORACLE:aarch64:samples=1663:checked=5400:stranded=1:running_shape=1:ready_shape=0:resolved_production=12:resolved_exercised=2:worst_dwell_ms=79746:overflow=0:worst_nonprogress_ms=51842:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=86453 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=87455 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=88457 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=89458 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=90465 kbd_nonzero=0
+[PT_ROOT_CUSTODY:no_proof=10:no_arch=0:terminated=1:undecided=3:mid_retire=1:retired=78]
+[net-rx-counters] sample=8 begin
+[net-rx-counters] sample=8 NET_RX_MSI_TOTAL: 0
+[net-rx-counters] sample=8 NET_RX_RING_DRAIN_TOTAL: 0
+[net-rx-counters] sample=8 NET_RX_FRAME_TOTAL: 3 (cpu0=3)
+[net-rx-counters] sample=8 NET_RX_ARP_TOTAL: 2 (cpu0=2)
+[net-rx-counters] sample=8 NET_RX_ETHERTYPE_OTHER_TOTAL: 0
+[net-rx-counters] sample=8 NET_RX_SOFTIRQ_ENTRY_TOTAL: 2 (cpu0=1, cpu1=1)
+[net-rx-counters] sample=8 NET_RX_SOFTIRQ_EXIT_TOTAL: 2 (cpu0=1, cpu1=1)
+[net-rx-counters] sample=8 NET_RX_REENTRANT_SKIP_TOTAL: 0
+[net-rx-counters] sample=8 NET_RX_GUARD_RELEASE_TOTAL: 2 (cpu0=1, cpu1=1)
+[net-rx-counters] sample=8 NET_RX_REARM_CHECK_TOTAL: 0
+[net-rx-counters] sample=8 NET_RX_REARM_RACE_TOTAL: 0
+[net-rx-counters] sample=8 NET_RX_REARM_ARMED_TOTAL: 0
+[net-rx-counters] sample=8 NET_PCI_IRQ_RAISED_NETRX: 0
+[net-rx-counters] sample=8 GIC_SPI55_ACK_TOTAL: 0
+[net-rx-counters] sample=8 end
+[SCHED_STRAND_ORACLE:aarch64:samples=1760:checked=5691:stranded=1:running_shape=1:ready_shape=0:resolved_production=12:resolved_exercised=2:worst_dwell_ms=84752:overflow=0:worst_nonprogress_ms=55066:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=91470 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=92471 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=93475 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=94476 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=95477 kbd_nonzero=0
+[SCHED_STRAND_ORACLE:aarch64:samples=1857:checked=5982:stranded=1:running_shape=1:ready_shape=0:resolved_production=12:resolved_exercised=2:worst_dwell_ms=89755:overflow=0:worst_nonprogress_ms=58448:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=96478 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=97479 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=98480 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=99483 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=100484 kbd_nonzero=0
+[PT_ROOT_CUSTODY:no_proof=10:no_arch=0:terminated=1:undecided=3:mid_retire=1:retired=78]
+[net-rx-counters] sample=9 begin
+[net-rx-counters] sample=9 NET_RX_MSI_TOTAL: 0
+[net-rx-counters] sample=9 NET_RX_RING_DRAIN_TOTAL: 0
+[net-rx-counters] sample=9 NET_RX_FRAME_TOTAL: 3 (cpu0=3)
+[net-rx-counters] sample=9 NET_RX_ARP_TOTAL: 2 (cpu0=2)
+[net-rx-counters] sample=9 NET_RX_ETHERTYPE_OTHER_TOTAL: 0
+[net-rx-counters] sample=9 NET_RX_SOFTIRQ_ENTRY_TOTAL: 2 (cpu0=1, cpu1=1)
+[net-rx-counters] sample=9 NET_RX_SOFTIRQ_EXIT_TOTAL: 2 (cpu0=1, cpu1=1)
+[net-rx-counters] sample=9 NET_RX_REENTRANT_SKIP_TOTAL: 0
+[net-rx-counters] sample=9 NET_RX_GUARD_RELEASE_TOTAL: 2 (cpu0=1, cpu1=1)
+[net-rx-counters] sample=9 NET_RX_REARM_CHECK_TOTAL: 0
+[net-rx-counters] sample=9 NET_RX_REARM_RACE_TOTAL: 0
+[net-rx-counters] sample=9 NET_RX_REARM_ARMED_TOTAL: 0
+[net-rx-counters] sample=9 NET_PCI_IRQ_RAISED_NETRX: 0
+[net-rx-counters] sample=9 GIC_SPI55_ACK_TOTAL: 0
+[net-rx-counters] sample=9 end
+[SCHED_STRAND_ORACLE:aarch64:samples=1955:checked=6277:stranded=1:running_shape=1:ready_shape=0:resolved_production=12:resolved_exercised=2:worst_dwell_ms=94796:overflow=0:worst_nonprogress_ms=61723:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=101495 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=102496 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=103498 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=104499 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=105502 kbd_nonzero=0
+[SCHED_STRAND_ORACLE:aarch64:samples=2053:checked=6571:stranded=1:running_shape=1:ready_shape=0:resolved_production=12:resolved_exercised=2:worst_dwell_ms=99836:overflow=0:worst_nonprogress_ms=65000:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=106504 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=107506 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=108508 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=109509 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=110511 kbd_nonzero=0
+[PT_ROOT_CUSTODY:no_proof=10:no_arch=0:terminated=1:undecided=3:mid_retire=1:retired=78]
+[net-rx-counters] sample=10 begin
+[net-rx-counters] sample=10 NET_RX_MSI_TOTAL: 0
+[net-rx-counters] sample=10 NET_RX_RING_DRAIN_TOTAL: 0
+[net-rx-counters] sample=10 NET_RX_FRAME_TOTAL: 3 (cpu0=3)
+[net-rx-counters] sample=10 NET_RX_ARP_TOTAL: 2 (cpu0=2)
+[net-rx-counters] sample=10 NET_RX_ETHERTYPE_OTHER_TOTAL: 0
+[net-rx-counters] sample=10 NET_RX_SOFTIRQ_ENTRY_TOTAL: 2 (cpu0=1, cpu1=1)
+[net-rx-counters] sample=10 NET_RX_SOFTIRQ_EXIT_TOTAL: 2 (cpu0=1, cpu1=1)
+[net-rx-counters] sample=10 NET_RX_REENTRANT_SKIP_TOTAL: 0
+[net-rx-counters] sample=10 NET_RX_GUARD_RELEASE_TOTAL: 2 (cpu0=1, cpu1=1)
+[net-rx-counters] sample=10 NET_RX_REARM_CHECK_TOTAL: 0
+[net-rx-counters] sample=10 NET_RX_REARM_RACE_TOTAL: 0
+[net-rx-counters] sample=10 NET_RX_REARM_ARMED_TOTAL: 0
+[net-rx-counters] sample=10 NET_PCI_IRQ_RAISED_NETRX: 0
+[net-rx-counters] sample=10 GIC_SPI55_ACK_TOTAL: 0
+[net-rx-counters] sample=10 end
+[SCHED_STRAND_ORACLE:aarch64:samples=2150:checked=6862:stranded=1:running_shape=1:ready_shape=0:resolved_production=12:resolved_exercised=2:worst_dwell_ms=104842:overflow=0:worst_nonprogress_ms=68259:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=111520 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=112521 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=113521 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=114522 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=115523 kbd_nonzero=0
+[SCHED_STRAND_ORACLE:aarch64:samples=2248:checked=7156:stranded=1:running_shape=1:ready_shape=0:resolved_production=12:resolved_exercised=2:worst_dwell_ms=109883:overflow=0:worst_nonprogress_ms=71646:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=116525 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=117527 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=118532 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=119532 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=120534 kbd_nonzero=0
+[SCHED_STRAND_ORACLE:aarch64:samples=2345:checked=7447:stranded=1:running_shape=1:ready_shape=0:resolved_production=12:resolved_exercised=2:worst_dwell_ms=114886:overflow=0:worst_nonprogress_ms=74900:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=121541 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=122542 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=123551 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=124552 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=125554 kbd_nonzero=0
+[SCHED_STRAND_ORACLE:aarch64:samples=2443:checked=7742:stranded=1:running_shape=1:ready_shape=0:resolved_production=12:resolved_exercised=2:worst_dwell_ms=119930:overflow=0:worst_nonprogress_ms=78226:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=126556 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=127561 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=128562 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=129564 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=130565 kbd_nonzero=0
+[SCHED_STRAND_ORACLE:aarch64:samples=2541:checked=8036:stranded=1:running_shape=1:ready_shape=0:resolved_production=12:resolved_exercised=2:worst_dwell_ms=124971:overflow=0:worst_nonprogress_ms=81511:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=131573 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=132574 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=133575 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=134575 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=135577 kbd_nonzero=0
+[SCHED_STRAND_ORACLE:aarch64:samples=2639:checked=8330:stranded=1:running_shape=1:ready_shape=0:resolved_production=12:resolved_exercised=2:worst_dwell_ms=129977:overflow=0:worst_nonprogress_ms=85251:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=136578 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=137586 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=138587 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=139588 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=140589 kbd_nonzero=0
+[SCHED_STRAND_ORACLE:aarch64:samples=2736:checked=8621:stranded=1:running_shape=1:ready_shape=0:resolved_production=12:resolved_exercised=2:worst_dwell_ms=134978:overflow=0:worst_nonprogress_ms=88721:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=141590 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=142597 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=143599 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=144599 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=145601 kbd_nonzero=0
+[SCHED_STRAND_ORACLE:aarch64:samples=2834:checked=8915:stranded=1:running_shape=1:ready_shape=0:resolved_production=12:resolved_exercised=2:worst_dwell_ms=139995:overflow=0:worst_nonprogress_ms=92057:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=146603 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=147606 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=148607 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=149608 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=150609 kbd_nonzero=0
+[SCHED_STRAND_ORACLE:aarch64:samples=2933:checked=9213:stranded=1:running_shape=1:ready_shape=0:resolved_production=12:resolved_exercised=2:worst_dwell_ms=145030:overflow=0:worst_nonprogress_ms=95901:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=151611 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=152613 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=153614 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=154616 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=155617 kbd_nonzero=0
+[SCHED_STRAND_ORACLE:aarch64:samples=3032:checked=9510:stranded=1:running_shape=1:ready_shape=0:resolved_production=12:resolved_exercised=2:worst_dwell_ms=150079:overflow=0:worst_nonprogress_ms=99759:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=156619 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=157620 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=158622 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=159623 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=160624 kbd_nonzero=0
+[SCHED_STRAND_ORACLE:aarch64:samples=3131:checked=9807:stranded=1:running_shape=1:ready_shape=0:resolved_production=12:resolved_exercised=2:worst_dwell_ms=155112:overflow=0:worst_nonprogress_ms=103603:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=161626 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=162628 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=163634 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=164636 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=165636 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=166638 kbd_nonzero=0
+[SCHED_STRAND_ORACLE:aarch64:samples=3229:checked=10101:stranded=1:running_shape=1:ready_shape=0:resolved_production=12:resolved_exercised=2:worst_dwell_ms=160149:overflow=0:worst_nonprogress_ms=107024:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=167639 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=168641 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=169651 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=170652 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=171654 kbd_nonzero=0
+[SCHED_STRAND_ORACLE:aarch64:samples=3327:checked=10396:stranded=1:running_shape=1:ready_shape=0:resolved_production=12:resolved_exercised=2:worst_dwell_ms=165174:overflow=0:worst_nonprogress_ms=110581:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=172663 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=173664 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=174665 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=175672 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=176673 kbd_nonzero=0
+[SCHED_STRAND_ORACLE:aarch64:samples=3425:checked=10690:stranded=1:running_shape=1:ready_shape=0:resolved_production=12:resolved_exercised=2:worst_dwell_ms=170200:overflow=0:worst_nonprogress_ms=114125:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=177675 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=178676 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=179678 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=180680 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=181682 kbd_nonzero=0
+[SCHED_STRAND_ORACLE:aarch64:samples=3524:checked=10987:stranded=1:running_shape=1:ready_shape=0:resolved_production=12:resolved_exercised=2:worst_dwell_ms=175247:overflow=0:worst_nonprogress_ms=117543:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=182684 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=183685 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=184686 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=185687 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=186692 kbd_nonzero=0
+[SCHED_STRAND_ORACLE:aarch64:samples=3622:checked=11281:stranded=1:running_shape=1:ready_shape=0:resolved_production=12:resolved_exercised=2:worst_dwell_ms=180264:overflow=0:worst_nonprogress_ms=120894:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=187697 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=188698 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=189699 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=190703 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=191704 kbd_nonzero=0
+[SCHED_STRAND_ORACLE:aarch64:samples=3719:checked=11572:stranded=1:running_shape=1:ready_shape=0:resolved_production=12:resolved_exercised=2:worst_dwell_ms=185266:overflow=0:worst_nonprogress_ms=124321:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=192707 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=193709 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=194710 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=195712 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=196713 kbd_nonzero=0
+[SCHED_STRAND_ORACLE:aarch64:samples=3817:checked=11866:stranded=1:running_shape=1:ready_shape=0:resolved_production=12:resolved_exercised=2:worst_dwell_ms=190306:overflow=0:worst_nonprogress_ms=127730:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=197715 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=198718 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=199719 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=200719 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=201721 kbd_nonzero=0
+[SCHED_STRAND_ORACLE:aarch64:samples=3915:checked=12160:stranded=1:running_shape=1:ready_shape=0:resolved_production=12:resolved_exercised=2:worst_dwell_ms=195321:overflow=0:worst_nonprogress_ms=131310:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=202727 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=203729 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=204731 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=205732 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=206733 kbd_nonzero=0
+[SCHED_STRAND_ORACLE:aarch64:samples=4013:checked=12454:stranded=1:running_shape=1:ready_shape=0:resolved_production=12:resolved_exercised=2:worst_dwell_ms=200348:overflow=0:worst_nonprogress_ms=134701:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=207734 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=208736 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=209737 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=210739 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=211741 kbd_nonzero=0
+[SCHED_STRAND_ORACLE:aarch64:samples=4111:checked=12748:stranded=1:running_shape=1:ready_shape=0:resolved_production=12:resolved_exercised=2:worst_dwell_ms=205381:overflow=0:worst_nonprogress_ms=138140:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=212743 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=213745 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=214746 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=215747 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=216748 kbd_nonzero=0
+[SCHED_STRAND_ORACLE:aarch64:samples=4209:checked=13042:stranded=1:running_shape=1:ready_shape=0:resolved_production=12:resolved_exercised=2:worst_dwell_ms=210397:overflow=0:worst_nonprogress_ms=141540:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=217749 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=218751 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=219751 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=220752 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=221754 kbd_nonzero=0
+[SCHED_STRAND_ORACLE:aarch64:samples=4307:checked=13336:stranded=1:running_shape=1:ready_shape=0:resolved_production=12:resolved_exercised=2:worst_dwell_ms=215406:overflow=0:worst_nonprogress_ms=145292:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=222756 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=223761 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=224762 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=225763 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=226764 kbd_nonzero=0
+[SCHED_STRAND_ORACLE:aarch64:samples=4405:checked=13631:stranded=1:running_shape=1:ready_shape=0:resolved_production=12:resolved_exercised=2:worst_dwell_ms=220409:overflow=0:worst_nonprogress_ms=148862:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=227765 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=228766 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=229767 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=230769 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=231770 kbd_nonzero=0
+[SCHED_STRAND_ORACLE:aarch64:samples=4504:checked=13928:stranded=1:running_shape=1:ready_shape=0:resolved_production=12:resolved_exercised=2:worst_dwell_ms=225450:overflow=0:worst_nonprogress_ms=152703:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=232774 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=233775 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=234776 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=235777 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=236779 kbd_nonzero=0
+[SCHED_STRAND_ORACLE:aarch64:samples=4602:checked=14223:stranded=1:running_shape=1:ready_shape=0:resolved_production=12:resolved_exercised=2:worst_dwell_ms=230452:overflow=0:worst_nonprogress_ms=156505:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=237781 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=238784 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=239785 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=240787 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=241787 kbd_nonzero=0
+[SCHED_STRAND_ORACLE:aarch64:samples=4701:checked=14520:stranded=1:running_shape=1:ready_shape=0:resolved_production=12:resolved_exercised=2:worst_dwell_ms=235484:overflow=0:worst_nonprogress_ms=160345:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=242789 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=243790 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=244791 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=245794 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=246795 kbd_nonzero=0
+[SCHED_STRAND_ORACLE:aarch64:samples=4799:checked=14814:stranded=1:running_shape=1:ready_shape=0:resolved_production=12:resolved_exercised=2:worst_dwell_ms=240502:overflow=0:worst_nonprogress_ms=164040:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=247797 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=248797 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=249799 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=250801 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=251802 kbd_nonzero=0
+[SCHED_STRAND_ORACLE:aarch64:samples=4897:checked=15108:stranded=1:running_shape=1:ready_shape=0:resolved_production=12:resolved_exercised=2:worst_dwell_ms=245504:overflow=0:worst_nonprogress_ms=167678:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=252803 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=253814 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=254815 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=255816 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=256818 kbd_nonzero=0
+[SCHED_STRAND_ORACLE:aarch64:samples=4995:checked=15402:stranded=1:running_shape=1:ready_shape=0:resolved_production=12:resolved_exercised=2:worst_dwell_ms=250512:overflow=0:worst_nonprogress_ms=171250:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=257819 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=258820 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=259822 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=260823 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=261824 kbd_nonzero=0
+[SCHED_STRAND_ORACLE:aarch64:samples=5093:checked=15696:stranded=1:running_shape=1:ready_shape=0:resolved_production=12:resolved_exercised=2:worst_dwell_ms=255518:overflow=0:worst_nonprogress_ms=174975:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=262825 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=263826 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=264828 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=265829 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=266830 kbd_nonzero=0
+[SCHED_STRAND_ORACLE:aarch64:samples=5191:checked=15990:stranded=1:running_shape=1:ready_shape=0:resolved_production=12:resolved_exercised=2:worst_dwell_ms=260549:overflow=0:worst_nonprogress_ms=178528:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=267832 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=268833 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=269834 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=270835 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=271836 kbd_nonzero=0
+[SCHED_STRAND_ORACLE:aarch64:samples=5289:checked=16284:stranded=1:running_shape=1:ready_shape=0:resolved_production=12:resolved_exercised=2:worst_dwell_ms=265550:overflow=0:worst_nonprogress_ms=182185:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=272838 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=273839 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=274840 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=275841 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=276843 kbd_nonzero=0
+[SCHED_STRAND_ORACLE:aarch64:samples=5387:checked=16578:stranded=1:running_shape=1:ready_shape=0:resolved_production=12:resolved_exercised=2:worst_dwell_ms=270566:overflow=0:worst_nonprogress_ms=185729:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=277844 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=278845 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=279849 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=280851 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=281852 kbd_nonzero=0
+[SCHED_STRAND_ORACLE:aarch64:samples=5485:checked=16872:stranded=1:running_shape=1:ready_shape=0:resolved_production=12:resolved_exercised=2:worst_dwell_ms=275579:overflow=0:worst_nonprogress_ms=189321:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=282852 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=283854 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=284856 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=285859 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=286860 kbd_nonzero=0
+[SCHED_STRAND_ORACLE:aarch64:samples=5583:checked=17167:stranded=1:running_shape=1:ready_shape=0:resolved_production=12:resolved_exercised=2:worst_dwell_ms=280597:overflow=0:worst_nonprogress_ms=192918:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=287862 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=288863 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=289864 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=290866 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=291867 kbd_nonzero=0
+[SCHED_STRAND_ORACLE:aarch64:samples=5681:checked=17461:stranded=1:running_shape=1:ready_shape=0:resolved_production=12:resolved_exercised=2:worst_dwell_ms=285598:overflow=0:worst_nonprogress_ms=196502:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=292868 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=293870 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=294873 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=295874 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=296881 kbd_nonzero=0
+[SCHED_STRAND_ORACLE:aarch64:samples=5779:checked=17755:stranded=1:running_shape=1:ready_shape=0:resolved_production=12:resolved_exercised=2:worst_dwell_ms=290610:overflow=0:worst_nonprogress_ms=200100:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=297884 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=298890 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=299892 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=300893 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=301894 kbd_nonzero=0
+[SCHED_STRAND_ORACLE:aarch64:samples=5877:checked=18050:stranded=1:running_shape=1:ready_shape=0:resolved_production=12:resolved_exercised=2:worst_dwell_ms=295632:overflow=0:worst_nonprogress_ms=203773:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=302896 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=303898 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=304905 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=305906 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=306908 kbd_nonzero=0
+[SCHED_STRAND_ORACLE:aarch64:samples=5975:checked=18345:stranded=1:running_shape=1:ready_shape=0:resolved_production=12:resolved_exercised=2:worst_dwell_ms=300655:overflow=0:worst_nonprogress_ms=207339:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=307908 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=308910 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=309912 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=310921 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=311923 kbd_nonzero=0
+[SCHED_STRAND_ORACLE:aarch64:samples=6074:checked=18642:stranded=1:running_shape=1:ready_shape=0:resolved_production=12:resolved_exercised=2:worst_dwell_ms=305701:overflow=0:worst_nonprogress_ms=211038:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=312924 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=313932 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=314934 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=315936 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=316938 kbd_nonzero=0
+[SCHED_STRAND_ORACLE:aarch64:samples=6173:checked=18939:stranded=1:running_shape=1:ready_shape=0:resolved_production=12:resolved_exercised=2:worst_dwell_ms=310751:overflow=0:worst_nonprogress_ms=214688:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=317938 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=318943 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=319945 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=320946 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=321948 kbd_nonzero=0
+[SCHED_STRAND_ORACLE:aarch64:samples=6272:checked=19236:stranded=1:running_shape=1:ready_shape=0:resolved_production=12:resolved_exercised=2:worst_dwell_ms=315783:overflow=0:worst_nonprogress_ms=218384:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=322950 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=323951 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=324953 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=325956 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=326962 kbd_nonzero=0
+[SCHED_STRAND_ORACLE:aarch64:samples=6370:checked=19531:stranded=1:running_shape=1:ready_shape=0:resolved_production=12:resolved_exercised=2:worst_dwell_ms=320812:overflow=0:worst_nonprogress_ms=222058:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=327963 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=328965 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=329966 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=330967 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=331969 kbd_nonzero=0
+[SCHED_STRAND_ORACLE:aarch64:samples=6469:checked=19828:stranded=1:running_shape=1:ready_shape=0:resolved_production=12:resolved_exercised=2:worst_dwell_ms=325855:overflow=0:worst_nonprogress_ms=225691:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=332970 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=333971 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=334973 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=335974 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=336976 kbd_nonzero=0
+[SCHED_STRAND_ORACLE:aarch64:samples=6567:checked=20122:stranded=1:running_shape=1:ready_shape=0:resolved_production=12:resolved_exercised=2:worst_dwell_ms=330867:overflow=0:worst_nonprogress_ms=229214:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=337977 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=338977 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=339978 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=340980 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=341981 kbd_nonzero=0
+[SCHED_STRAND_ORACLE:aarch64:samples=6666:checked=20419:stranded=1:running_shape=1:ready_shape=0:resolved_production=12:resolved_exercised=2:worst_dwell_ms=335904:overflow=0:worst_nonprogress_ms=232857:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=342982 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=343983 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=344984 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=345985 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=346987 kbd_nonzero=0
+[SCHED_STRAND_ORACLE:aarch64:samples=6764:checked=20713:stranded=1:running_shape=1:ready_shape=0:resolved_production=12:resolved_exercised=2:worst_dwell_ms=340911:overflow=0:worst_nonprogress_ms=236469:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=347989 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=348995 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=349996 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=351000 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=352001 kbd_nonzero=0
+[SCHED_STRAND_ORACLE:aarch64:samples=6862:checked=21008:stranded=1:running_shape=1:ready_shape=0:resolved_production=12:resolved_exercised=2:worst_dwell_ms=345916:overflow=0:worst_nonprogress_ms=240084:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=353003 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=354004 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=355007 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=356008 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=357011 kbd_nonzero=0
+[SCHED_STRAND_ORACLE:aarch64:samples=6961:checked=21306:stranded=1:running_shape=1:ready_shape=0:resolved_production=12:resolved_exercised=2:worst_dwell_ms=350960:overflow=0:worst_nonprogress_ms=243843:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=358013 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=359014 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=360015 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=361016 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=362018 kbd_nonzero=0
+[SCHED_STRAND_ORACLE:aarch64:samples=7059:checked=21600:stranded=1:running_shape=1:ready_shape=0:resolved_production=12:resolved_exercised=2:worst_dwell_ms=355971:overflow=0:worst_nonprogress_ms=247420:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=363019 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=364021 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=365023 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=366024 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=367026 kbd_nonzero=0
+[SCHED_STRAND_ORACLE:aarch64:samples=7158:checked=21897:stranded=1:running_shape=1:ready_shape=0:resolved_production=12:resolved_exercised=2:worst_dwell_ms=360997:overflow=0:worst_nonprogress_ms=251239:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=368028 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=369032 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=370033 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=371033 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=372035 kbd_nonzero=0
+[SCHED_STRAND_ORACLE:aarch64:samples=7257:checked=22195:stranded=1:running_shape=1:ready_shape=0:resolved_production=12:resolved_exercised=2:worst_dwell_ms=366026:overflow=0:worst_nonprogress_ms=255072:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=373036 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=374037 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=375038 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=376040 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=377041 kbd_nonzero=0
+[SCHED_STRAND_ORACLE:aarch64:samples=7356:checked=22492:stranded=1:running_shape=1:ready_shape=0:resolved_production=12:resolved_exercised=2:worst_dwell_ms=371058:overflow=0:worst_nonprogress_ms=258929:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=378047 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=379047 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=380048 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=381049 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=382051 kbd_nonzero=0
+[SCHED_STRAND_ORACLE:aarch64:samples=7455:checked=22789:stranded=1:running_shape=1:ready_shape=0:resolved_production=12:resolved_exercised=2:worst_dwell_ms=376092:overflow=0:worst_nonprogress_ms=262767:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=383058 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=384059 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=385061 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=386062 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=387063 kbd_nonzero=0
+[SCHED_STRAND_ORACLE:aarch64:samples=7553:checked=23084:stranded=1:running_shape=1:ready_shape=0:resolved_production=12:resolved_exercised=2:worst_dwell_ms=381096:overflow=0:worst_nonprogress_ms=266451:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=388065 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=389067 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=390069 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=391071 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=392072 kbd_nonzero=0
+[SCHED_STRAND_ORACLE:aarch64:samples=7652:checked=23381:stranded=1:running_shape=1:ready_shape=0:resolved_production=12:resolved_exercised=2:worst_dwell_ms=386130:overflow=0:worst_nonprogress_ms=270252:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=393073 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=394075 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=395076 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=396078 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=397079 kbd_nonzero=0
+[SCHED_STRAND_ORACLE:aarch64:samples=7751:checked=23678:stranded=1:running_shape=1:ready_shape=0:resolved_production=12:resolved_exercised=2:worst_dwell_ms=391169:overflow=0:worst_nonprogress_ms=274044:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=398081 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=399083 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=400084 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=401086 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=402087 kbd_nonzero=0
+[SCHED_STRAND_ORACLE:aarch64:samples=7850:checked=23975:stranded=1:running_shape=1:ready_shape=0:resolved_production=12:resolved_exercised=2:worst_dwell_ms=396207:overflow=0:worst_nonprogress_ms=277827:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=403089 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=404090 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=405092 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=406093 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=407094 kbd_nonzero=0
+[SCHED_STRAND_ORACLE:aarch64:samples=7949:checked=24272:stranded=1:running_shape=1:ready_shape=0:resolved_production=12:resolved_exercised=2:worst_dwell_ms=401244:overflow=0:worst_nonprogress_ms=281636:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=408096 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=409099 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=410100 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=411102 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=412103 kbd_nonzero=0
+[SCHED_STRAND_ORACLE:aarch64:samples=8048:checked=24569:stranded=1:running_shape=1:ready_shape=0:resolved_production=12:resolved_exercised=2:worst_dwell_ms=406279:overflow=0:worst_nonprogress_ms=285421:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=413105 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=414106 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=415108 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=416110 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=417111 kbd_nonzero=0
+[SCHED_STRAND_ORACLE:aarch64:samples=8147:checked=24866:stranded=1:running_shape=1:ready_shape=0:resolved_production=12:resolved_exercised=2:worst_dwell_ms=411306:overflow=0:worst_nonprogress_ms=289273:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=418112 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=419117 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=420119 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=421121 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=422122 kbd_nonzero=0
+[SCHED_STRAND_ORACLE:aarch64:samples=8245:checked=25160:stranded=1:running_shape=1:ready_shape=0:resolved_production=12:resolved_exercised=2:worst_dwell_ms=416310:overflow=0:worst_nonprogress_ms=293057:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=423123 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=424124 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=425126 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=426130 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=427134 kbd_nonzero=0
+[SCHED_STRAND_ORACLE:aarch64:samples=8344:checked=25457:stranded=1:running_shape=1:ready_shape=0:resolved_production=12:resolved_exercised=2:worst_dwell_ms=421356:overflow=0:worst_nonprogress_ms=296861:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=428135 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=429136 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=430137 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=431139 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=432140 kbd_nonzero=0
+[SCHED_STRAND_ORACLE:aarch64:samples=8443:checked=25754:stranded=1:running_shape=1:ready_shape=0:resolved_production=12:resolved_exercised=2:worst_dwell_ms=426381:overflow=0:worst_nonprogress_ms=300668:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=433141 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=434142 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=435144 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=436147 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=437148 kbd_nonzero=0
+[SCHED_STRAND_ORACLE:aarch64:samples=8541:checked=26049:stranded=1:running_shape=1:ready_shape=0:resolved_production=12:resolved_exercised=2:worst_dwell_ms=431385:overflow=0:worst_nonprogress_ms=304450:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=438149 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=439151 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=440153 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=441154 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=442155 kbd_nonzero=0
+[SCHED_STRAND_ORACLE:aarch64:samples=8640:checked=26346:stranded=1:running_shape=1:ready_shape=0:resolved_production=12:resolved_exercised=2:worst_dwell_ms=436426:overflow=0:worst_nonprogress_ms=308271:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=443156 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=444157 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=445158 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=446160 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=447161 kbd_nonzero=0
+[SCHED_STRAND_ORACLE:aarch64:samples=8739:checked=26643:stranded=1:running_shape=1:ready_shape=0:resolved_production=12:resolved_exercised=2:worst_dwell_ms=441467:overflow=0:worst_nonprogress_ms=312062:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=448163 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=449164 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=450165 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=451166 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=452168 kbd_nonzero=0
+[SCHED_STRAND_ORACLE:aarch64:samples=8837:checked=26937:stranded=1:running_shape=1:ready_shape=0:resolved_production=12:resolved_exercised=2:worst_dwell_ms=446477:overflow=0:worst_nonprogress_ms=315763:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=453168 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=454170 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=455172 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=456173 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=457175 kbd_nonzero=0
+[SCHED_STRAND_ORACLE:aarch64:samples=8935:checked=27231:stranded=1:running_shape=1:ready_shape=0:resolved_production=12:resolved_exercised=2:worst_dwell_ms=451477:overflow=0:worst_nonprogress_ms=319565:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=458177 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=459178 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=460179 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=461180 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=462182 kbd_nonzero=0
+[SCHED_STRAND_ORACLE:aarch64:samples=9033:checked=27525:stranded=1:running_shape=1:ready_shape=0:resolved_production=12:resolved_exercised=2:worst_dwell_ms=456480:overflow=0:worst_nonprogress_ms=323328:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=463183 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=464184 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=465185 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=466186 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=467188 kbd_nonzero=0
+[SCHED_STRAND_ORACLE:aarch64:samples=9132:checked=27822:stranded=1:running_shape=1:ready_shape=0:resolved_production=12:resolved_exercised=2:worst_dwell_ms=461524:overflow=0:worst_nonprogress_ms=327179:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=468189 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=469191 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=470191 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=471193 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=472194 kbd_nonzero=0
+[SCHED_STRAND_ORACLE:aarch64:samples=9231:checked=28119:stranded=1:running_shape=1:ready_shape=0:resolved_production=12:resolved_exercised=2:worst_dwell_ms=466568:overflow=0:worst_nonprogress_ms=330984:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=473195 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=474196 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=475197 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=476199 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=477200 kbd_nonzero=0
+[SCHED_STRAND_ORACLE:aarch64:samples=9330:checked=28416:stranded=1:running_shape=1:ready_shape=0:resolved_production=12:resolved_exercised=2:worst_dwell_ms=471609:overflow=0:worst_nonprogress_ms=334834:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=478201 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=479203 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=480207 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=481208 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=482209 kbd_nonzero=0
+[SCHED_STRAND_ORACLE:aarch64:samples=9429:checked=28713:stranded=1:running_shape=1:ready_shape=0:resolved_production=12:resolved_exercised=2:worst_dwell_ms=476655:overflow=0:worst_nonprogress_ms=338648:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=483210 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=484213 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=485215 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=486216 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=487218 kbd_nonzero=0
+[SCHED_STRAND_ORACLE:aarch64:samples=9527:checked=29007:stranded=1:running_shape=1:ready_shape=0:resolved_production=12:resolved_exercised=2:worst_dwell_ms=481656:overflow=0:worst_nonprogress_ms=342461:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=488219 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=489220 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=490223 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=491224 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=492226 kbd_nonzero=0
+[SCHED_STRAND_ORACLE:aarch64:samples=9626:checked=29304:stranded=1:running_shape=1:ready_shape=0:resolved_production=12:resolved_exercised=2:worst_dwell_ms=486704:overflow=0:worst_nonprogress_ms=346295:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=493227 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=494235 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=495236 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=496238 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=497240 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=498241 kbd_nonzero=0
+[SCHED_STRAND_ORACLE:aarch64:samples=9725:checked=29601:stranded=1:running_shape=1:ready_shape=0:resolved_production=12:resolved_exercised=2:worst_dwell_ms=491753:overflow=0:worst_nonprogress_ms=350048:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=499243 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=500243 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=501244 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=502246 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=503248 kbd_nonzero=0
+[SCHED_STRAND_ORACLE:aarch64:samples=9824:checked=29898:stranded=1:running_shape=1:ready_shape=0:resolved_production=12:resolved_exercised=2:worst_dwell_ms=496800:overflow=0:worst_nonprogress_ms=353886:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=504251 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=505253 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=506255 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=507256 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=508257 kbd_nonzero=0
+[SCHED_STRAND_ORACLE:aarch64:samples=9923:checked=30195:stranded=1:running_shape=1:ready_shape=0:resolved_production=12:resolved_exercised=2:worst_dwell_ms=501850:overflow=0:worst_nonprogress_ms=357679:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=509258 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=510260 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=511261 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=512262 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=513263 kbd_nonzero=0
+[SCHED_STRAND_ORACLE:aarch64:samples=10021:checked=30489:stranded=1:running_shape=1:ready_shape=0:resolved_production=12:resolved_exercised=2:worst_dwell_ms=506858:overflow=0:worst_nonprogress_ms=361457:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=514264 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=515265 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=516267 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=517267 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=518268 kbd_nonzero=0
+[SCHED_STRAND_ORACLE:aarch64:samples=10120:checked=30786:stranded=1:running_shape=1:ready_shape=0:resolved_production=12:resolved_exercised=2:worst_dwell_ms=511885:overflow=0:worst_nonprogress_ms=365279:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=519270 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=520274 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=521276 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=522277 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=523279 kbd_nonzero=0
+[SCHED_STRAND_ORACLE:aarch64:samples=10219:checked=31084:stranded=1:running_shape=1:ready_shape=0:resolved_production=12:resolved_exercised=2:worst_dwell_ms=516922:overflow=0:worst_nonprogress_ms=369121:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=524280 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=525282 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=526284 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=527286 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=528287 kbd_nonzero=0
+[SCHED_STRAND_ORACLE:aarch64:samples=10318:checked=31381:stranded=1:running_shape=1:ready_shape=0:resolved_production=12:resolved_exercised=2:worst_dwell_ms=521955:overflow=0:worst_nonprogress_ms=372952:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=529288 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=530289 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=531291 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=532292 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=533293 kbd_nonzero=0
+[SCHED_STRAND_ORACLE:aarch64:samples=10417:checked=31678:stranded=1:running_shape=1:ready_shape=0:resolved_production=12:resolved_exercised=2:worst_dwell_ms=526996:overflow=0:worst_nonprogress_ms=376714:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=534295 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=535297 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=536298 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=537299 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=538301 kbd_nonzero=0
+[SCHED_STRAND_ORACLE:aarch64:samples=10516:checked=31975:stranded=1:running_shape=1:ready_shape=0:resolved_production=12:resolved_exercised=2:worst_dwell_ms=532042:overflow=0:worst_nonprogress_ms=380513:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=539303 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=540305 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=541307 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=542310 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=543312 kbd_nonzero=0
+[SCHED_STRAND_ORACLE:aarch64:samples=10614:checked=32269:stranded=1:running_shape=1:ready_shape=0:resolved_production=12:resolved_exercised=2:worst_dwell_ms=537047:overflow=0:worst_nonprogress_ms=384332:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=544313 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=545315 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=546317 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=547335 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=548337 kbd_nonzero=0
+[SCHED_STRAND_ORACLE:aarch64:samples=10713:checked=32566:stranded=1:running_shape=1:ready_shape=0:resolved_production=12:resolved_exercised=2:worst_dwell_ms=542097:overflow=0:worst_nonprogress_ms=388067:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=549337 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=550338 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=551339 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=552342 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=553343 kbd_nonzero=0
+[SCHED_STRAND_ORACLE:aarch64:samples=10812:checked=32863:stranded=1:running_shape=1:ready_shape=0:resolved_production=12:resolved_exercised=2:worst_dwell_ms=547131:overflow=0:worst_nonprogress_ms=391875:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=554345 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=555346 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=556348 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=557349 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=558350 kbd_nonzero=0
+[SCHED_STRAND_ORACLE:aarch64:samples=10911:checked=33160:stranded=1:running_shape=1:ready_shape=0:resolved_production=12:resolved_exercised=2:worst_dwell_ms=552169:overflow=0:worst_nonprogress_ms=395663:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=559351 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=560353 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=561355 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=562357 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=563358 kbd_nonzero=0
+[SCHED_STRAND_ORACLE:aarch64:samples=11009:checked=33454:stranded=1:running_shape=1:ready_shape=0:resolved_production=12:resolved_exercised=2:worst_dwell_ms=557172:overflow=0:worst_nonprogress_ms=399408:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=564358 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=565359 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=566361 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=567362 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=568364 kbd_nonzero=0
+[SCHED_STRAND_ORACLE:aarch64:samples=11108:checked=33751:stranded=1:running_shape=1:ready_shape=0:resolved_production=12:resolved_exercised=2:worst_dwell_ms=562207:overflow=0:worst_nonprogress_ms=403086:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=569365 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=570366 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=571368 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=572369 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=573371 kbd_nonzero=0
+[SCHED_STRAND_ORACLE:aarch64:samples=11207:checked=34048:stranded=1:running_shape=1:ready_shape=0:resolved_production=12:resolved_exercised=2:worst_dwell_ms=567250:overflow=0:worst_nonprogress_ms=406864:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=574373 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=575374 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=576375 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=577377 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=578378 kbd_nonzero=0
+[SCHED_STRAND_ORACLE:aarch64:samples=11305:checked=34342:stranded=1:running_shape=1:ready_shape=0:resolved_production=12:resolved_exercised=2:worst_dwell_ms=572260:overflow=0:worst_nonprogress_ms=410584:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=579380 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=580381 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=581382 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=582384 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=583385 kbd_nonzero=0
+[SCHED_STRAND_ORACLE:aarch64:samples=11404:checked=34640:stranded=1:running_shape=1:ready_shape=0:resolved_production=12:resolved_exercised=2:worst_dwell_ms=577303:overflow=0:worst_nonprogress_ms=414329:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=584386 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=585388 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=586390 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=587390 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=588391 kbd_nonzero=0
+[SCHED_STRAND_ORACLE:aarch64:samples=11503:checked=34937:stranded=1:running_shape=1:ready_shape=0:resolved_production=12:resolved_exercised=2:worst_dwell_ms=582342:overflow=0:worst_nonprogress_ms=418154:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=589393 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=590395 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=591397 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=592398 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=593400 kbd_nonzero=0
+[SCHED_STRAND_ORACLE:aarch64:samples=11601:checked=35231:stranded=1:running_shape=1:ready_shape=0:resolved_production=12:resolved_exercised=2:worst_dwell_ms=587351:overflow=0:worst_nonprogress_ms=421910:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=594401 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=595402 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=596404 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=597407 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=598407 kbd_nonzero=0
+[SCHED_STRAND_ORACLE:aarch64:samples=11700:checked=35528:stranded=1:running_shape=1:ready_shape=0:resolved_production=12:resolved_exercised=2:worst_dwell_ms=592397:overflow=0:worst_nonprogress_ms=425736:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=599412 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=600417 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=601418 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=602420 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=603421 kbd_nonzero=0
+[SCHED_STRAND_ORACLE:aarch64:samples=11798:checked=35822:stranded=1:running_shape=1:ready_shape=0:resolved_production=12:resolved_exercised=2:worst_dwell_ms=597406:overflow=0:worst_nonprogress_ms=429432:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=604423 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=605424 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=606426 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=607428 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=608429 kbd_nonzero=0
+[SCHED_STRAND_ORACLE:aarch64:samples=11897:checked=36119:stranded=1:running_shape=1:ready_shape=0:resolved_production=12:resolved_exercised=2:worst_dwell_ms=602444:overflow=0:worst_nonprogress_ms=433197:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=609431 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=610432 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=611434 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=612435 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=613436 kbd_nonzero=0
+[SCHED_STRAND_ORACLE:aarch64:samples=11995:checked=36413:stranded=1:running_shape=1:ready_shape=0:resolved_production=12:resolved_exercised=2:worst_dwell_ms=607460:overflow=0:worst_nonprogress_ms=436888:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=614444 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=615445 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=616447 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=617451 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=618452 kbd_nonzero=0
+[SCHED_STRAND_ORACLE:aarch64:samples=12093:checked=36707:stranded=1:running_shape=1:ready_shape=0:resolved_production=12:resolved_exercised=2:worst_dwell_ms=612464:overflow=0:worst_nonprogress_ms=440642:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=619455 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=620456 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=621457 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=622459 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=623461 kbd_nonzero=0
+[SCHED_STRAND_ORACLE:aarch64:samples=12192:checked=37004:stranded=1:running_shape=1:ready_shape=0:resolved_production=12:resolved_exercised=2:worst_dwell_ms=617496:overflow=0:worst_nonprogress_ms=444440:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=624462 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=625463 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=626465 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=627466 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=628470 kbd_nonzero=0
+[SCHED_STRAND_ORACLE:aarch64:samples=12290:checked=37298:stranded=1:running_shape=1:ready_shape=0:resolved_production=12:resolved_exercised=2:worst_dwell_ms=622509:overflow=0:worst_nonprogress_ms=448240:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=629471 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=630471 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=631473 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=632474 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=633476 kbd_nonzero=0
+[SCHED_STRAND_ORACLE:aarch64:samples=12388:checked=37592:stranded=1:running_shape=1:ready_shape=0:resolved_production=12:resolved_exercised=2:worst_dwell_ms=627514:overflow=0:worst_nonprogress_ms=451986:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=634479 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=635481 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=636482 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=637484 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=638486 kbd_nonzero=0
+[SCHED_STRAND_ORACLE:aarch64:samples=12486:checked=37887:stranded=1:running_shape=1:ready_shape=0:resolved_production=12:resolved_exercised=2:worst_dwell_ms=632529:overflow=0:worst_nonprogress_ms=455611:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=639492 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=640493 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=641494 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=642495 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=643498 kbd_nonzero=0
+[SCHED_STRAND_ORACLE:aarch64:samples=12585:checked=38184:stranded=1:running_shape=1:ready_shape=0:resolved_production=12:resolved_exercised=2:worst_dwell_ms=637563:overflow=0:worst_nonprogress_ms=459322:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=644502 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=645504 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=646504 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=647505 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=648507 kbd_nonzero=0
+[SCHED_STRAND_ORACLE:aarch64:samples=12683:checked=38478:stranded=1:running_shape=1:ready_shape=0:resolved_production=12:resolved_exercised=2:worst_dwell_ms=642566:overflow=0:worst_nonprogress_ms=462898:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=649508 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=650510 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=651511 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=652513 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=653521 kbd_nonzero=0
+[SCHED_STRAND_ORACLE:aarch64:samples=12781:checked=38773:stranded=1:running_shape=1:ready_shape=0:resolved_production=12:resolved_exercised=2:worst_dwell_ms=647572:overflow=0:worst_nonprogress_ms=466533:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=654522 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=655524 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=656526 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=657527 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=658529 kbd_nonzero=0
+[SCHED_STRAND_ORACLE:aarch64:samples=12879:checked=39067:stranded=1:running_shape=1:ready_shape=0:resolved_production=12:resolved_exercised=2:worst_dwell_ms=652574:overflow=0:worst_nonprogress_ms=470231:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=659530 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=660531 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=661533 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=662534 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=663536 kbd_nonzero=0
+[SCHED_STRAND_ORACLE:aarch64:samples=12978:checked=39364:stranded=1:running_shape=1:ready_shape=0:resolved_production=12:resolved_exercised=2:worst_dwell_ms=657625:overflow=0:worst_nonprogress_ms=473968:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=664537 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=665538 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=666540 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=667541 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=668542 kbd_nonzero=0
+[SCHED_STRAND_ORACLE:aarch64:samples=13076:checked=39658:stranded=1:running_shape=1:ready_shape=0:resolved_production=12:resolved_exercised=2:worst_dwell_ms=662629:overflow=0:worst_nonprogress_ms=477684:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=669543 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=670544 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=671546 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=672547 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=673549 kbd_nonzero=0
+[SCHED_STRAND_ORACLE:aarch64:samples=13174:checked=39952:stranded=1:running_shape=1:ready_shape=0:resolved_production=12:resolved_exercised=2:worst_dwell_ms=667632:overflow=0:worst_nonprogress_ms=481298:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=674551 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=675552 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=676559 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=677561 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=678563 kbd_nonzero=0
+[SCHED_STRAND_ORACLE:aarch64:samples=13272:checked=40246:stranded=1:running_shape=1:ready_shape=0:resolved_production=12:resolved_exercised=2:worst_dwell_ms=672641:overflow=0:worst_nonprogress_ms=484882:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=679569 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=680571 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=681573 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=682574 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=683575 kbd_nonzero=0
+[SCHED_STRAND_ORACLE:aarch64:samples=13371:checked=40544:stranded=1:running_shape=1:ready_shape=0:resolved_production=12:resolved_exercised=2:worst_dwell_ms=677686:overflow=0:worst_nonprogress_ms=488702:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=684576 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=685577 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=686579 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=687580 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=688582 kbd_nonzero=0
+[SCHED_STRAND_ORACLE:aarch64:samples=13470:checked=40841:stranded=1:running_shape=1:ready_shape=0:resolved_production=12:resolved_exercised=2:worst_dwell_ms=682720:overflow=0:worst_nonprogress_ms=492302:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=689584 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=690586 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=691587 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=692588 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=693590 kbd_nonzero=0
+[SCHED_STRAND_ORACLE:aarch64:samples=13568:checked=41136:stranded=1:running_shape=1:ready_shape=0:resolved_production=12:resolved_exercised=2:worst_dwell_ms=687735:overflow=0:worst_nonprogress_ms=496011:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=694591 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=695593 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=696594 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=697595 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=698598 kbd_nonzero=0
+[SCHED_STRAND_ORACLE:aarch64:samples=13666:checked=41430:stranded=1:running_shape=1:ready_shape=0:resolved_production=12:resolved_exercised=2:worst_dwell_ms=692753:overflow=0:worst_nonprogress_ms=499622:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=699599 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=700601 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=701605 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=702607 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=703609 kbd_nonzero=0
+[SCHED_STRAND_ORACLE:aarch64:samples=13765:checked=41728:stranded=1:running_shape=1:ready_shape=0:resolved_production=12:resolved_exercised=2:worst_dwell_ms=697794:overflow=0:worst_nonprogress_ms=503351:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=704611 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=705613 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=706614 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=707615 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=708622 kbd_nonzero=0
+[SCHED_STRAND_ORACLE:aarch64:samples=13863:checked=42022:stranded=1:running_shape=1:ready_shape=0:resolved_production=12:resolved_exercised=2:worst_dwell_ms=702798:overflow=0:worst_nonprogress_ms=507164:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=709623 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=710624 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=711625 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=712627 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=713628 kbd_nonzero=0
+[SCHED_STRAND_ORACLE:aarch64:samples=13961:checked=42316:stranded=1:running_shape=1:ready_shape=0:resolved_production=12:resolved_exercised=2:worst_dwell_ms=707809:overflow=0:worst_nonprogress_ms=510937:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=714629 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=715630 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=716632 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=717634 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=718636 kbd_nonzero=0
+[SCHED_STRAND_ORACLE:aarch64:samples=14060:checked=42613:stranded=1:running_shape=1:ready_shape=0:resolved_production=12:resolved_exercised=2:worst_dwell_ms=712850:overflow=0:worst_nonprogress_ms=514718:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=719637 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=720639 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=721640 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=722641 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=723642 kbd_nonzero=0
+[SCHED_STRAND_ORACLE:aarch64:samples=14158:checked=42907:stranded=1:running_shape=1:ready_shape=0:resolved_production=12:resolved_exercised=2:worst_dwell_ms=717867:overflow=0:worst_nonprogress_ms=518531:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=724643 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=725644 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=726645 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=727647 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=728660 kbd_nonzero=0
+[SCHED_STRAND_ORACLE:aarch64:samples=14256:checked=43201:stranded=1:running_shape=1:ready_shape=0:resolved_production=12:resolved_exercised=2:worst_dwell_ms=722882:overflow=0:worst_nonprogress_ms=522328:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=729661 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=730663 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=731665 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=732667 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=733668 kbd_nonzero=0
+[SCHED_STRAND_ORACLE:aarch64:samples=14355:checked=43498:stranded=1:running_shape=1:ready_shape=0:resolved_production=12:resolved_exercised=2:worst_dwell_ms=727927:overflow=0:worst_nonprogress_ms=526151:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=734670 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=735672 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=736673 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=737674 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=738675 kbd_nonzero=0
+[SCHED_STRAND_ORACLE:aarch64:samples=14454:checked=43795:stranded=1:running_shape=1:ready_shape=0:resolved_production=12:resolved_exercised=2:worst_dwell_ms=732974:overflow=0:worst_nonprogress_ms=529988:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=739677 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=740678 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=741680 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=742681 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=743683 kbd_nonzero=0
+[SCHED_STRAND_ORACLE:aarch64:samples=14552:checked=44089:stranded=1:running_shape=1:ready_shape=0:resolved_production=12:resolved_exercised=2:worst_dwell_ms=737978:overflow=0:worst_nonprogress_ms=533793:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=744685 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=745689 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=746691 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=747692 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=748694 kbd_nonzero=0
+[SCHED_STRAND_ORACLE:aarch64:samples=14651:checked=44386:stranded=1:running_shape=1:ready_shape=0:resolved_production=12:resolved_exercised=2:worst_dwell_ms=743024:overflow=0:worst_nonprogress_ms=537509:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=749695 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=750704 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=751706 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=752707 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=753709 kbd_nonzero=0
+[SCHED_STRAND_ORACLE:aarch64:samples=14749:checked=44680:stranded=1:running_shape=1:ready_shape=0:resolved_production=12:resolved_exercised=2:worst_dwell_ms=748048:overflow=0:worst_nonprogress_ms=541191:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=754710 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=755711 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=756712 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=757718 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=758719 kbd_nonzero=0
+[SCHED_STRAND_ORACLE:aarch64:samples=14847:checked=44974:stranded=1:running_shape=1:ready_shape=0:resolved_production=12:resolved_exercised=2:worst_dwell_ms=753086:overflow=0:worst_nonprogress_ms=544918:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=759720 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=760722 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=761723 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=762724 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=763726 kbd_nonzero=0
+[SCHED_STRAND_ORACLE:aarch64:samples=14946:checked=45271:stranded=1:running_shape=1:ready_shape=0:resolved_production=12:resolved_exercised=2:worst_dwell_ms=758136:overflow=0:worst_nonprogress_ms=548740:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=764728 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=765729 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=766731 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=767753 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=768755 kbd_nonzero=0
+[SCHED_STRAND_ORACLE:aarch64:samples=15045:checked=45569:stranded=1:running_shape=1:ready_shape=0:resolved_production=12:resolved_exercised=2:worst_dwell_ms=763180:overflow=0:worst_nonprogress_ms=552579:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=769757 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=770758 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=771759 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=772761 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=773762 kbd_nonzero=0
+[SCHED_STRAND_ORACLE:aarch64:samples=15144:checked=45866:stranded=1:running_shape=1:ready_shape=0:resolved_production=12:resolved_exercised=2:worst_dwell_ms=768236:overflow=0:worst_nonprogress_ms=556407:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=774764 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=775770 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=776776 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=777777 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=778778 kbd_nonzero=0
+[SCHED_STRAND_ORACLE:aarch64:samples=15242:checked=46161:stranded=1:running_shape=1:ready_shape=0:resolved_production=12:resolved_exercised=2:worst_dwell_ms=773240:overflow=0:worst_nonprogress_ms=560209:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=779780 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=780782 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=781783 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=782784 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=783785 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=784787 kbd_nonzero=0
+[SCHED_STRAND_ORACLE:aarch64:samples=15341:checked=46458:stranded=1:running_shape=1:ready_shape=0:resolved_production=12:resolved_exercised=2:worst_dwell_ms=778282:overflow=0:worst_nonprogress_ms=564040:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=785788 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=786790 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=787792 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=788793 kbd_nonzero=0
+[SCHED_STRAND_ORACLE:aarch64:samples=15439:checked=46753:stranded=1:running_shape=1:ready_shape=0:resolved_production=12:resolved_exercised=2:worst_dwell_ms=783284:overflow=0:worst_nonprogress_ms=567833:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=789795 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=790796 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=791798 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=792802 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=793804 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=794806 kbd_nonzero=0
+[SCHED_STRAND_ORACLE:aarch64:samples=15537:checked=47048:stranded=1:running_shape=1:ready_shape=0:resolved_production=12:resolved_exercised=2:worst_dwell_ms=788302:overflow=0:worst_nonprogress_ms=571642:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=795807 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=796809 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=797810 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=798812 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=799813 kbd_nonzero=0
+[SCHED_STRAND_ORACLE:aarch64:samples=15636:checked=47345:stranded=1:running_shape=1:ready_shape=0:resolved_production=12:resolved_exercised=2:worst_dwell_ms=793341:overflow=0:worst_nonprogress_ms=575453:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=800815 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=801820 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=802826 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=803828 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=804830 kbd_nonzero=0
+[SCHED_STRAND_ORACLE:aarch64:samples=15735:checked=47642:stranded=1:running_shape=1:ready_shape=0:resolved_production=12:resolved_exercised=2:worst_dwell_ms=798377:overflow=0:worst_nonprogress_ms=579287:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=805832 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=806834 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=807835 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=808836 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=809837 kbd_nonzero=0
+[SCHED_STRAND_ORACLE:aarch64:samples=15834:checked=47939:stranded=1:running_shape=1:ready_shape=0:resolved_production=12:resolved_exercised=2:worst_dwell_ms=803409:overflow=0:worst_nonprogress_ms=583085:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=810839 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=811840 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=812841 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=813842 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=814844 kbd_nonzero=0
+[SCHED_STRAND_ORACLE:aarch64:samples=15933:checked=48236:stranded=1:running_shape=1:ready_shape=0:resolved_production=12:resolved_exercised=2:worst_dwell_ms=808440:overflow=0:worst_nonprogress_ms=586909:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=815845 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=816846 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=817848 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=818849 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=819851 kbd_nonzero=0
+[SCHED_STRAND_ORACLE:aarch64:samples=16032:checked=48533:stranded=1:running_shape=1:ready_shape=0:resolved_production=12:resolved_exercised=2:worst_dwell_ms=813487:overflow=0:worst_nonprogress_ms=590725:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=820852 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=821854 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=822855 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=823856 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=824857 kbd_nonzero=0
+[SCHED_STRAND_ORACLE:aarch64:samples=16131:checked=48830:stranded=1:running_shape=1:ready_shape=0:resolved_production=12:resolved_exercised=2:worst_dwell_ms=818525:overflow=0:worst_nonprogress_ms=594559:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=825859 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=826865 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=827867 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=828868 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=829870 kbd_nonzero=0
+[SCHED_STRAND_ORACLE:aarch64:samples=16230:checked=49127:stranded=1:running_shape=1:ready_shape=0:resolved_production=12:resolved_exercised=2:worst_dwell_ms=823571:overflow=0:worst_nonprogress_ms=598334:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=830872 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=831873 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=832875 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=833876 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=834877 kbd_nonzero=0
+[SCHED_STRAND_ORACLE:aarch64:samples=16329:checked=49424:stranded=1:running_shape=1:ready_shape=0:resolved_production=12:resolved_exercised=2:worst_dwell_ms=828601:overflow=0:worst_nonprogress_ms=602147:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=835879 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=836880 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=837882 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=838883 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=839884 kbd_nonzero=0
+[SCHED_STRAND_ORACLE:aarch64:samples=16428:checked=49721:stranded=1:running_shape=1:ready_shape=0:resolved_production=12:resolved_exercised=2:worst_dwell_ms=833637:overflow=0:worst_nonprogress_ms=605981:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=840886 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=841891 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=842894 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=843896 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=844898 kbd_nonzero=0
+[SCHED_STRAND_ORACLE:aarch64:samples=16527:checked=50019:stranded=1:running_shape=1:ready_shape=0:resolved_production=12:resolved_exercised=2:worst_dwell_ms=838674:overflow=0:worst_nonprogress_ms=609771:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=845899 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=846901 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=847903 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=848911 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=849912 kbd_nonzero=0
+[SCHED_STRAND_ORACLE:aarch64:samples=16626:checked=50316:stranded=1:running_shape=1:ready_shape=0:resolved_production=12:resolved_exercised=2:worst_dwell_ms=843713:overflow=0:worst_nonprogress_ms=613542:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=850913 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=851914 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=852915 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=853917 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=854917 kbd_nonzero=0
+[SCHED_STRAND_ORACLE:aarch64:samples=16724:checked=50610:stranded=1:running_shape=1:ready_shape=0:resolved_production=12:resolved_exercised=2:worst_dwell_ms=848740:overflow=0:worst_nonprogress_ms=617200:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=855919 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=856920 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=857921 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=858922 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=859924 kbd_nonzero=0
+[SCHED_STRAND_ORACLE:aarch64:samples=16822:checked=50904:stranded=1:running_shape=1:ready_shape=0:resolved_production=12:resolved_exercised=2:worst_dwell_ms=853743:overflow=0:worst_nonprogress_ms=620854:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=860926 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=861927 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=862928 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=863929 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=864931 kbd_nonzero=0
+[SCHED_STRAND_ORACLE:aarch64:samples=16921:checked=51201:stranded=1:running_shape=1:ready_shape=0:resolved_production=12:resolved_exercised=2:worst_dwell_ms=858785:overflow=0:worst_nonprogress_ms=624586:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=865932 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=866934 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=867935 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=868937 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=869937 kbd_nonzero=0
+[SCHED_STRAND_ORACLE:aarch64:samples=17019:checked=51495:stranded=1:running_shape=1:ready_shape=0:resolved_production=12:resolved_exercised=2:worst_dwell_ms=863785:overflow=0:worst_nonprogress_ms=628301:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=870938 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=871940 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=872941 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=873943 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=874945 kbd_nonzero=0
+[SCHED_STRAND_ORACLE:aarch64:samples=17117:checked=51790:stranded=1:running_shape=1:ready_shape=0:resolved_production=12:resolved_exercised=2:worst_dwell_ms=868796:overflow=0:worst_nonprogress_ms=632027:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=875946 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=876948 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=877948 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=878950 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=879952 kbd_nonzero=0
+[SCHED_STRAND_ORACLE:aarch64:samples=17215:checked=52084:stranded=1:running_shape=1:ready_shape=0:resolved_production=12:resolved_exercised=2:worst_dwell_ms=873801:overflow=0:worst_nonprogress_ms=635772:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1804:worst_cpu_scheduler_silence_ms=1827:worst_silence_cpu=0]
+[heartbeat] tid=1207 uptime_ms=880954 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=881955 kbd_nonzero=0
+[heartbeat] tid=1207 uptime_ms=882956 kbd_nonzero=0
