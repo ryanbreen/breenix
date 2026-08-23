@@ -1,0 +1,26 @@
+diff --git a/kernel/src/arch_impl/aarch64/context_switch.rs b/kernel/src/arch_impl/aarch64/context_switch.rs
+index 943bb702..15c6a39a 100644
+--- a/kernel/src/arch_impl/aarch64/context_switch.rs
++++ b/kernel/src/arch_impl/aarch64/context_switch.rs
+@@ -380,13 +380,9 @@ pub fn drain_asm_resume_pc_refusals() {
+     for cpu_id in 0..crate::arch_impl::aarch64::constants::MAX_CPUS {
+-        let Some((_source, elr, spsr, x29, x30, sp, count)) =
++        let Some((_source, elr, spsr, x29, x30, sp, _count)) =
+             crate::per_cpu_aarch64::eret_guard_record_full(cpu_id)
+         else {
+             continue;
+         };
+-        if cpu_id as u64 != drain_cpu {
+-            report_foreign_resume_pc_refusal(drain_cpu, cpu_id, elr, sp, count);
+-            continue;
+-        }
+         let claimed_source = crate::per_cpu_aarch64::eret_guard_claim_source(cpu_id);
+         if claimed_source == 0 {
+             continue;
+@@ -545,5 +541,6 @@ pub fn drain_asm_resume_pc_refusals() {
+ /// record (keyed on the record's own monotonically increasing count), so an
+ /// owner that has not reached idle yet does not produce a report per drain.
++#[allow(dead_code)]
+ fn report_foreign_resume_pc_refusal(
+     drain_cpu: u64,
+     record_cpu: usize,
