@@ -122,9 +122,13 @@ pub static RESUME_PC_CURRENT_REPOINTED: AtomicU64 = AtomicU64::new(0);
 /// stack — the CPU never departed, so that thread is live and its publication
 /// is true. `PUBLICATION_MOVED` is a drain whose published identity no longer
 /// names the canary's thread at all, leaving the canary as the sole witness.
-/// Neither refusal terminates, dequeues or unpublishes anything.
+/// `SCHEDULER_UNAVAILABLE` is a drain whose `with_scheduler` closure never ran
+/// at all, so it decided nothing: the record was claimed above and is dropped,
+/// and without this reason that drop is indistinguishable from a correct act.
+/// None of the three terminates, dequeues or unpublishes anything.
 pub static RESUME_PC_DRAIN_ON_VICTIM_STACK: AtomicU64 = AtomicU64::new(0);
 pub static RESUME_PC_DRAIN_PUBLICATION_MOVED: AtomicU64 = AtomicU64::new(0);
+pub static RESUME_PC_DRAIN_SCHEDULER_UNAVAILABLE: AtomicU64 = AtomicU64::new(0);
 
 pub const RESUME_PC_SOURCE_SYNC_EPILOGUE: u64 = 1;
 pub const RESUME_PC_SOURCE_IRQ_EPILOGUE: u64 = 2;
@@ -373,6 +377,8 @@ pub fn record_resume_pc_refusal_locked(
 /// refusal retires it instead of leaving it for a later drain to act on under an
 /// even staler name. A refusal can leak a refused thread; it can never terminate
 /// or free a running one.
+/// A third reason covers the case where the scheduler closure never runs at
+/// all: the claimed record is dropped, and it says so instead of printing OK.
 pub fn drain_asm_resume_pc_refusals() {
     let drain_sp: u64;
     unsafe {
@@ -422,7 +428,7 @@ pub fn drain_asm_resume_pc_refusals() {
             let mut publication_names_victim = false;
             let mut decided = false;
             let mut acted = false;
-            crate::task::scheduler::with_scheduler(|sched| {
+            let scheduler_consulted = crate::task::scheduler::with_scheduler(|sched| {
                 let is_idle = sched
                     .cpu_state
                     .iter()
@@ -500,16 +506,29 @@ pub fn drain_asm_resume_pc_refusals() {
                     }
                     sched.remove_from_ready_queue(tid);
                 }
-            });
+            })
+            .is_some();
+            // A claimed record that no scheduler pass ever looked at is dropped
+            // without a decision, and it gets its own reason rather than the
+            // silent `OK` a drop used to print. It is reported FIRST because a
+            // drain that never consulted the scheduler decided nothing at all;
+            // the blind-custody condition stays readable on the same line from
+            // the `on_refused_stack=` and `named_live=` fields.
+            let refused_scheduler_unavailable = !scheduler_consulted;
             let refused_on_victim_stack = decided && !acted && on_victim_stack;
             let refused_publication_moved = decided && !acted && !on_victim_stack;
+            if refused_scheduler_unavailable {
+                RESUME_PC_DRAIN_SCHEDULER_UNAVAILABLE.fetch_add(1, Ordering::Release);
+            }
             if refused_on_victim_stack {
                 RESUME_PC_DRAIN_ON_VICTIM_STACK.fetch_add(1, Ordering::Release);
             }
             if refused_publication_moved {
                 RESUME_PC_DRAIN_PUBLICATION_MOVED.fetch_add(1, Ordering::Release);
             }
-            let verdict = if on_refused_stack && !named_live {
+            let verdict = if refused_scheduler_unavailable {
+                "REFUSED_SCHEDULER_UNAVAILABLE"
+            } else if on_refused_stack && !named_live {
                 "STACK_CUSTODY_BLIND"
             } else if refused_on_victim_stack {
                 "REFUSED_ON_VICTIM_STACK"
