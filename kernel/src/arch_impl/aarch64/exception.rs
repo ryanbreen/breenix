@@ -522,6 +522,12 @@ fn dump_fatal_postmortem_once(label: &str) {
             );
             raw_uart_str("\n");
         }
+        // The refusal TOTAL, which the per-record emissions stop reporting once
+        // the whole-boot budget is spent. Without this the counter has no
+        // reader and 17 refusals look exactly like 16.
+        raw_uart_str("    percpu_stack_alien_refusals=");
+        raw_uart_dec(crate::arch_impl::aarch64::percpu::percpu_stack_alien_refusals());
+        raw_uart_str("\n");
     });
     dump_fatal_postmortem_section(cpu_id, 6, "\n  Last-dispatched tids:\n", || {
         crate::arch_impl::aarch64::context_switch::dump_all_last_dispatched_tids();

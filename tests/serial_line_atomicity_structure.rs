@@ -986,7 +986,7 @@ const UNLOCKED_MULTI_BYTE_WRITE_ANCHORS: &[(&str, &str, usize)] = &[
     (
         "kernel/src/arch_impl/aarch64/exception.rs",
         "fn dump_fatal_postmortem_once",
-        6,
+        8,
     ),
     (
         "kernel/src/arch_impl/aarch64/exception.rs",
@@ -1008,12 +1008,12 @@ const UNLOCKED_MULTI_BYTE_WRITE_ANCHORS: &[(&str, &str, usize)] = &[
         "fn raw_uart_hex_u32",
         2,
     ),
-    // The per-CPU stack-top ownership refusal record. It runs on the dispatch
-    // path from inside the setters themselves, so it cannot take the serial
-    // lock; it is bounded to 16 emissions for the whole boot.
+    // The per-CPU stack-top ownership refusal record, in the one function both
+    // custody sides funnel through. It runs on the dispatch path, so it cannot
+    // take the serial lock; it is bounded to 16 emissions for the whole boot.
     (
         "kernel/src/arch_impl/aarch64/percpu.rs",
-        "fn percpu_stack_install_permitted",
+        "fn record_percpu_stack_alien",
         9,
     ),
     (

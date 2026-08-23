@@ -420,6 +420,32 @@ pub fn percpu_stack_slot_of(addr: u64) -> Option<usize> {
     Some(((addr - 1 - base) >> PERCPU_STACK_STRIDE_SHIFT) as usize)
 }
 
+/// Whether `addr` may serve as CPU `cpu`'s kernel/exception stack top.
+///
+/// This is the single per-CPU stack custody predicate. Both the producer that
+/// CHOOSES an idle-dispatch SP (`idle_dispatch_stack`) and the setter guard
+/// that ADJUDICATES an install (`percpu_stack_install_permitted`) evaluate it,
+/// so a value one of them normalises cannot be refused by the other.
+///
+/// Acceptance is positive — the address has to be attributable to `cpu` — not
+/// "did not trip a scan". Three outcomes, in the order they are cheapest to
+/// decide:
+///
+/// * The address names no per-CPU slot at all: an ordinary heap-backed thread
+///   kernel stack, or CPU 0's platform boot stack on Parallels. Two comparisons.
+/// * The address names `cpu`'s OWN slot and the slot's published owner is `cpu`
+///   or nothing at all. Accepting an unpublished slot is what keeps very early
+///   boot working, and it is not a hole: an address naming a different CPU's
+///   slot is rejected on the arithmetic alone, before the owner is consulted.
+/// * Anything else belongs to another CPU.
+#[inline]
+pub fn percpu_stack_top_owned_by(cpu: usize, addr: u64) -> bool {
+    let Some(slot) = percpu_stack_slot_of(addr) else {
+        return true;
+    };
+    slot == cpu && percpu_stack_published_owner(slot).map_or(true, |owner| owner == cpu)
+}
+
 /// Legacy constant for compile-time contexts (diagnostics). Uses the default
 /// QEMU/Parallels base. Runtime code should use percpu_stack_region_base().
 pub const PERCPU_STACK_REGION_BASE_DEFAULT: u64 = HHDM_BASE + 0x4300_0000;

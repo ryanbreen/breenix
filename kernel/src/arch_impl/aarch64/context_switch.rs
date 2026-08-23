@@ -2772,9 +2772,11 @@ fn frame_returns_to_el0(frame: &Aarch64ExceptionFrame) -> bool {
 /// (e.g., stale boot stack), frames get pushed on the wrong stack.
 ///
 /// Conditioned on the frame's PENDING exception level, not on the level the
-/// exception was taken from: installing a kernel stack top into the EL0 scratch
-/// slot for a frame that is about to ERET to EL1 puts a kernel stack pointer
-/// where the hardware will not read it, and leaves the value that IS read stale.
+/// exception was taken from. The skip is load-bearing, not cosmetic: for an
+/// EL1-returning frame `boot.S` reads offset 40 — `user_rsp_scratch` — as the
+/// KERNEL resume SP, so writing `kernel_stack_top` there would overwrite the
+/// very value the ERET epilogue is about to restore, on the one path where that
+/// value is the interrupted kernel stack pointer rather than a scratch slot.
 #[inline(always)]
 fn ensure_user_rsp_scratch_for_el0(frame: &Aarch64ExceptionFrame) {
     if !frame_returns_to_el0(frame) {
@@ -2871,13 +2873,33 @@ fn scheduler_stack_top(cpu_id: usize) -> u64 {
     top
 }
 
+/// The stack top CPU `cpu_id` may actually dispatch idle onto.
+///
+/// `preferred` arrives from a scheduler structure — `cpu_state[cpu_id]`'s idle
+/// thread's `kernel_stack_top`, or the live per-CPU word — and nothing upstream
+/// requires it to name slot `cpu_id`. It used to be returned verbatim for every
+/// non-zero value, which is how a `percpu_kernel_stack_top(0)` reached CPU 3's
+/// per-CPU words, CPU 3's idle `context.sp` and CPU 3's SP in the #635
+/// acceptance battery (docs/planning/t3g-prb/RCA-ALIEN.md).
+///
+/// The result is now always an address this CPU owns: `preferred` when custody
+/// attributes it to `cpu_id`, and `cpu_id`'s own exception-stack top otherwise,
+/// with the substitution recorded. `percpu_stack_top_for` applies the same
+/// predicate the per-CPU setter guard applies, so the value returned here can
+/// never be refused downstream.
+///
+/// `#[track_caller]` so the refusal record names the dispatch site.
 #[inline(always)]
+#[track_caller]
 fn idle_dispatch_stack(cpu_id: usize, preferred: u64) -> u64 {
     if preferred == 0 {
-        super::constants::percpu_kernel_stack_top(cpu_id)
-    } else {
-        preferred
+        return super::constants::percpu_kernel_stack_top(cpu_id);
     }
+    crate::arch_impl::aarch64::percpu::percpu_stack_top_for(
+        cpu_id,
+        preferred,
+        core::panic::Location::caller(),
+    )
 }
 
 #[inline(always)]
@@ -3979,11 +4001,16 @@ fn setup_idle_return_locked(
     frame.elr = idle_addr;
     frame.spsr = 0x5; // EL1h with interrupts enabled
 
-    // Get idle thread's kernel stack
-    let idle_stack = sched
-        .get_thread(idle_id)
-        .and_then(|t| t.kernel_stack_top.map(|v| v.as_u64()))
-        .unwrap_or_else(|| super::constants::percpu_kernel_stack_top(cpu_id));
+    // Get idle thread's kernel stack, normalised to one this CPU owns. Zero is
+    // the "no recorded stack" input `idle_dispatch_stack` answers with this
+    // CPU's own top, so the fallback lives in exactly one place.
+    let idle_stack = idle_dispatch_stack(
+        cpu_id,
+        sched
+            .get_thread(idle_id)
+            .and_then(|t| t.kernel_stack_top.map(|v| v.as_u64()))
+            .unwrap_or(0),
+    );
 
     // Clear all general purpose registers for clean state
     frame.x0 = 0;
@@ -4019,8 +4046,7 @@ fn setup_idle_return_locked(
     frame.x30 = 0;
 
     unsafe {
-        Aarch64PerCpu::set_user_rsp_scratch(idle_stack);
-        Aarch64PerCpu::set_kernel_stack_top(idle_stack);
+        Aarch64PerCpu::install_idle_return_sp(idle_stack);
         let mut kernel_ttbr0 = Aarch64PerCpu::kernel_cr3();
         if kernel_ttbr0 == 0 {
             kernel_ttbr0 = 0x4200_0000;
@@ -5457,7 +5483,7 @@ extern "C" fn inline_schedule_trampoline() -> ! {
             let candidate = sched
                 .get_thread(idle_id)
                 .and_then(|thread| thread.kernel_stack_top.map(|stack| stack.as_u64()))
-                .unwrap_or_else(|| super::constants::percpu_kernel_stack_top(cpu_id));
+                .unwrap_or(0);
             let idle_sp = idle_dispatch_stack(cpu_id, candidate);
 
             // Persist the exact normalized stack value used by the live pivot.
@@ -5493,12 +5519,19 @@ extern "C" fn inline_schedule_trampoline() -> ! {
         // absent; in that case there is no persisted idle Thread to update.
         .unwrap_or_else(|| super::constants::percpu_kernel_stack_top(cpu_id));
 
-        unsafe {
-            Aarch64PerCpu::set_user_rsp_scratch(idle_sp);
-            Aarch64PerCpu::set_kernel_stack_top(idle_sp);
+        // Fail closed. This CPU is about to RUN on `idle_sp`, so a refused
+        // install must not leave the refused address in SP with the per-CPU
+        // words naming something else: pivot onto whatever custody granted.
+        // `idle_dispatch_stack` above already normalised the value, so the only
+        // way this differs is the guard's independent `cpu_id()` read
+        // disagreeing with the local one — and then the guard's answer, which
+        // is the identity the hardware per-CPU block and boot.S also use, wins.
+        let idle_sp = unsafe {
+            let granted = Aarch64PerCpu::install_idle_return_sp(idle_sp);
             Aarch64PerCpu::set_current_thread_ptr(core::ptr::null_mut());
             Aarch64PerCpu::clear_preempt_active();
-        }
+            granted
+        };
         crate::arch_impl::aarch64::timer_interrupt::reset_quantum();
         if crate::arch_impl::aarch64::timer_interrupt::is_initialized() {
             crate::arch_impl::aarch64::timer_interrupt::rearm_timer();
@@ -6024,18 +6057,19 @@ fn setup_idle_return_arm64(frame: &mut Aarch64ExceptionFrame) {
     frame.elr = idle_loop_arm64 as *const () as u64;
     frame.spsr = 0x5;
 
-    // Get idle thread's kernel stack
-    let idle_stack = crate::task::scheduler::with_scheduler(|sched| {
-        let idle_id = sched.idle_thread();
-        sched
-            .get_thread(idle_id)
-            .and_then(|t| t.kernel_stack_top.map(|v| v.as_u64()))
-    })
-    .flatten()
-    .unwrap_or_else(|| {
-        let cpu_id = Aarch64PerCpu::cpu_id() as usize;
-        super::constants::percpu_kernel_stack_top(cpu_id)
-    });
+    // Get idle thread's kernel stack, normalised to one this CPU owns.
+    let cpu_id = Aarch64PerCpu::cpu_id() as usize;
+    let idle_stack = idle_dispatch_stack(
+        cpu_id,
+        crate::task::scheduler::with_scheduler(|sched| {
+            let idle_id = sched.idle_thread();
+            sched
+                .get_thread(idle_id)
+                .and_then(|t| t.kernel_stack_top.map(|v| v.as_u64()))
+        })
+        .flatten()
+        .unwrap_or(0),
+    );
 
     // Clear all general purpose registers for clean state
     frame.x0 = 0;
@@ -6071,8 +6105,7 @@ fn setup_idle_return_arm64(frame: &mut Aarch64ExceptionFrame) {
     frame.x30 = 0;
 
     unsafe {
-        Aarch64PerCpu::set_user_rsp_scratch(idle_stack);
-        Aarch64PerCpu::set_kernel_stack_top(idle_stack);
+        Aarch64PerCpu::install_idle_return_sp(idle_stack);
         Aarch64PerCpu::set_current_thread_ptr(core::ptr::null_mut());
         Aarch64PerCpu::clear_preempt_active();
     }

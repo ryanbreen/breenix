@@ -5787,9 +5787,12 @@ fn percpu_write_sites(source: &str, mask: &[bool], offset_name: &str) -> Vec<usi
 
 /// RATCHET 1 — every per-CPU stack-top writer consults the ownership check.
 ///
-/// The check's identifier is derived from the file: it is the function whose
-/// body carries the `[PERCPU_STACK_ALIEN:` refusal record. Renaming it is free;
-/// removing its call from a writer is not.
+/// The check is derived from the file, never named here: the record emitter is
+/// the function whose body carries the `[PERCPU_STACK_ALIEN:` refusal record,
+/// and the ownership checks are that emitter plus every function in the file
+/// that calls it directly. A writer is guarded when it calls one of them.
+/// Renaming any of them, or splitting the emitter out of the predicate, is
+/// free; removing the consultation from a writer is not.
 #[test]
 fn percpu_stack_top_writers_consult_the_ownership_check() {
     let source = repo_text(PERCPU_PATH);
@@ -5811,7 +5814,27 @@ fn percpu_stack_top_writers_consult_the_ownership_check() {
         "expected exactly one function in {PERCPU_PATH} to carry the {PERCPU_STACK_ALIEN_LITERAL} \
          record, derived: {check_names:?}"
     );
-    let check = check_names.iter().next().expect("derived check name").clone();
+    let emitter = check_names.iter().next().expect("derived check name").clone();
+
+    // The predicate may sit one hop above the emitter (a custody test that
+    // records and answers), so the guard set is the emitter plus its direct
+    // callers in this file.
+    let mut checks: BTreeSet<String> = BTreeSet::new();
+    checks.insert(emitter.clone());
+    for function in &functions {
+        if function.name == emitter {
+            continue;
+        }
+        let body = &source[function.open..=function.close];
+        let body_mask = code_mask(body);
+        if !call_offsets(body, &body_mask, &emitter).is_empty() {
+            checks.insert(function.name.clone());
+        }
+    }
+    assert!(
+        checks.len() > 1,
+        "nothing in {PERCPU_PATH} calls the `{emitter}` record emitter; the guard census is          vacuous"
+    );
 
     let mut writers: BTreeSet<String> = BTreeSet::new();
     for offset_name in [
@@ -5833,7 +5856,7 @@ fn percpu_stack_top_writers_consult_the_ownership_check() {
 
     let mut unguarded: Vec<String> = Vec::new();
     for writer in &writers {
-        if *writer == check {
+        if checks.contains(writer) {
             continue;
         }
         let guarded = functions
@@ -5842,7 +5865,9 @@ fn percpu_stack_top_writers_consult_the_ownership_check() {
             .any(|function| {
                 let body = &source[function.open..=function.close];
                 let body_mask = code_mask(body);
-                !call_offsets(body, &body_mask, &check).is_empty()
+                checks
+                    .iter()
+                    .any(|check| !call_offsets(body, &body_mask, check).is_empty())
             });
         if !guarded {
             unguarded.push(writer.clone());
@@ -5850,8 +5875,8 @@ fn percpu_stack_top_writers_consult_the_ownership_check() {
     }
     assert!(
         unguarded.is_empty(),
-        "these {PERCPU_PATH} functions write a per-CPU stack-top field without calling the \
-         ownership check `{check}`: {unguarded:?} (writers censused: {writers:?})"
+        "these {PERCPU_PATH} functions write a per-CPU stack-top field without calling any \
+         ownership check in {checks:?}: {unguarded:?} (writers censused: {writers:?})"
     );
 }
 

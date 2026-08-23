@@ -18,7 +18,10 @@ use crate::arch_impl::aarch64::constants::{
     PERCPU_TSS_OFFSET, PERCPU_USER_RSP_SCRATCH_OFFSET, PREEMPT_ACTIVE, SOFTIRQ_DISABLE_OFFSET,
     SOFTIRQ_MASK, SOFTIRQ_OFFSET,
 };
-use crate::arch_impl::aarch64::constants::{percpu_stack_published_owner, percpu_stack_slot_of};
+use crate::arch_impl::aarch64::constants::{
+    percpu_kernel_stack_top, percpu_stack_published_owner, percpu_stack_slot_of,
+    percpu_stack_top_owned_by,
+};
 use crate::arch_impl::traits::PerCpuOps;
 use core::panic::Location;
 use core::sync::atomic::{compiler_fence, AtomicU32, AtomicU64, Ordering};
@@ -49,31 +52,65 @@ pub fn percpu_stack_alien_refusals() -> u64 {
 /// Decide whether a per-CPU stack-top install may proceed, and record it when
 /// it may not.
 ///
-/// Three outcomes, in the order they are cheapest to decide:
+/// The decision itself is `percpu_stack_top_owned_by`, the one custody
+/// predicate this arch shares with the producer side (`idle_dispatch_stack`),
+/// so a value the producer normalised can never be refused here and a value
+/// this refuses can never have been produced by the normaliser.
 ///
-/// * The address is outside the per-CPU stack region entirely — an ordinary
-///   heap-backed thread kernel stack, or CPU 0's platform boot stack on
-///   Parallels. This is the common case and costs two comparisons.
-/// * The address names THIS CPU's own slot, and the slot's published owner is
-///   this CPU or nothing at all. Accepting an unpublished slot is what keeps
-///   very early boot working, and it is not a hole: an address naming a
-///   different CPU's slot is refused on the arithmetic alone, before the
-///   published owner is even consulted.
-/// * Anything else is refused. The previous value stays in place — a leaked
-///   stack is always better than a shared one, and substituting or redirecting
-///   would hide the defect that produced the address.
+/// A refusal writes nothing: the previous value stays in place. A leaked stack
+/// is always better than a shared one, and substituting inside the setter would
+/// hide the defect that produced the address. Callers that are about to RUN on
+/// the address must not simply ignore the refusal — `install_idle_return_sp` is
+/// the fail-closed install for exactly that case.
 ///
 /// `site` is threaded in from the setter's own `#[track_caller]` location so
 /// the record names the code that asked for the install, not the setter.
 fn percpu_stack_install_permitted(addr: u64, site: &'static Location<'static>) -> bool {
-    let Some(slot) = percpu_stack_slot_of(addr) else {
-        return true;
-    };
     let cpu = <Aarch64PerCpu as PerCpuOps>::cpu_id() as usize;
-    let published = percpu_stack_published_owner(slot);
-    if slot == cpu && published.map_or(true, |owner| owner == cpu) {
+    if percpu_stack_top_owned_by(cpu, addr) {
         return true;
     }
+    record_percpu_stack_alien(cpu, addr, site);
+    false
+}
+
+/// Producer-side custody: the stack top CPU `cpu` may actually dispatch onto,
+/// given the address some upstream structure preferred.
+///
+/// The idle pivot used to take `preferred` verbatim from
+/// `cpu_state[cpu].idle_thread`'s `kernel_stack_top` and only substitute when it
+/// was zero, so a thread record naming another CPU's slot went straight into
+/// the per-CPU words, into the idle thread's saved `context.sp`, and into SP.
+/// Refusing that downstream in the setter came too late — the setter writes
+/// nothing, and the caller pivoted onto the refused address anyway.
+///
+/// So the substitution happens HERE, at the choice, using the same predicate
+/// the setter guard applies. `percpu_kernel_stack_top(cpu)` is own-slot by
+/// construction, so the returned value is always installable and the setter can
+/// never refuse it. The refusal is recorded with the caller's own site, which is
+/// why this takes `site` explicitly rather than reading `Location::caller()` —
+/// the useful location is the dispatch site, not this helper's line.
+#[inline]
+pub fn percpu_stack_top_for(cpu: usize, preferred: u64, site: &'static Location<'static>) -> u64 {
+    if percpu_stack_top_owned_by(cpu, preferred) {
+        return preferred;
+    }
+    record_percpu_stack_alien(cpu, preferred, site);
+    percpu_kernel_stack_top(cpu)
+}
+
+/// The one emitter of the `[PERCPU_STACK_ALIEN:` refusal record.
+///
+/// Both custody sides funnel through it — the producer that declines to choose
+/// a foreign address and the setter that declines to install one — so the
+/// evidence channel is a single literal with a single census, and moving the
+/// repair upstream cannot quietly move the evidence out of the gate.
+///
+/// Lock-free `raw_uart_*` with a whole-boot emission budget: this runs from the
+/// dispatch path, where the resume-PC refusal record set the precedent.
+fn record_percpu_stack_alien(cpu: usize, addr: u64, site: &'static Location<'static>) {
+    let slot = percpu_stack_slot_of(addr).unwrap_or(usize::MAX);
+    let published = percpu_stack_published_owner(slot);
 
     PERCPU_STACK_ALIEN_REFUSALS.fetch_add(1, Ordering::Release);
     if PERCPU_STACK_ALIEN_EMISSIONS.fetch_add(1, Ordering::Relaxed)
@@ -99,7 +136,6 @@ fn percpu_stack_install_permitted(addr: u64, site: &'static Location<'static>) -
         raw_uart_dec(u64::from(site.line()));
         raw_uart_str("]\n");
     }
-    false
 }
 
 /// Read TPIDR_EL1 (per-CPU data base pointer)
@@ -467,6 +503,38 @@ impl Aarch64PerCpu {
         }
         percpu_write_u64(PERCPU_USER_RSP_SCRATCH_OFFSET, sp);
         crate::task::percpu_stack_oracle::note_stack_top_install(sp);
+    }
+
+    /// Install `sp` into BOTH per-CPU return-SP words and report the address
+    /// that is now actually installed.
+    ///
+    /// This is the fail-closed install for the idle pivot. Its callers do not
+    /// merely publish the address, they then `mov sp, <address>` and run on it,
+    /// so ignoring a refusal is not an option: the refused value would become
+    /// the live stack pointer while the two per-CPU words still named something
+    /// else. The #635 acceptance battery observed exactly that — a refused
+    /// `percpu_kernel_stack_top(0)` reaching SP on CPU 3.
+    ///
+    /// On refusal the fallback is this CPU's own exception-stack top, derived
+    /// from the same `cpu_id()` the refusal used. That makes the fallback
+    /// own-slot by construction, so it cannot itself be foreign, and it needs
+    /// no second adjudication.
+    ///
+    /// The refusal record is still emitted by `percpu_stack_install_permitted`.
+    /// Nothing here suppresses it, and nothing here redirects execution — the
+    /// caller is told what it may run on and decides for itself.
+    #[inline]
+    #[track_caller]
+    pub unsafe fn install_idle_return_sp(sp: u64) -> u64 {
+        let granted = if percpu_stack_install_permitted(sp, Location::caller()) {
+            sp
+        } else {
+            percpu_kernel_stack_top(<Self as PerCpuOps>::cpu_id() as usize)
+        };
+        percpu_write_u64(PERCPU_KERNEL_STACK_TOP_OFFSET, granted);
+        percpu_write_u64(PERCPU_USER_RSP_SCRATCH_OFFSET, granted);
+        crate::task::percpu_stack_oracle::note_stack_top_install(granted);
+        granted
     }
 
     /// Get the softirq pending bitmap.
