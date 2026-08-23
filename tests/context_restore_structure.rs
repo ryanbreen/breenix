@@ -5698,3 +5698,505 @@ fn fatal_scheduler_census_m_f_rejects_broken_fatal_callee_derivation() {
         )
     );
 }
+
+// =============================================================================
+// PR-B stage 2 — per-CPU stack custody, tid-0 retirement, masked reclaim drop
+//
+// Five structural ratchets. Each censuses a shape DERIVED from the code — the
+// function that emits the refusal record, the files that name `swapper/0`, the
+// pure SPSR-mode predicate — rather than a literal list of names or a line
+// number, so moving or renaming the subject is free and removing it is not.
+// =============================================================================
+
+const PERCPU_PATH: &str = "kernel/src/arch_impl/aarch64/percpu.rs";
+const PER_CPU_AARCH64_PATH: &str = "kernel/src/per_cpu_aarch64.rs";
+const AARCH64_CONSTANTS_PATH: &str = "kernel/src/arch_impl/aarch64/constants.rs";
+const CONTEXT_SWITCH_PATH: &str = "kernel/src/arch_impl/aarch64/context_switch.rs";
+const PERCPU_STACK_ALIEN_LITERAL: &str = "[PERCPU_STACK_ALIEN:";
+
+/// The innermost function definition whose body span contains `offset`.
+fn innermost_function<'a>(
+    functions: &'a [SourceFunction],
+    offset: usize,
+) -> Option<&'a SourceFunction> {
+    functions
+        .iter()
+        .filter(|function| function.open < offset && offset < function.close)
+        .min_by_key(|function| function.close - function.open)
+}
+
+/// The balanced `(...)` argument span of the call whose callee name starts at
+/// `name_offset`, as `(first byte after `(`, offset of the closing `)`)`.
+fn call_argument_span(source: &str, mask: &[bool], name_offset: usize) -> Option<(usize, usize)> {
+    let bytes = source.as_bytes();
+    let mut cursor = name_offset;
+    while cursor < bytes.len() && mask[cursor] && identifier_byte(bytes[cursor]) {
+        cursor += 1;
+    }
+    let open = (cursor..bytes.len()).find(|index| mask[*index] && !bytes[*index].is_ascii_whitespace())?;
+    if bytes[open] != b'(' {
+        return None;
+    }
+    let mut depth = 0usize;
+    for index in open..bytes.len() {
+        if !mask[index] {
+            continue;
+        }
+        match bytes[index] {
+            b'(' => depth += 1,
+            b')' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some((open + 1, index));
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Offsets at which `offset_name` appears as the FIRST argument of a call to a
+/// `percpu_write_*` helper — i.e. a write to that per-CPU field, as opposed to
+/// the `percpu_read_*` of the same field.
+fn percpu_write_sites(source: &str, mask: &[bool], offset_name: &str) -> Vec<usize> {
+    let bytes = source.as_bytes();
+    identifier_offsets(source, mask, offset_name)
+        .into_iter()
+        .filter(|at| {
+            let Some(open) = previous_code(source, mask, *at) else {
+                return false;
+            };
+            if bytes[open] != b'(' {
+                return false;
+            }
+            let Some(name_end) = previous_code(source, mask, open) else {
+                return false;
+            };
+            if !identifier_byte(bytes[name_end]) {
+                return false;
+            }
+            let mut start = name_end;
+            while start > 0 && mask[start - 1] && identifier_byte(bytes[start - 1]) {
+                start -= 1;
+            }
+            source[start..=name_end].starts_with("percpu_write_")
+        })
+        .collect()
+}
+
+/// RATCHET 1 — every per-CPU stack-top writer consults the ownership check.
+///
+/// The check's identifier is derived from the file: it is the function whose
+/// body carries the `[PERCPU_STACK_ALIEN:` refusal record. Renaming it is free;
+/// removing its call from a writer is not.
+#[test]
+fn percpu_stack_top_writers_consult_the_ownership_check() {
+    let source = repo_text(PERCPU_PATH);
+    let mask = code_mask(&source);
+    let blocks = lexical_blocks(&source, &mask);
+    let functions = source_functions(&source, &mask, &blocks);
+
+    // Prose about the record (a doc comment on the emission budget, say) is not
+    // the record; only an occurrence inside a function body is.
+    let mut check_names: BTreeSet<String> = BTreeSet::new();
+    for (record_offset, _) in source.match_indices(PERCPU_STACK_ALIEN_LITERAL) {
+        if let Some(function) = innermost_function(&functions, record_offset) {
+            check_names.insert(function.name.clone());
+        }
+    }
+    assert_eq!(
+        check_names.len(),
+        1,
+        "expected exactly one function in {PERCPU_PATH} to carry the {PERCPU_STACK_ALIEN_LITERAL} \
+         record, derived: {check_names:?}"
+    );
+    let check = check_names.iter().next().expect("derived check name").clone();
+
+    let mut writers: BTreeSet<String> = BTreeSet::new();
+    for offset_name in [
+        "PERCPU_KERNEL_STACK_TOP_OFFSET",
+        "PERCPU_USER_RSP_SCRATCH_OFFSET",
+    ] {
+        for site in percpu_write_sites(&source, &mask, offset_name) {
+            let function = innermost_function(&functions, site).unwrap_or_else(|| {
+                panic!("write of {offset_name} at byte {site} is outside any function")
+            });
+            writers.insert(function.name.clone());
+        }
+    }
+    assert!(
+        !writers.is_empty(),
+        "no function in {PERCPU_PATH} writes PERCPU_KERNEL_STACK_TOP_OFFSET or \
+         PERCPU_USER_RSP_SCRATCH_OFFSET; the writer census is vacuous"
+    );
+
+    let mut unguarded: Vec<String> = Vec::new();
+    for writer in &writers {
+        if *writer == check {
+            continue;
+        }
+        let guarded = functions
+            .iter()
+            .filter(|function| function.name == *writer)
+            .any(|function| {
+                let body = &source[function.open..=function.close];
+                let body_mask = code_mask(body);
+                !call_offsets(body, &body_mask, &check).is_empty()
+            });
+        if !guarded {
+            unguarded.push(writer.clone());
+        }
+    }
+    assert!(
+        unguarded.is_empty(),
+        "these {PERCPU_PATH} functions write a per-CPU stack-top field without calling the \
+         ownership check `{check}`: {unguarded:?} (writers censused: {writers:?})"
+    );
+}
+
+/// True when `source` assigns the bare literal `0` to a field named `id`.
+fn zero_assigned_to_id_field(source: &str, mask: &[bool]) -> Vec<usize> {
+    let bytes = source.as_bytes();
+    assigned_value_offsets(source, mask, "0")
+        .into_iter()
+        .filter(|zero| {
+            // The value must be exactly `0`, not `0x…`, `0u64` or `0.0`.
+            if bytes
+                .get(zero + 1)
+                .is_some_and(|byte| identifier_byte(*byte) || *byte == b'.')
+            {
+                return false;
+            }
+            let Some(equals) = previous_code(source, mask, *zero) else {
+                return false;
+            };
+            let Some(name_end) = previous_code(source, mask, equals) else {
+                return false;
+            };
+            if !identifier_byte(bytes[name_end]) {
+                return false;
+            }
+            let mut start = name_end;
+            while start > 0 && mask[start - 1] && identifier_byte(bytes[start - 1]) {
+                start -= 1;
+            }
+            if &source[start..=name_end] != "id" {
+                return false;
+            }
+            // A field, not a local: the name is reached through `.`.
+            previous_code(source, mask, start).is_some_and(|before| bytes[before] == b'.')
+        })
+        .collect()
+}
+
+/// RATCHET 2 — no `swapper/0` file hands a live thread the id 0.
+///
+/// The file set is derived from the `swapper/0` literal, so the rule follows
+/// the boot idle task wherever it is defined.
+#[test]
+fn swapper_files_do_not_assign_thread_id_zero() {
+    let mut named_files: Vec<(String, String)> = Vec::new();
+    for (path, source) in rust_sources_below("kernel/src") {
+        if !source.contains("swapper/0") {
+            continue;
+        }
+        let relative = path
+            .strip_prefix(repo_root())
+            .expect("source below repository root")
+            .to_string_lossy()
+            .into_owned();
+        named_files.push((relative, source));
+    }
+    assert!(
+        !named_files.is_empty(),
+        "no file below kernel/src contains the literal `swapper/0`; the file census is vacuous"
+    );
+
+    let mut offenders: Vec<String> = Vec::new();
+    for (relative, source) in &named_files {
+        let mask = code_mask(source);
+        for site in zero_assigned_to_id_field(source, &mask) {
+            let line = source[..site].bytes().filter(|byte| *byte == b'\n').count() + 1;
+            offenders.push(format!("{relative}:{line}"));
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "0 is the no-thread sentinel and must never be assigned to a live thread's id, but these \
+         `swapper/0` files do it: {offenders:?} (files censused: {:?})",
+        named_files
+            .iter()
+            .map(|(relative, _)| relative.as_str())
+            .collect::<Vec<_>>()
+    );
+}
+
+/// RATCHET 3 — the reclaimed control blocks are freed with interrupts masked
+/// and outside the scheduler lock.
+#[test]
+fn reclaim_drops_thread_control_blocks_inside_the_masked_region() {
+    let source = repo_text(SCHEDULER_PATH);
+    let mask = code_mask(&source);
+    let blocks = lexical_blocks(&source, &mask);
+    let functions = source_functions(&source, &mask, &blocks);
+
+    let reclaimers: Vec<&SourceFunction> = functions
+        .iter()
+        .filter(|function| function.name == "reclaim_terminated_threads")
+        .filter(|function| {
+            let body = &source[function.open..=function.close];
+            let body_mask = code_mask(body);
+            !call_offsets(body, &body_mask, "without_interrupts").is_empty()
+        })
+        .collect();
+    assert_eq!(
+        reclaimers.len(),
+        1,
+        "expected exactly one `reclaim_terminated_threads` in {SCHEDULER_PATH} that masks \
+         interrupts, found {}",
+        reclaimers.len()
+    );
+    let reclaimer = reclaimers[0];
+    let body = &source[reclaimer.open..=reclaimer.close];
+    let body_mask = code_mask(body);
+
+    let masked = call_offsets(body, &body_mask, "without_interrupts");
+    assert_eq!(masked.len(), 1, "one masked region expected, found {masked:?}");
+    let (masked_start, masked_end) = call_argument_span(body, &body_mask, masked[0])
+        .expect("without_interrupts argument span");
+
+    let drops = call_offsets(body, &body_mask, "drop");
+    assert_eq!(
+        drops.len(),
+        1,
+        "expected exactly one explicit `drop(` of the reclaimed control blocks, found {drops:?}"
+    );
+    let drop_call = drops[0];
+    assert!(
+        masked_start < drop_call && drop_call < masked_end,
+        "the reclaimed control blocks are dropped OUTSIDE the masked region: a thread control \
+         block's heap free would run with interrupts enabled on a borrowed stack \
+         (drop at {drop_call}, masked region [{masked_start}, {masked_end}))"
+    );
+
+    let (arg_start, arg_end) =
+        call_argument_span(body, &body_mask, drop_call).expect("drop argument span");
+    let dropped = body[arg_start..arg_end].trim().to_string();
+    assert!(
+        !binding_offsets(body, &body_mask, &dropped).is_empty(),
+        "`drop({dropped})` does not name a binding declared in `reclaim_terminated_threads`"
+    );
+
+    let locks = call_offsets(body, &body_mask, "lock_scheduler");
+    assert_eq!(
+        locks.len(),
+        1,
+        "one scheduler lock acquisition expected, found {locks:?}"
+    );
+    let body_blocks = lexical_blocks(body, &body_mask);
+    let guard_scope = body_blocks
+        .iter()
+        .filter(|block| block.open < locks[0] && locks[0] < block.close)
+        .min_by_key(|block| block.close - block.open)
+        .expect("innermost block holding the scheduler lock guard");
+    assert!(
+        guard_scope.close < drop_call,
+        "the reclaimed control blocks are dropped while the scheduler lock guard is still in \
+         scope (guard scope closes at {}, drop at {drop_call})",
+        guard_scope.close
+    );
+}
+
+/// Every spelling of the 4-bit SPSR mode-field mask used in this file: the
+/// literal, plus any `const` in the file bound to it.
+fn mode_mask_spellings(source: &str, mask: &[bool]) -> BTreeSet<String> {
+    let bytes = source.as_bytes();
+    let mut spellings: BTreeSet<String> = ["0xF", "0xf", "15"]
+        .into_iter()
+        .map(str::to_string)
+        .collect();
+    for keyword in identifier_offsets(source, mask, "const") {
+        let mut cursor = keyword + "const".len();
+        while cursor < bytes.len() && (!mask[cursor] || bytes[cursor].is_ascii_whitespace()) {
+            cursor += 1;
+        }
+        let name_start = cursor;
+        while cursor < bytes.len() && mask[cursor] && identifier_byte(bytes[cursor]) {
+            cursor += 1;
+        }
+        if cursor == name_start {
+            continue;
+        }
+        let Some(semicolon) = (cursor..bytes.len()).find(|index| mask[*index] && bytes[*index] == b';')
+        else {
+            continue;
+        };
+        let declaration = normalized_code(&source[cursor..semicolon]);
+        if ["= 0xF", "= 0xf", "= 15"]
+            .into_iter()
+            .any(|tail| declaration.ends_with(tail))
+        {
+            spellings.insert(source[name_start..cursor].to_owned());
+        }
+    }
+    spellings
+}
+
+/// The file's pure SPSR-exception-level predicate: the single function whose
+/// whole body is one expression masking `spsr` with the mode field.
+fn derived_exception_level_predicate(source: &str) -> String {
+    let mask = code_mask(source);
+    let blocks = lexical_blocks(source, &mask);
+    let functions = source_functions(source, &mask, &blocks);
+    let spellings = mode_mask_spellings(source, &mask);
+
+    let mut candidates: BTreeSet<String> = BTreeSet::new();
+    for function in &functions {
+        let body = normalized_code(&source[function.open..=function.close]);
+        if body.contains(';') {
+            continue;
+        }
+        if spellings
+            .iter()
+            .any(|spelling| body.contains(&format!("spsr & {spelling}")))
+        {
+            candidates.insert(function.name.clone());
+        }
+    }
+    assert_eq!(
+        candidates.len(),
+        1,
+        "expected exactly one pure SPSR exception-level predicate in {CONTEXT_SWITCH_PATH}, \
+         derived: {candidates:?} (mode-mask spellings: {spellings:?})"
+    );
+    candidates.into_iter().next().expect("derived predicate")
+}
+
+/// RATCHET 4 — every kernel-stack-top install into the EL0 scratch slot is
+/// preceded by the pending-exception-level test.
+///
+/// `boot.S` reads the slot the FRAME's SPSR selects, so an install that follows
+/// only `from_el0` writes a kernel stack pointer where the hardware will not
+/// look and leaves the value it does read stale.
+#[test]
+fn user_rsp_scratch_kernel_stack_installs_follow_the_pending_exception_level() {
+    let source = repo_text(CONTEXT_SWITCH_PATH);
+    let mask = code_mask(&source);
+    let blocks = lexical_blocks(&source, &mask);
+    let functions = source_functions(&source, &mask, &blocks);
+    let predicate = derived_exception_level_predicate(&source);
+
+    let mut censused = 0usize;
+    let mut unguarded: Vec<String> = Vec::new();
+    for call in call_offsets(&source, &mask, "set_user_rsp_scratch") {
+        let Some(function) = innermost_function(&functions, call) else {
+            continue;
+        };
+        let Some((arg_start, arg_end)) = call_argument_span(&source, &mask, call) else {
+            continue;
+        };
+        let argument = &source[arg_start..arg_end];
+        let argument_mask = code_mask(argument);
+        let body = &source[function.open..=function.close];
+        let body_mask = code_mask(body);
+
+        // The install is kernel-stack-top-valued either directly, or through a
+        // binding in the same body whose initialiser is exactly the per-CPU
+        // accessor call. Deliberately NOT any binding that merely mentions a
+        // stack top: the idle-return paths install the CPU's own idle stack
+        // into this slot ON PURPOSE, because their frames ERET to EL1 and
+        // boot.S reads this slot for an EL1 return.
+        let direct = !identifier_offsets(argument, &argument_mask, "kernel_stack_top").is_empty();
+        let indirect = !direct && {
+            let name = argument.trim();
+            !name.is_empty()
+                && name.bytes().all(identifier_byte)
+                && binding_offsets(body, &body_mask, name)
+                    .into_iter()
+                    .any(|binding| {
+                        let statement_end = (binding..body.len())
+                            .find(|index| body_mask[*index] && body.as_bytes()[*index] == b';')
+                            .unwrap_or(body.len());
+                        normalized_code(&body[binding..statement_end])
+                            .ends_with("kernel_stack_top()")
+                    })
+        };
+        if !direct && !indirect {
+            continue;
+        }
+        censused += 1;
+
+        let relative_call = call - function.open;
+        let tested = call_offsets(body, &body_mask, &predicate)
+            .into_iter()
+            .any(|test| test < relative_call);
+        if !tested {
+            let line = source[..call].bytes().filter(|byte| *byte == b'\n').count() + 1;
+            unguarded.push(format!("{}:{line} in fn {}", CONTEXT_SWITCH_PATH, function.name));
+        }
+    }
+
+    assert!(
+        censused > 0,
+        "no `set_user_rsp_scratch` call in {CONTEXT_SWITCH_PATH} installs the per-CPU kernel \
+         stack top; the census is vacuous"
+    );
+    assert!(
+        unguarded.is_empty(),
+        "these kernel-stack-top installs into the EL0 scratch slot are not preceded by the \
+         pending-exception-level predicate `{predicate}`: {unguarded:?} ({censused} installs \
+         censused)"
+    );
+}
+
+/// The single function in `scope` whose body writes `witness`.
+fn sole_writer_of(scope_path: &str, source: &str, witness: &str) -> String {
+    let mask = code_mask(source);
+    let blocks = lexical_blocks(source, &mask);
+    let functions = source_functions(source, &mask, &blocks);
+    let mut names: BTreeSet<String> = BTreeSet::new();
+    for site in identifier_offsets(source, &mask, witness) {
+        if let Some(function) = innermost_function(&functions, site) {
+            let body = &source[function.open..=function.close];
+            let body_mask = code_mask(body);
+            if call_offsets(body, &body_mask, "write_volatile").is_empty() {
+                continue;
+            }
+            names.insert(function.name.clone());
+        }
+    }
+    assert_eq!(
+        names.len(),
+        1,
+        "expected exactly one function in {scope_path} to publish `{witness}`, derived: {names:?}"
+    );
+    names.into_iter().next().expect("derived publisher")
+}
+
+/// RATCHET 5 — `init_cpu` publishes both per-CPU stack facts.
+///
+/// Both publisher names are derived from the code they write, so either can be
+/// renamed freely; dropping either call from `init_cpu` is what fails.
+#[test]
+fn init_cpu_publishes_both_idle_stack_top_and_stack_ownership() {
+    let per_cpu = repo_text(PER_CPU_AARCH64_PATH);
+    let constants = repo_text(AARCH64_CONSTANTS_PATH);
+
+    let idle_publisher = sole_writer_of(PER_CPU_AARCH64_PATH, &per_cpu, "idle_stack_top");
+    let owner_publisher =
+        sole_writer_of(AARCH64_CONSTANTS_PATH, &constants, "PERCPU_STACK_OWNER_MAGIC");
+
+    let body = function_body(&per_cpu, "init_cpu")
+        .unwrap_or_else(|| panic!("`init_cpu` body not found in {PER_CPU_AARCH64_PATH}"));
+    let body_mask = code_mask(body);
+
+    for publisher in [&idle_publisher, &owner_publisher] {
+        assert!(
+            !call_offsets(body, &body_mask, publisher).is_empty(),
+            "`init_cpu` in {PER_CPU_AARCH64_PATH} does not call `{publisher}`; a CPU would run \
+             with an unpublished per-CPU stack fact (derived publishers: idle-stack-top \
+             `{idle_publisher}`, stack-owner `{owner_publisher}`)"
+        );
+    }
+}

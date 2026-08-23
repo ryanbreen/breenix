@@ -1008,6 +1008,14 @@ const UNLOCKED_MULTI_BYTE_WRITE_ANCHORS: &[(&str, &str, usize)] = &[
         "fn raw_uart_hex_u32",
         2,
     ),
+    // The per-CPU stack-top ownership refusal record. It runs on the dispatch
+    // path from inside the setters themselves, so it cannot take the serial
+    // lock; it is bounded to 16 emissions for the whole boot.
+    (
+        "kernel/src/arch_impl/aarch64/percpu.rs",
+        "fn percpu_stack_install_permitted",
+        9,
+    ),
     (
         "kernel/src/arch_impl/aarch64/timer_interrupt.rs",
         "fn dump_lockup_state",

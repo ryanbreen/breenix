@@ -10,9 +10,9 @@
 # boot-test failures.
 #
 # The gate additionally requires a [PERCPU_STACK_ALIEN: record — the refusal the
-# ownership-checking setter will emit when it declines a stack top belonging to
-# another CPU. No such record exists in the tree today, so this gate FAILS on
-# purpose until the repair lands.
+# ownership-checking setter emits when it declines a stack top belonging to
+# another CPU — and, like every other aarch64 boot_tests gate, a non-failing
+# [BLOCK_EINTR_ORACLE: line.
 #
 # It builds into its own target dir so the shared target/aarch64-breenix-kernel
 # kernel other gates boot is never replaced by a probe-feature build.
@@ -26,7 +26,11 @@ OUTPUT_DIR="/tmp/breenix_aarch64_percpu_stack_custody_gate"
 
 # This proves the complete boot-tests sequence reported success.
 BOOT_TESTS_PASS_LITERAL='[BOOT_TESTS:PASS]'
-# The refusing setter's record. Absent from the tree today, on purpose.
+# This proves init's block EINTR oracle ran during the boot-tests sequence.
+BLOCK_EINTR_ORACLE_LITERAL='[BLOCK_EINTR_ORACLE:'
+# This proves init's block EINTR oracle did not self-report a failure.
+BLOCK_EINTR_ORACLE_FAIL_LITERAL='[BLOCK_EINTR_ORACLE:FAIL'
+# The refusing setter's record.
 ALIEN_LITERAL='[PERCPU_STACK_ALIEN:'
 
 LEG_A_MARKER='[PERCPU_STACK_CUSTODY_ORACLE:aarch64:leg=A:'
@@ -93,6 +97,7 @@ LEG_B_LINE=""
 LEG_C_LINE=""
 LEG_D_LINE=""
 BOOT_TESTS_PASS_LINE=""
+BLOCK_EINTR_ORACLE_LINE=""
 ALIEN_LINE=""
 FATAL_LINE=""
 
@@ -103,6 +108,7 @@ for _ in $(seq 1 180); do
         LEG_C_LINE=$(grep -aF "$LEG_C_MARKER" "$OUTPUT_DIR/serial.txt" 2>/dev/null | tail -1 || true)
         LEG_D_LINE=$(grep -aF "$LEG_D_MARKER" "$OUTPUT_DIR/serial.txt" 2>/dev/null | tail -1 || true)
         BOOT_TESTS_PASS_LINE=$(grep -aF "$BOOT_TESTS_PASS_LITERAL" "$OUTPUT_DIR/serial.txt" 2>/dev/null | tail -1 || true)
+        BLOCK_EINTR_ORACLE_LINE=$(grep -aF "$BLOCK_EINTR_ORACLE_LITERAL" "$OUTPUT_DIR/serial.txt" 2>/dev/null | tail -1 || true)
         ALIEN_LINE=$(grep -aF "$ALIEN_LITERAL" "$OUTPUT_DIR/serial.txt" 2>/dev/null | tail -1 || true)
         FATAL_LINE=$(grep -aiE 'KERNEL PANIC|DATA_ABORT|INSTRUCTION_ABORT|Unhandled sync exception|soft lockup detected' "$OUTPUT_DIR/serial.txt" 2>/dev/null | tail -1 || true)
         if [ -n "$FATAL_LINE" ]; then
@@ -119,7 +125,8 @@ for _ in $(seq 1 180); do
             exit 1
         fi
         if [ -n "$LEG_A_LINE" ] && [ -n "$LEG_B_LINE" ] && [ -n "$LEG_C_LINE" ] && \
-            [ -n "$LEG_D_LINE" ] && [ -n "$BOOT_TESTS_PASS_LINE" ] && [ -n "$ALIEN_LINE" ]; then
+            [ -n "$LEG_D_LINE" ] && [ -n "$BOOT_TESTS_PASS_LINE" ] && [ -n "$ALIEN_LINE" ] && \
+            [ -n "$BLOCK_EINTR_ORACLE_LINE" ]; then
             break
         fi
     fi
@@ -132,6 +139,19 @@ done
 if ! grep -qaF "$BOOT_TESTS_PASS_LITERAL" "$OUTPUT_DIR/serial.txt" 2>/dev/null; then
     echo "ARM64 PERCPU STACK CUSTODY GATE: FAILED"
     echo "Missing marker: $BOOT_TESTS_PASS_LITERAL"
+    dump_reports
+    exit 1
+fi
+
+if ! grep -qaF "$BLOCK_EINTR_ORACLE_LITERAL" "$OUTPUT_DIR/serial.txt" 2>/dev/null; then
+    echo "ARM64 PERCPU STACK CUSTODY GATE: FAILED"
+    echo "Missing marker: $BLOCK_EINTR_ORACLE_LITERAL"
+    dump_reports
+    exit 1
+fi
+if grep -qaF "$BLOCK_EINTR_ORACLE_FAIL_LITERAL" "$OUTPUT_DIR/serial.txt" 2>/dev/null; then
+    echo "ARM64 PERCPU STACK CUSTODY GATE: FAILED"
+    echo "Block EINTR oracle reported failure: $BLOCK_EINTR_ORACLE_FAIL_LITERAL"
     dump_reports
     exit 1
 fi
@@ -172,4 +192,5 @@ echo "$LEG_C_LINE"
 echo "$LEG_D_LINE"
 echo "$ALIEN_LINE"
 echo "$BOOT_TESTS_PASS_LINE"
+echo "$BLOCK_EINTR_ORACLE_LINE"
 exit 0

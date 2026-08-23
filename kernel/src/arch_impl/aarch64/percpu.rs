@@ -38,7 +38,7 @@ pub static PERCPU_STACK_ALIEN_REFUSALS: AtomicU64 = AtomicU64::new(0);
 /// resume-PC refusal record.
 static PERCPU_STACK_ALIEN_EMISSIONS: AtomicU64 = AtomicU64::new(0);
 
-/// Maximum `[PERCPU_STACK_ALIEN:` records emitted per boot.
+/// Maximum alien-install records emitted per boot.
 const PERCPU_STACK_ALIEN_EMISSION_CAP: u64 = 16;
 
 /// Total stack-top installs refused for naming another CPU's slot.

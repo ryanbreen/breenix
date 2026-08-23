@@ -10754,6 +10754,23 @@ fn check_kernel_stack_allocator_live_guards(kernel_stack: &str) -> Result<(), St
     Ok(())
 }
 
+/// The reclaimed `Box<Thread>` values must be freed with interrupts MASKED and
+/// with the scheduler lock RELEASED.
+///
+/// Freeing one runs `KernelStack::drop` -> `free_kernel_stack`, which takes
+/// `ARM64_STACK_BITMAP`. Doing that with interrupts ENABLED is link 1 of the
+/// #609 chain — see
+/// `docs/planning/teardown-unification/609-RCA-RETRACTION-2026-08-21.md` §2.3,
+/// which names this exact drop, sitting outside the `without_interrupts` block,
+/// as the way a holder of that lock became preemptible. Masking the free closes
+/// that link; #632 having made the bitmap lock `IrqSafeMutex` means the masked
+/// wait is bounded rather than an unbounded spin on an orphaned lock.
+///
+/// It must equally not run under the scheduler lock, so the binding's
+/// initialiser scope has to end before the drop.
+///
+/// This check previously required the opposite ordering (bound and dropped
+/// AFTER `without_interrupts` returned). That pinned the pre-#609 shape.
 fn check_reclaimed_threads_drop_after_unlock(scheduler: &str) -> Result<(), String> {
     let functions = module_function_bodies(scheduler);
     let wrappers: Vec<_> = functions
@@ -10778,9 +10795,39 @@ fn check_reclaimed_threads_drop_after_unlock(scheduler: &str) -> Result<(), Stri
         .ok_or_else(|| "without_interrupts call has no argument list".to_owned())?;
     let close = matching_paren(body, &mask, open)
         .ok_or_else(|| "without_interrupts call has no closing parenthesis".to_owned())?;
-    if !(binding < without && close < drop_reclaimed) {
+    if !(without < binding && binding < drop_reclaimed && drop_reclaimed < close) {
         return Err(
-            "reclaimed Box<Thread> values are not bound and dropped outside without_interrupts"
+            "reclaimed Box<Thread> values are not bound and dropped inside without_interrupts"
+                .to_owned(),
+        );
+    }
+
+    // ...and the scheduler lock guard's scope must have ended first.
+    let lock = code_offset_once(body, "lock_scheduler()")?;
+    let bytes = body.as_bytes();
+    let mut stack: Vec<usize> = Vec::new();
+    let mut guard_scope_close = None;
+    for index in 0..bytes.len() {
+        if !mask[index] {
+            continue;
+        }
+        match bytes[index] {
+            b'{' => stack.push(index),
+            b'}' => {
+                if let Some(scope_open) = stack.pop() {
+                    if scope_open < lock && lock < index && guard_scope_close.is_none() {
+                        guard_scope_close = Some(index);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    let guard_scope_close = guard_scope_close
+        .ok_or_else(|| "scheduler lock guard is not inside a braced scope".to_owned())?;
+    if !(guard_scope_close < drop_reclaimed) {
+        return Err(
+            "reclaimed Box<Thread> values are dropped while the scheduler lock guard is in scope"
                 .to_owned(),
         );
     }
@@ -10921,6 +10968,60 @@ fn kernel_stack_release_validator_rejects_unsafe_mutations() {
         drop_under_lock,
     )
     .is_err());
+
+    // The pre-#609 shape: bound and dropped AFTER the masked region returns, so
+    // `KernelStack::drop` -> `free_kernel_stack` runs with interrupts enabled.
+    // That is link 1 of the #609 chain and must be rejected.
+    let drop_with_interrupts_enabled = r#"
+        fn reclaim_terminated_threads() {
+            let reclaimed_threads = without_interrupts(|| {
+                let mut scheduler_lock = lock_scheduler();
+                if let Some(scheduler) = scheduler_lock.as_mut() {
+                    scheduler.reclaim_terminated_threads()
+                } else {
+                    alloc::vec::Vec::new()
+                }
+            });
+            drop(reclaimed_threads);
+        }
+    "#;
+    assert_eq!(
+        validate_kernel_stack_release_mechanism(
+            &kernel_stack,
+            &kernel_page_table,
+            drop_with_interrupts_enabled,
+        ),
+        Err(
+            "reclaimed Box<Thread> values are not bound and dropped inside without_interrupts"
+                .to_owned()
+        )
+    );
+
+    // The drop must also be outside the scheduler lock guard's scope.
+    let drop_inside_guard_scope = r#"
+        fn reclaim_terminated_threads() {
+            without_interrupts(|| {
+                let mut scheduler_lock = lock_scheduler();
+                let reclaimed_threads = if let Some(scheduler) = scheduler_lock.as_mut() {
+                    scheduler.reclaim_terminated_threads()
+                } else {
+                    alloc::vec::Vec::new()
+                };
+                drop(reclaimed_threads);
+            });
+        }
+    "#;
+    assert_eq!(
+        validate_kernel_stack_release_mechanism(
+            &kernel_stack,
+            &kernel_page_table,
+            drop_inside_guard_scope,
+        ),
+        Err(
+            "reclaimed Box<Thread> values are dropped while the scheduler lock guard is in scope"
+                .to_owned()
+        )
+    );
 }
 
 #[test]
