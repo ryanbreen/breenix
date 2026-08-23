@@ -1,0 +1,13 @@
+diff --git a/kernel/src/arch_impl/aarch64/context_switch.rs b/kernel/src/arch_impl/aarch64/context_switch.rs
+index 7a2fd616..a7abfcc5 100644
+--- a/kernel/src/arch_impl/aarch64/context_switch.rs
++++ b/kernel/src/arch_impl/aarch64/context_switch.rs
+@@ -353,7 +353,7 @@ pub fn drain_asm_resume_pc_refusals() {
+         else {
+             continue;
+         };
+-        if cpu_id as u64 != drain_cpu {
++        if false {
+             report_foreign_resume_pc_refusal(drain_cpu, cpu_id, elr, sp, count);
+             continue;
+         }

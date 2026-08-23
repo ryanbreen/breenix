@@ -1,0 +1,33 @@
+diff --git a/kernel/src/arch_impl/aarch64/context_switch.rs b/kernel/src/arch_impl/aarch64/context_switch.rs
+index 7a2fd616..8e8aa649 100644
+--- a/kernel/src/arch_impl/aarch64/context_switch.rs
++++ b/kernel/src/arch_impl/aarch64/context_switch.rs
+@@ -421,27 +421,11 @@ pub fn drain_asm_resume_pc_refusals() {
+                 // holds reclamation back. Republish idle, which is what this
+                 // CPU is actually running.
+                 let drain_cpu_index = drain_cpu as usize;
+-                let idle_id = sched.cpu_state[drain_cpu_index].idle_thread;
++                let _idle_id = sched.cpu_state[drain_cpu_index].idle_thread;
+                 let published_ptr = Aarch64PerCpu::current_thread_ptr();
+                 let published_tid = sched.cpu_state[drain_cpu_index].current_thread;
+                 if published_ptr == victim_ptr || published_tid == Some(tid) {
+                     RESUME_PC_CURRENT_DANGLING.fetch_add(1, Ordering::Release);
+-                    if published_ptr == victim_ptr {
+-                        unsafe {
+-                            Aarch64PerCpu::set_current_thread_ptr(core::ptr::null_mut());
+-                        }
+-                    }
+-                    if published_tid == Some(tid) {
+-                        crate::task::scheduler::record_cpu_state_change(
+-                            drain_cpu_index,
+-                            20,
+-                            tid,
+-                            idle_id,
+-                        );
+-                        sched.cpu_state[drain_cpu_index].current_thread = Some(idle_id);
+-                    }
+-                    RESUME_PC_CURRENT_REPOINTED.fetch_add(1, Ordering::Release);
+-                    current_repointed = true;
+                 }
+ 
+                 if let Some(thread) = sched.get_thread_mut(tid) {

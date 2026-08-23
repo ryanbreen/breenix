@@ -130,3 +130,65 @@ the thread's pool stack.
 The round-1 statement that no leg exercises the ret-dispatch arm no longer holds: leg F does, in
 both directions, with a mutation. The dispatch ERET's own arms remain covered only by the shared
 macro and the structural ratchet.
+
+## Round 3 (ruling R47) — the drain hazard cluster
+
+Firing the ret-dispatch arm in round 2 made the *refusal drain* reachable for the first time. Round 3
+fixes three hazards inside it. Every serial below was captured on the shipped round-3 tree.
+
+### (a) foreign records are report-only — leg G
+
+`drain_asm_resume_pc_refusals` used to iterate every `MAX_CPUS` record and terminate
+`last_dispatched_tid(record_cpu)` for any of them. That word is the *publishing* CPU's OWNER-TID
+canary; read across CPUs it is a race. Leg G plants a synthetic record in an **offline** per-CPU slot
+(`MAX_CPUS-1`; the gate boots `-smp 4`), so the record is foreign by construction and cannot perturb
+any running CPU's own record or canary, and stamps that slot's canary with a dedicated live kthread.
+
+| file | what it shows |
+|---|---|
+| `legG-r3-green-foreign-report-only.txt` | **Green.** `[RESUME_PC_CUSTODY:drain_cpu=1:record_cpu=7:record_elr=0x2000000:record_sp=0x0:record_count=1:FOREIGN_REPORT_ONLY]` — described, not consumed. `[RESUME_PC_FOREIGN_ORACLE:...:foreign_reports=1:record_still_published=1:canary_present=1:canary_terminated=0:canary_progress=29:PASS]`: the record is still published at report time (left for its owner) and the thread it named is alive and running. |
+| `legG-r3-mutation-M6-act-on-foreign-red-canary-killed.txt` | **The designated mutation**: the foreign early-out condition replaced by `if false`, nothing else. CPU 3 claims CPU 7's record and terminates the canary — `foreign_reports=0:record_still_published=0:canary_present=0`, `canary_progress` frozen at 3 (vs 29 green) — and the custody line shows it did so **while executing on that canary's own kernel stack**: `[RESUME_PC_CUSTODY:drain_cpu=3:record_cpu=7:victim_tid=10:...:on_victim_stack=1:...]`. That is the over-free, made visible. `FAIL`. |
+| `legG-r3-disarmed-antivacuity.txt` | Harness live, nothing planted: `armed=1:planted=0:foreign_reports=0:record_still_published=0:canary_present=1:canary_progress=30:PASS`. The green above is not a dead harness. |
+
+A **production-shaped** foreign record also appears in `legP-r3-green-guard-events-explains-coalescing.txt`:
+`[RESUME_PC_CUSTODY:drain_cpu=2:record_cpu=3:...:FOREIGN_REPORT_ONLY]`, followed moments later by CPU
+3 draining its own record with the correct `victim_tid=10`. Not planted — the real cross-CPU race,
+observed and correctly left alone.
+
+### (b) the record publishes its source behind a store barrier
+
+Both macros wrote `source` last as the validity word with a plain `str`. Both now do `dmb ishst`
+first, on the cold refusal arm only. **This has no observational leg** — QEMU TCG does not reorder
+stores, so nothing can redden from a missing barrier, and saying otherwise would be theatre. It is
+proven structurally: `aarch64_resume_pc_records_publish_their_source_behind_a_store_barrier` asserts
+the barrier sits after every payload store and before the source store in both macro bodies, and
+mutation **M8** (`pr3-mutation-patches/M8-no-release-barrier.patch`, both `dmb ishst` lines deleted)
+turns that ratchet red: 70 passed, 1 failed.
+
+### (c) the CPU stops publishing a thread it is about to have reclaimed — leg F
+
+The refused dispatch had already published its victim as this CPU's current thread. After the round-2
+fix the refused stack slot is no longer named live, so nothing holds reclamation back — marking the
+victim Terminated with that publication standing leaves `current_thread_ptr` aimed at a `Box` the
+next reclaim pass may drop. The drain now repoints the bookkeeping at idle **before** the terminate,
+and counts both the hazard and the repair.
+
+| file | what it shows |
+|---|---|
+| `legF-r3-green-final-tree-repoint.txt` | **Green on the shipped tree.** `[RESUME_PC_CUSTODY:...:current_repointed=1:OK]` and `[RET_FLOOR_ORACLE:...:refused_tid=10:custody_checks=1:custody_blind=0:current_dangling=1:current_repointed=1:fatal=0:PASS]`. `current_dangling=1` is the anti-vacuity half — the hazard genuinely occurs in this leg; `current_repointed == current_dangling` is the fix. |
+| `legF-r3-mutation-M7-no-current-repoint-red.txt` | **The designated mutation for (c)**: the two repoint actions deleted, the hazard counter kept. `current_dangling=1:current_repointed=0:FAIL`, `[BOOT_TESTS:FAIL:1]`. |
+| `legF-r3-mutation-M5-nopivot-red-custody-blind.txt` | M5 re-run on the round-3 tree: still red, still for the round-2 reason. `on_refused_stack=1:named_live=0:STACK_CUSTODY_BLIND`, `custody_blind=1:FAIL`. |
+| `legF-r3-disarmed-antivacuity-final-tree.txt` | **R47 item 1.** The round-2 disarmed serial was superseded — it carried an `identity_mismatches` field that existed only in an intermediate build. Re-run on the shipped tree: `armed=1:fired=0:opportunities=33:refused=0:refused_tid=0:custody_checks=0:custody_blind=0:current_dangling=0:current_repointed=0:fatal=0:PASS` with `[BOOT_TESTS:PASS]`. 33 opportunities, zero production refusals. |
+
+### review note N8 — leg P's arithmetic is now in its own verdict
+
+| file | what it shows |
+|---|---|
+| `legP-r3-green-guard-events-explains-coalescing.txt` | `[RESUME_PC_EL1_ORACLE:...:opportunities=3:injected=3:refused=2:guard_events=3:...:PASS]`. `injected` counts injections, `refused` counts *drained* records, and the per-CPU record slot holds one entry — two refusals between drains coalesce. `guard_events` is the per-arm execution count, summed across CPUs, and it does not coalesce: 3 arms fired for 3 injections, 2 records were drained. The gap is explained by the data instead of by a deviation note. |
+
+### mutation patches
+
+The four round-2/round-3 mutation patches are preserved verbatim in
+`../pr3-mutation-patches/` (`M5-no-sp-pivot`, `M6-act-on-foreign`, `M7-no-current-repoint`,
+`M8-no-release-barrier`). Each applies and reverts cleanly with `git apply` against this branch, and
+each mutant compiles — so every red above can be reproduced exactly.
