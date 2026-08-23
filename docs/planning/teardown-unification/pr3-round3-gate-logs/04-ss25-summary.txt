@@ -1,0 +1,17 @@
+Profile selection: both
+Profile max: running 25 sequential boots
+Profile max census
+  GREEN rate: 25/25 (100.0%) — census-only: every non-GREEN bucket is gate-failing, including the open #576 and #626 defects, EXCEPT #635 (a temporary, authorized, field-keyed attribution at its documented ~1% rate, reported here and never gating — see classify_serial)
+  RET dispatch refused: 0 marker line(s) across 0/25 boot(s) — reported, not gated
+  Resume PC refused: 0 marker line(s) across 0/25 boot(s) — reported, not gated
+Profile max gate: PASSED (575=0, 576=0, 626=0, 635=0 [ATTRIBUTED, non-failing], DATA_ABORT=0, CLONE_EXEC=0, STRAND=0, BOOT_TEST_FAIL=0, 596=0, 612=0, 609=0, P5B=0, UNATTRIBUTED=0)
+Profile cortex-a72: running 25 sequential boots
+Profile cortex-a72 census
+  GREEN rate: 25/25 (100.0%) — census-only: every non-GREEN bucket is gate-failing, including the open #576 and #626 defects, EXCEPT #635 (a temporary, authorized, field-keyed attribution at its documented ~1% rate, reported here and never gating — see classify_serial)
+  RET dispatch refused: 0 marker line(s) across 0/25 boot(s) — reported, not gated
+  Resume PC refused: 0 marker line(s) across 0/25 boot(s) — reported, not gated
+Profile cortex-a72 gate: PASSED (575=0, 576=0, 626=0, 635=0 [ATTRIBUTED, non-failing], DATA_ABORT=0, CLONE_EXEC=0, STRAND=0, BOOT_TEST_FAIL=0, 596=0, 612=0, 609=0, P5B=0, UNATTRIBUTED=0)
+  GREEN rate: 50/50 (100.0%) — census-only: every non-GREEN bucket is gate-failing, including the open #576 and #626 defects, EXCEPT #635 (a temporary, authorized, field-keyed attribution at its documented ~1% rate, reported here and never gating — see classify_serial)
+  RET dispatch refused: 0 marker line(s) across 0/50 boot(s) — reported, not gated
+  Resume PC refused: 0 marker line(s) across 0/50 boot(s) — reported, not gated
+ARM64 #575 SERVICE SEQUENCE GATE: PASSED
