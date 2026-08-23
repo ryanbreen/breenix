@@ -1034,6 +1034,8 @@ pub fn note_scheduling_epoch(cpu_id: usize) {
 ///  17 = Scheduler::terminate_current (new_thread = 0xDEAD means None)
 ///  18 = Scheduler::new (initial CPU 0 idle thread)
 ///  19 = setup_idle_return_locked (every exception-frame redirect to idle)
+///  20 = drain_asm_resume_pc_refusals (the refusal drain republishing idle over
+///       a refused dispatch's own victim, before it terminates that victim)
 #[cfg(target_arch = "aarch64")]
 const HISTORY_SIZE: usize = 256;
 #[cfg(target_arch = "aarch64")]

@@ -117,6 +117,14 @@ static RESUME_PC_FOREIGN_LAST_COUNT: [AtomicU64;
 /// repointed at idle before the terminate. The two must stay equal.
 pub static RESUME_PC_CURRENT_DANGLING: AtomicU64 = AtomicU64::new(0);
 pub static RESUME_PC_CURRENT_REPOINTED: AtomicU64 = AtomicU64::new(0);
+/// Drains that REFUSED to act, by reason. `ON_VICTIM_STACK` is a drain that
+/// found this CPU still executing on the canary-named thread's own kernel
+/// stack — the CPU never departed, so that thread is live and its publication
+/// is true. `PUBLICATION_MOVED` is a drain whose published identity no longer
+/// names the canary's thread at all, leaving the canary as the sole witness.
+/// Neither refusal terminates, dequeues or unpublishes anything.
+pub static RESUME_PC_DRAIN_ON_VICTIM_STACK: AtomicU64 = AtomicU64::new(0);
+pub static RESUME_PC_DRAIN_PUBLICATION_MOVED: AtomicU64 = AtomicU64::new(0);
 
 pub const RESUME_PC_SOURCE_SYNC_EPILOGUE: u64 = 1;
 pub const RESUME_PC_SOURCE_IRQ_EPILOGUE: u64 = 2;
@@ -340,6 +348,31 @@ pub fn record_resume_pc_refusal_locked(
 /// thread's stack, and does not re-select SP for another ~20-40 instructions.
 /// With no foreign actor, the only CPU that can terminate that thread and hand
 /// its stack to the reaper is the one that has already left it.
+///
+/// Same-CPU is necessary and not sufficient. The canary is a per-CPU word that a
+/// LATER dispatch on this CPU overwrites, and this drain is not idle-only:
+/// `run_deferred_reclamation` is also reached from `scheduler::schedule()` and
+/// from the waitqueue/completion wait loops, so a refusal record can still be
+/// unclaimed while the CPU is running a thread dispatched after it was
+/// published. Two facts must agree with the canary's name before anything is
+/// terminated, dequeued or unpublished:
+///
+/// * DEPARTURE. Every refusal arm leaves the refused thread's kernel stack
+///   before this drain can run — the frame arms in the ERET epilogue, which
+///   re-selects SP from the per-CPU idle-stack words, and the frame-less arm at
+///   its `mov sp` pivot. A drain standing ON the canary-named thread's kernel
+///   stack therefore did not arrive from that refusal; it arrived on that
+///   thread's own back. That thread is LIVE and its publication is TRUE.
+/// * PUBLICATION. This CPU's published identity — the `Box` pointer, the
+///   `cpu_state` tid, or both — must still name the canary's thread. Once the
+///   publication has moved on, the only thing naming the victim is the canary,
+///   and the canary alone is not evidence.
+///
+/// When either fact disagrees the drain refuses: it reports, counts the refusal
+/// by reason, and touches nothing. The record was already claimed above, so a
+/// refusal retires it instead of leaving it for a later drain to act on under an
+/// even staler name. A refusal can leak a refused thread; it can never terminate
+/// or free a running one.
 pub fn drain_asm_resume_pc_refusals() {
     let drain_sp: u64;
     unsafe {
@@ -386,6 +419,9 @@ pub fn drain_asm_resume_pc_refusals() {
             let mut on_victim_stack = false;
             let mut record_sp_on_victim_stack = false;
             let mut current_repointed = false;
+            let mut publication_names_victim = false;
+            let mut decided = false;
+            let mut acted = false;
             crate::task::scheduler::with_scheduler(|sched| {
                 let is_idle = sched
                     .cpu_state
@@ -395,6 +431,10 @@ pub fn drain_asm_resume_pc_refusals() {
                     return;
                 }
                 let Some(thread) = sched.get_thread(tid) else {
+                    // No thread carries that name: nothing can be executing it,
+                    // so there is no departure to prove and no publication to
+                    // preserve. Dropping a queue entry for a thread that does
+                    // not exist frees nothing.
                     sched.remove_from_ready_queue(tid);
                     return;
                 };
@@ -411,20 +451,32 @@ pub fn drain_asm_resume_pc_refusals() {
                         victim_stack_top,
                     );
 
-                // BOOKKEEPING REPOINT, and it happens BEFORE the terminate on
-                // purpose. The refused dispatch published this thread as this
-                // CPU's current thread and then never resumed it: the refusal
-                // arm redirected the CPU to idle. Marking it Terminated while
-                // that publication still stands leaves `current_thread_ptr`
-                // aimed at a Box the very next reclaim pass is free to drop —
-                // the refused stack slot is no longer named live, so nothing
-                // holds reclamation back. Republish idle, which is what this
-                // CPU is actually running.
                 let drain_cpu_index = drain_cpu as usize;
                 let idle_id = sched.cpu_state[drain_cpu_index].idle_thread;
                 let published_ptr = Aarch64PerCpu::current_thread_ptr();
                 let published_tid = sched.cpu_state[drain_cpu_index].current_thread;
-                if published_ptr == victim_ptr || published_tid == Some(tid) {
+                publication_names_victim =
+                    published_ptr == victim_ptr || published_tid == Some(tid);
+
+                // DEPARTURE first. `drain_sp` inside the canary-named thread's
+                // own kernel stack means this CPU is running that thread right
+                // now, reached from `scheduler::schedule()` rather than from the
+                // refusal arm — every refusal arm departs before idle can drain.
+                // Terminating there is an over-free of a running stack and
+                // nulling the publication there is a lie about a live thread.
+                let departed = !on_victim_stack;
+                decided = true;
+                if departed && publication_names_victim {
+                    acted = true;
+                    // BOOKKEEPING REPOINT, and it happens BEFORE the terminate
+                    // on purpose. The refused dispatch published this thread as
+                    // this CPU's current thread and then never resumed it: the
+                    // refusal arm redirected the CPU to idle. Marking it
+                    // Terminated while that publication still stands leaves
+                    // `current_thread_ptr` aimed at a Box the very next reclaim
+                    // pass is free to drop — the refused stack slot is no longer
+                    // named live, so nothing holds reclamation back. Republish
+                    // idle, which is what this CPU is actually running.
                     RESUME_PC_CURRENT_DANGLING.fetch_add(1, Ordering::Release);
                     if published_ptr == victim_ptr {
                         unsafe {
@@ -442,21 +494,33 @@ pub fn drain_asm_resume_pc_refusals() {
                     }
                     RESUME_PC_CURRENT_REPOINTED.fetch_add(1, Ordering::Release);
                     current_repointed = true;
-                }
 
-                if let Some(thread) = sched.get_thread_mut(tid) {
-                    thread.set_terminated();
+                    if let Some(thread) = sched.get_thread_mut(tid) {
+                        thread.set_terminated();
+                    }
+                    sched.remove_from_ready_queue(tid);
                 }
-                sched.remove_from_ready_queue(tid);
             });
+            let refused_on_victim_stack = decided && !acted && on_victim_stack;
+            let refused_publication_moved = decided && !acted && !on_victim_stack;
+            if refused_on_victim_stack {
+                RESUME_PC_DRAIN_ON_VICTIM_STACK.fetch_add(1, Ordering::Release);
+            }
+            if refused_publication_moved {
+                RESUME_PC_DRAIN_PUBLICATION_MOVED.fetch_add(1, Ordering::Release);
+            }
             let verdict = if on_refused_stack && !named_live {
                 "STACK_CUSTODY_BLIND"
+            } else if refused_on_victim_stack {
+                "REFUSED_ON_VICTIM_STACK"
+            } else if refused_publication_moved {
+                "REFUSED_PUBLICATION_MOVED"
             } else {
                 "OK"
             };
             if RESUME_PC_CUSTODY_EMISSIONS.fetch_add(1, Ordering::Relaxed) < 16 {
                 crate::serial_println!(
-                    "[RESUME_PC_CUSTODY:drain_cpu={}:record_cpu={}:victim_tid={}:record_sp=0x{:x}:drain_sp=0x{:x}:record_slot={}:drain_slot={}:on_refused_stack={}:victim_stack_top=0x{:x}:sp_in_pool={}:on_victim_stack={}:record_sp_on_victim_stack={}:named_live={}:current_repointed={}:{}]",
+                    "[RESUME_PC_CUSTODY:drain_cpu={}:record_cpu={}:victim_tid={}:record_sp=0x{:x}:drain_sp=0x{:x}:record_slot={}:drain_slot={}:on_refused_stack={}:victim_stack_top=0x{:x}:sp_in_pool={}:on_victim_stack={}:record_sp_on_victim_stack={}:named_live={}:publication_names_victim={}:acted={}:current_repointed={}:{}]",
                     drain_cpu,
                     cpu_id,
                     tid,
@@ -470,6 +534,8 @@ pub fn drain_asm_resume_pc_refusals() {
                     u64::from(on_victim_stack),
                     u64::from(record_sp_on_victim_stack),
                     u64::from(named_live),
+                    u64::from(publication_names_victim),
+                    u64::from(acted),
                     u64::from(current_repointed),
                     verdict,
                 );
