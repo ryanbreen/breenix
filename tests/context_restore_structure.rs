@@ -6674,3 +6674,356 @@ fn saved_context_layout_and_identity_are_compile_time_facts() {
          {stamps} stamp(s)"
     );
 }
+
+// =============================================================================
+// PR-B round 4 — the CPU identity a per-CPU stack decision is made with
+//
+// Round 2 unified the custody PREDICATE between the producer of an idle
+// dispatch SP and the setter that installs it. Round 3 still recorded a
+// production refusal, because what the two sides did not share was the CPU
+// IDENTITY they fed that predicate: `schedule_from_kernel` captured an index
+// with interrupts still enabled, a preemption in that window let another CPU
+// resume the thread, and the carried index then chose a stack, a state slot and
+// a `cpu_state` row belonging to the CPU it used to be on.
+//
+// These four ratchets pin the repair by SHAPE — the pivots derived from the
+// file, the identity acquisitions derived from each function, the constructors
+// derived from the type — never by site line or name list. The site line for
+// this defect family has already moved once (5497 → 5985).
+// =============================================================================
+
+/// Every stack pivot in the aarch64 context switch: an inline-asm `mov sp, …`
+/// and every call to the assembly switch, which pivots on its caller's behalf.
+///
+/// Derived from the source. The extern declaration of the switch is not a
+/// pivot, so a `fn`-preceded occurrence is excluded.
+fn stack_pivot_sites(source: &str, mask: &[bool]) -> Vec<usize> {
+    let mut sites: Vec<usize> = source
+        .match_indices("\"mov sp,")
+        .map(|(offset, _)| offset)
+        .collect();
+    sites.extend(
+        call_offsets(source, mask, "aarch64_inline_schedule_switch")
+            .into_iter()
+            .filter(|offset| !preceded_by_keyword(source, mask, *offset, "fn")),
+    );
+    sites.sort_unstable();
+    sites
+}
+
+/// Calls to a function, excluding its own definition.
+fn call_sites_excluding_definition(source: &str, mask: &[bool], name: &str) -> Vec<usize> {
+    call_offsets(source, mask, name)
+        .into_iter()
+        .filter(|offset| !preceded_by_keyword(source, mask, *offset, "fn"))
+        .collect()
+}
+
+/// RATCHET — every stack pivot runs on an adjudicated destination.
+///
+/// A per-CPU word install is guarded; a pivot is not an install. `mov sp, x`
+/// runs on `x` whether or not any per-CPU word ever named it, and the scheduler
+/// pivot took its destination from a plain index with no custody check at all.
+/// The census is the pivots themselves, so a new pivot that skips the
+/// adjudication is a count mismatch rather than an omission nobody notices.
+#[test]
+fn every_aarch64_stack_pivot_runs_on_an_adjudicated_destination() {
+    let source = repo_text(CONTEXT_SWITCH_PATH);
+    let mask = code_mask(&source);
+    let blocks = lexical_blocks(&source, &mask);
+    let functions = source_functions(&source, &mask, &blocks);
+
+    let sites = stack_pivot_sites(&source, &mask);
+    assert!(
+        sites.len() >= 4,
+        "the stack-pivot census found {} sites in {CONTEXT_SWITCH_PATH}; it is vacuous",
+        sites.len()
+    );
+
+    let adjudications = call_sites_excluding_definition(&source, &mask, "pivot_destination");
+    assert_eq!(
+        adjudications.len(),
+        sites.len(),
+        "{} stack pivots but {} pivot adjudications in {CONTEXT_SWITCH_PATH}: every pivot must \
+         run on the address custody granted, not on the address it preferred",
+        sites.len(),
+        adjudications.len()
+    );
+
+    for site in &sites {
+        let function = innermost_function(&functions, *site)
+            .unwrap_or_else(|| panic!("stack pivot at byte {site} is outside any function"));
+        assert!(
+            adjudications
+                .iter()
+                .any(|call| function.open < *call && *call < *site),
+            "the stack pivot at byte {site} in `{}` is not preceded by a pivot adjudication",
+            function.name
+        );
+    }
+}
+
+/// Offsets at which a body acquires a CPU identity.
+fn identity_acquisitions(body: &str, mask: &[bool]) -> Vec<usize> {
+    let mut offsets = call_offsets(body, mask, "cpu_id");
+    offsets.extend(code_offsets(body, mask, "CpuId::current"));
+    offsets.sort_unstable();
+    offsets
+}
+
+/// RATCHET — a pivoting function that masks interrupts reads its identity after
+/// the mask.
+///
+/// This is the producing defect itself. Above the mask the thread is
+/// preemptible, so the index it reads names the CPU it happened to be on, not
+/// the CPU that will spend it; below the mask the two cannot differ. The census
+/// is derived — every pivot-bearing function that masks — so the rule follows
+/// the code rather than naming `schedule_from_kernel`.
+#[test]
+fn a_masking_pivot_function_reads_its_identity_after_the_mask() {
+    let source = repo_text(CONTEXT_SWITCH_PATH);
+    let mask = code_mask(&source);
+    let blocks = lexical_blocks(&source, &mask);
+    let functions = source_functions(&source, &mask, &blocks);
+    let sites = stack_pivot_sites(&source, &mask);
+
+    let mut checked = 0usize;
+    for function in &functions {
+        if !sites
+            .iter()
+            .any(|site| function.open < *site && *site < function.close)
+        {
+            continue;
+        }
+        let body = &source[function.open..=function.close];
+        let body_mask = code_mask(body);
+        let Some(mask_call) = call_offsets(body, &body_mask, "disable_interrupts")
+            .into_iter()
+            .min()
+        else {
+            // Already masked by its caller — the trampoline runs this way — so
+            // there is no mask in this body to be after.
+            continue;
+        };
+        checked += 1;
+        let early: Vec<usize> = identity_acquisitions(body, &body_mask)
+            .into_iter()
+            .filter(|acquisition| *acquisition < mask_call)
+            .collect();
+        assert!(
+            early.is_empty(),
+            "`{}` reads a CPU identity at byte offset(s) {early:?}, before it masks interrupts \
+             at {mask_call}: an identity read in a preemptible window can name another CPU by \
+             the time it is spent on a per-CPU stack",
+            function.name
+        );
+    }
+    assert!(
+        checked >= 2,
+        "only {checked} pivot-bearing masking function(s) censused; the ratchet is vacuous"
+    );
+}
+
+/// RATCHET — the identity token has no constructor from a carried index.
+///
+/// The type is the whole point: a `usize` cannot say when it was read, so the
+/// per-CPU stack decisions take a value that can only come from a hardware
+/// read. Every construction must therefore live beside such a read and use its
+/// result. A `CpuId(some_parameter)` anywhere — in this file or any other —
+/// re-opens the class this round closed.
+#[test]
+fn the_cpu_identity_token_is_only_minted_from_a_hardware_read() {
+    let source = repo_text(PERCPU_PATH);
+    let mask = code_mask(&source);
+    let blocks = lexical_blocks(&source, &mask);
+    let functions = source_functions(&source, &mask, &blocks);
+
+    let constructions: Vec<usize> = call_offsets(&source, &mask, "CpuId")
+        .into_iter()
+        .filter(|offset| !preceded_by_keyword(&source, &mask, *offset, "struct"))
+        .collect();
+    assert!(
+        !constructions.is_empty(),
+        "no `CpuId` construction found in {PERCPU_PATH}; the ratchet is vacuous"
+    );
+
+    for construction in &constructions {
+        let function = innermost_function(&functions, *construction).unwrap_or_else(|| {
+            panic!("`CpuId` construction at byte {construction} is outside any function")
+        });
+        let body = &source[function.open..=function.close];
+        let body_mask = code_mask(body);
+        assert!(
+            !call_offsets(body, &body_mask, "cpu_id").is_empty(),
+            "`{}` constructs a `CpuId` without reading the hardware identity",
+            function.name
+        );
+
+        let (start, end) = call_argument_span(&source, &mask, *construction)
+            .expect("`CpuId` construction argument span");
+        let argument = source[start..end].trim().to_string();
+        if argument.contains("cpu_id") {
+            continue;
+        }
+        // A local is admissible only when it was bound from the hardware read
+        // in this same body.
+        let binding = format!("let {argument} =");
+        let bound = body.find(&binding).map(|at| {
+            let statement = &body[at..];
+            let end = statement.find(';').unwrap_or(statement.len());
+            statement[..end].contains("cpu_id")
+        });
+        assert_eq!(
+            bound,
+            Some(true),
+            "`{}` constructs a `CpuId` from `{argument}`, which is not bound from a hardware \
+             identity read in that body",
+            function.name
+        );
+    }
+
+    let percpu_path = repo_root().join(PERCPU_PATH);
+    for (path, other) in rust_sources_below("kernel/src") {
+        if path == percpu_path {
+            continue;
+        }
+        let other_mask = code_mask(&other);
+        let elsewhere: Vec<usize> = call_offsets(&other, &other_mask, "CpuId")
+            .into_iter()
+            .filter(|offset| !preceded_by_keyword(&other, &other_mask, *offset, "struct"))
+            .collect();
+        assert!(
+            elsewhere.is_empty(),
+            "{} constructs a `CpuId` outside the type's own module at byte(s) {elsewhere:?}",
+            path.display()
+        );
+    }
+}
+
+/// RATCHET — the dispatch adjudicates the SP it is about to resume on, and a
+/// refused thread goes to the CPU that owns that stack.
+///
+/// The ready queues work-steal, so a saved kernel SP standing in a per-CPU slot
+/// is otherwise resumed by whichever CPU picks the thread up — two CPUs, one
+/// stack. The refusal is only half the repair: bouncing the thread onto the
+/// declining CPU's own queue would hand it straight back, so the routing is
+/// pinned here too, at the destination the enqueue actually indexes.
+#[test]
+fn the_aarch64_dispatch_refuses_a_foreign_resume_stack_and_routes_it_home() {
+    let source = repo_text(CONTEXT_SWITCH_PATH);
+    let mask = code_mask(&source);
+    let blocks = lexical_blocks(&source, &mask);
+    let functions = source_functions(&source, &mask, &blocks);
+
+    let dispatchers: BTreeSet<String> =
+        call_sites_excluding_definition(&source, &mask, "restore_kernel_context_inline")
+            .into_iter()
+            .filter_map(|offset| innermost_function(&functions, offset))
+            .map(|function| function.name.clone())
+            .collect();
+    assert_eq!(
+        dispatchers.len(),
+        1,
+        "expected exactly one kernel-context dispatch function in {CONTEXT_SWITCH_PATH}, \
+         derived: {dispatchers:?}"
+    );
+    let dispatcher = dispatchers.iter().next().expect("dispatcher").clone();
+    let function = functions
+        .iter()
+        .find(|candidate| candidate.name == dispatcher)
+        .expect("dispatcher body");
+    let body = &source[function.open..=function.close];
+    let body_mask = code_mask(body);
+
+    let adjudication = call_offsets(body, &body_mask, "percpu_stack_resume_permitted")
+        .into_iter()
+        .min()
+        .unwrap_or_else(|| {
+            panic!("`{dispatcher}` does not adjudicate the stack it is about to resume on")
+        });
+    assert!(
+        !call_offsets(body, &body_mask, "requeue_thread_on_cpu").is_empty(),
+        "`{dispatcher}` refuses a foreign resume stack without routing the thread to the CPU \
+         that owns it"
+    );
+    let install = call_offsets(body, &body_mask, "set_current_thread_ptr")
+        .into_iter()
+        .min()
+        .expect("dispatch installs the current-thread pointer");
+    assert!(
+        adjudication < install,
+        "`{dispatcher}` adjudicates the resume stack only after it has begun installing per-CPU \
+         state for the dispatch"
+    );
+
+    // The routing helper must enqueue on its own destination parameter.
+    let scheduler = repo_text(SCHEDULER_PATH);
+    let entry = function_body(&scheduler, "requeue_thread_on_cpu")
+        .expect("requeue_thread_on_cpu body");
+    let entry_mask = code_mask(entry);
+    let delegates: BTreeSet<String> = identifier_offsets(entry, &entry_mask, "self")
+        .into_iter()
+        .filter_map(|offset| {
+            let rest = entry.get(offset + "self.".len()..)?;
+            if !entry[offset..].starts_with("self.") {
+                return None;
+            }
+            let name: String = rest
+                .chars()
+                .take_while(|character| identifier_byte(*character as u8))
+                .collect();
+            (!name.is_empty() && rest[name.len()..].starts_with('(')).then_some(name)
+        })
+        .collect();
+    assert_eq!(
+        delegates.len(),
+        1,
+        "requeue_thread_on_cpu must delegate to exactly one enqueue implementation, derived: \
+         {delegates:?}"
+    );
+    let delegate = delegates.iter().next().expect("delegate").clone();
+    let implementation =
+        function_body(&scheduler, &delegate).expect("enqueue implementation body");
+    let signature_start = scheduler
+        .find(&format!("fn {delegate}("))
+        .expect("enqueue implementation signature");
+    let signature = &scheduler[signature_start..signature_start
+        + scheduler[signature_start..]
+            .find('{')
+            .expect("enqueue implementation signature end")];
+    let destination = signature
+        .split(&['(', ')'][..])
+        .nth(1)
+        .expect("enqueue implementation parameter list")
+        .split(',')
+        .filter_map(|parameter| parameter.split(':').next())
+        .map(str::trim)
+        .filter(|parameter| !parameter.is_empty() && *parameter != "&mut self")
+        .last()
+        .expect("enqueue destination parameter")
+        .to_string();
+
+    let pushes = implementation.match_indices("push_back").count();
+    assert_eq!(
+        pushes, 1,
+        "the enqueue implementation `{delegate}` must have exactly one enqueue site"
+    );
+    let push = implementation
+        .find("push_back")
+        .expect("enqueue implementation push_back");
+    let queue_index_start = implementation[..push]
+        .rfind("per_cpu_queues[")
+        .expect("enqueue indexes the per-CPU queues")
+        + "per_cpu_queues[".len();
+    let queue_index_end = queue_index_start
+        + implementation[queue_index_start..]
+            .find(']')
+            .expect("enqueue queue index end");
+    assert_eq!(
+        implementation[queue_index_start..queue_index_end].trim(),
+        destination,
+        "`{delegate}` must enqueue on its destination parameter `{destination}`, not on a CPU it \
+         reads for itself: routing a stack-pinned thread back to the declining CPU hands it \
+         straight back"
+    );
+}

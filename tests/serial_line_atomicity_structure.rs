@@ -1033,6 +1033,16 @@ const UNLOCKED_MULTI_BYTE_WRITE_ANCHORS: &[(&str, &str, usize)] = &[
         "fn record_percpu_stack_alien",
         9,
     ),
+    // The CPU-identity split record: a carried CPU index that disagreed with
+    // the hardware identity where the decision was made. Same constraints as
+    // the alien record above — dispatch path, no lock, bounded to 16 emissions
+    // for the whole boot — and deliberately its own literal so the shape can
+    // never again be absorbed by the alien record.
+    (
+        "kernel/src/arch_impl/aarch64/percpu.rs",
+        "fn record_cpu_identity_split",
+        6,
+    ),
     (
         "kernel/src/arch_impl/aarch64/timer_interrupt.rs",
         "fn dump_lockup_state",

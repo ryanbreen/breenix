@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
 use std::fs;
 use std::io::Write;
 use std::path::PathBuf;
@@ -1825,7 +1825,38 @@ fn strand_handoff_structure_is_pinned_without_line_numbers() {
         "commit_cpu_state_after_save clears pending_next"
     );
 
-    let requeue = function_body(&scheduler, "requeue_thread_after_save");
+    // The public requeue entry point may delegate the enqueue to one private
+    // implementation (round 4 gave it a destination-CPU parameter so a thread
+    // pinned to another CPU's stack can be routed to its owner). Follow the hop
+    // rather than pinning the name that happens to hold the body today: the
+    // guard census belongs wherever `push_back` is, and a delegate that dropped
+    // the guards would still be caught.
+    let entry = function_body(&scheduler, "requeue_thread_after_save");
+    let requeue = if entry.contains("push_back") {
+        entry
+    } else {
+        let (masked_entry, entry_mask) = code_source(entry);
+        let delegates: BTreeSet<String> = identifier_offsets(&masked_entry, &entry_mask, "self")
+            .into_iter()
+            .filter_map(|at| {
+                let rest = masked_entry.get(at + "self.".len()..)?;
+                if !masked_entry[at..].starts_with("self.") {
+                    return None;
+                }
+                let name: String = rest
+                    .chars()
+                    .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+                    .collect();
+                (!name.is_empty() && rest[name.len()..].starts_with('(')).then_some(name)
+            })
+            .collect();
+        assert_eq!(
+            delegates.len(),
+            1,
+            "requeue_thread_after_save must delegate its enqueue to exactly one              implementation, derived: {delegates:?}"
+        );
+        function_body(&scheduler, delegates.iter().next().expect("delegate"))
+    };
     let (masked_requeue, _) = code_source(requeue);
     let enqueue = masked_requeue
         .find("push_back")
@@ -2809,5 +2840,155 @@ fn wakeup_placement_requires_local_dispatchability() {
     assert!(
         compact_context.contains("#[inline(always)]pubfncan_dispatch_here()->bool"),
         "the shared aarch64 predicate must remain public and always-inline"
+    );
+}
+
+/// The CPU-identity split record is its own gate term, and it is gate-failing.
+///
+/// It exists BECAUSE folding it into the per-CPU stack alien count hid it: a
+/// carried CPU index disagreeing with the hardware identity arrived as an
+/// ordinary foreign stack top, named the setter's site rather than the
+/// invocation that belonged to another CPU, and cost two rounds of RCA. Nothing
+/// in this gate's feature profile can manufacture the record, so a non-zero
+/// count is a defect to file rather than a number to watch.
+#[test]
+fn service_sequence_cpu_identity_splits_fail_the_profile() {
+    let gate = repo_text(SERVICE_SEQUENCE_GATE_PATH);
+    let run_profile = shell_function_body(&gate, "run_profile");
+
+    let split_count_line = run_profile
+        .lines()
+        .map(str::trim)
+        .find(|line| line.contains(r#"grep -cF "[CPU_IDENTITY_SPLIT:""#))
+        .expect("per-boot CPU identity split count");
+    let boot_counter = split_count_line
+        .split_once('=')
+        .map(|(counter, _)| counter)
+        .expect("per-boot CPU identity split counter assignment");
+    let profile_line_counter = run_profile
+        .lines()
+        .map(str::trim)
+        .find_map(|line| {
+            let (counter, expression) = line.split_once("=$((")?;
+            expression
+                .contains(&format!("+ {boot_counter}"))
+                .then_some(counter)
+        })
+        .expect("per-profile CPU identity split line accumulator");
+
+    let fail_conditions: Vec<_> = run_profile
+        .lines()
+        .map(str::trim)
+        .filter(|line| line.starts_with(r#"if [ "$count_"#) && line.ends_with("; then"))
+        .collect();
+    assert_eq!(
+        fail_conditions.len(),
+        1,
+        "run_profile must retain exactly one per-profile FAIL condition"
+    );
+    assert!(
+        fail_conditions[0].contains(&format!(r#"[ "${profile_line_counter}" -ne 0 ]"#)),
+        "a non-zero production CPU identity split must fail the profile"
+    );
+
+    let print_census = shell_function_body(&gate, "print_census");
+    let reports: Vec<_> = print_census
+        .lines()
+        .map(str::trim)
+        .filter(|line| line.contains("CPU identity split:"))
+        .collect();
+    assert_eq!(
+        reports.len(),
+        1,
+        "print_census must report the CPU identity split census exactly once"
+    );
+    assert!(
+        !reports[0].contains("reported, not gated"),
+        "the CPU identity split census must not describe itself as ungated once it gates"
+    );
+    assert!(
+        reports[0].contains(&format!("${profile_line_counter}")),
+        "the CPU identity split census must print the derived line accumulator"
+    );
+}
+
+/// The single-quoted format string of the `printf` statement starting at
+/// `anchor`, and the text of its arguments.
+fn shell_printf_format_and_arguments<'a>(body: &'a str, anchor: usize) -> (&'a str, String) {
+    let open = body[anchor..].find('\'').expect("printf format opens") + anchor + 1;
+    let close = body[open..].find('\'').expect("printf format closes") + open;
+    let mut arguments = String::new();
+    let mut cursor = close + 1;
+    loop {
+        let line_end = body[cursor..]
+            .find('\n')
+            .map(|at| cursor + at)
+            .unwrap_or(body.len());
+        let line = &body[cursor..line_end];
+        arguments.push_str(line);
+        let continues = line.trim_end().ends_with('\\');
+        cursor = line_end + 1;
+        if !continues || cursor >= body.len() {
+            break;
+        }
+    }
+    (&body[open..close], arguments)
+}
+
+/// The census header names every column the row `printf` writes, and the row
+/// `printf` has one conversion specifier per argument.
+///
+/// This is not bookkeeping. A `printf` handed more arguments than conversion
+/// specifiers REUSES its format: until round 4 every boot appended a second,
+/// headerless row whose bucket field was empty, and the gate's own failure
+/// report printed one bogus line per boot because of it. Both halves are
+/// derived from the script, so adding a column keeps the ratchet honest and
+/// forgetting to name it does not.
+#[test]
+fn service_sequence_census_columns_match_the_rows_it_writes() {
+    let gate = repo_text(SERVICE_SEQUENCE_GATE_PATH);
+    let run_profile = shell_function_body(&gate, "run_profile");
+
+    let header_anchor = run_profile
+        .find("printf 'boot")
+        .expect("census header printf");
+    let (header_format, _) = shell_printf_format_and_arguments(run_profile, header_anchor);
+    let header_columns: Vec<&str> = header_format
+        .trim_end_matches("\\n")
+        .split("\\t")
+        .filter(|column| !column.is_empty())
+        .collect();
+    assert!(
+        header_columns.len() >= 10,
+        "census header names only {} column(s); the ratchet is vacuous",
+        header_columns.len()
+    );
+
+    let row_anchor = run_profile
+        .find("printf '%s")
+        .expect("census row printf");
+    let (row_format, row_arguments) = shell_printf_format_and_arguments(run_profile, row_anchor);
+    let row_columns = row_format.trim_end_matches("\\n").split("\\t").count();
+    assert_eq!(
+        header_columns.len(),
+        row_columns,
+        "the census header names {} column(s) but each row writes {}: a row column nobody named \
+         is a column nobody reads",
+        header_columns.len(),
+        row_columns
+    );
+
+    let specifiers = row_format.matches("%s").count();
+    let arguments = row_arguments
+        .split_once(">>")
+        .map(|(arguments, _)| arguments)
+        .unwrap_or(&row_arguments)
+        .matches("\"$")
+        .count();
+    assert_eq!(
+        specifiers, arguments,
+        "the census row printf has {specifiers} conversion specifier(s) for {arguments} \
+         argument(s); a surplus argument makes printf reuse the format and append a phantom row \
+         per boot"
     );
 }
