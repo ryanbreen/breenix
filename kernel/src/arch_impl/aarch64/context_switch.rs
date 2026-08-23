@@ -84,11 +84,80 @@ crate::define_trace_counter!(
 static CTX596_ORACLE_EMISSIONS: AtomicU32 = AtomicU32::new(0);
 static CTX596_DIVERGENCE_EMISSIONS: AtomicU32 = AtomicU32::new(0);
 static RET_DISPATCH_REFUSAL_EMISSIONS: AtomicU32 = AtomicU32::new(0);
+static RESUME_PC_REFUSAL_EMISSIONS: AtomicU32 = AtomicU32::new(0);
+static RESUME_PC_CUSTODY_EMISSIONS: AtomicU32 = AtomicU32::new(0);
+static RESUME_PC_CENSUS_LAST_EMIT_NS: AtomicU64 = AtomicU64::new(0);
+static RESUME_PC_CENSUS_EMISSIONS: AtomicU32 = AtomicU32::new(0);
 
 /// Production census for invalid ret-dispatch resume PCs. The feature-gated
 /// oracle also reads these counters to prove its designated victim was refused.
 pub static RET_DISPATCH_REFUSALS: AtomicU64 = AtomicU64::new(0);
 pub static RET_DISPATCH_REFUSED_TID: AtomicU64 = AtomicU64::new(0);
+
+pub static RESUME_PC_REFUSALS: AtomicU64 = AtomicU64::new(0);
+pub static RESUME_PC_REFUSED_TID: AtomicU64 = AtomicU64::new(0);
+pub static RESUME_PC_REFUSED_PC: AtomicU64 = AtomicU64::new(0);
+pub static RESUME_PC_REFUSED_SOURCES: AtomicU64 = AtomicU64::new(0);
+pub static RESUME_PC_EL0_ASM_REFUSALS: AtomicU64 = AtomicU64::new(0);
+/// Custody checks performed at the refusal drain, and how many of them found
+/// this CPU still executing on the stack the drain is about to hand to the
+/// reaper. Both must be readable by the feature-gated ret-dispatch oracle.
+pub static RESUME_PC_CUSTODY_CHECKS: AtomicU64 = AtomicU64::new(0);
+pub static RESUME_PC_CUSTODY_BLIND: AtomicU64 = AtomicU64::new(0);
+/// Refusal records published by a CPU other than the one draining. They are
+/// reported and left alone; see `drain_asm_resume_pc_refusals`.
+pub static RESUME_PC_FOREIGN_REPORTS: AtomicU64 = AtomicU64::new(0);
+/// Last `eret_guard_count` already reported for a foreign CPU's record, so an
+/// undrained foreign record is described once instead of on every drain pass.
+static RESUME_PC_FOREIGN_LAST_COUNT: [AtomicU64;
+    crate::arch_impl::aarch64::constants::MAX_CPUS] =
+    [const { AtomicU64::new(0) }; crate::arch_impl::aarch64::constants::MAX_CPUS];
+/// Drains that found this CPU's published current thread still naming the
+/// thread the refusal is about to terminate, and how many of those were
+/// repointed at idle before the terminate. The two must stay equal.
+pub static RESUME_PC_CURRENT_DANGLING: AtomicU64 = AtomicU64::new(0);
+pub static RESUME_PC_CURRENT_REPOINTED: AtomicU64 = AtomicU64::new(0);
+/// Drains that REFUSED to act, by reason. `ON_VICTIM_STACK` is a drain that
+/// found this CPU still executing on the canary-named thread's own kernel
+/// stack — the CPU never departed, so that thread is live and its publication
+/// is true. `PUBLICATION_MOVED` is a drain whose published identity no longer
+/// names the canary's thread at all, leaving the canary as the sole witness.
+/// `SCHEDULER_UNAVAILABLE` is a drain whose `with_scheduler` closure never ran
+/// at all, so it decided nothing: the record was claimed above and is dropped,
+/// and without this reason that drop is indistinguishable from a correct act.
+/// None of the three terminates, dequeues or unpublishes anything.
+pub static RESUME_PC_DRAIN_ON_VICTIM_STACK: AtomicU64 = AtomicU64::new(0);
+pub static RESUME_PC_DRAIN_PUBLICATION_MOVED: AtomicU64 = AtomicU64::new(0);
+pub static RESUME_PC_DRAIN_SCHEDULER_UNAVAILABLE: AtomicU64 = AtomicU64::new(0);
+
+pub const RESUME_PC_SOURCE_SYNC_EPILOGUE: u64 = 1;
+pub const RESUME_PC_SOURCE_IRQ_EPILOGUE: u64 = 2;
+pub const RESUME_PC_SOURCE_SYSCALL_EPILOGUE: u64 = 3;
+pub const RESUME_PC_SOURCE_DISPATCH_ERET: u64 = 4;
+pub const RESUME_PC_SOURCE_RET_DISPATCH: u64 = 5;
+pub const RESUME_PC_SOURCE_EL0_RESTORE: u64 = 6;
+pub const RESUME_PC_SOURCE_EL0_FIRST_ENTRY: u64 = 7;
+pub const RESUME_PC_SOURCE_EL1_RESTORE: u64 = 8;
+pub const RESUME_PC_SOURCE_EL0_DISPATCH_GUARD: u64 = 9;
+pub const RESUME_PC_SOURCE_EL0_FLAG: u64 = 0x10;
+
+const RESUME_PC_CENSUS_SOURCES: usize = 5;
+const RESUME_PC_CENSUS_CLASSES: usize = 5;
+const RESUME_PC_CENSUS_SOURCE_NAMES: [&str; RESUME_PC_CENSUS_SOURCES] = [
+    "el1-restore-frame-elr",
+    "el0-restore-frame-elr",
+    "el0-first-entry-frame-elr",
+    "ctx-x30",
+    "ctx-elr-el1",
+];
+static RESUME_PC_CENSUS: [
+    [[AtomicU32; RESUME_PC_CENSUS_CLASSES]; RESUME_PC_CENSUS_SOURCES];
+    crate::arch_impl::aarch64::constants::MAX_CPUS
+] = [const {
+    [const {
+        [const { AtomicU32::new(0) }; RESUME_PC_CENSUS_CLASSES]
+    }; RESUME_PC_CENSUS_SOURCES]
+}; crate::arch_impl::aarch64::constants::MAX_CPUS];
 
 /// A saved kernel resume PC must name an aligned instruction in kernel text.
 #[inline(always)]
@@ -112,6 +181,530 @@ fn resume_pc_is_dispatchable(addr: u64) -> bool {
         && ((addr >= text_start && addr < text_end)
             || (higher_alias >= text_start && higher_alias < text_end)
             || (lower_alias >= text_start && lower_alias < text_end))
+}
+
+/// A saved userspace resume PC must be aligned, above the reserved low range,
+/// and outside the kernel's high half. It is deliberately NOT tested against
+/// the kernel-text window: on Parallels the kernel is identity-mapped into the
+/// same range user programs are linked at.
+#[inline(always)]
+fn resume_pc_is_user_dispatchable(addr: u64) -> bool {
+    addr >= 0x1000 && addr & 0x3 == 0 && addr < 0xFFFF_0000_0000_0000
+}
+
+fn resume_pc_source_name(id: u64) -> &'static str {
+    match id & 0xF {
+        RESUME_PC_SOURCE_SYNC_EPILOGUE => "sync-epilogue",
+        RESUME_PC_SOURCE_IRQ_EPILOGUE => "irq-epilogue",
+        RESUME_PC_SOURCE_SYSCALL_EPILOGUE => "syscall-epilogue",
+        RESUME_PC_SOURCE_DISPATCH_ERET => "dispatch-eret",
+        RESUME_PC_SOURCE_RET_DISPATCH => "ret-dispatch",
+        RESUME_PC_SOURCE_EL0_RESTORE => "el0-restore",
+        RESUME_PC_SOURCE_EL0_FIRST_ENTRY => "el0-first-entry",
+        RESUME_PC_SOURCE_EL1_RESTORE => "el1-restore",
+        RESUME_PC_SOURCE_EL0_DISPATCH_GUARD => "el0-dispatch-guard",
+        _ => "unknown",
+    }
+}
+
+#[inline(always)]
+fn resume_pc_class(addr: u64) -> usize {
+    if resume_pc_is_dispatchable(addr) {
+        0
+    } else if crate::memory::kernel_stack::addr_in_kernel_stack_pool(addr) {
+        1
+    } else if (0x1000..0xFFFF_0000_0000_0000).contains(&addr) {
+        2
+    } else if addr < 0x1000 {
+        3
+    } else {
+        4
+    }
+}
+
+#[inline(always)]
+fn census_resume_pc(source_idx: usize, addr: u64) {
+    let cpu_id = Aarch64PerCpu::cpu_id() as usize;
+    if cpu_id >= crate::arch_impl::aarch64::constants::MAX_CPUS
+        || source_idx >= RESUME_PC_CENSUS_SOURCES
+    {
+        return;
+    }
+    RESUME_PC_CENSUS[cpu_id][source_idx][resume_pc_class(addr)]
+        .fetch_add(1, Ordering::Relaxed);
+}
+
+/// Snapshot the aggregate resume-PC refusal counters.
+pub fn resume_pc_refusal_snapshot() -> (u64, u64, u64, u64, u64) {
+    (
+        RESUME_PC_REFUSALS.load(Ordering::Acquire),
+        RESUME_PC_REFUSED_TID.load(Ordering::Acquire),
+        RESUME_PC_REFUSED_PC.load(Ordering::Acquire),
+        RESUME_PC_REFUSED_SOURCES.load(Ordering::Acquire),
+        RESUME_PC_EL0_ASM_REFUSALS.load(Ordering::Acquire),
+    )
+}
+
+fn record_resume_pc_refusal_common(source: u64, tid: u64, pc: u64) -> Option<(u64, bool)> {
+    let cpu_id = Aarch64PerCpu::cpu_id() as u64;
+    RESUME_PC_REFUSALS.fetch_add(1, Ordering::Release);
+    RESUME_PC_REFUSED_TID.store(tid, Ordering::Release);
+    RESUME_PC_REFUSED_PC.store(pc, Ordering::Release);
+    RESUME_PC_REFUSED_SOURCES.fetch_or(1u64 << (source & 0xF), Ordering::Release);
+    if source & RESUME_PC_SOURCE_EL0_FLAG != 0 {
+        RESUME_PC_EL0_ASM_REFUSALS.fetch_add(1, Ordering::Release);
+    }
+
+    if RESUME_PC_REFUSAL_EMISSIONS.fetch_add(1, Ordering::Relaxed) >= 16 {
+        return None;
+    }
+
+    let source_id = source & 0xF;
+    let el0 = if source_id <= RESUME_PC_SOURCE_DISPATCH_ERET {
+        source & RESUME_PC_SOURCE_EL0_FLAG != 0
+    } else {
+        matches!(
+            source_id,
+            RESUME_PC_SOURCE_EL0_RESTORE
+                | RESUME_PC_SOURCE_EL0_FIRST_ENTRY
+                | RESUME_PC_SOURCE_EL0_DISPATCH_GUARD
+        )
+    };
+    Some((cpu_id, el0))
+}
+
+/// Record and emit a bounded lock-free diagnostic for a resume-PC refusal.
+pub fn record_resume_pc_refusal(
+    source: u64,
+    tid: u64,
+    pc: u64,
+    x29: u64,
+    x30: u64,
+    sp: u64,
+    spsr: u64,
+) {
+    let Some((cpu_id, el0)) = record_resume_pc_refusal_common(source, tid, pc) else {
+        return;
+    };
+    raw_uart_str("[RESUME_PC_REFUSED:source=");
+    raw_uart_str(resume_pc_source_name(source));
+    raw_uart_str(":el0=");
+    raw_uart_dec(u64::from(el0));
+    raw_uart_str(":tid=");
+    raw_uart_dec(tid);
+    raw_uart_str(":pc=");
+    raw_uart_hex(pc);
+    raw_uart_str(":x29=");
+    raw_uart_hex(x29);
+    raw_uart_str(":x30=");
+    raw_uart_hex(x30);
+    raw_uart_str(":sp=");
+    raw_uart_hex(sp);
+    raw_uart_str(":spsr=");
+    raw_uart_hex(spsr);
+    raw_uart_str(":cpu=");
+    raw_uart_dec(cpu_id);
+    raw_uart_str("]\n");
+}
+
+/// Record and emit a bounded serialized diagnostic for a cold-path refusal.
+pub fn record_resume_pc_refusal_locked(
+    source: u64,
+    tid: u64,
+    pc: u64,
+    x29: u64,
+    x30: u64,
+    sp: u64,
+    spsr: u64,
+) {
+    let Some((cpu_id, el0)) = record_resume_pc_refusal_common(source, tid, pc) else {
+        return;
+    };
+    crate::serial_println!(
+        "[RESUME_PC_REFUSED:source={}:el0={}:tid={}:pc=0x{:x}:x29=0x{:x}:x30=0x{:x}:sp=0x{:x}:spsr=0x{:x}:cpu={}]",
+        resume_pc_source_name(source),
+        u64::from(el0),
+        tid,
+        pc,
+        x29,
+        x30,
+        sp,
+        spsr,
+        cpu_id,
+    );
+}
+
+/// Drain all per-CPU refusal records published by assembly ERET guards.
+///
+/// Only the CPU that published a record may act on it. A record carries no tid;
+/// the terminate decision is keyed on the publishing CPU's OWNER-TID canary
+/// (`LAST_DISPATCHED_TID`), a per-CPU word that only that CPU's own dispatch
+/// path stamps. Read from another CPU it is a race — the publisher may have
+/// finalized a later dispatch since, so the name would belong to an innocent
+/// thread. Foreign records are therefore REPORT-ONLY: counted, described, and
+/// left published for their owner. Nothing is lost, because every refusal arm
+/// redirects its own CPU to `idle_loop_arm64`, whose first act is
+/// `run_deferred_reclamation()` -> this drain. The owner always arrives.
+///
+/// Making foreign records inert is also what closes the frame-based arms'
+/// publication-before-departure window: `RESUME_PC_RECORD` publishes the source
+/// word while the CPU is still executing the ERET epilogue on the refused
+/// thread's stack, and does not re-select SP for another ~20-40 instructions.
+/// With no foreign actor, the only CPU that can terminate that thread and hand
+/// its stack to the reaper is the one that has already left it.
+///
+/// Same-CPU is necessary and not sufficient. The canary is a per-CPU word that a
+/// LATER dispatch on this CPU overwrites, and this drain is not idle-only:
+/// `run_deferred_reclamation` is also reached from `scheduler::schedule()` and
+/// from the waitqueue/completion wait loops, so a refusal record can still be
+/// unclaimed while the CPU is running a thread dispatched after it was
+/// published. Two facts must agree with the canary's name before anything is
+/// terminated, dequeued or unpublished:
+///
+/// * DEPARTURE. Every refusal arm leaves the refused thread's kernel stack
+///   before this drain can run — the frame arms in the ERET epilogue, which
+///   re-selects SP from the per-CPU idle-stack words, and the frame-less arm at
+///   its `mov sp` pivot. A drain standing ON the canary-named thread's kernel
+///   stack therefore did not arrive from that refusal; it arrived on that
+///   thread's own back. That thread is LIVE and its publication is TRUE.
+/// * PUBLICATION. This CPU's published identity — the `Box` pointer, the
+///   `cpu_state` tid, or both — must still name the canary's thread. Once the
+///   publication has moved on, the only thing naming the victim is the canary,
+///   and the canary alone is not evidence.
+///
+/// When either fact disagrees the drain refuses: it reports, counts the refusal
+/// by reason, and touches nothing. The record was already claimed above, so a
+/// refusal retires it instead of leaving it for a later drain to act on under an
+/// even staler name. A refusal can leak a refused thread; it can never terminate
+/// or free a running one.
+/// A third reason covers the case where the scheduler closure never runs at
+/// all: the claimed record is dropped, and it says so instead of printing OK.
+pub fn drain_asm_resume_pc_refusals() {
+    let drain_sp: u64;
+    unsafe {
+        core::arch::asm!("mov {}, sp", out(reg) drain_sp, options(nomem, nostack, preserves_flags));
+    }
+    let drain_cpu = Aarch64PerCpu::cpu_id() as u64;
+
+    for cpu_id in 0..crate::arch_impl::aarch64::constants::MAX_CPUS {
+        let Some((_source, elr, spsr, x29, x30, sp, count)) =
+            crate::per_cpu_aarch64::eret_guard_record_full(cpu_id)
+        else {
+            continue;
+        };
+        if cpu_id as u64 != drain_cpu {
+            report_foreign_resume_pc_refusal(drain_cpu, cpu_id, elr, sp, count);
+            continue;
+        }
+        let claimed_source = crate::per_cpu_aarch64::eret_guard_claim_source(cpu_id);
+        if claimed_source == 0 {
+            continue;
+        }
+        let record_slot = reusable_kstack_slot_for_address(sp);
+        let drain_slot = reusable_kstack_slot_for_address(drain_sp);
+        let on_refused_stack = record_slot.is_some() && record_slot == drain_slot;
+        let named_live = drain_slot
+            .map(crate::memory::kernel_stack::kernel_stack_slot_top)
+            .is_some_and(crate::memory::kernel_stack::is_kernel_stack_slot_live);
+        RESUME_PC_CUSTODY_CHECKS.fetch_add(1, Ordering::Release);
+        if on_refused_stack && !named_live {
+            RESUME_PC_CUSTODY_BLIND.fetch_add(1, Ordering::Release);
+        }
+        let tid = last_dispatched_tid(cpu_id).unwrap_or(0);
+        record_resume_pc_refusal_locked(
+            claimed_source,
+            tid,
+            elr,
+            x29,
+            x30,
+            sp,
+            spsr,
+        );
+        if tid != 0 {
+            let mut victim_stack_top = 0;
+            let mut on_victim_stack = false;
+            let mut record_sp_on_victim_stack = false;
+            let mut current_repointed = false;
+            let mut publication_names_victim = false;
+            let mut decided = false;
+            let mut acted = false;
+            let scheduler_consulted = crate::task::scheduler::with_scheduler(|sched| {
+                let is_idle = sched
+                    .cpu_state
+                    .iter()
+                    .any(|state| state.idle_thread == tid);
+                if is_idle {
+                    return;
+                }
+                let Some(thread) = sched.get_thread(tid) else {
+                    // No thread carries that name: nothing can be executing it,
+                    // so there is no departure to prove and no publication to
+                    // preserve. Dropping a queue entry for a thread that does
+                    // not exist frees nothing.
+                    sched.remove_from_ready_queue(tid);
+                    return;
+                };
+                let victim_ptr = thread as *const _ as *mut u8;
+                victim_stack_top = thread
+                    .kernel_stack_top
+                    .map(|top| top.as_u64())
+                    .unwrap_or(0);
+                record_sp_on_victim_stack = victim_stack_top != 0
+                    && crate::memory::kernel_stack::sp_within_kernel_stack(sp, victim_stack_top);
+                on_victim_stack = victim_stack_top != 0
+                    && crate::memory::kernel_stack::sp_within_kernel_stack(
+                        drain_sp,
+                        victim_stack_top,
+                    );
+
+                let drain_cpu_index = drain_cpu as usize;
+                let idle_id = sched.cpu_state[drain_cpu_index].idle_thread;
+                let published_ptr = Aarch64PerCpu::current_thread_ptr();
+                let published_tid = sched.cpu_state[drain_cpu_index].current_thread;
+                publication_names_victim =
+                    published_ptr == victim_ptr || published_tid == Some(tid);
+
+                // DEPARTURE first. `drain_sp` inside the canary-named thread's
+                // own kernel stack means this CPU is running that thread right
+                // now, reached from `scheduler::schedule()` rather than from the
+                // refusal arm — every refusal arm departs before idle can drain.
+                // Terminating there is an over-free of a running stack and
+                // nulling the publication there is a lie about a live thread.
+                let departed = !on_victim_stack;
+                decided = true;
+                if departed && publication_names_victim {
+                    acted = true;
+                    // BOOKKEEPING REPOINT, and it happens BEFORE the terminate
+                    // on purpose. The refused dispatch published this thread as
+                    // this CPU's current thread and then never resumed it: the
+                    // refusal arm redirected the CPU to idle. Marking it
+                    // Terminated while that publication still stands leaves
+                    // `current_thread_ptr` aimed at a Box the very next reclaim
+                    // pass is free to drop — the refused stack slot is no longer
+                    // named live, so nothing holds reclamation back. Republish
+                    // idle, which is what this CPU is actually running.
+                    RESUME_PC_CURRENT_DANGLING.fetch_add(1, Ordering::Release);
+                    if published_ptr == victim_ptr {
+                        unsafe {
+                            Aarch64PerCpu::set_current_thread_ptr(core::ptr::null_mut());
+                        }
+                    }
+                    if published_tid == Some(tid) {
+                        crate::task::scheduler::record_cpu_state_change(
+                            drain_cpu_index,
+                            20,
+                            tid,
+                            idle_id,
+                        );
+                        sched.cpu_state[drain_cpu_index].current_thread = Some(idle_id);
+                    }
+                    RESUME_PC_CURRENT_REPOINTED.fetch_add(1, Ordering::Release);
+                    current_repointed = true;
+
+                    if let Some(thread) = sched.get_thread_mut(tid) {
+                        thread.set_terminated();
+                    }
+                    sched.remove_from_ready_queue(tid);
+                }
+            })
+            .is_some();
+            // A claimed record that no scheduler pass ever looked at is dropped
+            // without a decision, and it gets its own reason rather than the
+            // silent `OK` a drop used to print. It is reported FIRST because a
+            // drain that never consulted the scheduler decided nothing at all;
+            // the blind-custody condition stays readable on the same line from
+            // the `on_refused_stack=` and `named_live=` fields.
+            let refused_scheduler_unavailable = !scheduler_consulted;
+            let refused_on_victim_stack = decided && !acted && on_victim_stack;
+            let refused_publication_moved = decided && !acted && !on_victim_stack;
+            if refused_scheduler_unavailable {
+                RESUME_PC_DRAIN_SCHEDULER_UNAVAILABLE.fetch_add(1, Ordering::Release);
+            }
+            if refused_on_victim_stack {
+                RESUME_PC_DRAIN_ON_VICTIM_STACK.fetch_add(1, Ordering::Release);
+            }
+            if refused_publication_moved {
+                RESUME_PC_DRAIN_PUBLICATION_MOVED.fetch_add(1, Ordering::Release);
+            }
+            let verdict = if refused_scheduler_unavailable {
+                "REFUSED_SCHEDULER_UNAVAILABLE"
+            } else if on_refused_stack && !named_live {
+                "STACK_CUSTODY_BLIND"
+            } else if refused_on_victim_stack {
+                "REFUSED_ON_VICTIM_STACK"
+            } else if refused_publication_moved {
+                "REFUSED_PUBLICATION_MOVED"
+            } else {
+                "OK"
+            };
+            if RESUME_PC_CUSTODY_EMISSIONS.fetch_add(1, Ordering::Relaxed) < 16 {
+                crate::serial_println!(
+                    "[RESUME_PC_CUSTODY:drain_cpu={}:record_cpu={}:victim_tid={}:record_sp=0x{:x}:drain_sp=0x{:x}:record_slot={}:drain_slot={}:on_refused_stack={}:victim_stack_top=0x{:x}:sp_in_pool={}:on_victim_stack={}:record_sp_on_victim_stack={}:named_live={}:publication_names_victim={}:acted={}:current_repointed={}:{}]",
+                    drain_cpu,
+                    cpu_id,
+                    tid,
+                    sp,
+                    drain_sp,
+                    record_slot.map(|slot| slot as i64).unwrap_or(-1),
+                    drain_slot.map(|slot| slot as i64).unwrap_or(-1),
+                    u64::from(on_refused_stack),
+                    victim_stack_top,
+                    u64::from(crate::memory::kernel_stack::addr_in_kernel_stack_pool(drain_sp)),
+                    u64::from(on_victim_stack),
+                    u64::from(record_sp_on_victim_stack),
+                    u64::from(named_live),
+                    u64::from(publication_names_victim),
+                    u64::from(acted),
+                    u64::from(current_repointed),
+                    verdict,
+                );
+            }
+        }
+    }
+}
+
+/// Describe a refusal record published by another CPU without acting on it.
+///
+/// The record stays published: its owner drains it under the OWNER-TID canary
+/// that actually names the refused thread. Reported at most once per distinct
+/// record (keyed on the record's own monotonically increasing count), so an
+/// owner that has not reached idle yet does not produce a report per drain.
+fn report_foreign_resume_pc_refusal(
+    drain_cpu: u64,
+    record_cpu: usize,
+    elr: u64,
+    sp: u64,
+    count: u64,
+) {
+    if record_cpu >= crate::arch_impl::aarch64::constants::MAX_CPUS {
+        return;
+    }
+    let last = RESUME_PC_FOREIGN_LAST_COUNT[record_cpu].load(Ordering::Acquire);
+    if last == count
+        || RESUME_PC_FOREIGN_LAST_COUNT[record_cpu]
+            .compare_exchange(last, count, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+    {
+        return;
+    }
+    RESUME_PC_FOREIGN_REPORTS.fetch_add(1, Ordering::Release);
+    if RESUME_PC_CUSTODY_EMISSIONS.fetch_add(1, Ordering::Relaxed) < 16 {
+        crate::serial_println!(
+            "[RESUME_PC_CUSTODY:drain_cpu={}:record_cpu={}:record_elr=0x{:x}:record_sp=0x{:x}:record_count={}:FOREIGN_REPORT_ONLY]",
+            drain_cpu,
+            record_cpu,
+            elr,
+            sp,
+            count,
+        );
+    }
+}
+
+/// Cold EL0 refusal target entered by ERET at EL1h on the CPU-owned idle stack.
+#[no_mangle]
+pub extern "C" fn aarch64_resume_pc_refused_el0() -> ! {
+    let cpu_id = Aarch64PerCpu::cpu_id() as usize;
+    let victim = last_dispatched_tid(cpu_id).unwrap_or(0);
+    if victim != 0 {
+        let _ = crate::task::process_task::defer_fault_sigsegv_exit(victim);
+        crate::task::scheduler::with_scheduler(|sched| {
+            if let Some(thread) = sched.get_thread_mut(victim) {
+                thread.set_terminated();
+            }
+        });
+    }
+    crate::arch_impl::aarch64::exception::set_idle_stack_for_eret();
+    crate::task::scheduler::switch_to_idle();
+    crate::task::scheduler::set_need_resched();
+    crate::arch_impl::aarch64::idle_loop_arm64()
+}
+
+/// Emit non-zero producer-classification rows for every CPU.
+pub fn emit_resume_pc_census() {
+    for cpu_id in 0..crate::arch_impl::aarch64::constants::MAX_CPUS {
+        for (source_idx, source_name) in RESUME_PC_CENSUS_SOURCE_NAMES.iter().enumerate() {
+            let row = &RESUME_PC_CENSUS[cpu_id][source_idx];
+            let text = row[0].load(Ordering::Relaxed);
+            let kstack = row[1].load(Ordering::Relaxed);
+            let uva = row[2].load(Ordering::Relaxed);
+            let smallint = row[3].load(Ordering::Relaxed);
+            let other = row[4].load(Ordering::Relaxed);
+            if text == 0 && kstack == 0 && uva == 0 && smallint == 0 && other == 0 {
+                continue;
+            }
+
+            raw_uart_str("[RESUME_PC_CENSUS:cpu=");
+            raw_uart_dec(cpu_id as u64);
+            raw_uart_str(":source=");
+            raw_uart_str(source_name);
+            raw_uart_str(":text=");
+            raw_uart_dec(text as u64);
+            raw_uart_str(":kstack=");
+            raw_uart_dec(kstack as u64);
+            raw_uart_str(":uva=");
+            raw_uart_dec(uva as u64);
+            raw_uart_str(":smallint=");
+            raw_uart_dec(smallint as u64);
+            raw_uart_str(":other=");
+            raw_uart_dec(other as u64);
+            raw_uart_str("]\n");
+        }
+    }
+}
+
+/// Emit non-zero producer-classification rows with whole-line serialization.
+pub fn emit_resume_pc_census_locked() {
+    for cpu_id in 0..crate::arch_impl::aarch64::constants::MAX_CPUS {
+        for (source_idx, source_name) in RESUME_PC_CENSUS_SOURCE_NAMES.iter().enumerate() {
+            let row = &RESUME_PC_CENSUS[cpu_id][source_idx];
+            let text = row[0].load(Ordering::Relaxed);
+            let kstack = row[1].load(Ordering::Relaxed);
+            let uva = row[2].load(Ordering::Relaxed);
+            let smallint = row[3].load(Ordering::Relaxed);
+            let other = row[4].load(Ordering::Relaxed);
+            if text == 0 && kstack == 0 && uva == 0 && smallint == 0 && other == 0 {
+                continue;
+            }
+
+            crate::serial_println!(
+                "[RESUME_PC_CENSUS:cpu={}:source={}:text={}:kstack={}:uva={}:smallint={}:other={}]",
+                cpu_id,
+                source_name,
+                text,
+                kstack,
+                uva,
+                smallint,
+                other,
+            );
+        }
+    }
+}
+
+fn emit_resume_pc_census_if_due() {
+    const EMIT_INTERVAL_NS: u64 = 10_000_000_000;
+    const MAX_EMISSIONS: u32 = 6;
+
+    if RESUME_PC_CENSUS_EMISSIONS.load(Ordering::Acquire) >= MAX_EMISSIONS {
+        return;
+    }
+    let (seconds, nanos) = crate::time::get_monotonic_time_ns();
+    let now_ns = seconds
+        .saturating_mul(1_000_000_000)
+        .saturating_add(nanos);
+    let last_ns = RESUME_PC_CENSUS_LAST_EMIT_NS.load(Ordering::Acquire);
+    if now_ns.saturating_sub(last_ns) < EMIT_INTERVAL_NS {
+        return;
+    }
+    if RESUME_PC_CENSUS_LAST_EMIT_NS
+        .compare_exchange(last_ns, now_ns, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        return;
+    }
+    if RESUME_PC_CENSUS_EMISSIONS.fetch_add(1, Ordering::AcqRel) >= MAX_EMISSIONS {
+        return;
+    }
+    emit_resume_pc_census_locked();
 }
 
 #[inline]
@@ -582,8 +1175,19 @@ fn trace_resched_tail(stage: u16, expected_tid: u64) {
     );
 }
 
-core::arch::global_asm!(
+core::arch::global_asm!(concat!(
+    include_str!("resume_pc_guard.inc"),
     r#"
+.equ KERNEL_VIRT_BASE, 0xFFFF000000000000
+.equ PERCPU_ERET_GUARD_ELR, 120
+.equ PERCPU_ERET_GUARD_SPSR, 128
+.equ PERCPU_ERET_GUARD_SOURCE, 136
+.equ PERCPU_ERET_GUARD_X29, 152
+.equ PERCPU_ERET_GUARD_X30, 160
+.equ PERCPU_ERET_GUARD_SP, 168
+.equ PERCPU_ERET_GUARD_COUNT, 176
+.equ PERCPU_IDLE_STACK_TOP, 184
+
 .section .text
 .global aarch64_inline_schedule_switch
 .type aarch64_inline_schedule_switch, @function
@@ -639,10 +1243,14 @@ aarch64_ret_to_kernel_context:
     mov sp, x2
     msr daifclr, #3
     isb
-    adrp x16, __kernel_text_start
-    add x16, x16, :lo12:__kernel_text_start
-    cmp x1, x16
-    b.hs 1f
+    RESUME_PC_EL1_OK x1, x2, x3, x16, 1f
+    // Refusal arm. RESUME_PC_RECORD_NOFRAME pivots SP to this CPU's idle stack
+    // before it stops naming the refused thread's stack, so the branch to idle
+    // below does not run the drain/reaper on a stack it is about to free.
+    mrs x17, tpidr_el1
+    cbz x17, 9f
+    RESUME_PC_RECORD_NOFRAME x17, x1, 5, x2, x3
+9:
     adrp x1, idle_loop_arm64
     add x1, x1, :lo12:idle_loop_arm64
 1:
@@ -691,13 +1299,38 @@ aarch64_enter_exception_frame:
     add x16, x16, :lo12:CPU0_BREADCRUMB_CTL
     str x17, [x16]
 8:
-    cmp x1, #0x1000
-    b.hs 1f
+    ldr x2, [sp, #256]
+    and x3, x2, #0xF
+    cbz x3, .Ldispatch_el0_check
+    RESUME_PC_EL1_OK x1, x3, x16, x17, .Ldispatch_elr_ok
+    b .Ldispatch_el1_refuse
+
+.Ldispatch_el0_check:
+    RESUME_PC_EL0_OK x1, x3, .Ldispatch_elr_ok
+
+.Ldispatch_el0_refuse:
+    mrs x16, tpidr_el1
+    cbz x16, .Ldispatch_el0_guard_recorded
+    RESUME_PC_RECORD x16, sp, x1, x2, 20, x3, x17
+.Ldispatch_el0_guard_recorded:
+    adrp x1, aarch64_resume_pc_refused_el0
+    add x1, x1, :lo12:aarch64_resume_pc_refused_el0
+    str x1, [sp, #248]
+    mov x2, #0x5
+    str x2, [sp, #256]
+    b .Ldispatch_elr_ok
+
+.Ldispatch_el1_refuse:
+    mrs x16, tpidr_el1
+    cbz x16, .Ldispatch_el1_guard_recorded
+    RESUME_PC_RECORD x16, sp, x1, x2, 4, x3, x17
+.Ldispatch_el1_guard_recorded:
     adrp x1, idle_loop_arm64
     add x1, x1, :lo12:idle_loop_arm64
     str x1, [sp, #248]
     mov x2, #0x5
     str x2, [sp, #256]
+.Ldispatch_elr_ok:
 1:
     mrs x16, mpidr_el1
     and x16, x16, #0xFF
@@ -825,7 +1458,7 @@ aarch64_enter_exception_frame:
     ldr x16, [x16, #96]      // x16 = saved frame.x16
     eret
 "#
-);
+));
 
 extern "C" {
     fn aarch64_inline_schedule_switch(
@@ -1613,22 +2246,40 @@ fn decode_last_dispatched(encoded: u64) -> (u64, Option<usize>) {
     (tid, slot)
 }
 
+/// Stamp the OWNER-TID CANARY for `cpu_id` using an explicit stack address, so
+/// a dispatch path that has not yet published this CPU's kernel_stack_top can
+/// still record the slot the dispatched thread actually runs on.
+#[inline(always)]
+fn stamp_last_dispatched_tid_for_stack(cpu_id: usize, tid: u64, stack_address: u64) {
+    if cpu_id >= crate::arch_impl::aarch64::constants::MAX_CPUS {
+        return;
+    }
+    debug_assert!(tid <= (u64::MAX >> LAST_DISPATCHED_SLOT_BITS));
+    let slot_code = reusable_kstack_slot_for_address(stack_address)
+        .map(|slot| slot as u64 + 1)
+        .unwrap_or(0);
+    let encoded = (tid << LAST_DISPATCHED_SLOT_BITS) | slot_code;
+    LAST_DISPATCHED_TID[cpu_id].store(encoded, Ordering::Release);
+}
+
+/// Stamp the OWNER-TID CANARY for an arbitrary CPU slot. Test-only: the
+/// foreign-record oracle needs the record's CPU to name a known thread so the
+/// leg can prove that thread survives.
+#[cfg(all(target_arch = "aarch64", feature = "resume_pc_foreign_oracle"))]
+pub fn stamp_last_dispatched_tid_for_test(cpu_id: usize, tid: u64) {
+    stamp_last_dispatched_tid_for_stack(cpu_id, tid, 0);
+}
+
 /// Stamp the OWNER-TID CANARY for this CPU. Called from `dispatch_thread_locked`
 /// at its two frame-finalize points. Lock-free; safe to call from inside the
 /// scheduler lock hold.
 #[inline(always)]
 fn stamp_last_dispatched_tid(cpu_id: usize, tid: u64) {
-    if cpu_id >= crate::arch_impl::aarch64::constants::MAX_CPUS {
-        return;
-    }
-    debug_assert!(tid <= (u64::MAX >> LAST_DISPATCHED_SLOT_BITS));
-    let slot_code = reusable_kstack_slot_for_address(
+    stamp_last_dispatched_tid_for_stack(
+        cpu_id,
+        tid,
         Aarch64PerCpu::kernel_stack_top().saturating_sub(1),
-    )
-    .map(|slot| slot as u64 + 1)
-    .unwrap_or(0);
-    let encoded = (tid << LAST_DISPATCHED_SLOT_BITS) | slot_code;
-    LAST_DISPATCHED_TID[cpu_id].store(encoded, Ordering::Release);
+    );
 }
 
 /// Return the reusable kernel-stack slot containing `address` and the tid most
@@ -1675,7 +2326,9 @@ pub fn dump_all_last_dispatched_tids() {
 /// Dump the last branch-only ERET invariant redirect captured on each CPU.
 pub fn dump_all_eret_guard_records() {
     for cpu_id in 0..crate::arch_impl::aarch64::constants::MAX_CPUS {
-        let Some((source, elr, spsr)) = crate::per_cpu_aarch64::eret_guard_record(cpu_id) else {
+        let Some((source, elr, spsr, x29, x30, sp, count)) =
+            crate::per_cpu_aarch64::eret_guard_record_full(cpu_id)
+        else {
             continue;
         };
         raw_uart_str("[ERET_GUARD_REDIRECT] cpu=");
@@ -1686,6 +2339,14 @@ pub fn dump_all_eret_guard_records() {
         raw_uart_hex(elr);
         raw_uart_str(" spsr=");
         raw_uart_hex(spsr);
+        raw_uart_str(" x29=");
+        raw_uart_hex(x29);
+        raw_uart_str(" x30=");
+        raw_uart_hex(x30);
+        raw_uart_str(" sp=");
+        raw_uart_hex(sp);
+        raw_uart_str(" count=");
+        raw_uart_dec(count);
         raw_uart_str("\n");
     }
 }
@@ -2327,8 +2988,19 @@ fn take_inline_ret_dispatch_info(
     // it must resume at the safe post-inline-switch return target, not a
     // mid-function ELR that may require stale volatile registers.
     let resume_pc = thread.context.x30;
+    census_resume_pc(3, resume_pc);
+    census_resume_pc(4, thread.context.elr_el1);
     if !resume_pc_is_dispatchable(resume_pc) {
         let thread_id = thread.id();
+        record_resume_pc_refusal(
+            RESUME_PC_SOURCE_RET_DISPATCH,
+            thread_id,
+            resume_pc,
+            thread.context.x29,
+            thread.context.x30,
+            thread.context.sp,
+            thread.context.spsr_el1,
+        );
         RET_DISPATCH_REFUSED_TID.store(thread_id, Ordering::Relaxed);
         RET_DISPATCH_REFUSALS.fetch_add(1, Ordering::Release);
         if RET_DISPATCH_REFUSAL_EMISSIONS.fetch_add(1, Ordering::Relaxed) < 8 {
@@ -2814,6 +3486,9 @@ fn restore_kernel_context_inline(
     } else {
         thread.context.elr_el1
     };
+    census_resume_pc(0, resume_pc);
+    census_resume_pc(3, thread.context.x30);
+    census_resume_pc(4, thread.context.elr_el1);
     let elr_valid = if !has_started {
         // First run: x30 must be a valid kernel address
         resume_pc_is_dispatchable(thread.context.x30)
@@ -2836,6 +3511,15 @@ fn restore_kernel_context_inline(
     );
 
     if !elr_valid {
+        record_resume_pc_refusal(
+            RESUME_PC_SOURCE_EL1_RESTORE,
+            thread_id,
+            resume_pc,
+            thread.context.x29,
+            thread.context.x30,
+            thread.context.sp,
+            thread.context.spsr_el1,
+        );
         raw_uart_str("\n!!! BUG: invalid context for kernel dispatch tid=");
         raw_uart_dec(thread_id);
         raw_uart_str("\n  elr_el1=");
@@ -2934,6 +3618,15 @@ fn restore_kernel_context_inline(
         frame.spsr = dispatch_spsr(thread.context.spsr_el1); // Restore saved processor state
     } else {
         // elr_el1 == 0 or not a valid kernel address — redirect to idle
+        record_resume_pc_refusal(
+            RESUME_PC_SOURCE_EL1_RESTORE,
+            thread_id,
+            resume_pc,
+            thread.context.x29,
+            thread.context.x30,
+            thread.context.sp,
+            thread.context.spsr_el1,
+        );
         raw_uart_str("WARN: bad elr=");
         raw_uart_hex(resume_pc);
         raw_uart_str(" for started kthread tid=");
@@ -2990,7 +3683,18 @@ fn restore_kernel_context_inline(
 fn restore_userspace_context_inline(
     thread: &mut Thread,
     frame: &mut Aarch64ExceptionFrame,
-) {
+) -> bool {
+    #[cfg(all(
+        target_arch = "aarch64",
+        any(
+            feature = "resume_pc_el0_kernel_oracle",
+            feature = "resume_pc_el0_tid_oracle"
+        ),
+        not(feature = "resume_pc_el0_frame_oracle")
+    ))]
+    let saved_el0_resume_pc =
+        crate::task::ret_zero_pc_oracle::inject_el0_resume_pc_if_armed(thread);
+
     frame.x0 = thread.context.x0;
     frame.x1 = thread.context.x1;
     frame.x2 = thread.context.x2;
@@ -3024,6 +3728,20 @@ fn restore_userspace_context_inline(
     frame.x30 = thread.context.x30;
 
     // Restore program counter and status
+    census_resume_pc(1, thread.context.elr_el1);
+    census_resume_pc(3, thread.context.x30);
+    if !resume_pc_is_user_dispatchable(thread.context.elr_el1) {
+        record_resume_pc_refusal(
+            RESUME_PC_SOURCE_EL0_RESTORE,
+            thread.id(),
+            thread.context.elr_el1,
+            thread.context.x29,
+            thread.context.x30,
+            thread.context.sp,
+            thread.context.spsr_el1,
+        );
+        return false;
+    }
     frame.elr = thread.context.elr_el1;
     frame.spsr = dispatch_spsr(thread.context.spsr_el1) & !SPSR_MODE_MASK;
 
@@ -3044,11 +3762,46 @@ fn restore_userspace_context_inline(
             options(nomem, nostack)
         );
     }
+
+    #[cfg(all(
+        target_arch = "aarch64",
+        any(
+            feature = "resume_pc_el0_kernel_oracle",
+            feature = "resume_pc_el0_tid_oracle"
+        ),
+        not(feature = "resume_pc_el0_frame_oracle")
+    ))]
+    crate::task::ret_zero_pc_oracle::restore_el0_resume_pc(thread, saved_el0_resume_pc);
+    true
 }
 
 /// Set up first userspace entry — called inside scheduler lock hold.
-fn setup_first_entry_inline(thread: &mut Thread, frame: &mut Aarch64ExceptionFrame) {
+fn setup_first_entry_inline(thread: &mut Thread, frame: &mut Aarch64ExceptionFrame) -> bool {
+    #[cfg(all(
+        target_arch = "aarch64",
+        any(
+            feature = "resume_pc_el0_kernel_oracle",
+            feature = "resume_pc_el0_tid_oracle"
+        ),
+        not(feature = "resume_pc_el0_frame_oracle")
+    ))]
+    let saved_el0_resume_pc =
+        crate::task::ret_zero_pc_oracle::inject_el0_resume_pc_if_armed(thread);
+
     // Set return address to entry point
+    census_resume_pc(2, thread.context.elr_el1);
+    if !resume_pc_is_user_dispatchable(thread.context.elr_el1) {
+        record_resume_pc_refusal(
+            RESUME_PC_SOURCE_EL0_FIRST_ENTRY,
+            thread.id(),
+            thread.context.elr_el1,
+            thread.context.x29,
+            thread.context.x30,
+            thread.context.sp,
+            thread.context.spsr_el1,
+        );
+        return false;
+    }
     frame.elr = thread.context.elr_el1;
 
     // SPSR for EL0t (userspace, interrupts enabled)
@@ -3105,6 +3858,17 @@ fn setup_first_entry_inline(thread: &mut Thread, frame: &mut Aarch64ExceptionFra
             options(nomem, nostack)
         );
     }
+
+    #[cfg(all(
+        target_arch = "aarch64",
+        any(
+            feature = "resume_pc_el0_kernel_oracle",
+            feature = "resume_pc_el0_tid_oracle"
+        ),
+        not(feature = "resume_pc_el0_frame_oracle")
+    ))]
+    crate::task::ret_zero_pc_oracle::restore_el0_resume_pc(thread, saved_el0_resume_pc);
+    true
 }
 
 // =============================================================================
@@ -3521,18 +4285,52 @@ fn dispatch_thread_locked(
         //
         // Background: docs/planning/cpu0-user-guard-autopsy/README.md.
 
-        if !has_started {
+        let restore_ok = if !has_started {
             if let Some(thread) = sched.get_thread_mut(thread_id) {
                 thread.has_started = true;
-                setup_first_entry_inline(thread, frame);
+                setup_first_entry_inline(thread, frame)
+            } else {
+                false
             }
         } else {
             if let Some(thread) = sched.get_thread_mut(thread_id) {
-                restore_userspace_context_inline(thread, frame);
+                restore_userspace_context_inline(thread, frame)
+            } else {
+                false
             }
+        };
 
+        if !restore_ok {
+            let _ = crate::task::process_task::defer_fault_sigsegv_exit(thread_id);
+            if let Some(thread) = sched.get_thread_mut(thread_id) {
+                thread.state = ThreadState::Terminated;
+            }
+            let current_before = setup_idle_return_locked(sched, frame, cpu_id);
+            record_idle_redirect(
+                sched,
+                cpu_id,
+                IdleRedirectReason::UserBadContext,
+                current_before,
+            );
+            return;
+        }
+
+        if has_started {
             // SAFETY GUARD: Check for corrupted ELR before committing to dispatch.
             if frame.elr < 0x1000 || (frame.spsr & 0xF) != 0 {
+                let context_sp = sched
+                    .get_thread(thread_id)
+                    .map(|thread| thread.context.sp)
+                    .unwrap_or(0);
+                record_resume_pc_refusal(
+                    RESUME_PC_SOURCE_EL0_DISPATCH_GUARD,
+                    thread_id,
+                    frame.elr,
+                    frame.x29,
+                    frame.x30,
+                    context_sp,
+                    frame.spsr,
+                );
                 raw_uart_str("\n[BUG] dispatch_thread: bad context tid=");
                 raw_uart_dec(thread_id);
                 raw_uart_str(" elr=");
@@ -3681,6 +4479,21 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
     if (preempt_count & 0x10000000) != 0 {
         // PREEMPT_ACTIVE: in the middle of returning from a previous
         // exception — don't context switch now.
+        #[cfg(all(
+            target_arch = "aarch64",
+            any(
+                feature = "resume_pc_el1_oracle",
+                feature = "eret_zero_pc_oracle",
+                all(
+                    feature = "resume_pc_el0_frame_oracle",
+                    any(
+                        feature = "resume_pc_el0_kernel_oracle",
+                        feature = "resume_pc_el0_tid_oracle"
+                    )
+                )
+            )
+        ))]
+        crate::task::ret_zero_pc_oracle::inject_el1_frame_resume_pc_if_armed(frame);
         return;
     }
 
@@ -3746,6 +4559,21 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
     if (preempt_count & PREEMPT_GUARD_MASK) != 0 {
         // Kernel or interrupt context is not safe to preempt.
         // Deferred requeue was already processed above.
+        #[cfg(all(
+            target_arch = "aarch64",
+            any(
+                feature = "resume_pc_el1_oracle",
+                feature = "eret_zero_pc_oracle",
+                all(
+                    feature = "resume_pc_el0_frame_oracle",
+                    any(
+                        feature = "resume_pc_el0_kernel_oracle",
+                        feature = "resume_pc_el0_tid_oracle"
+                    )
+                )
+            )
+        ))]
+        crate::task::ret_zero_pc_oracle::inject_el1_frame_resume_pc_if_armed(frame);
         return;
     }
 
@@ -3802,6 +4630,21 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
                 check_and_deliver_signals_for_current_thread_arm64(frame);
                 ensure_user_rsp_scratch_for_el0();
             }
+            #[cfg(all(
+                target_arch = "aarch64",
+                any(
+                    feature = "resume_pc_el1_oracle",
+                    feature = "eret_zero_pc_oracle",
+                    all(
+                        feature = "resume_pc_el0_frame_oracle",
+                        any(
+                            feature = "resume_pc_el0_kernel_oracle",
+                            feature = "resume_pc_el0_tid_oracle"
+                        )
+                    )
+                )
+            ))]
+            crate::task::ret_zero_pc_oracle::inject_el1_frame_resume_pc_if_armed(frame);
             return;
         }
     }
@@ -3810,7 +4653,24 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
     let mut guard = crate::task::scheduler::lock_for_context_switch();
     let sched = match guard.as_mut() {
         Some(s) => s,
-        None => return,
+        None => {
+            #[cfg(all(
+                target_arch = "aarch64",
+                any(
+                    feature = "resume_pc_el1_oracle",
+                    feature = "eret_zero_pc_oracle",
+                    all(
+                        feature = "resume_pc_el0_frame_oracle",
+                        any(
+                            feature = "resume_pc_el0_kernel_oracle",
+                            feature = "resume_pc_el0_tid_oracle"
+                        )
+                    )
+                )
+            ))]
+            crate::task::ret_zero_pc_oracle::inject_el1_frame_resume_pc_if_armed(frame);
+            return;
+        }
     };
 
     if exception_cleanup_context {
@@ -3889,6 +4749,21 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
             check_and_deliver_signals_for_current_thread_arm64(frame);
             ensure_user_rsp_scratch_for_el0();
         }
+        #[cfg(all(
+            target_arch = "aarch64",
+            any(
+                feature = "resume_pc_el1_oracle",
+                feature = "eret_zero_pc_oracle",
+                all(
+                    feature = "resume_pc_el0_frame_oracle",
+                    any(
+                        feature = "resume_pc_el0_kernel_oracle",
+                        feature = "resume_pc_el0_tid_oracle"
+                    )
+                )
+            )
+        ))]
+        crate::task::ret_zero_pc_oracle::inject_el1_frame_resume_pc_if_armed(frame);
         return;
     }
 
@@ -3910,6 +4785,21 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
             check_and_deliver_signals_for_current_thread_arm64(frame);
             ensure_user_rsp_scratch_for_el0();
         }
+        #[cfg(all(
+            target_arch = "aarch64",
+            any(
+                feature = "resume_pc_el1_oracle",
+                feature = "eret_zero_pc_oracle",
+                all(
+                    feature = "resume_pc_el0_frame_oracle",
+                    any(
+                        feature = "resume_pc_el0_kernel_oracle",
+                        feature = "resume_pc_el0_tid_oracle"
+                    )
+                )
+            )
+        ))]
+        crate::task::ret_zero_pc_oracle::inject_el1_frame_resume_pc_if_armed(frame);
         return;
     }
 
@@ -3927,6 +4817,21 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
             check_and_deliver_signals_for_current_thread_arm64(frame);
             ensure_user_rsp_scratch_for_el0();
         }
+        #[cfg(all(
+            target_arch = "aarch64",
+            any(
+                feature = "resume_pc_el1_oracle",
+                feature = "eret_zero_pc_oracle",
+                all(
+                    feature = "resume_pc_el0_frame_oracle",
+                    any(
+                        feature = "resume_pc_el0_kernel_oracle",
+                        feature = "resume_pc_el0_tid_oracle"
+                    )
+                )
+            )
+        ))]
+        crate::task::ret_zero_pc_oracle::inject_el1_frame_resume_pc_if_armed(frame);
         return;
     }
 
@@ -4172,6 +5077,11 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
         #[cfg(all(target_arch = "aarch64", feature = "ret_floor_oracle"))]
         let resume_pc =
             crate::task::ret_zero_pc_oracle::inject_ret_floor_if_armed(new_id, resume_pc);
+        // OWNER-TID CANARY: this ret-based dispatch is finalized for new_id. The
+        // assembly refusal record carries no tid, so the drain's terminate decision
+        // reads this canary; without the stamp it names the last ERET-dispatched
+        // thread instead, and an innocent thread gets terminated.
+        stamp_last_dispatched_tid_for_stack(cpu_id, new_id, resume_sp);
         unsafe {
             aarch64_ret_to_kernel_context(ctx_ptr, resume_pc);
         }
@@ -4263,6 +5173,21 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
     if let Some(trace_tid) = trace_eret_tid {
         trace_resched_tail(TRACE_RESCHED_TAIL_BEFORE_RETURN, trace_tid);
     }
+    #[cfg(all(
+        target_arch = "aarch64",
+        any(
+            feature = "resume_pc_el1_oracle",
+            feature = "eret_zero_pc_oracle",
+            all(
+                feature = "resume_pc_el0_frame_oracle",
+                any(
+                    feature = "resume_pc_el0_kernel_oracle",
+                    feature = "resume_pc_el0_tid_oracle"
+                )
+            )
+        )
+    ))]
+    crate::task::ret_zero_pc_oracle::inject_el1_frame_resume_pc_if_armed(frame);
 }
 
 /// Final scheduler handoff for an exiting AArch64 thread.
@@ -4643,6 +5568,11 @@ extern "C" fn inline_schedule_trampoline() -> ! {
         #[cfg(all(target_arch = "aarch64", feature = "ret_floor_oracle"))]
         let resume_pc =
             crate::task::ret_zero_pc_oracle::inject_ret_floor_if_armed(new_id, resume_pc);
+        // OWNER-TID CANARY: this ret-based dispatch is finalized for new_id. The
+        // assembly refusal record carries no tid, so the drain's terminate decision
+        // reads this canary; without the stamp it names the last ERET-dispatched
+        // thread instead, and an innocent thread gets terminated.
+        stamp_last_dispatched_tid_for_stack(cpu_id, new_id, resume_sp);
         unsafe {
             aarch64_ret_to_kernel_context(ctx_ptr, resume_pc);
         }
@@ -4797,6 +5727,8 @@ fn cpu0_breadcrumb(cpu_id: usize, id: u64) {
 /// window; `schedule_from_kernel` deliberately contains no reclamation work.
 #[inline]
 pub fn run_deferred_reclamation() {
+    drain_asm_resume_pc_refusals();
+    emit_resume_pc_census_if_due();
     crate::task::process_task::drain_deferred_fault_sigsegv_exits();
     crate::task::process_task::reclaim_deferred_process_resources();
     crate::task::scheduler::reclaim_terminated_threads();

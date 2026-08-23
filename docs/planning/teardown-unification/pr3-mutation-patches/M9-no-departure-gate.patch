@@ -1,0 +1,13 @@
+diff --git a/kernel/src/arch_impl/aarch64/context_switch.rs b/kernel/src/arch_impl/aarch64/context_switch.rs
+index 943bb702..240dc7ab 100644
+--- a/kernel/src/arch_impl/aarch64/context_switch.rs
++++ b/kernel/src/arch_impl/aarch64/context_switch.rs
+@@ -463,7 +463,7 @@ pub fn drain_asm_resume_pc_refusals() {
+                 // refusal arm — every refusal arm departs before idle can drain.
+                 // Terminating there is an over-free of a running stack and
+                 // nulling the publication there is a lie about a live thread.
+-                let departed = !on_victim_stack;
++                let departed = true;
+                 decided = true;
+                 if departed && publication_names_victim {
+                     acted = true;

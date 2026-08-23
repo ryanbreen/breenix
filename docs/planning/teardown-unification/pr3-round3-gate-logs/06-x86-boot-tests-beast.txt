@@ -1,0 +1,7 @@
+x86 userspace gate: PASS - exited=102 expected>=101 nonzero=0 allowlist=0
+x86 frame-custody gate run 1: PASS
+x86 userspace gate: PASS - exited=102 expected>=101 nonzero=0 allowlist=0
+x86 frame-custody gate run 2: PASS
+x86 userspace gate: PASS - exited=102 expected>=101 nonzero=0 allowlist=0
+x86 frame-custody gate run 3: PASS
+EXIT=0

@@ -1,0 +1,20 @@
+diff --git a/kernel/src/arch_impl/aarch64/resume_pc_guard.inc b/kernel/src/arch_impl/aarch64/resume_pc_guard.inc
+index 77147532..70a08b3a 100644
+--- a/kernel/src/arch_impl/aarch64/resume_pc_guard.inc
++++ b/kernel/src/arch_impl/aarch64/resume_pc_guard.inc
+@@ -75,7 +75,6 @@
+     // Publish the payload before the validity word. The source tag is what a
+     // remote drain uses to decide the record is readable, so every store above
+     // must be visible first.
+-    dmb ishst
+     mov   \s1, #\src
+     str   \s1, [\percpu, #PERCPU_ERET_GUARD_SOURCE]
+ .endm
+@@ -120,7 +119,6 @@
+     // Publish the payload before the validity word. The source tag is what a
+     // remote drain uses to decide the record is readable, so every store above
+     // must be visible first.
+-    dmb ishst
+     mov   \s1, #\src
+     str   \s1, [\percpu, #PERCPU_ERET_GUARD_SOURCE]
+ .endm

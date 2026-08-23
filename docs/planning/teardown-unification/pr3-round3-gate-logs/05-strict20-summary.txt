@@ -1,0 +1,8 @@
+Guard: kernel FP/SIMD instruction check
+[0;32mPASS:[0m 0 FP/SIMD load/store instructions in kernel .text (allowlisted & suppressed: 0).
+RESULTS
+Total iterations: 20
+Successes: 20
+Failures: 0
+Success rate: 100%
+PASS: 20/20 boots succeeded

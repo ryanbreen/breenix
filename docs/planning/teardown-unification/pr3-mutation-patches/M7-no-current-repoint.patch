@@ -1,0 +1,41 @@
+diff --git a/kernel/src/arch_impl/aarch64/context_switch.rs b/kernel/src/arch_impl/aarch64/context_switch.rs
+index 943bb702..240f23ef 100644
+--- a/kernel/src/arch_impl/aarch64/context_switch.rs
++++ b/kernel/src/arch_impl/aarch64/context_switch.rs
+@@ -417,7 +417,7 @@ pub fn drain_asm_resume_pc_refusals() {
+             let mut victim_stack_top = 0;
+             let mut on_victim_stack = false;
+             let mut record_sp_on_victim_stack = false;
+-            let mut current_repointed = false;
++            let current_repointed = false;
+             let mut publication_names_victim = false;
+             let mut decided = false;
+             let mut acted = false;
+@@ -453,5 +453,4 @@ pub fn drain_asm_resume_pc_refusals() {
+                 let drain_cpu_index = drain_cpu as usize;
+-                let idle_id = sched.cpu_state[drain_cpu_index].idle_thread;
+                 let published_ptr = Aarch64PerCpu::current_thread_ptr();
+                 let published_tid = sched.cpu_state[drain_cpu_index].current_thread;
+                 publication_names_victim =
+@@ -475,21 +474,4 @@ pub fn drain_asm_resume_pc_refusals() {
+                     // idle, which is what this CPU is actually running.
+                     RESUME_PC_CURRENT_DANGLING.fetch_add(1, Ordering::Release);
+-                    if published_ptr == victim_ptr {
+-                        unsafe {
+-                            Aarch64PerCpu::set_current_thread_ptr(core::ptr::null_mut());
+-                        }
+-                    }
+-                    if published_tid == Some(tid) {
+-                        crate::task::scheduler::record_cpu_state_change(
+-                            drain_cpu_index,
+-                            20,
+-                            tid,
+-                            idle_id,
+-                        );
+-                        sched.cpu_state[drain_cpu_index].current_thread = Some(idle_id);
+-                    }
+-                    RESUME_PC_CURRENT_REPOINTED.fetch_add(1, Ordering::Release);
+-                    current_repointed = true;
+-
+                     if let Some(thread) = sched.get_thread_mut(tid) {
+                         thread.set_terminated();

@@ -840,7 +840,7 @@ const UNLOCKED_MULTI_BYTE_WRITE_ANCHORS: &[(&str, &str, usize)] = &[
     (
         "kernel/src/arch_impl/aarch64/context_switch.rs",
         "fn dump_all_eret_guard_records",
-        5,
+        9,
     ),
     (
         "kernel/src/arch_impl/aarch64/context_switch.rs",
@@ -917,6 +917,26 @@ const UNLOCKED_MULTI_BYTE_WRITE_ANCHORS: &[(&str, &str, usize)] = &[
         "fn record_inline_elr_divergence",
         6,
     ),
+    // `record_resume_pc_refusal` emits from refusal paths that hold the
+    // scheduler lock, where the locked writer is unavailable. It is capped at
+    // 16 emissions per boot and is never periodic; a torn record can only
+    // under-count the report-only census, never flip a verdict.
+    (
+        "kernel/src/arch_impl/aarch64/context_switch.rs",
+        "fn record_resume_pc_refusal",
+        11,
+    ),
+    // `emit_resume_pc_census` is the fatal-postmortem form and therefore must
+    // remain lock-free by construction.
+    (
+        "kernel/src/arch_impl/aarch64/context_switch.rs",
+        "fn emit_resume_pc_census",
+        9,
+    ),
+    // `drain_asm_resume_pc_refusals`, `record_resume_pc_refusal_locked`, and
+    // `emit_resume_pc_census_locked` use the locked writer and intentionally
+    // do not appear here. If they enter this raw-writer census, restore the
+    // locked write in production instead of admitting them to the test.
     (
         "kernel/src/arch_impl/aarch64/context_switch.rs",
         "fn restore_kernel_context_inline",
@@ -1072,6 +1092,23 @@ const UNLOCKED_MULTI_BYTE_WRITE_ANCHORS: &[(&str, &str, usize)] = &[
         "kernel/src/task/ret_zero_pc_oracle.rs",
         "#[cfg(all(target_arch=aarch64,feature=ret_floor_oracle))] fn inject_ret_floor_if_armed",
         3,
+    ),
+    // The resume-PC oracle injectors emit one-shot markers while the scheduler
+    // lock is held, matching the existing ret-dispatch injector exception.
+    (
+        "kernel/src/task/ret_zero_pc_oracle.rs",
+        "#[cfg(all(target_arch=aarch64,any(feature=resume_pc_el0_kernel_oracle,feature=resume_pc_el0_tid_oracle),not(feature=resume_pc_el0_frame_oracle)))] fn inject_el0_resume_pc_if_armed",
+        6,
+    ),
+    (
+        "kernel/src/task/ret_zero_pc_oracle.rs",
+        "#[cfg(all(target_arch=aarch64,any(feature=resume_pc_el1_oracle,feature=eret_zero_pc_oracle,all(feature=resume_pc_el0_frame_oracle,any(feature=resume_pc_el0_kernel_oracle,feature=resume_pc_el0_tid_oracle)))))] fn inject_el1_frame_resume_pc_if_armed",
+        6,
+    ),
+    (
+        "kernel/src/task/ret_zero_pc_oracle.rs",
+        "#[cfg(all(target_arch=aarch64,feature=resume_pc_el0_frame_oracle,any(feature=resume_pc_el0_kernel_oracle,feature=resume_pc_el0_tid_oracle)))] fn inject_el0_frame_resume_pc_if_armed",
+        6,
     ),
     (
         "kernel/src/task/scheduler.rs",

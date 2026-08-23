@@ -41,6 +41,11 @@
 .equ PERCPU_ERET_GUARD_ELR, 120
 .equ PERCPU_ERET_GUARD_SPSR, 128
 .equ PERCPU_ERET_GUARD_SOURCE, 136
+.equ PERCPU_ERET_GUARD_X29, 152
+.equ PERCPU_ERET_GUARD_X30, 160
+.equ PERCPU_ERET_GUARD_SP, 168
+.equ PERCPU_ERET_GUARD_COUNT, 176
+.equ PERCPU_IDLE_STACK_TOP, 184
 
 /*
  * Syscall entry point from EL0 (userspace)
@@ -274,26 +279,37 @@ syscall_entry_from_el0:
     /* Read ELR from exception frame */
     ldr x10, [sp, #248]      /* x10 = frame.elr */
 
-    /* Guard the EL1 return invariant. EL0 legitimately uses lower VAs. */
+    /* Admit EL1 and EL0 resume PCs through their shared window predicates. */
     ldr x1, [sp, #256]          /* x1 = frame.spsr */
     and x9, x1, #0xF            /* x9 = M[3:0] */
-    cbz x9, .Lsvc_elr_ok         /* EL0 return */
-    ldr x9, =KERNEL_VIRT_BASE
-    cmp x10, x9
-    b.hs .Lsvc_elr_ok            /* valid EL1 kernel return */
+    cbz x9, .Lsvc_el0_check
+    RESUME_PC_EL1_OK x10, x9, x2, x3, .Lsvc_elr_ok
+    b .Lsvc_el1_refuse
 
+.Lsvc_el0_check:
+    RESUME_PC_EL0_OK x10, x9, .Lsvc_elr_ok
+
+.Lsvc_el0_refuse:
+    mrs x9, tpidr_el1
+    cbz x9, .Lsvc_el0_guard_recorded
+    RESUME_PC_RECORD x9, sp, x10, x1, 19, x2, x3
+.Lsvc_el0_guard_recorded:
+    adrp x10, aarch64_resume_pc_refused_el0
+    add x10, x10, :lo12:aarch64_resume_pc_refused_el0
+    mov x1, #0x5
+    str x1, [sp, #256]       /* frame.spsr = 0x5 (EL1h) */
+    str x10, [sp, #248]      /* frame.elr = EL0 refusal trampoline */
+    b .Lsvc_elr_ok
+
+.Lsvc_el1_refuse:
     /* Branch-only record, published by writing source last. No UART/I/O. */
     mrs x9, tpidr_el1
-    cbz x9, .Lsvc_eret_guard_recorded
-    str x10, [x9, #PERCPU_ERET_GUARD_ELR]
-    str x1, [x9, #PERCPU_ERET_GUARD_SPSR]
-    mov x1, #3                   /* source 3 = syscall epilogue */
-    str x1, [x9, #PERCPU_ERET_GUARD_SOURCE]
-.Lsvc_eret_guard_recorded:
-    /* Redirect to idle_loop_arm64 instead of returning to EL1 at a user VA. */
+    cbz x9, .Lsvc_el1_guard_recorded
+    RESUME_PC_RECORD x9, sp, x10, x1, 3, x2, x3
+.Lsvc_el1_guard_recorded:
+    /* Redirect to idle on the CPU-owned idle stack, not a reclaimable stack. */
     adrp x10, idle_loop_arm64
     add x10, x10, :lo12:idle_loop_arm64
-    /* Force SPSR to EL1h - write to frame */
     mov x1, #0x5
     str x1, [sp, #256]       /* frame.spsr = 0x5 (EL1h) */
     str x10, [sp, #248]      /* frame.elr = idle_loop_arm64 */

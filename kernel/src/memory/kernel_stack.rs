@@ -494,6 +494,18 @@ mod aarch64 {
         })
     }
 
+    /// True when `sp` names a byte inside the 64 KiB stack whose top is `stack_top`.
+    pub(crate) fn sp_within_kernel_stack(sp: u64, stack_top: u64) -> bool {
+        let stack_bottom = stack_top.saturating_sub(ARM64_KERNEL_STACK_SIZE);
+        sp > stack_bottom && sp <= stack_top
+    }
+
+    /// Top of the reusable pool slot with this index, i.e. the value the per-CPU
+    /// custody words hold for a thread running on that slot.
+    pub(crate) fn kernel_stack_slot_top(index: usize) -> u64 {
+        ARM64_KERNEL_STACK_BASE + (index as u64 + 1) * ARM64_STACK_SLOT_SIZE
+    }
+
     /// Allocate a kernel stack for ARM64
     ///
     /// Uses a bitmap over a reserved high-half direct map region so fork-heavy
@@ -636,9 +648,16 @@ pub use aarch64::{
 
 #[cfg(target_arch = "aarch64")]
 pub(crate) use aarch64::{
-    is_kernel_stack_slot_live, ARM64_KERNEL_STACK_BASE, ARM64_KERNEL_STACK_END,
-    ARM64_MAX_KERNEL_STACKS, ARM64_STACK_SLOT_SIZE,
+    is_kernel_stack_slot_live, kernel_stack_slot_top, sp_within_kernel_stack,
+    ARM64_KERNEL_STACK_BASE, ARM64_KERNEL_STACK_END, ARM64_MAX_KERNEL_STACKS,
+    ARM64_STACK_SLOT_SIZE,
 };
+
+#[cfg(target_arch = "aarch64")]
+#[inline(always)]
+pub(crate) fn addr_in_kernel_stack_pool(addr: u64) -> bool {
+    addr >= ARM64_KERNEL_STACK_BASE && addr <= ARM64_KERNEL_STACK_END
+}
 
 pub(crate) fn is_kernel_stack_va(addr: u64) -> bool {
     #[cfg(target_arch = "x86_64")]

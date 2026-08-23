@@ -1,0 +1,12 @@
+diff --git a/kernel/src/arch_impl/aarch64/resume_pc_guard.inc b/kernel/src/arch_impl/aarch64/resume_pc_guard.inc
+index 77147532..b118b74e 100644
+--- a/kernel/src/arch_impl/aarch64/resume_pc_guard.inc
++++ b/kernel/src/arch_impl/aarch64/resume_pc_guard.inc
+@@ -112,7 +112,6 @@
+     ldr   \s0, [\percpu, #PERCPU_IDLE_STACK_TOP]
+     cbz   \s0, 8891f
+     // Leave the refused thread's stack for real, then stop naming it.
+-    mov   sp, \s0
+     str   \s0, [\percpu, #16]
+     str   \s0, [\percpu, #40]
+     str   xzr, [\percpu, #48]

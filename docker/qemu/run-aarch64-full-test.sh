@@ -671,6 +671,20 @@ if [ -f "$OUTPUT_DIR/serial.txt" ]; then
     fi
 fi
 
+# --- Phase 5: refusal-drain oracle legs (feature profile, own kernel build) ---
+#
+# Legs G and H are feature-gated (`resume_pc_foreign_oracle`), so they are not in
+# this boot's kernel. Running them here is what makes them gate evidence instead
+# of something a human remembers to run. The sub-gate builds into its own target
+# dir, so the kernel this script just booted is left untouched.
+echo ""
+echo "Phase 5: refusal-drain oracle legs (leg G foreign record, leg H departure guard)..."
+if ! bash "$SCRIPT_DIR/run-aarch64-refusal-drain-gate.sh"; then
+    FAIL_REASON="${FAIL_REASON:-Phase 5: refusal-drain oracle legs failed}"
+else
+    echo "Phase 5: PASS"
+fi
+
 # --- Report ---
 echo ""
 TOTAL_LINES=$(wc -l < "$OUTPUT_DIR/serial.txt" 2>/dev/null | tr -d ' ')

@@ -68,8 +68,16 @@ pub struct PerCpuData {
     /// Second scratch slot used by the assembly dispatch ERET path to carry
     /// `frame.x17` across the SP switch (offset 144).
     pub eret_scratch2: u64,
-    /// Padding to match the fixed 192-byte per-CPU layout.
-    _pad3: [u8; 40],
+    /// X29 captured by an assembly ERET invariant redirect (offset 152).
+    pub eret_guard_x29: u64,
+    /// X30 captured by an assembly ERET invariant redirect (offset 160).
+    pub eret_guard_x30: u64,
+    /// SP captured by an assembly ERET invariant redirect (offset 168).
+    pub eret_guard_sp: u64,
+    /// Number of assembly ERET invariant redirects (offset 176).
+    pub eret_guard_count: u64,
+    /// This CPU's fixed idle/exception stack top (offset 184).
+    pub idle_stack_top: u64,
 }
 
 const _: () = assert!(
@@ -104,7 +112,11 @@ impl PerCpuData {
             eret_guard_spsr: 0,
             eret_guard_source: 0,
             eret_scratch2: 0,
-            _pad3: [0; 40],
+            eret_guard_x29: 0,
+            eret_guard_x30: 0,
+            eret_guard_sp: 0,
+            eret_guard_count: 0,
+            idle_stack_top: 0,
         }
     }
 }
@@ -124,6 +136,26 @@ const _: () = assert!(
 const _: () = assert!(
     core::mem::offset_of!(PerCpuData, eret_scratch2)
         == crate::arch_impl::aarch64::constants::PERCPU_ERET_SCRATCH2_OFFSET
+);
+const _: () = assert!(
+    core::mem::offset_of!(PerCpuData, eret_guard_x29)
+        == crate::arch_impl::aarch64::constants::PERCPU_ERET_GUARD_X29_OFFSET
+);
+const _: () = assert!(
+    core::mem::offset_of!(PerCpuData, eret_guard_x30)
+        == crate::arch_impl::aarch64::constants::PERCPU_ERET_GUARD_X30_OFFSET
+);
+const _: () = assert!(
+    core::mem::offset_of!(PerCpuData, eret_guard_sp)
+        == crate::arch_impl::aarch64::constants::PERCPU_ERET_GUARD_SP_OFFSET
+);
+const _: () = assert!(
+    core::mem::offset_of!(PerCpuData, eret_guard_count)
+        == crate::arch_impl::aarch64::constants::PERCPU_ERET_GUARD_COUNT_OFFSET
+);
+const _: () = assert!(
+    core::mem::offset_of!(PerCpuData, idle_stack_top)
+        == crate::arch_impl::aarch64::constants::PERCPU_IDLE_STACK_TOP_OFFSET
 );
 
 /// Per-CPU data for all CPUs (up to MAX_CPUS).
@@ -161,6 +193,123 @@ pub fn eret_guard_record(cpu_id: usize) -> Option<(u64, u64, u64)> {
     let spsr =
         unsafe { core::ptr::read_volatile(core::ptr::addr_of!((*cpu_data).eret_guard_spsr)) };
     Some((source, elr, spsr))
+}
+
+/// Read the complete assembly ERET-guard redirect record for `cpu_id`.
+/// The source tag is written last by assembly and acts as the validity word.
+pub fn eret_guard_record_full(cpu_id: usize) -> Option<(u64, u64, u64, u64, u64, u64, u64)> {
+    if cpu_id >= crate::arch_impl::aarch64::constants::MAX_CPUS {
+        return None;
+    }
+
+    let cpu_data = unsafe { &raw const ALL_CPU_DATA[cpu_id] };
+    let source =
+        unsafe { core::ptr::read_volatile(core::ptr::addr_of!((*cpu_data).eret_guard_source)) };
+    if source == 0 {
+        return None;
+    }
+    core::sync::atomic::fence(Ordering::Acquire);
+    let elr = unsafe { core::ptr::read_volatile(core::ptr::addr_of!((*cpu_data).eret_guard_elr)) };
+    let spsr =
+        unsafe { core::ptr::read_volatile(core::ptr::addr_of!((*cpu_data).eret_guard_spsr)) };
+    let x29 = unsafe { core::ptr::read_volatile(core::ptr::addr_of!((*cpu_data).eret_guard_x29)) };
+    let x30 = unsafe { core::ptr::read_volatile(core::ptr::addr_of!((*cpu_data).eret_guard_x30)) };
+    let sp = unsafe { core::ptr::read_volatile(core::ptr::addr_of!((*cpu_data).eret_guard_sp)) };
+    let count =
+        unsafe { core::ptr::read_volatile(core::ptr::addr_of!((*cpu_data).eret_guard_count)) };
+    Some((source, elr, spsr, x29, x30, sp, count))
+}
+
+/// Total refusal-arm executions recorded across all CPUs.
+///
+/// Each arm increments its CPU's counter before publishing, so this does not
+/// coalesce the way the single-entry record slot does. It is the denominator
+/// that explains a drained-refusal count lower than an injection count.
+pub fn eret_guard_events_total() -> u64 {
+    let mut total = 0u64;
+    for cpu_id in 0..crate::arch_impl::aarch64::constants::MAX_CPUS {
+        let cpu_data = unsafe { &raw const ALL_CPU_DATA[cpu_id] };
+        total = total.saturating_add(unsafe {
+            core::ptr::read_volatile(core::ptr::addr_of!((*cpu_data).eret_guard_count))
+        });
+    }
+    total
+}
+
+/// Exclusively claim the ERET-guard validity word after reading its record.
+pub fn eret_guard_claim_source(cpu_id: usize) -> u64 {
+    if cpu_id >= crate::arch_impl::aarch64::constants::MAX_CPUS {
+        return 0;
+    }
+
+    let cpu_data = unsafe { &raw mut ALL_CPU_DATA[cpu_id] };
+    let source = unsafe {
+        core::sync::atomic::AtomicU64::from_ptr(core::ptr::addr_of_mut!(
+            (*cpu_data).eret_guard_source
+        ))
+    };
+    source.swap(0, Ordering::AcqRel)
+}
+
+/// Publish a synthetic ERET-guard refusal record into `cpu_id`'s per-CPU slot.
+///
+/// Test-only. The foreign-record oracle plants a record in an offline CPU slot
+/// so the drain's foreign path can be exercised without disturbing any running
+/// CPU's state, and without waiting for a real cross-CPU refusal to race.
+#[cfg(all(target_arch = "aarch64", feature = "resume_pc_foreign_oracle"))]
+pub fn plant_synthetic_eret_guard_record(cpu_id: usize, elr: u64, sp: u64, source: u64) -> bool {
+    if cpu_id >= crate::arch_impl::aarch64::constants::MAX_CPUS || source == 0 {
+        return false;
+    }
+    let cpu_data = unsafe { &raw mut ALL_CPU_DATA[cpu_id] };
+    unsafe {
+        core::ptr::write_volatile(core::ptr::addr_of_mut!((*cpu_data).eret_guard_elr), elr);
+        core::ptr::write_volatile(core::ptr::addr_of_mut!((*cpu_data).eret_guard_spsr), 0);
+        core::ptr::write_volatile(core::ptr::addr_of_mut!((*cpu_data).eret_guard_x29), 0);
+        core::ptr::write_volatile(core::ptr::addr_of_mut!((*cpu_data).eret_guard_x30), 0);
+        core::ptr::write_volatile(core::ptr::addr_of_mut!((*cpu_data).eret_guard_sp), sp);
+        core::ptr::write_volatile(core::ptr::addr_of_mut!((*cpu_data).eret_guard_count), 1);
+    }
+    core::sync::atomic::fence(Ordering::Release);
+    let source_word = unsafe {
+        core::sync::atomic::AtomicU64::from_ptr(core::ptr::addr_of_mut!(
+            (*cpu_data).eret_guard_source
+        ))
+    };
+    source_word.store(source, Ordering::Release);
+    true
+}
+
+/// True when `cpu_id` still has an unclaimed ERET-guard refusal record.
+#[cfg(all(target_arch = "aarch64", feature = "resume_pc_foreign_oracle"))]
+pub fn eret_guard_record_is_published(cpu_id: usize) -> bool {
+    if cpu_id >= crate::arch_impl::aarch64::constants::MAX_CPUS {
+        return false;
+    }
+    let cpu_data = unsafe { &raw const ALL_CPU_DATA[cpu_id] };
+    unsafe { core::ptr::read_volatile(core::ptr::addr_of!((*cpu_data).eret_guard_source)) != 0 }
+}
+
+/// Read the fixed idle/exception stack top recorded for `cpu_id`.
+pub fn idle_stack_top(cpu_id: usize) -> u64 {
+    if cpu_id >= crate::arch_impl::aarch64::constants::MAX_CPUS {
+        return 0;
+    }
+
+    let cpu_data = unsafe { &raw const ALL_CPU_DATA[cpu_id] };
+    unsafe { core::ptr::read_volatile(core::ptr::addr_of!((*cpu_data).idle_stack_top)) }
+}
+
+/// Record the fixed idle/exception stack top for `cpu_id`.
+pub fn set_idle_stack_top(cpu_id: usize, top: u64) {
+    if cpu_id >= crate::arch_impl::aarch64::constants::MAX_CPUS {
+        return;
+    }
+
+    let cpu_data = unsafe { &raw mut ALL_CPU_DATA[cpu_id] };
+    unsafe {
+        core::ptr::write_volatile(core::ptr::addr_of_mut!((*cpu_data).idle_stack_top), top);
+    }
 }
 
 /// Snapshot the two per-CPU pointers that can keep a kernel-stack slot live.
@@ -261,6 +410,10 @@ pub fn init_cpu(cpu_id: usize) {
     unsafe {
         hal_percpu::init_percpu(cpu_data_addr, cpu_id as u64);
     }
+    set_idle_stack_top(
+        cpu_id,
+        crate::arch_impl::aarch64::constants::percpu_kernel_stack_top(cpu_id),
+    );
 }
 
 /// Get the current thread pointer (raw)

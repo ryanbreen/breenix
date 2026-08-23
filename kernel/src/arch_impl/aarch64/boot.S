@@ -21,6 +21,11 @@
 .equ PERCPU_ERET_GUARD_ELR, 120
 .equ PERCPU_ERET_GUARD_SPSR, 128
 .equ PERCPU_ERET_GUARD_SOURCE, 136
+.equ PERCPU_ERET_GUARD_X29, 152
+.equ PERCPU_ERET_GUARD_X30, 160
+.equ PERCPU_ERET_GUARD_SP, 168
+.equ PERCPU_ERET_GUARD_COUNT, 176
+.equ PERCPU_IDLE_STACK_TOP, 184
 
 // Descriptor bits
 .equ DESC_VALID,        (1 << 0)
@@ -525,25 +530,36 @@ sync_exception_handler:
     // Read ELR from exception frame (modified by Rust handler if redirected)
     ldr x1, [sp, #248]       // x1 = frame.elr
 
-    // Guard the EL1 return invariant: an EL1 frame may only resume in the
-    // kernel VA range. EL0 returns legitimately use lower addresses.
+    // Admit EL1 and EL0 resume PCs through their shared window predicates.
     ldr x2, [sp, #256]       // x2 = frame.spsr
     and x3, x2, #0xF         // x3 = M[3:0]
-    cbz x3, 10f              // EL0 return
-    ldr x3, =KERNEL_VIRT_BASE
-    cmp x1, x3
-    b.hs 10f                 // valid EL1 kernel return
+    cbz x3, .Lsync_el0_check
+    RESUME_PC_EL1_OK x1, x3, x4, x5, 10f
+    b .Lsync_el1_refuse
 
+.Lsync_el0_check:
+    RESUME_PC_EL0_OK x1, x3, 10f
+
+.Lsync_el0_refuse:
+    mrs x3, tpidr_el1
+    cbz x3, .Lsync_el0_guard_recorded
+    RESUME_PC_RECORD x3, sp, x1, x2, 17, x4, x5
+.Lsync_el0_guard_recorded:
+    adrp x1, aarch64_resume_pc_refused_el0
+    add x1, x1, :lo12:aarch64_resume_pc_refused_el0
+    str x1, [sp, #248]       // frame.elr = EL0 refusal trampoline
+    mov x2, #0x5             // EL1h, interrupts enabled
+    str x2, [sp, #256]       // frame.spsr = 0x5
+    b 10f
+
+.Lsync_el1_refuse:
     // Branch-only record, published by writing source last. Never perform
     // UART or other I/O in this return corridor.
     mrs x3, tpidr_el1
     cbz x3, 11f
-    str x1, [x3, #PERCPU_ERET_GUARD_ELR]
-    str x2, [x3, #PERCPU_ERET_GUARD_SPSR]
-    mov x4, #1              // source 1 = sync epilogue
-    str x4, [x3, #PERCPU_ERET_GUARD_SOURCE]
+    RESUME_PC_RECORD x3, sp, x1, x2, 1, x4, x5
 11:
-    // Redirect to idle_loop_arm64 instead of returning to EL1 at a user VA.
+    // Redirect to idle on the CPU-owned idle stack, not a reclaimable stack.
     adrp x1, idle_loop_arm64
     add x1, x1, :lo12:idle_loop_arm64
     // Write safe values to frame
@@ -682,25 +698,37 @@ irq_handler:
     // CPU, so no other CPU can dispatch it while we still read from the frame.
     ldr x16, [sp, #248]      // x16 = frame.elr
 
-    // Guard the EL1 return invariant: an EL1 frame may only resume in the
-    // kernel VA range. EL0 returns legitimately use lower addresses.
+    // Admit EL1 and EL0 resume PCs through their shared window predicates.
     ldr x1, [sp, #256]       // x1 = frame.spsr
     and x2, x1, #0xF         // x2 = M[3:0]
-    cbz x2, 1f               // EL0 return
-    ldr x2, =KERNEL_VIRT_BASE
-    cmp x16, x2
-    b.hs 1f                  // valid EL1 kernel return
+    cbz x2, .Lirq_el0_check
+    RESUME_PC_EL1_OK x16, x2, x3, x4, 1f
+    b .Lirq_el1_refuse
 
+.Lirq_el0_check:
+    RESUME_PC_EL0_OK x16, x2, 1f
+
+.Lirq_el0_refuse:
+    mrs x2, tpidr_el1
+    cbz x2, .Lirq_el0_guard_recorded
+    RESUME_PC_RECORD x2, sp, x16, x1, 18, x3, x4
+.Lirq_el0_guard_recorded:
+    adrp x16, aarch64_resume_pc_refused_el0
+    add x16, x16, :lo12:aarch64_resume_pc_refused_el0
+    str x16, [sp, #248]      // frame.elr = EL0 refusal trampoline
+    mov x1, #0x5             // EL1h, interrupts enabled
+    str x1, [sp, #256]       // frame.spsr = 0x5
+    ldr x1, [sp, #8]         // Re-restore x1 from frame
+    b 1f
+
+.Lirq_el1_refuse:
     // Branch-only record, published by writing source last. Never perform
     // UART or other I/O in this return corridor.
     mrs x2, tpidr_el1
     cbz x2, 2f
-    str x16, [x2, #PERCPU_ERET_GUARD_ELR]
-    str x1, [x2, #PERCPU_ERET_GUARD_SPSR]
-    mov x3, #2              // source 2 = IRQ epilogue
-    str x3, [x2, #PERCPU_ERET_GUARD_SOURCE]
+    RESUME_PC_RECORD x2, sp, x16, x1, 2, x3, x4
 2:
-    // Redirect to idle_loop_arm64 instead of returning to EL1 at a user VA.
+    // Redirect to idle on the CPU-owned idle stack, not a reclaimable stack.
     adrp x16, idle_loop_arm64
     add x16, x16, :lo12:idle_loop_arm64
     str x16, [sp, #248]      // frame.elr = idle_loop_arm64

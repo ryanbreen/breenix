@@ -25,8 +25,11 @@ use super::percpu::Aarch64PerCpu;
 use crate::arch_impl::traits::{PerCpuOps, SyscallFrame};
 use crate::tracing::providers::syscall::{trace_entry, trace_exit};
 
-// Include the syscall entry assembly
-global_asm!(include_str!("syscall_entry.S"));
+// Include the shared resume-PC guard macros and syscall assembly as one unit.
+global_asm!(concat!(
+    include_str!("resume_pc_guard.inc"),
+    include_str!("syscall_entry.S")
+));
 
 // Static flag to track first EL0 syscall (mirrors x86_64's RING3_CONFIRMED)
 static EL0_CONFIRMED: AtomicBool = AtomicBool::new(false);
