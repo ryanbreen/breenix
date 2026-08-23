@@ -7027,3 +7027,428 @@ fn the_aarch64_dispatch_refuses_a_foreign_resume_stack_and_routes_it_home() {
          straight back"
     );
 }
+
+const CUSTODY_HOST_TEST_PATH: &str = "tests/percpu_stack_custody.rs";
+
+/// The `use super::<module> as <alias>;` in `constants.rs` that names a sibling
+/// source file, as `(repository-relative module path, alias)`.
+///
+/// Derived rather than named so renaming the module or the alias is free.
+fn custody_module_import() -> (String, String) {
+    let source = repo_text(AARCH64_CONSTANTS_PATH);
+    let mask = code_mask(&source);
+    let directory = AARCH64_CONSTANTS_PATH
+        .rsplit_once('/')
+        .expect("constants.rs lives in a directory")
+        .0;
+
+    let mut imports: Vec<(String, String)> = Vec::new();
+    for use_offset in identifier_offsets(&source, &mask, "use") {
+        let rest = &source[use_offset..];
+        let Some(statement_end) = rest.find(';') else {
+            continue;
+        };
+        let statement = &rest[.."use".len() + statement_end];
+        let mut words = statement.split_whitespace().skip(1);
+        let Some(path) = words.next() else {
+            continue;
+        };
+        let Some(module) = path.strip_prefix("super::") else {
+            continue;
+        };
+        let module = module.trim_end_matches(';').to_string();
+        let alias = match (words.next(), words.next()) {
+            (Some("as"), Some(alias)) => alias.trim_end_matches(';').to_string(),
+            _ => module.clone(),
+        };
+        let candidate = format!("{directory}/{module}.rs");
+        if repo_root().join(&candidate).is_file() {
+            imports.push((candidate, alias));
+        }
+    }
+
+    assert_eq!(
+        imports.len(),
+        1,
+        "expected {AARCH64_CONSTANTS_PATH} to import exactly one sibling module for the custody \
+         arithmetic, derived: {imports:?}"
+    );
+    imports.pop().expect("custody module import")
+}
+
+/// RATCHET — the custody rule the kernel delegates to is the rule a host test
+/// EXECUTES.
+///
+/// Every earlier custody ratchet pins a shape AROUND the predicate; the
+/// predicate itself reddened nothing, three reviews running. It does now, but
+/// only while two links hold: `constants.rs` must delegate its decisions to the
+/// pure module instead of re-inlining them, and the host test must execute
+/// every rule that module exports to the kernel. Both links are censuses — the
+/// delegated rules are derived from `constants.rs`, not listed here — so adding
+/// a rule the host test does not run is a mismatch rather than an omission.
+#[test]
+fn the_custody_rule_the_kernel_delegates_to_is_executed_by_a_host_test() {
+    let (module_path, alias) = custody_module_import();
+    let source = repo_text(AARCH64_CONSTANTS_PATH);
+    let mask = code_mask(&source);
+    let blocks = lexical_blocks(&source, &mask);
+    let functions = source_functions(&source, &mask, &blocks);
+
+    // Every `alias::rule(` call in the file: the rules the kernel delegates.
+    let mut delegated: BTreeSet<String> = BTreeSet::new();
+    let mut delegating_functions: BTreeSet<String> = BTreeSet::new();
+    let qualifier = format!("{alias}::");
+    for (offset, _) in source.match_indices(&qualifier) {
+        if !mask[offset] {
+            continue;
+        }
+        let rest = &source[offset + qualifier.len()..];
+        let name: String = rest
+            .chars()
+            .take_while(|character| identifier_byte(*character as u8))
+            .collect();
+        if name.is_empty() || !rest[name.len()..].starts_with('(') {
+            continue;
+        }
+        delegated.insert(name);
+        if let Some(function) = innermost_function(&functions, offset) {
+            delegating_functions.insert(function.name.clone());
+        }
+    }
+    assert!(
+        delegated.len() >= 2,
+        "{AARCH64_CONSTANTS_PATH} delegates fewer than two custody rules to `{alias}`; the \
+         delegation census is vacuous, derived: {delegated:?}"
+    );
+
+    // The predicate every custody site funnels through must be one of the
+    // delegating functions — re-inlining the rule there orphans the host test.
+    assert!(
+        delegating_functions.contains("percpu_stack_top_owned_by"),
+        "`percpu_stack_top_owned_by` no longer delegates to `{alias}`; the executable custody \
+         coverage is orphaned. Delegating functions: {delegating_functions:?}"
+    );
+
+    // The host test includes THAT file, not a copy of it.
+    let host = repo_text(CUSTODY_HOST_TEST_PATH);
+    let path_attribute = host
+        .find("#[path = \"")
+        .map(|start| start + "#[path = \"".len())
+        .expect("the custody host test includes the module by path");
+    let path_end = path_attribute
+        + host[path_attribute..]
+            .find('"')
+            .expect("path attribute end quote");
+    let included = host[path_attribute..path_end].to_string();
+    let normalised = included
+        .strip_prefix("../")
+        .unwrap_or(&included)
+        .to_string();
+    assert_eq!(
+        normalised, module_path,
+        "{CUSTODY_HOST_TEST_PATH} executes `{normalised}` while {AARCH64_CONSTANTS_PATH} \
+         delegates to `{module_path}`"
+    );
+
+    // And it calls every rule the kernel delegates.
+    let host_mask = code_mask(&host);
+    let uncovered: Vec<&String> = delegated
+        .iter()
+        .filter(|rule| call_offsets(&host, &host_mask, rule).is_empty())
+        .collect();
+    assert!(
+        uncovered.is_empty(),
+        "{CUSTODY_HOST_TEST_PATH} never executes these custody rules the kernel delegates to \
+         `{alias}`: {uncovered:?}"
+    );
+}
+
+/// RATCHET — a custody decision only reads an ownership record that a sentinel
+/// still guards.
+///
+/// The record sits at the bottom of the idle/exception half, which stacks grow
+/// down INTO. Round 4 made that record load-bearing on the dispatch path while
+/// it was still the topmost of the reserved words, so a 16-byte overrun could
+/// rewrite it with every sentinel reading clean and then answer a custody
+/// question with stack bytes. The placement is fixed — the offsets assert their
+/// own order and a host test exhausts it — and the trust condition is pinned
+/// here: whatever `percpu_stack_top_owned_by` passes as the CLAIM must consult
+/// the sentinel constant before it reads the record.
+#[test]
+fn a_custody_decision_reads_an_ownership_record_only_while_its_sentinel_guards_it() {
+    let (_, alias) = custody_module_import();
+    let source = repo_text(AARCH64_CONSTANTS_PATH);
+    let mask = code_mask(&source);
+    let blocks = lexical_blocks(&source, &mask);
+    let functions = source_functions(&source, &mask, &blocks);
+
+    let predicate = functions
+        .iter()
+        .find(|function| function.name == "percpu_stack_top_owned_by")
+        .expect("the custody predicate");
+    let body = &source[predicate.open..=predicate.close];
+    let body_mask = code_mask(body);
+
+    // The claim is the LAST argument of the single delegated call in the body.
+    let qualifier = format!("{alias}::");
+    let call = body
+        .match_indices(&qualifier)
+        .find(|(offset, _)| body_mask[*offset])
+        .map(|(offset, _)| offset + qualifier.len())
+        .expect("the predicate delegates its decision");
+    let (span_start, span_end) =
+        call_argument_span(body, &body_mask, call).expect("delegated call arguments");
+    let mut depth = 0usize;
+    let mut last_comma = span_start;
+    for (index, byte) in body[span_start..span_end].bytes().enumerate() {
+        let at = span_start + index;
+        if !body_mask[at] {
+            continue;
+        }
+        match byte {
+            b'(' | b'[' | b'<' => depth += 1,
+            b')' | b']' | b'>' => depth = depth.saturating_sub(1),
+            b',' if depth == 0 => last_comma = at + 1,
+            _ => {}
+        }
+    }
+    let claim = body[last_comma..span_end].trim().to_string();
+    assert!(
+        !claim.is_empty() && claim.chars().all(|character| identifier_byte(character as u8)),
+        "the predicate must pass a named claim function, found `{claim}`"
+    );
+
+    // Functions in the file that read the sentinel constant, derived.
+    let sentinel_readers: BTreeSet<String> = source
+        .match_indices("PERCPU_STACK_OVERRUN_SENTINEL")
+        .filter(|(offset, _)| mask[*offset])
+        .filter_map(|(offset, _)| innermost_function(&functions, offset))
+        .map(|function| function.name.clone())
+        .collect();
+    assert!(
+        sentinel_readers.len() >= 2,
+        "the overrun sentinel must be written once and read at least once; derived: \
+         {sentinel_readers:?}"
+    );
+
+    let claim_body = function_body(&source, &claim).expect("claim function body");
+    let claim_mask = code_mask(claim_body);
+    let consulted: Vec<&String> = sentinel_readers
+        .iter()
+        .filter(|reader| !call_offsets(claim_body, &claim_mask, reader).is_empty())
+        .collect();
+    assert!(
+        !consulted.is_empty(),
+        "`{claim}` hands the ownership record to a custody decision without consulting the \
+         sentinel that stands between the record and the stack above it"
+    );
+}
+
+/// RATCHET — both kernel resume paths adjudicate the stack they resume on.
+///
+/// There are two, and until this round only one of them asked. The ERET path
+/// adjudicates in the dispatcher; the ret path admitted `thread.context.sp`,
+/// dereferenced it and made it SP entirely upstream of that dispatcher. The
+/// census is the resume ADMISSIONS themselves — the function that restores a
+/// kernel context and the function that stages a ret dispatch — so a third
+/// resume path is a count mismatch, not a silent omission.
+#[test]
+fn both_kernel_resume_paths_adjudicate_the_stack_they_resume_on() {
+    let source = repo_text(CONTEXT_SWITCH_PATH);
+    let mask = code_mask(&source);
+    let blocks = lexical_blocks(&source, &mask);
+    let functions = source_functions(&source, &mask, &blocks);
+
+    let admission_of = |callee: &str| -> String {
+        let owners: BTreeSet<String> = call_sites_excluding_definition(&source, &mask, callee)
+            .into_iter()
+            .filter_map(|offset| innermost_function(&functions, offset))
+            .map(|function| function.name.clone())
+            .collect();
+        assert_eq!(
+            owners.len(),
+            1,
+            "expected exactly one function in {CONTEXT_SWITCH_PATH} to call `{callee}`, derived: \
+             {owners:?}"
+        );
+        owners.into_iter().next().expect("admission")
+    };
+
+    let eret_admission = admission_of("restore_kernel_context_inline");
+    let ret_admission = admission_of("stage_ret_dispatch_context");
+    assert_ne!(
+        eret_admission, ret_admission,
+        "the two kernel resume paths must be two admissions"
+    );
+
+    let adjudicating: BTreeSet<String> =
+        call_offsets(&source, &mask, "percpu_stack_resume_permitted")
+            .into_iter()
+            .filter_map(|offset| innermost_function(&functions, offset))
+            .map(|function| function.name.clone())
+            .collect();
+    for admission in [&eret_admission, &ret_admission] {
+        assert!(
+            adjudicating.contains(admission),
+            "`{admission}` admits a saved kernel SP without adjudicating whose per-CPU stack it \
+             stands in; adjudicating functions: {adjudicating:?}"
+        );
+    }
+
+    // In the ret admission the adjudication has to come before the SP is spent:
+    // the LR slot is read through it, and the staged copy is what the assembly
+    // restores SP from.
+    let function = functions
+        .iter()
+        .find(|candidate| candidate.name == ret_admission)
+        .expect("ret admission body");
+    let body = &source[function.open..=function.close];
+    let body_mask = code_mask(body);
+    let adjudication = call_offsets(body, &body_mask, "percpu_stack_resume_permitted")
+        .into_iter()
+        .min()
+        .expect("ret admission adjudication");
+    let dereference = call_offsets(body, &body_mask, "read_volatile")
+        .into_iter()
+        .min()
+        .expect("the ret admission dereferences the resume SP");
+    let staging = call_offsets(body, &body_mask, "stage_ret_dispatch_context")
+        .into_iter()
+        .min()
+        .expect("ret admission staging");
+    assert!(
+        adjudication < dereference && adjudication < staging,
+        "`{ret_admission}` adjudicates the resume stack only after it has dereferenced it or \
+         staged the context it will restore"
+    );
+}
+
+/// RATCHET — work-stealing declines a thread pinned to another CPU's per-CPU
+/// stack, and routes it home rather than dropping it.
+///
+/// Refusing at DISPATCH makes the thread re-selectable, not stack-pinned: the
+/// declining CPU steals it straight back off the owner's queue and refuses it
+/// again. The census is the steal pops themselves, so a new steal loop that
+/// skips the custody query is a count mismatch.
+#[test]
+fn work_stealing_declines_a_thread_pinned_to_another_cpus_stack() {
+    let source = repo_text(SCHEDULER_PATH);
+    let mask = code_mask(&source);
+
+    let steals = source
+        .match_indices("per_cpu_queues[steal_cpu].pop_front()")
+        .filter(|(offset, _)| mask[*offset])
+        .count();
+    assert!(
+        steals >= 2,
+        "expected the scheduler to work-steal in more than one place; the steal census is vacuous"
+    );
+
+    let declines: Vec<usize> = call_offsets(&source, &mask, "percpu_stack_home_cpu")
+        .into_iter()
+        .filter(|offset| !preceded_by_keyword(&source, &mask, *offset, "fn"))
+        .collect();
+    assert_eq!(
+        declines.len(),
+        steals,
+        "every work-steal pop must consult per-CPU stack custody: {steals} steal pops, \
+         {} custody queries",
+        declines.len()
+    );
+
+    for decline in declines {
+        let prefix = &source[..decline];
+        let binding_start = prefix
+            .rfind("Some(")
+            .expect("the custody query binds its answer")
+            + "Some(".len();
+        let binding_end = binding_start
+            + source[binding_start..]
+                .find(')')
+                .expect("custody binding end");
+        let binding = source[binding_start..binding_end].trim();
+        let window_end = (decline + 400).min(source.len());
+        let window = &source[decline..window_end];
+        assert!(
+            window.contains(&format!("per_cpu_queues[{binding}].push_back")),
+            "a work-steal that declines a stack-pinned thread must enqueue it on the CPU that \
+             owns the stack (`{binding}`), not drop it or hand it back"
+        );
+    }
+}
+
+/// RATCHET — a refused resume is never routed back to the CPU that declined it.
+///
+/// The dispatch refuses a foreign resume stack and enqueues the thread on the
+/// CPU that owns the slot. When the refusal came from the ownership record
+/// rather than from the arithmetic, that owner IS the declining CPU, and the
+/// enqueue would hand the thread straight back to the arm that just refused it
+/// — a spin that buries its own gate-failing record under repetition. The
+/// destination must therefore be filtered against the identity the adjudication
+/// was made with, which is what this pins.
+#[test]
+fn a_refused_resume_is_never_routed_back_to_the_cpu_that_declined_it() {
+    let source = repo_text(CONTEXT_SWITCH_PATH);
+    let mask = code_mask(&source);
+    let blocks = lexical_blocks(&source, &mask);
+    let functions = source_functions(&source, &mask, &blocks);
+
+    let dispatchers: BTreeSet<String> =
+        call_sites_excluding_definition(&source, &mask, "requeue_thread_on_cpu")
+            .into_iter()
+            .filter_map(|offset| innermost_function(&functions, offset))
+            .map(|function| function.name.clone())
+            .collect();
+    assert_eq!(
+        dispatchers.len(),
+        1,
+        "expected exactly one function in {CONTEXT_SWITCH_PATH} to route a refused resume, \
+         derived: {dispatchers:?}"
+    );
+    let dispatcher = dispatchers.iter().next().expect("dispatcher").clone();
+    let function = functions
+        .iter()
+        .find(|candidate| candidate.name == dispatcher)
+        .expect("dispatcher body");
+    let body = &source[function.open..=function.close];
+    let body_mask = code_mask(body);
+
+    // The identity the adjudication was made with, derived from its first
+    // argument rather than named here.
+    let adjudication = call_offsets(body, &body_mask, "percpu_stack_resume_permitted")
+        .into_iter()
+        .min()
+        .expect("the dispatcher adjudicates the resume stack");
+    let (span_start, span_end) =
+        call_argument_span(body, &body_mask, adjudication).expect("adjudication arguments");
+    let identity = body[span_start..span_end]
+        .split(',')
+        .next()
+        .expect("adjudication identity argument")
+        .trim()
+        .to_string();
+    assert!(
+        !identity.is_empty()
+            && identity
+                .chars()
+                .all(|character| identifier_byte(character as u8)),
+        "the adjudication must take a named identity, found `{identity}`"
+    );
+
+    let attribution = call_offsets(body, &body_mask, "percpu_stack_slot_of")
+        .into_iter()
+        .min()
+        .expect("the refusal attributes the SP to a slot");
+    let routing = call_offsets(body, &body_mask, "requeue_thread_on_cpu")
+        .into_iter()
+        .min()
+        .expect("the refusal routes the thread");
+    assert!(attribution < routing);
+    let window = &body[attribution..routing];
+    assert!(
+        window.contains("filter") && window.contains(&identity),
+        "the destination the refusal routes to is not filtered against `{identity}`, the identity \
+         that declined the thread: a refusal whose slot is this CPU's own would enqueue the \
+         thread on the CPU that just refused it"
+    );
+}

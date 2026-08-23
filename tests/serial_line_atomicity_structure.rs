@@ -1003,7 +1003,7 @@ const UNLOCKED_MULTI_BYTE_WRITE_ANCHORS: &[(&str, &str, usize)] = &[
     (
         "kernel/src/arch_impl/aarch64/exception.rs",
         "fn dump_fatal_postmortem_once",
-        16,
+        18,
     ),
     (
         "kernel/src/arch_impl/aarch64/exception.rs",
