@@ -17,7 +17,7 @@ use x86_64::VirtAddr;
 pub use crate::memory::arch_stub::VirtAddr;
 
 /// Global thread ID counter
-static NEXT_THREAD_ID: AtomicU64 = AtomicU64::new(1); // 0 is reserved for kernel thread
+static NEXT_THREAD_ID: AtomicU64 = AtomicU64::new(1); // 0 is the no-thread sentinel and is never allocated
 
 /// Allocate a new thread ID
 pub fn allocate_thread_id() -> u64 {

@@ -6386,7 +6386,8 @@ fn check_and_deliver_signals_for_current_thread_arm64(frame: &mut Aarch64Excepti
         None => return,
     };
 
-    // Thread 0 is the idle thread - it doesn't have a process with signals
+    // 0 is the no-thread sentinel, not a live thread id, so there is no
+    // process to deliver signals to.
     if current_thread_id == 0 {
         return;
     }

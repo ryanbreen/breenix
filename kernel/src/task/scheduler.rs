@@ -347,8 +347,9 @@ fn retain_cpu_affine_test_thread(
     thread_id: u64,
     current_cpu: usize,
 ) -> bool {
-    // Zero means "no pinned thread" in BOOT_TEST_CPU_AFFINITY; it is a sentinel,
-    // not a recorded affinity for the bootstrap thread whose real tid is also 0.
+    // Zero means "no pinned thread" in BOOT_TEST_CPU_AFFINITY, and 0 is also the
+    // no-thread sentinel: no live thread carries it, so a zero here can only be
+    // an empty affinity slot.
     if thread_id == 0 {
         return false;
     }
@@ -561,16 +562,20 @@ pub const STRAND_CENSUS_PROGRESS_AXES: usize = 6;
 
 /// Return the CPU whose registered idle thread has `tid`.
 ///
-/// CPU 0's idle slot is registered by `Scheduler::new`, including when its
-/// real idle TID is zero. A zero idle TID in any later CPU slot is the
-/// `EMPTY_STATE` sentinel, not a registration.
+/// No live thread carries id 0, so a zero `idle_thread` is unambiguously
+/// `EMPTY_STATE`'s empty-slot sentinel and can no longer collide with a real
+/// idle thread. CPU 0 therefore needs no special case: its idle thread has an
+/// ordinary allocated id like every other CPU's.
+///
+/// The `!= 0` test stays because it is the sentinel rule, not the CPU-0
+/// workaround: slots for CPUs that never came online still hold 0, and an
+/// unregistered slot must not answer a lookup.
 #[cfg(feature = "boot_tests")]
 fn registered_idle_cpu(scheduler: &Scheduler, tid: u64) -> Option<usize> {
     scheduler
         .cpu_state
         .iter()
-        .enumerate()
-        .position(|(cpu_id, cpu)| (cpu_id == 0 || cpu.idle_thread != 0) && cpu.idle_thread == tid)
+        .position(|cpu| cpu.idle_thread != 0 && cpu.idle_thread == tid)
 }
 
 /// Read-only probe for the per-CPU stack custody oracle's leg D: the thread id
@@ -578,8 +583,9 @@ fn registered_idle_cpu(scheduler: &Scheduler, tid: u64) -> Option<usize> {
 /// registered idle thread.
 ///
 /// The second answer deliberately goes through `registered_idle_cpu` rather
-/// than re-implementing it, so that a later change to that helper is visible
-/// here instead of being masked by a copy.
+/// than re-implementing it, so that a change to that helper is visible here
+/// instead of being masked by a copy — including the removal of its CPU-0
+/// special case.
 #[cfg(feature = "percpu_stack_custody_oracle")]
 pub fn zero_tid_idle_probe() -> Option<(u64, bool)> {
     with_scheduler(|scheduler| {

@@ -182,7 +182,7 @@ pub extern "C" fn check_need_resched_and_switch(
     //
     // Previously, this check happened AFTER schedule() was called, which mutated
     // the scheduler's current_thread state. Then the early return left the
-    // scheduler thinking idle (thread 0) was running when actually the userspace
+    // scheduler thinking the idle thread was running when actually the userspace
     // thread was still active. This caused the entire scheduler to become stuck.
     //
     // The fix: Check preempt_active BEFORE schedule() to avoid state corruption.
@@ -1478,7 +1478,8 @@ fn check_and_deliver_signals_for_current_thread(
         None => return,
     };
 
-    // Thread 0 is the idle thread - it doesn't have a process with signals
+    // 0 is the no-thread sentinel, not a live thread id, so there is no
+    // process to deliver signals to.
     if current_thread_id == 0 {
         return;
     }

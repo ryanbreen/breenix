@@ -1352,7 +1352,7 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
         serial_println!("[test] Entering scheduler idle loop");
         // Print shell prompt to serial before enabling interrupts.
         // Once interrupts are enabled, the scheduler takes over and the BSP
-        // (idle thread 0) enters idle_loop_arm64 - it won't return here.
+        // (its idle thread) enters idle_loop_arm64 - it won't return here.
         // The prompt signals to the test harness that boot is complete.
         serial_print!("breenix> ");
         // Enable interrupts - scheduler dispatches test processes via timer.
@@ -1624,9 +1624,10 @@ fn init_scheduler() {
     // that overwrite the other thread's SVC frame → ELR=0 crash.
     idle_task.kernel_stack_top = Some(boot_stack_top);
 
-    // Mark as running with ID 0, and has_started=true since boot code is already executing
+    // Mark as running, and has_started=true since boot code is already executing.
+    // The id stays the one `Thread::new` allocated: 0 is the no-thread sentinel
+    // and is never a live thread id.
     idle_task.state = ThreadState::Running;
-    idle_task.id = 0;
     idle_task.has_started = true; // CRITICAL: Boot thread is already running, not waiting for first entry
 
     // Set up per-CPU current thread pointer and kernel stack

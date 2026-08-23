@@ -2679,10 +2679,11 @@ pub fn sys_getpid() -> SyscallResult {
                 }
             }
 
-            // If no process found, we might be in kernel/idle thread
+            // If no process found and the id is the no-thread sentinel, there
+            // is no caller to name a process for.
             if thread_id == 0 {
-                log::info!("sys_getpid: Thread 0 is kernel/idle thread");
-                return SyscallResult::Ok(0); // Kernel/idle process
+                log::info!("sys_getpid: no current thread (id 0 is the no-thread sentinel)");
+                return SyscallResult::Ok(0);
             }
 
             log::warn!("sys_getpid: Thread {} has no associated process", thread_id);
