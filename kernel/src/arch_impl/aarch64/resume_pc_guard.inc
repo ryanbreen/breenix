@@ -78,20 +78,37 @@
 
 // Record a refusal from a ret-dispatch site that has no exception frame.
 // \percpu is known non-zero; \s0 and \s1 are dead scratch registers.
+//
+// The frame-based arms leave the refused thread's kernel stack in the ERET
+// epilogue, which re-selects SP from percpu+16/+40 before returning. This arm
+// has no epilogue: the caller has already executed `mov sp, <ctx.sp>` and
+// branches straight to idle on that SP. So the pivot has to happen here, and
+// the ORDER IS LOAD-BEARING: SP moves to the CPU-owned idle stack BEFORE
+// +16/+40 stop naming the refused thread's stack. Those two words are the
+// entire aarch64 is_kernel_stack_slot_live() predicate, and idle's first act
+// is run_deferred_reclamation() -> drain_asm_resume_pc_refusals() ->
+// set_terminated(tid) -> reclaim_terminated_threads(). Repointing them while
+// this CPU still executes on that stack would hand a running stack to the
+// reaper (free + 64 KiB scrub). Pivoting first leaves no such instant: before
+// the pivot the words name the stack the CPU is on; between pivot and repoint
+// they over-name a stack nobody is on (safe); after, they name the idle stack
+// the CPU is actually running on. When idle_stack_top is not published yet
+// there is nowhere to pivot to, so neither the pivot nor the repoint happens
+// and custody keeps naming the stack in use.
 .macro RESUME_PC_RECORD_NOFRAME percpu, pc, src, s0, s1
     str   \pc, [\percpu, #PERCPU_ERET_GUARD_ELR]
     str   xzr, [\percpu, #PERCPU_ERET_GUARD_SPSR]
     str   xzr, [\percpu, #PERCPU_ERET_GUARD_X29]
     str   xzr, [\percpu, #PERCPU_ERET_GUARD_X30]
     mov   \s0, sp
-    str   \s0, [\percpu, #PERCPU_ERET_GUARD_SP]
+    str   \s0, [\percpu, #PERCPU_ERET_GUARD_SP]  // pre-pivot SP, for forensics
     ldr   \s0, [\percpu, #PERCPU_ERET_GUARD_COUNT]
     add   \s0, \s0, #1
     str   \s0, [\percpu, #PERCPU_ERET_GUARD_COUNT]
     ldr   \s0, [\percpu, #PERCPU_IDLE_STACK_TOP]
     cbz   \s0, 8891f
-    // The refused thread's restored stack is reclaimable; move all future
-    // idle SP selection to the CPU-owned idle stack before publishing.
+    // Leave the refused thread's stack for real, then stop naming it.
+    mov   sp, \s0
     str   \s0, [\percpu, #16]
     str   \s0, [\percpu, #40]
     str   xzr, [\percpu, #48]

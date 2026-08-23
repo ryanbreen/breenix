@@ -85,6 +85,7 @@ static CTX596_ORACLE_EMISSIONS: AtomicU32 = AtomicU32::new(0);
 static CTX596_DIVERGENCE_EMISSIONS: AtomicU32 = AtomicU32::new(0);
 static RET_DISPATCH_REFUSAL_EMISSIONS: AtomicU32 = AtomicU32::new(0);
 static RESUME_PC_REFUSAL_EMISSIONS: AtomicU32 = AtomicU32::new(0);
+static RESUME_PC_CUSTODY_EMISSIONS: AtomicU32 = AtomicU32::new(0);
 static RESUME_PC_CENSUS_LAST_EMIT_NS: AtomicU64 = AtomicU64::new(0);
 static RESUME_PC_CENSUS_EMISSIONS: AtomicU32 = AtomicU32::new(0);
 
@@ -98,6 +99,11 @@ pub static RESUME_PC_REFUSED_TID: AtomicU64 = AtomicU64::new(0);
 pub static RESUME_PC_REFUSED_PC: AtomicU64 = AtomicU64::new(0);
 pub static RESUME_PC_REFUSED_SOURCES: AtomicU64 = AtomicU64::new(0);
 pub static RESUME_PC_EL0_ASM_REFUSALS: AtomicU64 = AtomicU64::new(0);
+/// Custody checks performed at the refusal drain, and how many of them found
+/// this CPU still executing on the stack the drain is about to hand to the
+/// reaper. Both must be readable by the feature-gated ret-dispatch oracle.
+pub static RESUME_PC_CUSTODY_CHECKS: AtomicU64 = AtomicU64::new(0);
+pub static RESUME_PC_CUSTODY_BLIND: AtomicU64 = AtomicU64::new(0);
 
 pub const RESUME_PC_SOURCE_SYNC_EPILOGUE: u64 = 1;
 pub const RESUME_PC_SOURCE_IRQ_EPILOGUE: u64 = 2;
@@ -305,6 +311,12 @@ pub fn record_resume_pc_refusal_locked(
 
 /// Drain all per-CPU refusal records published by assembly ERET guards.
 pub fn drain_asm_resume_pc_refusals() {
+    let drain_sp: u64;
+    unsafe {
+        core::arch::asm!("mov {}, sp", out(reg) drain_sp, options(nomem, nostack, preserves_flags));
+    }
+    let drain_cpu = Aarch64PerCpu::cpu_id() as u64;
+
     for cpu_id in 0..crate::arch_impl::aarch64::constants::MAX_CPUS {
         let Some((_source, elr, spsr, x29, x30, sp, _count)) =
             crate::per_cpu_aarch64::eret_guard_record_full(cpu_id)
@@ -314,6 +326,19 @@ pub fn drain_asm_resume_pc_refusals() {
         let claimed_source = crate::per_cpu_aarch64::eret_guard_claim_source(cpu_id);
         if claimed_source == 0 {
             continue;
+        }
+        let record_slot = reusable_kstack_slot_for_address(sp);
+        let drain_slot = reusable_kstack_slot_for_address(drain_sp);
+        let on_refused_stack =
+            cpu_id as u64 == drain_cpu && record_slot.is_some() && record_slot == drain_slot;
+        let named_live = drain_slot
+            .map(crate::memory::kernel_stack::kernel_stack_slot_top)
+            .is_some_and(crate::memory::kernel_stack::is_kernel_stack_slot_live);
+        if cpu_id as u64 == drain_cpu {
+            RESUME_PC_CUSTODY_CHECKS.fetch_add(1, Ordering::Release);
+            if on_refused_stack && !named_live {
+                RESUME_PC_CUSTODY_BLIND.fetch_add(1, Ordering::Release);
+            }
         }
         let tid = last_dispatched_tid(cpu_id).unwrap_or(0);
         record_resume_pc_refusal_locked(
@@ -326,6 +351,9 @@ pub fn drain_asm_resume_pc_refusals() {
             spsr,
         );
         if tid != 0 {
+            let mut victim_stack_top = 0;
+            let mut on_victim_stack = false;
+            let mut record_sp_on_victim_stack = false;
             crate::task::scheduler::with_scheduler(|sched| {
                 let is_idle = sched
                     .cpu_state
@@ -333,11 +361,54 @@ pub fn drain_asm_resume_pc_refusals() {
                     .any(|state| state.idle_thread == tid);
                 if !is_idle {
                     if let Some(thread) = sched.get_thread_mut(tid) {
+                        victim_stack_top = thread
+                            .kernel_stack_top
+                            .map(|top| top.as_u64())
+                            .unwrap_or(0);
+                        record_sp_on_victim_stack = victim_stack_top != 0
+                            && crate::memory::kernel_stack::sp_within_kernel_stack(
+                                sp,
+                                victim_stack_top,
+                            );
+                        if victim_stack_top != 0 && cpu_id as u64 == drain_cpu {
+                            on_victim_stack =
+                                crate::memory::kernel_stack::sp_within_kernel_stack(
+                                    drain_sp,
+                                    victim_stack_top,
+                                );
+                        }
                         thread.set_terminated();
                     }
                     sched.remove_from_ready_queue(tid);
                 }
             });
+            let foreign = cpu_id as u64 != drain_cpu;
+            let verdict = if foreign {
+                "FOREIGN"
+            } else if on_refused_stack && !named_live {
+                "STACK_CUSTODY_BLIND"
+            } else {
+                "OK"
+            };
+            if RESUME_PC_CUSTODY_EMISSIONS.fetch_add(1, Ordering::Relaxed) < 16 {
+                crate::serial_println!(
+                    "[RESUME_PC_CUSTODY:drain_cpu={}:record_cpu={}:victim_tid={}:record_sp=0x{:x}:drain_sp=0x{:x}:record_slot={}:drain_slot={}:on_refused_stack={}:victim_stack_top=0x{:x}:sp_in_pool={}:on_victim_stack={}:record_sp_on_victim_stack={}:named_live={}:{}]",
+                    drain_cpu,
+                    cpu_id,
+                    tid,
+                    sp,
+                    drain_sp,
+                    record_slot.map(|slot| slot as i64).unwrap_or(-1),
+                    drain_slot.map(|slot| slot as i64).unwrap_or(-1),
+                    u64::from(on_refused_stack),
+                    victim_stack_top,
+                    u64::from(crate::memory::kernel_stack::addr_in_kernel_stack_pool(drain_sp)),
+                    u64::from(on_victim_stack),
+                    u64::from(record_sp_on_victim_stack),
+                    u64::from(named_live),
+                    verdict,
+                );
+            }
         }
     }
 }
@@ -986,6 +1057,9 @@ aarch64_ret_to_kernel_context:
     msr daifclr, #3
     isb
     RESUME_PC_EL1_OK x1, x2, x3, x16, 1f
+    // Refusal arm. RESUME_PC_RECORD_NOFRAME pivots SP to this CPU's idle stack
+    // before it stops naming the refused thread's stack, so the branch to idle
+    // below does not run the drain/reaper on a stack it is about to free.
     mrs x17, tpidr_el1
     cbz x17, 9f
     RESUME_PC_RECORD_NOFRAME x17, x1, 5, x2, x3
@@ -1985,22 +2059,32 @@ fn decode_last_dispatched(encoded: u64) -> (u64, Option<usize>) {
     (tid, slot)
 }
 
+/// Stamp the OWNER-TID CANARY for `cpu_id` using an explicit stack address, so
+/// a dispatch path that has not yet published this CPU's kernel_stack_top can
+/// still record the slot the dispatched thread actually runs on.
+#[inline(always)]
+fn stamp_last_dispatched_tid_for_stack(cpu_id: usize, tid: u64, stack_address: u64) {
+    if cpu_id >= crate::arch_impl::aarch64::constants::MAX_CPUS {
+        return;
+    }
+    debug_assert!(tid <= (u64::MAX >> LAST_DISPATCHED_SLOT_BITS));
+    let slot_code = reusable_kstack_slot_for_address(stack_address)
+        .map(|slot| slot as u64 + 1)
+        .unwrap_or(0);
+    let encoded = (tid << LAST_DISPATCHED_SLOT_BITS) | slot_code;
+    LAST_DISPATCHED_TID[cpu_id].store(encoded, Ordering::Release);
+}
+
 /// Stamp the OWNER-TID CANARY for this CPU. Called from `dispatch_thread_locked`
 /// at its two frame-finalize points. Lock-free; safe to call from inside the
 /// scheduler lock hold.
 #[inline(always)]
 fn stamp_last_dispatched_tid(cpu_id: usize, tid: u64) {
-    if cpu_id >= crate::arch_impl::aarch64::constants::MAX_CPUS {
-        return;
-    }
-    debug_assert!(tid <= (u64::MAX >> LAST_DISPATCHED_SLOT_BITS));
-    let slot_code = reusable_kstack_slot_for_address(
+    stamp_last_dispatched_tid_for_stack(
+        cpu_id,
+        tid,
         Aarch64PerCpu::kernel_stack_top().saturating_sub(1),
-    )
-    .map(|slot| slot as u64 + 1)
-    .unwrap_or(0);
-    let encoded = (tid << LAST_DISPATCHED_SLOT_BITS) | slot_code;
-    LAST_DISPATCHED_TID[cpu_id].store(encoded, Ordering::Release);
+    );
 }
 
 /// Return the reusable kernel-stack slot containing `address` and the tid most
@@ -4798,6 +4882,11 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
         #[cfg(all(target_arch = "aarch64", feature = "ret_floor_oracle"))]
         let resume_pc =
             crate::task::ret_zero_pc_oracle::inject_ret_floor_if_armed(new_id, resume_pc);
+        // OWNER-TID CANARY: this ret-based dispatch is finalized for new_id. The
+        // assembly refusal record carries no tid, so the drain's terminate decision
+        // reads this canary; without the stamp it names the last ERET-dispatched
+        // thread instead, and an innocent thread gets terminated.
+        stamp_last_dispatched_tid_for_stack(cpu_id, new_id, resume_sp);
         unsafe {
             aarch64_ret_to_kernel_context(ctx_ptr, resume_pc);
         }
@@ -5284,6 +5373,11 @@ extern "C" fn inline_schedule_trampoline() -> ! {
         #[cfg(all(target_arch = "aarch64", feature = "ret_floor_oracle"))]
         let resume_pc =
             crate::task::ret_zero_pc_oracle::inject_ret_floor_if_armed(new_id, resume_pc);
+        // OWNER-TID CANARY: this ret-based dispatch is finalized for new_id. The
+        // assembly refusal record carries no tid, so the drain's terminate decision
+        // reads this canary; without the stamp it names the last ERET-dispatched
+        // thread instead, and an innocent thread gets terminated.
+        stamp_last_dispatched_tid_for_stack(cpu_id, new_id, resume_sp);
         unsafe {
             aarch64_ret_to_kernel_context(ctx_ptr, resume_pc);
         }
