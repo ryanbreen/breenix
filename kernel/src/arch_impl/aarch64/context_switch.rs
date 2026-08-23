@@ -904,6 +904,17 @@ pub fn emit_resume_pc_census() {
 
 /// Emit non-zero producer-classification rows with whole-line serialization.
 pub fn emit_resume_pc_census_locked() {
+    // The selection-side custody total, and the only reader it has in a boot
+    // that does not fault. Work-stealing declines a stack-pinned thread without
+    // writing a record — the selection path takes no UART writes — so without
+    // this line the routing would be invisible in exactly the boots where it is
+    // working. Reported, never gated: routing a thread home is the fix
+    // operating, while the gate-failing fact is the dispatch refusal.
+    let routed = crate::task::scheduler::percpu_stack_selection_routed();
+    if routed != 0 {
+        crate::serial_println!("[PERCPU_STACK_SELECTION_ROUTED:total={}]", routed);
+    }
+
     for cpu_id in 0..crate::arch_impl::aarch64::constants::MAX_CPUS {
         for (source_idx, source_name) in RESUME_PC_CENSUS_SOURCE_NAMES.iter().enumerate() {
             let row = &RESUME_PC_CENSUS[cpu_id][source_idx];
