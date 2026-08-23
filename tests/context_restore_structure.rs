@@ -5957,8 +5957,13 @@ fn swapper_files_do_not_assign_thread_id_zero() {
     );
 }
 
-/// RATCHET 3 — the reclaimed control blocks are freed with interrupts masked
-/// and outside the scheduler lock.
+/// RATCHET 3 — on aarch64 the reclaimed control blocks are freed with
+/// interrupts masked, and on no arch are they freed under the scheduler lock.
+///
+/// The free is delegated to `release_reclaimed_threads`, which is arch-scoped:
+/// masking is what the #609 `ARM64_STACK_BITMAP` race requires and is not
+/// charged to arches that do not have it. This ratchet pins the aarch64 arm —
+/// the one this suite is about — and the harvest's lock discipline.
 #[test]
 fn reclaim_drops_thread_control_blocks_inside_the_masked_region() {
     let source = repo_text(SCHEDULER_PATH);
@@ -5986,31 +5991,28 @@ fn reclaim_drops_thread_control_blocks_inside_the_masked_region() {
     let body = &source[reclaimer.open..=reclaimer.close];
     let body_mask = code_mask(body);
 
+    // The harvest is masked; the free is handed to the arch-scoped release.
     let masked = call_offsets(body, &body_mask, "without_interrupts");
     assert_eq!(masked.len(), 1, "one masked region expected, found {masked:?}");
-    let (masked_start, masked_end) = call_argument_span(body, &body_mask, masked[0])
+    let (_, masked_end) = call_argument_span(body, &body_mask, masked[0])
         .expect("without_interrupts argument span");
-
-    let drops = call_offsets(body, &body_mask, "drop");
+    assert!(
+        call_offsets(body, &body_mask, "drop").is_empty(),
+        "`reclaim_terminated_threads` must delegate the free to `release_reclaimed_threads` \
+         rather than dropping the control blocks itself"
+    );
+    let releases = call_offsets(body, &body_mask, "release_reclaimed_threads");
     assert_eq!(
-        drops.len(),
+        releases.len(),
         1,
-        "expected exactly one explicit `drop(` of the reclaimed control blocks, found {drops:?}"
+        "expected exactly one `release_reclaimed_threads(` call, found {releases:?}"
     );
-    let drop_call = drops[0];
+    let release_call = releases[0];
     assert!(
-        masked_start < drop_call && drop_call < masked_end,
-        "the reclaimed control blocks are dropped OUTSIDE the masked region: a thread control \
-         block's heap free would run with interrupts enabled on a borrowed stack \
-         (drop at {drop_call}, masked region [{masked_start}, {masked_end}))"
-    );
-
-    let (arg_start, arg_end) =
-        call_argument_span(body, &body_mask, drop_call).expect("drop argument span");
-    let dropped = body[arg_start..arg_end].trim().to_string();
-    assert!(
-        !binding_offsets(body, &body_mask, &dropped).is_empty(),
-        "`drop({dropped})` does not name a binding declared in `reclaim_terminated_threads`"
+        masked_end < release_call,
+        "the release runs inside the harvest's masked region, which would keep the scheduler \
+         lock's masked window open across the free (release at {release_call}, harvest ends at \
+         {masked_end})"
     );
 
     let locks = call_offsets(body, &body_mask, "lock_scheduler");
@@ -6026,10 +6028,74 @@ fn reclaim_drops_thread_control_blocks_inside_the_masked_region() {
         .min_by_key(|block| block.close - block.open)
         .expect("innermost block holding the scheduler lock guard");
     assert!(
-        guard_scope.close < drop_call,
-        "the reclaimed control blocks are dropped while the scheduler lock guard is still in \
-         scope (guard scope closes at {}, drop at {drop_call})",
+        guard_scope.close < release_call,
+        "the reclaimed control blocks are released while the scheduler lock guard is still in \
+         scope (guard scope closes at {}, release at {release_call})",
         guard_scope.close
+    );
+
+    // The aarch64 arm of the release: one masked region, one drop, drop inside.
+    let releasers: Vec<&SourceFunction> = functions
+        .iter()
+        .filter(|function| function.name == "release_reclaimed_threads")
+        .collect();
+    assert_eq!(
+        releasers.len(),
+        2,
+        "expected two arch-scoped `release_reclaimed_threads` definitions, found {}",
+        releasers.len()
+    );
+    let masked_releasers: Vec<&&SourceFunction> = releasers
+        .iter()
+        .filter(|function| {
+            let arm = &source[function.open..=function.close];
+            let arm_mask = code_mask(arm);
+            !call_offsets(arm, &arm_mask, "without_interrupts").is_empty()
+        })
+        .collect();
+    assert_eq!(
+        masked_releasers.len(),
+        1,
+        "exactly one `release_reclaimed_threads` arm must mask interrupts around the free; \
+         masking the page-table-walking arm buys nothing and unmasking the aarch64 arm reopens \
+         the #609 window"
+    );
+    let masked_arm = masked_releasers[0];
+    assert!(
+        source[..masked_arm.open].rfind("#[cfg(target_arch = \"aarch64\")]")
+            > source[..masked_arm.open].rfind("#[cfg(not(target_arch = \"aarch64\"))]"),
+        "the masked `release_reclaimed_threads` arm is not the aarch64 one"
+    );
+    let arm = &source[masked_arm.open..=masked_arm.close];
+    let arm_mask = code_mask(arm);
+    let arm_masked = call_offsets(arm, &arm_mask, "without_interrupts");
+    assert_eq!(
+        arm_masked.len(),
+        1,
+        "one masked region expected in the aarch64 release, found {arm_masked:?}"
+    );
+    let (arm_start, arm_end) = call_argument_span(arm, &arm_mask, arm_masked[0])
+        .expect("aarch64 release without_interrupts argument span");
+    let arm_drops = call_offsets(arm, &arm_mask, "drop");
+    assert_eq!(
+        arm_drops.len(),
+        1,
+        "expected exactly one explicit `drop(` in the aarch64 release, found {arm_drops:?}"
+    );
+    assert!(
+        arm_start < arm_drops[0] && arm_drops[0] < arm_end,
+        "the aarch64 release drops the control blocks OUTSIDE the masked region: \
+         `free_kernel_stack` would take ARM64_STACK_BITMAP preemptibly, which is link 1 of the \
+         #609 chain (drop at {}, masked region [{arm_start}, {arm_end}))",
+        arm_drops[0]
+    );
+
+    let (arg_start, arg_end) =
+        call_argument_span(arm, &arm_mask, arm_drops[0]).expect("drop argument span");
+    let dropped = arm[arg_start..arg_end].trim().to_string();
+    assert!(
+        !dropped.is_empty(),
+        "`drop()` in the aarch64 release names nothing"
     );
 }
 

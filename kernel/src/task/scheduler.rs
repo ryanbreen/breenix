@@ -3924,24 +3924,53 @@ pub fn spawn_front(thread: Box<Thread>) {
 }
 
 pub fn reclaim_terminated_threads() {
-    // The reclaimed control blocks are freed INSIDE the masked region. Dropping
-    // a `Box<Thread>` runs the heap free, and a timer interrupt taken part-way
-    // through that free builds its exception frame on whatever stack this call
-    // is standing on — which, for a reaper running on a borrowed or
-    // just-released stack, is exactly the window this campaign is closing.
-    // Masking covers the free; the inner scope ends the scheduler lock guard
-    // first, so the free still never runs under the scheduler lock.
+    // Two masked regions, deliberately, with the scheduler lock held in neither
+    // of the frees: the harvest under the lock, then the release. Splitting them
+    // keeps the second window covering the free and nothing else.
+    let reclaimed_threads = without_interrupts(|| {
+        let mut scheduler_lock = lock_scheduler();
+        if let Some(scheduler) = scheduler_lock.as_mut() {
+            scheduler.reclaim_terminated_threads()
+        } else {
+            alloc::vec::Vec::new()
+        }
+    });
+    release_reclaimed_threads(reclaimed_threads);
+}
+
+/// Free reclaimed control blocks with interrupts MASKED.
+///
+/// Dropping a `Box<Thread>` reaches `KernelStack::drop` -> `free_kernel_stack`,
+/// which takes `ARM64_STACK_BITMAP`. Doing that preemptibly is link 1 of the
+/// `#609` chain (docs/planning/teardown-unification/609-RCA-RETRACTION-2026-08-21.md
+/// §2.3, which names this exact drop): a timer interrupt taken part-way through
+/// leaves a bitmap holder preemptible, and builds its exception frame on
+/// whatever stack the reaper is standing on. Masking closes that link, and
+/// `#632` having made the bitmap lock an `IrqSafeMutex` is what makes the masked
+/// wait bounded rather than a spin on an orphaned lock.
+///
+/// The masked work here is a slot-bitmap return plus a lock-free tracing
+/// recorder — a bounded handful of instructions per thread.
+#[cfg(target_arch = "aarch64")]
+fn release_reclaimed_threads(reclaimed_threads: alloc::vec::Vec<Box<Thread>>) {
     without_interrupts(|| {
-        let reclaimed_threads = {
-            let mut scheduler_lock = lock_scheduler();
-            if let Some(scheduler) = scheduler_lock.as_mut() {
-                scheduler.reclaim_terminated_threads()
-            } else {
-                alloc::vec::Vec::new()
-            }
-        };
         drop(reclaimed_threads);
     });
+}
+
+/// Free reclaimed control blocks with interrupts as the caller left them.
+///
+/// The `#609` race the masked aarch64 release closes is an `ARM64_STACK_BITMAP`
+/// race and does not exist here. What does exist here is the cost: the x86_64
+/// `KernelStack::drop` walks `KERNEL_STACK_SIZE / 4096` pages, taking the kernel
+/// page-table lock and the frame-allocator lock and doing TLB maintenance on
+/// every one, then logs. Masking that would put an unbounded page-table teardown
+/// inside a no-interrupt window on a path reachable from
+/// `interrupts/context_switch.rs`, buying nothing. Mask what correctness
+/// requires and no more.
+#[cfg(not(target_arch = "aarch64"))]
+fn release_reclaimed_threads(reclaimed_threads: alloc::vec::Vec<Box<Thread>>) {
+    drop(reclaimed_threads);
 }
 
 /// Add a thread as the current running thread without scheduling.

@@ -10754,24 +10754,30 @@ fn check_kernel_stack_allocator_live_guards(kernel_stack: &str) -> Result<(), St
     Ok(())
 }
 
-/// The reclaimed `Box<Thread>` values must be freed with interrupts MASKED and
-/// with the scheduler lock RELEASED.
+/// The reclaimed `Box<Thread>` values must be freed with the scheduler lock
+/// RELEASED, and with interrupts masked ONLY on aarch64.
 ///
-/// Freeing one runs `KernelStack::drop` -> `free_kernel_stack`, which takes
-/// `ARM64_STACK_BITMAP`. Doing that with interrupts ENABLED is link 1 of the
-/// #609 chain — see
+/// Freeing one runs `KernelStack::drop`. On aarch64 that reaches
+/// `free_kernel_stack`, which takes `ARM64_STACK_BITMAP`; doing that with
+/// interrupts ENABLED is link 1 of the #609 chain — see
 /// `docs/planning/teardown-unification/609-RCA-RETRACTION-2026-08-21.md` §2.3,
-/// which names this exact drop, sitting outside the `without_interrupts` block,
-/// as the way a holder of that lock became preemptible. Masking the free closes
-/// that link; #632 having made the bitmap lock `IrqSafeMutex` means the masked
-/// wait is bounded rather than an unbounded spin on an orphaned lock.
+/// which names this exact drop as the way a holder of that lock became
+/// preemptible. Masking the free closes that link, and #632 having made the
+/// bitmap lock an `IrqSafeMutex` is what bounds the masked wait.
 ///
-/// It must equally not run under the scheduler lock, so the binding's
-/// initialiser scope has to end before the drop.
+/// On x86_64 there is no such race, and the same drop instead walks
+/// `KERNEL_STACK_SIZE / 4096` pages taking the kernel page-table lock and the
+/// frame-allocator lock per page. Masking THAT would put an unbounded page-table
+/// teardown in a no-interrupt window on a path reachable from
+/// `interrupts/context_switch.rs`. So the release is arch-scoped, and this pins
+/// both halves: neither may drift to the other's shape.
 ///
-/// This check previously required the opposite ordering (bound and dropped
-/// AFTER `without_interrupts` returned). That pinned the pre-#609 shape.
-fn check_reclaimed_threads_drop_after_unlock(scheduler: &str) -> Result<(), String> {
+/// It must equally not run under the scheduler lock, so the harvest's guard
+/// scope has to end before the release call.
+///
+/// This check previously required the drop to sit AFTER `without_interrupts`
+/// returned on every arch. That pinned the pre-#609 shape.
+fn check_reclaimed_threads_release_is_arch_scoped(scheduler: &str) -> Result<(), String> {
     let functions = module_function_bodies(scheduler);
     let wrappers: Vec<_> = functions
         .get("reclaim_terminated_threads")
@@ -10790,46 +10796,91 @@ fn check_reclaimed_threads_drop_after_unlock(scheduler: &str) -> Result<(), Stri
     let mask = code_mask(body);
     let binding = code_offset_once(body, "let reclaimed_threads =")?;
     let without = code_offset_once(body, "without_interrupts(")?;
-    let drop_reclaimed = code_offset_once(body, "drop(reclaimed_threads)")?;
+    let release = code_offset_once(body, "release_reclaimed_threads(reclaimed_threads)")?;
     let open = next_code(body, &mask, without + "without_interrupts".len())
         .ok_or_else(|| "without_interrupts call has no argument list".to_owned())?;
     let close = matching_paren(body, &mask, open)
         .ok_or_else(|| "without_interrupts call has no closing parenthesis".to_owned())?;
-    if !(without < binding && binding < drop_reclaimed && drop_reclaimed < close) {
+    if !(binding < without && close < release) {
         return Err(
-            "reclaimed Box<Thread> values are not bound and dropped inside without_interrupts"
+            "reclaimed Box<Thread> values are not harvested under the mask and released after it"
+                .to_owned(),
+        );
+    }
+    if !code_offsets(body, &mask, "drop(reclaimed_threads)").is_empty() {
+        return Err(
+            "reclaim_terminated_threads must delegate the free to release_reclaimed_threads"
                 .to_owned(),
         );
     }
 
-    // ...and the scheduler lock guard's scope must have ended first.
-    let lock = code_offset_once(body, "lock_scheduler()")?;
-    let bytes = body.as_bytes();
-    let mut stack: Vec<usize> = Vec::new();
-    let mut guard_scope_close = None;
-    for index in 0..bytes.len() {
-        if !mask[index] {
-            continue;
-        }
-        match bytes[index] {
-            b'{' => stack.push(index),
-            b'}' => {
-                if let Some(scope_open) = stack.pop() {
-                    if scope_open < lock && lock < index && guard_scope_close.is_none() {
-                        guard_scope_close = Some(index);
-                    }
-                }
+    // The two arch arms, classified by the cfg attribute that immediately
+    // precedes each definition rather than by their order in the file.
+    let scheduler_mask = code_mask(scheduler);
+    let definitions = code_offsets(scheduler, &scheduler_mask, "fn release_reclaimed_threads(");
+    if definitions.len() != 2 {
+        return Err(format!(
+            "expected exactly two release_reclaimed_threads definitions, found {}",
+            definitions.len()
+        ));
+    }
+    let mut masked_arm = None;
+    let mut unmasked_arm = None;
+    for definition in definitions {
+        let preamble = &scheduler[..definition];
+        let is_aarch64 = preamble.rfind("#[cfg(target_arch = \"aarch64\")]");
+        let is_other = preamble.rfind("#[cfg(not(target_arch = \"aarch64\"))]");
+        let arm = braced_block(scheduler, &scheduler_mask, definition)
+            .ok_or_else(|| "release_reclaimed_threads has no body".to_owned())?;
+        match (is_aarch64, is_other) {
+            (Some(aarch64_at), Some(other_at)) if aarch64_at > other_at => {
+                masked_arm = Some(arm)
             }
-            _ => {}
+            (Some(_), None) => masked_arm = Some(arm),
+            (Some(_), Some(_)) | (None, Some(_)) => unmasked_arm = Some(arm),
+            (None, None) => {
+                return Err("release_reclaimed_threads definition carries no arch cfg".to_owned())
+            }
         }
     }
-    let guard_scope_close = guard_scope_close
-        .ok_or_else(|| "scheduler lock guard is not inside a braced scope".to_owned())?;
-    if !(guard_scope_close < drop_reclaimed) {
+    let masked_arm = masked_arm
+        .ok_or_else(|| "no #[cfg(target_arch = \"aarch64\")] release_reclaimed_threads".to_owned())?;
+    let unmasked_arm = unmasked_arm.ok_or_else(|| {
+        "no #[cfg(not(target_arch = \"aarch64\"))] release_reclaimed_threads".to_owned()
+    })?;
+
+    const MASKED_ARM_REQUIREMENT: &str =
+        "the aarch64 release must drop the reclaimed threads inside without_interrupts";
+    let masked_mask = code_mask(masked_arm);
+    let inside_mask = (|| {
+        let masked_without = *code_offsets(masked_arm, &masked_mask, "without_interrupts(")
+            .first()
+            .filter(|_| {
+                code_offsets(masked_arm, &masked_mask, "without_interrupts(").len() == 1
+            })?;
+        let masked_drops = code_offsets(masked_arm, &masked_mask, "drop(reclaimed_threads)");
+        let masked_drop = *masked_drops.first().filter(|_| masked_drops.len() == 1)?;
+        let masked_open = next_code(
+            masked_arm,
+            &masked_mask,
+            masked_without + "without_interrupts".len(),
+        )?;
+        let masked_close = matching_paren(masked_arm, &masked_mask, masked_open)?;
+        Some(masked_without < masked_drop && masked_drop < masked_close)
+    })();
+    if inside_mask != Some(true) {
+        return Err(MASKED_ARM_REQUIREMENT.to_owned());
+    }
+
+    let unmasked_mask = code_mask(unmasked_arm);
+    if !code_offsets(unmasked_arm, &unmasked_mask, "without_interrupts(").is_empty() {
         return Err(
-            "reclaimed Box<Thread> values are dropped while the scheduler lock guard is in scope"
+            "the non-aarch64 release must not mask interrupts around the page-table teardown"
                 .to_owned(),
         );
+    }
+    if code_offsets(unmasked_arm, &unmasked_mask, "drop(reclaimed_threads)").len() != 1 {
+        return Err("the non-aarch64 release must free the reclaimed threads".to_owned());
     }
     Ok(())
 }
@@ -10842,7 +10893,7 @@ fn validate_kernel_stack_release_mechanism(
     check_kernel_stack_drop_release_order(kernel_stack)?;
     check_kernel_stack_map_refusal_order(kernel_page_table)?;
     check_kernel_stack_allocator_live_guards(kernel_stack)?;
-    check_reclaimed_threads_drop_after_unlock(scheduler)
+    check_reclaimed_threads_release_is_arch_scoped(scheduler)
 }
 
 #[test]
@@ -10954,26 +11005,11 @@ fn kernel_stack_release_validator_rejects_unsafe_mutations() {
             .is_err()
     );
 
-    let drop_under_lock = r#"
-        fn reclaim_terminated_threads() {
-            without_interrupts(|| {
-                let reclaimed_threads = scheduler.reclaim_terminated_threads();
-                drop(reclaimed_threads);
-            });
-        }
-    "#;
-    assert!(validate_kernel_stack_release_mechanism(
-        &kernel_stack,
-        &kernel_page_table,
-        drop_under_lock,
-    )
-    .is_err());
-
-    // The pre-#609 shape: bound and dropped AFTER the masked region returns, so
-    // `KernelStack::drop` -> `free_kernel_stack` runs with interrupts enabled.
-    // That is link 1 of the #609 chain and must be rejected.
-    let drop_with_interrupts_enabled = r#"
-        fn reclaim_terminated_threads() {
+    // The shape the kernel now carries, reduced to the three functions this
+    // check reads. Validating it first is the anti-vacuity half: every mutation
+    // below is a single edit away from something that passes.
+    let arch_scoped_release = r#"
+        pub fn reclaim_terminated_threads() {
             let reclaimed_threads = without_interrupts(|| {
                 let mut scheduler_lock = lock_scheduler();
                 if let Some(scheduler) = scheduler_lock.as_mut() {
@@ -10982,6 +11018,18 @@ fn kernel_stack_release_validator_rejects_unsafe_mutations() {
                     alloc::vec::Vec::new()
                 }
             });
+            release_reclaimed_threads(reclaimed_threads);
+        }
+
+        #[cfg(target_arch = "aarch64")]
+        fn release_reclaimed_threads(reclaimed_threads: alloc::vec::Vec<Box<Thread>>) {
+            without_interrupts(|| {
+                drop(reclaimed_threads);
+            });
+        }
+
+        #[cfg(not(target_arch = "aarch64"))]
+        fn release_reclaimed_threads(reclaimed_threads: alloc::vec::Vec<Box<Thread>>) {
             drop(reclaimed_threads);
         }
     "#;
@@ -10989,15 +11037,75 @@ fn kernel_stack_release_validator_rejects_unsafe_mutations() {
         validate_kernel_stack_release_mechanism(
             &kernel_stack,
             &kernel_page_table,
-            drop_with_interrupts_enabled,
+            arch_scoped_release,
+        ),
+        Ok(())
+    );
+
+    // The pre-#609 shape, one arm at a time: the aarch64 release freeing with
+    // interrupts ENABLED is link 1 of the #609 chain and must be rejected.
+    let unmasked_aarch64_release = arch_scoped_release.replacen(
+        "            without_interrupts(|| {\n                drop(reclaimed_threads);\n            });",
+        "            drop(reclaimed_threads);",
+        1,
+    );
+    assert_ne!(
+        unmasked_aarch64_release, arch_scoped_release,
+        "aarch64 unmasked-release mutation applied"
+    );
+    assert_eq!(
+        validate_kernel_stack_release_mechanism(
+            &kernel_stack,
+            &kernel_page_table,
+            &unmasked_aarch64_release,
         ),
         Err(
-            "reclaimed Box<Thread> values are not bound and dropped inside without_interrupts"
+            "the aarch64 release must drop the reclaimed threads inside without_interrupts"
                 .to_owned()
         )
     );
 
-    // The drop must also be outside the scheduler lock guard's scope.
+    // And the converse: masking the x86_64 release puts an unbounded page-table
+    // teardown inside a no-interrupt window for a race that arch does not have.
+    let masked_x86_release = arch_scoped_release.replacen(
+        "        fn release_reclaimed_threads(reclaimed_threads: alloc::vec::Vec<Box<Thread>>) {\n            drop(reclaimed_threads);\n        }",
+        "        fn release_reclaimed_threads(reclaimed_threads: alloc::vec::Vec<Box<Thread>>) {\n            without_interrupts(|| {\n                drop(reclaimed_threads);\n            });\n        }",
+        1,
+    );
+    assert_ne!(
+        masked_x86_release, arch_scoped_release,
+        "x86_64 masked-release mutation applied"
+    );
+    assert_eq!(
+        validate_kernel_stack_release_mechanism(
+            &kernel_stack,
+            &kernel_page_table,
+            &masked_x86_release,
+        ),
+        Err(
+            "the non-aarch64 release must not mask interrupts around the page-table teardown"
+                .to_owned()
+        )
+    );
+
+    // Dropping one arm entirely leaves an arch with no release at all.
+    let single_release = arch_scoped_release.replacen(
+        "        #[cfg(not(target_arch = \"aarch64\"))]\n        fn release_reclaimed_threads(reclaimed_threads: alloc::vec::Vec<Box<Thread>>) {\n            drop(reclaimed_threads);\n        }",
+        "",
+        1,
+    );
+    assert_ne!(
+        single_release, arch_scoped_release,
+        "single-arm mutation applied"
+    );
+    assert!(validate_kernel_stack_release_mechanism(
+        &kernel_stack,
+        &kernel_page_table,
+        &single_release,
+    )
+    .is_err());
+
+    // The free must not run under the scheduler lock guard, on any arch.
     let drop_inside_guard_scope = r#"
         fn reclaim_terminated_threads() {
             without_interrupts(|| {
@@ -11010,18 +11118,25 @@ fn kernel_stack_release_validator_rejects_unsafe_mutations() {
                 drop(reclaimed_threads);
             });
         }
+
+        #[cfg(target_arch = "aarch64")]
+        fn release_reclaimed_threads(reclaimed_threads: alloc::vec::Vec<Box<Thread>>) {
+            without_interrupts(|| {
+                drop(reclaimed_threads);
+            });
+        }
+
+        #[cfg(not(target_arch = "aarch64"))]
+        fn release_reclaimed_threads(reclaimed_threads: alloc::vec::Vec<Box<Thread>>) {
+            drop(reclaimed_threads);
+        }
     "#;
-    assert_eq!(
-        validate_kernel_stack_release_mechanism(
-            &kernel_stack,
-            &kernel_page_table,
-            drop_inside_guard_scope,
-        ),
-        Err(
-            "reclaimed Box<Thread> values are dropped while the scheduler lock guard is in scope"
-                .to_owned()
-        )
-    );
+    assert!(validate_kernel_stack_release_mechanism(
+        &kernel_stack,
+        &kernel_page_table,
+        drop_inside_guard_scope,
+    )
+    .is_err());
 }
 
 #[test]
