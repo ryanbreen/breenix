@@ -6,6 +6,8 @@
 
 #![allow(dead_code)] // HAL constants - complete API for AArch64 architecture
 
+use super::percpu_custody as custody;
+
 // ============================================================================
 // Memory Layout Constants
 // ============================================================================
@@ -264,6 +266,16 @@ const _: () = assert!(PERCPU_SCHED_STACK_SIZE + KERNEL_STACK_SIZE as u64 <= PERC
 /// while recording a fatal postmortem.
 pub const PERCPU_STACK_BOUNDARY_CANARY: u64 = 0x4252_4545_4E49_5853;
 
+/// Sentinel standing between the ownership record and the idle/exception stack
+/// above it (ASCII "OVERRUN!").
+///
+/// Unlike the boundary canary this one is NOT diagnostics-only: the custody
+/// predicate refuses to read an ownership record whose sentinel is gone, so a
+/// downward overrun cannot reach the record and then answer a dispatch-path
+/// question with stack bytes. The offset ordering that makes that true is
+/// asserted in `percpu_custody`.
+pub const PERCPU_STACK_OVERRUN_SENTINEL: u64 = 0x4F56_4552_5255_4E21;
+
 /// Guard page size between stacks.
 pub const STACK_GUARD_SIZE: usize = PAGE_SIZE;
 
@@ -314,29 +326,64 @@ pub fn percpu_sched_stack_top(cpu: usize) -> u64 {
     percpu_kernel_stack_bottom(cpu)
 }
 
-/// Write each stack-half boundary sentinel once, before scheduler/SMP startup.
+/// Address of the half-boundary canary word.
+#[inline]
+pub fn percpu_stack_boundary_canary_addr(cpu: usize) -> u64 {
+    percpu_kernel_stack_bottom(cpu) + custody::BOUNDARY_CANARY_OFFSET
+}
+
+/// Address of the sentinel that stands above the ownership record.
+#[inline]
+pub fn percpu_stack_overrun_sentinel_addr(cpu: usize) -> u64 {
+    percpu_kernel_stack_bottom(cpu) + custody::OVERRUN_SENTINEL_OFFSET
+}
+
+/// Write both stack-half sentinels once, before scheduler/SMP startup.
 ///
-/// AArch64 stacks grow downward. The word at the half boundary can therefore
-/// detect the upper idle/exception stack reaching down into the boundary. It
-/// cannot detect a scheduler-stack overrun toward higher addresses: normal
-/// stack growth never approaches the boundary from the lower half.
+/// AArch64 stacks grow downward, so an idle/exception-half overrun reaches the
+/// overrun sentinel first and the boundary canary last, with the ownership
+/// record between them. Neither detects a scheduler-stack overrun toward higher
+/// addresses: normal stack growth never approaches the boundary from the lower
+/// half, which is why the record may live above the canary at all.
 pub fn initialize_percpu_stack_boundary_canaries() {
     for cpu in 0..MAX_CPUS {
         unsafe {
             core::ptr::write_volatile(
-                percpu_sched_stack_top(cpu) as *mut u64,
+                percpu_stack_boundary_canary_addr(cpu) as *mut u64,
                 PERCPU_STACK_BOUNDARY_CANARY,
+            );
+            core::ptr::write_volatile(
+                percpu_stack_overrun_sentinel_addr(cpu) as *mut u64,
+                PERCPU_STACK_OVERRUN_SENTINEL,
             );
         }
     }
 }
 
-/// Read the upper idle/exception-half downward-overrun sentinel for fatal
-/// postmortem diagnostics only; this is not a bidirectional stack guard.
+/// Read the half-boundary canary for fatal postmortem diagnostics only; this is
+/// not a bidirectional stack guard.
 pub fn percpu_stack_boundary_canary_is_intact(cpu: usize) -> bool {
     unsafe {
-        core::ptr::read_volatile(percpu_sched_stack_top(cpu) as *const u64)
+        core::ptr::read_volatile(percpu_stack_boundary_canary_addr(cpu) as *const u64)
             == PERCPU_STACK_BOUNDARY_CANARY
+    }
+}
+
+/// Whether the sentinel above `cpu`'s ownership record is still the word this
+/// kernel wrote.
+///
+/// A downward overrun of the idle/exception half destroys this word before it
+/// can reach any byte of the record (`percpu_custody`'s offset assertions), so
+/// this reading false is exactly "the record may be stack bytes". It is the
+/// trust condition for `percpu_stack_owner_claim`, not diagnostics.
+#[inline]
+pub fn percpu_stack_overrun_sentinel_is_intact(cpu: usize) -> bool {
+    if cpu >= MAX_CPUS {
+        return false;
+    }
+    unsafe {
+        core::ptr::read_volatile(percpu_stack_overrun_sentinel_addr(cpu) as *const u64)
+            == PERCPU_STACK_OVERRUN_SENTINEL
     }
 }
 
@@ -353,17 +400,22 @@ pub const PERCPU_STACK_OWNER_MAGIC: u64 = 0x5354_4B4F_574E_4552;
 
 /// Address of a CPU's two-`u64` stack-ownership record.
 ///
-/// The record sits in the 16 bytes directly above the existing half-boundary
-/// canary word, at the very bottom of the idle/exception half. It is NOT at the
-/// top of the slot because `boot.S` computes each secondary CPU's initial SP
-/// itself (`sp = SMP_STACK_BASE_PHYS + (cpu_id + 1) * 0x20_0000`): the slot top
-/// is part of the boot contract and is not ours to move in this change. The
-/// bottom is the only 16 bytes of the half that ordinary downward stack growth
-/// cannot reach without first destroying the boundary canary, which is already
-/// checked in the fatal postmortem.
+/// The record sits at the very bottom of the idle/exception half, BRACKETED by
+/// the two sentinels: the half-boundary canary below it and the overrun
+/// sentinel above it. It is not at the top of the slot because `boot.S`
+/// computes each secondary CPU's initial SP itself
+/// (`sp = SMP_STACK_BASE_PHYS + (cpu_id + 1) * 0x20_0000`): the slot top is
+/// part of the boot contract and is not ours to move.
+///
+/// The bracket is what the round-4 review asked for. The record used to sit
+/// directly above the canary with nothing above it, so a 16-byte downward
+/// overrun rewrote the record while the canary still read clean — and round 4
+/// had just made that record load-bearing on the dispatch path. Downward growth
+/// now destroys `percpu_stack_overrun_sentinel_addr` first, and
+/// `percpu_stack_owner_claim` will not read a record whose sentinel is gone.
 #[inline]
 pub fn percpu_stack_owner_sentinel(cpu: usize) -> u64 {
-    percpu_kernel_stack_bottom(cpu) + 8
+    percpu_kernel_stack_bottom(cpu) + custody::OWNER_RECORD_OFFSET
 }
 
 /// Stamp `cpu`'s ownership of its own idle/exception stack half.
@@ -395,11 +447,28 @@ pub fn percpu_stack_published_owner(slot: usize) -> Option<usize> {
     let record = percpu_stack_owner_sentinel(slot) as *const u64;
     let word0 = unsafe { core::ptr::read_volatile(record) };
     let word1 = unsafe { core::ptr::read_volatile(record.add(1)) };
-    let owner = word0 ^ PERCPU_STACK_OWNER_MAGIC;
-    if owner != word1 || owner >= MAX_CPUS as u64 {
+    custody::decode_owner_record(word0, word1, PERCPU_STACK_OWNER_MAGIC, MAX_CPUS)
+}
+
+/// The ownership claim a CUSTODY DECISION may rest on, as opposed to what the
+/// record's bytes happen to say.
+///
+/// Same decode, plus the trust condition: a record whose overrun sentinel is
+/// gone reads as no claim at all. That is the whole difference between this and
+/// `percpu_stack_published_owner`, which the refusal record keeps using so the
+/// evidence still reports the bytes as found.
+///
+/// Direction matters. The claim can only ever REFUSE an address that the
+/// arithmetic already attributed to this CPU, so distrusting a reachable record
+/// cannot admit another CPU's slot — that is decided before `claim` is called —
+/// while trusting one could refuse a CPU its own stack and leave the dispatch
+/// with nowhere to route the thread.
+#[inline]
+pub fn percpu_stack_owner_claim(slot: usize) -> Option<usize> {
+    if !percpu_stack_overrun_sentinel_is_intact(slot) {
         return None;
     }
-    Some(owner as usize)
+    percpu_stack_published_owner(slot)
 }
 
 /// The per-CPU stack slot an address belongs to, or `None` outside the region.
@@ -413,37 +482,30 @@ pub fn percpu_stack_published_owner(slot: usize) -> Option<usize> {
 /// entirely. Two comparisons and a shift: this runs on the dispatch path.
 #[inline]
 pub fn percpu_stack_slot_of(addr: u64) -> Option<usize> {
-    let base = percpu_stack_region_base();
-    if addr <= base || addr > base + PERCPU_STACK_REGION_SIZE as u64 {
-        return None;
-    }
-    Some(((addr - 1 - base) >> PERCPU_STACK_STRIDE_SHIFT) as usize)
+    custody::slot_of(
+        percpu_stack_region_base(),
+        PERCPU_STACK_REGION_SIZE as u64,
+        PERCPU_STACK_STRIDE_SHIFT,
+        addr,
+    )
 }
 
 /// Whether `addr` may serve as CPU `cpu`'s kernel/exception stack top.
 ///
-/// This is the single per-CPU stack custody predicate. Both the producer that
-/// CHOOSES an idle-dispatch SP (`idle_dispatch_stack`) and the setter guard
-/// that ADJUDICATES an install (`percpu_stack_install_permitted`) evaluate it,
-/// so a value one of them normalises cannot be refused by the other.
+/// This is the single per-CPU stack custody predicate. The producer that
+/// CHOOSES an idle-dispatch SP (`idle_dispatch_stack`), the setter guard that
+/// ADJUDICATES an install (`percpu_stack_install_permitted`), the pivot that
+/// RUNS on a destination and the dispatch that RESUMES a thread all evaluate
+/// it, so a value one of them normalises cannot be refused by another.
 ///
-/// Acceptance is positive — the address has to be attributable to `cpu` — not
-/// "did not trip a scan". Three outcomes, in the order they are cheapest to
-/// decide:
-///
-/// * The address names no per-CPU slot at all: an ordinary heap-backed thread
-///   kernel stack, or CPU 0's platform boot stack on Parallels. Two comparisons.
-/// * The address names `cpu`'s OWN slot and the slot's published owner is `cpu`
-///   or nothing at all. Accepting an unpublished slot is what keeps very early
-///   boot working, and it is not a hole: an address naming a different CPU's
-///   slot is rejected on the arithmetic alone, before the owner is consulted.
-/// * Anything else belongs to another CPU.
+/// Everything decidable without touching memory or the platform — the slot
+/// arithmetic, the record decode and the acceptance rule itself — lives in
+/// `percpu_custody` and is executed by `tests/percpu_stack_custody.rs`. This
+/// function is the binding of that rule to this kernel's geometry and to the
+/// two memory reads it needs; it deliberately holds no rule of its own.
 #[inline]
 pub fn percpu_stack_top_owned_by(cpu: usize, addr: u64) -> bool {
-    let Some(slot) = percpu_stack_slot_of(addr) else {
-        return true;
-    };
-    slot == cpu && percpu_stack_published_owner(slot).map_or(true, |owner| owner == cpu)
+    custody::slot_admits(cpu, percpu_stack_slot_of(addr), percpu_stack_owner_claim)
 }
 
 /// Legacy constant for compile-time contexts (diagnostics). Uses the default

@@ -539,6 +539,14 @@ fn dump_fatal_postmortem_once(label: &str) {
             raw_uart_dec(
                 super::constants::percpu_stack_boundary_canary_is_intact(canary_cpu) as u64,
             );
+            // The record's own sentinel, reported separately: a downward
+            // overrun destroys it BEFORE it can reach the ownership record, so
+            // a 0 here with a 1 above is the reading that says the record the
+            // custody predicate would have consulted is stack bytes.
+            raw_uart_str(" record_guard=");
+            raw_uart_dec(
+                super::constants::percpu_stack_overrun_sentinel_is_intact(canary_cpu) as u64,
+            );
             raw_uart_str("\n");
         }
         // The refusal TOTAL, which the per-record emissions stop reporting once
@@ -546,6 +554,12 @@ fn dump_fatal_postmortem_once(label: &str) {
         // reader and 17 refusals look exactly like 16.
         raw_uart_str("    percpu_stack_alien_refusals=");
         raw_uart_dec(crate::arch_impl::aarch64::percpu::percpu_stack_alien_refusals());
+        // Steals the selection side declined for the same custody rule. A
+        // refusal count of 0 next to a non-zero routed count is the reading
+        // that says the pinning worked: the thread was kept off the wrong CPU
+        // instead of being refused after it got there.
+        raw_uart_str(" percpu_stack_selection_routed=");
+        raw_uart_dec(crate::task::scheduler::percpu_stack_selection_routed());
         raw_uart_str("\n");
         // Saved-LR report totals. Same argument as the line above: the
         // per-record emissions stop at their whole-boot budget, so without a

@@ -363,6 +363,19 @@ fn retain_cpu_affine_test_thread(
     true
 }
 
+/// Threads work-stealing declined to take because their saved kernel SP stands
+/// in another CPU's per-CPU stack slot. Never reset; reported in the fatal
+/// postmortem next to the custody refusals.
+#[cfg(target_arch = "aarch64")]
+pub static PERCPU_STACK_SELECTION_ROUTED: core::sync::atomic::AtomicU64 =
+    core::sync::atomic::AtomicU64::new(0);
+
+/// Total steals declined for per-CPU stack custody.
+#[cfg(target_arch = "aarch64")]
+pub fn percpu_stack_selection_routed() -> u64 {
+    PERCPU_STACK_SELECTION_ROUTED.load(Ordering::Acquire)
+}
+
 #[cfg(all(target_arch = "aarch64", feature = "boot_tests"))]
 pub(crate) fn clear_cpu_affinity_for_test(thread_id: u64) {
     crate::tracing::providers::teardown::record_kthread_exit_stage_for_test(thread_id);
@@ -1789,6 +1802,12 @@ impl Scheduler {
                     ) {
                         break;
                     }
+                    #[cfg(target_arch = "aarch64")]
+                    if let Some(home) = self.percpu_stack_home_cpu(n, current_cpu) {
+                        PERCPU_STACK_SELECTION_ROUTED.fetch_add(1, Ordering::Relaxed);
+                        self.per_cpu_queues[home].push_back(n);
+                        continue;
+                    }
                     let (terminated, owner_pid) = self
                         .get_thread(n)
                         .map(|thread| (thread.state == ThreadState::Terminated, thread.owner_pid))
@@ -1847,6 +1866,12 @@ impl Scheduler {
                                 current_cpu,
                             ) {
                                 retained_injector = true;
+                                continue;
+                            }
+                            #[cfg(target_arch = "aarch64")]
+                            if let Some(home) = self.percpu_stack_home_cpu(n, current_cpu) {
+                                PERCPU_STACK_SELECTION_ROUTED.fetch_add(1, Ordering::Relaxed);
+                                self.per_cpu_queues[home].push_back(n);
                                 continue;
                             }
                             found = Some(n);
@@ -2197,6 +2222,12 @@ impl Scheduler {
                     ) {
                         break;
                     }
+                    #[cfg(target_arch = "aarch64")]
+                    if let Some(home) = self.percpu_stack_home_cpu(n, current_cpu) {
+                        PERCPU_STACK_SELECTION_ROUTED.fetch_add(1, Ordering::Relaxed);
+                        self.per_cpu_queues[home].push_back(n);
+                        continue;
+                    }
                     let (terminated, owner_pid) = self
                         .get_thread(n)
                         .map(|thread| (thread.state == ThreadState::Terminated, thread.owner_pid))
@@ -2253,6 +2284,12 @@ impl Scheduler {
                                 n,
                                 current_cpu,
                             ) {
+                                continue;
+                            }
+                            #[cfg(target_arch = "aarch64")]
+                            if let Some(home) = self.percpu_stack_home_cpu(n, current_cpu) {
+                                PERCPU_STACK_SELECTION_ROUTED.fetch_add(1, Ordering::Relaxed);
+                                self.per_cpu_queues[home].push_back(n);
                                 continue;
                             }
                             found = Some(n);
@@ -2378,6 +2415,40 @@ impl Scheduler {
     #[cfg(target_arch = "aarch64")]
     pub fn requeue_thread_after_save(&mut self, thread_id: u64) {
         self.requeue_thread_after_save_onto(thread_id, Self::current_cpu_id());
+    }
+
+    /// The CPU that owns the per-CPU stack slot a ready thread's saved kernel
+    /// SP stands in, when that is not this CPU.
+    ///
+    /// SELECTION-SIDE CUSTODY. The dispatch refuses a foreign resume stack and
+    /// routes the thread to the owning CPU, but routing does not pin: the ready
+    /// queues work-steal, so the declining CPU can take the same thread straight
+    /// back off the owner's queue and refuse it again — a tight loop rather than
+    /// a redirect, which is what the round-4 review recorded. Declining at
+    /// SELECTION is what makes the thread genuinely stack-pinned.
+    ///
+    /// The rule is deliberately narrower than the dispatch's: this only declines
+    /// to STEAL: a thread that reaches a CPU's own queue by any other route
+    /// still meets the dispatch adjudication, is recorded there and is routed
+    /// home from there. Selection does not manufacture the foreign resume; it
+    /// also does not hide one that arrives another way.
+    ///
+    /// `None` for every ordinary thread: a heap-backed kernel stack names no
+    /// slot, and that is decided in two comparisons before anything else is
+    /// read. Idle threads are exempt by identity — each legitimately stands on
+    /// its own CPU's slot — and the check runs only in the rare case where an
+    /// address did name a slot.
+    #[cfg(target_arch = "aarch64")]
+    fn percpu_stack_home_cpu(&self, thread_id: u64, current_cpu: usize) -> Option<usize> {
+        let saved_sp = self.get_thread(thread_id)?.context.sp;
+        let slot = crate::arch_impl::aarch64::constants::percpu_stack_slot_of(saved_sp)?;
+        if slot == current_cpu {
+            return None;
+        }
+        if (0..MAX_CPUS).any(|cpu| self.cpu_state[cpu].idle_thread == thread_id) {
+            return None;
+        }
+        Some(slot)
     }
 
     /// Requeue a thread onto the CPU that owns the resources it must resume on,

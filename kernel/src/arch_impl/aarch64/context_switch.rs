@@ -3535,13 +3535,44 @@ fn take_inline_ret_dispatch_info(
         }
         return None;
     }
+
+    // CUSTODY ON THE RET ADMISSION.
+    //
+    // This is the second kernel resume path, and until now the only one that
+    // admitted a saved SP without asking whose stack it is: `resume_sp` is
+    // dereferenced at +0x20 here and then becomes SP in
+    // `aarch64_ret_to_kernel_context`, all upstream of `dispatch_thread_locked`
+    // — which this path never reaches, so the round-4 adjudication there could
+    // not cover it. The eligible population (`has_started &&
+    // saved_by_inline_schedule`, kernel-mode) is exactly the threads whose
+    // saved SP can be an EL1 frame on a per-CPU exception stack.
+    //
+    // Same predicate, same identity token, same emitter as every other custody
+    // site. A refusal returns `None` with the scheduler lock still held, which
+    // is this function's existing "fall through to the ERET dispatch" contract
+    // — and that dispatch adjudicates the same SP and routes the thread to the
+    // CPU that owns the slot. The refusal decides nothing about the thread's
+    // fate here; it declines to be the path that resumes it.
+    //
+    // Idle threads are exempt by identity, not by address: both callers of
+    // `inline_ret_dispatch_info_if_ready` gate it on `!is_idle`, so an idle
+    // thread standing on its own CPU's slot never reaches this admission.
+    let dispatch_cpu = CpuId::current();
+    let resume_sp = thread.context.sp;
+    if !crate::arch_impl::aarch64::percpu::percpu_stack_resume_permitted(
+        dispatch_cpu,
+        resume_sp,
+        core::panic::Location::caller(),
+    ) {
+        return None;
+    }
+
     let saved_by_inline_schedule = thread.saved_by_inline_schedule;
     check_inline_save_resume_point(thread, 1);
     thread.context.elr_el1 = resume_pc;
     let kst = thread.kernel_stack_top;
     let sp_el0 = thread.context.sp_el0;
     let tpidr_el0 = thread.context.tpidr_el0;
-    let resume_sp = thread.context.sp;
     let resume_lr_slot = unsafe { core::ptr::read_volatile((resume_sp + 0x20) as *const u64) };
     trace_ctx_diag(
         TRACE_CTX_DIAG_TAKE_INLINE_RET,
@@ -3561,8 +3592,11 @@ fn take_inline_ret_dispatch_info(
     // has been settled, and while the scheduler lock is still held. From here
     // the assembly restores from `ctx`, so the bytes admitted above and the
     // bytes restored are the same bytes.
-    let cpu_id = Aarch64PerCpu::cpu_id() as usize;
-    let ctx_ptr = stage_ret_dispatch_context(cpu_id, thread.id(), &thread.context, resume_pc)?;
+    // The identity that adjudicated the resume SP is the identity that stages
+    // the copy: one hardware read, spent at both, so this path cannot become
+    // the round-4 split in miniature.
+    let ctx_ptr =
+        stage_ret_dispatch_context(dispatch_cpu.index(), thread.id(), &thread.context, resume_pc)?;
     clear_inline_schedule_state(thread);
     Some(RetDispatchInfo {
         thread_ptr,
@@ -4716,7 +4750,15 @@ fn dispatch_thread_locked(
             context_sp,
             core::panic::Location::caller(),
         ) {
-            let owner = crate::arch_impl::aarch64::constants::percpu_stack_slot_of(context_sp);
+            // The destination is the slot's own CPU and never this one. A
+            // refusal whose slot IS this CPU's slot cannot come from the
+            // arithmetic — that already agreed — only from the ownership
+            // record, i.e. from two facts about one slot disagreeing. Routing
+            // the thread here would hand it straight back to the arm that just
+            // declined it, and the spin would bury the record under its own
+            // repetition. Refuse, keep the gate-failing record, do not loop.
+            let owner = crate::arch_impl::aarch64::constants::percpu_stack_slot_of(context_sp)
+                .filter(|owner| *owner != dispatch_cpu.index());
             trace_dispatch_redirect(thread_id, TRACE_REDIRECT_PERCPU_STACK_FOREIGN);
             // cpu_state first: the requeue consults `cpu_state[].current_thread`
             // and silently declines a thread that still reads as running here.
