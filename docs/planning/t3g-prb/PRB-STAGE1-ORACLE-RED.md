@@ -38,6 +38,13 @@ line to record.
 
 ## Probe A — a cross-CPU stack top is accepted, and a save frame lands on it
 
+The first recorded run of this probe used an overlay predicate that asked for a
+frame taken from user mode (`spsr & 0xF == 0`). That predicate was wrong, not
+the observation, and it has since been corrected; both readings are kept below
+because the raw fields did not change.
+
+### As first recorded (wrong predicate)
+
 ```
 [PERCPU_STACK_CUSTODY_ORACLE:aarch64:leg=A:target_cpu=7:stimulus_cpu=2:arm_verified=1:stimuli=1:accepted=1:overwritten=33:elr_slot=0xffff0000404f76b0:spsr_slot=0x5:overlay=0:FAIL]
 ```
@@ -51,11 +58,62 @@ frame's 8-byte tail pad, which the vector never stores to, and it survived
 intact. `arm_verified=1` says the borrowed slot really was mapped and idle
 before the stimulus, so the overwrite is the stimulus's doing.
 
-`overlay=0` is *not* an exoneration. The overlay predicate as specified asks for
-a frame taken from user mode (`spsr & 0xF == 0`); what actually landed is
-`spsr_slot=0x5` (EL1h) with `elr_slot=0xffff0000404f76b0`, a kernel text
-address — an exception taken while the CPU was already in EL1 with SP_EL1
-pointing at the borrowed stack. Same class of damage, different entry level.
+`overlay=0` was *not* an exoneration. What actually landed is `spsr_slot=0x5`
+(EL1h) with `elr_slot=0xffff0000404f76b0`, a kernel text address — an exception
+taken while the CPU was already in EL1 with SP_EL1 pointing at the borrowed
+stack. Same class of damage, different entry level.
+
+### Corrected predicate, re-run before any repair
+
+Serial: `docs/planning/t3g-prb/serials/prb-stage1b-overlay-red-20260823T105620Z.txt`
+
+```
+[PERCPU_STACK_CUSTODY_ORACLE:aarch64:leg=A:target_cpu=7:stimulus_cpu=3:arm_verified=1:stimuli=1:accepted=1:overwritten=33:pad_intact=1:elr_slot=0xffff0000404c2cf8:spsr_slot=0x5:overlay=1:FAIL]
+```
+
+`overlay` is now `1` when `overwritten > 0` and the two frame slots read back as
+a genuine register-save frame:
+
+- `elr_slot` is a canonical kernel high-half address (`elr_slot >> 48 == 0xffff`);
+- `spsr_slot & 0xF` is a well-formed exception-return mode — `SPSR_MODE_EL0T`
+  (`0b0000`) or `SPSR_MODE_EL1H` (`0b0101`). Both are legitimate: the vectors
+  carve their 272-byte frame off whatever SP is current, so a userspace thread
+  whose SP_EL1 is a borrowed stack top and a CPU already in EL1 running on a
+  borrowed exception stack both build their frame there. EL1h is the mode the
+  filed defect shows;
+- `spsr_slot` has no bits set above the 32-bit PSTATE image (NZCV, bits 31:28,
+  is the highest-numbered SPSR field), so an arbitrary word cannot be read as
+  processor state.
+
+The new `pad_intact` field reports the 34th word — the frame's 8-byte tail pad
+at `top - 8`, which the vector's 33 stores never touch. `overwritten == 33 &&
+pad_intact == 1` is the save frame's own fingerprint, and this run shows exactly
+that.
+
+Probe A's PASS condition is unchanged: `target_cpu != none && arm_verified == 1
+&& stimuli > 0 && accepted == 0 && overwritten == 0 && overlay == 0`.
+`pad_intact` is reported, not gated on.
+
+### The fingerprint varies with which CPU borrows the slot
+
+Four consecutive runs of the corrected probe:
+
+| stimulus_cpu | overwritten | pad_intact | foreign_occupancy |
+|---|---|---|---|
+| 0 | 34 | 0 | 5 |
+| 1 | 33 | 1 | 2 |
+| 0 | 34 | 0 | 3 |
+| 3 | 33 | 1 | 2 |
+
+`accepted=1` and `overlay=1` in all four. The clean `33/1` fingerprint appears
+when the stimulus lands on a secondary CPU; when CPU 0 borrows the slot it keeps
+running on it long enough for an ordinary `stp x29, x30, [sp, #-16]!` prologue to
+reach the tail pad as well, giving `34/0`. Probe C's count rises above the
+stimulus's own 2 for the same reason: once `kernel_stack_top()` holds the
+borrowed address, the dispatch path's `set_user_rsp_scratch(kernel_stack_top())`
+and `ensure_user_rsp_scratch_for_el0()` re-install it, so the extra observations
+are downstream propagation of the single stimulus, not independent foreign
+installs.
 
 ## Probe B — the control arm, shipped in the same build
 
@@ -74,6 +132,9 @@ probe A's image (it runs before the stimulus is armed).
 ```
 [PERCPU_STACK_CUSTODY_ORACLE:aarch64:leg=C:slots=8:observations=19569:foreign_occupancy=2:max_concurrent=1:worst_slot=7:worst_cpu=2:FAIL]
 ```
+
+(This is the first recorded run; the corrected-predicate re-run reports the same
+`foreign_occupancy=2` with `worst_cpu=3`.)
 
 `foreign_occupancy=2` carries the failure: two stack-top installs named a slot
 whose owner was not the installing CPU. Both are probe A's stimulus

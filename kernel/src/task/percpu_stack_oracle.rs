@@ -117,6 +117,90 @@ const _: () = assert!(SAVE_FRAME_BYTES - FRAME_ELR_OFFSET == 24);
 ))]
 const _: () = assert!(SAVE_FRAME_BYTES - FRAME_SPSR_OFFSET == 16);
 
+/// Byte offset of the frame's 8-byte tail pad: the 34th word of the 272-byte
+/// carve-out. The vectors store 33 words (x0-x30, ELR, SPSR) and never write
+/// this one, so `overwritten == 33` together with an intact pad is the save
+/// frame's own fingerprint.
+#[cfg(all(
+    target_arch = "aarch64",
+    feature = "percpu_stack_custody_oracle",
+    feature = "boot_tests"
+))]
+const FRAME_TAIL_PAD_OFFSET: u64 = 264;
+
+#[cfg(all(
+    target_arch = "aarch64",
+    feature = "percpu_stack_custody_oracle",
+    feature = "boot_tests"
+))]
+const _: () = assert!(SAVE_FRAME_BYTES - FRAME_TAIL_PAD_OFFSET == 8);
+#[cfg(all(
+    target_arch = "aarch64",
+    feature = "percpu_stack_custody_oracle",
+    feature = "boot_tests"
+))]
+const _: () = assert!(FRAME_TAIL_PAD_OFFSET / 8 == (IMAGE_WORDS - 1) as u64);
+
+/// Mask of `SPSR.M[3:0]`, the exception-return mode selector.
+#[cfg(all(
+    target_arch = "aarch64",
+    feature = "percpu_stack_custody_oracle",
+    feature = "boot_tests"
+))]
+const SPSR_MODE_MASK: u64 = 0xF;
+
+/// `M[3:0] == 0b0000`: the exception was taken from EL0 with SP_EL0.
+///
+/// Legitimate because a userspace thread's exception frame is built on the
+/// SP_EL1 the kernel installed — a borrowed stack top lands the frame on the
+/// borrowed stack.
+#[cfg(all(
+    target_arch = "aarch64",
+    feature = "percpu_stack_custody_oracle",
+    feature = "boot_tests"
+))]
+const SPSR_MODE_EL0T: u64 = 0b0000;
+
+/// `M[3:0] == 0b0101`: the exception was taken from EL1 with SP_EL1 selected.
+///
+/// Equally legitimate, and it is the shape the filed defect shows. The vectors
+/// carve their 272-byte frame off whatever SP is current, so a CPU already in
+/// EL1 running on a borrowed exception stack builds its frame there too. Both
+/// modes are therefore admitted; anything else is not a well-formed
+/// exception-return mode and must not be read as a save frame.
+#[cfg(all(
+    target_arch = "aarch64",
+    feature = "percpu_stack_custody_oracle",
+    feature = "boot_tests"
+))]
+const SPSR_MODE_EL1H: u64 = 0b0101;
+
+/// Bits above the 32-bit PSTATE image. NZCV occupies bits 31:28 and is the
+/// highest-numbered SPSR field, so a genuine saved SPSR has nothing set above
+/// bit 31. A word with those bits set is an arbitrary value, not processor
+/// state.
+#[cfg(all(
+    target_arch = "aarch64",
+    feature = "percpu_stack_custody_oracle",
+    feature = "boot_tests"
+))]
+const SPSR_BITS_ABOVE_PSTATE: u64 = !0xFFFF_FFFF;
+
+/// True when the two frame slots read back as a genuine register-save frame:
+/// a canonical kernel high-half return address, a well-formed exception-return
+/// mode, and a PSTATE image with no bits above NZCV.
+#[cfg(all(
+    target_arch = "aarch64",
+    feature = "percpu_stack_custody_oracle",
+    feature = "boot_tests"
+))]
+fn frame_slots_are_a_save_frame(elr_slot: u64, spsr_slot: u64) -> bool {
+    let mode = spsr_slot & SPSR_MODE_MASK;
+    (elr_slot >> 48) == 0xffff
+        && (mode == SPSR_MODE_EL0T || mode == SPSR_MODE_EL1H)
+        && (spsr_slot & SPSR_BITS_ABOVE_PSTATE) == 0
+}
+
 // ============================================================================
 // Probe A — is a cross-CPU stack top accepted, and what happens next
 // ============================================================================
@@ -184,6 +268,13 @@ static A_SPSR_SLOT: AtomicU64 = AtomicU64::new(0);
     feature = "boot_tests"
 ))]
 static A_OVERLAY: AtomicU64 = AtomicU64::new(0);
+/// 1 while the frame's 8-byte tail pad still holds its planted value.
+#[cfg(all(
+    target_arch = "aarch64",
+    feature = "percpu_stack_custody_oracle",
+    feature = "boot_tests"
+))]
+static A_PAD_INTACT: AtomicU64 = AtomicU64::new(0);
 
 /// Sentinel for "no CPU": `MAX_CPUS` is small, so any out-of-range value works
 /// and every consumer range-checks before indexing.
@@ -560,6 +651,7 @@ fn report_cross_cpu_install() {
     let elr_slot = A_ELR_SLOT.load(Ordering::Acquire);
     let spsr_slot = A_SPSR_SLOT.load(Ordering::Acquire);
     let overlay = A_OVERLAY.load(Ordering::Acquire);
+    let pad_intact = A_PAD_INTACT.load(Ordering::Acquire);
 
     // No offline slot to borrow means the probe never ran; it must not pass
     // silently. `stimuli == 0` is likewise a failure: a probe that never fired
@@ -573,36 +665,39 @@ fn report_cross_cpu_install() {
 
     match (cpu_field(target_cpu), cpu_field(stimulus_cpu)) {
         (Some(target), Some(stimulus)) => crate::serial_println!(
-            "[PERCPU_STACK_CUSTODY_ORACLE:aarch64:leg=A:target_cpu={}:stimulus_cpu={}:arm_verified={}:stimuli={}:accepted={}:overwritten={}:elr_slot=0x{:x}:spsr_slot=0x{:x}:overlay={}:{}]",
+            "[PERCPU_STACK_CUSTODY_ORACLE:aarch64:leg=A:target_cpu={}:stimulus_cpu={}:arm_verified={}:stimuli={}:accepted={}:overwritten={}:pad_intact={}:elr_slot=0x{:x}:spsr_slot=0x{:x}:overlay={}:{}]",
             target,
             stimulus,
             arm_verified,
             stimuli,
             accepted,
             overwritten,
+            pad_intact,
             elr_slot,
             spsr_slot,
             overlay,
             if passed { "PASS" } else { "FAIL" },
         ),
         (Some(target), None) => crate::serial_println!(
-            "[PERCPU_STACK_CUSTODY_ORACLE:aarch64:leg=A:target_cpu={}:stimulus_cpu=none:arm_verified={}:stimuli={}:accepted={}:overwritten={}:elr_slot=0x{:x}:spsr_slot=0x{:x}:overlay={}:{}]",
+            "[PERCPU_STACK_CUSTODY_ORACLE:aarch64:leg=A:target_cpu={}:stimulus_cpu=none:arm_verified={}:stimuli={}:accepted={}:overwritten={}:pad_intact={}:elr_slot=0x{:x}:spsr_slot=0x{:x}:overlay={}:{}]",
             target,
             arm_verified,
             stimuli,
             accepted,
             overwritten,
+            pad_intact,
             elr_slot,
             spsr_slot,
             overlay,
             if passed { "PASS" } else { "FAIL" },
         ),
         _ => crate::serial_println!(
-            "[PERCPU_STACK_CUSTODY_ORACLE:aarch64:leg=A:target_cpu=none:stimulus_cpu=none:arm_verified={}:stimuli={}:accepted={}:overwritten={}:elr_slot=0x{:x}:spsr_slot=0x{:x}:overlay={}:FAIL]",
+            "[PERCPU_STACK_CUSTODY_ORACLE:aarch64:leg=A:target_cpu=none:stimulus_cpu=none:arm_verified={}:stimuli={}:accepted={}:overwritten={}:pad_intact={}:elr_slot=0x{:x}:spsr_slot=0x{:x}:overlay={}:FAIL]",
             arm_verified,
             stimuli,
             accepted,
             overwritten,
+            pad_intact,
             elr_slot,
             spsr_slot,
             overlay,
@@ -749,11 +844,17 @@ fn percpu_stack_oracle_thread() {
             unsafe { core::ptr::read_volatile((frame_base + FRAME_ELR_OFFSET) as *const u64) };
         let spsr_slot =
             unsafe { core::ptr::read_volatile((frame_base + FRAME_SPSR_OFFSET) as *const u64) };
+        let pad_slot =
+            unsafe { core::ptr::read_volatile((frame_base + FRAME_TAIL_PAD_OFFSET) as *const u64) };
         A_OVERWRITTEN.store(overwritten, Ordering::Release);
         A_ELR_SLOT.store(elr_slot, Ordering::Release);
         A_SPSR_SLOT.store(spsr_slot, Ordering::Release);
+        A_PAD_INTACT.store(
+            u64::from(pad_slot == image_word(IMAGE_WORDS - 1)),
+            Ordering::Release,
+        );
         A_OVERLAY.store(
-            u64::from(overwritten > 0 && (elr_slot >> 48) == 0xffff && (spsr_slot & 0xF) == 0),
+            u64::from(overwritten > 0 && frame_slots_are_a_save_frame(elr_slot, spsr_slot)),
             Ordering::Release,
         );
     }
