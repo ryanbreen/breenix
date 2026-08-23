@@ -119,7 +119,16 @@ pub fn save_user_context(
     ctx.x27 = frame.x27;
     ctx.x28 = frame.x28;
     ctx.x29 = frame.x29;
-    ctx.x30 = frame.x30;
+    // Saved-LR custody: EL0 words are user data and are stored verbatim; the
+    // accessor is still the single authority so this helper cannot drift away
+    // from the census the dispatch producers feed.
+    super::context_switch::set_saved_lr(
+        &mut ctx.x30,
+        frame.x30,
+        super::context_switch::SavedLrSlot::HalSave,
+        super::context_switch::saved_lr_el_of_frame(frame),
+        0,
+    );
     ctx.elr_el1 = frame.elr;
     ctx.spsr_el1 = frame.spsr;
 
@@ -152,9 +161,19 @@ pub fn restore_user_context(
     frame.x27 = ctx.x27;
     frame.x28 = ctx.x28;
     frame.x29 = ctx.x29;
-    frame.x30 = ctx.x30;
-    frame.elr = ctx.elr_el1;
+    // SPSR first: the level the link register will be live at is a property of
+    // the frame, and this is the write that settles it. The level is then read
+    // out before the slot is borrowed mutably.
     frame.spsr = ctx.spsr_el1;
+    let restore_el = super::context_switch::saved_lr_el_of_frame(frame);
+    super::context_switch::set_saved_lr(
+        &mut frame.x30,
+        ctx.x30,
+        super::context_switch::SavedLrSlot::HalRestore,
+        restore_el,
+        0,
+    );
+    frame.elr = ctx.elr_el1;
 
     // Set SP_EL0 (user stack pointer)
     unsafe {

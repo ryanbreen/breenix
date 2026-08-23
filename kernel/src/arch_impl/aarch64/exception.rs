@@ -35,6 +35,24 @@ pub(crate) fn any_fatal_postmortem_captured() -> bool {
     FATAL_POSTMORTEM_CAPTURED
         .iter()
         .any(|flag| flag.load(Ordering::Acquire))
+        || EL1_FATAL_FRAME_DUMPS.load(Ordering::Acquire) != 0
+}
+
+/// EL1 fatal register dumps taken, whether or not a full postmortem followed.
+///
+/// WHY THIS TERM EXISTS. The self-test verdicts read
+/// `any_fatal_postmortem_captured()` for their `fatal=` field, and that flag is
+/// set only by `dump_fatal_postmortem_once`. A PC-alignment abort at EL1 stops
+/// at `[FATAL_REGS]` without reaching it, so a leg could — and did, in the
+/// saved-LR leg's own red run — print
+/// `[FATAL_REGS] label=PC_ALIGN ... esr=0x8a000000` and still report
+/// `fatal=0`. Every leg using that term was blind to exactly the face this
+/// family is filed at. Counting the register dump closes it for all of them.
+pub(crate) static EL1_FATAL_FRAME_DUMPS: AtomicU64 = AtomicU64::new(0);
+
+/// Reader for the EL1 fatal register-dump counter.
+pub fn el1_fatal_frame_dumps() -> u64 {
+    EL1_FATAL_FRAME_DUMPS.load(Ordering::Acquire)
 }
 static FATAL_POSTMORTEM_SECTIONS_CLAIMED: [AtomicU64; 8] =
     [const { AtomicU64::new(0) }; 8];
@@ -201,6 +219,7 @@ fn dump_el1_fatal_frame_and_dispatch_trace(
 ) {
     use crate::arch_impl::aarch64::context_switch::{raw_uart_dec, raw_uart_hex, raw_uart_str};
 
+    EL1_FATAL_FRAME_DUMPS.fetch_add(1, Ordering::Release);
     let sp_at_crash = frame as *const _ as u64 + 272;
     raw_uart_str("\n[FATAL_REGS] label=");
     raw_uart_str(label);
@@ -527,6 +546,28 @@ fn dump_fatal_postmortem_once(label: &str) {
         // reader and 17 refusals look exactly like 16.
         raw_uart_str("    percpu_stack_alien_refusals=");
         raw_uart_dec(crate::arch_impl::aarch64::percpu::percpu_stack_alien_refusals());
+        raw_uart_str("\n");
+        // Saved-LR report totals. Same argument as the line above: the
+        // per-record emissions stop at their whole-boot budget, so without a
+        // total here 9 non-PC words and 8 read identically.
+        let (lr_nontext, lr_tid, lr_value, lr_sites, lr_el0_kernel) =
+            crate::arch_impl::aarch64::context_switch::saved_lr_report_snapshot();
+        raw_uart_str("    saved_lr_nontext=");
+        raw_uart_dec(lr_nontext);
+        raw_uart_str(" last_tid=");
+        raw_uart_dec(lr_tid);
+        raw_uart_str(" last_lr=");
+        crate::arch_impl::aarch64::context_switch::raw_uart_hex(lr_value);
+        raw_uart_str(" sites=");
+        crate::arch_impl::aarch64::context_switch::raw_uart_hex(lr_sites);
+        raw_uart_str(" el0_kernel_lr=");
+        raw_uart_dec(lr_el0_kernel);
+        raw_uart_str("\n");
+        raw_uart_str("    ret_stage_refusals=");
+        raw_uart_dec(
+            crate::arch_impl::aarch64::context_switch::RET_STAGE_REFUSALS
+                .load(core::sync::atomic::Ordering::Acquire),
+        );
         raw_uart_str("\n");
     });
     dump_fatal_postmortem_section(cpu_id, 6, "\n  Last-dispatched tids:\n", || {

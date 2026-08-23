@@ -141,7 +141,7 @@ pub const RESUME_PC_SOURCE_EL1_RESTORE: u64 = 8;
 pub const RESUME_PC_SOURCE_EL0_DISPATCH_GUARD: u64 = 9;
 pub const RESUME_PC_SOURCE_EL0_FLAG: u64 = 0x10;
 
-const RESUME_PC_CENSUS_SOURCES: usize = 5;
+const RESUME_PC_CENSUS_SOURCES: usize = 9;
 const RESUME_PC_CENSUS_CLASSES: usize = 5;
 const RESUME_PC_CENSUS_SOURCE_NAMES: [&str; RESUME_PC_CENSUS_SOURCES] = [
     "el1-restore-frame-elr",
@@ -149,6 +149,10 @@ const RESUME_PC_CENSUS_SOURCE_NAMES: [&str; RESUME_PC_CENSUS_SOURCES] = [
     "el0-first-entry-frame-elr",
     "ctx-x30",
     "ctx-elr-el1",
+    "lr-save-el1",
+    "lr-restore-el1",
+    "lr-save-el0",
+    "lr-restore-el0",
 ];
 static RESUME_PC_CENSUS: [
     [[AtomicU32; RESUME_PC_CENSUS_CLASSES]; RESUME_PC_CENSUS_SOURCES];
@@ -232,6 +236,251 @@ fn census_resume_pc(source_idx: usize, addr: u64) {
     }
     RESUME_PC_CENSUS[cpu_id][source_idx][resume_pc_class(addr)]
         .fetch_add(1, Ordering::Relaxed);
+}
+
+// ── Saved link-register custody ───────────────────────────────────────────
+//
+// A resume PC is the word that reaches ELR_EL1. The link register is the OTHER
+// PC in a saved context: whatever word sits at CpuContext/frame offset 240
+// becomes the target of the next `ret` the resumed code executes, at an
+// unbounded later time, with no record tying that branch back to the dispatch
+// that installed it. The T3-G run-3 boot was killed by exactly that — a `ret`
+// to `0x19`, the outgoing tid.
+//
+// THIS IS A CENSUS AND A REPORT, NOT A SECOND GUARD, AND THE REASON IS A
+// NEGATIVE RESULT THIS ROUND MEASURED RATHER THAN ASSUMED.
+//
+// The repair this was built for would have refused an inadmissible word on its
+// way into a saved-LR slot and substituted a named trampoline. Production says
+// that is wrong at three of the four producers and unreachable at the fourth:
+//
+//  * EL0, any slot. x30 there is USER DATA. AArch64 leaves it free for a leaf
+//    to use as a scratch register, `_start` is entered with x30 = 0, and the
+//    kernel must preserve a user register verbatim across a trap. Rewriting it
+//    would hand a user program a kernel return address — #637's face,
+//    manufactured by the guard meant to prevent it. Measured: `0x400008ec` and
+//    `0x400048ac` arrived at an EL1-named save in one 60 s boot, because
+//    `save_kernel_context_inline` is entered whenever the entry stub's
+//    `from_el0` flag is clear, INCLUDING the branch whose frame SPSR says EL0.
+//    (That is why the level comes from `saved_lr_el_of_frame`, never from the
+//    name of the function doing the copy.)
+//
+//  * An EXCEPTION-SAVED EL1 context, at save or at restore. The word is a
+//    snapshot of x30 at an arbitrary preemption point, and compiled kernel
+//    code may legitimately be using x30 as a scratch temporary once it has
+//    stored its own return address. Measured: one gate boot produced
+//    `[LR_NONTEXT:site=save-el1:tid=29:lr=0xffff00005038cf50]` — a kernel heap
+//    address — and then the matching `restore-el1` of the same word; earlier
+//    boots put `0x28` and `0x0b2d05e0` in tid 32's saved EL1 x30.
+//    Substituting would destroy a live data register.
+//
+//  * An INLINE-SAVED (architectural) context, where x30 IS a resume PC by
+//    construction and a non-PC word IS a corruption — is ALREADY REFUSED,
+//    twice, before any of this runs. `take_inline_ret_dispatch_info` admits
+//    `thread.context.x30` as the ret-dispatch resume PC, and
+//    `restore_kernel_context_inline` derives its `resume_pc` from the same
+//    word for an inline-saved context and refuses through
+//    `RESUME_PC_SOURCE_EL1_RESTORE`. Leg L drives the specimen's exact shape
+//    into that class and both guards fire; a third one would be unreachable
+//    code carrying a fail-closed claim.
+//
+// So the accessor is the single authority for every Rust copy into a saved-LR
+// slot, it CLASSIFIES every word into the existing resume-PC census, and it
+// REPORTS the EL1 words that are not PCs (`[LR_NONTEXT:`, bounded, counted,
+// read back in the fatal postmortem). It never substitutes. A producer added
+// later inherits the census instead of quietly reopening the blind spot.
+
+/// Which saved-LR slot is being written.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SavedLrSlot {
+    /// `thread.context.x30 <- frame.x30` on an exception save.
+    Save,
+    /// `frame.x30 <- thread.context.x30` on an ERET dispatch.
+    Restore,
+    /// `ctx.x30 <- frame.x30` in the HAL user-context save helper.
+    HalSave,
+    /// `frame.x30 <- ctx.x30` in the HAL user-context restore helper.
+    HalRestore,
+}
+
+/// The exception level the word will be LIVE at once restored.
+///
+/// This is a property of the register file the frame holds, not of the
+/// function doing the copy. `save_kernel_context_inline` is entered whenever
+/// the entry stub's `from_el0` flag is clear, INCLUDING the branch where the
+/// frame's own SPSR says EL0 — and that frame holds a user register file whose
+/// x30 is a user address. Deriving the level from the name of the caller
+/// instead of from the frame refuses live user link registers: an unnarrowed
+/// first cut of this accessor refused four of them in a single 60 s boot
+/// (0x400008ec, 0x400048ac — the user link base is 0x40000000).
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SavedLrEl {
+    El0,
+    El1,
+}
+
+/// The level a frame's register file belongs to, taken from the frame itself.
+///
+/// Callers on the `from_el0 == true` path pass `El0` directly: the entry stub
+/// is the authority there. Callers reached with `from_el0 == false` ask this,
+/// because the frame's SPSR is then the only fact that distinguishes a kernel
+/// register file from a user one. It delegates to `frame_returns_to_el0` so
+/// there stays exactly ONE spelling of the exception-level test in this file.
+#[inline(always)]
+pub(crate) fn saved_lr_el_of_frame(frame: &Aarch64ExceptionFrame) -> SavedLrEl {
+    if frame_returns_to_el0(frame) {
+        SavedLrEl::El0
+    } else {
+        SavedLrEl::El1
+    }
+}
+
+impl SavedLrSlot {
+    /// Row in `RESUME_PC_CENSUS`. The HAL helpers share the rows of the
+    /// dispatch producers they duplicate; the record's site name keeps them
+    /// distinct.
+    #[inline(always)]
+    fn census_index(self, el: SavedLrEl) -> usize {
+        match (self, el) {
+            (SavedLrSlot::Save | SavedLrSlot::HalSave, SavedLrEl::El1) => 5,
+            (SavedLrSlot::Restore | SavedLrSlot::HalRestore, SavedLrEl::El1) => 6,
+            (SavedLrSlot::Save | SavedLrSlot::HalSave, SavedLrEl::El0) => 7,
+            (SavedLrSlot::Restore | SavedLrSlot::HalRestore, SavedLrEl::El0) => 8,
+        }
+    }
+
+    #[inline(always)]
+    fn name(self, el: SavedLrEl) -> &'static str {
+        let el1 = matches!(el, SavedLrEl::El1);
+        match self {
+            SavedLrSlot::Save if el1 => "save-el1",
+            SavedLrSlot::Save => "save-el0",
+            SavedLrSlot::Restore if el1 => "restore-el1",
+            SavedLrSlot::Restore => "restore-el0",
+            SavedLrSlot::HalSave if el1 => "hal-save-el1",
+            SavedLrSlot::HalSave => "hal-save-el0",
+            SavedLrSlot::HalRestore if el1 => "hal-restore-el1",
+            SavedLrSlot::HalRestore => "hal-restore-el0",
+        }
+    }
+
+    #[inline(always)]
+    fn bit(self, el: SavedLrEl) -> u64 {
+        1u64 << (self.census_index(el) as u64 - 5)
+    }
+}
+
+/// EL0 saved LRs that name a high-half kernel address. Reported, never
+/// rewritten: at EL0 the word is data, and the ERET to EL0 cannot execute a
+/// kernel address from it.
+pub static SAVED_LR_EL0_KERNEL_ADDR: AtomicU64 = AtomicU64::new(0);
+/// EL1 words that are neither a kernel PC, the sentinel, nor a user address.
+/// Reported, never substituted. The last one's identity is kept for the
+/// postmortem, and the per-site bitmask says which producers have seen one.
+pub static SAVED_LR_NONTEXT: AtomicU64 = AtomicU64::new(0);
+pub static SAVED_LR_NONTEXT_TID: AtomicU64 = AtomicU64::new(0);
+pub static SAVED_LR_NONTEXT_VALUE: AtomicU64 = AtomicU64::new(0);
+pub static SAVED_LR_NONTEXT_SITES: AtomicU64 = AtomicU64::new(0);
+static SAVED_LR_NONTEXT_EMISSIONS: AtomicU64 = AtomicU64::new(0);
+
+/// The kernel's explicit "this context has no return address" sentinel. Written
+/// deliberately at the idle-frame producers and by the idle-context reset, so a
+/// copy of a context carrying it is not a corruption and must not be poisoned.
+/// It is also inert: a `ret` through 0 aborts at address 0 immediately, naming
+/// nothing and executing nothing.
+const SAVED_LR_NONE: u64 = 0;
+
+/// A saved EL1 link register is admissible when it belongs to one of the three
+/// classes an EL1 register file can legitimately hold. The classification is
+/// the one `resume_pc_class` already uses, and the boot census
+/// (`[RESUME_PC_CENSUS:source=lr-save-el1]` /
+/// `[RESUME_PC_CENSUS:source=lr-restore-el1]`) reports the same classes for
+/// every word that passes here, so the rule is checkable against production
+/// rather than asserted.
+///
+///  1. A dispatchable kernel PC — an ordinary return address. In a clean 60 s
+///     four-CPU boot this is ~14000 of ~14000 words at both EL1 producers.
+///  2. The sentinel 0, written deliberately at the idle producers.
+///  3. A plausible USER virtual address. This one is not obvious and it is not
+///     a concession: between the `svc` trap and the moment the syscall entry
+///     stub archives the user register file, x30 still holds the USER link
+///     register while the CPU is already at EL1. A timer IRQ landing in that
+///     window captures an EL1 frame whose x30 is a user address, and that word
+///     must survive verbatim — the stub stores it into the user frame after
+///     the IRQ returns, so substituting a kernel trampoline there would hand
+///     the user program a kernel return address, which is #637's face
+///     manufactured by the guard meant to prevent it. One such word was
+///     observed in the very first instrumented boot (tid 1207, `0x4000f4a0`,
+///     user link base `0x40000000`).
+///
+/// WHAT THIS DOES NOT CATCH, stated plainly: a corrupted word that happens to
+/// land inside the user window is admitted. Every filed face of this family is
+/// outside it — the run-3 specimen's `0x19`, #633's tid-as-PC, #635's
+/// kernel-stack and .bss addresses, #639's kernel address — because a tid is
+/// below `0x1000` and a kernel VA is above the window. The census counts class
+/// 2 at both EL1 producers, so if that gap ever needs closing there is already
+/// a number to close it against.
+#[inline(always)]
+fn saved_lr_is_admissible(value: u64) -> bool {
+    value == SAVED_LR_NONE
+        || resume_pc_is_dispatchable(value)
+        || resume_pc_is_user_dispatchable(value)
+}
+
+/// Snapshot the saved-LR report counters:
+/// (non-PC EL1 words, last tid, last value, per-site bitmask, EL0 kernel addrs).
+pub fn saved_lr_report_snapshot() -> (u64, u64, u64, u64, u64) {
+    (
+        SAVED_LR_NONTEXT.load(Ordering::Acquire),
+        SAVED_LR_NONTEXT_TID.load(Ordering::Acquire),
+        SAVED_LR_NONTEXT_VALUE.load(Ordering::Acquire),
+        SAVED_LR_NONTEXT_SITES.load(Ordering::Acquire),
+        SAVED_LR_EL0_KERNEL_ADDR.load(Ordering::Acquire),
+    )
+}
+
+/// THE single authority for every Rust copy into a saved link-register slot.
+///
+/// Classifies the word into the resume-PC census, reports an EL1 word that is
+/// not a PC, and stores the word. It never substitutes — see the negative
+/// result above.
+#[inline(always)]
+pub(crate) fn set_saved_lr(
+    slot: &mut u64,
+    value: u64,
+    which: SavedLrSlot,
+    el: SavedLrEl,
+    tid: u64,
+) {
+    census_resume_pc(which.census_index(el), value);
+    *slot = value;
+
+    if matches!(el, SavedLrEl::El0) {
+        if value >= 0xFFFF_0000_0000_0000 {
+            SAVED_LR_EL0_KERNEL_ADDR.fetch_add(1, Ordering::Relaxed);
+        }
+        return;
+    }
+
+    if saved_lr_is_admissible(value) {
+        return;
+    }
+
+    SAVED_LR_NONTEXT.fetch_add(1, Ordering::Release);
+    SAVED_LR_NONTEXT_TID.store(tid, Ordering::Release);
+    SAVED_LR_NONTEXT_VALUE.store(value, Ordering::Release);
+    SAVED_LR_NONTEXT_SITES.fetch_or(which.bit(el), Ordering::Release);
+    if SAVED_LR_NONTEXT_EMISSIONS.fetch_add(1, Ordering::Relaxed) < 8 {
+        raw_uart_str("[LR_NONTEXT:site=");
+        raw_uart_str(which.name(el));
+        raw_uart_str(":tid=");
+        raw_uart_dec(tid);
+        raw_uart_str(":lr=");
+        raw_uart_hex(value);
+        raw_uart_str(":cpu=");
+        raw_uart_dec(Aarch64PerCpu::cpu_id() as u64);
+        raw_uart_str("]\n");
+    }
 }
 
 /// Snapshot the aggregate resume-PC refusal counters.
@@ -1476,10 +1725,25 @@ const _: () = assert!(core::mem::offset_of!(CpuContext, x29) == 232);
 const _: () = assert!(core::mem::offset_of!(CpuContext, x30) == 240);
 const _: () = assert!(core::mem::offset_of!(CpuContext, sp) == 248);
 const _: () = assert!(core::mem::offset_of!(CpuContext, elr_el1) == 264);
+const _: () = assert!(core::mem::offset_of!(CpuContext, spsr_el1) == 272);
+const _: () = assert!(core::mem::offset_of!(CpuContext, tpidr_el0) == 280);
+const _: () = assert!(core::mem::offset_of!(CpuContext, magic) == 288);
+// SIZE, not just offsets. An offset assert pins where a field starts and says
+// nothing about what follows it: a field appended, widened or reordered after
+// `magic` moves the identity word without moving anything the assembly reads,
+// so no offset assert fires. The size assert is what makes the whole shape —
+// including the identity word's position at the end — a compile-time fact.
+const _: () = assert!(core::mem::size_of::<CpuContext>() == 296);
 const _: () = assert!(core::mem::offset_of!(Aarch64ExceptionFrame, x16) == 128);
 const _: () = assert!(core::mem::offset_of!(Aarch64ExceptionFrame, x30) == 240);
 const _: () = assert!(core::mem::offset_of!(Aarch64ExceptionFrame, elr) == 248);
 const _: () = assert!(core::mem::offset_of!(Aarch64ExceptionFrame, spsr) == 256);
+// The entry stubs reserve 272 bytes for a frame (boot.S, syscall_entry.S) and
+// `save_*_context_inline` reconstructs the interrupted SP as `frame + 272`.
+// The struct must fit that reservation exactly, with the 8-byte tail the
+// stubs never write; a 34th field would silently overrun every frame the
+// assembly allocates.
+const _: () = assert!(core::mem::size_of::<Aarch64ExceptionFrame>() == 264);
 
 /// Diagnostic counter: number of times a thread dispatch hit ProcessGone
 /// (TTBR0 lookup couldn't find the thread's process).
@@ -2550,6 +2814,108 @@ static mut INLINE_SCHEDULE_ERET_FRAMES: [MaybeUninit<Aarch64ExceptionFrame>;
     crate::arch_impl::aarch64::constants::MAX_CPUS] =
     [const { MaybeUninit::zeroed() }; crate::arch_impl::aarch64::constants::MAX_CPUS];
 
+/// Per-CPU staging for a ret-based kernel dispatch.
+///
+/// WHY THIS EXISTS. `take_inline_ret_dispatch_info` used to admit
+/// `thread.context.x30` under the scheduler lock and hand back a raw
+/// `&thread.context`. The caller then dropped the guard, reset the quantum,
+/// re-armed the timer and stamped the owner-tid canary, and only then did
+/// `aarch64_ret_to_kernel_context` re-read the same words with
+/// `ldp x29, x30, [x0, #232]`. Between the admission and the load the pointer
+/// was an unguarded raw pointer into the scheduler's `threads` `Vec`,
+/// dereferenced with the lock released — the exact hazard the code one screen
+/// away already documents for a different read and avoids there by
+/// snapshotting under the lock. The admitted word and the restored word were
+/// two different reads of memory that a `Vec` growth, an element shift or a
+/// row free could have moved out from under the dispatch.
+///
+/// With the staging slot, the bytes admitted and the bytes restored are the
+/// SAME BYTES: the copy is taken under the lock, into per-CPU memory that only
+/// this CPU writes, and the window from the copy to the branch runs with IRQs
+/// masked on both ret-dispatch paths, so nothing can re-enter and re-stage.
+#[repr(C)]
+struct StagedRetContext {
+    /// The restored context. First field: the pointer handed to the assembly
+    /// is a `*const CpuContext` and must be exactly this.
+    ctx: CpuContext,
+    tid: u64,
+    resume_pc: u64,
+    magic: u64,
+}
+
+const RET_STAGE_MAGIC: u64 = 0x5245_5453_5447_3031; // "RETSTG01"
+
+const _: () = assert!(core::mem::offset_of!(StagedRetContext, ctx) == 0);
+
+static mut RET_DISPATCH_STAGE: [MaybeUninit<StagedRetContext>;
+    crate::arch_impl::aarch64::constants::MAX_CPUS] =
+    [const { MaybeUninit::zeroed() }; crate::arch_impl::aarch64::constants::MAX_CPUS];
+
+/// Ret-dispatch admissions refused because the staged copy did not agree with
+/// what was admitted, or because the source row carried no live identity word.
+pub static RET_STAGE_REFUSALS: AtomicU64 = AtomicU64::new(0);
+static RET_STAGE_REFUSAL_EMISSIONS: AtomicU64 = AtomicU64::new(0);
+
+/// Copy `context` into this CPU's ret-dispatch staging slot and return a
+/// pointer to the copy. Returns `None` — and the caller then falls through to
+/// the ERET dispatch path with the scheduler lock still held — when the source
+/// row does not carry a live `CpuContext` identity word, or when the staged
+/// bytes disagree with the word that was admitted.
+///
+/// MUST be called with the scheduler lock held.
+#[inline(always)]
+fn stage_ret_dispatch_context(
+    cpu_id: usize,
+    tid: u64,
+    context: &CpuContext,
+    resume_pc: u64,
+) -> Option<*const CpuContext> {
+    if cpu_id >= crate::arch_impl::aarch64::constants::MAX_CPUS {
+        return None;
+    }
+    if !context.identity_is_intact() {
+        record_ret_stage_refusal(cpu_id, tid, resume_pc, "identity");
+        return None;
+    }
+
+    let staged_ctx = unsafe {
+        let slot = core::ptr::addr_of_mut!(RET_DISPATCH_STAGE[cpu_id]);
+        let staged = (*slot).as_mut_ptr();
+        (*staged).ctx = context.clone();
+        (*staged).tid = tid;
+        (*staged).resume_pc = resume_pc;
+        (*staged).magic = RET_STAGE_MAGIC;
+        core::ptr::addr_of!((*staged).ctx)
+    };
+
+    // The assembly loads x30 from ctx+240 and branches to the separately
+    // admitted resume PC. Those are one word on this path — `resume_pc` IS
+    // `context.x30` — so equality here is the statement that the copy landed
+    // and that the admitted word is the word about to be restored.
+    let staged_x30 = unsafe { core::ptr::read_volatile(core::ptr::addr_of!((*staged_ctx).x30)) };
+    if staged_x30 != resume_pc {
+        record_ret_stage_refusal(cpu_id, tid, resume_pc, "copy");
+        return None;
+    }
+    Some(staged_ctx)
+}
+
+fn record_ret_stage_refusal(cpu_id: usize, tid: u64, resume_pc: u64, reason: &str) {
+    RET_STAGE_REFUSALS.fetch_add(1, Ordering::Release);
+    if RET_STAGE_REFUSAL_EMISSIONS.fetch_add(1, Ordering::Relaxed) >= 8 {
+        return;
+    }
+    raw_uart_str("[RET_STAGE_REFUSED:reason=");
+    raw_uart_str(reason);
+    raw_uart_str(":tid=");
+    raw_uart_dec(tid);
+    raw_uart_str(":pc=");
+    raw_uart_hex(resume_pc);
+    raw_uart_str(":cpu=");
+    raw_uart_dec(cpu_id as u64);
+    raw_uart_str("]\n");
+}
+
 #[inline(always)]
 fn inline_schedule_dispatch_frame(cpu_id: usize) -> &'static mut Aarch64ExceptionFrame {
     debug_assert!(cpu_id < crate::arch_impl::aarch64::constants::MAX_CPUS);
@@ -2581,7 +2947,7 @@ struct DispatchEntry {
     spsr: u64,
     x30: u64,
     sp: u64,
-    path: u8, // K=kernel, U=userspace, I=idle, F=first_entry, B=BUG-terminated
+    path: u8, // K=kernel, U=userspace, I=idle, R=ret-dispatch, F=first_entry, B=BUG-terminated
     from_el0: u8,
 }
 
@@ -3056,17 +3422,37 @@ fn record_inline_elr_divergence(thread: &Thread) {
     raw_uart_str("\n");
 }
 
+/// Everything a ret-based kernel dispatch needs, all of it read under the
+/// scheduler lock. `ctx` points at this CPU's staging copy — never at a row in
+/// the scheduler's `threads` Vec — so no raw pointer into scheduler-owned
+/// memory outlives the guard.
+#[derive(Clone, Copy)]
+struct RetDispatchInfo {
+    thread_ptr: *mut u8,
+    ctx: *const CpuContext,
+    resume_pc: u64,
+    kernel_stack_top: Option<crate::task::thread::VirtAddr>,
+    sp_el0: u64,
+    tpidr_el0: u64,
+    resume_sp: u64,
+    resume_lr_slot: u64,
+    /// `elr_el1` as it stands in the LIVE row, read under the lock. The
+    /// dispatch-mismatch check compares this against the admitted resume PC;
+    /// reading it here is what lets both call sites stop dereferencing a raw
+    /// context pointer after the lock is gone.
+    live_ctx_elr: u64,
+}
+
 #[inline(always)]
 fn take_inline_ret_dispatch_info(
     thread: &mut Thread,
-) -> Option<(*mut u8, *const CpuContext, u64, Option<crate::task::thread::VirtAddr>, u64, u64, u64, u64)>
+) -> Option<RetDispatchInfo>
 {
     if !thread.has_started || !thread.saved_by_inline_schedule {
         return None;
     }
 
     let thread_ptr = thread as *const _ as *mut u8;
-    let ctx_ptr = &thread.context as *const CpuContext;
     // WHY: inline ret-dispatch restores only callee-saved registers + SP, so
     // it must resume at the safe post-inline-switch return target, not a
     // mid-function ELR that may require stale volatile registers.
@@ -3130,17 +3516,25 @@ fn take_inline_ret_dispatch_info(
         0,
         saved_by_inline_schedule,
     );
+    let live_ctx_elr = thread.context.elr_el1;
+    // The staging copy is taken LAST, after every field this dispatch will use
+    // has been settled, and while the scheduler lock is still held. From here
+    // the assembly restores from `ctx`, so the bytes admitted above and the
+    // bytes restored are the same bytes.
+    let cpu_id = Aarch64PerCpu::cpu_id() as usize;
+    let ctx_ptr = stage_ret_dispatch_context(cpu_id, thread.id(), &thread.context, resume_pc)?;
     clear_inline_schedule_state(thread);
-    Some((
+    Some(RetDispatchInfo {
         thread_ptr,
-        ctx_ptr,
+        ctx: ctx_ptr,
         resume_pc,
-        kst,
+        kernel_stack_top: kst,
         sp_el0,
         tpidr_el0,
         resume_sp,
         resume_lr_slot,
-    ))
+        live_ctx_elr,
+    })
 }
 
 #[inline(always)]
@@ -3148,7 +3542,7 @@ fn take_inline_ret_dispatch_info(
 fn inline_ret_dispatch_info_if_ready(
     _sched: &mut Scheduler,
     _thread_id: u64,
-) -> Option<(*mut u8, *const CpuContext, u64, Option<crate::task::thread::VirtAddr>, u64, u64, u64, u64)>
+) -> Option<RetDispatchInfo>
 {
     // This forces only a production-reachable ERET path (PmLockBusy,
     // RowUnpublished, ProcessGone, is_idle, or !has_started); it invents
@@ -3161,7 +3555,7 @@ fn inline_ret_dispatch_info_if_ready(
 fn inline_ret_dispatch_info_if_ready(
     sched: &mut Scheduler,
     thread_id: u64,
-) -> Option<(*mut u8, *const CpuContext, u64, Option<crate::task::thread::VirtAddr>, u64, u64, u64, u64)>
+) -> Option<RetDispatchInfo>
 {
     const KERNEL_VIRT_BASE: u64 = 0xFFFF_0000_0000_0000;
 
@@ -3198,6 +3592,8 @@ fn inline_ret_dispatch_info_if_ready(
     crate::task::ret_zero_pc_oracle::inject_ret_zero_pc_if_armed(sched, thread_id);
     #[cfg(all(target_arch = "aarch64", feature = "ret_stack_pc_oracle"))]
     crate::task::ret_zero_pc_oracle::inject_ret_stack_pc_if_armed(sched, thread_id);
+    #[cfg(all(target_arch = "aarch64", feature = "lr_poison_oracle"))]
+    crate::task::ret_zero_pc_oracle::inject_saved_lr_if_armed(sched, thread_id);
     sched.get_thread_mut(thread_id)
         .and_then(take_inline_ret_dispatch_info)
 }
@@ -3290,7 +3686,16 @@ fn save_userspace_context_inline(thread: &mut Thread, frame: &Aarch64ExceptionFr
     thread.context.x27 = frame.x27;
     thread.context.x28 = frame.x28;
     thread.context.x29 = frame.x29;
-    thread.context.x30 = frame.x30;
+    let saving_tid = thread.id();
+    // Reached only with the entry stub's from_el0 flag set, so the frame holds
+    // a user register file and the entry path is the authority on that.
+    set_saved_lr(
+        &mut thread.context.x30,
+        frame.x30,
+        SavedLrSlot::Save,
+        SavedLrEl::El0,
+        saving_tid,
+    );
 
     // Save program counter and status
     thread.context.elr_el1 = frame.elr;
@@ -3406,7 +3811,17 @@ fn save_kernel_context_inline(thread: &mut Thread, frame: &Aarch64ExceptionFrame
     thread.context.x27 = frame.x27;
     thread.context.x28 = frame.x28;
     thread.context.x29 = frame.x29;
-    thread.context.x30 = frame.x30;
+    let saving_tid = thread.id();
+    // Reached with from_el0 clear, which includes the branch whose frame SPSR
+    // says EL0. The SPSR is then the only fact naming the register file, so
+    // the level comes from it and not from this function's name.
+    set_saved_lr(
+        &mut thread.context.x30,
+        frame.x30,
+        SavedLrSlot::Save,
+        saved_lr_el_of_frame(frame),
+        saving_tid,
+    );
 
     // Save program counter and processor state
     thread.context.elr_el1 = frame.elr;
@@ -3684,7 +4099,20 @@ fn restore_kernel_context_inline(
     frame.x27 = thread.context.x27;
     frame.x28 = thread.context.x28;
     frame.x29 = thread.context.x29;
-    frame.x30 = thread.context.x30;
+    // Every exit from this function installs `kernel_dispatch_spsr(..)`, which
+    // forces SPSR_EL1H, so the frame this word lands in is ERETed at EL1 and
+    // the word is a live kernel link register.
+    // An inline-saved context's x30 is already admitted above, as this
+    // function's `resume_pc`; an exception-saved one is a live register the
+    // interrupted code owns. Either way this copy classifies and reports, it
+    // does not judge.
+    set_saved_lr(
+        &mut frame.x30,
+        thread.context.x30,
+        SavedLrSlot::Restore,
+        SavedLrEl::El1,
+        thread.id(),
+    );
 
     // Set return address and SPSR
     if !has_started {
@@ -3808,7 +4236,14 @@ fn restore_userspace_context_inline(
     frame.x27 = thread.context.x27;
     frame.x28 = thread.context.x28;
     frame.x29 = thread.context.x29;
-    frame.x30 = thread.context.x30;
+    // This producer clears SPSR_MODE_MASK below: the frame is ERETed at EL0.
+    set_saved_lr(
+        &mut frame.x30,
+        thread.context.x30,
+        SavedLrSlot::Restore,
+        SavedLrEl::El0,
+        thread.id(),
+    );
 
     // Restore program counter and status
     census_resume_pc(1, thread.context.elr_el1);
@@ -5099,8 +5534,17 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
         None
     };
 
-    if let Some((thread_ptr, ctx_ptr, resume_pc, kst, sp_el0, tpidr_el0, resume_sp, resume_lr_slot)) =
-        ret_dispatch_info
+    if let Some(RetDispatchInfo {
+        thread_ptr,
+        ctx: ctx_ptr,
+        resume_pc,
+        kernel_stack_top: kst,
+        sp_el0,
+        tpidr_el0,
+        resume_sp,
+        resume_lr_slot,
+        live_ctx_elr,
+    }) = ret_dispatch_info
     {
         let previous_thread = sched.cpu_state[cpu_id].previous_thread.unwrap_or(0);
         trace_ctx_diag(
@@ -5154,26 +5598,37 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
         unsafe {
             Aarch64PerCpu::set_dispatch_elr(resume_pc);
         }
-        // DISPATCH_MISMATCH check: right before the frame/context is
+        // DISPATCH_MISMATCH check: right before the staged context is
         // consumed for ret-based kernel resume. take_inline_ret_dispatch_info
-        // always sets thread.context.elr_el1 = resume_pc before returning
-        // ctx_ptr, so this is a diagnostic invariant check (record-and-
-        // continue only), not a gate. Read while the scheduler lock is still
-        // held (before drop(guard) below) so ctx_ptr's target is guaranteed
-        // live and unmodified concurrently.
-        record_dispatch_mismatch_if_needed(
-            cpu_id,
-            new_id,
-            resume_pc,
-            unsafe { (*ctx_ptr).elr_el1 },
-            resume_sp,
-        );
+        // always sets thread.context.elr_el1 = resume_pc before staging, so
+        // this is a diagnostic invariant check (record-and-continue only), not
+        // a gate. `live_ctx_elr` was read from the LIVE row under the
+        // scheduler lock, so the comparison still speaks about the row and not
+        // about the copy.
+        record_dispatch_mismatch_if_needed(cpu_id, new_id, resume_pc, live_ctx_elr, resume_sp);
         drop(guard);
         crate::arch_impl::aarch64::timer_interrupt::reset_quantum();
         crate::arch_impl::aarch64::timer_interrupt::rearm_timer();
         #[cfg(all(target_arch = "aarch64", feature = "ret_floor_oracle"))]
         let resume_pc =
             crate::task::ret_zero_pc_oracle::inject_ret_floor_if_armed(new_id, resume_pc);
+        // The ret-based dispatch is a dispatch, and until now the ring did not
+        // say so: record_dispatch had exactly two call sites, both on the ERET
+        // path, so a fatal that followed a ret dispatch showed a newest entry
+        // naming whatever was ERET-dispatched before it — in the run-3 specimen
+        // an idle dispatch, while current_tid read the ret-dispatched thread.
+        // 'R' rows carry spsr=0 because this path restores no SPSR at all.
+        record_dispatch(
+            cpu_id,
+            old_id,
+            new_id,
+            resume_pc,
+            0,
+            resume_pc,
+            resume_sp,
+            b'R',
+            from_el0,
+        );
         // OWNER-TID CANARY: this ret-based dispatch is finalized for new_id. The
         // assembly refusal record carries no tid, so the drain's terminate decision
         // reads this canary; without the stamp it names the last ERET-dispatched
@@ -5587,8 +6042,17 @@ extern "C" fn inline_schedule_trampoline() -> ! {
         None
     };
 
-    if let Some((thread_ptr, ctx_ptr, resume_pc, kst, sp_el0, tpidr_el0, resume_sp, resume_lr_slot)) =
-        ret_dispatch_info
+    if let Some(RetDispatchInfo {
+        thread_ptr,
+        ctx: ctx_ptr,
+        resume_pc,
+        kernel_stack_top: kst,
+        sp_el0,
+        tpidr_el0,
+        resume_sp,
+        resume_lr_slot,
+        live_ctx_elr,
+    }) = ret_dispatch_info
     {
         let previous_thread = sched.cpu_state[cpu_id].previous_thread.unwrap_or(0);
         trace_ctx_diag(
@@ -5653,25 +6117,30 @@ extern "C" fn inline_schedule_trampoline() -> ! {
         crate::arch_impl::aarch64::timer_interrupt::rearm_timer();
 
         cpu0_breadcrumb(cpu_id, 36); // before aarch64_ret_to_kernel_context
-        // DISPATCH_MISMATCH check: right before the frame/context is
+        // DISPATCH_MISMATCH check: right before the staged context is
         // consumed for ret-based kernel resume (inline-schedule trampoline
-        // path). take_inline_ret_dispatch_info always sets
-        // thread.context.elr_el1 = resume_pc before returning ctx_ptr, so
-        // this is a diagnostic invariant check (record-and-continue only),
-        // not a gate. The scheduler lock was already released above via
-        // force_unlock_scheduler(), but ctx_ptr still points at this
-        // thread's live, exclusively-owned CpuContext (no other CPU can be
-        // dispatching this same thread concurrently), so the read is safe.
-        record_dispatch_mismatch_if_needed(
-            cpu_id,
-            new_id,
-            resume_pc,
-            unsafe { (*ctx_ptr).elr_el1 },
-            resume_sp,
-        );
+        // path). `live_ctx_elr` was read from the live row while the scheduler
+        // lock was still held, above; this path no longer dereferences a raw
+        // context pointer after force_unlock_scheduler(), because the pointer
+        // it holds now names this CPU's staging copy and not a row in the
+        // scheduler's threads Vec.
+        record_dispatch_mismatch_if_needed(cpu_id, new_id, resume_pc, live_ctx_elr, resume_sp);
         #[cfg(all(target_arch = "aarch64", feature = "ret_floor_oracle"))]
         let resume_pc =
             crate::task::ret_zero_pc_oracle::inject_ret_floor_if_armed(new_id, resume_pc);
+        // See the IRQ-path site: the ret-based dispatch records its own 'R' row
+        // so the ring names the dispatch that actually happened.
+        record_dispatch(
+            cpu_id,
+            old_id,
+            new_id,
+            resume_pc,
+            0,
+            resume_pc,
+            resume_sp,
+            b'R',
+            false,
+        );
         // OWNER-TID CANARY: this ret-based dispatch is finalized for new_id. The
         // assembly refusal record carries no tid, so the drain's terminate decision
         // reads this canary; without the stamp it names the last ERET-dispatched
