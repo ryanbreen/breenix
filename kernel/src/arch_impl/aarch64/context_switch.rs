@@ -2880,7 +2880,7 @@ fn scheduler_stack_top(cpu_id: usize) -> u64 {
 /// requires it to name slot `cpu_id`. It used to be returned verbatim for every
 /// non-zero value, which is how a `percpu_kernel_stack_top(0)` reached CPU 3's
 /// per-CPU words, CPU 3's idle `context.sp` and CPU 3's SP in the #635
-/// acceptance battery (docs/planning/t3g-prb/RCA-ALIEN.md).
+/// acceptance battery (docs/planning/t3g-prb/PRB-R2-RCA-ALIEN.md).
 ///
 /// The result is now always an address this CPU owns: `preferred` when custody
 /// attributes it to `cpu_id`, and `cpu_id`'s own exception-stack top otherwise,
