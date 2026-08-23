@@ -2975,6 +2975,28 @@ fn validate_resume_pc_macro_definitions(source: &str) -> Result<(), String> {
     Ok(())
 }
 
+fn assembly_macro_body<'a>(source: &'a str, name: &str) -> Option<&'a str> {
+    let mut line_offset = 0usize;
+    let mut body_start = None;
+    for line in source.split_inclusive('\n') {
+        let code = assembly_line_code(line);
+        if body_start.is_none() {
+            let mut fields = code.split_whitespace();
+            if fields.next() == Some(".macro")
+                && fields
+                    .next()
+                    .is_some_and(|field| field.trim_end_matches(',') == name)
+            {
+                body_start = Some(line_offset + line.len());
+            }
+        } else if code == ".endm" {
+            return body_start.map(|start| &source[start..line_offset]);
+        }
+        line_offset += line.len();
+    }
+    None
+}
+
 fn validate_resume_pc_macro_census(
     sources: &[(String, String)],
     name: &str,
@@ -3581,6 +3603,82 @@ fn shared_resume_pc_macros_each_have_one_definition() {
             "a second .macro {name} definition must fail the definition census"
         );
     }
+}
+
+#[test]
+fn aarch64_ret_dispatch_refusal_leaves_the_refused_stack_before_custody_stops_naming_it() {
+    let source = repo_text(RESUME_PC_GUARD_INCLUDE);
+    let noframe = assembly_macro_body(&source, "RESUME_PC_RECORD_NOFRAME")
+        .expect("missing RESUME_PC_RECORD_NOFRAME macro body");
+    let frame = assembly_macro_body(&source, "RESUME_PC_RECORD")
+        .expect("missing RESUME_PC_RECORD macro body");
+    let failure = "the ret-dispatch refusal arm must leave the refused thread's kernel stack before the per-CPU words stop naming it";
+
+    let instruction_lines = |body: &str| {
+        let mut offset = 0usize;
+        body.split_inclusive('\n')
+            .filter_map(|line| {
+                let line_offset = offset;
+                offset += line.len();
+                let code = assembly_line_code(line);
+                (!assembly_line_is_label_or_directive(code))
+                    .then_some((line_offset, code.to_owned()))
+            })
+            .collect::<Vec<_>>()
+    };
+    let mov_sp_offsets = |body: &str| {
+        instruction_lines(body)
+            .into_iter()
+            .filter_map(|(offset, code)| {
+                let mut fields = code.splitn(2, char::is_whitespace);
+                let mnemonic = fields.next()?;
+                let destination = fields
+                    .next()
+                    .and_then(|operands| operands.split(',').next())
+                    .map(str::trim);
+                (mnemonic == "mov" && destination == Some("sp")).then_some(offset)
+            })
+            .collect::<Vec<_>>()
+    };
+    let store_offsets = |body: &str, displacement: &str| {
+        instruction_lines(body)
+            .into_iter()
+            .filter_map(|(offset, code)| {
+                let mut fields = code.splitn(2, char::is_whitespace);
+                let mnemonic = fields.next()?;
+                let operands = fields.next()?.replace(' ', "");
+                let destination = operands.split_once(',')?.1;
+                let inner = destination.strip_prefix('[')?.strip_suffix(']')?;
+                let (base, actual_displacement) = inner.rsplit_once(',')?;
+                (mnemonic.starts_with("st")
+                    && !base.is_empty()
+                    && actual_displacement == displacement)
+                    .then_some(offset)
+            })
+            .collect::<Vec<_>>()
+    };
+
+    let noframe_mov_sp = mov_sp_offsets(noframe);
+    let noframe_stores_16 = store_offsets(noframe, "#16");
+    let noframe_stores_40 = store_offsets(noframe, "#40");
+    assert_eq!(noframe_mov_sp.len(), 1, "{failure}: expected exactly one mov to sp");
+    assert!(
+        !noframe_stores_16.is_empty() && !noframe_stores_40.is_empty(),
+        "{failure}: expected stores to both #16 and #40 displacements"
+    );
+    let pivot = noframe_mov_sp[0];
+    assert!(
+        noframe_stores_16
+            .iter()
+            .chain(&noframe_stores_40)
+            .all(|store| pivot < *store),
+        "{failure}: mov to sp must precede every #16/#40 store"
+    );
+
+    assert!(
+        mov_sp_offsets(frame).is_empty(),
+        "RESUME_PC_RECORD must not move to sp because the ERET epilogue selects SP"
+    );
 }
 
 #[test]

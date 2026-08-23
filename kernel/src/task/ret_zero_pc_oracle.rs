@@ -83,6 +83,8 @@ static FLOOR_ARMED: AtomicU64 = AtomicU64::new(0);
 #[cfg(all(target_arch = "aarch64", feature = "ret_floor_oracle"))]
 static FLOOR_FIRED: AtomicU64 = AtomicU64::new(0);
 #[cfg(all(target_arch = "aarch64", feature = "ret_floor_oracle"))]
+static FLOOR_OPPORTUNITIES: AtomicU64 = AtomicU64::new(0);
+#[cfg(all(target_arch = "aarch64", feature = "ret_floor_oracle"))]
 static FLOOR_VICTIM_TID: AtomicU64 = AtomicU64::new(0);
 #[cfg(all(target_arch = "aarch64", feature = "ret_floor_oracle"))]
 static FLOOR_VICTIM_PROGRESS: AtomicU64 = AtomicU64::new(0);
@@ -264,27 +266,36 @@ pub(crate) fn inject_ret_stack_pc_if_armed(sched: &mut Scheduler, thread_id: u64
 
 #[cfg(all(target_arch = "aarch64", feature = "ret_floor_oracle"))]
 pub(crate) fn inject_ret_floor_if_armed(thread_id: u64, resume_pc: u64) -> u64 {
+    #[cfg(not(feature = "resume_pc_oracle_disarm"))]
     const INJECTED_PC: u64 = 0x0000_0000_0100_0000;
 
     let victim_tid = FLOOR_VICTIM_TID.load(Ordering::Acquire);
     if victim_tid == 0 || thread_id != victim_tid {
         return resume_pc;
     }
-    if FLOOR_FIRED
-        .compare_exchange(0, 1, Ordering::AcqRel, Ordering::Relaxed)
-        .is_err()
+    FLOOR_OPPORTUNITIES.fetch_add(1, Ordering::AcqRel);
+    #[cfg(feature = "resume_pc_oracle_disarm")]
     {
         return resume_pc;
     }
+    #[cfg(not(feature = "resume_pc_oracle_disarm"))]
+    {
+        if FLOOR_FIRED
+            .compare_exchange(0, 1, Ordering::AcqRel, Ordering::Relaxed)
+            .is_err()
+        {
+            return resume_pc;
+        }
 
-    FLOOR_INJECTED_PC.store(INJECTED_PC, Ordering::Release);
-    use crate::arch_impl::aarch64::context_switch::{raw_uart_dec, raw_uart_hex, raw_uart_str};
-    raw_uart_str("[RET_FLOOR_ORACLE:aarch64:leg=F:FIRED:tid=");
-    raw_uart_dec(thread_id);
-    raw_uart_str(":injected_pc=");
-    raw_uart_hex(INJECTED_PC);
-    raw_uart_str("]\n");
-    INJECTED_PC
+        FLOOR_INJECTED_PC.store(INJECTED_PC, Ordering::Release);
+        use crate::arch_impl::aarch64::context_switch::{raw_uart_dec, raw_uart_hex, raw_uart_str};
+        raw_uart_str("[RET_FLOOR_ORACLE:aarch64:leg=F:FIRED:tid=");
+        raw_uart_dec(thread_id);
+        raw_uart_str(":injected_pc=");
+        raw_uart_hex(INJECTED_PC);
+        raw_uart_str("]\n");
+        INJECTED_PC
+    }
 }
 
 #[cfg(all(target_arch = "aarch64", feature = "ret_zero_pc_oracle"))]
@@ -733,8 +744,20 @@ fn every_compiled_test_fired() -> bool {
     if STACK_FIRED.load(Ordering::Acquire) == 0 {
         return false;
     }
-    #[cfg(all(target_arch = "aarch64", feature = "ret_floor_oracle"))]
+    #[cfg(all(
+        target_arch = "aarch64",
+        feature = "ret_floor_oracle",
+        not(feature = "resume_pc_oracle_disarm")
+    ))]
     if FLOOR_FIRED.load(Ordering::Acquire) == 0 {
+        return false;
+    }
+    #[cfg(all(
+        target_arch = "aarch64",
+        feature = "ret_floor_oracle",
+        feature = "resume_pc_oracle_disarm"
+    ))]
+    if FLOOR_OPPORTUNITIES.load(Ordering::Acquire) == 0 {
         return false;
     }
     #[cfg(feature = "strand_inject_live_outgoing")]
@@ -813,20 +836,53 @@ fn report_ret_stack_pc() {
 fn report_ret_floor() {
     let armed = FLOOR_ARMED.load(Ordering::Acquire);
     let fired = FLOOR_FIRED.load(Ordering::Acquire);
+    let opportunities = FLOOR_OPPORTUNITIES.load(Ordering::Acquire);
     let victim_tid = FLOOR_VICTIM_TID.load(Ordering::Acquire);
     let injected_pc = FLOOR_INJECTED_PC.load(Ordering::Acquire);
+    let (refused, refused_tid, _refused_pc, refused_sources, _el0_asm_refused) =
+        crate::arch_impl::aarch64::context_switch::resume_pc_refusal_snapshot();
+    let ret_dispatch_arm = (refused_sources
+        >> crate::arch_impl::aarch64::context_switch::RESUME_PC_SOURCE_RET_DISPATCH)
+        & 1;
+    let custody_checks =
+        crate::arch_impl::aarch64::context_switch::RESUME_PC_CUSTODY_CHECKS.load(Ordering::Acquire);
+    let custody_blind =
+        crate::arch_impl::aarch64::context_switch::RESUME_PC_CUSTODY_BLIND.load(Ordering::Acquire);
     let fatal = if crate::arch_impl::aarch64::exception::any_fatal_postmortem_captured() {
         1
     } else {
         0
     };
-    let passed = armed == 1 && fired == 1 && fatal == 0;
+    #[cfg(not(feature = "resume_pc_oracle_disarm"))]
+    let passed = armed == 1
+        && fired == 1
+        && ret_dispatch_arm == 1
+        && refused_tid == victim_tid
+        && custody_checks >= 1
+        && custody_blind == 0
+        && fatal == 0;
+    #[cfg(feature = "resume_pc_oracle_disarm")]
+    let passed = armed == 1
+        && opportunities >= 1
+        && fired == 0
+        && refused == 0
+        && refused_tid == 0
+        && custody_checks == 0
+        && custody_blind == 0
+        && fatal == 0;
     crate::serial_println!(
-        "[RET_FLOOR_ORACLE:aarch64:leg=F:armed={}:fired={}:victim_tid={}:injected_pc=0x{:x}:fatal={}:{}]",
+        "[RET_FLOOR_ORACLE:aarch64:leg=F:armed={}:fired={}:opportunities={}:victim_tid={}:injected_pc=0x{:x}:refused={}:refused_tid={}:refused_sources=0x{:x}:ret_dispatch_arm={}:custody_checks={}:custody_blind={}:fatal={}:{}]",
         armed,
         fired,
+        opportunities,
         victim_tid,
         injected_pc,
+        refused,
+        refused_tid,
+        refused_sources,
+        ret_dispatch_arm,
+        custody_checks,
+        custody_blind,
         fatal,
         if passed { "PASS" } else { "FAIL" },
     );

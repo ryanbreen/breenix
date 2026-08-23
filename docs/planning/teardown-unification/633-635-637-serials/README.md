@@ -95,3 +95,38 @@ recorded; the values are unchanged.
 * No serial here names the producing store. PR-A converts four silent admissions into named
   refusals and stops them being fatal; it does not identify what writes the value. That is the
   next PR's subject.
+
+---
+
+# Round 2 (ruling R46) — the ret-dispatch arm, exercised for the first time
+
+Round 1 disclosed (D7) that the ret-dispatch assembly net had never been fired by a leg. R46 ordered
+forced refusal legs for it, and firing it found two defects and proved the round-2 fix. These runs
+used the same QEMU line as the round-1 legs, `-cpu cortex-a72`, 60 s, kernel built with
+`--features boot_tests,ret_floor_oracle` (leg F is the pre-existing `ret_floor_oracle`: it replaces
+one ret-dispatch resume PC with `0x0100_0000` for a designated kthread victim, which the unified EL1
+window refuses at `aarch64_ret_to_kernel_context`, source `ret-dispatch`).
+
+| file | what it shows |
+|---|---|
+| `legF-r2-red-stale-owner-canary-wrong-tid-fatal.txt` | **Red, first ever firing of the arm.** `[RET_FLOOR_ORACLE:...FIRED:tid=10]` but `[RESUME_PC_REFUSED:source=ret-dispatch:...:tid=4:...]` — the refusal drain read the OWNER-TID canary, which the two ret-dispatch sites never stamped, so it named the last ERET-dispatched thread instead of the refused one. The drain terminated and dequeued tid 4, an innocent thread, and the boot died: `[DATA_ABORT] FAR=0x8010000 ELR=0xffff00004040af94 ESR=0x96000010 DFSC=0x10`, resolved against this build's own ELF to `Scheduler::schedule_deferred_requeue+0x6b0`. This is review note N1 ("a kill decision keyed on an unproven identity") firing, not dormant. |
+| `legF-r2-green-pivot-and-canary.txt` | **Green after both round-2 fixes.** `[RESUME_PC_REFUSED:source=ret-dispatch:...:tid=10...]` — the canary now names the refused thread, because both ret-dispatch sites stamp it. `[RESUME_PC_CUSTODY:...:record_slot=5:drain_slot=-1:on_refused_stack=0:...:OK]` — the drain (and the reclamation that follows it in the same `run_deferred_reclamation` call) is running on the CPU-owned idle stack, not on the refused thread's pool slot. `[RET_FLOOR_ORACLE:...:refused_tid=10:ret_dispatch_arm=1:custody_checks=1:custody_blind=0:fatal=0:PASS]`, `[BOOT_TESTS:PASS]`. |
+| `legF-r2-mutation-M5-nopivot-red-custody-blind.txt` | **The designated mutation for the B3 fix**: the single `mov sp, <idle_stack_top>` deleted from `RESUME_PC_RECORD_NOFRAME`, nothing else changed. `[RESUME_PC_CUSTODY:...:record_slot=5:drain_slot=5:on_refused_stack=1:...:named_live=0:STACK_CUSTODY_BLIND]` — the drain is executing on the refused thread's own pool slot while the two per-CPU words that are the entire `is_kernel_stack_slot_live()` predicate name a different stack, i.e. the over-free window is open, and it is about to terminate that thread and hand the slot to the reaper. `custody_blind=1 ... FAIL`. |
+| `legF-r2-disarmed-antivacuity.txt` | Harness live, store skipped: `armed=1:fired=0:opportunities=30:refused=0:custody_checks=0:...:PASS` with `[BOOT_TESTS:PASS]`. 30 opportunities and zero production refusals on this arm — the green above is not a dead harness. |
+
+## The leg-P regression this round found in its own first fix, and removed
+
+An intermediate round-2 attempt gated the drain's terminate on "the refusal record's SP lies inside
+the victim thread's kernel stack". That is wrong for an EL1 frame taken while a thread runs on a
+per-CPU stack (inline-schedule trampoline / scheduler stack), where the frame is legitimately not on
+the thread's pool stack.
+
+| file | what it shows |
+|---|---|
+| `legP-r2-control-14272b9a-green.txt` | Control: leg P at `14272b9a`, the pre-round-2 tree, `fatal=0:PASS` (2/2 boots). |
+| `legP-r2-red-identity-gate-regression.txt` | The gate in place: `refused=2:refused_sources=0x4 ... fatal=1:FAIL`, 3/3 boots, with `[RESUME_PC_CUSTODY:...record_slot=-1...]` showing the refused frame on a per-CPU stack. |
+| `legP-r2-green-after-gate-removed.txt` | Gate removed, canary stamp kept: `fatal=0:PASS`, `[BOOT_TESTS:PASS]`. The identity defect is fixed at its source (the unstamped canary), and leg F asserts it directly with `refused_tid == victim_tid`. |
+
+The round-1 statement that no leg exercises the ret-dispatch arm no longer holds: leg F does, in
+both directions, with a mutation. The dispatch ERET's own arms remain covered only by the shared
+macro and the structural ratchet.
