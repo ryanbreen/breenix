@@ -1,0 +1,74 @@
+Building ARM64 kernel with boot_tests feature...
+    Finished `release` profile [optimized] target(s) in 0.06s
+warning: the following packages contain code that will be rejected by a future version of Rust: core v0.0.0 (/Users/wrb/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/src/rust/library/core)
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+Build complete.
+
+Guard: kernel FP/SIMD instruction check
+  ELF:       /Users/wrb/fun/code/breenix/target/aarch64-breenix-kernel/release/kernel-aarch64
+  objdump:   /Users/wrb/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/aarch64-apple-darwin/bin/llvm-objdump
+  allowlist: /Users/wrb/fun/code/breenix/scripts/kernel-neon-allowlist.txt
+[0;32mPASS:[0m 0 FP/SIMD load/store instructions in kernel .text (allowlisted & suppressed: 0).
+=========================================
+ARM64 Full System Test
+=========================================
+Kernel: /Users/wrb/fun/code/breenix/target/aarch64-breenix-kernel/release/kernel-aarch64
+ext2 disk: /Users/wrb/fun/code/breenix/target/ext2-aarch64.img
+
+Phase 1: Running 85 subsystem tests...
+  (Waiting for [BOOT_TESTS:PASS] or [BOOT_TESTS:FAIL])
+  All tests passed: 107/107
+
+Phase 1a3: Waiting for scheduler strand oracles...
+  Observed: [SCHED_STRAND_ORACLE:aarch64:samples=101:checked=514:stranded=0:running_shape=0:ready_shape=0:resolved_production=0:resolved_exercised=2:worst_dwell_ms=0:overflow=0:worst_nonprogress_ms=0:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1478:worst_cpu_scheduler_silence_ms=1498:worst_silence_cpu=0]
+  Observed: [STRAND_INJECT_ORACLE:aarch64:legA_exercised=1:legA_recovered=1:legB_exercised=1:legB_recovered=1:stranded=0]
+Phase 1a3: PASS
+
+Phase 1a: Waiting for block EINTR oracle...
+  Observed: [BLOCK_EINTR_ORACLE:PASS:stages=2:reads=4:short=0:eintr=0:handled=1]
+Phase 1a: PASS
+
+Phase 1a2: Waiting for futex handoff oracle...
+  Observed: [FUTEX_HANDOFF_ORACLE:aarch64:driven=2:stage1_ret=EAGAIN:stage1_wake=0:stage1_parked=0:stage2_ret=0:stage2_wake=1:stage2_parked=0:stage3_ret=ETIMEDOUT:stage3_elapsed_ok=1:stage3_elapsed_ms=50:rescues=0:queue_residual=0:balance=0]
+Phase 1a2: PASS
+Phase 1: PASS (107/107 tests)
+
+Phase 1b: Running exec smoke...
+  Exec smoke: [EXEC_LOCK_ORDER:commits=2:pm_held=0:unpinned=0:missing=0]
+Phase 1b: PASS
+
+Phase 1c: Running clonevm_exec_test (exec detach proof)...
+Phase 1c: PASS
+Phase 1d: PASS (init designated and observed as PID 1)
+
+Phase 1e: Waiting for init-group refusal quiesce proof...
+  Observed: [INIT_GROUP_WALK:aarch64:rows=12:init_tgid_rows=1:foreign_tgid_rows=0:refused=4:verdict=PASS]
+Phase 1e: PASS
+qemu-system-aarch64: terminating on signal 15 from pid 54581 (<unknown process>)
+
+Phase 5: refusal-drain oracle legs (leg G foreign record, leg H departure guard)...
+   Compiling kernel v0.1.0 (/Users/wrb/fun/code/breenix/kernel)
+    Finished `release` profile [optimized] target(s) in 6.05s
+warning: the following packages contain code that will be rejected by a future version of Rust: core v0.0.0 (/Users/wrb/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/src/rust/library/core)
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+Guard: kernel FP/SIMD instruction check
+  ELF:       /Users/wrb/fun/code/breenix/target/refusal-drain-gate/aarch64-breenix-kernel/release/kernel-aarch64
+  objdump:   /Users/wrb/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/aarch64-apple-darwin/bin/llvm-objdump
+  allowlist: /Users/wrb/fun/code/breenix/scripts/kernel-neon-allowlist.txt
+[0;32mPASS:[0m 0 FP/SIMD load/store instructions in kernel .text (allowlisted & suppressed: 0).
+ARM64 REFUSAL DRAIN GATE: PASSED
+[RESUME_PC_FOREIGN_ORACLE:aarch64:leg=G:armed=1:planted=1:record_cpu=7:canary_tid=10:canary_progress=31:foreign_reports=1:record_still_published=1:canary_present=1:canary_terminated=0:fatal=0:PASS]
+[RESUME_PC_DRAIN_DEPARTURE_ORACLE:aarch64:leg=H:armed=1:fired=1:planted=1:victim_tid=12:canary_is_self=1:refusals=1:victim_present=1:victim_terminated=0:still_current=1:ptr_nulled=0:record_still_published=0:progress=31:fatal=0:PASS]
+[BOOT_TESTS:PASS]
+[BLOCK_EINTR_ORACLE:PASS:stages=2:reads=4:short=0:eintr=0:handled=1]
+qemu-system-aarch64: terminating on signal 15 from pid 55087 (<unknown process>)
+Serial: /tmp/breenix_aarch64_refusal_drain_gate/serial.txt
+Phase 5: PASS
+
+=========================================
+ARM64 BOOT TESTS: PASSED
+=========================================
+Tests: 107/107 passed
+Serial: 807 lines
+Log: /tmp/breenix_aarch64_full_test/serial.txt
+EXIT=0

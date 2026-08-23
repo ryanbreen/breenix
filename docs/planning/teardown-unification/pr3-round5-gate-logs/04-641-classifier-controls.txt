@@ -1,0 +1,24 @@
+# #641 classifier controls — R49 round 5
+#
+# The classifier functions were extracted verbatim from
+# docker/qemu/run-aarch64-service-sequence-gate.sh (the block of helper
+# definitions through classify_serial) and run against real preserved
+# serials and against mutations of the round-4 #641 serial. Columns:
+# bucket <TAB> serial <TAB> reason.
+
+## Real preserved serials
+641	ss25-cortex-a72-boot21-641-far0x2-esr0x96000005.txt	EL1 data abort matching the filed #641 signature (FAR=0x2 ESR=0x96000005 DFSC=0x5 from_el0=0, ELR=0xffff000040846998 in kernel text) — ATTRIBUTED, and gate-failing exactly as the UNATTRIBUTED verdict it replaces
+635	clean-cortex100-boot41-635-far-eq-elr.txt	instruction abort matching the #635 kernel-stack-PC family (FAR=ELR=0xffff000041139200 ESR=0x8600000e) — ATTRIBUTED, non-failing, ~1% documented rate, pending the producer-family fix
+UNATTRIBUTED	clean-cortex100-boot87-613-disagreeing-records.txt	instruction abort records disagree, so no single signature describes this boot: far/elr/esr = 0xffff000041139200 0x0 0x8600000e|0xffff000041139200 0xffff000040509540 0x8600000e
+641	clean-cortex100-boot97-far0x2-null-data-abort.txt	EL1 data abort matching the filed #641 signature (FAR=0x2 ESR=0x96000005 DFSC=0x5 from_el0=0, ELR=0xffff0000404e80a0 in kernel text) — ATTRIBUTED, and gate-failing exactly as the UNATTRIBUTED verdict it replaces
+BOOT_TEST_FAIL	clean-max100-boot26-555-softirq.txt	boot test failure: [TEST:interrupts:softirq_aarch64:FAIL:raise_softirq did not set pending bit on ARM64]
+
+## Mutations of the round-4 #641 serial (negative controls)
+# c1: ELR rewritten 0xffff000040846998 -> 0x2 in both records (not kernel text)
+# c2: the [FATAL_REGS] record's elr rewritten -> 0xffff000040999999 (records disagree)
+# c3: FAR/ESR rewritten to #612's filed signature (0x292 / 0x96000021)
+# c4: FAR rewritten 0x2 -> 0x3 (novel near-null address, #641's ESR)
+UNATTRIBUTED	c1-elr-not-kernel.txt	EL1 data abort carrying #641's FAR/ESR (0x2 0x96000005) without #641's single kernel-text ELR: elr = 0x2
+UNATTRIBUTED	c2-elr-disagree.txt	EL1 data abort carrying #641's FAR/ESR (0x2 0x96000005) without #641's single kernel-text ELR: elr = 0xffff000040846998|0xffff000040999999
+612	c3-612.txt	EL1 data abort matching the filed #612 signature (FAR=0x292 ESR=0x96000021)
+UNATTRIBUTED	c4-far3.txt	EL1 data abort matches no filed signature: far/esr = 0x3 0x96000005

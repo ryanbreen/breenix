@@ -30,10 +30,17 @@ stand.
 ```
 
 Field for field, that is **#641** — filed from the round-1 battery with exactly
-`[DATA_ABORT] FAR=0x2 ESR=0x96000005`, open. The gate's classifier has no #641 bucket, so it
-scores it `UNATTRIBUTED`, which is gate-failing; the gate therefore reports FAILED and that verdict
-is reported here as measured. No tolerance was added and no bucket was created for it: adding one
-after seeing the red is exactly the goalpost-move the campaign law forbids.
+`[DATA_ABORT] FAR=0x2 ESR=0x96000005`, open. When this run was scored the gate's classifier had no
+#641 bucket, so it scored it `UNATTRIBUTED`, which is gate-failing; the gate therefore reports FAILED
+and that verdict is reported here as measured. No tolerance was added and no bucket was created for
+it in round 4: adding one after seeing the red is exactly the goalpost-move the campaign law forbids.
+
+> **Round-5 addendum (ruling R49).** R49 pre-adjudicated #641 by its field signature and authorized a
+> field-keyed bucket for it in the NEXT round; it exists now, in
+> `run-aarch64-service-sequence-gate.sh`, and `count_641` is in the same per-profile FAIL condition as
+> #576 and #626 — an attribution, never a tolerance. **This run is not re-scored.** It measured
+> FAILED at 49/50 and is reported as FAILED at 49/50 here, permanently; the bucket only changes what a
+> FUTURE occurrence is called. Controls for the key are in `../pr3-round5-gate-logs/`.
 
 The red is not on any path this round changed, and that is checkable rather than asserted:
 
