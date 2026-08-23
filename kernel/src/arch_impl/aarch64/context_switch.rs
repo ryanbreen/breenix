@@ -2177,6 +2177,14 @@ fn stamp_last_dispatched_tid_for_stack(cpu_id: usize, tid: u64, stack_address: u
     LAST_DISPATCHED_TID[cpu_id].store(encoded, Ordering::Release);
 }
 
+/// Stamp the OWNER-TID CANARY for an arbitrary CPU slot. Test-only: the
+/// foreign-record oracle needs the record's CPU to name a known thread so the
+/// leg can prove that thread survives.
+#[cfg(all(target_arch = "aarch64", feature = "resume_pc_foreign_oracle"))]
+pub fn stamp_last_dispatched_tid_for_test(cpu_id: usize, tid: u64) {
+    stamp_last_dispatched_tid_for_stack(cpu_id, tid, 0);
+}
+
 /// Stamp the OWNER-TID CANARY for this CPU. Called from `dispatch_thread_locked`
 /// at its two frame-finalize points. Lock-free; safe to call from inside the
 /// scheduler lock hold.

@@ -13,7 +13,8 @@
         feature = "resume_pc_el1_oracle",
         feature = "eret_zero_pc_oracle",
         feature = "resume_pc_el0_kernel_oracle",
-        feature = "resume_pc_el0_tid_oracle"
+        feature = "resume_pc_el0_tid_oracle",
+        feature = "resume_pc_foreign_oracle"
     )
 ))]
 use core::sync::atomic::{AtomicU64, Ordering};
@@ -90,6 +91,19 @@ static FLOOR_VICTIM_TID: AtomicU64 = AtomicU64::new(0);
 static FLOOR_VICTIM_PROGRESS: AtomicU64 = AtomicU64::new(0);
 #[cfg(all(target_arch = "aarch64", feature = "ret_floor_oracle"))]
 static FLOOR_INJECTED_PC: AtomicU64 = AtomicU64::new(0);
+
+#[cfg(all(target_arch = "aarch64", feature = "resume_pc_foreign_oracle"))]
+static FOREIGN_ARMED: AtomicU64 = AtomicU64::new(0);
+#[cfg(all(target_arch = "aarch64", feature = "resume_pc_foreign_oracle"))]
+static FOREIGN_ARM_RAN: AtomicU64 = AtomicU64::new(0);
+#[cfg(all(target_arch = "aarch64", feature = "resume_pc_foreign_oracle"))]
+static FOREIGN_PLANTED: AtomicU64 = AtomicU64::new(0);
+#[cfg(all(target_arch = "aarch64", feature = "resume_pc_foreign_oracle"))]
+static FOREIGN_RECORD_CPU: AtomicU64 = AtomicU64::new(0);
+#[cfg(all(target_arch = "aarch64", feature = "resume_pc_foreign_oracle"))]
+static FOREIGN_CANARY_TID: AtomicU64 = AtomicU64::new(0);
+#[cfg(all(target_arch = "aarch64", feature = "resume_pc_foreign_oracle"))]
+static FOREIGN_CANARY_PROGRESS: AtomicU64 = AtomicU64::new(0);
 
 #[cfg(all(target_arch = "aarch64", feature = "ret_zero_pc_oracle_exec"))]
 static EXEC_ARMED: AtomicU64 = AtomicU64::new(1);
@@ -679,6 +693,69 @@ fn retfloor_victim() {
     }
 }
 
+#[cfg(all(target_arch = "aarch64", feature = "resume_pc_foreign_oracle"))]
+fn foreign_canary() {
+    loop {
+        FOREIGN_CANARY_PROGRESS.fetch_add(1, Ordering::AcqRel);
+        super::scheduler::schedule();
+        super::strand_oracle::sleep_sample_period();
+    }
+}
+
+#[cfg(all(target_arch = "aarch64", feature = "resume_pc_foreign_oracle"))]
+fn arm_foreign_record_oracle() {
+    // Let the canary reach the ready queue and run at least once, so "still
+    // alive at report time" is a statement about a scheduled thread.
+    while FOREIGN_CANARY_PROGRESS.load(Ordering::Acquire) < 2 {
+        super::strand_oracle::sleep_sample_period();
+    }
+    FOREIGN_ARM_RAN.store(1, Ordering::Release);
+
+    let canary_tid = FOREIGN_CANARY_TID.load(Ordering::Acquire);
+    if canary_tid == 0 {
+        return;
+    }
+    // An offline slot: MAX_CPUS per-CPU records exist, but the gate boots with
+    // fewer CPUs online. Planting there is foreign by construction, can never
+    // be the draining CPU, and cannot perturb a running CPU's own record or
+    // OWNER-TID canary.
+    let record_cpu = crate::arch_impl::aarch64::constants::MAX_CPUS - 1;
+    if crate::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id() as usize == record_cpu {
+        return;
+    }
+    #[cfg(feature = "resume_pc_oracle_disarm")]
+    {
+        FOREIGN_RECORD_CPU.store(record_cpu as u64, Ordering::Release);
+        return;
+    }
+    #[cfg(not(feature = "resume_pc_oracle_disarm"))]
+    {
+        // The record's CPU must name the canary, exactly as a real refusal on
+        // that CPU would: that is the identity the old all-CPU drain read
+        // across the race, and the thread this leg proves survives.
+        crate::arch_impl::aarch64::context_switch::stamp_last_dispatched_tid_for_test(
+            record_cpu, canary_tid,
+        );
+        const PLANTED_PC: u64 = 0x0000_0000_0200_0000;
+        let planted = crate::per_cpu_aarch64::plant_synthetic_eret_guard_record(
+            record_cpu,
+            PLANTED_PC,
+            0,
+            crate::arch_impl::aarch64::context_switch::RESUME_PC_SOURCE_RET_DISPATCH,
+        );
+        FOREIGN_RECORD_CPU.store(record_cpu as u64, Ordering::Release);
+        if planted {
+            FOREIGN_PLANTED.store(1, Ordering::Release);
+            use crate::arch_impl::aarch64::context_switch::{raw_uart_dec, raw_uart_str};
+            raw_uart_str("[RESUME_PC_FOREIGN_ORACLE:aarch64:leg=G:PLANTED:record_cpu=");
+            raw_uart_dec(record_cpu as u64);
+            raw_uart_str(":canary_tid=");
+            raw_uart_dec(canary_tid);
+            raw_uart_str("]\n");
+        }
+    }
+}
+
 #[cfg(all(target_arch = "aarch64", feature = "strand_inject_live_outgoing"))]
 fn strand_live_driver() {
     let Some(tid) = super::scheduler::current_thread_id() else {
@@ -707,7 +784,8 @@ fn strand_live_driver() {
         feature = "resume_pc_el1_oracle",
         feature = "eret_zero_pc_oracle",
         feature = "resume_pc_el0_kernel_oracle",
-        feature = "resume_pc_el0_tid_oracle"
+        feature = "resume_pc_el0_tid_oracle",
+        feature = "resume_pc_foreign_oracle"
     )
 ))]
 fn monotonic_now_ms() -> u64 {
@@ -728,7 +806,8 @@ fn monotonic_now_ms() -> u64 {
         feature = "resume_pc_el1_oracle",
         feature = "eret_zero_pc_oracle",
         feature = "resume_pc_el0_kernel_oracle",
-        feature = "resume_pc_el0_tid_oracle"
+        feature = "resume_pc_el0_tid_oracle",
+        feature = "resume_pc_foreign_oracle"
     )
 ))]
 fn every_compiled_test_fired() -> bool {
@@ -773,6 +852,10 @@ fn every_compiled_test_fired() -> bool {
         feature = "resume_pc_el0_tid_oracle"
     ))]
     if EL0_OPPORTUNITIES.load(Ordering::Acquire) == 0 {
+        return false;
+    }
+    #[cfg(all(target_arch = "aarch64", feature = "resume_pc_foreign_oracle"))]
+    if FOREIGN_ARM_RAN.load(Ordering::Acquire) == 0 {
         return false;
     }
     true
@@ -883,6 +966,66 @@ fn report_ret_floor() {
         ret_dispatch_arm,
         custody_checks,
         custody_blind,
+        fatal,
+        if passed { "PASS" } else { "FAIL" },
+    );
+}
+
+#[cfg(all(target_arch = "aarch64", feature = "resume_pc_foreign_oracle"))]
+fn report_foreign_record() {
+    let armed = FOREIGN_ARMED.load(Ordering::Acquire);
+    let planted = FOREIGN_PLANTED.load(Ordering::Acquire);
+    let record_cpu = FOREIGN_RECORD_CPU.load(Ordering::Acquire);
+    let canary_tid = FOREIGN_CANARY_TID.load(Ordering::Acquire);
+    let foreign_reports =
+        crate::arch_impl::aarch64::context_switch::RESUME_PC_FOREIGN_REPORTS.load(Ordering::Acquire);
+    let still_published = u64::from(crate::per_cpu_aarch64::eret_guard_record_is_published(
+        record_cpu as usize,
+    ));
+    let (canary_present, canary_terminated) = super::scheduler::with_scheduler(|sched| {
+        match sched.get_thread(canary_tid) {
+            Some(thread) => (
+                1u64,
+                u64::from(thread.state == crate::task::thread::ThreadState::Terminated),
+            ),
+            None => (0u64, 0u64),
+        }
+    })
+    .unwrap_or((0, 0));
+    let canary_progress = FOREIGN_CANARY_PROGRESS.load(Ordering::Acquire);
+    let fatal = if crate::arch_impl::aarch64::exception::any_fatal_postmortem_captured() {
+        1
+    } else {
+        0
+    };
+    #[cfg(not(feature = "resume_pc_oracle_disarm"))]
+    let passed = armed == 1
+        && planted == 1
+        && foreign_reports >= 1
+        && still_published == 1
+        && canary_present == 1
+        && canary_terminated == 0
+        && fatal == 0;
+    #[cfg(feature = "resume_pc_oracle_disarm")]
+    let passed = armed == 1
+        && FOREIGN_ARM_RAN.load(Ordering::Acquire) == 1
+        && planted == 0
+        && foreign_reports == 0
+        && still_published == 0
+        && canary_present == 1
+        && canary_terminated == 0
+        && fatal == 0;
+    crate::serial_println!(
+        "[RESUME_PC_FOREIGN_ORACLE:aarch64:leg=G:armed={}:planted={}:record_cpu={}:canary_tid={}:canary_progress={}:foreign_reports={}:record_still_published={}:canary_present={}:canary_terminated={}:fatal={}:{}]",
+        armed,
+        planted,
+        record_cpu,
+        canary_tid,
+        canary_progress,
+        foreign_reports,
+        still_published,
+        canary_present,
+        canary_terminated,
         fatal,
         if passed { "PASS" } else { "FAIL" },
     );
@@ -1074,7 +1217,8 @@ fn report_el0_resume_pc() {
         feature = "resume_pc_el1_oracle",
         feature = "eret_zero_pc_oracle",
         feature = "resume_pc_el0_kernel_oracle",
-        feature = "resume_pc_el0_tid_oracle"
+        feature = "resume_pc_el0_tid_oracle",
+        feature = "resume_pc_foreign_oracle"
     )
 ))]
 fn retzero_oracle_thread() {
@@ -1090,7 +1234,8 @@ fn retzero_oracle_thread() {
             feature = "resume_pc_el1_oracle",
             feature = "eret_zero_pc_oracle",
             feature = "resume_pc_el0_kernel_oracle",
-            feature = "resume_pc_el0_tid_oracle"
+            feature = "resume_pc_el0_tid_oracle",
+            feature = "resume_pc_foreign_oracle"
         )
     ))]
     const HARD_CAP_MS: u64 = 30_000;
@@ -1100,7 +1245,8 @@ fn retzero_oracle_thread() {
             feature = "resume_pc_el1_oracle",
             feature = "eret_zero_pc_oracle",
             feature = "resume_pc_el0_kernel_oracle",
-            feature = "resume_pc_el0_tid_oracle"
+            feature = "resume_pc_el0_tid_oracle",
+            feature = "resume_pc_foreign_oracle"
         ))
     ))]
     const HARD_CAP_MS: u64 = 14_000;
@@ -1123,6 +1269,8 @@ fn retzero_oracle_thread() {
             report_ret_stack_pc();
             #[cfg(all(target_arch = "aarch64", feature = "ret_floor_oracle"))]
             report_ret_floor();
+            #[cfg(all(target_arch = "aarch64", feature = "resume_pc_foreign_oracle"))]
+            report_foreign_record();
             #[cfg(feature = "strand_inject_live_outgoing")]
             report_live_outgoing();
             #[cfg(any(feature = "resume_pc_el1_oracle", feature = "eret_zero_pc_oracle"))]
@@ -1152,7 +1300,8 @@ pub fn start() {
             feature = "resume_pc_el1_oracle",
             feature = "eret_zero_pc_oracle",
             feature = "resume_pc_el0_kernel_oracle",
-            feature = "resume_pc_el0_tid_oracle"
+            feature = "resume_pc_el0_tid_oracle",
+            feature = "resume_pc_foreign_oracle"
         )
     ))]
     {
@@ -1188,6 +1337,14 @@ pub fn start() {
         {
             EL0_ARMED.store(1, Ordering::Release);
             let _ = super::kthread::kthread_run(arm_el0_resume_pc_oracle, "resume-pc-el0-arm");
+        }
+        #[cfg(all(target_arch = "aarch64", feature = "resume_pc_foreign_oracle"))]
+        {
+            if let Ok(canary) = super::kthread::kthread_run(foreign_canary, "foreign-canary") {
+                FOREIGN_CANARY_TID.store(canary.tid(), Ordering::Release);
+                FOREIGN_ARMED.store(1, Ordering::Release);
+                let _ = super::kthread::kthread_run(arm_foreign_record_oracle, "foreign-arm");
+            }
         }
         let _ = super::kthread::kthread_run(retzero_oracle_thread, "retzero-oracle");
     }

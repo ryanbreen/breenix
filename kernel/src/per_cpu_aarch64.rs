@@ -235,6 +235,45 @@ pub fn eret_guard_claim_source(cpu_id: usize) -> u64 {
     source.swap(0, Ordering::AcqRel)
 }
 
+/// Publish a synthetic ERET-guard refusal record into `cpu_id`'s per-CPU slot.
+///
+/// Test-only. The foreign-record oracle plants a record in an offline CPU slot
+/// so the drain's foreign path can be exercised without disturbing any running
+/// CPU's state, and without waiting for a real cross-CPU refusal to race.
+#[cfg(all(target_arch = "aarch64", feature = "resume_pc_foreign_oracle"))]
+pub fn plant_synthetic_eret_guard_record(cpu_id: usize, elr: u64, sp: u64, source: u64) -> bool {
+    if cpu_id >= crate::arch_impl::aarch64::constants::MAX_CPUS || source == 0 {
+        return false;
+    }
+    let cpu_data = unsafe { &raw mut ALL_CPU_DATA[cpu_id] };
+    unsafe {
+        core::ptr::write_volatile(core::ptr::addr_of_mut!((*cpu_data).eret_guard_elr), elr);
+        core::ptr::write_volatile(core::ptr::addr_of_mut!((*cpu_data).eret_guard_spsr), 0);
+        core::ptr::write_volatile(core::ptr::addr_of_mut!((*cpu_data).eret_guard_x29), 0);
+        core::ptr::write_volatile(core::ptr::addr_of_mut!((*cpu_data).eret_guard_x30), 0);
+        core::ptr::write_volatile(core::ptr::addr_of_mut!((*cpu_data).eret_guard_sp), sp);
+        core::ptr::write_volatile(core::ptr::addr_of_mut!((*cpu_data).eret_guard_count), 1);
+    }
+    core::sync::atomic::fence(Ordering::Release);
+    let source_word = unsafe {
+        core::sync::atomic::AtomicU64::from_ptr(core::ptr::addr_of_mut!(
+            (*cpu_data).eret_guard_source
+        ))
+    };
+    source_word.store(source, Ordering::Release);
+    true
+}
+
+/// True when `cpu_id` still has an unclaimed ERET-guard refusal record.
+#[cfg(all(target_arch = "aarch64", feature = "resume_pc_foreign_oracle"))]
+pub fn eret_guard_record_is_published(cpu_id: usize) -> bool {
+    if cpu_id >= crate::arch_impl::aarch64::constants::MAX_CPUS {
+        return false;
+    }
+    let cpu_data = unsafe { &raw const ALL_CPU_DATA[cpu_id] };
+    unsafe { core::ptr::read_volatile(core::ptr::addr_of!((*cpu_data).eret_guard_source)) != 0 }
+}
+
 /// Read the fixed idle/exception stack top recorded for `cpu_id`.
 pub fn idle_stack_top(cpu_id: usize) -> u64 {
     if cpu_id >= crate::arch_impl::aarch64::constants::MAX_CPUS {

@@ -3682,6 +3682,226 @@ fn aarch64_ret_dispatch_refusal_leaves_the_refused_stack_before_custody_stops_na
 }
 
 #[test]
+fn aarch64_refusal_drain_acts_only_on_records_this_cpu_published() {
+    let source = repo_text(AARCH64_CONTEXT_SWITCH);
+    let body = function_body(&source, "drain_asm_resume_pc_refusals")
+        .expect("missing drain_asm_resume_pc_refusals body");
+    let mask = code_mask(body);
+    let failure = "the drain may only act on records the draining CPU published";
+
+    let claim_calls = call_offsets(body, &mask, "eret_guard_claim_source");
+    assert_eq!(
+        claim_calls.len(),
+        1,
+        "{failure}: expected exactly one record claim"
+    );
+    let claim = claim_calls[0];
+    let drain_cpu_offsets = identifier_offsets(body, &mask, "drain_cpu");
+    let first_drain_cpu = *drain_cpu_offsets
+        .first()
+        .expect("drain_asm_resume_pc_refusals must identify the draining CPU");
+    let continue_offsets = identifier_offsets(body, &mask, "continue");
+    assert!(
+        drain_cpu_offsets.iter().any(|offset| *offset < claim)
+            && continue_offsets.iter().any(|offset| *offset < claim),
+        "{failure}: the foreign-record early-out must precede the claim"
+    );
+
+    let calls = |name| {
+        let offsets = call_offsets(body, &mask, name);
+        assert!(!offsets.is_empty(), "{failure}: missing {name} call");
+        offsets
+    };
+    let record_calls = calls("record_resume_pc_refusal_locked");
+    let terminate_calls = calls("set_terminated");
+    let dequeue_calls = calls("remove_from_ready_queue");
+    for (name, offsets) in [
+        ("eret_guard_claim_source", claim_calls.as_slice()),
+        (
+            "record_resume_pc_refusal_locked",
+            record_calls.as_slice(),
+        ),
+        ("set_terminated", terminate_calls.as_slice()),
+        ("remove_from_ready_queue", dequeue_calls.as_slice()),
+    ] {
+        assert!(
+            offsets.iter().all(|offset| *offset > first_drain_cpu),
+            "{failure}: {name} must occur after the drain CPU is identified"
+        );
+    }
+    for (name, offsets) in [
+        (
+            "record_resume_pc_refusal_locked",
+            record_calls.as_slice(),
+        ),
+        ("set_terminated", terminate_calls.as_slice()),
+        ("remove_from_ready_queue", dequeue_calls.as_slice()),
+    ] {
+        assert!(
+            offsets.iter().all(|offset| *offset > claim),
+            "{failure}: {name} must occur after the owner record is claimed"
+        );
+    }
+
+    assert!(
+        !body.contains("FOREIGN"),
+        "{failure}: the acting drain body must not carry a FOREIGN verdict"
+    );
+    let foreign = function_body(&source, "report_foreign_resume_pc_refusal")
+        .expect("missing report_foreign_resume_pc_refusal body");
+    assert!(
+        foreign.contains("FOREIGN_REPORT_ONLY"),
+        "{failure}: the FOREIGN-tagged emission must live in the report-only helper"
+    );
+    let foreign_mask = code_mask(foreign);
+    for name in [
+        "set_terminated",
+        "remove_from_ready_queue",
+        "eret_guard_claim_source",
+        "with_scheduler",
+    ] {
+        assert_eq!(
+            call_offsets(foreign, &foreign_mask, name).len(),
+            0,
+            "{failure}: the foreign reporter must not call {name}"
+        );
+    }
+}
+
+#[test]
+fn aarch64_resume_pc_records_publish_their_source_behind_a_store_barrier() {
+    let source = repo_text(RESUME_PC_GUARD_INCLUDE);
+    let failure = "the record payload has to be visible before the validity word";
+
+    let instruction_lines = |body: &str| {
+        let mut offset = 0usize;
+        body.split_inclusive('\n')
+            .filter_map(|line| {
+                let line_offset = offset;
+                offset += line.len();
+                let code = assembly_line_code(line);
+                (!assembly_line_is_label_or_directive(code))
+                    .then_some((line_offset, code.to_owned()))
+            })
+            .collect::<Vec<_>>()
+    };
+
+    for name in ["RESUME_PC_RECORD", "RESUME_PC_RECORD_NOFRAME"] {
+        let body = assembly_macro_body(&source, name)
+            .unwrap_or_else(|| panic!("missing {name} macro body"));
+        let instructions = instruction_lines(body);
+        let stores = instructions
+            .iter()
+            .filter_map(|(offset, code)| {
+                let mut fields = code.splitn(2, char::is_whitespace);
+                let mnemonic = fields.next()?;
+                let operands = fields.next()?.replace(' ', "");
+                let destination = operands.split_once(',')?.1;
+                let inner = destination.strip_prefix('[')?.strip_suffix(']')?;
+                let (_base, displacement) = inner.rsplit_once(',')?;
+                mnemonic
+                    .starts_with("st")
+                    .then_some((*offset, displacement.to_owned()))
+            })
+            .collect::<Vec<_>>();
+        let source_stores = stores
+            .iter()
+            .filter_map(|(offset, displacement)| {
+                (displacement == "#PERCPU_ERET_GUARD_SOURCE").then_some(*offset)
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            source_stores.len(),
+            1,
+            "{failure}: {name} must have exactly one source store"
+        );
+        let barriers = instructions
+            .iter()
+            .filter_map(|(offset, code)| {
+                code.split_whitespace()
+                    .next()
+                    .is_some_and(|mnemonic| mnemonic.starts_with("dmb"))
+                    .then_some(*offset)
+            })
+            .collect::<Vec<_>>();
+        assert!(
+            !barriers.is_empty(),
+            "{failure}: {name} must contain a store barrier"
+        );
+        let payload_stores = stores
+            .iter()
+            .filter_map(|(offset, displacement)| {
+                (displacement.starts_with("#PERCPU_ERET_GUARD_")
+                    && displacement != "#PERCPU_ERET_GUARD_SOURCE")
+                    .then_some(*offset)
+            })
+            .collect::<Vec<_>>();
+        assert!(
+            !payload_stores.is_empty(),
+            "{failure}: {name} must publish a guard payload"
+        );
+        assert!(
+            barriers.iter().any(|barrier| {
+                *barrier < source_stores[0]
+                    && payload_stores.iter().all(|store| *store < *barrier)
+            }),
+            "{failure}: {name} must place the barrier after payload stores and before source"
+        );
+    }
+}
+
+#[test]
+fn aarch64_refusal_drain_repoints_this_cpus_current_thread_before_terminating() {
+    let source = repo_text(AARCH64_CONTEXT_SWITCH);
+    let body = function_body(&source, "drain_asm_resume_pc_refusals")
+        .expect("missing drain_asm_resume_pc_refusals body");
+    let mask = code_mask(body);
+    let failure = "a CPU may not mark its published current thread Terminated while still publishing it";
+
+    let pointer_repoints = call_offsets(body, &mask, "set_current_thread_ptr");
+    assert!(
+        !pointer_repoints.is_empty(),
+        "{failure}: missing current-thread pointer repoint"
+    );
+    let bytes = body.as_bytes();
+    let current_thread_assignments = identifier_offsets(body, &mask, "current_thread")
+        .into_iter()
+        .filter(|offset| {
+            let mut cursor = *offset + "current_thread".len();
+            while cursor < bytes.len() && (!mask[cursor] || bytes[cursor].is_ascii_whitespace()) {
+                cursor += 1;
+            }
+            bytes.get(cursor) == Some(&b'=') && bytes.get(cursor + 1) != Some(&b'=')
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        !current_thread_assignments.is_empty(),
+        "{failure}: missing scheduler current-thread assignment"
+    );
+    let terminate_calls = call_offsets(body, &mask, "set_terminated");
+    assert!(
+        !terminate_calls.is_empty(),
+        "{failure}: missing termination call"
+    );
+    assert!(
+        pointer_repoints
+            .iter()
+            .chain(&current_thread_assignments)
+            .all(|repoint| terminate_calls.iter().all(|terminate| *repoint < *terminate)),
+        "{failure}: every current-thread repoint must precede every termination"
+    );
+    for counter in [
+        "RESUME_PC_CURRENT_DANGLING",
+        "RESUME_PC_CURRENT_REPOINTED",
+    ] {
+        assert!(
+            !identifier_offsets(body, &mask, counter).is_empty(),
+            "{failure}: missing {counter} census reference"
+        );
+    }
+}
+
+#[test]
 fn every_el1_resume_pc_consumer_uses_the_shared_admission_macro() {
     let sources = text_sources_below(RESUME_PC_ASSEMBLY_ROOT);
     assert_eq!(
