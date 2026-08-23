@@ -87,6 +87,24 @@ a thread that reaches a CPU's own queue another way still meets the dispatch
 adjudication, is recorded there and is routed home from there. Filtering the
 local pop would delete that evidence, and the dispatch record is gate-failing.
 
+## Verification
+
+* 10 ratchet mutations, each applied singly to a clean tree, each RED on its own
+  suite: drop the own-slot conjunct; invert it; stop delegating the rule; the
+  inherited layout (record topmost, no order assertions); trust a record its
+  sentinel no longer guards; the ret admission stops adjudicating; the ret
+  admission adjudicates after it spends the SP; one steal loop skips custody; a
+  declined steal is not routed home; a refusal routed back to the declining CPU.
+* Host suites: 14 suites, 354 tests, green — including the new
+  `percpu_stack_custody` and five new structural ratchets.
+* Kernel builds on `aarch64-breenix-kernel.json` only, both profiles, 0 warnings
+  each. `scripts/check-kernel-no-neon.sh`: PASS, 0 FP/SIMD load/stores.
+* `run-aarch64-service-sequence-gate.sh --profile both --boots 10 --rebuild`:
+  PASSED, 20/20 GREEN, every gate-failing bucket 0 on both profiles. No
+  `[PERCPU_STACK_SELECTION_ROUTED:` line in any serial: the steal decline never
+  fired, which is what `PERCPU_STACK_ALIEN=0` predicts — the seam is closed, not
+  exercised.
+
 ## What this round does not do
 
 The ERET epilogue is untouched (hot path; a redirect there would strand the
