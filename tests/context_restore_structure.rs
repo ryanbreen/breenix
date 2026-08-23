@@ -3427,6 +3427,48 @@ fn brace_depth_before(source: &str, mask: &[bool], offset: usize) -> usize {
         })
 }
 
+/// The single identifier passed as the first argument of the call at `offset`,
+/// or `None` when the argument is not a bare identifier (possibly with a cast).
+fn call_argument_identifier<'a>(source: &'a str, mask: &[bool], offset: usize) -> Option<&'a str> {
+    let bytes = source.as_bytes();
+    let open = (offset..bytes.len()).find(|index| mask[*index] && bytes[*index] == b'(')?;
+    let mut cursor = open + 1;
+    while cursor < bytes.len() && (!mask[cursor] || bytes[cursor].is_ascii_whitespace()) {
+        cursor += 1;
+    }
+    let start = cursor;
+    while cursor < bytes.len() && mask[cursor] && identifier_byte(bytes[cursor]) {
+        cursor += 1;
+    }
+    (cursor > start).then(|| &source[start..cursor])
+}
+
+/// The identifier bound by the first `let <ident> = ... <call>(...)` in `source`.
+fn binding_from_call<'a>(source: &'a str, mask: &[bool], call: &str) -> Option<&'a str> {
+    let bytes = source.as_bytes();
+    for offset in identifier_offsets(source, mask, "let") {
+        let mut cursor = offset + "let".len();
+        while cursor < bytes.len() && (!mask[cursor] || bytes[cursor].is_ascii_whitespace()) {
+            cursor += 1;
+        }
+        let start = cursor;
+        while cursor < bytes.len() && mask[cursor] && identifier_byte(bytes[cursor]) {
+            cursor += 1;
+        }
+        if cursor == start {
+            continue;
+        }
+        let name = &source[start..cursor];
+        let statement_end = (cursor..bytes.len()).find(|index| mask[*index] && bytes[*index] == b';')?;
+        let initializer = &source[cursor..statement_end];
+        let initializer_mask = code_mask(initializer);
+        if !call_offsets(initializer, &initializer_mask, call).is_empty() {
+            return Some(name);
+        }
+    }
+    None
+}
+
 fn braced_block_bounds(source: &str, mask: &[bool], start: usize) -> Option<(usize, usize)> {
     let open =
         (start..source.len()).find(|index| mask[*index] && source.as_bytes()[*index] == b'{')?;
@@ -3681,6 +3723,28 @@ fn aarch64_ret_dispatch_refusal_leaves_the_refused_stack_before_custody_stops_na
     );
 }
 
+/// Locate the `if` statements in `body` whose condition text satisfies
+/// `condition_ok`, returning `(condition_text, block_start, block_end)` for each.
+/// `block_start` is the offset of the `{` opening the consequent and `block_end`
+/// the offset of its matching `}`.
+fn guarded_if_blocks<'a>(
+    body: &'a str,
+    mask: &[bool],
+    condition_ok: impl Fn(&str) -> bool,
+) -> Vec<(&'a str, usize, usize)> {
+    let mut blocks = Vec::new();
+    for offset in identifier_offsets(body, mask, "if") {
+        let Some((open, close)) = braced_block_bounds(body, mask, offset) else {
+            continue;
+        };
+        let condition = &body[offset + "if".len()..open];
+        if condition_ok(condition) {
+            blocks.push((condition, open, close));
+        }
+    }
+    blocks
+}
+
 #[test]
 fn aarch64_refusal_drain_acts_only_on_records_this_cpu_published() {
     let source = repo_text(AARCH64_CONTEXT_SWITCH);
@@ -3689,6 +3753,24 @@ fn aarch64_refusal_drain_acts_only_on_records_this_cpu_published() {
     let mask = code_mask(body);
     let failure = "the drain may only act on records the draining CPU published";
 
+    // Both operands of the guard are DERIVED, not named by this test: the record
+    // CPU is whatever identifier indexes the per-CPU record read, and the drain
+    // CPU is whatever identifier is bound from this CPU's own id.
+    let record_read = call_offsets(body, &mask, "eret_guard_record_full");
+    assert_eq!(
+        record_read.len(),
+        1,
+        "{failure}: expected exactly one per-CPU record read"
+    );
+    let record_cpu_ident = call_argument_identifier(body, &mask, record_read[0])
+        .expect("the per-CPU record read must be indexed by an identifier");
+    let drain_cpu_ident = binding_from_call(body, &mask, "cpu_id")
+        .expect("the drain must bind this CPU's id to an identifier");
+    assert_ne!(
+        record_cpu_ident, drain_cpu_ident,
+        "{failure}: the record CPU and the drain CPU must be distinct identifiers"
+    );
+
     let claim_calls = call_offsets(body, &mask, "eret_guard_claim_source");
     assert_eq!(
         claim_calls.len(),
@@ -3696,15 +3778,60 @@ fn aarch64_refusal_drain_acts_only_on_records_this_cpu_published() {
         "{failure}: expected exactly one record claim"
     );
     let claim = claim_calls[0];
-    let drain_cpu_offsets = identifier_offsets(body, &mask, "drain_cpu");
-    let first_drain_cpu = *drain_cpu_offsets
-        .first()
-        .expect("drain_asm_resume_pc_refusals must identify the draining CPU");
-    let continue_offsets = identifier_offsets(body, &mask, "continue");
+
+    // THE SHAPE: an `if` comparing the two, whose consequent both reports the
+    // foreign record and leaves the iteration, and which dominates the claim.
+    let comparisons = guarded_if_blocks(body, &mask, |condition| {
+        let condition_mask = code_mask(condition);
+        let mentions = |identifier: &str| {
+            !identifier_offsets(condition, &condition_mask, identifier).is_empty()
+        };
+        let compares = condition.contains("!=") || condition.contains("==");
+        compares && mentions(record_cpu_ident) && mentions(drain_cpu_ident)
+    });
+    assert_eq!(
+        comparisons.len(),
+        1,
+        "{failure}: expected exactly one `if` comparing {record_cpu_ident} against \
+         {drain_cpu_ident}; found {}",
+        comparisons.len()
+    );
+    let (_, foreign_open, foreign_close) = comparisons[0];
+
+    let reporter_calls = call_offsets(body, &mask, "report_foreign_resume_pc_refusal");
+    assert_eq!(
+        reporter_calls.len(),
+        1,
+        "{failure}: the foreign reporter must have exactly one call site in the drain"
+    );
     assert!(
-        drain_cpu_offsets.iter().any(|offset| *offset < claim)
-            && continue_offsets.iter().any(|offset| *offset < claim),
-        "{failure}: the foreign-record early-out must precede the claim"
+        reporter_calls[0] > foreign_open && reporter_calls[0] < foreign_close,
+        "{failure}: the foreign reporter must be reachable only from the CPU comparison"
+    );
+    let source_mask = code_mask(&source);
+    let reporter_file_calls = call_offsets(
+        &source,
+        &source_mask,
+        "report_foreign_resume_pc_refusal",
+    )
+    .into_iter()
+    .filter(|offset| !preceded_by_keyword(&source, &source_mask, *offset, "fn"))
+    .collect::<Vec<_>>();
+    assert_eq!(
+        reporter_file_calls.len(),
+        1,
+        "{failure}: the foreign reporter must have exactly one call site in the file"
+    );
+    let continues = identifier_offsets(body, &mask, "continue");
+    assert!(
+        continues
+            .iter()
+            .any(|offset| *offset > foreign_open && *offset < foreign_close),
+        "{failure}: the foreign branch must leave the iteration"
+    );
+    assert!(
+        claim > foreign_close,
+        "{failure}: the CPU comparison must dominate the record claim"
     );
 
     let calls = |name| {
@@ -3716,7 +3843,6 @@ fn aarch64_refusal_drain_acts_only_on_records_this_cpu_published() {
     let terminate_calls = calls("set_terminated");
     let dequeue_calls = calls("remove_from_ready_queue");
     for (name, offsets) in [
-        ("eret_guard_claim_source", claim_calls.as_slice()),
         (
             "record_resume_pc_refusal_locked",
             record_calls.as_slice(),
@@ -3725,18 +3851,9 @@ fn aarch64_refusal_drain_acts_only_on_records_this_cpu_published() {
         ("remove_from_ready_queue", dequeue_calls.as_slice()),
     ] {
         assert!(
-            offsets.iter().all(|offset| *offset > first_drain_cpu),
-            "{failure}: {name} must occur after the drain CPU is identified"
+            offsets.iter().all(|offset| *offset > foreign_close),
+            "{failure}: {name} must occur after the foreign early-out"
         );
-    }
-    for (name, offsets) in [
-        (
-            "record_resume_pc_refusal_locked",
-            record_calls.as_slice(),
-        ),
-        ("set_terminated", terminate_calls.as_slice()),
-        ("remove_from_ready_queue", dequeue_calls.as_slice()),
-    ] {
         assert!(
             offsets.iter().all(|offset| *offset > claim),
             "{failure}: {name} must occur after the owner record is claimed"
@@ -3765,6 +3882,108 @@ fn aarch64_refusal_drain_acts_only_on_records_this_cpu_published() {
             0,
             "{failure}: the foreign reporter must not call {name}"
         );
+    }
+}
+
+#[test]
+fn aarch64_refusal_drain_acts_only_after_it_has_departed_the_victim_stack() {
+    let source = repo_text(AARCH64_CONTEXT_SWITCH);
+    let body = function_body(&source, "drain_asm_resume_pc_refusals")
+        .expect("missing drain_asm_resume_pc_refusals body");
+    let mask = code_mask(body);
+    let failure = "the drain may only act once it has left the victim's kernel stack";
+
+    // DERIVED, not named: every identifier assigned from a kernel-stack
+    // containment test, plus anything `let`-bound from one of those.
+    let bytes = body.as_bytes();
+    let mut departure: BTreeSet<&str> = BTreeSet::new();
+    for call in call_offsets(body, &mask, "sp_within_kernel_stack") {
+        let statement_start = (0..call)
+            .rev()
+            .find(|index| mask[*index] && matches!(bytes[*index], b';' | b'{' | b'}'))
+            .map(|index| index + 1)
+            .unwrap_or(0);
+        let mut cursor = statement_start;
+        while cursor < call && (!mask[cursor] || bytes[cursor].is_ascii_whitespace()) {
+            cursor += 1;
+        }
+        if body[cursor..call].starts_with("let ") {
+            cursor += "let ".len();
+            while cursor < call && (!mask[cursor] || bytes[cursor].is_ascii_whitespace()) {
+                cursor += 1;
+            }
+        }
+        let start = cursor;
+        while cursor < call && mask[cursor] && identifier_byte(bytes[cursor]) {
+            cursor += 1;
+        }
+        if cursor > start {
+            departure.insert(&body[start..cursor]);
+        }
+    }
+    assert!(
+        !departure.is_empty(),
+        "{failure}: the drain must test whether it stands on the victim's kernel stack"
+    );
+    // One level of alias: `let departed = !on_victim_stack;`.
+    for _ in 0..2 {
+        let mut discovered: Vec<&str> = Vec::new();
+        for offset in identifier_offsets(body, &mask, "let") {
+            let mut cursor = offset + "let".len();
+            while cursor < bytes.len() && (!mask[cursor] || bytes[cursor].is_ascii_whitespace()) {
+                cursor += 1;
+            }
+            let start = cursor;
+            while cursor < bytes.len() && mask[cursor] && identifier_byte(bytes[cursor]) {
+                cursor += 1;
+            }
+            if cursor == start {
+                continue;
+            }
+            let name = &body[start..cursor];
+            let Some(end) = (cursor..bytes.len()).find(|index| mask[*index] && bytes[*index] == b';')
+            else {
+                continue;
+            };
+            let initializer = &body[cursor..end];
+            let initializer_mask = code_mask(initializer);
+            if departure.iter().any(|identifier| {
+                !identifier_offsets(initializer, &initializer_mask, identifier).is_empty()
+            }) {
+                discovered.push(name);
+            }
+        }
+        for name in discovered {
+            departure.insert(name);
+        }
+    }
+
+    let guarded = guarded_if_blocks(body, &mask, |condition| {
+        let condition_mask = code_mask(condition);
+        departure.iter().any(|identifier| {
+            !identifier_offsets(condition, &condition_mask, identifier).is_empty()
+        })
+    });
+    assert!(
+        !guarded.is_empty(),
+        "{failure}: no branch in the drain is controlled by the departure test"
+    );
+
+    for name in [
+        "set_terminated",
+        "record_cpu_state_change",
+        "set_current_thread_ptr",
+    ] {
+        let offsets = call_offsets(body, &mask, name);
+        assert!(!offsets.is_empty(), "{failure}: missing {name} call");
+        for offset in offsets {
+            assert!(
+                guarded
+                    .iter()
+                    .any(|(_, open, close)| offset > *open && offset < *close),
+                "{failure}: {name} is not dominated by the departure test"
+            );
+        }
     }
 }
 

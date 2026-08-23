@@ -104,6 +104,30 @@ static FOREIGN_RECORD_CPU: AtomicU64 = AtomicU64::new(0);
 static FOREIGN_CANARY_TID: AtomicU64 = AtomicU64::new(0);
 #[cfg(all(target_arch = "aarch64", feature = "resume_pc_foreign_oracle"))]
 static FOREIGN_CANARY_PROGRESS: AtomicU64 = AtomicU64::new(0);
+#[cfg(all(target_arch = "aarch64", feature = "resume_pc_foreign_oracle"))]
+static DEPARTURE_ARMED: AtomicU64 = AtomicU64::new(0);
+#[cfg(all(target_arch = "aarch64", feature = "resume_pc_foreign_oracle"))]
+static DEPARTURE_FIRED: AtomicU64 = AtomicU64::new(0);
+#[cfg(all(target_arch = "aarch64", feature = "resume_pc_foreign_oracle"))]
+static DEPARTURE_PLANTED: AtomicU64 = AtomicU64::new(0);
+#[cfg(all(target_arch = "aarch64", feature = "resume_pc_foreign_oracle"))]
+static DEPARTURE_VICTIM_TID: AtomicU64 = AtomicU64::new(0);
+#[cfg(all(target_arch = "aarch64", feature = "resume_pc_foreign_oracle"))]
+static DEPARTURE_CANARY_IS_SELF: AtomicU64 = AtomicU64::new(0);
+#[cfg(all(target_arch = "aarch64", feature = "resume_pc_foreign_oracle"))]
+static DEPARTURE_REFUSALS: AtomicU64 = AtomicU64::new(0);
+#[cfg(all(target_arch = "aarch64", feature = "resume_pc_foreign_oracle"))]
+static DEPARTURE_VICTIM_PRESENT: AtomicU64 = AtomicU64::new(0);
+#[cfg(all(target_arch = "aarch64", feature = "resume_pc_foreign_oracle"))]
+static DEPARTURE_VICTIM_TERMINATED: AtomicU64 = AtomicU64::new(0);
+#[cfg(all(target_arch = "aarch64", feature = "resume_pc_foreign_oracle"))]
+static DEPARTURE_STILL_CURRENT: AtomicU64 = AtomicU64::new(0);
+#[cfg(all(target_arch = "aarch64", feature = "resume_pc_foreign_oracle"))]
+static DEPARTURE_PTR_NULLED: AtomicU64 = AtomicU64::new(0);
+#[cfg(all(target_arch = "aarch64", feature = "resume_pc_foreign_oracle"))]
+static DEPARTURE_RECORD_STILL_PUBLISHED: AtomicU64 = AtomicU64::new(0);
+#[cfg(all(target_arch = "aarch64", feature = "resume_pc_foreign_oracle"))]
+static DEPARTURE_PROGRESS: AtomicU64 = AtomicU64::new(0);
 
 #[cfg(all(target_arch = "aarch64", feature = "ret_zero_pc_oracle_exec"))]
 static EXEC_ARMED: AtomicU64 = AtomicU64::new(1);
@@ -810,6 +834,10 @@ fn monotonic_now_ms() -> u64 {
     )
 ))]
 fn every_compiled_test_fired() -> bool {
+    #[cfg(all(target_arch = "aarch64", feature = "resume_pc_foreign_oracle"))]
+    if DEPARTURE_FIRED.load(Ordering::Acquire) == 0 {
+        return false;
+    }
     #[cfg(feature = "ret_zero_pc_oracle")]
     if RET_FIRED.load(Ordering::Acquire) == 0 {
         return false;
@@ -986,6 +1014,102 @@ fn report_ret_floor() {
     );
 }
 
+/// Leg H victim. It is the thread the drain would wrongly kill: dispatched onto
+/// this CPU AFTER a refusal record was published, named by this CPU's OWNER-TID
+/// canary, and running on its own kernel stack at the instant the drain runs.
+///
+/// The stimulus is staged on THIS CPU's own record slot with interrupts masked,
+/// so no other CPU's record, canary or publication is perturbed, and the drain
+/// itself claims the planted record (the claim precedes the act decision), so
+/// nothing is left published for a later drain to act on.
+#[cfg(all(target_arch = "aarch64", feature = "resume_pc_foreign_oracle"))]
+fn drain_departure_victim() {
+    use crate::arch_impl::aarch64::context_switch as ctx;
+    use crate::arch_impl::aarch64::percpu::Aarch64PerCpu;
+    use crate::arch_impl::traits::PerCpuOps;
+
+    // Run for a while first, so "dispatched after the record" is a statement
+    // about a thread the scheduler really dispatched.
+    while DEPARTURE_PROGRESS.load(Ordering::Acquire) < 2 {
+        DEPARTURE_PROGRESS.fetch_add(1, Ordering::AcqRel);
+        super::scheduler::schedule();
+        super::strand_oracle::sleep_sample_period();
+    }
+
+    let self_tid = match super::scheduler::current_thread_id() {
+        Some(tid) => tid,
+        None => return,
+    };
+    DEPARTURE_VICTIM_TID.store(self_tid, Ordering::Release);
+
+    for _ in 0..200 {
+        let staged = crate::arch_without_interrupts(|| {
+            let cpu_id = Aarch64PerCpu::cpu_id() as usize;
+            let canary = ctx::last_dispatched_tid(cpu_id).unwrap_or(0);
+            if canary != self_tid {
+                return false;
+            }
+            DEPARTURE_CANARY_IS_SELF.store(1, Ordering::Release);
+
+            let before = ctx::RESUME_PC_DRAIN_ON_VICTIM_STACK.load(Ordering::Acquire);
+            #[cfg(not(feature = "resume_pc_oracle_disarm"))]
+            {
+                const PLANTED_PC: u64 = 0x0000_0000_0200_0000;
+                if crate::per_cpu_aarch64::plant_synthetic_eret_guard_record(
+                    cpu_id,
+                    PLANTED_PC,
+                    0,
+                    ctx::RESUME_PC_SOURCE_RET_DISPATCH,
+                ) {
+                    DEPARTURE_PLANTED.store(1, Ordering::Release);
+                }
+            }
+            ctx::drain_asm_resume_pc_refusals();
+            let after = ctx::RESUME_PC_DRAIN_ON_VICTIM_STACK.load(Ordering::Acquire);
+            DEPARTURE_REFUSALS.store(after.saturating_sub(before), Ordering::Release);
+            DEPARTURE_RECORD_STILL_PUBLISHED.store(
+                u64::from(crate::per_cpu_aarch64::eret_guard_record_is_published(cpu_id)),
+                Ordering::Release,
+            );
+            DEPARTURE_PTR_NULLED.store(
+                u64::from(Aarch64PerCpu::current_thread_ptr().is_null()),
+                Ordering::Release,
+            );
+            let (present, terminated, still_current) =
+                super::scheduler::with_scheduler(|sched| {
+                    let still_current =
+                        u64::from(sched.cpu_state[cpu_id].current_thread == Some(self_tid));
+                    match sched.get_thread(self_tid) {
+                        Some(thread) => (
+                            1u64,
+                            u64::from(
+                                thread.state == crate::task::thread::ThreadState::Terminated,
+                            ),
+                            still_current,
+                        ),
+                        None => (0u64, 0u64, still_current),
+                    }
+                })
+                .unwrap_or((0, 0, 0));
+            DEPARTURE_VICTIM_PRESENT.store(present, Ordering::Release);
+            DEPARTURE_VICTIM_TERMINATED.store(terminated, Ordering::Release);
+            DEPARTURE_STILL_CURRENT.store(still_current, Ordering::Release);
+            DEPARTURE_FIRED.store(1, Ordering::Release);
+            true
+        });
+        if staged {
+            break;
+        }
+        super::strand_oracle::sleep_sample_period();
+    }
+
+    loop {
+        DEPARTURE_PROGRESS.fetch_add(1, Ordering::AcqRel);
+        super::scheduler::schedule();
+        super::strand_oracle::sleep_sample_period();
+    }
+}
+
 #[cfg(all(target_arch = "aarch64", feature = "resume_pc_foreign_oracle"))]
 fn report_foreign_record() {
     let armed = FOREIGN_ARMED.load(Ordering::Acquire);
@@ -1041,6 +1165,65 @@ fn report_foreign_record() {
         still_published,
         canary_present,
         canary_terminated,
+        fatal,
+        if passed { "PASS" } else { "FAIL" },
+    );
+}
+
+#[cfg(all(target_arch = "aarch64", feature = "resume_pc_foreign_oracle"))]
+fn report_drain_departure() {
+    let armed = DEPARTURE_ARMED.load(Ordering::Acquire);
+    let fired = DEPARTURE_FIRED.load(Ordering::Acquire);
+    let planted = DEPARTURE_PLANTED.load(Ordering::Acquire);
+    let victim_tid = DEPARTURE_VICTIM_TID.load(Ordering::Acquire);
+    let canary_is_self = DEPARTURE_CANARY_IS_SELF.load(Ordering::Acquire);
+    let refusals = DEPARTURE_REFUSALS.load(Ordering::Acquire);
+    let victim_present = DEPARTURE_VICTIM_PRESENT.load(Ordering::Acquire);
+    let victim_terminated = DEPARTURE_VICTIM_TERMINATED.load(Ordering::Acquire);
+    let still_current = DEPARTURE_STILL_CURRENT.load(Ordering::Acquire);
+    let ptr_nulled = DEPARTURE_PTR_NULLED.load(Ordering::Acquire);
+    let record_still_published = DEPARTURE_RECORD_STILL_PUBLISHED.load(Ordering::Acquire);
+    let progress = DEPARTURE_PROGRESS.load(Ordering::Acquire);
+    let fatal = if crate::arch_impl::aarch64::exception::any_fatal_postmortem_captured() {
+        1
+    } else {
+        0
+    };
+    let survived = victim_present == 1
+        && victim_terminated == 0
+        && still_current == 1
+        && ptr_nulled == 0
+        && fatal == 0;
+    #[cfg(not(feature = "resume_pc_oracle_disarm"))]
+    let passed = armed == 1
+        && fired == 1
+        && planted == 1
+        && canary_is_self == 1
+        && refusals >= 1
+        && record_still_published == 0
+        && survived;
+    #[cfg(feature = "resume_pc_oracle_disarm")]
+    let passed = armed == 1
+        && fired == 1
+        && planted == 0
+        && canary_is_self == 1
+        && refusals == 0
+        && record_still_published == 0
+        && survived;
+    crate::serial_println!(
+        "[RESUME_PC_DRAIN_DEPARTURE_ORACLE:aarch64:leg=H:armed={}:fired={}:planted={}:victim_tid={}:canary_is_self={}:refusals={}:victim_present={}:victim_terminated={}:still_current={}:ptr_nulled={}:record_still_published={}:progress={}:fatal={}:{}]",
+        armed,
+        fired,
+        planted,
+        victim_tid,
+        canary_is_self,
+        refusals,
+        victim_present,
+        victim_terminated,
+        still_current,
+        ptr_nulled,
+        record_still_published,
+        progress,
         fatal,
         if passed { "PASS" } else { "FAIL" },
     );
@@ -1298,6 +1481,8 @@ fn retzero_oracle_thread() {
             report_ret_floor();
             #[cfg(all(target_arch = "aarch64", feature = "resume_pc_foreign_oracle"))]
             report_foreign_record();
+            #[cfg(all(target_arch = "aarch64", feature = "resume_pc_foreign_oracle"))]
+            report_drain_departure();
             #[cfg(feature = "strand_inject_live_outgoing")]
             report_live_outgoing();
             #[cfg(any(feature = "resume_pc_el1_oracle", feature = "eret_zero_pc_oracle"))]
@@ -1371,6 +1556,10 @@ pub fn start() {
                 FOREIGN_CANARY_TID.store(canary.tid(), Ordering::Release);
                 FOREIGN_ARMED.store(1, Ordering::Release);
                 let _ = super::kthread::kthread_run(arm_foreign_record_oracle, "foreign-arm");
+            }
+            if super::kthread::kthread_run(drain_departure_victim, "drain-departure-victim").is_ok()
+            {
+                DEPARTURE_ARMED.store(1, Ordering::Release);
             }
         }
         let _ = super::kthread::kthread_run(retzero_oracle_thread, "retzero-oracle");
