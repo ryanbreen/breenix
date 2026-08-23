@@ -104,6 +104,19 @@ pub static RESUME_PC_EL0_ASM_REFUSALS: AtomicU64 = AtomicU64::new(0);
 /// reaper. Both must be readable by the feature-gated ret-dispatch oracle.
 pub static RESUME_PC_CUSTODY_CHECKS: AtomicU64 = AtomicU64::new(0);
 pub static RESUME_PC_CUSTODY_BLIND: AtomicU64 = AtomicU64::new(0);
+/// Refusal records published by a CPU other than the one draining. They are
+/// reported and left alone; see `drain_asm_resume_pc_refusals`.
+pub static RESUME_PC_FOREIGN_REPORTS: AtomicU64 = AtomicU64::new(0);
+/// Last `eret_guard_count` already reported for a foreign CPU's record, so an
+/// undrained foreign record is described once instead of on every drain pass.
+static RESUME_PC_FOREIGN_LAST_COUNT: [AtomicU64;
+    crate::arch_impl::aarch64::constants::MAX_CPUS] =
+    [const { AtomicU64::new(0) }; crate::arch_impl::aarch64::constants::MAX_CPUS];
+/// Drains that found this CPU's published current thread still naming the
+/// thread the refusal is about to terminate, and how many of those were
+/// repointed at idle before the terminate. The two must stay equal.
+pub static RESUME_PC_CURRENT_DANGLING: AtomicU64 = AtomicU64::new(0);
+pub static RESUME_PC_CURRENT_REPOINTED: AtomicU64 = AtomicU64::new(0);
 
 pub const RESUME_PC_SOURCE_SYNC_EPILOGUE: u64 = 1;
 pub const RESUME_PC_SOURCE_IRQ_EPILOGUE: u64 = 2;
@@ -310,6 +323,23 @@ pub fn record_resume_pc_refusal_locked(
 }
 
 /// Drain all per-CPU refusal records published by assembly ERET guards.
+///
+/// Only the CPU that published a record may act on it. A record carries no tid;
+/// the terminate decision is keyed on the publishing CPU's OWNER-TID canary
+/// (`LAST_DISPATCHED_TID`), a per-CPU word that only that CPU's own dispatch
+/// path stamps. Read from another CPU it is a race — the publisher may have
+/// finalized a later dispatch since, so the name would belong to an innocent
+/// thread. Foreign records are therefore REPORT-ONLY: counted, described, and
+/// left published for their owner. Nothing is lost, because every refusal arm
+/// redirects its own CPU to `idle_loop_arm64`, whose first act is
+/// `run_deferred_reclamation()` -> this drain. The owner always arrives.
+///
+/// Making foreign records inert is also what closes the frame-based arms'
+/// publication-before-departure window: `RESUME_PC_RECORD` publishes the source
+/// word while the CPU is still executing the ERET epilogue on the refused
+/// thread's stack, and does not re-select SP for another ~20-40 instructions.
+/// With no foreign actor, the only CPU that can terminate that thread and hand
+/// its stack to the reaper is the one that has already left it.
 pub fn drain_asm_resume_pc_refusals() {
     let drain_sp: u64;
     unsafe {
@@ -318,27 +348,28 @@ pub fn drain_asm_resume_pc_refusals() {
     let drain_cpu = Aarch64PerCpu::cpu_id() as u64;
 
     for cpu_id in 0..crate::arch_impl::aarch64::constants::MAX_CPUS {
-        let Some((_source, elr, spsr, x29, x30, sp, _count)) =
+        let Some((_source, elr, spsr, x29, x30, sp, count)) =
             crate::per_cpu_aarch64::eret_guard_record_full(cpu_id)
         else {
             continue;
         };
+        if cpu_id as u64 != drain_cpu {
+            report_foreign_resume_pc_refusal(drain_cpu, cpu_id, elr, sp, count);
+            continue;
+        }
         let claimed_source = crate::per_cpu_aarch64::eret_guard_claim_source(cpu_id);
         if claimed_source == 0 {
             continue;
         }
         let record_slot = reusable_kstack_slot_for_address(sp);
         let drain_slot = reusable_kstack_slot_for_address(drain_sp);
-        let on_refused_stack =
-            cpu_id as u64 == drain_cpu && record_slot.is_some() && record_slot == drain_slot;
+        let on_refused_stack = record_slot.is_some() && record_slot == drain_slot;
         let named_live = drain_slot
             .map(crate::memory::kernel_stack::kernel_stack_slot_top)
             .is_some_and(crate::memory::kernel_stack::is_kernel_stack_slot_live);
-        if cpu_id as u64 == drain_cpu {
-            RESUME_PC_CUSTODY_CHECKS.fetch_add(1, Ordering::Release);
-            if on_refused_stack && !named_live {
-                RESUME_PC_CUSTODY_BLIND.fetch_add(1, Ordering::Release);
-            }
+        RESUME_PC_CUSTODY_CHECKS.fetch_add(1, Ordering::Release);
+        if on_refused_stack && !named_live {
+            RESUME_PC_CUSTODY_BLIND.fetch_add(1, Ordering::Release);
         }
         let tid = last_dispatched_tid(cpu_id).unwrap_or(0);
         record_resume_pc_refusal_locked(
@@ -354,45 +385,78 @@ pub fn drain_asm_resume_pc_refusals() {
             let mut victim_stack_top = 0;
             let mut on_victim_stack = false;
             let mut record_sp_on_victim_stack = false;
+            let mut current_repointed = false;
             crate::task::scheduler::with_scheduler(|sched| {
                 let is_idle = sched
                     .cpu_state
                     .iter()
                     .any(|state| state.idle_thread == tid);
-                if !is_idle {
-                    if let Some(thread) = sched.get_thread_mut(tid) {
-                        victim_stack_top = thread
-                            .kernel_stack_top
-                            .map(|top| top.as_u64())
-                            .unwrap_or(0);
-                        record_sp_on_victim_stack = victim_stack_top != 0
-                            && crate::memory::kernel_stack::sp_within_kernel_stack(
-                                sp,
-                                victim_stack_top,
-                            );
-                        if victim_stack_top != 0 && cpu_id as u64 == drain_cpu {
-                            on_victim_stack =
-                                crate::memory::kernel_stack::sp_within_kernel_stack(
-                                    drain_sp,
-                                    victim_stack_top,
-                                );
-                        }
-                        thread.set_terminated();
-                    }
-                    sched.remove_from_ready_queue(tid);
+                if is_idle {
+                    return;
                 }
+                let Some(thread) = sched.get_thread(tid) else {
+                    sched.remove_from_ready_queue(tid);
+                    return;
+                };
+                let victim_ptr = thread as *const _ as *mut u8;
+                victim_stack_top = thread
+                    .kernel_stack_top
+                    .map(|top| top.as_u64())
+                    .unwrap_or(0);
+                record_sp_on_victim_stack = victim_stack_top != 0
+                    && crate::memory::kernel_stack::sp_within_kernel_stack(sp, victim_stack_top);
+                on_victim_stack = victim_stack_top != 0
+                    && crate::memory::kernel_stack::sp_within_kernel_stack(
+                        drain_sp,
+                        victim_stack_top,
+                    );
+
+                // BOOKKEEPING REPOINT, and it happens BEFORE the terminate on
+                // purpose. The refused dispatch published this thread as this
+                // CPU's current thread and then never resumed it: the refusal
+                // arm redirected the CPU to idle. Marking it Terminated while
+                // that publication still stands leaves `current_thread_ptr`
+                // aimed at a Box the very next reclaim pass is free to drop —
+                // the refused stack slot is no longer named live, so nothing
+                // holds reclamation back. Republish idle, which is what this
+                // CPU is actually running.
+                let drain_cpu_index = drain_cpu as usize;
+                let idle_id = sched.cpu_state[drain_cpu_index].idle_thread;
+                let published_ptr = Aarch64PerCpu::current_thread_ptr();
+                let published_tid = sched.cpu_state[drain_cpu_index].current_thread;
+                if published_ptr == victim_ptr || published_tid == Some(tid) {
+                    RESUME_PC_CURRENT_DANGLING.fetch_add(1, Ordering::Release);
+                    if published_ptr == victim_ptr {
+                        unsafe {
+                            Aarch64PerCpu::set_current_thread_ptr(core::ptr::null_mut());
+                        }
+                    }
+                    if published_tid == Some(tid) {
+                        crate::task::scheduler::record_cpu_state_change(
+                            drain_cpu_index,
+                            20,
+                            tid,
+                            idle_id,
+                        );
+                        sched.cpu_state[drain_cpu_index].current_thread = Some(idle_id);
+                    }
+                    RESUME_PC_CURRENT_REPOINTED.fetch_add(1, Ordering::Release);
+                    current_repointed = true;
+                }
+
+                if let Some(thread) = sched.get_thread_mut(tid) {
+                    thread.set_terminated();
+                }
+                sched.remove_from_ready_queue(tid);
             });
-            let foreign = cpu_id as u64 != drain_cpu;
-            let verdict = if foreign {
-                "FOREIGN"
-            } else if on_refused_stack && !named_live {
+            let verdict = if on_refused_stack && !named_live {
                 "STACK_CUSTODY_BLIND"
             } else {
                 "OK"
             };
             if RESUME_PC_CUSTODY_EMISSIONS.fetch_add(1, Ordering::Relaxed) < 16 {
                 crate::serial_println!(
-                    "[RESUME_PC_CUSTODY:drain_cpu={}:record_cpu={}:victim_tid={}:record_sp=0x{:x}:drain_sp=0x{:x}:record_slot={}:drain_slot={}:on_refused_stack={}:victim_stack_top=0x{:x}:sp_in_pool={}:on_victim_stack={}:record_sp_on_victim_stack={}:named_live={}:{}]",
+                    "[RESUME_PC_CUSTODY:drain_cpu={}:record_cpu={}:victim_tid={}:record_sp=0x{:x}:drain_sp=0x{:x}:record_slot={}:drain_slot={}:on_refused_stack={}:victim_stack_top=0x{:x}:sp_in_pool={}:on_victim_stack={}:record_sp_on_victim_stack={}:named_live={}:current_repointed={}:{}]",
                     drain_cpu,
                     cpu_id,
                     tid,
@@ -406,10 +470,48 @@ pub fn drain_asm_resume_pc_refusals() {
                     u64::from(on_victim_stack),
                     u64::from(record_sp_on_victim_stack),
                     u64::from(named_live),
+                    u64::from(current_repointed),
                     verdict,
                 );
             }
         }
+    }
+}
+
+/// Describe a refusal record published by another CPU without acting on it.
+///
+/// The record stays published: its owner drains it under the OWNER-TID canary
+/// that actually names the refused thread. Reported at most once per distinct
+/// record (keyed on the record's own monotonically increasing count), so an
+/// owner that has not reached idle yet does not produce a report per drain.
+fn report_foreign_resume_pc_refusal(
+    drain_cpu: u64,
+    record_cpu: usize,
+    elr: u64,
+    sp: u64,
+    count: u64,
+) {
+    if record_cpu >= crate::arch_impl::aarch64::constants::MAX_CPUS {
+        return;
+    }
+    let last = RESUME_PC_FOREIGN_LAST_COUNT[record_cpu].load(Ordering::Acquire);
+    if last == count
+        || RESUME_PC_FOREIGN_LAST_COUNT[record_cpu]
+            .compare_exchange(last, count, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+    {
+        return;
+    }
+    RESUME_PC_FOREIGN_REPORTS.fetch_add(1, Ordering::Release);
+    if RESUME_PC_CUSTODY_EMISSIONS.fetch_add(1, Ordering::Relaxed) < 16 {
+        crate::serial_println!(
+            "[RESUME_PC_CUSTODY:drain_cpu={}:record_cpu={}:record_elr=0x{:x}:record_sp=0x{:x}:record_count={}:FOREIGN_REPORT_ONLY]",
+            drain_cpu,
+            record_cpu,
+            elr,
+            sp,
+            count,
+        );
     }
 }
 

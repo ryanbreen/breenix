@@ -72,6 +72,10 @@
     str   \s0, [\percpu, #40]                    // user_sp_scratch = idle stack
     str   xzr, [\percpu, #48]                    // drop nested EL1 resume SP
 8890:
+    // Publish the payload before the validity word. The source tag is what a
+    // remote drain uses to decide the record is readable, so every store above
+    // must be visible first.
+    dmb ishst
     mov   \s1, #\src
     str   \s1, [\percpu, #PERCPU_ERET_GUARD_SOURCE]
 .endm
@@ -113,6 +117,10 @@
     str   \s0, [\percpu, #40]
     str   xzr, [\percpu, #48]
 8891:
+    // Publish the payload before the validity word. The source tag is what a
+    // remote drain uses to decide the record is readable, so every store above
+    // must be visible first.
+    dmb ishst
     mov   \s1, #\src
     str   \s1, [\percpu, #PERCPU_ERET_GUARD_SOURCE]
 .endm
