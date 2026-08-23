@@ -21,7 +21,10 @@ const MIN_INSTRUCTION_ABORT_REFUSAL_REASONS: usize = 3;
 const PRIOR_NAMED_INSTRUCTION_ABORT_ARMS: usize = 1;
 /// Additional #609 clauses are welcome; dropping one is how a tolerated bucket starts absorbing unfiled failures.
 const MIN_609_SIGNATURE_GUARDS: usize = 5;
-const EXPECTED_NON_FAILING_SERVICE_SEQUENCE_BUCKETS: usize = 2;
+/// GREEN alone. #635 was the second entry until its producer was repaired at
+/// source on this branch and its tolerance was removed; the service-sequence
+/// gate now has no non-failing bucket other than a healthy boot.
+const EXPECTED_NON_FAILING_SERVICE_SEQUENCE_BUCKETS: usize = 1;
 /// Each gate must reject both strand marker families; additional rejections are welcome.
 const MIN_STRANDED_FORBIDDEN_REJECTIONS: usize = 2;
 /// More discriminating markers are welcome; dropping one quietly disarms the profile guard.
@@ -1053,8 +1056,8 @@ fn service_sequence_609_arm_is_field_keyed_and_untolerated() {
         "the healthy GREEN result must remain non-failing"
     );
     assert!(
-        non_failing_buckets.contains("635"),
-        "the authorized 635 ATTRIBUTED bucket must remain report-only in this change"
+        failing_buckets.contains("635"),
+        "the 635 bucket keeps its field-keyed attribution but lost its non-failing exemption when its producer was repaired; it must gate like every other named bucket"
     );
     assert!(
         failing_buckets.contains(bucket_609),
@@ -1225,13 +1228,135 @@ fn service_sequence_ret_dispatch_refusals_are_counted_and_reported_not_gated() {
         1,
         "run_profile must retain exactly one per-profile count_* FAIL condition"
     );
+    // Exact `"$name"` terms, not substrings. The blanket `contains("refusal")`
+    // catch-all this replaces cannot survive the resume-PC refusal becoming a
+    // gate failure: `refusal_lines` is a substring of `resume_pc_refusal_lines`,
+    // so a substring test can no longer tell the two families apart and would
+    // read the intended tightening as a ret-dispatch regression. The three
+    // counters below are still derived from the script by following the data
+    // flow out of the `grep -cF "[RET_DISPATCH_REFUSED:"` line, so an alias is
+    // followed rather than evaded, and the shell always writes these terms in
+    // the quoted `[ "$name" -ne 0 ]` form the checks below require.
+    for counter in [boot_counter, profile_line_counter, profile_boot_counter] {
+        assert!(
+            !fail_conditions[0].contains(&format!("\"${counter}\"")),
+            "ret-dispatch refusal counter {counter} must appear in no per-profile FAIL condition"
+        );
+    }
     assert!(
-        !fail_conditions[0].contains(boot_counter)
-            && !fail_conditions[0].contains(profile_line_counter)
-            && !fail_conditions[0].contains(profile_boot_counter)
-            && !fail_conditions[0].contains("refusal"),
+        !fail_conditions[0].contains("RET_DISPATCH_REFUSED"),
         "ret-dispatch refusal observations must appear in no per-profile FAIL condition"
     );
+}
+
+/// The resume-PC refusal record is emitted only by production dispatch in this
+/// gate's feature profile, so a non-zero count is a defect and must fail the
+/// profile rather than be watched.
+#[test]
+fn service_sequence_resume_pc_refusals_fail_the_profile() {
+    let gate = repo_text(SERVICE_SEQUENCE_GATE_PATH);
+    let run_profile = shell_function_body(&gate, "run_profile");
+
+    let refusal_count_line = run_profile
+        .lines()
+        .map(str::trim)
+        .find(|line| line.contains(r#"grep -cF "[RESUME_PC_REFUSED:""#))
+        .expect("per-boot resume-PC refusal count");
+    let boot_counter = refusal_count_line
+        .split_once('=')
+        .map(|(counter, _)| counter)
+        .expect("per-boot resume-PC refusal counter assignment");
+    let profile_line_counter = run_profile
+        .lines()
+        .map(str::trim)
+        .find_map(|line| {
+            let (counter, expression) = line.split_once("=$((")?;
+            expression
+                .contains(&format!("+ {boot_counter}"))
+                .then_some(counter)
+        })
+        .expect("per-profile resume-PC refusal line accumulator");
+
+    let fail_conditions: Vec<_> = run_profile
+        .lines()
+        .map(str::trim)
+        .filter(|line| line.starts_with(r#"if [ "$count_"#) && line.ends_with("; then"))
+        .collect();
+    assert_eq!(
+        fail_conditions.len(),
+        1,
+        "run_profile must retain exactly one per-profile FAIL condition"
+    );
+    assert!(
+        fail_conditions[0].contains(&format!(r#"[ "${profile_line_counter}" -ne 0 ]"#)),
+        "a non-zero production resume-PC refusal count must fail the profile"
+    );
+
+    let print_census = shell_function_body(&gate, "print_census");
+    let resume_reports: Vec<_> = print_census
+        .lines()
+        .map(str::trim)
+        .filter(|line| line.contains("Resume PC refused:"))
+        .collect();
+    assert_eq!(
+        resume_reports.len(),
+        1,
+        "print_census must report the resume-PC refusal census exactly once"
+    );
+    assert!(
+        !resume_reports[0].contains("reported, not gated"),
+        "the resume-PC refusal census must not describe itself as ungated once it gates"
+    );
+    assert!(
+        resume_reports[0].contains(&format!("${profile_line_counter}")),
+        "the resume-PC refusal census must print the derived line accumulator"
+    );
+}
+
+/// #635 keeps its field-keyed classifier arm — attribution by FAR/ELR/ESR is
+/// what stops the shape falling into UNATTRIBUTED — while gating like every
+/// other named bucket. A catch-all arm would be a different thing entirely.
+#[test]
+fn service_sequence_635_arm_is_field_keyed_and_untolerated() {
+    let gate = repo_text(SERVICE_SEQUENCE_GATE_PATH);
+    let classifier = shell_function_body(&gate, "classify_serial");
+    let bucket_offset = classifier
+        .find(r#"CLASS_BUCKET="635""#)
+        .expect("#635 classifier arm");
+    let arm = &classifier[..bucket_offset];
+    let guard = arm
+        .rfind("elif ")
+        .map(|offset| &arm[offset..])
+        .expect("#635 arm guard");
+
+    for term in [
+        r#"[ "$instruction_abort_far" = "$instruction_abort_elr" ]"#,
+        r#"[ "$instruction_abort_far" != "0x0" ]"#,
+        r#"[ "$instruction_abort_esr" = "0x8600000e" ]"#,
+        r#"^0xffff[0-9a-f]+$"#,
+    ] {
+        assert!(
+            guard.contains(term),
+            "#635 must stay keyed to its field signature; lost guard term {term}"
+        );
+    }
+
+    let run_profile = shell_function_body(&gate, "run_profile");
+    let fail_condition = run_profile
+        .lines()
+        .map(str::trim)
+        .find(|line| line.starts_with(r#"if [ "$count_"#) && line.ends_with("; then"))
+        .expect("per-profile FAIL condition");
+    assert!(
+        fail_condition.contains(r#"[ "$count_635" -ne 0 ]"#),
+        "#635 must fail the profile it occurred in"
+    );
+    for stale in ["ATTRIBUTED, non-failing", "never gating", "non-failing]"] {
+        assert!(
+            !gate.contains(stale),
+            "the service-sequence gate still describes a removed tolerance: {stale}"
+        );
+    }
 }
 
 #[test]

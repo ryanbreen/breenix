@@ -554,21 +554,27 @@ classify_serial() {
             # #635's field-keyed family: ESR=0x8600000e with FAR == ELR (the
             # SAME hex string in both positions, never 0x0 — #576 and #626
             # above already claimed FAR=ELR=0x0) and a canonical kernel
-            # high-half address. Coordinator ruling R41 (2026-08-22, T3-G
-            # PR2): the register-file shape (x29==x30, consecutive
-            # callee-saved slots) once looked like a dispatch-vs-epilogue
-            # discriminator, but a byte-identical recurrence with zero
-            # ret-dispatch refusals in the SAME boot proved the shape is
-            # producer-family, not path-proof — the fix in this PR narrows
-            # the ret-dispatch consumer and cannot see this face's producer.
-            # This is a TEMPORARY, AUTHORIZED, field-keyed tolerance at the
-            # documented ~1% rate (#635), attributed and reported but not
-            # gate-failing, to be REMOVED by the producer-family PR
-            # (#633/#635/#637) that closes #635 at source — it must never be
-            # widened or treated as a template for tolerating a different
-            # signature.
+            # high-half address.
+            #
+            # The predicate above is unchanged and stays: attribution by field
+            # signature is what keeps an occurrence of this shape reported
+            # under the issue it belongs to rather than falling into
+            # UNATTRIBUTED. Attribution is not a tolerance.
+            #
+            # The tolerance is gone. The non-failing exemption this bucket
+            # carried was authorized only for as long as the producer was
+            # unfixed; that producer is repaired at source on this branch —
+            # per-CPU idle/exception stacks name their owner and the per-CPU
+            # stack-top setters refuse an address belonging to another CPU,
+            # thread id 0 is retired, the return-SP install follows the frame's
+            # pending exception level, and the reclaimed-thread drop runs with
+            # interrupts masked (docs/planning/t3g-prb/). count_635 is
+            # therefore in run_profile's FAIL condition below, exactly like
+            # every other named bucket, and one occurrence fails the profile it
+            # happened in. Removing the tolerance is a tightening: the set of
+            # runs this gate passes is strictly smaller than before.
             CLASS_BUCKET="635"
-            CLASS_REASON="instruction abort matching the #635 kernel-stack-PC family (FAR=ELR=$instruction_abort_far ESR=0x8600000e) — ATTRIBUTED, non-failing, ~1% documented rate, pending the producer-family fix"
+            CLASS_REASON="instruction abort matching the #635 kernel-stack-PC family (FAR=ELR=$instruction_abort_far ESR=0x8600000e) — ATTRIBUTED by field signature, and gate-failing"
         else
             CLASS_BUCKET="UNATTRIBUTED"
             CLASS_REASON="instruction abort matches no filed signature: far/elr/esr = $instruction_abort_signature"
@@ -812,7 +818,7 @@ print_census() {
     printf '  %-13s %d\n' "P5B" "$count_p5b"
     printf '  %-13s %d\n' "GREEN" "$count_green"
     printf '  %-13s %d\n' "UNATTRIBUTED" "$count_unattributed"
-    echo "  GREEN rate: $count_green/$count_boots ($green_rate%) — census-only: every non-GREEN bucket is gate-failing, including the open #576, #626 and #641 defects, EXCEPT #635 (a temporary, authorized, field-keyed attribution at its documented ~1% rate, reported here and never gating — see classify_serial)"
+    echo "  GREEN rate: $count_green/$count_boots ($green_rate%) — census-only: every non-GREEN bucket is gate-failing, with no exceptions, including the open #576, #626, #635 and #641 defects"
     # Reported, never gated: the #596 mechanism counter. A nonzero divergence
     # count with bucket 596 at zero is the production evidence that an
     # inline-saved context really is ERET-dispatched carrying a stale ELR and
@@ -822,7 +828,16 @@ print_census() {
     # job. Nonzero refusals together with zero #576-shape boots are production
     # confirmation of that guard and name a producer to chase, not a regression.
     echo "  RET dispatch refused: $refusal_lines marker line(s) across $refusal_boots/$count_boots boot(s) — reported, not gated"
-    echo "  Resume PC refused: $resume_pc_refusal_lines marker line(s) across $resume_pc_refusal_boots/$count_boots boot(s) — reported, not gated"
+    # GATED, not merely reported. This gate builds no oracle and no injection
+    # feature, so every [RESUME_PC_REFUSED:] record it can see was emitted by a
+    # production dispatch. The guard that emits the record was earned by the
+    # previous PR, which unified every resume-PC consumer on one admission test;
+    # a refusal here therefore means a resume PC that failed that admission
+    # actually occurred in production — the EL0 arm of the same fault family as
+    # the filed #633 and #637 faces. That is a defect to file, not a number to
+    # watch, so a non-zero count fails the profile via run_profile's FAIL
+    # condition below.
+    echo "  Resume PC refused: $resume_pc_refusal_lines marker line(s) across $resume_pc_refusal_boots/$count_boots boot(s) — gate-failing"
 }
 
 run_profile() {
@@ -967,9 +982,10 @@ run_profile() {
         if [ "$boot_refusals" -ne 0 ]; then
             refusal_boots=$((refusal_boots + 1))
         fi
-        # Report-only census in this PR: this counts the refusal arm that
-        # replaced four unequal resume-PC admission tests. Removing the 635
-        # tolerance and hard-failing production refusals is the follow-on.
+        # Counted per boot and GATED: this counts the refusal arm that replaced
+        # four unequal resume-PC admission tests. Every record this gate can see
+        # comes from a production dispatch, so the count feeds the per-profile
+        # FAIL condition below rather than a watch list.
         boot_resume_pc_refusals=$(grep -cF "[RESUME_PC_REFUSED:" "$serial_file" 2>/dev/null | tr -d ' ')
         boot_resume_pc_refusals=${boot_resume_pc_refusals:-0}
         resume_pc_refusal_lines=$((resume_pc_refusal_lines + boot_resume_pc_refusals))
@@ -1023,21 +1039,32 @@ run_profile() {
     # #609 joined this condition under R33: its rate pre-adjudication is retired,
     # so a single boot carrying the shape fails the profile immediately instead of
     # being deferred to a run-wide ceiling.
-    # #635 is DELIBERATELY EXCLUDED from this condition (R41, T3-G PR2): it is a
-    # temporary, authorized, field-keyed ATTRIBUTED tolerance at its documented
-    # ~1% rate, counted and printed below but never gate-failing, until the
-    # producer-family PR removes it. Every other bucket's FAIL behavior is
-    # unchanged by this addition.
+    # #635 is IN this condition. Its bucket keeps the field-keyed classifier arm
+    # in classify_serial — that is attribution, and attribution stays — but it
+    # has lost the non-failing exemption it carried while its producer was
+    # unfixed. The producer is repaired at source on this branch (per-CPU
+    # idle/exception stack ownership with refusing setters, tid 0 retired, the
+    # return-SP install following the pending exception level, and the
+    # reclaimed-thread drop under masked interrupts; docs/planning/t3g-prb/), so
+    # there is no rate left to tolerate: one boot carrying the shape fails the
+    # profile it happened in, and its serial is preserved by the failure report
+    # below. Removing the tolerance is a TIGHTENING — the set of runs this gate
+    # passes is strictly smaller than before.
     # #641 is IN this condition (R49): its bucket is an ATTRIBUTION, not a
     # tolerance. Before the bucket existed the signature scored UNATTRIBUTED and
     # failed the profile; it fails the profile now for the same reason, under
     # the name of the open issue it belongs to. Nothing else about the condition
     # changed when it was added.
-    if [ "$count_575" -ne 0 ] || [ "$count_576" -ne 0 ] || [ "$count_626" -ne 0 ] || [ "$count_641" -ne 0 ] || [ "$count_data_abort" -ne 0 ] || [ "$count_clone_exec" -ne 0 ] || [ "$count_strand" -ne 0 ] || [ "$count_boot_test_fail" -ne 0 ] || [ "$count_596" -ne 0 ] || [ "$count_612" -ne 0 ] || [ "$count_609" -ne 0 ] || [ "$count_p5b" -ne 0 ] || [ "$count_unattributed" -ne 0 ]; then
+    # resume_pc_refusal_lines is IN this condition. This gate builds no oracle
+    # or injection feature, so a [RESUME_PC_REFUSED:] record here can only have
+    # come from a production dispatch whose resume PC failed admission — the EL0
+    # arm of the same fault family as the filed #633 and #637 faces. It is a
+    # defect to file, not a number to watch.
+    if [ "$count_575" -ne 0 ] || [ "$count_576" -ne 0 ] || [ "$count_626" -ne 0 ] || [ "$count_635" -ne 0 ] || [ "$count_641" -ne 0 ] || [ "$count_data_abort" -ne 0 ] || [ "$count_clone_exec" -ne 0 ] || [ "$count_strand" -ne 0 ] || [ "$count_boot_test_fail" -ne 0 ] || [ "$count_596" -ne 0 ] || [ "$count_612" -ne 0 ] || [ "$count_609" -ne 0 ] || [ "$count_p5b" -ne 0 ] || [ "$count_unattributed" -ne 0 ] || [ "$resume_pc_refusal_lines" -ne 0 ]; then
         ANY_GATE_FAILURE=1
-        echo "Profile $cpu_profile gate: FAILED (575=$count_575, 576=$count_576, 626=$count_626, 635=$count_635 [ATTRIBUTED, non-failing], 641=$count_641 [ATTRIBUTED, failing], DATA_ABORT=$count_data_abort, CLONE_EXEC=$count_clone_exec, STRAND=$count_strand, BOOT_TEST_FAIL=$count_boot_test_fail, 596=$count_596, 612=$count_612, 609=$count_609, P5B=$count_p5b, UNATTRIBUTED=$count_unattributed)"
+        echo "Profile $cpu_profile gate: FAILED (575=$count_575, 576=$count_576, 626=$count_626, 635=$count_635, 641=$count_641, DATA_ABORT=$count_data_abort, CLONE_EXEC=$count_clone_exec, STRAND=$count_strand, BOOT_TEST_FAIL=$count_boot_test_fail, 596=$count_596, 612=$count_612, 609=$count_609, P5B=$count_p5b, UNATTRIBUTED=$count_unattributed, RESUME_PC_REFUSED=$resume_pc_refusal_lines)"
     else
-        echo "Profile $cpu_profile gate: PASSED (575=0, 576=0, 626=0, 635=$count_635 [ATTRIBUTED, non-failing], 641=0, DATA_ABORT=0, CLONE_EXEC=0, STRAND=0, BOOT_TEST_FAIL=0, 596=0, 612=0, 609=0, P5B=0, UNATTRIBUTED=0)"
+        echo "Profile $cpu_profile gate: PASSED (575=0, 576=0, 626=0, 635=0, 641=0, DATA_ABORT=0, CLONE_EXEC=0, STRAND=0, BOOT_TEST_FAIL=0, 596=0, 612=0, 609=0, P5B=0, UNATTRIBUTED=0, RESUME_PC_REFUSED=0)"
     fi
 
     TOTAL_575=$((TOTAL_575 + count_575))
