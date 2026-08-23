@@ -21,6 +21,10 @@ pub mod context;
 // Scheduler and preemption - works on both x86_64 and aarch64
 // (requires architecture-specific interrupt control, provided by arch_impl)
 pub mod scheduler;
+// Registered unconditionally: the in-path recorders it exposes are called from
+// the aarch64 dispatch path in every profile, and compile to empty inline
+// no-ops without `percpu_stack_custody_oracle`.
+pub mod percpu_stack_oracle;
 #[cfg(feature = "boot_tests")]
 pub mod ret_zero_pc_oracle;
 #[cfg(feature = "boot_tests")]

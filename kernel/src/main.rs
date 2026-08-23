@@ -547,9 +547,10 @@ extern "C" fn kernel_main_on_kernel_stack(arg: *mut core::ffi::c_void) -> ! {
         task::thread::ThreadPrivilege::Kernel,
     ));
 
-    // Mark init_task as already running with ID 0 (boot CPU idle task)
+    // Mark init_task as already running (boot CPU idle task). The id stays the
+    // one `Thread::new` allocated: 0 is the no-thread sentinel and is never a
+    // live thread id.
     init_task.state = task::thread::ThreadState::Running;
-    init_task.id = 0; // PID 0 is the idle/swapper task
 
     // Store the kernel stack in the thread (important for context switching)
     init_task.kernel_stack_top = Some(idle_kernel_stack_top);
@@ -2075,7 +2076,7 @@ fn test_threading() {
     if let Some(_tls_block) = kernel::tls::get_thread_tls_block(0) {
         log::info!("✓ TLS block lookup works");
     } else {
-        log::warn!("⚠️ TLS block lookup returned None (expected for thread 0)");
+        log::warn!("⚠️ TLS block lookup returned None (expected: 0 is the no-thread sentinel)");
     }
 
     // Test 5: Context switching assembly (just verify it compiles)

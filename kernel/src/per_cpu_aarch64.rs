@@ -414,6 +414,12 @@ pub fn init_cpu(cpu_id: usize) {
         cpu_id,
         crate::arch_impl::aarch64::constants::percpu_kernel_stack_top(cpu_id),
     );
+    // Stamp this CPU's name into its own idle/exception stack half. Runs on the
+    // CPU itself and before its first guarded stack-top install: secondaries
+    // reach here from `secondary_cpu_entry_rust` ahead of their
+    // `set_kernel_stack_top`, and CPU 0 reaches it from `init()` ahead of
+    // `init_scheduler()`.
+    crate::arch_impl::aarch64::constants::publish_percpu_stack_owner(cpu_id);
 }
 
 /// Get the current thread pointer (raw)
@@ -453,6 +459,10 @@ pub fn kernel_stack_top() -> u64 {
 }
 
 /// Set the kernel stack top
+///
+/// `#[track_caller]` so a refused install names the caller of this wrapper
+/// rather than the wrapper itself.
+#[track_caller]
 pub fn set_kernel_stack_top(stack_top: u64) {
     unsafe {
         hal_percpu::Aarch64PerCpu::set_kernel_stack_top(stack_top);
@@ -460,6 +470,10 @@ pub fn set_kernel_stack_top(stack_top: u64) {
 }
 
 /// Set user_rsp_scratch (SP restored by boot.S ERET path)
+///
+/// `#[track_caller]` so a refused install names the caller of this wrapper
+/// rather than the wrapper itself.
+#[track_caller]
 pub fn set_user_rsp_scratch(sp: u64) {
     unsafe {
         hal_percpu::Aarch64PerCpu::set_user_rsp_scratch(sp);

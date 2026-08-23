@@ -70,7 +70,7 @@ pub fn init() {
     }
 }
 
-/// Set up TLS for the kernel thread (thread 0)
+/// Set up TLS for the boot kernel thread
 fn setup_kernel_tls() -> Result<(), &'static str> {
     // Allocate TLS block for kernel (doesn't acquire TLS_MANAGER lock)
     let tls_block = allocate_tls_block()?;
@@ -249,7 +249,8 @@ pub fn register_thread_tls(thread_id: u64, tls_block: VirtAddr) -> Result<(), &'
 /// CRITICAL: Now uses FS base for user TLS, leaving GS for per-CPU data
 #[allow(dead_code)]
 pub fn switch_tls(thread_id: u64) -> Result<(), &'static str> {
-    // Thread 0 is the kernel/idle thread - it uses per-CPU GS, no user TLS needed
+    // 0 is the no-thread sentinel: nothing to switch to, and kernel threads use
+    // per-CPU GS rather than user TLS anyway.
     if thread_id == 0 {
         // For kernel threads, clear FS base (no user TLS needed)
         // GS remains pointing to per-CPU data

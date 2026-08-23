@@ -120,9 +120,9 @@ pub fn create_idle_thread() -> Box<Thread> {
         ThreadPrivilege::Kernel,
     ));
 
-    // Mark idle thread as already running
+    // Mark idle thread as already running. The id stays the one `Thread::new`
+    // allocated: 0 is the no-thread sentinel and is never a live thread id.
     thread.state = super::thread::ThreadState::Running;
-    thread.id = 0; // Kernel thread has ID 0
 
     thread
 }

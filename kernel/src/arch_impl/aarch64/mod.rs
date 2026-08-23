@@ -22,6 +22,7 @@ pub mod gic;
 pub mod mmu;
 pub mod paging;
 pub mod percpu;
+pub mod percpu_custody;
 pub mod privilege;
 pub mod smp;
 pub mod syscall_entry;

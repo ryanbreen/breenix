@@ -144,9 +144,13 @@ pub trait PerCpuOps {
 
     /// Set the kernel stack top for this CPU.
     ///
+    /// `#[track_caller]` so an implementation that refuses the install can name
+    /// the code that asked for it rather than the setter.
+    ///
     /// # Safety
     ///
     /// The address must point to a valid kernel stack.
+    #[track_caller]
     unsafe fn set_kernel_stack_top(addr: u64);
 
     /// Get the current preemption count.

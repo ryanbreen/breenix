@@ -347,8 +347,9 @@ fn retain_cpu_affine_test_thread(
     thread_id: u64,
     current_cpu: usize,
 ) -> bool {
-    // Zero means "no pinned thread" in BOOT_TEST_CPU_AFFINITY; it is a sentinel,
-    // not a recorded affinity for the bootstrap thread whose real tid is also 0.
+    // Zero means "no pinned thread" in BOOT_TEST_CPU_AFFINITY, and 0 is also the
+    // no-thread sentinel: no live thread carries it, so a zero here can only be
+    // an empty affinity slot.
     if thread_id == 0 {
         return false;
     }
@@ -360,6 +361,19 @@ fn retain_cpu_affine_test_thread(
     }
     queue.push_back(thread_id);
     true
+}
+
+/// Threads work-stealing declined to take because their saved kernel SP stands
+/// in another CPU's per-CPU stack slot. Never reset; reported in the fatal
+/// postmortem next to the custody refusals.
+#[cfg(target_arch = "aarch64")]
+pub static PERCPU_STACK_SELECTION_ROUTED: core::sync::atomic::AtomicU64 =
+    core::sync::atomic::AtomicU64::new(0);
+
+/// Total steals declined for per-CPU stack custody.
+#[cfg(target_arch = "aarch64")]
+pub fn percpu_stack_selection_routed() -> u64 {
+    PERCPU_STACK_SELECTION_ROUTED.load(Ordering::Acquire)
 }
 
 #[cfg(all(target_arch = "aarch64", feature = "boot_tests"))]
@@ -561,16 +575,37 @@ pub const STRAND_CENSUS_PROGRESS_AXES: usize = 6;
 
 /// Return the CPU whose registered idle thread has `tid`.
 ///
-/// CPU 0's idle slot is registered by `Scheduler::new`, including when its
-/// real idle TID is zero. A zero idle TID in any later CPU slot is the
-/// `EMPTY_STATE` sentinel, not a registration.
+/// No live thread carries id 0, so a zero `idle_thread` is unambiguously
+/// `EMPTY_STATE`'s empty-slot sentinel and can no longer collide with a real
+/// idle thread. CPU 0 therefore needs no special case: its idle thread has an
+/// ordinary allocated id like every other CPU's.
+///
+/// The `!= 0` test stays because it is the sentinel rule, not the CPU-0
+/// workaround: slots for CPUs that never came online still hold 0, and an
+/// unregistered slot must not answer a lookup.
 #[cfg(feature = "boot_tests")]
 fn registered_idle_cpu(scheduler: &Scheduler, tid: u64) -> Option<usize> {
     scheduler
         .cpu_state
         .iter()
-        .enumerate()
-        .position(|(cpu_id, cpu)| (cpu_id == 0 || cpu.idle_thread != 0) && cpu.idle_thread == tid)
+        .position(|cpu| cpu.idle_thread != 0 && cpu.idle_thread == tid)
+}
+
+/// Read-only probe for the per-CPU stack custody oracle's leg D: the thread id
+/// registered as CPU 0's idle thread, and whether thread id 0 resolves to a
+/// registered idle thread.
+///
+/// The second answer deliberately goes through `registered_idle_cpu` rather
+/// than re-implementing it, so that a change to that helper is visible here
+/// instead of being masked by a copy — including the removal of its CPU-0
+/// special case.
+#[cfg(feature = "percpu_stack_custody_oracle")]
+pub fn zero_tid_idle_probe() -> Option<(u64, bool)> {
+    with_scheduler(|scheduler| {
+        let swapper_tid = scheduler.cpu_state[0].idle_thread;
+        let zero_resolves = registered_idle_cpu(scheduler, 0).is_some();
+        (swapper_tid, zero_resolves)
+    })
 }
 
 /// Collect one fixed-size strand census under the scheduler lock.
@@ -1767,6 +1802,12 @@ impl Scheduler {
                     ) {
                         break;
                     }
+                    #[cfg(target_arch = "aarch64")]
+                    if let Some(home) = self.percpu_stack_home_cpu(n, current_cpu) {
+                        PERCPU_STACK_SELECTION_ROUTED.fetch_add(1, Ordering::Relaxed);
+                        self.per_cpu_queues[home].push_back(n);
+                        continue;
+                    }
                     let (terminated, owner_pid) = self
                         .get_thread(n)
                         .map(|thread| (thread.state == ThreadState::Terminated, thread.owner_pid))
@@ -1825,6 +1866,12 @@ impl Scheduler {
                                 current_cpu,
                             ) {
                                 retained_injector = true;
+                                continue;
+                            }
+                            #[cfg(target_arch = "aarch64")]
+                            if let Some(home) = self.percpu_stack_home_cpu(n, current_cpu) {
+                                PERCPU_STACK_SELECTION_ROUTED.fetch_add(1, Ordering::Relaxed);
+                                self.per_cpu_queues[home].push_back(n);
                                 continue;
                             }
                             found = Some(n);
@@ -2175,6 +2222,12 @@ impl Scheduler {
                     ) {
                         break;
                     }
+                    #[cfg(target_arch = "aarch64")]
+                    if let Some(home) = self.percpu_stack_home_cpu(n, current_cpu) {
+                        PERCPU_STACK_SELECTION_ROUTED.fetch_add(1, Ordering::Relaxed);
+                        self.per_cpu_queues[home].push_back(n);
+                        continue;
+                    }
                     let (terminated, owner_pid) = self
                         .get_thread(n)
                         .map(|thread| (thread.state == ThreadState::Terminated, thread.owner_pid))
@@ -2231,6 +2284,12 @@ impl Scheduler {
                                 n,
                                 current_cpu,
                             ) {
+                                continue;
+                            }
+                            #[cfg(target_arch = "aarch64")]
+                            if let Some(home) = self.percpu_stack_home_cpu(n, current_cpu) {
+                                PERCPU_STACK_SELECTION_ROUTED.fetch_add(1, Ordering::Relaxed);
+                                self.per_cpu_queues[home].push_back(n);
                                 continue;
                             }
                             found = Some(n);
@@ -2355,6 +2414,63 @@ impl Scheduler {
     /// to prevent other CPUs from dispatching it with stale state.
     #[cfg(target_arch = "aarch64")]
     pub fn requeue_thread_after_save(&mut self, thread_id: u64) {
+        self.requeue_thread_after_save_onto(thread_id, Self::current_cpu_id());
+    }
+
+    /// The CPU that owns the per-CPU stack slot a ready thread's saved kernel
+    /// SP stands in, when that is not this CPU.
+    ///
+    /// SELECTION-SIDE CUSTODY. The dispatch refuses a foreign resume stack and
+    /// routes the thread to the owning CPU, but routing does not pin: the ready
+    /// queues work-steal, so the declining CPU can take the same thread straight
+    /// back off the owner's queue and refuse it again — a tight loop rather than
+    /// a redirect, which is what the round-4 review recorded. Declining at
+    /// SELECTION is what makes the thread genuinely stack-pinned.
+    ///
+    /// The rule is deliberately narrower than the dispatch's: this only declines
+    /// to STEAL: a thread that reaches a CPU's own queue by any other route
+    /// still meets the dispatch adjudication, is recorded there and is routed
+    /// home from there. Selection does not manufacture the foreign resume; it
+    /// also does not hide one that arrives another way.
+    ///
+    /// `None` for every ordinary thread: a heap-backed kernel stack names no
+    /// slot, and that is decided in two comparisons before anything else is
+    /// read. Idle threads are exempt by identity — each legitimately stands on
+    /// its own CPU's slot — and the check runs only in the rare case where an
+    /// address did name a slot.
+    #[cfg(target_arch = "aarch64")]
+    fn percpu_stack_home_cpu(&self, thread_id: u64, current_cpu: usize) -> Option<usize> {
+        let saved_sp = self.get_thread(thread_id)?.context.sp;
+        let slot = crate::arch_impl::aarch64::constants::percpu_stack_slot_of(saved_sp)?;
+        if slot == current_cpu {
+            return None;
+        }
+        if (0..MAX_CPUS).any(|cpu| self.cpu_state[cpu].idle_thread == thread_id) {
+            return None;
+        }
+        Some(slot)
+    }
+
+    /// Requeue a thread onto the CPU that owns the resources it must resume on,
+    /// rather than onto the CPU that is declining it.
+    ///
+    /// The aarch64 dispatch path uses this when a thread's saved kernel SP
+    /// stands in another CPU's per-CPU stack slot: that stack belongs to one
+    /// CPU, so the thread is runnable on exactly one CPU, and putting it back on
+    /// the declining CPU's own queue would hand it straight back (work-stealing
+    /// would hand it to a third). Every admission check in
+    /// `requeue_thread_after_save` still applies — only the destination queue
+    /// differs.
+    #[cfg(target_arch = "aarch64")]
+    pub fn requeue_thread_on_cpu(&mut self, thread_id: u64, cpu: usize) {
+        if cpu >= MAX_CPUS {
+            return;
+        }
+        self.requeue_thread_after_save_onto(thread_id, cpu);
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    fn requeue_thread_after_save_onto(&mut self, thread_id: u64, target_cpu: usize) {
         // Don't requeue idle threads (they are never in the ready queue)
         if (0..MAX_CPUS).any(|cpu| self.cpu_state[cpu].idle_thread == thread_id) {
             return;
@@ -2411,8 +2527,7 @@ impl Scheduler {
                     thread.set_ready();
                 }
             }
-            let cpu = Self::current_cpu_id();
-            self.per_cpu_queues[cpu].push_back(thread_id);
+            self.per_cpu_queues[target_cpu].push_back(thread_id);
             ENQUEUE_DEFERRED_DRAINED_OK.fetch_add(1, Ordering::Relaxed);
             // Send IPI to wake an idle CPU to pick up the requeued thread
             self.send_resched_ipi();
@@ -3902,6 +4017,9 @@ pub fn spawn_front(thread: Box<Thread>) {
 }
 
 pub fn reclaim_terminated_threads() {
+    // Two masked regions, deliberately, with the scheduler lock held in neither
+    // of the frees: the harvest under the lock, then the release. Splitting them
+    // keeps the second window covering the free and nothing else.
     let reclaimed_threads = without_interrupts(|| {
         let mut scheduler_lock = lock_scheduler();
         if let Some(scheduler) = scheduler_lock.as_mut() {
@@ -3910,6 +4028,41 @@ pub fn reclaim_terminated_threads() {
             alloc::vec::Vec::new()
         }
     });
+    release_reclaimed_threads(reclaimed_threads);
+}
+
+/// Free reclaimed control blocks with interrupts MASKED.
+///
+/// Dropping a `Box<Thread>` reaches `KernelStack::drop` -> `free_kernel_stack`,
+/// which takes `ARM64_STACK_BITMAP`. Doing that preemptibly is link 1 of the
+/// `#609` chain (docs/planning/teardown-unification/609-RCA-RETRACTION-2026-08-21.md
+/// §2.3, which names this exact drop): a timer interrupt taken part-way through
+/// leaves a bitmap holder preemptible, and builds its exception frame on
+/// whatever stack the reaper is standing on. Masking closes that link, and
+/// `#632` having made the bitmap lock an `IrqSafeMutex` is what makes the masked
+/// wait bounded rather than a spin on an orphaned lock.
+///
+/// The masked work here is a slot-bitmap return plus a lock-free tracing
+/// recorder — a bounded handful of instructions per thread.
+#[cfg(target_arch = "aarch64")]
+fn release_reclaimed_threads(reclaimed_threads: alloc::vec::Vec<Box<Thread>>) {
+    without_interrupts(|| {
+        drop(reclaimed_threads);
+    });
+}
+
+/// Free reclaimed control blocks with interrupts as the caller left them.
+///
+/// The `#609` race the masked aarch64 release closes is an `ARM64_STACK_BITMAP`
+/// race and does not exist here. What does exist here is the cost: the x86_64
+/// `KernelStack::drop` walks `KERNEL_STACK_SIZE / 4096` pages, taking the kernel
+/// page-table lock and the frame-allocator lock and doing TLB maintenance on
+/// every one, then logs. Masking that would put an unbounded page-table teardown
+/// inside a no-interrupt window on a path reachable from
+/// `interrupts/context_switch.rs`, buying nothing. Mask what correctness
+/// requires and no more.
+#[cfg(not(target_arch = "aarch64"))]
+fn release_reclaimed_threads(reclaimed_threads: alloc::vec::Vec<Box<Thread>>) {
     drop(reclaimed_threads);
 }
 

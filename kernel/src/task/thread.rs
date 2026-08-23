@@ -17,7 +17,7 @@ use x86_64::VirtAddr;
 pub use crate::memory::arch_stub::VirtAddr;
 
 /// Global thread ID counter
-static NEXT_THREAD_ID: AtomicU64 = AtomicU64::new(1); // 0 is reserved for kernel thread
+static NEXT_THREAD_ID: AtomicU64 = AtomicU64::new(1); // 0 is the no-thread sentinel and is never allocated
 
 /// Allocate a new thread ID
 pub fn allocate_thread_id() -> u64 {
@@ -240,6 +240,29 @@ pub struct CpuContext {
     pub spsr_el1: u64,
     /// Thread pointer (TPIDR_EL0) - used by musl/libc for Thread Local Storage
     pub tpidr_el0: u64,
+
+    /// Identity word. Stamped by every constructor, never written again, and
+    /// checked by the ret-based dispatch admission before a raw pointer into
+    /// this row is used to restore callee-saved registers, SP and a link
+    /// register. A pointer that no longer names a live `CpuContext` — a row
+    /// whose `Vec` buffer moved or was freed and reused — almost never carries
+    /// the word, so the admission refuses instead of restoring whatever the
+    /// memory now holds. Placed last so every offset the assembly knows
+    /// (x19@152 .. elr_el1@264) is unchanged; the const-asserts below pin that.
+    pub magic: u64,
+}
+
+/// The value `CpuContext::magic` carries for the whole life of a context.
+#[cfg(target_arch = "aarch64")]
+pub const CPU_CONTEXT_MAGIC: u64 = 0x4252_5843_5458_3031; // "BRXCTX01"
+
+#[cfg(target_arch = "aarch64")]
+impl CpuContext {
+    /// True when this row still looks like a live, kernel-constructed context.
+    #[inline(always)]
+    pub fn identity_is_intact(&self) -> bool {
+        self.magic == CPU_CONTEXT_MAGIC
+    }
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -298,6 +321,7 @@ impl CpuContext {
             // SPSR with EL1h mode and IRQs enabled
             spsr_el1: 0x5, // EL1h, DAIF clear
             tpidr_el0: 0,
+            magic: CPU_CONTEXT_MAGIC,
         }
     }
 
@@ -344,6 +368,7 @@ impl CpuContext {
             // SPSR for EL0: mode=0 (EL0t), DAIF clear (interrupts enabled)
             spsr_el1: 0x0, // EL0t with interrupts enabled
             tpidr_el0: 0,  // TLS pointer, set by musl during __init_tls
+            magic: CPU_CONTEXT_MAGIC,
         }
     }
 
@@ -398,6 +423,7 @@ impl CpuContext {
             elr_el1: frame.elr,   // Return address (where to resume after syscall)
             spsr_el1: frame.spsr, // Saved program status
             tpidr_el0: tpidr,     // User TLS pointer (inherited by forked child)
+            magic: CPU_CONTEXT_MAGIC,
         }
     }
 }

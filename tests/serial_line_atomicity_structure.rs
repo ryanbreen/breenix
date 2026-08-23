@@ -968,6 +968,23 @@ const UNLOCKED_MULTI_BYTE_WRITE_ANCHORS: &[(&str, &str, usize)] = &[
         "fn take_inline_ret_dispatch_info",
         10,
     ),
+    // Saved-LR custody, PR-B round 3. `set_saved_lr` reports an EL1 saved link
+    // register that is not a kernel PC and `record_ret_stage_refusal` reports a
+    // ret-dispatch staging copy that disagreed with what was admitted; both run
+    // inside a dispatch with the scheduler lock held, so the locked writer is
+    // unavailable, and both are emission-capped at 8 per boot rather than
+    // periodic. `[LR_NONTEXT:` is census only. `[RET_STAGE_REFUSED:` IS a gate
+    // condition, and a torn line can only under-count it, never invent one.
+    (
+        "kernel/src/arch_impl/aarch64/context_switch.rs",
+        "fn set_saved_lr",
+        6,
+    ),
+    (
+        "kernel/src/arch_impl/aarch64/context_switch.rs",
+        "fn record_ret_stage_refusal",
+        6,
+    ),
     (
         "kernel/src/arch_impl/aarch64/exception.rs",
         "fn defer_current_user_thread_sigsegv_exit",
@@ -986,7 +1003,7 @@ const UNLOCKED_MULTI_BYTE_WRITE_ANCHORS: &[(&str, &str, usize)] = &[
     (
         "kernel/src/arch_impl/aarch64/exception.rs",
         "fn dump_fatal_postmortem_once",
-        6,
+        18,
     ),
     (
         "kernel/src/arch_impl/aarch64/exception.rs",
@@ -1007,6 +1024,24 @@ const UNLOCKED_MULTI_BYTE_WRITE_ANCHORS: &[(&str, &str, usize)] = &[
         "kernel/src/arch_impl/aarch64/exception.rs",
         "fn raw_uart_hex_u32",
         2,
+    ),
+    // The per-CPU stack-top ownership refusal record, in the one function both
+    // custody sides funnel through. It runs on the dispatch path, so it cannot
+    // take the serial lock; it is bounded to 16 emissions for the whole boot.
+    (
+        "kernel/src/arch_impl/aarch64/percpu.rs",
+        "fn record_percpu_stack_alien",
+        9,
+    ),
+    // The CPU-identity split record: a carried CPU index that disagreed with
+    // the hardware identity where the decision was made. Same constraints as
+    // the alien record above — dispatch path, no lock, bounded to 16 emissions
+    // for the whole boot — and deliberately its own literal so the shape can
+    // never again be absorbed by the alien record.
+    (
+        "kernel/src/arch_impl/aarch64/percpu.rs",
+        "fn record_cpu_identity_split",
+        6,
     ),
     (
         "kernel/src/arch_impl/aarch64/timer_interrupt.rs",
@@ -1081,6 +1116,11 @@ const UNLOCKED_MULTI_BYTE_WRITE_ANCHORS: &[(&str, &str, usize)] = &[
     (
         "kernel/src/task/ret_zero_pc_oracle.rs",
         "#[cfg(all(target_arch=aarch64,feature=ret_zero_pc_oracle))] fn inject_ret_zero_pc_if_armed",
+        3,
+    ),
+    (
+        "kernel/src/task/ret_zero_pc_oracle.rs",
+        "#[cfg(all(target_arch=aarch64,feature=lr_poison_oracle))] fn inject_saved_lr_if_armed",
         3,
     ),
     (

@@ -74,7 +74,10 @@ impl PerCpuOps for X86PerCpu {
         top
     }
 
+    /// x86_64 has no per-CPU stack region to police, so this install is
+    /// unconditional. `#[track_caller]` matches the trait declaration.
     #[inline(always)]
+    #[track_caller]
     unsafe fn set_kernel_stack_top(addr: u64) {
         asm!(
             "mov gs:[{offset}], {}",

@@ -3,3 +3,5 @@ docs/planning/teardown-unification/p5b-serials/589-fulltest-phase1c-r2-attempt2.
 docs/planning/teardown-unification/p5b-serials/dataabort-schedule-from-kernel-cortexa72-boot55.txt -text
 docs/planning/teardown-unification/p5b-serials/serial-interleave-max-boot33.txt -text
 docs/planning/teardown-unification/p5b-serials/576-svcseq-max-boot75-r2.txt -text
+docs/planning/t3g-prb/serials/prb-stage1-oracles-red-20260823T094928Z.txt -text
+docs/planning/t3g-prb/serials/prb-stage3-ss-gate-cortexa72-boot10-timer-not-advancing-20260823T115457Z.txt -text

@@ -209,7 +209,7 @@ fn check_and_deliver_signals_aarch64(frame: &mut Aarch64ExceptionFrame) {
         None => return,
     };
 
-    // Thread 0 is the idle thread - no signals
+    // 0 is the no-thread sentinel, not a live thread id - no signals
     if current_thread_id == 0 {
         return;
     }
@@ -1071,7 +1071,8 @@ fn sys_exec_aarch64(
     };
 
     if current_thread_id == 0 {
-        log::error!("sys_exec_aarch64: Cannot exec from idle thread");
+        // 0 is the no-thread sentinel; there is no caller to exec on behalf of.
+        log::error!("sys_exec_aarch64: current thread id is the no-thread sentinel");
         return (-22_i64) as u64; // -EINVAL
     }
 
