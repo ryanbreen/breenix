@@ -2,10 +2,29 @@
 
 Branch `fix/prb-producer-custody` @ `63a814c5`. Specimens:
 
-* FATAL — `r3/confirm-max-boot21-UNATTRIBUTED-percpu-stack-alien.txt` (= `r3/ssgate-clean-full-output/max/serial-21.txt`)
-* SURVIVED — `r3/confirm-cortexa72-boot5-PERCPU_STACK_ALIEN.txt` (= `r3/ssgate-clean-full-output/cortex-a72/serial-5.txt`)
-* Round-2 specimen of the same signature at site 5497 — `cortex-a72-boot3-UNATTRIBUTED-serial.txt`
+* FATAL — `serials/prb-r3-ssgate-max-boot21-UNATTRIBUTED-percpu-stack-alien-fatal.txt`
+  (captured as `r3/confirm-max-boot21-UNATTRIBUTED-percpu-stack-alien.txt` = `r3/ssgate-clean-full-output/max/serial-21.txt`)
+* SURVIVED — `serials/prb-r3-ssgate-cortexa72-boot5-percpu-stack-alien-survived.txt`
+  (captured as `r3/confirm-cortexa72-boot5-PERCPU_STACK_ALIEN.txt` = `r3/ssgate-clean-full-output/cortex-a72/serial-5.txt`)
+* Round-2 specimen of the same signature at site 5497 —
+  `serials/prb-battery-cortexa72-boot3-alien-then-fatal.txt` (captured as `cortex-a72-boot3-UNATTRIBUTED-serial.txt`)
 * Peer records of the same family from the leg builds at `3ee79f70` — `r3/legP-baseline-3ee79f70.serial.txt`, `r3/legP-green.serial.txt`
+
+## 0. Attribution of the two round-3 specimens
+
+Both round-3 specimens are preserved in `docs/planning/t3g-prb/serials/` under the names above, and
+both are **#635-family records that this PR repairs**: they are the `PERCPU_STACK_ALIEN` face of a
+kernel-stack address reaching a place only one CPU may use it. No separate issue is filed for them —
+they are this branch's own caught-and-repaired specimens, and their producing write is named in §5
+and closed by §8's F1.
+
+**The producing read is pre-existing on `main`, not introduced by this branch.**
+`git show main:kernel/src/arch_impl/aarch64/context_switch.rs` carries the identical pre-mask
+`let cpu_id = Aarch64PerCpu::cpu_id() as usize;` one line above `disable_interrupts()` in
+`schedule_from_kernel` (main line 5739). The branch did not create the identity split; it made the
+consequence *recordable* — the round-2 fail-closed setter turned a silent alien install into a
+printed refusal, which is why the specimen appears in the round-3 confirmation and not in the main
+baseline. Branch-surfaced, pre-existing, repaired at the source here.
 
 ## 1. What site 5985 is, and why the round-2 fix could not cover it
 
