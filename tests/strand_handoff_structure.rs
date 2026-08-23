@@ -1313,6 +1313,76 @@ fn service_sequence_resume_pc_refusals_fail_the_profile() {
     );
 }
 
+/// The per-CPU stack custody record is emitted only by production dispatch in
+/// this gate's feature profile, so a non-zero count is a defect and must fail
+/// the profile rather than be watched — the same standard the resume-PC refusal
+/// is held to, and for the same reason.
+///
+/// `percpu_stack_custody_oracle` is a distinct cargo feature that `boot_tests`
+/// does not imply (the dependency runs the other way), so this gate's
+/// `--features boot_tests` kernel compiles the oracle's cross-CPU stimulus out
+/// entirely. Every `[PERCPU_STACK_ALIEN:` line it can see is production.
+#[test]
+fn service_sequence_percpu_stack_alien_refusals_fail_the_profile() {
+    let gate = repo_text(SERVICE_SEQUENCE_GATE_PATH);
+    let run_profile = shell_function_body(&gate, "run_profile");
+
+    let alien_count_line = run_profile
+        .lines()
+        .map(str::trim)
+        .find(|line| line.contains(r#"grep -cF "[PERCPU_STACK_ALIEN:""#))
+        .expect("per-boot per-CPU stack alien count");
+    let boot_counter = alien_count_line
+        .split_once('=')
+        .map(|(counter, _)| counter)
+        .expect("per-boot per-CPU stack alien counter assignment");
+    let profile_line_counter = run_profile
+        .lines()
+        .map(str::trim)
+        .find_map(|line| {
+            let (counter, expression) = line.split_once("=$((")?;
+            expression
+                .contains(&format!("+ {boot_counter}"))
+                .then_some(counter)
+        })
+        .expect("per-profile per-CPU stack alien line accumulator");
+
+    let fail_conditions: Vec<_> = run_profile
+        .lines()
+        .map(str::trim)
+        .filter(|line| line.starts_with(r#"if [ "$count_"#) && line.ends_with("; then"))
+        .collect();
+    assert_eq!(
+        fail_conditions.len(),
+        1,
+        "run_profile must retain exactly one per-profile FAIL condition"
+    );
+    assert!(
+        fail_conditions[0].contains(&format!(r#"[ "${profile_line_counter}" -ne 0 ]"#)),
+        "a non-zero production per-CPU stack alien count must fail the profile"
+    );
+
+    let print_census = shell_function_body(&gate, "print_census");
+    let alien_reports: Vec<_> = print_census
+        .lines()
+        .map(str::trim)
+        .filter(|line| line.contains("Per-CPU stack alien:"))
+        .collect();
+    assert_eq!(
+        alien_reports.len(),
+        1,
+        "print_census must report the per-CPU stack alien census exactly once"
+    );
+    assert!(
+        !alien_reports[0].contains("reported, not gated"),
+        "the per-CPU stack alien census must not describe itself as ungated once it gates"
+    );
+    assert!(
+        alien_reports[0].contains(&format!("${profile_line_counter}")),
+        "the per-CPU stack alien census must print the derived line accumulator"
+    );
+}
+
 /// #635 keeps its field-keyed classifier arm — attribution by FAR/ELR/ESR is
 /// what stops the shape falling into UNATTRIBUTED — while gating like every
 /// other named bucket. A catch-all arm would be a different thing entirely.
