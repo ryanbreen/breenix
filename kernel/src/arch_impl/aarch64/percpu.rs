@@ -19,8 +19,8 @@ use crate::arch_impl::aarch64::constants::{
     SOFTIRQ_MASK, SOFTIRQ_OFFSET,
 };
 use crate::arch_impl::aarch64::constants::{
-    percpu_kernel_stack_top, percpu_stack_published_owner, percpu_stack_slot_of,
-    percpu_stack_top_owned_by,
+    percpu_kernel_stack_top, percpu_sched_stack_top, percpu_stack_published_owner,
+    percpu_stack_slot_of, percpu_stack_top_owned_by,
 };
 use crate::arch_impl::traits::PerCpuOps;
 use core::panic::Location;
@@ -90,13 +90,183 @@ fn percpu_stack_install_permitted(addr: u64, site: &'static Location<'static>) -
 /// never refuse it. The refusal is recorded with the caller's own site, which is
 /// why this takes `site` explicitly rather than reading `Location::caller()` —
 /// the useful location is the dispatch site, not this helper's line.
+///
+/// It takes a `CpuId`, not a `usize`: the round-4 RCA
+/// (`docs/planning/t3g-prb/PRB-R4-RCA-IDENTITY.md`) showed the predicate was
+/// already shared with the setter and the two sides still disagreed, because
+/// the producer spent an index captured before interrupts were masked while the
+/// setter re-read the hardware. A value of this type can only come from a
+/// hardware read, so a carried index cannot reach the decision at all.
 #[inline]
-pub fn percpu_stack_top_for(cpu: usize, preferred: u64, site: &'static Location<'static>) -> u64 {
-    if percpu_stack_top_owned_by(cpu, preferred) {
+pub fn percpu_stack_top_for(cpu: CpuId, preferred: u64, site: &'static Location<'static>) -> u64 {
+    if percpu_stack_top_owned_by(cpu.index(), preferred) {
         return preferred;
     }
-    record_percpu_stack_alien(cpu, preferred, site);
-    percpu_kernel_stack_top(cpu)
+    record_percpu_stack_alien(cpu.index(), preferred, site);
+    percpu_kernel_stack_top(cpu.index())
+}
+
+/// Which half of a per-CPU stack slot a pivot destination names.
+///
+/// A refused pivot has to be replaced by an address in the SAME half: the
+/// scheduler half and the idle/exception half are two disjoint stacks, and
+/// substituting across the boundary would put a scheduler pivot and an idle
+/// pivot on one stack — the very sharing this custody exists to prevent.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum PivotHalf {
+    /// The lower, scheduler-owned half (`percpu_sched_stack_top`).
+    Scheduler,
+    /// The upper, idle/exception-owned half (`percpu_kernel_stack_top`).
+    Exception,
+}
+
+/// Custody for a stack a CPU is about to PIVOT ONTO and run on.
+///
+/// The per-CPU words are guarded by `percpu_stack_install_permitted`, but a
+/// pivot is not an install: `mov sp, x` runs on the address whether or not any
+/// per-CPU word ever named it. Three of the four aarch64 pivots take their
+/// destination from a value that has already been adjudicated; the fourth
+/// (`scheduler_stack_top`) was adjudicated nowhere at all, which is how CPU 3
+/// came to stand on CPU 0's scheduler half in the round-3 specimens.
+///
+/// Same predicate as every other custody site, evaluated against the same
+/// hardware identity, recorded through the same single emitter — this is the
+/// existing check applied to the SP a CPU actually runs on, not a new one.
+#[inline]
+pub fn percpu_pivot_top_for(
+    cpu: CpuId,
+    preferred: u64,
+    half: PivotHalf,
+    site: &'static Location<'static>,
+) -> u64 {
+    if percpu_stack_top_owned_by(cpu.index(), preferred) {
+        return preferred;
+    }
+    record_percpu_stack_alien(cpu.index(), preferred, site);
+    match half {
+        PivotHalf::Scheduler => percpu_sched_stack_top(cpu.index()),
+        PivotHalf::Exception => percpu_kernel_stack_top(cpu.index()),
+    }
+}
+
+/// Whether CPU `cpu` may RESUME a thread whose saved kernel SP is `sp`.
+///
+/// A saved SP standing in a per-CPU stack slot names a stack that belongs to
+/// exactly one CPU. Resuming such a thread anywhere else puts two CPUs on one
+/// stack, which is this campaign's producer-corruption family in one step. The
+/// dispatch path refuses it and routes the thread to the CPU that owns the
+/// slot; see `dispatch_thread_locked`.
+///
+/// Heap-backed kernel stacks — every ordinary thread — name no slot and are
+/// admitted by the same predicate without a second rule.
+#[inline]
+pub fn percpu_stack_resume_permitted(
+    cpu: CpuId,
+    sp: u64,
+    site: &'static Location<'static>,
+) -> bool {
+    if percpu_stack_top_owned_by(cpu.index(), sp) {
+        return true;
+    }
+    record_percpu_stack_alien(cpu.index(), sp, site);
+    false
+}
+
+// =============================================================================
+// The CPU identity a per-CPU decision may be made with
+// =============================================================================
+
+/// Count of decisions whose carried CPU index disagreed with the hardware
+/// identity read where the decision was actually made. Never reset.
+///
+/// This is its own census, not part of `PERCPU_STACK_ALIEN_REFUSALS`: two
+/// rounds of RCA chased the wrong producer precisely because the disagreement
+/// arrived disguised as an ordinary alien address.
+pub static CPU_IDENTITY_SPLIT_EVENTS: AtomicU64 = AtomicU64::new(0);
+
+/// Emission budget for the whole boot, exactly like the alien record's.
+static CPU_IDENTITY_SPLIT_EMISSIONS: AtomicU64 = AtomicU64::new(0);
+
+/// Maximum identity-split records emitted per boot.
+const CPU_IDENTITY_SPLIT_EMISSION_CAP: u64 = 16;
+
+/// Total decisions whose carried index disagreed with the hardware identity.
+pub fn cpu_identity_split_events() -> u64 {
+    CPU_IDENTITY_SPLIT_EVENTS.load(Ordering::Acquire)
+}
+
+/// The one emitter of the `[CPU_IDENTITY_SPLIT:` record.
+#[cold]
+#[inline(never)]
+fn record_cpu_identity_split(carried: usize, fresh: usize, site: &'static Location<'static>) {
+    CPU_IDENTITY_SPLIT_EVENTS.fetch_add(1, Ordering::Release);
+    if CPU_IDENTITY_SPLIT_EMISSIONS.fetch_add(1, Ordering::Relaxed)
+        < CPU_IDENTITY_SPLIT_EMISSION_CAP
+    {
+        use crate::arch_impl::aarch64::context_switch::{raw_uart_dec, raw_uart_str};
+        raw_uart_str("[CPU_IDENTITY_SPLIT:carried=");
+        raw_uart_dec(carried as u64);
+        raw_uart_str(":fresh=");
+        raw_uart_dec(fresh as u64);
+        raw_uart_str(":site=");
+        raw_uart_str(site.file());
+        raw_uart_str(":");
+        raw_uart_dec(u64::from(site.line()));
+        raw_uart_str("]\n");
+    }
+}
+
+/// A CPU index read from this CPU's own hardware per-CPU block at the point it
+/// is spent.
+///
+/// A plain `usize` cannot say WHEN it was read. `schedule_from_kernel` captured
+/// one with interrupts still enabled and then spent it, after a preemption that
+/// could resume the thread anywhere, on `scheduler_stack_top`,
+/// `INLINE_SCHEDULE_STATE[]` and `cpu_state[]` — so CPU 3 pivoted onto CPU 0's
+/// scheduler stack and read CPU 0's spilled locals back as its own. This type
+/// exists so that class cannot be written: there is no constructor from an
+/// index, only from a hardware read, and every per-CPU stack decision on the
+/// dispatch path takes this type.
+///
+/// It is `Copy` and one word wide, so passing it costs exactly what passing the
+/// index cost.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct CpuId(usize);
+
+impl CpuId {
+    /// Read this CPU's identity now.
+    ///
+    /// Callers use this where the identity is being established for the first
+    /// time in a masked region; where a caller already carries an index, it must
+    /// use `current_checked` so the disagreement is recorded rather than lost.
+    #[inline(always)]
+    pub fn current() -> CpuId {
+        CpuId(<Aarch64PerCpu as PerCpuOps>::cpu_id() as usize)
+    }
+
+    /// Read this CPU's identity now, and record it when a carried index
+    /// disagrees.
+    ///
+    /// The hardware read wins — it is the identity the per-CPU block, `boot.S`
+    /// and the setter guard all use — so the decision is made for the CPU that
+    /// will actually run on the result. The carried value is not silently
+    /// discarded: a disagreement means the invocation belongs to another CPU
+    /// and it earns its own gate-failing record.
+    #[inline(always)]
+    #[track_caller]
+    pub fn current_checked(carried: usize) -> CpuId {
+        let fresh = <Aarch64PerCpu as PerCpuOps>::cpu_id() as usize;
+        if fresh != carried {
+            record_cpu_identity_split(carried, fresh, Location::caller());
+        }
+        CpuId(fresh)
+    }
+
+    /// The index, for the array and arithmetic uses that need one.
+    #[inline(always)]
+    pub fn index(self) -> usize {
+        self.0
+    }
 }
 
 /// The one emitter of the `[PERCPU_STACK_ALIEN:` refusal record.

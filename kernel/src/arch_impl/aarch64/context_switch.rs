@@ -23,7 +23,7 @@ use core::ops::Deref;
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 
 use super::exception_frame::Aarch64ExceptionFrame;
-use super::percpu::Aarch64PerCpu;
+use super::percpu::{Aarch64PerCpu, CpuId, PivotHalf};
 use crate::arch_impl::aarch64::constants::{HARDIRQ_MASK, NMI_MASK, PREEMPT_MASK, SOFTIRQ_MASK};
 use crate::arch_impl::traits::PerCpuOps;
 use crate::task::scheduler::Scheduler;
@@ -45,6 +45,7 @@ const TRACE_REDIRECT_TTBR_PM_LOCK_BUSY: u16 = 3;
 const TRACE_REDIRECT_TTBR_PROCESS_GONE: u16 = 4;
 const TRACE_REDIRECT_RESTORE_FAILED: u16 = 5;
 const TRACE_REDIRECT_CPU0_USER_GUARD: u16 = 6;
+const TRACE_REDIRECT_PERCPU_STACK_FOREIGN: u16 = 7;
 const TRACE_CPU0_USER_DISPATCH_CANDIDATE: u16 = 1;
 const TRACE_CPU0_USER_DISPATCH_PREPARED: u16 = 2;
 const TRACE_CPU0_USER_DISPATCH_GUARD_REDIRECT: u16 = 3;
@@ -2043,6 +2044,7 @@ enum IdleRedirectReason {
     UserBadContext = 7,
     UserTtbrPmLockBusy = 8,
     UserProcessGone = 9,
+    PercpuStackForeign = 10,
 }
 
 impl IdleRedirectReason {
@@ -2057,6 +2059,7 @@ impl IdleRedirectReason {
             7 => Some(Self::UserBadContext),
             8 => Some(Self::UserTtbrPmLockBusy),
             9 => Some(Self::UserProcessGone),
+            10 => Some(Self::PercpuStackForeign),
             _ => None,
         }
     }
@@ -2072,6 +2075,7 @@ impl IdleRedirectReason {
             Self::UserBadContext => "USER_BAD_CONTEXT",
             Self::UserTtbrPmLockBusy => "USER_TTBR_PM_LOCK_BUSY",
             Self::UserProcessGone => "USER_PROCESS_GONE",
+            Self::PercpuStackForeign => "PERCPU_STACK_FOREIGN",
         }
     }
 }
@@ -2188,18 +2192,44 @@ fn record_stack_pivot_alias(cpu: usize, dest_top: u64, cur_sp: u64, site: u8) {
     STACK_PIVOT_HISTORY[cpu][base + 2].store(cur_sp, Ordering::Relaxed);
 }
 
+/// Adjudicate a stack a CPU is about to pivot onto, and report what it may
+/// actually run on.
+///
+/// Two distinct facts, deliberately kept apart:
+///
+/// * SELF-ALIASING — the current SP already lies inside the destination range.
+///   Recorded, never substituted: the CPU is standing on the destination, and
+///   moving it elsewhere would strand the frames it is executing on. This is
+///   the original `assert_pivot_free` behaviour, unchanged.
+/// * FOREIGN CUSTODY — the destination names a per-CPU slot this CPU does not
+///   own. Refused: the returned address is this CPU's own half instead, so the
+///   pivot cannot put two CPUs on one stack. The refusal goes through the one
+///   `[PERCPU_STACK_ALIEN:` emitter, so it is the same evidence channel and the
+///   same gate term as every other custody refusal.
+///
+/// Callers MUST pivot onto the returned value. Ignoring it is the failure mode
+/// `install_idle_return_sp` was introduced for: a refused address in SP while
+/// the per-CPU words name something else.
 #[inline(always)]
-fn assert_pivot_free(cpu: usize, dest_top: u64, cur_sp: u64, site: u8) {
-    if cpu >= crate::arch_impl::aarch64::constants::MAX_CPUS {
-        return;
+#[track_caller]
+fn pivot_destination(cpu: CpuId, dest_top: u64, cur_sp: u64, half: PivotHalf, site: u8) -> u64 {
+    let granted = crate::arch_impl::aarch64::percpu::percpu_pivot_top_for(
+        cpu,
+        dest_top,
+        half,
+        core::panic::Location::caller(),
+    );
+    if cpu.index() >= crate::arch_impl::aarch64::constants::MAX_CPUS {
+        return granted;
     }
     let dest_bottom =
-        dest_top.saturating_sub(crate::arch_impl::aarch64::constants::PERCPU_SCHED_STACK_SIZE);
-    if cur_sp < dest_bottom || cur_sp > dest_top {
-        return;
+        granted.saturating_sub(crate::arch_impl::aarch64::constants::PERCPU_SCHED_STACK_SIZE);
+    if cur_sp < dest_bottom || cur_sp > granted {
+        return granted;
     }
 
-    record_stack_pivot_alias(cpu, dest_top, cur_sp, site);
+    record_stack_pivot_alias(cpu.index(), granted, cur_sp, site);
+    granted
 }
 
 pub fn dump_stack_pivot_alias_history() {
@@ -3232,10 +3262,20 @@ fn read_tpidr_el0() -> u64 {
     tpidr
 }
 
+/// The scheduler half of the slot belonging to the CPU that is about to pivot
+/// onto it.
+///
+/// Takes the identity token rather than an index: this is the address a CPU
+/// runs on for the whole inline-schedule transaction, and the round-3 specimens
+/// reached it with an index captured on another CPU
+/// (`docs/planning/t3g-prb/PRB-R4-RCA-IDENTITY.md`).
 #[inline(always)]
-fn scheduler_stack_top(cpu_id: usize) -> u64 {
-    let top = super::constants::percpu_sched_stack_top(cpu_id);
-    debug_assert_ne!(top, super::constants::percpu_kernel_stack_top(cpu_id));
+fn scheduler_stack_top(cpu_id: CpuId) -> u64 {
+    let top = super::constants::percpu_sched_stack_top(cpu_id.index());
+    debug_assert_ne!(
+        top,
+        super::constants::percpu_kernel_stack_top(cpu_id.index())
+    );
     top
 }
 
@@ -3257,9 +3297,9 @@ fn scheduler_stack_top(cpu_id: usize) -> u64 {
 /// `#[track_caller]` so the refusal record names the dispatch site.
 #[inline(always)]
 #[track_caller]
-fn idle_dispatch_stack(cpu_id: usize, preferred: u64) -> u64 {
+fn idle_dispatch_stack(cpu_id: CpuId, preferred: u64) -> u64 {
     if preferred == 0 {
-        return super::constants::percpu_kernel_stack_top(cpu_id);
+        return super::constants::percpu_kernel_stack_top(cpu_id.index());
     }
     crate::arch_impl::aarch64::percpu::percpu_stack_top_for(
         cpu_id,
@@ -4440,7 +4480,7 @@ fn setup_idle_return_locked(
     // the "no recorded stack" input `idle_dispatch_stack` answers with this
     // CPU's own top, so the fallback lives in exactly one place.
     let idle_stack = idle_dispatch_stack(
-        cpu_id,
+        CpuId::current_checked(cpu_id),
         sched
             .get_thread(idle_id)
             .and_then(|t| t.kernel_stack_top.map(|v| v.as_u64()))
@@ -4596,6 +4636,7 @@ fn dispatch_thread_locked(
         let has_started = thread.has_started;
         let elr = thread.context.elr_el1;
         let kernel_stack_top = thread.kernel_stack_top;
+        let context_sp = thread.context.sp;
         let thread_ptr = thread as *const _ as *mut u8;
         (
             state,
@@ -4604,12 +4645,21 @@ fn dispatch_thread_locked(
             has_started,
             elr,
             kernel_stack_top,
+            context_sp,
             thread_ptr,
         )
     });
 
-    let (state, privilege, blocked_in_syscall, has_started, elr, kernel_stack_top, thread_ptr) =
-        match thread_info {
+    let (
+        state,
+        privilege,
+        blocked_in_syscall,
+        has_started,
+        elr,
+        kernel_stack_top,
+        context_sp,
+        thread_ptr,
+    ) = match thread_info {
             Some(info) => info,
             None => {
                 trace_dispatch_redirect(thread_id, TRACE_REDIRECT_THREAD_MISSING);
@@ -4637,6 +4687,54 @@ fn dispatch_thread_locked(
         return;
     }
 
+    let is_idle = sched.is_idle_thread_inner(thread_id);
+
+    // CUSTODY-AWARE MIGRATION.
+    //
+    // A saved kernel SP standing inside a per-CPU stack slot names a stack that
+    // belongs to exactly one CPU. Resuming such a thread anywhere else puts two
+    // CPUs on one stack in a single step — this campaign's producer-corruption
+    // family. It is not hypothetical: the round-3 leg serials caught a kernel
+    // thread carrying an EL1 frame SP from CPU 3's slot being restored on CPU 1
+    // (`docs/planning/t3g-prb/PRB-R4-RCA-IDENTITY.md` §7), because nothing on
+    // the dispatch path adjudicated `context.sp` and the ready queues are
+    // work-stealing.
+    //
+    // The thread is not terminated and not bounced back onto this CPU's own
+    // queue: it is enqueued on the CPU that OWNS the slot, which is the only
+    // CPU that may run it, and this CPU takes an ordinary idle redirect. Idle
+    // threads are exempt by identity, not by address — each one legitimately
+    // stands on its own CPU's slot and is never queued.
+    //
+    // Heap-backed kernel stacks name no slot and are admitted by the same
+    // custody predicate every other site uses, so this arm is dormant for every
+    // ordinary thread.
+    if !is_idle {
+        let dispatch_cpu = CpuId::current_checked(cpu_id);
+        if !crate::arch_impl::aarch64::percpu::percpu_stack_resume_permitted(
+            dispatch_cpu,
+            context_sp,
+            core::panic::Location::caller(),
+        ) {
+            let owner = crate::arch_impl::aarch64::constants::percpu_stack_slot_of(context_sp);
+            trace_dispatch_redirect(thread_id, TRACE_REDIRECT_PERCPU_STACK_FOREIGN);
+            // cpu_state first: the requeue consults `cpu_state[].current_thread`
+            // and silently declines a thread that still reads as running here.
+            let current_before = setup_idle_return_locked(sched, frame, cpu_id);
+            if let Some(owner) = owner {
+                sched.requeue_thread_on_cpu(thread_id, owner);
+            }
+            record_idle_redirect(
+                sched,
+                cpu_id,
+                IdleRedirectReason::PercpuStackForeign,
+                current_before,
+            );
+            sched.set_need_resched_inner();
+            return;
+        }
+    }
+
     // Update per-CPU current thread pointer (register writes, no lock needed)
     unsafe {
         Aarch64PerCpu::set_current_thread_ptr(thread_ptr);
@@ -4647,7 +4745,6 @@ fn dispatch_thread_locked(
         }
     }
 
-    let is_idle = sched.is_idle_thread_inner(thread_id);
     let is_kernel = privilege == ThreadPrivilege::Kernel;
     const KERNEL_VIRT_BASE: u64 = 0xFFFF_0000_0000_0000;
     let is_in_kernel_mode = elr >= KERNEL_VIRT_BASE;
@@ -5774,8 +5871,14 @@ pub fn schedule_terminated_from_exit(thread_id: u64) -> ! {
         .store(thread_id, Ordering::Release);
 
     let _ = spin::MutexGuard::leak(guard);
-    let scheduler_top = scheduler_stack_top(cpu_id);
-    assert_pivot_free(cpu_id, scheduler_top, read_current_sp(), 4);
+    let pivot_cpu = CpuId::current_checked(cpu_id);
+    let scheduler_top = pivot_destination(
+        pivot_cpu,
+        scheduler_stack_top(pivot_cpu),
+        read_current_sp(),
+        PivotHalf::Scheduler,
+        4,
+    );
 
     unsafe {
         aarch64_inline_schedule_switch(old_context_ptr, scheduler_top, exit_schedule_trampoline);
@@ -5832,7 +5935,11 @@ extern "C" fn exit_schedule_trampoline() -> ! {
 }
 
 extern "C" fn inline_schedule_trampoline() -> ! {
-    let cpu_id = Aarch64PerCpu::cpu_id() as usize;
+    // Interrupts are masked from `schedule_from_kernel`'s mask through this
+    // whole function, so this read is the identity of the CPU that will run
+    // every decision below.
+    let cpu = CpuId::current();
+    let cpu_id = cpu.index();
     inline_schedule_breadcrumb(cpu_id, INLINE_BC_TRAMPOLINE_ENTRY, 0);
     cpu0_breadcrumb(cpu_id, 30); // trampoline entry
     let state = &INLINE_SCHEDULE_STATE[cpu_id];
@@ -5939,7 +6046,7 @@ extern "C" fn inline_schedule_trampoline() -> ! {
                 .get_thread(idle_id)
                 .and_then(|thread| thread.kernel_stack_top.map(|stack| stack.as_u64()))
                 .unwrap_or(0);
-            let idle_sp = idle_dispatch_stack(cpu_id, candidate);
+            let idle_sp = idle_dispatch_stack(cpu, candidate);
 
             // Persist the exact normalized stack value used by the live pivot.
             // Use the current idle ID from this lock hold, never either stale
@@ -5974,13 +6081,29 @@ extern "C" fn inline_schedule_trampoline() -> ! {
         // absent; in that case there is no persisted idle Thread to update.
         .unwrap_or_else(|| super::constants::percpu_kernel_stack_top(cpu_id));
 
+        // ONE IDENTITY FOR THE PRODUCER AND THE SETTER.
+        //
+        // `with_scheduler` above is a lock acquire and a closure call — a spill
+        // point. Round 2 unified the custody PREDICATE between the producer
+        // (`idle_dispatch_stack`) and the setter (`install_idle_return_sp`) and
+        // the two still disagreed in round 3, because what was not unified is
+        // the CPU IDENTITY each side feeds it: the producer spent the index
+        // carried through the closure while the setter re-read the hardware.
+        // Re-read it here, on the same side of the spill as the install, and
+        // record the disagreement as its own fact instead of letting the
+        // setter's refusal absorb it as an ordinary alien address.
+        let install_cpu = CpuId::current_checked(cpu_id);
+        let idle_sp = if install_cpu.index() == cpu_id {
+            idle_sp
+        } else {
+            // The chosen value was chosen for another CPU. This CPU's own
+            // exception top is own-slot by construction.
+            super::constants::percpu_kernel_stack_top(install_cpu.index())
+        };
+
         // Fail closed. This CPU is about to RUN on `idle_sp`, so a refused
         // install must not leave the refused address in SP with the per-CPU
         // words naming something else: pivot onto whatever custody granted.
-        // `idle_dispatch_stack` above already normalised the value, so the only
-        // way this differs is the guard's independent `cpu_id()` read
-        // disagreeing with the local one — and then the guard's answer, which
-        // is the identity the hardware per-CPU block and boot.S also use, wins.
         let idle_sp = unsafe {
             let granted = Aarch64PerCpu::install_idle_return_sp(idle_sp);
             Aarch64PerCpu::set_current_thread_ptr(core::ptr::null_mut());
@@ -5994,7 +6117,13 @@ extern "C" fn inline_schedule_trampoline() -> ! {
 
         inline_schedule_breadcrumb(cpu_id, INLINE_BC_IDLE_RET_BRANCH, 1);
         let idle_addr = crate::arch_impl::aarch64::idle_loop_arm64 as *const () as u64;
-        assert_pivot_free(cpu_id, idle_sp, read_current_sp(), 3);
+        let idle_sp = pivot_destination(
+            install_cpu,
+            idle_sp,
+            read_current_sp(),
+            PivotHalf::Exception,
+            3,
+        );
         unsafe {
             core::arch::asm!(
                 "mov sp, {stack}",
@@ -6216,7 +6345,10 @@ extern "C" fn inline_schedule_trampoline() -> ! {
     }
 
     let fresh_idle_sp = if is_idle {
-        let idle_sp = idle_dispatch_stack(cpu_id, Aarch64PerCpu::kernel_stack_top());
+        let idle_sp = idle_dispatch_stack(
+            CpuId::current_checked(cpu_id),
+            Aarch64PerCpu::kernel_stack_top(),
+        );
         reset_idle_continuation_locked(sched, cpu_id, new_id, idle_sp);
         idle_sp
     } else {
@@ -6247,8 +6379,13 @@ extern "C" fn inline_schedule_trampoline() -> ! {
         inline_schedule_breadcrumb(cpu_id, INLINE_BC_IDLE_RET_BRANCH, 0);
         cpu0_breadcrumb(cpu_id, 45); // ret-based idle dispatch (NOT ERET)
         let idle_addr = crate::arch_impl::aarch64::idle_loop_arm64 as *const () as u64;
-        let idle_sp = fresh_idle_sp;
-        assert_pivot_free(cpu_id, idle_sp, read_current_sp(), 2);
+        let idle_sp = pivot_destination(
+            CpuId::current_checked(cpu_id),
+            fresh_idle_sp,
+            read_current_sp(),
+            PivotHalf::Exception,
+            2,
+        );
         unsafe {
             core::arch::asm!(
                 "mov sp, {stack}",
@@ -6309,11 +6446,26 @@ pub fn run_deferred_reclamation() {
 
 pub fn schedule_from_kernel() {
     let saved_daif = read_daif();
-    let cpu_id = Aarch64PerCpu::cpu_id() as usize;
-    cpu0_breadcrumb(cpu_id, 1); // entry
     unsafe {
         crate::arch_impl::aarch64::cpu::disable_interrupts();
     }
+    // THE IDENTITY IS READ HERE, NOT ABOVE.
+    //
+    // Every caller of this function runs with interrupts ENABLED — that is why
+    // the DAIF save and the mask above exist. An identity read before the mask
+    // is a value from a preemptible window: a timer IRQ in it requeues this
+    // thread, any CPU may resume it, and the index then names the CPU the thread
+    // USED to be on. Spent afterwards on `scheduler_stack_top`,
+    // `INLINE_SCHEDULE_STATE[]`, `cpu_state[]` and `DEFERRED_REQUEUE[]`, that
+    // stale index put CPU 3 on CPU 0's scheduler stack with CPU 0's published
+    // state — the round-3 `PERCPU_STACK_ALIEN` specimens
+    // (`docs/planning/t3g-prb/PRB-R4-RCA-IDENTITY.md`).
+    //
+    // Below the mask this thread cannot be preempted, so the identity cannot go
+    // stale before the pivot; the pivot re-checks it anyway.
+    let cpu = CpuId::current();
+    let cpu_id = cpu.index();
+    cpu0_breadcrumb(cpu_id, 1); // entry
     cpu0_breadcrumb(cpu_id, 2); // after disable_interrupts
 
     let mut guard = crate::task::scheduler::lock_for_context_switch();
@@ -6473,8 +6625,28 @@ pub fn schedule_from_kernel() {
 
     let _ = spin::MutexGuard::leak(guard);
 
-    let scheduler_top = scheduler_stack_top(cpu_id);
-    assert_pivot_free(cpu_id, scheduler_top, read_current_sp(), 1);
+    // Re-read the identity at the point it is spent on a stack. Masked since
+    // the mint above, so this can only disagree if something re-enabled
+    // interrupts inside the transaction; the disagreement is recorded and the
+    // hardware answer wins, because that is the identity the trampoline, the
+    // per-CPU block and the setter guard all use.
+    let pivot_cpu = CpuId::current_checked(cpu_id);
+    if pivot_cpu.index() != cpu_id {
+        // The published state belongs to a slot this CPU does not own. Retract
+        // it rather than leave it for its owner to consume as its own: the
+        // trampoline then finds its own slot empty and takes the null-scheduler
+        // fallback, which is a designed recovery.
+        INLINE_SCHEDULE_STATE[cpu_id]
+            .scheduler_ptr
+            .store(0, Ordering::Relaxed);
+    }
+    let scheduler_top = pivot_destination(
+        pivot_cpu,
+        scheduler_stack_top(pivot_cpu),
+        read_current_sp(),
+        PivotHalf::Scheduler,
+        1,
+    );
 
     unsafe {
         aarch64_inline_schedule_switch(
@@ -6527,18 +6699,20 @@ fn setup_idle_return_arm64(frame: &mut Aarch64ExceptionFrame) {
     frame.spsr = 0x5;
 
     // Get idle thread's kernel stack, normalised to one this CPU owns.
-    let cpu_id = Aarch64PerCpu::cpu_id() as usize;
-    let idle_stack = idle_dispatch_stack(
-        cpu_id,
-        crate::task::scheduler::with_scheduler(|sched| {
-            let idle_id = sched.idle_thread();
-            sched
-                .get_thread(idle_id)
-                .and_then(|t| t.kernel_stack_top.map(|v| v.as_u64()))
-        })
-        .flatten()
-        .unwrap_or(0),
-    );
+    //
+    // The identity is read AFTER the lock hold, on the same side of that spill
+    // point as the decision it feeds: an index read before `with_scheduler` is
+    // a value carried across a lock acquire, which is exactly the shape that
+    // let a foreign per-CPU top reach a pivot in round 3.
+    let preferred = crate::task::scheduler::with_scheduler(|sched| {
+        let idle_id = sched.idle_thread();
+        sched
+            .get_thread(idle_id)
+            .and_then(|t| t.kernel_stack_top.map(|v| v.as_u64()))
+    })
+    .flatten()
+    .unwrap_or(0);
+    let idle_stack = idle_dispatch_stack(CpuId::current(), preferred);
 
     // Clear all general purpose registers for clean state
     frame.x0 = 0;

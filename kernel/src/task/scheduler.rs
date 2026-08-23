@@ -2377,6 +2377,29 @@ impl Scheduler {
     /// to prevent other CPUs from dispatching it with stale state.
     #[cfg(target_arch = "aarch64")]
     pub fn requeue_thread_after_save(&mut self, thread_id: u64) {
+        self.requeue_thread_after_save_onto(thread_id, Self::current_cpu_id());
+    }
+
+    /// Requeue a thread onto the CPU that owns the resources it must resume on,
+    /// rather than onto the CPU that is declining it.
+    ///
+    /// The aarch64 dispatch path uses this when a thread's saved kernel SP
+    /// stands in another CPU's per-CPU stack slot: that stack belongs to one
+    /// CPU, so the thread is runnable on exactly one CPU, and putting it back on
+    /// the declining CPU's own queue would hand it straight back (work-stealing
+    /// would hand it to a third). Every admission check in
+    /// `requeue_thread_after_save` still applies — only the destination queue
+    /// differs.
+    #[cfg(target_arch = "aarch64")]
+    pub fn requeue_thread_on_cpu(&mut self, thread_id: u64, cpu: usize) {
+        if cpu >= MAX_CPUS {
+            return;
+        }
+        self.requeue_thread_after_save_onto(thread_id, cpu);
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    fn requeue_thread_after_save_onto(&mut self, thread_id: u64, target_cpu: usize) {
         // Don't requeue idle threads (they are never in the ready queue)
         if (0..MAX_CPUS).any(|cpu| self.cpu_state[cpu].idle_thread == thread_id) {
             return;
@@ -2433,8 +2456,7 @@ impl Scheduler {
                     thread.set_ready();
                 }
             }
-            let cpu = Self::current_cpu_id();
-            self.per_cpu_queues[cpu].push_back(thread_id);
+            self.per_cpu_queues[target_cpu].push_back(thread_id);
             ENQUEUE_DEFERRED_DRAINED_OK.fetch_add(1, Ordering::Relaxed);
             // Send IPI to wake an idle CPU to pick up the requeued thread
             self.send_resched_ipi();
