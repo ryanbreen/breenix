@@ -573,6 +573,22 @@ fn registered_idle_cpu(scheduler: &Scheduler, tid: u64) -> Option<usize> {
         .position(|(cpu_id, cpu)| (cpu_id == 0 || cpu.idle_thread != 0) && cpu.idle_thread == tid)
 }
 
+/// Read-only probe for the per-CPU stack custody oracle's leg D: the thread id
+/// registered as CPU 0's idle thread, and whether thread id 0 resolves to a
+/// registered idle thread.
+///
+/// The second answer deliberately goes through `registered_idle_cpu` rather
+/// than re-implementing it, so that a later change to that helper is visible
+/// here instead of being masked by a copy.
+#[cfg(feature = "percpu_stack_custody_oracle")]
+pub fn zero_tid_idle_probe() -> Option<(u64, bool)> {
+    with_scheduler(|scheduler| {
+        let swapper_tid = scheduler.cpu_state[0].idle_thread;
+        let zero_resolves = registered_idle_cpu(scheduler, 0).is_some();
+        (swapper_tid, zero_resolves)
+    })
+}
+
 /// Collect one fixed-size strand census under the scheduler lock.
 ///
 /// The caller owns the array and processes it after this function returns, so

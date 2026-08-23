@@ -121,6 +121,7 @@ impl PerCpuOps for Aarch64PerCpu {
     #[inline]
     unsafe fn set_kernel_stack_top(addr: u64) {
         percpu_write_u64(PERCPU_KERNEL_STACK_TOP_OFFSET, addr);
+        crate::task::percpu_stack_oracle::note_stack_top_install(addr);
     }
 
     /// Get the preempt count (atomically)
@@ -372,6 +373,7 @@ impl Aarch64PerCpu {
     #[inline(always)]
     pub unsafe fn set_user_rsp_scratch(sp: u64) {
         percpu_write_u64(PERCPU_USER_RSP_SCRATCH_OFFSET, sp);
+        crate::task::percpu_stack_oracle::note_stack_top_install(sp);
     }
 
     /// Get the softirq pending bitmap.

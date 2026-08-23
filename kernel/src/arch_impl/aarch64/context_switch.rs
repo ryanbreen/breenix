@@ -4449,6 +4449,7 @@ fn dispatch_thread_locked(
         unsafe {
             Aarch64PerCpu::set_user_rsp_scratch(Aarch64PerCpu::kernel_stack_top());
         }
+        crate::task::percpu_stack_oracle::note_user_dispatch_stack_install(cpu_id);
     }
 }
 
