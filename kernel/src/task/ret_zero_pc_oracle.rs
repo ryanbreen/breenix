@@ -746,12 +746,11 @@ fn arm_foreign_record_oracle() {
         FOREIGN_RECORD_CPU.store(record_cpu as u64, Ordering::Release);
         if planted {
             FOREIGN_PLANTED.store(1, Ordering::Release);
-            use crate::arch_impl::aarch64::context_switch::{raw_uart_dec, raw_uart_str};
-            raw_uart_str("[RESUME_PC_FOREIGN_ORACLE:aarch64:leg=G:PLANTED:record_cpu=");
-            raw_uart_dec(record_cpu as u64);
-            raw_uart_str(":canary_tid=");
-            raw_uart_dec(canary_tid);
-            raw_uart_str("]\n");
+            crate::serial_println!(
+                "[RESUME_PC_FOREIGN_ORACLE:aarch64:leg=G:PLANTED:record_cpu={}:canary_tid={}]",
+                record_cpu,
+                canary_tid,
+            );
         }
     }
 }
