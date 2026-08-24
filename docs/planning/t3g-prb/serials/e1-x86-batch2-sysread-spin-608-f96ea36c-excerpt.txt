@@ -1,0 +1,108 @@
+### EXCERPT of /root/bx-batch2-fail-serial.txt (13MB, 153107 repeats of the garbage sys_read line) — lines 3280-3345 then final 40 lines
+[DEBUG] kernel::net: NET: Loopback detected, queueing packet for deferred delivery
+[DEBUG] kernel::net: NET: Loopback packet queued (queue size: 1)
+[DEBUG] kernel::net: NET: Loopback detected, queueing packet for deferred delivery
+[DEBUG] kernel::net: NET: Loopback packet queued (queue size: 2)
+[DEBUG] kernel::net: NET: Loopback detected, queueing packet for deferred delivery
+[DEBUG] kernel::net: NET: Loopback packet queued (queue size: 3)
+[DEBUG] kernel::net: NET: Loopback detected, queueing packet for deferred delivery
+[DEBUG] kernel::net: NET: Loopback packet queued (queue size: 4)
+[DEBUG] kernel::net: NET: Loopback detected, queueing packet for deferred delivery
+[DEBUG] kernel::net: NET: Loopback packet queued (queue size: 5)
+[DEBUG] kernel::net: NET: Loopback detected, queueing packet for deferred delivery
+[DEBUG] kernel::net: NET: Loopback packet queued (queue size: 6)
+[DEBUG] kernel::net: NET: Loopback detected, queueing packet for deferred delivery
+[DEBUG] kernel::net: NET: Loopback packet queued (queue size: 7)
+[DEBUG] kernel::net: NET: Loopback detected, queueing packet for deferred delivery
+[DEBUG] kernel::net: NET: Loopback packet queued (queue size: 8)
+[DEBUG] kernel::net: NET: Loopback detected, queueing packet for deferred delivery
+[DEBUG] kernel::net: NET: Loopback packet queued (queue size: 9)
+[DEBUG] kernel::net: NET: Loopback detected, queueing packet for deferred delivery
+[DEBUG] kernel::net: NET: Loopback packet queued (queue size: 10)
+[DEBUG] kernel::net: NET: Loopback detected, queueing packet for deferred delivery
+[DEBUG] kernel::net: NET: Loopback packet queued (queue size: 11)
+[DEBUG] kernel::net: NET: Loopback detected, queueing packet for deferred delivery
+[DEBUG] kernel::net: NET: Loopback packet queued (queue size: 12)
+[DEBUG] kernel::net: NET: Loopback detected, queueing packet for deferred delivery
+[DEBUG] kernel::net: NET: Loopback packet queued (queue size: 13)
+[DEBUG] kernel::net: NET: Loopback detected, queueing packet for deferred delivery
+[DEBUG] kernel::net: NET: Loopback packet queued (queue size: 14)
+[DEBUG] kernel::net: NET: Loopback detected, queueing packet for deferred delivery
+[DEBUG] kernel::net: NET: Loopback packet queued (queue size: 15)
+[DEBUG] kernel::net: NET: Loopback detected, queueing packet for deferred delivery
+[DEBUG] kernel::net: NET: Loopback packet queued (queue size: 16)
+[DEBUG] kernel::net: NET: Loopback detected, queueing packet for deferred delivery
+[DEBUG] kernel::net: NET: Loopback packet queued (queue size: 17)
+[DEBUG] kernel::net: NET: Loopback detected, queueing packet for deferred delivery
+[DEBUG] kernel::net: NET: Loopback packet queued (queue size: 18)
+[DEBUG] kernel::net: NET: Loopback detected, queueing packet for deferred delivery
+[DEBUG] kernel::net: NET: Loopback packet queued (queue size: 19)
+[DEBUG] kernel::net: NET: Loopback detected, queueing packet for deferred delivery
+[DEBUG] kernel::net: NET: Loopback packet queued (queue size: 20)
+[DEBUG] kernel::memory::kernel_stack: Mapping 128 pages for kernel stack 8
+[DEBUG] kernel::memory::kernel_stack: Allocated kernel stack 8 at 0xffffc90000409000-0xffffc90000489000 (guard at 0xffffc90000408000)
+[DEBUG] kernel::tls: Registered thread 34 with TLS block 0x32000
+[DEBUG] kernel::ipc::fd: FdTable::drop() - closing all fds and decrementing pipe counts
+Added thread 34 'clone-child-34' to scheduler (user: true, target_cpu: 0)
+[ INFO] kernel::syscall::clone: clone: created child thread 34 (pid 20) for parent pid 13, fn_ptr=0x40000f32, stack=0x7ffffdffc000
+[DEBUG] kernel::syscall::handlers: sys_read: fd=140737454784540, buf_ptr=0x1, count=0
+[DEBUG] kernel::syscall::handlers: sys_read: fd=140737454784540, buf_ptr=0x1, count=0
+[DEBUG] kernel::syscall::handlers: sys_read: fd=140737454784540, buf_ptr=0x1, count=0
+[DEBUG] kernel::syscall::handlers: sys_read: fd=140737454784540, buf_ptr=0x1, count=0
+[DEBUG] kernel::syscall::handlers: sys_read: fd=140737454784540, buf_ptr=0x1, count=0
+[DEBUG] kernel::syscall::handlers: sys_read: fd=140737454784540, buf_ptr=0x1, count=0
+[DEBUG] kernel::syscall::handlers: sys_read: fd=140737454784540, buf_ptr=0x1, count=0
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 23: RIP=0x100001fb372 CS=0x8 RSP=0xffffc90000c179a8
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 34: RIP=0x100001fb372 CS=0x8 RSP=0xffffc900004889a8
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 23: RIP=0x100001fb372 RSP=0xffffc90000c179a8
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x5663000 for blocked-in-syscall kernel return (thread 23)
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 34: RIP=0x100001fb372 RSP=0xffffc900004889a8
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x5663000 for blocked-in-syscall kernel return (thread 34)
+[DEBUG] kernel::syscall::handlers: sys_read: fd=140737454784552, buf_ptr=0x1, count=0
+[DEBUG] kernel::syscall::handlers: sys_read: fd=140737454784552, buf_ptr=0x1, count=0
+[DEBUG] kernel::syscall::handlers: sys_read: fd=140737454784552, buf_ptr=0x1, count=0
+[DEBUG] kernel::syscall::handlers: sys_read: fd=140737454784552, buf_ptr=0x1, count=0
+[ INFO] kernel::syscall::handlers: USERSPACE: sys_exit called with code: 1
+[DEBUG] kernel::syscall::handlers: sys_exit: Current thread ID from scheduler: 23
+[DEBUG] kernel::memory::stack: GuardedStack dropped (cleanup not yet implemented)
+### ... 153k repeats elided ...
+[DEBUG] kernel::syscall::handlers: sys_read: fd=140737454784552, buf_ptr=0x1, count=0
+[DEBUG] kernel::syscall::handlers: sys_read: fd=140737454784552, buf_ptr=0x1, count=0
+[DEBUG] kernel::syscall::handlers: sys_read: fd=140737454784552, buf_ptr=0x1, count=0
+[DEBUG] kernel::syscall::handlers: sys_read: fd=140737454784552, buf_ptr=0x1, count=0
+[DEBUG] kernel::syscall::handlers: sys_read: fd=140737454784552, buf_ptr=0x1, count=0
+[DEBUG] kernel::syscall::handlers: sys_read: fd=140737454784552, buf_ptr=0x1, count=0
+[DEBUG] kernel::syscall::handlers: sys_read: fd=140737454784552, buf_ptr=0x1, count=0
+[DEBUG] kernel::syscall::handlers: sys_read: fd=140737454784552, buf_ptr=0x1, count=0
+[DEBUG] kernel::syscall::handlers: sys_read: fd=140737454784552, buf_ptr=0x1, count=0
+[DEBUG] kernel::syscall::handlers: sys_read: fd=140737454784552, buf_ptr=0x1, count=0
+[DEBUG] kernel::syscall::handlers: sys_read: fd=140737454784552, buf_ptr=0x1, count=0
+[DEBUG] kernel::syscall::handlers: sys_read: fd=140737454784552, buf_ptr=0x1, count=0
+[DEBUG] kernel::syscall::handlers: sys_read: fd=140737454784552, buf_ptr=0x1, count=0
+[DEBUG] kernel::syscall::handlers: sys_read: fd=140737454784552, buf_ptr=0x1, count=0
+[DEBUG] kernel::syscall::handlers: sys_read: fd=140737454784552, buf_ptr=0x1, count=0
+[DEBUG] kernel::syscall::handlers: sys_read: fd=140737454784552, buf_ptr=0x1, count=0
+[DEBUG] kernel::syscall::handlers: sys_read: fd=140737454784552, buf_ptr=0x1, count=0
+[DEBUG] kernel::syscall::handlers: sys_read: fd=140737454784552, buf_ptr=0x1, count=0
+[DEBUG] kernel::syscall::handlers: sys_read: fd=140737454784552, buf_ptr=0x1, count=0
+[DEBUG] kernel::syscall::handlers: sys_read: fd=140737454784552, buf_ptr=0x1, count=0
+[DEBUG] kernel::syscall::handlers: sys_read: fd=140737454784552, buf_ptr=0x1, count=0
+[DEBUG] kernel::syscall::handlers: sys_read: fd=140737454784552, buf_ptr=0x1, count=0
+[DEBUG] kernel::syscall::handlers: sys_read: fd=140737454784552, buf_ptr=0x1, count=0
+[DEBUG] kernel::syscall::handlers: sys_read: fd=140737454784552, buf_ptr=0x1, count=0
+[DEBUG] kernel::syscall::handlers: sys_read: fd=140737454784552, buf_ptr=0x1, count=0
+[DEBUG] kernel::syscall::handlers: sys_read: fd=140737454784552, buf_ptr=0x1, count=0
+[DEBUG] kernel::syscall::handlers: sys_read: fd=140737454784552, buf_ptr=0x1, count=0
+[DEBUG] kernel::syscall::handlers: sys_read: fd=140737454784552, buf_ptr=0x1, count=0
+[DEBUG] kernel::syscall::handlers: sys_read: fd=140737454784552, buf_ptr=0x1, count=0
+[DEBUG] kernel::syscall::handlers: sys_read: fd=140737454784552, buf_ptr=0x1, count=0
+[DEBUG] kernel::syscall::handlers: sys_read: fd=140737454784552, buf_ptr=0x1, count=0
+[DEBUG] kernel::syscall::handlers: sys_read: fd=140737454784552, buf_ptr=0x1, count=0
+[DEBUG] kernel::syscall::handlers: sys_read: fd=140737454784552, buf_ptr=0x1, count=0
+[DEBUG] kernel::syscall::handlers: sys_read: fd=140737454784552, buf_ptr=0x1, count=0
+[DEBUG] kernel::syscall::handlers: sys_read: fd=140737454784552, buf_ptr=0x1, count=0
+[DEBUG] kernel::syscall::handlers: sys_read: fd=140737454784552, buf_ptr=0x1, count=0
+[DEBUG] kernel::syscall::handlers: sys_read: fd=140737454784552, buf_ptr=0x1, count=0
+[DEBUG] kernel::syscall::handlers: sys_read: fd=140737454784552, buf_ptr=0x1, count=0
+[DEBUG] kernel::syscall::handlers: sys_read: fd=140737454784552, buf_ptr=0x1, count=0
+[DEBUG] kernel::sysc
