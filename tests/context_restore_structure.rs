@@ -3085,6 +3085,184 @@ fn validate_no_private_resume_pc_admission(
     Ok(())
 }
 
+// ── Every ERET is dispositioned (#643) ──────────────────────────────────────
+//
+// The unification ratchet above catches a consumer that re-implements the
+// admission test privately. It cannot see a consumer that performs no
+// admission at all, which is the shape of both sites #643 filed. So every
+// `eret` under the resume-PC assembly root — `.S` files and the assembly
+// carried inside Rust `global_asm!` / `asm!` blocks alike — must carry one of
+// two dispositions in its own line comment or the comment block immediately
+// above it:
+//
+//   RESUME_PC_ERET_ADMITTED  the resume PC this instruction consumes passed a
+//                            shared admission arm on the way here;
+//   RESUME_PC_ERET_EXEMPT    followed by the reason it consumes no stored
+//                            resume PC, or why no refusal protocol exists at
+//                            this point in boot.
+//
+// An `eret` carrying neither fails closed, so a newly added bare ERET reddens
+// this ratchet with nobody maintaining a list of today's sites; and the counts
+// per class are anchored, so relabelling a new site into either class reddens
+// it too. This is #643's item 1, its own prescription: census every ERET and
+// require each to be admitted or to be an explicitly justified exemption
+// recorded as a COUNT anchor — never a name list.
+
+const ERET_ADMITTED_MARKER: &str = "RESUME_PC_ERET_ADMITTED";
+const ERET_EXEMPT_MARKER: &str = "RESUME_PC_ERET_EXEMPT";
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum EretDisposition {
+    Admitted,
+    Exempt,
+}
+
+impl EretDisposition {
+    fn census_item(self) -> &'static str {
+        match self {
+            EretDisposition::Admitted => "eret admitted",
+            EretDisposition::Exempt => "eret exempt",
+        }
+    }
+}
+
+/// Anchored per-file counts of each ERET disposition. `boot.S`'s three
+/// exemptions are the two EL2→EL1 drops, which ERET on a link-time constant
+/// loaded by `adr`, and #643 site 1, the `tpidr_el1 == 0` early-boot arm that
+/// runs before the per-CPU record and the redirect targets a refusal needs
+/// exist. #643 site 2, `syscall_return_to_userspace_aarch64`, is gone: it had
+/// no call site, and #643 offered delete-or-wire-plus-arm as its resolution.
+#[rustfmt::skip]
+const ERET_DISPOSITIONS: &[(&str, &str, usize)] = &[
+    (AARCH64_CONTEXT_PATH, "eret admitted", 1),
+    (AARCH64_CONTEXT_SWITCH, "eret admitted", 1),
+    (BOOT_ASM, "eret admitted", 2),
+    (BOOT_ASM, "eret exempt", 3),
+    (SYSCALL_ENTRY_ASM, "eret admitted", 1),
+];
+
+/// Whether a source line's code is the `eret` mnemonic. Assembly under this
+/// root lives both in `.S` files and inside Rust string literals, so the
+/// mnemonic is read after stripping a line comment, the string quoting and a
+/// trailing comma.
+fn assembly_line_is_eret(line: &str) -> bool {
+    let code = assembly_line_code(line);
+    let code = code.strip_suffix(',').unwrap_or(code).trim();
+    let code = code.strip_prefix('"').unwrap_or(code);
+    let code = code.strip_suffix('"').unwrap_or(code);
+    code.split_whitespace().next() == Some("eret")
+}
+
+/// Every `eret` in a source, as (1-based line, disposition). The disposition
+/// is read from the instruction's own line and from the contiguous run of
+/// comment (or blank) lines directly above it, which is where a justification
+/// too long for one line goes.
+fn eret_disposition_sites(source: &str) -> Vec<(usize, Option<EretDisposition>)> {
+    let lines: Vec<&str> = source.lines().collect();
+    let mut sites = Vec::new();
+    for (index, line) in lines.iter().enumerate() {
+        if !assembly_line_is_eret(line) {
+            continue;
+        }
+        let mut window = String::from(*line);
+        let mut cursor = index;
+        while cursor > 0 {
+            let candidate = lines[cursor - 1].trim();
+            let comment = candidate.is_empty()
+                || candidate.starts_with("//")
+                || candidate.starts_with("/*")
+                || candidate.starts_with('*');
+            if !comment {
+                break;
+            }
+            window.push('\n');
+            window.push_str(candidate);
+            cursor -= 1;
+        }
+        let disposition = if window.contains(ERET_ADMITTED_MARKER) {
+            Some(EretDisposition::Admitted)
+        } else if window.contains(ERET_EXEMPT_MARKER) {
+            Some(EretDisposition::Exempt)
+        } else {
+            None
+        };
+        sites.push((index + 1, disposition));
+    }
+    sites
+}
+
+fn eret_disposition_census(sources: &[(String, String)]) -> Census {
+    let mut result = Census::new();
+    for (path, source) in sources {
+        for (_, disposition) in eret_disposition_sites(source) {
+            let Some(disposition) = disposition else {
+                continue;
+            };
+            *result
+                .entry((path.clone(), disposition.census_item().to_owned()))
+                .or_insert(0) += 1;
+        }
+    }
+    result
+}
+
+fn validate_every_eret_carries_a_disposition(
+    sources: &[(String, String)],
+) -> Result<(), String> {
+    for (path, source) in sources {
+        for (line, disposition) in eret_disposition_sites(source) {
+            if disposition.is_none() {
+                return Err(format!(
+                    "{path}:{line} ERETs with neither {ERET_ADMITTED_MARKER} nor \
+                     {ERET_EXEMPT_MARKER}; an unguarded resume-PC consumer fails closed"
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_eret_disposition_census(sources: &[(String, String)]) -> Result<(), String> {
+    census_error(&eret_disposition_census(sources), ERET_DISPOSITIONS)
+}
+
+/// Uses of a shared admission in one source: either assembly macro, or the
+/// Rust twin of the EL0 macro that `context.rs` takes before its first-entry
+/// ERET. A mention inside a line comment does not count.
+fn shared_admission_uses(source: &str) -> usize {
+    assembly_macro_invocations(source, "RESUME_PC_EL1_OK").len()
+        + assembly_macro_invocations(source, "RESUME_PC_EL0_OK").len()
+        + source
+            .lines()
+            .filter(|line| {
+                assembly_line_code(line).contains("resume_pc_is_user_dispatchable(")
+            })
+            .count()
+}
+
+/// An ADMITTED disposition is a claim that a shared admission arm covers the
+/// site. A file that makes the claim and holds no shared admission at all has
+/// nothing to make it true.
+fn validate_admitted_erets_have_a_shared_admission(
+    sources: &[(String, String)],
+) -> Result<(), String> {
+    for (path, source) in sources {
+        let admitted = eret_disposition_sites(source)
+            .into_iter()
+            .filter(|(_, disposition)| *disposition == Some(EretDisposition::Admitted))
+            .count();
+        if admitted == 0 {
+            continue;
+        }
+        if shared_admission_uses(source) == 0 {
+            return Err(format!(
+                "{path} claims {admitted} admitted ERET(s) and invokes no shared admission"
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn direct_user_frame_elr_assignment_offsets(source: &str, mask: &[bool]) -> Vec<usize> {
     assigned_value_offsets(source, mask, "thread.context.elr_el1")
         .into_iter()
@@ -4161,6 +4339,119 @@ fn every_el1_resume_pc_consumer_uses_the_shared_admission_macro() {
         assert!(
             validate_no_private_resume_pc_admission(&mutant).is_err(),
             "a private cmp/b.hs admission pair in {path} must fail"
+        );
+    }
+}
+
+#[test]
+fn every_eret_under_the_resume_pc_root_is_dispositioned() {
+    let sources = text_sources_below(RESUME_PC_ASSEMBLY_ROOT);
+    assert_eq!(validate_every_eret_carries_a_disposition(&sources), Ok(()));
+    assert_eq!(validate_eret_disposition_census(&sources), Ok(()));
+    assert_eq!(validate_admitted_erets_have_a_shared_admission(&sources), Ok(()));
+
+    let eret_bearing: Vec<String> = sources
+        .iter()
+        .filter(|(_, source)| !eret_disposition_sites(source).is_empty())
+        .map(|(path, _)| path.clone())
+        .collect();
+    assert!(
+        !eret_bearing.is_empty(),
+        "no ERET site found under {RESUME_PC_ASSEMBLY_ROOT}; the census is vacuous"
+    );
+
+    for path in &eret_bearing {
+        // #643's blind spot, directly: a NEW consumer that ERETs on a stored PC
+        // with no admission and no disposition. The unification ratchet passes
+        // it silently; this one fails closed.
+        let mut bare = sources.clone();
+        let (_, source) = bare
+            .iter_mut()
+            .find(|(candidate, _)| candidate == path)
+            .expect("mutated resume-PC source");
+        source.push_str("\n    eret\n");
+        assert!(
+            validate_every_eret_carries_a_disposition(&bare).is_err(),
+            "an undispositioned ERET added to {path} must fail"
+        );
+
+        // Relabelling the new site into either class is not an escape: both
+        // counts are anchored, so the census reddens and the site is re-anchored
+        // deliberately.
+        for marker in [ERET_ADMITTED_MARKER, ERET_EXEMPT_MARKER] {
+            let mut labelled = sources.clone();
+            let (_, source) = labelled
+                .iter_mut()
+                .find(|(candidate, _)| candidate == path)
+                .expect("mutated resume-PC source");
+            source.push_str(&format!("\n    eret // {marker}: probe\n"));
+            assert_eq!(
+                validate_every_eret_carries_a_disposition(&labelled),
+                Ok(()),
+                "a {marker} ERET added to {path} must satisfy the disposition rule"
+            );
+            assert!(
+                validate_eret_disposition_census(&labelled).is_err(),
+                "a {marker} ERET added to {path} must move the census"
+            );
+        }
+    }
+
+    // Deleting the disposition from a site that has one is the same failure as
+    // never writing it, at every existing site rather than a synthetic one.
+    for marker in [ERET_ADMITTED_MARKER, ERET_EXEMPT_MARKER] {
+        for path in &eret_bearing {
+            let mut stripped = sources.clone();
+            let (_, source) = stripped
+                .iter_mut()
+                .find(|(candidate, _)| candidate == path)
+                .expect("mutated resume-PC source");
+            if !source.contains(marker) {
+                continue;
+            }
+            *source = source.replace(marker, "RESUME_PC_ERET_UNDISPOSITIONED");
+            assert!(
+                validate_every_eret_carries_a_disposition(&stripped).is_err(),
+                "stripping {marker} from {path} must fail"
+            );
+        }
+    }
+
+    // And an ADMITTED claim is not free-floating: a file that keeps the label
+    // but loses every shared admission fails.
+    for path in &eret_bearing {
+        let mut unadmitted = sources.clone();
+        let (_, source) = unadmitted
+            .iter_mut()
+            .find(|(candidate, _)| candidate == path)
+            .expect("mutated resume-PC source");
+        if !eret_disposition_sites(source)
+            .iter()
+            .any(|(_, disposition)| *disposition == Some(EretDisposition::Admitted))
+        {
+            continue;
+        }
+        *source = source
+            .replace("RESUME_PC_EL1_OK", "REMOVED_RESUME_PC_EL1_OK")
+            .replace("RESUME_PC_EL0_OK", "REMOVED_RESUME_PC_EL0_OK")
+            .replace("resume_pc_is_user_dispatchable(", "absent_admission_predicate(");
+        assert!(
+            validate_admitted_erets_have_a_shared_admission(&unadmitted).is_err(),
+            "{path} must not claim an admitted ERET with no shared admission"
+        );
+    }
+}
+
+/// #643 site 2 is closed by deletion: `syscall_return_to_userspace_aarch64`
+/// ERETed on `x0` with no admission and had no in-kernel call site, and the
+/// issue named delete-or-wire-plus-arm as the two acceptable resolutions.
+/// Its symbol must not come back without an admission arm coming back with it.
+#[test]
+fn the_dead_first_entry_eret_entry_point_stays_deleted() {
+    for (path, source) in text_sources_below(RESUME_PC_ASSEMBLY_ROOT) {
+        assert!(
+            !source.contains("syscall_return_to_userspace_aarch64"),
+            "{path} names a deleted unguarded ERET entry point"
         );
     }
 }
