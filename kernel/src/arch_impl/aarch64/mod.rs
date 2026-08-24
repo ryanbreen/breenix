@@ -52,7 +52,7 @@ pub use percpu::Aarch64PerCpu;
 #[allow(unused_imports)]
 pub use privilege::Aarch64PrivilegeLevel;
 #[allow(unused_imports)]
-pub use syscall_entry::{is_el0_confirmed, syscall_return_to_userspace_aarch64};
+pub use syscall_entry::is_el0_confirmed;
 #[allow(unused_imports)]
 pub use timer::Aarch64Timer;
 pub use ttbr0::{

@@ -193,7 +193,7 @@ fn resume_pc_is_dispatchable(addr: u64) -> bool {
 /// the kernel-text window: on Parallels the kernel is identity-mapped into the
 /// same range user programs are linked at.
 #[inline(always)]
-fn resume_pc_is_user_dispatchable(addr: u64) -> bool {
+pub(crate) fn resume_pc_is_user_dispatchable(addr: u64) -> bool {
     addr >= 0x1000 && addr & 0x3 == 0 && addr < 0xFFFF_0000_0000_0000
 }
 
@@ -1717,7 +1717,7 @@ aarch64_enter_exception_frame:
     mrs x16, tpidr_el1
     ldr x17, [x16, #144]     // x17 = saved frame.x17
     ldr x16, [x16, #96]      // x16 = saved frame.x16
-    eret
+    eret                     // RESUME_PC_ERET_ADMITTED: frame.elr was admitted by this routine's RESUME_PC_EL1_OK / RESUME_PC_EL0_OK arms
 "#
 ));
 

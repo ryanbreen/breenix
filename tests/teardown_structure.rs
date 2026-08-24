@@ -3058,21 +3058,94 @@ fn validate_blocked_state_publications(sources: &[(String, String)]) -> Result<(
     )
 }
 
+/// The offset just past the `(` opened at `open`, i.e. the matching `)`.
+fn balanced_paren_close(text: &str, after_open: usize) -> Option<usize> {
+    let bytes = text.as_bytes();
+    let mut depth = 0usize;
+    for index in after_open..bytes.len() {
+        match bytes[index] {
+            b'(' => depth += 1,
+            b')' => {
+                if depth == 0 {
+                    return Some(index);
+                }
+                depth -= 1;
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Top-level comma-separated arguments of a rendered cfg predicate list.
+fn cfg_predicate_arguments(list: &str) -> Vec<&str> {
+    let bytes = list.as_bytes();
+    let mut arguments = Vec::new();
+    let mut depth = 0usize;
+    let mut start = 0usize;
+    for index in 0..bytes.len() {
+        match bytes[index] {
+            b'(' => depth += 1,
+            b')' => depth = depth.saturating_sub(1),
+            b',' if depth == 0 => {
+                arguments.push(list[start..index].trim());
+                start = index + 1;
+            }
+            _ => {}
+        }
+    }
+    let last = list[start..].trim();
+    if !last.is_empty() {
+        arguments.push(last);
+    }
+    arguments
+}
+
+/// Whether a rendered `#[cfg(...)]` predicate can hold ONLY when the `test`
+/// configuration is enabled. Positive-shaped and polarity-aware, which the
+/// old substring test was not: it read `test` anywhere inside the predicate as
+/// a fixture marker, so `#[cfg(not(test))]` — production code, compiled in
+/// exactly when `test` is OFF — was exempted from the family rule (PR #648
+/// review, F2). `all(..)` inherits the requirement from any arm, `any(..)`
+/// only from every arm, and `not(..)` never satisfies it. Every other atom
+/// (`feature = "…"`, `target_arch = "…"`) is production configuration, so it
+/// fails closed rather than exempting.
+fn cfg_predicate_requires_test(predicate: &str) -> bool {
+    let predicate = predicate.trim();
+    for connective in ["all", "any"] {
+        let Some(rest) = predicate.strip_prefix(connective) else {
+            continue;
+        };
+        let Some(rest) = rest.strip_prefix('(').and_then(|rest| rest.strip_suffix(')')) else {
+            continue;
+        };
+        let arguments = cfg_predicate_arguments(rest);
+        if arguments.is_empty() {
+            return false;
+        }
+        return match connective {
+            "all" => arguments.iter().any(|argument| cfg_predicate_requires_test(argument)),
+            _ => arguments.iter().all(|argument| cfg_predicate_requires_test(argument)),
+        };
+    }
+    predicate == "test"
+}
+
 /// Whether a rendered item path names a test fixture, judged by shape: one of
-/// the `#[cfg(...)]` attributes carried in the path mentions a test
-/// configuration (`test`, `all(test,…)`, `feature=boot_tests`). Never a list of
-/// fixture names.
+/// the `#[cfg(...)]` attributes carried in the path holds only with the `test`
+/// configuration enabled (`test`, `all(test,…)`, `any(test,test)`). Never a
+/// list of fixture names, and never a bare mention of the word.
 fn item_path_is_test_fixture(item: &str) -> bool {
     let mut cursor = 0usize;
     while let Some(relative) = item[cursor..].find("#[cfg(") {
-        let start = cursor + relative;
-        let Some(length) = item[start..].find(']') else {
+        let start = cursor + relative + "#[cfg(".len();
+        let Some(close) = balanced_paren_close(item, start) else {
             return false;
         };
-        if item[start..start + length].contains("test") {
+        if cfg_predicate_requires_test(&item[start..close]) {
             return true;
         }
-        cursor = start + length + 1;
+        cursor = close + 1;
     }
     false
 }
@@ -8444,6 +8517,60 @@ fn deliberately_broken_variants_fail_the_ratchet() {
     );
     assert!(validate_blocked_state_publications(&family_named_publication).is_err());
     assert!(validate_blocked_state_publication_family(&family_named_publication).is_ok());
+
+    // PR #648 review, F2: `#[cfg(not(test))]` is PRODUCTION code — it compiles
+    // in exactly when `test` is off. The old exemption substring-tested the cfg
+    // for `test`, so this probe moved census A and the derived family rule
+    // stayed silent; the class rule that exists to see the class was the one
+    // that could not. Every negated and mixed shape below is production and
+    // must fire the rule.
+    for cfg in [
+        "#[cfg(not(test))]",
+        "#[cfg(all(not(test), target_arch = \"aarch64\"))]",
+        "#[cfg(all(feature = \"btrt\", not(feature = \"testing\")))]",
+        "#[cfg(any(test, target_arch = \"aarch64\"))]",
+        "#[cfg(feature = \"boot_tests\")]",
+    ] {
+        let production_publication = with_synthetic_source(
+            &sources,
+            "kernel/src/task/synthetic_cfg_production_publication.rs",
+            &format!(
+                "{cfg}\npub fn park_probe(thread: &mut Thread) {{ thread.state = ThreadState::Blocked; }}"
+            ),
+        );
+        assert!(
+            validate_blocked_state_publications(&production_publication).is_err(),
+            "{cfg} publication must move census A"
+        );
+        assert!(
+            validate_blocked_state_publication_family(&production_publication).is_err(),
+            "{cfg} is production configuration and must fire the derived family rule"
+        );
+    }
+
+    // …and the exemption itself is preserved: a genuine host-test fixture, under
+    // either spelling that can only compile with `test` enabled, still moves
+    // census A and still does not fire the naming rule.
+    for cfg in [
+        "#[cfg(test)]",
+        "#[cfg(all(test, target_arch = \"x86_64\"))]",
+    ] {
+        let fixture_publication = with_synthetic_source(
+            &sources,
+            "kernel/src/task/synthetic_cfg_fixture_publication.rs",
+            &format!(
+                "{cfg}\npub fn park_probe(thread: &mut Thread) {{ thread.state = ThreadState::Blocked; }}"
+            ),
+        );
+        assert!(
+            validate_blocked_state_publications(&fixture_publication).is_err(),
+            "{cfg} publication must still move census A"
+        );
+        assert!(
+            validate_blocked_state_publication_family(&fixture_publication).is_ok(),
+            "{cfg} is a host-test fixture and must stay exempt from the naming rule"
+        );
+    }
 
     // The fully qualified spelling must not escape the census. It does not
     // carry `=` immediately before the needle, and a mutation reverting
