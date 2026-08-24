@@ -390,7 +390,6 @@ impl Process {
     }
 
     /// Mark process as blocked
-    #[allow(dead_code)]
     pub fn set_blocked(&mut self) {
         self.state = ProcessState::Blocked;
     }
