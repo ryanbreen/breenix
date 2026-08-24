@@ -2728,11 +2728,13 @@ const BLOCKING_PRIMITIVES: &[(&str, &str, usize)] = &[
     ("kernel/src/task/scheduler.rs", "impl Scheduler::fn block_current_for_child_exit", 1),
     ("kernel/src/task/scheduler.rs", "impl Scheduler::fn block_current_for_compositor", 1),
     ("kernel/src/task/scheduler.rs", "impl Scheduler::fn block_current_for_io", 1),
+    ("kernel/src/task/scheduler.rs", "impl Scheduler::fn block_current_for_io_publish", 1),
     ("kernel/src/task/scheduler.rs", "impl Scheduler::fn block_current_for_io_with_timeout", 1),
     ("kernel/src/task/scheduler.rs", "impl Scheduler::fn block_current_for_signal", 1),
     ("kernel/src/task/scheduler.rs", "impl Scheduler::fn block_current_for_signal_with_context", 1),
     ("kernel/src/task/scheduler.rs", "impl Scheduler::fn block_current_for_timer", 1),
     ("kernel/src/task/waitqueue.rs", "impl WaitQueueHead::fn prepare_to_wait", 1),
+    ("kernel/src/task/waitqueue.rs", "impl WaitQueueHead::fn prepare_to_wait_checked", 1),
 ];
 #[rustfmt::skip]
 const RAW_SCHEDULER_LOCK_SITES: &[(&str, &str, usize)] = &[
@@ -2933,20 +2935,24 @@ fn validate_exit_process_entry_points(
     failures.is_empty().then_some(()).ok_or(failures)
 }
 
+/// Every definition whose name begins with a blocking-family prefix, at any
+/// visibility. Visibility is not what makes something a blocking primitive:
+/// filtering on a literal `pub` token hid `pub(crate)` members from the census
+/// entirely, because the code byte before `fn` there is `)`.
+fn blocking_primitive_offsets(source: &str, mask: &[bool]) -> Vec<usize> {
+    BLOCKING_NAME_PREFIXES
+        .iter()
+        .flat_map(|prefix| {
+            definition_prefix_offsets(source, mask, prefix)
+                .into_iter()
+                .map(|(_, brace)| brace)
+        })
+        .collect()
+}
+
 fn validate_blocking_primitives(sources: &[(String, String)]) -> Result<(), Vec<String>> {
     validate_census(
-        &census(sources, |source, mask| {
-            BLOCKING_NAME_PREFIXES
-                .iter()
-                .flat_map(|prefix| {
-                    definition_prefix_offsets(source, mask, prefix)
-                        .into_iter()
-                        .filter_map(|(keyword, brace)| {
-                            preceded_by_keyword(source, mask, keyword, "pub").then_some(brace)
-                        })
-                })
-                .collect()
-        }),
+        &census(sources, blocking_primitive_offsets),
         BLOCKING_PRIMITIVES,
     )
 }
@@ -3637,14 +3643,21 @@ fn validate_futex_queue_value_type(sources: &[(String, String)]) -> Result<(), V
     failures.is_empty().then_some(()).ok_or(failures)
 }
 
-fn sleeping_publication_names() -> [&'static str; 6] {
+/// The publication primitives whose callers owe preempt discipline. The former
+/// `publish_current_io_wait_state` entry is gone with the wrapper it named: its
+/// only call site, `WaitQueueHead::prepare_to_wait`, now reaches the same
+/// publication through `block_current_for_io_with_timeout`, which is already
+/// listed here — so the census this drives is unchanged, not diminished. The
+/// renamed private publisher `block_current_for_io_publish` is deliberately not
+/// listed: it is private to `scheduler.rs`, which these sources do not include,
+/// so an entry for it would match nothing.
+fn sleeping_publication_names() -> [&'static str; 5] {
     [
         "block_current_for_timer",
         "block_current_for_io",
         "block_current_for_io_with_timeout",
         "prepare_to_wait",
         "prepare_to_wait_checked",
-        "publish_current_io_wait_state",
     ]
 }
 
@@ -6602,6 +6615,51 @@ fn kernel_stack_gate_validator_rejects_a_deleted_pin() {
     assert!(validate_kstack_gate_script_pins(&deleted_pin).is_err());
 }
 
+/// The visibility widening, proven by contrast rather than asserted. The census
+/// must see a `pub(crate)` family member; the predicate it replaced must not.
+/// Restoring the `pub` filter therefore reddens this test, and the inventory row
+/// it used to hide is pinned here by name.
+#[test]
+fn blocking_primitive_census_sees_pub_crate_members() {
+    let sources = rust_sources_below("kernel/src");
+
+    assert!(
+        BLOCKING_PRIMITIVES.iter().any(|(path, item, _)| {
+            *path == "kernel/src/task/waitqueue.rs"
+                && *item == "impl WaitQueueHead::fn prepare_to_wait_checked"
+        }),
+        "the pub(crate) member the visibility filter hid must be in the inventory"
+    );
+
+    let probe = with_synthetic_source(
+        &sources,
+        "kernel/src/task/synthetic_pub_crate_blocking.rs",
+        "pub(crate) fn block_current_probe() {}",
+    );
+    let anchor = (
+        "kernel/src/task/synthetic_pub_crate_blocking.rs".to_owned(),
+        "fn block_current_probe".to_owned(),
+    );
+
+    // The predicate that used to gate the census, kept only as the control arm:
+    // the token before `fn` in `pub(crate) fn` is `)`, so the probe is invisible.
+    let visibility_filtered = census(&probe, |source, mask| {
+        BLOCKING_NAME_PREFIXES
+            .iter()
+            .flat_map(|prefix| {
+                definition_prefix_offsets(source, mask, prefix)
+                    .into_iter()
+                    .filter_map(|(keyword, brace)| {
+                        preceded_by_keyword(source, mask, keyword, "pub").then_some(brace)
+                    })
+            })
+            .collect()
+    });
+    assert!(!visibility_filtered.contains_key(&anchor));
+    assert!(census(&probe, blocking_primitive_offsets).contains_key(&anchor));
+    assert!(validate_blocking_primitives(&probe).is_err());
+}
+
 #[test]
 fn v3_structural_closures_are_exact() {
     let sources = rust_sources_below("kernel/src");
@@ -6613,7 +6671,7 @@ fn v3_structural_closures_are_exact() {
     );
     record(
         &mut failures,
-        "the nine P0 blocking primitives changed",
+        "the P0 blocking-primitive inventory changed",
         validate_blocking_primitives(&sources),
     );
     record(
@@ -8096,6 +8154,16 @@ fn deliberately_broken_variants_fail_the_ratchet() {
         "pub fn block_current_probe(saved_regs: [u64; 32]) { let _ = saved_regs; }",
     );
     assert!(validate_blocking_primitives(&broken_blocking_family).is_err());
+
+    // A `pub(crate)` family member must be visible to the census. Until the
+    // visibility filter was dropped this probe was invisible, which is how
+    // `WaitQueueHead::prepare_to_wait_checked` stayed out of the inventory.
+    let broken_pub_crate_blocking = with_synthetic_source(
+        &sources,
+        "kernel/src/task/synthetic_pub_crate_blocking.rs",
+        "pub(crate) fn block_current_probe() {}",
+    );
+    assert!(validate_blocking_primitives(&broken_pub_crate_blocking).is_err());
 
     let broken_group_write = with_synthetic_source(
         &sources,

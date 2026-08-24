@@ -970,12 +970,6 @@ impl Thread {
         }
     }
 
-    /// Mark thread as blocked
-    #[allow(dead_code)]
-    pub fn set_blocked(&mut self) {
-        self.state = ThreadState::Blocked;
-    }
-
     /// Mark thread as terminated
     pub fn set_terminated(&mut self) {
         self.state = ThreadState::Terminated;

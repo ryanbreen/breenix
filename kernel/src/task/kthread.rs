@@ -197,11 +197,11 @@ pub fn kthread_park() {
                 return; // Already unparked, don't block
             }
 
-            // Mark thread as Blocked and remove from ready queue
+            // Mark thread as Blocked and remove from ready queue.
+            // The publication goes through the inventoried `block_current`
+            // primitive so no blocked state is written outside the family.
             scheduler::with_scheduler(|sched| {
-                if let Some(thread) = sched.current_thread_mut() {
-                    thread.state = crate::task::thread::ThreadState::Blocked;
-                }
+                sched.block_current();
                 // Remove from ready queue to ensure scheduler doesn't pick us up
                 sched.remove_from_ready_queue(handle.inner.tid);
             });
