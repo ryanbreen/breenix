@@ -2987,19 +2987,59 @@ fn validate_blocking_primitives(sources: &[(String, String)]) -> Result<(), Vec<
     )
 }
 
+/// The start of the whole path expression whose tail begins at `offset`: walk
+/// back over every `SEGMENT::` qualifier. Without this, the fully qualified
+/// `crate::task::thread::ThreadState::Blocked` spelling escapes the assignment
+/// test entirely — the code byte before the needle there is `:`, not `=` — and
+/// a direct write can hide behind an import-free path. A mutation reverting
+/// `kthread_park` to its inline write proved exactly that hole.
+fn path_expression_start(source: &str, mask: &[bool], offset: usize) -> usize {
+    let bytes = source.as_bytes();
+    let mut start = offset;
+    loop {
+        let Some(colon) = previous_code(source, mask, start) else {
+            return start;
+        };
+        if bytes[colon] != b':' {
+            return start;
+        }
+        let Some(separator) = previous_code(source, mask, colon) else {
+            return start;
+        };
+        if bytes[separator] != b':' {
+            return start;
+        }
+        let Some(segment_end) = previous_code(source, mask, separator) else {
+            return start;
+        };
+        if !identifier_byte(bytes[segment_end]) {
+            return start;
+        }
+        let mut segment_start = segment_end;
+        while segment_start > 0
+            && mask[segment_start - 1]
+            && identifier_byte(bytes[segment_start - 1])
+        {
+            segment_start -= 1;
+        }
+        start = segment_start;
+    }
+}
+
 /// Offsets of `ThreadState::Blocked*` paths that sit on the right-hand side of
 /// an assignment. `code_offsets` is a substring match, so `Blocked`,
-/// `BlockedOnIO`, `BlockedOnSignal`, `BlockedOnChildExit`, `BlockedOnTimer` and
-/// the fully qualified `crate::task::thread::ThreadState::…` spelling are all
-/// covered by one needle. Comparisons (`==`, `!=`, `<=`, `>=`), `matches!` arms
-/// and call arguments are excluded by construction — the census is the class of
-/// *publications*, not of mentions.
+/// `BlockedOnIO`, `BlockedOnSignal`, `BlockedOnChildExit` and `BlockedOnTimer`
+/// are all covered by one needle, and `path_expression_start` covers the
+/// fully qualified spelling. Comparisons (`==`, `!=`, `<=`, `>=`), `matches!`
+/// arms and call arguments are excluded by construction — the census is the
+/// class of *publications*, not of mentions.
 fn blocked_state_publication_offsets(source: &str, mask: &[bool]) -> Vec<usize> {
     let bytes = source.as_bytes();
     code_offsets(source, mask, "ThreadState::Blocked")
         .into_iter()
         .filter(|offset| {
-            let Some(equals) = previous_code(source, mask, *offset) else {
+            let start = path_expression_start(source, mask, *offset);
+            let Some(equals) = previous_code(source, mask, start) else {
                 return false;
             };
             if bytes[equals] != b'=' {
@@ -8404,6 +8444,25 @@ fn deliberately_broken_variants_fail_the_ratchet() {
     );
     assert!(validate_blocked_state_publications(&family_named_publication).is_err());
     assert!(validate_blocked_state_publication_family(&family_named_publication).is_ok());
+
+    // The fully qualified spelling must not escape the census. It does not
+    // carry `=` immediately before the needle, and a mutation reverting
+    // `kthread_park` to its inline write is exactly this shape.
+    let broken_qualified_publication = with_synthetic_source(
+        &sources,
+        "kernel/src/task/synthetic_qualified_publication.rs",
+        "pub fn park_probe(thread: &mut Thread) { thread.state = crate::task::thread::ThreadState::Blocked; }",
+    );
+    assert!(validate_blocked_state_publications(&broken_qualified_publication).is_err());
+    assert!(validate_blocked_state_publication_family(&broken_qualified_publication).is_err());
+
+    // …and the qualified comparison still must not be read as a publication.
+    let qualified_comparison = with_synthetic_source(
+        &sources,
+        "kernel/src/task/synthetic_qualified_comparison.rs",
+        "pub fn is_parked(thread: &Thread) -> bool { thread.state == crate::task::thread::ThreadState::Blocked }",
+    );
+    assert!(validate_blocked_state_publications(&qualified_comparison).is_ok());
 
     // A comparison must not be read as a publication, or census A would be
     // unreadable and every re-anchor meaningless.
