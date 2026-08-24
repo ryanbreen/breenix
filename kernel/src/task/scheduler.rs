@@ -2536,8 +2536,12 @@ impl Scheduler {
         }
     }
 
-    /// Block the current thread
-    #[allow(dead_code)]
+    /// Block the current thread.
+    ///
+    /// This is the generic member of the `block_current*` family: it is the only
+    /// place in the kernel that publishes the plain `Blocked` state, so P9's
+    /// no-new-block interlock has one site to install here rather than one per
+    /// caller.
     pub fn block_current(&mut self) {
         if let Some(current) = self.current_thread_mut() {
             // Charge elapsed CPU ticks before blocking
@@ -2545,7 +2549,7 @@ impl Scheduler {
             current.cpu_ticks_total += now.wrapping_sub(current.run_start_ticks);
             current.run_start_ticks = now;
 
-            current.set_blocked();
+            current.state = ThreadState::Blocked;
         }
     }
 
@@ -3038,7 +3042,7 @@ impl Scheduler {
         }
     }
 
-    fn publish_current_io_wait_state_inner(&mut self, wake_time_ns: Option<u64>) -> Option<u64> {
+    fn block_current_for_io_publish(&mut self, wake_time_ns: Option<u64>) -> Option<u64> {
         if let Some(current_id) = self.cpu_state[Self::current_cpu_id()].current_thread {
             if let Some(thread) = self.get_thread_mut(current_id) {
                 // Charge elapsed CPU ticks before blocking
@@ -3064,15 +3068,6 @@ impl Scheduler {
         None
     }
 
-    /// Publish that the current thread intends to sleep for device I/O.
-    ///
-    /// This is the waitqueue equivalent of Linux `set_current_state()`: callers
-    /// hold the waitqueue lock across enqueue and this state publication, then
-    /// release that lock before entering the scheduler.
-    pub fn publish_current_io_wait_state(&mut self) -> bool {
-        self.publish_current_io_wait_state_inner(None).is_some()
-    }
-
     /// Block the current thread for device I/O.
     ///
     /// Sets state to BlockedOnIO and blocked_in_syscall. The thread will be
@@ -3091,7 +3086,7 @@ impl Scheduler {
     /// unblock_for_io(), while the timer path wakes it by observing
     /// wake_time_ns without clearing blocked_in_syscall prematurely.
     pub fn block_current_for_io_with_timeout(&mut self, wake_time_ns: Option<u64>) -> bool {
-        if let Some(current_id) = self.publish_current_io_wait_state_inner(wake_time_ns) {
+        if let Some(current_id) = self.block_current_for_io_publish(wake_time_ns) {
             // Insert into timer heap if a timeout was specified
             if let Some(wt) = wake_time_ns {
                 self.timer_heap.push(Reverse((wt, current_id)));

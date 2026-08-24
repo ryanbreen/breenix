@@ -73,7 +73,7 @@ impl WaitQueueHead {
             }
 
             let published = crate::task::scheduler::with_scheduler(|sched| {
-                sched.publish_current_io_wait_state()
+                sched.block_current_for_io_with_timeout(None)
             })
             .unwrap_or(false);
 

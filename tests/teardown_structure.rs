@@ -2728,11 +2728,43 @@ const BLOCKING_PRIMITIVES: &[(&str, &str, usize)] = &[
     ("kernel/src/task/scheduler.rs", "impl Scheduler::fn block_current_for_child_exit", 1),
     ("kernel/src/task/scheduler.rs", "impl Scheduler::fn block_current_for_compositor", 1),
     ("kernel/src/task/scheduler.rs", "impl Scheduler::fn block_current_for_io", 1),
+    ("kernel/src/task/scheduler.rs", "impl Scheduler::fn block_current_for_io_publish", 1),
     ("kernel/src/task/scheduler.rs", "impl Scheduler::fn block_current_for_io_with_timeout", 1),
     ("kernel/src/task/scheduler.rs", "impl Scheduler::fn block_current_for_signal", 1),
     ("kernel/src/task/scheduler.rs", "impl Scheduler::fn block_current_for_signal_with_context", 1),
     ("kernel/src/task/scheduler.rs", "impl Scheduler::fn block_current_for_timer", 1),
     ("kernel/src/task/waitqueue.rs", "impl WaitQueueHead::fn prepare_to_wait", 1),
+    ("kernel/src/task/waitqueue.rs", "impl WaitQueueHead::fn prepare_to_wait_checked", 1),
+];
+/// Census A: every right-hand-side publication of a `ThreadState::Blocked*`
+/// value under `kernel/src`. The six production rows are all blocking-family
+/// primitives, which `validate_blocked_state_publication_family` asserts as a
+/// derived rule; the five `#[cfg(test)]` rows are fixtures, exempt from that
+/// rule but still pinned here so a new fixture is re-anchored deliberately.
+#[rustfmt::skip]
+const BLOCKED_STATE_PUBLICATIONS: &[(&str, &str, usize)] = &[
+    ("kernel/src/socket/udp.rs", "#[cfg(test)] mod tests::fn test_blocking_recvfrom_blocks_and_wakes", 1),
+    ("kernel/src/socket/udp.rs", "#[cfg(test)] mod tests::fn test_enqueue_packet_wakes_blocked_threads", 1),
+    ("kernel/src/socket/udp.rs", "#[cfg(test)] mod tests::fn test_enqueue_packet_wakes_multiple_waiters", 1),
+    ("kernel/src/socket/udp.rs", "#[cfg(test)] mod tests::fn test_spurious_wakeup_handling", 1),
+    ("kernel/src/task/scheduler.rs", "#[cfg(all(test,target_arch=x86_64))] mod tests::fn test_unblock_does_not_duplicate_ready_queue", 1),
+    ("kernel/src/task/scheduler.rs", "impl Scheduler::fn block_current", 1),
+    ("kernel/src/task/scheduler.rs", "impl Scheduler::fn block_current_for_child_exit", 1),
+    ("kernel/src/task/scheduler.rs", "impl Scheduler::fn block_current_for_compositor", 1),
+    ("kernel/src/task/scheduler.rs", "impl Scheduler::fn block_current_for_io_publish", 1),
+    ("kernel/src/task/scheduler.rs", "impl Scheduler::fn block_current_for_signal_with_context", 1),
+    ("kernel/src/task/scheduler.rs", "impl Scheduler::fn block_current_for_timer", 1),
+];
+/// Census B: stores into a field named `state` whose right-hand side is opaque
+/// (not a path), the shape that would launder a blocked publication past census
+/// A. All four rows today are fixtures or a PRNG counter; a production opaque
+/// store on a thread would arrive here as a new row.
+#[rustfmt::skip]
+const OPAQUE_THREAD_STATE_STORES: &[(&str, &str, usize)] = &[
+    ("kernel/src/socket/udp.rs", "#[cfg(test)] mod tests::fn make_thread", 1),
+    ("kernel/src/syscall/random.rs", "impl Xorshift64Star::fn next_u64", 1),
+    ("kernel/src/task/scheduler.rs", "#[cfg(all(test,target_arch=x86_64))] mod tests::fn make_thread", 1),
+    ("kernel/src/tracing/providers/teardown.rs", "#[cfg(feature=boot_tests)] fn clone_admission_oracle_test::fn test_thread", 1),
 ];
 #[rustfmt::skip]
 const RAW_SCHEDULER_LOCK_SITES: &[(&str, &str, usize)] = &[
@@ -2933,21 +2965,210 @@ fn validate_exit_process_entry_points(
     failures.is_empty().then_some(()).ok_or(failures)
 }
 
+/// Every definition whose name begins with a blocking-family prefix, at any
+/// visibility. Visibility is not what makes something a blocking primitive:
+/// filtering on a literal `pub` token hid `pub(crate)` members from the census
+/// entirely, because the code byte before `fn` there is `)`.
+fn blocking_primitive_offsets(source: &str, mask: &[bool]) -> Vec<usize> {
+    BLOCKING_NAME_PREFIXES
+        .iter()
+        .flat_map(|prefix| {
+            definition_prefix_offsets(source, mask, prefix)
+                .into_iter()
+                .map(|(_, brace)| brace)
+        })
+        .collect()
+}
+
 fn validate_blocking_primitives(sources: &[(String, String)]) -> Result<(), Vec<String>> {
     validate_census(
-        &census(sources, |source, mask| {
+        &census(sources, blocking_primitive_offsets),
+        BLOCKING_PRIMITIVES,
+    )
+}
+
+/// The start of the whole path expression whose tail begins at `offset`: walk
+/// back over every `SEGMENT::` qualifier. Without this, the fully qualified
+/// `crate::task::thread::ThreadState::Blocked` spelling escapes the assignment
+/// test entirely — the code byte before the needle there is `:`, not `=` — and
+/// a direct write can hide behind an import-free path. A mutation reverting
+/// `kthread_park` to its inline write proved exactly that hole.
+fn path_expression_start(source: &str, mask: &[bool], offset: usize) -> usize {
+    let bytes = source.as_bytes();
+    let mut start = offset;
+    loop {
+        let Some(colon) = previous_code(source, mask, start) else {
+            return start;
+        };
+        if bytes[colon] != b':' {
+            return start;
+        }
+        let Some(separator) = previous_code(source, mask, colon) else {
+            return start;
+        };
+        if bytes[separator] != b':' {
+            return start;
+        }
+        let Some(segment_end) = previous_code(source, mask, separator) else {
+            return start;
+        };
+        if !identifier_byte(bytes[segment_end]) {
+            return start;
+        }
+        let mut segment_start = segment_end;
+        while segment_start > 0
+            && mask[segment_start - 1]
+            && identifier_byte(bytes[segment_start - 1])
+        {
+            segment_start -= 1;
+        }
+        start = segment_start;
+    }
+}
+
+/// Offsets of `ThreadState::Blocked*` paths that sit on the right-hand side of
+/// an assignment. `code_offsets` is a substring match, so `Blocked`,
+/// `BlockedOnIO`, `BlockedOnSignal`, `BlockedOnChildExit` and `BlockedOnTimer`
+/// are all covered by one needle, and `path_expression_start` covers the
+/// fully qualified spelling. Comparisons (`==`, `!=`, `<=`, `>=`), `matches!`
+/// arms and call arguments are excluded by construction — the census is the
+/// class of *publications*, not of mentions.
+fn blocked_state_publication_offsets(source: &str, mask: &[bool]) -> Vec<usize> {
+    let bytes = source.as_bytes();
+    code_offsets(source, mask, "ThreadState::Blocked")
+        .into_iter()
+        .filter(|offset| {
+            let start = path_expression_start(source, mask, *offset);
+            let Some(equals) = previous_code(source, mask, start) else {
+                return false;
+            };
+            if bytes[equals] != b'=' {
+                return false;
+            }
+            previous_code(source, mask, equals)
+                .is_none_or(|before| !matches!(bytes[before], b'=' | b'!' | b'<' | b'>'))
+        })
+        .collect()
+}
+
+fn validate_blocked_state_publications(sources: &[(String, String)]) -> Result<(), Vec<String>> {
+    validate_census(
+        &census(sources, blocked_state_publication_offsets),
+        BLOCKED_STATE_PUBLICATIONS,
+    )
+}
+
+/// Whether a rendered item path names a test fixture, judged by shape: one of
+/// the `#[cfg(...)]` attributes carried in the path mentions a test
+/// configuration (`test`, `all(test,…)`, `feature=boot_tests`). Never a list of
+/// fixture names.
+fn item_path_is_test_fixture(item: &str) -> bool {
+    let mut cursor = 0usize;
+    while let Some(relative) = item[cursor..].find("#[cfg(") {
+        let start = cursor + relative;
+        let Some(length) = item[start..].find(']') else {
+            return false;
+        };
+        if item[start..start + length].contains("test") {
+            return true;
+        }
+        cursor = start + length + 1;
+    }
+    false
+}
+
+/// The innermost function name in a rendered item path, or `None` when the path
+/// names no function at all (in which case the family predicate fails closed).
+fn item_path_function_name(item: &str) -> Option<&str> {
+    let start = item.rfind("fn ")? + "fn ".len();
+    let end = item[start..]
+        .find(|character: char| !(character == '_' || character.is_ascii_alphanumeric()))
+        .map_or(item.len(), |offset| start + offset);
+    (end > start).then(|| &item[start..end])
+}
+
+/// The derived rule over census A's own rows: every production publication of a
+/// blocked state must live inside a blocking-family primitive. This sees the
+/// *class* — a new direct write anywhere under `kernel/src`, under any name and
+/// in any file, fires it — which `BLOCKING_NAME_PREFIXES` alone cannot do,
+/// because that census only sees definitions that already carry a family name.
+/// Test fixtures are exempt from the naming rule but stay pinned by census A, so
+/// a new fixture is still re-anchored deliberately.
+fn validate_blocked_state_publication_family(
+    sources: &[(String, String)],
+) -> Result<(), Vec<String>> {
+    let mut failures = Vec::new();
+    for ((path, item), count) in census(sources, blocked_state_publication_offsets) {
+        if item_path_is_test_fixture(&item) {
+            continue;
+        }
+        let in_family = item_path_function_name(&item).is_some_and(|name| {
             BLOCKING_NAME_PREFIXES
                 .iter()
-                .flat_map(|prefix| {
-                    definition_prefix_offsets(source, mask, prefix)
-                        .into_iter()
-                        .filter_map(|(keyword, brace)| {
-                            preceded_by_keyword(source, mask, keyword, "pub").then_some(brace)
-                        })
-                })
-                .collect()
-        }),
-        BLOCKING_PRIMITIVES,
+                .any(|prefix| name.starts_with(prefix))
+        });
+        if !in_family {
+            failures.push(format!(
+                "{path} :: {item}  ({count} blocked-state publication(s) outside the blocking-primitive family)"
+            ));
+        }
+    }
+    failures.is_empty().then_some(()).ok_or(failures)
+}
+
+/// Stores into a `state` *field* whose right-hand side does not begin with a
+/// path. That is the laundering shape `thread.state = state;`, which census A
+/// cannot see because no `ThreadState::` token appears at the store itself.
+/// Path-valued stores (`conn.state = TcpState::Established`,
+/// `self.state = ProcessState::Running`) are excluded by construction rather
+/// than by naming the modules they live in.
+fn opaque_thread_state_store_offsets(source: &str, mask: &[bool]) -> Vec<usize> {
+    let bytes = source.as_bytes();
+    assignment_offsets(source, mask, "state")
+        .into_iter()
+        .filter(|offset| {
+            // A field store, not a local binding: `receiver.state = …`. The
+            // receiver spelling is free, and a range expression (`..state`) is
+            // excluded by the second byte test.
+            let Some(dot) = previous_code(source, mask, *offset) else {
+                return false;
+            };
+            bytes[dot] == b'.'
+                && previous_code(source, mask, dot).is_some_and(|before| bytes[before] != b'.')
+        })
+        .filter(|offset| {
+            let Some(operator) = next_code(source, mask, offset + "state".len()) else {
+                return false;
+            };
+            let equals = if bytes[operator] == b'=' {
+                operator
+            } else {
+                match next_code(source, mask, operator + 1) {
+                    Some(equals) => equals,
+                    None => return false,
+                }
+            };
+            let Some(start) = next_code(source, mask, equals + 1) else {
+                return false;
+            };
+            let mut cursor = start;
+            while cursor < bytes.len()
+                && mask[cursor]
+                && (identifier_byte(bytes[cursor]) || bytes[cursor] == b':')
+            {
+                cursor += 1;
+            }
+            !source[start..cursor].contains("::")
+        })
+        .collect()
+}
+
+fn validate_opaque_thread_state_stores(
+    sources: &[(String, String)],
+) -> Result<(), Vec<String>> {
+    validate_census(
+        &census(sources, opaque_thread_state_store_offsets),
+        OPAQUE_THREAD_STATE_STORES,
     )
 }
 
@@ -3637,14 +3858,21 @@ fn validate_futex_queue_value_type(sources: &[(String, String)]) -> Result<(), V
     failures.is_empty().then_some(()).ok_or(failures)
 }
 
-fn sleeping_publication_names() -> [&'static str; 6] {
+/// The publication primitives whose callers owe preempt discipline. The former
+/// `publish_current_io_wait_state` entry is gone with the wrapper it named: its
+/// only call site, `WaitQueueHead::prepare_to_wait`, now reaches the same
+/// publication through `block_current_for_io_with_timeout`, which is already
+/// listed here — so the census this drives is unchanged, not diminished. The
+/// renamed private publisher `block_current_for_io_publish` is deliberately not
+/// listed: it is private to `scheduler.rs`, which these sources do not include,
+/// so an entry for it would match nothing.
+fn sleeping_publication_names() -> [&'static str; 5] {
     [
         "block_current_for_timer",
         "block_current_for_io",
         "block_current_for_io_with_timeout",
         "prepare_to_wait",
         "prepare_to_wait_checked",
-        "publish_current_io_wait_state",
     ]
 }
 
@@ -6602,6 +6830,79 @@ fn kernel_stack_gate_validator_rejects_a_deleted_pin() {
     assert!(validate_kstack_gate_script_pins(&deleted_pin).is_err());
 }
 
+/// The registration ratchet for the blocking-family censuses. A validator that
+/// is defined but never invoked, or an anchor table that has been emptied, is a
+/// ratchet in name only: the mutations it is supposed to catch pass silently.
+/// Deleting any of these four `record(...)` calls from
+/// `v3_structural_closures_are_exact`, or emptying either new anchor table,
+/// reddens this test — which is what makes those delete-mutations detectable.
+#[test]
+fn blocking_family_ratchets_are_registered_and_nonvacuous() {
+    let suite = repo_text("tests/teardown_structure.rs");
+    let body = function_body(&suite, "v3_structural_closures_are_exact");
+    let mask = code_mask(body);
+    for validator in [
+        "validate_blocking_primitives",
+        "validate_blocked_state_publications",
+        "validate_blocked_state_publication_family",
+        "validate_opaque_thread_state_stores",
+    ] {
+        assert_eq!(
+            call_offsets(body, &mask, validator).len(),
+            1,
+            "{validator} must be invoked exactly once from v3_structural_closures_are_exact"
+        );
+    }
+    assert!(!BLOCKING_PRIMITIVES.is_empty());
+    assert!(!BLOCKED_STATE_PUBLICATIONS.is_empty());
+    assert!(!OPAQUE_THREAD_STATE_STORES.is_empty());
+}
+
+/// The visibility widening, proven by contrast rather than asserted. The census
+/// must see a `pub(crate)` family member; the predicate it replaced must not.
+/// Restoring the `pub` filter therefore reddens this test, and the inventory row
+/// it used to hide is pinned here by name.
+#[test]
+fn blocking_primitive_census_sees_pub_crate_members() {
+    let sources = rust_sources_below("kernel/src");
+
+    assert!(
+        BLOCKING_PRIMITIVES.iter().any(|(path, item, _)| {
+            *path == "kernel/src/task/waitqueue.rs"
+                && *item == "impl WaitQueueHead::fn prepare_to_wait_checked"
+        }),
+        "the pub(crate) member the visibility filter hid must be in the inventory"
+    );
+
+    let probe = with_synthetic_source(
+        &sources,
+        "kernel/src/task/synthetic_pub_crate_blocking.rs",
+        "pub(crate) fn block_current_probe() {}",
+    );
+    let anchor = (
+        "kernel/src/task/synthetic_pub_crate_blocking.rs".to_owned(),
+        "fn block_current_probe".to_owned(),
+    );
+
+    // The predicate that used to gate the census, kept only as the control arm:
+    // the token before `fn` in `pub(crate) fn` is `)`, so the probe is invisible.
+    let visibility_filtered = census(&probe, |source, mask| {
+        BLOCKING_NAME_PREFIXES
+            .iter()
+            .flat_map(|prefix| {
+                definition_prefix_offsets(source, mask, prefix)
+                    .into_iter()
+                    .filter_map(|(keyword, brace)| {
+                        preceded_by_keyword(source, mask, keyword, "pub").then_some(brace)
+                    })
+            })
+            .collect()
+    });
+    assert!(!visibility_filtered.contains_key(&anchor));
+    assert!(census(&probe, blocking_primitive_offsets).contains_key(&anchor));
+    assert!(validate_blocking_primitives(&probe).is_err());
+}
+
 #[test]
 fn v3_structural_closures_are_exact() {
     let sources = rust_sources_below("kernel/src");
@@ -6613,8 +6914,23 @@ fn v3_structural_closures_are_exact() {
     );
     record(
         &mut failures,
-        "the nine P0 blocking primitives changed",
+        "the P0 blocking-primitive inventory changed",
         validate_blocking_primitives(&sources),
+    );
+    record(
+        &mut failures,
+        "blocked-state publications changed",
+        validate_blocked_state_publications(&sources),
+    );
+    record(
+        &mut failures,
+        "a blocked state is published outside the blocking-primitive family",
+        validate_blocked_state_publication_family(&sources),
+    );
+    record(
+        &mut failures,
+        "opaque thread-state stores changed",
+        validate_opaque_thread_state_stores(&sources),
     );
     record(
         &mut failures,
@@ -8096,6 +8412,76 @@ fn deliberately_broken_variants_fail_the_ratchet() {
         "pub fn block_current_probe(saved_regs: [u64; 32]) { let _ = saved_regs; }",
     );
     assert!(validate_blocking_primitives(&broken_blocking_family).is_err());
+
+    // A `pub(crate)` family member must be visible to the census. Until the
+    // visibility filter was dropped this probe was invisible, which is how
+    // `WaitQueueHead::prepare_to_wait_checked` stayed out of the inventory.
+    let broken_pub_crate_blocking = with_synthetic_source(
+        &sources,
+        "kernel/src/task/synthetic_pub_crate_blocking.rs",
+        "pub(crate) fn block_current_probe() {}",
+    );
+    assert!(validate_blocking_primitives(&broken_pub_crate_blocking).is_err());
+
+    // A direct blocked-state publication in a new file, under a name outside the
+    // family, must move census A *and* fail the derived family rule.
+    let broken_blocked_publication = with_synthetic_source(
+        &sources,
+        "kernel/src/task/synthetic_blocked_publication.rs",
+        "pub fn park_probe(thread: &mut Thread) { thread.state = ThreadState::Blocked; }",
+    );
+    assert!(validate_blocked_state_publications(&broken_blocked_publication).is_err());
+    assert!(validate_blocked_state_publication_family(&broken_blocked_publication).is_err());
+
+    // The derived rule is the naming rule, not "any new write": the same
+    // publication inside a family-named item passes it while still moving census
+    // A. Without this control the family rule could be vacuously satisfied by
+    // census A's own strictness.
+    let family_named_publication = with_synthetic_source(
+        &sources,
+        "kernel/src/task/synthetic_family_publication.rs",
+        "pub fn block_current_probe(thread: &mut Thread) { thread.state = ThreadState::Blocked; }",
+    );
+    assert!(validate_blocked_state_publications(&family_named_publication).is_err());
+    assert!(validate_blocked_state_publication_family(&family_named_publication).is_ok());
+
+    // The fully qualified spelling must not escape the census. It does not
+    // carry `=` immediately before the needle, and a mutation reverting
+    // `kthread_park` to its inline write is exactly this shape.
+    let broken_qualified_publication = with_synthetic_source(
+        &sources,
+        "kernel/src/task/synthetic_qualified_publication.rs",
+        "pub fn park_probe(thread: &mut Thread) { thread.state = crate::task::thread::ThreadState::Blocked; }",
+    );
+    assert!(validate_blocked_state_publications(&broken_qualified_publication).is_err());
+    assert!(validate_blocked_state_publication_family(&broken_qualified_publication).is_err());
+
+    // …and the qualified comparison still must not be read as a publication.
+    let qualified_comparison = with_synthetic_source(
+        &sources,
+        "kernel/src/task/synthetic_qualified_comparison.rs",
+        "pub fn is_parked(thread: &Thread) -> bool { thread.state == crate::task::thread::ThreadState::Blocked }",
+    );
+    assert!(validate_blocked_state_publications(&qualified_comparison).is_ok());
+
+    // A comparison must not be read as a publication, or census A would be
+    // unreadable and every re-anchor meaningless.
+    let blocked_comparison = with_synthetic_source(
+        &sources,
+        "kernel/src/task/synthetic_blocked_comparison.rs",
+        "pub fn is_parked(thread: &Thread) -> bool { thread.state == ThreadState::Blocked }",
+    );
+    assert!(validate_blocked_state_publications(&blocked_comparison).is_ok());
+
+    // Laundering the value through a binding evades census A by construction and
+    // must be caught by census B.
+    let broken_opaque_store = with_synthetic_source(
+        &sources,
+        "kernel/src/task/synthetic_state_laundering.rs",
+        "pub fn launder(thread: &mut Thread, state: ThreadState) { thread.state = state; }",
+    );
+    assert!(validate_blocked_state_publications(&broken_opaque_store).is_ok());
+    assert!(validate_opaque_thread_state_stores(&broken_opaque_store).is_err());
 
     let broken_group_write = with_synthetic_source(
         &sources,
