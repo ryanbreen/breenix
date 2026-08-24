@@ -118,13 +118,20 @@ is a close.
 
 ### 3.2 What branch (a) does **not** license
 
-- **The #635 bucket is field-keyed, and the live #635 face is not in it.** The bucket keys on
-  `ESR = 0x8600000e` with `FAR == ELR` at a kernel address. The live face documented during PR-A —
-  a corrupted whole context / live `x30` restored by an ordinary `ret` — is invisible to it and
-  lives inside the **census-only** `LR_NONTEXT` signal, which fired **928 lines across 200/200
-  boots** in this very battery. A zero in the bucket is evidence about the specimen family; it is
-  not evidence about the live face, whose producing write is still unpinned. Any closure taken on
-  this data must be scoped to the specimen family and say so.
+- **The #635 bucket sees the live face's fault but not its cause, and 200 boots do not resolve
+  that face's own rate.** The bucket keys on `ESR = 0x8600000e` with `FAR == ELR`, non-zero, at a
+  canonical kernel high-half address. The live face documented during PR-A — a corrupted whole
+  context / live `x30` restored by an ordinary `ret` — faulted at PR-A boot 41 with
+  `FAR = ELR = 0xffff000041139200`, `ESR = 0x8600000e`, which that predicate **matches**: the live
+  face's *fatal expression* is in the bucket and is gate-failing, and this document's earlier draft
+  claiming otherwise was wrong. What is genuinely outside the bucket is the corrupting **write**,
+  which lives in the census-only `LR_NONTEXT` signal — **928 lines across 200/200 boots** in this
+  very battery, a census that cannot separate a benign `save-el1`/`restore-el1` scratch pair from a
+  corrupt one. So the binding limit here is arithmetic, not detector coverage: the 1.5% this table
+  applies to the bucket is the **aggregate** filed rate over both faces, whereas the live face was
+  observed once in PR-A's clean 100-boot `cortex-a72` leg (~1%), for which `P(0 | 1%, 200) = 0.134`
+  — uninformative. Its producing write remains unpinned. Any closure taken on this data must be
+  scoped to the specimen family and say so.
 - **#605 is invisible to this gate** (counter only, no oracle, no bucket; filed at 3–28 events per
   boot on 16/16 boots). 200 green boots say nothing whatsoever about it.
 - **`CTX596` divergence (53/200 boots) and `RET_DISPATCH_REFUSED` (0/200) are reported, not gated.**
@@ -163,7 +170,7 @@ Each line below is an adjudication for someone else to make. This document takes
 | Item | What the data supports | What it does not support |
 |---|---|---|
 | **#606** (8%, boot wedge) | A close-retake. `P(0 \| 8%, 200) = 5.7 × 10⁻⁸`: either the defect was repaired by the #609/#635 work or the filed 8% was badly over-estimated. | Closing it silently. The retake should say which of those two it believes and on what basis. |
-| **#635** | Accepting the **specimen-family** closure — the `ESR 0x8600000e`, `FAR == ELR` bucket at 0/200 with `P(0 \| 1.5%, 200) = 0.049`. | Closing #635 outright. The live corrupted-`x30` face is census-only-visible and unaddressed (§3.2). |
+| **#635** | Accepting the **specimen-family** closure — the `ESR 0x8600000e`, `FAR == ELR` bucket at 0/200 with `P(0 \| 1.5%, 200) = 0.049`. | Closing #635 outright. The live corrupted-`x30` face's fatal expression is bucket-visible, but its producing write is unpinned and its own ~1% rate is unresolved by 200 boots — `P(0 | 1%, 200) = 0.134` (§3.2). |
 | **#641** | Restating the issue at its measured ceiling (~0.33% pooled, 95% upper bound ~1.5%). | A close. `P(0 \| 1%, 200) = 0.134`. |
 | **#576**, **#626** | Carrying forward with the residual written into the issue: `P(0 \| 1.25%, 200) = 0.081` for #576; `P(0 \| 4%, 100 max) = 0.017` for #626 against a point estimate that rests on one observation. | A close for either. |
 | **#599** | Recording this 20/20 on the issue as a first clean re-measurement. | Closing it on one run. A second clean 20 would make the case. |
