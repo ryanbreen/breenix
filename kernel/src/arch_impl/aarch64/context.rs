@@ -23,6 +23,26 @@ pub use crate::task::thread::CpuContext;
 /// - Interrupts should be properly configured
 #[inline(never)]
 pub unsafe fn return_to_userspace(entry: u64, user_sp: u64) -> ! {
+    // Admission. This ERET consumes a caller-produced EL0 resume PC, so it
+    // takes the same window every other EL0 resume-PC consumer takes — the
+    // shared `resume_pc_is_user_dispatchable` predicate, the Rust twin of the
+    // `RESUME_PC_EL0_OK` assembly macro. Fail closed: a PC the predicate
+    // rejects is recorded as a refusal and never ERETed to. The tid is 0
+    // because this path runs before the caller has been dispatched through the
+    // scheduler, and the record must stay lock-free.
+    if !crate::arch_impl::aarch64::context_switch::resume_pc_is_user_dispatchable(entry) {
+        crate::arch_impl::aarch64::context_switch::record_resume_pc_refusal(
+            crate::arch_impl::aarch64::context_switch::RESUME_PC_SOURCE_EL0_FIRST_ENTRY,
+            0,
+            entry,
+            0,
+            0,
+            user_sp,
+            0,
+        );
+        panic!("first-entry resume PC {entry:#x} failed EL0 admission");
+    }
+
     asm!(
         // Set up ELR_EL1 (return address)
         "msr elr_el1, {entry}",
@@ -89,7 +109,10 @@ pub unsafe fn return_to_userspace(entry: u64, user_sp: u64) -> ! {
         "mov x29, #0",
         "mov x30, #0",
 
-        // Exception return - jumps to EL0
+        // Exception return - jumps to EL0.
+        // RESUME_PC_ERET_ADMITTED: `entry` passed the shared
+        // `resume_pc_is_user_dispatchable` window above, and the refusal arm
+        // panics rather than reaching this instruction.
         "eret",
         entry = in(reg) entry,
         user_sp = in(reg) user_sp,

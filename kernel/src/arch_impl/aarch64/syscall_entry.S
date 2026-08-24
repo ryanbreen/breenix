@@ -29,7 +29,6 @@
 
 .section .text.syscall
 .global syscall_entry_from_el0
-.global syscall_return_to_userspace_aarch64
 .global check_signals_on_syscall_return
 
 /* External Rust functions */
@@ -443,122 +442,13 @@ syscall_entry_from_el0:
     mrs x0, tpidr_el1
     ldr x0, [x0, #96]          /* x0 = saved frame.x0 */
 
+    /*
+     * RESUME_PC_ERET_ADMITTED: frame.elr reached ELR_EL1 through the
+     * RESUME_PC_EL1_OK / RESUME_PC_EL0_OK arms of this path, whose refusal
+     * arm publishes a RESUME_PC_RECORD and redirects.
+     */
     eret
 
     /* Should never reach here - debug marker */
     mov x0, #0xDEAD
-    b .
-
-
-/*
- * syscall_return_to_userspace_aarch64
- *
- * Used when starting a new userspace thread (first entry to userspace).
- * This sets up a minimal exception frame and ERETs to userspace.
- *
- * Arguments:
- *   x0 = user entry point (ELR_EL1)
- *   x1 = user stack pointer (SP_EL0)
- *   x2 = user PSTATE/flags (SPSR_EL1)
- */
-syscall_return_to_userspace_aarch64:
-    /* Disable interrupts */
-    msr daifset, #0xf
-
-    /* Set up return state */
-    msr elr_el1, x0             /* Entry point */
-    msr sp_el0, x1              /* User stack */
-    msr spsr_el1, x2            /* User PSTATE (EL0, interrupts enabled) */
-
-    /*
-     * Check for TTBR0 switch (process page table).
-     */
-    mrs x9, tpidr_el1
-    cbz x9, .Lfirst_entry_no_ttbr
-
-    ldr x10, [x9, #64]          /* next_cr3 offset = 64 */
-    cbz x10, .Lfirst_entry_restore_ttbr
-
-    /* Clear next_cr3 and switch with full TLB invalidation */
-    str xzr, [x9, #64]
-    dsb ishst
-    msr ttbr0_el1, x10
-    isb
-    tlbi vmalle1is
-    dsb ish
-    isb
-    b .Lfirst_entry_after_ttbr
-
-.Lfirst_entry_restore_ttbr:
-    /* Try saved process TTBR0 */
-    ldr x10, [x9, #80]
-    cbz x10, .Lfirst_entry_after_ttbr
-    dsb ishst
-    msr ttbr0_el1, x10
-    isb
-    tlbi vmalle1is
-    dsb ish
-    isb
-
-.Lfirst_entry_after_ttbr:
-.Lfirst_entry_no_ttbr:
-
-    /*
-     * Set SP to this thread's kernel_stack_top so that subsequent
-     * exceptions from EL0 (timer IRQs, syscalls) use the correct
-     * kernel stack instead of the stale boot stack.
-     *
-     * Without this, SP_EL1 retains whatever value it had before
-     * this function was called (typically the boot stack from
-     * kernel_main), so the first timer IRQ from userspace would
-     * push its exception frame on the wrong stack.
-     */
-    mrs x9, tpidr_el1
-    cbz x9, .Lskip_sp_fix
-    ldr x10, [x9, #16]          /* kernel_stack_top (per-CPU offset 16) */
-    cbz x10, .Lskip_sp_fix
-    mov sp, x10
-.Lskip_sp_fix:
-
-    /*
-     * Clear all registers to prevent information leaks.
-     * x0 will be used for initial return value (0).
-     */
-    mov x0, #0
-    mov x1, #0
-    mov x2, #0
-    mov x3, #0
-    mov x4, #0
-    mov x5, #0
-    mov x6, #0
-    mov x7, #0
-    mov x8, #0
-    mov x9, #0
-    mov x10, #0
-    mov x11, #0
-    mov x12, #0
-    mov x13, #0
-    mov x14, #0
-    mov x15, #0
-    mov x16, #0
-    mov x17, #0
-    mov x18, #0
-    mov x19, #0
-    mov x20, #0
-    mov x21, #0
-    mov x22, #0
-    mov x23, #0
-    mov x24, #0
-    mov x25, #0
-    mov x26, #0
-    mov x27, #0
-    mov x28, #0
-    mov x29, #0
-    mov x30, #0
-
-    /* Return to userspace */
-    eret
-
-    /* Should never reach here */
-    mov x0, #0xCC
     b .

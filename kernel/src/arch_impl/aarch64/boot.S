@@ -129,7 +129,10 @@ drop_to_el1:
     adr x0, el1_init
     msr elr_el2, x0
 
-    // Return to EL1
+    // Return to EL1.
+    // RESUME_PC_ERET_EXEMPT: consumes no stored resume PC. ELR_EL2 was just
+    // loaded from `adr el1_init`, a link-time constant in this file, so there
+    // is no value here for a producer to corrupt and nothing to admit.
     eret
 
 el1_init:
@@ -618,6 +621,9 @@ sync_exception_handler:
     mrs x16, tpidr_el1
     ldr x16, [x16, #96]      // x16 = saved frame.x16
 
+    // RESUME_PC_ERET_ADMITTED: frame.elr reached ELR_EL1 through the
+    // RESUME_PC_EL1_OK / RESUME_PC_EL0_OK arms of this handler, whose refusal
+    // path publishes a RESUME_PC_RECORD and redirects.
     eret
 
 irq_handler:
@@ -811,6 +817,9 @@ irq_handler:
     mrs x16, tpidr_el1
     ldr x16, [x16, #96]      // x16 = saved frame.x16
 
+    // RESUME_PC_ERET_ADMITTED: frame.elr reached ELR_EL1 through the
+    // RESUME_PC_EL1_OK / RESUME_PC_EL0_OK arms of this handler, whose refusal
+    // path publishes a RESUME_PC_RECORD and redirects.
     eret
 
 50:
@@ -840,6 +849,13 @@ irq_handler:
     ldp x28, x29, [sp, #224]
     ldr x30, [sp, #240]
     add sp, sp, #272          // Restore SP (undo the sub at entry)
+    // RESUME_PC_ERET_EXEMPT: issue #643 site 1, the tpidr_el1 == 0 early-boot
+    // arm. The refusal protocol IS the per-CPU record: RESUME_PC_RECORD needs a
+    // non-zero tpidr_el1 to publish into, and both redirect targets
+    // (idle_loop_arm64, aarch64_resume_pc_refused_el0) need the scheduler. This
+    // arm runs before either exists, so admitting here means designing an
+    // early-boot refusal path — tracked in #643, not silently absorbed. It is
+    // also not a live carrier: it runs before any thread has a saved resume PC.
     eret
 
 unhandled_exception:
@@ -1107,6 +1123,8 @@ secondary_drop_to_el1:
 
     adr x0, secondary_el1_init
     msr elr_el2, x0
+    // RESUME_PC_ERET_EXEMPT: consumes no stored resume PC. ELR_EL2 was just
+    // loaded from `adr secondary_el1_init`, a link-time constant in this file.
     eret
 
 secondary_hang:

@@ -1447,13 +1447,6 @@ extern "C" {
     #[allow(dead_code)]
     pub fn syscall_entry_from_el0();
 
-    /// Return to userspace for new thread start (defined in syscall_entry.S).
-    /// Arguments:
-    ///   - entry_point: user entry address (ELR_EL1)
-    ///   - stack_ptr: user stack pointer (SP_EL0)
-    ///   - pstate: user PSTATE (SPSR_EL1, typically 0 for EL0t)
-    #[allow(dead_code)]
-    pub fn syscall_return_to_userspace_aarch64(entry_point: u64, stack_ptr: u64, pstate: u64) -> !;
 }
 
 // =============================================================================
