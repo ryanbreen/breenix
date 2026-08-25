@@ -1161,6 +1161,23 @@ fn reclaim_deferred_process_resources_for_pass(my_pass: u32, boot_test_owned: bo
                     == crate::memory::process_memory::RetireProgress::Complete
                 {
                     crate::tracing::providers::teardown::record_reclaim(reclaim.pid);
+                    // P6a retire arm: latch the row's retirement fact. The join
+                    // is NOT installed in this PR - nothing reads the latch and
+                    // no row is removed here, so retention is unchanged.
+                    //
+                    // Lock order: PENDING_PROCESS_RECLAIMS was released with the
+                    // `arch_without_interrupts` closure above, and PM is taken
+                    // and dropped inside this scope, never held across the next
+                    // PENDING acquisition. `live_row_names_root` already takes PM
+                    // one step earlier in this same iteration, so this adds no
+                    // lock-order edge. The window does no destructor work: it
+                    // sets one bool.
+                    {
+                        let mut manager_guard = crate::process::manager();
+                        if let Some(ref mut manager) = *manager_guard {
+                            manager.note_row_retired(crate::process::ProcessId::new(reclaim.pid));
+                        }
+                    }
                 } else {
                     crate::trace_count!(
                         crate::tracing::providers::teardown::PT_RETIRE_BUDGET_REQUEUED

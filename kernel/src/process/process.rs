@@ -62,6 +62,26 @@ pub enum ProcessState {
     Terminated(i32), // exit code
 }
 
+/// Where the row sits in the reap/tombstone lifetime.
+///
+/// P6a deviation **D-1**: `RowState` is a *derived accessor* over the facts the
+/// row already carries — `state`, `reaped` — and never a stored field. A second
+/// stored copy of "has this row terminated" would be a second authority, and
+/// `Process::is_terminated()` (which `ProcessManager::any_live_root_matches`
+/// relies on to keep the two-event join from deadlocking against RootProof) is
+/// itself derived from this accessor, so the two cannot disagree. It also keeps
+/// the join off `OPAQUE_THREAD_STATE_STORES`: there is no `row.state = computed`
+/// store for a raw write to launder.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RowState {
+    /// The row has not terminated.
+    Live,
+    /// Terminated, not yet reaped: `waitpid` must still be able to collect it.
+    Zombie,
+    /// Terminated and reaped: invisible to every live-process query.
+    Tombstone,
+}
+
 /// Phase-2 exit-obligation state. The PM lock is the sole serializer for
 /// every transition; later teardown phases extend this exact shape rather
 /// than upgrading a boolean in place.
@@ -211,6 +231,17 @@ pub struct Process {
     /// Exit code (if terminated)
     pub exit_code: Option<i32>,
 
+    /// The reap half of the two-event join: `(reaper, status)`, written exactly
+    /// once by `claim_reap` under the process-manager lock. Deliberately private
+    /// — the only writer is the join's own claim, so no raw field store can
+    /// launder a row into a tombstone.
+    reaped: Option<(ProcessId, i32)>,
+
+    /// The retirement half of the two-event join, latched exactly once by
+    /// `mark_retired` when this row's deferred resources have been reclaimed.
+    /// Private for the same reason `reaped` is.
+    retired: bool,
+
     /// Durable P2 notification state, serialized exclusively by the PM lock.
     pub(crate) exit_notifications: ExitNotificationObligations,
 
@@ -322,6 +353,8 @@ impl Process {
             parent: None,
             children: Vec::new(),
             exit_code: None,
+            reaped: None,
+            retired: false,
             exit_notifications: ExitNotificationObligations::new(),
             memory_usage: MemoryUsage::default(),
             stack: None,
@@ -638,9 +671,56 @@ impl Process {
         let _ = self.drain_old_page_tables_bounded(&mut budget);
     }
 
-    /// Check if process is terminated
+    /// The row's lifetime state. **The single authority** for P6a: every other
+    /// predicate on this file derives from it rather than re-reading `state`.
+    pub fn row_state(&self) -> RowState {
+        match self.state {
+            ProcessState::Creating
+            | ProcessState::Ready
+            | ProcessState::Running
+            | ProcessState::Blocked => RowState::Live,
+            ProcessState::Terminated(_) => match self.reaped {
+                None => RowState::Zombie,
+                Some(_) => RowState::Tombstone,
+            },
+        }
+    }
+
+    /// Check if process is terminated.
+    ///
+    /// Derived from `row_state()`, and **a tombstone is terminated**: the
+    /// `!is_terminated()` filter in `any_live_root_matches` is what keeps a
+    /// reaped-but-unretired row from blocking its own retirement. Inverting this
+    /// reintroduces the retire-waits-for-row / row-waits-for-retire cycle.
     pub fn is_terminated(&self) -> bool {
-        matches!(self.state, ProcessState::Terminated(_))
+        matches!(self.row_state(), RowState::Zombie | RowState::Tombstone)
+    }
+
+    /// A reaped row. Live-process queries must not see it.
+    pub fn is_tombstone(&self) -> bool {
+        matches!(self.row_state(), RowState::Tombstone)
+    }
+
+    /// Reap arm of the two-event join: record `(reaper, status)` exactly once.
+    ///
+    /// Write-once by construction — a second reaper of the same row reads the
+    /// existing claim and changes nothing — and refused on a row that has not
+    /// terminated, so no live row can be tombstoned by an out-of-order claim.
+    pub(crate) fn claim_reap(&mut self, reaper: ProcessId, status: i32) {
+        if self.reaped.is_some() || !self.is_terminated() {
+            return;
+        }
+        self.reaped = Some((reaper, status));
+    }
+
+    /// Retirement arm of the two-event join: latch that this row's deferred
+    /// resources have been reclaimed. Write-once, and refused on a row that has
+    /// not terminated so a receipt naming a still-live row cannot latch it.
+    pub(crate) fn mark_retired(&mut self) {
+        if self.retired || !self.is_terminated() {
+            return;
+        }
+        self.retired = true;
     }
 
     /// Add a child process

@@ -2852,7 +2852,13 @@ pub fn sys_waitpid(pid: i64, status_ptr: u64, options: u32) -> SyscallResult {
             };
 
             if let Some((child_pid, exit_code)) = child_terminated {
-                return complete_wait(child_pid, exit_code, status_ptr, &children_copy);
+                return complete_wait(
+                    child_pid,
+                    exit_code,
+                    status_ptr,
+                    &children_copy,
+                    current_pid,
+                );
             }
 
             // Child exists but not terminated
@@ -2888,6 +2894,7 @@ pub fn sys_waitpid(pid: i64, status_ptr: u64, options: u32) -> SyscallResult {
                                 exit_code,
                                 status_ptr,
                                 &children_copy,
+                                current_pid,
                             );
                         }
                     }
@@ -2931,6 +2938,7 @@ pub fn sys_waitpid(pid: i64, status_ptr: u64, options: u32) -> SyscallResult {
                                 exit_code,
                                 status_ptr,
                                 &children_copy,
+                                current_pid,
                             );
                         }
                     }
@@ -2964,7 +2972,13 @@ pub fn sys_waitpid(pid: i64, status_ptr: u64, options: u32) -> SyscallResult {
             };
 
             if let Some((child_pid, exit_code)) = terminated_child {
-                return complete_wait(child_pid, exit_code, status_ptr, &children_copy);
+                return complete_wait(
+                    child_pid,
+                    exit_code,
+                    status_ptr,
+                    &children_copy,
+                    current_pid,
+                );
             }
 
             // No terminated children yet
@@ -2998,6 +3012,7 @@ pub fn sys_waitpid(pid: i64, status_ptr: u64, options: u32) -> SyscallResult {
                                     exit_code,
                                     status_ptr,
                                     &children_copy,
+                                    current_pid,
                                 );
                             }
                         }
@@ -3044,6 +3059,7 @@ pub fn sys_waitpid(pid: i64, status_ptr: u64, options: u32) -> SyscallResult {
                                     exit_code,
                                     status_ptr,
                                     &children_copy,
+                                    current_pid,
                                 );
                             }
                         }
@@ -3067,6 +3083,7 @@ fn complete_wait(
     exit_code: i32,
     status_ptr: u64,
     _children: &[crate::process::ProcessId],
+    reaper: crate::process::ProcessId,
 ) -> SyscallResult {
     // Encode exit status in wstatus format.
     // The wstatus encoding distinguishes between:
@@ -3126,6 +3143,11 @@ fn complete_wait(
                     child_pid.as_u64()
                 );
             }
+            // P6a reap arm: record the claim in the same PM acquisition that
+            // removes the row. The join is NOT installed in this PR - the
+            // removal below is unchanged and unconditional, so retention is
+            // byte-for-byte what it was.
+            manager.claim_reap(child_pid, reaper, exit_code);
             manager.remove_process(child_pid);
             log::debug!(
                 "complete_wait: Reaped process {} from process table",

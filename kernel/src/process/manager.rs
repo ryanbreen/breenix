@@ -53,6 +53,44 @@ impl InitPublication {
     }
 }
 
+/// The two keyed-lookup predicates of the P6a reap/tombstone lifetime, as an
+/// extension trait on the row map itself.
+///
+/// They are methods on the map rather than on `ProcessManager` on purpose: a
+/// `&mut self` accessor would borrow the whole manager and force every call site
+/// that also touches `ready_queue` or `current_pid` to be restructured, which is
+/// exactly the kind of collateral a "no behaviour change" migration must not
+/// carry. Borrowing stays field-scoped, so the migration is a spelling change.
+///
+/// `live_row`/`live_row_mut` are the migration target for every keyed lookup:
+/// **tombstone-blind, zombie-VISIBLE**. Keying on `is_tombstone()` rather than on
+/// liveness is load-bearing — `waitpid`'s own scan and the repeat-exit detector
+/// both have to keep seeing `Terminated` rows, and a liveness predicate would
+/// make every child unreapable.
+///
+/// `row_including_tombstones_mut` is the deliberately-named tombstone-VISIBLE
+/// accessor. Its call sites are the two-event join's own writers and nothing
+/// else; `tests/teardown_structure.rs` pins them by census shape.
+trait ProcessRowMap {
+    fn live_row(&self, pid: &ProcessId) -> Option<&Process>;
+    fn live_row_mut(&mut self, pid: &ProcessId) -> Option<&mut Process>;
+    fn row_including_tombstones_mut(&mut self, pid: &ProcessId) -> Option<&mut Process>;
+}
+
+impl ProcessRowMap for BTreeMap<ProcessId, Process> {
+    fn live_row(&self, pid: &ProcessId) -> Option<&Process> {
+        self.get(pid).filter(|row| !row.is_tombstone())
+    }
+
+    fn live_row_mut(&mut self, pid: &ProcessId) -> Option<&mut Process> {
+        self.get_mut(pid).filter(|row| !row.is_tombstone())
+    }
+
+    fn row_including_tombstones_mut(&mut self, pid: &ProcessId) -> Option<&mut Process> {
+        self.get_mut(pid)
+    }
+}
+
 /// Process manager handles all processes in the system
 pub struct ProcessManager {
     /// All processes indexed by PID
@@ -158,6 +196,11 @@ impl ProcessManager {
         }
     }
 
+    /// PID allocation consults no row: `next_pid` is a bare monotonic counter and
+    /// **PID reuse does not exist on this tree**. There is therefore no keyed
+    /// lookup on the allocation path for the tombstone predicate to gate, and
+    /// DESIGN's "PID reuse is delayed until the tombstone is removed" describes a
+    /// mechanism the tree does not have. Declared, not silently skipped (C6).
     fn allocate_ordinary_pid(&self) -> ProcessId {
         let raw = self.next_pid.fetch_add(1, Ordering::SeqCst);
         crate::tracing::providers::teardown::record_ordinary_pid_allocation(raw, RESERVED_INIT_PID);
@@ -177,7 +220,7 @@ impl ProcessManager {
         // A raw removal here would leave `designated_init` naming a row that no longer exists.
         let main_thread = self
             .processes
-            .get_mut(&provisional_pid)
+            .live_row_mut(&provisional_pid)
             .and_then(|process| process.main_thread.as_mut())
             .map(|main_thread| Box::new(main_thread.publish_to_scheduler()));
         let Some(main_thread) = main_thread else {
@@ -217,7 +260,7 @@ impl ProcessManager {
         }
         if self
             .processes
-            .get(&pid)
+            .live_row(&pid)
             .map(|process| process.is_terminated())
             .unwrap_or(true)
         {
@@ -266,11 +309,11 @@ impl ProcessManager {
         }
 
         for child in children {
-            if let Some(process) = self.processes.get_mut(child) {
+            if let Some(process) = self.processes.live_row_mut(child) {
                 process.parent = Some(init);
             }
         }
-        if let Some(process) = self.processes.get_mut(&init) {
+        if let Some(process) = self.processes.live_row_mut(&init) {
             process.children.extend_from_slice(children);
         }
         crate::tracing::providers::teardown::record_init_reparent(children.len(), true);
@@ -988,7 +1031,7 @@ impl ProcessManager {
         let (parent_pgid, parent_sid, parent_cwd) = {
             let parent = self
                 .processes
-                .get(&parent_pid)
+                .live_row(&parent_pid)
                 .ok_or("Parent process not found")?;
             (parent.pgid, parent.sid, parent.cwd.clone())
         };
@@ -997,7 +1040,7 @@ impl ProcessManager {
         let child_pid = self.create_process_with_argv(name, elf_data, argv)?;
 
         // Set up parent-child relationship and inherit attributes
-        if let Some(child) = self.processes.get_mut(&child_pid) {
+        if let Some(child) = self.processes.live_row_mut(&child_pid) {
             child.parent = Some(parent_pid);
             child.pgid = parent_pgid;
             child.sid = parent_sid;
@@ -1005,7 +1048,7 @@ impl ProcessManager {
         }
 
         // Add child to parent's children list
-        if let Some(parent) = self.processes.get_mut(&parent_pid) {
+        if let Some(parent) = self.processes.live_row_mut(&parent_pid) {
             parent.children.push(child_pid);
         }
 
@@ -1308,7 +1351,7 @@ impl ProcessManager {
         self.current_pid = Some(pid);
 
         // Update process state
-        if let Some(process) = self.processes.get_mut(&pid) {
+        if let Some(process) = self.processes.live_row_mut(&pid) {
             process.set_running();
         }
     }
@@ -1325,7 +1368,7 @@ impl ProcessManager {
     pub fn admit_clone_into(&self, parent_pid: ProcessId) -> bool {
         let admitted = self
             .processes
-            .get(&parent_pid)
+            .live_row(&parent_pid)
             .map(Process::admits_clone)
             .unwrap_or(false);
         crate::tracing::providers::teardown::record_clone_admission(admitted);
@@ -1335,6 +1378,34 @@ impl ProcessManager {
     /// Insert a fully-constructed process into the manager
     pub fn insert_process(&mut self, pid: ProcessId, process: Process) {
         self.processes.insert(pid, process);
+    }
+
+    /// Reap arm of the two-event join: record that `reaper` collected `status`
+    /// for `pid`.
+    ///
+    /// **The join is not installed in this PR** — the reap still removes the row
+    /// unconditionally through `remove_process` in the same PM acquisition, so
+    /// retention is byte-for-byte what it was. This writes the fact the join will
+    /// read. It is a tombstone-VISIBLE reader by construction: the row it claims
+    /// is the one it is turning into a tombstone, and a second reaper of the same
+    /// row must see the existing claim rather than a `None` from a blind lookup.
+    pub fn claim_reap(&mut self, pid: ProcessId, reaper: ProcessId, status: i32) {
+        if let Some(row) = self.processes.row_including_tombstones_mut(&pid) {
+            row.claim_reap(reaper, status);
+        }
+    }
+
+    /// Retirement arm of the two-event join: latch that `pid`'s deferred
+    /// resources have been reclaimed.
+    ///
+    /// Tombstone-VISIBLE: by the time a receipt retires, the row may already have
+    /// been reaped, and a blind lookup would silently drop the latch. `Process`
+    /// refuses the latch on a row that has not terminated, so a receipt naming a
+    /// live row cannot mark it retired.
+    pub fn note_row_retired(&mut self, pid: ProcessId) {
+        if let Some(row) = self.processes.row_including_tombstones_mut(&pid) {
+            row.mark_retired();
+        }
     }
 
     /// Remove a terminated process from the process table (reap).
@@ -1352,13 +1423,13 @@ impl ProcessManager {
     /// Get a reference to a process
     #[allow(dead_code)]
     pub fn get_process(&self, pid: ProcessId) -> Option<&Process> {
-        self.processes.get(&pid)
+        self.processes.live_row(&pid)
     }
 
     /// Get a mutable reference to a process
     #[allow(dead_code)]
     pub fn get_process_mut(&mut self, pid: ProcessId) -> Option<&mut Process> {
-        self.processes.get_mut(&pid)
+        self.processes.live_row_mut(&pid)
     }
 
     /// Locked half of process exit. The sole caller is
@@ -1369,17 +1440,17 @@ impl ProcessManager {
         pid: ProcessId,
         exit_code: i32,
     ) -> Option<super::RetirementReceipt> {
-        let already_terminated = match self.processes.get(&pid) {
+        let already_terminated = match self.processes.live_row(&pid) {
             Some(process) => process.is_terminated(),
             None => return None,
         };
         crate::tracing::providers::teardown::record_exit_request(already_terminated);
 
         // Get parent PID before we borrow the process mutably
-        let parent_pid = self.processes.get(&pid).and_then(|p| p.parent);
+        let parent_pid = self.processes.live_row(&pid).and_then(|p| p.parent);
 
         let mut receipt = None;
-        if let Some(process) = self.processes.get_mut(&pid) {
+        if let Some(process) = self.processes.live_row_mut(&pid) {
             if !already_terminated {
                 process.exit_notifications.seed();
             }
@@ -1423,18 +1494,18 @@ impl ProcessManager {
 
         let children: Vec<ProcessId> = self
             .processes
-            .get(&pid)
+            .live_row(&pid)
             .map(|p| p.children.clone())
             .unwrap_or_default();
         if self.reparent_children_to_init(pid, &children) {
-            if let Some(exiting) = self.processes.get_mut(&pid) {
+            if let Some(exiting) = self.processes.live_row_mut(&pid) {
                 exiting.children.clear();
             }
         }
 
         // Class-A SIGCHLD obligation: perform the PM-owned effect and mark it
         // completed in this same acquisition. Repeat exit paths do neither.
-        let sigchld_pending = self.processes.get(&pid).is_some_and(|process| {
+        let sigchld_pending = self.processes.live_row(&pid).is_some_and(|process| {
             matches!(
                 process.exit_notifications.sigchld,
                 super::process::ExitObligationState::Pending
@@ -1442,12 +1513,12 @@ impl ProcessManager {
         });
         if sigchld_pending {
             if let Some(parent_pid) = parent_pid {
-                if let Some(parent_process) = self.processes.get_mut(&parent_pid) {
+                if let Some(parent_process) = self.processes.live_row_mut(&parent_pid) {
                     use crate::signal::constants::SIGCHLD;
                     parent_process.signals.set_pending(SIGCHLD);
                 }
             }
-            if let Some(process) = self.processes.get_mut(&pid) {
+            if let Some(process) = self.processes.live_row_mut(&pid) {
                 process.exit_notifications.complete_sigchld();
             }
         }
@@ -1466,14 +1537,14 @@ impl ProcessManager {
 
             // Update states
             if let Some(old_pid) = self.current_pid {
-                if let Some(old_process) = self.processes.get_mut(&old_pid) {
+                if let Some(old_process) = self.processes.live_row_mut(&old_pid) {
                     if !old_process.is_terminated() {
                         old_process.set_ready();
                     }
                 }
             }
 
-            if let Some(new_process) = self.processes.get_mut(&pid) {
+            if let Some(new_process) = self.processes.live_row_mut(&pid) {
                 new_process.set_running();
             }
 
@@ -1518,11 +1589,17 @@ impl ProcessManager {
         }
     }
 
-    /// Find a process by its main thread ID
+    /// Find a process by its main thread ID.
+    ///
+    /// Tombstone-blind like every other live-process query: a reaped row is a
+    /// stale handle and must not answer a thread lookup.
     pub fn find_process_by_thread(&self, thread_id: u64) -> Option<(ProcessId, &Process)> {
         self.processes
             .iter()
-            .find(|(_, process)| process.main_thread.as_ref().map(|t| t.id) == Some(thread_id))
+            .find(|(_, process)| {
+                !process.is_tombstone()
+                    && process.main_thread.as_ref().map(|t| t.id) == Some(thread_id)
+            })
             .map(|(pid, process)| (*pid, process))
     }
 
@@ -1533,7 +1610,10 @@ impl ProcessManager {
     ) -> Option<(ProcessId, &mut Process)> {
         self.processes
             .iter_mut()
-            .find(|(_, process)| process.main_thread.as_ref().map(|t| t.id) == Some(thread_id))
+            .find(|(_, process)| {
+                !process.is_tombstone()
+                    && process.main_thread.as_ref().map(|t| t.id) == Some(thread_id)
+            })
             .map(|(pid, process)| (*pid, process))
     }
 
@@ -1543,6 +1623,9 @@ impl ProcessManager {
         self.processes
             .iter()
             .find(|(_, process)| {
+                if process.is_tombstone() {
+                    return false;
+                }
                 if let Some(ref pt) = process.page_table {
                     pt.level_4_frame().start_address().as_u64() == cr3
                 } else {
@@ -1560,6 +1643,9 @@ impl ProcessManager {
             .processes
             .iter_mut()
             .find(|(_, process)| {
+                if process.is_tombstone() {
+                    return false;
+                }
                 if let Some(ref pt) = process.page_table {
                     pt.level_4_frame().start_address().as_u64() == cr3
                 } else {
@@ -1636,7 +1722,7 @@ impl ProcessManager {
         ) = {
             let parent = self
                 .processes
-                .get(&parent_pid)
+                .live_row(&parent_pid)
                 .ok_or("Parent process not found")?;
 
             let _parent_thread = parent
@@ -1689,7 +1775,7 @@ impl ProcessManager {
             // Get mutable access to parent's page table for CoW setup
             let parent = self
                 .processes
-                .get_mut(&parent_pid)
+                .live_row_mut(&parent_pid)
                 .ok_or("Parent process not found during CoW setup")?;
             let mut parent_page_table = parent
                 .page_table
@@ -1778,7 +1864,7 @@ impl ProcessManager {
         ) = {
             let parent = self
                 .processes
-                .get(&parent_pid)
+                .live_row(&parent_pid)
                 .ok_or("Parent process not found")?;
 
             let _parent_thread = parent
@@ -1833,7 +1919,7 @@ impl ProcessManager {
             // We temporarily take ownership to modify parent's page flags
             let parent = self
                 .processes
-                .get_mut(&parent_pid)
+                .live_row_mut(&parent_pid)
                 .ok_or("Parent process not found during CoW setup")?;
             let mut parent_page_table = parent
                 .page_table
@@ -1922,7 +2008,7 @@ impl ProcessManager {
         ) = {
             let parent = self
                 .processes
-                .get(&parent_pid)
+                .live_row(&parent_pid)
                 .ok_or("Parent process not found")?;
 
             let parent_thread = parent
@@ -1970,7 +2056,7 @@ impl ProcessManager {
             // Get mutable access to parent's page table for CoW setup
             let parent = self
                 .processes
-                .get_mut(&parent_pid)
+                .live_row_mut(&parent_pid)
                 .ok_or("Parent process not found during CoW setup")?;
             let mut parent_page_table = parent
                 .page_table
@@ -2131,13 +2217,13 @@ impl ProcessManager {
         child_process.set_main_thread(child_thread);
 
         // Inherit parent's user stack bounds for demand-paged growth
-        if let Some(parent) = self.processes.get(&parent_pid) {
+        if let Some(parent) = self.processes.live_row(&parent_pid) {
             child_process.user_stack_top = parent.user_stack_top;
             child_process.user_stack_bottom = parent.user_stack_bottom;
         }
 
         // Copy all other process state (fd_table, signals, verify pgid/sid)
-        if let Some(parent) = self.processes.get(&parent_pid) {
+        if let Some(parent) = self.processes.live_row(&parent_pid) {
             if let Err(e) = super::fork::copy_process_state(parent, &mut child_process) {
                 return Err(e);
             }
@@ -2146,7 +2232,7 @@ impl ProcessManager {
         }
 
         // Add the child to the parent's children list
-        if let Some(parent) = self.processes.get_mut(&parent_pid) {
+        if let Some(parent) = self.processes.live_row_mut(&parent_pid) {
             parent.children.push(child_pid);
         }
 
@@ -2336,14 +2422,14 @@ impl ProcessManager {
         child_process.user_stack_top = {
             let parent = self
                 .processes
-                .get(&parent_pid)
+                .live_row(&parent_pid)
                 .ok_or("Parent process not found for stack bounds")?;
             parent.user_stack_top
         };
         child_process.user_stack_bottom = {
             let parent = self
                 .processes
-                .get(&parent_pid)
+                .live_row(&parent_pid)
                 .ok_or("Parent process not found for stack bounds")?;
             parent.user_stack_bottom
         };
@@ -2353,7 +2439,7 @@ impl ProcessManager {
         // - File descriptor table cloning (with proper pipe refcount handling)
         // - Signal state forking (handlers and mask, NOT pending signals)
         // - Verification of pgid and sid inheritance
-        if let Some(parent) = self.processes.get(&parent_pid) {
+        if let Some(parent) = self.processes.live_row(&parent_pid) {
             if let Err(e) = super::fork::copy_process_state(parent, &mut child_process) {
                 log::error!(
                     "fork: Failed to copy process state from parent {} to child {}: {}",
@@ -2372,7 +2458,7 @@ impl ProcessManager {
         }
 
         // Add the child to the parent's children list
-        if let Some(parent) = self.processes.get_mut(&parent_pid) {
+        if let Some(parent) = self.processes.live_row_mut(&parent_pid) {
             parent.children.push(child_pid);
         }
 
@@ -2403,7 +2489,7 @@ impl ProcessManager {
         // Get the parent process
         let parent = self
             .processes
-            .get(&parent_pid)
+            .live_row(&parent_pid)
             .ok_or("Parent process not found")?;
 
         // Get parent's main thread (used in testing builds for context cloning)
@@ -2477,7 +2563,7 @@ impl ProcessManager {
             // Get mutable access to parent's page table for CoW setup
             let parent_mut = self
                 .processes
-                .get_mut(&parent_pid)
+                .live_row_mut(&parent_pid)
                 .ok_or("Parent process not found during CoW setup")?;
             let mut parent_page_table = parent_mut
                 .page_table
@@ -2623,7 +2709,7 @@ impl ProcessManager {
             {
                 let parent = self
                     .processes
-                    .get(&parent_pid)
+                    .live_row(&parent_pid)
                     .ok_or("Parent process not found for stack bounds")?;
                 child_process.user_stack_top = parent.user_stack_top;
                 child_process.user_stack_bottom = parent.user_stack_bottom;
@@ -2633,7 +2719,7 @@ impl ProcessManager {
             {
                 let parent = self
                     .processes
-                    .get(&parent_pid)
+                    .live_row(&parent_pid)
                     .ok_or("Parent process not found during state copy")?;
                 super::fork::copy_process_state(parent, &mut child_process)?;
             }
@@ -2642,7 +2728,7 @@ impl ProcessManager {
             child_process.set_main_thread(child_thread);
 
             // Add child to parent's children list
-            if let Some(parent) = self.processes.get_mut(&parent_pid) {
+            if let Some(parent) = self.processes.live_row_mut(&parent_pid) {
                 parent.add_child(child_pid);
             }
 
@@ -2700,7 +2786,7 @@ impl ProcessManager {
         // would drop the old Box<ProcessPageTable>, freeing physical memory while CR3 still
         // points to it. The old page table is taken later, after all fallible ops succeed.
         let thread_id = {
-            let process = self.processes.get_mut(&pid).ok_or("Process not found")?;
+            let process = self.processes.live_row_mut(&pid).ok_or("Process not found")?;
             // Drain any pending old page tables from previous exec() calls.
             // By this point, CR3 has definitely switched away from any old tables.
             process.drain_old_page_tables();
@@ -2825,7 +2911,7 @@ impl ProcessManager {
         // All fallible operations have succeeded — now it's safe to take the old page table.
         let process = self
             .processes
-            .get_mut(&pid)
+            .live_row_mut(&pid)
             .ok_or("Process not found during update")?;
         let old_page_table = process.page_table.take();
 
@@ -2976,7 +3062,7 @@ impl ProcessManager {
         // when the process exits.
         if let Some(old_pt) = old_page_table {
             log::info!("exec_process: Deferring old page table cleanup");
-            if let Some(process) = self.processes.get_mut(&pid) {
+            if let Some(process) = self.processes.live_row_mut(&pid) {
                 process.pending_old_page_tables.push(old_pt);
             }
         }
@@ -3052,7 +3138,7 @@ impl ProcessManager {
         // would drop the old Box<ProcessPageTable>, freeing physical memory while CR3 still
         // points to it. The old page table is taken later, after all fallible ops succeed.
         let thread_id = {
-            let process = self.processes.get_mut(&pid).ok_or("Process not found")?;
+            let process = self.processes.live_row_mut(&pid).ok_or("Process not found")?;
             // Drain any pending old page tables from previous exec() calls.
             process.drain_old_page_tables();
             let main_thread = process
@@ -3175,7 +3261,7 @@ impl ProcessManager {
         // All fallible operations have succeeded — now it's safe to take the old page table.
         let process = self
             .processes
-            .get_mut(&pid)
+            .live_row_mut(&pid)
             .ok_or("Process not found during update")?;
         let old_page_table = process.page_table.take();
 
@@ -3267,7 +3353,7 @@ impl ProcessManager {
         // Defer old page table cleanup (see exec_process for rationale)
         if let Some(old_pt) = old_page_table {
             log::info!("exec_process_with_argv: Deferring old page table cleanup");
-            if let Some(process) = self.processes.get_mut(&pid) {
+            if let Some(process) = self.processes.live_row_mut(&pid) {
                 process.pending_old_page_tables.push(old_pt);
             }
         }
@@ -3320,7 +3406,7 @@ impl ProcessManager {
         // would drop the old Box<ProcessPageTable>, freeing physical memory while TTBR0_EL1
         // still points to it. The old page table is taken later, after all fallible ops succeed.
         let (thread_id, old_cr3, thread_group_id) = {
-            let process = self.processes.get(&pid).ok_or("Process not found")?;
+            let process = self.processes.live_row(&pid).ok_or("Process not found")?;
             let old_cr3 = process.cr3_value();
             let thread_group_id = process.thread_group_id.unwrap_or(pid.as_u64());
             let main_thread = process
@@ -3346,7 +3432,7 @@ impl ProcessManager {
         }
 
         {
-            let process = self.processes.get_mut(&pid).ok_or("Process not found")?;
+            let process = self.processes.live_row_mut(&pid).ok_or("Process not found")?;
             // Drain any pending old page tables from previous exec() calls.
             process.drain_old_page_tables();
         }
@@ -3460,7 +3546,7 @@ impl ProcessManager {
         // All fallible operations have succeeded — now it's safe to take the old page table.
         let process = self
             .processes
-            .get_mut(&pid)
+            .live_row_mut(&pid)
             .ok_or("Process not found during update")?;
         let old_page_table = process.page_table.take();
 
@@ -3573,7 +3659,7 @@ impl ProcessManager {
         // Defer old page table cleanup (see exec_process for rationale)
         if let Some(old_pt) = old_page_table {
             log::info!("exec_process_with_argv [ARM64]: Deferring old page table cleanup");
-            if let Some(process) = self.processes.get_mut(&pid) {
+            if let Some(process) = self.processes.live_row_mut(&pid) {
                 process.pending_old_page_tables.push(old_pt);
             }
         }
@@ -3633,7 +3719,7 @@ impl ProcessManager {
         // Keep the live table installed until every fallible construction step
         // has succeeded. A failed exec must leave TTBR0 custody unchanged.
         let (thread_id, old_cr3, thread_group_id) = {
-            let process = self.processes.get(&pid).ok_or("Process not found")?;
+            let process = self.processes.live_row(&pid).ok_or("Process not found")?;
             let old_cr3 = process.cr3_value();
             let thread_group_id = process.thread_group_id.unwrap_or(pid.as_u64());
             let main_thread = process
@@ -3659,7 +3745,7 @@ impl ProcessManager {
         }
 
         {
-            let process = self.processes.get_mut(&pid).ok_or("Process not found")?;
+            let process = self.processes.live_row_mut(&pid).ok_or("Process not found")?;
             process.drain_old_page_tables();
         }
 
@@ -3774,7 +3860,7 @@ impl ProcessManager {
         // address space and transfer the unpublished table into the Process.
         let process = self
             .processes
-            .get_mut(&pid)
+            .live_row_mut(&pid)
             .ok_or("Process not found during update")?;
         let old_page_table = process.page_table.take();
 
@@ -3912,7 +3998,7 @@ impl ProcessManager {
         // Defer old page table cleanup (see exec_process x86_64 for rationale)
         if let Some(old_pt) = old_page_table {
             log::info!("exec_process [ARM64]: Deferring old page table cleanup");
-            if let Some(process) = self.processes.get_mut(&pid) {
+            if let Some(process) = self.processes.live_row_mut(&pid) {
                 process.pending_old_page_tables.push(old_pt);
             }
         }
