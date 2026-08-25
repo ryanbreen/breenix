@@ -1407,7 +1407,12 @@ impl ProcessManager {
     /// here, so the caller runs the `Process` destructor after releasing the (on
     /// aarch64, DAIF-masked) PM guard.
     #[must_use]
-    pub(crate) fn reap_row(&mut self, pid: ProcessId, reaper: ProcessId, status: i32) -> ReapOutcome {
+    pub(crate) fn reap_row(
+        &mut self,
+        pid: ProcessId,
+        reaper: ProcessId,
+        status: i32,
+    ) -> ReapOutcome {
         let Some(row) = self.processes.row_including_tombstones_mut(&pid) else {
             return ReapOutcome::Refused;
         };
