@@ -2103,9 +2103,18 @@ fn validate_init_designation_authority(
 /// never a mutable row *set*). Anything NOT on this list is treated as a row-set mutation, so an
 /// unfamiliar method is red until it is pinned: the defect this census exists for was a second
 /// `self.processes.remove(` site, on `hold_init_publication`'s error path, that no census could see.
+///
+/// P6a delta: the three `ProcessRowMap` predicates join the list. They are keyed
+/// *reads* by construction — each one is a `get`/`get_mut` plus a tombstone
+/// filter, and `keyed_row_lookups_go_through_the_tombstone_predicates` pins
+/// their bodies to exactly that — so admitting them here leaves this census
+/// measuring what it has always measured: mutations of the row *set*.
 const PROCESS_ROW_MAP_READERS: &[&str] = &[
     "get",
     "get_mut",
+    "live_row",
+    "live_row_mut",
+    "row_including_tombstones_mut",
     "iter",
     "iter_mut",
     "keys",
@@ -2197,6 +2206,100 @@ fn process_row_map_field_is_private(manager: &str) -> bool {
         "pub",
     )
     .is_empty()
+}
+
+/// P6a's C9 census method, as code: `self` `.` `processes` `.` `get`|`get_mut`
+/// `(`, walked token by token through trivia and comments so a rustfmt wrap
+/// after `self` cannot hide a site. The tag carries the method, so a diff line
+/// names the shape that reappeared rather than only its enclosing item.
+fn raw_keyed_row_lookup_offsets(source: &str, mask: &[bool]) -> Vec<(usize, String)> {
+    let bytes = source.as_bytes();
+    identifier_offsets(source, mask, "processes")
+        .into_iter()
+        .filter_map(|offset| {
+            let receiver_dot = previous_code(source, mask, offset)?;
+            if bytes[receiver_dot] != b'.'
+                || preceding_identifier(source, mask, receiver_dot).as_deref() != Some("self")
+            {
+                return None;
+            }
+            let method_dot = next_code(source, mask, offset + "processes".len())?;
+            if bytes[method_dot] != b'.' {
+                return None;
+            }
+            let method_start = next_code(source, mask, method_dot + 1)?;
+            let mut method_end = method_start;
+            while method_end < bytes.len()
+                && mask[method_end]
+                && identifier_byte(bytes[method_end])
+            {
+                method_end += 1;
+            }
+            let method = &source[method_start..method_end];
+            if method != "get" && method != "get_mut" {
+                return None;
+            }
+            next_code(source, mask, method_end)
+                .is_some_and(|open| bytes[open] == b'(')
+                .then(|| (offset, method.to_owned()))
+        })
+        .collect()
+}
+
+/// The body of one of the row map's predicates, addressed by its rendered item
+/// path so the trait's body-less declaration cannot be mistaken for the impl.
+fn predicate_body(manager: &str, name: &str) -> Option<String> {
+    item_body_for_path(
+        manager,
+        &format!("impl ProcessRowMap for BTreeMap<ProcessId, Process>::fn {name}"),
+    )
+    .map(|body| normalized_code(body).replace(' ', ""))
+}
+
+fn raw_keyed_row_lookup_census(sources: &[(String, String)]) -> Census {
+    census_tagged(sources, raw_keyed_row_lookup_offsets)
+}
+
+fn tombstone_visible_row_lookup_census(sources: &[(String, String)]) -> Census {
+    census(sources, |source, mask| {
+        method_call_offsets(source, mask, "row_including_tombstones_mut")
+    })
+}
+
+fn row_state_mention_census(sources: &[(String, String)]) -> Census {
+    census(sources, |source, mask| {
+        let bytes = source.as_bytes();
+        identifier_offsets(source, mask, "RowState")
+            .into_iter()
+            .filter(|offset| {
+                next_code(source, mask, offset + "RowState".len())
+                    .is_some_and(|colon| bytes[colon] == b':')
+            })
+            .collect()
+    })
+}
+
+/// The invariant `ProcessManager::any_live_root_matches` rests on: a tombstone
+/// still reports `is_terminated()`. Inverting it reintroduces the
+/// retire-waits-for-row / row-waits-for-retire cycle the two-event join could
+/// otherwise create, and the failure mode is quiet — a permanently resident row
+/// plus a leaked page-table root. Pinned as source shape because the predicate is
+/// derived, not stored: `is_terminated` must read the single `row_state()`
+/// authority and admit BOTH terminated row states.
+fn tombstone_reports_terminated(process_rs: &str) -> bool {
+    normalized_code(function_body(process_rs, "is_terminated")).replace(' ', "")
+        == "fnis_terminated(&self)->bool{matches!(self.row_state(),RowState::Zombie|RowState::Tombstone)}"
+}
+
+/// The other half of D-1: `row_state` is the sole producer, and it is the reap
+/// claim — not a second stored state field — that separates a zombie from a
+/// tombstone.
+fn row_state_derives_tombstone_from_the_reap_claim(process_rs: &str) -> bool {
+    normalized_code(function_body(process_rs, "row_state"))
+        .replace(' ', "")
+        .contains(
+            "ProcessState::Terminated(_)=>matchself.reaped{None=>RowState::Zombie,Some(_)=>RowState::Tombstone,}",
+        )
 }
 
 fn mutable_process_row_map_borrow_offsets(source: &str, mask: &[bool]) -> Vec<usize> {
@@ -2665,6 +2768,39 @@ const PROCESS_ROW_MAP_MUTATIONS: &[(&str, &str, usize)] = &[
     ("kernel/src/process/manager.rs", "impl ProcessManager::fn debug_processes => raw-binding", 1),
     ("kernel/src/process/manager.rs", "impl ProcessManager::fn insert_process => insert", 1),
     ("kernel/src/process/manager.rs", "impl ProcessManager::fn remove_process => remove", 1),
+];
+/// P6a C1/C9. Raw keyed lookups of the process-row map — `self.processes.get(…)`
+/// and `.get_mut(…)`. Every one of them was migrated onto the two tombstone
+/// predicates (`live_row`/`live_row_mut`, and the deliberately-named
+/// tombstone-visible `row_including_tombstones_mut`), so the census is EMPTY and
+/// a re-introduced raw lookup is a `+` row wherever it appears.
+///
+/// The census walks `self` `.` `processes` `.` `get`|`get_mut` `(` through
+/// trivia rather than matching a line, because rustfmt wraps the receiver AFTER
+/// `self` (`self` ⏎ `.processes` ⏎ `.get_mut(&pid)`) at 20 of the sites that
+/// stood here before P6a: a line-based `grep -c` saw 31 of them, not 53. The
+/// same walk is what the PR body's count is derived from.
+#[rustfmt::skip]
+const RAW_KEYED_ROW_LOOKUPS: &[(&str, &str, usize)] = &[
+];
+/// P6a C1. Call sites of the tombstone-VISIBLE accessor. Exactly the two-event
+/// join's own writers: everything else on the tree answers keyed lookups through
+/// the tombstone-blind predicate. A live query moved onto this accessor is a `+`
+/// row; a join writer moved off it is a `-` row.
+#[rustfmt::skip]
+const TOMBSTONE_VISIBLE_ROW_LOOKUPS: &[(&str, &str, usize)] = &[
+    ("kernel/src/process/manager.rs", "impl ProcessManager::fn claim_reap", 1),
+    ("kernel/src/process/manager.rs", "impl ProcessManager::fn note_row_retired", 1),
+];
+/// P6a D-1. Every mention of the derived `RowState` authority, by enclosing item.
+/// `row_state` is the only producer; the predicates below it are the only
+/// consumers, and `is_terminated` must stay among them — see
+/// `tombstone_row_state_is_the_single_authority`.
+#[rustfmt::skip]
+const ROW_STATE_MENTIONS: &[(&str, &str, usize)] = &[
+    ("kernel/src/process/process.rs", "impl Process::fn is_terminated", 2),
+    ("kernel/src/process/process.rs", "impl Process::fn is_tombstone", 1),
+    ("kernel/src/process/process.rs", "impl Process::fn row_state", 3),
 ];
 #[rustfmt::skip]
 const QUARANTINE_CALLS: &[(&str, &str, usize)] = &[
@@ -6735,6 +6871,188 @@ fn process_row_map_mutations_are_authority_scoped() {
         retained_failures,
         ["+ kernel/src/process/manager.rs :: impl ProcessManager::fn remove_process => retain  (1 occurrences, expected none)"]
     );
+}
+
+#[test]
+fn keyed_row_lookups_go_through_the_tombstone_predicates() {
+    let sources = rust_sources_below("kernel/src");
+    let mut failures = Vec::new();
+    record(
+        &mut failures,
+        "raw keyed process-row lookup census changed",
+        validate_census(&raw_keyed_row_lookup_census(&sources), RAW_KEYED_ROW_LOOKUPS),
+    );
+    record(
+        &mut failures,
+        "tombstone-visible row lookup census changed",
+        validate_census(
+            &tombstone_visible_row_lookup_census(&sources),
+            TOMBSTONE_VISIBLE_ROW_LOOKUPS,
+        ),
+    );
+    let manager = source(&sources, "kernel/src/process/manager.rs");
+    check(
+        &mut failures,
+        "the tombstone-blind predicate stopped filtering tombstones",
+        predicate_body(manager, "live_row") == Some("{self.get(pid).filter(|row|!row.is_tombstone())}".to_owned())
+            && predicate_body(manager, "live_row_mut")
+                == Some("{self.get_mut(pid).filter(|row|!row.is_tombstone())}".to_owned()),
+    );
+    check(
+        &mut failures,
+        "the tombstone-visible accessor gained a filter",
+        predicate_body(manager, "row_including_tombstones_mut")
+            == Some("{self.get_mut(pid)}".to_owned()),
+    );
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+
+    // Anti-vacuity 1: a re-introduced raw lookup, written the way rustc would
+    // accept it on one line.
+    let raw_inline = manager.replacen(
+        "        self.processes.live_row(&pid)\n    }\n\n    /// Get a mutable reference to a process",
+        "        self.processes.get(&pid)\n    }\n\n    /// Get a mutable reference to a process",
+        1,
+    );
+    assert_ne!(raw_inline, manager, "inline raw-lookup injection anchor");
+    let raw_inline = with_replaced_source(&sources, "kernel/src/process/manager.rs", raw_inline);
+    let raw_inline_failures =
+        validate_census(&raw_keyed_row_lookup_census(&raw_inline), RAW_KEYED_ROW_LOOKUPS)
+            .expect_err("an inline raw keyed lookup escaped the census");
+    eprintln!("C1 inline raw-lookup mutation:\n{}", raw_inline_failures.join("\n"));
+    assert_eq!(
+        raw_inline_failures,
+        ["+ kernel/src/process/manager.rs :: impl ProcessManager::fn get_process => get  (1 occurrences, expected none)"]
+    );
+
+    // Anti-vacuity 2: the SAME lookup wrapped the way rustfmt actually writes it,
+    // with the break after `self`. This is the blind spot that made the recorded
+    // census 31 instead of 53, and it is why the ratchet walks tokens.
+    let raw_wrapped = manager.replacen(
+        "        self.processes.live_row(&pid)\n    }\n\n    /// Get a mutable reference to a process",
+        "        self\n            .processes\n            .get(&pid)\n    }\n\n    /// Get a mutable reference to a process",
+        1,
+    );
+    assert_ne!(raw_wrapped, manager, "wrapped raw-lookup injection anchor");
+    let raw_wrapped = with_replaced_source(&sources, "kernel/src/process/manager.rs", raw_wrapped);
+    let raw_wrapped_failures =
+        validate_census(&raw_keyed_row_lookup_census(&raw_wrapped), RAW_KEYED_ROW_LOOKUPS)
+            .expect_err("a rustfmt-wrapped raw keyed lookup escaped the census");
+    eprintln!("C1 wrapped raw-lookup mutation:\n{}", raw_wrapped_failures.join("\n"));
+    assert_eq!(raw_wrapped_failures, raw_inline_failures);
+
+    // C1 mutation A: a live query made tombstone-visible.
+    let visible_live_query = manager.replacen(
+        "    pub fn get_process_mut(&mut self, pid: ProcessId) -> Option<&mut Process> {\n        self.processes.live_row_mut(&pid)",
+        "    pub fn get_process_mut(&mut self, pid: ProcessId) -> Option<&mut Process> {\n        self.processes.row_including_tombstones_mut(&pid)",
+        1,
+    );
+    assert_ne!(visible_live_query, manager, "live-query mutation anchor");
+    let visible_live_query =
+        with_replaced_source(&sources, "kernel/src/process/manager.rs", visible_live_query);
+    let visible_live_query_failures = validate_census(
+        &tombstone_visible_row_lookup_census(&visible_live_query),
+        TOMBSTONE_VISIBLE_ROW_LOOKUPS,
+    )
+    .expect_err("a live query made tombstone-visible escaped the census");
+    eprintln!(
+        "C1 tombstone-visible live-query mutation:\n{}",
+        visible_live_query_failures.join("\n")
+    );
+    assert_eq!(
+        visible_live_query_failures,
+        ["+ kernel/src/process/manager.rs :: impl ProcessManager::fn get_process_mut  (1 occurrences, expected none)"]
+    );
+
+    // C1 mutation B: the reap arm made tombstone-blind.
+    let blind_reaper = manager.replacen(
+        "        if let Some(row) = self.processes.row_including_tombstones_mut(&pid) {\n            row.claim_reap(reaper, status);",
+        "        if let Some(row) = self.processes.live_row_mut(&pid) {\n            row.claim_reap(reaper, status);",
+        1,
+    );
+    assert_ne!(blind_reaper, manager, "blind-reaper mutation anchor");
+    let blind_reaper =
+        with_replaced_source(&sources, "kernel/src/process/manager.rs", blind_reaper);
+    let blind_reaper_failures = validate_census(
+        &tombstone_visible_row_lookup_census(&blind_reaper),
+        TOMBSTONE_VISIBLE_ROW_LOOKUPS,
+    )
+    .expect_err("a reaper made tombstone-blind escaped the census");
+    eprintln!(
+        "C1 blind-reaper mutation:\n{}",
+        blind_reaper_failures.join("\n")
+    );
+    assert_eq!(
+        blind_reaper_failures,
+        ["- kernel/src/process/manager.rs :: impl ProcessManager::fn claim_reap  (expected 1, found none)"]
+    );
+}
+
+#[test]
+fn tombstone_row_state_is_the_single_authority() {
+    let sources = rust_sources_below("kernel/src");
+    let process = source(&sources, "kernel/src/process/process.rs");
+    let mut failures = Vec::new();
+    record(
+        &mut failures,
+        "RowState mention census changed",
+        validate_census(&row_state_mention_census(&sources), ROW_STATE_MENTIONS),
+    );
+    check(
+        &mut failures,
+        "a tombstone stopped reporting is_terminated()",
+        tombstone_reports_terminated(process),
+    );
+    check(
+        &mut failures,
+        "RowState stopped deriving the tombstone from the reap claim",
+        row_state_derives_tombstone_from_the_reap_claim(process),
+    );
+    check(
+        &mut failures,
+        "the row lifetime gained a stored state field",
+        !normalized_code(source(&sources, "kernel/src/process/process.rs"))
+            .contains("row_state: RowState"),
+    );
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+
+    // Anti-vacuity: drop the tombstone arm from the derived predicate. This is
+    // the exact inversion `any_live_root_matches` cannot survive.
+    let blind_to_tombstones = process.replacen(
+        "matches!(self.row_state(), RowState::Zombie | RowState::Tombstone)",
+        "matches!(self.row_state(), RowState::Zombie)",
+        1,
+    );
+    assert_ne!(blind_to_tombstones, process, "tombstone-arm mutation anchor");
+    assert!(!tombstone_reports_terminated(&blind_to_tombstones));
+    let blind_to_tombstones =
+        with_replaced_source(&sources, "kernel/src/process/process.rs", blind_to_tombstones);
+    let blind_failures =
+        validate_census(&row_state_mention_census(&blind_to_tombstones), ROW_STATE_MENTIONS)
+            .expect_err("a dropped tombstone arm escaped the RowState census");
+    eprintln!("D-1 dropped-tombstone-arm mutation:\n{}", blind_failures.join("\n"));
+    assert_eq!(
+        blind_failures,
+        ["~ kernel/src/process/process.rs :: impl Process::fn is_terminated  (expected 2, found 1)"]
+    );
+
+    // Anti-vacuity: re-derive the predicate from `state` directly, i.e. give the
+    // row a second authority on "has this terminated".
+    let second_authority = process.replacen(
+        "matches!(self.row_state(), RowState::Zombie | RowState::Tombstone)",
+        "matches!(self.state, ProcessState::Terminated(_))",
+        1,
+    );
+    assert_ne!(second_authority, process, "second-authority mutation anchor");
+    assert!(!tombstone_reports_terminated(&second_authority));
+
+    // Anti-vacuity: swap which reap claim yields a tombstone.
+    let swapped = process.replacen(
+        "None => RowState::Zombie,\n                Some(_) => RowState::Tombstone,",
+        "None => RowState::Tombstone,\n                Some(_) => RowState::Zombie,",
+        1,
+    );
+    assert_ne!(swapped, process, "swapped-reap-claim mutation anchor");
+    assert!(!row_state_derives_tombstone_from_the_reap_claim(&swapped));
 }
 
 #[test]
