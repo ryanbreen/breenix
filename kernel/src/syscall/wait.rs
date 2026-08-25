@@ -395,6 +395,13 @@ fn complete_wait(
     if claim_refused {
         return SyscallResult::Err(ECHILD as u64);
     }
+    // Disclosed consequence of C3's ordering, and it is forced: the claim
+    // commits the reap before the status is copied, so a `copy_to_user` that
+    // faults now loses that status instead of leaving the child reapable. It
+    // cannot be avoided while the claim is the arbiter — a row claimed by this
+    // caller is a tombstone whether or not the copy lands, and re-opening it on
+    // a fault would hand the same status to a second waiter, which is exactly
+    // the defect C3 exists to close. Linux has the same wart on the same path.
 
     if status_ptr != 0 {
         // CRITICAL: Restore TTBR0 to current process's page tables before accessing user memory.
