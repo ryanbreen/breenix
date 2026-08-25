@@ -724,6 +724,26 @@ pub fn emit_root_custody_summary() {
     );
 }
 
+/// Emit the P6a tombstone census from normal context.
+///
+/// Gate extras (b) and (f) are read off this line by a real workload rather
+/// than by a fixture: it rides the same three call sites as the root-custody
+/// summary — both architectures' boot paths once before userspace, and the
+/// production heartbeat's cold `/proc/trace/counters` read as the run
+/// progresses — so `resident` is observably nonzero while children are being
+/// reaped and back to zero once the drain has retired them. A `resident` that
+/// never returns to zero is a visible leak with a counter naming it.
+pub fn emit_tombstone_census() {
+    crate::serial_println!(
+        "[TOMBSTONE_CENSUS:resident={}:removed={}:reap_second={}:retire_second={}:abandoned_unqueued={}]",
+        TOMBSTONE_RESIDENT.aggregate(),
+        TOMBSTONE_REMOVED.aggregate(),
+        TOMBSTONE_JOIN_REAP_SECOND.aggregate(),
+        TOMBSTONE_JOIN_RETIRE_SECOND.aggregate(),
+        RECLAIM_ABANDONED_UNQUEUED.aggregate()
+    );
+}
+
 #[cfg(feature = "boot_tests")]
 const BOOT_TEST_PID_COUNT_SLOTS: usize = 256;
 

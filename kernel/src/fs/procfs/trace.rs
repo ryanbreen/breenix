@@ -207,6 +207,7 @@ pub fn generate_counters() -> String {
     // The production heartbeat reads this cold procfs endpoint periodically,
     // making late root-custody changes visible without logging in a hot path.
     crate::tracing::providers::teardown::emit_root_custody_summary();
+    crate::tracing::providers::teardown::emit_tombstone_census();
 
     let mut output = String::new();
 

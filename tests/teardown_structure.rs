@@ -12608,3 +12608,124 @@ fn p6a_retire_arm_stays_outside_masked_and_queue_held_windows() {
         "a PM acquisition moved into the masked queue window must be visible to this ratchet"
     );
 }
+
+fn validate_production_tombstone_census(
+    provider: &str,
+    procfs_trace: &str,
+    x86_main: &str,
+    arm_main: &str,
+    strand_oracle: &str,
+) -> Result<(), ()> {
+    let marker = "pub fn emit_tombstone_census";
+    let declaration = provider.find(marker).ok_or(())?;
+    let prefix_start = provider[..declaration]
+        .rfind('}')
+        .map(|offset| offset + 1)
+        .unwrap_or(0);
+    if provider[prefix_start..declaration].contains("boot_tests") {
+        return Err(());
+    }
+    let body = function_body(provider, "emit_tombstone_census");
+    for required in [
+        "TOMBSTONE_RESIDENT",
+        "TOMBSTONE_REMOVED",
+        "TOMBSTONE_JOIN_REAP_SECOND",
+        "TOMBSTONE_JOIN_RETIRE_SECOND",
+        "RECLAIM_ABANDONED_UNQUEUED",
+        "[TOMBSTONE_CENSUS:",
+    ] {
+        if !body.contains(required) {
+            return Err(());
+        }
+    }
+    if body.matches("serial_println!").count() != 1
+        || !function_body(procfs_trace, "generate_counters").contains("emit_tombstone_census();")
+        || !function_body(x86_main, "kernel_main_on_kernel_stack")
+            .contains("emit_tombstone_census();")
+        || !function_body(arm_main, "kernel_main").contains("emit_tombstone_census();")
+        || !function_body(strand_oracle, "report_strand").contains("emit_tombstone_census();")
+    {
+        return Err(());
+    }
+    Ok(())
+}
+
+/// P6a gate extras (b) and (f) need a **production** reader, not a fixture one:
+/// `TOMBSTONE_RESIDENT` has to be observably nonzero while a real workload is
+/// reaping children and back to zero once the drain has retired them. The census
+/// rides the root-custody summary's three call sites — both boot paths and the
+/// heartbeat's cold procfs read — so it repeats as the run progresses.
+#[test]
+fn production_boot_and_heartbeat_emit_the_tombstone_census() {
+    let provider = repo_text("kernel/src/tracing/providers/teardown.rs");
+    let procfs_trace = repo_text("kernel/src/fs/procfs/trace.rs");
+    let x86_main = repo_text("kernel/src/main.rs");
+    let arm_main = repo_text("kernel/src/main_aarch64.rs");
+    let strand_oracle = repo_text("kernel/src/task/strand_oracle.rs");
+    assert_eq!(
+        validate_production_tombstone_census(
+            &provider,
+            &procfs_trace,
+            &x86_main,
+            &arm_main,
+            &strand_oracle
+        ),
+        Ok(())
+    );
+
+    // Anti-vacuity: an emitter that only exists in the boot-test profile proves
+    // nothing about the production drain, and neither does one the heartbeat
+    // never calls.
+    let boot_tests_only = provider.replacen(
+        "pub fn emit_tombstone_census",
+        "#[cfg(feature = \"boot_tests\")]\npub fn emit_tombstone_census",
+        1,
+    );
+    assert_ne!(boot_tests_only, provider, "boot-tests-only mutation anchor");
+    assert_eq!(
+        validate_production_tombstone_census(
+            &boot_tests_only,
+            &procfs_trace,
+            &x86_main,
+            &arm_main,
+            &strand_oracle
+        ),
+        Err(())
+    );
+
+    let heartbeat_dropped = procfs_trace.replacen(
+        "    crate::tracing::providers::teardown::emit_tombstone_census();\n",
+        "",
+        1,
+    );
+    assert_ne!(heartbeat_dropped, procfs_trace, "heartbeat mutation anchor");
+    assert_eq!(
+        validate_production_tombstone_census(
+            &provider,
+            &heartbeat_dropped,
+            &x86_main,
+            &arm_main,
+            &strand_oracle
+        ),
+        Err(())
+    );
+
+    // The periodic reporter is the leg that makes the census a *mid-run*
+    // observation rather than a boot-time snapshot of zeros; losing it is red.
+    let periodic_dropped = strand_oracle.replacen(
+        "    crate::tracing::providers::teardown::emit_tombstone_census();\n",
+        "",
+        1,
+    );
+    assert_ne!(periodic_dropped, strand_oracle, "periodic-report mutation anchor");
+    assert_eq!(
+        validate_production_tombstone_census(
+            &provider,
+            &procfs_trace,
+            &x86_main,
+            &arm_main,
+            &periodic_dropped
+        ),
+        Err(())
+    );
+}
