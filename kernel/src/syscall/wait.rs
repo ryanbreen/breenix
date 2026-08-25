@@ -136,7 +136,7 @@ pub fn sys_waitpid(pid: i64, status_ptr: u64, options: u32) -> SyscallResult {
             };
 
             if let Some((child_pid, exit_code)) = child_terminated {
-                return complete_wait(child_pid, exit_code, status_ptr);
+                return complete_wait(child_pid, exit_code, status_ptr, current_pid);
             }
 
             if options & WNOHANG != 0 {
@@ -176,7 +176,7 @@ pub fn sys_waitpid(pid: i64, status_ptr: u64, options: u32) -> SyscallResult {
                                     thread.set_ready();
                                 }
                             });
-                            return complete_wait(target_pid, exit_code, status_ptr);
+                            return complete_wait(target_pid, exit_code, status_ptr, current_pid);
                         }
                     }
                 }
@@ -211,7 +211,7 @@ pub fn sys_waitpid(pid: i64, status_ptr: u64, options: u32) -> SyscallResult {
                         if let crate::process::ProcessState::Terminated(exit_code) = child.state {
                             drop(manager_guard);
                             crate::per_cpu::preempt_disable();
-                            return complete_wait(target_pid, exit_code, status_ptr);
+                            return complete_wait(target_pid, exit_code, status_ptr, current_pid);
                         }
                     }
                 }
@@ -243,7 +243,7 @@ pub fn sys_waitpid(pid: i64, status_ptr: u64, options: u32) -> SyscallResult {
             };
 
             if let Some((child_pid, exit_code)) = terminated_child {
-                return complete_wait(child_pid, exit_code, status_ptr);
+                return complete_wait(child_pid, exit_code, status_ptr, current_pid);
             }
 
             if is_wnohang {
@@ -277,7 +277,7 @@ pub fn sys_waitpid(pid: i64, status_ptr: u64, options: u32) -> SyscallResult {
                                         thread.set_ready();
                                     }
                                 });
-                                return complete_wait(child_pid, exit_code, status_ptr);
+                                return complete_wait(child_pid, exit_code, status_ptr, current_pid);
                             }
                         }
                     }
@@ -315,7 +315,7 @@ pub fn sys_waitpid(pid: i64, status_ptr: u64, options: u32) -> SyscallResult {
                             {
                                 drop(manager_guard);
                                 crate::per_cpu::preempt_disable();
-                                return complete_wait(child_pid, exit_code, status_ptr);
+                                return complete_wait(child_pid, exit_code, status_ptr, current_pid);
                             }
                         }
                     }
@@ -332,10 +332,16 @@ pub fn sys_waitpid(pid: i64, status_ptr: u64, options: u32) -> SyscallResult {
 }
 
 /// Helper function to complete a wait operation
+///
+/// `reaper` is the process calling `waitpid`; it is the identity recorded in the
+/// row's reap claim (P6a's reap arm). It is threaded in from the caller rather
+/// than re-derived here because the caller already holds it and a re-derivation
+/// can fail, which would leave the claim silently unwritten.
 fn complete_wait(
     child_pid: crate::process::ProcessId,
     exit_code: i32,
     status_ptr: u64,
+    reaper: crate::process::ProcessId,
 ) -> SyscallResult {
     let wstatus: i32 = if exit_code < 0 {
         let signal_number = (-exit_code) as i32;
@@ -383,6 +389,11 @@ fn complete_wait(
                     child_pid.as_u64()
                 );
             }
+            // P6a reap arm: record the claim in the same PM acquisition that
+            // removes the row. The join is NOT installed in this PR - the
+            // removal below is unchanged and unconditional, so retention is
+            // byte-for-byte what it was.
+            manager.claim_reap(child_pid, reaper, exit_code);
             manager.remove_process(child_pid);
             log::debug!(
                 "complete_wait: Reaped process {} from process table",
