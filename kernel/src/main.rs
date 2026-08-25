@@ -656,6 +656,7 @@ extern "C" fn kernel_main_on_kernel_stack(arg: *mut core::ffi::c_void) -> ! {
         kernel::tracing::providers::teardown::run_x86_init_designation_gate();
         kernel::tracing::providers::teardown::run_x86_init_group_refusal_gate();
         kernel::tracing::providers::teardown::run_x86_kernel_stack_ownership_gate();
+        kernel::tracing::providers::teardown::run_x86_tombstone_join_gate();
     }
 
     kernel::tracing::providers::teardown::emit_root_custody_summary();

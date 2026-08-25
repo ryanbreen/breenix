@@ -364,6 +364,38 @@ fn complete_wait(
         }
     );
 
+    // P6a reap arm. Condition C3: the claim is taken under PM *before* any
+    // status reaches userspace. Two concurrent waiters can both pass the scan
+    // that produced `exit_code`; only the one that installs the claim may report
+    // it, and the loser returns ECHILD having copied nothing.
+    let mut claim_refused = false;
+    if let Some(thread_id) = crate::task::scheduler::current_thread_id() {
+        let mut evicted = None;
+        {
+            let mut manager_guard = crate::process::manager();
+            if let Some(ref mut manager) = *manager_guard {
+                if let Some((_parent_pid, parent)) = manager.find_process_by_thread_mut(thread_id) {
+                    parent.children.retain(|&id| id != child_pid);
+                }
+                match manager.reap_row(child_pid, reaper, exit_code) {
+                    crate::process::manager::ReapOutcome::Claimed(row) => evicted = row,
+                    crate::process::manager::ReapOutcome::Refused => claim_refused = true,
+                }
+            }
+        }
+        // Condition C8: the row destructor runs after the guard is released, so
+        // no `Process` drop happens inside the DAIF-masked PM window.
+        drop(evicted);
+        log::debug!(
+            "complete_wait: reap arm for child {} ({})",
+            child_pid.as_u64(),
+            if claim_refused { "refused" } else { "claimed" }
+        );
+    }
+    if claim_refused {
+        return SyscallResult::Err(ECHILD as u64);
+    }
+
     if status_ptr != 0 {
         // CRITICAL: Restore TTBR0 to current process's page tables before accessing user memory.
         // After blocking in waitpid and resuming, TTBR0 may have been changed by context
@@ -375,30 +407,6 @@ fn complete_wait(
         if userptr::copy_to_user(user_ptr, &wstatus).is_err() {
             log::error!("complete_wait: Failed to write status");
             return SyscallResult::Err(EFAULT as u64);
-        }
-    }
-
-    // Remove child from parent's children list and reap from process table
-    if let Some(thread_id) = crate::task::scheduler::current_thread_id() {
-        let mut manager_guard = crate::process::manager();
-        if let Some(ref mut manager) = *manager_guard {
-            if let Some((_parent_pid, parent)) = manager.find_process_by_thread_mut(thread_id) {
-                parent.children.retain(|&id| id != child_pid);
-                log::debug!(
-                    "complete_wait: Removed child {} from parent's children list",
-                    child_pid.as_u64()
-                );
-            }
-            // P6a reap arm: record the claim in the same PM acquisition that
-            // removes the row. The join is NOT installed in this PR - the
-            // removal below is unchanged and unconditional, so retention is
-            // byte-for-byte what it was.
-            manager.claim_reap(child_pid, reaper, exit_code);
-            manager.remove_process(child_pid);
-            log::debug!(
-                "complete_wait: Reaped process {} from process table",
-                child_pid.as_u64()
-            );
         }
     }
 

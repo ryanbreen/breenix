@@ -452,6 +452,10 @@ counter!(
     "Immediately unparked reclaims"
 );
 counter!(RECLAIM_PARK_RESIDENT, "Resident parked reclaims");
+counter!(
+    RECLAIM_ABANDONED_UNQUEUED,
+    "Reclaims abandoned because the pending queue refused them"
+);
 counter!(EXIT_SGI_SENT, "Teardown-attributed expedite SGIs");
 counter!(EXIT_KICK_PUBLISHED, "Published exit-kick buckets");
 counter!(EXIT_KICK_OBSERVED, "Observed exit-kick victims");
@@ -558,11 +562,14 @@ counter!(
     "Reparent requests skipped because no init is designated"
 );
 
-// Declaration-only until the phase named in PLAN.md. These intentionally have
-// no trace_count! producer yet.
-counter!(TEARDOWN_ENTRY_GROUP, "Group teardown entries");
-counter!(EXIT_REQUEST_OBSERVED, "Observed latched exit requests");
-counter!(LEDGER_EFFECT_AMBIGUOUS_REPORT, "Ambiguous report effects");
+// The tombstone family. P6a moves the two TOMBSTONE_JOIN counters out of the
+// declaration-only region below and gives them their producers: the join's reap
+// arm and its retire arm each increment the one named for being second.
+// TOMBSTONE_RESIDENT is a gauge and follows RECLAIM_PARK_RESIDENT's idiom
+// exactly — `trace_count!` to increment, `trace_count_add!(_, u64::MAX)` to
+// decrement — so a resident tombstone at quiesce is a visible leak.
+counter!(TOMBSTONE_RESIDENT, "Resident reaped-but-unremoved rows");
+counter!(TOMBSTONE_REMOVED, "Rows removed by the two-event join");
 counter!(
     TOMBSTONE_JOIN_REAP_SECOND,
     "Tombstone joins completed by reap"
@@ -571,6 +578,12 @@ counter!(
     TOMBSTONE_JOIN_RETIRE_SECOND,
     "Tombstone joins completed by retire"
 );
+
+// Declaration-only until the phase named in PLAN.md. These intentionally have
+// no trace_count! producer yet.
+counter!(TEARDOWN_ENTRY_GROUP, "Group teardown entries");
+counter!(EXIT_REQUEST_OBSERVED, "Observed latched exit requests");
+counter!(LEDGER_EFFECT_AMBIGUOUS_REPORT, "Ambiguous report effects");
 counter!(
     EXIT_BLOCK_REFUSED_FAMILY,
     "Latched exits refused by blocking families"
@@ -585,7 +598,7 @@ counter!(
     "Fatal group signals dropped for init"
 );
 
-pub const COUNTER_COUNT: usize = 83;
+pub const COUNTER_COUNT: usize = 86;
 
 /// The registration and normal-context reader inventory. Keeping one inventory
 /// makes a write-only counter structurally impossible without changing the P0
@@ -667,7 +680,10 @@ pub static COUNTERS: [&TraceCounter; COUNTER_COUNT] = [
     &RECLAIM_UNPARKED_AGE,
     &RECLAIM_PARK_IMMEDIATE_UNPARK,
     &RECLAIM_PARK_RESIDENT,
+    &RECLAIM_ABANDONED_UNQUEUED,
     &LEDGER_EFFECT_AMBIGUOUS_REPORT,
+    &TOMBSTONE_RESIDENT,
+    &TOMBSTONE_REMOVED,
     &TOMBSTONE_JOIN_REAP_SECOND,
     &TOMBSTONE_JOIN_RETIRE_SECOND,
     &EXIT_BLOCK_REFUSED_FAMILY,
@@ -2044,6 +2060,260 @@ pub fn fork_exit_defer_reclaim_pairing_test() -> crate::test_framework::registry
         );
     }
     TestResult::Pass
+}
+
+/// P6a gate extras (b), (f), (g) and the C3 arbiter — the two-event join, both
+/// orders, in one run.
+///
+/// The join has two arms and each is dormant code unless something reaches it.
+/// The natural fork/exit/reap cohort only ever produces one of them: the parent
+/// collects the status long before grace elapses, so retirement is always the
+/// second event. This oracle drives **both** orders deterministically on rows
+/// that genuinely exited, and observes the `TOMBSTONE_RESIDENT` gauge nonzero
+/// mid-run and back to its entry value afterwards — both halves of the
+/// anti-vacuity burden, without a sleep race deciding a merge gate.
+///
+/// The rows carry no page table, so the oracle moves no frame, leaf or
+/// kernel-stack accounting and none of the eight pinned oracle literals depend
+/// on it.
+#[cfg(feature = "boot_tests")]
+pub fn tombstone_join_oracle_test() -> crate::test_framework::registry::TestResult {
+    use crate::test_framework::registry::TestResult;
+    #[cfg(not(target_arch = "x86_64"))]
+    use crate::memory::arch_stub::VirtAddr;
+    #[cfg(target_arch = "x86_64")]
+    use x86_64::VirtAddr;
+
+    let _reclaim_owner = match crate::task::process_task::BootReclaimTestGuard::enter() {
+        Ok(guard) => guard,
+        Err(_) => {
+            return TestResult::Fail("reclaim queues not quiescent at tombstone join oracle start")
+        }
+    };
+
+    /// Insert a row, terminate it, and defer its (empty) resources so exactly one
+    /// retirement receipt names it. The row is a zombie on return: terminated,
+    /// unreaped, one obligation outstanding.
+    fn stage_zombie(
+        name: &str,
+    ) -> Result<
+        (
+            crate::process::ProcessId,
+            crate::task::process_task::PendingProcessReclaim,
+        ),
+        &'static str,
+    > {
+        let mut manager_guard = crate::process::manager();
+        let Some(manager) = manager_guard.as_mut() else {
+            return Err("process manager unavailable for tombstone join fixture");
+        };
+        let pid = manager.allocate_pid();
+        let process = crate::process::Process::new(
+            pid,
+            alloc::string::String::from(name),
+            VirtAddr::new(0x0040_0000),
+        );
+        manager.insert_process(pid, process);
+        let Some(row) = manager.get_process_mut(pid) else {
+            return Err("tombstone join fixture row disappeared after insert");
+        };
+        row.terminate_minimal(0);
+        let reclaim = crate::task::process_task::defer_process_resources(row);
+        Ok((pid, reclaim))
+    }
+
+    fn row_is_visible_to_live_queries(pid: crate::process::ProcessId) -> bool {
+        let manager_guard = crate::process::manager();
+        manager_guard
+            .as_ref()
+            .is_some_and(|manager| manager.get_process(pid).is_some())
+    }
+
+    fn tombstone_rows() -> usize {
+        let manager_guard = crate::process::manager();
+        manager_guard
+            .as_ref()
+            .map_or(0, |manager| manager.tombstone_row_count())
+    }
+
+    fn reap(
+        pid: crate::process::ProcessId,
+        reaper: crate::process::ProcessId,
+    ) -> Result<bool, &'static str> {
+        let mut evicted = None;
+        let claimed = {
+            let mut manager_guard = crate::process::manager();
+            let Some(manager) = manager_guard.as_mut() else {
+                return Err("process manager unavailable for tombstone join reap");
+            };
+            match manager.reap_row(pid, reaper, 0) {
+                crate::process::manager::ReapOutcome::Claimed(row) => {
+                    evicted = row;
+                    true
+                }
+                crate::process::manager::ReapOutcome::Refused => false,
+            }
+        };
+        drop(evicted);
+        Ok(claimed)
+    }
+
+    /// Drain until `record_reclaim` has run for one more receipt, or the deadline
+    /// passes. Returns whether the retirement was observed.
+    fn drain_one_retirement(reclaims_before: u64) -> bool {
+        let deadline =
+            retirement_oracle_clock_now().saturating_add(retirement_oracle_clock_delta(5_000));
+        loop {
+            crate::task::scheduler::nudge_retirement_grace_for_test();
+            let boundary =
+                retirement_oracle_clock_now().saturating_add(retirement_oracle_clock_delta(1));
+            while retirement_oracle_clock_now() < boundary {
+                core::hint::spin_loop();
+            }
+            crate::task::process_task::boot_reclaim_deferred_process_resources();
+            if TEARDOWN_RECLAIM.aggregate() != reclaims_before {
+                return true;
+            }
+            if retirement_oracle_clock_now() >= deadline {
+                return false;
+            }
+            core::hint::spin_loop();
+        }
+    }
+
+    let reaper = crate::process::ProcessId::new(crate::process::RESERVED_INIT_PID);
+    let resident_before = TOMBSTONE_RESIDENT.aggregate();
+    let removed_before = TOMBSTONE_REMOVED.aggregate();
+    let reap_second_before = TOMBSTONE_JOIN_REAP_SECOND.aggregate();
+    let retire_second_before = TOMBSTONE_JOIN_RETIRE_SECOND.aggregate();
+    let tombstone_rows_before = tombstone_rows();
+
+    // ---- Arm 1: the reap lands first, retirement completes the join --------
+    let (pid_a, reclaim_a) = match stage_zombie("tombstone_join_retire_second") {
+        Ok(staged) => staged,
+        Err(reason) => return TestResult::Fail(reason),
+    };
+    if !row_is_visible_to_live_queries(pid_a) {
+        return TestResult::Fail("A1: a zombie was already invisible to live queries");
+    }
+    match reap(pid_a, reaper) {
+        Ok(true) => {}
+        Ok(false) => return TestResult::Fail("A2: the first reap of a zombie was refused"),
+        Err(reason) => return TestResult::Fail(reason),
+    }
+    // Gate extra (b)/(f), first half: the gauge is observably nonzero here.
+    if TOMBSTONE_RESIDENT.aggregate() != resident_before.wrapping_add(1) {
+        return TestResult::Fail("A3: the reap did not make TOMBSTONE_RESIDENT nonzero");
+    }
+    if tombstone_rows() != tombstone_rows_before + 1 {
+        return TestResult::Fail("A4: the reaped row did not stay resident as a tombstone");
+    }
+    if row_is_visible_to_live_queries(pid_a) {
+        return TestResult::Fail("A5: a tombstone answered a live-process query");
+    }
+    if TOMBSTONE_REMOVED.aggregate() != removed_before {
+        return TestResult::Fail("A6: the reap removed the row with retirement outstanding");
+    }
+    // Condition C3: the claim is the arbiter, so a second reaper is refused and
+    // reports nothing. This is what a concurrent losing waiter observes.
+    match reap(pid_a, reaper) {
+        Ok(false) => {}
+        Ok(true) => return TestResult::Fail("A7: a second reap of the same row was admitted"),
+        Err(reason) => return TestResult::Fail(reason),
+    }
+
+    let reclaims_before_a = TEARDOWN_RECLAIM.aggregate();
+    crate::task::process_task::enqueue_process_reclaim(reclaim_a);
+    if !drain_one_retirement(reclaims_before_a) {
+        return TestResult::Fail("A8: the tombstone's retirement never completed");
+    }
+    core::sync::atomic::fence(Ordering::Acquire);
+    if TOMBSTONE_JOIN_RETIRE_SECOND.aggregate() != retire_second_before.wrapping_add(1) {
+        return TestResult::Fail("A9: retirement did not complete the join as the second event");
+    }
+    if TOMBSTONE_JOIN_REAP_SECOND.aggregate() != reap_second_before {
+        return TestResult::Fail("A10: the wrong join arm was credited");
+    }
+    if TOMBSTONE_REMOVED.aggregate() != removed_before.wrapping_add(1) {
+        return TestResult::Fail("A11: the join did not remove the row");
+    }
+    // Gate extra (b)/(f), second half: the gauge returns to its entry value.
+    if TOMBSTONE_RESIDENT.aggregate() != resident_before {
+        return TestResult::Fail("A12: TOMBSTONE_RESIDENT did not return to its entry value");
+    }
+    if tombstone_rows() != tombstone_rows_before {
+        return TestResult::Fail("A13: a tombstone survived its own join");
+    }
+
+    // ---- Arm 2: retirement lands first, the reap completes the join --------
+    let (pid_b, reclaim_b) = match stage_zombie("tombstone_join_reap_second") {
+        Ok(staged) => staged,
+        Err(reason) => return TestResult::Fail(reason),
+    };
+    let reclaims_before_b = TEARDOWN_RECLAIM.aggregate();
+    crate::task::process_task::enqueue_process_reclaim(reclaim_b);
+    if !drain_one_retirement(reclaims_before_b) {
+        return TestResult::Fail("B1: the zombie's retirement never completed");
+    }
+    core::sync::atomic::fence(Ordering::Acquire);
+    if TOMBSTONE_REMOVED.aggregate() != removed_before.wrapping_add(1) {
+        return TestResult::Fail("B2: retirement removed an unreaped row");
+    }
+    if !row_is_visible_to_live_queries(pid_b) {
+        return TestResult::Fail("B3: a retired-but-unreaped row stopped answering waitpid");
+    }
+    match reap(pid_b, reaper) {
+        Ok(true) => {}
+        Ok(false) => return TestResult::Fail("B4: the reap of a retired zombie was refused"),
+        Err(reason) => return TestResult::Fail(reason),
+    }
+    if TOMBSTONE_JOIN_REAP_SECOND.aggregate() != reap_second_before.wrapping_add(1) {
+        return TestResult::Fail("B5: the reap did not complete the join as the second event");
+    }
+    if TOMBSTONE_JOIN_RETIRE_SECOND.aggregate() != retire_second_before.wrapping_add(1) {
+        return TestResult::Fail("B6: the wrong join arm was credited");
+    }
+    if TOMBSTONE_REMOVED.aggregate() != removed_before.wrapping_add(2) {
+        return TestResult::Fail("B7: the join did not remove the row");
+    }
+    if TOMBSTONE_RESIDENT.aggregate() != resident_before {
+        return TestResult::Fail("B8: TOMBSTONE_RESIDENT did not return to its entry value");
+    }
+    if tombstone_rows() != tombstone_rows_before {
+        return TestResult::Fail("B9: a tombstone survived its own join");
+    }
+    if row_is_visible_to_live_queries(pid_b) {
+        return TestResult::Fail("B10: a removed row still answered a live-process query");
+    }
+
+    crate::serial_println!(
+        "[TOMBSTONE_JOIN_ORACLE:{}:retire_second={}:reap_second={}:removed={}:resident_delta={}:tombstone_rows={}:PASS]",
+        if cfg!(target_arch = "aarch64") {
+            "aarch64"
+        } else {
+            "x86"
+        },
+        TOMBSTONE_JOIN_RETIRE_SECOND
+            .aggregate()
+            .wrapping_sub(retire_second_before),
+        TOMBSTONE_JOIN_REAP_SECOND
+            .aggregate()
+            .wrapping_sub(reap_second_before),
+        TOMBSTONE_REMOVED.aggregate().wrapping_sub(removed_before),
+        TOMBSTONE_RESIDENT.aggregate().wrapping_sub(resident_before),
+        tombstone_rows(),
+    );
+    TestResult::Pass
+}
+
+#[cfg(all(feature = "boot_tests", target_arch = "x86_64"))]
+pub fn run_x86_tombstone_join_gate() {
+    crate::serial_println!("[TEST:process:tombstone_join_oracle:START]");
+    let result = tombstone_join_oracle_test();
+    if !result.is_pass() {
+        crate::serial_println!("[TEST:process:tombstone_join_oracle:FAIL:{:?}]", result);
+    }
+    assert!(result.is_pass(), "x86 tombstone join oracle gate failed");
 }
 
 #[cfg(all(feature = "boot_tests", target_arch = "x86_64"))]

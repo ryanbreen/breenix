@@ -2703,6 +2703,8 @@ const TERMINATE_CALLS: &[(&str, &str, usize)] = &[
 #[rustfmt::skip]
 const TERMINATE_MINIMAL_CALLS: &[(&str, &str, usize)] = &[
     ("kernel/src/task/process_task.rs", "impl ProcessScheduler::fn handle_thread_exit", 1),
+    // P6a PR-2: the join oracle's fixture has to reach the real zombie state, so it terminates its rows through the production helper rather than storing `state` directly.
+    ("kernel/src/tracing/providers/teardown.rs", "#[cfg(feature=boot_tests)] fn tombstone_join_oracle_test::fn stage_zombie", 1),
     ("kernel/src/tracing/providers/teardown.rs", "#[cfg(feature=boot_tests)] fn clone_admission_oracle_test", 1),
     ("kernel/src/tracing/providers/teardown.rs", "#[cfg(feature=boot_tests)] fn init_designation_oracle_test", 1),
 ];
@@ -2744,9 +2746,13 @@ const DESIGNATED_INIT_FIELD_DECLARATIONS: &[(&str, &str, usize)] = &[
     ("kernel/src/process/manager.rs", "struct ProcessManager", 1),
 ];
 #[rustfmt::skip]
+// P6a PR-2 re-derivation, per delta: the destructor's body moved out of
+// `remove_process` and into `take_row_unconditionally`, which is now the single
+// raw removal of a row from the map. The census keeps exactly the two writers it
+// had — one row moved, none were added or dropped.
 const DESIGNATED_INIT_WRITES: &[(&str, &str, usize)] = &[
     ("kernel/src/process/manager.rs", "impl ProcessManager::fn designate_init", 1),
-    ("kernel/src/process/manager.rs", "impl ProcessManager::fn remove_process", 1),
+    ("kernel/src/process/manager.rs", "impl ProcessManager::fn take_row_unconditionally", 1),
 ];
 #[rustfmt::skip]
 const INIT_DESIGNATION_TICKET_CONSTRUCTIONS: &[(&str, &str, usize)] = &[
@@ -2767,7 +2773,8 @@ const PROCESS_ROW_MAP_MUTATIONS: &[(&str, &str, usize)] = &[
     ("kernel/src/process/manager.rs", "impl ProcessManager::#[cfg(target_arch=x86_64)] fn fork_process_with_context => insert", 1),
     ("kernel/src/process/manager.rs", "impl ProcessManager::fn debug_processes => raw-binding", 1),
     ("kernel/src/process/manager.rs", "impl ProcessManager::fn insert_process => insert", 1),
-    ("kernel/src/process/manager.rs", "impl ProcessManager::fn remove_process => remove", 1),
+    // P6a PR-2, per delta: the raw removal moved from `remove_process` into the shared `take_row_unconditionally`; still exactly one removal of a row from the map.
+    ("kernel/src/process/manager.rs", "impl ProcessManager::fn take_row_unconditionally => remove", 1),
 ];
 /// P6a C1/C9. Raw keyed lookups of the process-row map — `self.processes.get(…)`
 /// and `.get_mut(…)`. Every one of them was migrated onto the two tombstone
@@ -2789,8 +2796,13 @@ const RAW_KEYED_ROW_LOOKUPS: &[(&str, &str, usize)] = &[
 /// row; a join writer moved off it is a `-` row.
 #[rustfmt::skip]
 const TOMBSTONE_VISIBLE_ROW_LOOKUPS: &[(&str, &str, usize)] = &[
-    ("kernel/src/process/manager.rs", "impl ProcessManager::fn claim_reap", 1),
-    ("kernel/src/process/manager.rs", "impl ProcessManager::fn note_row_retired", 1),
+    // P6a PR-2 re-derivation, per delta: PR-1's two bare writers became the
+    // join's two arms, and the join's own removal predicate is the third — it
+    // has to read the row it is about to remove, and that row is a tombstone by
+    // definition. Nothing else on the tree may see one.
+    ("kernel/src/process/manager.rs", "impl ProcessManager::fn reap_row", 1),
+    ("kernel/src/process/manager.rs", "impl ProcessManager::fn remove_row_joined", 1),
+    ("kernel/src/process/manager.rs", "impl ProcessManager::fn retire_row", 1),
 ];
 /// P6a D-1. Every mention of the derived `RowState` authority, by enclosing item.
 /// `row_state` is the only producer; the predicates below it are the only
@@ -2821,6 +2833,42 @@ const KERNEL_STACK_MUTATIONS: &[(&str, &str, usize)] = &[
 const BOX_LEAK_CALLS: &[(&str, &str, usize)] = &[
     ("kernel/src/userspace_test.rs", "#[cfg(feature=testing)] fn get_test_binary_static", 4),
 ];
+/// DEBT-4 (ii): every call site that reaches the unconditional row destructor,
+/// occurrence-based and by enclosing item. Twenty-two occurrences across three
+/// exempt classes; the two live reaps are absent by construction, and an added
+/// one is a `+` row here.
+#[rustfmt::skip]
+const ROW_DESTRUCTOR_CALLS: &[(&str, &str, usize)] = &[
+    // Class 2 — creation-failure retire. Never reaped, never retired.
+    ("kernel/src/process/manager.rs", "impl ProcessManager::fn hold_init_publication", 1),
+    // Class 4 — the p1_row_epoch_gate harness. It must keep bumping ROW_REMOVAL_EPOCH or P1's parked-reclaimer `{row}` arm stops being driven.
+    ("kernel/src/task/process_task.rs", "#[cfg(feature=boot_tests)] fn reclaim_progress_gate_test", 1),
+    // Class 3 — the twenty in-kernel oracle callers, nine enclosing items.
+    ("kernel/src/tracing/providers/teardown.rs", "#[cfg(all(feature=boot_tests,target_arch=aarch64))] fn creating_dispatch_refusal_test::fn retire_and_remove_owned_row", 1),
+    ("kernel/src/tracing/providers/teardown.rs", "#[cfg(all(feature=boot_tests,target_arch=x86_64))] fn exec_supersede_cohort_test", 2),
+    ("kernel/src/tracing/providers/teardown.rs", "#[cfg(feature=boot_tests)] fn clone_admission_oracle_test::fn exit_and_remove_row", 1),
+    ("kernel/src/tracing/providers/teardown.rs", "#[cfg(feature=boot_tests)] fn exec_detach_oracle_test::fn exit_and_remove_unowned_row", 1),
+    ("kernel/src/tracing/providers/teardown.rs", "#[cfg(feature=boot_tests)] fn exec_detach_oracle_test::fn retire_and_remove_owned_row", 1),
+    ("kernel/src/tracing/providers/teardown.rs", "#[cfg(feature=boot_tests)] fn fork_exit_defer_reclaim_pairing_test", 4),
+    ("kernel/src/tracing/providers/teardown.rs", "#[cfg(feature=boot_tests)] fn init_designation_oracle_test", 7),
+    ("kernel/src/tracing/providers/teardown.rs", "#[cfg(feature=boot_tests)] fn init_group_refusal_oracle_test", 2),
+    ("kernel/src/tracing/providers/teardown.rs", "#[cfg(feature=boot_tests)] fn kernel_stack_ownership_oracle_test::fn retire_and_remove_owned_row", 1),
+];
+/// The join's reap arm. Both arches' `complete_wait` are here — that is DEBT-4
+/// (ii)'s "on BOTH arches", and deleting either is a `-` row.
+#[rustfmt::skip]
+const JOIN_REAP_ARM_CALLS: &[(&str, &str, usize)] = &[
+    ("kernel/src/syscall/handlers.rs", "fn complete_wait", 1),
+    ("kernel/src/syscall/wait.rs", "fn complete_wait", 1),
+    ("kernel/src/tracing/providers/teardown.rs", "#[cfg(feature=boot_tests)] fn tombstone_join_oracle_test::fn reap", 1),
+];
+/// The join's retire arm: the retirement-complete point in the drain, and the
+/// abandon path that ends a retirement obligation without one (condition C2(c)).
+#[rustfmt::skip]
+const JOIN_RETIRE_ARM_CALLS: &[(&str, &str, usize)] = &[
+    ("kernel/src/task/process_task.rs", "fn reclaim_deferred_process_resources_for_pass", 1),
+    ("kernel/src/task/process_task.rs", "fn settle_abandoned_retirement", 1),
+];
 #[rustfmt::skip]
 const RECLAIM_ENQUEUE_CALLS: &[(&str, &str, usize)] = &[
     ("kernel/src/process/mod.rs", "fn exit_process_and_retire", 1),
@@ -2833,6 +2881,12 @@ const RECLAIM_ENQUEUE_CALLS: &[(&str, &str, usize)] = &[
     // The kernel-stack ownership oracle now retires its owned fixture row through the same deferred-reclaim helper shape as the existing oracles.
     ("kernel/src/tracing/providers/teardown.rs", "#[cfg(feature=boot_tests)] fn kernel_stack_ownership_oracle_test::fn retire_and_remove_owned_row", 1),
     ("kernel/src/tracing/providers/teardown.rs", "#[cfg(all(feature=boot_tests,target_arch=aarch64))] fn creating_dispatch_refusal_test::fn retire_and_remove_owned_row", 1),
+    // P6a PR-2, condition C4. This census is the ratchet the condition asks for:
+    // every producer of a retirement receipt is named here, so a future site that
+    // enqueues a *second* reclaim naming a pid that already has one is a `+` row
+    // rather than a silent early removal. The join oracle enqueues one receipt per
+    // fixture row, one per join arm.
+    ("kernel/src/tracing/providers/teardown.rs", "#[cfg(feature=boot_tests)] fn tombstone_join_oracle_test", 2),
 ];
 #[rustfmt::skip]
 const EXIT_PROCESS_AND_RETIRE_CALLS: &[(&str, &str, usize)] = &[
@@ -3025,8 +3079,12 @@ const BTRT_PROCESS_EXIT_REPORTS: &[(&str, &str, usize)] = &[
     ("kernel/src/task/process_task.rs", "impl ProcessScheduler::fn handle_thread_exit", 1),
 ];
 #[rustfmt::skip]
+// P6a PR-2 re-derivation, per delta: the bump moved with the raw removal into
+// `take_row_unconditionally`. Both entry points — the unconditional destructor
+// and the join's `remove_row_joined` — reach it, so P1's parked-reclaimer `{row}`
+// unpark trigger keeps being driven by every removal, joined or not.
 const ROW_REMOVAL_EPOCH_BUMPS: &[(&str, &str, usize)] = &[
-    ("kernel/src/process/manager.rs", "impl ProcessManager::fn remove_process", 1),
+    ("kernel/src/process/manager.rs", "impl ProcessManager::fn take_row_unconditionally", 1),
 ];
 
 /// The blocking-primitive families, pinned by name *prefix* so that a tenth
@@ -5301,7 +5359,7 @@ fn validate_frame_ledger_counter_inventory(provider: &str) -> Result<(), ()> {
         && EXPECTED
             .iter()
             .all(|counter| inventory.contains(&format!("&{counter},")))
-        && provider.contains("pub const COUNTER_COUNT: usize = 83;"))
+        && provider.contains("pub const COUNTER_COUNT: usize = 86;"))
     .then_some(())
     .ok_or(())
 }
@@ -5559,7 +5617,7 @@ fn validate_process_page_table_counter_inventory(sources: &[(String, String)]) -
         || !EXPECTED
             .iter()
             .all(|counter| inventory.contains(&format!("&{counter},")))
-        || !provider.contains("pub const COUNTER_COUNT: usize = 83;")
+        || !provider.contains("pub const COUNTER_COUNT: usize = 86;")
     {
         return Err(());
     }
@@ -6515,8 +6573,8 @@ fn frame_ledger_return_and_initialization_ratchets_are_exact() {
     }
     check(
         &mut failures,
-        "COUNTER_COUNT is no longer 83",
-        provider.contains("pub const COUNTER_COUNT: usize = 83;"),
+        "COUNTER_COUNT is no longer 86",
+        provider.contains("pub const COUNTER_COUNT: usize = 86;"),
     );
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
@@ -6965,8 +7023,8 @@ fn keyed_row_lookups_go_through_the_tombstone_predicates() {
 
     // C1 mutation B: the reap arm made tombstone-blind.
     let blind_reaper = manager.replacen(
-        "        if let Some(row) = self.processes.row_including_tombstones_mut(&pid) {\n            row.claim_reap(reaper, status);",
-        "        if let Some(row) = self.processes.live_row_mut(&pid) {\n            row.claim_reap(reaper, status);",
+        "        let Some(row) = self.processes.row_including_tombstones_mut(&pid) else {\n            return ReapOutcome::Refused;",
+        "        let Some(row) = self.processes.live_row_mut(&pid) else {\n            return ReapOutcome::Refused;",
         1,
     );
     assert_ne!(blind_reaper, manager, "blind-reaper mutation anchor");
@@ -6983,7 +7041,7 @@ fn keyed_row_lookups_go_through_the_tombstone_predicates() {
     );
     assert_eq!(
         blind_reaper_failures,
-        ["- kernel/src/process/manager.rs :: impl ProcessManager::fn claim_reap  (expected 1, found none)"]
+        ["- kernel/src/process/manager.rs :: impl ProcessManager::fn reap_row  (expected 1, found none)"]
     );
 }
 
@@ -7634,11 +7692,34 @@ fn phase_one_retirement_fence_and_lock_domains_are_structural() {
             ROW_REMOVAL_EPOCH_BUMPS,
         ),
     );
+    // P6a PR-2 inverts this tripwire. Its NAME was written for the post-P6a world
+    // and its predicate for the pre-P6a one; the phase makes the name true rather
+    // than deleting the check. `remove_process` survives as the unconditional
+    // destructor's public entry point, but the raw removal now lives in
+    // `take_row_unconditionally`, which both it and the join's `remove_row_joined`
+    // delegate to. Re-introducing the raw removal in `remove_process` reddens this.
     check(
         &mut failures,
         "remove_process no longer removes the process row",
         manager.contains("fn remove_process(")
-            && function_body(manager, "remove_process").contains("self.processes.remove(&pid)"),
+            && !function_body(manager, "remove_process").contains("self.processes.remove(&pid)")
+            && function_body(manager, "remove_process").contains("take_row_unconditionally"),
+    );
+    check(
+        &mut failures,
+        "the row destructor is no longer a single raw removal",
+        function_body(manager, "take_row_unconditionally").contains("self.processes.remove(&pid)"),
+    );
+    check(
+        &mut failures,
+        "the join's removal stopped asserting all three retention terms",
+        {
+            let joined = function_body(manager, "remove_row_joined");
+            joined.contains("is_reaped()")
+                && joined.contains("is_retired()")
+                && joined.contains("ledger_settled()")
+                && joined.contains("take_row_unconditionally")
+        },
     );
     check(
         &mut failures,
@@ -7726,7 +7807,7 @@ fn all_phase_zero_counters_have_registered_readers_and_honest_runtime_gates() {
         .filter_map(|rest| rest.strip_suffix(','))
         .map(str::to_owned)
         .collect();
-    assert_eq!(declarations.len(), 83);
+    assert_eq!(declarations.len(), 86);
     assert_eq!(
         readers, declarations,
         "every counter must have an inventory reader"
@@ -7772,6 +7853,14 @@ fn all_phase_zero_counters_have_registered_readers_and_honest_runtime_gates() {
     assert!(!declaration_only.contains("counter!(EXIT_SGI_SENT,"));
     assert!(!declaration_only.contains("counter!(EXIT_KICK_PUBLISHED,"));
     assert!(!declaration_only.contains("counter!(RECEIPT_DROPPED_UNRETIRED,"));
+    // P6a PR-2, a deliberate and derived edit to this boundary: the two
+    // TOMBSTONE_JOIN counters left the declaration-only region because this phase
+    // gave them their producers. The tombstone gauge and its removal counter are
+    // new and were never declaration-only.
+    assert!(!declaration_only.contains("counter!(\n    TOMBSTONE_JOIN_REAP_SECOND,"));
+    assert!(!declaration_only.contains("counter!(\n    TOMBSTONE_JOIN_RETIRE_SECOND,"));
+    assert!(!declaration_only.contains("counter!(TOMBSTONE_RESIDENT,"));
+    assert!(!declaration_only.contains("counter!(TOMBSTONE_REMOVED,"));
 
     let registry = source(&sources, "kernel/src/test_framework/registry.rs");
     assert!(registry.contains("name: \"fork_exit_defer_reclaim_pairing_test\""));
@@ -12302,5 +12391,220 @@ fn every_external_schedule_from_kernel_call_reclaims_immediately_beforehand() {
     assert_eq!(
         schedule_sites, paired_sites,
         "every external schedule_from_kernel caller must immediately run deferred reclamation"
+    );
+}
+
+/// DEBT-4 (ii). The removal routes through the two-event join on **both**
+/// arches, and no call site outside the join and the named exempt classes
+/// reaches the row destructor.
+///
+/// Two censuses, occurrence-based, and one rule between them: the destructor's
+/// caller set contains no live reap, and the reap arm's caller set contains
+/// both of them — `syscall/wait.rs::complete_wait` (aarch64) and
+/// `syscall/handlers.rs::complete_wait` (x86_64). DEBT-4's "x86 bypasses the
+/// gate" was an evidence problem, not a missing edit; this is the evidence.
+///
+/// The exempt classes are named, not inferred:
+///
+/// * **class 2 — creation-failure retire** (`hold_init_publication`): the row was
+///   never reaped and will never be retired, so the join would strand it.
+/// * **class 4 — the `p1_row_epoch_gate` harness**: it inserts a row and removes
+///   it in the next statement to observe `ROW_REMOVAL_EPOCH`; under the join it
+///   would both strand a tombstone and stop bumping the epoch, silently
+///   disarming P1's parked-reclaimer gate.
+/// * **class 3 — the twenty in-kernel oracle callers** in `teardown.rs`: per-site
+///   dispositions live in the PR body. All twenty stay on the unconditional
+///   destructor because none of their fixture rows has a retirement event to
+///   join against inside the oracle's own measurement window.
+#[test]
+fn debt4_row_removal_routes_through_the_join_on_both_arches() {
+    let sources = rust_sources_below("kernel/src");
+    let mut failures = Vec::new();
+
+    record(
+        &mut failures,
+        "row destructor caller census changed",
+        validate_census(
+            &census(&sources, |source, mask| {
+                method_call_offsets(source, mask, "remove_process")
+            }),
+            ROW_DESTRUCTOR_CALLS,
+        ),
+    );
+    record(
+        &mut failures,
+        "join reap-arm caller census changed",
+        validate_census(
+            &census(&sources, |source, mask| {
+                method_call_offsets(source, mask, "reap_row")
+            }),
+            JOIN_REAP_ARM_CALLS,
+        ),
+    );
+    record(
+        &mut failures,
+        "join retire-arm caller census changed",
+        validate_census(
+            &census(&sources, |source, mask| {
+                method_call_offsets(source, mask, "retire_row")
+            }),
+            JOIN_RETIRE_ARM_CALLS,
+        ),
+    );
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+
+    // Anti-vacuity, two independent mutations applied singly.
+
+    // Mutation 1: an unjoined destructor call added on a live reap path.
+    let wait = source(&sources, "kernel/src/syscall/wait.rs");
+    let unjoined_destructor = wait.replacen(
+        "        drop(evicted);",
+        "        manager_unjoined_probe.remove_process(child_pid);\n        drop(evicted);",
+        1,
+    );
+    assert_ne!(unjoined_destructor, wait, "unjoined-destructor mutation anchor");
+    let unjoined_destructor =
+        with_replaced_source(&sources, "kernel/src/syscall/wait.rs", unjoined_destructor);
+    let unjoined_failures = validate_census(
+        &census(&unjoined_destructor, |source, mask| {
+            method_call_offsets(source, mask, "remove_process")
+        }),
+        ROW_DESTRUCTOR_CALLS,
+    )
+    .expect_err("an unjoined destructor call on a live reap path escaped the census");
+    assert_eq!(
+        unjoined_failures,
+        ["+ kernel/src/syscall/wait.rs :: fn complete_wait  (1 occurrences, expected none)"]
+    );
+
+    // Mutation 2: the join's reap arm deleted.
+    let deleted_reap_arm = wait.replacen(
+        "                match manager.reap_row(child_pid, reaper, exit_code) {",
+        "                match manager.reap_row_disabled(child_pid, reaper, exit_code) {",
+        1,
+    );
+    assert_ne!(deleted_reap_arm, wait, "deleted-reap-arm mutation anchor");
+    let deleted_reap_arm =
+        with_replaced_source(&sources, "kernel/src/syscall/wait.rs", deleted_reap_arm);
+    let deleted_failures = validate_census(
+        &census(&deleted_reap_arm, |source, mask| {
+            method_call_offsets(source, mask, "reap_row")
+        }),
+        JOIN_REAP_ARM_CALLS,
+    )
+    .expect_err("a deleted reap arm escaped the census");
+    assert_eq!(
+        deleted_failures,
+        ["- kernel/src/syscall/wait.rs :: fn complete_wait  (expected 1, found none)"]
+    );
+}
+
+/// P6a condition C8 and the #609 lesson: the retire arm's PM acquisition must
+/// never migrate into a masked window or a window that already holds the
+/// deferred-reclaim queue, and the `Process` destructor it can trigger must run
+/// after the guard is released.
+///
+/// This is the one lock-order hazard the phase introduces. It adds no lock
+/// *edge* — `live_row_names_root` already takes PM one step earlier in the same
+/// drain iteration — but it is the first time the drain path can drop a row.
+#[test]
+fn p6a_retire_arm_stays_outside_masked_and_queue_held_windows() {
+    let process_task = repo_text("kernel/src/task/process_task.rs");
+    let drain = function_body(&process_task, "reclaim_deferred_process_resources_for_pass");
+    let mask = code_mask(drain);
+
+    let retire_calls = call_offsets(drain, &mask, "retire_row");
+    assert_eq!(
+        retire_calls.len(),
+        1,
+        "the drain must contain exactly one retire arm"
+    );
+
+    // Neither the retire arm nor its PM acquisition may live inside an
+    // interrupt-masked closure.
+    for offset in call_offsets(drain, &mask, "arch_without_interrupts") {
+        let block = braced_block(drain, &mask, offset).expect("masked closure body");
+        assert!(
+            !block.contains("retire_row"),
+            "the retire arm migrated into a masked window"
+        );
+        assert!(
+            !block.contains("crate::process::manager()"),
+            "the retire arm's PM acquisition migrated into a masked window"
+        );
+    }
+
+    // Between taking PM and dropping the evicted row, the drain touches no queue
+    // lock: PM is never held across the loop's next PENDING acquisition.
+    let acquisition = drain
+        .find("let mut manager_guard = crate::process::manager();")
+        .expect("retire-arm PM acquisition");
+    let release = drain[acquisition..]
+        .find("drop(evicted);")
+        .expect("retire-arm row drop");
+    let window = &drain[acquisition..acquisition + release];
+    for forbidden in [
+        "PENDING_PROCESS_RECLAIMS",
+        "PARKED_PROCESS_RECLAIMS",
+        ".lock()",
+        ".try_lock()",
+        "arch_without_interrupts",
+    ] {
+        assert!(
+            !window.contains(forbidden),
+            "the retire arm's PM window gained {forbidden}"
+        );
+    }
+
+    // The row destructor runs after the guard: the evicted row is bound under PM
+    // and dropped outside it.
+    assert!(
+        window.contains("evicted =\n                                manager.retire_row(")
+            || window.contains("evicted = manager.retire_row("),
+        "the retire arm must hand the removed row back rather than drop it under PM"
+    );
+    assert!(
+        drain[acquisition..acquisition + release].matches('}').count() >= 2,
+        "the retire arm's PM guard must be scoped and released before the row is dropped"
+    );
+
+    // The abandon path settles the same latch and declines rather than
+    // re-entering PM, so a violated enqueue contract is a counted leak and never
+    // a deadlock (P6a condition C2, path (c)).
+    let abandon = function_body(&process_task, "settle_abandoned_retirement");
+    assert!(
+        abandon.contains("process_manager_held_on_current_cpu()"),
+        "the abandon-path settle must decline when PM is already held"
+    );
+    assert!(
+        abandon.contains("retire_row") && abandon.contains("drop(evicted);"),
+        "the abandon-path settle must use the retire arm and drop the row outside PM"
+    );
+    let push = function_body(&process_task, "push_pending_or_abandon");
+    assert!(
+        push.contains("RECLAIM_ABANDONED_UNQUEUED") && push.contains("settle_abandoned_retirement"),
+        "an abandoned reclaim must be counted and must settle its row"
+    );
+
+    // Mutation: the retire arm moved inside the masked queue closure.
+    let migrated = process_task.replacen(
+        "        let reclaim = crate::arch_without_interrupts(|| {\n            let mut pending = PENDING_PROCESS_RECLAIMS.lock();",
+        "        let reclaim = crate::arch_without_interrupts(|| {\n            let mut pending = PENDING_PROCESS_RECLAIMS.lock();\n            let _ = crate::process::manager();",
+        1,
+    );
+    assert_ne!(migrated, process_task, "masked-window mutation anchor");
+    let migrated_drain =
+        function_body(&migrated, "reclaim_deferred_process_resources_for_pass").to_owned();
+    let migrated_mask = code_mask(&migrated_drain);
+    let migrated_masked_windows: Vec<_> =
+        call_offsets(&migrated_drain, &migrated_mask, "arch_without_interrupts")
+            .into_iter()
+            .filter_map(|offset| braced_block(&migrated_drain, &migrated_mask, offset))
+            .filter(|block| block.contains("crate::process::manager()"))
+            .collect();
+    assert_eq!(
+        migrated_masked_windows.len(),
+        1,
+        "a PM acquisition moved into the masked queue window must be visible to this ratchet"
     );
 }

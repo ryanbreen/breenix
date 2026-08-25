@@ -91,6 +91,17 @@ impl ProcessRowMap for BTreeMap<ProcessId, Process> {
     }
 }
 
+/// Outcome of the two-event join's reap arm.
+pub(crate) enum ReapOutcome {
+    /// This caller installed the reap claim, so it owns the status it read. The
+    /// payload carries the row when the join completed on this arm, for the
+    /// caller to drop after releasing PM.
+    Claimed(Option<Process>),
+    /// The row was gone, or another waiter had already claimed it. The caller
+    /// reaped nothing and must not report a status.
+    Refused,
+}
+
 /// Process manager handles all processes in the system
 pub struct ProcessManager {
     /// All processes indexed by PID
@@ -1381,43 +1392,126 @@ impl ProcessManager {
     }
 
     /// Reap arm of the two-event join: record that `reaper` collected `status`
-    /// for `pid`.
+    /// for `pid`, then complete the join if retirement already landed.
     ///
-    /// **The join is not installed in this PR** — the reap still removes the row
-    /// unconditionally through `remove_process` in the same PM acquisition, so
-    /// retention is byte-for-byte what it was. This writes the fact the join will
-    /// read. It is a tombstone-VISIBLE reader by construction: the row it claims
-    /// is the one it is turning into a tombstone, and a second reaper of the same
-    /// row must see the existing claim rather than a `None` from a blind lookup.
-    pub fn claim_reap(&mut self, pid: ProcessId, reaper: ProcessId, status: i32) {
-        if let Some(row) = self.processes.row_including_tombstones_mut(&pid) {
-            row.claim_reap(reaper, status);
+    /// Tombstone-VISIBLE by construction: the row it claims is the one it is
+    /// turning into a tombstone, and a second reaper of the same row must see the
+    /// existing claim rather than a `None` from a blind lookup.
+    ///
+    /// **P6a condition C3.** The claim is the arbiter for concurrent waiters, and
+    /// it is performed in this PM acquisition *before* the caller copies any
+    /// status to userspace. Exactly one caller gets `Claimed`; every other one
+    /// gets `Refused` and must return `ECHILD` without copying.
+    ///
+    /// **P6a condition C8.** The removed row is handed back rather than dropped
+    /// here, so the caller runs the `Process` destructor after releasing the (on
+    /// aarch64, DAIF-masked) PM guard.
+    #[must_use]
+    pub(crate) fn reap_row(&mut self, pid: ProcessId, reaper: ProcessId, status: i32) -> ReapOutcome {
+        let Some(row) = self.processes.row_including_tombstones_mut(&pid) else {
+            return ReapOutcome::Refused;
+        };
+        if !row.claim_reap(reaper, status) {
+            return ReapOutcome::Refused;
         }
+        crate::trace_count!(crate::tracing::providers::teardown::TOMBSTONE_RESIDENT);
+        let evicted = self.remove_row_joined(pid);
+        if evicted.is_some() {
+            crate::trace_count!(crate::tracing::providers::teardown::TOMBSTONE_JOIN_REAP_SECOND);
+        }
+        ReapOutcome::Claimed(evicted)
     }
 
-    /// Retirement arm of the two-event join: latch that `pid`'s deferred
-    /// resources have been reclaimed.
+    /// Retirement arm of the two-event join: settle one of `pid`'s outstanding
+    /// retirement receipts, then complete the join if the reap already landed.
     ///
     /// Tombstone-VISIBLE: by the time a receipt retires, the row may already have
     /// been reaped, and a blind lookup would silently drop the latch. `Process`
-    /// refuses the latch on a row that has not terminated, so a receipt naming a
-    /// live row cannot mark it retired.
-    pub fn note_row_retired(&mut self, pid: ProcessId) {
-        if let Some(row) = self.processes.row_including_tombstones_mut(&pid) {
-            row.mark_retired();
+    /// refuses the latch on a row that has not terminated and while any other
+    /// receipt naming the row is still outstanding (condition C4), so a foreign
+    /// receipt cannot free the row out from under a live obligation.
+    ///
+    /// Returns the removed row for the caller to drop outside PM (condition C8).
+    #[must_use]
+    pub(crate) fn retire_row(&mut self, pid: ProcessId) -> Option<Process> {
+        let row = self.processes.row_including_tombstones_mut(&pid)?;
+        if !row.settle_retirement_receipt() {
+            return None;
         }
+        let evicted = self.remove_row_joined(pid);
+        if evicted.is_some() {
+            crate::trace_count!(crate::tracing::providers::teardown::TOMBSTONE_JOIN_RETIRE_SECOND);
+        }
+        evicted
     }
 
-    /// Remove a terminated process from the process table (reap).
-    /// Called after waitpid() has collected the exit status.
-    pub fn remove_process(&mut self, pid: ProcessId) {
-        if self.processes.remove(&pid).is_some() {
-            if self.designated_init == Some(pid) {
-                self.designated_init = None;
-                crate::tracing::providers::teardown::record_init_designation_retired();
-            }
-            crate::task::process_task::note_process_row_removed();
+    /// The two-event join's removal, and the only conditional path into the row
+    /// destructor. Reached from `reap_row` and `retire_row` and from nowhere
+    /// else: `tests/teardown_structure.rs` pins that by census shape.
+    ///
+    /// Removes the row only when every term of the retention rule holds — the
+    /// row was reaped, its retirement obligations have all ended, and its exit
+    /// ledger is settled. Otherwise the row stays resident as a tombstone and the
+    /// other arm removes it when it lands.
+    #[must_use]
+    fn remove_row_joined(&mut self, pid: ProcessId) -> Option<Process> {
+        let row = self.processes.row_including_tombstones_mut(&pid)?;
+        if !(row.is_reaped() && row.is_retired() && row.ledger_settled()) {
+            return None;
         }
+        let evicted = self.take_row_unconditionally(pid);
+        if evicted.is_some() {
+            crate::trace_count!(crate::tracing::providers::teardown::TOMBSTONE_REMOVED);
+            crate::trace_count_add!(
+                crate::tracing::providers::teardown::TOMBSTONE_RESIDENT,
+                u64::MAX
+            );
+        }
+        evicted
+    }
+
+    /// Unconditional row destructor.
+    ///
+    /// The sole clearer of `designated_init` and the sole bumper of
+    /// `ROW_REMOVAL_EPOCH`, for rows that were never reaped and will never be
+    /// retired: the creation-failure retire in `hold_init_publication`, the
+    /// `p1_row_epoch_gate` harness, and the in-kernel teardown oracles. Live
+    /// reaps do **not** come here — they go through the join.
+    pub fn remove_process(&mut self, pid: ProcessId) {
+        drop(self.take_row_unconditionally(pid));
+    }
+
+    /// The single raw removal of a row from the process-row map, plus the two
+    /// PM-owned effects that must accompany it. Both entry points above delegate
+    /// here, so `PROCESS_ROW_MAP_MUTATIONS`, `DESIGNATED_INIT_WRITES` and
+    /// `ROW_REMOVAL_EPOCH_BUMPS` keep exactly one row each.
+    ///
+    /// Returns the row so a caller in a masked window can drop it later.
+    #[must_use]
+    fn take_row_unconditionally(&mut self, pid: ProcessId) -> Option<Process> {
+        let row = self.processes.remove(&pid)?;
+        if self.designated_init == Some(pid) {
+            self.designated_init = None;
+            crate::tracing::providers::teardown::record_init_designation_retired();
+        }
+        crate::task::process_task::note_process_row_removed();
+        Some(row)
+    }
+
+    /// Rows that have been reaped and are waiting on the other join arm. The
+    /// tombstone-VISIBLE census reader that cross-checks the `TOMBSTONE_RESIDENT`
+    /// gauge against the map itself.
+    ///
+    /// Boot-test only, and deliberately so: in production the gauge *is* the
+    /// reader — it is registered in the teardown provider's inventory and read
+    /// through it — and a row-walking census on the production path would be a
+    /// second authority for the same fact.
+    #[cfg(feature = "boot_tests")]
+    pub(crate) fn tombstone_row_count(&self) -> usize {
+        self.processes
+            .values()
+            .filter(|row| row.is_tombstone())
+            .count()
     }
 
     /// Get a reference to a process
@@ -1464,6 +1558,12 @@ impl ProcessManager {
                 }
                 drop(process.stack.take());
                 process.pending_old_page_tables.clear();
+                // P6a condition C2, path (b): this arm produces no receipt, so
+                // no `record_reclaim` will ever arrive for the work it just did.
+                // The latch is still refused while a receipt from this row's
+                // first exit is outstanding, so a repeat exit cannot retire a row
+                // whose resources are still in flight.
+                process.note_resources_absent();
             } else {
                 // Fault exits always defer: the two-epoch grace covers both a
                 // peer's pre-shadow-stamp dispatch window and hardware root lag.
@@ -1555,21 +1655,34 @@ impl ProcessManager {
         }
     }
 
-    /// Get all process IDs
+    /// Get all process IDs.
+    ///
+    /// Tombstone-blind, like every other live-process query: once a row is
+    /// reaped it is no longer a process anyone may enumerate.
     #[allow(dead_code)]
     pub fn all_pids(&self) -> Vec<ProcessId> {
-        self.processes.keys().cloned().collect()
+        self.processes
+            .iter()
+            .filter(|(_, row)| !row.is_tombstone())
+            .map(|(pid, _)| *pid)
+            .collect()
     }
 
-    /// Get process count
+    /// Get process count. Tombstone-blind.
     #[allow(dead_code)]
     pub fn process_count(&self) -> usize {
-        self.processes.len()
+        self.processes
+            .values()
+            .filter(|row| !row.is_tombstone())
+            .count()
     }
 
-    /// Iterate over all processes (for diagnostics)
+    /// Iterate over all processes (for diagnostics). Tombstone-blind.
     pub fn iter_processes(&self) -> impl Iterator<Item = (ProcessId, &Process)> {
-        self.processes.iter().map(|(pid, p)| (*pid, p))
+        self.processes
+            .iter()
+            .filter(|(_, row)| !row.is_tombstone())
+            .map(|(pid, p)| (*pid, p))
     }
 
     /// Remove a process from the ready queue
@@ -1678,10 +1791,15 @@ impl ProcessManager {
         log::info!("Ready queue: {:?}", self.ready_queue);
     }
 
-    /// Get all processes (for contract testing)
+    /// Get all processes (for contract testing). Tombstone-blind: signal
+    /// delivery, the pty pgid scan and the contract runner all read this, and a
+    /// reaped row is not a process any of them may act on.
     #[allow(dead_code)]
     pub fn all_processes(&self) -> Vec<&Process> {
-        self.processes.values().collect()
+        self.processes
+            .values()
+            .filter(|row| !row.is_tombstone())
+            .collect()
     }
 
     /// Fork a process - create a child process that's a copy of the parent
