@@ -1654,6 +1654,44 @@ pub(crate) fn boot_reclaim_queue_census() -> (usize, usize) {
     (live, parked)
 }
 
+/// Per-blocker census of the pending deferred-reclaim queue.
+///
+/// Returns `(epoch, hardware, shadow, selectable)`.
+///
+/// A receipt still queued once the drain has nothing left to do is either held
+/// by a term of the root proof — the retirement fence has not elapsed, the root
+/// is the one currently installed in hardware, or a per-CPU shadow slot still
+/// names it — or it is one the drain could have taken and did not. Those are
+/// different faults with the same queue depth, and #653 is what happens when
+/// nobody can tell them apart: a strand and a physically unretirable root both
+/// read as "pending is not zero".
+///
+/// This reports the same lock-free predicate the selection loop uses to CHOOSE a
+/// receipt, under the same queue lock inside the same `ReclaimProofScope`, so
+/// `selectable` is exactly "the drain would have taken this on its next pass".
+/// It never touches the process manager, so it adds no lock-order edge, and the
+/// two blockers evaluated outside the lock (`Cached`, `LiveRow`) cannot appear
+/// here — a receipt held by either of those fails its proof three times and
+/// lands in the parked queue, which the settled census reports separately.
+#[cfg(feature = "boot_tests")]
+pub fn boot_pending_blocker_census() -> (u32, u32, u32, u32) {
+    crate::arch_without_interrupts(|| {
+        let pending = PENDING_PROCESS_RECLAIMS.lock();
+        let _proof_scope = crate::tracing::providers::teardown::ReclaimProofScope::enter();
+        let snapshot = scheduler::RetirementSnapshot::capture();
+        let mut census = (0u32, 0u32, 0u32, 0u32);
+        for reclaim in pending.iter() {
+            match reclaim.lock_free_root_proof(&snapshot, false).blocker() {
+                Some(RootBlocker::Epoch) => census.0 = census.0.saturating_add(1),
+                Some(RootBlocker::Hardware) => census.1 = census.1.saturating_add(1),
+                Some(RootBlocker::Shadow) => census.2 = census.2.saturating_add(1),
+                _ => census.3 = census.3.saturating_add(1),
+            }
+        }
+        census
+    })
+}
+
 #[cfg(feature = "boot_tests")]
 fn boot_force_blocker(pid: u64, blocker: Option<RootBlocker>) {
     BOOT_RECLAIM_FORCED_PID.store(pid, Ordering::Release);

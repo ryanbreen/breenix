@@ -113,8 +113,19 @@ readonly TOMBSTONE_CENSUS_EMISSIONS=3
 # the drain running during the userspace phase, a row may retire before or after
 # its reap and the arm that completes the join differs accordingly. Their SUM is
 # invariant and is asserted below.
+#
+# `pending` is NOT pinned to zero, and the reason is a measurement rather than a
+# concession. A boot on the fixed kernel drains seventeen of the eighteen
+# receipts #653 used to leak and leaves exactly one, because a page-table root
+# cannot be retired while it is the root the CPU currently has installed — and
+# after the last userspace thread exits, nothing on this uniprocessor profile
+# ever loads another one. That receipt is not a leak the drain could have taken;
+# refusing it is the root proof working. What must be pinned is that NOTHING
+# RETIRABLE is left behind, which is what `pend_selectable=0` and the
+# depth-conservation check below assert, and which the strand would have
+# violated with seventeen selectable receipts.
 readonly TOMBSTONE_JOINED_REMOVALS=$(( TOMBSTONE_FIXTURE_REMOVALS + PRODUCTION_REAPED_ROWS ))
-TOMBSTONE_QUIESCE_PATTERN="\\[TOMBSTONE_QUIESCE:resident=0:removed=${TOMBSTONE_JOINED_REMOVALS}:reap_second=[0-9]+:retire_second=[0-9]+:abandoned_unqueued=1:pending=0:parked=0\\]"
+TOMBSTONE_QUIESCE_PATTERN="\\[TOMBSTONE_QUIESCE:resident=0:removed=${TOMBSTONE_JOINED_REMOVALS}:reap_second=[0-9]+:retire_second=[0-9]+:abandoned_unqueued=1:pending=[0-9]+:parked=0\\]"
 # (3) #653 delta (3) — the drain's own refusal counters, which existed before the
 # fix and were printed by nothing: a whole-boot loss of production reclamation
 # was inferable only three phases later from a tombstone census read alongside a
@@ -128,7 +139,15 @@ TOMBSTONE_QUIESCE_PATTERN="\\[TOMBSTONE_QUIESCE:resident=0:removed=${TOMBSTONE_J
 # production selection cap firing; its exact value is a property of how many
 # receipts happened to be ready per pass rather than of the claim, so it is
 # shape-pinned rather than value-pinned.
-RECLAIM_DRAIN_PATTERN='\[RECLAIM_DRAIN:nested=1:context_violations=0:selection_capped=[0-9]+:injected=1\]'
+#
+# The four `pend_*` fields attribute the settled queue depth term by term, using
+# the same lock-free predicate the drain uses to choose a receipt.
+# `pend_selectable=0` is the load-bearing one: a receipt the drain could have
+# taken and did not is the #653 signature, and the strand would print seventeen
+# of them here. The other three are the roots that are legitimately unretirable
+# at quiesce and are left shape-pinned, because which term holds a root is a
+# property of what the CPU happens to have installed.
+RECLAIM_DRAIN_PATTERN='\[RECLAIM_DRAIN:nested=1:context_violations=0:selection_capped=[0-9]+:injected=1:pend_epoch=[0-9]+:pend_hw=[0-9]+:pend_shadow=[0-9]+:pend_selectable=0\]'
 SCHED_STRAND_ORACLE_PATTERN='\[SCHED_STRAND_ORACLE:x86:samples=[1-9][0-9]*:checked=[1-9][0-9]*:stranded=0:running_shape=[0-9]+:ready_shape=[0-9]+:resolved_production=[0-9]+:resolved_exercised=[0-9]+:worst_dwell_ms=[0-9]+:overflow=[0-9]+:worst_nonprogress_ms=[0-9]+:nonprogress=[0-9]+:queued_on_nondispatching_cpu=[0-9]+:worst_queued_nondispatch_ms=[0-9]+:worst_cpu_scheduler_silence_ms=[0-9]+:worst_silence_cpu=[0-9]+\]'
 CENSUS_WIDEN_ORACLE_LITERAL='[CENSUS_WIDEN_ORACLE:x86:arm=none:reason=uniprocessor_no_dispatching_peer:baseline_reported=0:axes=6:SKIP]'
 # The boot-test oracle deliberately drives the detector exactly once; the forbidden exact marker is separately pinned absent below.
@@ -419,6 +438,21 @@ for i in $(seq 1 "$COUNT"); do
     # path still executes.
     test "$(grep -h -E -c "$RECLAIM_DRAIN_PATTERN" \
         "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 1
+    RECLAIM_DRAIN_LINE=$(grep -h -E "$RECLAIM_DRAIN_PATTERN" \
+        "$OUTPUT_DIR"/serial_*.txt | tail -1)
+    # Depth conservation: every receipt still queued at quiesce is named by a
+    # root-proof term. An unattributed receipt is a receipt the drain left behind
+    # for a reason nothing in this serial states, which is the condition #653 was
+    # filed under and is gate-failing here.
+    QUIESCE_PENDING=$(printf '%s\n' "$QUIESCE_LINE" | \
+        sed -n 's/.*:pending=\([0-9][0-9]*\):.*/\1/p')
+    PEND_EPOCH=$(printf '%s\n' "$RECLAIM_DRAIN_LINE" | \
+        sed -n 's/.*:pend_epoch=\([0-9][0-9]*\):.*/\1/p')
+    PEND_HW=$(printf '%s\n' "$RECLAIM_DRAIN_LINE" | \
+        sed -n 's/.*:pend_hw=\([0-9][0-9]*\):.*/\1/p')
+    PEND_SHADOW=$(printf '%s\n' "$RECLAIM_DRAIN_LINE" | \
+        sed -n 's/.*:pend_shadow=\([0-9][0-9]*\):.*/\1/p')
+    test "$QUIESCE_PENDING" -eq "$(( PEND_EPOCH + PEND_HW + PEND_SHADOW ))"
     # x86 has no production designated init, so the runtime refusal never fires
     # and the whole-boot walk is legitimately zero here; this is the `None`-arm
     # evidence, not the whole-boot-walk evidence, and it becomes non-zero only
@@ -455,8 +489,6 @@ for i in $(seq 1 "$COUNT"); do
     echo "$TOMBSTONE_JOIN_ORACLE_LITERAL"
     echo "$TOMBSTONE_CENSUS_USERSPACE_END_LINE"
     echo "$QUIESCE_LINE"
-    RECLAIM_DRAIN_LINE=$(grep -h -E "$RECLAIM_DRAIN_PATTERN" \
-        "$OUTPUT_DIR"/serial_*.txt | tail -1)
     echo "$RECLAIM_DRAIN_LINE"
     if grep -qE '\[BOOT_TESTS:FAIL|KERNEL PANIC|panic!' \
         "$OUTPUT_DIR"/serial_*.txt; then

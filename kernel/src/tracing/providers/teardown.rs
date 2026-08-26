@@ -837,12 +837,18 @@ pub fn x86_settled_tombstone_census() {
 /// pin on this line would be vacuous.
 #[cfg(all(feature = "boot_tests", target_arch = "x86_64"))]
 fn emit_reclaim_drain_census() {
+    let (epoch, hardware, shadow, selectable) =
+        crate::task::process_task::boot_pending_blocker_census();
     crate::serial_println!(
-        "[RECLAIM_DRAIN:nested={}:context_violations={}:selection_capped={}:injected={}]",
+        "[RECLAIM_DRAIN:nested={}:context_violations={}:selection_capped={}:injected={}:pend_epoch={}:pend_hw={}:pend_shadow={}:pend_selectable={}]",
         RECLAIM_DRAIN_NESTED_REFUSED.aggregate(),
         RECLAIM_CONTEXT_VIOLATIONS.aggregate(),
         RECLAIM_PASS_SELECTION_CAPPED.aggregate(),
         crate::task::process_task::boot_injected_nested_refusals(),
+        epoch,
+        hardware,
+        shadow,
+        selectable,
     );
 }
 
