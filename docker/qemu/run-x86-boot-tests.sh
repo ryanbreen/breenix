@@ -86,7 +86,7 @@ TOMBSTONE_CENSUS_USERSPACE_END_LITERAL='[TOMBSTONE_CENSUS:resident=4:removed=2:r
 # `live_q=18:parked_q=0:drain_active=true:nested=18420`, i.e. main leaks the same
 # eighteen deferred reclaims with their page tables and frames unreleased, and
 # P6a is what finally makes four of them visible as retained rows with a counter
-# naming them. Filed as its own issue; the retention fields are pinned exactly so
+# naming them. Filed as #653; the retention fields are pinned exactly so
 # a regression moves them, while `pending` is a bounded attribution field because
 # its depth is a property of that pre-existing defect rather than of this claim.
 TOMBSTONE_QUIESCE_PATTERN='\[TOMBSTONE_QUIESCE:resident=4:removed=2:reap_second=1:retire_second=1:abandoned_unqueued=1:pending=[0-9]+:parked=0\]'
