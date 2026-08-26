@@ -277,7 +277,75 @@ static ROW_REMOVAL_EPOCH: AtomicU64 = AtomicU64::new(0);
 /// forever on a queue mutex whose owner no longer exists. An abandoned drain
 /// leaves the flag set on purpose: every later drain then refuses, so the
 /// failure mode is a bounded leak instead of a hard hang.
+///
+/// #653 narrowed what "abandoned" can mean. A *fatal fault* is still allowed to
+/// latch this flag forever, and that is still the right answer: the dead owner
+/// may hold a receipt it detached from the pending queue, so refusing is safer
+/// than letting a successor double-mutate a root. But a *scheduler handoff* used
+/// to abandon a pass just as effectively and far more routinely — x86 dispatches
+/// to idle by rewriting the interrupt frame to restart `idle_loop`, discarding
+/// the mid-drain continuation and the release with it — and one such preemption
+/// per boot turned production reclamation off for the rest of that boot. The
+/// claim window is now taken with preemption disabled, so that route is closed
+/// by construction and the latch is reserved for the fatal case it was written
+/// for. The residual is reported: see `RECLAIM_DRAIN_NESTED_REFUSED` and the
+/// `[RECLAIM_DRAIN:...]` census.
 static RECLAIM_DRAIN_ACTIVE: AtomicBool = AtomicBool::new(false);
+
+/// Selections a single *production* drain pass may take before it releases the
+/// claim and lets the scheduler run.
+///
+/// #653 delta (2). The claim-to-release interval is now non-preemptible, so its
+/// length is a scheduling property and not merely a throughput one. Each
+/// selection is already bounded — `reclaim_bounded` retires at most
+/// `RETIRE_FRAME_BUDGET` frames per receipt — but the pass itself was not, so a
+/// pass could hold the CPU for every receipt that was queued when it started.
+/// Four keeps the window to four bounded retire steps while leaving every
+/// production caller enough per-invocation throughput to stay ahead of its
+/// enqueue rate: the slowest re-entry cadence in the tree is x86's idle loop at
+/// roughly one call per timer tick, and process exits are orders of magnitude
+/// rarer than that. Boot-owned passes are deliberately uncapped — they feed
+/// `BOOT_RECLAIM_PASS_SELECTIONS` and the oracles' drain-to-quiesce loops, whose
+/// meaning is "this pass took everything it could".
+const PRODUCTION_PASS_SELECTION_CAP: u32 = 4;
+
+/// Injected nested refusals observed by `boot_prove_nested_drain_refusal`.
+#[cfg(feature = "boot_tests")]
+static BOOT_INJECTED_NESTED_REFUSALS: AtomicU64 = AtomicU64::new(0);
+
+/// Disable preemption for the production drain's claim window.
+///
+/// #653. The claim below is a bare boolean whose only release is the tail of the
+/// function that takes it. A context switch taken from inside the pass does not
+/// unwind and does not resume: x86's dispatcher rewrites the interrupt frame to
+/// restart `idle_loop` rather than resume the saved continuation, so the pending
+/// release is discarded and every later drain refuses for the rest of the boot.
+/// Disabling preemption before the claim removes the only routine way to leave
+/// the interval without releasing it.
+///
+/// Interrupts stay ENABLED. Masking them here would put page-table retirement,
+/// the process-manager lock, the frame allocator and row destructors inside an
+/// IRQ-off window; only the scheduler handoff needs deferring.
+#[inline]
+fn reclaim_preempt_disable() {
+    #[cfg(target_arch = "aarch64")]
+    crate::per_cpu_aarch64::preempt_disable();
+    #[cfg(not(target_arch = "aarch64"))]
+    crate::per_cpu::preempt_disable();
+}
+
+/// Re-enable preemption at the end of the production drain's claim window.
+///
+/// Neither arch's `preempt_enable` schedules of its own accord, so a
+/// `need_resched` raised during the pass is honoured at the next interrupt
+/// return rather than here.
+#[inline]
+fn reclaim_preempt_enable() {
+    #[cfg(target_arch = "aarch64")]
+    crate::per_cpu_aarch64::preempt_enable();
+    #[cfg(not(target_arch = "aarch64"))]
+    crate::per_cpu::preempt_enable();
+}
 
 #[cfg(feature = "boot_tests")]
 static BOOT_RECLAIM_TEST_OWNER: AtomicU64 = AtomicU64::new(0);
@@ -1123,6 +1191,10 @@ pub fn reclaim_deferred_process_resources() {
     if BOOT_RECLAIM_TEST_OWNER.load(Ordering::Acquire) != 0 {
         return;
     }
+    // #653: the bracket opens BEFORE the compare-exchange on purpose. The gap
+    // between a successful claim and a later disable is itself an abandonment
+    // window, and it is the window the strand was taken in.
+    reclaim_preempt_disable();
     if RECLAIM_DRAIN_ACTIVE
         .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
         .is_err()
@@ -1131,11 +1203,13 @@ pub fn reclaim_deferred_process_resources() {
         crate::trace_count!(
             crate::tracing::providers::teardown::RECLAIM_DRAIN_NESTED_REFUSED
         );
+        reclaim_preempt_enable();
         return;
     }
 
     reclaim_deferred_process_resources_for_pass(my_pass, false);
     RECLAIM_DRAIN_ACTIVE.store(false, Ordering::Release);
+    reclaim_preempt_enable();
 }
 
 fn reclaim_deferred_process_resources_for_pass(my_pass: u32, boot_test_owned: bool) {
@@ -1147,6 +1221,11 @@ fn reclaim_deferred_process_resources_for_pass(my_pass: u32, boot_test_owned: bo
     }
     unpark_sweep();
     boot_begin_reclaim_pass(boot_test_owned);
+
+    // #653 delta (2): production passes run inside a non-preemptible bracket, so
+    // the number of receipts one invocation may take is bounded. Boot-owned
+    // passes are uncapped and keep their drain-to-quiesce meaning.
+    let mut production_selections: u32 = 0;
 
     loop {
         #[cfg(feature = "boot_tests")]
@@ -1235,6 +1314,16 @@ fn reclaim_deferred_process_resources_for_pass(my_pass: u32, boot_test_owned: bo
                     );
                     push_pending_or_abandon(reclaim);
                 }
+
+                if !boot_test_owned {
+                    production_selections = production_selections.saturating_add(1);
+                    if production_selections >= PRODUCTION_PASS_SELECTION_CAP {
+                        crate::trace_count!(
+                            crate::tracing::providers::teardown::RECLAIM_PASS_SELECTION_CAPPED
+                        );
+                        break;
+                    }
+                }
             }
             None => break,
         }
@@ -1250,6 +1339,46 @@ pub(crate) fn boot_reclaim_deferred_process_resources() {
             .wrapping_add(1),
     );
     reclaim_deferred_process_resources_for_pass(my_pass, true);
+}
+
+/// #653 delta (3): drive the production nested-refusal arm on purpose, so the
+/// `[RECLAIM_DRAIN:...]` line the gate pins is not a pin on a path that never
+/// executes.
+///
+/// The refusal is the fail-closed residual the fix deliberately keeps: a fatal
+/// fault inside an owned pass still latches the claim, because the abandoned
+/// owner may hold a detached receipt. A residual nobody can see is a residual
+/// nobody can gate on, so this stages the exact condition — the claim already
+/// taken — calls the real production entry point, and reports whether the
+/// refusal counter moved.
+///
+/// Runs from the x86 boot-test gate, in ordinary kernel context with the
+/// boot-test owner clear, the process-manager lock unheld and no scheduler scope
+/// open; every one of those would be refused earlier in the callee and would
+/// make the observation below false rather than silently vacuous.
+#[cfg(feature = "boot_tests")]
+pub fn boot_prove_nested_drain_refusal() -> bool {
+    let before = crate::tracing::providers::teardown::RECLAIM_DRAIN_NESTED_REFUSED.aggregate();
+    if RECLAIM_DRAIN_ACTIVE
+        .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+        .is_err()
+    {
+        return false;
+    }
+    reclaim_deferred_process_resources();
+    RECLAIM_DRAIN_ACTIVE.store(false, Ordering::Release);
+    let observed = crate::tracing::providers::teardown::RECLAIM_DRAIN_NESTED_REFUSED.aggregate()
+        == before.wrapping_add(1);
+    if observed {
+        BOOT_INJECTED_NESTED_REFUSALS.fetch_add(1, Ordering::Relaxed);
+    }
+    observed
+}
+
+/// Injected nested refusals this boot, for the `[RECLAIM_DRAIN:...]` census.
+#[cfg(feature = "boot_tests")]
+pub fn boot_injected_nested_refusals() -> u64 {
+    BOOT_INJECTED_NESTED_REFUSALS.load(Ordering::Relaxed)
 }
 
 #[cfg(feature = "boot_tests")]
@@ -1523,6 +1652,44 @@ pub(crate) fn boot_reclaim_queue_census() -> (usize, usize) {
     let live = crate::arch_without_interrupts(|| PENDING_PROCESS_RECLAIMS.lock().len());
     let parked = crate::arch_without_interrupts(|| PARKED_PROCESS_RECLAIMS.lock().len());
     (live, parked)
+}
+
+/// Per-blocker census of the pending deferred-reclaim queue.
+///
+/// Returns `(epoch, hardware, shadow, selectable)`.
+///
+/// A receipt still queued once the drain has nothing left to do is either held
+/// by a term of the root proof — the retirement fence has not elapsed, the root
+/// is the one currently installed in hardware, or a per-CPU shadow slot still
+/// names it — or it is one the drain could have taken and did not. Those are
+/// different faults with the same queue depth, and #653 is what happens when
+/// nobody can tell them apart: a strand and a physically unretirable root both
+/// read as "pending is not zero".
+///
+/// This reports the same lock-free predicate the selection loop uses to CHOOSE a
+/// receipt, under the same queue lock inside the same `ReclaimProofScope`, so
+/// `selectable` is exactly "the drain would have taken this on its next pass".
+/// It never touches the process manager, so it adds no lock-order edge, and the
+/// two blockers evaluated outside the lock (`Cached`, `LiveRow`) cannot appear
+/// here — a receipt held by either of those fails its proof three times and
+/// lands in the parked queue, which the settled census reports separately.
+#[cfg(feature = "boot_tests")]
+pub fn boot_pending_blocker_census() -> (u32, u32, u32, u32) {
+    crate::arch_without_interrupts(|| {
+        let pending = PENDING_PROCESS_RECLAIMS.lock();
+        let _proof_scope = crate::tracing::providers::teardown::ReclaimProofScope::enter();
+        let snapshot = scheduler::RetirementSnapshot::capture();
+        let mut census = (0u32, 0u32, 0u32, 0u32);
+        for reclaim in pending.iter() {
+            match reclaim.lock_free_root_proof(&snapshot, false).blocker() {
+                Some(RootBlocker::Epoch) => census.0 = census.0.saturating_add(1),
+                Some(RootBlocker::Hardware) => census.1 = census.1.saturating_add(1),
+                Some(RootBlocker::Shadow) => census.2 = census.2.saturating_add(1),
+                _ => census.3 = census.3.saturating_add(1),
+            }
+        }
+        census
+    })
 }
 
 #[cfg(feature = "boot_tests")]
@@ -3128,6 +3295,14 @@ pub fn run_x86_reclaim_progress_gate() {
         crate::serial_println!("[TEST:process:reclaim_progress_gate:FAIL:{:?}]", result);
     }
     assert!(result.is_pass(), "x86 reclaim progress gate failed");
+
+    // #653 delta (3). Drive the fail-closed residual once, here, so the
+    // `injected` field of the `[RECLAIM_DRAIN:...]` census names a refusal arm
+    // that provably executed this boot.
+    assert!(
+        boot_prove_nested_drain_refusal(),
+        "injected nested drain refusal was not counted"
+    );
 }
 
 #[cfg(feature = "boot_tests")]

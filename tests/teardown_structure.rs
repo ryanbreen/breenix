@@ -3040,6 +3040,10 @@ const DEFERRED_RECLAIM_DRAIN_SITES: &[(&str, &str, usize)] = &[
     ("kernel/src/arch_impl/aarch64/syscall_entry.rs", "fn sys_fork_aarch64", 1),
     ("kernel/src/interrupts/context_switch.rs", "fn idle_loop", 1),
     ("kernel/src/process/mod.rs", "fn exit_process_and_retire", 1),
+    // #653 delta (3): the boot-test arm that drives the nested-refusal residual
+    // through the real production entry point. It is a test caller, not a
+    // production one, and it is cfg'd to the boot-test profile.
+    ("kernel/src/task/process_task.rs", "#[cfg(feature=boot_tests)] fn boot_prove_nested_drain_refusal", 1),
 ];
 /// Whole-tree writes include the boot-test alias arm. The separate production
 /// subset check in the page-table validator remains fixed to clone.rs +
@@ -5360,11 +5364,13 @@ fn validate_frame_ledger_counter_inventory(provider: &str) -> Result<(), ()> {
     // (binding condition C2 path (c), which requires `abandon_unqueued_reclaim`
     // to gain a counter in this PR) = 86. The two TOMBSTONE_JOIN counters were
     // already declared in PR-1 and are not part of this delta.
+    // #653 adds RECLAIM_PASS_SELECTION_CAPPED, the production drain's
+    // selection-cap counter, for 87.
     (declared == expected
         && EXPECTED
             .iter()
             .all(|counter| inventory.contains(&format!("&{counter},")))
-        && provider.contains("pub const COUNTER_COUNT: usize = 86;"))
+        && provider.contains("pub const COUNTER_COUNT: usize = 87;"))
     .then_some(())
     .ok_or(())
 }
@@ -5623,11 +5629,13 @@ fn validate_process_page_table_counter_inventory(sources: &[(String, String)]) -
     // (binding condition C2 path (c), which requires `abandon_unqueued_reclaim`
     // to gain a counter in this PR) = 86. The two TOMBSTONE_JOIN counters were
     // already declared in PR-1 and are not part of this delta.
+    // #653 adds RECLAIM_PASS_SELECTION_CAPPED, the production drain's
+    // selection-cap counter, for 87.
     if declared != expected
         || !EXPECTED
             .iter()
             .all(|counter| inventory.contains(&format!("&{counter},")))
-        || !provider.contains("pub const COUNTER_COUNT: usize = 86;")
+        || !provider.contains("pub const COUNTER_COUNT: usize = 87;")
     {
         return Err(());
     }
@@ -6061,8 +6069,9 @@ fn validate_root_proof_architecture_legs(sources: &[(String, String)]) -> Result
     Ok(())
 }
 
-/// Exact production drain membership. Both x86 calls are normal-context sites;
-/// the interrupt-return function is explicitly excluded.
+/// Exact drain membership. Both x86 production calls are normal-context sites;
+/// the interrupt-return function is explicitly excluded. The one boot-test
+/// caller is the #653 refusal injection, which must stay a single call.
 fn validate_deferred_reclaim_drain_sites(
     sources: &[(String, String)],
 ) -> Result<(), Vec<String>> {
@@ -6586,10 +6595,12 @@ fn frame_ledger_return_and_initialization_ratchets_are_exact() {
     // (binding condition C2 path (c), which requires `abandon_unqueued_reclaim`
     // to gain a counter in this PR) = 86. The two TOMBSTONE_JOIN counters were
     // already declared in PR-1 and are not part of this delta.
+    // #653 adds RECLAIM_PASS_SELECTION_CAPPED, the production drain's
+    // selection-cap counter, for 87.
     check(
         &mut failures,
         "COUNTER_COUNT is no longer 86",
-        provider.contains("pub const COUNTER_COUNT: usize = 86;"),
+        provider.contains("pub const COUNTER_COUNT: usize = 87;"),
     );
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
@@ -7827,7 +7838,9 @@ fn all_phase_zero_counters_have_registered_readers_and_honest_runtime_gates() {
     // (binding condition C2 path (c), which requires `abandon_unqueued_reclaim`
     // to gain a counter in this PR) = 86. The two TOMBSTONE_JOIN counters were
     // already declared in PR-1 and are not part of this delta.
-    assert_eq!(declarations.len(), 86);
+    // #653 adds RECLAIM_PASS_SELECTION_CAPPED, the production drain's
+    // selection-cap counter, for 87.
+    assert_eq!(declarations.len(), 87);
     assert_eq!(
         readers, declarations,
         "every counter must have an inventory reader"
@@ -11212,6 +11225,133 @@ fn reclaim_nesting_validator_rejects_context_violation_conflation() {
         static COUNTERS: [&Counter; 1] = [&RECLAIM_DRAIN_NESTED_REFUSED,];
     "#;
     assert!(validate_reclaim_nesting_counter(process, provider).is_err());
+}
+
+/// #653. The production claim window is entered non-preemptibly and left
+/// preemptible, proven by shape rather than by comment.
+///
+/// The claim is a bare boolean whose only release is the tail of the function
+/// that takes it, and a context switch taken from inside the pass does not
+/// unwind: the x86 dispatcher restarts `idle_loop` instead of resuming the saved
+/// continuation, so the pending release is discarded and reclamation is off for
+/// the rest of the boot. Two orderings carry the whole fix, and both are pinned
+/// here: the disable must precede the compare-exchange (the gap between a taken
+/// claim and a later disable is itself an abandonment window), and each of the
+/// two exits from the claimed interval must re-enable.
+///
+/// The bracket must also be a preemption bracket and not an interrupt bracket —
+/// masking here would put page-table retirement, the process-manager lock and
+/// row destructors in an IRQ-off window — so the helpers are required to move
+/// the per-CPU preempt count on both arches and the claim body is required to
+/// contain no interrupt masking of its own.
+fn validate_reclaim_preempt_bracket(process_task: &str) -> Result<(), ()> {
+    let body = function_body(process_task, "reclaim_deferred_process_resources");
+    let mask = code_mask(body);
+    let disables = call_offsets(body, &mask, "reclaim_preempt_disable");
+    let enables = call_offsets(body, &mask, "reclaim_preempt_enable");
+    if disables.len() != 1 || enables.len() != 2 {
+        return Err(());
+    }
+    let claim = body.find("RECLAIM_DRAIN_ACTIVE").ok_or(())?;
+    let release = body.rfind("RECLAIM_DRAIN_ACTIVE").ok_or(())?;
+    let refused = body.find("RECLAIM_DRAIN_NESTED_REFUSED").ok_or(())?;
+    if !(disables[0] < claim && claim < refused && refused < release) {
+        return Err(());
+    }
+    if !(refused < enables[0] && enables[0] < release && release < enables[1]) {
+        return Err(());
+    }
+    if body.contains("arch_without_interrupts") || body.contains("interrupts::disable") {
+        return Err(());
+    }
+    let disable = function_body(process_task, "reclaim_preempt_disable");
+    let enable = function_body(process_task, "reclaim_preempt_enable");
+    (disable.contains("crate::per_cpu_aarch64::preempt_disable()")
+        && disable.contains("crate::per_cpu::preempt_disable()")
+        && enable.contains("crate::per_cpu_aarch64::preempt_enable()")
+        && enable.contains("crate::per_cpu::preempt_enable()"))
+    .then_some(())
+    .ok_or(())
+}
+
+#[test]
+fn the_production_reclaim_claim_runs_with_preemption_disabled() {
+    assert_eq!(
+        validate_reclaim_preempt_bracket(&repo_text("kernel/src/task/process_task.rs")),
+        Ok(())
+    );
+}
+
+/// The shape the validator is written against, so each mutation below removes
+/// exactly one thing.
+const RECLAIM_BRACKET_FIXTURE: &str = r#"
+fn reclaim_preempt_disable() {
+    crate::per_cpu_aarch64::preempt_disable();
+    crate::per_cpu::preempt_disable();
+}
+fn reclaim_preempt_enable() {
+    crate::per_cpu_aarch64::preempt_enable();
+    crate::per_cpu::preempt_enable();
+}
+fn reclaim_deferred_process_resources() {
+    reclaim_preempt_disable();
+    if RECLAIM_DRAIN_ACTIVE.compare_exchange(false, true).is_err() {
+        trace_count!(RECLAIM_DRAIN_NESTED_REFUSED);
+        reclaim_preempt_enable();
+        return;
+    }
+    reclaim_deferred_process_resources_for_pass(my_pass, false);
+    RECLAIM_DRAIN_ACTIVE.store(false, Ordering::Release);
+    reclaim_preempt_enable();
+}
+"#;
+
+#[test]
+fn reclaim_bracket_fixture_is_accepted_so_the_mutations_below_are_meaningful() {
+    assert_eq!(validate_reclaim_preempt_bracket(RECLAIM_BRACKET_FIXTURE), Ok(()));
+}
+
+#[test]
+fn reclaim_bracket_validator_rejects_a_deleted_disable() {
+    let mutated = RECLAIM_BRACKET_FIXTURE.replace("    reclaim_preempt_disable();\n", "");
+    assert!(validate_reclaim_preempt_bracket(&mutated).is_err());
+}
+
+#[test]
+fn reclaim_bracket_validator_rejects_a_disable_taken_after_the_claim() {
+    let mutated = RECLAIM_BRACKET_FIXTURE
+        .replace("    reclaim_preempt_disable();\n", "")
+        .replace(
+            "    reclaim_deferred_process_resources_for_pass(my_pass, false);\n",
+            "    reclaim_preempt_disable();\n    reclaim_deferred_process_resources_for_pass(my_pass, false);\n",
+        );
+    assert!(validate_reclaim_preempt_bracket(&mutated).is_err());
+}
+
+#[test]
+fn reclaim_bracket_validator_rejects_a_deleted_refusal_arm_enable() {
+    let mutated = RECLAIM_BRACKET_FIXTURE.replace(
+        "        trace_count!(RECLAIM_DRAIN_NESTED_REFUSED);\n        reclaim_preempt_enable();\n",
+        "        trace_count!(RECLAIM_DRAIN_NESTED_REFUSED);\n",
+    );
+    assert!(validate_reclaim_preempt_bracket(&mutated).is_err());
+}
+
+#[test]
+fn reclaim_bracket_validator_rejects_a_deleted_release_enable() {
+    let mutated = RECLAIM_BRACKET_FIXTURE.replace(
+        "    RECLAIM_DRAIN_ACTIVE.store(false, Ordering::Release);\n    reclaim_preempt_enable();\n",
+        "    RECLAIM_DRAIN_ACTIVE.store(false, Ordering::Release);\n",
+    );
+    assert!(validate_reclaim_preempt_bracket(&mutated).is_err());
+}
+
+#[test]
+fn reclaim_bracket_validator_rejects_an_interrupt_mask_in_place_of_a_preempt_bracket() {
+    let mutated = RECLAIM_BRACKET_FIXTURE
+        .replace("crate::per_cpu_aarch64::preempt_disable();", "arch_without_interrupts(|| ());")
+        .replace("crate::per_cpu::preempt_disable();", "arch_without_interrupts(|| ());");
+    assert!(validate_reclaim_preempt_bracket(&mutated).is_err());
 }
 
 fn validate_shadow_root_clear_counter(process_task: &str, provider: &str) -> Result<(), ()> {

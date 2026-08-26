@@ -63,41 +63,91 @@ KSTACK_OWNER_ORACLE_PATTERN='\[KSTACK_OWNER_ORACLE:x86:creation_rows=1000:creati
 # gate (g)'s retire-second arm ever executes on x86, and until this pin existed
 # deleting run_x86_tombstone_join_gate() from main.rs left this gate green.
 TOMBSTONE_JOIN_ORACLE_LITERAL='[TOMBSTONE_JOIN_ORACLE:x86:retire_second=1:reap_second=1:removed=2:resident_delta=0:tombstone_rows=0:PASS]'
-# P6a PR-2 review finding B2 — the x86 retention claim, measured on production
-# rows instead of on the oracle's fixture, in two samples that mean different
-# things and are pinned separately.
+# P6a PR-2 review finding B2, re-derived for #653 — the x86 retention claim,
+# measured on production rows instead of on the oracle's fixture, in two samples
+# that mean different things and are pinned separately.
+#
+# #653 is FIXED, and these pins are what the fix moved. The production
+# deferred-reclaim claim used to be a bare boolean released only by the tail of
+# the function that took it; the first timer preemption inside an owned pass
+# discarded that release (x86's dispatcher restarts `idle_loop` rather than
+# resuming the mid-drain continuation), so the claim latched true and every later
+# drain refused for the rest of the boot. Eighteen receipts stayed queued, no
+# retirement ever completed, and the four rows the live reaps claimed could never
+# join. The claim window is now non-preemptible, so production reclamation runs
+# to completion and BOTH samples below assert a drained system rather than
+# narrating a strand.
+#
+# Two fixture constants carry the arithmetic. The join oracle stages two rows of
+# its own before any user process exists and removes both (TOMBSTONE_JOIN_ORACLE
+# above reports resident_delta=0), and the userspace phase reaps exactly four
+# production rows through the live `complete_wait` path.
+readonly TOMBSTONE_FIXTURE_REMOVALS=2
+readonly PRODUCTION_REAPED_ROWS=4
 #
 # (1) End of the userspace phase, emitted from the `sys_exit` arm entered when no
-# userspace thread remains. `resident=4` is the four rows the live `complete_wait`
-# reaps claimed, still tombstones at that instant: the only observation anywhere
-# in this campaign's matrix of the tombstone gauge nonzero on real rows. `removed`
-# is still the join oracle's own two. Both other x86 census lines are emitted
-# before any user process exists and read `resident=0:removed=2`, so this literal
-# is unique and pinned by exact count.
-TOMBSTONE_CENSUS_USERSPACE_END_LITERAL='[TOMBSTONE_CENSUS:resident=4:removed=2:reap_second=1:retire_second=1:abandoned_unqueued=1]'
+# userspace thread remains. This sample used to be pinnable as an exact literal
+# only BECAUSE reclamation was dead: `resident=4:removed=2` was the frozen state
+# of a system that had stopped retiring. With the drain live, the split between
+# "still a tombstone" and "already joined" at that instant depends on how many
+# retirements the drain happened to complete while the workload was still
+# running, and pinning either half would pin a race. What is timing-safe is the
+# conservation law: every production row the reaps claimed is either still
+# resident or already removed, so
+#   resident + (removed - TOMBSTONE_FIXTURE_REMOVALS) == PRODUCTION_REAPED_ROWS
+# is invariant across every scheduling of the same workload. It is asserted below
+# on the LAST `[TOMBSTONE_CENSUS:` line, which is this sample: the other two
+# census emitters on this arch (kernel_main's and the strand oracle's once-only
+# report) both fire earlier, and the total emission count is pinned so a deleted
+# sample cannot pass by leaving a stale earlier line in its place.
+readonly TOMBSTONE_CENSUS_EMISSIONS=3
 # (2) Quiesce, emitted from the idle loop once the deferred-reclaim queues are
-# empty or a 2000 ms backstop elapses, whichever comes first. On this arch it is
-# the backstop that fires, and the line says why: `pending` is nonzero because
-# x86 production reclamation is dead by then. `RECLAIM_DRAIN_ACTIVE` is stranded
-# true — every later drain refuses as a nested drain, at ~1000 refusals/second
-# from the idle loop — so no receipt retires, no join completes, and the four
-# rows stay tombstones. The STRAND itself is PRE-EXISTING: an identical
-# instrumented probe on main (ca147f94) reads
-# `live_q=18:parked_q=0:drain_active=true:nested=18420`, i.e. main leaks the same
-# eighteen deferred reclaims with their page tables and frames unreleased. But
-# the ROW RETENTION is this PR's: on main, `complete_wait` removes the Process
-# row unconditionally at the reap, so those rows were freed even while the
-# reclaim was stranded. This PR's join instead fail-closes row removal on a
-# retirement that x86 never completes, so the four rows are retained forever,
-# not merely "made visible". #653 is therefore a prerequisite for x86 row-
-# removal CORRECTNESS on this PR, not only for x86 evidence. And this probe
-# only ever runs in the `boot_tests` profile — there is no x86 production-
-# profile teardown gate (the #540 gap) — so whether the same per-process row
-# retention occurs in production x86 is unmeasured and unknown. Filed as #653;
-# the retention fields are pinned exactly so a regression moves them, while
-# `pending` is a bounded attribution field because its depth is a property of
-# the pre-existing strand rather than of this claim.
-TOMBSTONE_QUIESCE_PATTERN='\[TOMBSTONE_QUIESCE:resident=4:removed=2:reap_second=1:retire_second=1:abandoned_unqueued=1:pending=[0-9]+:parked=0\]'
+# empty or a 2000 ms backstop elapses, whichever comes first. Before #653 it was
+# always the backstop, and `pending` was nonzero because production reclamation
+# was dead by then; the field was a bounded attribution field for exactly that
+# reason. It is now an exact zero, and it is the load-bearing half of this pin:
+# `pending=0:parked=0:resident=0` is the return-to-zero evidence x86 has never
+# had. `removed` is the two fixture rows plus all four production rows, because
+# a row can only be removed by the join after it has been both reaped and
+# retired. The reap-second/retire-second SPLIT is deliberately not pinned: with
+# the drain running during the userspace phase, a row may retire before or after
+# its reap and the arm that completes the join differs accordingly. Their SUM is
+# invariant and is asserted below.
+#
+# `pending` is NOT pinned to zero, and the reason is a measurement rather than a
+# concession. A boot on the fixed kernel drains seventeen of the eighteen
+# receipts #653 used to leak and leaves exactly one, because a page-table root
+# cannot be retired while it is the root the CPU currently has installed — and
+# after the last userspace thread exits, nothing on this uniprocessor profile
+# ever loads another one. That receipt is not a leak the drain could have taken;
+# refusing it is the root proof working. What must be pinned is that NOTHING
+# RETIRABLE is left behind, which is what `pend_selectable=0` and the
+# depth-conservation check below assert, and which the strand would have
+# violated with seventeen selectable receipts.
+readonly TOMBSTONE_JOINED_REMOVALS=$(( TOMBSTONE_FIXTURE_REMOVALS + PRODUCTION_REAPED_ROWS ))
+TOMBSTONE_QUIESCE_PATTERN="\\[TOMBSTONE_QUIESCE:resident=0:removed=${TOMBSTONE_JOINED_REMOVALS}:reap_second=[0-9]+:retire_second=[0-9]+:abandoned_unqueued=1:pending=[0-9]+:parked=0\\]"
+# (3) #653 delta (3) — the drain's own refusal counters, which existed before the
+# fix and were printed by nothing: a whole-boot loss of production reclamation
+# was inferable only three phases later from a tombstone census read alongside a
+# queue depth. `context_violations=0` is exact (a drain entered under the process
+# manager or inside a scheduler scope is a defect, not a rate). `nested=1` is
+# exact and is the whole point of `injected=1`: the fix keeps the nested refusal
+# as its fail-closed residual for a fatal fault inside an owned pass, so the arm
+# must still be provably live, and the boot-test injection drives it once on
+# purpose. A `nested=0:injected=0` line would mean the refusal path no longer
+# executes at all and this pin would be vacuous. `selection_capped` is the
+# production selection cap firing; its exact value is a property of how many
+# receipts happened to be ready per pass rather than of the claim, so it is
+# shape-pinned rather than value-pinned.
+#
+# The four `pend_*` fields attribute the settled queue depth term by term, using
+# the same lock-free predicate the drain uses to choose a receipt.
+# `pend_selectable=0` is the load-bearing one: a receipt the drain could have
+# taken and did not is the #653 signature, and the strand would print seventeen
+# of them here. The other three are the roots that are legitimately unretirable
+# at quiesce and are left shape-pinned, because which term holds a root is a
+# property of what the CPU happens to have installed.
+RECLAIM_DRAIN_PATTERN='\[RECLAIM_DRAIN:nested=1:context_violations=0:selection_capped=[0-9]+:injected=1:pend_epoch=[0-9]+:pend_hw=[0-9]+:pend_shadow=[0-9]+:pend_selectable=0\]'
 SCHED_STRAND_ORACLE_PATTERN='\[SCHED_STRAND_ORACLE:x86:samples=[1-9][0-9]*:checked=[1-9][0-9]*:stranded=0:running_shape=[0-9]+:ready_shape=[0-9]+:resolved_production=[0-9]+:resolved_exercised=[0-9]+:worst_dwell_ms=[0-9]+:overflow=[0-9]+:worst_nonprogress_ms=[0-9]+:nonprogress=[0-9]+:queued_on_nondispatching_cpu=[0-9]+:worst_queued_nondispatch_ms=[0-9]+:worst_cpu_scheduler_silence_ms=[0-9]+:worst_silence_cpu=[0-9]+\]'
 CENSUS_WIDEN_ORACLE_LITERAL='[CENSUS_WIDEN_ORACLE:x86:arm=none:reason=uniprocessor_no_dispatching_peer:baseline_reported=0:axes=6:SKIP]'
 # The boot-test oracle deliberately drives the detector exactly once; the forbidden exact marker is separately pinned absent below.
@@ -245,9 +295,9 @@ for i in $(seq 1 "$COUNT"); do
                 "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
             && grep -qF "$TOMBSTONE_JOIN_ORACLE_LITERAL" \
                 "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
-            && grep -qF "$TOMBSTONE_CENSUS_USERSPACE_END_LITERAL" \
+            && grep -qF '[TOMBSTONE_QUIESCE:' \
                 "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
-            && grep -qE "$TOMBSTONE_QUIESCE_PATTERN" \
+            && grep -qF '[RECLAIM_DRAIN:' \
                 "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
             && grep -q '\[TEST:userspace:loopback_recv_wake:PASS\]' \
                 "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
@@ -354,10 +404,55 @@ for i in $(seq 1 "$COUNT"); do
         "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 0
     test "$(grep -h -F -c "$TOMBSTONE_JOIN_ORACLE_LITERAL" \
         "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 1
-    test "$(grep -h -F -c "$TOMBSTONE_CENSUS_USERSPACE_END_LITERAL" \
-        "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 1
+    # (1) The userspace-end census, pinned by conservation rather than by a race.
+    # The poll loop deliberately waits on marker PRESENCE, not on these field
+    # values: a field the fix makes timing-dependent must never be able to turn a
+    # real regression into a 900-second poll timeout instead of a legible
+    # assertion failure here.
+    test "$(grep -h -F -c '[TOMBSTONE_CENSUS:' \
+        "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" \
+        -eq "$TOMBSTONE_CENSUS_EMISSIONS"
+    TOMBSTONE_CENSUS_USERSPACE_END_LINE=$(grep -h -F '[TOMBSTONE_CENSUS:' \
+        "$OUTPUT_DIR"/serial_*.txt | tail -1)
+    CENSUS_RESIDENT=$(printf '%s\n' "$TOMBSTONE_CENSUS_USERSPACE_END_LINE" | \
+        sed -n 's/.*\[TOMBSTONE_CENSUS:resident=\([0-9][0-9]*\):.*/\1/p')
+    CENSUS_REMOVED=$(printf '%s\n' "$TOMBSTONE_CENSUS_USERSPACE_END_LINE" | \
+        sed -n 's/.*\[TOMBSTONE_CENSUS:resident=[0-9][0-9]*:removed=\([0-9][0-9]*\):.*/\1/p')
+    test -n "$CENSUS_RESIDENT"
+    test -n "$CENSUS_REMOVED"
+    test "$CENSUS_RESIDENT" -le "$PRODUCTION_REAPED_ROWS"
+    test "$CENSUS_REMOVED" -ge "$TOMBSTONE_FIXTURE_REMOVALS"
+    test "$(( CENSUS_RESIDENT + CENSUS_REMOVED - TOMBSTONE_FIXTURE_REMOVALS ))" \
+        -eq "$PRODUCTION_REAPED_ROWS"
+    # (2) Quiesce: return to zero, plus the join-arm sum the split cannot pin.
     test "$(grep -h -E -c "$TOMBSTONE_QUIESCE_PATTERN" \
         "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 1
+    QUIESCE_LINE=$(grep -h -E "$TOMBSTONE_QUIESCE_PATTERN" \
+        "$OUTPUT_DIR"/serial_*.txt | tail -1)
+    QUIESCE_REAP_SECOND=$(printf '%s\n' "$QUIESCE_LINE" | \
+        sed -n 's/.*:reap_second=\([0-9][0-9]*\):.*/\1/p')
+    QUIESCE_RETIRE_SECOND=$(printf '%s\n' "$QUIESCE_LINE" | \
+        sed -n 's/.*:retire_second=\([0-9][0-9]*\):.*/\1/p')
+    test "$(( QUIESCE_REAP_SECOND + QUIESCE_RETIRE_SECOND ))" -eq "$TOMBSTONE_JOINED_REMOVALS"
+    # (3) The drain's refusal counters, with the injected arm proving the refusal
+    # path still executes.
+    test "$(grep -h -E -c "$RECLAIM_DRAIN_PATTERN" \
+        "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 1
+    RECLAIM_DRAIN_LINE=$(grep -h -E "$RECLAIM_DRAIN_PATTERN" \
+        "$OUTPUT_DIR"/serial_*.txt | tail -1)
+    # Depth conservation: every receipt still queued at quiesce is named by a
+    # root-proof term. An unattributed receipt is a receipt the drain left behind
+    # for a reason nothing in this serial states, which is the condition #653 was
+    # filed under and is gate-failing here.
+    QUIESCE_PENDING=$(printf '%s\n' "$QUIESCE_LINE" | \
+        sed -n 's/.*:pending=\([0-9][0-9]*\):.*/\1/p')
+    PEND_EPOCH=$(printf '%s\n' "$RECLAIM_DRAIN_LINE" | \
+        sed -n 's/.*:pend_epoch=\([0-9][0-9]*\):.*/\1/p')
+    PEND_HW=$(printf '%s\n' "$RECLAIM_DRAIN_LINE" | \
+        sed -n 's/.*:pend_hw=\([0-9][0-9]*\):.*/\1/p')
+    PEND_SHADOW=$(printf '%s\n' "$RECLAIM_DRAIN_LINE" | \
+        sed -n 's/.*:pend_shadow=\([0-9][0-9]*\):.*/\1/p')
+    test "$QUIESCE_PENDING" -eq "$(( PEND_EPOCH + PEND_HW + PEND_SHADOW ))"
     # x86 has no production designated init, so the runtime refusal never fires
     # and the whole-boot walk is legitimately zero here; this is the `None`-arm
     # evidence, not the whole-boot-walk evidence, and it becomes non-zero only
@@ -392,10 +487,9 @@ for i in $(seq 1 "$COUNT"); do
     echo "$KSTACK_OWNER_LINE"
     echo "$CREATION_LOCK_ORDER_INJECTED_LITERAL"
     echo "$TOMBSTONE_JOIN_ORACLE_LITERAL"
-    echo "$TOMBSTONE_CENSUS_USERSPACE_END_LITERAL"
-    TOMBSTONE_QUIESCE_LINE=$(grep -h -E "$TOMBSTONE_QUIESCE_PATTERN" \
-        "$OUTPUT_DIR"/serial_*.txt | tail -1)
-    echo "$TOMBSTONE_QUIESCE_LINE"
+    echo "$TOMBSTONE_CENSUS_USERSPACE_END_LINE"
+    echo "$QUIESCE_LINE"
+    echo "$RECLAIM_DRAIN_LINE"
     if grep -qE '\[BOOT_TESTS:FAIL|KERNEL PANIC|panic!' \
         "$OUTPUT_DIR"/serial_*.txt; then
         exit 1

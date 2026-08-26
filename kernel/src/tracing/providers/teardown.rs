@@ -412,6 +412,10 @@ counter!(
     "Reclaim calls refused while another drain owns the queues"
 );
 counter!(
+    RECLAIM_PASS_SELECTION_CAPPED,
+    "Production drain passes that ended at the selection cap"
+);
+counter!(
     TEARDOWN_LOCK_ORDER_SUSPECT,
     "Suspect teardown lock ordering"
 );
@@ -598,7 +602,7 @@ counter!(
     "Fatal group signals dropped for init"
 );
 
-pub const COUNTER_COUNT: usize = 86;
+pub const COUNTER_COUNT: usize = 87;
 
 /// The registration and normal-context reader inventory. Keeping one inventory
 /// makes a write-only counter structurally impossible without changing the P0
@@ -623,6 +627,7 @@ pub static COUNTERS: [&TraceCounter; COUNTER_COUNT] = [
     &PROOF_UNDER_QUEUE_LOCK,
     &RECLAIM_CONTEXT_VIOLATIONS,
     &RECLAIM_DRAIN_NESTED_REFUSED,
+    &RECLAIM_PASS_SELECTION_CAPPED,
     &TEARDOWN_LOCK_ORDER_SUSPECT,
     &ROOT_PROOF_BLOCKED_EPOCH,
     &ROOT_PROOF_BLOCKED_HW,
@@ -809,6 +814,41 @@ pub fn x86_settled_tombstone_census() {
         RECLAIM_ABANDONED_UNQUEUED.aggregate(),
         pending,
         parked,
+    );
+    emit_reclaim_drain_census();
+}
+
+/// #653 delta (3). The production drain's refusal counters, printed.
+///
+/// `RECLAIM_DRAIN_NESTED_REFUSED` and `RECLAIM_CONTEXT_VIOLATIONS` existed
+/// before this and were emitted by nothing: a whole-boot loss of production
+/// reclamation was inferable only three phases later, from a tombstone census
+/// that had to be read alongside a queue depth. Naming them at the source makes
+/// the failure visible where it happens.
+///
+/// Emitted from the settled census — once per boot, from the idle loop after the
+/// userspace phase, in the same normal-context reporter that already prints
+/// `[TOMBSTONE_QUIESCE:...]`. Nothing here runs on an interrupt, syscall or
+/// context-switch path.
+///
+/// `injected` is the count of refusals staged on purpose by
+/// `boot_prove_nested_drain_refusal`. Without it a `nested=0` line would be
+/// indistinguishable from a refusal arm that no longer executes at all, and the
+/// pin on this line would be vacuous.
+#[cfg(all(feature = "boot_tests", target_arch = "x86_64"))]
+fn emit_reclaim_drain_census() {
+    let (epoch, hardware, shadow, selectable) =
+        crate::task::process_task::boot_pending_blocker_census();
+    crate::serial_println!(
+        "[RECLAIM_DRAIN:nested={}:context_violations={}:selection_capped={}:injected={}:pend_epoch={}:pend_hw={}:pend_shadow={}:pend_selectable={}]",
+        RECLAIM_DRAIN_NESTED_REFUSED.aggregate(),
+        RECLAIM_CONTEXT_VIOLATIONS.aggregate(),
+        RECLAIM_PASS_SELECTION_CAPPED.aggregate(),
+        crate::task::process_task::boot_injected_nested_refusals(),
+        epoch,
+        hardware,
+        shadow,
+        selectable,
     );
 }
 
