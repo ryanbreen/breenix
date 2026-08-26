@@ -81,14 +81,22 @@ TOMBSTONE_CENSUS_USERSPACE_END_LITERAL='[TOMBSTONE_CENSUS:resident=4:removed=2:r
 # x86 production reclamation is dead by then. `RECLAIM_DRAIN_ACTIVE` is stranded
 # true — every later drain refuses as a nested drain, at ~1000 refusals/second
 # from the idle loop — so no receipt retires, no join completes, and the four
-# rows stay tombstones. That is PRE-EXISTING and not this PR's doing: an
-# identical instrumented probe on main (ca147f94) reads
+# rows stay tombstones. The STRAND itself is PRE-EXISTING: an identical
+# instrumented probe on main (ca147f94) reads
 # `live_q=18:parked_q=0:drain_active=true:nested=18420`, i.e. main leaks the same
-# eighteen deferred reclaims with their page tables and frames unreleased, and
-# P6a is what finally makes four of them visible as retained rows with a counter
-# naming them. Filed as #653; the retention fields are pinned exactly so
-# a regression moves them, while `pending` is a bounded attribution field because
-# its depth is a property of that pre-existing defect rather than of this claim.
+# eighteen deferred reclaims with their page tables and frames unreleased. But
+# the ROW RETENTION is this PR's: on main, `complete_wait` removes the Process
+# row unconditionally at the reap, so those rows were freed even while the
+# reclaim was stranded. This PR's join instead fail-closes row removal on a
+# retirement that x86 never completes, so the four rows are retained forever,
+# not merely "made visible". #653 is therefore a prerequisite for x86 row-
+# removal CORRECTNESS on this PR, not only for x86 evidence. And this probe
+# only ever runs in the `boot_tests` profile — there is no x86 production-
+# profile teardown gate (the #540 gap) — so whether the same per-process row
+# retention occurs in production x86 is unmeasured and unknown. Filed as #653;
+# the retention fields are pinned exactly so a regression moves them, while
+# `pending` is a bounded attribution field because its depth is a property of
+# the pre-existing strand rather than of this claim.
 TOMBSTONE_QUIESCE_PATTERN='\[TOMBSTONE_QUIESCE:resident=4:removed=2:reap_second=1:retire_second=1:abandoned_unqueued=1:pending=[0-9]+:parked=0\]'
 SCHED_STRAND_ORACLE_PATTERN='\[SCHED_STRAND_ORACLE:x86:samples=[1-9][0-9]*:checked=[1-9][0-9]*:stranded=0:running_shape=[0-9]+:ready_shape=[0-9]+:resolved_production=[0-9]+:resolved_exercised=[0-9]+:worst_dwell_ms=[0-9]+:overflow=[0-9]+:worst_nonprogress_ms=[0-9]+:nonprogress=[0-9]+:queued_on_nondispatching_cpu=[0-9]+:worst_queued_nondispatch_ms=[0-9]+:worst_cpu_scheduler_silence_ms=[0-9]+:worst_silence_cpu=[0-9]+\]'
 CENSUS_WIDEN_ORACLE_LITERAL='[CENSUS_WIDEN_ORACLE:x86:arm=none:reason=uniprocessor_no_dispatching_peer:baseline_reported=0:axes=6:SKIP]'

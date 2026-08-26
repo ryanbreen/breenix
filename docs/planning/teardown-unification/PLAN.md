@@ -1936,10 +1936,17 @@ that it moves. At quiesce it is **still 4**, with `pending=18`, because **x86 pr
 reclamation is dead by then**: `RECLAIM_DRAIN_ACTIVE` is stranded `true`, every drain from the idle
 loop refuses as a nested drain at ~1000 refusals/second, and no retirement receipt completes at all.
 An instrumented probe on `main` @ `ca147f94` reads the identical shape
-(`live_q=18:parked_q=0:owner=0:drain_active=true:nested=18420` at t=74 s), so this is **pre-existing
-and not P6a's doing** — `main` leaks the same eighteen reclaims with their page tables and frames
-unreleased, and what P6a changes is that four of them become visible as retained rows with a counter
-naming them. Filed as **#653**. Consequently: the retention claim — retention returns to zero — is
+(`live_q=18:parked_q=0:owner=0:drain_active=true:nested=18420` at t=74 s), so the **strand** is
+**pre-existing and not P6a's doing** — `main` leaks the same eighteen reclaims with their page tables
+and frames unreleased. But the **row retention is P6a's**, not a mere visibility change: on `main`,
+`complete_wait` removes the `Process` row unconditionally at the reap, so those four rows were freed
+even while the underlying reclaim was stranded. This PR's join instead fail-closes row removal on a
+retirement that x86 never completes, so the four rows are retained forever rather than freed-and-
+invisible. Filed as **#653**. Two consequences follow: #653 is now a prerequisite for x86 **row-
+removal correctness** on this PR, not only for x86 evidence of return-to-zero; and the probe above
+only ever ran in the `boot_tests` profile — there is no x86 production-profile teardown gate (the
+#540 gap) — so whether the same per-process row retention occurs in production x86 is unmeasured and
+unknown. Consequently: the retention claim — retention returns to zero — is
 **proven on aarch64** (100 SS-gate samples and 379 soak samples at `resident=0`, `removed` reaching
 12 per boot on real rows) and **bounded on x86**, where it cannot be reached while #653 stands. The
 x86 gate states the bound rather than asserting a zero it cannot reach: the retention fields are
