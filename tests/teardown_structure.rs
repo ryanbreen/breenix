@@ -11227,6 +11227,133 @@ fn reclaim_nesting_validator_rejects_context_violation_conflation() {
     assert!(validate_reclaim_nesting_counter(process, provider).is_err());
 }
 
+/// #653. The production claim window is entered non-preemptibly and left
+/// preemptible, proven by shape rather than by comment.
+///
+/// The claim is a bare boolean whose only release is the tail of the function
+/// that takes it, and a context switch taken from inside the pass does not
+/// unwind: the x86 dispatcher restarts `idle_loop` instead of resuming the saved
+/// continuation, so the pending release is discarded and reclamation is off for
+/// the rest of the boot. Two orderings carry the whole fix, and both are pinned
+/// here: the disable must precede the compare-exchange (the gap between a taken
+/// claim and a later disable is itself an abandonment window), and each of the
+/// two exits from the claimed interval must re-enable.
+///
+/// The bracket must also be a preemption bracket and not an interrupt bracket —
+/// masking here would put page-table retirement, the process-manager lock and
+/// row destructors in an IRQ-off window — so the helpers are required to move
+/// the per-CPU preempt count on both arches and the claim body is required to
+/// contain no interrupt masking of its own.
+fn validate_reclaim_preempt_bracket(process_task: &str) -> Result<(), ()> {
+    let body = function_body(process_task, "reclaim_deferred_process_resources");
+    let mask = code_mask(body);
+    let disables = call_offsets(body, &mask, "reclaim_preempt_disable");
+    let enables = call_offsets(body, &mask, "reclaim_preempt_enable");
+    if disables.len() != 1 || enables.len() != 2 {
+        return Err(());
+    }
+    let claim = body.find("RECLAIM_DRAIN_ACTIVE").ok_or(())?;
+    let release = body.rfind("RECLAIM_DRAIN_ACTIVE").ok_or(())?;
+    let refused = body.find("RECLAIM_DRAIN_NESTED_REFUSED").ok_or(())?;
+    if !(disables[0] < claim && claim < refused && refused < release) {
+        return Err(());
+    }
+    if !(refused < enables[0] && enables[0] < release && release < enables[1]) {
+        return Err(());
+    }
+    if body.contains("arch_without_interrupts") || body.contains("interrupts::disable") {
+        return Err(());
+    }
+    let disable = function_body(process_task, "reclaim_preempt_disable");
+    let enable = function_body(process_task, "reclaim_preempt_enable");
+    (disable.contains("crate::per_cpu_aarch64::preempt_disable()")
+        && disable.contains("crate::per_cpu::preempt_disable()")
+        && enable.contains("crate::per_cpu_aarch64::preempt_enable()")
+        && enable.contains("crate::per_cpu::preempt_enable()"))
+    .then_some(())
+    .ok_or(())
+}
+
+#[test]
+fn the_production_reclaim_claim_runs_with_preemption_disabled() {
+    assert_eq!(
+        validate_reclaim_preempt_bracket(&repo_text("kernel/src/task/process_task.rs")),
+        Ok(())
+    );
+}
+
+/// The shape the validator is written against, so each mutation below removes
+/// exactly one thing.
+const RECLAIM_BRACKET_FIXTURE: &str = r#"
+fn reclaim_preempt_disable() {
+    crate::per_cpu_aarch64::preempt_disable();
+    crate::per_cpu::preempt_disable();
+}
+fn reclaim_preempt_enable() {
+    crate::per_cpu_aarch64::preempt_enable();
+    crate::per_cpu::preempt_enable();
+}
+fn reclaim_deferred_process_resources() {
+    reclaim_preempt_disable();
+    if RECLAIM_DRAIN_ACTIVE.compare_exchange(false, true).is_err() {
+        trace_count!(RECLAIM_DRAIN_NESTED_REFUSED);
+        reclaim_preempt_enable();
+        return;
+    }
+    reclaim_deferred_process_resources_for_pass(my_pass, false);
+    RECLAIM_DRAIN_ACTIVE.store(false, Ordering::Release);
+    reclaim_preempt_enable();
+}
+"#;
+
+#[test]
+fn reclaim_bracket_fixture_is_accepted_so_the_mutations_below_are_meaningful() {
+    assert_eq!(validate_reclaim_preempt_bracket(RECLAIM_BRACKET_FIXTURE), Ok(()));
+}
+
+#[test]
+fn reclaim_bracket_validator_rejects_a_deleted_disable() {
+    let mutated = RECLAIM_BRACKET_FIXTURE.replace("    reclaim_preempt_disable();\n", "");
+    assert!(validate_reclaim_preempt_bracket(&mutated).is_err());
+}
+
+#[test]
+fn reclaim_bracket_validator_rejects_a_disable_taken_after_the_claim() {
+    let mutated = RECLAIM_BRACKET_FIXTURE
+        .replace("    reclaim_preempt_disable();\n", "")
+        .replace(
+            "    reclaim_deferred_process_resources_for_pass(my_pass, false);\n",
+            "    reclaim_preempt_disable();\n    reclaim_deferred_process_resources_for_pass(my_pass, false);\n",
+        );
+    assert!(validate_reclaim_preempt_bracket(&mutated).is_err());
+}
+
+#[test]
+fn reclaim_bracket_validator_rejects_a_deleted_refusal_arm_enable() {
+    let mutated = RECLAIM_BRACKET_FIXTURE.replace(
+        "        trace_count!(RECLAIM_DRAIN_NESTED_REFUSED);\n        reclaim_preempt_enable();\n",
+        "        trace_count!(RECLAIM_DRAIN_NESTED_REFUSED);\n",
+    );
+    assert!(validate_reclaim_preempt_bracket(&mutated).is_err());
+}
+
+#[test]
+fn reclaim_bracket_validator_rejects_a_deleted_release_enable() {
+    let mutated = RECLAIM_BRACKET_FIXTURE.replace(
+        "    RECLAIM_DRAIN_ACTIVE.store(false, Ordering::Release);\n    reclaim_preempt_enable();\n",
+        "    RECLAIM_DRAIN_ACTIVE.store(false, Ordering::Release);\n",
+    );
+    assert!(validate_reclaim_preempt_bracket(&mutated).is_err());
+}
+
+#[test]
+fn reclaim_bracket_validator_rejects_an_interrupt_mask_in_place_of_a_preempt_bracket() {
+    let mutated = RECLAIM_BRACKET_FIXTURE
+        .replace("crate::per_cpu_aarch64::preempt_disable();", "arch_without_interrupts(|| ());")
+        .replace("crate::per_cpu::preempt_disable();", "arch_without_interrupts(|| ());");
+    assert!(validate_reclaim_preempt_bracket(&mutated).is_err());
+}
+
 fn validate_shadow_root_clear_counter(process_task: &str, provider: &str) -> Result<(), ()> {
     if !provider.contains("counter!(PT_SHADOW_ROOT_CLEARED,")
         || !provider.contains("&PT_SHADOW_ROOT_CLEARED,")
