@@ -412,6 +412,10 @@ counter!(
     "Reclaim calls refused while another drain owns the queues"
 );
 counter!(
+    RECLAIM_PASS_SELECTION_CAPPED,
+    "Production drain passes that ended at the selection cap"
+);
+counter!(
     TEARDOWN_LOCK_ORDER_SUSPECT,
     "Suspect teardown lock ordering"
 );
@@ -598,7 +602,7 @@ counter!(
     "Fatal group signals dropped for init"
 );
 
-pub const COUNTER_COUNT: usize = 86;
+pub const COUNTER_COUNT: usize = 87;
 
 /// The registration and normal-context reader inventory. Keeping one inventory
 /// makes a write-only counter structurally impossible without changing the P0
@@ -623,6 +627,7 @@ pub static COUNTERS: [&TraceCounter; COUNTER_COUNT] = [
     &PROOF_UNDER_QUEUE_LOCK,
     &RECLAIM_CONTEXT_VIOLATIONS,
     &RECLAIM_DRAIN_NESTED_REFUSED,
+    &RECLAIM_PASS_SELECTION_CAPPED,
     &TEARDOWN_LOCK_ORDER_SUSPECT,
     &ROOT_PROOF_BLOCKED_EPOCH,
     &ROOT_PROOF_BLOCKED_HW,

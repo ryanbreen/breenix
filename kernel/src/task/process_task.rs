@@ -277,7 +277,71 @@ static ROW_REMOVAL_EPOCH: AtomicU64 = AtomicU64::new(0);
 /// forever on a queue mutex whose owner no longer exists. An abandoned drain
 /// leaves the flag set on purpose: every later drain then refuses, so the
 /// failure mode is a bounded leak instead of a hard hang.
+///
+/// #653 narrowed what "abandoned" can mean. A *fatal fault* is still allowed to
+/// latch this flag forever, and that is still the right answer: the dead owner
+/// may hold a receipt it detached from the pending queue, so refusing is safer
+/// than letting a successor double-mutate a root. But a *scheduler handoff* used
+/// to abandon a pass just as effectively and far more routinely — x86 dispatches
+/// to idle by rewriting the interrupt frame to restart `idle_loop`, discarding
+/// the mid-drain continuation and the release with it — and one such preemption
+/// per boot turned production reclamation off for the rest of that boot. The
+/// claim window is now taken with preemption disabled, so that route is closed
+/// by construction and the latch is reserved for the fatal case it was written
+/// for. The residual is reported: see `RECLAIM_DRAIN_NESTED_REFUSED` and the
+/// `[RECLAIM_DRAIN:...]` census.
 static RECLAIM_DRAIN_ACTIVE: AtomicBool = AtomicBool::new(false);
+
+/// Selections a single *production* drain pass may take before it releases the
+/// claim and lets the scheduler run.
+///
+/// #653 delta (2). The claim-to-release interval is now non-preemptible, so its
+/// length is a scheduling property and not merely a throughput one. Each
+/// selection is already bounded — `reclaim_bounded` retires at most
+/// `RETIRE_FRAME_BUDGET` frames per receipt — but the pass itself was not, so a
+/// pass could hold the CPU for every receipt that was queued when it started.
+/// Four keeps the window to four bounded retire steps while leaving every
+/// production caller enough per-invocation throughput to stay ahead of its
+/// enqueue rate: the slowest re-entry cadence in the tree is x86's idle loop at
+/// roughly one call per timer tick, and process exits are orders of magnitude
+/// rarer than that. Boot-owned passes are deliberately uncapped — they feed
+/// `BOOT_RECLAIM_PASS_SELECTIONS` and the oracles' drain-to-quiesce loops, whose
+/// meaning is "this pass took everything it could".
+const PRODUCTION_PASS_SELECTION_CAP: u32 = 4;
+
+/// Disable preemption for the production drain's claim window.
+///
+/// #653. The claim below is a bare boolean whose only release is the tail of the
+/// function that takes it. A context switch taken from inside the pass does not
+/// unwind and does not resume: x86's dispatcher rewrites the interrupt frame to
+/// restart `idle_loop` rather than resume the saved continuation, so the pending
+/// release is discarded and every later drain refuses for the rest of the boot.
+/// Disabling preemption before the claim removes the only routine way to leave
+/// the interval without releasing it.
+///
+/// Interrupts stay ENABLED. Masking them here would put page-table retirement,
+/// the process-manager lock, the frame allocator and row destructors inside an
+/// IRQ-off window; only the scheduler handoff needs deferring.
+#[inline]
+fn reclaim_preempt_disable() {
+    #[cfg(target_arch = "aarch64")]
+    crate::per_cpu_aarch64::preempt_disable();
+    #[cfg(not(target_arch = "aarch64"))]
+    crate::per_cpu::preempt_disable();
+}
+
+/// Re-enable preemption at the end of the production drain's claim window.
+///
+/// Neither arch's `preempt_enable` schedules of its own accord, so a
+/// `need_resched` raised during the pass is honoured at the next interrupt
+/// return rather than here.
+#[inline]
+fn reclaim_preempt_enable() {
+    #[cfg(target_arch = "aarch64")]
+    crate::per_cpu_aarch64::preempt_enable();
+    #[cfg(not(target_arch = "aarch64"))]
+    crate::per_cpu::preempt_enable();
+}
 
 #[cfg(feature = "boot_tests")]
 static BOOT_RECLAIM_TEST_OWNER: AtomicU64 = AtomicU64::new(0);
@@ -1123,6 +1187,10 @@ pub fn reclaim_deferred_process_resources() {
     if BOOT_RECLAIM_TEST_OWNER.load(Ordering::Acquire) != 0 {
         return;
     }
+    // #653: the bracket opens BEFORE the compare-exchange on purpose. The gap
+    // between a successful claim and a later disable is itself an abandonment
+    // window, and it is the window the strand was taken in.
+    reclaim_preempt_disable();
     if RECLAIM_DRAIN_ACTIVE
         .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
         .is_err()
@@ -1131,11 +1199,13 @@ pub fn reclaim_deferred_process_resources() {
         crate::trace_count!(
             crate::tracing::providers::teardown::RECLAIM_DRAIN_NESTED_REFUSED
         );
+        reclaim_preempt_enable();
         return;
     }
 
     reclaim_deferred_process_resources_for_pass(my_pass, false);
     RECLAIM_DRAIN_ACTIVE.store(false, Ordering::Release);
+    reclaim_preempt_enable();
 }
 
 fn reclaim_deferred_process_resources_for_pass(my_pass: u32, boot_test_owned: bool) {
@@ -1147,6 +1217,11 @@ fn reclaim_deferred_process_resources_for_pass(my_pass: u32, boot_test_owned: bo
     }
     unpark_sweep();
     boot_begin_reclaim_pass(boot_test_owned);
+
+    // #653 delta (2): production passes run inside a non-preemptible bracket, so
+    // the number of receipts one invocation may take is bounded. Boot-owned
+    // passes are uncapped and keep their drain-to-quiesce meaning.
+    let mut production_selections: u32 = 0;
 
     loop {
         #[cfg(feature = "boot_tests")]
@@ -1234,6 +1309,16 @@ fn reclaim_deferred_process_resources_for_pass(my_pass: u32, boot_test_owned: bo
                         crate::tracing::providers::teardown::PT_RETIRE_BUDGET_REQUEUED
                     );
                     push_pending_or_abandon(reclaim);
+                }
+
+                if !boot_test_owned {
+                    production_selections = production_selections.saturating_add(1);
+                    if production_selections >= PRODUCTION_PASS_SELECTION_CAP {
+                        crate::trace_count!(
+                            crate::tracing::providers::teardown::RECLAIM_PASS_SELECTION_CAPPED
+                        );
+                        break;
+                    }
                 }
             }
             None => break,

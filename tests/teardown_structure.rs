@@ -5360,11 +5360,13 @@ fn validate_frame_ledger_counter_inventory(provider: &str) -> Result<(), ()> {
     // (binding condition C2 path (c), which requires `abandon_unqueued_reclaim`
     // to gain a counter in this PR) = 86. The two TOMBSTONE_JOIN counters were
     // already declared in PR-1 and are not part of this delta.
+    // #653 adds RECLAIM_PASS_SELECTION_CAPPED, the production drain's
+    // selection-cap counter, for 87.
     (declared == expected
         && EXPECTED
             .iter()
             .all(|counter| inventory.contains(&format!("&{counter},")))
-        && provider.contains("pub const COUNTER_COUNT: usize = 86;"))
+        && provider.contains("pub const COUNTER_COUNT: usize = 87;"))
     .then_some(())
     .ok_or(())
 }
@@ -5623,11 +5625,13 @@ fn validate_process_page_table_counter_inventory(sources: &[(String, String)]) -
     // (binding condition C2 path (c), which requires `abandon_unqueued_reclaim`
     // to gain a counter in this PR) = 86. The two TOMBSTONE_JOIN counters were
     // already declared in PR-1 and are not part of this delta.
+    // #653 adds RECLAIM_PASS_SELECTION_CAPPED, the production drain's
+    // selection-cap counter, for 87.
     if declared != expected
         || !EXPECTED
             .iter()
             .all(|counter| inventory.contains(&format!("&{counter},")))
-        || !provider.contains("pub const COUNTER_COUNT: usize = 86;")
+        || !provider.contains("pub const COUNTER_COUNT: usize = 87;")
     {
         return Err(());
     }
@@ -6586,10 +6590,12 @@ fn frame_ledger_return_and_initialization_ratchets_are_exact() {
     // (binding condition C2 path (c), which requires `abandon_unqueued_reclaim`
     // to gain a counter in this PR) = 86. The two TOMBSTONE_JOIN counters were
     // already declared in PR-1 and are not part of this delta.
+    // #653 adds RECLAIM_PASS_SELECTION_CAPPED, the production drain's
+    // selection-cap counter, for 87.
     check(
         &mut failures,
         "COUNTER_COUNT is no longer 86",
-        provider.contains("pub const COUNTER_COUNT: usize = 86;"),
+        provider.contains("pub const COUNTER_COUNT: usize = 87;"),
     );
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
@@ -7827,7 +7833,9 @@ fn all_phase_zero_counters_have_registered_readers_and_honest_runtime_gates() {
     // (binding condition C2 path (c), which requires `abandon_unqueued_reclaim`
     // to gain a counter in this PR) = 86. The two TOMBSTONE_JOIN counters were
     // already declared in PR-1 and are not part of this delta.
-    assert_eq!(declarations.len(), 86);
+    // #653 adds RECLAIM_PASS_SELECTION_CAPPED, the production drain's
+    // selection-cap counter, for 87.
+    assert_eq!(declarations.len(), 87);
     assert_eq!(
         readers, declarations,
         "every counter must have an inventory reader"
