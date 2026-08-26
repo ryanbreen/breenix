@@ -309,6 +309,10 @@ static RECLAIM_DRAIN_ACTIVE: AtomicBool = AtomicBool::new(false);
 /// meaning is "this pass took everything it could".
 const PRODUCTION_PASS_SELECTION_CAP: u32 = 4;
 
+/// Injected nested refusals observed by `boot_prove_nested_drain_refusal`.
+#[cfg(feature = "boot_tests")]
+static BOOT_INJECTED_NESTED_REFUSALS: AtomicU64 = AtomicU64::new(0);
+
 /// Disable preemption for the production drain's claim window.
 ///
 /// #653. The claim below is a bare boolean whose only release is the tail of the
@@ -1335,6 +1339,46 @@ pub(crate) fn boot_reclaim_deferred_process_resources() {
             .wrapping_add(1),
     );
     reclaim_deferred_process_resources_for_pass(my_pass, true);
+}
+
+/// #653 delta (3): drive the production nested-refusal arm on purpose, so the
+/// `[RECLAIM_DRAIN:...]` line the gate pins is not a pin on a path that never
+/// executes.
+///
+/// The refusal is the fail-closed residual the fix deliberately keeps: a fatal
+/// fault inside an owned pass still latches the claim, because the abandoned
+/// owner may hold a detached receipt. A residual nobody can see is a residual
+/// nobody can gate on, so this stages the exact condition — the claim already
+/// taken — calls the real production entry point, and reports whether the
+/// refusal counter moved.
+///
+/// Runs from the x86 boot-test gate, in ordinary kernel context with the
+/// boot-test owner clear, the process-manager lock unheld and no scheduler scope
+/// open; every one of those would be refused earlier in the callee and would
+/// make the observation below false rather than silently vacuous.
+#[cfg(feature = "boot_tests")]
+pub fn boot_prove_nested_drain_refusal() -> bool {
+    let before = crate::tracing::providers::teardown::RECLAIM_DRAIN_NESTED_REFUSED.aggregate();
+    if RECLAIM_DRAIN_ACTIVE
+        .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+        .is_err()
+    {
+        return false;
+    }
+    reclaim_deferred_process_resources();
+    RECLAIM_DRAIN_ACTIVE.store(false, Ordering::Release);
+    let observed = crate::tracing::providers::teardown::RECLAIM_DRAIN_NESTED_REFUSED.aggregate()
+        == before.wrapping_add(1);
+    if observed {
+        BOOT_INJECTED_NESTED_REFUSALS.fetch_add(1, Ordering::Relaxed);
+    }
+    observed
+}
+
+/// Injected nested refusals this boot, for the `[RECLAIM_DRAIN:...]` census.
+#[cfg(feature = "boot_tests")]
+pub fn boot_injected_nested_refusals() -> u64 {
+    BOOT_INJECTED_NESTED_REFUSALS.load(Ordering::Relaxed)
 }
 
 #[cfg(feature = "boot_tests")]
@@ -3213,6 +3257,14 @@ pub fn run_x86_reclaim_progress_gate() {
         crate::serial_println!("[TEST:process:reclaim_progress_gate:FAIL:{:?}]", result);
     }
     assert!(result.is_pass(), "x86 reclaim progress gate failed");
+
+    // #653 delta (3). Drive the fail-closed residual once, here, so the
+    // `injected` field of the `[RECLAIM_DRAIN:...]` census names a refusal arm
+    // that provably executed this boot.
+    assert!(
+        boot_prove_nested_drain_refusal(),
+        "injected nested drain refusal was not counted"
+    );
 }
 
 #[cfg(feature = "boot_tests")]

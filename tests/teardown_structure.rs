@@ -3040,6 +3040,10 @@ const DEFERRED_RECLAIM_DRAIN_SITES: &[(&str, &str, usize)] = &[
     ("kernel/src/arch_impl/aarch64/syscall_entry.rs", "fn sys_fork_aarch64", 1),
     ("kernel/src/interrupts/context_switch.rs", "fn idle_loop", 1),
     ("kernel/src/process/mod.rs", "fn exit_process_and_retire", 1),
+    // #653 delta (3): the boot-test arm that drives the nested-refusal residual
+    // through the real production entry point. It is a test caller, not a
+    // production one, and it is cfg'd to the boot-test profile.
+    ("kernel/src/task/process_task.rs", "#[cfg(feature=boot_tests)] fn boot_prove_nested_drain_refusal", 1),
 ];
 /// Whole-tree writes include the boot-test alias arm. The separate production
 /// subset check in the page-table validator remains fixed to clone.rs +
@@ -6065,8 +6069,9 @@ fn validate_root_proof_architecture_legs(sources: &[(String, String)]) -> Result
     Ok(())
 }
 
-/// Exact production drain membership. Both x86 calls are normal-context sites;
-/// the interrupt-return function is explicitly excluded.
+/// Exact drain membership. Both x86 production calls are normal-context sites;
+/// the interrupt-return function is explicitly excluded. The one boot-test
+/// caller is the #653 refusal injection, which must stay a single call.
 fn validate_deferred_reclaim_drain_sites(
     sources: &[(String, String)],
 ) -> Result<(), Vec<String>> {

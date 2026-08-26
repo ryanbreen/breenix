@@ -815,6 +815,35 @@ pub fn x86_settled_tombstone_census() {
         pending,
         parked,
     );
+    emit_reclaim_drain_census();
+}
+
+/// #653 delta (3). The production drain's refusal counters, printed.
+///
+/// `RECLAIM_DRAIN_NESTED_REFUSED` and `RECLAIM_CONTEXT_VIOLATIONS` existed
+/// before this and were emitted by nothing: a whole-boot loss of production
+/// reclamation was inferable only three phases later, from a tombstone census
+/// that had to be read alongside a queue depth. Naming them at the source makes
+/// the failure visible where it happens.
+///
+/// Emitted from the settled census — once per boot, from the idle loop after the
+/// userspace phase, in the same normal-context reporter that already prints
+/// `[TOMBSTONE_QUIESCE:...]`. Nothing here runs on an interrupt, syscall or
+/// context-switch path.
+///
+/// `injected` is the count of refusals staged on purpose by
+/// `boot_prove_nested_drain_refusal`. Without it a `nested=0` line would be
+/// indistinguishable from a refusal arm that no longer executes at all, and the
+/// pin on this line would be vacuous.
+#[cfg(all(feature = "boot_tests", target_arch = "x86_64"))]
+fn emit_reclaim_drain_census() {
+    crate::serial_println!(
+        "[RECLAIM_DRAIN:nested={}:context_violations={}:selection_capped={}:injected={}]",
+        RECLAIM_DRAIN_NESTED_REFUSED.aggregate(),
+        RECLAIM_CONTEXT_VIOLATIONS.aggregate(),
+        RECLAIM_PASS_SELECTION_CAPPED.aggregate(),
+        crate::task::process_task::boot_injected_nested_refusals(),
+    );
 }
 
 #[cfg(feature = "boot_tests")]
