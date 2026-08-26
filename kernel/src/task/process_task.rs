@@ -1359,14 +1359,17 @@ pub(crate) fn boot_reclaim_deferred_process_resources() {
 #[cfg(feature = "boot_tests")]
 pub fn boot_prove_nested_drain_refusal() -> bool {
     let before = crate::tracing::providers::teardown::RECLAIM_DRAIN_NESTED_REFUSED.aggregate();
+    reclaim_preempt_disable();
     if RECLAIM_DRAIN_ACTIVE
         .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
         .is_err()
     {
+        reclaim_preempt_enable();
         return false;
     }
     reclaim_deferred_process_resources();
     RECLAIM_DRAIN_ACTIVE.store(false, Ordering::Release);
+    reclaim_preempt_enable();
     let observed = crate::tracing::providers::teardown::RECLAIM_DRAIN_NESTED_REFUSED.aggregate()
         == before.wrapping_add(1);
     if observed {
