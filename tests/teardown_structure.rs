@@ -12677,12 +12677,38 @@ fn validate_production_tombstone_census(
     {
         return Err(());
     }
-    // Review finding B2: the x86 post-userspace sample. Every other x86 census
-    // site fires before a user process exists, so without this one the arch's
-    // retention claim rests on a sample taken before any row was ever reaped.
-    // It sits in the `sys_exit` arm that runs when the last userspace thread is
-    // gone, so it reads retention at quiesce and can never race a later reap.
+    // Review finding B2: the x86 post-userspace samples, and there are two
+    // because one cannot carry both halves of the claim. The `sys_exit` arm runs
+    // when the last userspace thread is gone and measures the gauge nonzero on
+    // the four real rows the live reaps just claimed; the idle-loop sample is
+    // taken a fixed settle later and measures retention at quiesce. Every other
+    // x86 census site fires before a user process exists, so without these the
+    // arch's retention claim rests on samples taken before any row was reaped.
     if !function_body(x86_handlers, "sys_exit").contains("emit_tombstone_census();") {
+        return Err(());
+    }
+    Ok(())
+}
+
+fn validate_x86_settled_tombstone_census(provider: &str, idle: &str) -> Result<(), ()> {
+    let body = function_body(provider, "x86_settled_tombstone_census");
+    for required in [
+        "USERSPACE_TEST_COMPLETE",
+        "SETTLE_MS",
+        "emit_tombstone_census();",
+    ] {
+        if !body.contains(required) {
+            return Err(());
+        }
+    }
+    // The sample must be unconditional once the settle has elapsed: a census
+    // that only prints when the gauge already reads zero cannot fail, and the
+    // gate literal it feeds would be self-fulfilling.
+    let emit = body.find("emit_tombstone_census();").ok_or(())?;
+    if body[..emit].contains("TOMBSTONE_RESIDENT") {
+        return Err(());
+    }
+    if !function_body(idle, "idle_loop").contains("x86_settled_tombstone_census();") {
         return Err(());
     }
     Ok(())
@@ -12769,6 +12795,33 @@ fn production_boot_and_heartbeat_emit_the_tombstone_census() {
             &periodic_dropped,
             &x86_handlers
         ),
+        Err(())
+    );
+
+    // The settled x86 sample, its idle-loop driver, and the property that makes
+    // it capable of failing: it emits whatever it reads.
+    let idle = repo_text("kernel/src/interrupts/context_switch.rs");
+    assert_eq!(validate_x86_settled_tombstone_census(&provider, &idle), Ok(()));
+
+    let idle_call_dropped = idle.replacen(
+        "        crate::tracing::providers::teardown::x86_settled_tombstone_census();\n",
+        "",
+        1,
+    );
+    assert_ne!(idle_call_dropped, idle, "idle-loop census mutation anchor");
+    assert_eq!(
+        validate_x86_settled_tombstone_census(&provider, &idle_call_dropped),
+        Err(())
+    );
+
+    let gauge_gated = provider.replacen(
+        "    if EMITTED.swap(true, Ordering::Relaxed) {\n        return;\n    }\n    emit_tombstone_census();",
+        "    if EMITTED.swap(true, Ordering::Relaxed) {\n        return;\n    }\n    if TOMBSTONE_RESIDENT.aggregate() != 0 {\n        return;\n    }\n    emit_tombstone_census();",
+        1,
+    );
+    assert_ne!(gauge_gated, provider, "gauge-gated census mutation anchor");
+    assert_eq!(
+        validate_x86_settled_tombstone_census(&gauge_gated, &idle),
         Err(())
     );
 

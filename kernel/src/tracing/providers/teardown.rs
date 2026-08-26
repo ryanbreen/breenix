@@ -744,6 +744,52 @@ pub fn emit_tombstone_census() {
     );
 }
 
+/// P6a PR-2, review finding B2 — the **settled** half of the x86 retention
+/// sample, and the only place in the matrix that observes a real workload's
+/// tombstone window closing.
+///
+/// The sample `sys_exit` takes at the end of the userspace phase is taken at the
+/// instant the last userspace thread leaves, which is *before* the drain that
+/// retires the rows the four live reaps just claimed: it measures a nonzero
+/// gauge on four real production rows. Nothing on x86 samples again — the
+/// strand reporter fires once, before userspace, and the heartbeat's procfs
+/// reader is an aarch64 userspace program — so retention at quiesce was
+/// unmeasured on this arch.
+///
+/// This runs from the idle loop, which is the first context that exists after
+/// every userspace thread is gone and which drives the production drain itself.
+/// The sample is taken at a FIXED point — the first idle pass at or after
+/// `SETTLE_MS` past the completion flag — and emits whatever it reads. It never
+/// waits for the gauge to reach zero: a census that only prints when it likes
+/// the answer proves nothing, and a stranded tombstone must reach the gate as a
+/// red rather than as silence.
+#[cfg(all(feature = "boot_tests", target_arch = "x86_64"))]
+pub fn x86_settled_tombstone_census() {
+    const SETTLE_MS: u64 = 2_000;
+    static SETTLE_AT_MS: AtomicU64 = AtomicU64::new(0);
+    static EMITTED: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
+    if EMITTED.load(Ordering::Relaxed) {
+        return;
+    }
+    if !crate::syscall::handlers::USERSPACE_TEST_COMPLETE.load(Ordering::Relaxed) {
+        return;
+    }
+    let now = crate::time::timer::get_monotonic_time();
+    let settle_at = SETTLE_AT_MS.load(Ordering::Relaxed);
+    if settle_at == 0 {
+        SETTLE_AT_MS.store(now.saturating_add(SETTLE_MS).max(1), Ordering::Relaxed);
+        return;
+    }
+    if now < settle_at {
+        return;
+    }
+    if EMITTED.swap(true, Ordering::Relaxed) {
+        return;
+    }
+    emit_tombstone_census();
+}
+
 #[cfg(feature = "boot_tests")]
 const BOOT_TEST_PID_COUNT_SLOTS: usize = 256;
 

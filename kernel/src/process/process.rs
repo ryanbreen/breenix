@@ -742,6 +742,20 @@ impl Process {
     ///
     /// Returns `true` only for the call that latched. Refused on a row that has
     /// not terminated, so a receipt naming a still-live row cannot latch it.
+    ///
+    /// **The arm is keyed on a COUNT, not on a receipt identity** — review
+    /// finding F4, stated here rather than left for a reader to discover. A
+    /// settle that names a row with no counted receipt saturates at zero and
+    /// then latches, so the fail-closed property holds only while every producer
+    /// of a receipt counts one. In production it does: `defer_process_resources`
+    /// is the sole producer, it holds `&mut Process` and calls
+    /// `note_receipt_created`, and the aarch64 `defer_live_process_resources`
+    /// route goes through it. `boot_test_reclaim` builds reclaims directly and
+    /// is deliberately uncounted, which is safe only because every row it names
+    /// is removed by the unconditional destructor rather than by the join. What
+    /// guards the gap is structural, exactly as condition C4 asks: the
+    /// `RECLAIM_ENQUEUE_CALLS` census makes any new receipt producer a `+` row
+    /// rather than a silent early removal.
     pub(crate) fn settle_retirement_receipt(&mut self) -> bool {
         self.retirement_receipts = self.retirement_receipts.saturating_sub(1);
         self.latch_retired_if_settled()
