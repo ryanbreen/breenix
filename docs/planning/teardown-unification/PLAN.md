@@ -1925,6 +1925,28 @@ x86 evidence column says exactly what was and was not observed on x86 and names 
 closes it. Structural pins are not a substitute for an executed gate, and this document does not
 pretend otherwise.
 
+**#653 — what the executed x86 gate actually measured, and the bound it puts on the x86 claim.**
+P6a PR-2's round-2 review closed #540's evidence question by *taking the sample*: the `boot_tests`
+profile does execute the real reap, and the x86 gate now pins two retention lines emitted after it —
+one at the end of the userspace phase, one at quiesce from the idle loop. What they measure is not
+what this document assumed. At the end of the userspace phase `TOMBSTONE_RESIDENT` is **4**: the four
+rows the live `complete_wait` reaps claimed, still tombstones — the only observation in this
+campaign's matrix of the gauge nonzero on real production rows, and genuine anti-vacuity evidence
+that it moves. At quiesce it is **still 4**, with `pending=18`, because **x86 production deferred
+reclamation is dead by then**: `RECLAIM_DRAIN_ACTIVE` is stranded `true`, every drain from the idle
+loop refuses as a nested drain at ~1000 refusals/second, and no retirement receipt completes at all.
+An instrumented probe on `main` @ `ca147f94` reads the identical shape
+(`live_q=18:parked_q=0:owner=0:drain_active=true:nested=18420` at t=74 s), so this is **pre-existing
+and not P6a's doing** — `main` leaks the same eighteen reclaims with their page tables and frames
+unreleased, and what P6a changes is that four of them become visible as retained rows with a counter
+naming them. Filed as **#653**. Consequently: the retention claim — retention returns to zero — is
+**proven on aarch64** (100 SS-gate samples and 379 soak samples at `resident=0`, `removed` reaching
+12 per boot on real rows) and **bounded on x86**, where it cannot be reached while #653 stands. The
+x86 gate states the bound rather than asserting a zero it cannot reach: the retention fields are
+pinned exactly so any regression moves them, `pending` is a bounded attribution field, and `parked=0`
+is exact because a parked reclaim would be a different fault. #653 is the prerequisite for x86
+evidence of return-to-zero, not more gate plumbing.
+
 **Adjacent open issues that will move literals under this phase, none of them blocking:** **#583**
 (`GuardedStack::drop` does not reclaim user-stack frames) is the source of every pinned residual —
 `EXPECTED_STACK_RESIDUAL_PRE_KSTACK_RELEASE` (`teardown.rs:2662` aarch64 = 18, `:2664` x86 = 149) and
@@ -1940,7 +1962,11 @@ re-pinned to green a red gate.
 **Gate extras.** (a) `waitpid` still returns the correct status and the parent's `children` list is
 still pruned — existing wait/orphan tests green unchanged. (b) `TOMBSTONE_RESIDENT` returns to **0**
 at quiesce after a 64-child fork/exit/reap workload, having been **observably nonzero mid-run** (both
-halves asserted — a gauge that is always zero proves nothing). (c) A pid whose row is tombstoned is
+halves asserted — a gauge that is always zero proves nothing). *(P6a PR-2, round 2, per arch and
+measured: both halves hold on aarch64, and inside the join oracle on both arches. On x86 the
+return-to-zero half is **not** reached by the production workload and the gate pins the measured
+`resident=4` instead — see the #653 paragraph above for why, and for the main-vs-branch A/B that
+shows the cause predates this phase.)* (c) A pid whose row is tombstoned is
 not returned by **any** live-process lookup — and "any" is the
 32-site raw census plus the named accessors enumerated under Blast radius, not the named accessors
 alone: negative tests for `kill(pid)` → `ESRCH`, `waitpid` repeat → `ECHILD`, and procfs absence,
