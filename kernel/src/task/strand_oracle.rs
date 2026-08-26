@@ -451,6 +451,12 @@ fn report_strand(
         worst_cpu_scheduler_silence_ms,
         worst_silence_cpu,
     );
+    // P6a gate extras (b) and (f). This oracle thread is the only reporter that
+    // repeats on a period in *both* profiles once userspace is running, so it is
+    // where a real workload's tombstone census becomes visible: nonzero while
+    // children are being reaped, back to zero once the drain has retired them.
+    // Same context as the line above — a sampling kthread, never a hot path.
+    crate::tracing::providers::teardown::emit_tombstone_census();
 }
 
 #[cfg(target_arch = "aarch64")]

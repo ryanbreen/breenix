@@ -55,27 +55,80 @@ EXEC_FAILED_RELEASE_PROD_LITERAL='[EXEC_FAILED_RELEASE_PROD:x86:plain_err=true:p
 # sched_publications is a nonzero boot-wide driver for sched_pm_held_production=0.
 # frame_used_delta is boot-state dependent because of heap growth during the stress; the oracle asserts it is strictly less than 128 frames, one x86 kernel stack's worth.
 KSTACK_OWNER_ORACLE_PATTERN='\[KSTACK_OWNER_ORACLE:x86:creation_rows=1000:creation_owned=1000:one_owner=1000:two_owner=0:zero_owner=0:fork_rows=2:fork_owned=2:slot_returns_exact_one=2:slot_alloc_delta=1000:slot_free_delta=1000:slot_balance=0:frames_mapped_delta=128000:frames_released_delta=128000:frame_balance=0:frame_used_delta=[0-9]+:frame_used_bounded=1:live_checks=[1-9][0-9]*:live_refusals_production=0:live_refusals_injected=1:drop_refused_live=0:pte_overwrite_refusals=0:pub_pooled=[1-9][0-9]*:pub_sched_owned=[1-9][0-9]*:pub_row_residual=0:pub_unowned=0:classifier_sched_owned=1:classifier_row_residual=1:classifier_unowned=1:classifier_not_pooled=1:sched_publications=[1-9][0-9]*:sched_pm_held_production=0:sched_pm_held_injected=1:balance=0\]'
+# P6a PR-2 gate extras (b)/(f)/(g). Every field is a delta the oracle drives
+# itself inside one run, so the whole line is a literal: two fixture rows, one
+# joined by retirement (retire_second) and one by the reap (reap_second), the
+# gauge back at its entry value (resident_delta=0) and no tombstone left behind
+# (tombstone_rows=0 is absolute, not a delta). This is the ONLY evidence that
+# gate (g)'s retire-second arm ever executes on x86, and until this pin existed
+# deleting run_x86_tombstone_join_gate() from main.rs left this gate green.
+TOMBSTONE_JOIN_ORACLE_LITERAL='[TOMBSTONE_JOIN_ORACLE:x86:retire_second=1:reap_second=1:removed=2:resident_delta=0:tombstone_rows=0:PASS]'
+# P6a PR-2 review finding B2 — the x86 retention claim, measured on production
+# rows instead of on the oracle's fixture, in two samples that mean different
+# things and are pinned separately.
+#
+# (1) End of the userspace phase, emitted from the `sys_exit` arm entered when no
+# userspace thread remains. `resident=4` is the four rows the live `complete_wait`
+# reaps claimed, still tombstones at that instant: the only observation anywhere
+# in this campaign's matrix of the tombstone gauge nonzero on real rows. `removed`
+# is still the join oracle's own two. Both other x86 census lines are emitted
+# before any user process exists and read `resident=0:removed=2`, so this literal
+# is unique and pinned by exact count.
+TOMBSTONE_CENSUS_USERSPACE_END_LITERAL='[TOMBSTONE_CENSUS:resident=4:removed=2:reap_second=1:retire_second=1:abandoned_unqueued=1]'
+# (2) Quiesce, emitted from the idle loop once the deferred-reclaim queues are
+# empty or a 2000 ms backstop elapses, whichever comes first. On this arch it is
+# the backstop that fires, and the line says why: `pending` is nonzero because
+# x86 production reclamation is dead by then. `RECLAIM_DRAIN_ACTIVE` is stranded
+# true — every later drain refuses as a nested drain, at ~1000 refusals/second
+# from the idle loop — so no receipt retires, no join completes, and the four
+# rows stay tombstones. The STRAND itself is PRE-EXISTING: an identical
+# instrumented probe on main (ca147f94) reads
+# `live_q=18:parked_q=0:drain_active=true:nested=18420`, i.e. main leaks the same
+# eighteen deferred reclaims with their page tables and frames unreleased. But
+# the ROW RETENTION is this PR's: on main, `complete_wait` removes the Process
+# row unconditionally at the reap, so those rows were freed even while the
+# reclaim was stranded. This PR's join instead fail-closes row removal on a
+# retirement that x86 never completes, so the four rows are retained forever,
+# not merely "made visible". #653 is therefore a prerequisite for x86 row-
+# removal CORRECTNESS on this PR, not only for x86 evidence. And this probe
+# only ever runs in the `boot_tests` profile — there is no x86 production-
+# profile teardown gate (the #540 gap) — so whether the same per-process row
+# retention occurs in production x86 is unmeasured and unknown. Filed as #653;
+# the retention fields are pinned exactly so a regression moves them, while
+# `pending` is a bounded attribution field because its depth is a property of
+# the pre-existing strand rather than of this claim.
+TOMBSTONE_QUIESCE_PATTERN='\[TOMBSTONE_QUIESCE:resident=4:removed=2:reap_second=1:retire_second=1:abandoned_unqueued=1:pending=[0-9]+:parked=0\]'
 SCHED_STRAND_ORACLE_PATTERN='\[SCHED_STRAND_ORACLE:x86:samples=[1-9][0-9]*:checked=[1-9][0-9]*:stranded=0:running_shape=[0-9]+:ready_shape=[0-9]+:resolved_production=[0-9]+:resolved_exercised=[0-9]+:worst_dwell_ms=[0-9]+:overflow=[0-9]+:worst_nonprogress_ms=[0-9]+:nonprogress=[0-9]+:queued_on_nondispatching_cpu=[0-9]+:worst_queued_nondispatch_ms=[0-9]+:worst_cpu_scheduler_silence_ms=[0-9]+:worst_silence_cpu=[0-9]+\]'
 CENSUS_WIDEN_ORACLE_LITERAL='[CENSUS_WIDEN_ORACLE:x86:arm=none:reason=uniprocessor_no_dispatching_peer:baseline_reported=0:axes=6:SKIP]'
 # The boot-test oracle deliberately drives the detector exactly once; the forbidden exact marker is separately pinned absent below.
 CREATION_LOCK_ORDER_INJECTED_LITERAL='[CREATION_LOCK_ORDER:INJECTED:PM_HELD]'
 CREATION_LOCK_ORDER_VIOLATION_LITERAL='[CREATION_LOCK_ORDER:VIOLATION:PM_HELD]'
-# Twelve oracle/counter lines are pinned by the success chain below; fields are exact except for the bounded boot-state-dependent KSTACK_OWNER fields documented above.
-# Ten launched test programs, one futex_handoff_oracle, 64 retire-cohort children, five loopback_wake_test
+# Thirteen oracle/counter lines are pinned by the success chain below; fields are exact except for the bounded boot-state-dependent KSTACK_OWNER fields documented above.
+# Ten launched test programs, one smoke_hello_time (the RING3_SMOKE process
+# kernel_main_continue creates after the twelve disk-loaded ones), one
+# futex_handoff_oracle, 64 retire-cohort children, five loopback_wake_test
 # processes (parent, reader, peer, load, watchdog), 16 exec-cohort children, one
 # clonevm_exec_test process (renamed by its second-stage exec), its phase-1
-# CLONE_VM child, two clone-admission oracle rows, and one init designation
-# oracle terminated-row refusal (arm A5), which is that oracle's only row that
-# passes through terminate_minimal. Its other synthetic rows are removed with
-# remove_process and contribute nothing, while its two construction-failure
-# arms create no row at all:
-# 10 + 1 + 64 + 5 + 16 + 1 + 1 + 1 + 1 + 1 = 101. The exec-detach oracle contributes
+# CLONE_VM child, two clone-admission oracle rows, one init designation
+# oracle terminated-row refusal (arm A5), and the two rows P6a PR-2's tombstone
+# join oracle stages — its fixture has to reach the real zombie state, so both
+# rows pass through terminate_minimal, which is the tally's choke point. The
+# init designation oracle's other synthetic rows are removed with remove_process
+# and contribute nothing, while its two construction-failure arms create no row
+# at all:
+# 10 + 1 + 1 + 64 + 5 + 16 + 1 + 1 + 2 + 1 + 2 = 104. The exec-detach oracle contributes
 # zero because its rows use the deferred-reclaim path rather than the
 # Process::terminate / terminate_minimal tally choke point. This is a floor,
 # checked >= by scripts/x86-gate-verdict.sh; the production-path arm execs the
 # cohort's already-inserted parent and fails without launching a new userspace
 # process; re-pin consciously.
-readonly EXPECTED_USERSPACE_EXITS=101
+#
+# Re-derived for P6a PR-2, and the re-derivation closed a pre-existing one-row
+# gap rather than only adding this PR's two: the enumeration read 101 while the
+# gate's own runs measured 102 (two runs, 2026-08-23) because smoke_hello_time
+# was never counted. 102 + this PR's two staged rows = 104, which is what the
+# branch's own run measures.
+readonly EXPECTED_USERSPACE_EXITS=104
 
 cd "$BREENIX_ROOT"
 cargo build --release --features boot_tests,testing,external_test_bins --bin qemu-uefi
@@ -190,6 +243,12 @@ for i in $(seq 1 "$COUNT"); do
                 "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
             && grep -qF "$CREATION_LOCK_ORDER_INJECTED_LITERAL" \
                 "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
+            && grep -qF "$TOMBSTONE_JOIN_ORACLE_LITERAL" \
+                "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
+            && grep -qF "$TOMBSTONE_CENSUS_USERSPACE_END_LITERAL" \
+                "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
+            && grep -qE "$TOMBSTONE_QUIESCE_PATTERN" \
+                "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
             && grep -q '\[TEST:userspace:loopback_recv_wake:PASS\]' \
                 "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
             && grep -q 'TEST_TALLY:' \
@@ -293,6 +352,12 @@ for i in $(seq 1 "$COUNT"); do
         "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 1
     test "$(grep -h -F -c "$CREATION_LOCK_ORDER_VIOLATION_LITERAL" \
         "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 0
+    test "$(grep -h -F -c "$TOMBSTONE_JOIN_ORACLE_LITERAL" \
+        "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 1
+    test "$(grep -h -F -c "$TOMBSTONE_CENSUS_USERSPACE_END_LITERAL" \
+        "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 1
+    test "$(grep -h -E -c "$TOMBSTONE_QUIESCE_PATTERN" \
+        "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 1
     # x86 has no production designated init, so the runtime refusal never fires
     # and the whole-boot walk is legitimately zero here; this is the `None`-arm
     # evidence, not the whole-boot-walk evidence, and it becomes non-zero only
@@ -326,6 +391,11 @@ for i in $(seq 1 "$COUNT"); do
     echo "$EXEC_FAILED_RELEASE_PROD_LITERAL"
     echo "$KSTACK_OWNER_LINE"
     echo "$CREATION_LOCK_ORDER_INJECTED_LITERAL"
+    echo "$TOMBSTONE_JOIN_ORACLE_LITERAL"
+    echo "$TOMBSTONE_CENSUS_USERSPACE_END_LITERAL"
+    TOMBSTONE_QUIESCE_LINE=$(grep -h -E "$TOMBSTONE_QUIESCE_PATTERN" \
+        "$OUTPUT_DIR"/serial_*.txt | tail -1)
+    echo "$TOMBSTONE_QUIESCE_LINE"
     if grep -qE '\[BOOT_TESTS:FAIL|KERNEL PANIC|panic!' \
         "$OUTPUT_DIR"/serial_*.txt; then
         exit 1

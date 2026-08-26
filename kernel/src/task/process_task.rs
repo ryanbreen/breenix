@@ -487,6 +487,11 @@ pub(crate) fn defer_process_resources(
     // Carry superseded exec roots into the same proof-gated receipt as the
     // current root. The owning drain consumes them after PM is out of scope.
     crate::tracing::providers::teardown::record_defer(process.id.as_u64());
+    // P6a condition C4: bind the receipt about to be created to this row, so the
+    // retire arm latches on the row's *own* obligations. A second receipt naming
+    // the same row leaves the count at one after the first `record_reclaim`, and
+    // the join refuses to remove a row with an obligation still outstanding.
+    process.note_receipt_created();
     let page_table = process.page_table.take();
     #[cfg(target_arch = "x86_64")]
     if let Some(page_table) = page_table.as_ref() {
@@ -550,8 +555,37 @@ fn push_pending_or_abandon(reclaim: PendingProcessReclaim) {
         }
     });
     if !queued {
-        abandon_unqueued_reclaim(reclaim.take().expect("unqueued reclaim retained"));
+        let reclaim = reclaim.take().expect("unqueued reclaim retained");
+        let pid = reclaim.pid;
+        crate::trace_count!(crate::tracing::providers::teardown::RECLAIM_ABANDONED_UNQUEUED);
+        abandon_unqueued_reclaim(reclaim);
+        settle_abandoned_retirement(pid);
     }
+}
+
+/// P6a condition C2, path (c). An unqueued reclaim ends the row's retirement
+/// obligation without ever reaching `record_reclaim`; without this the join
+/// would hold that row as a tombstone forever, with `TOMBSTONE_RESIDENT`
+/// nonzero at quiesce and no counter naming the cause — an unattributed red.
+///
+/// Lock order matches the retire arm's: PENDING_PROCESS_RECLAIMS was released by
+/// the queueing attempt's `arch_without_interrupts` closure, PM is taken and
+/// dropped here, and the evicted row is dropped after the guard (C8). The
+/// enqueue contract is PM-free and `RECLAIM_ENQUEUE_UNDER_PM` polices it; if it
+/// has already been violated that counter has fired, so this declines rather
+/// than re-entering PM and deadlocking.
+fn settle_abandoned_retirement(pid: u64) {
+    if crate::process::process_manager_held_on_current_cpu() {
+        return;
+    }
+    let mut evicted = None;
+    {
+        let mut manager_guard = crate::process::manager();
+        if let Some(ref mut manager) = *manager_guard {
+            evicted = manager.retire_row(crate::process::ProcessId::new(pid));
+        }
+    }
+    drop(evicted);
 }
 
 pub(crate) fn enqueue_process_reclaim(reclaim: PendingProcessReclaim) {
@@ -696,6 +730,18 @@ impl ProcessScheduler {
                     // None, cleanup_cow_frames() cannot repeat the CoW walk; moving
                     // terminate()/terminate_minimal() earlier breaks that invariant.
                     process.terminate_minimal(exit_code);
+                    // P6a condition C2, paths (a) and (b). No receipt means no
+                    // `record_reclaim` will ever arrive for this row: on aarch64
+                    // the root was not live in any TTBR0 and was released
+                    // synchronously, or an earlier `terminate()` already walked
+                    // it under the `already_terminated` arm. Latch here or the
+                    // join strands a tombstone. The latch is refused while a
+                    // receipt from this row's first exit is still outstanding,
+                    // so a repeat exit cannot retire a row whose resources are
+                    // still in flight.
+                    if retirement_receipt.is_none() {
+                        process.note_resources_absent();
+                    }
                     // terminate_minimal() is a no-op on a repeat teardown pass, so
                     // preserve and report the first-recorded status.
                     let reported_exit_code = process.exit_code.unwrap_or(exit_code);
@@ -1161,23 +1207,28 @@ fn reclaim_deferred_process_resources_for_pass(my_pass: u32, boot_test_owned: bo
                     == crate::memory::process_memory::RetireProgress::Complete
                 {
                     crate::tracing::providers::teardown::record_reclaim(reclaim.pid);
-                    // P6a retire arm: latch the row's retirement fact. The join
-                    // is NOT installed in this PR - nothing reads the latch and
-                    // no row is removed here, so retention is unchanged.
+                    // P6a retire arm: settle this row's receipt and, if the reap
+                    // already landed, complete the join here.
                     //
-                    // Lock order: PENDING_PROCESS_RECLAIMS was released with the
-                    // `arch_without_interrupts` closure above, and PM is taken
-                    // and dropped inside this scope, never held across the next
-                    // PENDING acquisition. `live_row_names_root` already takes PM
-                    // one step earlier in this same iteration, so this adds no
-                    // lock-order edge. The window does no destructor work: it
-                    // sets one bool.
+                    // Lock order — the one hazard this phase introduces, and the
+                    // #609 lesson it obeys. PENDING_PROCESS_RECLAIMS was
+                    // released with the `arch_without_interrupts` closure above,
+                    // so PM is taken and dropped inside this scope and is never
+                    // held across the loop's next PENDING acquisition.
+                    // `live_row_names_root` already takes PM one step earlier in
+                    // this same iteration, so this adds no lock-order *edge*.
+                    // Condition C8: the PM window itself does no destructor work
+                    // — the removed row is handed back and dropped below, after
+                    // the guard, outside the DAIF-masked window.
+                    let mut evicted = None;
                     {
                         let mut manager_guard = crate::process::manager();
                         if let Some(ref mut manager) = *manager_guard {
-                            manager.note_row_retired(crate::process::ProcessId::new(reclaim.pid));
+                            evicted =
+                                manager.retire_row(crate::process::ProcessId::new(reclaim.pid));
                         }
                     }
+                    drop(evicted);
                 } else {
                     crate::trace_count!(
                         crate::tracing::providers::teardown::PT_RETIRE_BUDGET_REQUEUED
@@ -1454,10 +1505,15 @@ pub(crate) fn boot_restore_process_resources(
         || !process.pending_old_page_tables.is_empty()
     {
         abandon_unqueued_reclaim(reclaim);
+        // The receipt this fixture held is gone either way, so settle the row's
+        // obligation on both arms of the restore (P6a condition C4's accounting:
+        // a receipt handed back to its row is a receipt that no longer exists).
+        let _ = process.settle_retirement_receipt();
         return Err("creating-dispatch detached-root restoration was not exclusive");
     }
     process.page_table = reclaim.page_table.take();
     process.pending_old_page_tables = core::mem::take(&mut reclaim.old_page_tables);
+    let _ = process.settle_retirement_receipt();
     Ok(())
 }
 

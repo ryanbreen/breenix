@@ -834,12 +834,18 @@ fn validate_x86_gate_requires_the_loopback_regression_tests(source: &str) -> Res
     if source.contains("\\[TEST:network:loopback_wake_loss_counters_are_zero:PASS\\]") {
         return Err("x86 gate still treats the boot-window counter marker as proof".to_string());
     }
+    // Re-pinned per delta by P6a PR-2 (review finding F5): the tombstone join
+    // oracle's fixture stages two rows that reach the real zombie state through
+    // `terminate_minimal`, which is the tally's choke point, and the same
+    // re-derivation closed a pre-existing one-row gap — the enumeration read 101
+    // while the gate's own runs measured 102, because the RING3_SMOKE
+    // `smoke_hello_time` process was never counted. 102 + 2 = 104.
     if source
-        .matches("readonly EXPECTED_USERSPACE_EXITS=101")
+        .matches("readonly EXPECTED_USERSPACE_EXITS=104")
         .count()
         != 1
     {
-        return Err("x86 gate does not pin the 101 expected userspace exits".to_string());
+        return Err("x86 gate does not pin the 104 expected userspace exits".to_string());
     }
     for rationale in [
         "B1",
@@ -1559,8 +1565,8 @@ fn x86_gate_validator_rejects_missing_userspace_failure_trap() {
 fn x86_gate_validator_rejects_lower_userspace_exit_pin() {
     let source = repo_text("docker/qemu/run-x86-boot-tests.sh");
     let mutated = source.replacen(
-        "readonly EXPECTED_USERSPACE_EXITS=101",
-        "readonly EXPECTED_USERSPACE_EXITS=100",
+        "readonly EXPECTED_USERSPACE_EXITS=104",
+        "readonly EXPECTED_USERSPACE_EXITS=103",
         1,
     );
     assert_ne!(mutated, source, "userspace exit-pin mutation must apply");

@@ -31,6 +31,15 @@ FUTEX_HANDOFF_ORACLE_PATTERN='\[FUTEX_HANDOFF_ORACLE:aarch64:driven=2:stage1_ret
 # resolved_production may be zero once #605's early-slot-consumption defect is fixed; deterministic resolved_exercised proves the resolver ran.
 SCHED_STRAND_ORACLE_PATTERN='\[SCHED_STRAND_ORACLE:aarch64:samples=[1-9][0-9]*:checked=[1-9][0-9]*:stranded=0:running_shape=[0-9]+:ready_shape=[0-9]+:resolved_production=[0-9]+:resolved_exercised=[1-9][0-9]*:worst_dwell_ms=[0-9]+:overflow=[0-9]+:worst_nonprogress_ms=[0-9]+:nonprogress=[0-9]+:queued_on_nondispatching_cpu=[0-9]+:worst_queued_nondispatch_ms=[0-9]+:worst_cpu_scheduler_silence_ms=[0-9]+:worst_silence_cpu=[0-9]+\]'
 STRAND_INJECT_ORACLE_PATTERN='\[STRAND_INJECT_ORACLE:aarch64:legA_exercised=1:legA_recovered=1:legB_exercised=1:legB_recovered=1:stranded=0\]'
+# P6a PR-2 gate extras (b)/(f)/(g). Every field is a delta the oracle drives
+# itself inside one run, so the whole line is a literal: two fixture rows, one
+# joined by retirement (retire_second) and one by the reap (reap_second), the
+# gauge back at its entry value (resident_delta=0) and no tombstone left behind
+# (tombstone_rows=0 is absolute, not a delta). Observed on this gate's own
+# profile before it was pinned: 20/20 boots of the 2026-08-25 run printed it
+# exactly once. Without this pin, deleting the oracle's registry entry left this
+# gate, [BOOT_TESTS:PASS] and every structural suite green.
+TOMBSTONE_JOIN_ORACLE_LITERAL='[TOMBSTONE_JOIN_ORACLE:aarch64:retire_second=1:reap_second=1:removed=2:resident_delta=0:tombstone_rows=0:PASS]'
 CENSUS_WIDEN_ORACLE_PATTERN='\[CENSUS_WIDEN_ORACLE:aarch64:arm_target=[0-9]+:baseline_reported=0:armed_reported=1:tid=[1-9][0-9]*:shape=ready_queued_nondispatching:queued_nondispatching=[1-9][0-9]*:queued_nondispatch_ms=[1-9][0-9]*:cpu_silence_ms=[1-9][0-9]*:joined=1:retired=[01]:PASS\]'
 
 # Find the ARM64 kernel
@@ -73,7 +82,7 @@ require_boot_tests_kernel() {
 
     # A census of marker literals rather than one sentinel: a single marker
     # changing profile must not be able to disarm this guard quietly.
-    for marker in '[SCHED_STRAND_ORACLE:' '[STRAND_INJECT_ORACLE:' '[CENSUS_WIDEN_ORACLE:' '[FUTEX_HANDOFF_ORACLE:' '[CTX596_ORACLE:' '[BOOT_TESTS:'; do
+    for marker in '[SCHED_STRAND_ORACLE:' '[STRAND_INJECT_ORACLE:' '[CENSUS_WIDEN_ORACLE:' '[FUTEX_HANDOFF_ORACLE:' '[CTX596_ORACLE:' '[TOMBSTONE_JOIN_ORACLE:' '[BOOT_TESTS:'; do
         if ! grep -aqF "$marker" "$kernel" 2>/dev/null; then
             missing="$missing $marker"
         fi
@@ -232,6 +241,10 @@ score_serial() {
     fi
     if ! grep -qF -x "$INIT_GROUP_REFUSAL_ORACLE_LITERAL" "$serial_file" 2>/dev/null; then
         echo "Init-group refusal oracle counter marker missing"
+        return 1
+    fi
+    if ! grep -qF -x "$TOMBSTONE_JOIN_ORACLE_LITERAL" "$serial_file" 2>/dev/null; then
+        echo "Tombstone join oracle marker missing"
         return 1
     fi
     # This gate kills QEMU shortly after exec smoke, so it pins the early probe

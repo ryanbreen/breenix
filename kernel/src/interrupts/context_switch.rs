@@ -1557,6 +1557,17 @@ fn check_and_deliver_signals_for_current_thread(
 pub fn idle_loop() -> ! {
     loop {
         crate::task::process_task::reclaim_deferred_process_resources();
+        // P6a PR-2, review finding B2. Retention at quiesce has to be sampled
+        // from a context that exists AFTER every userspace thread is gone and
+        // after the drain above has had passes to run; the idle loop is the only
+        // such context on x86, because the strand reporter fires once before
+        // userspace and the heartbeat's procfs reader is an aarch64 userspace
+        // program. Boot-test profile only. On the production x86 path this is
+        // compiled out entirely, and inside the profile it is one relaxed atomic
+        // load per idle pass until it emits its single line: no lock, no
+        // allocation, and nothing on the context-switch path itself.
+        #[cfg(all(target_arch = "x86_64", feature = "boot_tests"))]
+        crate::tracing::providers::teardown::x86_settled_tombstone_census();
         crate::task::scheduler::reclaim_terminated_threads();
         // Try to flush any pending IRQ logs while idle
         crate::irq_log::flush_local_try();

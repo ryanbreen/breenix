@@ -237,10 +237,21 @@ pub struct Process {
     /// launder a row into a tombstone.
     reaped: Option<(ProcessId, i32)>,
 
-    /// The retirement half of the two-event join, latched exactly once by
-    /// `mark_retired` when this row's deferred resources have been reclaimed.
-    /// Private for the same reason `reaped` is.
+    /// The retirement half of the two-event join, latched exactly once when this
+    /// row's last outstanding retirement obligation ends. Private for the same
+    /// reason `reaped` is.
     retired: bool,
+
+    /// Retirement receipts created for this row and not yet settled.
+    ///
+    /// P6a condition **C4**: `retired` is a per-row latch but retirement is a
+    /// per-*receipt* event, and the 1:1 mapping holds only incidentally today.
+    /// Counting the outstanding receipts keys the latch on this row's own
+    /// obligations: a second receipt naming the same row leaves the count at one
+    /// after the first `record_reclaim`, so the join refuses to remove the row
+    /// while an obligation is still outstanding. Fail-closed — a counted
+    /// tombstone beats freeing a row out from under a live receipt.
+    retirement_receipts: u32,
 
     /// Durable P2 notification state, serialized exclusively by the PM lock.
     pub(crate) exit_notifications: ExitNotificationObligations,
@@ -355,6 +366,7 @@ impl Process {
             exit_code: None,
             reaped: None,
             retired: false,
+            retirement_receipts: 0,
             exit_notifications: ExitNotificationObligations::new(),
             memory_usage: MemoryUsage::default(),
             stack: None,
@@ -703,24 +715,93 @@ impl Process {
 
     /// Reap arm of the two-event join: record `(reaper, status)` exactly once.
     ///
-    /// Write-once by construction — a second reaper of the same row reads the
-    /// existing claim and changes nothing — and refused on a row that has not
-    /// terminated, so no live row can be tombstoned by an out-of-order claim.
-    pub(crate) fn claim_reap(&mut self, reaper: ProcessId, status: i32) {
+    /// Returns `true` only for the caller that installed the claim. That return
+    /// is the arbiter for P6a condition **C3**: two concurrent waiters both pass
+    /// the scan, and the loser must return `ECHILD` and copy no status rather
+    /// than reporting a reap it did not perform.
+    ///
+    /// Refused on a row that has not terminated, so no live row can be
+    /// tombstoned by an out-of-order claim.
+    pub(crate) fn claim_reap(&mut self, reaper: ProcessId, status: i32) -> bool {
         if self.reaped.is_some() || !self.is_terminated() {
-            return;
+            return false;
         }
         self.reaped = Some((reaper, status));
+        true
     }
 
-    /// Retirement arm of the two-event join: latch that this row's deferred
-    /// resources have been reclaimed. Write-once, and refused on a row that has
-    /// not terminated so a receipt naming a still-live row cannot latch it.
-    pub(crate) fn mark_retired(&mut self) {
-        if self.retired || !self.is_terminated() {
-            return;
+    /// Record that a retirement receipt now names this row. Called by the exit
+    /// path that defers the row's resources, which is the sole production
+    /// producer of a receipt.
+    pub(crate) fn note_receipt_created(&mut self) {
+        self.retirement_receipts = self.retirement_receipts.saturating_add(1);
+    }
+
+    /// Settle one outstanding retirement receipt for this row, latching
+    /// `retired` when the last one is gone.
+    ///
+    /// Returns `true` only for the call that latched. Refused on a row that has
+    /// not terminated, so a receipt naming a still-live row cannot latch it.
+    ///
+    /// **The arm is keyed on a COUNT, not on a receipt identity** — review
+    /// finding F4, stated here rather than left for a reader to discover. A
+    /// settle that names a row with no counted receipt saturates at zero and
+    /// then latches, so the fail-closed property holds only while every producer
+    /// of a receipt counts one. In production it does: `defer_process_resources`
+    /// is the sole producer, it holds `&mut Process` and calls
+    /// `note_receipt_created`, and the aarch64 `defer_live_process_resources`
+    /// route goes through it. `boot_test_reclaim` builds reclaims directly and
+    /// is deliberately uncounted, which is safe only because every row it names
+    /// is removed by the unconditional destructor rather than by the join. What
+    /// guards the gap is structural, exactly as condition C4 asks: the
+    /// `RECLAIM_ENQUEUE_CALLS` census makes any new receipt producer a `+` row
+    /// rather than a silent early removal.
+    pub(crate) fn settle_retirement_receipt(&mut self) -> bool {
+        self.retirement_receipts = self.retirement_receipts.saturating_sub(1);
+        self.latch_retired_if_settled()
+    }
+
+    /// Record that this row's resources ended without ever producing a receipt
+    /// (P6a condition **C2**: the aarch64 synchronous-release arm and the
+    /// `already_terminated` exit arms). The latch is still refused while a
+    /// receipt from an earlier exit of the same row is outstanding.
+    pub(crate) fn note_resources_absent(&mut self) {
+        let _ = self.latch_retired_if_settled();
+    }
+
+    fn latch_retired_if_settled(&mut self) -> bool {
+        if self.retired || self.retirement_receipts != 0 || !self.is_terminated() {
+            return false;
         }
         self.retired = true;
+        true
+    }
+
+    /// The reap half of the join, for the join's own removal predicate.
+    pub(crate) fn is_reaped(&self) -> bool {
+        self.reaped.is_some()
+    }
+
+    /// The retirement half of the join.
+    pub(crate) fn is_retired(&self) -> bool {
+        self.retired
+    }
+
+    /// The ledger half of the join's removal condition: every obligation in this
+    /// row's exit ledger is `Completed` or `Absent`.
+    ///
+    /// **Vacuously true in P6a, deliberately and by construction.** The ledger
+    /// carries only `Sigchld` and `Report`, and DESIGN's own P2 exemption is the
+    /// reason: both are discharged no later than the zombie transition, and a
+    /// parent cannot reap a row that has not reached zombie, so neither can
+    /// outlive the reap. `Resources` — the obligation that can outlive a reap,
+    /// and the reason P6a exists — does not become row-resident until P6b, which
+    /// is the phase that makes this term live. Evaluating today's two
+    /// obligations here instead would let a row that never reached
+    /// `handle_thread_exit` stall its own removal forever, which is a stranding
+    /// this phase must not introduce.
+    pub(crate) fn ledger_settled(&self) -> bool {
+        true
     }
 
     /// Add a child process

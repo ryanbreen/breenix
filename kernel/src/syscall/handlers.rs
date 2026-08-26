@@ -25,6 +25,13 @@ fn reset_quantum() {
 /// Global flag to signal that userspace testing is complete and kernel should exit
 pub static USERSPACE_TEST_COMPLETE: AtomicBool = AtomicBool::new(false);
 
+/// P6a PR-2, review finding B2. Latches the one post-userspace tombstone census
+/// sample so the x86 gate can pin it by exact count: the block below is entered
+/// whenever the last userspace thread exits, and a second entry would emit a
+/// second line with different values.
+#[cfg(all(target_arch = "x86_64", feature = "boot_tests"))]
+static TOMBSTONE_CENSUS_AFTER_USERSPACE: AtomicBool = AtomicBool::new(false);
+
 /// File descriptors (legacy constants, now using FdKind-based routing)
 #[allow(dead_code)]
 const FD_STDIN: u64 = 0;
@@ -225,6 +232,20 @@ pub fn sys_exit(exit_code: i32) -> SyscallResult {
 
             // Set flag for automated systems that want to detect completion
             USERSPACE_TEST_COMPLETE.store(true, Ordering::SeqCst);
+
+            // P6a PR-2, review finding B2: sample the tombstone census AFTER a
+            // live reap. x86's other two census sites both fire before any user
+            // process exists, so `removed` never left the join oracle's own two
+            // rows and whether the rows the four live `complete_wait` reaps
+            // claimed completed their join was unmeasured — the x86 half of this
+            // phase's central retention claim had no evidence. This point is the
+            // end of the userspace phase: no userspace thread remains, so no
+            // further reap can occur, and `resident` here is retention at
+            // quiesce. Boot-test profile only, on the exit path, once per boot.
+            #[cfg(all(target_arch = "x86_64", feature = "boot_tests"))]
+            if !TOMBSTONE_CENSUS_AFTER_USERSPACE.swap(true, Ordering::SeqCst) {
+                crate::tracing::providers::teardown::emit_tombstone_census();
+            }
 
             // Fallback BTRT finalization: if all userspace threads are gone,
             // finalize regardless of whether every registered PID called on_process_exit.
@@ -3120,6 +3141,44 @@ fn complete_wait(
         }
     );
 
+    // P6a reap arm. Condition C3: the claim is taken under PM *before* any
+    // status reaches userspace. Two concurrent waiters can both pass the scan
+    // that produced `exit_code`; only the one that installs the claim may report
+    // it, and the loser returns ECHILD having copied nothing.
+    let mut claim_refused = false;
+    if let Some(thread_id) = crate::task::scheduler::current_thread_id() {
+        let mut evicted = None;
+        {
+            let mut manager_guard = crate::process::manager();
+            if let Some(ref mut manager) = *manager_guard {
+                if let Some((_parent_pid, parent)) = manager.find_process_by_thread_mut(thread_id) {
+                    parent.children.retain(|&id| id != child_pid);
+                }
+                match manager.reap_row(child_pid, reaper, exit_code) {
+                    crate::process::manager::ReapOutcome::Claimed(row) => evicted = row,
+                    crate::process::manager::ReapOutcome::Refused => claim_refused = true,
+                }
+            }
+        }
+        // Condition C8: the row destructor runs after the guard is released.
+        drop(evicted);
+        log::debug!(
+            "complete_wait: reap arm for child {} ({})",
+            child_pid.as_u64(),
+            if claim_refused { "refused" } else { "claimed" }
+        );
+    }
+    if claim_refused {
+        return SyscallResult::Err(super::errno::ECHILD as u64);
+    }
+    // Disclosed consequence of C3's ordering, and it is forced: the claim
+    // commits the reap before the status is copied, so a `copy_to_user` that
+    // faults now loses that status instead of leaving the child reapable. It
+    // cannot be avoided while the claim is the arbiter — a row claimed by this
+    // caller is a tombstone whether or not the copy lands, and re-opening it on
+    // a fault would hand the same status to a second waiter, which is exactly
+    // the defect C3 exists to close. Linux has the same wart on the same path.
+
     // Write status to userspace if pointer is valid
     if status_ptr != 0 {
         if let Err(e) = copy_to_user(
@@ -3129,30 +3188,6 @@ fn complete_wait(
         ) {
             log::error!("complete_wait: Failed to write status: {}", e);
             return SyscallResult::Err(super::errno::EFAULT as u64);
-        }
-    }
-
-    // Remove child from parent's children list and reap from process table
-    if let Some(thread_id) = crate::task::scheduler::current_thread_id() {
-        let mut manager_guard = crate::process::manager();
-        if let Some(ref mut manager) = *manager_guard {
-            if let Some((_parent_pid, parent)) = manager.find_process_by_thread_mut(thread_id) {
-                parent.children.retain(|&id| id != child_pid);
-                log::debug!(
-                    "complete_wait: Removed child {} from parent's children list",
-                    child_pid.as_u64()
-                );
-            }
-            // P6a reap arm: record the claim in the same PM acquisition that
-            // removes the row. The join is NOT installed in this PR - the
-            // removal below is unchanged and unconditional, so retention is
-            // byte-for-byte what it was.
-            manager.claim_reap(child_pid, reaper, exit_code);
-            manager.remove_process(child_pid);
-            log::debug!(
-                "complete_wait: Reaped process {} from process table",
-                child_pid.as_u64()
-            );
         }
     }
 
