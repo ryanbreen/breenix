@@ -12695,6 +12695,7 @@ fn validate_x86_settled_tombstone_census(provider: &str, idle: &str) -> Result<(
     for required in [
         "USERSPACE_TEST_COMPLETE",
         "SETTLE_MS",
+        "boot_reclaim_queue_census()",
         "emit_tombstone_census();",
     ] {
         if !body.contains(required) {

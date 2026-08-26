@@ -758,15 +758,23 @@ pub fn emit_tombstone_census() {
 ///
 /// This runs from the idle loop, which is the first context that exists after
 /// every userspace thread is gone and which drives the production drain itself.
-/// The sample is taken at a FIXED point — the first idle pass at or after
-/// `SETTLE_MS` past the completion flag — and emits whatever it reads. It never
-/// waits for the gauge to reach zero: a census that only prints when it likes
-/// the answer proves nothing, and a stranded tombstone must reach the gate as a
-/// red rather than as silence.
+/// The sample is taken when that drain has **nothing left to do** — both
+/// deferred-reclaim queues empty — or at a `SETTLE_MS` backstop if they never
+/// empty, and it emits whatever it reads either way.
+///
+/// It never consults the gauge it is reporting. A census that prints only when
+/// it likes the answer feeds a self-fulfilling gate literal, and a stranded
+/// tombstone has to reach the gate as a red rather than as silence: the backstop
+/// exists so that a queue which never drains still produces a line, with the
+/// leak visible in it.
+///
+/// Quiesce rather than a fixed delay because the gate kills QEMU as soon as its
+/// success chain matches, which is within a second or two of the last userspace
+/// exit; a fixed multi-second settle would simply never print.
 #[cfg(all(feature = "boot_tests", target_arch = "x86_64"))]
 pub fn x86_settled_tombstone_census() {
     const SETTLE_MS: u64 = 2_000;
-    static SETTLE_AT_MS: AtomicU64 = AtomicU64::new(0);
+    static BACKSTOP_AT_MS: AtomicU64 = AtomicU64::new(0);
     static EMITTED: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 
     if EMITTED.load(Ordering::Relaxed) {
@@ -776,12 +784,14 @@ pub fn x86_settled_tombstone_census() {
         return;
     }
     let now = crate::time::timer::get_monotonic_time();
-    let settle_at = SETTLE_AT_MS.load(Ordering::Relaxed);
-    if settle_at == 0 {
-        SETTLE_AT_MS.store(now.saturating_add(SETTLE_MS).max(1), Ordering::Relaxed);
+    let backstop_at = BACKSTOP_AT_MS.load(Ordering::Relaxed);
+    if backstop_at == 0 {
+        BACKSTOP_AT_MS.store(now.saturating_add(SETTLE_MS).max(1), Ordering::Relaxed);
         return;
     }
-    if now < settle_at {
+    let drain_quiesced =
+        crate::task::process_task::boot_reclaim_queue_census() == (0, 0);
+    if !drain_quiesced && now < backstop_at {
         return;
     }
     if EMITTED.swap(true, Ordering::Relaxed) {
