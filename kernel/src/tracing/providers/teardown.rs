@@ -745,32 +745,36 @@ pub fn emit_tombstone_census() {
 }
 
 /// P6a PR-2, review finding B2 — the **settled** half of the x86 retention
-/// sample, and the only place in the matrix that observes a real workload's
-/// tombstone window closing.
+/// sample, and the only place in the matrix that looks at a real workload's
+/// tombstones once the workload is over.
 ///
 /// The sample `sys_exit` takes at the end of the userspace phase is taken at the
-/// instant the last userspace thread leaves, which is *before* the drain that
-/// retires the rows the four live reaps just claimed: it measures a nonzero
-/// gauge on four real production rows. Nothing on x86 samples again — the
+/// instant the last userspace thread leaves, which is *before* any drain could
+/// retire the rows the four live reaps just claimed: it measures the gauge
+/// nonzero on four real production rows. Nothing on x86 samples again — the
 /// strand reporter fires once, before userspace, and the heartbeat's procfs
 /// reader is an aarch64 userspace program — so retention at quiesce was
-/// unmeasured on this arch.
+/// unmeasured on this arch, which is exactly the gap the review named.
 ///
-/// This runs from the idle loop, which is the first context that exists after
-/// every userspace thread is gone and which drives the production drain itself.
-/// The sample is taken when that drain has **nothing left to do** — both
-/// deferred-reclaim queues empty — or at a `SETTLE_MS` backstop if they never
-/// empty, and it emits whatever it reads either way.
+/// This runs from the idle loop: the first context that exists after every
+/// userspace thread is gone, and the context that drives the production drain
+/// itself. It fires when that drain has nothing left to do (both deferred
+/// reclaim queues empty) or at a `SETTLE_MS` backstop, and it emits whatever it
+/// reads either way. It never consults the gauge it reports: a census that
+/// prints only when it likes the answer feeds a self-fulfilling gate literal,
+/// and a stranded tombstone has to reach the gate as a red rather than as
+/// silence.
 ///
-/// It never consults the gauge it is reporting. A census that prints only when
-/// it likes the answer feeds a self-fulfilling gate literal, and a stranded
-/// tombstone has to reach the gate as a red rather than as silence: the backstop
-/// exists so that a queue which never drains still produces a line, with the
-/// leak visible in it.
+/// It carries the two queue depths because retention at quiesce is only half an
+/// answer without them — a nonzero `resident` with a nonempty `pending` names a
+/// drain that never completed, which is a different fault from a join that
+/// failed to remove a retired-and-reaped row, and the gate should be able to
+/// tell them apart from the serial alone.
 ///
-/// Quiesce rather than a fixed delay because the gate kills QEMU as soon as its
-/// success chain matches, which is within a second or two of the last userspace
-/// exit; a fixed multi-second settle would simply never print.
+/// Its own marker, not `[TOMBSTONE_CENSUS:`, so the gate can pin this sample and
+/// the userspace-end sample independently: the two can legitimately carry
+/// identical retention fields, and a shared marker would make both unpinnable by
+/// exact count.
 #[cfg(all(feature = "boot_tests", target_arch = "x86_64"))]
 pub fn x86_settled_tombstone_census() {
     const SETTLE_MS: u64 = 2_000;
@@ -789,15 +793,23 @@ pub fn x86_settled_tombstone_census() {
         BACKSTOP_AT_MS.store(now.saturating_add(SETTLE_MS).max(1), Ordering::Relaxed);
         return;
     }
-    let drain_quiesced =
-        crate::task::process_task::boot_reclaim_queue_census() == (0, 0);
-    if !drain_quiesced && now < backstop_at {
+    let (pending, parked) = crate::task::process_task::boot_reclaim_queue_census();
+    if (pending != 0 || parked != 0) && now < backstop_at {
         return;
     }
     if EMITTED.swap(true, Ordering::Relaxed) {
         return;
     }
-    emit_tombstone_census();
+    crate::serial_println!(
+        "[TOMBSTONE_QUIESCE:resident={}:removed={}:reap_second={}:retire_second={}:abandoned_unqueued={}:pending={}:parked={}]",
+        TOMBSTONE_RESIDENT.aggregate(),
+        TOMBSTONE_REMOVED.aggregate(),
+        TOMBSTONE_JOIN_REAP_SECOND.aggregate(),
+        TOMBSTONE_JOIN_RETIRE_SECOND.aggregate(),
+        RECLAIM_ABANDONED_UNQUEUED.aggregate(),
+        pending,
+        parked,
+    );
 }
 
 #[cfg(feature = "boot_tests")]

@@ -63,6 +63,33 @@ KSTACK_OWNER_ORACLE_PATTERN='\[KSTACK_OWNER_ORACLE:x86:creation_rows=1000:creati
 # gate (g)'s retire-second arm ever executes on x86, and until this pin existed
 # deleting run_x86_tombstone_join_gate() from main.rs left this gate green.
 TOMBSTONE_JOIN_ORACLE_LITERAL='[TOMBSTONE_JOIN_ORACLE:x86:retire_second=1:reap_second=1:removed=2:resident_delta=0:tombstone_rows=0:PASS]'
+# P6a PR-2 review finding B2 — the x86 retention claim, measured on production
+# rows instead of on the oracle's fixture, in two samples that mean different
+# things and are pinned separately.
+#
+# (1) End of the userspace phase, emitted from the `sys_exit` arm entered when no
+# userspace thread remains. `resident=4` is the four rows the live `complete_wait`
+# reaps claimed, still tombstones at that instant: the only observation anywhere
+# in this campaign's matrix of the tombstone gauge nonzero on real rows. `removed`
+# is still the join oracle's own two. Both other x86 census lines are emitted
+# before any user process exists and read `resident=0:removed=2`, so this literal
+# is unique and pinned by exact count.
+TOMBSTONE_CENSUS_USERSPACE_END_LITERAL='[TOMBSTONE_CENSUS:resident=4:removed=2:reap_second=1:retire_second=1:abandoned_unqueued=1]'
+# (2) Quiesce, emitted from the idle loop once the deferred-reclaim queues are
+# empty or a 2000 ms backstop elapses, whichever comes first. On this arch it is
+# the backstop that fires, and the line says why: `pending` is nonzero because
+# x86 production reclamation is dead by then. `RECLAIM_DRAIN_ACTIVE` is stranded
+# true — every later drain refuses as a nested drain, at ~1000 refusals/second
+# from the idle loop — so no receipt retires, no join completes, and the four
+# rows stay tombstones. That is PRE-EXISTING and not this PR's doing: an
+# identical instrumented probe on main (ca147f94) reads
+# `live_q=18:parked_q=0:drain_active=true:nested=18420`, i.e. main leaks the same
+# eighteen deferred reclaims with their page tables and frames unreleased, and
+# P6a is what finally makes four of them visible as retained rows with a counter
+# naming them. Filed as its own issue; the retention fields are pinned exactly so
+# a regression moves them, while `pending` is a bounded attribution field because
+# its depth is a property of that pre-existing defect rather than of this claim.
+TOMBSTONE_QUIESCE_PATTERN='\[TOMBSTONE_QUIESCE:resident=4:removed=2:reap_second=1:retire_second=1:abandoned_unqueued=1:pending=[0-9]+:parked=0\]'
 SCHED_STRAND_ORACLE_PATTERN='\[SCHED_STRAND_ORACLE:x86:samples=[1-9][0-9]*:checked=[1-9][0-9]*:stranded=0:running_shape=[0-9]+:ready_shape=[0-9]+:resolved_production=[0-9]+:resolved_exercised=[0-9]+:worst_dwell_ms=[0-9]+:overflow=[0-9]+:worst_nonprogress_ms=[0-9]+:nonprogress=[0-9]+:queued_on_nondispatching_cpu=[0-9]+:worst_queued_nondispatch_ms=[0-9]+:worst_cpu_scheduler_silence_ms=[0-9]+:worst_silence_cpu=[0-9]+\]'
 CENSUS_WIDEN_ORACLE_LITERAL='[CENSUS_WIDEN_ORACLE:x86:arm=none:reason=uniprocessor_no_dispatching_peer:baseline_reported=0:axes=6:SKIP]'
 # The boot-test oracle deliberately drives the detector exactly once; the forbidden exact marker is separately pinned absent below.
@@ -210,6 +237,10 @@ for i in $(seq 1 "$COUNT"); do
                 "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
             && grep -qF "$TOMBSTONE_JOIN_ORACLE_LITERAL" \
                 "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
+            && grep -qF "$TOMBSTONE_CENSUS_USERSPACE_END_LITERAL" \
+                "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
+            && grep -qE "$TOMBSTONE_QUIESCE_PATTERN" \
+                "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
             && grep -q '\[TEST:userspace:loopback_recv_wake:PASS\]' \
                 "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
             && grep -q 'TEST_TALLY:' \
@@ -315,6 +346,10 @@ for i in $(seq 1 "$COUNT"); do
         "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 0
     test "$(grep -h -F -c "$TOMBSTONE_JOIN_ORACLE_LITERAL" \
         "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 1
+    test "$(grep -h -F -c "$TOMBSTONE_CENSUS_USERSPACE_END_LITERAL" \
+        "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 1
+    test "$(grep -h -E -c "$TOMBSTONE_QUIESCE_PATTERN" \
+        "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 1
     # x86 has no production designated init, so the runtime refusal never fires
     # and the whole-boot walk is legitimately zero here; this is the `None`-arm
     # evidence, not the whole-boot-walk evidence, and it becomes non-zero only
@@ -349,6 +384,10 @@ for i in $(seq 1 "$COUNT"); do
     echo "$KSTACK_OWNER_LINE"
     echo "$CREATION_LOCK_ORDER_INJECTED_LITERAL"
     echo "$TOMBSTONE_JOIN_ORACLE_LITERAL"
+    echo "$TOMBSTONE_CENSUS_USERSPACE_END_LITERAL"
+    TOMBSTONE_QUIESCE_LINE=$(grep -h -E "$TOMBSTONE_QUIESCE_PATTERN" \
+        "$OUTPUT_DIR"/serial_*.txt | tail -1)
+    echo "$TOMBSTONE_QUIESCE_LINE"
     if grep -qE '\[BOOT_TESTS:FAIL|KERNEL PANIC|panic!' \
         "$OUTPUT_DIR"/serial_*.txt; then
         exit 1

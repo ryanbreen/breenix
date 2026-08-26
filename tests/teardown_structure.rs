@@ -12696,16 +12696,19 @@ fn validate_x86_settled_tombstone_census(provider: &str, idle: &str) -> Result<(
         "USERSPACE_TEST_COMPLETE",
         "SETTLE_MS",
         "boot_reclaim_queue_census()",
-        "emit_tombstone_census();",
+        "[TOMBSTONE_QUIESCE:",
+        "TOMBSTONE_RESIDENT.aggregate()",
+        "TOMBSTONE_REMOVED.aggregate()",
     ] {
         if !body.contains(required) {
             return Err(());
         }
     }
-    // The sample must be unconditional once the settle has elapsed: a census
+    // The sample must be unconditional once the backstop has elapsed: a census
     // that only prints when the gauge already reads zero cannot fail, and the
-    // gate literal it feeds would be self-fulfilling.
-    let emit = body.find("emit_tombstone_census();").ok_or(())?;
+    // gate literal it feeds would be self-fulfilling. Nothing before the emit
+    // may read the gauge.
+    let emit = body.find("serial_println!").ok_or(())?;
     if body[..emit].contains("TOMBSTONE_RESIDENT") {
         return Err(());
     }
@@ -12816,8 +12819,8 @@ fn production_boot_and_heartbeat_emit_the_tombstone_census() {
     );
 
     let gauge_gated = provider.replacen(
-        "    if EMITTED.swap(true, Ordering::Relaxed) {\n        return;\n    }\n    emit_tombstone_census();",
-        "    if EMITTED.swap(true, Ordering::Relaxed) {\n        return;\n    }\n    if TOMBSTONE_RESIDENT.aggregate() != 0 {\n        return;\n    }\n    emit_tombstone_census();",
+        "    if EMITTED.swap(true, Ordering::Relaxed) {\n        return;\n    }",
+        "    if EMITTED.swap(true, Ordering::Relaxed) {\n        return;\n    }\n    if TOMBSTONE_RESIDENT.aggregate() != 0 {\n        return;\n    }",
         1,
     );
     assert_ne!(gauge_gated, provider, "gauge-gated census mutation anchor");
