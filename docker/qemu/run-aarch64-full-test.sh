@@ -90,7 +90,7 @@ require_boot_tests_kernel() {
 
     # A census of marker literals rather than one sentinel: a single marker
     # changing profile must not be able to disarm this guard quietly.
-    for marker in '[SCHED_STRAND_ORACLE:' '[STRAND_INJECT_ORACLE:' '[CENSUS_WIDEN_ORACLE:' '[FUTEX_HANDOFF_ORACLE:' '[CTX596_ORACLE:' '[BOOT_TESTS:'; do
+    for marker in '[SCHED_STRAND_ORACLE:' '[STRAND_INJECT_ORACLE:' '[CENSUS_WIDEN_ORACLE:' '[FUTEX_HANDOFF_ORACLE:' '[CTX596_ORACLE:' '[TOMBSTONE_JOIN_ORACLE:' '[BOOT_TESTS:'; do
         if ! grep -aqF "$marker" "$kernel" 2>/dev/null; then
             missing="$missing $marker"
         fi
@@ -265,6 +265,13 @@ if $PHASE1_OK && [ -z "$FAIL_REASON" ]; then
         FAIL_REASON="Phase 1: missing init-group refusal oracle counter marker"
     elif ! grep -Eq '\[BLOCK_WEDGE_ORACLE:locked=1:wedged=1:refused=1:parked=0:refuse_ms=[0-9]+\]' "$OUTPUT_DIR/serial.txt" 2>/dev/null; then
         FAIL_REASON="Phase 1: missing block wedge oracle counter marker"
+    # P6a PR-2 gate extras (b)/(f)/(g). Every field is a delta the oracle drives
+    # itself inside one run: two fixture rows, one joined by retirement and one
+    # by the reap, the gauge back at its entry value and no tombstone left. The
+    # tally alone cannot pin this — deleting the oracle's registry entry lowers
+    # TESTS_TOTAL and TESTS_PASSED together and stays green.
+    elif [ "$(grep -Fxc '[TOMBSTONE_JOIN_ORACLE:aarch64:retire_second=1:reap_second=1:removed=2:resident_delta=0:tombstone_rows=0:PASS]' "$OUTPUT_DIR/serial.txt" 2>/dev/null || true)" -ne 1 ]; then
+        FAIL_REASON="Phase 1: tombstone join oracle marker count is not exactly one"
     fi
 fi
 

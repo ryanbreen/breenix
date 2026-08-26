@@ -25,6 +25,13 @@ fn reset_quantum() {
 /// Global flag to signal that userspace testing is complete and kernel should exit
 pub static USERSPACE_TEST_COMPLETE: AtomicBool = AtomicBool::new(false);
 
+/// P6a PR-2, review finding B2. Latches the one post-userspace tombstone census
+/// sample so the x86 gate can pin it by exact count: the block below is entered
+/// whenever the last userspace thread exits, and a second entry would emit a
+/// second line with different values.
+#[cfg(all(target_arch = "x86_64", feature = "boot_tests"))]
+static TOMBSTONE_CENSUS_AFTER_USERSPACE: AtomicBool = AtomicBool::new(false);
+
 /// File descriptors (legacy constants, now using FdKind-based routing)
 #[allow(dead_code)]
 const FD_STDIN: u64 = 0;
@@ -225,6 +232,20 @@ pub fn sys_exit(exit_code: i32) -> SyscallResult {
 
             // Set flag for automated systems that want to detect completion
             USERSPACE_TEST_COMPLETE.store(true, Ordering::SeqCst);
+
+            // P6a PR-2, review finding B2: sample the tombstone census AFTER a
+            // live reap. x86's other two census sites both fire before any user
+            // process exists, so `removed` never left the join oracle's own two
+            // rows and whether the rows the four live `complete_wait` reaps
+            // claimed completed their join was unmeasured — the x86 half of this
+            // phase's central retention claim had no evidence. This point is the
+            // end of the userspace phase: no userspace thread remains, so no
+            // further reap can occur, and `resident` here is retention at
+            // quiesce. Boot-test profile only, on the exit path, once per boot.
+            #[cfg(all(target_arch = "x86_64", feature = "boot_tests"))]
+            if !TOMBSTONE_CENSUS_AFTER_USERSPACE.swap(true, Ordering::SeqCst) {
+                crate::tracing::providers::teardown::emit_tombstone_census();
+            }
 
             // Fallback BTRT finalization: if all userspace threads are gone,
             // finalize regardless of whether every registered PID called on_process_exit.

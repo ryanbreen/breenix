@@ -5355,6 +5355,11 @@ fn validate_frame_ledger_counter_inventory(provider: &str) -> Result<(), ()> {
         .next()
         .ok_or(())?;
 
+    // P6a PR-2 re-pin, derived per delta: 83 + TOMBSTONE_RESIDENT (the gauge)
+    // + TOMBSTONE_REMOVED (the removal counter) + RECLAIM_ABANDONED_UNQUEUED
+    // (binding condition C2 path (c), which requires `abandon_unqueued_reclaim`
+    // to gain a counter in this PR) = 86. The two TOMBSTONE_JOIN counters were
+    // already declared in PR-1 and are not part of this delta.
     (declared == expected
         && EXPECTED
             .iter()
@@ -5613,6 +5618,11 @@ fn validate_process_page_table_counter_inventory(sources: &[(String, String)]) -
         .split("];")
         .next()
         .ok_or(())?;
+    // P6a PR-2 re-pin, derived per delta: 83 + TOMBSTONE_RESIDENT (the gauge)
+    // + TOMBSTONE_REMOVED (the removal counter) + RECLAIM_ABANDONED_UNQUEUED
+    // (binding condition C2 path (c), which requires `abandon_unqueued_reclaim`
+    // to gain a counter in this PR) = 86. The two TOMBSTONE_JOIN counters were
+    // already declared in PR-1 and are not part of this delta.
     if declared != expected
         || !EXPECTED
             .iter()
@@ -6571,6 +6581,11 @@ fn frame_ledger_return_and_initialization_ratchets_are_exact() {
             None => failures.push(format!("missing counter {counter}")),
         }
     }
+    // P6a PR-2 re-pin, derived per delta: 83 + TOMBSTONE_RESIDENT (the gauge)
+    // + TOMBSTONE_REMOVED (the removal counter) + RECLAIM_ABANDONED_UNQUEUED
+    // (binding condition C2 path (c), which requires `abandon_unqueued_reclaim`
+    // to gain a counter in this PR) = 86. The two TOMBSTONE_JOIN counters were
+    // already declared in PR-1 and are not part of this delta.
     check(
         &mut failures,
         "COUNTER_COUNT is no longer 86",
@@ -7807,6 +7822,11 @@ fn all_phase_zero_counters_have_registered_readers_and_honest_runtime_gates() {
         .filter_map(|rest| rest.strip_suffix(','))
         .map(str::to_owned)
         .collect();
+    // P6a PR-2 re-pin, derived per delta: 83 + TOMBSTONE_RESIDENT (the gauge)
+    // + TOMBSTONE_REMOVED (the removal counter) + RECLAIM_ABANDONED_UNQUEUED
+    // (binding condition C2 path (c), which requires `abandon_unqueued_reclaim`
+    // to gain a counter in this PR) = 86. The two TOMBSTONE_JOIN counters were
+    // already declared in PR-1 and are not part of this delta.
     assert_eq!(declarations.len(), 86);
     assert_eq!(
         readers, declarations,
@@ -7863,6 +7883,15 @@ fn all_phase_zero_counters_have_registered_readers_and_honest_runtime_gates() {
     assert!(!declaration_only.contains("counter!(TOMBSTONE_REMOVED,"));
 
     let registry = source(&sources, "kernel/src/test_framework/registry.rs");
+    // P6a PR-2, review finding B1: the censuses above pin that the join oracle
+    // EXISTS; they cannot see whether anything runs it. Gate extra (g)'s only
+    // evidence is the oracle's own marker, so both of its drivers are pinned
+    // here — the aarch64 registry entry and the x86 explicit call in main.rs.
+    // Deleting either used to leave all structural suites, `[BOOT_TESTS:PASS]`
+    // and the x86 gate green while silently removing that evidence.
+    assert!(registry.contains("name: \"tombstone_join_oracle\""));
+    assert!(source(&sources, "kernel/src/main.rs")
+        .contains("teardown::run_x86_tombstone_join_gate();"));
     assert!(registry.contains("name: \"fork_exit_defer_reclaim_pairing_test\""));
     assert!(registry.contains("name: \"deferred_fault_ring_overflow_injection\""));
     assert!(registry.contains("name: \"exit_kick_protocol_gate\""));
@@ -12615,6 +12644,7 @@ fn validate_production_tombstone_census(
     x86_main: &str,
     arm_main: &str,
     strand_oracle: &str,
+    x86_handlers: &str,
 ) -> Result<(), ()> {
     let marker = "pub fn emit_tombstone_census";
     let declaration = provider.find(marker).ok_or(())?;
@@ -12647,6 +12677,14 @@ fn validate_production_tombstone_census(
     {
         return Err(());
     }
+    // Review finding B2: the x86 post-userspace sample. Every other x86 census
+    // site fires before a user process exists, so without this one the arch's
+    // retention claim rests on a sample taken before any row was ever reaped.
+    // It sits in the `sys_exit` arm that runs when the last userspace thread is
+    // gone, so it reads retention at quiesce and can never race a later reap.
+    if !function_body(x86_handlers, "sys_exit").contains("emit_tombstone_census();") {
+        return Err(());
+    }
     Ok(())
 }
 
@@ -12662,13 +12700,15 @@ fn production_boot_and_heartbeat_emit_the_tombstone_census() {
     let x86_main = repo_text("kernel/src/main.rs");
     let arm_main = repo_text("kernel/src/main_aarch64.rs");
     let strand_oracle = repo_text("kernel/src/task/strand_oracle.rs");
+    let x86_handlers = repo_text("kernel/src/syscall/handlers.rs");
     assert_eq!(
         validate_production_tombstone_census(
             &provider,
             &procfs_trace,
             &x86_main,
             &arm_main,
-            &strand_oracle
+            &strand_oracle,
+            &x86_handlers
         ),
         Ok(())
     );
@@ -12688,7 +12728,8 @@ fn production_boot_and_heartbeat_emit_the_tombstone_census() {
             &procfs_trace,
             &x86_main,
             &arm_main,
-            &strand_oracle
+            &strand_oracle,
+            &x86_handlers
         ),
         Err(())
     );
@@ -12705,7 +12746,8 @@ fn production_boot_and_heartbeat_emit_the_tombstone_census() {
             &heartbeat_dropped,
             &x86_main,
             &arm_main,
-            &strand_oracle
+            &strand_oracle,
+            &x86_handlers
         ),
         Err(())
     );
@@ -12724,8 +12766,125 @@ fn production_boot_and_heartbeat_emit_the_tombstone_census() {
             &procfs_trace,
             &x86_main,
             &arm_main,
-            &periodic_dropped
+            &periodic_dropped,
+            &x86_handlers
         ),
         Err(())
     );
+
+    // Review finding B2's own mutation: the post-userspace x86 sample deleted.
+    // Without it the only x86 census samples are the two that precede every live
+    // reap, which is exactly the evidence gap this finding named.
+    let post_userspace_dropped = x86_handlers.replacen(
+        "                crate::tracing::providers::teardown::emit_tombstone_census();\n",
+        "",
+        1,
+    );
+    assert_ne!(
+        post_userspace_dropped, x86_handlers,
+        "post-userspace census mutation anchor"
+    );
+    assert_eq!(
+        validate_production_tombstone_census(
+            &provider,
+            &procfs_trace,
+            &x86_main,
+            &arm_main,
+            &strand_oracle,
+            &post_userspace_dropped
+        ),
+        Err(())
+    );
+}
+
+fn validate_claim_before_copy(body: &str) -> Result<(), &'static str> {
+    let mask = code_mask(body);
+    let claims = method_call_offsets(body, &mask, "reap_row");
+    if claims.len() != 1 {
+        return Err("the reap arm must contain exactly one claim");
+    }
+    let copies = call_offsets(body, &mask, "copy_to_user");
+    if copies.is_empty() {
+        return Err("the status copy disappeared");
+    }
+    if claims[0] > copies[0] {
+        return Err("a status reaches userspace before the claim is installed");
+    }
+    // The reap arm also reads `claim_refused` inside its own debug log, so the
+    // arm being pinned is the one that RETURNS, selected by shape rather than by
+    // position: exactly one `if claim_refused` block leaves the function.
+    let returning_arms: Vec<(usize, &str)> = body
+        .match_indices("if claim_refused {")
+        .filter_map(|(offset, _)| braced_block(body, &mask, offset).map(|arm| (offset, arm)))
+        .filter(|(_, arm)| arm.contains("return"))
+        .collect();
+    let [(refusal, arm)] = returning_arms[..] else {
+        return Err("the refused-claim arm disappeared");
+    };
+    if refusal > copies[0] {
+        return Err("the refused-claim arm no longer precedes the copy");
+    }
+    if !arm.contains("ECHILD") {
+        return Err("the refused-claim arm no longer returns ECHILD");
+    }
+    Ok(())
+}
+
+/// P6a condition C3, review finding F7. Nothing exercises `complete_wait`'s own
+/// return: the join oracle calls `reap_row` directly, so the syscall-level
+/// behaviour C3 specifies — the loser of the claim returns ECHILD and copies
+/// nothing — was established by reading the code. This pins it on both arches
+/// instead, so an edit that reinstates copy-before-claim is red on the host.
+///
+/// What this does **not** prove, stated plainly: that two *concurrent* waiters
+/// serialize correctly. C3's last sentence asks for a concurrent injection and
+/// this PR's is sequential; that narrowing is disclosed in PLAN gate (h) and the
+/// equivalence argument for it (`Process::claim_reap` is one PM-protected
+/// read-modify-write, and PM is the sole serializer, so a sequential second
+/// claim traverses the identical path a concurrent loser does) is unchanged by
+/// this test. What the test removes is the possibility of the *ordering*
+/// regressing unnoticed, which is the half that lives in the source.
+#[test]
+fn both_complete_wait_arms_claim_before_they_copy() {
+    for path in [
+        "kernel/src/syscall/wait.rs",
+        "kernel/src/syscall/handlers.rs",
+    ] {
+        let source = repo_text(path);
+        let body = function_body(&source, "complete_wait").to_owned();
+        assert_eq!(
+            validate_claim_before_copy(&body),
+            Ok(()),
+            "{path}: the reap arm must claim before it copies"
+        );
+
+
+        // Mutation 1, applied singly: a status copy placed before the claim —
+        // the pre-P6a ordering C3 exists to forbid.
+        let copy_first = body.replacen(
+            "    let mut claim_refused = false;",
+            "    let _ = copy_to_user(status_ptr, &exit_code);\n    let mut claim_refused = false;",
+            1,
+        );
+        assert_ne!(copy_first, body, "{path}: copy-first mutation anchor");
+        assert_eq!(
+            validate_claim_before_copy(&copy_first),
+            Err("a status reaches userspace before the claim is installed"),
+            "{path}: a copy before the claim must redden this ratchet"
+        );
+
+        // Mutation 2, applied singly: the loser stops returning ECHILD and falls
+        // through to report a status it did not claim.
+        let refusal_dropped = body.replacen(
+            "if claim_refused {\n        return SyscallResult::Err(",
+            "if false {\n        return SyscallResult::Err(",
+            1,
+        );
+        assert_ne!(refusal_dropped, body, "{path}: refusal mutation anchor");
+        assert_eq!(
+            validate_claim_before_copy(&refusal_dropped),
+            Err("the refused-claim arm disappeared"),
+            "{path}: a refused claim that still copies must redden this ratchet"
+        );
+    }
 }
