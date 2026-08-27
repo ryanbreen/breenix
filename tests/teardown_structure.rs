@@ -3560,6 +3560,158 @@ fn opaque_thread_state_store_offsets(source: &str, mask: &[bool]) -> Vec<usize> 
         .collect()
 }
 
+/// Method calls `.NAME(` where NAME begins with `prefix`. The family is named
+/// by prefix everywhere else in this file for the same reason: an exact-name
+/// list only ever sees the members that already exist.
+fn method_call_prefix_offsets(source: &str, mask: &[bool], prefix: &str) -> Vec<usize> {
+    let bytes = source.as_bytes();
+    code_offsets(source, mask, prefix)
+        .into_iter()
+        .filter(|offset| {
+            offset
+                .checked_sub(1)
+                .and_then(|before| bytes.get(before))
+                .is_some_and(|byte| *byte == b'.')
+        })
+        .filter(|offset| {
+            let mut end = offset + prefix.len();
+            while bytes.get(end).is_some_and(|byte| identifier_byte(*byte)) {
+                end += 1;
+            }
+            next_code(source, mask, end).is_some_and(|open| bytes[open] == b'(')
+        })
+        .collect()
+}
+
+/// A per-CPU ready-queue departure inside `body`: the family's inline scrub over
+/// `per_cpu_queues`, or a call to the general-purpose dequeue. The departure is
+/// recognised by shape, so a primitive satisfies the rule below by actually
+/// departing the thread rather than by being added to a list of names.
+fn contains_ready_queue_departure(body: &str) -> bool {
+    let mask = code_mask(body);
+    !method_call_offsets(body, &mask, "remove_from_ready_queue").is_empty()
+        || (!identifier_offsets(body, &mask, "per_cpu_queues").is_empty()
+            && !method_call_offsets(body, &mask, "retain").is_empty())
+}
+
+/// A `blocked_in_syscall = true` publication inside `body`. Clearing the flag is
+/// deliberately not this shape: only code running on the thread itself may clear
+/// it, which stays a caller's business, while setting it belongs to the blocking
+/// primitive that publishes the state it describes.
+fn publishes_blocked_in_syscall(body: &str) -> bool {
+    let mask = code_mask(body);
+    let bytes = body.as_bytes();
+    assignment_offsets(body, &mask, "blocked_in_syscall")
+        .into_iter()
+        .any(|offset| {
+            let Some(equals) = next_code(body, &mask, offset + "blocked_in_syscall".len()) else {
+                return false;
+            };
+            next_code(body, &mask, equals + 1)
+                .is_some_and(|value| identifier_beginning_at(body, &mask, value) == "true")
+                && bytes[equals] == b'='
+        })
+}
+
+/// The body of the item `path` names, or `None` when the file holds no such item.
+fn item_body_in<'a>(sources: &'a [(String, String)], path: &str, item: &str) -> Option<&'a str> {
+    let source = sources
+        .iter()
+        .find(|(candidate, _)| candidate == path)
+        .map(|(_, contents)| contents)?;
+    item_body_for_path(source, item)
+}
+
+/// #647's primitive-side rule, derived over census A's own rows: a production
+/// publication of a blocked state must depart the thread from the per-CPU ready
+/// queues in the same function that publishes it — i.e. under the one scheduler
+/// lock acquisition the caller already holds. Publishing without departing
+/// leaves a window in which a `Blocked` thread still names a ready queue, and
+/// the dispatch loop refuses only `Terminated` candidates: it would dispatch
+/// that thread exactly like a `Ready` one. Test fixtures manufacture a foreign
+/// thread's state rather than parking themselves and are exempt, as they are
+/// from the naming rule, while staying pinned by census A.
+fn validate_blocked_publication_departs_ready_queue(
+    sources: &[(String, String)],
+) -> Result<(), Vec<String>> {
+    let mut failures = Vec::new();
+    let mut inspected = 0usize;
+    for ((path, item), _) in census(sources, blocked_state_publication_offsets) {
+        if item_path_is_test_fixture(&item) {
+            continue;
+        }
+        inspected += 1;
+        match item_body_in(sources, &path, &item) {
+            Some(body) if contains_ready_queue_departure(body) => {}
+            Some(_) => failures.push(format!(
+                "{path} :: {item}  (publishes a blocked state without departing the ready queue)"
+            )),
+            None => failures.push(format!("{path} :: {item}  (publication body not found)")),
+        }
+    }
+    if inspected == 0 {
+        failures.push("no production blocked-state publication was inspected".to_owned());
+    }
+    failures.is_empty().then_some(()).ok_or(failures)
+}
+
+/// #647's caller-side rule: the blocking primitive owns the departure, so no
+/// caller of the family may open-code one — nor the `blocked_in_syscall`
+/// publication the syscall variant now performs. Both were caller obligations
+/// spread over fifteen sites, which is what made the primitive a guard point
+/// anything could bypass by forgetting a post-condition.
+///
+/// The rule is item-scoped rather than window-scoped: a departure written
+/// anywhere in the same function as the blocking call — inside the same
+/// `with_scheduler` closure, or a second one after it — reads the same way. A
+/// blocking-family definition is exempt because it is the owner, which is also
+/// what keeps the departure probe (a family-named boot-test member that plants
+/// queue entries on purpose) from being read as a caller.
+fn validate_block_family_callers_own_no_departure(
+    sources: &[(String, String)],
+) -> Result<(), Vec<String>> {
+    let mut failures = Vec::new();
+    let mut inspected = 0usize;
+    for (path, source) in sources {
+        let mask = code_mask(source);
+        let spans = rendered_item_spans(&item_spans(source, &mask));
+        let mut callers: BTreeSet<String> = BTreeSet::new();
+        for prefix in BLOCKING_NAME_PREFIXES {
+            for offset in method_call_prefix_offsets(source, &mask, prefix) {
+                callers.insert(item_path_at(&spans, offset));
+            }
+        }
+        for item in callers {
+            if item_path_function_name(&item).is_some_and(|name| {
+                BLOCKING_NAME_PREFIXES
+                    .iter()
+                    .any(|prefix| name.starts_with(prefix))
+            }) {
+                continue;
+            }
+            inspected += 1;
+            let Some(body) = item_body_for_path(source, &item) else {
+                failures.push(format!("{path} :: {item}  (caller body not found)"));
+                continue;
+            };
+            if contains_ready_queue_departure(body) {
+                failures.push(format!(
+                    "{path} :: {item}  (open-codes the ready-queue departure the primitive owns)"
+                ));
+            }
+            if publishes_blocked_in_syscall(body) {
+                failures.push(format!(
+                    "{path} :: {item}  (open-codes the syscall-context publication block_current_in_syscall owns)"
+                ));
+            }
+        }
+    }
+    if inspected == 0 {
+        failures.push("no blocking-primitive caller was inspected".to_owned());
+    }
+    failures.is_empty().then_some(()).ok_or(failures)
+}
+
 fn validate_opaque_thread_state_stores(
     sources: &[(String, String)],
 ) -> Result<(), Vec<String>> {
@@ -7625,6 +7777,16 @@ fn v3_structural_closures_are_exact() {
     );
     record(
         &mut failures,
+        "a blocked state is published without a ready-queue departure",
+        validate_blocked_publication_departs_ready_queue(&sources),
+    );
+    record(
+        &mut failures,
+        "a blocking-primitive caller open-codes a post-condition the primitive owns",
+        validate_block_family_callers_own_no_departure(&sources),
+    );
+    record(
+        &mut failures,
         "opaque thread-state stores changed",
         validate_opaque_thread_state_stores(&sources),
     );
@@ -9249,6 +9411,74 @@ fn deliberately_broken_variants_fail_the_ratchet() {
         assert!(
             validate_blocked_state_publication_family(&fixture_publication).is_ok(),
             "{cfg} is a host-test fixture and must stay exempt from the naming rule"
+        );
+    }
+
+    // #647, primitive side: a production publication that does not depart the
+    // thread it blocks fires the departure rule, and the same publication with
+    // the family's scrub does not. Both arms matter — without the second, the
+    // rule could be failing for a reason unrelated to the departure.
+    let undeparted_publication = with_synthetic_source(
+        &sources,
+        "kernel/src/task/synthetic_undeparted_publication.rs",
+        "pub fn park_probe(thread: &mut Thread) { thread.state = ThreadState::Blocked; }",
+    );
+    assert!(
+        validate_blocked_publication_departs_ready_queue(&undeparted_publication).is_err(),
+        "a blocked publication with no ready-queue departure must fire the rule"
+    );
+    for departure in [
+        "for q in self.per_cpu_queues.iter_mut() { q.retain(|&id| id != tid); }",
+        "self.remove_from_ready_queue(tid);",
+    ] {
+        let departed_publication = with_synthetic_source(
+            &sources,
+            "kernel/src/task/synthetic_departed_publication.rs",
+            &format!(
+                "pub fn park_probe(&mut self, thread: &mut Thread, tid: u64) {{ thread.state = ThreadState::Blocked; {departure} }}"
+            ),
+        );
+        assert!(
+            validate_blocked_publication_departs_ready_queue(&departed_publication).is_ok(),
+            "a blocked publication that departs the ready queue must satisfy the rule"
+        );
+    }
+
+    // #647, caller side: a caller that open-codes either post-condition the
+    // primitive owns fires the caller rule, however the departure is spelled and
+    // wherever in the function it sits. The control arms keep the rule readable:
+    // the same caller without the open-coding passes, a dequeue in a function
+    // that blocks nothing is not a blocking departure at all, and clearing
+    // `blocked_in_syscall` stays a caller's business.
+    for open_coding in [
+        "sched.block_current(); sched.remove_from_ready_queue(tid);",
+        "sched.block_current_in_syscall(); sched.remove_from_ready_queue(tid);",
+        "sched.block_current(); for q in sched.per_cpu_queues.iter_mut() { q.retain(|&id| id != tid); }",
+        "sched.block_current(); if let Some(thread) = sched.current_thread_mut() { thread.blocked_in_syscall = true; }",
+    ] {
+        let open_coded_caller = with_synthetic_source(
+            &sources,
+            "kernel/src/task/synthetic_open_coded_caller.rs",
+            &format!("pub fn park(sched: &mut Scheduler, tid: u64) {{ {open_coding} }}"),
+        );
+        assert!(
+            validate_block_family_callers_own_no_departure(&open_coded_caller).is_err(),
+            "a caller that open-codes {open_coding} must fire the caller rule"
+        );
+    }
+    for permitted in [
+        "pub fn park(sched: &mut Scheduler) { sched.block_current(); }",
+        "pub fn reap(sched: &mut Scheduler, tid: u64) { sched.remove_from_ready_queue(tid); }",
+        "pub fn resume(sched: &mut Scheduler) { sched.block_current(); if let Some(thread) = sched.current_thread_mut() { thread.blocked_in_syscall = false; } }",
+    ] {
+        let permitted_caller = with_synthetic_source(
+            &sources,
+            "kernel/src/task/synthetic_permitted_caller.rs",
+            permitted,
+        );
+        assert!(
+            validate_block_family_callers_own_no_departure(&permitted_caller).is_ok(),
+            "the caller rule must not fire on {permitted}"
         );
     }
 
