@@ -5347,6 +5347,11 @@ pub fn kernel_stack_ownership_oracle_test() -> crate::test_framework::registry::
         slot_alloc_delta: u64,
         slot_free_delta: u64,
         slot_balance: i64,
+        cohort_enrolled: u64,
+        cohort_returned: u64,
+        cohort_double_return: u64,
+        foreign_returned: u64,
+        foreign_alloc_delta: u64,
         frames_mapped_delta: u64,
         frames_released_delta: u64,
         frame_balance: i64,
@@ -5558,6 +5563,10 @@ pub fn kernel_stack_ownership_oracle_test() -> crate::test_framework::registry::
     }
 
     let stress_before = crate::memory::kernel_stack::kernel_stack_pool_counters();
+    // #646: the global slot counters move for every kernel stack in the system,
+    // so they cannot carry the oracle's own allocation/return equality. Enrol the
+    // slots this loop allocates and match the returns by slot identity instead.
+    let cohort_before = crate::memory::kernel_stack::kernel_stack_cohort_counters();
     let frame_used_before = frame_allocator_used_frames();
     #[cfg(target_arch = "aarch64")]
     let mut aarch_plain_constructors = 0u64;
@@ -5583,6 +5592,12 @@ pub fn kernel_stack_ownership_oracle_test() -> crate::test_framework::registry::
             aarch_plain_constructors += 1;
         } else {
             aarch_sp_constructors += 1;
+        }
+
+        if let Some(allocation) = row.kernel_stack_allocation.as_ref() {
+            // Enrolment travels with the slot index, so it survives the
+            // publication move into the scheduler-owned copy.
+            allocation.enroll_in_measurement_cohort();
         }
 
         if row.kernel_stack_allocation.is_some()
@@ -5618,6 +5633,7 @@ pub fn kernel_stack_ownership_oracle_test() -> crate::test_framework::registry::
     }
 
     let stress_after = crate::memory::kernel_stack::kernel_stack_pool_counters();
+    let cohort_after = crate::memory::kernel_stack::kernel_stack_cohort_counters();
     let frame_used_after = frame_allocator_used_frames();
     measurements.slot_alloc_delta = stress_after
         .slots_allocated
@@ -5627,6 +5643,19 @@ pub fn kernel_stack_ownership_oracle_test() -> crate::test_framework::registry::
         .saturating_sub(stress_before.slots_freed);
     measurements.slot_balance =
         measurements.slot_alloc_delta as i64 - measurements.slot_free_delta as i64;
+    measurements.cohort_enrolled = cohort_after.enrolled.saturating_sub(cohort_before.enrolled);
+    measurements.cohort_returned = cohort_after.returned.saturating_sub(cohort_before.returned);
+    measurements.cohort_double_return = cohort_after
+        .double_returned
+        .saturating_sub(cohort_before.double_returned);
+    measurements.foreign_returned = cohort_after
+        .foreign_returned
+        .saturating_sub(cohort_before.foreign_returned);
+    // Allocation-side attribution is only knowable once a slot is enrolled, so
+    // the foreign allocation count is the residual of the exact global delta.
+    measurements.foreign_alloc_delta = measurements
+        .slot_alloc_delta
+        .saturating_sub(measurements.cohort_enrolled);
     measurements.frames_mapped_delta = stress_after
         .frames_mapped
         .saturating_sub(stress_before.frames_mapped);
@@ -6057,40 +6086,80 @@ pub fn kernel_stack_ownership_oracle_test() -> crate::test_framework::registry::
             "ownership stress slot return workload was too small",
         );
     }
-    if measurements.slot_alloc_delta != measurements.slot_free_delta {
+    // #646: the oracle's own allocation/return balance is asserted by slot
+    // identity, not by a global before/after delta. Every stress row enrols the
+    // slot it allocated, and `KernelStack::drop` matches the return against that
+    // enrolment, so a thread reaped on another CPU inside this window can no
+    // longer move the quantities these checks read.
+    if measurements.cohort_enrolled != OWNERSHIP_STRESS_ITERATIONS as u64 {
         note_failure(
             &mut first_failure,
             &mut violations,
-            "ownership stress slot allocation/free equality failed",
+            "ownership stress did not enrol one cohort slot per iteration",
         );
     }
-    if measurements.slot_balance != 0 {
+    if measurements.cohort_returned != measurements.cohort_enrolled {
         note_failure(
             &mut first_failure,
             &mut violations,
-            "ownership stress slot balance was nonzero",
+            "ownership stress cohort slot allocation/return equality failed",
         );
     }
-    if measurements.frames_mapped_delta != measurements.frames_released_delta {
+    // The reading the old global delta could never separate from ordinary
+    // concurrency: a slot returned twice with no intervening allocation.
+    if measurements.cohort_double_return != 0 {
         note_failure(
             &mut first_failure,
             &mut violations,
-            "ownership stress mapped/released frame equality failed",
+            "ownership stress returned a cohort slot twice",
         );
     }
-    if measurements.frame_balance != 0 {
+    // Global/cohort reconciliation. Every slot return in the window is counted
+    // as exactly one of cohort or foreign, so this identity holds regardless of
+    // what the other CPUs are doing — it fails only if the two accountings have
+    // drifted apart, i.e. a return moved one counter and not the other.
+    if measurements.slot_free_delta
+        != measurements.cohort_returned + measurements.foreign_returned
+    {
         note_failure(
             &mut first_failure,
             &mut violations,
-            "ownership stress frame balance was nonzero",
+            "ownership stress slot return accounting did not reconcile",
         );
     }
+    if measurements.slot_alloc_delta < measurements.cohort_enrolled {
+        note_failure(
+            &mut first_failure,
+            &mut violations,
+            "ownership stress enrolled more slots than the allocator handed out",
+        );
+    }
+    // Frame accounting is per allocation and per return, so pinning it to the
+    // global slot deltas is exact on both arches whatever else is running;
+    // the old mapped-equals-released pair carried the same window race as the
+    // slot equality did.
     #[cfg(target_arch = "x86_64")]
     if measurements.frames_mapped_delta != 128 * measurements.slot_alloc_delta {
         note_failure(
             &mut first_failure,
             &mut violations,
             "x86 ownership stress did not map 128 frames per stack",
+        );
+    }
+    #[cfg(target_arch = "x86_64")]
+    if measurements.frames_released_delta != 128 * measurements.slot_free_delta {
+        note_failure(
+            &mut first_failure,
+            &mut violations,
+            "x86 ownership stress did not release 128 frames per returned stack",
+        );
+    }
+    #[cfg(target_arch = "aarch64")]
+    if measurements.frames_released_delta != 0 {
+        note_failure(
+            &mut first_failure,
+            &mut violations,
+            "aarch64 ownership stress unexpectedly released frames",
         );
     }
     #[cfg(target_arch = "aarch64")]
@@ -6231,7 +6300,7 @@ pub fn kernel_stack_ownership_oracle_test() -> crate::test_framework::registry::
     let arch = "x86";
     let balance = violations;
     crate::serial_println!(
-        "[KSTACK_OWNER_ORACLE:{}:creation_rows={}:creation_owned={}:one_owner={}:two_owner={}:zero_owner={}:fork_rows={}:fork_owned={}:slot_returns_exact_one={}:slot_alloc_delta={}:slot_free_delta={}:slot_balance={}:frames_mapped_delta={}:frames_released_delta={}:frame_balance={}:frame_used_delta={}:frame_used_bounded={}:live_checks={}:live_refusals_production={}:live_refusals_injected={}:drop_refused_live={}:pte_overwrite_refusals={}:pub_pooled={}:pub_sched_owned={}:pub_row_residual={}:pub_unowned={}:classifier_sched_owned={}:classifier_row_residual={}:classifier_unowned={}:classifier_not_pooled={}:sched_publications={}:sched_pm_held_production={}:sched_pm_held_injected={}:balance={}]",
+        "[KSTACK_OWNER_ORACLE:{}:creation_rows={}:creation_owned={}:one_owner={}:two_owner={}:zero_owner={}:fork_rows={}:fork_owned={}:slot_returns_exact_one={}:slot_alloc_delta={}:slot_free_delta={}:slot_balance={}:cohort_enrolled={}:cohort_returned={}:cohort_double_return={}:foreign_alloc_delta={}:foreign_returned={}:frames_mapped_delta={}:frames_released_delta={}:frame_balance={}:frame_used_delta={}:frame_used_bounded={}:live_checks={}:live_refusals_production={}:live_refusals_injected={}:drop_refused_live={}:pte_overwrite_refusals={}:pub_pooled={}:pub_sched_owned={}:pub_row_residual={}:pub_unowned={}:classifier_sched_owned={}:classifier_row_residual={}:classifier_unowned={}:classifier_not_pooled={}:sched_publications={}:sched_pm_held_production={}:sched_pm_held_injected={}:balance={}]",
         arch,
         measurements.creation_rows,
         measurements.creation_owned,
@@ -6244,6 +6313,11 @@ pub fn kernel_stack_ownership_oracle_test() -> crate::test_framework::registry::
         measurements.slot_alloc_delta,
         measurements.slot_free_delta,
         measurements.slot_balance,
+        measurements.cohort_enrolled,
+        measurements.cohort_returned,
+        measurements.cohort_double_return,
+        measurements.foreign_alloc_delta,
+        measurements.foreign_returned,
         measurements.frames_mapped_delta,
         measurements.frames_released_delta,
         measurements.frame_balance,

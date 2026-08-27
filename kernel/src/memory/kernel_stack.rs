@@ -8,6 +8,8 @@ use crate::memory::arch_stub::VirtAddr;
 #[cfg(target_arch = "x86_64")]
 use crate::memory::frame_allocator::{allocate_frame, deallocate_frame};
 use core::sync::atomic::{AtomicU64, Ordering};
+#[cfg(feature = "boot_tests")]
+use core::sync::atomic::AtomicU8;
 #[cfg(target_arch = "x86_64")]
 use spin::Mutex;
 #[cfg(target_arch = "x86_64")]
@@ -27,6 +29,123 @@ static KSTACK_PUBLICATIONS_POOLED: AtomicU64 = AtomicU64::new(0);
 static KSTACK_PUBLICATIONS_SCHEDULER_OWNED: AtomicU64 = AtomicU64::new(0);
 static KSTACK_PUBLICATIONS_ROW_RESIDUAL: AtomicU64 = AtomicU64::new(0);
 static KSTACK_PUBLICATIONS_UNOWNED: AtomicU64 = AtomicU64::new(0);
+
+// ---------------------------------------------------------------------------
+// Slot-identity measurement cohort (#646)
+//
+// The kernel-stack ownership oracle used to measure its own workload with the
+// process-wide `KSTACK_SLOTS_ALLOCATED` / `KSTACK_SLOTS_FREED` deltas taken
+// across its stress loop. Those counters move for every kernel stack in the
+// system, so a thread reaped on another CPU inside the oracle's window landed
+// in the oracle's "free" delta with no matching allocation in the same window:
+// the equality the oracle asserted was a property of the whole system being
+// quiescent, which nothing enforces (`slot_free_delta` one high, `slot_balance`
+// -1, ~25% of `-smp 4` boots).
+//
+// The cohort below attributes slot motion to an *identity* rather than to a
+// window. The oracle enrols the exact slot indices it allocates; `KernelStack::
+// drop` matches each return against that enrolment before the bitmap bit is
+// released. Every free is therefore classified as either a cohort return or a
+// foreign return, and the two partition the global free delta exactly, whatever
+// the rest of the system is doing on the other CPUs.
+//
+// A slot returned twice with no intervening allocation is still sitting in
+// `COHORT_STATE_RETURNED` and is counted as a double return — the real
+// unpaired-free reading the old global delta could never distinguish from
+// ordinary concurrency. The allocator clears the state when it hands an index
+// back out, which is what stops an *ordinary* return of a reallocated slot from
+// being misreported as that double return.
+#[cfg(all(feature = "boot_tests", target_arch = "x86_64"))]
+const COHORT_TABLE_SLOTS: usize = MAX_KERNEL_STACKS;
+#[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
+const COHORT_TABLE_SLOTS: usize = aarch64::ARM64_MAX_KERNEL_STACKS;
+
+/// Slot index is not a member of the measurement cohort.
+#[cfg(feature = "boot_tests")]
+const COHORT_STATE_ABSENT: u8 = 0;
+/// Slot index was enrolled by the oracle and has not been returned yet.
+#[cfg(feature = "boot_tests")]
+const COHORT_STATE_ENROLLED: u8 = 1;
+/// Slot index was enrolled and has been returned exactly once; it stays in this
+/// state until the allocator hands the index out again.
+#[cfg(feature = "boot_tests")]
+const COHORT_STATE_RETURNED: u8 = 2;
+
+#[cfg(feature = "boot_tests")]
+static KSTACK_COHORT_STATE: [AtomicU8; COHORT_TABLE_SLOTS] =
+    [const { AtomicU8::new(COHORT_STATE_ABSENT) }; COHORT_TABLE_SLOTS];
+#[cfg(feature = "boot_tests")]
+static KSTACK_COHORT_ENROLLED: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "boot_tests")]
+static KSTACK_COHORT_RETURNED: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "boot_tests")]
+static KSTACK_COHORT_DOUBLE_RETURN: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "boot_tests")]
+static KSTACK_FOREIGN_RETURNED: AtomicU64 = AtomicU64::new(0);
+
+/// Drop the cohort state for a slot index the allocator has just claimed.
+///
+/// Called with the index owned by the caller and before the new `KernelStack`
+/// escapes, so no return for this index can be in flight. This guards the
+/// double-return counter against a false positive: once a cohort slot has been
+/// returned and the pool hands the index to some other owner, that owner's
+/// eventual return is an ordinary one and must not be read as a second return
+/// of the cohort's slot.
+#[cfg(feature = "boot_tests")]
+#[inline]
+fn cohort_note_allocation(index: usize) {
+    if let Some(state) = KSTACK_COHORT_STATE.get(index) {
+        state.store(COHORT_STATE_ABSENT, Ordering::Release);
+    }
+}
+
+/// Classify a slot return by identity. Runs inside `KernelStack::drop`, before
+/// the bitmap bit is released, so the index cannot be reallocated underneath
+/// the classification.
+#[cfg(feature = "boot_tests")]
+#[inline]
+fn cohort_note_return(index: usize) {
+    let Some(state) = KSTACK_COHORT_STATE.get(index) else {
+        KSTACK_FOREIGN_RETURNED.fetch_add(1, Ordering::Relaxed);
+        return;
+    };
+    match state.compare_exchange(
+        COHORT_STATE_ENROLLED,
+        COHORT_STATE_RETURNED,
+        Ordering::AcqRel,
+        Ordering::Acquire,
+    ) {
+        Ok(_) => {
+            KSTACK_COHORT_RETURNED.fetch_add(1, Ordering::Relaxed);
+        }
+        Err(COHORT_STATE_RETURNED) => {
+            KSTACK_COHORT_DOUBLE_RETURN.fetch_add(1, Ordering::Relaxed);
+        }
+        Err(_) => {
+            KSTACK_FOREIGN_RETURNED.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+}
+
+/// Identity-scoped slot accounting for the ownership oracle.
+#[cfg(feature = "boot_tests")]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct KernelStackCohortCounters {
+    pub enrolled: u64,
+    pub returned: u64,
+    pub double_returned: u64,
+    pub foreign_returned: u64,
+}
+
+#[cfg(feature = "boot_tests")]
+pub fn kernel_stack_cohort_counters() -> KernelStackCohortCounters {
+    KernelStackCohortCounters {
+        enrolled: KSTACK_COHORT_ENROLLED.load(Ordering::Relaxed),
+        returned: KSTACK_COHORT_RETURNED.load(Ordering::Relaxed),
+        double_returned: KSTACK_COHORT_DOUBLE_RETURN.load(Ordering::Relaxed),
+        foreign_returned: KSTACK_FOREIGN_RETURNED.load(Ordering::Relaxed),
+    }
+}
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum KernelStackOwnership {
@@ -219,6 +338,20 @@ impl KernelStack {
         self.owner_pid = owner_pid;
     }
 
+    /// Enrol this allocation's slot identity in the measurement cohort (#646).
+    ///
+    /// Enrolment travels with the slot index, not with this `KernelStack`
+    /// value, so publication moving the allocation to the scheduler-owned copy
+    /// keeps the enrolment intact; the return is matched wherever the final
+    /// owner is dropped.
+    #[cfg(feature = "boot_tests")]
+    pub fn enroll_in_measurement_cohort(&self) {
+        if let Some(state) = KSTACK_COHORT_STATE.get(self.index) {
+            state.store(COHORT_STATE_ENROLLED, Ordering::Release);
+            KSTACK_COHORT_ENROLLED.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
     /// Get the guard page address
     #[cfg(target_arch = "x86_64")]
     #[allow(dead_code)]
@@ -235,6 +368,8 @@ impl Drop for KernelStack {
                 KSTACK_DROP_REFUSED_LIVE.fetch_add(1, Ordering::Relaxed);
                 return;
             }
+            #[cfg(feature = "boot_tests")]
+            cohort_note_return(self.index);
             aarch64::free_kernel_stack(self.index);
             KSTACK_SLOTS_FREED.fetch_add(1, Ordering::Relaxed);
             if let Some(pid) = self.owner_pid {
@@ -273,6 +408,8 @@ impl Drop for KernelStack {
                 return;
             }
 
+            #[cfg(feature = "boot_tests")]
+            cohort_note_return(self.index);
             free_stack_slot(self.index);
             KSTACK_SLOTS_FREED.fetch_add(1, Ordering::Relaxed);
             if let Some(pid) = self.owner_pid {
@@ -320,6 +457,12 @@ pub fn allocate_kernel_stack() -> Result<KernelStack, &'static str> {
 
     let index = slot_index.ok_or("No free kernel stack slots")?;
     drop(bitmap); // Release the lock early
+    // The index is now owned by this caller, so no return for it can be in
+    // flight: clear the cohort state here so a later ordinary return of this
+    // reallocated slot is not misread as a second return of the slot's
+    // previous occupant (#646).
+    #[cfg(feature = "boot_tests")]
+    cohort_note_allocation(index);
 
     // Calculate addresses
     let slot_base = KERNEL_STACK_BASE + (index as u64 * STACK_SLOT_SIZE);
@@ -539,6 +682,10 @@ mod aarch64 {
 
         let index = slot_index.ok_or("ARM64 kernel stack pool exhausted")?;
         drop(bitmap);
+        // See the x86 arm: clearing on allocation keeps an ordinary return of a
+        // reallocated slot from being misread as a double return (#646).
+        #[cfg(feature = "boot_tests")]
+        super::cohort_note_allocation(index);
 
         let slot_base = ARM64_KERNEL_STACK_BASE + (index as u64 * ARM64_STACK_SLOT_SIZE);
         let stack_bottom = VirtAddr::new(slot_base + ARM64_GUARD_PAGE_SIZE);
