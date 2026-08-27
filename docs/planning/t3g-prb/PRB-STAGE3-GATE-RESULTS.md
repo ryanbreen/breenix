@@ -187,7 +187,22 @@ tests passed in the same boot, on both sides of the failure:
 352:[TEST:timer:timer_quantum_reset_aarch64:PASS]
 ```
 
-so the global `TICKS` counter demonstrably advanced elsewhere in that same boot.
+**Correction (2026-08-26).** This passage originally concluded from those four passes that "the
+global `TICKS` counter demonstrably advanced elsewhere in that same boot". That does not follow and
+the inference is withdrawn: on aarch64 none of the four reads `crate::time::timer::get_ticks()`.
+`test_timer_ticks` and `test_timer_monotonic` read the raw architectural counter `CNTVCT_EL0` via
+`timer::rdtsc()`; `test_timer_init` checks only a non-zero `CNTFRQ_EL0` plus the calibration flag;
+`test_timer_delay` scores `timer::nanoseconds_since_base()`, also `CNTVCT_EL0`-derived; and
+`test_timer_quantum_reset_aarch64` checks a dedicated `reset_quantum` call counter. Their passes are
+silent about `TICKS`, so this boot carries no evidence either way about the counter the failing test
+read.
+
+The failing test's own aarch64 arm has since been established as an invalid oracle — it asserted a
+peer-CPU latency bound on a counter only CPU 0 writes, from an unpinned thread, over a host
+wall-clock window — and has been repaired fail-closed and instrumented. #644 remains OPEN: four
+dynamic causes for this red survive and this serial records none of the fields that separate them.
+The full correction, including the surviving causes and the closing bar, is in
+`docs/planning/t3g-prb/GATE-BASELINE-f96ea36c.md` under §3.1.
 
 **Not established here.** Whether this signature is branch-caused or pre-existing is not
 settled by this run, and #644 says so. It appears in no serial preserved in this repository

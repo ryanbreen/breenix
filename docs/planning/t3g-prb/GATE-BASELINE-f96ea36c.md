@@ -106,10 +106,37 @@ for signatures filed on one CPU model only.
 | #625 | 4% (1/25, a72 only) | 100 a72 | 0.017 | 73 a72 boots | Same shape as #626. |
 | **#576** | 1.25% (~1/80) | 200 | **0.081** | 238 | Consistent with unchanged. **Not a close.** Residual carried forward verbatim. |
 | **#641** | 1.0% (1/100) | 200 | **0.134** | 298 | Consistent with unchanged. Restate at ceiling, do not close. |
-| #644 | ~2% (1/50, a72) | 100 a72 | 0.133 | 148 a72 boots | Uninformative. #644 is unfixed and will red roughly 2% of future a72 batteries. |
+| #644 | 1 occurrence / 50 a72 | 100 a72 | 0.133 | 148 a72 boots | Uninformative — and "~2%" is not a defect rate. See the #644 correction below this table. |
 | #622 | ~1% | 200 | 0.134 | 298 | Uninformative. |
 | #613 | 0.5% | 200 | 0.367 | 598 | Uninformative. |
 | #612 | 0.25% | 200 | 0.606 | 1197 | Uninformative. |
+
+**Correction (2026-08-26) — the #644 row.** As first written this row read
+"~2% (1/50, a72) … #644 is unfixed and will red roughly 2% of future a72 batteries". Both halves
+are withdrawn. The oracle that produced the recorded red was invalid on aarch64:
+`test_timer_interrupt_running` asserted that the **global** `TICKS` counter advanced, and `TICKS`
+has exactly one write site — `time::timer::timer_interrupt()` — which on aarch64 is reached only
+through the `if cpu_id == 0` arm of
+`arch_impl::aarch64::timer_interrupt::timer_interrupt_handler`. The test thread is an ordinary
+unpinned kthread, so what the test actually asserted was a maximum-latency bound on a *peer* CPU's
+interrupt stream, measured over a window of `CNTVCT_EL0`, which under QEMU TCG advances whether or
+not that vCPU thread executed an instruction. It was simultaneously fail-open in the direction that
+matters: a completely dead timer on CPU 1, 2 or 3 passed it — proven by mutation on the repair
+branch, where freezing one peer CPU's tick counter now reddens the test and previously did not.
+"1/50" is therefore an occurrence count for an invalid measurement, not a rate for any defect, and
+no forecast of future batteries follows from it.
+
+Four dynamic causes for the recorded red survive, and the preserved serial records none of the
+fields that separate them: (a) CPU 0 spent ≥15 ms with `DAIF.I` set; (b) the CPU-0 vCPU thread was
+not scheduled by the host for ≥15 ms; (c) the test ran with IRQs left masked by the immediately
+preceding `irq_enable_disable` test; (d) a genuine transient virtual-timer/GIC PPI delivery failure
+on CPU 0. Two of those four are kernel defects. A 44-boot `cortex-a72` repro on `main` (`f8cf13f5`)
+produced zero occurrences, which **bounds** the rate rather than proving absence —
+`P(0 | 2.2%, 44) ≈ 0.37`. The oracle has since been repaired fail-closed (it refuses a masked entry
+instead of repairing it, pins the measurement, asserts the executing CPU's own per-CPU tick counter
+and every online CPU's, and emits a `[TIMER_LIVENESS_RECORD:aarch64]` marker carrying every
+deciding field on failure). **#644 stays OPEN** on that instrumented wait; the closing bar remains
+the ≥148 a72 boots this table computes, and the next occurrence is expected to decide itself.
 
 For #641 specifically, "measured ceiling" in numbers: pooling its one filed occurrence with this
 clean 200 gives 1 event in ~300 boots (point estimate 0.33%); the rule of three on this battery alone
@@ -174,7 +201,8 @@ Each line below is an adjudication for someone else to make. This document takes
 | **#641** | Restating the issue at its measured ceiling (~0.33% pooled, 95% upper bound ~1.5%). | A close. `P(0 \| 1%, 200) = 0.134`. |
 | **#576**, **#626** | Carrying forward with the residual written into the issue: `P(0 \| 1.25%, 200) = 0.081` for #576; `P(0 \| 4%, 100 max) = 0.017` for #626 against a point estimate that rests on one observation. | A close for either. |
 | **#599** | Recording this 20/20 on the issue as a first clean re-measurement. | Closing it on one run. A second clean 20 would make the case. |
-| **#646**, **#598**, **#630**, **#554**, **#629**, **#631**, **#605**, **#644**, and the starved-gate residents | Nothing. Not sampled, or sampled far below their N₉₅. | Any inference at all. |
+| **#646**, **#598**, **#630**, **#554**, **#629**, **#631**, **#605**, and the starved-gate residents | Nothing. Not sampled, or sampled far below their N₉₅. | Any inference at all. |
+| **#644** | Repairing the oracle that produced the red: on aarch64 it asserted a peer-CPU latency bound the platform cannot offer, and passed a dead peer-CPU timer. See the correction under §3.1. | A close, or any statement about a kernel defect's rate. The red's cause is still one of four, this battery sampled none of the deciding fields, and the repair deliberately ships with the record rather than instead of it. |
 | **#610**, **#608**, **#636** | Each reproduced at this SHA with a preserved serial; each is live on `main`. | — |
 
 ---
