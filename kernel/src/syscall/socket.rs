@@ -694,10 +694,7 @@ pub fn sys_recvfrom(
         // 3. Without this flag, no context is saved when switching away,
         //    and stale userspace context is restored when switching back
         crate::task::scheduler::with_scheduler(|sched| {
-            sched.block_current();
-            if let Some(thread) = sched.current_thread_mut() {
-                thread.blocked_in_syscall = true;
-            }
+            sched.block_current_in_syscall();
         });
 
         // CRITICAL RACE CONDITION FIX:
@@ -1068,10 +1065,7 @@ fn sys_accept_tcp(
 
         // Block the current thread
         crate::task::scheduler::with_scheduler(|sched| {
-            sched.block_current();
-            if let Some(thread) = sched.current_thread_mut() {
-                thread.blocked_in_syscall = true;
-            }
+            sched.block_current_in_syscall();
         });
 
         // Double-check for pending connection after setting Blocked state
@@ -1228,10 +1222,7 @@ fn sys_accept_unix(
 
         // Block the current thread
         crate::task::scheduler::with_scheduler(|sched| {
-            sched.block_current();
-            if let Some(thread) = sched.current_thread_mut() {
-                thread.blocked_in_syscall = true;
-            }
+            sched.block_current_in_syscall();
         });
 
         // Double-check for pending connection after setting Blocked state
@@ -1535,10 +1526,7 @@ fn sys_connect_tcp(fd: u64, addr_ptr: u64, addrlen: u64) -> SyscallResult {
 
         // Block the current thread
         crate::task::scheduler::with_scheduler(|sched| {
-            sched.block_current();
-            if let Some(thread) = sched.current_thread_mut() {
-                thread.blocked_in_syscall = true;
-            }
+            sched.block_current_in_syscall();
         });
 
         log::info!(

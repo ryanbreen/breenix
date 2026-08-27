@@ -710,11 +710,7 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                         //    and stale userspace context is restored when switching back,
                         //    causing RIP corruption (kernel address in userspace CS)
                         crate::task::scheduler::with_scheduler(|sched| {
-                            sched.block_current();
-                            if let Some(thread) = sched.current_thread_mut() {
-                                thread.blocked_in_syscall = true;
-                                log::trace!("sys_read: Thread {} blocked on stdin (blocked_in_syscall=true)", thread.id);
-                            }
+                            sched.block_current_in_syscall();
                         });
 
                         log::trace!("sys_read: Thread {} blocking on stdin", thread_id);
@@ -854,10 +850,7 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
 
                         // Block the thread
                         crate::task::scheduler::with_scheduler(|sched| {
-                            sched.block_current();
-                            if let Some(thread) = sched.current_thread_mut() {
-                                thread.blocked_in_syscall = true;
-                            }
+                            sched.block_current_in_syscall();
                         });
 
                         // Check if data arrived during setup (race condition fix)
@@ -1005,10 +998,7 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
 
                         // Block the thread
                         crate::task::scheduler::with_scheduler(|sched| {
-                            sched.block_current();
-                            if let Some(thread) = sched.current_thread_mut() {
-                                thread.blocked_in_syscall = true;
-                            }
+                            sched.block_current_in_syscall();
                         });
 
                         // Check if data arrived during setup (race condition fix)
@@ -1281,10 +1271,7 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                 log::debug!("TCP recv: entering blocking path, thread={}", thread_id);
 
                 crate::task::scheduler::with_scheduler(|sched| {
-                    sched.block_current();
-                    if let Some(thread) = sched.current_thread_mut() {
-                        thread.blocked_in_syscall = true;
-                    }
+                    sched.block_current_in_syscall();
                 });
 
                 // Double-check for data after setting Blocked state
@@ -1400,10 +1387,7 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
 
                 // Block the thread
                 crate::task::scheduler::with_scheduler(|sched| {
-                    sched.block_current();
-                    if let Some(thread) = sched.current_thread_mut() {
-                        thread.blocked_in_syscall = true;
-                    }
+                    sched.block_current_in_syscall();
                 });
 
                 // Double-check for data or hangup after setting Blocked state
@@ -1501,10 +1485,7 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
 
                 // Block the thread
                 crate::task::scheduler::with_scheduler(|sched| {
-                    sched.block_current();
-                    if let Some(thread) = sched.current_thread_mut() {
-                        thread.blocked_in_syscall = true;
-                    }
+                    sched.block_current_in_syscall();
                 });
 
                 // Double-check for data after setting Blocked state
@@ -1615,10 +1596,7 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
 
                         // Block the thread
                         crate::task::scheduler::with_scheduler(|sched| {
-                            sched.block_current();
-                            if let Some(thread) = sched.current_thread_mut() {
-                                thread.blocked_in_syscall = true;
-                            }
+                            sched.block_current_in_syscall();
                         });
 
                         // Double-check for data after setting Blocked state

@@ -2914,7 +2914,16 @@ const EXIT_PROCESS_FOR_TEARDOWN_TEST_CALLS: &[(&str, &str, usize)] = &[
 ];
 #[rustfmt::skip]
 const BLOCKING_PRIMITIVES: &[(&str, &str, usize)] = &[
+    // The #647 repair splits the generic block into two published contracts over
+    // one shared body: the plain block, and the syscall-context variant that
+    // publishes `blocked_in_syscall` its callers used to write themselves. The
+    // shared body is the single place the publication and the ready-queue
+    // departure happen together.
+    ("kernel/src/task/scheduler.rs", "impl Scheduler::#[cfg(feature=boot_tests)] fn block_current_departure_gate", 1),
+    ("kernel/src/task/scheduler.rs", "#[cfg(feature=boot_tests)] fn block_current_departure_gate_test", 1),
     ("kernel/src/task/scheduler.rs", "impl Scheduler::fn block_current", 1),
+    ("kernel/src/task/scheduler.rs", "impl Scheduler::fn block_current_in_syscall", 1),
+    ("kernel/src/task/scheduler.rs", "impl Scheduler::fn block_current_inner", 1),
     ("kernel/src/task/scheduler.rs", "impl Scheduler::fn block_current_for_child_exit", 1),
     ("kernel/src/task/scheduler.rs", "impl Scheduler::fn block_current_for_compositor", 1),
     ("kernel/src/task/scheduler.rs", "impl Scheduler::fn block_current_for_io", 1),
@@ -2938,12 +2947,12 @@ const BLOCKED_STATE_PUBLICATIONS: &[(&str, &str, usize)] = &[
     ("kernel/src/socket/udp.rs", "#[cfg(test)] mod tests::fn test_enqueue_packet_wakes_multiple_waiters", 1),
     ("kernel/src/socket/udp.rs", "#[cfg(test)] mod tests::fn test_spurious_wakeup_handling", 1),
     ("kernel/src/task/scheduler.rs", "#[cfg(all(test,target_arch=x86_64))] mod tests::fn test_unblock_does_not_duplicate_ready_queue", 1),
-    ("kernel/src/task/scheduler.rs", "impl Scheduler::fn block_current", 1),
     ("kernel/src/task/scheduler.rs", "impl Scheduler::fn block_current_for_child_exit", 1),
     ("kernel/src/task/scheduler.rs", "impl Scheduler::fn block_current_for_compositor", 1),
     ("kernel/src/task/scheduler.rs", "impl Scheduler::fn block_current_for_io_publish", 1),
     ("kernel/src/task/scheduler.rs", "impl Scheduler::fn block_current_for_signal_with_context", 1),
     ("kernel/src/task/scheduler.rs", "impl Scheduler::fn block_current_for_timer", 1),
+    ("kernel/src/task/scheduler.rs", "impl Scheduler::fn block_current_inner", 1),
 ];
 /// Census B: stores into a field named `state` whose right-hand side is opaque
 /// (not a path), the shape that would launder a blocked publication past census
@@ -2952,6 +2961,12 @@ const BLOCKED_STATE_PUBLICATIONS: &[(&str, &str, usize)] = &[
 #[rustfmt::skip]
 const OPAQUE_THREAD_STATE_STORES: &[(&str, &str, usize)] = &[
     ("kernel/src/socket/udp.rs", "#[cfg(test)] mod tests::fn make_thread", 1),
+    // The #647 departure probe restores the state it snapshotted rather than
+    // naming a variant, so its restore is an opaque store by construction. It is
+    // the census's first non-fixture row: the probe is boot-test wiring, which
+    // the polarity-aware cfg predicate correctly reads as production
+    // configuration rather than a `test`-cfg fixture.
+    ("kernel/src/task/scheduler.rs", "impl Scheduler::#[cfg(feature=boot_tests)] fn block_current_departure_gate", 1),
     ("kernel/src/syscall/random.rs", "impl Xorshift64Star::fn next_u64", 1),
     ("kernel/src/task/scheduler.rs", "#[cfg(all(test,target_arch=x86_64))] mod tests::fn make_thread", 1),
     ("kernel/src/tracing/providers/teardown.rs", "#[cfg(feature=boot_tests)] fn clone_admission_oracle_test::fn test_thread", 1),
