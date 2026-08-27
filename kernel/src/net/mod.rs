@@ -282,6 +282,11 @@ const ARP_PENDING_TTL_MS: u64 = 5_000;
 struct LoopbackPacket {
     /// Raw IP packet data
     data: Vec<u8>,
+    /// Monotonic milliseconds at which this packet entered the queue.
+    ///
+    /// Delivery latency is the quantity #636 is about, so the queue carries the
+    /// only timestamp from which it can be computed without a test harness.
+    queued_at_ms: u64,
 }
 
 static LOOPBACK_QUEUE: Mutex<Vec<LoopbackPacket>> = Mutex::new(Vec::new());
@@ -296,6 +301,70 @@ static LOOPBACK_DRAIN_COMPLETED: AtomicU64 = AtomicU64::new(0);
 static LOOPBACK_DROPPED_FULL: AtomicU64 = AtomicU64::new(0);
 static IDLE_LOOPBACK_DRAIN_CALLS: AtomicU64 = AtomicU64::new(0);
 static LOOPBACK_PUMP_REARM_FROM_SCHED: AtomicU64 = AtomicU64::new(0);
+/// Longest observed queue-to-delivery latency of a loopback packet, in ms.
+static LOOPBACK_MAX_RESIDENCY_MS: AtomicU64 = AtomicU64::new(0);
+/// Deliveries whose residency exceeded `LOOPBACK_SLOW_DELIVERY_MS`.
+static LOOPBACK_SLOW_DELIVERIES: AtomicU64 = AtomicU64::new(0);
+/// Slow deliveries that have already emitted their census line.
+static LOOPBACK_SLOW_REPORTS: AtomicU64 = AtomicU64::new(0);
+/// Residency above which a delivery is reported rather than merely counted.
+///
+/// This is a diagnostic threshold, not a test bound: nothing fails because of
+/// it, it only decides when the census line is emitted.
+const LOOPBACK_SLOW_DELIVERY_MS: u64 = 250;
+/// Number of slow deliveries that emit a census line before reporting goes
+/// quiet, so a sustained stall cannot flood the serial line.
+const LOOPBACK_SLOW_REPORT_LIMIT: u64 = 8;
+
+/// Which context performed a drain, for slow-delivery attribution.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LoopbackDrainSource {
+    Pump,
+    Syscall,
+    Idle,
+}
+
+impl LoopbackDrainSource {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Pump => "pump",
+            Self::Syscall => "syscall",
+            Self::Idle => "idle",
+        }
+    }
+}
+
+pub fn loopback_max_residency_ms() -> u64 {
+    LOOPBACK_MAX_RESIDENCY_MS.load(Ordering::Relaxed)
+}
+
+pub fn loopback_slow_deliveries() -> u64 {
+    LOOPBACK_SLOW_DELIVERIES.load(Ordering::Relaxed)
+}
+
+/// Record one packet's queue-to-delivery latency and report the outliers.
+fn note_loopback_residency(queued_at_ms: u64, source: LoopbackDrainSource) {
+    let now_ms = crate::time::get_monotonic_time();
+    let residency_ms = now_ms.saturating_sub(queued_at_ms);
+
+    LOOPBACK_MAX_RESIDENCY_MS.fetch_max(residency_ms, Ordering::Relaxed);
+    if residency_ms <= LOOPBACK_SLOW_DELIVERY_MS {
+        return;
+    }
+
+    LOOPBACK_SLOW_DELIVERIES.fetch_add(1, Ordering::Relaxed);
+    if LOOPBACK_SLOW_REPORTS.fetch_add(1, Ordering::Relaxed) >= LOOPBACK_SLOW_REPORT_LIMIT {
+        return;
+    }
+
+    crate::serial_println!(
+        "LOOPBACK_SLOW_DELIVERY: residency_ms={} source={} slow={}",
+        residency_ms,
+        source.as_str(),
+        LOOPBACK_SLOW_DELIVERIES.load(Ordering::Relaxed),
+    );
+    dump_loopback_state();
+}
 
 struct LoopbackDrainGuard {
     owner: u64,
@@ -495,7 +564,7 @@ fn take_queued_loopback_packets() -> LoopbackTake {
 ///
 /// Returns true when work remains so callers can re-arm without doing
 /// unbounded delivery work in a single pass.
-pub(crate) fn drain_loopback_rounds(max_rounds: usize) -> bool {
+pub(crate) fn drain_loopback_rounds(max_rounds: usize, source: LoopbackDrainSource) -> bool {
     for _ in 0..max_rounds {
         let packets = match take_queued_loopback_packets() {
             LoopbackTake::Packets(packets) => packets,
@@ -504,6 +573,7 @@ pub(crate) fn drain_loopback_rounds(max_rounds: usize) -> bool {
         };
 
         for packet in packets {
+            note_loopback_residency(packet.queued_at_ms, source);
             if let Some(parsed_ip) = ipv4::Ipv4Packet::parse(&packet.data) {
                 let src_mac = get_mac_address().unwrap_or([0; 6]);
                 let dummy_frame = ethernet::EthernetFrame {
@@ -528,13 +598,13 @@ pub(crate) fn drain_loopback_rounds(max_rounds: usize) -> bool {
 /// can enqueue deferred replies (SYN+ACK, ACK) while delivering an earlier
 /// packet, so drain bounded rounds until the local packet chain is quiescent.
 pub fn drain_loopback_queue() {
-    let _ = drain_loopback_rounds(MAX_DRAIN_ROUNDS);
+    let _ = drain_loopback_rounds(MAX_DRAIN_ROUNDS, LoopbackDrainSource::Syscall);
 }
 
 /// Drain loopback delivery from a general thread-context idle backstop.
 pub fn drain_loopback_from_idle() {
     IDLE_LOOPBACK_DRAIN_CALLS.fetch_add(1, Ordering::Relaxed);
-    let _ = drain_loopback_rounds(MAX_DRAIN_ROUNDS);
+    let _ = drain_loopback_rounds(MAX_DRAIN_ROUNDS, LoopbackDrainSource::Idle);
 }
 
 pub fn idle_loopback_drain_calls() -> u64 {
@@ -545,12 +615,14 @@ pub fn idle_loopback_drain_calls() -> u64 {
 pub fn dump_loopback_state() {
     let pump_tid = loopback_pump_tid();
     crate::serial_println!(
-        "loopback: depth={} drain_contended={} drain_take_abandoned={} drain_completed={} dropped_full={} pump_tid={} pump_passes={} pump_rearms={} pump_rearm_from_sched={} pump_wakes={} pump_wake_rejected={} pump_wake_already_awake={} accept_publish_race_recovered={} isr_wakeup_depth_cpu0={} isr_wakeup_buffer_full={} stalled_reclaimed={}",
+        "loopback: depth={} drain_contended={} drain_take_abandoned={} drain_completed={} dropped_full={} max_residency_ms={} slow_deliveries={} pump_tid={} pump_passes={} pump_rearms={} pump_rearm_from_sched={} pump_wakes={} pump_wake_rejected={} pump_wake_already_awake={} accept_publish_race_recovered={} isr_wakeup_depth_cpu0={} isr_wakeup_buffer_full={} stalled_reclaimed={}",
         loopback_queue_depth(),
         loopback_drain_contended(),
         loopback_drain_take_abandoned(),
         loopback_drain_completed(),
         loopback_dropped_full(),
+        loopback_max_residency_ms(),
+        loopback_slow_deliveries(),
         pump_tid,
         loopback_pump_passes(),
         loopback_pump_rearms(),
@@ -1073,7 +1145,10 @@ pub fn send_ipv4(dst_ip: [u8; 4], protocol: u8, payload: &[u8]) -> Result<(), &'
                 false
             };
 
-            queue.push(LoopbackPacket { data: ip_packet });
+            queue.push(LoopbackPacket {
+                data: ip_packet,
+                queued_at_ms: crate::time::get_monotonic_time(),
+            });
             let queue_len = queue.len();
             LOOPBACK_QUEUE_DEPTH.store(queue_len, Ordering::Release);
             drop(queue);
