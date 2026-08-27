@@ -5593,8 +5593,23 @@ fn validate_no_vacuous_test_conditions(sources: &[(String, String)]) -> Result<(
 /// The x86 harness's *pass mechanism*, not just its shape. The five `contains`
 /// checks below prove the gate looks for the right markers; the block above them
 /// proves the recorded verdict is actually spent — `set -e` still on, `$passed`
-/// executed bare (so a false verdict ends the run), and no early or zero exit
-/// able to pre-empt it (review-sweep-r4 finding 4).
+/// asserted explicitly (so a false verdict ends the run), and no early or zero
+/// exit able to pre-empt it (review-sweep-r4 finding 4).
+///
+/// The verdict assertion is `test "$passed" = true`, not a bare `$passed`: a
+/// bare boolean variable executed as a command is silent on failure under
+/// `set -e` (bash prints nothing of its own), so a genuine FAIL died with no
+/// verdict text and no serial pointer — the diagnosis channel for every x86
+/// gate red. The ERR trap installed near the top of the script
+/// (`report_gate_failure`) is what makes that failure loud: it fires on every
+/// uncaught nonzero exit under `set -e` (including this assertion and the ~40
+/// marker-count `test` assertions below it), prints an explicit FAIL line,
+/// tails the run's serial output, and then performs the one exit this harness
+/// needs after a verdict has already been computed and found false:
+/// `exit "$exit_code"`. That is not a shortcut that pre-empts the verdict — it
+/// re-raises the same nonzero status the silent abort already carried, with
+/// the diagnosis attached — so it is allowed alongside the plain `exit 1`
+/// sites below.
 fn validate_x86_frame_custody_harness(script: &str) -> Result<(), ()> {
     const FRAME_VECTOR: &str = "FRAME_CUSTODY_PATTERN='\\[FRAME_CUSTODY_COUNTERS:x86:double=1:stale=1:never=1:untracked=1:duplicate=3:contended=[1-9][0-9]*\\]'";
     const PT_CUSTODY_VECTOR: &str = "PT_CUSTODY_LITERAL='[PT_CUSTODY_COUNTERS:x86:recorded=14:no_proof=0:no_arch=0:terminated=1:undecided=1:retired=2:returned=14:lost=0:requeued=0]'";
@@ -5625,20 +5640,24 @@ fn validate_x86_frame_custody_harness(script: &str) -> Result<(), ()> {
     let mut bare_verdict = false;
     for line in script.lines() {
         let statement = line.trim();
-        if statement == "$passed" {
+        if statement == "test \"$passed\" = true" {
             bare_verdict = true;
         }
-        if statement.split_whitespace().next() == Some("exit") && statement != "exit 1" {
+        if statement.split_whitespace().next() == Some("exit")
+            && statement != "exit 1"
+            && statement != "exit \"$exit_code\""
+        {
             eprintln!("x86 harness gained an exit that pre-empts its verdict: {statement}");
             return Err(());
         }
     }
     let verdict_false = script.find("passed=false").ok_or(())?;
     let verdict_true = script.find("passed=true").ok_or(())?;
-    let verdict_spent = script.find("\n    $passed\n").ok_or(())?;
+    let verdict_spent = script.find("\n    test \"$passed\" = true\n").ok_or(())?;
     let counter_check = script.find("-eq 1").ok_or(())?;
 
     (bare_verdict
+        && script.contains("trap 'report_gate_failure \"$LINENO\" \"$BASH_COMMAND\"' ERR")
         && script.contains("set -euo pipefail")
         && !script.contains("set +")
         && script.matches("passed=false").count() == 1
@@ -11188,7 +11207,10 @@ fn deliberately_broken_variants_fail_the_ratchet() {
     assert!(validate_x86_frame_custody_harness(&missing_prod_poll).is_err());
     assert!(validate_x86_frame_custody_harness(&harness.replace("-eq 1", "-ge 0")).is_err());
     assert!(validate_x86_frame_custody_harness(
-        &harness.replace("\n    $passed\n", "\n    $passed || true\n")
+        &harness.replace(
+            "\n    test \"$passed\" = true\n",
+            "\n    test \"$passed\" = true || true\n",
+        )
     )
     .is_err());
     assert!(validate_x86_frame_custody_harness(
@@ -11196,7 +11218,10 @@ fn deliberately_broken_variants_fail_the_ratchet() {
     )
     .is_err());
     assert!(validate_x86_frame_custody_harness(
-        &harness.replace("\n    $passed\n", "\n    exit 0\n    $passed\n")
+        &harness.replace(
+            "\n    test \"$passed\" = true\n",
+            "\n    exit 0\n    test \"$passed\" = true\n",
+        )
     )
     .is_err());
     assert!(validate_x86_frame_custody_harness(

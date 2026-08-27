@@ -18,7 +18,7 @@ set -euo pipefail
 # functions, and report_gate_failure is itself invoked from that trap.
 set -E
 
-# Every assertion below this point (the bare `$passed` check and the ~40
+# Every assertion below this point (the explicit passed-flag check and the ~40
 # bare `test ... -eq N` marker-count assertions) is deliberately a
 # set -e abort point: on a genuine boot regression, the assertion SHOULD
 # kill the script. What must never happen is a silent kill: `set -e`
@@ -371,7 +371,7 @@ for i in $(seq 1 "$COUNT"); do
     kill "$RUNNER_PID" 2>/dev/null || true
     wait "$RUNNER_PID" 2>/dev/null || true
 
-    # Explicit assertion, not a bare `$passed`: a bare boolean variable
+    # Explicit assertion, not a bare boolean variable: a bare boolean value
     # executed as a command is the same silent-abort shape as the `test`
     # assertions below, and is exactly as opaque on failure without the
     # ERR trap installed above.
