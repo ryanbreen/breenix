@@ -3281,7 +3281,8 @@ fn test_irq_enable_disable() -> TestResult {
 ///
 /// The x86_64 arm is deliberately unchanged. `interrupts::timer::timer_interrupt_handler`
 /// increments `TICKS` from every CPU with no `cpu_id` gate, so reading the global
-/// counter there is already a whole-machine liveness assertion.
+/// counter there is only an any-CPU liveness assertion. Its peer-CPU fail-open
+/// hole predates #658, is outside this follow-up's scope, and is tracked by #659.
 fn test_timer_interrupt_running() -> TestResult {
     #[cfg(target_arch = "x86_64")]
     {
@@ -3357,9 +3358,9 @@ fn test_timer_interrupt_running() -> TestResult {
         /// threshold (`timer_interrupt::LOCKUP_THRESHOLD_TICKS`).
         const MAX_MEASUREMENT_ATTEMPTS: u32 = 2;
         const MEASUREMENT_BUDGET_MS: u64 = 3_200;
-        /// Below this frequency a 5 us gap is not representable in whole ticks,
-        /// so the starvation screen is switched off and the single window is
-        /// scored with no re-measurement at all.
+        /// Below this frequency a `STALL_SAMPLE_MICROSECONDS` (50 us) gap is not
+        /// representable in whole ticks, so the starvation screen is switched
+        /// off and the single window is scored with no re-measurement at all.
         const MIN_SCREENABLE_FREQUENCY_HZ: u64 = 1_000_000;
 
         struct TimerLivenessPreemptGuard;
@@ -3481,6 +3482,73 @@ fn test_timer_interrupt_running() -> TestResult {
                 .unwrap_or(0)
         }
 
+        fn scan_online_mask() -> u32 {
+            let mut online_mask = 0u32;
+            for candidate in 0..smp::MAX_CPUS {
+                if smp::is_cpu_online(candidate) {
+                    online_mask |= 1 << candidate;
+                }
+            }
+            online_mask
+        }
+
+        fn bare_liveness_record(reason: &'static str) -> LivenessRecord {
+            let cpu = crate::arch_impl::current::percpu::Aarch64PerCpu::cpu_id() as usize;
+            let local = counter_snapshot(cpu);
+            let cpu0 = counter_snapshot(0);
+            let (timer_reg, timer_ctl, timer_cval) = read_timer_control();
+            let ppi = timer_irq();
+            let now = timer::rdtsc_serialized();
+            LivenessRecord {
+                reason,
+                attempt: 0,
+                cpu,
+                online_mask: scan_online_mask(),
+                not_advanced_mask: 0,
+                daif_entry: read_daif(),
+                daif_exit: read_daif(),
+                freq: timer::frequency_hz(),
+                deadline_ticks: 0,
+                cnt_start: now,
+                cnt_end: now,
+                max_gap_ticks: 0,
+                samples: 0,
+                host_stall_ticks: 0,
+                tick_local_before: tick_count(cpu),
+                tick_local_after: tick_count(cpu),
+                tick_cpu0_before: tick_count(0),
+                tick_cpu0_after: tick_count(0),
+                global_ticks_before: crate::time::timer::get_ticks(),
+                global_ticks_after: crate::time::timer::get_ticks(),
+                irq_local_before: local.map(|c| c.irq).unwrap_or(0),
+                irq_local_after: local.map(|c| c.irq).unwrap_or(0),
+                sync_local_before: local.map(|c| c.sync).unwrap_or(0),
+                sync_local_after: local.map(|c| c.sync).unwrap_or(0),
+                irq_cpu0_before: cpu0.map(|c| c.irq).unwrap_or(0),
+                irq_cpu0_after: cpu0.map(|c| c.irq).unwrap_or(0),
+                sync_cpu0_before: cpu0.map(|c| c.sync).unwrap_or(0),
+                sync_cpu0_after: cpu0.map(|c| c.sync).unwrap_or(0),
+                timer_reg,
+                timer_ctl,
+                timer_cval,
+                ppi,
+                gicr_isenabler0_local: gic::read_gicr_isenabler0(cpu),
+                gicr_ispendr0_local: gic::read_gicr_ispendr0(cpu),
+                gicr_isenabler0_cpu0: gic::read_gicr_isenabler0(0),
+                gicr_ispendr0_cpu0: gic::read_gicr_ispendr0(0),
+            }
+        }
+
+        fn ppi_bit_state(raw: u32, ppi: u32) -> &'static str {
+            if raw == 0xDEAD_BEEF {
+                "unknown"
+            } else if raw & (1u32 << (ppi & 31)) != 0 {
+                "true"
+            } else {
+                "false"
+            }
+        }
+
         fn emit_record(marker: &str, record: &LivenessRecord) {
             let to_microseconds = |ticks: u64| -> u64 {
                 if record.freq == 0 {
@@ -3489,7 +3557,6 @@ fn test_timer_interrupt_running() -> TestResult {
                     ticks.saturating_mul(1_000_000) / record.freq
                 }
             };
-            let ppi_bit = 1u32 << (record.ppi & 31);
             crate::serial_println!(
                 "{} reason={} attempt={} cpu={} online_mask={:#x} \
                  not_advanced_mask={:#x} daif_entry={:#x} daif_exit={:#x} freq_hz={} \
@@ -3541,12 +3608,12 @@ fn test_timer_interrupt_running() -> TestResult {
                 record.ppi,
                 record.gicr_isenabler0_local,
                 record.gicr_ispendr0_local,
-                (record.gicr_isenabler0_local & ppi_bit) != 0,
-                (record.gicr_ispendr0_local & ppi_bit) != 0,
+                ppi_bit_state(record.gicr_isenabler0_local, record.ppi),
+                ppi_bit_state(record.gicr_ispendr0_local, record.ppi),
                 record.gicr_isenabler0_cpu0,
                 record.gicr_ispendr0_cpu0,
-                (record.gicr_isenabler0_cpu0 & ppi_bit) != 0,
-                (record.gicr_ispendr0_cpu0 & ppi_bit) != 0,
+                ppi_bit_state(record.gicr_isenabler0_cpu0, record.ppi),
+                ppi_bit_state(record.gicr_ispendr0_cpu0, record.ppi),
             );
         }
 
@@ -3554,52 +3621,8 @@ fn test_timer_interrupt_running() -> TestResult {
         // before this test and restores a masked entry state; silently calling
         // enable_interrupts() here would convert an interrupt-state restoration
         // defect into a pass and retire it unnoticed. See #644 candidate (c).
-        let daif_entry = read_daif();
         if !cpu::interrupts_enabled() {
-            let cpu = crate::arch_impl::current::percpu::Aarch64PerCpu::cpu_id() as usize;
-            let local = counter_snapshot(cpu);
-            let cpu0 = counter_snapshot(0);
-            let (timer_reg, timer_ctl, timer_cval) = read_timer_control();
-            let ppi = timer_irq();
-            let now = timer::rdtsc_serialized();
-            let record = LivenessRecord {
-                reason: "masked-entry",
-                attempt: 0,
-                cpu,
-                online_mask: 0,
-                not_advanced_mask: 0,
-                daif_entry,
-                daif_exit: read_daif(),
-                freq: timer::frequency_hz(),
-                deadline_ticks: 0,
-                cnt_start: now,
-                cnt_end: now,
-                max_gap_ticks: 0,
-                samples: 0,
-                host_stall_ticks: 0,
-                tick_local_before: tick_count(cpu),
-                tick_local_after: tick_count(cpu),
-                tick_cpu0_before: tick_count(0),
-                tick_cpu0_after: tick_count(0),
-                global_ticks_before: crate::time::timer::get_ticks(),
-                global_ticks_after: crate::time::timer::get_ticks(),
-                irq_local_before: local.map(|c| c.irq).unwrap_or(0),
-                irq_local_after: local.map(|c| c.irq).unwrap_or(0),
-                sync_local_before: local.map(|c| c.sync).unwrap_or(0),
-                sync_local_after: local.map(|c| c.sync).unwrap_or(0),
-                irq_cpu0_before: cpu0.map(|c| c.irq).unwrap_or(0),
-                irq_cpu0_after: cpu0.map(|c| c.irq).unwrap_or(0),
-                sync_cpu0_before: cpu0.map(|c| c.sync).unwrap_or(0),
-                sync_cpu0_after: cpu0.map(|c| c.sync).unwrap_or(0),
-                timer_reg,
-                timer_ctl,
-                timer_cval,
-                ppi,
-                gicr_isenabler0_local: gic::read_gicr_isenabler0(cpu),
-                gicr_ispendr0_local: gic::read_gicr_ispendr0(cpu),
-                gicr_isenabler0_cpu0: gic::read_gicr_isenabler0(0),
-                gicr_ispendr0_cpu0: gic::read_gicr_ispendr0(0),
-            };
+            let record = bare_liveness_record("masked-entry");
             emit_record(FAILURE_MARKER, &record);
             return TestResult::Fail("timer interrupt test entered with IRQs masked on ARM64");
         }
@@ -3626,12 +3649,10 @@ fn test_timer_interrupt_running() -> TestResult {
             let _preempt_guard = TimerLivenessPreemptGuard::enter();
             let cpu = crate::arch_impl::current::percpu::Aarch64PerCpu::cpu_id() as usize;
 
-            let mut online_mask = 0u32;
-            for candidate in 0..smp::MAX_CPUS {
-                if smp::is_cpu_online(candidate) {
-                    online_mask |= 1 << candidate;
-                }
-            }
+            let mut online_mask = scan_online_mask();
+            // The executing CPU's liveness assertion must never become vacuous
+            // if a future offline path changes the online-state bookkeeping.
+            online_mask |= 1 << cpu;
 
             let mut tick_before = [0u64; smp::MAX_CPUS];
             for (candidate, slot) in tick_before.iter_mut().enumerate() {
@@ -3645,7 +3666,7 @@ fn test_timer_interrupt_running() -> TestResult {
 
             let cnt_start = timer::rdtsc_serialized();
             let mut previous_sample = cnt_start;
-            let mut previous_counters = counter_snapshot(cpu);
+            let mut previous_counters_after = counter_snapshot(cpu);
             let mut max_gap_ticks = 0u64;
             let mut host_stall_ticks = 0u64;
             let mut samples = 1u64;
@@ -3663,20 +3684,23 @@ fn test_timer_interrupt_running() -> TestResult {
                     break;
                 }
 
-                // Counters are read before the counter sample, so the interval
-                // they cover strictly contains the CNTVCT gap being credited.
-                // Anything landing in the seam denies credit, never grants it.
-                let counters = counter_snapshot(cpu);
+                // Snapshots on both sides bracket every CNTVCT sample. Credit
+                // uses the previous after-snapshot and this before-snapshot, so
+                // the proven counter-quiet region is interior to the sample gap.
+                let counters_before = counter_snapshot(cpu);
                 let sample = timer::rdtsc_serialized();
+                let counters_after = counter_snapshot(cpu);
                 samples = samples.saturating_add(1);
                 let gap = timer::elapsed_ticks(sample, previous_sample);
                 max_gap_ticks = max_gap_ticks.max(gap);
-                if screened && counters_unchanged(previous_counters, counters) {
+                if screened
+                    && counters_unchanged(previous_counters_after, counters_before)
+                {
                     host_stall_ticks =
                         host_stall_ticks.saturating_add(gap.saturating_sub(stall_sample_ticks));
                 }
                 previous_sample = sample;
-                previous_counters = counters;
+                previous_counters_after = counters_after;
 
                 if timer::elapsed_ticks(sample, cnt_start) >= deadline_ticks {
                     break;
@@ -3765,10 +3789,16 @@ fn test_timer_interrupt_running() -> TestResult {
             1
         };
         let mut attempt: u32 = 0;
+        let mut last_record: Option<LivenessRecord> = None;
         loop {
             if attempt >= max_attempts
                 || timer::elapsed_ticks(timer::rdtsc_serialized(), budget_start) >= budget_ticks
             {
+                let mut record = last_record.unwrap_or_else(|| {
+                    bare_liveness_record("starvation-attempts-exhausted")
+                });
+                record.reason = "starvation-attempts-exhausted";
+                emit_record(FAILURE_MARKER, &record);
                 return TestResult::Fail(
                     "timer interrupt liveness never observed an unstarved window on ARM64",
                 );
@@ -3791,6 +3821,7 @@ fn test_timer_interrupt_running() -> TestResult {
             if host_starved {
                 record.reason = "host-starved-remeasure";
                 emit_record(REMEASURE_MARKER, &record);
+                last_record = Some(record);
                 continue;
             }
 
