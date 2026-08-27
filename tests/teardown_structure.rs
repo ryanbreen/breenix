@@ -3874,8 +3874,8 @@ fn validate_kstack_gate_script_pins(
     let mut failures = Vec::new();
     let injected = "[CREATION_LOCK_ORDER:INJECTED:PM_HELD]";
     let violation = "[CREATION_LOCK_ORDER:VIOLATION:PM_HELD]";
-    let x86_owner_pattern = "KSTACK_OWNER_ORACLE_PATTERN='\\[KSTACK_OWNER_ORACLE:x86:creation_rows=1000:creation_owned=1000:one_owner=1000:two_owner=0:zero_owner=0:fork_rows=2:fork_owned=2:slot_returns_exact_one=2:slot_alloc_delta=1000:slot_free_delta=1000:slot_balance=0:frames_mapped_delta=128000:frames_released_delta=128000:frame_balance=0:frame_used_delta=[0-9]+:frame_used_bounded=1:live_checks=[1-9][0-9]*:live_refusals_production=0:live_refusals_injected=1:drop_refused_live=0:pte_overwrite_refusals=0:pub_pooled=[1-9][0-9]*:pub_sched_owned=[1-9][0-9]*:pub_row_residual=0:pub_unowned=0:classifier_sched_owned=1:classifier_row_residual=1:classifier_unowned=1:classifier_not_pooled=1:sched_publications=[1-9][0-9]*:sched_pm_held_production=0:sched_pm_held_injected=1:balance=0\\]'";
-    let aarch64_owner_pattern = "KSTACK_OWNER_ORACLE_PATTERN='^\\[KSTACK_OWNER_ORACLE:aarch64:creation_rows=1000:creation_owned=1000:one_owner=1000:two_owner=0:zero_owner=0:fork_rows=1:fork_owned=1:slot_returns_exact_one=1:slot_alloc_delta=1000:slot_free_delta=1000:slot_balance=0:frames_mapped_delta=0:frames_released_delta=0:frame_balance=0:frame_used_delta=[0-9]+:frame_used_bounded=1:live_checks=[1-9][0-9]*:live_refusals_production=0:live_refusals_injected=1:drop_refused_live=0:pte_overwrite_refusals=0:pub_pooled=[1-9][0-9]*:pub_sched_owned=[1-9][0-9]*:pub_row_residual=0:pub_unowned=0:classifier_sched_owned=1:classifier_row_residual=1:classifier_unowned=1:classifier_not_pooled=1:sched_publications=[1-9][0-9]*:sched_pm_held_production=0:sched_pm_held_injected=1:balance=0\\]$'";
+    let x86_owner_pattern = "KSTACK_OWNER_ORACLE_PATTERN='\\[KSTACK_OWNER_ORACLE:x86:creation_rows=1000:creation_owned=1000:one_owner=1000:two_owner=0:zero_owner=0:fork_rows=2:fork_owned=2:slot_returns_exact_one=2:slot_alloc_delta=[1-9][0-9]*:slot_free_delta=[1-9][0-9]*:slot_balance=-?[0-9]+:cohort_enrolled=1000:cohort_returned=1000:cohort_double_return=0:foreign_alloc_delta=[0-9]+:foreign_returned=[0-9]+:frames_mapped_delta=[1-9][0-9]*:frames_released_delta=[1-9][0-9]*:frame_balance=-?[0-9]+:frame_used_delta=[0-9]+:frame_used_bounded=1:live_checks=[1-9][0-9]*:live_refusals_production=0:live_refusals_injected=1:drop_refused_live=0:pte_overwrite_refusals=0:pub_pooled=[1-9][0-9]*:pub_sched_owned=[1-9][0-9]*:pub_row_residual=0:pub_unowned=0:classifier_sched_owned=1:classifier_row_residual=1:classifier_unowned=1:classifier_not_pooled=1:sched_publications=[1-9][0-9]*:sched_pm_held_production=0:sched_pm_held_injected=1:balance=0\\]'";
+    let aarch64_owner_pattern = "KSTACK_OWNER_ORACLE_PATTERN='^\\[KSTACK_OWNER_ORACLE:aarch64:creation_rows=1000:creation_owned=1000:one_owner=1000:two_owner=0:zero_owner=0:fork_rows=1:fork_owned=1:slot_returns_exact_one=1:slot_alloc_delta=[1-9][0-9]*:slot_free_delta=[1-9][0-9]*:slot_balance=-?[0-9]+:cohort_enrolled=1000:cohort_returned=1000:cohort_double_return=0:foreign_alloc_delta=[0-9]+:foreign_returned=[0-9]+:frames_mapped_delta=0:frames_released_delta=0:frame_balance=0:frame_used_delta=[0-9]+:frame_used_bounded=1:live_checks=[1-9][0-9]*:live_refusals_production=0:live_refusals_injected=1:drop_refused_live=0:pte_overwrite_refusals=0:pub_pooled=[1-9][0-9]*:pub_sched_owned=[1-9][0-9]*:pub_row_residual=0:pub_unowned=0:classifier_sched_owned=1:classifier_row_residual=1:classifier_unowned=1:classifier_not_pooled=1:sched_publications=[1-9][0-9]*:sched_pm_held_production=0:sched_pm_held_injected=1:balance=0\\]$'";
 
     let x86 = source(scripts, "docker/qemu/run-x86-boot-tests.sh");
     for pin in [
@@ -13122,4 +13122,174 @@ fn both_complete_wait_arms_claim_before_they_copy() {
             "{path}: a refused claim that still copies must redden this ratchet"
         );
     }
+}
+
+/// #646: the kernel-stack ownership oracle must measure its own workload by
+/// slot identity, never by a before/after delta on the process-wide slot
+/// counters. Those counters move for every kernel stack in the system, so the
+/// old `slot_alloc_delta == slot_free_delta` assertion was really asserting
+/// that nothing else in the system reaped a thread inside the window — a
+/// quiescence property nothing enforces, red on ~25% of `-smp 4` boots.
+///
+/// The shapes below are census-derived, not line pins: every site that counts a
+/// slot return must classify that return by identity first, and every allocator
+/// entry point that counts an allocation must clear the identity state, so a
+/// new allocation or return path cannot silently reopen the window.
+fn validate_kstack_ownership_is_identity_scoped(
+    oracle: &str,
+    kernel_stack: &str,
+) -> Result<(), Vec<String>> {
+    let mut failures = Vec::new();
+    let oracle_mask = code_mask(oracle);
+    let stack_mask = code_mask(kernel_stack);
+
+    for (label, needle) in [
+        (
+            "the ownership oracle stopped enrolling its stress slots in the cohort",
+            "enroll_in_measurement_cohort()",
+        ),
+        (
+            "the ownership oracle stopped asserting cohort return equality",
+            "measurements.cohort_returned != measurements.cohort_enrolled",
+        ),
+        (
+            "the ownership oracle stopped asserting one enrolment per iteration",
+            "measurements.cohort_enrolled != OWNERSHIP_STRESS_ITERATIONS as u64",
+        ),
+        (
+            "the ownership oracle stopped asserting the double-return guard",
+            "measurements.cohort_double_return != 0",
+        ),
+        (
+            "the ownership oracle stopped reconciling global and cohort returns",
+            "measurements.cohort_returned + measurements.foreign_returned",
+        ),
+    ] {
+        check(
+            &mut failures,
+            label,
+            !code_offsets(oracle, &oracle_mask, needle).is_empty(),
+        );
+    }
+
+    // The two racy assertions this repair removed must not come back.
+    for (label, needle) in [
+        (
+            "the ownership oracle reintroduced the racy global slot equality",
+            "measurements.slot_alloc_delta != measurements.slot_free_delta",
+        ),
+        (
+            "the ownership oracle reintroduced the racy global slot balance",
+            "measurements.slot_balance != 0",
+        ),
+    ] {
+        check(
+            &mut failures,
+            label,
+            code_offsets(oracle, &oracle_mask, needle).is_empty(),
+        );
+    }
+
+    // Census: every counted slot return classifies by identity first, and the
+    // classification happens before the bitmap bit is released, so the index
+    // cannot be reallocated underneath it.
+    let freed_sites = code_offsets(kernel_stack, &stack_mask, "KSTACK_SLOTS_FREED.fetch_add");
+    let classify_sites = code_offsets(kernel_stack, &stack_mask, "cohort_note_return(self.index)");
+    check(
+        &mut failures,
+        &format!(
+            "kernel-stack return sites ({}) and cohort classifications ({}) disagree",
+            freed_sites.len(),
+            classify_sites.len()
+        ),
+        !freed_sites.is_empty() && freed_sites.len() == classify_sites.len(),
+    );
+    let release_sites: Vec<usize> = ["free_kernel_stack(self.index)", "free_stack_slot(self.index)"]
+        .into_iter()
+        .flat_map(|needle| code_offsets(kernel_stack, &stack_mask, needle))
+        .collect();
+    check(
+        &mut failures,
+        &format!(
+            "kernel-stack bitmap releases ({}) and cohort classifications ({}) disagree",
+            release_sites.len(),
+            classify_sites.len()
+        ),
+        release_sites.len() == classify_sites.len(),
+    );
+    for (classify, freed) in classify_sites.iter().zip(freed_sites.iter()) {
+        check(
+            &mut failures,
+            "a kernel-stack return counts the global counter before classifying it",
+            classify < freed,
+        );
+        check(
+            &mut failures,
+            "a kernel-stack return releases the bitmap bit before classifying it",
+            release_sites.iter().any(|release| classify < release && release < freed),
+        );
+    }
+
+    // Census: every allocator entry point that counts an allocation also clears
+    // the identity state, so an ordinary return of a reallocated slot is never
+    // misreported as a double return of the slot's previous occupant.
+    let alloc_sites = code_offsets(
+        kernel_stack,
+        &stack_mask,
+        "KSTACK_SLOTS_ALLOCATED.fetch_add",
+    );
+    let clear_sites = code_offsets(kernel_stack, &stack_mask, "cohort_note_allocation(index)");
+    check(
+        &mut failures,
+        &format!(
+            "kernel-stack allocation sites ({}) and cohort clears ({}) disagree",
+            alloc_sites.len(),
+            clear_sites.len()
+        ),
+        !alloc_sites.is_empty() && alloc_sites.len() == clear_sites.len(),
+    );
+
+    failures.is_empty().then_some(()).ok_or(failures)
+}
+
+fn kstack_ownership_identity_sources() -> (String, String) {
+    let teardown = repo_text("kernel/src/tracing/providers/teardown.rs");
+    let oracle = function_body(&teardown, "kernel_stack_ownership_oracle_test").to_owned();
+    (oracle, repo_text("kernel/src/memory/kernel_stack.rs"))
+}
+
+#[test]
+fn kernel_stack_ownership_oracle_measures_by_slot_identity() {
+    let (oracle, kernel_stack) = kstack_ownership_identity_sources();
+    if let Err(failures) = validate_kstack_ownership_is_identity_scoped(&oracle, &kernel_stack) {
+        panic!("{}", failures.join("\n"));
+    }
+}
+
+#[test]
+fn kstack_identity_validator_rejects_the_unsound_reads() {
+    let (oracle, kernel_stack) = kstack_ownership_identity_sources();
+
+    // Reintroducing the racy global equality must redden the ratchet.
+    let racy = oracle.replace(
+        "measurements.cohort_returned != measurements.cohort_enrolled",
+        "measurements.slot_alloc_delta != measurements.slot_free_delta",
+    );
+    assert_ne!(racy, oracle, "racy-equality mutation anchor");
+    assert!(validate_kstack_ownership_is_identity_scoped(&racy, &kernel_stack).is_err());
+
+    // Deleting the enrolment must redden the ratchet.
+    let unenrolled = oracle.replacen("enroll_in_measurement_cohort()", "top()", 1);
+    assert_ne!(unenrolled, oracle, "enrolment mutation anchor");
+    assert!(validate_kstack_ownership_is_identity_scoped(&unenrolled, &kernel_stack).is_err());
+
+    // Deleting a return classification must redden the ratchet.
+    let unclassified = kernel_stack.replacen("cohort_note_return(self.index)", "let _ = self.index", 1);
+    assert_ne!(unclassified, kernel_stack, "classification mutation anchor");
+    assert!(validate_kstack_ownership_is_identity_scoped(&oracle, &unclassified).is_err());
+
+    // Deleting an allocator-side clear must redden the ratchet.
+    let uncleared = kernel_stack.replacen("cohort_note_allocation(index)", "let _ = index", 1);
+    assert_ne!(uncleared, kernel_stack, "clear mutation anchor");
+    assert!(validate_kstack_ownership_is_identity_scoped(&oracle, &uncleared).is_err());
 }
