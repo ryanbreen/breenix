@@ -11258,6 +11258,15 @@ fn validate_reclaim_preempt_bracket(process_task: &str) -> Result<(), ()> {
     if !(disables[0] < claim && claim < refused && refused < release) {
         return Err(());
     }
+    // #655 F3: `disables[0] < claim` only pins the claim ordering above; it does
+    // not keep the disable after intervening early returns that must stay enabled.
+    let last_early_return = code_offsets(body, &mask, "return;")
+        .into_iter()
+        .filter(|offset| *offset < claim)
+        .max();
+    if last_early_return.is_some_and(|early_return| disables[0] <= early_return) {
+        return Err(());
+    }
     if !(refused < enables[0] && enables[0] < release && release < enables[1]) {
         return Err(());
     }
@@ -11294,6 +11303,13 @@ fn reclaim_preempt_enable() {
     crate::per_cpu::preempt_enable();
 }
 fn reclaim_deferred_process_resources() {
+    if reclaim_context_violation() {
+        trace_count!(RECLAIM_CONTEXT_VIOLATIONS);
+        return;
+    }
+    if BOOT_RECLAIM_TEST_OWNER.load(Ordering::Acquire) != 0 {
+        return;
+    }
     reclaim_preempt_disable();
     if RECLAIM_DRAIN_ACTIVE.compare_exchange(false, true).is_err() {
         trace_count!(RECLAIM_DRAIN_NESTED_REFUSED);
@@ -11324,6 +11340,28 @@ fn reclaim_bracket_validator_rejects_a_disable_taken_after_the_claim() {
         .replace(
             "    reclaim_deferred_process_resources_for_pass(my_pass, false);\n",
             "    reclaim_preempt_disable();\n    reclaim_deferred_process_resources_for_pass(my_pass, false);\n",
+        );
+    assert!(validate_reclaim_preempt_bracket(&mutated).is_err());
+}
+
+#[test]
+fn reclaim_bracket_validator_rejects_a_disable_hoisted_above_the_context_violation_return() {
+    let mutated = RECLAIM_BRACKET_FIXTURE
+        .replacen("    reclaim_preempt_disable();\n", "", 1)
+        .replace(
+            "fn reclaim_deferred_process_resources() {\n",
+            "fn reclaim_deferred_process_resources() {\n    reclaim_preempt_disable();\n",
+        );
+    assert!(validate_reclaim_preempt_bracket(&mutated).is_err());
+}
+
+#[test]
+fn reclaim_bracket_validator_rejects_a_disable_hoisted_above_the_boot_owner_return() {
+    let mutated = RECLAIM_BRACKET_FIXTURE
+        .replacen("    reclaim_preempt_disable();\n", "", 1)
+        .replace(
+            "    if BOOT_RECLAIM_TEST_OWNER.load(Ordering::Acquire) != 0 {\n",
+            "    reclaim_preempt_disable();\n    if BOOT_RECLAIM_TEST_OWNER.load(Ordering::Acquire) != 0 {\n",
         );
     assert!(validate_reclaim_preempt_bracket(&mutated).is_err());
 }
