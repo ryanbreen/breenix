@@ -14,6 +14,35 @@
 # recv-wake regression this gate exists to catch.
 
 set -euo pipefail
+# errtrace: without this, the ERR trap below is not inherited into shell
+# functions, and report_gate_failure is itself invoked from that trap.
+set -E
+
+# Every assertion below this point (the bare `$passed` check and the ~40
+# bare `test ... -eq N` marker-count assertions) is deliberately a
+# set -e abort point: on a genuine boot regression, the assertion SHOULD
+# kill the script. What must never happen is a silent kill: `set -e`
+# does not print anything on its own, so without this trap the script
+# dies with no verdict/FAIL text and no serial pointer, and the only way
+# to learn why is to dig through the raw serial by hand. This trap is the
+# fix: it fires on every uncaught nonzero exit under set -e (bash routes
+# them through ERR the same way set -e decides to abort), prints an
+# explicit FAIL line naming the failing command and line, tails the
+# current run's serial output for diagnosis, and then exits nonzero
+# deliberately so the caller still sees a real failure.
+report_gate_failure() {
+    local exit_code=$?
+    local line_no="$1"
+    local failing_cmd="$2"
+    echo "x86 frame-custody gate${i:+ run $i}: FAIL (set -e abort at ${BASH_SOURCE[0]}:${line_no}, exit ${exit_code})"
+    echo "  failing command: ${failing_cmd}"
+    if [ -n "${OUTPUT_DIR:-}" ] && compgen -G "$OUTPUT_DIR/serial_*.txt" >/dev/null 2>&1; then
+        echo "--- serial tail (last 200 lines per file, $OUTPUT_DIR) ---"
+        tail -n 200 "$OUTPUT_DIR"/serial_*.txt
+    fi
+    exit "$exit_code"
+}
+trap 'report_gate_failure "$LINENO" "$BASH_COMMAND"' ERR
 
 COUNT="${1:-1}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -342,7 +371,11 @@ for i in $(seq 1 "$COUNT"); do
     kill "$RUNNER_PID" 2>/dev/null || true
     wait "$RUNNER_PID" 2>/dev/null || true
 
-    $passed
+    # Explicit assertion, not a bare `$passed`: a bare boolean variable
+    # executed as a command is the same silent-abort shape as the `test`
+    # assertions below, and is exactly as opaque on failure without the
+    # ERR trap installed above.
+    test "$passed" = true
     test "$(grep -h -c '\[TEST:process:frame_custody_refusal_gate:PASS\]' \
         "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 1
     test "$(grep -h -c '\[TEST:process:page_table_custody_disposition_gate:PASS\]' \
@@ -497,24 +530,29 @@ for i in $(seq 1 "$COUNT"); do
     echo "$RECLAIM_DRAIN_LINE"
     if grep -qE '\[BOOT_TESTS:FAIL|KERNEL PANIC|panic!' \
         "$OUTPUT_DIR"/serial_*.txt; then
+        echo "x86 frame-custody gate run $i: FAIL (BOOT_TESTS:FAIL, KERNEL PANIC, or panic! marker present)"
         exit 1
     fi
     if grep -qE '\[CENSUS_WIDEN_ORACLE:x86:[^]]*:FAIL\]' \
         "$OUTPUT_DIR"/serial_*.txt; then
+        echo "x86 frame-custody gate run $i: FAIL (CENSUS_WIDEN_ORACLE:FAIL marker present)"
         exit 1
     fi
     if grep -qE '\[TEST:network:[^]]*:FAIL' \
         "$OUTPUT_DIR"/serial_*.txt; then
+        echo "x86 frame-custody gate run $i: FAIL (TEST:network:*:FAIL marker present)"
         exit 1
     fi
     if grep -qE '\[TEST:userspace:[^]]*:FAIL' \
         "$OUTPUT_DIR"/serial_*.txt; then
+        echo "x86 frame-custody gate run $i: FAIL (TEST:userspace:*:FAIL marker present)"
         exit 1
     fi
     # Absence is meaningful because KSTACK_OWNER_ORACLE pins a nonzero
     # sched_publications driver and the injected marker proves the detector fires.
     if grep -qF '[CREATION_LOCK_ORDER:VIOLATION' \
         "$OUTPUT_DIR"/serial_*.txt; then
+        echo "x86 frame-custody gate run $i: FAIL (CREATION_LOCK_ORDER:VIOLATION marker present)"
         exit 1
     fi
     echo "x86 frame-custody gate run $i: PASS"
