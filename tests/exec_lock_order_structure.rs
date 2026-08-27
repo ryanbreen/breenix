@@ -1568,7 +1568,7 @@ fn validate_creation_lock_order_marker(scheduler: &str, teardown: &str) -> Resul
         }
     }
     const ORACLE_FIELDS: &str =
-        ":sched_publications={}:sched_pm_held_production={}:sched_pm_held_injected={}:balance={}]";
+        ":sched_publications={}:sched_pm_held_production={}:sched_pm_held_injected={}:reconciliation_diff={}:reconciliation_skew_bound={}:balance={}]";
     if oracle.matches(ORACLE_FIELDS).count() != 1 {
         return Err(
             "kernel-stack ownership oracle lock-order fields are not uniquely pinned".to_owned(),

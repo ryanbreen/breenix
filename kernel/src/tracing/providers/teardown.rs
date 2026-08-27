@@ -779,6 +779,7 @@ static KSTACK_QUIESCE_LEAK_EMITTED: core::sync::atomic::AtomicBool =
 /// this follow-up does not claim to close that gap.
 #[cfg(all(feature = "boot_tests", target_arch = "x86_64"))]
 pub fn x86_settled_kstack_leak_census() {
+    // x86 only: there is no aarch64 counterpart for this settled census.
     if KSTACK_QUIESCE_LEAK_EMITTED.load(Ordering::Relaxed) {
         return;
     }
@@ -6173,9 +6174,15 @@ pub fn kernel_stack_ownership_oracle_test() -> crate::test_framework::registry::
     // separate snapshots at both boundaries, while `KernelStack::drop` writes
     // the cohort classification before bumping the global freed counter. A
     // foreign drop that lands in either boundary's read window can desynchronize
-    // the two accountings by at most one per other online CPU per boundary. The
-    // check therefore tolerates the derived `2 * (online_cpu_count - 1)` skew,
-    // and any deviation beyond that bound still means the accountings drifted.
+    // the two accountings. The check therefore tolerates the derived
+    // `2 * (online_cpu_count - 1)` skew, on the assumption that each other
+    // online CPU completes at most one `KernelStack::drop` inside a two-load
+    // read window; nothing enforces that assumption, so the bound is a
+    // best-effort derivation, not a proof. Any deviation beyond the bound still
+    // means the accountings drifted, but a drift within the bound is invisible
+    // to this check and to the gate regex (which accepts any
+    // `reconciliation_diff` value) alike — a disclosed blind spot, not an exact
+    // identity.
     if measurements.reconciliation_diff.abs() > measurements.reconciliation_skew_bound {
         note_failure(
             &mut first_failure,

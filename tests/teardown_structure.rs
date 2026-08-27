@@ -13214,7 +13214,7 @@ fn validate_x86_settled_tombstone_census(
         "x86 only",
         "aarch64",
     ] {
-        if !kstack_body.contains(required) && !provider.contains(required) {
+        if !kstack_body.contains(required) {
             return Err(());
         }
     }

@@ -310,6 +310,11 @@ pub fn kernel_stack_quiesce_baseline_outstanding() -> u64 {
 /// userspace phase) legitimately outlive quiescence and are deliberately not
 /// watched, so the `leaked=0` pin cannot be reddened by a live thread that was
 /// never in scope.
+/// The reverse direction is not free of false reds: a foreign kernel stack
+/// allocated inside this window by a thread that legitimately outlives
+/// quiescence (a worker or daemon started during the stress window) is
+/// indistinguishable from a real leak and will redden the `leaked=0` pin. The
+/// window is narrow, so this class is rare, but it is real and not covered.
 #[cfg(all(feature = "boot_tests", target_arch = "x86_64"))]
 pub fn kernel_stack_quiesce_start_watch() {
     for word in KSTACK_QUIESCE_WATCH_BITMAP.iter() {
