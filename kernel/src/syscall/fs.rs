@@ -3593,10 +3593,7 @@ fn handle_fifo_open(path: &str, flags: u32) -> SyscallResult {
             //    from_userspace=false (kernel mode) but blocked_in_syscall tells
             //    it to save/restore kernel context, not userspace context
             crate::task::scheduler::with_scheduler(|sched| {
-                sched.block_current();
-                if let Some(thread) = sched.current_thread_mut() {
-                    thread.blocked_in_syscall = true;
-                }
+                sched.block_current_in_syscall();
             });
 
             // CRITICAL RACE CONDITION FIX:

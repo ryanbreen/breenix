@@ -6976,6 +6976,13 @@ static PROCESS_TESTS: &[TestDef] = &[
         stage: TestStage::SerialBoot,
     },
     TestDef {
+        name: "block_current_departure_gate",
+        func: crate::task::scheduler::block_current_departure_gate_test,
+        arch: Arch::Any,
+        timeout_ms: 5000,
+        stage: TestStage::SerialBoot,
+    },
+    TestDef {
         name: "deferred_fault_ring_overflow_injection",
         func: crate::tracing::providers::teardown::deferred_fault_ring_overflow_test,
         arch: Arch::Any,

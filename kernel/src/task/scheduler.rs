@@ -2552,15 +2552,132 @@ impl Scheduler {
     /// place in the kernel that publishes the plain `Blocked` state, so P9's
     /// no-new-block interlock has one site to install here rather than one per
     /// caller.
+    ///
+    /// The primitive owns the ready-queue departure: the publication and the
+    /// departure happen in one scheduler-lock acquisition, so no window exists
+    /// in which a `Blocked` thread is still dispatchable. That window mattered
+    /// because the dispatch loop admits every candidate it pops except a
+    /// `Terminated` one — a queued `Blocked` thread would be dispatched exactly
+    /// like a `Ready` one, with no refusal anywhere on the path. Callers must
+    /// not open-code the departure; the caller rule in
+    /// `tests/teardown_structure.rs` fires when one does.
+    ///
+    /// `blocked_in_syscall` is deliberately not written here: it records which
+    /// kind of context is saved in `thread.context`, not blocked-ness. A caller
+    /// blocking inside a syscall uses `block_current_in_syscall()`, which
+    /// publishes that fact in the same critical section instead of leaving it to
+    /// a follow-up write at the call site.
     pub fn block_current(&mut self) {
-        if let Some(current) = self.current_thread_mut() {
+        self.block_current_inner(false);
+    }
+
+    /// Block the current thread from inside a syscall.
+    ///
+    /// The syscall-context variant of `block_current()`: same publication and
+    /// same departure, plus `blocked_in_syscall`, so the context-switch path
+    /// saves and restores the kernel-side syscall context rather than stale
+    /// userspace context. Every syscall-path caller of the generic primitive
+    /// uses this variant, which is why none of them writes the flag itself.
+    pub fn block_current_in_syscall(&mut self) {
+        self.block_current_inner(true);
+    }
+
+    /// The generic block: charge, publish, depart — in that order, under the
+    /// one scheduler-lock acquisition the caller already holds.
+    fn block_current_inner(&mut self, in_syscall: bool) {
+        let Some(current_id) = self.cpu_state[Self::current_cpu_id()].current_thread else {
+            return;
+        };
+
+        if let Some(current) = self.get_thread_mut(current_id) {
             // Charge elapsed CPU ticks before blocking
             let now = crate::time::get_ticks();
             current.cpu_ticks_total += now.wrapping_sub(current.run_start_ticks);
             current.run_start_ticks = now;
 
             current.state = ThreadState::Blocked;
+            if in_syscall {
+                current.blocked_in_syscall = true;
+            }
         }
+
+        // The departure the family's other members already perform. The current
+        // thread is not expected to name a ready queue at all, so this is the
+        // same defence in depth they document — but it is now unconditional for
+        // the generic block too, rather than a post-condition each caller had to
+        // remember.
+        for q in self.per_cpu_queues.iter_mut() {
+            q.retain(|&id| id != current_id);
+        }
+    }
+
+    /// Boot-test probe for the departure post-condition of the generic block.
+    ///
+    /// The departure is not observable on a healthy boot: under ordinary
+    /// scheduling the current thread names no ready queue, so deleting the
+    /// departure from the primitive changes nothing a running kernel would
+    /// notice. This probe manufactures the one state that makes it observable —
+    /// the current thread present in its own CPU's ready queue while it
+    /// publishes `Blocked`, i.e. blocked-yet-dispatchable — and proves the
+    /// primitive removed it, for both the plain and the syscall variant.
+    ///
+    /// Everything runs inside the single scheduler-lock acquisition the caller
+    /// holds with interrupts masked, and the thread's pre-probe state and queue
+    /// membership are restored before that lock is released, so no other CPU can
+    /// observe the planted entry. The only residue is the CPU-tick charge the
+    /// primitive performs, which is idempotent across back-to-back calls.
+    #[cfg(feature = "boot_tests")]
+    pub fn block_current_departure_gate(&mut self) -> Result<(), &'static str> {
+        let cpu = Self::current_cpu_id();
+        let Some(tid) = self.cpu_state[cpu].current_thread else {
+            return Err("departure gate ran with no current thread");
+        };
+        let Some(thread) = self.get_thread(tid) else {
+            return Err("departure gate found no row for the current thread");
+        };
+        let restore_state = thread.state;
+        let restore_in_syscall = thread.blocked_in_syscall;
+        if self.per_cpu_queues.iter().any(|q| q.contains(&tid)) {
+            return Err("departure gate started with the current thread already queued");
+        }
+
+        // Leg 1: the plain primitive departs the planted entry, publishes
+        // Blocked, and leaves the syscall-context fact alone.
+        self.per_cpu_queues[cpu].push_back(tid);
+        self.block_current();
+        let mut outcome = if self.per_cpu_queues.iter().any(|q| q.contains(&tid)) {
+            Err("block_current left the blocked thread dispatchable")
+        } else if self.get_thread(tid).map(|thread| thread.state) != Some(ThreadState::Blocked) {
+            Err("block_current did not publish Blocked")
+        } else if self.get_thread(tid).map(|thread| thread.blocked_in_syscall)
+            != Some(restore_in_syscall)
+        {
+            Err("block_current wrote blocked_in_syscall")
+        } else {
+            Ok(())
+        };
+
+        // Leg 2: the syscall variant departs the planted entry too, and adds the
+        // syscall-context fact its callers no longer write themselves.
+        if outcome.is_ok() {
+            self.per_cpu_queues[cpu].push_back(tid);
+            self.block_current_in_syscall();
+            outcome = if self.per_cpu_queues.iter().any(|q| q.contains(&tid)) {
+                Err("block_current_in_syscall left the blocked thread dispatchable")
+            } else if self.get_thread(tid).map(|thread| thread.blocked_in_syscall) != Some(true) {
+                Err("block_current_in_syscall did not publish the syscall context")
+            } else {
+                Ok(())
+            };
+        }
+
+        // Restore exactly, before the lock is released.
+        self.per_cpu_queues[cpu].retain(|&id| id != tid);
+        if let Some(thread) = self.get_thread_mut(tid) {
+            thread.state = restore_state;
+            thread.blocked_in_syscall = restore_in_syscall;
+        }
+        outcome
     }
 
     /// Unblock a thread by ID.
@@ -3053,29 +3170,34 @@ impl Scheduler {
     }
 
     fn block_current_for_io_publish(&mut self, wake_time_ns: Option<u64>) -> Option<u64> {
-        if let Some(current_id) = self.cpu_state[Self::current_cpu_id()].current_thread {
-            if let Some(thread) = self.get_thread_mut(current_id) {
-                // Charge elapsed CPU ticks before blocking
-                let now = crate::time::get_ticks();
-                thread.cpu_ticks_total += now.wrapping_sub(thread.run_start_ticks);
-                thread.run_start_ticks = now;
+        let current_id = self.cpu_state[Self::current_cpu_id()].current_thread?;
+        let thread = self.get_thread_mut(current_id)?;
 
-                thread.state = ThreadState::BlockedOnIO;
-                thread.wake_time_ns = wake_time_ns;
-                // Mark blocked_in_syscall so the context switch path resumes
-                // inside the syscall (wait_timeout loop) rather than restoring
-                // stale userspace context.
-                thread.blocked_in_syscall = true;
+        // Charge elapsed CPU ticks before blocking
+        let now = crate::time::get_ticks();
+        thread.cpu_ticks_total += now.wrapping_sub(thread.run_start_ticks);
+        thread.run_start_ticks = now;
 
-                // Linux set_current_state() is smp_store_mb(): publish the sleep
-                // state before later condition checks or schedule entry observe
-                // wakeups. On AArch64 Rust lowers SeqCst fence to a full DMB.
-                core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
-                return Some(current_id);
-            }
+        thread.state = ThreadState::BlockedOnIO;
+        thread.wake_time_ns = wake_time_ns;
+        // Mark blocked_in_syscall so the context switch path resumes
+        // inside the syscall (wait_timeout loop) rather than restoring
+        // stale userspace context.
+        thread.blocked_in_syscall = true;
+
+        // The departure belongs to the publication, not to the wrapper: this is
+        // the only function in the family that published a blocked state
+        // without departing the thread itself, which left the post-condition
+        // resting on whichever caller remembered it.
+        for q in self.per_cpu_queues.iter_mut() {
+            q.retain(|&id| id != current_id);
         }
 
-        None
+        // Linux set_current_state() is smp_store_mb(): publish the sleep
+        // state before later condition checks or schedule entry observe
+        // wakeups. On AArch64 Rust lowers SeqCst fence to a full DMB.
+        core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
+        Some(current_id)
     }
 
     /// Block the current thread for device I/O.
@@ -3100,10 +3222,6 @@ impl Scheduler {
             // Insert into timer heap if a timeout was specified
             if let Some(wt) = wake_time_ns {
                 self.timer_heap.push(Reverse((wt, current_id)));
-            }
-            // Remove from all per-CPU queues (shouldn't be there, but guard against races)
-            for q in self.per_cpu_queues.iter_mut() {
-                q.retain(|&id| id != current_id);
             }
             true
         } else {
@@ -5157,6 +5275,20 @@ pub fn run_scheduler_tests() {
 
         // Clean up
         crate::per_cpu::set_need_resched(false);
+    }
+}
+
+/// Boot-test entry point for the blocked-yet-dispatchable probe.
+///
+/// Runs at `SerialBoot` because the probe deliberately mutates shared scheduler
+/// state and restores it exactly.
+#[cfg(feature = "boot_tests")]
+pub fn block_current_departure_gate_test() -> crate::test_framework::registry::TestResult {
+    use crate::test_framework::registry::TestResult;
+    match with_scheduler(|sched| sched.block_current_departure_gate()) {
+        Some(Ok(())) => TestResult::Pass,
+        Some(Err(reason)) => TestResult::Fail(reason),
+        None => TestResult::Fail("departure gate could not reach the scheduler"),
     }
 }
 

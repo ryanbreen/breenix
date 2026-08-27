@@ -199,11 +199,12 @@ pub fn kthread_park() {
 
             // Mark thread as Blocked and remove from ready queue.
             // The publication goes through the inventoried `block_current`
-            // primitive so no blocked state is written outside the family.
+            // primitive so no blocked state is written outside the family, and
+            // the departure comes with it: the primitive removes the current
+            // thread from every per-CPU ready queue in the same acquisition, so
+            // there is no longer a caller-side dequeue to forget.
             scheduler::with_scheduler(|sched| {
                 sched.block_current();
-                // Remove from ready queue to ensure scheduler doesn't pick us up
-                sched.remove_from_ready_queue(handle.inner.tid);
             });
         });
 
