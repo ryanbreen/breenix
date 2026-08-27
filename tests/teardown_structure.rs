@@ -3163,6 +3163,55 @@ const ROW_REMOVAL_EPOCH_BUMPS: &[(&str, &str, usize)] = &[
 /// `BLOCKING_PRIMITIVES`.
 const BLOCKING_NAME_PREFIXES: &[&str] = &["block_current", "prepare_to_wait"];
 
+/// #663 M2: every call site of `remove_from_ready_queue` under `kernel/src`,
+/// by enclosing item, whatever the receiver — `Scheduler`'s tid-keyed queue
+/// departure and `ProcessManager`'s pid-keyed one share the method name, and
+/// this census does not need to tell them apart to do its job. It exists
+/// alongside `validate_block_family_callers_own_no_departure` rather than
+/// instead of it: that rule is item-scoped and reads a departure written
+/// directly in a blocking-family caller's own body, but a departure moved one
+/// call deeper — a caller invokes a helper, and the helper's body holds the
+/// dequeue — escapes it, because neither the caller (no departure shape in its
+/// own body) nor the helper (not a blocking-family caller) trips the rule. A
+/// new helper anywhere is still a new call site, so it is still a new row
+/// here, and `validate_census`'s exact match forces it to be re-anchored
+/// deliberately rather than pass silently. This is a backstop, not a
+/// classifier: it does not decide whether a new site is correct, only that
+/// someone must look at it.
+#[rustfmt::skip]
+const REMOVE_FROM_READY_QUEUE_CALL_SITES: &[(&str, &str, usize)] = &[
+    ("kernel/src/arch_impl/aarch64/context_switch.rs", "fn drain_asm_resume_pc_refusals", 2),
+    ("kernel/src/arch_impl/aarch64/context_switch.rs", "fn exit_schedule_trampoline", 1),
+    ("kernel/src/arch_impl/aarch64/exception.rs", "fn terminate_current_scheduler_thread", 1),
+    ("kernel/src/socket/udp.rs", "#[cfg(test)] mod tests::fn test_blocking_recvfrom_blocks_and_wakes", 1),
+    ("kernel/src/socket/udp.rs", "#[cfg(test)] mod tests::fn test_enqueue_packet_wakes_blocked_threads", 1),
+    ("kernel/src/socket/udp.rs", "#[cfg(test)] mod tests::fn test_enqueue_packet_wakes_multiple_waiters", 1),
+    ("kernel/src/socket/udp.rs", "#[cfg(test)] mod tests::fn test_spurious_wakeup_handling", 1),
+    ("kernel/src/task/scheduler.rs", "#[cfg(all(test,target_arch=x86_64))] mod tests::fn test_unblock_does_not_duplicate_ready_queue", 1),
+    ("kernel/src/task/scheduler.rs", "#[cfg(target_arch=aarch64)] fn terminate_thread_best_effort", 1),
+    ("kernel/src/test_exec.rs", "fn test_exec_real_userspace", 1),
+    ("kernel/src/test_exec.rs", "fn test_exec_without_scheduling", 1),
+    ("kernel/src/test_exec.rs", "fn test_shell_fork_exec", 1),
+    ("kernel/src/tracing/providers/teardown.rs", "#[cfg(all(feature=boot_tests,target_arch=aarch64))] fn creating_dispatch_refusal_test::fn retire_and_remove_owned_row", 1),
+    ("kernel/src/tracing/providers/teardown.rs", "#[cfg(feature=boot_tests)] fn clone_admission_oracle_test::fn exit_and_remove_row", 1),
+    ("kernel/src/tracing/providers/teardown.rs", "#[cfg(feature=boot_tests)] fn exec_detach_oracle_test::fn exit_and_remove_unowned_row", 1),
+    ("kernel/src/tracing/providers/teardown.rs", "#[cfg(feature=boot_tests)] fn exec_detach_oracle_test::fn retire_and_remove_owned_row", 1),
+    ("kernel/src/tracing/providers/teardown.rs", "#[cfg(feature=boot_tests)] fn init_designation_oracle_test", 4),
+    ("kernel/src/tracing/providers/teardown.rs", "#[cfg(feature=boot_tests)] fn init_group_refusal_oracle_test", 3),
+    ("kernel/src/tracing/providers/teardown.rs", "#[cfg(feature=boot_tests)] fn kernel_stack_ownership_oracle_test::fn retire_and_remove_owned_row", 1),
+];
+
+fn validate_remove_from_ready_queue_call_sites(
+    sources: &[(String, String)],
+) -> Result<(), Vec<String>> {
+    validate_census(
+        &census(sources, |source, mask| {
+            method_call_offsets(source, mask, "remove_from_ready_queue")
+        }),
+        REMOVE_FROM_READY_QUEUE_CALL_SITES,
+    )
+}
+
 fn validate_reclaim_enqueue_callers(
     sources: &[(String, String)],
 ) -> Result<(), Vec<String>> {
@@ -7787,6 +7836,11 @@ fn v3_structural_closures_are_exact() {
     );
     record(
         &mut failures,
+        "the remove_from_ready_queue call-site census changed",
+        validate_remove_from_ready_queue_call_sites(&sources),
+    );
+    record(
+        &mut failures,
         "opaque thread-state stores changed",
         validate_opaque_thread_state_stores(&sources),
     );
@@ -9481,6 +9535,28 @@ fn deliberately_broken_variants_fail_the_ratchet() {
             "the caller rule must not fire on {permitted}"
         );
     }
+
+    // #663 M2: the caller rule's own blind spot, demonstrated rather than
+    // just described. `reap` here is exactly one of the caller rule's
+    // permitted arms above — it holds the dequeue but never calls the
+    // blocking family, so the caller rule does not (and structurally cannot)
+    // see it as an evasion. The call-site census is a different shape: it
+    // does not care whether the enclosing item calls the blocking family, it
+    // only cares that `remove_from_ready_queue` is now called from a place
+    // census A does not already list, and that alone must redden it.
+    let one_hop_indirection = with_synthetic_source(
+        &sources,
+        "kernel/src/task/synthetic_one_hop_dequeue_helper.rs",
+        "pub fn reap(sched: &mut Scheduler, tid: u64) { sched.remove_from_ready_queue(tid); }\npub fn park_then_reap(sched: &mut Scheduler, tid: u64) { sched.block_current(); reap(sched, tid); }",
+    );
+    assert!(
+        validate_block_family_callers_own_no_departure(&one_hop_indirection).is_ok(),
+        "documents the gap: a departure moved one call deeper is invisible to the caller rule"
+    );
+    assert!(
+        validate_remove_from_ready_queue_call_sites(&one_hop_indirection).is_err(),
+        "the call-site census must still redden on the new, unanchored call site"
+    );
 
     // The fully qualified spelling must not escape the census. It does not
     // carry `=` immediately before the needle, and a mutation reverting
