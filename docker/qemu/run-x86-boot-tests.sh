@@ -54,7 +54,7 @@ EXEC_FAILED_RELEASE_PROD_LITERAL='[EXEC_FAILED_RELEASE_PROD:x86:plain_err=true:p
 # live_checks is nonzero because every allocation evaluates the guard; pub_pooled and pub_sched_owned are nonzero boot-wide totals whose exact values depend on process creation, while the oracle asserts they are equal and both publication residuals are zero.
 # sched_publications is a nonzero boot-wide driver for sched_pm_held_production=0.
 # frame_used_delta is boot-state dependent because of heap growth during the stress; the oracle asserts it is strictly less than 128 frames, one x86 kernel stack's worth.
-KSTACK_OWNER_ORACLE_PATTERN='\[KSTACK_OWNER_ORACLE:x86:creation_rows=1000:creation_owned=1000:one_owner=1000:two_owner=0:zero_owner=0:fork_rows=2:fork_owned=2:slot_returns_exact_one=2:slot_alloc_delta=[1-9][0-9]*:slot_free_delta=[1-9][0-9]*:slot_balance=-?[0-9]+:cohort_enrolled=1000:cohort_returned=1000:cohort_double_return=0:foreign_alloc_delta=[0-9]+:foreign_returned=[0-9]+:frames_mapped_delta=[1-9][0-9]*:frames_released_delta=[1-9][0-9]*:frame_balance=-?[0-9]+:frame_used_delta=[0-9]+:frame_used_bounded=1:live_checks=[1-9][0-9]*:live_refusals_production=0:live_refusals_injected=1:drop_refused_live=0:pte_overwrite_refusals=0:pub_pooled=[1-9][0-9]*:pub_sched_owned=[1-9][0-9]*:pub_row_residual=0:pub_unowned=0:classifier_sched_owned=1:classifier_row_residual=1:classifier_unowned=1:classifier_not_pooled=1:sched_publications=[1-9][0-9]*:sched_pm_held_production=0:sched_pm_held_injected=1:balance=0\]'
+KSTACK_OWNER_ORACLE_PATTERN='\[KSTACK_OWNER_ORACLE:x86:creation_rows=1000:creation_owned=1000:one_owner=1000:two_owner=0:zero_owner=0:fork_rows=2:fork_owned=2:slot_returns_exact_one=2:slot_alloc_delta=[1-9][0-9]*:slot_free_delta=[1-9][0-9]*:slot_balance=-?[0-9]+:cohort_enrolled=1000:cohort_returned=1000:cohort_double_return=0:foreign_alloc_delta=[0-9]+:foreign_returned=[0-9]+:frames_mapped_delta=[1-9][0-9]*:frames_released_delta=[1-9][0-9]*:frame_balance=-?[0-9]+:frame_used_delta=[0-9]+:frame_used_bounded=1:live_checks=[1-9][0-9]*:live_refusals_production=0:live_refusals_injected=1:drop_refused_live=0:pte_overwrite_refusals=0:pub_pooled=[1-9][0-9]*:pub_sched_owned=[1-9][0-9]*:pub_row_residual=0:pub_unowned=0:classifier_sched_owned=1:classifier_row_residual=1:classifier_unowned=1:classifier_not_pooled=1:sched_publications=[1-9][0-9]*:sched_pm_held_production=0:sched_pm_held_injected=1:reconciliation_diff=-?[0-9]+:reconciliation_skew_bound=[0-9]+:balance=0\]'
 # P6a PR-2 gate extras (b)/(f)/(g). Every field is a delta the oracle drives
 # itself inside one run, so the whole line is a literal: two fixture rows, one
 # joined by retirement (retire_second) and one by the reap (reap_second), the
@@ -126,6 +126,7 @@ readonly TOMBSTONE_CENSUS_EMISSIONS=3
 # violated with seventeen selectable receipts.
 readonly TOMBSTONE_JOINED_REMOVALS=$(( TOMBSTONE_FIXTURE_REMOVALS + PRODUCTION_REAPED_ROWS ))
 TOMBSTONE_QUIESCE_PATTERN="\\[TOMBSTONE_QUIESCE:resident=0:removed=${TOMBSTONE_JOINED_REMOVALS}:reap_second=[0-9]+:retire_second=[0-9]+:abandoned_unqueued=1:pending=[0-9]+:parked=0\\]"
+KSTACK_QUIESCE_LEAK_PATTERN='\[KSTACK_QUIESCE_LEAK:baseline_outstanding=[0-9]+:outstanding=[0-9]+:leaked=0\]'
 # (3) #653 delta (3) — the drain's own refusal counters, which existed before the
 # fix and were printed by nothing: a whole-boot loss of production reclamation
 # was inferable only three phases later from a tombstone census read alongside a
@@ -297,6 +298,8 @@ for i in $(seq 1 "$COUNT"); do
                 "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
             && grep -qF '[TOMBSTONE_QUIESCE:' \
                 "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
+            && grep -qE "$KSTACK_QUIESCE_LEAK_PATTERN" \
+                "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
             && grep -qF '[RECLAIM_DRAIN:' \
                 "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
             && grep -q '\[TEST:userspace:loopback_recv_wake:PASS\]' \
@@ -434,6 +437,8 @@ for i in $(seq 1 "$COUNT"); do
     QUIESCE_RETIRE_SECOND=$(printf '%s\n' "$QUIESCE_LINE" | \
         sed -n 's/.*:retire_second=\([0-9][0-9]*\):.*/\1/p')
     test "$(( QUIESCE_REAP_SECOND + QUIESCE_RETIRE_SECOND ))" -eq "$TOMBSTONE_JOINED_REMOVALS"
+    test "$(grep -h -E -c "$KSTACK_QUIESCE_LEAK_PATTERN" \
+        "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 1
     # (3) The drain's refusal counters, with the injected arm proving the refusal
     # path still executes.
     test "$(grep -h -E -c "$RECLAIM_DRAIN_PATTERN" \

@@ -749,6 +749,55 @@ pub fn emit_tombstone_census() {
     );
 }
 
+#[cfg(all(feature = "boot_tests", target_arch = "x86_64"))]
+static KSTACK_QUIESCE_LEAK_EMITTED: core::sync::atomic::AtomicBool =
+    core::sync::atomic::AtomicBool::new(false);
+
+/// #661 F2: restore whole-boot kernel-stack slot-leak coverage on x86.
+///
+/// The old ownership oracle's window-scoped slot equality would have caught a
+/// foreign kernel stack allocated inside its stress window and never freed. The
+/// #646 cohort assertions deliberately cannot see that case: foreign allocation
+/// motion is emitted as census data, while the oracle's assertions are scoped to
+/// the slots it enrolled by identity.
+///
+/// This does not recover window-scoped *detection*, because that would reopen the
+/// #646 race: the stimulus is still bounded by the oracle's window, but the
+/// verdict is read at the point where the race structurally cannot occur — x86
+/// quiescence, after userspace is complete and the deferred reclaim queues are
+/// drained or the existing tombstone backstop has elapsed. The allocator's
+/// boot-test-only watch is opened by the ownership gate immediately before its
+/// stress window and closed immediately after, so a watched slot is exactly a
+/// slot allocated inside that window; cohort enrolment and slot return clear the
+/// watch, leaving only still-live foreign slots for this census to count.
+///
+/// Disclosed residual: a kernel-stack slot leaked *outside* the oracle's window —
+/// before it or during the userspace phase after it — is not covered here, and
+/// deliberately so, because such a slot is indistinguishable at quiescence from a
+/// thread that is legitimately still alive. The scope is x86 only; aarch64's
+/// oracle gate still has no equivalent quiesce-time kernel-stack leak check, and
+/// this follow-up does not claim to close that gap.
+#[cfg(all(feature = "boot_tests", target_arch = "x86_64"))]
+pub fn x86_settled_kstack_leak_census() {
+    // x86 only: there is no aarch64 counterpart for this settled census.
+    if KSTACK_QUIESCE_LEAK_EMITTED.load(Ordering::Relaxed) {
+        return;
+    }
+    if KSTACK_QUIESCE_LEAK_EMITTED.swap(true, Ordering::Relaxed) {
+        return;
+    }
+    let baseline = crate::memory::kernel_stack::kernel_stack_quiesce_baseline_outstanding();
+    let now = crate::memory::kernel_stack::kernel_stack_pool_counters();
+    let outstanding = now.slots_allocated.saturating_sub(now.slots_freed);
+    let leaked = crate::memory::kernel_stack::kernel_stack_quiesce_leaked_slots();
+    crate::serial_println!(
+        "[KSTACK_QUIESCE_LEAK:baseline_outstanding={}:outstanding={}:leaked={}]",
+        baseline,
+        outstanding,
+        leaked
+    );
+}
+
 /// P6a PR-2, review finding B2 — the **settled** half of the x86 retention
 /// sample, and the only place in the matrix that looks at a real workload's
 /// tombstones once the workload is over.
@@ -805,6 +854,7 @@ pub fn x86_settled_tombstone_census() {
     if EMITTED.swap(true, Ordering::Relaxed) {
         return;
     }
+    x86_settled_kstack_leak_census();
     crate::serial_println!(
         "[TOMBSTONE_QUIESCE:resident={}:removed={}:reap_second={}:retire_second={}:abandoned_unqueued={}:pending={}:parked={}]",
         TOMBSTONE_RESIDENT.aggregate(),
@@ -5373,6 +5423,8 @@ pub fn kernel_stack_ownership_oracle_test() -> crate::test_framework::registry::
         sched_publications: u64,
         sched_pm_held_production: u64,
         sched_pm_held_injected: u64,
+        reconciliation_diff: i64,
+        reconciliation_skew_bound: i64,
     }
 
     fn note_failure(
@@ -5656,6 +5708,10 @@ pub fn kernel_stack_ownership_oracle_test() -> crate::test_framework::registry::
     measurements.foreign_alloc_delta = measurements
         .slot_alloc_delta
         .saturating_sub(measurements.cohort_enrolled);
+    let online_cpus = crate::task::scheduler::online_cpu_count_snapshot() as i64;
+    measurements.reconciliation_skew_bound = 2 * (online_cpus - 1).max(0);
+    measurements.reconciliation_diff = measurements.slot_free_delta as i64
+        - (measurements.cohort_returned + measurements.foreign_returned) as i64;
     measurements.frames_mapped_delta = stress_after
         .frames_mapped
         .saturating_sub(stress_before.frames_mapped);
@@ -6114,13 +6170,20 @@ pub fn kernel_stack_ownership_oracle_test() -> crate::test_framework::registry::
             "ownership stress returned a cohort slot twice",
         );
     }
-    // Global/cohort reconciliation. Every slot return in the window is counted
-    // as exactly one of cohort or foreign, so this identity holds regardless of
-    // what the other CPUs are doing — it fails only if the two accountings have
-    // drifted apart, i.e. a return moved one counter and not the other.
-    if measurements.slot_free_delta
-        != measurements.cohort_returned + measurements.foreign_returned
-    {
+    // Global/cohort reconciliation. The pool and cohort counters are read as
+    // separate snapshots at both boundaries, while `KernelStack::drop` writes
+    // the cohort classification before bumping the global freed counter. A
+    // foreign drop that lands in either boundary's read window can desynchronize
+    // the two accountings. The check therefore tolerates the derived
+    // `2 * (online_cpu_count - 1)` skew, on the assumption that each other
+    // online CPU completes at most one `KernelStack::drop` inside a two-load
+    // read window; nothing enforces that assumption, so the bound is a
+    // best-effort derivation, not a proof. Any deviation beyond the bound still
+    // means the accountings drifted, but a drift within the bound is invisible
+    // to this check and to the gate regex (which accepts any
+    // `reconciliation_diff` value) alike — a disclosed blind spot, not an exact
+    // identity.
+    if measurements.reconciliation_diff.abs() > measurements.reconciliation_skew_bound {
         note_failure(
             &mut first_failure,
             &mut violations,
@@ -6300,7 +6363,7 @@ pub fn kernel_stack_ownership_oracle_test() -> crate::test_framework::registry::
     let arch = "x86";
     let balance = violations;
     crate::serial_println!(
-        "[KSTACK_OWNER_ORACLE:{}:creation_rows={}:creation_owned={}:one_owner={}:two_owner={}:zero_owner={}:fork_rows={}:fork_owned={}:slot_returns_exact_one={}:slot_alloc_delta={}:slot_free_delta={}:slot_balance={}:cohort_enrolled={}:cohort_returned={}:cohort_double_return={}:foreign_alloc_delta={}:foreign_returned={}:frames_mapped_delta={}:frames_released_delta={}:frame_balance={}:frame_used_delta={}:frame_used_bounded={}:live_checks={}:live_refusals_production={}:live_refusals_injected={}:drop_refused_live={}:pte_overwrite_refusals={}:pub_pooled={}:pub_sched_owned={}:pub_row_residual={}:pub_unowned={}:classifier_sched_owned={}:classifier_row_residual={}:classifier_unowned={}:classifier_not_pooled={}:sched_publications={}:sched_pm_held_production={}:sched_pm_held_injected={}:balance={}]",
+        "[KSTACK_OWNER_ORACLE:{}:creation_rows={}:creation_owned={}:one_owner={}:two_owner={}:zero_owner={}:fork_rows={}:fork_owned={}:slot_returns_exact_one={}:slot_alloc_delta={}:slot_free_delta={}:slot_balance={}:cohort_enrolled={}:cohort_returned={}:cohort_double_return={}:foreign_alloc_delta={}:foreign_returned={}:frames_mapped_delta={}:frames_released_delta={}:frame_balance={}:frame_used_delta={}:frame_used_bounded={}:live_checks={}:live_refusals_production={}:live_refusals_injected={}:drop_refused_live={}:pte_overwrite_refusals={}:pub_pooled={}:pub_sched_owned={}:pub_row_residual={}:pub_unowned={}:classifier_sched_owned={}:classifier_row_residual={}:classifier_unowned={}:classifier_not_pooled={}:sched_publications={}:sched_pm_held_production={}:sched_pm_held_injected={}:reconciliation_diff={}:reconciliation_skew_bound={}:balance={}]",
         arch,
         measurements.creation_rows,
         measurements.creation_owned,
@@ -6339,6 +6402,8 @@ pub fn kernel_stack_ownership_oracle_test() -> crate::test_framework::registry::
         measurements.sched_publications,
         measurements.sched_pm_held_production,
         measurements.sched_pm_held_injected,
+        measurements.reconciliation_diff,
+        measurements.reconciliation_skew_bound,
         balance
     );
 
@@ -6408,8 +6473,11 @@ pub fn run_x86_init_group_refusal_gate() {
 
 #[cfg(all(feature = "boot_tests", target_arch = "x86_64"))]
 pub fn run_x86_kernel_stack_ownership_gate() {
+    let _ = crate::memory::kernel_stack::kernel_stack_quiesce_baseline_outstanding();
+    crate::memory::kernel_stack::kernel_stack_quiesce_start_watch();
     crate::serial_println!("[TEST:process:kernel_stack_ownership_oracle:START]");
     let result = kernel_stack_ownership_oracle_test();
+    crate::memory::kernel_stack::kernel_stack_quiesce_stop_watch();
     if !result.is_pass() {
         crate::serial_println!(
             "[TEST:process:kernel_stack_ownership_oracle:FAIL:{:?}]",

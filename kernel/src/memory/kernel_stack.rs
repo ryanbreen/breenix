@@ -7,6 +7,8 @@
 use crate::memory::arch_stub::VirtAddr;
 #[cfg(target_arch = "x86_64")]
 use crate::memory::frame_allocator::{allocate_frame, deallocate_frame};
+#[cfg(all(feature = "boot_tests", target_arch = "x86_64"))]
+use core::sync::atomic::AtomicBool;
 use core::sync::atomic::{AtomicU64, Ordering};
 #[cfg(feature = "boot_tests")]
 use core::sync::atomic::AtomicU8;
@@ -82,6 +84,13 @@ static KSTACK_COHORT_RETURNED: AtomicU64 = AtomicU64::new(0);
 static KSTACK_COHORT_DOUBLE_RETURN: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "boot_tests")]
 static KSTACK_FOREIGN_RETURNED: AtomicU64 = AtomicU64::new(0);
+#[cfg(all(feature = "boot_tests", target_arch = "x86_64"))]
+static KSTACK_QUIESCE_BASELINE_OUTSTANDING: AtomicU64 = AtomicU64::new(u64::MAX);
+#[cfg(all(feature = "boot_tests", target_arch = "x86_64"))]
+static KSTACK_QUIESCE_WATCH_BITMAP: [AtomicU64; BITMAP_SIZE] =
+    [const { AtomicU64::new(0) }; BITMAP_SIZE];
+#[cfg(all(feature = "boot_tests", target_arch = "x86_64"))]
+static KSTACK_QUIESCE_WATCH_ACTIVE: AtomicBool = AtomicBool::new(false);
 
 /// Drop the cohort state for a slot index the allocator has just claimed.
 ///
@@ -97,6 +106,31 @@ fn cohort_note_allocation(index: usize) {
     if let Some(state) = KSTACK_COHORT_STATE.get(index) {
         state.store(COHORT_STATE_ABSENT, Ordering::Release);
     }
+    #[cfg(target_arch = "x86_64")]
+    quiesce_note_allocation(index);
+}
+
+#[cfg(all(feature = "boot_tests", target_arch = "x86_64"))]
+#[inline]
+fn quiesce_note_allocation(index: usize) {
+    if !KSTACK_QUIESCE_WATCH_ACTIVE.load(Ordering::Acquire) {
+        return;
+    }
+    let word_index = index / 64;
+    let bit_index = index % 64;
+    if let Some(word) = KSTACK_QUIESCE_WATCH_BITMAP.get(word_index) {
+        word.fetch_or(1u64 << bit_index, Ordering::AcqRel);
+    }
+}
+
+#[cfg(all(feature = "boot_tests", target_arch = "x86_64"))]
+#[inline]
+fn quiesce_note_owned_or_returned(index: usize) {
+    let word_index = index / 64;
+    let bit_index = index % 64;
+    if let Some(word) = KSTACK_QUIESCE_WATCH_BITMAP.get(word_index) {
+        word.fetch_and(!(1u64 << bit_index), Ordering::AcqRel);
+    }
 }
 
 /// Classify a slot return by identity. Runs inside `KernelStack::drop`, before
@@ -107,6 +141,8 @@ fn cohort_note_allocation(index: usize) {
 fn cohort_note_return(index: usize) {
     let Some(state) = KSTACK_COHORT_STATE.get(index) else {
         KSTACK_FOREIGN_RETURNED.fetch_add(1, Ordering::Relaxed);
+        #[cfg(target_arch = "x86_64")]
+        quiesce_note_owned_or_returned(index);
         return;
     };
     match state.compare_exchange(
@@ -125,6 +161,8 @@ fn cohort_note_return(index: usize) {
             KSTACK_FOREIGN_RETURNED.fetch_add(1, Ordering::Relaxed);
         }
     }
+    #[cfg(target_arch = "x86_64")]
+    quiesce_note_owned_or_returned(index);
 }
 
 /// Identity-scoped slot accounting for the ownership oracle.
@@ -235,6 +273,75 @@ pub fn kernel_stack_pool_counters() -> KernelStackPoolCounters {
         publications_row_residual: KSTACK_PUBLICATIONS_ROW_RESIDUAL.load(Ordering::Relaxed),
         publications_unowned: KSTACK_PUBLICATIONS_UNOWNED.load(Ordering::Relaxed),
     }
+}
+
+/// Outstanding pool slots at the first call to this function.
+///
+/// First-caller-wins via `compare_exchange`, so every later caller reuses the
+/// same baseline. `test_framework::executor::run_all_tests()` calls this once,
+/// early, after the permanent boot-test oracle threads are started and before
+/// the registered test workload creates kernel-stack churn; at that point the
+/// only outstanding slots are the boot-time permanent ones, whatever that count
+/// is. This is measurement only: it arms nothing, so the census number and the
+/// watched window are set independently and neither can silently move the other.
+#[cfg(all(feature = "boot_tests", target_arch = "x86_64"))]
+pub fn kernel_stack_quiesce_baseline_outstanding() -> u64 {
+    let current = kernel_stack_pool_counters();
+    let outstanding = current
+        .slots_allocated
+        .saturating_sub(current.slots_freed);
+    match KSTACK_QUIESCE_BASELINE_OUTSTANDING.compare_exchange(
+        u64::MAX,
+        outstanding,
+        Ordering::AcqRel,
+        Ordering::Acquire,
+    ) {
+        Ok(_) => outstanding,
+        Err(existing) => existing,
+    }
+}
+
+/// Open the watched window for the x86 quiesce leak census.
+///
+/// The watch is opened by the x86 kernel-stack ownership gate immediately before
+/// its stress window and closed immediately after, so a watched slot is exactly a
+/// slot allocated inside that window — the window #661 F2 names. Threads created
+/// before the window (the permanent boot-test oracles) and after it (the
+/// userspace phase) legitimately outlive quiescence and are deliberately not
+/// watched, so the `leaked=0` pin cannot be reddened by a live thread that was
+/// never in scope.
+/// The reverse direction is not free of false reds: a foreign kernel stack
+/// allocated inside this window by a thread that legitimately outlives
+/// quiescence (a worker or daemon started during the stress window) is
+/// indistinguishable from a real leak and will redden the `leaked=0` pin. The
+/// window is narrow, so this class is rare, but it is real and not covered.
+#[cfg(all(feature = "boot_tests", target_arch = "x86_64"))]
+pub fn kernel_stack_quiesce_start_watch() {
+    for word in KSTACK_QUIESCE_WATCH_BITMAP.iter() {
+        word.store(0, Ordering::Release);
+    }
+    KSTACK_QUIESCE_WATCH_ACTIVE.store(true, Ordering::Release);
+}
+
+/// Stop watching new foreign allocations for the x86 quiesce leak census.
+#[cfg(all(feature = "boot_tests", target_arch = "x86_64"))]
+pub fn kernel_stack_quiesce_stop_watch() {
+    KSTACK_QUIESCE_WATCH_ACTIVE.store(false, Ordering::Release);
+}
+
+/// Count watched foreign slots still live at quiescence.
+#[cfg(all(feature = "boot_tests", target_arch = "x86_64"))]
+pub fn kernel_stack_quiesce_leaked_slots() -> u64 {
+    let Some(bitmap) = STACK_BITMAP.try_lock() else {
+        return u64::MAX;
+    };
+    bitmap
+        .iter()
+        .zip(KSTACK_QUIESCE_WATCH_BITMAP.iter())
+        .map(|(current, watched)| {
+            (current & watched.load(Ordering::Acquire)).count_ones() as u64
+        })
+        .sum()
 }
 
 pub(crate) fn note_kernel_stack_pte_overwrite_refused() {
@@ -349,6 +456,8 @@ impl KernelStack {
         if let Some(state) = KSTACK_COHORT_STATE.get(self.index) {
             state.store(COHORT_STATE_ENROLLED, Ordering::Release);
             KSTACK_COHORT_ENROLLED.fetch_add(1, Ordering::Relaxed);
+            #[cfg(target_arch = "x86_64")]
+            quiesce_note_owned_or_returned(self.index);
         }
     }
 

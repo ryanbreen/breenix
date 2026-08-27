@@ -2956,6 +2956,56 @@ const OPAQUE_THREAD_STATE_STORES: &[(&str, &str, usize)] = &[
     ("kernel/src/task/scheduler.rs", "#[cfg(all(test,target_arch=x86_64))] mod tests::fn make_thread", 1),
     ("kernel/src/tracing/providers/teardown.rs", "#[cfg(feature=boot_tests)] fn clone_admission_oracle_test::fn test_thread", 1),
 ];
+/// Census C: struct-literal `state:` fields whose value is a `ThreadState`
+/// path. Neither census A (which requires an `=` immediately before the path)
+/// nor census B (which requires a `.state =` field store) can see a thread that
+/// is *constructed* already blocked, so this is the third publication shape.
+/// Two deliberate choices: the census is over every variant rather than
+/// `Blocked*` alone, so it starts non-empty and the registration ratchet can
+/// prove it is not vacuous; and the variant is carried in the row tag, so
+/// flipping an anchored `Ready` construction to `Blocked` in place — which
+/// leaves the row count untouched — is a divergence too.
+///
+/// The `sys_clone` row is the census's first finding and corrects the premise
+/// it was built on: #650 recorded this shape as dormant, and it is not. A clone
+/// child is *constructed* `Blocked` under the fully qualified spelling and made
+/// ready at its admission point, so it is a live production blocked-state
+/// publication that the DEBT-3 blocking inventory never saw. It is anchored
+/// rather than ruled a defect because the publication is paired: the same
+/// function readies the thread once its setup completes. It is deliberately not
+/// subject to `validate_blocked_state_publication_family` — that rule reads a
+/// blocked publication as a park and demands a blocking-family name, which an
+/// admission-time initial state is not. Extending the rule to constructions is
+/// the P9 admission-interlock question, not this census's.
+#[rustfmt::skip]
+const THREAD_STATE_CONSTRUCTIONS: &[(&str, &str, usize)] = &[
+    ("kernel/src/process/manager.rs", "impl ProcessManager::#[cfg(target_arch=aarch64)] fn create_main_thread => Ready", 1),
+    ("kernel/src/process/manager.rs", "impl ProcessManager::#[cfg(target_arch=aarch64)] fn create_main_thread_with_sp => Ready", 1),
+    ("kernel/src/process/manager.rs", "impl ProcessManager::#[cfg(target_arch=x86_64)] fn create_main_thread => Ready", 1),
+    ("kernel/src/process/manager.rs", "impl ProcessManager::#[cfg(target_arch=x86_64)] fn fork_process_with_context => Ready", 1),
+    ("kernel/src/syscall/clone.rs", "fn sys_clone => Blocked", 1),
+    ("kernel/src/task/strand_oracle.rs", "fn sample_once => Running", 1),
+    ("kernel/src/task/thread.rs", "impl Thread::#[cfg(target_arch=aarch64)] fn new => Ready", 1),
+    ("kernel/src/task/thread.rs", "impl Thread::#[cfg(target_arch=aarch64)] fn new_kernel => Ready", 1),
+    ("kernel/src/task/thread.rs", "impl Thread::#[cfg(target_arch=aarch64)] fn new_userspace => Ready", 1),
+    ("kernel/src/task/thread.rs", "impl Thread::#[cfg(target_arch=aarch64)] fn new_with_id => Ready", 1),
+    ("kernel/src/task/thread.rs", "impl Thread::#[cfg(target_arch=x86_64)] fn new => Ready", 1),
+    ("kernel/src/task/thread.rs", "impl Thread::#[cfg(target_arch=x86_64)] fn new_kernel => Ready", 1),
+    ("kernel/src/task/thread.rs", "impl Thread::#[cfg(target_arch=x86_64)] fn new_userspace => Ready", 1),
+    ("kernel/src/task/thread.rs", "impl Thread::#[cfg(target_arch=x86_64)] fn new_with_id => Ready", 1),
+    ("kernel/src/test_framework/registry.rs", "fn run_census_widen_oracle => Running", 2),
+];
+/// Census D: `use … ThreadState as ALIAS` renamings. Censuses A and C resolve
+/// same-file aliases into their needle set, but a renaming that is re-exported
+/// and read from another file leaves no `ThreadState` token in the reading file
+/// at all, which same-file resolution structurally cannot see. So the renaming
+/// itself is censused. The table is empty because the tree has no alias: an
+/// alias arriving anywhere is a divergence that must be re-anchored
+/// deliberately. Its emptiness is why the registration ratchet proves this
+/// census non-vacuous with a positive control instead of a row count.
+#[rustfmt::skip]
+const THREAD_STATE_ALIASES: &[(&str, &str, usize)] = &[
+];
 #[rustfmt::skip]
 const RAW_SCHEDULER_LOCK_SITES: &[(&str, &str, usize)] = &[
     ("kernel/src/task/scheduler.rs", "fn lock_scheduler", 1),
@@ -3224,17 +3274,75 @@ fn path_expression_start(source: &str, mask: &[bool], offset: usize) -> usize {
     }
 }
 
-/// Offsets of `ThreadState::Blocked*` paths that sit on the right-hand side of
-/// an assignment. `code_offsets` is a substring match, so `Blocked`,
-/// `BlockedOnIO`, `BlockedOnSignal`, `BlockedOnChildExit` and `BlockedOnTimer`
-/// are all covered by one needle, and `path_expression_start` covers the
-/// fully qualified spelling. Comparisons (`==`, `!=`, `<=`, `>=`), `matches!`
-/// arms and call arguments are excluded by construction — the census is the
-/// class of *publications*, not of mentions.
+/// The identifier beginning at `start`, or the empty string when the byte there
+/// is not part of one.
+fn identifier_beginning_at<'a>(source: &'a str, mask: &[bool], start: usize) -> &'a str {
+    let bytes = source.as_bytes();
+    if start >= bytes.len() || !mask[start] || !identifier_byte(bytes[start]) {
+        return "";
+    }
+    let mut end = start;
+    while end < bytes.len() && mask[end] && identifier_byte(bytes[end]) {
+        end += 1;
+    }
+    &source[start..end]
+}
+
+/// Offsets of the alias identifier in every `use … ThreadState as ALIAS`
+/// renaming. An alias renames the type out of every needle in this family, so
+/// the renaming is both resolved (below) and censused (census D).
+fn thread_state_alias_offsets(source: &str, mask: &[bool]) -> Vec<usize> {
+    identifier_offsets(source, mask, "ThreadState")
+        .into_iter()
+        .filter_map(|offset| {
+            let keyword = next_code(source, mask, offset + "ThreadState".len())?;
+            if identifier_beginning_at(source, mask, keyword) != "as" {
+                return None;
+            }
+            let alias = next_code(source, mask, keyword + "as".len())?;
+            (!identifier_beginning_at(source, mask, alias).is_empty()).then_some(alias)
+        })
+        .collect()
+}
+
+/// Every spelling the `ThreadState` type answers to in this file: its own name
+/// plus each same-file `use … as` renaming of it. Without this an alias hides a
+/// publication from census A and a construction from census C, because the
+/// needle those censuses match is the type's name.
+fn thread_state_spellings(source: &str, mask: &[bool]) -> Vec<String> {
+    let mut spellings = vec!["ThreadState".to_owned()];
+    spellings.extend(
+        thread_state_alias_offsets(source, mask)
+            .into_iter()
+            .map(|offset| identifier_beginning_at(source, mask, offset).to_owned()),
+    );
+    spellings.sort();
+    spellings.dedup();
+    spellings
+}
+
+/// Offsets of `<spelling>::Blocked*` paths. The tail is matched as a prefix, so
+/// `Blocked`, `BlockedOnIO`, `BlockedOnSignal`, `BlockedOnChildExit` and
+/// `BlockedOnTimer` are all covered by one needle, and the head is matched on
+/// identifier boundaries, so a type whose name merely ends in `ThreadState` is
+/// not read as this one.
+fn blocked_variant_path_offsets(source: &str, mask: &[bool], spelling: &str) -> Vec<usize> {
+    identifier_offsets(source, mask, spelling)
+        .into_iter()
+        .filter(|offset| code_follows(source, mask, offset + spelling.len(), "::Blocked"))
+        .collect()
+}
+
+/// Offsets of `ThreadState::Blocked*` paths — under any same-file spelling of
+/// the type — that sit on the right-hand side of an assignment.
+/// `path_expression_start` covers the fully qualified spelling. Comparisons
+/// (`==`, `!=`, `<=`, `>=`), `matches!` arms and call arguments are excluded by
+/// construction — the census is the class of *publications*, not of mentions.
 fn blocked_state_publication_offsets(source: &str, mask: &[bool]) -> Vec<usize> {
     let bytes = source.as_bytes();
-    code_offsets(source, mask, "ThreadState::Blocked")
-        .into_iter()
+    let mut offsets: Vec<usize> = thread_state_spellings(source, mask)
+        .iter()
+        .flat_map(|spelling| blocked_variant_path_offsets(source, mask, spelling))
         .filter(|offset| {
             let start = path_expression_start(source, mask, *offset);
             let Some(equals) = previous_code(source, mask, start) else {
@@ -3246,7 +3354,10 @@ fn blocked_state_publication_offsets(source: &str, mask: &[bool]) -> Vec<usize> 
             previous_code(source, mask, equals)
                 .is_none_or(|before| !matches!(bytes[before], b'=' | b'!' | b'<' | b'>'))
         })
-        .collect()
+        .collect();
+    offsets.sort_unstable();
+    offsets.dedup();
+    offsets
 }
 
 fn validate_blocked_state_publications(sources: &[(String, String)]) -> Result<(), Vec<String>> {
@@ -3440,6 +3551,70 @@ fn validate_opaque_thread_state_stores(
     validate_census(
         &census(sources, opaque_thread_state_store_offsets),
         OPAQUE_THREAD_STATE_STORES,
+    )
+}
+
+/// Struct-literal `state:` fields whose value is a `ThreadState` path, tagged
+/// with the variant. This is the construction shape: the byte before the path
+/// is `:`, not `=`, so census A cannot see it, and there is no `.state =` field
+/// store, so census B cannot either. A field *declaration* (`state: ThreadState`)
+/// carries no variant and is excluded by requiring the `::` that makes the value
+/// a path.
+fn thread_state_construction_offsets(source: &str, mask: &[bool]) -> Vec<(usize, String)> {
+    let bytes = source.as_bytes();
+    let mut matches: Vec<(usize, String)> = Vec::new();
+    for spelling in thread_state_spellings(source, mask) {
+        for offset in identifier_offsets(source, mask, &spelling) {
+            let Some(first) = next_code(source, mask, offset + spelling.len()) else {
+                continue;
+            };
+            if bytes[first] != b':' {
+                continue;
+            }
+            let Some(second) = next_code(source, mask, first + 1) else {
+                continue;
+            };
+            if bytes[second] != b':' {
+                continue;
+            }
+            let Some(variant_start) = next_code(source, mask, second + 1) else {
+                continue;
+            };
+            let variant = identifier_beginning_at(source, mask, variant_start);
+            if variant.is_empty() {
+                continue;
+            }
+            // The field name sits immediately before the whole path expression,
+            // so the qualified spelling is covered the same way census A covers
+            // it. `previous_code` of the `:` is the last byte of the field name.
+            let start = path_expression_start(source, mask, offset);
+            let Some(colon) = previous_code(source, mask, start) else {
+                continue;
+            };
+            if bytes[colon] != b':' || !preceded_by_keyword(source, mask, colon, "state") {
+                continue;
+            }
+            matches.push((offset, variant.to_owned()));
+        }
+    }
+    matches.sort_unstable();
+    matches.dedup();
+    matches
+}
+
+fn validate_thread_state_constructions(
+    sources: &[(String, String)],
+) -> Result<(), Vec<String>> {
+    validate_census(
+        &census_tagged(sources, thread_state_construction_offsets),
+        THREAD_STATE_CONSTRUCTIONS,
+    )
+}
+
+fn validate_thread_state_aliases(sources: &[(String, String)]) -> Result<(), Vec<String>> {
+    validate_census(
+        &census(sources, thread_state_alias_offsets),
+        THREAD_STATE_ALIASES,
     )
 }
 
@@ -3874,8 +4049,9 @@ fn validate_kstack_gate_script_pins(
     let mut failures = Vec::new();
     let injected = "[CREATION_LOCK_ORDER:INJECTED:PM_HELD]";
     let violation = "[CREATION_LOCK_ORDER:VIOLATION:PM_HELD]";
-    let x86_owner_pattern = "KSTACK_OWNER_ORACLE_PATTERN='\\[KSTACK_OWNER_ORACLE:x86:creation_rows=1000:creation_owned=1000:one_owner=1000:two_owner=0:zero_owner=0:fork_rows=2:fork_owned=2:slot_returns_exact_one=2:slot_alloc_delta=[1-9][0-9]*:slot_free_delta=[1-9][0-9]*:slot_balance=-?[0-9]+:cohort_enrolled=1000:cohort_returned=1000:cohort_double_return=0:foreign_alloc_delta=[0-9]+:foreign_returned=[0-9]+:frames_mapped_delta=[1-9][0-9]*:frames_released_delta=[1-9][0-9]*:frame_balance=-?[0-9]+:frame_used_delta=[0-9]+:frame_used_bounded=1:live_checks=[1-9][0-9]*:live_refusals_production=0:live_refusals_injected=1:drop_refused_live=0:pte_overwrite_refusals=0:pub_pooled=[1-9][0-9]*:pub_sched_owned=[1-9][0-9]*:pub_row_residual=0:pub_unowned=0:classifier_sched_owned=1:classifier_row_residual=1:classifier_unowned=1:classifier_not_pooled=1:sched_publications=[1-9][0-9]*:sched_pm_held_production=0:sched_pm_held_injected=1:balance=0\\]'";
-    let aarch64_owner_pattern = "KSTACK_OWNER_ORACLE_PATTERN='^\\[KSTACK_OWNER_ORACLE:aarch64:creation_rows=1000:creation_owned=1000:one_owner=1000:two_owner=0:zero_owner=0:fork_rows=1:fork_owned=1:slot_returns_exact_one=1:slot_alloc_delta=[1-9][0-9]*:slot_free_delta=[1-9][0-9]*:slot_balance=-?[0-9]+:cohort_enrolled=1000:cohort_returned=1000:cohort_double_return=0:foreign_alloc_delta=[0-9]+:foreign_returned=[0-9]+:frames_mapped_delta=0:frames_released_delta=0:frame_balance=0:frame_used_delta=[0-9]+:frame_used_bounded=1:live_checks=[1-9][0-9]*:live_refusals_production=0:live_refusals_injected=1:drop_refused_live=0:pte_overwrite_refusals=0:pub_pooled=[1-9][0-9]*:pub_sched_owned=[1-9][0-9]*:pub_row_residual=0:pub_unowned=0:classifier_sched_owned=1:classifier_row_residual=1:classifier_unowned=1:classifier_not_pooled=1:sched_publications=[1-9][0-9]*:sched_pm_held_production=0:sched_pm_held_injected=1:balance=0\\]$'";
+    let x86_owner_pattern = "KSTACK_OWNER_ORACLE_PATTERN='\\[KSTACK_OWNER_ORACLE:x86:creation_rows=1000:creation_owned=1000:one_owner=1000:two_owner=0:zero_owner=0:fork_rows=2:fork_owned=2:slot_returns_exact_one=2:slot_alloc_delta=[1-9][0-9]*:slot_free_delta=[1-9][0-9]*:slot_balance=-?[0-9]+:cohort_enrolled=1000:cohort_returned=1000:cohort_double_return=0:foreign_alloc_delta=[0-9]+:foreign_returned=[0-9]+:frames_mapped_delta=[1-9][0-9]*:frames_released_delta=[1-9][0-9]*:frame_balance=-?[0-9]+:frame_used_delta=[0-9]+:frame_used_bounded=1:live_checks=[1-9][0-9]*:live_refusals_production=0:live_refusals_injected=1:drop_refused_live=0:pte_overwrite_refusals=0:pub_pooled=[1-9][0-9]*:pub_sched_owned=[1-9][0-9]*:pub_row_residual=0:pub_unowned=0:classifier_sched_owned=1:classifier_row_residual=1:classifier_unowned=1:classifier_not_pooled=1:sched_publications=[1-9][0-9]*:sched_pm_held_production=0:sched_pm_held_injected=1:reconciliation_diff=-?[0-9]+:reconciliation_skew_bound=[0-9]+:balance=0\\]'";
+    let aarch64_owner_pattern = "KSTACK_OWNER_ORACLE_PATTERN='^\\[KSTACK_OWNER_ORACLE:aarch64:creation_rows=1000:creation_owned=1000:one_owner=1000:two_owner=0:zero_owner=0:fork_rows=1:fork_owned=1:slot_returns_exact_one=1:slot_alloc_delta=[1-9][0-9]*:slot_free_delta=[1-9][0-9]*:slot_balance=-?[0-9]+:cohort_enrolled=1000:cohort_returned=1000:cohort_double_return=0:foreign_alloc_delta=[0-9]+:foreign_returned=[0-9]+:frames_mapped_delta=0:frames_released_delta=0:frame_balance=0:frame_used_delta=[0-9]+:frame_used_bounded=1:live_checks=[1-9][0-9]*:live_refusals_production=0:live_refusals_injected=1:drop_refused_live=0:pte_overwrite_refusals=0:pub_pooled=[1-9][0-9]*:pub_sched_owned=[1-9][0-9]*:pub_row_residual=0:pub_unowned=0:classifier_sched_owned=1:classifier_row_residual=1:classifier_unowned=1:classifier_not_pooled=1:sched_publications=[1-9][0-9]*:sched_pm_held_production=0:sched_pm_held_injected=1:reconciliation_diff=-?[0-9]+:reconciliation_skew_bound=[0-9]+:balance=0\\]$'";
+    let kstack_quiesce_leak_pattern = "KSTACK_QUIESCE_LEAK_PATTERN='\\[KSTACK_QUIESCE_LEAK:baseline_outstanding=[0-9]+:outstanding=[0-9]+:leaked=0\\]'";
 
     let x86 = source(scripts, "docker/qemu/run-x86-boot-tests.sh");
     for pin in [
@@ -3887,6 +4063,8 @@ fn validate_kstack_gate_script_pins(
         "grep -qF \"$CREATION_LOCK_ORDER_INJECTED_LITERAL\"",
         "grep -h -F -c \"$CREATION_LOCK_ORDER_INJECTED_LITERAL\"",
         "grep -h -F -c \"$CREATION_LOCK_ORDER_VIOLATION_LITERAL\"",
+        "grep -qE \"$KSTACK_QUIESCE_LEAK_PATTERN\"",
+        "grep -h -E -c \"$KSTACK_QUIESCE_LEAK_PATTERN\"",
         injected,
         violation,
     ] {
@@ -3900,6 +4078,18 @@ fn validate_kstack_gate_script_pins(
         &mut failures,
         "run-x86-boot-tests.sh kernel-stack owner pattern changed",
         x86.matches(x86_owner_pattern).count() == 1,
+    );
+    check(
+        &mut failures,
+        "run-x86-boot-tests.sh kernel-stack quiesce leak pattern changed",
+        x86.matches(kstack_quiesce_leak_pattern).count() == 1,
+    );
+    check(
+        &mut failures,
+        "run-x86-boot-tests.sh lost strict quiesce leak exact-count check",
+        x86.contains(
+            "test \"$(grep -h -E -c \"$KSTACK_QUIESCE_LEAK_PATTERN\" \\\n        \"$OUTPUT_DIR\"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')\" -eq 1",
+        ),
     );
     let exec_detach = x86
         .lines()
@@ -7308,9 +7498,10 @@ fn kernel_stack_gate_validator_rejects_a_deleted_pin() {
 /// The registration ratchet for the blocking-family censuses. A validator that
 /// is defined but never invoked, or an anchor table that has been emptied, is a
 /// ratchet in name only: the mutations it is supposed to catch pass silently.
-/// Deleting any of these four `record(...)` calls from
-/// `v3_structural_closures_are_exact`, or emptying either new anchor table,
-/// reddens this test — which is what makes those delete-mutations detectable.
+/// Deleting any of these six `record(...)` calls from
+/// `v3_structural_closures_are_exact`, or emptying any of the counted anchor
+/// tables, reddens this test — which is what makes those delete-mutations
+/// detectable.
 #[test]
 fn blocking_family_ratchets_are_registered_and_nonvacuous() {
     let suite = repo_text("tests/teardown_structure.rs");
@@ -7321,6 +7512,8 @@ fn blocking_family_ratchets_are_registered_and_nonvacuous() {
         "validate_blocked_state_publications",
         "validate_blocked_state_publication_family",
         "validate_opaque_thread_state_stores",
+        "validate_thread_state_constructions",
+        "validate_thread_state_aliases",
     ] {
         assert_eq!(
             call_offsets(body, &mask, validator).len(),
@@ -7331,6 +7524,19 @@ fn blocking_family_ratchets_are_registered_and_nonvacuous() {
     assert!(!BLOCKING_PRIMITIVES.is_empty());
     assert!(!BLOCKED_STATE_PUBLICATIONS.is_empty());
     assert!(!OPAQUE_THREAD_STATE_STORES.is_empty());
+    assert!(!THREAD_STATE_CONSTRUCTIONS.is_empty());
+
+    // Census D's table is empty *by design* — emptiness is the invariant it
+    // holds, so a row count cannot stand in for non-vacuity. A positive control
+    // does: the census must actually see a renaming when one exists, and the
+    // validator must fail on it. Deleting the alias census reddens this.
+    let aliased = with_synthetic_source(
+        &[],
+        "kernel/src/task/synthetic_alias_control.rs",
+        "use crate::task::thread::ThreadState as TS;\npub fn park(t: &mut Thread) { t.state = TS::Blocked; }",
+    );
+    assert!(!census(&aliased, thread_state_alias_offsets).is_empty());
+    assert!(validate_thread_state_aliases(&aliased).is_err());
 }
 
 /// The visibility widening, proven by contrast rather than asserted. The census
@@ -7406,6 +7612,16 @@ fn v3_structural_closures_are_exact() {
         &mut failures,
         "opaque thread-state stores changed",
         validate_opaque_thread_state_stores(&sources),
+    );
+    record(
+        &mut failures,
+        "thread-state constructions changed",
+        validate_thread_state_constructions(&sources),
+    );
+    record(
+        &mut failures,
+        "ThreadState import aliases changed",
+        validate_thread_state_aliases(&sources),
     );
     record(
         &mut failures,
@@ -9058,6 +9274,96 @@ fn deliberately_broken_variants_fail_the_ratchet() {
     );
     assert!(validate_blocked_state_publications(&broken_opaque_store).is_ok());
     assert!(validate_opaque_thread_state_stores(&broken_opaque_store).is_err());
+
+    // #650 shape 1: a thread *constructed* already blocked is a publication that
+    // neither census A nor census B can see — the byte before the path is `:`,
+    // and there is no field store. Both controls below are the gap itself, so
+    // census C failing is what closes it rather than duplicating cover.
+    assert!(validate_thread_state_constructions(&sources).is_ok());
+    let blocked_construction = with_synthetic_source(
+        &sources,
+        "kernel/src/task/synthetic_blocked_construction.rs",
+        "pub fn parked() -> Thread { Thread { state: ThreadState::Blocked } }",
+    );
+    assert!(validate_blocked_state_publications(&blocked_construction).is_ok());
+    assert!(validate_opaque_thread_state_stores(&blocked_construction).is_ok());
+    assert!(validate_thread_state_constructions(&blocked_construction).is_err());
+
+    // The fully qualified construction must not escape census C either, for the
+    // same reason the qualified publication must not escape census A.
+    let qualified_construction = with_synthetic_source(
+        &sources,
+        "kernel/src/task/synthetic_qualified_construction.rs",
+        "pub fn parked() -> Thread { Thread { state: crate::task::thread::ThreadState::BlockedOnIO } }",
+    );
+    assert!(validate_thread_state_constructions(&qualified_construction).is_err());
+
+    // The variant lives in the row tag, so flipping an anchored construction in
+    // place — which leaves the row *count* untouched — moves census C too. A
+    // census counting only `Blocked` values would be silent here, and a census
+    // counting `state:` fields without the tag would be silent here as well.
+    let oracle = source(&sources, "kernel/src/task/strand_oracle.rs");
+    assert!(oracle.contains("state: ThreadState::Running"));
+    let flipped_construction = with_replaced_source(
+        &sources,
+        "kernel/src/task/strand_oracle.rs",
+        oracle.replace("state: ThreadState::Running", "state: ThreadState::Blocked"),
+    );
+    assert!(validate_thread_state_constructions(&flipped_construction).is_err());
+
+    // …and census C stays readable: a field *declaration* names the type without
+    // a variant and is not a construction. Reading it as one would put a row on
+    // every struct that has a thread state at all.
+    let state_declaration = with_synthetic_source(
+        &sources,
+        "kernel/src/task/synthetic_state_declaration.rs",
+        "pub struct Probe { pub state: ThreadState }",
+    );
+    assert!(validate_thread_state_constructions(&state_declaration).is_ok());
+
+    // …and the census is scoped to the field named `state`, the same field
+    // census B is scoped to. A different field that merely holds a thread state
+    // — a remembered prior value, a default — publishes nothing about the
+    // thread's own state, and rows on those sites would make census C
+    // unreadable. Dropping the field-name guard reddens this.
+    let other_state_field = with_synthetic_source(
+        &sources,
+        "kernel/src/task/synthetic_other_state_field.rs",
+        "pub fn probe() -> Probe { Probe { previous_state: ThreadState::Blocked } }",
+    );
+    assert!(validate_thread_state_constructions(&other_state_field).is_ok());
+
+    // #650 shape 2: an import alias renames the type out of census A's needle
+    // and out of census B's exclusion at once. Resolving same-file renamings
+    // puts the aliased publication back into census A and the derived family
+    // rule; without the resolution both are silent.
+    let aliased_publication = with_synthetic_source(
+        &sources,
+        "kernel/src/task/synthetic_alias_publication.rs",
+        "use crate::task::thread::ThreadState as TS;\npub fn park_probe(thread: &mut Thread) { thread.state = TS::Blocked; }",
+    );
+    assert!(validate_blocked_state_publications(&aliased_publication).is_err());
+    assert!(validate_blocked_state_publication_family(&aliased_publication).is_err());
+    assert!(validate_opaque_thread_state_stores(&aliased_publication).is_ok());
+
+    // An aliased construction is seen by census C for the same reason.
+    let aliased_construction = with_synthetic_source(
+        &sources,
+        "kernel/src/task/synthetic_alias_construction.rs",
+        "use crate::task::thread::ThreadState as TS;\npub fn parked() -> Thread { Thread { state: TS::Blocked } }",
+    );
+    assert!(validate_thread_state_constructions(&aliased_construction).is_err());
+
+    // …and the renaming itself is censused, which is the part same-file
+    // resolution structurally cannot reach: a renaming re-exported under a new
+    // name and read from a file carrying no `ThreadState` token at all.
+    assert!(validate_thread_state_aliases(&aliased_publication).is_err());
+    let unaliased_publication = with_synthetic_source(
+        &sources,
+        "kernel/src/task/synthetic_unaliased_publication.rs",
+        "pub fn park_probe(thread: &mut Thread) { thread.state = ThreadState::Blocked; }",
+    );
+    assert!(validate_thread_state_aliases(&unaliased_publication).is_ok());
 
     let broken_group_write = with_synthetic_source(
         &sources,
@@ -12868,12 +13174,17 @@ fn validate_production_tombstone_census(
     Ok(())
 }
 
-fn validate_x86_settled_tombstone_census(provider: &str, idle: &str) -> Result<(), ()> {
+fn validate_x86_settled_tombstone_census(
+    provider: &str,
+    idle: &str,
+    allocator: &str,
+) -> Result<(), ()> {
     let body = function_body(provider, "x86_settled_tombstone_census");
     for required in [
         "USERSPACE_TEST_COMPLETE",
         "SETTLE_MS",
         "boot_reclaim_queue_census()",
+        "x86_settled_kstack_leak_census();",
         "[TOMBSTONE_QUIESCE:",
         "TOMBSTONE_RESIDENT.aggregate()",
         "TOMBSTONE_REMOVED.aggregate()",
@@ -12891,6 +13202,61 @@ fn validate_x86_settled_tombstone_census(provider: &str, idle: &str) -> Result<(
         return Err(());
     }
     if !function_body(idle, "idle_loop").contains("x86_settled_tombstone_census();") {
+        return Err(());
+    }
+    let kstack_body = function_body(provider, "x86_settled_kstack_leak_census");
+    for required in [
+        "KSTACK_QUIESCE_LEAK_EMITTED",
+        "kernel_stack_quiesce_baseline_outstanding()",
+        "kernel_stack_pool_counters()",
+        "[KSTACK_QUIESCE_LEAK:",
+        "leaked",
+        "x86 only",
+        "aarch64",
+    ] {
+        if !kstack_body.contains(required) {
+            return Err(());
+        }
+    }
+    // #661 F2 anti-vacuity. `leaked` can only ever be nonzero while the watched
+    // window is open, and the window is exactly the ownership gate's stress
+    // window. If the gate stops opening it, every watch bit stays clear, the
+    // census reads zero for a kernel that never looked, and the gate's literal
+    // `leaked=0` pin passes vacuously — the failure mode a census pinned to a
+    // constant is most exposed to.
+    let gate_body = function_body(provider, "run_x86_kernel_stack_ownership_gate");
+    if !gate_body.contains("kernel_stack_quiesce_start_watch();")
+        || !gate_body.contains("kernel_stack_quiesce_stop_watch();")
+    {
+        return Err(());
+    }
+    if !function_body(allocator, "kernel_stack_quiesce_start_watch")
+        .contains("KSTACK_QUIESCE_WATCH_ACTIVE")
+    {
+        return Err(());
+    }
+    // A leak is the intersection of two facts: the slot is still live, and it was
+    // allocated inside the window. Either half alone is not a leak, so the count
+    // has to read both bitmaps.
+    let leaked_body = function_body(allocator, "kernel_stack_quiesce_leaked_slots");
+    let intersected = leaked_body
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join("")
+        .contains("&watched.load(");
+    if !leaked_body.contains("STACK_BITMAP")
+        || !leaked_body.contains("KSTACK_QUIESCE_WATCH_BITMAP")
+        || !leaked_body.contains("count_ones()")
+        || !intersected
+    {
+        return Err(());
+    }
+    // The watch is only populated and cleared from the allocator's own cohort
+    // hooks; without those it is an empty bitmap that nothing ever sets.
+    if !function_body(allocator, "cohort_note_allocation").contains("quiesce_note_allocation(index)")
+        || !function_body(allocator, "cohort_note_return")
+            .contains("quiesce_note_owned_or_returned(index)")
+    {
         return Err(());
     }
     Ok(())
@@ -12983,7 +13349,11 @@ fn production_boot_and_heartbeat_emit_the_tombstone_census() {
     // The settled x86 sample, its idle-loop driver, and the property that makes
     // it capable of failing: it emits whatever it reads.
     let idle = repo_text("kernel/src/interrupts/context_switch.rs");
-    assert_eq!(validate_x86_settled_tombstone_census(&provider, &idle), Ok(()));
+    let allocator = repo_text("kernel/src/memory/kernel_stack.rs");
+    assert_eq!(
+        validate_x86_settled_tombstone_census(&provider, &idle, &allocator),
+        Ok(())
+    );
 
     let idle_call_dropped = idle.replacen(
         "        crate::tracing::providers::teardown::x86_settled_tombstone_census();\n",
@@ -12992,7 +13362,34 @@ fn production_boot_and_heartbeat_emit_the_tombstone_census() {
     );
     assert_ne!(idle_call_dropped, idle, "idle-loop census mutation anchor");
     assert_eq!(
-        validate_x86_settled_tombstone_census(&provider, &idle_call_dropped),
+        validate_x86_settled_tombstone_census(&provider, &idle_call_dropped, &allocator),
+        Err(())
+    );
+
+    // #661 F2. The two mutations that would leave the quiesce-leak census
+    // structurally present and permanently blind: the gate stops opening the
+    // watched window, and the count stops intersecting the watch with the live
+    // slot bitmap. Both read `leaked=0` on every boot, which is precisely what
+    // the gate pins, so neither can be caught by the gate itself.
+    let watch_never_opened = provider.replacen(
+        "    crate::memory::kernel_stack::kernel_stack_quiesce_start_watch();\n",
+        "",
+        1,
+    );
+    assert_ne!(watch_never_opened, provider, "watch-open mutation anchor");
+    assert_eq!(
+        validate_x86_settled_tombstone_census(&watch_never_opened, &idle, &allocator),
+        Err(())
+    );
+
+    let watch_ignored = allocator.replacen(
+        "(current & watched.load(Ordering::Acquire)).count_ones() as u64",
+        "current.count_ones() as u64",
+        1,
+    );
+    assert_ne!(watch_ignored, allocator, "watch-intersection mutation anchor");
+    assert_eq!(
+        validate_x86_settled_tombstone_census(&provider, &idle, &watch_ignored),
         Err(())
     );
 
@@ -13003,7 +13400,7 @@ fn production_boot_and_heartbeat_emit_the_tombstone_census() {
     );
     assert_ne!(gauge_gated, provider, "gauge-gated census mutation anchor");
     assert_eq!(
-        validate_x86_settled_tombstone_census(&gauge_gated, &idle),
+        validate_x86_settled_tombstone_census(&gauge_gated, &idle, &allocator),
         Err(())
     );
 
