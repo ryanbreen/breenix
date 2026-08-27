@@ -1698,3 +1698,160 @@ fn unschedulable_reclaim_validator_rejects_missing_deferred_reclaim() {
     let mutated = source.replacen(deferred, &mutated_deferred, 1);
     assert!(validate_scheduling_paths_reclaim_unschedulable_cpu_queues(&mutated).is_err());
 }
+
+/// Every loopback enqueue must schedule its own delivery.
+///
+/// Census-shaped on purpose: the check counts the functions in `kernel/src/net/mod.rs`
+/// that push onto `LOOPBACK_QUEUE` and requires every one of them to raise the
+/// softirq that owns delivery. A new enqueue site added later without a kick
+/// changes the census and reddens this, which a named list of today's one site
+/// would not.
+fn validate_loopback_enqueue_owns_its_delivery(source: &str) -> Result<(), String> {
+    let mut pushers = Vec::new();
+    let mut kickers = 0usize;
+    for span in function_spans(source) {
+        let body = normalized_code(&source[span.open..=span.close]);
+        // Skip enclosing scopes that merely contain a pushing function.
+        if !body.contains("queue.push(LoopbackPacket") {
+            continue;
+        }
+        let inner = function_spans(&source[span.open..=span.close])
+            .into_iter()
+            .any(|nested| {
+                normalized_code(&source[span.open..=span.close][nested.open..=nested.close])
+                    .contains("queue.push(LoopbackPacket")
+            });
+        if inner {
+            continue;
+        }
+        pushers.push(span.name.clone());
+        if body.contains("kick_loopback_delivery()") {
+            kickers += 1;
+        }
+    }
+
+    if pushers.is_empty() {
+        return Err("no loopback enqueue site found in kernel/src/net/mod.rs".to_string());
+    }
+    if kickers != pushers.len() {
+        return Err(format!(
+            "{} of {} loopback enqueue sites raise the delivery softirq: {:?}",
+            kickers,
+            pushers.len(),
+            pushers
+        ));
+    }
+
+    let kick = function_body(source, "kick_loopback_delivery")
+        .ok_or_else(|| "kick_loopback_delivery is not defined".to_string())?;
+    if !normalized_code(kick).contains("raise_softirq(SoftirqType::NetRx)") {
+        return Err("kick_loopback_delivery does not raise the NetRx softirq".to_string());
+    }
+
+    let handler = function_body(source, "net_rx_softirq_handler")
+        .ok_or_else(|| "net_rx_softirq_handler is not defined".to_string())?;
+    if !normalized_code(handler).contains("drain_loopback_rounds(MAX_DRAIN_ROUNDS, LoopbackDrainSource::Softirq)")
+    {
+        return Err("the NetRx softirq does not drain the loopback queue".to_string());
+    }
+
+    Ok(())
+}
+
+/// No exit from the loopback drain may leave queued work without an owner.
+///
+/// Census-shaped: it counts the `return` statements in `drain_loopback_rounds`
+/// and requires each one to be preceded, within its own statement group, by the
+/// deferred-TX flush; and it requires every early return that can leave packets
+/// queued to hand them back to the softirq. Adding a new early return reddens
+/// this until that return is given the same discharge.
+fn validate_loopback_drain_exits_own_their_leftovers(source: &str) -> Result<(), String> {
+    let body = function_body(source, "drain_loopback_rounds")
+        .ok_or_else(|| "drain_loopback_rounds is not defined".to_string())?;
+    let code = normalized_code(body);
+
+    let returns = code.matches("return ").count();
+    let flushes = code.matches("tcp::drain_deferred_tx();").count();
+    if returns == 0 {
+        return Err("drain_loopback_rounds has no return statements to audit".to_string());
+    }
+    if flushes < returns {
+        return Err(format!(
+            "drain_loopback_rounds has {returns} returns but only {flushes} deferred-TX flushes"
+        ));
+    }
+    if !code.contains("LoopbackTake::Empty => { tcp::drain_deferred_tx(); return false; }") {
+        return Err("the empty-queue exit does not flush deferred TX".to_string());
+    }
+    if !code.contains("LoopbackTake::Contended => { tcp::drain_deferred_tx(); return rearm_if_work_remains(); }")
+    {
+        return Err("the contended exit does not re-arm delivery".to_string());
+    }
+    if !code.ends_with("rearm_if_work_remains() }") {
+        return Err("the exhausted-budget exit does not re-arm delivery".to_string());
+    }
+
+    let rearm = function_body(source, "rearm_if_work_remains")
+        .ok_or_else(|| "rearm_if_work_remains is not defined".to_string())?;
+    let rearm_code = normalized_code(rearm);
+    if !rearm_code.contains("kick_loopback_delivery()") {
+        return Err("rearm_if_work_remains does not kick delivery".to_string());
+    }
+
+    Ok(())
+}
+
+#[test]
+fn loopback_enqueue_owns_its_delivery() {
+    validate_loopback_enqueue_owns_its_delivery(&repo_text("kernel/src/net/mod.rs"))
+        .expect("every loopback enqueue raises the softirq that delivers it");
+}
+
+#[test]
+fn loopback_enqueue_validator_rejects_a_missing_kick() {
+    let source = repo_text("kernel/src/net/mod.rs");
+    let call = "kick_loopback_delivery();\n        crate::net::loopback_pump::wake_loopback_pump();";
+    assert!(source.contains(call), "fixture mutation target must exist");
+    let mutated = source.replacen(call, "crate::net::loopback_pump::wake_loopback_pump();", 1);
+    assert_ne!(mutated, source, "fixture mutation must apply");
+    assert!(validate_loopback_enqueue_owns_its_delivery(&mutated).is_err());
+}
+
+#[test]
+fn loopback_enqueue_validator_rejects_a_softirq_that_does_not_drain() {
+    let source = repo_text("kernel/src/net/mod.rs");
+    let handler =
+        function_body(&source, "net_rx_softirq_handler").expect("find the NetRx handler fixture");
+    let drain = "let _ = drain_loopback_rounds(MAX_DRAIN_ROUNDS, LoopbackDrainSource::Softirq);";
+    assert!(handler.contains(drain), "fixture mutation target must exist");
+    let mutated_handler = handler.replacen(drain, "", 1);
+    let mutated = source.replacen(handler, &mutated_handler, 1);
+    assert!(validate_loopback_enqueue_owns_its_delivery(&mutated).is_err());
+}
+
+#[test]
+fn loopback_drain_exits_own_their_leftovers() {
+    validate_loopback_drain_exits_own_their_leftovers(&repo_text("kernel/src/net/mod.rs"))
+        .expect("every loopback drain exit flushes deferred TX and re-arms remaining work");
+}
+
+#[test]
+fn loopback_drain_validator_rejects_an_unflushed_empty_exit() {
+    let source = repo_text("kernel/src/net/mod.rs");
+    let body = function_body(&source, "drain_loopback_rounds").expect("find the drain fixture");
+    let arm = "LoopbackTake::Empty => {\n                tcp::drain_deferred_tx();\n                return false;\n            }";
+    assert!(body.contains(arm), "fixture mutation target must exist");
+    let mutated_body = body.replacen(arm, "LoopbackTake::Empty => return false,", 1);
+    let mutated = source.replacen(body, &mutated_body, 1);
+    assert!(validate_loopback_drain_exits_own_their_leftovers(&mutated).is_err());
+}
+
+#[test]
+fn loopback_drain_validator_rejects_a_dropped_rearm() {
+    let source = repo_text("kernel/src/net/mod.rs");
+    let rearm = function_body(&source, "rearm_if_work_remains").expect("find the re-arm fixture");
+    let mutated_rearm = rearm.replacen("kick_loopback_delivery();", "", 1);
+    assert_ne!(mutated_rearm, rearm, "fixture mutation must apply");
+    let mutated = source.replacen(rearm, &mutated_rearm, 1);
+    assert!(validate_loopback_drain_exits_own_their_leftovers(&mutated).is_err());
+}
