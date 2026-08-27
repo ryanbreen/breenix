@@ -282,6 +282,17 @@ const ARP_PENDING_TTL_MS: u64 = 5_000;
 struct LoopbackPacket {
     /// Raw IP packet data
     data: Vec<u8>,
+    /// Monotonic timer tick at which this packet entered the queue.
+    ///
+    /// Delivery latency is the quantity #636 is about, so the queue carries the
+    /// only timestamp from which it can be computed without a test harness.
+    ///
+    /// Ticks, not milliseconds: `crate::time::get_monotonic_time()` returns the
+    /// raw tick counter, and on x86_64 the PIT runs at 200 Hz, so one tick is
+    /// five milliseconds there and one millisecond on aarch64. Residency is
+    /// therefore reported in ticks and converted by the reader, rather than
+    /// carrying a unit this kernel does not actually keep.
+    queued_at_tick: u64,
 }
 
 static LOOPBACK_QUEUE: Mutex<Vec<LoopbackPacket>> = Mutex::new(Vec::new());
@@ -296,6 +307,97 @@ static LOOPBACK_DRAIN_COMPLETED: AtomicU64 = AtomicU64::new(0);
 static LOOPBACK_DROPPED_FULL: AtomicU64 = AtomicU64::new(0);
 static IDLE_LOOPBACK_DRAIN_CALLS: AtomicU64 = AtomicU64::new(0);
 static LOOPBACK_PUMP_REARM_FROM_SCHED: AtomicU64 = AtomicU64::new(0);
+/// Longest observed queue-to-delivery latency of a loopback packet, in ticks.
+static LOOPBACK_MAX_RESIDENCY_TICKS: AtomicU64 = AtomicU64::new(0);
+/// Deliveries whose residency exceeded `LOOPBACK_SLOW_DELIVERY_TICKS`.
+static LOOPBACK_SLOW_DELIVERIES: AtomicU64 = AtomicU64::new(0);
+/// Slow deliveries that have already emitted their census line.
+static LOOPBACK_SLOW_REPORTS: AtomicU64 = AtomicU64::new(0);
+/// Softirq drains that found the queue non-empty on entry.
+static LOOPBACK_SOFTIRQ_DRAINS: AtomicU64 = AtomicU64::new(0);
+/// Enqueues that raised the NetRx softirq to own their own delivery.
+static LOOPBACK_SOFTIRQ_RAISES: AtomicU64 = AtomicU64::new(0);
+/// Residency above which a delivery is reported rather than merely counted.
+///
+/// This is a diagnostic threshold, not a test bound: nothing fails because of
+/// it, it only decides when the census line is emitted.
+const LOOPBACK_SLOW_DELIVERY_TICKS: u64 = 50;
+/// Number of slow deliveries that emit a census line before reporting goes
+/// quiet, so a sustained stall cannot flood the serial line.
+const LOOPBACK_SLOW_REPORT_LIMIT: u64 = 8;
+
+/// Which context performed a drain, for slow-delivery attribution.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LoopbackDrainSource {
+    Pump,
+    Syscall,
+    Idle,
+    Softirq,
+}
+
+impl LoopbackDrainSource {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Pump => "pump",
+            Self::Syscall => "syscall",
+            Self::Idle => "idle",
+            Self::Softirq => "softirq",
+        }
+    }
+}
+
+pub fn loopback_max_residency_ticks() -> u64 {
+    LOOPBACK_MAX_RESIDENCY_TICKS.load(Ordering::Relaxed)
+}
+
+pub fn loopback_softirq_drains() -> u64 {
+    LOOPBACK_SOFTIRQ_DRAINS.load(Ordering::Relaxed)
+}
+
+pub fn loopback_softirq_raises() -> u64 {
+    LOOPBACK_SOFTIRQ_RAISES.load(Ordering::Relaxed)
+}
+
+/// Hand the loopback queue to the NetRx softirq, which owns its delivery.
+///
+/// This is the enqueue's own kick, and the one that does not depend on any
+/// scheduling decision: `irq_exit()` runs pending softirqs on the way out of
+/// the next interrupt whenever the interrupted context was preemptible, so a
+/// queued loopback packet is delivered within a timer tick of being queued
+/// rather than whenever some unrelated thread next happens to drain.
+#[inline]
+pub(crate) fn kick_loopback_delivery() {
+    LOOPBACK_SOFTIRQ_RAISES.fetch_add(1, Ordering::Relaxed);
+    crate::task::softirqd::raise_softirq(SoftirqType::NetRx);
+}
+
+pub fn loopback_slow_deliveries() -> u64 {
+    LOOPBACK_SLOW_DELIVERIES.load(Ordering::Relaxed)
+}
+
+/// Record one packet's queue-to-delivery latency and report the outliers.
+fn note_loopback_residency(queued_at_tick: u64, source: LoopbackDrainSource) {
+    let now_tick = crate::time::get_monotonic_time();
+    let residency_ticks = now_tick.saturating_sub(queued_at_tick);
+
+    LOOPBACK_MAX_RESIDENCY_TICKS.fetch_max(residency_ticks, Ordering::Relaxed);
+    if residency_ticks <= LOOPBACK_SLOW_DELIVERY_TICKS {
+        return;
+    }
+
+    LOOPBACK_SLOW_DELIVERIES.fetch_add(1, Ordering::Relaxed);
+    if LOOPBACK_SLOW_REPORTS.fetch_add(1, Ordering::Relaxed) >= LOOPBACK_SLOW_REPORT_LIMIT {
+        return;
+    }
+
+    crate::serial_println!(
+        "LOOPBACK_SLOW_DELIVERY: residency_ticks={} source={} slow={}",
+        residency_ticks,
+        source.as_str(),
+        LOOPBACK_SLOW_DELIVERIES.load(Ordering::Relaxed),
+    );
+    dump_loopback_state();
+}
 
 struct LoopbackDrainGuard {
     owner: u64,
@@ -495,15 +597,30 @@ fn take_queued_loopback_packets() -> LoopbackTake {
 ///
 /// Returns true when work remains so callers can re-arm without doing
 /// unbounded delivery work in a single pass.
-pub(crate) fn drain_loopback_rounds(max_rounds: usize) -> bool {
+pub(crate) fn drain_loopback_rounds(max_rounds: usize, source: LoopbackDrainSource) -> bool {
     for _ in 0..max_rounds {
         let packets = match take_queued_loopback_packets() {
             LoopbackTake::Packets(packets) => packets,
-            LoopbackTake::Empty => return false,
-            LoopbackTake::Contended => return !loopback_queue_is_empty(),
+            // An empty loopback queue does not mean there is no queued work:
+            // TCP parks segments it could not send during RX processing on the
+            // deferred-TX queue, and this drain is their only owner. Returning
+            // early without flushing left them waiting for the next loopback
+            // packet from somewhere else to carry them out.
+            LoopbackTake::Empty => {
+                tcp::drain_deferred_tx();
+                return false;
+            }
+            // Another context is taking the batch. It will deliver what it took,
+            // but anything queued behind it belongs to nobody once this call
+            // returns, so hand it back to the softirq rather than dropping it.
+            LoopbackTake::Contended => {
+                tcp::drain_deferred_tx();
+                return rearm_if_work_remains();
+            }
         };
 
         for packet in packets {
+            note_loopback_residency(packet.queued_at_tick, source);
             if let Some(parsed_ip) = ipv4::Ipv4Packet::parse(&packet.data) {
                 let src_mac = get_mac_address().unwrap_or([0; 6]);
                 let dummy_frame = ethernet::EthernetFrame {
@@ -519,7 +636,21 @@ pub(crate) fn drain_loopback_rounds(max_rounds: usize) -> bool {
         tcp::drain_deferred_tx();
     }
 
-    !loopback_queue_is_empty()
+    // The round budget is spent. Whatever is still queued has no owner unless
+    // this call names one, so re-raise the softirq that owns loopback delivery.
+    rearm_if_work_remains()
+}
+
+/// Re-raise the delivery softirq when the queue still holds work.
+///
+/// Every path that stops draining with packets still queued goes through here,
+/// so "work remains" and "someone is coming back for it" are the same fact.
+fn rearm_if_work_remains() -> bool {
+    if loopback_queue_is_empty() {
+        return false;
+    }
+    kick_loopback_delivery();
+    true
 }
 
 /// Drain the loopback queue, delivering any pending packets.
@@ -528,13 +659,13 @@ pub(crate) fn drain_loopback_rounds(max_rounds: usize) -> bool {
 /// can enqueue deferred replies (SYN+ACK, ACK) while delivering an earlier
 /// packet, so drain bounded rounds until the local packet chain is quiescent.
 pub fn drain_loopback_queue() {
-    let _ = drain_loopback_rounds(MAX_DRAIN_ROUNDS);
+    let _ = drain_loopback_rounds(MAX_DRAIN_ROUNDS, LoopbackDrainSource::Syscall);
 }
 
 /// Drain loopback delivery from a general thread-context idle backstop.
 pub fn drain_loopback_from_idle() {
     IDLE_LOOPBACK_DRAIN_CALLS.fetch_add(1, Ordering::Relaxed);
-    let _ = drain_loopback_rounds(MAX_DRAIN_ROUNDS);
+    let _ = drain_loopback_rounds(MAX_DRAIN_ROUNDS, LoopbackDrainSource::Idle);
 }
 
 pub fn idle_loopback_drain_calls() -> u64 {
@@ -545,12 +676,16 @@ pub fn idle_loopback_drain_calls() -> u64 {
 pub fn dump_loopback_state() {
     let pump_tid = loopback_pump_tid();
     crate::serial_println!(
-        "loopback: depth={} drain_contended={} drain_take_abandoned={} drain_completed={} dropped_full={} pump_tid={} pump_passes={} pump_rearms={} pump_rearm_from_sched={} pump_wakes={} pump_wake_rejected={} pump_wake_already_awake={} accept_publish_race_recovered={} isr_wakeup_depth_cpu0={} isr_wakeup_buffer_full={} stalled_reclaimed={}",
+        "loopback: depth={} drain_contended={} drain_take_abandoned={} drain_completed={} dropped_full={} max_residency_ticks={} slow_deliveries={} softirq_raises={} softirq_drains={} pump_tid={} pump_passes={} pump_rearms={} pump_rearm_from_sched={} pump_wakes={} pump_wake_rejected={} pump_wake_already_awake={} accept_publish_race_recovered={} isr_wakeup_depth_cpu0={} isr_wakeup_buffer_full={} stalled_reclaimed={}",
         loopback_queue_depth(),
         loopback_drain_contended(),
         loopback_drain_take_abandoned(),
         loopback_drain_completed(),
         loopback_dropped_full(),
+        loopback_max_residency_ticks(),
+        loopback_slow_deliveries(),
+        loopback_softirq_raises(),
+        loopback_softirq_drains(),
         pump_tid,
         loopback_pump_passes(),
         loopback_pump_rearms(),
@@ -619,6 +754,16 @@ fn net_rx_softirq_handler(_softirq: SoftirqType) {
 
         break;
     }
+
+    // Loopback delivery is receive processing too, and this is the context that
+    // owns it: the enqueue raises NetRx, and irq_exit() runs it on the way out
+    // of the next interrupt. Draining here is what makes a queued loopback
+    // packet's delivery scheduled by its own enqueue rather than by whichever
+    // unrelated thread next reaches a syscall drain site.
+    if loopback_queue_has_work() {
+        LOOPBACK_SOFTIRQ_DRAINS.fetch_add(1, Ordering::Relaxed);
+    }
+    let _ = drain_loopback_rounds(MAX_DRAIN_ROUNDS, LoopbackDrainSource::Softirq);
 
     #[cfg(target_arch = "aarch64")]
     if net_pci::is_initialized() {
@@ -1073,7 +1218,10 @@ pub fn send_ipv4(dst_ip: [u8; 4], protocol: u8, payload: &[u8]) -> Result<(), &'
                 false
             };
 
-            queue.push(LoopbackPacket { data: ip_packet });
+            queue.push(LoopbackPacket {
+                data: ip_packet,
+                queued_at_tick: crate::time::get_monotonic_time(),
+            });
             let queue_len = queue.len();
             LOOPBACK_QUEUE_DEPTH.store(queue_len, Ordering::Release);
             drop(queue);
@@ -1084,6 +1232,11 @@ pub fn send_ipv4(dst_ip: [u8; 4], protocol: u8, payload: &[u8]) -> Result<(), &'
             net_warn!("NET: Loopback queue full, dropped oldest packet");
         }
         net_debug!("NET: Loopback packet queued (queue size: {})", queue_len);
+        // Two kicks, deliberately: the softirq is the owner (it runs on the way
+        // out of the next interrupt, needing no scheduling decision at all),
+        // and kloopbackd remains the thread-context backstop for contexts the
+        // softirq cannot reach.
+        kick_loopback_delivery();
         crate::net::loopback_pump::wake_loopback_pump();
 
         return Ok(());

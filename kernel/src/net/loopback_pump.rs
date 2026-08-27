@@ -56,7 +56,10 @@ fn loopback_pump_fn() {
 
     loop {
         LOOPBACK_PUMP_PASSES.fetch_add(1, Ordering::Relaxed);
-        let more = super::drain_loopback_rounds(PUMP_ROUNDS_PER_PASS);
+        let more = super::drain_loopback_rounds(
+            PUMP_ROUNDS_PER_PASS,
+            super::LoopbackDrainSource::Pump,
+        );
         if more {
             LOOPBACK_PUMP_REARMS.fetch_add(1, Ordering::Relaxed);
             scheduler::yield_current();
