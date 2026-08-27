@@ -110,3 +110,7 @@ logs/
 /heartbeat.codex
 /turn*-*.md
 /turn*-artifacts/
+
+# Codex supervision-harness run directories (codex-wf): logs and transcripts,
+# never source. Untracked and ignored by design.
+.codex-runs/

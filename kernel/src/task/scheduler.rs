@@ -608,6 +608,16 @@ pub fn zero_tid_idle_probe() -> Option<(u64, bool)> {
     })
 }
 
+/// Measurement-only snapshot of the scheduler's current online CPU count.
+///
+/// This takes the scheduler lock through `with_scheduler`, so it is for
+/// boot-test accounting only and must not be called from interrupt, syscall,
+/// context-switch or allocator hot paths.
+#[cfg(feature = "boot_tests")]
+pub fn online_cpu_count_snapshot() -> usize {
+    with_scheduler(|scheduler| scheduler.online_cpu_count()).unwrap_or(1)
+}
+
 /// Collect one fixed-size strand census under the scheduler lock.
 ///
 /// The caller owns the array and processes it after this function returns, so

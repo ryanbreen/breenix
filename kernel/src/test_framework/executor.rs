@@ -200,6 +200,8 @@ pub fn run_all_tests() -> u32 {
     crate::task::strand_oracle::start();
     crate::task::ret_zero_pc_oracle::start();
     crate::task::percpu_stack_oracle::start();
+    #[cfg(all(feature = "boot_tests", target_arch = "x86_64"))]
+    let _ = crate::memory::kernel_stack::kernel_stack_quiesce_baseline_outstanding();
 
     // Use serial_println! for test markers (works on both x86_64 and ARM64)
     // log::info!() is silently discarded on ARM64 due to lack of logger backend

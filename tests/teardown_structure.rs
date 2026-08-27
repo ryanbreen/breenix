@@ -13174,7 +13174,11 @@ fn validate_production_tombstone_census(
     Ok(())
 }
 
-fn validate_x86_settled_tombstone_census(provider: &str, idle: &str) -> Result<(), ()> {
+fn validate_x86_settled_tombstone_census(
+    provider: &str,
+    idle: &str,
+    allocator: &str,
+) -> Result<(), ()> {
     let body = function_body(provider, "x86_settled_tombstone_census");
     for required in [
         "USERSPACE_TEST_COMPLETE",
@@ -13213,6 +13217,47 @@ fn validate_x86_settled_tombstone_census(provider: &str, idle: &str) -> Result<(
         if !kstack_body.contains(required) && !provider.contains(required) {
             return Err(());
         }
+    }
+    // #661 F2 anti-vacuity. `leaked` can only ever be nonzero while the watched
+    // window is open, and the window is exactly the ownership gate's stress
+    // window. If the gate stops opening it, every watch bit stays clear, the
+    // census reads zero for a kernel that never looked, and the gate's literal
+    // `leaked=0` pin passes vacuously — the failure mode a census pinned to a
+    // constant is most exposed to.
+    let gate_body = function_body(provider, "run_x86_kernel_stack_ownership_gate");
+    if !gate_body.contains("kernel_stack_quiesce_start_watch();")
+        || !gate_body.contains("kernel_stack_quiesce_stop_watch();")
+    {
+        return Err(());
+    }
+    if !function_body(allocator, "kernel_stack_quiesce_start_watch")
+        .contains("KSTACK_QUIESCE_WATCH_ACTIVE")
+    {
+        return Err(());
+    }
+    // A leak is the intersection of two facts: the slot is still live, and it was
+    // allocated inside the window. Either half alone is not a leak, so the count
+    // has to read both bitmaps.
+    let leaked_body = function_body(allocator, "kernel_stack_quiesce_leaked_slots");
+    let intersected = leaked_body
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join("")
+        .contains("&watched.load(");
+    if !leaked_body.contains("STACK_BITMAP")
+        || !leaked_body.contains("KSTACK_QUIESCE_WATCH_BITMAP")
+        || !leaked_body.contains("count_ones()")
+        || !intersected
+    {
+        return Err(());
+    }
+    // The watch is only populated and cleared from the allocator's own cohort
+    // hooks; without those it is an empty bitmap that nothing ever sets.
+    if !function_body(allocator, "cohort_note_allocation").contains("quiesce_note_allocation(index)")
+        || !function_body(allocator, "cohort_note_return")
+            .contains("quiesce_note_owned_or_returned(index)")
+    {
+        return Err(());
     }
     Ok(())
 }
@@ -13304,7 +13349,11 @@ fn production_boot_and_heartbeat_emit_the_tombstone_census() {
     // The settled x86 sample, its idle-loop driver, and the property that makes
     // it capable of failing: it emits whatever it reads.
     let idle = repo_text("kernel/src/interrupts/context_switch.rs");
-    assert_eq!(validate_x86_settled_tombstone_census(&provider, &idle), Ok(()));
+    let allocator = repo_text("kernel/src/memory/kernel_stack.rs");
+    assert_eq!(
+        validate_x86_settled_tombstone_census(&provider, &idle, &allocator),
+        Ok(())
+    );
 
     let idle_call_dropped = idle.replacen(
         "        crate::tracing::providers::teardown::x86_settled_tombstone_census();\n",
@@ -13313,7 +13362,34 @@ fn production_boot_and_heartbeat_emit_the_tombstone_census() {
     );
     assert_ne!(idle_call_dropped, idle, "idle-loop census mutation anchor");
     assert_eq!(
-        validate_x86_settled_tombstone_census(&provider, &idle_call_dropped),
+        validate_x86_settled_tombstone_census(&provider, &idle_call_dropped, &allocator),
+        Err(())
+    );
+
+    // #661 F2. The two mutations that would leave the quiesce-leak census
+    // structurally present and permanently blind: the gate stops opening the
+    // watched window, and the count stops intersecting the watch with the live
+    // slot bitmap. Both read `leaked=0` on every boot, which is precisely what
+    // the gate pins, so neither can be caught by the gate itself.
+    let watch_never_opened = provider.replacen(
+        "    crate::memory::kernel_stack::kernel_stack_quiesce_start_watch();\n",
+        "",
+        1,
+    );
+    assert_ne!(watch_never_opened, provider, "watch-open mutation anchor");
+    assert_eq!(
+        validate_x86_settled_tombstone_census(&watch_never_opened, &idle, &allocator),
+        Err(())
+    );
+
+    let watch_ignored = allocator.replacen(
+        "(current & watched.load(Ordering::Acquire)).count_ones() as u64",
+        "current.count_ones() as u64",
+        1,
+    );
+    assert_ne!(watch_ignored, allocator, "watch-intersection mutation anchor");
+    assert_eq!(
+        validate_x86_settled_tombstone_census(&provider, &idle, &watch_ignored),
         Err(())
     );
 
@@ -13324,7 +13400,7 @@ fn production_boot_and_heartbeat_emit_the_tombstone_census() {
     );
     assert_ne!(gauge_gated, provider, "gauge-gated census mutation anchor");
     assert_eq!(
-        validate_x86_settled_tombstone_census(&gauge_gated, &idle),
+        validate_x86_settled_tombstone_census(&gauge_gated, &idle, &allocator),
         Err(())
     );
 

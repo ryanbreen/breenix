@@ -198,6 +198,20 @@ pub fn sys_clone(
         }
     };
 
+    // #650 census C rows this as the tree's only production `Blocked` thread
+    // construction, and it is legal rather than a park. The publication interlock
+    // for a new row is `ProcessState::Creating`, not the thread's state:
+    // `Process::new` opens the row `Creating`, `admits_clone` refuses a `Creating`
+    // row and `is_unpublished` reports it, and the row leaves `Creating` only at
+    // the `set_ready()` below. That readying and the matching `Ready` store on this
+    // thread happen under the same process-manager guard that `insert_process`
+    // runs under, with no early return between them, so no observer can ever see
+    // this thread blocked: it is an admission-time initial state, not a wait with
+    // an owed wake. It is therefore deliberately outside the derived
+    // blocked-publication family rule, which reads a blocked publication as a park
+    // and demands a blocking-primitive name that an initial state has no business
+    // carrying. Whether constructions belong under that rule at all is the P9
+    // admission-interlock question.
     let mut child_thread = Thread {
         id: child_thread_id,
         name: alloc::format!("clone-child-{}", child_thread_id),
