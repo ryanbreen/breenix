@@ -64,7 +64,15 @@ extern crate kernel;
 // Re-import commonly used kernel modules for unqualified access
 #[cfg(all(target_arch = "x86_64", feature = "interactive"))]
 use kernel::graphics;
-#[cfg(all(target_arch = "x86_64", any(feature = "boot_tests", feature = "btrt")))]
+// Unqualified `test_framework::` appears in exactly one place: the staged
+// registry dispatch below. Every other reference is fully qualified, so this
+// import's cfg has to match that block exactly or a `btrt`-only build warns on
+// an unused import (it did, before and after this change was scoped).
+#[cfg(all(
+    target_arch = "x86_64",
+    feature = "boot_tests",
+    feature = "x86_staged_registry"
+))]
 use kernel::test_framework;
 #[cfg(all(
     target_arch = "x86_64",
@@ -1048,7 +1056,10 @@ fn kernel_main_continue() -> ! {
     // `[BOOT_TESTS:PASS]` pair that the first Ring 3 syscall prints. Measured on
     // main @ 54aa16a1: the whole serial contained three registry markers, all
     // from that vacuous path.
-    #[cfg(feature = "boot_tests")]
+    // Off by default until the strand below is fixed. Turning the feature on is
+    // how the two blocking defects are reproduced; leaving it off keeps the
+    // shipped x86 boot identical to what it was before this work.
+    #[cfg(all(feature = "boot_tests", feature = "x86_staged_registry"))]
     {
         log::info!("[boot] Running parallel boot tests...");
         #[cfg(feature = "btrt")]

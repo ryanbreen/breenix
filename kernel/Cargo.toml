@@ -42,6 +42,12 @@ resume_pc_oracle_disarm = ["boot_tests"]
 lr_poison_oracle = ["boot_tests"]  # saved-LR custody mutation leg
 percpu_stack_custody_oracle = ["boot_tests"]
 arm_a_609 = ["boot_tests"]  # #609 arm-A placement oracle
+# #533 x86 staged-registry dispatch. OFF by default: the dispatch itself works
+# (SerialBoot + all 70 EarlyBoot tests pass), but the boot thread is stranded
+# when the last EarlyBoot subsystem kthread exits, so PostScheduler and
+# ProcessContext never run and the boot never returns to userspace. See
+# docs/planning/green-program/tracing/X86-533-2026-08-28.md.
+x86_staged_registry = ["boot_tests"]
 btrt = []  # Boot Test Result Table (structured test results)
 kthread_test_only = ["testing"]  # Run only kthread tests and exit
 xhci_linux_harness = []  # Build and use the Linux C-based xHCI harness
