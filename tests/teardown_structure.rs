@@ -1,4 +1,10 @@
 use std::collections::{BTreeMap, BTreeSet};
+#[path = "shared_coreproof/mutation_leg_mask.rs"]
+mod mutation_leg_mask;
+
+/// Sources this ratchet reads that carry a planted mutation leg.
+const MUTATION_LEG_SOURCES: &[&str] = &["kernel/src/task/scheduler.rs", "kernel/src/task/process_task.rs", "kernel/src/syscall/futex.rs"];
+
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -74,7 +80,16 @@ fn source<'a>(sources: &'a [(String, String)], path: &str) -> &'a str {
         .1
 }
 
+/// `raw_code_mask`, with every compiled-out core-proof mutation leg additionally
+/// masked out. See `shared_coreproof/mutation_leg_mask.rs` for why the exemption
+/// exists and exactly how narrow it is.
 fn code_mask(source: &str) -> Vec<bool> {
+    let mut mask = raw_code_mask(source);
+    mutation_leg_mask::apply(source, &mut mask);
+    mask
+}
+
+fn raw_code_mask(source: &str) -> Vec<bool> {
     let bytes = source.as_bytes();
     let mut mask = vec![true; bytes.len()];
     let mut line_comment = false;
@@ -2921,6 +2936,12 @@ const BLOCKING_PRIMITIVES: &[(&str, &str, usize)] = &[
     // departure happen together.
     ("kernel/src/task/scheduler.rs", "impl Scheduler::#[cfg(feature=boot_tests)] fn block_current_departure_gate", 1),
     ("kernel/src/task/scheduler.rs", "#[cfg(feature=boot_tests)] fn block_current_departure_gate_test", 1),
+    // The core-proof harness's departure probe. Same shape as the departure
+    // gate above and registered on the same footing: it plants a queue entry,
+    // calls the real primitive, and restores. It is a family member rather than
+    // a caller — the caller rule exempts the family because the family owns the
+    // departure — and it carries a `block_current` name to say so.
+    ("kernel/src/task/scheduler.rs", "#[cfg(feature=coreproof)] fn block_current_coreproof_probe", 1),
     ("kernel/src/task/scheduler.rs", "impl Scheduler::fn block_current", 1),
     ("kernel/src/task/scheduler.rs", "impl Scheduler::fn block_current_in_syscall", 1),
     ("kernel/src/task/scheduler.rs", "impl Scheduler::fn block_current_inner", 1),
@@ -2967,6 +2988,9 @@ const OPAQUE_THREAD_STATE_STORES: &[(&str, &str, usize)] = &[
     // the polarity-aware cfg predicate correctly reads as production
     // configuration rather than a `test`-cfg fixture.
     ("kernel/src/task/scheduler.rs", "impl Scheduler::#[cfg(feature=boot_tests)] fn block_current_departure_gate", 1),
+    // The core-proof departure probe restores the state it snapshotted, for the
+    // same reason and in the same shape as the gate above.
+    ("kernel/src/task/scheduler.rs", "#[cfg(feature=coreproof)] fn block_current_coreproof_probe", 1),
     ("kernel/src/syscall/random.rs", "impl Xorshift64Star::fn next_u64", 1),
     ("kernel/src/task/scheduler.rs", "#[cfg(all(test,target_arch=x86_64))] mod tests::fn make_thread", 1),
     ("kernel/src/tracing/providers/teardown.rs", "#[cfg(feature=boot_tests)] fn clone_admission_oracle_test::fn test_thread", 1),
@@ -2999,6 +3023,11 @@ const THREAD_STATE_CONSTRUCTIONS: &[(&str, &str, usize)] = &[
     ("kernel/src/process/manager.rs", "impl ProcessManager::#[cfg(target_arch=x86_64)] fn create_main_thread => Ready", 1),
     ("kernel/src/process/manager.rs", "impl ProcessManager::#[cfg(target_arch=x86_64)] fn fork_process_with_context => Ready", 1),
     ("kernel/src/syscall/clone.rs", "fn sys_clone => Blocked", 1),
+    // The core-proof driver's census scratch array, initialised to the same
+    // `Running` placeholder the strand oracle uses below. Neither is a thread
+    // publication: both are array fill values immediately overwritten by
+    // `collect_strand_census`.
+    ("kernel/src/proof/driver_a.rs", "fn strand_census => Running", 1),
     ("kernel/src/task/strand_oracle.rs", "fn sample_once => Running", 1),
     ("kernel/src/task/thread.rs", "impl Thread::#[cfg(target_arch=aarch64)] fn new => Ready", 1),
     ("kernel/src/task/thread.rs", "impl Thread::#[cfg(target_arch=aarch64)] fn new_kernel => Ready", 1),
@@ -14365,4 +14394,82 @@ fn x86_production_profile_gate_ratchet_is_not_vacuous() {
         "serial preservation deleted",
         gate.replacen("cp \"$OUTPUT_DIR\"/serial_*.txt \"$failure_dir/\"", "", 1),
     );
+}
+
+/// ANTI-VACUITY — the `coreproof_mut_*` exemption cannot hide a real regression.
+///
+/// `code_mask` in this file masks out the core-proof harness's compiled-out
+/// mutation legs, so a leg no production build compiles cannot redden a ratchet
+/// that polices what production compiles. An exemption is only safe if it is
+/// exactly as narrow as it claims, so both directions are proven here on
+/// synthetic sources: with the positive attribute the construct is invisible,
+/// and WITHOUT it the identical text is visible again. The second half is the
+/// one that matters — it is the case where a genuine regression is dressed up as
+/// a mutation leg, and it must still fire.
+///
+/// The `#[cfg(not(feature = "coreproof_mut_…"))]` arm guards the production code
+/// itself; masking that would switch the ratchet off rather than narrow it, so
+/// it is checked to be visible too.
+#[test]
+fn the_mutation_leg_exemption_is_exactly_as_narrow_as_it_claims() {
+    let gated = concat!(
+        "fn release(threads: Vec<Box<Thread>>) {\n",
+        "    #[cfg(feature = \"coreproof_mut_masked_lock\")]\n",
+        "    drop(threads);\n",
+        "    #[cfg(not(feature = \"coreproof_mut_masked_lock\"))]\n",
+        "    without_interrupts(|| {\n",
+        "        drop(threads);\n",
+        "    });\n",
+        "}\n",
+    );
+    let gated_mask = code_mask(gated);
+    assert_eq!(
+        count_occurrences(gated, &gated_mask, "drop("),
+        1,
+        "the cfg-gated leg and the production arm are both visible, so a law \
+         counting this construct counts one that never compiles"
+    );
+    assert_eq!(
+        count_occurrences(gated, &gated_mask, "without_interrupts("),
+        1,
+        "the production `#[cfg(not(feature = \"coreproof_mut_…\"))]` arm was \
+         masked out; that switches the ratchet off rather than narrowing it"
+    );
+
+    let ungated = concat!(
+        "fn release(threads: Vec<Box<Thread>>) {\n",
+        "    drop(threads);\n",
+        "    without_interrupts(|| {\n",
+        "        drop(threads);\n",
+        "    });\n",
+        "}\n",
+    );
+    let ungated_mask = code_mask(ungated);
+    assert_eq!(
+        count_occurrences(ungated, &ungated_mask, "drop("),
+        2,
+        "an UNGATED extra drop is invisible: the exemption has grown wider than \
+         the mutation legs and a real regression could now pass"
+    );
+
+    // And the exemption must actually apply to something in the sources this
+    // file reads, or this file's half of it proves nothing.
+    let mut seen = 0usize;
+    for path in MUTATION_LEG_SOURCES {
+        let source = repo_text(path);
+        seen += mutation_leg_mask::mutation_gated_spans(&source, &raw_code_mask(&source)).len();
+    }
+    assert!(
+        seen > 0,
+        "none of this ratchet's sources carries a cfg-gated mutation leg, though \
+         kernel/src/proof/mutations.rs says they should"
+    );
+}
+
+/// Count masked-in occurrences of `needle`, for the exemption proof above.
+fn count_occurrences(source: &str, mask: &[bool], needle: &str) -> usize {
+    source
+        .match_indices(needle)
+        .filter(|(index, _)| mask.get(*index).copied().unwrap_or(false))
+        .count()
 }
