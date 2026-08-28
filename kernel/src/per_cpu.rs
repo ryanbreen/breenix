@@ -28,6 +28,17 @@ use crate::arch_impl::current::constants::{
 static IRQ_ENTER_COUNT: AtomicU64 = AtomicU64::new(0);
 static IRQ_EXIT_COUNT: AtomicU64 = AtomicU64::new(0);
 static MAX_PREEMPT_IMBALANCE: AtomicU64 = AtomicU64::new(0);
+// Fail-closed guard for the preempt bracket (#672). preempt_disable() and
+// preempt_enable() are one protocol: an enable with no matching disable is a
+// protocol violation, not a number to wrap. The x86 HAL decrement is a bare
+// `sub dword ptr gs:[..], 1` on a u32, so before this counter existed an
+// unpaired enable wrapped preempt_count to 0xFFFFFFFF and can_schedule()'s
+// `preempt_count == 0` arms - ordinary timer preemption and yield-driven
+// scheduling - were dead for the rest of that CPU's uptime. The release-build
+// behaviour is now saturate-at-zero plus this counter; debug builds panic on
+// the spot. No logging here: preempt_enable() runs inside spinlock release and
+// on interrupt-return paths.
+static PREEMPT_UNDERFLOW_COUNT: AtomicU64 = AtomicU64::new(0);
 
 /// Per-CPU data structure with cache-line alignment and stable ABI
 /// This structure is accessed from assembly code, so field order and offsets must be stable
@@ -139,7 +150,8 @@ const HARDIRQ_SHIFT: u32 = SOFTIRQ_SHIFT + SOFTIRQ_BITS; // 16
 #[allow(dead_code)]
 const NMI_SHIFT: u32 = HARDIRQ_SHIFT + HARDIRQ_BITS; // 26
 
-#[allow(dead_code)]
+/// Mask of the PREEMPT nesting bits - the only field preempt_disable()/
+/// preempt_enable() move, and the field the underflow guard consults.
 const PREEMPT_MASK: u32 = ((1 << PREEMPT_BITS) - 1) << PREEMPT_SHIFT; // 0x000000FF
 #[allow(dead_code)]
 const SOFTIRQ_MASK: u32 = ((1 << SOFTIRQ_BITS) - 1) << SOFTIRQ_SHIFT; // 0x0000FF00
@@ -772,6 +784,31 @@ pub fn preempt_enable() {
     // Compiler barrier before decrementing preempt count
     compiler_fence(Ordering::Acquire);
 
+    // Fail-closed underflow guard (#672): decrementing PREEMPT bits that are
+    // already zero means some path released a brake it never took. Saturate at
+    // zero and count it rather than wrapping to 0xFFFFFFFF, which would leave
+    // this CPU with clean preemptive scheduling structurally disabled. Debug
+    // builds make it fatal; release builds leave the count truthful and the
+    // violation readable at census time via preempt_underflow_count(). Only the
+    // PREEMPT bits are consulted, matching what this function decrements - the
+    // softirq/hardirq/NMI fields have their own enter/exit wrappers.
+    //
+    // The check and the decrement are not one atomic read-modify-write, and they
+    // do not need to be: preempt_count is per-CPU, the PREEMPT field is moved
+    // only by paired disable/enable calls on this same CPU, and an interrupt
+    // taken in the window moves the HARDIRQ/SOFTIRQ fields and restores whatever
+    // it did to the PREEMPT field before returning. The decrement it guards was
+    // already a non-atomic `sub` on the same per-CPU word.
+    if hal_percpu::X86PerCpu::preempt_count() & PREEMPT_MASK == 0 {
+        PREEMPT_UNDERFLOW_COUNT.fetch_add(1, Ordering::Relaxed);
+        debug_assert!(
+            false,
+            "preempt_enable() underflow: PREEMPT bits already zero (unpaired release)"
+        );
+        compiler_fence(Ordering::Release);
+        return;
+    }
+
     // Use HAL for atomic GS-relative decrement
 
     hal_percpu::X86PerCpu::preempt_enable();
@@ -1132,4 +1169,13 @@ pub fn get_irq_exit_count() -> u64 {
 #[allow(dead_code)]
 pub fn get_max_preempt_imbalance() -> u64 {
     MAX_PREEMPT_IMBALANCE.load(Ordering::Relaxed)
+}
+
+/// Number of preempt_enable() calls refused because the PREEMPT bits were
+/// already zero (#672). Any nonzero value is a bracket protocol violation:
+/// some path released a scheduling brake it never took. Emitted once per boot
+/// as `[PREEMPT_BRACKET_CENSUS:underflow=N]` from kernel_main_continue() and
+/// pinned at zero by docker/qemu/run-x86-prod-profile-boot-test.sh.
+pub fn preempt_underflow_count() -> u64 {
+    PREEMPT_UNDERFLOW_COUNT.load(Ordering::Relaxed)
 }

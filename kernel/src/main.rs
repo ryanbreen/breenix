@@ -1030,6 +1030,34 @@ fn kernel_main_continue() -> ! {
         });
     }
 
+    // Take the boot sequence's scheduling brake.
+    //
+    // This call is UNCONDITIONAL and must stay that way. The matching
+    // preempt_enable() several hundred lines below is unconditional too, and
+    // the two are one protocol: they compile together or not at all. #672 was
+    // the asymmetry - the disable used to sit inside the
+    // `#[cfg(all(feature = "testing", not(feature = "interactive")))]` block
+    // immediately below, so every shipped (zero-feature) boot and every
+    // `interactive` boot decremented a preempt_count that had never been
+    // incremented. The x86 HAL decrement is a bare `sub` on a u32, so the count
+    // wrapped to 0xFFFFFFFF and clean preemptive scheduling stayed off for the
+    // rest of that CPU's uptime. Whatever cfg the release below carries, this
+    // call must carry the identical one; tests/preempt_bracket_structure.rs
+    // pins that symmetry and per_cpu::preempt_enable() now refuses (and counts)
+    // a decrement below zero rather than wrapping.
+    //
+    // preempt_disable() is the brake here, not interrupts::disable(), because
+    // the disk-backed test binaries loaded in the block below need VirtIO block
+    // IRQ completions: interrupts stay hardware-enabled and preempt_count gates
+    // scheduling instead. PRECONDITION 7 further below checks that real
+    // invariant. NOTE: real boot testing shows the timer interrupt can still
+    // switch away from the boot thread during the busy-spin disk-completion
+    // wait in this window (a pre-existing gap between preempt_count and this
+    // kernel's actual can_schedule() logic, which this change neither
+    // introduces nor closes - see the PR that added this comment for the
+    // investigation notes and the recommended follow-up RCA).
+    kernel::per_cpu::preempt_disable();
+
     // RING3_SMOKE: Create userspace process early for CI validation
     // Must be done before int3() which might hang in CI
     //
@@ -1048,22 +1076,10 @@ fn kernel_main_continue() -> ! {
         // re-disabling interrupts here causes those later calls to panic
         // with "DISK LOADING FAILED" - the IRQ can never be serviced).
         //
-        // preempt_disable() is used (not interrupts::disable()) so the boot
-        // thread's scheduling is gated by preempt_count rather than the raw
-        // interrupt flag, keeping IRQs serviceable. This closes the
-        // documented-invariant violation the post-#498-merge review flagged
-        // (PRECONDITION 7 below now checks the real guard, preempt_count,
-        // instead of the interrupt flag) and matches this function's
-        // documented intent that scheduling should not happen until the
-        // deliberate preempt_enable()/interrupts::enable() pair near the end
-        // of this function. NOTE: real boot testing shows the timer
-        // interrupt can still switch away from the boot thread during the
-        // busy-spin disk-completion wait in this window (a pre-existing gap
-        // between preempt_count and this kernel's actual can_schedule()
-        // logic, not something this change introduces or fully closes) -
-        // see the PR that added this comment for full investigation notes
-        // and the recommended follow-up RCA.
-        kernel::per_cpu::preempt_disable();
+        // The scheduling brake for this whole window is the unconditional
+        // preempt_disable() hoisted above this block (see its comment): it is
+        // deliberately outside this cfg so that it pairs with the equally
+        // unconditional preempt_enable() near the end of this function.
         // Disk-backed test binaries require VirtIO block IRQ completions.
         x86_64::instructions::interrupts::enable();
         let elf = userspace_test::get_test_binary("hello_time");
@@ -1827,6 +1843,16 @@ fn kernel_main_continue() -> ! {
     }
 
     log::info!("Disabling interrupts after scheduler test...");
+
+    // Preempt-bracket census (#672). Unconditional, once per boot, on the way
+    // to the executor: a nonzero value means some path called preempt_enable()
+    // without a matching preempt_disable(), which per_cpu::preempt_enable()
+    // now refuses and counts instead of wrapping preempt_count to 0xFFFFFFFF.
+    // Pinned at zero by docker/qemu/run-x86-prod-profile-boot-test.sh.
+    log::info!(
+        "[PREEMPT_BRACKET_CENSUS:underflow={}]",
+        kernel::per_cpu::preempt_underflow_count()
+    );
 
     // Initialize and run the async executor
     log::info!("Starting async executor...");
