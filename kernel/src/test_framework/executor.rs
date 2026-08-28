@@ -136,17 +136,24 @@ fn run_census_widen_oracle_x86_once() {
 /// Returns the number of failed tests at the new stage.
 pub fn advance_to_stage(stage: TestStage) -> u32 {
     let current = current_stage();
-    if stage <= current {
-        // Already at or past this stage
-        return 0;
+    if stage > current {
+        serial_println!("[STAGE:{}:ADVANCE]", stage.name());
+        CURRENT_STAGE.store(stage as u8, Ordering::Release);
+        #[cfg(not(target_arch = "aarch64"))]
+        crate::task::strand_oracle::sample_now();
     }
 
-    serial_println!("[STAGE:{}:ADVANCE]", stage.name());
-    CURRENT_STAGE.store(stage as u8, Ordering::Release);
-    #[cfg(not(target_arch = "aarch64"))]
-    crate::task::strand_oracle::sample_now();
-
-    // Run any tests that were waiting for this stage
+    // Run this stage's tests whether or not the stage counter has already been
+    // pushed past it.
+    //
+    // The counter is not only advanced from here: `advance_stage_marker_only`
+    // jumps it straight to Userspace from the first Ring 3 syscall, and on x86
+    // that syscall races the dispatch - it was observed landing in the middle of
+    // the EarlyBoot cohort. With the old `stage <= current` early return, that
+    // race silently dropped the entire ProcessContext cohort, which is the
+    // failure mode #533 exists to remove. `run_staged_tests` is idempotent
+    // through the TESTS_RUN bitmap and returns silently when nothing is pending,
+    // so running it unconditionally costs an already-complete stage nothing.
     run_staged_tests(stage)
 }
 
@@ -179,6 +186,21 @@ pub fn advance_stage_marker_only(stage: TestStage) {
         crate::task::strand_oracle::sample_now();
         run_census_widen_oracle_x86_once();
         crate::task::strand_oracle::report_x86_once();
+    }
+
+    // Only the completion of the last registered test gets to publish a
+    // verdict.
+    //
+    // This path prints whatever progress happens to stand at the instant of the
+    // first Ring 3 syscall, and on x86 that instant lands in the middle of the
+    // dispatch - a boot was observed printing this verdict while the `system`
+    // subsystem's EarlyBoot thread was still running. Publishing a partial tally
+    // as `[BOOT_TESTS:PASS]` would be the same class of false green as the 0/0
+    // pass below, so an incomplete tally is reported as stage progress and the
+    // dispatch keeps the verdict.
+    if total != 0 && completed != 0 && completed < total {
+        serial_println!("[STAGE:{}:COMPLETE:{}/{}]", stage.name(), completed, total);
+        return;
     }
 
     // A verdict that no test contributed to is not a pass (#533).
@@ -423,6 +445,16 @@ fn dispatch_is_serialized() -> bool {
 
 /// Run tests for a specific stage (and mark them as run)
 fn run_staged_tests(target_stage: TestStage) -> u32 {
+    // Nothing pending at this stage: return without printing. `advance_to_stage`
+    // may be called for a stage that has already run, and a repeat summary line
+    // would be noise in every serial the gates parse.
+    if SUBSYSTEMS
+        .iter()
+        .all(|s| count_stage_filtered_tests(s, target_stage) == 0)
+    {
+        return 0;
+    }
+
     let mut handles: Vec<(SubsystemId, KthreadHandle)> = Vec::new();
     let mut total_failed = 0u32;
 
