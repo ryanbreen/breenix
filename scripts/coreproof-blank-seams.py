@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Blank every `proof_point!` invocation in a tree, preserving line and column count.
+"""Blank every core-proof macro invocation, preserving line and column count.
 
 LEG 3 of the core-proof production-cleanliness ratchet compares the production
 `.text` built with the seams present against the production `.text` built with
@@ -21,7 +21,7 @@ import os
 import re
 import sys
 
-SEAM = re.compile(r"(crate::)?proof_point!\([A-Za-z0-9_]*\);")
+SEAM = re.compile(r"(crate::)?proof_(?:point|cover)!\([A-Za-z0-9_]*\);")
 
 
 def main() -> int:

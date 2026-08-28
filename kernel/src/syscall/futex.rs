@@ -157,6 +157,9 @@ fn futex_wait(uaddr: u64, expected_val: u32, timeout_ptr: u64, _val3: u32) -> Sy
         }
     };
 
+    crate::proof_cover!(FutexSection);
+
+    #[cfg(not(feature = "coreproof_mut_futex_section"))]
     let mut value_matches = false;
 
     // CORE-PROOF MUTATION LEG `coreproof_mut_futex_section` (#584, fixed by PR
@@ -166,13 +169,14 @@ fn futex_wait(uaddr: u64, expected_val: u32, timeout_ptr: u64, _val3: u32) -> Sy
     // check, enqueue and publication one section, which is the unmutated form
     // immediately below. Test profiles only.
     #[cfg(feature = "coreproof_mut_futex_section")]
-    let split_precheck = {
+    let value_matches = {
         let _queues = FUTEX_QUEUES.lock();
         // SAFETY: The address was validated and pre-touched above.
         let current_val = unsafe { core::ptr::read_volatile(uaddr as *const u32) };
-        value_matches = current_val == expected_val;
-        value_matches && !zero_timeout
+        current_val == expected_val
     };
+    #[cfg(feature = "coreproof_mut_futex_section")]
+    let split_precheck = value_matches && !zero_timeout;
 
     let prepare_outcome = {
         let mut queues = FUTEX_QUEUES.lock();

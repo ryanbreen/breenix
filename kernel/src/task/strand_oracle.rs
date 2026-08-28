@@ -22,7 +22,12 @@ static STRANDED_COUNT: AtomicU64 = AtomicU64::new(0);
 pub static RESOLVED_PRODUCTION: AtomicU64 = AtomicU64::new(0);
 pub static RESOLVED_EXERCISED: AtomicU64 = AtomicU64::new(0);
 
-#[cfg(target_arch = "aarch64")]
+// The pending-next mutation deliberately compiles out the only honest caller:
+// a lost handoff was not resolved, so notifying this oracle would be a lie.
+#[cfg(all(
+    target_arch = "aarch64",
+    not(feature = "coreproof_mut_pending_next")
+))]
 pub(crate) fn note_pending_next_resolved(tid: u64) {
     if tid == VICTIM_TID.load(Ordering::Acquire) {
         RESOLVED_EXERCISED.fetch_add(1, Ordering::Relaxed);

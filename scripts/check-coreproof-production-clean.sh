@@ -5,7 +5,7 @@
 #
 # The claim under test is not "the harness is feature-gated" — that is visible in
 # the source and proves nothing about what ships. The claim is that
-# `proof_point!` compiles to LITERALLY NOTHING in a production build, and this
+# `proof_point!` and `proof_cover!` compile to LITERALLY NOTHING in a production build, and this
 # script measures it three ways against a real production-profile ELF:
 #
 #   LEG 1 (symbols): no symbol in the production kernel belongs to the harness.
@@ -214,7 +214,7 @@ echo "LEG 3 .text sha256 with seams:    $WITH_SEAMS"
 echo "LEG 3 .text sha256 seams blanked: $WITHOUT_SEAMS"
 if [ "$WITH_SEAMS" != "$WITHOUT_SEAMS" ]; then
     echo "CORE-PROOF PRODUCTION RATCHET: FAILED"
-    echo "The seams changed the production .text. proof_point! is not expanding to nothing."
+    echo "The seams changed the production .text. a core-proof macro is not expanding to nothing."
     exit 1
 fi
 

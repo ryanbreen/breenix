@@ -1191,6 +1191,7 @@ pub fn reclaim_deferred_process_resources() {
     if BOOT_RECLAIM_TEST_OWNER.load(Ordering::Acquire) != 0 {
         return;
     }
+    crate::proof_cover!(ReclaimBracket);
     // #653: the bracket opens BEFORE the compare-exchange on purpose. The gap
     // between a successful claim and a later disable is itself an abandonment
     // window, and it is the window the strand was taken in.

@@ -35,7 +35,9 @@
 #
 # Usage:
 #   docker/qemu/run-coreproof-gate.sh [--component A] [--seeds N] [--profile max|cortex-a72|both]
-#                                     [--mode pen|adversarial|ambient] [--seed 0xHEX]
+#                                     [--mode pen|adversarial|ambient]
+#                                     [--window post_cohort|overlap] [--disarm]
+#                                     [--require-cov mutation-feature|short-name] [--seed 0xHEX]
 #
 # Defaults follow the 2026-08-18 gate-size directive: 25 boots per profile. More
 # boots is deliberately the wrong lever for this harness — the lever is more
@@ -54,9 +56,15 @@ COMPONENT="A"
 SEEDS=25
 PROFILE="both"
 MODE="pen"
+WINDOW=""
+DISARM=0
+REQUIRE_COV=""
 PINNED_SEED=""
 GATE_TARGET_DIR="$BREENIX_ROOT/target/coreproof-gate"
-OUTPUT_ROOT="/tmp/breenix_coreproof_gate"
+OUTPUT_BASE="/tmp/breenix_coreproof_gate"
+STARTED_AT="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+RUN_STAMP="$(date -u '+%Y%m%dT%H%M%SZ')"
+OUTPUT_ROOT="$OUTPUT_BASE/${RUN_STAMP}_$$"
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -64,12 +72,48 @@ while [ $# -gt 0 ]; do
         --seeds) SEEDS="$2"; shift 2 ;;
         --profile) PROFILE="$2"; shift 2 ;;
         --mode) MODE="$2"; shift 2 ;;
+        --window) WINDOW="$2"; shift 2 ;;
+        --disarm) DISARM=1; shift ;;
+        --require-cov) REQUIRE_COV="$2"; shift 2 ;;
         --seed) PINNED_SEED="$2"; shift 2 ;;
         --features) EXTRA_FEATURES="$2"; shift 2 ;;
         *) echo "unknown argument: $1" >&2; exit 2 ;;
     esac
 done
 EXTRA_FEATURES="${EXTRA_FEATURES:-}"
+
+case "$MODE" in
+    pen|adversarial|ambient) ;;
+    *) echo "unknown mode: $MODE" >&2; exit 2 ;;
+esac
+
+if [ -z "$WINDOW" ]; then
+    if [ "$MODE" = "ambient" ]; then
+        WINDOW="overlap"
+    else
+        WINDOW="post_cohort"
+    fi
+fi
+case "$WINDOW" in
+    post_cohort|overlap) ;;
+    *) echo "unknown window: $WINDOW" >&2; exit 2 ;;
+esac
+
+REQUIRE_COV_SHORT="${REQUIRE_COV#coreproof_mut_}"
+if [ -n "$REQUIRE_COV" ] && [ -z "$REQUIRE_COV_SHORT" ]; then
+    echo "invalid coverage name: $REQUIRE_COV" >&2
+    exit 2
+fi
+if [ -n "$REQUIRE_COV_SHORT" ]; then
+    case "$REQUIRE_COV_SHORT" in
+        *[!a-z0-9_]*) echo "invalid coverage name: $REQUIRE_COV" >&2; exit 2 ;;
+    esac
+    if ! grep -qE "^coreproof_mut_${REQUIRE_COV_SHORT}[[:space:]]*=" \
+        "$BREENIX_ROOT/kernel/Cargo.toml"; then
+        echo "unknown mutation coverage name: $REQUIRE_COV" >&2
+        exit 2
+    fi
+fi
 
 case "$PROFILE" in
     max) PROFILES=(max) ;;
@@ -92,6 +136,7 @@ report_gate_failure() {
     echo ""
     echo "ARM64 CORE-PROOF GATE: FAILED"
     echo "  at line $line: $command (exit $status)"
+    echo "  started=$STARTED_AT ended=$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
     if [ -n "$CURRENT_SERIAL" ] && [ -f "$CURRENT_SERIAL" ]; then
         echo "  serial: $CURRENT_SERIAL"
         echo "  --- last 30 lines ---"
@@ -132,6 +177,8 @@ fi
 # boot. Passing it only to QEMU would leave every run in the default pen while
 # the verdict line claimed otherwise.
 BUILD_ENV+=("BREENIX_COREPROOF_MODE=$MODE")
+BUILD_ENV+=("BREENIX_COREPROOF_WINDOW=$WINDOW")
+BUILD_ENV+=("BREENIX_COREPROOF_DISARM=$DISARM")
 ( cd "$BREENIX_ROOT" && "${BUILD_ENV[@]}" cargo build --release \
     --features "$FEATURES" \
     --target aarch64-breenix-kernel.json \
@@ -145,8 +192,8 @@ KERNEL="$GATE_TARGET_DIR/aarch64-breenix-kernel/release/kernel-aarch64"
 EXT2_DISK="$BREENIX_ROOT/target/ext2-aarch64.img"
 test -f "$EXT2_DISK"
 
-rm -rf "$OUTPUT_ROOT"
 mkdir -p "$OUTPUT_ROOT"
+echo "Serial output root: $OUTPUT_ROOT"
 
 TOTAL_BOOTS=0
 TOTAL_VIOLATIONS=0
@@ -156,7 +203,7 @@ boot_once() {
     local profile="$1"
     local index="$2"
     local dir="$OUTPUT_ROOT/${profile}_${index}"
-    rm -rf "$dir"; mkdir -p "$dir"
+    mkdir -p "$dir"
     CURRENT_SERIAL="$dir/serial.txt"
     local ext2="$dir/ext2-writable.img"
     cp "$EXT2_DISK" "$ext2"
@@ -196,6 +243,49 @@ adjudicate() {
     local serial="$1"
     local label="$2"
 
+    # Read and report the harness's own evidence BEFORE any ordinary boot
+    # verdict can return. A boot-test failure and a core-proof catch can coexist;
+    # the former must still fail the boot, but it must not erase the latter from
+    # this invocation's counts (round 1's M1 evidence did exactly that).
+    local violations run seed declared visited iters cov_field cov_value cov_failure
+    violations="$(grep -acF "$VIOLATION_PREFIX" "$serial" 2>/dev/null || true)"
+    violations="${violations:-0}"
+    run="$(grep -aF "$RUN_PREFIX" "$serial" 2>/dev/null | tail -1 || true)"
+    iters="$(echo "$run" | grep -oE 'iters=[0-9]+' | head -1 | cut -d= -f2 || true)"
+    cov_value=""
+    cov_failure=0
+    if [ -n "$REQUIRE_COV_SHORT" ]; then
+        cov_field="$(echo "$run" | sed -n 's/.*:cov=\([^]]*\)\].*/\1/p')"
+        cov_value="$(echo "$cov_field" | tr ',' '\n' \
+            | awk -F= -v required="$REQUIRE_COV_SHORT" '$1 == required { print $2; exit }')"
+        case "$cov_value" in
+            "")
+                echo "  $label: RUN record has no cov=$REQUIRE_COV_SHORT entry"
+                cov_failure=1
+                ;;
+            *[!0-9]*)
+                echo "  $label: RUN record has malformed cov=$REQUIRE_COV_SHORT=$cov_value"
+                cov_failure=1
+                ;;
+            0)
+                echo "  $label: mutation window is vacuous — cov=$REQUIRE_COV_SHORT=0"
+                cov_failure=1
+                ;;
+        esac
+    fi
+    TOTAL_VIOLATIONS=$((TOTAL_VIOLATIONS + violations))
+    if [ -n "$iters" ]; then
+        TOTAL_ITERS=$((TOTAL_ITERS + iters))
+    fi
+    if [ -n "$REQUIRE_COV_SHORT" ]; then
+        echo "  $label: harness violations=$violations iters=${iters:-0} cov=$REQUIRE_COV_SHORT=${cov_value:-missing}"
+    else
+        echo "  $label: harness violations=$violations iters=${iters:-0}"
+    fi
+    if [ "$violations" -ne 0 ]; then
+        grep -aF "$VIOLATION_PREFIX" "$serial" | sed 's/^/    /'
+    fi
+
     # ---- an unexplained boot failure is never absorbed -------------------
     local fatal
     fatal="$(grep -aiE 'KERNEL PANIC|DATA_ABORT|INSTRUCTION_ABORT|Unhandled sync exception|soft lockup detected' "$serial" 2>/dev/null | tail -1 || true)"
@@ -212,13 +302,7 @@ adjudicate() {
     fi
 
     # ---- condition 1: any violation --------------------------------------
-    local violations
-    violations="$(grep -acF "$VIOLATION_PREFIX" "$serial" 2>/dev/null || true)"
-    violations="${violations:-0}"
     if [ "$violations" -ne 0 ]; then
-        echo "  $label: $violations violation(s)"
-        grep -aF "$VIOLATION_PREFIX" "$serial" | sed 's/^/    /'
-        TOTAL_VIOLATIONS=$((TOTAL_VIOLATIONS + violations))
         return 1
     fi
 
@@ -227,21 +311,25 @@ adjudicate() {
     # iteration and a closing record with the achieved counts, so a run that
     # dies mid-flight still has its seed on the wire. The gate adjudicates the
     # LAST record, which is the closing one.
-    local run
-    run="$(grep -aF "$RUN_PREFIX" "$serial" 2>/dev/null | tail -1 || true)"
     if [ -z "$run" ]; then
         echo "  $label: no RUN record"
         return 1
     fi
-    local seed declared visited iters
     seed="$(echo "$run" | grep -oE 'seed=0x[0-9a-f]+' | head -1 || true)"
     declared="$(echo "$run" | grep -oE 'sites_declared=[0-9]+' | head -1 | cut -d= -f2 || true)"
     visited="$(echo "$run" | grep -oE 'sites_visited=[0-9]+' | head -1 | cut -d= -f2 || true)"
-    iters="$(echo "$run" | grep -oE 'iters=[0-9]+' | head -1 | cut -d= -f2 || true)"
     if [ -z "$seed" ] || [ -z "$declared" ] || [ -z "$visited" ] || [ -z "$iters" ]; then
         echo "  $label: malformed RUN record"
         echo "    $run"
         return 1
+    fi
+
+    # ---- optional mutation-window coverage guard -------------------------
+    if [ -n "$REQUIRE_COV_SHORT" ]; then
+        if [ "$cov_failure" -ne 0 ]; then
+            echo "    $run"
+            return 1
+        fi
     fi
 
     # ---- condition 3: the vacuity guard ----------------------------------
@@ -251,7 +339,6 @@ adjudicate() {
         return 1
     fi
 
-    TOTAL_ITERS=$((TOTAL_ITERS + iters))
     local degraded
     degraded="$(echo "$run" | grep -oE 'degraded=[01]' | head -1 | cut -d= -f2 || true)"
     if [ "${degraded:-0}" != "0" ]; then
@@ -259,17 +346,20 @@ adjudicate() {
         # one. It is surfaced so a degraded run is never read as a penned one.
         echo "  $label: clean but DEGRADED to ambient ($seed iters=$iters sites=$visited/$declared)"
         echo "    $run"
-        TOTAL_ITERS=$((TOTAL_ITERS + iters))
         return 0
     fi
-    echo "  $label: clean ($seed iters=$iters sites=$visited/$declared)"
+    if [ -n "$REQUIRE_COV_SHORT" ]; then
+        echo "  $label: clean ($seed iters=$iters sites=$visited/$declared cov=$REQUIRE_COV_SHORT=$cov_value)"
+    else
+        echo "  $label: clean ($seed iters=$iters sites=$visited/$declared)"
+    fi
     return 0
 }
 
 FAILED_BOOTS=0
 for profile in "${PROFILES[@]}"; do
     echo ""
-    echo "=== profile $profile — $SEEDS boot(s), component $COMPONENT, mode $MODE ==="
+    echo "=== profile $profile — $SEEDS boot(s), component $COMPONENT, mode $MODE, window $WINDOW, disarmed $DISARM ==="
     for index in $(seq 1 "$SEEDS"); do
         boot_once "$profile" "$index"
         TOTAL_BOOTS=$((TOTAL_BOOTS + 1))
@@ -282,7 +372,8 @@ for profile in "${PROFILES[@]}"; do
 done
 
 echo ""
-echo "boots=$TOTAL_BOOTS failed=$FAILED_BOOTS violations=$TOTAL_VIOLATIONS iters_total=$TOTAL_ITERS"
+ENDED_AT="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+echo "boots=$TOTAL_BOOTS failed=$FAILED_BOOTS violations=$TOTAL_VIOLATIONS iters_total=$TOTAL_ITERS started=$STARTED_AT ended=$ENDED_AT"
 if [ "$FAILED_BOOTS" -ne 0 ]; then
     echo "ARM64 CORE-PROOF GATE: FAILED"
     echo "Serials preserved under $OUTPUT_ROOT"

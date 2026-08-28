@@ -5,8 +5,9 @@
 //! `[FUTEX_HANDOFF_ORACLE:...]` and `[PERCPU_STACK_CUSTODY_ORACLE:...]`.
 //!
 //! ```text
-//! [COREPROOF:RUN:v1:comp=A:mut=none:seed=0x...:iters=N:sites_declared=N:sites_visited=N:
-//!  mode=pen:degraded=0:profile=...:smp=N:downgraded=N:violated_predicates=N]
+//! [COREPROOF:RUN:v1:comp=A:mut=none:seed=0x...:dcpu=N:iters=N:sites_declared=N:
+//!  sites_visited=N:mode=pen:window=post_cohort:disarmed=0:degraded=0:profile=...:
+//!  smp=N:downgraded=N:violated_predicates=N:cov=name=N,...]
 //! [COREPROOF:VIOLATION:v1:comp=A:seed=0x...:iter=N:site=...:action=...:ticks=N:
 //!  order=before:acpu=N:pred=...:detail=N]
 //! ```
@@ -32,7 +33,7 @@
 
 use core::sync::atomic::{AtomicU64, Ordering};
 
-use super::quiesce::Mode;
+use super::quiesce::{Mode, Window};
 use super::rng::DrawVector;
 use super::sites;
 use super::stimulus;
@@ -58,24 +59,36 @@ fn profile() -> &'static str {
 }
 
 /// Put the seed on the wire before the first iteration.
-pub fn emit_seed_line(seed: u64, mode: Mode, smp: usize) {
-    emit_run(seed, 0, mode, smp);
+pub fn emit_seed_line(seed: u64, driver_cpu: usize, mode: Mode, window: Window, smp: usize) {
+    emit_run(seed, driver_cpu, 0, mode, window, smp);
 }
 
-pub fn emit_run(seed: u64, iterations: u64, mode: Mode, smp: usize) {
+pub fn emit_run(
+    seed: u64,
+    driver_cpu: usize,
+    iterations: u64,
+    mode: Mode,
+    window: Window,
+    smp: usize,
+) {
+    let coverage = super::coverage::counts();
     crate::serial_println!(
-        "[COREPROOF:RUN:v1:comp=A:mut={}:seed=0x{:016x}:iters={}:sites_declared={}:sites_visited={}:mode={}:degraded={}:profile={}:smp={}:downgraded={}:violated_predicates={}]",
+        "[COREPROOF:RUN:v1:comp=A:mut={}:seed=0x{:016x}:dcpu={}:iters={}:sites_declared={}:sites_visited={}:mode={}:window={}:disarmed={}:degraded={}:profile={}:smp={}:downgraded={}:violated_predicates={}:cov={}]",
         super::mutations::armed_name(),
         seed,
+        driver_cpu,
         iterations,
         sites::DECLARED,
         sites::visited_count(),
         mode.name(),
+        window.name(),
+        u8::from(super::loop_disarmed()),
         u8::from(super::quiesce::degraded()),
         profile(),
         smp,
         stimulus::downgraded_count(),
         violated_predicate_count(),
+        super::coverage::display_counts(&coverage),
     );
 }
 

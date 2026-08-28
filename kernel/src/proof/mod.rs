@@ -30,6 +30,17 @@
 //!    stimulus source through the already-public `timer::arm_timer`, called from
 //!    harness code — never as a seam in a handler.
 //!
+//! ## Two independent confirmation arms
+//!
+//! `BREENIX_COREPROOF_DISARM=1` removes only the PERTURBATION: the loop still
+//! makes the same draws, probes at the same cadence, forms the same pen and runs
+//! the same antagonist workload, but it never calls `arm`, so no seam fires and
+//! `stimulus::apply` cannot run. `Ambient` removes only the PEN: injection stays
+//! live while the full machine runs. Design risk 1 requires both because a
+//! finding that survives a disarmed pen may still be caused by the pen, while a
+//! finding that survives ambient with injection live may still be caused by the
+//! injection.
+//!
 //! ## The fast path
 //!
 //! `seam()` is what every `proof_point!` expands to: mark the site visited (a
@@ -49,6 +60,7 @@
 //! PR. `mutations` carries the register of planted defects the harness is
 //! validated against, and states up front how a miss is to be read.
 
+pub mod coverage;
 mod driver_a;
 pub mod mutations;
 mod quiesce;
@@ -59,12 +71,16 @@ mod stimulus;
 
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, Ordering};
 
-pub use quiesce::Mode;
+pub use quiesce::{Mode, Window};
 pub use rng::{draw, AntagonistOp, DrawVector, Order, Xorshift64Star};
 pub use sites::{SiteClass, SiteId, ALL, DECLARED};
 pub use stimulus::Action;
 
 const DISARMED: u64 = 0;
+
+pub(crate) fn loop_disarmed() -> bool {
+    matches!(option_env!("BREENIX_COREPROOF_DISARM"), Some("1"))
+}
 
 struct ArmedSlot {
     site: AtomicU64,

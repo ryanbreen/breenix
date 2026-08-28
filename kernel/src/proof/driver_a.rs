@@ -41,7 +41,7 @@ use crate::task::scheduler::{
 };
 use crate::task::thread::{ThreadPrivilege, ThreadState};
 
-use super::quiesce::{Controller, Mode};
+use super::quiesce::{Controller, Mode, Window};
 use super::{record, rng, stimulus};
 
 pub const COMPONENT_A: u8 = b'A';
@@ -98,7 +98,40 @@ struct Baseline {
     cpu_identity_split: u64,
     percpu_stack_alien: u64,
     teardown: [u64; 2],
-    liveness: Option<LivenessBaseline>,
+}
+
+struct LivenessMonitor {
+    baseline: Option<LivenessBaseline>,
+    waiting_for_cohort: bool,
+}
+
+impl LivenessMonitor {
+    fn new(window: Window) -> Self {
+        Self {
+            baseline: liveness_baseline(),
+            waiting_for_cohort: window == Window::Overlap && !super::boot_tests_complete(),
+        }
+    }
+
+    /// Keep a rolling baseline while the ordinary boot cohort is active.
+    ///
+    /// Cohort tests deliberately create transient queued and nonprogressing
+    /// threads, so comparing their later census to a snapshot from cohort start
+    /// makes normal boot growth look like a harness finding. Coverage remains
+    /// open during this interval; only the liveness comparison waits. When the
+    /// verdict arrives, freeze the most recent real census and score subsequent
+    /// samples against it without changing the existing strand predicates.
+    fn baseline_for_score(&mut self) -> Option<LivenessBaseline> {
+        if self.waiting_for_cohort {
+            self.baseline = liveness_baseline();
+            if !super::boot_tests_complete() {
+                return None;
+            }
+            self.waiting_for_cohort = false;
+            return None;
+        }
+        self.baseline
+    }
 }
 
 struct Reported(u16);
@@ -147,7 +180,6 @@ fn baseline() -> Baseline {
         percpu_stack_alien: crate::arch_impl::aarch64::percpu::PERCPU_STACK_ALIEN_REFUSALS
             .load(Ordering::Relaxed),
         teardown: teardown_flat_counters(),
-        liveness: liveness_baseline(),
     }
 }
 
@@ -258,10 +290,10 @@ fn score_liveness(
     seed: u64,
     iteration: u64,
     vector: &rng::DrawVector,
-    baseline: Option<LivenessBaseline>,
+    monitor: &mut LivenessMonitor,
     reported: &mut Reported,
 ) {
-    let (Some(baseline), Some(census)) = (baseline, strand_census()) else {
+    let (Some(baseline), Some(census)) = (monitor.baseline_for_score(), strand_census()) else {
         return;
     };
     if census.nonprogress > baseline.nonprogress
@@ -282,14 +314,13 @@ fn score_liveness(
 pub fn run() {
     let seed = rng::root_seed();
     let mode = Mode::selected();
+    let window = Window::selected(mode);
     let online_cpus = scheduler::online_cpu_count_snapshot();
 
-    record::emit_seed_line(seed, mode, online_cpus);
-
-    // The seed is already on the wire, so a boot that dies waiting still names
-    // the run it was going to make.
-    if !wait_for_boot_tests() {
-        record::emit_run(seed, 0, mode, online_cpus);
+    if window == Window::PostCohort && !wait_for_boot_tests() {
+        let driver_cpu = crate::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id() as usize;
+        record::emit_seed_line(seed, driver_cpu, mode, window, online_cpus);
+        record::emit_run(seed, driver_cpu, 0, mode, window, online_cpus);
         return;
     }
 
@@ -299,23 +330,35 @@ pub fn run() {
     // window the run actually covers rather than the boot that preceded it.
     let driver_cpu = crate::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id() as usize;
     let victim_tid = scheduler::current_thread_id().unwrap_or(0);
+    record::emit_seed_line(seed, driver_cpu, mode, window, online_cpus);
     let baseline = baseline();
+    let mut liveness = LivenessMonitor::new(window);
 
-    let controller =
-        Controller::begin(mode, seed, COMPONENT_A, driver_cpu, victim_tid, online_cpus);
+    let controller = Controller::begin(
+        mode,
+        window,
+        seed,
+        COMPONENT_A,
+        driver_cpu,
+        victim_tid,
+        online_cpus,
+    );
 
     let cadence_vector = rng::draw(seed, COMPONENT_A, driver_cpu as u8, u64::MAX);
     let release_cadence = u64::from(cadence_vector.cycles % 64) + 1;
     let started_at = monotonic_now_ns();
     let mut iterations = 0u64;
     let mut reported = Reported(0);
+    super::coverage::open_window();
 
     while iterations < ITERATION_CAP
         && monotonic_now_ns().saturating_sub(started_at) < WALL_CLOCK_BUDGET_NS
     {
         let vector =
             stimulus::materialize(rng::draw(seed, COMPONENT_A, driver_cpu as u8, iterations));
-        super::arm(&vector);
+        if !super::loop_disarmed() {
+            super::arm(&vector);
+        }
         crate::proof_point!(DriverPreCycle);
         let probe = scheduler::block_current_coreproof_probe();
         crate::proof_point!(DriverPostCycle);
@@ -333,15 +376,19 @@ pub fn run() {
         // timescale, not a microsecond one.
         if iterations % CENSUS_CADENCE == 0 {
             score_existing_markers(seed, iterations, &vector, &baseline, &mut reported);
-            score_liveness(seed, iterations, &vector, baseline.liveness, &mut reported);
+            score_liveness(seed, iterations, &vector, &mut liveness, &mut reported);
         }
 
         if iterations % release_cadence == 0 {
             crate::proof_point!(DriverPreQuiesce);
             controller.release_and_reform();
         }
+        if window == Window::Overlap {
+            scheduler::yield_current();
+        }
         iterations = iterations.wrapping_add(1);
     }
+    super::coverage::close_window();
 
     super::disarm();
     // One closing sweep, so a marker that moved after the last cadence tick is
@@ -357,10 +404,10 @@ pub fn run() {
         seed,
         iterations,
         &closing_vector,
-        baseline.liveness,
+        &mut liveness,
         &mut reported,
     );
     crate::proof_point!(DriverPreQuiesce);
     controller.finish();
-    record::emit_run(seed, iterations, mode, online_cpus);
+    record::emit_run(seed, driver_cpu, iterations, mode, window, online_cpus);
 }

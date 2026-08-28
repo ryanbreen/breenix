@@ -87,7 +87,7 @@ pub const REGISTER: &[Mutation] = &[
     Mutation {
         feature: "coreproof_mut_masked_lock",
         issue: "#609",
-        fixed_by: "PR #632",
+        fixed_by: "PR #645",
         site: "kernel/src/task/scheduler.rs::release_reclaimed_threads",
         predicate: "PERCPU_STACK_ALIEN",
     },

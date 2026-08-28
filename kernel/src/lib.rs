@@ -126,6 +126,25 @@ macro_rules! proof_point {
     ($($ignored:tt)*) => {};
 }
 
+/// Count execution of a mutation-hosting region during the measured window.
+///
+/// This has the same two polarities as `proof_point!`: on the AArch64
+/// core-proof profile it reaches the relaxed coverage fast path, and in every
+/// other build it expands to literally nothing, including its argument.
+#[cfg(all(feature = "coreproof", target_arch = "aarch64"))]
+#[macro_export]
+macro_rules! proof_cover {
+    ($site:ident) => {
+        $crate::proof::coverage::note($crate::proof::coverage::MutSite::$site)
+    };
+}
+
+#[cfg(not(all(feature = "coreproof", target_arch = "aarch64")))]
+#[macro_export]
+macro_rules! proof_cover {
+    ($($ignored:tt)*) => {};
+}
+
 // =========================================================================
 // Modules migrated from main.rs for unified crate structure (Phase 2A)
 // These are x86_64-only modules that were previously declared only in main.rs.

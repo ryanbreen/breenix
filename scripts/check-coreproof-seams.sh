@@ -6,7 +6,8 @@
 # The harness's charter carries two permanent exclusions, and this script is the
 # mechanism behind them rather than the comment that promises them:
 #
-#   1. No `proof_point!` inside any Tier-1 file or any interrupt/syscall handler,
+#   1. No `proof_point!` or `proof_cover!` inside any Tier-1 file or any
+#      interrupt/syscall handler,
 #      on either architecture. CLAUDE.md's Tier-1 list is the x86 spelling of the
 #      rule; the AArch64 timer and exception paths are its moral twins and are
 #      prohibited on the same footing.
@@ -76,6 +77,7 @@ PROHIBITED=(
 # the way around it, so both are prohibited in the same places.
 SEAM_PATTERNS=(
     'proof_point!'
+    'proof_cover!'
     'crate::proof::'
     'kernel::proof::'
 )
@@ -118,8 +120,10 @@ scan() {
 }
 
 if [ "$PROVE" -eq 1 ]; then
-    # Anti-vacuity. A scan that cannot go red proves nothing, so plant exactly one
-    # seam in one prohibited file inside a throwaway copy and require a red.
+    # Anti-vacuity. A scan that cannot go red proves nothing, so plant each macro
+    # independently in one prohibited file inside a throwaway copy and require
+    # each scan to go red. Planting both at once would let one working pattern
+    # hide a stale matcher for the other.
     TMP_ROOT="$(mktemp -d)"
     trap 'rm -rf "$TMP_ROOT"' EXIT
     mkdir -p "$TMP_ROOT/kernel/src/syscall"
@@ -127,15 +131,26 @@ if [ "$PROVE" -eq 1 ]; then
         mkdir -p "$TMP_ROOT/$(dirname "$relative")"
         cp "$BREENIX_ROOT/$relative" "$TMP_ROOT/$relative"
     done
-    printf '\n// planted by --prove\nfn _coreproof_prove_seam() { proof_point!(BlockEntry); }\n' \
+    cp "$BREENIX_ROOT/kernel/src/syscall/handler.rs" \
+        "$TMP_ROOT/kernel/src/syscall/handler.rs"
+    printf '\n// planted by --prove\nfn _coreproof_prove_point() { proof_point!(BlockEntry); }\n' \
         >> "$TMP_ROOT/kernel/src/syscall/handler.rs"
-
     if scan "$TMP_ROOT" >/dev/null 2>&1; then
         echo "CORE-PROOF SEAM RATCHET ANTI-VACUITY: FAILED"
-        echo "A seam planted in kernel/src/syscall/handler.rs did not redden the scan."
+        echo "A proof_point! planted in kernel/src/syscall/handler.rs did not redden the scan."
         exit 1
     fi
-    echo "CORE-PROOF SEAM RATCHET ANTI-VACUITY: PASSED (planted seam reddens the scan)"
+
+    cp "$BREENIX_ROOT/kernel/src/syscall/handler.rs" \
+        "$TMP_ROOT/kernel/src/syscall/handler.rs"
+    printf '\n// planted by --prove\nfn _coreproof_prove_cover() { proof_cover!(BlockDeparture); }\n' \
+        >> "$TMP_ROOT/kernel/src/syscall/handler.rs"
+    if scan "$TMP_ROOT" >/dev/null 2>&1; then
+        echo "CORE-PROOF SEAM RATCHET ANTI-VACUITY: FAILED"
+        echo "A proof_cover! planted in kernel/src/syscall/handler.rs did not redden the scan."
+        exit 1
+    fi
+    echo "CORE-PROOF SEAM RATCHET ANTI-VACUITY: PASSED (both planted macro patterns redden the scan)"
     exit 0
 fi
 

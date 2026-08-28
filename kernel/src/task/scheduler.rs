@@ -2115,6 +2115,7 @@ impl Scheduler {
         let Some(tid) = self.cpu_state[cpu].pending_next else {
             return;
         };
+        crate::proof_cover!(PendingNext);
 
         // CORE-PROOF MUTATION LEG `coreproof_mut_pending_next` (#589, fixed by
         // PR #614): the incoming handoff is CONSUMED without being resolved.
@@ -2173,6 +2174,61 @@ impl Scheduler {
             #[cfg(feature = "boot_tests")]
             crate::task::strand_oracle::note_pending_next_resolved(tid);
         }
+    }
+
+    /// Stage the recoverable handoff state consumed by
+    /// `resolve_pending_next_locked` and drive the real resolver.
+    ///
+    /// Normal scheduling commits `pending_next` before another scheduler entry,
+    /// so merely calling `schedule_from_kernel` cannot exercise the recovery
+    /// guard. The core-proof churn peer supplies a newly queued, CPU-affine
+    /// kthread. Under this existing scheduler lock, the probe removes that
+    /// thread from its queue, marks it selected, and makes `pending_next` its
+    /// sole reachability source — the state the null-scheduler fallback leaves.
+    /// The production resolver restores it to Ready and requeues it. The M4
+    /// mutation consumes the slot and does neither, reproducing the loseable
+    /// handoff rather than merely incrementing a counter near it.
+    #[cfg(all(target_arch = "aarch64", feature = "coreproof"))]
+    pub(crate) fn exercise_pending_next_coreproof_probe(&mut self, tid: u64) -> bool {
+        let cpu = Self::current_cpu_id();
+        if self.cpu_state[cpu].pending_next.is_some()
+            || self
+                .cpu_state
+                .iter()
+                .any(|state| state.current_thread == Some(tid))
+            || self
+                .cpu_state
+                .iter()
+                .any(|state| state.previous_thread == Some(tid))
+            || crate::arch_impl::aarch64::context_switch::deferred_requeue_contains(tid)
+            || !self
+                .get_thread(tid)
+                .is_some_and(|thread| thread.state == ThreadState::Ready)
+        {
+            return false;
+        }
+
+        let Some((queue_cpu, position)) = self.per_cpu_queues.iter().enumerate().find_map(
+            |(queue_cpu, queue)| {
+                queue
+                    .iter()
+                    .position(|queued_tid| *queued_tid == tid)
+                    .map(|position| (queue_cpu, position))
+            },
+        ) else {
+            return false;
+        };
+        if self.per_cpu_queues[queue_cpu].remove(position) != Some(tid) {
+            return false;
+        }
+
+        let Some(thread) = self.get_thread_mut(tid) else {
+            return false;
+        };
+        thread.set_running();
+        self.cpu_state[cpu].pending_next = Some(tid);
+        self.resolve_pending_next_locked(cpu);
+        true
     }
 
     /// Schedule the next thread, but do NOT add the old thread to the ready queue.
@@ -2724,6 +2780,7 @@ impl Scheduler {
         // the generic block too, rather than a post-condition each caller had to
         // remember.
         crate::proof_point!(BlockBeforeDeparture);
+        crate::proof_cover!(BlockDeparture);
         // CORE-PROOF MUTATION LEG `coreproof_mut_block_departure` (#647, scoped
         // closed by PR #648): the departure is skipped, so a thread that has
         // published `Blocked` still names a ready queue and is dispatchable —
@@ -4311,8 +4368,13 @@ pub fn reclaim_terminated_threads() {
 /// recorder — a bounded handful of instructions per thread.
 #[cfg(target_arch = "aarch64")]
 fn release_reclaimed_threads(reclaimed_threads: alloc::vec::Vec<Box<Thread>>) {
+    #[cfg(feature = "coreproof")]
+    if !reclaimed_threads.is_empty() {
+        crate::proof_cover!(MaskedLock);
+    }
     // CORE-PROOF MUTATION LEG `coreproof_mut_masked_lock` (#609, fixed by PR
-    // #632): the release runs preemptibly again, so a timer interrupt taken
+    // #645; PR #632 made the bitmap lock irq-safe): the release runs
+    // preemptibly again, so a timer interrupt taken
     // part-way through leaves an `ARM64_STACK_BITMAP` holder preemptible and
     // builds its exception frame on whatever stack the reaper is standing on —
     // link 1 of the #609 chain, restored. Test profiles only. Expected

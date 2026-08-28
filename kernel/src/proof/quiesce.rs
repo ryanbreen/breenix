@@ -28,7 +28,7 @@ use core::sync::atomic::{AtomicU64, Ordering};
 
 use crate::task::kthread::KthreadHandle;
 
-
+use super::coverage::{self, MutSite};
 use super::rng::{self, AntagonistOp};
 
 const RELEASED: u64 = 0;
@@ -65,6 +65,31 @@ impl Mode {
     }
 }
 
+/// Which boot interval the measured loop occupies.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Window {
+    PostCohort,
+    Overlap,
+}
+
+impl Window {
+    pub fn selected(mode: Mode) -> Self {
+        match option_env!("BREENIX_COREPROOF_WINDOW") {
+            Some("post_cohort") => Self::PostCohort,
+            Some("overlap") => Self::Overlap,
+            _ if mode == Mode::Ambient => Self::Overlap,
+            _ => Self::PostCohort,
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::PostCohort => "post_cohort",
+            Self::Overlap => "overlap",
+        }
+    }
+}
+
 /// Spin budget for one rendezvous, in iterations of the wait loop.
 ///
 /// Sized to be generous for a rendezvous that normally completes in
@@ -88,6 +113,7 @@ pub struct Controller {
 impl Controller {
     pub fn begin(
         mode: Mode,
+        window: Window,
         root_seed: u64,
         component: u8,
         driver_cpu: usize,
@@ -118,6 +144,7 @@ impl Controller {
                 move || {
                     worker(
                         worker_mode,
+                        window,
                         root_seed,
                         component,
                         cpu,
@@ -138,10 +165,7 @@ impl Controller {
             // The pen never formed. Release whatever did start and run ambient
             // rather than spinning on a CPU that is not coming.
             CONTROL.store(STOPPED, Ordering::Release);
-            return Self {
-                mask: 0,
-                handles,
-            };
+            return Self { mask: 0, handles };
         }
         Self { mask, handles }
     }
@@ -212,7 +236,7 @@ fn adversarial_step(
     iteration: u64,
     victim_tid: u64,
     online_cpus: usize,
-    placement_exercised: &mut bool,
+    state: &mut PeerState,
 ) {
     let vector = rng::draw(root_seed, component, cpu as u8, iteration);
     match vector.antagonist_op {
@@ -220,21 +244,66 @@ fn adversarial_step(
             let _ =
                 crate::task::scheduler::with_scheduler(|scheduler| scheduler.unblock(victim_tid));
         }
-        AntagonistOp::Placement if !*placement_exercised => {
+        AntagonistOp::Placement if !state.placement_exercised => {
             // This wrapper publishes through spawn_on_cpu_for_test, so the
             // placement protocol is exercised without exposing a raw Thread.
             let online = online_cpus.min(crate::arch_impl::aarch64::smp::MAX_CPUS);
             let target = usize::from(vector.antagonist_cpu) % online.max(1);
             let _ =
                 crate::task::kthread::kthread_run_on_cpu_for_test(|| {}, "coreproof-place", target);
-            *placement_exercised = true;
+            state.placement_exercised = true;
         }
         AntagonistOp::Placement => core::hint::spin_loop(),
+        AntagonistOp::KernelSchedule => kernel_schedule(),
+        AntagonistOp::ThreadChurn => {
+            let cadence = u64::from(vector.cycles % THREAD_CHURN_CADENCE_SPAN) + 1;
+            if state.churn_spawned < THREAD_CHURN_CAP && iteration % cadence == 0 {
+                if let Ok(handle) =
+                    crate::task::kthread::kthread_run_on_cpu_for_test(|| {}, "coreproof-churn", cpu)
+                {
+                    state.churn_spawned += 1;
+                    if !state.pending_next_exercised {
+                        state.pending_next_exercised =
+                            crate::task::scheduler::with_scheduler(|scheduler| {
+                                scheduler.exercise_pending_next_coreproof_probe(handle.tid())
+                            })
+                            .unwrap_or(false);
+                    }
+                }
+            }
+        }
+        AntagonistOp::ReclaimDrain => {
+            crate::arch_impl::aarch64::context_switch::run_deferred_reclamation();
+        }
+        AntagonistOp::Steal => {
+            // From a foreign CPU, make the victim eligible if it is blocked and
+            // immediately drive the real local-first/then-steal pick path. If
+            // the victim is still current elsewhere this remains an attempt,
+            // which is exactly the production admission rule under test.
+            let _ =
+                crate::task::scheduler::with_scheduler(|scheduler| scheduler.unblock(victim_tid));
+            kernel_schedule();
+        }
     }
+}
+
+const THREAD_CHURN_CAP: u32 = 32;
+const THREAD_CHURN_CADENCE_SPAN: u32 = 32;
+
+struct PeerState {
+    placement_exercised: bool,
+    churn_spawned: u32,
+    pending_next_exercised: bool,
+}
+
+fn kernel_schedule() {
+    crate::task::scheduler::schedule();
+    coverage::note(MutSite::CpuIdentity);
 }
 
 fn worker(
     mode: Mode,
+    window: Window,
     root_seed: u64,
     component: u8,
     cpu: usize,
@@ -243,7 +312,11 @@ fn worker(
 ) {
     let bit = 1u64 << cpu;
     let mut iteration = 0u64;
-    let mut placement_exercised = false;
+    let mut state = PeerState {
+        placement_exercised: false,
+        churn_spawned: 0,
+        pending_next_exercised: false,
+    };
 
     loop {
         match CONTROL.load(Ordering::Acquire) {
@@ -257,17 +330,23 @@ fn worker(
                         iteration,
                         victim_tid,
                         online_cpus,
-                        &mut placement_exercised,
+                        &mut state,
                     );
                     iteration = iteration.wrapping_add(1);
                 } else {
                     core::hint::spin_loop();
+                }
+                if window == Window::Overlap {
+                    crate::task::scheduler::yield_current();
                 }
             }
             RELEASED => {
                 ACTIVE_CPUS.fetch_and(!bit, Ordering::AcqRel);
                 CLEAR_OBSERVED.fetch_or(bit, Ordering::AcqRel);
                 while CONTROL.load(Ordering::Acquire) == RELEASED {
+                    if window == Window::Overlap {
+                        crate::task::scheduler::yield_current();
+                    }
                     core::hint::spin_loop();
                 }
             }
