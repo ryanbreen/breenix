@@ -42,6 +42,7 @@ use crate::task::scheduler::{
 use crate::task::thread::{ThreadPrivilege, ThreadState};
 
 use super::quiesce::{Controller, Mode, Window};
+use super::record::Phase;
 use super::{record, rng, stimulus};
 
 pub const COMPONENT_A: u8 = b'A';
@@ -317,10 +318,28 @@ pub fn run() {
     let window = Window::selected(mode);
     let online_cpus = scheduler::online_cpu_count_snapshot();
 
+    // The seed goes on the wire BEFORE the cohort wait, and therefore before
+    // anything in this boot that can die, so a run that never reaches its
+    // window still names the run it was going to make. That is design 4.1's
+    // requirement and it survives here rather than being traded away for a
+    // settled `dcpu`.
+    //
+    // `dcpu` in THIS record is provisional. The driver is spawned unpinned and
+    // sleeps through the cohort wait, so it may be resumed on another CPU; the
+    // authoritative draw domain is the one in the settled record emitted after
+    // the wait and in the closing record, which is the one the gate adjudicates.
+    record::emit_seed_line(
+        seed,
+        crate::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id() as usize,
+        mode,
+        window,
+        online_cpus,
+        Phase::Open,
+    );
+
     if window == Window::PostCohort && !wait_for_boot_tests() {
         let driver_cpu = crate::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id() as usize;
-        record::emit_seed_line(seed, driver_cpu, mode, window, online_cpus);
-        record::emit_run(seed, driver_cpu, 0, mode, window, online_cpus);
+        record::emit_run(seed, driver_cpu, 0, mode, window, online_cpus, Phase::Close);
         return;
     }
 
@@ -330,7 +349,7 @@ pub fn run() {
     // window the run actually covers rather than the boot that preceded it.
     let driver_cpu = crate::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id() as usize;
     let victim_tid = scheduler::current_thread_id().unwrap_or(0);
-    record::emit_seed_line(seed, driver_cpu, mode, window, online_cpus);
+    record::emit_seed_line(seed, driver_cpu, mode, window, online_cpus, Phase::Settled);
     let baseline = baseline();
     let mut liveness = LivenessMonitor::new(window);
 
@@ -409,5 +428,13 @@ pub fn run() {
     );
     crate::proof_point!(DriverPreQuiesce);
     controller.finish();
-    record::emit_run(seed, driver_cpu, iterations, mode, window, online_cpus);
+    record::emit_run(
+        seed,
+        driver_cpu,
+        iterations,
+        mode,
+        window,
+        online_cpus,
+        Phase::Close,
+    );
 }

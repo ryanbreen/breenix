@@ -5,16 +5,27 @@
 //! `[FUTEX_HANDOFF_ORACLE:...]` and `[PERCPU_STACK_CUSTODY_ORACLE:...]`.
 //!
 //! ```text
-//! [COREPROOF:RUN:v1:comp=A:mut=none:seed=0x...:dcpu=N:iters=N:sites_declared=N:
+//! [COREPROOF:RUN:v1:comp=A:phase=close:mut=none:seed=0x...:dcpu=N:iters=N:sites_declared=N:
 //!  sites_visited=N:mode=pen:window=post_cohort:disarmed=0:degraded=0:profile=...:
 //!  smp=N:downgraded=N:violated_predicates=N:cov=name=N,...]
 //! [COREPROOF:VIOLATION:v1:comp=A:seed=0x...:iter=N:site=...:action=...:ticks=N:
 //!  order=before:acpu=N:pred=...:detail=N]
 //! ```
 //!
-//! Two RUN records per run, and the first one matters: it is emitted BEFORE the
-//! first iteration so that a boot which dies mid-flight still carries its seed.
-//! The gate adjudicates the last record, which is the closing one.
+//! Up to three RUN records per run, each naming its own `phase`, and the first
+//! one matters: `phase=open` is emitted BEFORE the cohort wait — before anything
+//! in the boot that can die — so a boot which never reaches its window still
+//! carries its seed. Its `dcpu` is PROVISIONAL, because the driver is spawned
+//! unpinned and sleeps through that wait; `phase=settled` repeats the seed with
+//! the authoritative draw domain once the window is about to open, and
+//! `phase=close` carries the achieved counts.
+//!
+//! The phase field is what the gate keys on, in both of its jobs: it waits for
+//! `phase=close` to know the run finished, and it adjudicates that record. It
+//! exists because counting RUN lines cannot tell "the run is over" from "the run
+//! is about to start" — a gate that counted them killed the guest the instant
+//! the settled record appeared and then adjudicated a run of zero iterations as
+//! if that were the result.
 //!
 //! `degraded=1` says a rendezvous in the pen exhausted its budget and the run
 //! fell back to ambient. It is reported rather than hidden: a degraded run is a
@@ -58,9 +69,37 @@ fn profile() -> &'static str {
     }
 }
 
+/// Which of a run's records this is. See the module header.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Phase {
+    /// Before the cohort wait; the seed is on the wire, `dcpu` is provisional.
+    Open,
+    /// The window is about to open; the draw domain is now authoritative.
+    Settled,
+    /// The run is over; every field is final and this is the adjudicated record.
+    Close,
+}
+
+impl Phase {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Open => "open",
+            Self::Settled => "settled",
+            Self::Close => "close",
+        }
+    }
+}
+
 /// Put the seed on the wire before the first iteration.
-pub fn emit_seed_line(seed: u64, driver_cpu: usize, mode: Mode, window: Window, smp: usize) {
-    emit_run(seed, driver_cpu, 0, mode, window, smp);
+pub fn emit_seed_line(
+    seed: u64,
+    driver_cpu: usize,
+    mode: Mode,
+    window: Window,
+    smp: usize,
+    phase: Phase,
+) {
+    emit_run(seed, driver_cpu, 0, mode, window, smp, phase);
 }
 
 pub fn emit_run(
@@ -70,10 +109,12 @@ pub fn emit_run(
     mode: Mode,
     window: Window,
     smp: usize,
+    phase: Phase,
 ) {
     let coverage = super::coverage::counts();
     crate::serial_println!(
-        "[COREPROOF:RUN:v1:comp=A:mut={}:seed=0x{:016x}:dcpu={}:iters={}:sites_declared={}:sites_visited={}:mode={}:window={}:disarmed={}:degraded={}:profile={}:smp={}:downgraded={}:violated_predicates={}:cov={}]",
+        "[COREPROOF:RUN:v1:comp=A:phase={}:mut={}:seed=0x{:016x}:dcpu={}:iters={}:sites_declared={}:sites_visited={}:mode={}:window={}:disarmed={}:degraded={}:profile={}:smp={}:downgraded={}:violated_predicates={}:cov={}]",
+        phase.name(),
         super::mutations::armed_name(),
         seed,
         driver_cpu,

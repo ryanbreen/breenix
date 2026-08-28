@@ -123,6 +123,13 @@ case "$PROFILE" in
 esac
 
 RUN_PREFIX='[COREPROOF:RUN:'
+# The harness names each record's phase. `close` is the run's own statement that
+# it finished, and it is BOTH the signal to stop the guest and the record the
+# gate adjudicates. Counting RUN lines instead would confuse "about to start"
+# with "over": the open and settled records both exist before the first
+# iteration, so a count of two killed the guest at iteration zero and then read
+# that as the result.
+RUN_CLOSE_MARKER=':phase=close:'
 VIOLATION_PREFIX='[COREPROOF:VIOLATION:'
 BOOT_TESTS_PASS_LITERAL='[BOOT_TESTS:PASS]'
 
@@ -225,7 +232,7 @@ boot_once() {
     local waited=0
     while [ "$waited" -lt 38 ]; do
         if [ -f "$CURRENT_SERIAL" ] && grep -qaF "$BOOT_TESTS_PASS_LITERAL" "$CURRENT_SERIAL" 2>/dev/null \
-            && [ "$(grep -acF "$RUN_PREFIX" "$CURRENT_SERIAL" 2>/dev/null || echo 0)" -ge 2 ]; then
+            && grep -qaF "$RUN_CLOSE_MARKER" "$CURRENT_SERIAL" 2>/dev/null; then
             break
         fi
         if ! kill -0 "$QEMU_PID" 2>/dev/null; then
@@ -250,7 +257,14 @@ adjudicate() {
     local violations run seed declared visited iters cov_field cov_value cov_failure
     violations="$(grep -acF "$VIOLATION_PREFIX" "$serial" 2>/dev/null || true)"
     violations="${violations:-0}"
-    run="$(grep -aF "$RUN_PREFIX" "$serial" 2>/dev/null | tail -1 || true)"
+    # Prefer the run's own closing record. Falling back to the last record of any
+    # phase is deliberate: a boot that died mid-flight then still adjudicates the
+    # furthest record it reached, which reports iters=0 and an incomplete site
+    # census and reddens on its own terms rather than as "no RUN record".
+    run="$(grep -aF "$RUN_CLOSE_MARKER" "$serial" 2>/dev/null | tail -1 || true)"
+    if [ -z "$run" ]; then
+        run="$(grep -aF "$RUN_PREFIX" "$serial" 2>/dev/null | tail -1 || true)"
+    fi
     iters="$(echo "$run" | grep -oE 'iters=[0-9]+' | head -1 | cut -d= -f2 || true)"
     cov_value=""
     cov_failure=0
@@ -307,10 +321,10 @@ adjudicate() {
     fi
 
     # ---- condition 2: a well-formed closing run record --------------------
-    # The harness emits an opening record carrying the seed before its first
-    # iteration and a closing record with the achieved counts, so a run that
-    # dies mid-flight still has its seed on the wire. The gate adjudicates the
-    # LAST record, which is the closing one.
+    # The harness emits an opening record carrying the seed before the cohort
+    # wait, a settled record once its draw domain is authoritative, and a closing
+    # record with the achieved counts, so a run that dies mid-flight still has
+    # its seed on the wire. The gate adjudicates the `phase=close` record.
     if [ -z "$run" ]; then
         echo "  $label: no RUN record"
         return 1
