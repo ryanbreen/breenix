@@ -618,6 +618,93 @@ pub fn online_cpu_count_snapshot() -> usize {
     with_scheduler(|scheduler| scheduler.online_cpu_count()).unwrap_or(1)
 }
 
+#[cfg(feature = "coreproof")]
+pub struct DepartureProbe {
+    pub queued_after_block: bool,
+    pub state_is_blocked: bool,
+    pub unblock_outcome: UnblockOutcome,
+    pub membership_changed: bool,
+    pub cardinality_before: usize,
+    pub cardinality_after: usize,
+}
+
+/// Exercise and restore the generic ready-queue departure protocol under one
+/// scheduler-lock acquisition with interrupts masked.
+#[cfg(feature = "coreproof")]
+pub fn coreproof_departure_probe() -> Option<Result<DepartureProbe, &'static str>> {
+    with_scheduler(|scheduler| {
+        let cpu = Scheduler::current_cpu_id();
+        let Some(tid) = scheduler.cpu_state[cpu].current_thread else {
+            return Err("departure probe ran with no current thread");
+        };
+        let Some(thread) = scheduler.get_thread(tid) else {
+            return Err("departure probe found no current thread row");
+        };
+        let restore_state = thread.state;
+        let restore_in_syscall = thread.blocked_in_syscall;
+        if !matches!(restore_state, ThreadState::Running | ThreadState::Ready) {
+            return Err("departure probe current thread was not runnable");
+        }
+        if scheduler
+            .per_cpu_queues
+            .iter()
+            .any(|queue| queue.contains(&tid))
+        {
+            return Err("departure probe current thread already named a ready queue");
+        }
+
+        let cardinality_before = scheduler
+            .per_cpu_queues
+            .iter()
+            .map(VecDeque::len)
+            .sum();
+        scheduler.per_cpu_queues[cpu].push_back(tid);
+        scheduler.block_current();
+
+        let queued_after_block = scheduler
+            .per_cpu_queues
+            .iter()
+            .any(|queue| queue.contains(&tid));
+        let state_is_blocked = scheduler
+            .get_thread(tid)
+            .is_some_and(|thread| thread.state == ThreadState::Blocked);
+
+        // Restore the planted membership and thread fields before exercising
+        // runnable-unblock idempotence. No fallible exit exists after planting.
+        for queue in scheduler.per_cpu_queues.iter_mut() {
+            queue.retain(|queued_tid| *queued_tid != tid);
+        }
+        if let Some(thread) = scheduler.get_thread_mut(tid) {
+            thread.state = restore_state;
+            thread.blocked_in_syscall = restore_in_syscall;
+        }
+
+        let membership_before_unblock = core::array::from_fn::<_, MAX_CPUS, _>(|queue| {
+            scheduler.per_cpu_queues[queue].contains(&tid)
+        });
+        let unblock_outcome = scheduler.unblock(tid);
+        let membership_changed = scheduler
+            .per_cpu_queues
+            .iter()
+            .zip(membership_before_unblock)
+            .any(|(queue, was_member)| queue.contains(&tid) != was_member);
+        let cardinality_after = scheduler
+            .per_cpu_queues
+            .iter()
+            .map(VecDeque::len)
+            .sum();
+
+        Ok(DepartureProbe {
+            queued_after_block,
+            state_is_blocked,
+            unblock_outcome,
+            membership_changed,
+            cardinality_before,
+            cardinality_after,
+        })
+    })
+}
+
 /// Collect one fixed-size strand census under the scheduler lock.
 ///
 /// The caller owns the array and processes it after this function returns, so
@@ -2397,6 +2484,7 @@ impl Scheduler {
                 | ((is_switching_to_idle as u32) << 30)
                 | self.ready_queue_length() as u32,
         );
+        crate::proof_point!(DeferredRequeueClaim);
         Some((old_thread_id, next_thread_id, should_requeue_old))
     }
 
@@ -2585,6 +2673,7 @@ impl Scheduler {
     /// The generic block: charge, publish, depart — in that order, under the
     /// one scheduler-lock acquisition the caller already holds.
     fn block_current_inner(&mut self, in_syscall: bool) {
+        crate::proof_point!(BlockEntry);
         let Some(current_id) = self.cpu_state[Self::current_cpu_id()].current_thread else {
             return;
         };
@@ -2596,6 +2685,7 @@ impl Scheduler {
             current.run_start_ticks = now;
 
             current.state = ThreadState::Blocked;
+            crate::proof_point!(BlockAfterStateStore);
             if in_syscall {
                 current.blocked_in_syscall = true;
             }
@@ -2606,9 +2696,11 @@ impl Scheduler {
         // same defence in depth they document — but it is now unconditional for
         // the generic block too, rather than a post-condition each caller had to
         // remember.
+        crate::proof_point!(BlockBeforeDeparture);
         for q in self.per_cpu_queues.iter_mut() {
             q.retain(|&id| id != current_id);
         }
+        crate::proof_point!(BlockAfterDeparture);
     }
 
     /// Boot-test probe for the departure post-condition of the generic block.
@@ -2686,6 +2778,7 @@ impl Scheduler {
     /// `BlockedOnTimer`, and `BlockedOnIO`. Other blocked states have dedicated
     /// wake paths and are reported as `UnblockOutcome::NotFound` here.
     pub fn unblock(&mut self, thread_id: u64) -> UnblockOutcome {
+        crate::proof_point!(UnblockEntry);
         // Increment the call counter for testing (tracks that unblock was called)
         UNBLOCK_CALL_COUNT.fetch_add(1, Ordering::SeqCst);
 
@@ -2697,6 +2790,7 @@ impl Scheduler {
                 || thread.state == ThreadState::BlockedOnIO
             {
                 thread.set_ready();
+                crate::proof_point!(UnblockAfterSetReady);
                 outcome = UnblockOutcome::Transitioned;
                 WAKE_SITE_UNBLOCK.fetch_add(1, Ordering::Relaxed);
                 record_ready_site(thread_id, READY_SITE_UNBLOCK);
@@ -2740,7 +2834,9 @@ impl Scheduler {
                     && !already_queued
                 {
                     let target = self.find_target_cpu_for_wakeup(thread_id);
+                    crate::proof_point!(UnblockBeforeEnqueue);
                     self.per_cpu_queues[target].push_back(thread_id);
+                    crate::proof_point!(UnblockAfterEnqueue);
                     ENQUEUE_SAME_LOCK_OK.fetch_add(1, Ordering::Relaxed);
                     // CRITICAL: Only log on x86_64 to avoid deadlock on ARM64
                     #[cfg(target_arch = "x86_64")]

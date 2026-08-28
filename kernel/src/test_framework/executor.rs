@@ -242,6 +242,8 @@ pub fn advance_stage_marker_only(stage: TestStage) {
 /// Returns the total number of failed tests.
 pub fn run_all_tests() -> u32 {
     crate::task::strand_oracle::start();
+    #[cfg(feature = "coreproof")]
+    crate::proof::start();
     crate::task::ret_zero_pc_oracle::start();
     crate::task::percpu_stack_oracle::start();
     #[cfg(all(feature = "boot_tests", target_arch = "x86_64"))]
