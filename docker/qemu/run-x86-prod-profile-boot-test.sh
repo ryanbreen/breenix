@@ -40,13 +40,22 @@
 # Therefore the census assertions below are a ZERO-WORKLOAD BASELINE, not a
 # return-to-zero after a teardown. This gate CANNOT prove that x86 production
 # teardown drains, because x86 production has no teardown to drain. What it does
-# prove, and what nothing proved before, is that the census counters are live and
-# at rest in the shipped kernel: any kernel-internal path -- a kthread, a
-# boot-path process row, a page-table root taken and abandoned before userspace
-# ever exists -- that leaked a tombstone or abandoned a root would move these
-# fields off zero and redden this gate. Read the pinned literals as a
-# conservation law over the whole shipped boot, not as evidence about process
-# exit.
+# prove, and what nothing proved before, is that the census counters are AT REST
+# at their own emission point: both censuses are emitted once from
+# kernel/src/main.rs:662-663, inside kernel_main, BEFORE the PRECONDITION block
+# (main.rs:1676-1740), the unconditional preempt_enable() (main.rs:1791),
+# interrupt enable, and executor startup that follow on the way to this gate's
+# steady-state marker (kernel_main_continue, main.rs:1834). Read the pinned
+# literals as a conservation law over boot UP TO that emission point only --
+# any kthread, boot-path process row, or page-table root that leaks a tombstone
+# or is abandoned AFTER main.rs:663, including anywhere in the steady-state
+# liveness window this gate polls afterward, is outside what this gate can see.
+# No run on this branch has ever observed a nonzero census -- the forced-fail
+# leg (VERDICT DISCIPLINE below) mutates the gate's expected pattern, not the
+# kernel's counter state, so "the counters move off zero on a real leak" is an
+# inference from the emitters reading real aggregate() state
+# (tracing/providers/teardown.rs:720,741), not something this gate has
+# measured.
 #
 # DISK LAYOUT
 #
