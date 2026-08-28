@@ -1,0 +1,60 @@
+Architecture:  x86_64
+Kernel binary: /root/breenix/target/x86_64-unknown-none/release/deps/artifact/kernel-781238d2dede9f03/bin/kernel-781238d2dede9f03
+
+Derived layout (from kernel sources, not hardcoded):
+  MAX_CPUS:            16
+  TRACE_BUFFER_SIZE:   1024 events/CPU
+  Per-CPU buffer:      16448 bytes
+  TRACE_BUFFERS total: 263168 bytes
+
+Symbol addresses:
+  TRACE_BUFFERS:        0x1000044cf40
+  TRACE_ENABLED:        0x1000044cf38
+  TRACE_CPU0_WRITE_IDX: 0x1000048d340
+
+Starting qemu-system-x86_64 with gdbstub on port 1245...
+QEMU started (PID: 718664); letting the kernel run 240s to record events...
+Attaching GDB and dumping the trace region...
+The target architecture is set to "auto" (currently "i386:x86-64").
+0x00000100002556d6 in ?? ()
+TRACE_ENABLED = 0x1
+TRACE_CPU0_WRITE_IDX = 28348
+
+=== Trace Memory Dump Complete ===
+
+=== Results ===
+
+Trace buffer dump: 263168 bytes (expected 263168)
+TRACE_ENABLED = 0x1
+TRACE_CPU0_WRITE_IDX = 28348
+OK: TRACE_ENABLED is set
+
+Parsing and validating trace data...
+Layout: TRACE_BUFFER_SIZE=1024, MAX_CPUS=16, stride=16448 bytes, 105 event types known
+
+Parsed 16 CPU buffers:
+  CPU0: 1024 events (write_idx=28348, dropped=27324)
+  CPU1: 0 events (write_idx=0, dropped=0)
+  CPU2: 0 events (write_idx=0, dropped=0)
+  CPU3: 0 events (write_idx=0, dropped=0)
+  CPU4: 0 events (write_idx=0, dropped=0)
+  CPU5: 0 events (write_idx=0, dropped=0)
+  CPU6: 0 events (write_idx=0, dropped=0)
+  CPU7: 0 events (write_idx=0, dropped=0)
+  CPU8: 0 events (write_idx=0, dropped=0)
+  CPU9: 0 events (write_idx=0, dropped=0)
+  CPU10: 0 events (write_idx=0, dropped=0)
+  CPU11: 0 events (write_idx=0, dropped=0)
+  CPU12: 0 events (write_idx=0, dropped=0)
+  CPU13: 0 events (write_idx=0, dropped=0)
+  CPU14: 0 events (write_idx=0, dropped=0)
+  CPU15: 0 events (write_idx=0, dropped=0)
+
+Validation results:
+  OK: 1024 total events across 16 parsed CPU buffers
+  OK: CPU0 recorded 1024 events (write_idx=28348, dropped=27324, wrapped=True)
+  OK: all 3 observed event types decode: TEARDOWN_DEFER_EVENT, TIMER_TICK, WAITPID_WAKE
+  OK: TIMER_TICK events present
+  OK: CPU0 overflow accounting exact (write_idx=28348, dropped=27324, resident=1024)
+  CENSUS: 0 timestamp inversion(s) total (not a failure; see comment)
+TRACING_EVIDENCE:x86_64:PASS
