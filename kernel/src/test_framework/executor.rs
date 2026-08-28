@@ -397,6 +397,30 @@ mod arm_a_609 {
     pub(super) fn report_late() {}
 }
 
+/// Whether this architecture runs one subsystem at a time instead of spawning
+/// the whole cohort in parallel.
+///
+/// aarch64 runs the cohort in parallel and has done so for the life of this
+/// framework. x86 does not, and the reason is measured rather than assumed: with
+/// the cohort spawned in parallel, the very first x86 dispatch deadlocked with
+/// the boot thread inside `kernel_stack::allocate` mapping the second
+/// subsystem's stack while the Memory subsystem's kthread was inside
+/// `heap_large_alloc` — two threads in the frame allocator and the kernel page
+/// tables at once, with the boot thread halted in `kthread_join`. That is the
+/// same #567 family the registry already documents above
+/// `run_x86_loopback_gates` ("any test that schedules in this window currently
+/// poisons the x86 boot").
+///
+/// Serializing does not paper over #567: the four tests that #567 actually
+/// blocks stay on the deferral roster and still announce themselves. It removes
+/// the concurrency the executor itself introduces, so the registry can be
+/// dispatched at all. When #567 is fixed this should go back to parallel and the
+/// roster should empty; both are one edit each.
+#[inline]
+fn dispatch_is_serialized() -> bool {
+    cfg!(not(target_arch = "aarch64"))
+}
+
 /// Run tests for a specific stage (and mark them as run)
 fn run_staged_tests(target_stage: TestStage) -> u32 {
     let mut handles: Vec<(SubsystemId, KthreadHandle)> = Vec::new();
@@ -430,7 +454,7 @@ fn run_staged_tests(target_stage: TestStage) -> u32 {
                     target_stage.name(),
                     test_count
                 );
-                if target_stage == TestStage::SerialBoot {
+                if target_stage == TestStage::SerialBoot || dispatch_is_serialized() {
                     total_failed += join_test_thread(subsystem.id, handle);
                 } else {
                     handles.push((subsystem.id, handle));

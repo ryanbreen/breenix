@@ -1,0 +1,126 @@
+Guard: kernel FP/SIMD instruction check
+  ELF:       /Users/wrb/fun/code/breenix/target/aarch64-breenix-kernel/release/kernel-aarch64
+  objdump:   /Users/wrb/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/aarch64-apple-darwin/bin/llvm-objdump
+  allowlist: /Users/wrb/fun/code/breenix/scripts/kernel-neon-allowlist.txt
+[0;32mPASS:[0m 0 FP/SIMD load/store instructions in kernel .text (allowlisted & suppressed: 0).
+Architecture:  aarch64
+Kernel binary: /Users/wrb/fun/code/breenix/target/aarch64-breenix-kernel/release/kernel-aarch64
+
+Derived layout (from kernel sources, not hardcoded):
+  MAX_CPUS:            16
+  TRACE_BUFFER_SIZE:   1024 events/CPU
+  Per-CPU buffer:      16448 bytes
+  TRACE_BUFFERS total: 263168 bytes
+
+Symbol addresses:
+  TRACE_BUFFERS:        0xffff0000411b36c0
+  TRACE_ENABLED:        0xffff0000411b36a0
+  TRACE_CPU0_WRITE_IDX: 0xffff0000411f3ac0
+
+Starting qemu-system-aarch64 with gdbstub on port 1244...
+QEMU started (PID: 15304); letting the kernel run 20s to record events...
+Attaching GDB and dumping the trace region...
+The target architecture is set to "auto" (currently "aarch64").
+0xffff000040571398 in idle_loop_arm64 ()
+TRACE_ENABLED = 0x1
+TRACE_CPU0_WRITE_IDX = 2395443
+
+=== Trace Memory Dump Complete ===
+[Inferior 1 (process 1) detached]
+
+=== Results ===
+
+Trace buffer dump: 263168 bytes (expected 263168)
+TRACE_ENABLED = 0x1
+TRACE_CPU0_WRITE_IDX = 2395443
+OK: TRACE_ENABLED is set
+
+Parsing and validating trace data...
+Layout: TRACE_BUFFER_SIZE=1024, MAX_CPUS=16, stride=16448 bytes, 100 event types known
+
+Parsed 16 CPU buffers:
+  CPU0: 1024 events (write_idx=2395443, dropped=2394419)
+  CPU1: 1024 events (write_idx=1285603, dropped=1284579)
+  CPU2: 1024 events (write_idx=1341747, dropped=1340723)
+  CPU3: 1024 events (write_idx=1300678, dropped=1299654)
+  CPU4: 0 events (write_idx=0, dropped=0)
+  CPU5: 0 events (write_idx=0, dropped=0)
+  CPU6: 0 events (write_idx=0, dropped=0)
+  CPU7: 0 events (write_idx=0, dropped=0)
+  CPU8: 0 events (write_idx=0, dropped=0)
+  CPU9: 0 events (write_idx=0, dropped=0)
+  CPU10: 0 events (write_idx=0, dropped=0)
+  CPU11: 0 events (write_idx=0, dropped=0)
+  CPU12: 0 events (write_idx=0, dropped=0)
+  CPU13: 0 events (write_idx=0, dropped=0)
+  CPU14: 0 events (write_idx=0, dropped=0)
+  CPU15: 0 events (write_idx=0, dropped=0)
+
+Validation results:
+  OK: 4096 total events across 16 parsed CPU buffers
+  OK: CPU0 recorded 1024 events (write_idx=2395443, dropped=2394419, wrapped=True)
+  OK: all 20 observed event types decode: CTX_DIAG_FLAGS, CTX_DIAG_FRAME_ELR, CTX_DIAG_FRAME_X30, CTX_DIAG_SP, CTX_DIAG_STAGE, CTX_DIAG_THREAD_ELR, CTX_DIAG_THREAD_X30, CTX_DIAG_TID_PAIR, CTX_SWITCH_ENTRY, DEFER_REQUEUE_ELR, DEFER_REQUEUE_FLAGS, DEFER_REQUEUE_SP, DEFER_REQUEUE_STAGE, DEFER_REQUEUE_X30, SCHED_DIAG_FLAGS, SCHED_DIAG_STAGE, SCHED_DIAG_TID_PAIR, SCHED_QUEUE_STATE, SCHED_RESCHED_IPI_RECV, TIMER_TICK
+  OK: TIMER_TICK events present
+  OK: CPU0 overflow accounting exact (write_idx=2395443, dropped=2394419, resident=1024)
+  OK: CPU1 overflow accounting exact (write_idx=1285603, dropped=1284579, resident=1024)
+  OK: CPU2 overflow accounting exact (write_idx=1341747, dropped=1340723, resident=1024)
+  OK: CPU3 overflow accounting exact (write_idx=1300678, dropped=1299654, resident=1024)
+  CENSUS: CPU3 has 1 nested-record timestamp inversion(s) of 1024 events
+  CENSUS: 1 timestamp inversion(s) total (not a failure; see comment)
+
+TRACE_VALIDATION:PASS
+
+Serial output (first 50 lines):
+EOS
+========================================
+  Breenix ARM64 Kernel Starting
+  BUILD_ID: 006a91a4032a4b
+========================================
+
+[CTX596_ORACLE:ARMED:force_eret=0]
+[boot] DIAG_MARKER_XHCI_A
+[boot] DIAG_MARKER_XHCI_B
+[boot] DIAG_MARKER_XHCI_C
+[boot] loader xhci_hcrst_raw=0x0 ecam=0x0
+[boot] Current exception level: EL1
+[boot] MMU already enabled (high-half kernel)
+[boot] Initializing memory management (0x44000000-0x50000000)...
+[boot] Memory management ready
+[boot] Initializing Generic Timer...
+[boot] Timer frequency: 1000000000 Hz (1000 MHz)
+[boot] Initializing PL031 RTC...
+[boot] Current timestamp: 8176000
+[boot] Initializing GIC...
+[gic] GICR probe 0x080a0000: WAKER=0x00000006 <<< VALID
+[gic] GICR base mismatch: loader=0x00000000, using=0x080a0000
+[gic] GICD_CTLR wrote 0x53, readback=0x53
+[gic] GICR_IGROUPR0: wrote 0xFFFFFFFF, readback=0xffffffff
+[gic] EOImode=1 (split EOI/DIR) - non-VMware path
+[gic] ICC_CTLR_EL1: 0x8c00 -> 0x8c02 (EOImode=1)
+[boot] GIC initialized (version 3)
+[boot] Enabling UART interrupts...
+[boot] Enabling GIC IRQ 33 (UART0)...
+[uart] IMSC: 0x0 -> 0x50 (verify: 0x50)
+[uart] FR=0x90 (RXFE=1), RIS=0x20
+[gic] IRQ 33 state (GICv3):
+  enabled=true, group1=true, pending=false
+  priority=0xa0, GICD_CTLR=0x53
+  ICC_PMR=0xf0
+[boot] UART interrupts enabled
+[boot] Enabling interrupts...
+[boot] Interrupts enabled: true
+[boot] QEMU PCI ECAM configured at 0x4010000000
+[boot] Initializing device drivers...
+[drivers] Initializing driver subsystem...
+[drivers] Hybrid mode: VirtIO MMIO + PCI AHCI
+[drivers] Found VirtIO MMIO device: network (ID=1, version=1)
+[drivers] Found VirtIO MMIO device: block (ID=2, version=1)
+[drivers] Found VirtIO MMIO device: input (ID=18, version=1)
+[drivers] Found VirtIO MMIO device: input (ID=18, version=1)
+[drivers] Found VirtIO MMIO device: GPU (ID=16, version=1)
+[drivers] Found 5 VirtIO MMIO devices
+[virtio-blk] Searching for block devices...
+[virtio-blk] Found block device 0 at 0xa003800
+
+TRACING_EVIDENCE:aarch64:PASS
+Artifacts: /tmp/breenix_trace_test_aarch64
