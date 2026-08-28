@@ -1,7 +1,7 @@
-Validator anti-vacuity mutations, aarch64 dump of 2026-08-28.
+Validator anti-vacuity mutations, aarch64 dump of 2026-08-28 (branch HEAD).
 Each mutation is applied SINGLY to a copy of the passing dump; the
-unmutated dump exits 0 (TRACE_VALIDATION:PASS) in the run recorded
-alongside this file.
+unmutated dump exits 0 (TRACE_VALIDATION:PASS) in the harness transcript
+recorded alongside this file.
 
 MUTATION zeroed -- whole TRACE_BUFFERS region zeroed
   exit=1
@@ -17,14 +17,14 @@ MUTATION unknown_evtype -- one event_type set to 0xDEAD
 
 MUTATION bad_dropped -- CPU1 'dropped' counter falsified
   exit=1
-  FAIL: CPU1 dropped=12345 but write_idx=1285603 implies 1284579 overwritten slots
+  FAIL: CPU1 dropped=12345 but write_idx=1357814 implies 1356790 overwritten slots
   TRACE_VALIDATION:FAIL
 
 MUTATION truncated_8cpu -- dump truncated to the old hardcoded 8 CPUs
   exit=1
   Error: dump is 131584 bytes but 16 CPUs x 16448 bytes = 263168 are required. The dump does not cover the whole TRACE_BUFFERS array.
 
-MUTATION no_timer_tick -- all 204 TIMER_TICK events rewritten to IRQ_ENTRY
+MUTATION no_timer_tick -- all 207 TIMER_TICK events rewritten to IRQ_ENTRY
   exit=1
   FAIL: no TIMER_TICK events recorded — the timer provider never fired
   TRACE_VALIDATION:FAIL

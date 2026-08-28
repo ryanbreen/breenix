@@ -1,10 +1,10 @@
 Layout: TRACE_BUFFER_SIZE=1024, MAX_CPUS=16, stride=16448 bytes, 100 event types known
 
 Parsed 16 CPU buffers:
-  CPU0: 1024 events (write_idx=2395443, dropped=2394419)
-  CPU1: 1024 events (write_idx=1285603, dropped=1284579)
-  CPU2: 1024 events (write_idx=1341747, dropped=1340723)
-  CPU3: 1024 events (write_idx=1300678, dropped=1299654)
+  CPU0: 1024 events (write_idx=2397699, dropped=2396675)
+  CPU1: 1024 events (write_idx=1357814, dropped=1356790)
+  CPU2: 1024 events (write_idx=1345691, dropped=1344667)
+  CPU3: 1024 events (write_idx=1308060, dropped=1307036)
   CPU4: 0 events (write_idx=0, dropped=0)
   CPU5: 0 events (write_idx=0, dropped=0)
   CPU6: 0 events (write_idx=0, dropped=0)
@@ -20,14 +20,15 @@ Parsed 16 CPU buffers:
 
 Validation results:
   OK: 4096 total events across 16 parsed CPU buffers
-  OK: CPU0 recorded 1024 events (write_idx=2395443, dropped=2394419, wrapped=True)
+  OK: CPU0 recorded 1024 events (write_idx=2397699, dropped=2396675, wrapped=True)
   OK: all 20 observed event types decode: CTX_DIAG_FLAGS, CTX_DIAG_FRAME_ELR, CTX_DIAG_FRAME_X30, CTX_DIAG_SP, CTX_DIAG_STAGE, CTX_DIAG_THREAD_ELR, CTX_DIAG_THREAD_X30, CTX_DIAG_TID_PAIR, CTX_SWITCH_ENTRY, DEFER_REQUEUE_ELR, DEFER_REQUEUE_FLAGS, DEFER_REQUEUE_SP, DEFER_REQUEUE_STAGE, DEFER_REQUEUE_X30, SCHED_DIAG_FLAGS, SCHED_DIAG_STAGE, SCHED_DIAG_TID_PAIR, SCHED_QUEUE_STATE, SCHED_RESCHED_IPI_RECV, TIMER_TICK
   OK: TIMER_TICK events present
-  OK: CPU0 overflow accounting exact (write_idx=2395443, dropped=2394419, resident=1024)
-  OK: CPU1 overflow accounting exact (write_idx=1285603, dropped=1284579, resident=1024)
-  OK: CPU2 overflow accounting exact (write_idx=1341747, dropped=1340723, resident=1024)
-  OK: CPU3 overflow accounting exact (write_idx=1300678, dropped=1299654, resident=1024)
-  CENSUS: CPU3 has 1 nested-record timestamp inversion(s) of 1024 events
-  CENSUS: 1 timestamp inversion(s) total (not a failure; see comment)
+  OK: CPU0 overflow accounting exact (write_idx=2397699, dropped=2396675, resident=1024)
+  OK: CPU1 overflow accounting exact (write_idx=1357814, dropped=1356790, resident=1024)
+  OK: CPU2 overflow accounting exact (write_idx=1345691, dropped=1344667, resident=1024)
+  OK: CPU3 overflow accounting exact (write_idx=1308060, dropped=1307036, resident=1024)
+  CENSUS: CPU1 has 1 nested-record timestamp inversion(s) of 1024 events
+  CENSUS: CPU2 has 1 nested-record timestamp inversion(s) of 1024 events
+  CENSUS: 2 timestamp inversion(s) total (not a failure; see comment)
 
 TRACE_VALIDATION:PASS
