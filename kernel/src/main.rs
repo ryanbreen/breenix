@@ -1070,7 +1070,20 @@ fn kernel_main_continue() -> ! {
             x86_64::instructions::interrupts::enable();
         }
 
-        let failures = test_framework::run_all_tests();
+        let mut failures = test_framework::run_all_tests();
+
+        // ProcessContext is the last stage with registered x86 tests, and this
+        // is the only x86 context that can dispatch it: the stage's tests need
+        // preemption (they run in a joined kthread like every other stage), and
+        // the boot thread has none left after the `preempt_disable()` below.
+        // Its precondition holds here - `kernel_main_on_kernel_stack` has
+        // already created and retired user processes by this point, so the
+        // process manager is populated and the boot thread is a live scheduler
+        // thread. The Userspace stage stays marker-only on both architectures:
+        // it is reached from syscall context, where #533 itself says not to run
+        // blocking staged tests.
+        failures +=
+            test_framework::advance_to_stage(test_framework::TestStage::ProcessContext);
 
         if !interrupts_were_enabled {
             x86_64::instructions::interrupts::disable();

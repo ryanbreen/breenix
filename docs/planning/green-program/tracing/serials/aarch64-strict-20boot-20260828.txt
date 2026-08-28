@@ -1,0 +1,25 @@
+qemu-system-aarch64: terminating on signal 15 from pid 99315 (<unknown process>)
+  [OK] Boot 15: SUCCESS
+qemu-system-aarch64: terminating on signal 15 from pid 99610 (<unknown process>)
+  [OK] Boot 16: SUCCESS
+qemu-system-aarch64: terminating on signal 15 from pid 99861 (<unknown process>)
+  [OK] Boot 17: SUCCESS
+qemu-system-aarch64: terminating on signal 15 from pid 270 (<unknown process>)
+  [OK] Boot 18: SUCCESS
+qemu-system-aarch64: terminating on signal 15 from pid 790 (<unknown process>)
+  [OK] Boot 19: SUCCESS
+qemu-system-aarch64: terminating on signal 15 from pid 1105 (<unknown process>)
+  [OK] Boot 20: SUCCESS
+
+=========================================
+RESULTS
+=========================================
+Total iterations: 20
+Successes: 20
+Failures: 0
+Success rate: 100%
+Duration: 198s
+
+=========================================
+PASS: 20/20 boots succeeded
+=========================================
