@@ -43,9 +43,11 @@
 # prove, and what nothing proved before, is that the census counters are AT REST
 # at their own emission point: both censuses are emitted once from
 # kernel/src/main.rs:662-663, inside kernel_main, BEFORE the PRECONDITION block
-# (main.rs:1676-1740), the unconditional preempt_enable() (main.rs:1791),
-# interrupt enable, and executor startup that follow on the way to this gate's
-# steady-state marker (kernel_main_continue, main.rs:1834). Read the pinned
+# (main.rs:1637-1742), the unconditional preempt_enable() (main.rs:1807), the
+# preempt-bracket census (main.rs:1847-1855), interrupt enable, and executor
+# startup that follow on the way to this gate's steady-state marker
+# (kernel_main_continue, main.rs:1861). Anchors re-derived per-delta by the
+# #672 fix. Read the pinned
 # literals as a conservation law over boot UP TO that emission point only --
 # any kthread, boot-path process row, or page-table root that leaks a tombstone
 # or is abandoned AFTER main.rs:663, including anywhere in the steady-state
@@ -160,27 +162,46 @@ CRASH_MARKERS_PATTERN='KERNEL PANIC|panic!|DOUBLE FAULT|TRIPLE FAULT|soft lockup
 # ---------------------------------------------------------------------------
 # ATTRIBUTED pre-existing production-profile defects, pinned so they cannot move
 # silently. R52 forbids an unattributed failure; it does not require pretending
-# a disclosed one is absent. Both of these are printed by the shipped x86 kernel
-# on every boot and were invisible until this gate existed:
+# a disclosed one is absent. What the shipped x86 kernel still prints on every
+# boot, and was invisible until this gate existed:
 #
 #   PRECONDITION 5 (#673) -- "No runnable threads in scheduler". The shipped x86
 #   kernel launches no userspace process at all (see the header). Symptom of that
 #   gap, not an independent defect.
 #
-#   PRECONDITION 7 (#672) -- "Preemption is not disabled". kernel_main_continue() calls
-#   per_cpu::preempt_disable() only inside `#[cfg(all(feature = "testing", not(feature
-#   = "interactive")))]` but calls the matching preempt_enable() unconditionally,
-#   so the shipped profile decrements a preempt_count that is already zero. The
-#   x86 HAL decrement is a bare `sub dword ptr gs:[..], 1`, so the count wraps to
-#   0xFFFFFFFF and preemption stays disabled for the rest of the boot.
+# It is pinned present-exactly-once ON PURPOSE: the day it is fixed this gate
+# goes red and the pin must be re-derived to 0 in the same change. Do not relax
+# it to >= or delete it -- that is how a disclosed defect becomes an undisclosed
+# one.
 #
-# Both are pinned present-exactly-once ON PURPOSE: the day either is fixed this
-# gate goes red and the pin must be re-derived to 0 in the same change. Do not
-# relax these to >= or delete them -- that is how a disclosed defect becomes an
-# undisclosed one.
+# PRECONDITION 7 (#672) USED TO BE THE SECOND ENTRY HERE and is now FIXED, so
+# its pin is re-derived in the opposite direction: the FAIL line must be ABSENT
+# and the PASS line present exactly once. The defect was that
+# kernel_main_continue() called per_cpu::preempt_disable() only inside
+# `#[cfg(all(feature = "testing", not(feature = "interactive")))]` while calling
+# the matching preempt_enable() unconditionally, so the shipped profile
+# decremented a preempt_count that was already zero and the bare `sub dword ptr
+# gs:[..], 1` wrapped it to 0xFFFFFFFF. The disable is now unconditional, so the
+# bracket is symmetric in every build profile. Pinning the PASS line rather than
+# only asserting the FAIL line is gone is deliberate: a kernel that stopped
+# emitting PRECONDITION 7 altogether would satisfy a bare absence check.
 # ---------------------------------------------------------------------------
 PRECOND_RUNNABLE_FAIL_LITERAL='PRECONDITION 5: Scheduler has runnable threads ✗ FAIL'
 PRECOND_PREEMPT_FAIL_LITERAL='PRECONDITION 7: Preemption disabled ✗ FAIL'
+PRECOND_PREEMPT_PASS_LITERAL='PRECONDITION 7: Preemption disabled ✓ PASS'
+
+# ---------------------------------------------------------------------------
+# The preempt-bracket census (#672), emitted once per boot from
+# kernel/src/main.rs on the way to the executor, outside every test cfg. A
+# nonzero value means some path called preempt_enable() without a matching
+# preempt_disable(); per_cpu::preempt_enable() saturates at zero and counts the
+# violation instead of wrapping the count. Prefix and all-zero literal are both
+# pinned for the same reason as the teardown censuses above: the prefix alone
+# would pass a drifted value, the literal alone would pass a boot that also
+# emitted a nonzero line.
+# ---------------------------------------------------------------------------
+PREEMPT_CENSUS_PREFIX='[PREEMPT_BRACKET_CENSUS:'
+PREEMPT_CENSUS_PROD_LITERAL='[PREEMPT_BRACKET_CENSUS:underflow=0]'
 
 # Measured on beast under TCG: steady state at 14s from QEMU launch. The bound is
 # an order of magnitude above that so host contention cannot score a slow-but-
@@ -266,9 +287,13 @@ print_observed_values() {
         echo "  fault marker '$marker': $(marker_count "$marker")"
     done
     echo "  attributed PRECONDITION 5 fail: $(marker_count "$PRECOND_RUNNABLE_FAIL_LITERAL")"
-    echo "  attributed PRECONDITION 7 fail: $(marker_count "$PRECOND_PREEMPT_FAIL_LITERAL")"
+    echo "  fixed PRECONDITION 7 fail (#672): $(marker_count "$PRECOND_PREEMPT_FAIL_LITERAL")"
+    echo "  fixed PRECONDITION 7 pass (#672): $(marker_count "$PRECOND_PREEMPT_PASS_LITERAL")"
+    echo "  preempt census lines:          $(marker_count "$PREEMPT_CENSUS_PREFIX")"
+    echo "  preempt census at rest:        $(marker_count "$PREEMPT_CENSUS_PROD_LITERAL")"
     { grep -F -h -- "$TOMBSTONE_CENSUS_PREFIX" "$OUTPUT_DIR"/serial_*.txt 2>/dev/null || true; }
     { grep -F -h -- "$ROOT_CUSTODY_PREFIX" "$OUTPUT_DIR"/serial_*.txt 2>/dev/null || true; }
+    { grep -F -h -- "$PREEMPT_CENSUS_PREFIX" "$OUTPUT_DIR"/serial_*.txt 2>/dev/null || true; }
 }
 
 cd "$BREENIX_ROOT"
@@ -378,9 +403,17 @@ for marker in "${FAULT_MARKERS[@]}"; do
 done
 test "$(crash_count)" -eq 0
 
-# Attributed pre-existing defects: pinned, not tolerated. See the block above.
+# Attributed pre-existing defect: pinned, not tolerated. See the block above.
 test "$(marker_count "$PRECOND_RUNNABLE_FAIL_LITERAL")" -eq 1
-test "$(marker_count "$PRECOND_PREEMPT_FAIL_LITERAL")" -eq 1
+
+# #672, fixed: the preempt bracket is symmetric in the shipped profile, so
+# PRECONDITION 7 must now pass and must still be reported.
+test "$(marker_count "$PRECOND_PREEMPT_FAIL_LITERAL")" -eq 0
+test "$(marker_count "$PRECOND_PREEMPT_PASS_LITERAL")" -eq 1
+
+# Preempt-bracket census, at rest, in the shipped profile.
+test "$(marker_count "$PREEMPT_CENSUS_PREFIX")" -eq 1
+test "$(marker_count "$PREEMPT_CENSUS_PROD_LITERAL")" -eq 1
 
 trap - ERR
 echo "PASS: x86 production profile reached steady state with the teardown census at rest"
