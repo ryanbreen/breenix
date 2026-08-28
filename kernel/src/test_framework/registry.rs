@@ -1258,14 +1258,22 @@ fn test_timer_delay() -> TestResult {
 
     #[cfg(target_arch = "x86_64")]
     {
+        // Wait on the same clock the assertion below reads.
+        //
+        // This used to convert TARGET_MS into a tick count with a hardcoded
+        // "200 Hz PIT, 5ms per tick", giving `(10 / 5) + 1 = 3` ticks. The x86
+        // PIT runs at 1000 Hz - `get_monotonic_time()` is literally
+        // `get_ticks()`, one tick per millisecond - so the loop waited ~3ms and
+        // then asserted `elapsed >= 5`. The test could not pass. Nobody saw it
+        // because the x86 staged registry was never dispatched (#533); the
+        // first boot that did dispatch it reported
+        // `[TEST:timer:timer_delay:FAIL:delay too short on x86_64]`.
+        //
+        // Reading one clock removes the conversion, and with it the chance of
+        // the two ends of this test disagreeing about what a tick is.
         let start = crate::time::get_monotonic_time();
 
-        // Busy-wait for approximately TARGET_MS
-        // At 200 Hz PIT (5ms per tick), we need ~2 ticks for 10ms
-        let target_ticks = (TARGET_MS / 5) + 1; // Round up
-        let start_ticks = crate::time::get_ticks();
-
-        while crate::time::get_ticks() < start_ticks + target_ticks {
+        while crate::time::get_monotonic_time().saturating_sub(start) < TARGET_MS {
             core::hint::spin_loop();
         }
 
