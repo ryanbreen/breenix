@@ -55,29 +55,57 @@ def read_usize_const(path: Path, name: str) -> int:
     return int(match.group(1).replace("_", ""))
 
 
-def read_event_types(path: Path) -> dict:
-    """Read the TraceEventType associated constants out of core.rs.
+def read_event_types(core_rs: Path, providers_dir: Path) -> dict:
+    """Read every event-type constant the kernel defines.
 
-    Returns {value: NAME}. Duplicated values (the kernel defines a few aliases)
-    keep the first name seen, which is enough for human-readable decoding.
+    Two places define them and both have to be read, or real events decode as
+    UNKNOWN:
+
+    * `impl TraceEventType` in core.rs, the shared types (TIMER_TICK, the
+      context-switch and syscall families, the debug markers).
+    * each provider module, which composes its own ids as
+      `((PROVIDER_ID as u16) << 8) | n`. `TEARDOWN_DEFER_EVENT` is 0x0A00 that
+      way, and an x86 evidence run failed on exactly that value before this
+      function looked at the provider files.
+
+    Returns {value: NAME}. Two providers share an id, so a duplicate value keeps
+    the first name seen; that is enough for human-readable decoding.
     """
-    text = path.read_text()
+    table = {}
+
+    text = core_rs.read_text()
     body = re.search(r"impl TraceEventType \{(.*?)\n\}", text, re.S)
     if not body:
-        raise SystemExit("Error: could not locate `impl TraceEventType` in %s" % path)
-    table = {}
+        raise SystemExit("Error: could not locate `impl TraceEventType` in %s" % core_rs)
     for name, value in re.findall(
         r"pub const (\w+): u16 = (0[xX][0-9a-fA-F]+|\d+);", body.group(1)
     ):
         table.setdefault(int(value, 0), name)
     if not table:
-        raise SystemExit("Error: no event-type constants found in %s" % path)
+        raise SystemExit("Error: no event-type constants found in %s" % core_rs)
+
+    for provider in sorted(providers_dir.glob("*.rs")):
+        source = provider.read_text()
+        provider_id = re.search(
+            r"^pub const PROVIDER_ID: u8 = (0[xX][0-9a-fA-F]+|\d+);", source, re.M
+        )
+        if not provider_id:
+            continue
+        base = int(provider_id.group(1), 0) << 8
+        for name, low in re.findall(
+            r"^pub const (\w+): u16 = \(\(PROVIDER_ID as u16\) << 8\) \| "
+            r"(0[xX][0-9a-fA-F]+|\d+);",
+            source,
+            re.M,
+        ):
+            table.setdefault(base | int(low, 0), name)
+
     return table
 
 
 TRACE_BUFFER_SIZE = read_usize_const(BUFFER_RS, "TRACE_BUFFER_SIZE")
 KERNEL_MAX_CPUS = read_usize_const(CORE_RS, "MAX_CPUS")
-EVENT_TYPES = read_event_types(CORE_RS)
+EVENT_TYPES = read_event_types(CORE_RS, CORE_RS.parent / "providers")
 
 
 @dataclass
