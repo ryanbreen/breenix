@@ -195,18 +195,6 @@ pub fn advance_stage_marker_only(stage: TestStage) {
     // turns the shipped x86 gate red for a defect the build deliberately still
     // has. Leaving that build on the historical output keeps it byte-for-byte
     // what it was; #533 stays open, and it is #533 that describes the 0/0 pass.
-    if !registry_is_dispatched() {
-        if failed == 0 && lock_order_clean {
-            serial_println!("[TESTS_COMPLETE:{}/{}]", completed, total);
-            serial_println!("[BOOT_TESTS:PASS]");
-        } else {
-            serial_println!("[TESTS_COMPLETE:{}/{}:FAILED:{}]", completed, total, failed);
-            let verdict_failures = failed + u32::from(!lock_order_clean);
-            serial_println!("[BOOT_TESTS:FAIL:{}]", verdict_failures);
-        }
-        return;
-    }
-
     // Only the completion of the last registered test gets to publish a
     // verdict.
     //
@@ -217,20 +205,24 @@ pub fn advance_stage_marker_only(stage: TestStage) {
     // as `[BOOT_TESTS:PASS]` would be the same class of false green as the 0/0
     // pass below, so an incomplete tally is reported as stage progress and the
     // dispatch keeps the verdict.
-    if total != 0 && completed != 0 && completed < total {
+    //
+    // Both this guard and the vacuity guard below only mean something where the
+    // registry is actually dispatched. On an x86 build without
+    // `x86_staged_registry` nothing ever runs, so every boot would trip the
+    // vacuity arm - a true statement about #533, and the wrong place to make it:
+    // it turns the shipped x86 gate red for a defect that build deliberately
+    // still has. That build keeps the historical output; #533 stays open, and
+    // #533 is where the 0/0 pass is described.
+    let dispatched = registry_is_dispatched();
+    if dispatched && total != 0 && completed != 0 && completed < total {
         serial_println!("[STAGE:{}:COMPLETE:{}/{}]", stage.name(), completed, total);
         return;
     }
 
-    // A verdict that no test contributed to is not a pass (#533).
-    //
-    // This path prints whatever progress happens to stand, and before the x86
-    // registry was dispatched that was 0/0 - a pass-shaped
-    // `[TESTS_COMPLETE:0/0]` + `[BOOT_TESTS:PASS]` pair emitted by the first
-    // Ring 3 syscall on a boot where the suite had never run. `0/0` is not
+    // A verdict that no test contributed to is not a pass (#533). `0/0` is not
     // evidence of anything, so it is reported as a failure with its own
     // signature, which the gates reject by name.
-    if total == 0 || completed == 0 {
+    if dispatched && (total == 0 || completed == 0) {
         serial_println!("[TESTS_COMPLETE:{}/{}:VACUOUS]", completed, total);
         serial_println!("[BOOT_TESTS:FAIL:VACUOUS]");
     } else if failed == 0 && lock_order_clean {
