@@ -107,9 +107,17 @@ if [ "$ARCH" = "aarch64" ]; then
     KERNEL_BASE=0
     QEMU_BIN=qemu-system-aarch64
 else
+    # Cargo keeps one artifact directory per build hash, so `target` holds every
+    # x86 kernel this checkout has ever produced. Taking the first `find` hit
+    # picks an arbitrary one, and a stale binary makes every symbol address
+    # wrong without anything looking wrong: the first x86 run of this harness
+    # read TRACE_ENABLED as 0x89485024448b48d0 (instruction bytes) because the
+    # chosen binary's segments sat 0x3a000 away from the booted kernel's. Take
+    # the most recently built one, which is the one the UEFI image embeds.
     KERNEL_BIN=$(find "$BREENIX_ROOT/target" \
         -path "*/x86_64-unknown-none/release/deps/artifact/*/bin/kernel-*" \
-        -type f ! -name "*aarch64*" ! -name "*.d" 2>/dev/null | head -1)
+        -type f ! -name "*aarch64*" ! -name "*.d" -print0 2>/dev/null |
+        xargs -0 ls -t 2>/dev/null | head -1)
     if [ -z "$KERNEL_BIN" ]; then
         echo "Error: x86_64 kernel binary not found. Build with:" >&2
         echo "  cargo build --release --features testing,external_test_bins --bin qemu-uefi" >&2
