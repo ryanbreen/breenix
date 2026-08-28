@@ -136,17 +136,24 @@ fn run_census_widen_oracle_x86_once() {
 /// Returns the number of failed tests at the new stage.
 pub fn advance_to_stage(stage: TestStage) -> u32 {
     let current = current_stage();
-    if stage <= current {
-        // Already at or past this stage
-        return 0;
+    if stage > current {
+        serial_println!("[STAGE:{}:ADVANCE]", stage.name());
+        CURRENT_STAGE.store(stage as u8, Ordering::Release);
+        #[cfg(not(target_arch = "aarch64"))]
+        crate::task::strand_oracle::sample_now();
     }
 
-    serial_println!("[STAGE:{}:ADVANCE]", stage.name());
-    CURRENT_STAGE.store(stage as u8, Ordering::Release);
-    #[cfg(not(target_arch = "aarch64"))]
-    crate::task::strand_oracle::sample_now();
-
-    // Run any tests that were waiting for this stage
+    // Run this stage's tests whether or not the stage counter has already been
+    // pushed past it.
+    //
+    // The counter is not only advanced from here: `advance_stage_marker_only`
+    // jumps it straight to Userspace from the first Ring 3 syscall, and on x86
+    // that syscall races the dispatch - it was observed landing in the middle of
+    // the EarlyBoot cohort. With the old `stage <= current` early return, that
+    // race silently dropped the entire ProcessContext cohort, which is the
+    // failure mode #533 exists to remove. `run_staged_tests` is idempotent
+    // through the TESTS_RUN bitmap and returns silently when nothing is pending,
+    // so running it unconditionally costs an already-complete stage nothing.
     run_staged_tests(stage)
 }
 
@@ -181,7 +188,44 @@ pub fn advance_stage_marker_only(stage: TestStage) {
         crate::task::strand_oracle::report_x86_once();
     }
 
-    if failed == 0 && lock_order_clean {
+    // Both guards below only mean something where the registry is actually
+    // dispatched. On an x86 build without `x86_staged_registry` nothing ever
+    // runs, so every boot would trip the vacuity arm and report
+    // `[BOOT_TESTS:FAIL:VACUOUS]` - a true statement about #533, but one that
+    // turns the shipped x86 gate red for a defect the build deliberately still
+    // has. Leaving that build on the historical output keeps it byte-for-byte
+    // what it was; #533 stays open, and it is #533 that describes the 0/0 pass.
+    // Only the completion of the last registered test gets to publish a
+    // verdict.
+    //
+    // This path prints whatever progress happens to stand at the instant of the
+    // first Ring 3 syscall, and on x86 that instant lands in the middle of the
+    // dispatch - a boot was observed printing this verdict while the `system`
+    // subsystem's EarlyBoot thread was still running. Publishing a partial tally
+    // as `[BOOT_TESTS:PASS]` would be the same class of false green as the 0/0
+    // pass below, so an incomplete tally is reported as stage progress and the
+    // dispatch keeps the verdict.
+    //
+    // Both this guard and the vacuity guard below only mean something where the
+    // registry is actually dispatched. On an x86 build without
+    // `x86_staged_registry` nothing ever runs, so every boot would trip the
+    // vacuity arm - a true statement about #533, and the wrong place to make it:
+    // it turns the shipped x86 gate red for a defect that build deliberately
+    // still has. That build keeps the historical output; #533 stays open, and
+    // #533 is where the 0/0 pass is described.
+    let dispatched = registry_is_dispatched();
+    if dispatched && total != 0 && completed != 0 && completed < total {
+        serial_println!("[STAGE:{}:COMPLETE:{}/{}]", stage.name(), completed, total);
+        return;
+    }
+
+    // A verdict that no test contributed to is not a pass (#533). `0/0` is not
+    // evidence of anything, so it is reported as a failure with its own
+    // signature, which the gates reject by name.
+    if dispatched && (total == 0 || completed == 0) {
+        serial_println!("[TESTS_COMPLETE:{}/{}:VACUOUS]", completed, total);
+        serial_println!("[BOOT_TESTS:FAIL:VACUOUS]");
+    } else if failed == 0 && lock_order_clean {
         serial_println!("[TESTS_COMPLETE:{}/{}]", completed, total);
         serial_println!("[BOOT_TESTS:PASS]");
     } else {
@@ -386,8 +430,51 @@ mod arm_a_609 {
     pub(super) fn report_late() {}
 }
 
+/// Whether the staged registry is dispatched in this build.
+///
+/// aarch64 always dispatches it. x86 does so only behind `x86_staged_registry`,
+/// which is off by default until #680 and #681 are fixed.
+#[inline]
+fn registry_is_dispatched() -> bool {
+    cfg!(any(target_arch = "aarch64", feature = "x86_staged_registry"))
+}
+
+/// Whether this architecture runs one subsystem at a time instead of spawning
+/// the whole cohort in parallel.
+///
+/// aarch64 runs the cohort in parallel and has done so for the life of this
+/// framework. x86 does not, and the reason is measured rather than assumed: with
+/// the cohort spawned in parallel, the very first x86 dispatch deadlocked with
+/// the boot thread inside `kernel_stack::allocate` mapping the second
+/// subsystem's stack while the Memory subsystem's kthread was inside
+/// `heap_large_alloc` — two threads in the frame allocator and the kernel page
+/// tables at once, with the boot thread halted in `kthread_join`. That is the
+/// same #567 family the registry already documents above
+/// `run_x86_loopback_gates` ("any test that schedules in this window currently
+/// poisons the x86 boot").
+///
+/// Serializing does not paper over #567: the four tests that #567 actually
+/// blocks stay on the deferral roster and still announce themselves. It removes
+/// the concurrency the executor itself introduces, so the registry can be
+/// dispatched at all. When #567 is fixed this should go back to parallel and the
+/// roster should empty; both are one edit each.
+#[inline]
+fn dispatch_is_serialized() -> bool {
+    cfg!(not(target_arch = "aarch64"))
+}
+
 /// Run tests for a specific stage (and mark them as run)
 fn run_staged_tests(target_stage: TestStage) -> u32 {
+    // Nothing pending at this stage: return without printing. `advance_to_stage`
+    // may be called for a stage that has already run, and a repeat summary line
+    // would be noise in every serial the gates parse.
+    if SUBSYSTEMS
+        .iter()
+        .all(|s| count_stage_filtered_tests(s, target_stage) == 0)
+    {
+        return 0;
+    }
+
     let mut handles: Vec<(SubsystemId, KthreadHandle)> = Vec::new();
     let mut total_failed = 0u32;
 
@@ -419,7 +506,7 @@ fn run_staged_tests(target_stage: TestStage) -> u32 {
                     target_stage.name(),
                     test_count
                 );
-                if target_stage == TestStage::SerialBoot {
+                if target_stage == TestStage::SerialBoot || dispatch_is_serialized() {
                     total_failed += join_test_thread(subsystem.id, handle);
                 } else {
                     handles.push((subsystem.id, handle));
@@ -495,8 +582,50 @@ fn count_arch_filtered_tests(subsystem: &Subsystem) -> u32 {
     subsystem
         .tests
         .iter()
-        .filter(|t| t.arch.matches_current())
+        .filter(|t| t.arch.matches_current() && deferral_issue(t.name).is_none())
         .count() as u32
+}
+
+/// Registry tests deferred on this architecture, each with the open issue that
+/// blocks it.
+///
+/// A deferred test is NOT run here, and the executor says so out loud: it emits
+/// `[TEST:<subsystem>:<name>:DEFERRED:#<issue>]` and counts the test as neither
+/// passed nor failed. That marker is the whole point of this roster. The four
+/// entries below were previously absent from x86 by the simple expedient of the
+/// x86 registry never being dispatched at all (#533); once it is dispatched,
+/// silently skipping them would trade one invisible gap for another, and
+/// deleting them from the registry would lose them on aarch64, where they run
+/// and are the mechanism-level proof for #545.
+///
+/// Every entry must name a live issue. When #567 is fixed, this roster empties
+/// and `x86_deferral_issue` returns `None` for everything.
+#[cfg(not(target_arch = "aarch64"))]
+static X86_DEFERRED_TESTS: &[(&str, u32)] = &[
+    // #567: these four schedule inside the x86 boot-test window, and every one
+    // of them poisons the boot's resume context - documented case by case in
+    // registry.rs above `run_x86_loopback_gates`, which exists precisely because
+    // only the non-scheduling loopback gate could be run on x86 without them.
+    ("loopback_recv_wake_when_idle", 567),
+    ("loopback_recv_wake_under_load", 567),
+    ("loopback_pump_does_not_busy_spin", 567),
+    ("tcp_final_ack_survives_accept_publish_race", 567),
+];
+
+/// The issue blocking `name` on this architecture, if it is deferred here.
+#[cfg(not(target_arch = "aarch64"))]
+fn deferral_issue(name: &str) -> Option<u32> {
+    X86_DEFERRED_TESTS
+        .iter()
+        .find(|(deferred, _)| *deferred == name)
+        .map(|(_, issue)| *issue)
+}
+
+/// aarch64 defers nothing: every registry test that matches the architecture is
+/// dispatched there.
+#[cfg(target_arch = "aarch64")]
+fn deferral_issue(_name: &str) -> Option<u32> {
+    None
 }
 
 /// Count tests that match architecture AND specific stage (not already run)
@@ -509,7 +638,10 @@ fn count_stage_filtered_tests(subsystem: &Subsystem, stage: TestStage) -> u32 {
         .iter()
         .enumerate()
         .filter(|(idx, t)| {
-            t.arch.matches_current() && t.stage == stage && (already_run & (1u64 << idx)) == 0
+            t.arch.matches_current()
+                && t.stage == stage
+                && deferral_issue(t.name).is_none()
+                && (already_run & (1u64 << idx)) == 0
             // Not already run
         })
         .count() as u32
@@ -527,7 +659,10 @@ fn count_pending_tests(subsystem: &Subsystem) -> u32 {
         .iter()
         .enumerate()
         .filter(|(idx, t)| {
-            t.arch.matches_current() && t.stage <= current && (already_run & (1u64 << idx)) == 0
+            t.arch.matches_current()
+                && t.stage <= current
+                && deferral_issue(t.name).is_none()
+                && (already_run & (1u64 << idx)) == 0
         })
         .count() as u32
 }
@@ -565,6 +700,12 @@ fn run_subsystem_stage_tests(id: SubsystemId, target_stage: TestStage) {
 
         // Skip tests not for this stage
         if test.stage != target_stage {
+            continue;
+        }
+
+        // Announce deferred tests rather than skipping them silently.
+        if let Some(issue) = deferral_issue(test.name) {
+            serial_println!("[TEST:{}:{}:DEFERRED:#{}]", id_name, test.name, issue);
             continue;
         }
 

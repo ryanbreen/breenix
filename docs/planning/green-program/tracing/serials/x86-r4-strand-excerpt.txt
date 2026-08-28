@@ -1,0 +1,211 @@
+Added thread 1202 'test_process_serial' to scheduler (user: false, target_cpu: 0)
+[DEBUG] kernel::test_framework::executor: Process Management:serial: all 1 tests passed
+[DEBUG] kernel::test_framework::executor: Spawned test thread for Process Management:serial (1 tests)
+[DEBUG] kernel::memory::kernel_stack: Mapping 128 pages for kernel stack 13
+[DEBUG] kernel::memory::kernel_stack: Allocated kernel stack 13 at 0xffffc9000068e000-0xffffc9000070e000 (guard at 0xffffc9000068d000)
+Added thread 1203 'test_memory_early' to scheduler (user: false, target_cpu: 0)
+[DEBUG] kernel::test_framework::executor: Spawned test thread for Memory Management:early (23 tests)
+[DEBUG] kernel::test_framework::executor: Memory Management:early: all 23 tests passed
+[DEBUG] kernel::memory::kernel_stack: Mapping 128 pages for kernel stack 14
+[DEBUG] kernel::memory::kernel_stack: Allocated kernel stack 14 at 0xffffc9000070f000-0xffffc9000078f000 (guard at 0xffffc9000070e000)
+Added thread 1204 'test_scheduler_early' to scheduler (user: false, target_cpu: 0)
+[DEBUG] kernel::test_framework::executor: Spawned test thread for Scheduler:early (4 tests)
+[DEBUG] kernel::test_framework::executor: Scheduler:early: all 4 tests passed
+[DEBUG] kernel::memory::kernel_stack: Mapping 128 pages for kernel stack 15
+[DEBUG] kernel::memory::kernel_stack: Allocated kernel stack 15 at 0xffffc90000790000-0xffffc90000810000 (guard at 0xffffc9000078f000)
+Added thread 1205 'test_interrupts_early' to scheduler (user: false, target_cpu: 0)
+[DEBUG] kernel::test_framework::executor: Spawned test thread for Interrupts:early (7 tests)
+[DEBUG] kernel::interrupts: Breakpoint from kernel at RIP: 0x100003afde8
+RETIQ[DEBUG] kernel::test_framework::executor: Interrupts:early: all 7 tests passed
+[DEBUG] kernel::memory::kernel_stack: Mapping 128 pages for kernel stack 16
+[DEBUG] kernel::memory::kernel_stack: Allocated kernel stack 16 at 0xffffc90000811000-0xffffc90000891000 (guard at 0xffffc90000810000)
+Added thread 1206 'test_filesystem_early' to scheduler (user: false, target_cpu: 0)
+[DEBUG] kernel::test_framework::executor: Spawned test thread for Filesystem:early (4 tests)
+[DEBUG] kernel::test_framework::executor: Filesystem:early: all 4 tests passed
+[DEBUG] kernel::memory::kernel_stack: Mapping 128 pages for kernel stack 17
+[DEBUG] kernel::memory::kernel_stack: Allocated kernel stack 17 at 0xffffc90000892000-0xffffc90000912000 (guard at 0xffffc90000891000)
+Added thread 1207 'test_network_early' to scheduler (user: false, target_cpu: 0)
+[DEBUG] kernel::test_framework::executor: Spawned test thread for Network:early (7 tests)
+[ INFO] kernel::test_framework::registry: network stack initialized: IP=10.0.2.15
+[ INFO] kernel::test_framework::registry: E1000 network device found and initialized
+[ INFO] kernel::test_framework::registry: created UDP socket with handle 0
+[ INFO] kernel::test_framework::registry: testing TCP socket creation on current architecture
+[ INFO] kernel::test_framework::registry: created FdKind::TcpSocket(0) - unbound TCP socket
+[ INFO] kernel::test_framework::registry: created FdKind::TcpSocket(8080) - bound TCP socket
+[ INFO] kernel::test_framework::registry: created FdKind::TcpListener(8080) - listening TCP socket
+[ INFO] kernel::test_framework::registry: created FdKind::TcpConnection - connection ID works
+[ INFO] kernel::test_framework::registry: TCP socket creation test passed - all FdKind variants work
+[DEBUG] kernel::net: NET: Loopback detected, queueing packet for deferred delivery
+[DEBUG] kernel::net: NET: Loopback packet queued (queue size: 1)
+unblock(3): Added to per_cpu_queues[0]
+[ INFO] kernel::test_framework::registry: loopback packet queued successfully
+[DEBUG] kernel::net::udp: UDP: Received packet from 10.0.2.15:12345 -> port 54321 (21 bytes)
+[DEBUG] kernel::net::udp: UDP: No socket listening on port 54321, dropping packet
+[ INFO] kernel::task::softirqd: SOFTIRQ_REGISTER: NetRx handler registered
+[ INFO] kernel::task::softirqd: SOFTIRQ_REGISTER: NetRx handler registered
+[DEBUG] kernel::test_framework::executor: Network:early: all 7 tests passed
+[DEBUG] kernel::memory::kernel_stack: Mapping 128 pages for kernel stack 18
+[DEBUG] kernel::memory::kernel_stack: Allocated kernel stack 18 at 0xffffc90000913000-0xffffc90000993000 (guard at 0xffffc90000912000)
+Added thread 1208 'test_ipc_early' to scheduler (user: false, target_cpu: 0)
+[DEBUG] kernel::test_framework::executor: Spawned test thread for IPC:early (7 tests)
+[DEBUG] kernel::ipc::fd: FdTable::drop() - closing all fds and decrementing pipe counts
+[DEBUG] kernel::ipc::fd: FdTable::drop() - closing all fds and decrementing pipe counts
+[DEBUG] kernel::test_framework::executor: IPC:early: all 7 tests passed
+[DEBUG] kernel::memory::kernel_stack: Mapping 128 pages for kernel stack 19
+[DEBUG] kernel::memory::kernel_stack: Allocated kernel stack 19 at 0xffffc90000994000-0xffffc90000a14000 (guard at 0xffffc90000993000)
+Added thread 1209 'test_process_early' to scheduler (user: false, target_cpu: 0)
+[DEBUG] kernel::test_framework::executor: Spawned test thread for Process Management:early (5 tests)
+[DEBUG] kernel::memory::kernel_stack: Mapping 128 pages for kernel stack 20
+[DEBUG] kernel::memory::kernel_stack: Allocated kernel stack 20 at 0xffffc90000a15000-0xffffc90000a95000 (guard at 0xffffc90000a14000)
+Added thread 1210 'test_thread' to scheduler (user: false, target_cpu: 0)
+[DEBUG] kernel::test_framework::executor: Process Management:early: all 5 tests passed
+[DEBUG] kernel::memory::kernel_stack: Mapping 128 pages for kernel stack 21
+[DEBUG] kernel::memory::kernel_stack: Allocated kernel stack 21 at 0xffffc90000a96000-0xffffc90000b16000 (guard at 0xffffc90000a95000)
+Added thread 1211 'test_syscall_early' to scheduler (user: false, target_cpu: 0)
+[DEBUG] kernel::test_framework::executor: Spawned test thread for System Calls:early (1 tests)
+[DEBUG] kernel::test_framework::executor: System Calls:early: all 1 tests passed
+[DEBUG] kernel::memory::kernel_stack: Mapping 128 pages for kernel stack 22
+[DEBUG] kernel::memory::kernel_stack: Allocated kernel stack 22 at 0xffffc90000b17000-0xffffc90000b97000 (guard at 0xffffc90000b16000)
+Added thread 1212 'test_timer_early' to scheduler (user: false, target_cpu: 0)
+[DEBUG] kernel::test_framework::executor: Spawned test thread for Timer:early (4 tests)
+[DEBUG] kernel::test_framework::executor: Timer:early: all 4 tests passed
+[DEBUG] kernel::memory::kernel_stack: Mapping 128 pages for kernel stack 23
+[DEBUG] kernel::memory::kernel_stack: Allocated kernel stack 23 at 0xffffc90000b98000-0xffffc90000c18000 (guard at 0xffffc90000b97000)
+Added thread 1213 'test_logging_early' to scheduler (user: false, target_cpu: 0)
+[DEBUG] kernel::test_framework::executor: Spawned test thread for Logging:early (3 tests)
+[DEBUG] kernel::test_framework::registry: [LOGGING_TEST] debug level
+[ INFO] kernel::test_framework::registry: [LOGGING_TEST] info level
+[ WARN] kernel::test_framework::registry: [LOGGING_TEST] warn level
+[ERROR] kernel::test_framework::registry: [LOGGING_TEST] error level
+[ INFO] kernel::test_framework::registry: [LOGGING_TEST] Log level test - info
+[DEBUG] kernel::test_framework::registry: [LOGGING_TEST] Log level test - debug
+[ WARN] kernel::test_framework::registry: [LOGGING_TEST] Log level test - warn
+[ INFO] kernel::test_framework::registry: [LOGGING_TEST] formatted log message
+[DEBUG] kernel::test_framework::executor: Logging:early: all 3 tests passed
+[DEBUG] kernel::memory::kernel_stack: Mapping 128 pages for kernel stack 24
+[DEBUG] kernel::memory::kernel_stack: Allocated kernel stack 24 at 0xffffc90000c19000-0xffffc90000c99000 (guard at 0xffffc90000c18000)
+Added thread 1214 'test_system_early' to scheduler (user: false, target_cpu: 0)
+[DEBUG] kernel::test_framework::executor: Spawned test thread for System:early (4 tests)
+[ INFO] kernel::test_framework::registry: [SYSTEM_TEST] Boot sequence verification passed
+[ INFO] kernel::test_framework::registry: [SYSTEM_TEST] System stability check passed - reached test point
+[ INFO] kernel::test_framework::registry: [SYSTEM_TEST] Kernel heap verification passed
+[ INFO] kernel::test_framework::registry: [TTY_PGRP_TEST] Sentinel pgrp set to 0xdeadbeef
+[ INFO] kernel::userspace_test: ✓ Loaded 'hello_time' from test disk (177632 bytes)
+[ INFO] kernel::test_framework::registry: [TTY_PGRP_TEST] Loaded test binary (177632 bytes), creating process...
+[ INFO] kernel::process::creation: create_user_process: Creating user process 'tty_pgrp_test' with new model
+[DEBUG] kernel::memory::process_memory: ProcessPageTable::new() - Current RSP: 0xffffc90000c92be8
+[DEBUG] kernel::memory::process_memory: ProcessPageTable::new() - About to allocate L4 frame
+[DEBUG] kernel::memory::process_memory: Successfully allocated frame: 0x5439000
+[DEBUG] kernel::memory::process_memory: Allocated L4 frame: 0x5439000
+[DEBUG] kernel::memory::process_memory: Physical memory offset: 0x28000000000
+[DEBUG] kernel::memory::process_memory: New L4 table virtual address: 0x28005439000
+[DEBUG] kernel::memory::process_memory: About to create mutable reference to page table at 0x28005439000
+[DEBUG] kernel::memory::process_memory: Testing read access at 0x28005439000
+[DEBUG] kernel::memory::process_memory: Read test successful
+[DEBUG] kernel::memory::process_memory: Page table pointer: 0x28005439000
+[DEBUG] kernel::memory::process_memory: About to clear the new page table
+[DEBUG] kernel::memory::process_memory: Successfully cleared new page table (all entries set to unused)
+[DEBUG] kernel::memory::process_memory: ProcessPageTable::new() - Using current CR3: 0x611000 for copying
+[DEBUG] kernel::memory::process_memory: Current L4 table virtual address: 0x28000611000
+[DEBUG] kernel::memory::process_memory: Examining kernel page table upper half entries:
+[DEBUG] kernel::memory::process_memory:   Kernel PML4[256]: phys=0x610000, flags=PageTableFlags(PRESENT | WRITABLE)
+[DEBUG] kernel::memory::process_memory:   Kernel PML4[257]: phys=0x610000, flags=PageTableFlags(PRESENT | WRITABLE)
+[DEBUG] kernel::memory::process_memory:   Kernel PML4[258]: phys=0x610000, flags=PageTableFlags(PRESENT | WRITABLE)
+[DEBUG] kernel::memory::process_memory:   Kernel PML4[259]: phys=0x610000, flags=PageTableFlags(PRESENT | WRITABLE)
+[DEBUG] kernel::memory::process_memory:   Kernel PML4[260]: phys=0x610000, flags=PageTableFlags(PRESENT | WRITABLE)
+[DEBUG] kernel::memory::process_memory:   Kernel PML4[509]: phys=0x610000, flags=PageTableFlags(PRESENT | WRITABLE)
+[DEBUG] kernel::memory::process_memory:   Kernel PML4[510]: phys=0x610000, flags=PageTableFlags(PRESENT | WRITABLE)
+[DEBUG] kernel::memory::process_memory:   Kernel PML4[511]: phys=0x1f8000, flags=PageTableFlags(PRESENT | WRITABLE | GLOBAL)
+[DEBUG] kernel::memory::process_memory: Found 256 valid upper-half kernel PML4 entries (256-511)
+[DEBUG] kernel::memory::process_memory: Copied 256 upper-half kernel PML4 entries (256-511)
+[ INFO] kernel::memory::process_memory: PHASE2: Using master kernel PML4 for process creation
+[ INFO] kernel::memory::process_memory: PHASE2-DEBUG: Reading master PML4 from virtual address 0x28000611000
+[ INFO] kernel::memory::process_memory: PHASE2-DEBUG: Master PML4[402] = Ok(PhysFrame[4KiB](0x612000))
+[ INFO] kernel::memory::process_memory: PHASE2-DEBUG: Master PML4[403] = Ok(PhysFrame[4KiB](0x613000))
+[ INFO] kernel::memory::process_memory: PHASE2-DEBUG: &master_pml4[403] is at 0x28000611c98
+[ INFO] kernel::memory::process_memory: CRITICAL: Copied PML4[2] (direct phys mapping) from master with kernel-only flags: PageTableFlags(PRESENT | WRITABLE | ACCESSED)
+[ INFO] kernel::memory::process_memory: PHASE2: Copied 6 kernel-only lower-half entries (skipped userspace), PML4[0] left empty
+[ INFO] kernel::memory::process_memory: PHASE2: Created fresh PDPT for PML4[0] at frame 0x543a000
+[ INFO] kernel::memory::process_memory: PHASE2: PML4[402] (kernel stacks): master=PhysFrame[4KiB](0x612000), copied=PhysFrame[4KiB](0x612000)
+[ INFO] kernel::memory::process_memory: PHASE2: PML4[403] (IST stacks): master=PhysFrame[4KiB](0x613000), copied=PhysFrame[4KiB](0x613000)
+[ INFO] kernel::memory::process_memory: PHASE2: PML4[510]: master=PhysFrame[4KiB](0x610000), copied=PhysFrame[4KiB](0x610000)
+[ INFO] kernel::memory::process_memory: PHASE2: PML4[511] (kernel high-half): master=PhysFrame[4KiB](0x1f8000), copied=PhysFrame[4KiB](0x1f8000)
+[ INFO] kernel::memory::process_memory: PHASE2: Inherited 256 upper-half kernel mappings (256-511) from master PML4
+[ INFO] kernel::memory::process_memory: ✓ INVARIANT OK: PML4[402]=PhysFrame[4KiB](0x612000) != PML4[403]=PhysFrame[4KiB](0x613000)
+[ INFO] kernel::memory::process_memory: PHASE2: PML4[0] left empty for process-specific userspace mappings (0x0 - 0x7FFFFFFFFF)
+[ INFO] kernel::memory::process_memory: PHASE3: Skipping manual identity mapping - PML4[0] already copied from master
+[DEBUG] kernel::memory::process_memory: Creating OffsetPageTable with L4 frame 0x5439000 and phys_offset 0x28000000000
+[DEBUG] kernel::memory::process_memory: ProcessPageTable created with global kernel page tables
+[ INFO] kernel::elf: Loading ELF into process page table: entry=0x4000e2ac, 7 program headers
+[ INFO] kernel::elf: ELF loaded: segments end at 0x40015170, heap will start at 0x40016000
+[ INFO] kernel::process::manager: Restoring kernel mappings after ELF load...
+[ INFO] kernel::process::manager: ✓ Kernel low-half mappings restored
+[ INFO] kernel::process::manager: ✓✓ VERIFIED: Kernel at 0x100000 -> 0x100000 after restoration
+[DEBUG] kernel::memory::stack: allocate_stack_with_privilege: size=0x10000, KERNEL_STACK_ALLOC_START=0xffffc90020000000
+[DEBUG] kernel::memory::stack: Allocating guarded stack at 0x7fffff015000, size 68 KiB
+[DEBUG] kernel::memory::stack: User stack: mapping in kernel page tables
+[DEBUG] kernel::memory::stack: Guard page at 0x7fffff015000 (unmapped)
+[DEBUG] kernel::memory::stack: Stack region: 0x7fffff016000 - 0x7fffff026000 (64 KiB)
+[DEBUG] kernel::process::manager: Mapping user stack pages into process page table...
+[DEBUG] kernel::memory::process_memory: map_user_stack_to_process: mapping stack range 0x7fffff016000 - 0x7fffff026000
+[DEBUG] kernel::memory::process_memory: ✓ Successfully mapped 16 user stack pages to process page table
+[DEBUG] kernel::process::manager: ✓ User stack mapped in process page table
+[DEBUG] kernel::tls: Registered thread 1215 with TLS block 0x4cf000
+[DEBUG] kernel::memory::kernel_stack: Mapping 128 pages for kernel stack 25
+[DEBUG] kernel::memory::kernel_stack: Allocated kernel stack 25 at 0xffffc90000c9a000-0xffffc90000d1a000 (guard at 0xffffc90000c99000)
+[DEBUG] kernel::process::manager: ✓ Allocated kernel stack at 0xffffc90000d1a000 (globally visible)
+[ INFO] kernel::process::manager: Created process tty_pgrp_test (PID 103)
+[ INFO] kernel::process::creation: create_user_process: Scheduling user thread 1215 ('tty_pgrp_test')
+Added thread 1215 'tty_pgrp_test' to scheduler (user: true, target_cpu: 0)
+[DEBUG] kernel::process::creation: create_user_process: Set PID 103 as foreground pgrp for TTY
+[ INFO] kernel::interrupts::context_switch: RING3_ENTRY: RIP=0x4000e2ac, RSP=0x7fffff025ff8, CS=0x33, SS=0x2b
+[ INFO] kernel::interrupts::context_switch: FIRST_ENTRY t1215: zeroed all registers
+[ INFO] kernel::interrupts::context_switch: First userspace entry setup complete for thread 1215
+[ INFO] kernel::interrupts::context_switch: First run: thread 1215 entering userspace
+[ INFO] kernel::syscall::handlers: USERSPACE: sys_exit called with code: 0
+[DEBUG] kernel::syscall::handlers: sys_exit: Current thread ID from scheduler: 1215
+[DEBUG] kernel::memory::stack: GuardedStack dropped (cleanup not yet implemented)
+[DEBUG] kernel::task::process_task: Process 103 'tty_pgrp_test' (thread 1215) exited with code 0
+[ INFO] kernel::syscall::handlers: No more userspace threads remaining
+[ INFO] kernel::syscall::handlers: Woke keyboard task to ensure input processing continues
+[ INFO] kernel::syscall::handlers: 🎯 USERSPACE TEST COMPLETE - All processes finished successfully
+[ INFO] kernel::syscall::handlers: TEST_TALLY: exited=86 nonzero=0 failed=[]
+[ INFO] kernel::syscall::handlers: =====================================
+[ INFO] kernel::syscall::handlers: ✅ USERSPACE EXECUTION SUCCESSFUL ✅
+[ INFO] kernel::syscall::handlers: ✅ Ring 3 execution confirmed       ✅
+[ INFO] kernel::syscall::handlers: ✅ System calls working correctly   ✅
+[ INFO] kernel::syscall::handlers: ✅ Process lifecycle complete       ✅
+[ INFO] kernel::syscall::handlers: =====================================
+[ INFO] kernel::syscall::handlers: 🏁 TEST RUNNER: All tests passed - you can exit QEMU now 🏁
+[ INFO] kernel::process::creation: create_user_process: User thread 1215 enqueued for scheduling
+[ INFO] kernel::process::creation: create_user_process: Successfully created user process 103 without spawn mechanism
+[ INFO] kernel::test_framework::registry: [TTY_PGRP_TEST] Process created with PID 103
+[ INFO] kernel::test_framework::registry: [TTY_PGRP_TEST] PASS: foreground pgrp correctly set to PID 103
+[ INFO] kernel::test_framework::registry: [TTY_PGRP_TEST] Integration test passed - create_user_process sets foreground pgrp
+[DEBUG] kernel::test_framework::executor: System:early: all 4 tests passed
+Next thread from queue: 1, cpu: 0
+Idle thread 1 is alone, continuing (no switch needed)
+Next thread from queue: 1, cpu: 0
+Idle thread 1 is alone, continuing (no switch needed)
+Next thread from queue: 1, cpu: 0
+Idle thread 1 is alone, continuing (no switch needed)
+Next thread from queue: 1, cpu: 0
+Idle thread 1 is alone, continuing (no switch needed)
+Next thread from queue: 1, cpu: 0
+Idle thread 1 is alone, continuing (no switch needed)
+Next thread from queue: 1, cpu: 0
+Idle thread 1 is alone, continuing (no switch needed)
+Next thread from queue: 1, cpu: 0
+Idle thread 1 is alone, continuing (no switch needed)
+Next thread from queue: 1, cpu: 0
+Idle thread 1 is alone, continuing (no switch needed)
+Next thread from queue: 1, cpu: 0
+Idle thread 1 is alone, continuing (no switch needed)
+Next thread from queue: 1, cpu: 0
+Idle thread 1 is alone, continuing (no switch needed)
+Next thread from queue: 1, cpu: 0
+Idle thread 1 is alone, continuing (no switch needed)
+Next thread from queue: 1, cpu: 0
+Idle thread 1 is alone, continuing (no switch needed)
+Next thread from queue: 1, cpu: 0
+Idle thread 1 is alone, continuing (no switch needed)

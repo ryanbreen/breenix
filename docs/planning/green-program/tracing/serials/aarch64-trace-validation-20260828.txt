@@ -1,0 +1,32 @@
+Layout: TRACE_BUFFER_SIZE=1024, MAX_CPUS=16, stride=16448 bytes, 105 event types known
+
+Parsed 16 CPU buffers:
+  CPU0: 1024 events (write_idx=2116224, dropped=2115200)
+  CPU1: 1024 events (write_idx=1197491, dropped=1196467)
+  CPU2: 1024 events (write_idx=1192406, dropped=1191382)
+  CPU3: 1024 events (write_idx=1174533, dropped=1173509)
+  CPU4: 0 events (write_idx=0, dropped=0)
+  CPU5: 0 events (write_idx=0, dropped=0)
+  CPU6: 0 events (write_idx=0, dropped=0)
+  CPU7: 0 events (write_idx=0, dropped=0)
+  CPU8: 0 events (write_idx=0, dropped=0)
+  CPU9: 0 events (write_idx=0, dropped=0)
+  CPU10: 0 events (write_idx=0, dropped=0)
+  CPU11: 0 events (write_idx=0, dropped=0)
+  CPU12: 0 events (write_idx=0, dropped=0)
+  CPU13: 0 events (write_idx=0, dropped=0)
+  CPU14: 0 events (write_idx=0, dropped=0)
+  CPU15: 0 events (write_idx=0, dropped=0)
+
+Validation results:
+  OK: 4096 total events across 16 parsed CPU buffers
+  OK: CPU0 recorded 1024 events (write_idx=2116224, dropped=2115200, wrapped=True)
+  OK: all 28 observed event types decode: CTX_DIAG_FLAGS, CTX_DIAG_FRAME_ELR, CTX_DIAG_FRAME_X30, CTX_DIAG_SP, CTX_DIAG_STAGE, CTX_DIAG_THREAD_ELR, CTX_DIAG_THREAD_X30, CTX_DIAG_TID_PAIR, CTX_PUBLISH_AUX, CTX_PUBLISH_ELR, CTX_PUBLISH_FLAGS, CTX_PUBLISH_SP, CTX_PUBLISH_STAGE, CTX_PUBLISH_X30, CTX_SWITCH_ENTRY, DEFER_REQUEUE_ELR, DEFER_REQUEUE_FLAGS, DEFER_REQUEUE_SP, DEFER_REQUEUE_STAGE, DEFER_REQUEUE_X30, SCHED_DIAG_FLAGS, SCHED_DIAG_STAGE, SCHED_DIAG_TID_PAIR, SCHED_QUEUE_STATE, SCHED_RESCHED_IPI_RECV, SYSCALL_ENTRY, SYSCALL_EXIT, TIMER_TICK
+  OK: TIMER_TICK events present
+  OK: CPU0 overflow accounting exact (write_idx=2116224, dropped=2115200, resident=1024)
+  OK: CPU1 overflow accounting exact (write_idx=1197491, dropped=1196467, resident=1024)
+  OK: CPU2 overflow accounting exact (write_idx=1192406, dropped=1191382, resident=1024)
+  OK: CPU3 overflow accounting exact (write_idx=1174533, dropped=1173509, resident=1024)
+  CENSUS: 0 timestamp inversion(s) total (not a failure; see comment)
+
+TRACE_VALIDATION:PASS

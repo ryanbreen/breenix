@@ -5412,8 +5412,14 @@ fn validate_frame_ledger_runtime_oracles(sources: &[(String, String)]) -> Result
     let parallel = run_all
         .find("run_staged_tests(TestStage::EarlyBoot)")
         .ok_or(())?;
+    // #533 re-pin, per delta: the join-inline arm is now taken for the
+    // SerialBoot stage on either architecture OR for every stage on an
+    // architecture that dispatches subsystems one at a time. x86 became such an
+    // architecture because the parallel cohort deadlocked the boot thread
+    // against the Memory subsystem's kthread. The arm's body is unchanged and
+    // is still pinned statement-for-statement below, as is the parallel arm's.
     let serial_condition = run_staged
-        .find("if target_stage == TestStage::SerialBoot {")
+        .find("if target_stage == TestStage::SerialBoot || dispatch_is_serialized() {")
         .ok_or(())?;
     let run_staged_mask = code_mask(run_staged);
     let serial_block = braced_block(run_staged, &run_staged_mask, serial_condition).ok_or(())?;
@@ -11100,8 +11106,10 @@ fn deliberately_broken_variants_fail_the_ratchet() {
     );
     assert!(validate_frame_ledger_runtime_oracles(&parallel_gate).is_err());
     let executor = source(&sources, "kernel/src/test_framework/executor.rs");
+    // Same mutation, re-spelled for the #533 dispatch condition: disarm the
+    // join-inline arm and the ratchet must red.
     let nonserial_join = executor.replacen(
-        "if target_stage == TestStage::SerialBoot {",
+        "if target_stage == TestStage::SerialBoot || dispatch_is_serialized() {",
         "if target_stage == TestStage::SerialBoot && false {",
         1,
     );
@@ -11112,8 +11120,8 @@ fn deliberately_broken_variants_fail_the_ratchet() {
     );
     assert!(validate_frame_ledger_runtime_oracles(&nonserial_join).is_err());
     let nested_false_join = executor.replacen(
-        "                if target_stage == TestStage::SerialBoot {\n                    total_failed += join_test_thread(subsystem.id, handle);\n                } else {\n                    handles.push((subsystem.id, handle));\n                }",
-        "                if target_stage == TestStage::SerialBoot {\n                    if false {\n                        total_failed += join_test_thread(subsystem.id, handle);\n                    } else {\n                        handles.push((subsystem.id, handle));\n                    }\n                } else {\n                    handles.push((subsystem.id, handle));\n                }",
+        "                if target_stage == TestStage::SerialBoot || dispatch_is_serialized() {\n                    total_failed += join_test_thread(subsystem.id, handle);\n                } else {\n                    handles.push((subsystem.id, handle));\n                }",
+        "                if target_stage == TestStage::SerialBoot || dispatch_is_serialized() {\n                    if false {\n                        total_failed += join_test_thread(subsystem.id, handle);\n                    } else {\n                        handles.push((subsystem.id, handle));\n                    }\n                } else {\n                    handles.push((subsystem.id, handle));\n                }",
         1,
     );
     let nested_false_join = with_replaced_source(

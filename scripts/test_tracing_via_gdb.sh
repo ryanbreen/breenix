@@ -1,168 +1,306 @@
 #!/bin/bash
 #
-# Test Tracing Framework via GDB Memory Dump
+# Tracing-framework evidence harness (arch-portable: x86_64 and aarch64).
 #
-# This script:
-# 1. Starts QEMU with the kernel (GDB enabled)
-# 2. Connects GDB and sets a breakpoint after tracing initialization
-# 3. Continues to the breakpoint
-# 4. Dumps the TRACE_BUFFERS memory region
-# 5. Parses and validates the trace data
+# Boots a Breenix kernel under QEMU with the gdbstub enabled, lets it run long
+# enough to record real trace events, attaches GDB (which halts the guest),
+# dumps the whole TRACE_BUFFERS region plus TRACE_ENABLED, and hands the dump to
+# scripts/trace_memory_dump.py --validate. The parser's verdict is this script's
+# exit status: a dump that parses to zero events is a FAILURE, not a pass.
 #
+# Two properties this harness deliberately does NOT have:
+#   * no hardcoded breakpoint address. The previous version broke at a literal
+#     `KERNEL_BASE + 0x18b090`, which silently stopped meaning anything the
+#     moment the kernel was rebuilt. Instead the guest free-runs for a settle
+#     window and GDB's attach is what halts it.
+#   * no hardcoded CPU count. MAX_CPUS and TRACE_BUFFER_SIZE are read out of the
+#     kernel sources they are defined in, so a change there cannot leave this
+#     harness dumping (and validating) half the buffers.
+#
+# Usage:
+#   scripts/test_tracing_via_gdb.sh [--arch aarch64|x86_64] [--settle SECONDS]
+#                                   [--port PORT] [--out DIR]
+#
+# Default --arch is derived from the host (`uname -m`); pass it explicitly in a
+# gate. Both arches are runnable on an ARM Mac (QEMU TCG for x86_64) and on the
+# beast x86 VM.
 
-set -e
+set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BREENIX_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
-# Find kernel binary to get symbol offsets
-KERNEL_BIN=$(find "$BREENIX_ROOT/target" -path "*/x86_64-unknown-none/release/deps/artifact/*/bin/kernel-*" -type f ! -name "*aarch64*" ! -name "*.d" 2>/dev/null | head -1)
+case "$(uname -m)" in
+    arm64 | aarch64) DEFAULT_ARCH=aarch64 ;;
+    *) DEFAULT_ARCH=x86_64 ;;
+esac
 
-if [ -z "$KERNEL_BIN" ]; then
-    echo "Error: Kernel binary not found. Build with:"
-    echo "  cargo build --release --features testing,external_test_bins --bin qemu-uefi"
-    exit 1
+ARCH="$DEFAULT_ARCH"
+SETTLE_SECONDS=15
+GDB_PORT=1234
+OUTPUT_DIR=""
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --arch) ARCH="$2"; shift 2 ;;
+        --settle) SETTLE_SECONDS="$2"; shift 2 ;;
+        --port) GDB_PORT="$2"; shift 2 ;;
+        --out) OUTPUT_DIR="$2"; shift 2 ;;
+        -h | --help) sed -n '2,30p' "$0"; exit 0 ;;
+        *) echo "Unknown argument: $1" >&2; exit 2 ;;
+    esac
+done
+
+case "$ARCH" in
+    aarch64 | x86_64) ;;
+    *) echo "Unsupported --arch '$ARCH' (expected aarch64 or x86_64)" >&2; exit 2 ;;
+esac
+
+if [ -z "$OUTPUT_DIR" ]; then
+    OUTPUT_DIR="/tmp/breenix_trace_test_$ARCH"
 fi
 
+# ---------------------------------------------------------------------------
+# Layout constants, read from the kernel sources that define them.
+#
+# These are derivations, not pins: if MAX_CPUS or TRACE_BUFFER_SIZE moves, this
+# harness follows it. A failed derivation is fatal — silently falling back to a
+# guessed value is exactly how the old `* 8` dumped half of a 16-CPU array.
+# ---------------------------------------------------------------------------
+read_kernel_const() {
+    local file="$1" name="$2" value
+    value=$(sed -n "s/^pub const ${name}: usize = \([0-9_]*\);.*/\1/p" "$file" | head -1 | tr -d '_')
+    if [ -z "$value" ]; then
+        echo "Error: could not read ${name} from ${file}" >&2
+        exit 1
+    fi
+    printf '%s' "$value"
+}
+
+MAX_CPUS=$(read_kernel_const "$BREENIX_ROOT/kernel/src/tracing/core.rs" MAX_CPUS)
+TRACE_BUFFER_SIZE=$(read_kernel_const "$BREENIX_ROOT/kernel/src/tracing/buffer.rs" TRACE_BUFFER_SIZE)
+
+# TraceEvent is #[repr(C, align(16))]: u64 + u16 + u8 + u8 + u32 = 16 bytes.
+TRACE_EVENT_SIZE=16
+# TraceCpuBuffer metadata after the entries array: write_idx + read_idx +
+# dropped + explicit padding = 8 + 8 + 8 + 24.
+TRACE_BUFFER_METADATA=48
+ENTRIES_SIZE=$((TRACE_BUFFER_SIZE * TRACE_EVENT_SIZE))
+# #[repr(C, align(64))] rounds the struct size up to a 64-byte multiple.
+BUFFER_SIZE=$(((ENTRIES_SIZE + TRACE_BUFFER_METADATA + 63) / 64 * 64))
+TOTAL_SIZE=$((BUFFER_SIZE * MAX_CPUS))
+
+# ---------------------------------------------------------------------------
+# Per-arch kernel image, load base, and QEMU command line.
+# ---------------------------------------------------------------------------
+if [ "$ARCH" = "aarch64" ]; then
+    KERNEL_BIN="$BREENIX_ROOT/target/aarch64-breenix-kernel/release/kernel-aarch64"
+    if [ ! -f "$KERNEL_BIN" ]; then
+        echo "Error: ARM64 kernel not found at $KERNEL_BIN. Build with:" >&2
+        echo "  cargo build --release --target aarch64-breenix-kernel.json -Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem -p kernel --bin kernel-aarch64" >&2
+        exit 1
+    fi
+    # Durable #528 guard: the aarch64 kernel must be soft-float.
+    "$BREENIX_ROOT/scripts/check-kernel-no-neon.sh" "$KERNEL_BIN"
+    # The aarch64 kernel is linked at its runtime virtual address, so nm already
+    # reports the address the MMU-enabled kernel uses. No relocation offset.
+    KERNEL_BASE=0
+    QEMU_BIN=qemu-system-aarch64
+else
+    # Cargo keeps one artifact directory per build hash, so `target` holds every
+    # x86 kernel this checkout has ever produced. Taking the first `find` hit
+    # picks an arbitrary one, and a stale binary makes every symbol address
+    # wrong without anything looking wrong: the first x86 run of this harness
+    # read TRACE_ENABLED as 0x89485024448b48d0 (instruction bytes) because the
+    # chosen binary's segments sat 0x3a000 away from the booted kernel's. Take
+    # the most recently built one, which is the one the UEFI image embeds.
+    KERNEL_BIN=$(find "$BREENIX_ROOT/target" \
+        -path "*/x86_64-unknown-none/release/deps/artifact/*/bin/kernel-*" \
+        -type f ! -name "*aarch64*" ! -name "*.d" -print0 2>/dev/null |
+        xargs -0 ls -t 2>/dev/null | head -1)
+    if [ -z "$KERNEL_BIN" ]; then
+        echo "Error: x86_64 kernel binary not found. Build with:" >&2
+        echo "  cargo build --release --features testing,external_test_bins --bin qemu-uefi" >&2
+        exit 1
+    fi
+    # The x86_64 kernel is a PIE loaded by the bootloader at 1 TiB.
+    KERNEL_BASE=0x10000000000
+    QEMU_BIN=qemu-system-x86_64
+fi
+
+command -v "$QEMU_BIN" >/dev/null || { echo "Error: $QEMU_BIN not on PATH" >&2; exit 1; }
+GDB_BIN="${BREENIX_GDB_BIN:-gdb}"
+command -v "$GDB_BIN" >/dev/null || { echo "Error: $GDB_BIN not on PATH (set BREENIX_GDB_BIN)" >&2; exit 1; }
+
+echo "Architecture:  $ARCH"
 echo "Kernel binary: $KERNEL_BIN"
 
-# Get symbol offsets
-TRACE_BUFFERS_OFFSET=$(nm "$KERNEL_BIN" | grep " B TRACE_BUFFERS$" | awk '{print $1}')
-TRACE_ENABLED_OFFSET=$(nm "$KERNEL_BIN" | grep " B TRACE_ENABLED$" | awk '{print $1}')
-TRACE_CPU0_IDX_OFFSET=$(nm "$KERNEL_BIN" | grep " B TRACE_CPU0_WRITE_IDX$" | awk '{print $1}')
+symbol_addr() {
+    local sym="$1" off
+    off=$(nm "$KERNEL_BIN" | awk -v s="$sym" '$3 == s { print $1; exit }')
+    if [ -z "$off" ]; then
+        echo "Error: symbol $sym not found in $KERNEL_BIN" >&2
+        exit 1
+    fi
+    printf '0x%x' $((KERNEL_BASE + 0x$off))
+}
 
-if [ -z "$TRACE_BUFFERS_OFFSET" ]; then
-    echo "Error: TRACE_BUFFERS symbol not found"
-    exit 1
-fi
-
-# Calculate runtime addresses (kernel base = 0x10000000000)
-KERNEL_BASE=0x10000000000
-TRACE_BUFFERS_ADDR=$(printf "0x%x" $((KERNEL_BASE + 0x$TRACE_BUFFERS_OFFSET)))
-TRACE_ENABLED_ADDR=$(printf "0x%x" $((KERNEL_BASE + 0x$TRACE_ENABLED_OFFSET)))
-TRACE_CPU0_IDX_ADDR=$(printf "0x%x" $((KERNEL_BASE + 0x$TRACE_CPU0_IDX_OFFSET)))
+TRACE_BUFFERS_ADDR=$(symbol_addr TRACE_BUFFERS)
+TRACE_ENABLED_ADDR=$(symbol_addr TRACE_ENABLED)
+TRACE_CPU0_IDX_ADDR=$(symbol_addr TRACE_CPU0_WRITE_IDX)
 
 echo ""
-echo "Symbol Addresses:"
-echo "  TRACE_BUFFERS:      $TRACE_BUFFERS_ADDR (offset: 0x$TRACE_BUFFERS_OFFSET)"
-echo "  TRACE_ENABLED:      $TRACE_ENABLED_ADDR (offset: 0x$TRACE_ENABLED_OFFSET)"
-echo "  TRACE_CPU0_WRITE_IDX: $TRACE_CPU0_IDX_ADDR (offset: 0x$TRACE_CPU0_IDX_OFFSET)"
+echo "Derived layout (from kernel sources, not hardcoded):"
+echo "  MAX_CPUS:            $MAX_CPUS"
+echo "  TRACE_BUFFER_SIZE:   $TRACE_BUFFER_SIZE events/CPU"
+echo "  Per-CPU buffer:      $BUFFER_SIZE bytes"
+echo "  TRACE_BUFFERS total: $TOTAL_SIZE bytes"
+echo ""
+echo "Symbol addresses:"
+echo "  TRACE_BUFFERS:        $TRACE_BUFFERS_ADDR"
+echo "  TRACE_ENABLED:        $TRACE_ENABLED_ADDR"
+echo "  TRACE_CPU0_WRITE_IDX: $TRACE_CPU0_IDX_ADDR"
 echo ""
 
-# Buffer size calculation
-# TraceCpuBuffer: 1024 events * 16 bytes = 16384 + ~48 bytes metadata, aligned to 64
-EVENTS_SIZE=$((1024 * 16))
-BUFFER_SIZE=$(( ((EVENTS_SIZE + 64 + 63) / 64) * 64 ))  # ~16448, aligned
-TOTAL_SIZE=$((BUFFER_SIZE * 8))  # 8 CPUs
-
-echo "Buffer sizes:"
-echo "  Per-CPU buffer: $BUFFER_SIZE bytes"
-echo "  Total (8 CPUs): $TOTAL_SIZE bytes"
-echo ""
-
-# Create output directory
-OUTPUT_DIR="/tmp/breenix_trace_test"
 rm -rf "$OUTPUT_DIR"
 mkdir -p "$OUTPUT_DIR"
 
-# Create GDB commands file
-cat > "$OUTPUT_DIR/gdb_commands.txt" << EOF
-set pagination off
-set confirm off
+QEMU_PID=""
+cleanup() {
+    if [ -n "$QEMU_PID" ]; then
+        kill "$QEMU_PID" 2>/dev/null || true
+        wait "$QEMU_PID" 2>/dev/null || true
+    fi
+}
+trap cleanup EXIT
 
-# Connect to QEMU GDB server
-target remote localhost:1234
+echo "Starting $QEMU_BIN with gdbstub on port $GDB_PORT..."
 
-# Wait for kernel to initialize tracing
-# Set breakpoint after tracing init (look for the checkpoint log)
-break *($KERNEL_BASE + 0x18b090)
+if [ "$ARCH" = "aarch64" ]; then
+    EXT2_DISK="$BREENIX_ROOT/target/ext2-aarch64.img"
+    if [ ! -f "$EXT2_DISK" ]; then
+        echo "Error: ext2 disk not found at $EXT2_DISK" >&2
+        exit 1
+    fi
+    cp "$EXT2_DISK" "$OUTPUT_DIR/ext2-writable.img"
+    "$QEMU_BIN" \
+        -M virt,gic-version=3 -cpu max -m 512 -smp 4 \
+        -kernel "$KERNEL_BIN" \
+        -display none -no-reboot \
+        -device virtio-gpu-device \
+        -device virtio-keyboard-device \
+        -device virtio-tablet-device \
+        -device virtio-blk-device,drive=ext2 \
+        -drive "if=none,id=ext2,format=raw,file=$OUTPUT_DIR/ext2-writable.img" \
+        -device virtio-net-device,netdev=net0 \
+        -netdev user,id=net0 \
+        -serial "file:$OUTPUT_DIR/serial.txt" \
+        -gdb "tcp::$GDB_PORT" \
+        >"$OUTPUT_DIR/qemu.log" 2>&1 &
+    QEMU_PID=$!
+else
+    UEFI_IMG=$(ls -t "$BREENIX_ROOT/target/release/build/breenix-"*/out/breenix-uefi.img 2>/dev/null | head -1)
+    if [ -z "$UEFI_IMG" ]; then
+        echo "Error: UEFI image not found (run the qemu-uefi build first)" >&2
+        exit 1
+    fi
+    cp "$BREENIX_ROOT/target/ovmf/x64/code.fd" "$OUTPUT_DIR/OVMF_CODE.fd"
+    cp "$BREENIX_ROOT/target/ovmf/x64/vars.fd" "$OUTPUT_DIR/OVMF_VARS.fd"
+    "$QEMU_BIN" \
+        -pflash "$OUTPUT_DIR/OVMF_CODE.fd" \
+        -pflash "$OUTPUT_DIR/OVMF_VARS.fd" \
+        -drive "if=none,id=hd,format=raw,readonly=on,file=$UEFI_IMG" \
+        -device virtio-blk-pci,drive=hd,bootindex=0,disable-modern=on,disable-legacy=off \
+        -machine pc,accel=tcg -cpu qemu64 -smp 1 -m 512 \
+        -display none -no-reboot -no-shutdown \
+        -device isa-debug-exit,iobase=0xf4,iosize=0x04 \
+        -serial "file:$OUTPUT_DIR/serial.txt" \
+        -gdb "tcp::$GDB_PORT" \
+        >"$OUTPUT_DIR/qemu.log" 2>&1 &
+    QEMU_PID=$!
+fi
 
-# Continue to let kernel boot
-continue
+echo "QEMU started (PID: $QEMU_PID); letting the kernel run ${SETTLE_SECONDS}s to record events..."
+sleep "$SETTLE_SECONDS"
 
-# Wait a moment for tracing to record some events
-shell sleep 2
-
-# Check if tracing is enabled
-print/x *(unsigned long long*)$TRACE_ENABLED_ADDR
-
-# Check write index
-print/x *(unsigned long long*)$TRACE_CPU0_IDX_ADDR
-
-# Dump trace buffers to file
-dump binary memory $OUTPUT_DIR/trace_buffers.bin $TRACE_BUFFERS_ADDR ($TRACE_BUFFERS_ADDR + $TOTAL_SIZE)
-
-# Dump enabled flag
-dump binary memory $OUTPUT_DIR/trace_enabled.bin $TRACE_ENABLED_ADDR ($TRACE_ENABLED_ADDR + 8)
-
-echo \n=== Trace Memory Dump Complete ===\n
-
-quit
-EOF
-
-echo "Starting QEMU with GDB..."
-
-# Start QEMU with GDB server
-UEFI_IMG=$(ls -t "$BREENIX_ROOT/target/release/build/breenix-"*/out/breenix-uefi.img 2>/dev/null | head -1)
-if [ -z "$UEFI_IMG" ]; then
-    echo "Error: UEFI image not found"
+if ! kill -0 "$QEMU_PID" 2>/dev/null; then
+    echo "Error: QEMU exited during the settle window" >&2
+    tail -40 "$OUTPUT_DIR/qemu.log" 2>/dev/null || true
     exit 1
 fi
 
-# Copy OVMF files
-cp "$BREENIX_ROOT/target/ovmf/x64/code.fd" "$OUTPUT_DIR/OVMF_CODE.fd"
-cp "$BREENIX_ROOT/target/ovmf/x64/vars.fd" "$OUTPUT_DIR/OVMF_VARS.fd"
+cat > "$OUTPUT_DIR/gdb_commands.txt" <<EOF
+set pagination off
+set confirm off
+set architecture auto
+# Attaching to the QEMU gdbstub is what halts the guest; there is no breakpoint
+# address to go stale.
+target remote localhost:$GDB_PORT
+printf "TRACE_ENABLED = 0x%llx\n", *(unsigned long long*)$TRACE_ENABLED_ADDR
+printf "TRACE_CPU0_WRITE_IDX = %llu\n", *(unsigned long long*)$TRACE_CPU0_IDX_ADDR
+dump binary memory $OUTPUT_DIR/trace_buffers.bin $TRACE_BUFFERS_ADDR ($TRACE_BUFFERS_ADDR + $TOTAL_SIZE)
+dump binary memory $OUTPUT_DIR/trace_enabled.bin $TRACE_ENABLED_ADDR ($TRACE_ENABLED_ADDR + 8)
+echo \n=== Trace Memory Dump Complete ===\n
+quit
+EOF
 
-# Start QEMU in background with GDB enabled
-qemu-system-x86_64 \
-    -pflash "$OUTPUT_DIR/OVMF_CODE.fd" \
-    -pflash "$OUTPUT_DIR/OVMF_VARS.fd" \
-    -drive if=none,id=hd,format=raw,readonly=on,file="$UEFI_IMG" \
-    -device virtio-blk-pci,drive=hd,bootindex=0,disable-modern=on,disable-legacy=off \
-    -machine pc,accel=tcg -cpu qemu64 -smp 1 -m 512 \
-    -display none -no-reboot -no-shutdown \
-    -device isa-debug-exit,iobase=0xf4,iosize=0x04 \
-    -serial file:"$OUTPUT_DIR/serial.txt" \
-    -gdb tcp::1234 -S \
-    &>/dev/null &
-QEMU_PID=$!
+echo "Attaching GDB and dumping the trace region..."
+set +e
+timeout 120 "$GDB_BIN" -nx -batch -x "$OUTPUT_DIR/gdb_commands.txt" "$KERNEL_BIN" \
+    2>&1 | tee "$OUTPUT_DIR/gdb_output.txt"
+GDB_STATUS=${PIPESTATUS[0]}
+set -e
 
-echo "QEMU started (PID: $QEMU_PID)"
-sleep 2
+cleanup
+QEMU_PID=""
 
-# Run GDB
-echo "Running GDB commands..."
-timeout 60 gdb -batch -x "$OUTPUT_DIR/gdb_commands.txt" "$KERNEL_BIN" 2>&1 || true
-
-# Clean up
-kill $QEMU_PID 2>/dev/null || true
-
-# Check results
 echo ""
 echo "=== Results ==="
 echo ""
 
-if [ -f "$OUTPUT_DIR/trace_buffers.bin" ]; then
-    SIZE=$(stat -f%z "$OUTPUT_DIR/trace_buffers.bin" 2>/dev/null || stat -c%s "$OUTPUT_DIR/trace_buffers.bin" 2>/dev/null)
-    echo "Trace buffer dump: $SIZE bytes"
-
-    # Parse with Python script
-    if [ -f "$BREENIX_ROOT/scripts/trace_memory_dump.py" ]; then
-        echo ""
-        echo "Parsing trace data..."
-        python3 "$BREENIX_ROOT/scripts/trace_memory_dump.py" --parse "$OUTPUT_DIR/trace_buffers.bin" --validate
-    fi
-else
-    echo "Error: Trace buffer dump not created"
+if [ ! -f "$OUTPUT_DIR/trace_buffers.bin" ]; then
+    echo "FAIL: trace buffer dump was not created (gdb exit $GDB_STATUS)"
     echo ""
-    echo "GDB output:"
-    cat "$OUTPUT_DIR/gdb_commands.txt" 2>/dev/null || true
+    echo "Serial tail:"
+    tail -40 "$OUTPUT_DIR/serial.txt" 2>/dev/null || echo "(no serial output)"
     exit 1
 fi
 
+DUMP_SIZE=$(wc -c < "$OUTPUT_DIR/trace_buffers.bin" | tr -d ' ')
+echo "Trace buffer dump: $DUMP_SIZE bytes (expected $TOTAL_SIZE)"
+if [ "$DUMP_SIZE" -ne "$TOTAL_SIZE" ]; then
+    echo "FAIL: short dump — the guest memory read did not cover TRACE_BUFFERS"
+    exit 1
+fi
+
+grep -E '^TRACE_(ENABLED|CPU0_WRITE_IDX)' "$OUTPUT_DIR/gdb_output.txt" || true
+
+TRACE_ENABLED_VALUE=$(sed -n 's/^TRACE_ENABLED = 0x\([0-9a-fA-F]*\)$/\1/p' \
+    "$OUTPUT_DIR/gdb_output.txt" | head -1)
+if [ -z "$TRACE_ENABLED_VALUE" ] || [ "$((16#$TRACE_ENABLED_VALUE))" -eq 0 ]; then
+    echo "FAIL: TRACE_ENABLED is not set — the kernel never enabled tracing"
+    exit 1
+fi
+echo "OK: TRACE_ENABLED is set"
+
 echo ""
-echo "Serial output:"
+echo "Parsing and validating trace data..."
+set +e
+python3 "$BREENIX_ROOT/scripts/trace_memory_dump.py" \
+    --parse "$OUTPUT_DIR/trace_buffers.bin" --max-cpus "$MAX_CPUS" --validate \
+    2>&1 | tee "$OUTPUT_DIR/validation.txt"
+VALIDATE_STATUS=${PIPESTATUS[0]}
+set -e
+
+echo ""
+echo "Serial output (first 50 lines):"
 head -50 "$OUTPUT_DIR/serial.txt" 2>/dev/null || echo "(no serial output)"
 
 echo ""
-echo "Done. Files saved to: $OUTPUT_DIR"
+if [ "$VALIDATE_STATUS" -eq 0 ]; then
+    echo "TRACING_EVIDENCE:$ARCH:PASS"
+else
+    echo "TRACING_EVIDENCE:$ARCH:FAIL"
+fi
+echo "Artifacts: $OUTPUT_DIR"
+exit "$VALIDATE_STATUS"

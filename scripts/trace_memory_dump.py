@@ -1,73 +1,117 @@
 #!/usr/bin/env python3
 """
-Trace Memory Dump Framework for Breenix
+Trace memory dump parser and validator for Breenix.
 
-This script captures and validates the tracing subsystem state by:
-1. Running QEMU with GDB attached
-2. Setting a breakpoint at a test completion point
-3. Dumping the tracing memory regions (TRACE_BUFFERS, counters, etc.)
-4. Parsing the raw bytes to extract and validate trace events
+This parses a raw dump of the kernel's `TRACE_BUFFERS` array — produced by
+`scripts/test_tracing_via_gdb.sh`, which owns QEMU and GDB — and validates that
+the tracing subsystem actually recorded usable events.
 
-The tracing structures are:
-- TraceEvent: 16 bytes (u64 timestamp, u16 event_type, u8 cpu_id, u8 flags, u32 payload)
-- TraceCpuBuffer: 1024 entries per CPU + metadata
-- TraceCounter: per-CPU atomic counters with 64-byte cache-line alignment
+The tracing structures it decodes:
+- TraceEvent:     16 bytes (u64 timestamp, u16 event_type, u8 cpu_id, u8 flags,
+                  u32 payload), #[repr(C, align(16))]
+- TraceCpuBuffer: TRACE_BUFFER_SIZE entries + write_idx/read_idx/dropped
+                  metadata, #[repr(C, align(64))]
+- TraceCounter:   per-CPU u64 slots on 64-byte cache lines
+
+Layout constants and the event-type table are read out of the kernel sources
+that define them (`kernel/src/tracing/{core,buffer}.rs`) rather than duplicated
+here as literals. A stale copy of either would silently mis-decode: before this
+was derived, the table held 13 of the kernel's ~60 event types, so most real
+events decoded as UNKNOWN.
 
 Usage:
-    # Dump tracing state at a breakpoint
-    python3 scripts/trace_memory_dump.py --breakpoint kernel::kernel_main
-
-    # Dump and validate expected events
-    python3 scripts/trace_memory_dump.py --validate
+    python3 scripts/trace_memory_dump.py --parse <dump.bin> [--max-cpus N] --validate
 """
 
-import os
+import re
 import sys
 import struct
 import argparse
-import subprocess
-import time
-import json
 from pathlib import Path
 from dataclasses import dataclass
-from typing import List, Optional, Dict, Any, Tuple
+from typing import List, Tuple
 
 # ============================================================================
-# Constants matching kernel/src/tracing/
+# Constants derived from kernel/src/tracing/
 # ============================================================================
 
-# TraceEvent structure (16 bytes, aligned)
-# Layout: timestamp(8) + event_type(2) + cpu_id(1) + flags(1) + payload(4)
+# TraceEvent is #[repr(C, align(16))]: 8 + 2 + 1 + 1 + 4 = 16 bytes.
 TRACE_EVENT_SIZE = 16
+# TraceCpuBuffer metadata following the entries array:
+# write_idx(8) + read_idx(8) + dropped(8) + _padding(24).
+TRACE_BUFFER_METADATA = 48
 
-# Buffer constants
-TRACE_BUFFER_SIZE = 1024  # Events per CPU
-MAX_CPUS = 8
+BREENIX_ROOT = Path(__file__).resolve().parent.parent
+CORE_RS = BREENIX_ROOT / "kernel" / "src" / "tracing" / "core.rs"
+BUFFER_RS = BREENIX_ROOT / "kernel" / "src" / "tracing" / "buffer.rs"
 
-# Event type constants (from core.rs)
-EVENT_TYPES = {
-    0x0001: "CTX_SWITCH_ENTRY",
-    0x0002: "CTX_SWITCH_EXIT",
-    0x0003: "CTX_SWITCH_TO_USER",
-    0x0004: "CTX_SWITCH_FROM_USER",
-    0x0100: "IRQ_ENTRY",
-    0x0101: "IRQ_EXIT",
-    0x0102: "TIMER_TICK",
-    0x0200: "SCHED_PICK",
-    0x0201: "SCHED_RESCHED",
-    0x0300: "SYSCALL_ENTRY",
-    0x0301: "SYSCALL_EXIT",
-    0xFF00: "MARKER",
-    0xFF01: "DEBUG",
-}
 
-# PIE kernel base address
-KERNEL_BASE = 0x10000000000
+def read_usize_const(path: Path, name: str) -> int:
+    """Read `pub const <name>: usize = <n>;` out of a kernel source file."""
+    pattern = re.compile(r"^pub const %s: usize = ([0-9_]+);" % re.escape(name), re.M)
+    match = pattern.search(path.read_text())
+    if not match:
+        raise SystemExit("Error: could not read %s from %s" % (name, path))
+    return int(match.group(1).replace("_", ""))
+
+
+def read_event_types(core_rs: Path, providers_dir: Path) -> dict:
+    """Read every event-type constant the kernel defines.
+
+    Two places define them and both have to be read, or real events decode as
+    UNKNOWN:
+
+    * `impl TraceEventType` in core.rs, the shared types (TIMER_TICK, the
+      context-switch and syscall families, the debug markers).
+    * each provider module, which composes its own ids as
+      `((PROVIDER_ID as u16) << 8) | n`. `TEARDOWN_DEFER_EVENT` is 0x0A00 that
+      way, and an x86 evidence run failed on exactly that value before this
+      function looked at the provider files.
+
+    Returns {value: NAME}. Two providers share an id, so a duplicate value keeps
+    the first name seen; that is enough for human-readable decoding.
+    """
+    table = {}
+
+    text = core_rs.read_text()
+    body = re.search(r"impl TraceEventType \{(.*?)\n\}", text, re.S)
+    if not body:
+        raise SystemExit("Error: could not locate `impl TraceEventType` in %s" % core_rs)
+    for name, value in re.findall(
+        r"pub const (\w+): u16 = (0[xX][0-9a-fA-F]+|\d+);", body.group(1)
+    ):
+        table.setdefault(int(value, 0), name)
+    if not table:
+        raise SystemExit("Error: no event-type constants found in %s" % core_rs)
+
+    for provider in sorted(providers_dir.glob("*.rs")):
+        source = provider.read_text()
+        provider_id = re.search(
+            r"^pub const PROVIDER_ID: u8 = (0[xX][0-9a-fA-F]+|\d+);", source, re.M
+        )
+        if not provider_id:
+            continue
+        base = int(provider_id.group(1), 0) << 8
+        for name, low in re.findall(
+            r"^pub const (\w+): u16 = \(\(PROVIDER_ID as u16\) << 8\) \| "
+            r"(0[xX][0-9a-fA-F]+|\d+);",
+            source,
+            re.M,
+        ):
+            table.setdefault(base | int(low, 0), name)
+
+    return table
+
+
+TRACE_BUFFER_SIZE = read_usize_const(BUFFER_RS, "TRACE_BUFFER_SIZE")
+KERNEL_MAX_CPUS = read_usize_const(CORE_RS, "MAX_CPUS")
+EVENT_TYPES = read_event_types(CORE_RS, CORE_RS.parent / "providers")
 
 
 @dataclass
 class TraceEvent:
-    """Represents a single trace event from the ring buffer."""
+    """A single trace event from the ring buffer."""
+
     timestamp: int
     event_type: int
     cpu_id: int
@@ -75,296 +119,305 @@ class TraceEvent:
     payload: int
 
     @classmethod
-    def from_bytes(cls, data: bytes) -> 'TraceEvent':
-        """Parse a TraceEvent from 16 bytes of memory."""
+    def from_bytes(cls, data: bytes) -> "TraceEvent":
         if len(data) != TRACE_EVENT_SIZE:
-            raise ValueError(f"Expected {TRACE_EVENT_SIZE} bytes, got {len(data)}")
-
-        # Little-endian: timestamp(8), event_type(2), cpu_id(1), flags(1), payload(4)
-        timestamp, event_type, cpu_id, flags, payload = struct.unpack('<QHBBI', data)
-        return cls(timestamp, event_type, cpu_id, flags, payload)
+            raise ValueError("TraceEvent needs %d bytes, got %d" % (TRACE_EVENT_SIZE, len(data)))
+        timestamp, event_type, cpu_id, flags, payload = struct.unpack("<QHBBI", data)
+        return cls(
+            timestamp=timestamp,
+            event_type=event_type,
+            cpu_id=cpu_id,
+            flags=flags,
+            payload=payload,
+        )
 
     def event_name(self) -> str:
-        """Get human-readable event type name."""
-        return EVENT_TYPES.get(self.event_type, f"UNKNOWN({self.event_type:#06x})")
+        return EVENT_TYPES.get(self.event_type, "UNKNOWN(%#06x)" % self.event_type)
+
+    def is_recorded(self) -> bool:
+        """True for a slot a CPU actually wrote, false for an untouched slot."""
+        return self.timestamp != 0 or self.event_type != 0
 
     def __str__(self) -> str:
-        return (f"CPU{self.cpu_id} ts={self.timestamp} "
-                f"type={self.event_type:#06x} {self.event_name()} "
-                f"payload={self.payload} flags={self.flags:#04x}")
+        return "[%d] cpu%d %s payload=%#x flags=%#x" % (
+            self.timestamp,
+            self.cpu_id,
+            self.event_name(),
+            self.payload,
+            self.flags,
+        )
 
 
 @dataclass
 class TraceCpuBuffer:
-    """Represents a per-CPU trace ring buffer."""
+    """A per-CPU trace ring buffer."""
+
     cpu_id: int
     write_idx: int
+    dropped: int
     events: List[TraceEvent]
 
     def count(self) -> int:
-        """Number of valid events in buffer."""
+        """Number of valid events in the buffer."""
         return min(self.write_idx, TRACE_BUFFER_SIZE)
 
     def is_empty(self) -> bool:
         return self.write_idx == 0
 
+    def wrapped(self) -> bool:
+        return self.write_idx > TRACE_BUFFER_SIZE
+
     def iter_events(self):
-        """Iterate over events in order (oldest to newest)."""
+        """Iterate over recorded events, oldest to newest."""
         count = self.count()
-        if self.write_idx > TRACE_BUFFER_SIZE:
-            # Buffer wrapped - start from oldest
+        if self.wrapped():
             start = self.write_idx % TRACE_BUFFER_SIZE
             for i in range(count):
-                idx = (start + i) % TRACE_BUFFER_SIZE
-                yield self.events[idx]
+                yield self.events[(start + i) % TRACE_BUFFER_SIZE]
         else:
-            # Buffer not wrapped - start from 0
             for i in range(count):
                 yield self.events[i]
 
 
 @dataclass
 class TraceCounter:
-    """Represents a per-CPU atomic counter."""
+    """A per-CPU atomic counter."""
+
     name: str
-    per_cpu: List[int]  # Value per CPU
+    per_cpu: List[int]
 
     def total(self) -> int:
         return sum(self.per_cpu)
 
 
-class TraceMemoryDumper:
-    """Dumps and parses tracing memory from a running Breenix kernel."""
+def buffer_stride() -> int:
+    """Size of one TraceCpuBuffer, including the align(64) tail padding."""
+    entries = TRACE_BUFFER_SIZE * TRACE_EVENT_SIZE
+    return ((entries + TRACE_BUFFER_METADATA + 63) // 64) * 64
 
-    def __init__(self, breenix_root: Path):
-        self.breenix_root = breenix_root
-        self.gdb_script_dir = breenix_root / "breenix-gdb-chat" / "scripts"
-        self.symbols: Dict[str, int] = {}
 
-    def get_symbol_address(self, symbol: str) -> Optional[int]:
-        """Get the runtime address of a kernel symbol."""
-        # Use nm to find symbol offset, then add kernel base
-        kernel_binary = self.breenix_root / "target" / "release" / "qemu-uefi"
+def parse_trace_buffers(data: bytes, max_cpus: int) -> List[TraceCpuBuffer]:
+    """Parse a raw memory dump of the TRACE_BUFFERS array."""
+    stride = buffer_stride()
+    entries_size = TRACE_BUFFER_SIZE * TRACE_EVENT_SIZE
+    expected = stride * max_cpus
+    if len(data) < expected:
+        raise SystemExit(
+            "Error: dump is %d bytes but %d CPUs x %d bytes = %d are required. "
+            "The dump does not cover the whole TRACE_BUFFERS array."
+            % (len(data), max_cpus, stride, expected)
+        )
 
-        try:
-            result = subprocess.run(
-                ["nm", str(kernel_binary)],
-                capture_output=True, text=True, check=True
+    buffers = []
+    for cpu in range(max_cpus):
+        block = data[cpu * stride : (cpu + 1) * stride]
+        events = [
+            TraceEvent.from_bytes(block[i * TRACE_EVENT_SIZE : (i + 1) * TRACE_EVENT_SIZE])
+            for i in range(TRACE_BUFFER_SIZE)
+        ]
+        write_idx = struct.unpack("<Q", block[entries_size : entries_size + 8])[0]
+        dropped = struct.unpack("<Q", block[entries_size + 16 : entries_size + 24])[0]
+        buffers.append(
+            TraceCpuBuffer(cpu_id=cpu, write_idx=write_idx, dropped=dropped, events=events)
+        )
+    return buffers
+
+
+def parse_counter(data: bytes, name: str, max_cpus: int) -> TraceCounter:
+    """Parse a TraceCounter's per-CPU slots (64-byte cache-line aligned)."""
+    per_cpu = []
+    for cpu in range(max_cpus):
+        offset = cpu * 64
+        if offset + 8 > len(data):
+            raise SystemExit(
+                "Error: counter dump for %s is truncated at CPU %d" % (name, cpu)
             )
-            for line in result.stdout.splitlines():
-                parts = line.split()
-                if len(parts) >= 3 and parts[2] == symbol:
-                    offset = int(parts[0], 16)
-                    return KERNEL_BASE + offset
-        except subprocess.CalledProcessError:
-            pass
-        return None
-
-    def dump_memory_via_gdb(self, address: int, size: int, output_file: Path) -> bool:
-        """Use GDB to dump a memory region to a file."""
-        gdb_commands = f"""
-set pagination off
-target remote localhost:1234
-dump binary memory {output_file} {address:#x} {address + size:#x}
-quit
-"""
-        try:
-            result = subprocess.run(
-                ["gdb", "-batch", "-ex", gdb_commands.replace('\n', ' -ex ')],
-                capture_output=True, text=True, timeout=30
-            )
-            return output_file.exists()
-        except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
-            return False
-
-    def parse_trace_buffers(self, data: bytes) -> List[TraceCpuBuffer]:
-        """Parse raw memory dump of TRACE_BUFFERS array."""
-        buffers = []
-
-        # TraceCpuBuffer layout (simplified):
-        # - entries: [TraceEvent; 1024] = 16384 bytes
-        # - write_idx: AtomicUsize = 8 bytes
-        # - read_idx: AtomicUsize = 8 bytes (unused)
-        # - dropped: AtomicU64 = 8 bytes
-        # - padding to 64-byte alignment
-
-        # Calculate buffer size (must be 64-byte aligned)
-        entry_data_size = TRACE_BUFFER_SIZE * TRACE_EVENT_SIZE  # 16384
-        metadata_size = 8 + 8 + 8 + 24  # write_idx + read_idx + dropped + padding
-        buffer_size = entry_data_size + metadata_size  # ~16432, rounded up
-        # Actual size with 64-byte alignment
-        buffer_size = ((buffer_size + 63) // 64) * 64
-
-        for cpu in range(MAX_CPUS):
-            offset = cpu * buffer_size
-            if offset + buffer_size > len(data):
-                break
-
-            buffer_data = data[offset:offset + buffer_size]
-
-            # Parse events
-            events = []
-            for i in range(TRACE_BUFFER_SIZE):
-                event_offset = i * TRACE_EVENT_SIZE
-                event_data = buffer_data[event_offset:event_offset + TRACE_EVENT_SIZE]
-                if len(event_data) == TRACE_EVENT_SIZE:
-                    events.append(TraceEvent.from_bytes(event_data))
-
-            # Parse write index (after events)
-            write_idx_offset = entry_data_size
-            write_idx = struct.unpack('<Q', buffer_data[write_idx_offset:write_idx_offset + 8])[0]
-
-            buffers.append(TraceCpuBuffer(cpu_id=cpu, write_idx=write_idx, events=events))
-
-        return buffers
-
-    def parse_counter(self, data: bytes, name: str) -> TraceCounter:
-        """Parse a TraceCounter from raw memory."""
-        # CpuCounterSlot is 64 bytes (8-byte value + 56 bytes padding)
-        per_cpu = []
-        for cpu in range(MAX_CPUS):
-            offset = cpu * 64  # 64-byte cache-line aligned slots
-            if offset + 8 <= len(data):
-                value = struct.unpack('<Q', data[offset:offset + 8])[0]
-                per_cpu.append(value)
-            else:
-                per_cpu.append(0)
-        return TraceCounter(name=name, per_cpu=per_cpu)
-
-
-def run_gdb_dump(breenix_root: Path, breakpoint: str = None) -> Dict[str, Any]:
-    """
-    Run QEMU with GDB, optionally set breakpoint, and dump tracing state.
-
-    Returns a dictionary with:
-    - 'buffers': List of TraceCpuBuffer data
-    - 'counters': Dict of counter name -> TraceCounter
-    - 'enabled': Whether tracing is enabled
-    """
-    dumper = TraceMemoryDumper(breenix_root)
-
-    # Find symbol addresses
-    trace_buffers_addr = dumper.get_symbol_address("TRACE_BUFFERS")
-    trace_enabled_addr = dumper.get_symbol_address("TRACE_ENABLED")
-
-    if not trace_buffers_addr:
-        print("Error: Could not find TRACE_BUFFERS symbol", file=sys.stderr)
-        return {}
-
-    print(f"TRACE_BUFFERS at {trace_buffers_addr:#x}")
-    if trace_enabled_addr:
-        print(f"TRACE_ENABLED at {trace_enabled_addr:#x}")
-
-    # Calculate buffer size to dump
-    entry_data_size = TRACE_BUFFER_SIZE * TRACE_EVENT_SIZE
-    metadata_size = 64  # Aligned metadata
-    buffer_size = ((entry_data_size + metadata_size + 63) // 64) * 64
-    total_size = buffer_size * MAX_CPUS
-
-    print(f"Buffer size per CPU: {buffer_size} bytes")
-    print(f"Total dump size: {total_size} bytes")
-
-    # TODO: Implement actual GDB session with breakpoint
-    # For now, return placeholder
-    return {
-        'trace_buffers_addr': trace_buffers_addr,
-        'trace_enabled_addr': trace_enabled_addr,
-        'buffer_size': buffer_size,
-        'total_size': total_size,
-    }
+        per_cpu.append(struct.unpack("<Q", data[offset : offset + 8])[0])
+    return TraceCounter(name=name, per_cpu=per_cpu)
 
 
 def validate_trace_buffers(buffers: List[TraceCpuBuffer]) -> Tuple[bool, List[str]]:
-    """
-    Validate trace buffer contents against expected patterns.
+    """Validate that the dump shows a live, correctly-decoded tracing subsystem.
 
-    Returns (success, list of validation messages).
+    Every check below can fail. The point of this harness is that an empty or
+    garbage buffer is reported as a FAILURE — a run that records nothing must
+    not read as evidence that tracing works.
     """
     messages = []
     success = True
 
-    # Check that at least one buffer has events
     total_events = sum(b.count() for b in buffers)
     if total_events == 0:
-        messages.append("FAIL: No trace events recorded")
+        messages.append("FAIL: no trace events recorded in any CPU buffer")
         success = False
     else:
-        messages.append(f"OK: {total_events} total events across {len(buffers)} CPUs")
+        messages.append(
+            "OK: %d total events across %d parsed CPU buffers" % (total_events, len(buffers))
+        )
 
-    # Check for expected event types
-    event_types_seen = set()
+    # The boot CPU always runs; an empty CPU0 buffer means recording never
+    # happened, whatever the other buffers hold.
+    if buffers and buffers[0].is_empty():
+        messages.append("FAIL: CPU0 (boot CPU) recorded no events")
+        success = False
+    elif buffers:
+        messages.append(
+            "OK: CPU0 recorded %d events (write_idx=%d, dropped=%d, wrapped=%s)"
+            % (
+                buffers[0].count(),
+                buffers[0].write_idx,
+                buffers[0].dropped,
+                buffers[0].wrapped(),
+            )
+        )
+
+    # Decode coverage: every recorded event must map to a known event type.
+    # An unknown type means the dump is misaligned or the decode table drifted
+    # from the kernel, and either way the decoded output is not trustworthy.
+    unknown = {}
+    seen_types = set()
     for buffer in buffers:
         for event in buffer.iter_events():
-            event_types_seen.add(event.event_type)
+            if not event.is_recorded():
+                continue
+            seen_types.add(event.event_type)
+            if event.event_type not in EVENT_TYPES:
+                unknown[event.event_type] = unknown.get(event.event_type, 0) + 1
+    if unknown:
+        detail = ", ".join(
+            "%#06x x%d" % (k, v) for k, v in sorted(unknown.items(), key=lambda kv: -kv[1])[:8]
+        )
+        messages.append("FAIL: %d event type(s) did not decode: %s" % (len(unknown), detail))
+        success = False
+    elif seen_types:
+        names = sorted(EVENT_TYPES[t] for t in seen_types)
+        messages.append("OK: all %d observed event types decode: %s" % (len(names), ", ".join(names)))
 
-    # We expect at least timer ticks if the kernel booted
-    if 0x0102 not in event_types_seen:  # TIMER_TICK
-        messages.append("WARN: No TIMER_TICK events seen")
+    # A booted kernel with the timer running must have recorded timer ticks.
+    timer_tick = next((v for v, n in EVENT_TYPES.items() if n == "TIMER_TICK"), None)
+    if timer_tick is None:
+        messages.append("FAIL: kernel event-type table has no TIMER_TICK")
+        success = False
+    elif timer_tick not in seen_types:
+        messages.append("FAIL: no TIMER_TICK events recorded — the timer provider never fired")
+        success = False
     else:
         messages.append("OK: TIMER_TICK events present")
 
-    # Check buffer integrity
+    # Ring-overflow accounting. `TraceCpuBuffer::record` bumps `dropped` every
+    # time it reserves a slot that already held an event, so once a buffer has
+    # wrapped exactly TRACE_BUFFER_SIZE of its writes are still resident and the
+    # rest are counted as dropped. That is an exact identity, and it is the one
+    # falsifiable statement this dump can make about the ring's own bookkeeping.
     for buffer in buffers:
-        if buffer.write_idx > 0:
-            # Verify timestamps are monotonically increasing (within reason)
-            last_ts = 0
-            out_of_order = 0
-            for event in buffer.iter_events():
-                if event.timestamp < last_ts and event.timestamp != 0:
-                    out_of_order += 1
-                last_ts = event.timestamp
-
-            if out_of_order > 0:
-                messages.append(f"WARN: CPU{buffer.cpu_id} has {out_of_order} out-of-order timestamps")
+        if buffer.wrapped():
+            expected_dropped = buffer.write_idx - TRACE_BUFFER_SIZE
+            if buffer.dropped != expected_dropped:
+                messages.append(
+                    "FAIL: CPU%d dropped=%d but write_idx=%d implies %d overwritten slots"
+                    % (buffer.cpu_id, buffer.dropped, buffer.write_idx, expected_dropped)
+                )
+                success = False
             else:
-                messages.append(f"OK: CPU{buffer.cpu_id} timestamps monotonic")
+                messages.append(
+                    "OK: CPU%d overflow accounting exact (write_idx=%d, dropped=%d, resident=%d)"
+                    % (buffer.cpu_id, buffer.write_idx, buffer.dropped, TRACE_BUFFER_SIZE)
+                )
+        elif buffer.dropped != 0:
+            messages.append(
+                "FAIL: CPU%d never wrapped (write_idx=%d) but reports dropped=%d"
+                % (buffer.cpu_id, buffer.write_idx, buffer.dropped)
+            )
+            success = False
+
+    # Slot-order timestamp inversions are REPORTED, not gated.
+    #
+    # `record_event` samples the timestamp before `record()` reserves a slot, and
+    # `record()` cannot mask interrupts (it runs in the timer and IRQ paths under
+    # a sub-microsecond budget). So an interrupt landing between a writer's
+    # timestamp read and its slot write lets the nested event take the earlier
+    # slot with the later timestamp. Sampling the timestamp after the reservation
+    # would not close it either — the same interrupt can land between the
+    # reservation and the timestamp read. Slot order therefore does not imply
+    # timestamp order on this ring, and asserting that it does would be a false
+    # invariant. The count is printed because a sudden jump in it is still worth
+    # seeing, and because a misaligned decode shows up here as mass inversion.
+    total_inversions = 0
+    for buffer in buffers:
+        if buffer.is_empty():
+            continue
+        last_ts = 0
+        inversions = 0
+        for event in buffer.iter_events():
+            if not event.is_recorded():
+                continue
+            if event.timestamp < last_ts:
+                inversions += 1
+            last_ts = event.timestamp
+        total_inversions += inversions
+        if inversions:
+            messages.append(
+                "CENSUS: CPU%d has %d nested-record timestamp inversion(s) of %d events"
+                % (buffer.cpu_id, inversions, buffer.count())
+            )
+    messages.append(
+        "CENSUS: %d timestamp inversion(s) total (not a failure; see comment)" % total_inversions
+    )
 
     return success, messages
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Dump and validate Breenix tracing state")
-    parser.add_argument("--breakpoint", "-b", help="GDB breakpoint to set before dumping")
+    parser = argparse.ArgumentParser(
+        description="Parse and validate a Breenix TRACE_BUFFERS memory dump"
+    )
+    parser.add_argument("--parse", "-p", required=True, help="Raw TRACE_BUFFERS dump to parse")
     parser.add_argument("--validate", "-v", action="store_true", help="Validate trace contents")
-    parser.add_argument("--output", "-o", help="Output file for raw memory dump")
-    parser.add_argument("--parse", "-p", help="Parse existing memory dump file")
+    parser.add_argument(
+        "--max-cpus",
+        type=int,
+        default=KERNEL_MAX_CPUS,
+        help="CPU buffers in the dump (default: MAX_CPUS from kernel/src/tracing/core.rs = %d)"
+        % KERNEL_MAX_CPUS,
+    )
+    parser.add_argument(
+        "--events", action="store_true", help="Print every decoded event, not just the summary"
+    )
     args = parser.parse_args()
 
-    # Find breenix root
-    script_path = Path(__file__).resolve()
-    breenix_root = script_path.parent.parent
+    with open(args.parse, "rb") as handle:
+        data = handle.read()
 
-    if args.parse:
-        # Parse existing dump file
-        dumper = TraceMemoryDumper(breenix_root)
-        with open(args.parse, 'rb') as f:
-            data = f.read()
+    buffers = parse_trace_buffers(data, args.max_cpus)
 
-        buffers = dumper.parse_trace_buffers(data)
+    print(
+        "Layout: TRACE_BUFFER_SIZE=%d, MAX_CPUS=%d, stride=%d bytes, %d event types known"
+        % (TRACE_BUFFER_SIZE, KERNEL_MAX_CPUS, buffer_stride(), len(EVENT_TYPES))
+    )
+    print("\nParsed %d CPU buffers:" % len(buffers))
+    for buffer in buffers:
+        print(
+            "  CPU%d: %d events (write_idx=%d, dropped=%d)"
+            % (buffer.cpu_id, buffer.count(), buffer.write_idx, buffer.dropped)
+        )
 
-        print(f"\nParsed {len(buffers)} CPU buffers:")
-        for buffer in buffers:
-            print(f"  CPU{buffer.cpu_id}: {buffer.count()} events (write_idx={buffer.write_idx})")
-
-        if args.validate:
-            success, messages = validate_trace_buffers(buffers)
-            print("\nValidation results:")
-            for msg in messages:
-                print(f"  {msg}")
-            sys.exit(0 if success else 1)
-
-        # Print events
+    if args.events:
         print("\nEvents:")
         for buffer in buffers:
-            if not buffer.is_empty():
-                print(f"\n--- CPU{buffer.cpu_id} ({buffer.count()} events) ---")
-                for event in buffer.iter_events():
-                    if event.timestamp > 0 or event.event_type > 0:
-                        print(f"  {event}")
-    else:
-        # Run GDB and dump
-        result = run_gdb_dump(breenix_root, args.breakpoint)
-        print(json.dumps(result, indent=2))
+            if buffer.is_empty():
+                continue
+            print("\n--- CPU%d (%d events) ---" % (buffer.cpu_id, buffer.count()))
+            for event in buffer.iter_events():
+                if event.is_recorded():
+                    print("  %s" % event)
+
+    if args.validate:
+        success, messages = validate_trace_buffers(buffers)
+        print("\nValidation results:")
+        for message in messages:
+            print("  %s" % message)
+        print("\nTRACE_VALIDATION:%s" % ("PASS" if success else "FAIL"))
+        sys.exit(0 if success else 1)
 
 
 if __name__ == "__main__":

@@ -64,7 +64,15 @@ extern crate kernel;
 // Re-import commonly used kernel modules for unqualified access
 #[cfg(all(target_arch = "x86_64", feature = "interactive"))]
 use kernel::graphics;
-#[cfg(all(target_arch = "x86_64", any(feature = "boot_tests", feature = "btrt")))]
+// Unqualified `test_framework::` appears in exactly one place: the staged
+// registry dispatch below. Every other reference is fully qualified, so this
+// import's cfg has to match that block exactly or a `btrt`-only build warns on
+// an unused import (it did, before and after this change was scoped).
+#[cfg(all(
+    target_arch = "x86_64",
+    feature = "boot_tests",
+    feature = "x86_staged_registry"
+))]
 use kernel::test_framework;
 #[cfg(all(
     target_arch = "x86_64",
@@ -1030,6 +1038,77 @@ fn kernel_main_continue() -> ! {
         });
     }
 
+    // Dispatch the staged boot-test registry (#533).
+    //
+    // This is the last point in the x86 boot where the registry CAN be
+    // dispatched: `run_staged_tests` spawns one kthread per subsystem and
+    // `kthread_join`s them, so it needs preemption enabled, and the boot thread
+    // has to still be running. Both stop being true a few lines below - the
+    // `preempt_disable()` immediately after this takes the scheduling brake, and
+    // the boot thread then strands inside the disk-backed `get_test_binary()`
+    // busy-wait in `test_exec::test_direct_execution()` and never returns.
+    //
+    // The historical call site sat next to `preempt_enable()` several hundred
+    // lines further down, past both of those. It was therefore unreachable, and
+    // #533's symptom was exactly that: an x86 boot emitted no
+    // `[BOOT_TESTS:START]` and no per-test markers at all, and the only
+    // completion output was the marker-only `[TESTS_COMPLETE:0/0]` +
+    // `[BOOT_TESTS:PASS]` pair that the first Ring 3 syscall prints. Measured on
+    // main @ 54aa16a1: the whole serial contained three registry markers, all
+    // from that vacuous path.
+    // Off by default until the strand below is fixed. Turning the feature on is
+    // how the two blocking defects are reproduced; leaving it off keeps the
+    // shipped x86 boot identical to what it was before this work.
+    #[cfg(all(feature = "boot_tests", feature = "x86_staged_registry"))]
+    {
+        log::info!("[boot] Running parallel boot tests...");
+        #[cfg(feature = "btrt")]
+        kernel::test_framework::btrt::pass(kernel::test_framework::catalog::BOOT_TESTS_START);
+
+        // The executor's `kthread_join` waits with `hlt`, so the timer has to be
+        // able to fire or the boot thread halts forever with the test kthread
+        // sitting runnable behind it. That is not hypothetical: every
+        // `kernel::task::kthread_tests::*` case run immediately above this ends
+        // with `arch_disable_interrupts()`, so control arrives here with IF
+        // clear, and the first dispatched subsystem thread hung the boot
+        // permanently after `[STAGE:serial:ADVANCE]`.
+        //
+        // Enable interrupts for the dispatch and put the flag back the way it
+        // was found. Restoring rather than leaving them on keeps this block from
+        // changing the interrupt state the rest of the boot sequence inherits.
+        let interrupts_were_enabled = x86_64::instructions::interrupts::are_enabled();
+        if !interrupts_were_enabled {
+            x86_64::instructions::interrupts::enable();
+        }
+
+        let mut failures = test_framework::run_all_tests();
+
+        // ProcessContext is the last stage with registered x86 tests, and this
+        // is the only x86 context that can dispatch it: the stage's tests need
+        // preemption (they run in a joined kthread like every other stage), and
+        // the boot thread has none left after the `preempt_disable()` below.
+        // Its precondition holds here - `kernel_main_on_kernel_stack` has
+        // already created and retired user processes by this point, so the
+        // process manager is populated and the boot thread is a live scheduler
+        // thread. The Userspace stage stays marker-only on both architectures:
+        // it is reached from syscall context, where #533 itself says not to run
+        // blocking staged tests.
+        failures +=
+            test_framework::advance_to_stage(test_framework::TestStage::ProcessContext);
+
+        if !interrupts_were_enabled {
+            x86_64::instructions::interrupts::disable();
+        }
+
+        if failures > 0 {
+            log::error!("[boot] {} test(s) failed!", failures);
+        } else {
+            log::info!("[boot] All boot tests passed!");
+        }
+        #[cfg(feature = "btrt")]
+        kernel::test_framework::btrt::pass(kernel::test_framework::catalog::BOOT_TESTS_COMPLETE);
+    }
+
     // Take the boot sequence's scheduling brake.
     //
     // This call is UNCONDITIONAL and must stay that way. The matching
@@ -1771,23 +1850,9 @@ fn kernel_main_continue() -> ! {
     clock_gettime_test::test_clock_gettime();
     log::info!("✅ clock_gettime tests passed");
 
-    // Run parallel boot tests if enabled
-    // These run after scheduler init but before enabling interrupts to avoid
-    // preemption during test execution
-    #[cfg(feature = "boot_tests")]
-    {
-        log::info!("[boot] Running parallel boot tests...");
-        #[cfg(feature = "btrt")]
-        kernel::test_framework::btrt::pass(kernel::test_framework::catalog::BOOT_TESTS_START);
-        let failures = test_framework::run_all_tests();
-        if failures > 0 {
-            log::error!("[boot] {} test(s) failed!", failures);
-        } else {
-            log::info!("[boot] All boot tests passed!");
-        }
-        #[cfg(feature = "btrt")]
-        kernel::test_framework::btrt::pass(kernel::test_framework::catalog::BOOT_TESTS_COMPLETE);
-    }
+    // The staged boot-test registry used to be dispatched from here. It is now
+    // dispatched from the top of kernel_main_continue() instead - see the #533
+    // comment there for why this position could never work.
 
     // Mark kernel initialization complete BEFORE enabling interrupts
     // Once interrupts are enabled, the scheduler will preempt to userspace
