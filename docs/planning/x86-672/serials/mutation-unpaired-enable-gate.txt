@@ -1,0 +1,390 @@
+Building the shipped x86_64 production kernel profile...
+   Compiling kernel v0.1.0 (/root/breenix/kernel)
+   Compiling breenix v0.1.0 (/root/breenix)
+    Finished `release` profile [optimized] target(s) in 14.40s
+   Compiling kernel v0.1.0 (/root/breenix/kernel)
+   Compiling breenix v0.1.0 (/root/breenix)
+    Finished `release` profile [optimized] target(s) in 14.98s
+     Running `target/release/qemu-uefi`
+[qemu-uefi] Using UEFI image: /root/breenix/target/release/build/breenix-792743187c012d02/out/breenix-uefi.img (6356992 bytes)
+Creating ext2 disk image...
+  Arch: x86_64
+  Output: /root/breenix/target/ext2.img
+  Size: 256MB
+  busybox.elf not found, attempting to build...
+Error: x86_64-linux-musl-gcc not found in PATH
+
+Install with:
+  brew tap filosottile/musl-cross
+  brew install musl-cross
+  WARNING: BusyBox build failed (see build-busybox.sh for prerequisites)
+  WARNING: busybox.elf not found, skipping coreutils
+Installing other binaries...
+  Installed 39 binaries in /bin
+  Installed 3 binaries in /sbin
+  Installed 0 C binaries in /usr/local/cbin
+  Installed 99 test binaries in /usr/local/test/bin
+  Installed 29 fonts in /usr/share/fonts
+  Created /etc/fonts.conf
+  Created /etc/hotkeys.conf
+  Created /etc/init.js
+
+ext2 filesystem contents:
+total 9540
+drwxr-xr-x  2 root root   4096 Aug 28 13:20 .
+drwxr-xr-x 12 root root   4096 Aug 28 13:20 ..
+-rwxr-xr-x  1 root root 299352 Aug 28 13:20 bcheck
+-rwxr-xr-x  1 root root 346352 Aug 28 13:20 bfontpicker
+-rwxr-xr-x  1 root root 248272 Aug 28 13:20 biconkit
+-rwxr-xr-x  1 root root 325464 Aug 28 13:20 blauncher
+-rwxr-xr-x  1 root root 185648 Aug 28 13:20 bless
+-rwxr-xr-x  1 root root 190016 Aug 28 13:20 block_eintr_oracle
+-rwxr-xr-x  1 root root 331192 Aug 28 13:20 blog
+-rwxr-xr-x  1 root root 275248 Aug 28 13:20 bounce
+-rwxr-xr-x  1 root root 579456 Aug 28 13:20 bsh
+-rwxr-xr-x  1 root root 322496 Aug 28 13:20 bssh
+-rwxr-xr-x  1 root root 310168 Aug 28 13:20 bsshd
+-rwxr-xr-x  1 root root 338712 Aug 28 13:20 bterm
+-rwxr-xr-x  1 root root 184208 Aug 28 13:20 btop
+-rwxr-xr-x  1 root root 194840 Aug 28 13:20 btrace
+-rwxr-xr-x  1 root root 483376 Aug 28 13:20 burl
+-rwxr-xr-x  1 root root 331504 Aug 28 13:20 bwm
+-rwxr-xr-x  1 root root 188952 Aug 28 13:20 concurrent_recv_stress
+-rwxr-xr-x  1 root root 189248 Aug 28 13:20 confetti
+-rwxr-xr-x  1 root root 177648 Aug 28 13:20 counter
+-rwxr-xr-x  1 root root 189712 Aug 28 13:20 demo
+-rwxr-xr-x  1 root root 178072 Aug 28 13:20 exec_smoke
+-rwxr-xr-x  1 root root 185048 Aug 28 13:20 exec_smoke_target
+-rwxr-xr-x  1 root root 191704 Aug 28 13:20 fart
+-rwxr-xr-x  1 root root 178832 Aug 28 13:20 futex_handoff_oracle
+-rwxr-xr-x  1 root root 391600 Aug 28 13:20 guskit
+-rwxr-xr-x  1 root root 189112 Aug 28 13:20 heartbeat
+-rwxr-xr-x  1 root root 177640 Aug 28 13:20 hello_time
+-rwxr-xr-x  1 root root 227168 Aug 28 13:20 hello_world
+-rwxr-xr-x  1 root root 262608 Aug 28 13:20 init_shell
+-rwxr-xr-x  1 root root 193944 Aug 28 13:20 particles
+-rwxr-xr-x  1 root root 197096 Aug 28 13:20 rectangles
+-rwxr-xr-x  1 root root 186928 Aug 28 13:20 resolution
+-rwxr-xr-x  1 root root 177888 Aug 28 13:20 signal_exec_check
+-rwxr-xr-x  1 root root 170592 Aug 28 13:20 simple_exit
+-rwxr-xr-x  1 root root 177648 Aug 28 13:20 spinner
+-rwxr-xr-x  1 root root 177536 Aug 28 13:20 syscall_enosys
+-rwxr-xr-x  1 root root 184224 Aug 28 13:20 tones
+-rwxr-xr-x  1 root root 195568 Aug 28 13:20 wait_stress
+-rwxr-xr-x  1 root root 183120 Aug 28 13:20 xhci_counters
+  Test binaries in /usr/local/test/bin:
+total 19156
+drwxr-xr-x 2 root root   4096 Aug 28 13:20 .
+drwxr-xr-x 3 root root   4096 Aug 28 13:20 ..
+-rwxr-xr-x 1 root root 177952 Aug 28 13:20 access_test
+-rwxr-xr-x 1 root root 182768 Aug 28 13:20 alarm_test
+-rwxr-xr-x 1 root root 184344 Aug 28 13:20 argv_test
+-rwxr-xr-x 1 root root 184024 Aug 28 13:20 blocking_recv_test
+-rwxr-xr-x 1 root root 182496 Aug 28 13:20 brk_test
+-rwxr-xr-x 1 root root 183248 Aug 28 13:20 cat_test
+-rwxr-xr-x 1 root root 184576 Aug 28 13:20 clock_gettime_test
+-rwxr-xr-x 1 root root 192592 Aug 28 13:20 cloexec_test
+-rwxr-xr-x 1 root root 184680 Aug 28 13:20 clonevm_exec_test
+-rwxr-xr-x 1 root root 182544 Aug 28 13:20 cow_cleanup_test
+-rwxr-xr-x 1 root root 182512 Aug 28 13:20 cow_oom_test
+-rwxr-xr-x 1 root root 182952 Aug 28 13:20 cow_readonly_test
+-rwxr-xr-x 1 root root 188320 Aug 28 13:20 cow_signal_test
+-rwxr-xr-x 1 root root 187016 Aug 28 13:20 cow_sole_owner_test
+-rwxr-xr-x 1 root root 183008 Aug 28 13:20 cow_stress_test
+-rwxr-xr-x 1 root root 182816 Aug 28 13:20 cp_mv_argv_test
+-rwxr-xr-x 1 root root 187992 Aug 28 13:20 ctrl_c_test
+-rwxr-xr-x 1 root root 182632 Aug 28 13:20 cwd_test
+-rwxr-xr-x 1 root root 182448 Aug 28 13:20 devfs_test
+-rwxr-xr-x 1 root root 195248 Aug 28 13:20 dns_test
+-rwxr-xr-x 1 root root 188936 Aug 28 13:20 dup_test
+-rwxr-xr-x 1 root root 182480 Aug 28 13:20 echo_argv_test
+-rwxr-xr-x 1 root root 182840 Aug 28 13:20 epoll_test
+-rwxr-xr-x 1 root root 178216 Aug 28 13:20 exec_argv_test
+-rwxr-xr-x 1 root root 188080 Aug 28 13:20 exec_from_ext2_test
+-rwxr-xr-x 1 root root 183440 Aug 28 13:20 exec_stack_argv_test
+-rwxr-xr-x 1 root root 182568 Aug 28 13:20 false_test
+-rwxr-xr-x 1 root root 183480 Aug 28 13:20 fbinfo_test
+-rwxr-xr-x 1 root root 188752 Aug 28 13:20 fcntl_test
+-rwxr-xr-x 1 root root 198456 Aug 28 13:20 fifo_test
+-rwxr-xr-x 1 root root 182408 Aug 28 13:20 file_read_test
+-rwxr-xr-x 1 root root 188672 Aug 28 13:20 fork_memory_test
+-rwxr-xr-x 1 root root 187752 Aug 28 13:20 fork_pending_signal_test
+-rwxr-xr-x 1 root root 189184 Aug 28 13:20 fork_state_test
+-rwxr-xr-x 1 root root 188104 Aug 28 13:20 fork_test
+-rwxr-xr-x 1 root root 188624 Aug 28 13:20 fs_block_alloc_test
+-rwxr-xr-x 1 root root 183168 Aug 28 13:20 fs_directory_test
+-rwxr-xr-x 1 root root 182616 Aug 28 13:20 fs_large_file_test
+-rwxr-xr-x 1 root root 182816 Aug 28 13:20 fs_link_test
+-rwxr-xr-x 1 root root 182720 Aug 28 13:20 fs_rename_test
+-rwxr-xr-x 1 root root 182904 Aug 28 13:20 fs_write_test
+-rwxr-xr-x 1 root root 184000 Aug 28 13:20 getdents_test
+-rwxr-xr-x 1 root root 183064 Aug 28 13:20 head_test
+-rwxr-xr-x 1 root root 464440 Aug 28 13:20 http_fetch_test
+-rwxr-xr-x 1 root root 468592 Aug 28 13:20 http_test
+-rwxr-xr-x 1 root root 183208 Aug 28 13:20 itimer_test
+-rwxr-xr-x 1 root root 187656 Aug 28 13:20 job_control_test
+-rwxr-xr-x 1 root root 192240 Aug 28 13:20 job_table_test
+-rwxr-xr-x 1 root root 188488 Aug 28 13:20 kill_process_group_test
+-rwxr-xr-x 1 root root 185696 Aug 28 13:20 loopback_wake_test
+-rwxr-xr-x 1 root root 183304 Aug 28 13:20 ls_test
+-rwxr-xr-x 1 root root 182520 Aug 28 13:20 lseek_test
+-rwxr-xr-x 1 root root 182680 Aug 28 13:20 mkdir_argv_test
+-rwxr-xr-x 1 root root 191592 Aug 28 13:20 net_test
+-rwxr-xr-x 1 root root 179624 Aug 28 13:20 nonblock_eagain_test
+-rwxr-xr-x 1 root root 188752 Aug 28 13:20 nonblock_test
+-rwxr-xr-x 1 root root 188368 Aug 28 13:20 pause_test
+-rwxr-xr-x 1 root root 188928 Aug 28 13:20 pipe2_test
+-rwxr-xr-x 1 root root 188728 Aug 28 13:20 pipe_concurrent_test
+-rwxr-xr-x 1 root root 188832 Aug 28 13:20 pipe_fork_test
+-rwxr-xr-x 1 root root 195864 Aug 28 13:20 pipe_refcount_test
+-rwxr-xr-x 1 root root 188256 Aug 28 13:20 pipe_test
+-rwxr-xr-x 1 root root 191592 Aug 28 13:20 pipeline_test
+-rwxr-xr-x 1 root root 189032 Aug 28 13:20 poll_test
+-rwxr-xr-x 1 root root 183016 Aug 28 13:20 pty_test
+-rwxr-xr-x 1 root root 177104 Aug 28 13:20 register_init_test
+-rwxr-xr-x 1 root root 182488 Aug 28 13:20 rm_argv_test
+-rwxr-xr-x 1 root root 188920 Aug 28 13:20 select_test
+-rwxr-xr-x 1 root root 187976 Aug 28 13:20 session_test
+-rwxr-xr-x 1 root root 183136 Aug 28 13:20 shell_pipe_test
+-rwxr-xr-x 1 root root 189016 Aug 28 13:20 sigaltstack_test
+-rwxr-xr-x 1 root root 183440 Aug 28 13:20 sigchld_job_test
+-rwxr-xr-x 1 root root 182448 Aug 28 13:20 sigchld_test
+-rwxr-xr-x 1 root root 206712 Aug 28 13:20 sigkill_teardown_test
+-rwxr-xr-x 1 root root 188728 Aug 28 13:20 signal_exec_test
+-rwxr-xr-x 1 root root 188168 Aug 28 13:20 signal_fork_test
+-rwxr-xr-x 1 root root 187904 Aug 28 13:20 signal_handler_test
+-rwxr-xr-x 1 root root 188216 Aug 28 13:20 signal_regs_test
+-rwxr-xr-x 1 root root 188320 Aug 28 13:20 signal_return_test
+-rwxr-xr-x 1 root root 187872 Aug 28 13:20 signal_test
+-rwxr-xr-x 1 root root 188872 Aug 28 13:20 sigsuspend_test
+-rwxr-xr-x 1 root root 188600 Aug 28 13:20 sleep_debug_test
+-rwxr-xr-x 1 root root 182288 Aug 28 13:20 stdin_test
+-rwxr-xr-x 1 root root 170872 Aug 28 13:20 syscall_diagnostic_test
+-rwxr-xr-x 1 root root 183064 Aug 28 13:20 tail_test
+-rwxr-xr-x 1 root root 203440 Aug 28 13:20 tcp_blocking_test
+-rwxr-xr-x 1 root root 187632 Aug 28 13:20 tcp_client_test
+-rwxr-xr-x 1 root root 202296 Aug 28 13:20 tcp_socket_test
+-rwxr-xr-x 1 root root 182232 Aug 28 13:20 test_mmap
+-rwxr-xr-x 1 root root 182160 Aug 28 13:20 timer_test
+-rwxr-xr-x 1 root root 182568 Aug 28 13:20 true_test
+-rwxr-xr-x 1 root root 188096 Aug 28 13:20 tty_test
+-rwxr-xr-x 1 root root 193408 Aug 28 13:20 udp_socket_test
+-rwxr-xr-x 1 root root 195352 Aug 28 13:20 unix_named_socket_test
+-rwxr-xr-x 1 root root 205328 Aug 28 13:20 unix_socket_test
+-rwxr-xr-x 1 root root 188152 Aug 28 13:20 waitpid_test
+-rwxr-xr-x 1 root root 183640 Aug 28 13:20 wc_test
+-rwxr-xr-x 1 root root 182968 Aug 28 13:20 which_test
+-rwxr-xr-x 1 root root 182544 Aug 28 13:20 wnohang_timing_test
+-rw-r--r-- 1 root root 17 Aug 28 13:20 /tmp/tmp.HVMsdVxE2n/hello.txt
+-rw-r--r-- 1 root root 445 Aug 28 13:20 /tmp/tmp.HVMsdVxE2n/etc/fonts.conf
+-rw-r--r-- 1 root root 26 Aug 28 13:20 /tmp/tmp.HVMsdVxE2n/etc/group
+-rw-r--r-- 1 root root 367 Aug 28 13:20 /tmp/tmp.HVMsdVxE2n/etc/bshrc
+-rw-r--r-- 1 root root 83 Aug 28 13:20 /tmp/tmp.HVMsdVxE2n/etc/passwd
+-rw-r--r-- 1 root root 349 Aug 28 13:20 /tmp/tmp.HVMsdVxE2n/etc/hotkeys.conf
+-rw-r--r-- 1 root root 679 Aug 28 13:20 /tmp/tmp.HVMsdVxE2n/etc/init.js
+-rw-r--r-- 1 root root 19 Aug 28 13:20 /tmp/tmp.HVMsdVxE2n/trunctest.txt
+-rwxr-xr-x 1 root root 178896 Aug 28 13:20 /tmp/tmp.HVMsdVxE2n/sbin/init
+-rwxr-xr-x 1 root root 184080 Aug 28 13:20 /tmp/tmp.HVMsdVxE2n/sbin/telnetd
+-rwxr-xr-x 1 root root 181968 Aug 28 13:20 /tmp/tmp.HVMsdVxE2n/sbin/blogd
+-rw-r--r-- 1 root root 282844 Aug 28 13:20 /tmp/tmp.HVMsdVxE2n/usr/share/fonts/Merriweather-Regular.ttf
+-rw-r--r-- 1 root root 876576 Aug 28 13:20 /tmp/tmp.HVMsdVxE2n/usr/share/fonts/Inter-Regular.ttf
+-rw-r--r-- 1 root root 359048 Aug 28 13:20 /tmp/tmp.HVMsdVxE2n/usr/share/fonts/PTSerif-Regular.ttf
+-rw-r--r-- 1 root root 1708408 Aug 28 13:20 /tmp/tmp.HVMsdVxE2n/usr/share/fonts/NotoSansMono-Regular.ttf
+-rw-r--r-- 1 root root 276932 Aug 28 13:20 /tmp/tmp.HVMsdVxE2n/usr/share/fonts/Nunito-Regular.ttf
+-rw-r--r-- 1 root root 340712 Aug 28 13:20 /tmp/tmp.HVMsdVxE2n/usr/share/fonts/DejaVuSansMono.ttf
+-rw-r--r-- 1 root root 656568 Aug 28 13:20 /tmp/tmp.HVMsdVxE2n/usr/share/fonts/Lato-Regular.ttf
+-rw-r--r-- 1 root root 744936 Aug 28 13:20 /tmp/tmp.HVMsdVxE2n/usr/share/fonts/Montserrat-Regular.ttf
+-rw-r--r-- 1 root root 532636 Aug 28 13:20 /tmp/tmp.HVMsdVxE2n/usr/share/fonts/OpenSans-Regular.ttf
+-rw-r--r-- 1 root root 260364 Aug 28 13:20 /tmp/tmp.HVMsdVxE2n/usr/share/fonts/FiraCode-Regular.ttf
+-rw-r--r-- 1 root root 646340 Aug 28 13:20 /tmp/tmp.HVMsdVxE2n/usr/share/fonts/SourceSans3-Regular.ttf
+-rw-r--r-- 1 root root 488584 Aug 28 13:20 /tmp/tmp.HVMsdVxE2n/usr/share/fonts/Roboto-Regular.ttf
+-rw-r--r-- 1 root root 212196 Aug 28 13:20 /tmp/tmp.HVMsdVxE2n/usr/share/fonts/Lora-Regular.ttf
+-rw-r--r-- 1 root root 273900 Aug 28 13:20 /tmp/tmp.HVMsdVxE2n/usr/share/fonts/JetBrainsMono-Regular.ttf
+-rw-r--r-- 1 root root 598060 Aug 28 13:20 /tmp/tmp.HVMsdVxE2n/usr/share/fonts/CascadiaCode-Regular.ttf
+-rw-r--r-- 1 root root 1209508 Aug 28 13:20 /tmp/tmp.HVMsdVxE2n/usr/share/fonts/SourceSerif4-Regular.ttf
+-rw-r--r-- 1 root root 309408 Aug 28 13:20 /tmp/tmp.HVMsdVxE2n/usr/share/fonts/Hack-Regular.ttf
+-rw-r--r-- 1 root root 757076 Aug 28 13:20 /tmp/tmp.HVMsdVxE2n/usr/share/fonts/DejaVuSans.ttf
+-rw-r--r-- 1 root root 108684 Aug 28 13:20 /tmp/tmp.HVMsdVxE2n/usr/share/fonts/Inconsolata-Regular.ttf
+-rw-r--r-- 1 root root 212340 Aug 28 13:20 /tmp/tmp.HVMsdVxE2n/usr/share/fonts/SourceCodePro-Regular.ttf
+-rw-r--r-- 1 root root 300724 Aug 28 13:20 /tmp/tmp.HVMsdVxE2n/usr/share/fonts/PlayfairDisplay-Regular.ttf
+-rw-r--r-- 1 root root 205748 Aug 28 13:20 /tmp/tmp.HVMsdVxE2n/usr/share/fonts/UbuntuMono-Regular.ttf
+-rw-r--r-- 1 root root 312352 Aug 28 13:20 /tmp/tmp.HVMsdVxE2n/usr/share/fonts/Raleway-Regular.ttf
+-rw-r--r-- 1 root root 2049096 Aug 28 13:20 /tmp/tmp.HVMsdVxE2n/usr/share/fonts/NotoSans-Regular.ttf
+-rw-r--r-- 1 root root 351884 Aug 28 13:20 /tmp/tmp.HVMsdVxE2n/usr/share/fonts/Ubuntu-Regular.ttf
+-rw-r--r-- 1 root root 135580 Aug 28 13:20 /tmp/tmp.HVMsdVxE2n/usr/share/fonts/IBMPlexMono-Regular.ttf
+-rw-r--r-- 1 root root 160316 Aug 28 13:20 /tmp/tmp.HVMsdVxE2n/usr/share/fonts/Poppins-Regular.ttf
+-rw-r--r-- 1 root root 1887192 Aug 28 13:20 /tmp/tmp.HVMsdVxE2n/usr/share/fonts/NotoSerif-Regular.ttf
+-rw-r--r-- 1 root root 183700 Aug 28 13:20 /tmp/tmp.HVMsdVxE2n/usr/share/fonts/RobotoMono-Regular.ttf
+-rw-r--r-- 1 root root 111 Aug 28 13:20 /tmp/tmp.HVMsdVxE2n/lines.txt
+-rw-r--r-- 1 root root 20 Aug 28 13:20 /tmp/tmp.HVMsdVxE2n/test/nested.txt
+-rw-r--r-- 1 root root 20 Aug 28 13:20 /tmp/tmp.HVMsdVxE2n/deep/path/to/file/data.txt
+-rw-r--r-- 1 root root 0 Aug 28 13:20 /tmp/tmp.HVMsdVxE2n/empty.txt
+ext2 image created successfully
+
+ext2 disk created and copied to testdata/:
+  /root/breenix/target/ext2.img
+  /root/breenix/testdata/ext2.img
+  Size: 256M
+
+Contents:
+  /bin/busybox - BusyBox multi-call binary
+  /bin/ls - native Breenix ls
+  /bin/{cat,head,tail,...} - BusyBox hardlinks
+  /sbin/{true,false} - BusyBox hardlinks
+  /bin/* - Other userspace binaries (demos)
+  /usr/local/test/bin/* - Test binaries (*_test, test_*)
+  /sbin/telnetd - telnet daemon
+  /hello.txt - test file (1 line)
+  /lines.txt - multi-line test file (15 lines) for head/tail/wc
+  /test/nested.txt - nested test file
+  /deep/path/to/file/data.txt - deep nested test file
+Booting the x86_64 production profile...
+x86 production-profile gate: FAIL (set -e abort at ./docker/qemu/run-x86-prod-profile-boot-test.sh:449, exit 1)
+  failing command: test "$(marker_count "$PREEMPT_CENSUS_PROD_LITERAL")" -eq 1
+  preserved failing serial: /tmp/breenix_x86_prod_profile_failures/20260828T132101Z_535097
+--- observed values ---
+  ext2 root mounted:            1
+  kernel init complete:         1
+  async executor started:       1
+  steady state reached:         1
+  console prompt:               1
+  tombstone census lines:       1
+  tombstone census at rest:     1
+  root custody lines:           1
+  root custody at rest:         1
+  crash markers:                0
+  test-only marker 'TEST_TALLY:': 0
+  test-only marker '[TEST:': 0
+  test-only marker 'TEST RUNNER:': 0
+  test-only marker '[BOOT_TESTS:': 0
+  test-only marker 'RING3_SMOKE:': 0
+  test-only marker '[TOMBSTONE_QUIESCE:': 0
+  test-only marker '[RECLAIM_DRAIN:': 0
+  test-only marker '[TOMBSTONE_JOIN_ORACLE:': 0
+  test-only marker '[KSTACK_OWNER_ORACLE:': 0
+  test-only marker '[KSTACK_QUIESCE_LEAK:': 0
+  test-only marker '[PT_CUSTODY_COUNTERS:': 0
+  test-only marker '[FRAME_CUSTODY_COUNTERS:': 0
+  test-only marker '[PT_RETIRE_COHORT:': 0
+  test-only marker '[PT_EXEC_COHORT:': 0
+  test-only marker '[EXEC_DETACH_ORACLE:': 0
+  test-only marker '[CLONE_ADMISSION_ORACLE:': 0
+  test-only marker '[INIT_DESIGNATION_ORACLE:': 0
+  test-only marker '[SCHED_STRAND_ORACLE:': 0
+  test-only marker '[CENSUS_WIDEN_ORACLE:': 0
+  test-only marker 'Testing features enabled': 0
+  fault marker '[PMGUARD]': 0
+  fault marker '[CREATION_LOCK_ORDER:VIOLATION': 0
+  fault marker 'DISK LOADING FAILED': 0
+  attributed PRECONDITION 5 fail: 1
+  fixed PRECONDITION 7 fail (#672): 0
+  fixed PRECONDITION 7 pass (#672): 1
+  preempt census lines:          1
+  preempt census at rest:        0
+[TOMBSTONE_CENSUS:resident=0:removed=0:reap_second=0:retire_second=0:abandoned_unqueued=0]
+[SW]<K>[SW]<K>[SW]<1>[PT_ROOT_CUSTODY:no_proof=0:no_arch=0:terminated=0:undecided=0:mid_retire=0:retired=0]
+[ INFO] kernel: [PREEMPT_BRACKET_CENSUS:underflow=1]
+--- serial tail (last 60 lines per file) ---
+==> /tmp/breenix_x86_prod_profile/serial_kernel.txt <==
+[ INFO] kernel: PRECONDITION 4: PIC IRQ0 unmasked ✓ PASS
+[ INFO] kernel:   PIC1 mask register: 0xe8
+[ INFO] kernel:   Status: IRQ0 is UNMASKED (bit 0 clear)
+[ INFO] kernel: PRECONDITION 5: Checking scheduler has runnable threads...
+[ERROR] kernel: PRECONDITION 5: Scheduler has runnable threads ✗ FAIL
+[ERROR] kernel:   No runnable threads in scheduler - timer interrupt will have nothing to schedule!
+[ INFO] kernel: PRECONDITION 6: Checking current thread is set...
+[ INFO] kernel: PRECONDITION 6: Current thread set ✓ PASS
+[ INFO] kernel:   Thread pointer: 0x4444444dfdd0
+[ INFO] kernel:   Thread ID: 1
+[ INFO] kernel:   Thread name: swapper/0
+[ INFO] kernel:   Thread pointer validation: ✓ looks valid
+[ INFO] kernel: PRECONDITION 7: Verifying preemption is currently disabled...
+[ INFO] kernel: PRECONDITION 7: Preemption disabled ✓ PASS
+[ INFO] kernel:   Ready to enable preemption safely
+[ INFO] kernel: ================================================================
+[ERROR] kernel: ✗ SOME PRECONDITIONS FAILED - See details above
+[ERROR] kernel:   Enabling interrupts anyway to observe failure behavior...
+[ INFO] kernel: Testing timer resolution...
+[ INFO] kernel::time_test: === TIMER RESOLUTION TEST ===
+[ INFO] kernel::time_test: Current state: 19 ticks, 19 ms
+[ INFO] kernel::time_test: ✓ Timer conversion correct: 19 ticks = 19 ms
+[ INFO] kernel::time_test: ✓ Timer resolution: 1 ms per tick (1000 Hz PIT)
+[ INFO] kernel::time_test: === TIMER RESOLUTION TEST COMPLETE ===
+[ INFO] kernel: ✅ Timer resolution test passed
+[ INFO] kernel: Testing clock_gettime syscall implementation...
+[ INFO] kernel::clock_gettime_test: === CLOCK_GETTIME TEST ===
+[ INFO] kernel::clock_gettime_test: Test A: TSC Calibration Status
+[ INFO] kernel::clock_gettime_test:   TSC frequency: 2402190300 Hz (2.40 GHz)
+[ INFO] kernel::clock_gettime_test: ✓ TSC calibrated with reasonable frequency
+[ INFO] kernel::clock_gettime_test: Test B: Verify TSC provides sub-millisecond precision
+[ INFO] kernel::clock_gettime_test:   First call:  1 s, 44809986 ns
+[ INFO] kernel::clock_gettime_test:   Second call: 1 s, 44885473 ns
+[ INFO] kernel::clock_gettime_test:   Elapsed: 75487 ns
+[ INFO] kernel::clock_gettime_test: ✓ Sub-millisecond precision confirmed (TSC active)
+[ INFO] kernel::clock_gettime_test: Test C: Monotonic advancement
+[ INFO] kernel::clock_gettime_test:   Made 10 calls, time advanced 10 times
+[ INFO] kernel::clock_gettime_test: ✓ Time never went backwards
+[ INFO] kernel::clock_gettime_test: Test D: Nanosecond precision (not millisecond-aligned)
+[ INFO] kernel::clock_gettime_test:   Collected 20 nanosecond samples
+[ INFO] kernel::clock_gettime_test:   Millisecond-aligned values: 0/20
+[ INFO] kernel::clock_gettime_test: ✓ Nanosecond precision confirmed (not PIT-granular)
+[ INFO] kernel::clock_gettime_test: Test E: CLOCK_MONOTONIC basic validation
+[ INFO] kernel::clock_gettime_test:   CLOCK_MONOTONIC: 1 s, 50963961 ns
+[ INFO] kernel::clock_gettime_test: ✓ Nanoseconds in valid range [0, 999999999]
+[ INFO] kernel::clock_gettime_test: Test F: CLOCK_REALTIME validation
+[ INFO] kernel::clock_gettime_test:   CLOCK_REALTIME: 2026-08-28 13:20:43.052474484
+[ INFO] kernel::clock_gettime_test: ✓ CLOCK_REALTIME has valid timestamp and sub-second precision
+[ INFO] kernel::clock_gettime_test: Test G: Invalid clock ID handling
+[ INFO] kernel::clock_gettime_test: ✓ Invalid ID correctly returned EINVAL
+[ INFO] kernel::clock_gettime_test: === CLOCK_GETTIME TEST COMPLETE ===
+[ INFO] kernel::clock_gettime_test: All 7 tests passed: TSC-based high-resolution timing validated
+[ INFO] kernel: ✅ clock_gettime tests passed
+[ INFO] kernel: ✅ Kernel initialization complete!
+[ INFO] kernel: Enabling interrupts (after creating user processes)...
+[ INFO] kernel: Disabling interrupts after scheduler test...
+[ INFO] kernel: [PREEMPT_BRACKET_CENSUS:underflow=1]
+[ INFO] kernel: Starting async executor...
+[ INFO] kernel::keyboard: Keyboard ready! Type to see characters (Ctrl+T/M/U/P/F/E/X/H for special actions)
+[ INFO] kernel::serial::command: Serial command task started
+
+==> /tmp/breenix_x86_prod_profile/serial_user.txt <==
+[2J[01;01H[=3h[2J[01;01H[2J[01;01H[8;056;240t0[2J[01;01H[2J[01;01H[=3h[2J[01;01H[2J[01;01H[8;042;160t0[2J[01;01HBdsDxe: loading Boot0002 "UEFI Misc Device" from PciRoot(0x0)/Pci(0x4,0x0)
+BdsDxe: starting Boot0002 "UEFI Misc Device" from PciRoot(0x0)/Pci(0x4,0x0)
+INFO : Framebuffer info: FrameBufferInfo { byte_len: 16384000, width: 2560, height: 1600, pixel_format: Bgr, bytes_per_pixel: 4, stride: 2560 }
+INFO : UEFI bootloader started
+INFO : Using framebuffer at 0x80000000
+INFO : Reading configuration from disk was successful
+INFO : Trying to load ramdisk via Disk
+INFO : Ramdisk not found.
+TRACE: exiting boot services
+TRACE: switching to new level 4 table
+INFO : New page table at: PhysFrame[4KiB](0x101000)
+INFO : Elf file loaded at Pointer {
+    addr: 0x000000001daf2000,
+    metadata: 4830816,
+}
+INFO : virtual_address_offset: 0x10000000000
+INFO : Handling Segment: Ph64(ProgramHeader64 { type_: Ok(Load), flags: Flags(4), offset: 0, virtual_addr: 0, physical_addr: 0, file_size: 92554, mem_size: 92554, align: 1000 })
+INFO : Handling Segment: Ph64(ProgramHeader64 { type_: Ok(Load), flags: Flags(5), offset: 92560, virtual_addr: 93560, physical_addr: 93560, file_size: 27ae60, mem_size: 27ae60, align: 1000 })
+INFO : Handling Segment: Ph64(ProgramHeader64 { type_: Ok(Load), flags: Flags(6), offset: 30d3c0, virtual_addr: 30f3c0, physical_addr: 30f3c0, file_size: 3c6c0, mem_size: 3cc40, align: 1000 })
+INFO : Mapping bss section
+INFO : Handling Segment: Ph64(ProgramHeader64 { type_: Ok(Load), flags: Flags(6), offset: 349a80, virtual_addr: 34ca80, physical_addr: 34ca80, file_size: 2a358, mem_size: 83760, align: 1000 })
+INFO : Mapping bss section
+INFO : Entry point at: 0x100000a02e0
+INFO : Creating GDT at PhysAddr(0x1e2000)
+INFO : Map framebuffer
+INFO : Map physical memory
+INFO : Allocate bootinfo
+INFO : Create Memory Map
+INFO : Create bootinfo
+INFO : Jumping to kernel entry point at VirtAddr(0x100000a02e0)
+[ INFO] scheduler::schedule() returned (boot marker)
+[SW]<K>[SW]<K>[SW]<1>[PT_ROOT_CUSTODY:no_proof=0:no_arch=0:terminated=0:undecided=0:mid_retire=0:retired=0]
+[TOMBSTONE_CENSUS:resident=0:removed=0:reap_second=0:retire_second=0:abandoned_unqueued=0]
+BPBP_HANDLER_ENTRY!
+About to call preempt_disable from BP handler
+Called preempt_disable from BP handler
+BP from_userspace=false, CS=0x8
+BP handler: About to call preempt_enable
+BP handler: Called preempt_enable, exiting handler
+breenix> x
