@@ -630,8 +630,18 @@ pub struct DepartureProbe {
 
 /// Exercise and restore the generic ready-queue departure protocol under one
 /// scheduler-lock acquisition with interrupts masked.
+///
+/// The name is load-bearing, not decorative. #647's caller-side rule
+/// (`tests/teardown_structure.rs::validate_block_family_callers_own_no_departure`)
+/// forbids any CALLER of the blocking family from open-coding a ready-queue
+/// departure, and exempts the family's own members because they are the owners.
+/// This probe plants and removes a queue entry ON PURPOSE — it manufactures the
+/// one state that makes the departure observable — so it belongs on the same
+/// side of that rule as `block_current_departure_gate`, and carries a
+/// family name to say so. Renaming it out of the family would make it a caller
+/// that open-codes a departure, which is exactly what the rule is for.
 #[cfg(feature = "coreproof")]
-pub fn coreproof_departure_probe() -> Option<Result<DepartureProbe, &'static str>> {
+pub fn block_current_coreproof_probe() -> Option<Result<DepartureProbe, &'static str>> {
     with_scheduler(|scheduler| {
         let cpu = Scheduler::current_cpu_id();
         let Some(tid) = scheduler.cpu_state[cpu].current_thread else {

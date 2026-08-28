@@ -1,4 +1,56 @@
+//! The core-proof harness — one kernel component, driven hard and scored.
+//!
+//! An in-kernel torture loop that rides a REAL boot at `PostScheduler`, against
+//! the component's real callees and the real per-CPU state its postconditions
+//! read. Not a dedicated boot mode: a mode would buy nothing the pen buys and
+//! would cost the arguability of every catch, because the component would then
+//! be running against a kernel state no production boot reaches.
+//!
+//! Four properties are non-negotiable, and each is a mechanism here rather than
+//! a promise:
+//!
+//! 1. **Test profile only.** The module is compiled solely under `coreproof`,
+//!    which implies `boot_tests`. The `proof_point!` seam macro lives in
+//!    `lib.rs` in two polarities and expands to LITERALLY NOTHING without the
+//!    feature — not an empty call the optimiser is trusted to remove.
+//!    `scripts/check-coreproof-seams.sh` scans the source and
+//!    `tests/coreproof_production_clean.rs` scans the binary, including a
+//!    `.text` byte-comparison against a seam-stripped tree.
+//! 2. **Seeded and reproducible.** Every draw is a pure function of
+//!    `(root_seed, component, cpu, iteration)`, and the seed is on the wire
+//!    before the first iteration. See `rng` for what a seed does and does not
+//!    replay on a four-CPU multi-threaded TCG guest — the answer is a
+//!    measurement, not a caveat.
+//! 3. **Postconditions read existing markers.** The component's own contract
+//!    contributes three new predicates; everything else is a read of a counter
+//!    that already fails a gate. A parallel truth that disagrees with the
+//!    original would be worse than no check.
+//! 4. **No seam in a Tier-1 file, in any interrupt or syscall handler, or in
+//!    the ERET epilogue.** Permanent exclusions. The timer is reached only as a
+//!    stimulus source through the already-public `timer::arm_timer`, called from
+//!    harness code — never as a seam in a handler.
+//!
+//! ## The fast path
+//!
+//! `seam()` is what every `proof_point!` expands to: mark the site visited (a
+//! relaxed load and a compare after the first visit), one relaxed load of this
+//! CPU's armed word, one compare, and a predicted-not-taken branch out of line.
+//! The perturbation itself is `#[cold]` and `#[inline(never)]`, so the seam adds
+//! a few instructions to the masked critical sections it sits in and no more.
+//!
+//! An arm is one-iteration, one-hit: `fire` consumes the slot before applying an
+//! action, so an action that reschedules cannot let unrelated work reach the
+//! same seam and fire the same vector twice.
+//!
+//! ## Scope of this pilot
+//!
+//! AArch64 only, and component A only. The x86 driver and the remaining seven
+//! components are later rungs, each of which names its own additions in its own
+//! PR. `mutations` carries the register of planted defects the harness is
+//! validated against, and states up front how a miss is to be read.
+
 mod driver_a;
+pub mod mutations;
 mod quiesce;
 mod record;
 mod rng;
@@ -41,6 +93,32 @@ impl ArmedSlot {
 static ARMED: [ArmedSlot; crate::arch_impl::aarch64::smp::MAX_CPUS] =
     [const { ArmedSlot::new() }; crate::arch_impl::aarch64::smp::MAX_CPUS];
 static STARTED: AtomicBool = AtomicBool::new(false);
+
+/// Set when the boot-test cohort has published its verdict.
+///
+/// The driver will not form its pen until this is true. See
+/// `note_boot_tests_complete`.
+static BOOT_TESTS_COMPLETE: AtomicBool = AtomicBool::new(false);
+
+/// The boot-test cohort has published its verdict; the harness may run.
+///
+/// Called from both of the executor's verdict sites. The harness pens the other
+/// online CPUs and runs a tight loop on its own, which is exactly the load that
+/// starves a concurrently-running test — and it did: the first smoke boot turned
+/// `census_widen_oracle` red, because that oracle needs a QUIET strand census
+/// for its baseline and places its probe on the CPU the driver was occupying.
+/// The oracle was right and the harness was wrong. This is the strand oracle's
+/// recorded hazard in its most concrete form: a perturbation loop can
+/// manufacture its own failure, and the answer is to stop overlapping the thing
+/// being disturbed, not to relax the thing that noticed.
+pub fn note_boot_tests_complete() {
+    BOOT_TESTS_COMPLETE.store(true, Ordering::Release);
+}
+
+/// Whether the cohort has finished.
+pub(crate) fn boot_tests_complete() -> bool {
+    BOOT_TESTS_COMPLETE.load(Ordering::Acquire)
+}
 
 fn current_cpu() -> usize {
     crate::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id() as usize
@@ -107,5 +185,14 @@ pub fn start() {
         return;
     }
 
-    let _ = crate::task::kthread::kthread_run_on_cpu_for_test(driver_a::run, "coreproof-a", 0);
+    // Spawned through the ORDINARY placement path, deliberately not
+    // `kthread_run_on_cpu_for_test`. A CPU-affine spawn pins the driver to one
+    // CPU's ready queue for its whole life, including the stretch where it is
+    // only waiting for the boot-test cohort — and a thread sitting Ready on a
+    // CPU that is not dispatching is precisely what `census_widen_oracle`'s
+    // baseline requires to be absent. The pinned spawn made the harness's own
+    // idle driver look like the strand that oracle exists to detect. The driver
+    // does not need affinity: it reads its CPU once the pen has formed, and the
+    // pen is what keeps it there.
+    let _ = crate::task::kthread::kthread_run(driver_a::run, "coreproof-a");
 }

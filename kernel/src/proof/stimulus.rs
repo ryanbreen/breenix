@@ -1,3 +1,36 @@
+//! The perturbation battery.
+//!
+//! Every action here is reached from harness code. **No action adds a call site
+//! inside a timer or syscall interrupt handler on either architecture, and none
+//! is placed in the ERET epilogue.** Those are permanent exclusions, enforced by
+//! `scripts/check-coreproof-seams.sh` rather than promised in a comment: the
+//! epilogue is the hot path, and a redirect there would strand the thread and
+//! destroy the fault evidence a later rung depends on.
+//!
+//! ## The timer is a stimulus SOURCE, not a seam
+//!
+//! `TimerSqueeze` calls the already-public, otherwise-uncalled
+//! `timer::arm_timer`, which writes `cntv_tval_el0`. That register's unit is
+//! COUNTER INCREMENTS — roughly 24 MHz — not 1 kHz timer ticks, and the live
+//! value is recalculated at init from the measured frequency. The draw is
+//! therefore log-uniform over `[1, 20 x TICKS_PER_INTERRUPT]` read live from
+//! that atomic; a literal bound would be wrong by more than an order of
+//! magnitude the moment the frequency changed.
+//!
+//! It also perturbs exactly ONE interval: the next tick's handler reprograms the
+//! countdown. The harness re-arms per iteration, and this is deliberately not
+//! described as a sustained storm, because it is not one.
+//!
+//! ## Admissibility is a safety filter
+//!
+//! A `Masked` site holds the scheduler lock with interrupts masked. Only
+//! `None`, `SpinDelay`, `TimerSqueeze` and `SgiFrom` are admissible there —
+//! arming a timer and pending an SGI are both fine under a mask, while a yield
+//! or a forced reschedule is a deadlock the harness authored. Inadmissible
+//! draws are downgraded to `None` and the downgrade is counted, so the run
+//! record reports how much of the draw space a class filter removed instead of
+//! hiding it.
+
 use core::sync::atomic::{AtomicU64, Ordering};
 
 use super::rng::{splitmix64, DrawVector};

@@ -1,3 +1,33 @@
+//! Seeded, counter-derived draws.
+//!
+//! The root seed is a `u64` — `option_env!("BREENIX_COREPROOF_SEED")` when a
+//! replay pins one, otherwise the monotonic clock at harness start. It is
+//! printed in a `RUN` record BEFORE the first iteration, so a run that dies
+//! mid-flight still has its seed on the wire.
+//!
+//! ## Counter-derived, not sequential
+//!
+//! `draw(root_seed, component, cpu, iteration)` is a pure function of its
+//! arguments: iteration *I*'s vector does not depend on iterations `0..I-1`.
+//! Three things follow, and they are why the construction is worth the extra
+//! mixing. A violation record can name its own complete draw vector. A replay
+//! can arm iteration *I* alone instead of re-executing half a million
+//! predecessors. And concurrent CPUs cannot perturb each other's streams, so
+//! `Adversarial` is exactly as reproducible as `Pen`.
+//!
+//! ## What a seed does and does not replay
+//!
+//! On the profile the gates actually run — `-smp 4` multi-threaded TCG — a seed
+//! replays *what the harness did*, not *what the machine did in response*: host
+//! scheduling of four vCPU threads, virtio timing and the throttled disk all
+//! vary. The honest answer is a measurement, not a caveat, which is why the
+//! pilot's pass bar requires a `replay_hit_rate` measured over ten replays of
+//! each catching seed rather than an assertion that replay works.
+//!
+//! The generator is the same `xorshift64*` construction `syscall/random.rs`
+//! already uses, deliberately re-implemented here rather than imported: that
+//! instance is syscall-owned and reseeded on its own schedule.
+
 use super::sites::{SiteId, ALL};
 use super::stimulus::Action;
 
@@ -52,22 +82,22 @@ const PINNED_SEED: Option<u64> = match option_env!("BREENIX_COREPROOF_SEED") {
 };
 
 pub struct Xorshift64Star {
-    state: u64,
+    word: u64,
 }
 
 impl Xorshift64Star {
     fn new(seed: u64) -> Self {
         Self {
-            state: if seed == 0 { NONZERO_FALLBACK } else { seed },
+            word: if seed == 0 { NONZERO_FALLBACK } else { seed },
         }
     }
 
     fn next_u64(&mut self) -> u64 {
-        let mut value = self.state;
+        let mut value = self.word;
         value ^= value >> 12;
         value ^= value << 25;
         value ^= value >> 27;
-        self.state = value;
+        self.word = value;
         value.wrapping_mul(0x2545_f491_4f6c_dd1d)
     }
 }
@@ -79,6 +109,10 @@ pub const fn splitmix64(mut value: u64) -> u64 {
     value ^ (value >> 31)
 }
 
+/// Which side of a protocol's commit point a seam sits on.
+///
+/// Derived from the site (`SiteId::order()`), never drawn — see that method for
+/// why an independent draw would let a record contradict itself.
 #[derive(Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum Order {
@@ -174,10 +208,8 @@ pub fn draw(root_seed: u64, component: u8, cpu: u8, iteration: u64) -> DrawVecto
             AntagonistOp::Placement
         },
         antagonist_cpu: rng.next_u64() as u8,
-        order: if rng.next_u64() & 1 == 0 {
-            Order::Before
-        } else {
-            Order::After
-        },
+        // Not drawn: the site already says which side of its commit point the
+        // seam is on, and a second, independent bit could only disagree with it.
+        order: site.order(),
     }
 }

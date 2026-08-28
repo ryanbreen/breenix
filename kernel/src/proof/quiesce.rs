@@ -1,7 +1,33 @@
+//! Quiescence — how much of the machine the component gets to itself.
+//!
+//! * `Pen` (default): the driver runs the component in a tight loop while every
+//!   other online CPU is parked on a harness-owned atomic gate. Parked CPUs
+//!   still take interrupts — controlled, not stopped — and the pen releases
+//!   between iterations at a PRNG-selected cadence.
+//! * `Adversarial`: the parked CPUs instead run the component's paired
+//!   operation from the same seeded stream.
+//! * `Ambient`: no pen at all; the boot proceeds and the loop rides along.
+//!   Deliberately the least sensitive mode, and a mandatory confirmation arm —
+//!   a perturbation harness can manufacture its own bug, which the strand
+//!   oracle recorded in its own source (7 aborts and 4 hangs in 49 boots with
+//!   injection fully disarmed but its loop running, versus 1 abort in 50
+//!   without the loop). A finding is not a finding until it survives `Ambient`.
+//!
+//! ## Every wait is bounded, and giving up is recorded
+//!
+//! The rendezvous words below are waited on with a spin. An unbounded spin is
+//! the wrong failure: if a peer kthread is spawned but never dispatched, the
+//! driver would hang holding a CPU, the boot would produce no RUN record, and
+//! the gate would report "missing RUN" — true, but pointing at the harness
+//! instead of at anything about the kernel. Each wait therefore has a bounded
+//! budget, and exhausting it degrades the run to `Ambient` and says so in the
+//! run record rather than hanging or pretending the pen formed.
+
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, Ordering};
 
 use crate::task::kthread::KthreadHandle;
+
 
 use super::rng::{self, AntagonistOp};
 
@@ -37,6 +63,21 @@ impl Mode {
             Self::Ambient => "ambient",
         }
     }
+}
+
+/// Spin budget for one rendezvous, in iterations of the wait loop.
+///
+/// Sized to be generous for a rendezvous that normally completes in
+/// microseconds and still bounded well inside one boot.
+const RENDEZVOUS_SPIN_BUDGET: u64 = 200_000_000;
+
+/// Set when any rendezvous exhausted its budget. The run record reports it, so
+/// a degraded run is never read as a clean penned one.
+static DEGRADED: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
+/// Whether any rendezvous gave up and degraded the run to ambient.
+pub fn degraded() -> bool {
+    DEGRADED.load(Ordering::Relaxed)
 }
 
 pub struct Controller {
@@ -93,7 +134,15 @@ impl Controller {
             }
         }
 
-        wait_for_mask(&ACTIVE_CPUS, mask);
+        if !wait_for_mask(&ACTIVE_CPUS, mask) {
+            // The pen never formed. Release whatever did start and run ambient
+            // rather than spinning on a CPU that is not coming.
+            CONTROL.store(STOPPED, Ordering::Release);
+            return Self {
+                mask: 0,
+                handles,
+            };
+        }
         Self { mask, handles }
     }
 
@@ -103,21 +152,33 @@ impl Controller {
         }
 
         CONTROL.store(RELEASED, Ordering::Release);
-        wait_for_mask(&CLEAR_OBSERVED, self.mask);
+        if !wait_for_mask(&CLEAR_OBSERVED, self.mask) {
+            return;
+        }
+        let mut spins = 0u64;
         while ACTIVE_CPUS.load(Ordering::Acquire) & self.mask != 0 {
             core::hint::spin_loop();
+            spins += 1;
+            if spins >= RENDEZVOUS_SPIN_BUDGET {
+                DEGRADED.store(true, Ordering::Relaxed);
+                return;
+            }
         }
 
         CLEAR_OBSERVED.fetch_and(!self.mask, Ordering::AcqRel);
         CONTROL.store(PARKED, Ordering::Release);
-        wait_for_mask(&ACTIVE_CPUS, self.mask);
+        let _ = wait_for_mask(&ACTIVE_CPUS, self.mask);
     }
 
+    /// Stop every peer and wait for it to leave, so no parked CPU outlives the
+    /// run. A peer that outlives the driver is a harness bug, not a finding.
     pub fn finish(self) {
+        // Stop unconditionally: `begin` may have degraded to mask 0 while peers
+        // were already running, and those peers still have to be told to leave.
+        CONTROL.store(STOPPED, Ordering::Release);
         if self.mask != 0 {
-            CONTROL.store(STOPPED, Ordering::Release);
-            wait_for_mask(&CLEAR_OBSERVED, self.mask);
-            wait_for_mask(&EXITED_CPUS, self.mask);
+            let _ = wait_for_mask(&CLEAR_OBSERVED, self.mask);
+            let _ = wait_for_mask(&EXITED_CPUS, self.mask);
         }
         for handle in self.handles {
             let _ = crate::task::kthread::kthread_join(&handle);
@@ -125,10 +186,23 @@ impl Controller {
     }
 }
 
-fn wait_for_mask(word: &AtomicU64, mask: u64) {
+/// Spin until every bit in `mask` is set, or the budget runs out.
+///
+/// Returns `false` when the budget was exhausted, having recorded that the run
+/// is degraded. Callers must treat `false` as "the pen is not there" rather than
+/// retrying.
+#[must_use]
+fn wait_for_mask(word: &AtomicU64, mask: u64) -> bool {
+    let mut spins = 0u64;
     while word.load(Ordering::Acquire) & mask != mask {
         core::hint::spin_loop();
+        spins += 1;
+        if spins >= RENDEZVOUS_SPIN_BUDGET {
+            DEGRADED.store(true, Ordering::Relaxed);
+            return false;
+        }
     }
+    true
 }
 
 fn adversarial_step(
