@@ -44,11 +44,13 @@ unsafe fn raw_msg(msg: &[u8]) {
     write(2, msg.as_ptr(), msg.len());
 }
 
+/// Yield through the library wrapper, which declares that the kernel writes
+/// the syscall return register (#608). The hand-rolled block this replaces
+/// named that register as an input only, so the compiler was entitled to hoist
+/// the syscall-number load out of every spin below and each later trap ran
+/// with the previous call's return value as its syscall number.
 unsafe fn sys_yield() {
-    #[cfg(target_arch = "x86_64")]
-    core::arch::asm!("int 0x80", in("rax") 24u64, options(nostack));
-    #[cfg(target_arch = "aarch64")]
-    core::arch::asm!("svc #0", in("x8") 124u64, in("x0") 0u64, options(nostack));
+    raw::syscall0(nr::YIELD);
 }
 
 unsafe fn thread_exit(code: u64) -> ! {

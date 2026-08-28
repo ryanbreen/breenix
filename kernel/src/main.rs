@@ -1942,6 +1942,10 @@ fn test_syscalls() {
             core::arch::asm!(
                 "mov rax, 4", // SyscallNumber::GetTime
                 "int 0x80",
+                // The kernel writes RAX on every syscall return, so the block
+                // must declare it clobbered rather than leave the compiler
+                // believing a live value survives the trap (#608 shape).
+                lateout("rax") _,
                 options(nostack)
             );
         }
