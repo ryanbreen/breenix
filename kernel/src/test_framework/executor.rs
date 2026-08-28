@@ -181,7 +181,18 @@ pub fn advance_stage_marker_only(stage: TestStage) {
         crate::task::strand_oracle::report_x86_once();
     }
 
-    if failed == 0 && lock_order_clean {
+    // A verdict that no test contributed to is not a pass (#533).
+    //
+    // This path prints whatever progress happens to stand, and before the x86
+    // registry was dispatched that was 0/0 - a pass-shaped
+    // `[TESTS_COMPLETE:0/0]` + `[BOOT_TESTS:PASS]` pair emitted by the first
+    // Ring 3 syscall on a boot where the suite had never run. `0/0` is not
+    // evidence of anything, so it is reported as a failure with its own
+    // signature, which the gates reject by name.
+    if total == 0 || completed == 0 {
+        serial_println!("[TESTS_COMPLETE:{}/{}:VACUOUS]", completed, total);
+        serial_println!("[BOOT_TESTS:FAIL:VACUOUS]");
+    } else if failed == 0 && lock_order_clean {
         serial_println!("[TESTS_COMPLETE:{}/{}]", completed, total);
         serial_println!("[BOOT_TESTS:PASS]");
     } else {
@@ -495,8 +506,50 @@ fn count_arch_filtered_tests(subsystem: &Subsystem) -> u32 {
     subsystem
         .tests
         .iter()
-        .filter(|t| t.arch.matches_current())
+        .filter(|t| t.arch.matches_current() && deferral_issue(t.name).is_none())
         .count() as u32
+}
+
+/// Registry tests deferred on this architecture, each with the open issue that
+/// blocks it.
+///
+/// A deferred test is NOT run here, and the executor says so out loud: it emits
+/// `[TEST:<subsystem>:<name>:DEFERRED:#<issue>]` and counts the test as neither
+/// passed nor failed. That marker is the whole point of this roster. The four
+/// entries below were previously absent from x86 by the simple expedient of the
+/// x86 registry never being dispatched at all (#533); once it is dispatched,
+/// silently skipping them would trade one invisible gap for another, and
+/// deleting them from the registry would lose them on aarch64, where they run
+/// and are the mechanism-level proof for #545.
+///
+/// Every entry must name a live issue. When #567 is fixed, this roster empties
+/// and `x86_deferral_issue` returns `None` for everything.
+#[cfg(not(target_arch = "aarch64"))]
+static X86_DEFERRED_TESTS: &[(&str, u32)] = &[
+    // #567: these four schedule inside the x86 boot-test window, and every one
+    // of them poisons the boot's resume context - documented case by case in
+    // registry.rs above `run_x86_loopback_gates`, which exists precisely because
+    // only the non-scheduling loopback gate could be run on x86 without them.
+    ("loopback_recv_wake_when_idle", 567),
+    ("loopback_recv_wake_under_load", 567),
+    ("loopback_pump_does_not_busy_spin", 567),
+    ("tcp_final_ack_survives_accept_publish_race", 567),
+];
+
+/// The issue blocking `name` on this architecture, if it is deferred here.
+#[cfg(not(target_arch = "aarch64"))]
+fn deferral_issue(name: &str) -> Option<u32> {
+    X86_DEFERRED_TESTS
+        .iter()
+        .find(|(deferred, _)| *deferred == name)
+        .map(|(_, issue)| *issue)
+}
+
+/// aarch64 defers nothing: every registry test that matches the architecture is
+/// dispatched there.
+#[cfg(target_arch = "aarch64")]
+fn deferral_issue(_name: &str) -> Option<u32> {
+    None
 }
 
 /// Count tests that match architecture AND specific stage (not already run)
@@ -509,7 +562,10 @@ fn count_stage_filtered_tests(subsystem: &Subsystem, stage: TestStage) -> u32 {
         .iter()
         .enumerate()
         .filter(|(idx, t)| {
-            t.arch.matches_current() && t.stage == stage && (already_run & (1u64 << idx)) == 0
+            t.arch.matches_current()
+                && t.stage == stage
+                && deferral_issue(t.name).is_none()
+                && (already_run & (1u64 << idx)) == 0
             // Not already run
         })
         .count() as u32
@@ -527,7 +583,10 @@ fn count_pending_tests(subsystem: &Subsystem) -> u32 {
         .iter()
         .enumerate()
         .filter(|(idx, t)| {
-            t.arch.matches_current() && t.stage <= current && (already_run & (1u64 << idx)) == 0
+            t.arch.matches_current()
+                && t.stage <= current
+                && deferral_issue(t.name).is_none()
+                && (already_run & (1u64 << idx)) == 0
         })
         .count() as u32
 }
@@ -565,6 +624,12 @@ fn run_subsystem_stage_tests(id: SubsystemId, target_stage: TestStage) {
 
         // Skip tests not for this stage
         if test.stage != target_stage {
+            continue;
+        }
+
+        // Announce deferred tests rather than skipping them silently.
+        if let Some(issue) = deferral_issue(test.name) {
+            serial_println!("[TEST:{}:{}:DEFERRED:#{}]", id_name, test.name, issue);
             continue;
         }
 

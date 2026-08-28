@@ -1030,6 +1030,39 @@ fn kernel_main_continue() -> ! {
         });
     }
 
+    // Dispatch the staged boot-test registry (#533).
+    //
+    // This is the last point in the x86 boot where the registry CAN be
+    // dispatched: `run_staged_tests` spawns one kthread per subsystem and
+    // `kthread_join`s them, so it needs preemption enabled, and the boot thread
+    // has to still be running. Both stop being true a few lines below - the
+    // `preempt_disable()` immediately after this takes the scheduling brake, and
+    // the boot thread then strands inside the disk-backed `get_test_binary()`
+    // busy-wait in `test_exec::test_direct_execution()` and never returns.
+    //
+    // The historical call site sat next to `preempt_enable()` several hundred
+    // lines further down, past both of those. It was therefore unreachable, and
+    // #533's symptom was exactly that: an x86 boot emitted no
+    // `[BOOT_TESTS:START]` and no per-test markers at all, and the only
+    // completion output was the marker-only `[TESTS_COMPLETE:0/0]` +
+    // `[BOOT_TESTS:PASS]` pair that the first Ring 3 syscall prints. Measured on
+    // main @ 54aa16a1: the whole serial contained three registry markers, all
+    // from that vacuous path.
+    #[cfg(feature = "boot_tests")]
+    {
+        log::info!("[boot] Running parallel boot tests...");
+        #[cfg(feature = "btrt")]
+        kernel::test_framework::btrt::pass(kernel::test_framework::catalog::BOOT_TESTS_START);
+        let failures = test_framework::run_all_tests();
+        if failures > 0 {
+            log::error!("[boot] {} test(s) failed!", failures);
+        } else {
+            log::info!("[boot] All boot tests passed!");
+        }
+        #[cfg(feature = "btrt")]
+        kernel::test_framework::btrt::pass(kernel::test_framework::catalog::BOOT_TESTS_COMPLETE);
+    }
+
     // Take the boot sequence's scheduling brake.
     //
     // This call is UNCONDITIONAL and must stay that way. The matching
@@ -1771,23 +1804,9 @@ fn kernel_main_continue() -> ! {
     clock_gettime_test::test_clock_gettime();
     log::info!("✅ clock_gettime tests passed");
 
-    // Run parallel boot tests if enabled
-    // These run after scheduler init but before enabling interrupts to avoid
-    // preemption during test execution
-    #[cfg(feature = "boot_tests")]
-    {
-        log::info!("[boot] Running parallel boot tests...");
-        #[cfg(feature = "btrt")]
-        kernel::test_framework::btrt::pass(kernel::test_framework::catalog::BOOT_TESTS_START);
-        let failures = test_framework::run_all_tests();
-        if failures > 0 {
-            log::error!("[boot] {} test(s) failed!", failures);
-        } else {
-            log::info!("[boot] All boot tests passed!");
-        }
-        #[cfg(feature = "btrt")]
-        kernel::test_framework::btrt::pass(kernel::test_framework::catalog::BOOT_TESTS_COMPLETE);
-    }
+    // The staged boot-test registry used to be dispatched from here. It is now
+    // dispatched from the top of kernel_main_continue() instead - see the #533
+    // comment there for why this position could never work.
 
     // Mark kernel initialization complete BEFORE enabling interrupts
     // Once interrupts are enabled, the scheduler will preempt to userspace
