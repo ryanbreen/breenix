@@ -208,10 +208,32 @@ PREEMPT_CENSUS_PROD_LITERAL='[PREEMPT_BRACKET_CENSUS:underflow=0]'
 # healthy boot as a failure, and it is still far below run-x86-boot-tests.sh's
 # 900s because this profile runs no oracle cohort.
 POLL_BOUND_SECONDS=240
-# Liveness window. The production idle path emits its raw scheduler trace token
-# roughly once every few seconds under TCG (measured: 6 bytes per 5s), so a
-# window this size makes strict growth robust while still failing a kernel that
-# has wedged in its halt loop.
+# Liveness. STIMULUS-RESPONSE, and it has to be: until #672 was fixed, the
+# shipped kernel's only periodic output was `pFFr1 ` - per_cpu::can_schedule()'s
+# every-1000th-refusal debug trace (per_cpu.rs), printing the low byte of the
+# preempt_count #672 had wrapped to 0xFFFFFFFF next to a set need_resched. That
+# is the defect's own symptom, so the old "serial keeps growing on its own"
+# check was measuring the bug rather than the kernel's health, and it goes
+# silent - correctly - the moment the count is sane and can_schedule() stops
+# refusing. A healthy shipped kernel at steady state emits NOTHING spontaneously:
+# it has no userspace, no heartbeat process, and an async executor parked on the
+# keyboard and serial streams.
+#
+# So the gate pokes it. Serial 0 is a socket chardev instead of a plain file
+# (same logfile, so every marker count above is unchanged), one byte is written
+# to the console after steady state, and the console's echo is what makes the
+# byte count grow. That exercises UART RX interrupt delivery, the executor, and
+# serial_command_task's echo path - strictly more than the old check, and it
+# fails a kernel wedged in its halt loop for the same reason the old one did.
+#
+# Anti-vacuity: the chardev logfile records guest output only, not what the host
+# writes into the socket. Measured on the fixed kernel: one byte in, exactly one
+# byte logged. If it echoed the host's write the growth would be two.
+#
+# The byte is a printable character rather than a newline on purpose: a newline
+# would make serial_command_task print a second `breenix> ` prompt and break the
+# prompt pin above.
+LIVENESS_STIMULUS_BYTE='x'
 LIVENESS_WINDOW_SECONDS=15
 
 report_gate_failure() {
@@ -341,7 +363,8 @@ qemu-system-x86_64 \
     -machine pc,accel=tcg -cpu qemu64 -smp 1 -m 512 \
     -display none -no-reboot -no-shutdown \
     -device isa-debug-exit,iobase=0xf4,iosize=0x04 \
-    -serial "file:$OUTPUT_DIR/serial_user.txt" \
+    -chardev "socket,id=console,path=$OUTPUT_DIR/console.sock,server=on,wait=off,logfile=$OUTPUT_DIR/serial_user.txt" \
+    -serial chardev:console \
     -serial "file:$OUTPUT_DIR/serial_kernel.txt" \
     >"$OUTPUT_DIR/qemu.log" 2>&1 &
 QEMU_PID=$!
@@ -365,11 +388,21 @@ done
 # command is silent under set -e and leaves a red with no verdict text.
 test "$reached" = true
 
-# Liveness. Both samples are taken with QEMU still running, after steady state:
-# a kernel that has wedged in its halt loop emits nothing more, a live one keeps
-# emitting its raw scheduler trace token. This is the shipped profile's only
-# periodic output -- it has no heartbeat process, because it has no userspace.
+# Liveness. Both samples are taken with QEMU still running, after steady state,
+# with the stimulus written between them: a kernel that has wedged in its halt
+# loop never services the UART interrupt and never echoes, a live one answers.
+# See the LIVENESS_STIMULUS_BYTE block above for why the old free-running
+# byte-growth check is not available on a kernel with #672 fixed.
 BYTES_BEFORE=$(serial_bytes)
+python3 - "$OUTPUT_DIR/console.sock" "$LIVENESS_STIMULUS_BYTE" <<'STIMULUS'
+import socket
+import sys
+
+console = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+console.connect(sys.argv[1])
+console.sendall(sys.argv[2].encode())
+console.close()
+STIMULUS
 sleep "$LIVENESS_WINDOW_SECONDS"
 BYTES_AFTER=$(serial_bytes)
 
@@ -418,4 +451,4 @@ test "$(marker_count "$PREEMPT_CENSUS_PROD_LITERAL")" -eq 1
 trap - ERR
 echo "PASS: x86 production profile reached steady state with the teardown census at rest"
 print_observed_values
-echo "  serial bytes over ${LIVENESS_WINDOW_SECONDS}s: $BYTES_BEFORE -> $BYTES_AFTER"
+echo "  console echo over ${LIVENESS_WINDOW_SECONDS}s: $BYTES_BEFORE -> $BYTES_AFTER bytes"
