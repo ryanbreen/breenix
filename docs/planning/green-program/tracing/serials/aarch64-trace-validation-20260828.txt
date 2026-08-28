@@ -1,4 +1,4 @@
-Layout: TRACE_BUFFER_SIZE=1024, MAX_CPUS=16, stride=16448 bytes, 100 event types known
+Layout: TRACE_BUFFER_SIZE=1024, MAX_CPUS=16, stride=16448 bytes, 105 event types known
 
 Parsed 16 CPU buffers:
   CPU0: 1024 events (write_idx=2116224, dropped=2115200)
