@@ -229,20 +229,34 @@ fn futex_wait(uaddr: u64, expected_val: u32, timeout_ptr: u64, _val3: u32) -> Sy
             #[cfg(feature = "boot_tests")]
             let mut oracle_parked = false;
             let mut signal_pending = false;
+            // What the timer heap's pop of this wait saw, carried out of the
+            // loop for the record below (#608 F4). It is a plain field read
+            // taken inside the scheduler access this loop already performs.
+            let mut timer_pop_wake_time_set: Option<bool> = None;
             loop {
                 if crate::syscall::check_signals_for_eintr().is_some() {
                     signal_pending = true;
                     break;
                 }
 
-                let still_waiting = crate::task::scheduler::with_scheduler(|sched| {
-                    sched.wake_expired_timers();
-                    sched
-                        .current_thread_mut()
-                        .map(|thread| thread.state == ThreadState::BlockedOnIO)
-                        .unwrap_or(false)
-                })
-                .unwrap_or(false);
+                let (still_waiting, pop_observation) =
+                    crate::task::scheduler::with_scheduler(|sched| {
+                        sched.wake_expired_timers();
+                        sched
+                            .current_thread_mut()
+                            .map(|thread| {
+                                (
+                                    thread.state == ThreadState::BlockedOnIO,
+                                    thread.timer_pop_wake_time_set,
+                                )
+                            })
+                            .unwrap_or((false, None))
+                    })
+                    .unwrap_or((false, None));
+
+                if pop_observation.is_some() {
+                    timer_pop_wake_time_set = pop_observation;
+                }
 
                 if !still_waiting {
                     break;
@@ -300,14 +314,22 @@ fn futex_wait(uaddr: u64, expected_val: u32, timeout_ptr: u64, _val3: u32) -> Sy
                 }
             }
 
+            // One clock read, taken once and used by both the arbitration and
+            // the record, so the record reports the value the decision was
+            // actually made on rather than a second, later sample.
+            let arbitration_now_ns = user_wake_time_ns.map(|_| {
+                let (seconds, nanos) = crate::time::get_monotonic_time_ns();
+                seconds as u64 * 1_000_000_000 + nanos as u64
+            });
+            let deadline_reached = match (user_wake_time_ns, arbitration_now_ns) {
+                (Some(deadline), Some(now_ns)) => now_ns >= deadline,
+                _ => false,
+            };
+
             let result = if removed_by_me {
                 if signal_pending {
                     SyscallResult::Err(super::errno::EINTR as u64)
-                } else if user_wake_time_ns.is_some_and(|deadline| {
-                    let (seconds, nanos) = crate::time::get_monotonic_time_ns();
-                    let now_ns = seconds as u64 * 1_000_000_000 + nanos as u64;
-                    now_ns >= deadline
-                }) {
+                } else if deadline_reached {
                     SyscallResult::Err(super::errno::ETIMEDOUT as u64)
                 } else {
                     SyscallResult::Ok(0)
@@ -317,6 +339,35 @@ fn futex_wait(uaddr: u64, expected_val: u32, timeout_ptr: u64, _val3: u32) -> Sy
                 // or a signal became observable at the same time.
                 SyscallResult::Ok(0)
             };
+
+            // The failure arbitration of a timed wait: the caller asked for a
+            // deadline and is about to be told something other than
+            // ETIMEDOUT, having either come out of the wait with nobody
+            // dequeuing it or come out after its deadline had already passed.
+            // A wait a real waker satisfied before its deadline is the one
+            // shape excluded here, because that is the shape that is correct.
+            if let (Some(deadline), Some(now_ns)) = (user_wake_time_ns, arbitration_now_ns) {
+                let timed_out = matches!(
+                    result,
+                    SyscallResult::Err(errno) if errno == super::errno::ETIMEDOUT as u64
+                );
+                if !timed_out && (removed_by_me || deadline_reached) {
+                    crate::syscall::futex_timeout_record::record(
+                        &crate::syscall::futex_timeout_record::TimedWaitRecord {
+                            thread_id,
+                            removed_by_me,
+                            signal_pending,
+                            user_deadline_ns: deadline,
+                            now_ns,
+                            timer_pop_wake_time_set,
+                            errno: match result {
+                                SyscallResult::Err(errno) => errno,
+                                SyscallResult::Ok(_) => 0,
+                            },
+                        },
+                    );
+                }
+            }
 
             #[cfg(feature = "boot_tests")]
             oracle_finish(

@@ -1103,6 +1103,15 @@ const UNLOCKED_MULTI_BYTE_WRITE_ANCHORS: &[(&str, &str, usize)] = &[
         "fn switch_to_thread",
         10,
     ),
+    // #608 F4: the timed-futex failure record. It fires only when a timed
+    // wait arbitrates to something other than ETIMEDOUT, is budgeted to 32
+    // lines a boot, and must stay lock-free because the futex wait reaches it
+    // with preemption disabled.
+    (
+        "kernel/src/syscall/futex_timeout_record.rs",
+        "fn record",
+        12,
+    ),
     (
         "kernel/src/syscall/handler.rs",
         "fn emit_ring3_syscall_marker",

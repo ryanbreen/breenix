@@ -436,8 +436,19 @@ for i in $(seq 1 "$COUNT"); do
         "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 1
     test "$(grep -h -F -c "$CREATION_LOCK_ORDER_INJECTED_LITERAL" \
         "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 1
-    test "$(grep -h -F -c "$CREATION_LOCK_ORDER_VIOLATION_LITERAL" \
-        "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 0
+    # The one assertion in this file that expects ZERO matches, and therefore
+    # the one that has to survive grep's no-match exit status. Under
+    # `set -o pipefail` a grep that matches nothing exits 1, that status
+    # becomes the pipeline's, and the ERR trap fires inside the command
+    # substitution - so report_gate_failure's own output lands in the
+    # substitution and `test` is handed 400 lines of serial instead of a
+    # count. The gate then failed with "integer expression expected" on every
+    # healthy boot, i.e. exactly when this violation was correctly absent.
+    # `|| test $? -eq 1` accepts no-match and nothing else: a real grep error
+    # (exit 2) still aborts.
+    test "$( { grep -h -F -c "$CREATION_LOCK_ORDER_VIOLATION_LITERAL" \
+        "$OUTPUT_DIR"/serial_*.txt || test $? -eq 1; } | \
+        awk '{ total += $1 } END { print total + 0 }')" -eq 0
     test "$(grep -h -F -c "$TOMBSTONE_JOIN_ORACLE_LITERAL" \
         "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 1
     # (1) The userspace-end census, pinned by conservation rather than by a race.

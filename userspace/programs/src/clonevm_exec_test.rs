@@ -13,6 +13,7 @@ use libbreenix::syscall::{nr, raw};
 use libbreenix::time::now_monotonic;
 use libbreenix::Timespec;
 use std::ptr;
+use std::sync::atomic::{AtomicPtr, Ordering};
 
 const SHARED_ALIVE_OFFSET: usize = 0;
 const SHARED_COMMAND_OFFSET: usize = 8;
@@ -44,11 +45,77 @@ unsafe fn raw_msg(msg: &[u8]) {
     write(2, msg.as_ptr(), msg.len());
 }
 
+/// Custody of the one clone-VM child this process may have alive at a time.
+///
+/// A parent that exits an error path while its sibling is still scheduled
+/// leaves a process with no producer for the word that sibling spins on: the
+/// sibling then burns its whole spin bound before the boot can complete. Every
+/// parent error exit therefore goes through `fail_closed`, which releases the
+/// child and waits for the kernel to clear its `tid_addr` first.
+static CHILD_TID_ADDRESS: AtomicPtr<u32> = AtomicPtr::new(ptr::null_mut());
+/// The `u32` release word of the post-exec rendezvous child, written to 1.
+static CHILD_RELEASE_WORD: AtomicPtr<u32> = AtomicPtr::new(ptr::null_mut());
+/// The `u64` command word of the first-stage child, written to 2.
+static CHILD_RELEASE_COMMAND: AtomicPtr<u64> = AtomicPtr::new(ptr::null_mut());
+
+fn take_child_custody(release: *mut u32, command: *mut u64, tid_addr: *mut u32) {
+    CHILD_RELEASE_WORD.store(release, Ordering::SeqCst);
+    CHILD_RELEASE_COMMAND.store(command, Ordering::SeqCst);
+    CHILD_TID_ADDRESS.store(tid_addr, Ordering::SeqCst);
+}
+
+/// Called once the child has been reaped on the success path, so a later
+/// failure does not wait on a tid that is already clear.
+fn drop_child_custody() {
+    CHILD_TID_ADDRESS.store(ptr::null_mut(), Ordering::SeqCst);
+    CHILD_RELEASE_WORD.store(ptr::null_mut(), Ordering::SeqCst);
+    CHILD_RELEASE_COMMAND.store(ptr::null_mut(), Ordering::SeqCst);
+}
+
+/// Release the child and wait for the kernel to clear its `tid_addr`. Taking
+/// custody with a swap makes this at-most-once even if a later failure path
+/// re-enters it.
+unsafe fn release_and_reap_child() {
+    let tid_addr = CHILD_TID_ADDRESS.swap(ptr::null_mut(), Ordering::SeqCst);
+    if tid_addr.is_null() {
+        return;
+    }
+
+    let release = CHILD_RELEASE_WORD.swap(ptr::null_mut(), Ordering::SeqCst);
+    if !release.is_null() {
+        core::ptr::write_volatile(release, 1);
+    }
+    let command = CHILD_RELEASE_COMMAND.swap(ptr::null_mut(), Ordering::SeqCst);
+    if !command.is_null() {
+        core::ptr::write_volatile(command, 2);
+    }
+
+    let mut iteration = 0;
+    while iteration < SPIN_LIMIT {
+        if core::ptr::read_volatile(tid_addr) == 0 {
+            return;
+        }
+        sys_yield();
+        iteration += 1;
+    }
+
+    raw_msg(b"CLONEVM_EXEC_TEST: ERROR child was not reaped on the fail-closed exit\n");
+}
+
+/// The only parent error exit in this program.
+unsafe fn fail_closed(msg: &[u8]) -> ! {
+    release_and_reap_child();
+    raw_msg(msg);
+    std::process::exit(1);
+}
+
+/// Yield through the library wrapper, which declares that the kernel writes
+/// the syscall return register (#608). The hand-rolled block this replaces
+/// named that register as an input only, so the compiler was entitled to hoist
+/// the syscall-number load out of every spin below and each later trap ran
+/// with the previous call's return value as its syscall number.
 unsafe fn sys_yield() {
-    #[cfg(target_arch = "x86_64")]
-    core::arch::asm!("int 0x80", in("rax") 24u64, options(nostack));
-    #[cfg(target_arch = "aarch64")]
-    core::arch::asm!("svc #0", in("x8") 124u64, in("x0") 0u64, options(nostack));
+    raw::syscall0(nr::YIELD);
 }
 
 unsafe fn thread_exit(code: u64) -> ! {
@@ -139,8 +206,7 @@ unsafe fn map_region(size: usize, error: &[u8]) -> *mut u8 {
         Ok(mapped) => mapped,
         Err(map_error) => {
             drop(map_error);
-            raw_msg(error);
-            std::process::exit(1);
+            fail_closed(error);
         }
     }
 }
@@ -163,8 +229,7 @@ unsafe fn wait_for_nonzero_u64(address: *mut u64, error: &[u8]) {
         return;
     }
 
-    raw_msg(error);
-    std::process::exit(1);
+    fail_closed(error);
 }
 
 unsafe fn spin_until_u32(address: *mut u32, expected: u32) -> bool {
@@ -185,8 +250,7 @@ unsafe fn wait_for_zero_u32(address: *mut u32, error: &[u8]) {
         return;
     }
 
-    raw_msg(error);
-    std::process::exit(1);
+    fail_closed(error);
 }
 
 unsafe fn wait_for_nonzero_u32(address: *mut u32, error: &[u8]) {
@@ -199,8 +263,7 @@ unsafe fn wait_for_nonzero_u32(address: *mut u32, error: &[u8]) {
         iteration += 1;
     }
 
-    raw_msg(error);
-    std::process::exit(1);
+    fail_closed(error);
 }
 
 unsafe fn wait_for_child_status(address: *mut u32, expected: u32, error: &[u8]) {
@@ -211,15 +274,13 @@ unsafe fn wait_for_child_status(address: *mut u32, expected: u32, error: &[u8]) 
             return;
         }
         if status == u32::MAX {
-            raw_msg(error);
-            std::process::exit(1);
+            fail_closed(error);
         }
         sys_yield();
         iteration += 1;
     }
 
-    raw_msg(error);
-    std::process::exit(1);
+    fail_closed(error);
 }
 
 unsafe fn monotonic_ns(error: &[u8]) -> u64 {
@@ -227,13 +288,11 @@ unsafe fn monotonic_ns(error: &[u8]) -> u64 {
         Ok(timestamp) => timestamp,
         Err(error_value) => {
             drop(error_value);
-            raw_msg(error);
-            std::process::exit(1);
+            fail_closed(error);
         }
     };
     if timestamp.tv_sec < 0 || timestamp.tv_nsec < 0 || timestamp.tv_nsec >= 1_000_000_000 {
-        raw_msg(error);
-        std::process::exit(1);
+        fail_closed(error);
     }
     timestamp.tv_sec as u64 * 1_000_000_000 + timestamp.tv_nsec as u64
 }
@@ -254,8 +313,7 @@ unsafe fn prove_child_still_live(alive: *mut u64, tid_addr: *mut u32) {
         iteration += 1;
     }
 
-    raw_msg(b"CLONEVM_EXEC_TEST: ERROR child was not live before exec probe\n");
-    std::process::exit(1);
+    fail_closed(b"CLONEVM_EXEC_TEST: ERROR child was not live before exec probe\n");
 }
 
 extern "C" fn post_exec_rendezvous_child(arg: *mut u8) -> *mut u8 {
@@ -330,8 +388,7 @@ unsafe fn probe_live_sibling_exec() {
         }
         Err(error) => {
             drop(error);
-            raw_msg(b"CLONEVM_EXEC_TEST: ERROR live-sibling exec returned unexpected errno\n");
-            std::process::exit(1);
+            fail_closed(b"CLONEVM_EXEC_TEST: ERROR live-sibling exec returned unexpected errno\n");
         }
         Ok(infallible) => match infallible {},
     }
@@ -358,23 +415,19 @@ unsafe fn second_stage() -> ! {
     core::ptr::write_volatile(second_word, 0);
 
     if futex_wake(first_word, 1) != 0 {
-        raw_msg(b"CLONEVM_EXEC_TEST: ERROR first post-exec futex wake returned nonzero\n");
-        std::process::exit(1);
+        fail_closed(b"CLONEVM_EXEC_TEST: ERROR first post-exec futex wake returned nonzero\n");
     }
     core::ptr::write_volatile(first_word, 1);
     if futex_wait(first_word, 0) != -(Errno::EAGAIN as i64) {
-        raw_msg(b"CLONEVM_EXEC_TEST: ERROR first post-exec futex wait did not return EAGAIN\n");
-        std::process::exit(1);
+        fail_closed(b"CLONEVM_EXEC_TEST: ERROR first post-exec futex wait did not return EAGAIN\n");
     }
 
     if futex_wake(second_word, 1) != 0 {
-        raw_msg(b"CLONEVM_EXEC_TEST: ERROR second post-exec futex wake returned nonzero\n");
-        std::process::exit(1);
+        fail_closed(b"CLONEVM_EXEC_TEST: ERROR second post-exec futex wake returned nonzero\n");
     }
     core::ptr::write_volatile(second_word, 2);
     if futex_wait(second_word, 1) != -(Errno::EAGAIN as i64) {
-        raw_msg(b"CLONEVM_EXEC_TEST: ERROR second post-exec futex wait did not return EAGAIN\n");
-        std::process::exit(1);
+        fail_closed(b"CLONEVM_EXEC_TEST: ERROR second post-exec futex wait did not return EAGAIN\n");
     }
 
     let rendezvous = shared.add(RENDEZVOUS_OFFSET) as *mut u32;
@@ -398,14 +451,13 @@ unsafe fn second_stage() -> ! {
         b"CLONEVM_EXEC_TEST: ERROR rendezvous stack mmap failed\n",
     );
     if clone_vm_child(sibling_stack, post_exec_rendezvous_child, shared, tid_addr) < 0 {
-        raw_msg(b"CLONEVM_EXEC_TEST: ERROR rendezvous clone failed\n");
-        std::process::exit(1);
+        fail_closed(b"CLONEVM_EXEC_TEST: ERROR rendezvous clone failed\n");
     }
+    take_child_custody(release, ptr::null_mut(), tid_addr);
 
     core::ptr::write_volatile(ready, 1);
     if futex_wait(rendezvous, 0) != 0 {
-        raw_msg(b"CLONEVM_EXEC_TEST: ERROR parent wait was not woken by sibling\n");
-        std::process::exit(1);
+        fail_closed(b"CLONEVM_EXEC_TEST: ERROR parent wait was not woken by sibling\n");
     }
     wait_for_child_status(
         child_status,
@@ -418,8 +470,7 @@ unsafe fn second_stage() -> ! {
         b"CLONEVM_EXEC_TEST: ERROR sibling did not report second wait readiness\n",
     );
     if futex_wake(second_word, 1) != 1 {
-        raw_msg(b"CLONEVM_EXEC_TEST: ERROR parent wake of sibling failed\n");
-        std::process::exit(1);
+        fail_closed(b"CLONEVM_EXEC_TEST: ERROR parent wake of sibling failed\n");
     }
     wait_for_child_status(
         child_status,
@@ -435,16 +486,14 @@ unsafe fn second_stage() -> ! {
         b"CLONEVM_EXEC_TEST: ERROR monotonic clock failed before futex timeout\n",
     );
     if futex_wait_with_timeout(never_woken, 0, &timeout) != -(Errno::ETIMEDOUT as i64) {
-        raw_msg(b"CLONEVM_EXEC_TEST: ERROR futex timeout did not return ETIMEDOUT\n");
-        std::process::exit(1);
+        fail_closed(b"CLONEVM_EXEC_TEST: ERROR futex timeout did not return ETIMEDOUT\n");
     }
     let elapsed = monotonic_ns(
         b"CLONEVM_EXEC_TEST: ERROR monotonic clock failed after futex timeout\n",
     )
     .saturating_sub(timeout_start);
     if elapsed < 50_000_000 {
-        raw_msg(b"CLONEVM_EXEC_TEST: ERROR futex timeout elapsed less than 50ms\n");
-        std::process::exit(1);
+        fail_closed(b"CLONEVM_EXEC_TEST: ERROR futex timeout elapsed less than 50ms\n");
     }
 
     core::ptr::write_volatile(release, 1);
@@ -452,6 +501,7 @@ unsafe fn second_stage() -> ! {
         tid_addr,
         b"CLONEVM_EXEC_TEST: ERROR rendezvous child tid was not cleared after release\n",
     );
+    drop_child_custody();
     raw_msg(b"CLONEVM_EXEC_TEST: post-exec rendezvous complete\n");
 
     raw_msg(b"CLONEVM_EXEC_TEST: post-exec futex keys derived\n");
@@ -478,9 +528,9 @@ unsafe fn first_stage() -> ! {
     core::ptr::write_volatile(tid_addr, u32::MAX);
 
     if clone_vm_child(stack, phase_one_child, shared, tid_addr) < 0 {
-        raw_msg(b"CLONEVM_EXEC_TEST: ERROR initial clone failed\n");
-        std::process::exit(1);
+        fail_closed(b"CLONEVM_EXEC_TEST: ERROR initial clone failed\n");
     }
+    take_child_custody(ptr::null_mut(), command, tid_addr);
 
     wait_for_nonzero_u64(
         alive,
@@ -496,13 +546,13 @@ unsafe fn first_stage() -> ! {
         tid_addr,
         b"CLONEVM_EXEC_TEST: ERROR child tid was not cleared after release\n",
     );
+    drop_child_custody();
     raw_msg(b"CLONEVM_EXEC_TEST: child exited\n");
 
     let argv = second_stage_argv();
     let exec_result = process::execv(PROGRAM, argv.as_ptr());
     drop(exec_result);
-    raw_msg(b"CLONEVM_EXEC_TEST: ERROR post-release exec returned\n");
-    std::process::exit(1);
+    fail_closed(b"CLONEVM_EXEC_TEST: ERROR post-release exec returned\n");
 }
 
 fn main() {

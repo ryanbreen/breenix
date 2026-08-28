@@ -159,11 +159,12 @@ fn main() {
                 if tid_val == 0 {
                     break;
                 }
-                // Yield CPU: Linux x86_64 sched_yield=24
-                #[cfg(target_arch = "x86_64")]
-                core::arch::asm!("int 0x80", in("rax") 24u64, options(nostack));
-                #[cfg(target_arch = "aarch64")]
-                core::arch::asm!("svc #0", in("x8") 124u64, in("x0") 0u64, options(nostack));
+                // Yield CPU through the library wrapper, which declares that
+                // the kernel writes the syscall return register (#608). The
+                // hand-rolled block this replaces named that register as an
+                // input only, so the syscall-number load was free to leave this
+                // loop and every later trap carried a stale number.
+                libbreenix::syscall::raw::syscall0(libbreenix::syscall::nr::YIELD);
                 // Print progress every 1M iterations
                 if i > 0 && i % 1_000_000 == 0 {
                     let digit = b'0' + (i / 1_000_000) as u8;
