@@ -1194,6 +1194,12 @@ pub fn reclaim_deferred_process_resources() {
     // #653: the bracket opens BEFORE the compare-exchange on purpose. The gap
     // between a successful claim and a later disable is itself an abandonment
     // window, and it is the window the strand was taken in.
+    //
+    // CORE-PROOF MUTATION LEG `coreproof_mut_reclaim_bracket` (#653, fixed by PR
+    // #655): the mutation opens the bracket AFTER the claim instead, restoring
+    // exactly that window. Both legs stay balanced on every path — the mutation
+    // leg has nothing to release on the refusal return. Test profiles only.
+    #[cfg(not(feature = "coreproof_mut_reclaim_bracket"))]
     reclaim_preempt_disable();
     if RECLAIM_DRAIN_ACTIVE
         .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
@@ -1203,9 +1209,12 @@ pub fn reclaim_deferred_process_resources() {
         crate::trace_count!(
             crate::tracing::providers::teardown::RECLAIM_DRAIN_NESTED_REFUSED
         );
+        #[cfg(not(feature = "coreproof_mut_reclaim_bracket"))]
         reclaim_preempt_enable();
         return;
     }
+    #[cfg(feature = "coreproof_mut_reclaim_bracket")]
+    reclaim_preempt_disable();
 
     reclaim_deferred_process_resources_for_pass(my_pass, false);
     RECLAIM_DRAIN_ACTIVE.store(false, Ordering::Release);

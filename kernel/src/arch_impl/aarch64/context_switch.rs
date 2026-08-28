@@ -6498,6 +6498,12 @@ pub fn run_deferred_reclamation() {
 }
 
 pub fn schedule_from_kernel() {
+    // CORE-PROOF MUTATION LEG `coreproof_mut_cpu_identity` (#645, fixed by PR
+    // #645's own campaign): the identity read moves back above the mask, into
+    // the preemptible window the comment below explains. Test profiles only —
+    // `coreproof_mut_*` implies `coreproof`, which implies `boot_tests`.
+    #[cfg(feature = "coreproof_mut_cpu_identity")]
+    let premask_cpu = CpuId::current();
     let saved_daif = read_daif();
     unsafe {
         crate::arch_impl::aarch64::cpu::disable_interrupts();
@@ -6516,7 +6522,10 @@ pub fn schedule_from_kernel() {
     //
     // Below the mask this thread cannot be preempted, so the identity cannot go
     // stale before the pivot; the pivot re-checks it anyway.
+    #[cfg(not(feature = "coreproof_mut_cpu_identity"))]
     let cpu = CpuId::current();
+    #[cfg(feature = "coreproof_mut_cpu_identity")]
+    let cpu = premask_cpu;
     let cpu_id = cpu.index();
     cpu0_breadcrumb(cpu_id, 1); // entry
     cpu0_breadcrumb(cpu_id, 2); // after disable_interrupts

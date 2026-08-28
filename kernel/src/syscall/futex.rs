@@ -158,6 +158,22 @@ fn futex_wait(uaddr: u64, expected_val: u32, timeout_ptr: u64, _val3: u32) -> Sy
     };
 
     let mut value_matches = false;
+
+    // CORE-PROOF MUTATION LEG `coreproof_mut_futex_section` (#584, fixed by PR
+    // #604): the value check runs in its OWN critical section, which is then
+    // dropped before the section below re-takes the map lock to enqueue and
+    // publish the waiter. A wake landing in that gap is lost. PR #604 made
+    // check, enqueue and publication one section, which is the unmutated form
+    // immediately below. Test profiles only.
+    #[cfg(feature = "coreproof_mut_futex_section")]
+    let split_precheck = {
+        let _queues = FUTEX_QUEUES.lock();
+        // SAFETY: The address was validated and pre-touched above.
+        let current_val = unsafe { core::ptr::read_volatile(uaddr as *const u32) };
+        value_matches = current_val == expected_val;
+        value_matches && !zero_timeout
+    };
+
     let prepare_outcome = {
         let mut queues = FUTEX_QUEUES.lock();
         let waitqueue = queues.entry(key).or_insert_with(WaitQueueHead::new);
@@ -165,11 +181,19 @@ fn futex_wait(uaddr: u64, expected_val: u32, timeout_ptr: u64, _val3: u32) -> Sy
             ThreadState::BlockedOnIO,
             effective_wake_time_ns,
             || {
-                // SAFETY: The address was validated and pre-touched above.
-                // A concurrent unmap remains a documented residual risk.
-                let current_val = unsafe { core::ptr::read_volatile(uaddr as *const u32) };
-                value_matches = current_val == expected_val;
-                value_matches && !zero_timeout
+                #[cfg(feature = "coreproof_mut_futex_section")]
+                {
+                    split_precheck
+                }
+                #[cfg(not(feature = "coreproof_mut_futex_section"))]
+                {
+                    // SAFETY: The address was validated and pre-touched above.
+                    // A concurrent unmap remains a documented residual risk.
+                    let current_val =
+                        unsafe { core::ptr::read_volatile(uaddr as *const u32) };
+                    value_matches = current_val == expected_val;
+                    value_matches && !zero_timeout
+                }
             },
         );
 

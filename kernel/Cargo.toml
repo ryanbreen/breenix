@@ -42,6 +42,22 @@ resume_pc_oracle_disarm = ["boot_tests"]
 lr_poison_oracle = ["boot_tests"]  # saved-LR custody mutation leg
 percpu_stack_custody_oracle = ["boot_tests"]
 arm_a_609 = ["boot_tests"]  # #609 arm-A placement oracle
+
+# Core-proof harness (R60 pilot). Test profile only: it rides `boot_tests` and
+# every byte of it is behind `#[cfg(feature = "coreproof")]`. Two ratchets prove
+# the production profile carries none of it -- `scripts/check-coreproof-seams.sh`
+# (source) and `tests/coreproof_production_clean.rs` (binary).
+coreproof = ["boot_tests"]
+# The six planted known-fixed defects the pilot re-finds. Each is a one-line
+# re-introduction at the real site, cited to the PR that fixed it, and each
+# implies `coreproof` so a mutation can never be built without the harness that
+# scores it.
+coreproof_mut_block_departure = ["coreproof"]
+coreproof_mut_cpu_identity = ["coreproof"]
+coreproof_mut_reclaim_bracket = ["coreproof"]
+coreproof_mut_pending_next = ["coreproof"]
+coreproof_mut_futex_section = ["coreproof"]
+coreproof_mut_masked_lock = ["coreproof"]
 # #533 x86 staged-registry dispatch. OFF by default: the dispatch itself works
 # (SerialBoot + all 70 EarlyBoot tests pass), but the boot thread is stranded
 # when the last EarlyBoot subsystem kthread exits, so PostScheduler and
