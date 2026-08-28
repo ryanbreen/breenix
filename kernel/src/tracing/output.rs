@@ -147,7 +147,7 @@ pub static mut TRACE_DUMP_COUNT: u64 = 0;
 /// This is safe to call from panic handlers and interrupt contexts.
 /// Uses direct port I/O on x86-64, UART on ARM64.
 #[inline(always)]
-fn raw_serial_char(c: u8) {
+pub(crate) fn raw_serial_char(c: u8) {
     #[cfg(target_arch = "x86_64")]
     unsafe {
         use x86_64::instructions::port::Port;
@@ -164,7 +164,7 @@ fn raw_serial_char(c: u8) {
 
 /// Write a string to serial output without any locks.
 #[inline(never)]
-fn raw_serial_str(s: &str) {
+pub(crate) fn raw_serial_str(s: &str) {
     for c in s.bytes() {
         raw_serial_char(c);
     }
@@ -172,7 +172,7 @@ fn raw_serial_str(s: &str) {
 
 /// Write a newline to serial output.
 #[inline(always)]
-fn raw_serial_newline() {
+pub(crate) fn raw_serial_newline() {
     raw_serial_char(b'\r');
     raw_serial_char(b'\n');
 }
@@ -200,7 +200,7 @@ fn raw_serial_hex(value: u64) {
 }
 
 /// Write a u64 value in decimal to serial output.
-fn raw_serial_dec(mut value: u64) {
+pub(crate) fn raw_serial_dec(mut value: u64) {
     if value == 0 {
         raw_serial_char(b'0');
         return;

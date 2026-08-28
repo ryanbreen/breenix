@@ -514,6 +514,14 @@ pub struct Thread {
     /// clock reaches this value.
     pub wake_time_ns: Option<u64>,
 
+    /// What `Scheduler::wake_expired_timers` saw when it popped this thread's
+    /// timer-heap entry: `Some(true)` if `wake_time_ns` was still set (the pop
+    /// did its work), `Some(false)` if it had been cleared, which makes the pop
+    /// a no-op and leaves a timed wait blocked with its deadline already gone.
+    /// `None` means no entry for this thread has been popped since the current
+    /// wait was published. Read by the futex timed-wait record (#608 F4).
+    pub timer_pop_wake_time_set: Option<bool>,
+
     /// Tick count when this thread started its current run (for CPU accounting)
     pub run_start_ticks: u64,
 
@@ -558,6 +566,7 @@ impl Clone for Thread {
             inline_schedule_saved_sp: self.inline_schedule_saved_sp,
             saved_userspace_context: self.saved_userspace_context.clone(),
             wake_time_ns: self.wake_time_ns,
+            timer_pop_wake_time_set: self.timer_pop_wake_time_set,
             run_start_ticks: self.run_start_ticks,
             cpu_ticks_total: self.cpu_ticks_total,
             owner_pid: self.owner_pid,
@@ -660,6 +669,7 @@ impl Thread {
             inline_schedule_saved_sp: 0,
             saved_userspace_context: None,
             wake_time_ns: None,
+            timer_pop_wake_time_set: None,
             run_start_ticks: 0,
             cpu_ticks_total: 0,
             owner_pid: None,
@@ -723,6 +733,7 @@ impl Thread {
             inline_schedule_saved_sp: 0,
             saved_userspace_context: None,
             wake_time_ns: None,
+            timer_pop_wake_time_set: None,
             run_start_ticks: 0,
             cpu_ticks_total: 0,
             owner_pid: None,
@@ -773,6 +784,7 @@ impl Thread {
             inline_schedule_saved_sp: 0,
             saved_userspace_context: None,
             wake_time_ns: None,
+            timer_pop_wake_time_set: None,
             run_start_ticks: 0,
             cpu_ticks_total: 0,
             owner_pid: None,
@@ -822,6 +834,7 @@ impl Thread {
             inline_schedule_saved_sp: 0,
             saved_userspace_context: None,
             wake_time_ns: None,
+            timer_pop_wake_time_set: None,
             run_start_ticks: 0,
             cpu_ticks_total: 0,
             owner_pid: None,
@@ -884,6 +897,7 @@ impl Thread {
             inline_schedule_saved_sp: 0,
             saved_userspace_context: None,
             wake_time_ns: None,
+            timer_pop_wake_time_set: None,
             run_start_ticks: 0,
             cpu_ticks_total: 0,
             owner_pid: None,
@@ -941,6 +955,7 @@ impl Thread {
             inline_schedule_saved_sp: 0,
             saved_userspace_context: None,
             wake_time_ns: None,
+            timer_pop_wake_time_set: None,
             run_start_ticks: 0,
             cpu_ticks_total: 0,
             owner_pid: None,
@@ -1017,6 +1032,7 @@ impl Thread {
             inline_schedule_saved_sp: 0,
             saved_userspace_context: None,
             wake_time_ns: None,
+            timer_pop_wake_time_set: None,
             run_start_ticks: 0,
             cpu_ticks_total: 0,
             owner_pid: None,
@@ -1062,6 +1078,7 @@ impl Thread {
             inline_schedule_saved_sp: 0,
             saved_userspace_context: None,
             wake_time_ns: None,
+            timer_pop_wake_time_set: None,
             run_start_ticks: 0,
             cpu_ticks_total: 0,
             owner_pid: None,

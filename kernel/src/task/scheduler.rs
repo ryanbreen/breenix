@@ -3180,6 +3180,9 @@ impl Scheduler {
 
         thread.state = ThreadState::BlockedOnIO;
         thread.wake_time_ns = wake_time_ns;
+        // The observation belongs to this wait, not to whatever the thread did
+        // before it.
+        thread.timer_pop_wake_time_set = None;
         // Mark blocked_in_syscall so the context switch path resumes
         // inside the syscall (wait_timeout loop) rather than restoring
         // stale userspace context.
@@ -3418,6 +3421,16 @@ impl Scheduler {
                 break; // All remaining entries are in the future
             }
             self.timer_heap.pop();
+
+            // Record what this pop saw before deciding anything with it. A
+            // popped entry whose thread has already had wake_time_ns cleared
+            // makes the pop a no-op, and a timed wait that was relying on it
+            // stays blocked with its deadline in the past. That is the fact
+            // the futex timed-wait record needs (#608 F4); the store is a
+            // single Option<bool> and costs nothing on the reschedule path.
+            if let Some(thread) = self.get_thread_mut(tid) {
+                thread.timer_pop_wake_time_set = Some(thread.wake_time_ns.is_some());
+            }
 
             // Validate: thread might have been woken already (by ISR, signal, etc.)
             // or terminated. Only process if still in a timed-wait state with a
