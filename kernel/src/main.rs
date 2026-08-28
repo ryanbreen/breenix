@@ -1053,7 +1053,29 @@ fn kernel_main_continue() -> ! {
         log::info!("[boot] Running parallel boot tests...");
         #[cfg(feature = "btrt")]
         kernel::test_framework::btrt::pass(kernel::test_framework::catalog::BOOT_TESTS_START);
+
+        // The executor's `kthread_join` waits with `hlt`, so the timer has to be
+        // able to fire or the boot thread halts forever with the test kthread
+        // sitting runnable behind it. That is not hypothetical: every
+        // `kernel::task::kthread_tests::*` case run immediately above this ends
+        // with `arch_disable_interrupts()`, so control arrives here with IF
+        // clear, and the first dispatched subsystem thread hung the boot
+        // permanently after `[STAGE:serial:ADVANCE]`.
+        //
+        // Enable interrupts for the dispatch and put the flag back the way it
+        // was found. Restoring rather than leaving them on keeps this block from
+        // changing the interrupt state the rest of the boot sequence inherits.
+        let interrupts_were_enabled = x86_64::instructions::interrupts::are_enabled();
+        if !interrupts_were_enabled {
+            x86_64::instructions::interrupts::enable();
+        }
+
         let failures = test_framework::run_all_tests();
+
+        if !interrupts_were_enabled {
+            x86_64::instructions::interrupts::disable();
+        }
+
         if failures > 0 {
             log::error!("[boot] {} test(s) failed!", failures);
         } else {
