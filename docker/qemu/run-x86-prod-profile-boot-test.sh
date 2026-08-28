@@ -29,7 +29,7 @@
 #
 # WHAT IT DOES NOT DO, STATED PLAINLY
 #
-# It launches NO userspace process. `/sbin/init` is read and launched only by
+# It launches NO userspace process (#673). `/sbin/init` is read and launched only by
 # kernel/src/main_aarch64.rs; x86's kernel_main_continue() creates user processes
 # exclusively inside `#[cfg(feature = "testing")]` / `#[cfg(feature = "interactive")]`
 # blocks, and the serial console's `test` handler bottoms out in
@@ -154,11 +154,11 @@ CRASH_MARKERS_PATTERN='KERNEL PANIC|panic!|DOUBLE FAULT|TRIPLE FAULT|soft lockup
 # a disclosed one is absent. Both of these are printed by the shipped x86 kernel
 # on every boot and were invisible until this gate existed:
 #
-#   PRECONDITION 5 -- "No runnable threads in scheduler". The shipped x86 kernel
-#   launches no userspace process at all (see the header). Symptom of that gap,
-#   not an independent defect.
+#   PRECONDITION 5 (#673) -- "No runnable threads in scheduler". The shipped x86
+#   kernel launches no userspace process at all (see the header). Symptom of that
+#   gap, not an independent defect.
 #
-#   PRECONDITION 7 -- "Preemption is not disabled". kernel_main_continue() calls
+#   PRECONDITION 7 (#672) -- "Preemption is not disabled". kernel_main_continue() calls
 #   per_cpu::preempt_disable() only inside `#[cfg(all(feature = "testing", not(feature
 #   = "interactive")))]` but calls the matching preempt_enable() unconditionally,
 #   so the shipped profile decrements a preempt_count that is already zero. The
