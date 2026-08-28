@@ -6502,6 +6502,12 @@ pub fn schedule_from_kernel() {
     // #645's own campaign): the identity read moves back above the mask, into
     // the preemptible window the comment below explains. Test profiles only —
     // `coreproof_mut_*` implies `coreproof`, which implies `boot_tests`.
+    //
+    // ROUND 3: still not re-found. The detector is right here in this file —
+    // `CpuId::current_checked` at the pivot records the carried-versus-fresh
+    // disagreement — so the gap is production of the state, not detection of
+    // it: the window is a few instructions no seam may ever label, and the
+    // damage needs the preempted thread to come back on ANOTHER CPU.
     #[cfg(feature = "coreproof_mut_cpu_identity")]
     let premask_cpu = CpuId::current();
     let saved_daif = read_daif();

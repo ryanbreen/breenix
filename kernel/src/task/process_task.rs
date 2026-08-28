@@ -292,6 +292,28 @@ static ROW_REMOVAL_EPOCH: AtomicU64 = AtomicU64::new(0);
 /// `[RECLAIM_DRAIN:...]` census.
 static RECLAIM_DRAIN_ACTIVE: AtomicBool = AtomicBool::new(false);
 
+/// The claim word and the pass counter, read together for an outside observer.
+///
+/// #653's repair is an INVARIANT, not a counter: from before the
+/// compare-exchange until after the release, the claiming CPU holds a
+/// preemption bracket, so `RECLAIM_DRAIN_ACTIVE == true` implies some CPU has a
+/// non-zero preempt count. The core-proof harness scores that invariant, and it
+/// reads the claim word itself rather than keeping a second notion of "a drain
+/// is in flight" — a parallel truth that could disagree with this one would be
+/// worse than no check.
+///
+/// The pass id rides along because an observer on a third CPU has no other way
+/// to tell one claim from the next: `RECLAIM_PASS_ID` advances on every ENTRY
+/// to this function, refusals included, so a pass id that did not move across a
+/// sample proves no CPU entered the drain during it, and therefore that the
+/// claim seen at both ends of the sample is the same claim.
+#[cfg(feature = "coreproof")]
+pub fn reclaim_drain_claim_snapshot() -> (bool, u32) {
+    let pass = RECLAIM_PASS_ID.load(Ordering::Acquire);
+    let held = RECLAIM_DRAIN_ACTIVE.load(Ordering::Acquire);
+    (held, pass)
+}
+
 /// Selections a single *production* drain pass may take before it releases the
 /// claim and lets the scheduler run.
 ///

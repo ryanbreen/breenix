@@ -131,13 +131,6 @@ fn futex_wait(uaddr: u64, expected_val: u32, timeout_ptr: u64, _val3: u32) -> Sy
     let oracle_deadline =
         oracle_stage.map(|stage| crate::syscall::futex_oracle::record_arm(stage, tg_id, uaddr));
 
-    #[cfg(feature = "boot_tests")]
-    if oracle_stage == Some(crate::syscall::futex_oracle::Stage::S1) {
-        // This seam must remain immediately before the check+enqueue section.
-        // It drives the race while the map lock is still available to the wake.
-        crate::syscall::futex_oracle::stage1_drive(tg_id, uaddr, expected_val);
-    }
-
     let key = (tg_id, uaddr);
     let effective_wake_time_ns = {
         #[cfg(feature = "boot_tests")]
@@ -177,6 +170,30 @@ fn futex_wait(uaddr: u64, expected_val: u32, timeout_ptr: u64, _val3: u32) -> Sy
     };
     #[cfg(feature = "coreproof_mut_futex_section")]
     let split_precheck = value_matches && !zero_timeout;
+
+    // STAGE 1's seam. It must remain immediately before the section that
+    // ENQUEUES and PUBLISHES the waiter, with the map lock free, so the wake it
+    // drives is one a correct implementation cannot lose: #584 is lost exactly
+    // when a wake lands after the value check and before the publication.
+    //
+    // In a correct build there is nothing between the seam and the check — they
+    // are one section — so the drive changes the value, the in-lock check sees
+    // the change, and the wait returns EAGAIN having never enqueued. Split that
+    // section and the same seam lands INSIDE the split: the check has already
+    // decided on a stale value, the wake finds nothing queued, and the waiter
+    // publishes itself into a queue no wake will visit again. The oracle then
+    // reports the loss through its own backstop as `stage1_ret=RESCUED`,
+    // `stage1_parked=1` and `rescues=1`.
+    //
+    // The seam moved here from above the value check in round 3 of the
+    // core-proof pilot. In a build without the split the two positions are the
+    // same position — only a `let` binding and compiled-out code sit between
+    // them — so this is a no-op for every shipping profile and a real race for
+    // the one that reopens the window.
+    #[cfg(feature = "boot_tests")]
+    if oracle_stage == Some(crate::syscall::futex_oracle::Stage::S1) {
+        crate::syscall::futex_oracle::stage1_drive(tg_id, uaddr, expected_val);
+    }
 
     let prepare_outcome = {
         let mut queues = FUTEX_QUEUES.lock();

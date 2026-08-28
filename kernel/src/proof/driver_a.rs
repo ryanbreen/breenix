@@ -27,6 +27,27 @@
 //! postcondition with no fault marker to key off — the silent-hang case — and
 //! it is the reason component A was chosen for the pilot.
 //!
+//! ## Where a postcondition is sampled is part of the postcondition
+//!
+//! Round 2 measured four planted defects executing inside the window and no
+//! predicate firing on any of them. Two of those misses were a SAMPLING
+//! mistake, not a missing marker, and round 3 fixes them here:
+//!
+//! * `RECLAIM_CLAIM_UNBRACKETED` (#653) scores an invariant that exists only
+//!   while the machine is moving. The unbracketed claim is a handful of
+//!   instructions wide and is gone by the time anything quiesces, so it is
+//!   sampled IN-WINDOW on every iteration while the adversarial peers drive
+//!   drains — and it is read out of the claim word and the per-CPU preempt
+//!   counts, the two pieces of state the bracket is made of.
+//! * `FUTEX_HANDOFF_RESCUED` (#584) is the opposite case. The futex handoff
+//!   oracle's `rescues` census is LATCHED for the boot, so it is read at the
+//!   existing cadence and once more at close; a per-iteration read would cost a
+//!   load in the hot loop and learn nothing extra.
+//!
+//! Neither adds a truth. The first reads `RECLAIM_DRAIN_ACTIVE` and
+//! `PerCpuData::preempt_count`; the second reads the counter behind the
+//! `rescues=` field of the futex handoff oracle's marker line.
+//!
 //! ## First occurrence only
 //!
 //! At most one record is emitted per predicate per run. The gate fails on the
@@ -99,6 +120,7 @@ struct Baseline {
     cpu_identity_split: u64,
     percpu_stack_alien: u64,
     teardown: [u64; 2],
+    futex_rescues: u64,
 }
 
 struct LivenessMonitor {
@@ -153,6 +175,8 @@ const REPORTED_CPU_IDENTITY: u16 = 1 << 4;
 const REPORTED_STACK_ALIEN: u16 = 1 << 5;
 const REPORTED_TEARDOWN: u16 = 1 << 6;
 const REPORTED_EXEC_LOCK: u16 = 1 << 7;
+const REPORTED_RECLAIM_BRACKET: u16 = 1 << 8;
+const REPORTED_FUTEX_RESCUE: u16 = 1 << 9;
 
 fn strand_census() -> Option<StrandCensus> {
     const EMPTY: StrandCandidate = StrandCandidate {
@@ -181,6 +205,7 @@ fn baseline() -> Baseline {
         percpu_stack_alien: crate::arch_impl::aarch64::percpu::PERCPU_STACK_ALIEN_REFUSALS
             .load(Ordering::Relaxed),
         teardown: teardown_flat_counters(),
+        futex_rescues: crate::syscall::futex_oracle::rescues(),
     }
 }
 
@@ -279,11 +304,95 @@ fn score_existing_markers(
         record::violation(seed, iteration, vector, "TEARDOWN_COUNTERS", detail);
     }
 
+    // #584's observable, read out of the futex handoff oracle's own census
+    // rather than re-derived. A rescue means a wait outlived its stage budget
+    // with no wake reaching it — the lost handoff — and the counter is LATCHED,
+    // so a cadence sample cannot miss one that has already happened. Sampling
+    // it per iteration would buy nothing and cost a load in the hot loop.
+    let futex_rescues = crate::syscall::futex_oracle::rescues();
+    if futex_rescues != baseline.futex_rescues && reported.first(REPORTED_FUTEX_RESCUE) {
+        record::violation(seed, iteration, vector, "FUTEX_HANDOFF_RESCUED", futex_rescues);
+    }
+
     let lock_order = u64::from(scheduler::SCHED_AFTER_PM_VIOLATIONS.load(Ordering::Relaxed) != 0)
         | (u64::from(scheduler::EXEC_COMMIT_UNPINNED.load(Ordering::Relaxed) != 0) << 1)
         | (u64::from(scheduler::EXEC_COMMIT_MISSING_THREAD.load(Ordering::Relaxed) != 0) << 2);
     if lock_order != 0 && reported.first(REPORTED_EXEC_LOCK) {
         record::violation(seed, iteration, vector, "EXEC_LOCK_ORDER", lock_order);
+    }
+}
+
+/// Whether every online CPU currently shows an empty preemption bracket.
+///
+/// A CPU whose count is non-zero is inside SOME non-preemptible region, which
+/// is enough to explain a held reclaim claim; the predicate below only reports
+/// when nobody at all is holding one, so any bracket anywhere makes this sample
+/// inconclusive rather than clean.
+fn no_cpu_holds_a_preempt_bracket(cpus: usize) -> bool {
+    (0..cpus).all(|cpu| crate::per_cpu_aarch64::preempt_count_snapshot(cpu).unwrap_or(0) == 0)
+}
+
+/// #653's bracket invariant, scored from a CPU that is not the one draining.
+///
+/// PR #655 did not add a counter; it established an INVARIANT — the production
+/// drain takes its preemption bracket BEFORE the compare-exchange and drops it
+/// after the release, so `RECLAIM_DRAIN_ACTIVE == true` implies some CPU has a
+/// non-zero preempt count. A claim held with no bracket anywhere is the exact
+/// state the fix removed: the interval in which a scheduler handoff can abandon
+/// the claim, latch the flag for the rest of the boot, and turn production
+/// reclamation off (`process_task::RECLAIM_DRAIN_ACTIVE`'s own documentation).
+///
+/// This reads the claim word and the preempt counts THEMSELVES. It is not a
+/// second notion of "the bracket held" — the driver's header rules that out and
+/// is right to — it is the two pieces of state the bracket consists of.
+///
+/// SAMPLED IN-WINDOW, EVERY ITERATION, and that is forced by the state: the
+/// unbracketed interval is a handful of instructions inside a call the
+/// adversarial peers make tens of thousands of times, and it is GONE at
+/// quiescence, when no drain is running at all. A cadence sample would be
+/// sampling for a state that only exists while the peers are hammering.
+///
+/// Three flag reads around two sweeps, with the pass id pinned across all of
+/// them, is what makes a positive sound. `RECLAIM_PASS_ID` advances on every
+/// entry to the drain — refusals included — so an unchanged pass id proves no
+/// CPU entered during the sample, and therefore that the claim seen at the
+/// start is the claim seen at the end. Without that, a claim released and
+/// retaken between two reads could show a bracket-free instant that never
+/// existed.
+fn reclaim_claim_unbracketed(online_cpus: usize) -> Option<u64> {
+    let cpus = online_cpus.min(crate::arch_impl::aarch64::smp::MAX_CPUS);
+    let (held, pass) = crate::task::process_task::reclaim_drain_claim_snapshot();
+    if !held || !no_cpu_holds_a_preempt_bracket(cpus) {
+        return None;
+    }
+    let (still_held, mid_pass) = crate::task::process_task::reclaim_drain_claim_snapshot();
+    if !still_held || mid_pass != pass || !no_cpu_holds_a_preempt_bracket(cpus) {
+        return None;
+    }
+    let (finally_held, end_pass) = crate::task::process_task::reclaim_drain_claim_snapshot();
+    if !finally_held || end_pass != pass {
+        return None;
+    }
+    Some((u64::from(pass) << 32) | cpus as u64)
+}
+
+fn score_reclaim_bracket(
+    seed: u64,
+    iteration: u64,
+    vector: &rng::DrawVector,
+    online_cpus: usize,
+    reported: &mut Reported,
+) {
+    if let Some(detail) = reclaim_claim_unbracketed(online_cpus) {
+        if reported.first(REPORTED_RECLAIM_BRACKET) {
+            record::violation(
+                seed,
+                iteration,
+                vector,
+                "RECLAIM_CLAIM_UNBRACKETED",
+                detail,
+            );
+        }
     }
 }
 
@@ -386,6 +495,7 @@ pub fn run() {
         if let Some(Ok(probe)) = probe {
             score_probe(seed, iterations, &vector, probe, &mut reported);
         }
+        score_reclaim_bracket(seed, iterations, &vector, online_cpus, &mut reported);
         // Both of these read shared state — the census takes the scheduler
         // lock, and the marker sweep touches per-CPU aggregate counters — so
         // they run at a cadence rather than per iteration. More iterations
@@ -419,6 +529,7 @@ pub fn run() {
         iterations.saturating_sub(1),
     ));
     score_existing_markers(seed, iterations, &closing_vector, &baseline, &mut reported);
+    score_reclaim_bracket(seed, iterations, &closing_vector, online_cpus, &mut reported);
     score_liveness(
         seed,
         iterations,

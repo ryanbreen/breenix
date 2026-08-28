@@ -4379,6 +4379,13 @@ fn release_reclaimed_threads(reclaimed_threads: alloc::vec::Vec<Box<Thread>>) {
     // builds its exception frame on whatever stack the reaper is standing on —
     // link 1 of the #609 chain, restored. Test profiles only. Expected
     // predicate: PERCPU_STACK_ALIEN.
+    //
+    // ROUND 3 MEASUREMENT, recorded where the leg is rather than only in the
+    // register: this half of link 1 is no longer sufficient on its own. PR #632
+    // typed `ARM64_STACK_BITMAP` as an `IrqSafeMutex`, so the holder cannot be
+    // preempted however this call is entered, and the orphaned lock the field
+    // failure needed cannot form. 15 mutated boots moved no existing census.
+    // A faithful re-introduction has to restore the bare `spin::Mutex` too.
     #[cfg(feature = "coreproof_mut_masked_lock")]
     drop(reclaimed_threads);
     #[cfg(not(feature = "coreproof_mut_masked_lock"))]
