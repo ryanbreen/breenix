@@ -17,14 +17,14 @@ MUTATION unknown_evtype -- one event_type set to 0xDEAD
 
 MUTATION bad_dropped -- CPU1 'dropped' counter falsified
   exit=1
-  FAIL: CPU1 dropped=12345 but write_idx=1357814 implies 1356790 overwritten slots
+  FAIL: CPU1 dropped=12345 but write_idx=1197491 implies 1196467 overwritten slots
   TRACE_VALIDATION:FAIL
 
 MUTATION truncated_8cpu -- dump truncated to the old hardcoded 8 CPUs
   exit=1
   Error: dump is 131584 bytes but 16 CPUs x 16448 bytes = 263168 are required. The dump does not cover the whole TRACE_BUFFERS array.
 
-MUTATION no_timer_tick -- all 207 TIMER_TICK events rewritten to IRQ_ENTRY
+MUTATION no_timer_tick -- all 246 TIMER_TICK events rewritten to IRQ_ENTRY
   exit=1
   FAIL: no TIMER_TICK events recorded — the timer provider never fired
   TRACE_VALIDATION:FAIL

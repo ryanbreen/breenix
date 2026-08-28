@@ -1,7 +1,7 @@
 The target architecture is set to "auto" (currently "aarch64").
-0xffff00004049b410 in idle_loop_arm64 ()
+0xffff00004051aa54 in kernel::graphics::render_task::render_thread_main_kthread ()
 TRACE_ENABLED = 0x1
-TRACE_CPU0_WRITE_IDX = 2397699
+TRACE_CPU0_WRITE_IDX = 2116224
 
 === Trace Memory Dump Complete ===
 [Inferior 1 (process 1) detached]

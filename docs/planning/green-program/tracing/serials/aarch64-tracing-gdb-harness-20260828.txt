@@ -18,12 +18,12 @@ Symbol addresses:
   TRACE_CPU0_WRITE_IDX: 0xffff000041212e80
 
 Starting qemu-system-aarch64 with gdbstub on port 1244...
-QEMU started (PID: 58927); letting the kernel run 20s to record events...
+QEMU started (PID: 14276); letting the kernel run 20s to record events...
 Attaching GDB and dumping the trace region...
 The target architecture is set to "auto" (currently "aarch64").
-0xffff00004049b410 in idle_loop_arm64 ()
+0xffff00004051aa54 in kernel::graphics::render_task::render_thread_main_kthread ()
 TRACE_ENABLED = 0x1
-TRACE_CPU0_WRITE_IDX = 2397699
+TRACE_CPU0_WRITE_IDX = 2116224
 
 === Trace Memory Dump Complete ===
 [Inferior 1 (process 1) detached]
@@ -32,17 +32,17 @@ TRACE_CPU0_WRITE_IDX = 2397699
 
 Trace buffer dump: 263168 bytes (expected 263168)
 TRACE_ENABLED = 0x1
-TRACE_CPU0_WRITE_IDX = 2397699
+TRACE_CPU0_WRITE_IDX = 2116224
 OK: TRACE_ENABLED is set
 
 Parsing and validating trace data...
 Layout: TRACE_BUFFER_SIZE=1024, MAX_CPUS=16, stride=16448 bytes, 100 event types known
 
 Parsed 16 CPU buffers:
-  CPU0: 1024 events (write_idx=2397699, dropped=2396675)
-  CPU1: 1024 events (write_idx=1357814, dropped=1356790)
-  CPU2: 1024 events (write_idx=1345691, dropped=1344667)
-  CPU3: 1024 events (write_idx=1308060, dropped=1307036)
+  CPU0: 1024 events (write_idx=2116224, dropped=2115200)
+  CPU1: 1024 events (write_idx=1197491, dropped=1196467)
+  CPU2: 1024 events (write_idx=1192406, dropped=1191382)
+  CPU3: 1024 events (write_idx=1174533, dropped=1173509)
   CPU4: 0 events (write_idx=0, dropped=0)
   CPU5: 0 events (write_idx=0, dropped=0)
   CPU6: 0 events (write_idx=0, dropped=0)
@@ -58,16 +58,14 @@ Parsed 16 CPU buffers:
 
 Validation results:
   OK: 4096 total events across 16 parsed CPU buffers
-  OK: CPU0 recorded 1024 events (write_idx=2397699, dropped=2396675, wrapped=True)
-  OK: all 20 observed event types decode: CTX_DIAG_FLAGS, CTX_DIAG_FRAME_ELR, CTX_DIAG_FRAME_X30, CTX_DIAG_SP, CTX_DIAG_STAGE, CTX_DIAG_THREAD_ELR, CTX_DIAG_THREAD_X30, CTX_DIAG_TID_PAIR, CTX_SWITCH_ENTRY, DEFER_REQUEUE_ELR, DEFER_REQUEUE_FLAGS, DEFER_REQUEUE_SP, DEFER_REQUEUE_STAGE, DEFER_REQUEUE_X30, SCHED_DIAG_FLAGS, SCHED_DIAG_STAGE, SCHED_DIAG_TID_PAIR, SCHED_QUEUE_STATE, SCHED_RESCHED_IPI_RECV, TIMER_TICK
+  OK: CPU0 recorded 1024 events (write_idx=2116224, dropped=2115200, wrapped=True)
+  OK: all 28 observed event types decode: CTX_DIAG_FLAGS, CTX_DIAG_FRAME_ELR, CTX_DIAG_FRAME_X30, CTX_DIAG_SP, CTX_DIAG_STAGE, CTX_DIAG_THREAD_ELR, CTX_DIAG_THREAD_X30, CTX_DIAG_TID_PAIR, CTX_PUBLISH_AUX, CTX_PUBLISH_ELR, CTX_PUBLISH_FLAGS, CTX_PUBLISH_SP, CTX_PUBLISH_STAGE, CTX_PUBLISH_X30, CTX_SWITCH_ENTRY, DEFER_REQUEUE_ELR, DEFER_REQUEUE_FLAGS, DEFER_REQUEUE_SP, DEFER_REQUEUE_STAGE, DEFER_REQUEUE_X30, SCHED_DIAG_FLAGS, SCHED_DIAG_STAGE, SCHED_DIAG_TID_PAIR, SCHED_QUEUE_STATE, SCHED_RESCHED_IPI_RECV, SYSCALL_ENTRY, SYSCALL_EXIT, TIMER_TICK
   OK: TIMER_TICK events present
-  OK: CPU0 overflow accounting exact (write_idx=2397699, dropped=2396675, resident=1024)
-  OK: CPU1 overflow accounting exact (write_idx=1357814, dropped=1356790, resident=1024)
-  OK: CPU2 overflow accounting exact (write_idx=1345691, dropped=1344667, resident=1024)
-  OK: CPU3 overflow accounting exact (write_idx=1308060, dropped=1307036, resident=1024)
-  CENSUS: CPU1 has 1 nested-record timestamp inversion(s) of 1024 events
-  CENSUS: CPU2 has 1 nested-record timestamp inversion(s) of 1024 events
-  CENSUS: 2 timestamp inversion(s) total (not a failure; see comment)
+  OK: CPU0 overflow accounting exact (write_idx=2116224, dropped=2115200, resident=1024)
+  OK: CPU1 overflow accounting exact (write_idx=1197491, dropped=1196467, resident=1024)
+  OK: CPU2 overflow accounting exact (write_idx=1192406, dropped=1191382, resident=1024)
+  OK: CPU3 overflow accounting exact (write_idx=1174533, dropped=1173509, resident=1024)
+  CENSUS: 0 timestamp inversion(s) total (not a failure; see comment)
 
 TRACE_VALIDATION:PASS
 
@@ -75,7 +73,7 @@ Serial output (first 50 lines):
 EOS
 ========================================
   Breenix ARM64 Kernel Starting
-  BUILD_ID: 006a91aecf2bd1
+  BUILD_ID: 006a91b87528b8
 ========================================
 
 [CTX596_ORACLE:ARMED:force_eret=0]
@@ -90,7 +88,7 @@ EOS
 [boot] Initializing Generic Timer...
 [boot] Timer frequency: 1000000000 Hz (1000 MHz)
 [boot] Initializing PL031 RTC...
-[boot] Current timestamp: 7742000
+[boot] Current timestamp: 8812000
 [boot] Initializing GIC...
 [gic] GICR probe 0x080a0000: WAKER=0x00000006 <<< VALID
 [gic] GICR base mismatch: loader=0x00000000, using=0x080a0000
