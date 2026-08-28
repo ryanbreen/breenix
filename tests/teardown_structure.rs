@@ -14036,3 +14036,325 @@ fn kstack_identity_validator_rejects_the_unsound_reads() {
     assert_ne!(uncleared, kernel_stack, "clear mutation anchor");
     assert!(validate_kstack_ownership_is_identity_scoped(&oracle, &uncleared).is_err());
 }
+
+/// Marker variables the x86 production-profile gate declares for itself.
+///
+/// A census rather than a pinned list: the shape is "every marker constant this
+/// script declares is spent on an assertion", so adding a constant without
+/// asserting it, or deleting the assertion that spends one, is what reddens the
+/// ratchet. A literal list of today's marker names would go stale the first time
+/// the shipped profile grew a milestone, and would say nothing about whether the
+/// listed markers were actually consumed.
+fn x86_prod_declared_markers(script: &str) -> Vec<&str> {
+    script
+        .lines()
+        .filter_map(|line| {
+            let (name, value) = line.split_once('=')?;
+            if !name.ends_with("_LITERAL") && !name.ends_with("_PREFIX") {
+                return None;
+            }
+            if !name
+                .chars()
+                .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
+            {
+                return None;
+            }
+            value.starts_with('\'').then_some(name)
+        })
+        .collect()
+}
+
+/// Marker arrays the same script declares, by the same census rule.
+fn x86_prod_declared_marker_arrays(script: &str) -> Vec<&str> {
+    script
+        .lines()
+        .filter_map(|line| {
+            let (name, value) = line.split_once('=')?;
+            if !name.ends_with("_MARKERS") {
+                return None;
+            }
+            if !name
+                .chars()
+                .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
+            {
+                return None;
+            }
+            (value == "(").then_some(name)
+        })
+        .collect()
+}
+
+/// The #540 x86 production-profile gate's *verdict mechanism*, not its marker
+/// vocabulary.
+///
+/// This gate is the only x86 boot that ever executes the shipped zero-feature
+/// kernel, so a silent abort inside it is worse than in the boot-test harness:
+/// there is no second x86 gate that would catch the same regression. The checks
+/// below therefore pin the machinery that makes a red loud and unfakeable --
+/// `set -e` with errtrace and the ERR trap installed, the poll verdict spent on
+/// an explicit `test` rather than a bare boolean, no `set +` re-enabling, no
+/// `exit` able to pre-empt the verdict, and serial preserved on the way out --
+/// plus the two properties specific to this gate: that its build carries no
+/// `--features` flag (the omission is the whole gate), and that every marker
+/// constant and marker array it declares is spent on an exact-count assertion.
+///
+/// Exact counts only: an `-eq` assertion can go red, a `-ge 0` cannot, and a
+/// gate whose assertions cannot go red is the failure mode this ratchet exists
+/// to prevent.
+fn validate_x86_prod_profile_harness(script: &str) -> Result<(), ()> {
+    const TRAP: &str = "trap 'report_gate_failure \"$LINENO\" \"$BASH_COMMAND\"' ERR";
+    const VERDICT: &str = "test \"$reached\" = true";
+    const BUILD: &str = "cargo build --release --bin qemu-uefi";
+
+    // Verdict machinery.
+    if !script.contains("set -euo pipefail")
+        || !script.contains("\nset -E")
+        || !script.contains(TRAP)
+        || script.contains("set +")
+        || !script.contains(VERDICT)
+    {
+        return Err(());
+    }
+
+    // The verdict must be recorded false, raised true, and only then spent.
+    let verdict_false = script.find("reached=false").ok_or(())?;
+    let verdict_true = script.find("reached=true").ok_or(())?;
+    let verdict_spent = script.find(VERDICT).ok_or(())?;
+    if script.matches("reached=false").count() != 1
+        || script.matches("reached=true").count() != 1
+        || script.matches("$reached").count() != 1
+        || verdict_false >= verdict_true
+        || verdict_true >= verdict_spent
+    {
+        return Err(());
+    }
+
+    // No exit may pre-empt the verdict. The trap's re-raise is the only one this
+    // gate needs, and it runs after a verdict has already been found false.
+    for line in script.lines() {
+        let statement = line.trim();
+        if statement.split_whitespace().next() == Some("exit")
+            && statement != "exit \"$exit_code\""
+        {
+            eprintln!("x86 production-profile gate gained a pre-empting exit: {statement}");
+            return Err(());
+        }
+    }
+
+    // The build must stay feature-free: a --features flag anywhere on a cargo
+    // line would silently turn this into a second boot-test gate.
+    if !script.contains(BUILD) {
+        return Err(());
+    }
+    for line in script.lines() {
+        let statement = line.trim();
+        if (statement.starts_with("cargo ") || statement.contains(" cargo "))
+            && statement.contains("--features")
+        {
+            eprintln!("x86 production-profile gate gained a --features build: {statement}");
+            return Err(());
+        }
+    }
+
+    // Census: every declared marker constant is spent on an exact-count assertion.
+    let markers = x86_prod_declared_markers(script);
+    if markers.is_empty() {
+        return Err(());
+    }
+    for name in &markers {
+        let spent = format!("test \"$(marker_count \"${name}\")\" -eq ");
+        if !script.contains(&spent) {
+            eprintln!("x86 production-profile gate declares {name} but never asserts it");
+            return Err(());
+        }
+    }
+
+    // Census: every declared marker array is spent on a zero-count loop, and
+    // carries at least one marker.
+    let arrays = x86_prod_declared_marker_arrays(script);
+    if arrays.is_empty() {
+        return Err(());
+    }
+    for name in &arrays {
+        // The script loops over each array twice -- once to report observed values
+        // and once to assert them -- so the spending loop is *an* occurrence, not
+        // the first one.
+        let loop_head = format!("for marker in \"${{{name}[@]}}\"; do");
+        let consumed = script.match_indices(&loop_head).any(|(start, _)| {
+            let tail = &script[start..];
+            let end = tail.find("\ndone").unwrap_or(tail.len());
+            tail[..end].contains("test \"$(marker_count \"$marker\")\" -eq 0")
+        });
+        let declaration = script.find(&format!("\n{name}=(")).ok_or(())?;
+        let body_end = script[declaration..].find("\n)").ok_or(())? + declaration;
+        let entries = script[declaration..body_end]
+            .lines()
+            .filter(|line| line.trim().starts_with('\''))
+            .count();
+        if !consumed || entries == 0 {
+            eprintln!("x86 production-profile gate array {name} is unconsumed or empty");
+            return Err(());
+        }
+    }
+
+    // Every marker assertion is an exact count. A relaxed comparison here is how
+    // a gate stops being able to fail.
+    for line in script.lines() {
+        let statement = line.trim();
+        if statement.contains("marker_count") && statement.starts_with("test ") {
+            let exact = statement.ends_with("-eq 0") || statement.ends_with("-eq 1");
+            if !exact {
+                eprintln!("x86 production-profile gate relaxed a marker assertion: {statement}");
+                return Err(());
+            }
+        }
+    }
+
+    // The three assertions that are not marker counts, and the failure-path
+    // serial preservation that makes a red diagnosable at all.
+    if !script.contains("test \"$(crash_count)\" -eq 0")
+        || !script.contains("test \"$BYTES_AFTER\" -gt \"$BYTES_BEFORE\"")
+        || !script.contains("cp \"$OUTPUT_DIR\"/serial_*.txt \"$failure_dir/\"")
+    {
+        return Err(());
+    }
+
+    Ok(())
+}
+
+#[test]
+fn x86_production_profile_gate_verdict_discipline_holds() {
+    let gate = repo_text("docker/qemu/run-x86-prod-profile-boot-test.sh");
+    assert!(
+        validate_x86_prod_profile_harness(&gate).is_ok(),
+        "x86 production-profile gate lost its verdict discipline or a marker assertion"
+    );
+}
+
+#[test]
+fn x86_production_profile_gate_ratchet_is_not_vacuous() {
+    let gate = repo_text("docker/qemu/run-x86-prod-profile-boot-test.sh");
+
+    let report_vacuity = |label: &str, mutated: String| {
+        assert_ne!(mutated, gate, "{label} mutation must apply");
+        assert!(
+            validate_x86_prod_profile_harness(&mutated).is_err(),
+            "{label} must redden the x86 production-profile ratchet"
+        );
+    };
+
+    // Losing errtrace makes the ERR trap invisible inside functions, which is the
+    // exact shape that produced silent x86 reds before #668.
+    report_vacuity("errtrace removed", gate.replacen("\nset -E", "\nset -e", 1));
+    // Losing the trap itself returns the gate to dying with no verdict text.
+    report_vacuity(
+        "ERR trap removed",
+        gate.replacen(
+            "trap 'report_gate_failure \"$LINENO\" \"$BASH_COMMAND\"' ERR",
+            "",
+            1,
+        ),
+    );
+    // A bare boolean is silent under set -e.
+    report_vacuity(
+        "bare-boolean verdict",
+        gate.replacen("test \"$reached\" = true", "$reached", 1),
+    );
+    // Re-enabling errexit off would let assertions pass through unread.
+    report_vacuity(
+        "errexit disabled",
+        gate.replacen("set -euo pipefail", "set -euo pipefail\nset +e", 1),
+    );
+    // An early exit before the verdict is spent.
+    report_vacuity(
+        "verdict pre-empted by an exit",
+        gate.replacen(
+            "test \"$reached\" = true",
+            "exit 0\ntest \"$reached\" = true",
+            1,
+        ),
+    );
+    // The whole point of the gate is the featureless build.
+    report_vacuity(
+        "featured build",
+        gate.replacen(
+            "cargo build --release --bin qemu-uefi",
+            "cargo build --release --features boot_tests --bin qemu-uefi",
+            1,
+        ),
+    );
+    // A marker constant declared but never spent.
+    report_vacuity(
+        "unspent marker constant",
+        gate.replacen(
+            "CONSOLE_PROMPT_LITERAL='breenix> '",
+            "CONSOLE_PROMPT_LITERAL='breenix> '\nUNSPENT_LITERAL='never asserted'",
+            1,
+        ),
+    );
+    // A marker assertion deleted.
+    report_vacuity(
+        "census assertion deleted",
+        gate.replacen(
+            "test \"$(marker_count \"$TOMBSTONE_CENSUS_PROD_LITERAL\")\" -eq 1",
+            "",
+            1,
+        ),
+    );
+    // A marker assertion relaxed until it cannot fail.
+    report_vacuity(
+        "census assertion relaxed",
+        gate.replacen(
+            "test \"$(marker_count \"$TOMBSTONE_CENSUS_PROD_LITERAL\")\" -eq 1",
+            "test \"$(marker_count \"$TOMBSTONE_CENSUS_PROD_LITERAL\")\" -ge 0",
+            1,
+        ),
+    );
+    // The profile-fidelity negative control emptied.
+    report_vacuity(
+        "profile-fidelity array emptied",
+        gate.replacen("    'TEST_TALLY:'\n", "", 1)
+            .replacen("    '[TEST:'\n", "", 1)
+            .replacen("    'TEST RUNNER:'\n", "", 1)
+            .replacen("    '[BOOT_TESTS:'\n", "", 1)
+            .replacen("    'RING3_SMOKE:'\n", "", 1)
+            .replacen("    '[TOMBSTONE_QUIESCE:'\n", "", 1)
+            .replacen("    '[RECLAIM_DRAIN:'\n", "", 1)
+            .replacen("    '[TOMBSTONE_JOIN_ORACLE:'\n", "", 1)
+            .replacen("    '[KSTACK_OWNER_ORACLE:'\n", "", 1)
+            .replacen("    '[KSTACK_QUIESCE_LEAK:'\n", "", 1)
+            .replacen("    '[PT_CUSTODY_COUNTERS:'\n", "", 1)
+            .replacen("    '[FRAME_CUSTODY_COUNTERS:'\n", "", 1)
+            .replacen("    '[PT_RETIRE_COHORT:'\n", "", 1)
+            .replacen("    '[PT_EXEC_COHORT:'\n", "", 1)
+            .replacen("    '[EXEC_DETACH_ORACLE:'\n", "", 1)
+            .replacen("    '[CLONE_ADMISSION_ORACLE:'\n", "", 1)
+            .replacen("    '[INIT_DESIGNATION_ORACLE:'\n", "", 1)
+            .replacen("    '[SCHED_STRAND_ORACLE:'\n", "", 1)
+            .replacen("    '[CENSUS_WIDEN_ORACLE:'\n", "", 1)
+            .replacen("    'Testing features enabled'\n", "", 1),
+    );
+    // The zero-count loop that spends the negative control removed.
+    report_vacuity(
+        "profile-fidelity loop unwired",
+        gate.replacen(
+            "for marker in \"${TEST_ONLY_MARKERS[@]}\"; do\n    test \"$(marker_count \"$marker\")\" -eq 0\ndone",
+            "",
+            1,
+        ),
+    );
+    // Crash and liveness assertions removed.
+    report_vacuity(
+        "crash assertion deleted",
+        gate.replacen("test \"$(crash_count)\" -eq 0", "", 1),
+    );
+    report_vacuity(
+        "liveness assertion deleted",
+        gate.replacen("test \"$BYTES_AFTER\" -gt \"$BYTES_BEFORE\"", "", 1),
+    );
+    // Serial preservation removed: a red with no serial is not diagnosable.
+    report_vacuity(
+        "serial preservation deleted",
+        gate.replacen("cp \"$OUTPUT_DIR\"/serial_*.txt \"$failure_dir/\"", "", 1),
+    );
+}
