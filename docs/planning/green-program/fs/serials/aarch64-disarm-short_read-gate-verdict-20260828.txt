@@ -1,4 +1,4 @@
-### disarm short_read, aarch64, 2026-08-28 23:24 EDT
+### disarm short_read, aarch64, at 4d660f78, 2026-08-28 23:35 EDT
 =========================================
 ext2/VFS fault-injection gate
   arch:     aarch64

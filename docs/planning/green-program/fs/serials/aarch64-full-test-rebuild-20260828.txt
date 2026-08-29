@@ -21,8 +21,8 @@ Phase 1: Running 85 subsystem tests...
   All tests passed: 109/109
 
 Phase 1a3: Waiting for scheduler strand oracles...
-  Observed: [SCHED_STRAND_ORACLE:aarch64:samples=100:checked=507:stranded=0:running_shape=0:ready_shape=0:resolved_production=0:resolved_exercised=2:worst_dwell_ms=0:overflow=0:worst_nonprogress_ms=0:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1918:worst_cpu_scheduler_silence_ms=1940:worst_silence_cpu=0]
-  Observed: F123456789SC[STRAND_INJECT_ORACLE:aarch64:legA_exercised=1:legA_recovered=1:legB_exercised=1:legB_recovered=1:stranded=0]
+  Observed: [SCHED_STRAND_ORACLE:aarch64:samples=8:checked=92:stranded=0:running_shape=0:ready_shape=0:resolved_production=0:resolved_exercised=1:worst_dwell_ms=0:overflow=0:worst_nonprogress_ms=0:nonprogress=0:queued_on_nondispatching_cpu=0:worst_queued_nondispatch_ms=0:worst_cpu_scheduler_silence_ms=333:worst_silence_cpu=0]
+  Observed: [STRAND_INJECT_ORACLE:aarch64:legA_exercised=1:legA_recovered=1:legB_exercised=1:legB_recovered=1:stranded=0]
 Phase 1a3: PASS
 
 Phase 1a: Waiting for block EINTR oracle...
@@ -30,7 +30,7 @@ Phase 1a: Waiting for block EINTR oracle...
 Phase 1a: PASS
 
 Phase 1a2: Waiting for futex handoff oracle...
-  Observed: [FUTEX_HANDOFF_ORACLE:aarch64:driven=2:stage1_ret=EAGAIN:stage1_wake=0:stage1_parked=0:stage2_ret=0:stage2_wake=1:stage2_parked=0:stage3_ret=ETIMEDOUT:stage3_elapsed_ok=1:stage3_elapsed_ms=51:rescues=0:queue_residual=0:balance=0]
+  Observed: [FUTEX_HANDOFF_ORACLE:aarch64:driven=2:stage1_ret=EAGAIN:stage1_wake=0:stage1_parked=0:stage2_ret=0:stage2_wake=1:stage2_parked=0:stage3_ret=ETIMEDOUT:stage3_elapsed_ok=1:stage3_elapsed_ms=50:rescues=0:queue_residual=0:balance=0]
 Phase 1a2: PASS
 Phase 1: PASS (109/109 tests)
 
@@ -47,11 +47,11 @@ Phase 1e: Waiting for init-group refusal quiesce proof...
 Phase 1e: PASS
 
 Phase 2: Checking services...
-qemu-system-aarch64: terminating on signal 15 from pid 29909 (<unknown process>)
+qemu-system-aarch64: terminating on signal 15 from pid 37852 (<unknown process>)
 
 Phase 5: refusal-drain oracle legs (leg G foreign record, leg H departure guard)...
    Compiling kernel v0.1.0 (/Users/wrb/fun/code/breenix/kernel)
-    Finished `release` profile [optimized] target(s) in 7.21s
+    Finished `release` profile [optimized] target(s) in 6.97s
 warning: the following packages contain code that will be rejected by a future version of Rust: core v0.0.0 (/Users/wrb/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/src/rust/library/core)
 note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
 Guard: kernel FP/SIMD instruction check
@@ -60,11 +60,11 @@ Guard: kernel FP/SIMD instruction check
   allowlist: /Users/wrb/fun/code/breenix/scripts/kernel-neon-allowlist.txt
 [0;32mPASS:[0m 0 FP/SIMD load/store instructions in kernel .text (allowlisted & suppressed: 0).
 ARM64 REFUSAL DRAIN GATE: PASSED
-[RESUME_PC_FOREIGN_ORACLE:aarch64:leg=G:armed=1:planted=1:record_cpu=7:canary_tid=10:canary_progress=34:foreign_reports=1:record_still_published=1:canary_present=1:canary_terminated=0:fatal=0:PASS]
-[RESUME_PC_DRAIN_DEPARTURE_ORACLE:aarch64:leg=H:armed=1:fired=1:planted=1:victim_tid=12:canary_is_self=1:refusals=1:victim_present=1:victim_terminated=0:still_current=1:ptr_nulled=0:record_still_published=0:progress=33:fatal=0:PASS]
+[RESUME_PC_FOREIGN_ORACLE:aarch64:leg=G:armed=1:planted=1:record_cpu=7:canary_tid=10:canary_progress=28:foreign_reports=1:record_still_published=1:canary_present=1:canary_terminated=0:fatal=0:PASS]
+[RESUME_PC_DRAIN_DEPARTURE_ORACLE:aarch64:leg=H:armed=1:fired=1:planted=1:victim_tid=12:canary_is_self=1:refusals=1:victim_present=1:victim_terminated=0:still_current=1:ptr_nulled=0:record_still_published=0:progress=28:fatal=0:PASS]
 [BOOT_TESTS:PASS]
 [BLOCK_EINTR_ORACLE:PASS:stages=2:reads=4:short=0:eintr=0:handled=1]
-qemu-system-aarch64: terminating on signal 15 from pid 30688 (<unknown process>)
+qemu-system-aarch64: terminating on signal 15 from pid 38523 (<unknown process>)
 Serial: /tmp/breenix_aarch64_refusal_drain_gate/serial.txt
 Phase 5: PASS
 
@@ -73,27 +73,27 @@ ARM64 FULL SYSTEM TEST: FAILED
 =========================================
 Reason: Phase 2 timeout: shell not detected
 
-Serial: 851 lines
+Serial: 856 lines
 Log: /tmp/breenix_aarch64_full_test/serial.txt
 
 Last 20 lines of serial output:
-[net-rx-counters] sample=1 NET_RX_SOFTIRQ_EXIT_TOTAL: 16 (cpu0=1, cpu1=3, cpu2=3, cpu3=9)
-[net-rx-counters] sample=1 NET_RX_REENTRANT_SKIP_TOTAL: 2 (cpu1=2)
-[net-rx-counters] sample=1 NET_RX_GUARD_RELEASE_TOTAL: 14 (cpu0=1, cpu1=1, cpu2=3, cpu3=9)
+[net-rx-counters] sample=1 NET_RX_REENTRANT_SKIP_TOTAL: 4 (cpu1=4)
+[net-rx-counters] sample=1 NET_RX_GUARD_RELEASE_TOTAL: 13 (cpu0=1, cpu1=3, cpu2=7, cpu3=2)
 [net-rx-counters] sample=1 NET_RX_REARM_CHECK_TOTAL: 0
 [net-rx-counters] sample=1 NET_RX_REARM_RACE_TOTAL: 0
 [net-rx-counters] sample=1 NET_RX_REARM_ARMED_TOTAL: 0
 [net-rx-counters] sample=1 NET_PCI_IRQ_RAISED_NETRX: 0
 [net-rx-counters] sample=1 GIC_SPI55_ACK_TOTAL: 0
 [net-rx-counters] sample=1 end
-[SCHED_STRAND_ORACLE:aarch64:samples=393:checked=1316:stranded=0:running_shape=0:ready_shape=0:resolved_production=0:resolved_exercised=2:worst_dwell_ms=0:overflow=0:worst_nonprogress_ms=0:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1918:worst_cpu_scheduler_silence_ms=1940:worst_silence_cpu=0]
+[SCHED_STRAND_ORACLE:aarch64:samples=396:checked=1316:stranded=0:running_shape=0:ready_shape=0:resolved_production=0:resolved_exercised=2:worst_dwell_ms=0:overflow=0:worst_nonprogress_ms=0:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1649:worst_cpu_scheduler_silence_ms=1677:worst_silence_cpu=0]
 [TOMBSTONE_CENSUS:resident=0:removed=12:reap_second=11:retire_second=1:abandoned_unqueued=0]
-[heartbeat] tid=1204 uptime_ms=21671 kbd_nonzero=0
-[heartbeat] tid=1204 uptime_ms=22673 kbd_nonzero=0
-[heartbeat] tid=1204 uptime_ms=23674 kbd_nonzero=0
-[heartbeat] tid=1204 uptime_ms=24676 kbd_nonzero=0
-[heartbeat] tid=1204 uptime_ms=25678 kbd_nonzero=0
-[SCHED_STRAND_ORACLE:aarch64:samples=491:checked=1512:stranded=0:running_shape=0:ready_shape=0:resolved_production=0:resolved_exercised=2:worst_dwell_ms=0:overflow=0:worst_nonprogress_ms=0:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1918:worst_cpu_scheduler_silence_ms=1940:worst_silence_cpu=0]
+[heartbeat] tid=1204 uptime_ms=21361 kbd_nonzero=0
+[heartbeat] tid=1204 uptime_ms=22362 kbd_nonzero=0
+[heartbeat] tid=1204 uptime_ms=23364 kbd_nonzero=0
+[heartbeat] tid=1204 uptime_ms=24365 kbd_nonzero=0
+[heartbeat] tid=1204 uptime_ms=25370 kbd_nonzero=0
+[SCHED_STRAND_ORACLE:aarch64:samples=494:checked=1512:stranded=0:running_shape=0:ready_shape=0:resolved_production=0:resolved_exercised=2:worst_dwell_ms=0:overflow=0:worst_nonprogress_ms=0:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1649:worst_cpu_scheduler_silence_ms=1677:worst_silence_cpu=0]
 [TOMBSTONE_CENSUS:resident=0:removed=12:reap_second=11:retire_second=1:abandoned_unqueued=0]
-[heartbeat] tid=1204 uptime_ms=26679 kbd_nonzero=0
-[heartbeat] tid=1204 uptime_ms=27681 kbd_nonzero=0
+[heartbeat] tid=1204 uptime_ms=26371 kbd_nonzero=0
+[heartbeat] tid=1204 uptime_ms=27374 kbd_nonzero=0
+[heartbeat] tid=1204 uptime_ms=28376 kbd_nonzero=0

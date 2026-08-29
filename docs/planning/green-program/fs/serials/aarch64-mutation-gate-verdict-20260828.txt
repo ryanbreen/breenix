@@ -1,0 +1,16 @@
+### MUTATION: allocation bound removed, aarch64, at 4d660f78 + one-line revert, 2026-08-28 23:36 EDT
+=========================================
+ext2/VFS fault-injection gate
+  arch:     aarch64
+  features: boot_tests,fs_fault_inject
+  mode:     armed
+=========================================
+[gate] building aarch64 kernel...
+fs fault gate (aarch64): FAIL - kernel panic during or after the fault leg
+--- FSFAULT lines ---
+[FSFAULT:aarch64:BEGIN]
+[FSFAULT:aarch64:baseline_mount:verdict=PASS]
+[FSFAULT:aarch64:baseline_read:verdict=PASS:bytes=1024]
+[FSFAULT:aarch64:short_read:verdict=PASS:hits=1:observed=Err:detail=Failed to read ext2 superblock]
+[FSFAULT:aarch64:eio_data_block:verdict=PASS:hits=1:sector=1546:observed=Err:detail=Failed to read directory data]
+[FSFAULT:aarch64:eio_recovery:verdict=PASS:bytes=1024]
