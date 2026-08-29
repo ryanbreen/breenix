@@ -30,21 +30,33 @@
 //!
 //! Do not weaken any stage to `timeout=0`.
 //!
-//! Stage 3's bounds are derived from the peer's ACTUAL write instant, which the
-//! peer measures and reports, never from either side's own guess about the
-//! other's timing. The child stamps `monotonic_ms()` immediately before its
-//! send and ships that stamp as the second half of the payload; the parent
-//! decodes it and proves two facts about its own poll:
+//! Stage 3's bounds are derived from instants the PEER measures and reports,
+//! never from either side's guess about the other's timing. The child stamps
+//! `monotonic_ms()` when it receives the readiness token and again immediately
+//! before its send, and ships both stamps with the payload. The parent decodes
+//! them and proves three facts:
 //!
-//!   entry  <= write_ms      (the poll call began before the peer wrote)
-//!   return >= write_ms      (the poll did not return before the peer wrote)
+//!   entry    <= token_ms              (the parent had already committed to
+//!                                      this poll before the peer's clock even
+//!                                      started)
+//!   write_ms >= token_ms + delay_ms   (the peer really waited: it sleeps until
+//!                                      that instant on its own clock, so a
+//!                                      short wait is the kernel's fault and is
+//!                                      reported as one)
+//!   return   >= write_ms              (the poll did not return before the peer
+//!                                      wrote)
 //!
-//! Together they say the poll was outstanding across the publication, which is
-//! the whole claim of the stage, and `park_ms = write_ms - entry` reports the
-//! measured span rather than asserting one. Both hold with zero timing slack on
-//! a correct kernel: the only thing that can make this poll report POLLIN is
-//! that send. A return before it means the poll saw readiness the peer had not
-//! published -- stale state, not a wake -- and is a named FAIL.
+//! Together they put the whole of the peer's delay strictly inside the poll:
+//! `park_ms = write_ms - entry` is at least `delay_ms`, and it is REPORTED, so
+//! the evidence shows the separation instead of asserting it. A return before
+//! `write_ms` means the poll saw readiness the peer had not published -- stale
+//! state, not a wake -- and is a named FAIL.
+//!
+//! The middle fact is what stops the stage from silently degenerating into a
+//! second copy of stage 2. An earlier revision proved only `entry <= write_ms`;
+//! a mutation that had the peer write immediately then PASSED it, reporting
+//! `park_ms=0`, because the two stamps landed in the same truncated
+//! millisecond. A bound a degenerate run satisfies is not a bound.
 //!
 //! Two design points keep this from becoming a flake generator, which is
 //! exactly what two earlier revisions of this bound were:
@@ -59,11 +71,11 @@
 //!     *duration* and reddened ~8% of healthy aarch64 boots; the second moved
 //!     to a shared absolute deadline but still paid the fork inside the window
 //!     and could not reach its own poll in time on x86 at all.
-//!   * `entry <= write_ms` is a PRECONDITION, not a verdict. If the parent was
+//!   * `entry <= token_ms` is a PRECONDITION, not a verdict. If the parent was
 //!     descheduled between handing over the token and reaching `poll()`, the
-//!     trial proves nothing either way, so it is drained, the child reaped, and
-//!     the delay widened. Only an exhausted budget is a FAIL, and it reports
-//!     the measured overshoot so the failure is legible.
+//!     trial proves nothing either way, so its payload is consumed, the child
+//!     reaped, and the delay widened. Only an exhausted budget is a FAIL, and it
+//!     reports the measured overshoot so the failure is legible.
 
 use std::string::String;
 
@@ -110,11 +122,11 @@ const LATE_MAX_ATTEMPTS: u32 = 5;
 const READY_TOKEN: &[u8] = b"R";
 
 const PAYLOAD_ARMED: &[u8] = b"armed568";
-/// Stage 3's payload is the tag followed by the child's own little-endian
-/// `monotonic_ms()` stamp, taken immediately before the send. The parent scores
-/// its poll against that measured instant.
+/// Stage 3's payload is the tag followed by two little-endian `monotonic_ms()`
+/// stamps taken by the child: when it received the readiness token, and
+/// immediately before this send. The parent scores its poll against both.
 const PAYLOAD_LATE: &[u8] = b"late568";
-const LATE_MSG_LEN: usize = 7 + 8;
+const LATE_MSG_LEN: usize = 7 + 8 + 8;
 
 struct Failure {
     stage: &'static str,
@@ -252,18 +264,33 @@ fn recv_exact(fd: Fd, buf: &mut [u8], stage: &'static str) -> Result<(), Failure
     Ok(())
 }
 
-/// The child half of stage 3. Waits for the parent's readiness token, sleeps,
-/// then stamps the instant it is about to write and ships that stamp with the
-/// payload. Never returns.
+/// Sleep until an absolute instant on the child's own monotonic clock. Sleeping
+/// to an instant rather than for a duration means an interrupted `nanosleep`
+/// cannot shorten the wait without the parent being able to see it.
+fn sleep_until(due_ms: u64) {
+    while let Ok(now) = monotonic_ms("child_sleep") {
+        if now >= due_ms {
+            return;
+        }
+        let _ = time::sleep_ms(due_ms - now);
+    }
+}
+
+/// The child half of stage 3. Waits for the parent's readiness token, stamps
+/// that moment, waits out the delay, stamps again, and ships both stamps with
+/// the payload. Never returns.
 fn late_peer(server: Fd, delay_ms: u64) -> ! {
     let mut token = [0u8; 1];
     if recv_exact(server, &mut token, "child_token").is_ok() {
-        let _ = time::sleep_ms(delay_ms);
-        if let Ok(write_ms) = monotonic_ms("child_write") {
-            let mut msg = [0u8; LATE_MSG_LEN];
-            msg[..7].copy_from_slice(PAYLOAD_LATE);
-            msg[7..].copy_from_slice(&write_ms.to_le_bytes());
-            let _ = socket::send(server, &msg);
+        if let Ok(token_ms) = monotonic_ms("child_token_stamp") {
+            sleep_until(token_ms + delay_ms);
+            if let Ok(write_ms) = monotonic_ms("child_write") {
+                let mut msg = [0u8; LATE_MSG_LEN];
+                msg[..7].copy_from_slice(PAYLOAD_LATE);
+                msg[7..15].copy_from_slice(&token_ms.to_le_bytes());
+                msg[15..].copy_from_slice(&write_ms.to_le_bytes());
+                let _ = socket::send(server, &msg);
+            }
         }
     }
     process::exit(0);
@@ -322,24 +349,47 @@ fn stage_late(client: Fd, server: Fd) -> Result<(u64, u64, u64), Failure> {
             return Err(fail("late_payload", format!("tag={:?}", &buf[..7])));
         }
         let mut stamp = [0u8; 8];
-        stamp.copy_from_slice(&buf[7..]);
+        stamp.copy_from_slice(&buf[7..15]);
+        let token_ms = u64::from_le_bytes(stamp);
+        stamp.copy_from_slice(&buf[15..]);
         let write_ms = u64::from_le_bytes(stamp);
 
-        if entry > write_ms {
-            // The parent did not reach its own poll entry before the peer wrote.
-            // Nothing about wakes can be concluded from this trial either way,
-            // so it is not a verdict: widen the delay and try again. Reporting
-            // this as a failure is the bug two earlier revisions of this bound
-            // had -- it is ordinary parent-side scheduling latency.
+        // The peer waits to an absolute instant on the same kernel clock, so a
+        // short wait is not a scheduling artifact -- it is `nanosleep` or the
+        // clock misbehaving, and it belongs in the verdict rather than in a
+        // retry that would quietly paper over it. This is also the bound that
+        // keeps stage 3 from degenerating into stage 2: without it, a peer that
+        // publishes readiness immediately satisfies every other check with a
+        // proven parked span of zero.
+        if write_ms < token_ms + delay_ms {
+            return Err(fail(
+                "late_peer_short_wait",
+                format!(
+                    "token_ms={} write_ms={} waited_ms={} delay_ms={}",
+                    token_ms,
+                    write_ms,
+                    write_ms.saturating_sub(token_ms),
+                    delay_ms
+                ),
+            ));
+        }
+
+        if entry > token_ms {
+            // The parent did not reach its own poll entry before the peer's
+            // clock started. Nothing about wakes can be concluded from this
+            // trial either way, so it is not a verdict: widen the delay and try
+            // again. Reporting this as a failure is the bug two earlier
+            // revisions of this bound had -- it is ordinary parent-side
+            // scheduling latency, not a kernel defect.
             attempt += 1;
             delay_ms *= 2;
             if attempt > LATE_MAX_ATTEMPTS {
                 return Err(fail(
-                    "late_parent_never_parked",
+                    "late_window_missed",
                     format!(
                         "attempts={} overshoot_ms={} delay_ms={}",
                         LATE_MAX_ATTEMPTS,
-                        entry - write_ms,
+                        entry - token_ms,
                         delay_ms / 2
                     ),
                 ));
