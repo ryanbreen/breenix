@@ -27,6 +27,24 @@ done
 
 [[ -r "$ALLOWLIST_PATH" ]] || fail "allowlist is not readable: $ALLOWLIST_PATH"
 
+# Run the strand census FIRST, so that a boot which died because a thread was
+# silenced is named by its first cause rather than by its terminal symptom.
+#
+# #568 round 2: the poll oracle was saved blocked in its own `poll()` and never
+# restored in about half of the beast KVM boots. Every check below is blind to
+# that -- a silenced thread emits no verdict, no exit and no marker, so the gate
+# saw only "USERSPACE TEST COMPLETE was absent" and could not tell a branch
+# strand apart from main's. The census reads the kernel's own context-switch
+# record, which is written whether or not the thread ever speaks again, so the
+# stranded thread is named.
+strand_output=""
+strand_rc=0
+strand_output="$("$SCRIPT_DIR/x86-strand-census.sh" "$@" 2>&1)" || strand_rc=$?
+printf '%s\n' "$strand_output"
+if (( strand_rc != 0 )); then
+    fail "a thread was saved blocked in a kernel wait and never restored (see the strand census above)"
+fi
+
 if ! grep -hFq 'USERSPACE TEST COMPLETE' "$@"; then
     fail "USERSPACE TEST COMPLETE was absent; boot did not finish"
 fi
