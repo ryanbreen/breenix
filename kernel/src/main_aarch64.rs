@@ -636,6 +636,12 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
         }
     }
 
+
+    // ext2/VFS fault-injection leg (test profile only, feature `fs_fault_inject`).
+    // Runs immediately after the root filesystem mounts, so every marker the rest
+    // of this boot prints is evidence the kernel survived the injected faults.
+    #[cfg(feature = "fs_fault_inject")]
+    kernel::fs::fault_inject::run_fs_fault_leg();
     // Initialize ext2 home filesystem (/home on separate disk)
     match kernel::fs::ext2::init_home_fs() {
         Ok(()) => serial_println!("[boot] ext2 home filesystem mounted at /home"),
