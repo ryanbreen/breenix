@@ -1802,6 +1802,35 @@ impl Scheduler {
             }
         }
 
+        // Wake expired timers BEFORE reading the outgoing thread's disposition.
+        //
+        // #568 (second defect): this call used to sit AFTER the block below, and
+        // the two together lost the wake outright. The block reads the outgoing
+        // thread's state to decide whether to requeue it; a thread still marked
+        // BlockedOnTimer is deliberately left off the ready queue. Only then did
+        // wake_expired_timers() run -- and because this CPU has not yet selected
+        // a successor, `cpu_state[cpu].current_thread` is still the outgoing
+        // thread, so the pop took the "is_current_on_any_cpu" arm: it published
+        // Ready, consumed the thread's only timer-heap entry, and deliberately
+        // did NOT enqueue, on the documented assumption that either the running
+        // thread would notice after its halt or DEFERRED_REQUEUE would catch it.
+        // Neither holds here: the thread is being switched out in this very
+        // call so it never runs to notice, and DEFERRED_REQUEUE together with
+        // every requeue_thread_after_save() caller is aarch64-only. The thread
+        // was left Ready, in no queue, with no heap entry -- stranded for good.
+        //
+        // sys_poll is the caller that made this deterministic: it re-arms a 1ms
+        // slice, so its deadline has essentially always expired by the time
+        // schedule() runs. nanosleep arms its full duration, so nothing pops in
+        // this window and the enqueue happens cleanly later.
+        //
+        // Waking first removes the read-before-write inversion: the outgoing
+        // thread is already Ready when the block below reads it, and the
+        // existing enqueue there takes ownership. The wake path's SMP guard is
+        // deliberately left exactly as it is -- this gives the wake an owner
+        // rather than relaxing the rule that protects it.
+        self.wake_expired_timers();
+
         // If current thread is still runnable, put it back in ready queue
         if let Some(current_id) = self.cpu_state[Self::current_cpu_id()].current_thread {
             if current_id != self.cpu_state[Self::current_cpu_id()].idle_thread {
@@ -1858,9 +1887,6 @@ impl Scheduler {
                 }
             }
         }
-
-        // Check for expired timer-blocked threads and wake them
-        self.wake_expired_timers();
 
         // Get next thread from ready queue (local first, then steal), skipping terminated.
         let current_cpu = Self::current_cpu_id();
