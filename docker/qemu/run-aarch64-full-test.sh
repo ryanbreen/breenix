@@ -380,6 +380,17 @@ if [ -z "$FAIL_REASON" ]; then
             break
         fi
         if grep -qF '[FUTEX_HANDOFF_ORACLE:' "$OUTPUT_DIR/serial.txt" 2>/dev/null; then
+            # The prefix can match a line still being flushed to the serial
+            # file before the anchored pattern above sees it complete — that
+            # is an adjudication race, not a real failure (#R3-B2). Settle
+            # briefly and re-check the anchored pattern once before treating
+            # the prefix match as a genuine failure.
+            sleep 0.3
+            if grep -qE "$FUTEX_HANDOFF_ORACLE_PATTERN" "$OUTPUT_DIR/serial.txt" 2>/dev/null; then
+                FUTEX_HANDOFF_ORACLE_OK=true
+                FUTEX_HANDOFF_ORACLE_LINE=$(grep -E "$FUTEX_HANDOFF_ORACLE_PATTERN" "$OUTPUT_DIR/serial.txt" 2>/dev/null | tail -1)
+                break
+            fi
             FUTEX_HANDOFF_ORACLE_LINE=$(grep -F '[FUTEX_HANDOFF_ORACLE:' "$OUTPUT_DIR/serial.txt" 2>/dev/null | tail -1)
             FAIL_REASON="Phase 1a2: futex handoff oracle failed ($FUTEX_HANDOFF_ORACLE_LINE)"
             break
