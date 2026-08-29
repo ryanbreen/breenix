@@ -30,26 +30,40 @@
 //!
 //! Do not weaken any stage to `timeout=0`.
 //!
-//! Stage 3's bounds are derived from an *absolute instant both processes name*,
-//! never from either side's own stopwatch. The parent computes `write_deadline`
-//! on the kernel monotonic clock BEFORE forking; the child inherits it and
-//! sleeps *until* it rather than sleeping a duration from whenever it happens to
-//! be scheduled. The parent then proves two facts from its own two timestamps:
+//! Stage 3's bounds are derived from the peer's ACTUAL write instant, which the
+//! peer measures and reports, never from either side's own guess about the
+//! other's timing. The child stamps `monotonic_ms()` immediately before its
+//! send and ships that stamp as the second half of the payload; the parent
+//! decodes it and proves two facts about its own poll:
 //!
-//!   entry  + ENTRY_GUARD_MS <= write_deadline   (it was inside poll() before
-//!                                                the peer's write was due)
-//!   return                   >= write_deadline   (the poll did not return
-//!                                                before that write was due)
+//!   entry  <= write_ms      (the poll call began before the peer wrote)
+//!   return >= write_ms      (the poll did not return before the peer wrote)
 //!
-//! Both hold with zero timing slack on a correct kernel, because the only thing
-//! that can make this poll return POLLIN is the child's send, and that send is
-//! at or after `write_deadline` by construction. The first is a *precondition*,
-//! not a verdict: if the parent was descheduled long enough to miss its own
-//! window the trial proves nothing, so it is drained and retried with a wider
-//! margin, and only an exhausted retry budget is a FAIL. An earlier revision
-//! compared the parent's elapsed against the child's sleep *duration*; because
-//! the child's clock starts at the fork and the parent's at its poll entry, that
-//! bound sat on top of its own distribution and reddened ~8% of healthy boots.
+//! Together they say the poll was outstanding across the publication, which is
+//! the whole claim of the stage, and `park_ms = write_ms - entry` reports the
+//! measured span rather than asserting one. Both hold with zero timing slack on
+//! a correct kernel: the only thing that can make this poll report POLLIN is
+//! that send. A return before it means the poll saw readiness the peer had not
+//! published -- stale state, not a wake -- and is a named FAIL.
+//!
+//! Two design points keep this from becoming a flake generator, which is
+//! exactly what two earlier revisions of this bound were:
+//!
+//!   * The `fork()` is OUTSIDE the timing window. The parent forks, then hands
+//!     the child a one-byte readiness token over the *reverse* direction of the
+//!     same connection, and only then stamps `entry` and polls. The child waits
+//!     on that token before starting its delay, so process creation -- which on
+//!     a loaded emulated x86 boot costs hundreds of milliseconds, far more than
+//!     the delay itself -- is spent before either clock starts. The first
+//!     revision compared the parent's elapsed against the child's sleep
+//!     *duration* and reddened ~8% of healthy aarch64 boots; the second moved
+//!     to a shared absolute deadline but still paid the fork inside the window
+//!     and could not reach its own poll in time on x86 at all.
+//!   * `entry <= write_ms` is a PRECONDITION, not a verdict. If the parent was
+//!     descheduled between handing over the token and reaching `poll()`, the
+//!     trial proves nothing either way, so it is drained, the child reaped, and
+//!     the delay widened. Only an exhausted budget is a FAIL, and it reports
+//!     the measured overshoot so the failure is legible.
 
 use std::string::String;
 
@@ -77,25 +91,30 @@ const IDLE_TIMEOUT_MS: i32 = 120;
 /// timeout the stage actually asks for.
 const IDLE_MIN_ELAPSED_MS: u64 = IDLE_TIMEOUT_MS as u64 - 1;
 
-/// Stage 3 timeout, and how far ahead of the fork the shared write deadline is
-/// placed. The deadline is absolute; the child sleeps until it, so the write
-/// instant does not drift with the child's scheduling.
+/// Stage 3 timeout, and how long the child waits after the readiness token
+/// before it writes. The delay is a duration on the child's side because the
+/// child measures and reports the instant it actually wrote -- nothing is
+/// predicted, so nothing has to be guessed accurately.
 const LATE_TIMEOUT_MS: i32 = 5_000;
 const LATE_WRITE_DELAY_MS: u64 = 80;
-/// Margin the parent must have left when it stamps its poll entry, in the same
-/// truncated milliseconds as the two stamps it separates. Two milliseconds
-/// covers the truncation of both, so `entry + guard <= deadline` is a real
-/// ordering fact and not an artifact of the clock's resolution.
-const ENTRY_GUARD_MS: u64 = 2;
-/// A trial in which the parent missed its own window proves nothing about
-/// wakes, so it is retried rather than reported. Each retry widens the deadline,
-/// so exhausting this budget means the parent could not get from `fork()` to
-/// `poll()` inside 80, 160, 240 and 320 ms in turn -- a real pathology, and the
-/// only thing that turns a missed window into a FAIL.
-const LATE_MAX_ATTEMPTS: u64 = 4;
+/// A trial in which the parent did not reach `poll()` before the peer wrote
+/// proves nothing about wakes, so it is retried rather than reported. The delay
+/// doubles each time -- 80, 160, 320, 640, 1280 ms, all far inside the 5 s poll
+/// timeout -- so exhausting this budget means the parent could not get from one
+/// `send()` to the next syscall inside 1.28 s. That is a real pathology, and it
+/// is the only thing that turns a missed window into a FAIL.
+const LATE_MAX_ATTEMPTS: u32 = 5;
+/// One byte, sent by the parent on its own end of the connection, that tells the
+/// child the parent is about to poll. It travels the opposite direction from the
+/// payload, so it cannot make the polled fd readable.
+const READY_TOKEN: &[u8] = b"R";
 
 const PAYLOAD_ARMED: &[u8] = b"armed568";
+/// Stage 3's payload is the tag followed by the child's own little-endian
+/// `monotonic_ms()` stamp, taken immediately before the send. The parent scores
+/// its poll against that measured instant.
 const PAYLOAD_LATE: &[u8] = b"late568";
+const LATE_MSG_LEN: usize = 7 + 8;
 
 struct Failure {
     stage: &'static str,
@@ -213,127 +232,132 @@ fn stage_armed(client: Fd, server: Fd) -> Result<(), Failure> {
     }
 }
 
-/// Sleep until an absolute instant on the kernel monotonic clock. The child
-/// uses this rather than sleeping a duration, so the write lands at the instant
-/// the parent named before the fork no matter when the child is first scheduled.
-fn sleep_until(deadline_ms: u64) -> Result<(), Failure> {
-    loop {
-        let now = monotonic_ms("child_sleep")?;
-        if now >= deadline_ms {
-            return Ok(());
+/// Read exactly `buf.len()` bytes, or fail naming the stage. Loopback delivers
+/// these short messages in one piece in practice, but a short read must not be
+/// silently reinterpreted as a different message.
+fn recv_exact(fd: Fd, buf: &mut [u8], stage: &'static str) -> Result<(), Failure> {
+    let mut filled = 0usize;
+    while filled < buf.len() {
+        match socket::recv(fd, &mut buf[filled..]) {
+            Ok(0) => {
+                return Err(fail(
+                    stage,
+                    format!("peer closed after {} of {} bytes", filled, buf.len()),
+                ))
+            }
+            Ok(n) => filled += n,
+            Err(e) => return Err(fail(stage, format!("{}", e))),
         }
-        let _ = time::sleep_ms(deadline_ms - now);
     }
+    Ok(())
 }
 
-/// Consume a trial whose precondition failed: the peer's write is still coming,
-/// so wait for it and read it, leaving the connection as empty as it was.
-fn drain_late_payload(client: Fd) -> Result<(), Failure> {
-    let mut fds = [PollFd::new(client, POLLIN)];
-    match io::poll(&mut fds, LATE_TIMEOUT_MS) {
-        Ok(1) if fds[0].revents & POLLIN != 0 => {}
-        Ok(n) => {
-            return Err(fail(
-                "late_drain_stuck",
-                format!("ready={} revents={:#06x}", n, fds[0].revents),
-            ))
+/// The child half of stage 3. Waits for the parent's readiness token, sleeps,
+/// then stamps the instant it is about to write and ships that stamp with the
+/// payload. Never returns.
+fn late_peer(server: Fd, delay_ms: u64) -> ! {
+    let mut token = [0u8; 1];
+    if recv_exact(server, &mut token, "child_token").is_ok() {
+        let _ = time::sleep_ms(delay_ms);
+        if let Ok(write_ms) = monotonic_ms("child_write") {
+            let mut msg = [0u8; LATE_MSG_LEN];
+            msg[..7].copy_from_slice(PAYLOAD_LATE);
+            msg[7..].copy_from_slice(&write_ms.to_le_bytes());
+            let _ = socket::send(server, &msg);
         }
-        Err(e) => return Err(fail("late_drain_poll", format!("{}", e))),
     }
-    let mut buf = [0u8; 64];
-    match socket::recv(client, &mut buf) {
-        Ok(_) => Ok(()),
-        Err(e) => Err(fail("late_drain_recv", format!("{}", e))),
-    }
+    process::exit(0);
 }
 
 /// The lost-wake stage: readiness is published while the poller is already
 /// parked inside `poll()`.
 ///
-/// Returns `(elapsed_ms, park_ms, attempts)`, where `park_ms` is the span the
-/// poll is *proven* to have spent blocked before the peer's write was due.
+/// Returns `(elapsed_ms, park_ms, attempts)`, where `park_ms` is the measured
+/// span between the parent's poll entry and the peer's actual write.
 fn stage_late(client: Fd, server: Fd) -> Result<(u64, u64, u64), Failure> {
-    let mut attempt: u64 = 1;
+    let mut attempt: u32 = 1;
+    let mut delay_ms = LATE_WRITE_DELAY_MS;
     loop {
-        // The deadline is absolute and is computed BEFORE the fork, so both
-        // processes name the same instant on the same clock. Widening it per
-        // attempt is what makes a missed window self-correcting.
-        let write_deadline =
-            monotonic_ms("late_setup")? + LATE_WRITE_DELAY_MS * attempt;
-
         let child = match process::fork() {
-            Ok(ForkResult::Child) => {
-                if sleep_until(write_deadline).is_ok() {
-                    let _ = socket::send(server, PAYLOAD_LATE);
-                }
-                process::exit(0);
-            }
+            Ok(ForkResult::Child) => late_peer(server, delay_ms),
             Ok(ForkResult::Parent(pid)) => pid,
             Err(e) => return Err(fail("late_fork", format!("{}", e))),
         };
 
-        let entry = monotonic_ms("late_entry")?;
-        if entry + ENTRY_GUARD_MS > write_deadline {
-            // The parent did not reach its own poll entry before the peer's
-            // write was due. Nothing about wakes can be concluded from this
-            // trial either way, so it is not a verdict: drain the write the
-            // child is still going to make, reap it, and try again with a wider
-            // margin. Reporting this as a failure is the bug the previous
-            // revision had -- it is ordinary parent-side scheduling latency.
-            drain_late_payload(client)?;
-            let mut status = 0i32;
-            let _ = process::waitpid(child.raw() as i32, &mut status as *mut i32, 0);
-            attempt += 1;
-            if attempt > LATE_MAX_ATTEMPTS {
-                return Err(fail(
-                    "late_parent_never_parked",
-                    format!(
-                        "attempts={} guard_ms={} last_slack_ms={}",
-                        LATE_MAX_ATTEMPTS,
-                        ENTRY_GUARD_MS,
-                        write_deadline.saturating_sub(entry)
-                    ),
-                ));
-            }
-            continue;
+        // Everything expensive -- process creation, the child's first schedule --
+        // happens before the token goes out, so neither clock has started yet.
+        // The token travels parent -> child on the reverse direction of this
+        // connection, so it cannot make `client` readable.
+        if let Err(e) = socket::send(client, READY_TOKEN) {
+            return Err(fail("late_ready_send", format!("{}", e)));
         }
 
         let mut fds = [PollFd::new(client, POLLIN)];
+        let entry = monotonic_ms("late_entry")?;
         let ready = match io::poll(&mut fds, LATE_TIMEOUT_MS) {
             Ok(n) => n,
             Err(e) => return Err(fail("late_poll", format!("{}", e))),
         };
         let returned = monotonic_ms("late_return")?;
         let elapsed = returned.saturating_sub(entry);
-        let park_ms = write_deadline - entry;
-
-        let mut status = 0i32;
-        let _ = process::waitpid(child.raw() as i32, &mut status as *mut i32, 0);
 
         if ready != 1 || fds[0].revents & POLLIN == 0 {
+            let mut status = 0i32;
+            let _ = process::waitpid(child.raw() as i32, &mut status as *mut i32, 0);
             return Err(fail(
                 "late_lost_wake",
                 format!(
-                    "ready={} revents={:#06x} elapsed_ms={} park_ms={}",
-                    ready, fds[0].revents, elapsed, park_ms
+                    "ready={} revents={:#06x} elapsed_ms={} delay_ms={}",
+                    ready, fds[0].revents, elapsed, delay_ms
                 ),
             ));
         }
         reject_broken("late_broken", fds[0].revents)?;
 
-        // Anti-vacuity, derived from the shared deadline rather than from either
-        // side's stopwatch: the only thing that can make this poll report POLLIN
-        // is the child's send, and that send is at or after `write_deadline` by
-        // construction, so a correct kernel cannot return earlier than it. A
-        // return before the deadline means the poll saw readiness that the peer
-        // had not published yet -- stale state, not a wake. There is no timing
-        // slack in this bound and nothing in it to retune.
-        if returned < write_deadline {
+        let mut buf = [0u8; LATE_MSG_LEN];
+        recv_exact(client, &mut buf, "late_recv")?;
+        let mut status = 0i32;
+        let _ = process::waitpid(child.raw() as i32, &mut status as *mut i32, 0);
+        if &buf[..7] != PAYLOAD_LATE {
+            return Err(fail("late_payload", format!("tag={:?}", &buf[..7])));
+        }
+        let mut stamp = [0u8; 8];
+        stamp.copy_from_slice(&buf[7..]);
+        let write_ms = u64::from_le_bytes(stamp);
+
+        if entry > write_ms {
+            // The parent did not reach its own poll entry before the peer wrote.
+            // Nothing about wakes can be concluded from this trial either way,
+            // so it is not a verdict: widen the delay and try again. Reporting
+            // this as a failure is the bug two earlier revisions of this bound
+            // had -- it is ordinary parent-side scheduling latency.
+            attempt += 1;
+            delay_ms *= 2;
+            if attempt > LATE_MAX_ATTEMPTS {
+                return Err(fail(
+                    "late_parent_never_parked",
+                    format!(
+                        "attempts={} overshoot_ms={} delay_ms={}",
+                        LATE_MAX_ATTEMPTS,
+                        entry - write_ms,
+                        delay_ms / 2
+                    ),
+                ));
+            }
+            continue;
+        }
+
+        // Anti-vacuity, scored against the peer's measured write instant rather
+        // than either side's stopwatch: the only thing that can make this poll
+        // report POLLIN is that send, so a correct kernel cannot return before
+        // it. A return before it is readiness the peer had not published --
+        // stale state, not a wake. No timing slack, nothing to retune.
+        if returned < write_ms {
             return Err(fail(
                 "late_early_ready",
                 format!(
-                    "returned={} deadline={} entry={} elapsed_ms={}",
-                    returned, write_deadline, entry, elapsed
+                    "returned={} write_ms={} entry={} elapsed_ms={}",
+                    returned, write_ms, entry, elapsed
                 ),
             ));
         }
@@ -347,12 +371,7 @@ fn stage_late(client: Fd, server: Fd) -> Result<(u64, u64, u64), Failure> {
             ));
         }
 
-        let mut buf = [0u8; 64];
-        return match socket::recv(client, &mut buf) {
-            Ok(n) if &buf[..n] == PAYLOAD_LATE => Ok((elapsed, park_ms, attempt)),
-            Ok(n) => Err(fail("late_payload", format!("n={}", n))),
-            Err(e) => Err(fail("late_recv", format!("{}", e))),
-        };
+        return Ok((elapsed, write_ms - entry, attempt as u64));
     }
 }
 
