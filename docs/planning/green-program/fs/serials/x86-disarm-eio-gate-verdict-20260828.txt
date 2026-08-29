@@ -1,0 +1,25 @@
+=========================================
+ext2/VFS fault-injection gate
+  arch:     x86
+  features: boot_tests,fs_fault_inject,fs_fault_disarm_eio
+  mode:     anti-vacuity (disarm eio)
+=========================================
+[gate] building x86_64 kernel...
+   Compiling kernel v0.1.0 (/root/breenix/kernel)
+   Compiling breenix v0.1.0 (/root/breenix)
+    Finished `release` profile [optimized] target(s) in 17.30s
+     Running `target/release/qemu-uefi`
+[qemu-uefi] Using UEFI image: /root/breenix/target/release/build/breenix-17c87a8fc7d0d73f/out/breenix-uefi.img (7405568 bytes)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.07s
+     Running `target/debug/xtask create-test-disk`
+[gate] [FSFAULT:x86:COMPLETE:pass=7:fail=1]
+[gate] observed verdict lines: PASS=7 FAIL=1
+[gate]   baseline_mount           PASS (expected PASS)
+[gate]   baseline_read            PASS (expected PASS)
+[gate]   short_read               PASS (expected PASS)
+[gate]   eio_data_block           FAIL (expected FAIL)
+[gate]   eio_recovery             PASS (expected PASS)
+[gate]   corrupt_inode:arm=size   PASS (expected PASS)
+[gate]   corrupt_inode:arm=blocks PASS (expected PASS)
+[gate]   liveness                 PASS (expected PASS)
+fs fault gate (x86): ANTI-VACUITY PASSED - disarming 'eio' reddens exactly that shape

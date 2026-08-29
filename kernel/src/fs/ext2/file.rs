@@ -260,6 +260,28 @@ pub fn read_file_range<B: BlockDevice + ?Sized>(
     length: usize,
 ) -> Result<Vec<u8>, BlockError> {
     let file_size = inode.size();
+    let block_size = superblock.block_size();
+
+    // The capacity of the filesystem itself: no read this function can satisfy
+    // may be larger, because it materialises the whole requested range in one
+    // Vec. Without this bound a corrupt or hostile inode turns a read into an
+    // arbitrary allocation request -- an i_size of 0xFFFFFFF0 on a 256 MiB
+    // filesystem was an immediate allocation-error panic, reached before a
+    // single block pointer was ever examined, so no downstream block validation
+    // could have caught it. Found by the ext2 fault-injection leg's
+    // corrupt-inode shape (kernel/src/fs/fault_inject.rs).
+    //
+    // The bound is on the ALLOCATION, not on i_size. A sparse ext2 file may
+    // legitimately carry an i_size larger than the device -- Linux bounds i_size
+    // against ext2_max_size(), not against the filesystem size -- and a small
+    // ranged read of such a file is both legal and safe. What is never
+    // satisfiable is a request to materialise more bytes than the filesystem
+    // could possibly contain.
+    let fs_capacity = unsafe {
+        core::ptr::read_unaligned(core::ptr::addr_of!(superblock.s_blocks_count)) as u64
+    }
+    .saturating_mul(block_size as u64);
+
     if offset >= file_size {
         return Ok(Vec::new()); // Read past EOF
     }
@@ -269,8 +291,10 @@ pub fn read_file_range<B: BlockDevice + ?Sized>(
     if actual_length == 0 {
         return Ok(Vec::new());
     }
+    if actual_length as u64 > fs_capacity {
+        return Err(BlockError::IoError);
+    }
 
-    let block_size = superblock.block_size();
     let start_block = (offset / block_size as u64) as u32;
     let offset_in_first_block = (offset % block_size as u64) as usize;
     let end_offset = offset + actual_length as u64;

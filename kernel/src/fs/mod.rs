@@ -12,5 +12,10 @@
 pub mod devfs;
 pub mod devptsfs;
 pub mod ext2;
+// The ext2/VFS fault-injection leg. Test profile only: every byte of it is
+// behind this feature, and `scripts/check-fs-fault-production-clean.sh` proves
+// a production ELF carries none of it.
+#[cfg(feature = "fs_fault_inject")]
+pub mod fault_inject;
 pub mod procfs;
 pub mod vfs;

@@ -64,6 +64,17 @@ coreproof_mut_masked_lock = ["coreproof"]
 # ProcessContext never run and the boot never returns to userspace. See
 # docs/planning/green-program/tracing/X86-533-2026-08-28.md.
 x86_staged_registry = ["boot_tests"]
+# ext2/VFS fault-injection leg. Test profile only: the module and both of its
+# call sites are behind this feature, and the pair of ratchets
+# (`scripts/check-fs-fault-production-clean.sh`, `tests/fs_fault_production_clean.rs`)
+# prove a production ELF carries none of it.
+fs_fault_inject = []
+# Anti-vacuity: each disarm feature turns exactly one shape's arming into a
+# no-op while leaving its assertion in place, so that shape's arm must report
+# `verdict=FAIL detail=fault-not-observed` and the gate must go red.
+fs_fault_disarm_short_read = ["fs_fault_inject"]
+fs_fault_disarm_eio = ["fs_fault_inject"]
+fs_fault_disarm_corrupt_inode = ["fs_fault_inject"]
 btrt = []  # Boot Test Result Table (structured test results)
 kthread_test_only = ["testing"]  # Run only kthread tests and exit
 xhci_linux_harness = []  # Build and use the Linux C-based xHCI harness

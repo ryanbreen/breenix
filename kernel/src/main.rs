@@ -628,6 +628,12 @@ extern "C" fn kernel_main_on_kernel_stack(arg: *mut core::ffi::c_void) -> ! {
         }
     }
 
+
+    // ext2/VFS fault-injection leg (test profile only, feature `fs_fault_inject`).
+    // Runs immediately after the root filesystem mounts, so every marker the rest
+    // of this boot prints is evidence the kernel survived the injected faults.
+    #[cfg(feature = "fs_fault_inject")]
+    kernel::fs::fault_inject::run_fs_fault_leg();
     // Initialize ext2 home filesystem only when the x86 home disk is attached.
     if kernel::block::virtio::VirtioBlockWrapper::new(3).is_some() {
         match kernel::fs::ext2::init_home_fs() {
