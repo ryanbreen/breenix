@@ -118,6 +118,8 @@ STD_BINARIES=(
 
     # #575 block-EINTR oracle
     "block_eintr_oracle"
+    # #568 blocking-poll-on-connected-TCP oracle
+    "poll_tcp_oracle"
     # #584 futex handoff oracle
     "futex_handoff_oracle"
 
