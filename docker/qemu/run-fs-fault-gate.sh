@@ -217,7 +217,7 @@ if [ "$ARCH" = "aarch64" ]; then
 else
     cp target/ovmf/x64/code.fd "$OUTPUT_DIR/OVMF_CODE.fd"
     cp target/ovmf/x64/vars.fd "$OUTPUT_DIR/OVMF_VARS.fd"
-    timeout 900 qemu-system-x86_64 \
+    timeout "${X86_BOOT_TIMEOUT:-1800}" qemu-system-x86_64 \
         -pflash "$OUTPUT_DIR/OVMF_CODE.fd" \
         -pflash "$OUTPUT_DIR/OVMF_VARS.fd" \
         -drive "if=none,id=hd,format=raw,readonly=on,file=$BREENIX_ROOT/$UEFI_IMG" \
@@ -240,8 +240,14 @@ fi
 # still usable.
 LEG_DONE=0
 LIVE=0
+# The aarch64 profile reaches its liveness marker in tens of seconds. The x86
+# full-test profile runs a ten-minute userspace suite (networking, loopback, COW)
+# before its terminal marker, and takes materially longer when the host is busy:
+# a 900-second bound passed on an idle beast and timed out on a contended one,
+# with the leg itself green in both. The deadline is generous rather than tight,
+# because a slow-but-healthy boot scored as failed is a false red.
 POLL_BOUND=150
-[ "$ARCH" = "x86" ] && POLL_BOUND=450
+[ "$ARCH" = "x86" ] && POLL_BOUND="${X86_POLL_BOUND:-900}"
 for _ in $(seq 1 "$POLL_BOUND"); do
     if grep -qa "\[FSFAULT:.*:COMPLETE:" "$OUTPUT_DIR"/serial*.txt 2>/dev/null; then
         LEG_DONE=1
@@ -253,6 +259,12 @@ for _ in $(seq 1 "$POLL_BOUND"); do
         break
     fi
     if [ "$LEG_DONE" -eq 1 ] && [ "$LIVE" -eq 1 ]; then
+        break
+    fi
+    # An anti-vacuity run is scored entirely on the leg's own arms -- it asserts
+    # that a disarmed shape reddens, not that the boot completes -- so it need
+    # not sit through the rest of a ten-minute userspace suite.
+    if [ -n "$DISARM" ] && [ "$LEG_DONE" -eq 1 ]; then
         break
     fi
     sleep 2
