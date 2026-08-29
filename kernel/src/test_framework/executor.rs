@@ -222,6 +222,8 @@ pub fn advance_stage_marker_only(stage: TestStage) {
     // A verdict that no test contributed to is not a pass (#533). `0/0` is not
     // evidence of anything, so it is reported as a failure with its own
     // signature, which the gates reject by name.
+    #[cfg(feature = "coreproof")]
+    crate::proof::note_boot_tests_complete();
     if dispatched && (total == 0 || completed == 0) {
         serial_println!("[TESTS_COMPLETE:{}/{}:VACUOUS]", completed, total);
         serial_println!("[BOOT_TESTS:FAIL:VACUOUS]");
@@ -543,6 +545,8 @@ fn run_staged_tests(target_stage: TestStage) -> u32 {
             crate::task::strand_oracle::report_x86_once();
         }
 
+        #[cfg(feature = "coreproof")]
+        crate::proof::note_boot_tests_complete();
         if failed == 0 && lock_order_clean {
             serial_println!("[TESTS_COMPLETE:{}/{}]", completed, total);
             serial_println!("[BOOT_TESTS:PASS]");
@@ -562,6 +566,18 @@ fn run_staged_tests(target_stage: TestStage) -> u32 {
 
     // Refresh display
     super::display::render_progress();
+
+    // The core-proof harness starts HERE, after the cohort's verdict, and not
+    // with the other oracles above. It pens every other online CPU and runs a
+    // tight loop on its own, so it cannot share a boot phase with tests that
+    // measure scheduler quiet: the first smoke boot reddened
+    // `census_widen_oracle`, whose baseline requires a strand census with no
+    // thread queued on a non-dispatching CPU — and the harness's own driver
+    // thread, merely by existing pinned to a CPU, was that thread. Waiting was
+    // not enough; the thread must not exist yet. The oracle was measuring
+    // correctly, so the harness moved.
+    #[cfg(feature = "coreproof")]
+    crate::proof::start();
 
     total_failed
 }

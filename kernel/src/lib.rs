@@ -79,6 +79,72 @@ pub mod log_buffer;
 #[cfg(any(feature = "boot_tests", feature = "btrt"))]
 pub mod test_framework;
 
+// ---------------------------------------------------------------------------
+// Core-proof harness (R60 pilot).
+//
+// The module itself is test-profile only. The `proof_point!` seam macro is
+// declared HERE, outside the cfg, because a seam has to be writable at a
+// production call site: without the feature the macro exists and expands to
+// LITERALLY NOTHING -- no call, no argument evaluation, no token -- so a
+// production build cannot carry a byte of it. That is the language-level form
+// of the non-negotiable, rather than a promise that the optimiser will inline
+// an empty function away.
+//
+// The pilot's driver, stimulus battery and pen are AArch64-only: they reach the
+// GIC, the virtual timer and `kthread_run_on_cpu_for_test`, none of which the
+// x86 side offers today. The seams themselves live in arch-shared
+// `task/scheduler.rs`, so `proof_point!` must still COMPILE on x86 — hence the
+// arch in the cfg on both the module and the macro's active arm rather than on
+// the feature alone. An x86 driver is the #608 hunt's own work and is not in
+// this pilot; saying so here is cheaper than a build that fails for whoever
+// first types `--features coreproof` on the x86 target.
+// ---------------------------------------------------------------------------
+#[cfg(all(feature = "coreproof", target_arch = "aarch64"))]
+pub mod proof;
+
+/// A labelled perturbation seam.
+///
+/// `proof_point!(SITE)` names a semantically meaningful point in a protocol --
+/// "after the state store, before the departure" -- so the harness can place a
+/// perturbation there instead of sampling the instruction stream uniformly and
+/// hoping to land in a window a few instructions wide.
+///
+/// Under `coreproof` the fast path is one relaxed load of this CPU's armed-site
+/// word plus a compare; the perturbation itself is out of line. Without
+/// `coreproof` the macro expands to nothing at all.
+#[cfg(all(feature = "coreproof", target_arch = "aarch64"))]
+#[macro_export]
+macro_rules! proof_point {
+    ($site:ident) => {
+        $crate::proof::seam($crate::proof::SiteId::$site)
+    };
+}
+
+#[cfg(not(all(feature = "coreproof", target_arch = "aarch64")))]
+#[macro_export]
+macro_rules! proof_point {
+    ($($ignored:tt)*) => {};
+}
+
+/// Count execution of a mutation-hosting region during the measured window.
+///
+/// This has the same two polarities as `proof_point!`: on the AArch64
+/// core-proof profile it reaches the relaxed coverage fast path, and in every
+/// other build it expands to literally nothing, including its argument.
+#[cfg(all(feature = "coreproof", target_arch = "aarch64"))]
+#[macro_export]
+macro_rules! proof_cover {
+    ($site:ident) => {
+        $crate::proof::coverage::note($crate::proof::coverage::MutSite::$site)
+    };
+}
+
+#[cfg(not(all(feature = "coreproof", target_arch = "aarch64")))]
+#[macro_export]
+macro_rules! proof_cover {
+    ($($ignored:tt)*) => {};
+}
+
 // =========================================================================
 // Modules migrated from main.rs for unified crate structure (Phase 2A)
 // These are x86_64-only modules that were previously declared only in main.rs.

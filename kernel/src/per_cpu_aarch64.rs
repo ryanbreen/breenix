@@ -330,6 +330,29 @@ pub fn live_stack_snapshot(cpu_id: usize) -> Option<(u64, u64)> {
     Some((kernel_stack_top, user_rsp_scratch))
 }
 
+/// Read another CPU's preempt count out of its published per-CPU block.
+///
+/// `preempt_count()` below reads this CPU's block through `TPIDR_EL1` and can
+/// therefore only answer for the CPU asking. A preemption bracket is held by
+/// whichever CPU took it, so an observer scoring someone else's bracket has to
+/// read the owner's word — the same volatile read of `ALL_CPU_DATA[cpu]` that
+/// `live_stack_snapshot` above already makes for the stack-custody words, and
+/// for the same reason: the field is written by another CPU while this one
+/// looks at it.
+///
+/// `None` for an index outside the array; an offline CPU reads its initialised
+/// zero, which is the conservative answer for every caller here (it can only
+/// make a bracket look absent, never present).
+#[cfg(feature = "coreproof")]
+pub fn preempt_count_snapshot(cpu_id: usize) -> Option<u32> {
+    if cpu_id >= crate::arch_impl::aarch64::constants::MAX_CPUS {
+        return None;
+    }
+
+    let cpu_data = unsafe { &raw const ALL_CPU_DATA[cpu_id] };
+    Some(unsafe { core::ptr::read_volatile(core::ptr::addr_of!((*cpu_data).preempt_count)) })
+}
+
 /// Snapshot the per-CPU TTBR0 shadows that can retain a userspace root.
 ///
 /// Exception-return assembly also reads and writes these fields, so use

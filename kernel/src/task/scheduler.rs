@@ -618,6 +618,103 @@ pub fn online_cpu_count_snapshot() -> usize {
     with_scheduler(|scheduler| scheduler.online_cpu_count()).unwrap_or(1)
 }
 
+#[cfg(feature = "coreproof")]
+pub struct DepartureProbe {
+    pub queued_after_block: bool,
+    pub state_is_blocked: bool,
+    pub unblock_outcome: UnblockOutcome,
+    pub membership_changed: bool,
+    pub cardinality_before: usize,
+    pub cardinality_after: usize,
+}
+
+/// Exercise and restore the generic ready-queue departure protocol under one
+/// scheduler-lock acquisition with interrupts masked.
+///
+/// The name is load-bearing, not decorative. #647's caller-side rule
+/// (`tests/teardown_structure.rs::validate_block_family_callers_own_no_departure`)
+/// forbids any CALLER of the blocking family from open-coding a ready-queue
+/// departure, and exempts the family's own members because they are the owners.
+/// This probe plants and removes a queue entry ON PURPOSE — it manufactures the
+/// one state that makes the departure observable — so it belongs on the same
+/// side of that rule as `block_current_departure_gate`, and carries a
+/// family name to say so. Renaming it out of the family would make it a caller
+/// that open-codes a departure, which is exactly what the rule is for.
+#[cfg(feature = "coreproof")]
+pub fn block_current_coreproof_probe() -> Option<Result<DepartureProbe, &'static str>> {
+    with_scheduler(|scheduler| {
+        let cpu = Scheduler::current_cpu_id();
+        let Some(tid) = scheduler.cpu_state[cpu].current_thread else {
+            return Err("departure probe ran with no current thread");
+        };
+        let Some(thread) = scheduler.get_thread(tid) else {
+            return Err("departure probe found no current thread row");
+        };
+        let restore_state = thread.state;
+        let restore_in_syscall = thread.blocked_in_syscall;
+        if !matches!(restore_state, ThreadState::Running | ThreadState::Ready) {
+            return Err("departure probe current thread was not runnable");
+        }
+        if scheduler
+            .per_cpu_queues
+            .iter()
+            .any(|queue| queue.contains(&tid))
+        {
+            return Err("departure probe current thread already named a ready queue");
+        }
+
+        let cardinality_before = scheduler
+            .per_cpu_queues
+            .iter()
+            .map(VecDeque::len)
+            .sum();
+        scheduler.per_cpu_queues[cpu].push_back(tid);
+        scheduler.block_current();
+
+        let queued_after_block = scheduler
+            .per_cpu_queues
+            .iter()
+            .any(|queue| queue.contains(&tid));
+        let state_is_blocked = scheduler
+            .get_thread(tid)
+            .is_some_and(|thread| thread.state == ThreadState::Blocked);
+
+        // Restore the planted membership and thread fields before exercising
+        // runnable-unblock idempotence. No fallible exit exists after planting.
+        for queue in scheduler.per_cpu_queues.iter_mut() {
+            queue.retain(|queued_tid| *queued_tid != tid);
+        }
+        if let Some(thread) = scheduler.get_thread_mut(tid) {
+            thread.state = restore_state;
+            thread.blocked_in_syscall = restore_in_syscall;
+        }
+
+        let membership_before_unblock = core::array::from_fn::<_, MAX_CPUS, _>(|queue| {
+            scheduler.per_cpu_queues[queue].contains(&tid)
+        });
+        let unblock_outcome = scheduler.unblock(tid);
+        let membership_changed = scheduler
+            .per_cpu_queues
+            .iter()
+            .zip(membership_before_unblock)
+            .any(|(queue, was_member)| queue.contains(&tid) != was_member);
+        let cardinality_after = scheduler
+            .per_cpu_queues
+            .iter()
+            .map(VecDeque::len)
+            .sum();
+
+        Ok(DepartureProbe {
+            queued_after_block,
+            state_is_blocked,
+            unblock_outcome,
+            membership_changed,
+            cardinality_before,
+            cardinality_after,
+        })
+    })
+}
+
 /// Collect one fixed-size strand census under the scheduler lock.
 ///
 /// The caller owns the array and processes it after this function returns, so
@@ -2018,47 +2115,120 @@ impl Scheduler {
         let Some(tid) = self.cpu_state[cpu].pending_next else {
             return;
         };
+        crate::proof_cover!(PendingNext);
 
-        if self
-            .cpu_state
-            .iter()
-            .any(|state| state.idle_thread == tid)
+        // CORE-PROOF MUTATION LEG `coreproof_mut_pending_next` (#589, fixed by
+        // PR #614): the incoming handoff is CONSUMED without being resolved.
+        // The slot is cleared, nothing re-queues the thread, and no other
+        // reachability source names it — the loseable handoff exactly. The
+        // resolution below is compiled out wholesale rather than jumped over, so
+        // the mutated build carries no unreachable tail and the unmutated build
+        // carries no branch. Test profiles only.
+        // Expected predicate: REDISPATCH_LIVENESS.
+        #[cfg(feature = "coreproof_mut_pending_next")]
+        {
+            let _ = self.cpu_state[cpu].pending_next.take();
+            let _ = tid;
+        }
+
+        #[cfg(not(feature = "coreproof_mut_pending_next"))]
+        {
+            if self
+                .cpu_state
+                .iter()
+                .any(|state| state.idle_thread == tid)
+                || self
+                    .cpu_state
+                    .iter()
+                    .any(|state| state.current_thread == Some(tid))
+                || self
+                    .per_cpu_queues
+                    .iter()
+                    .any(|queue| queue.contains(&tid))
+                || self
+                    .cpu_state
+                    .iter()
+                    .any(|state| state.previous_thread == Some(tid))
+                || crate::arch_impl::aarch64::context_switch::deferred_requeue_contains(
+                    tid,
+                )
+            {
+                return;
+            }
+
+            let Some(state) = self.get_thread(tid).map(|thread| thread.state) else {
+                return;
+            };
+            if !matches!(state, ThreadState::Running | ThreadState::Ready) {
+                return;
+            }
+
+            let Some(thread) = self.get_thread_mut(tid) else {
+                return;
+            };
+            thread.set_ready();
+            let _ = self.cpu_state[cpu].pending_next.take();
+            self.per_cpu_queues[cpu].push_back(tid);
+            crate::per_cpu_aarch64::set_need_resched(true);
+            self.send_resched_ipi();
+            #[cfg(feature = "boot_tests")]
+            crate::task::strand_oracle::note_pending_next_resolved(tid);
+        }
+    }
+
+    /// Stage the recoverable handoff state consumed by
+    /// `resolve_pending_next_locked` and drive the real resolver.
+    ///
+    /// Normal scheduling commits `pending_next` before another scheduler entry,
+    /// so merely calling `schedule_from_kernel` cannot exercise the recovery
+    /// guard. The core-proof churn peer supplies a newly queued, CPU-affine
+    /// kthread. Under this existing scheduler lock, the probe removes that
+    /// thread from its queue, marks it selected, and makes `pending_next` its
+    /// sole reachability source — the state the null-scheduler fallback leaves.
+    /// The production resolver restores it to Ready and requeues it. The M4
+    /// mutation consumes the slot and does neither, reproducing the loseable
+    /// handoff rather than merely incrementing a counter near it.
+    #[cfg(all(target_arch = "aarch64", feature = "coreproof"))]
+    pub(crate) fn exercise_pending_next_coreproof_probe(&mut self, tid: u64) -> bool {
+        let cpu = Self::current_cpu_id();
+        if self.cpu_state[cpu].pending_next.is_some()
             || self
                 .cpu_state
                 .iter()
                 .any(|state| state.current_thread == Some(tid))
             || self
-                .per_cpu_queues
-                .iter()
-                .any(|queue| queue.contains(&tid))
-            || self
                 .cpu_state
                 .iter()
                 .any(|state| state.previous_thread == Some(tid))
-            || crate::arch_impl::aarch64::context_switch::deferred_requeue_contains(
-                tid,
-            )
+            || crate::arch_impl::aarch64::context_switch::deferred_requeue_contains(tid)
+            || !self
+                .get_thread(tid)
+                .is_some_and(|thread| thread.state == ThreadState::Ready)
         {
-            return;
+            return false;
         }
 
-        let Some(state) = self.get_thread(tid).map(|thread| thread.state) else {
-            return;
+        let Some((queue_cpu, position)) = self.per_cpu_queues.iter().enumerate().find_map(
+            |(queue_cpu, queue)| {
+                queue
+                    .iter()
+                    .position(|queued_tid| *queued_tid == tid)
+                    .map(|position| (queue_cpu, position))
+            },
+        ) else {
+            return false;
         };
-        if !matches!(state, ThreadState::Running | ThreadState::Ready) {
-            return;
+        if self.per_cpu_queues[queue_cpu].remove(position) != Some(tid) {
+            return false;
         }
 
         let Some(thread) = self.get_thread_mut(tid) else {
-            return;
+            return false;
         };
-        thread.set_ready();
-        let _ = self.cpu_state[cpu].pending_next.take();
-        self.per_cpu_queues[cpu].push_back(tid);
-        crate::per_cpu_aarch64::set_need_resched(true);
-        self.send_resched_ipi();
-        #[cfg(feature = "boot_tests")]
-        crate::task::strand_oracle::note_pending_next_resolved(tid);
+        thread.set_running();
+        self.cpu_state[cpu].pending_next = Some(tid);
+        self.resolve_pending_next_locked(cpu);
+        true
     }
 
     /// Schedule the next thread, but do NOT add the old thread to the ready queue.
@@ -2397,6 +2567,7 @@ impl Scheduler {
                 | ((is_switching_to_idle as u32) << 30)
                 | self.ready_queue_length() as u32,
         );
+        crate::proof_point!(DeferredRequeueClaim);
         Some((old_thread_id, next_thread_id, should_requeue_old))
     }
 
@@ -2585,6 +2756,7 @@ impl Scheduler {
     /// The generic block: charge, publish, depart — in that order, under the
     /// one scheduler-lock acquisition the caller already holds.
     fn block_current_inner(&mut self, in_syscall: bool) {
+        crate::proof_point!(BlockEntry);
         let Some(current_id) = self.cpu_state[Self::current_cpu_id()].current_thread else {
             return;
         };
@@ -2596,6 +2768,7 @@ impl Scheduler {
             current.run_start_ticks = now;
 
             current.state = ThreadState::Blocked;
+            crate::proof_point!(BlockAfterStateStore);
             if in_syscall {
                 current.blocked_in_syscall = true;
             }
@@ -2606,9 +2779,18 @@ impl Scheduler {
         // same defence in depth they document — but it is now unconditional for
         // the generic block too, rather than a post-condition each caller had to
         // remember.
+        crate::proof_point!(BlockBeforeDeparture);
+        crate::proof_cover!(BlockDeparture);
+        // CORE-PROOF MUTATION LEG `coreproof_mut_block_departure` (#647, scoped
+        // closed by PR #648): the departure is skipped, so a thread that has
+        // published `Blocked` still names a ready queue and is dispatchable —
+        // blocked-yet-dispatchable, which is the defect verbatim. Test profiles
+        // only. Expected predicate: BLOCKED_NOT_IN_READYQ.
+        #[cfg(not(feature = "coreproof_mut_block_departure"))]
         for q in self.per_cpu_queues.iter_mut() {
             q.retain(|&id| id != current_id);
         }
+        crate::proof_point!(BlockAfterDeparture);
     }
 
     /// Boot-test probe for the departure post-condition of the generic block.
@@ -2686,6 +2868,7 @@ impl Scheduler {
     /// `BlockedOnTimer`, and `BlockedOnIO`. Other blocked states have dedicated
     /// wake paths and are reported as `UnblockOutcome::NotFound` here.
     pub fn unblock(&mut self, thread_id: u64) -> UnblockOutcome {
+        crate::proof_point!(UnblockEntry);
         // Increment the call counter for testing (tracks that unblock was called)
         UNBLOCK_CALL_COUNT.fetch_add(1, Ordering::SeqCst);
 
@@ -2697,6 +2880,7 @@ impl Scheduler {
                 || thread.state == ThreadState::BlockedOnIO
             {
                 thread.set_ready();
+                crate::proof_point!(UnblockAfterSetReady);
                 outcome = UnblockOutcome::Transitioned;
                 WAKE_SITE_UNBLOCK.fetch_add(1, Ordering::Relaxed);
                 record_ready_site(thread_id, READY_SITE_UNBLOCK);
@@ -2740,7 +2924,9 @@ impl Scheduler {
                     && !already_queued
                 {
                     let target = self.find_target_cpu_for_wakeup(thread_id);
+                    crate::proof_point!(UnblockBeforeEnqueue);
                     self.per_cpu_queues[target].push_back(thread_id);
+                    crate::proof_point!(UnblockAfterEnqueue);
                     ENQUEUE_SAME_LOCK_OK.fetch_add(1, Ordering::Relaxed);
                     // CRITICAL: Only log on x86_64 to avoid deadlock on ARM64
                     #[cfg(target_arch = "x86_64")]
@@ -4182,6 +4368,27 @@ pub fn reclaim_terminated_threads() {
 /// recorder — a bounded handful of instructions per thread.
 #[cfg(target_arch = "aarch64")]
 fn release_reclaimed_threads(reclaimed_threads: alloc::vec::Vec<Box<Thread>>) {
+    #[cfg(feature = "coreproof")]
+    if !reclaimed_threads.is_empty() {
+        crate::proof_cover!(MaskedLock);
+    }
+    // CORE-PROOF MUTATION LEG `coreproof_mut_masked_lock` (#609, fixed by PR
+    // #645; PR #632 made the bitmap lock irq-safe): the release runs
+    // preemptibly again, so a timer interrupt taken
+    // part-way through leaves an `ARM64_STACK_BITMAP` holder preemptible and
+    // builds its exception frame on whatever stack the reaper is standing on —
+    // link 1 of the #609 chain, restored. Test profiles only. Expected
+    // predicate: PERCPU_STACK_ALIEN.
+    //
+    // ROUND 3 MEASUREMENT, recorded where the leg is rather than only in the
+    // register: this half of link 1 is no longer sufficient on its own. PR #632
+    // typed `ARM64_STACK_BITMAP` as an `IrqSafeMutex`, so the holder cannot be
+    // preempted however this call is entered, and the orphaned lock the field
+    // failure needed cannot form. 15 mutated boots moved no existing census.
+    // A faithful re-introduction has to restore the bare `spin::Mutex` too.
+    #[cfg(feature = "coreproof_mut_masked_lock")]
+    drop(reclaimed_threads);
+    #[cfg(not(feature = "coreproof_mut_masked_lock"))]
     without_interrupts(|| {
         drop(reclaimed_threads);
     });

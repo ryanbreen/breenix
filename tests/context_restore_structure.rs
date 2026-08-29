@@ -1,3 +1,6 @@
+#[path = "shared_coreproof/mutation_leg_mask.rs"]
+mod mutation_leg_mask;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::PathBuf;
@@ -53,7 +56,21 @@ fn text_sources_below(relative: &str) -> Vec<(String, String)> {
     sources
 }
 
+/// `raw_code_mask`, with every compiled-out core-proof mutation leg additionally
+/// masked out.
+///
+/// Every ratchet in this file goes through `code_mask`, so extending that one
+/// predicate is what keeps the treatment consistent: "live source" already meant
+/// "not a comment and not a string literal", and it now also means "not a leg no
+/// production build compiles". See `shared_coreproof/mutation_leg_mask.rs` for
+/// how narrow the exemption is and what proves it stays that way.
 fn code_mask(source: &str) -> Vec<bool> {
+    let mut mask = raw_code_mask(source);
+    mutation_leg_mask::apply(source, &mut mask);
+    mask
+}
+
+fn raw_code_mask(source: &str) -> Vec<bool> {
     let bytes = source.as_bytes();
     let mut mask = vec![true; bytes.len()];
     let mut line_comment = false;
@@ -7742,4 +7759,91 @@ fn a_refused_resume_is_never_routed_back_to_the_cpu_that_declined_it() {
          that declined the thread: a refusal whose slot is this CPU's own would enqueue the \
          thread on the CPU that just refused it"
     );
+}
+
+/// ANTI-VACUITY — the `coreproof_mut_*` exemption cannot hide a real regression.
+///
+/// `code_mask` masks out the core-proof harness's deliberately-compiled-out
+/// mutation legs so that a leg no production build compiles cannot redden a
+/// ratchet. An exemption is only safe if it is exactly as narrow as it claims,
+/// so this proves both directions on synthetic sources shaped like the two real
+/// sites:
+///
+/// * WITH the positive attribute, the offending construct is invisible;
+/// * WITHOUT it, the identical text is visible and the ratchets' own detectors
+///   still find it. That is the case where a genuine regression is smuggled in
+///   under a mutation-shaped comment, and it must still fire.
+///
+/// It also checks the production arms in the real files, which are guarded by
+/// `#[cfg(not(feature = "coreproof_mut_…"))]`: masking those would silently
+/// switch every affected ratchet off.
+#[test]
+fn the_mutation_leg_exemption_is_exactly_as_narrow_as_it_claims() {
+    let gated = concat!(
+        "fn pivot() {\n",
+        "    #[cfg(feature = \"coreproof_mut_cpu_identity\")]\n",
+        "    let premask_cpu = CpuId::current();\n",
+        "    disable_interrupts();\n",
+        "}\n",
+    );
+    let ungated = concat!(
+        "fn pivot() {\n",
+        "    let premask_cpu = CpuId::current();\n",
+        "    disable_interrupts();\n",
+        "}\n",
+    );
+
+    let gated_mask = code_mask(gated);
+    assert!(
+        identity_acquisitions(gated, &gated_mask).is_empty(),
+        "a cfg-gated mutation leg is still visible to the identity census, so the \
+         planted defect would redden a ratchet no production build can trip"
+    );
+
+    let ungated_mask = code_mask(ungated);
+    assert!(
+        !identity_acquisitions(ungated, &ungated_mask).is_empty(),
+        "an UNGATED identity read before the mask is invisible to the census: the \
+         exemption has grown wider than the mutation legs and a real regression \
+         could now pass"
+    );
+
+    // The same in the other file's shape: a bare `drop(` outside the mask.
+    let gated_drop = concat!(
+        "fn release(threads: Vec<Box<Thread>>) {\n",
+        "    #[cfg(feature = \"coreproof_mut_masked_lock\")]\n",
+        "    drop(threads);\n",
+        "    #[cfg(not(feature = \"coreproof_mut_masked_lock\"))]\n",
+        "    without_interrupts(|| {\n",
+        "        drop(threads);\n",
+        "    });\n",
+        "}\n",
+    );
+    let gated_drop_mask = code_mask(gated_drop);
+    assert_eq!(
+        call_offsets(gated_drop, &gated_drop_mask, "drop").len(),
+        1,
+        "the cfg-gated release leg and the production one are both visible, so the \
+         one-drop law counts a construct that never compiles"
+    );
+    assert_eq!(
+        call_offsets(gated_drop, &gated_drop_mask, "without_interrupts").len(),
+        1,
+        "the production `#[cfg(not(feature = \"coreproof_mut_…\"))]` arm was masked \
+         out; that would switch the ratchet off rather than narrow it"
+    );
+
+    // And on the real sources: production arms stay visible.
+    for path in [CONTEXT_SWITCH_PATH, "kernel/src/task/scheduler.rs"] {
+        let source = repo_text(path);
+        // `raw_code_mask`, deliberately: `code_mask` has already masked these
+        // spans out, so asking it where they are would always answer "nowhere".
+        let spans = mutation_leg_mask::mutation_gated_spans(&source, &raw_code_mask(&source));
+        assert!(
+            !spans.is_empty(),
+            "{path} carries no cfg-gated mutation leg, so this file's half of the \
+             exemption proves nothing; the register in \
+             kernel/src/proof/mutations.rs says it should"
+        );
+    }
 }

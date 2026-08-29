@@ -197,7 +197,6 @@ pub fn monotonic_time() -> Option<(u64, u64)> {
 // =============================================================================
 
 /// Arm the virtual timer to fire after `ticks` counter increments
-#[allow(dead_code)]
 pub fn arm_timer(ticks: u64) {
     unsafe {
         // Set countdown value

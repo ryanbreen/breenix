@@ -151,6 +151,19 @@ pub fn record_parked(stage: Stage) {
     RESCUES.fetch_add(1, Ordering::AcqRel);
 }
 
+/// Waits this boot that only ended because the oracle's backstop rescued them.
+///
+/// The `rescues=` field of this oracle's own marker line, read live rather than
+/// at report time. (Spelled without the marker prefix on purpose: `report`
+/// below is the single emitter of that literal, and a structural census pins it
+/// at exactly one occurrence in this file.) A rescue means a wait outlived its stage's whole budget with
+/// no wake reaching it, which is the observable #584 produced: the handoff was
+/// lost, and only the backstop got the thread moving again. Zero on every
+/// healthy boot, which is what makes it worth reading from outside.
+pub fn rescues() -> u64 {
+    RESCUES.load(Ordering::Acquire)
+}
+
 pub fn record_enqueued(stage: Stage) {
     match stage {
         Stage::S1 => STAGE1_ENQUEUED.fetch_add(1, Ordering::AcqRel),
