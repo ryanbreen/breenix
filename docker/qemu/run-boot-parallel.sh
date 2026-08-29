@@ -177,6 +177,20 @@ for i in $(seq 1 $COUNT); do
                 sleep 1
             done
 
+            # #568 anti-vacuity. A FAIL from the poll oracle already fails this
+            # gate through its non-zero exit and the empty allowlist, but a boot
+            # in which the oracle never ran at all would still pass: the exit
+            # floor is a >= bound, so one missing program hides under it. Pin the
+            # verdict marker's presence explicitly, the way the aarch64 gates
+            # pin their oracles, so the blocking-poll path cannot silently stop
+            # being exercised on x86.
+            if ! grep -qhF "[POLL_TCP_ORACLE:" \
+                "$OUTPUT_DIR/serial_kernel.txt" "$OUTPUT_DIR/serial_user.txt" 2>/dev/null; then
+                echo "  Test $i: FAIL (poll TCP oracle marker absent; #568 path not exercised)"
+                FAILED=$((FAILED + 1))
+                continue
+            fi
+
             if VERDICT_OUTPUT="$(
                 EXPECTED_EXITS="$EXPECTED_USERSPACE_EXITS" \
                     "$BREENIX_ROOT/scripts/x86-gate-verdict.sh" \

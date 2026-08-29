@@ -200,6 +200,20 @@ score_serial() {
         echo "Block EINTR oracle reported failure"
         return 1
     fi
+    # #568: the blocking-poll-on-connected-TCP oracle. Pinned in the same pair
+    # shape as its #575 peer above -- presence, then absence-of-FAIL -- because
+    # a marker check alone passes a boot where the program never ran, and a
+    # FAIL check alone passes a boot where it was never started. Without both,
+    # the oracle's own non-zero exit rides a green gate unnoticed, which is
+    # exactly what happened on the first pass at this fix.
+    if ! grep -qF "[POLL_TCP_ORACLE:" "$serial_file" 2>/dev/null; then
+        echo "Poll TCP oracle marker missing"
+        return 1
+    fi
+    if grep -qF "[POLL_TCP_ORACLE:FAIL" "$serial_file" 2>/dev/null; then
+        echo "Poll TCP oracle reported failure ($(grep -aoF -m1 "[POLL_TCP_ORACLE:FAIL" "$serial_file"))"
+        return 1
+    fi
     if ! grep -qE "$FUTEX_HANDOFF_ORACLE_PATTERN" "$serial_file" 2>/dev/null; then
         echo "Futex handoff oracle marker missing or failed"
         return 1

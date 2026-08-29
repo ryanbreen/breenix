@@ -26,6 +26,12 @@ INIT_EXIT_LITERAL='[init] futex_handoff_oracle exited pid='
 BLOCK_EINTR_ORACLE_LITERAL='[BLOCK_EINTR_ORACLE:'
 # This proves init's earlier oracle did not self-report a failure.
 BLOCK_EINTR_ORACLE_FAIL_LITERAL='[BLOCK_EINTR_ORACLE:FAIL'
+# #568: init's blocking-poll-on-connected-TCP oracle runs on this profile too --
+# it is launched from init, not from a boot_tests-only seam -- so the production
+# profile is where a lost poll wake would show up on a shipped kernel. Pinned as
+# a pair: presence, then absence-of-FAIL.
+POLL_TCP_ORACLE_LITERAL='[POLL_TCP_ORACLE:'
+POLL_TCP_ORACLE_FAIL_LITERAL='[POLL_TCP_ORACLE:FAIL'
 # This proves init progressed through to the production SSH service.
 BSSHD_LITERAL='bsshd: listening'
 # Any one of these literals means the production boot crashed or locked up.
@@ -63,6 +69,8 @@ print_observed_values() {
     echo "Observed init-resumed marker count: $(marker_count "$serial_file" "$INIT_EXIT_LITERAL")"
     echo "Observed block EINTR oracle marker count: $(marker_count "$serial_file" "$BLOCK_EINTR_ORACLE_LITERAL")"
     echo "Observed block EINTR oracle failure count: $(marker_count "$serial_file" "$BLOCK_EINTR_ORACLE_FAIL_LITERAL")"
+    echo "Observed poll TCP oracle marker count: $(marker_count "$serial_file" "$POLL_TCP_ORACLE_LITERAL")"
+    echo "Observed poll TCP oracle failure count: $(marker_count "$serial_file" "$POLL_TCP_ORACLE_FAIL_LITERAL")"
     echo "Observed bsshd marker count: $(marker_count "$serial_file" "$BSSHD_LITERAL")"
     echo "Observed crash marker count: $(crash_count "$serial_file")"
     if [ -f "$serial_file" ]; then
@@ -199,6 +207,8 @@ STRAND_INJECT_ORACLE_COUNT=$(marker_count "$SERIAL_FILE" "$STRAND_INJECT_ORACLE_
 INIT_EXIT_COUNT=$(marker_count "$SERIAL_FILE" "$INIT_EXIT_LITERAL")
 BLOCK_EINTR_ORACLE_COUNT=$(marker_count "$SERIAL_FILE" "$BLOCK_EINTR_ORACLE_LITERAL")
 BLOCK_EINTR_ORACLE_FAIL_COUNT=$(marker_count "$SERIAL_FILE" "$BLOCK_EINTR_ORACLE_FAIL_LITERAL")
+POLL_TCP_ORACLE_COUNT=$(marker_count "$SERIAL_FILE" "$POLL_TCP_ORACLE_LITERAL")
+POLL_TCP_ORACLE_FAIL_COUNT=$(marker_count "$SERIAL_FILE" "$POLL_TCP_ORACLE_FAIL_LITERAL")
 BSSHD_COUNT=$(marker_count "$SERIAL_FILE" "$BSSHD_LITERAL")
 CRASH_COUNT=$(crash_count "$SERIAL_FILE")
 
@@ -237,6 +247,14 @@ fi
     echo "FAIL: Block EINTR oracle reported failure"
     exit 1
 }
+[ "$POLL_TCP_ORACLE_COUNT" -ge 1 ] || {
+    echo "FAIL: Poll TCP oracle marker missing"
+    exit 1
+}
+[ "$POLL_TCP_ORACLE_FAIL_COUNT" -eq 0 ] || {
+    echo "FAIL: Poll TCP oracle reported failure: $(grep -aF "$POLL_TCP_ORACLE_FAIL_LITERAL" "$SERIAL_FILE" | tail -1)"
+    exit 1
+}
 [ "$BSSHD_COUNT" -ge 1 ] || {
     echo "FAIL: bsshd never reached its listening state"
     exit 1
@@ -253,5 +271,7 @@ echo "Observed: $(grep -F -m 1 "$BSSHD_LITERAL" "$SERIAL_FILE")"
 echo "Observed kernel oracle marker count: $KERNEL_ORACLE_COUNT"
 echo "Observed block EINTR oracle marker count: $BLOCK_EINTR_ORACLE_COUNT"
 echo "Observed block EINTR oracle failure count: $BLOCK_EINTR_ORACLE_FAIL_COUNT"
+echo "Observed poll TCP oracle marker count: $POLL_TCP_ORACLE_COUNT"
+echo "Observed poll TCP oracle failure count: $POLL_TCP_ORACLE_FAIL_COUNT"
 echo "Observed crash marker count: $CRASH_COUNT"
 cleanup 0
