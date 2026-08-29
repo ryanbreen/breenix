@@ -1,0 +1,19 @@
+### armed run, aarch64, 2026-08-28 23:24 EDT
+=========================================
+ext2/VFS fault-injection gate
+  arch:     aarch64
+  features: boot_tests,fs_fault_inject
+  mode:     armed
+=========================================
+[gate] building aarch64 kernel...
+[gate] [FSFAULT:aarch64:COMPLETE:pass=8:fail=0]
+[gate] observed verdict lines: PASS=8 FAIL=0
+[gate]   baseline_mount           PASS (expected PASS)
+[gate]   baseline_read            PASS (expected PASS)
+[gate]   short_read               PASS (expected PASS)
+[gate]   eio_data_block           PASS (expected PASS)
+[gate]   eio_recovery             PASS (expected PASS)
+[gate]   corrupt_inode:arm=size   PASS (expected PASS)
+[gate]   corrupt_inode:arm=blocks PASS (expected PASS)
+[gate]   liveness                 PASS (expected PASS)
+fs fault gate (aarch64): PASSED - 8 arms green, kernel live after every injected fault

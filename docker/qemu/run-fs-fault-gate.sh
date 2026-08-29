@@ -285,14 +285,19 @@ arm_verdict() {
     esac
 }
 
-if [ "$LEG_DONE" -ne 1 ]; then
-    fail "the leg never reached its COMPLETE marker (hang, or it never ran)"
-fi
+# Crash checks come FIRST. A fault that kills the kernel also stops the leg
+# reaching COMPLETE, and "never reached COMPLETE" would name the symptom while
+# the panic line scrolled past -- which is exactly the diagnosis-channel failure
+# #668 was about. Measured: removing the ext2 i_size bound makes the
+# corrupt_inode size arm panic, and this ordering is what says so.
 if grep -qa "KERNEL PANIC" "$SERIAL_ALL"; then
     fail "kernel panic during or after the fault leg"
 fi
 if grep -qaE "(DATA_ABORT|INSTRUCTION_ABORT|Unhandled sync exception|soft lockup detected)" "$SERIAL_ALL"; then
     fail "CPU exception or soft lockup during or after the fault leg"
+fi
+if [ "$LEG_DONE" -ne 1 ]; then
+    fail "the leg never reached its COMPLETE marker (hang, or it never ran)"
 fi
 
 COMPLETE_LINE="$(grep -a "\[FSFAULT:.*:COMPLETE:" "$SERIAL_ALL" | head -1)"

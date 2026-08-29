@@ -1,0 +1,19 @@
+### disarm short_read, aarch64, 2026-08-28 23:24 EDT
+=========================================
+ext2/VFS fault-injection gate
+  arch:     aarch64
+  features: boot_tests,fs_fault_inject,fs_fault_disarm_short_read
+  mode:     anti-vacuity (disarm short_read)
+=========================================
+[gate] building aarch64 kernel...
+[gate] [FSFAULT:aarch64:COMPLETE:pass=7:fail=1]
+[gate] observed verdict lines: PASS=7 FAIL=1
+[gate]   baseline_mount           PASS (expected PASS)
+[gate]   baseline_read            PASS (expected PASS)
+[gate]   short_read               FAIL (expected FAIL)
+[gate]   eio_data_block           PASS (expected PASS)
+[gate]   eio_recovery             PASS (expected PASS)
+[gate]   corrupt_inode:arm=size   PASS (expected PASS)
+[gate]   corrupt_inode:arm=blocks PASS (expected PASS)
+[gate]   liveness                 PASS (expected PASS)
+fs fault gate (aarch64): ANTI-VACUITY PASSED - disarming 'short_read' reddens exactly that shape
