@@ -1180,7 +1180,6 @@ fn kernel_main_continue() -> ! {
         let http_test_buf = kernel::userspace_test::get_test_binary("http_test");
         let loopback_wake_test_buf =
             kernel::userspace_test::get_test_binary("loopback_wake_test");
-        let poll_tcp_oracle_buf = kernel::userspace_test::get_test_binary("poll_tcp_oracle");
         let clonevm_exec_test_buf =
             kernel::userspace_test::get_test_binary("clonevm_exec_test");
         let futex_handoff_oracle_buf =
@@ -1374,26 +1373,18 @@ fn kernel_main_continue() -> ! {
                 }
             }
 
-            // Launch the #568 blocking-poll-on-connected-TCP oracle. Nothing else
-            // in this profile blocks in poll() on an FdKind::TcpConnection --
-            // http_test's receive deadline was rewritten to avoid poll() on a
-            // connected TCP fd (see the #568 comment in libbreenix's socket.rs)
-            // and poll_test only polls a listener with timeout=0 -- so without
-            // this the path #568 was filed against is never executed on x86.
-            {
-                serial_println!("RING3_SMOKE: creating poll_tcp_oracle userspace process");
-                match process::creation::create_user_process(
-                    String::from("poll_tcp_oracle"),
-                    &poll_tcp_oracle_buf,
-                ) {
-                    Ok(pid) => {
-                        log::info!("Created poll_tcp_oracle process with PID {}", pid.as_u64());
-                    }
-                    Err(e) => {
-                        log::error!("Failed to create poll_tcp_oracle process: {}", e);
-                    }
-                }
-            }
+            // The #568 blocking-poll-on-connected-TCP oracle (poll_tcp_oracle)
+            // is deliberately NOT launched here. It runs on aarch64, where eight
+            // gates pin its marker and its verdict, and it is green there. On x86
+            // it is not gate-compatible yet: it fork()s a peer per retry attempt,
+            // so it shifts the tombstone census this file's own boot gate pins
+            // (CENSUS_REMOVED = 6 + attempts, exact on 30/30 boots), and its
+            // late_lost_wake verdict carries neither the peer's exit status nor
+            // its token_ms/write_ms stamps, so a red cannot be told apart from
+            // TCG starvation. Re-wiring it here, together with the marker
+            // assertion removed from docker/qemu/run-boot-parallel.sh, is
+            // tracked by #697. The #568 kernel fix itself is proven on x86
+            // without the oracle, by the strand census in the A/B battery.
 
             {
                 serial_println!("RING3_SMOKE: creating clonevm_exec_test userspace process");
