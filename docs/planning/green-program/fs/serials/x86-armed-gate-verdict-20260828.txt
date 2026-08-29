@@ -1,12 +1,18 @@
-### armed run, aarch64, at 51b8099f, 2026-08-28 23:57 EDT
 =========================================
 ext2/VFS fault-injection gate
-  arch:     aarch64
+  arch:     x86
   features: boot_tests,fs_fault_inject
   mode:     armed
 =========================================
-[gate] building aarch64 kernel...
-[gate] [FSFAULT:aarch64:COMPLETE:pass=8:fail=0]
+[gate] building x86_64 kernel...
+   Compiling kernel v0.1.0 (/root/breenix/kernel)
+   Compiling breenix v0.1.0 (/root/breenix)
+    Finished `release` profile [optimized] target(s) in 19.51s
+     Running `target/release/qemu-uefi`
+[qemu-uefi] Using UEFI image: /root/breenix/target/release/build/breenix-caec8b96964e0855/out/breenix-uefi.img (7405568 bytes)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.06s
+     Running `target/debug/xtask create-test-disk`
+[gate] [FSFAULT:x86:COMPLETE:pass=8:fail=0]
 [gate] observed verdict lines: PASS=8 FAIL=0
 [gate]   baseline_mount           PASS (expected PASS)
 [gate]   baseline_read            PASS (expected PASS)
@@ -16,4 +22,4 @@ ext2/VFS fault-injection gate
 [gate]   corrupt_inode:arm=size   PASS (expected PASS)
 [gate]   corrupt_inode:arm=blocks PASS (expected PASS)
 [gate]   liveness                 PASS (expected PASS)
-fs fault gate (aarch64): PASSED - 8 arms green, kernel live after every injected fault
+fs fault gate (x86): PASSED - 8 arms green, kernel live after every injected fault

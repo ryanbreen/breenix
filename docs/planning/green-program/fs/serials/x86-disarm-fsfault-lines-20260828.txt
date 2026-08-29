@@ -1,0 +1,36 @@
+### x86 disarm short_read FSFAULT lines
+[SW]<K>[SW]<K>[SW]<1>[FSFAULT:x86:BEGIN]
+[FSFAULT:x86:baseline_mount:verdict=PASS]
+[FSFAULT:x86:baseline_read:verdict=PASS:bytes=4096]
+[FSFAULT:x86:short_read:verdict=FAIL:hits=0:detail=fault-not-observed-mount-succeeded]
+[FSFAULT:x86:eio_data_block:verdict=PASS:hits=1:sector=16536:observed=Err:detail=Failed to read directory data]
+[FSFAULT:x86:eio_recovery:verdict=PASS:bytes=4096]
+[FSFAULT:x86:corrupt_inode:arm=size:verdict=PASS:hits=1:i_size=4294967280:observed=Err:detail=I/O error]
+[FSFAULT:x86:corrupt_inode:arm=blocks:verdict=PASS:hits=1:i_size=1024:observed=Err:detail=block number out of bounds]
+[FSFAULT:x86:liveness:verdict=PASS:shadow=1:mounted=1]
+[FSFAULT:x86:COMPLETE:pass=7:fail=1]
+
+### x86 disarm eio FSFAULT lines
+[SW]<K>[SW]<K>[SW]<1>[FSFAULT:x86:BEGIN]
+[FSFAULT:x86:baseline_mount:verdict=PASS]
+[FSFAULT:x86:baseline_read:verdict=PASS:bytes=4096]
+[FSFAULT:x86:short_read:verdict=PASS:hits=1:observed=Err:detail=Failed to read ext2 superblock]
+[FSFAULT:x86:eio_data_block:verdict=FAIL:hits=0:sector=16536:detail=fault-not-observed-read-returned-4096-bytes]
+[FSFAULT:x86:eio_recovery:verdict=PASS:bytes=4096]
+[FSFAULT:x86:corrupt_inode:arm=size:verdict=PASS:hits=1:i_size=4294967280:observed=Err:detail=I/O error]
+[FSFAULT:x86:corrupt_inode:arm=blocks:verdict=PASS:hits=1:i_size=1024:observed=Err:detail=block number out of bounds]
+[FSFAULT:x86:liveness:verdict=PASS:shadow=1:mounted=1]
+[FSFAULT:x86:COMPLETE:pass=7:fail=1]
+
+### x86 disarm corrupt_inode FSFAULT lines
+[SW]<K>[SW]<K>[SW]<K>[SW]<K>[SW]<1>[FSFAULT:x86:BEGIN]
+[FSFAULT:x86:baseline_mount:verdict=PASS]
+[FSFAULT:x86:baseline_read:verdict=PASS:bytes=4096]
+[FSFAULT:x86:short_read:verdict=PASS:hits=1:observed=Err:detail=Failed to read ext2 superblock]
+[FSFAULT:x86:eio_data_block:verdict=PASS:hits=1:sector=16536:observed=Err:detail=Failed to read directory data]
+[FSFAULT:x86:eio_recovery:verdict=PASS:bytes=4096]
+[FSFAULT:x86:corrupt_inode:arm=size:verdict=FAIL:hits=0:i_size=4096:detail=fault-not-observed-read-returned-4096-bytes]
+[FSFAULT:x86:corrupt_inode:arm=blocks:verdict=FAIL:hits=0:i_size=4096:detail=fault-not-observed-read-returned-4096-bytes]
+[FSFAULT:x86:liveness:verdict=PASS:shadow=1:mounted=1]
+[FSFAULT:x86:COMPLETE:pass=6:fail=2]
+

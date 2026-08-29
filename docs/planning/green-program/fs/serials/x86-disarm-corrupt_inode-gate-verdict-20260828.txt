@@ -1,12 +1,18 @@
-### disarm corrupt_inode, aarch64, at 51b8099f, 2026-08-28 23:58 EDT
 =========================================
 ext2/VFS fault-injection gate
-  arch:     aarch64
+  arch:     x86
   features: boot_tests,fs_fault_inject,fs_fault_disarm_corrupt_inode
   mode:     anti-vacuity (disarm corrupt_inode)
 =========================================
-[gate] building aarch64 kernel...
-[gate] [FSFAULT:aarch64:COMPLETE:pass=6:fail=2]
+[gate] building x86_64 kernel...
+   Compiling kernel v0.1.0 (/root/breenix/kernel)
+   Compiling breenix v0.1.0 (/root/breenix)
+    Finished `release` profile [optimized] target(s) in 17.25s
+     Running `target/release/qemu-uefi`
+[qemu-uefi] Using UEFI image: /root/breenix/target/release/build/breenix-2bdd43d8d7482fad/out/breenix-uefi.img (7405568 bytes)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.08s
+     Running `target/debug/xtask create-test-disk`
+[gate] [FSFAULT:x86:COMPLETE:pass=6:fail=2]
 [gate] observed verdict lines: PASS=6 FAIL=2
 [gate]   baseline_mount           PASS (expected PASS)
 [gate]   baseline_read            PASS (expected PASS)
@@ -16,4 +22,4 @@ ext2/VFS fault-injection gate
 [gate]   corrupt_inode:arm=size   FAIL (expected FAIL)
 [gate]   corrupt_inode:arm=blocks FAIL (expected FAIL)
 [gate]   liveness                 PASS (expected PASS)
-fs fault gate (aarch64): ANTI-VACUITY PASSED - disarming 'corrupt_inode' reddens exactly that shape
+fs fault gate (x86): ANTI-VACUITY PASSED - disarming 'corrupt_inode' reddens exactly that shape

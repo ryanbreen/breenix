@@ -1,12 +1,18 @@
-### disarm short_read, aarch64, at 51b8099f, 2026-08-28 23:58 EDT
 =========================================
 ext2/VFS fault-injection gate
-  arch:     aarch64
+  arch:     x86
   features: boot_tests,fs_fault_inject,fs_fault_disarm_short_read
   mode:     anti-vacuity (disarm short_read)
 =========================================
-[gate] building aarch64 kernel...
-[gate] [FSFAULT:aarch64:COMPLETE:pass=7:fail=1]
+[gate] building x86_64 kernel...
+   Compiling kernel v0.1.0 (/root/breenix/kernel)
+   Compiling breenix v0.1.0 (/root/breenix)
+    Finished `release` profile [optimized] target(s) in 16.88s
+     Running `target/release/qemu-uefi`
+[qemu-uefi] Using UEFI image: /root/breenix/target/release/build/breenix-0f09b4d940004f69/out/breenix-uefi.img (7405568 bytes)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.35s
+     Running `target/debug/xtask create-test-disk`
+[gate] [FSFAULT:x86:COMPLETE:pass=7:fail=1]
 [gate] observed verdict lines: PASS=7 FAIL=1
 [gate]   baseline_mount           PASS (expected PASS)
 [gate]   baseline_read            PASS (expected PASS)
@@ -16,4 +22,4 @@ ext2/VFS fault-injection gate
 [gate]   corrupt_inode:arm=size   PASS (expected PASS)
 [gate]   corrupt_inode:arm=blocks PASS (expected PASS)
 [gate]   liveness                 PASS (expected PASS)
-fs fault gate (aarch64): ANTI-VACUITY PASSED - disarming 'short_read' reddens exactly that shape
+fs fault gate (x86): ANTI-VACUITY PASSED - disarming 'short_read' reddens exactly that shape
