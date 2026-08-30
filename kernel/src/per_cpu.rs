@@ -1095,19 +1095,32 @@ pub fn can_schedule(saved_cs: u64) -> bool {
     // When a thread blocks, it enters an HLT loop waiting for an interrupt.
     // When a thread terminates, it sets need_resched and expects immediate switch.
     // The timer interrupt should be able to switch to another thread.
-    let current_thread_blocked_or_terminated = crate::task::scheduler::with_scheduler(|sched| {
-        if let Some(current) = sched.current_thread_mut() {
-            current.state == crate::task::thread::ThreadState::BlockedOnSignal
-                || current.state == crate::task::thread::ThreadState::BlockedOnChildExit
-                || current.state == crate::task::thread::ThreadState::BlockedOnTimer
-                || current.state == crate::task::thread::ThreadState::BlockedOnIO
-                || current.state == crate::task::thread::ThreadState::Blocked
-                || current.state == crate::task::thread::ThreadState::Terminated
-        } else {
-            false
-        }
-    })
-    .unwrap_or(false);
+    let (current_thread_blocked_or_terminated, dbg_state_num, dbg_thread_id) =
+        crate::task::scheduler::with_scheduler(|sched| {
+            if let Some(current) = sched.current_thread_mut() {
+                let blocked = current.state == crate::task::thread::ThreadState::BlockedOnSignal
+                    || current.state == crate::task::thread::ThreadState::BlockedOnChildExit
+                    || current.state == crate::task::thread::ThreadState::BlockedOnTimer
+                    || current.state == crate::task::thread::ThreadState::BlockedOnIO
+                    || current.state == crate::task::thread::ThreadState::Blocked
+                    || current.state == crate::task::thread::ThreadState::Terminated;
+                // Same numeric mapping as ThreadDumpEntry (task/scheduler.rs).
+                let state_num: u8 = match current.state {
+                    crate::task::thread::ThreadState::Ready => 0,
+                    crate::task::thread::ThreadState::Running => 1,
+                    crate::task::thread::ThreadState::Blocked => 2,
+                    crate::task::thread::ThreadState::BlockedOnSignal => 3,
+                    crate::task::thread::ThreadState::BlockedOnChildExit => 4,
+                    crate::task::thread::ThreadState::BlockedOnTimer => 5,
+                    crate::task::thread::ThreadState::Terminated => 6,
+                    crate::task::thread::ThreadState::BlockedOnIO => 7,
+                };
+                (blocked, state_num, current.id as u32)
+            } else {
+                (false, 9u8, 0u32)
+            }
+        })
+        .unwrap_or((false, 9u8, 0u32));
 
     // Check if need_resched is set - kernel threads use yield_current() which sets this flag
     let need_resched_set = crate::task::scheduler::is_need_resched();
@@ -1150,6 +1163,23 @@ pub fn can_schedule(saved_cs: u64) -> bool {
             });
             port.write(b'r');
             port.write(if need_resched_set { b'1' } else { b'0' });
+            // Extend with 's' + thread-state digit + 't' + low byte of thread
+            // id (hex) so a refusal storm can be attributed to a specific
+            // thread/state instead of just preempt_count and need_resched.
+            port.write(b's');
+            port.write(b'0' + dbg_state_num.min(9));
+            port.write(b't');
+            let tid = dbg_thread_id as u8;
+            port.write(if (tid >> 4) < 10 {
+                b'0' + (tid >> 4)
+            } else {
+                b'A' + (tid >> 4) - 10
+            });
+            port.write(if (tid & 0xF) < 10 {
+                b'0' + (tid & 0xF)
+            } else {
+                b'A' + (tid & 0xF) - 10
+            });
             port.write(b' ');
         }
     }
