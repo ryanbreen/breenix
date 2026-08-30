@@ -1,0 +1,17 @@
+Building the shipped ARM64 production kernel profile...
+    Finished `release` profile [optimized] target(s) in 0.07s
+warning: the following packages contain code that will be rejected by a future version of Rust: core v0.0.0 (/Users/wrb/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/src/rust/library/core)
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+Guard: kernel FP/SIMD instruction check
+  ELF:       /Users/wrb/fun/code/breenix/target/aarch64-breenix-kernel/release/kernel-aarch64
+  objdump:   /Users/wrb/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/aarch64-apple-darwin/bin/llvm-objdump
+  allowlist: /Users/wrb/fun/code/breenix/scripts/kernel-neon-allowlist.txt
+[0;32mPASS:[0m 0 FP/SIMD load/store instructions in kernel .text (allowlisted & suppressed: 0).
+Booting the ARM64 production profile (boot 1/3)...
+  boot 1: 13/13 arms PASS, kernel live (bsshd reached)
+Booting the ARM64 production profile (boot 2/3)...
+  boot 2: 13/13 arms PASS, kernel live (bsshd reached)
+Booting the ARM64 production profile (boot 3/3)...
+  boot 3: 13/13 arms PASS, kernel live (bsshd reached)
+PASS: aarch64 TTY oracle gate - 3/3 boots, 13 arms green on the shipped production profile
+Serials: /tmp/breenix_aarch64_tty_oracle/boot_*/serial.txt

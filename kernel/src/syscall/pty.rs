@@ -12,6 +12,16 @@ use crate::tty::pty;
 /// Open flags
 const O_RDWR: u32 = 0x02;
 const O_CLOEXEC: u32 = 0x80000;
+/// O_NONBLOCK. POSIX lists this among the flags `posix_openpt()` accepts, and
+/// the master read path already honours it (`handlers.rs`, `FdKind::PtyMaster`
+/// checks `status_flags & O_NONBLOCK`) -- but the bit never reached the fd,
+/// so that branch was unreachable through `open`. Mirrors
+/// `crate::ipc::fd::status_flags::O_NONBLOCK`.
+const O_NONBLOCK: u32 = 0x800;
+/// The two definitions must not drift: the read path tests the fd's
+/// `status_flags` against the `ipc::fd` constant, so a mismatch here would
+/// silently re-open the same hole this constant closes.
+const _: () = assert!(O_NONBLOCK == crate::ipc::fd::status_flags::O_NONBLOCK);
 
 /// sys_posix_openpt - Open a new PTY master device
 ///
@@ -19,7 +29,7 @@ const O_CLOEXEC: u32 = 0x80000;
 /// The PTY master is used by terminal emulators, telnet servers, etc.
 ///
 /// # Arguments
-/// * `flags` - O_RDWR (required), O_NOCTTY, O_CLOEXEC
+/// * `flags` - O_RDWR (required), O_NOCTTY, O_CLOEXEC, O_NONBLOCK
 ///
 /// # Returns
 /// * `Ok(fd)` - File descriptor for the PTY master
@@ -83,12 +93,14 @@ pub fn sys_posix_openpt(flags: u64) -> SyscallResult {
         0
     };
 
+    // Carry O_NONBLOCK through as a file status flag. Dropping it here made
+    // an fd that reports blocking semantics no matter what the caller asked
+    // for; `fcntl(F_SETFL)` was the only way to reach the non-blocking read
+    // path.
+    let status_flags = flags_u32 & O_NONBLOCK;
+
     // Create file descriptor with appropriate flags
-    let fd_entry = FileDescriptor::with_flags(
-        FdKind::PtyMaster(pty_num),
-        fd_flags,
-        0, // No status flags for PTY master
-    );
+    let fd_entry = FileDescriptor::with_flags(FdKind::PtyMaster(pty_num), fd_flags, status_flags);
 
     // Allocate file descriptor
     let fd = match process.fd_table.alloc_with_entry(fd_entry) {

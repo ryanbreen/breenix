@@ -111,6 +111,8 @@ fn main() {
     #[cfg(target_arch = "aarch64")]
     run_poll_tcp_oracle();
     #[cfg(target_arch = "aarch64")]
+    run_tty_oracle();
+    #[cfg(target_arch = "aarch64")]
     run_exec_smoke();
     #[cfg(target_arch = "aarch64")]
     run_clonevm_exec_test();
@@ -198,6 +200,29 @@ fn run_poll_tcp_oracle() {
                 "[init] Warning: failed to start poll_tcp_oracle: {}\n",
                 error
             );
+        }
+    }
+}
+
+/// Run the green-program TTY oracle. Every other TTY proof in the tree lives in the
+/// kernel's `boot_tests` registry, so it measures a kernel that is not the one shipped;
+/// launching the oracle from init puts the PTY, line-discipline and termios surface on
+/// the production profile's own boot. The child prints its own arm verdicts.
+#[cfg(target_arch = "aarch64")]
+fn run_tty_oracle() {
+    match spawn(b"/bin/tty_oracle\0") {
+        Ok(child_pid) => {
+            let mut status = 0i32;
+            let _ = waitpid(child_pid.raw() as i32, &mut status as *mut i32, 0);
+            let exit_code = (status >> 8) & 0xFF;
+            print!(
+                "[init] tty_oracle exited pid={} code={}\n",
+                child_pid.raw(),
+                exit_code
+            );
+        }
+        Err(error) => {
+            print!("[init] Warning: failed to start tty_oracle: {}\n", error);
         }
     }
 }

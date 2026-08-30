@@ -137,6 +137,8 @@ STD_BINARIES=(
     "poll_tcp_oracle"
     # #584 futex handoff oracle
     "futex_handoff_oracle"
+    # Green-program arc 4: production-profile TTY/PTY evidence leg
+    "tty_oracle"
 
     # Phase 1: No-fork programs
     "syscall_enosys"

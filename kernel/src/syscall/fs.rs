@@ -2382,20 +2382,28 @@ fn handle_procfs_open(path: &str, _flags: u32) -> SyscallResult {
     }
 }
 
-/// * `_flags` - Open flags (currently unused for devices)
+/// * `flags` - Open flags. Forwarded to the /dev/pts path, which builds a real
+///   fd entry from them; the remaining device kinds still ignore them.
 ///
 /// # Returns
 /// File descriptor on success, negative errno on failure
-fn handle_devfs_open(device_name: &str, _flags: u32) -> SyscallResult {
+fn handle_devfs_open(device_name: &str, flags: u32) -> SyscallResult {
     use super::errno::{EMFILE, ENOENT};
     use crate::fs::devfs;
+    use crate::ipc::fd::FileDescriptor;
+
+    /// O_CLOEXEC as seen in an `open(2)` flags word. Same value/pattern as
+    /// the local const in `handle_devpts_open` (NB7: was a bare 0x80000
+    /// literal here; kept local rather than shared to match that function's
+    /// own precedent of a per-function const guard).
+    const O_CLOEXEC: u32 = 0x80000;
 
     log::debug!("handle_devfs_open: device_name={:?}", device_name);
 
     // Check for /dev/pts/* paths - route to devptsfs
     if device_name.starts_with("pts/") {
         let pty_name = &device_name[4..]; // Remove "pts/" prefix
-        return handle_devpts_open(pty_name);
+        return handle_devpts_open(pty_name, flags);
     }
 
     // Check for /dev/pts directory itself
@@ -2454,17 +2462,66 @@ fn handle_devfs_open(device_name: &str, _flags: u32) -> SyscallResult {
             if let Some(pair) = crate::tty::pty::get(pty_num) {
                 if pair.controlling_pid.lock().map_or(false, |p| p == sid) {
                     // Found the controlling PTY — open as PtySlave
-                    let thread_id2 = crate::task::scheduler::current_thread_id().unwrap();
+                    //
+                    // NB6: these three lookups used to be `.unwrap()`-chained
+                    // and would panic the kernel on a racing thread/process
+                    // teardown. This arm runs on every production boot (the
+                    // TTY oracle's `ctty` arm, arm 13, drives it), so a panic
+                    // here is a live production risk, not a theoretical one.
+                    // Graceful ESRCH returns, mirroring the pattern already
+                    // used above in this same function.
+                    let thread_id2 = match crate::task::scheduler::current_thread_id() {
+                        Some(id) => id,
+                        None => {
+                            log::error!("handle_devfs_open: /dev/tty: no current thread");
+                            return SyscallResult::Err(3); // ESRCH
+                        }
+                    };
                     let mut mg = crate::process::manager();
-                    let proc2 = mg
+                    let proc2 = match mg
                         .as_mut()
-                        .unwrap()
-                        .find_process_by_thread_mut(thread_id2)
-                        .unwrap()
-                        .1;
-                    let fd_kind = FdKind::PtySlave(pty_num);
-                    return match proc2.fd_table.alloc(fd_kind) {
+                        .and_then(|manager| manager.find_process_by_thread_mut(thread_id2))
+                    {
+                        Some((_, p)) => p,
+                        None => {
+                            log::error!(
+                                "handle_devfs_open: /dev/tty: process not found for thread {}",
+                                thread_id2
+                            );
+                            return SyscallResult::Err(3); // ESRCH
+                        }
+                    };
+                    // Same status-flag plumbing as handle_devpts_open: this is
+                    // the third site that hands out a PtySlave fd, and a
+                    // /dev/tty opened O_NONBLOCK must read non-blocking too.
+                    // Exercised on every production boot by the TTY oracle's
+                    // `ctty` arm (arm 13), which drives exactly this branch.
+                    let entry = FileDescriptor::with_flags(
+                        FdKind::PtySlave(pty_num),
+                        if (flags & O_CLOEXEC) != 0 {
+                            crate::ipc::fd::flags::FD_CLOEXEC
+                        } else {
+                            0
+                        },
+                        flags & crate::ipc::fd::status_flags::O_NONBLOCK,
+                    );
+                    return match proc2.fd_table.alloc_with_entry(entry) {
                         Ok(fd) => {
+                            // #704 (found and fixed on feat/green-tty): this
+                            // site handed out an FdKind::PtySlave fd without a
+                            // matching slave_open(), while every retire path
+                            // decrements on the assumption every handout path
+                            // incremented. As of this round every retire path
+                            // does its matching half -- including
+                            // close_cloexec() (kernel/src/ipc/fd.rs), which
+                            // was found to have the identical asymmetry (the
+                            // exec-time close-on-exec path, unfiled, same
+                            // round) and was fixed alongside this site rather
+                            // than left as a sibling defect. Mirror
+                            // handle_devpts_open exactly: the open and close
+                            // accounting must be symmetric regardless of which
+                            // path produced the fd.
+                            pair.slave_open();
                             log::info!(
                                 "handle_devfs_open: /dev/tty -> PTY slave {} as fd {}",
                                 pty_num,
@@ -2478,15 +2535,29 @@ fn handle_devfs_open(device_name: &str, _flags: u32) -> SyscallResult {
             }
         }
         // No controlling terminal found — fall through to generic device
-        // Re-acquire manager lock for the generic path
-        let thread_id2 = crate::task::scheduler::current_thread_id().unwrap();
+        // Re-acquire manager lock for the generic path. Same NB6 shape as the
+        // ctty-found arm above: graceful ESRCH returns instead of unwrap().
+        let thread_id2 = match crate::task::scheduler::current_thread_id() {
+            Some(id) => id,
+            None => {
+                log::error!("handle_devfs_open: /dev/tty (no ctty): no current thread");
+                return SyscallResult::Err(3); // ESRCH
+            }
+        };
         let mut manager_guard = crate::process::manager();
-        let process = manager_guard
+        let process = match manager_guard
             .as_mut()
-            .unwrap()
-            .find_process_by_thread_mut(thread_id2)
-            .unwrap()
-            .1;
+            .and_then(|manager| manager.find_process_by_thread_mut(thread_id2))
+        {
+            Some((_, p)) => p,
+            None => {
+                log::error!(
+                    "handle_devfs_open: /dev/tty (no ctty): process not found for thread {}",
+                    thread_id2
+                );
+                return SyscallResult::Err(3); // ESRCH
+            }
+        };
         let fd_kind = FdKind::Device(device.device_type);
         return match process.fd_table.alloc(fd_kind) {
             Ok(fd) => {
@@ -2519,12 +2590,21 @@ fn handle_devfs_open(device_name: &str, _flags: u32) -> SyscallResult {
 ///
 /// # Arguments
 /// * `pty_name` - PTY number as string (e.g., "0", "1")
+/// * `flags` - The caller's open flags. `O_NONBLOCK` and `O_CLOEXEC` are
+///   recorded on the fd; the slave read path in `handlers.rs` tests
+///   `status_flags & O_NONBLOCK` to decide between `EAGAIN` and blocking, so
+///   dropping the flags here made a non-blocking slave impossible to open and
+///   left that branch reachable only through `fcntl(F_SETFL)`.
 ///
 /// # Returns
 /// File descriptor on success, negative errno on failure
-fn handle_devpts_open(pty_name: &str) -> SyscallResult {
+fn handle_devpts_open(pty_name: &str, flags: u32) -> SyscallResult {
     use super::errno::{EMFILE, ENOENT};
     use crate::fs::devptsfs;
+    use crate::ipc::fd::{status_flags, FileDescriptor};
+
+    /// O_CLOEXEC as seen in an `open(2)` flags word.
+    const O_CLOEXEC: u32 = 0x80000;
 
     // Look up the PTY slave in devptsfs
     let pty_num = match devptsfs::lookup(pty_name) {
@@ -2555,9 +2635,19 @@ fn handle_devpts_open(pty_name: &str) -> SyscallResult {
         }
     };
 
-    // Allocate file descriptor with PtySlave kind
-    let fd_kind = FdKind::PtySlave(pty_num);
-    match process.fd_table.alloc(fd_kind) {
+    // Allocate file descriptor with PtySlave kind, carrying the caller's
+    // status flags so a slave opened O_NONBLOCK actually reads non-blocking.
+    let fd_flags = if (flags & O_CLOEXEC) != 0 {
+        crate::ipc::fd::flags::FD_CLOEXEC
+    } else {
+        0
+    };
+    let entry = FileDescriptor::with_flags(
+        FdKind::PtySlave(pty_num),
+        fd_flags,
+        flags & status_flags::O_NONBLOCK,
+    );
+    match process.fd_table.alloc_with_entry(entry) {
         Ok(fd) => {
             // Increment slave reference count so master can detect hangup
             if let Some(pair) = crate::tty::pty::get(pty_num) {
