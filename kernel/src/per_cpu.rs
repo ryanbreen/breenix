@@ -1079,7 +1079,19 @@ pub fn can_schedule(saved_cs: u64) -> bool {
     // Also allow scheduling if we're in exception cleanup context
     let in_exception_cleanup = in_exception_cleanup_context();
 
-    // Check if current thread is blocked or terminated
+    // Check if current thread is blocked or terminated. This must recognize
+    // every ThreadState the scheduler treats as "not really running" --
+    // schedule() and unblock() (task/scheduler.rs) both switch on the same
+    // five variants (Blocked, BlockedOnSignal, BlockedOnChildExit,
+    // BlockedOnTimer, BlockedOnIO); this check used to be missing
+    // BlockedOnTimer and BlockedOnIO, which meant a thread parked in
+    // sys_nanosleep's or a device wait's HLT loop was never recognized as
+    // blocked here. On a single CPU, with nothing else forcing a reschedule
+    // (not returning to userspace, not idle, need_resched already consumed),
+    // that starved every OTHER ready thread indefinitely -- reproduced by
+    // #673's init, whose infinite reap loop nanosleep()s between waitpid
+    // attempts and is the first x86 production thread to ever call nanosleep
+    // in a retry loop while a sibling thread needs the CPU.
     // When a thread blocks, it enters an HLT loop waiting for an interrupt.
     // When a thread terminates, it sets need_resched and expects immediate switch.
     // The timer interrupt should be able to switch to another thread.
@@ -1087,6 +1099,8 @@ pub fn can_schedule(saved_cs: u64) -> bool {
         if let Some(current) = sched.current_thread_mut() {
             current.state == crate::task::thread::ThreadState::BlockedOnSignal
                 || current.state == crate::task::thread::ThreadState::BlockedOnChildExit
+                || current.state == crate::task::thread::ThreadState::BlockedOnTimer
+                || current.state == crate::task::thread::ThreadState::BlockedOnIO
                 || current.state == crate::task::thread::ThreadState::Blocked
                 || current.state == crate::task::thread::ThreadState::Terminated
         } else {

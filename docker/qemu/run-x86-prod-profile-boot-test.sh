@@ -151,13 +151,26 @@ ROOT_CUSTODY_PROD_LITERAL='[PT_ROOT_CUSTODY:no_proof=0:no_arch=0:terminated=0:un
 # with boot_tests/testing/external_test_bins. One of them appearing means this
 # gate measured the wrong kernel, which is the single failure mode that would
 # make everything else it asserts meaningless.
+#
+# RING3_SMOKE: creating (not bare RING3_SMOKE:, #673) -- context_switch.rs
+# emits an unconditional, once-per-boot "[ OK ] RING3_SMOKE: userspace
+# executed + syscall path verified" canary on the FIRST real transition to
+# Ring 3 in ANY profile (raw_serial_str, no cfg at all -- it exists so CI can
+# verify userspace ran regardless of build). Before #673 that canary could
+# never fire in production because no process ever reached Ring 3, which
+# masked the bare RING3_SMOKE: substring here being wrong: it was only ever
+# a valid test-only signal by accident of the OTHER defect, not because it is
+# actually behind a testing cfg. #673 is the first thing that makes a
+# production boot exercise that canary, and it does -- correctly -- so this
+# entry is narrowed to RING3_SMOKE: creating, the prefix every genuinely
+# testing-gated RING3_SMOKE print in main.rs shares and the canary does not.
 # ---------------------------------------------------------------------------
 TEST_ONLY_MARKERS=(
     'TEST_TALLY:'
     '[TEST:'
     'TEST RUNNER:'
     '[BOOT_TESTS:'
-    'RING3_SMOKE:'
+    'RING3_SMOKE: creating'
     '[TOMBSTONE_QUIESCE:'
     '[RECLAIM_DRAIN:'
     '[TOMBSTONE_JOIN_ORACLE:'
