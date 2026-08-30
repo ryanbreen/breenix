@@ -1062,6 +1062,26 @@ fn launch_x86_production_init(elf_data: &[u8]) -> Result<(), &'static str> {
     );
 
     task::scheduler::spawn(thread);
+
+    // Take an EXTRA, dedicated scheduling brake here, matched by the extra
+    // preempt_enable() next to the pre-existing one in kernel_main_continue()
+    // (search for its own comment for the full explanation). Boot's own
+    // identity is the scheduler's idle thread (main.rs, init_with_current(),
+    // "the boot thread becomes the idle task"); once ANY thread reaches
+    // Ring 3, syscall::handler::is_ring3_confirmed() latches true and
+    // context_switch.rs permanently stops restoring idle's saved boot
+    // context, jumping to the generic idle_loop() instead every time idle is
+    // next selected (its own comment: "Idle's saved context from boot may
+    // contain RIP values in kernel init code that cause hangs"). That is
+    // correct and necessary in general, but it means this call site cannot
+    // let init actually run until every remaining line of boot's own
+    // PRECONDITION-checking, timer, and census work is done -- once init
+    // makes its own first syscall, boot's chance to resume is gone for
+    // good, unconditionally, by design. spawn() above already asked for a
+    // reschedule (NEED_RESCHED); this brake is what keeps that request from
+    // being honored before boot is ready to be interrupted.
+    per_cpu::preempt_disable();
+
     Ok(())
 }
 
@@ -2007,6 +2027,22 @@ fn kernel_main_continue() -> ! {
     // above (see its preempt_disable() comment) - this is the true,
     // intended start of preemption for userspace processes registered
     // since then.
+    kernel::per_cpu::preempt_enable();
+
+    // Release the SECOND, dedicated brake taken in launch_x86_production_init()
+    // (#673 -- see its own comment for the full explanation). It exists
+    // specifically so init cannot be dispatched, reach Ring 3, and latch
+    // is_ring3_confirmed() before this point: once that latches,
+    // context_switch.rs permanently abandons the boot/idle thread's saved
+    // context whenever idle is next selected, so everything below this line
+    // -- the PRECONDITION checks, the timer test, this very release -- had
+    // to run first. Gated identically to that disable so the two are always
+    // paired in exactly the builds that take the brake.
+    #[cfg(not(any(
+        feature = "testing",
+        feature = "interactive",
+        feature = "disable_x86_prod_init"
+    )))]
     kernel::per_cpu::preempt_enable();
 
     // Enable interrupts for preemptive multitasking - userspace processes will now run
