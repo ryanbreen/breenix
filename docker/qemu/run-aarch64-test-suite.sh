@@ -92,12 +92,35 @@ kernel_src = sys.argv[1]
 test_name = sys.argv[2]
 with open(kernel_src, 'r') as f:
     content = f.read()
-# Replace the path in run_userspace_from_ext2 call (handles both init_shell and bsh)
-content = re.sub(
+# Replace the path in run_userspace_from_ext2 call (handles both init_shell and bsh).
+#
+# This substitution is the ONLY thing that makes each iteration run a different
+# test binary. If it does not apply, every "test" below boots the same
+# unmodified kernel and the PASS/FAIL this script prints describes that boot
+# rather than the named test -- a fake-green generator. So the rewrite is
+# asserted rather than attempted: a zero-substitution result aborts.
+#
+# It is currently a no-op on this tree. `run_userspace_from_ext2` no longer
+# exists anywhere under kernel/ (the aarch64 boot launches init via
+# `launch_init_from_elf`, and the `testing` profile loads the whole
+# boot::test_list::TEST_BINARIES roster through
+# `load_test_binaries_from_ext2`), so this script cannot select a single test
+# until it is re-plumbed onto whatever the current per-test launch hook is.
+content, substitutions = re.subn(
     r'run_userspace_from_ext2\("/bin/(init_shell|bsh)"\)',
     f'run_userspace_from_ext2("/usr/local/test/bin/{test_name}")',
     content
 )
+if substitutions == 0:
+    sys.stderr.write(
+        "ERROR: no run_userspace_from_ext2(\"/bin/init_shell\"|\"/bin/bsh\") call site in "
+        f"{kernel_src}.\n"
+        "The per-test launch rewrite this script depends on did not apply, so the\n"
+        f"boot would run an unmodified kernel and report its result as '{test_name}'.\n"
+        "Re-plumb this substitution onto the kernel's current per-test launch hook\n"
+        "before using this script.\n"
+    )
+    sys.exit(1)
 with open(kernel_src, 'w') as f:
     f.write(content)
 print(f"Modified kernel to load: /usr/local/test/bin/{test_name}")
