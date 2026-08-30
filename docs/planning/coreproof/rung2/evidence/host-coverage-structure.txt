@@ -1,0 +1,9 @@
+
+running 4 tests
+test coverage_census_matches_the_mutation_register_in_order ... ok
+test every_coverage_placement_names_a_declared_site ... ok
+test every_harness_side_exception_is_counted_inside_the_harness ... ok
+test every_non_harness_site_has_a_real_coverage_placement ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
