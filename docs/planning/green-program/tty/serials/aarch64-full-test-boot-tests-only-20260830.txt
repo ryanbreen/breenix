@@ -14,7 +14,7 @@ Phase 1: Running 85 subsystem tests...
   All tests passed: 109/109
 
 Phase 1a3: Waiting for scheduler strand oracles...
-  Observed: [SCHED_STRAND_ORACLE:aarch64:samples=99:checked=511:stranded=0:running_shape=0:ready_shape=0:resolved_production=0:resolved_exercised=2:worst_dwell_ms=0:overflow=0:worst_nonprogress_ms=0:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1432:worst_cpu_scheduler_silence_ms=1465:worst_silence_cpu=0]
+  Observed: [SCHED_STRAND_ORACLE:aarch64:samples=105:checked=483:stranded=0:running_shape=0:ready_shape=0:resolved_production=0:resolved_exercised=2:worst_dwell_ms=0:overflow=0:worst_nonprogress_ms=0:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1210:worst_cpu_scheduler_silence_ms=1240:worst_silence_cpu=0]
   Observed: [STRAND_INJECT_ORACLE:aarch64:legA_exercised=1:legA_recovered=1:legB_exercised=1:legB_recovered=1:stranded=0]
 Phase 1a3: PASS
 
@@ -23,7 +23,7 @@ Phase 1a: Waiting for block EINTR oracle...
 Phase 1a: PASS
 
 Phase 1a1: Waiting for poll TCP oracle (#568)...
-  Observed: [POLL_TCP_ORACLE:PASS:stages=3:idle_ms=124:late_ms=89:park_ms=87:attempts=1]
+  Observed: [POLL_TCP_ORACLE:PASS:stages=3:idle_ms=126:late_ms=82:park_ms=81:attempts=1]
 Phase 1a1: PASS
 
 Phase 1a2: Waiting for futex handoff oracle...
@@ -32,7 +32,7 @@ Phase 1a2: PASS
 Phase 1: PASS (109/109 tests)
 
 Phase 1b: Running exec smoke...
-  Exec smoke: [EXEC_LOCK_ORDER:commits=1:pm_held=0:unpinned=0:missing=0]
+  Exec smoke: [EXEC_LOCK_ORDER:commits=2:pm_held=0:unpinned=0:missing=0]
 Phase 1b: PASS
 
 Phase 1c: Running clonevm_exec_test (exec detach proof)...
@@ -42,7 +42,7 @@ Phase 1d: PASS (init designated and observed as PID 1)
 Phase 1e: Waiting for init-group refusal quiesce proof...
   Observed: [INIT_GROUP_WALK:aarch64:rows=12:init_tgid_rows=1:foreign_tgid_rows=0:refused=4:verdict=PASS]
 Phase 1e: PASS
-qemu-system-aarch64: terminating on signal 15 from pid 86832 (<unknown process>)
+qemu-system-aarch64: terminating on signal 15 from pid 15974 (<unknown process>)
 
 Phase 5: refusal-drain oracle legs (leg G foreign record, leg H departure guard)...
     Finished `release` profile [optimized] target(s) in 0.06s
@@ -54,11 +54,11 @@ Guard: kernel FP/SIMD instruction check
   allowlist: /Users/wrb/fun/code/breenix/scripts/kernel-neon-allowlist.txt
 [0;32mPASS:[0m 0 FP/SIMD load/store instructions in kernel .text (allowlisted & suppressed: 0).
 ARM64 REFUSAL DRAIN GATE: PASSED
-[RESUME_PC_FOREIGN_ORACLE:aarch64:leg=G:armed=1:planted=1:record_cpu=7:canary_tid=10:canary_progress=30:foreign_reports=1:record_still_published=1:canary_present=1:canary_terminated=0:fatal=0:PASS]
-[RESUME_PC_DRAIN_DEPARTURE_ORACLE:aarch64:leg=H:armed=1:fired=1:planted=1:victim_tid=12:canary_is_self=1:refusals=1:victim_present=1:victim_terminated=0:still_current=1:ptr_nulled=0:record_still_published=0:progress=29:fatal=0:PASS]
+[RESUME_PC_FOREIGN_ORACLE:aarch64:leg=G:armed=1:planted=1:record_cpu=7:canary_tid=10:canary_progress=32:foreign_reports=1:record_still_published=1:canary_present=1:canary_terminated=0:fatal=0:PASS]
+[RESUME_PC_DRAIN_DEPARTURE_ORACLE:aarch64:leg=H:armed=1:fired=1:planted=1:victim_tid=12:canary_is_self=1:refusals=1:victim_present=1:victim_terminated=0:still_current=1:ptr_nulled=0:record_still_published=0:progress=34:fatal=0:PASS]
 [BOOT_TESTS:PASS]
 [BLOCK_EINTR_ORACLE:PASS:stages=2:reads=4:short=0:eintr=0:handled=1]
-qemu-system-aarch64: terminating on signal 15 from pid 87275 (<unknown process>)
+qemu-system-aarch64: terminating on signal 15 from pid 16381 (<unknown process>)
 Serial: /tmp/breenix_aarch64_refusal_drain_gate/serial.txt
 Phase 5: PASS
 
@@ -66,5 +66,5 @@ Phase 5: PASS
 ARM64 BOOT TESTS: PASSED
 =========================================
 Tests: 109/109 passed
-Serial: 889 lines
+Serial: 879 lines
 Log: /tmp/breenix_aarch64_full_test/serial.txt

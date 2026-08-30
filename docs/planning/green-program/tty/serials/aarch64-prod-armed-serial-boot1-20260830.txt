@@ -15,7 +15,7 @@ EOS
 [boot] Initializing Generic Timer...
 [boot] Timer frequency: 1000000000 Hz (1000 MHz)
 [boot] Initializing PL031 RTC...
-[boot] Current timestamp: 8034000
+[boot] Current timestamp: 8007000
 [boot] Initializing GIC...
 [gic] GICR probe 0x080a0000: WAKER=0x00000006 <<< VALID
 [gic] GICR base mismatch: loader=0x00000000, using=0x080a0000
@@ -157,30 +157,30 @@ NET: pre-primed NetRx softirq for bootstrap callback re-enable
 [boot] Timer interrupt initialized
 [smp] CPU 0 MPIDR=0x80000000, stack_base=0x43000000
 [smp] Probing secondary CPUs via PSCI...
-[smp] CPU 1: PSCI CPU_ON1@ success (raw_1status=A0)
-B[smp] 2C@1ACPU 2: PSBCCDID CPU_ONEE seeuFcGcess (rFGaw_s1tat2us=0)
-[smp] 3@1ABCPUCD 3: PSCI CPU_ON success (raw_status=EeFG30)
+[smp] CPU 11@: PSCI1 CPAU_ON success (Braw_sCtatus=D0)
+[smEep] CPFU G2: PS2@1CI CABCPUDEeFG_1ON succ2ess (raw_status=0)
+[sm3@1ABCDEeFGp] CPU 3: PSCI3 CPU_ON success (raw_status=0)
 [gic] EOImode=1 (split EOI/DIR) - non-VMware path
 [gic] EOImode=1 (split EOI/DIR) - non-VMware path
+[gic] EOImode=1 (split EOI/DIR) - non-VMware path
+[gic] ICC_CTLR_EL1: 0x8c00 -> 0x8c02 (EOImode=1)
+[gic] ICC_CTLR_EL1: 0x8c00 -> 0x8c02 (EOImode=1)
+[gic] ICC_CTLR_EL1: 0x8c00 -> 0x8c02 (EOImode=1)
 [smp] CPU 4 attempt 1/4: HVC64 failed (ret=-2), trying HVC32...
-[gic] ICC_CTLR_EL1: 0x8c00 -> 0x8c02 (EOImode=1)
-[gic] ICC_CTLR_EL1: 0x8c00 -> 0x8c02 (EOImode=1)
-[gic] EOImode=1 (split EOI/DIR) - non-VMware path
-[smp] PSCI CPU_ON failed for CPU 4 after 1 attempts: ret=-2 (MPIDR=0x4 entry=0x400802b8)
-[gic] ICC_CTLR_EL1: 0x8c00 -> 0x8c02 (ETOImo1de=1)
+T1[smp] PSCI CPU_ON failed for CPU 4 after 1 attempts: ret=-2 (MPIDR=0x4 entry=0x400802b8)
 [smp] CPU 4: PSCI CPU_ON failed (ret=-2), stopping probe
 [smp] 4 CPUs online
 [PT_ROOT_CUSTODY:no_proof=0:no_arch=0:terminated=0:undecided=0:mid_retire=0:retired=0]
 [TOMBSTONE_CENSUS:resident=0:removed=0:reap_second=0:retire_second=0:abandoned_unqueued=0]
 
 ========================================
-  Breenix ARM64 Boot Complete!
+T2  Breenix ARM64 Boot Complete!
 ========================================
 
 Hello from ARM64!
 
 [boot] Launching init from pre-loaded ELF...
-T2manager.create_process_with_argv [ARM64]: ENTRY - name='init', elf_size=298544, argc=1
+manager.create_process_with_argv [ARM64]: ENTRY - name='init', elf_size=298544, argc=1
 manager.create_process_with_argv [ARM64]: Generated PID 1
 manager.create_process_with_argv [ARM64]: Creating ProcessPageTable
 manager.create_process_with_argv [ARM64]: Loading ELF into page table
@@ -191,11 +191,11 @@ manager.create_process_with_argv [ARM64]: argc/argv set up on stack, SP=0xfffffe
 manager.create_process_with_argv [ARM64]: SUCCESS - returning PID 1
 [INIT_DESIGNATION:aarch64:designated_pid=1:reserved_collisions=0]
 [boot] Reset 4 idle thread contexts (CPUs online: 4)
-T3T4T5T6T7T8T9T0EL0_SYSCALL: First syscall from userspace (SPSR confirms EL0)
+T3EL0_SYSCALL: First syscall from userspace (SPSR confirms EL0)
 [ OK ] syscall path verified
-[init] Breenix init starting (PID 1)
+T4T5T6[init] Breenix init starting (PID 1)
 [spawn] path='/bin/heartbeat'
-manager.create_process_with_argv [ARM64]: ENTRY - name='heartbeat', elf_size=303616, argc=1
+T7T8T9T0manager.create_process_with_argv [ARM64]: ENTRY - name='heartbeat', elf_size=303616, argc=1
 manager.create_process_with_argv [ARM64]: Generated PID 2
 manager.create_process_with_argv [ARM64]: Creating ProcessPageTable
 manager.create_process_with_argv [ARM64]: Loading ELF into page table
@@ -209,7 +209,11 @@ manager.create_process_with_argv [ARM64]: SUCCESS - returning PID 2
 [init] heartbeat started (PID 2)
 [INIT_GROUP_REFUSAL:aarch64:phase=early:probe1=-22:probe2=-22:expected=-22]
 [spawn] path='/bin/block_eintr_oracle'
-[heartbeat] tid=9 uptime_ms=517 kbd_nonzero=0
+[heartbeat] tid=9 uptime_ms=484 kbd_nonzero=0
+
+[CTX596_ELR_DIVERGENCE] tid=8 cpu=3 prev_elr=0xffff000040410374 x30=0xffff000040577a4c ctx_elr=0xffff000040577a4c
+
+[INLINE_SAVE_OVERWRITE] tid=8 sp=0xffff000054241e40 old_sp=0xffff000054241e40 saved_sp=0xffff000054241e40 delta=0x0 saved_lr=0xffff000040460afc saved_slot20=0xffff000040460afc slot20=0xffff000040460afc elr=0xffff000040577a4c x30=0xffff000040577a4c
 manager.create_process_with_argv [ARM64]: ENTRY - name='block_eintr_oracle', elf_size=304752, argc=1
 manager.create_process_with_argv [ARM64]: Generated PID 3
 manager.create_process_with_argv [ARM64]: Creating ProcessPageTable
@@ -222,20 +226,16 @@ manager.create_process_with_argv [ARM64]: SUCCESS - returning PID 3
 [spawn] Created child PID 3 for parent PID 1
 [spawn] Success: child PID 3 scheduled
 F123456789SC[syscall] exit(0) pid=4 name=block_eintr_oracle_child_4
-[heartbeat] tid=9 uptime_ms=1522 kbd_nonzero=0
-[heartbeat] tid=9 uptime_ms=2525 kbd_nonzero=0
+[heartbeat] tid=9 uptime_ms=1491 kbd_nonzero=0
+[heartbeat] tid=9 uptime_ms=2494 kbd_nonzero=0
 F123456789SC[syscall] exit(0) pid=5 name=block_eintr_oracle_child_5
-
-[CTX596_ELR_DIVERGENCE] tid=10 cpu=0 prev_elr=0xffff0000405310b4 x30=0xffff000040577a4c ctx_elr=0xffff000040577a4c
-
-[INLINE_SAVE_OVERWRITE] tid=10 sp=0xffff000054264400 old_sp=0xffff000054264400 saved_sp=0xffff000054264400 delta=0x0 saved_lr=0xffff000040460afc saved_slot20=0xffff000040460afc slot20=0xffff000040460afc elr=0xffff000040577a4c x30=0xffff000040577a4c
-[heartbeat] tid=9 uptime_ms=3528 kbd_nonzero=0
+[heartbeat] tid=9 uptime_ms=3500 kbd_nonzero=0
 [BLOCK_EINTR_ORACLE:PASS:stages=2:reads=4:short=0:eintr=0:handled=1]
 [BLOCK_EINTR_ORACLE:PASS:stages=2:reads=4:short=0:eintr=0:handled=1]
 [syscall] exit(0) pid=3 name=block_eintr_oracle
 [init] block_eintr_oracle exited pid=3 code=0
 [spawn] path='/bin/futex_handoff_oracle'
-[heartbeat] tid=9 uptime_ms=4530 kbd_nonzero=0
+[heartbeat] tid=9 uptime_ms=4505 kbd_nonzero=0
 manager.create_process_with_argv [ARM64]: ENTRY - name='futex_handoff_oracle', elf_size=291984, argc=1
 manager.create_process_with_argv [ARM64]: Generated PID 6
 manager.create_process_with_argv [ARM64]: Creating ProcessPageTable
@@ -262,13 +262,13 @@ manager.create_process_with_argv [ARM64]: argc/argv set up on stack, SP=0xfffffe
 manager.create_process_with_argv [ARM64]: SUCCESS - returning PID 7
 [spawn] Created child PID 7 for parent PID 1
 [spawn] Success: child PID 7 scheduled
+[heartbeat] tid=9 uptime_ms=5508 kbd_nonzero=0
 F123456789SC[syscall] exit(0) pid=8 name=poll_tcp_oracle_child_8
-[POLL_TCP_ORACLE:PASS:stages=3:idle_ms=124:late_ms=86:park_ms=82:attempts=1]
-[POLL_TCP_ORACLE:PASS:stages=3:idle_ms=124:late_ms=86:park_ms=82:attempts=1]
+[POLL_TCP_ORACLE:PASS:stages=3:idle_ms=124:late_ms=86:park_ms=86:attempts=1]
+[POLL_TCP_ORACLE:PASS:stages=3:idle_ms=124:late_ms=86:park_ms=86:attempts=1]
 [syscall] exit(0) pid=7 name=poll_tcp_oracle
 [init] poll_tcp_oracle exited pid=7 code=0
 [spawn] path='/bin/tty_oracle'
-[heartbeat] tid=9 uptime_ms=5538 kbd_nonzero=0
 manager.create_process_with_argv [ARM64]: ENTRY - name='tty_oracle', elf_size=322472, argc=1
 manager.create_process_with_argv [ARM64]: Generated PID 9
 manager.create_process_with_argv [ARM64]: Creating ProcessPageTable
@@ -312,6 +312,7 @@ manager.create_process_with_argv [ARM64]: SUCCESS - returning PID 9
 [syscall] exit(0) pid=9 name=tty_oracle
 [init] tty_oracle exited pid=9 code=0
 [spawn] path='/bin/exec_smoke'
+[heartbeat] tid=9 uptime_ms=6511 kbd_nonzero=0
 manager.create_process_with_argv [ARM64]: ENTRY - name='exec_smoke', elf_size=290928, argc=1
 manager.create_process_with_argv [ARM64]: Generated PID 10
 manager.create_process_with_argv [ARM64]: Creating ProcessPageTable
@@ -324,7 +325,6 @@ manager.create_process_with_argv [ARM64]: SUCCESS - returning PID 10
 [spawn] Created child PID 10 for parent PID 1
 [spawn] Success: child PID 10 scheduled
 [EXEC_SMOKE:LAUNCH]
-[heartbeat] tid=9 uptime_ms=6545 kbd_nonzero=0
 [EXEC_LOCK_ORDER:FIRST_COMMIT]
 [EXEC_SMOKE:TARGET_ENTER argc=2]
 [EXEC_SMOKE:TARGET_OK]
@@ -344,7 +344,7 @@ manager.create_process_with_argv [ARM64]: SUCCESS - returning PID 11
 [spawn] Success: child PID 11 scheduled
 CLONEVM_EXEC_TEST: start
 CLONEVM_EXEC_TEST: child live
-[heartbeat] tid=9 uptime_ms=7548 kbd_nonzero=0
+[heartbeat] tid=9 uptime_ms=7512 kbd_nonzero=0
 CLONEVM_EXEC_TEST: live sibling refused exec
 [syscall] exit(0) pid=12 name=thread-12
 CLONEVM_EXEC_TEST: child exited
@@ -356,7 +356,7 @@ CLONEVM_EXEC_TEST: PASS
 [syscall] exit(0) pid=11 name=/usr/local/test/bin/clonevm_exec_test
 [init] clonevm_exec_test exited pid=11 code=0
 [spawn] path='/bin/bsshd'
-[heartbeat] tid=9 uptime_ms=8552 kbd_nonzero=0
+[heartbeat] tid=9 uptime_ms=8514 kbd_nonzero=0
 manager.create_process_with_argv [ARM64]: ENTRY - name='bsshd', elf_size=455240, argc=1
 manager.create_process_with_argv [ARM64]: Generated PID 14
 manager.create_process_with_argv [ARM64]: Creating ProcessPageTable
@@ -372,3 +372,30 @@ manager.create_process_with_argv [ARM64]: SUCCESS - returning PID 14
 [spawn] path='/bin/xhci_counters'
 bsshd: starting on port 2222
 bsshd: listening on 0.0.0.0:2222
+[heartbeat] tid=9 uptime_ms=9515 kbd_nonzero=0
+manager.create_process_with_argv [ARM64]: ENTRY - name='xhci_counters', elf_size=292264, argc=1
+manager.create_process_with_argv [ARM64]: Generated PID 15
+manager.create_process_with_argv [ARM64]: Creating ProcessPageTable
+manager.create_process_with_argv [ARM64]: Loading ELF into page table
+manager.create_process_with_argv [ARM64]: ELF loaded, entry=0x4000f140
+manager.create_process_with_argv [ARM64]: Allocating user stack
+manager.create_process_with_argv [ARM64]: User stack will be at 0xfffffeff0000-0xffffff000000
+manager.create_process_with_argv [ARM64]: argc/argv set up on stack, SP=0xfffffefffed0
+manager.create_process_with_argv [ARM64]: SUCCESS - returning PID 15
+[spawn] Created child PID 15 for parent PID 1
+[spawn] Success: child PID 15 scheduled
+[spawn] path='/bin/bwm'
+[xhci-counters] XHCI_MSI_EVENT_TOTAL=0
+[xhci-counters] XHCI_IRQ_ENTRY_TOTAL=0
+[xhci-counters] XHCI_LOCK_CONTENDED_TOTAL=0
+[xhci-counters] KBD_NONZERO_TOTAL=0
+[syscall] exit(0) pid=15 name=xhci_counters
+[RESUME_PC_CENSUS:cpu=0:source=el1-restore-frame-elr:text=5020:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=0:source=el0-restore-frame-elr:text=0:kstack=0:uva=329:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=0:source=el0-first-entry-frame-elr:text=0:kstack=0:uva=4:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=0:source=ctx-x30:text=13176:kstack=0:uva=118:smallint=212:other=0]
+[RESUME_PC_CENSUS:cpu=0:source=ctx-elr-el1:text=13177:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=0:source=lr-save-el1:text=5100:kstack=0:uva=0:smallint=1:other=0]
+[RESUME_PC_CENSUS:cpu=0:source=lr-restore-el1:text=5019:kstack=0:uva=0:smallint=1:other=0]
+[RESUME_PC_CENSUS:cpu=0:source=lr-save-el0:text=0:kstack=0:uva=138:smallint=214:other=0]
+[RESUME_PC_CENSUS:cpu=0:source=lr-restore-el0:text=0:kstack=0:uva=118:smallint=211:other=0]
