@@ -1373,6 +1373,19 @@ fn kernel_main_continue() -> ! {
                 }
             }
 
+            // The #568 blocking-poll-on-connected-TCP oracle (poll_tcp_oracle)
+            // is deliberately NOT launched here. It runs on aarch64, where eight
+            // gates pin its marker and its verdict, and it is green there. On x86
+            // it is not gate-compatible yet: it fork()s a peer per retry attempt,
+            // so it shifts the tombstone census this file's own boot gate pins
+            // (CENSUS_REMOVED = 6 + attempts, exact on 30/30 boots), and its
+            // late_lost_wake verdict carries neither the peer's exit status nor
+            // its token_ms/write_ms stamps, so a red cannot be told apart from
+            // TCG starvation. Re-wiring it here, together with the marker
+            // assertion removed from docker/qemu/run-boot-parallel.sh, is
+            // tracked by #697. The #568 kernel fix itself is proven on x86
+            // without the oracle, by the strand census in the A/B battery.
+
             {
                 serial_println!("RING3_SMOKE: creating clonevm_exec_test userspace process");
                 match process::creation::create_user_process(

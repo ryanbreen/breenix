@@ -30,6 +30,12 @@ BOOT_TESTS_PASS_LITERAL='[BOOT_TESTS:PASS]'
 BLOCK_EINTR_ORACLE_LITERAL='[BLOCK_EINTR_ORACLE:'
 # This proves init's block EINTR oracle did not self-report a failure.
 BLOCK_EINTR_ORACLE_FAIL_LITERAL='[BLOCK_EINTR_ORACLE:FAIL'
+# #568: this proves init's blocking-poll-on-connected-TCP oracle ran, and that
+# it did not self-report a failure. Both halves are needed: presence alone
+# passes a boot whose verdict was FAIL, and the FAIL grep alone passes a boot
+# where the program never started.
+POLL_TCP_ORACLE_LITERAL='[POLL_TCP_ORACLE:'
+POLL_TCP_ORACLE_FAIL_LITERAL='[POLL_TCP_ORACLE:FAIL'
 # The refusing setter's record.
 ALIEN_LITERAL='[PERCPU_STACK_ALIEN:'
 
@@ -98,6 +104,7 @@ LEG_C_LINE=""
 LEG_D_LINE=""
 BOOT_TESTS_PASS_LINE=""
 BLOCK_EINTR_ORACLE_LINE=""
+POLL_TCP_ORACLE_LINE=""
 ALIEN_LINE=""
 FATAL_LINE=""
 
@@ -109,6 +116,7 @@ for _ in $(seq 1 180); do
         LEG_D_LINE=$(grep -aF "$LEG_D_MARKER" "$OUTPUT_DIR/serial.txt" 2>/dev/null | tail -1 || true)
         BOOT_TESTS_PASS_LINE=$(grep -aF "$BOOT_TESTS_PASS_LITERAL" "$OUTPUT_DIR/serial.txt" 2>/dev/null | tail -1 || true)
         BLOCK_EINTR_ORACLE_LINE=$(grep -aF "$BLOCK_EINTR_ORACLE_LITERAL" "$OUTPUT_DIR/serial.txt" 2>/dev/null | tail -1 || true)
+        POLL_TCP_ORACLE_LINE=$(grep -aF "$POLL_TCP_ORACLE_LITERAL" "$OUTPUT_DIR/serial.txt" 2>/dev/null | tail -1 || true)
         ALIEN_LINE=$(grep -aF "$ALIEN_LITERAL" "$OUTPUT_DIR/serial.txt" 2>/dev/null | tail -1 || true)
         FATAL_LINE=$(grep -aiE 'KERNEL PANIC|DATA_ABORT|INSTRUCTION_ABORT|Unhandled sync exception|soft lockup detected' "$OUTPUT_DIR/serial.txt" 2>/dev/null | tail -1 || true)
         if [ -n "$FATAL_LINE" ]; then
@@ -126,7 +134,7 @@ for _ in $(seq 1 180); do
         fi
         if [ -n "$LEG_A_LINE" ] && [ -n "$LEG_B_LINE" ] && [ -n "$LEG_C_LINE" ] && \
             [ -n "$LEG_D_LINE" ] && [ -n "$BOOT_TESTS_PASS_LINE" ] && [ -n "$ALIEN_LINE" ] && \
-            [ -n "$BLOCK_EINTR_ORACLE_LINE" ]; then
+            [ -n "$BLOCK_EINTR_ORACLE_LINE" ] && [ -n "$POLL_TCP_ORACLE_LINE" ]; then
             break
         fi
     fi
@@ -152,6 +160,19 @@ fi
 if grep -qaF "$BLOCK_EINTR_ORACLE_FAIL_LITERAL" "$OUTPUT_DIR/serial.txt" 2>/dev/null; then
     echo "ARM64 PERCPU STACK CUSTODY GATE: FAILED"
     echo "Block EINTR oracle reported failure: $BLOCK_EINTR_ORACLE_FAIL_LITERAL"
+    dump_reports
+    exit 1
+fi
+
+if ! grep -qaF "$POLL_TCP_ORACLE_LITERAL" "$OUTPUT_DIR/serial.txt" 2>/dev/null; then
+    echo "ARM64 PERCPU STACK CUSTODY GATE: FAILED"
+    echo "Missing marker: $POLL_TCP_ORACLE_LITERAL"
+    dump_reports
+    exit 1
+fi
+if grep -qaF "$POLL_TCP_ORACLE_FAIL_LITERAL" "$OUTPUT_DIR/serial.txt" 2>/dev/null; then
+    echo "ARM64 PERCPU STACK CUSTODY GATE: FAILED"
+    echo "Poll TCP oracle reported failure: $(grep -aF "$POLL_TCP_ORACLE_FAIL_LITERAL" "$OUTPUT_DIR/serial.txt" | tail -1)"
     dump_reports
     exit 1
 fi

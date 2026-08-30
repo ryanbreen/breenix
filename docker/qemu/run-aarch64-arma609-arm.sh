@@ -380,6 +380,17 @@ classify_serial() {
         return
     fi
 
+    # #568's oracle gets the same arm, for the same reason: it runs from init
+    # inside the service sequence, and its non-zero verdict must never be
+    # absorbed by a bucket that is about something else.
+    if grep -qF '[POLL_TCP_ORACLE:FAIL' "$serial_file" 2>/dev/null; then
+        oracle_fail_line=$(grep -F '[POLL_TCP_ORACLE:FAIL' "$serial_file" 2>/dev/null \
+            | head -1 | sed 's/[[:space:]]*$//')
+        CLASS="ORACLE_FAIL"
+        CLASS_REASON="poll TCP oracle failure: $oracle_fail_line"
+        return
+    fi
+
     if grep -qF '[BOOT_TESTS:FAIL' "$serial_file" 2>/dev/null \
         || grep -qE '\[TESTS_COMPLETE:[^]]*:FAILED:[1-9][0-9]*\]' "$serial_file" 2>/dev/null; then
         boot_test_fail_line=$(grep -ahoE '\[TEST:[^]]*:FAIL:[^]]*\]' \
@@ -484,6 +495,11 @@ for boot in $(seq 1 "$BOOTS"); do
             break
         fi
         if grep -qF '[BLOCK_EINTR_ORACLE:FAIL' "$SERIAL_FILE" 2>/dev/null; then
+            BOOT_END="early"
+            kill "$QEMU_PID" 2>/dev/null || true
+            break
+        fi
+        if grep -qF '[POLL_TCP_ORACLE:FAIL' "$SERIAL_FILE" 2>/dev/null; then
             BOOT_END="early"
             kill "$QEMU_PID" 2>/dev/null || true
             break

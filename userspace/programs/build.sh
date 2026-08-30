@@ -70,13 +70,23 @@ if [ ! -d "$LIBC_DIR" ]; then
     exit 1
 fi
 
-(cd "$LIBC_DIR" && \
+# `set -o pipefail` inside the subshell: without it the pipeline's status is the
+# `while` loop's, which is always 0, so a FAILED cargo build reported success and
+# the previous ELFs stayed installed. That is how a stale binary rides a green
+# gate -- caught while mutating the #568 oracle, where an uncompilable mutation
+# silently reused the last good build and "passed".
+if ! (
+    set -o pipefail
+    cd "$LIBC_DIR" && \
     CARGO_ENCODED_RUSTFLAGS= \
     RUSTFLAGS= \
     cargo build --release --target "$TARGET_JSON" 2>&1 | while read line; do
         echo "  $line"
     done
-)
+); then
+    echo "  ERROR: libbreenix-libc build FAILED"
+    exit 1
+fi
 echo "  libbreenix-libc built successfully"
 echo ""
 
@@ -91,14 +101,19 @@ if [ ! -d "$RUST_FORK_LIBRARY" ]; then
     exit 1
 fi
 
-(cd "$SCRIPT_DIR" && \
+if ! (
+    set -o pipefail
+    cd "$SCRIPT_DIR" && \
     unset CARGO_ENCODED_RUSTFLAGS && \
     __CARGO_TESTS_ONLY_SRC_ROOT="$RUST_FORK_LIBRARY" \
     RUSTFLAGS="$STD_RUSTFLAGS" \
     cargo build --release --target "$TARGET_JSON" 2>&1 | while read line; do
         echo "  $line"
     done
-)
+); then
+    echo "  ERROR: userspace build FAILED"
+    exit 1
+fi
 
 echo "  Userspace build successful"
 echo ""
@@ -118,6 +133,8 @@ STD_BINARIES=(
 
     # #575 block-EINTR oracle
     "block_eintr_oracle"
+    # #568 blocking-poll-on-connected-TCP oracle
+    "poll_tcp_oracle"
     # #584 futex handoff oracle
     "futex_handoff_oracle"
 

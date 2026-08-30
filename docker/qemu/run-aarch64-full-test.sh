@@ -366,6 +366,54 @@ if [ -z "$FAIL_REASON" ]; then
     fi
 fi
 
+# --- Phase 1a1: Pin the #568 blocking-poll-on-connected-TCP oracle ---
+# init runs this immediately after the block EINTR oracle above, so by the time
+# Phase 1a has passed it is either already in the serial or about to be. Both
+# halves are pinned -- the marker must appear, and it must not be a FAIL --
+# because a marker check alone passes a boot whose verdict was FAIL, and a FAIL
+# check alone passes a boot where the program never started. Before this phase
+# existed, a POLL_TCP_ORACLE FAIL was invisible to every aarch64 gate: the
+# oracle exited non-zero and the run still reported GREEN.
+if [ -z "$FAIL_REASON" ]; then
+    echo ""
+    echo "Phase 1a1: Waiting for poll TCP oracle (#568)..."
+    POLL_TCP_ORACLE_OK=false
+    for i in $(seq 1 15); do
+        if grep -qF "[POLL_TCP_ORACLE:FAIL" "$OUTPUT_DIR/serial.txt" 2>/dev/null; then
+            POLL_TCP_ORACLE_LINE=$(grep -F "[POLL_TCP_ORACLE:FAIL" "$OUTPUT_DIR/serial.txt" 2>/dev/null | tail -1)
+            FAIL_REASON="Phase 1a1: poll TCP oracle failed ($POLL_TCP_ORACLE_LINE)"
+            break
+        fi
+        if grep -qF "[POLL_TCP_ORACLE:" "$OUTPUT_DIR/serial.txt" 2>/dev/null; then
+            POLL_TCP_ORACLE_OK=true
+            break
+        fi
+        if FATAL=$(check_fatal); then
+            FAIL_REASON="Phase 1a1: poll TCP oracle never completed ($FATAL)"
+            break
+        fi
+        if ! kill -0 $QEMU_PID 2>/dev/null; then
+            FAIL_REASON="Phase 1a1: poll TCP oracle never completed (QEMU exited)"
+            break
+        fi
+        sleep 2
+    done
+
+    if ! $POLL_TCP_ORACLE_OK && [ -z "$FAIL_REASON" ]; then
+        FAIL_REASON="Phase 1a1: poll TCP oracle marker absent (30s timeout)"
+    fi
+
+    if $POLL_TCP_ORACLE_OK && [ -z "$FAIL_REASON" ]; then
+        POLL_TCP_ORACLE_LINE=$(grep -F "[POLL_TCP_ORACLE:" "$OUTPUT_DIR/serial.txt" 2>/dev/null | tail -1)
+        if echo "$POLL_TCP_ORACLE_LINE" | grep -qF "[POLL_TCP_ORACLE:FAIL"; then
+            FAIL_REASON="Phase 1a1: poll TCP oracle failed ($POLL_TCP_ORACLE_LINE)"
+        else
+            echo "  Observed: $POLL_TCP_ORACLE_LINE"
+            echo "Phase 1a1: PASS"
+        fi
+    fi
+fi
+
 # --- Phase 1a2: Pin the deterministic futex handoff oracle ---
 # The pattern keeps every kernel-behaviour field exact while allowing only the
 # measured stage3_elapsed_ms field to vary with emulator wall-clock speed.

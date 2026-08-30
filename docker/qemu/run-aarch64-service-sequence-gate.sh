@@ -504,6 +504,17 @@ classify_serial() {
         CLASS_REASON="block EINTR oracle reported failure"
         return
     fi
+    # #568's oracle is scored UNATTRIBUTED, not into a bucket of its own,
+    # because #568 is closed by the same change that wires this gate: there is
+    # no open defect left for a failure here to be attributed TO. UNATTRIBUTED
+    # is gate-failing under R52, so a non-zero verdict fails the profile it
+    # happened in and its serial is preserved by the failure report. The reason
+    # string carries the exact verdict line, so the census stays legible.
+    if grep -qF "[POLL_TCP_ORACLE:FAIL" "$serial_file" 2>/dev/null; then
+        CLASS_BUCKET="UNATTRIBUTED"
+        CLASS_REASON="poll TCP oracle (#568) reported failure: $(grep -aF "[POLL_TCP_ORACLE:FAIL" "$serial_file" | head -1 | sed 's/[[:space:]]*$//')"
+        return
+    fi
     if grep -qF "failed to spawn service: EIO" "$serial_file" 2>/dev/null; then
         CLASS_BUCKET="575"
         CLASS_REASON="service spawn returned EIO"
@@ -684,6 +695,14 @@ classify_serial() {
     if ! grep -qF "[BLOCK_EINTR_ORACLE:" "$serial_file" 2>/dev/null; then
         CLASS_BUCKET="UNATTRIBUTED"
         CLASS_REASON="oracle marker absent"
+        return
+    fi
+    # Anti-vacuity for #568, matching the line above: a boot that never emitted
+    # the poll oracle's verdict never exercised the blocking poll on a connected
+    # TCP fd, so it cannot be GREEN by omission.
+    if ! grep -qF "[POLL_TCP_ORACLE:" "$serial_file" 2>/dev/null; then
+        CLASS_BUCKET="UNATTRIBUTED"
+        CLASS_REASON="poll TCP oracle (#568) marker absent"
         return
     fi
     # Anti-vacuity: a boot that never armed the #596 oracle cannot be scored
@@ -997,6 +1016,11 @@ run_profile() {
             boot_seconds=$((SECONDS - boot_start))
 
             if grep -qF "[BLOCK_EINTR_ORACLE:FAIL" "$serial_file" 2>/dev/null; then
+                boot_end="early"
+                kill "$QEMU_PID" 2>/dev/null || true
+                break
+            fi
+            if grep -qF "[POLL_TCP_ORACLE:FAIL" "$serial_file" 2>/dev/null; then
                 boot_end="early"
                 kill "$QEMU_PID" 2>/dev/null || true
                 break

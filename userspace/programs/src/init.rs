@@ -109,6 +109,8 @@ fn main() {
     #[cfg(target_arch = "aarch64")]
     run_futex_handoff_oracle();
     #[cfg(target_arch = "aarch64")]
+    run_poll_tcp_oracle();
+    #[cfg(target_arch = "aarch64")]
     run_exec_smoke();
     #[cfg(target_arch = "aarch64")]
     run_clonevm_exec_test();
@@ -168,6 +170,32 @@ fn run_block_eintr_oracle() {
         Err(error) => {
             print!(
                 "[init] Warning: failed to start block_eintr_oracle: {}\n",
+                error
+            );
+        }
+    }
+}
+
+/// Run the #568 blocking-poll-on-connected-TCP oracle. Nothing else in any boot
+/// profile blocks in `poll()` on an `FdKind::TcpConnection`, so without this the
+/// path #568 was filed against is never executed. The child prints its own
+/// verdict marker; this launcher records the exit for boot-log debuggability.
+#[cfg(target_arch = "aarch64")]
+fn run_poll_tcp_oracle() {
+    match spawn(b"/bin/poll_tcp_oracle\0") {
+        Ok(child_pid) => {
+            let mut status = 0i32;
+            let _ = waitpid(child_pid.raw() as i32, &mut status as *mut i32, 0);
+            let exit_code = (status >> 8) & 0xFF;
+            print!(
+                "[init] poll_tcp_oracle exited pid={} code={}\n",
+                child_pid.raw(),
+                exit_code
+            );
+        }
+        Err(error) => {
+            print!(
+                "[init] Warning: failed to start poll_tcp_oracle: {}\n",
                 error
             );
         }

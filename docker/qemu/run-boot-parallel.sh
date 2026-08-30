@@ -177,6 +177,16 @@ for i in $(seq 1 $COUNT); do
                 sleep 1
             done
 
+            # #568 anti-vacuity for the poll oracle used to be pinned here: a
+            # missing [POLL_TCP_ORACLE:] marker failed this gate the way the
+            # aarch64 gates pin their oracles. The assertion is removed with the
+            # oracle itself, which is not launched on x86 (see the #697 comment
+            # in kernel/src/main.rs) because it shifts the tombstone census
+            # docker/qemu/run-x86-boot-tests.sh pins and its verdict cannot yet
+            # be told apart from TCG starvation. Restoring both the launch and
+            # this assertion is #697. On aarch64 the oracle and its eight gate
+            # assertions are unchanged and green.
+
             if VERDICT_OUTPUT="$(
                 EXPECTED_EXITS="$EXPECTED_USERSPACE_EXITS" \
                     "$BREENIX_ROOT/scripts/x86-gate-verdict.sh" \

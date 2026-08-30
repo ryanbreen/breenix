@@ -165,6 +165,18 @@ run_single_test() {
             echo "FAIL: block EINTR oracle reported failure"
             return 1
         fi
+        # #568: the blocking-poll-on-connected-TCP oracle runs from init before
+        # exec smoke, whose marker this gate already requires, so it has always
+        # completed by the time this check runs. Pinned as a pair for the same
+        # reason as its #575 peer above.
+        if ! grep -qF "[POLL_TCP_ORACLE:" "$OUTPUT_DIR/serial.txt" 2>/dev/null; then
+            echo "FAIL: poll TCP oracle marker missing"
+            return 1
+        fi
+        if grep -qF "[POLL_TCP_ORACLE:FAIL" "$OUTPUT_DIR/serial.txt" 2>/dev/null; then
+            echo "FAIL: poll TCP oracle reported failure ($(grep -aoF -m1 "[POLL_TCP_ORACLE:FAIL" "$OUTPUT_DIR/serial.txt"))"
+            return 1
+        fi
         if ! grep -qF -x "$INIT_GROUP_REFUSAL_ORACLE_LITERAL" "$OUTPUT_DIR/serial.txt" 2>/dev/null; then
             echo "FAIL: init-group refusal oracle counter marker missing"
             return 1

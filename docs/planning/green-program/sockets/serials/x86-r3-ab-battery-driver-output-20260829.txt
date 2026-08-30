@@ -1,0 +1,252 @@
+[r3] head: efe08b1734b9d6513dcaa54f2a1aec080180b1f2
+[r3] CAND scheduler.rs diff vs branch head: 
+[r3] CAND build clean (0 warnings)
+[r3] CAND image: /root/breenix/target/release/build/breenix-ea07692c0c9fe24b/out/breenix-uefi.img
+65d88b242b6fea9bd648b2bbd1a99683  /root/r3-out/bin/CAND/breenix-uefi.img
+[r3] OUT scheduler.rs diff vs branch head:  1 file changed, 3 insertions(+), 29 deletions(-)
+[r3] OUT build clean (0 warnings)
+[r3] OUT image: /root/breenix/target/release/build/breenix-ea07692c0c9fe24b/out/breenix-uefi.img
+7dbeeb08684bd4b600086f7b8a88145b  /root/r3-out/bin/OUT/breenix-uefi.img
+[r3] source restored to head: 2 modified files
+[r3] images differ: YES
+[r3] CAND boot 1: FAIL
+      tally:    [ INFO] kernel::syscall::handlers: TEST_TALLY: exited=25 nonzero=1 failed=[poll_tcp_oracle:1]
+      oracle:   [POLL_TCP_ORACLE:FAIL:late_window_missed:attempts=5 overshoot_ms=20 delay_ms=1280]
+      loopback: <none>
+      panic:    [DEBUG] kernel::gdt:   TSS IST[0] (double fault stack): 0x0|[ INFO] kernel::gdt_tests: Skipping double fault stack test (temporarily disabled)|[ INFO] kernel::gdt: Updated IST[0] (double fault stack) to 0xffffc98000002000|
+      strand:   {"total_lines": 6020, "stranded": []}
+[r3] OUT boot 1: FAIL+ORACLE_MARKER_ABSENT
+      tally:    <none>
+      oracle:   <none>
+      loopback: <none>
+      panic:    [DEBUG] kernel::gdt:   TSS IST[0] (double fault stack): 0x0|[ INFO] kernel::gdt_tests: Skipping double fault stack test (temporarily disabled)|[ INFO] kernel::gdt: Updated IST[0] (double fault stack) to 0xffffc98000002000|
+      strand:   {"total_lines": 5529, "stranded": [{"tid": 23, "name": "poll_tcp_oracle", "save_line": 4264, "lines_after": 1265}, {"tid": 24, "name": "clonevm_exec_test", "save_line": 4321, "lines_after": 1208}]}
+[r3] CAND boot 2: PASS
+      tally:    [ INFO] kernel::syscall::handlers: TEST_TALLY: exited=22 nonzero=0 failed=[]
+      oracle:   [POLL_TCP_ORACLE:PASS:stages=3:idle_ms=2828:late_ms=1984:park_ms=1909:attempts=2]
+      loopback: <none>
+      panic:    [DEBUG] kernel::gdt:   TSS IST[0] (double fault stack): 0x0|[ INFO] kernel::gdt_tests: Skipping double fault stack test (temporarily disabled)|[ INFO] kernel::gdt: Updated IST[0] (double fault stack) to 0xffffc98000002000|
+      strand:   {"total_lines": 5314, "stranded": []}
+[r3] OUT boot 2: FAIL
+      tally:    <none>
+      oracle:   [POLL_TCP_ORACLE:PASS:stages=3:idle_ms=1227:late_ms=982:park_ms=853:attempts=2]
+      loopback: <none>
+      panic:    [DEBUG] kernel::gdt:   TSS IST[0] (double fault stack): 0x0|[ INFO] kernel::gdt_tests: Skipping double fault stack test (temporarily disabled)|[ INFO] kernel::gdt: Updated IST[0] (double fault stack) to 0xffffc98000002000|
+      strand:   {"total_lines": 5342, "stranded": [{"tid": 24, "name": "clonevm_exec_test", "save_line": 3700, "lines_after": 1642}]}
+[r3] CAND boot 3: FAIL
+      tally:    [ INFO] kernel::syscall::handlers: TEST_TALLY: exited=22 nonzero=2 failed=[loopback_wake_test_child:15,loopback_wake_test:1]
+      oracle:   [POLL_TCP_ORACLE:PASS:stages=3:idle_ms=3130:late_ms=2262:park_ms=1929:attempts=2]
+      loopback: loopback_wake_test:1,loopback_wake_test_child:15,
+      panic:    [DEBUG] kernel::gdt:   TSS IST[0] (double fault stack): 0x0|[ INFO] kernel::gdt_tests: Skipping double fault stack test (temporarily disabled)|[ INFO] kernel::gdt: Updated IST[0] (double fault stack) to 0xffffc98000002000|
+      strand:   {"total_lines": 5250, "stranded": []}
+[r3] OUT boot 3: FAIL
+      tally:    [ INFO] kernel::syscall::handlers: TEST_TALLY: exited=21 nonzero=1 failed=[clock_gettime_test:1]
+      oracle:   [POLL_TCP_ORACLE:PASS:stages=3:idle_ms=2942:late_ms=1324:park_ms=946:attempts=1]
+      loopback: <none>
+      panic:    [DEBUG] kernel::gdt:   TSS IST[0] (double fault stack): 0x0|[ INFO] kernel::gdt_tests: Skipping double fault stack test (temporarily disabled)|[ INFO] kernel::gdt: Updated IST[0] (double fault stack) to 0xffffc98000002000|
+      strand:   {"total_lines": 5234, "stranded": []}
+[r3] CAND boot 4: PASS
+      tally:    [ INFO] kernel::syscall::handlers: TEST_TALLY: exited=25 nonzero=0 failed=[]
+      oracle:   [POLL_TCP_ORACLE:PASS:stages=3:idle_ms=352:late_ms=1555:park_ms=1472:attempts=5]
+      loopback: <none>
+      panic:    [DEBUG] kernel::gdt:   TSS IST[0] (double fault stack): 0x0|[ INFO] kernel::gdt_tests: Skipping double fault stack test (temporarily disabled)|[ INFO] kernel::gdt: Updated IST[0] (double fault stack) to 0xffffc98000002000|
+      strand:   {"total_lines": 6115, "stranded": []}
+[r3] OUT boot 4: FAIL+ORACLE_MARKER_ABSENT
+      tally:    <none>
+      oracle:   <none>
+      loopback: <none>
+      panic:    [DEBUG] kernel::gdt:   TSS IST[0] (double fault stack): 0x0|[ INFO] kernel::gdt_tests: Skipping double fault stack test (temporarily disabled)|[ INFO] kernel::gdt: Updated IST[0] (double fault stack) to 0xffffc98000002000|
+      strand:   {"total_lines": 5111, "stranded": [{"tid": 23, "name": "poll_tcp_oracle", "save_line": 2471, "lines_after": 2640}]}
+[r3] CAND boot 5: FAIL
+      tally:    [ INFO] kernel::syscall::handlers: TEST_TALLY: exited=23 nonzero=1 failed=[clock_gettime_test:1]
+      oracle:   [POLL_TCP_ORACLE:PASS:stages=3:idle_ms=1407:late_ms=841:park_ms=586:attempts=3]
+      loopback: <none>
+      panic:    [DEBUG] kernel::gdt:   TSS IST[0] (double fault stack): 0x0|[ INFO] kernel::gdt_tests: Skipping double fault stack test (temporarily disabled)|[ INFO] kernel::gdt: Updated IST[0] (double fault stack) to 0xffffc98000002000|
+      strand:   {"total_lines": 5469, "stranded": []}
+[r3] OUT boot 5: PASS
+      tally:    [ INFO] kernel::syscall::handlers: TEST_TALLY: exited=21 nonzero=0 failed=[]
+      oracle:   [POLL_TCP_ORACLE:PASS:stages=3:idle_ms=1724:late_ms=2340:park_ms=1457:attempts=1]
+      loopback: <none>
+      panic:    [DEBUG] kernel::gdt:   TSS IST[0] (double fault stack): 0x0|[ INFO] kernel::gdt_tests: Skipping double fault stack test (temporarily disabled)|[ INFO] kernel::gdt: Updated IST[0] (double fault stack) to 0xffffc98000002000|
+      strand:   {"total_lines": 5233, "stranded": []}
+[r3] CAND boot 6: PASS
+      tally:    [ INFO] kernel::syscall::handlers: TEST_TALLY: exited=22 nonzero=0 failed=[]
+      oracle:   [POLL_TCP_ORACLE:PASS:stages=3:idle_ms=1795:late_ms=1508:park_ms=1074:attempts=2]
+      loopback: <none>
+      panic:    [DEBUG] kernel::gdt:   TSS IST[0] (double fault stack): 0x0|[ INFO] kernel::gdt_tests: Skipping double fault stack test (temporarily disabled)|[ INFO] kernel::gdt: Updated IST[0] (double fault stack) to 0xffffc98000002000|
+      strand:   {"total_lines": 5221, "stranded": []}
+[r3] OUT boot 6: PASS
+      tally:    [ INFO] kernel::syscall::handlers: TEST_TALLY: exited=21 nonzero=0 failed=[]
+      oracle:   [POLL_TCP_ORACLE:PASS:stages=3:idle_ms=2317:late_ms=3427:park_ms=2315:attempts=1]
+      loopback: <none>
+      panic:    [DEBUG] kernel::gdt:   TSS IST[0] (double fault stack): 0x0|[ INFO] kernel::gdt_tests: Skipping double fault stack test (temporarily disabled)|[ INFO] kernel::gdt: Updated IST[0] (double fault stack) to 0xffffc98000002000|
+      strand:   {"total_lines": 5243, "stranded": []}
+[r3] CAND boot 7: PASS
+      tally:    [ INFO] kernel::syscall::handlers: TEST_TALLY: exited=21 nonzero=0 failed=[]
+      oracle:   [POLL_TCP_ORACLE:PASS:stages=3:idle_ms=2743:late_ms=3562:park_ms=2590:attempts=1]
+      loopback: <none>
+      panic:    [DEBUG] kernel::gdt:   TSS IST[0] (double fault stack): 0x0|[ INFO] kernel::gdt_tests: Skipping double fault stack test (temporarily disabled)|[ INFO] kernel::gdt: Updated IST[0] (double fault stack) to 0xffffc98000002000|
+      strand:   {"total_lines": 5311, "stranded": []}
+[r3] OUT boot 7: FAIL+ORACLE_MARKER_ABSENT
+      tally:    <none>
+      oracle:   <none>
+      loopback: <none>
+      panic:    [DEBUG] kernel::gdt:   TSS IST[0] (double fault stack): 0x0|[ INFO] kernel::gdt_tests: Skipping double fault stack test (temporarily disabled)|[ INFO] kernel::gdt: Updated IST[0] (double fault stack) to 0xffffc98000002000|
+      strand:   {"total_lines": 5067, "stranded": [{"tid": 23, "name": "poll_tcp_oracle", "save_line": 2492, "lines_after": 2575}]}
+[r3] CAND boot 8: FAIL
+      tally:    [ INFO] kernel::syscall::handlers: TEST_TALLY: exited=25 nonzero=1 failed=[poll_tcp_oracle:1]
+      oracle:   <S>[SW]<T><U><R>p00r0 p00r0 <S>[SW]<T><B>[SW]<T><U><R>[POLL_TCP_ORACLE:FAIL:late_window_missed:attempts=5 overshoot_ms=23 delay_ms=1280]
+      loopback: <none>
+      panic:    [DEBUG] kernel::gdt:   TSS IST[0] (double fault stack): 0x0|[ INFO] kernel::gdt_tests: Skipping double fault stack test (temporarily disabled)|[ INFO] kernel::gdt: Updated IST[0] (double fault stack) to 0xffffc98000002000|
+      strand:   {"total_lines": 5717, "stranded": []}
+[r3] OUT boot 8: FAIL+ORACLE_MARKER_ABSENT
+      tally:    <none>
+      oracle:   <none>
+      loopback: <none>
+      panic:    [DEBUG] kernel::gdt:   TSS IST[0] (double fault stack): 0x0|[ INFO] kernel::gdt_tests: Skipping double fault stack test (temporarily disabled)|[ INFO] kernel::gdt: Updated IST[0] (double fault stack) to 0xffffc98000002000|
+      strand:   {"total_lines": 5553, "stranded": [{"tid": 23, "name": "poll_tcp_oracle", "save_line": 3619, "lines_after": 1934}]}
+[r3] CAND boot 9: FAIL
+      tally:    [ INFO] kernel::syscall::handlers: TEST_TALLY: exited=21 nonzero=1 failed=[poll_tcp_oracle:1]
+      oracle:   [POLL_TCP_ORACLE:FAIL:late_lost_wake:ready=0 revents=0x0000 elapsed_ms=5040 delay_ms=80]
+      loopback: <none>
+      panic:    [DEBUG] kernel::gdt:   TSS IST[0] (double fault stack): 0x0|[ INFO] kernel::gdt_tests: Skipping double fault stack test (temporarily disabled)|[ INFO] kernel::gdt: Updated IST[0] (double fault stack) to 0xffffc98000002000|
+      strand:   {"total_lines": 5221, "stranded": []}
+[r3] OUT boot 9: FAIL+ORACLE_MARKER_ABSENT
+      tally:    <none>
+      oracle:   <none>
+      loopback: <none>
+      panic:    [DEBUG] kernel::gdt:   TSS IST[0] (double fault stack): 0x0|[ INFO] kernel::gdt_tests: Skipping double fault stack test (temporarily disabled)|[ INFO] kernel::gdt: Updated IST[0] (double fault stack) to 0xffffc98000002000|
+      strand:   {"total_lines": 5821, "stranded": [{"tid": 23, "name": "poll_tcp_oracle", "save_line": 3237, "lines_after": 2584}]}
+[r3] CAND boot 10: PASS
+      tally:    [ INFO] kernel::syscall::handlers: TEST_TALLY: exited=22 nonzero=0 failed=[]
+      oracle:   [POLL_TCP_ORACLE:PASS:stages=3:idle_ms=3121:late_ms=1270:park_ms=835:attempts=2]
+      loopback: <none>
+      panic:    [DEBUG] kernel::gdt:   TSS IST[0] (double fault stack): 0x0|[ INFO] kernel::gdt_tests: Skipping double fault stack test (temporarily disabled)|[ INFO] kernel::gdt: Updated IST[0] (double fault stack) to 0xffffc98000002000|
+      strand:   {"total_lines": 5209, "stranded": []}
+[r3] OUT boot 10: FAIL+ORACLE_MARKER_ABSENT
+      tally:    <none>
+      oracle:   <none>
+      loopback: <none>
+      panic:    [DEBUG] kernel::gdt:   TSS IST[0] (double fault stack): 0x0|[ INFO] kernel::gdt_tests: Skipping double fault stack test (temporarily disabled)|[ INFO] kernel::gdt: Updated IST[0] (double fault stack) to 0xffffc98000002000|
+      strand:   {"total_lines": 5164, "stranded": [{"tid": 23, "name": "poll_tcp_oracle", "save_line": 2962, "lines_after": 2202}]}
+[r3] CAND boot 11: PASS
+      tally:    [ INFO] kernel::syscall::handlers: TEST_TALLY: exited=22 nonzero=0 failed=[]
+      oracle:   [POLL_TCP_ORACLE:PASS:stages=3:idle_ms=1829:late_ms=914:park_ms=621:attempts=2]
+      loopback: <none>
+      panic:    [DEBUG] kernel::gdt:   TSS IST[0] (double fault stack): 0x0|[ INFO] kernel::gdt_tests: Skipping double fault stack test (temporarily disabled)|[ INFO] kernel::gdt: Updated IST[0] (double fault stack) to 0xffffc98000002000|
+      strand:   {"total_lines": 5268, "stranded": []}
+[r3] OUT boot 11: FAIL+ORACLE_MARKER_ABSENT
+      tally:    <none>
+      oracle:   <none>
+      loopback: <none>
+      panic:    [DEBUG] kernel::gdt:   TSS IST[0] (double fault stack): 0x0|[ INFO] kernel::gdt_tests: Skipping double fault stack test (temporarily disabled)|[ INFO] kernel::gdt: Updated IST[0] (double fault stack) to 0xffffc98000002000|
+      strand:   {"total_lines": 5015, "stranded": [{"tid": 23, "name": "poll_tcp_oracle", "save_line": 2594, "lines_after": 2421}]}
+[r3] CAND boot 12: FAIL
+      tally:    [ INFO] kernel::syscall::handlers: TEST_TALLY: exited=25 nonzero=3 failed=[loopback_wake_test_child:15,poll_tcp_oracle:1,loopback_wake_test:1]
+      oracle:   [POLL_TCP_ORACLE:FAIL:late_window_missed:attempts=5 overshoot_ms=20 delay_ms=1280]
+      loopback: loopback_wake_test:1,loopback_wake_test_child:15,
+      panic:    [DEBUG] kernel::gdt:   TSS IST[0] (double fault stack): 0x0|[ INFO] kernel::gdt_tests: Skipping double fault stack test (temporarily disabled)|[ INFO] kernel::gdt: Updated IST[0] (double fault stack) to 0xffffc98000002000|
+      strand:   {"total_lines": 5709, "stranded": []}
+[r3] OUT boot 12: FAIL+ORACLE_MARKER_ABSENT
+      tally:    <none>
+      oracle:   <none>
+      loopback: <none>
+      panic:    [DEBUG] kernel::gdt:   TSS IST[0] (double fault stack): 0x0|[ INFO] kernel::gdt_tests: Skipping double fault stack test (temporarily disabled)|[ INFO] kernel::gdt: Updated IST[0] (double fault stack) to 0xffffc98000002000|
+      strand:   {"total_lines": 5097, "stranded": [{"tid": 23, "name": "poll_tcp_oracle", "save_line": 2745, "lines_after": 2352}]}
+[r3] CAND boot 13: FAIL
+      tally:    [ INFO] kernel::syscall::handlers: TEST_TALLY: exited=21 nonzero=2 failed=[loopback_wake_test_child:15,loopback_wake_test:1]
+      oracle:   [POLL_TCP_ORACLE:PASS:stages=3:idle_ms=1805:late_ms=1930:park_ms=1218:attempts=1]
+      loopback: loopback_wake_test:1,loopback_wake_test_child:15,
+      panic:    [DEBUG] kernel::gdt:   TSS IST[0] (double fault stack): 0x0|[ INFO] kernel::gdt_tests: Skipping double fault stack test (temporarily disabled)|[ INFO] kernel::gdt: Updated IST[0] (double fault stack) to 0xffffc98000002000|
+      strand:   {"total_lines": 5155, "stranded": []}
+[r3] OUT boot 13: FAIL+ORACLE_MARKER_ABSENT
+      tally:    <none>
+      oracle:   <none>
+      loopback: <none>
+      panic:    [DEBUG] kernel::gdt:   TSS IST[0] (double fault stack): 0x0|[ INFO] kernel::gdt_tests: Skipping double fault stack test (temporarily disabled)|[ INFO] kernel::gdt: Updated IST[0] (double fault stack) to 0xffffc98000002000|
+      strand:   {"total_lines": 5396, "stranded": [{"tid": 23, "name": "poll_tcp_oracle", "save_line": 3595, "lines_after": 1801}]}
+[r3] CAND boot 14: FAIL
+      tally:    [ INFO] kernel::syscall::handlers: TEST_TALLY: exited=22 nonzero=2 failed=[loopback_wake_test_child:15,loopback_wake_test:1]
+      oracle:   [POLL_TCP_ORACLE:PASS:stages=3:idle_ms=3818:late_ms=1475:park_ms=878:attempts=2]
+      loopback: loopback_wake_test:1,loopback_wake_test_child:15,
+      panic:    [DEBUG] kernel::gdt:   TSS IST[0] (double fault stack): 0x0|[ INFO] kernel::gdt_tests: Skipping double fault stack test (temporarily disabled)|[ INFO] kernel::gdt: Updated IST[0] (double fault stack) to 0xffffc98000002000|
+      strand:   {"total_lines": 5337, "stranded": []}
+[r3] OUT boot 14: FAIL+ORACLE_MARKER_ABSENT
+      tally:    <none>
+      oracle:   <none>
+      loopback: <none>
+      panic:    [DEBUG] kernel::gdt:   TSS IST[0] (double fault stack): 0x0|[ INFO] kernel::gdt_tests: Skipping double fault stack test (temporarily disabled)|[ INFO] kernel::gdt: Updated IST[0] (double fault stack) to 0xffffc98000002000|
+      strand:   {"total_lines": 5063, "stranded": [{"tid": 23, "name": "poll_tcp_oracle", "save_line": 2561, "lines_after": 2502}]}
+[r3] CAND boot 15: FAIL
+      tally:    [ INFO] kernel::syscall::handlers: TEST_TALLY: exited=21 nonzero=2 failed=[loopback_wake_test_child:15,loopback_wake_test:1]
+      oracle:   [POLL_TCP_ORACLE:PASS:stages=3:idle_ms=2484:late_ms=2018:park_ms=1337:attempts=1]
+      loopback: loopback_wake_test:1,loopback_wake_test_child:15,
+      panic:    [DEBUG] kernel::gdt:   TSS IST[0] (double fault stack): 0x0|[ INFO] kernel::gdt_tests: Skipping double fault stack test (temporarily disabled)|[ INFO] kernel::gdt: Updated IST[0] (double fault stack) to 0xffffc98000002000|
+      strand:   {"total_lines": 5298, "stranded": []}
+[r3] OUT boot 15: FAIL+ORACLE_MARKER_ABSENT
+      tally:    <none>
+      oracle:   <none>
+      loopback: <none>
+      panic:    [DEBUG] kernel::gdt:   TSS IST[0] (double fault stack): 0x0|[ INFO] kernel::gdt_tests: Skipping double fault stack test (temporarily disabled)|[ INFO] kernel::gdt: Updated IST[0] (double fault stack) to 0xffffc98000002000|
+      strand:   {"total_lines": 5168, "stranded": [{"tid": 23, "name": "poll_tcp_oracle", "save_line": 2775, "lines_after": 2393}]}
+[r3] CAND boot 16: PASS
+      tally:    [ INFO] kernel::syscall::handlers: TEST_TALLY: exited=23 nonzero=0 failed=[]
+      oracle:   [POLL_TCP_ORACLE:PASS:stages=3:idle_ms=1483:late_ms=1831:park_ms=1359:attempts=3]
+      loopback: <none>
+      panic:    [DEBUG] kernel::gdt:   TSS IST[0] (double fault stack): 0x0|[ INFO] kernel::gdt_tests: Skipping double fault stack test (temporarily disabled)|[ INFO] kernel::gdt: Updated IST[0] (double fault stack) to 0xffffc98000002000|
+      strand:   {"total_lines": 5405, "stranded": []}
+[r3] OUT boot 16: FAIL+ORACLE_MARKER_ABSENT
+      tally:    <none>
+      oracle:   <none>
+      loopback: <none>
+      panic:    [DEBUG] kernel::gdt:   TSS IST[0] (double fault stack): 0x0|[ INFO] kernel::gdt_tests: Skipping double fault stack test (temporarily disabled)|[ INFO] kernel::gdt: Updated IST[0] (double fault stack) to 0xffffc98000002000|
+      strand:   {"total_lines": 5033, "stranded": [{"tid": 23, "name": "poll_tcp_oracle", "save_line": 2499, "lines_after": 2534}]}
+[r3] CAND boot 17: PASS
+      tally:    [ INFO] kernel::syscall::handlers: TEST_TALLY: exited=22 nonzero=0 failed=[]
+      oracle:   [POLL_TCP_ORACLE:PASS:stages=3:idle_ms=1544:late_ms=977:park_ms=846:attempts=2]
+      loopback: <none>
+      panic:    [DEBUG] kernel::gdt:   TSS IST[0] (double fault stack): 0x0|[ INFO] kernel::gdt_tests: Skipping double fault stack test (temporarily disabled)|[ INFO] kernel::gdt: Updated IST[0] (double fault stack) to 0xffffc98000002000|
+      strand:   {"total_lines": 5275, "stranded": []}
+[r3] CAND boot 18: FAIL
+      tally:    [ INFO] kernel::syscall::handlers: TEST_TALLY: exited=23 nonzero=2 failed=[loopback_wake_test_child:15,loopback_wake_test:1]
+      oracle:   [POLL_TCP_ORACLE:PASS:stages=3:idle_ms=1048:late_ms=2938:park_ms=1071:attempts=3]
+      loopback: loopback_wake_test:1,loopback_wake_test_child:15,
+      panic:    [DEBUG] kernel::gdt:   TSS IST[0] (double fault stack): 0x0|[ INFO] kernel::gdt_tests: Skipping double fault stack test (temporarily disabled)|[ INFO] kernel::gdt: Updated IST[0] (double fault stack) to 0xffffc98000002000|
+      strand:   {"total_lines": 5459, "stranded": []}
+[r3] CAND boot 19: FAIL
+      tally:    [ INFO] kernel::syscall::handlers: TEST_TALLY: exited=25 nonzero=3 failed=[loopback_wake_test_child:15,poll_tcp_oracle:1,loopback_wake_test:1]
+      oracle:   [POLL_TCP_ORACLE:FAIL:late_window_missed:attempts=5 overshoot_ms=19 delay_ms=1280]
+      loopback: loopback_wake_test:1,loopback_wake_test_child:15,
+      panic:    [DEBUG] kernel::gdt:   TSS IST[0] (double fault stack): 0x0|[ INFO] kernel::gdt_tests: Skipping double fault stack test (temporarily disabled)|[ INFO] kernel::gdt: Updated IST[0] (double fault stack) to 0xffffc98000002000|
+      strand:   {"total_lines": 5638, "stranded": []}
+[r3] CAND boot 20: FAIL
+      tally:    [ INFO] kernel::syscall::handlers: TEST_TALLY: exited=21 nonzero=2 failed=[loopback_wake_test_child:15,loopback_wake_test:1]
+      oracle:   [POLL_TCP_ORACLE:PASS:stages=3:idle_ms=1647:late_ms=2189:park_ms=1505:attempts=1]
+      loopback: loopback_wake_test:1,loopback_wake_test_child:15,
+      panic:    [DEBUG] kernel::gdt:   TSS IST[0] (double fault stack): 0x0|[ INFO] kernel::gdt_tests: Skipping double fault stack test (temporarily disabled)|[ INFO] kernel::gdt: Updated IST[0] (double fault stack) to 0xffffc98000002000|
+      strand:   {"total_lines": 5305, "stranded": []}
+[r3] CAND boot 21: PASS
+      tally:    [ INFO] kernel::syscall::handlers: TEST_TALLY: exited=21 nonzero=0 failed=[]
+      oracle:   [POLL_TCP_ORACLE:PASS:stages=3:idle_ms=1460:late_ms=2927:park_ms=1229:attempts=1]
+      loopback: <none>
+      panic:    [DEBUG] kernel::gdt:   TSS IST[0] (double fault stack): 0x0|[ INFO] kernel::gdt_tests: Skipping double fault stack test (temporarily disabled)|[ INFO] kernel::gdt: Updated IST[0] (double fault stack) to 0xffffc98000002000|
+      strand:   {"total_lines": 5166, "stranded": []}
+[r3] CAND boot 22: FAIL
+      tally:    [ INFO] kernel::syscall::handlers: TEST_TALLY: exited=25 nonzero=2 failed=[loopback_wake_test_child:15,loopback_wake_test:1]
+      oracle:   [POLL_TCP_ORACLE:PASS:stages=3:idle_ms=1061:late_ms=2607:park_ms=1564:attempts=5]
+      loopback: loopback_wake_test:1,loopback_wake_test_child:15,
+      panic:    [DEBUG] kernel::gdt:   TSS IST[0] (double fault stack): 0x0|[ INFO] kernel::gdt_tests: Skipping double fault stack test (temporarily disabled)|[ INFO] kernel::gdt: Updated IST[0] (double fault stack) to 0xffffc98000002000|
+      strand:   {"total_lines": 5690, "stranded": []}
+[r3] CAND boot 23: PASS
+      tally:    [ INFO] kernel::syscall::handlers: TEST_TALLY: exited=21 nonzero=0 failed=[]
+      oracle:   [POLL_TCP_ORACLE:PASS:stages=3:idle_ms=1409:late_ms=2461:park_ms=1591:attempts=1]
+      loopback: <none>
+      panic:    [DEBUG] kernel::gdt:   TSS IST[0] (double fault stack): 0x0|[ INFO] kernel::gdt_tests: Skipping double fault stack test (temporarily disabled)|[ INFO] kernel::gdt: Updated IST[0] (double fault stack) to 0xffffc98000002000|
+      strand:   {"total_lines": 5316, "stranded": []}
+[r3] CAND boot 24: PASS
+      tally:    [ INFO] kernel::syscall::handlers: TEST_TALLY: exited=23 nonzero=0 failed=[]
+      oracle:   [POLL_TCP_ORACLE:PASS:stages=3:idle_ms=487:late_ms=2506:park_ms=1106:attempts=3]
+      loopback: <none>
+      panic:    [DEBUG] kernel::gdt:   TSS IST[0] (double fault stack): 0x0|[ INFO] kernel::gdt_tests: Skipping double fault stack test (temporarily disabled)|[ INFO] kernel::gdt: Updated IST[0] (double fault stack) to 0xffffc98000002000|
+      strand:   {"total_lines": 5366, "stranded": []}
+[r3] DONE head=efe08b1734b9d6513dcaa54f2a1aec080180b1f2

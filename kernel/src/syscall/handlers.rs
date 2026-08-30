@@ -3568,12 +3568,24 @@ pub fn sys_poll(fds_ptr: u64, nfds: u64, timeout: i32) -> SyscallResult {
             }
 
             crate::task::scheduler::yield_current();
-            #[cfg(target_arch = "aarch64")]
-            unsafe {
-                core::arch::asm!("msr daifclr, #3", "wfi", options(nomem, nostack));
-            }
-            #[cfg(target_arch = "x86_64")]
-            x86_64::instructions::hlt();
+            // Enable interrupts and halt as ONE step, via the shared primitive
+            // every other blocking syscall wait in this kernel uses (nanosleep,
+            // futex, wait, pause, accept, connect, recv, the completion and
+            // waitqueue waits, and the nine other sites in this file).
+            //
+            // #568: these two poll loops were the only blocking waits in the
+            // tree that hand-inlined the halt instead, and the x86 half of that
+            // hand-inline was a bare `hlt` with no `sti`. `yield_current()`
+            // returns with interrupts disabled, so the bare `hlt` halted the CPU
+            // with IF=0 -- a state only an NMI or a reset leaves. That is the
+            // recorded #568 signature exactly: the guest stops with no
+            // scheduling and no serial output, indefinitely. AArch64 escaped it
+            // because its hand-inline spelled out `msr daifclr, #3` before the
+            // `wfi`, which is precisely what the shared primitive emits there.
+            //
+            // Do not re-split this by architecture: the split is what let the
+            // two arches drift apart in the first place.
+            crate::arch_halt_with_interrupts();
         }
 
         // Clear blocked state + re-disable preemption
@@ -3634,12 +3646,24 @@ fn poll_block_until(wake_ns: u64) {
             break;
         }
         crate::task::scheduler::yield_current();
-        #[cfg(target_arch = "aarch64")]
-        unsafe {
-            core::arch::asm!("msr daifclr, #3", "wfi", options(nomem, nostack));
-        }
-        #[cfg(target_arch = "x86_64")]
-        x86_64::instructions::hlt();
+        // Enable interrupts and halt as ONE step, via the shared primitive
+        // every other blocking syscall wait in this kernel uses (nanosleep,
+        // futex, wait, pause, accept, connect, recv, the completion and
+        // waitqueue waits, and the nine other sites in this file).
+        //
+        // #568: these two poll loops were the only blocking waits in the
+        // tree that hand-inlined the halt instead, and the x86 half of that
+        // hand-inline was a bare `hlt` with no `sti`. `yield_current()`
+        // returns with interrupts disabled, so the bare `hlt` halted the CPU
+        // with IF=0 -- a state only an NMI or a reset leaves. That is the
+        // recorded #568 signature exactly: the guest stops with no
+        // scheduling and no serial output, indefinitely. AArch64 escaped it
+        // because its hand-inline spelled out `msr daifclr, #3` before the
+        // `wfi`, which is precisely what the shared primitive emits there.
+        //
+        // Do not re-split this by architecture: the split is what let the
+        // two arches drift apart in the first place.
+        crate::arch_halt_with_interrupts();
     }
 
     crate::task::scheduler::with_scheduler(|sched| {

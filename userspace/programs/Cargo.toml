@@ -280,6 +280,10 @@ name = "block_eintr_oracle"
 path = "src/block_eintr_oracle.rs"
 
 [[bin]]
+name = "poll_tcp_oracle"
+path = "src/poll_tcp_oracle.rs"
+
+[[bin]]
 name = "futex_handoff_oracle"
 path = "src/futex_handoff_oracle.rs"
 
