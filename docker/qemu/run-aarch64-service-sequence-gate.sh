@@ -610,6 +610,11 @@ classify_serial() {
         CLASS_REASON="live sibling refused exec"
         return
     fi
+    # NB5 (green arc 4/TTY round 3): this 690 check runs BEFORE the STRAND check
+    # further down, so a boot that both stalls at "second stage" and reports
+    # stranded>=1 reports 690, not STRAND — both are gate-failing, so nothing is
+    # softened, but a combined specimen's attribution granularity favors 690.
+    #
     # #690, ATTRIBUTION ONLY (filed by arc 3/sockets 2026-08-29; recurred in arc
     # 4/TTY's confirmation slot, cortex-a72 boot 19/25, 2026-08-30 — same
     # signature, same rate class, not attributed to either branch). Like #641,

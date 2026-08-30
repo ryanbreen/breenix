@@ -623,6 +623,23 @@ impl FdTable {
                         FdKind::UnixStream(socket) => {
                             socket.lock().close();
                         }
+                        FdKind::PtyMaster(pty_num) => {
+                            // #704-class: mirrors sys_close's PtyMaster arm exactly.
+                            if let Some(pair) = crate::tty::pty::get(*pty_num) {
+                                let old_count = pair
+                                    .master_refcount
+                                    .fetch_sub(1, core::sync::atomic::Ordering::SeqCst);
+                                if old_count == 1 {
+                                    crate::tty::pty::release(*pty_num);
+                                }
+                            }
+                        }
+                        FdKind::PtySlave(pty_num) => {
+                            // #704-class: mirrors sys_close's PtySlave arm exactly.
+                            if let Some(pair) = crate::tty::pty::get(*pty_num) {
+                                pair.slave_close();
+                            }
+                        }
                         _ => {}
                     }
                 }

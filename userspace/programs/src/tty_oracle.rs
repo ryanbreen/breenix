@@ -23,11 +23,14 @@
 use libbreenix::error::Error;
 use libbreenix::fs;
 use libbreenix::io;
+use libbreenix::io::fd_flags::FD_CLOEXEC;
 use libbreenix::process;
+use libbreenix::process::ForkResult;
 use libbreenix::pty;
 use libbreenix::termios::{self, cc, iflag, lflag, oflag, Termios, Winsize, TCSANOW};
 use libbreenix::types::Fd;
 use libbreenix::Errno;
+use std::env;
 
 /// `O_NONBLOCK` as `open(2)`/`posix_openpt(3)` take it.
 const O_NONBLOCK_OPEN: i32 = 0x800;
@@ -684,7 +687,135 @@ fn arm_ctty() -> Result<(), Failure> {
     Ok(())
 }
 
-const ARM_COUNT: u32 = 13;
+/// Arm 14 -- #704-class: `close_cloexec()` (the exec() close-on-exec path)
+/// must retire an `FdKind::PtySlave` fd exactly like `sys_close()` does, or a
+/// slave fd marked `FD_CLOEXEC` that survives an `exec()` leaks the shared
+/// refcount and the master can never observe hangup.
+///
+/// Found by this round's audit of every path that hands out or retires a
+/// PTY-slave fd (the same audit that closed #704 at the `/dev/tty` arm):
+/// `close_cloexec()` took every other release path's refcount accounting
+/// (pipe/fifo/UnixStream) but routed `FdKind::PtySlave`/`FdKind::PtyMaster`
+/// through its catch-all `_ => {}` arm, with no accounting at all. Fixed in
+/// `kernel/src/ipc/fd.rs` alongside this arm, mirroring `sys_close`'s two
+/// arms exactly.
+///
+/// Sequence: open a fresh, self-contained PTY pair, mark the slave
+/// `FD_CLOEXEC` via `fcntl(F_SETFD)` (the route that predates round one's
+/// `O_CLOEXEC`-on-open plumbing), `fork()`, and have the child `exec()` a
+/// fresh copy of this very program with a marker argv (`--cloexec-child`)
+/// that does nothing but `exit(0)` -- so the only kernel-side event that can
+/// retire the child's cloned slave fd is `close_cloexec()` itself, not
+/// anything the child does. The parent reaps the child, closes its OWN slave
+/// fd, and then requires the master to see EOF: if `close_cloexec()` did its
+/// job, the parent's close is the last live slave reference; if it did not,
+/// the child's fork-cloned fd was never decremented and the master is stuck
+/// reporting EAGAIN forever. Checked with an IDLE read, same framing as arm
+/// 13 (`ctty`) and for the same reason: `master_read()` drains any buffered
+/// data ahead of its hangup check, so a write-then-read would not discriminate.
+fn arm_cloexec_exec() -> Result<(), Failure> {
+    const ARM: &str = "cloexec_exec";
+
+    let master = match pty::posix_openpt(pty::O_RDWR | pty::O_NOCTTY | O_NONBLOCK_OPEN) {
+        Ok(fd) => fd,
+        Err(e) => return Err(fail(ARM, format!("posix_openpt_failed:{}", e))),
+    };
+    if let Err(e) = pty::grantpt(master) {
+        return Err(fail(ARM, format!("grantpt_failed:{}", e)));
+    }
+    if let Err(e) = pty::unlockpt(master) {
+        return Err(fail(ARM, format!("unlockpt_failed:{}", e)));
+    }
+
+    let mut path_buf = [0u8; 32];
+    let path_len = match pty::ptsname(master, &mut path_buf) {
+        Ok(len) => len,
+        Err(e) => return Err(fail(ARM, format!("ptsname_failed:{}", e))),
+    };
+    let slave_path = String::from_utf8_lossy(&path_buf[..path_len]).into_owned();
+
+    let slave = match fs::open(&slave_path, fs::O_RDWR | O_NONBLOCK_FS) {
+        Ok(fd) => fd,
+        Err(e) => return Err(fail(ARM, format!("slave_open_failed:{}", e))),
+    };
+
+    if let Err(e) = io::fcntl_setfd(slave, FD_CLOEXEC) {
+        return Err(fail(ARM, format!("fcntl_setfd_failed:{}", e)));
+    }
+    match io::fcntl_getfd(slave) {
+        Ok(flags) if flags & (FD_CLOEXEC as i64) != 0 => {}
+        Ok(flags) => {
+            return Err(fail(
+                ARM,
+                format!("cloexec_not_set_after_setfd:flags={:#x}", flags),
+            ))
+        }
+        Err(e) => return Err(fail(ARM, format!("fcntl_getfd_failed:{}", e))),
+    }
+
+    let child_pid = match process::fork() {
+        Ok(ForkResult::Child) => {
+            // Child: exec a fresh copy of this program in marker mode. This
+            // is the event under test -- close_cloexec() runs as part of
+            // THIS exec(), on the child's fork-cloned slave fd.
+            let path = b"/bin/tty_oracle\0";
+            let arg0 = b"tty_oracle\0".as_ptr();
+            let arg1 = b"--cloexec-child\0".as_ptr();
+            let argv: [*const u8; 3] = [arg0, arg1, core::ptr::null()];
+            let _ = process::execv(path, argv.as_ptr());
+            // exec() only returns on failure.
+            process::exit(127);
+        }
+        Ok(ForkResult::Parent(pid)) => pid,
+        Err(e) => return Err(fail(ARM, format!("fork_failed:{}", e))),
+    };
+
+    let mut status: i32 = 0;
+    if let Err(e) = process::waitpid(child_pid.raw() as i32, &mut status, 0) {
+        return Err(fail(ARM, format!("waitpid_failed:{}", e)));
+    }
+    if !process::wifexited(status) || process::wexitstatus(status) != 0 {
+        return Err(fail(
+            ARM,
+            format!("child_did_not_exit_cleanly:status={:#x}", status),
+        ));
+    }
+
+    // Close the parent's OWN slave fd. If close_cloexec() correctly retired
+    // the child's fork-cloned copy during exec(), this is the last live
+    // slave reference and the master must now see EOF.
+    if io::close(slave).is_err() {
+        return Err(fail(ARM, "slave_close_failed".to_string()));
+    }
+
+    // #704-class idle read: nothing written, nothing pending, so the only
+    // way this sees data is a real bug and the only way it sees EAGAIN
+    // instead of EOF is close_cloexec() having leaked the child's
+    // fork-cloned slave reference across exec().
+    let mut buf = [0u8; 32];
+    match io::read(master, &mut buf) {
+        Ok(0) => {}
+        Ok(n) => {
+            return Err(fail(
+                ARM,
+                format!("expected_eof_got_data:n={}:bytes={}", n, show(&buf[..n])),
+            ))
+        }
+        Err(Error::Os(Errno::EAGAIN)) => {
+            return Err(fail(
+                ARM,
+                "leaked_refcount_across_exec:post_parent_close_read=EAGAIN_not_EOF".to_string(),
+            ))
+        }
+        Err(e) => return Err(fail(ARM, format!("expected_eof_got_error:{}", e))),
+    }
+
+    let _ = io::close(master);
+    pass(ARM, "cloexec_survived_fork=1:eof_after_parent_close=1");
+    Ok(())
+}
+
+const ARM_COUNT: u32 = 14;
 
 fn run() -> Result<u32, Failure> {
     let (master, slave_path) = arm_openpt()?;
@@ -708,6 +839,7 @@ fn run() -> Result<u32, Failure> {
         arm_pgrp(master, slave)?;
         arm_hangup(master, slave)?;
         arm_ctty()?;
+        arm_cloexec_exec()?;
         Ok(())
     })();
 
@@ -723,6 +855,16 @@ fn run() -> Result<u32, Failure> {
 }
 
 fn main() {
+    // Arm 14 (cloexec_exec) execs a fresh copy of this program to observe
+    // what the KERNEL does to an FD_CLOEXEC-marked fd during exec() --
+    // close_cloexec() runs before main() is ever reached. This marker mode
+    // must do nothing else: touching any TTY state here would test what the
+    // child does, not what the kernel already did.
+    let args: Vec<String> = env::args().collect();
+    if args.len() >= 2 && args[1] == "--cloexec-child" {
+        process::exit(0);
+    }
+
     match run() {
         Ok(arms) => {
             emit(&format!("[TTY_ORACLE:COMPLETE:pass={}:fail=0]", arms));
