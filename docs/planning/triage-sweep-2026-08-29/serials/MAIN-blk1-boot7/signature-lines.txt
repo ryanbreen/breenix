@@ -1,0 +1,17 @@
+RING3_SMOKE: creating clock_gettime_test userspace process
+create_user_process: ENTRY - Creating 'clock_gettime_test'
+manager.create_process: ENTRY - name='clock_gettime_test', elf_size=184576
+<S>[SW]<T><U><R><S>[SW]<T><U><R>=== clock_gettime Userspace Test ===
+Test 41c: Single clock_gettime + verify memory
+  Calling clock_gettime once...
+Test 41e: Second clock_gettime call
+<S>[SW]<T><U><R>  Calling clock_gettime again...
+[ INFO] kernel::userspace_test: ✓ Loaded 'clock_gettime_test' from test disk (184576 bytes)
+[ INFO] kernel::process::creation: create_user_process: Creating user process 'clock_gettime_test' with new model
+[ INFO] kernel::process::manager: Created process clock_gettime_test (PID 4)
+[ INFO] kernel::process::creation: create_user_process: Scheduling user thread 14 ('clock_gettime_test')
+Added thread 14 'clock_gettime_test' to scheduler (user: true, target_cpu: 0)
+[ INFO] kernel: Created clock_gettime_test process with PID 4
+[DEBUG] kernel::task::process_task: Process 4 'clock_gettime_test' (thread 14) exited with code 1
+[ INFO] kernel::syscall::handlers: TEST_TALLY: exited=19 nonzero=1 failed=[clock_gettime_test:1]
+[ERROR] kernel::syscall::handlers: 🚨 Failing userspace processes: clock_gettime_test:1 🚨
