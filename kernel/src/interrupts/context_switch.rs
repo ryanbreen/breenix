@@ -203,21 +203,14 @@ pub extern "C" fn check_need_resched_and_switch(
         return;
     }
 
-    // Check if current thread is blocked or terminated - we MUST switch away in that case
+    // Check if current thread is blocked or terminated - we MUST switch away in that case.
+    // Uses ThreadState::is_blocked() (#673 review, m4) -- this site wants the
+    // full family, unlike per_cpu::can_schedule()'s deliberately narrower set.
     let current_thread_blocked_or_terminated = scheduler::with_scheduler(|sched| {
-        if let Some(current) = sched.current_thread_mut() {
-            matches!(
-                current.state,
-                crate::task::thread::ThreadState::Blocked
-                    | crate::task::thread::ThreadState::BlockedOnSignal
-                    | crate::task::thread::ThreadState::BlockedOnChildExit
-                    | crate::task::thread::ThreadState::BlockedOnTimer
-                    | crate::task::thread::ThreadState::BlockedOnIO
-                    | crate::task::thread::ThreadState::Terminated
-            )
-        } else {
-            false
-        }
+        sched.current_thread_mut().is_some_and(|current| {
+            current.state.is_blocked()
+                || current.state == crate::task::thread::ThreadState::Terminated
+        })
     })
     .unwrap_or(false);
 

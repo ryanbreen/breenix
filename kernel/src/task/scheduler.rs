@@ -909,14 +909,7 @@ pub fn try_liveness_snapshot(cpu_id: usize) -> Option<SchedulerLivenessSnapshot>
         .threads
         .iter()
         .filter(|t| {
-            matches!(
-                t.state,
-                ThreadState::Blocked
-                    | ThreadState::BlockedOnSignal
-                    | ThreadState::BlockedOnChildExit
-                    | ThreadState::BlockedOnTimer
-                    | ThreadState::BlockedOnIO
-            )
+            t.state.is_blocked() // #673 review, m4
         })
         .count() as u64;
 
@@ -944,14 +937,7 @@ pub fn try_dump_state() -> Option<SchedulerDumpInfo> {
         .threads
         .iter()
         .filter(|t| {
-            matches!(
-                t.state,
-                ThreadState::Blocked
-                    | ThreadState::BlockedOnSignal
-                    | ThreadState::BlockedOnChildExit
-                    | ThreadState::BlockedOnTimer
-                    | ThreadState::BlockedOnIO
-            )
+            t.state.is_blocked() // #673 review, m4
         })
         .count() as u64;
 
@@ -1839,11 +1825,8 @@ impl Scheduler {
                     if let Some(current) = self.get_thread_mut(current_id) {
                         let was_terminated = current.state == ThreadState::Terminated;
                         // Check for any blocked state
-                        let was_blocked = current.state == ThreadState::Blocked
-                            || current.state == ThreadState::BlockedOnSignal
-                            || current.state == ThreadState::BlockedOnChildExit
-                            || current.state == ThreadState::BlockedOnTimer
-                            || current.state == ThreadState::BlockedOnIO;
+                        // ThreadState::is_blocked() (#673 review, m4).
+                        let was_blocked = current.state.is_blocked();
 
                         // Charge elapsed CPU ticks to the outgoing thread, but ONLY
                         // if it was actually running. Blocked threads already had
@@ -2320,11 +2303,8 @@ impl Scheduler {
                 let (is_terminated, is_blocked, terminated_owner_pid) =
                     if let Some(current) = self.get_thread(current_id) {
                         let was_terminated = current.state == ThreadState::Terminated;
-                        let was_blocked = current.state == ThreadState::Blocked
-                            || current.state == ThreadState::BlockedOnSignal
-                            || current.state == ThreadState::BlockedOnChildExit
-                            || current.state == ThreadState::BlockedOnTimer
-                            || current.state == ThreadState::BlockedOnIO;
+                        // ThreadState::is_blocked() (#673 review, m4).
+                        let was_blocked = current.state.is_blocked();
 
                         (
                             was_terminated,
