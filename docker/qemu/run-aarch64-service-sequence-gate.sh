@@ -428,6 +428,8 @@ classify_serial() {
     local kernel_panic_marker
     local kernel_panic_location
     local kernel_panic_message
+    local second_stage_line
+    local heartbeat_after_stall
 
     # #596's runtime oracle is unconditional: an inline-saved context whose
     # recorded resume PC is not its inline-save x30 is a defect no matter what
@@ -608,6 +610,42 @@ classify_serial() {
         CLASS_REASON="live sibling refused exec"
         return
     fi
+    # #690, ATTRIBUTION ONLY (filed by arc 3/sockets 2026-08-29; recurred in arc
+    # 4/TTY's confirmation slot, cortex-a72 boot 19/25, 2026-08-30 — same
+    # signature, same rate class, not attributed to either branch). Like #641,
+    # this bucket does not soften the gate: 690 is IN run_profile's FAIL
+    # condition below exactly where the UNATTRIBUTED verdict it replaces already
+    # was. It only routes a recurrence of a known, pre-existing, unexplained
+    # defect to the issue that names it instead of losing it inside
+    # UNATTRIBUTED, where a genuinely novel signature could ride in behind it.
+    #
+    # #690's signature: clonevm_exec_test's last CLONEVM_EXEC_TEST line is
+    # "second stage" and "post-exec rendezvous complete" never arrives — init
+    # is blocked forever in waitpid on the child, so the service sequence never
+    # proceeds and the boot runs out its timeout. A KERNEL PANIC or PC_ALIGN
+    # record anywhere in the serial disqualifies this arm (those get their own
+    # bucket further down and must not be stolen by this one), and the kernel
+    # must still be emitting heartbeats well after the stall — #690's own
+    # evidence that the guest is not dead, just one process wedged in a
+    # rendezvous, not a crash that happened to leave "second stage" as its last
+    # line.
+    if [ "$last_line" = "CLONEVM_EXEC_TEST: second stage" ] \
+        && ! grep -qF "CLONEVM_EXEC_TEST: post-exec rendezvous complete" "$serial_file" 2>/dev/null \
+        && ! grep -qF "KERNEL PANIC" "$serial_file" 2>/dev/null \
+        && ! grep -qF "[PC_ALIGN]" "$serial_file" 2>/dev/null; then
+        second_stage_line=$(grep -nF "CLONEVM_EXEC_TEST: second stage" "$serial_file" 2>/dev/null | tail -1 | cut -d: -f1)
+        heartbeat_after_stall=0
+        if [ -n "$second_stage_line" ]; then
+            heartbeat_after_stall=$(awk -v start="$second_stage_line" \
+                'NR > start && index($0, "[heartbeat]") { count++ } END { print count + 0 }' \
+                "$serial_file")
+        fi
+        if [ "$heartbeat_after_stall" -ge 5 ]; then
+            CLASS_BUCKET="690"
+            CLASS_REASON="clonevm_exec_test stalled at 'second stage' and never reached the post-exec rendezvous (#690, pre-existing, ATTRIBUTED and gate-failing exactly as the UNATTRIBUTED verdict it replaces); kernel stayed alive: $heartbeat_after_stall heartbeat(s) observed after the stall"
+            return
+        fi
+    fi
     # A crashed boot's cleanup can strand a thread; attribute strands only if no crash came first.
     stranded_strand_line=$(grep -E '\[SCHED_STRAND_ORACLE:[^]]*:stranded=[1-9][0-9]*:' \
         "$serial_file" 2>/dev/null | tail -1 || true)
@@ -772,6 +810,7 @@ TOTAL_576=0
 TOTAL_626=0
 TOTAL_635=0
 TOTAL_641=0
+TOTAL_690=0
 TOTAL_DATA_ABORT=0
 TOTAL_CLONE_EXEC=0
 TOTAL_STRAND=0
@@ -832,6 +871,11 @@ print_census() {
     local lr_nontext_lines="${29}"
     local identity_split_boots="${30}"
     local identity_split_lines="${31}"
+    # Appended as the LAST positional parameter rather than inserted after
+    # count_641, so every existing "${N}" reference above keeps its number —
+    # renumbering them all in place to insert this in bucket order would be a
+    # one-mistake-and-every-count-is-off edit for a purely cosmetic gain.
+    local count_690="${32}"
     local green_rate
 
     green_rate=$(awk -v green="$count_green" -v boots="$count_boots" \
@@ -843,6 +887,7 @@ print_census() {
     printf '  %-13s %d\n' "626" "$count_626"
     printf '  %-13s %d\n' "635" "$count_635"
     printf '  %-13s %d\n' "641" "$count_641"
+    printf '  %-13s %d\n' "690" "$count_690"
     printf '  %-13s %d\n' "DATA_ABORT" "$count_data_abort"
     printf '  %-13s %d\n' "CLONE_EXEC" "$count_clone_exec"
     printf '  %-13s %d\n' "STRAND" "$count_strand"
@@ -853,7 +898,7 @@ print_census() {
     printf '  %-13s %d\n' "P5B" "$count_p5b"
     printf '  %-13s %d\n' "GREEN" "$count_green"
     printf '  %-13s %d\n' "UNATTRIBUTED" "$count_unattributed"
-    echo "  GREEN rate: $count_green/$count_boots ($green_rate%) — census-only: every non-GREEN bucket is gate-failing, with no exceptions, including the open #576, #626, #635 and #641 defects"
+    echo "  GREEN rate: $count_green/$count_boots ($green_rate%) — census-only: every non-GREEN bucket is gate-failing, with no exceptions, including the open #576, #626, #635, #641 and #690 defects"
     # Reported, never gated: the #596 mechanism counter. A nonzero divergence
     # count with bucket 596 at zero is the production evidence that an
     # inline-saved context really is ERET-dispatched carrying a stale ELR and
@@ -921,6 +966,7 @@ run_profile() {
     local count_626=0
     local count_635=0
     local count_641=0
+    local count_690=0
     local count_data_abort=0
     local count_clone_exec=0
     local count_strand=0
@@ -1127,6 +1173,7 @@ run_profile() {
             626) count_626=$((count_626 + 1)) ;;
             635) count_635=$((count_635 + 1)) ;;
             641) count_641=$((count_641 + 1)) ;;
+            690) count_690=$((count_690 + 1)) ;;
             DATA_ABORT) count_data_abort=$((count_data_abort + 1)) ;;
             CLONE_EXEC) count_clone_exec=$((count_clone_exec + 1)) ;;
             STRAND) count_strand=$((count_strand + 1)) ;;
@@ -1148,7 +1195,7 @@ run_profile() {
         echo "  Boot $boot/$BOOTS: $CLASS_BUCKET — $CLASS_REASON [$boot_end, ${boot_seconds}s, ctx596_divergence=$boot_divergence, ret_dispatch_refusals=$boot_refusals, resume_pc_refusals=$boot_resume_pc_refusals, percpu_stack_aliens=$boot_stack_aliens, cpu_identity_splits=$boot_identity_splits, ret_stage_refusals=$boot_stage_refusals, lr_nontext=$boot_lr_nontext]"
     done
 
-    census_sum=$((count_575 + count_576 + count_626 + count_635 + count_641 + count_data_abort + count_clone_exec + count_strand + count_boot_test_fail + count_596 + count_612 + count_609 + count_p5b + count_green + count_unattributed))
+    census_sum=$((count_575 + count_576 + count_626 + count_635 + count_641 + count_690 + count_data_abort + count_clone_exec + count_strand + count_boot_test_fail + count_596 + count_612 + count_609 + count_p5b + count_green + count_unattributed))
     if [ "$census_sum" -ne "$BOOTS" ]; then
         echo "FATAL: $cpu_profile bucket census sums to $census_sum, expected $BOOTS"
         exit 1
@@ -1161,7 +1208,8 @@ run_profile() {
         "$stack_alien_boots" "$stack_alien_lines" \
         "$stage_refusal_boots" "$stage_refusal_lines" \
         "$lr_nontext_boots" "$lr_nontext_lines" \
-        "$identity_split_boots" "$identity_split_lines"
+        "$identity_split_boots" "$identity_split_lines" \
+        "$count_690"
 
     # #589 is closed; its CLONE_EXEC and STRAND shapes now fail this gate. The
     # GREEN rate stays census-only reporting; open #576 and #626 remain named
@@ -1186,16 +1234,21 @@ run_profile() {
     # failed the profile; it fails the profile now for the same reason, under
     # the name of the open issue it belongs to. Nothing else about the condition
     # changed when it was added.
+    # #690 is IN this condition for the identical reason: its bucket is an
+    # ATTRIBUTION, not a tolerance, added in the round that found the boot-19
+    # occurrence in this branch's own confirmation slot (#706, closed as a
+    # duplicate). Before the bucket existed the signature scored UNATTRIBUTED
+    # and failed the profile; it fails the profile now for the same reason.
     # resume_pc_refusal_lines is IN this condition. This gate builds no oracle
     # or injection feature, so a [RESUME_PC_REFUSED:] record here can only have
     # come from a production dispatch whose resume PC failed admission — the EL0
     # arm of the same fault family as the filed #633 and #637 faces. It is a
     # defect to file, not a number to watch.
-    if [ "$count_575" -ne 0 ] || [ "$count_576" -ne 0 ] || [ "$count_626" -ne 0 ] || [ "$count_635" -ne 0 ] || [ "$count_641" -ne 0 ] || [ "$count_data_abort" -ne 0 ] || [ "$count_clone_exec" -ne 0 ] || [ "$count_strand" -ne 0 ] || [ "$count_boot_test_fail" -ne 0 ] || [ "$count_596" -ne 0 ] || [ "$count_612" -ne 0 ] || [ "$count_609" -ne 0 ] || [ "$count_p5b" -ne 0 ] || [ "$count_unattributed" -ne 0 ] || [ "$resume_pc_refusal_lines" -ne 0 ] || [ "$stack_alien_lines" -ne 0 ] || [ "$identity_split_lines" -ne 0 ] || [ "$stage_refusal_lines" -ne 0 ]; then
+    if [ "$count_575" -ne 0 ] || [ "$count_576" -ne 0 ] || [ "$count_626" -ne 0 ] || [ "$count_635" -ne 0 ] || [ "$count_641" -ne 0 ] || [ "$count_690" -ne 0 ] || [ "$count_data_abort" -ne 0 ] || [ "$count_clone_exec" -ne 0 ] || [ "$count_strand" -ne 0 ] || [ "$count_boot_test_fail" -ne 0 ] || [ "$count_596" -ne 0 ] || [ "$count_612" -ne 0 ] || [ "$count_609" -ne 0 ] || [ "$count_p5b" -ne 0 ] || [ "$count_unattributed" -ne 0 ] || [ "$resume_pc_refusal_lines" -ne 0 ] || [ "$stack_alien_lines" -ne 0 ] || [ "$identity_split_lines" -ne 0 ] || [ "$stage_refusal_lines" -ne 0 ]; then
         ANY_GATE_FAILURE=1
-        echo "Profile $cpu_profile gate: FAILED (575=$count_575, 576=$count_576, 626=$count_626, 635=$count_635, 641=$count_641, DATA_ABORT=$count_data_abort, CLONE_EXEC=$count_clone_exec, STRAND=$count_strand, BOOT_TEST_FAIL=$count_boot_test_fail, 596=$count_596, 612=$count_612, 609=$count_609, P5B=$count_p5b, UNATTRIBUTED=$count_unattributed, RESUME_PC_REFUSED=$resume_pc_refusal_lines, PERCPU_STACK_ALIEN=$stack_alien_lines, CPU_IDENTITY_SPLIT=$identity_split_lines, RET_STAGE_REFUSED=$stage_refusal_lines)"
+        echo "Profile $cpu_profile gate: FAILED (575=$count_575, 576=$count_576, 626=$count_626, 635=$count_635, 641=$count_641, 690=$count_690, DATA_ABORT=$count_data_abort, CLONE_EXEC=$count_clone_exec, STRAND=$count_strand, BOOT_TEST_FAIL=$count_boot_test_fail, 596=$count_596, 612=$count_612, 609=$count_609, P5B=$count_p5b, UNATTRIBUTED=$count_unattributed, RESUME_PC_REFUSED=$resume_pc_refusal_lines, PERCPU_STACK_ALIEN=$stack_alien_lines, CPU_IDENTITY_SPLIT=$identity_split_lines, RET_STAGE_REFUSED=$stage_refusal_lines)"
     else
-        echo "Profile $cpu_profile gate: PASSED (575=0, 576=0, 626=0, 635=0, 641=0, DATA_ABORT=0, CLONE_EXEC=0, STRAND=0, BOOT_TEST_FAIL=0, 596=0, 612=0, 609=0, P5B=0, UNATTRIBUTED=0, RESUME_PC_REFUSED=0, PERCPU_STACK_ALIEN=0, CPU_IDENTITY_SPLIT=0, RET_STAGE_REFUSED=0)"
+        echo "Profile $cpu_profile gate: PASSED (575=0, 576=0, 626=0, 635=0, 641=0, 690=0, DATA_ABORT=0, CLONE_EXEC=0, STRAND=0, BOOT_TEST_FAIL=0, 596=0, 612=0, 609=0, P5B=0, UNATTRIBUTED=0, RESUME_PC_REFUSED=0, PERCPU_STACK_ALIEN=0, CPU_IDENTITY_SPLIT=0, RET_STAGE_REFUSED=0)"
     fi
 
     TOTAL_575=$((TOTAL_575 + count_575))
@@ -1203,6 +1256,7 @@ run_profile() {
     TOTAL_626=$((TOTAL_626 + count_626))
     TOTAL_635=$((TOTAL_635 + count_635))
     TOTAL_641=$((TOTAL_641 + count_641))
+    TOTAL_690=$((TOTAL_690 + count_690))
     TOTAL_DATA_ABORT=$((TOTAL_DATA_ABORT + count_data_abort))
     TOTAL_CLONE_EXEC=$((TOTAL_CLONE_EXEC + count_clone_exec))
     TOTAL_STRAND=$((TOTAL_STRAND + count_strand))
@@ -1251,7 +1305,7 @@ case "$PROFILE" in
         ;;
 esac
 
-TOTAL_SUM=$((TOTAL_575 + TOTAL_576 + TOTAL_626 + TOTAL_635 + TOTAL_641 + TOTAL_DATA_ABORT + TOTAL_CLONE_EXEC + TOTAL_STRAND + TOTAL_BOOT_TEST_FAIL + TOTAL_596 + TOTAL_612 + TOTAL_609 + TOTAL_P5B + TOTAL_GREEN + TOTAL_UNATTRIBUTED))
+TOTAL_SUM=$((TOTAL_575 + TOTAL_576 + TOTAL_626 + TOTAL_635 + TOTAL_641 + TOTAL_690 + TOTAL_DATA_ABORT + TOTAL_CLONE_EXEC + TOTAL_STRAND + TOTAL_BOOT_TEST_FAIL + TOTAL_596 + TOTAL_612 + TOTAL_609 + TOTAL_P5B + TOTAL_GREEN + TOTAL_UNATTRIBUTED))
 EXPECTED_TOTAL=$((BOOTS * PROFILE_COUNT))
 if [ "$TOTAL_SUM" -ne "$EXPECTED_TOTAL" ] || [ "$TOTAL_BOOTS" -ne "$EXPECTED_TOTAL" ]; then
     echo "FATAL: total bucket census sums to $TOTAL_SUM for $TOTAL_BOOTS recorded boots; expected $EXPECTED_TOTAL"
@@ -1265,7 +1319,8 @@ print_census "Total" "$TOTAL_575" "$TOTAL_576" "$TOTAL_626" "$TOTAL_635" "$TOTAL
     "$TOTAL_STACK_ALIEN_BOOTS" "$TOTAL_STACK_ALIEN_LINES" \
     "$TOTAL_STAGE_REFUSAL_BOOTS" "$TOTAL_STAGE_REFUSAL_LINES" \
     "$TOTAL_LR_NONTEXT_BOOTS" "$TOTAL_LR_NONTEXT_LINES" \
-    "$TOTAL_IDENTITY_SPLIT_BOOTS" "$TOTAL_IDENTITY_SPLIT_LINES"
+    "$TOTAL_IDENTITY_SPLIT_BOOTS" "$TOTAL_IDENTITY_SPLIT_LINES" \
+    "$TOTAL_690"
 
 # The #609 run-wide rate ceiling that used to live here is DELETED (R33) and
 # stays deleted (R37). A rate ceiling is a tolerance: it let up to
