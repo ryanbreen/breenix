@@ -287,6 +287,10 @@ path = "src/poll_tcp_oracle.rs"
 name = "futex_handoff_oracle"
 path = "src/futex_handoff_oracle.rs"
 
+[[bin]]
+name = "tty_oracle"
+path = "src/tty_oracle.rs"
+
 # Additional test programs
 [[bin]]
 name = "alarm_test"
