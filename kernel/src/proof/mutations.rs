@@ -174,12 +174,12 @@ pub fn armed() -> Option<&'static Mutation> {
         "coreproof_mut_futex_section"
     } else if cfg!(feature = "coreproof_mut_masked_lock") {
         "coreproof_mut_masked_lock"
+    } else if cfg!(feature = "coreproof_mut_masked_lock_bare") {
+        "coreproof_mut_masked_lock_bare"
     } else {
         return None;
     };
-    REGISTER
-        .iter()
-        .find(|mutation| mutation.feature == feature)
+    REGISTER.iter().find(|mutation| mutation.feature == feature)
 }
 
 /// The armed mutation's feature name for the run record, or `none`.

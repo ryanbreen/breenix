@@ -32,16 +32,18 @@
 //! harness-authored deadlock rather than a finding. Component A's nine seams
 //! placed inside `scheduler.rs` all sit inside such a critical section, so
 //! every one of them must be classified `Masked` — that rule is unchanged and
-//! still enforced exactly. Component C's `ScheduleEntry` seam is placed at the
-//! very top of `scheduler::schedule()`, BEFORE that function ever reaches the
-//! lock, so it is deliberately `Open` — a documented, checked exception rather
-//! than a silently-skipped one. The distinguishing shape used to tell the two
-//! cases apart is structural, not a name: a block that declares more than one
-//! site is treated as "Component A's shape" (every one of its scheduler.rs
-//! placements must be `Masked`), and a block that declares exactly one site is
-//! treated as "a minimal single-entry-seam shape" (its one scheduler.rs
-//! placement, if any, must be `Open`). Neither branch is skipped; both are
-//! asserted.
+//! still enforced exactly. Component C's `ScheduleEntry` and `PreDispatchMask`
+//! seams are both placed in `scheduler::schedule()` BEFORE that function ever
+//! reaches the lock, so they are deliberately `Open` — documented, checked
+//! exceptions rather than silently-skipped ones. The distinguishing fact is
+//! each placement, not its block's cardinality: a scheduler seam inside
+//! `impl Scheduler { .. }`, or
+//! after a lock-taking construct in its own free function, must be `Masked`; a
+//! seam genuinely before any lock in its own free function must be `Open`.
+//! That handles Component C's now-multi-site block without forcing either of
+//! its two genuinely `Open` scheduler seams to lie about themselves. Every placed
+//! variant is checked even when its block has no `Open` arm at all, so absence
+//! of that arm cannot skip the block and make the assertion vacuous (B3).
 
 use std::collections::BTreeSet;
 use std::fs;
@@ -162,10 +164,19 @@ fn every_declared_site_is_listed_and_named() {
     let block_list = blocks();
     for block in &block_list {
         let variants = declared_variants_in(block);
+        // A floor of 2, not just non-empty: `main` asserted `>= 2` here (a
+        // parser that silently stopped finding variants would still pass a
+        // bare non-empty check on a block that used to have many). Rung 2's
+        // first cut weakened this to `!is_empty()` to accommodate a
+        // one-variant Component C block; this rung's own B1/M4a fixes give
+        // Component C three variants, so the original floor is restored
+        // rather than carried as a permanent weakening (rung 2 review, m3).
         assert!(
-            !variants.is_empty(),
-            "a SiteId block parsed to zero variants; the parser has drifted off \
-             the source it reads"
+            variants.len() >= 2,
+            "a SiteId block parsed to {} variant(s); the parser has drifted off \
+             the source it reads (or a block has shrunk to a single seam, which \
+             needs this floor revisited deliberately, not silently)",
+            variants.len()
         );
         for variant in &variants {
             // A trailing comma follows every element of a multi-element ALL
@@ -227,75 +238,128 @@ fn every_placed_site_is_declared() {
     );
 }
 
+/// Whether a byte offset within `scheduler.rs`'s own source text sits inside a region that
+/// runs with the scheduler lock already held.
+///
+/// This is the placement fact `every_scheduler_seam_is_classified_correctly` keys on now
+/// (rung 2 review, M1) — not block cardinality, which has no causal relation to where a seam
+/// actually lives and would wrongly force a future single-seam component's genuinely masked
+/// placement to lie about itself as `Open` (or, as happened here, wrongly force a genuinely
+/// `Open` multi-seam component's placements to lie about themselves as `Masked`). Two
+/// structural signals, checked in order:
+///
+///   1. Every `impl Scheduler { .. }` method runs with the lock already held by ITS CALLER —
+///      no method inside that block ever takes the lock itself; that is this codebase's own
+///      calling convention (`Scheduler`'s methods are always reached via
+///      `lock_scheduler()`/`without_interrupts` at the CALL site, never inside the method). A
+///      call site lexically inside that block's own byte range is therefore Masked,
+///      unconditionally.
+///   2. A call site in a free (module-level) function is Masked only if a lock-taking
+///      construct (`lock_scheduler(`, `try_lock_scheduler(`, or `without_interrupts(`) appears
+///      textually earlier in THAT SAME function's own source than the call site does;
+///      otherwise it precedes any lock the function ever takes, and is Open.
+fn scheduler_seam_is_masked(source: &str, call_offset: usize) -> bool {
+    let impl_marker = "\nimpl Scheduler {";
+    let impl_start = source
+        .find(impl_marker)
+        .expect("scheduler.rs no longer declares `impl Scheduler { .. }`; the parser has drifted off the source it reads");
+    // The block's own closing brace is the first line consisting of a bare `}` at column 0
+    // after the block starts — every OTHER close inside it is indented (rustfmt's own
+    // convention), so this cannot mistake a nested block's close for the impl's own.
+    let close_rel = source[impl_start..]
+        .find("\n}\n")
+        .expect("`impl Scheduler { .. }` has no column-0 closing brace; the parser has drifted off the source it reads");
+    let impl_end = impl_start + close_rel;
+    if call_offset > impl_start && call_offset < impl_end {
+        return true;
+    }
+
+    let head = &source[..call_offset];
+    let fn_start = ["\nfn ", "\npub fn "]
+        .iter()
+        .filter_map(|marker| head.rfind(marker))
+        .max()
+        .unwrap_or(0);
+    let body = &source[fn_start..call_offset];
+    body.contains("lock_scheduler(")
+        || body.contains("try_lock_scheduler(")
+        || body.contains("without_interrupts(")
+}
+
 #[test]
 fn every_scheduler_seam_is_classified_correctly() {
+    let scheduler_source = read("kernel/src/task/scheduler.rs");
     let scheduler_placed = scheduler_placed_variants();
     for block in blocks() {
         let variants = declared_variants_in(&block);
-        let open_body = {
-            let Some(start) = block.find("SiteClass::Open") else {
-                // A block with no Open arm at all has nothing further to check
-                // here — every one of its variants is Masked by construction.
-                continue;
-            };
-            let head = &block[..start];
-            // The Open arm's own pattern sits BETWEEN the previous arm's `=>`
-            // and this arm's own `=>` — two arrows back from "SiteClass::Open",
-            // not one: `head.rfind("=>")` alone lands on THIS arm's own arrow,
-            // whose head[..] slice then ends exactly at "SiteClass::Open" and
-            // never actually contains this arm's pattern names at all. Walking
-            // back a second arrow (or to `match self {` for a first arm) is
-            // what makes this a real containment check instead of a
-            // whitespace-only string that renders every assertion below
-            // vacuously true.
-            let this_arrow = head
-                .rfind("=>")
-                .expect("class() has an arm ending in SiteClass::Open");
-            let prior_text = &head[..this_arrow];
-            let arm_start = match prior_text.rfind("=>") {
-                Some(index) => index + 2,
-                None => {
-                    let marker = "match self {";
-                    prior_text
-                        .rfind(marker)
-                        .map(|index| index + marker.len())
-                        .unwrap_or(0)
-                }
-            };
-            head[arm_start..].to_string()
+        // The Open arm's own pattern text, used below to check that a variant this rung
+        // requires to be `Open` is genuinely spelled inside a `SiteClass::Open` arm (not
+        // merely absent from every OTHER arm — string containment, not exclusion, is the
+        // actual check). A block with no `SiteClass::Open` arm at all yields an empty body
+        // here rather than skipping the block (rung 2 review, B3): a variant this rung
+        // requires to be `Open` then correctly fails the `assert!` below instead of having
+        // its whole block silently skipped.
+        let open_body: String = match block.find("SiteClass::Open") {
+            Some(start) => {
+                let head = &block[..start];
+                // The Open arm's own pattern sits BETWEEN the previous arm's `=>` and this
+                // arm's own `=>` — two arrows back from "SiteClass::Open", not one:
+                // `head.rfind("=>")` alone lands on THIS arm's own arrow, whose head[..]
+                // slice then ends exactly at "SiteClass::Open" and never actually contains
+                // this arm's pattern names at all. Walking back a second arrow (or to
+                // `match self {` for a first arm) is what makes this a real containment
+                // check instead of a whitespace-only string that renders every assertion
+                // below vacuously true.
+                let this_arrow = head
+                    .rfind("=>")
+                    .expect("class() has an arm ending in SiteClass::Open");
+                let prior_text = &head[..this_arrow];
+                let arm_start = match prior_text.rfind("=>") {
+                    Some(index) => index + 2,
+                    None => {
+                        let marker = "match self {";
+                        prior_text
+                            .rfind(marker)
+                            .map(|index| index + marker.len())
+                            .unwrap_or(0)
+                    }
+                };
+                head[arm_start..].to_string()
+            }
+            None => String::new(),
         };
-        // A block that declares more than one site is Component A's shape:
-        // every one of its seams sits inside a scheduler-lock critical
-        // section, so none placed in scheduler.rs may be classified Open.
-        // A block that declares exactly one site is a minimal single-entry
-        // seam shape: its one scheduler.rs placement, if it has one, sits
-        // BEFORE the lock is ever taken and must be classified Open — checked
-        // for, not merely permitted, so a future single-seam block that
-        // forgets to mark itself Open still reddens this test.
-        let this_block_scheduler_variants: Vec<&String> = variants
+
+        for variant in variants
             .iter()
             .filter(|variant| scheduler_placed.contains(*variant))
-            .collect();
-        if variants.len() > 1 {
-            for variant in this_block_scheduler_variants {
+        {
+            let marker = format!("proof_point!({variant});");
+            let call_offset = scheduler_source.find(&marker).unwrap_or_else(|| {
+                panic!(
+                    "{variant} is placed in scheduler.rs per proof_point! invocation \
+                     scanning, but no `proof_point!({variant});` statement text was \
+                     found — the parser has drifted off the source it reads"
+                )
+            });
+            let must_be_masked = scheduler_seam_is_masked(&scheduler_source, call_offset);
+            let is_open = open_body.contains(&format!("Self::{variant}"));
+            if must_be_masked {
                 assert!(
-                    !open_body.contains(&format!("Self::{variant}")),
-                    "site {variant} is placed inside the scheduler's masked \
-                     critical sections but is classified Open, which would \
-                     admit a yield or a forced reschedule from a window that \
-                     holds the scheduler lock with interrupts masked — a \
-                     harness-authored deadlock, not a finding"
+                    !is_open,
+                    "site {variant} is placed inside the scheduler's masked critical \
+                     sections (inside `impl Scheduler {{ .. }}`, or after a lock-taking \
+                     construct in its own free function) but is classified Open, which \
+                     would admit a yield or a forced reschedule from a window that holds \
+                     the scheduler lock with interrupts masked — a harness-authored \
+                     deadlock, not a finding"
                 );
-            }
-        } else {
-            for variant in this_block_scheduler_variants {
+            } else {
                 assert!(
-                    open_body.contains(&format!("Self::{variant}")),
-                    "site {variant} is its block's only declared site and is \
-                     placed in scheduler.rs; a minimal single-entry-seam block \
-                     must classify its one site Open (it is expected to sit \
-                     before the scheduler lock is taken, not inside it) — \
-                     found it classified something else"
+                    is_open,
+                    "site {variant} is placed in scheduler.rs BEFORE any lock-taking \
+                     construct in its own free function (or outside `impl Scheduler {{ \
+                     .. }}` entirely) but is not classified Open — a genuinely pre-lock \
+                     seam must say so, not merely avoid saying it holds the lock"
                 );
             }
         }

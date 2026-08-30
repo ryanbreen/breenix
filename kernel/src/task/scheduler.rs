@@ -4486,23 +4486,34 @@ pub fn spawn_as_current(thread: Box<Thread>) {
 /// Perform scheduling inline from Rust kernel context (AArch64).
 #[cfg(target_arch = "aarch64")]
 pub fn schedule() {
-    // Component C's one seam (rung 2). Every caller reaches this point with
-    // interrupts ENABLED — masking is `schedule_from_kernel`'s own job,
-    // further down a call chain this harness may never seam
+    // Component C's two scheduler seams (rung 2). Every caller reaches both
+    // points with interrupts ENABLED — masking is `schedule_from_kernel`'s own
+    // job, further down a call chain this harness may never seam
     // (`context_switch.rs` is permanently prohibited,
     // `scripts/check-coreproof-seams.sh`) — so `SiteClass::Open` admits every
-    // stimulus action, including a `TimerSqueeze` at its full drawable range.
+    // stimulus action, including a `TimerSqueeze` with the Open-site-biased
+    // tick range described in `kernel/src/proof/stimulus.rs`.
     // This is also the exact function the existing `KernelSchedule` and
     // `Steal` adversarial ops already call on every peer step, so no new call
     // site is needed to reach it. See `kernel/src/proof/driver_c.rs`.
     //
     // Gated additionally on `coreproof_component_c`: Component A's build
-    // compiles a DIFFERENT `SiteId` (twelve variants, none named
-    // `ScheduleEntry`), so this invocation must not exist at all outside a
+    // compiles a DIFFERENT `SiteId` (twelve variants, neither scheduler-seam
+    // name present), so these invocations must not exist at all outside a
     // Component C build — see `kernel/src/proof/sites.rs`.
     #[cfg(feature = "coreproof_component_c")]
     crate::proof_point!(ScheduleEntry);
     crate::arch_impl::aarch64::context_switch::run_deferred_reclamation();
+    // Second Component C seam (rung 2 review, M4a): `run_deferred_reclamation()` is five
+    // separate drains (`context_switch.rs`'s own doc on that function) — an unbounded amount
+    // of work between `ScheduleEntry` above and the actual ~3-instruction pre-mask window at
+    // `schedule_from_kernel`'s own entry. A squeeze armed here has a much shorter distance to
+    // travel: only the call overhead of `schedule_from_kernel` itself stands between this
+    // point and the window `coreproof_mut_cpu_identity` targets. Same `SiteClass::Open`
+    // reasoning as `ScheduleEntry` above (interrupts are still enabled here — masking is
+    // `schedule_from_kernel`'s own job, further in).
+    #[cfg(feature = "coreproof_component_c")]
+    crate::proof_point!(PreDispatchMask);
     crate::arch_impl::aarch64::context_switch::schedule_from_kernel();
 }
 

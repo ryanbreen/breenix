@@ -18,9 +18,11 @@
 //! ## Component-scoped, not one global set
 //!
 //! Rung 1 shipped a single `SiteId` naming Component A's twelve seams. Rung 2
-//! adds Component C, whose own contract needs exactly one seam
-//! (`ScheduleEntry`, `SiteClass::Open`) that lives inside `scheduler.rs` — a
-//! file every one of Component A's placed seams is `Masked` in. Merging the two
+//! adds Component C, whose own contract needs three seams: `ScheduleEntry` at
+//! the broad pre-dispatch boundary, `PreDispatchMask` for a tighter aim point,
+//! and `DriverPreCycle` to prove the driver itself ran. The first two live
+//! inside `scheduler.rs` as `SiteClass::Open` — a file every one of Component
+//! A's placed seams is `Masked` in. Merging the two
 //! into one array would declare a site the OTHER component's build can never
 //! visit, permanently reddening that build's own non-vacuity gate
 //! (`sites_visited < sites_declared`). So `SiteId` and `ALL` are two mutually
@@ -143,39 +145,69 @@ impl SiteId {
 }
 
 // ============================================================================
-// Component C — per-CPU identity + stack custody's one seam.
+// Component C — per-CPU identity + stack custody's three seams.
 // ============================================================================
 //
 // `ScheduleEntry` sits at the top of `scheduler::schedule()`, before the call
-// to `run_deferred_reclamation()`. Every caller of `schedule()` reaches it with
-// interrupts ENABLED — masking is `schedule_from_kernel`'s own job, further
-// down a call chain this harness may never seam (`context_switch.rs` is
-// permanently prohibited, `scripts/check-coreproof-seams.sh`) — so the class is
-// `Open`, not `Masked`. It is also the one site both the existing
-// `KernelSchedule` and `Steal` antagonist ops already reach on every peer step,
-// so no new call site is needed to exercise it.
+// to `run_deferred_reclamation()`, while `PreDispatchMask` sits immediately
+// after that drain and before `schedule_from_kernel()`. Every caller of
+// `schedule()` reaches both with interrupts ENABLED — masking is
+// `schedule_from_kernel`'s own job, further down a call chain this harness may
+// never seam (`context_switch.rs` is permanently prohibited,
+// `scripts/check-coreproof-seams.sh`) — so their class is `Open`, not `Masked`.
+// Both existing `KernelSchedule` and `Steal` antagonist ops already reach them
+// on every peer step, so no new call path is needed to exercise either one.
 //
-// A single-variant `ALL` means `rng::draw`'s uniform site pick always lands
-// here; there is nothing else to draw. `sites_visited == sites_declared` is
-// satisfied trivially in ordinary operation because `scheduler::schedule()` is
-// called throughout an ordinary boot regardless of which component is driving.
+// `ALL` now has three variants. `ScheduleEntry` and `PreDispatchMask` are both
+// visited trivially by ordinary boot traffic — `scheduler::schedule()` runs
+// constantly regardless of which component is driving, so those two alone
+// would make `sites_visited == sites_declared` satisfied by construction, not
+// by the harness actually running (this was a real, disclosed gap in rung 2's
+// first cut — the review that caught it is `rung2-review.md`, finding B1).
+// `DriverPreCycle` closes that gap: it lives in `driver_c.rs`'s own loop, not in
+// `scheduler.rs`, so it can only ever be visited if the coreproof driver thread
+// itself dispatches and runs at least one iteration. `sites_visited ==
+// sites_declared` is therefore now a genuine non-vacuity check for Component C,
+// not a tautology. `docker/qemu/run-coreproof-gate.sh`'s `adjudicate()` also now
+// fails a boot outright on `iters=0`, independent of which sites a future
+// component happens to declare — belt and suspenders, not either/or.
 
 #[cfg(feature = "coreproof_component_c")]
 #[derive(Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum SiteId {
     ScheduleEntry,
+    PreDispatchMask,
+    DriverPreCycle,
 }
 
 #[cfg(feature = "coreproof_component_c")]
-pub const ALL: &[SiteId] = &[SiteId::ScheduleEntry];
+pub const ALL: &[SiteId] = &[
+    SiteId::ScheduleEntry,
+    SiteId::PreDispatchMask,
+    SiteId::DriverPreCycle,
+];
 
 #[cfg(feature = "coreproof_component_c")]
 impl SiteId {
     pub fn name(self) -> &'static str {
         match self {
             Self::ScheduleEntry => "ScheduleEntry",
+            Self::PreDispatchMask => "PreDispatchMask",
+            Self::DriverPreCycle => "DriverPreCycle",
         }
+    }
+
+    /// Reconstruct a `SiteId` from its `as u8` discriminant, defensively (never panics —
+    /// falls back to `ALL[0]` for an out-of-range value). Used to decode a site that was
+    /// stored as a raw `u8` in an atomic. Derived from `ALL`, not a second literal list —
+    /// see this module's own header on why a name list here would be the same mistake
+    /// #549/#551/#527-r1 already made once.
+    pub(crate) fn from_u8(value: u8) -> Self {
+        ALL.iter()
+            .copied()
+            .find(|site| *site as u8 == value)
+            .unwrap_or(ALL[0])
     }
 
     /// See the Component A impl's doc for why this is derived, never drawn.
@@ -184,13 +216,13 @@ impl SiteId {
         match self {
             // Placed BEFORE `run_deferred_reclamation()`, i.e. before
             // `schedule_from_kernel`'s own pre-mask identity read.
-            Self::ScheduleEntry => Order::Before,
+            Self::ScheduleEntry | Self::PreDispatchMask | Self::DriverPreCycle => Order::Before,
         }
     }
 
     pub fn class(self) -> SiteClass {
         match self {
-            Self::ScheduleEntry => SiteClass::Open,
+            Self::ScheduleEntry | Self::PreDispatchMask | Self::DriverPreCycle => SiteClass::Open,
         }
     }
 }

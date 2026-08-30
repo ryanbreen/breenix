@@ -92,6 +92,29 @@ fn gated_features() -> BTreeSet<String> {
     found
 }
 
+/// Distinct files under `kernel/src` where a `#[cfg(feature = "name")]` attribute names
+/// `feature` — used to check that a defect whose OWN register entry says it needs more than
+/// one file moved together actually has code gated in more than one file (M7: a register
+/// entry naming two files is a claim that BOTH are needed together — M6 alone, missing the
+/// `kernel_stack.rs` half, left a real half of the original chain unreachable; see
+/// `mutations.rs`'s own header).
+fn files_gating(feature: &str) -> BTreeSet<PathBuf> {
+    let mut found = BTreeSet::new();
+    let src = repo_root().join("kernel/src");
+    let register = src.join("proof/mutations.rs");
+    walk(&src, &mut |path| {
+        if path == register || path.extension().and_then(|e| e.to_str()) != Some("rs") {
+            return;
+        }
+        let text = fs::read_to_string(path).unwrap_or_default();
+        let needle = format!("feature = \"{feature}\"");
+        if text.contains(&needle) {
+            found.insert(path.to_path_buf());
+        }
+    });
+    found
+}
+
 fn scan_for_feature_names(text: &str) -> BTreeSet<String> {
     let mut found = BTreeSet::new();
     let mut rest = text;
@@ -186,6 +209,46 @@ fn every_register_entry_cites_its_issue_its_fix_and_its_predicate() {
             register.contains(issue),
             "the register does not cite {issue}, which the pilot's pass bar names \
              as one of its six planted defects"
+        );
+    }
+}
+
+/// A register entry's `site:` field naming more than one `.rs` file is a claim that the
+/// defect needs ALL of them moved together — not a decorative list. A cfg gate that only
+/// names the feature in one of those files is silently a WEAKER mutation than the one
+/// registered (it degrades back into a different, already-registered mutation with the
+/// existing census tests fully green — see this file's own header on why that is the exact
+/// failure mode a census, not a name list, exists to catch). Generic over every register
+/// entry, not special-cased to M7 by name: a future multi-file mutation gets this check for
+/// free.
+#[test]
+fn every_multi_file_mutation_gates_every_file_its_own_entry_names() {
+    let register = read("kernel/src/proof/mutations.rs");
+    for feature in registered_features() {
+        let Some(entry_start) = register.find(&format!("\"{feature}\"")) else {
+            continue; // covered by `the_register_names_exactly_the_declared_mutations`
+        };
+        let Some(site_rel) = register[entry_start..].find("site:") else {
+            continue;
+        };
+        let site_start = entry_start + site_rel + "site:".len();
+        let Some(site_end_rel) = register[site_start..].find("predicate:") else {
+            continue;
+        };
+        let site_text = &register[site_start..site_start + site_end_rel];
+        let file_count = site_text.matches(".rs").count();
+        if file_count < 2 {
+            continue; // a single-site mutation has nothing to pair
+        }
+        let gated_in = files_gating(&feature);
+        assert!(
+            gated_in.len() >= file_count,
+            "{feature}'s own register entry names {file_count} files in `site:` but only {} \
+             of them actually gate code on the feature ({:?}) — a mutation missing one of its \
+             own named halves silently degrades into a weaker, already-registered mutation \
+             with every existing ratchet green",
+            gated_in.len(),
+            gated_in
         );
     }
 }

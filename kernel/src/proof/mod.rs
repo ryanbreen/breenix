@@ -44,7 +44,7 @@
 //! ## The fast path
 //!
 //! `seam()` is what every `proof_point!` expands to: mark the site visited (a
-//! relaxed load and a compare after the first visit), one relaxed load of this
+//! relaxed load and a compare after the first visit), one Acquire load of this
 //! CPU's armed word, one compare, and a predicted-not-taken branch out of line.
 //! The perturbation itself is `#[cold]` and `#[inline(never)]`, so the seam adds
 //! a few instructions to the masked critical sections it sits in and no more.
@@ -58,9 +58,11 @@
 //! Component C's is not: the defect it hunts needs the seam to fire on a PEER
 //! cpu's execution of `scheduler::schedule()`, not the driver's own, so
 //! `arm_cpu`/`disarm_cpu` below let the driver target any online cpu's slot
-//! from wherever it happens to be running. `ARMED` was already a per-CPU array
-//! for exactly this reason; rung 1 just never had a caller that needed the
-//! cross-CPU form.
+//! from wherever it happens to be running. `ARMED` already being a per-CPU
+//! array was necessary but not sufficient for that genuine cross-CPU handoff:
+//! rung 2 adds the actual Acquire/Release pairing and the seqlock splice-window
+//! close below. Rung 1's writer and reader were always the same cpu and never
+//! needed either mechanism.
 //!
 //! ## Scope
 //!
@@ -87,7 +89,7 @@ mod rng;
 mod sites;
 mod stimulus;
 
-use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, Ordering};
+use core::sync::atomic::{fence, AtomicBool, AtomicU32, AtomicU64, AtomicU8, Ordering};
 
 pub use quiesce::{Mode, Window};
 pub use rng::{draw, AntagonistOp, DrawVector, Order, Xorshift64Star};
@@ -102,6 +104,14 @@ pub(crate) fn loop_disarmed() -> bool {
 
 struct ArmedSlot {
     site: AtomicU64,
+    /// Seqlock write-in-progress/generation counter. Even = stable, odd = a write is
+    /// currently in flight. Bumped by `arm_cpu` (the sole writer of a given slot) before AND
+    /// after every payload write, so a concurrent `fire()` on the peer that owns this slot
+    /// can detect — and drop rather than apply — a read that overlapped a rewrite in either
+    /// direction. See `arm_cpu` and `fire` below; this closes the cross-CPU splice window the
+    /// rung 2 review found (M2). Rung 1 never needed this: the writer and reader were always
+    /// the same cpu, and program order alone made the read coherent.
+    generation: AtomicU64,
     action: AtomicU8,
     ticks: AtomicU64,
     cycles: AtomicU32,
@@ -114,6 +124,48 @@ impl ArmedSlot {
     const fn new() -> Self {
         Self {
             site: AtomicU64::new(DISARMED),
+            generation: AtomicU64::new(0),
+            action: AtomicU8::new(Action::None as u8),
+            ticks: AtomicU64::new(0),
+            cycles: AtomicU32::new(0),
+            antagonist_op: AtomicU8::new(AntagonistOp::Unblock as u8),
+            antagonist_cpu: AtomicU8::new(0),
+            order: AtomicU8::new(Order::Before as u8),
+        }
+    }
+}
+
+/// The vector actually applied by the most recent successful `fire()` on each cpu —
+/// advisory record-keeping only, NEVER consulted by `fire`/`seam` themselves. See M3 in the
+/// rung 2 review: a violation record naming a fresh, unrelated draw instead of the vector
+/// that actually fired has no causal link to the finding it accompanies. This record has its
+/// own generation counter because a final `seq` publish alone is not a snapshot protocol: a
+/// reader that acquired the old `seq` could otherwise overlap the NEXT fire's field writes
+/// before that next writer published its new `seq`, splicing two individually valid fires
+/// into one impossible report. As with `ArmedSlot`, a racing reader drops an in-flight sample
+/// instead of spinning; a slightly stale but internally coherent past fire is still honest
+/// advisory evidence.
+struct LastFired {
+    /// Even = stable, odd = a record write is in flight. One writer per cpu.
+    generation: AtomicU64,
+    /// 0 = never fired. Monotonic per-cpu (one writer per slot), so a caller comparing
+    /// sequence numbers across several peer cpus can tell which one fired most recently.
+    seq: AtomicU64,
+    site: AtomicU8,
+    action: AtomicU8,
+    ticks: AtomicU64,
+    cycles: AtomicU32,
+    antagonist_op: AtomicU8,
+    antagonist_cpu: AtomicU8,
+    order: AtomicU8,
+}
+
+impl LastFired {
+    const fn new() -> Self {
+        Self {
+            generation: AtomicU64::new(0),
+            seq: AtomicU64::new(0),
+            site: AtomicU8::new(0),
             action: AtomicU8::new(Action::None as u8),
             ticks: AtomicU64::new(0),
             cycles: AtomicU32::new(0),
@@ -126,6 +178,9 @@ impl ArmedSlot {
 
 static ARMED: [ArmedSlot; crate::arch_impl::aarch64::smp::MAX_CPUS] =
     [const { ArmedSlot::new() }; crate::arch_impl::aarch64::smp::MAX_CPUS];
+static LAST_FIRED: [LastFired; crate::arch_impl::aarch64::smp::MAX_CPUS] =
+    [const { LastFired::new() }; crate::arch_impl::aarch64::smp::MAX_CPUS];
+static FIRE_SEQ: AtomicU64 = AtomicU64::new(0);
 static STARTED: AtomicBool = AtomicBool::new(false);
 
 /// Set when the boot-test cohort has published its verdict.
@@ -175,6 +230,19 @@ pub(crate) fn arm_cpu(cpu: usize, vector: &DrawVector) {
     let Some(slot) = ARMED.get(cpu) else {
         return;
     };
+    // Seqlock write side (M2): bump to an odd (in-progress) generation BEFORE touching any
+    // payload field, write the payload, then bump to the next even (stable) generation and
+    // arm `site` last. A concurrent `fire()` on the peer that samples `generation` before and
+    // after its own read sees a mismatch — or an odd value outright — for ANY write that
+    // overlaps its read window in either direction, not just one that starts after the read
+    // does. There is exactly one writer per slot (this driver, running single-threaded on its
+    // own cpu), so a plain load+store pair (not a RMW) is enough to advance it.
+    let current_generation = slot.generation.load(Ordering::Relaxed);
+    slot.generation
+        .store(current_generation.wrapping_add(1), Ordering::Release);
+    // A release store only orders accesses that precede it; this full fence also keeps every
+    // payload store below from becoming visible before the odd in-progress generation.
+    fence(Ordering::SeqCst);
     slot.action.store(vector.action as u8, Ordering::Relaxed);
     slot.ticks.store(vector.ticks, Ordering::Relaxed);
     slot.cycles.store(vector.cycles, Ordering::Relaxed);
@@ -183,6 +251,12 @@ pub(crate) fn arm_cpu(cpu: usize, vector: &DrawVector) {
     slot.antagonist_cpu
         .store(vector.antagonist_cpu, Ordering::Relaxed);
     slot.order.store(vector.order as u8, Ordering::Relaxed);
+    slot.generation
+        .store(current_generation.wrapping_add(2), Ordering::Release);
+    // Acquire-paired with `seam()`'s load below: every payload write above, and the final
+    // (stable) generation store, happen-before a peer's `seam()` call that observes THIS
+    // store via an Acquire load — the pairing rung 1 never needed because the writer and
+    // reader were always the same cpu there.
     slot.site
         .store(u64::from(vector.site as u8) + 1, Ordering::Release);
 }
@@ -207,7 +281,9 @@ pub fn seam(site: SiteId) {
     let Some(slot) = ARMED.get(current_cpu()) else {
         return;
     };
-    let armed_site = slot.site.load(Ordering::Relaxed);
+    // Acquire, paired with `arm_cpu`'s final Release store of `site` above — see that
+    // function's doc and the module header's cross-CPU note (M2 in the rung 2 review).
+    let armed_site = slot.site.load(Ordering::Acquire);
     if armed_site == u64::from(site as u8) + 1 {
         fire(slot, site);
     }
@@ -216,9 +292,23 @@ pub fn seam(site: SiteId) {
 #[inline(never)]
 #[cold]
 fn fire(slot: &ArmedSlot, site: SiteId) {
-    // A vector is a one-iteration, one-hit arm. Consume it before applying an
-    // action that may reschedule and let unrelated work reach the same seam.
-    slot.site.store(DISARMED, Ordering::Relaxed);
+    let expected_site = u64::from(site as u8) + 1;
+
+    // Seqlock read side (M2): the driver rewrites every peer's slot every iteration
+    // regardless of whether the previous arm was consumed (see `driver_c.rs`'s own doc), so a
+    // plain field-by-field read here could read some fields from THIS draw and some from the
+    // NEXT one. Reading `generation` before and after the payload, and requiring both to
+    // agree (and be even — no write in flight), detects any interleaving `arm_cpu` call: it
+    // is a single-shot check, not a spin-retry loop, so a detected tear is DROPPED rather than
+    // retried. A dropped draw is a lost sample — `iters` already accounts for unfired arms and
+    // this is no different. An applied, spliced draw would violate this harness's own "every
+    // draw is a pure function of (seed, component, cpu, iteration)" guarantee, which matters.
+    let generation_before = slot.generation.load(Ordering::Acquire);
+    if generation_before & 1 != 0 {
+        // A write is already in flight; the payload is definitely not stable yet. Don't even
+        // start reading it.
+        return;
+    }
     let vector = DrawVector {
         site,
         action: Action::from_u8(slot.action.load(Ordering::Relaxed)),
@@ -228,7 +318,107 @@ fn fire(slot: &ArmedSlot, site: SiteId) {
         antagonist_cpu: slot.antagonist_cpu.load(Ordering::Relaxed),
         order: Order::from_u8(slot.order.load(Ordering::Relaxed)),
     };
+    // Pair with the writer-side fence: payload loads must finish before the validation load
+    // below, otherwise the compiler or cpu could move one past the generation check.
+    fence(Ordering::SeqCst);
+    let generation_after = slot.generation.load(Ordering::Acquire);
+    if generation_after != generation_before {
+        // A re-arm landed mid-read (torn) or has already fully replaced this arm. Drop rather
+        // than risk applying a spliced vector.
+        return;
+    }
+
+    // Best-effort one-hit consumption: if this CAS fails, a newer arm has already replaced
+    // this slot's contents (the driver never blocks on a consumer) — the vector we already
+    // validated above is still internally coherent and safe to apply either way; we simply
+    // leave the newer arm alone for the peer's next visit rather than clobber it.
+    let _ = slot.site.compare_exchange(
+        expected_site,
+        DISARMED,
+        Ordering::Relaxed,
+        Ordering::Relaxed,
+    );
+
+    record_last_fired(site, &vector);
     stimulus::apply(&vector);
+}
+
+/// Record a just-validated, about-to-be-applied fire. Called from `fire()` only, on the cpu
+/// whose own slot this is (i.e. `current_cpu()` inside `fire()` is the right index).
+fn record_last_fired(site: SiteId, vector: &DrawVector) {
+    let Some(last) = LAST_FIRED.get(current_cpu()) else {
+        return;
+    };
+    let seq = FIRE_SEQ.fetch_add(1, Ordering::Relaxed) + 1;
+    let current_generation = last.generation.load(Ordering::Relaxed);
+    last.generation
+        .store(current_generation.wrapping_add(1), Ordering::Release);
+    fence(Ordering::SeqCst);
+    last.site.store(site as u8, Ordering::Relaxed);
+    last.action.store(vector.action as u8, Ordering::Relaxed);
+    last.ticks.store(vector.ticks, Ordering::Relaxed);
+    last.cycles.store(vector.cycles, Ordering::Relaxed);
+    last.antagonist_op
+        .store(vector.antagonist_op as u8, Ordering::Relaxed);
+    last.antagonist_cpu
+        .store(vector.antagonist_cpu, Ordering::Relaxed);
+    last.order.store(vector.order as u8, Ordering::Relaxed);
+    last.seq.store(seq, Ordering::Release);
+    last.generation
+        .store(current_generation.wrapping_add(2), Ordering::Release);
+}
+
+/// Read one cpu's advisory fire record as a coherent single-shot snapshot. An in-progress or
+/// overlapping write is skipped, never retried: violation scoring can use another peer's
+/// stable record or the explicit never-fired placeholder instead of delaying a live kernel.
+#[cfg(feature = "coreproof_component_c")]
+fn last_fired_snapshot(last: &LastFired) -> Option<(u64, DrawVector)> {
+    let generation_before = last.generation.load(Ordering::Acquire);
+    if generation_before & 1 != 0 {
+        return None;
+    }
+    let seq = last.seq.load(Ordering::Acquire);
+    if seq == 0 {
+        return None;
+    }
+    let vector = DrawVector {
+        site: sites::SiteId::from_u8(last.site.load(Ordering::Relaxed)),
+        action: Action::from_u8(last.action.load(Ordering::Relaxed)),
+        ticks: last.ticks.load(Ordering::Relaxed),
+        cycles: last.cycles.load(Ordering::Relaxed),
+        antagonist_op: AntagonistOp::from_u8(last.antagonist_op.load(Ordering::Relaxed)),
+        antagonist_cpu: last.antagonist_cpu.load(Ordering::Relaxed),
+        order: Order::from_u8(last.order.load(Ordering::Relaxed)),
+    };
+    fence(Ordering::SeqCst);
+    let generation_after = last.generation.load(Ordering::Acquire);
+    if generation_after != generation_before {
+        return None;
+    }
+    Some((seq, vector))
+}
+
+/// The most recently fired vector across the given peer cpus, if any of them has fired at
+/// least once — and which cpu it fired on. Used by a driver's violation report to name the
+/// stimulus that actually ran rather than an unrelated fresh draw (M3, rung 2 review). Only
+/// Component C's driver calls this today (Component A's own probe already knows its applied
+/// vector directly, synchronously, with no cross-CPU gap to bridge) — gated accordingly so an
+/// unused-function warning never appears in a Component A build.
+#[cfg(feature = "coreproof_component_c")]
+pub(crate) fn most_recent_fired(peers: impl Iterator<Item = usize>) -> Option<(usize, DrawVector)> {
+    let mut best: Option<(usize, u64, DrawVector)> = None;
+    for cpu in peers {
+        let Some(last) = LAST_FIRED.get(cpu) else {
+            continue;
+        };
+        let Some((seq, vector)) = last_fired_snapshot(last) else {
+            continue;
+        };
+        if best.as_ref().is_none_or(|(_, best_seq, _)| seq > *best_seq) {
+            best = Some((cpu, seq, vector));
+        }
+    }
+    best.map(|(cpu, _seq, vector)| (cpu, vector))
 }
 
 pub fn start() {

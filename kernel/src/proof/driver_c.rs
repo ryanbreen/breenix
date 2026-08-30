@@ -22,31 +22,36 @@
 //! producing the damage needs a thread PREEMPTED there to resume on ANOTHER
 //! cpu — a live, cross-CPU race, not a manufactured critical section.
 //!
-//! So this driver does not probe anything itself. It arms the ONE upstream
-//! seam this rung is allowed to place (`ScheduleEntry`, at the top of
-//! `scheduler::schedule()`, `SiteClass::Open`) on every online PEER cpu, every
-//! cycle, so that whichever peer next executes `scheduler::schedule()` — via
-//! the existing `KernelSchedule` or `Steal` adversarial ops, unmodified, which
-//! the pilot's own round-3 measurement already put through this exact function
-//! 50k-54k times per boot — finds a freshly drawn vector waiting for it. A
-//! `TimerSqueeze` armed there fires the timer within a handful of cycles of the
-//! seam, aiming for the still-unmasked window a few instructions further down
-//! `schedule_from_kernel`'s own entry. This is aim, not a guarantee: the
-//! residual gap between "fires very soon after the seam" and "fires inside the
-//! exact pre-mask window" is real, and is exactly what `iters` and a replay hit
-//! rate measure rather than assert. See rung 2's spec §3.1 for the full
-//! reasoning and the pre-registered reading of a miss.
+//! So this driver does not probe anything itself. It arms two upstream `Open`
+//! seams on every online PEER cpu, every cycle: `ScheduleEntry`, at the top of
+//! `scheduler::schedule()`, and `PreDispatchMask`, after deferred reclamation
+//! has drained and immediately before `schedule_from_kernel()`. Whichever peer
+//! next executes `scheduler::schedule()` — via the existing `KernelSchedule`
+//! or `Steal` adversarial ops, which the pilot's own round-3 measurement already
+//! put through this exact function 50k-54k times per boot — can find a freshly
+//! drawn vector waiting for it. `PreDispatchMask` removes the five deferred
+//! reclamation drains from the aim gap, and `stimulus::materialize` now biases
+//! the `ticks` draw toward the low end specifically for `Open` sites. A
+//! `TimerSqueeze` at either seam is therefore more likely, not guaranteed, to
+//! land soon after that seam. This remains aim, not a guarantee: `iters` and
+//! any future replay hit-rate measurement have to report the observed hit rate,
+//! not replace it with a claim that the timer fires within a handful of cycles.
+//! See rung 2's spec §3.1 for the full reasoning and the pre-registered reading
+//! of a miss.
 //!
-//! `victim_tid` is carried through to `Controller::begin` exactly as Component
-//! A uses it (the driver's own current thread id at settle time), which keeps
-//! `Unblock`/`Steal`'s unblock half inert here since this driver's own thread
-//! is never blocked mid-loop — the useful half of `Steal` for this component is
-//! the dispatch attempt it always makes on the stealer's own cpu, which itself
-//! reaches `ScheduleEntry` exactly like `KernelSchedule` does. This is a
-//! disclosed simplification, not a claim that a dedicated victim thread
-//! wouldn't sharpen the aim further; it is the honest starting point, matching
-//! the "reuse existing antagonist machinery verbatim" constraint this rung was
-//! built under.
+//! Component C now has the real designated victim/stealer pairing required by
+//! spec section 3.1 item 2. Among the online peers, the lowest-numbered peer is
+//! forced onto `KernelSchedule` every iteration and the next-lowest is forced
+//! onto `Steal`; if fewer than two peers are online, only the roles that fit are
+//! assigned. The designated stealer targets the victim peer's own live kthread
+//! tid, not the driver's inert `victim_tid`. Any third-or-later peer still draws
+//! its antagonist op independently exactly as before; for those ordinary peers
+//! specifically, `Steal`/`Unblock` still target the driver's own inert tid, so
+//! their unblock half remains inert while their dispatch attempt remains live.
+//! With a small online cpu count such as `-smp 4` (three peers), fixing two of
+//! three peers into designated roles leaves fewer peers exercising the general
+//! `ReclaimDrain`/`ThreadChurn`/other antagonist mix; that trade-off is explicit
+//! rather than silently introduced.
 
 use core::sync::atomic::Ordering;
 
@@ -201,6 +206,29 @@ fn online_peer_cpus(driver_cpu: usize, online_cpus: usize) -> impl Iterator<Item
     (0..cap).filter(move |&cpu| cpu != driver_cpu)
 }
 
+/// The vector that actually fired on some peer cpu since this driver started, or an explicit
+/// "nothing has fired yet" placeholder (`action=None`) if none has. Never a fresh, unrelated
+/// draw — see the rung 2 review's M3: a violation record's `action`/`ticks`/`acpu` fields
+/// must name a vector that could plausibly have produced the finding they accompany, and a
+/// synthetic draw taken on the driver's own cpu at report time has no causal link to a marker
+/// that moved on a PEER cpu at an earlier, unknown iteration. `action=none` in the printed
+/// record is itself an honest signal in the never-fired case: it says the marker moved
+/// despite no harness stimulus having fired on any peer yet, which is a real and useful
+/// distinction, not a fabricated one.
+fn last_fired_stimulus(driver_cpu: usize, online_cpus: usize) -> rng::DrawVector {
+    super::most_recent_fired(online_peer_cpus(driver_cpu, online_cpus))
+        .map(|(_fired_on_cpu, vector)| vector)
+        .unwrap_or(rng::DrawVector {
+            site: super::ALL[0],
+            action: stimulus::Action::None,
+            ticks: 0,
+            cycles: 0,
+            antagonist_op: rng::AntagonistOp::Unblock,
+            antagonist_cpu: 0,
+            order: super::ALL[0].order(),
+        })
+}
+
 pub fn run() {
     let seed = rng::root_seed();
     let mode = Mode::selected();
@@ -267,12 +295,13 @@ pub fn run() {
     while iterations < ITERATION_CAP
         && monotonic_now_ns().saturating_sub(started_at) < WALL_CLOCK_BUDGET_NS
     {
-        // Re-arm every online peer's OWN slot at `ScheduleEntry` every cycle.
-        // `sites::ALL` names exactly one site for this component, so every
-        // draw already targets `ScheduleEntry` — nothing here overrides the
-        // drawn site. Each peer's stream is keyed by its own cpu id, so a
-        // replay of iteration I arms the same vector on the same peer without
-        // re-running any predecessor (rng.rs's own counter-derived contract).
+        // Re-arm every online peer's OWN slot every cycle. `ScheduleEntry` and
+        // `PreDispatchMask` are the peer-fired aim seams; `DriverPreCycle` is a
+        // driver-only census draw and therefore expires unfired when it lands
+        // in a peer slot. Nothing here overrides the drawn site. Each peer's
+        // stream is keyed by its own cpu id, so a replay of iteration I arms the
+        // same vector on the same peer without re-running any predecessor
+        // (rng.rs's own counter-derived contract).
         if !super::loop_disarmed() {
             for cpu in online_peer_cpus(driver_cpu, online_cpus) {
                 let vector =
@@ -281,12 +310,19 @@ pub fn run() {
             }
         }
 
+        // Driver-only census site (rung 2 review, B1): visited unconditionally every
+        // iteration, regardless of `loop_disarmed()` — its only job is proving this driver
+        // thread genuinely dispatched and ran at least one iteration, closing the non-vacuity
+        // gap `ScheduleEntry`/`PreDispatchMask` alone cannot close (both of those are visited
+        // by ordinary boot traffic too). Matches Component A's own `DriverPreCycle` shape.
+        crate::proof_point!(DriverPreCycle);
+
         if iterations % CENSUS_CADENCE == 0 {
-            let sample_vector = rng::draw(seed, COMPONENT_C, driver_cpu as u8, iterations);
+            let fired_vector = last_fired_stimulus(driver_cpu, online_cpus);
             score_existing_markers(
                 seed,
                 iterations,
-                &sample_vector,
+                &fired_vector,
                 &baseline_snapshot,
                 &mut reported,
             );
@@ -309,12 +345,7 @@ pub fn run() {
     // One closing sweep, so a marker that moved after the last cadence tick is
     // scored rather than dropped on the floor — Component A's driver does the
     // same for the same reason.
-    let closing_vector = rng::draw(
-        seed,
-        COMPONENT_C,
-        driver_cpu as u8,
-        iterations.saturating_sub(1),
-    );
+    let closing_vector = last_fired_stimulus(driver_cpu, online_cpus);
     score_existing_markers(
         seed,
         iterations,
