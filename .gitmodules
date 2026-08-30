@@ -1,3 +1,0 @@
-[submodule "rust-fork"]
-	path = rust-fork
-	url = https://github.com/ryanbreen/rust.git
