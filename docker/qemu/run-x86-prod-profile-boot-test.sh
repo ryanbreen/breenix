@@ -74,14 +74,38 @@
 #      runnable set, checked live via `task::scheduler::with_scheduler` at
 #      kernel/src/main.rs:1909-1915 (was main.rs:1798-1807 pre-fix, per #673's
 #      original RCA -- the fix's own new block shifted every line after it).
-#   3. `[X86_PROD_INIT_SYSCALL_EVIDENCE:syscall_total=N]` with N > 0 -- proves init's
-#      userspace code actually ran and reached the syscall handler at least once.
-#      This reads the existing, always-incrementing `SYSCALL_TOTAL` counter
-#      (kernel/src/tracing/providers/counters.rs, incremented unconditionally on
-#      every syscall via the pre-existing `trace_entry()` call already on the
-#      syscall hot path in kernel/src/syscall/handler.rs) from ordinary
-#      boot-orchestration code well after that hot path returns -- it adds no
-#      logging to the syscall or interrupt paths themselves.
+#   3. `RING3_SYSCALL: First syscall from userspace` present exactly once --
+#      proves init's userspace code actually ran and reached the syscall
+#      handler. This is a pre-existing, one-time marker
+#      (kernel/src/syscall/handler.rs's emit_ring3_syscall_marker(), raw
+#      serial output, no locks) that already exists for the test framework's
+#      own stage-advance bookkeeping; #673 does not add it, only asserts on
+#      it in a profile that had never reached Ring 3 before.
+#
+# WHY INIT CANNOT RUN UNTIL BOOT'S OWN WORK IS DONE (#673, the real fight)
+#
+# The straightforward version of this fix -- spawn init, let it compete --
+# reliably stalled the boot thread forever partway through its own remaining
+# work. Root cause: main.rs's init_with_current() makes the boot thread
+# BECOME the scheduler's idle thread ("Linux where the boot thread becomes
+# the idle task"). The moment any thread's first syscall is confirmed,
+# syscall::handler::is_ring3_confirmed() latches true, and
+# interrupts/context_switch.rs permanently stops restoring idle's saved
+# boot context whenever idle is next selected -- by design, to avoid
+# resuming stale boot-time RIPs. Separately, schedule() never re-enqueues
+# the outgoing thread when it IS the idle thread (correct for genuine idle).
+# Combined: once init exists as a thread that keeps re-readying itself (its
+# infinite reap loop nanosleep()s between waitpid attempts), the ready queue
+# is never truly empty, idle is never selected as the last-resort fallback,
+# and boot's own remaining PRECONDITION-checking/timer/census work -- tagged
+# as "idle" -- can never resume. The fix (kernel/src/main.rs) is a second,
+# dedicated preempt_disable()/preempt_enable() bracket scoped to exactly the
+# production build: taken immediately after scheduler::spawn() (before init
+# can be dispatched) and released only as the last thing before the async
+# executor starts, once every line of boot's own sequential work is behind
+# it. This gate's three evidence signals above are what proves that bracket
+# is correctly placed: construction, then dispatch, then execution, in that
+# order, with the shipped profile still reaching steady state afterward.
 #
 # DISK LAYOUT
 #
@@ -250,7 +274,7 @@ PREEMPT_CENSUS_PROD_LITERAL='[PREEMPT_BRACKET_CENSUS:underflow=0]'
 # is the part that must never drift.
 # ---------------------------------------------------------------------------
 INIT_DESIGNATION_X86_PREFIX='[INIT_DESIGNATION:x86_64:designated_pid=1:'
-SYSCALL_EVIDENCE_PREFIX='[X86_PROD_INIT_SYSCALL_EVIDENCE:syscall_total='
+RING3_SYSCALL_LITERAL='RING3_SYSCALL: First syscall from userspace'
 
 # Measured on beast under TCG: steady state at 14s from QEMU launch. The bound is
 # an order of magnitude above that so host contention cannot score a slow-but-
@@ -340,21 +364,6 @@ serial_bytes() {
 }
 
 
-# Extracts the numeric syscall_total value from the first matching serial
-# line (there should be exactly one -- see the assertion below). Pure bash
-# parameter expansion, no sed/awk regex: strip everything through the last
-# "syscall_total=" (greedy prefix removal), then everything from the first
-# "]" onward. Empty/absent resolves to 0 so a missing marker fails the ">0"
-# assertion rather than the arithmetic comparison itself.
-syscall_evidence_value() {
-    local line
-    line=$(grep -F -h -- "$SYSCALL_EVIDENCE_PREFIX" "$OUTPUT_DIR"/serial_*.txt 2>/dev/null || true)
-    line=$(printf '%s\n' "$line" | head -1)
-    local val="${line##*syscall_total=}"
-    val="${val%%]*}"
-    printf '%s' "${val:-0}"
-}
-
 print_observed_values() {
     echo "  ext2 root mounted:            $(marker_count "$EXT2_ROOT_LITERAL")"
     echo "  kernel init complete:         $(marker_count "$KERNEL_INIT_LITERAL")"
@@ -380,7 +389,7 @@ print_observed_values() {
     echo "  preempt census lines:          $(marker_count "$PREEMPT_CENSUS_PREFIX")"
     echo "  preempt census at rest:        $(marker_count "$PREEMPT_CENSUS_PROD_LITERAL")"
     echo "  init designation (#673):      $(marker_count "$INIT_DESIGNATION_X86_PREFIX")"
-    echo "  syscall evidence value (#673): $(syscall_evidence_value)"
+    echo "  ring3 syscall confirmed (#673): $(marker_count "$RING3_SYSCALL_LITERAL")"
     { grep -F -h -- "$TOMBSTONE_CENSUS_PREFIX" "$OUTPUT_DIR"/serial_*.txt 2>/dev/null || true; }
     { grep -F -h -- "$ROOT_CUSTODY_PREFIX" "$OUTPUT_DIR"/serial_*.txt 2>/dev/null || true; }
     { grep -F -h -- "$PREEMPT_CENSUS_PREFIX" "$OUTPUT_DIR"/serial_*.txt 2>/dev/null || true; }
@@ -529,7 +538,7 @@ test "$(marker_count "$PREEMPT_CENSUS_PROD_LITERAL")" -eq 1
 # #673: init designation and syscall-execution evidence -- construction,
 # dispatch, and execution, each proven independently. See the header.
 test "$(marker_count "$INIT_DESIGNATION_X86_PREFIX")" -eq 1
-test "$(syscall_evidence_value)" -gt 0
+test "$(marker_count "$RING3_SYSCALL_LITERAL")" -eq 1
 
 trap - ERR
 echo "PASS: x86 production profile reached steady state with the teardown census at rest"

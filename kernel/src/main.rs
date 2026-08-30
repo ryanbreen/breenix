@@ -2029,22 +2029,6 @@ fn kernel_main_continue() -> ! {
     // since then.
     kernel::per_cpu::preempt_enable();
 
-    // Release the SECOND, dedicated brake taken in launch_x86_production_init()
-    // (#673 -- see its own comment for the full explanation). It exists
-    // specifically so init cannot be dispatched, reach Ring 3, and latch
-    // is_ring3_confirmed() before this point: once that latches,
-    // context_switch.rs permanently abandons the boot/idle thread's saved
-    // context whenever idle is next selected, so everything below this line
-    // -- the PRECONDITION checks, the timer test, this very release -- had
-    // to run first. Gated identically to that disable so the two are always
-    // paired in exactly the builds that take the brake.
-    #[cfg(not(any(
-        feature = "testing",
-        feature = "interactive",
-        feature = "disable_x86_prod_init"
-    )))]
-    kernel::per_cpu::preempt_enable();
-
     // Enable interrupts for preemptive multitasking - userspace processes will now run
     // WARNING: After this call, kernel_main will likely be preempted immediately
     // by the timer interrupt and scheduler. All essential init must be done above.
@@ -2093,21 +2077,26 @@ fn kernel_main_continue() -> ! {
         kernel::per_cpu::preempt_underflow_count()
     );
 
-    // #673 anti-vacuity syscall-execution evidence: proves the newly spawned
-    // production init thread actually executed userspace instructions and
-    // reached the syscall handler, not merely that the kernel constructed and
-    // enqueued it. SYSCALL_TOTAL is incremented unconditionally on every
-    // syscall entry (syscall/handler.rs, via the existing trace_entry() call
-    // on the hot path -- this print does not touch that path, it only reads
-    // the counter afterward from ordinary boot-orchestration code). By this
-    // point preemption has been re-enabled and the "wait briefly for
-    // processes to run" busy-loop above has given the timer a chance to
-    // dispatch any runnable thread, so a nonzero value here means real
-    // userspace code ran and made at least one syscall.
-    log::info!(
-        "[X86_PROD_INIT_SYSCALL_EVIDENCE:syscall_total={}]",
-        tracing::providers::SYSCALL_TOTAL.aggregate()
-    );
+    // Release the SECOND, dedicated brake taken in launch_x86_production_init()
+    // (#673 -- see its own comment for the full explanation), only now,
+    // after every remaining line of boot's own sequential work is done:
+    // the PRECONDITION checks, the timer test, Kernel initialization
+    // complete, this scheduler-test window, and the preempt-bracket census
+    // above. Once this releases, init (still holding NEED_RESCHED from its
+    // spawn() call) can finally be dispatched, reach Ring 3, and latch
+    // is_ring3_confirmed() -- from that instant on, context_switch.rs
+    // permanently abandons the boot/idle thread's saved context whenever
+    // idle is next selected (its own comment: stale boot RIPs "cause hangs
+    // when restored during userspace operation"), so nothing here may run
+    // one line later than this. The executor below has nothing left to lose
+    // from that: it is boot's genuine final state, not more sequential work
+    // that needs to survive a resume.
+    #[cfg(not(any(
+        feature = "testing",
+        feature = "interactive",
+        feature = "disable_x86_prod_init"
+    )))]
+    kernel::per_cpu::preempt_enable();
 
     // Initialize and run the async executor
     log::info!("Starting async executor...");
