@@ -14,10 +14,13 @@
 //! governing its `preempt_disable()` sites must equal the census governing its
 //! `preempt_enable()` sites. A future bracket that is deliberately cfg-gated as
 //! a unit still passes; half a bracket never does. A second, stronger test pins
-//! what production actually needs today - both halves compile in every profile -
+//! that every distinct bracket context in a file is a refinement of every other
+//! (#673, B4: a file may hold more than one bracket, at more than one nesting
+//! depth, once a nested bracket like #673's production-init one is legitimate) -
 //! and the vacuity tests prove each check can still go red.
 
 use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 use std::fs;
 use std::path::PathBuf;
 
@@ -284,19 +287,39 @@ fn boot_path_preempt_sites_share_one_cfg_context() {
     // is itself `#[cfg(target_arch = "x86_64", ...)]`, and that is not an
     // asymmetry because both halves inherit it. What may never happen is one half
     // acquiring a condition the other does not have, which is #672 exactly.
+    //
+    // A file may legitimately hold more than one bracket, at more than one
+    // nesting depth (#673 review, B4: the production block's bracket is a
+    // deliberately MORE-nested one alongside the historical bracket, scoped
+    // narrower and released after boot's own remaining sequential work; it
+    // compiles into a strict SUBSET of the profiles the historical one does,
+    // by lexical nesting inside the same function - not by feature-implication
+    // reasoning about what any condition implies). "One context" here means
+    // every distinct context is comparable to every other under set inclusion
+    // - forms one nesting chain - so no two brackets can carry two genuinely
+    // unrelated conditions. Exact per-context balance (disable count == enable
+    // count for that exact context) is `boot_path_preempt_brackets_are_cfg_symmetric`'s
+    // job above, not this one's.
     for path in BOOT_PATH_SOURCES {
         let source = repo_text(path);
         let mut contexts: Vec<String> = cfg_contexts(&source, DISABLE);
         contexts.extend(cfg_contexts(&source, ENABLE));
         let distinct = census(&contexts);
-        assert_eq!(
-            distinct.len(),
-            1,
-            "{path}: boot-path preempt sites live under {} different cfg contexts ({:?}) - \
-             every half of the bracket must compile in exactly the same set of profiles (#672)",
-            distinct.len(),
-            distinct.keys().collect::<Vec<_>>()
-        );
+        let condition_sets: Vec<BTreeSet<&str>> = distinct
+            .keys()
+            .map(|context| context.split(" + ").filter(|c| !c.is_empty()).collect())
+            .collect();
+        for (i, a) in condition_sets.iter().enumerate() {
+            for b in &condition_sets[i + 1..] {
+                assert!(
+                    a.is_subset(b) || b.is_subset(a),
+                    "{path}: boot-path preempt sites carry two incomparable cfg contexts \
+                     {a:?} and {b:?} (out of {} distinct contexts total) - every bracket must \
+                     be a refinement of every other, not an unrelated condition (#672)",
+                    distinct.len()
+                );
+            }
+        }
     }
 }
 
