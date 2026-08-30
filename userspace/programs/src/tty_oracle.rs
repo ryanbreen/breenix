@@ -20,12 +20,14 @@
 //! open-time `O_NONBLOCK` again, this program fails fast on the assertion
 //! instead of blocking forever inside `read()`.
 
+use libbreenix::error::Error;
 use libbreenix::fs;
 use libbreenix::io;
 use libbreenix::process;
 use libbreenix::pty;
 use libbreenix::termios::{self, cc, iflag, lflag, oflag, Termios, Winsize, TCSANOW};
 use libbreenix::types::Fd;
+use libbreenix::Errno;
 
 /// `O_NONBLOCK` as `open(2)`/`posix_openpt(3)` take it.
 const O_NONBLOCK_OPEN: i32 = 0x800;
@@ -68,7 +70,12 @@ fn show(bytes: &[u8]) -> String {
     out
 }
 
-/// A read that must find nothing. Returns `Ok(())` only on `EAGAIN`.
+/// A read that must find nothing. Returns `Ok(())` only on `EAGAIN` -- any
+/// other errno (EIO, EBADF, ...) is itself a failure, not a pass. The arms
+/// that call this (`nonblock_open`'s both_eagain=1, `hangup`'s
+/// eagain_while_open=1, #704's ctty idle-read) print those claims into the
+/// durable evidence, so the check has to mean exactly what it says: EAGAIN
+/// specifically, not merely "did not return data".
 fn expect_empty(fd: Fd, arm: &'static str, what: &str) -> Result<(), Failure> {
     let mut buf = [0u8; 64];
     match io::read(fd, &mut buf) {
@@ -76,7 +83,8 @@ fn expect_empty(fd: Fd, arm: &'static str, what: &str) -> Result<(), Failure> {
             arm,
             format!("{}=unexpected_data:n={}:bytes={}", what, n, show(&buf[..n])),
         )),
-        Err(_) => Ok(()),
+        Err(Error::Os(Errno::EAGAIN)) => Ok(()),
+        Err(e) => Err(fail(arm, format!("{}=wrong_errno:want=EAGAIN:got={}", what, e))),
     }
 }
 
@@ -544,7 +552,139 @@ fn arm_hangup(master: Fd, slave: Fd) -> Result<(), Failure> {
     Ok(())
 }
 
-const ARM_COUNT: u32 = 12;
+/// Arm 13 -- #704: `/dev/tty` must account for its slave fd exactly like
+/// `/dev/pts/N` does, or the master hangs up while a slave fd is still open.
+///
+/// The other eleven arms deliberately open `O_NOCTTY` and never establish a
+/// controlling terminal (#705's gap). This arm is self-contained -- its own
+/// PTY pair, its own session -- so it can drive `setsid()`, `TIOCSCTTY` and
+/// `/dev/tty` for real without disturbing the shared master/slave the other
+/// arms use.
+///
+/// Sequence and why each step is there:
+/// 1. Open a `/dev/pts/N` slave first. That path's `slave_open()` accounting
+///    is not in question; it establishes the refcount this arm then watches.
+/// 2. `setsid()` + `TIOCSCTTY` on that slave, then open `/dev/tty`. It must
+///    resolve to the SAME PTY -- proven by writing a marker through the
+///    `/dev/tty` fd and reading it back on the master, which only a real
+///    alias of this pty (not the no-ctty fallback device) could deliver.
+/// 3. Close the `/dev/tty` fd immediately. On the unfixed kernel this is the
+///    exact moment #704 fires: the alias's open never called `slave_open()`,
+///    so this close's unconditional `slave_close()` drops the shared count
+///    to zero while the original `/dev/pts/N` fd is still open.
+/// 4. An IDLE master read, with nothing written and nothing pending, must
+///    report EAGAIN rather than EOF. This is the assertion that actually
+///    distinguishes fixed from broken: `master_read()` drains any buffered
+///    data ahead of its hangup check, so a write-then-read alone would pass
+///    on the broken kernel too -- the bytes still arrive even after the
+///    refcount has wrongly hit zero.
+/// 5. A functional write/read round trip confirms the survivor is not
+///    merely "not yet flagged hung up" but genuinely live.
+/// 6. Close the one remaining slave fd and require EOF now, not before.
+fn arm_ctty() -> Result<(), Failure> {
+    const ARM: &str = "ctty";
+
+    let master = match pty::posix_openpt(pty::O_RDWR | pty::O_NOCTTY | O_NONBLOCK_OPEN) {
+        Ok(fd) => fd,
+        Err(e) => return Err(fail(ARM, format!("posix_openpt_failed:{}", e))),
+    };
+    if let Err(e) = pty::grantpt(master) {
+        return Err(fail(ARM, format!("grantpt_failed:{}", e)));
+    }
+    if let Err(e) = pty::unlockpt(master) {
+        return Err(fail(ARM, format!("unlockpt_failed:{}", e)));
+    }
+    let master_fl = match io::fcntl_getfl(master) {
+        Ok(fl) => fl,
+        Err(e) => return Err(fail(ARM, format!("master_getfl_failed:{}", e))),
+    };
+    if master_fl & (O_NONBLOCK_OPEN as i64) == 0 {
+        return Err(fail(
+            ARM,
+            format!("master_nonblock_dropped:fl={:#x}", master_fl),
+        ));
+    }
+
+    let mut path_buf = [0u8; 32];
+    let path_len = match pty::ptsname(master, &mut path_buf) {
+        Ok(len) => len,
+        Err(e) => return Err(fail(ARM, format!("ptsname_failed:{}", e))),
+    };
+    let slave_path = String::from_utf8_lossy(&path_buf[..path_len]).into_owned();
+
+    let slave = match fs::open(&slave_path, fs::O_RDWR | O_NONBLOCK_FS) {
+        Ok(fd) => fd,
+        Err(e) => return Err(fail(ARM, format!("slave_open_failed:{}", e))),
+    };
+
+    // The oracle is freshly exec'd by init; setsid() succeeds unconditionally
+    // on this kernel regardless of the caller's current process-group state
+    // (kernel/src/syscall/session.rs never actually returns EPERM). This
+    // makes the calling process its own session leader: sid == pgid == pid,
+    // which is what handle_devfs_open's /dev/tty arm matches on below.
+    if let Err(e) = process::setsid() {
+        return Err(fail(ARM, format!("setsid_failed:{}", e)));
+    }
+
+    if let Err(e) = termios::set_controlling_terminal(slave) {
+        return Err(fail(ARM, format!("tiocsctty_failed:{}", e)));
+    }
+
+    let ttyfd = match fs::open("/dev/tty", fs::O_RDWR | O_NONBLOCK_FS) {
+        Ok(fd) => fd,
+        Err(e) => return Err(fail(ARM, format!("dev_tty_open_failed:{}", e))),
+    };
+
+    // Prove /dev/tty is a real alias of THIS pty, not the no-ctty fallback
+    // device: only a slave fd of this pty could deliver these bytes to the
+    // master's read queue. Default oflag is OPOST|ONLCR, so LF becomes CRLF.
+    write_all(ttyfd, b"ctty-alias\n", ARM, "alias_marker_write")?;
+    expect_bytes(master, b"ctty-alias\r\n", ARM, "alias_marker_read")?;
+
+    if io::close(ttyfd).is_err() {
+        return Err(fail(ARM, "ctty_fd_close_failed".to_string()));
+    }
+
+    // #704's assertion. Checked with nothing written and nothing pending, so
+    // the only way this sees data instead of EAGAIN is a bug; the only way
+    // it sees EOF (Ok(0)) is the pair having been wrongly hung up already.
+    if let Err(f) = expect_empty(master, ARM, "post_alias_close_idle_read") {
+        return Err(fail(
+            ARM,
+            format!("slave_hung_up_after_alias_close:{}", f.detail),
+        ));
+    }
+
+    // Functional confirmation the surviving /dev/pts/N slave is genuinely
+    // live, not merely unchecked.
+    write_all(slave, b"still-live\n", ARM, "post_alias_close_write")?;
+    expect_bytes(master, b"still-live\r\n", ARM, "post_alias_close_read")?;
+
+    if io::close(slave).is_err() {
+        return Err(fail(ARM, "slave_close_failed".to_string()));
+    }
+
+    let mut buf = [0u8; 32];
+    match io::read(master, &mut buf) {
+        Ok(0) => {}
+        Ok(n) => {
+            return Err(fail(
+                ARM,
+                format!("expected_eof_got_data:n={}:bytes={}", n, show(&buf[..n])),
+            ))
+        }
+        Err(e) => return Err(fail(ARM, format!("expected_eof_got_error:{}", e))),
+    }
+
+    let _ = io::close(master);
+    pass(
+        ARM,
+        "dev_tty_aliased_slave=1:survived_alias_close=1:eof_after_last_slave_close=1",
+    );
+    Ok(())
+}
+
+const ARM_COUNT: u32 = 13;
 
 fn run() -> Result<u32, Failure> {
     let (master, slave_path) = arm_openpt()?;
@@ -567,6 +707,7 @@ fn run() -> Result<u32, Failure> {
         arm_winsize(master, slave)?;
         arm_pgrp(master, slave)?;
         arm_hangup(master, slave)?;
+        arm_ctty()?;
         Ok(())
     })();
 

@@ -40,6 +40,7 @@ EXPECTED_ARMS=(
     winsize
     foreground_pgrp
     hangup
+    ctty
 )
 EXPECTED_ARM_COUNT=${#EXPECTED_ARMS[@]}
 
