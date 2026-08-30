@@ -211,6 +211,8 @@ pub extern "C" fn check_need_resched_and_switch(
                 crate::task::thread::ThreadState::Blocked
                     | crate::task::thread::ThreadState::BlockedOnSignal
                     | crate::task::thread::ThreadState::BlockedOnChildExit
+                    | crate::task::thread::ThreadState::BlockedOnTimer
+                    | crate::task::thread::ThreadState::BlockedOnIO
                     | crate::task::thread::ThreadState::Terminated
             )
         } else {
