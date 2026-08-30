@@ -72,8 +72,8 @@ one compiled kernel change that the boot could reach: #670's
 `validate_fd_for_degenerate_transfer()`, called from the
 `buf_ptr == 0 || count == 0` guard of `sys_read`, `sys_write`, `sys_pread64` and
 `sys_pwrite64`. (#665's change is inside `#[cfg(feature = "interactive")]`, which
-this profile does not build; #679's is in `kernel/build.rs` and runs at build time;
-#678's touches no compiled code.)
+this profile does not build; #679's is in `kernel/build.rs` and runs at build
+time; and #678's touches no compiled code.)
 
 That call was instrumented directly. A local, uncommitted probe on the branch
 bytes added two relaxed atomic counters — one incremented on entry to the
