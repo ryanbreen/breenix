@@ -27,43 +27,53 @@ name is the second-stage exec's `argv[0]`.
 
 ### Rates, both arms
 
-Round 1 (9 branch boots, 5 main boots) plus round 2 (14 branch boots, 14 main
-boots), same host, same profile. Round 2 ran as interleaved blocks — branch 7,
-main 7, main 7, branch 7 — so host drift cannot be read as an arm effect.
+The primary measurement is round 2's own battery: **26 boots per arm**, balanced,
+run as interleaved blocks — branch 7, main 7, main 7, branch 7, then three
+alternating blocks of 4 per arm — so host drift cannot be read as an arm effect.
 
 | signature | branch `671bab95` | main `782ab96f` |
 |---|---|---|
-| A `clock_gettime_test:1` | 1/23 | **2/19** |
-| B `CLONEVM_EXEC_TEST: ERROR futex timeout did not return ETIMEDOUT` | 3/23 | 0/19 |
-| (C) `loopback_wake_test_child:15, loopback_wake_test:1` | 1/23 | 1/19 |
+| A `clock_gettime_test:1` | 0/26 | **2/26** |
+| B `CLONEVM_EXEC_TEST: ERROR futex timeout did not return ETIMEDOUT` | 2/26 | **1/26** |
+| C `loopback_wake_test_child:15, loopback_wake_test:1` | 1/26 | 1/26 |
+| D boot hangs in PCI enumeration, `threads_saved_blocked=0`, 305 lines | 1/26 | 0/26 |
 
-Failing serials for every round-2 red are preserved under `serials/` here.
-Round 1's two signature-B serials were overwritten before they were copied and
-no longer exist; round 2's `BRANCH-blk2-boot7` replaces them.
+Round 1's boots are folded in below where they add power. They are unbalanced —
+10 branch boots against 5 main, on the same host and profile — and they are where
+the blocker rates came from: signature A once and signature B twice in the nine
+branch boots the ledger counted, plus one more branch boot that failed with
+signature D. Round 1's five main boots produced one signature C and nothing else.
+Combined, that is branch 35 boots (36 counting the signature-D boot outside the
+ledger's nine) against main 31.
+
+Failing serials for every round-2 red are preserved under `serials/` here — eight
+pairs. Round 1's two signature-B serials were left in `/tmp/breenix_gate_*` and
+overwritten by the next run before they could be copied; round 2's replace them.
 
 ### Verdict A — pre-existing, #631
 
-`clock_gettime_test:1` occurs on pristine `main` at 2/19 against the branch's
-1/23. It is the exact signature of the already-open **#631**
+`clock_gettime_test:1` occurs on pristine `main` at 2/26 in round 2 — against
+0/26 on the branch in the same battery, and 1/9 on the branch in round 1, so 2/31
+against 1/35 combined. It is the exact signature of the already-open **#631**
 ("x86: clock_gettime_test exits 1 on a boot that otherwise passes ... the test
 does not say which assertion failed"), and #631 is not the first sighting
 either: `docs/planning/green-program/sockets/EVIDENCE-2026-08-29.md` §7 records
 it at 1/24 on the #568 candidate and 1/16 on the reverted arm and attributes it
 to #631 "already filed, both trees". Attributed; no new issue.
 
-### Verdict B — pre-existing, and branch-causation is excluded by construction
+### Verdict B — pre-existing, settled twice over
 
-Signature B was not observed on main in this battery (0/19), so rate alone does
-not settle it: 3/23 against 0/19 is p ≈ 0.24 by Fisher's exact test, which
-discriminates nothing. It was settled by measuring the branch's kernel delta
-instead.
+Signature B was **not** observed on main in the first 19 main boots, so rate alone
+did not settle it: 3/23 against 0/19 (combined with round 1) was p ≈ 0.24 by
+Fisher's exact test, which discriminates nothing. Two things then settled it independently.
 
-Against this gate profile the branch carries exactly one compiled kernel change
-that the boot could reach: #670's `validate_fd_for_degenerate_transfer()`, called
-from the `buf_ptr == 0 || count == 0` guard of `sys_read`, `sys_write`,
-`sys_pread64` and `sys_pwrite64`. (#665's change is inside
-`#[cfg(feature = "interactive")]`, which this profile does not build; #679's is
-in `kernel/build.rs` and runs at build time; #678's touches no compiled code.)
+**First, by construction.** Against this gate profile the branch carries exactly
+one compiled kernel change that the boot could reach: #670's
+`validate_fd_for_degenerate_transfer()`, called from the
+`buf_ptr == 0 || count == 0` guard of `sys_read`, `sys_write`, `sys_pread64` and
+`sys_pwrite64`. (#665's change is inside `#[cfg(feature = "interactive")]`, which
+this profile does not build; #679's is in `kernel/build.rs` and runs at build time;
+#678's touches no compiled code.)
 
 That call was instrumented directly. A local, uncommitted probe on the branch
 bytes added two relaxed atomic counters — one incremented on entry to the
@@ -88,12 +98,38 @@ does not apply here: `clonevm_exec_test` never calls `read`/`write` with a
 degenerate length. `spin_until_u32` spins on `sys_yield`, and the program's only
 `write` calls are `raw_msg`, which always passes `msg.len()`.
 
+**Then, by measurement.** The battery was extended by 12 boots per arm after that,
+and main reproduced signature B on the fourth of them
+(`MAIN-s2blk1-boot4`, `threads_saved_blocked=10`, `lines=4745`). Final rates are
+2/26 branch against 1/26 main in the balanced battery, 4/35 against 1/31 with
+round 1 folded in — p ≈ 0.36. The asymmetry the first stage showed has
+closed, and the two independent lines of evidence agree.
+
 Signature B also has main-lineage prior sightings under a different name: the
 string `CLONEVM_EXEC_TEST: ERROR futex timeout did not return ETIMEDOUT` is the
 central specimen of the #608 RCA (four independent captures across its A/B/B3
 arms), and #690 is the same second-stage rendezvous failing on aarch64. #608 was
 closed as not-reproduced and #690 is aarch64-only, so the live x86 face has no
-open home and is filed fresh.
+open home and was filed as **#700**.
+
+### The other two reds this battery surfaced
+
+Neither was in the round-1 blocker list; both are recorded so nothing in these 66
+boots is left unattributed.
+
+* **C** `loopback_wake_test_child:15, loopback_wake_test:1` — 1/26 on each arm in
+  the balanced battery. Open as **#692**, whose own record has it live on beast KVM x86.
+* **D** a boot that stops dead inside PCI enumeration immediately after
+  `E1000 network device found` — 305 serial lines against a healthy boot's ~4 900,
+  `threads_saved_blocked=0`, no panic, no fault, no reset, hung until the 150 s
+  timeout, at 1/26 on the branch and 0/26 on main.
+  `threads_saved_blocked=0` is what separates it from the strand family
+  (#695 and the `poll_tcp_oracle` strand both show a nonzero count), and it stops
+  hundreds of lines before any userspace process or syscall exists, so the
+  branch's syscall-handler delta cannot reach it. The g568 review saw
+  `USERSPACE TEST COMPLETE was absent` on a pristine-main baseline and folded it
+  into the strand family; this variant was never separated out. Filed as **#702**
+  with its serial.
 
 ---
 

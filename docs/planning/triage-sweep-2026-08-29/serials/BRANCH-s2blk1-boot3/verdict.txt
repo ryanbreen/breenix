@@ -1,0 +1,2 @@
+STRAND_CENSUS: threads_saved_blocked=0 stranded=0 lines=335
+x86 userspace gate: FAIL - USERSPACE TEST COMPLETE was absent; boot did not finish
