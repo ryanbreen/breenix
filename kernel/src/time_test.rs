@@ -19,31 +19,53 @@
 /// This test ensures that get_monotonic_time() returns actual milliseconds.
 /// At 1000 Hz PIT, ticks == milliseconds (1 tick = 1 ms).
 ///
-/// IMPORTANT: This test runs BEFORE interrupts are enabled, so we cannot wait
-/// for ticks to increment. Instead, we validate the conversion math is correct.
+/// This test used to run only in profiles where interrupts were still
+/// disabled at this point, so it could compare two live reads for exact
+/// equality. x86 production (#673) is the first profile to reach this call
+/// site with interrupts already flowing and a real second thread running, so
+/// ticks may legitimately advance between reads -- the check below brackets
+/// the read instead of assuming nothing happened in between.
 #[allow(dead_code)] // Used in kernel_main_continue (conditionally compiled)
 pub fn test_timer_resolution() {
     log::info!("=== TIMER RESOLUTION TEST ===");
 
-    // Get current state (ticks may or may not have advanced yet)
-    let ticks = crate::time::get_ticks();
+    // Bracket the read rather than comparing two independent live reads for
+    // exact equality. This test used to assume interrupts could not possibly
+    // be enabled yet, so ticks_before and get_monotonic_time()'s own internal
+    // tick read could never diverge -- true in every profile that reached
+    // this point before #673, false the moment a profile keeps interrupts
+    // flowing (and a real second thread running) well before this point, as
+    // x86 production now legitimately does. A genuine timer tick landing
+    // between the two reads is not a bug; comparing them for exact equality
+    // treated it as one and panicked on its own race. The bracket still
+    // proves the 1-tick=1-ms conversion has no scaling or drift -- ms must
+    // fall within the observed tick range -- without requiring the
+    // impossible "nothing happened in between."
+    let ticks_before = crate::time::get_ticks();
     let ms = crate::time::get_monotonic_time();
+    let ticks_after = crate::time::get_ticks();
 
-    log::info!("Current state: {} ticks, {} ms", ticks, ms);
+    log::info!(
+        "Current state: {} ticks (before), {} ms, {} ticks (after)",
+        ticks_before,
+        ms,
+        ticks_after
+    );
 
-    // Verify the conversion is correct: at 1000 Hz, each tick = 1 ms
-    // get_monotonic_time() should return ticks directly
-    let expected_ms = ticks;
-
-    if ms == expected_ms {
-        log::info!("✓ Timer conversion correct: {} ticks = {} ms", ticks, ms);
+    if ms >= ticks_before && ms <= ticks_after {
+        log::info!(
+            "✓ Timer conversion correct: {} ms within observed tick range [{}, {}]",
+            ms,
+            ticks_before,
+            ticks_after
+        );
         log::info!("✓ Timer resolution: 1 ms per tick (1000 Hz PIT)");
     } else {
         log::error!(
-            "✗ Timer conversion INCORRECT: {} ticks should yield {} ms, got {} ms",
-            ticks,
-            expected_ms,
-            ms
+            "✗ Timer conversion INCORRECT: {} ms outside observed tick range [{}, {}]",
+            ms,
+            ticks_before,
+            ticks_after
         );
         panic!("Timer resolution validation failed");
     }
