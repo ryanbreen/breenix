@@ -1036,10 +1036,6 @@ fn nonblock_eagain_test_main() -> ! {
 ))]
 fn launch_x86_production_init(elf_data: &[u8]) -> Result<(), &'static str> {
     use alloc::string::String;
-    log::info!(
-        "[673_DEBUG] preempt_count at entry = {}",
-        per_cpu::preempt_count()
-    );
 
     let (thread, designated_pid_raw, reserved_collisions) = {
         let mut manager_guard = process::manager();
@@ -1085,10 +1081,6 @@ fn launch_x86_production_init(elf_data: &[u8]) -> Result<(), &'static str> {
     // reschedule (NEED_RESCHED); this brake is what keeps that request from
     // being honored before boot is ready to be interrupted.
     per_cpu::preempt_disable();
-    log::info!(
-        "[673_DEBUG] preempt_count after extra disable = {}",
-        per_cpu::preempt_count()
-    );
 
     Ok(())
 }
@@ -1578,10 +1570,6 @@ fn kernel_main_continue() -> ! {
     // clock_gettime_test::test_clock_gettime();
 
     // Test if interrupts are working by triggering a breakpoint
-    log::info!(
-        "[673_DEBUG] preempt_count before int3 = {}",
-        per_cpu::preempt_count()
-    );
     log::info!("Testing breakpoint interrupt...");
     x86_64::instructions::interrupts::int3();
     log::info!("Breakpoint test completed!");
@@ -2089,32 +2077,38 @@ fn kernel_main_continue() -> ! {
         kernel::per_cpu::preempt_underflow_count()
     );
 
-    // Release the SECOND, dedicated brake taken in launch_x86_production_init()
-    // (#673 -- see its own comment for the full explanation), only now,
-    // after every remaining line of boot's own sequential work is done:
-    // the PRECONDITION checks, the timer test, Kernel initialization
-    // complete, this scheduler-test window, and the preempt-bracket census
-    // above. Once this releases, init (still holding NEED_RESCHED from its
-    // spawn() call) can finally be dispatched, reach Ring 3, and latch
-    // is_ring3_confirmed() -- from that instant on, context_switch.rs
-    // permanently abandons the boot/idle thread's saved context whenever
-    // idle is next selected (its own comment: stale boot RIPs "cause hangs
-    // when restored during userspace operation"), so nothing here may run
-    // one line later than this. The executor below has nothing left to lose
-    // from that: it is boot's genuine final state, not more sequential work
-    // that needs to survive a resume.
-    #[cfg(not(any(
-        feature = "testing",
-        feature = "interactive",
-        feature = "disable_x86_prod_init"
-    )))]
-    kernel::per_cpu::preempt_enable();
-
     // Initialize and run the async executor
     log::info!("Starting async executor...");
     let mut executor = task::executor::Executor::new();
     executor.spawn(task::Task::new(keyboard::keyboard_task()));
     executor.spawn(task::Task::new(serial::command::serial_command_task()));
+
+    // Release the SECOND, dedicated brake taken in launch_x86_production_init()
+    // (#673 -- see its own comment for the full explanation), only now: both
+    // startup tasks above are primed to their first await point first, via
+    // one manual run_ready_tasks() pass, so this priming pass itself cannot
+    // be the thing that never finishes -- STEADY_STATE_LITERAL
+    // ("Serial command task started") is one of the two lines this pass
+    // guarantees get printed before init can ever be dispatched. Once this
+    // releases, init (still holding NEED_RESCHED from its spawn() call) can
+    // finally run, reach Ring 3, and latch is_ring3_confirmed() -- from that
+    // instant on, context_switch.rs permanently abandons the boot/idle
+    // thread's saved context whenever idle is next selected (its own
+    // comment: stale boot RIPs "cause hangs when restored during userspace
+    // operation"), so nothing above this line may run one line later than
+    // it already has. executor.run()'s own loop below has nothing left to
+    // lose from that: every task it now polls reaches its own await point
+    // through the ordinary Waker path, not through resuming this specific
+    // saved boot context.
+    #[cfg(not(any(
+        feature = "testing",
+        feature = "interactive",
+        feature = "disable_x86_prod_init"
+    )))]
+    {
+        executor.run_ready_tasks();
+        kernel::per_cpu::preempt_enable();
+    }
 
     // Don't run tests automatically - let the user trigger them manually
     #[cfg(feature = "testing")]

@@ -31,8 +31,14 @@ impl Executor {
         self.task_queue.push(task_id).expect("queue full");
     }
 
+    /// Poll every currently-queued task once. `pub` (#673) so a caller that
+    /// needs to observe "every initially-spawned task has been polled at
+    /// least once" -- e.g. x86 production init, which must not let a
+    /// competing kernel thread run until this executor's own startup tasks
+    /// have reached their first await point -- can drive one pass manually
+    /// before handing off to run()'s normal loop.
     #[allow(dead_code)] // Used in kernel_main_continue (conditionally compiled)
-    fn run_ready_tasks(&mut self) {
+    pub fn run_ready_tasks(&mut self) {
         // destructure `self` to avoid borrow checker errors
         let Self {
             tasks,
