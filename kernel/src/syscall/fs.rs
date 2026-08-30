@@ -2382,11 +2382,12 @@ fn handle_procfs_open(path: &str, _flags: u32) -> SyscallResult {
     }
 }
 
-/// * `_flags` - Open flags (currently unused for devices)
+/// * `flags` - Open flags. Forwarded to the /dev/pts path, which builds a real
+///   fd entry from them; the remaining device kinds still ignore them.
 ///
 /// # Returns
 /// File descriptor on success, negative errno on failure
-fn handle_devfs_open(device_name: &str, _flags: u32) -> SyscallResult {
+fn handle_devfs_open(device_name: &str, flags: u32) -> SyscallResult {
     use super::errno::{EMFILE, ENOENT};
     use crate::fs::devfs;
 
@@ -2395,7 +2396,7 @@ fn handle_devfs_open(device_name: &str, _flags: u32) -> SyscallResult {
     // Check for /dev/pts/* paths - route to devptsfs
     if device_name.starts_with("pts/") {
         let pty_name = &device_name[4..]; // Remove "pts/" prefix
-        return handle_devpts_open(pty_name);
+        return handle_devpts_open(pty_name, flags);
     }
 
     // Check for /dev/pts directory itself
@@ -2519,12 +2520,21 @@ fn handle_devfs_open(device_name: &str, _flags: u32) -> SyscallResult {
 ///
 /// # Arguments
 /// * `pty_name` - PTY number as string (e.g., "0", "1")
+/// * `flags` - The caller's open flags. `O_NONBLOCK` and `O_CLOEXEC` are
+///   recorded on the fd; the slave read path in `handlers.rs` tests
+///   `status_flags & O_NONBLOCK` to decide between `EAGAIN` and blocking, so
+///   dropping the flags here made a non-blocking slave impossible to open and
+///   left that branch reachable only through `fcntl(F_SETFL)`.
 ///
 /// # Returns
 /// File descriptor on success, negative errno on failure
-fn handle_devpts_open(pty_name: &str) -> SyscallResult {
+fn handle_devpts_open(pty_name: &str, flags: u32) -> SyscallResult {
     use super::errno::{EMFILE, ENOENT};
     use crate::fs::devptsfs;
+    use crate::ipc::fd::{status_flags, FileDescriptor};
+
+    /// O_CLOEXEC as seen in an `open(2)` flags word.
+    const O_CLOEXEC: u32 = 0x80000;
 
     // Look up the PTY slave in devptsfs
     let pty_num = match devptsfs::lookup(pty_name) {
@@ -2555,9 +2565,19 @@ fn handle_devpts_open(pty_name: &str) -> SyscallResult {
         }
     };
 
-    // Allocate file descriptor with PtySlave kind
-    let fd_kind = FdKind::PtySlave(pty_num);
-    match process.fd_table.alloc(fd_kind) {
+    // Allocate file descriptor with PtySlave kind, carrying the caller's
+    // status flags so a slave opened O_NONBLOCK actually reads non-blocking.
+    let fd_flags = if (flags & O_CLOEXEC) != 0 {
+        crate::ipc::fd::flags::FD_CLOEXEC
+    } else {
+        0
+    };
+    let entry = FileDescriptor::with_flags(
+        FdKind::PtySlave(pty_num),
+        fd_flags,
+        flags & status_flags::O_NONBLOCK,
+    );
+    match process.fd_table.alloc_with_entry(entry) {
         Ok(fd) => {
             // Increment slave reference count so master can detect hangup
             if let Some(pair) = crate::tty::pty::get(pty_num) {
