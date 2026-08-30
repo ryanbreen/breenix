@@ -1013,6 +1013,58 @@ fn nonblock_eagain_test_main() -> ! {
     }
 }
 
+/// Construct, designate, and publish `/sbin/init` (PID 1) on x86_64, then
+/// hand its thread to the scheduler.
+///
+/// This is the x86_64 counterpart to aarch64's `launch_init_from_elf()` in
+/// `main_aarch64.rs`; the two diverge only at the terminal step, per
+/// `publish_init()`'s own doc comment: aarch64 ERETs into the thread
+/// manually, x86_64 enqueues it on the ordinary scheduler dispatch path via
+/// `task::scheduler::spawn()`.
+///
+/// Must be called with the PROCESS_MANAGER lock's usual boot-time discipline:
+/// interrupts masked around the ProcessManager transaction (matching the
+/// `testing`/`interactive` blocks in `kernel_main_continue()` this sits
+/// beside), and with the ext2 root filesystem already mounted.
+#[cfg(all(
+    target_arch = "x86_64",
+    not(any(
+        feature = "testing",
+        feature = "interactive",
+        feature = "disable_x86_prod_init"
+    ))
+))]
+fn launch_x86_production_init(elf_data: &[u8]) -> Result<(), &'static str> {
+    use alloc::string::String;
+
+    let (thread, designated_pid_raw, reserved_collisions) = {
+        let mut manager_guard = process::manager();
+        let manager = manager_guard
+            .as_mut()
+            .ok_or("process manager not available")?;
+
+        let ticket = manager.create_init_process(String::from("init"), elf_data)?;
+        let publication = manager.designate_init(ticket)?;
+        let designated_pid_raw = manager
+            .designated_init()
+            .ok_or("init designation missing after publication")?
+            .as_u64();
+        let reserved_collisions =
+            tracing::providers::teardown::init_reserved_pid_collisions_total();
+        let thread = manager.publish_init(publication);
+        (thread, designated_pid_raw, reserved_collisions)
+    };
+
+    serial_println!(
+        "[INIT_DESIGNATION:x86_64:designated_pid={}:reserved_collisions={}]",
+        designated_pid_raw,
+        reserved_collisions
+    );
+
+    task::scheduler::spawn(thread);
+    Ok(())
+}
+
 /// Continue kernel initialization after setting up threading
 #[cfg(all(
     target_arch = "x86_64",
@@ -1430,6 +1482,65 @@ fn kernel_main_continue() -> ! {
                 }
             }
         });
+    }
+
+    // PRODUCTION INIT: Load /sbin/init from the mounted ext2 root and hand it
+    // to the scheduler as PID 1 (#673).
+    //
+    // This is the exact complement of the two blocks above: it runs only in
+    // the shipped, zero-feature x86_64 build (neither `testing` nor
+    // `interactive`). Before this block existed, that build constructed zero
+    // userspace processes -- PRECONDITION 5 further down
+    // ("Scheduler has runnable threads") failed on every production boot.
+    //
+    // It reuses the exact arch-neutral ProcessManager transaction aarch64's
+    // `launch_init_from_elf()` (main_aarch64.rs) drives -- create_init_process
+    // -> designate_init -> publish_init, all in process/manager.rs with no
+    // target_arch cfg on the designate/publish steps -- and swaps aarch64's
+    // manual ERET terminal step for `task::scheduler::spawn()`, the ordinary
+    // x86_64 dispatch entry point every other process on this arch already
+    // uses (see `process::creation::create_user_process`, called by both
+    // sibling blocks above). `publish_init()`'s own doc comment anticipates
+    // exactly this split: "aarch64 hands it to scheduler::spawn_as_current;
+    // x86 rows run off the ready queue" -- the concrete missing call was
+    // `task::scheduler::spawn()`, per #673's RCA.
+    //
+    // Interrupt/lock discipline mirrors the testing block above exactly:
+    // interrupts must be hardware-enabled for the disk-backed ext2 read (IRQ-
+    // driven VirtIO block completions), then the ProcessManager transaction
+    // runs masked via without_interrupts() -- the same boot-time-safe shape
+    // `create_user_process` and the RING3_SMOKE block already use. `spawn()`
+    // wraps itself in without_interrupts() internally, so nesting it inside
+    // the outer without_interrupts() here is redundant but harmless (it just
+    // re-saves/restores already-disabled flags).
+    //
+    // `disable_x86_prod_init` is a #673 anti-vacuity knob only: building with
+    // it (and neither `testing` nor `interactive`) reproduces the pre-fix
+    // zero-userspace production kernel so the extended gate leg can prove it
+    // actually discriminates the fix. It is not meant to ship enabled.
+    #[cfg(not(any(
+        feature = "testing",
+        feature = "interactive",
+        feature = "disable_x86_prod_init"
+    )))]
+    {
+        x86_64::instructions::interrupts::enable();
+
+        match kernel::boot::init_image::read_init_from_ext2("/sbin/init") {
+            Ok(elf_data) => {
+                x86_64::instructions::interrupts::without_interrupts(|| {
+                    if let Err(e) = launch_x86_production_init(&elf_data) {
+                        log::error!("PRODUCTION INIT: failed to launch init: {}", e);
+                    }
+                });
+            }
+            Err(e) => {
+                log::error!(
+                    "PRODUCTION INIT: failed to read /sbin/init from ext2: {}",
+                    e
+                );
+            }
+        }
     }
 
     // Test timer functionality immediately
@@ -1944,6 +2055,22 @@ fn kernel_main_continue() -> ! {
     log::info!(
         "[PREEMPT_BRACKET_CENSUS:underflow={}]",
         kernel::per_cpu::preempt_underflow_count()
+    );
+
+    // #673 anti-vacuity syscall-execution evidence: proves the newly spawned
+    // production init thread actually executed userspace instructions and
+    // reached the syscall handler, not merely that the kernel constructed and
+    // enqueued it. SYSCALL_TOTAL is incremented unconditionally on every
+    // syscall entry (syscall/handler.rs, via the existing trace_entry() call
+    // on the hot path -- this print does not touch that path, it only reads
+    // the counter afterward from ordinary boot-orchestration code). By this
+    // point preemption has been re-enabled and the "wait briefly for
+    // processes to run" busy-loop above has given the timer a chance to
+    // dispatch any runnable thread, so a nonzero value here means real
+    // userspace code ran and made at least one syscall.
+    log::info!(
+        "[X86_PROD_INIT_SYSCALL_EVIDENCE:syscall_total={}]",
+        tracing::providers::SYSCALL_TOTAL.aggregate()
     );
 
     // Initialize and run the async executor

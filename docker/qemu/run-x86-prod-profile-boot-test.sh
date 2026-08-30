@@ -27,37 +27,61 @@
 # init, and drops into the async executor running the keyboard and serial-command
 # tasks. That is its steady state, and this gate polls for it.
 #
-# WHAT IT DOES NOT DO, STATED PLAINLY
+# WHAT IT NOW DOES (#673, fixed)
 #
-# It launches NO userspace process (#673). `/sbin/init` is read and launched only by
-# kernel/src/main_aarch64.rs; x86's kernel_main_continue() creates user processes
-# exclusively inside `#[cfg(feature = "testing")]` / `#[cfg(feature = "interactive")]`
-# blocks, and the serial console's `test` handler bottoms out in
-# userspace_test::test_multiple_processes(), whose body is also `#[cfg(feature =
-# "testing")]`. So the shipped x86 kernel spawns nothing, reaps nothing, and
-# retires no page-table root.
+# The shipped x86_64 kernel now launches a real init process. kernel_main_continue()
+# (kernel/src/main.rs) gained a third block, mutually exclusive with the existing
+# `testing`/`interactive` blocks: `#[cfg(not(any(feature = "testing", feature =
+# "interactive", feature = "disable_x86_prod_init")))]`. It reads `/sbin/init` from
+# the already-mounted ext2 root and drives it through the exact same arch-neutral
+# ProcessManager transaction aarch64's `launch_init_from_elf()` uses --
+# `create_init_process` -> `designate_init` -> `publish_init` (all in
+# kernel/src/process/manager.rs, no target_arch cfg) -- then hands the published
+# thread to `task::scheduler::spawn()`, the ordinary x86_64 dispatch entry point
+# every other process on this arch already uses. That single call was the gap:
+# `publish_init()` already left the thread scheduler-ready, but nothing on x86 had
+# ever called `spawn()` on it before #673.
 #
-# Therefore the census assertions below are a ZERO-WORKLOAD BASELINE, not a
-# return-to-zero after a teardown. This gate CANNOT prove that x86 production
-# teardown drains, because x86 production has no teardown to drain. What it does
-# prove, and what nothing proved before, is that the census counters are AT REST
-# at their own emission point: both censuses are emitted once from
-# kernel/src/main.rs:662-663, inside kernel_main, BEFORE the PRECONDITION block
-# (main.rs:1637-1742), the unconditional preempt_enable() (main.rs:1807), the
-# preempt-bracket census (main.rs:1847-1855), interrupt enable, and executor
-# startup that follow on the way to this gate's steady-state marker
-# (kernel_main_continue, main.rs:1861). Anchors re-derived per-delta by the
-# #672 fix. Read the pinned
-# literals as a conservation law over boot UP TO that emission point only --
-# any kthread, boot-path process row, or page-table root that leaks a tombstone
-# or is abandoned AFTER main.rs:663, including anywhere in the steady-state
-# liveness window this gate polls afterward, is outside what this gate can see.
-# No run on this branch has ever observed a nonzero census -- the forced-fail
-# leg (VERDICT DISCIPLINE below) mutates the gate's expected pattern, not the
-# kernel's counter state, so "the counters move off zero on a real leak" is an
-# inference from the emitters reading real aggregate() state
-# (tracing/providers/teardown.rs:720,741), not something this gate has
-# measured.
+# `disable_x86_prod_init` is an anti-vacuity knob only (not meant to ship enabled):
+# building with `--features disable_x86_prod_init` and neither `testing` nor
+# `interactive` compiles the new block back out and reproduces the pre-fix,
+# zero-userspace shipped kernel byte-for-byte, so this same gate can be run against
+# it to prove the assertions below actually discriminate the fix rather than
+# passing either way. Set X86_PROD_PROFILE_EXTRA_FEATURES=disable_x86_prod_init
+# before invoking this script to run that leg.
+#
+# CENSUS SCOPE, UNCHANGED BY THE FIX
+#
+# `emit_root_custody_summary()`/`emit_tombstone_census()` (kernel/src/main.rs:676-677)
+# still run exactly where they always did: inside `kernel_main`, strictly BEFORE
+# `kernel_main_continue()` is ever called, and therefore strictly before the new
+# init-launch block above. The pinned all-zero census literals below are therefore
+# still a true "before any user process exists" baseline -- the fix does not move
+# that emission point and does not require re-deriving those literals. What remains
+# true, and was true before #673 too, is that this gate does not drive init through
+# a reap/retire cycle, so it proves the census is at rest at its own emission point,
+# not a return-to-zero after a teardown: nothing here asserts anything about
+# teardown behavior once init is actually running its own workload.
+#
+# NEW EVIDENCE THIS GATE REQUIRES (#673)
+#
+# Construction is not dispatch, and dispatch is not execution, so three independent
+# signals are asserted, each proving a strictly stronger claim than the last:
+#   1. `[INIT_DESIGNATION:x86_64:designated_pid=1:...]` (emitted from the new call
+#      site) -- proves the ProcessManager transaction ran and named PID 1 as init.
+#   2. PRECONDITION 5 ("Scheduler has runnable threads") flips from its old,
+#      attributed FAIL to PASS -- proves the thread reached the scheduler's
+#      runnable set, checked live via `task::scheduler::with_scheduler` at
+#      kernel/src/main.rs:1909-1915 (was main.rs:1798-1807 pre-fix, per #673's
+#      original RCA -- the fix's own new block shifted every line after it).
+#   3. `[X86_PROD_INIT_SYSCALL_EVIDENCE:syscall_total=N]` with N > 0 -- proves init's
+#      userspace code actually ran and reached the syscall handler at least once.
+#      This reads the existing, always-incrementing `SYSCALL_TOTAL` counter
+#      (kernel/src/tracing/providers/counters.rs, incremented unconditionally on
+#      every syscall via the pre-existing `trace_entry()` call already on the
+#      syscall hot path in kernel/src/syscall/handler.rs) from ordinary
+#      boot-orchestration code well after that hot path returns -- it adds no
+#      logging to the syscall or interrupt paths themselves.
 #
 # DISK LAYOUT
 #
@@ -86,6 +110,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BREENIX_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 OUTPUT_DIR="/tmp/breenix_x86_prod_profile"
 QEMU_PID=""
+# #673 anti-vacuity knob. Empty (default) builds the real shipped profile;
+# set to "disable_x86_prod_init" to build the pre-fix, zero-userspace kernel
+# and confirm this same gate discriminates the fix (see the header).
+X86_PROD_PROFILE_EXTRA_FEATURES="${X86_PROD_PROFILE_EXTRA_FEATURES:-}"
 
 # ---------------------------------------------------------------------------
 # Production milestones. Each must appear exactly once. `Kernel initialization
@@ -158,35 +186,32 @@ FAULT_MARKERS=(
     'DISK LOADING FAILED'
 )
 CRASH_MARKERS_PATTERN='KERNEL PANIC|panic!|DOUBLE FAULT|TRIPLE FAULT|soft lockup detected'
-
 # ---------------------------------------------------------------------------
-# ATTRIBUTED pre-existing production-profile defects, pinned so they cannot move
-# silently. R52 forbids an unattributed failure; it does not require pretending
-# a disclosed one is absent. What the shipped x86 kernel still prints on every
-# boot, and was invisible until this gate existed:
+# PRECONDITION pins. R52 forbids an unattributed failure, not a disclosed one
+# left unfixed forever: both entries that used to live here (#672, #673) are
+# now FIXED, and both pins are re-derived in the direction that proves it --
+# the FAIL line must be ABSENT and the PASS line present exactly once. A
+# kernel that simply stopped emitting the check would satisfy a bare absence
+# assertion, which is why the PASS line is pinned too, not just the FAIL
+# line's absence.
 #
-#   PRECONDITION 5 (#673) -- "No runnable threads in scheduler". The shipped x86
-#   kernel launches no userspace process at all (see the header). Symptom of that
-#   gap, not an independent defect.
+# PRECONDITION 5 (#673, fixed) -- "Scheduler has runnable threads". The
+# shipped x86 kernel launched no userspace process at all; kernel_main_continue()
+# now reads /sbin/init from ext2 and hands it to task::scheduler::spawn() before
+# this check runs (see the header). Do not relax the FAIL-absent / PASS-present
+# pair back to a bare presence check or delete it -- that is how a fixed defect
+# regresses silently.
 #
-# It is pinned present-exactly-once ON PURPOSE: the day it is fixed this gate
-# goes red and the pin must be re-derived to 0 in the same change. Do not relax
-# it to >= or delete it -- that is how a disclosed defect becomes an undisclosed
-# one.
-#
-# PRECONDITION 7 (#672) USED TO BE THE SECOND ENTRY HERE and is now FIXED, so
-# its pin is re-derived in the opposite direction: the FAIL line must be ABSENT
-# and the PASS line present exactly once. The defect was that
-# kernel_main_continue() called per_cpu::preempt_disable() only inside
-# `#[cfg(all(feature = "testing", not(feature = "interactive")))]` while calling
-# the matching preempt_enable() unconditionally, so the shipped profile
-# decremented a preempt_count that was already zero and the bare `sub dword ptr
-# gs:[..], 1` wrapped it to 0xFFFFFFFF. The disable is now unconditional, so the
-# bracket is symmetric in every build profile. Pinning the PASS line rather than
-# only asserting the FAIL line is gone is deliberate: a kernel that stopped
-# emitting PRECONDITION 7 altogether would satisfy a bare absence check.
+# PRECONDITION 7 (#672, fixed) -- "Preemption disabled". kernel_main_continue()
+# used to call per_cpu::preempt_disable() only inside `#[cfg(all(feature =
+# "testing", not(feature = "interactive")))]` while calling the matching
+# preempt_enable() unconditionally, so the shipped profile decremented a
+# preempt_count that was already zero and the bare `sub dword ptr gs:[..], 1`
+# wrapped it to 0xFFFFFFFF. The disable is now unconditional, so the bracket is
+# symmetric in every build profile.
 # ---------------------------------------------------------------------------
 PRECOND_RUNNABLE_FAIL_LITERAL='PRECONDITION 5: Scheduler has runnable threads ✗ FAIL'
+PRECOND_RUNNABLE_PASS_LITERAL='PRECONDITION 5: Scheduler has runnable threads ✓ PASS'
 PRECOND_PREEMPT_FAIL_LITERAL='PRECONDITION 7: Preemption disabled ✗ FAIL'
 PRECOND_PREEMPT_PASS_LITERAL='PRECONDITION 7: Preemption disabled ✓ PASS'
 
@@ -202,6 +227,17 @@ PRECOND_PREEMPT_PASS_LITERAL='PRECONDITION 7: Preemption disabled ✓ PASS'
 # ---------------------------------------------------------------------------
 PREEMPT_CENSUS_PREFIX='[PREEMPT_BRACKET_CENSUS:'
 PREEMPT_CENSUS_PROD_LITERAL='[PREEMPT_BRACKET_CENSUS:underflow=0]'
+
+# ---------------------------------------------------------------------------
+# #673 new evidence. Three independent signals, each a strictly stronger claim
+# than the last (construction, then dispatch, then execution) -- see the
+# header's "NEW EVIDENCE THIS GATE REQUIRES" section for the full rationale.
+# INIT_DESIGNATION is matched by prefix (not full literal) because
+# reserved_collisions is a live counter, not a fixed value; designated_pid=1
+# is the part that must never drift.
+# ---------------------------------------------------------------------------
+INIT_DESIGNATION_X86_PREFIX='[INIT_DESIGNATION:x86_64:designated_pid=1:'
+SYSCALL_EVIDENCE_PREFIX='[X86_PROD_INIT_SYSCALL_EVIDENCE:syscall_total='
 
 # Measured on beast under TCG: steady state at 14s from QEMU launch. The bound is
 # an order of magnitude above that so host contention cannot score a slow-but-
@@ -290,6 +326,22 @@ serial_bytes() {
     printf '%s' "$total"
 }
 
+
+# Extracts the numeric syscall_total value from the first matching serial
+# line (there should be exactly one -- see the assertion below). Pure bash
+# parameter expansion, no sed/awk regex: strip everything through the last
+# "syscall_total=" (greedy prefix removal), then everything from the first
+# "]" onward. Empty/absent resolves to 0 so a missing marker fails the ">0"
+# assertion rather than the arithmetic comparison itself.
+syscall_evidence_value() {
+    local line
+    line=$(grep -F -h -- "$SYSCALL_EVIDENCE_PREFIX" "$OUTPUT_DIR"/serial_*.txt 2>/dev/null || true)
+    line=$(printf '%s\n' "$line" | head -1)
+    local val="${line##*syscall_total=}"
+    val="${val%%]*}"
+    printf '%s' "${val:-0}"
+}
+
 print_observed_values() {
     echo "  ext2 root mounted:            $(marker_count "$EXT2_ROOT_LITERAL")"
     echo "  kernel init complete:         $(marker_count "$KERNEL_INIT_LITERAL")"
@@ -308,30 +360,41 @@ print_observed_values() {
     for marker in "${FAULT_MARKERS[@]}"; do
         echo "  fault marker '$marker': $(marker_count "$marker")"
     done
-    echo "  attributed PRECONDITION 5 fail: $(marker_count "$PRECOND_RUNNABLE_FAIL_LITERAL")"
+    echo "  fixed PRECONDITION 5 fail (#673): $(marker_count "$PRECOND_RUNNABLE_FAIL_LITERAL")"
+    echo "  fixed PRECONDITION 5 pass (#673): $(marker_count "$PRECOND_RUNNABLE_PASS_LITERAL")"
     echo "  fixed PRECONDITION 7 fail (#672): $(marker_count "$PRECOND_PREEMPT_FAIL_LITERAL")"
     echo "  fixed PRECONDITION 7 pass (#672): $(marker_count "$PRECOND_PREEMPT_PASS_LITERAL")"
     echo "  preempt census lines:          $(marker_count "$PREEMPT_CENSUS_PREFIX")"
     echo "  preempt census at rest:        $(marker_count "$PREEMPT_CENSUS_PROD_LITERAL")"
+    echo "  init designation (#673):      $(marker_count "$INIT_DESIGNATION_X86_PREFIX")"
+    echo "  syscall evidence value (#673): $(syscall_evidence_value)"
     { grep -F -h -- "$TOMBSTONE_CENSUS_PREFIX" "$OUTPUT_DIR"/serial_*.txt 2>/dev/null || true; }
     { grep -F -h -- "$ROOT_CUSTODY_PREFIX" "$OUTPUT_DIR"/serial_*.txt 2>/dev/null || true; }
     { grep -F -h -- "$PREEMPT_CENSUS_PREFIX" "$OUTPUT_DIR"/serial_*.txt 2>/dev/null || true; }
+    { grep -F -h -- "$INIT_DESIGNATION_X86_PREFIX" "$OUTPUT_DIR"/serial_*.txt 2>/dev/null || true; }
 }
 
 cd "$BREENIX_ROOT"
 
 echo "Building the shipped x86_64 production kernel profile..."
-# No --features, and that omission is the assertion: adding one here would make
-# this gate measure a different kernel than the one the project ships.
+FEATURE_ARGS=()
+if [ -n "$X86_PROD_PROFILE_EXTRA_FEATURES" ]; then
+    FEATURE_ARGS=(--features "$X86_PROD_PROFILE_EXTRA_FEATURES")
+    echo "  (#673 anti-vacuity leg: extra features = $X86_PROD_PROFILE_EXTRA_FEATURES)"
+fi
+# No --features by default, and that omission is the assertion: silently
+# adding one would make this gate measure a different kernel than the one
+# the project ships. The one documented exception is the #673 anti-vacuity
+# knob above, which is off by default and must be opted into explicitly.
 # The existing image is removed first so a stale artifact from a differently
 # featured build cannot be picked up by the newest-first selection below.
 rm -f target/release/build/breenix-*/out/breenix-uefi.img
 BUILD_LOG=/tmp/breenix_x86_prod_profile_build.log
-cargo build --release --bin qemu-uefi 2>&1 | tee "$BUILD_LOG"
+cargo build --release "${FEATURE_ARGS[@]}" --bin qemu-uefi 2>&1 | tee "$BUILD_LOG"
 # Zero-warning law. grep exits 1 on the clean case, so the status is swallowed in
 # the group and awk -- which always exits 0 -- produces the number.
 test "$( { grep -c '^warning' "$BUILD_LOG" || true; } | awk '{ print $1 + 0 }')" -eq 0
-BREENIX_PRINT_UEFI_IMAGE=1 cargo run --release --bin qemu-uefi >/dev/null
+BREENIX_PRINT_UEFI_IMAGE=1 cargo run --release "${FEATURE_ARGS[@]}" --bin qemu-uefi >/dev/null
 UEFI_IMG=$(ls -t target/release/build/breenix-*/out/breenix-uefi.img | head -1)
 test -n "$UEFI_IMG"
 
@@ -436,8 +499,10 @@ for marker in "${FAULT_MARKERS[@]}"; do
 done
 test "$(crash_count)" -eq 0
 
-# Attributed pre-existing defect: pinned, not tolerated. See the block above.
-test "$(marker_count "$PRECOND_RUNNABLE_FAIL_LITERAL")" -eq 1
+# #673, fixed: the shipped kernel now launches init, so PRECONDITION 5 must
+# now pass and must still be reported. See the block above.
+test "$(marker_count "$PRECOND_RUNNABLE_FAIL_LITERAL")" -eq 0
+test "$(marker_count "$PRECOND_RUNNABLE_PASS_LITERAL")" -eq 1
 
 # #672, fixed: the preempt bracket is symmetric in the shipped profile, so
 # PRECONDITION 7 must now pass and must still be reported.
@@ -447,6 +512,11 @@ test "$(marker_count "$PRECOND_PREEMPT_PASS_LITERAL")" -eq 1
 # Preempt-bracket census, at rest, in the shipped profile.
 test "$(marker_count "$PREEMPT_CENSUS_PREFIX")" -eq 1
 test "$(marker_count "$PREEMPT_CENSUS_PROD_LITERAL")" -eq 1
+
+# #673: init designation and syscall-execution evidence -- construction,
+# dispatch, and execution, each proven independently. See the header.
+test "$(marker_count "$INIT_DESIGNATION_X86_PREFIX")" -eq 1
+test "$(syscall_evidence_value)" -gt 0
 
 trap - ERR
 echo "PASS: x86 production profile reached steady state with the teardown census at rest"

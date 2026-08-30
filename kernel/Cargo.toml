@@ -93,6 +93,11 @@ ec0_fault_inject = []  # Inject one EL1 UDF on CPU 0 after about 10 seconds
 receipt_drop_test = ["boot_tests"]  # Deliberately exercise RetirementReceipt::drop
 vmnet = []  # Use vmnet network config (192.168.64.x) instead of SLIRP (10.0.2.x)
 interactive = ["testing"]  # Boot into init_shell instead of running automated tests
+# #673 anti-vacuity knob: forces the zero-feature x86_64 production build
+# back to the pre-fix state (no userspace process launched) with no other
+# scaffolding, so the extended prod-profile gate can prove it discriminates
+# the fix rather than passing either way. Not implied by any other feature.
+disable_x86_prod_init = []
 
 [dependencies]
 bootloader_api = { git = "https://github.com/rust-osdev/bootloader.git", branch = "main" }
