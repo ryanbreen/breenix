@@ -15,6 +15,23 @@
 //! so a site cannot be declared without being placed or placed without being
 //! declared.
 //!
+//! ## Component-scoped, not one global set
+//!
+//! Rung 1 shipped a single `SiteId` naming Component A's twelve seams. Rung 2
+//! adds Component C, whose own contract needs three seams: `ScheduleEntry` at
+//! the broad pre-dispatch boundary, `PreDispatchMask` for a tighter aim point,
+//! and `DriverPreCycle` to prove the driver itself ran. The first two live
+//! inside `scheduler.rs` as `SiteClass::Open` — a file every one of Component
+//! A's placed seams is `Masked` in. Merging the two
+//! into one array would declare a site the OTHER component's build can never
+//! visit, permanently reddening that build's own non-vacuity gate
+//! (`sites_visited < sites_declared`). So `SiteId` and `ALL` are two mutually
+//! exclusive definitions, selected at compile time by `coreproof_component_c` —
+//! the same "mutually-exclusive compile-time driver selection" pattern
+//! `MODE`/`WINDOW`/`SEED` already use. Everything below the two definitions
+//! (`SiteClass`, `mark_visited`, `visited_count`) is generic over whichever
+//! concrete `SiteId` is in scope and needs no per-component copy.
+//!
 //! ## Classes are a safety rule, not a label
 //!
 //! A `Masked` site's seam sits inside a critical section that holds the
@@ -25,6 +42,11 @@
 
 use core::sync::atomic::{AtomicU64, Ordering};
 
+// ============================================================================
+// Component A — the ready-queue departure protocol's twelve seams.
+// ============================================================================
+
+#[cfg(not(feature = "coreproof_component_c"))]
 #[derive(Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum SiteId {
@@ -42,6 +64,7 @@ pub enum SiteId {
     DriverPreQuiesce,
 }
 
+#[cfg(not(feature = "coreproof_component_c"))]
 pub const ALL: &[SiteId] = &[
     SiteId::BlockEntry,
     SiteId::BlockAfterStateStore,
@@ -57,20 +80,7 @@ pub const ALL: &[SiteId] = &[
     SiteId::DriverPreQuiesce,
 ];
 
-pub const DECLARED: usize = ALL.len();
-const _: () = assert!(DECLARED <= 64);
-
-static VISITED: AtomicU64 = AtomicU64::new(0);
-
-/// Which actions a site admits. See the module header — this is a safety rule.
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub enum SiteClass {
-    /// Inside a scheduler-lock critical section with interrupts masked.
-    Masked,
-    /// Ordinary kthread context.
-    Open,
-}
-
+#[cfg(not(feature = "coreproof_component_c"))]
 impl SiteId {
     pub fn name(self) -> &'static str {
         match self {
@@ -132,6 +142,108 @@ impl SiteId {
             | Self::DeferredRequeueClaim => SiteClass::Masked,
         }
     }
+}
+
+// ============================================================================
+// Component C — per-CPU identity + stack custody's three seams.
+// ============================================================================
+//
+// `ScheduleEntry` sits at the top of `scheduler::schedule()`, before the call
+// to `run_deferred_reclamation()`, while `PreDispatchMask` sits immediately
+// after that drain and before `schedule_from_kernel()`. Every caller of
+// `schedule()` reaches both with interrupts ENABLED — masking is
+// `schedule_from_kernel`'s own job, further down a call chain this harness may
+// never seam (`context_switch.rs` is permanently prohibited,
+// `scripts/check-coreproof-seams.sh`) — so their class is `Open`, not `Masked`.
+// Both existing `KernelSchedule` and `Steal` antagonist ops already reach them
+// on every peer step, so no new call path is needed to exercise either one.
+//
+// `ALL` now has three variants. `ScheduleEntry` and `PreDispatchMask` are both
+// visited trivially by ordinary boot traffic — `scheduler::schedule()` runs
+// constantly regardless of which component is driving, so those two alone
+// would make `sites_visited == sites_declared` satisfied by construction, not
+// by the harness actually running (this was a real, disclosed gap in rung 2's
+// first cut — the review that caught it is `rung2-review.md`, finding B1).
+// `DriverPreCycle` closes that gap: it lives in `driver_c.rs`'s own loop, not in
+// `scheduler.rs`, so it can only ever be visited if the coreproof driver thread
+// itself dispatches and runs at least one iteration. `sites_visited ==
+// sites_declared` is therefore now a genuine non-vacuity check for Component C,
+// not a tautology. `docker/qemu/run-coreproof-gate.sh`'s `adjudicate()` also now
+// fails a boot outright on `iters=0`, independent of which sites a future
+// component happens to declare — belt and suspenders, not either/or.
+
+#[cfg(feature = "coreproof_component_c")]
+#[derive(Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum SiteId {
+    ScheduleEntry,
+    PreDispatchMask,
+    DriverPreCycle,
+}
+
+#[cfg(feature = "coreproof_component_c")]
+pub const ALL: &[SiteId] = &[
+    SiteId::ScheduleEntry,
+    SiteId::PreDispatchMask,
+    SiteId::DriverPreCycle,
+];
+
+#[cfg(feature = "coreproof_component_c")]
+impl SiteId {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::ScheduleEntry => "ScheduleEntry",
+            Self::PreDispatchMask => "PreDispatchMask",
+            Self::DriverPreCycle => "DriverPreCycle",
+        }
+    }
+
+    /// Reconstruct a `SiteId` from its `as u8` discriminant, defensively (never panics —
+    /// falls back to `ALL[0]` for an out-of-range value). Used to decode a site that was
+    /// stored as a raw `u8` in an atomic. Derived from `ALL`, not a second literal list —
+    /// see this module's own header on why a name list here would be the same mistake
+    /// #549/#551/#527-r1 already made once.
+    pub(crate) fn from_u8(value: u8) -> Self {
+        ALL.iter()
+            .copied()
+            .find(|site| *site as u8 == value)
+            .unwrap_or(ALL[0])
+    }
+
+    /// See the Component A impl's doc for why this is derived, never drawn.
+    pub fn order(self) -> super::rng::Order {
+        use super::rng::Order;
+        match self {
+            // Placed BEFORE `run_deferred_reclamation()`, i.e. before
+            // `schedule_from_kernel`'s own pre-mask identity read.
+            Self::ScheduleEntry | Self::PreDispatchMask | Self::DriverPreCycle => Order::Before,
+        }
+    }
+
+    pub fn class(self) -> SiteClass {
+        match self {
+            Self::ScheduleEntry | Self::PreDispatchMask | Self::DriverPreCycle => SiteClass::Open,
+        }
+    }
+}
+
+// ============================================================================
+// Shared: generic over whichever `SiteId` this build compiled.
+// ============================================================================
+
+pub const DECLARED: usize = ALL.len();
+const _: () = assert!(DECLARED <= 64);
+const _: () = assert!(DECLARED >= 1);
+
+static VISITED: AtomicU64 = AtomicU64::new(0);
+
+/// Which actions a site admits. See the module header — this is a safety rule.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum SiteClass {
+    /// Inside a scheduler-lock critical section with interrupts masked.
+    Masked,
+    /// Ordinary kthread context.
+    Open,
 }
 
 /// Record that this seam was reached at least once.

@@ -1,0 +1,11 @@
+
+running 5 tests
+test every_declared_mutation_perturbs_a_real_site ... ok
+test every_gated_mutation_is_declared ... ok
+test every_multi_file_mutation_gates_every_file_its_own_entry_names ... ok
+test every_register_entry_cites_its_issue_its_fix_and_its_predicate ... ok
+test the_register_names_exactly_the_declared_mutations ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+
+exit=0

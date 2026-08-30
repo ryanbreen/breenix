@@ -109,11 +109,27 @@ fn log_uniform_ticks(entropy: u64, maximum: u64) -> u64 {
 }
 
 /// Resolve the timer entropy against the live, frequency-derived tick interval.
+///
+/// At an `Open` site the aim lever is landing the tick close to the seam (rung 2 review, M4):
+/// bias the log-uniform draw toward the low end of its range rather than widening the range
+/// further. A quarter of the full `Masked`-site range keeps a squeeze armed at an `Open` site
+/// inside roughly one interrupt interval of the seam most of the time, instead of the full
+/// 20x (~0.83ms at the pilot's measured frequency) range a `Masked` site still needs — a
+/// `Masked` site has no seam to aim near (the timer is its only admissible perturbation
+/// across the WHOLE critical section it sits inside), so it keeps the wide range. This is
+/// still a deterministic, pure function of `vector` (itself already a pure function of
+/// `(root_seed, component, cpu, iteration)` by the time it reaches here) — no new entropy
+/// source, just a different transform of the same draw.
 pub fn materialize(mut vector: DrawVector) -> DrawVector {
     if vector.action == Action::TimerSqueeze {
         let base =
             crate::arch_impl::aarch64::timer_interrupt::TICKS_PER_INTERRUPT.load(Ordering::Relaxed);
-        vector.ticks = log_uniform_ticks(vector.ticks, base.saturating_mul(20));
+        let range = if vector.site.class() == SiteClass::Open {
+            base.saturating_mul(4)
+        } else {
+            base.saturating_mul(20)
+        };
+        vector.ticks = log_uniform_ticks(vector.ticks, range);
     }
     vector
 }
@@ -154,6 +170,12 @@ pub fn apply(vector: &DrawVector) {
     match action {
         Action::None => {}
         Action::Yield => crate::task::scheduler::yield_current(),
+        // Re-enters `schedule()` from inside a live seam call (when this fires at
+        // `ScheduleEntry`/`PreDispatchMask`). `fire()` disarms the slot before calling
+        // `stimulus::apply`, so a SECOND fire inside this nested call needs a fresh re-arm to
+        // land inside the nested window specifically — improbable per level, but not
+        // structurally bounded to zero. Not observed to cause a stack overflow across this
+        // rung's boot batteries; noted here rather than asserted safe by construction.
         Action::ForceResched => {
             crate::task::scheduler::set_need_resched();
             crate::task::scheduler::schedule();

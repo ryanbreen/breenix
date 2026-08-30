@@ -5,7 +5,8 @@
 //!   still take interrupts — controlled, not stopped — and the pen releases
 //!   between iterations at a PRNG-selected cadence.
 //! * `Adversarial`: the parked CPUs instead run the component's paired
-//!   operation from the same seeded stream.
+//!   operation from the same seeded stream. Component C additionally
+//!   designates a victim/stealer pair among its first two parked peers.
 //! * `Ambient`: no pen at all; the boot proceeds and the loop rides along.
 //!   Deliberately the least sensitive mode, and a mandatory confirmation arm —
 //!   a perturbation harness can manufacture its own bug, which the strand
@@ -48,6 +49,21 @@ pub enum Mode {
 }
 
 impl Mode {
+    /// Compile-time default is `Pen`, unconditionally. There used to be a
+    /// second, per-component default computed here too (Adversarial for
+    /// Component C) - removed (rung 2 review, m1): the gate script, the only
+    /// sanctioned way to run this harness, always passes an explicit
+    /// `BREENIX_COREPROOF_MODE=$MODE` after computing its own per-component
+    /// default in shell, so the arm that used to live here was dead under
+    /// every real invocation and could silently drift from the shell's own
+    /// default without anything catching it. The gate script is now the
+    /// single owner of that per-component default (`adversarial` for C,
+    /// `pen` for A - see its own header comment). A hand-invoked `cargo
+    /// build` for a Component C feature set outside the gate script, with no
+    /// `BREENIX_COREPROOF_MODE` set, now genuinely gets `Pen` - which
+    /// suppresses the very condition Component C hunts (see `driver_c.rs`) -
+    /// so such an invocation must pass `BREENIX_COREPROOF_MODE=adversarial`
+    /// itself; the gate script always does.
     pub fn selected() -> Self {
         match option_env!("BREENIX_COREPROOF_MODE") {
             Some("adversarial") => Self::Adversarial,
@@ -70,6 +86,26 @@ impl Mode {
 pub enum Window {
     PostCohort,
     Overlap,
+}
+
+/// A peer's role in Component C's designated victim/stealer pairing (rung 2 review, M5; spec
+/// section 3.1 item 2). `Ordinary` is rung 1's unchanged behavior — Component A NEVER sees
+/// anything but `Ordinary`, and neither does any peer beyond the first two for Component C.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PeerRole {
+    /// Draws its own antagonist op from the seeded stream every iteration, unchanged from
+    /// rung 1.
+    Ordinary,
+    /// Forced onto `KernelSchedule` every iteration — Component C's designated victim: reliably
+    /// keeps calling `scheduler::schedule()`, giving the driver's armed seam many more chances
+    /// to catch it mid-dispatch than an independent ~1-in-6 draw would.
+    Victim,
+    /// Forced onto `Steal` every iteration, targeting the VICTIM peer's own tid (not the
+    /// driver's) — the foreign-cpu dispatch attempt that contests redispatching a thread the
+    /// victim's own timer squeeze just preempted, before the victim's home cpu can redispatch
+    /// it locally first (the exact structural gap round 3 diagnosed: "a preempted peer is
+    /// requeued onto its own CPU ... re-dispatched at home before any steal can take it").
+    Stealer,
 }
 
 impl Window {
@@ -132,14 +168,39 @@ impl Controller {
         EXITED_CPUS.store(0, Ordering::Release);
         CONTROL.store(PARKED, Ordering::Release);
 
+        // Component C's designated victim/stealer pairing (M5): the lowest-numbered online
+        // peer is the victim, the next-lowest is the stealer. Every other peer — and every
+        // peer for any OTHER component — keeps rung 1's unchanged uniform draw (`Ordinary`).
+        // `component == b'C'` is a runtime check on the byte already threaded through this
+        // whole call chain, not a new compile-time coupling to Component C's own module.
+        let assign_roles = component == b'C';
+        let mut role_iter = (0..online_cpus.min(crate::arch_impl::aarch64::smp::MAX_CPUS))
+            .filter(|&cpu| cpu != driver_cpu);
+        let victim_cpu = if assign_roles { role_iter.next() } else { None };
+        let stealer_cpu = if assign_roles { role_iter.next() } else { None };
+
         let mut mask = 0u64;
         let mut handles = Vec::new();
+        // Falls back to the driver's own (inert) tid until the victim peer has actually
+        // spawned — see below. `victim_cpu`, when `Some`, is always numerically less than
+        // `stealer_cpu` (both come from the same ascending filter above), and the outer loop
+        // below also runs cpu-ascending, so the victim's own iteration always updates this
+        // BEFORE the stealer's iteration reads it.
+        let mut victim_peer_tid = victim_tid;
         for cpu in 0..online_cpus.min(crate::arch_impl::aarch64::smp::MAX_CPUS) {
             if cpu == driver_cpu {
                 continue;
             }
             let bit = 1u64 << cpu;
             let worker_mode = mode;
+            let role = if Some(cpu) == victim_cpu {
+                PeerRole::Victim
+            } else if Some(cpu) == stealer_cpu {
+                PeerRole::Stealer
+            } else {
+                PeerRole::Ordinary
+            };
+            let steal_target = victim_peer_tid;
             let result = crate::task::kthread::kthread_run_on_cpu_for_test(
                 move || {
                     worker(
@@ -150,12 +211,17 @@ impl Controller {
                         cpu,
                         victim_tid,
                         online_cpus,
+                        role,
+                        steal_target,
                     )
                 },
                 "coreproof-peer",
                 cpu,
             );
             if let Ok(handle) = result {
+                if role == PeerRole::Victim {
+                    victim_peer_tid = handle.tid();
+                }
                 mask |= bit;
                 handles.push(handle);
             }
@@ -237,7 +303,22 @@ fn adversarial_step(
     victim_tid: u64,
     online_cpus: usize,
     state: &mut PeerState,
+    role: PeerRole,
+    steal_target: u64,
 ) {
+    match role {
+        PeerRole::Victim => {
+            kernel_schedule();
+            return;
+        }
+        PeerRole::Stealer => {
+            let _ =
+                crate::task::scheduler::with_scheduler(|scheduler| scheduler.unblock(steal_target));
+            kernel_schedule();
+            return;
+        }
+        PeerRole::Ordinary => {}
+    }
     let vector = rng::draw(root_seed, component, cpu as u8, iteration);
     match vector.antagonist_op {
         AntagonistOp::Unblock => {
@@ -309,6 +390,8 @@ fn worker(
     cpu: usize,
     victim_tid: u64,
     online_cpus: usize,
+    role: PeerRole,
+    steal_target: u64,
 ) {
     let bit = 1u64 << cpu;
     let mut iteration = 0u64;
@@ -331,6 +414,8 @@ fn worker(
                         victim_tid,
                         online_cpus,
                         &mut state,
+                        role,
+                        steal_target,
                     );
                     iteration = iteration.wrapping_add(1);
                 } else {

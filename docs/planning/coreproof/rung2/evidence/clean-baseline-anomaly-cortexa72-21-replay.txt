@@ -1,0 +1,20 @@
+Building coreproof kernel (features: boot_tests,coreproof,coreproof_component_c)...
+   Compiling kernel v0.1.0 (/Users/wrb/fun/code/breenix/.claude/worktrees/wf_6c1dffc9-63b-4/kernel)
+    Finished `release` profile [optimized] target(s) in 8.71s
+warning: the following packages contain code that will be rejected by a future version of Rust: core v0.0.0 (/Users/wrb/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/src/rust/library/core)
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+Guard: kernel FP/SIMD instruction check
+  ELF:       /Users/wrb/fun/code/breenix/.claude/worktrees/wf_6c1dffc9-63b-4/target/coreproof-gate/aarch64-breenix-kernel/release/kernel-aarch64
+  objdump:   /Users/wrb/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/aarch64-apple-darwin/bin/llvm-objdump
+  allowlist: /Users/wrb/fun/code/breenix/.claude/worktrees/wf_6c1dffc9-63b-4/scripts/kernel-neon-allowlist.txt
+[0;32mPASS:[0m 0 FP/SIMD load/store instructions in kernel .text (allowlisted & suppressed: 0).
+CORE-PROOF SEAM RATCHET: PASSED (14 prohibited path(s) clean)
+Serial output root: /tmp/breenix_coreproof_gate/20260830T174117Z_15488
+
+=== profile cortex-a72 — 1 boot(s), component C, mode adversarial, window post_cohort, disarmed 0 ===
+qemu-system-aarch64: terminating on signal 15 from pid 15863 (<unknown process>)
+  cortex-a72#1: harness violations=0 iters=106471
+  cortex-a72#1: clean (seed=0x000000000a3bb480 iters=106471 sites=3/3)
+
+boots=1 failed=0 violations=0 iters_total=106471 started=2026-08-30T17:41:17Z ended=2026-08-30T17:41:42Z
+ARM64 CORE-PROOF GATE: PASSED

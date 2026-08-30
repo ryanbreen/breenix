@@ -1,0 +1,36 @@
+2026-08-30T15:07:50Z
+Building coreproof kernel (features: boot_tests,coreproof,coreproof_component_c,coreproof_mut_cpu_identity)...
+    Finished `release` profile [optimized] target(s) in 0.08s
+warning: the following packages contain code that will be rejected by a future version of Rust: core v0.0.0 (/Users/wrb/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/src/rust/library/core)
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+Guard: kernel FP/SIMD instruction check
+  ELF:       /Users/wrb/fun/code/breenix/.claude/worktrees/wf_9984c5fd-786-6/target/coreproof-gate/aarch64-breenix-kernel/release/kernel-aarch64
+  objdump:   /Users/wrb/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/aarch64-apple-darwin/bin/llvm-objdump
+  allowlist: /Users/wrb/fun/code/breenix/.claude/worktrees/wf_9984c5fd-786-6/scripts/kernel-neon-allowlist.txt
+[0;32mPASS:[0m 0 FP/SIMD load/store instructions in kernel .text (allowlisted & suppressed: 0).
+CORE-PROOF SEAM RATCHET: PASSED (14 prohibited path(s) clean)
+Serial output root: /tmp/breenix_coreproof_gate/20260830T150750Z_18163
+
+=== profile max — 5 boot(s), component C, mode adversarial, window post_cohort, disarmed 0 ===
+qemu-system-aarch64: terminating on signal 15 from pid 18357 (<unknown process>)
+  max#1: harness violations=0 iters=161783 cov=cpu_identity=24015
+  max#1: clean (seed=0x0000000008f32ef8 iters=161783 sites=1/1 cov=cpu_identity=24015)
+qemu-system-aarch64: terminating on signal 15 from pid 18641 (<unknown process>)
+  max#2: harness violations=0 iters=175921 cov=cpu_identity=24618
+  max#2: clean (seed=0x00000000098cee58 iters=175921 sites=1/1 cov=cpu_identity=24618)
+qemu-system-aarch64: terminating on signal 15 from pid 18923 (<unknown process>)
+  max#3: harness violations=0 iters=106231 cov=cpu_identity=22988
+  max#3: clean (seed=0x000000000a493d60 iters=106231 sites=1/1 cov=cpu_identity=22988)
+qemu-system-aarch64: terminating on signal 15 from pid 19184 (<unknown process>)
+  max#4: harness violations=0 iters=91251 cov=cpu_identity=23787
+  max#4: clean (seed=0x0000000008e48ce0 iters=91251 sites=1/1 cov=cpu_identity=23787)
+qemu-system-aarch64: terminating on signal 15 from pid 19477 (<unknown process>)
+  max#5: harness violations=0 iters=86809 cov=cpu_identity=23525
+  max#5: clean (seed=0x0000000009a0bca8 iters=86809 sites=1/1 cov=cpu_identity=23525)
+
+boots=5 failed=0 violations=0 iters_total=621995 started=2026-08-30T15:07:50Z ended=2026-08-30T15:08:55Z
+ARM64 CORE-PROOF GATE: PASSED
+SCRIPT_EXIT=0
+2026-08-30T15:08:55Z
+
+[exited with code 0]

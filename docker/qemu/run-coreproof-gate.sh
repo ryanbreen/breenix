@@ -8,13 +8,17 @@
 #   [COREPROOF:RUN:v1:comp=A:seed=0x…:iters=…:sites_declared=N:sites_visited=N:…]
 #   [COREPROOF:VIOLATION:v1:comp=A:seed=0x…:iter=…:site=…:pred=…:…]
 #
-# THREE GATE-FAILING CONDITIONS, and they are the whole verdict:
+# FIVE GATE-FAILING CONDITIONS, and they are the whole verdict:
 #
 #   1. Any VIOLATION line.
 #   2. A missing or malformed RUN line — a boot that emitted no run record proves
 #      nothing, and "no violations" from a harness that never ran is the exact
 #      false green this gate exists to refuse.
-#   3. sites_visited < sites_declared. This is the vacuity guard. Both numbers
+#   3. A RUN record whose comp= byte does not match --component. Adjudicating a
+#      mis-wired driver under another component's rules is a false green (m5).
+#   4. iters=0. A zero-iteration run measured nothing, even if ordinary boot
+#      traffic happened to satisfy its whole site census (B1).
+#   5. sites_visited < sites_declared. This is the vacuity guard. Both numbers
 #      come from the harness's own site census, so the gate compares two numbers
 #      and never a literal list of site names: adding a site changes both sides
 #      automatically, and a site that is declared but never reached is a red.
@@ -55,7 +59,7 @@ BREENIX_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 COMPONENT="A"
 SEEDS=25
 PROFILE="both"
-MODE="pen"
+MODE=""
 WINDOW=""
 DISARM=0
 REQUIRE_COV=""
@@ -81,6 +85,27 @@ while [ $# -gt 0 ]; do
     esac
 done
 EXTRA_FEATURES="${EXTRA_FEATURES:-}"
+
+case "$COMPONENT" in
+    A) COMPONENT_FEATURE="" ;;
+    C) COMPONENT_FEATURE="coreproof_component_c" ;;
+    *) echo "unknown component: $COMPONENT" >&2; exit 2 ;;
+esac
+
+# This script is the SOLE owner of the per-component mode default (rung 2
+# review, m1) - Pen for A, Adversarial for C, because Pen suppresses the very
+# condition Component C hunts. `kernel/src/proof/quiesce.rs`'s own
+# `Mode::selected()` used to compute a second, duplicate default that was
+# dead under this script (which always passes an explicit
+# `BREENIX_COREPROOF_MODE`) and has been removed; its compile-time default
+# is now plain `Pen` for a build invoked outside this script. An explicit
+# `--mode` always wins over this script's own default.
+if [ -z "$MODE" ]; then
+    case "$COMPONENT" in
+        C) MODE="adversarial" ;;
+        *) MODE="pen" ;;
+    esac
+fi
 
 case "$MODE" in
     pen|adversarial|ambient) ;;
@@ -168,6 +193,9 @@ trap cleanup EXIT
 # silently re-arm #528.
 # ---------------------------------------------------------------------------
 FEATURES="boot_tests,coreproof"
+if [ -n "$COMPONENT_FEATURE" ]; then
+    FEATURES="$FEATURES,$COMPONENT_FEATURE"
+fi
 if [ -n "$EXTRA_FEATURES" ]; then
     FEATURES="$FEATURES,$EXTRA_FEATURES"
 fi
@@ -254,7 +282,7 @@ adjudicate() {
     # verdict can return. A boot-test failure and a core-proof catch can coexist;
     # the former must still fail the boot, but it must not erase the latter from
     # this invocation's counts (round 1's M1 evidence did exactly that).
-    local violations run seed declared visited iters cov_field cov_value cov_failure
+    local violations run seed declared visited iters comp cov_field cov_value cov_failure
     violations="$(grep -acF "$VIOLATION_PREFIX" "$serial" 2>/dev/null || true)"
     violations="${violations:-0}"
     # Prefer the run's own closing record. Falling back to the last record of any
@@ -332,8 +360,33 @@ adjudicate() {
     seed="$(echo "$run" | grep -oE 'seed=0x[0-9a-f]+' | head -1 || true)"
     declared="$(echo "$run" | grep -oE 'sites_declared=[0-9]+' | head -1 | cut -d= -f2 || true)"
     visited="$(echo "$run" | grep -oE 'sites_visited=[0-9]+' | head -1 | cut -d= -f2 || true)"
-    if [ -z "$seed" ] || [ -z "$declared" ] || [ -z "$visited" ] || [ -z "$iters" ]; then
+    comp="$(echo "$run" | grep -oE 'comp=[A-Za-z]' | head -1 | cut -d= -f2 || true)"
+    if [ -z "$seed" ] || [ -z "$declared" ] || [ -z "$visited" ] || [ -z "$iters" ] || [ -z "$comp" ]; then
         echo "  $label: malformed RUN record"
+        echo "    $run"
+        return 1
+    fi
+
+    # ---- condition: the RUN record's own component must match what was asked for --------
+    # A mis-wired feature would otherwise be adjudicated under the wrong driver's rules —
+    # `sites_declared` happening to discriminate by coincidence today is not a gate (m5).
+    if [ "$comp" != "$COMPONENT" ]; then
+        echo "  $label: RUN record reports comp=$comp, expected --component $COMPONENT"
+        echo "    $run"
+        return 1
+    fi
+
+    # ---- condition: a zero-iteration run proves nothing -------------------------------
+    # `sites_visited < sites_declared` used to be the only thing standing between "the
+    # harness genuinely ran" and "clean by construction" for a component whose census sites
+    # were all ordinary-boot-traffic sites — a boot that took the PostCohort cohort-wait
+    # timeout and closed with `iterations=0` still reported a full site census and was scored
+    # clean (rung 2 review, B1; kernel/src/proof/sites.rs's Component C header now explains
+    # why this no longer happens by construction either, via its new driver-only census
+    # site — this check is belt-and-suspenders on top of that, independent of which sites any
+    # future component happens to declare).
+    if [ "$iters" -eq 0 ]; then
+        echo "  $label: zero-iteration run — the harness never measured anything"
         echo "    $run"
         return 1
     fi
@@ -346,7 +399,7 @@ adjudicate() {
         fi
     fi
 
-    # ---- condition 3: the vacuity guard ----------------------------------
+    # ---- condition 5: the vacuity guard ----------------------------------
     if [ "$visited" -lt "$declared" ]; then
         echo "  $label: vacuous run — visited $visited of $declared declared sites"
         echo "    $run"

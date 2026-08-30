@@ -134,6 +134,26 @@ pub const REGISTER: &[Mutation] = &[
         site: "kernel/src/task/scheduler.rs::release_reclaimed_threads",
         predicate: "PERCPU_STACK_ALIEN",
     },
+    // M7 (rung 2): the sibling entry to M6 above, not a rewrite of it. M6's
+    // own miss and its documented reason (round 3's 15-mutated-boot
+    // measurement, this module's own header) stay exactly as recorded —
+    // this is the faithful completion `passbar.md` called for: the bare-
+    // `spin::Mutex` half of #609's real defect, planted alongside M6's
+    // unmasked drop so both halves of the original chain are present
+    // together. Unlike every other entry, the expected outcome is NOT a
+    // `[COREPROOF:VIOLATION:...]` line — #609 "presented as a wedged boot
+    // with no marker at all," so the expected detection is the gate's own
+    // missing-RUN-record condition. `predicate` names that explicitly rather
+    // than leaving the field empty, so a future reader does not mistake "no
+    // VIOLATION line" for a false negative.
+    Mutation {
+        feature: "coreproof_mut_masked_lock_bare",
+        issue: "#609",
+        fixed_by: "PR #632 (bitmap typing) with PR #645 (masking)",
+        site: "kernel/src/memory/kernel_stack.rs::ARM64_STACK_BITMAP and \
+               kernel/src/task/scheduler.rs::release_reclaimed_threads",
+        predicate: "NONE_EXPECTED:missing_run_record_is_the_catch",
+    },
 ];
 
 /// The mutation this build carries, if any.
@@ -154,12 +174,12 @@ pub fn armed() -> Option<&'static Mutation> {
         "coreproof_mut_futex_section"
     } else if cfg!(feature = "coreproof_mut_masked_lock") {
         "coreproof_mut_masked_lock"
+    } else if cfg!(feature = "coreproof_mut_masked_lock_bare") {
+        "coreproof_mut_masked_lock_bare"
     } else {
         return None;
     };
-    REGISTER
-        .iter()
-        .find(|mutation| mutation.feature == feature)
+    REGISTER.iter().find(|mutation| mutation.feature == feature)
 }
 
 /// The armed mutation's feature name for the run record, or `none`.
