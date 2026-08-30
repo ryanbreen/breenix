@@ -48,10 +48,18 @@ pub enum Mode {
 }
 
 impl Mode {
+    /// The build-selected default is per-component: Pen for A (unchanged —
+    /// round 3's own measurement is that Pen alone drives Component A's probe
+    /// fine), and Adversarial for C, because Pen suppresses the very
+    /// condition Component C hunts (see `driver_c.rs` and rung 2's spec,
+    /// section 2, for why). An explicit `BREENIX_COREPROOF_MODE` always wins
+    /// over either default.
     pub fn selected() -> Self {
         match option_env!("BREENIX_COREPROOF_MODE") {
             Some("adversarial") => Self::Adversarial,
             Some("ambient") => Self::Ambient,
+            Some("pen") => Self::Pen,
+            _ if cfg!(feature = "coreproof_component_c") => Self::Adversarial,
             _ => Self::Pen,
         }
     }

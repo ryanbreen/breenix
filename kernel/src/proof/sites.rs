@@ -15,6 +15,21 @@
 //! so a site cannot be declared without being placed or placed without being
 //! declared.
 //!
+//! ## Component-scoped, not one global set
+//!
+//! Rung 1 shipped a single `SiteId` naming Component A's twelve seams. Rung 2
+//! adds Component C, whose own contract needs exactly one seam
+//! (`ScheduleEntry`, `SiteClass::Open`) that lives inside `scheduler.rs` — a
+//! file every one of Component A's placed seams is `Masked` in. Merging the two
+//! into one array would declare a site the OTHER component's build can never
+//! visit, permanently reddening that build's own non-vacuity gate
+//! (`sites_visited < sites_declared`). So `SiteId` and `ALL` are two mutually
+//! exclusive definitions, selected at compile time by `coreproof_component_c` —
+//! the same "mutually-exclusive compile-time driver selection" pattern
+//! `MODE`/`WINDOW`/`SEED` already use. Everything below the two definitions
+//! (`SiteClass`, `mark_visited`, `visited_count`) is generic over whichever
+//! concrete `SiteId` is in scope and needs no per-component copy.
+//!
 //! ## Classes are a safety rule, not a label
 //!
 //! A `Masked` site's seam sits inside a critical section that holds the
@@ -25,6 +40,11 @@
 
 use core::sync::atomic::{AtomicU64, Ordering};
 
+// ============================================================================
+// Component A — the ready-queue departure protocol's twelve seams.
+// ============================================================================
+
+#[cfg(not(feature = "coreproof_component_c"))]
 #[derive(Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum SiteId {
@@ -42,6 +62,7 @@ pub enum SiteId {
     DriverPreQuiesce,
 }
 
+#[cfg(not(feature = "coreproof_component_c"))]
 pub const ALL: &[SiteId] = &[
     SiteId::BlockEntry,
     SiteId::BlockAfterStateStore,
@@ -57,20 +78,7 @@ pub const ALL: &[SiteId] = &[
     SiteId::DriverPreQuiesce,
 ];
 
-pub const DECLARED: usize = ALL.len();
-const _: () = assert!(DECLARED <= 64);
-
-static VISITED: AtomicU64 = AtomicU64::new(0);
-
-/// Which actions a site admits. See the module header — this is a safety rule.
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub enum SiteClass {
-    /// Inside a scheduler-lock critical section with interrupts masked.
-    Masked,
-    /// Ordinary kthread context.
-    Open,
-}
-
+#[cfg(not(feature = "coreproof_component_c"))]
 impl SiteId {
     pub fn name(self) -> &'static str {
         match self {
@@ -132,6 +140,78 @@ impl SiteId {
             | Self::DeferredRequeueClaim => SiteClass::Masked,
         }
     }
+}
+
+// ============================================================================
+// Component C — per-CPU identity + stack custody's one seam.
+// ============================================================================
+//
+// `ScheduleEntry` sits at the top of `scheduler::schedule()`, before the call
+// to `run_deferred_reclamation()`. Every caller of `schedule()` reaches it with
+// interrupts ENABLED — masking is `schedule_from_kernel`'s own job, further
+// down a call chain this harness may never seam (`context_switch.rs` is
+// permanently prohibited, `scripts/check-coreproof-seams.sh`) — so the class is
+// `Open`, not `Masked`. It is also the one site both the existing
+// `KernelSchedule` and `Steal` antagonist ops already reach on every peer step,
+// so no new call site is needed to exercise it.
+//
+// A single-variant `ALL` means `rng::draw`'s uniform site pick always lands
+// here; there is nothing else to draw. `sites_visited == sites_declared` is
+// satisfied trivially in ordinary operation because `scheduler::schedule()` is
+// called throughout an ordinary boot regardless of which component is driving.
+
+#[cfg(feature = "coreproof_component_c")]
+#[derive(Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum SiteId {
+    ScheduleEntry,
+}
+
+#[cfg(feature = "coreproof_component_c")]
+pub const ALL: &[SiteId] = &[SiteId::ScheduleEntry];
+
+#[cfg(feature = "coreproof_component_c")]
+impl SiteId {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::ScheduleEntry => "ScheduleEntry",
+        }
+    }
+
+    /// See the Component A impl's doc for why this is derived, never drawn.
+    pub fn order(self) -> super::rng::Order {
+        use super::rng::Order;
+        match self {
+            // Placed BEFORE `run_deferred_reclamation()`, i.e. before
+            // `schedule_from_kernel`'s own pre-mask identity read.
+            Self::ScheduleEntry => Order::Before,
+        }
+    }
+
+    pub fn class(self) -> SiteClass {
+        match self {
+            Self::ScheduleEntry => SiteClass::Open,
+        }
+    }
+}
+
+// ============================================================================
+// Shared: generic over whichever `SiteId` this build compiled.
+// ============================================================================
+
+pub const DECLARED: usize = ALL.len();
+const _: () = assert!(DECLARED <= 64);
+const _: () = assert!(DECLARED >= 1);
+
+static VISITED: AtomicU64 = AtomicU64::new(0);
+
+/// Which actions a site admits. See the module header — this is a safety rule.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum SiteClass {
+    /// Inside a scheduler-lock critical section with interrupts masked.
+    Masked,
+    /// Ordinary kthread context.
+    Open,
 }
 
 /// Record that this seam was reached at least once.

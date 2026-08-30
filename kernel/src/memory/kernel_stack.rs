@@ -673,6 +673,7 @@ mod aarch64 {
         VirtAddr, KSTACK_LIVE_SLOT_CHECKS, KSTACK_LIVE_SLOT_REFUSALS,
         KSTACK_SLOTS_ALLOCATED,
     };
+    #[cfg(not(feature = "coreproof_mut_masked_lock_bare"))]
     use crate::irq_safe_mutex::IrqSafeMutex;
     use core::sync::atomic::Ordering;
 
@@ -703,8 +704,21 @@ mod aarch64 {
         ((ARM64_KERNEL_STACK_END - ARM64_KERNEL_STACK_BASE) / ARM64_STACK_SLOT_SIZE) as usize;
     const ARM64_BITMAP_SIZE: usize = (ARM64_MAX_KERNEL_STACKS + 63) / 64;
 
+    // CORE-PROOF MUTATION LEG `coreproof_mut_masked_lock_bare` (M7, #609,
+    // rung 2): the bare-`spin::Mutex` half of the original #609 defect,
+    // faithfully reintroduced alongside `scheduler.rs`'s reused unmasked-drop
+    // arm — see that file's `release_reclaimed_threads` for why both halves
+    // have to move together and `kernel/src/proof/mutations.rs` for the
+    // predicate this mutation is expected (and not expected) to produce.
+    // `spin::Mutex` and `IrqSafeMutex` both expose `.lock() -> Guard:
+    // DerefMut<Target = T>`, so every `.lock()` call site below is unaffected
+    // by which arm is compiled.
+    #[cfg(not(feature = "coreproof_mut_masked_lock_bare"))]
     static ARM64_STACK_BITMAP: IrqSafeMutex<[u64; ARM64_BITMAP_SIZE]> =
         IrqSafeMutex::new([0; ARM64_BITMAP_SIZE]);
+    #[cfg(feature = "coreproof_mut_masked_lock_bare")]
+    static ARM64_STACK_BITMAP: spin::Mutex<[u64; ARM64_BITMAP_SIZE]> =
+        spin::Mutex::new([0; ARM64_BITMAP_SIZE]);
 
     /// A kernel stack allocation for ARM64
     #[derive(Debug)]

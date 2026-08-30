@@ -55,7 +55,7 @@ BREENIX_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 COMPONENT="A"
 SEEDS=25
 PROFILE="both"
-MODE="pen"
+MODE=""
 WINDOW=""
 DISARM=0
 REQUIRE_COV=""
@@ -81,6 +81,22 @@ while [ $# -gt 0 ]; do
     esac
 done
 EXTRA_FEATURES="${EXTRA_FEATURES:-}"
+
+case "$COMPONENT" in
+    A) COMPONENT_FEATURE="" ;;
+    C) COMPONENT_FEATURE="coreproof_component_c" ;;
+    *) echo "unknown component: $COMPONENT" >&2; exit 2 ;;
+esac
+
+# The build-selected default mode is per-component (kernel/src/proof/quiesce.rs's
+# own `Mode::selected()`): Pen for A, Adversarial for C, because Pen suppresses
+# the very condition Component C hunts. An explicit `--mode` always wins.
+if [ -z "$MODE" ]; then
+    case "$COMPONENT" in
+        C) MODE="adversarial" ;;
+        *) MODE="pen" ;;
+    esac
+fi
 
 case "$MODE" in
     pen|adversarial|ambient) ;;
@@ -168,6 +184,9 @@ trap cleanup EXIT
 # silently re-arm #528.
 # ---------------------------------------------------------------------------
 FEATURES="boot_tests,coreproof"
+if [ -n "$COMPONENT_FEATURE" ]; then
+    FEATURES="$FEATURES,$COMPONENT_FEATURE"
+fi
 if [ -n "$EXTRA_FEATURES" ]; then
     FEATURES="$FEATURES,$EXTRA_FEATURES"
 fi

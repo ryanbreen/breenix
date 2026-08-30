@@ -41,6 +41,15 @@
 //! thousands of times. The gate keys on the presence of any VIOLATION line, so
 //! nothing is lost by reporting first occurrences only, and the serial stays
 //! readable.
+//!
+//! ## `component`, threaded rather than hardcoded
+//!
+//! Rung 1 hardcoded `comp=A` in both format strings. Rung 2 adds Component C,
+//! whose runs must say `comp=C` in the same two records, so every public
+//! function here now takes a `component: u8` byte (`driver_a::COMPONENT_A` /
+//! `driver_c::COMPONENT_C`) and prints it as the one ASCII character it is.
+//! There is deliberately no third notion of "which component" invented here —
+//! the byte is the driver's own public constant, passed straight through.
 
 use core::sync::atomic::{AtomicU64, Ordering};
 
@@ -91,6 +100,7 @@ impl Phase {
 }
 
 /// Put the seed on the wire before the first iteration.
+#[allow(clippy::too_many_arguments)]
 pub fn emit_seed_line(
     seed: u64,
     driver_cpu: usize,
@@ -98,10 +108,12 @@ pub fn emit_seed_line(
     window: Window,
     smp: usize,
     phase: Phase,
+    component: u8,
 ) {
-    emit_run(seed, driver_cpu, 0, mode, window, smp, phase);
+    emit_run(seed, driver_cpu, 0, mode, window, smp, phase, component);
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn emit_run(
     seed: u64,
     driver_cpu: usize,
@@ -110,10 +122,12 @@ pub fn emit_run(
     window: Window,
     smp: usize,
     phase: Phase,
+    component: u8,
 ) {
     let coverage = super::coverage::counts();
     crate::serial_println!(
-        "[COREPROOF:RUN:v1:comp=A:phase={}:mut={}:seed=0x{:016x}:dcpu={}:iters={}:sites_declared={}:sites_visited={}:mode={}:window={}:disarmed={}:degraded={}:profile={}:smp={}:downgraded={}:violated_predicates={}:cov={}]",
+        "[COREPROOF:RUN:v1:comp={}:phase={}:mut={}:seed=0x{:016x}:dcpu={}:iters={}:sites_declared={}:sites_visited={}:mode={}:window={}:disarmed={}:degraded={}:profile={}:smp={}:downgraded={}:violated_predicates={}:cov={}]",
+        component as char,
         phase.name(),
         super::mutations::armed_name(),
         seed,
@@ -134,10 +148,18 @@ pub fn emit_run(
 }
 
 /// Emit one violation record naming its site, action, order and predicate.
-pub fn violation(seed: u64, iteration: u64, vector: &DrawVector, predicate: &str, detail: u64) {
+pub fn violation(
+    seed: u64,
+    iteration: u64,
+    vector: &DrawVector,
+    predicate: &str,
+    detail: u64,
+    component: u8,
+) {
     VIOLATIONS.fetch_add(1, Ordering::Relaxed);
     crate::serial_println!(
-        "[COREPROOF:VIOLATION:v1:comp=A:seed=0x{:016x}:iter={}:site={}:action={}:ticks={}:order={}:acpu={}:pred={}:detail={}]",
+        "[COREPROOF:VIOLATION:v1:comp={}:seed=0x{:016x}:iter={}:site={}:action={}:ticks={}:order={}:acpu={}:pred={}:detail={}]",
+        component as char,
         seed,
         iteration,
         vector.site.name(),

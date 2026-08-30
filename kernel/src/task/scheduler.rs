@@ -2593,6 +2593,7 @@ impl Scheduler {
                 | ((is_switching_to_idle as u32) << 30)
                 | self.ready_queue_length() as u32,
         );
+        #[cfg(not(feature = "coreproof_component_c"))]
         crate::proof_point!(DeferredRequeueClaim);
         Some((old_thread_id, next_thread_id, should_requeue_old))
     }
@@ -2782,6 +2783,7 @@ impl Scheduler {
     /// The generic block: charge, publish, depart — in that order, under the
     /// one scheduler-lock acquisition the caller already holds.
     fn block_current_inner(&mut self, in_syscall: bool) {
+        #[cfg(not(feature = "coreproof_component_c"))]
         crate::proof_point!(BlockEntry);
         let Some(current_id) = self.cpu_state[Self::current_cpu_id()].current_thread else {
             return;
@@ -2794,6 +2796,7 @@ impl Scheduler {
             current.run_start_ticks = now;
 
             current.state = ThreadState::Blocked;
+            #[cfg(not(feature = "coreproof_component_c"))]
             crate::proof_point!(BlockAfterStateStore);
             if in_syscall {
                 current.blocked_in_syscall = true;
@@ -2805,6 +2808,7 @@ impl Scheduler {
         // same defence in depth they document — but it is now unconditional for
         // the generic block too, rather than a post-condition each caller had to
         // remember.
+        #[cfg(not(feature = "coreproof_component_c"))]
         crate::proof_point!(BlockBeforeDeparture);
         crate::proof_cover!(BlockDeparture);
         // CORE-PROOF MUTATION LEG `coreproof_mut_block_departure` (#647, scoped
@@ -2816,6 +2820,7 @@ impl Scheduler {
         for q in self.per_cpu_queues.iter_mut() {
             q.retain(|&id| id != current_id);
         }
+        #[cfg(not(feature = "coreproof_component_c"))]
         crate::proof_point!(BlockAfterDeparture);
     }
 
@@ -2894,6 +2899,7 @@ impl Scheduler {
     /// `BlockedOnTimer`, and `BlockedOnIO`. Other blocked states have dedicated
     /// wake paths and are reported as `UnblockOutcome::NotFound` here.
     pub fn unblock(&mut self, thread_id: u64) -> UnblockOutcome {
+        #[cfg(not(feature = "coreproof_component_c"))]
         crate::proof_point!(UnblockEntry);
         // Increment the call counter for testing (tracks that unblock was called)
         UNBLOCK_CALL_COUNT.fetch_add(1, Ordering::SeqCst);
@@ -2906,6 +2912,7 @@ impl Scheduler {
                 || thread.state == ThreadState::BlockedOnIO
             {
                 thread.set_ready();
+                #[cfg(not(feature = "coreproof_component_c"))]
                 crate::proof_point!(UnblockAfterSetReady);
                 outcome = UnblockOutcome::Transitioned;
                 WAKE_SITE_UNBLOCK.fetch_add(1, Ordering::Relaxed);
@@ -2950,8 +2957,10 @@ impl Scheduler {
                     && !already_queued
                 {
                     let target = self.find_target_cpu_for_wakeup(thread_id);
+                    #[cfg(not(feature = "coreproof_component_c"))]
                     crate::proof_point!(UnblockBeforeEnqueue);
                     self.per_cpu_queues[target].push_back(thread_id);
+                    #[cfg(not(feature = "coreproof_component_c"))]
                     crate::proof_point!(UnblockAfterEnqueue);
                     ENQUEUE_SAME_LOCK_OK.fetch_add(1, Ordering::Relaxed);
                     // CRITICAL: Only log on x86_64 to avoid deadlock on ARM64
@@ -4397,6 +4406,8 @@ fn release_reclaimed_threads(reclaimed_threads: alloc::vec::Vec<Box<Thread>>) {
     #[cfg(feature = "coreproof")]
     if !reclaimed_threads.is_empty() {
         crate::proof_cover!(MaskedLock);
+        #[cfg(feature = "coreproof_mut_masked_lock_bare")]
+        crate::proof_cover!(MaskedLockBare);
     }
     // CORE-PROOF MUTATION LEG `coreproof_mut_masked_lock` (#609, fixed by PR
     // #645; PR #632 made the bitmap lock irq-safe): the release runs
@@ -4412,9 +4423,26 @@ fn release_reclaimed_threads(reclaimed_threads: alloc::vec::Vec<Box<Thread>>) {
     // preempted however this call is entered, and the orphaned lock the field
     // failure needed cannot form. 15 mutated boots moved no existing census.
     // A faithful re-introduction has to restore the bare `spin::Mutex` too.
-    #[cfg(feature = "coreproof_mut_masked_lock")]
+    //
+    // M7 (`coreproof_mut_masked_lock_bare`, rung 2): the bare-mutex half of
+    // #609's real defect, planted alongside `kernel_stack.rs`'s matching
+    // `ARM64_STACK_BITMAP` type swap (both must move together, see that
+    // file). This arm is REUSED, not duplicated: M7 shares M6's unmasked drop
+    // exactly, because the drop being unmasked is only half of what M7 needs
+    // to reopen. Expected outcome for M7 is NOT a `[COREPROOF:VIOLATION:...]`
+    // line — it is the gate's own missing-RUN-record detector, because a
+    // bitmap holder preempted mid-drop while the bitmap is a bare `spin::Mutex`
+    // is exactly the #609 field failure: a wedged boot, not a marker. See
+    // `kernel/src/proof/mutations.rs`'s M7 entry.
+    #[cfg(any(
+        feature = "coreproof_mut_masked_lock",
+        feature = "coreproof_mut_masked_lock_bare"
+    ))]
     drop(reclaimed_threads);
-    #[cfg(not(feature = "coreproof_mut_masked_lock"))]
+    #[cfg(not(any(
+        feature = "coreproof_mut_masked_lock",
+        feature = "coreproof_mut_masked_lock_bare"
+    )))]
     without_interrupts(|| {
         drop(reclaimed_threads);
     });
@@ -4458,6 +4486,22 @@ pub fn spawn_as_current(thread: Box<Thread>) {
 /// Perform scheduling inline from Rust kernel context (AArch64).
 #[cfg(target_arch = "aarch64")]
 pub fn schedule() {
+    // Component C's one seam (rung 2). Every caller reaches this point with
+    // interrupts ENABLED — masking is `schedule_from_kernel`'s own job,
+    // further down a call chain this harness may never seam
+    // (`context_switch.rs` is permanently prohibited,
+    // `scripts/check-coreproof-seams.sh`) — so `SiteClass::Open` admits every
+    // stimulus action, including a `TimerSqueeze` at its full drawable range.
+    // This is also the exact function the existing `KernelSchedule` and
+    // `Steal` adversarial ops already call on every peer step, so no new call
+    // site is needed to reach it. See `kernel/src/proof/driver_c.rs`.
+    //
+    // Gated additionally on `coreproof_component_c`: Component A's build
+    // compiles a DIFFERENT `SiteId` (twelve variants, none named
+    // `ScheduleEntry`), so this invocation must not exist at all outside a
+    // Component C build — see `kernel/src/proof/sites.rs`.
+    #[cfg(feature = "coreproof_component_c")]
+    crate::proof_point!(ScheduleEntry);
     crate::arch_impl::aarch64::context_switch::run_deferred_reclamation();
     crate::arch_impl::aarch64::context_switch::schedule_from_kernel();
 }

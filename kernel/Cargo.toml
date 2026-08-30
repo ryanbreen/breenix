@@ -58,6 +58,17 @@ coreproof_mut_reclaim_bracket = ["coreproof"]
 coreproof_mut_pending_next = ["coreproof"]
 coreproof_mut_futex_section = ["coreproof"]
 coreproof_mut_masked_lock = ["coreproof"]
+# M7 (rung 2): the bare-`spin::Mutex` half of #609's real defect, faithfully
+# reintroduced alongside the existing `coreproof_mut_masked_lock` unmasked-drop
+# arm so both halves of the original chain are present together. See
+# `kernel/src/proof/mutations.rs` for why this is a sibling entry rather than a
+# rewrite of M6.
+coreproof_mut_masked_lock_bare = ["coreproof"]
+# Rung 2: Component C (per-CPU identity + stack custody). Mutually exclusive
+# with the rung-1 Component A driver at compile time — selects which of
+# `driver_a`/`driver_c` `proof::start()` spawns and which component-scoped
+# `SiteId` set `kernel/src/proof/sites.rs` builds with.
+coreproof_component_c = ["coreproof"]
 # #533 x86 staged-registry dispatch. OFF by default: the dispatch itself works
 # (SerialBoot + all 70 EarlyBoot tests pass), but the boot thread is stranded
 # when the last EarlyBoot subsystem kthread exits, so PostScheduler and

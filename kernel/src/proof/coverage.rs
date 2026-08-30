@@ -19,16 +19,18 @@ pub enum MutSite {
     PendingNext,
     FutexSection,
     MaskedLock,
+    MaskedLockBare,
 }
 
 impl MutSite {
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 7] = [
         Self::BlockDeparture,
         Self::CpuIdentity,
         Self::ReclaimBracket,
         Self::PendingNext,
         Self::FutexSection,
         Self::MaskedLock,
+        Self::MaskedLockBare,
     ];
 
     pub const COUNT: usize = Self::ALL.len();
@@ -41,6 +43,7 @@ impl MutSite {
             Self::PendingNext => "pending_next",
             Self::FutexSection => "futex_section",
             Self::MaskedLock => "masked_lock",
+            Self::MaskedLockBare => "masked_lock_bare",
         }
     }
 }

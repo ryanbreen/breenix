@@ -22,9 +22,9 @@
 //!    replay on a four-CPU multi-threaded TCG guest — the answer is a
 //!    measurement, not a caveat.
 //! 3. **Postconditions read existing markers.** The component's own contract
-//!    contributes three new predicates; everything else is a read of a counter
-//!    that already fails a gate. A parallel truth that disagrees with the
-//!    original would be worse than no check.
+//!    contributes a handful of new predicates; everything else is a read of a
+//!    counter that already fails a gate. A parallel truth that disagrees with
+//!    the original would be worse than no check.
 //! 4. **No seam in a Tier-1 file, in any interrupt or syscall handler, or in
 //!    the ERET epilogue.** Permanent exclusions. The timer is reached only as a
 //!    stimulus source through the already-public `timer::arm_timer`, called from
@@ -53,15 +53,33 @@
 //! action, so an action that reschedules cannot let unrelated work reach the
 //! same seam and fire the same vector twice.
 //!
-//! ## Scope of this pilot
+//! `arm`/`disarm` act on the CALLING cpu's own slot — Component A's whole
+//! stimulus is self-armed, synchronous within the driver's own probe call.
+//! Component C's is not: the defect it hunts needs the seam to fire on a PEER
+//! cpu's execution of `scheduler::schedule()`, not the driver's own, so
+//! `arm_cpu`/`disarm_cpu` below let the driver target any online cpu's slot
+//! from wherever it happens to be running. `ARMED` was already a per-CPU array
+//! for exactly this reason; rung 1 just never had a caller that needed the
+//! cross-CPU form.
 //!
-//! AArch64 only, and component A only. The x86 driver and the remaining seven
-//! components are later rungs, each of which names its own additions in its own
-//! PR. `mutations` carries the register of planted defects the harness is
-//! validated against, and states up front how a miss is to be read.
+//! ## Scope
+//!
+//! AArch64 only. Rung 1 shipped Component A (the ready-queue departure
+//! protocol) alone; rung 2 adds Component C (per-CPU identity + stack
+//! custody) as a second, mutually exclusive driver selected at compile time by
+//! `coreproof_component_c` — see `sites` for why the site census also has to be
+//! component-scoped, and `record` for why the marker lines now thread a
+//! `component` byte instead of hardcoding `comp=A`. The x86 driver and the
+//! remaining six components are later rungs, each of which names its own
+//! additions in its own PR. `mutations` carries the register of planted
+//! defects the harness is validated against, and states up front how a miss is
+//! to be read.
 
 pub mod coverage;
+#[cfg(not(feature = "coreproof_component_c"))]
 mod driver_a;
+#[cfg(feature = "coreproof_component_c")]
+mod driver_c;
 pub mod mutations;
 mod quiesce;
 mod record;
@@ -140,8 +158,21 @@ fn current_cpu() -> usize {
     crate::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id() as usize
 }
 
+// Self-arm: only Component A's driver uses this shape (it arms its own
+// cpu right before its own synchronous probe). Component C arms PEER cpus
+// exclusively via `arm_cpu` — see the module header — so this would be
+// dead code in a `coreproof_component_c` build.
+#[cfg(not(feature = "coreproof_component_c"))]
 pub(crate) fn arm(vector: &DrawVector) {
-    let Some(slot) = ARMED.get(current_cpu()) else {
+    arm_cpu(current_cpu(), vector);
+}
+
+/// Arm an ARBITRARY online cpu's slot, not necessarily the calling one.
+///
+/// Component C's stimulus needs to arm a PEER cpu ahead of that peer's own
+/// execution of the seam, from the driver's own cpu. See the module header.
+pub(crate) fn arm_cpu(cpu: usize, vector: &DrawVector) {
+    let Some(slot) = ARMED.get(cpu) else {
         return;
     };
     slot.action.store(vector.action as u8, Ordering::Relaxed);
@@ -156,8 +187,15 @@ pub(crate) fn arm(vector: &DrawVector) {
         .store(u64::from(vector.site as u8) + 1, Ordering::Release);
 }
 
+// See `arm`'s doc for why this is Component-A-only.
+#[cfg(not(feature = "coreproof_component_c"))]
 pub(crate) fn disarm() {
-    if let Some(slot) = ARMED.get(current_cpu()) {
+    disarm_cpu(current_cpu());
+}
+
+/// Disarm an arbitrary online cpu's slot. See `arm_cpu`.
+pub(crate) fn disarm_cpu(cpu: usize) {
+    if let Some(slot) = ARMED.get(cpu) {
         slot.site.store(DISARMED, Ordering::Release);
     }
 }
@@ -210,5 +248,11 @@ pub fn start() {
     // idle driver look like the strand that oracle exists to detect. The driver
     // does not need affinity: it reads its CPU once the pen has formed, and the
     // pen is what keeps it there.
+    //
+    // Which driver is spawned is a compile-time choice, mutually exclusive with
+    // the site census and the mode default it carries — see the module header.
+    #[cfg(feature = "coreproof_component_c")]
+    let _ = crate::task::kthread::kthread_run(driver_c::run, "coreproof-c");
+    #[cfg(not(feature = "coreproof_component_c"))]
     let _ = crate::task::kthread::kthread_run(driver_a::run, "coreproof-a");
 }

@@ -257,7 +257,7 @@ fn score_probe(
 ) {
     if probe.state_is_blocked && probe.queued_after_block && reported.first(REPORTED_BLOCKED_READYQ)
     {
-        record::violation(seed, iteration, vector, "BLOCKED_NOT_IN_READYQ", 1);
+        record::violation(seed, iteration, vector, "BLOCKED_NOT_IN_READYQ", 1, COMPONENT_A);
     }
     if (probe.unblock_outcome != UnblockOutcome::AlreadyRunnable || probe.membership_changed)
         && reported.first(REPORTED_UNBLOCK_RUNNABLE)
@@ -268,11 +268,11 @@ fn score_probe(
                 UnblockOutcome::Transitioned => 2,
                 UnblockOutcome::NotFound => 4,
             };
-        record::violation(seed, iteration, vector, "UNBLOCK_ALREADY_RUNNABLE", detail);
+        record::violation(seed, iteration, vector, "UNBLOCK_ALREADY_RUNNABLE", detail, COMPONENT_A);
     }
     if probe.cardinality_before != probe.cardinality_after && reported.first(REPORTED_CARDINALITY) {
         let detail = ((probe.cardinality_before as u64) << 32) | probe.cardinality_after as u64;
-        record::violation(seed, iteration, vector, "QUEUE_CARDINALITY", detail);
+        record::violation(seed, iteration, vector, "QUEUE_CARDINALITY", detail, COMPONENT_A);
     }
 }
 
@@ -286,13 +286,13 @@ fn score_existing_markers(
     let identity =
         crate::arch_impl::aarch64::percpu::CPU_IDENTITY_SPLIT_EVENTS.load(Ordering::Relaxed);
     if identity != baseline.cpu_identity_split && reported.first(REPORTED_CPU_IDENTITY) {
-        record::violation(seed, iteration, vector, "CPU_IDENTITY_SPLIT", identity);
+        record::violation(seed, iteration, vector, "CPU_IDENTITY_SPLIT", identity, COMPONENT_A);
     }
 
     let alien =
         crate::arch_impl::aarch64::percpu::PERCPU_STACK_ALIEN_REFUSALS.load(Ordering::Relaxed);
     if alien != baseline.percpu_stack_alien && reported.first(REPORTED_STACK_ALIEN) {
-        record::violation(seed, iteration, vector, "PERCPU_STACK_ALIEN", alien);
+        record::violation(seed, iteration, vector, "PERCPU_STACK_ALIEN", alien, COMPONENT_A);
     }
 
     let teardown = teardown_flat_counters();
@@ -301,7 +301,7 @@ fn score_existing_markers(
         .filter(|_| reported.first(REPORTED_TEARDOWN))
     {
         let detail = ((index as u64) << 56) | (teardown[index] & 0x00ff_ffff_ffff_ffff);
-        record::violation(seed, iteration, vector, "TEARDOWN_COUNTERS", detail);
+        record::violation(seed, iteration, vector, "TEARDOWN_COUNTERS", detail, COMPONENT_A);
     }
 
     // #584's observable, read out of the futex handoff oracle's own census
@@ -311,14 +311,21 @@ fn score_existing_markers(
     // it per iteration would buy nothing and cost a load in the hot loop.
     let futex_rescues = crate::syscall::futex_oracle::rescues();
     if futex_rescues != baseline.futex_rescues && reported.first(REPORTED_FUTEX_RESCUE) {
-        record::violation(seed, iteration, vector, "FUTEX_HANDOFF_RESCUED", futex_rescues);
+        record::violation(
+            seed,
+            iteration,
+            vector,
+            "FUTEX_HANDOFF_RESCUED",
+            futex_rescues,
+            COMPONENT_A,
+        );
     }
 
     let lock_order = u64::from(scheduler::SCHED_AFTER_PM_VIOLATIONS.load(Ordering::Relaxed) != 0)
         | (u64::from(scheduler::EXEC_COMMIT_UNPINNED.load(Ordering::Relaxed) != 0) << 1)
         | (u64::from(scheduler::EXEC_COMMIT_MISSING_THREAD.load(Ordering::Relaxed) != 0) << 2);
     if lock_order != 0 && reported.first(REPORTED_EXEC_LOCK) {
-        record::violation(seed, iteration, vector, "EXEC_LOCK_ORDER", lock_order);
+        record::violation(seed, iteration, vector, "EXEC_LOCK_ORDER", lock_order, COMPONENT_A);
     }
 }
 
@@ -391,6 +398,7 @@ fn score_reclaim_bracket(
                 vector,
                 "RECLAIM_CLAIM_UNBRACKETED",
                 detail,
+                COMPONENT_A,
             );
         }
     }
@@ -417,7 +425,7 @@ fn score_liveness(
             .worst_queued_nondispatch_ms
             .max(census.nonprogress as u64)
             .max(census.queued_on_nondispatching_cpu);
-        record::violation(seed, iteration, vector, "REDISPATCH_LIVENESS", detail);
+        record::violation(seed, iteration, vector, "REDISPATCH_LIVENESS", detail, COMPONENT_A);
     }
 }
 
@@ -444,11 +452,12 @@ pub fn run() {
         window,
         online_cpus,
         Phase::Open,
+        COMPONENT_A,
     );
 
     if window == Window::PostCohort && !wait_for_boot_tests() {
         let driver_cpu = crate::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id() as usize;
-        record::emit_run(seed, driver_cpu, 0, mode, window, online_cpus, Phase::Close);
+        record::emit_run(seed, driver_cpu, 0, mode, window, online_cpus, Phase::Close, COMPONENT_A);
         return;
     }
 
@@ -458,7 +467,15 @@ pub fn run() {
     // window the run actually covers rather than the boot that preceded it.
     let driver_cpu = crate::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id() as usize;
     let victim_tid = scheduler::current_thread_id().unwrap_or(0);
-    record::emit_seed_line(seed, driver_cpu, mode, window, online_cpus, Phase::Settled);
+    record::emit_seed_line(
+        seed,
+        driver_cpu,
+        mode,
+        window,
+        online_cpus,
+        Phase::Settled,
+        COMPONENT_A,
+    );
     let baseline = baseline();
     let mut liveness = LivenessMonitor::new(window);
 
@@ -547,5 +564,6 @@ pub fn run() {
         window,
         online_cpus,
         Phase::Close,
+        COMPONENT_A,
     );
 }
