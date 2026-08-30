@@ -271,6 +271,39 @@ pub fn sys_exit(exit_code: i32) -> SyscallResult {
 // Note: perform_process_exit_switch function removed as part of spawn mechanism cleanup
 // Process switching now happens through the scheduler and new timer interrupt system
 
+/// Validate `fd` before a degenerate transfer answers `Ok(0)`.
+///
+/// `read`, `write`, `pread64` and `pwrite64` all answer a zero-length (or
+/// null-buffer) request with `Ok(0)`. Linux looks the descriptor up first, so
+/// such a request against a closed, negative or never-opened descriptor fails
+/// with `EBADF`; ours returned success and told the caller nothing (#670).
+///
+/// Returns `Err(EBADF)` only when the caller has a process context whose
+/// descriptor table has no such entry. Kernel threads have no descriptor table
+/// at all, so they keep whatever fallback their handler already applied.
+///
+/// This runs only on the degenerate path. The ordinary path already performs
+/// the same lookup, so no non-degenerate call gains work.
+fn validate_fd_for_degenerate_transfer(fd: i32) -> Result<(), u64> {
+    let Some(thread_id) = crate::task::scheduler::current_thread_id() else {
+        return Ok(());
+    };
+    crate::arch_without_interrupts(|| {
+        let manager_guard = crate::process::manager();
+        let Some(manager) = manager_guard.as_ref() else {
+            return Ok(());
+        };
+        let Some((_pid, process)) = manager.find_process_by_thread(thread_id) else {
+            return Ok(());
+        };
+        if process.fd_table.get(fd).is_some() {
+            Ok(())
+        } else {
+            Err(super::errno::EBADF as u64)
+        }
+    })
+}
+
 /// sys_write - Write to a file descriptor
 ///
 /// Supports stdout/stderr (serial port) and pipe write ends.
@@ -283,6 +316,11 @@ pub fn sys_write(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
 
     // Validate buffer pointer and count
     if buf_ptr == 0 || count == 0 {
+        // Linux checks the descriptor before honouring a degenerate transfer
+        // (#670): a zero-length operation on a bad descriptor is EBADF, not 0.
+        if let Err(e) = validate_fd_for_degenerate_transfer(fd as i32) {
+            return SyscallResult::Err(e);
+        }
         return SyscallResult::Ok(0);
     }
 
@@ -624,6 +662,11 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
 
     // Validate buffer pointer and count
     if buf_ptr == 0 || count == 0 {
+        // Linux checks the descriptor before honouring a degenerate transfer
+        // (#670): a zero-length operation on a bad descriptor is EBADF, not 0.
+        if let Err(e) = validate_fd_for_degenerate_transfer(fd as i32) {
+            return SyscallResult::Err(e);
+        }
         return SyscallResult::Ok(0);
     }
 
@@ -4331,6 +4374,11 @@ pub fn sys_pread64(fd: i32, buf_ptr: u64, count: u64, offset: i64) -> SyscallRes
     use crate::ipc::FdKind;
 
     if buf_ptr == 0 || count == 0 {
+        // Linux checks the descriptor before honouring a degenerate transfer
+        // (#670): a zero-length operation on a bad descriptor is EBADF, not 0.
+        if let Err(e) = validate_fd_for_degenerate_transfer(fd) {
+            return SyscallResult::Err(e);
+        }
         return SyscallResult::Ok(0);
     }
     if offset < 0 {
@@ -4419,6 +4467,11 @@ pub fn sys_pwrite64(fd: i32, buf_ptr: u64, count: u64, offset: i64) -> SyscallRe
     use crate::ipc::FdKind;
 
     if buf_ptr == 0 || count == 0 {
+        // Linux checks the descriptor before honouring a degenerate transfer
+        // (#670): a zero-length operation on a bad descriptor is EBADF, not 0.
+        if let Err(e) = validate_fd_for_degenerate_transfer(fd) {
+            return SyscallResult::Err(e);
+        }
         return SyscallResult::Ok(0);
     }
     if offset < 0 {
