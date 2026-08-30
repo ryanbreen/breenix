@@ -40,6 +40,7 @@ external_test_bins = ["kernel/external_test_bins"]
 receipt_drop_test = ["kernel/receipt_drop_test"]
 vmnet = ["kernel/vmnet"]
 interactive = ["kernel/interactive"]
+disable_x86_prod_init = ["kernel/disable_x86_prod_init"]  # #673 anti-vacuity knob, see kernel/Cargo.toml
 
 [[bin]]
 name = "qemu-uefi"
