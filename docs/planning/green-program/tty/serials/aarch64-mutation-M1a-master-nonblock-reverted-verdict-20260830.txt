@@ -1,0 +1,13 @@
+Building the shipped ARM64 production kernel profile...
+   Compiling kernel v0.1.0 (/Users/wrb/fun/code/breenix/kernel)
+    Finished `release` profile [optimized] target(s) in 6.04s
+warning: the following packages contain code that will be rejected by a future version of Rust: core v0.0.0 (/Users/wrb/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/src/rust/library/core)
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+Guard: kernel FP/SIMD instruction check
+  ELF:       /Users/wrb/fun/code/breenix/target/aarch64-breenix-kernel/release/kernel-aarch64
+  objdump:   /Users/wrb/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/aarch64-apple-darwin/bin/llvm-objdump
+  allowlist: /Users/wrb/fun/code/breenix/scripts/kernel-neon-allowlist.txt
+[0;32mPASS:[0m 0 FP/SIMD load/store instructions in kernel .text (allowlisted & suppressed: 0).
+Booting the ARM64 production profile (boot 1/1)...
+FAIL: boot 1 - 2 TTY arm failure(s)
+[TTY_ORACLE:FAIL:nonblock_open:master_nonblock_dropped:fl=0x0]
