@@ -1,0 +1,2 @@
+CORE-PROOF SEAM RATCHET ANTI-VACUITY: PASSED (both planted macro patterns redden the scan)
+exit=0

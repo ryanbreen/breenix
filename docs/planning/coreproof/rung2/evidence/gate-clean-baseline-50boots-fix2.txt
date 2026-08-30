@@ -1,0 +1,171 @@
+Building coreproof kernel (features: boot_tests,coreproof,coreproof_component_c)...
+   Compiling kernel v0.1.0 (/Users/wrb/fun/code/breenix/.claude/worktrees/wf_6c1dffc9-63b-4/kernel)
+    Finished `release` profile [optimized] target(s) in 8.50s
+warning: the following packages contain code that will be rejected by a future version of Rust: core v0.0.0 (/Users/wrb/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/src/rust/library/core)
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+Guard: kernel FP/SIMD instruction check
+  ELF:       /Users/wrb/fun/code/breenix/.claude/worktrees/wf_6c1dffc9-63b-4/target/coreproof-gate/aarch64-breenix-kernel/release/kernel-aarch64
+  objdump:   /Users/wrb/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/aarch64-apple-darwin/bin/llvm-objdump
+  allowlist: /Users/wrb/fun/code/breenix/.claude/worktrees/wf_6c1dffc9-63b-4/scripts/kernel-neon-allowlist.txt
+[0;32mPASS:[0m 0 FP/SIMD load/store instructions in kernel .text (allowlisted & suppressed: 0).
+CORE-PROOF SEAM RATCHET: PASSED (14 prohibited path(s) clean)
+Serial output root: /tmp/breenix_coreproof_gate/20260830T172743Z_94227
+
+=== profile max — 25 boot(s), component C, mode adversarial, window post_cohort, disarmed 0 ===
+qemu-system-aarch64: terminating on signal 15 from pid 94566 (<unknown process>)
+  max#1: harness violations=0 iters=110969
+  max#1: clean (seed=0x00000000098243e0 iters=110969 sites=3/3)
+qemu-system-aarch64: terminating on signal 15 from pid 94861 (<unknown process>)
+  max#2: harness violations=0 iters=105249
+  max#2: clean (seed=0x000000000a54af10 iters=105249 sites=3/3)
+qemu-system-aarch64: terminating on signal 15 from pid 95156 (<unknown process>)
+  max#3: harness violations=0 iters=115529
+  max#3: clean (seed=0x0000000008c2d410 iters=115529 sites=3/3)
+qemu-system-aarch64: terminating on signal 15
+  max#4: harness violations=0 iters=162310
+  max#4: clean (seed=0x0000000009931878 iters=162310 sites=3/3)
+qemu-system-aarch64: terminating on signal 15 from pid 95556 (<unknown process>)
+  max#5: harness violations=0 iters=125686
+  max#5: clean (seed=0x0000000009912478 iters=125686 sites=3/3)
+qemu-system-aarch64: terminating on signal 15 from pid 95818 (<unknown process>)
+  max#6: harness violations=0 iters=8326
+  max#6: clean (seed=0x000000000901c170 iters=8326 sites=3/3)
+qemu-system-aarch64: terminating on signal 15 from pid 96023 (<unknown process>)
+  max#7: harness violations=0 iters=13177
+  max#7: clean (seed=0x000000000934c408 iters=13177 sites=3/3)
+qemu-system-aarch64: terminating on signal 15
+  max#8: harness violations=0 iters=185501
+  max#8: clean (seed=0x0000000009ae5520 iters=185501 sites=3/3)
+qemu-system-aarch64: terminating on signal 15 from pid 96489 (<unknown process>)
+  max#9: harness violations=0 iters=203585
+  max#9: clean (seed=0x00000000094fba60 iters=203585 sites=3/3)
+qemu-system-aarch64: terminating on signal 15 from pid 96681 (<unknown process>)
+  max#10: harness violations=0 iters=67071
+  max#10: clean (seed=0x0000000008e39ab0 iters=67071 sites=3/3)
+qemu-system-aarch64: terminating on signal 15 from pid 96952 (<unknown process>)
+  max#11: harness violations=0 iters=6933
+  max#11: clean (seed=0x000000000a818b70 iters=6933 sites=3/3)
+qemu-system-aarch64: terminating on signal 15 from pid 97233 (<unknown process>)
+  max#12: harness violations=0 iters=5743
+  max#12: clean (seed=0x000000000a37a578 iters=5743 sites=3/3)
+qemu-system-aarch64: terminating on signal 15 from pid 97452 (<unknown process>)
+  max#13: harness violations=0 iters=160023
+  max#13: clean (seed=0x00000000082c9b08 iters=160023 sites=3/3)
+qemu-system-aarch64: terminating on signal 15 from pid 97794 (<unknown process>)
+  max#14: harness violations=0 iters=44481
+  max#14: clean (seed=0x000000000ac11510 iters=44481 sites=3/3)
+qemu-system-aarch64: terminating on signal 15 from pid 98076 (<unknown process>)
+  max#15: harness violations=0 iters=214335
+  max#15: clean (seed=0x000000000ab69d60 iters=214335 sites=3/3)
+qemu-system-aarch64: terminating on signal 15 from pid 98382 (<unknown process>)
+  max#16: harness violations=0 iters=17826
+  max#16: clean (seed=0x000000000c04c458 iters=17826 sites=3/3)
+qemu-system-aarch64: terminating on signal 15 from pid 98574 (<unknown process>)
+  max#17: harness violations=0 iters=104761
+  max#17: clean (seed=0x000000000a637450 iters=104761 sites=3/3)
+qemu-system-aarch64: terminating on signal 15 from pid 98770 (<unknown process>)
+  max#18: harness violations=0 iters=39592
+  max#18: clean (seed=0x0000000009583258 iters=39592 sites=3/3)
+qemu-system-aarch64: terminating on signal 15 from pid 99032 (<unknown process>)
+  max#19: harness violations=0 iters=5897
+  max#19: clean (seed=0x0000000008f559a8 iters=5897 sites=3/3)
+qemu-system-aarch64: terminating on signal 15 from pid 99314 (<unknown process>)
+  max#20: harness violations=0 iters=96708
+  max#20: clean (seed=0x0000000009d549c8 iters=96708 sites=3/3)
+qemu-system-aarch64: terminating on signal 15 from pid 99581 (<unknown process>)
+  max#21: harness violations=0 iters=8227
+  max#21: clean (seed=0x0000000008815a58 iters=8227 sites=3/3)
+qemu-system-aarch64: terminating on signal 15 from pid 99801 (<unknown process>)
+  max#22: harness violations=0 iters=52536
+  max#22: clean (seed=0x00000000093135e0 iters=52536 sites=3/3)
+qemu-system-aarch64: terminating on signal 15 from pid 116 (<unknown process>)
+  max#23: harness violations=0 iters=152185
+  max#23: clean (seed=0x0000000008e52538 iters=152185 sites=3/3)
+qemu-system-aarch64: terminating on signal 15 from pid 340 (<unknown process>)
+  max#24: harness violations=0 iters=3012
+  max#24: clean (seed=0x000000000918f2f0 iters=3012 sites=3/3)
+qemu-system-aarch64: terminating on signal 15
+  max#25: harness violations=0 iters=26113
+  max#25: clean (seed=0x000000000b3f49a8 iters=26113 sites=3/3)
+
+=== profile cortex-a72 — 25 boot(s), component C, mode adversarial, window post_cohort, disarmed 0 ===
+qemu-system-aarch64: terminating on signal 15 from pid 1083 (<unknown process>)
+  cortex-a72#1: harness violations=0 iters=79098
+  cortex-a72#1: clean (seed=0x0000000009f81bd0 iters=79098 sites=3/3)
+qemu-system-aarch64: terminating on signal 15 from pid 1531 (<unknown process>)
+  cortex-a72#2: harness violations=0 iters=3236
+  cortex-a72#2: clean (seed=0x000000000977e790 iters=3236 sites=3/3)
+qemu-system-aarch64: terminating on signal 15 from pid 2055 (<unknown process>)
+  cortex-a72#3: harness violations=0 iters=34601
+  cortex-a72#3: clean (seed=0x00000000096234d0 iters=34601 sites=3/3)
+qemu-system-aarch64: terminating on signal 15 from pid 2279 (<unknown process>)
+  cortex-a72#4: harness violations=0 iters=88870
+  cortex-a72#4: clean (seed=0x000000000a4443f0 iters=88870 sites=3/3)
+qemu-system-aarch64: terminating on signal 15 from pid 2590 (<unknown process>)
+  cortex-a72#5: harness violations=0 iters=92296
+  cortex-a72#5: clean (seed=0x000000000a642030 iters=92296 sites=3/3)
+qemu-system-aarch64: terminating on signal 15 from pid 2955 (<unknown process>)
+  cortex-a72#6: harness violations=0 iters=83656
+  cortex-a72#6: clean (seed=0x00000000090305a0 iters=83656 sites=3/3)
+qemu-system-aarch64: terminating on signal 15 from pid 3214 (<unknown process>)
+  cortex-a72#7: harness violations=0 iters=107475
+  cortex-a72#7: clean (seed=0x0000000008f76ce0 iters=107475 sites=3/3)
+qemu-system-aarch64: terminating on signal 15 from pid 3452 (<unknown process>)
+  cortex-a72#8: harness violations=0 iters=46227
+  cortex-a72#8: clean (seed=0x000000000902e670 iters=46227 sites=3/3)
+qemu-system-aarch64: terminating on signal 15
+  cortex-a72#9: harness violations=0 iters=70241
+  cortex-a72#9: clean (seed=0x0000000008329640 iters=70241 sites=3/3)
+qemu-system-aarch64: terminating on signal 15 from pid 4246 (<unknown process>)
+  cortex-a72#10: harness violations=0 iters=33103
+  cortex-a72#10: clean (seed=0x0000000008d65c10 iters=33103 sites=3/3)
+qemu-system-aarch64: terminating on signal 15 from pid 4764 (<unknown process>)
+  cortex-a72#11: harness violations=0 iters=100705
+  cortex-a72#11: clean (seed=0x000000000909dba0 iters=100705 sites=3/3)
+qemu-system-aarch64: terminating on signal 15 from pid 5220 (<unknown process>)
+  cortex-a72#12: harness violations=0 iters=100633
+  cortex-a72#12: clean (seed=0x000000000998ae20 iters=100633 sites=3/3)
+qemu-system-aarch64: terminating on signal 15 from pid 5562 (<unknown process>)
+  cortex-a72#13: harness violations=0 iters=150424
+  cortex-a72#13: clean (seed=0x000000000893a200 iters=150424 sites=3/3)
+qemu-system-aarch64: terminating on signal 15 from pid 5935 (<unknown process>)
+  cortex-a72#14: harness violations=0 iters=67919
+  cortex-a72#14: clean (seed=0x00000000097737c0 iters=67919 sites=3/3)
+qemu-system-aarch64: terminating on signal 15 from pid 6426 (<unknown process>)
+  cortex-a72#15: harness violations=0 iters=81941
+  cortex-a72#15: clean (seed=0x000000000a19b560 iters=81941 sites=3/3)
+qemu-system-aarch64: terminating on signal 15 from pid 6889 (<unknown process>)
+  cortex-a72#16: harness violations=0 iters=185275
+  cortex-a72#16: clean (seed=0x0000000008c8d720 iters=185275 sites=3/3)
+qemu-system-aarch64: terminating on signal 15 from pid 7178 (<unknown process>)
+  cortex-a72#17: harness violations=0 iters=93205
+  cortex-a72#17: clean (seed=0x00000000085cafa0 iters=93205 sites=3/3)
+qemu-system-aarch64: terminating on signal 15 from pid 7444 (<unknown process>)
+  cortex-a72#18: harness violations=0 iters=43107
+  cortex-a72#18: clean (seed=0x000000000b5419c0 iters=43107 sites=3/3)
+qemu-system-aarch64: terminating on signal 15 from pid 7854 (<unknown process>)
+  cortex-a72#19: harness violations=0 iters=96811
+  cortex-a72#19: clean (seed=0x00000000094d4190 iters=96811 sites=3/3)
+qemu-system-aarch64: terminating on signal 15 from pid 8364 (<unknown process>)
+  cortex-a72#20: harness violations=0 iters=75515
+  cortex-a72#20: clean (seed=0x00000000097ef050 iters=75515 sites=3/3)
+qemu-system-aarch64: terminating on signal 15 from pid 8978 (<unknown process>)
+  cortex-a72#21: harness violations=0 iters=0
+  cortex-a72#21: zero-iteration run — the harness never measured anything
+    [COREPROOF:RUN:v1:comp=C:phase=settled:mut=none:seed=0x000000000a3bb480:dcpu=1:iters=0:sites_declared=3:sites_visited=2:mode=adversarial:window=post_cohort:disarmed=0:degraded=0:profile=qemu-unknown-model:smp=4:downgraded=0:violated_predicates=0:cov=block_departure=0,cpu_identity=0,reclaim_bracket=0,pending_next=0,futex_section=0,masked_lock=0,masked_lock_bare=0]
+qemu-system-aarch64: terminating on signal 15 from pid 10165 (<unknown process>)
+  cortex-a72#22: harness violations=0 iters=86969
+  cortex-a72#22: clean (seed=0x0000000009ef9c10 iters=86969 sites=3/3)
+qemu-system-aarch64: terminating on signal 15 from pid 11106 (<unknown process>)
+  cortex-a72#23: harness violations=0 iters=134281
+  cortex-a72#23: clean (seed=0x000000000a046c30 iters=134281 sites=3/3)
+qemu-system-aarch64: terminating on signal 15 from pid 11594 (<unknown process>)
+  cortex-a72#24: harness violations=0 iters=36433
+  cortex-a72#24: clean (seed=0x00000000092994c0 iters=36433 sites=3/3)
+qemu-system-aarch64: terminating on signal 15 from pid 11944 (<unknown process>)
+  cortex-a72#25: harness violations=0 iters=20666
+  cortex-a72#25: clean (seed=0x000000000934fea0 iters=20666 sites=3/3)
+
+boots=50 failed=1 violations=0 iters_total=3948462 started=2026-08-30T17:27:43Z ended=2026-08-30T17:38:36Z
+ARM64 CORE-PROOF GATE: FAILED
+Serials preserved under /tmp/breenix_coreproof_gate/20260830T172743Z_94227

@@ -1,0 +1,23 @@
+
+running 5 tests
+test every_declared_mutation_perturbs_a_real_site ... ok
+test every_gated_mutation_is_declared ... ok
+test every_multi_file_mutation_gates_every_file_its_own_entry_names ... FAILED
+test every_register_entry_cites_its_issue_its_fix_and_its_predicate ... ok
+test the_register_names_exactly_the_declared_mutations ... ok
+
+failures:
+
+---- every_multi_file_mutation_gates_every_file_its_own_entry_names stdout ----
+
+thread 'every_multi_file_mutation_gates_every_file_its_own_entry_names' panicked at /Users/wrb/fun/code/breenix/.claude/worktrees/wf_6c1dffc9-63b-4/tests/coreproof_mutation_register_structure.rs:244:9:
+coreproof_mut_masked_lock_bare's own register entry names 2 files in `site:` but only 1 of them actually gate code on the feature ({"/Users/wrb/fun/code/breenix/.claude/worktrees/wf_6c1dffc9-63b-4/kernel/src/task/scheduler.rs"}) — a mutation missing one of its own named halves silently degrades into a weaker, already-registered mutation with every existing ratchet green
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    every_multi_file_mutation_gates_every_file_its_own_entry_names
+
+test result: FAILED. 4 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+
+exit=101

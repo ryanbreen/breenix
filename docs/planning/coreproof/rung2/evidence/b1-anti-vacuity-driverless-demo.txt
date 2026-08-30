@@ -1,0 +1,53 @@
+Building coreproof kernel (features: boot_tests,coreproof,coreproof_component_c)...
+   Compiling compiler_builtins v0.1.160 (/Users/wrb/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/src/rust/library/compiler-builtins/compiler-builtins)
+   Compiling core v0.0.0 (/Users/wrb/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/src/rust/library/core)
+   Compiling autocfg v1.5.1
+   Compiling az v1.2.1
+   Compiling crossbeam-utils v0.8.22
+   Compiling bootloader_api v0.11.17 (https://github.com/rust-osdev/bootloader.git?branch=main#3d7f72e3)
+   Compiling kernel v0.1.0 (/Users/wrb/fun/code/breenix/.claude/worktrees/wf_6c1dffc9-63b-4/kernel)
+   Compiling num-traits v0.2.19
+   Compiling alloc v0.0.0 (/Users/wrb/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/src/rust/library/alloc)
+   Compiling scopeguard v1.2.0
+   Compiling byteorder v1.5.0
+   Compiling futures-core v0.3.34
+   Compiling conquer-util v0.3.0
+   Compiling tock-registers v0.8.1
+   Compiling micromath v2.1.0
+   Compiling slab v0.4.12
+   Compiling futures-task v0.3.34
+   Compiling pin-project-lite v0.2.17
+   Compiling rlibc v1.0.0
+   Compiling log v0.4.34
+   Compiling noto-sans-mono-bitmap v0.3.2
+   Compiling lock_api v0.4.14
+   Compiling aarch64-cpu v9.4.0
+   Compiling conquer-once v0.4.0
+   Compiling futures-util v0.3.34
+   Compiling spinning_top v0.2.5
+   Compiling spin v0.9.9
+   Compiling crossbeam-queue v0.3.13
+   Compiling linked_list_allocator v0.10.6
+   Compiling float-cmp v0.9.0
+   Compiling embedded-graphics-core v0.4.1
+   Compiling embedded-graphics v0.8.2
+    Finished `release` profile [optimized] target(s) in 15.37s
+warning: the following packages contain code that will be rejected by a future version of Rust: core v0.0.0 (/Users/wrb/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/src/rust/library/core)
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+Guard: kernel FP/SIMD instruction check
+  ELF:       /Users/wrb/fun/code/breenix/.claude/worktrees/wf_6c1dffc9-63b-4/target/coreproof-gate/aarch64-breenix-kernel/release/kernel-aarch64
+  objdump:   /Users/wrb/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/aarch64-apple-darwin/bin/llvm-objdump
+  allowlist: /Users/wrb/fun/code/breenix/.claude/worktrees/wf_6c1dffc9-63b-4/scripts/kernel-neon-allowlist.txt
+[0;32mPASS:[0m 0 FP/SIMD load/store instructions in kernel .text (allowlisted & suppressed: 0).
+CORE-PROOF SEAM RATCHET: PASSED (14 prohibited path(s) clean)
+Serial output root: /tmp/breenix_coreproof_gate/20260830T172549Z_92696
+
+=== profile max — 1 boot(s), component C, mode adversarial, window post_cohort, disarmed 0 ===
+qemu-system-aarch64: terminating on signal 15 from pid 93103 (<unknown process>)
+  max#1: harness violations=0 iters=0
+  max#1: zero-iteration run — the harness never measured anything
+    [COREPROOF:RUN:v1:comp=C:phase=close:mut=none:seed=0x000000000ca52308:dcpu=1:iters=0:sites_declared=3:sites_visited=0:mode=adversarial:window=post_cohort:disarmed=0:degraded=0:profile=qemu-unknown-model:smp=4:downgraded=0:violated_predicates=0:cov=block_departure=0,cpu_identity=0,reclaim_bracket=0,pending_next=0,futex_section=0,masked_lock=0,masked_lock_bare=0]
+
+boots=1 failed=1 violations=0 iters_total=0 started=2026-08-30T17:25:49Z ended=2026-08-30T17:26:11Z
+ARM64 CORE-PROOF GATE: FAILED
+Serials preserved under /tmp/breenix_coreproof_gate/20260830T172549Z_92696

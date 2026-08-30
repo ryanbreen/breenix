@@ -1,0 +1,41 @@
+Building coreproof kernel (features: boot_tests,coreproof,coreproof_component_c,coreproof_mut_cpu_identity)...
+   Compiling kernel v0.1.0 (/Users/wrb/fun/code/breenix/.claude/worktrees/wf_6c1dffc9-63b-4/kernel)
+    Finished `release` profile [optimized] target(s) in 9.42s
+warning: the following packages contain code that will be rejected by a future version of Rust: core v0.0.0 (/Users/wrb/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/src/rust/library/core)
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+Guard: kernel FP/SIMD instruction check
+  ELF:       /Users/wrb/fun/code/breenix/.claude/worktrees/wf_6c1dffc9-63b-4/target/coreproof-gate/aarch64-breenix-kernel/release/kernel-aarch64
+  objdump:   /Users/wrb/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/aarch64-apple-darwin/bin/llvm-objdump
+  allowlist: /Users/wrb/fun/code/breenix/.claude/worktrees/wf_6c1dffc9-63b-4/scripts/kernel-neon-allowlist.txt
+[0;32mPASS:[0m 0 FP/SIMD load/store instructions in kernel .text (allowlisted & suppressed: 0).
+CORE-PROOF SEAM RATCHET: PASSED (14 prohibited path(s) clean)
+Serial output root: /tmp/breenix_coreproof_gate/20260830T174528Z_21740
+
+=== profile max — 8 boot(s), component C, mode adversarial, window post_cohort, disarmed 0 ===
+qemu-system-aarch64: terminating on signal 15 from pid 22105 (<unknown process>)
+  max#1: harness violations=0 iters=130021 cov=cpu_identity=23818
+  max#1: clean (seed=0x000000000991b500 iters=130021 sites=3/3 cov=cpu_identity=23818)
+qemu-system-aarch64: terminating on signal 15 from pid 22432 (<unknown process>)
+  max#2: harness violations=0 iters=145961 cov=cpu_identity=22658
+  max#2: clean (seed=0x000000000949de60 iters=145961 sites=3/3 cov=cpu_identity=22658)
+qemu-system-aarch64: terminating on signal 15 from pid 22759 (<unknown process>)
+  max#3: harness violations=0 iters=140020 cov=cpu_identity=29221
+  max#3: clean (seed=0x00000000097aecf8 iters=140020 sites=3/3 cov=cpu_identity=29221)
+qemu-system-aarch64: terminating on signal 15 from pid 23087 (<unknown process>)
+  max#4: harness violations=0 iters=57188 cov=cpu_identity=28567
+  max#4: clean (seed=0x000000000a5172f0 iters=57188 sites=3/3 cov=cpu_identity=28567)
+qemu-system-aarch64: terminating on signal 15 from pid 23452 (<unknown process>)
+  max#5: harness violations=0 iters=146035 cov=cpu_identity=28710
+  max#5: clean (seed=0x00000000099260e0 iters=146035 sites=3/3 cov=cpu_identity=28710)
+qemu-system-aarch64: terminating on signal 15 from pid 23770 (<unknown process>)
+  max#6: harness violations=0 iters=219052 cov=cpu_identity=29103
+  max#6: clean (seed=0x0000000009e4bed0 iters=219052 sites=3/3 cov=cpu_identity=29103)
+qemu-system-aarch64: terminating on signal 15 from pid 24099 (<unknown process>)
+  max#7: harness violations=0 iters=5923 cov=cpu_identity=18310
+  max#7: clean (seed=0x0000000008be57a0 iters=5923 sites=3/3 cov=cpu_identity=18310)
+qemu-system-aarch64: terminating on signal 15 from pid 24406 (<unknown process>)
+  max#8: harness violations=0 iters=191953 cov=cpu_identity=31760
+  max#8: clean (seed=0x0000000008af7ed8 iters=191953 sites=3/3 cov=cpu_identity=31760)
+
+boots=8 failed=0 violations=0 iters_total=1036153 started=2026-08-30T17:45:28Z ended=2026-08-30T17:47:19Z
+ARM64 CORE-PROOF GATE: PASSED
