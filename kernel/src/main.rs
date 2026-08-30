@@ -1029,10 +1029,18 @@ fn kernel_main_continue() -> ! {
     // INTERACTIVE MODE: Load init_shell as the only userspace process
     #[cfg(feature = "interactive")]
     {
+        // Disk-backed test binaries require VirtIO block IRQ completions, so the
+        // load has to happen with interrupts enabled - 62af9d13 hoisted exactly
+        // this call out of exactly this kind of block for the testing profile
+        // (#554), and the interactive profile kept the hazardous shape because
+        // no gate runs it (#665). Only process registration below needs the
+        // masked window.
+        x86_64::instructions::interrupts::enable();
+        serial_println!("INTERACTIVE: Loading init_shell as PID 1");
+        let elf = userspace_test::get_test_binary("init_shell");
+
         x86_64::instructions::interrupts::without_interrupts(|| {
             use alloc::string::String;
-            serial_println!("INTERACTIVE: Loading init_shell as PID 1");
-            let elf = userspace_test::get_test_binary("init_shell");
             match process::creation::create_user_process(String::from("init_shell"), &elf) {
                 Ok(pid) => {
                     serial_println!("INTERACTIVE: init_shell running as PID {}", pid.as_u64());

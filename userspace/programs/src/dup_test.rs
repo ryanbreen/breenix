@@ -151,6 +151,51 @@ fn main() {
     }
     println!("  Original read fd closed");
 
+    // Phase 6b: Zero-length operations validate the descriptor first (#670).
+    //
+    // read()/write() answer a zero-length request with 0, but the descriptor is
+    // looked up before that answer is given: a zero-length operation on the fd
+    // just closed above must fail with EBADF, exactly as a non-zero-length one
+    // would. Breenix used to return 0 here, so a caller could not tell a closed
+    // descriptor from a valid no-op.
+    println!("\nPhase 6b: Zero-length ops on the closed fd must be EBADF...");
+    let mut empty: [u8; 0] = [];
+    match io::read(read_fd, &mut empty) {
+        Err(Error::Os(Errno::EBADF)) => {}
+        Ok(n) => {
+            println!("  read(closed_fd, len 0) returned Ok({}), expected EBADF", n);
+            fail("zero-length read() on a closed fd should return EBADF");
+        }
+        Err(e) => {
+            println!("  read(closed_fd, len 0) returned {:?}, expected EBADF", e);
+            fail("zero-length read() on a closed fd should return EBADF");
+        }
+    }
+    match io::write(read_fd, &empty) {
+        Err(Error::Os(Errno::EBADF)) => {}
+        Ok(n) => {
+            println!("  write(closed_fd, len 0) returned Ok({}), expected EBADF", n);
+            fail("zero-length write() on a closed fd should return EBADF");
+        }
+        Err(e) => {
+            println!("  write(closed_fd, len 0) returned {:?}, expected EBADF", e);
+            fail("zero-length write() on a closed fd should return EBADF");
+        }
+    }
+    // The same request on an open, readable descriptor still answers 0.
+    match io::read(dup_fd, &mut empty) {
+        Ok(0) => {}
+        Ok(n) => {
+            println!("  read(open_fd, len 0) returned Ok({}), expected Ok(0)", n);
+            fail("zero-length read() on an open fd should return 0");
+        }
+        Err(e) => {
+            println!("  read(open_fd, len 0) returned {:?}, expected Ok(0)", e);
+            fail("zero-length read() on an open fd should return 0");
+        }
+    }
+    println!("  PASS: zero-length ops report EBADF on a closed fd and 0 on an open one");
+
     // Phase 7: Verify the dup'd fd still works after original is closed
     println!("\nPhase 7: Verifying dup'd fd still works after original closed...");
     let data3 = b"!";

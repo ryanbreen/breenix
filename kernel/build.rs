@@ -3,6 +3,22 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+/// Last `MAX_CAPTURED_OUTPUT_BYTES` bytes of a captured child stream, decoded
+/// lossily. The tail is what matters: cargo prints the error that stopped the
+/// build last, and an unbounded paste of a full userspace build would bury it.
+fn tail_of(stream: &[u8]) -> String {
+    const MAX_CAPTURED_OUTPUT_BYTES: usize = 8192;
+    let start = stream.len().saturating_sub(MAX_CAPTURED_OUTPUT_BYTES);
+    let mut text = String::from_utf8_lossy(&stream[start..]).into_owned();
+    if start > 0 {
+        text.insert_str(0, "<truncated>\n");
+    }
+    if text.trim().is_empty() {
+        text = "<empty>".to_owned();
+    }
+    text
+}
+
 fn main() {
     // Emit a unique build ID based on current timestamp (seconds + subsecond nanos).
     // Baked into the kernel boot banner so stale builds are immediately detectable.
@@ -167,7 +183,23 @@ fn main() {
                 .expect("Failed to run userspace build script");
 
             if !output.status.success() {
-                panic!("Failed to build userspace test programs with libbreenix");
+                // `output()` captured the child's streams, so the failure's real
+                // cause - a missing toolchain, a userspace compile error, an
+                // unresolvable forked-Rust library path - lives in `output` and
+                // nowhere else. Dropping them here left the panic naming nothing
+                // and forced a manual re-run of build.sh to learn anything (#679).
+                // build.sh reports its own errors on stdout, so both streams are
+                // reproduced.
+                panic!(
+                    "Failed to build userspace test programs with libbreenix: {}\n\
+                     --- {} stdout ---\n{}\n\
+                     --- {} stderr ---\n{}",
+                    output.status,
+                    build_script.display(),
+                    tail_of(&output.stdout),
+                    build_script.display(),
+                    tail_of(&output.stderr),
+                );
             }
 
             // Tell cargo to rerun if userspace sources change

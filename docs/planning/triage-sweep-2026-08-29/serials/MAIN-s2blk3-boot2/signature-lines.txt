@@ -1,0 +1,10 @@
+<S>[SW]<T><U>CLONEVM_EXEC_TEST: start
+[SW]<T><U><R><S>[SW]<T><U><R>CLONEVM_EXEC_TEST: child live
+<S>[SW]<T><U><R><S>[SW]<T><U><R>CLONEVM_EXEC_TEST: SKIP live-sibling probe (no x86 guard, see #468)
+[SW]<T><B><S>[SW]<T><U><R>[SW]<T><U><R><S>[SW]<T><U><R>CLONEVM_EXEC_TEST: child exited
+<S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>CLONEVM_EXEC_TEST: second stage
+<S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B><S>[SW]<T><U><R>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B><S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R>CLONEVM_EXEC_TEST: post-exec rendezvous complete
+CLONEVM_EXEC_TEST: post-exec futex keys derived
+CLONEVM_EXEC_TEST: PASS
+[DEBUG] kernel::task::process_task: Process 4 'clock_gettime_test' (thread 14) exited with code 0
+[ INFO] kernel::syscall::handlers: TEST_TALLY: exited=19 nonzero=2 failed=[loopback_wake_test_child:15,loopback_wake_test:1]

@@ -114,3 +114,9 @@ logs/
 # Codex supervision-harness run directories (codex-wf): logs and transcripts,
 # never source. Untracked and ignored by design.
 .codex-runs/
+
+# Forked Rust std checkout (target_os = "breenix"), required to build userspace.
+# It is a per-developer path - it used to be committed as a symlink to one
+# machine's home directory, which dangled in every other checkout (#678). Point
+# BREENIX_RUST_FORK_LIBRARY at <fork>/library, or create this symlink locally.
+/rust-fork
