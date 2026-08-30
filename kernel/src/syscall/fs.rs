@@ -2482,6 +2482,19 @@ fn handle_devfs_open(device_name: &str, flags: u32) -> SyscallResult {
                     );
                     return match proc2.fd_table.alloc_with_entry(entry) {
                         Ok(fd) => {
+                            // #704: every close path (kernel/src/ipc/fd.rs,
+                            // kernel/src/task/process_task.rs) calls
+                            // pair.slave_close() unconditionally for any
+                            // FdKind::PtySlave being released, so an fd handed
+                            // out here without a matching slave_open() either
+                            // drops the refcount to 0 while another slave fd is
+                            // still open (premature master EOF) or underflows
+                            // it to u32::MAX on close (has_slave_open()
+                            // permanently true, master can never see hangup
+                            // again). Mirror handle_devpts_open exactly: the
+                            // open and close accounting must be symmetric
+                            // regardless of which path produced the fd.
+                            pair.slave_open();
                             log::info!(
                                 "handle_devfs_open: /dev/tty -> PTY slave {} as fd {}",
                                 pty_num,
