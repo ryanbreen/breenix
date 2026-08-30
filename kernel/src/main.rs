@@ -1036,6 +1036,10 @@ fn nonblock_eagain_test_main() -> ! {
 ))]
 fn launch_x86_production_init(elf_data: &[u8]) -> Result<(), &'static str> {
     use alloc::string::String;
+    log::info!(
+        "[673_DEBUG] preempt_count at entry = {}",
+        per_cpu::preempt_count()
+    );
 
     let (thread, designated_pid_raw, reserved_collisions) = {
         let mut manager_guard = process::manager();
@@ -1081,6 +1085,10 @@ fn launch_x86_production_init(elf_data: &[u8]) -> Result<(), &'static str> {
     // reschedule (NEED_RESCHED); this brake is what keeps that request from
     // being honored before boot is ready to be interrupted.
     per_cpu::preempt_disable();
+    log::info!(
+        "[673_DEBUG] preempt_count after extra disable = {}",
+        per_cpu::preempt_count()
+    );
 
     Ok(())
 }
@@ -1570,6 +1578,10 @@ fn kernel_main_continue() -> ! {
     // clock_gettime_test::test_clock_gettime();
 
     // Test if interrupts are working by triggering a breakpoint
+    log::info!(
+        "[673_DEBUG] preempt_count before int3 = {}",
+        per_cpu::preempt_count()
+    );
     log::info!("Testing breakpoint interrupt...");
     x86_64::instructions::interrupts::int3();
     log::info!("Breakpoint test completed!");
