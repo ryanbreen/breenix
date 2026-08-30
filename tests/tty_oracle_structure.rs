@@ -32,6 +32,18 @@ fn read(relative: &str) -> String {
 
 const ORACLE: &str = "userspace/programs/src/tty_oracle.rs";
 const GATE: &str = "docker/qemu/run-aarch64-tty-oracle-gate.sh";
+const FULL_TEST: &str = "docker/qemu/run-aarch64-full-test.sh";
+
+/// The body of `run-aarch64-full-test.sh`'s Phase 2, from its banner to the
+/// start of Phase 3.
+fn phase_two_block(script: &str) -> &str {
+    let start = script
+        .find("Phase 2: Checking services")
+        .expect("full test declares Phase 2");
+    let rest = &script[start..];
+    let end = rest.find("Phase 3:").unwrap_or(rest.len());
+    &rest[..end]
+}
 
 /// Every arm the oracle declares, taken from its `const ARM: &str = "..."`
 /// bindings — the same string each arm stamps into its own verdict line.
@@ -183,6 +195,30 @@ fn init_launches_the_oracle_on_aarch64() {
     );
 }
 
+/// The TTY leg calls `unlockpt()` on every boot. `run-aarch64-full-test.sh`
+/// Phase 2 used to accept `[pty] Unlocked PTY` as a proxy for "a shell is up",
+/// on the assumption that only a shell-spawning service unlocks a PTY during
+/// boot. The leg broke that assumption and flipped the phase from its honest
+/// #593 red to reporting "PASS (shell spawned)" on a boot with zero shell
+/// markers. The proxy was removed; this keeps it from coming back, because the
+/// leg makes it permanently false.
+#[test]
+fn full_test_phase_two_does_not_accept_a_bare_pty_unlock_as_a_shell() {
+    let script = read(FULL_TEST);
+    let phase2 = phase_two_block(&script);
+    assert!(
+        !phase2.contains("Unlocked PTY"),
+        "Phase 2 accepts a bare PTY unlock as evidence of a shell. The TTY \
+         oracle unlocks a PTY on every boot, so this predicate would report \
+         \"shell spawned\" on a boot where no shell ran."
+    );
+    assert!(
+        phase2.contains("breenix>") && phase2.contains("SHELL_OK"),
+        "Phase 2 no longer looks for shell output at all - the guard above \
+         would be vacuous"
+    );
+}
+
 // --- Mutation tests: each rule must redden on a broken input. ---
 
 #[test]
@@ -234,5 +270,17 @@ fn deliberately_broken_variants_fail_the_ratchets() {
                 && l.contains("--features"))
             || featured.contains("--features boot_tests -p kernel"),
         "a --features build slipped past the profile rule"
+    );
+
+    // The PTY-unlock proxy creeping back into Phase 2.
+    let full_test = read(FULL_TEST);
+    let restored_proxy = full_test.replace(
+        "        # A bare PTY unlock is NOT evidence of a shell.",
+        "        if grep -qE \"\\[pty\\] Unlocked PTY\" \"$OUTPUT_DIR/serial.txt\"; then\n            SHELL_OK=true\n        fi\n        # A bare PTY unlock is NOT evidence of a shell.",
+    );
+    assert_ne!(restored_proxy, full_test, "mutation did not apply");
+    assert!(
+        phase_two_block(&restored_proxy).contains("Unlocked PTY"),
+        "the Phase 2 rule would not notice the proxy being restored"
     );
 }

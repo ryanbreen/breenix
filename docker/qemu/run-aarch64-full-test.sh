@@ -661,9 +661,14 @@ if [ -z "$FAIL_REASON" ] && ! $BOOT_TESTS_ONLY; then
         if grep -qE "(breenix>|bsh )" "$OUTPUT_DIR/serial.txt" 2>/dev/null; then
             SHELL_OK=true
         fi
-        if grep -qE "\[pty\] Unlocked PTY" "$OUTPUT_DIR/serial.txt" 2>/dev/null; then
-            SHELL_OK=true
-        fi
+        # A bare PTY unlock is NOT evidence of a shell. It used to be accepted
+        # here as a proxy, on the assumption that only a shell-spawning service
+        # ever unlocks a PTY during boot. The green-program TTY leg
+        # (/bin/tty_oracle) broke that assumption: it calls unlockpt() on every
+        # boot, which flipped this phase from its honest #593 red to reporting
+        # "PASS (shell spawned)" on a boot with zero shell markers. The proxy is
+        # gone; Phase 2 now requires actual shell output, and stays red until
+        # #593 (init's aarch64 arm spawns no shell) is fixed.
         if grep -qE "\[bwm\] Display:" "$OUTPUT_DIR/serial.txt" 2>/dev/null; then
             BWM_OK=true
         fi

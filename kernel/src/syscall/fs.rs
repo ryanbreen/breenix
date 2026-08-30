@@ -2390,6 +2390,7 @@ fn handle_procfs_open(path: &str, _flags: u32) -> SyscallResult {
 fn handle_devfs_open(device_name: &str, flags: u32) -> SyscallResult {
     use super::errno::{EMFILE, ENOENT};
     use crate::fs::devfs;
+    use crate::ipc::fd::FileDescriptor;
 
     log::debug!("handle_devfs_open: device_name={:?}", device_name);
 
@@ -2463,8 +2464,23 @@ fn handle_devfs_open(device_name: &str, flags: u32) -> SyscallResult {
                         .find_process_by_thread_mut(thread_id2)
                         .unwrap()
                         .1;
-                    let fd_kind = FdKind::PtySlave(pty_num);
-                    return match proc2.fd_table.alloc(fd_kind) {
+                    // Same status-flag plumbing as handle_devpts_open: this is
+                    // the third site that hands out a PtySlave fd, and a
+                    // /dev/tty opened O_NONBLOCK must read non-blocking too.
+                    // NOTE: unlike the /dev/pts path, this one is not exercised
+                    // by the production TTY leg -- reaching it needs a
+                    // controlling terminal -- so it is fixed by parity with the
+                    // two measured sites, not by measurement.
+                    let entry = FileDescriptor::with_flags(
+                        FdKind::PtySlave(pty_num),
+                        if (flags & 0x80000) != 0 {
+                            crate::ipc::fd::flags::FD_CLOEXEC
+                        } else {
+                            0
+                        },
+                        flags & crate::ipc::fd::status_flags::O_NONBLOCK,
+                    );
+                    return match proc2.fd_table.alloc_with_entry(entry) {
                         Ok(fd) => {
                             log::info!(
                                 "handle_devfs_open: /dev/tty -> PTY slave {} as fd {}",
