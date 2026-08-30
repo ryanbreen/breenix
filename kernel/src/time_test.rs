@@ -52,7 +52,16 @@ pub fn test_timer_resolution() {
         ticks_after
     );
 
-    if ms >= ticks_before && ms <= ticks_after {
+    // #673 review, m5: the equality-check removal above widens the window
+    // this test tolerates, which on its own could no longer catch a small
+    // constant scaling/offset bug (e.g. ms == ticks_before - 1, still
+    // "within range" if the window were left unbounded). Keeping the window
+    // provably tight -- at most one genuine tick between the two live reads
+    // -- closes that gap without reintroducing the exact-equality race:
+    // a SECOND tick landing in this tiny window would mean something else
+    // (an interrupt storm or a stalled read) is already wrong here.
+    let window = ticks_after - ticks_before;
+    if ms >= ticks_before && ms <= ticks_after && window <= 1 {
         log::info!(
             "✓ Timer conversion correct: {} ms within observed tick range [{}, {}]",
             ms,
@@ -62,14 +71,14 @@ pub fn test_timer_resolution() {
         log::info!("✓ Timer resolution: 1 ms per tick (1000 Hz PIT)");
     } else {
         log::error!(
-            "✗ Timer conversion INCORRECT: {} ms outside observed tick range [{}, {}]",
+            "✗ Timer conversion INCORRECT: {} ms outside observed tick range [{}, {}] (window={})",
             ms,
             ticks_before,
-            ticks_after
+            ticks_after,
+            window
         );
         panic!("Timer resolution validation failed");
     }
-
     log::info!("=== TIMER RESOLUTION TEST COMPLETE ===");
 }
 
