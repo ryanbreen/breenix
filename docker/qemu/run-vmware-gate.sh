@@ -37,15 +37,41 @@ RUN_LOG="/tmp/breenix-vmware-gate-run.log"
 VMX_FILE=""
 RUN_SH_PID=""
 
+# run.sh --vmware's own vmware.log monitor is `tail -f "$VM_LOG" | while ...`
+# inside a backgrounded subshell -- a pipeline, so bash forks a SEPARATE
+# process for the `tail -f` half. Killing the subshell (or its parent
+# run.sh) does not touch that already-forked pipe segment; it survives,
+# reparented to PID 1, observed directly across repeated runs of this
+# script. Kill both halves of the tree: the run.sh subtree via SIGTERM then
+# SIGKILL-on-survival, and any leaked `tail -f .../vmware.log` by path
+# (harmless to run broadly -- a leaked tail from a run.sh --vmware this
+# script did not start is exactly as orphaned and exactly as safe to reap).
+kill_run_sh_tree() {
+    local pid="$1"
+    [ -n "$pid" ] || return 0
+    kill -0 "$pid" 2>/dev/null || return 0
+    pkill -TERM -P "$pid" 2>/dev/null || true
+    kill -TERM "$pid" 2>/dev/null || true
+    for _ in 1 2 3 4 5; do
+        kill -0 "$pid" 2>/dev/null || return 0
+        sleep 1
+    done
+    pkill -KILL -P "$pid" 2>/dev/null || true
+    kill -KILL "$pid" 2>/dev/null || true
+    wait "$pid" 2>/dev/null || true
+}
+
+reap_leaked_vmware_log_tail() {
+    pkill -KILL -f 'tail -f .*\.vmwarevm/vmware\.log' 2>/dev/null || true
+}
+
 # Every exit path -- success, an assertion failure, or a build/start timeout
 # -- must leave no VM running. This is the ONE cleanup path; every `exit`
 # below routes through it via the EXIT trap rather than each caller
 # remembering to stop the VM itself.
 cleanup_vm() {
-    if [ -n "$RUN_SH_PID" ] && kill -0 "$RUN_SH_PID" 2>/dev/null; then
-        kill "$RUN_SH_PID" 2>/dev/null || true
-        wait "$RUN_SH_PID" 2>/dev/null || true
-    fi
+    kill_run_sh_tree "$RUN_SH_PID"
+    reap_leaked_vmware_log_tail
     if [ -n "$VMX_FILE" ] && [ -f "$VMX_FILE" ]; then
         echo "[vmware-gate] Stopping VM: $VMX_FILE"
         "$VMRUN" stop "$VMX_FILE" hard >/dev/null 2>&1 || true
@@ -101,10 +127,8 @@ sleep "$BOOT_WAIT_SECS"
 
 echo "[vmware-gate] === Stopping VM and reading evidence ==="
 "$VMRUN" stop "$VMX_FILE" hard >/dev/null 2>&1 || true
-if kill -0 "$RUN_SH_PID" 2>/dev/null; then
-    kill "$RUN_SH_PID" 2>/dev/null || true
-    wait "$RUN_SH_PID" 2>/dev/null || true
-fi
+kill_run_sh_tree "$RUN_SH_PID"
+reap_leaked_vmware_log_tail
 # The VM is already stopped; clear both so the EXIT trap's cleanup is a no-op
 # rather than a redundant (harmless, but noisy) second stop attempt.
 VMX_FILE_STOPPED="$VMX_FILE"
@@ -121,7 +145,15 @@ RUN_SH_PID=""
 #                  falls through to e1000::init().
 NET_PCI_ATTEMPT=$(grep -h -c -F '[drivers] VirtIO network (PCI) init failed' "$SERIAL_LOG" 2>/dev/null || true)
 E1000_SUCCESS=$(grep -h -c -F '[drivers] Intel e1000 network driver initialized' "$SERIAL_LOG" 2>/dev/null || true)
-PCI_CENSUS_LINE=$(grep -h -E 'PCI: Enumeration complete\. Found [0-9]+ devices \([0-9]+ VirtIO block, [0-9]+ network\)' \
+# run.sh --vmware builds the plain production profile (no --features), and
+# pci.rs's "PCI: Enumeration complete..." census line is a log::info! call --
+# filtered out of a production boot's serial by the default log level, unlike
+# the green arc 5 QEMU gates which all build with a testing/boot_tests
+# feature that raises it. Measured directly against a real VMware boot: the
+# unconditional serial_println! sibling line ("[drivers] Found N PCI
+# devices", kernel/src/drivers/mod.rs) IS present where the log::info! one is
+# not, so that is this leg's device-count evidence on this specific profile.
+PCI_CENSUS_LINE=$(grep -h -E '\[drivers\] Found [0-9]+ PCI devices' \
     "$SERIAL_LOG" 2>/dev/null | tail -1)
 
 if [ "${NET_PCI_ATTEMPT:-0}" -lt 1 ]; then
@@ -131,7 +163,7 @@ if [ "${E1000_SUCCESS:-0}" -lt 1 ]; then
     fail "e1000 fallback success line absent -- the fallback in kernel/src/drivers/mod.rs did not report success"
 fi
 if [ -z "$PCI_CENSUS_LINE" ]; then
-    fail "device-enumeration census line absent -- see kernel/src/drivers/pci.rs"
+    fail "device-enumeration line absent -- see kernel/src/drivers/mod.rs's PCI branch"
 fi
 
 echo ""
