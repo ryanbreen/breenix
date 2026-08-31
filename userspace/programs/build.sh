@@ -227,6 +227,7 @@ STD_BINARIES=(
     "tcp_client_test"
     "wait_stress"
     "simple_exit"
+    "spawn_smoke_target"
     "counter"
     "spinner"
     "hello_time"

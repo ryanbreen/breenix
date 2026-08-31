@@ -1,0 +1,18 @@
+   Compiling kernel v0.1.0 (/Users/wrb/fun/code/breenix/.claude/worktrees/wf_d33c398e-3a7-4/kernel)
+   Compiling breenix v0.1.0 (/Users/wrb/fun/code/breenix/.claude/worktrees/wf_d33c398e-3a7-4)
+    Finished `release` profile [optimized] target(s) in 3.69s
+     Running tests/serial_line_atomicity_structure.rs (target/release/deps/serial_line_atomicity_structure-ba5331fec62c0aa9)
+
+running 9 tests
+test periodic_guard_validator_rejects_a_synthetic_unlocked_writer ... ok
+test tty_validator_rejects_per_byte_serial_writes ... ok
+test tty_writes_line_segments_through_atomic_serial_path ... ok
+test every_serial_module_has_a_single_lock_batched_writer ... ok
+test unlocked_multi_byte_serial_writes_are_never_periodic ... ok
+test unlocked_multi_byte_serial_write_census_is_pinned ... ok
+test census_validator_rejects_a_synthetic_unlocked_multi_byte_writer ... ok
+test raw_serial_primitive_census_is_pinned ... ok
+test primitive_census_validator_rejects_a_differently_named_uart_writer ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
+

@@ -1,0 +1,25 @@
+   Compiling kernel v0.1.0 (/Users/wrb/fun/code/breenix/.claude/worktrees/wf_a617a050-8c9-4/kernel)
+   Compiling breenix v0.1.0 (/Users/wrb/fun/code/breenix/.claude/worktrees/wf_a617a050-8c9-4)
+    Finished `release` profile [optimized] target(s) in 3.84s
+     Running tests/percpu_stack_custody.rs (target/release/deps/percpu_stack_custody-b006f31581375903)
+
+running 16 tests
+test a_claim_naming_another_cpu_refuses_the_slot ... ok
+test a_cpu_may_not_use_another_cpus_slot ... ok
+test a_cpu_may_use_its_own_slot ... ok
+test a_foreign_slot_is_refused_before_any_claim_is_read ... ok
+test a_record_that_is_not_a_published_pair_reads_as_no_claim ... ok
+test a_slot_top_is_attributed_to_its_own_slot_and_not_the_next_one ... ok
+test addresses_outside_the_region_name_no_slot ... ok
+test an_address_naming_no_slot_is_admitted_without_consulting_a_claim ... ok
+test an_interior_address_is_attributed_to_the_slot_it_stands_in ... ok
+test an_unpublished_own_slot_is_admitted_and_an_unpublished_foreign_slot_is_not ... ok
+test no_downward_overrun_reaches_the_record_while_its_sentinel_reads_clean ... ok
+test the_last_slots_top_stays_inside_the_region ... ok
+test the_ownership_record_is_bracketed_by_the_two_sentinels ... ok
+test the_publishers_pair_decodes_to_the_publisher ... ok
+test the_round_3_specimen_is_refused ... ok
+test the_scheduler_half_cannot_reach_the_record_by_growing_down ... ok
+
+test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

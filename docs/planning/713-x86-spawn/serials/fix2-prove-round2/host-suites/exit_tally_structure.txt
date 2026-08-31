@@ -1,0 +1,15 @@
+   Compiling kernel v0.1.0 (/Users/wrb/fun/code/breenix/.claude/worktrees/wf_a617a050-8c9-4/kernel)
+   Compiling breenix v0.1.0 (/Users/wrb/fun/code/breenix/.claude/worktrees/wf_a617a050-8c9-4)
+    Finished `release` profile [optimized] target(s) in 3.52s
+     Running tests/exit_tally_structure.rs (target/release/deps/exit_tally_structure-c23383ad30c90300)
+
+running 6 tests
+test terminated_assignment_detector_handles_paths_without_counting_patterns ... ok
+test failure_table_lock_is_only_taken_with_interrupts_disabled ... ok
+test termination_functions_guard_assign_and_record_in_order_once_each ... ok
+test process_task_has_no_record_exit_call ... ok
+test terminated_state_assignments_are_confined_to_the_two_termination_functions ... ok
+test record_exit_calls_exist_only_at_the_two_termination_transitions ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+

@@ -2739,6 +2739,8 @@ const ALLOCATE_ORDINARY_PID_CALLS: &[(&str, &str, usize)] = &[
     ("kernel/src/process/manager.rs", "impl ProcessManager::#[cfg(target_arch=aarch64)] fn create_process_with_argv", 1),
     ("kernel/src/process/manager.rs", "impl ProcessManager::#[cfg(target_arch=aarch64)] fn fork_process_aarch64", 1),
     ("kernel/src/process/manager.rs", "impl ProcessManager::#[cfg(target_arch=x86_64)] fn create_process", 1),
+    // #713: x86 spawn() gained its own PID allocator, mirroring aarch64's sibling row above.
+    ("kernel/src/process/manager.rs", "impl ProcessManager::#[cfg(target_arch=x86_64)] fn create_process_with_argv", 1),
     ("kernel/src/process/manager.rs", "impl ProcessManager::#[cfg(target_arch=x86_64)] fn fork_process_with_context", 1),
     ("kernel/src/process/manager.rs", "impl ProcessManager::#[cfg(target_arch=x86_64)] fn fork_process_with_page_table", 1),
     ("kernel/src/process/manager.rs", "impl ProcessManager::#[cfg(target_arch=x86_64)] fn fork_process_with_parent_context", 1),
@@ -2783,6 +2785,9 @@ const PROCESS_ROW_MAP_MUTATIONS: &[(&str, &str, usize)] = &[
     ("kernel/src/process/manager.rs", "impl ProcessManager::#[cfg(target_arch=aarch64)] fn complete_fork_aarch64 => insert", 1),
     ("kernel/src/process/manager.rs", "impl ProcessManager::#[cfg(target_arch=aarch64)] fn create_process => insert", 1),
     ("kernel/src/process/manager.rs", "impl ProcessManager::#[cfg(target_arch=x86_64)] fn build_process_at => insert", 1),
+    // #713: x86 spawn() got its own construction path (build_process_at's
+    // sibling for real argv), a distinct row-map insert.
+    ("kernel/src/process/manager.rs", "impl ProcessManager::#[cfg(target_arch=x86_64)] fn build_process_with_argv_at => insert", 1),
     // `complete_fork` is testing-only, so replacing its stale dead-code suppression with honest feature gating moved only this item path.
     ("kernel/src/process/manager.rs", "impl ProcessManager::#[cfg(all(target_arch=x86_64,feature=testing))] fn complete_fork => insert", 1),
     ("kernel/src/process/manager.rs", "impl ProcessManager::#[cfg(target_arch=x86_64)] fn fork_process_with_context => insert", 1),
@@ -2856,6 +2861,10 @@ const BOX_LEAK_CALLS: &[(&str, &str, usize)] = &[
 const ROW_DESTRUCTOR_CALLS: &[(&str, &str, usize)] = &[
     // Class 2 — creation-failure retire. Never reaped, never retired.
     ("kernel/src/process/manager.rs", "impl ProcessManager::fn hold_init_publication", 1),
+    // Class 2 — sys_spawn's Window-3 teardown arm: the child's main thread was
+    // never published to the scheduler, so (like hold_init_publication) the row
+    // was never reaped and will never be retired; the join would strand it.
+    ("kernel/src/syscall/handlers.rs", "#[cfg(target_arch=x86_64)] fn sys_spawn", 1),
     // Class 4 — the p1_row_epoch_gate harness. It must keep bumping ROW_REMOVAL_EPOCH or P1's parked-reclaimer `{row}` arm stops being driven.
     ("kernel/src/task/process_task.rs", "#[cfg(feature=boot_tests)] fn reclaim_progress_gate_test", 1),
     // Class 3 — the twenty in-kernel oracle callers, nine enclosing items.
@@ -3021,6 +3030,9 @@ const THREAD_STATE_CONSTRUCTIONS: &[(&str, &str, usize)] = &[
     ("kernel/src/process/manager.rs", "impl ProcessManager::#[cfg(target_arch=aarch64)] fn create_main_thread => Ready", 1),
     ("kernel/src/process/manager.rs", "impl ProcessManager::#[cfg(target_arch=aarch64)] fn create_main_thread_with_sp => Ready", 1),
     ("kernel/src/process/manager.rs", "impl ProcessManager::#[cfg(target_arch=x86_64)] fn create_main_thread => Ready", 1),
+    // #713: x86 gained an SP-carrying thread creator (mirrors aarch64's sibling
+    // row above), a distinct Ready construction.
+    ("kernel/src/process/manager.rs", "impl ProcessManager::#[cfg(target_arch=x86_64)] fn create_main_thread_with_sp => Ready", 1),
     ("kernel/src/process/manager.rs", "impl ProcessManager::#[cfg(target_arch=x86_64)] fn fork_process_with_context => Ready", 1),
     ("kernel/src/syscall/clone.rs", "fn sys_clone => Blocked", 1),
     // The core-proof driver's census scratch array, initialised to the same
@@ -3116,6 +3128,8 @@ const PROCESS_PAGE_TABLE_CONSTRUCTORS: &[(&str, &str, usize)] = &[
     ("kernel/src/process/manager.rs", "impl ProcessManager::#[cfg(target_arch=aarch64)] fn exec_process", 1),
     ("kernel/src/process/manager.rs", "impl ProcessManager::#[cfg(target_arch=aarch64)] fn exec_process_with_argv", 1),
     ("kernel/src/process/manager.rs", "impl ProcessManager::#[cfg(target_arch=x86_64)] fn build_process_at", 1),
+    // #713: x86 spawn()'s own construction path, a distinct page-table constructor.
+    ("kernel/src/process/manager.rs", "impl ProcessManager::#[cfg(target_arch=x86_64)] fn build_process_with_argv_at", 1),
     ("kernel/src/process/manager.rs", "impl ProcessManager::#[cfg(target_arch=x86_64)] fn exec_process", 1),
     ("kernel/src/process/manager.rs", "impl ProcessManager::#[cfg(target_arch=x86_64)] fn exec_process_with_argv", 1),
     ("kernel/src/process/manager.rs", "impl ProcessManager::#[cfg(target_arch=x86_64)] fn fork_process_with_context", 1),
@@ -3134,6 +3148,9 @@ const DEFERRED_RECLAIM_DRAIN_SITES: &[(&str, &str, usize)] = &[
     ("kernel/src/arch_impl/aarch64/syscall_entry.rs", "fn sys_fork_aarch64", 1),
     ("kernel/src/interrupts/context_switch.rs", "fn idle_loop", 1),
     ("kernel/src/process/mod.rs", "fn exit_process_and_retire", 1),
+    // #713: sys_spawn drains before consuming another finite kernel-stack pool
+    // slot, mirroring sys_fork_with_parent_context's own ordering.
+    ("kernel/src/syscall/handlers.rs", "#[cfg(target_arch=x86_64)] fn sys_spawn", 1),
     // #653 delta (3): the boot-test arm that drives the nested-refusal residual
     // through the real production entry point. It is a test caller, not a
     // production one, and it is cfg'd to the boot-test profile.
@@ -3217,6 +3234,11 @@ const REMOVE_FROM_READY_QUEUE_CALL_SITES: &[(&str, &str, usize)] = &[
     ("kernel/src/socket/udp.rs", "#[cfg(test)] mod tests::fn test_enqueue_packet_wakes_blocked_threads", 1),
     ("kernel/src/socket/udp.rs", "#[cfg(test)] mod tests::fn test_enqueue_packet_wakes_multiple_waiters", 1),
     ("kernel/src/socket/udp.rs", "#[cfg(test)] mod tests::fn test_spurious_wakeup_handling", 1),
+    // #713 fix-round-2, N4: sys_spawn's Window-3 teardown arm now undoes the
+    // ready-queue push from create_process_with_argv when the child's main
+    // thread was never published, alongside retracting the parent's
+    // `children` entry and the row itself.
+    ("kernel/src/syscall/handlers.rs", "#[cfg(target_arch=x86_64)] fn sys_spawn", 1),
     ("kernel/src/task/scheduler.rs", "#[cfg(all(test,target_arch=x86_64))] mod tests::fn test_unblock_does_not_duplicate_ready_queue", 1),
     ("kernel/src/task/scheduler.rs", "#[cfg(target_arch=aarch64)] fn terminate_thread_best_effort", 1),
     ("kernel/src/test_exec.rs", "fn test_exec_real_userspace", 1),
@@ -13343,8 +13365,12 @@ fn every_external_schedule_from_kernel_call_reclaims_immediately_beforehand() {
 ///
 /// The exempt classes are named, not inferred:
 ///
-/// * **class 2 — creation-failure retire** (`hold_init_publication`): the row was
-///   never reaped and will never be retired, so the join would strand it.
+/// * **class 2 — creation-failure retire** (`hold_init_publication`,
+///   `sys_spawn`'s Window-3 arm): the row was never reaped and will never be
+///   retired, so the join would strand it. `sys_spawn`'s arm fires when the
+///   child's main thread was never published to the scheduler — the same
+///   shape as `hold_init_publication`'s own failure arm, just for a spawned
+///   child instead of init.
 /// * **class 4 — the `p1_row_epoch_gate` harness**: it inserts a row and removes
 ///   it in the next statement to observe `ROW_REMOVAL_EPOCH`; under the join it
 ///   would both strand a tombstone and stop bumping the epoch, silently

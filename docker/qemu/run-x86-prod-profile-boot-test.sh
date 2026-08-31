@@ -87,19 +87,25 @@
 #      serial output, no locks) that already exists for the test framework's
 #      own stage-advance bookkeeping; #673 does not add it, only asserts on
 #      it in a profile that had never reached Ring 3 before.
-#   4. init's own first line, followed by the bsshd-launch warning it prints
-#      immediately afterward -- proves init ran past its first print into
-#      start_bsshd()'s spawn attempt and handled the result (#673 review,
-#      M6/MA4). This is deliberately NOT proof init reached its steady-state
-#      reap loop: SPAWN is unconditionally ENOSYS on x86 today (#713), so the
-#      warning fires on the very next lines of init's own code, not after
-#      further progress. The signal this pin replaced -- "init was never
-#      reported killed by signal" -- could never fire either way (it is
-#      init.rs's reaped-CHILD message; PID 1 never reaps itself) and is
-#      removed rather than kept as an unfalsifiable pin. See "INIT SURVIVAL
-#      EVIDENCE" below for exactly what is and is not proven, and why this
-#      does NOT also pin bsshd reaching its listening state, unlike the
-#      aarch64 production gate.
+#   4. init's own first line, followed by bsshd actually starting AND
+#      reaching its listening state, PLUS a dedicated spawn-smoke child
+#      (/bin/spawn_smoke_target) observed exiting 0, reaped DIRECTLY by
+#      run_spawn_smoke() before start_bsshd() runs -- NOT through init's
+#      ordinary end-of-main() reap loop (#713, fixed -- x86 SPAWN syscall).
+#      Before #713, SPAWN was unconditionally ENOSYS on x86, so this block
+#      used to pin only a graceful-failure warning line; that is now
+#      replaced with real survival/execution evidence, matching what the
+#      aarch64 production gate has always pinned for bsshd. The signal
+#      this ORIGINALLY replaced (pre-#673) -- "init was never reported
+#      killed by signal" -- could never fire either way (it is init.rs's
+#      reaped-CHILD message; PID 1 never reaps itself) and stayed removed
+#      rather than reintroduced
+#      as an unfalsifiable pin. See "INIT SURVIVAL EVIDENCE" below for
+#      exactly what is and is not proven -- in particular, init's full
+#      boot-script chain (bsh --init-shell -> /etc/init.js's further spawns)
+#      is deliberately NOT pinned here; that chain has never run on x86
+#      before #713 and is tracked separately as #722, not folded into this
+#      gate's green.
 #
 # WHY INIT CANNOT RUN UNTIL BOOT'S OWN WORK IS DONE (#673, the real fight)
 #
@@ -373,39 +379,82 @@ RING3_SYSCALL_LITERAL='RING3_SYSCALL: First syscall from userspace'
 # regardless of whether init actually survived. It is removed rather than
 # kept as an unfalsifiable pin.
 #
-# INIT SURVIVAL EVIDENCE (why this does NOT also pin bsshd, unlike the
-# aarch64 production gate): checked before pinning, per the #673 spec's own
-# risk note about init.rs's spawn chain on a lean production disk. init's
-# x86 main() calls start_bsshd() unconditionally right after its own
-# startup print, exactly like aarch64 -- but on x86, both that call and the
-# following run_boot_script() spawn fail cleanly with ENOSYS:
-#   [init] Warning: failed to start bsshd
-#   [init] Failed to spawn boot script: ENOSYS
-# Root cause (pre-existing, NOT a #673 regression, filed as #713): the
-# SPAWN syscall (nr 440) is unconditionally stubbed to ENOSYS in
-# kernel/src/syscall/handler.rs on x86_64 -- it has a real implementation
-# on aarch64 (sys_spawn_aarch64) but has never been ported to x86, because
-# #673 is the first x86 build to ever run userspace code that calls it.
-# The good news, and the reason init.rs's spawn chain was safe to run here
-# at all: it degrades gracefully exactly as the spec required checking --
-# init falls through cleanly into its reap loop rather than hanging. But
-# no x86 child process can ever start today, so bsshd can never reach
-# "listening" on this architecture, and pinning it would make this gate
-# permanently unsatisfiable. Revisit once #713 is fixed.
+# INIT SURVIVAL EVIDENCE (#713, fixed -- was: "why this does NOT also pin
+# bsshd, unlike the aarch64 production gate"): SPAWN (syscall nr 440) is no
+# longer unconditionally stubbed to ENOSYS on x86_64 in
+# kernel/src/syscall/handler.rs -- it now dispatches to a real x86
+# implementation (handlers.rs's sys_spawn, backed by
+# ProcessManager::spawn_process/create_process_with_argv/
+# build_process_with_argv_at in manager.rs), mirroring aarch64's
+# sys_spawn_aarch64. init's x86 main() still calls start_bsshd()
+# unconditionally right after its own startup print, exactly like
+# aarch64 -- and now that call succeeds:
+#   [init] bsshd started (PID <pid>)
+#   bsshd: listening on 0.0.0.0:<port>
+# The QEMU launch below was also given a NIC (-netdev user,id=net0 -device
+# e1000,netdev=net0,...) so bsshd's socket()/bind_inet()/listen() sequence
+# (userspace/programs/src/bsshd.rs) has something to bind to -- e1000, not
+# virtio-net-pci, because that is what x86's own net::init()
+# (kernel/src/net/mod.rs) actually probes for
+# (e1000::mac_address()); the aarch64 driver stack uses a different NIC
+# family (net_pci, Parallels-specific) and its production gate's netdev
+# line is not directly portable by device type, only by intent (give the
+# kernel something to bind bsshd to). This matches the proven QEMU syntax
+# already used elsewhere in this project (docker/qemu/run-dns-test.sh).
 #
-# INIT_BSSHD_WARNING_LITERAL replaces INIT_KILLED_PREFIX as the actual
-# survival pin (#673 review, MA4): it is the first line init prints AFTER
-# its own startup print that it could only reach by running its own
-# subsequent code (attempting the bsshd spawn and handling the Err arm), so
-# unlike the marker it replaces, it CAN fail -- an init that hung, faulted,
-# or never called start_bsshd() would not print it. It does not by itself
-# prove init reached its reap loop (run_boot_script() and the loop both
-# come later in init's own control flow) -- only that init progressed past
-# its first line into code whose behavior depends on #713's real, still-
-# open gap.
+# What this gate deliberately does NOT pin, even now that SPAWN works:
+# init's full boot-script chain (run_boot_script()'s `/bin/bsh
+# --init-shell` child, which evaluates /etc/init.js and issues seven
+# further spawns of its own -- telnetd, bwm, bterm, blog, bounce, bcheck,
+# blogd). None of that chain has ever executed on x86 before #713 (x86 had
+# no working spawn() at all until now), so it is not audited yet and is not
+# safe to gate on in the same round that first makes spawn() work at all.
+# Tracked separately as #722; not folded into this gate.
+#
+# Instead, spawn()'s end-to-end path (create + exec + run + exit + reap) is
+# proven independently via a dedicated, minimal spawned child:
+# run_spawn_smoke() (userspace/programs/src/init.rs) spawns
+# /bin/spawn_smoke_target (a tiny userspace binary that just exits 0)
+# before start_bsshd(), waits on it directly, and prints:
+#   [init] spawn smoke: exited (code 0)
+# This deliberately waits on the child directly rather than leaving it for
+# the ordinary end-of-main() reap loop: that loop does not run until AFTER
+# run_boot_script() returns, and run_boot_script()'s own chain (loading
+# /bin/bsh, itself larger than anything loaded earlier in boot, then bsh's
+# own /etc/init.js issuing seven further spawns) can take considerably
+# longer under TCG emulation than this gate's timing budget -- entirely
+# unrelated to whether spawn() itself works. Waiting directly proves the
+# same thing (create + exec + run + exit + reap, not just "spawn returned
+# Ok") without depending on the boot-script chain's own completion time,
+# which stays out of scope per #722.
+#
+# INIT_BSSHD_WARNING_LITERAL, BSSHD_STARTED_LITERAL, BSSHD_LISTENING_LITERAL
+# and INIT_SPAWN_SMOKE_REAP_LITERAL together are the actual survival pins
+# now (#713): the warning literal must be ABSENT (a regression back to
+# ENOSYS would make it reappear), and the other three must each be present
+# exactly once.
 # ---------------------------------------------------------------------------
 INIT_FIRST_LINE_LITERAL='[init] Breenix init starting (PID 1)'
 INIT_BSSHD_WARNING_LITERAL='[init] Warning: failed to start bsshd'
+# #713: SPAWN now works on x86, so bsshd should start cleanly -- the warning
+# above must now be ABSENT (see the assertion further down), and these three
+# new literals are the actual survival/execution evidence in its place.
+BSSHD_STARTED_LITERAL='[init] bsshd started (PID'
+BSSHD_LISTENING_LITERAL='bsshd: listening'
+INIT_SPAWN_SMOKE_REAP_LITERAL='[init] spawn smoke: exited (code 0)'
+# The distinct failure literal run_spawn_smoke() now prints on a genuine
+# waitpid() error (as opposed to a successful reap of a nonzero exit code,
+# which is a different, still-legitimate-reap message this gate does not
+# assert on): its presence would mean the "exited (code 0)" pin above was
+# never actually reached via a real reap, so it must stay absent.
+INIT_SPAWN_SMOKE_REAP_FAILED_LITERAL='[init] Warning: spawn smoke reap failed'
+# #720 — x86 user-stack VA bump allocator never reclaims (spawn-heavy
+# exhaustion after ~240 creations).
+# #721 — x86 exec() syscall is ENOSYS in the zero-feature production build
+# (pre-existing, found during #713's trace, not fixed by #713).
+# #722 — x86 prod-profile gate does not yet exercise init's full
+# boot-script chain (`bsh --init-shell` -> `/etc/init.js`'s further spawns);
+# deferred out of #713's scope.
 
 # Measured on beast under TCG: steady state at 14s from QEMU launch. The bound is
 # an order of magnitude above that so host contention cannot score a slow-but-
@@ -537,10 +586,14 @@ print_observed_values() {
     echo "  init designation (#673):      $(marker_count "$INIT_DESIGNATION_X86_PREFIX")"
     echo "  ring3 syscall confirmed (#673): $(marker_count "$RING3_SYSCALL_LITERAL")"
     echo "  init first line (#673 M6):    $(marker_count "$INIT_FIRST_LINE_LITERAL")"
-    echo "  init bsshd-launch warning (#673 MA4): $(marker_count "$INIT_BSSHD_WARNING_LITERAL")"
-    # bsshd is not pinned as LISTENING: SPAWN is unconditionally ENOSYS on
-    # x86 (#713), a pre-existing gap #673 exposed but did not cause. See
-    # INIT SURVIVAL EVIDENCE above.
+    echo "  init bsshd-launch warning (must be absent, #713): $(marker_count "$INIT_BSSHD_WARNING_LITERAL")"
+    echo "  bsshd started (#713):          $(marker_count "$BSSHD_STARTED_LITERAL")"
+    echo "  bsshd listening (#713):        $(marker_count "$BSSHD_LISTENING_LITERAL")"
+    echo "  spawn-smoke child reaped exit 0 (#713): $(marker_count "$INIT_SPAWN_SMOKE_REAP_LITERAL")"
+    echo "  spawn-smoke reap failed (must be absent, #713 fix-round-2): $(marker_count "$INIT_SPAWN_SMOKE_REAP_FAILED_LITERAL")"
+    # init's full boot-script chain (bsh --init-shell -> /etc/init.js's
+    # further spawns) is still not pinned here -- see INIT SURVIVAL
+    # EVIDENCE above and #722.
     { grep -F -h -- "$TOMBSTONE_CENSUS_PREFIX" "$OUTPUT_DIR"/serial_*.txt 2>/dev/null || true; }
     { grep -F -h -- "$ROOT_CUSTODY_PREFIX" "$OUTPUT_DIR"/serial_*.txt 2>/dev/null || true; }
     { grep -F -h -- "$PREEMPT_CENSUS_PREFIX" "$OUTPUT_DIR"/serial_*.txt 2>/dev/null || true; }
@@ -605,6 +658,8 @@ qemu-system-x86_64 \
     -device virtio-blk-pci,drive=placeholder,disable-modern=on,disable-legacy=off \
     -drive "if=none,id=ext2disk,format=raw,readonly=on,file=$BREENIX_ROOT/target/ext2.img" \
     -device virtio-blk-pci,drive=ext2disk,disable-modern=on,disable-legacy=off \
+    -netdev user,id=net0 \
+    -device e1000,netdev=net0,mac=52:54:00:12:34:56 \
     -machine pc,accel=tcg -cpu qemu64 -smp 1 -m 512 \
     -display none -no-reboot -no-shutdown \
     -device isa-debug-exit,iobase=0xf4,iosize=0x04 \
@@ -714,13 +769,26 @@ test "$(marker_count "$TIMER_RESOLUTION_WINDOW_EXCEEDED_PREFIX")" -eq 0
 test "$(marker_count "$INIT_DESIGNATION_X86_PREFIX")" -eq 1
 test "$(marker_count "$RING3_SYSCALL_LITERAL")" -eq 1
 
-# #673 review, M6/MA4: init survival evidence -- init reached its own first
-# line and printed the bsshd-launch warning that only its own subsequent
-# code path can produce. bsshd is not pinned as listening here: SPAWN is
-# unconditionally ENOSYS on x86 today (#713, pre-existing, not a #673
-# regression) -- see "INIT SURVIVAL EVIDENCE" above for the full account.
+# #713, fixed: init survival/execution evidence. init reached its own
+# first line, bsshd started AND reached listening (no longer just a
+# graceful-failure warning -- SPAWN works on x86 now), and a dedicated
+# spawn-smoke child (/bin/spawn_smoke_target) was observed exiting 0,
+# reaped DIRECTLY by run_spawn_smoke() before start_bsshd() runs -- not
+# through init's ordinary end-of-main() reap loop, which does not run
+# until after run_boot_script()'s much slower chain completes (#722) --
+# proving the full create+exec+run+exit+reap path end to end. The reap
+# failure literal must also stay absent: a waitpid() error on the smoke
+# child (e.g. it was silently never registered as init's child) now prints
+# a distinct literal instead of a fabricated "exited (code 0)", so this
+# pin is a genuine reap, not merely "spawn returned Ok". init's full
+# boot-script chain (bsh --init-shell -> /etc/init.js) is still NOT pinned
+# here -- see "INIT SURVIVAL EVIDENCE" above and #722.
 test "$(marker_count "$INIT_FIRST_LINE_LITERAL")" -eq 1
-test "$(marker_count "$INIT_BSSHD_WARNING_LITERAL")" -eq 1
+test "$(marker_count "$INIT_BSSHD_WARNING_LITERAL")" -eq 0
+test "$(marker_count "$BSSHD_STARTED_LITERAL")" -eq 1
+test "$(marker_count "$BSSHD_LISTENING_LITERAL")" -eq 1
+test "$(marker_count "$INIT_SPAWN_SMOKE_REAP_LITERAL")" -eq 1
+test "$(marker_count "$INIT_SPAWN_SMOKE_REAP_FAILED_LITERAL")" -eq 0
 
 trap - ERR
 # #673 review, B5: an anti-vacuity leg must never print a bare production PASS

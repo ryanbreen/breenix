@@ -1,0 +1,28 @@
+   Compiling kernel v0.1.0 (/Users/wrb/fun/code/breenix/.claude/worktrees/wf_a617a050-8c9-4/kernel)
+   Compiling breenix v0.1.0 (/Users/wrb/fun/code/breenix/.claude/worktrees/wf_a617a050-8c9-4)
+    Finished `release` profile [optimized] target(s) in 4.25s
+     Running tests/net_lock_structure.rs (target/release/deps/net_lock_structure-398de05a0e174c8f)
+
+running 19 tests
+test hardirq_surface_validator_rejects_net_table_reference ... ok
+test irq_primitive_validator_rejects_resurrected_irq_save ... ok
+test net_lock_guard_aarch64_validator_rejects_missing_daifset ... ok
+test net_lock_guard_x86_validator_rejects_empty_arm ... ok
+test net_static_validator_rejects_empty_thread_context_only_reason ... ok
+test net_static_validator_accepts_declared_thread_context_only_static ... ok
+test net_static_validator_requires_exactly_one_classification ... ok
+test net_static_validator_rejects_immediately_dropped_guard ... ok
+test net_static_validator_rejects_public_mutex_static ... ok
+test net_static_validator_rejects_discovered_unguarded_static ... ok
+test net_lock_guard_aarch64_arm_still_masks_daif ... ok
+test deliberately_broken_unmatched_rst_reply_fails_the_validator ... ok
+test net_lock_guard_x86_arm_is_a_real_bottom_half_disable ... ok
+test unmatched_tcp_rst_is_dropped_without_a_reply ... ok
+test tcp_accept_publish_race_has_a_sequential_recovery_path ... ok
+test deliberately_broken_tcp_accept_publish_race_variants_fail_the_validator ... ok
+test hardirq_surface_never_touches_the_net_tables ... ok
+test the_no_op_irq_primitives_stay_deleted ... ok
+test every_cross_context_net_static_is_guarded_or_declared_thread_only ... ok
+
+test result: ok. 19 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.24s
+

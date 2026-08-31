@@ -1,0 +1,13 @@
+   Compiling kernel v0.1.0 (/Users/wrb/fun/code/breenix/.claude/worktrees/wf_d33c398e-3a7-4/kernel)
+   Compiling breenix v0.1.0 (/Users/wrb/fun/code/breenix/.claude/worktrees/wf_d33c398e-3a7-4)
+    Finished `release` profile [optimized] target(s) in 3.18s
+     Running tests/coreproof_coverage_structure.rs (target/release/deps/coreproof_coverage_structure-249afa325b1bf19b)
+
+running 4 tests
+test coverage_census_matches_the_mutation_register_in_order ... ok
+test every_harness_side_exception_is_counted_inside_the_harness ... ok
+test every_coverage_placement_names_a_declared_site ... ok
+test every_non_harness_site_has_a_real_coverage_placement ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+

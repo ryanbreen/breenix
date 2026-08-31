@@ -1,0 +1,11 @@
+   Compiling kernel v0.1.0 (/Users/wrb/fun/code/breenix/.claude/worktrees/wf_d33c398e-3a7-4/kernel)
+   Compiling breenix v0.1.0 (/Users/wrb/fun/code/breenix/.claude/worktrees/wf_d33c398e-3a7-4)
+    Finished `release` profile [optimized] target(s) in 3.40s
+     Running tests/signal_eintr_predicate_structure.rs (target/release/deps/signal_eintr_predicate_structure-397bfa16198d8548)
+
+running 2 tests
+test eintr_validator_rejects_deliverable_signal_call ... ok
+test syscall_eintr_uses_disposition_aware_signal_predicate ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

@@ -1,0 +1,1292 @@
+[2J[01;01H[=3h[2J[01;01H[2J[01;01H[8;056;240t0[2J[01;01H[2J[01;01H[=3h[2J[01;01H[2J[01;01H[8;042;160t0[2J[01;01HBdsDxe: loading Boot0002 "UEFI Misc Device" from PciRoot(0x0)/Pci(0x3,0x0)
+BdsDxe: starting Boot0002 "UEFI Misc Device" from PciRoot(0x0)/Pci(0x3,0x0)
+=== Buffered Boot Messages ===
+[ INFO] kernel: Kernel entry point reached
+[DEBUG] kernel: Boot info address: 0x38000000000
+[ INFO] kernel: Initializing serial port...
+
+=== End Buffered Messages ===
+[ INFO] kernel: Serial port initialized and buffer flushed
+[ INFO] kernel: Setting up framebuffer...
+[ INFO] kernel::logger: Logger fully initialized - output to both framebuffer and serial
+[ INFO] kernel: Initializing kernel systems...
+[ INFO] kernel::gdt: TSS I/O permission bitmap disabled (iomap_base=104)
+[ INFO] kernel::gdt: TSS located at 0x10000375848 (PML4 index 2)
+[ INFO] kernel::gdt: GDT loaded at 0x100003758b8 (PML4 index 2)
+[ INFO] kernel::gdt: GDT initialized with kernel and user segments
+[DEBUG] kernel::gdt:   Kernel code: 0x8
+[DEBUG] kernel::gdt:   Kernel data: 0x10
+[DEBUG] kernel::gdt:   TSS: 0x18
+[DEBUG] kernel::gdt:   User data: 0x2b
+[DEBUG] kernel::gdt:   User code: 0x33
+[DEBUG] kernel::gdt: GDT base: 0x100003758b8, limit: 0x37
+[DEBUG] kernel::gdt: Raw user data descriptor (0x2b): 0x00cff3000000ffff
+[DEBUG] kernel::gdt: Raw user code descriptor (0x33): 0x00affb000000ffff
+[DEBUG] kernel::gdt:   User data: P=1 DPL=3 S=1 Type=0x3
+[DEBUG] kernel::gdt:   User code: P=1 DPL=3 S=1 Type=0xb L=1 D=0
+[DEBUG] kernel::gdt:   TSS RSP0 (kernel stack): 0x0
+[DEBUG] kernel::gdt:   TSS IST[0] (double fault stack): 0x0
+[ERROR] kernel::interrupts: INVALID timer_interrupt_entry address: 0x1000031a0a1
+[ WARN] kernel::interrupts: Using low-half address for timer entry (temporary workaround)
+[ERROR] kernel::interrupts: INVALID syscall_entry address: 0x10000319eff
+[ WARN] kernel::interrupts: Using low-half address for syscall entry (temporary workaround)
+[ INFO] kernel::interrupts: IDT[0x80] gate attributes:
+[ INFO] kernel::interrupts:   Handler address: 0x10000319eff (low-half, validation failed)
+[ INFO] kernel::interrupts:   DPL (privilege level): Ring3 (allowing userspace access)
+[ INFO] kernel::interrupts:   Gate type: Interrupt gate (interrupts disabled on entry)
+[ INFO] kernel::interrupts: Syscall handler configured with assembly entry point
+[ INFO] kernel::interrupts: IDT address: 0x10000385220
+[ INFO] kernel::interrupts: IDT is in PML4 entry 2
+[ INFO] kernel::interrupts: IDT loaded successfully at 0x10000385220
+[ INFO] kernel: GDT and IDT initialized
+[ INFO] kernel::per_cpu: Initializing per-CPU data via GS segment
+[ INFO] kernel::per_cpu: Per-CPU data initialized at 0x10000384b40
+[DEBUG] kernel::per_cpu:   GS_BASE = 0x10000384b40
+[DEBUG] kernel::per_cpu:   KERNEL_GS_BASE = 0x10000384b40
+[ INFO] kernel::per_cpu: HAL read-back verification passed: GS-relative operations working
+[ INFO] kernel::per_cpu: Per-CPU data marked as initialized - preempt_count functions now use per-CPU storage
+[ INFO] kernel::per_cpu: Storing initial kernel_cr3 = 0x101000 in per-CPU data (bootloader PT)
+[ INFO] kernel::per_cpu: kernel_cr3 stored successfully - interrupt handlers can now switch to kernel page tables
+[ INFO] kernel::per_cpu: HAL_PERCPU_INITIALIZED: Per-CPU data setup via HAL complete
+[ INFO] kernel: Per-CPU data initialized
+[ INFO] kernel: Running preempt_count comprehensive tests...
+[ INFO] kernel::preempt_count_test: === PREEMPT_COUNT COMPREHENSIVE TEST START ===
+[ INFO] kernel::preempt_count_test: TEST 1: Initial preempt_count = 0x0
+[ INFO] kernel::preempt_count_test: TEST 2: Testing preempt_disable/enable...
+[ INFO] kernel::preempt_count_test:   After preempt_disable: 0x1
+[ INFO] kernel::preempt_count_test:   After preempt_enable: 0x0
+[ INFO] kernel::preempt_count_test: TEST 3: Testing nested preempt_disable/enable...
+[ INFO] kernel::preempt_count_test:   After 3x preempt_disable: 0x3
+[ INFO] kernel::preempt_count_test:   After 1x preempt_enable: 0x2
+[ INFO] kernel::preempt_count_test:   After all preempt_enable: 0x0
+[ INFO] kernel::preempt_count_test: TEST 4: Simulating IRQ context...
+[ INFO] kernel::preempt_count_test:   After irq_enter: 0x10000
+[ INFO] kernel::preempt_count_test:   After preempt_disable in IRQ: 0x10001
+[ INFO] kernel::preempt_count_test:   After irq_exit: 0x0
+[ INFO] kernel::preempt_count_test: TEST 5: Testing softirq context...
+[ INFO] kernel::preempt_count_test:   After softirq_enter: 0x100
+[ INFO] kernel::preempt_count_test:   After softirq_exit: 0x0
+[ INFO] kernel::preempt_count_test: TEST 5b: Testing bh_disable/bh_enable context split...
+[ INFO] kernel::preempt_count_test:   After bh_disable: 0x200
+[ INFO] kernel::preempt_count_test: TEST 6: Testing NMI context...
+[ INFO] kernel::preempt_count_test:   After nmi_enter: 0x4000000
+[ INFO] kernel::preempt_count_test:   After nmi_exit: 0x0
+[ INFO] kernel::preempt_count_test: TEST 7: Testing mixed contexts...
+[ INFO] kernel::preempt_count_test:   Mixed (preempt+irq+softirq): 0x10101
+[ INFO] kernel::preempt_count_test:   After clearing mixed: 0x0
+[ INFO] kernel::preempt_count_test: TEST 8: Testing nested IRQ context...
+[ INFO] kernel::preempt_count_test:   First irq_enter: 0x10000
+[ INFO] kernel::preempt_count_test:   Second irq_enter: 0x20000
+[ INFO] kernel::preempt_count_test:   After first irq_exit: 0x10000
+[ INFO] kernel::preempt_count_test:   After second irq_exit: 0x0
+[ INFO] kernel::preempt_count_test: TEST 9: Testing query functions...
+[ INFO] kernel::preempt_count_test: TEST 10: Testing spinlock integration...
+[ INFO] kernel::spinlock: Testing spinlock preemption integration...
+[ INFO] kernel::spinlock: Initial preempt_count: 0x0
+[ INFO] kernel::spinlock: With spinlock held: 0x1
+[ INFO] kernel::spinlock: After spinlock release: 0x0
+[ INFO] kernel::spinlock: ✅ Spinlock preemption integration test passed
+[ INFO] kernel::preempt_count_test: === PREEMPT_COUNT COMPREHENSIVE TEST PASSED ===
+[ INFO] kernel::preempt_count_test: ✅ All preempt_count functions validated successfully
+[ INFO] kernel::preempt_count_test: === PREEMPT_COUNT SCHEDULING TEST START ===
+[ INFO] kernel::preempt_count_test: Initial preempt_count: 0x0
+[ INFO] kernel::preempt_count_test: Set need_resched flag
+[ INFO] kernel::preempt_count_test: Entered IRQ context: 0x10000
+[ INFO] kernel::preempt_count_test: preempt_enable in IRQ did not schedule (correct)
+[ INFO] kernel::preempt_count_test: Exited IRQ context: 0x0
+[ INFO] kernel::preempt_count_test: Preemption disabled: 0x1
+[ INFO] kernel::preempt_count_test: Preemption enabled and may have scheduled
+[ INFO] kernel::preempt_count_test: Cleared need_resched flag after test
+[ INFO] kernel::preempt_count_test: === PREEMPT_COUNT SCHEDULING TEST PASSED ===
+[ INFO] kernel: ✅ preempt_count tests completed successfully
+[ INFO] kernel: Checking physical memory offset availability...
+[ INFO] kernel: Physical memory offset available: 0x28000000000
+[ INFO] kernel::memory: Initializing memory management...
+[ INFO] kernel::memory: Physical memory offset: VirtAddr(0x28000000000)
+[ INFO] kernel::memory: STEP 1: Establishing canonical kernel layout...
+[ INFO] kernel::memory::layout: LAYOUT: Kernel memory layout initialized:
+[ INFO] kernel::memory::layout: LAYOUT: percpu stack base=0xffffc90000000000, size=32 KiB, stride=2 MiB, guard=4 KiB
+[ INFO] kernel::memory::layout: LAYOUT: Max CPUs supported: 256
+[ INFO] kernel::memory::layout: LAYOUT: Total stack region size: 512 MiB
+[ INFO] kernel::memory::layout: LAYOUT: CPU 0 stack: base=0xffffc90000000000, top=0xffffc90000008000
+[ INFO] kernel::memory::layout: LAYOUT: CPU 1 stack: base=0xffffc90000200000, top=0xffffc90000208000
+[ INFO] kernel::memory::layout: LAYOUT: CPU 2 stack: base=0xffffc90000400000, top=0xffffc90000408000
+[ INFO] kernel::memory::layout: LAYOUT: CPU 3 stack: base=0xffffc90000600000, top=0xffffc90000608000
+[ INFO] kernel::memory: Initializing frame allocator...
+[DEBUG] kernel::memory::frame_allocator: Skipping low memory region 0x0..0xa0000 (below floor 0x100000)
+[ INFO] kernel::memory::frame_allocator: Frame allocator initialized with 495 MiB of usable memory in 105 regions (floor=0x100000)
+[ WARN] kernel::memory::frame_allocator: Ignored 1 memory regions (0 MiB) due to MAX_REGIONS limit
+[ INFO] kernel::memory: Initializing paging...
+[ INFO] kernel::memory::paging: Page table initialized
+[ INFO] kernel::memory::process_memory: Saved kernel page table frame: PhysFrame[4KiB](0x101000)
+[ INFO] kernel::memory: Initializing global kernel page tables...
+[ INFO] kernel::memory::kernel_page_table: Initializing global kernel page table system
+[ INFO] kernel::memory::kernel_page_table: Allocated kernel PDPT at frame PhysFrame[4KiB](0x5f7000)
+[ INFO] kernel::memory::kernel_page_table: Global kernel page table initialized successfully
+[ INFO] kernel::memory::kernel_page_table: STEP 2: Building master kernel PML4 with upper-half mappings and per-CPU stacks
+[ INFO] kernel::memory::kernel_page_table: Allocated fresh PDPTs: PML4[402]=PhysFrame[4KiB](0x5f9000), PML4[403]=PhysFrame[4KiB](0x5fa000)
+[ INFO] kernel::memory::kernel_page_table: PHASE2: Preserved all lower-half entries (0-255) from bootloader
+[ INFO] kernel::memory::kernel_page_table: PHASE2-TEMP: Preserved PML4[0] in master for low-half kernel execution
+[ INFO] kernel::memory::kernel_page_table: PHASE2: Aliased kernel from PML4[0] to PML4[511] (0xffffffff80000000)
+[ INFO] kernel::memory::kernel_page_table: PHASE2: Master PML4[510] -> frame PhysFrame[4KiB](0x5f7000)
+[ INFO] kernel::memory::kernel_page_table: STEP 2: Pre-building page table hierarchy for kernel stacks (without leaf mappings)
+[ INFO] kernel::memory::kernel_page_table: STEP 2: Using existing PDPT for kernel stacks at frame PhysFrame[4KiB](0x5f9000)
+[ INFO] kernel::memory::kernel_page_table: STEP 2: Building hierarchy for kernel stack region 0xffffc90000000000-0xffffc90008000000
+[ INFO] kernel::memory::kernel_page_table: STEP 2: Allocated PD for kernel stacks at frame PhysFrame[4KiB](0x5fb000)
+[DEBUG] kernel::memory::kernel_page_table: STEP 2: Allocated PT[0] for kernel stacks at frame PhysFrame[4KiB](0x5fc000)
+[DEBUG] kernel::memory::kernel_page_table: STEP 2: Allocated PT[1] for kernel stacks at frame PhysFrame[4KiB](0x5fd000)
+[DEBUG] kernel::memory::kernel_page_table: STEP 2: Allocated PT[2] for kernel stacks at frame PhysFrame[4KiB](0x5fe000)
+[DEBUG] kernel::memory::kernel_page_table: STEP 2: Allocated PT[3] for kernel stacks at frame PhysFrame[4KiB](0x5ff000)
+[DEBUG] kernel::memory::kernel_page_table: STEP 2: Allocated PT[4] for kernel stacks at frame PhysFrame[4KiB](0x600000)
+[DEBUG] kernel::memory::kernel_page_table: STEP 2: Allocated PT[5] for kernel stacks at frame PhysFrame[4KiB](0x601000)
+[DEBUG] kernel::memory::kernel_page_table: STEP 2: Allocated PT[6] for kernel stacks at frame PhysFrame[4KiB](0x602000)
+[DEBUG] kernel::memory::kernel_page_table: STEP 2: Allocated PT[7] for kernel stacks at frame PhysFrame[4KiB](0x603000)
+[DEBUG] kernel::memory::kernel_page_table: STEP 2: Allocated PT[8] for kernel stacks at frame PhysFrame[4KiB](0x604000)
+[DEBUG] kernel::memory::kernel_page_table: STEP 2: Allocated PT[9] for kernel stacks at frame PhysFrame[4KiB](0x605000)
+[DEBUG] kernel::memory::kernel_page_table: STEP 2: Allocated PT[10] for kernel stacks at frame PhysFrame[4KiB](0x606000)
+[DEBUG] kernel::memory::kernel_page_table: STEP 2: Allocated PT[11] for kernel stacks at frame PhysFrame[4KiB](0x607000)
+[DEBUG] kernel::memory::kernel_page_table: STEP 2: Allocated PT[12] for kernel stacks at frame PhysFrame[4KiB](0x608000)
+[DEBUG] kernel::memory::kernel_page_table: STEP 2: Allocated PT[13] for kernel stacks at frame PhysFrame[4KiB](0x609000)
+[DEBUG] kernel::memory::kernel_page_table: STEP 2: Allocated PT[14] for kernel stacks at frame PhysFrame[4KiB](0x60a000)
+[DEBUG] kernel::memory::kernel_page_table: STEP 2: Allocated PT[15] for kernel stacks at frame PhysFrame[4KiB](0x60b000)
+[DEBUG] kernel::memory::kernel_page_table: STEP 2: Allocated PT[16] for kernel stacks at frame PhysFrame[4KiB](0x60c000)
+[DEBUG] kernel::memory::kernel_page_table: STEP 2: Allocated PT[17] for kernel stacks at frame PhysFrame[4KiB](0x60d000)
+[DEBUG] kernel::memory::kernel_page_table: STEP 2: Allocated PT[18] for kernel stacks at frame PhysFrame[4KiB](0x60e000)
+[DEBUG] kernel::memory::kernel_page_table: STEP 2: Allocated PT[19] for kernel stacks at frame PhysFrame[4KiB](0x60f000)
+[DEBUG] kernel::memory::kernel_page_table: STEP 2: Allocated PT[20] for kernel stacks at frame PhysFrame[4KiB](0x610000)
+[DEBUG] kernel::memory::kernel_page_table: STEP 2: Allocated PT[21] for kernel stacks at frame PhysFrame[4KiB](0x611000)
+[DEBUG] kernel::memory::kernel_page_table: STEP 2: Allocated PT[22] for kernel stacks at frame PhysFrame[4KiB](0x612000)
+[DEBUG] kernel::memory::kernel_page_table: STEP 2: Allocated PT[23] for kernel stacks at frame PhysFrame[4KiB](0x613000)
+[DEBUG] kernel::memory::kernel_page_table: STEP 2: Allocated PT[24] for kernel stacks at frame PhysFrame[4KiB](0x614000)
+[DEBUG] kernel::memory::kernel_page_table: STEP 2: Allocated PT[25] for kernel stacks at frame PhysFrame[4KiB](0x615000)
+[DEBUG] kernel::memory::kernel_page_table: STEP 2: Allocated PT[26] for kernel stacks at frame PhysFrame[4KiB](0x616000)
+[DEBUG] kernel::memory::kernel_page_table: STEP 2: Allocated PT[27] for kernel stacks at frame PhysFrame[4KiB](0x617000)
+[DEBUG] kernel::memory::kernel_page_table: STEP 2: Allocated PT[28] for kernel stacks at frame PhysFrame[4KiB](0x618000)
+[DEBUG] kernel::memory::kernel_page_table: STEP 2: Allocated PT[29] for kernel stacks at frame PhysFrame[4KiB](0x619000)
+[DEBUG] kernel::memory::kernel_page_table: STEP 2: Allocated PT[30] for kernel stacks at frame PhysFrame[4KiB](0x61a000)
+[DEBUG] kernel::memory::kernel_page_table: STEP 2: Allocated PT[31] for kernel stacks at frame PhysFrame[4KiB](0x61b000)
+[DEBUG] kernel::memory::kernel_page_table: STEP 2: Allocated PT[32] for kernel stacks at frame PhysFrame[4KiB](0x61c000)
+[DEBUG] kernel::memory::kernel_page_table: STEP 2: Allocated PT[33] for kernel stacks at frame PhysFrame[4KiB](0x61d000)
+[DEBUG] kernel::memory::kernel_page_table: STEP 2: Allocated PT[34] for kernel stacks at frame PhysFrame[4KiB](0x61e000)
+[DEBUG] kernel::memory::kernel_page_table: STEP 2: Allocated PT[35] for kernel stacks at frame PhysFrame[4KiB](0x61f000)
+[DEBUG] kernel::memory::kernel_page_table: STEP 2: Allocated PT[36] for kernel stacks at frame PhysFrame[4KiB](0x620000)
+[DEBUG] kernel::memory::kernel_page_table: STEP 2: Allocated PT[37] for kernel stacks at frame PhysFrame[4KiB](0x621000)
+[DEBUG] kernel::memory::kernel_page_table: STEP 2: Allocated PT[38] for kernel stacks at frame PhysFrame[4KiB](0x622000)
+[DEBUG] kernel::memory::kernel_page_table: STEP 2: Allocated PT[39] for kernel stacks at frame PhysFrame[4KiB](0x623000)
+[DEBUG] kernel::memory::kernel_page_table: STEP 2: Allocated PT[40] for kernel stacks at frame PhysFrame[4KiB](0x624000)
+[DEBUG] kernel::memory::kernel_page_table: STEP 2: Allocated PT[41] for kernel stacks at frame PhysFrame[4KiB](0x625000)
+[DEBUG] kernel::memory::kernel_page_table: STEP 2: Allocated PT[42] for kernel stacks at frame PhysFrame[4KiB](0x626000)
+[DEBUG] kernel::memory::kernel_page_table: STEP 2: Allocated PT[43] for kernel stacks at frame PhysFrame[4KiB](0x627000)
+[DEBUG] kernel::memory::kernel_page_table: STEP 2: Allocated PT[44] for kernel stacks at frame PhysFrame[4KiB](0x628000)
+[DEBUG] kernel::memory::kernel_page_table: STEP 2: Allocated PT[45] for kernel stacks at frame PhysFrame[4KiB](0x629000)
+[DEBUG] kernel::memory::kernel_page_table: STEP 2: Allocated PT[46] for kernel stacks at frame PhysFrame[4KiB](0x62a000)
+[DEBUG] kernel::memory::kernel_page_table: STEP 2: Allocated PT[47] for kernel stacks at frame PhysFrame[4KiB](0x62b000)
+[DEBUG] kernel::memory::kernel_page_table: STEP 2: Allocated PT[48] for kernel stacks at frame PhysFrame[4KiB](0x62c000)
+[DEBUG] kernel::memory::kernel_page_table: STEP 2: Allocated PT[49] for kernel stacks at frame PhysFrame[4KiB](0x62d000)
+[DEBUG] kernel::memory::kernel_page_table: STEP 2: Allocated PT[50] for kernel stacks at frame PhysFrame[4KiB](0x62e000)
+[DEBUG] kernel::memory::kernel_page_table: STEP 2: Allocated PT[51] for kernel stacks at frame PhysFrame[4KiB](0x62f000)
+[DEBUG] kernel::memory::kernel_page_table: STEP 2: Allocated PT[52] for kernel stacks at frame PhysFrame[4KiB](0x630000)
+[DEBUG] kernel::memory::kernel_page_table: STEP 2: Allocated PT[53] for kernel stacks at frame PhysFrame[4KiB](0x631000)
+[DEBUG] kernel::memory::kernel_page_table: STEP 2: Allocated PT[54] for kernel stacks at frame PhysFrame[4KiB](0x632000)
+[DEBUG] kernel::memory::kernel_page_table: STEP 2: Allocated PT[55] for kernel stacks at frame PhysFrame[4KiB](0x633000)
+[DEBUG] kernel::memory::kernel_page_table: STEP 2: Allocated PT[56] for kernel stacks at frame PhysFrame[4KiB](0x634000)
+[DEBUG] kernel::memory::kernel_page_table: STEP 2: Allocated PT[57] for kernel stacks at frame PhysFrame[4KiB](0x635000)
+[DEBUG] kernel::memory::kernel_page_table: STEP 2: Allocated PT[58] for kernel stacks at frame PhysFrame[4KiB](0x636000)
+[DEBUG] kernel::memory::kernel_page_table: STEP 2: Allocated PT[59] for kernel stacks at frame PhysFrame[4KiB](0x637000)
+[DEBUG] kernel::memory::kernel_page_table: STEP 2: Allocated PT[60] for kernel stacks at frame PhysFrame[4KiB](0x638000)
+[DEBUG] kernel::memory::kernel_page_table: STEP 2: Allocated PT[61] for kernel stacks at frame PhysFrame[4KiB](0x639000)
+[DEBUG] kernel::memory::kernel_page_table: STEP 2: Allocated PT[62] for kernel stacks at frame PhysFrame[4KiB](0x63a000)
+[DEBUG] kernel::memory::kernel_page_table: STEP 2: Allocated PT[63] for kernel stacks at frame PhysFrame[4KiB](0x63b000)
+[ INFO] kernel::memory::kernel_page_table: STEP 2: Page table hierarchy built for kernel stack region:
+[ INFO] kernel::memory::kernel_page_table:   PML4[402] -> PDPT frame PhysFrame[4KiB](0x5f9000)
+[ INFO] kernel::memory::kernel_page_table:   PDPT[0] -> PD frame PhysFrame[4KiB](0x5fb000)
+[ INFO] kernel::memory::kernel_page_table:   PD[0-63] -> PT frames allocated for 128MB region
+[ INFO] kernel::memory::kernel_page_table:   PTEs: Left unmapped (will be populated by allocate_kernel_stack)
+[ INFO] kernel::memory::kernel_page_table: STEP 2: Successfully pre-built page table hierarchy for kernel stacks
+[ INFO] kernel::memory::kernel_page_table: STEP 3: Pre-building page table hierarchy for IST stacks (without leaf mappings)
+[ INFO] kernel::memory::kernel_page_table: STEP 3: Using existing PDPT for IST stacks at frame PhysFrame[4KiB](0x5fa000)
+[ INFO] kernel::memory::kernel_page_table: STEP 3: Building hierarchy for IST stack region 0xffffc98000000000-0xffffc98001000000
+[ INFO] kernel::memory::kernel_page_table: STEP 3: Allocated PD for IST stacks at frame PhysFrame[4KiB](0x63c000)
+[DEBUG] kernel::memory::kernel_page_table: STEP 3: Allocated PT[0] for IST stacks at frame PhysFrame[4KiB](0x63d000)
+[DEBUG] kernel::memory::kernel_page_table: STEP 3: Allocated PT[1] for IST stacks at frame PhysFrame[4KiB](0x63e000)
+[DEBUG] kernel::memory::kernel_page_table: STEP 3: Allocated PT[2] for IST stacks at frame PhysFrame[4KiB](0x63f000)
+[DEBUG] kernel::memory::kernel_page_table: STEP 3: Allocated PT[3] for IST stacks at frame PhysFrame[4KiB](0x640000)
+[DEBUG] kernel::memory::kernel_page_table: STEP 3: Allocated PT[4] for IST stacks at frame PhysFrame[4KiB](0x641000)
+[DEBUG] kernel::memory::kernel_page_table: STEP 3: Allocated PT[5] for IST stacks at frame PhysFrame[4KiB](0x642000)
+[DEBUG] kernel::memory::kernel_page_table: STEP 3: Allocated PT[6] for IST stacks at frame PhysFrame[4KiB](0x643000)
+[DEBUG] kernel::memory::kernel_page_table: STEP 3: Allocated PT[7] for IST stacks at frame PhysFrame[4KiB](0x644000)
+[ INFO] kernel::memory::kernel_page_table: STEP 3: Page table hierarchy built for IST stack region:
+[ INFO] kernel::memory::kernel_page_table:   PML4[403] -> PDPT frame PhysFrame[4KiB](0x5fa000)
+[ INFO] kernel::memory::kernel_page_table:   PDPT[0] -> PD frame PhysFrame[4KiB](0x63c000)
+[ INFO] kernel::memory::kernel_page_table:   PD[0-7] -> PT frames allocated
+[ INFO] kernel::memory::kernel_page_table:   PTEs: Left unmapped (will be populated by per_cpu_stack)
+[ INFO] kernel::memory::kernel_page_table: STEP 3: Successfully pre-built page table hierarchy for IST stacks
+[ INFO] kernel::memory::kernel_page_table: Verified: PML4[402]=PhysFrame[4KiB](0x5f9000) != PML4[403]=PhysFrame[4KiB](0x5fa000)
+[ INFO] kernel::memory::kernel_page_table: STORING: master_pml4_frame=PhysFrame[4KiB](0x5f8000)
+[ INFO] kernel::memory::kernel_page_table: Switching CR3 to master kernel PML4: PhysFrame[4KiB](0x5f8000)
+[ INFO] kernel::memory::kernel_page_table: CR3 switched to master PML4
+[ INFO] kernel::memory::kernel_page_table: Post-CR3 verification: PML4[402]=PhysFrame[4KiB](0x5f9000) != PML4[403]=PhysFrame[4KiB](0x5fa000)
+[ INFO] kernel::memory::kernel_page_table: PHASE2: Master kernel PML4 built and active at frame PhysFrame[4KiB](0x5f8000)
+[ INFO] kernel::memory: CRITICAL: Updating kernel_cr3 to master PML4: 0x5f8000
+[ INFO] kernel::per_cpu: Setting kernel_cr3 in per-CPU data to 0x5f8000
+[ INFO] kernel::memory::kernel_page_table: Process migration will occur as new processes are created
+[ INFO] kernel::memory::paging: PHASE2: Enabled global pages support (CR4.PGE)
+[ INFO] kernel::memory::paging: Page table initialized
+[ INFO] kernel::memory: Initializing heap allocator...
+[ INFO] kernel::memory::heap: Mapping heap pages from Page[4KiB](0x444444440000) to Page[4KiB](0x44444843f000)
+[ INFO] kernel::memory::heap: Heap initialized at 0x444444440000 with size 65536 KiB
+[ INFO] kernel::memory::slab: Slab cache 'fd_table' initialized: 64 slots x 12288 bytes = 768 KiB
+[ INFO] kernel::memory::slab: Slab cache 'signal_handlers' initialized: 64 slots x 2048 bytes = 128 KiB
+[ INFO] kernel::memory: Initializing stack allocation system...
+[ INFO] kernel::memory::stack: Stack allocation system initialized
+[ INFO] kernel::memory: Initializing kernel stack allocator...
+[ INFO] kernel::memory::kernel_stack: Kernel stack allocator initialized: 254 slots available
+[ INFO] kernel::memory::kernel_stack:   Stack range: 0xffffc90000000000 - 0xffffc90008000000
+[ INFO] kernel::memory::kernel_stack:   Stack size: 512 KiB + 4 KiB guard
+[ INFO] kernel::memory: Initializing per-CPU emergency stacks...
+[ INFO] kernel::memory::per_cpu_stack: Initializing per-CPU emergency stacks for 1 CPUs
+[DEBUG] kernel::memory::per_cpu_stack: CPU 0 emergency stack: 0xffffc98000000000 - 0xffffc98000004000
+[ INFO] kernel::memory::per_cpu_stack: Initialized 1 per-CPU emergency stacks
+[ INFO] kernel::memory: Memory management initialized
+[ INFO] kernel::memory::layout: KLAYOUT: image=0x100000..0x300000 text=0x100000..0x200000 rodata=0x200000..0x250000 data=0x250000..0x280000 bss=0x280000..0x300000
+[ INFO] kernel::memory::layout: KLAYOUT: GDT base=0x100003758b8 limit=55
+[ INFO] kernel::memory::layout: KLAYOUT: IDT base=0x10000385220 limit=4095
+[ INFO] kernel::memory::layout: KLAYOUT: TSS base=0x10000375848 RSP0=0x0
+[ INFO] kernel::memory::layout: KLAYOUT: Per-CPU base=0x10000384b40 size=0xc0
+[ INFO] kernel::drivers: Initializing driver subsystem...
+[ INFO] kernel::drivers::pci: PCI: Starting bus enumeration...
+[ INFO] kernel::drivers::pci: PCI: 00:00.0 [8086:1237] Intel Bridge/0x00 IRQ=255
+[ INFO] kernel::drivers::pci: PCI: 00:01.0 [8086:7000] Intel Bridge/0x01 IRQ=255
+[ INFO] kernel::drivers::pci: PCI: 00:01.1 [8086:7010] Intel MassStorage/0x01 IRQ=255
+[ INFO] kernel::drivers::pci: PCI: 00:01.3 [8086:7113] Intel Bridge/0x80 IRQ=10
+[ INFO] kernel::drivers::pci: PCI: 00:02.0 [1234:1111] Unknown Display/0x00 IRQ=255
+[DEBUG] kernel::drivers::pci: PCI:   BAR0: addr=0x80000000 size=0x1000000 MMIO
+[DEBUG] kernel::drivers::pci: PCI:   BAR2: addr=0x810a3000 size=0x1000 MMIO
+[ INFO] kernel::drivers::pci: PCI: 00:03.0 [1af4:1001] VirtIO MassStorage/0x00 IRQ=11
+[DEBUG] kernel::drivers::pci: PCI:   BAR0: addr=0xc100 size=0x80 I/O
+[DEBUG] kernel::drivers::pci: PCI:   BAR1: addr=0x810a2000 size=0x1000 MMIO
+[ INFO] kernel::drivers::pci: PCI: 00:04.0 [1af4:1001] VirtIO MassStorage/0x00 IRQ=11
+[DEBUG] kernel::drivers::pci: PCI:   BAR0: addr=0xc080 size=0x80 I/O
+[DEBUG] kernel::drivers::pci: PCI:   BAR1: addr=0x810a1000 size=0x1000 MMIO
+[ INFO] kernel::drivers::pci: PCI: 00:05.0 [1af4:1001] VirtIO MassStorage/0x00 IRQ=10
+[DEBUG] kernel::drivers::pci: PCI:   BAR0: addr=0xc000 size=0x80 I/O
+[DEBUG] kernel::drivers::pci: PCI:   BAR1: addr=0x810a0000 size=0x1000 MMIO
+[ INFO] kernel::drivers::pci: PCI: 00:06.0 [8086:100e] Intel Network/0x00 IRQ=10
+[DEBUG] kernel::drivers::pci: PCI:   BAR0: addr=0x81080000 size=0x20000 MMIO
+[DEBUG] kernel::drivers::pci: PCI:   BAR1: addr=0xc180 size=0x40 I/O
+[ INFO] kernel::drivers::pci: PCI:   -> Network controller detected!
+[ INFO] kernel::drivers::pci: E1000 network device found
+[ INFO] kernel::drivers::pci: PCI: Enumeration complete. Found 9 devices (3 VirtIO block, 1 network)
+[ INFO] kernel::drivers::virtio::block: VirtIO block: Found 3 device(s)
+[ INFO] kernel::drivers::virtio::block: VirtIO block: Initializing device 0 at 00:03.0
+[ INFO] kernel::drivers::virtio::block: VirtIO block: Initializing device at I/O base 0xc100
+[DEBUG] kernel::drivers::virtio: VirtIO: Reset complete after 0 attempts
+[DEBUG] kernel::drivers::virtio: VirtIO: Device features=0x71006ef4, requested=0x206, negotiated=0x204
+[ INFO] kernel::drivers::virtio::block: VirtIO block: Capacity = 12416 sectors (6 MB)
+[ INFO] kernel::drivers::virtio::block: VirtIO block: Device queue size = 256 (must use exactly)
+[DEBUG] kernel::drivers::virtio::queue: VirtIO queue: Allocated 3 pages starting at phys=0x4764000
+[DEBUG] kernel::drivers::virtio::queue: VirtIO queue: Layout - desc_offset=0, avail_offset=4096, used_offset=8192
+[DEBUG] kernel::drivers::virtio::queue: VirtIO queue: Pointers - desc=0x28004764000, avail=0x28004765000, used=0x28004766000
+[ INFO] kernel::drivers::virtio::block: VirtIO block: Setting queue address phys=0x4764000, PFN=0x4764
+[ INFO] kernel::drivers::virtio::block: VirtIO block: Queue address verified: PFN=0x4764
+[ INFO] kernel::drivers::virtio::block: VirtIO block: Device initialization complete (with cached DMA buffers)
+[ INFO] kernel::drivers::virtio::block: VirtIO block: Device 0 initialized successfully
+[ INFO] kernel::drivers::virtio::block: VirtIO block: Initializing device 1 at 00:04.0
+[ INFO] kernel::drivers::virtio::block: VirtIO block: Initializing device at I/O base 0xc080
+[DEBUG] kernel::drivers::virtio: VirtIO: Reset complete after 0 attempts
+[DEBUG] kernel::drivers::virtio: VirtIO: Device features=0x71006ef4, requested=0x206, negotiated=0x204
+[ INFO] kernel::drivers::virtio::block: VirtIO block: Capacity = 32768 sectors (16 MB)
+[ INFO] kernel::drivers::virtio::block: VirtIO block: Device queue size = 256 (must use exactly)
+[DEBUG] kernel::drivers::virtio::queue: VirtIO queue: Allocated 3 pages starting at phys=0x476a000
+[DEBUG] kernel::drivers::virtio::queue: VirtIO queue: Layout - desc_offset=0, avail_offset=4096, used_offset=8192
+[DEBUG] kernel::drivers::virtio::queue: VirtIO queue: Pointers - desc=0x2800476a000, avail=0x2800476b000, used=0x2800476c000
+[ INFO] kernel::drivers::virtio::block: VirtIO block: Setting queue address phys=0x476a000, PFN=0x476a
+[ INFO] kernel::drivers::virtio::block: VirtIO block: Queue address verified: PFN=0x476a
+[ INFO] kernel::drivers::virtio::block: VirtIO block: Device initialization complete (with cached DMA buffers)
+[ INFO] kernel::drivers::virtio::block: VirtIO block: Device 1 initialized successfully
+[ INFO] kernel::drivers::virtio::block: VirtIO block: Initializing device 2 at 00:05.0
+[ INFO] kernel::drivers::virtio::block: VirtIO block: Initializing device at I/O base 0xc000
+[DEBUG] kernel::drivers::virtio: VirtIO: Reset complete after 0 attempts
+[DEBUG] kernel::drivers::virtio: VirtIO: Device features=0x71006ef4, requested=0x206, negotiated=0x204
+[ INFO] kernel::drivers::virtio::block: VirtIO block: Capacity = 524288 sectors (256 MB)
+[ INFO] kernel::drivers::virtio::block: VirtIO block: Device queue size = 256 (must use exactly)
+[DEBUG] kernel::drivers::virtio::queue: VirtIO queue: Allocated 3 pages starting at phys=0x4770000
+[DEBUG] kernel::drivers::virtio::queue: VirtIO queue: Layout - desc_offset=0, avail_offset=4096, used_offset=8192
+[DEBUG] kernel::drivers::virtio::queue: VirtIO queue: Pointers - desc=0x28004770000, avail=0x28004771000, used=0x28004772000
+[ INFO] kernel::drivers::virtio::block: VirtIO block: Setting queue address phys=0x4770000, PFN=0x4770
+[ INFO] kernel::drivers::virtio::block: VirtIO block: Queue address verified: PFN=0x4770
+[ INFO] kernel::drivers::virtio::block: VirtIO block: Device initialization complete (with cached DMA buffers)
+[ INFO] kernel::drivers::virtio::block: VirtIO block: Device 2 initialized successfully
+[ INFO] kernel::drivers::virtio::block: VirtIO block: Driver initialized with 3 device(s)
+[ INFO] kernel::drivers: VirtIO block driver initialized successfully
+[ INFO] kernel::drivers::e1000: E1000: Found device 100e at 00:06.0 IRQ=10
+[ INFO] kernel::drivers::e1000: E1000: MMIO at 0x81080000 size 0x20000
+[ INFO] kernel::memory: MMIO: Mapping 0x81080000 -> 0xffffe00000000000 (32 pages)
+[ INFO] kernel::drivers::e1000: E1000: Mapped MMIO to 0xffffe00000000000
+[ INFO] kernel::drivers::e1000: E1000: MAC address 52:54:00:12:34:56
+[ INFO] kernel::drivers::e1000: E1000: RX initialized with 32 descriptors
+[ INFO] kernel::drivers::e1000: E1000: TX initialized with 32 descriptors
+[ INFO] kernel::drivers::e1000: E1000: Link up at 1000 Mbps
+[ INFO] kernel::drivers::e1000: E1000 driver initialized
+[ INFO] kernel::drivers: E1000 network driver initialized successfully
+[DEBUG] kernel::interrupts: IRQ 10 enabled (E1000)
+[ WARN] kernel::drivers: VirtIO sound driver initialization failed: No VirtIO sound devices found
+[ INFO] kernel::drivers: Driver subsystem initialized
+[ INFO] kernel: PCI subsystem initialized: 9 devices found
+[ INFO] kernel::task::softirqd: SOFTIRQ_REGISTER: NetRx handler registered
+[ INFO] kernel::net: NET: Initializing network stack...
+[ INFO] kernel::net: NET: MAC address: 52:54:00:12:34:56
+[ INFO] kernel::net: NET: IP address: 10.0.2.15
+[ INFO] kernel::net: NET: Gateway: 10.0.2.2
+[DEBUG] kernel::net::arp: ARP: Cache initialized (16 entries)
+[ INFO] kernel::net: Network stack initialized
+[ INFO] kernel::net: [net] e1000 link up after 0ms -- proceeding with ARP
+[ INFO] kernel::net: NET: Sending ARP request for gateway 10.0.2.2
+[DEBUG] kernel::net::arp: ARP: Sent request for 10.0.2.2
+[ INFO] kernel::net: ARP request sent successfully
+[ INFO] kernel::net: NET: Gateway ARP not resolved during init; will resolve via IRQ path
+[ INFO] kernel::net: NET: Sending ICMP echo request to gateway 10.0.2.2
+[ INFO] kernel::net: NET: ARP cache miss for 10.0.2.2, sending ARP request
+[DEBUG] kernel::net::arp: ARP: Sent request for 10.0.2.2
+[ INFO] kernel::net: NET: Failed to send ping: ArpMiss: reply will populate cache via IRQ
+[ INFO] kernel::net: NET: Network initialization complete
+[ INFO] kernel::fs::devfs: devfs: initialized with 4 devices
+[ INFO] kernel: devfs initialized at /dev
+[ INFO] kernel::fs::devptsfs: devpts: initialized at /dev/pts
+[ INFO] kernel: devptsfs initialized at /dev/pts
+[ INFO] kernel: CPU detected: QEMU Virtual CPU version 2.5+
+[ INFO] kernel::fs::procfs: procfs: initialized with 22 entries
+[ INFO] kernel: procfs initialized at /proc
+[ INFO] kernel::gdt: Updated IST[0] (double fault stack) to 0xffffc98000002000
+[ INFO] kernel::gdt: Updated IST[1] (page fault stack) to 0xffffc98000004000
+[ INFO] kernel: Updated IST stacks with per-CPU emergency and page fault stacks
+[DEBUG] kernel::memory::kernel_stack: Mapping 128 pages for kernel stack 0
+[DEBUG] kernel::memory::kernel_stack: Allocated kernel stack 0 at 0xffffc90000001000-0xffffc90000081000 (guard at 0xffffc90000000000)
+[ INFO] kernel: Initial TSS.RSP0 set to 0xffffc90000081000
+[ INFO] kernel: Testing heap allocation...
+[ INFO] kernel: Heap test: created vector with 10 elements
+[ INFO] kernel: Heap test: sum of elements = 45
+[ INFO] kernel: Heap allocation test passed!
+[ INFO] kernel::tls: Initializing Thread Local Storage (TLS) system...
+[ INFO] kernel::tls: Kernel TLS block allocated at 0xffffc90030000000
+[ INFO] kernel::tls: TLS system initialized successfully
+[ INFO] kernel: TLS initialized
+[ INFO] kernel::tls: SWAPGS support configured: GS always per-CPU = 0x10000384b40, user TLS uses FS
+[ INFO] kernel: SWAPGS support enabled
+[ INFO] kernel: Keyboard queue initialized
+[ INFO] kernel::tty::driver: Console TTY initialized
+[ INFO] kernel::tty::pty: PTY subsystem initialized
+[ INFO] kernel::tty: TTY subsystem initialized
+[ INFO] kernel: Initializing PIC...
+[ INFO] kernel: PIC initialized
+[ INFO] kernel::arch_impl::x86_64::timer: Calibrating TSC frequency using PIT...
+[ INFO] kernel::arch_impl::x86_64::timer: TSC calibration complete: 2402 MHz (2402105100 Hz)
+[ INFO] kernel::arch_impl::x86_64::timer: TSC cycles during 50ms calibration: 120105255
+[ INFO] kernel::arch_impl::x86_64::timer: HAL_TIMER_CALIBRATED: TSC calibration via HAL complete
+[ INFO] kernel::time::timer: Timer initialized at 200 Hz (5ms per tick)
+[ INFO] kernel::time::rtc: RTC initialized: 2026-08-31 14:12:25 UTC
+[ INFO] kernel: Timer initialized
+[ INFO] kernel::tracing::core: Tracing subsystem initialized (16 per-CPU buffers)
+[ INFO] kernel::tracing::providers::counters: Tracing counters initialized: SYSCALL_TOTAL, IRQ_TOTAL, CTX_SWITCH_TOTAL, TIMER_TICK_TOTAL, FORK_TOTAL, EXEC_TOTAL, COW_FAULT_TOTAL
+[ INFO] kernel::tracing::providers: Tracing providers initialized: syscall=0x3, sched=0x0, irq=0x1, net_rx=0x9, process=0x6, teardown=0xa, virtgpu=0x7, xhci=0x8
+[ INFO] kernel: Tracing subsystem initialized and enabled
+[ INFO] kernel: CHECKPOINT A: PIT initialized at 100 Hz
+[ INFO] kernel: Timer interrupt unmasked
+[ INFO] kernel::serial: Serial input interrupts enabled
+[ INFO] kernel: Initializing system call infrastructure...
+[ INFO] kernel::syscall: Initializing system call infrastructure
+[ INFO] kernel::syscall: System call infrastructure initialized
+[ INFO] kernel: System call infrastructure initialized
+[ INFO] kernel: Initializing threading subsystem...
+[ INFO] kernel: Allocating kernel stack for idle thread from upper half...
+[DEBUG] kernel::memory::kernel_stack: Mapping 128 pages for kernel stack 1
+[DEBUG] kernel::memory::kernel_stack: Allocated kernel stack 1 at 0xffffc90000082000-0xffffc90000102000 (guard at 0xffffc90000081000)
+[ INFO] kernel: Idle thread kernel stack allocated at 0xffffc90000102000 (PML4[402])
+[ INFO] kernel: TSS.RSP0 set to kernel stack at 0xffffc90000102000
+[ INFO] kernel: About to switch from bootstrap stack at 0x18000013a50 (PML4[3]) to kernel stack
+[ INFO] kernel: Successfully switched to kernel stack! RSP=0xffffc900001016a8 (PML4[402])
+[ INFO] kernel: TSS.RSP0 verified at 0xffffc90000102000
+Scheduler initialized with current thread 1 as idle task
+[ INFO] kernel: Threading subsystem initialized with init_task (swapper/0)
+[ INFO] kernel: percpu: cpu0 base=0x10000384b40, current=swapper/0, rsp0=0xffffc90000102000
+[ INFO] kernel: Initializing process management...
+[ INFO] kernel::process: Process management initialized
+[ INFO] kernel: Process management initialized
+[ INFO] kernel::task::workqueue: WORKQUEUE_INIT: workqueue system initialized
+[ INFO] kernel::task::softirqd: SOFTIRQ_INIT: Initializing softirq subsystem
+[DEBUG] kernel::memory::kernel_stack: Mapping 128 pages for kernel stack 2
+[DEBUG] kernel::memory::kernel_stack: Allocated kernel stack 2 at 0xffffc90000103000-0xffffc90000183000 (guard at 0xffffc90000102000)
+Added thread 2 'ksoftirqd/0' to scheduler (user: false, target_cpu: 0)
+[ INFO] kernel::task::softirqd: SOFTIRQ_INIT: ksoftirqd spawned successfully
+[ INFO] kernel::task::softirqd: SOFTIRQ_INIT: Softirq subsystem initialized
+[DEBUG] kernel::memory::kernel_stack: Mapping 128 pages for kernel stack 3
+[DEBUG] kernel::memory::kernel_stack: Allocated kernel stack 3 at 0xffffc90000184000-0xffffc90000204000 (guard at 0xffffc90000183000)
+Added thread 3 'kloopbackd' to scheduler (user: false, target_cpu: 0)
+[ INFO] kernel: Temporarily enabling interrupts for driver post-init self-tests...
+Next thread from queue: 2, cpu: 0
+Switching from thread 1 to thread 2
+[ INFO] kernel::task::softirqd: KSOFTIRQD_SPAWN: ksoftirqd/0 started
+Next thread from queue: 3, cpu: 0
+Switching from thread 2 to thread 3
+Next thread from queue: 1, cpu: 0
+Switching from thread 3 to thread 1
+[ INFO] kernel::drivers: Running driver post-init self-tests...
+[DEBUG] kernel::interrupts: IRQ 10 enabled (E1000)
+[DEBUG] kernel::interrupts: IRQ 11 enabled (VirtIO + E1000)
+[ INFO] kernel::drivers::virtio::block: VirtIO block test: Reading sector 0...
+[DEBUG] kernel::drivers::e1000: E1000: RX interrupt
+[DEBUG] kernel::drivers::e1000: E1000: TX interrupt
+[DEBUG] kernel::net::arp: ARP: Reply from 10.0.2.2 -> 52:55:0a:00:02:02
+[DEBUG] kernel::net::arp: ARP: Reply from 10.0.2.2 -> 52:55:0a:00:02:02
+[ INFO] kernel::net::icmp: NET: ICMP echo reply received from 10.0.2.2 seq=1
+[DEBUG] kernel::drivers::e1000: E1000: RX interrupt
+[DEBUG] kernel::drivers::e1000: E1000: TX interrupt
+[ INFO] kernel::drivers::virtio::block: VirtIO block test: Read successful!
+[ INFO] kernel::drivers::virtio::block:   First 16 bytes: [00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00]
+[ INFO] kernel::drivers::virtio::block:   MBR signature found (0x55AA)
+Next thread from queue: 1, cpu: 0
+Idle thread 1 is alone, continuing (no switch needed)
+Next thread from queue: 1, cpu: 0
+Idle thread 1 is alone, continuing (no switch needed)
+[ INFO] kernel::fs::ext2: ext2: Mounted root filesystem - 65536 blocks, 65536 inodes, block size 4096
+[ INFO] kernel: ext2 root filesystem mounted
+[ INFO] kernel: No home filesystem: no home block device attached
+[ INFO] kernel: Driver post-init self-tests complete; interrupts disabled for remaining init
+[DEBUG] kernel::memory::process_memory: ProcessPageTable::new() - Current RSP: 0xffffc900000fab28
+[DEBUG] kernel::memory::process_memory: ProcessPageTable::new() - About to allocate L4 frame
+[DEBUG] kernel::memory::process_memory: Successfully allocated frame: 0x497a000
+[DEBUG] kernel::memory::process_memory: Allocated L4 frame: 0x497a000
+[DEBUG] kernel::memory::process_memory: Physical memory offset: 0x28000000000
+[DEBUG] kernel::memory::process_memory: New L4 table virtual address: 0x2800497a000
+[DEBUG] kernel::memory::process_memory: About to create mutable reference to page table at 0x2800497a000
+[DEBUG] kernel::memory::process_memory: Testing read access at 0x2800497a000
+[DEBUG] kernel::memory::process_memory: Read test successful
+[DEBUG] kernel::memory::process_memory: Page table pointer: 0x2800497a000
+[DEBUG] kernel::memory::process_memory: About to clear the new page table
+[DEBUG] kernel::memory::process_memory: Successfully cleared new page table (all entries set to unused)
+[DEBUG] kernel::memory::process_memory: ProcessPageTable::new() - Using current CR3: 0x5f8000 for copying
+[DEBUG] kernel::memory::process_memory: Current L4 table virtual address: 0x280005f8000
+[DEBUG] kernel::memory::process_memory: Examining kernel page table upper half entries:
+[DEBUG] kernel::memory::process_memory:   Kernel PML4[256]: phys=0x5f7000, flags=PageTableFlags(PRESENT | WRITABLE)
+[DEBUG] kernel::memory::process_memory:   Kernel PML4[257]: phys=0x5f7000, flags=PageTableFlags(PRESENT | WRITABLE)
+[DEBUG] kernel::memory::process_memory:   Kernel PML4[258]: phys=0x5f7000, flags=PageTableFlags(PRESENT | WRITABLE)
+[DEBUG] kernel::memory::process_memory:   Kernel PML4[259]: phys=0x5f7000, flags=PageTableFlags(PRESENT | WRITABLE)
+[DEBUG] kernel::memory::process_memory:   Kernel PML4[260]: phys=0x5f7000, flags=PageTableFlags(PRESENT | WRITABLE)
+[DEBUG] kernel::memory::process_memory:   Kernel PML4[509]: phys=0x5f7000, flags=PageTableFlags(PRESENT | WRITABLE)
+[DEBUG] kernel::memory::process_memory:   Kernel PML4[510]: phys=0x5f7000, flags=PageTableFlags(PRESENT | WRITABLE)
+[DEBUG] kernel::memory::process_memory:   Kernel PML4[511]: phys=0x1df000, flags=PageTableFlags(PRESENT | WRITABLE | GLOBAL)
+[DEBUG] kernel::memory::process_memory: Found 256 valid upper-half kernel PML4 entries (256-511)
+[DEBUG] kernel::memory::process_memory: Copied 256 upper-half kernel PML4 entries (256-511)
+[ INFO] kernel::memory::process_memory: PHASE2: Using master kernel PML4 for process creation
+[ INFO] kernel::memory::process_memory: PHASE2-DEBUG: Reading master PML4 from virtual address 0x280005f8000
+[ INFO] kernel::memory::process_memory: PHASE2-DEBUG: Master PML4[402] = Ok(PhysFrame[4KiB](0x5f9000))
+[ INFO] kernel::memory::process_memory: PHASE2-DEBUG: Master PML4[403] = Ok(PhysFrame[4KiB](0x5fa000))
+[ INFO] kernel::memory::process_memory: PHASE2-DEBUG: &master_pml4[403] is at 0x280005f8c98
+[ INFO] kernel::memory::process_memory: CRITICAL: Copied PML4[2] (direct phys mapping) from master with kernel-only flags: PageTableFlags(PRESENT | WRITABLE | ACCESSED)
+[ INFO] kernel::memory::process_memory: PHASE2: Copied 6 kernel-only lower-half entries (skipped userspace), PML4[0] left empty
+[ INFO] kernel::memory::process_memory: PHASE2: Created fresh PDPT for PML4[0] at frame 0x497b000
+[ INFO] kernel::memory::process_memory: PHASE2: PML4[402] (kernel stacks): master=PhysFrame[4KiB](0x5f9000), copied=PhysFrame[4KiB](0x5f9000)
+[ INFO] kernel::memory::process_memory: PHASE2: PML4[403] (IST stacks): master=PhysFrame[4KiB](0x5fa000), copied=PhysFrame[4KiB](0x5fa000)
+[ INFO] kernel::memory::process_memory: PHASE2: PML4[510]: master=PhysFrame[4KiB](0x5f7000), copied=PhysFrame[4KiB](0x5f7000)
+[ INFO] kernel::memory::process_memory: PHASE2: PML4[511] (kernel high-half): master=PhysFrame[4KiB](0x1df000), copied=PhysFrame[4KiB](0x1df000)
+[ INFO] kernel::memory::process_memory: PHASE2: Inherited 256 upper-half kernel mappings (256-511) from master PML4
+[ INFO] kernel::memory::process_memory: ✓ INVARIANT OK: PML4[402]=PhysFrame[4KiB](0x5f9000) != PML4[403]=PhysFrame[4KiB](0x5fa000)
+[ INFO] kernel::memory::process_memory: PHASE2: PML4[0] left empty for process-specific userspace mappings (0x0 - 0x7FFFFFFFFF)
+[ INFO] kernel::memory::process_memory: PHASE3: Skipping manual identity mapping - PML4[0] already copied from master
+[DEBUG] kernel::memory::process_memory: Creating OffsetPageTable with L4 frame 0x497a000 and phys_offset 0x28000000000
+[DEBUG] kernel::memory::process_memory: ProcessPageTable created with global kernel page tables
+[ INFO] kernel::elf: Loading ELF into process page table: entry=0x4000e744, 7 program headers
+[ INFO] kernel::elf: ELF loaded: segments end at 0x40016170, heap will start at 0x40017000
+[ INFO] kernel::process::manager: Restoring kernel mappings after ELF load...
+[ INFO] kernel::process::manager: ✓ Kernel low-half mappings restored
+[ INFO] kernel::process::manager: ✓✓ VERIFIED: Kernel at 0x100000 -> 0x100000 after restoration
+[DEBUG] kernel::memory::stack: allocate_stack_with_privilege: size=0x10000, KERNEL_STACK_ALLOC_START=0xffffc90020000000
+[DEBUG] kernel::memory::stack: Allocating guarded stack at 0x7fffff000000, size 68 KiB
+[DEBUG] kernel::memory::stack: User stack: mapping in kernel page tables
+[DEBUG] kernel::memory::stack: Guard page at 0x7fffff000000 (unmapped)
+[DEBUG] kernel::memory::stack: Stack region: 0x7fffff001000 - 0x7fffff011000 (64 KiB)
+[DEBUG] kernel::process::manager: Mapping user stack pages into process page table...
+[DEBUG] kernel::memory::process_memory: map_user_stack_to_process: mapping stack range 0x7fffff001000 - 0x7fffff011000
+[DEBUG] kernel::memory::process_memory: ✓ Successfully mapped 16 user stack pages to process page table
+[DEBUG] kernel::process::manager: ✓ User stack mapped in process page table
+[DEBUG] kernel::tls: Registered thread 4 with TLS block 0x14000
+[DEBUG] kernel::memory::kernel_stack: Mapping 128 pages for kernel stack 4
+[DEBUG] kernel::memory::kernel_stack: Allocated kernel stack 4 at 0xffffc90000205000-0xffffc90000285000 (guard at 0xffffc90000204000)
+[DEBUG] kernel::process::manager: ✓ Allocated kernel stack at 0xffffc90000285000 (globally visible)
+[ INFO] kernel::process::manager: Created process init (PID 1)
+Added thread 4 'init' to scheduler (user: true, target_cpu: 0)
+[ INFO] kernel: Testing breakpoint interrupt...
+[DEBUG] kernel::interrupts: Breakpoint from kernel at RIP: 0x10000098bb1
+RETIQ[ INFO] kernel: Breakpoint test completed!
+[ INFO] kernel: DEBUG: About to print POST marker (before enabling interrupts)
+[ INFO] kernel: CHECKPOINT B: scheduler has_runnable_threads = true
+[ INFO] kernel: CHECKPOINT B: has_userspace_threads = true
+[ INFO] kernel: ==================== PRECONDITION VALIDATION ====================
+[ INFO] kernel: PRECONDITION 1: Checking IDT timer entry configuration...
+[ INFO] kernel: PRECONDITION 1: IDT timer entry ✓ PASS
+[ INFO] kernel:   Handler address: 0x1000031a0a1
+[ INFO] kernel:   Status: Handler address valid
+[ INFO] kernel: PRECONDITION 2: Verifying timer handler points to timer_interrupt_entry...
+[ INFO] kernel: PRECONDITION 2: Timer handler registered ✓ PASS
+[ INFO] kernel:   The IDT entry for IRQ0 (vector 32) is properly configured
+[ INFO] kernel: PRECONDITION 3: Checking PIT counter is active...
+[ INFO] kernel: PRECONDITION 3: PIT counter ✓ PASS
+[ INFO] kernel:   Counter values: 0x76a -> 0x61e
+[ INFO] kernel:   Status: Counter is actively counting down
+[ INFO] kernel: PRECONDITION 4: Checking PIC IRQ0 mask bit...
+[ INFO] kernel: PRECONDITION 4: PIC IRQ0 unmasked ✓ PASS
+[ INFO] kernel:   PIC1 mask register: 0xe8
+[ INFO] kernel:   Status: IRQ0 is UNMASKED (bit 0 clear)
+[ INFO] kernel: PRECONDITION 5: Checking scheduler has runnable threads...
+[ INFO] kernel: PRECONDITION 5: Scheduler has runnable threads ✓ PASS
+[ INFO] kernel: PRECONDITION 6: Checking current thread is set...
+[ INFO] kernel: PRECONDITION 6: Current thread set ✓ PASS
+[ INFO] kernel:   Thread pointer: 0x4444444dfdd0
+[ INFO] kernel:   Thread ID: 1
+[ INFO] kernel:   Thread name: swapper/0
+[ INFO] kernel:   Thread pointer validation: ✓ looks valid
+[ INFO] kernel: PRECONDITION 7: Verifying preemption is currently disabled...
+[ INFO] kernel: PRECONDITION 7: Preemption disabled ✓ PASS
+[ INFO] kernel:   Ready to enable preemption safely
+[ INFO] kernel: ================================================================
+[ INFO] kernel: ✓ ALL PRECONDITIONS PASSED - Safe to enable interrupts
+[ INFO] kernel: Testing timer resolution...
+[ INFO] kernel::time_test: === TIMER RESOLUTION TEST ===
+[ INFO] kernel::time_test: Current state: 53 ticks (before), 53 ms, 53 ticks (after)
+[ INFO] kernel::time_test: ✓ Timer conversion correct: 53 ms within observed tick range [53, 53]
+[ INFO] kernel::time_test: ✓ Timer resolution: 1 ms per tick (1000 Hz PIT)
+[ INFO] kernel::time_test: === TIMER RESOLUTION TEST COMPLETE ===
+[ INFO] kernel: ✅ Timer resolution test passed
+[ INFO] kernel: Testing clock_gettime syscall implementation...
+[ INFO] kernel::clock_gettime_test: === CLOCK_GETTIME TEST ===
+[ INFO] kernel::clock_gettime_test: Test A: TSC Calibration Status
+[ INFO] kernel::clock_gettime_test:   TSC frequency: 2402105100 Hz (2.40 GHz)
+[ INFO] kernel::clock_gettime_test: ✓ TSC calibrated with reasonable frequency
+[ INFO] kernel::clock_gettime_test: Test B: Verify TSC provides sub-millisecond precision
+[ INFO] kernel::clock_gettime_test:   First call:  1 s, 278177311 ns
+[ INFO] kernel::clock_gettime_test:   Second call: 1 s, 278254367 ns
+[ INFO] kernel::clock_gettime_test:   Elapsed: 77056 ns
+[ INFO] kernel::clock_gettime_test: ✓ Sub-millisecond precision confirmed (TSC active)
+[ INFO] kernel::clock_gettime_test: Test C: Monotonic advancement
+[ INFO] kernel::clock_gettime_test:   Made 10 calls, time advanced 10 times
+[ INFO] kernel::clock_gettime_test: ✓ Time never went backwards
+[ INFO] kernel::clock_gettime_test: Test D: Nanosecond precision (not millisecond-aligned)
+[ INFO] kernel::clock_gettime_test:   Collected 20 nanosecond samples
+[ INFO] kernel::clock_gettime_test:   Millisecond-aligned values: 0/20
+[ INFO] kernel::clock_gettime_test: ✓ Nanosecond precision confirmed (not PIT-granular)
+[ INFO] kernel::clock_gettime_test: Test E: CLOCK_MONOTONIC basic validation
+[ INFO] kernel::clock_gettime_test:   CLOCK_MONOTONIC: 1 s, 284598793 ns
+[ INFO] kernel::clock_gettime_test: ✓ Nanoseconds in valid range [0, 999999999]
+[ INFO] kernel::clock_gettime_test: Test F: CLOCK_REALTIME validation
+[ INFO] kernel::clock_gettime_test:   CLOCK_REALTIME: 2026-08-31 14:12:26.285944096
+[ INFO] kernel::clock_gettime_test: ✓ CLOCK_REALTIME has valid timestamp and sub-second precision
+[ INFO] kernel::clock_gettime_test: Test G: Invalid clock ID handling
+[ INFO] kernel::clock_gettime_test: ✓ Invalid ID correctly returned EINVAL
+[ INFO] kernel::clock_gettime_test: === CLOCK_GETTIME TEST COMPLETE ===
+[ INFO] kernel::clock_gettime_test: All 7 tests passed: TSC-based high-resolution timing validated
+[ INFO] kernel: ✅ clock_gettime tests passed
+[ INFO] kernel: ✅ Kernel initialization complete!
+[ INFO] kernel: Enabling interrupts (after creating user processes)...
+[ INFO] kernel: Disabling interrupts after scheduler test...
+[ INFO] kernel: [PREEMPT_BRACKET_CENSUS:underflow=0]
+[ INFO] kernel: Starting async executor...
+[DEBUG] kernel::memory::kernel_stack: Mapping 128 pages for kernel stack 5
+[DEBUG] kernel::memory::kernel_stack: Allocated kernel stack 5 at 0xffffc90000286000-0xffffc90000306000 (guard at 0xffffc90000285000)
+Added thread 5 'console_executor' to scheduler (user: false, target_cpu: 0)
+[ INFO] kernel::interrupts::context_switch: RING3_ENTRY: RIP=0x4000e744, RSP=0x7fffff010ff0, CS=0x33, SS=0x2b
+[ INFO] kernel::interrupts::context_switch: FIRST_ENTRY t4: zeroed all registers
+[ INFO] kernel::interrupts::context_switch: First userspace entry setup complete for thread 4
+[ INFO] kernel::interrupts::context_switch: First run: thread 4 entering userspace
+[ INFO] kernel: [PROD_BRACKET_RELEASE_CENSUS:underflow=0]
+[ INFO] kernel::keyboard: Keyboard ready! Type to see characters (Ctrl+T/M/U/P/F/E/X/H for special actions)
+[ INFO] kernel::serial::command: Serial command task started
+[ INFO] kernel::syscall::handlers: sys_getpid called
+[ INFO] kernel::syscall::handlers: sys_getpid: scheduler_thread_id = Some(4)
+[ INFO] kernel::syscall::handlers: sys_getpid: Found process 1 for thread 4
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000eef42 CS=0x8 RSP=0xffffc90000282948
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000eef42 RSP=0xffffc90000282948
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000eef42 CS=0x8 RSP=0xffffc90000282948
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000eef42 RSP=0xffffc90000282948
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000eef42 CS=0x8 RSP=0xffffc90000282648
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000eef42 RSP=0xffffc90000282648
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000eef42 CS=0x8 RSP=0xffffc90000282948
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000eef42 RSP=0xffffc90000282948
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000eef42 CS=0x8 RSP=0xffffc90000282fb8
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000eef42 RSP=0xffffc90000282fb8
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000eef42 CS=0x8 RSP=0xffffc90000281c68
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000eef42 RSP=0xffffc90000281c68
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000eef42 CS=0x8 RSP=0xffffc90000281c68
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000eef42 RSP=0xffffc90000281c68
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000eef42 CS=0x8 RSP=0xffffc90000282d68
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000eef42 RSP=0xffffc90000282d68
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000eef42 CS=0x8 RSP=0xffffc90000282d68
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000eef42 RSP=0xffffc90000282d68
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000eef42 CS=0x8 RSP=0xffffc90000282d68
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000eef42 RSP=0xffffc90000282d68
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000c43fd CS=0x8 RSP=0xffffc90000282c50
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000c43fd RSP=0xffffc90000282c50
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000eef42 CS=0x8 RSP=0xffffc90000282d68
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000eef42 RSP=0xffffc90000282d68
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000eef42 CS=0x8 RSP=0xffffc90000282d68
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000eef42 RSP=0xffffc90000282d68
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000eef42 CS=0x8 RSP=0xffffc90000282d68
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000eef42 RSP=0xffffc90000282d68
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000eef42 CS=0x8 RSP=0xffffc90000282d68
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000eef42 RSP=0xffffc90000282d68
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000eef42 CS=0x8 RSP=0xffffc90000282d68
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000eef42 RSP=0xffffc90000282d68
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000eef42 CS=0x8 RSP=0xffffc90000282d68
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000eef42 RSP=0xffffc90000282d68
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000eef42 CS=0x8 RSP=0xffffc90000282d68
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000eef42 RSP=0xffffc90000282d68
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000eef42 CS=0x8 RSP=0xffffc90000282d68
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000eef42 RSP=0xffffc90000282d68
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000eef42 CS=0x8 RSP=0xffffc90000282d68
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000eef42 RSP=0xffffc90000282d68
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000eef42 CS=0x8 RSP=0xffffc90000282d68
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000eef42 RSP=0xffffc90000282d68
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000eef42 CS=0x8 RSP=0xffffc90000282d68
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000eef42 RSP=0xffffc90000282d68
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000c1c50 CS=0x8 RSP=0xffffc90000282d68
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000c1c50 RSP=0xffffc90000282d68
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000c1c50 CS=0x8 RSP=0xffffc90000282d68
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000c1c50 RSP=0xffffc90000282d68
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000eef42 CS=0x8 RSP=0xffffc90000282d68
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000eef42 RSP=0xffffc90000282d68
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000eef42 CS=0x8 RSP=0xffffc90000282d68
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000eef42 RSP=0xffffc90000282d68
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000eef42 CS=0x8 RSP=0xffffc90000282d68
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000eef42 RSP=0xffffc90000282d68
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000dab08 CS=0x8 RSP=0xffffc90000282d70
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000dab08 RSP=0xffffc90000282d70
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000eef42 CS=0x8 RSP=0xffffc90000282d68
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000eef42 RSP=0xffffc90000282d68
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000eef42 CS=0x8 RSP=0xffffc90000282d68
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000eef42 RSP=0xffffc90000282d68
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000eef42 CS=0x8 RSP=0xffffc90000282d68
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000eef42 RSP=0xffffc90000282d68
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000eef42 CS=0x8 RSP=0xffffc90000282d68
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000eef42 RSP=0xffffc90000282d68
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000eef42 CS=0x8 RSP=0xffffc90000282d68
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000eef42 RSP=0xffffc90000282d68
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000eef42 CS=0x8 RSP=0xffffc90000282d68
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000eef42 RSP=0xffffc90000282d68
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000eef42 CS=0x8 RSP=0xffffc90000282d68
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000eef42 RSP=0xffffc90000282d68
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000eef42 CS=0x8 RSP=0xffffc90000282d68
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000eef42 RSP=0xffffc90000282d68
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[DEBUG] kernel::memory::process_memory: ProcessPageTable::new() - Current RSP: 0xffffc900002801f0
+[DEBUG] kernel::memory::process_memory: ProcessPageTable::new() - About to allocate L4 frame
+[DEBUG] kernel::memory::process_memory: Successfully allocated frame: 0x4ab1000
+[DEBUG] kernel::memory::process_memory: Allocated L4 frame: 0x4ab1000
+[DEBUG] kernel::memory::process_memory: Physical memory offset: 0x28000000000
+[DEBUG] kernel::memory::process_memory: New L4 table virtual address: 0x28004ab1000
+[DEBUG] kernel::memory::process_memory: About to create mutable reference to page table at 0x28004ab1000
+[DEBUG] kernel::memory::process_memory: Testing read access at 0x28004ab1000
+[DEBUG] kernel::memory::process_memory: Read test successful
+[DEBUG] kernel::memory::process_memory: Page table pointer: 0x28004ab1000
+[DEBUG] kernel::memory::process_memory: About to clear the new page table
+[DEBUG] kernel::memory::process_memory: Successfully cleared new page table (all entries set to unused)
+[DEBUG] kernel::memory::process_memory: ProcessPageTable::new() - Using current CR3: 0x497a000 for copying
+[DEBUG] kernel::memory::process_memory: Current L4 table virtual address: 0x2800497a000
+[DEBUG] kernel::memory::process_memory: Examining kernel page table upper half entries:
+[DEBUG] kernel::memory::process_memory:   Kernel PML4[256]: phys=0x5f7000, flags=PageTableFlags(PRESENT | WRITABLE)
+[DEBUG] kernel::memory::process_memory:   Kernel PML4[257]: phys=0x5f7000, flags=PageTableFlags(PRESENT | WRITABLE)
+[DEBUG] kernel::memory::process_memory:   Kernel PML4[258]: phys=0x5f7000, flags=PageTableFlags(PRESENT | WRITABLE)
+[DEBUG] kernel::memory::process_memory:   Kernel PML4[259]: phys=0x5f7000, flags=PageTableFlags(PRESENT | WRITABLE)
+[DEBUG] kernel::memory::process_memory:   Kernel PML4[260]: phys=0x5f7000, flags=PageTableFlags(PRESENT | WRITABLE)
+[DEBUG] kernel::memory::process_memory:   Kernel PML4[509]: phys=0x5f7000, flags=PageTableFlags(PRESENT | WRITABLE)
+[DEBUG] kernel::memory::process_memory:   Kernel PML4[510]: phys=0x5f7000, flags=PageTableFlags(PRESENT | WRITABLE)
+[DEBUG] kernel::memory::process_memory:   Kernel PML4[511]: phys=0x1df000, flags=PageTableFlags(PRESENT | WRITABLE | GLOBAL)
+[DEBUG] kernel::memory::process_memory: Found 256 valid upper-half kernel PML4 entries (256-511)
+[DEBUG] kernel::memory::process_memory: Copied 256 upper-half kernel PML4 entries (256-511)
+[ INFO] kernel::memory::process_memory: PHASE2: Using master kernel PML4 for process creation
+[ INFO] kernel::memory::process_memory: PHASE2-DEBUG: Reading master PML4 from virtual address 0x280005f8000
+[ INFO] kernel::memory::process_memory: PHASE2-DEBUG: Master PML4[402] = Ok(PhysFrame[4KiB](0x5f9000))
+[ INFO] kernel::memory::process_memory: PHASE2-DEBUG: Master PML4[403] = Ok(PhysFrame[4KiB](0x5fa000))
+[ INFO] kernel::memory::process_memory: PHASE2-DEBUG: &master_pml4[403] is at 0x280005f8c98
+[ INFO] kernel::memory::process_memory: CRITICAL: Copied PML4[2] (direct phys mapping) from master with kernel-only flags: PageTableFlags(PRESENT | WRITABLE | ACCESSED)
+[ INFO] kernel::memory::process_memory: PHASE2: Copied 6 kernel-only lower-half entries (skipped userspace), PML4[0] left empty
+[ INFO] kernel::memory::process_memory: PHASE2: Created fresh PDPT for PML4[0] at frame 0x4ab2000
+[ INFO] kernel::memory::process_memory: PHASE2: PML4[402] (kernel stacks): master=PhysFrame[4KiB](0x5f9000), copied=PhysFrame[4KiB](0x5f9000)
+[ INFO] kernel::memory::process_memory: PHASE2: PML4[403] (IST stacks): master=PhysFrame[4KiB](0x5fa000), copied=PhysFrame[4KiB](0x5fa000)
+[ INFO] kernel::memory::process_memory: PHASE2: PML4[510]: master=PhysFrame[4KiB](0x5f7000), copied=PhysFrame[4KiB](0x5f7000)
+[ INFO] kernel::memory::process_memory: PHASE2: PML4[511] (kernel high-half): master=PhysFrame[4KiB](0x1df000), copied=PhysFrame[4KiB](0x1df000)
+[ INFO] kernel::memory::process_memory: PHASE2: Inherited 256 upper-half kernel mappings (256-511) from master PML4
+[ INFO] kernel::memory::process_memory: ✓ INVARIANT OK: PML4[402]=PhysFrame[4KiB](0x5f9000) != PML4[403]=PhysFrame[4KiB](0x5fa000)
+[ INFO] kernel::memory::process_memory: PHASE2: PML4[0] left empty for process-specific userspace mappings (0x0 - 0x7FFFFFFFFF)
+[ INFO] kernel::memory::process_memory: PHASE3: Skipping manual identity mapping - PML4[0] already copied from master
+[DEBUG] kernel::memory::process_memory: Creating OffsetPageTable with L4 frame 0x4ab1000 and phys_offset 0x28000000000
+[DEBUG] kernel::memory::process_memory: ProcessPageTable created with global kernel page tables
+[ INFO] kernel::elf: Loading ELF into process page table: entry=0x4000d8d4, 7 program headers
+[ INFO] kernel::elf: ELF loaded: segments end at 0x40015170, heap will start at 0x40016000
+[DEBUG] kernel::memory::stack: allocate_stack_with_privilege: size=0x10000, KERNEL_STACK_ALLOC_START=0xffffc90020000000
+[DEBUG] kernel::memory::stack: Allocating guarded stack at 0x7fffff011000, size 68 KiB
+[DEBUG] kernel::memory::stack: User stack: mapping in kernel page tables
+[DEBUG] kernel::memory::stack: Guard page at 0x7fffff011000 (unmapped)
+[DEBUG] kernel::memory::stack: Stack region: 0x7fffff012000 - 0x7fffff022000 (64 KiB)
+[DEBUG] kernel::memory::process_memory: map_user_stack_to_process: mapping stack range 0x7fffff012000 - 0x7fffff022000
+[DEBUG] kernel::memory::process_memory: ✓ Successfully mapped 16 user stack pages to process page table
+[DEBUG] kernel::process::manager: setup_argv_on_stack: argc=1, RSP=0x7fffff021ed0, argv[0] at 0x7fffff021f88, auxv with phdr=0x40 phnum=7 entry=0x4000d8d4
+[DEBUG] kernel::tls: Registered thread 6 with TLS block 0x16000
+[DEBUG] kernel::memory::kernel_stack: Mapping 128 pages for kernel stack 6
+[DEBUG] kernel::memory::kernel_stack: Allocated kernel stack 6 at 0xffffc90000307000-0xffffc90000387000 (guard at 0xffffc90000306000)
+[ INFO] kernel::process::manager: create_process_with_argv: Created process spawn_smoke_target (PID 2) with argc=1
+Added thread 6 'spawn_smoke_target' to scheduler (user: true, target_cpu: 0)
+[DEBUG] kernel::syscall::handlers: sys_waitpid: pid=2, status_ptr=0x7fffff010e88, options=0
+[DEBUG] kernel::syscall::handlers: sys_waitpid: Current process PID=1, has 1 children
+Thread 4 blocked waiting for child exit (blocked_in_syscall=true)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000eef42 CS=0x8 RSP=0xffffc900002842c8
+[ INFO] kernel::interrupts::context_switch: RING3_ENTRY: RIP=0x4000d8d4, RSP=0x7fffff021ed0, CS=0x33, SS=0x2b
+[ INFO] kernel::interrupts::context_switch: FIRST_ENTRY t6: zeroed all registers
+[ INFO] kernel::interrupts::context_switch: First userspace entry setup complete for thread 6
+[ INFO] kernel::interrupts::context_switch: First run: thread 6 entering userspace
+[ INFO] kernel::syscall::handlers: USERSPACE: sys_exit called with code: 0
+[DEBUG] kernel::syscall::handlers: sys_exit: Current thread ID from scheduler: 6
+[DEBUG] kernel::memory::stack: GuardedStack dropped (cleanup not yet implemented)
+Thread 4 unblocked by child exit, queued to cpu 0
+unblock_for_signal: Checking thread 4 (current=Some(6))
+unblock_for_signal: Thread 4 state is Ready, blocked_in_syscall=true
+unblock_for_signal: Thread 4 not BlockedOnSignal, state=Ready
+[DEBUG] kernel::task::process_task: Process 2 'spawn_smoke_target' (thread 6) exited with code 0
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000eef42 RSP=0xffffc900002842c8
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[DEBUG] kernel::syscall::handlers: complete_wait: child 2 exited with code 0, wstatus=0x0 (normal exit)
+[DEBUG] kernel::syscall::handlers: complete_wait: reap arm for child 2 (claimed)
+[DEBUG] kernel::syscall::handlers: complete_wait: Cleared blocked_in_syscall flag for thread 4
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000eef42 CS=0x8 RSP=0xffffc90000282948
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000eef42 RSP=0xffffc90000282948
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000eef42 CS=0x8 RSP=0xffffc90000282948
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000eef42 RSP=0xffffc90000282948
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000eef42 CS=0x8 RSP=0xffffc90000282648
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000eef42 RSP=0xffffc90000282648
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000eef42 CS=0x8 RSP=0xffffc90000282948
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000eef42 RSP=0xffffc90000282948
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000eef42 CS=0x8 RSP=0xffffc90000282948
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000eef42 RSP=0xffffc90000282948
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000eef42 CS=0x8 RSP=0xffffc90000282648
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000eef42 RSP=0xffffc90000282648
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000eef42 CS=0x8 RSP=0xffffc90000282948
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000eef42 RSP=0xffffc90000282948
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000eef42 CS=0x8 RSP=0xffffc90000282fb8
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000eef42 RSP=0xffffc90000282fb8
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000eef42 CS=0x8 RSP=0xffffc90000281c68
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000eef42 RSP=0xffffc90000281c68
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000eef42 CS=0x8 RSP=0xffffc90000282d68
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000eef42 RSP=0xffffc90000282d68
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000eef42 CS=0x8 RSP=0xffffc90000282d68
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000eef42 RSP=0xffffc90000282d68
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000eef42 CS=0x8 RSP=0xffffc90000282d68
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000eef42 RSP=0xffffc90000282d68
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000eef42 CS=0x8 RSP=0xffffc90000282d68
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000eef42 RSP=0xffffc90000282d68
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000eef42 CS=0x8 RSP=0xffffc90000282d68
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000eef42 RSP=0xffffc90000282d68
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000eef42 CS=0x8 RSP=0xffffc90000282d68
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000eef42 RSP=0xffffc90000282d68
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000eef42 CS=0x8 RSP=0xffffc90000282d68
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000eef42 RSP=0xffffc90000282d68
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000eef42 CS=0x8 RSP=0xffffc90000282d68
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000eef42 RSP=0xffffc90000282d68
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000eef42 CS=0x8 RSP=0xffffc90000282d68
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000eef42 RSP=0xffffc90000282d68
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000eef42 CS=0x8 RSP=0xffffc90000282d68
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000eef42 RSP=0xffffc90000282d68
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000eef42 CS=0x8 RSP=0xffffc90000282d68
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000eef42 RSP=0xffffc90000282d68
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000eef42 CS=0x8 RSP=0xffffc90000282d68
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000eef42 RSP=0xffffc90000282d68
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000eef42 CS=0x8 RSP=0xffffc90000282d68
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000eef42 RSP=0xffffc90000282d68
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000eef42 CS=0x8 RSP=0xffffc90000282d68
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000eef42 RSP=0xffffc90000282d68
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000eef42 CS=0x8 RSP=0xffffc90000282d68
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000eef42 RSP=0xffffc90000282d68
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000eef42 CS=0x8 RSP=0xffffc90000282d68
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000eef42 RSP=0xffffc90000282d68
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000eef42 CS=0x8 RSP=0xffffc90000282d68
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000eef42 RSP=0xffffc90000282d68
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000eef42 CS=0x8 RSP=0xffffc90000282d68
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000eef42 RSP=0xffffc90000282d68
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000eef42 CS=0x8 RSP=0xffffc90000282d68
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000eef42 RSP=0xffffc90000282d68
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000eef42 CS=0x8 RSP=0xffffc90000282d68
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000eef42 RSP=0xffffc90000282d68
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000eef42 CS=0x8 RSP=0xffffc90000282d68
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000eef42 RSP=0xffffc90000282d68
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000eef42 CS=0x8 RSP=0xffffc90000282d68
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000eef42 RSP=0xffffc90000282d68
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000eef42 CS=0x8 RSP=0xffffc90000282d68
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000eef42 RSP=0xffffc90000282d68
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000eef42 CS=0x8 RSP=0xffffc90000282d68
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000eef42 RSP=0xffffc90000282d68
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000eef42 CS=0x8 RSP=0xffffc90000282d68
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000eef42 RSP=0xffffc90000282d68
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x10000309a50 CS=0x8 RSP=0xffffc90000282c48
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x10000309a50 RSP=0xffffc90000282c48
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000eef42 CS=0x8 RSP=0xffffc90000282d68
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000eef42 RSP=0xffffc90000282d68
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000eef42 CS=0x8 RSP=0xffffc90000282d68
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000eef42 RSP=0xffffc90000282d68
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000eef42 CS=0x8 RSP=0xffffc90000282d68
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000eef42 RSP=0xffffc90000282d68
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000eef42 CS=0x8 RSP=0xffffc90000282d68
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000eef42 RSP=0xffffc90000282d68
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000eef42 CS=0x8 RSP=0xffffc90000282d68
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000eef42 RSP=0xffffc90000282d68
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000eef42 CS=0x8 RSP=0xffffc90000282d68
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000eef42 RSP=0xffffc90000282d68
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000eef42 CS=0x8 RSP=0xffffc90000282d68
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000eef42 RSP=0xffffc90000282d68
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000eef42 CS=0x8 RSP=0xffffc90000282d68
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000eef42 RSP=0xffffc90000282d68
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x10000309a50 CS=0x8 RSP=0xffffc90000282c48
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x10000309a50 RSP=0xffffc90000282c48
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000eef42 CS=0x8 RSP=0xffffc90000282d68
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000eef42 RSP=0xffffc90000282d68
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000eef42 CS=0x8 RSP=0xffffc90000282d68
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000eef42 RSP=0xffffc90000282d68
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000eef42 CS=0x8 RSP=0xffffc90000282d68
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000eef42 RSP=0xffffc90000282d68
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000eef42 CS=0x8 RSP=0xffffc90000282d68
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000eef42 RSP=0xffffc90000282d68
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000eef42 CS=0x8 RSP=0xffffc90000282d68
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000eef42 RSP=0xffffc90000282d68
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000eef42 CS=0x8 RSP=0xffffc90000282d68
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000eef42 RSP=0xffffc90000282d68
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000eef42 CS=0x8 RSP=0xffffc90000282d68
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000eef42 RSP=0xffffc90000282d68
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000eef42 CS=0x8 RSP=0xffffc90000282d68
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000eef42 RSP=0xffffc90000282d68
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000eef42 CS=0x8 RSP=0xffffc90000282d68
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000eef42 RSP=0xffffc90000282d68
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000eef42 CS=0x8 RSP=0xffffc90000282d68
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000eef42 RSP=0xffffc90000282d68
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000eef42 CS=0x8 RSP=0xffffc90000282d68
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000eef42 RSP=0xffffc90000282d68
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000eef42 CS=0x8 RSP=0xffffc90000282d68
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000eef42 RSP=0xffffc90000282d68
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000eef42 CS=0x8 RSP=0xffffc90000282d68
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000eef42 RSP=0xffffc90000282d68
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000eef42 CS=0x8 RSP=0xffffc90000282d68
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000eef42 RSP=0xffffc90000282d68
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000eef42 CS=0x8 RSP=0xffffc90000282d68
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000eef42 RSP=0xffffc90000282d68
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000eef42 CS=0x8 RSP=0xffffc90000282d68
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000eef42 RSP=0xffffc90000282d68
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000c421d CS=0x8 RSP=0xffffc90000282c50
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000c421d RSP=0xffffc90000282c50
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000eef42 CS=0x8 RSP=0xffffc90000282d68
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000eef42 RSP=0xffffc90000282d68
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000eef42 CS=0x8 RSP=0xffffc90000282d68
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000eef42 RSP=0xffffc90000282d68
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000eef42 CS=0x8 RSP=0xffffc90000282d68
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000eef42 RSP=0xffffc90000282d68
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000eef42 CS=0x8 RSP=0xffffc90000282d68
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000eef42 RSP=0xffffc90000282d68
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000eef42 CS=0x8 RSP=0xffffc90000282d68
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000eef42 RSP=0xffffc90000282d68
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000eef42 CS=0x8 RSP=0xffffc90000282d68
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000eef42 RSP=0xffffc90000282d68
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000eef42 CS=0x8 RSP=0xffffc90000282d68
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000eef42 RSP=0xffffc90000282d68
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[DEBUG] kernel::ipc::fd: FdTable::drop() - closing all fds and decrementing pipe counts
+[DEBUG] kernel::memory::process_memory: ProcessPageTable::new() - Current RSP: 0xffffc900002801f0
+[DEBUG] kernel::memory::process_memory: ProcessPageTable::new() - About to allocate L4 frame
+[DEBUG] kernel::memory::process_memory: Successfully allocated frame: 0x4ab1000
+[DEBUG] kernel::memory::process_memory: Allocated L4 frame: 0x4ab1000
+[DEBUG] kernel::memory::process_memory: Physical memory offset: 0x28000000000
+[DEBUG] kernel::memory::process_memory: New L4 table virtual address: 0x28004ab1000
+[DEBUG] kernel::memory::process_memory: About to create mutable reference to page table at 0x28004ab1000
+[DEBUG] kernel::memory::process_memory: Testing read access at 0x28004ab1000
+[DEBUG] kernel::memory::process_memory: Read test successful
+[DEBUG] kernel::memory::process_memory: Page table pointer: 0x28004ab1000
+[DEBUG] kernel::memory::process_memory: About to clear the new page table
+[DEBUG] kernel::memory::process_memory: Successfully cleared new page table (all entries set to unused)
+[DEBUG] kernel::memory::process_memory: ProcessPageTable::new() - Using current CR3: 0x497a000 for copying
+[DEBUG] kernel::memory::process_memory: Current L4 table virtual address: 0x2800497a000
+[DEBUG] kernel::memory::process_memory: Examining kernel page table upper half entries:
+[DEBUG] kernel::memory::process_memory:   Kernel PML4[256]: phys=0x5f7000, flags=PageTableFlags(PRESENT | WRITABLE)
+[DEBUG] kernel::memory::process_memory:   Kernel PML4[257]: phys=0x5f7000, flags=PageTableFlags(PRESENT | WRITABLE)
+[DEBUG] kernel::memory::process_memory:   Kernel PML4[258]: phys=0x5f7000, flags=PageTableFlags(PRESENT | WRITABLE)
+[DEBUG] kernel::memory::process_memory:   Kernel PML4[259]: phys=0x5f7000, flags=PageTableFlags(PRESENT | WRITABLE)
+[DEBUG] kernel::memory::process_memory:   Kernel PML4[260]: phys=0x5f7000, flags=PageTableFlags(PRESENT | WRITABLE)
+[DEBUG] kernel::memory::process_memory:   Kernel PML4[509]: phys=0x5f7000, flags=PageTableFlags(PRESENT | WRITABLE)
+[DEBUG] kernel::memory::process_memory:   Kernel PML4[510]: phys=0x5f7000, flags=PageTableFlags(PRESENT | WRITABLE)
+[DEBUG] kernel::memory::process_memory:   Kernel PML4[511]: phys=0x1df000, flags=PageTableFlags(PRESENT | WRITABLE | GLOBAL)
+[DEBUG] kernel::memory::process_memory: Found 256 valid upper-half kernel PML4 entries (256-511)
+[DEBUG] kernel::memory::process_memory: Copied 256 upper-half kernel PML4 entries (256-511)
+[ INFO] kernel::memory::process_memory: PHASE2: Using master kernel PML4 for process creation
+[ INFO] kernel::memory::process_memory: PHASE2-DEBUG: Reading master PML4 from virtual address 0x280005f8000
+[ INFO] kernel::memory::process_memory: PHASE2-DEBUG: Master PML4[402] = Ok(PhysFrame[4KiB](0x5f9000))
+[ INFO] kernel::memory::process_memory: PHASE2-DEBUG: Master PML4[403] = Ok(PhysFrame[4KiB](0x5fa000))
+[ INFO] kernel::memory::process_memory: PHASE2-DEBUG: &master_pml4[403] is at 0x280005f8c98
+[ INFO] kernel::memory::process_memory: CRITICAL: Copied PML4[2] (direct phys mapping) from master with kernel-only flags: PageTableFlags(PRESENT | WRITABLE | ACCESSED)
+[ INFO] kernel::memory::process_memory: PHASE2: Copied 6 kernel-only lower-half entries (skipped userspace), PML4[0] left empty
+[ INFO] kernel::memory::process_memory: PHASE2: Created fresh PDPT for PML4[0] at frame 0x4ab2000
+[ INFO] kernel::memory::process_memory: PHASE2: PML4[402] (kernel stacks): master=PhysFrame[4KiB](0x5f9000), copied=PhysFrame[4KiB](0x5f9000)
+[ INFO] kernel::memory::process_memory: PHASE2: PML4[403] (IST stacks): master=PhysFrame[4KiB](0x5fa000), copied=PhysFrame[4KiB](0x5fa000)
+[ INFO] kernel::memory::process_memory: PHASE2: PML4[510]: master=PhysFrame[4KiB](0x5f7000), copied=PhysFrame[4KiB](0x5f7000)
+[ INFO] kernel::memory::process_memory: PHASE2: PML4[511] (kernel high-half): master=PhysFrame[4KiB](0x1df000), copied=PhysFrame[4KiB](0x1df000)
+[ INFO] kernel::memory::process_memory: PHASE2: Inherited 256 upper-half kernel mappings (256-511) from master PML4
+[ INFO] kernel::memory::process_memory: ✓ INVARIANT OK: PML4[402]=PhysFrame[4KiB](0x5f9000) != PML4[403]=PhysFrame[4KiB](0x5fa000)
+[ INFO] kernel::memory::process_memory: PHASE2: PML4[0] left empty for process-specific userspace mappings (0x0 - 0x7FFFFFFFFF)
+[ INFO] kernel::memory::process_memory: PHASE3: Skipping manual identity mapping - PML4[0] already copied from master
+[DEBUG] kernel::memory::process_memory: Creating OffsetPageTable with L4 frame 0x4ab1000 and phys_offset 0x28000000000
+[DEBUG] kernel::memory::process_memory: ProcessPageTable created with global kernel page tables
+[ INFO] kernel::elf: Loading ELF into process page table: entry=0x4001d454, 7 program headers
+[ INFO] kernel::elf: ELF loaded: segments end at 0x400291a0, heap will start at 0x4002a000
+[DEBUG] kernel::memory::stack: allocate_stack_with_privilege: size=0x10000, KERNEL_STACK_ALLOC_START=0xffffc90020000000
+[DEBUG] kernel::memory::stack: Allocating guarded stack at 0x7fffff022000, size 68 KiB
+[DEBUG] kernel::memory::stack: User stack: mapping in kernel page tables
+[DEBUG] kernel::memory::stack: Guard page at 0x7fffff022000 (unmapped)
+[DEBUG] kernel::memory::stack: Stack region: 0x7fffff023000 - 0x7fffff033000 (64 KiB)
+[DEBUG] kernel::memory::process_memory: map_user_stack_to_process: mapping stack range 0x7fffff023000 - 0x7fffff033000
+[DEBUG] kernel::memory::process_memory: ✓ Successfully mapped 16 user stack pages to process page table
+[DEBUG] kernel::process::manager: setup_argv_on_stack: argc=1, RSP=0x7fffff032ed0, argv[0] at 0x7fffff032f90, auxv with phdr=0x40 phnum=7 entry=0x4001d454
+[DEBUG] kernel::tls: Registered thread 7 with TLS block 0x17000
+[DEBUG] kernel::memory::kernel_stack: Mapping 128 pages for kernel stack 7
+[DEBUG] kernel::memory::kernel_stack: Allocated kernel stack 7 at 0xffffc90000388000-0xffffc90000408000 (guard at 0xffffc90000387000)
+[ INFO] kernel::process::manager: create_process_with_argv: Created process bsshd (PID 3) with argc=1
+Added thread 7 'bsshd' to scheduler (user: true, target_cpu: 0)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000eef42 CS=0x8 RSP=0xffffc90000282948
+[ INFO] kernel::interrupts::context_switch: RING3_ENTRY: RIP=0x4001d454, RSP=0x7fffff032ed0, CS=0x33, SS=0x2b
+[ INFO] kernel::interrupts::context_switch: FIRST_ENTRY t7: zeroed all registers
+[ INFO] kernel::interrupts::context_switch: First userspace entry setup complete for thread 7
+[ INFO] kernel::interrupts::context_switch: First run: thread 7 entering userspace
+[DEBUG] kernel::syscall::socket: sys_socket: called with domain=2, type=1
+[ INFO] kernel::syscall::socket: TCP: Socket created fd=3
+[DEBUG] kernel::syscall::socket: TCP socket: returning to userspace fd=3
+[ INFO] kernel::syscall::socket: TCP: Socket bound to port 2222
+[DEBUG] kernel::syscall::socket: sys_listen: fd=3, backlog=5
+[DEBUG] kernel::net::tcp: TCP: Listening on port 2222 (backlog=5)
+[ INFO] kernel::syscall::socket: TCP: Socket now listening on port 2222
+[DEBUG] kernel::syscall::socket: sys_accept: fd=3
+[DEBUG] kernel::syscall::socket: TCP accept: fd=3 entering blocking path, thread=7
+[ INFO] kernel::syscall::socket: TCP_BLOCK: Thread 7 entering blocked state for accept on port 2222
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 7: RIP=0x100000eef42 CS=0x8 RSP=0xffffc90000407458
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000eef42 RSP=0xffffc90000282948
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000eef42 CS=0x8 RSP=0xffffc90000282648
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000eef42 RSP=0xffffc90000282648
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000eef42 CS=0x8 RSP=0xffffc90000282948
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000eef42 RSP=0xffffc90000282948
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000eef42 CS=0x8 RSP=0xffffc90000282948
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000eef42 RSP=0xffffc90000282948
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000eef42 CS=0x8 RSP=0xffffc90000282948
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000eef42 RSP=0xffffc90000282948
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000eef42 CS=0x8 RSP=0xffffc90000282948
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000eef42 RSP=0xffffc90000282948
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000eef42 CS=0x8 RSP=0xffffc90000282fb8
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000eef42 RSP=0xffffc90000282fb8
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000eef42 CS=0x8 RSP=0xffffc90000282d68
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000eef42 RSP=0xffffc90000282d68
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000eef42 CS=0x8 RSP=0xffffc90000282d68
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000eef42 RSP=0xffffc90000282d68
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000eef42 CS=0x8 RSP=0xffffc90000282d68
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000eef42 RSP=0xffffc90000282d68
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000eef42 CS=0x8 RSP=0xffffc90000282d68
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000eef42 RSP=0xffffc90000282d68
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000eef42 CS=0x8 RSP=0xffffc90000282d68
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000eef42 RSP=0xffffc90000282d68
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000eef42 CS=0x8 RSP=0xffffc90000282d68
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000eef42 RSP=0xffffc90000282d68
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000eef42 CS=0x8 RSP=0xffffc90000282d68
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000eef42 RSP=0xffffc90000282d68
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000eef42 CS=0x8 RSP=0xffffc90000282d68
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000eef42 RSP=0xffffc90000282d68
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000eef42 CS=0x8 RSP=0xffffc90000282d68
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000eef42 RSP=0xffffc90000282d68
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000eef42 CS=0x8 RSP=0xffffc90000282d68
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000eef42 RSP=0xffffc90000282d68
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000eef42 CS=0x8 RSP=0xffffc90000282d68
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000eef42 RSP=0xffffc90000282d68
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000eef42 CS=0x8 RSP=0xffffc90000282d68
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000eef42 RSP=0xffffc90000282d68
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000eef42 CS=0x8 RSP=0xffffc90000282d68
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000eef42 RSP=0xffffc90000282d68
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000eef42 CS=0x8 RSP=0xffffc90000282d68
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000eef42 RSP=0xffffc90000282d68
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000eef42 CS=0x8 RSP=0xffffc90000282d68
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000eef42 RSP=0xffffc90000282d68
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000eef42 CS=0x8 RSP=0xffffc90000282d68
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000eef42 RSP=0xffffc90000282d68
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000eef42 CS=0x8 RSP=0xffffc90000282d68
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000eef42 RSP=0xffffc90000282d68
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000eef42 CS=0x8 RSP=0xffffc90000282d68
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000eef42 RSP=0xffffc90000282d68
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000eef42 CS=0x8 RSP=0xffffc90000282d68
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000eef42 RSP=0xffffc90000282d68
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000eef42 CS=0x8 RSP=0xffffc90000282d68
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000eef42 RSP=0xffffc90000282d68
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000eef42 CS=0x8 RSP=0xffffc90000282d68
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000eef42 RSP=0xffffc90000282d68
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000eef42 CS=0x8 RSP=0xffffc90000282d68
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000eef42 RSP=0xffffc90000282d68
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000eef42 CS=0x8 RSP=0xffffc90000282d68
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000eef42 RSP=0xffffc90000282d68
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000eef42 CS=0x8 RSP=0xffffc90000282d68
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000eef42 RSP=0xffffc90000282d68
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000eef42 CS=0x8 RSP=0xffffc90000282d68
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000eef42 RSP=0xffffc90000282d68
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000eef42 CS=0x8 RSP=0xffffc90000282d68
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000eef42 RSP=0xffffc90000282d68
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000eef42 CS=0x8 RSP=0xffffc90000282d68
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000eef42 RSP=0xffffc90000282d68
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000eef42 CS=0x8 RSP=0xffffc90000282d68
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000eef42 RSP=0xffffc90000282d68
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000eef42 CS=0x8 RSP=0xffffc90000282d68
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000eef42 RSP=0xffffc90000282d68
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000eef42 CS=0x8 RSP=0xffffc90000282d68
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000eef42 RSP=0xffffc90000282d68
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000eef42 CS=0x8 RSP=0xffffc90000282d68
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000eef42 RSP=0xffffc90000282d68
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000eef42 CS=0x8 RSP=0xffffc90000282d68
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000eef42 RSP=0xffffc90000282d68
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000eef42 CS=0x8 RSP=0xffffc90000282d68
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000eef42 RSP=0xffffc90000282d68
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000eef42 CS=0x8 RSP=0xffffc90000282d68
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000eef42 RSP=0xffffc90000282d68
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000eef42 CS=0x8 RSP=0xffffc90000282d68
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000eef42 RSP=0xffffc90000282d68
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000eef42 CS=0x8 RSP=0xffffc90000282d68
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000eef42 RSP=0xffffc90000282d68
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000eef42 CS=0x8 RSP=0xffffc90000282d68
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000eef42 RSP=0xffffc90000282d68
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000eef42 CS=0x8 RSP=0xffffc90000282d68
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000eef42 RSP=0xffffc90000282d68
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000eef42 CS=0x8 RSP=0xffffc90000282d68
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000eef42 RSP=0xffffc90000282d68
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000eef42 CS=0x8 RSP=0xffffc90000282d68
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000eef42 RSP=0xffffc90000282d68
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000eef42 CS=0x8 RSP=0xffffc90000282d68
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000eef42 RSP=0xffffc90000282d68
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000eef42 CS=0x8 RSP=0xffffc90000282d68
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000eef42 RSP=0xffffc90000282d68
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000eef42 CS=0x8 RSP=0xffffc90000282d68
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000eef42 RSP=0xffffc90000282d68
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000eef42 CS=0x8 RSP=0xffffc90000282d68
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000eef42 RSP=0xffffc90000282d68
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000eef42 CS=0x8 RSP=0xffffc90000282d68
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000eef42 RSP=0xffffc90000282d68
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000eef42 CS=0x8 RSP=0xffffc90000282d68
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000eef42 RSP=0xffffc90000282d68
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000eef42 CS=0x8 RSP=0xffffc90000282d68
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000eef42 RSP=0xffffc90000282d68
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000eef42 CS=0x8 RSP=0xffffc90000282d68
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000eef42 RSP=0xffffc90000282d68
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000eef42 CS=0x8 RSP=0xffffc90000282d68
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000eef42 RSP=0xffffc90000282d68
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000eef42 CS=0x8 RSP=0xffffc90000282d68
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000eef42 RSP=0xffffc90000282d68
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000eef42 CS=0x8 RSP=0xffffc90000282d68
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000eef42 RSP=0xffffc90000282d68
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000eef42 CS=0x8 RSP=0xffffc90000282d68
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000eef42 RSP=0xffffc90000282d68
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000eef42 CS=0x8 RSP=0xffffc90000282d68
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000eef42 RSP=0xffffc90000282d68
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000eef42 CS=0x8 RSP=0xffffc90000282d68
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000eef42 RSP=0xffffc90000282d68
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000eef42 CS=0x8 RSP=0xffffc90000282d68
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000eef42 RSP=0xffffc90000282d68
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000eef42 CS=0x8 RSP=0xffffc90000282d68
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000eef42 RSP=0xffffc90000282d68
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000c3dcd CS=0x8 RSP=0xffffc90000282c40
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000c3dcd RSP=0xffffc90000282c40
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000eef42 CS=0x8 RSP=0xffffc90000282d68
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000eef42 RSP=0xffffc90000282d68
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000eef42 CS=0x8 RSP=0xffffc90000282d68
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000eef42 RSP=0xffffc90000282d68
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000eef42 CS=0x8 RSP=0xffffc90000282d68
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000eef42 RSP=0xffffc90000282d68
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000eef42 CS=0x8 RSP=0xffffc90000282d68
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000eef42 RSP=0xffffc90000282d68
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000eef42 CS=0x8 RSP=0xffffc90000282d68
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000eef42 RSP=0xffffc90000282d68
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000eef42 CS=0x8 RSP=0xffffc90000282d68
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000eef42 RSP=0xffffc90000282d68
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000eef42 CS=0x8 RSP=0xffffc90000282d68
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000eef42 RSP=0xffffc90000282d68
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000eef42 CS=0x8 RSP=0xffffc90000282d68
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000eef42 RSP=0xffffc90000282d68
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000eef42 CS=0x8 RSP=0xffffc90000282d68
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000eef42 RSP=0xffffc90000282d68
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 4: RIP=0x100000eef42 CS=0x8 RSP=0xffffc90000282d68
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 4: RIP=0x100000eef42 RSP=0xffffc90000282d68
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x497a000 for blocked-in-syscall kernel return (thread 4)

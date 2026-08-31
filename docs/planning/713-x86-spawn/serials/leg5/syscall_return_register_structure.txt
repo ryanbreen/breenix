@@ -1,0 +1,15 @@
+   Compiling kernel v0.1.0 (/Users/wrb/fun/code/breenix/.claude/worktrees/wf_d33c398e-3a7-4/kernel)
+   Compiling breenix v0.1.0 (/Users/wrb/fun/code/breenix/.claude/worktrees/wf_d33c398e-3a7-4)
+    Finished `release` profile [optimized] target(s) in 3.40s
+     Running tests/syscall_return_register_structure.rs (target/release/deps/syscall_return_register_structure-cbf82bfb36310e9f)
+
+running 6 tests
+test deliberately_broken_variants_fail_the_rules ... ok
+test comments_and_strings_do_not_forge_findings ... ok
+test correct_shapes_are_admitted ... ok
+test every_returning_trap_declares_the_return_register_write ... ok
+test no_trap_names_its_return_register_as_input_only ... ok
+test the_census_sees_the_repository_s_syscall_traps ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.10s
+

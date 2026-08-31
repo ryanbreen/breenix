@@ -120,6 +120,8 @@ fn main() {
     run_wait_stress_if_enabled();
     #[cfg(target_arch = "aarch64")]
     run_trace_diag_probe_if_enabled();
+    #[cfg(target_arch = "x86_64")]
+    run_spawn_smoke();
     start_bsshd();
     run_boot_script();
     #[cfg(target_arch = "aarch64")]
@@ -465,6 +467,56 @@ fn start_bounce() {
         }
         Err(_) => {
             print!("[init] Warning: failed to start bounce\n");
+        }
+    }
+}
+
+/// #713: a minimal, self-contained proof that spawn() actually creates,
+/// execs, runs, exits, and can be reaped on x86 -- independent of
+/// run_boot_script()'s own bsh/init.js chain, which drags in seven further,
+/// previously-unaudited x86 spawns and is deliberately out of scope here
+/// (see #722). /bin/spawn_smoke_target is a dedicated, always-built
+/// userspace binary (userspace/programs/src/spawn_smoke_target.rs) that
+/// exits 0 unconditionally -- deliberately NOT busybox's /bin/true, which
+/// depends on a musl-cross toolchain that isn't guaranteed present in
+/// every build environment this gate runs in.
+///
+/// Waits on the child DIRECTLY (mirroring run_exec_smoke()'s own pattern,
+/// aarch64-only, elsewhere in this file) rather than fire-and-forget: an
+/// earlier version left this for the ordinary `waitpid(-1, ...)` reap loop
+/// at the end of main() to report, which does not run until AFTER
+/// run_boot_script() returns -- accidentally entangling this arc's own
+/// fast, narrow evidence with the boot-script chain's much slower (and
+/// deliberately out-of-scope, #722) completion time. `/bin/bsh` alone is
+/// larger than anything loaded earlier in boot and its own chain adds
+/// seven further ELF loads; none of that has any bearing on whether
+/// spawn() itself works, so this no longer waits on it.
+///
+/// Unlike this file's other fire-and-forget `let _ = waitpid(...)` call
+/// sites, this one's own success literal is a gate pin claiming a genuine
+/// reap ("the full create+exec+run+exit+reap path end to end") -- so the
+/// `waitpid` return value is checked honestly: only an `Ok` reap prints the
+/// exited-code literal the gate asserts on, and a `waitpid` failure (e.g.
+/// the child was silently never registered as this process's child) prints
+/// a distinct, differently-worded literal instead of silently reusing the
+/// pre-zeroed `status` to fabricate "exited (code 0)".
+#[cfg(target_arch = "x86_64")]
+fn run_spawn_smoke() {
+    match spawn(b"/bin/spawn_smoke_target\0") {
+        Ok(child_pid) => {
+            let mut status: i32 = 0;
+            match waitpid(child_pid.raw() as i32, &mut status as *mut i32, 0) {
+                Ok(_) => {
+                    let exit_code = (status >> 8) & 0xFF;
+                    print!("[init] spawn smoke: exited (code {})\n", exit_code);
+                }
+                Err(e) => {
+                    print!("[init] Warning: spawn smoke reap failed: {}\n", e);
+                }
+            }
+        }
+        Err(e) => {
+            print!("[init] Warning: failed to start spawn smoke: {}\n", e);
         }
     }
 }

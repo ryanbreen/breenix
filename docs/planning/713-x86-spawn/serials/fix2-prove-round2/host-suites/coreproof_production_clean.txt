@@ -1,0 +1,13 @@
+   Compiling kernel v0.1.0 (/Users/wrb/fun/code/breenix/.claude/worktrees/wf_a617a050-8c9-4/kernel)
+   Compiling breenix v0.1.0 (/Users/wrb/fun/code/breenix/.claude/worktrees/wf_a617a050-8c9-4)
+    Finished `release` profile [optimized] target(s) in 3.29s
+     Running tests/coreproof_production_clean.rs (target/release/deps/coreproof_production_clean-cc682178eb6ca50f)
+
+running 4 tests
+test no_prohibited_file_carries_a_seam ... ok
+test production_kernel_carries_no_harness ... ok
+test the_seam_ratchet_reddens_on_a_planted_seam ... ok
+test the_scan_reddens_on_a_build_that_carries_the_harness ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.64s
+

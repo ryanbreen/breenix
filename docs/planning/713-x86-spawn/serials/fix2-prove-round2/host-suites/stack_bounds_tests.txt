@@ -1,0 +1,26 @@
+   Compiling kernel v0.1.0 (/Users/wrb/fun/code/breenix/.claude/worktrees/wf_a617a050-8c9-4/kernel)
+   Compiling breenix v0.1.0 (/Users/wrb/fun/code/breenix/.claude/worktrees/wf_a617a050-8c9-4)
+    Finished `release` profile [optimized] target(s) in 3.85s
+     Running tests/stack_bounds_tests.rs (target/release/deps/stack_bounds_tests-31df55a9a00a4b56)
+
+running 17 tests
+test test_boundary_address_is_non_canonical ... ok
+test test_fix_gte_prevents_allocation_at_boundary ... ok
+test test_fix_bounds_check_before_allocation ... ok
+test test_kernel_stack_bounds_at_boundary_fails ... ok
+test test_max_valid_allocation ... ok
+test test_kernel_stack_bounds_normal_allocation ... ok
+test test_saturating_add_prevents_overflow ... ok
+test test_single_page_allocation ... ok
+test test_kernel_stack_bounds_one_byte_before_boundary_succeeds ... ok
+test test_user_stack_bounds_consecutive_allocations ... ok
+test test_user_stack_bounds_exactly_at_boundary_fails ... ok
+test test_user_stack_bounds_one_byte_before_boundary_succeeds ... ok
+test test_user_stack_bounds_normal_allocation ... ok
+test test_user_stack_bounds_overflow_protection ... ok
+test test_user_stack_bounds_state_not_modified_on_error ... ok
+test test_user_stack_bounds_past_boundary_fails ... ok
+test test_zero_size_allocation ... ok
+
+test result: ok. 17 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

@@ -2522,6 +2522,228 @@ pub fn sys_execv_with_frame(
     }
 }
 
+/// sys_spawn - Create a new process directly from an ELF path (no fork).
+///
+/// x86_64 counterpart to aarch64's `sys_spawn_aarch64`
+/// (`kernel/src/arch_impl/aarch64/syscall_entry.rs`). Avoids fork+exec
+/// entirely: the child's address space, ELF image and argv/envp/auxv stack
+/// are built directly by `ProcessManager::spawn_process`, and the child is
+/// handed to the scheduler only after its main thread is confirmed to
+/// exist (#713 precheck C2 — a process created but never scheduled is a
+/// hard error, not a degraded success: init's `waitpid` loop has no exit arm
+/// for a child that never runs).
+///
+/// arg1 = path_ptr (null-terminated C string to ELF binary path)
+/// arg2 = argv_ptr (null-terminated array of string pointers, or NULL)
+///
+/// Returns: child PID on success, or `SyscallResult::Err(errno)` with a
+/// positive errno (the negative-`i64`-as-`u64` return convention belongs to
+/// aarch64's raw-syscall encoding, not this arch's `SyscallResult`).
+#[cfg(target_arch = "x86_64")]
+pub fn sys_spawn(path_ptr: u64, argv_ptr: u64) -> SyscallResult {
+    use super::errno::{EFAULT, EINVAL, EIO, EISDIR, ENOENT, ENOMEM, ESRCH};
+
+    if path_ptr == 0 {
+        return SyscallResult::Err(EFAULT as u64);
+    }
+
+    // Read the path from userspace. 256 bytes matches sys_execv_with_frame's
+    // program-name budget above.
+    let path_bytes = match copy_string_from_user(path_ptr, 256) {
+        Ok(bytes) => bytes,
+        Err(_) => return SyscallResult::Err(EFAULT as u64),
+    };
+    let path_len = path_bytes
+        .iter()
+        .position(|&b| b == 0)
+        .unwrap_or(path_bytes.len());
+    let program_path = match core::str::from_utf8(&path_bytes[..path_len]) {
+        Ok(s) => s,
+        Err(_) => return SyscallResult::Err(EINVAL as u64),
+    };
+
+    // Read argv from userspace (mirrors sys_execv_with_frame's own loop above,
+    // same MAX_ARGS/MAX_ARG_LEN budget; not factored into a shared helper —
+    // #713 spec section 2.1 marks that pure hygiene, not load-bearing for
+    // this fix, and it is skipped here to keep the diff minimal).
+    let mut argv_vec: Vec<Vec<u8>> = Vec::new();
+    if argv_ptr != 0 {
+        const MAX_ARGS: usize = 64;
+        const MAX_ARG_LEN: usize = 4096;
+
+        for i in 0..MAX_ARGS {
+            let ptr_addr = match argv_ptr.checked_add((i * 8) as u64) {
+                Some(addr) => addr,
+                None => return SyscallResult::Err(EFAULT as u64),
+            };
+            let arg_ptr_bytes = match copy_from_user(ptr_addr, 8) {
+                Ok(bytes) => bytes,
+                Err(_) => return SyscallResult::Err(EFAULT as u64),
+            };
+            let arg_ptr = u64::from_le_bytes([
+                arg_ptr_bytes[0],
+                arg_ptr_bytes[1],
+                arg_ptr_bytes[2],
+                arg_ptr_bytes[3],
+                arg_ptr_bytes[4],
+                arg_ptr_bytes[5],
+                arg_ptr_bytes[6],
+                arg_ptr_bytes[7],
+            ]);
+
+            if arg_ptr == 0 {
+                break;
+            }
+
+            let arg_bytes = match copy_string_from_user(arg_ptr, MAX_ARG_LEN) {
+                Ok(bytes) => bytes,
+                Err(_) => return SyscallResult::Err(EFAULT as u64),
+            };
+            let arg_len = arg_bytes
+                .iter()
+                .position(|&b| b == 0)
+                .unwrap_or(arg_bytes.len());
+            let mut arg = arg_bytes[..arg_len].to_vec();
+            arg.push(0);
+            argv_vec.push(arg);
+        }
+    }
+    if argv_vec.is_empty() {
+        let mut arg0 = program_path.as_bytes().to_vec();
+        arg0.push(0);
+        argv_vec.push(arg0);
+    }
+
+    // Resolve the /bin/ prefix inline (mirrors sys_spawn_aarch64's own inline
+    // resolution) and load via the production-safe, zero-feature ext2 reader.
+    // Deliberately NOT load_elf_from_ext2 above: that helper is
+    // #[cfg(feature = "testing")]-gated, and calling it here would make
+    // sys_spawn silently ENOSYS-shaped in the zero-feature production build
+    // while looking implemented (#713 anti-vacuity / precheck section 4.6).
+    let resolved_path = if program_path.contains('/') {
+        alloc::string::String::from(program_path)
+    } else {
+        alloc::format!("/bin/{}", program_path)
+    };
+
+    let elf_vec = match crate::boot::init_image::read_init_from_ext2(&resolved_path) {
+        Ok(data) => data,
+        Err(msg) => {
+            let errno = match msg {
+                "init not found" => ENOENT,
+                "init is a directory" => EISDIR,
+                _ => EIO,
+            };
+            return SyscallResult::Err(errno as u64);
+        }
+    };
+    let elf_data = elf_vec.as_slice();
+
+    // Reclaim scheduler-owned kernel stacks and deferred process resources
+    // BEFORE consuming another finite kernel-stack pool slot (#713 precheck
+    // C8, mirrors sys_fork_with_parent_context's ordering and its own comment
+    // above; the PM lock is not held across either call).
+    crate::task::process_task::reclaim_deferred_process_resources();
+    crate::task::scheduler::reclaim_terminated_threads();
+
+    let current_thread_id = match crate::task::scheduler::current_thread_id() {
+        Some(id) => id,
+        None => return SyscallResult::Err(ESRCH as u64),
+    };
+
+    // Window 1: look up the caller's PID under the PM lock, then drop it — no
+    // I/O and no scheduler call inside this lock (#713 precheck C6).
+    let parent_pid = {
+        let manager_guard = crate::process::manager();
+        match *manager_guard {
+            Some(ref manager) => match manager.find_process_by_thread(current_thread_id) {
+                Some((pid, _)) => pid,
+                None => return SyscallResult::Err(ESRCH as u64),
+            },
+            None => return SyscallResult::Err(ENOMEM as u64),
+        }
+    };
+
+    let short_name = program_path
+        .rsplit('/')
+        .next()
+        .unwrap_or(program_path)
+        .trim_end_matches(".elf");
+    let process_name = alloc::string::String::from(short_name);
+    let argv_slices: Vec<&[u8]> = argv_vec.iter().map(|v| v.as_slice()).collect();
+
+    // Window 2: create the child under the PM lock. No arch_without_interrupts
+    // / without_interrupts wrapper here — matches creation.rs's documented
+    // reasoning (masking around process creation risks a MEMORY_INFO
+    // lock-order deadlock against concurrent frame allocation) and
+    // sys_spawn_aarch64's own comment that the PM lock alone is sufficient
+    // synchronization (#713 precheck C5/C6).
+    let child_pid = {
+        let mut manager_guard = crate::process::manager();
+        match *manager_guard {
+            Some(ref mut manager) => {
+                manager.spawn_process(parent_pid, process_name, elf_data, &argv_slices)
+            }
+            None => Err("Process manager not available"),
+        }
+    };
+
+    let child_pid = match child_pid {
+        Ok(pid) => pid,
+        Err("Parent process not found") => return SyscallResult::Err(ESRCH as u64),
+        Err(_) => return SyscallResult::Err(ENOMEM as u64),
+    };
+
+    // Window 3: publish the child's main thread to the scheduler. A missing
+    // main thread is a hard failure, not a degraded success (#713 precheck
+    // C2) — tear the row down here, under the same lock that discovered the
+    // problem, exactly like ProcessManager::hold_init_publication's own
+    // failure arm.
+    //
+    // Undo all three creation effects, in reverse-chronological (LIFO) order
+    // of when spawn_process/create_process_with_argv performed them: the
+    // parent's `children` entry was pushed LAST (spawn_process), the
+    // ready-queue entry second-to-last (create_process_with_argv), and the
+    // row itself first (build_process_with_argv_at's insert, undone here by
+    // `remove_process`). Leaving the `children` entry dangling would make
+    // the parent's later `waitpid(-1)` block forever instead of returning
+    // ECHILD: the `children.is_empty()` guard would no longer fire, and the
+    // row lookup for the phantom child would just silently skip it.
+    let scheduler_thread = {
+        let mut manager_guard = crate::process::manager();
+        match *manager_guard {
+            Some(ref mut manager) => {
+                let thread = manager.get_process_mut(child_pid).and_then(|process| {
+                    process
+                        .main_thread
+                        .as_mut()
+                        .map(|main_thread| Box::new(main_thread.publish_to_scheduler()))
+                });
+                if thread.is_none() {
+                    if let Some(parent) = manager.get_process_mut(parent_pid) {
+                        parent.children.retain(|&pid| pid != child_pid);
+                    }
+                    manager.remove_from_ready_queue(child_pid);
+                    manager.remove_process(child_pid);
+                }
+                thread
+            }
+            None => None,
+        }
+    };
+
+    let scheduler_thread = match scheduler_thread {
+        Some(thread) => thread,
+        None => return SyscallResult::Err(ENOMEM as u64),
+    };
+
+    // Outside every PM window, matching #713 precheck C6 and creation.rs's own
+    // "spawn() internally uses without_interrupts" note.
+    crate::task::scheduler::spawn(scheduler_thread);
+
+    SyscallResult::Ok(child_pid.as_u64())
+}
+
 /// sys_exec - Replace the current process with a new program (deprecated)
 ///
 /// This implements the exec() family of system calls, which replace the current

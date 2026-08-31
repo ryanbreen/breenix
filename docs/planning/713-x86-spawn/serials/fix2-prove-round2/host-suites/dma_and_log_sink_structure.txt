@@ -1,0 +1,13 @@
+   Compiling kernel v0.1.0 (/Users/wrb/fun/code/breenix/.claude/worktrees/wf_a617a050-8c9-4/kernel)
+   Compiling breenix v0.1.0 (/Users/wrb/fun/code/breenix/.claude/worktrees/wf_a617a050-8c9-4)
+    Finished `release` profile [optimized] target(s) in 3.52s
+     Running tests/dma_and_log_sink_structure.rs (target/release/deps/dma_and_log_sink_structure-d0bed977f6cd3f27)
+
+running 4 tests
+test logger_validator_rejects_blocking_framebuffer_lock ... ok
+test virtqueue_validator_rejects_log_and_continue_shape ... ok
+test virtqueue_dma_ring_allocation_fails_closed ... ok
+test framebuffer_log_sink_is_nonblocking_and_bounded ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

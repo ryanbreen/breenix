@@ -1,0 +1,17 @@
+   Compiling kernel v0.1.0 (/Users/wrb/fun/code/breenix/.claude/worktrees/wf_d33c398e-3a7-4/kernel)
+   Compiling breenix v0.1.0 (/Users/wrb/fun/code/breenix/.claude/worktrees/wf_d33c398e-3a7-4)
+    Finished `release` profile [optimized] target(s) in 3.22s
+     Running tests/tty_oracle_structure.rs (target/release/deps/tty_oracle_structure-332d87a8c88619e8)
+
+running 8 tests
+test a_boot_that_drove_nothing_cannot_pass_the_gate ... ok
+test the_gate_carries_the_668_err_trap ... ok
+test full_test_phase_two_does_not_accept_a_bare_pty_unlock_as_a_shell ... ok
+test init_launches_the_oracle_on_aarch64 ... ok
+test the_gate_measures_the_profile_that_ships ... ok
+test the_gate_scores_exactly_the_arms_the_oracle_drives ... ok
+test the_oracle_tally_matches_its_arm_census ... ok
+test deliberately_broken_variants_fail_the_ratchets ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

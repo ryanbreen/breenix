@@ -590,6 +590,230 @@ impl ProcessManager {
         self.create_init_process_at(ProcessId::new(RESERVED_INIT_PID), name, elf_data)
     }
 
+    /// Create a new process from an ELF binary with argc/argv support (x86_64 version).
+    ///
+    /// #713: x86 had no argv-carrying process-creation entry point before this — only
+    /// `create_process`/`build_process_at` (no argv) existed. This is assembled from
+    /// `build_process_at`'s page-table/ELF-load block plus `exec_process_with_argv`'s
+    /// `setup_argv_on_stack` call, but uses `build_process_at`'s bump-allocated
+    /// `GuardedStack` stack convention throughout rather than `exec_process_with_argv`'s
+    /// fixed-address manual frame loop + fabricated dummy `GuardedStack` (precheck C4):
+    /// `process.stack` must genuinely custody the mapped stack region so P4
+    /// scheduler-single-ownership's Drop-based cleanup (#583) actually reclaims it
+    /// instead of leaking the frames behind a stack object that does not describe
+    /// what got mapped.
+    ///
+    /// Precheck C14: the stack VA still comes from `build_process_at`'s
+    /// never-reclaiming bump allocator (`stack::allocate_stack_with_privilege`,
+    /// region `USER_STACK_REGION_START`, ~68 KiB consumed per process, 16 MiB total
+    /// per `kernel/src/memory/stack.rs`) — a long-running x86 session that spawns and
+    /// reaps repeatedly will exhaust that VA region after roughly 240 process
+    /// creations. Tracked as its own follow-up issue; not fixed here.
+    #[cfg(target_arch = "x86_64")]
+    pub fn create_process_with_argv(
+        &mut self,
+        name: String,
+        elf_data: &[u8],
+        argv: &[&[u8]],
+    ) -> Result<ProcessId, &'static str> {
+        let pid = self.allocate_ordinary_pid();
+        self.build_process_with_argv_at(pid, name, elf_data, argv)?;
+        self.ready_queue.push(pid);
+        Ok(pid)
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    fn build_process_with_argv_at(
+        &mut self,
+        pid: ProcessId,
+        name: String,
+        elf_data: &[u8],
+        argv: &[&[u8]],
+    ) -> Result<(), &'static str> {
+        // --- Page table + ELF load (build_process_at's block) ---
+        let mut page_table = Box::new(
+            crate::memory::process_memory::ProcessPageTable::new().map_err(|e| {
+                log::error!(
+                    "create_process_with_argv: Failed to create process page table for PID {}: {}",
+                    pid.as_u64(),
+                    e
+                );
+                "Failed to create process page table"
+            })?,
+        );
+
+        let loaded_elf = elf::load_elf_into_page_table(elf_data, page_table.as_mut())?;
+
+        // Restore kernel low-half mappings after ELF load. Same fixup
+        // build_process_at applies, and for the same reason: the ELF loader may
+        // have created page tables that don't preserve the kernel's own mappings.
+        {
+            use x86_64::structures::paging::{Page, PageTableFlags, PhysFrame, Size4KiB};
+            use x86_64::VirtAddr;
+
+            let kernel_start = 0x100000u64;
+            let kernel_end = 0x300000u64;
+
+            for addr in (kernel_start..kernel_end).step_by(0x1000) {
+                let page = Page::<Size4KiB>::containing_address(VirtAddr::new(addr));
+                let frame =
+                    PhysFrame::<Size4KiB>::containing_address(x86_64::PhysAddr::new(addr));
+
+                if let Some(existing_frame) = page_table.translate_page(VirtAddr::new(addr)) {
+                    if existing_frame.as_u64() == addr {
+                        continue;
+                    }
+                }
+
+                let flags = if addr < 0x200000 {
+                    PageTableFlags::PRESENT | PageTableFlags::GLOBAL
+                } else {
+                    PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::GLOBAL
+                };
+
+                if let Err(e) = page_table.map_page(page, frame, flags) {
+                    log::error!(
+                        "create_process_with_argv: Failed to restore kernel mapping at {:#x}: {}",
+                        addr,
+                        e
+                    );
+                    return Err("Failed to restore kernel mappings");
+                }
+            }
+
+            if page_table.translate_page(VirtAddr::new(0x100000)).is_none() {
+                log::error!("create_process_with_argv: Kernel still not mapped after restoration!");
+                return Err("Kernel restoration failed!");
+            }
+        }
+
+        let mut process = Process::new(pid, name.clone(), loaded_elf.entry_point);
+        process.page_table = Some(page_table);
+
+        let heap_base = loaded_elf.segments_end;
+        process.heap_start = heap_base;
+        process.heap_end = heap_base;
+        process.memory_usage.code_size = elf_data.len();
+
+        // --- Stack: build_process_at's bump-allocated GuardedStack (precheck C4) ---
+        use crate::memory::stack;
+        use crate::task::thread::ThreadPrivilege;
+
+        const USER_STACK_SIZE: usize = 64 * 1024;
+        let user_stack =
+            stack::allocate_stack_with_privilege(USER_STACK_SIZE, ThreadPrivilege::User)
+                .map_err(|_| "Failed to allocate user stack")?;
+
+        let stack_top = user_stack.top();
+        let stack_bottom = stack_top - USER_STACK_SIZE as u64;
+        process.memory_usage.stack_size = USER_STACK_SIZE;
+        process.user_stack_top = stack_top.as_u64();
+        process.user_stack_bottom = stack_bottom.as_u64();
+        process.stack = Some(Box::new(user_stack));
+
+        if let Some(ref mut page_table) = process.page_table {
+            crate::memory::process_memory::map_user_stack_to_process(
+                page_table,
+                stack_bottom,
+                stack_top,
+            )
+            .map_err(|e| {
+                log::error!(
+                    "create_process_with_argv: Failed to map user stack to process page table: {}",
+                    e
+                );
+                "Failed to map user stack in process page table"
+            })?;
+        } else {
+            return Err("Process page table not available for stack mapping");
+        }
+
+        // --- argv/envp/auxv (exec_process_with_argv's setup_argv_on_stack call) ---
+        let default_env: [&[u8]; 5] = [
+            b"PATH=/bin:/sbin:/usr/local/cbin\0",
+            b"HOME=/home\0",
+            b"TERM=vt100\0",
+            b"USER=root\0",
+            b"SHELL=/bin/bsh\0",
+        ];
+        let initial_rsp = if let Some(ref page_table) = process.page_table {
+            self.setup_argv_on_stack(
+                page_table,
+                stack_top.as_u64(),
+                argv,
+                &default_env,
+                loaded_elf.phdr_vaddr,
+                loaded_elf.phnum,
+                loaded_elf.phentsize,
+                loaded_elf.entry_point.as_u64(),
+            )?
+        } else {
+            return Err("Process page table not available for argv setup");
+        };
+
+        // Main thread with the argv-adjusted SP (pointing at argc), not
+        // create_main_thread's hardcoded stack_top-16 (precheck C3 — x86 had no
+        // SP-carrying thread creator before this).
+        let thread =
+            self.create_main_thread_with_sp(&mut process, stack_top, VirtAddr::new(initial_rsp))?;
+        process.set_main_thread(thread);
+
+        log::info!(
+            "create_process_with_argv: Created process {} (PID {}) with argc={}",
+            name,
+            pid.as_u64(),
+            argv.len()
+        );
+
+        self.processes.insert(pid, process);
+        Ok(())
+    }
+
+    /// Spawn a new process from an ELF binary, inheriting parent attributes
+    /// (x86_64 version).
+    ///
+    /// #713: mirrors aarch64's `spawn_process` — the parent-attribute capture and
+    /// child-relationship wiring below are arch-neutral logic, ported verbatim; only
+    /// the callee, `create_process_with_argv`, needed a genuinely new x86 body.
+    ///
+    /// Deliberately does NOT touch TTY foreground pgrp the way
+    /// `creation::create_user_process` does (precheck C10) — a shell spawning a
+    /// child must not steal its own keyboard focus.
+    #[cfg(target_arch = "x86_64")]
+    pub fn spawn_process(
+        &mut self,
+        parent_pid: ProcessId,
+        name: String,
+        elf_data: &[u8],
+        argv: &[&[u8]],
+    ) -> Result<ProcessId, &'static str> {
+        // Capture parent attributes before creating the child.
+        let (parent_pgid, parent_sid, parent_cwd) = {
+            let parent = self
+                .processes
+                .live_row(&parent_pid)
+                .ok_or("Parent process not found")?;
+            (parent.pgid, parent.sid, parent.cwd.clone())
+        };
+
+        // Create the child process (allocates PID, page table, loads ELF, argv stack).
+        let child_pid = self.create_process_with_argv(name, elf_data, argv)?;
+
+        // Set up the parent-child relationship and inherit attributes.
+        if let Some(child) = self.processes.live_row_mut(&child_pid) {
+            child.parent = Some(parent_pid);
+            child.pgid = parent_pgid;
+            child.sid = parent_sid;
+            child.cwd = parent_cwd;
+        }
+
+        if let Some(parent) = self.processes.live_row_mut(&parent_pid) {
+            parent.children.push(child_pid);
+        }
+
+        Ok(child_pid)
+    }
+
     /// Create a new process from an ELF binary (ARM64 version)
     ///
     /// This is simpler than the x86_64 version because:
@@ -1127,6 +1351,84 @@ impl ProcessManager {
         let context = crate::task::thread::CpuContext::new(
             process.entry_point,
             initial_rsp,
+            crate::task::thread::ThreadPrivilege::User,
+        );
+
+        let thread = Thread {
+            id: thread_id,
+            name: String::from(&process.name),
+            state: crate::task::thread::ThreadState::Ready,
+            context,
+            stack_top,
+            stack_bottom,
+            kernel_stack_top: Some(kernel_stack_top),
+            kernel_stack_allocation: Some(kernel_stack),
+            tls_block: actual_tls_block,
+            priority: 128,
+            time_slice: 10,
+            entry_point: None,
+            privilege: crate::task::thread::ThreadPrivilege::User,
+            has_started: false,
+            blocked_in_syscall: false,
+            saved_by_inline_schedule: false,
+            inline_schedule_spsr: 0,
+            inline_schedule_prev_elr: 0,
+            inline_schedule_caller_lr: 0,
+            inline_schedule_saved_sp: 0,
+            saved_userspace_context: None,
+            wake_time_ns: None,
+            timer_pop_wake_time_set: None,
+            run_start_ticks: 0,
+            cpu_ticks_total: 0,
+            owner_pid: Some(process.id.as_u64()),
+            cached_ttbr0: 0,
+        };
+
+        Ok(thread)
+    }
+
+    /// Create the main thread for a process with a specific initial SP (x86_64
+    /// version).
+    ///
+    /// `create_main_thread` hardcodes `initial_rsp = stack_top - 16`; this variant
+    /// is used once `setup_argv_on_stack` has already written argc/argv/envp/auxv
+    /// to the stack, so the initial RSP must point at argc instead of the bare
+    /// stack top (#713 precheck C3 — x86 had no SP-carrying thread creator before
+    /// this; mirrors aarch64's `create_main_thread_with_sp`).
+    #[cfg(target_arch = "x86_64")]
+    fn create_main_thread_with_sp(
+        &mut self,
+        process: &mut Process,
+        stack_top: VirtAddr,
+        initial_sp: VirtAddr,
+    ) -> Result<Thread, &'static str> {
+        let thread_id = crate::task::thread::allocate_thread_id();
+
+        let actual_tls_block = VirtAddr::new(0x10000 + thread_id * 0x1000);
+        if let Err(e) = crate::tls::register_thread_tls(thread_id, actual_tls_block) {
+            log::warn!(
+                "Failed to register thread {} with TLS system: {}",
+                thread_id,
+                e
+            );
+        }
+
+        const USER_STACK_SIZE: usize = 64 * 1024;
+        let stack_bottom = stack_top - USER_STACK_SIZE as u64;
+
+        let kernel_stack = crate::memory::kernel_stack::allocate_kernel_stack().map_err(|e| {
+            log::error!("Failed to allocate kernel stack: {}", e);
+            "Failed to allocate kernel stack for thread"
+        })?;
+        let kernel_stack_top = kernel_stack.top();
+
+        debug_assert!(
+            initial_sp.as_u64() & 0xF == 0,
+            "initial_sp must be 16-byte aligned"
+        );
+        let context = crate::task::thread::CpuContext::new(
+            process.entry_point,
+            initial_sp,
             crate::task::thread::ThreadPrivilege::User,
         );
 
@@ -3234,7 +3536,6 @@ impl ProcessManager {
     /// Returns: (entry_point, stack_pointer) on success
     /// Note: Exec requires architecture-specific register manipulation
     #[cfg(target_arch = "x86_64")]
-    #[allow(dead_code)]
     pub fn exec_process_with_argv(
         &mut self,
         pid: ProcessId,
@@ -4184,7 +4485,6 @@ impl ProcessManager {
     /// - entry_point: Program entry point address
     ///
     /// Returns: The initial RSP value (pointing to argc)
-    #[allow(dead_code)]
     fn setup_argv_on_stack(
         &self,
         page_table: &crate::memory::process_memory::ProcessPageTable,
@@ -4409,7 +4709,6 @@ impl ProcessManager {
     }
 
     /// Write a single byte to the stack via physical address translation
-    #[allow(dead_code)]
     fn write_byte_to_stack(
         &self,
         page_table: &crate::memory::process_memory::ProcessPageTable,
@@ -4436,7 +4735,6 @@ impl ProcessManager {
     }
 
     /// Write a u64 to the stack via physical address translation
-    #[allow(dead_code)]
     fn write_u64_to_stack(
         &self,
         page_table: &crate::memory::process_memory::ProcessPageTable,

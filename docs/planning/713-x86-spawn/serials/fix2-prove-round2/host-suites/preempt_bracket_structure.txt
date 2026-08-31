@@ -1,0 +1,17 @@
+   Compiling kernel v0.1.0 (/Users/wrb/fun/code/breenix/.claude/worktrees/wf_a617a050-8c9-4/kernel)
+   Compiling breenix v0.1.0 (/Users/wrb/fun/code/breenix/.claude/worktrees/wf_a617a050-8c9-4)
+    Finished `release` profile [optimized] target(s) in 4.08s
+     Running tests/preempt_bracket_structure.rs (target/release/deps/preempt_bracket_structure-198b14f99c46fc73)
+
+running 8 tests
+test asymmetric_cfg_reddens_the_ratchet ... ok
+test comments_and_strings_do_not_feed_the_census ... ok
+test symmetric_cfg_and_unconditional_brackets_pass ... ok
+test incomparable_cfg_contexts_reddens_the_chain_ratchet ... ok
+test the_underflow_guard_stays_fail_closed ... ok
+test boot_path_preempt_brackets_are_cfg_symmetric ... ok
+test boot_path_preempt_bracket_census_is_not_empty ... ok
+test boot_path_preempt_sites_share_one_cfg_context ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

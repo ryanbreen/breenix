@@ -1,0 +1,72 @@
+   Compiling kernel v0.1.0 (/Users/wrb/fun/code/breenix/.claude/worktrees/wf_a617a050-8c9-4/kernel)
+   Compiling breenix v0.1.0 (/Users/wrb/fun/code/breenix/.claude/worktrees/wf_a617a050-8c9-4)
+    Finished `release` profile [optimized] target(s) in 4.50s
+     Running tests/loopback_pump_structure.rs (target/release/deps/loopback_pump_structure-41fc5debfe849db9)
+
+running 63 tests
+test drain_guard_scope_excludes_delivery ... ok
+test drain_guard_scope_validator_rejects_delivery_in_take_window ... ok
+test drain_exclusion_is_a_typed_guard ... ok
+test general_idle_loop_validator_rejects_missing_x86_drain ... ok
+test general_idle_loop_validator_rejects_missing_aarch64_testing_drain ... ok
+test drain_exclusion_validator_rejects_atomic_bool ... ok
+test generic_unblock_keeps_child_exit_dedicated ... ok
+test general_idle_loops_drain_loopback ... ok
+test general_idle_loop_validator_rejects_missing_aarch64_no_userspace_drain ... ok
+test any_context_wake_never_takes_the_scheduler_lock_in_interrupt_context ... ok
+test any_context_wake_dispatch_validator_rejects_wide_softirq_predicate ... ok
+test io_wake_validator_rejects_direct_any_context_routing ... ok
+test loopback_drain_exits_own_their_leftovers ... ok
+test loopback_drain_validator_rejects_an_unflushed_empty_exit ... ok
+test pump_does_not_halt_while_work_remains ... ok
+test loopback_drain_validator_rejects_a_dropped_rearm ... ok
+test drain_owner_validator_rejects_force_release ... ok
+test pump_more_branch_validator_rejects_halt ... ok
+test net_lock_guard_context_validator_rejects_softirq_execution_entry ... ok
+test net_lock_guard_disables_bottom_halves_not_softirq_execution ... ok
+test loopback_enqueue_validator_rejects_a_missing_kick ... ok
+test generic_unblock_validator_rejects_child_exit_wake ... ok
+test io_wake_buffers_before_thread_context_overflow_fallback ... ok
+test any_context_wake_dispatches_on_execution_context ... ok
+test no_force_release_of_the_drain_owner ... ok
+test loopback_enqueue_owns_its_delivery ... ok
+test loopback_enqueue_validator_rejects_a_softirq_that_does_not_drain ... ok
+test tcp_accept_claims_pending_in_peek_closure ... ok
+test tcp_accept_inserts_before_pending_removal ... ok
+test tcp_accept_claim_validator_rejects_claim_outside_listener_lock ... ok
+test io_wake_validator_rejects_interrupt_context_inline_fallback ... ok
+test loopback_arch_validator_rejects_arch_specific_test ... ok
+test any_context_wake_validator_rejects_interrupt_scheduler_lock ... ok
+test tcp_accept_order_validator_rejects_remove_before_insert ... ok
+test wake_waiting_threads_is_arch_neutral ... ok
+test schedule_rearms_a_blocked_pump ... ok
+test waiter_list_validator_rejects_pre_wake_drain ... ok
+test waiter_lists_are_not_drained_before_the_wake ... ok
+test wake_waiting_threads_validator_rejects_arch_cfg ... ok
+test x86_gate_validator_rejects_lower_userspace_exit_pin ... ok
+test x86_gate_validator_rejects_deferred_loopback_requirement ... ok
+test x86_gate_requires_the_loopback_regression_tests ... ok
+test x86_gate_validator_rejects_missing_loopback_marker ... ok
+test x86_gate_validator_rejects_missing_http_deadline_tally_disclosure ... ok
+test x86_gate_validator_rejects_short_registry_poll_bound ... ok
+test x86_gate_validator_rejects_weak_loopback_marker_count ... ok
+test schedule_rearm_validator_rejects_missing_unblock ... ok
+test x86_gate_validator_rejects_missing_userspace_failure_trap ... ok
+test scheduling_paths_reclaim_unschedulable_cpu_queues ... ok
+test x86_userspace_launch_validator_rejects_missing_loopback_binary_load ... ok
+test x86_userspace_launch_validator_rejects_missing_loopback_process_launch ... ok
+test x86_userspace_phase_launches_loopback_wake_test ... ok
+test deliberately_broken_x86_loopback_gate_variants_fail_the_validator ... ok
+test wakeup_placement_is_bounded_by_online_cpus ... ok
+test loopback_regression_tests_are_arch_neutral ... ok
+test wakeup_placement_validator_rejects_max_cpu_selection ... ok
+test unschedulable_reclaim_validator_rejects_missing_deferred_reclaim ... ok
+test wakeup_placement_validator_rejects_missing_scheduling_liveness_check ... ok
+test x86_loopback_gates_are_direct_reachable_and_have_one_marker_producer ... ok
+test pump_producer_seam_validator_rejects_second_producer ... ok
+test pump_producer_seam_is_single ... ok
+test pump_wake_is_the_only_pump_wake_path ... ok
+test pump_wake_validator_rejects_second_wake_path ... ok
+
+test result: ok. 63 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s
+

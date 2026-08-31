@@ -461,6 +461,10 @@ name = "simple_exit"
 path = "src/simple_exit.rs"
 
 [[bin]]
+name = "spawn_smoke_target"
+path = "src/spawn_smoke_target.rs"
+
+[[bin]]
 name = "sleep_debug_test"
 path = "src/sleep_debug_test.rs"
 
