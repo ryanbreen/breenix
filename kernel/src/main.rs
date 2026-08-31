@@ -2032,8 +2032,14 @@ fn kernel_main_continue() -> ! {
         log::error!("  Enabling interrupts anyway to observe failure behavior...");
     }
 
-    // Test timer resolution BEFORE enabling interrupts
-    // This validates that get_monotonic_time() correctly converts PIT ticks to milliseconds
+    // Test timer resolution. Interrupts are already hardware-enabled by this
+    // point in the shipped x86 production profile (#673 review, mi4 --
+    // "BEFORE enabling interrupts" was true pre-#673 and is now false here;
+    // see the `interrupts::enable()` boot-order comment in the first
+    // RING3_SMOKE block above for why, and time_test.rs's own comment for
+    // how the test now tolerates a genuine tick landing between its two
+    // reads). This validates that get_monotonic_time() correctly converts
+    // PIT ticks to milliseconds.
     log::info!("Testing timer resolution...");
     time_test::test_timer_resolution();
     log::info!("✅ Timer resolution test passed");
@@ -2192,6 +2198,19 @@ fn kernel_main_continue() -> ! {
         }
 
         kernel::per_cpu::preempt_enable();
+
+        // #673 review, mi5: the shared census earlier in this function
+        // (search for PREEMPT_BRACKET_CENSUS) runs strictly BEFORE this
+        // release -- it is the LAST preempt_enable() call in this profile,
+        // so an underflow caused by THIS release would never be reported by
+        // that earlier read. This second, production-block-only census
+        // closes that gap: it is the only point in this profile reached
+        // after every preempt_enable() call in it has executed. Pinned by
+        // docker/qemu/run-x86-prod-profile-boot-test.sh.
+        log::info!(
+            "[PROD_BRACKET_RELEASE_CENSUS:underflow={}]",
+            kernel::per_cpu::preempt_underflow_count()
+        );
 
         // Boot's own sequential work is done, and its future role really is
         // the scheduler's generic idle one from here on: init and the
