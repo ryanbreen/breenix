@@ -2572,7 +2572,10 @@ pub fn sys_spawn(path_ptr: u64, argv_ptr: u64) -> SyscallResult {
         const MAX_ARG_LEN: usize = 4096;
 
         for i in 0..MAX_ARGS {
-            let ptr_addr = argv_ptr + (i * 8) as u64;
+            let ptr_addr = match argv_ptr.checked_add((i * 8) as u64) {
+                Some(addr) => addr,
+                None => return SyscallResult::Err(EFAULT as u64),
+            };
             let arg_ptr_bytes = match copy_from_user(ptr_addr, 8) {
                 Ok(bytes) => bytes,
                 Err(_) => return SyscallResult::Err(EFAULT as u64),
@@ -2696,6 +2699,16 @@ pub fn sys_spawn(path_ptr: u64, argv_ptr: u64) -> SyscallResult {
     // C2) — tear the row down here, under the same lock that discovered the
     // problem, exactly like ProcessManager::hold_init_publication's own
     // failure arm.
+    //
+    // Undo all three creation effects, in reverse-chronological (LIFO) order
+    // of when spawn_process/create_process_with_argv performed them: the
+    // parent's `children` entry was pushed LAST (spawn_process), the
+    // ready-queue entry second-to-last (create_process_with_argv), and the
+    // row itself first (build_process_with_argv_at's insert, undone here by
+    // `remove_process`). Leaving the `children` entry dangling would make
+    // the parent's later `waitpid(-1)` block forever instead of returning
+    // ECHILD: the `children.is_empty()` guard would no longer fire, and the
+    // row lookup for the phantom child would just silently skip it.
     let scheduler_thread = {
         let mut manager_guard = crate::process::manager();
         match *manager_guard {
@@ -2707,6 +2720,10 @@ pub fn sys_spawn(path_ptr: u64, argv_ptr: u64) -> SyscallResult {
                         .map(|main_thread| Box::new(main_thread.publish_to_scheduler()))
                 });
                 if thread.is_none() {
+                    if let Some(parent) = manager.get_process_mut(parent_pid) {
+                        parent.children.retain(|&pid| pid != child_pid);
+                    }
+                    manager.remove_from_ready_queue(child_pid);
                     manager.remove_process(child_pid);
                 }
                 thread

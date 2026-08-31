@@ -3234,6 +3234,11 @@ const REMOVE_FROM_READY_QUEUE_CALL_SITES: &[(&str, &str, usize)] = &[
     ("kernel/src/socket/udp.rs", "#[cfg(test)] mod tests::fn test_enqueue_packet_wakes_blocked_threads", 1),
     ("kernel/src/socket/udp.rs", "#[cfg(test)] mod tests::fn test_enqueue_packet_wakes_multiple_waiters", 1),
     ("kernel/src/socket/udp.rs", "#[cfg(test)] mod tests::fn test_spurious_wakeup_handling", 1),
+    // #713 fix-round-2, N4: sys_spawn's Window-3 teardown arm now undoes the
+    // ready-queue push from create_process_with_argv when the child's main
+    // thread was never published, alongside retracting the parent's
+    // `children` entry and the row itself.
+    ("kernel/src/syscall/handlers.rs", "#[cfg(target_arch=x86_64)] fn sys_spawn", 1),
     ("kernel/src/task/scheduler.rs", "#[cfg(all(test,target_arch=x86_64))] mod tests::fn test_unblock_does_not_duplicate_ready_queue", 1),
     ("kernel/src/task/scheduler.rs", "#[cfg(target_arch=aarch64)] fn terminate_thread_best_effort", 1),
     ("kernel/src/test_exec.rs", "fn test_exec_real_userspace", 1),
