@@ -401,15 +401,14 @@ for i in $(seq 1 "$COUNT"); do
     test -n "$CENSUS_VIRTIO_BLOCK"
     test -n "$CENSUS_NETWORK"
     test "$CENSUS_VIRTIO_BLOCK" -eq "$EXPECTED_VIRTIO_BLOCK"
-    # This invocation attaches no -netdev/e1000 device at all — no NIC flag
-    # appears in the qemu-system-x86_64 command above — so the honest
-    # expectation here is exactly zero, not >=1; asserting >=1 would be false
-    # on every healthy boot of this gate and would misreport a non-gap as a
-    # gap. NIC-presence evidence lives on the gates that actually attach a
-    # NIC (the aarch64 MMIO gates below); this leg's x86 contribution is the
-    # enumeration line's own presence (the #702 region made legible) and an
-    # exact VirtIO-block count.
-    test "$CENSUS_NETWORK" -eq 0
+    # This invocation passes no -net/-netdev/-nic option at all, and QEMU
+    # (confirmed empirically against the beast host's QEMU 8.2, not merely
+    # assumed from reading this script) auto-attaches its own default NIC
+    # whenever none of those flags is given -- `-nic none` is required to
+    # suppress it, and nothing here passes that. A real e1000 device is
+    # therefore present on every healthy boot of this gate, so the honest
+    # floor is >=1.
+    test "$CENSUS_NETWORK" -ge 1
     echo "  Device census: $PCI_CENSUS_LINE"
     test "$(grep -h -c '\[TEST:process:frame_custody_refusal_gate:PASS\]' \
         "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 1

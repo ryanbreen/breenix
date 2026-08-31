@@ -254,7 +254,7 @@ fi
 # device set, by type, was actually found" -- the precise gap #702 exposed on
 # x86 (a boot can die silently right after device detection, and every
 # marker-grep gate reads that only as an undifferentiated timeout).
-EXPECTED_MMIO_DEVICES=$(grep -c -- '-device virtio-[a-z]*-device' "${BASH_SOURCE[0]}")
+EXPECTED_MMIO_DEVICES=$(grep -cE -- '^[[:space:]]*-device virtio-[a-z]*-device' "${BASH_SOURCE[0]}")
 MMIO_CENSUS_LINE=$(grep -h -E '\[drivers\] Found [0-9]+ VirtIO MMIO devices' "$OUTPUT_DIR/serial.txt" 2>/dev/null | tail -1)
 MMIO_CENSUS_TOTAL=$(printf '%s\n' "$MMIO_CENSUS_LINE" | sed -n 's/.*Found \([0-9]*\) VirtIO MMIO devices.*/\1/p')
 MMIO_NETWORK_COUNT=$(grep -h -c -F '[drivers] Found VirtIO MMIO device: network' "$OUTPUT_DIR/serial.txt" 2>/dev/null || true)

@@ -109,7 +109,7 @@ CENSUS_WIDEN_ORACLE_PATTERN='\[CENSUS_WIDEN_ORACLE:aarch64:arm_target=[0-9]+:bas
 # hand-pinned literal, so a future edit to that invocation cannot silently
 # desync classify_serial's device-count assertion from what actually boots
 # (the #549/#551/[[gate-target-fidelity-528]] census-not-literal lesson).
-EXPECTED_MMIO_DEVICES=$(grep -c -- '-device virtio-[a-z]*-device' "${BASH_SOURCE[0]}")
+EXPECTED_MMIO_DEVICES=$(grep -cE -- '^[[:space:]]*-device virtio-[a-z]*-device' "${BASH_SOURCE[0]}")
 
 if $REBUILD; then
     echo "Building ARM64 kernel with boot_tests feature..."

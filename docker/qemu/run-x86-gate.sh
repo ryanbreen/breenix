@@ -158,12 +158,14 @@ for i in $(seq 1 "$COUNT"); do
   # checked against what this binary itself attaches, self-counted from
   # src/bin/qemu-uefi.rs rather than a second hand-pinned literal here (the
   # #549/#551/[[gate-target-fidelity-528]] census-not-literal lesson).
-  # BREENIX_NET_MODE=none above attaches no NIC at the QEMU level (the
-  # kernel-side e1000::init() call is unconditional, but there is no e1000
-  # PCI device for it to find here), so the honest expected network count on
-  # this gate is exactly zero -- asserting >=1 would be false on every
-  # healthy boot of this script. NIC-presence evidence lives on the gates
-  # that actually attach one (the aarch64 MMIO gates).
+  # BREENIX_NET_MODE=none only skips the explicit -netdev/-device args in
+  # qemu-uefi.rs; it never passes QEMU its own `-nic none`. QEMU 8.2 (the
+  # beast host's version) auto-attaches its own default e1000 NIC whenever
+  # no -net/-netdev/-nic option is given at all, so a real NIC (00:02.0
+  # [8086:100e]) IS present on every boot of this gate -- confirmed
+  # empirically (a boot here reports "PCI: ... Found 9 devices (3 VirtIO
+  # block, 1 network)" and "E1000 network device found"), not assumed from
+  # reading qemu-uefi.rs alone. The honest expected floor is therefore >=1.
   census_ok=true
   census_reason=""
   expected_virtio_block=$(grep -c -- 'virtio-blk-pci,drive=' "$REPO_DIR/src/bin/qemu-uefi.rs")
@@ -183,9 +185,9 @@ for i in $(seq 1 "$COUNT"); do
     elif [ "$census_virtio_block" -ne "$expected_virtio_block" ]; then
       census_ok=false
       census_reason="device-enumeration census reports $census_virtio_block VirtIO block device(s), self-counted expected $expected_virtio_block from src/bin/qemu-uefi.rs"
-    elif [ "$census_network" -ne 0 ]; then
+    elif [ "$census_network" -lt 1 ]; then
       census_ok=false
-      census_reason="device-enumeration census reports $census_network network device(s) but BREENIX_NET_MODE=none attaches none"
+      census_reason="device-enumeration census reports $census_network network device(s); QEMU's implicit default NIC (BREENIX_NET_MODE=none never passes -nic none) should always yield >=1"
     fi
   fi
 
