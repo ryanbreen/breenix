@@ -389,7 +389,19 @@ for i in $(seq 1 "$COUNT"); do
     # lesson — self-count via grep on this script's own command array, so a
     # future edit to the -device flags above cannot silently desync the
     # assertion from what actually boots).
-    EXPECTED_VIRTIO_BLOCK=$(grep -c -- '-device virtio-blk-pci,drive=' "${BASH_SOURCE[0]}")
+    # Anchored to actual command-line flag lines (leading whitespace then
+    # `-device`), not a bare substring match: an earlier, unanchored version
+    # of this pattern matched its own definition on the line immediately
+    # below (this very line also contains the literal `-device
+    # virtio-blk-pci,drive=` text inside the grep pattern argument),
+    # self-counting 4 instead of the real 3 QEMU flags and making this
+    # assertion permanently false on every boot -- the same self-referential
+    # vacuity shape the aarch64 leg's own unanchored regex hit (see that
+    # leg's fix, `^[[:space:]]*-device virtio-[a-z]*-device` in
+    # run-aarch64-full-test.sh), just triggered by matching this script's own
+    # source instead of its own prose. Caught by Confirm running this gate
+    # for real and observing `4 != 3` on a healthy, correct boot.
+    EXPECTED_VIRTIO_BLOCK=$(grep -cE -- '^[[:space:]]*-device virtio-blk-pci,drive=' "${BASH_SOURCE[0]}")
     test "$EXPECTED_VIRTIO_BLOCK" -ge 1
     PCI_CENSUS_LINE=$(grep -h -E 'PCI: Enumeration complete\. Found [0-9]+ devices \([0-9]+ VirtIO block, [0-9]+ network\)' \
         "$OUTPUT_DIR"/serial_*.txt | tail -1)

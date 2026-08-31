@@ -1,0 +1,40 @@
+Confirm slot, green arc 5 (bus+NIC blended), 2026-08-31. Independent re-run of
+docker/qemu/run-x86-boot-tests.sh on beast, at branch feat/green-bus-nic @
+77d2c1c2 (landed bytes, before the confirm-slot fix below).
+
+--- FIRST RUN (landed bytes, self-referential vacuity bug present) ---
+Boot 1 ran to completion (frame-custody/kstack/tombstone oracles all PASS,
+HTTP/DNS/TCP userspace tests all PASS) and then failed on the arc's own new
+device-enumeration assertion:
+
+x86 frame-custody gate run 1: FAIL (set -e abort at docker/qemu/run-x86-boot-tests.sh:403, exit 1)
+  failing command: test "$CENSUS_VIRTIO_BLOCK" -eq "$EXPECTED_VIRTIO_BLOCK"
+
+Root cause (confirmed by grepping the script's own source):
+  $ grep -n -- '-device virtio-blk-pci,drive=' docker/qemu/run-x86-boot-tests.sh
+  242:        -device virtio-blk-pci,drive=hd,bootindex=0,disable-modern=on,disable-legacy=off \
+  244:        -device virtio-blk-pci,drive=testdisk,disable-modern=on,disable-legacy=off \
+  246:        -device virtio-blk-pci,drive=ext2disk,disable-modern=on,disable-legacy=off \
+  392:    EXPECTED_VIRTIO_BLOCK=$(grep -c -- '-device virtio-blk-pci,drive=' "${BASH_SOURCE[0]}")
+
+Line 392 is the assertion's own definition -- it contains the literal string
+'-device virtio-blk-pci,drive=' inside its own grep pattern argument, so the
+unanchored grep -c against the whole file matched itself as a fourth "flag",
+self-counting EXPECTED_VIRTIO_BLOCK=4 against the real 3 QEMU flags on every
+boot, healthy or not. The kernel's own census was correct the entire time:
+
+  [ INFO] kernel::drivers::pci: PCI: Enumeration complete. Found 9 devices (3 VirtIO block, 1 network)
+
+Same self-referential-vacuity shape the aarch64 leg's own unanchored regex
+hit (matching its own FAIL_REASON prose instead of its own definition line),
+just a different trigger.
+
+--- FIX ---
+EXPECTED_VIRTIO_BLOCK=$(grep -cE -- '^[[:space:]]*-device virtio-blk-pci,drive=' "${BASH_SOURCE[0]}")
+(anchored to actual command-line flag lines; local recount confirmed 3)
+
+--- RE-RUN, 3 boots, fixed script ---
+x86 frame-custody gate run 1: PASS
+x86 frame-custody gate run 2: PASS
+x86 frame-custody gate run 3: PASS
+Device census (run 1): [ INFO] kernel::drivers::pci: PCI: Enumeration complete. Found 9 devices (3 VirtIO block, 1 network)
