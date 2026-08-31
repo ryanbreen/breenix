@@ -4709,7 +4709,6 @@ impl ProcessManager {
     }
 
     /// Write a single byte to the stack via physical address translation
-    #[allow(dead_code)]
     fn write_byte_to_stack(
         &self,
         page_table: &crate::memory::process_memory::ProcessPageTable,
@@ -4736,7 +4735,6 @@ impl ProcessManager {
     }
 
     /// Write a u64 to the stack via physical address translation
-    #[allow(dead_code)]
     fn write_u64_to_stack(
         &self,
         page_table: &crate::memory::process_memory::ProcessPageTable,
