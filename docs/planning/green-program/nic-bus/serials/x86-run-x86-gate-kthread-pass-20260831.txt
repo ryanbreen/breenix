@@ -1,0 +1,31 @@
+[ INFO] kernel::memory::layout: KLAYOUT: image=0x100000..0x300000 text=0x100000..0x200000 rodata=0x200000..0x250000 data=0x250000..0x280000 bss=0x280000..0x300000
+[ INFO] kernel::memory::layout: KLAYOUT: GDT base=0x80003416f8 limit=55
+[ INFO] kernel::memory::layout: KLAYOUT: IDT base=0x80003ae440 limit=4095
+[ INFO] kernel::memory::layout: KLAYOUT: TSS base=0x8000341688 RSP0=0x0
+[ INFO] kernel::memory::layout: KLAYOUT: Per-CPU base=0x80003af4c0 size=0xc0
+[ INFO] kernel::drivers: Initializing driver subsystem...
+[ INFO] kernel::drivers::pci: PCI: Starting bus enumeration...
+[ INFO] kernel::drivers::pci: PCI: 00:00.0 [8086:1237] Intel Bridge/0x00 IRQ=255
+[ INFO] kernel::drivers::pci: PCI: 00:01.0 [8086:7000] Intel Bridge/0x01 IRQ=255
+[ INFO] kernel::drivers::pci: PCI: 00:01.1 [8086:7010] Intel MassStorage/0x01 IRQ=255
+[ INFO] kernel::drivers::pci: PCI: 00:01.3 [8086:7113] Intel Bridge/0x80 IRQ=10
+[ INFO] kernel::drivers::pci: PCI: 00:02.0 [8086:100e] Intel Network/0x00 IRQ=10
+[DEBUG] kernel::drivers::pci: PCI:   BAR0: addr=0x80880000 size=0x20000 MMIO
+[DEBUG] kernel::drivers::pci: PCI:   BAR1: addr=0xc180 size=0x40 I/O
+[ INFO] kernel::drivers::pci: PCI:   -> Network controller detected!
+[ INFO] kernel::drivers::pci: E1000 network device found
+[ INFO] kernel::drivers::pci: PCI: 00:03.0 [1af4:1001] VirtIO MassStorage/0x00 IRQ=11
+[DEBUG] kernel::drivers::pci: PCI:   BAR0: addr=0xc100 size=0x80 I/O
+[DEBUG] kernel::drivers::pci: PCI:   BAR1: addr=0x808a3000 size=0x1000 MMIO
+[ INFO] kernel::drivers::pci: PCI: 00:04.0 [1af4:1001] VirtIO MassStorage/0x00 IRQ=11
+[DEBUG] kernel::drivers::pci: PCI:   BAR0: addr=0xc080 size=0x80 I/O
+[DEBUG] kernel::drivers::pci: PCI:   BAR1: addr=0x808a2000 size=0x1000 MMIO
+[ INFO] kernel::drivers::pci: PCI: 00:05.0 [1af4:1001] VirtIO MassStorage/0x00 IRQ=10
+[DEBUG] kernel::drivers::pci: PCI:   BAR0: addr=0xc000 size=0x80 I/O
+[DEBUG] kernel::drivers::pci: PCI:   BAR1: addr=0x808a1000 size=0x1000 MMIO
+[ INFO] kernel::drivers::pci: PCI: 00:06.0 [1af4:1050] VirtIO Display/0x00 IRQ=10
+[DEBUG] kernel::drivers::pci: PCI:   BAR0: addr=0x80000000 size=0x800000 MMIO
+[DEBUG] kernel::drivers::pci: PCI:   BAR2: addr=0x380000000000 size=0x4000 MMIO
+[DEBUG] kernel::drivers::pci: PCI:   BAR4: addr=0x808a0000 size=0x1000 MMIO
+[ INFO] kernel::drivers::pci: PCI: Enumeration complete. Found 9 devices (3 VirtIO block, 1 network)
+[ INFO] kernel::drivers::virtio::block: VirtIO block: Found 3 device(s)

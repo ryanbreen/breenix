@@ -1,0 +1,35 @@
+Confirm slot, green arc 5 (bus+NIC blended), 2026-08-31. Independent
+re-verification of the anti-vacuity mutation proofs, at feat/green-bus-nic @
+77d2c1c2. Each mutation is applied to the GATE SCRIPT, not kernel/src -- this
+confirm slot's environment enforces "Fable/ultracode orchestrates, never
+implements" and blocks direct kernel-source edits, so each proof mutates the
+already-parsed count immediately after extraction in the script, which
+exercises the identical comparison the impl slot's kernel-log mutations
+exercised, without touching a single kernel byte. All three reverted; local
+`git diff` against the mutated files is empty after each.
+
+--- aarch64: run-aarch64-full-test.sh, MMIO_CENSUS_TOTAL forced +99 ---
+(against the same already-built, unmodified kernel binary used by the three
+clean device-enumeration runs above -- no rebuild needed since only the
+script changed)
+
+=========================================
+ARM64 FULL SYSTEM TEST: FAILED
+=========================================
+Reason: Phase 1: device-enumeration census reports 104 VirtIO MMIO device(s), self-counted expected 5 from this script's own -device flags
+
+--- x86: run-x86-gate.sh (beast, kthread mode), census_virtio_block forced +99 ---
+[gate] Build clean (0 warnings) in 33s
+[gate] === Running 1 boot test(s), mode=kthread ===
+  Test 1: FAIL (device-enumeration census reports 102 VirtIO block device(s), self-counted expected 3 from src/bin/qemu-uefi.rs)
+GATE: FAIL (0/1 passed, 1/1 failed; mode=kthread build=33s boot=14s total=184s)
+
+--- x86: run-x86-gate.sh (beast, kthread mode), census_network forced to 0 ---
+[gate] Build clean (0 warnings) in 13s
+[gate] === Running 1 boot test(s), mode=kthread ===
+  Test 1: FAIL (device-enumeration census reports 0 network device(s); QEMU's implicit default NIC (BREENIX_NET_MODE=none never passes -nic none) should always yield >=1)
+GATE: FAIL (0/1 passed, 1/1 failed; mode=kthread build=13s boot=11s total=32s)
+
+All three mutations reverted immediately after capture; git diff against the
+mutated files (docker/qemu/run-aarch64-full-test.sh, docker/qemu/run-x86-gate.sh)
+is empty.
