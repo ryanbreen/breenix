@@ -146,7 +146,53 @@ for i in $(seq 1 "$COUNT"); do
     -serial file:"$OUTDIR/serial_user.log" \
     -serial file:"$OUTDIR/serial_kernel.log" \
     > "$OUTDIR/stdout.log" 2>&1
-  if [ "$MODE" = "full" ]; then
+
+  # Device-enumeration census leg (green arc 5, bus+NIC blended). Neither
+  # branch below proves pci::enumerate() found the device set this boot
+  # actually attached -- #702 is a silent hang inside PCI enumeration right
+  # after "E1000 network device found", and every check below reads that
+  # failure only as "marker not found" / "USERSPACE TEST COMPLETE was
+  # absent", with no signal naming where the boot actually stopped. This
+  # makes that region legible without a new QEMU invocation: the census
+  # line's mere absence is itself signal, and its VirtIO-block count is
+  # checked against what this binary itself attaches, self-counted from
+  # src/bin/qemu-uefi.rs rather than a second hand-pinned literal here (the
+  # #549/#551/[[gate-target-fidelity-528]] census-not-literal lesson).
+  # BREENIX_NET_MODE=none above attaches no NIC at the QEMU level (the
+  # kernel-side e1000::init() call is unconditional, but there is no e1000
+  # PCI device for it to find here), so the honest expected network count on
+  # this gate is exactly zero -- asserting >=1 would be false on every
+  # healthy boot of this script. NIC-presence evidence lives on the gates
+  # that actually attach one (the aarch64 MMIO gates).
+  census_ok=true
+  census_reason=""
+  expected_virtio_block=$(grep -c -- 'virtio-blk-pci,drive=' "$REPO_DIR/src/bin/qemu-uefi.rs")
+  pci_census_line=$(grep -h -E 'PCI: Enumeration complete\. Found [0-9]+ devices \([0-9]+ VirtIO block, [0-9]+ network\)' \
+      "$OUTDIR"/serial_*.log 2>/dev/null | tail -1)
+  if [ -z "$pci_census_line" ]; then
+    census_ok=false
+    census_reason="device-enumeration census absent -- see kernel/src/drivers/{pci.rs,mod.rs}"
+  else
+    census_virtio_block=$(printf '%s\n' "$pci_census_line" | \
+        sed -n 's/.*Found [0-9]* devices (\([0-9]*\) VirtIO block, [0-9]* network).*/\1/p')
+    census_network=$(printf '%s\n' "$pci_census_line" | \
+        sed -n 's/.*Found [0-9]* devices ([0-9]* VirtIO block, \([0-9]*\) network).*/\1/p')
+    if [ -z "$census_virtio_block" ] || [ -z "$census_network" ]; then
+      census_ok=false
+      census_reason="device-enumeration census line malformed: $pci_census_line"
+    elif [ "$census_virtio_block" -ne "$expected_virtio_block" ]; then
+      census_ok=false
+      census_reason="device-enumeration census reports $census_virtio_block VirtIO block device(s), self-counted expected $expected_virtio_block from src/bin/qemu-uefi.rs"
+    elif [ "$census_network" -ne 0 ]; then
+      census_ok=false
+      census_reason="device-enumeration census reports $census_network network device(s) but BREENIX_NET_MODE=none attaches none"
+    fi
+  fi
+
+  if [ "$census_ok" != true ]; then
+    echo "  Test $i: FAIL ($census_reason)"
+    FAIL=$((FAIL+1))
+  elif [ "$MODE" = "full" ]; then
     # EXPECTED_EXITS is mandatory for the verdict script; 10 is the count for
     # this profile's userspace program set.
     if EXPECTED_EXITS="${BREENIX_EXPECTED_EXITS:-10}" \

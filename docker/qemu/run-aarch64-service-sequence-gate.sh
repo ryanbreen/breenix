@@ -104,6 +104,12 @@ BREENIX_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 # This marker is emitted from a syscall while the scheduler trace stream is live, so its line can carry a prefix.
 FUTEX_HANDOFF_ORACLE_PATTERN='\[FUTEX_HANDOFF_ORACLE:aarch64:driven=2:stage1_ret=EAGAIN:stage1_wake=0:stage1_parked=0:stage2_ret=0:stage2_wake=1:stage2_parked=0:stage3_ret=ETIMEDOUT:stage3_elapsed_ok=1:stage3_elapsed_ms=[0-9]+:rescues=0:queue_residual=0:balance=0\]'
 CENSUS_WIDEN_ORACLE_PATTERN='\[CENSUS_WIDEN_ORACLE:aarch64:arm_target=[0-9]+:baseline_reported=0:armed_reported=1:tid=[1-9][0-9]*:shape=ready_queued_nondispatching:queued_nondispatching=[1-9][0-9]*:queued_nondispatch_ms=[1-9][0-9]*:cpu_silence_ms=[1-9][0-9]*:joined=1:retired=[01]:PASS\]'
+# Device-enumeration census leg (green arc 5, bus+NIC blended). Self-counted
+# from this script's OWN -device flags in the QEMU invocation below, not a
+# hand-pinned literal, so a future edit to that invocation cannot silently
+# desync classify_serial's device-count assertion from what actually boots
+# (the #549/#551/[[gate-target-fidelity-528]] census-not-literal lesson).
+EXPECTED_MMIO_DEVICES=$(grep -c -- '-device virtio-[a-z]*-device' "${BASH_SOURCE[0]}")
 
 if $REBUILD; then
     echo "Building ARM64 kernel with boot_tests feature..."
@@ -430,6 +436,10 @@ classify_serial() {
     local kernel_panic_message
     local second_stage_line
     local heartbeat_after_stall
+    local mmio_census_line
+    local mmio_census_total
+    local mmio_network_count
+    local mmio_block_count
 
     # #596's runtime oracle is unconditional: an inline-saved context whose
     # recorded resume PC is not its inline-save x30 is a defect no matter what
@@ -798,6 +808,35 @@ classify_serial() {
         if ! grep -qE "$CENSUS_WIDEN_ORACLE_PATTERN" "$serial_file" 2>/dev/null; then
             CLASS_BUCKET="UNATTRIBUTED"
             CLASS_REASON="census widening mutation oracle marker absent or failed"
+            return
+        fi
+        # Device-enumeration census leg (green arc 5, bus+NIC blended): a boot
+        # that reached every marker above still never proved
+        # enumerate_devices() found the exact device set this script itself
+        # declared. Same anti-vacuity shape as the two checks above -- a boot
+        # that never produced this census cannot be GREEN by omission.
+        mmio_census_line=$(grep -h -E '\[drivers\] Found [0-9]+ VirtIO MMIO devices' "$serial_file" 2>/dev/null | tail -1)
+        if [ -z "$mmio_census_line" ]; then
+            CLASS_BUCKET="UNATTRIBUTED"
+            CLASS_REASON="device-enumeration census absent -- see kernel/src/drivers/{mod.rs,virtio/mmio.rs}"
+            return
+        fi
+        mmio_census_total=$(printf '%s\n' "$mmio_census_line" | sed -n 's/.*Found \([0-9]*\) VirtIO MMIO devices.*/\1/p')
+        mmio_network_count=$(grep -h -c -F '[drivers] Found VirtIO MMIO device: network' "$serial_file" 2>/dev/null || true)
+        mmio_block_count=$(grep -h -c -F '[drivers] Found VirtIO MMIO device: block' "$serial_file" 2>/dev/null || true)
+        if [ -z "$mmio_census_total" ]; then
+            CLASS_BUCKET="UNATTRIBUTED"
+            CLASS_REASON="device-enumeration census line malformed: $mmio_census_line"
+            return
+        fi
+        if [ "$mmio_census_total" -ne "$EXPECTED_MMIO_DEVICES" ]; then
+            CLASS_BUCKET="UNATTRIBUTED"
+            CLASS_REASON="device-enumeration census reports $mmio_census_total VirtIO MMIO device(s), self-counted expected $EXPECTED_MMIO_DEVICES from this script's own -device flags"
+            return
+        fi
+        if [ "${mmio_network_count:-0}" -lt 1 ] || [ "${mmio_block_count:-0}" -lt 1 ]; then
+            CLASS_BUCKET="UNATTRIBUTED"
+            CLASS_REASON="device-enumeration census total matched but a declared network or block device is missing from the per-device breakdown (network=${mmio_network_count:-0} block=${mmio_block_count:-0})"
             return
         fi
         CLASS_BUCKET="GREEN"

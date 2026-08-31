@@ -376,6 +376,41 @@ for i in $(seq 1 "$COUNT"); do
     # assertions below, and is exactly as opaque on failure without the
     # ERR trap installed above.
     test "$passed" = true
+    # Device-enumeration census leg (green arc 5, bus+NIC blended). Every
+    # check above proves the boot reached USERSPACE TEST COMPLETE; none of
+    # them prove pci::enumerate() found the device set this script itself
+    # declared. #702 is a silent hang inside PCI enumeration right after
+    # "E1000 network device found" — a boot that dies there prints none of
+    # the markers above and every prior check reads it only as "USERSPACE
+    # TEST COMPLETE was absent." This makes that failure region legible: the
+    # census line's mere absence is signal, and its counts are checked
+    # against what this script itself attached, not a second hand-pinned
+    # literal (the #549/#551/[[gate-target-fidelity-528]] census-not-literal
+    # lesson — self-count via grep on this script's own command array, so a
+    # future edit to the -device flags above cannot silently desync the
+    # assertion from what actually boots).
+    EXPECTED_VIRTIO_BLOCK=$(grep -c -- '-device virtio-blk-pci,drive=' "${BASH_SOURCE[0]}")
+    test "$EXPECTED_VIRTIO_BLOCK" -ge 1
+    PCI_CENSUS_LINE=$(grep -h -E 'PCI: Enumeration complete\. Found [0-9]+ devices \([0-9]+ VirtIO block, [0-9]+ network\)' \
+        "$OUTPUT_DIR"/serial_*.txt | tail -1)
+    test -n "$PCI_CENSUS_LINE"
+    CENSUS_VIRTIO_BLOCK=$(printf '%s\n' "$PCI_CENSUS_LINE" | \
+        sed -n 's/.*Found [0-9]* devices (\([0-9]*\) VirtIO block, [0-9]* network).*/\1/p')
+    CENSUS_NETWORK=$(printf '%s\n' "$PCI_CENSUS_LINE" | \
+        sed -n 's/.*Found [0-9]* devices ([0-9]* VirtIO block, \([0-9]*\) network).*/\1/p')
+    test -n "$CENSUS_VIRTIO_BLOCK"
+    test -n "$CENSUS_NETWORK"
+    test "$CENSUS_VIRTIO_BLOCK" -eq "$EXPECTED_VIRTIO_BLOCK"
+    # This invocation attaches no -netdev/e1000 device at all — no NIC flag
+    # appears in the qemu-system-x86_64 command above — so the honest
+    # expectation here is exactly zero, not >=1; asserting >=1 would be false
+    # on every healthy boot of this gate and would misreport a non-gap as a
+    # gap. NIC-presence evidence lives on the gates that actually attach a
+    # NIC (the aarch64 MMIO gates below); this leg's x86 contribution is the
+    # enumeration line's own presence (the #702 region made legible) and an
+    # exact VirtIO-block count.
+    test "$CENSUS_NETWORK" -eq 0
+    echo "  Device census: $PCI_CENSUS_LINE"
     test "$(grep -h -c '\[TEST:process:frame_custody_refusal_gate:PASS\]' \
         "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 1
     test "$(grep -h -c '\[TEST:process:page_table_custody_disposition_gate:PASS\]' \
