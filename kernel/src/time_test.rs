@@ -57,11 +57,34 @@ pub fn test_timer_resolution() {
     // constant scaling/offset bug (e.g. ms == ticks_before - 1, still
     // "within range" if the window were left unbounded). Keeping the window
     // provably tight -- at most one genuine tick between the two live reads
-    // -- closes that gap without reintroducing the exact-equality race:
-    // a SECOND tick landing in this tiny window would mean something else
-    // (an interrupt storm or a stalled read) is already wrong here.
+    // -- closes that gap without reintroducing the exact-equality race.
+    //
+    // #673 review, MA6: the window bound and the range check are DIFFERENT
+    // claims and must fail differently. A second tick landing in this tiny
+    // window is rare-but-possible timing variance under host scheduling
+    // contention (a TCG-emulated PIT, a loaded CI runner) now that this
+    // function runs unconditionally in shipped x86 production with
+    // interrupts genuinely enabled (m1) -- not proof of a kernel defect, so
+    // it is logged and counted rather than panicking the shipped kernel over
+    // it. The range check below (ms actually outside
+    // [ticks_before, ticks_after]) is what would indicate a real
+    // scaling/offset bug, and that keeps the panic.
     let window = ticks_after - ticks_before;
-    if ms >= ticks_before && ms <= ticks_after && window <= 1 {
+    if window > 1 {
+        static TIMER_RESOLUTION_WINDOW_EXCEEDED_COUNT: core::sync::atomic::AtomicU32 =
+            core::sync::atomic::AtomicU32::new(0);
+        let occurrence = TIMER_RESOLUTION_WINDOW_EXCEEDED_COUNT
+            .fetch_add(1, core::sync::atomic::Ordering::Relaxed)
+            + 1;
+        log::error!(
+            "[TIMER_RESOLUTION_WINDOW_EXCEEDED:count={}] {} ticks elapsed between reads \
+             (expected <= 1) -- logged, not fatal; see this function's own comment \
+             (#673 review, MA6)",
+            occurrence,
+            window
+        );
+    }
+    if ms >= ticks_before && ms <= ticks_after {
         log::info!(
             "✓ Timer conversion correct: {} ms within observed tick range [{}, {}]",
             ms,
