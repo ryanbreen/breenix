@@ -62,14 +62,14 @@ ovmf-prebuilt = "0.2.3"
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 conquer-once = { version = "0.4.0", default-features = false }
-bootloader-x86_64-common = { git = "https://github.com/rust-osdev/bootloader.git", branch = "main" }
+bootloader-x86_64-common = { git = "https://github.com/rust-osdev/bootloader.git", rev = "707db11201b19541b7cfef84037866ee03aa0927" }
 log = { version = "0.4.17", default-features = false }
-x86_64 = { version = "0.15.2", features = ["instructions", "nightly"] }
+x86_64 = { version = "=0.15.4", features = ["instructions", "nightly"] }
 
 [build-dependencies]
 kernel = { path = "kernel", artifact = "bin", target = "x86_64-unknown-none" }
 # Limit bootloader to UEFI-only to avoid BIOS build/install on CI
-bootloader = { git = "https://github.com/rust-osdev/bootloader.git", branch = "main", default-features = false, features = ["uefi"] }
+bootloader = { git = "https://github.com/rust-osdev/bootloader.git", rev = "707db11201b19541b7cfef84037866ee03aa0927", default-features = false, features = ["uefi"] }
 
 [dev-dependencies]
 libc = "0.2"
