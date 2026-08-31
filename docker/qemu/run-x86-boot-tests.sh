@@ -371,24 +371,21 @@ for i in $(seq 1 "$COUNT"); do
     kill "$RUNNER_PID" 2>/dev/null || true
     wait "$RUNNER_PID" 2>/dev/null || true
 
-    # Explicit assertion, not a bare boolean variable: a bare boolean value
-    # executed as a command is the same silent-abort shape as the `test`
-    # assertions below, and is exactly as opaque on failure without the
-    # ERR trap installed above.
-    test "$passed" = true
-    # Device-enumeration census leg (green arc 5, bus+NIC blended). Every
-    # check above proves the boot reached USERSPACE TEST COMPLETE; none of
-    # them prove pci::enumerate() found the device set this script itself
-    # declared. #702 is a silent hang inside PCI enumeration right after
-    # "E1000 network device found" — a boot that dies there prints none of
-    # the markers above and every prior check reads it only as "USERSPACE
-    # TEST COMPLETE was absent." This makes that failure region legible: the
-    # census line's mere absence is signal, and its counts are checked
-    # against what this script itself attached, not a second hand-pinned
-    # literal (the #549/#551/[[gate-target-fidelity-528]] census-not-literal
-    # lesson — self-count via grep on this script's own command array, so a
-    # future edit to the -device flags above cannot silently desync the
-    # assertion from what actually boots).
+    # Device-enumeration census leg (green arc 5, bus+NIC blended). Placed
+    # BEFORE the passed-flag check below (and before the ~40 marker-count
+    # assertions that follow it): none of those checks prove pci::enumerate()
+    # found the device set this script itself declared, only that the boot
+    # reached USERSPACE TEST COMPLETE. #702 is a silent hang inside PCI
+    # enumeration right after "E1000 network device found" — a boot that dies
+    # there sets $passed=false and prints none of the later markers, so a
+    # census placed after the passed-flag check would never run on exactly
+    # the boot it exists to name. Running it first makes that failure region
+    # legible on its own: the census line's mere absence is signal, and its
+    # counts are checked against what this script itself attached, not a
+    # second hand-pinned literal (the #549/#551/[[gate-target-fidelity-528]]
+    # census-not-literal lesson — self-count via grep on this script's own
+    # command array, so a future edit to the -device flags above cannot
+    # silently desync the assertion from what actually boots).
     # Anchored to actual command-line flag lines (leading whitespace then
     # `-device`), not a bare substring match: an earlier, unanchored version
     # of this pattern matched its own definition on the line immediately
@@ -403,8 +400,15 @@ for i in $(seq 1 "$COUNT"); do
     # for real and observing `4 != 3` on a healthy, correct boot.
     EXPECTED_VIRTIO_BLOCK=$(grep -cE -- '^[[:space:]]*-device virtio-blk-pci,drive=' "${BASH_SOURCE[0]}")
     test "$EXPECTED_VIRTIO_BLOCK" -ge 1
+    # `|| true`: under `set -o pipefail`, a census-absent boot (e.g. the
+    # #702 hang this leg exists to catch) makes `grep` exit 1 with no match,
+    # which would otherwise abort the script AT THIS ASSIGNMENT — the ERR
+    # trap still fires and still prints a FAIL, but it names the grep
+    # command rather than the `test -n "$PCI_CENSUS_LINE"` assertion below
+    # that is actually making the claim. Let the assignment succeed with an
+    # empty value and let the explicit `test -n` name the real failure.
     PCI_CENSUS_LINE=$(grep -h -E 'PCI: Enumeration complete\. Found [0-9]+ devices \([0-9]+ VirtIO block, [0-9]+ network\)' \
-        "$OUTPUT_DIR"/serial_*.txt | tail -1)
+        "$OUTPUT_DIR"/serial_*.txt | tail -1) || true
     test -n "$PCI_CENSUS_LINE"
     CENSUS_VIRTIO_BLOCK=$(printf '%s\n' "$PCI_CENSUS_LINE" | \
         sed -n 's/.*Found [0-9]* devices (\([0-9]*\) VirtIO block, [0-9]* network).*/\1/p')
@@ -422,6 +426,11 @@ for i in $(seq 1 "$COUNT"); do
     # floor is >=1.
     test "$CENSUS_NETWORK" -ge 1
     echo "  Device census: $PCI_CENSUS_LINE"
+    # Explicit assertion, not a bare boolean variable: a bare boolean value
+    # executed as a command is the same silent-abort shape as the `test`
+    # assertions below, and is exactly as opaque on failure without the
+    # ERR trap installed above.
+    test "$passed" = true
     test "$(grep -h -c '\[TEST:process:frame_custody_refusal_gate:PASS\]' \
         "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 1
     test "$(grep -h -c '\[TEST:process:page_table_custody_disposition_gate:PASS\]' \
