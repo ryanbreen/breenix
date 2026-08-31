@@ -2543,6 +2543,14 @@ pub fn sys_execv_with_frame(
 pub fn sys_spawn(path_ptr: u64, argv_ptr: u64) -> SyscallResult {
     use super::errno::{EFAULT, EINVAL, EIO, EISDIR, ENOENT, ENOMEM, ESRCH};
 
+    // TEMPORARY #713 diagnostic (round 5) -- remove once the argv_ptr != 0
+    // stall this is hunting is root-caused and fixed.
+    log::info!(
+        "[713-DIAG] sys_spawn ENTER path_ptr={:#x} argv_ptr={:#x}",
+        path_ptr,
+        argv_ptr
+    );
+
     if path_ptr == 0 {
         return SyscallResult::Err(EFAULT as u64);
     }
@@ -2562,6 +2570,9 @@ pub fn sys_spawn(path_ptr: u64, argv_ptr: u64) -> SyscallResult {
         Err(_) => return SyscallResult::Err(EINVAL as u64),
     };
 
+    // TEMPORARY #713 diagnostic (round 5).
+    log::info!("[713-DIAG] sys_spawn path parsed: '{}'", program_path);
+
     // Read argv from userspace (mirrors sys_execv_with_frame's own loop above,
     // same MAX_ARGS/MAX_ARG_LEN budget; not factored into a shared helper —
     // #713 spec section 2.1 marks that pure hygiene, not load-bearing for
@@ -2572,6 +2583,8 @@ pub fn sys_spawn(path_ptr: u64, argv_ptr: u64) -> SyscallResult {
         const MAX_ARG_LEN: usize = 4096;
 
         for i in 0..MAX_ARGS {
+            // TEMPORARY #713 diagnostic (round 5).
+            log::info!("[713-DIAG] sys_spawn argv loop i={}", i);
             let ptr_addr = argv_ptr + (i * 8) as u64;
             let arg_ptr_bytes = match copy_from_user(ptr_addr, 8) {
                 Ok(bytes) => bytes,
@@ -2611,6 +2624,9 @@ pub fn sys_spawn(path_ptr: u64, argv_ptr: u64) -> SyscallResult {
         argv_vec.push(arg0);
     }
 
+    // TEMPORARY #713 diagnostic (round 5).
+    log::info!("[713-DIAG] sys_spawn argv_vec.len()={}", argv_vec.len());
+
     // Resolve the /bin/ prefix inline (mirrors sys_spawn_aarch64's own inline
     // resolution) and load via the production-safe, zero-feature ext2 reader.
     // Deliberately NOT load_elf_from_ext2 above: that helper is
@@ -2622,6 +2638,9 @@ pub fn sys_spawn(path_ptr: u64, argv_ptr: u64) -> SyscallResult {
     } else {
         alloc::format!("/bin/{}", program_path)
     };
+
+    // TEMPORARY #713 diagnostic (round 5).
+    log::info!("[713-DIAG] sys_spawn about to read_init_from_ext2('{}')", resolved_path);
 
     let elf_vec = match crate::boot::init_image::read_init_from_ext2(&resolved_path) {
         Ok(data) => data,
@@ -2636,6 +2655,9 @@ pub fn sys_spawn(path_ptr: u64, argv_ptr: u64) -> SyscallResult {
     };
     let elf_data = elf_vec.as_slice();
 
+    // TEMPORARY #713 diagnostic (round 5).
+    log::info!("[713-DIAG] sys_spawn elf_data.len()={}", elf_data.len());
+
     // Reclaim scheduler-owned kernel stacks and deferred process resources
     // BEFORE consuming another finite kernel-stack pool slot (#713 precheck
     // C8, mirrors sys_fork_with_parent_context's ordering and its own comment
@@ -2647,6 +2669,9 @@ pub fn sys_spawn(path_ptr: u64, argv_ptr: u64) -> SyscallResult {
         Some(id) => id,
         None => return SyscallResult::Err(ESRCH as u64),
     };
+
+    // TEMPORARY #713 diagnostic (round 5).
+    log::info!("[713-DIAG] sys_spawn current_thread_id={}", current_thread_id);
 
     // Window 1: look up the caller's PID under the PM lock, then drop it — no
     // I/O and no scheduler call inside this lock (#713 precheck C6).
@@ -2669,6 +2694,14 @@ pub fn sys_spawn(path_ptr: u64, argv_ptr: u64) -> SyscallResult {
     let process_name = alloc::string::String::from(short_name);
     let argv_slices: Vec<&[u8]> = argv_vec.iter().map(|v| v.as_slice()).collect();
 
+    // TEMPORARY #713 diagnostic (round 5).
+    log::info!(
+        "[713-DIAG] sys_spawn about to call spawn_process, parent_pid={} name='{}' argc={}",
+        parent_pid.as_u64(),
+        process_name,
+        argv_slices.len()
+    );
+
     // Window 2: create the child under the PM lock. No arch_without_interrupts
     // / without_interrupts wrapper here — matches creation.rs's documented
     // reasoning (masking around process creation risks a MEMORY_INFO
@@ -2684,6 +2717,12 @@ pub fn sys_spawn(path_ptr: u64, argv_ptr: u64) -> SyscallResult {
             None => Err("Process manager not available"),
         }
     };
+
+    // TEMPORARY #713 diagnostic (round 5).
+    match &child_pid {
+        Ok(pid) => log::info!("[713-DIAG] sys_spawn spawn_process Ok(pid={})", pid.as_u64()),
+        Err(e) => log::info!("[713-DIAG] sys_spawn spawn_process Err({})", e),
+    }
 
     let child_pid = match child_pid {
         Ok(pid) => pid,
@@ -2715,6 +2754,9 @@ pub fn sys_spawn(path_ptr: u64, argv_ptr: u64) -> SyscallResult {
         }
     };
 
+    // TEMPORARY #713 diagnostic (round 5).
+    log::info!("[713-DIAG] sys_spawn publish window: thread.is_some()={}", scheduler_thread.is_some());
+
     let scheduler_thread = match scheduler_thread {
         Some(thread) => thread,
         None => return SyscallResult::Err(ENOMEM as u64),
@@ -2723,6 +2765,9 @@ pub fn sys_spawn(path_ptr: u64, argv_ptr: u64) -> SyscallResult {
     // Outside every PM window, matching #713 precheck C6 and creation.rs's own
     // "spawn() internally uses without_interrupts" note.
     crate::task::scheduler::spawn(scheduler_thread);
+
+    // TEMPORARY #713 diagnostic (round 5).
+    log::info!("[713-DIAG] sys_spawn RETURNING Ok(pid={})", child_pid.as_u64());
 
     SyscallResult::Ok(child_pid.as_u64())
 }
