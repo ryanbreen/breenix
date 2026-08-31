@@ -1,0 +1,13 @@
+Building the shipped x86_64 production kernel profile...
+   Compiling kernel v0.1.0 (/root/breenix/kernel)
+   Compiling breenix v0.1.0 (/root/breenix)
+    Finished `release` profile [optimized] target(s) in 17.32s
+   Compiling kernel v0.1.0 (/root/breenix/kernel)
+   Compiling breenix v0.1.0 (/root/breenix)
+    Finished `release` profile [optimized] target(s) in 15.96s
+     Running `target/release/qemu-uefi`
+[qemu-uefi] Using UEFI image: /root/breenix/target/release/build/breenix-a551e3e76b26baf2/out/breenix-uefi.img (6356992 bytes)
+Booting the x86_64 production profile with the TTY oracle (boot 1/1)...
+FAIL: boot 1 - 2 TTY arm failure(s)
+/tmp/breenix_x86_tty_oracle/boot_1/serial_user.txt:<S>[SW]<K>[SW]<T><U><R>[TTY_ORACLE:FAIL:nonblock_open:master_nonblock_dropped:fl=0x0]
+/tmp/breenix_x86_tty_oracle/boot_1/serial_user.txt:[TTY_ORACLE:FAIL:nonblock_open:master_nonblock_dropped:fl=0x0]

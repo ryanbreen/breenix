@@ -448,6 +448,37 @@ INIT_SPAWN_SMOKE_REAP_LITERAL='[init] spawn smoke: exited (code 0)'
 # assert on): its presence would mean the "exited (code 0)" pin above was
 # never actually reached via a real reap, so it must stay absent.
 INIT_SPAWN_SMOKE_REAP_FAILED_LITERAL='[init] Warning: spawn smoke reap failed'
+# TTY-x86 port: a light canary, not the full per-arm proof. The full
+# per-arm/`pass=N` evidence lives in the dedicated gate
+# (docker/qemu/run-x86-tty-oracle-gate.sh, ported from
+# run-aarch64-tty-oracle-gate.sh); this standing gate only needs to know
+# the leg ran and reported no failure, the same "increasingly strong
+# signals, not re-proven at every gate" shape aarch64's own standing prod
+# gate already uses for BLOCK_EINTR_ORACLE/POLL_TCP_ORACLE
+# (run-aarch64-prod-profile-boot-test.sh).
+#
+# This file's OWN ratchet (tests/teardown_structure.rs,
+# x86_production_profile_gate_verdict_discipline_holds) requires every
+# marker assertion here to be an exact `-eq` count -- unlike
+# run-aarch64-prod-profile-boot-test.sh's equivalent canaries, which
+# legitimately use `-ge 1` under that file's own, looser house law. A first
+# attempt at this canary pinned `[TTY_ORACLE:COMPLETE:` (the oracle's own
+# tally line) at `-ge 1`/`-eq 2`, on the theory that its count is
+# "structurally always exactly 2". That theory was false: the 2 comes
+# entirely from `tty_oracle.rs`'s `emit()`, which deliberately prints the
+# line TWICE ("console output interleaves at byte granularity, so a single
+# shredded copy must not be able to hide a verdict") -- so a shred landing
+# inside the literal itself (as this branch's own mutation battery observed
+# once, verbatim: `<S>[SW]<K>[SW]<T><U><R>[TTY_ORACLE:FAIL:...`) can legally
+# drop the count to 1, making an `-eq 2` pin flaky by construction. Pin the
+# SINGLE-emit init record instead: init's own post-wait line prints exactly
+# once per boot (`run_tty_oracle()`'s one `print!` call, on a genuine reap),
+# with a distinct literal on a reap failure -- the same shape #713's own
+# INIT_SPAWN_SMOKE_REAP_LITERAL/INIT_SPAWN_SMOKE_REAP_FAILED_LITERAL pair
+# already uses just above.
+INIT_TTY_ORACLE_EXIT_LITERAL='[init] tty_oracle exited pid='
+INIT_TTY_ORACLE_REAP_FAILED_LITERAL='[init] Warning: tty_oracle reap failed'
+TTY_ORACLE_FAIL_LITERAL='[TTY_ORACLE:FAIL'
 # #720 — x86 user-stack VA bump allocator never reclaims (spawn-heavy
 # exhaustion after ~240 creations).
 # #721 — x86 exec() syscall is ENOSYS in the zero-feature production build
@@ -591,6 +622,9 @@ print_observed_values() {
     echo "  bsshd listening (#713):        $(marker_count "$BSSHD_LISTENING_LITERAL")"
     echo "  spawn-smoke child reaped exit 0 (#713): $(marker_count "$INIT_SPAWN_SMOKE_REAP_LITERAL")"
     echo "  spawn-smoke reap failed (must be absent, #713 fix-round-2): $(marker_count "$INIT_SPAWN_SMOKE_REAP_FAILED_LITERAL")"
+    echo "  tty oracle exit record (TTY-x86 port): $(marker_count "$INIT_TTY_ORACLE_EXIT_LITERAL")"
+    echo "  tty oracle reap failed (must be absent, TTY-x86 port): $(marker_count "$INIT_TTY_ORACLE_REAP_FAILED_LITERAL")"
+    echo "  tty oracle failed (must be absent, TTY-x86 port): $(marker_count "$TTY_ORACLE_FAIL_LITERAL")"
     # init's full boot-script chain (bsh --init-shell -> /etc/init.js's
     # further spawns) is still not pinned here -- see INIT SURVIVAL
     # EVIDENCE above and #722.
@@ -789,6 +823,14 @@ test "$(marker_count "$BSSHD_STARTED_LITERAL")" -eq 1
 test "$(marker_count "$BSSHD_LISTENING_LITERAL")" -eq 1
 test "$(marker_count "$INIT_SPAWN_SMOKE_REAP_LITERAL")" -eq 1
 test "$(marker_count "$INIT_SPAWN_SMOKE_REAP_FAILED_LITERAL")" -eq 0
+
+# TTY-x86 port: light canary that the leg ran and reported no failure. The
+# full 13-arm proof lives in the dedicated gate (see the literal comment
+# above). Pinned on init's single-emit post-wait record rather than the
+# oracle's own double-emitted COMPLETE line -- see that comment for why.
+test "$(marker_count "$INIT_TTY_ORACLE_EXIT_LITERAL")" -eq 1
+test "$(marker_count "$INIT_TTY_ORACLE_REAP_FAILED_LITERAL")" -eq 0
+test "$(marker_count "$TTY_ORACLE_FAIL_LITERAL")" -eq 0
 
 trap - ERR
 # #673 review, B5: an anti-vacuity leg must never print a bare production PASS
