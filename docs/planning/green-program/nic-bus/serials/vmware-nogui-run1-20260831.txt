@@ -1,0 +1,11 @@
+[vmware-gate] === Building + starting VM via run.sh --vmware (headless) ===
+[vmware-gate] VM started: /Users/wrb/Virtual Machines.localized/breenix-1788177387.vmwarevm/breenix-1788177387.vmx
+[vmware-gate] === Waiting 90s for boot ===
+[vmware-gate] === Stopping VM and reading evidence ===
+./docker/qemu/run-vmware-gate.sh: line 55: 26878 Terminated: 15          BREENIX_VMWARE_NOGUI=1 "$BREENIX_ROOT/run.sh" --vmware > "$RUN_LOG" 2>&1
+
+VMware e1000-fallback gate: PASS
+  virtio-net PCI attempted and failed, e1000 fallback initialized
+  [drivers] Found 60 PCI devices
+  Serial: /tmp/breenix-vmware-serial.log
+  VM stopped: /Users/wrb/Virtual Machines.localized/breenix-1788177387.vmwarevm/breenix-1788177387.vmx
