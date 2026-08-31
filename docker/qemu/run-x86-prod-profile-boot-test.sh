@@ -27,37 +27,138 @@
 # init, and drops into the async executor running the keyboard and serial-command
 # tasks. That is its steady state, and this gate polls for it.
 #
-# WHAT IT DOES NOT DO, STATED PLAINLY
+# WHAT IT NOW DOES (#673, fixed)
 #
-# It launches NO userspace process (#673). `/sbin/init` is read and launched only by
-# kernel/src/main_aarch64.rs; x86's kernel_main_continue() creates user processes
-# exclusively inside `#[cfg(feature = "testing")]` / `#[cfg(feature = "interactive")]`
-# blocks, and the serial console's `test` handler bottoms out in
-# userspace_test::test_multiple_processes(), whose body is also `#[cfg(feature =
-# "testing")]`. So the shipped x86 kernel spawns nothing, reaps nothing, and
-# retires no page-table root.
+# The shipped x86_64 kernel now launches a real init process. kernel_main_continue()
+# (kernel/src/main.rs) gained a third block, mutually exclusive with the existing
+# `testing`/`interactive` blocks: `#[cfg(not(any(feature = "testing", feature =
+# "interactive", feature = "disable_x86_prod_init")))]`. It reads `/sbin/init` from
+# the already-mounted ext2 root and drives it through the exact same arch-neutral
+# ProcessManager transaction aarch64's `launch_init_from_elf()` uses --
+# `create_init_process` -> `designate_init` -> `publish_init` (all in
+# kernel/src/process/manager.rs, no target_arch cfg) -- then hands the published
+# thread to `task::scheduler::spawn()`, the ordinary x86_64 dispatch entry point
+# every other process on this arch already uses. That single call was the gap:
+# `publish_init()` already left the thread scheduler-ready, but nothing on x86 had
+# ever called `spawn()` on it before #673.
 #
-# Therefore the census assertions below are a ZERO-WORKLOAD BASELINE, not a
-# return-to-zero after a teardown. This gate CANNOT prove that x86 production
-# teardown drains, because x86 production has no teardown to drain. What it does
-# prove, and what nothing proved before, is that the census counters are AT REST
-# at their own emission point: both censuses are emitted once from
-# kernel/src/main.rs:662-663, inside kernel_main, BEFORE the PRECONDITION block
-# (main.rs:1637-1742), the unconditional preempt_enable() (main.rs:1807), the
-# preempt-bracket census (main.rs:1847-1855), interrupt enable, and executor
-# startup that follow on the way to this gate's steady-state marker
-# (kernel_main_continue, main.rs:1861). Anchors re-derived per-delta by the
-# #672 fix. Read the pinned
-# literals as a conservation law over boot UP TO that emission point only --
-# any kthread, boot-path process row, or page-table root that leaks a tombstone
-# or is abandoned AFTER main.rs:663, including anywhere in the steady-state
-# liveness window this gate polls afterward, is outside what this gate can see.
-# No run on this branch has ever observed a nonzero census -- the forced-fail
-# leg (VERDICT DISCIPLINE below) mutates the gate's expected pattern, not the
-# kernel's counter state, so "the counters move off zero on a real leak" is an
-# inference from the emitters reading real aggregate() state
-# (tracing/providers/teardown.rs:720,741), not something this gate has
-# measured.
+# `disable_x86_prod_init` is an anti-vacuity knob only (not meant to ship enabled):
+# building with `--features disable_x86_prod_init` and neither `testing` nor
+# `interactive` compiles ONLY the init-launch block back out (#673 review, M3 --
+# not "byte-for-byte" the pre-fix kernel: the rest of this branch's fixes stay
+# in place, including the scheduler blocked-state fix, the timer TOCTOU fix, and
+# the console-executor kthread). It reproduces the one property this gate's
+# anti-vacuity leg needs: a kernel that never constructs a userspace process, so
+# this same gate can be run against it to prove the assertions below actually
+# discriminate the fix rather than passing either way. Set
+# X86_PROD_PROFILE_EXTRA_FEATURES=disable_x86_prod_init before invoking this
+# script to run that leg.
+#
+# CENSUS SCOPE, UNCHANGED BY THE FIX
+#
+# `emit_root_custody_summary()`/`emit_tombstone_census()` (kernel/src/main.rs:676-677)
+# still run exactly where they always did: inside `kernel_main`, strictly BEFORE
+# `kernel_main_continue()` is ever called, and therefore strictly before the new
+# init-launch block above. The pinned all-zero census literals below are therefore
+# still a true "before any user process exists" baseline -- the fix does not move
+# that emission point and does not require re-deriving those literals. What remains
+# true, and was true before #673 too, is that this gate does not drive init through
+# a reap/retire cycle, so it proves the census is at rest at its own emission point,
+# not a return-to-zero after a teardown: nothing here asserts anything about
+# teardown behavior once init is actually running its own workload.
+#
+# NEW EVIDENCE THIS GATE REQUIRES (#673)
+#
+# Construction is not dispatch, dispatch is not execution, and execution is not
+# survival, so four independent signals are asserted, each proving a strictly
+# stronger claim than the last:
+#   1. `[INIT_DESIGNATION:x86_64:designated_pid=1:...]` (emitted from the new call
+#      site) -- proves the ProcessManager transaction ran and named PID 1 as init.
+#   2. PRECONDITION 5 ("Scheduler has runnable threads") flips from its old,
+#      attributed FAIL to PASS -- proves the thread reached the scheduler's
+#      runnable set, checked live via `task::scheduler::with_scheduler` at
+#      kernel/src/main.rs:1970 (was main.rs:1798-1807 pre-fix, per #673's
+#      original RCA -- the fix's own new block shifted every line after it; re-
+#      derived again for the #673 review's M4 finding).
+#   3. `RING3_SYSCALL: First syscall from userspace` present exactly once --
+#      proves init's userspace code actually ran and reached the syscall
+#      handler. This is a pre-existing, one-time marker
+#      (kernel/src/syscall/handler.rs's emit_ring3_syscall_marker(), raw
+#      serial output, no locks) that already exists for the test framework's
+#      own stage-advance bookkeeping; #673 does not add it, only asserts on
+#      it in a profile that had never reached Ring 3 before.
+#   4. init's own first line, followed by the bsshd-launch warning it prints
+#      immediately afterward -- proves init ran past its first print into
+#      start_bsshd()'s spawn attempt and handled the result (#673 review,
+#      M6/MA4). This is deliberately NOT proof init reached its steady-state
+#      reap loop: SPAWN is unconditionally ENOSYS on x86 today (#713), so the
+#      warning fires on the very next lines of init's own code, not after
+#      further progress. The signal this pin replaced -- "init was never
+#      reported killed by signal" -- could never fire either way (it is
+#      init.rs's reaped-CHILD message; PID 1 never reaps itself) and is
+#      removed rather than kept as an unfalsifiable pin. See "INIT SURVIVAL
+#      EVIDENCE" below for exactly what is and is not proven, and why this
+#      does NOT also pin bsshd reaching its listening state, unlike the
+#      aarch64 production gate.
+#
+# WHY INIT CANNOT RUN UNTIL BOOT'S OWN WORK IS DONE (#673, the real fight)
+#
+# The straightforward version of this fix -- spawn init, let it compete --
+# reliably stalled the boot thread forever partway through its own remaining
+# work. Root cause: main.rs's init_with_current() makes the boot thread
+# BECOME the scheduler's idle thread ("Linux where the boot thread becomes
+# the idle task"). The moment any thread's first syscall is confirmed,
+# syscall::handler::is_ring3_confirmed() latches true, and
+# interrupts/context_switch.rs permanently stops restoring idle's saved
+# boot context whenever idle is next selected -- by design, to avoid
+# resuming stale boot-time RIPs. Separately, schedule() never re-enqueues
+# the outgoing thread when it IS the idle thread (correct for genuine idle).
+# Combined: once init exists as a thread that keeps re-readying itself (its
+# infinite reap loop nanosleep()s between waitpid attempts), the ready queue
+# is never truly empty, idle is never selected as the last-resort fallback,
+# and boot's own remaining PRECONDITION-checking/timer/census work -- tagged
+# as "idle" -- can never resume. The fix (kernel/src/main.rs) is a scheduling
+# brake taken unconditionally before init is even read from disk and released
+# unconditionally at a single matching site, once every line of boot's own
+# sequential work is behind it. This gate's evidence signals 1-3 above are
+# what proves that brake is correctly placed: construction, then dispatch,
+# then execution, in that order, with the shipped profile still reaching
+# steady state afterward.
+#
+# INTERRUPT BOOT-ORDER CHANGE (#673 review, m1/MA5)
+#
+# The brake above is taken alongside a new `interrupts::enable()` call that
+# moves hardware interrupt-enable to before this block, in every profile that
+# takes it (including the ext2-read-failure path, since the enable is
+# unconditional and outside the `match` arms). Before #673, the shipped
+# production profile's first hardware interrupt-enable was several hundred
+# lines later, immediately before the executor starts; every PRECONDITION
+# check, `int3`, and the timer/clock_gettime test between here and there now
+# run with interrupts genuinely enabled for the first time in production,
+# matching what the `testing` profile has always done -- this is what
+# surfaced time_test.rs's TOCTOU (m5).
+#
+# WHY THE CONSOLE SURVIVES INIT (#673 review, B1 -- a second, independent fight)
+#
+# The brake above only protects BOOT's own remaining work; it says nothing
+# about what happens to the async executor (keyboard + serial console) once
+# that brake lifts. The straightforward version of THAT -- run the executor
+# from the boot thread's own tail, exactly like every other x86 profile --
+# reliably loses the console within about a second of init starting: the
+# instant init's first syscall lands, idle's saved context (which is what
+# `executor.run()` would have to resume from) becomes exactly the kind of
+# stale boot-time context the paragraph above says is permanently abandoned,
+# and nothing else ever polls the executor again -- Waker::wake() only
+# re-queues a task id, and Executor::run()'s own loop is the only thing that
+# ever drains that queue. The fix is a SEPARATE mechanism from the brake
+# above: the console executor runs in its own dedicated kernel thread
+# (`task::kthread::kthread_run`, kernel/src/main.rs), spawned before the
+# brake lifts. A kthread is never the scheduler's idle thread, so it never
+# falls into the "abandon this context" rule at all -- it is preserved by the
+# same ordinary dispatch path every other kernel thread uses, indefinitely.
+# STEADY_STATE_LITERAL and the liveness check further below are what prove
+# this: they can only pass if the console is still being serviced well after
+# init has been running (see the LIVENESS section for exactly how).
 #
 # DISK LAYOUT
 #
@@ -86,6 +187,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BREENIX_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 OUTPUT_DIR="/tmp/breenix_x86_prod_profile"
 QEMU_PID=""
+# #673 anti-vacuity knob. Empty (default) builds the real shipped profile;
+# set to "disable_x86_prod_init" to build the pre-fix, zero-userspace kernel
+# and confirm this same gate discriminates the fix (see the header).
+X86_PROD_PROFILE_EXTRA_FEATURES="${X86_PROD_PROFILE_EXTRA_FEATURES:-}"
 
 # ---------------------------------------------------------------------------
 # Production milestones. Each must appear exactly once. `Kernel initialization
@@ -123,13 +228,26 @@ ROOT_CUSTODY_PROD_LITERAL='[PT_ROOT_CUSTODY:no_proof=0:no_arch=0:terminated=0:un
 # with boot_tests/testing/external_test_bins. One of them appearing means this
 # gate measured the wrong kernel, which is the single failure mode that would
 # make everything else it asserts meaningless.
+#
+# RING3_SMOKE: creating (not bare RING3_SMOKE:, #673) -- context_switch.rs
+# emits an unconditional, once-per-boot "[ OK ] RING3_SMOKE: userspace
+# executed + syscall path verified" canary on the FIRST real transition to
+# Ring 3 in ANY profile (raw_serial_str, no cfg at all -- it exists so CI can
+# verify userspace ran regardless of build). Before #673 that canary could
+# never fire in production because no process ever reached Ring 3, which
+# masked the bare RING3_SMOKE: substring here being wrong: it was only ever
+# a valid test-only signal by accident of the OTHER defect, not because it is
+# actually behind a testing cfg. #673 is the first thing that makes a
+# production boot exercise that canary, and it does -- correctly -- so this
+# entry is narrowed to RING3_SMOKE: creating, the prefix every genuinely
+# testing-gated RING3_SMOKE print in main.rs shares and the canary does not.
 # ---------------------------------------------------------------------------
 TEST_ONLY_MARKERS=(
     'TEST_TALLY:'
     '[TEST:'
     'TEST RUNNER:'
     '[BOOT_TESTS:'
-    'RING3_SMOKE:'
+    'RING3_SMOKE: creating'
     '[TOMBSTONE_QUIESCE:'
     '[RECLAIM_DRAIN:'
     '[TOMBSTONE_JOIN_ORACLE:'
@@ -158,35 +276,32 @@ FAULT_MARKERS=(
     'DISK LOADING FAILED'
 )
 CRASH_MARKERS_PATTERN='KERNEL PANIC|panic!|DOUBLE FAULT|TRIPLE FAULT|soft lockup detected'
-
 # ---------------------------------------------------------------------------
-# ATTRIBUTED pre-existing production-profile defects, pinned so they cannot move
-# silently. R52 forbids an unattributed failure; it does not require pretending
-# a disclosed one is absent. What the shipped x86 kernel still prints on every
-# boot, and was invisible until this gate existed:
+# PRECONDITION pins. R52 forbids an unattributed failure, not a disclosed one
+# left unfixed forever: both entries that used to live here (#672, #673) are
+# now FIXED, and both pins are re-derived in the direction that proves it --
+# the FAIL line must be ABSENT and the PASS line present exactly once. A
+# kernel that simply stopped emitting the check would satisfy a bare absence
+# assertion, which is why the PASS line is pinned too, not just the FAIL
+# line's absence.
 #
-#   PRECONDITION 5 (#673) -- "No runnable threads in scheduler". The shipped x86
-#   kernel launches no userspace process at all (see the header). Symptom of that
-#   gap, not an independent defect.
+# PRECONDITION 5 (#673, fixed) -- "Scheduler has runnable threads". The
+# shipped x86 kernel launched no userspace process at all; kernel_main_continue()
+# now reads /sbin/init from ext2 and hands it to task::scheduler::spawn() before
+# this check runs (see the header). Do not relax the FAIL-absent / PASS-present
+# pair back to a bare presence check or delete it -- that is how a fixed defect
+# regresses silently.
 #
-# It is pinned present-exactly-once ON PURPOSE: the day it is fixed this gate
-# goes red and the pin must be re-derived to 0 in the same change. Do not relax
-# it to >= or delete it -- that is how a disclosed defect becomes an undisclosed
-# one.
-#
-# PRECONDITION 7 (#672) USED TO BE THE SECOND ENTRY HERE and is now FIXED, so
-# its pin is re-derived in the opposite direction: the FAIL line must be ABSENT
-# and the PASS line present exactly once. The defect was that
-# kernel_main_continue() called per_cpu::preempt_disable() only inside
-# `#[cfg(all(feature = "testing", not(feature = "interactive")))]` while calling
-# the matching preempt_enable() unconditionally, so the shipped profile
-# decremented a preempt_count that was already zero and the bare `sub dword ptr
-# gs:[..], 1` wrapped it to 0xFFFFFFFF. The disable is now unconditional, so the
-# bracket is symmetric in every build profile. Pinning the PASS line rather than
-# only asserting the FAIL line is gone is deliberate: a kernel that stopped
-# emitting PRECONDITION 7 altogether would satisfy a bare absence check.
+# PRECONDITION 7 (#672, fixed) -- "Preemption disabled". kernel_main_continue()
+# used to call per_cpu::preempt_disable() only inside `#[cfg(all(feature =
+# "testing", not(feature = "interactive")))]` while calling the matching
+# preempt_enable() unconditionally, so the shipped profile decremented a
+# preempt_count that was already zero and the bare `sub dword ptr gs:[..], 1`
+# wrapped it to 0xFFFFFFFF. The disable is now unconditional, so the bracket is
+# symmetric in every build profile.
 # ---------------------------------------------------------------------------
 PRECOND_RUNNABLE_FAIL_LITERAL='PRECONDITION 5: Scheduler has runnable threads ✗ FAIL'
+PRECOND_RUNNABLE_PASS_LITERAL='PRECONDITION 5: Scheduler has runnable threads ✓ PASS'
 PRECOND_PREEMPT_FAIL_LITERAL='PRECONDITION 7: Preemption disabled ✗ FAIL'
 PRECOND_PREEMPT_PASS_LITERAL='PRECONDITION 7: Preemption disabled ✓ PASS'
 
@@ -202,38 +317,126 @@ PRECOND_PREEMPT_PASS_LITERAL='PRECONDITION 7: Preemption disabled ✓ PASS'
 # ---------------------------------------------------------------------------
 PREEMPT_CENSUS_PREFIX='[PREEMPT_BRACKET_CENSUS:'
 PREEMPT_CENSUS_PROD_LITERAL='[PREEMPT_BRACKET_CENSUS:underflow=0]'
+# #673 review, mi5/R3-B1: the census above is emitted before the production
+# block's OWN preempt_enable() (kernel/src/main.rs, B3's release) runs, so
+# it cannot see an underflow caused by that specific release. A second
+# marker closes that gap -- but emitting it from boot's own tail right
+# after the release raced the next timer tick (boot IS the scheduler's
+# idle thread in this profile, #712, and any preemption of its remaining
+# code abandons it for good): 1/6 shipping-profile boots at the #673
+# fix-round-3 review lost the line to that race. R3-B1 moved the emission
+# into the console_executor kthread's own first-run code instead -- a
+# kthread's context is never abandoned that way, and it cannot start
+# running until the release above has already completed (see the
+# emission's own comment in kernel/src/main.rs for the full derivation
+# against per_cpu::can_schedule()), so the read is now deterministic
+# rather than a footrace.
+PROD_BRACKET_RELEASE_PREFIX='[PROD_BRACKET_RELEASE_CENSUS:'
+PROD_BRACKET_RELEASE_PROD_LITERAL='[PROD_BRACKET_RELEASE_CENSUS:underflow=0]'
+
+# #673 review, MA6/R3-m4/R4-m1: test_timer_resolution() (kernel/src/time_test.rs)
+# demotes a >1-tick window between its two reads from a panic to a counted,
+# non-fatal log line (rare host scheduling jitter under a TCG-emulated PIT
+# or a loaded CI runner, not by itself proof of a kernel defect -- see that
+# function's own comment). Demoting it also made a genuine widening of the
+# tolerance invisible to this gate; pin it at zero so a real drift (the
+# window growing on every boot, not just an occasional stall) still reddens
+# here rather than passing silently. The implemented check cannot itself
+# distinguish the two: a single occasional stall also reds this gate at
+# -eq 0, same as genuine drift would -- a red here is attributable to MA6's
+# documented host-jitter tolerance until shown otherwise; adjudicate against
+# the observed-values count before re-running.
+TIMER_RESOLUTION_WINDOW_EXCEEDED_PREFIX='[TIMER_RESOLUTION_WINDOW_EXCEEDED:'
+
+# ---------------------------------------------------------------------------
+# #673 new evidence. Four independent signals, each a strictly stronger claim
+# than the last (construction, dispatch, execution, survival) -- see the
+# header's "NEW EVIDENCE THIS GATE REQUIRES" section for the full rationale.
+# INIT_DESIGNATION is matched by prefix (not full literal) because
+# reserved_collisions is a live counter, not a fixed value; designated_pid=1
+# is the part that must never drift.
+# ---------------------------------------------------------------------------
+INIT_DESIGNATION_X86_PREFIX='[INIT_DESIGNATION:x86_64:designated_pid=1:'
+RING3_SYSCALL_LITERAL='RING3_SYSCALL: First syscall from userspace'
+
+# ---------------------------------------------------------------------------
+# #673 review, M6/MA4: proves init did not just start but ran past its own
+# startup sequence. INIT_FIRST_LINE is init.rs's own first print (the exact
+# literal, not a prefix, since pid=1 is fixed for the singleton designated
+# init this profile constructs).
+#
+# The pin this replaced (INIT_KILLED_PREFIX, absent) was structurally
+# vacuous: it matched init.rs's waitpid(-1) reap-loop message for a REAPED
+# CHILD, printed with the CHILD's own pid. PID 1 is init itself, and init
+# never reaps itself via its own waitpid(-1) call, so that message could
+# never be emitted whatever init did -- the assertion could not fail
+# regardless of whether init actually survived. It is removed rather than
+# kept as an unfalsifiable pin.
+#
+# INIT SURVIVAL EVIDENCE (why this does NOT also pin bsshd, unlike the
+# aarch64 production gate): checked before pinning, per the #673 spec's own
+# risk note about init.rs's spawn chain on a lean production disk. init's
+# x86 main() calls start_bsshd() unconditionally right after its own
+# startup print, exactly like aarch64 -- but on x86, both that call and the
+# following run_boot_script() spawn fail cleanly with ENOSYS:
+#   [init] Warning: failed to start bsshd
+#   [init] Failed to spawn boot script: ENOSYS
+# Root cause (pre-existing, NOT a #673 regression, filed as #713): the
+# SPAWN syscall (nr 440) is unconditionally stubbed to ENOSYS in
+# kernel/src/syscall/handler.rs on x86_64 -- it has a real implementation
+# on aarch64 (sys_spawn_aarch64) but has never been ported to x86, because
+# #673 is the first x86 build to ever run userspace code that calls it.
+# The good news, and the reason init.rs's spawn chain was safe to run here
+# at all: it degrades gracefully exactly as the spec required checking --
+# init falls through cleanly into its reap loop rather than hanging. But
+# no x86 child process can ever start today, so bsshd can never reach
+# "listening" on this architecture, and pinning it would make this gate
+# permanently unsatisfiable. Revisit once #713 is fixed.
+#
+# INIT_BSSHD_WARNING_LITERAL replaces INIT_KILLED_PREFIX as the actual
+# survival pin (#673 review, MA4): it is the first line init prints AFTER
+# its own startup print that it could only reach by running its own
+# subsequent code (attempting the bsshd spawn and handling the Err arm), so
+# unlike the marker it replaces, it CAN fail -- an init that hung, faulted,
+# or never called start_bsshd() would not print it. It does not by itself
+# prove init reached its reap loop (run_boot_script() and the loop both
+# come later in init's own control flow) -- only that init progressed past
+# its first line into code whose behavior depends on #713's real, still-
+# open gap.
+# ---------------------------------------------------------------------------
+INIT_FIRST_LINE_LITERAL='[init] Breenix init starting (PID 1)'
+INIT_BSSHD_WARNING_LITERAL='[init] Warning: failed to start bsshd'
 
 # Measured on beast under TCG: steady state at 14s from QEMU launch. The bound is
 # an order of magnitude above that so host contention cannot score a slow-but-
 # healthy boot as a failure, and it is still far below run-x86-boot-tests.sh's
 # 900s because this profile runs no oracle cohort.
 POLL_BOUND_SECONDS=240
-# Liveness. STIMULUS-RESPONSE, and it has to be: until #672 was fixed, the
-# shipped kernel's only periodic output was `pFFr1 ` - per_cpu::can_schedule()'s
-# every-1000th-refusal debug trace (per_cpu.rs), printing the low byte of the
-# preempt_count #672 had wrapped to 0xFFFFFFFF next to a set need_resched. That
-# is the defect's own symptom, so the old "serial keeps growing on its own"
-# check was measuring the bug rather than the kernel's health, and it goes
-# silent - correctly - the moment the count is sane and can_schedule() stops
-# refusing. A healthy shipped kernel at steady state emits NOTHING spontaneously:
-# it has no userspace, no heartbeat process, and an async executor parked on the
-# keyboard and serial streams.
+# Liveness. STIMULUS-RESPONSE, and it has to be, but not for the reason a
+# pre-#673 header could give: post-fix, production has a real userspace init
+# (unconditional prints) and every context switch emits an unconditional raw-
+# serial marker (context_switch.rs's `[SW]`/`<K>`/`<U>`/`<I>`, outside every
+# cfg) -- so a healthy shipped kernel at steady state is NOT silent, and a
+# bare byte-growth check cannot fail for the reason it would need to: it was
+# measured on this branch's own boot growing 54346 -> 63572 bytes (+9226) in
+# 15s with NO console input at all, which is that switch/init traffic, not an
+# echo -- exactly the signature "console dead, kernel still switching" would
+# leave (#673 review, B1/B2). Total byte growth cannot distinguish that from
+# a live console, so it cannot redden on B1's failure mode and does not try
+# to here.
 #
-# So the gate pokes it. Serial 0 is a socket chardev instead of a plain file
-# (same logfile, so every marker count above is unchanged), one byte is written
-# to the console after steady state, and the console's echo is what makes the
-# byte count grow. That exercises UART RX interrupt delivery, the executor, and
-# serial_command_task's echo path - strictly more than the old check, and it
-# fails a kernel wedged in its halt loop for the same reason the old one did.
-#
-# Anti-vacuity: the chardev logfile records guest output only, not what the host
-# writes into the socket. Measured on the fixed kernel: one byte in, exactly one
-# byte logged. If it echoed the host's write the growth would be two.
-#
-# The byte is a printable character rather than a newline on purpose: a newline
-# would make serial_command_task print a second `breenix> ` prompt and break the
-# prompt pin above.
-LIVENESS_STIMULUS_BYTE='x'
+# So the gate asks a question only the console echo path can answer: it
+# sends a bare newline and requires serial_command_task's `breenix> ` prompt
+# COUNT to grow by exactly one. That prompt is printed only when the
+# console-executor kthread (#673's B1 fix) is actually scheduled, polls its
+# executor, and serial_command_task processes an RX-interrupt-delivered
+# newline through its read-line loop -- switch-trace noise and init's own
+# stdout cannot forge it. A kernel wedged in its halt loop, or one where the
+# console-executor kthread is dead (B1's exact failure mode: the boot
+# thread's saved executor.run() context abandoned with nothing left to poll
+# it), answers zero delta either way -- this is the prompt-count check below,
+# strengthened from a bare presence pin into a before/after delta.
+LIVENESS_STIMULUS_BYTE=$'\n'
 LIVENESS_WINDOW_SECONDS=15
 
 report_gate_failure() {
@@ -265,10 +468,23 @@ report_gate_failure() {
 }
 trap 'report_gate_failure "$LINENO" "$BASH_COMMAND"' ERR
 
-# Substring count across both serial files. grep exits 1 when nothing matches,
-# which under `set -e`/`pipefail` would abort before the assertion that wants to
-# read the zero, so the status is swallowed inside the group and awk -- which
-# always exits 0 -- produces the number.
+# Matching-LINE count across both serial files (#673 review, mi7 -- grep -c
+# counts lines, not substring occurrences, so two matches on one line would
+# still count once). The x86 console carries init's stdout on the same
+# serial stream as the shell prompt, so a same-line collision between a
+# pinned literal and the prompt could in principle misreport a 1->2 delta as
+# 1->1 (false red) or hide a real increase; 25/25 production-profile boots
+# (#673 fix round 2 -- the battery that measured this ran in round 2, NOT
+# round 3; corrected #673 review R3-MA2/R3-m3, which caught this comment
+# repeating round 2's figure as if it were round 3's own) observed no such
+# collision at that round's landed bytes. Re-measured at round 4's landed
+# bytes (`4aee31ea`): 12/12 production-profile boots green, 0 same-line
+# marker/prompt collisions (#673 fix round 4, `r4-prove.md` leg 1). This is
+# a disclosed sharp edge that has been checked, not a silently mislabeled
+# one. grep exits 1
+# when nothing matches, which under `set -e`/`pipefail` would abort before
+# the assertion that wants to read the zero, so the status is swallowed
+# inside the group and awk -- which always exits 0 -- produces the number.
 marker_count() {
     local literal="$1"
     local total
@@ -290,6 +506,7 @@ serial_bytes() {
     printf '%s' "$total"
 }
 
+
 print_observed_values() {
     echo "  ext2 root mounted:            $(marker_count "$EXT2_ROOT_LITERAL")"
     echo "  kernel init complete:         $(marker_count "$KERNEL_INIT_LITERAL")"
@@ -308,30 +525,58 @@ print_observed_values() {
     for marker in "${FAULT_MARKERS[@]}"; do
         echo "  fault marker '$marker': $(marker_count "$marker")"
     done
-    echo "  attributed PRECONDITION 5 fail: $(marker_count "$PRECOND_RUNNABLE_FAIL_LITERAL")"
+    echo "  fixed PRECONDITION 5 fail (#673): $(marker_count "$PRECOND_RUNNABLE_FAIL_LITERAL")"
+    echo "  fixed PRECONDITION 5 pass (#673): $(marker_count "$PRECOND_RUNNABLE_PASS_LITERAL")"
     echo "  fixed PRECONDITION 7 fail (#672): $(marker_count "$PRECOND_PREEMPT_FAIL_LITERAL")"
     echo "  fixed PRECONDITION 7 pass (#672): $(marker_count "$PRECOND_PREEMPT_PASS_LITERAL")"
     echo "  preempt census lines:          $(marker_count "$PREEMPT_CENSUS_PREFIX")"
     echo "  preempt census at rest:        $(marker_count "$PREEMPT_CENSUS_PROD_LITERAL")"
+    echo "  prod bracket release census:   $(marker_count "$PROD_BRACKET_RELEASE_PREFIX")"
+    echo "  prod bracket release at rest:  $(marker_count "$PROD_BRACKET_RELEASE_PROD_LITERAL")"
+    echo "  timer resolution window exceeded (#673 MA6/R3-m4): $(marker_count "$TIMER_RESOLUTION_WINDOW_EXCEEDED_PREFIX")"
+    echo "  init designation (#673):      $(marker_count "$INIT_DESIGNATION_X86_PREFIX")"
+    echo "  ring3 syscall confirmed (#673): $(marker_count "$RING3_SYSCALL_LITERAL")"
+    echo "  init first line (#673 M6):    $(marker_count "$INIT_FIRST_LINE_LITERAL")"
+    echo "  init bsshd-launch warning (#673 MA4): $(marker_count "$INIT_BSSHD_WARNING_LITERAL")"
+    # bsshd is not pinned as LISTENING: SPAWN is unconditionally ENOSYS on
+    # x86 (#713), a pre-existing gap #673 exposed but did not cause. See
+    # INIT SURVIVAL EVIDENCE above.
     { grep -F -h -- "$TOMBSTONE_CENSUS_PREFIX" "$OUTPUT_DIR"/serial_*.txt 2>/dev/null || true; }
     { grep -F -h -- "$ROOT_CUSTODY_PREFIX" "$OUTPUT_DIR"/serial_*.txt 2>/dev/null || true; }
     { grep -F -h -- "$PREEMPT_CENSUS_PREFIX" "$OUTPUT_DIR"/serial_*.txt 2>/dev/null || true; }
+    { grep -F -h -- "$PROD_BRACKET_RELEASE_PREFIX" "$OUTPUT_DIR"/serial_*.txt 2>/dev/null || true; }
+    { grep -F -h -- "$TIMER_RESOLUTION_WINDOW_EXCEEDED_PREFIX" "$OUTPUT_DIR"/serial_*.txt 2>/dev/null || true; }
+    { grep -F -h -- "$INIT_DESIGNATION_X86_PREFIX" "$OUTPUT_DIR"/serial_*.txt 2>/dev/null || true; }
 }
 
 cd "$BREENIX_ROOT"
 
 echo "Building the shipped x86_64 production kernel profile..."
-# No --features, and that omission is the assertion: adding one here would make
-# this gate measure a different kernel than the one the project ships.
+# #673 review, B5: the ONLY two legal values are empty (the shipped profile)
+# and the documented anti-vacuity knob below. "The absence of --features is
+# the point" (see the header) is not just prose about the default -- any
+# other value here would silently build and measure a DIFFERENT kernel than
+# the one this gate exists to prove, with no assertion below able to catch
+# it, and the trap above is already armed to make this loud (#668).
+test -z "$X86_PROD_PROFILE_EXTRA_FEATURES" -o "$X86_PROD_PROFILE_EXTRA_FEATURES" = "disable_x86_prod_init"
+FEATURE_ARGS=()
+if [ -n "$X86_PROD_PROFILE_EXTRA_FEATURES" ]; then
+    FEATURE_ARGS=(--features "$X86_PROD_PROFILE_EXTRA_FEATURES")
+    echo "  (#673 anti-vacuity leg: extra features = $X86_PROD_PROFILE_EXTRA_FEATURES)"
+fi
+# No --features by default, and that omission is the assertion: silently
+# adding one would make this gate measure a different kernel than the one
+# the project ships. The one documented exception is the #673 anti-vacuity
+# knob above, which is off by default and must be opted into explicitly.
 # The existing image is removed first so a stale artifact from a differently
 # featured build cannot be picked up by the newest-first selection below.
 rm -f target/release/build/breenix-*/out/breenix-uefi.img
 BUILD_LOG=/tmp/breenix_x86_prod_profile_build.log
-cargo build --release --bin qemu-uefi 2>&1 | tee "$BUILD_LOG"
+cargo build --release ${FEATURE_ARGS[@]+"${FEATURE_ARGS[@]}"} --bin qemu-uefi 2>&1 | tee "$BUILD_LOG"
 # Zero-warning law. grep exits 1 on the clean case, so the status is swallowed in
 # the group and awk -- which always exits 0 -- produces the number.
 test "$( { grep -c '^warning' "$BUILD_LOG" || true; } | awk '{ print $1 + 0 }')" -eq 0
-BREENIX_PRINT_UEFI_IMAGE=1 cargo run --release --bin qemu-uefi >/dev/null
+BREENIX_PRINT_UEFI_IMAGE=1 cargo run --release ${FEATURE_ARGS[@]+"${FEATURE_ARGS[@]}"} --bin qemu-uefi >/dev/null
 UEFI_IMG=$(ls -t target/release/build/breenix-*/out/breenix-uefi.img | head -1)
 test -n "$UEFI_IMG"
 
@@ -390,10 +635,11 @@ test "$reached" = true
 
 # Liveness. Both samples are taken with QEMU still running, after steady state,
 # with the stimulus written between them: a kernel that has wedged in its halt
-# loop never services the UART interrupt and never echoes, a live one answers.
-# See the LIVENESS_STIMULUS_BYTE block above for why the old free-running
-# byte-growth check is not available on a kernel with #672 fixed.
-BYTES_BEFORE=$(serial_bytes)
+# loop never services the UART interrupt and never echoes, a live one answers
+# with a fresh `breenix> ` prompt. See the LIVENESS_STIMULUS_BYTE block above
+# for why a bare byte-growth check is not available on a kernel with #672 and
+# #673 both fixed, and why counting THIS specific marker's growth is.
+PROMPT_BEFORE=$(marker_count "$CONSOLE_PROMPT_LITERAL")
 python3 - "$OUTPUT_DIR/console.sock" "$LIVENESS_STIMULUS_BYTE" <<'STIMULUS'
 import socket
 import sys
@@ -404,20 +650,24 @@ console.sendall(sys.argv[2].encode())
 console.close()
 STIMULUS
 sleep "$LIVENESS_WINDOW_SECONDS"
-BYTES_AFTER=$(serial_bytes)
+PROMPT_AFTER=$(marker_count "$CONSOLE_PROMPT_LITERAL")
 
 kill "$QEMU_PID" 2>/dev/null || true
 wait "$QEMU_PID" 2>/dev/null || true
 QEMU_PID=""
 
-test "$BYTES_AFTER" -gt "$BYTES_BEFORE"
+test "$PROMPT_AFTER" -gt "$PROMPT_BEFORE"
 
 # Production milestones.
 test "$(marker_count "$EXT2_ROOT_LITERAL")" -eq 1
 test "$(marker_count "$KERNEL_INIT_LITERAL")" -eq 1
 test "$(marker_count "$EXECUTOR_LITERAL")" -eq 1
 test "$(marker_count "$STEADY_STATE_LITERAL")" -eq 1
-test "$(marker_count "$CONSOLE_PROMPT_LITERAL")" -eq 1
+# Strengthened from a bare presence pin (#673 review, B2) into a before/after
+# delta: PROMPT_BEFORE is the steady-state prompt printed once at start,
+# PROMPT_AFTER is that plus exactly the one the liveness stimulus earned.
+test "$PROMPT_BEFORE" -eq 1
+test "$PROMPT_AFTER" -eq 2
 
 # Teardown census, at rest, in the shipped profile.
 test "$(marker_count "$TOMBSTONE_CENSUS_PREFIX")" -eq 1
@@ -436,8 +686,10 @@ for marker in "${FAULT_MARKERS[@]}"; do
 done
 test "$(crash_count)" -eq 0
 
-# Attributed pre-existing defect: pinned, not tolerated. See the block above.
-test "$(marker_count "$PRECOND_RUNNABLE_FAIL_LITERAL")" -eq 1
+# #673, fixed: the shipped kernel now launches init, so PRECONDITION 5 must
+# now pass and must still be reported. See the block above.
+test "$(marker_count "$PRECOND_RUNNABLE_FAIL_LITERAL")" -eq 0
+test "$(marker_count "$PRECOND_RUNNABLE_PASS_LITERAL")" -eq 1
 
 # #672, fixed: the preempt bracket is symmetric in the shipped profile, so
 # PRECONDITION 7 must now pass and must still be reported.
@@ -448,7 +700,36 @@ test "$(marker_count "$PRECOND_PREEMPT_PASS_LITERAL")" -eq 1
 test "$(marker_count "$PREEMPT_CENSUS_PREFIX")" -eq 1
 test "$(marker_count "$PREEMPT_CENSUS_PROD_LITERAL")" -eq 1
 
+# #673 review, mi5: the production bracket's own release, censused separately
+# from the shared census above (see its declaration comment).
+test "$(marker_count "$PROD_BRACKET_RELEASE_PREFIX")" -eq 1
+test "$(marker_count "$PROD_BRACKET_RELEASE_PROD_LITERAL")" -eq 1
+
+# #673 review, MA6/R3-m4: pin the demoted timer-resolution window overrun at
+# zero -- see its declaration comment above.
+test "$(marker_count "$TIMER_RESOLUTION_WINDOW_EXCEEDED_PREFIX")" -eq 0
+
+# #673: init designation and syscall-execution evidence -- construction,
+# dispatch, and execution, each proven independently. See the header.
+test "$(marker_count "$INIT_DESIGNATION_X86_PREFIX")" -eq 1
+test "$(marker_count "$RING3_SYSCALL_LITERAL")" -eq 1
+
+# #673 review, M6/MA4: init survival evidence -- init reached its own first
+# line and printed the bsshd-launch warning that only its own subsequent
+# code path can produce. bsshd is not pinned as listening here: SPAWN is
+# unconditionally ENOSYS on x86 today (#713, pre-existing, not a #673
+# regression) -- see "INIT SURVIVAL EVIDENCE" above for the full account.
+test "$(marker_count "$INIT_FIRST_LINE_LITERAL")" -eq 1
+test "$(marker_count "$INIT_BSSHD_WARNING_LITERAL")" -eq 1
+
 trap - ERR
-echo "PASS: x86 production profile reached steady state with the teardown census at rest"
+# #673 review, B5: an anti-vacuity leg must never print a bare production PASS
+# -- the measured arm has to be the shipping arm, or the verdict has to say so.
+if [ -n "$X86_PROD_PROFILE_EXTRA_FEATURES" ]; then
+    echo "PASS (feature-mutated build, features=$X86_PROD_PROFILE_EXTRA_FEATURES; NOT the shipped profile)"
+else
+    echo "PASS: x86 production profile reached steady state with the teardown census at rest"
+fi
 print_observed_values
-echo "  console echo over ${LIVENESS_WINDOW_SECONDS}s: $BYTES_BEFORE -> $BYTES_AFTER bytes"
+echo "  console prompt count over ${LIVENESS_WINDOW_SECONDS}s: $PROMPT_BEFORE -> $PROMPT_AFTER"
+echo "  (informational) total serial bytes at exit: $(serial_bytes)"

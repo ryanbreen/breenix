@@ -46,6 +46,29 @@ pub enum ThreadState {
     Terminated,
 }
 
+impl ThreadState {
+    /// True for every variant the scheduler treats as parked waiting on
+    /// some external event, as opposed to `Running`, `Ready`, or
+    /// `Terminated`. `schedule()` and `unblock()` (task/scheduler.rs) both
+    /// switch on this exact five-variant set in several places; this
+    /// predicate exists so the next missed site is impossible instead of a
+    /// sixth hand-copied match arm (#673 review, m4). Some call sites
+    /// (per_cpu::can_schedule(), unblock()) recognize a deliberately
+    /// DIFFERENT subset for their own documented reasons and do not use
+    /// this predicate -- see their own comments.
+    #[inline(always)]
+    pub fn is_blocked(self) -> bool {
+        matches!(
+            self,
+            ThreadState::Blocked
+                | ThreadState::BlockedOnSignal
+                | ThreadState::BlockedOnChildExit
+                | ThreadState::BlockedOnTimer
+                | ThreadState::BlockedOnIO
+        )
+    }
+}
+
 /// Thread privilege level
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ThreadPrivilege {

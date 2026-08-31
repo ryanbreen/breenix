@@ -203,19 +203,48 @@ pub extern "C" fn check_need_resched_and_switch(
         return;
     }
 
-    // Check if current thread is blocked or terminated - we MUST switch away in that case
+    // Check if current thread is blocked or terminated - we MUST switch away in that case.
+    // Uses ThreadState::is_blocked() (#673 review, m4) -- this site recognizes
+    // the FULL five-variant family (including BlockedOnIO), unlike
+    // per_cpu::can_schedule()'s deliberately narrower four-variant set
+    // (per_cpu.rs's own comment on that narrowing names the reason).
+    //
+    // Recognizing BlockedOnIO here is safe for a reason specific to THIS
+    // site, not a blanket claim about the state itself (#673 review, MA2):
+    // this check runs strictly AFTER the `preempt_count_value > 0 &&
+    // !from_userspace` early return above, so by the time we reach it,
+    // either preempt_count is already zero or we entered from userspace --
+    // never mid-brake. Every x86 producer of BlockedOnIO (the
+    // WaitQueueHead-based `prepare_to_wait(BlockedOnIO)` sites in
+    // drivers/virtio/{block,block_mmio,sound,sound_mmio,gpu_pci}.rs and
+    // syscall/graphics.rs, and the scheduler-internal
+    // `block_current_for_io_with_timeout()` the Completion-based device
+    // waits use, task/scheduler.rs) sets the state only immediately before
+    // handing off to the scheduler (`schedule_current_wait()` or an inline
+    // `schedule()` call), so a thread is never observably BlockedOnIO while
+    // still holding a brake it needs this check to respect. That includes
+    // #673's own production-init brake:
+    // `Completion::wait_timeout_uninterruptible()` (task/completion.rs, used
+    // by the ext2 read's `wait_for_completion()`, drivers/virtio/block.rs)
+    // explicitly calls `preempt_enable()` before setting BlockedOnIO and
+    // restores the brake afterward, so this site seeing BlockedOnIO here
+    // never coincides with the brake being up. This half of the widening
+    // ships in every x86 profile, `boot_tests`/`testing` included, not only
+    // the shipped production one.
+    //
+    // per_cpu::can_schedule() (M5) narrows differently: it is called from
+    // the timer interrupt with no equivalent preceding preempt-count gate of
+    // its own, so it cannot rely on the same "never mid-brake" argument --
+    // see its own comment for why BlockedOnIO stays out there (#666, #508,
+    // the still-open gap between preempt_count and scheduling admission
+    // during a boot-thread disk-completion wait). The two sites are not
+    // inconsistent: each recognizes the family that is provably safe for
+    // where it sits.
     let current_thread_blocked_or_terminated = scheduler::with_scheduler(|sched| {
-        if let Some(current) = sched.current_thread_mut() {
-            matches!(
-                current.state,
-                crate::task::thread::ThreadState::Blocked
-                    | crate::task::thread::ThreadState::BlockedOnSignal
-                    | crate::task::thread::ThreadState::BlockedOnChildExit
-                    | crate::task::thread::ThreadState::Terminated
-            )
-        } else {
-            false
-        }
+        sched.current_thread_mut().is_some_and(|current| {
+            current.state.is_blocked()
+                || current.state == crate::task::thread::ThreadState::Terminated
+        })
     })
     .unwrap_or(false);
 

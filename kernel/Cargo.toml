@@ -104,6 +104,16 @@ ec0_fault_inject = []  # Inject one EL1 UDF on CPU 0 after about 10 seconds
 receipt_drop_test = ["boot_tests"]  # Deliberately exercise RetirementReceipt::drop
 vmnet = []  # Use vmnet network config (192.168.64.x) instead of SLIRP (10.0.2.x)
 interactive = ["testing"]  # Boot into init_shell instead of running automated tests
+# #673 anti-vacuity knob (#673 review, M3/mi1): building with this feature
+# (and neither `testing` nor `interactive`) compiles ONLY the init-launch
+# block back out -- NOT byte-for-byte the pre-#673 kernel. The rest of this
+# branch's fixes (the scheduler blocked-state fix, the timer TOCTOU fix, the
+# console-executor kthread) stay in the tree regardless. It reproduces the
+# one property the extended prod-profile gate's anti-vacuity leg needs: a
+# kernel that never constructs a userspace process, so that gate can prove
+# it discriminates the fix rather than passing either way. Not implied by
+# any other feature, and not meant to ship enabled.
+disable_x86_prod_init = []
 
 [dependencies]
 bootloader_api = { git = "https://github.com/rust-osdev/bootloader.git", branch = "main" }

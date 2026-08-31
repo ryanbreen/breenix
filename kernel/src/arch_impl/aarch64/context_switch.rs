@@ -5290,15 +5290,7 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
             let thread_ptr = Aarch64PerCpu::current_thread_ptr();
             if !thread_ptr.is_null() {
                 let thread = unsafe { &*(thread_ptr as *const Thread) };
-                matches!(
-                    thread.state,
-                    ThreadState::Blocked
-                        | ThreadState::BlockedOnSignal
-                        | ThreadState::BlockedOnChildExit
-                        | ThreadState::BlockedOnTimer
-                        | ThreadState::BlockedOnIO
-                        | ThreadState::Terminated
-                )
+                thread.state.is_blocked() || thread.state == ThreadState::Terminated
             } else {
                 false
             }
@@ -5410,15 +5402,9 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
     // the scheduler switches away from a blocked thread even when need_resched
     // is not yet set, matching the behaviour of all other Blocked* states.
     let current_blocked_or_terminated = if let Some(current) = sched.current_thread_mut() {
-        matches!(
-            current.state,
-            ThreadState::Blocked
-                | ThreadState::BlockedOnSignal
-                | ThreadState::BlockedOnChildExit
-                | ThreadState::BlockedOnTimer
-                | ThreadState::BlockedOnIO
-                | ThreadState::Terminated
-        )
+        // ThreadState::is_blocked() (#673 review, m4); Terminated stays a
+        // separate arm since it is not one of is_blocked()'s five variants.
+        current.state.is_blocked() || current.state == ThreadState::Terminated
     } else {
         false
     };

@@ -3166,6 +3166,7 @@ const DESIGNATED_INIT_READS: &[(&str, &str, usize)] = &[
     ("kernel/src/tracing/providers/teardown.rs", "#[cfg(feature=boot_tests)] fn init_designation_oracle_test", 10),
     ("kernel/src/tracing/providers/teardown.rs", "#[cfg(feature=boot_tests)] fn init_group_refusal_oracle_test", 2),
     ("kernel/src/tracing/providers/teardown.rs", "#[cfg(feature=boot_tests)] fn init_group_walk_census", 1),
+    ("kernel/src/main.rs", "#[cfg(all(target_arch=x86_64,not(any(feature=testing,feature=interactive,feature=disable_x86_prod_init))))] fn launch_x86_production_init", 1),
 ];
 #[rustfmt::skip]
 const CLEAR_CHILD_TID_EXIT_SITES: &[(&str, &str, usize)] = &[
@@ -14082,6 +14083,36 @@ fn kstack_identity_validator_rejects_the_unsound_reads() {
 /// ratchet. A literal list of today's marker names would go stale the first time
 /// the shipped profile grew a milestone, and would say nothing about whether the
 /// listed markers were actually consumed.
+/// A declared marker is "spent" either directly - an inline
+/// `test "$(marker_count "$NAME")" -eq N` - or indirectly: captured into a
+/// variable (`VAR=$(marker_count "$NAME")`) that is itself later pinned with
+/// an exact-count assertion (`test "$VAR" -eq N`). #673 review, B2: the
+/// liveness check needs the SAME marker sampled twice (before/after a
+/// stimulus), which only the indirect form can express - it is a strictly
+/// stronger spend than the direct form's single presence pin, not a weaker
+/// one, so it counts as spent here.
+fn x86_prod_marker_is_spent(script: &str, name: &str) -> bool {
+    let direct = format!("test \"$(marker_count \"${name}\")\" -eq ");
+    if script.contains(&direct) {
+        return true;
+    }
+    let assign_suffix = format!("=$(marker_count \"${name}\")");
+    script.lines().any(|line| {
+        let Some(var) = line.trim_start().strip_suffix(assign_suffix.as_str()) else {
+            return false;
+        };
+        let var = var.trim();
+        if var.is_empty()
+            || !var
+                .chars()
+                .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
+        {
+            return false;
+        }
+        script.contains(&format!("test \"${var}\" -eq "))
+    })
+}
+
 fn x86_prod_declared_markers(script: &str) -> Vec<&str> {
     script
         .lines()
@@ -14141,7 +14172,11 @@ fn x86_prod_declared_marker_arrays(script: &str) -> Vec<&str> {
 fn validate_x86_prod_profile_harness(script: &str) -> Result<(), ()> {
     const TRAP: &str = "trap 'report_gate_failure \"$LINENO\" \"$BASH_COMMAND\"' ERR";
     const VERDICT: &str = "test \"$reached\" = true";
-    const BUILD: &str = "cargo build --release --bin qemu-uefi";
+    // #673 review, B4.3/B4.4: the build line now carries a bash-3.2-safe
+    // feature-array expansion (docker/qemu m3) so this constant tracks the
+    // real line, and the per-line --features scan below (not this literal)
+    // is what actually forbids a hardcoded --features flag.
+    const BUILD: &str = "cargo build --release ${FEATURE_ARGS[@]+\"${FEATURE_ARGS[@]}\"} --bin qemu-uefi";
 
     // Verdict machinery.
     if !script.contains("set -euo pipefail")
@@ -14178,6 +14213,15 @@ fn validate_x86_prod_profile_harness(script: &str) -> Result<(), ()> {
         }
     }
 
+    // #673 review, mi6: the anti-vacuity knob's own constraint (only empty
+    // or exactly "disable_x86_prod_init") must stay enforced structurally,
+    // not only at runtime -- deleting this one line would silently restore
+    // the unconstrained knob B5 was filed about.
+    const KNOB_CONSTRAINT: &str = "test -z \"$X86_PROD_PROFILE_EXTRA_FEATURES\" -o \"$X86_PROD_PROFILE_EXTRA_FEATURES\" = \"disable_x86_prod_init\"";
+    if !script.contains(KNOB_CONSTRAINT) {
+        return Err(());
+    }
+
     // The build must stay feature-free: a --features flag anywhere on a cargo
     // line would silently turn this into a second boot-test gate.
     if !script.contains(BUILD) {
@@ -14193,14 +14237,15 @@ fn validate_x86_prod_profile_harness(script: &str) -> Result<(), ()> {
         }
     }
 
-    // Census: every declared marker constant is spent on an exact-count assertion.
+    // Census: every declared marker constant is spent on an exact-count assertion,
+    // directly or indirectly (#673 review, B2: a before/after liveness delta
+    // captures a marker_count() into a variable so it can be pinned twice).
     let markers = x86_prod_declared_markers(script);
     if markers.is_empty() {
         return Err(());
     }
     for name in &markers {
-        let spent = format!("test \"$(marker_count \"${name}\")\" -eq ");
-        if !script.contains(&spent) {
+        if !x86_prod_marker_is_spent(script, name) {
             eprintln!("x86 production-profile gate declares {name} but never asserts it");
             return Err(());
         }
@@ -14250,7 +14295,7 @@ fn validate_x86_prod_profile_harness(script: &str) -> Result<(), ()> {
     // The three assertions that are not marker counts, and the failure-path
     // serial preservation that makes a red diagnosable at all.
     if !script.contains("test \"$(crash_count)\" -eq 0")
-        || !script.contains("test \"$BYTES_AFTER\" -gt \"$BYTES_BEFORE\"")
+        || !script.contains("test \"$PROMPT_AFTER\" -gt \"$PROMPT_BEFORE\"")
         || !script.contains("cp \"$OUTPUT_DIR\"/serial_*.txt \"$failure_dir/\"")
     {
         return Err(());
@@ -14315,8 +14360,18 @@ fn x86_production_profile_gate_ratchet_is_not_vacuous() {
     report_vacuity(
         "featured build",
         gate.replacen(
-            "cargo build --release --bin qemu-uefi",
-            "cargo build --release --features boot_tests --bin qemu-uefi",
+            "cargo build --release ${FEATURE_ARGS[@]+\"${FEATURE_ARGS[@]}\"} --bin qemu-uefi",
+            "cargo build --release --features boot_tests ${FEATURE_ARGS[@]+\"${FEATURE_ARGS[@]}\"} --bin qemu-uefi",
+            1,
+        ),
+    );
+    // B5's knob constraint deleted would silently restore the unconstrained
+    // knob (#673 review, mi6).
+    report_vacuity(
+        "knob constraint deleted",
+        gate.replacen(
+            "test -z \"$X86_PROD_PROFILE_EXTRA_FEATURES\" -o \"$X86_PROD_PROFILE_EXTRA_FEATURES\" = \"disable_x86_prod_init\"\n",
+            "",
             1,
         ),
     );
@@ -14354,7 +14409,7 @@ fn x86_production_profile_gate_ratchet_is_not_vacuous() {
             .replacen("    '[TEST:'\n", "", 1)
             .replacen("    'TEST RUNNER:'\n", "", 1)
             .replacen("    '[BOOT_TESTS:'\n", "", 1)
-            .replacen("    'RING3_SMOKE:'\n", "", 1)
+            .replacen("    'RING3_SMOKE: creating'\n", "", 1)
             .replacen("    '[TOMBSTONE_QUIESCE:'\n", "", 1)
             .replacen("    '[RECLAIM_DRAIN:'\n", "", 1)
             .replacen("    '[TOMBSTONE_JOIN_ORACLE:'\n", "", 1)
@@ -14387,7 +14442,7 @@ fn x86_production_profile_gate_ratchet_is_not_vacuous() {
     );
     report_vacuity(
         "liveness assertion deleted",
-        gate.replacen("test \"$BYTES_AFTER\" -gt \"$BYTES_BEFORE\"", "", 1),
+        gate.replacen("test \"$PROMPT_AFTER\" -gt \"$PROMPT_BEFORE\"", "", 1),
     );
     // Serial preservation removed: a red with no serial is not diagnosable.
     report_vacuity(

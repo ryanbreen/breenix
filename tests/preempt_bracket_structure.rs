@@ -14,10 +14,13 @@
 //! governing its `preempt_disable()` sites must equal the census governing its
 //! `preempt_enable()` sites. A future bracket that is deliberately cfg-gated as
 //! a unit still passes; half a bracket never does. A second, stronger test pins
-//! what production actually needs today - both halves compile in every profile -
+//! that every distinct bracket context in a file is a refinement of every other
+//! (#673, B4: a file may hold more than one bracket, at more than one nesting
+//! depth, once a nested bracket like #673's production-init one is legitimate) -
 //! and the vacuity tests prove each check can still go red.
 
 use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 use std::fs;
 use std::path::PathBuf;
 
@@ -263,6 +266,24 @@ fn bracket_is_symmetric(source: &str) -> bool {
     census(&cfg_contexts(source, DISABLE)) == census(&cfg_contexts(source, ENABLE))
 }
 
+/// The subset-or-superset law (B4's generalization of "share one context",
+/// #673 review MA3) in one function so the vacuity tests can exercise it
+/// against synthetic sources, mirroring `bracket_is_symmetric` above.
+fn bracket_contexts_form_one_chain(source: &str) -> bool {
+    let mut contexts: Vec<String> = cfg_contexts(source, DISABLE);
+    contexts.extend(cfg_contexts(source, ENABLE));
+    let distinct = census(&contexts);
+    let condition_sets: Vec<BTreeSet<&str>> = distinct
+        .keys()
+        .map(|context| context.split(" + ").filter(|c| !c.is_empty()).collect())
+        .collect();
+    condition_sets.iter().enumerate().all(|(i, a)| {
+        condition_sets[i + 1..]
+            .iter()
+            .all(|b| a.is_subset(b) || b.is_subset(a))
+    })
+}
+
 #[test]
 fn boot_path_preempt_brackets_are_cfg_symmetric() {
     for path in BOOT_PATH_SOURCES {
@@ -284,18 +305,57 @@ fn boot_path_preempt_sites_share_one_cfg_context() {
     // is itself `#[cfg(target_arch = "x86_64", ...)]`, and that is not an
     // asymmetry because both halves inherit it. What may never happen is one half
     // acquiring a condition the other does not have, which is #672 exactly.
+    //
+    // A file may legitimately hold more than one bracket, at more than one
+    // nesting depth (#673 review, B4: the production block's bracket is a
+    // deliberately MORE-nested one alongside the historical bracket, scoped
+    // narrower and released after boot's own remaining sequential work; it
+    // compiles into a strict SUBSET of the profiles the historical one does,
+    // by lexical nesting inside the same function - not by feature-implication
+    // reasoning about what any condition implies). "One context" here means
+    // every distinct context is comparable to every other under set inclusion
+    // - forms one nesting chain - so no two brackets can carry two genuinely
+    // unrelated conditions. Exact per-context balance (disable count == enable
+    // count for that exact context) is `boot_path_preempt_brackets_are_cfg_symmetric`'s
+    // job above, not this one's.
     for path in BOOT_PATH_SOURCES {
         let source = repo_text(path);
+        // #673 review, R3-m2: call the SAME predicate the vacuity test
+        // below (incomparable_cfg_contexts_reddens_the_chain_ratchet)
+        // mutates, rather than a duplicate inline copy of its logic -- so a
+        // mutation of the real, shipped check reddens THIS test too, not
+        // only a copy of it.
+        if bracket_contexts_form_one_chain(&source) {
+            continue;
+        }
+        // Re-derive the same sets to name the specific offending pair in
+        // the failure message; bracket_contexts_form_one_chain() above
+        // already made the pass/fail call.
         let mut contexts: Vec<String> = cfg_contexts(&source, DISABLE);
         contexts.extend(cfg_contexts(&source, ENABLE));
         let distinct = census(&contexts);
-        assert_eq!(
-            distinct.len(),
-            1,
-            "{path}: boot-path preempt sites live under {} different cfg contexts ({:?}) - \
-             every half of the bracket must compile in exactly the same set of profiles (#672)",
-            distinct.len(),
-            distinct.keys().collect::<Vec<_>>()
+        let condition_sets: Vec<BTreeSet<&str>> = distinct
+            .keys()
+            .map(|context| context.split(" + ").filter(|c| !c.is_empty()).collect())
+            .collect();
+        for (i, a) in condition_sets.iter().enumerate() {
+            for b in &condition_sets[i + 1..] {
+                assert!(
+                    a.is_subset(b) || b.is_subset(a),
+                    "{path}: boot-path preempt sites carry two incomparable cfg contexts \
+                     {a:?} and {b:?} (out of {} distinct contexts total) - every bracket must \
+                     be a refinement of every other, not an unrelated condition (#672)",
+                    distinct.len()
+                );
+            }
+        }
+        // Every pairwise check passed but bracket_contexts_form_one_chain()
+        // returned false above -- the two predicates have diverged, which
+        // is a bug in this test itself, not in the source under test.
+        panic!(
+            "{path}: bracket_contexts_form_one_chain() returned false but \
+             no incomparable pair was found by direct re-check (#673 \
+             review, R3-m2) -- the two predicates have diverged"
         );
     }
 }
@@ -398,6 +458,45 @@ fn kernel_main_continue() -> ! {
     assert!(
         bracket_is_symmetric(unconditional),
         "the shipped shape - unconditional brake, cfg-gated work inside it - must pass"
+    );
+}
+
+#[test]
+fn incomparable_cfg_contexts_reddens_the_chain_ratchet() {
+    // B4 generalized "share one context" (#672's original law) from "exactly
+    // one context file-wide" to "every distinct context is a subset-or-
+    // superset of every other" -- a real weakening, not merely a rename
+    // (#673 review, MA3: a commit message calling this change "generalized
+    // (not weakened)" overstated it; see the round-3 PR-body corrections).
+    // The empty, unconditional context is a subset of every context, so any
+    // future half-bracket added under ANY cfg is automatically "comparable"
+    // to an existing unconditional bracket and passes -- test 1's
+    // per-context COUNT equality still catches #672's own shape (unweakened,
+    // unchanged). What must still redden this generalized check is a
+    // genuinely INCOMPARABLE pair: two conditional contexts, neither a
+    // subset of the other.
+    let planted = r#"
+fn kernel_main_continue() -> ! {
+    #[cfg(feature = "testing")]
+    {
+        kernel::per_cpu::preempt_disable();
+        boot();
+        kernel::per_cpu::preempt_enable();
+    }
+    #[cfg(feature = "external_test_bins")]
+    {
+        kernel::per_cpu::preempt_disable();
+        boot_more();
+        kernel::per_cpu::preempt_enable();
+    }
+}
+"#;
+    assert!(
+        !bracket_contexts_form_one_chain(planted),
+        "two brackets cfg-gated on unrelated, non-nesting features (\"testing\" \
+         vs \"external_test_bins\", neither a subset of the other) must redden \
+         the subset-or-superset ratchet -- the exact vacuity gap B4's \
+         generalization opened (#673 review, MA3)"
     );
 }
 

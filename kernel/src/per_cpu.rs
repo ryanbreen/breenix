@@ -1079,21 +1079,72 @@ pub fn can_schedule(saved_cs: u64) -> bool {
     // Also allow scheduling if we're in exception cleanup context
     let in_exception_cleanup = in_exception_cleanup_context();
 
-    // Check if current thread is blocked or terminated
+    // Check if current thread is blocked or terminated. This must recognize
+    // every ThreadState the scheduler treats as "not really running" --
+    // schedule() and unblock() (task/scheduler.rs) both switch on the same
+    // five variants (Blocked, BlockedOnSignal, BlockedOnChildExit,
+    // BlockedOnTimer, BlockedOnIO); this check used to be missing
+    // BlockedOnTimer and BlockedOnIO, which meant a thread parked in
+    // sys_nanosleep's or a device wait's HLT loop was never recognized as
+    // blocked here. On a single CPU, with nothing else forcing a reschedule
+    // (not returning to userspace, not idle, need_resched already consumed),
+    // that starved every OTHER ready thread indefinitely -- reproduced by
+    // #673's init, whose infinite reap loop nanosleep()s between waitpid
+    // attempts and is the first x86 production thread to ever call nanosleep
+    // in a retry loop while a sibling thread needs the CPU.
+    //
+    // This check deliberately recognizes BlockedOnTimer (the variant #673's
+    // starvation actually needs -- nanosleep()) but NOT BlockedOnIO (#673
+    // review, M5, narrow fix chosen over widening both). The property that
+    // makes the other four variants (Blocked, BlockedOnSignal,
+    // BlockedOnChildExit, Terminated) unconditionally safe to recognize here
+    // is that they all feed the SAME `current_thread_blocked_or_terminated`
+    // term below, which is OR'd ahead of every `current_preempt == 0` guard
+    // in `result` -- so all five variants, were BlockedOnIO added, would
+    // bypass that guard identically; none is special-cased relative to the
+    // others by this expression's structure (#673 review, MA1: an earlier
+    // version of this comment claimed BlockedOnIO alone bypassed the guard,
+    // which the expression itself disproves).
+    //
+    // The real reason BlockedOnIO stays out is narrower: it is the ONLY one
+    // of the five states the boot thread can hold while #673's own
+    // production-init brake is up (`launch_x86_production_init()`'s caller
+    // in main.rs holds `preempt_disable()` across the disk-backed ext2 read
+    // that loads `/sbin/init`) -- the boot thread does not nanosleep, wait
+    // on a child, or receive a signal during that read. Today the one path
+    // that sets BlockedOnIO for that read
+    // (`Completion::wait_timeout_uninterruptible()`, drivers/virtio/block.rs
+    // -> task/completion.rs) already calls `preempt_enable()` of its own
+    // accord before setting the state and restores the brake afterward, so
+    // recognizing it here would not currently defeat that specific brake --
+    // but other BlockedOnIO producers on x86 (the WaitQueueHead-based
+    // `prepare_to_wait(BlockedOnIO)` call sites in
+    // drivers/virtio/{block,block_mmio,sound,sound_mmio,gpu_pci}.rs and
+    // syscall/graphics.rs) make no such promise, and nothing here proves
+    // every future BlockedOnIO producer will. Recognizing it unconditionally
+    // would trade a proof for an observation. Leaving it out does not reopen
+    // anything: it was never recognized here before #673 either. This is the
+    // documented, still-open gap between preempt_count and scheduling
+    // admission during a boot-thread disk-completion wait (#666, #508); if a
+    // future device-wait starvation needs BlockedOnIO recognized here too,
+    // that is a #666/#508 fix in its own right (establishing the invariant
+    // across every producer first), not a side effect of this one.
     // When a thread blocks, it enters an HLT loop waiting for an interrupt.
     // When a thread terminates, it sets need_resched and expects immediate switch.
     // The timer interrupt should be able to switch to another thread.
-    let current_thread_blocked_or_terminated = crate::task::scheduler::with_scheduler(|sched| {
-        if let Some(current) = sched.current_thread_mut() {
-            current.state == crate::task::thread::ThreadState::BlockedOnSignal
-                || current.state == crate::task::thread::ThreadState::BlockedOnChildExit
-                || current.state == crate::task::thread::ThreadState::Blocked
-                || current.state == crate::task::thread::ThreadState::Terminated
-        } else {
-            false
-        }
-    })
-    .unwrap_or(false);
+    let current_thread_blocked_or_terminated =
+        crate::task::scheduler::with_scheduler(|sched| {
+            if let Some(current) = sched.current_thread_mut() {
+                current.state == crate::task::thread::ThreadState::BlockedOnSignal
+                    || current.state == crate::task::thread::ThreadState::BlockedOnChildExit
+                    || current.state == crate::task::thread::ThreadState::BlockedOnTimer
+                    || current.state == crate::task::thread::ThreadState::Blocked
+                    || current.state == crate::task::thread::ThreadState::Terminated
+            } else {
+                false
+            }
+        })
+        .unwrap_or(false);
 
     // Check if need_resched is set - kernel threads use yield_current() which sets this flag
     let need_resched_set = crate::task::scheduler::is_need_resched();

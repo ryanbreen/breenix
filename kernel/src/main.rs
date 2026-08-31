@@ -1013,6 +1013,70 @@ fn nonblock_eagain_test_main() -> ! {
     }
 }
 
+/// Construct, designate, and publish `/sbin/init` (PID 1) on x86_64, then
+/// hand its thread to the scheduler.
+///
+/// This is the x86_64 counterpart to aarch64's `launch_init_from_elf()` in
+/// `main_aarch64.rs`; the two diverge only at the terminal step, per
+/// `publish_init()`'s own doc comment: aarch64 ERETs into the thread
+/// manually, x86_64 enqueues it on the ordinary scheduler dispatch path via
+/// `task::scheduler::spawn()`.
+///
+/// Must be called with the PROCESS_MANAGER lock's usual boot-time discipline:
+/// interrupts masked around the ProcessManager transaction (matching the
+/// `testing`/`interactive` blocks in `kernel_main_continue()` this sits
+/// beside), and with the ext2 root filesystem already mounted.
+///
+/// Does NOT take any scheduling brake of its own (#673 review, B3). The
+/// caller (`kernel_main_continue()`'s production block) takes ONE
+/// `preempt_disable()`/`preempt_enable()` bracket around this call and the
+/// rest of boot's remaining sequential work, unconditionally before this
+/// function can even be reached and unconditionally at a single matching
+/// release site, so the bracket stays dynamically paired on every path
+/// through this function -- including every one of its early `?` returns,
+/// which used to skip a brake this function took internally while the
+/// caller's release ran unconditionally regardless (the #672-shaped
+/// asymmetry the review's B3 finding named).
+#[cfg(all(
+    target_arch = "x86_64",
+    not(any(
+        feature = "testing",
+        feature = "interactive",
+        feature = "disable_x86_prod_init"
+    ))
+))]
+fn launch_x86_production_init(elf_data: &[u8]) -> Result<(), &'static str> {
+    use alloc::string::String;
+
+    let (thread, designated_pid_raw, reserved_collisions) = {
+        let mut manager_guard = process::manager();
+        let manager = manager_guard
+            .as_mut()
+            .ok_or("process manager not available")?;
+
+        let ticket = manager.create_init_process(String::from("init"), elf_data)?;
+        let publication = manager.designate_init(ticket)?;
+        let designated_pid_raw = manager
+            .designated_init()
+            .ok_or("init designation missing after publication")?
+            .as_u64();
+        let reserved_collisions =
+            tracing::providers::teardown::init_reserved_pid_collisions_total();
+        let thread = manager.publish_init(publication);
+        (thread, designated_pid_raw, reserved_collisions)
+    };
+
+    serial_println!(
+        "[INIT_DESIGNATION:x86_64:designated_pid={}:reserved_collisions={}]",
+        designated_pid_raw,
+        reserved_collisions
+    );
+
+    task::scheduler::spawn(thread);
+
+    Ok(())
+}
+
 /// Continue kernel initialization after setting up threading
 #[cfg(all(
     target_arch = "x86_64",
@@ -1430,6 +1494,112 @@ fn kernel_main_continue() -> ! {
                 }
             }
         });
+    }
+
+    // PRODUCTION INIT: Load /sbin/init from the mounted ext2 root and hand it
+    // to the scheduler as PID 1 (#673).
+    //
+    // This is the exact complement of the two blocks above: it runs only in
+    // the shipped, zero-feature x86_64 build (neither `testing` nor
+    // `interactive`). Before this block existed, that build constructed zero
+    // userspace processes -- PRECONDITION 5 further down
+    // ("Scheduler has runnable threads") failed on every production boot.
+    //
+    // It reuses the exact arch-neutral ProcessManager transaction aarch64's
+    // `launch_init_from_elf()` (main_aarch64.rs) drives -- create_init_process
+    // -> designate_init -> publish_init, all in process/manager.rs with no
+    // target_arch cfg on the designate/publish steps -- and swaps aarch64's
+    // manual ERET terminal step for `task::scheduler::spawn()`, the ordinary
+    // x86_64 dispatch entry point every other process on this arch already
+    // uses (see `process::creation::create_user_process`, called by both
+    // sibling blocks above). `publish_init()`'s own doc comment anticipates
+    // exactly this split: "aarch64 hands it to scheduler::spawn_as_current;
+    // x86 rows run off the ready queue" -- the concrete missing call was
+    // `task::scheduler::spawn()`, per #673's RCA.
+    //
+    // Interrupt/lock discipline mirrors the testing/interactive blocks above:
+    // interrupts must be hardware-enabled for the disk-backed ext2 read (IRQ-
+    // driven VirtIO block completions), then the ProcessManager transaction
+    // runs inside a without_interrupts() window -- the SAME shape those two
+    // blocks wrap their own create_user_process() calls in, not a property of
+    // create_user_process() itself: creation.rs's own comment says the
+    // opposite, explicitly declining to mask interrupts around process
+    // creation to avoid a MEMORY_INFO lock-order deadlock with concurrent
+    // frame allocation elsewhere. This call site (and the interactive/testing
+    // ones beside it) can mask safely for a different reason: at this point
+    // in boot there is exactly one CPU and no second thread alive yet to
+    // contend for that lock, so there is nothing to deadlock against.
+    // `spawn()` wraps itself in without_interrupts() internally too, so
+    // nesting it inside the outer without_interrupts() here is redundant but
+    // harmless (it just re-saves/restores already-disabled flags).
+    //
+    // `interrupts::enable()` below is new boot-order for the shipped profile
+    // (#673 review, m1): before this fix, production's first hardware
+    // interrupt-enable was several hundred lines later, immediately before
+    // the executor starts. Every PRECONDITION check, `int3`, and the
+    // timer/clock_gettime tests between here and there now run with
+    // interrupts genuinely enabled for the first time in production
+    // (matching what the `testing` profile has always done) -- this is what
+    // surfaced time_test.rs's TOCTOU. The enable is unconditional: it also
+    // runs on the ext2-read-failure path below, which only skips
+    // constructing init, not this interrupt-state change.
+    //
+    // `disable_x86_prod_init` is a #673 anti-vacuity knob only: building with
+    // it (and neither `testing` nor `interactive`) compiles this init-launch
+    // block back out. It is NOT byte-for-byte the pre-#673 kernel -- the
+    // rest of this branch's fixes (the scheduler blocked-state fix, the
+    // timer TOCTOU fix, the console-executor kthread) stay in place. It only
+    // reproduces the one property the gate's anti-vacuity leg needs to
+    // discriminate: a kernel that never constructs a userspace process. It
+    // is not meant to ship enabled.
+    //
+    // The scheduling brake taken immediately below is intentionally NOT
+    // inside `launch_x86_production_init()` (#673 review, B3): it is taken
+    // here, unconditionally, before even the ext2 read that can fail, and
+    // released unconditionally at the single matching site further down
+    // (search for its own comment) -- so the bracket is dynamically paired
+    // on every path through this block, including both arms of the `match`
+    // below, rather than depending on every fallible step inside
+    // `launch_x86_production_init()` succeeding before the brake is taken.
+    // Boot's own identity is the scheduler's idle thread (main.rs,
+    // init_with_current(), "the boot thread becomes the idle task"); once
+    // ANY thread reaches Ring 3, syscall::handler::is_ring3_confirmed()
+    // latches true and context_switch.rs permanently stops restoring idle's
+    // saved boot context, jumping to the generic idle_loop() instead every
+    // time idle is next selected (its own comment: "Idle's saved context
+    // from boot may contain RIP values in kernel init code that cause
+    // hangs"). That is correct and necessary in general, but it means init
+    // cannot be allowed to run until every remaining line of boot's own
+    // PRECONDITION-checking, timer, and census work is done -- once init
+    // makes its own first syscall, boot's chance to resume here is gone
+    // for good, unconditionally, by design. This brake is what keeps that
+    // from happening prematurely; the matching release (and what replaces
+    // it once it lifts) is at the site named above.
+    #[cfg(not(any(
+        feature = "testing",
+        feature = "interactive",
+        feature = "disable_x86_prod_init"
+    )))]
+    {
+        kernel::per_cpu::preempt_disable();
+
+        x86_64::instructions::interrupts::enable();
+
+        match kernel::boot::init_image::read_init_from_ext2("/sbin/init") {
+            Ok(elf_data) => {
+                x86_64::instructions::interrupts::without_interrupts(|| {
+                    if let Err(e) = launch_x86_production_init(&elf_data) {
+                        log::error!("PRODUCTION INIT: failed to launch init: {}", e);
+                    }
+                });
+            }
+            Err(e) => {
+                log::error!(
+                    "PRODUCTION INIT: failed to read /sbin/init from ext2: {}",
+                    e
+                );
+            }
+        }
     }
 
     // Test timer functionality immediately
@@ -1862,8 +2032,14 @@ fn kernel_main_continue() -> ! {
         log::error!("  Enabling interrupts anyway to observe failure behavior...");
     }
 
-    // Test timer resolution BEFORE enabling interrupts
-    // This validates that get_monotonic_time() correctly converts PIT ticks to milliseconds
+    // Test timer resolution. Interrupts are already hardware-enabled by this
+    // point in the shipped x86 production profile (#673 review, mi4 --
+    // "BEFORE enabling interrupts" was true pre-#673 and is now false here;
+    // see the `interrupts::enable()` boot-order comment in the first
+    // RING3_SMOKE block above for why, and time_test.rs's own comment for
+    // how the test now tolerates a genuine tick landing between its two
+    // reads). This validates that get_monotonic_time() correctly converts
+    // PIT ticks to milliseconds.
     log::info!("Testing timer resolution...");
     time_test::test_timer_resolution();
     log::info!("✅ Timer resolution test passed");
@@ -1946,11 +2122,161 @@ fn kernel_main_continue() -> ! {
         kernel::per_cpu::preempt_underflow_count()
     );
 
-    // Initialize and run the async executor
+    // Initialize and run the async executor.
     log::info!("Starting async executor...");
-    let mut executor = task::executor::Executor::new();
-    executor.spawn(task::Task::new(keyboard::keyboard_task()));
-    executor.spawn(task::Task::new(serial::command::serial_command_task()));
+
+    // Non-production profiles drive the console executor directly from the
+    // boot thread's own tail, exactly as they always have -- unaffected by
+    // the #673 B1 fix below.
+    #[cfg(any(
+        feature = "testing",
+        feature = "interactive",
+        feature = "disable_x86_prod_init"
+    ))]
+    let mut executor = {
+        let mut executor = task::executor::Executor::new();
+        executor.spawn(task::Task::new(keyboard::keyboard_task()));
+        executor.spawn(task::Task::new(serial::command::serial_command_task()));
+        executor
+    };
+
+    // Release the SECOND, dedicated brake taken above (#673 review, B3) by
+    // handing the console its OWN kernel thread instead of ever driving it
+    // from the boot thread's own saved context (#673 review, B1).
+    //
+    // The straightforward version of this -- executor.run() as this
+    // function's own tail, exactly like the non-production profiles above --
+    // reliably loses the console about a second after init starts. Boot's
+    // identity is the scheduler's idle thread (see the comment above this
+    // block); once init's first syscall lands, is_ring3_confirmed() latches
+    // and context_switch.rs permanently abandons whatever context idle is
+    // next preempted from, in favour of its own generic idle_loop(). A
+    // one-shot run_ready_tasks() priming pass before that point does not fix
+    // this: it advances every task to its first await point, but nothing
+    // ever polls the executor again afterward -- Waker::wake() only pushes a
+    // task id back onto the executor's own queue, and the ONLY thing that
+    // ever drains that queue is Executor::run()'s loop, which just became
+    // unreachable code the instant idle's saved context was abandoned.
+    // aarch64 never hits this: it has no equivalent call to Executor::run()
+    // in its own production path at all -- main_aarch64.rs never constructs
+    // an Executor, because its console (bsshd, spawned by init) is a real
+    // userspace process, not a kernel-side async task competing with boot
+    // for the same saved context.
+    //
+    // The fix: give the console executor its own ordinary kernel thread
+    // (`task::kthread::kthread_run`), spawned here -- before the brake
+    // below lifts, so it becomes runnable at the same instant init does,
+    // not after. A kthread's context is preserved by the SAME dispatch path
+    // every other kernel thread uses (`switch_to_thread()`'s
+    // `is_kernel_thread` arm, `setup_kernel_thread_return()`) -- it is never
+    // the scheduler's idle thread, so it never falls into the idle-specific
+    // "abandon this context" rule above, and it survives being preempted
+    // and resumed indefinitely, exactly like any other long-lived kernel
+    // thread. Once this exists, the boot thread genuinely has nothing left
+    // worth preserving after this point, so it no longer tries: see the
+    // plain interrupt-driven halt loop below instead of a second, competing
+    // Executor::run() call.
+    #[cfg(not(any(
+        feature = "testing",
+        feature = "interactive",
+        feature = "disable_x86_prod_init"
+    )))]
+    {
+        if let Err(e) = task::kthread::kthread_run(
+            || {
+                // #673 review, R3-B1: census the production bracket's
+                // release from HERE, not from boot's own tail after
+                // preempt_enable() below (see that call's comment for why
+                // boot's own reads are a footrace this profile cannot win).
+                // This kthread's context is never abandoned the way
+                // boot/idle's is -- it is dispatched and resumed by the
+                // ordinary switch_to_thread() is_kernel_thread path for as
+                // long as the system runs -- so this line executes exactly
+                // once, deterministically, rather than racing the next
+                // timer tick.
+                //
+                // It is also guaranteed to run AFTER the release below:
+                // this closure cannot start executing until the scheduler
+                // switches the CPU away from boot's currently-running
+                // context onto this thread, and per_cpu::can_schedule()
+                // (per_cpu.rs -- the `current_preempt == 0` guard ahead of
+                // `returning_to_idle_kernel`/`need_resched_set`, OR'd with
+                // the separate blocked/terminated admission this thread
+                // does not hold here) refuses that switch while ANY
+                // preempt_disable() bracket is still held on this CPU.
+                // kthread_run() only calls scheduler::spawn() (adds this
+                // thread to the ready queue); it never forces an immediate
+                // dispatch. So the first instruction of this closure can
+                // only run once preempt_count has already dropped to 0 on
+                // this CPU -- and the ONLY preempt_enable() call left
+                // between here and that point in this profile is the very
+                // next line below (this is boot's SECOND, more-nested brake,
+                // #673 review B3/B4 -- its release is boot's first
+                // preemptible point since that brake was taken, because the
+                // outer, unconditional bracket around the whole boot
+                // sequence was already released earlier in this function).
+                // The underflow counter itself
+                // (per_cpu::PREEMPT_UNDERFLOW_COUNT) is a monotonic,
+                // never-reset AtomicU64 (fetch_add on underflow only, no
+                // corresponding decrement anywhere), so reading it here
+                // still observes an underflow caused by that release even
+                // though this read happens strictly after it. Pinned by
+                // docker/qemu/run-x86-prod-profile-boot-test.sh.
+                log::info!(
+                    "[PROD_BRACKET_RELEASE_CENSUS:underflow={}]",
+                    kernel::per_cpu::preempt_underflow_count()
+                );
+
+                let mut executor = task::executor::Executor::new();
+                executor.spawn(task::Task::new(keyboard::keyboard_task()));
+                executor.spawn(task::Task::new(serial::command::serial_command_task()));
+                executor.run()
+            },
+            "console_executor",
+        ) {
+            log::error!(
+                "PRODUCTION INIT: failed to start console executor kthread: {:?}",
+                e
+            );
+        }
+
+        kernel::per_cpu::preempt_enable();
+
+        // #673 review, R3-B1: the census that used to sit here
+        // ([PROD_BRACKET_RELEASE_CENSUS:...]) was a designed footrace and
+        // has been MOVED to the top of the console_executor kthread's
+        // closure above (search for "R3-B1" there for the full
+        // derivation).
+        //
+        // Why it raced here: this profile's whole design (#712) is that
+        // boot IS the scheduler's idle thread from init_with_current()
+        // onward, and once any thread reaches Ring 3,
+        // is_ring3_confirmed() latches and context_switch.rs permanently
+        // abandons whatever context idle is next preempted from -- boot
+        // never resumes its own saved context again. A formatted
+        // log::info!() call is not atomic with the preempt_enable() call
+        // above it: between the two, this CPU is preemptible (preempt_count
+        // is already 0) and the very next 1 kHz timer tick can switch away
+        // from boot before it reaches the log call, permanently stranding
+        // it unexecuted (measured: 1/6 shipping-profile boots at the #673
+        // fix-round-3 review). The release itself was never affected by
+        // this -- preempt_enable() above always completes -- only the
+        // diagnostic line describing it could be lost. See #712 for the
+        // full mechanism and the corrected account (this is boot's tail
+        // being dropped after a correct release, not a stranded brake).
+
+        // Boot's own sequential work is done, and its future role really is
+        // the scheduler's generic idle one from here on: init and the
+        // console-executor kthread are both dispatchable threads with their
+        // own preserved contexts now, and this thread contributes nothing
+        // else. A plain interrupt-driven halt loop is deliberately all this
+        // needs -- unlike the pre-fix design above, nothing here owns state
+        // that must survive being resumed at context_switch.rs's own
+        // idle_loop() instead of wherever this loop happened to be halted.
+        loop {
+            x86_64::instructions::interrupts::enable_and_hlt();
+        }
+    }
 
     // Don't run tests automatically - let the user trigger them manually
     #[cfg(feature = "testing")]
@@ -1964,6 +2290,11 @@ fn kernel_main_continue() -> ! {
         log::info!("  Ctrl+M - Show memory debug info");
     }
 
+    #[cfg(any(
+        feature = "testing",
+        feature = "interactive",
+        feature = "disable_x86_prod_init"
+    ))]
     executor.run()
 }
 

@@ -1,0 +1,137 @@
+#673 prove-slot leg 5 (host structural suites) — NEW, UNATTRIBUTED failures
+Branch: fix/673-x86-prod-init @ 44dbd9979297df42585641ffbeca97b24dbbfc59
+Captured: 2026-08-30, local Mac worktree, `cargo test --locked` (--locked required —
+see prove.md for why: a fresh worktree has no Cargo.lock, and a fresh resolve
+against the floating `bootloader` git dependency's current `main` HEAD hits an
+unrelated, pre-existing toolchain incompatibility; seeding a known-good lockfile
+avoids it without touching branch content).
+
+None of these are in the leg-3 known-signature list (#631/#700/#692/#702/#636-family)
+-- they are host-side Rust structural ratchets (tests/*_structure.rs), not QEMU
+boot-gate markers. All 5 failures are the SAME root pattern: #673 changed
+kernel/src/main.rs and docker/qemu/run-x86-prod-profile-boot-test.sh
+substantially but its own impl-notes list no run of any `cargo test --test
+*_structure` suite before declaring done, so these pre-existing ratchets were
+never updated to admit the new, legitimate structural facts #673 introduces.
+Preserved verbatim per the "never rerun-to-green" discipline; not fixed here
+(prove-slot has no implement mandate).
+
+================================================================================
+1) tests/preempt_bracket_structure.rs -- 5 passed, 2 FAILED
+================================================================================
+
+running 7 tests
+test comments_and_strings_do_not_feed_the_census ... ok
+test asymmetric_cfg_reddens_the_ratchet ... ok
+test symmetric_cfg_and_unconditional_brackets_pass ... ok
+test the_underflow_guard_stays_fail_closed ... ok
+test boot_path_preempt_brackets_are_cfg_symmetric ... FAILED
+test boot_path_preempt_sites_share_one_cfg_context ... FAILED
+test boot_path_preempt_bracket_census_is_not_empty ... ok
+
+failures:
+
+---- boot_path_preempt_brackets_are_cfg_symmetric stdout ----
+
+thread 'boot_path_preempt_brackets_are_cfg_symmetric' panicked at tests/preempt_bracket_structure.rs:272:9:
+assertion `left == right` failed: kernel/src/main.rs: preempt_disable() and preempt_enable() sites carry different cfg conditions - half a bracket compiles out and the other half underflows preempt_count (#672)
+  left: {"all( target_arch = \"x86_64\", not(any( feature = \"kthread_test_only\", feature = \"kthread_stress_test\", feature = \"workqueue_test_only\", feature = \"dns_test_only\", feature = \"blocking_recv_test\", feature = \"nonblock_eagain_test\" )) )": 1, "all( target_arch = \"x86_64\", not(any( feature = \"testing\", feature = \"interactive\", feature = \"disable_x86_prod_init\" )) )": 1}
+ right: {"all( target_arch = \"x86_64\", not(any( feature = \"kthread_test_only\", feature = \"kthread_stress_test\", feature = \"workqueue_test_only\", feature = \"dns_test_only\", feature = \"blocking_recv_test\", feature = \"nonblock_eagain_test\" )) )": 1, "all( target_arch = \"x86_64\", not(any( feature = \"kthread_test_only\", feature = \"kthread_stress_test\", feature = \"workqueue_test_only\", feature = \"dns_test_only\", feature = \"blocking_recv_test\", feature = \"nonblock_eagain_test\" )) ) + not(any( feature = \"testing\", feature = \"interactive\", feature = \"disable_x86_prod_init\" ))": 1}
+
+---- boot_path_preempt_sites_share_one_cfg_context stdout ----
+
+thread 'boot_path_preempt_sites_share_one_cfg_context' panicked at tests/preempt_bracket_structure.rs:292:9:
+assertion `left == right` failed: kernel/src/main.rs: boot-path preempt sites live under 3 different cfg contexts (["all( target_arch = \"x86_64\", not(any( feature = \"kthread_test_only\", feature = \"kthread_stress_test\", feature = \"workqueue_test_only\", feature = \"dns_test_only\", feature = \"blocking_recv_test\", feature = \"nonblock_eagain_test\" )) )", "all( target_arch = \"x86_64\", not(any( feature = \"kthread_test_only\", feature = \"kthread_stress_test\", feature = \"workqueue_test_only\", feature = \"dns_test_only\", feature = \"blocking_recv_test\", feature = \"nonblock_eagain_test\" )) ) + not(any( feature = \"testing\", feature = \"interactive\", feature = \"disable_x86_prod_init\" ))", "all( target_arch = \"x86_64\", not(any( feature = \"testing\", feature = \"interactive\", feature = \"disable_x86_prod_init\" )) )"]) - every half of the bracket must compile in exactly the same set of profiles (#672)
+  left: 3
+ right: 1
+
+ROOT CAUSE (traced against source, not guessed):
+#673 adds a SECOND, legitimate preempt bracket:
+  - preempt_disable() in the new top-level fn launch_x86_production_init()
+    (kernel/src/main.rs), gated ONLY by
+    ctxB = #[cfg(all(target_arch="x86_64", not(any(testing, interactive, disable_x86_prod_init))))]
+  - its matching preempt_enable() lives as a block INSIDE kernel_main_continue(),
+    which is itself gated by
+    ctxA = #[cfg(all(target_arch="x86_64", not(any(kthread_test_only, kthread_stress_test, workqueue_test_only, dns_test_only, blocking_recv_test, nonblock_eagain_test))))]
+    so the enable() call textually carries ctxA+ctxB stacked, while the disable()
+    (living in its own standalone fn) carries only ctxB.
+Checked kernel/Cargo.toml: every feature in ctxA's exclusion list
+(kthread_test_only, kthread_stress_test, workqueue_test_only, dns_test_only,
+blocking_recv_test, nonblock_eagain_test) `= ["testing"]` or `= ["testing",
+"external_test_bins"]` -- i.e. each one implies `testing`. Since ctxB excludes
+whenever `testing` is set, ctxB=true implies testing=false implies none of
+ctxA's excluded features are set implies ctxA=true. So ctxB ⟹ ctxA always, in
+every buildable feature combination -- "ctxA+ctxB" and "ctxB alone" denote the
+identical buildable-configuration set. The bracket is FUNCTIONALLY safe (no
+feature combination compiles one half without the other); this is a real gap
+in the ratchet's feature-graph-blind textual census, not a runtime defect. The
+#672-class hazard the test exists to catch (a preempt_enable() that fires
+without a matching preempt_disable(), or vice versa) does not occur here.
+Needs either a feature-implication-aware census in the test, or restructuring
+launch_x86_production_init()'s call site for textual cfg symmetry.
+
+================================================================================
+2) tests/teardown_structure.rs -- 78 passed, 3 FAILED
+================================================================================
+
+test x86_production_profile_gate_ratchet_is_not_vacuous ... FAILED
+test x86_production_profile_gate_verdict_discipline_holds ... FAILED
+test v3_structural_closures_are_exact ... FAILED
+
+---- x86_production_profile_gate_ratchet_is_not_vacuous stdout ----
+x86 production-profile gate gained a pre-empting exit: exit 0
+
+thread 'x86_production_profile_gate_ratchet_is_not_vacuous' panicked at tests/teardown_structure.rs:14276:9:
+assertion `left != right` failed: featured build mutation must apply
+  left/right: (identical, 30024 chars -- the full text of
+  docker/qemu/run-x86-prod-profile-boot-test.sh)
+
+ROOT CAUSE (traced against source): this test's "featured build" vacuity check
+(tests/teardown_structure.rs ~line 14315) does
+  gate.replacen("cargo build --release --bin qemu-uefi",
+                 "cargo build --release --features boot_tests --bin qemu-uefi", 1)
+expecting to find that exact substring in the gate script and mutate it. #673's
+own anti-vacuity mechanism (X86_PROD_PROFILE_EXTRA_FEATURES / FEATURE_ARGS)
+rewrote the actual build line to:
+  cargo build --release "${FEATURE_ARGS[@]}" --bin qemu-uefi   (line 415)
+so the substring no longer exists verbatim, replacen() is a no-op, mutated==gate,
+and assert_ne! fails. Confirmed by direct grep of the current script.
+
+---- x86_production_profile_gate_verdict_discipline_holds stdout ----
+
+thread 'x86_production_profile_gate_verdict_discipline_holds' panicked at tests/teardown_structure.rs:14265:5:
+x86 production-profile gate lost its verdict discipline or a marker assertion
+
+ROOT CAUSE: same validate_x86_prod_profile_harness() validator used by test 1
+above, run against the same #673-rewritten script; it returns Err(()) via one
+of its early `?`-propagated branches, which carries no eprintln! diagnostic (the
+captured stdout for this test is empty above the panic line), so the exact
+failing sub-check was not pinned line-for-line within this prove pass's time
+budget. Same root class as test 1: a hardcoded textual/structural expectation
+against docker/qemu/run-x86-prod-profile-boot-test.sh that #673's rewrite of
+that script did not preserve.
+
+---- v3_structural_closures_are_exact stdout ----
+
+thread 'v3_structural_closures_are_exact' panicked at tests/teardown_structure.rs:8123:5:
+designated-init readers changed
+    + kernel/src/main.rs :: #[cfg(all(target_arch=x86_64,not(any(feature=testing,feature=interactive,feature=disable_x86_prod_init))))] fn launch_x86_production_init  (1 occurrences, expected none)
+
+ROOT CAUSE: a closed-list census of every "designated-init reader" (caller of
+designate_init/publish_init-family APIs) in the kernel source. #673 adds
+exactly the one new, legitimate, intended caller (launch_x86_production_init),
+and the census's allow-list has not been updated to admit it.
+
+================================================================================
+Summary
+================================================================================
+5 failures total, 0 attributable to any pre-existing/known signature. All 5
+stem from one gap: the #673 implement round changed kernel/src/main.rs and
+docker/qemu/run-x86-prod-profile-boot-test.sh without running the pre-existing
+tests/preempt_bracket_structure.rs and tests/teardown_structure.rs ratchets
+that encode closed-list/textual expectations about exactly those two files.
+Recommend a follow-up round that either (a) updates the three ratchets'
+expectations to admit #673's new, reviewed-legitimate structural facts, or
+(b) where a ratchet's own check is feature-graph-blind (preempt_bracket_structure),
+teaches it about Cargo.toml's feature-implication graph. No kernel behavior
+change is implied by either fix.

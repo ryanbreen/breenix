@@ -31,6 +31,14 @@ impl Executor {
         self.task_queue.push(task_id).expect("queue full");
     }
 
+    /// Poll every currently-queued task once.
+    ///
+    /// Private (#673 review, mi2): the priming caller this doc used to
+    /// describe -- x86 production init driving one pass manually before
+    /// handing off to `run()` -- was replaced by B1's dedicated console
+    /// kthread, which owns its own `Executor` and only ever calls `run()`.
+    /// Nothing outside this impl calls this method anymore; `run()`'s own
+    /// loop below is the only caller.
     #[allow(dead_code)] // Used in kernel_main_continue (conditionally compiled)
     fn run_ready_tasks(&mut self) {
         // destructure `self` to avoid borrow checker errors
@@ -65,8 +73,14 @@ impl Executor {
     fn sleep_if_idle(&self) {
         interrupts::disable();
         if self.task_queue.is_empty() {
-            interrupts::enable();
-            x86_64::instructions::hlt();
+            // #673 review, mi3: enable_and_hlt() atomically re-enables and
+            // halts, closing the tiny window a separate enable()+hlt() left
+            // open (a wake landing in between costs up to one timer tick of
+            // latency here, bounded but needless). idle_loop()
+            // (interrupts/context_switch.rs) already gets this right; this
+            // loop is the shipped x86 production console's own servicing
+            // loop as of #673 (B1), so it is worth the same care.
+            interrupts::enable_and_hlt();
         } else {
             interrupts::enable();
         }
