@@ -1,0 +1,13 @@
+   Compiling kernel v0.1.0 (/Users/wrb/fun/code/breenix/.claude/worktrees/wf_395bb9a4-6a3-4/kernel)
+   Compiling breenix v0.1.0 (/Users/wrb/fun/code/breenix/.claude/worktrees/wf_395bb9a4-6a3-4)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.61s
+     Running tests/repo_symlink_hygiene.rs (target/debug/deps/repo_symlink_hygiene-26624304766a13f7)
+
+running 4 tests
+test absolute_symlink_predicate_rejects_the_committed_rust_fork_shape ... ok
+test the_forked_rust_library_override_is_documented ... ok
+test rust_fork_is_untracked_and_ignored ... ok
+test tracked_symlinks_name_no_absolute_path ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
