@@ -87,11 +87,18 @@
 #      serial output, no locks) that already exists for the test framework's
 #      own stage-advance bookkeeping; #673 does not add it, only asserts on
 #      it in a profile that had never reached Ring 3 before.
-#   4. init's own first line and the absence of init being reported
-#      killed by signal -- proves init did not just start but survived past
-#      its own startup sequence into its steady-state reap loop (#673
-#      review, M6). See "INIT SURVIVAL EVIDENCE" below for why this does
-#      NOT also pin bsshd reaching its listening state, unlike the
+#   4. init's own first line, followed by the bsshd-launch warning it prints
+#      immediately afterward -- proves init ran past its first print into
+#      start_bsshd()'s spawn attempt and handled the result (#673 review,
+#      M6/MA4). This is deliberately NOT proof init reached its steady-state
+#      reap loop: SPAWN is unconditionally ENOSYS on x86 today (#713), so the
+#      warning fires on the very next lines of init's own code, not after
+#      further progress. The signal this pin replaced -- "init was never
+#      reported killed by signal" -- could never fire either way (it is
+#      init.rs's reaped-CHILD message; PID 1 never reaps itself) and is
+#      removed rather than kept as an unfalsifiable pin. See "INIT SURVIVAL
+#      EVIDENCE" below for exactly what is and is not proven, and why this
+#      does NOT also pin bsshd reaching its listening state, unlike the
 #      aarch64 production gate.
 #
 # WHY INIT CANNOT RUN UNTIL BOOT'S OWN WORK IS DONE (#673, the real fight)
@@ -117,6 +124,19 @@
 # what proves that brake is correctly placed: construction, then dispatch,
 # then execution, in that order, with the shipped profile still reaching
 # steady state afterward.
+#
+# INTERRUPT BOOT-ORDER CHANGE (#673 review, m1/MA5)
+#
+# The brake above is taken alongside a new `interrupts::enable()` call that
+# moves hardware interrupt-enable to before this block, in every profile that
+# takes it (including the ext2-read-failure path, since the enable is
+# unconditional and outside the `match` arms). Before #673, the shipped
+# production profile's first hardware interrupt-enable was several hundred
+# lines later, immediately before the executor starts; every PRECONDITION
+# check, `int3`, and the timer/clock_gettime test between here and there now
+# run with interrupts genuinely enabled for the first time in production,
+# matching what the `testing` profile has always done -- this is what
+# surfaced time_test.rs's TOCTOU (m5).
 #
 # WHY THE CONSOLE SURVIVES INIT (#673 review, B1 -- a second, independent fight)
 #
@@ -297,6 +317,13 @@ PRECOND_PREEMPT_PASS_LITERAL='PRECONDITION 7: Preemption disabled ✓ PASS'
 # ---------------------------------------------------------------------------
 PREEMPT_CENSUS_PREFIX='[PREEMPT_BRACKET_CENSUS:'
 PREEMPT_CENSUS_PROD_LITERAL='[PREEMPT_BRACKET_CENSUS:underflow=0]'
+# #673 review, mi5: the census above is emitted before the production
+# block's OWN preempt_enable() (kernel/src/main.rs, B3's release) runs, so
+# it cannot see an underflow caused by that specific release. This second
+# marker is emitted immediately after it -- the only point in this profile
+# reached after every preempt_enable() call in it has executed.
+PROD_BRACKET_RELEASE_PREFIX='[PROD_BRACKET_RELEASE_CENSUS:'
+PROD_BRACKET_RELEASE_PROD_LITERAL='[PROD_BRACKET_RELEASE_CENSUS:underflow=0]'
 
 # ---------------------------------------------------------------------------
 # #673 new evidence. Four independent signals, each a strictly stronger claim
@@ -310,14 +337,18 @@ INIT_DESIGNATION_X86_PREFIX='[INIT_DESIGNATION:x86_64:designated_pid=1:'
 RING3_SYSCALL_LITERAL='RING3_SYSCALL: First syscall from userspace'
 
 # ---------------------------------------------------------------------------
-# #673 review, M6: proves init did not just start but survived past its own
+# #673 review, M6/MA4: proves init did not just start but ran past its own
 # startup sequence. INIT_FIRST_LINE is init.rs's own first print (the exact
 # literal, not a prefix, since pid=1 is fixed for the singleton designated
-# init this profile constructs). INIT_KILLED_PREFIX is pinned ABSENT --
-# init.rs's waitpid loop prints this for a REAPED CHILD too, but only PID 1
-# is init, and init being reported as its own killed-by-signal event (which
-# can only happen if init itself, not a child, terminated abnormally) would
-# mean it did not survive.
+# init this profile constructs).
+#
+# The pin this replaced (INIT_KILLED_PREFIX, absent) was structurally
+# vacuous: it matched init.rs's waitpid(-1) reap-loop message for a REAPED
+# CHILD, printed with the CHILD's own pid. PID 1 is init itself, and init
+# never reaps itself via its own waitpid(-1) call, so that message could
+# never be emitted whatever init did -- the assertion could not fail
+# regardless of whether init actually survived. It is removed rather than
+# kept as an unfalsifiable pin.
 #
 # INIT SURVIVAL EVIDENCE (why this does NOT also pin bsshd, unlike the
 # aarch64 production gate): checked before pinning, per the #673 spec's own
@@ -338,9 +369,20 @@ RING3_SYSCALL_LITERAL='RING3_SYSCALL: First syscall from userspace'
 # no x86 child process can ever start today, so bsshd can never reach
 # "listening" on this architecture, and pinning it would make this gate
 # permanently unsatisfiable. Revisit once #713 is fixed.
+#
+# INIT_BSSHD_WARNING_LITERAL replaces INIT_KILLED_PREFIX as the actual
+# survival pin (#673 review, MA4): it is the first line init prints AFTER
+# its own startup print that it could only reach by running its own
+# subsequent code (attempting the bsshd spawn and handling the Err arm), so
+# unlike the marker it replaces, it CAN fail -- an init that hung, faulted,
+# or never called start_bsshd() would not print it. It does not by itself
+# prove init reached its reap loop (run_boot_script() and the loop both
+# come later in init's own control flow) -- only that init progressed past
+# its first line into code whose behavior depends on #713's real, still-
+# open gap.
 # ---------------------------------------------------------------------------
 INIT_FIRST_LINE_LITERAL='[init] Breenix init starting (PID 1)'
-INIT_KILLED_PREFIX='[init] Process 1 killed by signal'
+INIT_BSSHD_WARNING_LITERAL='[init] Warning: failed to start bsshd'
 
 # Measured on beast under TCG: steady state at 14s from QEMU launch. The bound is
 # an order of magnitude above that so host contention cannot score a slow-but-
@@ -403,10 +445,17 @@ report_gate_failure() {
 }
 trap 'report_gate_failure "$LINENO" "$BASH_COMMAND"' ERR
 
-# Substring count across both serial files. grep exits 1 when nothing matches,
-# which under `set -e`/`pipefail` would abort before the assertion that wants to
-# read the zero, so the status is swallowed inside the group and awk -- which
-# always exits 0 -- produces the number.
+# Matching-LINE count across both serial files (#673 review, mi7 -- grep -c
+# counts lines, not substring occurrences, so two matches on one line would
+# still count once). The x86 console carries init's stdout on the same
+# serial stream as the shell prompt, so a same-line collision between a
+# pinned literal and the prompt could in principle misreport a 1->2 delta as
+# 1->1 (false red) or hide a real increase; 25/25 production-profile boots
+# (#673 fix round 3) observed no such collision, so this is a disclosed,
+# currently-inert sharp edge, not a silently mislabeled one. grep exits 1
+# when nothing matches, which under `set -e`/`pipefail` would abort before
+# the assertion that wants to read the zero, so the status is swallowed
+# inside the group and awk -- which always exits 0 -- produces the number.
 marker_count() {
     local literal="$1"
     local total
@@ -453,16 +502,19 @@ print_observed_values() {
     echo "  fixed PRECONDITION 7 pass (#672): $(marker_count "$PRECOND_PREEMPT_PASS_LITERAL")"
     echo "  preempt census lines:          $(marker_count "$PREEMPT_CENSUS_PREFIX")"
     echo "  preempt census at rest:        $(marker_count "$PREEMPT_CENSUS_PROD_LITERAL")"
+    echo "  prod bracket release census:   $(marker_count "$PROD_BRACKET_RELEASE_PREFIX")"
+    echo "  prod bracket release at rest:  $(marker_count "$PROD_BRACKET_RELEASE_PROD_LITERAL")"
     echo "  init designation (#673):      $(marker_count "$INIT_DESIGNATION_X86_PREFIX")"
     echo "  ring3 syscall confirmed (#673): $(marker_count "$RING3_SYSCALL_LITERAL")"
     echo "  init first line (#673 M6):    $(marker_count "$INIT_FIRST_LINE_LITERAL")"
-    echo "  init killed by signal (#673 M6): $(marker_count "$INIT_KILLED_PREFIX")"
-    # bsshd is not pinned: SPAWN is unconditionally ENOSYS on x86 (#713),
-    # a pre-existing gap #673 exposed but did not cause. See INIT SURVIVAL
-    # EVIDENCE above.
+    echo "  init bsshd-launch warning (#673 MA4): $(marker_count "$INIT_BSSHD_WARNING_LITERAL")"
+    # bsshd is not pinned as LISTENING: SPAWN is unconditionally ENOSYS on
+    # x86 (#713), a pre-existing gap #673 exposed but did not cause. See
+    # INIT SURVIVAL EVIDENCE above.
     { grep -F -h -- "$TOMBSTONE_CENSUS_PREFIX" "$OUTPUT_DIR"/serial_*.txt 2>/dev/null || true; }
     { grep -F -h -- "$ROOT_CUSTODY_PREFIX" "$OUTPUT_DIR"/serial_*.txt 2>/dev/null || true; }
     { grep -F -h -- "$PREEMPT_CENSUS_PREFIX" "$OUTPUT_DIR"/serial_*.txt 2>/dev/null || true; }
+    { grep -F -h -- "$PROD_BRACKET_RELEASE_PREFIX" "$OUTPUT_DIR"/serial_*.txt 2>/dev/null || true; }
     { grep -F -h -- "$INIT_DESIGNATION_X86_PREFIX" "$OUTPUT_DIR"/serial_*.txt 2>/dev/null || true; }
 }
 
@@ -617,17 +669,23 @@ test "$(marker_count "$PRECOND_PREEMPT_PASS_LITERAL")" -eq 1
 test "$(marker_count "$PREEMPT_CENSUS_PREFIX")" -eq 1
 test "$(marker_count "$PREEMPT_CENSUS_PROD_LITERAL")" -eq 1
 
+# #673 review, mi5: the production bracket's own release, censused separately
+# from the shared census above (see its declaration comment).
+test "$(marker_count "$PROD_BRACKET_RELEASE_PREFIX")" -eq 1
+test "$(marker_count "$PROD_BRACKET_RELEASE_PROD_LITERAL")" -eq 1
+
 # #673: init designation and syscall-execution evidence -- construction,
 # dispatch, and execution, each proven independently. See the header.
 test "$(marker_count "$INIT_DESIGNATION_X86_PREFIX")" -eq 1
 test "$(marker_count "$RING3_SYSCALL_LITERAL")" -eq 1
 
-# #673 review, M6: init survival evidence -- init reached its own first line
-# and was never reported killed by signal. bsshd is not pinned here: SPAWN
-# is unconditionally ENOSYS on x86 today (#713, pre-existing, not a #673
+# #673 review, M6/MA4: init survival evidence -- init reached its own first
+# line and printed the bsshd-launch warning that only its own subsequent
+# code path can produce. bsshd is not pinned as listening here: SPAWN is
+# unconditionally ENOSYS on x86 today (#713, pre-existing, not a #673
 # regression) -- see "INIT SURVIVAL EVIDENCE" above for the full account.
 test "$(marker_count "$INIT_FIRST_LINE_LITERAL")" -eq 1
-test "$(marker_count "$INIT_KILLED_PREFIX")" -eq 0
+test "$(marker_count "$INIT_BSSHD_WARNING_LITERAL")" -eq 1
 
 trap - ERR
 # #673 review, B5: an anti-vacuity leg must never print a bare production PASS
