@@ -266,6 +266,24 @@ fn bracket_is_symmetric(source: &str) -> bool {
     census(&cfg_contexts(source, DISABLE)) == census(&cfg_contexts(source, ENABLE))
 }
 
+/// The subset-or-superset law (B4's generalization of "share one context",
+/// #673 review MA3) in one function so the vacuity tests can exercise it
+/// against synthetic sources, mirroring `bracket_is_symmetric` above.
+fn bracket_contexts_form_one_chain(source: &str) -> bool {
+    let mut contexts: Vec<String> = cfg_contexts(source, DISABLE);
+    contexts.extend(cfg_contexts(source, ENABLE));
+    let distinct = census(&contexts);
+    let condition_sets: Vec<BTreeSet<&str>> = distinct
+        .keys()
+        .map(|context| context.split(" + ").filter(|c| !c.is_empty()).collect())
+        .collect();
+    condition_sets.iter().enumerate().all(|(i, a)| {
+        condition_sets[i + 1..]
+            .iter()
+            .all(|b| a.is_subset(b) || b.is_subset(a))
+    })
+}
+
 #[test]
 fn boot_path_preempt_brackets_are_cfg_symmetric() {
     for path in BOOT_PATH_SOURCES {
@@ -421,6 +439,45 @@ fn kernel_main_continue() -> ! {
     assert!(
         bracket_is_symmetric(unconditional),
         "the shipped shape - unconditional brake, cfg-gated work inside it - must pass"
+    );
+}
+
+#[test]
+fn incomparable_cfg_contexts_reddens_the_chain_ratchet() {
+    // B4 generalized "share one context" (#672's original law) from "exactly
+    // one context file-wide" to "every distinct context is a subset-or-
+    // superset of every other" -- a real weakening, not merely a rename
+    // (#673 review, MA3: a commit message calling this change "generalized
+    // (not weakened)" overstated it; see the round-3 PR-body corrections).
+    // The empty, unconditional context is a subset of every context, so any
+    // future half-bracket added under ANY cfg is automatically "comparable"
+    // to an existing unconditional bracket and passes -- test 1's
+    // per-context COUNT equality still catches #672's own shape (unweakened,
+    // unchanged). What must still redden this generalized check is a
+    // genuinely INCOMPARABLE pair: two conditional contexts, neither a
+    // subset of the other.
+    let planted = r#"
+fn kernel_main_continue() -> ! {
+    #[cfg(feature = "testing")]
+    {
+        kernel::per_cpu::preempt_disable();
+        boot();
+        kernel::per_cpu::preempt_enable();
+    }
+    #[cfg(feature = "external_test_bins")]
+    {
+        kernel::per_cpu::preempt_disable();
+        boot_more();
+        kernel::per_cpu::preempt_enable();
+    }
+}
+"#;
+    assert!(
+        !bracket_contexts_form_one_chain(planted),
+        "two brackets cfg-gated on unrelated, non-nesting features (\"testing\" \
+         vs \"external_test_bins\", neither a subset of the other) must redden \
+         the subset-or-superset ratchet -- the exact vacuity gap B4's \
+         generalization opened (#673 review, MA3)"
     );
 }
 
