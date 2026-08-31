@@ -2184,6 +2184,49 @@ fn kernel_main_continue() -> ! {
     {
         if let Err(e) = task::kthread::kthread_run(
             || {
+                // #673 review, R3-B1: census the production bracket's
+                // release from HERE, not from boot's own tail after
+                // preempt_enable() below (see that call's comment for why
+                // boot's own reads are a footrace this profile cannot win).
+                // This kthread's context is never abandoned the way
+                // boot/idle's is -- it is dispatched and resumed by the
+                // ordinary switch_to_thread() is_kernel_thread path for as
+                // long as the system runs -- so this line executes exactly
+                // once, deterministically, rather than racing the next
+                // timer tick.
+                //
+                // It is also guaranteed to run AFTER the release below:
+                // this closure cannot start executing until the scheduler
+                // switches the CPU away from boot's currently-running
+                // context onto this thread, and per_cpu::can_schedule()
+                // (per_cpu.rs -- the `current_preempt == 0` guard ahead of
+                // `returning_to_idle_kernel`/`need_resched_set`, OR'd with
+                // the separate blocked/terminated admission this thread
+                // does not hold here) refuses that switch while ANY
+                // preempt_disable() bracket is still held on this CPU.
+                // kthread_run() only calls scheduler::spawn() (adds this
+                // thread to the ready queue); it never forces an immediate
+                // dispatch. So the first instruction of this closure can
+                // only run once preempt_count has already dropped to 0 on
+                // this CPU -- and the ONLY preempt_enable() call left
+                // between here and that point in this profile is the very
+                // next line below (this is boot's SECOND, more-nested brake,
+                // #673 review B3/B4 -- its release is boot's first
+                // preemptible point since that brake was taken, because the
+                // outer, unconditional bracket around the whole boot
+                // sequence was already released earlier in this function).
+                // The underflow counter itself
+                // (per_cpu::PREEMPT_UNDERFLOW_COUNT) is a monotonic,
+                // never-reset AtomicU64 (fetch_add on underflow only, no
+                // corresponding decrement anywhere), so reading it here
+                // still observes an underflow caused by that release even
+                // though this read happens strictly after it. Pinned by
+                // docker/qemu/run-x86-prod-profile-boot-test.sh.
+                log::info!(
+                    "[PROD_BRACKET_RELEASE_CENSUS:underflow={}]",
+                    kernel::per_cpu::preempt_underflow_count()
+                );
+
                 let mut executor = task::executor::Executor::new();
                 executor.spawn(task::Task::new(keyboard::keyboard_task()));
                 executor.spawn(task::Task::new(serial::command::serial_command_task()));
@@ -2199,18 +2242,28 @@ fn kernel_main_continue() -> ! {
 
         kernel::per_cpu::preempt_enable();
 
-        // #673 review, mi5: the shared census earlier in this function
-        // (search for PREEMPT_BRACKET_CENSUS) runs strictly BEFORE this
-        // release -- it is the LAST preempt_enable() call in this profile,
-        // so an underflow caused by THIS release would never be reported by
-        // that earlier read. This second, production-block-only census
-        // closes that gap: it is the only point in this profile reached
-        // after every preempt_enable() call in it has executed. Pinned by
-        // docker/qemu/run-x86-prod-profile-boot-test.sh.
-        log::info!(
-            "[PROD_BRACKET_RELEASE_CENSUS:underflow={}]",
-            kernel::per_cpu::preempt_underflow_count()
-        );
+        // #673 review, R3-B1: the census that used to sit here
+        // ([PROD_BRACKET_RELEASE_CENSUS:...]) was a designed footrace and
+        // has been MOVED to the top of the console_executor kthread's
+        // closure above (search for "R3-B1" there for the full
+        // derivation).
+        //
+        // Why it raced here: this profile's whole design (#712) is that
+        // boot IS the scheduler's idle thread from init_with_current()
+        // onward, and once any thread reaches Ring 3,
+        // is_ring3_confirmed() latches and context_switch.rs permanently
+        // abandons whatever context idle is next preempted from -- boot
+        // never resumes its own saved context again. A formatted
+        // log::info!() call is not atomic with the preempt_enable() call
+        // above it: between the two, this CPU is preemptible (preempt_count
+        // is already 0) and the very next 1 kHz timer tick can switch away
+        // from boot before it reaches the log call, permanently stranding
+        // it unexecuted (measured: 1/6 shipping-profile boots at the #673
+        // fix-round-3 review). The release itself was never affected by
+        // this -- preempt_enable() above always completes -- only the
+        // diagnostic line describing it could be lost. See #712 for the
+        // full mechanism and the corrected account (this is boot's tail
+        // being dropped after a correct release, not a stranded brake).
 
         // Boot's own sequential work is done, and its future role really is
         // the scheduler's generic idle one from here on: init and the

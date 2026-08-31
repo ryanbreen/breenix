@@ -320,6 +320,17 @@ fn boot_path_preempt_sites_share_one_cfg_context() {
     // job above, not this one's.
     for path in BOOT_PATH_SOURCES {
         let source = repo_text(path);
+        // #673 review, R3-m2: call the SAME predicate the vacuity test
+        // below (incomparable_cfg_contexts_reddens_the_chain_ratchet)
+        // mutates, rather than a duplicate inline copy of its logic -- so a
+        // mutation of the real, shipped check reddens THIS test too, not
+        // only a copy of it.
+        if bracket_contexts_form_one_chain(&source) {
+            continue;
+        }
+        // Re-derive the same sets to name the specific offending pair in
+        // the failure message; bracket_contexts_form_one_chain() above
+        // already made the pass/fail call.
         let mut contexts: Vec<String> = cfg_contexts(&source, DISABLE);
         contexts.extend(cfg_contexts(&source, ENABLE));
         let distinct = census(&contexts);
@@ -338,6 +349,14 @@ fn boot_path_preempt_sites_share_one_cfg_context() {
                 );
             }
         }
+        // Every pairwise check passed but bracket_contexts_form_one_chain()
+        // returned false above -- the two predicates have diverged, which
+        // is a bug in this test itself, not in the source under test.
+        panic!(
+            "{path}: bracket_contexts_form_one_chain() returned false but \
+             no incomparable pair was found by direct re-check (#673 \
+             review, R3-m2) -- the two predicates have diverged"
+        );
     }
 }
 

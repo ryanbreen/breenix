@@ -317,13 +317,32 @@ PRECOND_PREEMPT_PASS_LITERAL='PRECONDITION 7: Preemption disabled ✓ PASS'
 # ---------------------------------------------------------------------------
 PREEMPT_CENSUS_PREFIX='[PREEMPT_BRACKET_CENSUS:'
 PREEMPT_CENSUS_PROD_LITERAL='[PREEMPT_BRACKET_CENSUS:underflow=0]'
-# #673 review, mi5: the census above is emitted before the production
+# #673 review, mi5/R3-B1: the census above is emitted before the production
 # block's OWN preempt_enable() (kernel/src/main.rs, B3's release) runs, so
-# it cannot see an underflow caused by that specific release. This second
-# marker is emitted immediately after it -- the only point in this profile
-# reached after every preempt_enable() call in it has executed.
+# it cannot see an underflow caused by that specific release. A second
+# marker closes that gap -- but emitting it from boot's own tail right
+# after the release raced the next timer tick (boot IS the scheduler's
+# idle thread in this profile, #712, and any preemption of its remaining
+# code abandons it for good): 1/6 shipping-profile boots at the #673
+# fix-round-3 review lost the line to that race. R3-B1 moved the emission
+# into the console_executor kthread's own first-run code instead -- a
+# kthread's context is never abandoned that way, and it cannot start
+# running until the release above has already completed (see the
+# emission's own comment in kernel/src/main.rs for the full derivation
+# against per_cpu::can_schedule()), so the read is now deterministic
+# rather than a footrace.
 PROD_BRACKET_RELEASE_PREFIX='[PROD_BRACKET_RELEASE_CENSUS:'
 PROD_BRACKET_RELEASE_PROD_LITERAL='[PROD_BRACKET_RELEASE_CENSUS:underflow=0]'
+
+# #673 review, MA6/R3-m4: test_timer_resolution() (kernel/src/time_test.rs)
+# demotes a >1-tick window between its two reads from a panic to a counted,
+# non-fatal log line (rare host scheduling jitter under a TCG-emulated PIT
+# or a loaded CI runner, not by itself proof of a kernel defect -- see that
+# function's own comment). Demoting it also made a genuine widening of the
+# tolerance invisible to this gate; pin it at zero so a real drift (the
+# window growing on every boot, not just an occasional stall) still reddens
+# here rather than passing silently.
+TIMER_RESOLUTION_WINDOW_EXCEEDED_PREFIX='[TIMER_RESOLUTION_WINDOW_EXCEEDED:'
 
 # ---------------------------------------------------------------------------
 # #673 new evidence. Four independent signals, each a strictly stronger claim
@@ -451,7 +470,13 @@ trap 'report_gate_failure "$LINENO" "$BASH_COMMAND"' ERR
 # serial stream as the shell prompt, so a same-line collision between a
 # pinned literal and the prompt could in principle misreport a 1->2 delta as
 # 1->1 (false red) or hide a real increase; 25/25 production-profile boots
-# (#673 fix round 3) observed no such collision, so this is a disclosed,
+# (#673 fix round 2 -- the battery that measured this ran in round 2, NOT
+# round 3; corrected #673 review R3-MA2/R3-m3, which caught this comment
+# repeating round 2's figure as if it were round 3's own) observed no such
+# collision at that round's landed bytes. Re-measured at round 4's landed
+# bytes: [PROVE-R4-FILL: production-profile boot tally + collision count,
+# #673 fix round 4 -- the round-4 prove slot fills this bracket in with the
+# measured tally before this branch lands]. This is a disclosed,
 # currently-inert sharp edge, not a silently mislabeled one. grep exits 1
 # when nothing matches, which under `set -e`/`pipefail` would abort before
 # the assertion that wants to read the zero, so the status is swallowed
@@ -504,6 +529,7 @@ print_observed_values() {
     echo "  preempt census at rest:        $(marker_count "$PREEMPT_CENSUS_PROD_LITERAL")"
     echo "  prod bracket release census:   $(marker_count "$PROD_BRACKET_RELEASE_PREFIX")"
     echo "  prod bracket release at rest:  $(marker_count "$PROD_BRACKET_RELEASE_PROD_LITERAL")"
+    echo "  timer resolution window exceeded (#673 MA6/R3-m4): $(marker_count "$TIMER_RESOLUTION_WINDOW_EXCEEDED_PREFIX")"
     echo "  init designation (#673):      $(marker_count "$INIT_DESIGNATION_X86_PREFIX")"
     echo "  ring3 syscall confirmed (#673): $(marker_count "$RING3_SYSCALL_LITERAL")"
     echo "  init first line (#673 M6):    $(marker_count "$INIT_FIRST_LINE_LITERAL")"
@@ -515,6 +541,7 @@ print_observed_values() {
     { grep -F -h -- "$ROOT_CUSTODY_PREFIX" "$OUTPUT_DIR"/serial_*.txt 2>/dev/null || true; }
     { grep -F -h -- "$PREEMPT_CENSUS_PREFIX" "$OUTPUT_DIR"/serial_*.txt 2>/dev/null || true; }
     { grep -F -h -- "$PROD_BRACKET_RELEASE_PREFIX" "$OUTPUT_DIR"/serial_*.txt 2>/dev/null || true; }
+    { grep -F -h -- "$TIMER_RESOLUTION_WINDOW_EXCEEDED_PREFIX" "$OUTPUT_DIR"/serial_*.txt 2>/dev/null || true; }
     { grep -F -h -- "$INIT_DESIGNATION_X86_PREFIX" "$OUTPUT_DIR"/serial_*.txt 2>/dev/null || true; }
 }
 
@@ -673,6 +700,10 @@ test "$(marker_count "$PREEMPT_CENSUS_PROD_LITERAL")" -eq 1
 # from the shared census above (see its declaration comment).
 test "$(marker_count "$PROD_BRACKET_RELEASE_PREFIX")" -eq 1
 test "$(marker_count "$PROD_BRACKET_RELEASE_PROD_LITERAL")" -eq 1
+
+# #673 review, MA6/R3-m4: pin the demoted timer-resolution window overrun at
+# zero -- see its declaration comment above.
+test "$(marker_count "$TIMER_RESOLUTION_WINDOW_EXCEEDED_PREFIX")" -eq 0
 
 # #673: init designation and syscall-execution evidence -- construction,
 # dispatch, and execution, each proven independently. See the header.

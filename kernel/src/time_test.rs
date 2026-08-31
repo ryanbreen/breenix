@@ -7,12 +7,17 @@
 //!
 //! ## What This Test Does NOT Validate
 //!
-//! ✗ Time progression (runs before timer interrupts enabled)
+//! ✗ Time progression (see below -- no longer universally true)
 //! ✗ Timer interrupt handler
 //! ✗ Actual elapsed time measurement
 //!
 //! This is by design - the test validates the MATH is correct, not that
-//! time actually advances. Timer interrupts haven't started yet when this runs.
+//! time actually advances. Most profiles still reach this call before timer
+//! interrupts have started; x86 production (#673) is the exception --
+//! interrupts are already hardware-enabled here (see
+//! `test_timer_resolution()`'s own doc below, #673 review m1/mi4, for how
+//! the check tolerates a genuine tick landing between its two reads in that
+//! profile; #673 review R3-m1 corrected this module doc to match).
 
 /// Validates timer resolution and correctness
 ///
