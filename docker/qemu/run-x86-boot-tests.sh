@@ -34,6 +34,27 @@ report_gate_failure() {
     local exit_code=$?
     local line_no="$1"
     local failing_cmd="$2"
+    # #717: many assertions below are shaped `test "$(cmd | awk ...)" -eq N`
+    # (or `VAR=$(cmd | awk ...)` feeding one). That command substitution
+    # runs in its own subshell; under `set -o pipefail`, a zero-match `grep`
+    # earlier in such a pipeline fails the whole pipeline even though the
+    # final command (commonly `awk`) is fine, so this ERR trap fires INSIDE
+    # that subshell first, misattributing the failure to the pipeline's
+    # last command. `exit` there only ends the subshell, not the script --
+    # the parent's `test`/assignment then receives this handler's own
+    # printed text (or nothing) as its "value" instead of a real count,
+    # which always fails that parent statement's own check too, re-firing
+    # this trap a SECOND time at the top level with a different, but this
+    # time correctly-attributed, $LINENO/failing-command pair. A plain
+    # shell-variable guard can't dedupe this: the subshell's variable
+    # changes never propagate back to the parent. `$BASH_SUBSHELL` does
+    # survive that boundary as a readable fact (it counts subshell nesting
+    # depth), so use it: stay silent when running inside a subshell -- the
+    # top-level re-fire this always triggers is the one worth reporting --
+    # and print (and exit the whole script) only from depth 0.
+    if [ "$BASH_SUBSHELL" -gt 0 ]; then
+        exit "$exit_code"
+    fi
     echo "x86 frame-custody gate${i:+ run $i}: FAIL (set -e abort at ${BASH_SOURCE[0]}:${line_no}, exit ${exit_code})"
     echo "  failing command: ${failing_cmd}"
     if [ -n "${OUTPUT_DIR:-}" ] && compgen -G "$OUTPUT_DIR/serial_*.txt" >/dev/null 2>&1; then
