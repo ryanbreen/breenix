@@ -1,0 +1,13 @@
+   Compiling kernel v0.1.0 (/Users/wrb/fun/code/breenix/.claude/worktrees/wf_a617a050-8c9-4/kernel)
+   Compiling breenix v0.1.0 (/Users/wrb/fun/code/breenix/.claude/worktrees/wf_a617a050-8c9-4)
+    Finished `release` profile [optimized] target(s) in 3.98s
+     Running tests/masked_binary_load_structure.rs (target/release/deps/masked_binary_load_structure-882b3f498ee4ad1a)
+
+running 4 tests
+test the_oracle_rejects_the_pre_fix_interactive_shape ... ok
+test the_interactive_profile_loads_before_it_masks ... ok
+test no_masked_block_on_the_boot_path_loads_a_test_binary ... ok
+test the_boot_path_still_loads_binaries_and_still_masks ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

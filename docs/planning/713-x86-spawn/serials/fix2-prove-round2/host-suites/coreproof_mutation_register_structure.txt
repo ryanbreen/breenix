@@ -1,0 +1,14 @@
+   Compiling kernel v0.1.0 (/Users/wrb/fun/code/breenix/.claude/worktrees/wf_a617a050-8c9-4/kernel)
+   Compiling breenix v0.1.0 (/Users/wrb/fun/code/breenix/.claude/worktrees/wf_a617a050-8c9-4)
+    Finished `release` profile [optimized] target(s) in 3.24s
+     Running tests/coreproof_mutation_register_structure.rs (target/release/deps/coreproof_mutation_register_structure-a44476cda3baa850)
+
+running 5 tests
+test the_register_names_exactly_the_declared_mutations ... ok
+test every_register_entry_cites_its_issue_its_fix_and_its_predicate ... ok
+test every_multi_file_mutation_gates_every_file_its_own_entry_names ... ok
+test every_declared_mutation_perturbs_a_real_site ... ok
+test every_gated_mutation_is_declared ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+

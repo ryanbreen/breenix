@@ -1,0 +1,47 @@
+   Compiling kernel v0.1.0 (/Users/wrb/fun/code/breenix/.claude/worktrees/wf_a617a050-8c9-4/kernel)
+   Compiling breenix v0.1.0 (/Users/wrb/fun/code/breenix/.claude/worktrees/wf_a617a050-8c9-4)
+    Finished `release` profile [optimized] target(s) in 5.65s
+     Running tests/strand_handoff_structure.rs (target/release/deps/strand_handoff_structure-bcd4249983941d5d)
+
+running 38 tests
+test full_test_rejects_post_run_stranded_markers ... ok
+test every_aarch64_census_gate_requires_joined_but_accepts_reported_retirement_evidence ... ok
+test boot_tests_gates_refuse_a_wrong_profile_kernel ... ok
+test service_sequence_instruction_abort_signatures_are_set_shaped ... ok
+test first_strand_census_precedes_the_steady_state_cadence ... ok
+test service_sequence_census_columns_match_the_rows_it_writes ... ok
+test service_sequence_instruction_abort_classifier_is_single_signature ... ok
+test service_sequence_cpu_identity_splits_fail_the_profile ... ok
+test service_sequence_609_arm_is_field_keyed_and_untolerated ... ok
+test service_sequence_pc_align_and_panic_classifiers_are_field_keyed_before_fallbacks ... ok
+test service_sequence_635_arm_is_field_keyed_and_untolerated ... ok
+test service_sequence_resume_pc_refusals_are_counted_exactly_once_per_boot ... ok
+test service_sequence_percpu_stack_alien_refusals_fail_the_profile ... ok
+test cpu_affinity_zero_sentinel_is_never_a_thread_id ... ok
+test service_sequence_resume_pc_refusals_fail_the_profile ... ok
+test idle_disposability_is_parked_state_not_bare_tid_identity ... ok
+test pending_next_is_taken_only_after_rollback_refusals ... ok
+test injection_report_cap_preserves_in_flight_scoring_windows ... ok
+test strand_marker_reports_dwell_and_nonprogress_axes ... ok
+test strict_gate_build_hint_enables_boot_tests ... ok
+test service_sequence_ret_stage_refusals_fail_the_profile_and_nontext_words_do_not ... ok
+test strict_gate_rejects_aggregate_boot_test_failures_with_a_field_signature ... ok
+test census_and_kernel_stack_ownership_oracles_share_a_subsystem_in_safe_order ... ok
+test service_sequence_ret_dispatch_refusals_are_counted_and_reported_not_gated ... ok
+test strict_gate_rejects_stranded_markers_from_finished_serial ... ok
+test strict_gate_poll_loop_stops_only_on_crash_or_complete_score ... ok
+test strand_victim_parks_on_the_sample_timer ... ok
+test strand_census_disposability_and_reachability_dimensions_cannot_shrink ... ok
+test the_mutation_leg_exemption_is_exactly_as_narrow_as_it_claims ... ok
+test x86_strand_oracle_is_synchronous_and_sampled_by_the_executor ... ok
+test injection_stimulus_default_is_idle_gated_and_live_widening_is_cfg_only ... ok
+test census_real_thread_arm_and_forced_placement_helpers_are_aarch64_only ... ok
+test strand_census_progress_axes_and_ordering_cannot_shrink ... ok
+test x86_census_widen_oracle_is_one_shot_in_the_live_verdict_path ... ok
+test wakeup_placement_requires_local_dispatchability ... ok
+test strand_handoff_structure_is_pinned_without_line_numbers ... ok
+test every_oracle_gate_pattern_matches_the_emitted_format ... ok
+test aarch64_census_widen_oracle_has_real_disarmed_and_armed_legs ... ok
+
+test result: ok. 38 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
+

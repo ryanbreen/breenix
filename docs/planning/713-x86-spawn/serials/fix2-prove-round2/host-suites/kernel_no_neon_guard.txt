@@ -1,0 +1,10 @@
+   Compiling kernel v0.1.0 (/Users/wrb/fun/code/breenix/.claude/worktrees/wf_a617a050-8c9-4/kernel)
+   Compiling breenix v0.1.0 (/Users/wrb/fun/code/breenix/.claude/worktrees/wf_a617a050-8c9-4)
+    Finished `release` profile [optimized] target(s) in 3.97s
+     Running tests/kernel_no_neon_guard.rs (target/release/deps/kernel_no_neon_guard-5070b016e4ec3e77)
+
+running 1 test
+test kernel_elf_has_no_neon_fp_stores ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 8.09s
+

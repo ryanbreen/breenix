@@ -1,0 +1,43 @@
+   Compiling kernel v0.1.0 (/Users/wrb/fun/code/breenix/.claude/worktrees/wf_a617a050-8c9-4/kernel)
+   Compiling breenix v0.1.0 (/Users/wrb/fun/code/breenix/.claude/worktrees/wf_a617a050-8c9-4)
+    Finished `release` profile [optimized] target(s) in 3.99s
+     Running tests/exec_lock_order_structure.rs (target/release/deps/exec_lock_order_structure-74369c4fbc976ece)
+
+running 34 tests
+test negative_collapsed_scheduler_census_is_rejected ... ok
+test negative_creation_marker_reusing_exec_marker_is_rejected ... ok
+test negative_creation_injection_reusing_production_marker_is_rejected ... ok
+test boot_verdict_emits_and_gates_on_the_exec_lock_order_counters ... ok
+test exec_smoke_is_wired_into_the_aarch64_boot_path ... ok
+test arm64_exec_bodies_stage_the_receipt_after_the_context_reset ... ok
+test negative_exec_smoke_after_boot_services_is_rejected ... ok
+test negative_exec_sched_commit_without_must_use_is_rejected ... ok
+test creation_publication_seams_are_first_and_unique ... ok
+test negative_exec_smoke_after_reap_loop_is_rejected ... ok
+test negative_creation_publication_after_without_interrupts_is_rejected ... ok
+test negative_creation_injection_duplicating_predicate_is_rejected ... ok
+test negative_exec_smoke_init_spawn_deletion_is_rejected ... ok
+test negative_exec_smoke_before_liveness_spawn_is_rejected ... ok
+test exec_sched_commit_is_a_must_use_receipt_applied_in_the_scheduler ... ok
+test negative_full_gate_without_violation_grep_is_rejected ... ok
+test negative_arm64_exec_snapshot_before_reset_is_rejected ... ok
+test negative_sys_exec_missing_drop_is_rejected ... ok
+test negative_sys_exec_apply_before_drop_is_rejected ... ok
+test negative_full_gate_without_exec_smoke_target_grep_is_rejected ... ok
+test negative_manager_scheduler_use_import_is_rejected ... ok
+test negative_manager_module_scheduler_acquisition_is_rejected ... ok
+test negative_scheduler_glob_import_is_rejected ... ok
+test sys_exec_releases_the_process_manager_before_the_scheduler ... ok
+test creation_lock_order_marker_and_oracle_reader_are_pinned ... ok
+test negative_exec_sched_commit_without_pm_guard_is_rejected ... ok
+test negative_creation_oracle_without_injected_assertion_is_rejected ... ok
+test negative_arm64_exec_scheduler_acquisition_is_rejected ... ok
+test negative_arm64_exec_scheduler_path_call_is_rejected ... ok
+test negative_unqualified_scheduler_call_is_rejected ... ok
+test manager_module_has_no_scheduler_lock_acquisition_anywhere ... ok
+test arm64_exec_bodies_never_touch_the_scheduler_lock ... ok
+test creation_paths_release_process_manager_before_publication ... ok
+test negative_creation_publication_inside_process_manager_scope_is_rejected ... ok
+
+test result: ok. 34 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+
