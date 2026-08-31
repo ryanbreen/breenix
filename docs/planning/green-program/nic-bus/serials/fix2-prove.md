@@ -14,14 +14,23 @@ docs with measured results, commit + push.
 
 All five legs run to completion. Logs originally under a session-scratchpad
 `fix2-prove/` directory; the subset cited by EVIDENCE/CONFIRM is now archived
-durably alongside this file (`docs/planning/green-program/nic-bus/serials/`,
-sweep-2 N6 pass, 2026-08-31) — sibling filenames below refer to that
-directory. The mutation apply/revert scripts (`mutation1-*.sh`,
-`mutation2-*.sh`, `mutation-b5-*.sh`) and `b5-mutation-evidence.txt` were
-archived too; the `ss-gate-*.log`/`.tsv` and `leg3-*.log` raw run logs this
-narrative mentions below were not individually preserved past the original
-session -- only the files actually cited by EVIDENCE/CONFIRM's own text were
-archived.
+durably alongside this file (`docs/planning/green-program/nic-bus/serials/`)
+— sibling filenames below refer to that directory. The mutation apply/revert
+scripts (`mutation1-*.sh`, `mutation2-*.sh`, `mutation-b5-*.sh`) and
+`b5-mutation-evidence.txt` were archived too; the `ss-gate-*.log`/`.tsv` and
+`leg3-*.log` raw run logs this narrative mentions below were not
+individually preserved past the original session -- only the files actually
+cited by EVIDENCE/CONFIRM's own text were archived.
+
+Archival history, corrected: the sweep-2 N6 pass (`cbc6873b`, 2026-08-31)
+copied most of this subset but **falsely claimed** to have also copied the
+10 `suite-<name>.log` files and `700-recurrence-serial-kernel.log` — the
+repo's blanket `*.log` `.gitignore` rule silently dropped a plain `git add`
+of those, and N6 never noticed the no-op. A follow-up repair pass the same
+day (`sweep-2` archival-closure slot) force-added those 11 files from the
+still-surviving `fix2-prove/` scratchpad source and corrected N6's claim.
+Every `serials/` citation in EVIDENCE/CONFIRM/this-file now resolves to a
+real, tracked file.
 
 ---
 
