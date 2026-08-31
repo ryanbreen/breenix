@@ -283,11 +283,46 @@ the full three-item coverage-gap record, not the bare path string.
 - `cargo test --test tty_oracle_structure` — 16/16.
 - `cargo test --test exec_lock_order_structure` — 34/34 (M2's predicted-green
   suite, actually run rather than predicted by hand).
-- Userspace builds both arches, zero warnings.
+- Userspace builds both arches, zero warnings
+  (`serials/x86-fix2-*-script-log-20260831.txt`,
+  `grep -Ei '^(warning|error)'` empty on both build logs).
 - Kernel builds both arches (zero-feature x86 profile; aarch64 soft-float
-  target), zero warnings.
-- One standing x86 production-profile gate boot, green, on beast (new pins).
-- One dedicated x86 TTY oracle gate boot, green, on beast (new pins, 240s
-  bound).
-- Full serials: `serials/x86-fix2-prod-profile-gate-verdict-20260831.txt`,
-  `serials/x86-fix2-dedicated-tty-oracle-gate-verdict-20260831.txt`.
+  target), zero warnings (aarch64 build log carries only the pre-existing,
+  unrelated `-Z build-std` sysroot `core` future-incompat notice, same as
+  the implement slot found).
+- **Dedicated x86 TTY oracle gate, on beast (`breenix-x86` Incus VM):
+  green, 1/1 boots, 13/13 arms, new `INIT_REAP_FAILED_LITERAL` check and
+  240s bound both exercised.**
+  `serials/x86-fix2-dedicated-tty-oracle-gate-script-log-20260831.txt`,
+  `serials/x86-fix2-dedicated-tty-oracle-gate-serial_user-20260831.txt`.
+- **Standing x86 production-profile gate, on beast: two attempts, honestly
+  reported.** First attempt FAILED —
+  `test "$(marker_count "$BSSHD_STARTED_LITERAL")" -eq 1` — with `bsshd
+  started (#713): 0` and `bsshd listening (#713): 0` in the failure
+  summary, but every step up through the TTY oracle's own 13/13 arms and
+  reap succeeded cleanly (`tty oracle exit record: 1`, `tty oracle reap
+  failed: 0`, `tty oracle failed: 0`); `start_bsshd()`'s own spawn simply
+  never got observed to complete inside the poll bound. Beast's host load
+  average at the time was **34.7/28.9/26.7** on the run, with a chronic
+  966%-CPU `ugrep` process (running continuously since Aug 27) plus a
+  dozen concurrent, unrelated `node`/`vitest`/`pnpm`/`tsc` processes from
+  other agent sessions on the same host — captured in
+  `serials/x86-fix2-beast-contention-evidence-20260831.txt`. This is the
+  exact mechanism `#725` already filed and this arc's own confirm-round
+  `#731` independently rediscovered on a different gate script: a
+  TCG-emulated boot's disk I/O slowed enough under host contention to miss
+  a fixed wall-clock poll budget, not a functional defect. **Second
+  attempt, same bytes, host still at load 26-28 (not idle, but recovering):
+  PASS, clean.** `bsshd started (#713): 1`, `bsshd listening (#713): 1`,
+  `tty oracle exit record: 1`, `tty oracle reap failed: 0`, `tty oracle
+  failed: 0` — every new pin exercised and correct.
+  `serials/x86-fix2-prod-profile-gate-CONTENTION-FAIL-script-log-20260831.txt`
+  (attempt 1, disclosed rather than discarded),
+  `serials/x86-fix2-prod-profile-gate-retry-PASS-script-log-20260831.txt`
+  (attempt 2), `serials/x86-fix2-prod-profile-gate-serial_user-retry-pass-20260831.txt`.
+- aarch64 regression, on the Mac (native QEMU): dedicated gate 2x (one
+  `--rebuild-userspace`, one without) — both green, 14/14 arms, the new
+  `INIT_REAP_FAILED_LITERAL` check exercised and absent both times;
+  standing prod gate 1x — green.
+  `serials/aarch64-fix2-dedicated-tty-oracle-gate-serial-20260831.txt`.
+  No stray QEMU processes before or after (checked).
