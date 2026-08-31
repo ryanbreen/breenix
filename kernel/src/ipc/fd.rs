@@ -640,6 +640,16 @@ impl FdTable {
                                 pair.slave_close();
                             }
                         }
+                        FdKind::TcpListener(port) => {
+                            // #707: mirrors close_all_fds/FdTable::drop's TcpListener arm -
+                            // decrement ref count, remove only if it reaches 0.
+                            crate::net::tcp::tcp_listener_ref_dec(*port);
+                        }
+                        FdKind::TcpConnection(conn_id) => {
+                            // #707: mirrors close_all_fds/FdTable::drop's TcpConnection arm -
+                            // close the TCP connection.
+                            let _ = crate::net::tcp::tcp_close(conn_id);
+                        }
                         _ => {}
                     }
                 }
