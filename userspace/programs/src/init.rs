@@ -212,18 +212,30 @@ fn run_poll_tcp_oracle() {
 /// kernel's `boot_tests` registry, so it measures a kernel that is not the one shipped;
 /// launching the oracle from init puts the PTY, line-discipline and termios surface on
 /// the production profile's own boot. The child prints its own arm verdicts.
+///
+/// Like `run_spawn_smoke()`, `waitpid`'s `Result` is checked honestly: only a
+/// genuine `Ok` reap prints the exited-record literal the gates pin on, and a
+/// `waitpid` failure prints a distinct, differently-worded literal instead of
+/// silently reusing the pre-zeroed `status` to fabricate `code=0` (review
+/// finding B3: this launcher used to discard the `Result` with `let _ =`).
 #[cfg(target_arch = "aarch64")]
 fn run_tty_oracle() {
     match spawn(b"/bin/tty_oracle\0") {
         Ok(child_pid) => {
-            let mut status = 0i32;
-            let _ = waitpid(child_pid.raw() as i32, &mut status as *mut i32, 0);
-            let exit_code = (status >> 8) & 0xFF;
-            print!(
-                "[init] tty_oracle exited pid={} code={}\n",
-                child_pid.raw(),
-                exit_code
-            );
+            let mut status: i32 = 0;
+            match waitpid(child_pid.raw() as i32, &mut status as *mut i32, 0) {
+                Ok(_) => {
+                    let exit_code = (status >> 8) & 0xFF;
+                    print!(
+                        "[init] tty_oracle exited pid={} code={}\n",
+                        child_pid.raw(),
+                        exit_code
+                    );
+                }
+                Err(e) => {
+                    print!("[init] Warning: tty_oracle reap failed: {}\n", e);
+                }
+            }
         }
         Err(error) => {
             print!("[init] Warning: failed to start tty_oracle: {}\n", error);
@@ -532,18 +544,30 @@ fn run_spawn_smoke() {
 /// the oracle stays fully independent of init's boot-script chain (#722)
 /// and the production processes that already run sequentially before it
 /// never overlap with bsshd's own ext2 reads (#728).
+///
+/// Like `run_spawn_smoke()`, `waitpid`'s `Result` is checked honestly: only
+/// a genuine `Ok` reap prints the exited-record literal the gates pin on,
+/// and a `waitpid` failure prints a distinct, differently-worded literal
+/// instead of silently reusing the pre-zeroed `status` to fabricate
+/// `code=0` (review finding B3).
 #[cfg(target_arch = "x86_64")]
 fn run_tty_oracle() {
     match spawn(b"/bin/tty_oracle\0") {
         Ok(child_pid) => {
-            let mut status = 0i32;
-            let _ = waitpid(child_pid.raw() as i32, &mut status as *mut i32, 0);
-            let exit_code = (status >> 8) & 0xFF;
-            print!(
-                "[init] tty_oracle exited pid={} code={}\n",
-                child_pid.raw(),
-                exit_code
-            );
+            let mut status: i32 = 0;
+            match waitpid(child_pid.raw() as i32, &mut status as *mut i32, 0) {
+                Ok(_) => {
+                    let exit_code = (status >> 8) & 0xFF;
+                    print!(
+                        "[init] tty_oracle exited pid={} code={}\n",
+                        child_pid.raw(),
+                        exit_code
+                    );
+                }
+                Err(e) => {
+                    print!("[init] Warning: tty_oracle reap failed: {}\n", e);
+                }
+            }
         }
         Err(error) => {
             print!("[init] Warning: failed to start tty_oracle: {}\n", error);

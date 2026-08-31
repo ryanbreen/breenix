@@ -25,8 +25,17 @@ project-wide ratchet this port did not touch — reddens because the port's new
 `TTY_ORACLE_LITERAL` pin in `run-x86-prod-profile-boot-test.sh` uses
 `-ge 1` instead of the exact-count `-eq` convention that ratchet requires and every
 other pin in that file follows. Not fixed in this confirmation pass (read-only
-verification of landed bytes); the fix is a one-line change
-(`-ge 1` → `-eq 2`, the count is structurally always exactly 2 on this port's design).
+verification of landed bytes).
+**Correction (fix round, 2026-08-31 review): the `-eq 2` fix this pass proposed
+below does not work and rests on a false premise — see
+`docs/planning/green-program/tty/EVIDENCE-x86-fix-round-2026-08-31.md` §1 for
+the actual fix applied. The count is not "structurally always exactly 2 on
+this port's design"; it is exactly 2 only because `tty_oracle.rs`'s `emit()`
+deliberately double-prints its `COMPLETE:` line for console-shred resistance,
+which means a shred landing inside the literal itself can legally drop the
+count to 1 — this session's own Leg 2 mutation serial shows exactly that
+shape. `-eq 2` would have been flaky by construction. The landed fix pins
+init's own single-emit post-wait record instead.**
 
 ## Arm disposition (14 total, 13 on x86)
 
@@ -75,8 +84,8 @@ merely that it's absent from the expected-PASS list.
    inspected afterward, immediately preceded by a long run of live DNS/HTTP
    `sys_recvfrom` traffic. Neither failing boot's serial contains any crash/panic
    marker; both show clean idle-loop steady state.
-   `grep -ci "tty_oracle\|\[init\]"` against all four serial files (both arches of
-   both failing boots) returns **zero** matches every time, structurally proving
+   `grep -ci "tty_oracle\|\[init\]"` against all four serial files (both serial
+   streams of both failing boots) returns **zero** matches every time, structurally proving
    neither failure can involve the TTY-x86 port's code: `run_tty_oracle()` (and
    everything else this port added) is reachable only through the production-init
    cfg block in `kernel/src/main.rs`, which is compiled *out* whenever `feature =
@@ -104,3 +113,10 @@ merely that it's absent from the expected-PASS list.
   the fixed 900s budget, load-independent" in this pass.
 - `#705`'s issue-body `@path` documentation defect (a prior session's `gh issue
   edit` mistake) is still present, unfixed; flagged again, not this slot's to fix.
+
+**Status update (fix round, 2026-08-31): both open items above are closed.** The
+Leg 4 red is fixed — see
+`docs/planning/green-program/tty/EVIDENCE-x86-fix-round-2026-08-31.md`. `#705`'s
+body is expanded on GitHub (the `@path` literal replaced with real content via
+`gh issue edit --body-file`). Leg 5's `#731` root cause is still not chased
+further than this pass left it; that remains open, tracked on the issue.

@@ -75,8 +75,18 @@ COMPLETE_LITERAL="[TTY_ORACLE:COMPLETE:pass=${EXPECTED_ARM_COUNT}:fail=0]"
 ANY_COMPLETE_LITERAL='[TTY_ORACLE:COMPLETE:'
 ARM_FAIL_LITERAL='[TTY_ORACLE:FAIL:'
 CLOEXEC_EXEC_VERDICT_LITERAL='[TTY_ORACLE:cloexec_exec:'
-# init's post-wait record: proves the child was actually reaped with status 0.
+# init's post-wait record. This line only prints on a genuine `Ok` reap from
+# `waitpid` (review finding B3: run_tty_oracle() used to discard the
+# `Result` with `let _ =`, so a failed reap could still fabricate
+# `code=0` off the pre-zeroed status -- fixed to match run_spawn_smoke()'s
+# honest branch). Combined with the code=0 regex check below and
+# INIT_REAP_FAILED_LITERAL staying absent, this genuinely proves the child
+# was reaped with status 0, not merely that init printed a line saying so.
 INIT_EXIT_LITERAL='[init] tty_oracle exited pid='
+# The distinct literal a genuine waitpid() failure prints instead of the
+# line above -- its presence would mean the exit-record pin above was never
+# actually reached via a real reap.
+INIT_REAP_FAILED_LITERAL='[init] Warning: tty_oracle reap failed'
 # Liveness after the leg. The oracle's own final line is not accepted as
 # evidence that the kernel is still usable.
 BSSHD_LITERAL='bsshd: listening'
@@ -200,8 +210,13 @@ while [ "$boot" -le "$BOOTS" ]; do
         >"$RUN_DIR/qemu.log" 2>&1 &
     QEMU_PID=$!
 
+    # This gate boots the identical profile run-x86-prod-profile-boot-test.sh
+    # measures (steady state at 14s under TCG on beast) plus one extra spawn
+    # (tty_oracle) ahead of bsshd, so its own bound matches that sibling
+    # gate's 240s -- an order of magnitude of headroom above the measured
+    # steady state, not an unrationalized round number.
     POLL=0
-    while [ "$POLL" -lt 180 ]; do
+    while [ "$POLL" -lt 240 ]; do
         if grep -aqF "$BSSHD_LITERAL" "$RUN_DIR"/serial_*.txt 2>/dev/null; then break; fi
         if grep -aqE "$CRASH_MARKERS_PATTERN" "$RUN_DIR"/serial_*.txt 2>/dev/null; then break; fi
         kill -0 "$QEMU_PID" 2>/dev/null || break
@@ -260,7 +275,13 @@ while [ "$boot" -le "$BOOTS" ]; do
         exit 1
     fi
 
-    # --- init must have reaped the child with status 0. ---
+    # --- init must have reaped the child with status 0, via a genuine
+    #     waitpid() success -- not a failed reap over a pre-zeroed status. ---
+    if [ "$(marker_count "$INIT_REAP_FAILED_LITERAL")" -ne 0 ]; then
+        echo "FAIL: boot $boot - init's waitpid() on tty_oracle failed"
+        grep -aF "$INIT_REAP_FAILED_LITERAL" "$RUN_DIR"/serial_*.txt | head -2
+        exit 1
+    fi
     if [ "$(marker_count "$INIT_EXIT_LITERAL")" -eq 0 ]; then
         echo "FAIL: boot $boot - init never recorded the tty_oracle child exiting"
         exit 1

@@ -403,6 +403,24 @@ fn the_x86_gate_refuses_a_cloexec_exec_verdict() {
          verdict at all - a cfg regression that re-admits the arm \
          unconditionally would run it against #721's ENOSYS uncaught"
     );
+    // M3: pin the mechanism, not just the vocabulary. A gate that keeps the
+    // literal in a failure message but weakens the comparison so it can
+    // never fire would still pass the assertion above.
+    let declaration = script
+        .lines()
+        .find(|line| line.trim_start().starts_with("CLOEXEC_EXEC_VERDICT_LITERAL="))
+        .expect("the x86 gate declares CLOEXEC_EXEC_VERDICT_LITERAL");
+    let var = declaration
+        .split('=')
+        .next()
+        .expect("declaration has a name before '='");
+    let comparison = format!("marker_count \"${var}\")\" -ne 0");
+    assert!(
+        script.contains(&comparison),
+        "the x86 gate declares {var} but never compares its marker_count \
+         against zero with -ne 0 - a weakened comparison here would pass \
+         the ratchet while never being able to fail the gate"
+    );
 }
 
 #[test]
