@@ -92,11 +92,18 @@ if [ ! -x "$VMRUN" ]; then
     fail "vmrun not found at $VMRUN; is VMware Fusion installed?"
 fi
 
-echo "[vmware-gate] === Building + starting VM via run.sh --vmware ==="
+echo "[vmware-gate] === Building + starting VM via run.sh --vmware (headless) ==="
 rm -f "$SERIAL_LOG"
 : > "$RUN_LOG"
 cd "$BREENIX_ROOT" || fail "repo dir missing: $BREENIX_ROOT"
-"$BREENIX_ROOT/run.sh" --vmware >"$RUN_LOG" 2>&1 &
+# BREENIX_VMWARE_NOGUI: start the VM with `vmrun start ... nogui` directly,
+# skipping run.sh's own gui-first attempt (which "succeeds" -- exit 0, no
+# error to fall back from -- even when nothing is watching it, so this is
+# the only way an unattended capture avoids opening a real window on the
+# operator's desktop). This is the ratified design (verify.md §4b item 1):
+# reuse run.sh's own build+VMX-generation machinery, but never its gui-first
+# boot.
+BREENIX_VMWARE_NOGUI=1 "$BREENIX_ROOT/run.sh" --vmware >"$RUN_LOG" 2>&1 &
 RUN_SH_PID=$!
 
 # run.sh --vmware execs into `tail -f` on the serial log once the VM is up,
@@ -129,10 +136,20 @@ echo "[vmware-gate] === Stopping VM and reading evidence ==="
 "$VMRUN" stop "$VMX_FILE" hard >/dev/null 2>&1 || true
 kill_run_sh_tree "$RUN_SH_PID"
 reap_leaked_vmware_log_tail
-# The VM is already stopped; clear both so the EXIT trap's cleanup is a no-op
-# rather than a redundant (harmless, but noisy) second stop attempt.
+# Confirm the stop actually took before disarming the EXIT trap's cleanup --
+# `vmrun stop`'s own exit status is already discarded above (`|| true`, it is
+# not reliable enough to gate on), so trust `vmrun list` instead. If the VM
+# is STILL listed, the stop did not take: leave VMX_FILE set so the EXIT
+# trap's cleanup_vm retries the stop rather than silently leaving a VM
+# running -- the one operational rule this repo is emphatic about
+# (CLAUDE.md's Parallels section states it for that platform; the same
+# principle holds here).
 VMX_FILE_STOPPED="$VMX_FILE"
-VMX_FILE=""
+if "$VMRUN" list 2>/dev/null | grep -qF "$VMX_FILE"; then
+    echo "[vmware-gate] WARNING: $VMX_FILE still listed by 'vmrun list' after stop; leaving the cleanup trap armed to retry"
+else
+    VMX_FILE=""
+fi
 RUN_SH_PID=""
 
 [ -s "$SERIAL_LOG" ] || fail "no serial output captured at $SERIAL_LOG"
