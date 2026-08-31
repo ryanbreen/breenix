@@ -5630,7 +5630,12 @@ fn validate_no_vacuous_test_conditions(sources: &[(String, String)]) -> Result<(
 /// checks below prove the gate looks for the right markers; the block above them
 /// proves the recorded verdict is actually spent — `set -e` still on, `$passed`
 /// asserted explicitly (so a false verdict ends the run), and no early or zero
-/// exit able to pre-empt it (review-sweep-r4 finding 4).
+/// exit able to pre-empt it (review-sweep-r4 finding 4). The PCI census now runs
+/// before that assertion on purpose, so a boot which hangs in enumeration gets
+/// the census-specific failure rather than aborting first on the aggregate
+/// verdict. Its no-match assignment is allowed to continue only through the
+/// explicit `|| true`, then `test -n "$PCI_CENSUS_LINE"` spends the result before
+/// the verdict and the marker-count assertions.
 ///
 /// The verdict assertion is `test "$passed" = true`, not a bare `$passed`: a
 /// bare boolean variable executed as a command is silent on failure under
@@ -5674,8 +5679,20 @@ fn validate_x86_frame_custody_harness(script: &str) -> Result<(), ()> {
         })
     };
     let mut bare_verdict = false;
+    let mut passed_false_assignments = 0usize;
+    let mut passed_true_assignments = 0usize;
+    let mut passed_reads = 0usize;
     for line in script.lines() {
         let statement = line.trim();
+        if statement == "passed=false" {
+            passed_false_assignments += 1;
+        }
+        if statement == "passed=true" {
+            passed_true_assignments += 1;
+        }
+        if !statement.starts_with('#') {
+            passed_reads += statement.matches("$passed").count();
+        }
         if statement == "test \"$passed\" = true" {
             bare_verdict = true;
         }
@@ -5690,17 +5707,30 @@ fn validate_x86_frame_custody_harness(script: &str) -> Result<(), ()> {
     let verdict_false = script.find("passed=false").ok_or(())?;
     let verdict_true = script.find("passed=true").ok_or(())?;
     let verdict_spent = script.find("\n    test \"$passed\" = true\n").ok_or(())?;
-    let counter_check = script.find("-eq 1").ok_or(())?;
+    let census_assignment = script
+        .find("\n    PCI_CENSUS_LINE=$(grep -h -E '")
+        .ok_or(())?;
+    let census_presence = script
+        .find("\n    test -n \"$PCI_CENSUS_LINE\"\n")
+        .ok_or(())?;
+    let counter_check = script
+        .find("\n    test \"$(grep -h -c '\\[TEST:process:frame_custody_refusal_gate:PASS\\]'")
+        .ok_or(())?;
+    let census_assignment_is_explicitly_tolerated =
+        script[census_assignment..census_presence].contains("| tail -1) || true");
 
     (bare_verdict
         && script.contains("trap 'report_gate_failure \"$LINENO\" \"$BASH_COMMAND\"' ERR")
         && script.contains("set -euo pipefail")
         && !script.contains("set +")
-        && script.matches("passed=false").count() == 1
-        && script.matches("passed=true").count() == 1
-        && script.matches("$passed").count() == 1
+        && passed_false_assignments == 1
+        && passed_true_assignments == 1
+        && passed_reads == 1
         && verdict_false < verdict_true
-        && verdict_true < verdict_spent
+        && verdict_true < census_assignment
+        && census_assignment < census_presence
+        && census_assignment_is_explicitly_tolerated
+        && census_presence < verdict_spent
         && verdict_spent < counter_check
         && !script.contains("grep -q '\\[BOOT_TESTS:PASS\\]'")
         && !script.contains("grep -q 'KERNEL_POST_TESTS_COMPLETE'")
@@ -11243,6 +11273,16 @@ fn deliberately_broken_variants_fail_the_ratchet() {
         "production poll mutation must apply"
     );
     assert!(validate_x86_frame_custody_harness(&missing_prod_poll).is_err());
+    let unguarded_census_assignment = harness.replacen(
+        "        \"$OUTPUT_DIR\"/serial_*.txt | tail -1) || true\n    test -n \"$PCI_CENSUS_LINE\"",
+        "        \"$OUTPUT_DIR\"/serial_*.txt | tail -1)\n    test -n \"$PCI_CENSUS_LINE\"",
+        1,
+    );
+    assert_ne!(
+        unguarded_census_assignment, harness,
+        "PCI census assignment mutation must apply"
+    );
+    assert!(validate_x86_frame_custody_harness(&unguarded_census_assignment).is_err());
     assert!(validate_x86_frame_custody_harness(&harness.replace("-eq 1", "-ge 0")).is_err());
     assert!(validate_x86_frame_custody_harness(
         &harness.replace(
@@ -14505,6 +14545,169 @@ fn the_mutation_leg_exemption_is_exactly_as_narrow_as_it_claims() {
         2,
         "an UNGATED extra drop is invisible: the exemption has grown wider than \
          the mutation legs and a real regression could now pass"
+    );
+
+    let combinator_gated = concat!(
+        "fn release(threads: Vec<Box<Thread>>) {\n",
+        "    #[cfg(any(feature = \"coreproof_mut_x\", feature = \"coreproof_mut_y\"))]\n",
+        "    drop(threads);\n",
+        "}\n",
+    );
+    let combinator_gated_mask = code_mask(combinator_gated);
+    assert_eq!(
+        count_occurrences(combinator_gated, &combinator_gated_mask, "drop("),
+        0,
+        "the cfg(any(...))-gated mutation leg is visible, so a law counting this \
+         construct counts one that never compiles"
+    );
+
+    let combinator_ungated = concat!(
+        "fn release(threads: Vec<Box<Thread>>) {\n",
+        "    drop(threads);\n",
+        "}\n",
+    );
+    let combinator_ungated_mask = code_mask(combinator_ungated);
+    assert_eq!(
+        count_occurrences(combinator_ungated, &combinator_ungated_mask, "drop("),
+        1,
+        "an UNGATED construct matching the combinator leg is invisible: the \
+         exemption has grown wider than the mutation legs and a real regression \
+         could now pass"
+    );
+
+    let component_gated = concat!(
+        "fn schedule() {\n",
+        "    #[cfg(feature = \"coreproof_component_c\")]\n",
+        "    crate::proof_point!(PreDispatchMask);\n",
+        "}\n",
+    );
+    let component_gated_mask = code_mask(component_gated);
+    assert_eq!(
+        count_occurrences(component_gated, &component_gated_mask, "proof_point!("),
+        0,
+        "the cfg-gated coreproof component construct is visible, so a law \
+         checking adjacency sees a proof point that never compiles"
+    );
+
+    let component_ungated = concat!(
+        "fn schedule() {\n",
+        "    crate::proof_point!(PreDispatchMask);\n",
+        "}\n",
+    );
+    let component_ungated_mask = code_mask(component_ungated);
+    assert_eq!(
+        count_occurrences(component_ungated, &component_ungated_mask, "proof_point!("),
+        1,
+        "an UNGATED coreproof component construct is invisible: the exemption \
+         has grown wider than the proof-only code and a real regression could \
+         now pass"
+    );
+
+    let mixed_predicate = concat!(
+        "fn release(threads: Vec<Box<Thread>>) {\n",
+        "    #[cfg(any(feature = \"coreproof_mut_x\", feature = \"totally_unrelated_feature\"))]\n",
+        "    drop(threads);\n",
+        "}\n",
+    );
+    let mixed_predicate_mask = code_mask(mixed_predicate);
+    assert_eq!(
+        count_occurrences(mixed_predicate, &mixed_predicate_mask, "drop("),
+        1,
+        "a construct gated by a predicate that mixes coreproof and unrelated \
+         features was masked: the exemption guessed at intent and grew wider \
+         than coreproof-only predicates"
+    );
+
+    let spaced_negation = concat!(
+        "fn schedule() {\n",
+        "    #[cfg(not (feature = \"coreproof_component_c\"))]\n",
+        "    crate::proof_point!(ProductionArm);\n",
+        "}\n",
+    );
+    let spaced_negation_mask = code_mask(spaced_negation);
+    assert_eq!(
+        count_occurrences(spaced_negation, &spaced_negation_mask, "proof_point!("),
+        1,
+        "a negated production arm was masked merely because whitespace separated \
+         `not` from its predicate"
+    );
+
+    let non_coreproof_alternative = concat!(
+        "fn schedule() {\n",
+        "    #[cfg(any(feature = \"coreproof_component_c\", target_arch = \"aarch64\"))]\n",
+        "    crate::proof_point!(MixedAlternative);\n",
+        "}\n",
+    );
+    let non_coreproof_alternative_mask = code_mask(non_coreproof_alternative);
+    assert_eq!(
+        count_occurrences(
+            non_coreproof_alternative,
+            &non_coreproof_alternative_mask,
+            "proof_point!(",
+        ),
+        1,
+        "a predicate which can be true without coreproof was masked"
+    );
+
+    let gated_item_followed_by_production = concat!(
+        "#[cfg(feature = \"coreproof_component_c\")]\n",
+        "pub fn coreproof_probe() {\n",
+        "    coreproof_only_marker();\n",
+        "}\n",
+        "pub fn production_probe() {\n",
+        "    production_marker();\n",
+        "}\n",
+    );
+    let gated_item_mask = code_mask(gated_item_followed_by_production);
+    assert_eq!(
+        count_occurrences(
+            gated_item_followed_by_production,
+            &gated_item_mask,
+            "coreproof_only_marker(",
+        ),
+        0,
+        "a coreproof-gated braced item remained visible"
+    );
+    assert_eq!(
+        count_occurrences(
+            gated_item_followed_by_production,
+            &gated_item_mask,
+            "production_marker(",
+        ),
+        1,
+        "masking one coreproof-gated braced item consumed the production item \
+         that follows it"
+    );
+
+    let ungated_item = gated_item_followed_by_production
+        .replacen("#[cfg(feature = \"coreproof_component_c\")]\n", "", 1);
+    let ungated_item_mask = code_mask(&ungated_item);
+    assert_eq!(
+        count_occurrences(
+            &ungated_item,
+            &ungated_item_mask,
+            "coreproof_only_marker(",
+        ),
+        1,
+        "the same braced item without its coreproof attribute is invisible"
+    );
+
+    let base_coreproof_harness_item = concat!(
+        "#[cfg(feature = \"coreproof\")]\n",
+        "pub fn block_current_coreproof_probe() {\n",
+        "    harness_inventory_marker();\n",
+        "}\n",
+    );
+    let base_coreproof_harness_mask = code_mask(base_coreproof_harness_item);
+    assert_eq!(
+        count_occurrences(
+            base_coreproof_harness_item,
+            &base_coreproof_harness_mask,
+            "harness_inventory_marker(",
+        ),
+        1,
+        "the base coreproof harness was masked even though structural ratchets \
+         intentionally inventory its APIs"
     );
 
     // And the exemption must actually apply to something in the sources this
