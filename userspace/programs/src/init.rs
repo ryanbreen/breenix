@@ -120,6 +120,8 @@ fn main() {
     run_wait_stress_if_enabled();
     #[cfg(target_arch = "aarch64")]
     run_trace_diag_probe_if_enabled();
+    #[cfg(target_arch = "x86_64")]
+    run_spawn_smoke();
     start_bsshd();
     run_boot_script();
     #[cfg(target_arch = "aarch64")]
@@ -466,6 +468,24 @@ fn start_bounce() {
         Err(_) => {
             print!("[init] Warning: failed to start bounce\n");
         }
+    }
+}
+
+/// #713: a minimal, self-contained proof that spawn() actually creates,
+/// execs, and lets init reap a child on x86 -- independent of
+/// run_boot_script()'s own bsh/init.js chain, which drags in seven further,
+/// previously-unaudited x86 spawns and is deliberately out of scope here
+/// (see #722). `/bin/true` is busybox's own zero-exit applet, already
+/// present on every ext2 image this project builds
+/// (scripts/create_ext2_disk.sh's busybox coreutils hardlinks). Spawned
+/// fire-and-forget: this function does not wait on it directly, so the
+/// ordinary `waitpid(-1, ...)` reap loop at the end of main() is what
+/// prints its exit -- proving the full path (spawn -> exec -> run -> exit
+/// -> reap) rather than just the spawn call succeeding.
+#[cfg(target_arch = "x86_64")]
+fn run_spawn_smoke() {
+    if let Err(e) = spawn(b"/bin/true\0") {
+        print!("[init] Warning: failed to start spawn smoke: {}\n", e);
     }
 }
 
