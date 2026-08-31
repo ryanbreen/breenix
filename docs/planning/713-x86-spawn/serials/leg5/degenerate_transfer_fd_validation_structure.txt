@@ -1,0 +1,13 @@
+   Compiling kernel v0.1.0 (/Users/wrb/fun/code/breenix/.claude/worktrees/wf_d33c398e-3a7-4/kernel)
+   Compiling breenix v0.1.0 (/Users/wrb/fun/code/breenix/.claude/worktrees/wf_d33c398e-3a7-4)
+    Finished `release` profile [optimized] target(s) in 3.27s
+     Running tests/degenerate_transfer_fd_validation_structure.rs (target/release/deps/degenerate_transfer_fd_validation_structure-8366e9083c331a47)
+
+running 4 tests
+test the_guard_validator_rejects_the_pre_fix_shape ... ok
+test the_validator_reports_ebadf_from_the_descriptor_table ... ok
+test every_degenerate_transfer_guard_validates_the_descriptor_first ... ok
+test the_degenerate_transfer_census_is_not_vacuous ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

@@ -1,0 +1,13 @@
+   Compiling kernel v0.1.0 (/Users/wrb/fun/code/breenix/.claude/worktrees/wf_d33c398e-3a7-4/kernel)
+   Compiling breenix v0.1.0 (/Users/wrb/fun/code/breenix/.claude/worktrees/wf_d33c398e-3a7-4)
+    Finished `release` profile [optimized] target(s) in 3.29s
+     Running tests/fs_fault_production_clean.rs (target/release/deps/fs_fault_production_clean-3c86dc1c250d1fcc)
+
+running 4 tests
+test every_reference_to_the_leg_is_cfg_guarded ... ok
+test the_seam_ratchet_reddens_on_a_planted_unguarded_call ... ok
+test production_kernel_carries_no_fault_leg ... ok
+test the_scan_reddens_on_a_build_that_carries_the_leg ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 13.28s
+

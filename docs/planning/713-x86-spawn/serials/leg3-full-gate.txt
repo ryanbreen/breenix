@@ -1,0 +1,11 @@
+[gate] repo: /root/breenix  head: f8ab03b5
+[gate] accel=kvm cpu=host
+[gate] === Building userspace ELFs ===
+[gate] === Repacking the userspace test disk and the ext2 image ===
+[gate] === Building (release, features=testing,external_test_bins) ===
+[gate] Build clean (0 warnings) in 15s
+[gate] === Running 1 boot test(s), mode=full ===
+STRAND_CENSUS: threads_saved_blocked=9 stranded=0 lines=4780
+x86 userspace gate: PASS - exited=19 expected>=10 nonzero=0 allowlist=0
+  Test 1: PASS
+GATE: PASS (1/1 boot tests passed; mode=full build=15s boot=151s total=174s)

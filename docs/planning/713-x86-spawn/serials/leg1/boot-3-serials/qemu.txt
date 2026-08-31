@@ -1,0 +1,7 @@
+WARNING: Image format was not specified for '/tmp/breenix_x86_prod_profile/OVMF_CODE.fd' and probing guessed raw.
+         Automatically detecting the format is dangerous for raw images, write operations on block 0 will be restricted.
+         Specify the 'raw' format explicitly to remove the restrictions.
+WARNING: Image format was not specified for '/tmp/breenix_x86_prod_profile/OVMF_VARS.fd' and probing guessed raw.
+         Automatically detecting the format is dangerous for raw images, write operations on block 0 will be restricted.
+         Specify the 'raw' format explicitly to remove the restrictions.
+qemu-system-x86_64: terminating on signal 15 from pid 2767586 (/bin/bash)

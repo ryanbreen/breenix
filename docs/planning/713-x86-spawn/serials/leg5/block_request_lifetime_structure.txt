@@ -1,0 +1,27 @@
+   Compiling kernel v0.1.0 (/Users/wrb/fun/code/breenix/.claude/worktrees/wf_d33c398e-3a7-4/kernel)
+   Compiling http v1.5.0
+   Compiling crc v3.4.0
+   Compiling lzma-rs v0.3.0
+   Compiling ureq-proto v0.6.1
+   Compiling ureq v3.4.0
+   Compiling ovmf-prebuilt v0.2.9
+   Compiling breenix v0.1.0 (/Users/wrb/fun/code/breenix/.claude/worktrees/wf_d33c398e-3a7-4)
+    Finished `release` profile [optimized] target(s) in 3.80s
+     Running tests/block_request_lifetime_structure.rs (target/release/deps/block_request_lifetime_structure-5c86f381bbec215f)
+
+running 12 tests
+test completion_wait_census_ignores_comments_and_string_literals ... ok
+test completion_wait_validator_rejects_interruptible_synthetic_source ... ok
+test gate_poison_validator_rejects_synthetic_regressions ... ok
+test block_eintr_oracle_marker_is_pinned_in_the_gates ... ok
+test every_discovered_aarch64_boot_tests_gate_rejects_boot_test_failures ... ok
+test driver_guard_wedge_call_population_is_pinned ... ok
+test drivers_have_no_unpaired_keep_locked_escape ... ok
+test driver_release_on_drop_false_population_is_pinned ... ok
+test driver_completion_wait_population_is_pinned ... ok
+test drivers_have_no_interruptible_completion_waits ... ok
+test every_release_on_drop_false_arm_latches_wedged ... ok
+test every_wedged_driver_gate_refuses_inside_lock ... ok
+
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+

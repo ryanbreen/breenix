@@ -1,0 +1,71 @@
+[2J[01;01H[=3h[2J[01;01H[2J[01;01H[8;056;240t0[2J[01;01H[2J[01;01H[=3h[2J[01;01H[2J[01;01H[8;042;160t0[2J[01;01HBdsDxe: loading Boot0002 "UEFI Misc Device" from PciRoot(0x0)/Pci(0x3,0x0)
+BdsDxe: starting Boot0002 "UEFI Misc Device" from PciRoot(0x0)/Pci(0x3,0x0)
+INFO : Framebuffer info: FrameBufferInfo { byte_len: 16384000, width: 2560, height: 1600, pixel_format: Bgr, bytes_per_pixel: 4, stride: 2560 }
+INFO : UEFI bootloader started
+INFO : Using framebuffer at 0x80000000
+INFO : Reading configuration from disk was successful
+INFO : Trying to load ramdisk via Disk
+INFO : Ramdisk not found.
+TRACE: exiting boot services
+TRACE: switching to new level 4 table
+INFO : New page table at: PhysFrame[4KiB](0x101000)
+INFO : Elf file loaded at Pointer {
+    addr: 0x000000001dae1000,
+    metadata: 4899448,
+}
+INFO : virtual_address_offset: 0x10000000000
+INFO : Handling Segment: Ph64(ProgramHeader64 { type_: Ok(Load), flags: Flags(4), offset: 0, virtual_addr: 0, physical_addr: 0, file_size: 9440c, mem_size: 9440c, align: 1000 })
+INFO : Handling Segment: Ph64(ProgramHeader64 { type_: Ok(Load), flags: Flags(5), offset: 94410, virtual_addr: 95410, physical_addr: 95410, file_size: 284e90, mem_size: 284e90, align: 1000 })
+INFO : Handling Segment: Ph64(ProgramHeader64 { type_: Ok(Load), flags: Flags(6), offset: 3192a0, virtual_addr: 31b2a0, physical_addr: 31b2a0, file_size: 3d3f8, mem_size: 3dd60, align: 1000 })
+INFO : Mapping bss section
+INFO : Handling Segment: Ph64(ProgramHeader64 { type_: Ok(Load), flags: Flags(6), offset: 356700, virtual_addr: 359700, physical_addr: 359700, file_size: 2a330, mem_size: 836f0, align: 1000 })
+INFO : Mapping bss section
+INFO : Entry point at: 0x100000a3460
+INFO : Creating GDT at PhysAddr(0x1e2000)
+INFO : Map framebuffer
+INFO : Map physical memory
+INFO : Allocate bootinfo
+INFO : Create Memory Map
+INFO : Create bootinfo
+INFO : Jumping to kernel entry point at VirtAddr(0x100000a3460)
+[ INFO] scheduler::schedule() returned (boot marker)
+[SW]<K>[SW]<K>[SW]<1>[PT_ROOT_CUSTODY:no_proof=0:no_arch=0:terminated=0:undecided=0:mid_retire=0:retired=0]
+[TOMBSTONE_CENSUS:resident=0:removed=0:reap_second=0:retire_second=0:abandoned_unqueued=0]
+manager.create_process: ENTRY - name='init', elf_size=183128
+manager.create_process: Generating PID
+manager.create_process: Generated PID 1
+manager.create_process: Creating ProcessPageTable
+manager.create_process: ProcessPageTable created
+manager.create_process: Loading ELF into page table
+manager.create_process: ELF loaded, entry=0x4000e744
+manager.create_process: Restoring kernel mappings
+manager.create_process: Kernel mappings restored
+manager.create_process: Creating Process struct
+manager.create_process: Process struct created, heap_start=0x40017000
+manager.create_process: Allocating user stack
+manager.create_process: User stack allocated at 0x7fffff011000
+manager.create_process: Mapping user stack into process page table
+manager.create_process: User stack mapped successfully
+manager.create_process: Creating main thread
+manager.create_process: Main thread created
+manager.create_process: Main thread set on process
+manager.create_process: Inserting process into process table
+manager.create_process: SUCCESS - returning PID 1
+[INIT_DESIGNATION:x86_64:designated_pid=1:reserved_collisions=0]
+BPBP_HANDLER_ENTRY!
+About to call preempt_disable from BP handler
+Called preempt_disable from BP handler
+BP from_userspace=false, CS=0x8
+BP handler: About to call preempt_enable
+BP handler: Called preempt_enable, exiting handler
+[SW]<T><U>RING3_ENTER: CS=0x33
+[ OK ] RING3_SMOKE: userspace executed + syscall path verified
+<S>[SW]<K>breenix> [SW]<T><U><R>RING3_SYSCALL: First syscall from userspace
+[ OK ] syscall path verified
+[init] Breenix init starting (PID 1)
+[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>
+breenix> [SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><U><S>[SW]<K>[SW]<T><B>[init] spawn smoke: exited (code 0)
+[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[init] bsshd started (PID 3)
+[SW]<K>[SW]<T><U><S>[SW]<T><B>[SW]<K>[SW]<T><U><R>bsshd: starting on port 2222
+bsshd: listening on 0.0.0.0:2222
+[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>p00r0 [SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>

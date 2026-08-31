@@ -1,0 +1,14 @@
+   Compiling kernel v0.1.0 (/Users/wrb/fun/code/breenix/.claude/worktrees/wf_d33c398e-3a7-4/kernel)
+   Compiling breenix v0.1.0 (/Users/wrb/fun/code/breenix/.claude/worktrees/wf_d33c398e-3a7-4)
+    Finished `release` profile [optimized] target(s) in 3.36s
+     Running tests/x86_gate_verdict_test.rs (target/release/deps/x86_gate_verdict_test-625365b4e4e50d4d)
+
+running 5 tests
+test rejects_a_missing_expected_exits_variable ... ok
+test rejects_empty_non_decimal_and_zero_expected_exits_values ... ok
+test rejects_a_tally_below_the_expected_exit_floor ... ok
+test rejects_a_fault_killed_test_and_names_the_process ... ok
+test accepts_a_complete_green_cohort_at_the_expected_floor ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+
