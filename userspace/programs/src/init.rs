@@ -491,14 +491,29 @@ fn start_bounce() {
 /// larger than anything loaded earlier in boot and its own chain adds
 /// seven further ELF loads; none of that has any bearing on whether
 /// spawn() itself works, so this no longer waits on it.
+///
+/// Unlike this file's other fire-and-forget `let _ = waitpid(...)` call
+/// sites, this one's own success literal is a gate pin claiming a genuine
+/// reap ("the full create+exec+run+exit+reap path end to end") -- so the
+/// `waitpid` return value is checked honestly: only an `Ok` reap prints the
+/// exited-code literal the gate asserts on, and a `waitpid` failure (e.g.
+/// the child was silently never registered as this process's child) prints
+/// a distinct, differently-worded literal instead of silently reusing the
+/// pre-zeroed `status` to fabricate "exited (code 0)".
 #[cfg(target_arch = "x86_64")]
 fn run_spawn_smoke() {
     match spawn(b"/bin/spawn_smoke_target\0") {
         Ok(child_pid) => {
             let mut status: i32 = 0;
-            let _ = waitpid(child_pid.raw() as i32, &mut status as *mut i32, 0);
-            let exit_code = (status >> 8) & 0xFF;
-            print!("[init] spawn smoke: exited (code {})\n", exit_code);
+            match waitpid(child_pid.raw() as i32, &mut status as *mut i32, 0) {
+                Ok(_) => {
+                    let exit_code = (status >> 8) & 0xFF;
+                    print!("[init] spawn smoke: exited (code {})\n", exit_code);
+                }
+                Err(e) => {
+                    print!("[init] Warning: spawn smoke reap failed: {}\n", e);
+                }
+            }
         }
         Err(e) => {
             print!("[init] Warning: failed to start spawn smoke: {}\n", e);

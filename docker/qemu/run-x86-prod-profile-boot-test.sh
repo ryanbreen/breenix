@@ -89,15 +89,17 @@
 #      it in a profile that had never reached Ring 3 before.
 #   4. init's own first line, followed by bsshd actually starting AND
 #      reaching its listening state, PLUS a dedicated spawn-smoke child
-#      (/bin/true) observed exiting 0 through init's ordinary reap loop
-#      (#713, fixed -- x86 SPAWN syscall). Before #713, SPAWN was
-#      unconditionally ENOSYS on x86, so this block used to pin only a
-#      graceful-failure warning line; that is now replaced with real
-#      survival/execution evidence, matching what the aarch64 production
-#      gate has always pinned for bsshd. The signal this ORIGINALLY
-#      replaced (pre-#673) -- "init was never reported killed by signal" --
-#      could never fire either way (it is init.rs's reaped-CHILD message;
-#      PID 1 never reaps itself) and stayed removed rather than reintroduced
+#      (/bin/spawn_smoke_target) observed exiting 0, reaped DIRECTLY by
+#      run_spawn_smoke() before start_bsshd() runs -- NOT through init's
+#      ordinary end-of-main() reap loop (#713, fixed -- x86 SPAWN syscall).
+#      Before #713, SPAWN was unconditionally ENOSYS on x86, so this block
+#      used to pin only a graceful-failure warning line; that is now
+#      replaced with real survival/execution evidence, matching what the
+#      aarch64 production gate has always pinned for bsshd. The signal
+#      this ORIGINALLY replaced (pre-#673) -- "init was never reported
+#      killed by signal" -- could never fire either way (it is init.rs's
+#      reaped-CHILD message; PID 1 never reaps itself) and stayed removed
+#      rather than reintroduced
 #      as an unfalsifiable pin. See "INIT SURVIVAL EVIDENCE" below for
 #      exactly what is and is not proven -- in particular, init's full
 #      boot-script chain (bsh --init-shell -> /etc/init.js's further spawns)
@@ -440,6 +442,12 @@ INIT_BSSHD_WARNING_LITERAL='[init] Warning: failed to start bsshd'
 BSSHD_STARTED_LITERAL='[init] bsshd started (PID'
 BSSHD_LISTENING_LITERAL='bsshd: listening'
 INIT_SPAWN_SMOKE_REAP_LITERAL='[init] spawn smoke: exited (code 0)'
+# The distinct failure literal run_spawn_smoke() now prints on a genuine
+# waitpid() error (as opposed to a successful reap of a nonzero exit code,
+# which is a different, still-legitimate-reap message this gate does not
+# assert on): its presence would mean the "exited (code 0)" pin above was
+# never actually reached via a real reap, so it must stay absent.
+INIT_SPAWN_SMOKE_REAP_FAILED_LITERAL='[init] Warning: spawn smoke reap failed'
 # #720 — x86 user-stack VA bump allocator never reclaims (spawn-heavy
 # exhaustion after ~240 creations).
 # #721 — x86 exec() syscall is ENOSYS in the zero-feature production build
@@ -582,6 +590,7 @@ print_observed_values() {
     echo "  bsshd started (#713):          $(marker_count "$BSSHD_STARTED_LITERAL")"
     echo "  bsshd listening (#713):        $(marker_count "$BSSHD_LISTENING_LITERAL")"
     echo "  spawn-smoke child reaped exit 0 (#713): $(marker_count "$INIT_SPAWN_SMOKE_REAP_LITERAL")"
+    echo "  spawn-smoke reap failed (must be absent, #713 fix-round-2): $(marker_count "$INIT_SPAWN_SMOKE_REAP_FAILED_LITERAL")"
     # init's full boot-script chain (bsh --init-shell -> /etc/init.js's
     # further spawns) is still not pinned here -- see INIT SURVIVAL
     # EVIDENCE above and #722.
@@ -763,15 +772,23 @@ test "$(marker_count "$RING3_SYSCALL_LITERAL")" -eq 1
 # #713, fixed: init survival/execution evidence. init reached its own
 # first line, bsshd started AND reached listening (no longer just a
 # graceful-failure warning -- SPAWN works on x86 now), and a dedicated
-# spawn-smoke child was observed exiting 0 through init's ordinary reap
-# loop, proving the full create+exec+run+exit+reap path end to end. init's
-# full boot-script chain (bsh --init-shell -> /etc/init.js) is still NOT
-# pinned here -- see "INIT SURVIVAL EVIDENCE" above and #722.
+# spawn-smoke child (/bin/spawn_smoke_target) was observed exiting 0,
+# reaped DIRECTLY by run_spawn_smoke() before start_bsshd() runs -- not
+# through init's ordinary end-of-main() reap loop, which does not run
+# until after run_boot_script()'s much slower chain completes (#722) --
+# proving the full create+exec+run+exit+reap path end to end. The reap
+# failure literal must also stay absent: a waitpid() error on the smoke
+# child (e.g. it was silently never registered as init's child) now prints
+# a distinct literal instead of a fabricated "exited (code 0)", so this
+# pin is a genuine reap, not merely "spawn returned Ok". init's full
+# boot-script chain (bsh --init-shell -> /etc/init.js) is still NOT pinned
+# here -- see "INIT SURVIVAL EVIDENCE" above and #722.
 test "$(marker_count "$INIT_FIRST_LINE_LITERAL")" -eq 1
 test "$(marker_count "$INIT_BSSHD_WARNING_LITERAL")" -eq 0
 test "$(marker_count "$BSSHD_STARTED_LITERAL")" -eq 1
 test "$(marker_count "$BSSHD_LISTENING_LITERAL")" -eq 1
 test "$(marker_count "$INIT_SPAWN_SMOKE_REAP_LITERAL")" -eq 1
+test "$(marker_count "$INIT_SPAWN_SMOKE_REAP_FAILED_LITERAL")" -eq 0
 
 trap - ERR
 # #673 review, B5: an anti-vacuity leg must never print a bare production PASS
