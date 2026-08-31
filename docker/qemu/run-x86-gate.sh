@@ -146,23 +146,110 @@ for i in $(seq 1 "$COUNT"); do
     -serial file:"$OUTDIR/serial_user.log" \
     -serial file:"$OUTDIR/serial_kernel.log" \
     > "$OUTDIR/stdout.log" 2>&1
+
+  # Device-enumeration census leg (green arc 5, bus+NIC blended). Neither
+  # branch below proves pci::enumerate() found the device set this boot
+  # actually attached -- #702 is a silent hang inside PCI enumeration right
+  # after "E1000 network device found", and every check below reads that
+  # failure only as "marker not found" / "USERSPACE TEST COMPLETE was
+  # absent", with no signal naming where the boot actually stopped. This
+  # makes that region legible without a new QEMU invocation: the census
+  # line's mere absence is itself signal, and its VirtIO-block count is
+  # checked against what this binary itself attaches, self-counted from
+  # src/bin/qemu-uefi.rs rather than a second hand-pinned literal here (the
+  # #549/#551/[[gate-target-fidelity-528]] census-not-literal lesson).
+  # BREENIX_NET_MODE=none only skips the explicit -netdev/-device args in
+  # qemu-uefi.rs; it never passes QEMU its own `-nic none`. QEMU 8.2 (the
+  # beast host's version) auto-attaches its own default e1000 NIC whenever
+  # no -net/-netdev/-nic option is given at all, so a real NIC (00:02.0
+  # [8086:100e]) IS present on every boot of this gate -- confirmed
+  # empirically (a boot here reports "PCI: ... Found 9 devices (3 VirtIO
+  # block, 1 network)" and "E1000 network device found"), not assumed from
+  # reading qemu-uefi.rs alone. The honest expected floor is therefore >=1.
+  census_ok=true
+  census_reason=""
+  # Anchored to the emitted -device arg form (leading whitespace then the
+  # opening quote), not a bare substring match: an unanchored grep for the
+  # literal text can equally match a future comment or doc string that
+  # merely mentions the flag, permanently inflating the count and
+  # permanently reddening this gate (review finding F9 -- the same
+  # self-referential-vacuity class the aarch64 leg and run-x86-boot-tests.sh
+  # each hit once already, hardened here before it was hit a third time).
+  # All three sites are conditional on BREENIX_QEMU_STORAGE: this gate never
+  # sets it, so storage_mode defaults to "virtio" and all three attach --
+  # BREENIX_QEMU_STORAGE=ide (used elsewhere, e.g. CI's OVMF-discovery
+  # profile) would attach zero and make this expected count wrong for that
+  # profile; it is not read by this script today.
+  expected_virtio_block=$(grep -cE -- '^[[:space:]]*"virtio-blk-pci,drive=' "$REPO_DIR/src/bin/qemu-uefi.rs")
+  pci_census_line=$(grep -h -E 'PCI: Enumeration complete\. Found [0-9]+ devices \([0-9]+ VirtIO block, [0-9]+ network\)' \
+      "$OUTDIR"/serial_*.log 2>/dev/null | tail -1)
+  if [ -z "$pci_census_line" ]; then
+    census_ok=false
+    census_reason="device-enumeration census absent -- see kernel/src/drivers/{pci.rs,mod.rs}"
+  else
+    census_virtio_block=$(printf '%s\n' "$pci_census_line" | \
+        sed -n 's/.*Found [0-9]* devices (\([0-9]*\) VirtIO block, [0-9]* network).*/\1/p')
+    census_network=$(printf '%s\n' "$pci_census_line" | \
+        sed -n 's/.*Found [0-9]* devices ([0-9]* VirtIO block, \([0-9]*\) network).*/\1/p')
+    if [ -z "$census_virtio_block" ] || [ -z "$census_network" ]; then
+      census_ok=false
+      census_reason="device-enumeration census line malformed: $pci_census_line"
+    elif [ "$census_virtio_block" -ne "$expected_virtio_block" ]; then
+      census_ok=false
+      census_reason="device-enumeration census reports $census_virtio_block VirtIO block device(s), self-counted expected $expected_virtio_block from src/bin/qemu-uefi.rs"
+    elif [ "$census_network" -lt 1 ]; then
+      census_ok=false
+      census_reason="device-enumeration census reports $census_network network device(s); QEMU's implicit default NIC (BREENIX_NET_MODE=none never passes -nic none) should always yield >=1"
+    fi
+  fi
+
+  # The census is an ADDITIONAL requirement, not a short-circuit (review
+  # finding B5). In full mode, x86-gate-verdict.sh runs UNCONDITIONALLY --
+  # even when census_ok is already false -- because that script runs the
+  # strand census FIRST (scripts/x86-strand-census.sh, its own comment:
+  # "so that a boot which died because a thread was silenced is named by
+  # its first cause rather than by its terminal symptom"). #702's own
+  # filing leans on that census's threads_saved_blocked=0 reading to tell
+  # a silent PCI-enumeration hang apart from the strand family (#695). A
+  # short-circuit that skips the verdict script on census failure removes
+  # that datum from exactly the gate #702 lives on, and mischaracterizes
+  # every pre-enumeration failure (early panic, OVMF failure, early
+  # timeout) as a drivers-layer reason alone. Both signals print on every
+  # boot now, pass or fail.
   if [ "$MODE" = "full" ]; then
     # EXPECTED_EXITS is mandatory for the verdict script; 10 is the count for
     # this profile's userspace program set.
     if EXPECTED_EXITS="${BREENIX_EXPECTED_EXITS:-10}" \
         "$REPO_DIR/scripts/x86-gate-verdict.sh" \
         "$OUTDIR/serial_user.log" "$OUTDIR/serial_kernel.log"; then
-      echo "  Test $i: PASS"
-      PASS=$((PASS+1))
+      verdict_ok=true
+      verdict_reason=""
     else
-      echo "  Test $i: FAIL (see $OUTDIR/serial_kernel.log)"
-      FAIL=$((FAIL+1))
+      verdict_ok=false
+      verdict_reason="see $OUTDIR/serial_kernel.log"
     fi
   elif grep -q "$MARKER_GREP" "$OUTDIR/serial_kernel.log" "$OUTDIR/serial_user.log" 2>/dev/null; then
+    verdict_ok=true
+    verdict_reason=""
+  else
+    verdict_ok=false
+    verdict_reason="marker '$MARKER_GREP' not found; see $OUTDIR/serial_kernel.log"
+  fi
+
+  if [ "$census_ok" = true ] && [ "$verdict_ok" = true ]; then
     echo "  Test $i: PASS"
+    echo "  Device census: $pci_census_line"
     PASS=$((PASS+1))
   else
-    echo "  Test $i: FAIL (marker '$MARKER_GREP' not found; see $OUTDIR/serial_kernel.log)"
+    combined_reason="$verdict_reason"
+    if [ "$census_ok" != true ]; then
+      if [ -n "$combined_reason" ]; then
+        combined_reason="$census_reason; $combined_reason"
+      else
+        combined_reason="$census_reason"
+      fi
+    fi
+    echo "  Test $i: FAIL ($combined_reason)"
     FAIL=$((FAIL+1))
   fi
 done

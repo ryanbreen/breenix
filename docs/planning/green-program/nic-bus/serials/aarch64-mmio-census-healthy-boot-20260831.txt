@@ -1,0 +1,60 @@
+EOS
+========================================
+  Breenix ARM64 Kernel Starting
+  BUILD_ID: 006a953a622184
+========================================
+
+[boot] DIAG_MARKER_XHCI_A
+[boot] DIAG_MARKER_XHCI_B
+[boot] DIAG_MARKER_XHCI_C
+[boot] loader xhci_hcrst_raw=0x0 ecam=0x0
+[boot] Current exception level: EL1
+[boot] MMU already enabled (high-half kernel)
+[boot] Initializing memory management (0x44000000-0x50000000)...
+[boot] Memory management ready
+[boot] Initializing Generic Timer...
+[boot] Timer frequency: 1000000000 Hz (1000 MHz)
+[boot] Initializing PL031 RTC...
+[boot] Current timestamp: 8237000
+[boot] Initializing GIC...
+[gic] GICR probe 0x080a0000: WAKER=0x00000006 <<< VALID
+[gic] GICR base mismatch: loader=0x00000000, using=0x080a0000
+[gic] GICD_CTLR wrote 0x53, readback=0x53
+[gic] GICR_IGROUPR0: wrote 0xFFFFFFFF, readback=0xffffffff
+[gic] EOImode=1 (split EOI/DIR) - non-VMware path
+[gic] ICC_CTLR_EL1: 0x8c00 -> 0x8c02 (EOImode=1)
+[boot] GIC initialized (version 3)
+[boot] Enabling UART interrupts...
+[boot] Enabling GIC IRQ 33 (UART0)...
+[uart] IMSC: 0x0 -> 0x50 (verify: 0x50)
+[uart] FR=0x90 (RXFE=1), RIS=0x20
+[gic] IRQ 33 state (GICv3):
+  enabled=true, group1=true, pending=false
+  priority=0xa0, GICD_CTLR=0x53
+  ICC_PMR=0xf0
+[boot] UART interrupts enabled
+[boot] Enabling interrupts...
+[boot] Interrupts enabled: true
+[boot] QEMU PCI ECAM configured at 0x4010000000
+[boot] Initializing device drivers...
+[drivers] Initializing driver subsystem...
+[drivers] Hybrid mode: VirtIO MMIO + PCI AHCI
+[drivers] Found VirtIO MMIO device: network (ID=1, version=1)
+[drivers] Found VirtIO MMIO device: block (ID=2, version=1)
+[drivers] Found VirtIO MMIO device: input (ID=18, version=1)
+[drivers] Found VirtIO MMIO device: input (ID=18, version=1)
+[drivers] Found VirtIO MMIO device: GPU (ID=16, version=1)
+[drivers] Found 5 VirtIO MMIO devices
+[virtio-blk] Searching for block devices...
+[virtio-blk] Found block device 0 at 0xa003800
+[virtio-blk] Device 0 version: 1
+[virtio-blk] Device 0 capacity: 524288 sectors (256 MB)
+[virtio-blk] Device 0 queue max size: 1024
+[virtio-blk] Device 0 using v1 (legacy) queue setup at PFN 0x40841
+[virtio-blk] Block MMIO IRQ 76 enabled for device 0
+[virtio-blk] Block device 0 initialized successfully
+[virtio-blk] Initialized 1 block device(s)
+[drivers] VirtIO block driver initialized
+[virtio-net] Searching for network device...
+[virtio-net] Found network device at 0xa003600 (slot 27)
+[virtio-net] Device version: 1

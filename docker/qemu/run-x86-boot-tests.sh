@@ -34,6 +34,27 @@ report_gate_failure() {
     local exit_code=$?
     local line_no="$1"
     local failing_cmd="$2"
+    # #717: many assertions below are shaped `test "$(cmd | awk ...)" -eq N`
+    # (or `VAR=$(cmd | awk ...)` feeding one). That command substitution
+    # runs in its own subshell; under `set -o pipefail`, a zero-match `grep`
+    # earlier in such a pipeline fails the whole pipeline even though the
+    # final command (commonly `awk`) is fine, so this ERR trap fires INSIDE
+    # that subshell first, misattributing the failure to the pipeline's
+    # last command. `exit` there only ends the subshell, not the script --
+    # the parent's `test`/assignment then receives this handler's own
+    # printed text (or nothing) as its "value" instead of a real count,
+    # which always fails that parent statement's own check too, re-firing
+    # this trap a SECOND time at the top level with a different, but this
+    # time correctly-attributed, $LINENO/failing-command pair. A plain
+    # shell-variable guard can't dedupe this: the subshell's variable
+    # changes never propagate back to the parent. `$BASH_SUBSHELL` does
+    # survive that boundary as a readable fact (it counts subshell nesting
+    # depth), so use it: stay silent when running inside a subshell -- the
+    # top-level re-fire this always triggers is the one worth reporting --
+    # and print (and exit the whole script) only from depth 0.
+    if [ "$BASH_SUBSHELL" -gt 0 ]; then
+        exit "$exit_code"
+    fi
     echo "x86 frame-custody gate${i:+ run $i}: FAIL (set -e abort at ${BASH_SOURCE[0]}:${line_no}, exit ${exit_code})"
     echo "  failing command: ${failing_cmd}"
     if [ -n "${OUTPUT_DIR:-}" ] && compgen -G "$OUTPUT_DIR/serial_*.txt" >/dev/null 2>&1; then
@@ -371,6 +392,61 @@ for i in $(seq 1 "$COUNT"); do
     kill "$RUNNER_PID" 2>/dev/null || true
     wait "$RUNNER_PID" 2>/dev/null || true
 
+    # Device-enumeration census leg (green arc 5, bus+NIC blended). Placed
+    # BEFORE the passed-flag check below (and before the ~40 marker-count
+    # assertions that follow it): none of those checks prove pci::enumerate()
+    # found the device set this script itself declared, only that the boot
+    # reached USERSPACE TEST COMPLETE. #702 is a silent hang inside PCI
+    # enumeration right after "E1000 network device found" — a boot that dies
+    # there sets $passed=false and prints none of the later markers, so a
+    # census placed after the passed-flag check would never run on exactly
+    # the boot it exists to name. Running it first makes that failure region
+    # legible on its own: the census line's mere absence is signal, and its
+    # counts are checked against what this script itself attached, not a
+    # second hand-pinned literal (the #549/#551/[[gate-target-fidelity-528]]
+    # census-not-literal lesson — self-count via grep on this script's own
+    # command array, so a future edit to the -device flags above cannot
+    # silently desync the assertion from what actually boots).
+    # Anchored to actual command-line flag lines (leading whitespace then
+    # `-device`), not a bare substring match: an earlier, unanchored version
+    # of this pattern matched its own definition on the line immediately
+    # below (this very line also contains the literal `-device
+    # virtio-blk-pci,drive=` text inside the grep pattern argument),
+    # self-counting 4 instead of the real 3 QEMU flags and making this
+    # assertion permanently false on every boot -- the same self-referential
+    # vacuity shape the aarch64 leg's own unanchored regex hit (see that
+    # leg's fix, `^[[:space:]]*-device virtio-[a-z]*-device` in
+    # run-aarch64-full-test.sh), just triggered by matching this script's own
+    # source instead of its own prose. Caught by Confirm running this gate
+    # for real and observing `4 != 3` on a healthy, correct boot.
+    EXPECTED_VIRTIO_BLOCK=$(grep -cE -- '^[[:space:]]*-device virtio-blk-pci,drive=' "${BASH_SOURCE[0]}")
+    test "$EXPECTED_VIRTIO_BLOCK" -ge 1
+    # `|| true`: under `set -o pipefail`, a census-absent boot (e.g. the
+    # #702 hang this leg exists to catch) makes `grep` exit 1 with no match,
+    # which would otherwise abort the script AT THIS ASSIGNMENT — the ERR
+    # trap still fires and still prints a FAIL, but it names the grep
+    # command rather than the `test -n "$PCI_CENSUS_LINE"` assertion below
+    # that is actually making the claim. Let the assignment succeed with an
+    # empty value and let the explicit `test -n` name the real failure.
+    PCI_CENSUS_LINE=$(grep -h -E 'PCI: Enumeration complete\. Found [0-9]+ devices \([0-9]+ VirtIO block, [0-9]+ network\)' \
+        "$OUTPUT_DIR"/serial_*.txt | tail -1) || true
+    test -n "$PCI_CENSUS_LINE"
+    CENSUS_VIRTIO_BLOCK=$(printf '%s\n' "$PCI_CENSUS_LINE" | \
+        sed -n 's/.*Found [0-9]* devices (\([0-9]*\) VirtIO block, [0-9]* network).*/\1/p')
+    CENSUS_NETWORK=$(printf '%s\n' "$PCI_CENSUS_LINE" | \
+        sed -n 's/.*Found [0-9]* devices ([0-9]* VirtIO block, \([0-9]*\) network).*/\1/p')
+    test -n "$CENSUS_VIRTIO_BLOCK"
+    test -n "$CENSUS_NETWORK"
+    test "$CENSUS_VIRTIO_BLOCK" -eq "$EXPECTED_VIRTIO_BLOCK"
+    # This invocation passes no -net/-netdev/-nic option at all, and QEMU
+    # (confirmed empirically against the beast host's QEMU 8.2, not merely
+    # assumed from reading this script) auto-attaches its own default NIC
+    # whenever none of those flags is given -- `-nic none` is required to
+    # suppress it, and nothing here passes that. A real e1000 device is
+    # therefore present on every healthy boot of this gate, so the honest
+    # floor is >=1.
+    test "$CENSUS_NETWORK" -ge 1
+    echo "  Device census: $PCI_CENSUS_LINE"
     # Explicit assertion, not a bare boolean variable: a bare boolean value
     # executed as a command is the same silent-abort shape as the `test`
     # assertions below, and is exactly as opaque on failure without the

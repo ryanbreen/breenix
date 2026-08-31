@@ -116,7 +116,7 @@ interactive = ["testing"]  # Boot into init_shell instead of running automated t
 disable_x86_prod_init = []
 
 [dependencies]
-bootloader_api = { git = "https://github.com/rust-osdev/bootloader.git", branch = "main" }
+bootloader_api = { git = "https://github.com/rust-osdev/bootloader.git", rev = "707db11201b19541b7cfef84037866ee03aa0927" }
 embedded-graphics = "0.8.1"
 conquer-once = { version = "0.4.0", default-features = false }
 log = { version = "0.4.17", default-features = false }
@@ -127,8 +127,8 @@ linked_list_allocator = "0.10"
 noto-sans-mono-bitmap = { version = "0.3", default-features = false, features = ["size_16", "regular", "unicode-basic-latin", "unicode-specials"] }
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]
-bootloader-x86_64-common = { git = "https://github.com/rust-osdev/bootloader.git", branch = "main" }
-x86_64 = { version = "0.15.2", features = ["instructions", "nightly"] }
+bootloader-x86_64-common = { git = "https://github.com/rust-osdev/bootloader.git", rev = "707db11201b19541b7cfef84037866ee03aa0927" }
+x86_64 = { version = "=0.15.4", features = ["instructions", "nightly"] }
 pic8259 = "0.10.4"
 uart_16550 = "0.3.2"
 

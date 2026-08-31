@@ -245,6 +245,21 @@ if ! $PHASE1_OK && [ -z "$FAIL_REASON" ]; then
     FAIL_REASON="Phase 1 timeout: tests did not complete within 90s"
 fi
 
+# Device-enumeration census leg (green arc 5, bus+NIC blended). The expected
+# VirtIO MMIO device total is self-counted from this script's OWN -device
+# flags above, not a hand-pinned literal, so a future edit to the QEMU
+# invocation cannot silently desync the assertion below from what actually
+# boots (the #549/#551/[[gate-target-fidelity-528]] census-not-literal
+# lesson). This converts "enumerate_devices() returned" into "the declared
+# device set, by type, was actually found" -- the precise gap #702 exposed on
+# x86 (a boot can die silently right after device detection, and every
+# marker-grep gate reads that only as an undifferentiated timeout).
+EXPECTED_MMIO_DEVICES=$(grep -cE -- '^[[:space:]]*-device virtio-[a-z]*-device' "${BASH_SOURCE[0]}")
+MMIO_CENSUS_LINE=$(grep -h -E '\[drivers\] Found [0-9]+ VirtIO MMIO devices' "$OUTPUT_DIR/serial.txt" 2>/dev/null | tail -1)
+MMIO_CENSUS_TOTAL=$(printf '%s\n' "$MMIO_CENSUS_LINE" | sed -n 's/.*Found \([0-9]*\) VirtIO MMIO devices.*/\1/p')
+MMIO_NETWORK_COUNT=$(grep -h -c -F '[drivers] Found VirtIO MMIO device: network' "$OUTPUT_DIR/serial.txt" 2>/dev/null || true)
+MMIO_BLOCK_COUNT=$(grep -h -c -F '[drivers] Found VirtIO MMIO device: block' "$OUTPUT_DIR/serial.txt" 2>/dev/null || true)
+
 if $PHASE1_OK && [ -z "$FAIL_REASON" ]; then
     # The scheduler publication seam emits this prefix if publication happens
     # while the process-manager lock is held on the same CPU. Its absence is
@@ -272,6 +287,16 @@ if $PHASE1_OK && [ -z "$FAIL_REASON" ]; then
     # TESTS_TOTAL and TESTS_PASSED together and stays green.
     elif [ "$(grep -Fxc '[TOMBSTONE_JOIN_ORACLE:aarch64:retire_second=1:reap_second=1:removed=2:resident_delta=0:tombstone_rows=0:PASS]' "$OUTPUT_DIR/serial.txt" 2>/dev/null || true)" -ne 1 ]; then
         FAIL_REASON="Phase 1: tombstone join oracle marker count is not exactly one"
+    elif [ -z "$MMIO_CENSUS_LINE" ]; then
+        FAIL_REASON="Phase 1: device-enumeration census absent -- see kernel/src/drivers/{mod.rs,virtio/mmio.rs}"
+    elif [ -z "$MMIO_CENSUS_TOTAL" ]; then
+        FAIL_REASON="Phase 1: device-enumeration census line malformed: $MMIO_CENSUS_LINE"
+    elif [ "$MMIO_CENSUS_TOTAL" -ne "$EXPECTED_MMIO_DEVICES" ]; then
+        FAIL_REASON="Phase 1: device-enumeration census reports $MMIO_CENSUS_TOTAL VirtIO MMIO device(s), self-counted expected $EXPECTED_MMIO_DEVICES from this script's own -device flags"
+    elif [ "${MMIO_NETWORK_COUNT:-0}" -lt 1 ]; then
+        FAIL_REASON="Phase 1: device-enumeration census found no VirtIO MMIO network device, though -device virtio-net-device is attached"
+    elif [ "${MMIO_BLOCK_COUNT:-0}" -lt 1 ]; then
+        FAIL_REASON="Phase 1: device-enumeration census found no VirtIO MMIO block device, though -device virtio-blk-device is attached"
     fi
 fi
 

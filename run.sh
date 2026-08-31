@@ -746,10 +746,20 @@ VMXEOF
     echo ""
     echo "--- Starting VM ---"
     rm -f "$SERIAL_LOG"  # Remove so VMware creates fresh (avoids append/replace prompt)
-    "$VMRUN" start "$VMX_FILE" gui 2>&1 || {
-        echo "vmrun start failed with GUI, trying nogui..."
+    if [ -n "${BREENIX_VMWARE_NOGUI:-}" ]; then
+        # Headless automation (docker/qemu/run-vmware-gate.sh): `gui` mode
+        # "succeeds" (exit 0, no error to fall back from) even when nothing
+        # is watching it, so an unattended caller that wants no window on
+        # the operator's desktop has to skip the gui attempt entirely rather
+        # than rely on the error-fallback path below.
+        echo "BREENIX_VMWARE_NOGUI set: starting headless (nogui)"
         "$VMRUN" start "$VMX_FILE" nogui 2>&1 || true
-    }
+    else
+        "$VMRUN" start "$VMX_FILE" gui 2>&1 || {
+            echo "vmrun start failed with GUI, trying nogui..."
+            "$VMRUN" start "$VMX_FILE" nogui 2>&1 || true
+        }
+    fi
 
     echo ""
     echo "========================================="
