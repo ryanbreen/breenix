@@ -14213,6 +14213,15 @@ fn validate_x86_prod_profile_harness(script: &str) -> Result<(), ()> {
         }
     }
 
+    // #673 review, mi6: the anti-vacuity knob's own constraint (only empty
+    // or exactly "disable_x86_prod_init") must stay enforced structurally,
+    // not only at runtime -- deleting this one line would silently restore
+    // the unconstrained knob B5 was filed about.
+    const KNOB_CONSTRAINT: &str = "test -z \"$X86_PROD_PROFILE_EXTRA_FEATURES\" -o \"$X86_PROD_PROFILE_EXTRA_FEATURES\" = \"disable_x86_prod_init\"";
+    if !script.contains(KNOB_CONSTRAINT) {
+        return Err(());
+    }
+
     // The build must stay feature-free: a --features flag anywhere on a cargo
     // line would silently turn this into a second boot-test gate.
     if !script.contains(BUILD) {
@@ -14353,6 +14362,16 @@ fn x86_production_profile_gate_ratchet_is_not_vacuous() {
         gate.replacen(
             "cargo build --release ${FEATURE_ARGS[@]+\"${FEATURE_ARGS[@]}\"} --bin qemu-uefi",
             "cargo build --release --features boot_tests ${FEATURE_ARGS[@]+\"${FEATURE_ARGS[@]}\"} --bin qemu-uefi",
+            1,
+        ),
+    );
+    // B5's knob constraint deleted would silently restore the unconstrained
+    // knob (#673 review, mi6).
+    report_vacuity(
+        "knob constraint deleted",
+        gate.replacen(
+            "test -z \"$X86_PROD_PROFILE_EXTRA_FEATURES\" -o \"$X86_PROD_PROFILE_EXTRA_FEATURES\" = \"disable_x86_prod_init\"\n",
+            "",
             1,
         ),
     );
