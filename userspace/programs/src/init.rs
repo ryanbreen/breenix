@@ -472,22 +472,37 @@ fn start_bounce() {
 }
 
 /// #713: a minimal, self-contained proof that spawn() actually creates,
-/// execs, and lets init reap a child on x86 -- independent of
+/// execs, runs, exits, and can be reaped on x86 -- independent of
 /// run_boot_script()'s own bsh/init.js chain, which drags in seven further,
 /// previously-unaudited x86 spawns and is deliberately out of scope here
 /// (see #722). /bin/spawn_smoke_target is a dedicated, always-built
 /// userspace binary (userspace/programs/src/spawn_smoke_target.rs) that
 /// exits 0 unconditionally -- deliberately NOT busybox's /bin/true, which
 /// depends on a musl-cross toolchain that isn't guaranteed present in
-/// every build environment this gate runs in. Spawned fire-and-forget:
-/// this function does not wait on it directly, so the ordinary
-/// `waitpid(-1, ...)` reap loop at the end of main() is what prints its
-/// exit -- proving the full path (spawn -> exec -> run -> exit -> reap)
-/// rather than just the spawn call succeeding.
+/// every build environment this gate runs in.
+///
+/// Waits on the child DIRECTLY (mirroring run_exec_smoke()'s own pattern,
+/// aarch64-only, elsewhere in this file) rather than fire-and-forget: an
+/// earlier version left this for the ordinary `waitpid(-1, ...)` reap loop
+/// at the end of main() to report, which does not run until AFTER
+/// run_boot_script() returns -- accidentally entangling this arc's own
+/// fast, narrow evidence with the boot-script chain's much slower (and
+/// deliberately out-of-scope, #722) completion time. `/bin/bsh` alone is
+/// larger than anything loaded earlier in boot and its own chain adds
+/// seven further ELF loads; none of that has any bearing on whether
+/// spawn() itself works, so this no longer waits on it.
 #[cfg(target_arch = "x86_64")]
 fn run_spawn_smoke() {
-    if let Err(e) = spawn(b"/bin/spawn_smoke_target\0") {
-        print!("[init] Warning: failed to start spawn smoke: {}\n", e);
+    match spawn(b"/bin/spawn_smoke_target\0") {
+        Ok(child_pid) => {
+            let mut status: i32 = 0;
+            let _ = waitpid(child_pid.raw() as i32, &mut status as *mut i32, 0);
+            let exit_code = (status >> 8) & 0xFF;
+            print!("[init] spawn smoke: exited (code {})\n", exit_code);
+        }
+        Err(e) => {
+            print!("[init] Warning: failed to start spawn smoke: {}\n", e);
+        }
     }
 }
 

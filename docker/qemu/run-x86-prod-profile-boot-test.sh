@@ -410,17 +410,21 @@ RING3_SYSCALL_LITERAL='RING3_SYSCALL: First syscall from userspace'
 # Tracked separately as #722; not folded into this gate.
 #
 # Instead, spawn()'s end-to-end path (create + exec + run + exit + reap) is
-# proven independently via a dedicated, minimal spawned child: init spawns
-# /bin/true (busybox's zero-exit applet, already on every ext2 image this
-# project builds) fire-and-forget before start_bsshd(), and the ordinary
-# `waitpid(-1, ...)` reap loop at the end of main() -- completely
-# unmodified by #713 -- is what reports its exit:
-#   [init] Process <pid> exited (code 0)
-# This is a stronger signal than a bare "spawn returned Ok" would be: it
-# requires the child to have actually been scheduled, executed its ELF
-# (busybox dispatching to the `true` applet via argv[0]), exited, and been
-# reaped through the completely ordinary process-exit/waitpid path -- not a
-# code path special-cased for the smoke test.
+# proven independently via a dedicated, minimal spawned child:
+# run_spawn_smoke() (userspace/programs/src/init.rs) spawns
+# /bin/spawn_smoke_target (a tiny userspace binary that just exits 0)
+# before start_bsshd(), waits on it directly, and prints:
+#   [init] spawn smoke: exited (code 0)
+# This deliberately waits on the child directly rather than leaving it for
+# the ordinary end-of-main() reap loop: that loop does not run until AFTER
+# run_boot_script() returns, and run_boot_script()'s own chain (loading
+# /bin/bsh, itself larger than anything loaded earlier in boot, then bsh's
+# own /etc/init.js issuing seven further spawns) can take considerably
+# longer under TCG emulation than this gate's timing budget -- entirely
+# unrelated to whether spawn() itself works. Waiting directly proves the
+# same thing (create + exec + run + exit + reap, not just "spawn returned
+# Ok") without depending on the boot-script chain's own completion time,
+# which stays out of scope per #722.
 #
 # INIT_BSSHD_WARNING_LITERAL, BSSHD_STARTED_LITERAL, BSSHD_LISTENING_LITERAL
 # and INIT_SPAWN_SMOKE_REAP_LITERAL together are the actual survival pins
@@ -435,7 +439,7 @@ INIT_BSSHD_WARNING_LITERAL='[init] Warning: failed to start bsshd'
 # new literals are the actual survival/execution evidence in its place.
 BSSHD_STARTED_LITERAL='[init] bsshd started (PID'
 BSSHD_LISTENING_LITERAL='bsshd: listening'
-INIT_SPAWN_SMOKE_REAP_LITERAL='exited (code 0)'
+INIT_SPAWN_SMOKE_REAP_LITERAL='[init] spawn smoke: exited (code 0)'
 # #720 — x86 user-stack VA bump allocator never reclaims (spawn-heavy
 # exhaustion after ~240 creations).
 # #721 — x86 exec() syscall is ENOSYS in the zero-feature production build
