@@ -1095,22 +1095,40 @@ pub fn can_schedule(saved_cs: u64) -> bool {
     //
     // This check deliberately recognizes BlockedOnTimer (the variant #673's
     // starvation actually needs -- nanosleep()) but NOT BlockedOnIO (#673
-    // review, M5, narrow fix chosen over widening both). Unlike the other
-    // four variants here, BlockedOnIO bypasses `current_preempt == 0` below
-    // unconditionally, and #673's own production init block (see
-    // `launch_x86_production_init()`'s caller in main.rs) now holds a
-    // `preempt_disable()` brake across the disk-backed ext2 read that loads
-    // `/sbin/init` -- a read that goes through the exact virtio-blk
-    // `prepare_to_wait(BlockedOnIO)` busy-wait this variant names
-    // (drivers/virtio/block.rs). Recognizing BlockedOnIO here would let a
-    // timer interrupt switch away from the boot thread mid-read, inside the
-    // window that brake exists to protect -- the documented, still-open gap
-    // between preempt_count and scheduling admission during a boot-thread
-    // disk-completion wait (#666, #508). Leaving BlockedOnIO out of this
-    // check does not reopen anything: it was never recognized here before
-    // #673 either. If a future device-wait starvation needs it recognized
-    // too, that is a #666/#508 fix in its own right, not a side effect of
-    // this one.
+    // review, M5, narrow fix chosen over widening both). The property that
+    // makes the other four variants (Blocked, BlockedOnSignal,
+    // BlockedOnChildExit, Terminated) unconditionally safe to recognize here
+    // is that they all feed the SAME `current_thread_blocked_or_terminated`
+    // term below, which is OR'd ahead of every `current_preempt == 0` guard
+    // in `result` -- so all five variants, were BlockedOnIO added, would
+    // bypass that guard identically; none is special-cased relative to the
+    // others by this expression's structure (#673 review, MA1: an earlier
+    // version of this comment claimed BlockedOnIO alone bypassed the guard,
+    // which the expression itself disproves).
+    //
+    // The real reason BlockedOnIO stays out is narrower: it is the ONLY one
+    // of the five states the boot thread can hold while #673's own
+    // production-init brake is up (`launch_x86_production_init()`'s caller
+    // in main.rs holds `preempt_disable()` across the disk-backed ext2 read
+    // that loads `/sbin/init`) -- the boot thread does not nanosleep, wait
+    // on a child, or receive a signal during that read. Today the one path
+    // that sets BlockedOnIO for that read
+    // (`Completion::wait_timeout_uninterruptible()`, drivers/virtio/block.rs
+    // -> task/completion.rs) already calls `preempt_enable()` of its own
+    // accord before setting the state and restores the brake afterward, so
+    // recognizing it here would not currently defeat that specific brake --
+    // but other BlockedOnIO producers on x86 (the WaitQueueHead-based
+    // `prepare_to_wait(BlockedOnIO)` call sites in
+    // drivers/virtio/{block,block_mmio,sound,sound_mmio,gpu_pci}.rs and
+    // syscall/graphics.rs) make no such promise, and nothing here proves
+    // every future BlockedOnIO producer will. Recognizing it unconditionally
+    // would trade a proof for an observation. Leaving it out does not reopen
+    // anything: it was never recognized here before #673 either. This is the
+    // documented, still-open gap between preempt_count and scheduling
+    // admission during a boot-thread disk-completion wait (#666, #508); if a
+    // future device-wait starvation needs BlockedOnIO recognized here too,
+    // that is a #666/#508 fix in its own right (establishing the invariant
+    // across every producer first), not a side effect of this one.
     // When a thread blocks, it enters an HLT loop waiting for an interrupt.
     // When a thread terminates, it sets need_resched and expects immediate switch.
     // The timer interrupt should be able to switch to another thread.
