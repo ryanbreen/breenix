@@ -122,6 +122,8 @@ fn main() {
     run_trace_diag_probe_if_enabled();
     #[cfg(target_arch = "x86_64")]
     run_spawn_smoke();
+    #[cfg(target_arch = "x86_64")]
+    run_tty_oracle();
     start_bsshd();
     run_boot_script();
     #[cfg(target_arch = "aarch64")]
@@ -517,6 +519,34 @@ fn run_spawn_smoke() {
         }
         Err(e) => {
             print!("[init] Warning: failed to start spawn smoke: {}\n", e);
+        }
+    }
+}
+
+/// Run the green-program TTY oracle (x86 port). Identical body to the
+/// aarch64 `run_tty_oracle()` above (aarch64-gated) -- setsid/ioctl/PTY/
+/// termios/fork are all production-safe on x86 already, so the launcher
+/// itself needs no divergent behavior, only the arch gate. See
+/// `tty_oracle.rs`'s own #721 comment for the one arm excluded on x86.
+/// Placed after `run_spawn_smoke()` and strictly before `start_bsshd()`, so
+/// the oracle stays fully independent of init's boot-script chain (#722)
+/// and the production processes that already run sequentially before it
+/// never overlap with bsshd's own ext2 reads (#728).
+#[cfg(target_arch = "x86_64")]
+fn run_tty_oracle() {
+    match spawn(b"/bin/tty_oracle\0") {
+        Ok(child_pid) => {
+            let mut status = 0i32;
+            let _ = waitpid(child_pid.raw() as i32, &mut status as *mut i32, 0);
+            let exit_code = (status >> 8) & 0xFF;
+            print!(
+                "[init] tty_oracle exited pid={} code={}\n",
+                child_pid.raw(),
+                exit_code
+            );
+        }
+        Err(error) => {
+            print!("[init] Warning: failed to start tty_oracle: {}\n", error);
         }
     }
 }
