@@ -12,12 +12,14 @@
 //! ✗ Actual elapsed time measurement
 //!
 //! This is by design - the test validates the MATH is correct, not that
-//! time actually advances. Most profiles still reach this call before timer
-//! interrupts have started; x86 production (#673) is the exception --
-//! interrupts are already hardware-enabled here (see
-//! `test_timer_resolution()`'s own doc below, #673 review m1/mi4, for how
-//! the check tolerates a genuine tick landing between its two reads in that
-//! profile; #673 review R3-m1 corrected this module doc to match).
+//! time actually advances. Every x86 profile except `disable_x86_prod_init`
+//! reaches this call with interrupts already hardware-enabled: testing
+//! since `62af9d13`/#554, interactive at main.rs:1102, production at
+//! main.rs:1586. What #673 changed is production, not the general case
+//! (see `test_timer_resolution()`'s own doc below, #673 review m1/mi4, for
+//! how the check tolerates a genuine tick landing between its two reads;
+//! #673 review R4-B1 corrected this module doc, which R3-m1's repair had
+//! inverted).
 
 /// Validates timer resolution and correctness
 ///
@@ -26,10 +28,12 @@
 ///
 /// This test used to run only in profiles where interrupts were still
 /// disabled at this point, so it could compare two live reads for exact
-/// equality. x86 production (#673) is the first profile to reach this call
-/// site with interrupts already flowing and a real second thread running, so
-/// ticks may legitimately advance between reads -- the check below brackets
-/// the read instead of assuming nothing happened in between.
+/// equality. Interrupts are already flowing by this point in every x86
+/// profile except `disable_x86_prod_init` (testing since `62af9d13`/#554,
+/// interactive at main.rs:1102, production at main.rs:1586, #673); what
+/// #673 changed is production, not the general case. Ticks may legitimately
+/// advance between reads -- the check below brackets the read instead of
+/// assuming nothing happened in between.
 #[allow(dead_code)] // Used in kernel_main_continue (conditionally compiled)
 pub fn test_timer_resolution() {
     log::info!("=== TIMER RESOLUTION TEST ===");
@@ -37,15 +41,15 @@ pub fn test_timer_resolution() {
     // Bracket the read rather than comparing two independent live reads for
     // exact equality. This test used to assume interrupts could not possibly
     // be enabled yet, so ticks_before and get_monotonic_time()'s own internal
-    // tick read could never diverge -- true in every profile that reached
-    // this point before #673, false the moment a profile keeps interrupts
-    // flowing (and a real second thread running) well before this point, as
-    // x86 production now legitimately does. A genuine timer tick landing
-    // between the two reads is not a bug; comparing them for exact equality
-    // treated it as one and panicked on its own race. The bracket still
-    // proves the 1-tick=1-ms conversion has no scaling or drift -- ms must
-    // fall within the observed tick range -- without requiring the
-    // impossible "nothing happened in between."
+    // tick read could never diverge -- that assumption was already false in
+    // the testing profile before #673 existed (since `62af9d13`/#554) and in
+    // interactive (main.rs:1102); #673 made it false in production too
+    // (main.rs:1586), the one profile where it had still held. A genuine
+    // timer tick landing between the two reads is not a bug; comparing them
+    // for exact equality treated it as one and panicked on its own race. The
+    // bracket still proves the 1-tick=1-ms conversion has no scaling or
+    // drift -- ms must fall within the observed tick range -- without
+    // requiring the impossible "nothing happened in between."
     let ticks_before = crate::time::get_ticks();
     let ms = crate::time::get_monotonic_time();
     let ticks_after = crate::time::get_ticks();

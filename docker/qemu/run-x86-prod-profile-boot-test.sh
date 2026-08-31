@@ -334,14 +334,18 @@ PREEMPT_CENSUS_PROD_LITERAL='[PREEMPT_BRACKET_CENSUS:underflow=0]'
 PROD_BRACKET_RELEASE_PREFIX='[PROD_BRACKET_RELEASE_CENSUS:'
 PROD_BRACKET_RELEASE_PROD_LITERAL='[PROD_BRACKET_RELEASE_CENSUS:underflow=0]'
 
-# #673 review, MA6/R3-m4: test_timer_resolution() (kernel/src/time_test.rs)
+# #673 review, MA6/R3-m4/R4-m1: test_timer_resolution() (kernel/src/time_test.rs)
 # demotes a >1-tick window between its two reads from a panic to a counted,
 # non-fatal log line (rare host scheduling jitter under a TCG-emulated PIT
 # or a loaded CI runner, not by itself proof of a kernel defect -- see that
 # function's own comment). Demoting it also made a genuine widening of the
 # tolerance invisible to this gate; pin it at zero so a real drift (the
 # window growing on every boot, not just an occasional stall) still reddens
-# here rather than passing silently.
+# here rather than passing silently. The implemented check cannot itself
+# distinguish the two: a single occasional stall also reds this gate at
+# -eq 0, same as genuine drift would -- a red here is attributable to MA6's
+# documented host-jitter tolerance until shown otherwise; adjudicate against
+# the observed-values count before re-running.
 TIMER_RESOLUTION_WINDOW_EXCEEDED_PREFIX='[TIMER_RESOLUTION_WINDOW_EXCEEDED:'
 
 # ---------------------------------------------------------------------------
@@ -474,10 +478,10 @@ trap 'report_gate_failure "$LINENO" "$BASH_COMMAND"' ERR
 # round 3; corrected #673 review R3-MA2/R3-m3, which caught this comment
 # repeating round 2's figure as if it were round 3's own) observed no such
 # collision at that round's landed bytes. Re-measured at round 4's landed
-# bytes: [PROVE-R4-FILL: production-profile boot tally + collision count,
-# #673 fix round 4 -- the round-4 prove slot fills this bracket in with the
-# measured tally before this branch lands]. This is a disclosed,
-# currently-inert sharp edge, not a silently mislabeled one. grep exits 1
+# bytes (`4aee31ea`): 12/12 production-profile boots green, 0 same-line
+# marker/prompt collisions (#673 fix round 4, `r4-prove.md` leg 1). This is
+# a disclosed sharp edge that has been checked, not a silently mislabeled
+# one. grep exits 1
 # when nothing matches, which under `set -e`/`pipefail` would abort before
 # the assertion that wants to read the zero, so the status is swallowed
 # inside the group and awk -- which always exits 0 -- produces the number.
