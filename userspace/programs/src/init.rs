@@ -475,16 +475,18 @@ fn start_bounce() {
 /// execs, and lets init reap a child on x86 -- independent of
 /// run_boot_script()'s own bsh/init.js chain, which drags in seven further,
 /// previously-unaudited x86 spawns and is deliberately out of scope here
-/// (see #722). `/bin/true` is busybox's own zero-exit applet, already
-/// present on every ext2 image this project builds
-/// (scripts/create_ext2_disk.sh's busybox coreutils hardlinks). Spawned
-/// fire-and-forget: this function does not wait on it directly, so the
-/// ordinary `waitpid(-1, ...)` reap loop at the end of main() is what
-/// prints its exit -- proving the full path (spawn -> exec -> run -> exit
-/// -> reap) rather than just the spawn call succeeding.
+/// (see #722). /bin/spawn_smoke_target is a dedicated, always-built
+/// userspace binary (userspace/programs/src/spawn_smoke_target.rs) that
+/// exits 0 unconditionally -- deliberately NOT busybox's /bin/true, which
+/// depends on a musl-cross toolchain that isn't guaranteed present in
+/// every build environment this gate runs in. Spawned fire-and-forget:
+/// this function does not wait on it directly, so the ordinary
+/// `waitpid(-1, ...)` reap loop at the end of main() is what prints its
+/// exit -- proving the full path (spawn -> exec -> run -> exit -> reap)
+/// rather than just the spawn call succeeding.
 #[cfg(target_arch = "x86_64")]
 fn run_spawn_smoke() {
-    if let Err(e) = spawn(b"/bin/true\0") {
+    if let Err(e) = spawn(b"/bin/spawn_smoke_target\0") {
         print!("[init] Warning: failed to start spawn smoke: {}\n", e);
     }
 }

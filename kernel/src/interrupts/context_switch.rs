@@ -1439,10 +1439,36 @@ fn setup_first_userspace_entry(
             // Set instruction pointer to entry point
             frame.instruction_pointer = VirtAddr::new(entry_rip);
 
-            // Set stack pointer to user stack with proper alignment
-            // Ensure (rsp % 16) == 8 at entry for SysV AMD64 ABI
-            let aligned_rsp = (user_rsp & !0xF) | 0x8;
-            frame.stack_pointer = VirtAddr::new(aligned_rsp);
+            // Set stack pointer to the user stack EXACTLY as process creation
+            // computed it -- do NOT realign. Breenix's userspace entry point
+            // (_start, libs/libbreenix/src/runtime.rs) is reached via IRETQ
+            // directly, not a `call`: there is no implicit return-address
+            // push for a "(rsp % 16) == 8 at entry" C-ABI-call convention to
+            // compensate for. _start's naked asm reads argc directly from
+            // [rsp] (`mov rdi, rsp`) before it does anything else, and its
+            // own `and rsp, -16` re-aligns ONLY for its own internal `call`
+            // to runtime_entry, entirely after that read. The kernel must
+            // hand user_rsp over unmodified: 16-byte aligned, pointing at
+            // argc, exactly as ProcessManager::setup_argv_on_stack computed
+            // it (or, for a process created with no argv, exactly as
+            // create_main_thread's `stack_top - 16` computed it, which is
+            // also already 16-byte aligned).
+            //
+            // A previous version of this line forcibly misaligned RSP by 8
+            // bytes here ("Ensure (rsp % 16) == 8"), silently corrupting the
+            // exact byte offset _start reads argc from for every
+            // argv-carrying process. It was never visible before #713
+            // because every earlier x86 process-creation path left the
+            // stack region above RSP as fresh, zeroed memory with no real
+            // argc/argv written there at all -- reading "argc" 8 bytes off
+            // from a run of zero bytes still read as zero either way.
+            // #713's spawn() is the first x86 caller to write real,
+            // non-zero argc/argv data there, which is what made the
+            // corruption visible: bsshd panicked on first entry with
+            // "capacity overflow" in std::sys::args::unix::args(), reading
+            // a garbage argc that was actually a misaligned read spanning
+            // part of argc and part of argv[0]'s pointer bytes.
+            frame.stack_pointer = VirtAddr::new(user_rsp);
 
             // Set code segment to user code (Ring 3)
             frame.code_segment = crate::gdt::user_code_selector();
