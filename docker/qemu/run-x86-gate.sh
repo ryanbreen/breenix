@@ -168,7 +168,19 @@ for i in $(seq 1 "$COUNT"); do
   # reading qemu-uefi.rs alone. The honest expected floor is therefore >=1.
   census_ok=true
   census_reason=""
-  expected_virtio_block=$(grep -c -- 'virtio-blk-pci,drive=' "$REPO_DIR/src/bin/qemu-uefi.rs")
+  # Anchored to the emitted -device arg form (leading whitespace then the
+  # opening quote), not a bare substring match: an unanchored grep for the
+  # literal text can equally match a future comment or doc string that
+  # merely mentions the flag, permanently inflating the count and
+  # permanently reddening this gate (review finding F9 -- the same
+  # self-referential-vacuity class the aarch64 leg and run-x86-boot-tests.sh
+  # each hit once already, hardened here before it was hit a third time).
+  # All three sites are conditional on BREENIX_QEMU_STORAGE: this gate never
+  # sets it, so storage_mode defaults to "virtio" and all three attach --
+  # BREENIX_QEMU_STORAGE=ide (used elsewhere, e.g. CI's OVMF-discovery
+  # profile) would attach zero and make this expected count wrong for that
+  # profile; it is not read by this script today.
+  expected_virtio_block=$(grep -cE -- '^[[:space:]]*"virtio-blk-pci,drive=' "$REPO_DIR/src/bin/qemu-uefi.rs")
   pci_census_line=$(grep -h -E 'PCI: Enumeration complete\. Found [0-9]+ devices \([0-9]+ VirtIO block, [0-9]+ network\)' \
       "$OUTDIR"/serial_*.log 2>/dev/null | tail -1)
   if [ -z "$pci_census_line" ]; then
@@ -191,26 +203,53 @@ for i in $(seq 1 "$COUNT"); do
     fi
   fi
 
-  if [ "$census_ok" != true ]; then
-    echo "  Test $i: FAIL ($census_reason)"
-    FAIL=$((FAIL+1))
-  elif [ "$MODE" = "full" ]; then
+  # The census is an ADDITIONAL requirement, not a short-circuit (review
+  # finding B5). In full mode, x86-gate-verdict.sh runs UNCONDITIONALLY --
+  # even when census_ok is already false -- because that script runs the
+  # strand census FIRST (scripts/x86-strand-census.sh, its own comment:
+  # "so that a boot which died because a thread was silenced is named by
+  # its first cause rather than by its terminal symptom"). #702's own
+  # filing leans on that census's threads_saved_blocked=0 reading to tell
+  # a silent PCI-enumeration hang apart from the strand family (#695). A
+  # short-circuit that skips the verdict script on census failure removes
+  # that datum from exactly the gate #702 lives on, and mischaracterizes
+  # every pre-enumeration failure (early panic, OVMF failure, early
+  # timeout) as a drivers-layer reason alone. Both signals print on every
+  # boot now, pass or fail.
+  if [ "$MODE" = "full" ]; then
     # EXPECTED_EXITS is mandatory for the verdict script; 10 is the count for
     # this profile's userspace program set.
     if EXPECTED_EXITS="${BREENIX_EXPECTED_EXITS:-10}" \
         "$REPO_DIR/scripts/x86-gate-verdict.sh" \
         "$OUTDIR/serial_user.log" "$OUTDIR/serial_kernel.log"; then
-      echo "  Test $i: PASS"
-      PASS=$((PASS+1))
+      verdict_ok=true
+      verdict_reason=""
     else
-      echo "  Test $i: FAIL (see $OUTDIR/serial_kernel.log)"
-      FAIL=$((FAIL+1))
+      verdict_ok=false
+      verdict_reason="see $OUTDIR/serial_kernel.log"
     fi
   elif grep -q "$MARKER_GREP" "$OUTDIR/serial_kernel.log" "$OUTDIR/serial_user.log" 2>/dev/null; then
+    verdict_ok=true
+    verdict_reason=""
+  else
+    verdict_ok=false
+    verdict_reason="marker '$MARKER_GREP' not found; see $OUTDIR/serial_kernel.log"
+  fi
+
+  if [ "$census_ok" = true ] && [ "$verdict_ok" = true ]; then
     echo "  Test $i: PASS"
+    echo "  Device census: $pci_census_line"
     PASS=$((PASS+1))
   else
-    echo "  Test $i: FAIL (marker '$MARKER_GREP' not found; see $OUTDIR/serial_kernel.log)"
+    combined_reason="$verdict_reason"
+    if [ "$census_ok" != true ]; then
+      if [ -n "$combined_reason" ]; then
+        combined_reason="$census_reason; $combined_reason"
+      else
+        combined_reason="$census_reason"
+      fi
+    fi
+    echo "  Test $i: FAIL ($combined_reason)"
     FAIL=$((FAIL+1))
   fi
 done
