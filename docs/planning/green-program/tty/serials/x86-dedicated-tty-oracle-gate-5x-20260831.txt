@@ -1,0 +1,418 @@
+Building the shipped x86_64 production kernel profile...
+   Compiling kernel v0.1.0 (/root/breenix/kernel)
+   Compiling breenix v0.1.0 (/root/breenix)
+    Finished `release` profile [optimized] target(s) in 17.59s
+   Compiling kernel v0.1.0 (/root/breenix/kernel)
+   Compiling breenix v0.1.0 (/root/breenix)
+    Finished `release` profile [optimized] target(s) in 15.71s
+     Running `target/release/qemu-uefi`
+[qemu-uefi] Using UEFI image: /root/breenix/target/release/build/breenix-a551e3e76b26baf2/out/breenix-uefi.img (6356992 bytes)
+========================================
+  STD USERSPACE BUILD (Rust std library)
+========================================
+  Architecture: x86_64
+
+[1/3] Building libbreenix-libc (x86_64)...
+  Finished `release` profile [optimized] target(s) in 0.09s
+  libbreenix-libc built successfully
+
+[2/3] Building userspace (x86_64)...
+  Finished `release` profile [optimized] target(s) in 0.11s
+  Userspace build successful
+
+[3/3] Installing std binaries...
+  Installed hello_world.elf (227168 bytes)
+  Installed exec_smoke.elf (178072 bytes)
+  Installed exec_smoke_target.elf (185048 bytes)
+  Installed block_eintr_oracle.elf (190016 bytes)
+  Installed poll_tcp_oracle.elf (195736 bytes)
+  Installed futex_handoff_oracle.elf (178832 bytes)
+  Installed tty_oracle.elf (213824 bytes)
+  Installed syscall_enosys.elf (177536 bytes)
+  Installed clock_gettime_test.elf (184576 bytes)
+  Installed file_read_test.elf (182408 bytes)
+  Installed lseek_test.elf (182520 bytes)
+  Installed fs_write_test.elf (182904 bytes)
+  Installed fs_rename_test.elf (182720 bytes)
+  Installed fs_large_file_test.elf (182616 bytes)
+  Installed fs_directory_test.elf (183168 bytes)
+  Installed fs_link_test.elf (182816 bytes)
+  Installed access_test.elf (177952 bytes)
+  Installed devfs_test.elf (182448 bytes)
+  Installed cwd_test.elf (182632 bytes)
+  Installed getdents_test.elf (184000 bytes)
+  Installed pipe_test.elf (188256 bytes)
+  Installed pipe2_test.elf (188928 bytes)
+  Installed dup_test.elf (189160 bytes)
+  Installed fcntl_test.elf (188752 bytes)
+  Installed poll_test.elf (189032 bytes)
+  Installed select_test.elf (188920 bytes)
+  Installed epoll_test.elf (182840 bytes)
+  Installed nonblock_test.elf (188752 bytes)
+  Installed brk_test.elf (182496 bytes)
+  Installed signal_handler_test.elf (187904 bytes)
+  Installed signal_return_test.elf (188320 bytes)
+  Installed signal_regs_test.elf (188216 bytes)
+  Installed sigaltstack_test.elf (189016 bytes)
+  Installed sigsuspend_test.elf (188872 bytes)
+  Installed pause_test.elf (188368 bytes)
+  Installed tty_test.elf (188096 bytes)
+  Installed session_test.elf (187976 bytes)
+  Installed unix_socket_test.elf (205328 bytes)
+  Installed unix_named_socket_test.elf (195352 bytes)
+  Installed fifo_test.elf (198456 bytes)
+  Installed fork_test.elf (188104 bytes)
+  Installed fork_memory_test.elf (188672 bytes)
+  Installed fork_state_test.elf (189184 bytes)
+  Installed waitpid_test.elf (188152 bytes)
+  Installed exec_argv_test.elf (178216 bytes)
+  Installed cloexec_test.elf (192592 bytes)
+  Installed kill_process_group_test.elf (188488 bytes)
+  Installed sigchld_test.elf (182448 bytes)
+  Installed sigkill_teardown_test.elf (206712 bytes)
+  Installed sigchld_job_test.elf (183440 bytes)
+  Installed ctrl_c_test.elf (187992 bytes)
+  Installed job_control_test.elf (187656 bytes)
+  Installed signal_fork_test.elf (188168 bytes)
+  Installed signal_exec_test.elf (188728 bytes)
+  Installed wnohang_timing_test.elf (182544 bytes)
+  Installed fork_pending_signal_test.elf (187752 bytes)
+  Installed shell_pipe_test.elf (183136 bytes)
+  Installed pipeline_test.elf (191592 bytes)
+  Installed cow_cleanup_test.elf (182544 bytes)
+  Installed cow_sole_owner_test.elf (187016 bytes)
+  Installed cow_stress_test.elf (183008 bytes)
+  Installed cow_readonly_test.elf (182952 bytes)
+  Installed cow_signal_test.elf (188320 bytes)
+  Installed resolution.elf (186928 bytes)
+  Installed init_shell.elf (262608 bytes)
+  Installed argv_test.elf (184344 bytes)
+  Installed job_table_test.elf (192240 bytes)
+  Installed test_mmap.elf (182232 bytes)
+  Installed clonevm_exec_test.elf (184680 bytes)
+  Installed stdin_test.elf (182288 bytes)
+  Installed true_test.elf (182568 bytes)
+  Installed false_test.elf (182568 bytes)
+  Installed echo_argv_test.elf (182480 bytes)
+  Installed mkdir_argv_test.elf (182680 bytes)
+  Installed rm_argv_test.elf (182488 bytes)
+  Installed cp_mv_argv_test.elf (182816 bytes)
+  Installed nonblock_eagain_test.elf (179624 bytes)
+  Installed blocking_recv_test.elf (184024 bytes)
+  Installed tcp_client_test.elf (187632 bytes)
+  Installed wait_stress.elf (195568 bytes)
+  Installed simple_exit.elf (170592 bytes)
+  Installed spawn_smoke_target.elf (170608 bytes)
+  Installed counter.elf (177648 bytes)
+  Installed spinner.elf (177648 bytes)
+  Installed hello_time.elf (177640 bytes)
+  Installed heartbeat.elf (189112 bytes)
+  Installed xhci_counters.elf (183120 bytes)
+  Installed fbinfo_test.elf (183480 bytes)
+  Installed demo.elf (189712 bytes)
+  Installed bounce.elf (275248 bytes)
+  Installed rectangles.elf (197096 bytes)
+  Installed particles.elf (193944 bytes)
+  Installed confetti.elf (189248 bytes)
+  Installed tones.elf (184224 bytes)
+  Installed fart.elf (191704 bytes)
+  Installed http_test.elf (468592 bytes)
+  Installed register_init_test.elf (177104 bytes)
+  Installed head_test.elf (183064 bytes)
+  Installed tail_test.elf (183064 bytes)
+  Installed wc_test.elf (183640 bytes)
+  Installed which_test.elf (182968 bytes)
+  Installed cat_test.elf (183248 bytes)
+  Installed ls_test.elf (183304 bytes)
+  Installed exec_stack_argv_test.elf (183440 bytes)
+  Installed exec_from_ext2_test.elf (188080 bytes)
+  Installed pipe_fork_test.elf (188832 bytes)
+  Installed pipe_concurrent_test.elf (188728 bytes)
+  Installed fs_block_alloc_test.elf (188624 bytes)
+  Installed cow_oom_test.elf (182512 bytes)
+  Installed signal_test.elf (187872 bytes)
+  Installed alarm_test.elf (182768 bytes)
+  Installed itimer_test.elf (183208 bytes)
+  Installed timer_test.elf (182160 bytes)
+  Installed sleep_debug_test.elf (188600 bytes)
+  Installed pipe_refcount_test.elf (195864 bytes)
+  Installed udp_socket_test.elf (193408 bytes)
+  Installed tcp_socket_test.elf (202296 bytes)
+  Installed tcp_blocking_test.elf (203440 bytes)
+  Installed concurrent_recv_stress.elf (188952 bytes)
+  Installed dns_test.elf (195248 bytes)
+  Installed net_test.elf (191592 bytes)
+  Installed http_fetch_test.elf (464440 bytes)
+  Installed loopback_wake_test.elf (185696 bytes)
+  Installed syscall_diagnostic_test.elf (170872 bytes)
+  Installed pty_test.elf (183016 bytes)
+  Installed signal_exec_check.elf (177888 bytes)
+  Installed bsh.elf (579456 bytes)
+  Installed bwm.elf (331504 bytes)
+  Installed btop.elf (184208 bytes)
+  Installed burl.elf (483376 bytes)
+  Installed init.elf (187336 bytes)
+  Installed telnetd.elf (184080 bytes)
+  Installed blogd.elf (181968 bytes)
+  Installed btrace.elf (194840 bytes)
+  Installed bless.elf (185648 bytes)
+  Installed bcheck.elf (299352 bytes)
+  Installed biconkit.elf (248272 bytes)
+  Installed guskit.elf (391600 bytes)
+  Installed bterm.elf (338712 bytes)
+  Installed blog.elf (331192 bytes)
+  Installed bfontpicker.elf (346352 bytes)
+  Installed blauncher.elf (325464 bytes)
+  Installed bsshd.elf (310168 bytes)
+  Installed bssh.elf (322496 bytes)
+
+========================================
+  STD BUILD COMPLETE (x86_64)
+  Installed: 144 binaries
+========================================
+Creating ext2 disk image...
+  Arch: x86_64
+  Output: /root/breenix/target/ext2.img
+  Size: 256MB
+  busybox.elf not found, attempting to build...
+Error: x86_64-linux-musl-gcc not found in PATH
+
+Install with:
+  brew tap filosottile/musl-cross
+  brew install musl-cross
+  WARNING: BusyBox build failed (see build-busybox.sh for prerequisites)
+  WARNING: busybox.elf not found, skipping coreutils
+Installing other binaries...
+  Installed 42 binaries in /bin
+  Installed 3 binaries in /sbin
+  Installed 0 C binaries in /usr/local/cbin
+  Installed 99 test binaries in /usr/local/test/bin
+  Installed 29 fonts in /usr/share/fonts
+  Created /etc/fonts.conf
+  Created /etc/hotkeys.conf
+  Created /etc/init.js
+
+ext2 filesystem contents:
+total 10124
+drwxr-xr-x  2 root root   4096 Aug 31 19:31 .
+drwxr-xr-x 12 root root   4096 Aug 31 19:31 ..
+-rwxr-xr-x  1 root root 299352 Aug 31 19:31 bcheck
+-rwxr-xr-x  1 root root 346352 Aug 31 19:31 bfontpicker
+-rwxr-xr-x  1 root root 248272 Aug 31 19:31 biconkit
+-rwxr-xr-x  1 root root 325464 Aug 31 19:31 blauncher
+-rwxr-xr-x  1 root root 185648 Aug 31 19:31 bless
+-rwxr-xr-x  1 root root 190016 Aug 31 19:31 block_eintr_oracle
+-rwxr-xr-x  1 root root 331192 Aug 31 19:31 blog
+-rwxr-xr-x  1 root root 275248 Aug 31 19:31 bounce
+-rwxr-xr-x  1 root root 579456 Aug 31 19:31 bsh
+-rwxr-xr-x  1 root root 322496 Aug 31 19:31 bssh
+-rwxr-xr-x  1 root root 310168 Aug 31 19:31 bsshd
+-rwxr-xr-x  1 root root 338712 Aug 31 19:31 bterm
+-rwxr-xr-x  1 root root 184208 Aug 31 19:31 btop
+-rwxr-xr-x  1 root root 194840 Aug 31 19:31 btrace
+-rwxr-xr-x  1 root root 483376 Aug 31 19:31 burl
+-rwxr-xr-x  1 root root 331504 Aug 31 19:31 bwm
+-rwxr-xr-x  1 root root 188952 Aug 31 19:31 concurrent_recv_stress
+-rwxr-xr-x  1 root root 189248 Aug 31 19:31 confetti
+-rwxr-xr-x  1 root root 177648 Aug 31 19:31 counter
+-rwxr-xr-x  1 root root 189712 Aug 31 19:31 demo
+-rwxr-xr-x  1 root root 178072 Aug 31 19:31 exec_smoke
+-rwxr-xr-x  1 root root 185048 Aug 31 19:31 exec_smoke_target
+-rwxr-xr-x  1 root root 191704 Aug 31 19:31 fart
+-rwxr-xr-x  1 root root 178832 Aug 31 19:31 futex_handoff_oracle
+-rwxr-xr-x  1 root root 391600 Aug 31 19:31 guskit
+-rwxr-xr-x  1 root root 189112 Aug 31 19:31 heartbeat
+-rwxr-xr-x  1 root root 177640 Aug 31 19:31 hello_time
+-rwxr-xr-x  1 root root 227168 Aug 31 19:31 hello_world
+-rwxr-xr-x  1 root root 262608 Aug 31 19:31 init_shell
+-rwxr-xr-x  1 root root 193944 Aug 31 19:31 particles
+-rwxr-xr-x  1 root root 195736 Aug 31 19:31 poll_tcp_oracle
+-rwxr-xr-x  1 root root 197096 Aug 31 19:31 rectangles
+-rwxr-xr-x  1 root root 186928 Aug 31 19:31 resolution
+-rwxr-xr-x  1 root root 177888 Aug 31 19:31 signal_exec_check
+-rwxr-xr-x  1 root root 170592 Aug 31 19:31 simple_exit
+-rwxr-xr-x  1 root root 170608 Aug 31 19:31 spawn_smoke_target
+-rwxr-xr-x  1 root root 177648 Aug 31 19:31 spinner
+-rwxr-xr-x  1 root root 177536 Aug 31 19:31 syscall_enosys
+-rwxr-xr-x  1 root root 184224 Aug 31 19:31 tones
+-rwxr-xr-x  1 root root 213824 Aug 31 19:31 tty_oracle
+-rwxr-xr-x  1 root root 195568 Aug 31 19:31 wait_stress
+-rwxr-xr-x  1 root root 183120 Aug 31 19:31 xhci_counters
+  Test binaries in /usr/local/test/bin:
+total 19156
+drwxr-xr-x 2 root root   4096 Aug 31 19:31 .
+drwxr-xr-x 3 root root   4096 Aug 31 19:31 ..
+-rwxr-xr-x 1 root root 177952 Aug 31 19:31 access_test
+-rwxr-xr-x 1 root root 182768 Aug 31 19:31 alarm_test
+-rwxr-xr-x 1 root root 184344 Aug 31 19:31 argv_test
+-rwxr-xr-x 1 root root 184024 Aug 31 19:31 blocking_recv_test
+-rwxr-xr-x 1 root root 182496 Aug 31 19:31 brk_test
+-rwxr-xr-x 1 root root 183248 Aug 31 19:31 cat_test
+-rwxr-xr-x 1 root root 184576 Aug 31 19:31 clock_gettime_test
+-rwxr-xr-x 1 root root 192592 Aug 31 19:31 cloexec_test
+-rwxr-xr-x 1 root root 184680 Aug 31 19:31 clonevm_exec_test
+-rwxr-xr-x 1 root root 182544 Aug 31 19:31 cow_cleanup_test
+-rwxr-xr-x 1 root root 182512 Aug 31 19:31 cow_oom_test
+-rwxr-xr-x 1 root root 182952 Aug 31 19:31 cow_readonly_test
+-rwxr-xr-x 1 root root 188320 Aug 31 19:31 cow_signal_test
+-rwxr-xr-x 1 root root 187016 Aug 31 19:31 cow_sole_owner_test
+-rwxr-xr-x 1 root root 183008 Aug 31 19:31 cow_stress_test
+-rwxr-xr-x 1 root root 182816 Aug 31 19:31 cp_mv_argv_test
+-rwxr-xr-x 1 root root 187992 Aug 31 19:31 ctrl_c_test
+-rwxr-xr-x 1 root root 182632 Aug 31 19:31 cwd_test
+-rwxr-xr-x 1 root root 182448 Aug 31 19:31 devfs_test
+-rwxr-xr-x 1 root root 195248 Aug 31 19:31 dns_test
+-rwxr-xr-x 1 root root 189160 Aug 31 19:31 dup_test
+-rwxr-xr-x 1 root root 182480 Aug 31 19:31 echo_argv_test
+-rwxr-xr-x 1 root root 182840 Aug 31 19:31 epoll_test
+-rwxr-xr-x 1 root root 178216 Aug 31 19:31 exec_argv_test
+-rwxr-xr-x 1 root root 188080 Aug 31 19:31 exec_from_ext2_test
+-rwxr-xr-x 1 root root 183440 Aug 31 19:31 exec_stack_argv_test
+-rwxr-xr-x 1 root root 182568 Aug 31 19:31 false_test
+-rwxr-xr-x 1 root root 183480 Aug 31 19:31 fbinfo_test
+-rwxr-xr-x 1 root root 188752 Aug 31 19:31 fcntl_test
+-rwxr-xr-x 1 root root 198456 Aug 31 19:31 fifo_test
+-rwxr-xr-x 1 root root 182408 Aug 31 19:31 file_read_test
+-rwxr-xr-x 1 root root 188672 Aug 31 19:31 fork_memory_test
+-rwxr-xr-x 1 root root 187752 Aug 31 19:31 fork_pending_signal_test
+-rwxr-xr-x 1 root root 189184 Aug 31 19:31 fork_state_test
+-rwxr-xr-x 1 root root 188104 Aug 31 19:31 fork_test
+-rwxr-xr-x 1 root root 188624 Aug 31 19:31 fs_block_alloc_test
+-rwxr-xr-x 1 root root 183168 Aug 31 19:31 fs_directory_test
+-rwxr-xr-x 1 root root 182616 Aug 31 19:31 fs_large_file_test
+-rwxr-xr-x 1 root root 182816 Aug 31 19:31 fs_link_test
+-rwxr-xr-x 1 root root 182720 Aug 31 19:31 fs_rename_test
+-rwxr-xr-x 1 root root 182904 Aug 31 19:31 fs_write_test
+-rwxr-xr-x 1 root root 184000 Aug 31 19:31 getdents_test
+-rwxr-xr-x 1 root root 183064 Aug 31 19:31 head_test
+-rwxr-xr-x 1 root root 464440 Aug 31 19:31 http_fetch_test
+-rwxr-xr-x 1 root root 468592 Aug 31 19:31 http_test
+-rwxr-xr-x 1 root root 183208 Aug 31 19:31 itimer_test
+-rwxr-xr-x 1 root root 187656 Aug 31 19:31 job_control_test
+-rwxr-xr-x 1 root root 192240 Aug 31 19:31 job_table_test
+-rwxr-xr-x 1 root root 188488 Aug 31 19:31 kill_process_group_test
+-rwxr-xr-x 1 root root 185696 Aug 31 19:31 loopback_wake_test
+-rwxr-xr-x 1 root root 183304 Aug 31 19:31 ls_test
+-rwxr-xr-x 1 root root 182520 Aug 31 19:31 lseek_test
+-rwxr-xr-x 1 root root 182680 Aug 31 19:31 mkdir_argv_test
+-rwxr-xr-x 1 root root 191592 Aug 31 19:31 net_test
+-rwxr-xr-x 1 root root 179624 Aug 31 19:31 nonblock_eagain_test
+-rwxr-xr-x 1 root root 188752 Aug 31 19:31 nonblock_test
+-rwxr-xr-x 1 root root 188368 Aug 31 19:31 pause_test
+-rwxr-xr-x 1 root root 188928 Aug 31 19:31 pipe2_test
+-rwxr-xr-x 1 root root 188728 Aug 31 19:31 pipe_concurrent_test
+-rwxr-xr-x 1 root root 188832 Aug 31 19:31 pipe_fork_test
+-rwxr-xr-x 1 root root 195864 Aug 31 19:31 pipe_refcount_test
+-rwxr-xr-x 1 root root 188256 Aug 31 19:31 pipe_test
+-rwxr-xr-x 1 root root 191592 Aug 31 19:31 pipeline_test
+-rwxr-xr-x 1 root root 189032 Aug 31 19:31 poll_test
+-rwxr-xr-x 1 root root 183016 Aug 31 19:31 pty_test
+-rwxr-xr-x 1 root root 177104 Aug 31 19:31 register_init_test
+-rwxr-xr-x 1 root root 182488 Aug 31 19:31 rm_argv_test
+-rwxr-xr-x 1 root root 188920 Aug 31 19:31 select_test
+-rwxr-xr-x 1 root root 187976 Aug 31 19:31 session_test
+-rwxr-xr-x 1 root root 183136 Aug 31 19:31 shell_pipe_test
+-rwxr-xr-x 1 root root 189016 Aug 31 19:31 sigaltstack_test
+-rwxr-xr-x 1 root root 183440 Aug 31 19:31 sigchld_job_test
+-rwxr-xr-x 1 root root 182448 Aug 31 19:31 sigchld_test
+-rwxr-xr-x 1 root root 206712 Aug 31 19:31 sigkill_teardown_test
+-rwxr-xr-x 1 root root 188728 Aug 31 19:31 signal_exec_test
+-rwxr-xr-x 1 root root 188168 Aug 31 19:31 signal_fork_test
+-rwxr-xr-x 1 root root 187904 Aug 31 19:31 signal_handler_test
+-rwxr-xr-x 1 root root 188216 Aug 31 19:31 signal_regs_test
+-rwxr-xr-x 1 root root 188320 Aug 31 19:31 signal_return_test
+-rwxr-xr-x 1 root root 187872 Aug 31 19:31 signal_test
+-rwxr-xr-x 1 root root 188872 Aug 31 19:31 sigsuspend_test
+-rwxr-xr-x 1 root root 188600 Aug 31 19:31 sleep_debug_test
+-rwxr-xr-x 1 root root 182288 Aug 31 19:31 stdin_test
+-rwxr-xr-x 1 root root 170872 Aug 31 19:31 syscall_diagnostic_test
+-rwxr-xr-x 1 root root 183064 Aug 31 19:31 tail_test
+-rwxr-xr-x 1 root root 203440 Aug 31 19:31 tcp_blocking_test
+-rwxr-xr-x 1 root root 187632 Aug 31 19:31 tcp_client_test
+-rwxr-xr-x 1 root root 202296 Aug 31 19:31 tcp_socket_test
+-rwxr-xr-x 1 root root 182232 Aug 31 19:31 test_mmap
+-rwxr-xr-x 1 root root 182160 Aug 31 19:31 timer_test
+-rwxr-xr-x 1 root root 182568 Aug 31 19:31 true_test
+-rwxr-xr-x 1 root root 188096 Aug 31 19:31 tty_test
+-rwxr-xr-x 1 root root 193408 Aug 31 19:31 udp_socket_test
+-rwxr-xr-x 1 root root 195352 Aug 31 19:31 unix_named_socket_test
+-rwxr-xr-x 1 root root 205328 Aug 31 19:31 unix_socket_test
+-rwxr-xr-x 1 root root 188152 Aug 31 19:31 waitpid_test
+-rwxr-xr-x 1 root root 183640 Aug 31 19:31 wc_test
+-rwxr-xr-x 1 root root 182968 Aug 31 19:31 which_test
+-rwxr-xr-x 1 root root 182544 Aug 31 19:31 wnohang_timing_test
+-rw-r--r-- 1 root root 0 Aug 31 19:31 /tmp/tmp.jE1CbTaUEC/empty.txt
+-rw-r--r-- 1 root root 276932 Aug 31 19:31 /tmp/tmp.jE1CbTaUEC/usr/share/fonts/Nunito-Regular.ttf
+-rw-r--r-- 1 root root 108684 Aug 31 19:31 /tmp/tmp.jE1CbTaUEC/usr/share/fonts/Inconsolata-Regular.ttf
+-rw-r--r-- 1 root root 359048 Aug 31 19:31 /tmp/tmp.jE1CbTaUEC/usr/share/fonts/PTSerif-Regular.ttf
+-rw-r--r-- 1 root root 646340 Aug 31 19:31 /tmp/tmp.jE1CbTaUEC/usr/share/fonts/SourceSans3-Regular.ttf
+-rw-r--r-- 1 root root 488584 Aug 31 19:31 /tmp/tmp.jE1CbTaUEC/usr/share/fonts/Roboto-Regular.ttf
+-rw-r--r-- 1 root root 1209508 Aug 31 19:31 /tmp/tmp.jE1CbTaUEC/usr/share/fonts/SourceSerif4-Regular.ttf
+-rw-r--r-- 1 root root 282844 Aug 31 19:31 /tmp/tmp.jE1CbTaUEC/usr/share/fonts/Merriweather-Regular.ttf
+-rw-r--r-- 1 root root 135580 Aug 31 19:31 /tmp/tmp.jE1CbTaUEC/usr/share/fonts/IBMPlexMono-Regular.ttf
+-rw-r--r-- 1 root root 183700 Aug 31 19:31 /tmp/tmp.jE1CbTaUEC/usr/share/fonts/RobotoMono-Regular.ttf
+-rw-r--r-- 1 root root 260364 Aug 31 19:31 /tmp/tmp.jE1CbTaUEC/usr/share/fonts/FiraCode-Regular.ttf
+-rw-r--r-- 1 root root 876576 Aug 31 19:31 /tmp/tmp.jE1CbTaUEC/usr/share/fonts/Inter-Regular.ttf
+-rw-r--r-- 1 root root 351884 Aug 31 19:31 /tmp/tmp.jE1CbTaUEC/usr/share/fonts/Ubuntu-Regular.ttf
+-rw-r--r-- 1 root root 532636 Aug 31 19:31 /tmp/tmp.jE1CbTaUEC/usr/share/fonts/OpenSans-Regular.ttf
+-rw-r--r-- 1 root root 160316 Aug 31 19:31 /tmp/tmp.jE1CbTaUEC/usr/share/fonts/Poppins-Regular.ttf
+-rw-r--r-- 1 root root 744936 Aug 31 19:31 /tmp/tmp.jE1CbTaUEC/usr/share/fonts/Montserrat-Regular.ttf
+-rw-r--r-- 1 root root 340712 Aug 31 19:31 /tmp/tmp.jE1CbTaUEC/usr/share/fonts/DejaVuSansMono.ttf
+-rw-r--r-- 1 root root 656568 Aug 31 19:31 /tmp/tmp.jE1CbTaUEC/usr/share/fonts/Lato-Regular.ttf
+-rw-r--r-- 1 root root 2049096 Aug 31 19:31 /tmp/tmp.jE1CbTaUEC/usr/share/fonts/NotoSans-Regular.ttf
+-rw-r--r-- 1 root root 273900 Aug 31 19:31 /tmp/tmp.jE1CbTaUEC/usr/share/fonts/JetBrainsMono-Regular.ttf
+-rw-r--r-- 1 root root 312352 Aug 31 19:31 /tmp/tmp.jE1CbTaUEC/usr/share/fonts/Raleway-Regular.ttf
+-rw-r--r-- 1 root root 1887192 Aug 31 19:31 /tmp/tmp.jE1CbTaUEC/usr/share/fonts/NotoSerif-Regular.ttf
+-rw-r--r-- 1 root root 212340 Aug 31 19:31 /tmp/tmp.jE1CbTaUEC/usr/share/fonts/SourceCodePro-Regular.ttf
+-rw-r--r-- 1 root root 212196 Aug 31 19:31 /tmp/tmp.jE1CbTaUEC/usr/share/fonts/Lora-Regular.ttf
+-rw-r--r-- 1 root root 598060 Aug 31 19:31 /tmp/tmp.jE1CbTaUEC/usr/share/fonts/CascadiaCode-Regular.ttf
+-rw-r--r-- 1 root root 1708408 Aug 31 19:31 /tmp/tmp.jE1CbTaUEC/usr/share/fonts/NotoSansMono-Regular.ttf
+-rw-r--r-- 1 root root 309408 Aug 31 19:31 /tmp/tmp.jE1CbTaUEC/usr/share/fonts/Hack-Regular.ttf
+-rw-r--r-- 1 root root 757076 Aug 31 19:31 /tmp/tmp.jE1CbTaUEC/usr/share/fonts/DejaVuSans.ttf
+-rw-r--r-- 1 root root 205748 Aug 31 19:31 /tmp/tmp.jE1CbTaUEC/usr/share/fonts/UbuntuMono-Regular.ttf
+-rw-r--r-- 1 root root 300724 Aug 31 19:31 /tmp/tmp.jE1CbTaUEC/usr/share/fonts/PlayfairDisplay-Regular.ttf
+-rw-r--r-- 1 root root 19 Aug 31 19:31 /tmp/tmp.jE1CbTaUEC/trunctest.txt
+-rw-r--r-- 1 root root 17 Aug 31 19:31 /tmp/tmp.jE1CbTaUEC/hello.txt
+-rwxr-xr-x 1 root root 187336 Aug 31 19:31 /tmp/tmp.jE1CbTaUEC/sbin/init
+-rwxr-xr-x 1 root root 184080 Aug 31 19:31 /tmp/tmp.jE1CbTaUEC/sbin/telnetd
+-rwxr-xr-x 1 root root 181968 Aug 31 19:31 /tmp/tmp.jE1CbTaUEC/sbin/blogd
+-rw-r--r-- 1 root root 20 Aug 31 19:31 /tmp/tmp.jE1CbTaUEC/deep/path/to/file/data.txt
+-rw-r--r-- 1 root root 20 Aug 31 19:31 /tmp/tmp.jE1CbTaUEC/test/nested.txt
+-rw-r--r-- 1 root root 679 Aug 31 19:31 /tmp/tmp.jE1CbTaUEC/etc/init.js
+-rw-r--r-- 1 root root 367 Aug 31 19:31 /tmp/tmp.jE1CbTaUEC/etc/bshrc
+-rw-r--r-- 1 root root 83 Aug 31 19:31 /tmp/tmp.jE1CbTaUEC/etc/passwd
+-rw-r--r-- 1 root root 349 Aug 31 19:31 /tmp/tmp.jE1CbTaUEC/etc/hotkeys.conf
+-rw-r--r-- 1 root root 26 Aug 31 19:31 /tmp/tmp.jE1CbTaUEC/etc/group
+-rw-r--r-- 1 root root 445 Aug 31 19:31 /tmp/tmp.jE1CbTaUEC/etc/fonts.conf
+-rw-r--r-- 1 root root 111 Aug 31 19:31 /tmp/tmp.jE1CbTaUEC/lines.txt
+ext2 image created successfully
+
+ext2 disk created and copied to testdata/:
+  /root/breenix/target/ext2.img
+  /root/breenix/testdata/ext2.img
+  Size: 256M
+
+Contents:
+  /bin/busybox - BusyBox multi-call binary
+  /bin/ls - native Breenix ls
+  /bin/{cat,head,tail,...} - BusyBox hardlinks
+  /sbin/{true,false} - BusyBox hardlinks
+  /bin/* - Other userspace binaries (demos)
+  /usr/local/test/bin/* - Test binaries (*_test, test_*)
+  /sbin/telnetd - telnet daemon
+  /hello.txt - test file (1 line)
+  /lines.txt - multi-line test file (15 lines) for head/tail/wc
+  /test/nested.txt - nested test file
+  /deep/path/to/file/data.txt - deep nested test file
+Booting the x86_64 production profile with the TTY oracle (boot 1/5)...
+  boot 1: 13/13 arms PASS, kernel live (bsshd reached)
+Booting the x86_64 production profile with the TTY oracle (boot 2/5)...
+  boot 2: 13/13 arms PASS, kernel live (bsshd reached)
+Booting the x86_64 production profile with the TTY oracle (boot 3/5)...
+  boot 3: 13/13 arms PASS, kernel live (bsshd reached)
+Booting the x86_64 production profile with the TTY oracle (boot 4/5)...
+  boot 4: 13/13 arms PASS, kernel live (bsshd reached)
+Booting the x86_64 production profile with the TTY oracle (boot 5/5)...
+  boot 5: 13/13 arms PASS, kernel live (bsshd reached)
+PASS: x86 TTY oracle gate - 5/5 boots, 13 arms green on the shipped production profile (cloexec_exec excluded pending #721)
+Serials: /tmp/breenix_x86_tty_oracle/boot_*/serial_*.txt

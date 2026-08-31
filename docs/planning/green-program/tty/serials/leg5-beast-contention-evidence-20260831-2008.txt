@@ -1,0 +1,7 @@
+ 20:08:39 up 19 days,  2:27,  9 users,  load average: 20.77, 20.96, 23.54
+USER         PID %CPU %MEM    VSZ   RSS TTY      STAT START   TIME COMMAND
+1001001  2097253  966  0.0 2263172 22052 ?       Sl   Aug27 55608:58 ugrep -G --ignore-files --hidden -I --exclude-dir=.git --exclude-dir=.svn --exclude-dir=.hg --exclude-dir=.bzr --exclude-dir=.jj --exclude-dir=.sl -rl registerCronHandler /
+1001000   349393  188  0.3 1606796 207444 ?      Rl   20:08   0:02 node /tmp/ops-o2/packages/api-contracts/node_modules/.bin/../typescript/bin/tsc
+1001000   349109  151  0.5 1688652 354684 ?      Rl   20:08   0:07 node /tmp/ops-o2/packages/journey-runtime/node_modules/.bin/../typescript/bin/tsc
+1001000   348057  123  1.8 2555120 1239592 ?     Rl   20:08   0:26 node /tmp/ops-o2/packages/api-client/node_modules/.bin/../typescript/bin/tsc
+1001000   349426  121  0.1 1458688 95312 ?       Rl   20:08   0:00 node scripts/lint-opaque-token-coverage.mjs
