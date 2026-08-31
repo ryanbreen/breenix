@@ -64,31 +64,43 @@ merely that it's absent from the expected-PASS list.
    (`x86_production_profile_gate_verdict_discipline_holds`, see summary above — the
    file itself is untouched by this port's diff, confirming the ratchet was already
    green on `main` and reddens solely because of the port's own new `-ge 1` pin).
-5. **`run-x86-boot-tests.sh` 10+ boots** — not a clean single-invocation 10/10.
-   Attempt 1: boot 1 PASS, boot 2 failed its internal 900-second poll-loop budget
-   before observing every required marker in one simultaneous tick — but every
-   required marker (including the two terminal ones, `TEST_TALLY:` and `🏁 TEST
-   RUNNER: All tests passed 🏁`) is present in that same boot's serial when
-   inspected afterward, and the boot's tail shows clean idle steady-state, not a
-   crash or hang. `grep -ci "tty_oracle\|\[init\]"` against both of boot 2's serial
-   files returns zero matches in each, structurally proving this failure cannot
-   involve the TTY-x86 port's code: `run_tty_oracle()` (and everything else this
-   port added) is reachable only through the production-init cfg block in
-   `kernel/src/main.rs`, which is compiled *out* whenever `feature = "testing"` is
-   set — and this gate always builds with `testing` set. A `ps aux` snapshot taken
-   minutes after the failure shows beast under severe, unrelated contention (load
-   average 20.8/21.0/23.5 on an 8-core host, including a chronic 966%-CPU process
-   running since Aug 27) — the same failure *class* `#725` already pre-adjudicated
-   and closed as host-contention, non-blocking (different specific gate/pin, same
-   mechanism). A second attempt was launched under confirmed-clear load; see the
-   confirming session's `confirm-notes.md` for its outcome, not reproduced here.
+5. **`run-x86-boot-tests.sh` 10+ boots** — two full attempts, neither a clean
+   single-invocation run (the script aborts the whole batch on its first red).
+   **Attempt 1**: boot 1 PASS, boot 2 FAILED. **Attempt 2**: boots 1-8 PASS, boot 9
+   FAILED. 9 PASS / 2 FAIL across 11 total boot attempts. Both failures share the
+   identical shape: the script's internal 900-second poll loop expired before
+   observing every required success marker present in one simultaneous tick, but
+   every marker — including the two terminal ones, `TEST_TALLY:` and `🏁 TEST
+   RUNNER: All tests passed 🏁` — is present in that same boot's own serial when
+   inspected afterward, immediately preceded by a long run of live DNS/HTTP
+   `sys_recvfrom` traffic. Neither failing boot's serial contains any crash/panic
+   marker; both show clean idle-loop steady state.
+   `grep -ci "tty_oracle\|\[init\]"` against all four serial files (both arches of
+   both failing boots) returns **zero** matches every time, structurally proving
+   neither failure can involve the TTY-x86 port's code: `run_tty_oracle()` (and
+   everything else this port added) is reachable only through the production-init
+   cfg block in `kernel/src/main.rs`, which is compiled *out* whenever `feature =
+   "testing"` is set — and this gate always builds with `testing` set.
+   Attempt 1's failure coincided with beast under severe, unrelated contention
+   (load average 20.8/21.0/23.5 on an 8-core host at the time, including a chronic
+   966%-CPU process running since Aug 27) — the same failure *class* `#725`
+   pre-adjudicated as host-contention. **Attempt 2's failure occurred under
+   confirmed-low, uncontended load (1.0-1.2 throughout)**, ruling out host CPU
+   contention as the sole or necessary cause and showing this is a distinct,
+   recurring, load-independent flake in the registry's own DNS/HTTP-leg timing
+   margin against the fixed 900s budget. Filed as a new issue,
+   **[`#731`](https://github.com/ryanbreen/breenix/issues/731)** — not fixed here
+   (pre-existing in `main`'s own gate, unrelated to this port, filing is this
+   confirm slot's appropriate action per its read-only charter).
 
 ## Honest limits
 
 - The Leg 4 red is real and blocking a clean "confirm GREEN" declaration; not fixed
   in this pass by design (read-only confirmation of landed bytes at `16d6ff5b`).
-- Leg 5's attribution rests on a structural code-unreachability proof (strong) plus
-  one contention snapshot (suggestive, not exhaustive) — a second, host-independent
-  cause on that single occurrence cannot be mathematically excluded from one sample.
+- Leg 5's two failures are unrelated-to-this-port with certainty (structural
+  code-unreachability proof, confirmed empirically on both occurrences), but the
+  root cause of the flake itself (a pre-existing, `main`-inherited registry-timing
+  margin, filed as `#731`) is not diagnosed further than "DNS/HTTP-leg timing vs.
+  the fixed 900s budget, load-independent" in this pass.
 - `#705`'s issue-body `@path` documentation defect (a prior session's `gh issue
   edit` mistake) is still present, unfixed; flagged again, not this slot's to fix.

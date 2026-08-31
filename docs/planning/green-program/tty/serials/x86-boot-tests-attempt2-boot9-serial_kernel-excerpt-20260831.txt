@@ -1,0 +1,129 @@
+=== HEAD (first 40 lines) ===
+[2J[01;01H[=3h[2J[01;01H[2J[01;01H[8;056;240t0[2J[01;01H[2J[01;01H[=3h[2J[01;01H[2J[01;01H[8;042;160t0[2J[01;01HBdsDxe: loading Boot0002 "UEFI Misc Device" from PciRoot(0x0)/Pci(0x4,0x0)
+BdsDxe: starting Boot0002 "UEFI Misc Device" from PciRoot(0x0)/Pci(0x4,0x0)
+=== Buffered Boot Messages ===
+[ INFO] kernel: Kernel entry point reached
+[DEBUG] kernel: Boot info address: 0x38000000000
+[ INFO] kernel: Initializing serial port...
+
+=== End Buffered Messages ===
+[ INFO] kernel: Serial port initialized and buffer flushed
+[ INFO] kernel: Setting up framebuffer...
+[ INFO] kernel::logger: Logger fully initialized - output to both framebuffer and serial
+[ INFO] kernel: Initializing kernel systems...
+[ INFO] kernel::gdt: TSS I/O permission bitmap disabled (iomap_base=104)
+[ INFO] kernel::gdt: TSS located at 0x1000043cd50 (PML4 index 2)
+[ INFO] kernel::gdt: GDT loaded at 0x1000043cdc0 (PML4 index 2)
+[ INFO] kernel::gdt: GDT initialized with kernel and user segments
+[DEBUG] kernel::gdt:   Kernel code: 0x8
+[DEBUG] kernel::gdt:   Kernel data: 0x10
+[DEBUG] kernel::gdt:   TSS: 0x18
+[DEBUG] kernel::gdt:   User data: 0x2b
+[DEBUG] kernel::gdt:   User code: 0x33
+[DEBUG] kernel::gdt: GDT base: 0x1000043cdc0, limit: 0x37
+[DEBUG] kernel::gdt: Raw user data descriptor (0x2b): 0x00cff3000000ffff
+[DEBUG] kernel::gdt: Raw user code descriptor (0x33): 0x00affb000000ffff
+[DEBUG] kernel::gdt:   User data: P=1 DPL=3 S=1 Type=0x3
+[DEBUG] kernel::gdt:   User code: P=1 DPL=3 S=1 Type=0xb L=1 D=0
+[DEBUG] kernel::gdt:   TSS RSP0 (kernel stack): 0x0
+[DEBUG] kernel::gdt:   TSS IST[0] (double fault stack): 0x0
+[ERROR] kernel::interrupts: INVALID timer_interrupt_entry address: 0x100003c5c51
+[ WARN] kernel::interrupts: Using low-half address for timer entry (temporary workaround)
+[ERROR] kernel::interrupts: INVALID syscall_entry address: 0x100003c5aaf
+[ WARN] kernel::interrupts: Using low-half address for syscall entry (temporary workaround)
+[ INFO] kernel::interrupts: IDT[0x80] gate attributes:
+[ INFO] kernel::interrupts:   Handler address: 0x100003c5aaf (low-half, validation failed)
+[ INFO] kernel::interrupts:   DPL (privilege level): Ring3 (allowing userspace access)
+[ INFO] kernel::interrupts:   Gate type: Interrupt gate (interrupts disabled on entry)
+[ INFO] kernel::interrupts: Syscall handler configured with assembly entry point
+[ INFO] kernel::interrupts: IDT address: 0x10000447e70
+[ INFO] kernel::interrupts: IDT is in PML4 entry 2
+[ INFO] kernel::interrupts: IDT loaded successfully at 0x10000447e70
+
+=== ... elided (18101 lines omitted) ... ===
+
+=== markers proving completion ===
+18170: [ INFO] kernel::syscall::handlers: TEST_TALLY: exited=104 nonzero=0 failed=[]
+18177: [ INFO] kernel::syscall::handlers: 🏁 TEST RUNNER: All tests passed - you can exit QEMU now 🏁
+
+=== TAIL (last 80 lines) ===
+[DEBUG] kernel::syscall::handlers: sys_fcntl F_SETFL: fd=3 flags=0x800
+[DEBUG] kernel::syscall::handlers: sys_read: fd=3, buf_ptr=0x7fffff0aef08, count=65536
+[DEBUG] kernel::syscall::handlers: sys_read: TCP no data, O_NONBLOCK set - returning EAGAIN
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 1211: RIP=0x10000245d62 CS=0x8 RSP=0xffffc90000b15bf8
+[DEBUG] kernel::drivers::e1000: E1000: RX interrupt
+[DEBUG] kernel::net::tcp: TCP: Received 869 bytes of data
+[ WARN] kernel::net::tcp: TCP: Received FIN in Established, moving to CLOSE_WAIT (local=15:49171, remote=243:80, rx_buf=869)
+[DEBUG] kernel::drivers::e1000: E1000: TX interrupt
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 1211: RIP=0x10000245d62 RSP=0xffffc90000b15bf8
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x53f8000 for blocked-in-syscall kernel return (thread 1211)
+[DEBUG] kernel::syscall::handlers: sys_read: fd=3, buf_ptr=0x7fffff0aef08, count=65536
+[DEBUG] kernel::syscall::handlers: sys_read: Received 869 bytes from TCP connection
+[DEBUG] kernel::syscall::handlers: sys_fcntl: fd=3, cmd=4, arg=0
+[DEBUG] kernel::syscall::handlers: sys_fcntl F_SETFL: fd=3 flags=0x0
+[DEBUG] kernel::syscall::pipe: sys_close: Closing fd=3
+[DEBUG] kernel::syscall::pipe: sys_close: thread 1211 -> process 112 'http_test', closing fd=3
+[DEBUG] kernel::syscall::pipe: sys_close: Closed TCP connection fd=3
+[DEBUG] kernel::syscall::pipe: sys_close: returning to userspace fd=3
+[DEBUG] kernel::drivers::e1000: E1000: RX interrupt
+[DEBUG] kernel::drivers::e1000: E1000: TX interrupt
+[DEBUG] kernel::net::tcp: TCP: Connection closed
+[ INFO] kernel::syscall::handlers: USERSPACE: sys_exit called with code: 0
+[DEBUG] kernel::syscall::handlers: sys_exit: Current thread ID from scheduler: 1211
+[DEBUG] kernel::memory::stack: GuardedStack dropped (cleanup not yet implemented)
+[DEBUG] kernel::task::process_task: Process 112 'http_test' (thread 1211) exited with code 0
+[ INFO] kernel::syscall::handlers: No more userspace threads remaining
+[ INFO] kernel::syscall::handlers: Woke keyboard task to ensure input processing continues
+[ INFO] kernel::syscall::handlers: 🎯 USERSPACE TEST COMPLETE - All processes finished successfully
+[ INFO] kernel::syscall::handlers: TEST_TALLY: exited=104 nonzero=0 failed=[]
+[ INFO] kernel::syscall::handlers: =====================================
+[ INFO] kernel::syscall::handlers: ✅ USERSPACE EXECUTION SUCCESSFUL ✅
+[ INFO] kernel::syscall::handlers: ✅ Ring 3 execution confirmed       ✅
+[ INFO] kernel::syscall::handlers: ✅ System calls working correctly   ✅
+[ INFO] kernel::syscall::handlers: ✅ Process lifecycle complete       ✅
+[ INFO] kernel::syscall::handlers: =====================================
+[ INFO] kernel::syscall::handlers: 🏁 TEST RUNNER: All tests passed - you can exit QEMU now 🏁
+Next thread from queue: 1, cpu: 0
+Idle thread 1 is alone, continuing (no switch needed)
+Next thread from queue: 1, cpu: 0
+Idle thread 1 is alone, continuing (no switch needed)
+Next thread from queue: 1, cpu: 0
+Idle thread 1 is alone, continuing (no switch needed)
+Next thread from queue: 1, cpu: 0
+Idle thread 1 is alone, continuing (no switch needed)
+Next thread from queue: 1, cpu: 0
+Idle thread 1 is alone, continuing (no switch needed)
+Next thread from queue: 1, cpu: 0
+Idle thread 1 is alone, continuing (no switch needed)
+Next thread from queue: 1, cpu: 0
+Idle thread 1 is alone, continuing (no switch needed)
+Next thread from queue: 1, cpu: 0
+Idle thread 1 is alone, continuing (no switch needed)
+Next thread from queue: 1, cpu: 0
+Idle thread 1 is alone, continuing (no switch needed)
+Next thread from queue: 1, cpu: 0
+Idle thread 1 is alone, continuing (no switch needed)
+Next thread from queue: 1, cpu: 0
+Idle thread 1 is alone, continuing (no switch needed)
+Next thread from queue: 1, cpu: 0
+Idle thread 1 is alone, continuing (no switch needed)
+Next thread from queue: 1, cpu: 0
+Idle thread 1 is alone, continuing (no switch needed)
+Next thread from queue: 1, cpu: 0
+Idle thread 1 is alone, continuing (no switch needed)
+Next thread from queue: 1, cpu: 0
+Idle thread 1 is alone, continuing (no switch needed)
+Next thread from queue: 1, cpu: 0
+Idle thread 1 is alone, continuing (no switch needed)
+Next thread from queue: 1, cpu: 0
+Idle thread 1 is alone, continuing (no switch needed)
+Next thread from queue: 1, cpu: 0
+Idle thread 1 is alone, continuing (no switch needed)
+Next thread from queue: 1, cpu: 0
+Idle thread 1 is alone, continuing (no switch needed)
+Next thread from queue: 1, cpu: 0
+Idle thread 1 is alone, continuing (no switch needed)
+Next thread from queue: 1, cpu: 0
+Idle thread 1 is alone, continuing (no switch needed)
+Next thread from queue: 1, cpu: 0
+Idle thread 1 is alone, continuing (no switch needed)
