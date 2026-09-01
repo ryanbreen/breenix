@@ -32,9 +32,9 @@
 //!     observed repro's own call site). `CONTENDER_COUNT` matches each gate
 //!     profile's known `-smp` value (1 on x86, 4 on aarch64) rather than
 //!     auto-detecting it, keeping the oracle deterministic instead of
-//!     environment-sensitive. On aarch64 each contender (and the holder) is
-//!     pinned to a distinct CPU via `kthread_run_on_cpu_for_test` so the
-//!     construction does not depend on the default scheduler's placement
+//!     environment-sensitive. On aarch64 each contender is pinned to a
+//!     distinct CPU via `kthread_run_on_cpu_for_test` so the construction
+//!     does not depend on the default scheduler's placement
 //!     choices to occupy every CPU.
 //!
 //! # Why the observer is the spinner, not a userspace watchdog
@@ -186,9 +186,13 @@ fn run_one(is_home: bool) {
 
     HOLDER_SCRATCH.reset();
 
-    #[cfg(target_arch = "aarch64")]
-    let holder = spawn_pinned(move || holder_fn(is_home), "lockrace_holder", 0);
-    #[cfg(not(target_arch = "aarch64"))]
+    // Deliberately unpinned on both arches, including aarch64:
+    // `kthread_run_on_cpu_for_test`'s placement is a single-slot-per-CPU
+    // registration (`BOOT_TEST_CPU_AFFINITY`), so pinning the holder to the
+    // same CPU as one of the contenders below would clobber that
+    // contender's own placement. The holder's initial CPU doesn't need to
+    // be deterministic for the construction to work — it parks almost
+    // immediately, freeing whatever CPU it started on.
     let holder = spawn_plain(move || holder_fn(is_home), "lockrace_holder");
 
     let Some(holder) = holder else {
@@ -200,8 +204,24 @@ fn run_one(is_home: bool) {
 
     let mut contenders = alloc::vec::Vec::with_capacity(CONTENDER_COUNT);
     for i in 0..CONTENDER_COUNT {
+        // CPU 0 is excluded from pinning: it hosts this driver's own
+        // kthread_join polling loop below, and empirically
+        // kthread_run_on_cpu_for_test's single-slot-per-CPU placement
+        // (BOOT_TEST_CPU_AFFINITY) never dispatches a second thread pinned
+        // there while this driver occupies it — observed directly (the
+        // contender pinned to CPU 0 never printed even its own start line).
+        // Contender 0 is spawned unpinned instead, landing wherever the
+        // default scheduler puts it; contenders 1..CONTENDER_COUNT are
+        // pinned to CPUs 1..CONTENDER_COUNT so aarch64's -smp 4 profile
+        // still gets deterministic coverage of CPUs 1-3 (empirically
+        // already sufficient to reproduce the #728 shape on unfixed code —
+        // see the anti-vacuity notes in the gate script).
         #[cfg(target_arch = "aarch64")]
-        let handle = spawn_pinned(move || contender_fn(is_home, i), "lockrace_contender", i);
+        let handle = if i == 0 {
+            spawn_plain(move || contender_fn(is_home, i), "lockrace_contender")
+        } else {
+            spawn_pinned(move || contender_fn(is_home, i), "lockrace_contender", i)
+        };
         #[cfg(not(target_arch = "aarch64"))]
         let handle = spawn_plain(move || contender_fn(is_home, i), "lockrace_contender");
 
