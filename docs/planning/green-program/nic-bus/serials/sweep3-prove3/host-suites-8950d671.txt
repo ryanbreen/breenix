@@ -1,0 +1,875 @@
+=== block_request_lifetime_structure ===
+   Compiling proc-macro2 v1.0.107
+   Compiling quote v1.0.47
+   Compiling unicode-ident v1.0.24
+   Compiling libc v0.2.189
+   Compiling serde v1.0.229
+   Compiling rustversion v1.0.23
+   Compiling bit_field v0.10.3
+   Compiling cfg-if v1.0.4
+   Compiling serde_core v1.0.229
+   Compiling find-msvc-tools v0.1.11
+   Compiling shlex v2.0.1
+   Compiling scopeguard v1.2.0
+   Compiling bitflags v2.13.1
+   Compiling x86 v0.52.0
+   Compiling const_fn v0.4.12
+   Compiling getrandom v0.4.3
+   Compiling bitflags v1.3.2
+   Compiling volatile v0.4.6
+   Compiling raw-cpuid v10.7.0
+   Compiling lock_api v0.4.14
+   Compiling cc v1.4.4
+   Compiling az v1.2.1
+   Compiling num-traits v0.2.19
+   Compiling rand_core v0.6.4
+   Compiling conquer-util v0.3.0
+   Compiling crossbeam-utils v0.8.22
+   Compiling bootloader_api v0.11.13 (https://github.com/rust-osdev/bootloader.git?rev=707db11201b19541b7cfef84037866ee03aa0927#707db112)
+   Compiling zero v0.1.3
+   Compiling byteorder v1.5.0
+   Compiling spinning_top v0.2.5
+   Compiling zeroize v1.9.0
+   Compiling zmij v1.0.23
+   Compiling typenum v1.20.1
+   Compiling rustix v1.1.4
+   Compiling xmas-elf v0.8.0
+   Compiling rustls-pki-types v1.15.1
+   Compiling rand_hc v0.3.2
+   Compiling rand v0.8.8
+   Compiling conquer-once v0.3.2
+   Compiling llvm-tools v0.1.1
+   Compiling log v0.4.34
+   Compiling crc-catalog v2.5.0
+   Compiling x86_64 v0.15.4
+   Compiling x86_64 v0.14.13
+   Compiling syn v3.0.4
+   Compiling untrusted v0.9.0
+   Compiling float-cmp v0.9.0
+   Compiling usize_conversions v0.2.0
+   Compiling anyhow v1.0.104
+   Compiling getrandom v0.2.17
+   Compiling errno v0.3.14
+   Compiling embedded-graphics-core v0.4.1
+   Compiling pin-project-lite v0.2.17
+   Compiling futures-core v0.3.34
+   Compiling micromath v2.1.0
+   Compiling futures-task v0.3.34
+   Compiling httparse v1.10.1
+   Compiling serde_json v1.0.151
+   Compiling noto-sans-mono-bitmap v0.2.0
+   Compiling slab v0.4.12
+   Compiling kernel v0.1.0 (/Users/wrb/fun/code/breenix/.claude/worktrees/wf_b1492392-5aa-4/kernel)
+   Compiling uuid v1.26.0
+   Compiling hybrid-array v0.4.14
+   Compiling futures-util v0.3.34
+   Compiling crossbeam-queue v0.3.13
+   Compiling embedded-graphics v0.8.2
+   Compiling bootloader v0.11.13 (https://github.com/rust-osdev/bootloader.git?rev=707db11201b19541b7cfef84037866ee03aa0927#707db112)
+   Compiling crc v3.4.0
+   Compiling linked_list_allocator v0.10.6
+   Compiling spin v0.9.9
+   Compiling conquer-once v0.4.0
+   Compiling bytes v1.12.1
+   Compiling ring v0.17.14
+   Compiling once_cell v1.21.4
+   Compiling rustls v0.23.43
+   Compiling fastrand v2.5.0
+   Compiling itoa v1.0.18
+   Compiling memchr v2.8.3
+   Compiling uart_16550 v0.3.2
+   Compiling noto-sans-mono-bitmap v0.3.2
+   Compiling pic8259 v0.10.4
+   Compiling http v1.5.0
+   Compiling fatfs v0.3.6
+   Compiling crypto-common v0.2.2
+   Compiling block-buffer v0.12.1
+   Compiling tempfile v3.27.0
+   Compiling gpt v3.1.0
+   Compiling subtle v2.6.1
+   Compiling base64 v0.23.1
+   Compiling const-oid v0.10.2
+   Compiling cpufeatures v0.3.1
+   Compiling filetime v0.2.29
+   Compiling webpki-roots v1.0.9
+   Compiling percent-encoding v2.3.2
+   Compiling utf8-zero v0.8.1
+   Compiling base16ct v1.0.0
+   Compiling ureq-proto v0.6.1
+   Compiling lzma-rs v0.3.0
+   Compiling digest v0.11.3
+   Compiling xattr v1.6.1
+   Compiling serde_derive v1.0.229
+   Compiling tar v0.4.46
+   Compiling sha2 v0.11.0
+   Compiling bootloader-boot-config v0.11.13 (https://github.com/rust-osdev/bootloader.git?rev=707db11201b19541b7cfef84037866ee03aa0927#707db112)
+   Compiling bootloader-x86_64-common v0.11.13 (https://github.com/rust-osdev/bootloader.git?rev=707db11201b19541b7cfef84037866ee03aa0927#707db112)
+   Compiling breenix v0.1.0 (/Users/wrb/fun/code/breenix/.claude/worktrees/wf_b1492392-5aa-4)
+   Compiling rustls-webpki v0.103.15
+   Compiling ureq v3.4.0
+   Compiling ovmf-prebuilt v0.2.9
+    Finished `release` profile [optimized] target(s) in 30.91s
+     Running tests/block_request_lifetime_structure.rs (target/release/deps/block_request_lifetime_structure-5c86f381bbec215f)
+
+running 12 tests
+test completion_wait_census_ignores_comments_and_string_literals ... ok
+test completion_wait_validator_rejects_interruptible_synthetic_source ... ok
+test gate_poison_validator_rejects_synthetic_regressions ... ok
+test block_eintr_oracle_marker_is_pinned_in_the_gates ... ok
+test every_discovered_aarch64_boot_tests_gate_rejects_boot_test_failures ... ok
+test drivers_have_no_unpaired_keep_locked_escape ... ok
+test driver_guard_wedge_call_population_is_pinned ... ok
+test driver_release_on_drop_false_population_is_pinned ... ok
+test driver_completion_wait_population_is_pinned ... ok
+test drivers_have_no_interruptible_completion_waits ... ok
+test every_release_on_drop_false_arm_latches_wedged ... ok
+test every_wedged_driver_gate_refuses_inside_lock ... ok
+
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+EXIT_CODE_FOR_block_request_lifetime_structure: 0
+
+=== context_restore_structure ===
+   Compiling kernel v0.1.0 (/Users/wrb/fun/code/breenix/.claude/worktrees/wf_b1492392-5aa-4/kernel)
+   Compiling breenix v0.1.0 (/Users/wrb/fun/code/breenix/.claude/worktrees/wf_b1492392-5aa-4)
+    Finished `release` profile [optimized] target(s) in 7.97s
+     Running tests/context_restore_structure.rs (target/release/deps/context_restore_structure-0d249a64935d3eb7)
+
+running 96 tests
+test abort_dispatch_validator_rejects_unconditional_running_transition ... ok
+test abort_dispatch_validator_rejects_unguarded_resume_dequeue ... ok
+test aarch64_failed_exec_ttbr0_validator_rejects_missing_rollback ... ok
+test aarch64_resume_pc_records_publish_their_source_behind_a_store_barrier ... ok
+test aarch64_failed_exec_restores_the_pretransition_ttbr0 ... ok
+test aarch64_ret_dispatch_refusal_leaves_the_refused_stack_before_custody_stops_naming_it ... ok
+test aarch64_inline_save_blocks_publish_their_resume_pc ... ok
+test blocked_syscall_dispatch_validator_rejects_log_only_no_cr3 ... ok
+test blocked_syscall_dispatch_validator_rejects_per_use_cr3_guards ... ok
+test blocked_syscall_dispatch_validator_rejects_late_no_cr3_refusal ... ok
+test a_custody_decision_reads_an_ownership_record_only_while_its_sentinel_guards_it ... ok
+test dispatch_guard_validator_rejects_acquisition_after_scheduling ... ok
+test dispatch_guard_validator_rejects_unavailable_fallthrough ... ok
+test abort_dispatch_rollback_preserves_resume_thread_state ... ok
+test dispatch_guard_validator_rejects_userspace_only_acquisition ... ok
+test dispatch_guard_is_shared_and_acquired_before_scheduling ... ok
+test aarch64_refusal_drain_repoints_this_cpus_current_thread_before_terminating ... ok
+test blocked_syscall_dispatch_resolves_cr3_before_commit ... ok
+test aarch64_refusal_drain_acts_only_after_it_has_departed_the_victim_stack ... ok
+test every_context_switch_rsp0_publish_updates_tss_and_per_cpu_cache ... ok
+test every_save_failure_rolls_back_the_committed_dispatch ... ok
+test every_switch_return_rolls_back_the_committed_dispatch ... ok
+test an_inline_saved_resume_pc_is_admitted_on_both_dispatch_paths ... ok
+test aarch64_refusal_drain_acts_only_on_records_this_cpu_published ... ok
+test aarch64_inline_elr_slot_has_one_durable_layout_assert ... ok
+test every_userspace_resume_pc_producer_verdict_is_consumed ... ok
+test a_masking_pivot_function_reads_its_identity_after_the_mask ... ok
+test first_run_logging_validator_rejects_aborted_arm_logging ... ok
+test first_run_logging_validator_rejects_setup_prologue_logging ... ok
+test first_userspace_entry_validator_rejects_idle_abort_recovery ... ok
+test first_userspace_entry_validator_rejects_write_first_dispatch ... ok
+test first_run_dispatch_logs_only_after_installation ... ok
+test first_userspace_entry_installs_address_space_before_ring3_commit ... ok
+test every_aarch64_stack_pivot_runs_on_an_adjudicated_destination ... ok
+test interrupt_return_validator_rejects_unconditional_saved_frame_lookup ... ok
+test a_refused_resume_is_never_routed_back_to_the_cpu_that_declined_it ... ok
+test no_cr3_dispatch_validator_rejects_missing_return ... ok
+test no_cr3_dispatch_validator_rejects_scheduler_only_termination ... ok
+test no_cr3_dispatch_validator_rejects_warn_only_arm ... ok
+test init_cpu_publishes_both_idle_stack_top_and_stack_ownership ... ok
+test interrupt_return_reads_old_thread_once_and_lazily_checks_saved_cs ... ok
+test no_cr3_dispatch_fails_closed ... ok
+test both_kernel_resume_paths_adjudicate_the_stack_they_resume_on ... ok
+test restore_rejects_kernel_frames_before_context_writes ... ok
+test restore_validator_rejects_missing_kernel_selector_guard ... ok
+test percpu_stack_top_writers_consult_the_ownership_check ... ok
+test rollback_return_alternation_rejects_return_without_commitment ... ok
+test routing_enforcement_validator_rejects_has_started_conjunct ... ok
+test routing_enforcement_validator_rejects_missing_selector_check ... ok
+test rsp0_publisher_validator_rejects_a_tss_only_first_entry_write ... ok
+test save_failure_rollback_validator_rejects_rollback_after_return ... ok
+test save_failure_rollback_validator_rejects_unpaired_return ... ok
+test ret_dispatch_sites_record_an_r_path_dispatch_row ... ok
+test saved_frame_routing_matches_userspace_restore_enforcement ... ok
+test fatal_scheduler_census_m_c_rejects_broken_blocking_accessor_derivation ... ok
+test saved_lr_admission_is_the_three_named_classes ... ok
+test shared_resume_pc_macros_each_have_one_definition ... ok
+test saved_context_layout_and_identity_are_compile_time_facts ... ok
+test saved_lr_copies_route_through_the_single_accessor ... ok
+test switch_dispatch_rollback_validator_rejects_rollback_after_return ... ok
+test switch_dispatch_rollback_validator_rejects_unpaired_return ... ok
+test switch_validator_rejects_flag_only_dispatch ... ok
+test inline_schedule_trampoline_retains_the_redundant_elr_guard ... ok
+test reclaim_drops_thread_control_blocks_inside_the_masked_region ... ok
+test terminated_signal_validator_rejects_bookkeeping_rollback ... ok
+test terminated_signal_validator_rejects_return_without_completed_switch ... ok
+test ret_dispatch_restores_a_staged_copy_taken_under_the_scheduler_lock ... ok
+test terminated_signal_dispatch_completes_switch_to_idle ... ok
+test switch_dispatches_saved_kernel_frames_to_kernel_resume ... ok
+test aarch64_eret_resume_selection_disambiguates_inline_saves ... ok
+test set_saved_lr_classifies_and_reports_without_substituting ... ok
+test unblock_validator_rejects_foreign_flag_clear ... ok
+test every_el1_resume_pc_consumer_uses_the_shared_admission_macro ... ok
+test the_custody_rule_the_kernel_delegates_to_is_executed_by_a_host_test ... ok
+test userspace_fault_idle_return_validator_rejects_private_stack_derivation ... ok
+test unblock_preserves_blocked_syscall_context_ownership ... ok
+test the_dead_first_entry_eret_entry_point_stays_deleted ... ok
+test the_mutation_leg_exemption_is_exactly_as_narrow_as_it_claims ... ok
+test every_el0_resume_pc_consumer_has_a_shared_admission_arm ... ok
+test userspace_fault_termination_returns_on_the_idle_thread_stack ... ok
+test work_stealing_declines_a_thread_pinned_to_another_cpus_stack ... ok
+test userspace_resume_pc_predicate_stays_outside_the_kernel_text_window ... ok
+test unpublished_dispatch_is_retry_only_on_both_architectures ... ok
+test the_aarch64_dispatch_refuses_a_foreign_resume_stack_and_routes_it_home ... ok
+test user_rsp_scratch_kernel_stack_installs_follow_the_pending_exception_level ... ok
+test swapper_files_do_not_assign_thread_id_zero ... ok
+test userspace_resume_pc_producers_refuse_before_publishing_frame_elr ... ok
+test the_cpu_identity_token_is_only_minted_from_a_hardware_read ... ok
+test ctx596_oracles_are_permanent_while_forcing_stays_feature_gated ... ok
+test every_eret_under_the_resume_pc_root_is_dispositioned ... ok
+test clone_publication_lifecycle_is_closed ... ok
+test fatal_scheduler_census_m_f_rejects_broken_fatal_callee_derivation ... ok
+test fatal_exception_reports_never_take_blocking_scheduler_accessors ... ok
+test fatal_scheduler_census_m_e_rejects_blocking_call_in_transitive_callee ... ok
+test fatal_scheduler_census_m_a_rejects_blocking_call_at_fixed_site ... ok
+test fatal_scheduler_census_m_b_rejects_blocking_call_in_direct_fatal_callee ... ok
+
+test result: ok. 96 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 17.08s
+
+EXIT_CODE_FOR_context_restore_structure: 0
+
+=== coreproof_component_h_structure ===
+   Compiling kernel v0.1.0 (/Users/wrb/fun/code/breenix/.claude/worktrees/wf_b1492392-5aa-4/kernel)
+   Compiling breenix v0.1.0 (/Users/wrb/fun/code/breenix/.claude/worktrees/wf_b1492392-5aa-4)
+    Finished `release` profile [optimized] target(s) in 3.42s
+     Running tests/coreproof_component_h_structure.rs (target/release/deps/coreproof_component_h_structure-8b519c13e63c1cd8)
+
+running 5 tests
+test self_retraction_latch_cannot_outlive_one_measured_window ... ok
+test inline_slot_classification_counters_fire_from_exactly_one_site_each_and_stay_co_located ... ok
+test inline_schedule_state_is_only_ever_read_via_a_consumed_swap ... ok
+test self_retraction_tags_the_fresh_identity_the_resulting_trampoline_reads ... ok
+test the_new_inline_slot_instrument_is_entirely_coreproof_gated ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+EXIT_CODE_FOR_coreproof_component_h_structure: 0
+
+=== coreproof_coverage_structure ===
+   Compiling kernel v0.1.0 (/Users/wrb/fun/code/breenix/.claude/worktrees/wf_b1492392-5aa-4/kernel)
+   Compiling breenix v0.1.0 (/Users/wrb/fun/code/breenix/.claude/worktrees/wf_b1492392-5aa-4)
+    Finished `release` profile [optimized] target(s) in 3.34s
+     Running tests/coreproof_coverage_structure.rs (target/release/deps/coreproof_coverage_structure-249afa325b1bf19b)
+
+running 4 tests
+test coverage_census_matches_the_mutation_register_in_order ... ok
+test every_harness_side_exception_is_counted_inside_the_harness ... ok
+test every_coverage_placement_names_a_declared_site ... ok
+test every_non_harness_site_has_a_real_coverage_placement ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+EXIT_CODE_FOR_coreproof_coverage_structure: 0
+
+=== coreproof_mutation_register_structure ===
+   Compiling kernel v0.1.0 (/Users/wrb/fun/code/breenix/.claude/worktrees/wf_b1492392-5aa-4/kernel)
+   Compiling breenix v0.1.0 (/Users/wrb/fun/code/breenix/.claude/worktrees/wf_b1492392-5aa-4)
+    Finished `release` profile [optimized] target(s) in 3.33s
+     Running tests/coreproof_mutation_register_structure.rs (target/release/deps/coreproof_mutation_register_structure-a44476cda3baa850)
+
+running 5 tests
+test the_register_names_exactly_the_declared_mutations ... ok
+test every_register_entry_cites_its_issue_its_fix_and_its_predicate ... ok
+test every_multi_file_mutation_gates_every_file_its_own_entry_names ... ok
+test every_declared_mutation_perturbs_a_real_site ... ok
+test every_gated_mutation_is_declared ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+EXIT_CODE_FOR_coreproof_mutation_register_structure: 0
+
+=== coreproof_production_clean ===
+   Compiling kernel v0.1.0 (/Users/wrb/fun/code/breenix/.claude/worktrees/wf_b1492392-5aa-4/kernel)
+   Compiling breenix v0.1.0 (/Users/wrb/fun/code/breenix/.claude/worktrees/wf_b1492392-5aa-4)
+    Finished `release` profile [optimized] target(s) in 3.28s
+     Running tests/coreproof_production_clean.rs (target/release/deps/coreproof_production_clean-cc682178eb6ca50f)
+
+running 4 tests
+test no_prohibited_file_carries_a_seam ... ok
+test the_seam_ratchet_reddens_on_a_planted_seam ... ok
+test production_kernel_carries_no_harness ... ok
+test the_scan_reddens_on_a_build_that_carries_the_harness ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 13.68s
+
+EXIT_CODE_FOR_coreproof_production_clean: 0
+
+=== coreproof_sites_structure ===
+   Compiling kernel v0.1.0 (/Users/wrb/fun/code/breenix/.claude/worktrees/wf_b1492392-5aa-4/kernel)
+   Compiling breenix v0.1.0 (/Users/wrb/fun/code/breenix/.claude/worktrees/wf_b1492392-5aa-4)
+    Finished `release` profile [optimized] target(s) in 3.91s
+     Running tests/coreproof_sites_structure.rs (target/release/deps/coreproof_sites_structure-3ce19c3b53c545de)
+
+running 4 tests
+test every_declared_site_is_listed_and_named ... ok
+test every_scheduler_seam_is_classified_correctly ... ok
+test every_placed_site_is_declared ... ok
+test every_declared_site_is_actually_placed ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+EXIT_CODE_FOR_coreproof_sites_structure: 0
+
+=== degenerate_transfer_fd_validation_structure ===
+   Compiling kernel v0.1.0 (/Users/wrb/fun/code/breenix/.claude/worktrees/wf_b1492392-5aa-4/kernel)
+   Compiling breenix v0.1.0 (/Users/wrb/fun/code/breenix/.claude/worktrees/wf_b1492392-5aa-4)
+    Finished `release` profile [optimized] target(s) in 3.88s
+     Running tests/degenerate_transfer_fd_validation_structure.rs (target/release/deps/degenerate_transfer_fd_validation_structure-8366e9083c331a47)
+
+running 4 tests
+test the_guard_validator_rejects_the_pre_fix_shape ... ok
+test the_validator_reports_ebadf_from_the_descriptor_table ... ok
+test the_degenerate_transfer_census_is_not_vacuous ... ok
+test every_degenerate_transfer_guard_validates_the_descriptor_first ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+EXIT_CODE_FOR_degenerate_transfer_fd_validation_structure: 0
+
+=== dma_and_log_sink_structure ===
+   Compiling kernel v0.1.0 (/Users/wrb/fun/code/breenix/.claude/worktrees/wf_b1492392-5aa-4/kernel)
+   Compiling breenix v0.1.0 (/Users/wrb/fun/code/breenix/.claude/worktrees/wf_b1492392-5aa-4)
+    Finished `release` profile [optimized] target(s) in 3.82s
+     Running tests/dma_and_log_sink_structure.rs (target/release/deps/dma_and_log_sink_structure-d0bed977f6cd3f27)
+
+running 4 tests
+test logger_validator_rejects_blocking_framebuffer_lock ... ok
+test virtqueue_validator_rejects_log_and_continue_shape ... ok
+test virtqueue_dma_ring_allocation_fails_closed ... ok
+test framebuffer_log_sink_is_nonblocking_and_bounded ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+EXIT_CODE_FOR_dma_and_log_sink_structure: 0
+
+=== exec_lock_order_structure ===
+   Compiling kernel v0.1.0 (/Users/wrb/fun/code/breenix/.claude/worktrees/wf_b1492392-5aa-4/kernel)
+   Compiling breenix v0.1.0 (/Users/wrb/fun/code/breenix/.claude/worktrees/wf_b1492392-5aa-4)
+    Finished `release` profile [optimized] target(s) in 4.68s
+     Running tests/exec_lock_order_structure.rs (target/release/deps/exec_lock_order_structure-74369c4fbc976ece)
+
+running 34 tests
+test negative_collapsed_scheduler_census_is_rejected ... ok
+test boot_verdict_emits_and_gates_on_the_exec_lock_order_counters ... ok
+test negative_creation_injection_reusing_production_marker_is_rejected ... ok
+test arm64_exec_bodies_stage_the_receipt_after_the_context_reset ... ok
+test negative_creation_marker_reusing_exec_marker_is_rejected ... ok
+test creation_publication_seams_are_first_and_unique ... ok
+test exec_smoke_is_wired_into_the_aarch64_boot_path ... ok
+test negative_creation_publication_after_without_interrupts_is_rejected ... ok
+test negative_arm64_exec_snapshot_before_reset_is_rejected ... ok
+test negative_creation_injection_duplicating_predicate_is_rejected ... ok
+test negative_exec_sched_commit_without_must_use_is_rejected ... ok
+test negative_exec_smoke_after_reap_loop_is_rejected ... ok
+test negative_exec_smoke_after_boot_services_is_rejected ... ok
+test negative_exec_smoke_before_liveness_spawn_is_rejected ... ok
+test exec_sched_commit_is_a_must_use_receipt_applied_in_the_scheduler ... ok
+test negative_exec_smoke_init_spawn_deletion_is_rejected ... ok
+test negative_full_gate_without_exec_smoke_target_grep_is_rejected ... ok
+test negative_full_gate_without_violation_grep_is_rejected ... ok
+test negative_sys_exec_apply_before_drop_is_rejected ... ok
+test creation_lock_order_marker_and_oracle_reader_are_pinned ... ok
+test negative_sys_exec_missing_drop_is_rejected ... ok
+test negative_manager_module_scheduler_acquisition_is_rejected ... ok
+test negative_manager_scheduler_use_import_is_rejected ... ok
+test negative_scheduler_glob_import_is_rejected ... ok
+test negative_exec_sched_commit_without_pm_guard_is_rejected ... ok
+test sys_exec_releases_the_process_manager_before_the_scheduler ... ok
+test negative_creation_oracle_without_injected_assertion_is_rejected ... ok
+test negative_arm64_exec_scheduler_acquisition_is_rejected ... ok
+test negative_arm64_exec_scheduler_path_call_is_rejected ... ok
+test negative_unqualified_scheduler_call_is_rejected ... ok
+test manager_module_has_no_scheduler_lock_acquisition_anywhere ... ok
+test arm64_exec_bodies_never_touch_the_scheduler_lock ... ok
+test creation_paths_release_process_manager_before_publication ... ok
+test negative_creation_publication_inside_process_manager_scope_is_rejected ... ok
+
+test result: ok. 34 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+
+EXIT_CODE_FOR_exec_lock_order_structure: 0
+
+=== exit_tally_structure ===
+   Compiling kernel v0.1.0 (/Users/wrb/fun/code/breenix/.claude/worktrees/wf_b1492392-5aa-4/kernel)
+   Compiling breenix v0.1.0 (/Users/wrb/fun/code/breenix/.claude/worktrees/wf_b1492392-5aa-4)
+    Finished `release` profile [optimized] target(s) in 4.00s
+     Running tests/exit_tally_structure.rs (target/release/deps/exit_tally_structure-c23383ad30c90300)
+
+running 6 tests
+test terminated_assignment_detector_handles_paths_without_counting_patterns ... ok
+test failure_table_lock_is_only_taken_with_interrupts_disabled ... ok
+test termination_functions_guard_assign_and_record_in_order_once_each ... ok
+test process_task_has_no_record_exit_call ... ok
+test terminated_state_assignments_are_confined_to_the_two_termination_functions ... ok
+test record_exit_calls_exist_only_at_the_two_termination_transitions ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+EXIT_CODE_FOR_exit_tally_structure: 0
+
+=== fs_fault_production_clean ===
+   Compiling kernel v0.1.0 (/Users/wrb/fun/code/breenix/.claude/worktrees/wf_b1492392-5aa-4/kernel)
+   Compiling breenix v0.1.0 (/Users/wrb/fun/code/breenix/.claude/worktrees/wf_b1492392-5aa-4)
+    Finished `release` profile [optimized] target(s) in 3.86s
+     Running tests/fs_fault_production_clean.rs (target/release/deps/fs_fault_production_clean-3c86dc1c250d1fcc)
+
+running 4 tests
+test every_reference_to_the_leg_is_cfg_guarded ... ok
+test the_seam_ratchet_reddens_on_a_planted_unguarded_call ... ok
+test production_kernel_carries_no_fault_leg ... ok
+test the_scan_reddens_on_a_build_that_carries_the_leg ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 15.14s
+
+EXIT_CODE_FOR_fs_fault_production_clean: 0
+
+=== kernel_no_neon_guard ===
+   Compiling kernel v0.1.0 (/Users/wrb/fun/code/breenix/.claude/worktrees/wf_b1492392-5aa-4/kernel)
+   Compiling breenix v0.1.0 (/Users/wrb/fun/code/breenix/.claude/worktrees/wf_b1492392-5aa-4)
+    Finished `release` profile [optimized] target(s) in 3.96s
+     Running tests/kernel_no_neon_guard.rs (target/release/deps/kernel_no_neon_guard-5070b016e4ec3e77)
+
+running 1 test
+test kernel_elf_has_no_neon_fp_stores ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.54s
+
+EXIT_CODE_FOR_kernel_no_neon_guard: 0
+
+=== loopback_pump_structure ===
+   Compiling kernel v0.1.0 (/Users/wrb/fun/code/breenix/.claude/worktrees/wf_b1492392-5aa-4/kernel)
+   Compiling breenix v0.1.0 (/Users/wrb/fun/code/breenix/.claude/worktrees/wf_b1492392-5aa-4)
+    Finished `release` profile [optimized] target(s) in 4.52s
+     Running tests/loopback_pump_structure.rs (target/release/deps/loopback_pump_structure-41fc5debfe849db9)
+
+running 63 tests
+test drain_guard_scope_excludes_delivery ... ok
+test drain_exclusion_validator_rejects_atomic_bool ... ok
+test drain_guard_scope_validator_rejects_delivery_in_take_window ... ok
+test drain_exclusion_is_a_typed_guard ... ok
+test drain_owner_validator_rejects_force_release ... ok
+test general_idle_loop_validator_rejects_missing_x86_drain ... ok
+test any_context_wake_dispatches_on_execution_context ... ok
+test general_idle_loop_validator_rejects_missing_aarch64_testing_drain ... ok
+test any_context_wake_never_takes_the_scheduler_lock_in_interrupt_context ... ok
+test loopback_drain_exits_own_their_leftovers ... ok
+test general_idle_loops_drain_loopback ... ok
+test io_wake_validator_rejects_direct_any_context_routing ... ok
+test general_idle_loop_validator_rejects_missing_aarch64_no_userspace_drain ... ok
+test generic_unblock_keeps_child_exit_dedicated ... ok
+test loopback_drain_validator_rejects_a_dropped_rearm ... ok
+test pump_does_not_halt_while_work_remains ... ok
+test loopback_drain_validator_rejects_an_unflushed_empty_exit ... ok
+test pump_more_branch_validator_rejects_halt ... ok
+test net_lock_guard_context_validator_rejects_softirq_execution_entry ... ok
+test net_lock_guard_disables_bottom_halves_not_softirq_execution ... ok
+test loopback_enqueue_validator_rejects_a_missing_kick ... ok
+test generic_unblock_validator_rejects_child_exit_wake ... ok
+test loopback_enqueue_owns_its_delivery ... ok
+test any_context_wake_dispatch_validator_rejects_wide_softirq_predicate ... ok
+test loopback_arch_validator_rejects_arch_specific_test ... ok
+test no_force_release_of_the_drain_owner ... ok
+test any_context_wake_validator_rejects_interrupt_scheduler_lock ... ok
+test io_wake_buffers_before_thread_context_overflow_fallback ... ok
+test loopback_enqueue_validator_rejects_a_softirq_that_does_not_drain ... ok
+test tcp_accept_claim_validator_rejects_claim_outside_listener_lock ... ok
+test tcp_accept_claims_pending_in_peek_closure ... ok
+test tcp_accept_inserts_before_pending_removal ... ok
+test io_wake_validator_rejects_interrupt_context_inline_fallback ... ok
+test wake_waiting_threads_is_arch_neutral ... ok
+test tcp_accept_order_validator_rejects_remove_before_insert ... ok
+test waiter_lists_are_not_drained_before_the_wake ... ok
+test waiter_list_validator_rejects_pre_wake_drain ... ok
+test schedule_rearms_a_blocked_pump ... ok
+test wake_waiting_threads_validator_rejects_arch_cfg ... ok
+test x86_gate_validator_rejects_missing_loopback_marker ... ok
+test x86_gate_validator_rejects_lower_userspace_exit_pin ... ok
+test x86_gate_validator_rejects_missing_http_deadline_tally_disclosure ... ok
+test x86_gate_validator_rejects_deferred_loopback_requirement ... ok
+test x86_gate_validator_rejects_short_registry_poll_bound ... ok
+test x86_gate_validator_rejects_missing_userspace_failure_trap ... ok
+test x86_gate_requires_the_loopback_regression_tests ... ok
+test x86_gate_validator_rejects_weak_loopback_marker_count ... ok
+test schedule_rearm_validator_rejects_missing_unblock ... ok
+test scheduling_paths_reclaim_unschedulable_cpu_queues ... ok
+test loopback_regression_tests_are_arch_neutral ... ok
+test x86_userspace_launch_validator_rejects_missing_loopback_binary_load ... ok
+test x86_userspace_launch_validator_rejects_missing_loopback_process_launch ... ok
+test x86_userspace_phase_launches_loopback_wake_test ... ok
+test wakeup_placement_is_bounded_by_online_cpus ... ok
+test wakeup_placement_validator_rejects_max_cpu_selection ... ok
+test deliberately_broken_x86_loopback_gate_variants_fail_the_validator ... ok
+test unschedulable_reclaim_validator_rejects_missing_deferred_reclaim ... ok
+test wakeup_placement_validator_rejects_missing_scheduling_liveness_check ... ok
+test x86_loopback_gates_are_direct_reachable_and_have_one_marker_producer ... ok
+test pump_producer_seam_is_single ... ok
+test pump_producer_seam_validator_rejects_second_producer ... ok
+test pump_wake_is_the_only_pump_wake_path ... ok
+test pump_wake_validator_rejects_second_wake_path ... ok
+
+test result: ok. 63 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s
+
+EXIT_CODE_FOR_loopback_pump_structure: 0
+
+=== masked_binary_load_structure ===
+   Compiling kernel v0.1.0 (/Users/wrb/fun/code/breenix/.claude/worktrees/wf_b1492392-5aa-4/kernel)
+   Compiling breenix v0.1.0 (/Users/wrb/fun/code/breenix/.claude/worktrees/wf_b1492392-5aa-4)
+    Finished `release` profile [optimized] target(s) in 4.02s
+     Running tests/masked_binary_load_structure.rs (target/release/deps/masked_binary_load_structure-882b3f498ee4ad1a)
+
+running 4 tests
+test the_oracle_rejects_the_pre_fix_interactive_shape ... ok
+test the_interactive_profile_loads_before_it_masks ... ok
+test no_masked_block_on_the_boot_path_loads_a_test_binary ... ok
+test the_boot_path_still_loads_binaries_and_still_masks ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+EXIT_CODE_FOR_masked_binary_load_structure: 0
+
+=== net_lock_structure ===
+   Compiling kernel v0.1.0 (/Users/wrb/fun/code/breenix/.claude/worktrees/wf_b1492392-5aa-4/kernel)
+   Compiling breenix v0.1.0 (/Users/wrb/fun/code/breenix/.claude/worktrees/wf_b1492392-5aa-4)
+    Finished `release` profile [optimized] target(s) in 4.34s
+     Running tests/net_lock_structure.rs (target/release/deps/net_lock_structure-398de05a0e174c8f)
+
+running 19 tests
+test hardirq_surface_validator_rejects_net_table_reference ... ok
+test net_lock_guard_x86_validator_rejects_empty_arm ... ok
+test net_static_validator_accepts_declared_thread_context_only_static ... ok
+test net_static_validator_rejects_discovered_unguarded_static ... ok
+test net_static_validator_rejects_empty_thread_context_only_reason ... ok
+test irq_primitive_validator_rejects_resurrected_irq_save ... ok
+test net_lock_guard_aarch64_validator_rejects_missing_daifset ... ok
+test net_static_validator_rejects_immediately_dropped_guard ... ok
+test net_static_validator_requires_exactly_one_classification ... ok
+test net_static_validator_rejects_public_mutex_static ... ok
+test net_lock_guard_x86_arm_is_a_real_bottom_half_disable ... ok
+test deliberately_broken_unmatched_rst_reply_fails_the_validator ... ok
+test net_lock_guard_aarch64_arm_still_masks_daif ... ok
+test unmatched_tcp_rst_is_dropped_without_a_reply ... ok
+test tcp_accept_publish_race_has_a_sequential_recovery_path ... ok
+test deliberately_broken_tcp_accept_publish_race_variants_fail_the_validator ... ok
+test hardirq_surface_never_touches_the_net_tables ... ok
+test the_no_op_irq_primitives_stay_deleted ... ok
+test every_cross_context_net_static_is_guarded_or_declared_thread_only ... ok
+
+test result: ok. 19 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.24s
+
+EXIT_CODE_FOR_net_lock_structure: 0
+
+=== preempt_bracket_structure ===
+   Compiling kernel v0.1.0 (/Users/wrb/fun/code/breenix/.claude/worktrees/wf_b1492392-5aa-4/kernel)
+   Compiling breenix v0.1.0 (/Users/wrb/fun/code/breenix/.claude/worktrees/wf_b1492392-5aa-4)
+    Finished `release` profile [optimized] target(s) in 3.98s
+     Running tests/preempt_bracket_structure.rs (target/release/deps/preempt_bracket_structure-198b14f99c46fc73)
+
+running 8 tests
+test asymmetric_cfg_reddens_the_ratchet ... ok
+test comments_and_strings_do_not_feed_the_census ... ok
+test incomparable_cfg_contexts_reddens_the_chain_ratchet ... ok
+test symmetric_cfg_and_unconditional_brackets_pass ... ok
+test the_underflow_guard_stays_fail_closed ... ok
+test boot_path_preempt_sites_share_one_cfg_context ... ok
+test boot_path_preempt_brackets_are_cfg_symmetric ... ok
+test boot_path_preempt_bracket_census_is_not_empty ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+EXIT_CODE_FOR_preempt_bracket_structure: 0
+
+=== repo_symlink_hygiene ===
+   Compiling kernel v0.1.0 (/Users/wrb/fun/code/breenix/.claude/worktrees/wf_b1492392-5aa-4/kernel)
+   Compiling breenix v0.1.0 (/Users/wrb/fun/code/breenix/.claude/worktrees/wf_b1492392-5aa-4)
+    Finished `release` profile [optimized] target(s) in 3.91s
+     Running tests/repo_symlink_hygiene.rs (target/release/deps/repo_symlink_hygiene-f73a16f4b2c86c16)
+
+running 4 tests
+test absolute_symlink_predicate_rejects_the_committed_rust_fork_shape ... ok
+test the_forked_rust_library_override_is_documented ... ok
+test rust_fork_is_untracked_and_ignored ... ok
+test tracked_symlinks_name_no_absolute_path ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+EXIT_CODE_FOR_repo_symlink_hygiene: 0
+
+=== serial_line_atomicity_structure ===
+   Compiling kernel v0.1.0 (/Users/wrb/fun/code/breenix/.claude/worktrees/wf_b1492392-5aa-4/kernel)
+   Compiling breenix v0.1.0 (/Users/wrb/fun/code/breenix/.claude/worktrees/wf_b1492392-5aa-4)
+    Finished `release` profile [optimized] target(s) in 4.28s
+     Running tests/serial_line_atomicity_structure.rs (target/release/deps/serial_line_atomicity_structure-ba5331fec62c0aa9)
+
+running 9 tests
+test periodic_guard_validator_rejects_a_synthetic_unlocked_writer ... ok
+test tty_validator_rejects_per_byte_serial_writes ... ok
+test tty_writes_line_segments_through_atomic_serial_path ... ok
+test every_serial_module_has_a_single_lock_batched_writer ... ok
+test unlocked_multi_byte_serial_writes_are_never_periodic ... ok
+test unlocked_multi_byte_serial_write_census_is_pinned ... ok
+test census_validator_rejects_a_synthetic_unlocked_multi_byte_writer ... ok
+test raw_serial_primitive_census_is_pinned ... ok
+test primitive_census_validator_rejects_a_differently_named_uart_writer ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
+
+EXIT_CODE_FOR_serial_line_atomicity_structure: 0
+
+=== signal_eintr_predicate_structure ===
+   Compiling kernel v0.1.0 (/Users/wrb/fun/code/breenix/.claude/worktrees/wf_b1492392-5aa-4/kernel)
+   Compiling breenix v0.1.0 (/Users/wrb/fun/code/breenix/.claude/worktrees/wf_b1492392-5aa-4)
+    Finished `release` profile [optimized] target(s) in 3.85s
+     Running tests/signal_eintr_predicate_structure.rs (target/release/deps/signal_eintr_predicate_structure-397bfa16198d8548)
+
+running 2 tests
+test eintr_validator_rejects_deliverable_signal_call ... ok
+test syscall_eintr_uses_disposition_aware_signal_predicate ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+EXIT_CODE_FOR_signal_eintr_predicate_structure: 0
+
+=== strand_handoff_structure ===
+   Compiling kernel v0.1.0 (/Users/wrb/fun/code/breenix/.claude/worktrees/wf_b1492392-5aa-4/kernel)
+   Compiling breenix v0.1.0 (/Users/wrb/fun/code/breenix/.claude/worktrees/wf_b1492392-5aa-4)
+    Finished `release` profile [optimized] target(s) in 5.47s
+     Running tests/strand_handoff_structure.rs (target/release/deps/strand_handoff_structure-bcd4249983941d5d)
+
+running 38 tests
+test every_aarch64_census_gate_requires_joined_but_accepts_reported_retirement_evidence ... ok
+test full_test_rejects_post_run_stranded_markers ... ok
+test service_sequence_instruction_abort_signatures_are_set_shaped ... ok
+test boot_tests_gates_refuse_a_wrong_profile_kernel ... ok
+test service_sequence_635_arm_is_field_keyed_and_untolerated ... ok
+test service_sequence_cpu_identity_splits_fail_the_profile ... ok
+test first_strand_census_precedes_the_steady_state_cadence ... ok
+test service_sequence_census_columns_match_the_rows_it_writes ... ok
+test service_sequence_instruction_abort_classifier_is_single_signature ... ok
+test service_sequence_609_arm_is_field_keyed_and_untolerated ... ok
+test service_sequence_pc_align_and_panic_classifiers_are_field_keyed_before_fallbacks ... ok
+test service_sequence_resume_pc_refusals_are_counted_exactly_once_per_boot ... ok
+test service_sequence_percpu_stack_alien_refusals_fail_the_profile ... ok
+test service_sequence_resume_pc_refusals_fail_the_profile ... ok
+test strand_marker_reports_dwell_and_nonprogress_axes ... ok
+test strand_victim_parks_on_the_sample_timer ... ok
+test cpu_affinity_zero_sentinel_is_never_a_thread_id ... ok
+test service_sequence_ret_dispatch_refusals_are_counted_and_reported_not_gated ... ok
+test strict_gate_build_hint_enables_boot_tests ... ok
+test pending_next_is_taken_only_after_rollback_refusals ... ok
+test service_sequence_ret_stage_refusals_fail_the_profile_and_nontext_words_do_not ... ok
+test injection_report_cap_preserves_in_flight_scoring_windows ... ok
+test strict_gate_poll_loop_stops_only_on_crash_or_complete_score ... ok
+test idle_disposability_is_parked_state_not_bare_tid_identity ... ok
+test strict_gate_rejects_aggregate_boot_test_failures_with_a_field_signature ... ok
+test strict_gate_rejects_stranded_markers_from_finished_serial ... ok
+test census_and_kernel_stack_ownership_oracles_share_a_subsystem_in_safe_order ... ok
+test strand_census_disposability_and_reachability_dimensions_cannot_shrink ... ok
+test the_mutation_leg_exemption_is_exactly_as_narrow_as_it_claims ... ok
+test x86_strand_oracle_is_synchronous_and_sampled_by_the_executor ... ok
+test injection_stimulus_default_is_idle_gated_and_live_widening_is_cfg_only ... ok
+test census_real_thread_arm_and_forced_placement_helpers_are_aarch64_only ... ok
+test strand_census_progress_axes_and_ordering_cannot_shrink ... ok
+test x86_census_widen_oracle_is_one_shot_in_the_live_verdict_path ... ok
+test strand_handoff_structure_is_pinned_without_line_numbers ... ok
+test wakeup_placement_requires_local_dispatchability ... ok
+test every_oracle_gate_pattern_matches_the_emitted_format ... ok
+test aarch64_census_widen_oracle_has_real_disarmed_and_armed_legs ... ok
+
+test result: ok. 38 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
+
+EXIT_CODE_FOR_strand_handoff_structure: 0
+
+=== syscall_return_register_structure ===
+   Compiling kernel v0.1.0 (/Users/wrb/fun/code/breenix/.claude/worktrees/wf_b1492392-5aa-4/kernel)
+   Compiling breenix v0.1.0 (/Users/wrb/fun/code/breenix/.claude/worktrees/wf_b1492392-5aa-4)
+    Finished `release` profile [optimized] target(s) in 3.77s
+     Running tests/syscall_return_register_structure.rs (target/release/deps/syscall_return_register_structure-cbf82bfb36310e9f)
+
+running 6 tests
+test comments_and_strings_do_not_forge_findings ... ok
+test correct_shapes_are_admitted ... ok
+test deliberately_broken_variants_fail_the_rules ... ok
+test every_returning_trap_declares_the_return_register_write ... ok
+test no_trap_names_its_return_register_as_input_only ... ok
+test the_census_sees_the_repository_s_syscall_traps ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.12s
+
+EXIT_CODE_FOR_syscall_return_register_structure: 0
+
+=== teardown_structure ===
+   Compiling kernel v0.1.0 (/Users/wrb/fun/code/breenix/.claude/worktrees/wf_b1492392-5aa-4/kernel)
+   Compiling breenix v0.1.0 (/Users/wrb/fun/code/breenix/.claude/worktrees/wf_b1492392-5aa-4)
+    Finished `release` profile [optimized] target(s) in 11.66s
+     Running tests/teardown_structure.rs (target/release/deps/teardown_structure-8f4e82e2206fcc7b)
+
+running 81 tests
+test code_mask_reports_only_real_code_occurrences ... ok
+test arm64_stack_bitmap_is_irqsafe_by_type_and_release_order ... ok
+test benign_reclaim_nesting_has_a_distinct_counter ... ok
+test direct_x86_teardown_gate_validator_rejects_dead_tail_and_duplicate_pass ... ok
+test both_complete_wait_arms_claim_before_they_copy ... ok
+test deliberately_broken_timer_delay_variants_fail_the_ratchet ... ok
+test blocking_family_ratchets_are_registered_and_nonvacuous ... ok
+test aarch64_reclamation_stays_outside_the_masked_scheduler_window ... ok
+test exec_detach_oracle_pins_pre_exec_group_reachability_control ... ok
+test function_body_is_lexically_scoped_and_exactly_named ... ok
+test gate_producer_validator_rejects_arch_any_double_registration ... ok
+test deferred_reclamation_census_rejects_an_added_operation ... ok
+test deferred_reclamation_census_rejects_each_missing_teardown_operation ... ok
+test creating_dispatch_refusal_oracle_is_registered_and_pinned ... ok
+test direct_x86_teardown_gates_keep_only_aarch64_registry_producers ... ok
+test init_shell_role_is_conferred_by_argument_not_pid ... ok
+test aarch64_exit_kick_waits_are_progress_bounded ... ok
+test item_path_is_cfg_and_impl_scoped ... ok
+test kernel_stack_gate_validator_rejects_a_deleted_pin ... ok
+test kernel_stack_gate_scripts_keep_ownership_evidence_pinned ... ok
+test kernel_stack_ownership_gate_launch_is_exact ... ok
+test kernel_stack_ownership_gate_launch_validator_rejects_missing_producers ... ok
+test kernel_stack_ownership_oracle_measures_by_slot_identity ... ok
+test kernel_stack_release_ordering_is_structural ... ok
+test kernel_stack_release_validator_rejects_unsafe_mutations ... ok
+test kstack_identity_validator_rejects_the_unsound_reads ... ok
+test leaf_timing_oracle_validator_rejects_an_empty_old_root_fixture ... ok
+test nonowning_reclaim_queue_paths_are_bounded_and_fail_closed ... ok
+test oversized_reclaim_failures_name_every_root_proof_blocker ... ok
+test all_phase_zero_counters_have_registered_readers_and_honest_runtime_gates ... ok
+test p5b_gate_scripts_keep_refusal_evidence_pinned ... ok
+test init_group_refusal_oracle_is_registered_and_directly_reachable ... ok
+test init_identity_mechanism_is_cfg_free ... ok
+test p6a_retire_arm_stays_outside_masked_and_queue_held_windows ... ok
+test production_boot_and_heartbeat_emit_root_custody_summary ... ok
+test init_row_builders_insert_only_after_all_fallible_steps ... ok
+test qemu_accelerator_is_opt_in_allowlisted_and_defaults_to_tcg ... ok
+test qemu_accelerator_validator_rejects_unvalidated_environment_input ... ok
+test reclaim_bracket_fixture_is_accepted_so_the_mutations_below_are_meaningful ... ok
+test every_external_schedule_from_kernel_call_reclaims_immediately_beforehand ... ok
+test reclaim_bracket_validator_rejects_a_deleted_disable ... ok
+test reclaim_bracket_validator_rejects_a_deleted_refusal_arm_enable ... ok
+test reclaim_bracket_validator_rejects_a_deleted_release_enable ... ok
+test reclaim_bracket_validator_rejects_a_disable_hoisted_above_the_boot_owner_return ... ok
+test reclaim_bracket_validator_rejects_a_disable_hoisted_above_the_context_violation_return ... ok
+test reclaim_bracket_validator_rejects_a_disable_taken_after_the_claim ... ok
+test reclaim_bracket_validator_rejects_an_interrupt_mask_in_place_of_a_preempt_bracket ... ok
+test reclaim_nesting_validator_rejects_context_violation_conflation ... ok
+test reclaim_progress_park_unpark_arms_follow_cpu_topology ... ok
+test box_leak_box_new_census_rejects_a_sixth_site ... ok
+test reclaim_queue_validator_rejects_a_blocking_enqueue_lock ... ok
+test root_custody_summary_validator_rejects_a_boot_tests_only_emitter ... ok
+test rust_fork_library_override_validator_rejects_hardcoded_paths ... ok
+test reclaim_progress_topology_validator_rejects_arch_selection_and_a_skipped_counter ... ok
+test rust_fork_library_paths_are_overrideable_in_both_builders ... ok
+test shadow_root_clears_are_observable_in_production_counters ... ok
+test shadow_root_counter_validator_rejects_an_uncounted_clear ... ok
+test the_mutation_leg_exemption_is_exactly_as_narrow_as_it_claims ... ok
+test the_production_reclaim_claim_runs_with_preemption_disabled ... ok
+test timer_delay_retry_is_gated_on_proven_host_starvation ... ok
+test x86_leaf_timing_oracle_has_an_exec_root_producer_in_its_window ... ok
+test production_boot_and_heartbeat_emit_the_tombstone_census ... ok
+test x86_production_profile_gate_ratchet_is_not_vacuous ... ok
+test box_leak_box_new_census_is_empty_and_nonvacuous ... ok
+test x86_production_profile_gate_verdict_discipline_holds ... ok
+test x86_teardown_gates_are_direct_reachable_and_exactly_once ... ok
+test blocking_primitive_census_sees_pub_crate_members ... ok
+test tombstone_row_state_is_the_single_authority ... ok
+test init_pid_reservation_is_single_sourced ... ok
+test phase_one_retirement_fence_and_lock_domains_are_structural ... ok
+test hardcoded_init_pid_shapes_are_confined_to_the_reservation ... ok
+test process_row_map_mutations_are_authority_scoped ... ok
+test debt4_row_removal_routes_through_the_join_on_both_arches ... ok
+test keyed_row_lookups_go_through_the_tombstone_predicates ... ok
+test process_page_table_custody_ratchets_are_exact ... ok
+test frame_ledger_return_and_initialization_ratchets_are_exact ... ok
+test current_teardown_bypass_surface_is_exact ... ok
+test drop_body_static_locks_are_irqsafe_by_derived_census ... ok
+test init_designation_authority_is_closed ... ok
+test v3_structural_closures_are_exact ... FAILED
+test deliberately_broken_variants_fail_the_ratchet ... FAILED
+
+failures:
+
+---- v3_structural_closures_are_exact stdout ----
+
+thread 'v3_structural_closures_are_exact' panicked at tests/teardown_structure.rs:8176:5:
+thread-state constructions changed
+    + kernel/src/proof/driver_h.rs :: fn corroborating_nonprogress_bit => Running  (1 occurrences, expected none)
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- deliberately_broken_variants_fail_the_ratchet stdout ----
+vacuity check check/enqueue atomicity: futex_wait must not compare expected_val before prepare_to_wait_checked
+vacuity check queue value type: FUTEX_QUEUES must map keys to WaitQueueHead | FUTEX_QUEUES must not use a bare waiter list
+vacuity check sleeping preempt discipline: kernel/src/syscall/futex.rs :: fn futex_wait must enable preemption before its first sleep loop and disable it after
+vacuity check futex lock order: kernel/src/syscall/futex.rs :: fn futex_wake must resolve group identity before FUTEX_QUEUES without manager held
+vacuity check wait/wake logging discipline: kernel/src/syscall/futex.rs :: fn futex_wait must not log on the futex wait/wake path
+vacuity check oracle marker and gate pins: futex oracle must emit the exact marker prefix
+vacuity check futex driver untimed handoff stage: every driver FUTEX_WAIT must carry a nonzero timeout pointer
+vacuity check futex driver seam-absent exit: the seam-absent guard must exit before the driver's second futex call
+vacuity check production gate armed build profile: production gate kernel build must not enable features
+vacuity check production gate bsshd accept pin: production gate must pin bsshd reaching its listening state
+
+thread 'deliberately_broken_variants_fail_the_ratchet' panicked at tests/teardown_structure.rs:9710:5:
+assertion failed: validate_thread_state_constructions(&sources).is_ok()
+
+
+failures:
+    deliberately_broken_variants_fail_the_ratchet
+    v3_structural_closures_are_exact
+
+test result: FAILED. 79 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.20s
+
+error: test failed, to rerun pass `--test teardown_structure`
+EXIT_CODE_FOR_teardown_structure: 101
+
+=== tty_oracle_structure ===
+   Compiling kernel v0.1.0 (/Users/wrb/fun/code/breenix/.claude/worktrees/wf_b1492392-5aa-4/kernel)
+   Compiling breenix v0.1.0 (/Users/wrb/fun/code/breenix/.claude/worktrees/wf_b1492392-5aa-4)
+    Finished `release` profile [optimized] target(s) in 4.05s
+     Running tests/tty_oracle_structure.rs (target/release/deps/tty_oracle_structure-332d87a8c88619e8)
+
+running 16 tests
+test a_boot_that_drove_nothing_cannot_pass_the_gate ... ok
+test a_boot_that_drove_nothing_cannot_pass_the_x86_gate ... ok
+test the_gate_carries_the_668_err_trap ... ok
+test the_gate_measures_the_profile_that_ships ... ok
+test the_x86_gate_carries_the_668_err_trap ... ok
+test full_test_phase_two_does_not_accept_a_bare_pty_unlock_as_a_shell ... ok
+test init_launches_the_oracle_on_x86 ... ok
+test the_oracle_tally_matches_its_arm_census ... ok
+test the_gate_scores_exactly_the_arms_the_oracle_drives ... ok
+test the_x86_gate_refuses_a_cloexec_exec_verdict ... ok
+test init_launches_the_oracle_on_aarch64 ... ok
+test the_oracle_tally_matches_its_x86_arm_census ... ok
+test the_x86_gate_measures_the_profile_that_ships ... ok
+test deliberately_broken_variants_fail_the_ratchets ... ok
+test the_x86_gate_scores_exactly_the_arms_the_oracle_drives_on_x86 ... ok
+test deliberately_broken_x86_variants_fail_the_ratchets ... ok
+
+test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+EXIT_CODE_FOR_tty_oracle_structure: 0
+
+=== x86_gate_verdict_test ===
+   Compiling kernel v0.1.0 (/Users/wrb/fun/code/breenix/.claude/worktrees/wf_b1492392-5aa-4/kernel)
+   Compiling breenix v0.1.0 (/Users/wrb/fun/code/breenix/.claude/worktrees/wf_b1492392-5aa-4)
+    Finished `release` profile [optimized] target(s) in 3.86s
+     Running tests/x86_gate_verdict_test.rs (target/release/deps/x86_gate_verdict_test-625365b4e4e50d4d)
+
+running 5 tests
+test rejects_a_missing_expected_exits_variable ... ok
+test rejects_empty_non_decimal_and_zero_expected_exits_values ... ok
+test rejects_a_tally_below_the_expected_exit_floor ... ok
+test rejects_a_fault_killed_test_and_names_the_process ... ok
+test accepts_a_complete_green_cohort_at_the_expected_floor ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+
+EXIT_CODE_FOR_x86_gate_verdict_test: 0
+

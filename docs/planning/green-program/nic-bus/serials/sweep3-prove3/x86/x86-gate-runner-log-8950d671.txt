@@ -1,0 +1,12 @@
+[gate] repo: /root/breenix  head: 8950d671
+[gate] accel=kvm cpu=host
+[gate] === Building userspace ELFs ===
+[gate] === Repacking the userspace test disk and the ext2 image ===
+[gate] === Building (release, features=testing,external_test_bins) ===
+[gate] Build clean (0 warnings) in 15s
+[gate] === Running 1 boot test(s), mode=full ===
+STRAND_CENSUS: threads_saved_blocked=9 stranded=0 lines=5154
+x86 userspace gate: PASS - exited=20 expected>=10 nonzero=0 allowlist=0
+  Test 1: PASS
+  Device census: [ INFO] kernel::drivers::pci: PCI: Enumeration complete. Found 9 devices (3 VirtIO block, 1 network)
+GATE: PASS (1/1 boot tests passed; mode=full build=15s boot=150s total=175s)
