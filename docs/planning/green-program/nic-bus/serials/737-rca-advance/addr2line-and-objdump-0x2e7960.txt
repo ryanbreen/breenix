@@ -1,0 +1,103 @@
+core::panic::location::Location::file
+kernel.b26cede5b24b6c2b-cgu.13:?
+---
+
+/root/p702-rca/repo/target/x86_64-unknown-none/release/deps/artifact/kernel-10a65b692264a663/bin/kernel-10a65b692264a663:     file format elf64-x86-64
+
+
+Disassembly of section .text:
+
+00000000002e7900 <core::array::<impl core::iter::traits::collect::IntoIterator for &[T; N]>::into_iter>:
+  2e7900:	48 83 ec 10          	sub    $0x10,%rsp
+  2e7904:	48 89 3c 24          	mov    %rdi,(%rsp)
+  2e7908:	48 8b 04 24          	mov    (%rsp),%rax
+  2e790c:	48 83 c0 0c          	add    $0xc,%rax
+  2e7910:	48 89 44 24 08       	mov    %rax,0x8(%rsp)
+  2e7915:	48 8b 04 24          	mov    (%rsp),%rax
+  2e7919:	48 8b 54 24 08       	mov    0x8(%rsp),%rdx
+  2e791e:	48 83 c4 10          	add    $0x10,%rsp
+  2e7922:	c3                   	ret
+  2e7923:	cc                   	int3
+  2e7924:	cc                   	int3
+  2e7925:	cc                   	int3
+  2e7926:	cc                   	int3
+  2e7927:	cc                   	int3
+  2e7928:	cc                   	int3
+  2e7929:	cc                   	int3
+  2e792a:	cc                   	int3
+  2e792b:	cc                   	int3
+  2e792c:	cc                   	int3
+  2e792d:	cc                   	int3
+  2e792e:	cc                   	int3
+  2e792f:	cc                   	int3
+
+00000000002e7930 <core::array::<impl core::iter::traits::collect::IntoIterator for &[T; N]>::into_iter>:
+  2e7930:	48 83 ec 10          	sub    $0x10,%rsp
+  2e7934:	48 89 3c 24          	mov    %rdi,(%rsp)
+  2e7938:	48 8b 04 24          	mov    (%rsp),%rax
+  2e793c:	48 05 00 02 00 00    	add    $0x200,%rax
+  2e7942:	48 89 44 24 08       	mov    %rax,0x8(%rsp)
+  2e7947:	48 8b 04 24          	mov    (%rsp),%rax
+  2e794b:	48 8b 54 24 08       	mov    0x8(%rsp),%rdx
+  2e7950:	48 83 c4 10          	add    $0x10,%rsp
+  2e7954:	c3                   	ret
+  2e7955:	cc                   	int3
+  2e7956:	cc                   	int3
+  2e7957:	cc                   	int3
+  2e7958:	cc                   	int3
+  2e7959:	cc                   	int3
+  2e795a:	cc                   	int3
+  2e795b:	cc                   	int3
+  2e795c:	cc                   	int3
+  2e795d:	cc                   	int3
+  2e795e:	cc                   	int3
+  2e795f:	cc                   	int3
+
+00000000002e7960 <core::panic::location::Location::file>:
+  2e7960:	48 8b 07             	mov    (%rdi),%rax
+  2e7963:	48 8b 57 08          	mov    0x8(%rdi),%rdx
+  2e7967:	48 ff ca             	dec    %rdx
+  2e796a:	c3                   	ret
+  2e796b:	cc                   	int3
+  2e796c:	cc                   	int3
+  2e796d:	cc                   	int3
+  2e796e:	cc                   	int3
+  2e796f:	cc                   	int3
+
+00000000002e7970 <core::panic::location::Location::line>:
+  2e7970:	8b 47 10             	mov    0x10(%rdi),%eax
+  2e7973:	c3                   	ret
+  2e7974:	cc                   	int3
+  2e7975:	cc                   	int3
+  2e7976:	cc                   	int3
+  2e7977:	cc                   	int3
+  2e7978:	cc                   	int3
+  2e7979:	cc                   	int3
+  2e797a:	cc                   	int3
+  2e797b:	cc                   	int3
+  2e797c:	cc                   	int3
+  2e797d:	cc                   	int3
+  2e797e:	cc                   	int3
+  2e797f:	cc                   	int3
+
+00000000002e7980 <core::slice::<impl [T]>::iter>:
+  2e7980:	50                   	push   %rax
+  2e7981:	48 8b 05 38 d3 0c 00 	mov    0xcd338(%rip),%rax        # 3b4cc0 <_DYNAMIC+0xebf8>
+  2e7988:	ff d0                	call   *%rax
+  2e798a:	59                   	pop    %rcx
+  2e798b:	c3                   	ret
+  2e798c:	cc                   	int3
+  2e798d:	cc                   	int3
+  2e798e:	cc                   	int3
+  2e798f:	cc                   	int3
+
+00000000002e7990 <core::slice::<impl [T]>::iter>:
+  2e7990:	50                   	push   %rax
+  2e7991:	48 8b 05 d0 d2 0c 00 	mov    0xcd2d0(%rip),%rax        # 3b4c68 <_DYNAMIC+0xeba0>
+  2e7998:	ff d0                	call   *%rax
+  2e799a:	59                   	pop    %rcx
+  2e799b:	c3                   	ret
+  2e799c:	cc                   	int3
+  2e799d:	cc                   	int3
+  2e799e:	cc                   	int3
+  2e799f:	cc                   	int3
