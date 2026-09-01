@@ -723,8 +723,20 @@ test -n "$UEFI_IMG"
 # rather than the *missing-artifact* build error it actually is. Fail loudly and
 # distinctly here, before that ambiguity can happen.
 for exec_smoke_bin in exec_smoke exec_smoke_target; do
-    if [ ! -f "userspace/programs/${exec_smoke_bin}.elf" ]; then
-        echo "userspace artifact missing: userspace/programs/${exec_smoke_bin}.elf -- run userspace/programs/build.sh --arch x86_64" >&2
+    elf_path="userspace/programs/${exec_smoke_bin}.elf"
+    if [ ! -f "$elf_path" ]; then
+        echo "userspace artifact missing: ${elf_path} -- run userspace/programs/build.sh --arch x86_64" >&2
+        false
+    fi
+    # #721 m3: presence alone does not rule out a stale wrong-arch artifact --
+    # a checkout that last ran `build.sh --arch aarch64` leaves an aarch64 .elf
+    # in place, which would pass the existence check above and then redden the
+    # EXEC_SMOKE assertions below as an *exec defect* instead of the *stale
+    # build* it actually is. Read the ELF e_machine field directly (offset
+    # 0x12, little-endian u16) rather than trusting the file's mere presence.
+    exec_smoke_e_machine=$(od -An -tu2 -j 18 -N 2 "$elf_path" | tr -d ' ')
+    if [ "$exec_smoke_e_machine" != "62" ]; then
+        echo "userspace artifact wrong architecture: ${elf_path} has e_machine=${exec_smoke_e_machine} (expected 62/EM_X86_64) -- run userspace/programs/build.sh --arch x86_64" >&2
         false
     fi
 done

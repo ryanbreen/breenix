@@ -2587,11 +2587,17 @@ pub fn sys_execv_with_frame(
         let elf_data = elf_vec.as_slice();
 
         // #721 K12: reclaim scheduler-owned kernel stacks and deferred process resources
-        // before exec consumes another finite kernel-stack-pool slot — exec_process_with_argv
-        // allocates a fresh GuardedStack for its manually-mapped user stack on every call
-        // (manager.rs, "Create a dummy stack object since we manually mapped the stack") and
-        // drops the previous one; this mirrors sys_spawn's identical ordering (#713 precheck
-        // C8). The PM lock is not held across either call.
+        // before exec runs, mirroring sys_spawn's identical ordering (#713 precheck C8).
+        // This mirrors, but does not fix, two separately-filed pools exec_process_with_argv
+        // touches on every call: it allocates a fresh GuardedStack for its manually-mapped
+        // user stack (manager.rs, "Create a dummy stack object since we manually mapped the
+        // stack") from #720's never-reclaiming NEXT_USER_STACK_ADDR bump allocator, and the
+        // previous GuardedStack it replaces is dropped into #583's no-op Drop (the frames
+        // are never returned). reclaim_deferred_process_resources()/reclaim_terminated_threads()
+        // reclaim kernel stacks and dead-process resources — neither touches either pool.
+        // Before this PR, production x86 exec consumed nothing (ENOSYS); it is now a new
+        // per-call consumer of #720's finite VA budget and #583's frame leak. The PM lock is
+        // not held across either reclaim call.
         crate::task::process_task::reclaim_deferred_process_resources();
         crate::task::scheduler::reclaim_terminated_threads();
 
@@ -2624,14 +2630,19 @@ pub fn sys_execv_with_frame(
 
         // CRITICAL SECTION: manager call, scheduler commit, CR3 install and frame patch —
         // masked together (#721 K10: mirrors aarch64's sys_exec_aarch64, which masks this
-        // exact window for exec specifically; #713's sys_spawn deliberately does NOT mask
-        // its own creation window, citing a MEMORY_INFO lock-order deadlock risk against
-        // concurrent frame allocation, but that risk is about a NEW page table's
-        // construction racing a DIFFERENT thread's frame accounting — exec's page table is
-        // also not yet published/active, and this is the same masking regime aarch64 already
-        // runs in production for the identical operation, so it is followed here rather than
-        // sys_spawn's un-masked one). The ext2 read and the argv/name parsing above both
-        // stay outside this section (X2).
+        // exact window for exec specifically). #713's sys_spawn deliberately does NOT mask
+        // its own creation window, citing creation.rs's documented worry: disabling
+        // interrupts while holding PROCESS_MANAGER and then acquiring MEMORY_INFO could
+        // deadlock against a concurrent thread doing the reverse. That worry is stale by
+        // the time exec ever runs: MEMORY_INFO (frame_allocator.rs) is a `spin::Once`
+        // populated once at boot and read everywhere thereafter via `.get()` — a non-blocking
+        // load, not a lock acquisition — and `allocate_frame()` itself is CAS-based, so there
+        // is no second lock for a masked exec to block on while holding PROCESS_MANAGER.
+        // aarch64 already masks this identical operation in production with no such hazard
+        // materializing, so the same regime is followed here. (creation.rs's and sys_spawn's
+        // own comments are stale in the same way; not rewritten here to keep this diff
+        // scoped to exec.) The ext2 read and the argv/name parsing above both stay outside
+        // this section (X2).
         crate::arch_without_interrupts(|| {
             let mut manager_guard = crate::process::manager();
             let Some(manager) = manager_guard.as_mut() else {

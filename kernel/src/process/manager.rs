@@ -3218,17 +3218,42 @@ impl ProcessManager {
         // a use-after-free on exec failure: if any subsequent operation fails, the Err return
         // would drop the old Box<ProcessPageTable>, freeing physical memory while CR3 still
         // points to it. The old page table is taken later, after all fallible ops succeed.
-        let thread_id = {
-            let process = self.processes.live_row_mut(&pid).ok_or("Process not found")?;
-            // Drain any pending old page tables from previous exec() calls.
-            // By this point, CR3 has definitely switched away from any old tables.
-            process.drain_old_page_tables();
+        let (thread_id, old_cr3, thread_group_id) = {
+            let process = self.processes.live_row(&pid).ok_or("Process not found")?;
+            let old_cr3 = process.cr3_value();
+            let thread_group_id = process.thread_group_id.unwrap_or(pid.as_u64());
             let main_thread = process
                 .main_thread
                 .as_ref()
                 .ok_or("Process has no main thread")?;
-            main_thread.id
+            (main_thread.id, old_cr3, thread_group_id)
         };
+
+        // #721 K5: refuse to retire this address space while a live CLONE_VM sibling
+        // still holds the same CR3 — matches exec_process_with_argv (#721 B2) and
+        // aarch64's own exec_process, same relative position (right after
+        // old_cr3/thread_group_id capture, before any fallible page-table work).
+        if let Some(old_cr3) = old_cr3 {
+            if let Some((sibling_pid, sibling_thread_id)) =
+                self.find_live_clone_vm_sibling_holding_cr3(pid, thread_group_id, old_cr3)
+            {
+                log::warn!(
+                    "exec_process: rejecting exec for PID {} while CLONE_VM sibling PID {} thread {} still holds inherited CR3 {:#x}",
+                    pid.as_u64(),
+                    sibling_pid.as_u64(),
+                    sibling_thread_id,
+                    old_cr3
+                );
+                return Err("exec blocked while CLONE_VM sibling shares old address space");
+            }
+        }
+
+        {
+            let process = self.processes.live_row_mut(&pid).ok_or("Process not found")?;
+            // Drain any pending old page tables from previous exec() calls.
+            // By this point, CR3 has definitely switched away from any old tables.
+            process.drain_old_page_tables();
+        }
 
         log::info!(
             "exec_process: Preserving thread ID {} for process {}",
@@ -3393,14 +3418,10 @@ impl ProcessManager {
         // thread group it was cloned into. Both fields are reset here — after
         // every fallible step and before the process-manager guard is released —
         // so that any exec that fails earlier leaves them byte-identical to their
-        // pre-exec values. #721 K6: unlike exec_process_with_argv (its sibling
-        // below, and aarch64's own two exec functions), this function has no
-        // find_live_clone_vm_sibling_holding_cr3 guard above — it is dead code in
-        // production (its only caller, sys_exec_with_frame, has no live call site;
-        // see #721 spec section 1.1) and test-only callers do not exercise
-        // CLONE_VM. Do not add the guard here without also giving this function a
-        // live caller; adding it unused would be exactly the kind of code this
-        // project does not carry.
+        // pre-exec values. The live-sibling guard above (#721 K5/B2) is what
+        // makes that byte-identical claim true for a failed exec: it runs
+        // before this point, so nothing here observes a sibling that still
+        // holds the old root.
         process.inherited_cr3 = None;
         process.thread_group_id = None;
 
@@ -3727,7 +3748,18 @@ impl ProcessManager {
             .processes
             .live_row_mut(&pid)
             .ok_or("Process not found during update")?;
-        let old_page_table = process.page_table.take();
+        // #721 M4: defer the old page table into the process's own pending list right here,
+        // rather than holding it in a local until the end of the function. Two fallible `?`s
+        // below (the published-page-table and main-thread lookups) run after this point; if
+        // either returned Err while the old table sat in a local, dropping that local on the
+        // early return would free its frames while CR3 might still reference them — exactly
+        // the use-after-free the deliberately-late `take()` above (vs. taking it before the
+        // fallible ELF/frame/argv work earlier in this function) exists to prevent. Deferring
+        // immediately closes that window: from here on, a failure leaves the table safely
+        // queued for later reclaim instead of owned by a local that is about to disappear.
+        if let Some(old_pt) = process.page_table.take() {
+            process.pending_old_page_tables.push(old_pt);
+        }
 
         // Update the process with new program data
         if let Some(name) = program_name {
@@ -3838,14 +3870,7 @@ impl ProcessManager {
                 pid.as_u64()
             );
         }
-
-        // Defer old page table cleanup (see exec_process for rationale)
-        if let Some(old_pt) = old_page_table {
-            log::info!("exec_process_with_argv: Deferring old page table cleanup");
-            if let Some(process) = self.processes.live_row_mut(&pid) {
-                process.pending_old_page_tables.push(old_pt);
-            }
-        }
+        // (Old page table already deferred into pending_old_page_tables above, #721 M4.)
 
         // Add the process back to the ready queue if it's not already there
         if !self.ready_queue.contains(&pid) {
@@ -4066,7 +4091,11 @@ impl ProcessManager {
         // thread group it was cloned into. Both fields are reset here — after
         // every fallible step and before the process-manager guard is released —
         // so that any exec that fails earlier leaves them byte-identical to their
-        // pre-exec values. The live-sibling guard above is unrelated and stays.
+        // pre-exec values. #721 B2/K6: the live-sibling guard above is what makes
+        // that byte-identical claim true for a failed exec (it was mislabeled
+        // "unrelated" here, which was false — that guard is exactly what runs
+        // before this point, so nothing here observes a sibling that still holds
+        // the old root).
         process.inherited_cr3 = None;
         process.thread_group_id = None;
         let new_ttbr0 = process
@@ -4384,7 +4413,11 @@ impl ProcessManager {
         // thread group it was cloned into. Both fields are reset here — after
         // every fallible step and before the process-manager guard is released —
         // so that any exec that fails earlier leaves them byte-identical to their
-        // pre-exec values. The live-sibling guard above is unrelated and stays.
+        // pre-exec values. #721 B2/K6: the live-sibling guard above is what makes
+        // that byte-identical claim true for a failed exec (it was mislabeled
+        // "unrelated" here, which was false — that guard is exactly what runs
+        // before this point, so nothing here observes a sibling that still holds
+        // the old root).
         process.inherited_cr3 = None;
         process.thread_group_id = None;
         let new_ttbr0 = process

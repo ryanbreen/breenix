@@ -1072,10 +1072,29 @@ fn validate_sys_execv_with_frame_releases_process_manager(handlers: &str) -> Res
         }
     }
 
+    // #721 m4: bound each arm's post-drop scan to that arm's own remaining body,
+    // not through to the *next* arm's drop. The naive `drops[arm + 1]` end bound
+    // swept arm 0's segment straight through arm 1's own pre-drop code (which
+    // still legitimately holds the PM guard) — a false span, not a false negative
+    // today only because arm 1 happens not to call get_process() before its own
+    // drop. The real boundary between the testing and production arms is the
+    // production arm's own cfg attribute.
+    let production_arm_start = body
+        .find("#[cfg(not(feature = \"testing\"))]")
+        .ok_or_else(|| {
+            "sys_execv_with_frame missing #[cfg(not(feature = \"testing\"))] arm boundary"
+                .to_string()
+        })?;
+    let arm_bounds = [production_arm_start, body.len()];
     for arm in 0..2 {
+        let arm_end = arm_bounds[arm];
+        if drops[arm] >= arm_end {
+            return Err(format!(
+                "sys_execv_with_frame arm {arm}'s drop(manager_guard) is not inside that arm"
+            ));
+        }
         let after_drop_start = drops[arm] + "drop(manager_guard)".len();
-        let after_drop_end = drops.get(arm + 1).copied().unwrap_or(body.len());
-        let segment = &body[after_drop_start..after_drop_end];
+        let segment = &body[after_drop_start..arm_end];
         let segment_mask = code_mask(segment);
         if !code_offsets(segment, &segment_mask, "get_process(").is_empty() {
             return Err(format!(
