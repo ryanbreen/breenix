@@ -1,0 +1,33 @@
+   Compiling kernel v0.1.0 (/Users/wrb/fun/code/breenix/.claude/worktrees/wf_9266f1e7-c9a-4/kernel)
+   Compiling breenix v0.1.0 (/Users/wrb/fun/code/breenix/.claude/worktrees/wf_9266f1e7-c9a-4)
+    Finished `release` profile [optimized] target(s) in 3.02s
+     Running tests/coreproof_component_h_structure.rs (target/release/deps/coreproof_component_h_structure-8b519c13e63c1cd8)
+
+running 5 tests
+test inline_slot_classification_counters_fire_from_exactly_one_site_each_and_stay_co_located ... ok
+test self_retraction_tags_the_fresh_identity_the_resulting_trampoline_reads ... FAILED
+test self_retraction_latch_cannot_outlive_one_measured_window ... ok
+test inline_schedule_state_is_only_ever_read_via_a_consumed_swap ... ok
+test the_new_inline_slot_instrument_is_entirely_coreproof_gated ... FAILED
+
+failures:
+
+---- self_retraction_tags_the_fresh_identity_the_resulting_trampoline_reads stdout ----
+
+thread 'self_retraction_tags_the_fresh_identity_the_resulting_trampoline_reads' panicked at tests/coreproof_component_h_structure.rs:185:5:
+the self-retraction tag site indexes by the carried `cpu_id` again -- this is the exact #735 regression: the retraction's own resulting trampoline runs on the FRESH `pivot_cpu`, not the carried identity, and would misclassify a designed self-retraction as ALREADY_CONSUMED_UNEXPLAINED instead of ATTRIBUTED
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- the_new_inline_slot_instrument_is_entirely_coreproof_gated stdout ----
+
+thread 'the_new_inline_slot_instrument_is_entirely_coreproof_gated' panicked at tests/coreproof_component_h_structure.rs:115:28:
+the self-retraction tag site no longer contains `COREPROOF_INLINE_HANDOFF_SELF_RETRACTED[pivot_cpu.index()].store(true, Ordering::Relaxed)`
+
+
+failures:
+    self_retraction_tags_the_fresh_identity_the_resulting_trampoline_reads
+    the_new_inline_slot_instrument_is_entirely_coreproof_gated
+
+test result: FAILED. 3 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `--test coreproof_component_h_structure`

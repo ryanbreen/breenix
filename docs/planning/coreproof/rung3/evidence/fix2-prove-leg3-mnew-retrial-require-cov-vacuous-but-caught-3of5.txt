@@ -1,0 +1,38 @@
+Building coreproof kernel (features: boot_tests,coreproof,coreproof_component_h,coreproof_mut_outgoing_fallback_requeue,strand_inject_live_outgoing)...
+   Compiling kernel v0.1.0 (/Users/wrb/fun/code/breenix/.claude/worktrees/wf_9266f1e7-c9a-4/kernel)
+    Finished `release` profile [optimized] target(s) in 6.08s
+warning: the following packages contain code that will be rejected by a future version of Rust: core v0.0.0 (/Users/wrb/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/src/rust/library/core)
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+Guard: kernel FP/SIMD instruction check
+  ELF:       /Users/wrb/fun/code/breenix/.claude/worktrees/wf_9266f1e7-c9a-4/target/coreproof-gate/aarch64-breenix-kernel/release/kernel-aarch64
+  objdump:   /Users/wrb/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/aarch64-apple-darwin/bin/llvm-objdump
+  allowlist: /Users/wrb/fun/code/breenix/.claude/worktrees/wf_9266f1e7-c9a-4/scripts/kernel-neon-allowlist.txt
+[0;32mPASS:[0m 0 FP/SIMD load/store instructions in kernel .text (allowlisted & suppressed: 0).
+CORE-PROOF SEAM RATCHET: PASSED (14 prohibited path(s) clean)
+Serial output root: /tmp/breenix_coreproof_gate/20260901T034728Z_18577
+
+=== profile max — 5 boot(s), component H, mode adversarial, window post_cohort, disarmed 0 ===
+qemu-system-aarch64: terminating on signal 15 from pid 18770 (<unknown process>)
+  max#1: mutation window is vacuous — cov=outgoing_fallback_requeue=0
+  max#1: harness violations=0 iters=123599 cov=outgoing_fallback_requeue=0
+    [COREPROOF:RUN:v1:comp=H:phase=close:mut=coreproof_mut_outgoing_fallback_requeue:seed=0x0000000007d470b8:dcpu=2:iters=123599:sites_declared=3:sites_visited=3:mode=adversarial:window=post_cohort:disarmed=0:degraded=0:profile=qemu-unknown-model:smp=4:downgraded=1377:fire_dropped=125:violated_predicates=0:cov=block_departure=8,cpu_identity=28602,reclaim_bracket=75217,pending_next=3,futex_section=8,masked_lock=68,masked_lock_bare=0,outgoing_fallback_requeue=0]
+qemu-system-aarch64: terminating on signal 15 from pid 19030 (<unknown process>)
+  max#2: mutation window is vacuous — cov=outgoing_fallback_requeue=0
+  max#2: harness violations=1 iters=81099 cov=outgoing_fallback_requeue=0
+    [COREPROOF:VIOLATION:v1:comp=H:seed=0x0000000007d69780:iter=9472:site=IncomingHandoffCommit:action=sgi_from:ticks=11527480547530990598:order=after:acpu=189:pred=OUTGOING_HANDOFF_STRANDED:detail=1:fired_cpu=2:fired_iter=1049]
+qemu-system-aarch64: terminating on signal 15 from pid 19214 (<unknown process>)
+  max#3: mutation window is vacuous — cov=outgoing_fallback_requeue=0
+  max#3: harness violations=1 iters=82001 cov=outgoing_fallback_requeue=0
+    [COREPROOF:VIOLATION:v1:comp=H:seed=0x0000000007eb67a0:iter=14336:site=IncomingHandoffCommit:action=none:ticks=14526804762015422849:order=after:acpu=66:pred=OUTGOING_HANDOFF_STRANDED:detail=1:fired_cpu=0:fired_iter=1301]
+qemu-system-aarch64: terminating on signal 15 from pid 19376 (<unknown process>)
+  max#4: mutation window is vacuous — cov=outgoing_fallback_requeue=0
+  max#4: harness violations=0 iters=61381 cov=outgoing_fallback_requeue=0
+    [COREPROOF:RUN:v1:comp=H:phase=close:mut=coreproof_mut_outgoing_fallback_requeue:seed=0x0000000008d24148:dcpu=0:iters=61381:sites_declared=3:sites_visited=3:mode=adversarial:window=post_cohort:disarmed=0:degraded=0:profile=qemu-unknown-model:smp=4:downgraded=1185:fire_dropped=61:violated_predicates=0:cov=block_departure=9,cpu_identity=27864,reclaim_bracket=72836,pending_next=3,futex_section=8,masked_lock=90,masked_lock_bare=0,outgoing_fallback_requeue=0]
+qemu-system-aarch64: terminating on signal 15 from pid 19562 (<unknown process>)
+  max#5: mutation window is vacuous — cov=outgoing_fallback_requeue=0
+  max#5: harness violations=1 iters=4347 cov=outgoing_fallback_requeue=0
+    [COREPROOF:VIOLATION:v1:comp=H:seed=0x0000000007e948a8:iter=256:site=IncomingHandoffCommit:action=spin_delay:ticks=15256916825200084018:order=after:acpu=67:pred=OUTGOING_HANDOFF_STRANDED:detail=1:fired_cpu=3:fired_iter=170]
+
+boots=5 failed=5 violations=3 iters_total=352427 started=2026-09-01T03:47:28Z ended=2026-09-01T03:48:37Z
+ARM64 CORE-PROOF GATE: FAILED
+Serials preserved under /tmp/breenix_coreproof_gate/20260901T034728Z_18577
