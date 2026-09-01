@@ -73,16 +73,34 @@ pub const USERSPACE_CODE_DATA_END: u64 = 0x0000_0000_8000_0000;
 /// Start of mmap allocation region (below stack)
 /// This is where anonymous mmap allocations (used by Rust's Vec/Box) are placed.
 /// The region grows downward from MMAP_REGION_END toward MMAP_REGION_START.
-#[cfg(target_arch = "x86_64")]
+///
+/// Arch-generic and NOT `#[cfg]`-split: this is the single, canonical
+/// definition, and `kernel::memory::vma::{MMAP_REGION_START, MMAP_REGION_END}`
+/// (the constants `sys_mmap` and `Process::new`'s `mmap_hint` seeding
+/// actually consume -- `kernel/src/syscall/mmap.rs`,
+/// `kernel/src/process/{process.rs,manager.rs}`) re-export these same
+/// values rather than redeclaring their own copy.
+///
+/// Before this, `vma.rs` hardcoded these exact numbers with no `#[cfg]` at
+/// all -- so on aarch64 the REAL mmap allocator was already handing out
+/// addresses in this x86-shaped window (confirmed live: a leftover boot
+/// serial log recorded a real aarch64 userspace mapping at
+/// `virt=0x7ffffdf86000`, just below `MMAP_REGION_END`), while this file
+/// separately declared a second, disjoint aarch64 window
+/// (`aarch64_const::MMAP_REGION_START/END`,
+/// `[0x1_0000_0000, 0xFF_FE00_0000)`) that no allocator ever actually used
+/// -- only `is_valid_user_range`'s mmap arm consulted it. That divergence
+/// is what made every aarch64 process's first malloc'd-buffer syscall
+/// (`sys_write` on `print!`'s heap-allocated `LineWriter`, since this libc's
+/// `malloc` is implemented as `mmap`) refuse with EFAULT (#729 B4-a). This
+/// definition now matches the address class the allocator has always
+/// really used, on both arches, and there is nowhere left for the two to
+/// drift apart again.
 pub const MMAP_REGION_START: u64 = 0x7000_0000_0000;
-#[cfg(target_arch = "aarch64")]
-pub const MMAP_REGION_START: u64 = aarch64_const::MMAP_REGION_START;
 
 /// End of mmap allocation region (gap before stack)
-#[cfg(target_arch = "x86_64")]
+/// See [`MMAP_REGION_START`] for why this is arch-generic.
 pub const MMAP_REGION_END: u64 = 0x7FFF_FE00_0000;
-#[cfg(target_arch = "aarch64")]
-pub const MMAP_REGION_END: u64 = aarch64_const::MMAP_REGION_END;
 
 /// User stack allocation region start (high canonical space)
 /// User stacks are allocated in this high canonical range for better compatibility
@@ -333,14 +351,11 @@ fn log_control_structures() {
 ///
 /// The code/data region spans from USERSPACE_BASE (1GB) to USERSPACE_CODE_DATA_END (2GB).
 /// This is where ELF programs are loaded and where their .text, .data, .rodata, and .bss
-/// sections reside.
-#[cfg(target_arch = "x86_64")]
-#[inline]
-pub fn is_user_code_data_address(addr: u64) -> bool {
-    addr >= USERSPACE_BASE && addr < USERSPACE_CODE_DATA_END
-}
-
-#[cfg(target_arch = "aarch64")]
+/// sections reside. `USERSPACE_BASE`/`USERSPACE_CODE_DATA_END` are already
+/// per-arch (via `#[cfg]` at their own declarations above), so this body
+/// does not need to be duplicated per arch too -- an identical-by-coincidence
+/// `#[cfg]`-split pair with no shared logic is exactly the shape that let
+/// the mmap and stack arms silently diverge (#729 B4-a).
 #[inline]
 pub fn is_user_code_data_address(addr: u64) -> bool {
     addr >= USERSPACE_BASE && addr < USERSPACE_CODE_DATA_END
@@ -351,39 +366,25 @@ pub fn is_user_code_data_address(addr: u64) -> bool {
 /// The stack region is in high canonical space, from USER_STACK_REGION_START to
 /// USER_STACK_REGION_END. This region is separate from code/data to allow for
 /// better compatibility and to avoid conflicts.
-#[cfg(target_arch = "x86_64")]
+///
+/// Delegates to [`is_valid_user_stack_range`] (a single-address range of
+/// length 1) rather than repeating the bound logic here, so this and the
+/// range form used by `copy_from_user` cannot independently drift the way
+/// they did before #729 B4-a (this function was never wrong, but its
+/// sibling range form was, and a hand-duplicated second copy of the same
+/// window is exactly the shape that let that happen unnoticed).
 #[inline]
 pub fn is_user_stack_address(addr: u64) -> bool {
-    addr >= USER_STACK_REGION_START && addr < USER_STACK_REGION_END
-}
-
-// ARM64: stack is in high user range (lower half canonical space).
-// Note: On ARM64, stacks are allocated starting at USER_STACK_REGION_START (the top)
-// and growing down, so actual stack addresses are BELOW USER_STACK_REGION_START.
-// The valid range is [USER_STACK_REGION_START - max_stack_size, USER_STACK_REGION_START).
-// We allow up to 1MB of stack space per process to account for multiple stacks.
-#[cfg(target_arch = "aarch64")]
-#[inline]
-pub fn is_user_stack_address(addr: u64) -> bool {
-    // Stack region extends downward from USER_STACK_REGION_START
-    // Allow addresses from START-1MB to START
-    const MAX_STACK_REGION_SIZE: u64 = 1024 * 1024; // 1 MB for multiple stacks
-    let region_bottom = USER_STACK_REGION_START.saturating_sub(MAX_STACK_REGION_SIZE);
-    addr >= region_bottom && addr < USER_STACK_REGION_START
+    is_valid_user_stack_range(addr, addr)
 }
 
 /// Check if an address is in userspace mmap region
 ///
 /// The mmap region is where anonymous memory mappings (used by Vec, Box, etc.)
-/// are placed. It spans from MMAP_REGION_START to MMAP_REGION_END.
-#[cfg(target_arch = "x86_64")]
-#[inline]
-pub fn is_user_mmap_address(addr: u64) -> bool {
-    addr >= MMAP_REGION_START && addr < MMAP_REGION_END
-}
-
-// ARM64: mmap region is in the lower half, below the stack.
-#[cfg(target_arch = "aarch64")]
+/// are placed. It spans from MMAP_REGION_START to MMAP_REGION_END, which are
+/// now arch-generic (see that constant's doc comment for why this used to be
+/// arch-split with no `#[cfg]` on the underlying constants at all -- the
+/// actual #729 B4-a defect).
 #[inline]
 pub fn is_user_mmap_address(addr: u64) -> bool {
     addr >= MMAP_REGION_START && addr < MMAP_REGION_END
@@ -398,13 +399,6 @@ pub fn is_user_mmap_address(addr: u64) -> bool {
 /// Note: This only checks that the address is in a valid region - it does NOT
 /// verify that the specific page is mapped. Accessing an unmapped address in
 /// a valid region will cause a page fault, which is the correct behavior.
-#[cfg(target_arch = "x86_64")]
-#[inline]
-pub fn is_valid_user_address(addr: u64) -> bool {
-    is_user_code_data_address(addr) || is_user_mmap_address(addr) || is_user_stack_address(addr)
-}
-
-#[cfg(target_arch = "aarch64")]
 #[inline]
 pub fn is_valid_user_address(addr: u64) -> bool {
     is_user_code_data_address(addr) || is_user_mmap_address(addr) || is_user_stack_address(addr)
@@ -463,23 +457,46 @@ pub const fn is_valid_user_range(addr: u64, len: usize) -> bool {
     in_code_data || in_mmap || is_valid_user_stack_range(addr, last)
 }
 
+// x86_64: `kernel/src/memory/stack.rs`'s `find_free_virtual_space` hands out
+// successive per-thread stack TOPS ascending from USER_STACK_REGION_START
+// toward USER_STACK_REGION_END (so the real occupied range's upper bound is
+// genuinely USER_STACK_REGION_END -- unchanged from before). Each stack's
+// demand-paged growth is governed by `kernel/src/interrupts.rs`'s
+// `handle_stack_growth`, which will map pages down to, and refuses to grow
+// past, `USER_STACK_REGION_START.saturating_sub(MAX_USER_STACK_SIZE)` --
+// the exact same constant used here, so this predicate can never be
+// tighter than what the growth handler will actually map, nor looser than
+// the true worst case (the very first stack, whose top sits at
+// USER_STACK_REGION_START itself).
 #[cfg(target_arch = "x86_64")]
 #[inline]
 const fn is_valid_user_stack_range(addr: u64, last: u64) -> bool {
-    addr >= USER_STACK_REGION_START
+    let region_bottom = USER_STACK_REGION_START.saturating_sub(MAX_USER_STACK_SIZE);
+    addr >= region_bottom
         && addr < USER_STACK_REGION_END
-        && last >= USER_STACK_REGION_START
+        && last >= region_bottom
         && last < USER_STACK_REGION_END
 }
 
-// ARM64: stack range form of is_user_stack_address -- see that function's
-// comment for why the valid range extends downward from
-// USER_STACK_REGION_START rather than up from it.
+// aarch64: there is no demand-paged stack growth on this arch (no
+// `handle_stack_growth` equivalent exists in `arch_impl::aarch64`) --
+// `kernel/src/process/manager.rs`'s ARM64 process-creation paths
+// allocate and map a single, fully-backed `USER_STACK_SIZE` (64 KiB) stack
+// per process, with its top *always* pinned at the fixed address
+// USER_STACK_REGION_START (never ascending the way x86_64's does, since
+// every process has its own page table and no two processes' stacks are
+// ever live in the same address space at once). USER_STACK_SIZE is
+// therefore the true, complete, exact extent -- not MAX_USER_STACK_SIZE
+// (that constant is x86_64's growth cap; it does not describe anything
+// aarch64's allocator ever actually maps). Before this, the aarch64 arm
+// used a hardcoded, unexplained "1 MiB for multiple stacks" literal that
+// matched neither number and was too narrow for a real process's stack
+// once this predicate became load-bearing on the copy_from_user hot path
+// (#729 B4-a).
 #[cfg(target_arch = "aarch64")]
 #[inline]
 const fn is_valid_user_stack_range(addr: u64, last: u64) -> bool {
-    const MAX_STACK_REGION_SIZE: u64 = 1024 * 1024; // 1 MB, matches is_user_stack_address
-    let region_bottom = USER_STACK_REGION_START.saturating_sub(MAX_STACK_REGION_SIZE);
+    let region_bottom = USER_STACK_REGION_START.saturating_sub(USER_STACK_SIZE as u64);
     addr >= region_bottom
         && addr < USER_STACK_REGION_START
         && last >= region_bottom
@@ -528,6 +545,83 @@ const _: () = assert!(
 const _: () = assert!(
     is_valid_user_range(USERSPACE_BASE + 0x10_0000, 4096),
     "an address inside the userspace code/data (brk-heap) region must be accepted"
+);
+
+// === Anti-vacuity: ACCEPTANCE, not just refusal (#729 B4-a follow-up) ===
+//
+// The refusal asserts above are necessary but were not sufficient: they
+// proved kernel addresses are rejected and ONE interior code/data address
+// is accepted, but never asserted acceptance for the mmap or stack arms at
+// all -- so both arms shipped completely unexercised by this "proof", and
+// the aarch64 stack arm's too-narrow hardcoded window (and, the actual
+// cause of the boot failure, the mmap arm's divergent region -- see
+// `MMAP_REGION_START`'s doc comment above) sailed through every build
+// undetected (#729 review finding M-c). Each assert below is anchored on
+// the address the real allocator/mapper for that region actually produces,
+// not a second hand-picked number, so a future regression of this shape
+// fails the build instead of shipping a dead init again.
+//
+// mmap: anchored on `vma::MMAP_REGION_END`/`_START` by name (not
+// `layout::MMAP_REGION_*`, even though they are the same definition after
+// the collapse above) so this keeps asserting against the actual runtime
+// consumer's own path -- if a future edit ever gives `vma` its own
+// diverging copy again, THIS assert (not just a human reading the doc
+// comment) fails the build.
+const _: () = assert!(
+    is_valid_user_range(crate::memory::vma::MMAP_REGION_END - 1, 1),
+    "the highest address the mmap allocator hands out (MMAP_REGION_END - 1) must be accepted"
+);
+const _: () = assert!(
+    is_valid_user_range(crate::memory::vma::MMAP_REGION_START, 1),
+    "the lowest address the mmap allocator may hand out (MMAP_REGION_START) must be accepted"
+);
+
+// code/data: both ends of the real ELF load region, not just one interior
+// point.
+const _: () = assert!(
+    is_valid_user_range(USERSPACE_BASE, 1),
+    "the bottom of the userspace code/data region must be accepted"
+);
+const _: () = assert!(
+    is_valid_user_range(USERSPACE_CODE_DATA_END - 1, 1),
+    "the top of the userspace code/data region -- where sys_brk caps heap growth -- must be accepted"
+);
+
+// user stack: both ends of the real per-arch extent. x86_64's demand-paged
+// growth handler (`kernel/src/interrupts.rs::handle_stack_growth`) will
+// map down to exactly `USER_STACK_REGION_START - MAX_USER_STACK_SIZE`, and
+// the ascending allocator (`kernel/src/memory/stack.rs`) can hand out a
+// stack top up to `USER_STACK_REGION_END`. aarch64 has no growth handler --
+// every process's stack is the fixed, fully-mapped `USER_STACK_SIZE` window
+// pinned at `USER_STACK_REGION_START` (`kernel/src/process/manager.rs`).
+// This is the exact address class whose bottom end was too narrow and
+// refused every aarch64 process's first stack-adjacent access once this
+// predicate became load-bearing on the copy_from_user hot path.
+#[cfg(target_arch = "x86_64")]
+const _: () = assert!(
+    is_valid_user_range(USER_STACK_REGION_END - 1, 1),
+    "the top of the real x86_64 user stack extent must be accepted"
+);
+#[cfg(target_arch = "x86_64")]
+const _: () = assert!(
+    is_valid_user_range(
+        USER_STACK_REGION_START.saturating_sub(MAX_USER_STACK_SIZE),
+        1
+    ),
+    "the deepest address handle_stack_growth will ever map must be accepted"
+);
+#[cfg(target_arch = "aarch64")]
+const _: () = assert!(
+    is_valid_user_range(USER_STACK_REGION_START - 1, 1),
+    "the top of the real aarch64 user stack extent must be accepted"
+);
+#[cfg(target_arch = "aarch64")]
+const _: () = assert!(
+    is_valid_user_range(
+        USER_STACK_REGION_START - USER_STACK_SIZE as u64,
+        1
+    ),
+    "the bottom of the real aarch64 user stack extent (USER_STACK_SIZE) must be accepted"
 );
 
 // === Compile-time Layout Assertions ===

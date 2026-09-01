@@ -10,11 +10,16 @@ use alloc::vec::Vec;
 #[cfg(target_arch = "x86_64")]
 use x86_64::VirtAddr;
 
-/// Start of mmap allocation region (below stack)
-#[allow(dead_code)]
-pub const MMAP_REGION_START: u64 = 0x7000_0000_0000;
-/// End of mmap allocation region (gap before stack)
-pub const MMAP_REGION_END: u64 = 0x7FFF_FE00_0000;
+/// Start and end of the mmap allocation region.
+///
+/// Re-exported from `memory::layout` rather than redeclared here: this used
+/// to be a second, hardcoded (non-`#[cfg]`) definition of the same region
+/// that happened to agree with `layout`'s x86_64 values and silently
+/// diverged from `layout`'s aarch64 values, which is what caused #729 B4-a
+/// (`layout::is_valid_user_range`'s mmap arm validated against a region no
+/// allocator ever actually used). One definition now; see
+/// `layout::MMAP_REGION_START`'s doc comment for the full story.
+pub use crate::memory::layout::{MMAP_REGION_END, MMAP_REGION_START};
 
 /// Page size constant for alignment checks
 #[allow(dead_code)]
