@@ -2793,6 +2793,29 @@ static INLINE_SCHEDULE_STATE: [InlineScheduleState;
     },
 ];
 
+/// Core-proof Component H's own instrument (rung 3,
+/// `docs/planning/coreproof/rung3/spec.md` §1.4 — `#605`'s "open question B" turned into
+/// a measured, gate-readable bucket). Plain `#[cfg(feature = "coreproof")]`-gated atomics,
+/// observation only, no perturbation — the same category as `strand_oracle::inject_if_armed`
+/// above, which is why this is not subject to the seam-placement ratchet
+/// (`scripts/check-coreproof-seams.sh`'s `PROHIBITED` list) even though it lives in a
+/// permanently seam-prohibited file. Named with a `coreproof_` prefix (lowercased in the
+/// statics below via the `COREPROOF_` prefix) specifically so the existing LEG 1 symbol
+/// scan (`scripts/check-coreproof-production-clean.sh`'s `SYMBOL_NEEDLE='coreproof'`)
+/// covers them automatically at zero ratchet-script cost.
+#[cfg(feature = "coreproof")]
+static COREPROOF_INLINE_HANDOFF_SELF_RETRACTED: [AtomicBool;
+    crate::arch_impl::aarch64::constants::MAX_CPUS] =
+    [const { AtomicBool::new(false) }; crate::arch_impl::aarch64::constants::MAX_CPUS];
+#[cfg(feature = "coreproof")]
+pub(crate) static COREPROOF_INLINE_SLOT_ENTERED_UNCONSUMED: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "coreproof")]
+pub(crate) static COREPROOF_INLINE_SLOT_ALREADY_CONSUMED_ATTRIBUTED: AtomicU64 =
+    AtomicU64::new(0);
+#[cfg(feature = "coreproof")]
+pub(crate) static COREPROOF_INLINE_SLOT_ALREADY_CONSUMED_UNEXPLAINED: AtomicU64 =
+    AtomicU64::new(0);
+
 struct ExitScheduleState {
     scheduler_ptr: AtomicUsize,
     thread_id: AtomicU64,
@@ -5987,6 +6010,19 @@ extern "C" fn inline_schedule_trampoline() -> ! {
     let new_id = state.new_thread_id.load(Ordering::Relaxed);
     let should_requeue_old = state.should_requeue_old.swap(false, Ordering::Relaxed);
 
+    #[cfg(feature = "coreproof")]
+    {
+        if sched_ptr.is_null() {
+            if COREPROOF_INLINE_HANDOFF_SELF_RETRACTED[cpu_id].swap(false, Ordering::Relaxed) {
+                COREPROOF_INLINE_SLOT_ALREADY_CONSUMED_ATTRIBUTED.fetch_add(1, Ordering::Relaxed);
+            } else {
+                COREPROOF_INLINE_SLOT_ALREADY_CONSUMED_UNEXPLAINED.fetch_add(1, Ordering::Relaxed);
+            }
+        } else {
+            COREPROOF_INLINE_SLOT_ENTERED_UNCONSUMED.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
     // Keep the default one-shot stimulus scoped to an idle outgoing handoff.
     // The live-outgoing feature below widens it specifically to exercise the
     // fallback's outgoing-thread transaction.
@@ -6094,13 +6130,16 @@ extern "C" fn inline_schedule_trampoline() -> ! {
                 sched.resolve_pending_next_locked(cpu_id);
             }
 
-            let old_ready_after_save = if old_id != idle_id {
+            if old_id != idle_id {
                 if let Some(old_thread) = sched.get_thread_mut(old_id) {
                     // Redundant with the assembly save above and retained
                     // deliberately as a Rust-side guard for the inline resume
                     // point invariant.
                     old_thread.context.elr_el1 = old_thread.context.x30;
                 }
+            }
+            #[cfg(not(feature = "coreproof_mut_outgoing_fallback_requeue"))]
+            let old_ready_after_save = if old_id != idle_id {
                 sched
                     .get_thread(old_id)
                     .map(|thread| thread.state == ThreadState::Ready)
@@ -6109,10 +6148,24 @@ extern "C" fn inline_schedule_trampoline() -> ! {
                 false
             };
             sched.fix_exception_cleanup_cpu_state();
-            if old_id != idle_id && (should_requeue_old || old_ready_after_save) {
-                sched.requeue_thread_after_save(old_id);
+            // CORE-PROOF MUTATION LEG `coreproof_mut_outgoing_fallback_requeue` (#607,
+            // fixed by PR #634 / commit ddd03a11): this block completes the OUTGOING half
+            // of the null-scheduler-ptr recovery — the Ready outgoing thread's own requeue,
+            // and clearing its stale `previous_thread`. Compiled out wholesale under the
+            // mutation feature (not jumped over) so a mutated build leaves `old_id`
+            // stranded exactly as #607 described — never requeued, with a stale
+            // `previous_thread` — rather than merely incrementing a counter near it. Test
+            // profiles only.
+            // Expected predicate: OUTGOING_HANDOFF_STRANDED (strand_oracle's
+            // stranded_count()/ready_shape= reading, scored by Component H's driver as a
+            // baseline-vs-cadence delta).
+            #[cfg(not(feature = "coreproof_mut_outgoing_fallback_requeue"))]
+            {
+                if old_id != idle_id && (should_requeue_old || old_ready_after_save) {
+                    sched.requeue_thread_after_save(old_id);
+                }
+                sched.cpu_state[cpu_id].previous_thread = None;
             }
-            sched.cpu_state[cpu_id].previous_thread = None;
             reset_idle_continuation_locked(sched, cpu_id, idle_id, idle_sp);
             idle_sp
         })
@@ -6693,6 +6746,8 @@ pub fn schedule_from_kernel() {
         INLINE_SCHEDULE_STATE[cpu_id]
             .scheduler_ptr
             .store(0, Ordering::Relaxed);
+        #[cfg(feature = "coreproof")]
+        COREPROOF_INLINE_HANDOFF_SELF_RETRACTED[cpu_id].store(true, Ordering::Relaxed);
     }
     let scheduler_top = pivot_destination(
         pivot_cpu,

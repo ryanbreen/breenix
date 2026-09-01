@@ -1,6 +1,6 @@
 //! The planted-defect register.
 //!
-//! The harness's validation set is six defects this campaign already found and
+//! The harness's validation set is seven defects this campaign already found and
 //! fixed, re-introduced one at a time behind a cargo feature and kept in tree
 //! forever as the harness's own regression suite. A harness that has never been
 //! shown to re-find a known bug is an assertion, not an instrument.
@@ -11,6 +11,12 @@
 //! fixed it, the file it perturbs, and the predicate expected to fire. That last
 //! field is what makes a validation adjudicable: a mutation whose expected
 //! outcome is unrecorded can only be argued about after the fact.
+//!
+//! Rung 3 adds `#607` as M(new): compiling out the outgoing half of the inline
+//! null-scheduler fallback strands the Ready outgoing thread and leaves
+//! `previous_thread` stale. PR #634 (commit ddd03a11) fixed this independently
+//! of M4's `#589` incoming-handoff repair, making it a second honestly plantable
+//! defect in Component H's own domain rather than a relabeling of M4.
 //!
 //! `tests/coreproof_mutation_register_structure.rs` keeps three descriptions of
 //! this set — the manifest's `[features]`, this register, and the `#[cfg]`
@@ -154,6 +160,13 @@ pub const REGISTER: &[Mutation] = &[
                kernel/src/task/scheduler.rs::release_reclaimed_threads",
         predicate: "NONE_EXPECTED:missing_run_record_is_the_catch",
     },
+    Mutation {
+        feature: "coreproof_mut_outgoing_fallback_requeue",
+        issue: "#607",
+        fixed_by: "PR #634 (commit ddd03a11)",
+        site: "kernel/src/arch_impl/aarch64/context_switch.rs::inline_schedule_trampoline",
+        predicate: "OUTGOING_HANDOFF_STRANDED",
+    },
 ];
 
 /// The mutation this build carries, if any.
@@ -176,6 +189,8 @@ pub fn armed() -> Option<&'static Mutation> {
         "coreproof_mut_masked_lock"
     } else if cfg!(feature = "coreproof_mut_masked_lock_bare") {
         "coreproof_mut_masked_lock_bare"
+    } else if cfg!(feature = "coreproof_mut_outgoing_fallback_requeue") {
+        "coreproof_mut_outgoing_fallback_requeue"
     } else {
         return None;
     };

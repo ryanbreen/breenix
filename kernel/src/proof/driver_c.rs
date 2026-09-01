@@ -124,6 +124,8 @@ fn score_existing_markers(
     iteration: u64,
     vector: &rng::DrawVector,
     baseline: &Baseline,
+    fired_cpu: Option<usize>,
+    fired_iter: Option<u64>,
     reported: &mut Reported,
 ) {
     let identity =
@@ -143,6 +145,8 @@ fn score_existing_markers(
             "CPU_IDENTITY_SPLIT",
             detail,
             COMPONENT_C,
+            fired_cpu,
+            fired_iter,
         );
     }
 
@@ -156,6 +160,8 @@ fn score_existing_markers(
             "PERCPU_STACK_ALIEN",
             alien,
             COMPONENT_C,
+            fired_cpu,
+            fired_iter,
         );
     }
 
@@ -167,6 +173,8 @@ fn score_existing_markers(
             "RET_STAGE_REFUSED",
             ret_stage,
             COMPONENT_C,
+            fired_cpu,
+            fired_iter,
         );
     }
 }
@@ -215,18 +223,26 @@ fn online_peer_cpus(driver_cpu: usize, online_cpus: usize) -> impl Iterator<Item
 /// record is itself an honest signal in the never-fired case: it says the marker moved
 /// despite no harness stimulus having fired on any peer yet, which is a real and useful
 /// distinction, not a fabricated one.
-fn last_fired_stimulus(driver_cpu: usize, online_cpus: usize) -> rng::DrawVector {
-    super::most_recent_fired(online_peer_cpus(driver_cpu, online_cpus))
-        .map(|(_fired_on_cpu, vector)| vector)
-        .unwrap_or(rng::DrawVector {
-            site: super::ALL[0],
-            action: stimulus::Action::None,
-            ticks: 0,
-            cycles: 0,
-            antagonist_op: rng::AntagonistOp::Unblock,
-            antagonist_cpu: 0,
-            order: super::ALL[0].order(),
-        })
+fn last_fired_stimulus(
+    driver_cpu: usize,
+    online_cpus: usize,
+) -> (Option<usize>, Option<u64>, rng::DrawVector) {
+    match super::most_recent_fired(online_peer_cpus(driver_cpu, online_cpus)) {
+        Some((cpu, seq, vector)) => (Some(cpu), Some(seq), vector),
+        None => (
+            None,
+            None,
+            rng::DrawVector {
+                site: super::ALL[0],
+                action: stimulus::Action::None,
+                ticks: 0,
+                cycles: 0,
+                antagonist_op: rng::AntagonistOp::Unblock,
+                antagonist_cpu: 0,
+                order: super::ALL[0].order(),
+            },
+        ),
+    }
 }
 
 pub fn run() {
@@ -318,12 +334,15 @@ pub fn run() {
         crate::proof_point!(DriverPreCycle);
 
         if iterations % CENSUS_CADENCE == 0 {
-            let fired_vector = last_fired_stimulus(driver_cpu, online_cpus);
+            let (fired_cpu, fired_iter, fired_vector) =
+                last_fired_stimulus(driver_cpu, online_cpus);
             score_existing_markers(
                 seed,
                 iterations,
                 &fired_vector,
                 &baseline_snapshot,
+                fired_cpu,
+                fired_iter,
                 &mut reported,
             );
         }
@@ -345,12 +364,14 @@ pub fn run() {
     // One closing sweep, so a marker that moved after the last cadence tick is
     // scored rather than dropped on the floor — Component A's driver does the
     // same for the same reason.
-    let closing_vector = last_fired_stimulus(driver_cpu, online_cpus);
+    let (fired_cpu, fired_iter, closing_vector) = last_fired_stimulus(driver_cpu, online_cpus);
     score_existing_markers(
         seed,
         iterations,
         &closing_vector,
         &baseline_snapshot,
+        fired_cpu,
+        fired_iter,
         &mut reported,
     );
 

@@ -309,6 +309,23 @@ from that attempt, both addressed here:
    vector that arms the squeeze also has a nonzero-probability antagonist on
    deck to contest the redispatch.
 
+   **Correction (rung 3 review, m6):** the paragraph above reads as though the
+   pairing were a probabilistic aspiration ("nonzero-probability antagonist on
+   deck"). The shipped code is stronger than that: `quiesce.rs`'s
+   `assign_roles`/`PeerRole::Victim`/`PeerRole::Stealer` FORCE both roles
+   UNCONDITIONALLY, every iteration, for Component C — the lowest-numbered
+   online peer always runs `KernelSchedule`, the next-lowest always runs
+   `Steal` against it, with no draw involved in the role assignment itself
+   (only the *ordinary* peers beyond the first two still draw independently).
+   `kernel/src/proof/quiesce.rs`'s own code is the authoritative description;
+   this paragraph is left as originally written for history, corrected here
+   rather than silently rewritten. Component H (rung 3,
+   `docs/planning/coreproof/rung3/spec.md` §2) deliberately does NOT reuse
+   this forced-pairing shape — H's `assign_roles` stays `false` (its defect
+   shape is single-CPU scheduling density, not a two-party contest) — and
+   states that deviation explicitly rather than silently diverging from this
+   precedent.
+
 **The ≤5-minute re-find bar, inherited from pilot §7.3 item 1 unchanged:**
 once implemented, M2 must be caught — a `[COREPROOF:VIOLATION:...:pred=CPU_IDENTITY_SPLIT:...]`
 line — within 5 minutes wall clock **including that mutation's build** (cold

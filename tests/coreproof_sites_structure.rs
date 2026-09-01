@@ -334,14 +334,29 @@ fn every_scheduler_seam_is_classified_correctly() {
             .filter(|variant| scheduler_placed.contains(*variant))
         {
             let marker = format!("proof_point!({variant});");
-            let call_offset = scheduler_source.find(&marker).unwrap_or_else(|| {
-                panic!(
-                    "{variant} is placed in scheduler.rs per proof_point! invocation \
-                     scanning, but no `proof_point!({variant});` statement text was \
-                     found — the parser has drifted off the source it reads"
-                )
-            });
-            let must_be_masked = scheduler_seam_is_masked(&scheduler_source, call_offset);
+            let call_offsets: Vec<_> = scheduler_source
+                .match_indices(&marker)
+                .map(|(offset, _)| offset)
+                .collect();
+            assert!(
+                !call_offsets.is_empty(),
+                "{variant} is placed in scheduler.rs per proof_point! invocation \
+                 scanning, but no `proof_point!({variant});` statement text was \
+                 found — the parser has drifted off the source it reads"
+            );
+            let classifications: Vec<_> = call_offsets
+                .iter()
+                .map(|&offset| scheduler_seam_is_masked(&scheduler_source, offset))
+                .collect();
+            let must_be_masked = classifications[0];
+            assert!(
+                classifications
+                    .iter()
+                    .all(|&classification| classification == must_be_masked),
+                "site {variant} is placed more than once in scheduler.rs but its \
+                 occurrences disagree about whether they are inside a masked critical \
+                 section: offsets={call_offsets:?}, masked={classifications:?}"
+            );
             let is_open = open_body.contains(&format!("Self::{variant}"));
             if must_be_masked {
                 assert!(

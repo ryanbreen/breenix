@@ -115,6 +115,19 @@ fn files_gating(feature: &str) -> BTreeSet<PathBuf> {
     found
 }
 
+fn named_file_names(site_text: &str) -> Vec<String> {
+    let mut names = Vec::new();
+    for (index, _) in site_text.match_indices(".rs") {
+        let end = index + ".rs".len();
+        let start = site_text[..index]
+            .rfind(|character: char| character.is_whitespace() || character == '"')
+            .map(|position| position + 1)
+            .unwrap_or(0);
+        names.push(site_text[start..end].to_string());
+    }
+    names
+}
+
 fn scan_for_feature_names(text: &str) -> BTreeSet<String> {
     let mut found = BTreeSet::new();
     let mut rest = text;
@@ -236,19 +249,22 @@ fn every_multi_file_mutation_gates_every_file_its_own_entry_names() {
             continue;
         };
         let site_text = &register[site_start..site_start + site_end_rel];
-        let file_count = site_text.matches(".rs").count();
-        if file_count < 2 {
+        let named_files = named_file_names(site_text);
+        if named_files.len() < 2 {
             continue; // a single-site mutation has nothing to pair
         }
         let gated_in = files_gating(&feature);
-        assert!(
-            gated_in.len() >= file_count,
-            "{feature}'s own register entry names {file_count} files in `site:` but only {} \
-             of them actually gate code on the feature ({:?}) — a mutation missing one of its \
-             own named halves silently degrades into a weaker, already-registered mutation \
-             with every existing ratchet green",
-            gated_in.len(),
-            gated_in
-        );
+        for named in named_files {
+            assert!(
+                gated_in
+                    .iter()
+                    .any(|path| path.to_string_lossy().ends_with(named.as_str())),
+                "{feature}'s own register entry names `{named}` in `site:`, but that \
+                 specific file does not gate code on the feature; files that do gate it: \
+                 {gated_in:?} — a mutation missing one of its own named halves silently \
+                 degrades into a weaker, already-registered mutation with every existing \
+                 ratchet green"
+            );
+        }
     }
 }

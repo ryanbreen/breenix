@@ -9,7 +9,7 @@
 //!  sites_visited=N:mode=pen:window=post_cohort:disarmed=0:degraded=0:profile=...:
 //!  smp=N:downgraded=N:violated_predicates=N:cov=name=N,...]
 //! [COREPROOF:VIOLATION:v1:comp=A:seed=0x...:iter=N:site=...:action=...:ticks=N:
-//!  order=before:acpu=N:pred=...:detail=N]
+//!  order=before:acpu=N:pred=...:detail=N:fired_cpu=N:fired_iter=N]
 //! ```
 //!
 //! Up to three RUN records per run, each naming its own `phase`, and the first
@@ -147,7 +147,13 @@ pub fn emit_run(
     );
 }
 
-/// Emit one violation record naming its site, action, order and predicate.
+/// Emit one violation record naming its site, action, order, predicate, and optional
+/// cross-CPU fire attribution.
+///
+/// `fired_cpu`/`fired_iter` are emitted as `u64::MAX` when the violation has no cross-CPU
+/// fire to attribute. Component A's self-armed synchronous predicates always pass
+/// `None, None`: there is no cross-CPU gap to bridge for them.
+#[allow(clippy::too_many_arguments)]
 pub fn violation(
     seed: u64,
     iteration: u64,
@@ -155,10 +161,12 @@ pub fn violation(
     predicate: &str,
     detail: u64,
     component: u8,
+    fired_cpu: Option<usize>,
+    fired_iter: Option<u64>,
 ) {
     VIOLATIONS.fetch_add(1, Ordering::Relaxed);
     crate::serial_println!(
-        "[COREPROOF:VIOLATION:v1:comp={}:seed=0x{:016x}:iter={}:site={}:action={}:ticks={}:order={}:acpu={}:pred={}:detail={}]",
+        "[COREPROOF:VIOLATION:v1:comp={}:seed=0x{:016x}:iter={}:site={}:action={}:ticks={}:order={}:acpu={}:pred={}:detail={}:fired_cpu={}:fired_iter={}]",
         component as char,
         seed,
         iteration,
@@ -169,6 +177,8 @@ pub fn violation(
         vector.antagonist_cpu,
         predicate,
         detail,
+        fired_cpu.map(|cpu| cpu as u64).unwrap_or(u64::MAX),
+        fired_iter.unwrap_or(u64::MAX),
     );
 }
 

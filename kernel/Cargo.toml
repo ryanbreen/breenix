@@ -64,11 +64,29 @@ coreproof_mut_masked_lock = ["coreproof"]
 # `kernel/src/proof/mutations.rs` for why this is a sibling entry rather than a
 # rewrite of M6.
 coreproof_mut_masked_lock_bare = ["coreproof"]
+# Rung 3: `#607` — the null-scheduler-ptr fallback abandons the outgoing
+# thread's own requeue (and leaves `previous_thread` stale). Fixed by PR #634
+# (commit ddd03a11). See `kernel/src/proof/mutations.rs` for the register
+# entry and `kernel/src/arch_impl/aarch64/context_switch.rs`'s
+# `inline_schedule_trampoline` for the re-introduction site.
+coreproof_mut_outgoing_fallback_requeue = ["coreproof"]
+# Rung 1's driver, now named explicitly rather than selected by the ABSENCE of
+# `coreproof_component_c` (rung 3 review hazard: a third component's own
+# negative-selector guard would otherwise silently compile against Component
+# A's `SiteId` variants the moment it existed). Every per-component guard in
+# `kernel/src/task/scheduler.rs` and `kernel/src/proof/{mod,sites}.rs` is a
+# POSITIVE per-component list because of this.
+coreproof_component_a = ["coreproof"]
 # Rung 2: Component C (per-CPU identity + stack custody). Mutually exclusive
-# with the rung-1 Component A driver at compile time — selects which of
-# `driver_a`/`driver_c` `proof::start()` spawns and which component-scoped
-# `SiteId` set `kernel/src/proof/sites.rs` builds with.
+# with the other component drivers at compile time — selects which of
+# `driver_a`/`driver_c`/`driver_h` `proof::start()` spawns and which
+# component-scoped `SiteId` set `kernel/src/proof/sites.rs` builds with.
 coreproof_component_c = ["coreproof"]
+# Rung 3: Component H (dispatch admission — the `INLINE_SCHEDULE_STATE`
+# handoff-slot discipline and the `pending_next` conservation discipline).
+# Mutually exclusive with the other component drivers, same mechanism as
+# `coreproof_component_c` above.
+coreproof_component_h = ["coreproof"]
 # #533 x86 staged-registry dispatch. OFF by default: the dispatch itself works
 # (SerialBoot + all 70 EarlyBoot tests pass), but the boot thread is stranded
 # when the last EarlyBoot subsystem kthread exits, so PostScheduler and

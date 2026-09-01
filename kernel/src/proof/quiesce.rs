@@ -57,11 +57,12 @@ impl Mode {
     /// default in shell, so the arm that used to live here was dead under
     /// every real invocation and could silently drift from the shell's own
     /// default without anything catching it. The gate script is now the
-    /// single owner of that per-component default (`adversarial` for C,
+    /// single owner of that per-component default (`adversarial` for C and H,
     /// `pen` for A - see its own header comment). A hand-invoked `cargo
-    /// build` for a Component C feature set outside the gate script, with no
+    /// build` for a Component C or H feature set outside the gate script, with no
     /// `BREENIX_COREPROOF_MODE` set, now genuinely gets `Pen` - which
-    /// suppresses the very condition Component C hunts (see `driver_c.rs`) -
+    /// suppresses the conditions those components hunt (see `driver_c.rs` and
+    /// `driver_h.rs`) -
     /// so such an invocation must pass `BREENIX_COREPROOF_MODE=adversarial`
     /// itself; the gate script always does.
     pub fn selected() -> Self {
