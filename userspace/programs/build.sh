@@ -269,6 +269,7 @@ STD_BINARIES=(
     # Network tests
     "udp_socket_test"
     "tcp_socket_test"
+    "tcp_dup_listener_test"
     "tcp_blocking_test"
     "concurrent_recv_stress"
     "dns_test"

@@ -1,0 +1,42 @@
+B4 falsification (local, aarch64, Mac): mutate is_valid_user_range to
+unconditionally `return true` right after the len==0 guard, proving the
+compile-time proof block in kernel/src/memory/layout.rs is load-bearing
+(a build failure IS the proof mechanism).
+
+Command:
+  cargo build --release --target aarch64-breenix-kernel.json \
+    -Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem \
+    -p kernel --bin kernel-aarch64
+
+--- MUTATED (is_valid_user_range forced to `return true`) ---
+   Compiling kernel v0.1.0 (/Users/wrb/fun/code/breenix/.claude/worktrees/wf_88b33677-5a6-4/kernel)
+warning: unused variable: `addr`
+   --> kernel/src/memory/layout.rs:445:34
+    |
+445 | pub const fn is_valid_user_range(addr: u64, len: usize) -> bool {
+    |                                  ^^^^ help: if this is intentional, prefix it with an underscore: `_addr`
+    |
+    = note: `#[warn(unused_variables)]` on by default
+
+error[E0080]: evaluation panicked: kernel heap start must be refused
+   --> kernel/src/memory/layout.rs:519:15
+    |
+519 |   const _: () = assert!(
+    |  _______________^
+520 | |     !is_valid_user_range(crate::memory::heap::HEAP_START, 1),
+521 | |     "kernel heap start must be refused"
+522 | | );
+    | |_^ evaluation of `memory::layout::_` failed here
+
+For more information about this error, try `rustc --explain E0080`.
+warning: `kernel` (lib) generated 1 warning
+error: could not compile `kernel` (lib) due to 1 previous error; 1 warning emitted
+
+--- RESTORED (mutation reverted, byte-identical to a6679e7c) ---
+    Finished `release` profile [optimized] target(s) in 5.17s
+(zero warnings, zero errors)
+
+CONCLUSION: the const-assert proof block is genuinely load-bearing on both
+architectures (it is arch-generic, unguarded by #[cfg(target_arch)] except
+the two x86-specific PIE-base assertions) -- flipping the predicate to admit
+everything is caught at compile time, not silently accepted.

@@ -1,0 +1,68 @@
+Guard: kernel FP/SIMD instruction check
+  ELF:       /Users/wrb/fun/code/breenix/.claude/worktrees/wf_88b33677-5a6-4/target/aarch64-breenix-kernel/release/kernel-aarch64
+  objdump:   /Users/wrb/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/aarch64-apple-darwin/bin/llvm-objdump
+  allowlist: /Users/wrb/fun/code/breenix/.claude/worktrees/wf_88b33677-5a6-4/scripts/kernel-neon-allowlist.txt
+[0;32mPASS:[0m 0 FP/SIMD load/store instructions in kernel .text (allowlisted & suppressed: 0).
+=========================================
+ARM64 Full System Test
+=========================================
+Kernel: /Users/wrb/fun/code/breenix/.claude/worktrees/wf_88b33677-5a6-4/target/aarch64-breenix-kernel/release/kernel-aarch64
+ext2 disk: /Users/wrb/fun/code/breenix/.claude/worktrees/wf_88b33677-5a6-4/target/ext2-aarch64.img
+
+Phase 1: Running 85 subsystem tests...
+  (Waiting for [BOOT_TESTS:PASS] or [BOOT_TESTS:FAIL])
+  All tests passed: 109/109
+
+Phase 1a3: Waiting for scheduler strand oracles...
+  Observed: [SCHED_STRAND_ORACLE:aarch64:samples=102:checked=402:stranded=0:running_shape=0:ready_shape=0:resolved_production=0:resolved_exercised=2:worst_dwell_ms=0:overflow=0:worst_nonprogress_ms=0:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1368:worst_cpu_scheduler_silence_ms=1416:worst_silence_cpu=0]
+  Observed: [STRAND_INJECT_ORACLE:aarch64:legA_exercised=1:legA_recovered=1:legB_exercised=1:legB_recovered=1:stranded=0]
+Phase 1a3: PASS
+
+Phase 1a: Waiting for block EINTR oracle...
+qemu-system-aarch64: terminating on signal 15
+
+Phase 5: refusal-drain oracle legs (leg G foreign record, leg H departure guard)...
+    Finished `release` profile [optimized] target(s) in 0.06s
+warning: the following packages contain code that will be rejected by a future version of Rust: core v0.0.0 (/Users/wrb/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/src/rust/library/core)
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+Guard: kernel FP/SIMD instruction check
+  ELF:       /Users/wrb/fun/code/breenix/.claude/worktrees/wf_88b33677-5a6-4/target/refusal-drain-gate/aarch64-breenix-kernel/release/kernel-aarch64
+  objdump:   /Users/wrb/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/aarch64-apple-darwin/bin/llvm-objdump
+  allowlist: /Users/wrb/fun/code/breenix/.claude/worktrees/wf_88b33677-5a6-4/scripts/kernel-neon-allowlist.txt
+[0;32mPASS:[0m 0 FP/SIMD load/store instructions in kernel .text (allowlisted & suppressed: 0).
+ARM64 REFUSAL DRAIN GATE: FAILED
+Missing marker: [BLOCK_EINTR_ORACLE:
+qemu-system-aarch64: terminating on signal 15 from pid 82509 (<unknown process>)
+Serial: /tmp/breenix_aarch64_refusal_drain_gate/serial.txt
+
+=========================================
+ARM64 FULL SYSTEM TEST: FAILED
+=========================================
+Reason: Phase 1a: block EINTR oracle marker absent (30s timeout)
+
+Serial: 699 lines
+Log: /tmp/breenix_aarch64_full_test/serial.txt
+
+Last 20 lines of serial output:
+[RESUME_PC_CENSUS:cpu=1:source=ctx-elr-el1:text=4737:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=lr-save-el1:text=4735:kstack=0:uva=0:smallint=0:other=1]
+[RESUME_PC_CENSUS:cpu=1:source=lr-restore-el1:text=4735:kstack=0:uva=0:smallint=0:other=1]
+[RESUME_PC_CENSUS:cpu=2:source=el1-restore-frame-elr:text=4584:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=ctx-x30:text=4583:kstack=0:uva=1:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=ctx-elr-el1:text=4585:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=lr-save-el1:text=4583:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=lr-restore-el1:text=4584:kstack=0:uva=1:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=3:source=el1-restore-frame-elr:text=3173:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=3:source=el0-restore-frame-elr:text=0:kstack=0:uva=13:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=3:source=ctx-x30:text=3172:kstack=0:uva=10:smallint=3:other=1]
+[RESUME_PC_CENSUS:cpu=3:source=ctx-elr-el1:text=3173:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=3:source=lr-save-el1:text=3171:kstack=0:uva=1:smallint=0:other=1]
+[RESUME_PC_CENSUS:cpu=3:source=lr-restore-el1:text=3172:kstack=0:uva=0:smallint=0:other=1]
+[RESUME_PC_CENSUS:cpu=3:source=lr-save-el0:text=0:kstack=0:uva=10:smallint=2:other=0]
+[RESUME_PC_CENSUS:cpu=3:source=lr-restore-el0:text=0:kstack=0:uva=10:smallint=3:other=0]
+[SCHED_STRAND_ORACLE:aarch64:samples=592:checked=1382:stranded=0:running_shape=0:ready_shape=0:resolved_production=0:resolved_exercised=2:worst_dwell_ms=0:overflow=0:worst_nonprogress_ms=0:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1368:worst_cpu_scheduler_silence_ms=1416:worst_silence_cpu=0]
+[TOMBSTONE_CENSUS:resident=0:removed=2:reap_second=1:retire_second=1:abandoned_unqueued=0]
+[SCHED_STRAND_ORACLE:aarch64:samples=690:checked=1578:stranded=0:running_shape=0:ready_shape=0:resolved_production=0:resolved_exercised=2:worst_dwell_ms=0:overflow=0:worst_nonprogress_ms=0:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1368:worst_cpu_scheduler_silence_ms=1416:worst_silence_cpu=0]
+[TOMBSTONE_CENSUS:resident=0:removed=2:reap_second=1:retire_second=1:abandoned_unqueued=0]
+
+[exited with code 0]

@@ -1248,6 +1248,8 @@ fn kernel_main_continue() -> ! {
             kernel::userspace_test::get_test_binary("syscall_diagnostic_test");
         let udp_test_buf = kernel::userspace_test::get_test_binary("udp_socket_test");
         let tcp_test_buf = kernel::userspace_test::get_test_binary("tcp_socket_test");
+        let tcp_dup_listener_test_buf =
+            kernel::userspace_test::get_test_binary("tcp_dup_listener_test");
         let dns_test_buf = kernel::userspace_test::get_test_binary("dns_test");
         let http_test_buf = kernel::userspace_test::get_test_binary("http_test");
         let loopback_wake_test_buf =
@@ -1389,6 +1391,28 @@ fn kernel_main_continue() -> ! {
                     }
                     Err(e) => {
                         log::error!("Failed to create tcp_socket_test process: {}", e);
+                    }
+                }
+            }
+
+            // Launch TCP dup'd-listener test (regression for #724 review
+            // finding M1: dup()/dup2() never incremented a TcpListener's
+            // ref_count, so sys_close()'s new decrement could retire a
+            // listener out from under a surviving dup'd fd).
+            {
+                serial_println!("RING3_SMOKE: creating tcp_dup_listener_test userspace process");
+                match process::creation::create_user_process(
+                    String::from("tcp_dup_listener_test"),
+                    &tcp_dup_listener_test_buf,
+                ) {
+                    Ok(pid) => {
+                        log::info!(
+                            "Created tcp_dup_listener_test process with PID {}",
+                            pid.as_u64()
+                        );
+                    }
+                    Err(e) => {
+                        log::error!("Failed to create tcp_dup_listener_test process: {}", e);
                     }
                 }
             }

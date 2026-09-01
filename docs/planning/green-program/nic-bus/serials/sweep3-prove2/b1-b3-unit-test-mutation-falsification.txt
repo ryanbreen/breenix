@@ -1,0 +1,38 @@
+B1-B3 proof, mutation leg: re-ran the committed
+739-gdb-chat-fix/unit-test-resync-symbols.txt myself, then reintroduced the
+B1 bug (self.kernel_base_x86 -> self.KERNEL_BASE_X86 at both
+_load_symbols_at_runtime_addr() call sites) in a scratch copy and re-ran the
+identical test.
+
+--- GREEN (gdb_chat.py as shipped at a6679e7c) ---
+[INFO] Symbol offsets: .text=0x1000
+[INFO] Runtime addresses: .text=0x10000001000 (base=0x10000000000)
+[INFO] Symbol offsets: .text=0x1000
+[INFO] Runtime addresses: .text=0x8000001000 (base=0x8000000000)
+initial add-symbol-file command: ['add-symbol-file /fake/kernel.elf 0x10000001000 -s .rodata 0x10000002000 -s .data 0x10000003000 -s .bss 0x10000004000']
+old_base       = 0x10000000000
+result         = {'success': True, 'resynced': True, 'verified': True, 'old_base': '0x10000000000', 'base': '0x8000000000', 'message': 'Symbols were loaded at the WRONG base 0x10000000000; corrected to 0x8000000000'}
+gdb commands   = ['remove-symbol-file -a 0x10000001000', 'add-symbol-file /fake/kernel.elf 0x8000001000 -s .rodata 0x8000002000 -s .data 0x8000003000 -s .bss 0x8000004000']
+result2 (idempotent call) = {'success': True, 'resynced': False, 'verified': True, 'base': '0x8000000000', 'message': 'Already resynced at this base'}
+ALL ASSERTIONS PASSED: resync_symbols() correctly discovers and corrects a wrong guess using real #737 boot data, exercising the REAL _load_symbols_at_runtime_addr() (not stubbed).
+
+--- RED (B1 bug reintroduced: text_addr/runtime_addr read self.KERNEL_BASE_X86, not self.kernel_base_x86) ---
+[INFO] Symbol offsets: .text=0x1000
+[INFO] Runtime addresses: .text=0x10000001000 (base=0x10000000000)
+[INFO] Symbol offsets: .text=0x1000
+[INFO] Runtime addresses: .text=0x10000001000 (base=0x8000000000)
+initial add-symbol-file command: ['add-symbol-file /fake/kernel.elf 0x10000001000 -s .rodata 0x10000002000 -s .data 0x10000003000 -s .bss 0x10000004000']
+old_base       = 0x10000000000
+result         = {'success': True, 'resynced': True, 'verified': True, 'old_base': '0x10000000000', 'base': '0x8000000000', 'message': 'Symbols were loaded at the WRONG base 0x10000000000; corrected to 0x8000000000'}
+gdb commands   = ['remove-symbol-file -a 0x10000001000', 'add-symbol-file /fake/kernel.elf 0x10000001000 -s .rodata 0x10000002000 -s .data 0x10000003000 -s .bss 0x10000004000']
+Traceback (most recent call last):
+  File "unit-test-resync-symbols-mutated.py", line 98, in <module>
+    assert "0x8000001000" in add_cmds[0], (
+AssertionError: reload must use the corrected base (0x8000000000 + .text offset 0x1000 = 0x8000001000), got: 'add-symbol-file /fake/kernel.elf 0x10000001000 -s .rodata 0x10000002000 -s .data 0x10000003000 -s .bss 0x10000004000'
+
+CONCLUSION: the committed unit test is not vacuous -- it goes RED
+immediately when the B1 bug is reintroduced (the reload silently uses the
+stale class-constant guess again, exactly the pre-fix #739 symptom), and
+GREEN against the shipped fix. Restored gdb_chat.py to its committed state
+after this test; re-ran the unmutated test to confirm GREEN again
+(ALL ASSERTIONS PASSED, identical to the first run above).
