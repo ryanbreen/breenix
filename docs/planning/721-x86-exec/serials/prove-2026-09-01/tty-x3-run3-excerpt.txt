@@ -1,0 +1,1 @@
+PASS: x86 TTY oracle gate - 1/1 boots, 13 arms green on the shipped production profile (cloexec_exec excluded pending #745)

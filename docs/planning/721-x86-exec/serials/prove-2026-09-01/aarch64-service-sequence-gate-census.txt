@@ -1,0 +1,73 @@
+75:Profile max census
+76:  575           0
+77:  576           0
+78:  626           0
+79:  635           0
+80:  641           0
+81:  690           1
+82:  DATA_ABORT    0
+83:  CLONE_EXEC    0
+84:  STRAND        0
+85:  BOOT_TEST_FAIL 0
+86:  596           0
+87:  612           0
+88:  609           0
+89:  P5B           0
+90:  GREEN         24
+91:  UNATTRIBUTED  0
+92:  GREEN rate: 24/25 (96.0%) — census-only: every non-GREEN bucket is gate-failing, with no exceptions, including the open #576, #626, #635, #641 and #690 defects
+93:  CTX596 divergence: 7 marker line(s) across 6/25 boot(s) — reported, not gated
+94:  RET dispatch refused: 0 marker line(s) across 0/25 boot(s) — reported, not gated
+96:  Per-CPU stack alien: 0 marker line(s) across 0/25 boot(s) — gate-failing
+97:  CPU identity split: 0 marker line(s) across 0/25 boot(s) — gate-failing
+98:  Ret-dispatch staging refused: 0 marker line(s) across 0/25 boot(s) — gate-failing
+99:  Saved-LR non-PC words: 126 marker line(s) across 25/25 boot(s) — reported, not gated
+100:Profile max gate: FAILED (575=0, 576=0, 626=0, 635=0, 641=0, 690=1, DATA_ABORT=0, CLONE_EXEC=0, STRAND=0, BOOT_TEST_FAIL=0, 596=0, 612=0, 609=0, P5B=0, UNATTRIBUTED=0, RESUME_PC_REFUSED=0, PERCPU_STACK_ALIEN=0, CPU_IDENTITY_SPLIT=0, RET_STAGE_REFUSED=0)
+154:Profile cortex-a72 census
+155:  575           0
+156:  576           0
+157:  626           0
+158:  635           0
+159:  641           0
+160:  690           0
+161:  DATA_ABORT    0
+162:  CLONE_EXEC    0
+163:  STRAND        0
+164:  BOOT_TEST_FAIL 0
+165:  596           0
+166:  612           0
+167:  609           0
+168:  P5B           0
+169:  GREEN         25
+170:  UNATTRIBUTED  0
+171:  GREEN rate: 25/25 (100.0%) — census-only: every non-GREEN bucket is gate-failing, with no exceptions, including the open #576, #626, #635, #641 and #690 defects
+172:  CTX596 divergence: 7 marker line(s) across 7/25 boot(s) — reported, not gated
+173:  RET dispatch refused: 0 marker line(s) across 0/25 boot(s) — reported, not gated
+175:  Per-CPU stack alien: 0 marker line(s) across 0/25 boot(s) — gate-failing
+176:  CPU identity split: 0 marker line(s) across 0/25 boot(s) — gate-failing
+177:  Ret-dispatch staging refused: 0 marker line(s) across 0/25 boot(s) — gate-failing
+178:  Saved-LR non-PC words: 114 marker line(s) across 25/25 boot(s) — reported, not gated
+179:Profile cortex-a72 gate: PASSED (575=0, 576=0, 626=0, 635=0, 641=0, 690=0, DATA_ABORT=0, CLONE_EXEC=0, STRAND=0, BOOT_TEST_FAIL=0, 596=0, 612=0, 609=0, P5B=0, UNATTRIBUTED=0, RESUME_PC_REFUSED=0, PERCPU_STACK_ALIEN=0, CPU_IDENTITY_SPLIT=0, RET_STAGE_REFUSED=0)
+182:  575           0
+183:  576           0
+184:  626           0
+185:  635           0
+186:  641           0
+187:  690           1
+188:  DATA_ABORT    0
+189:  CLONE_EXEC    0
+190:  STRAND        0
+191:  BOOT_TEST_FAIL 0
+192:  596           0
+193:  612           0
+194:  609           0
+195:  P5B           0
+196:  GREEN         49
+197:  UNATTRIBUTED  0
+198:  GREEN rate: 49/50 (98.0%) — census-only: every non-GREEN bucket is gate-failing, with no exceptions, including the open #576, #626, #635, #641 and #690 defects
+199:  CTX596 divergence: 14 marker line(s) across 13/50 boot(s) — reported, not gated
+200:  RET dispatch refused: 0 marker line(s) across 0/50 boot(s) — reported, not gated
+202:  Per-CPU stack alien: 0 marker line(s) across 0/50 boot(s) — gate-failing
+203:  CPU identity split: 0 marker line(s) across 0/50 boot(s) — gate-failing
+204:  Ret-dispatch staging refused: 0 marker line(s) across 0/50 boot(s) — gate-failing
+205:  Saved-LR non-PC words: 240 marker line(s) across 50/50 boot(s) — reported, not gated

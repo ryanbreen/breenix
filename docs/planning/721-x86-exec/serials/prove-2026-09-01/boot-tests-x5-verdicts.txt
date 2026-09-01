@@ -1,0 +1,10 @@
+/tmp/p721-prove/boot-tests-x5/run1.log:x86 userspace gate: PASS - exited=105 expected>=104 nonzero=0 allowlist=0
+/tmp/p721-prove/boot-tests-x5/run1.log:x86 frame-custody gate run 1: PASS
+/tmp/p721-prove/boot-tests-x5/run2.log:x86 userspace gate: PASS - exited=105 expected>=104 nonzero=0 allowlist=0
+/tmp/p721-prove/boot-tests-x5/run2.log:x86 frame-custody gate run 1: PASS
+/tmp/p721-prove/boot-tests-x5/run3.log:x86 userspace gate: PASS - exited=105 expected>=104 nonzero=0 allowlist=0
+/tmp/p721-prove/boot-tests-x5/run3.log:x86 frame-custody gate run 1: PASS
+/tmp/p721-prove/boot-tests-x5/run4.log:x86 userspace gate: PASS - exited=105 expected>=104 nonzero=0 allowlist=0
+/tmp/p721-prove/boot-tests-x5/run4.log:x86 frame-custody gate run 1: PASS
+/tmp/p721-prove/boot-tests-x5/run5.log:x86 userspace gate: PASS - exited=105 expected>=104 nonzero=0 allowlist=0
+/tmp/p721-prove/boot-tests-x5/run5.log:x86 frame-custody gate run 1: PASS
