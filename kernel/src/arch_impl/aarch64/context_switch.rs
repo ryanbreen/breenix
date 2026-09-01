@@ -2816,6 +2816,23 @@ pub(crate) static COREPROOF_INLINE_SLOT_ALREADY_CONSUMED_ATTRIBUTED: AtomicU64 =
 pub(crate) static COREPROOF_INLINE_SLOT_ALREADY_CONSUMED_UNEXPLAINED: AtomicU64 =
     AtomicU64::new(0);
 
+/// Reset every CPU's self-retraction attribution tag.
+///
+/// Called at the coreproof driver's window-open edge
+/// (`kernel/src/proof/driver_h.rs`, alongside `coverage::open_window()`) so a
+/// `true` left by activity before the measured window -- ordinary
+/// boot/rendezvous traffic, or a self-retraction whose own trampoline
+/// consumer never got a chance to run before the window opened -- cannot be
+/// silently absorbed as an `ALREADY_CONSUMED_ATTRIBUTED` classification for a
+/// later, genuinely unrelated null read inside the window (rung 3 review, M1:
+/// the sticky-latch half of the finding).
+#[cfg(feature = "coreproof")]
+pub(crate) fn coreproof_reset_self_retracted_tags() {
+    for slot in COREPROOF_INLINE_HANDOFF_SELF_RETRACTED.iter() {
+        slot.store(false, Ordering::Relaxed);
+    }
+}
+
 struct ExitScheduleState {
     scheduler_ptr: AtomicUsize,
     thread_id: AtomicU64,
@@ -6746,8 +6763,20 @@ pub fn schedule_from_kernel() {
         INLINE_SCHEDULE_STATE[cpu_id]
             .scheduler_ptr
             .store(0, Ordering::Relaxed);
+        // Tag the FRESH identity's slot, not the carried one (#735). Below this
+        // point every remaining instruction in this masked transaction --
+        // including `inline_schedule_trampoline`'s own `CpuId::current()` read
+        // at its entry -- runs on the physical CPU `pivot_cpu` names, since
+        // `aarch64_inline_schedule_switch` is a same-core stack pivot and
+        // branch (never a cross-CPU handoff) and interrupts stay masked the
+        // whole way. So the trampoline invocation THIS retraction produces
+        // reads `COREPROOF_INLINE_HANDOFF_SELF_RETRACTED[pivot_cpu.index()]`,
+        // never `[cpu_id]` -- tagging the carried slot sits on a slot no
+        // consumer of this retraction ever reads, and instead lingers as a
+        // stale latch that can misattribute whatever unrelated null read the
+        // carried CPU produces on its own, later (rung 3 review, M1).
         #[cfg(feature = "coreproof")]
-        COREPROOF_INLINE_HANDOFF_SELF_RETRACTED[cpu_id].store(true, Ordering::Relaxed);
+        COREPROOF_INLINE_HANDOFF_SELF_RETRACTED[pivot_cpu.index()].store(true, Ordering::Relaxed);
     }
     let scheduler_top = pivot_destination(
         pivot_cpu,

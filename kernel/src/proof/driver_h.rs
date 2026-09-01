@@ -37,7 +37,8 @@
 use core::sync::atomic::Ordering;
 
 use crate::arch_impl::aarch64::context_switch::{
-    COREPROOF_INLINE_SLOT_ALREADY_CONSUMED_UNEXPLAINED, INLINE_SCHED_NULL_FALLBACK,
+    coreproof_reset_self_retracted_tags, COREPROOF_INLINE_SLOT_ALREADY_CONSUMED_UNEXPLAINED,
+    INLINE_SCHED_NULL_FALLBACK,
 };
 use crate::task::scheduler;
 use crate::task::strand_oracle;
@@ -310,6 +311,10 @@ pub fn run() {
     let mut iterations = 0u64;
     let mut reported = Reported(0);
     super::coverage::open_window();
+    // Bound the self-retraction attribution tag's lifetime to this measured
+    // window (rung 3 review, M1): a `true` left by pre-window activity must
+    // never be available to absorb a later, unrelated null read as ATTRIBUTED.
+    coreproof_reset_self_retracted_tags();
     let mut last_null_fallback = INLINE_SCHED_NULL_FALLBACK.aggregate();
 
     while iterations < ITERATION_CAP

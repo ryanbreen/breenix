@@ -1,0 +1,28 @@
+FIX ROUND (B3) — leg 4's actual null-fallback event population, derived from
+the preserved serials at /tmp/breenix_coreproof_gate/20260901T020728Z_11161/
+(the same 160-boot leg 4 hunt window PROVE-2026-09-01.md §4 and
+evidence/leg4-hunt-window-160boots.txt already describe; this file adds the
+per-boot cov=outgoing_fallback_requeue distribution the condensed gate-script
+stdout in that evidence file does not print).
+
+Command:
+  for f in .../20260901T020728Z_11161/*/serial.txt; do
+    grep -a "phase=close" "$f" | tail -1 | grep -o "outgoing_fallback_requeue=[0-9]*"
+  done | sort | uniq -c
+
+Result:
+  100 outgoing_fallback_requeue=0
+   60 outgoing_fallback_requeue=1
+
+grep -rl "CPU_IDENTITY_SPLIT" .../20260901T020728Z_11161/*/serial.txt | wc -l
+  0
+
+Reading: across 160 boots, the null-fallback event `INLINE_SLOT_UNEXPLAINED`
+(and `ALREADY_CONSUMED_ATTRIBUTED`) classify was entered exactly 60 times —
+never more than once per boot, i.e. exactly the default one-shot idle
+injection each time it fired — and 0 times organically (no
+`CPU_IDENTITY_SPLIT` record anywhere in the 160 serials, so
+`COREPROOF_INLINE_HANDOFF_SELF_RETRACTED` was never set by real production
+traffic in this window). The event population leg 4's `#605`-class bullet
+was actually sampled over is 60 injected + 0 organic = 60, not the
+10.5M driver-loop iterations the original prose cited alongside it.

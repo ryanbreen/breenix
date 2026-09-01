@@ -108,7 +108,8 @@ fn the_new_inline_slot_instrument_is_entirely_coreproof_gated() {
         );
     }
 
-    let tag = "COREPROOF_INLINE_HANDOFF_SELF_RETRACTED[cpu_id].store(true, Ordering::Relaxed)";
+    let tag =
+        "COREPROOF_INLINE_HANDOFF_SELF_RETRACTED[pivot_cpu.index()].store(true, Ordering::Relaxed)";
     let tag_offset = source
         .find(tag)
         .unwrap_or_else(|| panic!("the self-retraction tag site no longer contains `{tag}`"));
@@ -158,5 +159,129 @@ fn inline_slot_classification_counters_fire_from_exactly_one_site_each_and_stay_
         span < 800,
         "the three classification increments span {span} bytes (offsets={offsets:?}), so \
          they are no longer one small co-located if/else dispatch"
+    );
+}
+
+#[test]
+fn self_retraction_tags_the_fresh_identity_the_resulting_trampoline_reads() {
+    // Both wrong-way scenarios this test exists to kill, both a regression to
+    // the fixed #735 bug shape:
+    //
+    //   (a) a designed self-retraction must classify ATTRIBUTED: the tag site
+    //       must index by the FRESH identity (`pivot_cpu.index()`), the exact
+    //       identity `inline_schedule_trampoline`'s own `CpuId::current()`
+    //       read resolves to, since `aarch64_inline_schedule_switch` is a
+    //       same-physical-core stack pivot and branch and interrupts stay
+    //       masked from the retraction through trampoline entry. If this
+    //       regresses to the carried `cpu_id`, the retraction's own resulting
+    //       trampoline reads a slot nobody tagged and misclassifies its own
+    //       designed recovery as UNEXPLAINED.
+    //   (b) the same identity must be the one the classification site reads,
+    //       so store and read genuinely agree at these bytes and not merely
+    //       by the same name appearing twice with different bindings.
+    let source = context_switch_source();
+
+    let old_buggy_tag = "COREPROOF_INLINE_HANDOFF_SELF_RETRACTED[cpu_id].store(true";
+    assert!(
+        !source.contains(old_buggy_tag),
+        "the self-retraction tag site indexes by the carried `cpu_id` again -- this is the \
+         exact #735 regression: the retraction's own resulting trampoline runs on the FRESH \
+         `pivot_cpu`, not the carried identity, and would misclassify a designed \
+         self-retraction as ALREADY_CONSUMED_UNEXPLAINED instead of ATTRIBUTED"
+    );
+
+    let fixed_tag =
+        "COREPROOF_INLINE_HANDOFF_SELF_RETRACTED[pivot_cpu.index()].store(true, Ordering::Relaxed)";
+    assert!(
+        source.contains(fixed_tag),
+        "expected the self-retraction tag site to index by the fresh `pivot_cpu.index()`; \
+         found neither the fixed form nor an unexpected variant -- `{fixed_tag}` is missing"
+    );
+
+    // The tag site must sit inside the `pivot_cpu.index() != cpu_id` retraction
+    // arm, not merely exist somewhere in the file with the right index
+    // variable by coincidence.
+    let guard = "if pivot_cpu.index() != cpu_id {";
+    let guard_offset = source
+        .find(guard)
+        .unwrap_or_else(|| panic!("the identity-mismatch retraction guard `{guard}` is missing"));
+    let tag_offset = source
+        .find(fixed_tag)
+        .expect("checked present above");
+    let guard_close = source[guard_offset..]
+        .find("\n    }\n")
+        .map(|relative| guard_offset + relative)
+        .unwrap_or(source.len());
+    assert!(
+        tag_offset > guard_offset && tag_offset < guard_close,
+        "the fixed tag site (byte {tag_offset}) is not inside the retraction guard opened at \
+         byte {guard_offset} and closed by byte {guard_close}"
+    );
+
+    // The trampoline's classification read must use its own fresh `cpu_id`
+    // (bound from `CpuId::current()` at trampoline entry) -- the same value
+    // the fixed tag site above computed as `pivot_cpu.index()` for the very
+    // invocation this retraction produces.
+    let read = "COREPROOF_INLINE_HANDOFF_SELF_RETRACTED[cpu_id].swap(false, Ordering::Relaxed)";
+    assert!(
+        source.contains(read),
+        "the trampoline's classification read no longer indexes by its own fresh `cpu_id`; \
+         expected `{read}`"
+    );
+}
+
+#[test]
+fn self_retraction_latch_cannot_outlive_one_measured_window() {
+    // (b) a stale-latch cross-window read must classify UNEXPLAINED: the tag
+    // array must be reset at the driver's window-open edge, so a `true` left
+    // by activity before the measured window can never be consumed as
+    // ATTRIBUTED by an unrelated null read inside it. If the reset function
+    // or its call site regresses away, this test reddens.
+    let kernel_source = context_switch_source();
+    assert!(
+        kernel_source.contains("pub(crate) fn coreproof_reset_self_retracted_tags()"),
+        "the self-retraction tag reset function no longer exists in context_switch.rs"
+    );
+    let reset_body_offset = kernel_source
+        .find("fn coreproof_reset_self_retracted_tags()")
+        .expect("checked present above");
+    let reset_body_end = kernel_source[reset_body_offset..]
+        .find("\n}\n")
+        .map(|relative| reset_body_offset + relative)
+        .unwrap_or(kernel_source.len());
+    let reset_body = &kernel_source[reset_body_offset..reset_body_end];
+    assert!(
+        reset_body.contains("COREPROOF_INLINE_HANDOFF_SELF_RETRACTED")
+            && reset_body.contains("store(false"),
+        "coreproof_reset_self_retracted_tags's body no longer resets \
+         COREPROOF_INLINE_HANDOFF_SELF_RETRACTED to false: {reset_body:?}"
+    );
+    assert_coreproof_cfg_precedes(
+        &kernel_source,
+        reset_body_offset,
+        "coreproof_reset_self_retracted_tags",
+        200,
+    );
+
+    let driver_source = read("kernel/src/proof/driver_h.rs");
+    assert!(
+        driver_source.contains("coreproof_reset_self_retracted_tags();"),
+        "driver_h.rs's run() no longer calls coreproof_reset_self_retracted_tags() -- the \
+         self-retraction latch can now leak a stale `true` across window boundaries into a \
+         later, unrelated specimen (the exact #735 sticky-latch shape)"
+    );
+    let open_offset = driver_source
+        .find("super::coverage::open_window();")
+        .expect("driver_h.rs's run() no longer calls coverage::open_window()");
+    let reset_offset = driver_source
+        .find("coreproof_reset_self_retracted_tags();")
+        .expect("checked present above");
+    assert!(
+        reset_offset > open_offset && reset_offset - open_offset < 300,
+        "coreproof_reset_self_retracted_tags() is called {} bytes after \
+         coverage::open_window() -- it must sit right at the window-open edge, not somewhere \
+         later where organic traffic inside the window could already have set a tag before \
+         the reset runs",
+        reset_offset.saturating_sub(open_offset)
     );
 }
