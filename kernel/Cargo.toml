@@ -104,6 +104,10 @@ fs_fault_inject = []
 fs_fault_disarm_short_read = ["fs_fault_inject"]
 fs_fault_disarm_eio = ["fs_fault_inject"]
 fs_fault_disarm_corrupt_inode = ["fs_fault_inject"]
+# #728 gate-observable repro oracle for ext2 lock discipline. Test profile
+# only: the module and both of its call sites are behind this feature, and it
+# requires boot_tests for kthread_run_on_cpu_for_test's aarch64 CPU pinning.
+ext2_lock_race = ["boot_tests"]
 btrt = []  # Boot Test Result Table (structured test results)
 kthread_test_only = ["testing"]  # Run only kthread tests and exit
 xhci_linux_harness = []  # Build and use the Linux C-based xHCI harness

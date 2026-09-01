@@ -1311,6 +1311,14 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
         kernel::test_framework::btrt::pass(kernel::test_framework::catalog::BOOT_TESTS_COMPLETE);
     }
 
+    // #728 ext2 lock-discipline repro oracle (test profile only, feature
+    // `ext2_lock_race`). Needs a running scheduler/timer/SMP, so it runs here
+    // rather than at the fault-injection leg's early insertion point right
+    // after mount -- kthreads do not exist, and SMP CPUs are not yet online,
+    // that early in boot.
+    #[cfg(feature = "ext2_lock_race")]
+    kernel::fs::ext2_lock_race::run_ext2_lock_race_leg();
+
     kernel::tracing::providers::teardown::emit_root_custody_summary();
     kernel::tracing::providers::teardown::emit_tombstone_census();
 

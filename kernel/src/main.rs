@@ -673,6 +673,13 @@ extern "C" fn kernel_main_on_kernel_stack(arg: *mut core::ffi::c_void) -> ! {
         kernel::tracing::providers::teardown::run_x86_tombstone_join_gate();
     }
 
+    // #728 ext2 lock-discipline repro oracle (test profile only, feature
+    // `ext2_lock_race`). Needs a running scheduler/timer/preemption, so it
+    // runs here rather than at the fault-injection leg's early insertion
+    // point right after mount -- kthreads do not exist that early in boot.
+    #[cfg(all(target_arch = "x86_64", feature = "ext2_lock_race"))]
+    kernel::fs::ext2_lock_race::run_ext2_lock_race_leg();
+
     kernel::tracing::providers::teardown::emit_root_custody_summary();
     kernel::tracing::providers::teardown::emit_tombstone_census();
 
