@@ -1468,16 +1468,27 @@ impl Ext2Fs {
 //
 // `ROOT_EXT2`/`HOME_EXT2` are `spin::RwLock`s whose contended acquisition
 // busy-spins with no `try_*`-then-park fallback (spin 0.9.8's default relax
-// strategy is a hardware pause, never an OS yield or park). Every syscall
-// dispatch that can contend these locks runs with `preempt_count() > 0`,
-// which is the same counter the timer interrupt's own preemption decision
-// gates on (`can_schedule() == (preempt_count() == 0)`). So the moment a
-// contended acquisition's own holder is genuinely parked for block-device
-// I/O completion (see `Completion::wait_timeout_uninterruptible`,
-// `task/completion.rs`) while still holding the guard, a spinning contender
-// is, for the duration of its spin, structurally exempt from the mechanism
-// that would otherwise let the timer ISR preempt it and let the actual
-// holder's completion get dispatched. See #728 for the full analysis.
+// strategy is a hardware pause, never an OS yield or park). The mechanism
+// that makes a contended spin un-interruptible differs by arch, and both
+// halves matter:
+//   - On aarch64, every syscall dispatch that can contend these locks runs
+//     with `preempt_count() > 0`, which is the same counter the timer
+//     interrupt's own preemption decision gates on
+//     (`can_schedule() == (preempt_count() == 0)`) — IRQs are normally
+//     *unmasked* in an aarch64 syscall, so the timer still fires, it just
+//     declines to switch away from the spinner.
+//   - On x86, the syscall entry path (`syscall/entry.asm:29`, `cli`, no
+//     `sti` before `rust_syscall_handler`) runs the entire syscall with
+//     RFLAGS.IF = 0, so the timer interrupt cannot fire *at all* — a
+//     stronger, more direct cause than the preempt_count mechanism (which
+//     is also true on x86, but not the reason the spin cannot be preempted).
+// Either way: the moment a contended acquisition's own holder is genuinely
+// parked for block-device I/O completion (see
+// `Completion::wait_timeout_uninterruptible`, `task/completion.rs`) while
+// still holding the guard, a spinning contender is, for the duration of its
+// spin, structurally exempt from the mechanism that would otherwise let the
+// timer ISR preempt it and let the actual holder's completion get
+// dispatched. See #728 for the full analysis.
 //
 // `ext2_spin_wait`/`ext2_spin_wait_write` below make that spin *observable*
 // without changing its behavior: they still busy-spin forever with no yield
@@ -1679,11 +1690,61 @@ const EXT2_LOCK_PARK_ROUNDS: u32 = 32;
 /// small next to "forever."
 const EXT2_LOCK_PARK_TIMEOUT_NS: u64 = 200_000_000;
 
+/// Running count of acquisition attempts that actually parked (queued on a
+/// `WaitQueueHead` and called `schedule_current_wait()`), as opposed to
+/// resolving on the fast `try_*` path or falling back to the spin. Read via
+/// `ext2_lock_parks()`.
+///
+/// Exists so a green race-leg run can prove the park path was *entered*,
+/// not merely that no stall was observed — the absence of a stall is also
+/// what a contender that parked and then never woke up looks like before
+/// its round timeout elapses, so "no stall" alone does not distinguish
+/// "the fix worked" from "the fix parked and got lucky on the timeout."
+/// (B4 of the #728 review.)
+static EXT2_LOCK_PARKS: AtomicU64 = AtomicU64::new(0);
+
+/// Read the running count of successful park entries since boot. See
+/// `EXT2_LOCK_PARKS`.
+pub fn ext2_lock_parks() -> u64 {
+    EXT2_LOCK_PARKS.load(Ordering::Relaxed)
+}
+
 /// Returns true when it is safe for a contended ext2 lock acquisition to
 /// park instead of spin. See the module docs above for the full rationale;
 /// this mirrors `block_request_gate_can_sleep()`
 /// (`drivers/virtio/block.rs`) and `syscall_sleep_path_available()`
-/// (`task/completion.rs`).
+/// (`task/completion.rs`) — including the arch split those two precedents
+/// already use: aarch64 gates on `interrupts_enabled()` (see below), x86
+/// does not.
+///
+/// # Why x86 does *not* check `interrupts_enabled()`
+///
+/// Every x86 syscall enters through `INT 0x80` on an interrupt gate with an
+/// explicit `cli` (`syscall/entry.asm:29`) and there is no `sti` anywhere on
+/// the path down into this file — RFLAGS.IF is unconditionally 0 for the
+/// entire duration of every x86 syscall, including the ~44 fs/syscall sites
+/// that call the four accessors below. An `interrupts_enabled()` conjunct
+/// here would make this predicate false at every one of them, permanently,
+/// which reduces the fix to a no-op on the arch #728 was reported on. IF=0
+/// is not a no-park condition on x86 the way DAIR.I-masked is on aarch64
+/// (C3): the x86 park primitive `schedule_current_wait()` calls on every
+/// loop iteration is `arch_halt_with_interrupts()` ==
+/// `X86Cpu::halt_with_interrupts()` == `enable_and_hlt` — the atomic
+/// `sti; hlt` sequence — so parking *from* IF=0 is exactly the normal,
+/// expected entry state; the primitive itself is what turns interrupts back
+/// on, at the halt, so the timer ISR can wake the thread. Every block-device
+/// read already parks this same way, from this same IF=0 syscall state, via
+/// `block_request_gate_can_sleep()` (x86: `preempt_count() > 0`, no IF
+/// check) and `syscall_sleep_path_available()` (x86: `preempt_count() > 0`,
+/// no IF check) — this predicate now matches both.
+///
+/// aarch64 syscalls are the opposite: `syscall_entry.S` unmasks DAIF before
+/// `rust_syscall_handler` runs, so IRQs are normally *unmasked* in an
+/// aarch64 syscall, and the one aarch64 site that masks them anyway
+/// (`load_test_binaries_from_ext2`, C3) needs exactly this check to stay a
+/// hard no-park. That is why the check is aarch64-only rather than deleted
+/// outright: on aarch64 it is load-bearing; on x86 it is never anything but
+/// unconditionally false, so keeping it there defeats the fix.
 #[inline]
 fn ext2_lock_can_sleep() -> bool {
     if crate::task::scheduler::current_thread_id().is_none() {
@@ -1705,13 +1766,7 @@ fn ext2_lock_can_sleep() -> bool {
     }
     #[cfg(not(target_arch = "aarch64"))]
     {
-        use crate::arch_impl::traits::CpuOps;
-        type Ext2Cpu = crate::arch_impl::x86_64::cpu::X86Cpu;
-
         if crate::per_cpu::in_interrupt() {
-            return false;
-        }
-        if !Ext2Cpu::interrupts_enabled() {
             return false;
         }
         crate::per_cpu::preempt_count() == 1
@@ -1763,6 +1818,7 @@ fn ext2_acquire<T>(
                 crate::task::waitqueue::PrepareOutcome::Mismatch => continue,
                 crate::task::waitqueue::PrepareOutcome::PublishFailed => break,
                 crate::task::waitqueue::PrepareOutcome::Queued => {
+                    EXT2_LOCK_PARKS.fetch_add(1, Ordering::Relaxed);
                     ext2_schedule_current_wait();
                     waiters.finish_wait();
                 }
@@ -1839,6 +1895,7 @@ fn ext2_acquire_write(
                 return ext2_spin_wait_upgrade(upgradeable, lock_name);
             }
             crate::task::waitqueue::PrepareOutcome::Queued => {
+                EXT2_LOCK_PARKS.fetch_add(1, Ordering::Relaxed);
                 ext2_schedule_current_wait();
                 waiters.finish_wait();
             }
@@ -2054,8 +2111,20 @@ pub fn root_fs_write() -> Ext2WriteGuard {
 }
 
 /// Check if the root filesystem is mounted
+///
+/// Routed through `root_fs_read()` (M1 of the #728 fix round), not a plain
+/// `ROOT_EXT2.read()`: `spin`'s `try_read()` rejects new readers while
+/// UPGRADED is set, so a plain blocking `.read()` here spins
+/// non-yieldingly with `preempt_count() == 1` whenever a writer holds the
+/// upgradeable slot — the #728 shape, invisible to the gate because it
+/// bypasses `ext2_spin_wait` entirely. This is called on syscall-hot paths
+/// (`sys_write`/`sys_read`/`sys_fstat`/etc. via `home_mount_id()` below, and
+/// this function itself from `ext2_lock_race`), so it needs the same
+/// park-then-spin-fallback discipline the four accessors get, not a
+/// bespoke one — reusing the guard means it also gets the observability and
+/// the release-before-wake ordering for free.
 pub fn is_mounted() -> bool {
-    ROOT_EXT2.read().is_some()
+    root_fs_read().is_some()
 }
 
 /// Global mounted ext2 home filesystem (/home)
@@ -2130,16 +2199,24 @@ pub fn home_fs_write() -> Ext2WriteGuard {
 }
 
 /// Check if the home filesystem is mounted
+///
+/// Routed through `home_fs_read()` — see `is_mounted()`'s doc comment (M1
+/// of the #728 fix round); the same blocking-spin hazard applies here.
 pub fn is_home_mounted() -> bool {
-    HOME_EXT2.read().is_some()
+    home_fs_read().is_some()
 }
 
 /// Get the mount_id of the home filesystem, if mounted.
 ///
 /// Used by FD-based syscall dispatch to determine which filesystem
-/// a file descriptor belongs to.
+/// a file descriptor belongs to. Routed through `home_fs_read()` — see
+/// `is_mounted()`'s doc comment (M1 of the #728 fix round). This is the
+/// highest-traffic of the three M1 sites: called from `sys_write`,
+/// `sys_read`, `sys_pread64`, `sys_pwrite64`, `sys_fstat`,
+/// `sys_getdents64` and `sys_utimensat`, immediately ahead of the very
+/// accessor calls this fix repaired.
 pub fn home_mount_id() -> Option<usize> {
-    HOME_EXT2.read().as_ref().map(|fs| fs.mount_id)
+    home_fs_read().as_ref().map(|fs| fs.mount_id)
 }
 
 /// Strip the /home prefix from a path, returning the path within the home filesystem.
