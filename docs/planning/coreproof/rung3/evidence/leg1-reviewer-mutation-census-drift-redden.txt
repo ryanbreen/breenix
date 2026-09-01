@@ -1,0 +1,26 @@
+   Compiling kernel v0.1.0 (/Users/wrb/fun/code/breenix/.claude/worktrees/wf_80829566-b61-6/kernel)
+   Compiling breenix v0.1.0 (/Users/wrb/fun/code/breenix/.claude/worktrees/wf_80829566-b61-6)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.61s
+     Running tests/coreproof_sites_structure.rs (target/debug/deps/coreproof_sites_structure-7df3b4f4acfd3a7a)
+
+running 4 tests
+test every_declared_site_is_listed_and_named ... ok
+test every_scheduler_seam_is_classified_correctly ... ok
+test every_placed_site_is_declared ... ok
+test every_declared_site_is_actually_placed ... FAILED
+
+failures:
+
+---- every_declared_site_is_actually_placed stdout ----
+
+thread 'every_declared_site_is_actually_placed' panicked at tests/coreproof_sites_structure.rs:218:5:
+these sites are declared but no proof_point! invocation names them, so they can never be visited and sites_visited can never reach sites_declared: ["PendingNextResolveEntry"]
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    every_declared_site_is_actually_placed
+
+test result: FAILED. 3 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+error: test failed, to rerun pass `--test coreproof_sites_structure`

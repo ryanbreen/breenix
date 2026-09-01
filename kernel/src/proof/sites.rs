@@ -18,17 +18,18 @@
 //! ## Component-scoped, not one global set
 //!
 //! Rung 1 shipped a single `SiteId` naming Component A's twelve seams. Rung 2
-//! adds Component C, whose own contract needs three seams: `ScheduleEntry` at
+//! added Component C, whose own contract needs three seams: `ScheduleEntry` at
 //! the broad pre-dispatch boundary, `PreDispatchMask` for a tighter aim point,
 //! and `DriverPreCycle` to prove the driver itself ran. The first two live
 //! inside `scheduler.rs` as `SiteClass::Open` — a file every one of Component
 //! A's placed seams is `Masked` in. Merging the two
 //! into one array would declare a site the OTHER component's build can never
 //! visit, permanently reddening that build's own non-vacuity gate
-//! (`sites_visited < sites_declared`). So `SiteId` and `ALL` are two mutually
-//! exclusive definitions, selected at compile time by `coreproof_component_c` —
+//! (`sites_visited < sites_declared`). Rung 3 adds Component H's own three-site
+//! set under the same rule. `SiteId` and `ALL` are therefore three mutually
+//! exclusive definitions, selected by positive per-component features. This is
 //! the same "mutually-exclusive compile-time driver selection" pattern
-//! `MODE`/`WINDOW`/`SEED` already use. Everything below the two definitions
+//! `MODE`/`WINDOW`/`SEED` already use. Everything below the definitions
 //! (`SiteClass`, `mark_visited`, `visited_count`) is generic over whichever
 //! concrete `SiteId` is in scope and needs no per-component copy.
 //!
@@ -46,7 +47,7 @@ use core::sync::atomic::{AtomicU64, Ordering};
 // Component A — the ready-queue departure protocol's twelve seams.
 // ============================================================================
 
-#[cfg(not(feature = "coreproof_component_c"))]
+#[cfg(feature = "coreproof_component_a")]
 #[derive(Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum SiteId {
@@ -64,7 +65,7 @@ pub enum SiteId {
     DriverPreQuiesce,
 }
 
-#[cfg(not(feature = "coreproof_component_c"))]
+#[cfg(feature = "coreproof_component_a")]
 pub const ALL: &[SiteId] = &[
     SiteId::BlockEntry,
     SiteId::BlockAfterStateStore,
@@ -80,7 +81,7 @@ pub const ALL: &[SiteId] = &[
     SiteId::DriverPreQuiesce,
 ];
 
-#[cfg(not(feature = "coreproof_component_c"))]
+#[cfg(feature = "coreproof_component_a")]
 impl SiteId {
     pub fn name(self) -> &'static str {
         match self {
@@ -214,15 +215,80 @@ impl SiteId {
     pub fn order(self) -> super::rng::Order {
         use super::rng::Order;
         match self {
-            // Placed BEFORE `run_deferred_reclamation()`, i.e. before
-            // `schedule_from_kernel`'s own pre-mask identity read.
-            Self::ScheduleEntry | Self::PreDispatchMask | Self::DriverPreCycle => Order::Before,
+            // Both scheduler seams precede `schedule_from_kernel`'s own pre-mask identity
+            // read: `ScheduleEntry` also precedes `run_deferred_reclamation()`, while
+            // `PreDispatchMask` follows that drain.
+            Self::ScheduleEntry | Self::PreDispatchMask => Order::Before,
+            // Driver-only census marker; `Before` by the convention shared with every
+            // component's own `DriverPreCycle`.
+            Self::DriverPreCycle => Order::Before,
         }
     }
 
     pub fn class(self) -> SiteClass {
         match self {
             Self::ScheduleEntry | Self::PreDispatchMask | Self::DriverPreCycle => SiteClass::Open,
+        }
+    }
+}
+
+// ============================================================================
+// Component H — dispatch admission's three seams.
+// ============================================================================
+//
+// `IncomingHandoffCommit` observes the `pending_next` publication immediately
+// after commit, while `PendingNextResolveEntry` observes the resolver at its own
+// entry before any resolution. Both live inside `impl Scheduler { .. }` and are
+// therefore `Masked`. `DriverPreCycle` is H's driver-only `Open` non-vacuity
+// census marker. See `docs/planning/coreproof/rung3/spec.md` sections 1 and 3.
+
+#[cfg(feature = "coreproof_component_h")]
+#[derive(Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum SiteId {
+    IncomingHandoffCommit,
+    PendingNextResolveEntry,
+    DriverPreCycle,
+}
+
+#[cfg(feature = "coreproof_component_h")]
+pub const ALL: &[SiteId] = &[
+    SiteId::IncomingHandoffCommit,
+    SiteId::PendingNextResolveEntry,
+    SiteId::DriverPreCycle,
+];
+
+#[cfg(feature = "coreproof_component_h")]
+impl SiteId {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::IncomingHandoffCommit => "IncomingHandoffCommit",
+            Self::PendingNextResolveEntry => "PendingNextResolveEntry",
+            Self::DriverPreCycle => "DriverPreCycle",
+        }
+    }
+
+    /// Reconstruct a `SiteId` from its atomic `u8` representation without panicking.
+    pub(crate) fn from_u8(value: u8) -> Self {
+        ALL.iter()
+            .copied()
+            .find(|site| *site as u8 == value)
+            .unwrap_or(ALL[0])
+    }
+
+    /// See the Component A impl's doc for why this is derived, never drawn.
+    pub fn order(self) -> super::rng::Order {
+        use super::rng::Order;
+        match self {
+            Self::IncomingHandoffCommit => Order::After,
+            Self::PendingNextResolveEntry | Self::DriverPreCycle => Order::Before,
+        }
+    }
+
+    pub fn class(self) -> SiteClass {
+        match self {
+            Self::IncomingHandoffCommit | Self::PendingNextResolveEntry => SiteClass::Masked,
+            Self::DriverPreCycle => SiteClass::Open,
         }
     }
 }

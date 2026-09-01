@@ -1,0 +1,30 @@
+Building coreproof kernel (features: boot_tests,coreproof,coreproof_component_h,coreproof_mut_pending_next)...
+   Compiling kernel v0.1.0 (/Users/wrb/fun/code/breenix/.claude/worktrees/wf_9266f1e7-c9a-2/kernel)
+    Finished `release` profile [optimized] target(s) in 5.99s
+warning: the following packages contain code that will be rejected by a future version of Rust: core v0.0.0 (/Users/wrb/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/src/rust/library/core)
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+Guard: kernel FP/SIMD instruction check
+  ELF:       /Users/wrb/fun/code/breenix/.claude/worktrees/wf_9266f1e7-c9a-2/target/coreproof-gate/aarch64-breenix-kernel/release/kernel-aarch64
+  objdump:   /Users/wrb/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/aarch64-apple-darwin/bin/llvm-objdump
+  allowlist: /Users/wrb/fun/code/breenix/.claude/worktrees/wf_9266f1e7-c9a-2/scripts/kernel-neon-allowlist.txt
+[0;32mPASS:[0m 0 FP/SIMD load/store instructions in kernel .text (allowlisted & suppressed: 0).
+CORE-PROOF SEAM RATCHET: PASSED (14 prohibited path(s) clean)
+Serial output root: /tmp/breenix_coreproof_gate/20260901T032743Z_92785
+
+=== profile max — 3 boot(s), component H, mode adversarial, window post_cohort, disarmed 0 ===
+qemu-system-aarch64: terminating on signal 15 from pid 93053 (<unknown process>)
+  max#1: harness violations=2 iters=12679 cov=pending_next=3
+    [COREPROOF:VIOLATION:v1:comp=H:seed=0x00000000082af910:iter=3328:site=IncomingHandoffCommit:action=none:ticks=9381106344258646691:order=after:acpu=91:pred=OUTGOING_HANDOFF_STRANDED:detail=1:fired_cpu=0:fired_iter=1259]
+    [COREPROOF:VIOLATION:v1:comp=H:seed=0x00000000082af910:iter=12679:site=IncomingHandoffCommit:action=spin_delay:ticks=8470989855949485823:order=after:acpu=38:pred=PENDING_NEXT_UNRESOLVED:detail=9223372036854775808:fired_cpu=18446744073709551615:fired_iter=18446744073709551615]
+qemu-system-aarch64: terminating on signal 15 from pid 93228 (<unknown process>)
+  max#2: harness violations=2 iters=41473 cov=pending_next=3
+    [COREPROOF:VIOLATION:v1:comp=H:seed=0x0000000008b02ab8:iter=9216:site=DriverPreCycle:action=spin_delay:ticks=3772051369756772827:order=before:acpu=94:pred=OUTGOING_HANDOFF_STRANDED:detail=1:fired_cpu=2:fired_iter=1521]
+    [COREPROOF:VIOLATION:v1:comp=H:seed=0x0000000008b02ab8:iter=41473:site=IncomingHandoffCommit:action=none:ticks=13821312831016134820:order=after:acpu=35:pred=PENDING_NEXT_UNRESOLVED:detail=9223372036854775808:fired_cpu=18446744073709551615:fired_iter=18446744073709551615]
+qemu-system-aarch64: terminating on signal 15 from pid 93395 (<unknown process>)
+  max#3: harness violations=2 iters=37135 cov=pending_next=2
+    [COREPROOF:VIOLATION:v1:comp=H:seed=0x00000000080511f0:iter=7936:site=DriverPreCycle:action=force_resched:ticks=14167765068811953957:order=before:acpu=114:pred=OUTGOING_HANDOFF_STRANDED:detail=1:fired_cpu=3:fired_iter=1822]
+    [COREPROOF:VIOLATION:v1:comp=H:seed=0x00000000080511f0:iter=37135:site=IncomingHandoffCommit:action=none:ticks=7390467290924571238:order=after:acpu=127:pred=PENDING_NEXT_UNRESOLVED:detail=9223372036854775808:fired_cpu=18446744073709551615:fired_iter=18446744073709551615]
+
+boots=3 failed=3 violations=6 iters_total=91287 started=2026-09-01T03:27:43Z ended=2026-09-01T03:28:28Z
+ARM64 CORE-PROOF GATE: FAILED
+Serials preserved under /tmp/breenix_coreproof_gate/20260901T032743Z_92785

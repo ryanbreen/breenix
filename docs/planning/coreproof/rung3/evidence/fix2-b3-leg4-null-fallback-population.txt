@@ -1,0 +1,43 @@
+FIX ROUND (B3) — leg 4's actual null-fallback event population, derived from
+the preserved serials at /tmp/breenix_coreproof_gate/20260901T020728Z_11161/
+(the same 160-boot leg 4 hunt window PROVE-2026-09-01.md §4 and
+evidence/leg4-hunt-window-160boots.txt already describe; this file adds the
+per-boot cov=outgoing_fallback_requeue distribution the condensed gate-script
+stdout in that evidence file does not print).
+
+Command:
+  for f in .../20260901T020728Z_11161/*/serial.txt; do
+    grep -a "phase=close" "$f" | tail -1 | grep -o "outgoing_fallback_requeue=[0-9]*"
+  done | sort | uniq -c
+
+Result:
+  100 outgoing_fallback_requeue=0
+   60 outgoing_fallback_requeue=1
+
+grep -rl "CPU_IDENTITY_SPLIT" .../20260901T020728Z_11161/*/serial.txt | wc -l
+  0
+
+Reading, corrected (fix2 review, F1): the 60/100 `cov=outgoing_fallback_
+requeue` split above is real, but it is NOT the `ATTRIBUTED`/`UNEXPLAINED`
+classify population. In `inline_schedule_trampoline`
+(`kernel/src/arch_impl/aarch64/context_switch.rs`), the classify block
+(lines 6030-6041) reads the real `scheduler_ptr` swap at line 6025, before
+the `boot_tests` injection shadow at line 6093 runs; `injected_leg` is
+computed only in the `else` of `if sched_ptr.is_null()`, so every injected
+entry's pre-injection pointer was non-null — the classifier takes the
+non-null (`ENTERED_UNCONSUMED`) arm for all 60, never `ATTRIBUTED` or
+`UNEXPLAINED`. `crate::trace_count!(INLINE_SCHED_NULL_FALLBACK)` (line 6128,
+sole writer of `cov=outgoing_fallback_requeue`) is keyed off the shadowed,
+post-injection pointer instead, so it counts organic nulls plus injected
+nulls — a different, wider population than the classifier's pre-injection
+read.
+
+So: the `ATTRIBUTED`/`UNEXPLAINED` classifier arms sampled exactly **0**
+events across these 160 boots (no `CPU_IDENTITY_SPLIT` record anywhere in
+the serials, so 0 organic nulls, and the 60 injected nulls never reach
+those two arms by construction). The 60/100 `cov=outgoing_fallback_requeue`
+split is a real, honest measurement of a *different* population — how often
+the null-fallback recovery code path itself executed (the production
+null-fallback arm) — not of how many events the `#605`-class predicate
+classified. Neither number is 10.5M (the unrelated driver-loop iteration
+count the original prose cited alongside it).

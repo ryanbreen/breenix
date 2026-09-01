@@ -67,21 +67,23 @@
 //! ## Scope
 //!
 //! AArch64 only. Rung 1 shipped Component A (the ready-queue departure
-//! protocol) alone; rung 2 adds Component C (per-CPU identity + stack
-//! custody) as a second, mutually exclusive driver selected at compile time by
-//! `coreproof_component_c` — see `sites` for why the site census also has to be
-//! component-scoped, and `record` for why the marker lines now thread a
-//! `component` byte instead of hardcoding `comp=A`. The x86 driver and the
-//! remaining six components are later rungs, each of which names its own
-//! additions in its own PR. `mutations` carries the register of planted
+//! protocol); rung 2 added Component C (per-CPU identity + stack custody), and
+//! rung 3 adds Component H (dispatch admission). They are mutually exclusive
+//! drivers selected by positive per-component features — see `sites` for why
+//! the site census also has to be component-scoped, and `record` for why the
+//! marker lines thread a `component` byte instead of hardcoding `comp=A`. The
+//! x86 driver and the remaining components are later rungs, each of which names
+//! its own additions in its own PR. `mutations` carries the register of planted
 //! defects the harness is validated against, and states up front how a miss is
 //! to be read.
 
 pub mod coverage;
-#[cfg(not(feature = "coreproof_component_c"))]
+#[cfg(feature = "coreproof_component_a")]
 mod driver_a;
 #[cfg(feature = "coreproof_component_c")]
 mod driver_c;
+#[cfg(feature = "coreproof_component_h")]
+mod driver_h;
 pub mod mutations;
 mod quiesce;
 mod record;
@@ -181,6 +183,22 @@ static ARMED: [ArmedSlot; crate::arch_impl::aarch64::smp::MAX_CPUS] =
 static LAST_FIRED: [LastFired; crate::arch_impl::aarch64::smp::MAX_CPUS] =
     [const { LastFired::new() }; crate::arch_impl::aarch64::smp::MAX_CPUS];
 static FIRE_SEQ: AtomicU64 = AtomicU64::new(0);
+
+/// The two ways `fire()` can drop a draw instead of applying it — see that function's own
+/// doc. Published in the RUN record next to `downgraded=` (rung 3, `#715` fold-in item Ma):
+/// a fire that never applies anything is a distinct, informative fact from a fire that
+/// applied a downgraded (Masked-inadmissible) action, and Component H's peer-armed
+/// Adversarial traffic re-arms every online peer's slot every cycle regardless of whether
+/// the previous arm was consumed, making this counter more informative here than it would
+/// have been left for a later rung.
+static FIRE_DROPPED_INFLIGHT: AtomicU64 = AtomicU64::new(0);
+static FIRE_DROPPED_TORN: AtomicU64 = AtomicU64::new(0);
+
+/// The total of both `fire()` drop paths. See their own doc comments in `fire()` for what
+/// each one means.
+pub(crate) fn fire_dropped_count() -> u64 {
+    FIRE_DROPPED_INFLIGHT.load(Ordering::Relaxed) + FIRE_DROPPED_TORN.load(Ordering::Relaxed)
+}
 static STARTED: AtomicBool = AtomicBool::new(false);
 
 /// Set when the boot-test cohort has published its verdict.
@@ -213,11 +231,10 @@ fn current_cpu() -> usize {
     crate::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id() as usize
 }
 
-// Self-arm: only Component A's driver uses this shape (it arms its own
-// cpu right before its own synchronous probe). Component C arms PEER cpus
-// exclusively via `arm_cpu` — see the module header — so this would be
-// dead code in a `coreproof_component_c` build.
-#[cfg(not(feature = "coreproof_component_c"))]
+// Self-arm: only Component A's driver uses this shape (it arms its own cpu right before its
+// synchronous probe). Components C and H both arm PEER cpus exclusively via `arm_cpu` — see
+// the module header — so this would be dead code in either peer-armed build.
+#[cfg(feature = "coreproof_component_a")]
 pub(crate) fn arm(vector: &DrawVector) {
     arm_cpu(current_cpu(), vector);
 }
@@ -262,7 +279,7 @@ pub(crate) fn arm_cpu(cpu: usize, vector: &DrawVector) {
 }
 
 // See `arm`'s doc for why this is Component-A-only.
-#[cfg(not(feature = "coreproof_component_c"))]
+#[cfg(feature = "coreproof_component_a")]
 pub(crate) fn disarm() {
     disarm_cpu(current_cpu());
 }
@@ -307,6 +324,7 @@ fn fire(slot: &ArmedSlot, site: SiteId) {
     if generation_before & 1 != 0 {
         // A write is already in flight; the payload is definitely not stable yet. Don't even
         // start reading it.
+        FIRE_DROPPED_INFLIGHT.fetch_add(1, Ordering::Relaxed);
         return;
     }
     let vector = DrawVector {
@@ -325,13 +343,18 @@ fn fire(slot: &ArmedSlot, site: SiteId) {
     if generation_after != generation_before {
         // A re-arm landed mid-read (torn) or has already fully replaced this arm. Drop rather
         // than risk applying a spliced vector.
+        FIRE_DROPPED_TORN.fetch_add(1, Ordering::Relaxed);
         return;
     }
 
-    // Best-effort one-hit consumption: if this CAS fails, a newer arm has already replaced
-    // this slot's contents (the driver never blocks on a consumer) — the vector we already
-    // validated above is still internally coherent and safe to apply either way; we simply
-    // leave the newer arm alone for the peer's next visit rather than clobber it.
+    // Best-effort one-hit consumption. A full re-arm can land between `seam()`'s site load
+    // and `fire()`'s first generation load, so this invocation may read a NEWER draw while
+    // still being called from the OLDER call site; the slot's newly armed site can differ
+    // from `expected_site`, making this CAS fail. The draw remains safe to apply because
+    // `vector.site` is built above from `fire`'s `site` parameter — the call site actually
+    // reached — rather than from any slot payload a re-arm could replace. Consequently
+    // `stimulus::apply` always judges Masked-vs-Open admissibility from the actual call site.
+    // A failed CAS simply leaves the newer arm for the peer's next visit.
     let _ = slot.site.compare_exchange(
         expected_site,
         DISARMED,
@@ -371,7 +394,10 @@ fn record_last_fired(site: SiteId, vector: &DrawVector) {
 /// Read one cpu's advisory fire record as a coherent single-shot snapshot. An in-progress or
 /// overlapping write is skipped, never retried: violation scoring can use another peer's
 /// stable record or the explicit never-fired placeholder instead of delaying a live kernel.
-#[cfg(feature = "coreproof_component_c")]
+#[cfg(any(
+    feature = "coreproof_component_c",
+    feature = "coreproof_component_h"
+))]
 fn last_fired_snapshot(last: &LastFired) -> Option<(u64, DrawVector)> {
     let generation_before = last.generation.load(Ordering::Acquire);
     if generation_before & 1 != 0 {
@@ -398,14 +424,19 @@ fn last_fired_snapshot(last: &LastFired) -> Option<(u64, DrawVector)> {
     Some((seq, vector))
 }
 
-/// The most recently fired vector across the given peer cpus, if any of them has fired at
-/// least once — and which cpu it fired on. Used by a driver's violation report to name the
-/// stimulus that actually ran rather than an unrelated fresh draw (M3, rung 2 review). Only
-/// Component C's driver calls this today (Component A's own probe already knows its applied
-/// vector directly, synchronously, with no cross-CPU gap to bridge) — gated accordingly so an
-/// unused-function warning never appears in a Component A build.
-#[cfg(feature = "coreproof_component_c")]
-pub(crate) fn most_recent_fired(peers: impl Iterator<Item = usize>) -> Option<(usize, DrawVector)> {
+/// The most recently fired vector across the given peer cpus, if any has fired at least once,
+/// together with the cpu it fired on and that fire's own sequence number. Cross-CPU drivers
+/// must thread BOTH values through to `record::violation` as `fired_cpu`/`fired_iter`, rather
+/// than pairing a finding with an unrelated fresh draw (M3, rung 2 review; m2, rung 3 review).
+/// Components C and H use this bridge; Component A already knows its applied vector directly
+/// and synchronously.
+#[cfg(any(
+    feature = "coreproof_component_c",
+    feature = "coreproof_component_h"
+))]
+pub(crate) fn most_recent_fired(
+    peers: impl Iterator<Item = usize>,
+) -> Option<(usize, u64, DrawVector)> {
     let mut best: Option<(usize, u64, DrawVector)> = None;
     for cpu in peers {
         let Some(last) = LAST_FIRED.get(cpu) else {
@@ -418,7 +449,7 @@ pub(crate) fn most_recent_fired(peers: impl Iterator<Item = usize>) -> Option<(u
             best = Some((cpu, seq, vector));
         }
     }
-    best.map(|(cpu, _seq, vector)| (cpu, vector))
+    best
 }
 
 pub fn start() {
@@ -441,8 +472,10 @@ pub fn start() {
     //
     // Which driver is spawned is a compile-time choice, mutually exclusive with
     // the site census and the mode default it carries — see the module header.
+    #[cfg(feature = "coreproof_component_a")]
+    let _ = crate::task::kthread::kthread_run(driver_a::run, "coreproof-a");
     #[cfg(feature = "coreproof_component_c")]
     let _ = crate::task::kthread::kthread_run(driver_c::run, "coreproof-c");
-    #[cfg(not(feature = "coreproof_component_c"))]
-    let _ = crate::task::kthread::kthread_run(driver_a::run, "coreproof-a");
+    #[cfg(feature = "coreproof_component_h")]
+    let _ = crate::task::kthread::kthread_run(driver_h::run, "coreproof-h");
 }

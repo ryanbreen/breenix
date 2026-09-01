@@ -1,0 +1,13 @@
+   Compiling kernel v0.1.0 (/Users/wrb/fun/code/breenix/.claude/worktrees/wf_9266f1e7-c9a-4/kernel)
+   Compiling breenix v0.1.0 (/Users/wrb/fun/code/breenix/.claude/worktrees/wf_9266f1e7-c9a-4)
+    Finished `release` profile [optimized] target(s) in 3.06s
+     Running tests/coreproof_sites_structure.rs (target/release/deps/coreproof_sites_structure-3ce19c3b53c545de)
+
+running 4 tests
+test every_declared_site_is_listed_and_named ... ok
+test every_scheduler_seam_is_classified_correctly ... ok
+test every_declared_site_is_actually_placed ... ok
+test every_placed_site_is_declared ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+

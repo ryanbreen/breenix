@@ -1,0 +1,14 @@
+   Compiling kernel v0.1.0 (/Users/wrb/fun/code/breenix/.claude/worktrees/wf_9266f1e7-c9a-4/kernel)
+   Compiling breenix v0.1.0 (/Users/wrb/fun/code/breenix/.claude/worktrees/wf_9266f1e7-c9a-4)
+    Finished `release` profile [optimized] target(s) in 3.01s
+     Running tests/coreproof_component_h_structure.rs (target/release/deps/coreproof_component_h_structure-8b519c13e63c1cd8)
+
+running 5 tests
+test inline_slot_classification_counters_fire_from_exactly_one_site_each_and_stay_co_located ... ok
+test self_retraction_latch_cannot_outlive_one_measured_window ... ok
+test inline_schedule_state_is_only_ever_read_via_a_consumed_swap ... ok
+test self_retraction_tags_the_fresh_identity_the_resulting_trampoline_reads ... ok
+test the_new_inline_slot_instrument_is_entirely_coreproof_gated ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

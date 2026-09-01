@@ -2124,6 +2124,8 @@ impl Scheduler {
         let Some(tid) = self.cpu_state[cpu].pending_next else {
             return;
         };
+        #[cfg(feature = "coreproof_component_h")]
+        crate::proof_point!(PendingNextResolveEntry);
         crate::proof_cover!(PendingNext);
 
         // CORE-PROOF MUTATION LEG `coreproof_mut_pending_next` (#589, fixed by
@@ -2559,6 +2561,8 @@ impl Scheduler {
             next.run_start_ticks = crate::time::get_ticks();
         }
         self.cpu_state[current_cpu].pending_next = Some(next_thread_id);
+        #[cfg(feature = "coreproof_component_h")]
+        crate::proof_point!(IncomingHandoffCommit);
 
         // Update per-CPU idle flag (lock-free, used by timer handler)
         let is_switching_to_idle = next_thread_id == self.cpu_state[current_cpu].idle_thread;
@@ -2573,7 +2577,7 @@ impl Scheduler {
                 | ((is_switching_to_idle as u32) << 30)
                 | self.ready_queue_length() as u32,
         );
-        #[cfg(not(feature = "coreproof_component_c"))]
+        #[cfg(feature = "coreproof_component_a")]
         crate::proof_point!(DeferredRequeueClaim);
         Some((old_thread_id, next_thread_id, should_requeue_old))
     }
@@ -2763,7 +2767,7 @@ impl Scheduler {
     /// The generic block: charge, publish, depart — in that order, under the
     /// one scheduler-lock acquisition the caller already holds.
     fn block_current_inner(&mut self, in_syscall: bool) {
-        #[cfg(not(feature = "coreproof_component_c"))]
+        #[cfg(feature = "coreproof_component_a")]
         crate::proof_point!(BlockEntry);
         let Some(current_id) = self.cpu_state[Self::current_cpu_id()].current_thread else {
             return;
@@ -2776,7 +2780,7 @@ impl Scheduler {
             current.run_start_ticks = now;
 
             current.state = ThreadState::Blocked;
-            #[cfg(not(feature = "coreproof_component_c"))]
+            #[cfg(feature = "coreproof_component_a")]
             crate::proof_point!(BlockAfterStateStore);
             if in_syscall {
                 current.blocked_in_syscall = true;
@@ -2788,7 +2792,7 @@ impl Scheduler {
         // same defence in depth they document — but it is now unconditional for
         // the generic block too, rather than a post-condition each caller had to
         // remember.
-        #[cfg(not(feature = "coreproof_component_c"))]
+        #[cfg(feature = "coreproof_component_a")]
         crate::proof_point!(BlockBeforeDeparture);
         crate::proof_cover!(BlockDeparture);
         // CORE-PROOF MUTATION LEG `coreproof_mut_block_departure` (#647, scoped
@@ -2800,7 +2804,7 @@ impl Scheduler {
         for q in self.per_cpu_queues.iter_mut() {
             q.retain(|&id| id != current_id);
         }
-        #[cfg(not(feature = "coreproof_component_c"))]
+        #[cfg(feature = "coreproof_component_a")]
         crate::proof_point!(BlockAfterDeparture);
     }
 
@@ -2879,7 +2883,7 @@ impl Scheduler {
     /// `BlockedOnTimer`, and `BlockedOnIO`. Other blocked states have dedicated
     /// wake paths and are reported as `UnblockOutcome::NotFound` here.
     pub fn unblock(&mut self, thread_id: u64) -> UnblockOutcome {
-        #[cfg(not(feature = "coreproof_component_c"))]
+        #[cfg(feature = "coreproof_component_a")]
         crate::proof_point!(UnblockEntry);
         // Increment the call counter for testing (tracks that unblock was called)
         UNBLOCK_CALL_COUNT.fetch_add(1, Ordering::SeqCst);
@@ -2892,7 +2896,7 @@ impl Scheduler {
                 || thread.state == ThreadState::BlockedOnIO
             {
                 thread.set_ready();
-                #[cfg(not(feature = "coreproof_component_c"))]
+                #[cfg(feature = "coreproof_component_a")]
                 crate::proof_point!(UnblockAfterSetReady);
                 outcome = UnblockOutcome::Transitioned;
                 WAKE_SITE_UNBLOCK.fetch_add(1, Ordering::Relaxed);
@@ -2937,10 +2941,10 @@ impl Scheduler {
                     && !already_queued
                 {
                     let target = self.find_target_cpu_for_wakeup(thread_id);
-                    #[cfg(not(feature = "coreproof_component_c"))]
+                    #[cfg(feature = "coreproof_component_a")]
                     crate::proof_point!(UnblockBeforeEnqueue);
                     self.per_cpu_queues[target].push_back(thread_id);
-                    #[cfg(not(feature = "coreproof_component_c"))]
+                    #[cfg(feature = "coreproof_component_a")]
                     crate::proof_point!(UnblockAfterEnqueue);
                     ENQUEUE_SAME_LOCK_OK.fetch_add(1, Ordering::Relaxed);
                     // CRITICAL: Only log on x86_64 to avoid deadlock on ARM64

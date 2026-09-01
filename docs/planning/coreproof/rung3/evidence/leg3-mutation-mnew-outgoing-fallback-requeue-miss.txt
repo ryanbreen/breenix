@@ -1,0 +1,26 @@
+Building coreproof kernel (features: boot_tests,coreproof,coreproof_component_h,coreproof_mut_outgoing_fallback_requeue)...
+   Compiling kernel v0.1.0 (/Users/wrb/fun/code/breenix/.claude/worktrees/wf_80829566-b61-6/kernel)
+    Finished `release` profile [optimized] target(s) in 6.04s
+warning: the following packages contain code that will be rejected by a future version of Rust: core v0.0.0 (/Users/wrb/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/src/rust/library/core)
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+Guard: kernel FP/SIMD instruction check
+  ELF:       /Users/wrb/fun/code/breenix/.claude/worktrees/wf_80829566-b61-6/target/coreproof-gate/aarch64-breenix-kernel/release/kernel-aarch64
+  objdump:   /Users/wrb/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/aarch64-apple-darwin/bin/llvm-objdump
+  allowlist: /Users/wrb/fun/code/breenix/.claude/worktrees/wf_80829566-b61-6/scripts/kernel-neon-allowlist.txt
+[0;32mPASS:[0m 0 FP/SIMD load/store instructions in kernel .text (allowlisted & suppressed: 0).
+CORE-PROOF SEAM RATCHET: PASSED (14 prohibited path(s) clean)
+Serial output root: /tmp/breenix_coreproof_gate/20260901T020603Z_9898
+
+=== profile max — 3 boot(s), component H, mode adversarial, window post_cohort, disarmed 0 ===
+qemu-system-aarch64: terminating on signal 15 from pid 10094 (<unknown process>)
+  max#1: harness violations=0 iters=91311
+  max#1: clean (seed=0x0000000007e312d0 iters=91311 sites=3/3)
+qemu-system-aarch64: terminating on signal 15 from pid 10273 (<unknown process>)
+  max#2: harness violations=0 iters=115287
+  max#2: clean (seed=0x0000000007ae08b0 iters=115287 sites=3/3)
+qemu-system-aarch64: terminating on signal 15 from pid 10451 (<unknown process>)
+  max#3: harness violations=0 iters=60640
+  max#3: clean (seed=0x0000000007be0a58 iters=60640 sites=3/3)
+
+boots=3 failed=0 violations=0 iters_total=267238 started=2026-09-01T02:06:03Z ended=2026-09-01T02:06:47Z
+ARM64 CORE-PROOF GATE: PASSED

@@ -1,0 +1,161 @@
+   Compiling proc-macro2 v1.0.107
+   Compiling cfg-if v1.0.4
+   Compiling libc v0.2.189
+   Compiling quote v1.0.47
+   Compiling unicode-ident v1.0.24
+   Compiling serde v1.0.229
+   Compiling rustversion v1.0.23
+   Compiling bit_field v0.10.3
+   Compiling bitflags v2.13.1
+   Compiling find-msvc-tools v0.1.11
+   Compiling scopeguard v1.2.0
+   Compiling autocfg v1.5.1
+   Compiling shlex v2.0.1
+   Compiling serde_core v1.0.229
+   Compiling log v0.4.34
+   Compiling bitflags v1.3.2
+   Compiling volatile v0.4.6
+   Compiling lock_api v0.4.14
+   Compiling getrandom v0.4.3
+   Compiling const_fn v0.4.12
+   Compiling x86 v0.52.0
+   Compiling cc v1.4.4
+   Compiling az v1.2.1
+   Compiling itoa v1.0.18
+   Compiling raw-cpuid v10.7.0
+   Compiling rand_core v0.6.4
+   Compiling once_cell v1.21.4
+   Compiling conquer-util v0.3.0
+   Compiling crc-catalog v2.5.0
+   Compiling crossbeam-utils v0.8.22
+   Compiling bootloader_api v0.11.13 (https://github.com/rust-osdev/bootloader.git?rev=707db11201b19541b7cfef84037866ee03aa0927#707db112)
+   Compiling spinning_top v0.2.5
+   Compiling crc v3.4.0
+   Compiling zeroize v1.9.0
+   Compiling typenum v1.20.1
+   Compiling num-traits v0.2.19
+   Compiling rustix v1.1.4
+   Compiling byteorder v1.5.0
+   Compiling zero v0.1.3
+   Compiling zmij v1.0.23
+   Compiling xmas-elf v0.8.0
+   Compiling rustls-pki-types v1.15.1
+   Compiling conquer-once v0.3.2
+   Compiling rand_hc v0.3.2
+   Compiling rand v0.8.8
+   Compiling x86_64 v0.14.13
+   Compiling syn v3.0.4
+   Compiling x86_64 v0.15.4
+   Compiling getrandom v0.2.17
+   Compiling errno v0.3.14
+   Compiling untrusted v0.9.0
+   Compiling pin-project-lite v0.2.17
+   Compiling futures-core v0.3.34
+   Compiling noto-sans-mono-bitmap v0.2.0
+   Compiling micromath v2.1.0
+   Compiling llvm-tools v0.1.1
+   Compiling futures-task v0.3.34
+   Compiling slab v0.4.12
+   Compiling embedded-graphics-core v0.4.1
+   Compiling float-cmp v0.9.0
+   Compiling hybrid-array v0.4.14
+   Compiling serde_json v1.0.151
+   Compiling kernel v0.1.0 (/Users/wrb/fun/code/breenix/.claude/worktrees/wf_80829566-b61-6/kernel)
+   Compiling anyhow v1.0.104
+   Compiling usize_conversions v0.2.0
+   Compiling httparse v1.10.1
+   Compiling futures-util v0.3.34
+   Compiling bootloader v0.11.13 (https://github.com/rust-osdev/bootloader.git?rev=707db11201b19541b7cfef84037866ee03aa0927#707db112)
+   Compiling uuid v1.26.0
+   Compiling crossbeam-queue v0.3.13
+   Compiling ring v0.17.14
+   Compiling linked_list_allocator v0.10.6
+   Compiling conquer-once v0.4.0
+   Compiling embedded-graphics v0.8.2
+   Compiling spin v0.9.9
+   Compiling fastrand v2.5.0
+   Compiling memchr v2.8.3
+   Compiling rustls v0.23.43
+   Compiling noto-sans-mono-bitmap v0.3.2
+   Compiling bytes v1.12.1
+   Compiling crypto-common v0.2.2
+   Compiling uart_16550 v0.3.2
+   Compiling block-buffer v0.12.1
+   Compiling fatfs v0.3.6
+   Compiling pic8259 v0.10.4
+   Compiling gpt v3.1.0
+   Compiling http v1.5.0
+   Compiling base64 v0.23.1
+   Compiling const-oid v0.10.2
+   Compiling tempfile v3.27.0
+   Compiling subtle v2.6.1
+   Compiling cpufeatures v0.3.1
+   Compiling filetime v0.2.29
+   Compiling webpki-roots v1.0.9
+   Compiling utf8-zero v0.8.1
+   Compiling percent-encoding v2.3.2
+   Compiling base16ct v1.0.0
+   Compiling digest v0.11.3
+   Compiling lzma-rs v0.3.0
+   Compiling sha2 v0.11.0
+   Compiling ureq-proto v0.6.1
+   Compiling serde_derive v1.0.229
+   Compiling xattr v1.6.1
+   Compiling tar v0.4.46
+   Compiling bootloader-boot-config v0.11.13 (https://github.com/rust-osdev/bootloader.git?rev=707db11201b19541b7cfef84037866ee03aa0927#707db112)
+   Compiling bootloader-x86_64-common v0.11.13 (https://github.com/rust-osdev/bootloader.git?rev=707db11201b19541b7cfef84037866ee03aa0927#707db112)
+   Compiling breenix v0.1.0 (/Users/wrb/fun/code/breenix/.claude/worktrees/wf_80829566-b61-6)
+   Compiling rustls-webpki v0.103.15
+   Compiling ureq v3.4.0
+   Compiling ovmf-prebuilt v0.2.9
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 24.79s
+     Running tests/coreproof_component_h_structure.rs (target/debug/deps/coreproof_component_h_structure-6ba60bacfbc82d42)
+
+running 3 tests
+test inline_slot_classification_counters_fire_from_exactly_one_site_each_and_stay_co_located ... ok
+test inline_schedule_state_is_only_ever_read_via_a_consumed_swap ... ok
+test the_new_inline_slot_instrument_is_entirely_coreproof_gated ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/coreproof_coverage_structure.rs (target/debug/deps/coreproof_coverage_structure-78e57c2c599abd0d)
+
+running 4 tests
+test coverage_census_matches_the_mutation_register_in_order ... ok
+test every_harness_side_exception_is_counted_inside_the_harness ... ok
+test every_coverage_placement_names_a_declared_site ... ok
+test every_non_harness_site_has_a_real_coverage_placement ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/coreproof_mutation_register_structure.rs (target/debug/deps/coreproof_mutation_register_structure-8d636cbeb4c4eb90)
+
+running 5 tests
+test the_register_names_exactly_the_declared_mutations ... ok
+test every_register_entry_cites_its_issue_its_fix_and_its_predicate ... ok
+test every_multi_file_mutation_gates_every_file_its_own_entry_names ... ok
+test every_gated_mutation_is_declared ... ok
+test every_declared_mutation_perturbs_a_real_site ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+     Running tests/coreproof_production_clean.rs (target/debug/deps/coreproof_production_clean-e29a53eee2b3cd8c)
+
+running 4 tests
+test no_prohibited_file_carries_a_seam ... ok
+test production_kernel_carries_no_harness ... ok
+test the_scan_reddens_on_a_build_that_carries_the_harness ... ok
+test the_seam_ratchet_reddens_on_a_planted_seam ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.30s
+
+     Running tests/coreproof_sites_structure.rs (target/debug/deps/coreproof_sites_structure-7df3b4f4acfd3a7a)
+
+running 4 tests
+test every_declared_site_is_listed_and_named ... ok
+test every_scheduler_seam_is_classified_correctly ... ok
+test every_placed_site_is_declared ... ok
+test every_declared_site_is_actually_placed ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+

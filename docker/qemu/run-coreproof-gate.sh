@@ -38,7 +38,7 @@
 # line, points at the serial, and re-raises the same status.
 #
 # Usage:
-#   docker/qemu/run-coreproof-gate.sh [--component A] [--seeds N] [--profile max|cortex-a72|both]
+#   docker/qemu/run-coreproof-gate.sh [--component A|C|H] [--seeds N] [--profile max|cortex-a72|both]
 #                                     [--mode pen|adversarial|ambient]
 #                                     [--window post_cohort|overlap] [--disarm]
 #                                     [--require-cov mutation-feature|short-name] [--seed 0xHEX]
@@ -87,14 +87,15 @@ done
 EXTRA_FEATURES="${EXTRA_FEATURES:-}"
 
 case "$COMPONENT" in
-    A) COMPONENT_FEATURE="" ;;
+    A) COMPONENT_FEATURE="coreproof_component_a" ;;
     C) COMPONENT_FEATURE="coreproof_component_c" ;;
+    H) COMPONENT_FEATURE="coreproof_component_h" ;;
     *) echo "unknown component: $COMPONENT" >&2; exit 2 ;;
 esac
 
 # This script is the SOLE owner of the per-component mode default (rung 2
-# review, m1) - Pen for A, Adversarial for C, because Pen suppresses the very
-# condition Component C hunts. `kernel/src/proof/quiesce.rs`'s own
+# review, m1) - Pen for A, Adversarial for C and H, because Pen suppresses the
+# conditions those components hunt. `kernel/src/proof/quiesce.rs`'s own
 # `Mode::selected()` used to compute a second, duplicate default that was
 # dead under this script (which always passes an explicit
 # `BREENIX_COREPROOF_MODE`) and has been removed; its compile-time default
@@ -102,7 +103,7 @@ esac
 # `--mode` always wins over this script's own default.
 if [ -z "$MODE" ]; then
     case "$COMPONENT" in
-        C) MODE="adversarial" ;;
+        C|H) MODE="adversarial" ;;
         *) MODE="pen" ;;
     esac
 fi

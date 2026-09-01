@@ -20,10 +20,11 @@ pub enum MutSite {
     FutexSection,
     MaskedLock,
     MaskedLockBare,
+    OutgoingFallbackRequeue,
 }
 
 impl MutSite {
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 8] = [
         Self::BlockDeparture,
         Self::CpuIdentity,
         Self::ReclaimBracket,
@@ -31,6 +32,7 @@ impl MutSite {
         Self::FutexSection,
         Self::MaskedLock,
         Self::MaskedLockBare,
+        Self::OutgoingFallbackRequeue,
     ];
 
     pub const COUNT: usize = Self::ALL.len();
@@ -44,6 +46,7 @@ impl MutSite {
             Self::FutexSection => "futex_section",
             Self::MaskedLock => "masked_lock",
             Self::MaskedLockBare => "masked_lock_bare",
+            Self::OutgoingFallbackRequeue => "outgoing_fallback_requeue",
         }
     }
 }
@@ -58,7 +61,15 @@ impl MutSite {
 /// the mutated identity read is unconditional at the latter's entry. Each
 /// harness-side increment is therefore an exact lower bound on executions of
 /// the mutation site without weakening the prohibited-file ratchet.
-pub const HARNESS_SIDE: &[MutSite] = &[MutSite::CpuIdentity];
+///
+/// `OutgoingFallbackRequeue` also lives in the permanently prohibited context-switch file.
+/// Component H counts it from `driver_h.rs` using the delta of the existing
+/// `INLINE_SCHED_NULL_FALLBACK` production trace counter. Unlike `CpuIdentity`'s lower-bound
+/// proxy, this is an EXACT count of entries into the mutated block's containing arm.
+pub const HARNESS_SIDE: &[MutSite] = &[
+    MutSite::CpuIdentity,
+    MutSite::OutgoingFallbackRequeue,
+];
 
 static COUNTS: [AtomicU64; MutSite::COUNT] = [const { AtomicU64::new(0) }; MutSite::COUNT];
 static WINDOW_OPEN: AtomicBool = AtomicBool::new(false);
