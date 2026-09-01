@@ -58,8 +58,14 @@ lines):
 - `TOMBSTONE_QUIESCE:` -- **0 occurrences**.
 - `RECLAIM_DRAIN:` -- **0 occurrences**.
 - `KSTACK_QUIESCE_LEAK:` -- **0 occurrences**.
-- `TOMBSTONE_CENSUS:` (the sibling marker that normally does print alongside
-  those three) -- **0 occurrences**.
+- `TOMBSTONE_CENSUS:` (the sibling marker the reference writeup says *does*
+  print in the true signature) -- **3 occurrences**, all in
+  `run5-716-serial_user.txt` (lines 102, 593, 953) -- consistent with, not
+  contrary to, the reference match: `prove-673-leg3-boot4-667-recurrence.md`
+  states "every one of the other ~28 required markers (including the sibling
+  `[TOMBSTONE_CENSUS:...]`, which *did* print) is present and matches."
+  (Corrected from this file's original "0 occurrences" claim, which had the
+  polarity backwards -- see #721 closure round B-1.)
 - `panic`/`PANIC` -- **0 occurrences** in either file.
 - After "All tests passed", the serial shows nothing but idle-loop churn
   (`Next thread from queue: 1, cpu: 0` / `Idle thread 1 is alone, continuing`)
