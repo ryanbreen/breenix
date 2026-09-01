@@ -48,18 +48,48 @@
 #     fires, and the boot never reaches its own liveness markers again -- on
 #     BOTH arches, BOTH filesystems.
 #   - The fix commit + the identical harness, aarch64: verdict=PASS for both
-#     filesystems, COMPLETE:pass=2:fail=0 (both disks attached), zero stall
-#     markers, and the boot continues live (heartbeats) long after.
+#     filesystems, COMPLETE:pass=2:fail=0 (both disks attached), a positive
+#     EXT2_LOCK_PARKS delta on both races (not merely an absence of stall --
+#     the fix's own park path is provably entered, review round-2 finding
+#     B4b), and the boot continues live on a line genuinely after COMPLETE.
+#     Reconfirmed on two independent reruns in fix round 2.
 #   - The fix commit + the identical harness, x86: NOT CAPTURED as a
-#     COMPLETE/verdict line. Every GREEN attempt reached the leg (holder +
-#     contender kthreads spawned, actively scheduled back and forth for as
-#     long as observed, zero EXT2_LOCK_SPIN_STALL) but none reached
-#     `[LOCKRACE:COMPLETE:...]` within the time budget spent -- x86's
-#     `testing`-profile boot sits behind a slow pre-existing boot_tests
-#     battery under unaccelerated TCG before the leg's own call site even
-#     runs. This is reported honestly as "x86 RED captured, x86 GREEN not
-#     captured" (see docs/planning/green-program/nic-bus/serials/728-prove/
-#     x86-oracle/), not as a pass record. Do not restate it as one.
+#     COMPLETE/verdict line, on either fix round. Every GREEN attempt reaches
+#     the leg (holder + contender kthreads spawned, actively scheduled back
+#     and forth for as long as observed, zero EXT2_LOCK_SPIN_STALL) but none
+#     has reached `[LOCKRACE:COMPLETE:...]` within the time budget spent.
+#     Fix round 2 investigated this specifically (review finding B2) rather
+#     than re-asserting round 1's framing: the round-1 explanation ("x86's
+#     testing-profile boot sits behind a slow pre-existing boot_tests
+#     battery") only accounts for the time *before* the leg's own call site;
+#     it does not explain why the leg itself, once reached, stays at
+#     "actively scheduling, zero stalls" for many further minutes without a
+#     verdict. Round 2's own dedicated-clone run on beast measured the
+#     line-production rate directly *inside* the leg (holder/contender
+#     threads 1194/1195 already spawned and switching): roughly one kernel-
+#     log line per 12-13 seconds of wall clock, sustained across multiple
+#     independently-sampled windows, while `uptime` on the physical beast
+#     host showed a load average of 21-29 for the entire observation window
+#     from unrelated tenants (one single non-breenix process alone was
+#     measured at ~960% CPU with ~6 weeks 6 days of accumulated runtime).
+#     Also established this round: `ext2_lock_race.rs`'s holder/contender
+#     kthreads run with IF=1 (kthread_entry() calls arch_enable_interrupts()
+#     before the thread body runs, task/kthread.rs:366-371), so this specific
+#     harness was never gated by review finding B1's interrupts_enabled()
+#     defect on x86 either before or after B1's fix -- B1 only mattered for
+#     real syscall callers (matching #728's own sys_mkdir repro, exercised
+#     instead by leg 2 / run-boot-parallel.sh). Taken together: the evidence
+#     points at severe host-contention-driven wall-clock slowdown of a
+#     verbose, high-frequency debug-logging boot profile under nested
+#     virtualization (matching this project's own prior finding that KVM
+#     acceleration "did not materially change the pace" -- the bottleneck is
+#     not instruction-emulation speed), not a logic defect in the shared
+#     ext2_acquire()/ext2_acquire_write() code path the aarch64 run above
+#     already proves parks and resolves correctly. This is reported as an
+#     explained, still-not-captured x86 GREEN -- not as a pass record, and
+#     not waved off as "probably fine" either. See
+#     docs/planning/green-program/nic-bus/serials/728-prove/x86-oracle/ for
+#     round 1's artifacts and this fix round's PR/issue history for round 2's.
 # Reproduce by hand: `git checkout <harness-fix commit> -- kernel/src/fs`
 # reverts only the lock-discipline commit while keeping this same harness,
 # rebuild, rerun this script -- it must redden the same way.
