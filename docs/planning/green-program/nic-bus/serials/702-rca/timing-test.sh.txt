@@ -1,0 +1,27 @@
+#!/bin/bash
+set -u
+source "$HOME/.cargo/env" 2>/dev/null || export PATH="$HOME/.cargo/bin:$PATH"
+export BREENIX_RUST_FORK_LIBRARY=/root/breenix/rust-fork-real/library
+export BREENIX_QEMU_ACCEL=kvm
+export BREENIX_QEMU_CPU=host
+cd /root/p702-rca/repo
+rm -rf /root/p702-rca/timing_test; mkdir -p /root/p702-rca/timing_test
+BREENIX_NET_MODE=none ./target/release/qemu-uefi -serial file:/root/p702-rca/timing_test/serial_user.log -serial file:/root/p702-rca/timing_test/serial_kernel.log -s > /root/p702-rca/timing_test/stdout.log 2>&1 &
+WP=$!
+LAST=-1; LASTCHANGE=$SECONDS; MAXGAP=0
+for i in $(seq 1 90); do
+  sleep 1
+  SZ=$(stat -c%s /root/p702-rca/timing_test/serial_kernel.log 2>/dev/null || echo 0)
+  if [ "$SZ" != "$LAST" ]; then
+    GAP=$((SECONDS-LASTCHANGE))
+    if [ "$GAP" -gt "$MAXGAP" ]; then MAXGAP=$GAP; fi
+    LAST=$SZ; LASTCHANGE=$SECONDS
+  fi
+  if grep -q "USERSPACE TEST COMPLETE" /root/p702-rca/timing_test/serial_kernel.log /root/p702-rca/timing_test/serial_user.log 2>/dev/null; then
+    echo "COMPLETE at t=${i}s, maxgap-so-far=${MAXGAP}s"
+    break
+  fi
+done
+echo "FINAL_MAXGAP=${MAXGAP}s total_elapsed=${i}s"
+kill -9 "$WP" 2>/dev/null
+sleep 1
