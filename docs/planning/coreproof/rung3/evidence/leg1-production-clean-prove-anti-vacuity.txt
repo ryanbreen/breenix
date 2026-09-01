@@ -1,0 +1,3 @@
+Building a coreproof-profile kernel to prove the scan can go red...
+  coreproof build: symbols=5 markers=2
+CORE-PROOF PRODUCTION RATCHET ANTI-VACUITY: PASSED (a coreproof build reddens both legs)
