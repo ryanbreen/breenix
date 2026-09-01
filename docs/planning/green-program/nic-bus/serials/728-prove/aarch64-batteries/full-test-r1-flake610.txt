@@ -1,0 +1,126 @@
+Building ARM64 kernel with boot_tests feature...
+   Compiling kernel v0.1.0 (/Users/wrb/fun/code/breenix/.claude/worktrees/wf_0b3dcd38-2a2-7/kernel)
+    Finished `release` profile [optimized] target(s) in 7.85s
+warning: the following packages contain code that will be rejected by a future version of Rust: core v0.0.0 (/Users/wrb/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/src/rust/library/core)
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+Build complete.
+
+Guard: kernel FP/SIMD instruction check
+  ELF:       /Users/wrb/fun/code/breenix/.claude/worktrees/wf_0b3dcd38-2a2-7/target/aarch64-breenix-kernel/release/kernel-aarch64
+  objdump:   /Users/wrb/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/aarch64-apple-darwin/bin/llvm-objdump
+  allowlist: /Users/wrb/fun/code/breenix/.claude/worktrees/wf_0b3dcd38-2a2-7/scripts/kernel-neon-allowlist.txt
+[0;32mPASS:[0m 0 FP/SIMD load/store instructions in kernel .text (allowlisted & suppressed: 0).
+=========================================
+ARM64 Full System Test
+=========================================
+Kernel: /Users/wrb/fun/code/breenix/.claude/worktrees/wf_0b3dcd38-2a2-7/target/aarch64-breenix-kernel/release/kernel-aarch64
+ext2 disk: /Users/wrb/fun/code/breenix/.claude/worktrees/wf_0b3dcd38-2a2-7/target/ext2-aarch64.img
+
+Phase 1: Running 85 subsystem tests...
+  (Waiting for [BOOT_TESTS:PASS] or [BOOT_TESTS:FAIL])
+  All tests passed: 109/109
+
+Phase 1a3: Waiting for scheduler strand oracles...
+  Observed: [SCHED_STRAND_ORACLE:aarch64:samples=105:checked=465:stranded=0:running_shape=0:ready_shape=0:resolved_production=0:resolved_exercised=2:worst_dwell_ms=0:overflow=0:worst_nonprogress_ms=0:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1718:worst_cpu_scheduler_silence_ms=1749:worst_silence_cpu=0]
+  Observed: [STRAND_INJECT_ORACLE:aarch64:legA_exercised=1:legA_recovered=1:legB_exercised=1:legB_recovered=1:stranded=0]
+Phase 1a3: PASS
+
+Phase 1a: Waiting for block EINTR oracle...
+  Observed: [BLOCK_EINTR_ORACLE:PASS:stages=2:reads=4:short=0:eintr=0:handled=1]
+Phase 1a: PASS
+
+Phase 1a1: Waiting for poll TCP oracle (#568)...
+  Observed: [POLL_TCP_ORACLE:PASS:stages=3:idle_ms=125:late_ms=84:park_ms=83:attempts=1]
+Phase 1a1: PASS
+
+Phase 1a2: Waiting for futex handoff oracle...
+  Observed: [FUTEX_HANDOFF_ORACLE:aarch64:driven=2:stage1_ret=EAGAIN:stage1_wake=0:stage1_parked=0:stage2_ret=0:stage2_wake=1:stage2_parked=0:stage3_ret=ETIMEDOUT:stage3_elapsed_ok=1:stage3_elapsed_ms=50:rescues=0:queue_residual=0:balance=0]
+Phase 1a2: PASS
+Phase 1: PASS (109/109 tests)
+
+Phase 1b: Running exec smoke...
+  Exec smoke: [EXEC_LOCK_ORDER:commits=2:pm_held=0:unpinned=0:missing=0]
+Phase 1b: PASS
+
+Phase 1c: Running clonevm_exec_test (exec detach proof)...
+qemu-system-aarch64: terminating on signal 15 from pid 81293 (<unknown process>)
+
+Phase 5: refusal-drain oracle legs (leg G foreign record, leg H departure guard)...
+   Compiling compiler_builtins v0.1.160 (/Users/wrb/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/src/rust/library/compiler-builtins/compiler-builtins)
+   Compiling core v0.0.0 (/Users/wrb/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/src/rust/library/core)
+   Compiling autocfg v1.5.1
+   Compiling az v1.2.1
+   Compiling crossbeam-utils v0.8.22
+   Compiling bootloader_api v0.11.13 (https://github.com/rust-osdev/bootloader.git?rev=707db11201b19541b7cfef84037866ee03aa0927#707db112)
+   Compiling kernel v0.1.0 (/Users/wrb/fun/code/breenix/.claude/worktrees/wf_0b3dcd38-2a2-7/kernel)
+   Compiling num-traits v0.2.19
+   Compiling alloc v0.0.0 (/Users/wrb/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/src/rust/library/alloc)
+   Compiling scopeguard v1.2.0
+   Compiling byteorder v1.5.0
+   Compiling futures-core v0.3.34
+   Compiling slab v0.4.12
+   Compiling conquer-util v0.3.0
+   Compiling micromath v2.1.0
+   Compiling pin-project-lite v0.2.17
+   Compiling tock-registers v0.8.1
+   Compiling futures-task v0.3.34
+   Compiling rlibc v1.0.0
+   Compiling log v0.4.34
+   Compiling noto-sans-mono-bitmap v0.3.2
+   Compiling lock_api v0.4.14
+   Compiling conquer-once v0.4.0
+   Compiling aarch64-cpu v9.4.0
+   Compiling futures-util v0.3.34
+   Compiling crossbeam-queue v0.3.13
+   Compiling spinning_top v0.2.5
+   Compiling spin v0.9.9
+   Compiling linked_list_allocator v0.10.6
+   Compiling float-cmp v0.9.0
+   Compiling embedded-graphics-core v0.4.1
+   Compiling embedded-graphics v0.8.2
+    Finished `release` profile [optimized] target(s) in 14.22s
+warning: the following packages contain code that will be rejected by a future version of Rust: core v0.0.0 (/Users/wrb/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/src/rust/library/core)
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+Guard: kernel FP/SIMD instruction check
+  ELF:       /Users/wrb/fun/code/breenix/.claude/worktrees/wf_0b3dcd38-2a2-7/target/refusal-drain-gate/aarch64-breenix-kernel/release/kernel-aarch64
+  objdump:   /Users/wrb/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/aarch64-apple-darwin/bin/llvm-objdump
+  allowlist: /Users/wrb/fun/code/breenix/.claude/worktrees/wf_0b3dcd38-2a2-7/scripts/kernel-neon-allowlist.txt
+[0;32mPASS:[0m 0 FP/SIMD load/store instructions in kernel .text (allowlisted & suppressed: 0).
+ARM64 REFUSAL DRAIN GATE: PASSED
+[RESUME_PC_FOREIGN_ORACLE:aarch64:leg=G:armed=1:planted=1:record_cpu=7:canary_tid=10:canary_progress=34:foreign_reports=1:record_still_published=1:canary_present=1:canary_terminated=0:fatal=0:PASS]
+[RESUME_PC_DRAIN_DEPARTURE_ORACLE:aarch64:leg=H:armed=1:fired=1:planted=1:victim_tid=12:canary_is_self=1:refusals=1:victim_present=1:victim_terminated=0:still_current=1:ptr_nulled=0:record_still_published=0:progress=36:fatal=0:PASS]
+[BOOT_TESTS:PASS]
+[BLOCK_EINTR_ORACLE:PASS:stages=2:reads=4:short=0:eintr=0:handled=1]
+qemu-system-aarch64: terminating on signal 15 from pid 82113 (<unknown process>)
+Serial: /tmp/breenix_aarch64_refusal_drain_gate/serial.txt
+Phase 5: PASS
+
+=========================================
+ARM64 FULL SYSTEM TEST: FAILED
+=========================================
+Reason: Phase 1c: clonevm_exec_test reported an error (CLONEVM_EXEC_TEST: ERROR parent wait was not woken by sibling)
+
+Serial: 826 lines
+Log: /tmp/breenix_aarch64_full_test/serial.txt
+
+Last 20 lines of serial output:
+bsshd: starting on port 2222
+bsshd: listening on 0.0.0.0:2222
+[heartbeat] tid=1204 uptime_ms=11855 kbd_nonzero=0
+manager.create_process_with_argv [ARM64]: ENTRY - name='xhci_counters', elf_size=292264, argc=1
+manager.create_process_with_argv [ARM64]: Generated PID 104
+manager.create_process_with_argv [ARM64]: Creating ProcessPageTable
+manager.create_process_with_argv [ARM64]: Loading ELF into page table
+manager.create_process_with_argv [ARM64]: ELF loaded, entry=0x4000f140
+manager.create_process_with_argv [ARM64]: Allocating user stack
+manager.create_process_with_argv [ARM64]: User stack will be at 0xfffffeff0000-0xffffff000000
+manager.create_process_with_argv [ARM64]: argc/argv set up on stack, SP=0xfffffefffed0
+manager.create_process_with_argv [ARM64]: SUCCESS - returning PID 104
+[spawn] Created child PID 104 for parent PID 1
+[spawn] Success: child PID 104 scheduled
+[spawn] path='/bin/bwm'
+[xhci-counters] XHCI_MSI_EVENT_TOTAL=0
+[xhci-counters] XHCI_IRQ_ENTRY_TOTAL=0
+[xhci-counters] XHCI_LOCK_CONTENDED_TOTAL=0
+[xhci-counters] KBD_NONZERO_TOTAL=0
+[syscall] exit(0) pid=104 name=xhci_counters

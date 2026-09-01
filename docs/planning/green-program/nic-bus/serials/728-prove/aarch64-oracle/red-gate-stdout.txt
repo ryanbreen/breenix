@@ -1,0 +1,11 @@
+=========================================
+#728 ext2 lock-race gate
+  arch:     aarch64
+  features: boot_tests,ext2_lock_race
+=========================================
+[gate] building aarch64 kernel...
+ext2 lock-race gate (aarch64): FAIL - EXT2_LOCK_SPIN_STALL observed — a contended acquisition spun instead of parking (#728 live)
+--- LOCKRACE / stall lines ---
+EXT2_LOCK_SPIN_STALL lock=ROOT_EXT2_write elapsed_ns=500083000
+EXT2_LOCK_SPIN_STALL lock=ROOT_EXT2_write elapsed_ns=501592000
+EXT2_LOCK_SPIN_STALL lock=ROOT_EXT2_write elapsed_ns=501760000

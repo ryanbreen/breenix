@@ -1,0 +1,16 @@
+=========================================
+#728 ext2 lock-race gate
+  arch:     x86
+  features: boot_tests,ext2_lock_race
+=========================================
+[gate] building x86_64 kernel...
+   Compiling kernel v0.1.0 (/root/breenix-728-prove/kernel)
+   Compiling breenix v0.1.0 (/root/breenix-728-prove)
+    Finished `release` profile [optimized] target(s) in 16.74s
+     Running `target/release/qemu-uefi`
+[qemu-uefi] Using UEFI image: /root/breenix-728-prove/target/release/build/breenix-c8a48f7e864c94be/out/breenix-uefi.img (7405568 bytes)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.15s
+     Running `target/debug/xtask create-test-disk`
+ext2 lock-race gate (x86): FAIL - EXT2_LOCK_SPIN_STALL observed — a contended acquisition spun instead of parking (#728 live)
+--- LOCKRACE / stall lines ---
+[SW]<K>[SW]<1>[SW]<K>EXT2_LOCK_SPIN_STALL lock=ROOT_EXT2_write elapsed_ns=502423399
