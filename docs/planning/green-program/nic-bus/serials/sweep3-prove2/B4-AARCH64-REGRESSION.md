@@ -1,5 +1,46 @@
 # B4's `is_valid_user_range` swap breaks EVERY aarch64 userspace process's first write() -- NEW, BLOCKING
 
+> **CORRECTION (fix round 3, commit `a1b7eaf7`):** The "Root cause" section
+> below, and the #729 reopening comment that repeated it verbatim, is
+> **wrong**. It attributes the failure to `is_valid_user_stack_range`'s
+> hardcoded 1 MiB aarch64 window, and claims that window is "too narrow for
+> a real process's stack" -- but every aarch64 process's stack top is fixed
+> at `USER_STACK_REGION_START` with a 64 KiB (`USER_STACK_SIZE`) extent
+> (`process/manager.rs`), comfortably inside 1 MiB, so init's first
+> `print!()` cannot have been failing on a stack address at all. The
+> closure review (`sweep3/fix2-review.md`, finding B4-b) caught this: no
+> address from the actual failing boot was ever quoted in this document --
+> the mechanism was inferred from reading the predicate, then labeled
+> "traced."
+>
+> The real cause, confirmed by decoding the actual failing address: this
+> libc's `malloc` is implemented as `mmap`
+> (`libs/libbreenix-libc/src/lib.rs`), so `print!`'s heap-allocated
+> `LineWriter` buffer is an mmap'd address, landing at
+> `~0x7ffffdf86000` -- just below `MMAP_REGION_END`
+> (`0x7FFF_FE00_0000`). `kernel/src/memory/vma.rs` hardcoded that region's
+> bounds with **no `#[cfg]` at all** (unconditionally the x86_64 numbers),
+> and those are exactly what `sys_mmap`/`Process::new`'s `mmap_hint`
+> seeding actually consume on **both** arches. Meanwhile
+> `layout::is_valid_user_range`'s mmap arm validated against a second,
+> disjoint aarch64-only window (`aarch64_const::MMAP_REGION_START/END`,
+> `[0x1_0000_0000, 0xFF_FE00_0000)`) that no allocator ever used. The
+> validator was refusing an address class the allocator had always
+> legitimately handed out on aarch64; x86_64 was accidentally fine only
+> because its two copies of the mmap region happened to agree.
+>
+> The stack arm's hardcoded 1 MiB window was real (M-a in the review) --
+> it disagreed with the demand-paged growth handler's own
+> `MAX_USER_STACK_SIZE` constant on x86_64, and used an unexplained
+> literal instead of `USER_STACK_SIZE` on aarch64 -- but it was a
+> **secondary, non-blocking** defect, not the cause of this boot failure.
+> Both defects are now fixed: the mmap region is one arch-generic
+> definition consumed by both the allocator and the validator, and the
+> stack arm on both arches derives from the real per-arch constant that
+> governs its allocator/growth-handler instead of a hardcoded literal. See
+> `kernel/src/memory/layout.rs` and the commit message on `a1b7eaf7` for
+> the full account.
+
 Found while running the prove round's mandated regression leg
 (`./docker/qemu/run-aarch64-full-test.sh --boot-tests-only`, per fix2-notes.md's
 own claim that aarch64 verification was "clean build, zero warnings" -- a
