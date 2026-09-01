@@ -72,14 +72,29 @@ tenant process observed in the fix round's own B2 investigation (now at
 **7 weeks** of accumulated CPU time, ~870-960% CPU) still dominant.
 Within the leg itself, both GREEN and RED advanced at an identical,
 consistent ~1 kernel-log line per 10-13 seconds of wall clock — matching
-the fix round's own B2 measurement almost exactly. Critically, **RED
-reached the same zero-signal state as GREEN this round** — under
-round 1's conditions, x86 RED reliably produced a stall marker within
-about a second of reaching the leg (see `../728-prove/x86-oracle/
-red-serial-all.txt`). That RED could not redden this round, on the same
-harness, under demonstrably heavier host contention, is itself strong
-evidence that the non-completion is a property of today's shared-host
-contention, not of which lock code is running.
+the fix round's own B2 measurement almost exactly. **RED reached the same
+zero-signal state as GREEN this round** — under round 1's conditions, x86
+RED reliably produced a stall marker within about a second of reaching the
+leg (see `../728-prove/x86-oracle/red-serial-all.txt`).
+
+**Correction (closure round, review finding B2): the inference drawn here
+originally — that RED not reddening under heavier host contention was
+itself "strong evidence the non-completion is a property of today's
+shared-host contention, not of which lock code is running" — did not
+follow from what was measured.** This round's RED reinstates only the
+`interrupts_enabled()` conjunct, and `ext2_lock_race.rs`'s holder/
+contender kthreads run with IF=1 regardless (`kthread_entry()` calls
+`arch_enable_interrupts()`, `task/kthread.rs:366-371` — see the B1 section
+above), so that conjunct's reinstatement does not change what this
+specific harness observes on x86 either way; a control that cannot
+distinguish its two settings supports no conclusion about *why* neither
+setting completes. A later round (`../728-x86-recapture/README.md`)
+measured the leg's line-advance pace directly against a real host-load
+swing (2.28 to 24.21) and found it flat throughout, which weakens rather
+than confirms the host-contention explanation this paragraph originally
+leaned on. The correct standing statement is Q2 of the review this
+correction responds to: x86's non-completion is unattributed, not
+attributed to host contention.
 
 **Verdict, stated plainly per this round's own instruction: a capture
 with zero oracle output is NOT green. x86 GREEN is UNPROVEN by the direct
@@ -190,10 +205,13 @@ other blocking-primitive-adjacent suite (`exec_lock_order_structure`,
 - **x86: the central question is not settled by the direct oracle this
   round**, despite two extended attempts (a full 30-minute run plus a
   90-minute run, both ending in zero oracle output on both the fixed and
-  the freshly-reverted code, under independently-confirmed severe,
-  standing beast host contention — RED failing to redden under these
-  conditions is itself evidence the non-completion is host-driven, not
-  code-driven). **What does bear on x86**, from a different instrument:
+  the freshly-reverted code, under independently-confirmed severe, standing
+  beast host contention). Correction (closure round, review finding B2):
+  this line originally went on to claim RED's non-reddening was itself
+  evidence the cause was host-driven rather than code-driven — see the
+  correction under "x86: NOT settled" above for why that inference does
+  not hold; it is removed here rather than repeated. **What does bear on
+  x86**, from a different instrument:
   10/10 real-syscall boots (`sys_mkdir` included, the historical repro's
   own shape) produced zero occurrences of the #728 stall at the fix
   bytes — modest statistical power, honestly stated, but a real,

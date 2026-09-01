@@ -26,6 +26,27 @@
 //!   5. `is_mounted`/`is_home_mounted`/`home_mount_id` are routed through
 //!      the park-capable accessors, not a raw `ROOT_EXT2`/`HOME_EXT2`
 //!      `.read()` (review finding M1).
+//!
+//! Added by the closure round to fix a blocking/major left open by the
+//! round-2 review (`fix2-review.md`):
+//!   6. `ext2_acquire` and `ext2_acquire_write` EACH individually call
+//!      `prepare_to_wait_checked` — not merely somewhere in their combined
+//!      bodies. Closes the M3 blind spot where deleting one function's
+//!      entire park loop (keeping its can-sleep gate and spin fallback)
+//!      still passed property 4 above because the *other* function's call
+//!      satisfied it.
+//!   7. No raw `_EXT2.read(` (as opposed to `.try_read()`) appears anywhere
+//!      in the file, and exactly the two C5 mount-time `_EXT2.write(` sites
+//!      exist — a file-wide census, not the three-function scope property 5
+//!      uses, closing M3's second blind spot (a new raw `.read()`/`.write()`
+//!      call site outside `is_mounted`/`is_home_mounted`/`home_mount_id`
+//!      would not have been caught).
+//!   8. `ext2_lock_can_sleep()`'s x86 arm checks `preempt_count() == 1`
+//!      exactly, not `> 0` or `>= 1` — pinning the liveness dependency
+//!      documented in `mod.rs` (review finding M2): a parked `BlockedOnIO`
+//!      x86 thread can only be scheduled away via `can_schedule()`'s
+//!      `preempt_count == 0` clause, which only `schedule_current_wait()`'s
+//!      single `preempt_enable()` can reach from exactly 1.
 
 use std::fs;
 use std::path::PathBuf;
@@ -363,6 +384,64 @@ fn validate_routed_through_accessor(body: &str, accessor_call: &str) -> Result<(
     Ok(())
 }
 
+/// Closure-round property 6 (closes M3 blind spot 1): a single park-capable
+/// function must itself call `prepare_to_wait_checked` — checked per
+/// function, not on a combined body where a sibling function's call could
+/// paper over this one's park loop having been deleted entirely.
+fn validate_calls_checked_wait_itself(body: &str) -> Result<(), String> {
+    let mask = code_mask(body);
+    if identifier_offsets(body, &mask, "prepare_to_wait_checked").is_empty() {
+        return Err("does not itself call prepare_to_wait_checked".to_string());
+    }
+    Ok(())
+}
+
+/// Closure-round property 7 (closes M3 blind spot 2): file-wide census, not
+/// scoped to any particular function. No raw, non-yielding `_EXT2.read(`
+/// may exist anywhere in the file (only `.try_read()`, which is a distinct
+/// identifier — `_EXT2.read(` is not a substring of `_EXT2.try_read(`), and
+/// exactly the two C5 mount-time `_EXT2.write(` initializers may exist —
+/// any other raw write bypasses the park-capable write accessor.
+fn validate_no_raw_ext2_rw_file_wide(source: &str) -> Result<(), String> {
+    let mask = code_mask(source);
+    if !code_offsets(source, &mask, "_EXT2.read(").is_empty() {
+        return Err(
+            "a raw spin::RwLock .read() on ROOT_EXT2/HOME_EXT2 exists somewhere in this file, \
+             outside every park-capable accessor (#728 review M1/M3)"
+                .to_string(),
+        );
+    }
+    let write_sites = code_offsets(source, &mask, "_EXT2.write(").len();
+    if write_sites != 2 {
+        return Err(format!(
+            "found {write_sites} raw _EXT2.write() call site(s), expected exactly 2 (the C5 \
+             mount-time initializers) — any other count means a raw write was added or removed \
+             outside the park-capable write accessor (#728 review M3)"
+        ));
+    }
+    Ok(())
+}
+
+/// Closure-round property 8 (M2): the x86 arm's preempt_count check must be
+/// the exact `== 1` the predicate's x86 liveness argument depends on (see
+/// `ext2_lock_can_sleep`'s own doc comment in `mod.rs`) — `> 0`/`>= 1` would
+/// still enter the park loop but could leave `preempt_count()` at 1 on
+/// return from `schedule_current_wait()`'s single `preempt_enable()`, which
+/// `can_schedule()`'s only reachable clause for a parked `BlockedOnIO`
+/// thread requires to be exactly 0.
+fn validate_x86_preempt_count_predicate_is_exact_one(fn_body: &str) -> Result<(), String> {
+    let x86_block = block_after(fn_body, "#[cfg(not(target_arch = \"aarch64\"))]");
+    let mask = code_mask(x86_block);
+    if !code_offsets(x86_block, &mask, "preempt_count() == 1").is_empty() {
+        return Ok(());
+    }
+    Err(
+        "x86 arm's preempt_count() check is not the exact `== 1` this predicate's x86 liveness \
+         argument depends on (review round-2 finding M2)"
+            .to_string(),
+    )
+}
+
 // ---------------------------------------------------------------------------
 // Positive tests — the real source satisfies every property.
 // ---------------------------------------------------------------------------
@@ -427,6 +506,31 @@ fn is_mounted_is_home_mounted_and_home_mount_id_route_through_the_accessor() {
     .unwrap();
     validate_routed_through_accessor(function_body(&source, "home_mount_id"), "home_fs_read()")
         .unwrap();
+}
+
+#[test]
+fn ext2_acquire_itself_calls_checked_wait() {
+    let source = repo_text("kernel/src/fs/ext2/mod.rs");
+    validate_calls_checked_wait_itself(function_body(&source, "ext2_acquire")).unwrap();
+}
+
+#[test]
+fn ext2_acquire_write_itself_calls_checked_wait() {
+    let source = repo_text("kernel/src/fs/ext2/mod.rs");
+    validate_calls_checked_wait_itself(function_body(&source, "ext2_acquire_write")).unwrap();
+}
+
+#[test]
+fn no_raw_ext2_read_write_exists_file_wide() {
+    let source = repo_text("kernel/src/fs/ext2/mod.rs");
+    validate_no_raw_ext2_rw_file_wide(&source).unwrap();
+}
+
+#[test]
+fn x86_can_sleep_preempt_count_check_is_exact_one() {
+    let source = repo_text("kernel/src/fs/ext2/mod.rs");
+    let body = function_body(&source, "ext2_lock_can_sleep");
+    validate_x86_preempt_count_predicate_is_exact_one(body).unwrap();
 }
 
 // ---------------------------------------------------------------------------
@@ -539,4 +643,74 @@ fn negative_missing_accessor_call_is_rejected() {
     let regressed = "{\n    true\n}";
     let err = validate_routed_through_accessor(regressed, "root_fs_read()").unwrap_err();
     assert!(err.contains("does not call"), "unexpected message: {err}");
+}
+
+#[test]
+fn negative_park_loop_deleted_from_one_function_is_rejected() {
+    // The exact M3 blind spot: ext2_acquire's park loop deleted entirely
+    // while keeping the can-sleep gate and the spin fallback. Property 1
+    // (validate_park_capable_with_spin_fallback) does not catch this —
+    // both identifiers it checks for are still present — but property 6
+    // does, because ext2_acquire itself no longer calls
+    // prepare_to_wait_checked.
+    let regressed = r#"
+fn ext2_acquire<T>() -> T {
+    if ext2_lock_can_sleep() {
+        // park loop deleted
+    }
+    spin_fallback()
+}
+"#;
+    validate_park_capable_with_spin_fallback(regressed, "spin_fallback").unwrap();
+    let err = validate_calls_checked_wait_itself(regressed).unwrap_err();
+    assert!(
+        err.contains("does not itself call"),
+        "unexpected message: {err}"
+    );
+}
+
+#[test]
+fn negative_raw_read_added_outside_the_three_functions_is_rejected() {
+    // The exact M3 blind spot: validate_routed_through_accessor only ever
+    // sees the body of whichever function it's handed, so a brand-new raw
+    // .read() call added to some OTHER function in the file (not
+    // is_mounted/is_home_mounted/home_mount_id) is invisible to it. The
+    // file-wide census (property 7) catches this because it scans the
+    // whole file, not one function's body.
+    let source = "fn some_new_helper() -> bool {\n    ROOT_EXT2.read().is_some()\n}\n";
+    let err = validate_no_raw_ext2_rw_file_wide(source).unwrap_err();
+    assert!(err.contains("raw spin::RwLock"), "unexpected message: {err}");
+}
+
+#[test]
+fn negative_third_raw_write_site_is_rejected() {
+    let source = "*ROOT_EXT2.write() = Some(fs);\n*HOME_EXT2.write() = Some(fs);\n\
+                  *ROOT_EXT2.write() = None;\n";
+    let err = validate_no_raw_ext2_rw_file_wide(source).unwrap_err();
+    assert!(err.contains("found 3 raw"), "unexpected message: {err}");
+}
+
+#[test]
+fn negative_missing_raw_write_site_is_rejected() {
+    let source = "*ROOT_EXT2.write() = Some(fs);\n";
+    let err = validate_no_raw_ext2_rw_file_wide(source).unwrap_err();
+    assert!(err.contains("found 1 raw"), "unexpected message: {err}");
+}
+
+#[test]
+fn negative_x86_preempt_count_weakened_to_greater_than_zero_is_rejected() {
+    let mutated = r#"
+fn ext2_lock_can_sleep() -> bool {
+    #[cfg(target_arch = "aarch64")]
+    {
+        crate::per_cpu_aarch64::preempt_count() == 1
+    }
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        crate::per_cpu::preempt_count() > 0
+    }
+}
+"#;
+    let err = validate_x86_preempt_count_predicate_is_exact_one(mutated).unwrap_err();
+    assert!(err.contains("exact"), "unexpected message: {err}");
 }

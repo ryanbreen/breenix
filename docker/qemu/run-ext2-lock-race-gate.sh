@@ -43,16 +43,30 @@
 # kernel source on every invocation would be its own hazard). The record, as
 # actually observed (not aspired to) at the time this header was last edited:
 #   - Observer-only commit (spin instrumented, no park path) + this same
-#     harness: EXT2_LOCK_SPIN_STALL fires (x3, aarch64 -smp 4; x1, x86
-#     -smp 1, both disks attached), the kernel's own soft-lockup detector
-#     fires, and the boot never reaches its own liveness markers again -- on
-#     BOTH arches, BOTH filesystems.
+#     harness, as actually archived (review round-2 finding B3 -- corrected
+#     here from an earlier version of this header that overstated both of
+#     the following): EXT2_LOCK_SPIN_STALL fires -- x3 on aarch64
+#     (`728-prove-round2/aarch64-oracle/red-serial.txt`), x1 on x86
+#     (`728-prove/x86-oracle/red-serial-all.txt`) -- and in every archived
+#     capture, both arches, the lock name printed is `ROOT_EXT2_write` only
+#     (the leg wedges acquiring ROOT before HOME ever runs, so "BOTH
+#     filesystems" is not something either archive shows). The aarch64
+#     capture's serial log ends immediately after its third stall line with
+#     no further output; the x86 capture's last line is its single stall.
+#     Neither archived capture contains a "soft lockup detected" line or any
+#     other output after the stall(s) -- the kernel's own soft-lockup
+#     detector firing is NOT something either archive demonstrates. (It may
+#     still fire in practice past the archived window; it just isn't
+#     evidence on file, so it is not asserted here.)
 #   - The fix commit + the identical harness, aarch64: verdict=PASS for both
-#     filesystems, COMPLETE:pass=2:fail=0 (both disks attached), a positive
+#     filesystems, COMPLETE:pass=2:fail=0 (both disks attached), a nonzero
 #     EXT2_LOCK_PARKS delta on both races (not merely an absence of stall --
-#     the fix's own park path is provably entered, review round-2 finding
-#     B4b), and the boot continues live on a line genuinely after COMPLETE.
-#     Reconfirmed on two independent reruns in fix round 2.
+#     the fix's own park path is entered at least once during the window;
+#     the counter is global, not per-race, so this is strong corroboration
+#     on this leg's dedicated profile rather than a per-thread proof --
+#     review round-2 finding M5), and the boot continues live on a line
+#     genuinely after COMPLETE. Reconfirmed on two independent reruns in fix
+#     round 2.
 #   - The fix commit + the identical harness, x86: NOT CAPTURED as a
 #     COMPLETE/verdict line, on either fix round. Every GREEN attempt reaches
 #     the leg (holder + contender kthreads spawned, actively scheduled back
@@ -274,7 +288,14 @@ check_live_after_complete() {
     [ -f "$PRIMARY_LOG" ] || return 1
     local complete_line
     complete_line="$(grep -na "\[LOCKRACE:COMPLETE:" "$PRIMARY_LOG" 2>/dev/null | tail -1 | cut -d: -f1)"
-    [ -n "$complete_line" ] || return 1
+    # review round-2 finding M4: a live run once hit
+    # "line 278: lock: unbound variable" here, meaning $complete_line held
+    # something non-numeric when the arithmetic context below evaluated it.
+    # The trigger wasn't reproducible from the archived serial (this
+    # function returns 1 cleanly against it), so guard defensively rather
+    # than leave `set -u` to fail unexplained mid-gate: require a plain
+    # decimal line number before ever reaching `$((...))`.
+    [[ "$complete_line" =~ ^[0-9]+$ ]] || return 1
     tail -n "+$((complete_line + 1))" "$PRIMARY_LOG" | grep -qaE "$LIVENESS_PATTERN"
 }
 

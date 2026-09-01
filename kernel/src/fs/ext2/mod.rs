@@ -1701,6 +1701,16 @@ const EXT2_LOCK_PARK_TIMEOUT_NS: u64 = 200_000_000;
 /// its round timeout elapses, so "no stall" alone does not distinguish
 /// "the fix worked" from "the fix parked and got lucky on the timeout."
 /// (B4 of the #728 review.)
+///
+/// This is a single global counter, not per-caller: a race-leg run reads it
+/// as a *delta* across its own window (see `ext2_lock_race.rs`'s
+/// `run_one()`), which proves "some ext2 acquisition parked somewhere
+/// during this window," not "this specific race's own contenders parked."
+/// On the race-leg's dedicated boot profile nothing else touches ext2
+/// concurrently, so a nonzero delta is strong corroboration in practice —
+/// but it is corroboration, not per-thread proof (review round-2 finding
+/// M5). Making it per-race (e.g. recording the contenders' own tids)
+/// remains a real improvement, not done here.
 static EXT2_LOCK_PARKS: AtomicU64 = AtomicU64::new(0);
 
 /// Read the running count of successful park entries since boot. See
@@ -1745,6 +1755,33 @@ pub fn ext2_lock_parks() -> u64 {
 /// hard no-park. That is why the check is aarch64-only rather than deleted
 /// outright: on aarch64 it is load-bearing; on x86 it is never anything but
 /// unconditionally false, so keeping it there defeats the fix.
+///
+/// # x86's liveness dependency: why this predicate requires `== 1`, not `> 0`
+///
+/// (Review round-2 finding M2.) A parked x86 thread is `BlockedOnIO`
+/// (`schedule_current_wait()`, `task/waitqueue.rs`), and
+/// `per_cpu::can_schedule()` (`kernel/src/per_cpu.rs:1051`) deliberately
+/// does **not** include `BlockedOnIO` in the small set of thread states
+/// that bypass its `current_preempt == 0` guard — only `Blocked`,
+/// `BlockedOnSignal`, `BlockedOnChildExit`, `BlockedOnTimer`, and
+/// `Terminated` do (see that function's own long-form comment, and #666/
+/// #508, the tracked gap this leaves for the general case). So the timer
+/// ISR's `check_need_resched_and_switch` can only take a parked x86 ext2
+/// thread off the CPU through `can_schedule()`'s
+/// `(current_preempt == 0 && need_resched_set)` clause — the
+/// exception-cleanup and returning-to-userspace/idle clauses do not apply
+/// to a thread halted mid-syscall. That clause needs `preempt_count() == 0`
+/// exactly, and the only reason it ever reaches 0 here is that
+/// `schedule_current_wait()` calls `preempt_enable()` before its halt loop,
+/// unwinding the *one* level of nesting this predicate insists on via its
+/// own `== 1` (not `>= 1` or `> 0`) check below. Weakening this check to
+/// `> 0` (admitting a caller with, say, two nested `preempt_disable()`
+/// guards) would still enter the park loop, but `preempt_enable()`'s single
+/// decrement would leave `preempt_count() == 1` on return — a park that can
+/// never be scheduled away by the only clause that can reach it, silently
+/// turning into the full `EXT2_LOCK_PARK_ROUNDS`-round timeout on every
+/// occurrence before falling back to the spin. Pinned in the structural
+/// ratchet (`tests/ext2_lock_structure.rs`).
 #[inline]
 fn ext2_lock_can_sleep() -> bool {
     if crate::task::scheduler::current_thread_id().is_none() {
@@ -1928,16 +1965,34 @@ impl Drop for Ext2ReadGuard {
         // holder waiting on `try_upgrade()` (releasing a reader never
         // admits another reader -- spin's RwLock never blocks reader vs.
         // reader), so at most one waiter can actually make progress from
-        // this event. wake_up_one() avoids taking the waitqueue mutex and
-        // waking every queued waiter (thundering herd) on every ordinary,
-        // uncontended read-guard drop; has_waiters() skips the lock
-        // entirely in the common uncontended case. If the queue is shared
-        // with waiters this release doesn't concern, they still get woken
-        // by their own bounded per-round timeout (C6) -- this is a wake-
-        // efficiency choice, not a correctness one (review finding m1).
-        if self.waiters.has_waiters() {
-            self.waiters.wake_up_one();
-        }
+        // this event: wake_up_one() (never queue every waiter for a
+        // thundering herd), not the full broadcast `wake_up()`.
+        //
+        // Correction (review round-2 finding M1, re-found in the closure
+        // round): an earlier version of this comment additionally claimed
+        // `has_waiters()` "skips the lock entirely in the common
+        // uncontended case." That was false -- `has_waiters()` calls
+        // `with_waiters()` (`task/waitqueue.rs`), the *same*
+        // `arch_without_interrupts`-guarded `spin::Mutex` `wake_up_one()`
+        // itself takes. Gating on it saved nothing on the uncontended path
+        // (one lock acquisition either way) and cost an extra one on the
+        // contended path (two acquisitions instead of one), so it has been
+        // removed; `wake_up_one()` is now called unconditionally.
+        //
+        // Residual, disclosed rather than fixed: `wake_up_one()` pops the
+        // waitqueue's *front* entry, which may be a parked reader rather
+        // than the upgrade-waiting writer that could actually proceed --
+        // that reader retries `try_read()`, is refused while UPGRADED is
+        // set, and re-parks, deferring the writer's own wake to its next
+        // bounded per-round timeout (C6, `EXT2_LOCK_PARK_TIMEOUT_NS`,
+        // worst case `EXT2_LOCK_PARK_ROUNDS` rounds later). This is bounded
+        // added latency, not a hang, and it existed before this correction
+        // too (`has_waiters()` never changed which waiter gets popped) --
+        // recorded here since it was under-stated originally. The queue is
+        // shared rather than writer-priority (module docs above); making it
+        // writer-priority is a real option for a future round, not done
+        // here.
+        self.waiters.wake_up_one();
     }
 }
 
@@ -1970,12 +2025,14 @@ impl Drop for Ext2WriteGuard {
         // Unlike a read-guard drop, releasing the write/upgradeable slot
         // can unblock several distinct waiter kinds at once (every queued
         // try_read(), plus the next try_upgradeable_read()), so this side
-        // keeps the full broadcast wake_up() -- only the has_waiters()
-        // fast path is worth adding, to skip the waitqueue mutex entirely
-        // on the common uncontended drop.
-        if self.waiters.has_waiters() {
-            self.waiters.wake_up();
-        }
+        // keeps the full broadcast wake_up().
+        //
+        // A `has_waiters()`-gated fast path was tried here and removed
+        // (see `Ext2ReadGuard::drop`'s comment for the full correction):
+        // `has_waiters()` takes the same `WaitQueueHead` lock `wake_up()`
+        // does, so gating on it does not skip a lock acquisition on the
+        // uncontended path and adds a second one on the contended path.
+        self.waiters.wake_up();
     }
 }
 
