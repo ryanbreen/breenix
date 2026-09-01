@@ -14,9 +14,19 @@ Each GDB command response includes a "serial_output" field with any NEW serial
 output that appeared during command execution.
 
 Special commands:
-    serial      - Get ALL serial output accumulated since session start
-    serial-new  - Get only NEW serial output since last read
-    quit/exit/q - Terminate session
+    serial          - Get ALL serial output accumulated since session start
+    serial-new      - Get only NEW serial output since last read
+    resync-symbols  - x86_64 only. The kernel is a PIE loaded by the
+                      bootloader at a runtime-chosen offset (observed to vary
+                      boot-to-boot, e.g. 0x8000000000 vs 0x10000000000) that
+                      is unknown until the bootloader has actually run and
+                      printed its "virtual_address_offset:" boot line.
+                      Symbols are loaded at connect time against a guessed
+                      base (unverified -- see the "symbols" field in the
+                      start() response). After continuing past that boot
+                      line, run this command to confirm or correct the
+                      symbol table before trusting info symbol/backtrace.
+    quit/exit/q     - Terminate session
 
 Usage:
     # Interactive mode (for testing)
@@ -67,6 +77,18 @@ class GDBChat:
         self.breenix_dir = script_dir.parent.parent  # breenix-gdb-chat/scripts -> breenix
         self.section_addrs: Dict[str, int] = {}  # ELF section addresses
         self.serial_read_pos: int = 0  # Track how much serial output we've read
+        # x86_64 kernel is a PIE loaded by the bootloader crate at a runtime-chosen
+        # free virtual address slot (Mapping::Dynamic) -- this is NOT a fixed
+        # constant, it varies per boot (observed 0x8000000000 and 0x10000000000
+        # across otherwise-identical boots; see #739). KERNEL_BASE_X86 is only an
+        # initial guess used before the real offset is known (while QEMU is still
+        # halted at reset with -S, before the bootloader has run). It MUST be
+        # corrected via resync_symbols() once the bootloader's own
+        # "virtual_address_offset:" line has appeared on serial -- symbols loaded
+        # against the guess alone are unverified and may silently be wrong.
+        self.kernel_base_x86: int = self.KERNEL_BASE_X86
+        self.symbols_verified: bool = False  # True once resync_symbols() confirms/corrects the base
+        self._last_symbol_text_addr: Optional[int] = None  # runtime .text addr passed to add-symbol-file
 
     def start(self) -> Dict[str, Any]:
         """Start QEMU and GDB, connect them."""
@@ -127,7 +149,17 @@ class GDBChat:
             symbol_info = "loaded from ELF (high-half VMA)"
         else:
             symbol_output = self._load_symbols_at_runtime_addr()
-            symbol_info = f"loaded at base {hex(self.KERNEL_BASE_X86)}"
+            # x86_64's runtime load base is chosen by the bootloader at boot time
+            # (Mapping::Dynamic) and is NOT knowable while QEMU is still halted at
+            # reset (-S) -- this is only a guess. It is UNVERIFIED until
+            # resync_symbols() confirms it against the bootloader's own
+            # "virtual_address_offset:" boot line (see #739). Do not trust
+            # info symbol/backtrace against this base without resyncing first.
+            symbol_info = (
+                f"loaded at UNVERIFIED guessed base {hex(self.kernel_base_x86)} "
+                "-- continue past the bootloader's boot-info print, then run "
+                "'resync-symbols' before trusting info symbol/backtrace"
+            )
 
         # Note: QEMU starts halted when using -S flag.
         # x86_64: halted at reset vector (0xFFF0), bootloader loads kernel on continue
@@ -143,6 +175,7 @@ class GDBChat:
             "qemu_pid": self.qemu_process.pid,
             "status": "connected",
             "symbols": symbol_info,
+            "symbols_verified": self.symbols_verified,
             "sections": {k: hex(v) for k, v in self.section_addrs.items()},
             "serial_log_file": self.SERIAL_LOG_FILE
         }
@@ -289,6 +322,72 @@ class GDBChat:
         sys.stderr.write(f"[INFO] Runtime addresses: .text={hex(text_addr)}\n")
 
         return output
+
+    def resync_symbols(self):
+        """Re-anchor x86_64 symbols to the bootloader actual per-boot load offset.
+
+        The bootloader crate loads the kernel PIE at a runtime-chosen free
+        virtual address slot (Mapping Dynamic) and prints it once as a line
+        starting with virtual_address_offset on serial. That value is not
+        knowable before the bootloader has run, so the base used by
+        _load_symbols_at_runtime_addr at connect time (self.kernel_base_x86,
+        seeded from the KERNEL_BASE_X86 guess) may be wrong, silently, since
+        GDB gives no error for symbols loaded at a plausible looking but
+        incorrect address (see number 739).
+
+        Call this after continuing (and interrupting, e.g. via Ctrl C or an
+        early breakpoint) past the point where the bootloader has printed its
+        boot info block. Idempotent: safe to call repeatedly; it is a no op
+        once the discovered offset matches the base already in use.
+        """
+        if self.arch != "x86_64":
+            return {"success": True, "resynced": False, "message": "resync-symbols is a no-op on aarch64 (ELF VMAs are already correct)"}
+
+        serial = self.get_all_serial_output()
+        match = re.search(r"virtual_address_offset:\s*(0x[0-9a-fA-F]+)", serial)
+        if not match:
+            return {
+                "success": True,
+                "resynced": False,
+                "verified": False,
+                "message": "No virtual_address_offset line seen on serial yet -- continue further into boot, then retry",
+            }
+
+        discovered_base = int(match.group(1), 16)
+        old_base = self.kernel_base_x86
+
+        if discovered_base == old_base and self.symbols_verified:
+            return {
+                "success": True,
+                "resynced": False,
+                "verified": True,
+                "base": hex(discovered_base),
+                "message": "Already resynced at this base",
+            }
+
+        # Drop the symbol table loaded at the (possibly wrong) old base before
+        # re-adding at the confirmed base -- GDB will otherwise carry both,
+        # which can make ambiguous-symbol lookups resolve to the stale copy.
+        if self._last_symbol_text_addr is not None:
+            self._send_raw("remove-symbol-file -a " + hex(self._last_symbol_text_addr))
+
+        self.kernel_base_x86 = discovered_base
+        self._load_symbols_at_runtime_addr()
+        self.symbols_verified = True
+
+        if discovered_base == old_base:
+            msg = "Symbols confirmed at guessed base " + hex(discovered_base)
+        else:
+            msg = "Symbols were loaded at the WRONG base " + hex(old_base) + "; corrected to " + hex(discovered_base)
+
+        return {
+            "success": True,
+            "resynced": discovered_base != old_base,
+            "verified": True,
+            "old_base": hex(old_base),
+            "base": hex(discovered_base),
+            "message": msg,
+        }
 
     def _load_symbols_aarch64(self) -> str:
         """Load symbols for ARM64 kernel.
@@ -686,6 +785,16 @@ def main():
                     "command": "serial-new",
                     "serial_output": serial_output[:8000] if serial_output else ""
                 }))
+                sys.stdout.flush()
+                continue
+
+            if cmd.lower() == "resync-symbols":
+                # Re-anchor x86_64 symbol table to the bootloader's real
+                # per-boot load offset (see #739 -- KERNEL_BASE_X86 is only
+                # a guess, and is wrong on roughly half of boots).
+                result = chat.resync_symbols()
+                result["command"] = "resync-symbols"
+                print(json.dumps(result))
                 sys.stdout.flush()
                 continue
 

@@ -15,6 +15,7 @@
 SESSION_DIR="/tmp/breenix_gdb_session"
 INPUT_FIFO="$SESSION_DIR/input.fifo"
 OUTPUT_FILE="$SESSION_DIR/output.jsonl"
+STDERR_LOG="$SESSION_DIR/stderr.log"
 PID_FILE="$SESSION_DIR/gdb_chat.pid"
 ARCH_FILE="$SESSION_DIR/arch"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -72,12 +73,20 @@ start_session() {
     rm -f "$INPUT_FIFO"
     mkfifo "$INPUT_FIFO"
 
-    # Clear output file
+    # Clear output file and stderr log
     > "$OUTPUT_FILE"
+    > "$STDERR_LOG"
 
     # Start gdb_chat.py in background with architecture flag
-    # Use tail -f to keep FIFO open for multiple writes
-    (tail -f "$INPUT_FIFO" | python3 "$SCRIPT_DIR/gdb_chat.py" --arch "$arch" >> "$OUTPUT_FILE" 2>&1) &
+    # Use tail -f to keep FIFO open for multiple writes.
+    # stdout (one JSON object per line) and stderr (free-form [INFO]/[DEBUG]
+    # diagnostics) are kept in SEPARATE files -- OUTPUT_FILE must contain only
+    # JSON, since send_command()'s "did a new line appear" polling and
+    # start_session()'s "is line 1 valid JSON" check both assume that. Merging
+    # them (the old `2>&1`) let a stderr diagnostic line land as line 1 or get
+    # counted as a command's response, silently breaking session start and
+    # command polling depending on stdout/stderr interleaving timing.
+    (tail -f "$INPUT_FIFO" | python3 "$SCRIPT_DIR/gdb_chat.py" --arch "$arch" >> "$OUTPUT_FILE" 2>> "$STDERR_LOG") &
     echo $! > "$PID_FILE"
 
     echo "Session starting (arch=$arch)... waiting for GDB connection"
@@ -149,11 +158,17 @@ stop_session() {
         rm -f "$PID_FILE"
     fi
 
-    # Clean up QEMU (architecture-aware) and GDB
+    # Clean up QEMU (architecture-aware) and GDB.
+    # NOTE: "qemu-system-x86_64" is 19 characters, longer than the 15-char
+    # comm-name pkill matches without -f -- a bare `pkill -9 qemu-system-x86_64`
+    # can never match anything and silently leaves the QEMU child running
+    # (it previously did exactly that here). Use -f (full command line) for
+    # both architectures. This is safe from self-matching gdb_session.sh's own
+    # invocation: this script's argv never contains the literal QEMU pattern.
     if [ "$arch" = "aarch64" ]; then
         pkill -9 -f "qemu-system-aarch64.*-s.*-S" 2>/dev/null || true
     else
-        pkill -9 qemu-system-x86_64 2>/dev/null || true
+        pkill -9 -f "qemu-system-x86_64" 2>/dev/null || true
     fi
     pkill -9 gdb 2>/dev/null || true
 

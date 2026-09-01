@@ -1,0 +1,5 @@
+old_base       = 0x10000000000
+result         = {'success': True, 'resynced': True, 'verified': True, 'old_base': '0x10000000000', 'base': '0x8000000000', 'message': 'Symbols were loaded at the WRONG base 0x10000000000; corrected to 0x8000000000'}
+gdb commands   = ['__load_symbols_at_base_0x8000000000__']
+result2 (idempotent call) = {'success': True, 'resynced': False, 'verified': True, 'base': '0x8000000000', 'message': 'Already resynced at this base'}
+ALL ASSERTIONS PASSED: resync_symbols() correctly discovers and corrects a wrong guess using real #737 boot data.

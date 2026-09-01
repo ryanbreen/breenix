@@ -655,7 +655,9 @@ printf 'break kernel::kernel_main\ncontinue\ninfo registers\nquit\n' | python3 b
 The tool:
 1. Starts QEMU with GDB server enabled (`BREENIX_GDB=1`)
 2. Starts GDB and connects to QEMU on localhost:1234
-3. Loads kernel symbols at the correct PIE base address (0x10000000000)
+3. Loads kernel symbols at a *guessed* x86_64 PIE base (the real per-boot base
+   isn't known yet at connect time -- run `resync-symbols` after boot output
+   appears; see "Symbol Loading" below)
 4. Accepts commands via stdin, returns JSON responses with serial output included
 5. **No automatic interrupt** - you control the timeout per command
 
@@ -732,12 +734,30 @@ print $cs & 3
 
 ### Symbol Loading
 
-The PIE kernel loads at base address `0x10000000000` (1 TiB). The gdb_chat.py tool handles this automatically via `add-symbol-file` with correct section offsets:
+**The x86_64 kernel's runtime load base is NOT a fixed constant.** The bootloader
+crate loads the kernel PIE at a runtime-chosen free virtual address slot and
+prints it once as `virtual_address_offset: 0x...` on serial early in boot.
+This has been observed to differ boot-to-boot on the exact same binary (e.g.
+`0x8000000000` vs `0x10000000000`) -- it depends on the UEFI memory map the
+bootloader is handed, not on anything in the kernel binary itself.
 
-- `.text` offset: varies by build
-- Runtime address = `0x10000000000 + elf_section_offset`
+Because QEMU is halted at reset (`-s -S`) when `gdb_chat.py` connects, this
+offset is not yet knowable at connect time, so `add-symbol-file` is issued
+against a best-effort guess (`KERNEL_BASE_X86`) and the `start()` response
+marks `"symbols_verified": false` with an `UNVERIFIED guessed base` message.
+**Do not trust `info symbol`/`backtrace` against that guess.** After
+continuing past the point where the bootloader has printed its
+`virtual_address_offset:` line (e.g. via a breakpoint, or an interrupt once
+serial shows kernel output), run:
+```
+resync-symbols
+```
+This re-anchors the symbol table to the real per-boot offset parsed from
+serial and reports whether the guess was correct or had to be corrected. Only
+after this should `info symbol $pc` / `backtrace` be trusted. (ARM64 does not
+need this -- its ELF VMAs are already correct at load time.)
 
-If symbols don't resolve, verify with:
+If symbols still don't resolve after `resync-symbols`, verify with:
 ```
 info address kernel::kernel_main
 ```

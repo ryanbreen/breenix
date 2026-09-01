@@ -1,0 +1,75 @@
+import sys
+sys.path.insert(0, "/Users/wrb/fun/code/breenix/.claude/worktrees/wf_2a16308d-2ca-6/breenix-gdb-chat/scripts")
+import re
+
+# Load gdb_chat.py's GDBChat class without actually starting a GDB/QEMU session.
+import importlib.util
+spec = importlib.util.spec_from_file_location(
+    "gdb_chat",
+    "/Users/wrb/fun/code/breenix/.claude/worktrees/wf_2a16308d-2ca-6/breenix-gdb-chat/scripts/gdb_chat.py",
+)
+gdb_chat = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(gdb_chat)
+
+# Real historical serial capture from the #737 specimen (anomaly_exited_114),
+# where the bootloader picked 0x8000000000 -- genuinely DIFFERENT from
+# gdb_chat.py's class-level guess (KERNEL_BASE_X86 = 0x10000000000). This is
+# the exact scenario resync_symbols() must correct.
+real_serial_path = "/Users/wrb/fun/code/breenix/.claude/worktrees/wf_2a16308d-2ca-6/docs/planning/green-program/nic-bus/serials/702-rca/anomaly_exited_114/serial_user.log.txt"
+with open(real_serial_path, encoding="utf-8", errors="replace") as f:
+    real_serial = f.read()
+
+assert "virtual_address_offset: 0x8000000000" in real_serial, "fixture does not contain the expected offset line"
+
+# Build a GDBChat instance WITHOUT starting a session (start() launches
+# QEMU/GDB subprocesses -- we only want to test resync_symbols()'s parsing
+# and comparison logic here, so we construct the object directly and stub
+# out the pieces resync_symbols() touches).
+chat = gdb_chat.GDBChat.__new__(gdb_chat.GDBChat)
+chat.arch = "x86_64"
+chat.kernel_base_x86 = gdb_chat.GDBChat.KERNEL_BASE_X86  # the (wrong, for this boot) guess
+chat.symbols_verified = False
+chat._last_symbol_text_addr = None
+chat.section_addrs = {}
+
+sent_commands = []
+def fake_send_raw(cmd, timeout=30, allow_breakpoint=False):
+    sent_commands.append(cmd)
+    return "(gdb) "
+
+def fake_get_all_serial_output():
+    return real_serial
+
+def fake_load_symbols():
+    # Record that a (re-)load was attempted at the now-corrected base.
+    sent_commands.append(f"__load_symbols_at_base_{hex(chat.kernel_base_x86)}__")
+    return "ok"
+
+chat._send_raw = fake_send_raw
+chat.get_all_serial_output = fake_get_all_serial_output
+chat._load_symbols_at_runtime_addr = fake_load_symbols
+
+old_base = chat.kernel_base_x86
+result = chat.resync_symbols()
+
+print("old_base       =", hex(old_base))
+print("result         =", result)
+print("gdb commands   =", sent_commands)
+
+assert old_base == 0x10000000000, "test setup sanity check failed"
+assert result["success"] is True
+assert result["resynced"] is True, "expected a real correction since the boot picked a different offset than the guess"
+assert result["base"] == hex(0x8000000000), f"expected corrected base 0x8000000000, got {result['base']}"
+assert chat.kernel_base_x86 == 0x8000000000, "instance state was not actually corrected"
+assert chat.symbols_verified is True
+assert any("0x8000000000" in c for c in sent_commands), "did not reload symbols at the corrected base"
+
+# Idempotency: calling again with the same serial content should be a no-op.
+sent_commands.clear()
+result2 = chat.resync_symbols()
+print("result2 (idempotent call) =", result2)
+assert result2["resynced"] is False
+assert result2["verified"] is True
+assert sent_commands == [], "second call should not re-issue any gdb commands"
+
+print("ALL ASSERTIONS PASSED: resync_symbols() correctly discovers and corrects a wrong guess using real #737 boot data.")
