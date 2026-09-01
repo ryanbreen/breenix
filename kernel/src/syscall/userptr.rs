@@ -8,19 +8,6 @@
 
 use super::SyscallResult;
 
-/// Userspace address range (architecture-specific)
-/// Keep these values aligned with the active VA layout for each arch.
-#[cfg(target_arch = "x86_64")]
-const USER_SPACE_START: u64 = 0x0000_0000_0000_0000;
-#[cfg(target_arch = "x86_64")]
-const USER_SPACE_END: u64 = 0x0000_8000_0000_0000;
-
-// ARM64 high-half kernel: userspace is the lower-half canonical range
-#[cfg(target_arch = "aarch64")]
-const USER_SPACE_START: u64 = crate::memory::layout::USERSPACE_BASE;
-#[cfg(target_arch = "aarch64")]
-const USER_SPACE_END: u64 = crate::memory::layout::USER_STACK_REGION_END;
-
 /// Validate that a userspace pointer is safe to read from
 ///
 /// # Arguments
@@ -36,23 +23,23 @@ const USER_SPACE_END: u64 = crate::memory::layout::USER_STACK_REGION_END;
 /// 3. Pointer + size doesn't overflow or cross into kernel space
 pub fn validate_user_ptr_read<T>(ptr: *const T) -> Result<(), u64> {
     let addr = ptr as u64;
-    let size = core::mem::size_of::<T>() as u64;
+    let size = core::mem::size_of::<T>() as usize;
 
     // Check for null pointer
     if ptr.is_null() {
         return Err(14); // EFAULT
     }
 
-    // Check address is in userspace range
-    if addr < USER_SPACE_START || addr >= USER_SPACE_END {
-        return Err(14); // EFAULT
-    }
-
-    // Check for overflow and that end address is still in userspace
-    if addr
-        .checked_add(size)
-        .map_or(true, |end| end > USER_SPACE_END)
-    {
+    // Validate against the closed allow-list of legitimate userspace regions
+    // (code/data, mmap, stack), not merely "somewhere below USER_SPACE_END".
+    // On x86_64, USER_SPACE_END alone is not a safe bound: it also covers
+    // the kernel's own mapped PIE image and heap, which
+    // ProcessPageTable::new copies (without USER_ACCESSIBLE) into every
+    // process's page table, so a kernel-mode read/write of an address there
+    // still succeeds even though userspace itself could never fault it in.
+    // See memory::layout::is_valid_user_range's doc comment (#729 review
+    // finding B4, and the same root cause found here while fixing it).
+    if !crate::memory::layout::is_valid_user_range(addr, size) {
         return Err(14); // EFAULT
     }
 
@@ -167,16 +154,11 @@ pub fn validate_user_buffer(ptr: *const u8, len: usize) -> Result<(), u64> {
         return Err(14); // EFAULT
     }
 
-    // Check address is in userspace range
-    if addr < USER_SPACE_START || addr >= USER_SPACE_END {
-        return Err(14); // EFAULT
-    }
-
-    // Check for overflow and that end address is still in userspace
-    if addr
-        .checked_add(len as u64)
-        .map_or(true, |end| end > USER_SPACE_END)
-    {
+    // Validate against the closed allow-list of legitimate userspace regions
+    // -- see validate_user_ptr_read's comment above for why the old
+    // USER_SPACE_END-only bound was unsafe on x86_64 (#729 review finding
+    // B4).
+    if !crate::memory::layout::is_valid_user_range(addr, len) {
         return Err(14); // EFAULT
     }
 
@@ -206,7 +188,7 @@ pub fn copy_cstr_from_user(ptr: u64) -> Result<alloc::string::String, u64> {
     if ptr == 0 {
         return Err(14); // EFAULT - null pointer
     }
-    if ptr < USER_SPACE_START || ptr >= USER_SPACE_END {
+    if !crate::memory::layout::is_valid_user_range(ptr, 1) {
         return Err(14); // EFAULT - kernel address
     }
 
@@ -214,7 +196,12 @@ pub fn copy_cstr_from_user(ptr: u64) -> Result<alloc::string::String, u64> {
 
     for offset in 0..MAX_PATH_LEN {
         let byte_addr = match ptr.checked_add(offset as u64) {
-            Some(addr) if addr >= USER_SPACE_START && addr < USER_SPACE_END => addr,
+            // Per-byte validation against the closed allow-list -- see
+            // validate_user_ptr_read's comment above (#729 review finding
+            // B4). The string's length isn't known up front (we stop at the
+            // first NUL below), so this stays a per-byte check rather than
+            // a single up-front range check.
+            Some(addr) if crate::memory::layout::is_valid_user_range(addr, 1) => addr,
             _ => return Err(14), // EFAULT - overflow or kernel address
         };
 
@@ -260,15 +247,34 @@ mod tests {
 
     #[test]
     fn test_valid_userspace_address() {
-        // Valid userspace address
-        let ptr: *const u64 = 0x0000_0000_1000_0000 as *const u64;
+        // Valid userspace address -- inside the code/data region
+        // (USERSPACE_BASE..USERSPACE_CODE_DATA_END), which is where a
+        // process's own code/data/brk-heap lives.
+        let ptr: *const u64 = crate::memory::layout::USERSPACE_BASE as *const u64;
         assert!(validate_user_ptr_read(ptr).is_ok());
     }
 
     #[test]
+    fn test_kernel_pie_candidate_rejected() {
+        // #729 review finding B4: both observed x86_64 kernel PIE bases
+        // (see gdb_chat.py's KERNEL_BASE_X86 comment) must be refused, not
+        // merely "somewhere below the old USER_SPACE_END bound".
+        assert!(validate_user_ptr_read(0x0000_0080_0000_0000u64 as *const u64).is_err());
+        assert!(validate_user_ptr_read(0x0000_0100_0000_0000u64 as *const u64).is_err());
+    }
+
+    #[test]
+    fn test_kernel_heap_rejected() {
+        assert!(
+            validate_user_ptr_read(crate::memory::heap::HEAP_START as *const u64).is_err()
+        );
+    }
+
+    #[test]
     fn test_boundary_case() {
-        // Address right at the boundary (should fail - would cross into kernel)
-        let ptr: *const u64 = (USER_SPACE_END - 4) as *const u64;
+        // Address right at the edge of the stack region (should fail - a
+        // u64 read here would cross out of the allow-listed range).
+        let ptr: *const u64 = (crate::memory::layout::USER_STACK_REGION_END - 4) as *const u64;
         assert!(validate_user_ptr_read(ptr).is_err());
     }
 }

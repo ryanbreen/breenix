@@ -396,7 +396,6 @@ impl FdTable {
 
     /// Duplicate a file descriptor to a specific slot
     /// Used for dup2() syscall
-    #[allow(dead_code)]
     pub fn dup2(&mut self, old_fd: i32, new_fd: i32) -> Result<i32, i32> {
         if old_fd < 0 || old_fd as usize >= MAX_FDS {
             return Err(9); // EBADF
@@ -418,7 +417,10 @@ impl FdTable {
 
         let fd_entry = self.fds[old_fd as usize].clone().ok_or(9)?;
 
-        // If new_fd is open, close it and decrement ref counts
+        // If new_fd is open, close it and decrement ref counts.
+        // TcpListener/TcpConnection mirror sys_close's arms (syscall/pipe.rs)
+        // exactly: this IS a close of new_fd's old contents, so it must use
+        // the same decrement protocol sys_close uses, not a bare drop.
         if let Some(old_entry) = self.fds[new_fd as usize].take() {
             match old_entry.kind {
                 FdKind::PipeRead(buffer) => buffer.lock().close_read(),
@@ -446,11 +448,32 @@ impl FdTable {
                         pair.slave_close();
                     }
                 }
+                FdKind::TcpListener(port) => {
+                    // M1 (#724 review): dup2() overwriting an already-open
+                    // new_fd IS a close of whatever new_fd held. Without
+                    // this arm the overwritten listener's ref count was
+                    // never decremented, so it could never reach zero and
+                    // its port would leak forever even after every real fd
+                    // referencing it closed.
+                    crate::net::tcp::tcp_listener_ref_dec(port);
+                }
+                FdKind::TcpConnection(conn_id) => {
+                    let _ = crate::net::tcp::tcp_close(&conn_id);
+                }
                 _ => {}
             }
         }
 
-        // Increment ref counts for the duplicated fd
+        // Increment ref counts for the duplicated fd. TcpListener/
+        // TcpConnection mirror clone_for_fork's arms (this file, above):
+        // the whole ref-counted-fd protocol is "every path that creates a
+        // second FdEntry pointing at the same underlying listener/
+        // connection increments; every path that removes an FdEntry
+        // pointing at it decrements (sys_close, FdTable::drop,
+        // close_cloexec, and this function's own close-old-new_fd arm
+        // above)". #724 review finding M1: this dup2 inc side was missing,
+        // so a dup'd listener could be retired by sys_close's dec while a
+        // surviving fd still held FdKind::TcpListener(port).
         match &fd_entry.kind {
             FdKind::PipeRead(buffer) => buffer.lock().add_reader(),
             FdKind::PipeWrite(buffer) => buffer.lock().add_writer(),
@@ -476,6 +499,12 @@ impl FdTable {
                 if let Some(pair) = crate::tty::pty::get(*pty_num) {
                     pair.slave_open();
                 }
+            }
+            FdKind::TcpConnection(conn_id) => {
+                crate::net::tcp::tcp_add_ref(conn_id);
+            }
+            FdKind::TcpListener(port) => {
+                crate::net::tcp::tcp_listener_ref_inc(*port);
             }
             _ => {}
         }
@@ -511,7 +540,14 @@ impl FdTable {
         // POSIX: dup and F_DUPFD clear FD_CLOEXEC, F_DUPFD_CLOEXEC sets it
         fd_entry.flags = if set_cloexec { flags::FD_CLOEXEC } else { 0 };
 
-        // Increment reference counts for the duplicated fd
+        // Increment reference counts for the duplicated fd. Same protocol as
+        // dup2()'s increment block above and clone_for_fork's arms: every
+        // path that hands out a second FdEntry for the same underlying
+        // listener/connection must increment, so sys_close's decrement
+        // (syscall/pipe.rs) never retires it while a live fd still refers
+        // to it (#724 review finding M1 -- this dup()/F_DUPFD path was
+        // missing the TcpListener/TcpConnection arms other kinds already
+        // had here).
         match &fd_entry.kind {
             FdKind::PipeRead(buffer) => buffer.lock().add_reader(),
             FdKind::PipeWrite(buffer) => buffer.lock().add_writer(),
@@ -537,6 +573,12 @@ impl FdTable {
                 if let Some(pair) = crate::tty::pty::get(*pty_num) {
                     pair.slave_open();
                 }
+            }
+            FdKind::TcpConnection(conn_id) => {
+                crate::net::tcp::tcp_add_ref(conn_id);
+            }
+            FdKind::TcpListener(port) => {
+                crate::net::tcp::tcp_listener_ref_inc(*port);
             }
             _ => {}
         }

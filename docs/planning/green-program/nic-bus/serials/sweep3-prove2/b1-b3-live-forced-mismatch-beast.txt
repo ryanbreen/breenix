@@ -1,0 +1,52 @@
+B1-B3 proof, live leg: gdb_chat.py's resync_symbols() correcting a REAL
+mismatch on a real boot, on beast (breenix-x86 container), at a6679e7c.
+
+The environment (this beast container, this host/QEMU/OVMF combination) has
+been observed to pick 0x10000000000 on every boot sampled by the fix round's
+own live-two-boot-test evidence -- the mismatch case never occurs naturally
+here. Forced it: temporarily set GDBChat.KERNEL_BASE_X86 (the class-level
+initial guess) to 0x8000000000 -- the OTHER value #739's own README cites as
+historically observed elsewhere -- so the guess is deliberately wrong for
+whatever this real boot actually picks, then drove a real GDB session
+end-to-end through the documented interface (no gdb_session.sh fifo -- driven
+directly via GDBChat, matching gdb_chat.py's own documented direct-invocation
+usage, to sidestep unrelated shared-host session flakiness).
+
+Full script: instantiate GDBChat(arch="x86_64"), start(), wrap _send_raw to
+log every raw GDB command issued, run `continue` in a background thread,
+poll real serial output for the bootloader's own `virtual_address_offset:`
+line, SIGINT the real gdb_pid, call resync_symbols() for real (no stubbing),
+and assert on the ACTUAL commands sent.
+
+--- Run output (mode=x86_64, forced-wrong class-level guess) ---
+
+[INFO] Symbol offsets: .text=0xa94f0
+[INFO] Runtime addresses: .text=0x80000a94f0 (base=0x8000000000)
+[INFO] Symbol offsets: .text=0xa94f0
+[INFO] Runtime addresses: .text=0x100000a94f0 (base=0x10000000000)
+offset_line found after poll: INFO : virtual_address_offset: 0x10000000000
+CONTINUE result: {"success": true, "command": "continue", "output": "Continuing.\nProgram received signal SIGINT, Interrupt.\n0x00000100001b0fe0 in ?? ()", ...}
+REAL boot base = 0x10000000000, forced guess = 0x8000000000
+RESYNC RESULT: {"success": true, "resynced": true, "verified": true, "old_base": "0x8000000000", "base": "0x10000000000", "message": "Symbols were loaded at the WRONG base 0x8000000000; corrected to 0x10000000000"}
+GDB COMMANDS SENT DURING RESYNC (post-start): ["continue", "remove-symbol-file -a 0x80000a94f0", "add-symbol-file /root/breenix/target/x86_64-unknown-none/release/deps/artifact/kernel-a7b990755460db32/bin/kernel-a7b990755460db32 0x100000a94f0 -s .rodata 0x10000073700 -s .data 0x100003b9980 -s .bss 0x100003e3d80"]
+REMOVE-SYMBOL-FILE ISSUED: remove-symbol-file -a 0x80000a94f0
+RELOAD ADD-SYMBOL-FILE ISSUED: add-symbol-file /root/breenix/target/x86_64-unknown-none/release/deps/artifact/kernel-a7b990755460db32/bin/kernel-a7b990755460db32 0x100000a94f0 -s .rodata 0x10000073700 -s .data 0x100003b9980 -s .bss 0x100003e3d80
+POST-RESYNC info symbol $pc: {"success": true, "command": "info symbol $pc", "output": "kernel::logger::LogFrameBuffer::write_rendered_char + 62 in section .text of /root/breenix/target/x86_64-unknown-none/release/deps/artifact/kernel-a7b990755460db32/bin/kernel-a7b990755460db32", ...}
+
+CONCLUSION:
+- remove-symbol-file DID actually issue, against the STALE guess-based
+  address (0x80000a94f0 = forced-wrong base 0x8000000000 + .text offset
+  0xa94f0) -- proves B3 (the `_last_symbol_text_addr` guard fires).
+- The RELOAD add-symbol-file used 0x100000a94f0 = the REAL discovered base
+  (0x10000000000, read straight off this boot's own serial line) + the same
+  .text offset -- computed and verified independently, not just pattern-
+  matched -- proves B1 (the reload reads the corrected self.kernel_base_x86
+  instance attribute, not the stale self.KERNEL_BASE_X86 class constant).
+- post-resync `info symbol $pc` resolves to a real kernel function
+  (kernel::logger::LogFrameBuffer::write_rendered_char) instead of "No
+  symbol matches $pc" (the pre-resync state) -- end-to-end correctness, not
+  just the internal command trace.
+
+A companion run (probe.py, same forced-wrong setup, full assertion suite
+including backtrace) independently reached the same "ALL ASSERTIONS PASSED"
+conclusion.

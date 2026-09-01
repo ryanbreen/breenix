@@ -104,6 +104,7 @@ pub const TEST_BINARIES: &[&str] = &[
     // Network tests (depend on virtio-net)
     "udp_socket_test",
     "tcp_socket_test",
+    "tcp_dup_listener_test",
     "dns_test",
     "http_test",
 ];

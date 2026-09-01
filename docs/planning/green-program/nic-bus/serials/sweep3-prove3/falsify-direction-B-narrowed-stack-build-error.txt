@@ -1,0 +1,16 @@
+   Compiling kernel v0.1.0 (/Users/wrb/fun/code/breenix/.claude/worktrees/wf_b1492392-5aa-4/kernel)
+error[E0080]: evaluation panicked: the bottom of the real aarch64 user stack extent (USER_STACK_SIZE) must be accepted
+   --> kernel/src/memory/layout.rs:624:15
+    |
+624 |   const _: () = assert!(
+    |  _______________^
+625 | |     is_valid_user_range(
+626 | |         USER_STACK_REGION_START - USER_STACK_SIZE as u64,
+627 | |         1
+628 | |     ),
+629 | |     "the bottom of the real aarch64 user stack extent (USER_STACK_SIZE) must be accepted"
+630 | | );
+    | |_^ evaluation of `memory::layout::_` failed here
+
+For more information about this error, try `rustc --explain E0080`.
+error: could not compile `kernel` (lib) due to 1 previous error

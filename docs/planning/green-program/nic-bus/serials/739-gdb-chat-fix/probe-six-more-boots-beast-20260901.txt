@@ -1,0 +1,7 @@
+boot1 offset=0x10000000000
+boot2 offset=0x10000000000
+boot3 offset=0x10000000000
+boot4 offset=0x10000000000
+boot5 offset=0x10000000000
+boot6 offset=0x10000000000
+DONE

@@ -1,0 +1,13 @@
+   Compiling kernel v0.1.0 (/Users/wrb/fun/code/breenix/.claude/worktrees/wf_b1492392-5aa-4/kernel)
+error[E0080]: evaluation panicked: kernel heap start must be refused
+   --> kernel/src/memory/layout.rs:541:15
+    |
+541 |   const _: () = assert!(
+    |  _______________^
+542 | |     !is_valid_user_range(crate::memory::heap::HEAP_START, 1),
+543 | |     "kernel heap start must be refused"
+544 | | );
+    | |_^ evaluation of `memory::layout::_` failed here
+
+For more information about this error, try `rustc --explain E0080`.
+error: could not compile `kernel` (lib) due to 1 previous error

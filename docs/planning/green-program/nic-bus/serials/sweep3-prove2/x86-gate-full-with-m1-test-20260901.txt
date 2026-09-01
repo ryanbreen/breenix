@@ -1,0 +1,37 @@
+docker/qemu/run-x86-gate.sh 1 full, beast (breenix-x86), a6679e7c + the M1
+tcp_dup_listener_test wiring (userspace/programs/src/tcp_dup_listener_test.rs,
+Cargo.toml, build.sh, kernel/src/boot/test_list.rs, kernel/src/main.rs).
+
+[gate] repo: /root/breenix  head: a6679e7c
+[gate] accel=kvm cpu=host
+[gate] === Building userspace ELFs ===
+[gate] === Repacking the userspace test disk and the ext2 image ===
+[gate] === Building (release, features=testing,external_test_bins) ===
+[gate] Build clean (0 warnings) in 16s
+[gate] === Running 1 boot test(s), mode=full ===
+STRAND_CENSUS: threads_saved_blocked=0 stranded=0 lines=4939
+x86 userspace gate: PASS - exited=20 expected>=10 nonzero=0 allowlist=0
+  Test 1: PASS
+  Device census: [ INFO] kernel::drivers::pci: PCI: Enumeration complete. Found 9 devices (3 VirtIO block, 1 network)
+GATE: PASS (1/1 boot tests passed; mode=full build=16s boot=150s total=173s)
+
+tcp_dup_listener_test's own serial output (serial_user.log):
+[ INFO] kernel::userspace_test: Loaded 'tcp_dup_listener_test' from test disk (188848 bytes)
+=== TCP Dup'd Listener Survival Test (#724 review M1) ===
+Step 1: bind + listen on port 9110... PASS
+Step 2: dup() the listener fd... PASS
+Step 3: close the ORIGINAL fd (dup'd fd must survive this)...
+Step 4: connect+accept through the SURVIVING dup'd fd...
+  PASS: accepted a connection through the dup'd fd after the original closed
+Step 5: close the last fd; the listener must now actually retire...
+  PASS: port 9110 was free after the last fd closed (listener genuinely retired)
+=== All TCP dup'd-listener tests passed! ===
+TCP_DUP_LISTENER_TEST_PASSED
+
+kernel_kernel.log confirmation:
+[ INFO] kernel::process::manager: Created process tcp_dup_listener_test (PID 10)
+[DEBUG] kernel::task::process_task: Process 10 'tcp_dup_listener_test' (thread 20) exited with code 0
+
+(exited=20, up from the pre-existing baseline of 19 documented in
+fix2-notes.md's own #729/#724 gate run -- the +1 is exactly the new test,
+folded cleanly into the tally with nonzero=0.)
