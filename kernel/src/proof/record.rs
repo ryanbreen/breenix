@@ -7,7 +7,7 @@
 //! ```text
 //! [COREPROOF:RUN:v1:comp=A:phase=close:mut=none:seed=0x...:dcpu=N:iters=N:sites_declared=N:
 //!  sites_visited=N:mode=pen:window=post_cohort:disarmed=0:degraded=0:profile=...:
-//!  smp=N:downgraded=N:violated_predicates=N:cov=name=N,...]
+//!  smp=N:downgraded=N:fire_dropped=N:violated_predicates=N:cov=name=N,...]
 //! [COREPROOF:VIOLATION:v1:comp=A:seed=0x...:iter=N:site=...:action=...:ticks=N:
 //!  order=before:acpu=N:pred=...:detail=N:fired_cpu=N:fired_iter=N]
 //! ```
@@ -126,7 +126,7 @@ pub fn emit_run(
 ) {
     let coverage = super::coverage::counts();
     crate::serial_println!(
-        "[COREPROOF:RUN:v1:comp={}:phase={}:mut={}:seed=0x{:016x}:dcpu={}:iters={}:sites_declared={}:sites_visited={}:mode={}:window={}:disarmed={}:degraded={}:profile={}:smp={}:downgraded={}:violated_predicates={}:cov={}]",
+        "[COREPROOF:RUN:v1:comp={}:phase={}:mut={}:seed=0x{:016x}:dcpu={}:iters={}:sites_declared={}:sites_visited={}:mode={}:window={}:disarmed={}:degraded={}:profile={}:smp={}:downgraded={}:fire_dropped={}:violated_predicates={}:cov={}]",
         component as char,
         phase.name(),
         super::mutations::armed_name(),
@@ -142,6 +142,7 @@ pub fn emit_run(
         profile(),
         smp,
         stimulus::downgraded_count(),
+        super::fire_dropped_count(),
         violated_predicate_count(),
         super::coverage::display_counts(&coverage),
     );

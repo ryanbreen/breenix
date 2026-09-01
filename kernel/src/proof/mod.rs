@@ -183,6 +183,22 @@ static ARMED: [ArmedSlot; crate::arch_impl::aarch64::smp::MAX_CPUS] =
 static LAST_FIRED: [LastFired; crate::arch_impl::aarch64::smp::MAX_CPUS] =
     [const { LastFired::new() }; crate::arch_impl::aarch64::smp::MAX_CPUS];
 static FIRE_SEQ: AtomicU64 = AtomicU64::new(0);
+
+/// The two ways `fire()` can drop a draw instead of applying it — see that function's own
+/// doc. Published in the RUN record next to `downgraded=` (rung 3, `#715` fold-in item Ma):
+/// a fire that never applies anything is a distinct, informative fact from a fire that
+/// applied a downgraded (Masked-inadmissible) action, and Component H's peer-armed
+/// Adversarial traffic re-arms every online peer's slot every cycle regardless of whether
+/// the previous arm was consumed, making this counter more informative here than it would
+/// have been left for a later rung.
+static FIRE_DROPPED_INFLIGHT: AtomicU64 = AtomicU64::new(0);
+static FIRE_DROPPED_TORN: AtomicU64 = AtomicU64::new(0);
+
+/// The total of both `fire()` drop paths. See their own doc comments in `fire()` for what
+/// each one means.
+pub(crate) fn fire_dropped_count() -> u64 {
+    FIRE_DROPPED_INFLIGHT.load(Ordering::Relaxed) + FIRE_DROPPED_TORN.load(Ordering::Relaxed)
+}
 static STARTED: AtomicBool = AtomicBool::new(false);
 
 /// Set when the boot-test cohort has published its verdict.
@@ -308,6 +324,7 @@ fn fire(slot: &ArmedSlot, site: SiteId) {
     if generation_before & 1 != 0 {
         // A write is already in flight; the payload is definitely not stable yet. Don't even
         // start reading it.
+        FIRE_DROPPED_INFLIGHT.fetch_add(1, Ordering::Relaxed);
         return;
     }
     let vector = DrawVector {
@@ -326,6 +343,7 @@ fn fire(slot: &ArmedSlot, site: SiteId) {
     if generation_after != generation_before {
         // A re-arm landed mid-read (torn) or has already fully replaced this arm. Drop rather
         // than risk applying a spliced vector.
+        FIRE_DROPPED_TORN.fetch_add(1, Ordering::Relaxed);
         return;
     }
 
