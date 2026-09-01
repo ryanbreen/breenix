@@ -186,6 +186,7 @@ rm -rf "$OUTPUT_DIR"
 mkdir -p "$OUTPUT_DIR"
 
 if [ "$ARCH" = "aarch64" ]; then
+    PRIMARY_LOG="$OUTPUT_DIR/serial.txt"
     cp "$EXT2_ROOT_DISK" "$OUTPUT_DIR/ext2-root-writable.img"
     cp "$EXT2_HOME_DISK" "$OUTPUT_DIR/ext2-home-writable.img"
     timeout "${AARCH64_BOOT_TIMEOUT:-90}" qemu-system-aarch64 \
@@ -205,6 +206,7 @@ if [ "$ARCH" = "aarch64" ]; then
     QEMU_PID=$!
     LIVENESS_PATTERN='(\[heartbeat\]|\[EXEC_SMOKE:TARGET_OK\]|\[bcheck\] Complete:|\[bwm\] Display:)'
 else
+    PRIMARY_LOG="$OUTPUT_DIR/serial_kernel.txt"
     cp target/ovmf/x64/code.fd "$OUTPUT_DIR/OVMF_CODE.fd"
     cp target/ovmf/x64/vars.fd "$OUTPUT_DIR/OVMF_VARS.fd"
     timeout "${X86_BOOT_TIMEOUT:-1800}" qemu-system-x86_64 \
@@ -227,27 +229,47 @@ else
     LIVENESS_PATTERN='USERSPACE TEST COMPLETE'
 fi
 
+# Position-aware liveness check (review finding B4c): a plain grep over the
+# whole capture for LIVENESS_PATTERN is order-insensitive — heartbeats print
+# early in boot, long before the leg ever runs, so that check could never
+# fail regardless of what happened afterward. LOCKRACE markers and every
+# LIVENESS_PATTERN marker on both arches are emitted through the same kernel
+# log sink (SERIAL2/COM2 -> serial.txt on aarch64, serial_kernel.txt on x86 —
+# log::info! and serial_println! both route there, see kernel/src/serial.rs),
+# so they share one chronological, line-numbered stream: a liveness marker
+# only counts if it appears on a line strictly AFTER the leg's own COMPLETE
+# line in that same file.
+check_live_after_complete() {
+    [ -f "$PRIMARY_LOG" ] || return 1
+    local complete_line
+    complete_line="$(grep -na "\[LOCKRACE:COMPLETE:" "$PRIMARY_LOG" 2>/dev/null | tail -1 | cut -d: -f1)"
+    [ -n "$complete_line" ] || return 1
+    tail -n "+$((complete_line + 1))" "$PRIMARY_LOG" | grep -qaE "$LIVENESS_PATTERN"
+}
+
 # Poll for the leg's terminal marker (or a red signal that fires without it —
 # see the header comment on why COMPLETE alone is not the red/green split)
-# and, on a green run, the boot's own liveness marker after it.
+# and, on a green run, the boot's own liveness marker genuinely after it.
 STALL_SEEN=0
 LOCKUP_SEEN=0
 COMPLETE_SEEN=0
+COMPLETE_AT=0
 LIVE=0
 POLL_BOUND=150
 [ "$ARCH" = "x86" ] && POLL_BOUND="${X86_POLL_BOUND:-1800}"
-for _ in $(seq 1 "$POLL_BOUND"); do
+# Extra ticks given *after* COMPLETE is first seen, to let a genuinely later
+# liveness marker actually print, before the boot is torn down.
+POST_COMPLETE_GRACE=20
+for i in $(seq 1 "$POLL_BOUND"); do
     if grep -qa "EXT2_LOCK_SPIN_STALL" "$OUTPUT_DIR"/serial*.txt 2>/dev/null; then
         STALL_SEEN=1
     fi
     if grep -qaE "soft lockup detected|SOFT LOCKUP DETECTED" "$OUTPUT_DIR"/serial*.txt 2>/dev/null; then
         LOCKUP_SEEN=1
     fi
-    if grep -qa "\[LOCKRACE:COMPLETE:" "$OUTPUT_DIR"/serial*.txt 2>/dev/null; then
+    if [ "$COMPLETE_SEEN" -eq 0 ] && grep -qa "\[LOCKRACE:COMPLETE:" "$OUTPUT_DIR"/serial*.txt 2>/dev/null; then
         COMPLETE_SEEN=1
-    fi
-    if grep -qaE "$LIVENESS_PATTERN" "$OUTPUT_DIR"/serial*.txt 2>/dev/null; then
-        LIVE=1
+        COMPLETE_AT="$i"
     fi
     if grep -qaE "KERNEL PANIC" "$OUTPUT_DIR"/serial*.txt 2>/dev/null; then
         break
@@ -257,8 +279,14 @@ for _ in $(seq 1 "$POLL_BOUND"); do
         # a boot that reaches this state does not reliably recover.
         break
     fi
-    if [ "$COMPLETE_SEEN" -eq 1 ] && [ "$LIVE" -eq 1 ]; then
-        break
+    if [ "$COMPLETE_SEEN" -eq 1 ]; then
+        if check_live_after_complete; then
+            LIVE=1
+            break
+        fi
+        if [ $((i - COMPLETE_AT)) -ge "$POST_COMPLETE_GRACE" ]; then
+            break
+        fi
     fi
     sleep 2
 done
@@ -267,6 +295,12 @@ wait "$QEMU_PID" 2>/dev/null || true
 
 SERIAL_ALL="$OUTPUT_DIR/serial-all.txt"
 cat "$OUTPUT_DIR"/serial*.txt >"$SERIAL_ALL" 2>/dev/null || true
+
+# Authoritative, final position-aware liveness check against the fully
+# flushed log (the polling loop above is only an early-exit optimization).
+if check_live_after_complete; then
+    LIVE=1
+fi
 
 # ---------------------------------------------------------------------------
 # Verdict
@@ -298,12 +332,41 @@ COMPLETE_LINE="$(grep -a "\[LOCKRACE:COMPLETE:" "$SERIAL_ALL" | head -1)"
 LEG_PASS="$(echo "$COMPLETE_LINE" | sed -n 's/.*pass=\([0-9]*\):fail=\([0-9]*\)\].*/\1/p')"
 LEG_FAIL="$(echo "$COMPLETE_LINE" | sed -n 's/.*pass=\([0-9]*\):fail=\([0-9]*\)\].*/\2/p')"
 echo "[gate] $COMPLETE_LINE"
-grep -a "\[LOCKRACE:.*:race:verdict=" "$SERIAL_ALL" | sed 's/^/[gate]   /'
+RACE_VERDICT_LINES="$(grep -a "\[LOCKRACE:.*:race:verdict=" "$SERIAL_ALL" || true)"
+echo "$RACE_VERDICT_LINES" | sed 's/^/[gate]   /'
 
-if [ -z "$LEG_PASS" ] || [ "$LEG_FAIL" != "0" ]; then
-    fail "the leg reported $LEG_FAIL failing filesystem(s) (pass=$LEG_PASS)"
+# B4d: pass=0:fail=0 (nothing raced at all -- e.g. a construction that never
+# reached run_one()) must not read as a pass, so LEG_PASS is floor-checked
+# rather than only requiring LEG_FAIL == 0.
+if [ -z "$LEG_PASS" ] || [ "$LEG_FAIL" != "0" ] || [ "$LEG_PASS" -lt 1 ]; then
+    fail "the leg reported $LEG_FAIL failing filesystem(s) and $LEG_PASS passing (need >=1 pass, 0 fail)"
 fi
-[ "$LIVE" -eq 1 ] || fail "the boot did not reach its liveness marker after the race leg"
 
-echo "ext2 lock-race gate ($ARCH): PASSED - $LEG_PASS filesystem(s) raced clean, kernel live after"
+# B4d ("require a per-race verdict line to exist"): the COMPLETE tally must
+# be backed by exactly that many printed :race:verdict= lines, not merely
+# asserted by the tally itself (run_one() in ext2_lock_race.rs prints
+# exactly one per attempted race, including every failure path -- setup
+# failure included -- so this can only diverge from LEG_PASS+LEG_FAIL if the
+# harness itself regresses).
+RACE_VERDICT_COUNT="$(echo "$RACE_VERDICT_LINES" | grep -c . || true)"
+EXPECTED_VERDICTS=$((LEG_PASS + LEG_FAIL))
+if [ "$RACE_VERDICT_COUNT" -ne "$EXPECTED_VERDICTS" ]; then
+    fail "COMPLETE reported pass=$LEG_PASS:fail=$LEG_FAIL ($EXPECTED_VERDICTS total) but $RACE_VERDICT_COUNT :race:verdict= line(s) were printed"
+fi
+
+# B4b: a green run must prove the fix's new park path was actually entered.
+# ext2_acquire()/ext2_acquire_write() already score a construction that
+# never parked as FAIL (see ext2_lock_race.rs's no-park-observed detail),
+# so LEG_FAIL==0 above already implies this -- this is a second, independent
+# assertion straight off the printed parks= fields, in case that in-kernel
+# classification itself ever regresses.
+TOTAL_PARKS="$(echo "$RACE_VERDICT_LINES" | sed -n 's/.*parks=\([0-9]*\)\].*/\1/p' | awk '{s+=$1} END {print s+0}')"
+if [ "$TOTAL_PARKS" -lt 1 ]; then
+    fail "pass=$LEG_PASS but zero parks were observed across the passing race(s) -- a green that never entered the park path proves nothing (#728 review B4)"
+fi
+echo "[gate] total parks observed: $TOTAL_PARKS"
+
+[ "$LIVE" -eq 1 ] || fail "the boot did not reach a liveness marker on a line after the race leg's own COMPLETE line in $PRIMARY_LOG"
+
+echo "ext2 lock-race gate ($ARCH): PASSED - $LEG_PASS filesystem(s) raced clean ($TOTAL_PARKS total parks), kernel live after"
 exit 0

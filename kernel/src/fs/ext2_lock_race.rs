@@ -174,15 +174,26 @@ where
     }
 }
 
+/// Outcome of a single filesystem's race construction. `Fail` covers every
+/// non-clean outcome: a spin stall, a setup failure, and — see `Fail`'s
+/// `no-park-observed` detail below — a construction that resolved without
+/// ever entering the fix's own park path, which review finding B4 flagged
+/// as indistinguishable from "got lucky" if left unchecked.
+enum RaceOutcome {
+    Pass,
+    Fail,
+}
+
 /// Run the race construction once against one filesystem (root or home).
-/// Returns true if the construction itself completed (holder + every
-/// contender joined) so the driver can distinguish "ran and passed",
-/// "ran and reddened", and "never came back" (the livelock case, where
-/// `kthread_join` on the holder never returns because no CPU is left to
-/// dispatch it — see module docs).
-fn run_one(is_home: bool) {
+/// Always prints exactly one `[LOCKRACE:{label}:race:verdict=...]` line
+/// before returning (review finding B4: "require a per-race verdict line
+/// to exist") and always reflects a non-clean run — including a spawn
+/// failure that never got as far as constructing a race at all — as `Fail`,
+/// never as a silent pass.
+fn run_one(is_home: bool) -> RaceOutcome {
     let label = if is_home { "HOME" } else { "ROOT" };
     let stalls_before = crate::fs::ext2::ext2_lock_spin_stalls();
+    let parks_before = crate::fs::ext2::ext2_lock_parks();
 
     HOLDER_SCRATCH.reset();
 
@@ -197,12 +208,14 @@ fn run_one(is_home: bool) {
 
     let Some(holder) = holder else {
         crate::serial_println!("[LOCKRACE:{}:setup:verdict=FAIL:detail=holder-spawn-failed]", label);
-        return;
+        crate::serial_println!("[LOCKRACE:{}:race:verdict=FAIL:detail=setup-failed]", label);
+        return RaceOutcome::Fail;
     };
 
     sleep_ms(HEAD_START_MS);
 
     let mut contenders = alloc::vec::Vec::with_capacity(CONTENDER_COUNT);
+    let mut setup_failed = false;
     for i in 0..CONTENDER_COUNT {
         // CPU 0 is excluded from pinning: it hosts this driver's own
         // kthread_join polling loop below, and empirically
@@ -233,28 +246,59 @@ fn run_one(is_home: bool) {
                     label,
                     i
                 );
-                return;
+                setup_failed = true;
+                break;
             }
         }
     }
 
-    // Join order does not matter for correctness (every contender and the
-    // holder are independent kthreads); joining contenders first surfaces a
-    // stuck contender without waiting out the holder's own timeout first.
+    // Join whatever was actually spawned either way, so a partial-setup
+    // failure still releases the holder's guard (it parks for at most
+    // HOLD_TIMEOUT_NS regardless) rather than leaking a parked kthread past
+    // this leg's own return — review finding M6 flagged exactly this shape
+    // of teardown hazard for the general case; this driver must not create
+    // an instance of it on its own setup-failure path.
     for c in &contenders {
         let _ = kthread_join(c);
     }
     let _ = kthread_join(&holder);
 
+    if setup_failed {
+        crate::serial_println!("[LOCKRACE:{}:race:verdict=FAIL:detail=setup-failed]", label);
+        return RaceOutcome::Fail;
+    }
+
     let stalls_after = crate::fs::ext2::ext2_lock_spin_stalls();
+    let parks_after = crate::fs::ext2::ext2_lock_parks();
+    let parks = parks_after - parks_before;
+
     if stalls_after > stalls_before {
         crate::serial_println!(
-            "[LOCKRACE:{}:race:verdict=FAIL:detail=spin-stall-observed:stalls={}]",
+            "[LOCKRACE:{}:race:verdict=FAIL:detail=spin-stall-observed:stalls={}:parks={}]",
             label,
-            stalls_after - stalls_before
+            stalls_after - stalls_before,
+            parks
         );
+        RaceOutcome::Fail
+    } else if parks == 0 {
+        // The holder's 3s hold plus the 100ms head start guarantees every
+        // contender's write-side upgrade attempt must wait for the reader
+        // to drain, so a genuine, fixed-code run always parks at least
+        // once. Zero parks means the fix's new code path was never
+        // actually entered — "no stall" alone does not distinguish that
+        // from a real pass (review finding B4).
+        crate::serial_println!(
+            "[LOCKRACE:{}:race:verdict=FAIL:detail=no-park-observed:parks=0]",
+            label
+        );
+        RaceOutcome::Fail
     } else {
-        crate::serial_println!("[LOCKRACE:{}:race:verdict=PASS:detail=no-spin-stall]", label);
+        crate::serial_println!(
+            "[LOCKRACE:{}:race:verdict=PASS:detail=no-spin-stall:parks={}]",
+            label,
+            parks
+        );
+        RaceOutcome::Pass
     }
 }
 
@@ -264,6 +308,7 @@ fn run_one(is_home: bool) {
 pub fn run_ext2_lock_race_leg() {
     if !crate::fs::ext2::is_mounted() {
         crate::serial_println!("[LOCKRACE:ROOT:setup:verdict=FAIL:detail=ext2-not-mounted]");
+        crate::serial_println!("[LOCKRACE:ROOT:race:verdict=FAIL:detail=ext2-not-mounted]");
         crate::serial_println!("[LOCKRACE:COMPLETE:pass=0:fail=1]");
         return;
     }
@@ -271,23 +316,21 @@ pub fn run_ext2_lock_race_leg() {
     let mut pass = 0u32;
     let mut fail = 0u32;
 
-    let before = crate::fs::ext2::ext2_lock_spin_stalls();
-    run_one(false);
-    let after = crate::fs::ext2::ext2_lock_spin_stalls();
-    if after > before {
-        fail += 1;
-    } else {
-        pass += 1;
+    // Every leg is scored solely from run_one()'s own returned outcome —
+    // no separate before/after check is re-derived here, so there is
+    // exactly one place that decides pass/fail and it is the same place
+    // that always prints the matching `:race:verdict=` line (review
+    // finding B4a: a setup failure must count as `fail`, not a silent
+    // pass by virtue of never having reached a stall check).
+    match run_one(false) {
+        RaceOutcome::Pass => pass += 1,
+        RaceOutcome::Fail => fail += 1,
     }
 
     if crate::fs::ext2::is_home_mounted() {
-        let before = crate::fs::ext2::ext2_lock_spin_stalls();
-        run_one(true);
-        let after = crate::fs::ext2::ext2_lock_spin_stalls();
-        if after > before {
-            fail += 1;
-        } else {
-            pass += 1;
+        match run_one(true) {
+            RaceOutcome::Pass => pass += 1,
+            RaceOutcome::Fail => fail += 1,
         }
     } else {
         crate::serial_println!("[LOCKRACE:HOME:setup:verdict=SKIP:detail=home-not-mounted]");
