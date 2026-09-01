@@ -17,7 +17,7 @@ pub use superblock::*;
 
 use crate::block::BlockDevice;
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use spin::RwLock;
 
 /// A mounted ext2 filesystem instance
@@ -1719,6 +1719,37 @@ pub fn ext2_lock_parks() -> u64 {
     EXT2_LOCK_PARKS.load(Ordering::Relaxed)
 }
 
+/// #748: set once the very first successful ext2 lock park has been
+/// observed since boot. Companion to `EXT2_LOCK_PARKS` above, not a
+/// replacement for it — this exists purely so a gate script (or a human
+/// tailing the serial log) can grep for the `EXT2_LOCK_PARK_FIRST` line
+/// `ext2_record_park()` prints below and stop watching the instant it
+/// appears, instead of waiting for `ext2_lock_race`'s own leg to fully
+/// resolve and join. On x86 under #748's pathological in-leg pace that join
+/// can take on the order of hours, even though the underlying park event
+/// this line reports is expected (by the leg's own construction: a 100ms
+/// head start against a 3s hold) to happen within the leg's first second of
+/// real progress.
+static EXT2_LOCK_PARK_FIRST_LOGGED: AtomicBool = AtomicBool::new(false);
+
+/// Record one successful park entry (`EXT2_LOCK_PARKS`), and — the first
+/// time only, across the whole kernel's boot — print a marker line proving
+/// the park path was actually entered at least once. Called from both
+/// `ext2_acquire` and `ext2_acquire_write`'s `Queued` arms instead of a raw
+/// `EXT2_LOCK_PARKS.fetch_add` (`tests/ext2_lock_structure.rs` pins that
+/// routing) so the marker can never be silently reintroduced-missing on one
+/// path while present on the other.
+#[inline]
+fn ext2_record_park(lock_name: &str) {
+    let parks = EXT2_LOCK_PARKS.fetch_add(1, Ordering::Relaxed) + 1;
+    if EXT2_LOCK_PARK_FIRST_LOGGED
+        .compare_exchange(false, true, Ordering::Relaxed, Ordering::Relaxed)
+        .is_ok()
+    {
+        crate::serial_println!("EXT2_LOCK_PARK_FIRST lock={} parks={}", lock_name, parks);
+    }
+}
+
 /// Returns true when it is safe for a contended ext2 lock acquisition to
 /// park instead of spin. See the module docs above for the full rationale;
 /// this mirrors `block_request_gate_can_sleep()`
@@ -1817,8 +1848,12 @@ fn ext2_schedule_current_wait() {
 /// Try the fast (uncontended) path, then park up to `EXT2_LOCK_PARK_ROUNDS`
 /// times when it's safe to, then fall back to the unchanged spin. Shared by
 /// the read and write acquisition paths below via the closures they pass.
+/// `lock_name` is used only for the `ext2_record_park()` marker below (the
+/// same name each caller already passes to its own `ext2_spin_wait*` spin
+/// fallback).
 fn ext2_acquire<T>(
     waiters: &'static crate::task::waitqueue::WaitQueueHead,
+    lock_name: &str,
     mut try_acquire: impl FnMut() -> Option<T>,
     spin_fallback: impl FnOnce() -> T,
 ) -> T {
@@ -1855,7 +1890,7 @@ fn ext2_acquire<T>(
                 crate::task::waitqueue::PrepareOutcome::Mismatch => continue,
                 crate::task::waitqueue::PrepareOutcome::PublishFailed => break,
                 crate::task::waitqueue::PrepareOutcome::Queued => {
-                    EXT2_LOCK_PARKS.fetch_add(1, Ordering::Relaxed);
+                    ext2_record_park(lock_name);
                     ext2_schedule_current_wait();
                     waiters.finish_wait();
                 }
@@ -1881,6 +1916,7 @@ fn ext2_acquire_write(
 ) -> spin::RwLockWriteGuard<'static, Option<Ext2Fs>> {
     let mut upgradeable = ext2_acquire(
         waiters,
+        lock_name,
         || lock.try_upgradeable_read(),
         || ext2_spin_wait(lock_name, || lock.try_upgradeable_read()),
     );
@@ -1932,7 +1968,7 @@ fn ext2_acquire_write(
                 return ext2_spin_wait_upgrade(upgradeable, lock_name);
             }
             crate::task::waitqueue::PrepareOutcome::Queued => {
-                EXT2_LOCK_PARKS.fetch_add(1, Ordering::Relaxed);
+                ext2_record_park(lock_name);
                 ext2_schedule_current_wait();
                 waiters.finish_wait();
             }
@@ -2160,6 +2196,7 @@ pub fn init_root_fs() -> Result<(), &'static str> {
 pub fn root_fs_read() -> Ext2ReadGuard {
     let inner = ext2_acquire(
         &ROOT_EXT2_WAITERS,
+        "ROOT_EXT2_read",
         || ROOT_EXT2.try_read(),
         || ext2_spin_wait("ROOT_EXT2_read", || ROOT_EXT2.try_read()),
     );
@@ -2256,6 +2293,7 @@ pub fn init_home_fs() -> Result<(), &'static str> {
 pub fn home_fs_read() -> Ext2ReadGuard {
     let inner = ext2_acquire(
         &HOME_EXT2_WAITERS,
+        "HOME_EXT2_read",
         || HOME_EXT2.try_read(),
         || ext2_spin_wait("HOME_EXT2_read", || HOME_EXT2.try_read()),
     );

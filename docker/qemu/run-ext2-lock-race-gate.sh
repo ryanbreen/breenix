@@ -114,11 +114,58 @@
 #   docker/qemu/run-ext2-lock-race-gate.sh                # aarch64 (default)
 #   docker/qemu/run-ext2-lock-race-gate.sh --x86           # x86_64 (beast)
 #   docker/qemu/run-ext2-lock-race-gate.sh --no-build       # reuse the built kernel
+#   docker/qemu/run-ext2-lock-race-gate.sh --x86 --park-only  # #748, see below
 #
 # x86's full `testing` profile runs the same ~10+ minute userspace/teardown
 # suite every other x86 boot_tests gate sits behind before reaching this
 # leg's own call site; X86_BOOT_TIMEOUT defaults to 1800s to give it room
 # (X86_POLL_BOUND tracks half of it by default -- see the poll loop).
+#
+# ---------------------------------------------------------------------------
+# --park-only (#748): a second-best oracle when the full leg won't capture
+# ---------------------------------------------------------------------------
+# #748 found the x86 leg's own in-leg pace pathological (~11-12s per printed
+# kernel log line once the holder/contender kthreads are running, ~145-370x
+# slower than the identical boot's own pre-leg pace, measured on a confirmed-
+# quiet host) -- multiple independent x86 attempts at the FULL leg above
+# (COMPLETE + both filesystems' verdicts + post-COMPLETE liveness) have
+# never reached a verdict within any budget tried, on either arch's fixed or
+# reverted-defect code (see #748's own issue body and the header above).
+#
+# `--park-only` does not wait for the full leg. It watches for exactly one
+# fact -- kernel/src/fs/ext2/mod.rs's `EXT2_LOCK_PARK_FIRST` marker, printed
+# by `ext2_record_park()` the instant (not after any timeout elapses) the
+# FIRST contended ext2 acquisition anywhere in this boot is enqueued via
+# `prepare_to_wait_checked`'s `Queued` outcome -- and exits the moment it
+# (or a competing, mutually-exclusive-in-practice signal) appears, without
+# waiting for either race to resolve, both filesystems to be attempted, or
+# the leg's own `kthread_join()`-gated COMPLETE line. This is possible
+# because the marker fires synchronously when the contender is confirmed
+# blocked and successfully enqueued -- not after any of the pathologically
+# stretched per-round deadlines this issue measured -- so on the
+# aarch64 comparison run its own `EXT2_LOCK_PARK_FIRST` line printed within
+# 2 lines of the ROOT race's own PASS verdict, well before the HOME race
+# even started (see #748's fix-notes.md for the full comparison). The
+# marker is a companion to (not a replacement for) `EXT2_LOCK_PARKS`
+# (`ext2_lock_parks()`); ratcheted by `tests/ext2_lock_structure.rs`
+# properties 6 and 9 (per-function routing so neither `ext2_acquire` nor
+# `ext2_acquire_write` can silently lose it).
+#
+# Three distinct, honestly-labeled outcomes (not park-only's own pass/fail
+# collapsed into two):
+#   PARK OBSERVED  -- EXT2_LOCK_PARK_FIRST fired: x86 DOES enter the park
+#                      path in this construction. The positive #728 fact
+#                      this probe exists to obtain.
+#   SPIN, NO PARK  -- EXT2_LOCK_SPIN_STALL (or a soft-lockup) fired before
+#                      any park was recorded: the contender took the spin
+#                      fallback instead of parking -- a real, different,
+#                      also-actionable fact (`ext2_lock_can_sleep()` false
+#                      in this exact call context, or the park path itself
+#                      not being reached), not "the probe failed."
+#   INCONCLUSIVE   -- neither fired within the probe's timeout. This proves
+#                      nothing either way and must never be reported as
+#                      either of the above.
+# Still governed by the same panic/CPU-exception aborts as the full gate.
 
 set -euo pipefail
 set -E
@@ -143,11 +190,13 @@ trap 'report_gate_failure "$LINENO" "$BASH_COMMAND"' ERR
 
 ARCH="aarch64"
 BUILD=1
+PARK_ONLY=0
 while [ $# -gt 0 ]; do
     case "$1" in
         --x86|--x86_64) ARCH="x86"; shift ;;
         --aarch64) ARCH="aarch64"; shift ;;
         --no-build) BUILD=0; shift ;;
+        --park-only) PARK_ONLY=1; shift ;;
         *) echo "unknown argument: $1" >&2; exit 2 ;;
     esac
 done
@@ -307,6 +356,9 @@ LOCKUP_SEEN=0
 COMPLETE_SEEN=0
 COMPLETE_AT=0
 LIVE=0
+# #748 --park-only: set the moment ext2_record_park()'s EXT2_LOCK_PARK_FIRST
+# marker appears anywhere in the capture -- see the header comment above.
+PARK_FIRST_SEEN=0
 POLL_BOUND=150
 # The poll loop sleeps 2s/iteration, so its own worst-case duration is
 # POLL_BOUND*2s. review finding m3: this defaulted to a flat 1800
@@ -329,8 +381,23 @@ for i in $(seq 1 "$POLL_BOUND"); do
         COMPLETE_SEEN=1
         COMPLETE_AT="$i"
     fi
+    if [ "$PARK_FIRST_SEEN" -eq 0 ] && grep -qa "EXT2_LOCK_PARK_FIRST" "$OUTPUT_DIR"/serial*.txt 2>/dev/null; then
+        PARK_FIRST_SEEN=1
+    fi
     if grep -qaE "KERNEL PANIC" "$OUTPUT_DIR"/serial*.txt 2>/dev/null; then
         break
+    fi
+    if [ "$PARK_ONLY" -eq 1 ]; then
+        # #748: don't wait for the full leg at all -- exit the instant any
+        # one of the three mutually-informative facts is captured (see the
+        # header comment's three-outcome list). No liveness grace needed:
+        # this mode's verdict is the marker itself, not a leg completion.
+        if [ "$PARK_FIRST_SEEN" -eq 1 ] || [ "$STALL_SEEN" -eq 1 ] \
+            || [ "$LOCKUP_SEEN" -eq 1 ] || [ "$COMPLETE_SEEN" -eq 1 ]; then
+            break
+        fi
+        sleep 2
+        continue
     fi
     if [ "$STALL_SEEN" -eq 1 ] || [ "$LOCKUP_SEEN" -eq 1 ]; then
         # Red signal fired. No point waiting out the rest of the timeout —
@@ -376,6 +443,35 @@ fi
 if grep -qaE "(DATA_ABORT|INSTRUCTION_ABORT|Unhandled sync exception)" "$SERIAL_ALL"; then
     fail "CPU exception during or after the race leg"
 fi
+
+if [ "$PARK_ONLY" -eq 1 ]; then
+    # #748: report exactly one of the three outcomes the header comment
+    # names, distinctly -- "no observation yet" must never read as either
+    # of the other two, and a spin/lockup without a park is a real,
+    # different fact from park-only's own success case, not a gate FAIL.
+    echo "--- LOCKRACE / park / stall lines ---"
+    grep -a "LOCKRACE\|EXT2_LOCK_PARK_FIRST\|EXT2_LOCK_SPIN_STALL\|soft lockup\|SOFT LOCKUP" "$SERIAL_ALL" || echo "(none)"
+    if [ "$PARK_FIRST_SEEN" -eq 1 ]; then
+        PARK_LINE="$(grep -a "EXT2_LOCK_PARK_FIRST" "$SERIAL_ALL" | head -1)"
+        echo "ext2 lock-race park-probe ($ARCH): PARK OBSERVED - $PARK_LINE"
+        exit 0
+    fi
+    if [ "$STALL_SEEN" -eq 1 ] || [ "$LOCKUP_SEEN" -eq 1 ]; then
+        echo "ext2 lock-race park-probe ($ARCH): SPIN, NO PARK - a contended acquisition spun (or soft-locked-up) before any EXT2_LOCK_PARK_FIRST was observed"
+        exit 1
+    fi
+    if [ "$COMPLETE_SEEN" -eq 1 ]; then
+        # The leg reached COMPLETE without ever recording a park; the
+        # in-kernel no-park-observed=FAIL classification (ext2_lock_race.rs)
+        # already covers this shape from the leg's own side -- report it in
+        # the same SPIN, NO PARK bucket rather than inventing a fourth one.
+        echo "ext2 lock-race park-probe ($ARCH): SPIN, NO PARK - the leg reached COMPLETE without ever recording EXT2_LOCK_PARK_FIRST"
+        exit 1
+    fi
+    echo "ext2 lock-race park-probe ($ARCH): INCONCLUSIVE - no EXT2_LOCK_PARK_FIRST/EXT2_LOCK_SPIN_STALL/soft-lockup/COMPLETE observed within the probe's ${POLL_BOUND}x2s budget -- this proves nothing either way, only that the budget wasn't enough"
+    exit 2
+fi
+
 if [ "$STALL_SEEN" -eq 1 ]; then
     fail "EXT2_LOCK_SPIN_STALL observed — a contended acquisition spun instead of parking (#728 live)"
 fi

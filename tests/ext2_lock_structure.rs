@@ -47,6 +47,17 @@
 //!      x86 thread can only be scheduled away via `can_schedule()`'s
 //!      `preempt_count == 0` clause, which only `schedule_current_wait()`'s
 //!      single `preempt_enable()` can reach from exactly 1.
+//!
+//! Added by the #748 second-best-fix round (x86 oracle pace is
+//! pathological; this gives a park-path fact an early exit, not a
+//! replacement for the full leg -- see `mod.rs`'s `ext2_record_park` doc
+//! comment and `docker/qemu/run-ext2-lock-race-park-probe.sh`):
+//!   9. `ext2_acquire` and `ext2_acquire_write` EACH individually route
+//!      their `Queued` arm through `ext2_record_park` rather than a bare
+//!      `EXT2_LOCK_PARKS.fetch_add` -- mirroring property 6's per-function
+//!      scope, so a future edit cannot silently drop the #748
+//!      `EXT2_LOCK_PARK_FIRST` marker from one park loop while leaving it
+//!      intact in the other.
 
 use std::fs;
 use std::path::PathBuf;
@@ -442,6 +453,32 @@ fn validate_x86_preempt_count_predicate_is_exact_one(fn_body: &str) -> Result<()
     )
 }
 
+/// #748 property 9: a park-capable function must itself call
+/// `ext2_record_park` (not a bare `EXT2_LOCK_PARKS.fetch_add`) in its
+/// `Queued` arm, so the #748 `EXT2_LOCK_PARK_FIRST` marker fires the moment
+/// either acquisition path actually parks. Checked per function (mirrors
+/// property 6's per-function scope via `validate_calls_checked_wait_itself`)
+/// so a future edit that restores a raw counter increment in one function
+/// while leaving the other's `ext2_record_park` call intact cannot silently
+/// drop the marker on a combined-body check.
+fn validate_records_park_itself(body: &str) -> Result<(), String> {
+    let mask = code_mask(body);
+    if identifier_offsets(body, &mask, "ext2_record_park").is_empty() {
+        return Err(
+            "does not itself call ext2_record_park (the #748 first-park marker helper)"
+                .to_string(),
+        );
+    }
+    if !code_offsets(body, &mask, "EXT2_LOCK_PARKS.fetch_add").is_empty() {
+        return Err(
+            "calls EXT2_LOCK_PARKS.fetch_add directly instead of routing through \
+             ext2_record_park -- this would silently drop the #748 EXT2_LOCK_PARK_FIRST marker"
+                .to_string(),
+        );
+    }
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Positive tests — the real source satisfies every property.
 // ---------------------------------------------------------------------------
@@ -531,6 +568,18 @@ fn x86_can_sleep_preempt_count_check_is_exact_one() {
     let source = repo_text("kernel/src/fs/ext2/mod.rs");
     let body = function_body(&source, "ext2_lock_can_sleep");
     validate_x86_preempt_count_predicate_is_exact_one(body).unwrap();
+}
+
+#[test]
+fn ext2_acquire_itself_calls_record_park() {
+    let source = repo_text("kernel/src/fs/ext2/mod.rs");
+    validate_records_park_itself(function_body(&source, "ext2_acquire")).unwrap();
+}
+
+#[test]
+fn ext2_acquire_write_itself_calls_record_park() {
+    let source = repo_text("kernel/src/fs/ext2/mod.rs");
+    validate_records_park_itself(function_body(&source, "ext2_acquire_write")).unwrap();
 }
 
 // ---------------------------------------------------------------------------
@@ -713,4 +762,47 @@ fn ext2_lock_can_sleep() -> bool {
 "#;
     let err = validate_x86_preempt_count_predicate_is_exact_one(mutated).unwrap_err();
     assert!(err.contains("exact"), "unexpected message: {err}");
+}
+
+#[test]
+fn negative_missing_record_park_call_is_rejected() {
+    // The #748 marker helper call deleted entirely -- e.g. a park loop
+    // rewritten to drop straight into schedule_current_wait() without
+    // recording anything.
+    let regressed = "{\n    if let Some(v) = try_acquire() { return v; }\n    spin_fallback()\n}";
+    let err = validate_records_park_itself(regressed).unwrap_err();
+    assert!(
+        err.contains("does not itself call ext2_record_park"),
+        "unexpected message: {err}"
+    );
+}
+
+#[test]
+fn negative_raw_fetch_add_instead_of_record_park_is_rejected() {
+    // The exact #748 regression this property exists to catch: a future
+    // edit reverts to the pre-#748 bare atomic increment, silently losing
+    // the EXT2_LOCK_PARK_FIRST marker while every other #728 property
+    // (checked-wait usage, can-sleep gating, spin fallback) stays intact.
+    let regressed = "{\n    EXT2_LOCK_PARKS.fetch_add(1, Ordering::Relaxed);\n    \
+                      ext2_schedule_current_wait();\n}";
+    let err = validate_records_park_itself(regressed).unwrap_err();
+    assert!(
+        err.contains("does not itself call ext2_record_park"),
+        "unexpected message: {err}"
+    );
+}
+
+#[test]
+fn negative_raw_fetch_add_alongside_record_park_is_rejected() {
+    // A stray direct increment reintroduced alongside the (still-present)
+    // ext2_record_park call would double-count EXT2_LOCK_PARKS -- the
+    // second check exists specifically to catch this even though the first
+    // (missing-call) branch above cannot.
+    let regressed = "{\n    ext2_record_park(lock_name);\n    \
+                      EXT2_LOCK_PARKS.fetch_add(1, Ordering::Relaxed);\n}";
+    let err = validate_records_park_itself(regressed).unwrap_err();
+    assert!(
+        err.contains("instead of routing through ext2_record_park"),
+        "unexpected message: {err}"
+    );
 }
