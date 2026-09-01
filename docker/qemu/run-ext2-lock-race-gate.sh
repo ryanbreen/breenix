@@ -38,18 +38,28 @@
 # ---------------------------------------------------------------------------
 # Anti-vacuity
 # ---------------------------------------------------------------------------
-# The oracle's own red/green split was proven by hand across this fix's three
+# The oracle's own red/green split was proven by hand across this fix's
 # commits, not re-derived by this script every run (a script that reverted
-# kernel source on every invocation would be its own hazard). The record:
+# kernel source on every invocation would be its own hazard). The record, as
+# actually observed (not aspired to) at the time this header was last edited:
 #   - Observer-only commit (spin instrumented, no park path) + this same
 #     harness: EXT2_LOCK_SPIN_STALL fires (x3, aarch64 -smp 4; x1, x86
-#     -smp 1), the kernel's own soft-lockup detector fires, and the boot
-#     never reaches its own liveness markers again -- on BOTH arches, BOTH
-#     filesystems.
-#   - The fix commit + the identical harness: verdict=PASS for both
-#     filesystems, COMPLETE:pass=2:fail=0 (aarch64, both disks attached) /
-#     pass=1:fail=0 (x86's single-disk CI profile, root only), zero stall
+#     -smp 1, both disks attached), the kernel's own soft-lockup detector
+#     fires, and the boot never reaches its own liveness markers again -- on
+#     BOTH arches, BOTH filesystems.
+#   - The fix commit + the identical harness, aarch64: verdict=PASS for both
+#     filesystems, COMPLETE:pass=2:fail=0 (both disks attached), zero stall
 #     markers, and the boot continues live (heartbeats) long after.
+#   - The fix commit + the identical harness, x86: NOT CAPTURED as a
+#     COMPLETE/verdict line. Every GREEN attempt reached the leg (holder +
+#     contender kthreads spawned, actively scheduled back and forth for as
+#     long as observed, zero EXT2_LOCK_SPIN_STALL) but none reached
+#     `[LOCKRACE:COMPLETE:...]` within the time budget spent -- x86's
+#     `testing`-profile boot sits behind a slow pre-existing boot_tests
+#     battery under unaccelerated TCG before the leg's own call site even
+#     runs. This is reported honestly as "x86 RED captured, x86 GREEN not
+#     captured" (see docs/planning/green-program/nic-bus/serials/728-prove/
+#     x86-oracle/), not as a pass record. Do not restate it as one.
 # Reproduce by hand: `git checkout <harness-fix commit> -- kernel/src/fs`
 # reverts only the lock-discipline commit while keeping this same harness,
 # rebuild, rerun this script -- it must redden the same way.
