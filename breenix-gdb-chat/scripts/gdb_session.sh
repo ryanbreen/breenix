@@ -165,10 +165,21 @@ stop_session() {
     # (it previously did exactly that here). Use -f (full command line) for
     # both architectures. This is safe from self-matching gdb_session.sh's own
     # invocation: this script's argv never contains the literal QEMU pattern.
+    #
+    # #739 review finding M5: an unscoped "qemu-system-x86_64" pattern kills
+    # EVERY x86 QEMU on a shared host (beast), including another checkout's
+    # in-flight gate soak -- this project's own triage attributed #725 to
+    # exactly that shape ("a concurrent, unrelated qemu-system-x86_64
+    # process from another checkout"). Scope it the same way the aarch64
+    # branch already is: qemu-uefi.rs only appends "-s -S" to the real
+    # qemu-system-x86_64 argv when BREENIX_GDB=1 (see
+    # src/bin/qemu-uefi.rs's "Enable GDB debugging if BREENIX_GDB=1" block),
+    # so this pattern matches only a live GDB debug session's own QEMU, not
+    # every x86 QEMU on the box.
     if [ "$arch" = "aarch64" ]; then
         pkill -9 -f "qemu-system-aarch64.*-s.*-S" 2>/dev/null || true
     else
-        pkill -9 -f "qemu-system-x86_64" 2>/dev/null || true
+        pkill -9 -f "qemu-system-x86_64.*-s.*-S" 2>/dev/null || true
     fi
     pkill -9 gdb 2>/dev/null || true
 

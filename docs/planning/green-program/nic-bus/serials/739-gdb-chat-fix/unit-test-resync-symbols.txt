@@ -1,12 +1,12 @@
 import sys
-sys.path.insert(0, "/Users/wrb/fun/code/breenix/.claude/worktrees/wf_2a16308d-2ca-6/breenix-gdb-chat/scripts")
+sys.path.insert(0, "/Users/wrb/fun/code/breenix/.claude/worktrees/wf_88b33677-5a6-2/breenix-gdb-chat/scripts")
 import re
 
 # Load gdb_chat.py's GDBChat class without actually starting a GDB/QEMU session.
 import importlib.util
 spec = importlib.util.spec_from_file_location(
     "gdb_chat",
-    "/Users/wrb/fun/code/breenix/.claude/worktrees/wf_2a16308d-2ca-6/breenix-gdb-chat/scripts/gdb_chat.py",
+    "/Users/wrb/fun/code/breenix/.claude/worktrees/wf_88b33677-5a6-2/breenix-gdb-chat/scripts/gdb_chat.py",
 )
 gdb_chat = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(gdb_chat)
@@ -15,7 +15,7 @@ spec.loader.exec_module(gdb_chat)
 # where the bootloader picked 0x8000000000 -- genuinely DIFFERENT from
 # gdb_chat.py's class-level guess (KERNEL_BASE_X86 = 0x10000000000). This is
 # the exact scenario resync_symbols() must correct.
-real_serial_path = "/Users/wrb/fun/code/breenix/.claude/worktrees/wf_2a16308d-2ca-6/docs/planning/green-program/nic-bus/serials/702-rca/anomaly_exited_114/serial_user.log.txt"
+real_serial_path = "/Users/wrb/fun/code/breenix/.claude/worktrees/wf_88b33677-5a6-2/docs/planning/green-program/nic-bus/serials/702-rca/anomaly_exited_114/serial_user.log.txt"
 with open(real_serial_path, encoding="utf-8", errors="replace") as f:
     real_serial = f.read()
 
@@ -23,14 +23,21 @@ assert "virtual_address_offset: 0x8000000000" in real_serial, "fixture does not 
 
 # Build a GDBChat instance WITHOUT starting a session (start() launches
 # QEMU/GDB subprocesses -- we only want to test resync_symbols()'s parsing
-# and comparison logic here, so we construct the object directly and stub
-# out the pieces resync_symbols() touches).
+# and comparison logic, PLUS the real _load_symbols_at_runtime_addr() it
+# calls, here). #739 review finding B2: the previous version of this test
+# stubbed out _load_symbols_at_runtime_addr itself -- the exact function
+# that carried the B1 bug -- so the assertion could not fail even with the
+# bug present. This version stubs only _parse_elf_sections (an ELF-reading
+# leaf that needs no real kernel binary) and lets the real
+# _load_symbols_at_runtime_addr() run, so the emitted "add-symbol-file"
+# command is genuine evidence, not a string manufactured by the stub.
 chat = gdb_chat.GDBChat.__new__(gdb_chat.GDBChat)
 chat.arch = "x86_64"
 chat.kernel_base_x86 = gdb_chat.GDBChat.KERNEL_BASE_X86  # the (wrong, for this boot) guess
 chat.symbols_verified = False
 chat._last_symbol_text_addr = None
 chat.section_addrs = {}
+chat.kernel_binary = "/fake/kernel.elf"  # never touched -- _parse_elf_sections is stubbed
 
 sent_commands = []
 def fake_send_raw(cmd, timeout=30, allow_breakpoint=False):
@@ -40,15 +47,28 @@ def fake_send_raw(cmd, timeout=30, allow_breakpoint=False):
 def fake_get_all_serial_output():
     return real_serial
 
-def fake_load_symbols():
-    # Record that a (re-)load was attempted at the now-corrected base.
-    sent_commands.append(f"__load_symbols_at_base_{hex(chat.kernel_base_x86)}__")
-    return "ok"
+FAKE_SECTIONS = {'.text': 0x1000, '.rodata': 0x2000, '.data': 0x3000, '.bss': 0x4000}
+def fake_parse_elf_sections():
+    return dict(FAKE_SECTIONS)
 
 chat._send_raw = fake_send_raw
 chat.get_all_serial_output = fake_get_all_serial_output
-chat._load_symbols_at_runtime_addr = fake_load_symbols
+chat._parse_elf_sections = fake_parse_elf_sections
+# _load_symbols_at_runtime_addr is NOT stubbed -- this is the function under test.
 
+# Simulate what start() does at connect time: an initial symbol load against
+# the (wrong, for this boot) guessed base.
+chat._load_symbols_at_runtime_addr()
+initial_cmds = list(sent_commands)
+print("initial add-symbol-file command:", initial_cmds)
+assert len(initial_cmds) == 1
+assert "0x10000001000" in initial_cmds[0], f"expected guess-based .text addr 0x10000001000 in {initial_cmds[0]!r}"
+assert chat._last_symbol_text_addr == 0x10000001000, (
+    "B3: _last_symbol_text_addr must be set by _load_symbols_at_runtime_addr "
+    f"so a later resync's remove-symbol-file guard can fire; got {chat._last_symbol_text_addr!r}"
+)
+
+sent_commands.clear()
 old_base = chat.kernel_base_x86
 result = chat.resync_symbols()
 
@@ -62,7 +82,30 @@ assert result["resynced"] is True, "expected a real correction since the boot pi
 assert result["base"] == hex(0x8000000000), f"expected corrected base 0x8000000000, got {result['base']}"
 assert chat.kernel_base_x86 == 0x8000000000, "instance state was not actually corrected"
 assert chat.symbols_verified is True
-assert any("0x8000000000" in c for c in sent_commands), "did not reload symbols at the corrected base"
+
+# B3: the stale (wrong-base) symbol table must be dropped before the
+# corrected one is added.
+assert any(c.startswith("remove-symbol-file") and "0x10000001000" in c for c in sent_commands), (
+    f"expected a remove-symbol-file against the ORIGINAL guess-based address 0x10000001000, got {sent_commands}"
+)
+
+# B1: the RELOAD must use the corrected base (self.kernel_base_x86), not the
+# class-level guess (self.KERNEL_BASE_X86) -- this is the exact bug: the old
+# code read KERNEL_BASE_X86 here, so this next assertion is what would have
+# failed before the fix (it would have found "0x10000001000" again instead).
+add_cmds = [c for c in sent_commands if c.startswith("add-symbol-file")]
+assert len(add_cmds) == 1, f"expected exactly one add-symbol-file reload, got {add_cmds}"
+assert "0x8000001000" in add_cmds[0], (
+    f"reload must use the corrected base (0x8000000000 + .text offset 0x1000 "
+    f"= 0x8000001000), got: {add_cmds[0]!r}"
+)
+assert "0x10000001000" not in add_cmds[0], "reload must NOT still be using the stale guessed base"
+
+# B3 (continued): the reload must also update _last_symbol_text_addr, so a
+# THIRD resync (if the base ever changed again) could clean this one up too.
+assert chat._last_symbol_text_addr == 0x8000001000, (
+    f"expected _last_symbol_text_addr updated to the corrected .text addr, got {chat._last_symbol_text_addr!r}"
+)
 
 # Idempotency: calling again with the same serial content should be a no-op.
 sent_commands.clear()
@@ -72,4 +115,4 @@ assert result2["resynced"] is False
 assert result2["verified"] is True
 assert sent_commands == [], "second call should not re-issue any gdb commands"
 
-print("ALL ASSERTIONS PASSED: resync_symbols() correctly discovers and corrects a wrong guess using real #737 boot data.")
+print("ALL ASSERTIONS PASSED: resync_symbols() correctly discovers and corrects a wrong guess using real #737 boot data, exercising the REAL _load_symbols_at_runtime_addr() (not stubbed).")

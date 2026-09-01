@@ -1,0 +1,65 @@
+#739/#737 review finding M2: binary-identity re-verification (sweep-3 fix round)
+
+Setup on beast (breenix-x86 Incus VM):
+
+$ rm -rf /root/m2-scratch
+$ git clone --no-checkout https://github.com/ryanbreen/breenix.git /root/m2-scratch
+$ cd /root/m2-scratch && git checkout 8b02ea2905020d5af19d0b5794afe082143d3254
+HEAD is now at 8b02ea29 Merge pull request #733 from ryanbreen/docs/tty-blended-amendment
+$ git status --short
+(clean -- no output)
+$ ln -sfn /root/breenix/rust-fork-real /root/m2-scratch/rust-fork
+
+Build (identical command used for the original 150-boot run per
+docs/planning/green-program/nic-bus/serials/702-rca/RCA-2026-08-31.md:35):
+
+$ cargo build --release --features testing,external_test_bins --bin qemu-uefi
+...
+    Finished `release` profile [optimized] target(s) in 2m 55s
+
+Comparison against the previously-cited "original" artifact
+(/root/p702-rca/repo, which review finding M2 established has uncommitted
+local #729/#724 edits present):
+
+$ ls -la \
+    /root/m2-scratch/target/x86_64-unknown-none/release/deps/artifact/kernel-10a65b692264a663/bin/kernel-10a65b692264a663 \
+    /root/p702-rca/repo/target/x86_64-unknown-none/release/deps/artifact/kernel-10a65b692264a663/bin/kernel-10a65b692264a663
+-rwxr-xr-x 1 root root 5319544 Sep  1 06:21 .../m2-scratch/.../kernel-10a65b692264a663
+-rwxr-xr-x 1 root root 5320320 Sep  1 05:40 .../p702-rca/.../kernel-10a65b692264a663
+
+$ sha256sum <both paths>
+e58fbd876d42227c9031178e2d6f17fb3a145a986460ae4f3975f69d4f5c3a75  .../m2-scratch/.../kernel-10a65b692264a663
+e87d4d61148d68f1e11d889cc77e5a43273400575377116a07716acb8e1e263d  .../p702-rca/.../kernel-10a65b692264a663
+
+DIFFERENT sizes, DIFFERENT sha256 -- despite identical Cargo artifact
+directory name (kernel-10a65b692264a663). That directory name is a
+metadata-derived hash (crate id / features / profile / target), not a
+content hash, so identical paths across two builds do NOT imply identical
+bytes. This falsifies the earlier "unchanged since that run" claim for the
+p702-rca copy: it reflects a build made with the dirty #724/#729 tree
+present (or at least a rebuild well after the original 150-boot run, whose
+mtime -- Sep 1 05:40, i.e. today -- is consistent with that).
+
+Re-run the original symbolization against the freshly-built, verifiably
+clean binary instead:
+
+$ addr2line -e /root/m2-scratch/target/x86_64-unknown-none/release/deps/artifact/kernel-10a65b692264a663/bin/kernel-10a65b692264a663 -f -C 0x2e7960
+core::panic::location::Location::file
+kernel.b26cede5b24b6c2b-cgu.13:?
+
+$ objdump -d --start-address=0x2e7900 --stop-address=0x2e79a0 -C <same binary>
+...
+00000000002e7960 <core::panic::location::Location::file>:
+  2e7960: 48 8b 07             mov    (%rdi),%rax
+  2e7963: 48 8b 57 08          mov    0x8(%rdi),%rdx
+  2e7967: 48 ff ca             dec    %rdx
+  2e796a: c3                   ret
+
+Byte-identical disassembly to the original (now-shown-to-be-different)
+p702-rca run. The symbolization result is corroborated non-circularly: an
+independent, verified-clean rebuild at the pinned commit reproduces it.
+
+Conclusion: the previous provenance justification was false as stated, but
+the underlying #737 finding (RIP 0x80002e7960 = first instruction of
+core::panic::location::Location::file, Accessed Address 0x8 means rdi == 8
+exactly) survives an honest, non-circular re-check.

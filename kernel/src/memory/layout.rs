@@ -410,6 +410,126 @@ pub fn is_valid_user_address(addr: u64) -> bool {
     is_user_code_data_address(addr) || is_user_mmap_address(addr) || is_user_stack_address(addr)
 }
 
+/// Check if an address RANGE `[addr, addr+len)` lies entirely within a
+/// single valid userspace region (code/data, mmap, or stack).
+///
+/// This is the range form of [`is_valid_user_address`]. It is what
+/// `copy_from_user`/`copy_string_from_user`
+/// (`kernel/src/syscall/handlers.rs`) use instead of
+/// `syscall::userptr::validate_user_buffer`'s broad canonical-half bound
+/// check: on x86_64 that bound (`[0, 0x0000_8000_0000_0000)`) also contains
+/// the kernel's own mapped PIE image and heap.
+/// `ProcessPageTable::new` (`kernel/src/memory/process_memory.rs`) copies
+/// those PML4 entries into every process's page table -- without
+/// `USER_ACCESSIBLE`, but the kernel itself runs at CPL 0 and does not
+/// consult that bit, so a supervisor-mode read of a kernel-mapped address
+/// still succeeds. A userspace-supplied pointer into either region must
+/// therefore be refused by address CLASS, not merely bounds-checked against
+/// "somewhere in the low canonical half" (#729 review finding B4).
+///
+/// This function is a closed allow-list of the three real user regions, so
+/// it structurally cannot admit a kernel address regardless of where the
+/// per-boot kernel PIE relocation lands (x86_64 has been observed to pick
+/// more than one base across otherwise-identical boots -- see #739 /
+/// `breenix-gdb-chat/scripts/gdb_chat.py`'s `KERNEL_BASE_X86` comment).
+///
+/// A range that spans two regions (e.g. straddling the code/data-to-mmap
+/// gap) is rejected, not merged -- deliberately conservative: no legitimate
+/// single userspace buffer crosses a region boundary.
+///
+/// `len == 0` is always accepted (nothing to validate). The compile-time
+/// assertions below prove this holds for both observed x86_64 kernel PIE
+/// bases, the kernel heap (both arches), and a representative user address,
+/// on every build -- not just at review time.
+#[inline]
+pub const fn is_valid_user_range(addr: u64, len: usize) -> bool {
+    if len == 0 {
+        return true;
+    }
+    let last = match addr.checked_add(len as u64 - 1) {
+        Some(l) => l,
+        None => return false,
+    };
+
+    let in_code_data = addr >= USERSPACE_BASE
+        && addr < USERSPACE_CODE_DATA_END
+        && last >= USERSPACE_BASE
+        && last < USERSPACE_CODE_DATA_END;
+    let in_mmap = addr >= MMAP_REGION_START
+        && addr < MMAP_REGION_END
+        && last >= MMAP_REGION_START
+        && last < MMAP_REGION_END;
+
+    in_code_data || in_mmap || is_valid_user_stack_range(addr, last)
+}
+
+#[cfg(target_arch = "x86_64")]
+#[inline]
+const fn is_valid_user_stack_range(addr: u64, last: u64) -> bool {
+    addr >= USER_STACK_REGION_START
+        && addr < USER_STACK_REGION_END
+        && last >= USER_STACK_REGION_START
+        && last < USER_STACK_REGION_END
+}
+
+// ARM64: stack range form of is_user_stack_address -- see that function's
+// comment for why the valid range extends downward from
+// USER_STACK_REGION_START rather than up from it.
+#[cfg(target_arch = "aarch64")]
+#[inline]
+const fn is_valid_user_stack_range(addr: u64, last: u64) -> bool {
+    const MAX_STACK_REGION_SIZE: u64 = 1024 * 1024; // 1 MB, matches is_user_stack_address
+    let region_bottom = USER_STACK_REGION_START.saturating_sub(MAX_STACK_REGION_SIZE);
+    addr >= region_bottom
+        && addr < USER_STACK_REGION_START
+        && last >= region_bottom
+        && last < USER_STACK_REGION_START
+}
+
+// === B4 (#729 review) compile-time proof ===
+//
+// Proves -- on every build, both architectures, not just at review time --
+// that `is_valid_user_range` refuses kernel-mapped addresses and accepts a
+// real user address. This is the exact function `copy_from_user` and
+// `copy_string_from_user` call, so this is a proof about the shipped path,
+// not a standalone unit test of the predicate in isolation.
+//
+// x86_64: kernel PIE image. `ProcessPageTable::new` copies PML4[1]
+// (0x0000_0080_0000_0000) and PML4[2] (0x0000_0100_0000_0000) -- the two
+// bases the kernel PIE relocation has been observed to pick across
+// otherwise-identical boots (#739) -- into every process page table.
+#[cfg(target_arch = "x86_64")]
+const _: () = assert!(
+    !is_valid_user_range(0x0000_0080_0000_0000, 1),
+    "x86_64 kernel PIE candidate base 0x8000000000 (PML4[1]) must be refused"
+);
+#[cfg(target_arch = "x86_64")]
+const _: () = assert!(
+    !is_valid_user_range(0x0000_0100_0000_0000, 1),
+    "x86_64 kernel PIE candidate base 0x10000000000 (PML4[2]) must be refused"
+);
+
+// Both arches: kernel heap start must never validate as a user address.
+// (On aarch64 the heap lives in the TTBR1-only region and a userspace
+// pointer can never reach it through TTBR0 at all; this assertion still
+// documents and locks the invariant at the shared-predicate level.)
+const _: () = assert!(
+    !is_valid_user_range(crate::memory::heap::HEAP_START, 1),
+    "kernel heap start must be refused"
+);
+
+// A representative address inside the userspace code/data region -- where
+// a process's brk-extended heap actually lives (sys_brk caps growth at
+// USERSPACE_CODE_DATA_END, see kernel/src/syscall/memory.rs) -- must be
+// accepted. This is the address class #729 was actually concerned about;
+// M4's review finding confirmed it was already covered by the pre-existing
+// per-byte `is_valid_user_address`, so no new heap-specific arm was needed
+// here, only restoring a closed allow-list instead of a broad bound.
+const _: () = assert!(
+    is_valid_user_range(USERSPACE_BASE + 0x10_0000, 4096),
+    "an address inside the userspace code/data (brk-heap) region must be accepted"
+);
+
 // === Compile-time Layout Assertions ===
 
 /// Verify that user regions don't overlap

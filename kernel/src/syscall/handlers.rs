@@ -50,12 +50,22 @@ fn copy_from_user(user_ptr: u64, len: usize) -> Result<Vec<u8>, &'static str> {
         return Err("null pointer");
     }
 
-    // Validate the entire buffer is within the broad userspace address range.
-    // We use the same range check as userptr::validate_user_buffer rather than
-    // is_valid_user_address(), because the latter only checks specific sub-regions
-    // (code/data, mmap, stack) and misses valid addresses like heap allocations
-    // that may extend beyond the code/data region.
-    if super::userptr::validate_user_buffer(user_ptr as *const u8, len).is_err() {
+    // Validate the whole [user_ptr, user_ptr+len) range against the closed
+    // allow-list of legitimate userspace regions (code/data, mmap, stack) --
+    // see memory::layout::is_valid_user_range's doc comment for the full
+    // rationale. We deliberately do NOT use
+    // userptr::validate_user_buffer's broad canonical-half bound check here:
+    // on x86_64 that bound also contains the kernel's own mapped PIE image
+    // and heap, which ProcessPageTable::new copies (without USER_ACCESSIBLE)
+    // into every process's page table -- a userspace pointer into either
+    // region still translates and is still readable by this kernel-mode
+    // code, turning this function into a kernel-memory read primitive
+    // (#729 review finding B4). The earlier comment here justified the
+    // broad check as covering heap-allocated addresses is_valid_user_address
+    // misses; that premise did not hold (#729 review finding M4): a
+    // process's brk-extended heap stays under USERSPACE_CODE_DATA_END and
+    // was already covered by the code/data region.
+    if !crate::memory::layout::is_valid_user_range(user_ptr, len) {
         return Err("invalid userspace address");
     }
 
@@ -75,16 +85,23 @@ fn copy_string_from_user(user_ptr: u64, max_len: usize) -> Result<Vec<u8>, &'sta
         return Err("null pointer");
     }
 
-    // Validate the worst-case [user_ptr, user_ptr + max_len) range up front,
-    // using the same broad range check copy_from_user() uses (see its comment
-    // above) rather than is_valid_user_address(). is_valid_user_address() only
-    // covers specific sub-regions (code/data, mmap, stack) and misses valid
-    // heap-allocated addresses -- exactly the shape a shell building argv on
-    // its own heap would hit (#729). The actual string may be shorter than
-    // max_len (we stop at the first NUL byte below); validating the full
-    // worst-case length up front is still correct since it only widens what's
-    // accepted before the byte-by-byte mapped-page check runs.
-    if super::userptr::validate_user_buffer(user_ptr as *const u8, max_len).is_err() {
+    // Validate the worst-case [user_ptr, user_ptr + max_len) range up front
+    // against the closed allow-list of legitimate userspace regions
+    // (code/data, mmap, stack) -- see copy_from_user's comment above and
+    // memory::layout::is_valid_user_range's doc comment for the full
+    // rationale. This function used to make this same check with
+    // userptr::validate_user_buffer's broad canonical-half bound, which also
+    // admits the kernel's own mapped PIE image and heap on x86_64 --
+    // #729 review finding B4 confirmed this was a live, userspace-reachable
+    // kernel-memory disclosure through sys_spawn's argv, not merely a
+    // theoretical widening. #729's original heap-address concern does not
+    // require a separate arm here: a process's brk-extended heap stays under
+    // USERSPACE_CODE_DATA_END and is already covered by the code/data
+    // region (#729 review finding M4). The actual string may be shorter
+    // than max_len (we stop at the first NUL byte below); validating the
+    // full worst-case length up front is still correct because a shorter
+    // valid string is always a subset of an accepted range.
+    if !crate::memory::layout::is_valid_user_range(user_ptr, max_len) {
         return Err("invalid userspace address");
     }
 
@@ -125,8 +142,18 @@ pub fn copy_to_user(user_ptr: u64, kernel_ptr: u64, len: usize) -> Result<(), &'
         return Err("null pointer");
     }
 
-    // Validate the entire buffer is within the broad userspace address range
-    if super::userptr::validate_user_buffer(user_ptr as *const u8, len).is_err() {
+    // Validate the whole [user_ptr, user_ptr+len) range against the closed
+    // allow-list of legitimate userspace regions -- see copy_from_user's
+    // comment above and memory::layout::is_valid_user_range's doc comment
+    // for the full rationale. copy_to_user WRITES kernel-supplied bytes to
+    // user_ptr, so the broad canonical-half bound this used to check with
+    // (userptr::validate_user_buffer) was not just a kernel-memory read
+    // primitive like copy_from_user's (#729 review finding B4) but a kernel-
+    // memory WRITE / corruption primitive: any syscall that copies a result
+    // buffer back to a caller-supplied pointer (e.g. read()) would happily
+    // write into the kernel's own mapped PIE image or heap if the caller
+    // named an address there.
+    if !crate::memory::layout::is_valid_user_range(user_ptr, len) {
         log::error!("copy_to_user: Invalid userspace address {:#x}", user_ptr);
         return Err("invalid userspace address");
     }

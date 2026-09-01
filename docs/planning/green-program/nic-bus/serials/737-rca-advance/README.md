@@ -20,13 +20,32 @@ ELF-relative address: `0x80002e7960 - 0x8000000000 = 0x2e7960`.
 addr2line -e <kernel ELF for main@8b02ea29> -f -C 0x2e7960
 objdump -d --start-address=0x2e7900 --stop-address=0x2e79a0 -C <same ELF>
 ```
-run against `kernel-10a65b692264a663`, the exact release artifact still
-present on beast (`/root/p702-rca/repo/target/x86_64-unknown-none/release/deps/artifact/kernel-10a65b692264a663/`)
-from the original #702-hunt/#737 150-boot run -- confirmed still built at
-`main`@`8b02ea29` (unchanged since that run; `kernel/src/net/tcp.rs`,
-`kernel/src/net/mod.rs`, and `kernel/src/interrupts.rs` have zero commits
-between `8b02ea29` and this sweep's `main` tip, so this is the same binary
-the original 150-boot loop ran, not a re-derived approximation).
+originally run against `kernel-10a65b692264a663` at
+`/root/p702-rca/repo/target/x86_64-unknown-none/release/deps/artifact/kernel-10a65b692264a663/`
+on beast, under the claim that it was "the exact release artifact ... from
+the original #702-hunt/#737 150-boot run, unchanged since that run."
+
+**That claim was checked in the sweep-3 fix round and found FALSE** (review
+finding M2): `/root/p702-rca/repo` had uncommitted local edits to
+`kernel/src/syscall/handlers.rs` and `kernel/src/syscall/pipe.rs` (the
+#729/#724 working changes) at the time, and a byte comparison against an
+independently fresh, verified-clean clone checked out at exactly
+`8b02ea2905020d5af19d0b5794afe082143d3254` and built with the identical
+command showed the two binaries **differ** (5,320,320 vs 5,319,544 bytes,
+different SHA-256) despite landing at the same Cargo artifact path -- that
+path is a metadata hash (crate/features/profile), not a content hash, so an
+identical path does not imply identical bytes. The `p702-rca` binary was a
+later rebuild with local working-tree changes present, not the untouched
+150-boot-run artifact.
+
+**The real check, done in the same fix round:** `addr2line`/`objdump` for
+`0x2e7960` were re-run against the fresh, verified-clean `8b02ea29` rebuild.
+The result is byte-identical to what's recorded below -- `0x2e7960` still
+resolves to `core::panic::location::Location::file`, same disassembly. This
+is genuine, non-circular corroboration (an independently clean rebuild at
+the pinned commit reproduces the same symbolization) and supersedes the
+earlier same-binary claim; the mechanism conclusion below still holds, now
+on solid ground. See the correction comment posted on issue #737.
 
 ## Result
 
@@ -37,3 +56,22 @@ would fault reading offset `+0`, i.e. `Accessed Address: 0x0`). See the
 issue comment for the full mechanism writeup and what remains unproven
 (the originating call site, which needs a live GDB catch with GPR/stack
 access that a static serial log cannot provide).
+
+### Two facts the mechanism write-up omitted (review finding M3)
+
+From the same `anomaly_exited_114/serial_kernel.log.txt`:
+
+- The faulting frame's saved flags: `cpu_flags: RFlags(RESUME_FLAG |
+  DIRECTION_FLAG | SIGN_FLAG | 0x2)`. `DIRECTION_FLAG` (DF) is set. SysV
+  requires DF clear at call boundaries, so ordinary Rust/LLVM-generated code
+  (including an uncaught `#[track_caller]` panic's own formatting) does not
+  produce a call with DF set -- at least as consistent with a corrupted or
+  foreign execution context (this project's own #635-family shape) as with
+  the mechanism above. `RESUME_FLAG` set is normal for a fault's saved
+  EFLAGS; DF is not.
+- 40 lines earlier in the same boot: `[ WARN] kernel::interrupts: UNHANDLED
+  INTERRUPT from RIP 0x800031c75d`, with a full `InterruptStackFrame` dump,
+  not yet correlated with the later fault.
+
+Neither changes the disposition (narrowed, not proven) but both should be
+in scope for the next GDB hunt.

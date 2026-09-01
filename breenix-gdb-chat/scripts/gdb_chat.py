@@ -303,23 +303,39 @@ class GDBChat:
 
         self.section_addrs = sections
 
-        # Calculate runtime addresses: kernel_base + elf_section_addr
-        text_addr = self.KERNEL_BASE_X86 + sections['.text']
+        # Calculate runtime addresses using the CURRENT best-known base
+        # (self.kernel_base_x86), not the class-level initial guess
+        # (self.KERNEL_BASE_X86). resync_symbols() corrects
+        # self.kernel_base_x86 from the bootloader's own
+        # "virtual_address_offset:" serial line and then calls back into
+        # this method to reload symbols at the corrected address -- reading
+        # the class constant here instead of the instance attribute is
+        # exactly the bug #739 was supposed to fix (the reload silently kept
+        # using the original guess). See #739 review finding B1.
+        text_addr = self.kernel_base_x86 + sections['.text']
 
         cmd = f"add-symbol-file {self.kernel_binary} {hex(text_addr)}"
 
         # Add other sections if available
         for name in ['.rodata', '.data', '.bss']:
             if name in sections:
-                runtime_addr = self.KERNEL_BASE_X86 + sections[name]
+                runtime_addr = self.kernel_base_x86 + sections[name]
                 cmd += f" -s {name} {hex(runtime_addr)}"
 
         # Execute the command
         output = self._send_raw(cmd)
 
+        # Record the .text address we just told GDB about so a later
+        # resync_symbols() call can issue "remove-symbol-file" against it
+        # before adding the corrected table -- otherwise GDB carries both
+        # tables and ambiguous-symbol lookups can resolve to the stale one
+        # (#739 review finding B3; this was previously never assigned, so
+        # the guard in resync_symbols() never fired).
+        self._last_symbol_text_addr = text_addr
+
         # Log what we did
         sys.stderr.write(f"[INFO] Symbol offsets: .text={hex(sections.get('.text', 0))}\n")
-        sys.stderr.write(f"[INFO] Runtime addresses: .text={hex(text_addr)}\n")
+        sys.stderr.write(f"[INFO] Runtime addresses: .text={hex(text_addr)} (base={hex(self.kernel_base_x86)})\n")
 
         return output
 
@@ -791,7 +807,10 @@ def main():
             if cmd.lower() == "resync-symbols":
                 # Re-anchor x86_64 symbol table to the bootloader's real
                 # per-boot load offset (see #739 -- KERNEL_BASE_X86 is only
-                # a guess, and is wrong on roughly half of boots).
+                # a guess, and varies boot-to-boot; the only base ever
+                # observed to differ from the guess so far is
+                # 0x8000000000, in 1 of 9 sampled boots -- always call
+                # resync-symbols rather than assuming a particular rate).
                 result = chat.resync_symbols()
                 result["command"] = "resync-symbols"
                 print(json.dumps(result))
