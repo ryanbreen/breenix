@@ -17,6 +17,7 @@ pub use superblock::*;
 
 use crate::block::BlockDevice;
 use alloc::vec::Vec;
+use core::sync::atomic::{AtomicU64, Ordering};
 use spin::RwLock;
 
 /// A mounted ext2 filesystem instance
@@ -1461,6 +1462,146 @@ impl Ext2Fs {
     }
 }
 
+// =============================================================================
+// #728 — ext2 lock-discipline observability
+// =============================================================================
+//
+// `ROOT_EXT2`/`HOME_EXT2` are `spin::RwLock`s whose contended acquisition
+// busy-spins with no `try_*`-then-park fallback (spin 0.9.8's default relax
+// strategy is a hardware pause, never an OS yield or park). Every syscall
+// dispatch that can contend these locks runs with `preempt_count() > 0`,
+// which is the same counter the timer interrupt's own preemption decision
+// gates on (`can_schedule() == (preempt_count() == 0)`). So the moment a
+// contended acquisition's own holder is genuinely parked for block-device
+// I/O completion (see `Completion::wait_timeout_uninterruptible`,
+// `task/completion.rs`) while still holding the guard, a spinning contender
+// is, for the duration of its spin, structurally exempt from the mechanism
+// that would otherwise let the timer ISR preempt it and let the actual
+// holder's completion get dispatched. See #728 for the full analysis.
+//
+// `ext2_spin_wait`/`ext2_spin_wait_write` below make that spin *observable*
+// without changing its behavior: they still busy-spin forever with no yield
+// and no park when contended — the same defect, just no longer silent. A
+// spin that crosses `EXT2_SPIN_STALL_THRESHOLD_NS` prints one
+// `EXT2_LOCK_SPIN_STALL` line (once per stall episode) and increments
+// `EXT2_LOCK_SPIN_STALLS`, so a gate script can detect the livelock without
+// a userspace watchdog — during the pathological case in question nothing
+// userspace can run at all, so the spinner has to be its own observer (see
+// `kernel::fs::ext2_lock_race` for the in-kernel repro leg that exercises
+// this).
+
+/// Wall-clock threshold (monotonic ns) past which a contended ext2 lock
+/// acquisition is reported as stalled. Ordinary contention resolves in well
+/// under a millisecond (either the fast `try_*` path succeeds immediately,
+/// or a genuine holder releases quickly); a spin still running half a second
+/// later is not "briefly contended," it is the #728 livelock shape.
+const EXT2_SPIN_STALL_THRESHOLD_NS: u64 = 500_000_000;
+
+/// Check the clock every 65536 spin iterations rather than every iteration,
+/// so the observability itself never becomes the bottleneck it's measuring.
+const EXT2_SPIN_POLL_MASK: u32 = 0xFFFF;
+
+/// Running count of observed acquisition stalls (test/gate use). Read via
+/// `ext2_lock_spin_stalls()`.
+static EXT2_LOCK_SPIN_STALLS: AtomicU64 = AtomicU64::new(0);
+
+/// Read the running count of #728 spin-stall episodes observed since boot.
+///
+/// Used by the `ext2_lock_race` repro leg and its gate script: on unfixed
+/// (spin-only) lock code this reliably increments under a forced read/write
+/// collision; on fixed code the same collision resolves by parking instead,
+/// so the counter should stay flat.
+pub fn ext2_lock_spin_stalls() -> u64 {
+    EXT2_LOCK_SPIN_STALLS.load(Ordering::Relaxed)
+}
+
+#[inline]
+fn ext2_now_ns() -> u64 {
+    let (secs, nanos) = crate::time::get_monotonic_time_ns();
+    secs as u64 * 1_000_000_000 + nanos as u64
+}
+
+/// Per-acquisition-attempt stall tracker shared by the read and write spin
+/// loops below. Reports at most once per loop (`ext2_spin_wait`/
+/// `ext2_spin_wait_write` each construct a fresh tracker per call).
+struct Ext2SpinStallTracker {
+    start_ns: u64,
+    iterations: u32,
+    reported: bool,
+}
+
+impl Ext2SpinStallTracker {
+    fn new() -> Self {
+        Self {
+            start_ns: ext2_now_ns(),
+            iterations: 0,
+            reported: false,
+        }
+    }
+
+    /// Call once per spin iteration. No-op after the first report, and cheap
+    /// (no clock read) on all but 1-in-65536 iterations.
+    fn tick(&mut self, lock_name: &str) {
+        if self.reported {
+            return;
+        }
+        self.iterations = self.iterations.wrapping_add(1);
+        if self.iterations & EXT2_SPIN_POLL_MASK != 0 {
+            return;
+        }
+        let elapsed = ext2_now_ns().saturating_sub(self.start_ns);
+        if elapsed > EXT2_SPIN_STALL_THRESHOLD_NS {
+            self.reported = true;
+            EXT2_LOCK_SPIN_STALLS.fetch_add(1, Ordering::Relaxed);
+            crate::serial_println!(
+                "EXT2_LOCK_SPIN_STALL lock={} elapsed_ns={}",
+                lock_name,
+                elapsed
+            );
+        }
+    }
+}
+
+/// Busy-spin until `try_acquire` succeeds. Behaviorally identical to calling
+/// `spin::RwLock`'s own blocking `.read()` — no yield, no park — except that
+/// a spin exceeding `EXT2_SPIN_STALL_THRESHOLD_NS` is reported once so the
+/// condition is gate-visible. This is the fallback path both before and
+/// after the #728 fix: pre-fix it is the *only* path (this function's
+/// behavior on unfixed code, unchanged from the plain spin), post-fix it is
+/// reached only when parking is unsafe (`ext2_lock_can_sleep()` false) or
+/// after a bounded number of park rounds made no progress.
+fn ext2_spin_wait<T>(lock_name: &str, mut try_acquire: impl FnMut() -> Option<T>) -> T {
+    let mut tracker = Ext2SpinStallTracker::new();
+    loop {
+        if let Some(v) = try_acquire() {
+            return v;
+        }
+        tracker.tick(lock_name);
+        core::hint::spin_loop();
+    }
+}
+
+/// Busy-spin to acquire the write (upgraded) guard: first the upgradeable
+/// slot, then the upgrade itself. Two phases because `spin::RwLock` only
+/// allows one upgradeable-read guard at a time, and `try_upgrade()` returns
+/// the guard back on failure (`Err(Self)`) rather than losing the slot.
+/// Same behavioral contract as `ext2_spin_wait`: unchanged spin, now observed.
+fn ext2_spin_wait_write(
+    lock: &'static RwLock<Option<Ext2Fs>>,
+    lock_name: &str,
+) -> spin::RwLockWriteGuard<'static, Option<Ext2Fs>> {
+    let mut upgradeable = ext2_spin_wait(lock_name, || lock.try_upgradeable_read());
+    let mut tracker = Ext2SpinStallTracker::new();
+    loop {
+        match upgradeable.try_upgrade() {
+            Ok(write_guard) => return write_guard,
+            Err(back) => upgradeable = back,
+        }
+        tracker.tick(lock_name);
+        core::hint::spin_loop();
+    }
+}
+
 /// Global mounted ext2 root filesystem
 ///
 /// Uses RwLock to allow concurrent read access (exec, file reads, getdents)
@@ -1571,7 +1712,7 @@ pub fn init_root_fs() -> Result<(), &'static str> {
 /// Multiple readers can hold this lock concurrently, allowing parallel
 /// exec, file reads, getdents, and stat operations without contention.
 pub fn root_fs_read() -> spin::RwLockReadGuard<'static, Option<Ext2Fs>> {
-    ROOT_EXT2.read()
+    ext2_spin_wait("ROOT_EXT2_read", || ROOT_EXT2.try_read())
 }
 
 /// Access the root ext2 filesystem for write operations
@@ -1586,7 +1727,7 @@ pub fn root_fs_read() -> spin::RwLockReadGuard<'static, Option<Ext2Fs>> {
 /// the UPGRADED bit, which causes try_read() to reject new readers. The writer
 /// then only waits for existing readers to drain, guaranteeing forward progress.
 pub fn root_fs_write() -> spin::RwLockWriteGuard<'static, Option<Ext2Fs>> {
-    ROOT_EXT2.upgradeable_read().upgrade()
+    ext2_spin_wait_write(&ROOT_EXT2, "ROOT_EXT2_write")
 }
 
 /// Check if the root filesystem is mounted
@@ -1643,14 +1784,14 @@ pub fn init_home_fs() -> Result<(), &'static str> {
 
 /// Access the home ext2 filesystem for read-only operations
 pub fn home_fs_read() -> spin::RwLockReadGuard<'static, Option<Ext2Fs>> {
-    HOME_EXT2.read()
+    ext2_spin_wait("HOME_EXT2_read", || HOME_EXT2.try_read())
 }
 
 /// Access the home ext2 filesystem for write operations
 ///
 /// Uses upgradeable_read() + upgrade() to prevent writer starvation (same as root_fs_write).
 pub fn home_fs_write() -> spin::RwLockWriteGuard<'static, Option<Ext2Fs>> {
-    HOME_EXT2.upgradeable_read().upgrade()
+    ext2_spin_wait_write(&HOME_EXT2, "HOME_EXT2_write")
 }
 
 /// Check if the home filesystem is mounted
