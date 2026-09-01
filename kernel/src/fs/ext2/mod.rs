@@ -1924,7 +1924,20 @@ impl core::ops::Deref for Ext2ReadGuard {
 impl Drop for Ext2ReadGuard {
     fn drop(&mut self) {
         self.inner = None;
-        self.waiters.wake_up();
+        // A dropped *read* guard only ever unblocks the single upgradeable
+        // holder waiting on `try_upgrade()` (releasing a reader never
+        // admits another reader -- spin's RwLock never blocks reader vs.
+        // reader), so at most one waiter can actually make progress from
+        // this event. wake_up_one() avoids taking the waitqueue mutex and
+        // waking every queued waiter (thundering herd) on every ordinary,
+        // uncontended read-guard drop; has_waiters() skips the lock
+        // entirely in the common uncontended case. If the queue is shared
+        // with waiters this release doesn't concern, they still get woken
+        // by their own bounded per-round timeout (C6) -- this is a wake-
+        // efficiency choice, not a correctness one (review finding m1).
+        if self.waiters.has_waiters() {
+            self.waiters.wake_up_one();
+        }
     }
 }
 
@@ -1954,7 +1967,15 @@ impl core::ops::DerefMut for Ext2WriteGuard {
 impl Drop for Ext2WriteGuard {
     fn drop(&mut self) {
         self.inner = None;
-        self.waiters.wake_up();
+        // Unlike a read-guard drop, releasing the write/upgradeable slot
+        // can unblock several distinct waiter kinds at once (every queued
+        // try_read(), plus the next try_upgradeable_read()), so this side
+        // keeps the full broadcast wake_up() -- only the has_waiters()
+        // fast path is worth adding, to skip the waitqueue mutex entirely
+        // on the common uncontended drop.
+        if self.waiters.has_waiters() {
+            self.waiters.wake_up();
+        }
     }
 }
 

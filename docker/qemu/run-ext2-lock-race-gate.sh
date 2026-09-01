@@ -73,7 +73,8 @@
 #
 # x86's full `testing` profile runs the same ~10+ minute userspace/teardown
 # suite every other x86 boot_tests gate sits behind before reaching this
-# leg's own call site; X86_POLL_BOUND defaults to 1800s to give it room.
+# leg's own call site; X86_BOOT_TIMEOUT defaults to 1800s to give it room
+# (X86_POLL_BOUND tracks half of it by default -- see the poll loop).
 
 set -euo pipefail
 set -E
@@ -256,7 +257,13 @@ COMPLETE_SEEN=0
 COMPLETE_AT=0
 LIVE=0
 POLL_BOUND=150
-[ "$ARCH" = "x86" ] && POLL_BOUND="${X86_POLL_BOUND:-1800}"
+# The poll loop sleeps 2s/iteration, so its own worst-case duration is
+# POLL_BOUND*2s. review finding m3: this defaulted to a flat 1800
+# independent of X86_BOOT_TIMEOUT, so it could poll for up to an hour after
+# `timeout` had already killed the QEMU process at the 1800s default --
+# derive the default from the same timeout instead, so the loop cannot
+# meaningfully outlive the process it is polling.
+[ "$ARCH" = "x86" ] && POLL_BOUND="${X86_POLL_BOUND:-$(( ${X86_BOOT_TIMEOUT:-1800} / 2 ))}"
 # Extra ticks given *after* COMPLETE is first seen, to let a genuinely later
 # liveness marker actually print, before the boot is torn down.
 POST_COMPLETE_GRACE=20

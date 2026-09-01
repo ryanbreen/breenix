@@ -297,10 +297,14 @@ fn validate_release_before_wake(drop_body: &str) -> Result<(), String> {
         .into_iter()
         .next()
         .ok_or_else(|| "missing `self.inner = None` release in Drop".to_string())?;
-    let wake = identifier_offsets(drop_body, &mask, "wake_up")
+    // A substring match on "wake_up" (not an identifier-bounded match) so
+    // this covers both the broadcast wake_up() and the single-waiter
+    // wake_up_one() the read side uses (review finding m1) -- either call
+    // is a real wake, and both must come after the release.
+    let wake = code_offsets(drop_body, &mask, "wake_up")
         .into_iter()
         .next()
-        .ok_or_else(|| "missing a wake_up() call in Drop".to_string())?;
+        .ok_or_else(|| "missing a wake_up()/wake_up_one() call in Drop".to_string())?;
     if release < wake {
         Ok(())
     } else {

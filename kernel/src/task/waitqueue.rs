@@ -202,7 +202,6 @@ impl WaitQueueHead {
     }
 
     /// Return whether the queue currently has waiters.
-    #[allow(dead_code)]
     pub fn has_waiters(&self) -> bool {
         self.with_waiters(|waiters| !waiters.is_empty())
     }
