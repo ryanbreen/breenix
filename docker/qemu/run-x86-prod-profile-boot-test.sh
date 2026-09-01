@@ -539,8 +539,21 @@ POLL_BOUND_SECONDS=240
 # thread's saved executor.run() context abandoned with nothing left to poll
 # it), answers zero delta either way -- this is the prompt-count check below,
 # strengthened from a bare presence pin into a before/after delta.
+#
+# #721: this window doubles as the wall-clock budget for every marker assertion
+# below it (spawn-smoke, tty-oracle, exec-smoke, bsshd-started) -- the script
+# kills QEMU and reads final counts the moment this sleep returns. Adding
+# exec_smoke's own work (a full exec -- new page table, ELF load, frame
+# allocation, argv stack setup -- immediately followed by a target that sleeps
+# 100ms and yields 8 times) between run_tty_oracle() and start_bsshd() pushed
+# the measured beast-under-TCG time from steady state to `bsshd started`
+# past the previous 15s: steady state at t=11s, bsshd started at t=39s
+# (docs/planning/721-x86-exec/serials/, manual per-second probe against this
+# exact commit). 60s keeps ~2x margin over that 28s span without the "order of
+# magnitude" POLL_BOUND_SECONDS margin above, which would make every gate run
+# needlessly slow for a bound this tight to the measured figure.
 LIVENESS_STIMULUS_BYTE=$'\n'
-LIVENESS_WINDOW_SECONDS=15
+LIVENESS_WINDOW_SECONDS=60
 
 report_gate_failure() {
     local exit_code=$?
