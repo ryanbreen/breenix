@@ -1,0 +1,27 @@
+Running 5 parallel full boot tests (runner: native)...
+Image: /root/breenix-728-prove-hist/target/release/build/breenix-1d02de7a9db89273/out/breenix-uefi.img
+  Started test 1
+  Started test 2
+  Started test 3
+  Started test 4
+  Started test 5
+Waiting for kthread tests to complete (900s timeout)...
+  Test 1: PASS
+    STRAND_CENSUS: threads_saved_blocked=9 stranded=0 lines=5092
+x86 userspace gate: PASS - exited=20 expected>=17 nonzero=0 allowlist=0
+  Test 2: PASS
+    STRAND_CENSUS: threads_saved_blocked=9 stranded=0 lines=5083
+x86 userspace gate: PASS - exited=20 expected>=17 nonzero=0 allowlist=0
+  Test 3: PASS
+    STRAND_CENSUS: threads_saved_blocked=9 stranded=0 lines=5099
+x86 userspace gate: PASS - exited=20 expected>=17 nonzero=0 allowlist=0
+  Test 4: PASS
+    STRAND_CENSUS: threads_saved_blocked=9 stranded=0 lines=4980
+x86 userspace gate: PASS - exited=20 expected>=17 nonzero=0 allowlist=0
+  Test 5: PASS
+    STRAND_CENSUS: threads_saved_blocked=9 stranded=0 lines=5026
+x86 userspace gate: PASS - exited=20 expected>=17 nonzero=0 allowlist=0
+
+=========================================
+Results: 5 passed, 0 failed out of 5
+=========================================

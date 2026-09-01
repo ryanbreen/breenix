@@ -17,5 +17,10 @@ pub mod ext2;
 // a production ELF carries none of it.
 #[cfg(feature = "fs_fault_inject")]
 pub mod fault_inject;
+// #728 gate-observable repro oracle for ext2 lock discipline. Test profile
+// only: the module and its single call site (one per architecture main) are
+// behind this feature.
+#[cfg(feature = "ext2_lock_race")]
+pub mod ext2_lock_race;
 pub mod procfs;
 pub mod vfs;

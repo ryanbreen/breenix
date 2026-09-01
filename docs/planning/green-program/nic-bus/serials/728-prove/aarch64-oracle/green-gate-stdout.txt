@@ -1,0 +1,10 @@
+=========================================
+#728 ext2 lock-race gate
+  arch:     aarch64
+  features: boot_tests,ext2_lock_race
+=========================================
+[gate] building aarch64 kernel...
+[gate] [LOCKRACE:COMPLETE:pass=2:fail=0]
+[gate]   [LOCKRACE:ROOT:race:verdict=PASS:detail=no-spin-stall]
+[gate]   [LOCKRACE:HOME:race:verdict=PASS:detail=no-spin-stall]
+ext2 lock-race gate (aarch64): PASSED - 2 filesystem(s) raced clean, kernel live after

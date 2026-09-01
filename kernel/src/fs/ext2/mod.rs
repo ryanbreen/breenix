@@ -17,6 +17,7 @@ pub use superblock::*;
 
 use crate::block::BlockDevice;
 use alloc::vec::Vec;
+use core::sync::atomic::{AtomicU64, Ordering};
 use spin::RwLock;
 
 /// A mounted ext2 filesystem instance
@@ -1461,6 +1462,592 @@ impl Ext2Fs {
     }
 }
 
+// =============================================================================
+// #728 — ext2 lock-discipline observability
+// =============================================================================
+//
+// `ROOT_EXT2`/`HOME_EXT2` are `spin::RwLock`s whose contended acquisition
+// busy-spins with no `try_*`-then-park fallback (spin 0.9.8's default relax
+// strategy is a hardware pause, never an OS yield or park). The mechanism
+// that makes a contended spin un-interruptible differs by arch, and both
+// halves matter:
+//   - On aarch64, every syscall dispatch that can contend these locks runs
+//     with `preempt_count() > 0`, which is the same counter the timer
+//     interrupt's own preemption decision gates on
+//     (`can_schedule() == (preempt_count() == 0)`) — IRQs are normally
+//     *unmasked* in an aarch64 syscall, so the timer still fires, it just
+//     declines to switch away from the spinner.
+//   - On x86, the syscall entry path (`syscall/entry.asm:29`, `cli`, no
+//     `sti` before `rust_syscall_handler`) runs the entire syscall with
+//     RFLAGS.IF = 0, so the timer interrupt cannot fire *at all* — a
+//     stronger, more direct cause than the preempt_count mechanism (which
+//     is also true on x86, but not the reason the spin cannot be preempted).
+// Either way: the moment a contended acquisition's own holder is genuinely
+// parked for block-device I/O completion (see
+// `Completion::wait_timeout_uninterruptible`, `task/completion.rs`) while
+// still holding the guard, a spinning contender is, for the duration of its
+// spin, structurally exempt from the mechanism that would otherwise let the
+// timer ISR preempt it and let the actual holder's completion get
+// dispatched. See #728 for the full analysis.
+//
+// `ext2_spin_wait`/`ext2_spin_wait_write` below make that spin *observable*
+// without changing its behavior: they still busy-spin forever with no yield
+// and no park when contended — the same defect, just no longer silent. A
+// spin that crosses `EXT2_SPIN_STALL_THRESHOLD_NS` prints one
+// `EXT2_LOCK_SPIN_STALL` line (once per stall episode) and increments
+// `EXT2_LOCK_SPIN_STALLS`, so a gate script can detect the livelock without
+// a userspace watchdog — during the pathological case in question nothing
+// userspace can run at all, so the spinner has to be its own observer (see
+// `kernel::fs::ext2_lock_race` for the in-kernel repro leg that exercises
+// this).
+
+/// Wall-clock threshold (monotonic ns) past which a contended ext2 lock
+/// acquisition is reported as stalled. Ordinary contention resolves in well
+/// under a millisecond (either the fast `try_*` path succeeds immediately,
+/// or a genuine holder releases quickly); a spin still running half a second
+/// later is not "briefly contended," it is the #728 livelock shape.
+const EXT2_SPIN_STALL_THRESHOLD_NS: u64 = 500_000_000;
+
+/// Check the clock every 65536 spin iterations rather than every iteration,
+/// so the observability itself never becomes the bottleneck it's measuring.
+const EXT2_SPIN_POLL_MASK: u32 = 0xFFFF;
+
+/// Running count of observed acquisition stalls (test/gate use). Read via
+/// `ext2_lock_spin_stalls()`.
+static EXT2_LOCK_SPIN_STALLS: AtomicU64 = AtomicU64::new(0);
+
+/// Read the running count of #728 spin-stall episodes observed since boot.
+///
+/// Used by the `ext2_lock_race` repro leg and its gate script: on unfixed
+/// (spin-only) lock code this reliably increments under a forced read/write
+/// collision; on fixed code the same collision resolves by parking instead,
+/// so the counter should stay flat.
+pub fn ext2_lock_spin_stalls() -> u64 {
+    EXT2_LOCK_SPIN_STALLS.load(Ordering::Relaxed)
+}
+
+#[inline]
+fn ext2_now_ns() -> u64 {
+    let (secs, nanos) = crate::time::get_monotonic_time_ns();
+    secs as u64 * 1_000_000_000 + nanos as u64
+}
+
+/// Per-acquisition-attempt stall tracker shared by the read and write spin
+/// loops below. Reports at most once per loop (`ext2_spin_wait`/
+/// `ext2_spin_wait_write` each construct a fresh tracker per call).
+struct Ext2SpinStallTracker {
+    start_ns: u64,
+    iterations: u32,
+    reported: bool,
+}
+
+impl Ext2SpinStallTracker {
+    fn new() -> Self {
+        Self {
+            start_ns: ext2_now_ns(),
+            iterations: 0,
+            reported: false,
+        }
+    }
+
+    /// Call once per spin iteration. No-op after the first report, and cheap
+    /// (no clock read) on all but 1-in-65536 iterations.
+    fn tick(&mut self, lock_name: &str) {
+        if self.reported {
+            return;
+        }
+        self.iterations = self.iterations.wrapping_add(1);
+        if self.iterations & EXT2_SPIN_POLL_MASK != 0 {
+            return;
+        }
+        let elapsed = ext2_now_ns().saturating_sub(self.start_ns);
+        if elapsed > EXT2_SPIN_STALL_THRESHOLD_NS {
+            self.reported = true;
+            EXT2_LOCK_SPIN_STALLS.fetch_add(1, Ordering::Relaxed);
+            crate::serial_println!(
+                "EXT2_LOCK_SPIN_STALL lock={} elapsed_ns={}",
+                lock_name,
+                elapsed
+            );
+        }
+    }
+}
+
+/// Busy-spin until `try_acquire` succeeds. Behaviorally identical to calling
+/// `spin::RwLock`'s own blocking `.read()` — no yield, no park — except that
+/// a spin exceeding `EXT2_SPIN_STALL_THRESHOLD_NS` is reported once so the
+/// condition is gate-visible. This is the fallback path both before and
+/// after the #728 fix: pre-fix it is the *only* path (this function's
+/// behavior on unfixed code, unchanged from the plain spin), post-fix it is
+/// reached only when parking is unsafe (`ext2_lock_can_sleep()` false) or
+/// after a bounded number of park rounds made no progress.
+fn ext2_spin_wait<T>(lock_name: &str, mut try_acquire: impl FnMut() -> Option<T>) -> T {
+    let mut tracker = Ext2SpinStallTracker::new();
+    loop {
+        if let Some(v) = try_acquire() {
+            return v;
+        }
+        tracker.tick(lock_name);
+        core::hint::spin_loop();
+    }
+}
+
+/// Busy-spin to acquire the write (upgraded) guard: first the upgradeable
+/// slot, then the upgrade itself. Two phases because `spin::RwLock` only
+/// allows one upgradeable-read guard at a time, and `try_upgrade()` returns
+/// the guard back on failure (`Err(Self)`) rather than losing the slot.
+/// Same behavioral contract as `ext2_spin_wait`: unchanged spin, now observed.
+fn ext2_spin_wait_write(
+    lock: &'static RwLock<Option<Ext2Fs>>,
+    lock_name: &str,
+) -> spin::RwLockWriteGuard<'static, Option<Ext2Fs>> {
+    let upgradeable = ext2_spin_wait(lock_name, || lock.try_upgradeable_read());
+    ext2_spin_wait_upgrade(upgradeable, lock_name)
+}
+
+/// Phase 2 of the write spin: busy-spin `try_upgrade()` starting from an
+/// already-held upgradeable guard, until every existing reader has drained.
+/// Factored out so the park path (`ext2_acquire_write`, below) can fall back
+/// to spinning on an upgrade it already holds the slot for, without
+/// releasing and re-racing for the upgradeable slot itself.
+fn ext2_spin_wait_upgrade(
+    mut upgradeable: spin::RwLockUpgradableGuard<'static, Option<Ext2Fs>>,
+    lock_name: &str,
+) -> spin::RwLockWriteGuard<'static, Option<Ext2Fs>> {
+    let mut tracker = Ext2SpinStallTracker::new();
+    loop {
+        match upgradeable.try_upgrade() {
+            Ok(write_guard) => return write_guard,
+            Err(back) => upgradeable = back,
+        }
+        tracker.tick(lock_name);
+        core::hint::spin_loop();
+    }
+}
+
+// =============================================================================
+// #728 — park instead of spin when it is safe to
+// =============================================================================
+//
+// A contended acquisition parks on a per-lock WaitQueueHead instead of
+// spinning whenever `ext2_lock_can_sleep()` is true — mirroring the
+// established parking-on-contention precedent in this kernel
+// (`drivers/virtio/block.rs`'s `BlockRequestGate`) and the syscall sleep
+// path's own can-sleep check (`task/completion.rs`'s
+// `syscall_sleep_path_available`), tightened to an exact `preempt_count()` of
+// 1 so `schedule_current_wait()`'s unconditional enable-then-disable pairing
+// (`task/waitqueue.rs`) can neither underflow nor leave preemption wedged on
+// return. When it is not safe — no current thread, interrupt context,
+// interrupts masked, more than one nested preempt-disable, or (aarch64) the
+// timer not yet initialized — the accessor falls back to exactly the same
+// spin `ext2_spin_wait`/`ext2_spin_wait_write` performed before this commit,
+// which is always correct, just not livelock-proof. This is why the
+// observer commit came first: the fallback spin path is unchanged code, and
+// the same instrument measures both the pre-fix state (spin, always) and
+// this fix's fallback edges (spin, sometimes).
+//
+// A parked acquisition is also bounded: `EXT2_LOCK_PARK_ROUNDS` rounds of
+// `EXT2_LOCK_PARK_TIMEOUT_NS` each, using `prepare_to_wait_checked`'s
+// enqueue-under-the-waitqueue-lock recheck (never the untimed
+// `prepare_to_wait`) so a missed wake degrades to a bounded retry rather than
+// a permanent hang, matching this kernel's own lost-wake history (#584,
+// #586, #589). If every round leaves the lock still unavailable — which
+// would mean the wake path itself is broken — the accessor falls back to the
+// unchanged spin rather than looping forever on a wait that isn't working.
+//
+// Guards returned by the four accessors below are wrapped in
+// `Ext2ReadGuard`/`Ext2WriteGuard`, which `Deref`/`DerefMut` transparently to
+// `Option<Ext2Fs>` (every call site already only ever calls `.as_ref()`/
+// `.as_mut()` on the guard, so no call site changes). Their `Drop` releases
+// the inner `spin::RwLock` guard *first* and only then calls
+// `wake_up()` — never holding ext2 state across the wake — so the lock order
+// this file participates in is exactly `EXT2_STATE -> WAITQUEUE ->
+// SCHEDULER`, matching `WaitQueueHead::wake_up_one`'s own
+// `WAITQUEUE -> SCHEDULER` order (`task/waitqueue.rs`,
+// `task/scheduler.rs`'s `with_scheduler`).
+//
+// Residual, disclosed rather than silently left: this fix closes the
+// *contention* half of #728 (a contender no longer denies the CPU the actual
+// holder's completion needs) but does not remove "ext2 guard held across a
+// park" itself — `Completion::wait_timeout()`'s own documented precondition
+// ("no locks are held") is still violated at every read/write-family call
+// site enumerated in the #728 fix PR. Removing that pattern entirely
+// (drop the guard before the block-device wait, re-validate on reacquire) is
+// Option A in the #728 analysis, deliberately deferred to a follow-on: it
+// touches the filesystem's core read/write/mutate paths and needs a real
+// revalidation story for the in-memory allocator state
+// (`Ext2Fs::block_groups`/`superblock`), which is real filesystem-correctness
+// work, not a locking-primitive change.
+
+/// Rounds of `EXT2_LOCK_PARK_TIMEOUT_NS` a parked acquisition will retry
+/// before giving up and falling back to the (always-correct) spin path.
+const EXT2_LOCK_PARK_ROUNDS: u32 = 32;
+
+/// Per-round park timeout. Bounded per C6 of the #728 pre-check: a missed
+/// wake degrades to a retry at this granularity rather than a permanent
+/// hang. 32 rounds at 200ms is a 6.4s worst-case bound before falling back
+/// to the spin path — generous next to ordinary block-device I/O latency,
+/// small next to "forever."
+const EXT2_LOCK_PARK_TIMEOUT_NS: u64 = 200_000_000;
+
+/// Running count of acquisition attempts that actually parked (queued on a
+/// `WaitQueueHead` and called `schedule_current_wait()`), as opposed to
+/// resolving on the fast `try_*` path or falling back to the spin. Read via
+/// `ext2_lock_parks()`.
+///
+/// Exists so a green race-leg run can prove the park path was *entered*,
+/// not merely that no stall was observed — the absence of a stall is also
+/// what a contender that parked and then never woke up looks like before
+/// its round timeout elapses, so "no stall" alone does not distinguish
+/// "the fix worked" from "the fix parked and got lucky on the timeout."
+/// (B4 of the #728 review.)
+///
+/// This is a single global counter, not per-caller: a race-leg run reads it
+/// as a *delta* across its own window (see `ext2_lock_race.rs`'s
+/// `run_one()`), which proves "some ext2 acquisition parked somewhere
+/// during this window," not "this specific race's own contenders parked."
+/// On the race-leg's dedicated boot profile nothing else touches ext2
+/// concurrently, so a nonzero delta is strong corroboration in practice —
+/// but it is corroboration, not per-thread proof (review round-2 finding
+/// M5). Making it per-race (e.g. recording the contenders' own tids)
+/// remains a real improvement, not done here.
+static EXT2_LOCK_PARKS: AtomicU64 = AtomicU64::new(0);
+
+/// Read the running count of successful park entries since boot. See
+/// `EXT2_LOCK_PARKS`.
+pub fn ext2_lock_parks() -> u64 {
+    EXT2_LOCK_PARKS.load(Ordering::Relaxed)
+}
+
+/// Returns true when it is safe for a contended ext2 lock acquisition to
+/// park instead of spin. See the module docs above for the full rationale;
+/// this mirrors `block_request_gate_can_sleep()`
+/// (`drivers/virtio/block.rs`) and `syscall_sleep_path_available()`
+/// (`task/completion.rs`) — including the arch split those two precedents
+/// already use: aarch64 gates on `interrupts_enabled()` (see below), x86
+/// does not.
+///
+/// # Why x86 does *not* check `interrupts_enabled()`
+///
+/// Every x86 syscall enters through `INT 0x80` on an interrupt gate with an
+/// explicit `cli` (`syscall/entry.asm:29`) and there is no `sti` anywhere on
+/// the path down into this file — RFLAGS.IF is unconditionally 0 for the
+/// entire duration of every x86 syscall, including the ~44 fs/syscall sites
+/// that call the four accessors below. An `interrupts_enabled()` conjunct
+/// here would make this predicate false at every one of them, permanently,
+/// which reduces the fix to a no-op on the arch #728 was reported on. IF=0
+/// is not a no-park condition on x86 the way DAIR.I-masked is on aarch64
+/// (C3): the x86 park primitive `schedule_current_wait()` calls on every
+/// loop iteration is `arch_halt_with_interrupts()` ==
+/// `X86Cpu::halt_with_interrupts()` == `enable_and_hlt` — the atomic
+/// `sti; hlt` sequence — so parking *from* IF=0 is exactly the normal,
+/// expected entry state; the primitive itself is what turns interrupts back
+/// on, at the halt, so the timer ISR can wake the thread. Every block-device
+/// read already parks this same way, from this same IF=0 syscall state, via
+/// `block_request_gate_can_sleep()` (x86: `preempt_count() > 0`, no IF
+/// check) and `syscall_sleep_path_available()` (x86: `preempt_count() > 0`,
+/// no IF check) — this predicate now matches both.
+///
+/// aarch64 syscalls are the opposite: `syscall_entry.S` unmasks DAIF before
+/// `rust_syscall_handler` runs, so IRQs are normally *unmasked* in an
+/// aarch64 syscall, and the one aarch64 site that masks them anyway
+/// (`load_test_binaries_from_ext2`, C3) needs exactly this check to stay a
+/// hard no-park. That is why the check is aarch64-only rather than deleted
+/// outright: on aarch64 it is load-bearing; on x86 it is never anything but
+/// unconditionally false, so keeping it there defeats the fix.
+///
+/// # x86's liveness dependency: why this predicate requires `== 1`, not `> 0`
+///
+/// (Review round-2 finding M2.) A parked x86 thread is `BlockedOnIO`
+/// (`schedule_current_wait()`, `task/waitqueue.rs`), and
+/// `per_cpu::can_schedule()` (`kernel/src/per_cpu.rs:1051`) deliberately
+/// does **not** include `BlockedOnIO` in the small set of thread states
+/// that bypass its `current_preempt == 0` guard — only `Blocked`,
+/// `BlockedOnSignal`, `BlockedOnChildExit`, `BlockedOnTimer`, and
+/// `Terminated` do (see that function's own long-form comment, and #666/
+/// #508, the tracked gap this leaves for the general case). So the timer
+/// ISR's `check_need_resched_and_switch` can only take a parked x86 ext2
+/// thread off the CPU through `can_schedule()`'s
+/// `(current_preempt == 0 && need_resched_set)` clause — the
+/// exception-cleanup and returning-to-userspace/idle clauses do not apply
+/// to a thread halted mid-syscall. That clause needs `preempt_count() == 0`
+/// exactly, and the only reason it ever reaches 0 here is that
+/// `schedule_current_wait()` calls `preempt_enable()` before its halt loop,
+/// unwinding the *one* level of nesting this predicate insists on via its
+/// own `== 1` (not `>= 1` or `> 0`) check below. Weakening this check to
+/// `> 0` (admitting a caller with, say, two nested `preempt_disable()`
+/// guards) would still enter the park loop, but `preempt_enable()`'s single
+/// decrement would leave `preempt_count() == 1` on return — a park that can
+/// never be scheduled away by the only clause that can reach it, silently
+/// turning into the full `EXT2_LOCK_PARK_ROUNDS`-round timeout on every
+/// occurrence before falling back to the spin. Pinned in the structural
+/// ratchet (`tests/ext2_lock_structure.rs`).
+#[inline]
+fn ext2_lock_can_sleep() -> bool {
+    if crate::task::scheduler::current_thread_id().is_none() {
+        return false;
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    {
+        if crate::per_cpu_aarch64::in_interrupt() {
+            return false;
+        }
+        if !crate::arch_impl::aarch64::cpu::interrupts_enabled() {
+            return false;
+        }
+        if crate::per_cpu_aarch64::preempt_count() != 1 {
+            return false;
+        }
+        crate::arch_impl::aarch64::timer_interrupt::is_initialized()
+    }
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        if crate::per_cpu::in_interrupt() {
+            return false;
+        }
+        crate::per_cpu::preempt_count() == 1
+    }
+}
+
+fn ext2_schedule_current_wait() {
+    crate::task::waitqueue::schedule_current_wait();
+}
+
+/// Try the fast (uncontended) path, then park up to `EXT2_LOCK_PARK_ROUNDS`
+/// times when it's safe to, then fall back to the unchanged spin. Shared by
+/// the read and write acquisition paths below via the closures they pass.
+fn ext2_acquire<T>(
+    waiters: &'static crate::task::waitqueue::WaitQueueHead,
+    mut try_acquire: impl FnMut() -> Option<T>,
+    spin_fallback: impl FnOnce() -> T,
+) -> T {
+    if let Some(v) = try_acquire() {
+        return v;
+    }
+
+    if ext2_lock_can_sleep() {
+        for _ in 0..EXT2_LOCK_PARK_ROUNDS {
+            if let Some(v) = try_acquire() {
+                return v;
+            }
+
+            let deadline = ext2_now_ns() + EXT2_LOCK_PARK_TIMEOUT_NS;
+            // The recheck closure runs under the waitqueue lock, atomically
+            // with publishing our BlockedOnIO state: a release that lands
+            // between our failed `try_acquire()` above and this enqueue is
+            // not lost, because either the closure now observes the lock
+            // free (Mismatch — loop back and retry `try_acquire()`
+            // immediately, uncontended) or it still observes it held, in
+            // which case we are safely enqueued before the holder can
+            // possibly release again. The closure's own successful
+            // `try_acquire()` result (if any) is deliberately dropped here —
+            // `prepare_to_wait_checked`'s `cond` can only report a bool, not
+            // hand a value back — and reacquired uncontended by the very
+            // next loop iteration's `try_acquire()` above.
+            let outcome = waiters.prepare_to_wait_checked(
+                crate::task::thread::ThreadState::BlockedOnIO,
+                Some(deadline),
+                || try_acquire().is_none(),
+            );
+
+            match outcome {
+                crate::task::waitqueue::PrepareOutcome::Mismatch => continue,
+                crate::task::waitqueue::PrepareOutcome::PublishFailed => break,
+                crate::task::waitqueue::PrepareOutcome::Queued => {
+                    EXT2_LOCK_PARKS.fetch_add(1, Ordering::Relaxed);
+                    ext2_schedule_current_wait();
+                    waiters.finish_wait();
+                }
+            }
+        }
+    }
+
+    spin_fallback()
+}
+
+/// Write-acquisition variant of `ext2_acquire`: acquires the upgradeable
+/// slot via `ext2_acquire` (park-capable, generic), then parks waiting for
+/// the upgrade itself while *continuing to hold* the upgradeable guard
+/// across every retry round — never releasing and re-racing for the
+/// upgradeable slot between rounds. This is what preserves the writer
+/// fairness `root_fs_write()`'s doc comment promises (the UPGRADED bit keeps
+/// blocking new readers for the whole wait, not just between our park
+/// rounds) — C8 of the #728 pre-check.
+fn ext2_acquire_write(
+    lock: &'static RwLock<Option<Ext2Fs>>,
+    waiters: &'static crate::task::waitqueue::WaitQueueHead,
+    lock_name: &str,
+) -> spin::RwLockWriteGuard<'static, Option<Ext2Fs>> {
+    let mut upgradeable = ext2_acquire(
+        waiters,
+        || lock.try_upgradeable_read(),
+        || ext2_spin_wait(lock_name, || lock.try_upgradeable_read()),
+    );
+
+    // Fast path: no readers in the way at all.
+    upgradeable = match upgradeable.try_upgrade() {
+        Ok(w) => return w,
+        Err(back) => back,
+    };
+
+    if !ext2_lock_can_sleep() {
+        return ext2_spin_wait_upgrade(upgradeable, lock_name);
+    }
+
+    for _ in 0..EXT2_LOCK_PARK_ROUNDS {
+        // `slot` lets the `FnOnce` recheck closure below hand the
+        // upgradeable guard back out (its own signature can only return
+        // `bool`) via a captured-by-reference `Option`, so we never drop it
+        // and re-race for the upgradeable position between rounds.
+        let mut slot = Some(upgradeable);
+        let mut upgraded: Option<spin::RwLockWriteGuard<'static, Option<Ext2Fs>>> = None;
+        let deadline = ext2_now_ns() + EXT2_LOCK_PARK_TIMEOUT_NS;
+        let outcome = waiters.prepare_to_wait_checked(
+            crate::task::thread::ThreadState::BlockedOnIO,
+            Some(deadline),
+            || {
+                let held = slot.take().expect("slot populated at recheck");
+                match held.try_upgrade() {
+                    Ok(w) => {
+                        upgraded = Some(w);
+                        false // Mismatch: got it, don't enqueue.
+                    }
+                    Err(back) => {
+                        slot = Some(back);
+                        true // readers still present: enqueue and block.
+                    }
+                }
+            },
+        );
+
+        if let Some(w) = upgraded {
+            return w;
+        }
+        upgradeable = slot.take().expect("slot repopulated by cond on Mismatch/Queued");
+
+        match outcome {
+            crate::task::waitqueue::PrepareOutcome::Mismatch => continue,
+            crate::task::waitqueue::PrepareOutcome::PublishFailed => {
+                return ext2_spin_wait_upgrade(upgradeable, lock_name);
+            }
+            crate::task::waitqueue::PrepareOutcome::Queued => {
+                EXT2_LOCK_PARKS.fetch_add(1, Ordering::Relaxed);
+                ext2_schedule_current_wait();
+                waiters.finish_wait();
+            }
+        }
+    }
+
+    ext2_spin_wait_upgrade(upgradeable, lock_name)
+}
+
+/// Wraps a `spin::RwLockReadGuard` on `ROOT_EXT2`/`HOME_EXT2`. Transparent
+/// `Deref` to `Option<Ext2Fs>` — every call site only ever calls `.as_ref()`
+/// on the guard it gets back, so this needs no call-site changes. Releases
+/// the inner guard before waking parked contenders (see module docs above).
+pub struct Ext2ReadGuard {
+    inner: Option<spin::RwLockReadGuard<'static, Option<Ext2Fs>>>,
+    waiters: &'static crate::task::waitqueue::WaitQueueHead,
+}
+
+impl core::ops::Deref for Ext2ReadGuard {
+    type Target = Option<Ext2Fs>;
+    fn deref(&self) -> &Option<Ext2Fs> {
+        self.inner.as_ref().expect("Ext2ReadGuard used after drop")
+    }
+}
+
+impl Drop for Ext2ReadGuard {
+    fn drop(&mut self) {
+        self.inner = None;
+        // A dropped *read* guard only ever unblocks the single upgradeable
+        // holder waiting on `try_upgrade()` (releasing a reader never
+        // admits another reader -- spin's RwLock never blocks reader vs.
+        // reader), so at most one waiter can actually make progress from
+        // this event: wake_up_one() (never queue every waiter for a
+        // thundering herd), not the full broadcast `wake_up()`.
+        //
+        // Correction (review round-2 finding M1, re-found in the closure
+        // round): an earlier version of this comment additionally claimed
+        // `has_waiters()` "skips the lock entirely in the common
+        // uncontended case." That was false -- `has_waiters()` calls
+        // `with_waiters()` (`task/waitqueue.rs`), the *same*
+        // `arch_without_interrupts`-guarded `spin::Mutex` `wake_up_one()`
+        // itself takes. Gating on it saved nothing on the uncontended path
+        // (one lock acquisition either way) and cost an extra one on the
+        // contended path (two acquisitions instead of one), so it has been
+        // removed; `wake_up_one()` is now called unconditionally.
+        //
+        // Residual, disclosed rather than fixed: `wake_up_one()` pops the
+        // waitqueue's *front* entry, which may be a parked reader rather
+        // than the upgrade-waiting writer that could actually proceed --
+        // that reader retries `try_read()`, is refused while UPGRADED is
+        // set, and re-parks, deferring the writer's own wake to its next
+        // bounded per-round timeout (C6, `EXT2_LOCK_PARK_TIMEOUT_NS`,
+        // worst case `EXT2_LOCK_PARK_ROUNDS` rounds later). This is bounded
+        // added latency, not a hang, and it existed before this correction
+        // too (`has_waiters()` never changed which waiter gets popped) --
+        // recorded here since it was under-stated originally. The queue is
+        // shared rather than writer-priority (module docs above); making it
+        // writer-priority is a real option for a future round, not done
+        // here.
+        self.waiters.wake_up_one();
+    }
+}
+
+/// Wraps a `spin::RwLockWriteGuard` on `ROOT_EXT2`/`HOME_EXT2`. Transparent
+/// `Deref`/`DerefMut` to `Option<Ext2Fs>` — every call site only ever calls
+/// `.as_mut()` on the guard it gets back, so this needs no call-site
+/// changes. Releases the inner guard before waking parked contenders (see
+/// module docs above).
+pub struct Ext2WriteGuard {
+    inner: Option<spin::RwLockWriteGuard<'static, Option<Ext2Fs>>>,
+    waiters: &'static crate::task::waitqueue::WaitQueueHead,
+}
+
+impl core::ops::Deref for Ext2WriteGuard {
+    type Target = Option<Ext2Fs>;
+    fn deref(&self) -> &Option<Ext2Fs> {
+        self.inner.as_ref().expect("Ext2WriteGuard used after drop")
+    }
+}
+
+impl core::ops::DerefMut for Ext2WriteGuard {
+    fn deref_mut(&mut self) -> &mut Option<Ext2Fs> {
+        self.inner.as_mut().expect("Ext2WriteGuard used after drop")
+    }
+}
+
+impl Drop for Ext2WriteGuard {
+    fn drop(&mut self) {
+        self.inner = None;
+        // Unlike a read-guard drop, releasing the write/upgradeable slot
+        // can unblock several distinct waiter kinds at once (every queued
+        // try_read(), plus the next try_upgradeable_read()), so this side
+        // keeps the full broadcast wake_up().
+        //
+        // A `has_waiters()`-gated fast path was tried here and removed
+        // (see `Ext2ReadGuard::drop`'s comment for the full correction):
+        // `has_waiters()` takes the same `WaitQueueHead` lock `wake_up()`
+        // does, so gating on it does not skip a lock acquisition on the
+        // uncontended path and adds a second one on the contended path.
+        self.waiters.wake_up();
+    }
+}
+
+/// Wait queue for contended `ROOT_EXT2` acquisitions (both read and write —
+/// a shared queue is deliberate: every release wakes every waiter, which is
+/// always correct for an RwLock, even if occasionally spurious for a waiter
+/// whose specific condition a given release didn't satisfy, and the bounded
+/// per-round timeout is the backstop regardless).
+static ROOT_EXT2_WAITERS: crate::task::waitqueue::WaitQueueHead =
+    crate::task::waitqueue::WaitQueueHead::new();
+
+/// Wait queue for contended `HOME_EXT2` acquisitions. See `ROOT_EXT2_WAITERS`.
+static HOME_EXT2_WAITERS: crate::task::waitqueue::WaitQueueHead =
+    crate::task::waitqueue::WaitQueueHead::new();
+
 /// Global mounted ext2 root filesystem
 ///
 /// Uses RwLock to allow concurrent read access (exec, file reads, getdents)
@@ -1570,8 +2157,16 @@ pub fn init_root_fs() -> Result<(), &'static str> {
 ///
 /// Multiple readers can hold this lock concurrently, allowing parallel
 /// exec, file reads, getdents, and stat operations without contention.
-pub fn root_fs_read() -> spin::RwLockReadGuard<'static, Option<Ext2Fs>> {
-    ROOT_EXT2.read()
+pub fn root_fs_read() -> Ext2ReadGuard {
+    let inner = ext2_acquire(
+        &ROOT_EXT2_WAITERS,
+        || ROOT_EXT2.try_read(),
+        || ext2_spin_wait("ROOT_EXT2_read", || ROOT_EXT2.try_read()),
+    );
+    Ext2ReadGuard {
+        inner: Some(inner),
+        waiters: &ROOT_EXT2_WAITERS,
+    }
 }
 
 /// Access the root ext2 filesystem for write operations
@@ -1585,13 +2180,29 @@ pub fn root_fs_read() -> spin::RwLockReadGuard<'static, Option<Ext2Fs>> {
 /// but new readers can keep arriving indefinitely. The upgradeable guard sets
 /// the UPGRADED bit, which causes try_read() to reject new readers. The writer
 /// then only waits for existing readers to drain, guaranteeing forward progress.
-pub fn root_fs_write() -> spin::RwLockWriteGuard<'static, Option<Ext2Fs>> {
-    ROOT_EXT2.upgradeable_read().upgrade()
+pub fn root_fs_write() -> Ext2WriteGuard {
+    let inner = ext2_acquire_write(&ROOT_EXT2, &ROOT_EXT2_WAITERS, "ROOT_EXT2_write");
+    Ext2WriteGuard {
+        inner: Some(inner),
+        waiters: &ROOT_EXT2_WAITERS,
+    }
 }
 
 /// Check if the root filesystem is mounted
+///
+/// Routed through `root_fs_read()` (M1 of the #728 fix round), not a plain
+/// `ROOT_EXT2.read()`: `spin`'s `try_read()` rejects new readers while
+/// UPGRADED is set, so a plain blocking `.read()` here spins
+/// non-yieldingly with `preempt_count() == 1` whenever a writer holds the
+/// upgradeable slot — the #728 shape, invisible to the gate because it
+/// bypasses `ext2_spin_wait` entirely. This is called on syscall-hot paths
+/// (`sys_write`/`sys_read`/`sys_fstat`/etc. via `home_mount_id()` below, and
+/// this function itself from `ext2_lock_race`), so it needs the same
+/// park-then-spin-fallback discipline the four accessors get, not a
+/// bespoke one — reusing the guard means it also gets the observability and
+/// the release-before-wake ordering for free.
 pub fn is_mounted() -> bool {
-    ROOT_EXT2.read().is_some()
+    root_fs_read().is_some()
 }
 
 /// Global mounted ext2 home filesystem (/home)
@@ -1642,28 +2253,48 @@ pub fn init_home_fs() -> Result<(), &'static str> {
 }
 
 /// Access the home ext2 filesystem for read-only operations
-pub fn home_fs_read() -> spin::RwLockReadGuard<'static, Option<Ext2Fs>> {
-    HOME_EXT2.read()
+pub fn home_fs_read() -> Ext2ReadGuard {
+    let inner = ext2_acquire(
+        &HOME_EXT2_WAITERS,
+        || HOME_EXT2.try_read(),
+        || ext2_spin_wait("HOME_EXT2_read", || HOME_EXT2.try_read()),
+    );
+    Ext2ReadGuard {
+        inner: Some(inner),
+        waiters: &HOME_EXT2_WAITERS,
+    }
 }
 
 /// Access the home ext2 filesystem for write operations
 ///
 /// Uses upgradeable_read() + upgrade() to prevent writer starvation (same as root_fs_write).
-pub fn home_fs_write() -> spin::RwLockWriteGuard<'static, Option<Ext2Fs>> {
-    HOME_EXT2.upgradeable_read().upgrade()
+pub fn home_fs_write() -> Ext2WriteGuard {
+    let inner = ext2_acquire_write(&HOME_EXT2, &HOME_EXT2_WAITERS, "HOME_EXT2_write");
+    Ext2WriteGuard {
+        inner: Some(inner),
+        waiters: &HOME_EXT2_WAITERS,
+    }
 }
 
 /// Check if the home filesystem is mounted
+///
+/// Routed through `home_fs_read()` — see `is_mounted()`'s doc comment (M1
+/// of the #728 fix round); the same blocking-spin hazard applies here.
 pub fn is_home_mounted() -> bool {
-    HOME_EXT2.read().is_some()
+    home_fs_read().is_some()
 }
 
 /// Get the mount_id of the home filesystem, if mounted.
 ///
 /// Used by FD-based syscall dispatch to determine which filesystem
-/// a file descriptor belongs to.
+/// a file descriptor belongs to. Routed through `home_fs_read()` — see
+/// `is_mounted()`'s doc comment (M1 of the #728 fix round). This is the
+/// highest-traffic of the three M1 sites: called from `sys_write`,
+/// `sys_read`, `sys_pread64`, `sys_pwrite64`, `sys_fstat`,
+/// `sys_getdents64` and `sys_utimensat`, immediately ahead of the very
+/// accessor calls this fix repaired.
 pub fn home_mount_id() -> Option<usize> {
-    HOME_EXT2.read().as_ref().map(|fs| fs.mount_id)
+    home_fs_read().as_ref().map(|fs| fs.mount_id)
 }
 
 /// Strip the /home prefix from a path, returning the path within the home filesystem.

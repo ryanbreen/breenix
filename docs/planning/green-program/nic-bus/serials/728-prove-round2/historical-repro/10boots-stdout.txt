@@ -1,0 +1,75 @@
+Running 5 parallel full boot tests (runner: native)...
+Image: /root/breenix-728-prove-hist/target/release/build/breenix-1d02de7a9db89273/out/breenix-uefi.img
+  Started test 1
+  Started test 2
+  Started test 3
+  Started test 4
+  Started test 5
+Waiting for kthread tests to complete (900s timeout)...
+  Test 1: PASS
+    STRAND_CENSUS: threads_saved_blocked=9 stranded=0 lines=4905
+x86 userspace gate: PASS - exited=20 expected>=17 nonzero=0 allowlist=0
+  Test 2: PASS
+    STRAND_CENSUS: threads_saved_blocked=9 stranded=0 lines=5010
+x86 userspace gate: PASS - exited=20 expected>=17 nonzero=0 allowlist=0
+  Test 3: PASS
+    STRAND_CENSUS: threads_saved_blocked=9 stranded=0 lines=5016
+x86 userspace gate: PASS - exited=20 expected>=17 nonzero=0 allowlist=0
+  Test 4: FAIL (x86 userspace verdict rejected the run)
+    STRAND_CENSUS: threads_saved_blocked=9 stranded=0 lines=5123
+x86 userspace gate: FAIL - failing process is not allowlisted: /usr/local/test/bin/clon
+[ INFO] kernel::syscall::handlers: USERSPACE: sys_exit called with code: 0
+[DEBUG] kernel::syscall::handlers: sys_exit: Current thread ID from scheduler: 22
+[DEBUG] kernel::memory::stack: GuardedStack dropped (cleanup not yet implemented)
+[DEBUG] kernel::task::process_task: Process 12 'http_test' (thread 22) exited with code 0
+[ INFO] kernel::syscall::handlers: No more userspace threads remaining
+[ INFO] kernel::syscall::handlers: Woke keyboard task to ensure input processing continues
+[ INFO] kernel::syscall::handlers: 🎯 USERSPACE TEST COMPLETE - All processes finished successfully
+[ INFO] kernel::syscall::handlers: TEST_TALLY: exited=20 nonzero=1 failed=[/usr/local/test/bin/clon:1]
+[ERROR] kernel::syscall::handlers: 🚨 Failing userspace processes: /usr/local/test/bin/clon:1 🚨
+[ERROR] kernel::syscall::handlers: 🚨 TEST RUNNER: FAILED - 1 of 20 userspace processes exited nonzero 🚨
+  Test 5: PASS
+    STRAND_CENSUS: threads_saved_blocked=9 stranded=0 lines=5068
+x86 userspace gate: PASS - exited=20 expected>=17 nonzero=0 allowlist=0
+
+=========================================
+Results: 4 passed, 1 failed out of 5
+=========================================
+===batch2===
+Running 5 parallel full boot tests (runner: native)...
+Image: /root/breenix-728-prove-hist/target/release/build/breenix-1d02de7a9db89273/out/breenix-uefi.img
+  Started test 1
+  Started test 2
+  Started test 3
+  Started test 4
+  Started test 5
+Waiting for kthread tests to complete (900s timeout)...
+  Test 1: PASS
+    STRAND_CENSUS: threads_saved_blocked=9 stranded=0 lines=4997
+x86 userspace gate: PASS - exited=20 expected>=17 nonzero=0 allowlist=0
+  Test 2: PASS
+    STRAND_CENSUS: threads_saved_blocked=9 stranded=0 lines=5027
+x86 userspace gate: PASS - exited=20 expected>=17 nonzero=0 allowlist=0
+  Test 3: PASS
+    STRAND_CENSUS: threads_saved_blocked=9 stranded=0 lines=5044
+x86 userspace gate: PASS - exited=20 expected>=17 nonzero=0 allowlist=0
+  Test 4: FAIL (x86 userspace verdict rejected the run)
+    STRAND_CENSUS: threads_saved_blocked=9 stranded=0 lines=5065
+x86 userspace gate: FAIL - failing process is not allowlisted: /usr/local/test/bin/clon
+[ INFO] kernel::syscall::handlers: USERSPACE: sys_exit called with code: 0
+[DEBUG] kernel::syscall::handlers: sys_exit: Current thread ID from scheduler: 22
+[DEBUG] kernel::memory::stack: GuardedStack dropped (cleanup not yet implemented)
+[DEBUG] kernel::task::process_task: Process 12 'http_test' (thread 22) exited with code 0
+[ INFO] kernel::syscall::handlers: No more userspace threads remaining
+[ INFO] kernel::syscall::handlers: Woke keyboard task to ensure input processing continues
+[ INFO] kernel::syscall::handlers: 🎯 USERSPACE TEST COMPLETE - All processes finished successfully
+[ INFO] kernel::syscall::handlers: TEST_TALLY: exited=20 nonzero=1 failed=[/usr/local/test/bin/clon:1]
+[ERROR] kernel::syscall::handlers: 🚨 Failing userspace processes: /usr/local/test/bin/clon:1 🚨
+[ERROR] kernel::syscall::handlers: 🚨 TEST RUNNER: FAILED - 1 of 20 userspace processes exited nonzero 🚨
+  Test 5: PASS
+    STRAND_CENSUS: threads_saved_blocked=9 stranded=0 lines=5013
+x86 userspace gate: PASS - exited=20 expected>=17 nonzero=0 allowlist=0
+
+=========================================
+Results: 4 passed, 1 failed out of 5
+=========================================
