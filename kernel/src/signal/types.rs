@@ -323,7 +323,11 @@ impl SignalState {
     /// Reset signal handlers to default after exec
     ///
     /// Per POSIX, caught signals are reset to SIG_DFL, ignored signals stay ignored
-    #[allow(dead_code)] // Will be used when exec() implementation is complete
+    ///
+    /// #721 m6: the `#[allow(dead_code)]` this carried ("Will be used when exec()
+    /// implementation is complete") is stale on both architectures now — x86's
+    /// production `exec_process`/`exec_process_with_argv` call this unconditionally,
+    /// same as aarch64's already did.
     pub fn exec_reset(&mut self) {
         self.pending = 0;
         for handler in self.handlers.iter_mut() {

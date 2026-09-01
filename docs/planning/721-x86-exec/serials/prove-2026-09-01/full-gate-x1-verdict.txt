@@ -1,0 +1,2 @@
+x86 userspace gate: PASS - exited=20 expected>=10 nonzero=0 allowlist=0
+GATE: PASS (1/1 boot tests passed; mode=full build=16s boot=150s total=174s)

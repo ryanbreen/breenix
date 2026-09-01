@@ -839,6 +839,52 @@ fn validate_arm64_exec_staging_order(manager: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// #721 K4/X4: the x86_64 analogue of `validate_arm64_exec_staging_order` — the receipt must
+/// be snapshotted from `process.main_thread` only after the page table is published and the
+/// context/state fields are already set, never recomputed separately from what the frame
+/// patch in `handlers.rs` uses.
+fn x86_64_exec_with_argv_body(manager: &str) -> &str {
+    let functions = module_function_bodies(manager);
+    functions
+        .get("exec_process_with_argv")
+        .into_iter()
+        .flatten()
+        .find(|body| !body.contains("[ARM64]"))
+        .expect("x86_64 exec_process_with_argv body")
+}
+
+fn validate_x86_64_exec_staging_order(manager: &str) -> Result<(), String> {
+    let body = x86_64_exec_with_argv_body(manager);
+    let mask = code_mask(body);
+    let mut stages = Vec::new();
+    for needle in [
+        "new_page_table.publish()",
+        "thread.context.rip = new_entry_point",
+        "thread.state = crate::task::thread::ThreadState::Ready",
+        "let ctx = thread.context.clone()",
+        "crate::task::scheduler::ExecSchedCommit::new(",
+    ] {
+        let offsets = code_offsets(body, &mask, needle);
+        if offsets.len() != 1 {
+            return Err(format!(
+                "x86_64 exec_process_with_argv body must contain exactly one `{needle}`, found {}",
+                offsets.len()
+            ));
+        }
+        stages.push((needle, offsets[0]));
+    }
+
+    for pair in stages.windows(2) {
+        if pair[0].1 >= pair[1].1 {
+            return Err(format!(
+                "x86_64 exec_process_with_argv staging order violation: `{}` must precede `{}`",
+                pair[0].0, pair[1].0
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn validate_manager_module_has_no_scheduler_lock_acquisition(
     manager: &str,
     scheduler: &str,
@@ -991,6 +1037,74 @@ fn validate_sys_exec_releases_process_manager(syscall_entry: &str) -> Result<(),
     Ok(())
 }
 
+/// #721 K3: the x86_64 analogue of `validate_sys_exec_releases_process_manager` above —
+/// `sys_execv_with_frame` must carry the same drop-before-apply-before-CR3 shape as
+/// `sys_exec_aarch64`, pinned structurally so the x86 handler's PM-then-SCHEDULER lock order
+/// can't silently regress the same way C-c/K3 found the naive "reuse verbatim" instruction
+/// would have shipped it. Unlike aarch64 (one function, one profile), `sys_execv_with_frame`
+/// carries a testing-arm/production-arm split, and #721 gave both arms the identical shape —
+/// so each marker is expected exactly TWICE (arm 0 = testing, arm 1 = production, in that
+/// textual order), each pair independently ordered and PM-clean after its own drop.
+fn validate_sys_execv_with_frame_releases_process_manager(handlers: &str) -> Result<(), String> {
+    let body = function_body(handlers, "sys_execv_with_frame");
+    let mask = code_mask(body);
+    let drops = code_offsets(body, &mask, "drop(manager_guard)");
+    let applies = code_offsets(body, &mask, "commit.apply()");
+    let set_next_cr3 = code_offsets(body, &mask, "set_next_cr3(");
+
+    for (label, count) in [
+        ("drop(manager_guard)", drops.len()),
+        ("commit.apply()", applies.len()),
+        ("set_next_cr3(", set_next_cr3.len()),
+    ] {
+        if count != 2 {
+            return Err(format!(
+                "expected {label} exactly twice (testing + production arms) in sys_execv_with_frame, found {count}"
+            ));
+        }
+    }
+
+    for arm in 0..2 {
+        if !(drops[arm] < applies[arm] && applies[arm] < set_next_cr3[arm]) {
+            return Err(format!(
+                "sys_execv_with_frame arm {arm} must drop PM before apply and before installing the new CR3"
+            ));
+        }
+    }
+
+    // #721 m4: bound each arm's post-drop scan to that arm's own remaining body,
+    // not through to the *next* arm's drop. The naive `drops[arm + 1]` end bound
+    // swept arm 0's segment straight through arm 1's own pre-drop code (which
+    // still legitimately holds the PM guard) — a false span, not a false negative
+    // today only because arm 1 happens not to call get_process() before its own
+    // drop. The real boundary between the testing and production arms is the
+    // production arm's own cfg attribute.
+    let production_arm_start = body
+        .find("#[cfg(not(feature = \"testing\"))]")
+        .ok_or_else(|| {
+            "sys_execv_with_frame missing #[cfg(not(feature = \"testing\"))] arm boundary"
+                .to_string()
+        })?;
+    let arm_bounds = [production_arm_start, body.len()];
+    for arm in 0..2 {
+        let arm_end = arm_bounds[arm];
+        if drops[arm] >= arm_end {
+            return Err(format!(
+                "sys_execv_with_frame arm {arm}'s drop(manager_guard) is not inside that arm"
+            ));
+        }
+        let after_drop_start = drops[arm] + "drop(manager_guard)".len();
+        let segment = &body[after_drop_start..arm_end];
+        let segment_mask = code_mask(segment);
+        if !code_offsets(segment, &segment_mask, "get_process(").is_empty() {
+            return Err(format!(
+                "sys_execv_with_frame arm {arm} accesses the process manager after guard release"
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn validate_boot_verdict_and_gate_scripts(
     executor: &str,
     full_test: &str,
@@ -1108,33 +1222,67 @@ fn validate_exec_smoke_is_wired(
 ) -> Result<(), String> {
     let main = function_body(init_rs, "main");
     let main_mask = code_mask(main);
+    // #721 K2: run_exec_smoke is now called on both architectures, so the raw count is two,
+    // not one. Each arch's own call site is then checked individually below so a delete of
+    // either one — not just both — reddens this validator.
     let smoke_calls = code_offsets(main, &main_mask, "run_exec_smoke()");
-    if smoke_calls.len() != 1 {
+    if smoke_calls.len() != 2 {
         return Err(format!(
-            "init main must call run_exec_smoke exactly once, found {}",
+            "init main must call run_exec_smoke exactly once per architecture, found {}",
             smoke_calls.len()
         ));
     }
-    let wait_stress = code_offsets(main, &main_mask, "run_wait_stress_if_enabled()");
-    if wait_stress.len() != 1 || smoke_calls[0] >= wait_stress[0] {
-        return Err("init must run the exec smoke before wait stress".to_owned());
+    let aarch64_gate = "#[cfg(target_arch = \"aarch64\")]\n    run_exec_smoke();";
+    let x86_64_gate = "#[cfg(target_arch = \"x86_64\")]\n    run_exec_smoke();";
+    if !main.contains(aarch64_gate) {
+        return Err("init main does not aarch64-gate a run_exec_smoke call".to_owned());
     }
+    if !main.contains(x86_64_gate) {
+        return Err("init main does not x86_64-gate a run_exec_smoke call".to_owned());
+    }
+    let aarch64_smoke = main
+        .find(aarch64_gate)
+        .ok_or_else(|| "aarch64 run_exec_smoke call site not found".to_owned())?
+        + aarch64_gate.len();
+    let x86_smoke = main
+        .find(x86_64_gate)
+        .ok_or_else(|| "x86_64 run_exec_smoke call site not found".to_owned())?
+        + x86_64_gate.len();
+
+    // aarch64 ordering: after the liveness service, before wait-stress (unchanged from the
+    // original single-arch check).
     let liveness_calls = code_offsets(main, &main_mask, "start_liveness_service()");
-    if liveness_calls.len() != 1 || liveness_calls[0] >= smoke_calls[0] {
-        return Err("init must spawn the liveness service before the exec smoke".to_owned());
+    if liveness_calls.len() != 1 || liveness_calls[0] >= aarch64_smoke {
+        return Err("init must spawn the liveness service before the aarch64 exec smoke".to_owned());
     }
+    let wait_stress = code_offsets(main, &main_mask, "run_wait_stress_if_enabled()");
+    if wait_stress.len() != 1 || aarch64_smoke >= wait_stress[0] {
+        return Err("init must run the aarch64 exec smoke before wait stress".to_owned());
+    }
+
+    // x86_64 ordering: after x86's own tty oracle call (its existing last service before this
+    // one), matching the position #713's run_spawn_smoke()/run_tty_oracle() already occupy.
+    let x86_tty_gate = "#[cfg(target_arch = \"x86_64\")]\n    run_tty_oracle();";
+    let x86_tty = main
+        .find(x86_tty_gate)
+        .ok_or_else(|| "x86_64 run_tty_oracle call site not found".to_owned())?;
+    if x86_tty >= x86_smoke {
+        return Err("init must run x86's tty oracle before the x86 exec smoke".to_owned());
+    }
+
+    // Both arches: exec smoke precedes the remaining shared boot services and the reap loop.
+    // Init stalls in a later service spawn on the aarch64 QEMU gates, so anything after
+    // run_boot_script() never executes there.
     let boot_services = code_offsets(main, &main_mask, "run_boot_script()");
-    // Init stalls in a later service spawn on the aarch64 QEMU gates, so anything
-    // after run_boot_script() never executes there.
-    if boot_services.len() != 1 || smoke_calls[0] >= boot_services[0] {
-        return Err("init must run the exec smoke before the remaining boot services".to_owned());
+    if boot_services.len() != 1
+        || aarch64_smoke >= boot_services[0]
+        || x86_smoke >= boot_services[0]
+    {
+        return Err("init must run both arches' exec smoke before the remaining boot services".to_owned());
     }
     let reap_loops = code_offsets(main, &main_mask, "loop {");
-    if reap_loops.len() != 1 || smoke_calls[0] >= reap_loops[0] {
-        return Err("init must run the exec smoke before the reap loop".to_owned());
-    }
-    if !main.contains("#[cfg(target_arch = \"aarch64\")]\n    run_exec_smoke();") {
-        return Err("init main does not aarch64-gate run_exec_smoke".to_owned());
+    if reap_loops.len() != 1 || aarch64_smoke >= reap_loops[0] || x86_smoke >= reap_loops[0] {
+        return Err("init must run both arches' exec smoke before the reap loop".to_owned());
     }
 
     let liveness = function_body(init_rs, "start_liveness_service");
@@ -1146,14 +1294,20 @@ fn validate_exec_smoke_is_wired(
         return Err("run_boot_script must not spawn /bin/heartbeat".to_owned());
     }
 
+    // #721 K2: run_exec_smoke's definition must now be arch-neutral — both arches call it
+    // and its body (spawn + waitpid + print) has no arch-specific content. Reject a stray
+    // target_arch gate directly above the definition, which would make one arch's call site
+    // fail to compile.
     let smoke_fn_offset = init_rs
         .find("fn run_exec_smoke(")
         .ok_or_else(|| "init is missing run_exec_smoke".to_owned())?;
-    let smoke_cfg = init_rs[..smoke_fn_offset]
-        .rfind("#[cfg(target_arch = \"aarch64\")]")
-        .ok_or_else(|| "run_exec_smoke is not aarch64-only".to_owned())?;
-    if init_rs[smoke_cfg..smoke_fn_offset].contains("fn ") {
-        return Err("run_exec_smoke is not directly guarded for aarch64".to_owned());
+    let preceding = init_rs[..smoke_fn_offset].trim_end_matches(['\n', ' ']);
+    let last_line = preceding.rsplit('\n').next().unwrap_or("");
+    if last_line.trim_start().starts_with("#[cfg(target_arch") {
+        return Err(
+            "run_exec_smoke must be arch-neutral (both arches call it), but is gated to one architecture"
+                .to_owned(),
+        );
     }
     let smoke = function_body(init_rs, "run_exec_smoke");
     for required in [
@@ -1611,6 +1765,13 @@ fn sys_exec_releases_the_process_manager_before_the_scheduler() {
     validate_sys_exec_releases_process_manager(&syscall_entry).expect("T4 validation");
 }
 
+/// #721 K3: the x86_64 analogue of T4 above.
+#[test]
+fn sys_execv_with_frame_releases_the_process_manager_before_the_scheduler() {
+    let handlers = repo_text("kernel/src/syscall/handlers.rs");
+    validate_sys_execv_with_frame_releases_process_manager(&handlers).expect("#721 K3 validation");
+}
+
 #[test]
 fn boot_verdict_emits_and_gates_on_the_exec_lock_order_counters() {
     let executor = repo_text("kernel/src/test_framework/executor.rs");
@@ -1626,8 +1787,15 @@ fn arm64_exec_bodies_stage_the_receipt_after_the_context_reset() {
     validate_arm64_exec_staging_order(&manager).expect("T6 validation");
 }
 
+/// #721 K4/X4: the x86_64 analogue of T6 above.
 #[test]
-fn exec_smoke_is_wired_into_the_aarch64_boot_path() {
+fn x86_64_exec_body_stages_the_receipt_after_the_context_reset() {
+    let manager = repo_text("kernel/src/process/manager.rs");
+    validate_x86_64_exec_staging_order(&manager).expect("#721 K4 validation");
+}
+
+#[test]
+fn exec_smoke_is_wired_into_both_boot_paths() {
     let init_rs = repo_text("userspace/programs/src/init.rs");
     let build_sh = repo_text("userspace/programs/build.sh");
     let cargo_toml = repo_text("userspace/programs/Cargo.toml");
@@ -1699,6 +1867,33 @@ fn negative_arm64_exec_snapshot_before_reset_is_rejected() {
     mutated.insert_str(aligned_stack_start, snapshot);
     assert_ne!(mutated, manager, "snapshot-before-reset mutation applied");
     assert!(validate_arm64_exec_staging_order(&mutated).is_err());
+}
+
+/// #721 K4/K13: the x86_64 analogue of the ARM64 snapshot-before-reset negative test above.
+#[test]
+fn negative_x86_64_exec_snapshot_before_reset_is_rejected() {
+    let manager = repo_text("kernel/src/process/manager.rs");
+    let snapshot = "        let ctx = thread.context.clone();\n";
+    let reset_marker = "        thread.context.rip = new_entry_point;\n";
+    let (snapshot_start, reset_start) = {
+        let body = x86_64_exec_with_argv_body(&manager);
+        let body_start = body.as_ptr() as usize - manager.as_ptr() as usize;
+        let snapshot_start = body_start
+            + body
+                .find(snapshot)
+                .expect("x86_64 exec_process_with_argv context snapshot");
+        let reset_start = body_start
+            + body
+                .find(reset_marker)
+                .expect("x86_64 exec_process_with_argv context reset");
+        (snapshot_start, reset_start)
+    };
+
+    let mut mutated = manager.clone();
+    mutated.replace_range(snapshot_start..snapshot_start + snapshot.len(), "");
+    mutated.insert_str(reset_start, snapshot);
+    assert_ne!(mutated, manager, "x86_64 snapshot-before-reset mutation applied");
+    assert!(validate_x86_64_exec_staging_order(&mutated).is_err());
 }
 
 #[test]
@@ -1812,6 +2007,31 @@ fn negative_sys_exec_missing_drop_is_rejected() {
     );
     assert_ne!(mutated, syscall_entry, "drop deletion mutation applied");
     assert!(validate_sys_exec_releases_process_manager(&mutated).is_err());
+}
+
+/// #721 K3/K13: the x86_64 analogue of the two aarch64 negative tests above.
+#[test]
+fn negative_sys_execv_with_frame_apply_before_drop_is_rejected() {
+    let handlers = repo_text("kernel/src/syscall/handlers.rs");
+    let mutated = handlers.replacen(
+        "            drop(manager_guard);\n\n            commit.apply();",
+        "            commit.apply();\n\n            drop(manager_guard);",
+        1,
+    );
+    assert_ne!(mutated, handlers, "drop/apply swap mutation applied");
+    assert!(validate_sys_execv_with_frame_releases_process_manager(&mutated).is_err());
+}
+
+#[test]
+fn negative_sys_execv_with_frame_missing_drop_is_rejected() {
+    let handlers = repo_text("kernel/src/syscall/handlers.rs");
+    let mutated = handlers.replacen(
+        "            drop(manager_guard);\n\n            commit.apply();",
+        "            commit.apply();",
+        1,
+    );
+    assert_ne!(mutated, handlers, "drop deletion mutation applied");
+    assert!(validate_sys_execv_with_frame_releases_process_manager(&mutated).is_err());
 }
 
 #[test]
@@ -1929,6 +2149,87 @@ fn negative_exec_smoke_after_reap_loop_is_rejected() {
         mutated, init_rs,
         "exec smoke after reap loop mutation applied"
     );
+    assert!(validate_exec_smoke_is_wired(
+        &mutated,
+        &build_sh,
+        &cargo_toml,
+        &launcher_rs,
+        &target_rs,
+        &syscall_entry,
+    )
+    .is_err());
+}
+
+/// #721 K2/K13: a deleted x86_64 call site must redden the validator too, not just the
+/// pre-existing aarch64 one.
+#[test]
+fn negative_exec_smoke_x86_64_call_site_deletion_is_rejected() {
+    let init_rs = repo_text("userspace/programs/src/init.rs");
+    let build_sh = repo_text("userspace/programs/build.sh");
+    let cargo_toml = repo_text("userspace/programs/Cargo.toml");
+    let launcher_rs = repo_text("userspace/programs/src/exec_smoke.rs");
+    let target_rs = repo_text("userspace/programs/src/exec_smoke_target.rs");
+    let syscall_entry = repo_text("kernel/src/arch_impl/aarch64/syscall_entry.rs");
+    let x86_smoke_call = "    #[cfg(target_arch = \"x86_64\")]\n    run_exec_smoke();\n";
+    let mutated = init_rs.replacen(x86_smoke_call, "", 1);
+    assert_ne!(mutated, init_rs, "x86_64 exec smoke call deletion applied");
+    assert!(validate_exec_smoke_is_wired(
+        &mutated,
+        &build_sh,
+        &cargo_toml,
+        &launcher_rs,
+        &target_rs,
+        &syscall_entry,
+    )
+    .is_err());
+}
+
+/// #721 K2/K13: the x86_64 call site must be ordered after x86's own tty oracle, matching the
+/// position #713's run_spawn_smoke()/run_tty_oracle() already occupy.
+#[test]
+fn negative_exec_smoke_x86_64_before_tty_oracle_is_rejected() {
+    let init_rs = repo_text("userspace/programs/src/init.rs");
+    let build_sh = repo_text("userspace/programs/build.sh");
+    let cargo_toml = repo_text("userspace/programs/Cargo.toml");
+    let launcher_rs = repo_text("userspace/programs/src/exec_smoke.rs");
+    let target_rs = repo_text("userspace/programs/src/exec_smoke_target.rs");
+    let syscall_entry = repo_text("kernel/src/arch_impl/aarch64/syscall_entry.rs");
+    let x86_smoke_call = "    #[cfg(target_arch = \"x86_64\")]\n    run_exec_smoke();\n";
+    let without_smoke = init_rs.replacen(x86_smoke_call, "", 1);
+    let x86_spawn_smoke_call = "    #[cfg(target_arch = \"x86_64\")]\n    run_spawn_smoke();\n";
+    let mutated = without_smoke.replacen(
+        x86_spawn_smoke_call,
+        &format!("{x86_smoke_call}{x86_spawn_smoke_call}"),
+        1,
+    );
+    assert_ne!(mutated, init_rs, "x86_64 exec smoke reorder mutation applied");
+    assert!(validate_exec_smoke_is_wired(
+        &mutated,
+        &build_sh,
+        &cargo_toml,
+        &launcher_rs,
+        &target_rs,
+        &syscall_entry,
+    )
+    .is_err());
+}
+
+/// #721 K2: re-gating the shared run_exec_smoke definition to a single architecture must
+/// redden the validator, since the other architecture's call site would then fail to build.
+#[test]
+fn negative_exec_smoke_definition_regated_to_one_arch_is_rejected() {
+    let init_rs = repo_text("userspace/programs/src/init.rs");
+    let build_sh = repo_text("userspace/programs/build.sh");
+    let cargo_toml = repo_text("userspace/programs/Cargo.toml");
+    let launcher_rs = repo_text("userspace/programs/src/exec_smoke.rs");
+    let target_rs = repo_text("userspace/programs/src/exec_smoke_target.rs");
+    let syscall_entry = repo_text("kernel/src/arch_impl/aarch64/syscall_entry.rs");
+    let mutated = init_rs.replacen(
+        "fn run_exec_smoke() {",
+        "#[cfg(target_arch = \"aarch64\")]\nfn run_exec_smoke() {",
+        1,
+    );
+    assert_ne!(mutated, init_rs, "run_exec_smoke re-gate mutation applied");
     assert!(validate_exec_smoke_is_wired(
         &mutated,
         &build_sh,

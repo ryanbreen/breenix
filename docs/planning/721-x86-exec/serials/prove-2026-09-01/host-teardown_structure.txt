@@ -1,0 +1,12 @@
+
+thread 'deliberately_broken_variants_fail_the_ratchet' panicked at tests/teardown_structure.rs:9715:5:
+assertion failed: validate_thread_state_constructions(&sources).is_ok()
+
+
+failures:
+    deliberately_broken_variants_fail_the_ratchet
+    v3_structural_closures_are_exact
+
+test result: FAILED. 79 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.26s
+
+error: test failed, to rerun pass `--test teardown_structure`

@@ -124,6 +124,8 @@ fn main() {
     run_spawn_smoke();
     #[cfg(target_arch = "x86_64")]
     run_tty_oracle();
+    #[cfg(target_arch = "x86_64")]
+    run_exec_smoke();
     start_bsshd();
     run_boot_script();
     #[cfg(target_arch = "aarch64")]
@@ -267,9 +269,11 @@ fn run_futex_handoff_oracle() {
     }
 }
 
-/// Run the boot path's only execve caller. The aarch64 exec gate asserts on the launcher's
-/// post-wait marker, the target's success marker, and the kernel's first scheduler commit marker.
-#[cfg(target_arch = "aarch64")]
+/// Run the boot path's only execve caller, on both architectures (#721 re-admits the x86_64
+/// call site alongside the pre-existing aarch64 one). The aarch64 exec gate asserts on the
+/// launcher's post-wait marker, the target's success marker, and the kernel's first scheduler
+/// commit marker; the x86_64 prod-profile gate asserts the same four userspace markers plus
+/// the kernel-side EXEC_LOCK_ORDER receipt oracles (#721 K7).
 fn run_exec_smoke() {
     match spawn(b"/bin/exec_smoke\0") {
         Ok(child_pid) => {
