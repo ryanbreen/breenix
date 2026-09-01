@@ -134,8 +134,21 @@ pub const MMAP_REGION_START: u64 = 0x7000_0000_0000;
 ///
 /// This bound genuinely is the allocators' own value -- see the derivation
 /// note on [`MMAP_REGION_START`] above. Since #742, the same is true of
-/// `MMAP_REGION_START`: there is nowhere left for either bound and the
-/// allocators' seed/floor to drift apart again.
+/// `MMAP_REGION_START`: every known producer seeds or floors `mmap_hint`
+/// against one of these two named constants, not an independently
+/// hardcoded literal.
+///
+/// That is a source-level fact backed by a structural ratchet
+/// (`tests/mmap_floor_structure.rs`), not a mathematical proof that no
+/// future producer could ever drift again (PR #744 review B2 -- the prior
+/// wording here claimed "there is nowhere left for either bound ... to
+/// drift apart again", which nothing enforced). The ratchet census-pins
+/// every currently known producer/seed site by (file, enclosing function,
+/// occurrence count) and fails the build the moment one of them stops
+/// naming these constants -- but a brand-new producer written tomorrow in
+/// some other shape entirely (never mentioning `MMAP_REGION_START`/`_END`
+/// by name) would not be walked into that census automatically; extending
+/// the pinned anchor list is how a legitimately new producer joins the law.
 pub const MMAP_REGION_END: u64 = 0x7FFF_FE00_0000;
 
 /// User stack allocation region start (high canonical space)
@@ -611,17 +624,28 @@ const _: () = assert!(
 // hand-picked number, so a future regression of this shape fails the build
 // instead of shipping a dead init again.
 //
-// Honest scope note on "fails the build" (#729 review m-3): only the
-// aarch64 stack-bottom assert below has been demonstrated, by mutation,
-// to actually catch a regression -- halving `USER_STACK_SIZE` in its
-// `region_bottom` computation reddens exactly this assert
+// Honest scope note on "fails the build" (#729 review m-3, updated by
+// #742/PR #744 review F6 -- the mmap arm below has since been demonstrated
+// too, so this note no longer overclaims it as unverified): the aarch64
+// stack-bottom assert below has been demonstrated, by mutation, to actually
+// catch a regression -- halving `USER_STACK_SIZE` in its `region_bottom`
+// computation reddens exactly this assert
 // (`docs/planning/green-program/nic-bus/serials/sweep3-prove3/
-// falsify-direction-B-narrowed-stack-build-error.txt`). The mmap, x86
-// stack, and code/data acceptance asserts are sound by the same
-// const-eval mechanism and the same reasoning, but as of this commit no
-// mutation has been run against them specifically -- they are unverified
-// by direct falsification, not yet proven the way the aarch64 stack one
-// is.
+// falsify-direction-B-narrowed-stack-build-error.txt`). The two mmap
+// asserts added by #742 have likewise been demonstrated by mutation, each
+// in isolation: loosening the mmap arm's lower-bound comparison by one
+// (`addr >= MMAP_REGION_START - 1`) reddens only the tight-refusal assert
+// below and nothing else; setting `MMAP_REGION_START = 0x7FFF_FEE0_0000`
+// and `MMAP_REGION_END = 0x5000_0000` reddens only the non-empty assert
+// below and nothing else (PR #744 review F3 -- the mutation on record
+// before this note, `MMAP_REGION_START = MMAP_REGION_END`, also reddened
+// the two acceptance asserts above it, so it did not isolate the
+// non-empty assert on its own; this pair of bounds does). The x86 stack
+// and code/data acceptance asserts remain sound by the same const-eval
+// mechanism and the same reasoning, but as of this commit no mutation has
+// been run against them specifically -- they are unverified by direct
+// falsification, not yet proven the way the stack-bottom and mmap ones
+// now are.
 //
 // mmap: anchored on `vma::MMAP_REGION_END`/`_START` by name (not
 // `layout::MMAP_REGION_*`, even though they are the same definition after
@@ -634,9 +658,15 @@ const _: () = assert!(
 // check: `sys_mmap` and all five `graphics.rs` mmap-hint producers now
 // floor their downward-descending `mmap_hint` against
 // `vma::MMAP_REGION_START` directly (not a second, independently
-// hardcoded `0x1000_0000`), so this assert accepting
-// `MMAP_REGION_START` is now a proof about the lowest address a real
-// allocator can hand out, the same way the END assert above always was.
+// hardcoded `0x1000_0000`). That link -- producers floor here, this
+// assert accepts here -- is a source-level fact enforced by the
+// structural ratchet in `tests/mmap_floor_structure.rs`, not by this
+// const-eval assert itself: this assert alone still only proves a
+// property of `is_valid_user_range`, exactly as it did before #742 (PR
+// #744 review B2 -- the prior wording here overclaimed this assert as
+// itself "a proof about the lowest address a real allocator can hand
+// out", which nothing here enforces on its own). Together with that
+// ratchet, the practical claim holds for every producer known today.
 const _: () = assert!(
     is_valid_user_range(crate::memory::vma::MMAP_REGION_END - 1, 1),
     "the highest address the mmap allocator hands out (MMAP_REGION_END - 1) must be accepted"
@@ -647,11 +677,16 @@ const _: () = assert!(
 );
 // One byte below the real producer floor must be refused -- proves the
 // boundary asserted above is tight, not merely "somewhere inside is
-// accepted". At `MMAP_REGION_START - 1` on both arches this falls below
-// `USERSPACE_CODE_DATA_END` too (2GiB vs 0x7000_0000_0000), so it cannot
-// be admitted by the code/data arm either; the only way this can pass is
-// if the mmap arm's lower bound is exactly `MMAP_REGION_START`, which is
-// exactly what #742 made the allocators' own floor.
+// accepted". At `MMAP_REGION_START - 1` (0x6FFF_FFFF_FFFF) on both arches
+// this falls *above* `USERSPACE_CODE_DATA_END` (0x8000_0000, 2GiB) -- not
+// below it, contrary to what this comment used to say (PR #744 review
+// F4) -- so it cannot be admitted by the code/data arm's own upper bound
+// either. It is also below `USER_STACK_REGION_START`
+// (0x7FFF_FF00_0000) by a wide margin on both arches, so the stack arm's
+// lower bound can't absorb it either. With all three windows' own bounds
+// ruling it out, the only way this assert can pass is if the mmap arm's
+// lower bound is exactly `MMAP_REGION_START`, which is exactly what #742
+// made the allocators' own floor.
 const _: () = assert!(
     !is_valid_user_range(crate::memory::vma::MMAP_REGION_START - 1, 1),
     "one byte below the mmap region's real floor (MMAP_REGION_START, #742) must be refused"

@@ -175,6 +175,18 @@ pub fn sys_mmap(
         // (`mmap_hint` only ever descends from `MMAP_REGION_END`, so
         // `end_addr` here equals the pre-allocation hint, which is always
         // <= `MMAP_REGION_END`).
+        //
+        // This is a Linux-semantics deviation, deliberately (PR #744 review
+        // F7): real MAP_FIXED is allowed to land anywhere in the process's
+        // address space, including inside its own code/data or stack
+        // windows (that is how Linux lets a program remap over itself).
+        // This check refuses MAP_FIXED outside `[MMAP_REGION_START,
+        // MMAP_REGION_END)` even for addresses `is_valid_user_range` would
+        // otherwise accept as code/data or stack -- there are zero in-tree
+        // callers of MAP_FIXED today, and a mapping placed there could
+        // clobber the ELF image or a live stack, so refusing the wider
+        // allow-list is the conservative, correct call here. It is not
+        // simply mirroring the validator's allow-list.
         if flags.contains(MmapFlags::FIXED)
             && (start_addr < crate::memory::vma::MMAP_REGION_START
                 || end_addr > crate::memory::vma::MMAP_REGION_END)
@@ -449,7 +461,19 @@ pub fn sys_munmap(addr: u64, length: u64) -> SyscallResult {
 
     // Round length up to page size
     let length = round_up_to_page(length);
-    let end_addr = addr + length;
+    // `checked_add`, matching `sys_mmap`'s sibling computation above (PR
+    // #744 review F8): an overflowing `addr + length` used to fall out as
+    // EINVAL only incidentally, via the exact-match VMA lookup below never
+    // finding a VMA ending at the wrapped address in a release build
+    // (`overflow-checks = false`, no `[profile]` override in this
+    // workspace). Refuse it directly instead of relying on that.
+    let end_addr = match addr.checked_add(length) {
+        Some(end_addr) => end_addr,
+        None => {
+            log::warn!("sys_munmap: addr + length would overflow");
+            return SyscallResult::Err(ErrorCode::InvalidArgument as u64);
+        }
+    };
 
     // Get current thread and process
     let current_thread_id = match get_current_thread_id() {
