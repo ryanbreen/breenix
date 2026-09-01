@@ -1,0 +1,216 @@
+#!/bin/bash
+# p702 catch harness - runs INSIDE the breenix-x86 incus container on beast.
+# Loops boots of the run-x86-gate.sh "full" profile with QEMU gdbserver (-s,
+# no -S) enabled, watching serial for the #702 signature: output stalls with
+# the last kernel line being exactly "E1000 network device found" and none of
+# the later boot markers ever appearing. On a match, attaches gdb live before
+# killing anything.
+set -u
+source "$HOME/.cargo/env" 2>/dev/null || export PATH="$HOME/.cargo/bin:$PATH"
+export BREENIX_RUST_FORK_LIBRARY=/root/breenix/rust-fork-real/library
+# Match the profile #702 was measured on (run-x86-gate.sh): kvm accel, cpu host.
+export BREENIX_QEMU_ACCEL=kvm
+export BREENIX_QEMU_CPU=host
+
+REPO=/root/p702-rca/repo
+OUT=/root/p702-rca/specimens
+STATE=/root/p702-rca/state
+LEDGER_LOCAL=/root/p702-rca/loop.log
+KERNEL_ELF="$REPO/target/x86_64-unknown-none/release/deps/artifact/kernel-10a65b692264a663/bin/kernel-10a65b692264a663"
+# IMPORTANT (discovered during harness smoke-testing, not from stale docs):
+# the bootloader crate picks its own PIE virtual_address_offset PER BOOT and
+# it is NOT constant. Two smoke boots on this exact binary produced
+# 0x8000000000 and 0x10000000000 respectively. The documented gdb_chat.py
+# constant (0x10000000000 / "1 TiB") is just one observed value, not a fixed
+# fact -- so the slide is read from THIS boot's own bootloader serial line
+# ("virtual_address_offset: 0x...") every time, never assumed.
+
+mkdir -p "$OUT" "$STATE"
+cd "$REPO" || exit 99
+
+MAX_BOOTS="${P702_MAX_BOOTS:-150}"
+MAX_SECONDS="${P702_MAX_SECONDS:-18000}"   # 5 hours
+STALL_SECS="${P702_STALL_SECS:-12}"        # no growth for this long => check signature
+PER_BOOT_CAP="${P702_PER_BOOT_CAP:-100}"   # empirically: healthy full-profile boot ~57s, maxgap ~3s
+POLL_INTERVAL=1
+
+log() { echo "[$(date '+%H:%M:%S')] $*" | tee -a "$LEDGER_LOCAL"; }
+
+# Compute gdb symbol-load command for ONE boot, reading its own PIE slide
+# from its serial_user.log (bootloader's "virtual_address_offset: 0x..." line).
+# Mirrors breenix-gdb-chat/scripts/gdb_chat.py::_load_symbols_at_runtime_addr
+# but with the per-boot slide instead of a hardcoded constant.
+compute_symfile_cmd_for_boot() {
+  local user_log="$1"
+  python3 - "$KERNEL_ELF" "$user_log" <<'PY'
+import re, subprocess, sys
+elf, user_log = sys.argv[1], sys.argv[2]
+base = None
+try:
+    with open(user_log, "r", errors="replace") as f:
+        for line in f:
+            m = re.search(r"virtual_address_offset:\s*(0x[0-9a-fA-F]+)", line)
+            if m:
+                base = int(m.group(1), 16)
+except FileNotFoundError:
+    pass
+if base is None:
+    print("ERROR: virtual_address_offset not found in " + user_log, file=sys.stderr)
+    sys.exit(1)
+out = subprocess.run(["objdump", "-h", elf], capture_output=True, text=True).stdout
+sections = {}
+for line in out.splitlines():
+    parts = line.split()
+    if len(parts) >= 4:
+        try:
+            int(parts[0])
+        except ValueError:
+            continue
+        name = parts[1]
+        if name in (".text", ".rodata", ".data", ".bss"):
+            sections[name] = int(parts[3], 16)
+text_addr = base + sections[".text"]
+cmd = f"add-symbol-file {elf} {hex(text_addr)}"
+for n in (".rodata", ".data", ".bss"):
+    if n in sections:
+        cmd += f" -s {n} {hex(base + sections[n])}"
+print(f"BASE={hex(base)}", file=sys.stderr)
+print(cmd)
+PY
+}
+
+BOOT=0
+SPECIMENS=0
+START_TS=$SECONDS
+
+cleanup_qemu() {
+  local wrapper_pid="$1"
+  local qemu_pid="$2"
+  [ -n "$qemu_pid" ] && kill -9 "$qemu_pid" 2>/dev/null
+  [ -n "$wrapper_pid" ] && kill -9 "$wrapper_pid" 2>/dev/null
+  wait "$wrapper_pid" 2>/dev/null
+  sleep 1
+}
+
+while [ "$BOOT" -lt "$MAX_BOOTS" ] && [ $((SECONDS - START_TS)) -lt "$MAX_SECONDS" ]; do
+  BOOT=$((BOOT+1))
+  BOUT="/root/p702-rca/boot_tmp"
+  rm -rf "$BOUT"; mkdir -p "$BOUT"
+
+  BREENIX_NET_MODE=none "$REPO/target/release/qemu-uefi" \
+    -serial "file:$BOUT/serial_user.log" \
+    -serial "file:$BOUT/serial_kernel.log" \
+    -s \
+    > "$BOUT/stdout.log" 2>&1 &
+  WRAPPER_PID=$!
+
+  # Find the real qemu-system-x86_64 child PID (may take a moment to spawn)
+  QEMU_PID=""
+  for _ in $(seq 1 30); do
+    QEMU_PID=$(pgrep -P "$WRAPPER_PID" -f qemu-system-x86_64 2>/dev/null | head -1)
+    [ -z "$QEMU_PID" ] && QEMU_PID=$(pgrep -f "qemu-system-x86_64.*$BOUT" 2>/dev/null | head -1)
+    [ -n "$QEMU_PID" ] && break
+    sleep 0.2
+  done
+
+  BOOT_START=$SECONDS
+  LAST_SIZE=-1
+  LAST_CHANGE=$SECONDS
+  VERDICT=""
+
+  while :; do
+    ELAPSED=$((SECONDS - BOOT_START))
+    if [ ! -f "$BOUT/serial_kernel.log" ]; then
+      SIZE=0
+    else
+      SIZE=$(stat -c%s "$BOUT/serial_kernel.log" 2>/dev/null || echo 0)
+    fi
+
+    if [ "$SIZE" != "$LAST_SIZE" ]; then
+      LAST_SIZE=$SIZE
+      LAST_CHANGE=$SECONDS
+    fi
+
+    # Healthy completion markers
+    if grep -q "USERSPACE TEST COMPLETE" "$BOUT/serial_kernel.log" "$BOUT/serial_user.log" 2>/dev/null; then
+      VERDICT="clean"
+      break
+    fi
+
+    # Wrapper process died (qemu exited on its own - crash/panic/reboot)
+    if ! kill -0 "$WRAPPER_PID" 2>/dev/null; then
+      VERDICT="exited"
+      break
+    fi
+
+    STALLED=$((SECONDS - LAST_CHANGE))
+    if [ "$STALLED" -ge "$STALL_SECS" ]; then
+      LAST_LINE=$(grep -v '^\s*$' "$BOUT/serial_kernel.log" 2>/dev/null | tail -1 | tr -d '\r')
+      if [ "$LAST_LINE" = "[ INFO] kernel::drivers::pci: E1000 network device found" ]; then
+        VERDICT="signature_match"
+        break
+      else
+        VERDICT="stalled_offsignature"
+        break
+      fi
+    fi
+
+    if [ "$ELAPSED" -ge "$PER_BOOT_CAP" ]; then
+      VERDICT="cap_exceeded"
+      break
+    fi
+    sleep "$POLL_INTERVAL"
+  done
+
+  case "$VERDICT" in
+    clean)
+      log "boot $BOOT: clean ($(wc -l < "$BOUT/serial_kernel.log" 2>/dev/null) kernel lines)"
+      cleanup_qemu "$WRAPPER_PID" "$QEMU_PID"
+      ;;
+    exited)
+      log "boot $BOOT: qemu exited on its own before completion marker - saving as anomaly"
+      DEST="$OUT/anomaly_exited_$(printf '%03d' "$BOOT")"
+      mkdir -p "$DEST"
+      cp "$BOUT"/*.log "$DEST/" 2>/dev/null
+      cleanup_qemu "$WRAPPER_PID" "$QEMU_PID"
+      ;;
+    stalled_offsignature)
+      LAST_LINE=$(grep -v '^\s*$' "$BOUT/serial_kernel.log" 2>/dev/null | tail -1 | tr -d '\r')
+      log "boot $BOOT: stalled but NOT #702 signature (last line: $LAST_LINE) - saving as anomaly"
+      DEST="$OUT/anomaly_offsig_$(printf '%03d' "$BOOT")"
+      mkdir -p "$DEST"
+      cp "$BOUT"/*.log "$DEST/" 2>/dev/null
+      cleanup_qemu "$WRAPPER_PID" "$QEMU_PID"
+      ;;
+    cap_exceeded)
+      LAST_LINE=$(grep -v '^\s*$' "$BOUT/serial_kernel.log" 2>/dev/null | tail -1 | tr -d '\r')
+      log "boot $BOOT: per-boot cap exceeded (still progressing?) last line: $LAST_LINE"
+      cleanup_qemu "$WRAPPER_PID" "$QEMU_PID"
+      ;;
+    signature_match)
+      SPECIMENS=$((SPECIMENS+1))
+      SPEC_DIR="$OUT/specimen_$(printf '%02d' "$SPECIMENS")"
+      mkdir -p "$SPEC_DIR"
+      log "boot $BOOT: *** #702 SIGNATURE MATCH *** qemu_pid=$QEMU_PID -> $SPEC_DIR"
+      cp "$BOUT"/*.log "$SPEC_DIR/" 2>/dev/null
+      wc -l "$BOUT/serial_kernel.log" >> "$SPEC_DIR/meta.txt"
+      echo "boot_number=$BOOT wrapper_pid=$WRAPPER_PID qemu_pid=$QEMU_PID" >> "$SPEC_DIR/meta.txt"
+      date >> "$SPEC_DIR/meta.txt"
+
+      # Attach GDB live and capture state. Slide is per-boot; compute it from
+      # THIS boot's own serial_user.log before building the symbol command.
+      SYMFILE_CMD="$(compute_symfile_cmd_for_boot "$SPEC_DIR/serial_user.log" 2>>"$SPEC_DIR/attach_driver.log")"
+      echo "SYMFILE_CMD=$SYMFILE_CMD" >> "$SPEC_DIR/meta.txt"
+      bash "$(dirname "$0")/attach.sh" "$SPEC_DIR" "$SYMFILE_CMD" >> "$SPEC_DIR/attach_driver.log" 2>&1
+
+      cleanup_qemu "$WRAPPER_PID" "$QEMU_PID"
+      ;;
+  esac
+
+  # make sure nothing lingers before next boot (shared disk image lock)
+  pkill -9 -f "qemu-system-x86_64.*$BOUT" 2>/dev/null
+  sleep 1
+done
+
+log "loop done: boots=$BOOT specimens=$SPECIMENS elapsed=$((SECONDS-START_TS))s"
+echo "FINAL boots=$BOOT specimens=$SPECIMENS elapsed=$((SECONDS-START_TS))" > "$STATE/final.txt"
