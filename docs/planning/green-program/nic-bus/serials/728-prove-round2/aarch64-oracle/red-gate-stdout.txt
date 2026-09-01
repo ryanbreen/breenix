@@ -1,0 +1,12 @@
+=========================================
+#728 ext2 lock-race gate
+  arch:     aarch64
+  features: boot_tests,ext2_lock_race
+=========================================
+[gate] building aarch64 kernel...
+docker/qemu/run-ext2-lock-race-gate.sh: line 278: lock: unbound variable
+ext2 lock-race gate (aarch64): FAIL - EXT2_LOCK_SPIN_STALL observed — a contended acquisition spun instead of parking (#728 live)
+--- LOCKRACE / stall lines ---
+EXT2_LOCK_SPIN_STALL lock=ROOT_EXT2_write elapsed_ns=500259000
+EXT2_LOCK_SPIN_STALL lock=ROOT_EXT2_write elapsed_ns=503353000
+EXT2_LOCK_SPIN_STALL lock=ROOT_EXT2_write elapsed_ns=503517000

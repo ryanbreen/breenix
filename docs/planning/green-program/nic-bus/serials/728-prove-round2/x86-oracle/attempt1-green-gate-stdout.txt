@@ -1,0 +1,16 @@
+=========================================
+#728 ext2 lock-race gate
+  arch:     x86
+  features: boot_tests,ext2_lock_race
+=========================================
+[gate] building x86_64 kernel...
+   Compiling kernel v0.1.0 (/root/breenix-728-prove/kernel)
+   Compiling breenix v0.1.0 (/root/breenix-728-prove)
+    Finished `release` profile [optimized] target(s) in 16.49s
+     Running `target/release/qemu-uefi`
+[qemu-uefi] Using UEFI image: /root/breenix-728-prove/target/release/build/breenix-c8a48f7e864c94be/out/breenix-uefi.img (7405568 bytes)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.22s
+     Running `target/debug/xtask create-test-disk`
+ext2 lock-race gate (x86): FAIL - the leg never reached its COMPLETE marker (hang with no stall/lockup signal caught, or it never ran)
+--- LOCKRACE / stall lines ---
+(none)

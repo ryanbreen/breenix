@@ -1,0 +1,14 @@
+diff --git a/kernel/src/fs/ext2/mod.rs b/kernel/src/fs/ext2/mod.rs
+index 553797c0..c7bb46e5 100644
+--- a/kernel/src/fs/ext2/mod.rs
++++ b/kernel/src/fs/ext2/mod.rs
+@@ -1769,6 +1769,9 @@ fn ext2_lock_can_sleep() -> bool {
+         if crate::per_cpu::in_interrupt() {
+             return false;
+         }
++        if !<crate::arch_impl::x86_64::X86Cpu as crate::arch_impl::traits::CpuOps>::interrupts_enabled() {
++            return false;
++        }
+         crate::per_cpu::preempt_count() == 1
+     }
+ }
