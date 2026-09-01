@@ -92,14 +92,39 @@ pub const USERSPACE_CODE_DATA_END: u64 = 0x0000_0000_8000_0000;
 /// -- only `is_valid_user_range`'s mmap arm consulted it. That divergence
 /// is what made every aarch64 process's first malloc'd-buffer syscall
 /// (`sys_write` on `print!`'s heap-allocated `LineWriter`, since this libc's
-/// `malloc` is implemented as `mmap`) refuse with EFAULT (#729 B4-a). This
-/// definition now matches the address class the allocator has always
-/// really used, on both arches, and there is nowhere left for the two to
-/// drift apart again.
+/// `malloc` is implemented as `mmap`) refuse with EFAULT (#729 B4-a).
+///
+/// **What this collapse actually derives, precisely (#729 review M-1):**
+/// only `MMAP_REGION_END`, the *upper* bound. `mmap_hint` -- the field both
+/// producers descend from -- is seeded from `vma::MMAP_REGION_END` at five
+/// call sites (`kernel/src/process/process.rs:377`,
+/// `kernel/src/process/manager.rs:3375/3710/3996/4309`), so the allocators'
+/// starting point and this constant are now provably the same value on
+/// both arches.
+///
+/// `MMAP_REGION_START`, the *lower* bound, is a different story: **no
+/// producer consults it.** Both `sys_mmap`
+/// (`kernel/src/syscall/mmap.rs:141-147`) and
+/// `handle_create_window_buffer` (`kernel/src/syscall/graphics.rs:1736-1740`)
+/// enforce their own hardcoded floor, `0x1000_0000` (256 MiB) -- not this
+/// constant -- when deciding whether the downward-descending `mmap_hint`
+/// has run out of room. `MMAP_REGION_START` is read only by
+/// `is_valid_user_range` (the validator) and by `VmaList::find_free_region`
+/// (`#[allow(dead_code)]`, zero live callers). So the real floor an
+/// aarch64/x86_64 process's `mmap_hint` can descend to is
+/// `0x1000_0000`, not `MMAP_REGION_START` (`0x7000_0000_0000`) -- the same
+/// "validator anchored to a bound the allocator does not use" shape that
+/// caused B4-a in the first place, just not yet live (~17.6 TB of
+/// cumulative, never-reclaimed hint descent stands between today's
+/// processes and it). Tracked as a follow-up, not re-fixed here: #742.
 pub const MMAP_REGION_START: u64 = 0x7000_0000_0000;
 
 /// End of mmap allocation region (gap before stack)
-/// See [`MMAP_REGION_START`] for why this is arch-generic.
+///
+/// Unlike [`MMAP_REGION_START`], this bound genuinely is the allocators'
+/// own value -- see the derivation note on `MMAP_REGION_START` above. There
+/// is nowhere left for `MMAP_REGION_END` and the allocators' seed to drift
+/// apart again; the same is not yet true of `MMAP_REGION_START`.
 pub const MMAP_REGION_END: u64 = 0x7FFF_FE00_0000;
 
 /// User stack allocation region start (high canonical space)
@@ -465,9 +490,17 @@ pub const fn is_valid_user_range(addr: u64, len: usize) -> bool {
 // `handle_stack_growth`, which will map pages down to, and refuses to grow
 // past, `USER_STACK_REGION_START.saturating_sub(MAX_USER_STACK_SIZE)` --
 // the exact same constant used here, so this predicate can never be
-// tighter than what the growth handler will actually map, nor looser than
-// the true worst case (the very first stack, whose top sits at
-// USER_STACK_REGION_START itself).
+// tighter than what the growth handler will actually map. It is
+// conservative in the accepting direction rather than exact: the bound
+// here is the theoretical worst case (a stack top pinned at
+// USER_STACK_REGION_START itself), while the shipped `exec` paths actually
+// pin `USER_STACK_TOP` at `USER_STACK_REGION_START + 0x10000` (64 KiB;
+// `process/manager.rs:3300,3632`, `syscall/handlers.rs:2153`) and
+// `stack.rs`'s allocator only ascends from USER_STACK_REGION_START. Every
+// real `stack_top` is therefore >= USER_STACK_REGION_START, so every
+// process's actual growth cap is >= this predicate's floor -- the
+// predicate is never tighter than reality, just not pinned to the exact
+// placement `exec` uses.
 #[cfg(target_arch = "x86_64")]
 #[inline]
 const fn is_valid_user_stack_range(addr: u64, last: u64) -> bool {
@@ -483,10 +516,15 @@ const fn is_valid_user_stack_range(addr: u64, last: u64) -> bool {
 // `kernel/src/process/manager.rs`'s ARM64 process-creation paths
 // allocate and map a single, fully-backed `USER_STACK_SIZE` (64 KiB) stack
 // per process, with its top *always* pinned at the fixed address
-// USER_STACK_REGION_START (never ascending the way x86_64's does, since
-// every process has its own page table and no two processes' stacks are
-// ever live in the same address space at once). USER_STACK_SIZE is
-// therefore the true, complete, exact extent -- not MAX_USER_STACK_SIZE
+// USER_STACK_REGION_START (never ascending the way x86_64's does). This
+// pin does NOT rest on "no two stacks are ever co-resident in one address
+// space" -- a CLONE_VM thread genuinely does share its parent's address
+// space and page table. It rests on `sys_clone` taking a caller-supplied
+// `child_stack` (`syscall/clone.rs:59,155,164`), which comes from the
+// mmap region and is covered by that arm instead -- every *non-CLONE_VM*
+// process still gets its own page table with its own single 64 KiB
+// window at this fixed address. USER_STACK_SIZE is
+// therefore the true, complete, exact extent for that window -- not MAX_USER_STACK_SIZE
 // (that constant is x86_64's growth cap; it does not describe anything
 // aarch64's allocator ever actually maps). Before this, the aarch64 arm
 // used a hardcoded, unexplained "1 MiB for multiple stacks" literal that
@@ -557,9 +595,22 @@ const _: () = assert!(
 // cause of the boot failure, the mmap arm's divergent region -- see
 // `MMAP_REGION_START`'s doc comment above) sailed through every build
 // undetected (#729 review finding M-c). Each assert below is anchored on
-// the address the real allocator/mapper for that region actually produces,
-// not a second hand-picked number, so a future regression of this shape
-// fails the build instead of shipping a dead init again.
+// the address the real allocator/mapper for that region actually produces
+// -- with one exception, disclosed at its own assert below, not a second
+// hand-picked number, so a future regression of this shape fails the build
+// instead of shipping a dead init again.
+//
+// Honest scope note on "fails the build" (#729 review m-3): only the
+// aarch64 stack-bottom assert below has been demonstrated, by mutation,
+// to actually catch a regression -- halving `USER_STACK_SIZE` in its
+// `region_bottom` computation reddens exactly this assert
+// (`docs/planning/green-program/nic-bus/serials/sweep3-prove3/
+// falsify-direction-B-narrowed-stack-build-error.txt`). The mmap, x86
+// stack, and code/data acceptance asserts are sound by the same
+// const-eval mechanism and the same reasoning, but as of this commit no
+// mutation has been run against them specifically -- they are unverified
+// by direct falsification, not yet proven the way the aarch64 stack one
+// is.
 //
 // mmap: anchored on `vma::MMAP_REGION_END`/`_START` by name (not
 // `layout::MMAP_REGION_*`, even though they are the same definition after
@@ -567,13 +618,23 @@ const _: () = assert!(
 // consumer's own path -- if a future edit ever gives `vma` its own
 // diverging copy again, THIS assert (not just a human reading the doc
 // comment) fails the build.
+//
+// Honest caveat on the START assert specifically (#729 review M-1): unlike
+// the END assert, this one is NOT anchored on anything a live allocator
+// produces -- neither `sys_mmap` nor `handle_create_window_buffer`
+// consults `MMAP_REGION_START` at all (both hardcode a `0x1000_0000`
+// floor instead; see `MMAP_REGION_START`'s doc comment above). This assert
+// can only ever fail if a future edit makes `vma::MMAP_REGION_START`
+// diverge from `layout::MMAP_REGION_START` -- it is a re-export-integrity
+// check, not proof that the validator's floor matches production
+// behavior. It does not, yet (#742).
 const _: () = assert!(
     is_valid_user_range(crate::memory::vma::MMAP_REGION_END - 1, 1),
     "the highest address the mmap allocator hands out (MMAP_REGION_END - 1) must be accepted"
 );
 const _: () = assert!(
     is_valid_user_range(crate::memory::vma::MMAP_REGION_START, 1),
-    "the lowest address the mmap allocator may hand out (MMAP_REGION_START) must be accepted"
+    "the mmap region's lower bound constant (MMAP_REGION_START, not yet consulted by any live allocator -- see caveat above) must be accepted"
 );
 
 // code/data: both ends of the real ELF load region, not just one interior
