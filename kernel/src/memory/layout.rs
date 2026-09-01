@@ -635,17 +635,44 @@ const _: () = assert!(
 // asserts added by #742 have likewise been demonstrated by mutation, each
 // in isolation: loosening the mmap arm's lower-bound comparison by one
 // (`addr >= MMAP_REGION_START - 1`) reddens only the tight-refusal assert
-// below and nothing else; setting `MMAP_REGION_START = 0x7FFF_FEE0_0000`
-// and `MMAP_REGION_END = 0x5000_0000` reddens only the non-empty assert
-// below and nothing else (PR #744 review F3 -- the mutation on record
-// before this note, `MMAP_REGION_START = MMAP_REGION_END`, also reddened
-// the two acceptance asserts above it, so it did not isolate the
-// non-empty assert on its own; this pair of bounds does). The x86 stack
-// and code/data acceptance asserts remain sound by the same const-eval
-// mechanism and the same reasoning, but as of this commit no mutation has
-// been run against them specifically -- they are unverified by direct
-// falsification, not yet proven the way the stack-bottom and mmap ones
-// now are.
+// below and nothing else, on both arches (verified by `cargo check` against
+// both `--target x86_64-breenix.json --bin kernel` and `--target
+// aarch64-breenix-kernel.json --bin kernel-aarch64`: one error, same
+// assert, on each).
+//
+// Isolating the non-empty assert on its own is a different story, and here
+// there is NO arch-neutral pair (PR #744 review C1). Emptying the mmap arm
+// (`MMAP_REGION_START >= MMAP_REGION_END`) makes the non-empty assert fail
+// unconditionally on both arches -- that part is arch-neutral -- but for it
+// to fail *alone*, the START-accept assert just above it must keep passing
+// too, which only happens if `MMAP_REGION_START` still lands inside the
+// *stack* arm's window once the mmap arm is gone. That window's bottom
+// edge is `is_valid_user_stack_range`'s own `region_bottom` (defined
+// above), which is a different value on each arch: x86_64 subtracts
+// `MAX_USER_STACK_SIZE` from its own `USER_STACK_REGION_START`; aarch64
+// subtracts the different `USER_STACK_SIZE` from a different
+// `USER_STACK_REGION_START`. Both pairs below were run through `cargo
+// check` on BOTH targets, not modelled or assumed from one arch's result:
+//   - x86_64's own edge: `MMAP_REGION_START = 0x7FFF_FEE0_0000`
+//     (`USER_STACK_REGION_START - MAX_USER_STACK_SIZE`), `MMAP_REGION_END =
+//     0x5000_0000` -- reddens only the non-empty assert on x86_64 (1
+//     error). The identical pair on aarch64 reddens the START-accept
+//     assert too (2 errors): aarch64's stack window does not reach down
+//     that far.
+//   - aarch64's own edge: `MMAP_REGION_START = 0xFFFF_FEFF_0000`
+//     (`USER_STACK_REGION_START - USER_STACK_SIZE`), `MMAP_REGION_END =
+//     0x5000_0000` -- reddens only the non-empty assert on aarch64 (1
+//     error), and mirrors: the same pair on x86_64 reddens both the
+//     non-empty and the START-accept asserts (2 errors), because that
+//     address is far above x86_64's own stack window.
+// (An earlier version of this note recorded only the first pair and stated
+// it reddened "only the non-empty assert" as a universal, without having
+// re-run it against the aarch64 target -- PR #744 review C1. It does not:
+// see the second bullet above.) The x86 stack and code/data acceptance
+// asserts remain sound by the same const-eval mechanism and the same
+// reasoning, but as of this commit no mutation has been run against them
+// specifically -- they are unverified by direct falsification, not yet
+// proven the way the stack-bottom and mmap ones now are.
 //
 // mmap: anchored on `vma::MMAP_REGION_END`/`_START` by name (not
 // `layout::MMAP_REGION_*`, even though they are the same definition after
