@@ -1590,7 +1590,19 @@ fn ext2_spin_wait_write(
     lock: &'static RwLock<Option<Ext2Fs>>,
     lock_name: &str,
 ) -> spin::RwLockWriteGuard<'static, Option<Ext2Fs>> {
-    let mut upgradeable = ext2_spin_wait(lock_name, || lock.try_upgradeable_read());
+    let upgradeable = ext2_spin_wait(lock_name, || lock.try_upgradeable_read());
+    ext2_spin_wait_upgrade(upgradeable, lock_name)
+}
+
+/// Phase 2 of the write spin: busy-spin `try_upgrade()` starting from an
+/// already-held upgradeable guard, until every existing reader has drained.
+/// Factored out so the park path (`ext2_acquire_write`, below) can fall back
+/// to spinning on an upgrade it already holds the slot for, without
+/// releasing and re-racing for the upgradeable slot itself.
+fn ext2_spin_wait_upgrade(
+    mut upgradeable: spin::RwLockUpgradableGuard<'static, Option<Ext2Fs>>,
+    lock_name: &str,
+) -> spin::RwLockWriteGuard<'static, Option<Ext2Fs>> {
     let mut tracker = Ext2SpinStallTracker::new();
     loop {
         match upgradeable.try_upgrade() {
@@ -1601,6 +1613,305 @@ fn ext2_spin_wait_write(
         core::hint::spin_loop();
     }
 }
+
+// =============================================================================
+// #728 — park instead of spin when it is safe to
+// =============================================================================
+//
+// A contended acquisition parks on a per-lock WaitQueueHead instead of
+// spinning whenever `ext2_lock_can_sleep()` is true — mirroring the
+// established parking-on-contention precedent in this kernel
+// (`drivers/virtio/block.rs`'s `BlockRequestGate`) and the syscall sleep
+// path's own can-sleep check (`task/completion.rs`'s
+// `syscall_sleep_path_available`), tightened to an exact `preempt_count()` of
+// 1 so `schedule_current_wait()`'s unconditional enable-then-disable pairing
+// (`task/waitqueue.rs`) can neither underflow nor leave preemption wedged on
+// return. When it is not safe — no current thread, interrupt context,
+// interrupts masked, more than one nested preempt-disable, or (aarch64) the
+// timer not yet initialized — the accessor falls back to exactly the same
+// spin `ext2_spin_wait`/`ext2_spin_wait_write` performed before this commit,
+// which is always correct, just not livelock-proof. This is why the
+// observer commit came first: the fallback spin path is unchanged code, and
+// the same instrument measures both the pre-fix state (spin, always) and
+// this fix's fallback edges (spin, sometimes).
+//
+// A parked acquisition is also bounded: `EXT2_LOCK_PARK_ROUNDS` rounds of
+// `EXT2_LOCK_PARK_TIMEOUT_NS` each, using `prepare_to_wait_checked`'s
+// enqueue-under-the-waitqueue-lock recheck (never the untimed
+// `prepare_to_wait`) so a missed wake degrades to a bounded retry rather than
+// a permanent hang, matching this kernel's own lost-wake history (#584,
+// #586, #589). If every round leaves the lock still unavailable — which
+// would mean the wake path itself is broken — the accessor falls back to the
+// unchanged spin rather than looping forever on a wait that isn't working.
+//
+// Guards returned by the four accessors below are wrapped in
+// `Ext2ReadGuard`/`Ext2WriteGuard`, which `Deref`/`DerefMut` transparently to
+// `Option<Ext2Fs>` (every call site already only ever calls `.as_ref()`/
+// `.as_mut()` on the guard, so no call site changes). Their `Drop` releases
+// the inner `spin::RwLock` guard *first* and only then calls
+// `wake_up()` — never holding ext2 state across the wake — so the lock order
+// this file participates in is exactly `EXT2_STATE -> WAITQUEUE ->
+// SCHEDULER`, matching `WaitQueueHead::wake_up_one`'s own
+// `WAITQUEUE -> SCHEDULER` order (`task/waitqueue.rs`,
+// `task/scheduler.rs`'s `with_scheduler`).
+//
+// Residual, disclosed rather than silently left: this fix closes the
+// *contention* half of #728 (a contender no longer denies the CPU the actual
+// holder's completion needs) but does not remove "ext2 guard held across a
+// park" itself — `Completion::wait_timeout()`'s own documented precondition
+// ("no locks are held") is still violated at every read/write-family call
+// site enumerated in the #728 fix PR. Removing that pattern entirely
+// (drop the guard before the block-device wait, re-validate on reacquire) is
+// Option A in the #728 analysis, deliberately deferred to a follow-on: it
+// touches the filesystem's core read/write/mutate paths and needs a real
+// revalidation story for the in-memory allocator state
+// (`Ext2Fs::block_groups`/`superblock`), which is real filesystem-correctness
+// work, not a locking-primitive change.
+
+/// Rounds of `EXT2_LOCK_PARK_TIMEOUT_NS` a parked acquisition will retry
+/// before giving up and falling back to the (always-correct) spin path.
+const EXT2_LOCK_PARK_ROUNDS: u32 = 32;
+
+/// Per-round park timeout. Bounded per C6 of the #728 pre-check: a missed
+/// wake degrades to a retry at this granularity rather than a permanent
+/// hang. 32 rounds at 200ms is a 6.4s worst-case bound before falling back
+/// to the spin path — generous next to ordinary block-device I/O latency,
+/// small next to "forever."
+const EXT2_LOCK_PARK_TIMEOUT_NS: u64 = 200_000_000;
+
+/// Returns true when it is safe for a contended ext2 lock acquisition to
+/// park instead of spin. See the module docs above for the full rationale;
+/// this mirrors `block_request_gate_can_sleep()`
+/// (`drivers/virtio/block.rs`) and `syscall_sleep_path_available()`
+/// (`task/completion.rs`).
+#[inline]
+fn ext2_lock_can_sleep() -> bool {
+    if crate::task::scheduler::current_thread_id().is_none() {
+        return false;
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    {
+        if crate::per_cpu_aarch64::in_interrupt() {
+            return false;
+        }
+        if !crate::arch_impl::aarch64::cpu::interrupts_enabled() {
+            return false;
+        }
+        if crate::per_cpu_aarch64::preempt_count() != 1 {
+            return false;
+        }
+        crate::arch_impl::aarch64::timer_interrupt::is_initialized()
+    }
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        use crate::arch_impl::traits::CpuOps;
+        type Ext2Cpu = crate::arch_impl::x86_64::cpu::X86Cpu;
+
+        if crate::per_cpu::in_interrupt() {
+            return false;
+        }
+        if !Ext2Cpu::interrupts_enabled() {
+            return false;
+        }
+        crate::per_cpu::preempt_count() == 1
+    }
+}
+
+fn ext2_schedule_current_wait() {
+    crate::task::waitqueue::schedule_current_wait();
+}
+
+/// Try the fast (uncontended) path, then park up to `EXT2_LOCK_PARK_ROUNDS`
+/// times when it's safe to, then fall back to the unchanged spin. Shared by
+/// the read and write acquisition paths below via the closures they pass.
+fn ext2_acquire<T>(
+    waiters: &'static crate::task::waitqueue::WaitQueueHead,
+    mut try_acquire: impl FnMut() -> Option<T>,
+    spin_fallback: impl FnOnce() -> T,
+) -> T {
+    if let Some(v) = try_acquire() {
+        return v;
+    }
+
+    if ext2_lock_can_sleep() {
+        for _ in 0..EXT2_LOCK_PARK_ROUNDS {
+            if let Some(v) = try_acquire() {
+                return v;
+            }
+
+            let deadline = ext2_now_ns() + EXT2_LOCK_PARK_TIMEOUT_NS;
+            // The recheck closure runs under the waitqueue lock, atomically
+            // with publishing our BlockedOnIO state: a release that lands
+            // between our failed `try_acquire()` above and this enqueue is
+            // not lost, because either the closure now observes the lock
+            // free (Mismatch — loop back and retry `try_acquire()`
+            // immediately, uncontended) or it still observes it held, in
+            // which case we are safely enqueued before the holder can
+            // possibly release again. The closure's own successful
+            // `try_acquire()` result (if any) is deliberately dropped here —
+            // `prepare_to_wait_checked`'s `cond` can only report a bool, not
+            // hand a value back — and reacquired uncontended by the very
+            // next loop iteration's `try_acquire()` above.
+            let outcome = waiters.prepare_to_wait_checked(
+                crate::task::thread::ThreadState::BlockedOnIO,
+                Some(deadline),
+                || try_acquire().is_none(),
+            );
+
+            match outcome {
+                crate::task::waitqueue::PrepareOutcome::Mismatch => continue,
+                crate::task::waitqueue::PrepareOutcome::PublishFailed => break,
+                crate::task::waitqueue::PrepareOutcome::Queued => {
+                    ext2_schedule_current_wait();
+                    waiters.finish_wait();
+                }
+            }
+        }
+    }
+
+    spin_fallback()
+}
+
+/// Write-acquisition variant of `ext2_acquire`: acquires the upgradeable
+/// slot via `ext2_acquire` (park-capable, generic), then parks waiting for
+/// the upgrade itself while *continuing to hold* the upgradeable guard
+/// across every retry round — never releasing and re-racing for the
+/// upgradeable slot between rounds. This is what preserves the writer
+/// fairness `root_fs_write()`'s doc comment promises (the UPGRADED bit keeps
+/// blocking new readers for the whole wait, not just between our park
+/// rounds) — C8 of the #728 pre-check.
+fn ext2_acquire_write(
+    lock: &'static RwLock<Option<Ext2Fs>>,
+    waiters: &'static crate::task::waitqueue::WaitQueueHead,
+    lock_name: &str,
+) -> spin::RwLockWriteGuard<'static, Option<Ext2Fs>> {
+    let mut upgradeable = ext2_acquire(
+        waiters,
+        || lock.try_upgradeable_read(),
+        || ext2_spin_wait(lock_name, || lock.try_upgradeable_read()),
+    );
+
+    // Fast path: no readers in the way at all.
+    upgradeable = match upgradeable.try_upgrade() {
+        Ok(w) => return w,
+        Err(back) => back,
+    };
+
+    if !ext2_lock_can_sleep() {
+        return ext2_spin_wait_upgrade(upgradeable, lock_name);
+    }
+
+    for _ in 0..EXT2_LOCK_PARK_ROUNDS {
+        // `slot` lets the `FnOnce` recheck closure below hand the
+        // upgradeable guard back out (its own signature can only return
+        // `bool`) via a captured-by-reference `Option`, so we never drop it
+        // and re-race for the upgradeable position between rounds.
+        let mut slot = Some(upgradeable);
+        let mut upgraded: Option<spin::RwLockWriteGuard<'static, Option<Ext2Fs>>> = None;
+        let deadline = ext2_now_ns() + EXT2_LOCK_PARK_TIMEOUT_NS;
+        let outcome = waiters.prepare_to_wait_checked(
+            crate::task::thread::ThreadState::BlockedOnIO,
+            Some(deadline),
+            || {
+                let held = slot.take().expect("slot populated at recheck");
+                match held.try_upgrade() {
+                    Ok(w) => {
+                        upgraded = Some(w);
+                        false // Mismatch: got it, don't enqueue.
+                    }
+                    Err(back) => {
+                        slot = Some(back);
+                        true // readers still present: enqueue and block.
+                    }
+                }
+            },
+        );
+
+        if let Some(w) = upgraded {
+            return w;
+        }
+        upgradeable = slot.take().expect("slot repopulated by cond on Mismatch/Queued");
+
+        match outcome {
+            crate::task::waitqueue::PrepareOutcome::Mismatch => continue,
+            crate::task::waitqueue::PrepareOutcome::PublishFailed => {
+                return ext2_spin_wait_upgrade(upgradeable, lock_name);
+            }
+            crate::task::waitqueue::PrepareOutcome::Queued => {
+                ext2_schedule_current_wait();
+                waiters.finish_wait();
+            }
+        }
+    }
+
+    ext2_spin_wait_upgrade(upgradeable, lock_name)
+}
+
+/// Wraps a `spin::RwLockReadGuard` on `ROOT_EXT2`/`HOME_EXT2`. Transparent
+/// `Deref` to `Option<Ext2Fs>` — every call site only ever calls `.as_ref()`
+/// on the guard it gets back, so this needs no call-site changes. Releases
+/// the inner guard before waking parked contenders (see module docs above).
+pub struct Ext2ReadGuard {
+    inner: Option<spin::RwLockReadGuard<'static, Option<Ext2Fs>>>,
+    waiters: &'static crate::task::waitqueue::WaitQueueHead,
+}
+
+impl core::ops::Deref for Ext2ReadGuard {
+    type Target = Option<Ext2Fs>;
+    fn deref(&self) -> &Option<Ext2Fs> {
+        self.inner.as_ref().expect("Ext2ReadGuard used after drop")
+    }
+}
+
+impl Drop for Ext2ReadGuard {
+    fn drop(&mut self) {
+        self.inner = None;
+        self.waiters.wake_up();
+    }
+}
+
+/// Wraps a `spin::RwLockWriteGuard` on `ROOT_EXT2`/`HOME_EXT2`. Transparent
+/// `Deref`/`DerefMut` to `Option<Ext2Fs>` — every call site only ever calls
+/// `.as_mut()` on the guard it gets back, so this needs no call-site
+/// changes. Releases the inner guard before waking parked contenders (see
+/// module docs above).
+pub struct Ext2WriteGuard {
+    inner: Option<spin::RwLockWriteGuard<'static, Option<Ext2Fs>>>,
+    waiters: &'static crate::task::waitqueue::WaitQueueHead,
+}
+
+impl core::ops::Deref for Ext2WriteGuard {
+    type Target = Option<Ext2Fs>;
+    fn deref(&self) -> &Option<Ext2Fs> {
+        self.inner.as_ref().expect("Ext2WriteGuard used after drop")
+    }
+}
+
+impl core::ops::DerefMut for Ext2WriteGuard {
+    fn deref_mut(&mut self) -> &mut Option<Ext2Fs> {
+        self.inner.as_mut().expect("Ext2WriteGuard used after drop")
+    }
+}
+
+impl Drop for Ext2WriteGuard {
+    fn drop(&mut self) {
+        self.inner = None;
+        self.waiters.wake_up();
+    }
+}
+
+/// Wait queue for contended `ROOT_EXT2` acquisitions (both read and write —
+/// a shared queue is deliberate: every release wakes every waiter, which is
+/// always correct for an RwLock, even if occasionally spurious for a waiter
+/// whose specific condition a given release didn't satisfy, and the bounded
+/// per-round timeout is the backstop regardless).
+static ROOT_EXT2_WAITERS: crate::task::waitqueue::WaitQueueHead =
+    crate::task::waitqueue::WaitQueueHead::new();
+
+/// Wait queue for contended `HOME_EXT2` acquisitions. See `ROOT_EXT2_WAITERS`.
+static HOME_EXT2_WAITERS: crate::task::waitqueue::WaitQueueHead =
+    crate::task::waitqueue::WaitQueueHead::new();
 
 /// Global mounted ext2 root filesystem
 ///
@@ -1711,8 +2022,16 @@ pub fn init_root_fs() -> Result<(), &'static str> {
 ///
 /// Multiple readers can hold this lock concurrently, allowing parallel
 /// exec, file reads, getdents, and stat operations without contention.
-pub fn root_fs_read() -> spin::RwLockReadGuard<'static, Option<Ext2Fs>> {
-    ext2_spin_wait("ROOT_EXT2_read", || ROOT_EXT2.try_read())
+pub fn root_fs_read() -> Ext2ReadGuard {
+    let inner = ext2_acquire(
+        &ROOT_EXT2_WAITERS,
+        || ROOT_EXT2.try_read(),
+        || ext2_spin_wait("ROOT_EXT2_read", || ROOT_EXT2.try_read()),
+    );
+    Ext2ReadGuard {
+        inner: Some(inner),
+        waiters: &ROOT_EXT2_WAITERS,
+    }
 }
 
 /// Access the root ext2 filesystem for write operations
@@ -1726,8 +2045,12 @@ pub fn root_fs_read() -> spin::RwLockReadGuard<'static, Option<Ext2Fs>> {
 /// but new readers can keep arriving indefinitely. The upgradeable guard sets
 /// the UPGRADED bit, which causes try_read() to reject new readers. The writer
 /// then only waits for existing readers to drain, guaranteeing forward progress.
-pub fn root_fs_write() -> spin::RwLockWriteGuard<'static, Option<Ext2Fs>> {
-    ext2_spin_wait_write(&ROOT_EXT2, "ROOT_EXT2_write")
+pub fn root_fs_write() -> Ext2WriteGuard {
+    let inner = ext2_acquire_write(&ROOT_EXT2, &ROOT_EXT2_WAITERS, "ROOT_EXT2_write");
+    Ext2WriteGuard {
+        inner: Some(inner),
+        waiters: &ROOT_EXT2_WAITERS,
+    }
 }
 
 /// Check if the root filesystem is mounted
@@ -1783,15 +2106,27 @@ pub fn init_home_fs() -> Result<(), &'static str> {
 }
 
 /// Access the home ext2 filesystem for read-only operations
-pub fn home_fs_read() -> spin::RwLockReadGuard<'static, Option<Ext2Fs>> {
-    ext2_spin_wait("HOME_EXT2_read", || HOME_EXT2.try_read())
+pub fn home_fs_read() -> Ext2ReadGuard {
+    let inner = ext2_acquire(
+        &HOME_EXT2_WAITERS,
+        || HOME_EXT2.try_read(),
+        || ext2_spin_wait("HOME_EXT2_read", || HOME_EXT2.try_read()),
+    );
+    Ext2ReadGuard {
+        inner: Some(inner),
+        waiters: &HOME_EXT2_WAITERS,
+    }
 }
 
 /// Access the home ext2 filesystem for write operations
 ///
 /// Uses upgradeable_read() + upgrade() to prevent writer starvation (same as root_fs_write).
-pub fn home_fs_write() -> spin::RwLockWriteGuard<'static, Option<Ext2Fs>> {
-    ext2_spin_wait_write(&HOME_EXT2, "HOME_EXT2_write")
+pub fn home_fs_write() -> Ext2WriteGuard {
+    let inner = ext2_acquire_write(&HOME_EXT2, &HOME_EXT2_WAITERS, "HOME_EXT2_write");
+    Ext2WriteGuard {
+        inner: Some(inner),
+        waiters: &HOME_EXT2_WAITERS,
+    }
 }
 
 /// Check if the home filesystem is mounted
