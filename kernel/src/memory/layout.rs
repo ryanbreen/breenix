@@ -102,29 +102,40 @@ pub const USERSPACE_CODE_DATA_END: u64 = 0x0000_0000_8000_0000;
 /// starting point and this constant are now provably the same value on
 /// both arches.
 ///
-/// `MMAP_REGION_START`, the *lower* bound, is a different story: **no
-/// producer consults it.** Both `sys_mmap`
-/// (`kernel/src/syscall/mmap.rs:141-147`) and
-/// `handle_create_window_buffer` (`kernel/src/syscall/graphics.rs:1736-1740`)
-/// enforce their own hardcoded floor, `0x1000_0000` (256 MiB) -- not this
-/// constant -- when deciding whether the downward-descending `mmap_hint`
-/// has run out of room. `MMAP_REGION_START` is read only by
-/// `is_valid_user_range` (the validator) and by `VmaList::find_free_region`
-/// (`#[allow(dead_code)]`, zero live callers). So the real floor an
-/// aarch64/x86_64 process's `mmap_hint` can descend to is
-/// `0x1000_0000`, not `MMAP_REGION_START` (`0x7000_0000_0000`) -- the same
-/// "validator anchored to a bound the allocator does not use" shape that
-/// caused B4-a in the first place, just not yet live (~17.6 TB of
-/// cumulative, never-reclaimed hint descent stands between today's
-/// processes and it). Tracked as a follow-up, not re-fixed here: #742.
+/// `MMAP_REGION_START`, the *lower* bound, was a different story at #729
+/// round-3 time: **no producer consulted it.** Both `sys_mmap`
+/// (`kernel/src/syscall/mmap.rs`) and its five siblings in
+/// `kernel/src/syscall/graphics.rs` (`handle_create_window_buffer`,
+/// `handle_resize_window_buffer`, `handle_map_window_buffer`,
+/// `handle_map_compositor_texture`, `sys_fbmmap`) each enforced their own
+/// hardcoded floor, `0x1000_0000` (256 MiB) -- not this constant -- when
+/// deciding whether the downward-descending `mmap_hint` had run out of
+/// room. The real floor an aarch64/x86_64 process's `mmap_hint` could
+/// descend to was therefore `0x1000_0000`, not `MMAP_REGION_START`
+/// (`0x7000_0000_0000`) -- the same "validator anchored to a bound the
+/// allocator does not use" shape that caused B4-a in the first place
+/// (#742).
+///
+/// **Fixed by #742:** every one of those six call sites now floors against
+/// this constant directly (`crate::memory::vma::MMAP_REGION_START`, the
+/// same re-export `is_valid_user_range`'s mmap arm reads), so the
+/// allocators and the validator agree by construction, not coincidence.
+/// `sys_mmap`'s `MAP_FIXED` arm additionally gained its own
+/// `[MMAP_REGION_START, MMAP_REGION_END)` region check (#742 M-2) -- before
+/// that fix it accepted any page-aligned address with no region check at
+/// all, so a `MAP_FIXED` mapping outside the three windows this file's
+/// closed allow-list recognizes would return memory userspace could touch
+/// directly but no syscall could ever accept via a user pointer.
+/// `MMAP_REGION_START` is also still read by `VmaList::find_free_region`
+/// (`#[allow(dead_code)]`, zero live callers) -- unchanged by this fix.
 pub const MMAP_REGION_START: u64 = 0x7000_0000_0000;
 
 /// End of mmap allocation region (gap before stack)
 ///
-/// Unlike [`MMAP_REGION_START`], this bound genuinely is the allocators'
-/// own value -- see the derivation note on `MMAP_REGION_START` above. There
-/// is nowhere left for `MMAP_REGION_END` and the allocators' seed to drift
-/// apart again; the same is not yet true of `MMAP_REGION_START`.
+/// This bound genuinely is the allocators' own value -- see the derivation
+/// note on [`MMAP_REGION_START`] above. Since #742, the same is true of
+/// `MMAP_REGION_START`: there is nowhere left for either bound and the
+/// allocators' seed/floor to drift apart again.
 pub const MMAP_REGION_END: u64 = 0x7FFF_FE00_0000;
 
 /// User stack allocation region start (high canonical space)
@@ -619,22 +630,42 @@ const _: () = assert!(
 // diverging copy again, THIS assert (not just a human reading the doc
 // comment) fails the build.
 //
-// Honest caveat on the START assert specifically (#729 review M-1): unlike
-// the END assert, this one is NOT anchored on anything a live allocator
-// produces -- neither `sys_mmap` nor `handle_create_window_buffer`
-// consults `MMAP_REGION_START` at all (both hardcode a `0x1000_0000`
-// floor instead; see `MMAP_REGION_START`'s doc comment above). This assert
-// can only ever fail if a future edit makes `vma::MMAP_REGION_START`
-// diverge from `layout::MMAP_REGION_START` -- it is a re-export-integrity
-// check, not proof that the validator's floor matches production
-// behavior. It does not, yet (#742).
+// Since #742, the START assert is no longer just a re-export-integrity
+// check: `sys_mmap` and all five `graphics.rs` mmap-hint producers now
+// floor their downward-descending `mmap_hint` against
+// `vma::MMAP_REGION_START` directly (not a second, independently
+// hardcoded `0x1000_0000`), so this assert accepting
+// `MMAP_REGION_START` is now a proof about the lowest address a real
+// allocator can hand out, the same way the END assert above always was.
 const _: () = assert!(
     is_valid_user_range(crate::memory::vma::MMAP_REGION_END - 1, 1),
     "the highest address the mmap allocator hands out (MMAP_REGION_END - 1) must be accepted"
 );
 const _: () = assert!(
     is_valid_user_range(crate::memory::vma::MMAP_REGION_START, 1),
-    "the mmap region's lower bound constant (MMAP_REGION_START, not yet consulted by any live allocator -- see caveat above) must be accepted"
+    "the mmap region's lower bound (MMAP_REGION_START, now the allocators' real floor -- #742) must be accepted"
+);
+// One byte below the real producer floor must be refused -- proves the
+// boundary asserted above is tight, not merely "somewhere inside is
+// accepted". At `MMAP_REGION_START - 1` on both arches this falls below
+// `USERSPACE_CODE_DATA_END` too (2GiB vs 0x7000_0000_0000), so it cannot
+// be admitted by the code/data arm either; the only way this can pass is
+// if the mmap arm's lower bound is exactly `MMAP_REGION_START`, which is
+// exactly what #742 made the allocators' own floor.
+const _: () = assert!(
+    !is_valid_user_range(crate::memory::vma::MMAP_REGION_START - 1, 1),
+    "one byte below the mmap region's real floor (MMAP_REGION_START, #742) must be refused"
+);
+// The mmap region must be non-empty for the floor to mean anything: if a
+// future edit ever let `MMAP_REGION_START` reach or pass
+// `MMAP_REGION_END`, every producer floor check above would refuse space
+// unconditionally (`sys_mmap`/`graphics.rs` would ENOMEM on their very
+// first allocation) rather than merely narrowing the region -- this is
+// now load-bearing in a way it was not before #742, when nothing
+// downstream of `MMAP_REGION_START` actually consumed it at runtime.
+const _: () = assert!(
+    MMAP_REGION_START < MMAP_REGION_END,
+    "the mmap region (now the allocators' own [MMAP_REGION_START, MMAP_REGION_END) floor/ceiling, #742) must be non-empty"
 );
 
 // code/data: both ends of the real ELF load region, not just one interior
