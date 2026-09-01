@@ -1735,7 +1735,14 @@ fn handle_create_window_buffer(width: u32, height: u32, out_addr_ptr: u64) -> Sy
 
         let total_size = (num_pages as u64) * PAGE_SIZE;
         let new_addr = round_down_to_page(process.mmap_hint.saturating_sub(total_size));
-        if new_addr < 0x1000_0000 {
+        // Floor against the same constant `is_valid_user_range`'s mmap arm
+        // polices, not an independently hardcoded number -- see the
+        // matching comment on `sys_mmap`'s hint-descent floor for why
+        // (#742). This function and its four siblings below
+        // (`handle_resize_window_buffer`, `handle_map_window_buffer`,
+        // `handle_map_compositor_texture`, `sys_fbmmap`) all shared the
+        // same stale `0x1000_0000` literal.
+        if new_addr < crate::memory::vma::MMAP_REGION_START {
             return SyscallResult::Err(super::ErrorCode::OutOfMemory as u64);
         }
         process.mmap_hint = new_addr;
@@ -1995,7 +2002,7 @@ fn handle_resize_window_buffer(cmd: &FbDrawCmd) -> SyscallResult {
     // Map new pages at a new virtual address
     let total_size = (new_num_pages as u64) * PAGE_SIZE;
     let new_addr = round_down_to_page(process.mmap_hint.saturating_sub(total_size));
-    if new_addr < 0x1000_0000 {
+    if new_addr < crate::memory::vma::MMAP_REGION_START {
         return SyscallResult::Err(super::ErrorCode::OutOfMemory as u64);
     }
     process.mmap_hint = new_addr;
@@ -2123,7 +2130,7 @@ fn handle_map_window_buffer(cmd: &FbDrawCmd) -> SyscallResult {
     // Allocate virtual address range from mmap hint
     let total_size = (num_pages as u64) * PAGE_SIZE;
     let new_addr = round_down_to_page(process.mmap_hint.saturating_sub(total_size));
-    if new_addr < 0x1000_0000 {
+    if new_addr < crate::memory::vma::MMAP_REGION_START {
         return SyscallResult::Err(super::ErrorCode::OutOfMemory as u64);
     }
     process.mmap_hint = new_addr;
@@ -2240,7 +2247,7 @@ fn handle_map_compositor_texture(cmd: &FbDrawCmd) -> SyscallResult {
     // Allocate virtual address range from mmap hint
     let total_size = (num_pages as u64) * PAGE_SIZE;
     let new_addr = round_down_to_page(process.mmap_hint.saturating_sub(total_size));
-    if new_addr < 0x1000_0000 {
+    if new_addr < crate::memory::vma::MMAP_REGION_START {
         return SyscallResult::Err(super::ErrorCode::OutOfMemory as u64);
     }
     process.mmap_hint = new_addr;
@@ -3059,7 +3066,7 @@ pub fn sys_fbmmap() -> SyscallResult {
         }
 
         let new_addr = round_down_to_page(process.mmap_hint.saturating_sub(mapping_size));
-        if new_addr < 0x1000_0000 {
+        if new_addr < crate::memory::vma::MMAP_REGION_START {
             return SyscallResult::Err(super::ErrorCode::OutOfMemory as u64);
         }
         process.mmap_hint = new_addr;

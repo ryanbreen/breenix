@@ -102,29 +102,53 @@ pub const USERSPACE_CODE_DATA_END: u64 = 0x0000_0000_8000_0000;
 /// starting point and this constant are now provably the same value on
 /// both arches.
 ///
-/// `MMAP_REGION_START`, the *lower* bound, is a different story: **no
-/// producer consults it.** Both `sys_mmap`
-/// (`kernel/src/syscall/mmap.rs:141-147`) and
-/// `handle_create_window_buffer` (`kernel/src/syscall/graphics.rs:1736-1740`)
-/// enforce their own hardcoded floor, `0x1000_0000` (256 MiB) -- not this
-/// constant -- when deciding whether the downward-descending `mmap_hint`
-/// has run out of room. `MMAP_REGION_START` is read only by
-/// `is_valid_user_range` (the validator) and by `VmaList::find_free_region`
-/// (`#[allow(dead_code)]`, zero live callers). So the real floor an
-/// aarch64/x86_64 process's `mmap_hint` can descend to is
-/// `0x1000_0000`, not `MMAP_REGION_START` (`0x7000_0000_0000`) -- the same
-/// "validator anchored to a bound the allocator does not use" shape that
-/// caused B4-a in the first place, just not yet live (~17.6 TB of
-/// cumulative, never-reclaimed hint descent stands between today's
-/// processes and it). Tracked as a follow-up, not re-fixed here: #742.
+/// `MMAP_REGION_START`, the *lower* bound, was a different story at #729
+/// round-3 time: **no producer consulted it.** Both `sys_mmap`
+/// (`kernel/src/syscall/mmap.rs`) and its five siblings in
+/// `kernel/src/syscall/graphics.rs` (`handle_create_window_buffer`,
+/// `handle_resize_window_buffer`, `handle_map_window_buffer`,
+/// `handle_map_compositor_texture`, `sys_fbmmap`) each enforced their own
+/// hardcoded floor, `0x1000_0000` (256 MiB) -- not this constant -- when
+/// deciding whether the downward-descending `mmap_hint` had run out of
+/// room. The real floor an aarch64/x86_64 process's `mmap_hint` could
+/// descend to was therefore `0x1000_0000`, not `MMAP_REGION_START`
+/// (`0x7000_0000_0000`) -- the same "validator anchored to a bound the
+/// allocator does not use" shape that caused B4-a in the first place
+/// (#742).
+///
+/// **Fixed by #742:** every one of those six call sites now floors against
+/// this constant directly (`crate::memory::vma::MMAP_REGION_START`, the
+/// same re-export `is_valid_user_range`'s mmap arm reads), so the
+/// allocators and the validator agree by construction, not coincidence.
+/// `sys_mmap`'s `MAP_FIXED` arm additionally gained its own
+/// `[MMAP_REGION_START, MMAP_REGION_END)` region check (#742 M-2) -- before
+/// that fix it accepted any page-aligned address with no region check at
+/// all, so a `MAP_FIXED` mapping outside the three windows this file's
+/// closed allow-list recognizes would return memory userspace could touch
+/// directly but no syscall could ever accept via a user pointer.
+/// `MMAP_REGION_START` is also still read by `VmaList::find_free_region`
+/// (`#[allow(dead_code)]`, zero live callers) -- unchanged by this fix.
 pub const MMAP_REGION_START: u64 = 0x7000_0000_0000;
 
 /// End of mmap allocation region (gap before stack)
 ///
-/// Unlike [`MMAP_REGION_START`], this bound genuinely is the allocators'
-/// own value -- see the derivation note on `MMAP_REGION_START` above. There
-/// is nowhere left for `MMAP_REGION_END` and the allocators' seed to drift
-/// apart again; the same is not yet true of `MMAP_REGION_START`.
+/// This bound genuinely is the allocators' own value -- see the derivation
+/// note on [`MMAP_REGION_START`] above. Since #742, the same is true of
+/// `MMAP_REGION_START`: every known producer seeds or floors `mmap_hint`
+/// against one of these two named constants, not an independently
+/// hardcoded literal.
+///
+/// That is a source-level fact backed by a structural ratchet
+/// (`tests/mmap_floor_structure.rs`), not a mathematical proof that no
+/// future producer could ever drift again (PR #744 review B2 -- the prior
+/// wording here claimed "there is nowhere left for either bound ... to
+/// drift apart again", which nothing enforced). The ratchet census-pins
+/// every currently known producer/seed site by (file, enclosing function,
+/// occurrence count) and fails the build the moment one of them stops
+/// naming these constants -- but a brand-new producer written tomorrow in
+/// some other shape entirely (never mentioning `MMAP_REGION_START`/`_END`
+/// by name) would not be walked into that census automatically; extending
+/// the pinned anchor list is how a legitimately new producer joins the law.
 pub const MMAP_REGION_END: u64 = 0x7FFF_FE00_0000;
 
 /// User stack allocation region start (high canonical space)
@@ -600,17 +624,55 @@ const _: () = assert!(
 // hand-picked number, so a future regression of this shape fails the build
 // instead of shipping a dead init again.
 //
-// Honest scope note on "fails the build" (#729 review m-3): only the
-// aarch64 stack-bottom assert below has been demonstrated, by mutation,
-// to actually catch a regression -- halving `USER_STACK_SIZE` in its
-// `region_bottom` computation reddens exactly this assert
+// Honest scope note on "fails the build" (#729 review m-3, updated by
+// #742/PR #744 review F6 -- the mmap arm below has since been demonstrated
+// too, so this note no longer overclaims it as unverified): the aarch64
+// stack-bottom assert below has been demonstrated, by mutation, to actually
+// catch a regression -- halving `USER_STACK_SIZE` in its `region_bottom`
+// computation reddens exactly this assert
 // (`docs/planning/green-program/nic-bus/serials/sweep3-prove3/
-// falsify-direction-B-narrowed-stack-build-error.txt`). The mmap, x86
-// stack, and code/data acceptance asserts are sound by the same
-// const-eval mechanism and the same reasoning, but as of this commit no
-// mutation has been run against them specifically -- they are unverified
-// by direct falsification, not yet proven the way the aarch64 stack one
-// is.
+// falsify-direction-B-narrowed-stack-build-error.txt`). The two mmap
+// asserts added by #742 have likewise been demonstrated by mutation, each
+// in isolation: loosening the mmap arm's lower-bound comparison by one
+// (`addr >= MMAP_REGION_START - 1`) reddens only the tight-refusal assert
+// below and nothing else, on both arches (verified by `cargo check` against
+// both `--target x86_64-breenix.json --bin kernel` and `--target
+// aarch64-breenix-kernel.json --bin kernel-aarch64`: one error, same
+// assert, on each).
+//
+// Isolating the non-empty assert on its own is a different story, and here
+// there is NO arch-neutral pair (PR #744 review C1). Emptying the mmap arm
+// (`MMAP_REGION_START >= MMAP_REGION_END`) makes the non-empty assert fail
+// unconditionally on both arches -- that part is arch-neutral -- but for it
+// to fail *alone*, the START-accept assert just above it must keep passing
+// too, which only happens if `MMAP_REGION_START` still lands inside the
+// *stack* arm's window once the mmap arm is gone. That window's bottom
+// edge is `is_valid_user_stack_range`'s own `region_bottom` (defined
+// above), which is a different value on each arch: x86_64 subtracts
+// `MAX_USER_STACK_SIZE` from its own `USER_STACK_REGION_START`; aarch64
+// subtracts the different `USER_STACK_SIZE` from a different
+// `USER_STACK_REGION_START`. Both pairs below were run through `cargo
+// check` on BOTH targets, not modelled or assumed from one arch's result:
+//   - x86_64's own edge: `MMAP_REGION_START = 0x7FFF_FEE0_0000`
+//     (`USER_STACK_REGION_START - MAX_USER_STACK_SIZE`), `MMAP_REGION_END =
+//     0x5000_0000` -- reddens only the non-empty assert on x86_64 (1
+//     error). The identical pair on aarch64 reddens the START-accept
+//     assert too (2 errors): aarch64's stack window does not reach down
+//     that far.
+//   - aarch64's own edge: `MMAP_REGION_START = 0xFFFF_FEFF_0000`
+//     (`USER_STACK_REGION_START - USER_STACK_SIZE`), `MMAP_REGION_END =
+//     0x5000_0000` -- reddens only the non-empty assert on aarch64 (1
+//     error), and mirrors: the same pair on x86_64 reddens both the
+//     non-empty and the START-accept asserts (2 errors), because that
+//     address is far above x86_64's own stack window.
+// (An earlier version of this note recorded only the first pair and stated
+// it reddened "only the non-empty assert" as a universal, without having
+// re-run it against the aarch64 target -- PR #744 review C1. It does not:
+// see the second bullet above.) The x86 stack and code/data acceptance
+// asserts remain sound by the same const-eval mechanism and the same
+// reasoning, but as of this commit no mutation has been run against them
+// specifically -- they are unverified by direct falsification, not yet
+// proven the way the stack-bottom and mmap ones now are.
 //
 // mmap: anchored on `vma::MMAP_REGION_END`/`_START` by name (not
 // `layout::MMAP_REGION_*`, even though they are the same definition after
@@ -619,22 +681,53 @@ const _: () = assert!(
 // diverging copy again, THIS assert (not just a human reading the doc
 // comment) fails the build.
 //
-// Honest caveat on the START assert specifically (#729 review M-1): unlike
-// the END assert, this one is NOT anchored on anything a live allocator
-// produces -- neither `sys_mmap` nor `handle_create_window_buffer`
-// consults `MMAP_REGION_START` at all (both hardcode a `0x1000_0000`
-// floor instead; see `MMAP_REGION_START`'s doc comment above). This assert
-// can only ever fail if a future edit makes `vma::MMAP_REGION_START`
-// diverge from `layout::MMAP_REGION_START` -- it is a re-export-integrity
-// check, not proof that the validator's floor matches production
-// behavior. It does not, yet (#742).
+// Since #742, the START assert is no longer just a re-export-integrity
+// check: `sys_mmap` and all five `graphics.rs` mmap-hint producers now
+// floor their downward-descending `mmap_hint` against
+// `vma::MMAP_REGION_START` directly (not a second, independently
+// hardcoded `0x1000_0000`). That link -- producers floor here, this
+// assert accepts here -- is a source-level fact enforced by the
+// structural ratchet in `tests/mmap_floor_structure.rs`, not by this
+// const-eval assert itself: this assert alone still only proves a
+// property of `is_valid_user_range`, exactly as it did before #742 (PR
+// #744 review B2 -- the prior wording here overclaimed this assert as
+// itself "a proof about the lowest address a real allocator can hand
+// out", which nothing here enforces on its own). Together with that
+// ratchet, the practical claim holds for every producer known today.
 const _: () = assert!(
     is_valid_user_range(crate::memory::vma::MMAP_REGION_END - 1, 1),
     "the highest address the mmap allocator hands out (MMAP_REGION_END - 1) must be accepted"
 );
 const _: () = assert!(
     is_valid_user_range(crate::memory::vma::MMAP_REGION_START, 1),
-    "the mmap region's lower bound constant (MMAP_REGION_START, not yet consulted by any live allocator -- see caveat above) must be accepted"
+    "the mmap region's lower bound (MMAP_REGION_START, now the allocators' real floor -- #742) must be accepted"
+);
+// One byte below the real producer floor must be refused -- proves the
+// boundary asserted above is tight, not merely "somewhere inside is
+// accepted". At `MMAP_REGION_START - 1` (0x6FFF_FFFF_FFFF) on both arches
+// this falls *above* `USERSPACE_CODE_DATA_END` (0x8000_0000, 2GiB) -- not
+// below it, contrary to what this comment used to say (PR #744 review
+// F4) -- so it cannot be admitted by the code/data arm's own upper bound
+// either. It is also below `USER_STACK_REGION_START`
+// (0x7FFF_FF00_0000) by a wide margin on both arches, so the stack arm's
+// lower bound can't absorb it either. With all three windows' own bounds
+// ruling it out, the only way this assert can pass is if the mmap arm's
+// lower bound is exactly `MMAP_REGION_START`, which is exactly what #742
+// made the allocators' own floor.
+const _: () = assert!(
+    !is_valid_user_range(crate::memory::vma::MMAP_REGION_START - 1, 1),
+    "one byte below the mmap region's real floor (MMAP_REGION_START, #742) must be refused"
+);
+// The mmap region must be non-empty for the floor to mean anything: if a
+// future edit ever let `MMAP_REGION_START` reach or pass
+// `MMAP_REGION_END`, every producer floor check above would refuse space
+// unconditionally (`sys_mmap`/`graphics.rs` would ENOMEM on their very
+// first allocation) rather than merely narrowing the region -- this is
+// now load-bearing in a way it was not before #742, when nothing
+// downstream of `MMAP_REGION_START` actually consumed it at runtime.
+const _: () = assert!(
+    MMAP_REGION_START < MMAP_REGION_END,
+    "the mmap region (now the allocators' own [MMAP_REGION_START, MMAP_REGION_END) floor/ceiling, #742) must be non-empty"
 );
 
 // code/data: both ends of the real ELF load region, not just one interior

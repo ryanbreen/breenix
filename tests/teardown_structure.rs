@@ -3035,11 +3035,17 @@ const THREAD_STATE_CONSTRUCTIONS: &[(&str, &str, usize)] = &[
     ("kernel/src/process/manager.rs", "impl ProcessManager::#[cfg(target_arch=x86_64)] fn create_main_thread_with_sp => Ready", 1),
     ("kernel/src/process/manager.rs", "impl ProcessManager::#[cfg(target_arch=x86_64)] fn fork_process_with_context => Ready", 1),
     ("kernel/src/syscall/clone.rs", "fn sys_clone => Blocked", 1),
-    // The core-proof driver's census scratch array, initialised to the same
-    // `Running` placeholder the strand oracle uses below. Neither is a thread
-    // publication: both are array fill values immediately overwritten by
-    // `collect_strand_census`.
+    // The core-proof driver's census scratch arrays, each initialised to the
+    // same `Running` placeholder the strand oracle uses below. None of these
+    // is a thread publication: all three are array fill values immediately
+    // overwritten by `collect_strand_census` before anything reads them.
+    // `driver_h.rs`'s row is Component H's own scratch buffer
+    // (`corroborating_nonprogress_bit`, rung 3 section 1.4) -- the same
+    // shape as `driver_a.rs`'s, just a distinct call site (#743: this row
+    // was missing when Component H landed, which is what reddened the
+    // ratchet).
     ("kernel/src/proof/driver_a.rs", "fn strand_census => Running", 1),
+    ("kernel/src/proof/driver_h.rs", "fn corroborating_nonprogress_bit => Running", 1),
     ("kernel/src/task/strand_oracle.rs", "fn sample_once => Running", 1),
     ("kernel/src/task/thread.rs", "impl Thread::#[cfg(target_arch=aarch64)] fn new => Ready", 1),
     ("kernel/src/task/thread.rs", "impl Thread::#[cfg(target_arch=aarch64)] fn new_kernel => Ready", 1),
