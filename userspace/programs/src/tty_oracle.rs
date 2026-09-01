@@ -23,9 +23,10 @@
 use libbreenix::error::Error;
 use libbreenix::fs;
 use libbreenix::io;
-// cloexec_exec (arm 14) is aarch64-only pending #721 (see the ARM_COUNT and
-// arm_cloexec_exec() cfgs below), so these two imports -- used only by that
-// arm -- carry the same gate rather than sitting unused on x86.
+// cloexec_exec (arm 14) is aarch64-only pending #745 (x86 fork() refused in
+// the production build; see the ARM_COUNT and arm_cloexec_exec() cfgs
+// below), so these two imports -- used only by that arm -- carry the same
+// gate rather than sitting unused on x86.
 #[cfg(target_arch = "aarch64")]
 use libbreenix::io::fd_flags::FD_CLOEXEC;
 use libbreenix::process;
@@ -822,12 +823,14 @@ fn arm_cloexec_exec() -> Result<(), Failure> {
 }
 
 /// Arm count differs per arch: aarch64 runs 14 arms; x86 excludes
-/// cloexec_exec (arm 14) because sys_execv_with_frame returns ENOSYS in the
-/// zero-feature x86 production build (#721) -- the child's exec() never
-/// returns control the way the arm's own success criterion needs, so
-/// running it on x86 today would misattribute #721 to the TTY/PTY layer.
-/// Re-admit on x86 by deleting this split (and the arm_cloexec_exec()?;
-/// cfg in run() below) the moment #721 closes.
+/// cloexec_exec (arm 14). #721 (x86 exec() ENOSYS in the zero-feature
+/// production build) is CLOSED -- exec works -- but re-admitting this arm
+/// then surfaced a second, distinct gap: #745, x86 fork() is unconditionally
+/// refused in that same production build ("Cannot fork - testing feature
+/// not enabled", kernel/src/process/manager.rs's fork_process* family).
+/// arm_cloexec_exec() calls process::fork() before it ever execs, so it
+/// still cannot run on x86 today. Re-admit on x86 by deleting this split
+/// (and the arm_cloexec_exec()?; cfg in run() below) once #745 closes.
 #[cfg(target_arch = "aarch64")]
 const ARM_COUNT: u32 = 14;
 #[cfg(target_arch = "x86_64")]
@@ -855,7 +858,7 @@ fn run() -> Result<u32, Failure> {
         arm_pgrp(master, slave)?;
         arm_hangup(master, slave)?;
         arm_ctty()?;
-        // #721: excluded on x86 pending sys_execv_with_frame's ENOSYS in the
+        // #745: excluded on x86 pending fork_process's refusal in the
         // zero-feature production build -- see the ARM_COUNT comment above.
         #[cfg(target_arch = "aarch64")]
         arm_cloexec_exec()?;

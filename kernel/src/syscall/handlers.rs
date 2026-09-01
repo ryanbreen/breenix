@@ -2299,7 +2299,6 @@ fn load_elf_from_ext2_fs(fs: &crate::fs::ext2::Ext2Fs, path: &str) -> Result<Vec
 /// Returns: Never returns on success (frame is modified to jump to new program)
 /// Returns: Error code on failure
 #[cfg(target_arch = "x86_64")]
-#[allow(unused_variables)]
 pub fn sys_execv_with_frame(
     frame: &mut super::handler::SyscallFrame,
     program_name_ptr: u64,
@@ -2477,84 +2476,254 @@ pub fn sys_execv_with_frame(
         // Convert argv_vec to slice of slices for exec_process_with_argv
         let argv_slices: Vec<&[u8]> = argv_vec.iter().map(|v| v.as_slice()).collect();
 
-        // CRITICAL SECTION: Frame manipulation and process state changes
-        // Only this part needs interrupts disabled for atomicity
+        // CRITICAL SECTION: manager call, scheduler commit, CR3 install and frame patch —
+        // masked together, same shape as the production arm below (#721 K3/K10).
         crate::arch_without_interrupts(|| {
             let mut manager_guard = crate::process::manager();
-            if let Some(ref mut manager) = *manager_guard {
-                match manager.exec_process_with_argv(
-                    current_pid,
-                    elf_data,
-                    Some(program_name),
-                    &argv_slices,
-                ) {
-                    Ok((new_entry_point, new_rsp)) => {
-                        log::info!(
-                            "sys_execv: Successfully replaced process address space, entry={:#x}, rsp={:#x}",
-                            new_entry_point, new_rsp
-                        );
-
-                        // Modify the syscall frame to jump to the new program
-                        frame.rip = new_entry_point;
-                        frame.rsp = new_rsp;
-                        frame.rflags = 0x202;
-
-                        // Clear all registers for security
-                        frame.rax = 0;
-                        frame.rbx = 0;
-                        frame.rcx = 0;
-                        frame.rdx = 0;
-                        frame.rsi = 0;
-                        frame.rdi = 0;
-                        frame.rbp = 0;
-                        frame.r8 = 0;
-                        frame.r9 = 0;
-                        frame.r10 = 0;
-                        frame.r11 = 0;
-                        frame.r12 = 0;
-                        frame.r13 = 0;
-                        frame.r14 = 0;
-                        frame.r15 = 0;
-
-                        // Set up CR3 for the new process page table
-                        if let Some(process) = manager.get_process(current_pid) {
-                            if let Some(ref page_table) = process.page_table {
-                                let new_cr3 = page_table.level_4_frame().start_address().as_u64();
-                                log::info!("sys_execv: Setting next_cr3 to {:#x}", new_cr3);
-                                unsafe {
-                                    crate::per_cpu::set_next_cr3(new_cr3);
-                                    core::arch::asm!(
-                                        "mov gs:[80], {}",
-                                        in(reg) new_cr3,
-                                        options(nostack, preserves_flags)
-                                    );
-                                }
-                            }
-                        }
-
-                        log::info!(
-                            "sys_execv: Frame updated - RIP={:#x}, RSP={:#x}",
-                            frame.rip,
-                            frame.rsp
-                        );
-
-                        SyscallResult::Ok(0)
-                    }
-                    Err(e) => {
-                        log::error!("sys_execv: Failed to exec process: {}", e);
-                        SyscallResult::Err(12) // ENOMEM
-                    }
-                }
-            } else {
+            let Some(manager) = manager_guard.as_mut() else {
                 log::error!("sys_execv: Process manager not available");
-                SyscallResult::Err(12) // ENOMEM
+                return SyscallResult::Err(12); // ENOMEM
+            };
+
+            let (new_entry_point, new_rsp, commit) = match manager.exec_process_with_argv(
+                current_pid,
+                elf_data,
+                Some(program_name),
+                &argv_slices,
+            ) {
+                Ok(value) => value,
+                Err("exec blocked while CLONE_VM sibling shares old address space") => {
+                    return SyscallResult::Err(11); // EAGAIN
+                }
+                Err(e) => {
+                    log::error!("sys_execv: Failed to exec process: {}", e);
+                    return SyscallResult::Err(12); // ENOMEM
+                }
+            };
+
+            let new_cr3 = commit.new_page_table_root();
+
+            // #721 K3/X1: read everything needed off the receipt above, then release PM
+            // before taking the SCHEDULER lock inside commit.apply() — never read the
+            // process manager again after this drop.
+            drop(manager_guard);
+
+            commit.apply();
+
+            log::info!(
+                "sys_execv: Successfully replaced process address space, entry={:#x}, rsp={:#x}",
+                new_entry_point, new_rsp
+            );
+
+            // Modify the syscall frame to jump to the new program
+            frame.rip = new_entry_point;
+            frame.rsp = new_rsp;
+            frame.rflags = 0x202;
+
+            // Clear all registers for security
+            frame.rax = 0;
+            frame.rbx = 0;
+            frame.rcx = 0;
+            frame.rdx = 0;
+            frame.rsi = 0;
+            frame.rdi = 0;
+            frame.rbp = 0;
+            frame.r8 = 0;
+            frame.r9 = 0;
+            frame.r10 = 0;
+            frame.r11 = 0;
+            frame.r12 = 0;
+            frame.r13 = 0;
+            frame.r14 = 0;
+            frame.r15 = 0;
+
+            // Set up CR3 for the new process page table, off the commit receipt.
+            log::info!("sys_execv: Setting next_cr3 to {:#x}", new_cr3);
+            unsafe {
+                crate::per_cpu::set_next_cr3(new_cr3);
+                core::arch::asm!(
+                    "mov gs:[80], {}",
+                    in(reg) new_cr3,
+                    options(nostack, preserves_flags)
+                );
             }
+
+            log::info!(
+                "sys_execv: Frame updated - RIP={:#x}, RSP={:#x}",
+                frame.rip,
+                frame.rsp
+            );
+
+            SyscallResult::Ok(0)
         })
     }
 
     #[cfg(not(feature = "testing"))]
     {
-        SyscallResult::Err(38) // ENOSYS
+        // #721: production exec. Resolve the /bin/ prefix inline and load via the
+        // production-safe, zero-feature ext2 reader — mirrors sys_spawn's already-landed
+        // pattern (#713); load_elf_from_ext2 above stays #[cfg(feature = "testing")]-only,
+        // so calling it here would leave this arm silently ENOSYS-shaped again (#721 spec
+        // section 2.1, #713 anti-vacuity / precheck section 4.6). This read happens with
+        // interrupts enabled, before any lock is taken — see this function's own
+        // top-of-file comment; do not move it inside the masked section below (X2).
+        let resolved_path = if program_name.contains('/') {
+            alloc::string::String::from(program_name)
+        } else {
+            alloc::format!("/bin/{}", program_name)
+        };
+
+        let elf_vec = match crate::boot::init_image::read_init_from_ext2(&resolved_path) {
+            Ok(data) => data,
+            Err(msg) => {
+                let errno = match msg {
+                    "init not found" => super::errno::ENOENT,
+                    "init is a directory" => super::errno::EISDIR,
+                    _ => super::errno::EIO,
+                };
+                return SyscallResult::Err(errno as u64);
+            }
+        };
+        let elf_data = elf_vec.as_slice();
+
+        // #721 K12: reclaim scheduler-owned kernel stacks and deferred process resources
+        // before exec runs, mirroring sys_spawn's identical ordering (#713 precheck C8).
+        // This mirrors, but does not fix, two separately-filed pools exec_process_with_argv
+        // touches on every call: it allocates a fresh GuardedStack for its manually-mapped
+        // user stack (manager.rs, "Create a dummy stack object since we manually mapped the
+        // stack") from #720's never-reclaiming NEXT_USER_STACK_ADDR bump allocator, and the
+        // previous GuardedStack it replaces is dropped into #583's no-op Drop (the frames
+        // are never returned). reclaim_deferred_process_resources()/reclaim_terminated_threads()
+        // reclaim kernel stacks and dead-process resources — neither touches either pool.
+        // Before this PR, production x86 exec consumed nothing (ENOSYS); it is now a new
+        // per-call consumer of #720's finite VA budget and #583's frame leak. The PM lock is
+        // not held across either reclaim call.
+        crate::task::process_task::reclaim_deferred_process_resources();
+        crate::task::scheduler::reclaim_terminated_threads();
+
+        // Find current process (unmasked PM window, matches the testing arm above)
+        let current_pid = {
+            let manager_guard = crate::process::manager();
+            if let Some(ref manager) = *manager_guard {
+                if let Some((pid, _)) = manager.find_process_by_thread(current_thread_id) {
+                    pid
+                } else {
+                    log::error!(
+                        "sys_execv: Thread {} not found in any process",
+                        current_thread_id
+                    );
+                    return SyscallResult::Err(3); // ESRCH
+                }
+            } else {
+                log::error!("sys_execv: Process manager not available");
+                return SyscallResult::Err(12); // ENOMEM
+            }
+        };
+
+        log::info!(
+            "sys_execv: Replacing process {} (thread {}) with new program",
+            current_pid.as_u64(),
+            current_thread_id
+        );
+
+        let argv_slices: Vec<&[u8]> = argv_vec.iter().map(|v| v.as_slice()).collect();
+
+        // CRITICAL SECTION: manager call, scheduler commit, CR3 install and frame patch —
+        // masked together (#721 K10: mirrors aarch64's sys_exec_aarch64, which masks this
+        // exact window for exec specifically). #713's sys_spawn deliberately does NOT mask
+        // its own creation window, citing creation.rs's documented worry: disabling
+        // interrupts while holding PROCESS_MANAGER and then acquiring MEMORY_INFO could
+        // deadlock against a concurrent thread doing the reverse. That worry is stale by
+        // the time exec ever runs: MEMORY_INFO (frame_allocator.rs) is a `spin::Once`
+        // populated once at boot and read everywhere thereafter via `.get()` — a non-blocking
+        // load, not a lock acquisition — and `allocate_frame()` itself is CAS-based, so there
+        // is no second lock for a masked exec to block on while holding PROCESS_MANAGER.
+        // aarch64 already masks this identical operation in production with no such hazard
+        // materializing, so the same regime is followed here. (creation.rs's and sys_spawn's
+        // own comments are stale in the same way; not rewritten here to keep this diff
+        // scoped to exec.) The ext2 read and the argv/name parsing above both stay outside
+        // this section (X2).
+        crate::arch_without_interrupts(|| {
+            let mut manager_guard = crate::process::manager();
+            let Some(manager) = manager_guard.as_mut() else {
+                log::error!("sys_execv: Process manager not available");
+                return SyscallResult::Err(12); // ENOMEM
+            };
+
+            let (new_entry_point, new_rsp, commit) = match manager.exec_process_with_argv(
+                current_pid,
+                elf_data,
+                Some(program_name),
+                &argv_slices,
+            ) {
+                Ok(value) => value,
+                Err("exec blocked while CLONE_VM sibling shares old address space") => {
+                    return SyscallResult::Err(11); // EAGAIN
+                }
+                Err(e) => {
+                    log::error!("sys_execv: Failed to exec process: {}", e);
+                    return SyscallResult::Err(12); // ENOMEM
+                }
+            };
+
+            let new_cr3 = commit.new_page_table_root();
+
+            // #721 K3/X1: read everything needed off the receipt above, then release PM
+            // before taking the SCHEDULER lock inside commit.apply() — the process manager
+            // must never be touched again after this drop (mirrors aarch64's
+            // sys_exec_aarch64: drop(manager_guard) before commit.apply() and before the
+            // CR3 install below).
+            drop(manager_guard);
+
+            commit.apply();
+
+            log::info!(
+                "sys_execv: Successfully replaced process address space, entry={:#x}, rsp={:#x}",
+                new_entry_point, new_rsp
+            );
+
+            // Modify the syscall frame to jump to the new program
+            frame.rip = new_entry_point;
+            frame.rsp = new_rsp;
+            frame.rflags = 0x202;
+
+            // Clear all registers for security
+            frame.rax = 0;
+            frame.rbx = 0;
+            frame.rcx = 0;
+            frame.rdx = 0;
+            frame.rsi = 0;
+            frame.rdi = 0;
+            frame.rbp = 0;
+            frame.r8 = 0;
+            frame.r9 = 0;
+            frame.r10 = 0;
+            frame.r11 = 0;
+            frame.r12 = 0;
+            frame.r13 = 0;
+            frame.r14 = 0;
+            frame.r15 = 0;
+
+            // Set up CR3 for the new process page table, off the commit receipt (K3: never
+            // read the process manager after drop).
+            log::info!("sys_execv: Setting next_cr3 to {:#x}", new_cr3);
+            unsafe {
+                crate::per_cpu::set_next_cr3(new_cr3);
+                core::arch::asm!(
+                    "mov gs:[80], {}",
+                    in(reg) new_cr3,
+                    options(nostack, preserves_flags)
+                );
+            }
+
+            log::info!(
+                "sys_execv: Frame updated - RIP={:#x}, RSP={:#x}",
+                frame.rip,
+                frame.rsp
+            );
+
+            SyscallResult::Ok(0)
+        })
     }
 }
 

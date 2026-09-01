@@ -1,0 +1,14 @@
+246:x86 production-profile gate: FAIL (set -e abort at docker/qemu/run-x86-prod-profile-boot-test.sh:904, exit 1)
+247:  failing command: test "$(marker_count "$EXEC_SMOKE_TARGET_ENTER_LITERAL")" -eq 1
+248:  preserved failing serial: /tmp/breenix_x86_prod_profile_failures/20260901T144012Z_3504052
+303:  exec smoke launch (#721):      1
+304:  exec smoke target enter argc=2 (#721): 0
+305:  exec smoke target ok (#721):   0
+306:  exec smoke launcher exit code=0 (#721): 0
+307:  exec smoke spawn failed (must be absent, #721): 0
+308:  exec smoke exec failed (must be absent, #721): 1
+309:  exec smoke target argv fail (must be absent, #721): 0
+310:  exec lock order first commit (#721 K7): 0
+311:  exec lock order PM-held violation (must be absent, #721 K7): 0
+312:  exec lock order unpinned violation (must be absent, #721 K7): 0
+313:  exec lock order no-sched-thread violation (must be absent, #721 K7): 0

@@ -2596,7 +2596,23 @@ fn validate_clone_publication_lifecycle(clone: &str) -> Result<(), String> {
     }
 
     let manager = repo_text("kernel/src/process/manager.rs");
-    let manager_bodies = module_function_bodies(&manager);
+    validate_exec_sibling_guard_census(&manager)?;
+    Ok(())
+}
+
+/// Splits out from `validate_clone_publication_lifecycle` so a mutation test
+/// can drive it directly against a doctored `manager.rs` string instead of
+/// disk content (`validate_clone_publication_lifecycle` always re-reads the
+/// real file internally, which would make in-memory mutation invisible to it).
+///
+/// #721 B1: both architectures now guard exec against a live CLONE_VM sibling
+/// still holding the old CR3/TTBR0 (x86 gained this in the same round that
+/// reddened this census — #721 K5/B2), so every one of the four `exec_process`
+/// / `exec_process_with_argv` bodies must carry the same guard shape. This is
+/// a per-arch census only in that it labels which arch failed; the
+/// requirement itself is arch-uniform.
+fn validate_exec_sibling_guard_census(manager: &str) -> Result<(), String> {
+    let manager_bodies = module_function_bodies(manager);
     let sibling_guard_definitions = manager_bodies
         .get("find_live_clone_vm_sibling_holding_cr3")
         .map_or(0, Vec::len);
@@ -2628,33 +2644,30 @@ fn validate_clone_publication_lifecycle(clone: &str) -> Result<(), String> {
         ));
     }
     for (name, body) in exec_bodies {
+        let arch = if body.contains("[ARM64]") {
+            "aarch64"
+        } else {
+            "x86"
+        };
         let body_mask = code_mask(body);
         let sibling_guard_calls =
             call_offsets(body, &body_mask, "find_live_clone_vm_sibling_holding_cr3");
-        if !body.contains("[ARM64]") {
-            if !sibling_guard_calls.is_empty() {
-                return Err(format!(
-                    "x86 {name} must not call find_live_clone_vm_sibling_holding_cr3"
-                ));
-            }
-            continue;
-        }
         if sibling_guard_calls.len() != 1 {
             return Err(format!(
-                "aarch64 {name} must call find_live_clone_vm_sibling_holding_cr3 exactly once, found {}",
+                "{arch} {name} must call find_live_clone_vm_sibling_holding_cr3 exactly once, found {}",
                 sibling_guard_calls.len()
             ));
         }
         let allocation = code_offsets(body, &body_mask, "UnpublishedPageTable::new(");
         if allocation.len() != 1 {
             return Err(format!(
-                "aarch64 {name} must allocate one UnpublishedPageTable, found {}",
+                "{arch} {name} must allocate one UnpublishedPageTable, found {}",
                 allocation.len()
             ));
         }
         if sibling_guard_calls[0] >= allocation[0] {
             return Err(format!(
-                "aarch64 {name} checks live CLONE_VM siblings after allocating its new address space"
+                "{arch} {name} checks live CLONE_VM siblings after allocating its new address space"
             ));
         }
         let guard_arm = identifier_offsets(body, &body_mask, "if")
@@ -2671,11 +2684,9 @@ fn validate_clone_publication_lifecycle(clone: &str) -> Result<(), String> {
                     == 1)
                     .then_some(block)
             })
-            .ok_or_else(|| format!("aarch64 {name} sibling check is not an if guard"))?;
+            .ok_or_else(|| format!("{arch} {name} sibling check is not an if guard"))?;
         if !normalized_code(guard_arm).contains("return Err(") {
-            return Err(format!(
-                "aarch64 {name} live-sibling guard does not return Err"
-            ));
+            return Err(format!("{arch} {name} live-sibling guard does not return Err"));
         }
     }
     Ok(())
@@ -3780,6 +3791,45 @@ fn clone_publication_lifecycle_is_closed() {
         "let _ignored =",
     );
     assert!(validate_clone_publication_lifecycle(&nonterminal_refusal).is_err());
+}
+
+#[test]
+fn clone_publication_lifecycle_guard_census_reddens_when_either_arch_guard_removed() {
+    // #721 B1: the guard census must fail closed in both directions on both
+    // architectures — deleting x86's guard call must redden it exactly as
+    // deleting aarch64's does. Prove all four exec bodies singly.
+    let manager = repo_text("kernel/src/process/manager.rs");
+    assert_eq!(validate_exec_sibling_guard_census(&manager), Ok(()));
+
+    let bodies = module_function_bodies(&manager);
+    let call = "self.find_live_clone_vm_sibling_holding_cr3(pid, thread_group_id, old_cr3)";
+    let mut mutated = 0;
+    for name in ["exec_process", "exec_process_with_argv"] {
+        for &body in bodies.get(name).into_iter().flatten() {
+            let arch = if body.contains("[ARM64]") {
+                "aarch64"
+            } else {
+                "x86"
+            };
+            let offset = manager
+                .find(body)
+                .unwrap_or_else(|| panic!("{name} ({arch}) body offset"));
+            let call_offset = body.find(call).unwrap_or_else(|| {
+                panic!("{name} ({arch}) must call the sibling guard before mutation")
+            });
+            let mut mutant = manager.clone();
+            mutant.replace_range(
+                offset + call_offset..offset + call_offset + call.len(),
+                "false",
+            );
+            assert!(
+                validate_exec_sibling_guard_census(&mutant).is_err(),
+                "deleting the {arch} sibling-guard call from {name} must redden the census"
+            );
+            mutated += 1;
+        }
+    }
+    assert_eq!(mutated, 4, "expected to mutate all four exec bodies' guard calls");
 }
 
 #[test]

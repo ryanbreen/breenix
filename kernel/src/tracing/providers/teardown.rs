@@ -3163,7 +3163,15 @@ pub fn exec_detach_oracle_test() -> crate::test_framework::registry::TestResult 
             let argv: [&[u8]; 1] = [b"exec_detach_oracle\0"];
             manager
                 .exec_process_with_argv(pid, elf, Some("exec_detach_oracle"), &argv)
-                .map(|_| ())
+                .map(|(_, _, commit)| {
+                    // #721 m1: deliberately not applied. This oracle reads detach/
+                    // refusal state straight off the process row and tears the row
+                    // down immediately after (retire_and_remove_owned_row /
+                    // exit_and_remove_unowned_row), so there is no live syscall
+                    // caller here for the scheduler-side commit to matter to —
+                    // unlike every real exec path, which must apply it.
+                    let _ = commit;
+                })
         } else {
             manager
                 .exec_process(pid, elf, Some("exec_detach_oracle"))
@@ -3310,10 +3318,11 @@ pub fn exec_detach_oracle_test() -> crate::test_framework::registry::TestResult 
 
     let mut bodies = 0usize;
     let mut fail_preserved = 0usize;
-    #[cfg(target_arch = "aarch64")]
+    // #721 B2: the live-sibling refusal is now armed on both architectures
+    // (x86 exec_process/exec_process_with_argv gained the guard alongside
+    // aarch64's), so this oracle exercises it on both arches too — the sibling
+    // arm below is no longer aarch64-only.
     let mut sibling_refused = 0usize;
-    #[cfg(target_arch = "x86_64")]
-    let sibling_refused = 0usize;
     let mut success_detached = 0usize;
     let mut fresh_root = 0usize;
     let mut tgid_self = 0usize;
@@ -3402,7 +3411,6 @@ pub fn exec_detach_oracle_test() -> crate::test_framework::registry::TestResult 
             fail_preserved += 1;
         }
 
-        #[cfg(target_arch = "aarch64")]
         {
             let sibling_pid = {
                 let manager_guard = crate::process::manager();
@@ -3694,13 +3702,8 @@ pub fn exec_detach_oracle_test() -> crate::test_framework::registry::TestResult 
     if fail_preserved != 2 && first_failure.is_none() {
         first_failure = Some("failed exec preservation count was not exact");
     }
-    #[cfg(target_arch = "aarch64")]
     if sibling_refused != 2 && first_failure.is_none() {
         first_failure = Some("live-sibling refusal count was not exact");
-    }
-    #[cfg(target_arch = "x86_64")]
-    if sibling_refused != 0 && first_failure.is_none() {
-        first_failure = Some("x86 unexpectedly exercised the aarch64 sibling guard");
     }
     if success_detached != 2 && first_failure.is_none() {
         first_failure = Some("successful exec detach count was not exact");

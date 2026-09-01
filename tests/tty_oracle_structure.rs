@@ -302,9 +302,10 @@ fn the_x86_gate_scores_exactly_the_arms_the_oracle_drives_on_x86() {
     assert!(
         x86_arms.len() < oracle_arms(&source).len(),
         "the x86-reachable census found no arch-excluded arm at all - if \
-         #721 has closed and cloexec_exec was re-admitted on x86, this \
-         ratchet (and the oracle's ARM_COUNT split) needs to be retired, \
-         not left silently checking a no-op exclusion"
+         #745 (x86 fork() refused in the production build) has closed and \
+         cloexec_exec was re-admitted on x86, this ratchet (and the \
+         oracle's ARM_COUNT split) needs to be retired, not left silently \
+         checking a no-op exclusion"
     );
     assert_eq!(
         x86_arms,
@@ -401,7 +402,7 @@ fn the_x86_gate_refuses_a_cloexec_exec_verdict() {
         script.contains("[TTY_ORACLE:cloexec_exec:"),
         "the x86 gate does not guard against cloexec_exec reporting a \
          verdict at all - a cfg regression that re-admits the arm \
-         unconditionally would run it against #721's ENOSYS uncaught"
+         unconditionally would run it against #745's fork() refusal uncaught"
     );
     // M3: pin the mechanism, not just the vocabulary. A gate that keeps the
     // literal in a failure message but weakens the comparison so it can
