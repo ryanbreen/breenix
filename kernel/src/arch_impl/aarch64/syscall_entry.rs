@@ -1253,7 +1253,7 @@ fn sys_exec_aarch64(
             new_entry_point
         );
 
-        let new_ttbr0 = commit.new_ttbr0();
+        let new_ttbr0 = commit.new_page_table_root();
 
         // Release the process-manager lock BEFORE taking the scheduler lock: Level 1 (SCHEDULER)
         // must never be acquired under Level 2 (PROCESS_MANAGER). Dropping the guard restores the

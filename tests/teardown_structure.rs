@@ -3151,6 +3151,11 @@ const DEFERRED_RECLAIM_DRAIN_SITES: &[(&str, &str, usize)] = &[
     // #713: sys_spawn drains before consuming another finite kernel-stack pool
     // slot, mirroring sys_fork_with_parent_context's own ordering.
     ("kernel/src/syscall/handlers.rs", "#[cfg(target_arch=x86_64)] fn sys_spawn", 1),
+    // #721 K12: sys_execv_with_frame's production arm drains before exec consumes
+    // another finite kernel-stack-pool slot (the GuardedStack allocation
+    // exec_process_with_argv makes for its manually-mapped user stack), mirroring
+    // sys_spawn's identical ordering above.
+    ("kernel/src/syscall/handlers.rs", "#[cfg(target_arch=x86_64)] fn sys_execv_with_frame", 1),
     // #653 delta (3): the boot-test arm that drives the nested-refusal residual
     // through the real production entry point. It is a test caller, not a
     // production one, and it is cfg'd to the boot-test profile.

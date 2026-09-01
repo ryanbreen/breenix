@@ -125,7 +125,11 @@ pub struct ProcessManager {
 }
 
 impl ProcessManager {
-    #[cfg(target_arch = "aarch64")]
+    /// Arch-neutral: walks only `Process`/`Thread` fields shared by both
+    /// architectures. Used by both arches' exec functions to refuse an exec
+    /// that would retire an address-space root a live `CLONE_VM` sibling
+    /// still holds (#721 B2 generalizes this off its original aarch64-only
+    /// gate — the body never referenced anything arch-specific).
     fn find_live_clone_vm_sibling_holding_cr3(
         &self,
         pid: ProcessId,
@@ -3389,7 +3393,14 @@ impl ProcessManager {
         // thread group it was cloned into. Both fields are reset here — after
         // every fallible step and before the process-manager guard is released —
         // so that any exec that fails earlier leaves them byte-identical to their
-        // pre-exec values. The live-sibling guard above is unrelated and stays.
+        // pre-exec values. #721 K6: unlike exec_process_with_argv (its sibling
+        // below, and aarch64's own two exec functions), this function has no
+        // find_live_clone_vm_sibling_holding_cr3 guard above — it is dead code in
+        // production (its only caller, sys_exec_with_frame, has no live call site;
+        // see #721 spec section 1.1) and test-only callers do not exercise
+        // CLONE_VM. Do not add the guard here without also giving this function a
+        // live caller; adding it unused would be exactly the kind of code this
+        // project does not carry.
         process.inherited_cr3 = None;
         process.thread_group_id = None;
 
@@ -3542,7 +3553,7 @@ impl ProcessManager {
         elf_data: &[u8],
         program_name: Option<&str>,
         argv: &[&[u8]],
-    ) -> Result<(u64, u64), &'static str> {
+    ) -> Result<(u64, u64, crate::task::scheduler::ExecSchedCommit), &'static str> {
         log::info!(
             "exec_process_with_argv: Replacing process {} with new program, argc={}",
             pid.as_u64(),
@@ -3565,16 +3576,41 @@ impl ProcessManager {
         // a use-after-free on exec failure: if any subsequent operation fails, the Err return
         // would drop the old Box<ProcessPageTable>, freeing physical memory while CR3 still
         // points to it. The old page table is taken later, after all fallible ops succeed.
-        let thread_id = {
-            let process = self.processes.live_row_mut(&pid).ok_or("Process not found")?;
-            // Drain any pending old page tables from previous exec() calls.
-            process.drain_old_page_tables();
+        let (thread_id, old_cr3, thread_group_id) = {
+            let process = self.processes.live_row(&pid).ok_or("Process not found")?;
+            let old_cr3 = process.cr3_value();
+            let thread_group_id = process.thread_group_id.unwrap_or(pid.as_u64());
             let main_thread = process
                 .main_thread
                 .as_ref()
                 .ok_or("Process has no main thread")?;
-            main_thread.id
+            (main_thread.id, old_cr3, thread_group_id)
         };
+
+        // #721 B2: refuse to retire this address space while a live CLONE_VM sibling still
+        // holds the same CR3 — matches aarch64's exec_process_with_argv, same relative
+        // position (right after old_cr3/thread_group_id capture, before any fallible
+        // page-table work; #721 precheck K5).
+        if let Some(old_cr3) = old_cr3 {
+            if let Some((sibling_pid, sibling_thread_id)) =
+                self.find_live_clone_vm_sibling_holding_cr3(pid, thread_group_id, old_cr3)
+            {
+                log::warn!(
+                    "exec_process_with_argv: rejecting exec for PID {} while CLONE_VM sibling PID {} thread {} still holds inherited CR3 {:#x}",
+                    pid.as_u64(),
+                    sibling_pid.as_u64(),
+                    sibling_thread_id,
+                    old_cr3
+                );
+                return Err("exec blocked while CLONE_VM sibling shares old address space");
+            }
+        }
+
+        {
+            let process = self.processes.live_row_mut(&pid).ok_or("Process not found")?;
+            // Drain any pending old page tables from previous exec() calls.
+            process.drain_old_page_tables();
+        }
 
         log::info!(
             "exec_process_with_argv: Preserving thread ID {} for process {}",
@@ -3720,51 +3756,76 @@ impl ProcessManager {
         // thread group it was cloned into. Both fields are reset here — after
         // every fallible step and before the process-manager guard is released —
         // so that any exec that fails earlier leaves them byte-identical to their
-        // pre-exec values. The live-sibling guard above is unrelated and stays.
+        // pre-exec values. The live-sibling guard above (#721 B2) is what makes
+        // that byte-identical claim true for a failed exec: it runs before this
+        // point, so nothing here observes a sibling that still holds the old root.
         process.inherited_cr3 = None;
         process.thread_group_id = None;
+        let new_cr3 = process
+            .page_table
+            .as_ref()
+            .ok_or("exec: published page table missing")?
+            .level_4_frame()
+            .start_address()
+            .as_u64();
         process.stack = Some(Box::new(new_stack));
         process.user_stack_top = USER_STACK_TOP;
         process.user_stack_bottom = USER_STACK_TOP - USER_STACK_SIZE as u64;
 
         // Update the main thread context for the new program
-        if let Some(ref mut thread) = process.main_thread {
-            let preserved_kernel_stack_top = thread.kernel_stack_top;
+        let thread = process
+            .main_thread
+            .as_mut()
+            .ok_or("exec: process lost its main thread during update")?;
+        let preserved_kernel_stack_top = thread.kernel_stack_top;
 
-            // Reset the CPU context for the new program
-            thread.context.rip = new_entry_point;
-            thread.context.rsp = initial_rsp; // Points to argc on stack
-            thread.context.rflags = 0x202;
-            thread.stack_top = stack_top;
-            thread.stack_bottom = stack_bottom;
-            thread.kernel_stack_top = preserved_kernel_stack_top;
+        // Reset the CPU context for the new program
+        thread.context.rip = new_entry_point;
+        thread.context.rsp = initial_rsp; // Points to argc on stack
+        thread.context.rflags = 0x202;
+        thread.stack_top = stack_top;
+        thread.stack_bottom = stack_bottom;
+        thread.kernel_stack_top = preserved_kernel_stack_top;
 
-            // Clear all other registers for security
-            thread.context.rax = 0;
-            thread.context.rbx = 0;
-            thread.context.rcx = 0;
-            thread.context.rdx = 0;
-            thread.context.rsi = 0;
-            thread.context.rdi = 0;
-            thread.context.rbp = 0;
-            thread.context.r8 = 0;
-            thread.context.r9 = 0;
-            thread.context.r10 = 0;
-            thread.context.r11 = 0;
-            thread.context.r12 = 0;
-            thread.context.r13 = 0;
-            thread.context.r14 = 0;
-            thread.context.r15 = 0;
+        // Clear all other registers for security
+        thread.context.rax = 0;
+        thread.context.rbx = 0;
+        thread.context.rcx = 0;
+        thread.context.rdx = 0;
+        thread.context.rsi = 0;
+        thread.context.rdi = 0;
+        thread.context.rbp = 0;
+        thread.context.r8 = 0;
+        thread.context.r9 = 0;
+        thread.context.r10 = 0;
+        thread.context.r11 = 0;
+        thread.context.r12 = 0;
+        thread.context.r13 = 0;
+        thread.context.r14 = 0;
+        thread.context.r15 = 0;
 
-            thread.context.cs = 0x33;
-            thread.context.ss = 0x2b;
-            thread.state = crate::task::thread::ThreadState::Ready;
+        thread.context.cs = 0x33;
+        thread.context.ss = 0x2b;
+        thread.state = crate::task::thread::ThreadState::Ready;
 
-            log::info!(
-                "exec_process_with_argv: Updated thread {} context for new program",
-                thread_id
-            );
-        }
+        log::info!(
+            "exec_process_with_argv: Updated thread {} context for new program",
+            thread_id
+        );
+
+        // #721 B1: snapshot the scheduler-side commit receipt from the exact fields
+        // just written above (X4 — the receipt must not be recomputed separately
+        // from what the syscall-frame patch uses). The caller applies this only
+        // after releasing the process-manager lock, keeping SCHEDULER and
+        // PROCESS_MANAGER un-nested (mirrors aarch64's exec_process_with_argv).
+        let ctx = thread.context.clone();
+        let st = thread.stack_top;
+        let sb = thread.stack_bottom;
+        let kst = thread.kernel_stack_top;
+        let tls = thread.tls_block;
+        let sched_commit = crate::task::scheduler::ExecSchedCommit::new(
+            thread_id, ctx, st, sb, kst, tls, new_cr3,
+        );
 
         // Handle page table switching
         if is_current_process {
@@ -3791,7 +3852,7 @@ impl ProcessManager {
             self.ready_queue.push(pid);
         }
 
-        Ok((new_entry_point, initial_rsp))
+        Ok((new_entry_point, initial_rsp, sched_commit))
     }
 
     /// Replace a process's address space with a new program (exec) with argv support (ARM64)

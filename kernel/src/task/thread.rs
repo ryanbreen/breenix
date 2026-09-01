@@ -10,7 +10,7 @@
 use core::sync::atomic::{AtomicU64, Ordering};
 
 #[cfg(target_arch = "x86_64")]
-use x86_64::VirtAddr;
+pub use x86_64::VirtAddr;
 
 // Use the shared arch_stub VirtAddr for non-x86_64 architectures
 #[cfg(not(target_arch = "x86_64"))]
@@ -601,7 +601,14 @@ impl Clone for Thread {
 impl Thread {
     /// Clear the classification and diagnostics owned by an inline scheduler
     /// save. Call this whenever a fresh context replaces that saved context.
-    #[cfg(target_arch = "aarch64")]
+    ///
+    /// The fields this clears are arch-neutral on `Thread` (aarch64 is the only
+    /// arch that ever sets them — the ret-based inline-schedule dispatch this
+    /// tracks has no x86_64 analogue, which always resumes via IRETQ), so this
+    /// stays a no-op on x86_64 rather than a wrong one: #721 generalized its one
+    /// caller, `ExecSchedCommit::apply`, off its original aarch64-only gate, and
+    /// an exec'd thread's context was never saved by an inline schedule on
+    /// either arch.
     pub(crate) fn clear_inline_schedule_state(&mut self) {
         self.saved_by_inline_schedule = false;
         self.inline_schedule_spsr = 0;

@@ -479,10 +479,33 @@ INIT_SPAWN_SMOKE_REAP_FAILED_LITERAL='[init] Warning: spawn smoke reap failed'
 INIT_TTY_ORACLE_EXIT_LITERAL='[init] tty_oracle exited pid='
 INIT_TTY_ORACLE_REAP_FAILED_LITERAL='[init] Warning: tty_oracle reap failed'
 TTY_ORACLE_FAIL_LITERAL='[TTY_ORACLE:FAIL'
+# #721, fixed: x86 exec() production wiring. exec_smoke (userspace/programs/src/init.rs's
+# run_exec_smoke(), positioned after run_tty_oracle() and before start_bsshd(), matching
+# #713's own call-site convention) is the boot path's only execve caller on x86 too now --
+# it execs into /bin/exec_smoke_target, which sleeps and yields at least once before
+# printing its success marker (the exact scenario ExecSchedCommit exists to make correct:
+# the scheduler-side thread copy must be written before the first post-exec preemption, or
+# the exec'd thread resumes with stale pre-exec context on redispatch). Four positive
+# markers proving a completed, argv-correct exec; three negative markers (#721 spec section
+# 4, anti-vacuity) proving exec didn't merely appear to run.
+EXEC_SMOKE_LAUNCH_LITERAL='[EXEC_SMOKE:LAUNCH]'
+EXEC_SMOKE_TARGET_ENTER_LITERAL='[EXEC_SMOKE:TARGET_ENTER argc=2]'
+EXEC_SMOKE_TARGET_OK_LITERAL='[EXEC_SMOKE:TARGET_OK]'
+EXEC_SMOKE_LAUNCHER_EXIT_LITERAL='[EXEC_SMOKE:LAUNCHER_EXIT code=0]'
+EXEC_SMOKE_SPAWN_FAILED_PREFIX='[EXEC_SMOKE:SPAWN_FAILED'
+EXEC_SMOKE_EXEC_FAILED_LITERAL='[EXEC_SMOKE:EXEC_FAILED]'
+EXEC_SMOKE_TARGET_ARGV_FAIL_PREFIX='[EXEC_SMOKE:TARGET_ARGV_FAIL'
+# #721 K7: the kernel-side scheduler-commit receipt oracles (ExecSchedCommit::apply,
+# kernel/src/task/scheduler.rs), unconditional in every profile -- not the
+# [EXEC_LOCK_ORDER:commits=...] summary line, which is an x86_64 no-op stub
+# (kernel/src/test_framework/executor.rs) whose only exec-path caller is
+# boot_tests-gated and therefore never fires here.
+EXEC_LOCK_ORDER_FIRST_COMMIT_LITERAL='[EXEC_LOCK_ORDER:FIRST_COMMIT]'
+EXEC_LOCK_ORDER_PM_HELD_LITERAL='[EXEC_LOCK_ORDER:VIOLATION:PM_HELD]'
+EXEC_LOCK_ORDER_UNPINNED_LITERAL='[EXEC_LOCK_ORDER:VIOLATION:UNPINNED]'
+EXEC_LOCK_ORDER_NO_SCHED_THREAD_LITERAL='[EXEC_LOCK_ORDER:VIOLATION:NO_SCHED_THREAD]'
 # #720 — x86 user-stack VA bump allocator never reclaims (spawn-heavy
 # exhaustion after ~240 creations).
-# #721 — x86 exec() syscall is ENOSYS in the zero-feature production build
-# (pre-existing, found during #713's trace, not fixed by #713).
 # #722 — x86 prod-profile gate does not yet exercise init's full
 # boot-script chain (`bsh --init-shell` -> `/etc/init.js`'s further spawns);
 # deferred out of #713's scope.
@@ -625,6 +648,17 @@ print_observed_values() {
     echo "  tty oracle exit record (TTY-x86 port): $(marker_count "$INIT_TTY_ORACLE_EXIT_LITERAL")"
     echo "  tty oracle reap failed (must be absent, TTY-x86 port): $(marker_count "$INIT_TTY_ORACLE_REAP_FAILED_LITERAL")"
     echo "  tty oracle failed (must be absent, TTY-x86 port): $(marker_count "$TTY_ORACLE_FAIL_LITERAL")"
+    echo "  exec smoke launch (#721):      $(marker_count "$EXEC_SMOKE_LAUNCH_LITERAL")"
+    echo "  exec smoke target enter argc=2 (#721): $(marker_count "$EXEC_SMOKE_TARGET_ENTER_LITERAL")"
+    echo "  exec smoke target ok (#721):   $(marker_count "$EXEC_SMOKE_TARGET_OK_LITERAL")"
+    echo "  exec smoke launcher exit code=0 (#721): $(marker_count "$EXEC_SMOKE_LAUNCHER_EXIT_LITERAL")"
+    echo "  exec smoke spawn failed (must be absent, #721): $(marker_count "$EXEC_SMOKE_SPAWN_FAILED_PREFIX")"
+    echo "  exec smoke exec failed (must be absent, #721): $(marker_count "$EXEC_SMOKE_EXEC_FAILED_LITERAL")"
+    echo "  exec smoke target argv fail (must be absent, #721): $(marker_count "$EXEC_SMOKE_TARGET_ARGV_FAIL_PREFIX")"
+    echo "  exec lock order first commit (#721 K7): $(marker_count "$EXEC_LOCK_ORDER_FIRST_COMMIT_LITERAL")"
+    echo "  exec lock order PM-held violation (must be absent, #721 K7): $(marker_count "$EXEC_LOCK_ORDER_PM_HELD_LITERAL")"
+    echo "  exec lock order unpinned violation (must be absent, #721 K7): $(marker_count "$EXEC_LOCK_ORDER_UNPINNED_LITERAL")"
+    echo "  exec lock order no-sched-thread violation (must be absent, #721 K7): $(marker_count "$EXEC_LOCK_ORDER_NO_SCHED_THREAD_LITERAL")"
     # init's full boot-script chain (bsh --init-shell -> /etc/init.js's
     # further spawns) is still not pinned here -- see INIT SURVIVAL
     # EVIDENCE above and #722.
@@ -666,6 +700,21 @@ test "$( { grep -c '^warning' "$BUILD_LOG" || true; } | awk '{ print $1 + 0 }')"
 BREENIX_PRINT_UEFI_IMAGE=1 cargo run --release ${FEATURE_ARGS[@]+"${FEATURE_ARGS[@]}"} --bin qemu-uefi >/dev/null
 UEFI_IMG=$(ls -t target/release/build/breenix-*/out/breenix-uefi.img | head -1)
 test -n "$UEFI_IMG"
+
+# #721 K9: create_ext2_disk.sh installs *.elf by glob with no manifest check (its
+# only missing-binary handling is the busybox warning) and this script does not
+# rebuild userspace itself -- so on a stale beast checkout where
+# `userspace/programs/build.sh --arch x86_64` has not been re-run since the exec
+# smoke binaries were added, /bin/exec_smoke would simply be absent from the
+# image and the EXEC_SMOKE assertions below would redden as an *exec defect*
+# rather than the *missing-artifact* build error it actually is. Fail loudly and
+# distinctly here, before that ambiguity can happen.
+for exec_smoke_bin in exec_smoke exec_smoke_target; do
+    if [ ! -f "userspace/programs/${exec_smoke_bin}.elf" ]; then
+        echo "userspace artifact missing: userspace/programs/${exec_smoke_bin}.elf -- run userspace/programs/build.sh --arch x86_64" >&2
+        false
+    fi
+done
 
 # The ext2 image carries the userspace binaries, so rebuild it every run: a
 # cached image silently boots an old root filesystem.
@@ -831,6 +880,24 @@ test "$(marker_count "$INIT_SPAWN_SMOKE_REAP_FAILED_LITERAL")" -eq 0
 test "$(marker_count "$INIT_TTY_ORACLE_EXIT_LITERAL")" -eq 1
 test "$(marker_count "$INIT_TTY_ORACLE_REAP_FAILED_LITERAL")" -eq 0
 test "$(marker_count "$TTY_ORACLE_FAIL_LITERAL")" -eq 0
+
+# #721, fixed: production exec. Four positive userspace markers proving a completed,
+# argv-correct exec (not just "spawn returned Ok" -- exec_smoke_target's success marker is
+# reachable only after the argv check and the deliberate yield loop both pass); three
+# negative markers (anti-vacuity, #721 spec section 4) proving exec did not fail or corrupt
+# argv; four kernel-side receipt oracles (K7) proving the scheduler-side commit that makes
+# the post-exec preemption safe actually ran, with zero lock-order violations.
+test "$(marker_count "$EXEC_SMOKE_LAUNCH_LITERAL")" -eq 1
+test "$(marker_count "$EXEC_SMOKE_TARGET_ENTER_LITERAL")" -eq 1
+test "$(marker_count "$EXEC_SMOKE_TARGET_OK_LITERAL")" -eq 1
+test "$(marker_count "$EXEC_SMOKE_LAUNCHER_EXIT_LITERAL")" -eq 1
+test "$(marker_count "$EXEC_SMOKE_SPAWN_FAILED_PREFIX")" -eq 0
+test "$(marker_count "$EXEC_SMOKE_EXEC_FAILED_LITERAL")" -eq 0
+test "$(marker_count "$EXEC_SMOKE_TARGET_ARGV_FAIL_PREFIX")" -eq 0
+test "$(marker_count "$EXEC_LOCK_ORDER_FIRST_COMMIT_LITERAL")" -eq 1
+test "$(marker_count "$EXEC_LOCK_ORDER_PM_HELD_LITERAL")" -eq 0
+test "$(marker_count "$EXEC_LOCK_ORDER_UNPINNED_LITERAL")" -eq 0
+test "$(marker_count "$EXEC_LOCK_ORDER_NO_SCHED_THREAD_LITERAL")" -eq 0
 
 trap - ERR
 # #673 review, B5: an anti-vacuity leg must never print a bare production PASS
