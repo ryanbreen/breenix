@@ -75,6 +75,19 @@ fn copy_string_from_user(user_ptr: u64, max_len: usize) -> Result<Vec<u8>, &'sta
         return Err("null pointer");
     }
 
+    // Validate the worst-case [user_ptr, user_ptr + max_len) range up front,
+    // using the same broad range check copy_from_user() uses (see its comment
+    // above) rather than is_valid_user_address(). is_valid_user_address() only
+    // covers specific sub-regions (code/data, mmap, stack) and misses valid
+    // heap-allocated addresses -- exactly the shape a shell building argv on
+    // its own heap would hit (#729). The actual string may be shorter than
+    // max_len (we stop at the first NUL byte below); validating the full
+    // worst-case length up front is still correct since it only widens what's
+    // accepted before the byte-by-byte mapped-page check runs.
+    if super::userptr::validate_user_buffer(user_ptr as *const u8, max_len).is_err() {
+        return Err("invalid userspace address");
+    }
+
     let mapper = unsafe { crate::memory::paging::get_mapper() };
     let mut buffer = Vec::new();
 
@@ -82,10 +95,6 @@ fn copy_string_from_user(user_ptr: u64, max_len: usize) -> Result<Vec<u8>, &'sta
         let addr = user_ptr
             .checked_add(offset as u64)
             .ok_or("userspace address overflow")?;
-
-        if !crate::memory::layout::is_valid_user_address(addr) {
-            return Err("invalid userspace address");
-        }
 
         if mapper.translate_addr(VirtAddr::new(addr)).is_none() {
             return Err("unmapped userspace address");
