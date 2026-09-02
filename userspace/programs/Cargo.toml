@@ -506,6 +506,10 @@ name = "tcp_dup_listener_test"
 path = "src/tcp_dup_listener_test.rs"
 
 [[bin]]
+name = "tcp_cloexec_exec_test"
+path = "src/tcp_cloexec_exec_test.rs"
+
+[[bin]]
 name = "telnetd"
 path = "src/telnetd.rs"
 
