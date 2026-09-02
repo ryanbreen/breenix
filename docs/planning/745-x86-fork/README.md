@@ -3,14 +3,46 @@
 **Status: fixed; review round 2 applied.** `fix/745-x86-fork` (branch), PR
 [#753](https://github.com/ryanbreen/breenix/pull/753) pending review/merge.
 Gate state at `13a1cf27`, the last commit that changes anything the kernel or
-the gate executes (`182937dc` on top of it adds serials and this file only):
+the gate executes (the four commits on top of it -- `182937dc`, `84953270`,
+`b7ac23bb`, `95c7807a` -- add serials, docs and this file only; `git diff
+--stat 13a1cf27 HEAD -- kernel userspace docker tests scripts` is empty):
 x86 production-profile gate PASS, and 24/24 structure-test files (496/496
 tests) on the same bytes. The TTY-oracle 14/14-arms-over-25-boots soak was run
-in round 1, at `3bf42613`; round 2 changed no code that oracle drives.
+in round 1, at `3bf42613`, and was **not re-run in round 2** — round 2 changed
+`kernel/src/syscall/handlers.rs` (`sys_fork_with_parent_context`) and
+`kernel/src/process/manager.rs` (`complete_fork`), the TLS hoist, and TTY-oracle
+arm 14 (`cloexec_exec`, `tty_oracle.rs:756`) calls `process::fork()` on x86 --
+that exact function. What stands in place of a re-run: the oracle reported
+`[TTY_ORACLE:COMPLETE:pass=14:fail=0]` plus `TTY_ORACLE:cloexec_exec:verdict=PASS`
+at round-2 bytes, twice each, in two committed prod-gate serials
+(`serials/review-round-2/final-gate-pass-serial_user-13a1cf27.txt` and
+`serials/review-round-2-prove/prove-slot-gate-pass-serial_user-84953270.txt`).
+The x86 production-profile gate that *was* re-run at those bytes deliberately
+does not pin the 14-arm tally itself -- its own comment
+(`run-x86-prod-profile-boot-test.sh:455`-`478`) explains why (the oracle
+double-emits `TTY_ORACLE:COMPLETE:`, so an exact-count pin on it is flaky by
+construction under this file's verdict-discipline rule) -- so it cannot by
+itself distinguish 14 arms from 13. Re-running the 25-boot soak at round-2
+bytes would be stronger evidence than the two single-boot emits above, but is
+not required to land this round.
 `spec.md` and `precheck.md` in this directory are the investigation this
 implementation round followed; precheck's sixteen binding conditions
 override the spec wherever the two disagree, per the precheck's own
 "corrections override the spec" framing.
+
+<!-- claim-lint:ok: "all in {spec,precheck,README}.md" is a verbatim quote of
+     commit 13a1cf27's own message (`git show 13a1cf27 --format=%B -s`), not
+     a claim of this paragraph's own; the corrected count is this round's own
+     `python3 scripts/claim-lint.py` run, recorded at fix-r3-notes.md. -->
+**Correction to commit `13a1cf27`'s own body (review round 2, m9-r2).** That
+commit's message records `scripts/claim-lint.py -> 93 findings, all in
+{spec,precheck,README}.md`. That count was measured before the same commit's
+own README rewrite and no longer reproduces. Re-running
+`python3 scripts/claim-lint.py` at any later commit on this branch returns a
+different total than 93 (`spec.md` 43 + `precheck.md` 35 + whatever this
+directory's own prose then adds, since unlike `spec.md`/`precheck.md` this
+README is NOT archived-verbatim and is linted live). Recorded here rather
+than by amending the already-pushed commit message.
 
 ## What shipped
 
@@ -26,8 +58,10 @@ override the spec wherever the two disagree, per the precheck's own
      named two sections down and filed as #756. -->
 - `kernel/src/process/manager.rs`: `fork_process_with_parent_context` and
   `complete_fork` de-gated from `feature = "testing"`; both purged of
-  logging to match aarch64 fork's own "no logging under the PM lock"
-  invariant (precheck C9); `trace_fork_entry`/`trace_stack_map`/
+  logging **in this function's own body** to match aarch64 fork's own "no
+  logging under the PM lock" invariant (precheck C9; the residue this
+  narrowing excludes -- `allocate_kernel_stack`'s own logging, still called
+  under the PM lock from both bodies -- is named below and filed as #756); `trace_fork_entry`/`trace_stack_map`/
   `trace_fork_exit` wired to close the tracing-parity gap (precheck C11);
   the CoW setup block's parent-page-table restore fixed on both the x86
   production path (newly reachable) and the aarch64 twin
@@ -206,12 +240,14 @@ The round-1 review returned 12 findings, 2 blocking. Dispositions:
   (`ROW_DESTRUCTOR_CALLS`, `REMOVE_FROM_READY_QUEUE_CALL_SITES`) and one
   gate-script marker whose comparison the harness's own verdict-discipline
   rule rejected (`COW_FAULT_PREFIX`, replaced with the isolation receipt).
-- **`fork_lock_order_structure`**: 7/7 tests pass, including all 6
+- **`fork_lock_order_structure`, round 1**: 7/7 tests pass, including all 6
   delete-mutation proofs (reintroduced interrupt mask, dropped either
   reclaim call, reordered `ProcessPageTable::new(` ahead of reclaim, an
   extra `manager()` acquisition simulating a live guard across reclaim,
   and a missing `drop(manager_guard)` before `spawn_front(`) — each
-  independently confirmed to redden the validator, run on beast.
+  independently confirmed to redden the validator, run on beast. (Round 2
+  added two more tests/mutations; see "Round-2 structural ratchets" below
+  for the file's current 10/10 total.)
 <!-- claim-lint:ok: every line quoted in the next two bullets is grep-able in
      the file named beside it; that is the point of the round-2 correction. -->
 - **Production gate at the shipping bytes, 1 boot** (`13a1cf27`, review round

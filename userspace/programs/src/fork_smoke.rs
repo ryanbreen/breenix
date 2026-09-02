@@ -1,11 +1,12 @@
 //! Fork smoke launcher -- the boot-path fork() caller (#745).
 //!
-//! claim-lint:ok: the pre-#745 refusal is quoted verbatim in
+//! claim-lint:ok: the pre-#745 refusal's observed effect
+//! (`[FORK_SMOKE:FORK_FAILED ENOMEM]`) is quoted verbatim in
 //! docs/planning/745-x86-fork/serials/anti-vacuity-pre-fix-refused-gate-2026-09-02.txt
 //! x86 userland otherwise has no live production caller of `fork()` proven
 //! to run on a per-boot basis (`bsh`'s own three fork() call sites had never
 //! executed on x86 in production before this program existed -- #745
-//! precheck C13; the refusal itself is quoted in docs/planning/745-x86-fork/serials/anti-vacuity-pre-fix-refused-gate-2026-09-02.txt).
+//! precheck C13; the refusal's observed effect is quoted in docs/planning/745-x86-fork/serials/anti-vacuity-pre-fix-refused-gate-2026-09-02.txt).
 //! This process forces a real fork()+CoW+voluntary-yield+
 //! exit+reap round trip so #745's fix (the interrupt-masking restructure of
 //! `sys_fork_with_parent_context` and the de-gated CoW block, see
@@ -61,7 +62,17 @@
 //! invisible to every parent-side check, because the parent would read back
 //! exactly the value it wrote. On a correct kernel the child's pre-write read
 //! is the pre-fork 0 regardless of scheduling, since the parent's write can
-//! only reach the parent's private copy.
+//! only reach the parent's private copy -- that is the no-false-positive
+//! direction, and it holds unconditionally. Detection is NOT
+//! order-independent, unlike `CHILD_ONLY_PROBE` above: this arm only fires
+//! if the parent's post-fork write to `SHARED_WRITE_PROBE` lands before the
+//! child's pre-write read, and the child is queued with `spawn_front`
+//! (front of the ready queue), so a child-first schedule is the likely one
+//! and this arm then does not fire at all. It is best-effort: the
+//! asymmetric-corruption shape it targets is caught probabilistically, not
+//! deterministically. The round's own mutation run shows exactly this --
+//! `side=child` never printed; only the `CHILD_ONLY_PROBE`-backed
+//! `side`-less line did (see the artifact below).
 //! claim-lint:ok: same mutation run as above --
 //! docs/planning/745-x86-fork/serials/review-round-2/m2-mutation-cow-isolation-broken-serial_user.txt
 //!

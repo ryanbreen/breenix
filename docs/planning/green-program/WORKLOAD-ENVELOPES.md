@@ -135,12 +135,13 @@ doc-comment on `run_tty_oracle()`'s x86 body says the launcher is "Placed after
 `run_spawn_smoke()` and strictly before `start_bsshd()`, so the oracle stays fully
 independent of init's boot-script chain (#722) and the production processes that
 already run sequentially before it never overlap with bsshd's own ext2 reads
-(#728)" (`userspace/programs/src/init.rs:560`-`563`, current tree) — the exact axis
+(#728)" (the doc comment on `init.rs`'s `#[cfg(target_arch = "x86_64")] fn run_tty_oracle()`) — the exact axis
 this document exists to make explicit is, for this one launcher, already named in
 the source by issue number.
 
 <!-- claim-lint:ok: the "always took an error branch" state is the refusal this
-     arc removed, quoted in
+     arc removed; its observed effect (`[FORK_SMOKE:FORK_FAILED ENOMEM]`) is
+     in
      docs/planning/745-x86-fork/serials/anti-vacuity-pre-fix-refused-gate-2026-09-02.txt -->
 **#745 addendum.** `run_fork_smoke()` was added to this same sequence, placed
 strictly AFTER `run_tty_oracle()` and before `start_bsshd()` (mechanically pinned

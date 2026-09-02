@@ -531,6 +531,12 @@ FORK_SMOKE_PARENT_REAPED_PREFIX='[FORK_SMOKE:PARENT_REAPED child='
 # boot, so the exit-code half is pinned on its own: ` code=37]` cannot
 # collide with `[FORK_SMOKE:LAUNCHER_EXIT code=0]` (the DIFFERENT process
 # below) under grep -F, and 37 is fork_smoke.rs's CHILD_EXIT_CODE.
+# NOT bound to the PARENT_REAPED prefix itself -- this is a bare suffix
+# literal matched anywhere in the boot log by grep -F, so a future marker
+# that also happened to end in ` code=37]` would satisfy it too. Only
+# PARENT_REAPED produces that suffix today. Because the assertion is exact
+# (-eq 1), such a collision would REDDEN the gate (two matches) rather than
+# silently pass, so this fails safe rather than fails quiet.
 # claim-lint:ok: run with CHILD_EXIT_CODE mutated 37 -> 38, this pin is the
 # assertion that reddens while PARENT_REAPED stays 1 and crash markers stay 0 --
 # docs/planning/745-x86-fork/serials/review-round-2/b1-mutation-child-exit-38-gate-FAIL.txt

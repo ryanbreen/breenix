@@ -557,8 +557,9 @@ fn run_spawn_smoke() {
 /// proven by `run_fork_smoke()` below (arch-neutral, `fork_smoke.rs`) and by
 /// `tty_oracle.rs`'s own arm 14 (`cloexec_exec`), re-admitted on x86 in the
 /// same round -- see that file's #721/#745 comment.
-/// claim-lint:ok: the refusal this replaced is quoted verbatim in the pre-fix
-/// negative control, and the post-fix markers in the passing run:
+/// claim-lint:ok: the observed effect of the refusal this replaced
+/// (`[FORK_SMOKE:FORK_FAILED ENOMEM]`) is in the pre-fix negative control,
+/// and the post-fix markers are in the passing run:
 /// docs/planning/745-x86-fork/serials/anti-vacuity-pre-fix-refused-gate-2026-09-02.txt
 /// Placed after `run_spawn_smoke()` and strictly before `start_bsshd()`, so
 /// the oracle stays fully independent of init's boot-script chain (#722)

@@ -13,8 +13,14 @@
 # below match run-x86-prod-profile-boot-test.sh's own invocation (three
 # virtio-blk devices: UEFI image, placeholder, ext2 at index 2).
 #
-# claim-lint:ok: the arm's pre-#745 failure is quoted verbatim in the arc's
-# negative control, docs/planning/745-x86-fork/serials/anti-vacuity-pre-fix-refused-gate-2026-09-02.txt
+# claim-lint:ok: the arc's negative control,
+# docs/planning/745-x86-fork/serials/anti-vacuity-pre-fix-refused-gate-2026-09-02.txt,
+# does NOT carry arm 14's own failure -- that boot ran a 13-arm build in
+# which cloexec_exec never executed (`[TTY_ORACLE:COMPLETE:pass=13:fail=0]`,
+# no cloexec_exec verdict line at all). What it carries is fork_smoke's own
+# refusal effect on the same pre-#745 kernel (`[FORK_SMOKE:FORK_FAILED
+# ENOMEM]`), evidence that x86 fork() was refused, not a record of this
+# specific arm failing under that refusal.
 # FULL PARITY WITH AARCH64: cloexec_exec (arm 14) is re-admitted. It was
 # excluded first pending #721 (sys_execv_with_frame returned ENOSYS in the
 # x86 zero-feature production build -- the arm's child could never actually
