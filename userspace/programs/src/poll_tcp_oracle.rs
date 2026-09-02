@@ -57,52 +57,63 @@
 //! the FAIL that ends it is `late_peer_overrun` carrying the measured overrun,
 //! not a wake-loss claim.
 //!
-//! Stage 3's bounds are derived from instants the PEER measures and reports,
-//! never from either side's guess about the other's timing. The child stamps
-//! `monotonic_ms()` when it receives the readiness token and again immediately
-//! before its send, and ships both stamps with the payload. The parent decodes
-//! them and proves three facts:
+//! ## The anchor, and the three facts each trial establishes
 //!
-//!   entry    <= token_ms              (the parent had already committed to
-//!                                      this poll before the peer's clock even
-//!                                      started)
-//!   write_ms >= token_ms + delay_ms   (the peer really waited: it sleeps until
-//!                                      that instant on its own clock, so a
-//!                                      short wait is the kernel's fault and is
-//!                                      reported as one)
-//!   return   >= write_ms              (the poll did not return before the peer
-//!                                      wrote)
+//! The parent stamps `anchor` before it sends the readiness token, and the
+//! token carries that stamp. The peer sleeps to `anchor + delay_ms` on the same
+//! kernel clock, stamps `write_ms` immediately before its send, and ships the
+//! anchor back with it. The parent then has three comparable instants of its
+//! own -- `anchor`, `entry` (taken immediately before `poll()`) and `returned`
+//! -- plus the peer's `write_ms`, and it establishes:
 //!
-//! Together they put the whole of the peer's delay strictly inside the poll:
-//! `park_ms = write_ms - entry` is at least `delay_ms`, and it is REPORTED, so
-//! the evidence shows the separation instead of asserting it. A return before
-//! `write_ms` means the poll saw readiness the peer had not published -- stale
-//! state, not a wake -- and is a named FAIL.
+//!   echo     == anchor                (this payload belongs to this trial, not
+//!                                      to a leftover from an earlier attempt)
+//!   write_ms >= anchor + delay_ms     (the peer really waited: it sleeps to
+//!                                      that instant, so a short wait is the
+//!                                      kernel's doing and is reported as one)
+//!   entry    <= write_ms              (the parent was inside `poll()` before
+//!                                      the peer published, so the publication
+//!                                      landed on a parked poller)
+//!
+//! `park_ms = write_ms - entry` is then REPORTED, so the evidence shows the
+//! separation instead of asserting it. A return before `write_ms` means the
+//! poll saw readiness the peer had not published -- stale state, not a wake --
+//! and is a named FAIL.
 //!
 //! The middle fact is what stops the stage from silently degenerating into a
-//! second copy of stage 2. An earlier revision proved only `entry <= write_ms`;
-//! a mutation that had the peer write immediately then PASSED it, reporting
-//! `park_ms=0`, because the two stamps landed in the same truncated
-//! millisecond. A bound a degenerate run satisfies is not a bound.
+//! second copy of stage 2. An earlier revision established only
+//! `entry <= write_ms`; a mutation that had the peer write immediately then
+//! PASSED it, reporting `park_ms=0`, because the two stamps landed in the same
+//! truncated millisecond. A bound a degenerate run satisfies is not a bound.
 //!
 //! Two design points keep this from becoming a flake generator, which is
 //! exactly what two earlier revisions of this bound were:
 //!
 //!   * The `fork()` is OUTSIDE the timing window. The parent forks, then hands
-//!     the child a one-byte readiness token over the *reverse* direction of the
-//!     same connection, and only then stamps `entry` and polls. The child waits
-//!     on that token before starting its delay, so process creation -- which on
-//!     a loaded emulated x86 boot costs hundreds of milliseconds, far more than
-//!     the delay itself -- is spent before either clock starts. The first
-//!     revision compared the parent's elapsed against the child's sleep
-//!     *duration* and reddened ~8% of healthy aarch64 boots; the second moved
-//!     to a shared absolute deadline but still paid the fork inside the window
-//!     and could not reach its own poll in time on x86 at all.
-//!   * `entry <= token_ms` is a PRECONDITION, not a verdict. If the parent was
+//!     the child the readiness token over the *reverse* direction of the same
+//!     connection, and only then polls. The child waits on that token before
+//!     starting its delay, so process creation -- which on a loaded emulated
+//!     x86 boot costs hundreds of milliseconds, far more than the delay itself
+//!     -- is spent before the trial's clock starts. The first revision compared
+//!     the parent's elapsed against the child's sleep *duration* and reddened
+//!     ~8% of healthy aarch64 boots; the second moved to a shared absolute
+//!     deadline but still paid the fork inside the window and could not reach
+//!     its own poll in time on x86.
+//!   * `entry <= write_ms` is a PRECONDITION, not a verdict. If the parent was
 //!     descheduled between handing over the token and reaching `poll()`, the
-//!     trial proves nothing either way, so its payload is consumed, the child
-//!     reaped, and the delay widened. Only an exhausted budget is a FAIL, and it
-//!     reports the measured overshoot so the failure is legible.
+//!     trial decides neither way, so its payload is consumed, the child reaped,
+//!     and the delay widened. Only an exhausted budget is a FAIL, and it reports
+//!     the measured overshoot so the failure is legible.
+//!
+//!     #694 is why that precondition is scored against `write_ms` rather than
+//!     against the peer's receipt stamp. The old form compared `entry` to the
+//!     instant the PEER was scheduled to read the token, which `delay_ms` does
+//!     not move at all -- so widening the delay could not influence the race it
+//!     was retrying, and five doublings were five flips of one coin (4 of 24
+//!     beast KVM boots exhausted the ladder and emitted a false FAIL). With the
+//!     peer anchored to the parent's own pre-send stamp, the peer's write lands
+//!     at `anchor + delay_ms + overrun`, so each doubling strictly widens the
+//!     room the parent has to get from its `send()` to its `poll()`.
 
 use std::string::String;
 
@@ -163,15 +174,27 @@ const LATE_MAX_PEER_LATE_ATTEMPTS: u32 = 3;
 /// it is paid once per boot on each arch.
 const FORCED_TIMEOUT_MS: i32 = 150;
 const FORCED_WRITE_DELAY_MS: u64 = 500;
-/// One byte, sent by the parent on its own end of the connection, that tells the
-/// child the parent is about to poll. It travels the opposite direction from the
-/// payload, so it cannot make the polled fd readable.
-const READY_TOKEN: &[u8] = b"R";
+/// The readiness token the parent sends on its own end of the connection to
+/// tell the child that the parent is about to poll. It travels the opposite
+/// direction from the payload, so it cannot make the polled fd readable.
+///
+/// #694: the token now CARRIES the parent's own pre-send stamp, and the peer
+/// sleeps to `anchor + delay_ms` on that stamp rather than to `token_ms +
+/// delay_ms` on its own receipt. The old anchor was the peer's receipt instant,
+/// which moves with the peer's scheduling, so widening `delay_ms` did not move
+/// the write relative to the parent's poll entry at all and the retry ladder
+/// was five flips of one coin. Anchored to the parent's clock, the peer's write
+/// instant is `anchor + delay_ms + overrun`, so a wider delay buys the parent
+/// strictly more room to reach `poll()` -- the retry can now influence the race
+/// it retries.
+const READY_TOKEN_TAG: u8 = b'R';
+const READY_TOKEN_LEN: usize = 1 + 8;
 
 const PAYLOAD_ARMED: &[u8] = b"armed568";
-/// Stage 3's payload is the tag followed by two little-endian `monotonic_ms()`
-/// stamps taken by the child: when it received the readiness token, and
-/// immediately before this send. The parent scores its poll against both.
+/// Stage 3's payload is the tag, the anchor the child was handed echoed back,
+/// and the child's own `monotonic_ms()` stamp taken immediately before this
+/// send. The echo is what ties the write to THIS trial's anchor; the parent
+/// refuses a payload whose echo does not match what it sent.
 const PAYLOAD_LATE: &[u8] = b"late568";
 const LATE_MSG_LEN: usize = 7 + 8 + 8;
 
@@ -332,6 +355,7 @@ const PEER_EXIT_TOKEN_RECV_FAILED: i32 = 11;
 const PEER_EXIT_TOKEN_CLOCK_FAILED: i32 = 12;
 const PEER_EXIT_WRITE_CLOCK_FAILED: i32 = 13;
 const PEER_EXIT_SEND_FAILED: i32 = 14;
+const PEER_EXIT_TOKEN_MALFORMED: i32 = 15;
 
 /// Report the branch the stage-3 peer took, then leave with the matching code.
 ///
@@ -355,7 +379,7 @@ fn peer_exit(branch: &str, detail: &str, code: i32) -> ! {
 /// that moment, waits out the delay, stamps again, and ships both stamps with
 /// the payload. Never returns.
 fn late_peer(server: Fd, delay_ms: u64) -> ! {
-    let mut token = [0u8; 1];
+    let mut token = [0u8; READY_TOKEN_LEN];
     if let Err(f) = recv_exact(server, &mut token, "child_token") {
         peer_exit(
             "token_recv_failed",
@@ -363,6 +387,19 @@ fn late_peer(server: Fd, delay_ms: u64) -> ! {
             PEER_EXIT_TOKEN_RECV_FAILED,
         );
     }
+    if token[0] != READY_TOKEN_TAG {
+        peer_exit(
+            "token_malformed",
+            &format!("tag={:#04x} delay_ms={}", token[0], delay_ms),
+            PEER_EXIT_TOKEN_MALFORMED,
+        );
+    }
+    let mut anchor_bytes = [0u8; 8];
+    anchor_bytes.copy_from_slice(&token[1..]);
+    let anchor = u64::from_le_bytes(anchor_bytes);
+    // Reported for the same reason the receipt stamp used to be: it is the
+    // peer's own reading of when it was scheduled, and the gap between it and
+    // the anchor is the dispatch latency that #693 turned out to be about.
     let token_ms = match monotonic_ms("child_token_stamp") {
         Ok(ms) => ms,
         Err(f) => peer_exit(
@@ -371,33 +408,33 @@ fn late_peer(server: Fd, delay_ms: u64) -> ! {
             PEER_EXIT_TOKEN_CLOCK_FAILED,
         ),
     };
-    sleep_until(token_ms + delay_ms);
+    sleep_until(anchor + delay_ms);
     let write_ms = match monotonic_ms("child_write") {
         Ok(ms) => ms,
         Err(f) => peer_exit(
             "write_clock_failed",
-            &format!("token_ms={} delay_ms={} detail={}", token_ms, delay_ms, f.detail),
+            &format!("anchor={} delay_ms={} detail={}", anchor, delay_ms, f.detail),
             PEER_EXIT_WRITE_CLOCK_FAILED,
         ),
     };
     let mut msg = [0u8; LATE_MSG_LEN];
     msg[..7].copy_from_slice(PAYLOAD_LATE);
-    msg[7..15].copy_from_slice(&token_ms.to_le_bytes());
+    msg[7..15].copy_from_slice(&anchor.to_le_bytes());
     msg[15..].copy_from_slice(&write_ms.to_le_bytes());
     match socket::send(server, &msg) {
         Ok(n) => peer_exit(
             "sent",
             &format!(
-                "n={} want={} token_ms={} write_ms={} delay_ms={}",
-                n, LATE_MSG_LEN, token_ms, write_ms, delay_ms
+                "n={} want={} anchor={} token_ms={} write_ms={} delay_ms={}",
+                n, LATE_MSG_LEN, anchor, token_ms, write_ms, delay_ms
             ),
             PEER_EXIT_SENT,
         ),
         Err(e) => peer_exit(
             "send_failed",
             &format!(
-                "err={} token_ms={} write_ms={} delay_ms={}",
-                e, token_ms, write_ms, delay_ms
+                "err={} anchor={} token_ms={} write_ms={} delay_ms={}",
+                e, anchor, token_ms, write_ms, delay_ms
             ),
             PEER_EXIT_SEND_FAILED,
         ),
@@ -467,10 +504,10 @@ fn late_lost_wake_probe(client: Fd) -> LostWakeProbe {
     }
 }
 
-/// The two stamps the peer ships inside its payload: when it received the
-/// readiness token, and the instant immediately before its `send`.
+/// What the peer ships inside its payload: the anchor it was handed, echoed
+/// back, and the instant immediately before its `send`.
 struct PeerStamps {
-    token_ms: u64,
+    anchor_echo: u64,
     write_ms: u64,
 }
 
@@ -480,11 +517,11 @@ fn decode_late_payload(buf: &[u8; LATE_MSG_LEN]) -> Result<PeerStamps, Failure> 
     }
     let mut stamp = [0u8; 8];
     stamp.copy_from_slice(&buf[7..15]);
-    let token_ms = u64::from_le_bytes(stamp);
+    let anchor_echo = u64::from_le_bytes(stamp);
     stamp.copy_from_slice(&buf[15..]);
     let write_ms = u64::from_le_bytes(stamp);
     Ok(PeerStamps {
-        token_ms,
+        anchor_echo,
         write_ms,
     })
 }
@@ -621,10 +658,17 @@ fn run_late_trial(client: Fd, server: Fd, trial: LateTrial) -> Result<LateResult
         };
 
         // Everything expensive -- process creation, the child's first schedule --
-        // happens before the token goes out, so neither clock has started yet.
-        // The token travels parent -> child on the reverse direction of this
-        // connection, so it cannot make `client` readable.
-        if let Err(e) = socket::send(client, READY_TOKEN) {
+        // happens before the token goes out, so the trial's clock has not
+        // started yet. The token travels parent -> child on the reverse
+        // direction of this connection, so it cannot make `client` readable,
+        // and it carries `anchor`: the peer sleeps to `anchor + delay_ms` on
+        // the parent's stamp, which is what makes widening the delay actually
+        // buy the parent room to reach `poll()` (#694).
+        let anchor = monotonic_ms("late_anchor")?;
+        let mut token = [0u8; READY_TOKEN_LEN];
+        token[0] = READY_TOKEN_TAG;
+        token[1..].copy_from_slice(&anchor.to_le_bytes());
+        if let Err(e) = socket::send(client, &token) {
             return Err(fail("late_ready_send", format!("{}", e)));
         }
 
@@ -670,10 +714,11 @@ fn run_late_trial(client: Fd, server: Fd, trial: LateTrial) -> Result<LateResult
                 return Err(fail(
                     "late_peer_no_publish",
                     format!(
-                        "stage={} ready={} revents={:#06x} entry={} returned={} elapsed_ms={} timeout={} delay_ms={} peer_reaped={} peer_status={:#010x} peer_code={}",
+                        "stage={} ready={} revents={:#06x} anchor={} entry={} returned={} elapsed_ms={} timeout={} delay_ms={} peer_reaped={} peer_status={:#010x} peer_code={}",
                         trial.stage,
                         ready,
                         fds[0].revents,
+                        anchor,
                         entry,
                         returned,
                         elapsed,
@@ -695,8 +740,20 @@ fn run_late_trial(client: Fd, server: Fd, trial: LateTrial) -> Result<LateResult
             decode_late_payload(&buf)?
         };
 
-        let token_ms = stamps.token_ms;
         let write_ms = stamps.write_ms;
+
+        // The echo ties this payload to THIS trial's anchor. Without it a
+        // payload left over from an earlier attempt could be scored against the
+        // current one's stamps, which is a way to pass by accident.
+        if stamps.anchor_echo != anchor {
+            return Err(fail(
+                "late_token_mismatch",
+                format!(
+                    "stage={} anchor={} echo={} write_ms={} delay_ms={}",
+                    trial.stage, anchor, stamps.anchor_echo, write_ms, delay_ms
+                ),
+            ));
+        }
 
         // The peer waits to an absolute instant on the same kernel clock, so a
         // short wait is not a scheduling artifact -- it is `nanosleep` or the
@@ -705,15 +762,15 @@ fn run_late_trial(client: Fd, server: Fd, trial: LateTrial) -> Result<LateResult
         // keeps a `Race` trial from degenerating into stage 2: without it, a
         // peer that publishes readiness immediately satisfies the other checks
         // with a measured parked span of 0.
-        if write_ms < token_ms + delay_ms {
+        if write_ms < anchor + delay_ms {
             return Err(fail(
                 "late_peer_short_wait",
                 format!(
-                    "stage={} token_ms={} write_ms={} waited_ms={} delay_ms={}",
+                    "stage={} anchor={} write_ms={} waited_ms={} delay_ms={}",
                     trial.stage,
-                    token_ms,
+                    anchor,
                     write_ms,
-                    write_ms.saturating_sub(token_ms),
+                    write_ms.saturating_sub(anchor),
                     delay_ms
                 ),
             ));
@@ -731,15 +788,15 @@ fn run_late_trial(client: Fd, server: Fd, trial: LateTrial) -> Result<LateResult
             // the quantity the #693 investigation had to reconstruct from
             // kernel syscall ordering across thirteen preserved boots.
             emit(&format!(
-                "[POLL_TCP_ORACLE:LATE_PUBLISH:stage={} decided={} entry={} returned={} token_ms={} write_ms={} late_by_ms={} delay_ms={} timeout={}]",
+                "[POLL_TCP_ORACLE:LATE_PUBLISH:stage={} decided={} anchor={} entry={} returned={} write_ms={} late_by_ms={} delay_ms={} timeout={}]",
                 trial.stage,
                 match verdict {
                     TimeoutVerdict::Lost => "published_before_return",
                     TimeoutVerdict::PublishedAfterReturn => "published_after_return",
                 },
+                anchor,
                 entry,
                 returned,
-                token_ms,
                 write_ms,
                 late_by,
                 delay_ms,
@@ -754,13 +811,13 @@ fn run_late_trial(client: Fd, server: Fd, trial: LateTrial) -> Result<LateResult
                     return Err(fail(
                         "late_lost_wake",
                         format!(
-                            "stage={} ready={} revents={:#06x} entry={} returned={} token_ms={} write_ms={} published_before_return_ms={} elapsed_ms={} timeout={} delay_ms={}",
+                            "stage={} ready={} revents={:#06x} anchor={} entry={} returned={} write_ms={} published_before_return_ms={} elapsed_ms={} timeout={} delay_ms={}",
                             trial.stage,
                             ready,
                             fds[0].revents,
+                            anchor,
                             entry,
                             returned,
-                            token_ms,
                             write_ms,
                             returned.saturating_sub(write_ms),
                             elapsed,
@@ -810,11 +867,11 @@ fn run_late_trial(client: Fd, server: Fd, trial: LateTrial) -> Result<LateResult
                 return Err(fail(
                     "forced_not_late",
                     format!(
-                        "attempts={} entry={} returned={} token_ms={} write_ms={} timeout={} delay_ms={}",
+                        "attempts={} anchor={} entry={} returned={} write_ms={} timeout={} delay_ms={}",
                         LATE_MAX_ATTEMPTS,
+                        anchor,
                         entry,
                         returned,
-                        token_ms,
                         write_ms,
                         timeout_ms,
                         delay_ms / 2
@@ -824,22 +881,32 @@ fn run_late_trial(client: Fd, server: Fd, trial: LateTrial) -> Result<LateResult
             continue;
         }
 
-        if entry > token_ms {
-            // The parent did not reach its own poll entry before the peer's
-            // clock started. Nothing about wakes can be concluded from this
-            // trial either way, so it is not a verdict: widen the delay and try
-            // again. Reporting this as a failure is the bug two earlier
-            // revisions of this bound had -- it is ordinary parent-side
-            // scheduling latency, not a kernel defect.
+        if entry > write_ms {
+            // The parent did not reach its own poll entry before the peer wrote,
+            // so the publication was already on the socket when the entry scan
+            // ran and this trial decides neither way. It is not a
+            // verdict: widen the delay and try again. Reporting it as a
+            // failure is the bug two earlier revisions of this bound had -- it
+            // is ordinary parent-side scheduling latency, not a kernel defect.
+            //
+            // #694: the comparison is against the peer's WRITE instant, which
+            // the anchor pins to `anchor + delay_ms + overrun`. The pre-#694
+            // comparison was against the peer's RECEIPT instant, which the
+            // delay does not move at all -- so the ladder below could not
+            // influence what it was retrying, and five doublings were five
+            // flips of one coin (17% exhaustion on beast KVM, #694). Anchored,
+            // each doubling strictly widens the room the parent has to get
+            // from its own `send()` to its own `poll()`.
             window_attempt += 1;
             delay_ms *= 2;
             if window_attempt > LATE_MAX_ATTEMPTS {
                 return Err(fail(
                     "late_window_missed",
                     format!(
-                        "attempts={} overshoot_ms={} delay_ms={}",
+                        "attempts={} overshoot_ms={} send_to_poll_ms={} delay_ms={}",
                         LATE_MAX_ATTEMPTS,
-                        entry - token_ms,
+                        entry - write_ms,
+                        entry.saturating_sub(anchor),
                         delay_ms / 2
                     ),
                 ));
