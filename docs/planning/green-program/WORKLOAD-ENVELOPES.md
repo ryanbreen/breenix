@@ -12,7 +12,7 @@ workload was, so nobody could tell the declaration had gone stale until it fault
 This document records, cell by cell, what workload each **currently standing** green
 declaration was actually measured against, so the next widening can be caught by
 inspection instead of by a livelock. `tests/green_program_envelope_structure.rs` turns
-four of these claims into a mechanical, re-run-on-every-change check (see
+five of these claims into a mechanical, re-run-on-every-change check (see
 [Detector](#detector) below); the rest are recorded here as the honest, human-readable
 record and are **not** mechanically enforced — said so at each one.
 
@@ -29,15 +29,19 @@ record and are **not** mechanically enforced — said so at each one.
   every/all/zero/always/never below is either a direct quote from an evidence doc
   (marked as such) or is immediately followed by the citation that grounds it as a
   literal, checked count — not a rhetorical universal.
-- "Standing cells" = the six cells `evidence-declarations.md` §3 recorded as still
-  HIGH at the moment of the 2026-09-01 assessment (verified against that document,
-  not assumed from the task brief): **TTY–x86, TTY–aarch64, TTY–blended,
-  Tracing–aarch64, Bus/device infrastructure–aarch64, NIC drivers–aarch64.** That
-  matches the six the task brief named going in; this document independently
-  re-derived the list from `evidence-declarations.md` §1/§3 rather than trusting the
-  brief, and it matches exactly — 6 of 6, no fourth arch view among them (no cell has
-  reached HIGH on all three views simultaneously in this program's history, per the
-  same table).
+- "Standing cells" = the six cells recorded as still HIGH at the moment of the
+  2026-09-01 assessment: **TTY–x86 (PR #732), TTY–aarch64 (PR #708/#709),
+  TTY–blended (the same PR #732 fix round, coordinator ruling), Tracing–aarch64
+  (PR #683), Bus/device infrastructure–aarch64 (PR #723), NIC drivers–aarch64
+  (PR #723).** That matches the six the task brief named going in. This list was
+  cross-checked against `evidence-declarations.md` §1/§3 during drafting and matched
+  exactly — 6 of 6, no fourth arch view among them (no cell has reached HIGH on all
+  three views simultaneously in this program's history, per the same table) — but
+  that file is an ephemeral workflow artifact under `…/scratchpad/assessment/`, not
+  durable in this repo at any commit, so it is **not** cited as this bullet's source
+  of truth; the PR numbers above are. A reader on `main` who wants the per-cell
+  reasoning behind each HIGH declaration should follow those PRs, not
+  `evidence-declarations.md`.
 
 ---
 
@@ -132,13 +136,17 @@ the source by issue number.
 **Syscall families exercised.** Same 13 of the 14 arms as aarch64 (§1) — arm 14,
 `cloexec_exec`, is excluded because `exec()` is `ENOSYS` in the shipped x86
 zero-feature profile (`tty/EVIDENCE-x86-fix-round-2026-08-31.md` §4). The 13-arm
-shared-surface argument is a census, not an absent-diff inference: every file the 13
-arms' syscalls dispatch through (`session.rs`, `ioctl.rs`, `tty/ioctl.rs`,
+shared-surface argument is a census, not an absent-diff inference: of the 11 files
+the 13 arms' syscalls dispatch through (`session.rs`, `ioctl.rs`, `tty/ioctl.rs`,
 `tty/termios.rs`, `tty/line_discipline.rs`, `tty/mod.rs`, `tty/pty/mod.rs`,
-`tty/pty/pair.rs`, `syscall/pty.rs`, `ipc/fd.rs`'s `close_cloexec()`) carries **zero**
-`target_arch` occurrences (`tty/EVIDENCE-x86-fix-round-2026-08-31.md` §5, a table of
-11 files each re-counted directly against the tree) — a literal, cited zero, not an
-unqualified "shared code" claim.
+`tty/pty/pair.rs`, `syscall/pty.rs`, `ipc/fd.rs`'s `close_cloexec()`, and
+`tty/driver.rs`), **10 of 11 carry zero** `target_arch` occurrences; the 11th,
+`tty/driver.rs`, carries **14** — every one of them console byte-out
+(`serial_aarch64::raw_serial_char` vs `serial::write_byte`) or arch-specific
+diagnostic text, not TTY/PTY protocol semantics, per the source table's own note
+(`tty/EVIDENCE-x86-fix-round-2026-08-31.md` §5, which itself corrects an earlier
+draft that had claimed this file was zero too). Cited as "10 of 11 zero, the 11th
+disclosed," not as a blanket zero across all 11.
 
 **CPU count / profile / accelerator.** `accel=tcg -cpu qemu64 -smp 1 -m 512` —
 confirmed in both `docker/qemu/run-x86-tty-oracle-gate.sh:206` and
@@ -154,10 +162,20 @@ TCG. Zero-feature production profile, no `--features` (same discipline as aarch6
 directly, not inferred from one). No fourth (`/home`) disk exists in either script,
 so `kernel::fs::ext2::init_home_fs()`'s guard (`VirtioBlockWrapper::new(3).is_some()`,
 `kernel/src/main.rs:638`) is false and no home filesystem mounts. **Because the ext2
-disk is mounted `readonly=on` at the device level, `root_fs_write()` cannot succeed
-on this workload even if something called it — not merely "nothing calls it," as on
-aarch64, but a hardware-level guarantee.** This is the sharpest asymmetry between the
-two arch views' filesystem envelopes and is mechanically checked (§ Detector, item 2).
+disk is mounted `readonly=on` at the device level, no ext2 write issued on this
+workload can ever land on the underlying image — a device-level bound on
+*persistence*, not on *lock-path reachability*.** `root_fs_write()`
+(`kernel/src/fs/ext2/mod.rs:2183`) is a lock acquisition, not a device write — it
+`Ext2WriteGuard`-succeeds the moment it wins `ROOT_EXT2`'s upgradeable-read-then-
+upgrade sequence, long before any block I/O is issued, and #728 itself was a
+lock-upgrade spin, not a write reaching the disk. So `readonly=on` does **not**
+make the #728 code path unreachable on x86 — a second process contending for that
+same lock would still spin exactly as it did on aarch64; what the flag guarantees
+is that if a write ever *did* land, it could not persist. That is still a real,
+disclosed asymmetry from aarch64 (below, ext2 is writable there, so a write that
+lands actually sticks) — it is just a narrower one than "hardware-level guarantee
+against the defect" claimed. Mechanically checked as a device-flag fact (§
+Detector, item 2), not as a claim about lock reachability.
 
 **Other fixed axes.** Same as aarch64: no ext2 read/write is issued by the oracle
 itself; every spawned ELF is read from ext2 by the loader on the way in.
@@ -178,8 +196,12 @@ governs the blended claim. Concretely: 1–4 CPUs depending on which arch view i
 exercised (never simultaneously — no test in this program boots both arches at once
 and compares them live), zero-feature production profile on both, 13 syscall-family
 arms common to both, ext2 mounted on both (writable on aarch64, read-only on x86 —
-the blended cell inherits the **weaker** (write-permitting) guarantee, since a
-blended claim is only as strong as its weakest view). Arm 14 (`fork`+`exec` inside a
+the blended cell inherits the **weaker persistence bound** (a write that lands on
+aarch64 sticks; one that landed on x86 would not), since a blended claim is only as
+strong as its weakest view; per §2's correction above, `readonly=on` bounds whether
+a write persists, not whether the #728 lock path is reachable, so the blended cell
+does *not* inherit any reduced exposure to #728 itself from x86's flag). Arm 14
+(`fork`+`exec` inside a
 PTY session) is aarch64-only supplementary evidence, tracked for re-admission on
 `#721`, per the same ruling — explicitly **not** part of the blended cell's own claim.
 
@@ -191,30 +213,53 @@ Declared 2026-08-28 (PR #683). Evidence: `tracing/EVIDENCE-2026-08-28.md`.
 
 **Concurrent userspace processes — partially uncheckable, disclosed.** The harness
 (`scripts/test_tracing_via_gdb.sh`) boots a kernel built with `--features boot_tests`
-(not the zero-feature production profile TTY uses), lets it free-run for a settle
+(not the zero-feature production profile TTY uses) — true of the specific run this
+cell's evidence cites, but **not enforced by the script itself going forward**: the
+script never builds the kernel (confirmed directly, current tree — it only checks
+for a pre-built binary at a fixed path) and its own error message, printed when
+that binary is missing, recommends the **zero-feature** build command for both
+arches (`scripts/test_tracing_via_gdb.sh:100,123`) — not `--features boot_tests`.
+So a future run of this exact script against whatever binary happens to already sit
+at that path could silently measure a different build profile than the one this
+cell's declaration was proven against, with nothing in the script itself to catch
+it. It lets the kernel free-run for a settle
 window (20s in the cited run), then halts it with a GDB attach and dumps the trace
 buffer — it does not stop the kernel at a defined boot stage. The evidence doc's own
 citation (`tracing/EVIDENCE-2026-08-28.md` §2, `serials/aarch64-bootgate-markers-…`)
 shows only `[BOOT_TESTS:TOTAL:109]` / `[TESTS_COMPLETE:109/109]` — the kthread-based
 in-kernel test registry (`kernel::test_framework::executor::run_all_tests()`, whose
 own doc comment says it "spawns kthreads to run tests in parallel" —
-`kernel/src/test_framework/executor.rs:1-4`, current tree). **Those 109 tests run as
-kernel threads sharing the kernel's own address space, not as separate userspace
-processes** — confirmed directly: `run_all_tests()`'s body contains no call to
-`create_user_process` or `spawn(` anywhere (grepped against the full function body,
-current tree; 0 occurrences). That much is a checked fact, not an inference, and is
-exactly what `tests/green_program_envelope_structure.rs`'s
-`boot_tests_registry_stays_kthread_only` guards (§ Detector, item 4).
+`kernel/src/test_framework/executor.rs:1-4`, current tree). **`run_all_tests()`
+itself never creates a userspace process directly** — confirmed by direct grep:
+its own function body contains no call to `create_user_process` or `spawn(`
+anywhere (current tree; 0 occurrences). That is a checked fact one level deep, not
+a claim about the full 109-test registry: `run_all_tests()` dispatches into 109
+individual test bodies living in other modules, and neither this grep nor
+`tests/green_program_envelope_structure.rs`'s `boot_tests_registry_stays_kthread_only`
+(§ Detector, item 4) walks any of THEIR bodies — a widening inside any one of the
+109 registered tests would not be caught by either. What this fact does establish:
+the registry's own dispatch loop is kthread-only, whatever any individual test
+goes on to do.
 What is **not** checked, and is disclosed here rather than assumed: after the
 kthread registry completes, the same boot flow continues into
 `launch_init_from_elf()` and the ordinary production `init.rs` sequence described in
 §1 above (`kernel/src/main_aarch64.rs`, the `#[cfg(feature = "boot_tests")]` block at
 the top of `kernel_main` advances to `TestStage::ProcessContext` once the designated
 init process exists, then falls through to the same userspace launch path a
-zero-feature boot uses). A companion arc's own evidence shows this concretely:
-`docker/qemu/run-aarch64-full-test.sh --rebuild`, built the same `boot_tests` way,
-reaches **Phase 2** (shell-prompt detection, which needs `run_boot_script()` to have
-executed) on this exact profile (`tty/EVIDENCE-2026-08-30.md` §8, the `#593` red).
+zero-feature boot uses). A companion arc's own serial capture shows this
+concretely, not just structurally: `[heartbeat] tid=1204 uptime_ms=...` lines
+recur throughout the serial log of `docker/qemu/run-aarch64-full-test.sh --rebuild`,
+built the same `boot_tests` way
+(`docs/planning/green-program/fs/serials/aarch64-full-test-rebuild-20260828.txt`,
+lines 90 onward) — `start_liveness_service()`'s heartbeat process actually ran on
+this exact profile. (The `#593` red on this same profile is **not** evidence of
+this on its own — per `tty/EVIDENCE-2026-08-30.md` §7, it reports that init's
+aarch64 boot script spawns no shell, so `run-aarch64-full-test.sh` Phase 2's own
+shell check can never *pass* here; a Phase-2 red, alone, says nothing about what
+booted before it, since Phase 2 is itself gated on Phase 1 having fully passed
+(`if [ -z "$FAIL_REASON" ]`, `run-aarch64-full-test.sh:680`) — which the same
+serial capture cited above shows directly: every Phase-1 sub-phase reports PASS
+before "Phase 2: Checking services…" begins, lines 19-49 of the cited log.)
 So the 20-second settle window in the tracing capture plausibly also included some
 or all of the same heartbeat/oracle/bsshd/boot-script userspace-process sequence §1
 documents — **but the tracing evidence doc itself never asserts a process count, and
@@ -275,10 +320,17 @@ for the identical reason: both gates build `--features boot_tests`
 `docker/qemu/run-aarch64-service-sequence-gate.sh:116`, current tree), so the
 measured boot runs the kthread-based 109-test registry (confirmed kthread-only, same
 citation as §4) and then — per the same `main_aarch64.rs` control flow — continues
-into the ordinary production userspace-init sequence. `run-aarch64-full-test.sh`'s
-own Phase-2 shell check (§4, `tty/EVIDENCE-2026-08-30.md` §8) is direct evidence that
-*this exact gate script* reaches userspace init in the same boot the device census
-also reads. The service-sequence gate's 50/50 GREEN run
+into the ordinary production userspace-init sequence. The same `[heartbeat]
+tid=1204 uptime_ms=...` serial evidence cited in §4
+(`docs/planning/green-program/fs/serials/aarch64-full-test-rebuild-20260828.txt`,
+`run-aarch64-full-test.sh --rebuild`'s own capture) is the evidence that *this
+exact gate script* reaches userspace init in the same boot the device census also
+reads — not the script's Phase-2 shell check, which per `tty/EVIDENCE-2026-08-30.md`
+§7's `#593` finding has no way to pass on this profile (aarch64's boot script
+spawns no shell at all) whether or not Phase 2 is ever reached, so it proves
+nothing about the boot either way (see §4's correction for the fuller mechanism).
+The service-sequence
+gate's 50/50 GREEN run
 (`nic-bus/EVIDENCE-2026-08-31.md` §4, table row "aarch64 MMIO total") is a 25-boot,
 two-profile battery on the shipped-shape boot sequence, not a bare device-count
 microbenchmark — so it plausibly also carries the same heartbeat/oracle/bsshd
@@ -327,7 +379,10 @@ exactly the shape of thing that produced the #728 revert:
    scripts happened to get checked. Confirmed directly against 7 gate scripts
    (2 x86, 5 aarch64) named throughout §1-6 above; mechanically re-checked by
    `tests/green_program_envelope_structure.rs` (item 2, below) on every future
-   change to any of those 7 scripts.
+   change to any of those 7 scripts. Per §2's correction: this is a *persistence*
+   bound (a write that lands cannot survive on x86), not a *lock-path reachability*
+   bound — `root_fs_write()` is a lock acquisition that succeeds independently of
+   the device flag, so #728's own lock-upgrade spin is reachable on either arch.
 2. **Two of the six standing cells (Tracing-aarch64, Bus/NIC-aarch64) were measured
    on the `boot_tests` feature profile, not the zero-feature production profile the
    other four (TTY, all three views) were measured on** — and the `boot_tests`
@@ -335,24 +390,41 @@ exactly the shape of thing that produced the #728 revert:
    envelope documents, on top of a 109-test kthread registry TTY's profile never
    runs at all. This document does not know, and does not claim to know, exactly how
    many userspace processes were alive at the moment either cell's measurement was
-   taken — see §4/§5-6's "uncheckable" notes.
+   taken — see §4/§5-6's "uncheckable" notes. **This axis is not enforced going
+   forward.** `run-aarch64-full-test.sh` and `run-aarch64-service-sequence-gate.sh`
+   only rebuild with `--features boot_tests` inside an `if $REBUILD` block gated on
+   an explicit `--rebuild` flag; run without it, they boot whatever kernel binary is
+   already sitting in `target/`, unverified against any profile. `scripts/
+   test_tracing_via_gdb.sh` never builds at all (§4) and its own error text
+   recommends the zero-feature build. Nothing in this repository checks that a
+   `boot_tests`-profile binary is actually what these three scripts boot on any
+   given run; the profile claims above are sourced to the specific historical runs
+   the cited evidence docs measured, not to a standing guarantee.
 
 ---
 
 ## Detector
 
-`tests/green_program_envelope_structure.rs` turns four of the claims above into a
+`tests/green_program_envelope_structure.rs` turns five of the claims above into a
 host-side structural test (`cargo test --test green_program_envelope_structure`),
 run the same way every other `*_structure.rs` ratchet in `tests/` is run — no kernel
 build or QEMU boot required, since every check parses source/script text directly.
 It is **not** a CI gate (this repo has no GitHub Actions and no git hooks are in
 scope per the task); it is a test the sweep process — or any future arc touching
-`init.rs`, the seven cited gate scripts, or `executor.rs` — is expected to run before
+`init.rs`, the seven cited gate scripts, `executor.rs`, `kernel/src/syscall/handler.rs`,
+or `kernel/src/arch_impl/aarch64/syscall_entry.rs` — is expected to run before
 declaring or re-declaring a cell, the same way `tty_oracle_structure.rs` is already
-run before every TTY declaration.
+run before every TTY declaration. It covers only these six *currently standing*
+cells; if Filesystem or any other cell re-declares, this document and this test file
+do not automatically grow a section or a check for it — extending both to a newly
+green cell is a manual follow-up, out of this task's scope.
 
-**What it checks (census-shaped — every check reads the current fact out of the
-source it governs, never a hand-typed expected value pulled from this document):**
+**What it checks.** Every item's *extraction* reads the current fact out of the
+source it governs — never string-matching against this document's own prose. Item
+1 and item 3's *expectations*, however, are hand-typed literals pinned to this
+document's own numbers (a ratchet, not a derivation from anything else in the
+tree) — stated plainly here rather than as "never a hand-typed value," which items
+1 and 3 make false if taken literally:
 
 1. **TTY concurrency invariant.** Parses `userspace/programs/src/init.rs::main()`'s
    call sequence and classifies each helper it calls, before the arch-appropriate
@@ -361,14 +433,17 @@ source it governs, never a hand-typed expected value pulled from this document):
    call starts) or *reaped* (both, sequential). Asserts the aarch64 persistent count
    is exactly 1 (`heartbeat`) and the x86 persistent count is exactly 0, matching §1
    and §2 above. A future PR that adds a second background daemon before either
-   arch's `run_tty_oracle()` call — the same shape of change #713 made to Filesystem
-   — reddens this test by name instead of silently changing the concurrency envelope
-   TTY was proven under.
+   arch's `run_tty_oracle()` call, as **text in `init.rs`**, reddens this test by
+   name instead of silently changing the concurrency envelope TTY was proven under.
+   This is *not* the shape #713 actually took (item 5, below, is) — #713's own
+   `init.rs` call sites for `start_bsshd()`/`run_boot_script()` already existed as
+   text before the merge; only their runtime effect changed via a kernel dispatch-
+   table edit this item cannot see.
 2. **ext2 read-only/writable split.** Parses the ext2 `-drive` (or `drive_opts=`)
    declaration out of all 7 gate scripts named in §1-6 and asserts x86 scripts carry
    `readonly=on` and aarch64 scripts do not. Flags the moment any of the two x86
-   scripts drops `readonly=on` (a real widening of the x86 write-envelope) or either
-   direction drifts from what this document claims.
+   scripts drops `readonly=on` (a real widening of the persistence bound described
+   in §2) or either direction drifts from what this document claims.
 3. **`-smp` census.** Parses the `-smp N` value adjoining each gate script's own
    arch-marker line (`-M virt,gic-version=3` for aarch64, `-machine pc,accel=tcg` for
    x86) for the same 7 scripts and asserts aarch64 is 4 and x86 is 1, matching every
@@ -377,22 +452,39 @@ source it governs, never a hand-typed expected value pulled from this document):
    `kernel/src/test_framework/executor.rs::run_all_tests()`'s body and asserts it
    calls neither `create_user_process` nor `spawn(` — the fact §4/§5-6 lean on to
    say the 109-test registry itself never becomes a second concurrent userspace
-   process, whatever the surrounding boot goes on to do.
+   process. This checks only `run_all_tests()`'s OWN body, one level deep — it says
+   nothing about the 109 individual test bodies it dispatches into, which live in
+   other modules and are not walked by this check; a widening inside any one of
+   those 109 tests would not be caught here.
+5. **Syscall-dispatch census.** Parses `kernel/src/syscall/handler.rs`'s live x86
+   dispatch table (`rust_syscall_handler`) and `kernel/src/arch_impl/aarch64/
+   syscall_entry.rs`'s live aarch64 dispatch tables (`rust_syscall_handler_aarch64`
+   plus `dispatch_syscall_enum`) for the `SyscallNumber` variant named in each arm
+   (all 126 variants the enum declares, on both arches — a literal count from the
+   standalone harness run described below, not assumed), classifies each arm as a
+   real dispatch or a hardcoded ENOSYS stub, and asserts the current ENOSYS-stub
+   set is exactly `{GetTime}` on x86 and exactly `{ArchPrctl}` on aarch64. **This is
+   the axis #713 actually widened**: Spawn moved out of x86's
+   stub set in commit a60b8855 with zero change to `init.rs` text, which is exactly
+   why items 1-4 above missed it. Replaying the real `handler.rs` bytes from
+   immediately before and immediately after PR #730 (#713's fix) through this exact
+   census logic (verified standalone, not committed as a test here — see item 5's
+   own code comment) shows the stub set changing across precisely that commit, with
+   all 125 non-Spawn arms byte-identical between the two.
 
-Each of the four is proven non-vacuous the same way `tty_oracle_structure.rs`
-proves its own census functions non-vacuous (in-memory string mutation, no on-disk
-edit, no rebuild): a **positive** mutation modeled directly on the #713 pattern (an
-extra persistent aarch64 spawn inserted before `run_tty_oracle()`; `readonly=on`
-stripped from an x86 script; an `-smp` value changed on a watched script; a
-`create_user_process` call inserted into `run_all_tests()`'s body) is asserted to
-flip the corresponding check from green to red, and a **control** mutation to
-something the check does not own (an unrelated print-string edit inside a reaped
-launcher; an `-smp` edit on a gate script none of the 6 cells cite; a call inserted
-into a different function in the same file) is asserted to leave the check
-unaffected. All eight mutation assertions pass against the current tree — see
-`tests/green_program_envelope_structure.rs`'s own test functions for the exact
-before/after pairs; nothing here restates them as a second copy that could drift
-from the code.
+Every item above has at least one **WIDENING** mutation proof (a change modeled on
+a real capability change is asserted to flip the check from green to red) and at
+least one **CONTROL** mutation proof (a change the check does not own is asserted
+to leave it unaffected), each applied to an in-memory copy of the real file content
+(`String::replace`, never an on-disk edit, matching `tty_oracle_structure.rs`'s
+established idiom) and fed through the exact same extraction function the live
+check uses. Items 1, 2, 3, and 5 each prove both their x86 and aarch64 arm
+specifically, not just one arch standing in for both — closing a gap a review of
+this suite's first draft found (two arms, including the one that models #713's own
+*shape* most directly, had no mutation proof at all). All mutation-proof tests pass
+against the current tree; see `tests/green_program_envelope_structure.rs`'s own
+test functions for the exact before/after pairs — nothing here restates them as a
+second copy that could drift from the code.
 
 **What the detector does not, and cannot, cover** — stated plainly rather than
 implied covered:
@@ -415,28 +507,79 @@ implied covered:
   (no CI, no git hooks in scope here); it is discovered and run manually, the same
   way every other `tests/*_structure.rs` ratchet already is.
 
+**Known parsing limits, disclosed rather than fixed (minor, found in R4 review):**
+
+- `ext2_drive_is_readonly` returns on the *first* line matching `id=ext2disk` or
+  `id=ext2,` and is keyed to those two exact spellings. A script that gains a
+  second ext2 disk (`run-ext2-lock-race-gate.sh` already has one,
+  `id=ext2root`/`id=ext2home`, though it is not one of the 7 watched scripts) would
+  only have its first match read; a third spelling would panic loudly rather than
+  silently misreading. Benign today: all 7 watched scripts have exactly one match,
+  verified directly.
+- `classify_launcher`'s cut is "does the child outlive the launcher call," but the
+  axis #728 actually needed is "is a second process alive at all, concurrently
+  enough to contend for ext2." A *reaped* launcher inserted immediately before the
+  oracle still makes the kernel's ELF loader read from ext2 with a second process
+  briefly live, and item 1 would score it 0 (no change). The persistent/reaped cut
+  is defensible for the TTY cell specifically (its own declared envelope really is
+  about the background daemon that outlives everything); as the general "widening"
+  primitive the Detector section above sells it as, it is narrower than the real
+  axis.
+- `main_call_sequence` only recognises bare `ident(...);` statement lines that end
+  literally `");"`. A launcher invoked as `let _ = start_daemon();`, or with its
+  call split across lines, is silently skipped — not a panic, a silent zero that
+  would undercount the persistent-launcher census.
+- §1's "exactly 3" concurrent-process derivation does not mention
+  `run_init_group_refusal_probe("early")`, which runs before the TTY oracle on
+  aarch64 and issues a raw `clone` via inline asm rather than `spawn()` — expected
+  to be refused (`-22`), so it does not add a fourth process and the count of 3
+  stands, but the omission from the derivation's own prose is exactly the kind of
+  unstated step this document is elsewhere careful to name.
+- Item 4's `body.contains("spawn(")` also matches `respawn(` / `kthread_spawn(` if
+  either ever appeared in `run_all_tests()`'s body. This over-matching, on its own,
+  is a false-positive risk only (the check would redden on a text change that isn't
+  actually a widening) — over-matching a substring cannot itself cause a miss. It
+  says nothing about item 4's separately-disclosed false-negative gap above (any
+  userspace-creating API not literally named `create_user_process` or `spawn(`, or
+  any widening inside one of the 109 individual test bodies, is missed regardless
+  of this substring's own behavior).
+
 ---
 
 ## Claim-discipline self-check
 
 Per the task's own instruction, this document was grepped for
-`every|all|zero|always|never` before finishing: 67 hits (as of this final pass; the
-count above was regenerated after the edit that added this sentence, not left stale
-from an earlier draft). Each was read in context and falls into one of the patterns
-below — a direct quote, a literal cited count, or a scoped/disclosed statement rather
-than an unbacked universal; representative examples of each pattern are listed, not
-all 67 individually:
+`every|all|zero|always|never` before finishing this R4 fix round: **93 hits**
+(`grep -owE 'every|all|zero|always|never' docs/planning/green-program/WORKLOAD-ENVELOPES.md
+| wc -l`, regenerated after every edit in this pass, including this sentence, not
+left stale from an earlier draft — up from the original draft's 67 because this
+round added a fifth detector item, a corrected filesystem-persistence argument, and
+a disclosed-limits section, each of which legitimately needs some of these words).
+Each was read in context and falls into one of the patterns below — a direct
+quote, a literal cited count, or a scoped/disclosed statement rather than an
+unbacked universal; representative examples of each pattern are listed, not all 93
+individually:
 
 - "**never** overlap with bsshd's own ext2 reads" (§2) — a direct quote from
   `userspace/programs/src/init.rs`'s own doc comment, attributed as a quote, not
   this document's claim.
-- "**zero** ext2 reads or writes" (§1), "**zero** `target_arch` occurrences" (§2, a
-  literal re-counted table cell), "run_all_tests()… 0 occurrences" (§4) — each is a
-  direct grep/count result stated next to its method, not an unqualified universal.
+- "**zero** ext2 reads or writes" (§1), "10 of 11 files carry **zero**
+  `target_arch` occurrences [the 11th disclosed at 14]" (§2, a literal re-counted
+  table), "run_all_tests()… 0 occurrences" (§4) — each is a direct grep/count
+  result stated next to its method, not an unqualified universal.
 - "no test in this program boots both arches at once" (§3) — scoped to "this
   program," not a claim about what's possible.
 - "This document does not know… **never** asserts a process count" (§4) — a
   disclosure of a limit, not a universal claim about the world.
+- "so #728's own lock-upgrade spin is reachable on either arch" / "`root_fs_write()`
+  is a lock acquisition that succeeds independently of the device flag" (§2, cross-
+  cell fact 1) — the corrected persistence-vs-reachability argument, each half
+  grounded in the cited function's own source (`kernel/src/fs/ext2/mod.rs:2183`),
+  not a restated "hardware-level guarantee."
+- "the ENOSYS-stub set is exactly `{GetTime}` on x86 and exactly `{ArchPrctl}` on
+  aarch64" (Detector item 5) — a literal set, re-derived by the census described in
+  the same sentence and re-checked by two live `#[test]`s, not an unqualified
+  "nothing is ever ENOSYS."
 - "**zero**-feature production profile" (throughout) — a proper noun (the profile's
   own name in this codebase, `cargo build` with no `--features` flag), not a
   quantifier.
@@ -445,3 +588,8 @@ all 67 individually:
   either a specific assertion inside a named test function (checkable by reading
   that function) or a scoped negative about this repo's own CI/hook surface
   (verified: no `.github/workflows`, no git hooks referenced anywhere in this task).
+- Known-parsing-limits section: "over-matching a substring cannot itself cause a
+  miss" (item 4's `spawn(` substring match) — a narrow, scoped claim about that one
+  substring's own behavior, immediately followed by a cross-reference to item 4's
+  separately-disclosed, real false-negative gap rather than a claim the check is
+  flawless.

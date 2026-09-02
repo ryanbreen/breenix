@@ -8,17 +8,35 @@
 //! *workload* the declaration was proven under simply widened, and nothing recorded
 //! what that workload was.
 //!
-//! This suite is the mechanical half of that fix. It reads the same four workload
-//! axes `WORKLOAD-ENVELOPES.md` documents for the program's six currently-standing
-//! green cells (TTY x86/aarch64/blended, Tracing-aarch64, Bus-aarch64, NIC-aarch64)
-//! and asserts the current tree still matches what those declarations were proven
-//! against. It is a CENSUS in the same sense every other `tests/*_structure.rs`
-//! ratchet in this tree is: every check reads its fact out of the real source file
-//! it governs (an `init.rs` call sequence, a gate script's own QEMU flags, a
-//! kernel-registry function body), never a hand-typed expected value copied out of
-//! the envelope document. A change that widens one of these axes -- the same shape
-//! of change #713 was -- reddens the corresponding test by name instead of silently
-//! invalidating a declaration nobody re-checks.
+//! This suite is the mechanical half of that fix. Items 1-4 read four workload axes
+//! `WORKLOAD-ENVELOPES.md` documents for the program's six currently-standing green
+//! cells (TTY x86/aarch64/blended, Tracing-aarch64, Bus-aarch64, NIC-aarch64) off
+//! `init.rs`'s own call-site text, gate scripts' own QEMU flags, and a
+//! kernel-registry function body -- but a round-2 review of this suite proved,
+//! numerically, that #713's *actual* mechanism (a kernel dispatch-table capability
+//! change, `kernel/src/syscall/handler.rs` commit a60b8855, with zero `init.rs` text
+//! delta) is invisible to all four: a census of `init.rs` at the #713 merge scores
+//! identically before and after. Item 5 closes that gap on the axis that actually
+//! moved -- which `SyscallNumber` variants dispatch to a real handler versus an
+//! ENOSYS stub, per arch -- and is the one item this suite can show, by replaying
+//! the real pre/post-#713 `handler.rs` bytes through its own census logic, would
+//! have caught #713's specific commit (see item 5's own comment block below for
+//! that verification). Items 1-4 remain real, useful ratchets on the axes they DO
+//! read; they are not claimed to cover #713's shape any more.
+//!
+//! Every check is a CENSUS in the sense every other `tests/*_structure.rs` ratchet
+//! in this tree is: the *extraction* reads a fact out of the real source file it
+//! governs, never string-matching against a copy of the envelope document's prose.
+//! The *expectation* each extracted fact is compared against, however, IS a
+//! hand-typed literal in several of the items below (item 1's `1`/`0` persistent
+//! counts, item 3's `4`/`1` -smp values) -- these are this document's own numbers,
+//! pinned here as a ratchet the same way this repo's other `*_structure.rs` files
+//! pin literals for facts that are expected to stay fixed. That is a legitimate,
+//! useful design (a pinned census still catches drift the moment source text
+//! changes shape), just not what "never a hand-typed expected value" claimed.
+//!
+//! A change that widens one of these axes reddens the corresponding test by name
+//! instead of silently invalidating a declaration nobody re-checks.
 //!
 //! It is host-side and requires no kernel build or QEMU boot: everything below is a
 //! text read of files already in the tree. Run it the same way any other structural
@@ -256,11 +274,13 @@ fn x86_gate_scripts_mount_ext2_readonly() {
         assert!(
             ext2_drive_is_readonly(&script),
             "WORKLOAD-ENVELOPES.md \u{a7}2 and the Cross-cell structural facts section \
-             both rely on {path} mounting the ext2 root disk `readonly=on` -- so \
-             `root_fs_write()` cannot succeed on this workload even in principle. That \
+             both rely on {path} mounting the ext2 root disk `readonly=on` -- so any \
+             ext2 write on this workload cannot persist (a bound on persistence, NOT \
+             on whether #728's own lock-upgrade spin is reachable -- root_fs_write() \
+             is a lock acquisition that succeeds independently of this flag). That \
              flag is now absent. This is exactly the shape of widening #728 needed: an \
-             x86 write-envelope guarantee just weakened. Re-derive the TTY-x86 and \
-             TTY-blended filesystem-envelope claims before trusting them."
+             x86 filesystem-write envelope bound just weakened. Re-derive the TTY-x86 \
+             and TTY-blended filesystem-envelope claims before trusting them."
         );
     }
 }
@@ -365,6 +385,290 @@ fn boot_tests_registry_stays_kthread_only() {
 }
 
 // ---------------------------------------------------------------------------
+// Item 5: syscall-dispatch census -- which SyscallNumber variants dispatch to a
+// real handler versus an ENOSYS stub, per arch. Added in the R4 fix round after
+// review found items 1-4 blind to the actual #713 widening: #713's real change was
+// commit a60b8855, a one-line kernel/src/syscall/handler.rs dispatch-table edit
+// (`Some(SyscallNumber::Spawn) => SyscallResult::Err(NoSys)` became
+// `=> super::handlers::sys_spawn(args.0, args.1)`) that no init.rs-reading census
+// can ever see: init.rs's own call sites for start_bsshd()/run_boot_script()
+// already existed as TEXT before #713 (their spawns just returned ENOSYS at
+// runtime) -- only kernel *capability* changed, not any userspace call-site text.
+// This is the axis the FS envelope was actually proven against and actually lost:
+// a text census of init.rs at the #713 merge scores identically before and after
+// (both 1 persistent x86 launcher, `start_bsshd`) even though the real world went
+// from zero other processes ever having executed to `run_boot_script()`'s full
+// process chain (#722) actually running.
+//
+// Verified against real history, not just asserted: this exact census logic, run
+// standalone (a scratch `rustc --edition 2021` harness against two `git show`
+// blobs, not committed here since embedding git archaeology into a source-text
+// ratchet would make it fragile to history rewrites) against
+// `kernel/src/syscall/handler.rs` at `09ae3f44^` (parent of the #713 merge, PR
+// #730) and at `09ae3f44` (the merge itself), finds 126 named arms on both sides,
+// all 125 non-Spawn arms byte-identical, and Spawn flipping from an ENOSYS stub to
+// a real handler dispatch -- the census the mutation proof below reproduces
+// generically DOES change across exactly the commit that mattered. Recorded in
+// docs/planning/green-program/WORKLOAD-ENVELOPES.md's Detector section and in the
+// R4 fix round's build notes.
+// ---------------------------------------------------------------------------
+
+/// Brace-matches from just after an already-located opening `{` (`after_open_brace`
+/// is the byte index of the character following it) to its matching `}`, returning
+/// the interior text. Same depth-counting loop as `fn_body` above, factored out
+/// separately here because item 5 brace-matches from an anchor string inside a
+/// function rather than from `fn name(` itself.
+fn brace_match_from(source: &str, after_open_brace: usize) -> &str {
+    let bytes = source.as_bytes();
+    let mut depth: i32 = 1;
+    let mut i = after_open_brace;
+    while i < bytes.len() && depth > 0 {
+        match bytes[i] {
+            b'{' => depth += 1,
+            b'}' => depth -= 1,
+            _ => {}
+        }
+        i += 1;
+    }
+    &source[after_open_brace..i - 1]
+}
+
+/// Splits the interior of a `match { ... }` block into `(pattern, body)` pairs, one
+/// per arm, tracking paren/brace/bracket depth together (sufficient for well-formed
+/// Rust) and treating the first depth-0 `=>` after an arm boundary as the
+/// pattern/body split. A `{ ... }`-bodied arm is brace-matched; an expression-bodied
+/// arm runs to the next depth-0 comma. Comment text between arms rides along as
+/// part of the *next* arm's `pattern` string, which is harmless here since callers
+/// only grep that string for `SyscallNumber::Name` substrings, never treat it as
+/// Rust syntax.
+fn split_match_arms(block: &str) -> Vec<(String, String)> {
+    let bytes = block.as_bytes();
+    let mut arms = Vec::new();
+    let mut i = 0usize;
+    let mut arm_start = 0usize;
+    let mut depth: i32 = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'(' | b'{' | b'[' => depth += 1,
+            b')' | b'}' | b']' => depth -= 1,
+            b'=' if depth == 0 && i + 1 < bytes.len() && bytes[i + 1] == b'>' => {
+                let pattern = block[arm_start..i].trim().to_string();
+                let mut j = i + 2;
+                while j < bytes.len() && bytes[j].is_ascii_whitespace() {
+                    j += 1;
+                }
+                let body_begin = j;
+                if j < bytes.len() && bytes[j] == b'{' {
+                    let mut bdepth: i32 = 1;
+                    j += 1;
+                    while j < bytes.len() && bdepth > 0 {
+                        match bytes[j] {
+                            b'{' => bdepth += 1,
+                            b'}' => bdepth -= 1,
+                            _ => {}
+                        }
+                        j += 1;
+                    }
+                } else {
+                    let mut bdepth: i32 = 0;
+                    while j < bytes.len() {
+                        match bytes[j] {
+                            b'(' | b'{' | b'[' => bdepth += 1,
+                            b')' | b'}' | b']' => bdepth -= 1,
+                            b',' if bdepth == 0 => break,
+                            _ => {}
+                        }
+                        j += 1;
+                    }
+                }
+                let body = block[body_begin..j].trim().to_string();
+                arms.push((pattern, body));
+                i = j;
+                if i < bytes.len() && bytes[i] == b',' {
+                    i += 1;
+                }
+                arm_start = i;
+                continue;
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    arms
+}
+
+/// The `SyscallNumber::Name` identifiers named in a match-arm pattern -- handles a
+/// single variant (`Some(SyscallNumber::Exit)`), a bare variant (aarch64's
+/// `SyscallNumber::Exit`), and an or-pattern (`SyscallNumber::Fork | SyscallNumber::Exec`).
+/// Returns an empty vec for catch-all arms (`None`, or aarch64's `Some(syscall)`
+/// binding with no literal variant name) -- those name no specific syscall and are
+/// correctly excluded from the per-name census.
+fn syscall_names_in_pattern(pattern: &str) -> Vec<String> {
+    let mut names = Vec::new();
+    let marker = "SyscallNumber::";
+    let mut rest = pattern;
+    while let Some(idx) = rest.find(marker) {
+        let after = &rest[idx + marker.len()..];
+        let end = after
+            .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+            .unwrap_or(after.len());
+        names.push(after[..end].to_string());
+        rest = &after[end..];
+    }
+    names
+}
+
+/// Whether an arm's body is a hardcoded "this syscall is not implemented" stub --
+/// the kernel textually admitting ENOSYS -- as opposed to a real dispatch to a
+/// handler function, even a trivial always-fails one (Mremap's fixed ENOMEM is a
+/// real, if minimal, handler and correctly does NOT count as a stub here: the
+/// kernel admits the syscall, it just always fails it for a resource reason, which
+/// is a different fact than "unimplemented").
+fn is_enosys_stub(body: &str) -> bool {
+    body.contains("NoSys") || body.contains("ENOSYS") || body.trim() == "(-38_i64) as u64"
+}
+
+const SYSCALL_HANDLER_RS: &str = "kernel/src/syscall/handler.rs";
+const AARCH64_SYSCALL_ENTRY_RS: &str = "kernel/src/arch_impl/aarch64/syscall_entry.rs";
+
+/// Syscall-dispatch census for the live x86_64 syscall path: `rust_syscall_handler`
+/// in `kernel/src/syscall/handler.rs`, the Tier-1 hot-path handler wired to
+/// `entry.asm` -- NOT `syscall/dispatcher.rs::dispatch_syscall`, which carries its
+/// own `#[allow(dead_code)]` and is never called anywhere else in the tree
+/// (checked: `grep -rn dispatch_syscall kernel/src` has no hits outside
+/// dispatcher.rs itself -- it is genuinely dead code, not a second live path).
+/// Returns `(variant_name, is_enosys_stub)` for every named `SyscallNumber`
+/// variant in the table.
+fn x86_syscall_census(source: &str) -> Vec<(String, bool)> {
+    let anchor = "match SyscallNumber::from_u64(syscall_num) {";
+    let start = source
+        .find(anchor)
+        .unwrap_or_else(|| {
+            panic!("{SYSCALL_HANDLER_RS} dispatches on SyscallNumber::from_u64(syscall_num)")
+        })
+        + anchor.len();
+    let block = brace_match_from(source, start);
+    let mut out = Vec::new();
+    for (pattern, body) in split_match_arms(block) {
+        for name in syscall_names_in_pattern(&pattern) {
+            out.push((name, is_enosys_stub(&body)));
+        }
+    }
+    out
+}
+
+/// Syscall-dispatch census for the live aarch64 syscall path. Two match blocks feed
+/// it, and BOTH must be read to get a truthful answer: `rust_syscall_handler_aarch64`
+/// intercepts Fork/Exec/Sigreturn/Pause/Sigsuspend/Clone directly (they need
+/// exception-frame access `dispatch_syscall_enum` doesn't have) before anything
+/// reaches `dispatch_syscall_enum`; `dispatch_syscall_enum` itself still carries a
+/// defensive `(-38_i64) as u64` arm for those same five names, per its own comment
+/// "If they somehow reach here, return ENOSYS" -- text that is never actually
+/// reached at runtime, since the outer match already intercepted them. A census
+/// that read only `dispatch_syscall_enum` would misclassify five live syscalls as
+/// ENOSYS stubs. This function reads the outer match first and lets it win;
+/// `dispatch_syscall_enum`'s arms only contribute for names the outer match
+/// doesn't already name.
+fn aarch64_syscall_census(source: &str) -> Vec<(String, bool)> {
+    let outer_anchor = "let result = match resolved_num {";
+    let outer_start = source
+        .find(outer_anchor)
+        .unwrap_or_else(|| {
+            panic!(
+                "{AARCH64_SYSCALL_ENTRY_RS} dispatches on resolved_num in \
+                 rust_syscall_handler_aarch64"
+            )
+        })
+        + outer_anchor.len();
+    let outer_block = brace_match_from(source, outer_start);
+
+    let inner_fn_anchor = "fn dispatch_syscall_enum(";
+    let inner_fn_start = source.find(inner_fn_anchor).unwrap_or_else(|| {
+        panic!("{AARCH64_SYSCALL_ENTRY_RS} declares fn dispatch_syscall_enum(...)")
+    });
+    let inner_source = &source[inner_fn_start..];
+    let match_anchor = "match syscall {";
+    let inner_match_start = inner_source
+        .find(match_anchor)
+        .unwrap_or_else(|| panic!("dispatch_syscall_enum matches on syscall"))
+        + match_anchor.len();
+    let inner_block = brace_match_from(inner_source, inner_match_start);
+
+    let mut seen = std::collections::BTreeSet::new();
+    let mut out = Vec::new();
+    for (pattern, body) in split_match_arms(outer_block) {
+        for name in syscall_names_in_pattern(&pattern) {
+            if seen.insert(name.clone()) {
+                out.push((name, is_enosys_stub(&body)));
+            }
+        }
+    }
+    for (pattern, body) in split_match_arms(inner_block) {
+        for name in syscall_names_in_pattern(&pattern) {
+            if seen.insert(name.clone()) {
+                out.push((name, is_enosys_stub(&body)));
+            }
+        }
+    }
+    out
+}
+
+/// The names in `census` whose arm is an ENOSYS stub, sorted.
+fn stub_names(census: &[(String, bool)]) -> Vec<String> {
+    let mut names: Vec<String> = census
+        .iter()
+        .filter(|(_, is_stub)| *is_stub)
+        .map(|(name, _)| name.clone())
+        .collect();
+    names.sort();
+    names
+}
+
+#[test]
+fn x86_syscall_dispatch_enosys_stubs_are_exactly_gettime() {
+    let source = read(SYSCALL_HANDLER_RS);
+    let census = x86_syscall_census(&source);
+    // Anti-vacuity anchor, same role as item 1's `found_stop`: a broken parser that
+    // silently returns nothing must not pass this test by accident.
+    assert!(
+        census.iter().any(|(n, is_stub)| n == "Write" && !is_stub),
+        "x86 syscall-dispatch census did not find Write as a live arm -- the parser \
+         is not reading {SYSCALL_HANDLER_RS}'s real dispatch table"
+    );
+    let stubs = stub_names(&census);
+    assert_eq!(
+        stubs,
+        vec!["GetTime".to_string()],
+        "x86's ENOSYS-stub syscall set changed from [GetTime] to {stubs:?}. This is \
+         the exact axis #713 widened on 2026-08-31 (Spawn moved ENOSYS -> \
+         handlers::sys_spawn, kernel/src/syscall/handler.rs, commit a60b8855) and the \
+         axis items 1-4 above are structurally blind to, because that widening never \
+         touched userspace/programs/src/init.rs's call-site text. A syscall leaving \
+         this set is new kernel-admitted capability on x86 -- re-derive every cell's \
+         envelope that assumed it was unreachable before trusting them."
+    );
+}
+
+#[test]
+fn aarch64_syscall_dispatch_enosys_stubs_are_exactly_archprctl() {
+    let source = read(AARCH64_SYSCALL_ENTRY_RS);
+    let census = aarch64_syscall_census(&source);
+    assert!(
+        census.iter().any(|(n, is_stub)| n == "Write" && !is_stub),
+        "aarch64 syscall-dispatch census did not find Write as a live arm -- the \
+         parser is not reading {AARCH64_SYSCALL_ENTRY_RS}'s real dispatch table"
+    );
+    let stubs = stub_names(&census);
+    assert_eq!(
+        stubs,
+        vec!["ArchPrctl".to_string()],
+        "aarch64's ENOSYS-stub syscall set changed from [ArchPrctl] to {stubs:?}. A \
+         syscall leaving this set is new kernel-admitted capability on aarch64 -- \
+         re-derive every standing cell's envelope before trusting it."
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Mutation proofs -- each item above, proven to redden on a #713-shaped widening
 // and stay quiet on an unrelated change. All mutations are applied to in-memory
 // copies only (String::replace), matching this file family's existing idiom; the
@@ -410,6 +714,28 @@ fn item1_mutation_proof() {
         "an unrelated print-string edit inside a reaped launcher must not move the \
          persistent-launcher census"
     );
+
+    // WIDENING (x86 arm): the same shape on x86's own count -- the arm that models
+    // #713's *text* shape directly (M7: this arm previously had no mutation proof
+    // of its own; the aarch64 case above exercises the same shared
+    // persistent_count_before()/classify_launcher() logic, but not the x86-gated
+    // read path specifically). A #713-shaped PR that added a *textual* fire-and-
+    // forget spawn ahead of x86's run_tty_oracle() -- as opposed to #713's actual
+    // mechanism, a dispatch-table capability change with no init.rs text delta at
+    // all, see item 5 above -- would be caught here.
+    let x86_baseline = persistent_count_before(&source, "x86_64", "run_tty_oracle");
+    assert_eq!(x86_baseline, 0, "sanity: x86 baseline must match the live #[test] above");
+    let x86_widened = source.replace(
+        "    #[cfg(target_arch = \"x86_64\")]\n    run_tty_oracle();",
+        "    #[cfg(target_arch = \"x86_64\")]\n    start_bounce();\n    #[cfg(target_arch = \"x86_64\")]\n    run_tty_oracle();",
+    );
+    assert_ne!(x86_widened, source, "x86 mutation did not apply");
+    let x86_widened_count = persistent_count_before(&x86_widened, "x86_64", "run_tty_oracle");
+    assert_eq!(
+        x86_widened_count, 1,
+        "inserting a persistent x86 launcher ahead of run_tty_oracle() did not \
+         change the x86 census"
+    );
 }
 
 #[test]
@@ -417,8 +743,10 @@ fn item2_mutation_proof() {
     let script = read("docker/qemu/run-x86-tty-oracle-gate.sh");
     assert!(ext2_drive_is_readonly(&script), "sanity: baseline must be readonly");
 
-    // WIDENING: the x86 ext2 disk loses its readonly flag -- the FS write-envelope
-    // guarantee this document leans on disappears.
+    // WIDENING: the x86 ext2 disk loses its readonly flag -- the device-level
+    // persistence bound this document leans on (§2's corrected wording: a bound on
+    // whether a write can persist, not on whether #728's lock path is reachable)
+    // disappears.
     let widened = script.replace(
         "if=none,id=ext2disk,format=raw,readonly=on,file=$EXT2_IMG",
         "if=none,id=ext2disk,format=raw,file=$EXT2_IMG",
@@ -427,7 +755,7 @@ fn item2_mutation_proof() {
     assert!(
         !ext2_drive_is_readonly(&widened),
         "stripping readonly=on from the x86 ext2 drive line did not flip the check -- \
-         the read-only guarantee could be lost silently"
+         the persistence bound could be lost silently"
     );
 
     // CONTROL: readonly=on stays, but an unrelated drive (the placeholder disk)
@@ -440,6 +768,28 @@ fn item2_mutation_proof() {
     assert!(
         ext2_drive_is_readonly(&control),
         "editing an unrelated drive's readonly flag must not affect the ext2 census"
+    );
+
+    // WIDENING (aarch64 arm): M7 -- the aarch64-writable arm previously had no
+    // mutation proof of its own. Flipping an aarch64 script to readonly=on is a
+    // *narrowing* of the concurrency-relevant axis (a write that lands would now
+    // fail to persist there too), but it is still the shape of drift
+    // `aarch64_gate_scripts_mount_ext2_writable` exists to catch, and the doc says
+    // as much: "this narrows rather than widens the envelope, but the document's
+    // own claim about this script is now stale either way."
+    let aarch64_script = read("docker/qemu/run-aarch64-tty-oracle-gate.sh");
+    assert!(
+        !ext2_drive_is_readonly(&aarch64_script),
+        "sanity: aarch64 baseline must be writable"
+    );
+    let aarch64_widened = aarch64_script.replace(
+        "-drive if=none,id=ext2,format=raw,file=\"$RUN_DIR/ext2-writable.img\"",
+        "-drive if=none,id=ext2,format=raw,readonly=on,file=\"$RUN_DIR/ext2-writable.img\"",
+    );
+    assert_ne!(aarch64_widened, aarch64_script, "aarch64 mutation did not apply");
+    assert!(
+        ext2_drive_is_readonly(&aarch64_widened),
+        "adding readonly=on to the aarch64 ext2 drive line did not flip the check"
     );
 }
 
@@ -461,16 +811,63 @@ fn item3_mutation_proof() {
         "bumping -smp on the x86 QEMU line did not change what the census reads"
     );
 
-    // CONTROL: -smp changed on a gate script none of the six standing cells cite
-    // (run-x86-gate.sh, the beast merge-gate script, not in either watched list).
-    // The watched-script census must not even look at it.
-    let unrelated = read("docker/qemu/run-x86-gate.sh");
+    // CONTROL: -smp changed on a real x86 gate script none of the six standing
+    // cells cite (run-x86-boot-tests.sh -- confirmed below to be in neither watched
+    // array, and confirmed to carry its own real `-smp 1` on the same anchor line
+    // shape). This is a genuine mutation (assert_ne, and smp_on_line_containing's
+    // own reading of THIS file's bytes really does change), fed through the exact
+    // same parsing function the live #[test]s use -- not a no-op read. What makes
+    // it a control rather than a second widening test is that the live #[test]s
+    // (`x86_gate_scripts_boot_smp_1`, `aarch64_gate_scripts_boot_smp_4`) only ever
+    // loop over X86_GATE_SCRIPTS/AARCH64_GATE_SCRIPTS, so this file's bytes --
+    // mutated or not -- are structurally never read by either: re-reading the real
+    // watched scripts from disk below (untouched, since every mutation in this file
+    // family stays in-memory) still returns exactly the live baseline.
+    let unrelated_path = "docker/qemu/run-x86-boot-tests.sh";
     assert!(
-        !X86_GATE_SCRIPTS.contains(&"docker/qemu/run-x86-gate.sh")
-            && !AARCH64_GATE_SCRIPTS.contains(&"docker/qemu/run-x86-gate.sh"),
-        "sanity: this script must not be one of the watched gate scripts"
+        !X86_GATE_SCRIPTS.contains(&unrelated_path) && !AARCH64_GATE_SCRIPTS.contains(&unrelated_path),
+        "sanity: {unrelated_path} must not be one of the watched gate scripts, or \
+         this control proves nothing"
     );
-    let _ = unrelated; // read only to prove the file exists; never fed to the census
+    let unrelated = read(unrelated_path);
+    let unrelated_baseline = smp_on_line_containing(&unrelated, X86_SMP_ANCHOR);
+    let unrelated_widened = unrelated.replace(
+        "-machine pc,accel=tcg -cpu qemu64 -smp 1 -m 512",
+        "-machine pc,accel=tcg -cpu qemu64 -smp 2 -m 512",
+    );
+    assert_ne!(unrelated_widened, unrelated, "control mutation did not apply");
+    assert_ne!(
+        smp_on_line_containing(&unrelated_widened, X86_SMP_ANCHOR),
+        unrelated_baseline,
+        "the control script's own -smp value should have changed under its own \
+         mutation -- if it didn't, this control is vacuous the same way the old one \
+         was"
+    );
+    for path in X86_GATE_SCRIPTS {
+        let watched_script = read(path);
+        assert_eq!(
+            smp_on_line_containing(&watched_script, X86_SMP_ANCHOR),
+            1,
+            "watched script {path}'s -smp reading moved after mutating an unrelated, \
+             unwatched script -- the two censuses must be independent"
+        );
+    }
+
+    // WIDENING (aarch64 arm): M7 -- the aarch64 -smp-4 arm previously had no
+    // mutation proof of its own.
+    let aarch64_script = read("docker/qemu/run-aarch64-tty-oracle-gate.sh");
+    let aarch64_baseline = smp_on_line_containing(&aarch64_script, AARCH64_SMP_ANCHOR);
+    assert_eq!(aarch64_baseline, 4, "sanity: aarch64 baseline must match the live #[test] above");
+    let aarch64_widened = aarch64_script.replace(
+        "-M virt,gic-version=3 -cpu max -m 512 -smp 4",
+        "-M virt,gic-version=3 -cpu max -m 512 -smp 2",
+    );
+    assert_ne!(aarch64_widened, aarch64_script, "aarch64 mutation did not apply");
+    assert_eq!(
+        smp_on_line_containing(&aarch64_widened, AARCH64_SMP_ANCHOR),
+        2,
+        "dropping -smp on the aarch64 QEMU line did not change what the census reads"
+    );
 }
 
 #[test]
@@ -482,13 +879,40 @@ fn item4_mutation_proof() {
         "sanity: baseline run_all_tests() must be kthread-only"
     );
 
-    // WIDENING: run_all_tests() starts creating a real userspace process directly.
-    let widened_body = format!(
-        "{baseline_body}\n    let _ = kernel::process::creation::create_user_process(alloc::string::String::new(), &[]);"
+    // WIDENING: splice a real create_user_process() call into run_all_tests()'s own
+    // SOURCE TEXT (not a standalone string built by this test), then re-extract the
+    // function body via the SAME fn_body() the live #[test] above uses, and check
+    // the same substring the live check watches. (Before this fix, this arm instead
+    // built a string via format!(baseline_body, ..) and asserted the string it had
+    // just concatenated contained what it had just concatenated -- never calling
+    // fn_body() again or touching the check predicate. Proof that mattered:
+    // sabotaging fn_body() to always return an empty slice left this test green.)
+    let widened_source = source.replace(
+        "    serial_println!(\"[BOOT_TESTS:START]\");",
+        "    serial_println!(\"[BOOT_TESTS:START]\");\n    let _ = kernel::process::creation::create_user_process(alloc::string::String::new(), &[]);",
     );
+    assert_ne!(widened_source, source, "mutation did not apply");
+    let widened_body = fn_body(&widened_source, "run_all_tests");
     assert!(
         widened_body.contains("create_user_process"),
-        "mutation did not apply"
+        "splicing a create_user_process() call into run_all_tests()'s source did not \
+         show up when the function body was re-extracted by fn_body() -- the \
+         mutation and the extractor disagree about where the function body is, so \
+         the live check would not have caught a #713-shaped widening of the \
+         boot_tests registry itself"
+    );
+
+    // Same shape, the other substring the live check watches (`spawn(`).
+    let widened_source_spawn = source.replace(
+        "    serial_println!(\"[BOOT_TESTS:START]\");",
+        "    serial_println!(\"[BOOT_TESTS:START]\");\n    let _ = spawn(0, 0);",
+    );
+    assert_ne!(widened_source_spawn, source, "spawn( mutation did not apply");
+    let widened_body_spawn = fn_body(&widened_source_spawn, "run_all_tests");
+    assert!(
+        widened_body_spawn.contains("spawn("),
+        "splicing a spawn( call into run_all_tests()'s source did not show up when \
+         the function body was re-extracted by fn_body()"
     );
 
     // CONTROL: a create_user_process-shaped call appears elsewhere in the same
@@ -503,5 +927,67 @@ fn item4_mutation_proof() {
     assert!(
         !control_body.contains("create_user_process"),
         "an edit outside run_all_tests()'s own body must not leak into its census"
+    );
+}
+
+#[test]
+fn item5_mutation_proof() {
+    // WIDENING: reproduce the #713 shape exactly -- an ENOSYS-stub arm becomes a
+    // real dispatch. x86's GetTime is the one currently-stubbed arm available to
+    // mutate without inventing a hypothetical (Spawn itself is already live
+    // post-#713, so there is nothing left to widen there on the current tree).
+    let source = read(SYSCALL_HANDLER_RS);
+    let baseline = x86_syscall_census(&source);
+    assert_eq!(
+        stub_names(&baseline),
+        vec!["GetTime".to_string()],
+        "sanity: baseline must match the live #[test] above"
+    );
+
+    let widened = source.replace(
+        "Some(SyscallNumber::GetTime) => SyscallResult::Err(super::ErrorCode::NoSys as u64),",
+        "Some(SyscallNumber::GetTime) => super::handlers::sys_gettid(),",
+    );
+    assert_ne!(widened, source, "mutation did not apply");
+    assert!(
+        stub_names(&x86_syscall_census(&widened)).is_empty(),
+        "flipping GetTime's arm from an ENOSYS stub to a real dispatch did not \
+         change the census -- the check would not have caught a #713-shaped \
+         widening"
+    );
+
+    // CONTROL: an unrelated already-live arm is rewritten to call a different
+    // (still real) function. It stays live either way; the stub set must not move.
+    let control = source.replace(
+        "Some(SyscallNumber::Yield) => super::handlers::sys_yield(),",
+        "Some(SyscallNumber::Yield) => super::handlers::sys_yield_now(),",
+    );
+    assert_ne!(control, source, "control mutation did not apply");
+    assert_eq!(
+        stub_names(&x86_syscall_census(&control)),
+        vec!["GetTime".to_string()],
+        "renaming an already-live arm's target function must not move the \
+         ENOSYS-stub census"
+    );
+
+    // Same widening shape on aarch64, using its one stubbed arm (ArchPrctl) -- the
+    // review's B1 finding asked for this axis to hold "for each arch," so both
+    // arches get their own widening proof rather than just x86's.
+    let aarch64_source = read(AARCH64_SYSCALL_ENTRY_RS);
+    let aarch64_baseline = aarch64_syscall_census(&aarch64_source);
+    assert_eq!(
+        stub_names(&aarch64_baseline),
+        vec!["ArchPrctl".to_string()],
+        "sanity: aarch64 baseline must match the live #[test] above"
+    );
+    let aarch64_widened = aarch64_source.replace(
+        "SyscallNumber::ArchPrctl => (-(crate::syscall::errno::ENOSYS as i64)) as u64,",
+        "SyscallNumber::ArchPrctl => sys_gettid(),",
+    );
+    assert_ne!(aarch64_widened, aarch64_source, "aarch64 mutation did not apply");
+    assert!(
+        stub_names(&aarch64_syscall_census(&aarch64_widened)).is_empty(),
+        "flipping aarch64's ArchPrctl arm from an ENOSYS stub to a real dispatch did \
+         not change the census"
     );
 }
