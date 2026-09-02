@@ -170,11 +170,51 @@ was actually hit is worse than "no coverage" -- it's "the profile itself
 does not boot," two layers deep, both pre-existing and unrelated to
 #707:
 
-1. **#562** (filed 2026-08-14, independently reproduced this round on
-   unmodified `main` @ `3d601400`): `kernel::task::softirq_tests::test_softirq()`
-   panics deterministically, 5/5 attempts, before any userspace binary is
-   spawned. `562-softirq-panic-serial.txt` preserves one of the five
-   reproductions from this round's own independent confirmation.
+1. **#562** (filed 2026-08-14): `kernel::task::softirq_tests::test_softirq()`
+   panics before any userspace binary is spawned --
+   `panicked at kernel/src/task/softirq_tests.rs:228:5: ksoftirqd should
+   have processed deferred softirqs (tid=Some(2))`.
+
+   **Correction (this round's own round-2 review + fix pass,
+   `review-707.md` finding B1):** the file this branch originally
+   committed under this name showed none of that -- 0 panic lines, 223
+   `--features boot_tests`-only `[TEST:` markers (the wrong build
+   profile), and a tail of `CLONEVM_EXEC_TEST: child live`, i.e. a
+   capture of a different, unrelated boot that reached userspace
+   cleanly (claim-lint:ok: the 4 greps `review-707.md`'s B1 finding ran
+   were re-run this round against those exact pre-fix bytes via
+   `git show HEAD:.../562-softirq-panic-serial.txt`, before this round's
+   own commit replaced them -- same 0 panic hits, 0 softirq-marker hits,
+   223 `^[TEST:` hits, and the same `CLONEVM_EXEC_TEST: child live` tail
+   line, all reconfirmed). It was filed under this name by mistake.
+   Commit `c1ada97f`'s
+   own message ("aarch64 blocked by #562/#761") repeats the same wrong
+   claim about that file; the commit message itself cannot be corrected
+   after the fact, so this paragraph stands in its place. The
+   2026-09-02T15:47:26Z comment on #562 does not itself cite a filename
+   -- its own verbal description of the reproduction (exact line, exact
+   panic text) is accurate and independently reconfirmed below; only the
+   in-repo artifact was wrong.
+
+   Root cause of the mixup: `run-aarch64-boot-test-native.sh` always
+   writes to the fixed path `/tmp/breenix_aarch64_boot_native/`, wiping
+   it (`rm -rf`) at the start of every attempt and every invocation. The
+   original prove slot's own reproduction did register in its scratch
+   (`/tmp/aarch64-boot1.log`: `FAIL: Kernel panic (336 lines)`, 5/5
+   attempts against a `--features testing` aarch64 build in this same
+   worktree, ~11:43 ET) -- but the raw serial behind that verdict was
+   overwritten by a later, unrelated invocation before anything was
+   copied into the repo, and the wrong file ended up committed instead.
+
+   This fix round (B1) re-ran the reproduction directly against this
+   branch's own aarch64 kernel (`--features testing`, unmodified
+   `kernel/src/main_aarch64.rs`), capturing the full raw serial before
+   any retry could overwrite it: **2/2 fresh boots**, panic at the
+   identical `softirq_tests.rs:228` assertion, before
+   `[test] Loading test binaries from ext2...` or any userspace spawn
+   line appears anywhere in either file.
+   `562-softirq-panic-serial.txt` (boot 1) and
+   `562-softirq-panic-serial-boot2.txt` (boot 2) are the real captures.
 2. **#761** (filed this round): bypassing #562 locally (temporary,
    uncommitted comment-out of the two self-test calls in
    `kernel/src/main_aarch64.rs`) removes the panic but exposes a second

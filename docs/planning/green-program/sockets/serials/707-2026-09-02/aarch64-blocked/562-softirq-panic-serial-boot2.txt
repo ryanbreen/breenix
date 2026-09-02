@@ -15,7 +15,7 @@ EOS
 [boot] Initializing Generic Timer...
 [boot] Timer frequency: 1000000000 Hz (1000 MHz)
 [boot] Initializing PL031 RTC...
-[boot] Current timestamp: 9895000
+[boot] Current timestamp: 7934000
 [boot] Initializing GIC...
 [gic] GICR probe 0x080a0000: WAKER=0x00000006 <<< VALID
 [gic] GICR base mismatch: loader=0x00000000, using=0x080a0000
@@ -157,18 +157,18 @@ NET: pre-primed NetRx softirq for bootstrap callback re-enable
 [boot] Timer interrupt initialized
 [smp] CPU 0 MPIDR=0x80000000, stack_base=0x43000000
 [smp] Probing secondary CPUs via PSCI...
-[smp] CPU 1: PSCI CPU_ON success (raw_status=10@)
-1[smp] CPUA 2: PSC2@1AI BCPU_ON success (BCCraw_status=0)
-DDEEeeFFGGT112[gic] EOImode=1 (split EOI/DIR) - non-VMware path
-[gic] ICC_CTLR_EL1: 0x8c00 -> 0x8c02 (EOImod3@1ABCDEeFG3e=1)
+[smp1] CPU @1: PSCI CPU_ON success (raw_statu1s=A0)
+B[smp] CPU2@ 2: PSC1I ABCCPU_ON sCDDucceEsEes (FreFGGaw_statu1s2=0)
+[s3@1Amp]BCD CEeFG3PU 3: PSCI CPU_ON success (raw_status=0)
+[gic] EOImode=1 (split EOI/DIR) - non-VMwTare p1ath
 [gic] EOImode=1 (split EOI/DIR) - non-VMware path
 [gic] ICC_CTLR_EL1: 0x8c00 -> 0x8c02 (EOImode=1)
 [gic] EOImode=1 (split EOI/DIR) - non-VMware path
-[smp] CPU 3: PSCI CPU_ON success (raw_status=0)
-[T2gic] ICC_CTLR_EL1: 0x8c00 -> 0x8c02 (EOImode=1)
+[gic] ICC_CTLR_EL1: 0x8c00 -> 0x8c02 (EOImode=1)
 [smp] CPU 4 attempt 1/4: HVC64 failed (ret=-2), trying HVC32...
+[gic] ICC_CTLR_EL1: 0x8c00 -> 0x8c02 (EOImode=1)
 [smp] PSCI CPU_ON failed for CPU 4 after 1 attempts: ret=-2 (MPIDR=0x4 entry=0x400802b8)
-[smp] CPU 4: PSCI CPU_ON failed (ret=-2), stopping probe
+T2[smp] CPU 4: PSCI CPU_ON failed (ret=-2), stopping probe
 [smp] 4 CPUs online
 T3T4T5T6T7T8T9T0
 ========================================
@@ -209,7 +209,7 @@ ksoftirqd should have processed deferred softirqs (tid=Some(2))
 [COUNTER] RECLAIM_ENQUEUE_UNDER_PM: 0
 [COUNTER] PROOF_UNDER_QUEUE_LOCK: 0
 [COUNTER] RECLAIM_CONTEXT_VIOLATIONS: 0
-[COUNTER] RECLAIM_DRAIN_NESTED_REFUSED: 0
+[COUNTER] RECLAIM_DRAIN_NESTED_REFUSED: 4 (cpu1=1, cpu2=1, cpu3=2)
 [COUNTER] RECLAIM_PASS_SELECTION_CAPPED: 0
 [COUNTER] TEARDOWN_LOCK_ORDER_SUSPECT: 0
 [COUNTER] ROOT_PROOF_BLOCKED_EPOCH: 0
@@ -320,13 +320,13 @@ ksoftirqd should have processed deferred softirqs (tid=Some(2))
 [COUNTER] XHCI_IRQ_ENTRY_TOTAL: 0
 [COUNTER] XHCI_LOCK_CONTENDED_TOTAL: 0
 [COUNTER] SYSCALL_TOTAL: 0
-[COUNTER] IRQ_TOTAL: 952 (cpu0=781, cpu1=57, cpu2=63, cpu3=51)
-[COUNTER] CTX_SWITCH_TOTAL: 92 (cpu1=41, cpu2=17, cpu3=34)
-[COUNTER] TIMER_TICK_TOTAL: 136 (cpu0=43, cpu1=31, cpu2=26, cpu3=36)
+[COUNTER] IRQ_TOTAL: 953 (cpu0=782, cpu1=53, cpu2=57, cpu3=61)
+[COUNTER] CTX_SWITCH_TOTAL: 108 (cpu1=39, cpu2=34, cpu3=35)
+[COUNTER] TIMER_TICK_TOTAL: 118 (cpu0=38, cpu1=30, cpu2=25, cpu3=25)
 [COUNTER] FORK_TOTAL: 0
 [COUNTER] EXEC_TOTAL: 0
 [COUNTER] COW_FAULT_TOTAL: 0
-[COUNTER] IDLE_TICK_TOTAL: 45 (cpu1=13, cpu2=16, cpu3=16)
+[COUNTER] IDLE_TICK_TOTAL: 36 (cpu1=13, cpu2=11, cpu3=12)
 [COUNTER] GPU_BYTES_UPLOADED: 0
 [COUNTER] GPU_FULL_UPLOADS: 0
 [COUNTER] GPU_PARTIAL_UPLOADS: 0
@@ -334,33 +334,33 @@ ksoftirqd should have processed deferred softirqs (tid=Some(2))
 [COUNTER] NET_PCI_IRQ_RAISED_NETRX: 0
 [COUNTER] GIC_SPI55_ACK_TOTAL: 0
 [COUNTER] ====== END COUNTERS ======
-[RESUME_PC_CENSUS:cpu=1:source=el1-restore-frame-elr:text=645:kstack=0:uva=0:smallint=0:other=0]
-[RESUME_PC_CENSUS:cpu=1:source=ctx-x30:text=645:kstack=0:uva=0:smallint=0:other=0]
-[RESUME_PC_CENSUS:cpu=1:source=ctx-elr-el1:text=645:kstack=0:uva=0:smallint=0:other=0]
-[RESUME_PC_CENSUS:cpu=1:source=lr-save-el1:text=645:kstack=0:uva=0:smallint=0:other=0]
-[RESUME_PC_CENSUS:cpu=1:source=lr-restore-el1:text=645:kstack=0:uva=0:smallint=0:other=0]
-[RESUME_PC_CENSUS:cpu=2:source=el1-restore-frame-elr:text=1938:kstack=0:uva=0:smallint=0:other=0]
-[RESUME_PC_CENSUS:cpu=2:source=ctx-x30:text=1938:kstack=0:uva=0:smallint=0:other=0]
-[RESUME_PC_CENSUS:cpu=2:source=ctx-elr-el1:text=1938:kstack=0:uva=0:smallint=0:other=0]
-[RESUME_PC_CENSUS:cpu=2:source=lr-save-el1:text=1938:kstack=0:uva=0:smallint=0:other=0]
-[RESUME_PC_CENSUS:cpu=2:source=lr-restore-el1:text=1939:kstack=0:uva=0:smallint=0:other=0]
-[RESUME_PC_CENSUS:cpu=3:source=el1-restore-frame-elr:text=2286:kstack=0:uva=0:smallint=0:other=0]
-[RESUME_PC_CENSUS:cpu=3:source=ctx-x30:text=2286:kstack=0:uva=0:smallint=0:other=0]
-[RESUME_PC_CENSUS:cpu=3:source=ctx-elr-el1:text=2286:kstack=0:uva=0:smallint=0:other=0]
-[RESUME_PC_CENSUS:cpu=3:source=lr-save-el1:text=2286:kstack=0:uva=0:smallint=0:other=0]
-[RESUME_PC_CENSUS:cpu=3:source=lr-restore-el1:text=2286:kstack=0:uva=0:smallint=0:other=0]
-[RESUME_PC_CENSUS:cpu=1:source=el1-restore-frame-elr:text=1277:kstack=0:uva=0:smallint=0:other=0]
-[RESUME_PC_CENSUS:cpu=1:source=ctx-x30:text=1277:kstack=0:uva=0:smallint=0:other=0]
-[RESUME_PC_CENSUS:cpu=1:source=ctx-elr-el1:text=1277:kstack=0:uva=0:smallint=0:other=0]
-[RESUME_PC_CENSUS:cpu=1:source=lr-save-el1:text=1277:kstack=0:uva=0:smallint=0:other=0]
-[RESUME_PC_CENSUS:cpu=1:source=lr-restore-el1:text=1277:kstack=0:uva=0:smallint=0:other=0]
-[RESUME_PC_CENSUS:cpu=2:source=el1-restore-frame-elr:text=3891:kstack=0:uva=0:smallint=0:other=0]
-[RESUME_PC_CENSUS:cpu=2:source=ctx-x30:text=3891:kstack=0:uva=0:smallint=0:other=0]
-[RESUME_PC_CENSUS:cpu=2:source=ctx-elr-el1:text=3891:kstack=0:uva=0:smallint=0:other=0]
-[RESUME_PC_CENSUS:cpu=2:source=lr-save-el1:text=3891:kstack=0:uva=0:smallint=0:other=0]
-[RESUME_PC_CENSUS:cpu=2:source=lr-restore-el1:text=3891:kstack=0:uva=0:smallint=0:other=0]
-[RESUME_PC_CENSUS:cpu=3:source=el1-restore-frame-elr:text=4583:kstack=0:uva=0:smallint=0:other=0]
-[RESUME_PC_CENSUS:cpu=3:source=ctx-x30:text=4583:kstack=0:uva=0:smallint=0:other=0]
-[RESUME_PC_CENSUS:cpu=3:source=ctx-elr-el1:text=4583:kstack=0:uva=0:smallint=0:other=0]
-[RESUME_PC_CENSUS:cpu=3:source=lr-save-el1:text=4583:kstack=0:uva=0:smallint=0:other=0]
-[RESUME_PC_CENSUS:cpu=3:source=lr-restore-el1:text=4583:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=el1-restore-frame-elr:text=656:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=ctx-x30:text=656:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=ctx-elr-el1:text=656:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=lr-save-el1:text=656:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=lr-restore-el1:text=656:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=el1-restore-frame-elr:text=1825:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=ctx-x30:text=1825:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=ctx-elr-el1:text=1825:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=lr-save-el1:text=1825:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=lr-restore-el1:text=1825:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=3:source=el1-restore-frame-elr:text=2290:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=3:source=ctx-x30:text=2290:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=3:source=ctx-elr-el1:text=2291:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=3:source=lr-save-el1:text=2290:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=3:source=lr-restore-el1:text=2291:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=el1-restore-frame-elr:text=1275:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=ctx-x30:text=1275:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=ctx-elr-el1:text=1275:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=lr-save-el1:text=1275:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=lr-restore-el1:text=1275:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=el1-restore-frame-elr:text=3678:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=ctx-x30:text=3678:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=ctx-elr-el1:text=3678:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=lr-save-el1:text=3678:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=lr-restore-el1:text=3678:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=3:source=el1-restore-frame-elr:text=4524:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=3:source=ctx-x30:text=4524:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=3:source=ctx-elr-el1:text=4524:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=3:source=lr-save-el1:text=4524:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=3:source=lr-restore-el1:text=4524:kstack=0:uva=0:smallint=0:other=0]
