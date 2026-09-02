@@ -51,11 +51,18 @@
 //!
 //! A timeout arm now recovers the peer's stamps before deciding: the peer's
 //! exit code says whether it published, and its `write_ms` says when.
-//! `write_ms <= returned` is a lost wake and stays a FAIL. `write_ms > returned`
-//! is a window the publication did not enter, so it decides neither way and is
-//! retried against a higher poll ceiling — and if the peer keeps overrunning,
-//! the FAIL that ends it is `late_peer_overrun` carrying the measured overrun,
-//! not a wake-loss claim.
+//! A publication strictly before the poll's own deadline (`entry + timeout_ms`,
+//! a lower bound on the kernel's) is a lost wake and stays a FAIL. A
+//! publication at or after it is a window the publication did not enter, so it
+//! decides neither way and is retried against a higher poll ceiling — and if
+//! the peer keeps overrunning, the FAIL that ends it is `late_peer_overrun`
+//! carrying the measured overrun, not a wake-loss claim.
+//!
+//! The comparison is against the DEADLINE and not against `returned`, the
+//! parent's post-syscall stamp. They differ by however long it took the parent
+//! to get the CPU back, which on beast KVM was measured at 543 ms for a 150 ms
+//! poll, and a publication landing in that gap is one the poll had already
+//! correctly declined to report.
 //!
 //! ## The anchor, and the three facts each trial establishes
 //!
@@ -615,12 +622,14 @@ struct LateTrial {
 /// How the timeout arm of a trial was decided, once the peer's publication
 /// instant is in hand.
 enum TimeoutVerdict {
-    /// Readiness was published at or before the poll's return and the poll did
-    /// not report it. This is a lost wake, and the only thing that is.
+    /// Readiness was published strictly INSIDE the poll's own budget and the
+    /// poll did not report it. This is a lost wake, and it is what the verdict
+    /// names.
     Lost,
-    /// The peer published after the poll had already given up. The poll's 0 is
-    /// the right answer for a socket that had not been written to yet.
-    PublishedAfterReturn,
+    /// The peer published after the poll's budget had already expired. The
+    /// poll's 0 is the right answer for a socket that had not been written to
+    /// when the deadline passed.
+    PublishedAfterDeadline,
 }
 
 /// The outcome of one completed trial.
@@ -777,25 +786,45 @@ fn run_late_trial(client: Fd, server: Fd, trial: LateTrial) -> Result<LateResult
         }
 
         if timed_out {
-            let verdict = if write_ms <= returned {
+            // Score the publication against the poll's own BUDGET, not against
+            // the instant the parent got the CPU back and stamped `returned`.
+            // The two are not the same number and the gap between them is
+            // scheduling latency: on beast KVM boot 20 of the first 25-boot
+            // battery, a 150 ms poll returned 693 ms after entry, and the peer
+            // published 247 ms after the deadline but 296 ms before that
+            // return. Scored against `returned` that reads as a lost wake, and
+            // it is not one -- the poll had already decided, correctly, on an
+            // empty buffer. Scoring against `returned` would have been the
+            // #693 error committed a second time, one instant to the left.
+            //
+            // `entry` is stamped immediately before the syscall and the kernel
+            // starts its countdown at or after that, so `entry + timeout_ms` is
+            // a LOWER bound on the kernel's deadline -- which is the direction
+            // that keeps this sound. A publication strictly before it is
+            // strictly inside the kernel's window too, so a poll that did not
+            // report it lost it. The interval this gives up on is the kernel's
+            // own syscall-entry latency, microseconds wide.
+            let deadline = entry.saturating_add(timeout_ms.max(0) as u64);
+            let verdict = if write_ms < deadline {
                 TimeoutVerdict::Lost
             } else {
-                TimeoutVerdict::PublishedAfterReturn
+                TimeoutVerdict::PublishedAfterDeadline
             };
-            let late_by = write_ms.saturating_sub(returned);
+            let late_by = write_ms.saturating_sub(deadline);
             // Report the classification and the numbers it was made from on
             // each timeout arm, passing or failing. The overrun this prints is
             // the quantity the #693 investigation had to reconstruct from
             // kernel syscall ordering across thirteen preserved boots.
             emit(&format!(
-                "[POLL_TCP_ORACLE:LATE_PUBLISH:stage={} decided={} anchor={} entry={} returned={} write_ms={} late_by_ms={} delay_ms={} timeout={}]",
+                "[POLL_TCP_ORACLE:LATE_PUBLISH:stage={} decided={} anchor={} entry={} deadline={} returned={} write_ms={} late_by_ms={} delay_ms={} timeout={}]",
                 trial.stage,
                 match verdict {
-                    TimeoutVerdict::Lost => "published_before_return",
-                    TimeoutVerdict::PublishedAfterReturn => "published_after_return",
+                    TimeoutVerdict::Lost => "published_before_deadline",
+                    TimeoutVerdict::PublishedAfterDeadline => "published_after_deadline",
                 },
                 anchor,
                 entry,
+                deadline,
                 returned,
                 write_ms,
                 late_by,
@@ -805,28 +834,29 @@ fn run_late_trial(client: Fd, server: Fd, trial: LateTrial) -> Result<LateResult
 
             match verdict {
                 TimeoutVerdict::Lost => {
-                    // Readiness was on the socket before this poll handed back
-                    // 0 ready fds. THIS is a lost wake, and it is what this
-                    // verdict now names.
+                    // Readiness was on the socket while this poll's budget was
+                    // still running, and the poll handed back 0 ready fds. THIS
+                    // is a lost wake, and it is what this verdict now names.
                     return Err(fail(
                         "late_lost_wake",
                         format!(
-                            "stage={} ready={} revents={:#06x} anchor={} entry={} returned={} write_ms={} published_before_return_ms={} elapsed_ms={} timeout={} delay_ms={}",
+                            "stage={} ready={} revents={:#06x} anchor={} entry={} deadline={} returned={} write_ms={} published_before_deadline_ms={} elapsed_ms={} timeout={} delay_ms={}",
                             trial.stage,
                             ready,
                             fds[0].revents,
                             anchor,
                             entry,
+                            deadline,
                             returned,
                             write_ms,
-                            returned.saturating_sub(write_ms),
+                            deadline.saturating_sub(write_ms),
                             elapsed,
                             timeout_ms,
                             delay_ms
                         ),
                     ));
                 }
-                TimeoutVerdict::PublishedAfterReturn => {
+                TimeoutVerdict::PublishedAfterDeadline => {
                     if trial.mode == LateMode::Forced {
                         // This is what the Forced arm exists to observe.
                         return Ok(LateResult {

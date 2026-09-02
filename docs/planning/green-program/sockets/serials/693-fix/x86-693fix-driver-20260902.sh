@@ -1,9 +1,9 @@
 #!/bin/bash
 # #693 fix battery, x86, hermetic. Boots a PRIVATE snapshot of the branch's own
-# images with the argv the qemu-uefi runner emits under BREENIX_NET_MODE=none,
-# so a concurrent rebuild of any shared tree cannot swap the kernel under a
-# running boot. Sequential: one QEMU at a time, and the only process this script
-# kills is the PID it started.
+# images with the argv the qemu-uefi runner emits for a netless guest, so a
+# concurrent rebuild of any shared tree cannot swap the kernel under a running
+# boot. Sequential: one QEMU at a time, and the single process
+# this script kills is the PID it started.
 set -u
 COUNT="${1:-25}"
 TAG="${2:-fix-tcg}"
