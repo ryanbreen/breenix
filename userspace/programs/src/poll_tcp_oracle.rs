@@ -276,24 +276,115 @@ fn sleep_until(due_ms: u64) {
     }
 }
 
+/// Exit codes the stage-3 peer uses to name the branch it took. `0` is the
+/// only one that means the payload reached the socket; every other value names
+/// a distinct place the peer stopped short, and the parent prints whichever it
+/// read out of `waitpid`.
+const PEER_EXIT_SENT: i32 = 0;
+const PEER_EXIT_TOKEN_RECV_FAILED: i32 = 11;
+const PEER_EXIT_TOKEN_CLOCK_FAILED: i32 = 12;
+const PEER_EXIT_WRITE_CLOCK_FAILED: i32 = 13;
+const PEER_EXIT_SEND_FAILED: i32 = 14;
+
+/// Report the branch the stage-3 peer took, then leave with the matching code.
+///
+/// #693 recorded a `late_lost_wake` whose two candidate explanations -- the
+/// kernel lost a readiness publication, or the peer never published one --
+/// could not be told apart from anything the boot emitted: `late_peer` swallowed
+/// its `send` result and exited `0` either way, so neither the verdict line nor
+/// the exit status discriminated. This marker is that missing fact. It is
+/// emitted on every path out of the peer, including the successful one, so a
+/// PASS boot carries the same evidence shape as a FAIL and the absence of a
+/// branch line is itself legible (the peer died before reaching any of them).
+fn peer_exit(branch: &str, detail: &str, code: i32) -> ! {
+    emit(&format!(
+        "[POLL_TCP_ORACLE:PEER:branch={}:{}]",
+        branch, detail
+    ));
+    process::exit(code);
+}
+
 /// The child half of stage 3. Waits for the parent's readiness token, stamps
 /// that moment, waits out the delay, stamps again, and ships both stamps with
 /// the payload. Never returns.
 fn late_peer(server: Fd, delay_ms: u64) -> ! {
     let mut token = [0u8; 1];
-    if recv_exact(server, &mut token, "child_token").is_ok() {
-        if let Ok(token_ms) = monotonic_ms("child_token_stamp") {
-            sleep_until(token_ms + delay_ms);
-            if let Ok(write_ms) = monotonic_ms("child_write") {
-                let mut msg = [0u8; LATE_MSG_LEN];
-                msg[..7].copy_from_slice(PAYLOAD_LATE);
-                msg[7..15].copy_from_slice(&token_ms.to_le_bytes());
-                msg[15..].copy_from_slice(&write_ms.to_le_bytes());
-                let _ = socket::send(server, &msg);
+    if let Err(f) = recv_exact(server, &mut token, "child_token") {
+        peer_exit(
+            "token_recv_failed",
+            &format!("delay_ms={} detail={}", delay_ms, f.detail),
+            PEER_EXIT_TOKEN_RECV_FAILED,
+        );
+    }
+    let token_ms = match monotonic_ms("child_token_stamp") {
+        Ok(ms) => ms,
+        Err(f) => peer_exit(
+            "token_clock_failed",
+            &format!("delay_ms={} detail={}", delay_ms, f.detail),
+            PEER_EXIT_TOKEN_CLOCK_FAILED,
+        ),
+    };
+    sleep_until(token_ms + delay_ms);
+    let write_ms = match monotonic_ms("child_write") {
+        Ok(ms) => ms,
+        Err(f) => peer_exit(
+            "write_clock_failed",
+            &format!("token_ms={} delay_ms={} detail={}", token_ms, delay_ms, f.detail),
+            PEER_EXIT_WRITE_CLOCK_FAILED,
+        ),
+    };
+    let mut msg = [0u8; LATE_MSG_LEN];
+    msg[..7].copy_from_slice(PAYLOAD_LATE);
+    msg[7..15].copy_from_slice(&token_ms.to_le_bytes());
+    msg[15..].copy_from_slice(&write_ms.to_le_bytes());
+    match socket::send(server, &msg) {
+        Ok(n) => peer_exit(
+            "sent",
+            &format!(
+                "n={} want={} token_ms={} write_ms={} delay_ms={}",
+                n, LATE_MSG_LEN, token_ms, write_ms, delay_ms
+            ),
+            PEER_EXIT_SENT,
+        ),
+        Err(e) => peer_exit(
+            "send_failed",
+            &format!(
+                "err={} token_ms={} write_ms={} delay_ms={}",
+                e, token_ms, write_ms, delay_ms
+            ),
+            PEER_EXIT_SEND_FAILED,
+        ),
+    }
+}
+
+/// Re-read the fd the blocking poll just gave up on, two ways, and render both
+/// results as one marker line. See the call site for what each probe decides.
+fn late_lost_wake_probe(client: Fd) -> String {
+    let mut fds = [PollFd::new(client, POLLIN)];
+    let rescan = match io::poll(&mut fds, 0) {
+        Ok(n) => format!("rescan_ready={} rescan_revents={:#06x}", n, fds[0].revents),
+        Err(e) => format!("rescan_err={}", e),
+    };
+
+    let nbread = match io::fcntl_getfl(client) {
+        Ok(original) => {
+            match io::fcntl_setfl(client, original as i32 | io::status_flags::O_NONBLOCK) {
+                Ok(_) => {
+                    let mut buf = [0u8; LATE_MSG_LEN];
+                    let outcome = match io::read(client, &mut buf) {
+                        Ok(n) => format!("nbread_n={}", n),
+                        Err(e) => format!("nbread_err={}", e),
+                    };
+                    let _ = io::fcntl_setfl(client, original as i32);
+                    outcome
+                }
+                Err(e) => format!("nbread_setfl_err={}", e),
             }
         }
-    }
-    process::exit(0);
+        Err(e) => format!("nbread_getfl_err={}", e),
+    };
+
+    format!("[POLL_TCP_ORACLE:LOSTWAKE_PROBE:{} {}]", rescan, nbread)
 }
 
 /// The lost-wake stage: readiness is published while the poller is already
@@ -329,13 +420,38 @@ fn stage_late(client: Fd, server: Fd) -> Result<(u64, u64, u64), Failure> {
         let elapsed = returned.saturating_sub(entry);
 
         if ready != 1 || fds[0].revents & POLLIN == 0 {
+            // #693: emit the discriminating facts BEFORE the reap, because the
+            // reap is the one step in this arm that can itself block forever (a
+            // peer wedged in its own token receive never exits). Two probes and
+            // the peer's own branch line together separate "the kernel lost a
+            // readiness publication" from "the peer never published one":
+            //
+            //   rescan  -- a timeout=0 poll on the same fd, immediately after
+            //              the blocking poll gave up. Ready here means the
+            //              readiness existed and only the blocking loop missed
+            //              it; not ready means the entry scan agrees with the
+            //              blocking scans.
+            //   nbread  -- a non-blocking read of the same fd. Bytes here with
+            //              rescan not ready means the data is in the socket and
+            //              the readiness predicate does not see it, which is a
+            //              different defect from either candidate.
+            //
+            // Both probes run only on this already-failed arm, so neither can
+            // consume anything a passing trial needs.
+            emit(&late_lost_wake_probe(client));
             let mut status = 0i32;
-            let _ = process::waitpid(child.raw() as i32, &mut status as *mut i32, 0);
+            let reaped = process::waitpid(child.raw() as i32, &mut status as *mut i32, 0);
             return Err(fail(
                 "late_lost_wake",
                 format!(
-                    "ready={} revents={:#06x} elapsed_ms={} delay_ms={}",
-                    ready, fds[0].revents, elapsed, delay_ms
+                    "ready={} revents={:#06x} elapsed_ms={} delay_ms={} peer_reaped={} peer_status={:#010x} peer_code={}",
+                    ready,
+                    fds[0].revents,
+                    elapsed,
+                    delay_ms,
+                    reaped.is_ok(),
+                    status,
+                    (status >> 8) & 0xFF
                 ),
             ));
         }
