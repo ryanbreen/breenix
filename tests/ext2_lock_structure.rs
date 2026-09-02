@@ -51,13 +51,29 @@
 //! Added by the #748 second-best-fix round (x86 oracle pace is
 //! pathological; this gives a park-path fact an early exit, not a
 //! replacement for the full leg -- see `mod.rs`'s `ext2_record_park` doc
-//! comment and `docker/qemu/run-ext2-lock-race-park-probe.sh`):
+//! comment and `docker/qemu/run-ext2-lock-race-gate.sh`'s `--park-only`
+//! flag):
 //!   9. `ext2_acquire` and `ext2_acquire_write` EACH individually route
 //!      their `Queued` arm through `ext2_record_park` rather than a bare
 //!      `EXT2_LOCK_PARKS.fetch_add` -- mirroring property 6's per-function
 //!      scope, so a future edit cannot silently drop the #748
 //!      `EXT2_LOCK_PARK_FIRST` marker from one park loop while leaving it
 //!      intact in the other.
+//!
+//! Added by the closure round (review finding F8: property 9 pins the
+//! *routing* to `ext2_record_park` but was blind to deleting what that
+//! routing actually depends on -- both gaps were confirmed open by a real-
+//! source mutation that left property 9 green):
+//!   10. `ext2_record_park` itself both calls `serial_println!` and prints
+//!       the literal `EXT2_LOCK_PARK_FIRST` text -- catches deleting the
+//!       marker print from inside the (still-called) helper, which
+//!       property 9 cannot see since it only checks that callers reach
+//!       `ext2_record_park`, not what `ext2_record_park` does once called.
+//!   11. `run_one()` (`kernel/src/fs/ext2_lock_race.rs`) itself calls
+//!       `ext2_reset_lock_park_first_marker()` -- catches the leg-scoping
+//!       reset silently reverting to whole-boot-first semantics, which
+//!       nothing in this file otherwise pins (the reset call lives outside
+//!       `mod.rs` entirely).
 
 use std::fs;
 use std::path::PathBuf;
@@ -479,6 +495,49 @@ fn validate_records_park_itself(body: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// F8 property 10: `ext2_record_park` must both call `serial_println!` (as
+/// real code, not merely mentioned in a comment -- hence `code_mask`) and
+/// print the literal `EXT2_LOCK_PARK_FIRST` text. `.contains` (not
+/// `code_offsets`) is deliberate for the second check: the marker text
+/// lives inside a string literal, which `code_mask` masks OUT of "code" by
+/// design (see the `string` arm above) -- `body` here is the raw,
+/// unmasked source slice, so a direct substring search still finds it.
+fn validate_record_park_prints_marker(body: &str) -> Result<(), String> {
+    let mask = code_mask(body);
+    if identifier_offsets(body, &mask, "serial_println").is_empty() {
+        return Err(
+            "does not itself call serial_println! -- the #748 EXT2_LOCK_PARK_FIRST marker \
+             print would be silently gone even though ext2_record_park is still called"
+                .to_string(),
+        );
+    }
+    if !body.contains("EXT2_LOCK_PARK_FIRST") {
+        return Err(
+            "does not itself print the literal EXT2_LOCK_PARK_FIRST text -- a probe grepping \
+             for it (docker/qemu/run-ext2-lock-race-gate.sh's --park-only) would find nothing \
+             even though a park was recorded"
+                .to_string(),
+        );
+    }
+    Ok(())
+}
+
+/// F8 property 11: `run_one()` must itself call
+/// `ext2_reset_lock_park_first_marker()` -- the #748 leg-scoping reset that
+/// keeps the marker meaningful per race attempt instead of whole-boot-first.
+fn validate_run_one_resets_park_marker(body: &str) -> Result<(), String> {
+    let mask = code_mask(body);
+    if identifier_offsets(body, &mask, "ext2_reset_lock_park_first_marker").is_empty() {
+        return Err(
+            "does not itself call ext2_reset_lock_park_first_marker() -- the #748 leg-scoping \
+             reset would silently stop re-arming per race attempt, reverting to whole-boot- \
+             first marker semantics"
+                .to_string(),
+        );
+    }
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Positive tests — the real source satisfies every property.
 // ---------------------------------------------------------------------------
@@ -580,6 +639,18 @@ fn ext2_acquire_itself_calls_record_park() {
 fn ext2_acquire_write_itself_calls_record_park() {
     let source = repo_text("kernel/src/fs/ext2/mod.rs");
     validate_records_park_itself(function_body(&source, "ext2_acquire_write")).unwrap();
+}
+
+#[test]
+fn ext2_record_park_itself_prints_the_marker() {
+    let source = repo_text("kernel/src/fs/ext2/mod.rs");
+    validate_record_park_prints_marker(function_body(&source, "ext2_record_park")).unwrap();
+}
+
+#[test]
+fn run_one_itself_resets_the_park_marker() {
+    let source = repo_text("kernel/src/fs/ext2_lock_race.rs");
+    validate_run_one_resets_park_marker(function_body(&source, "run_one")).unwrap();
 }
 
 // ---------------------------------------------------------------------------
@@ -803,6 +874,52 @@ fn negative_raw_fetch_add_alongside_record_park_is_rejected() {
     let err = validate_records_park_itself(regressed).unwrap_err();
     assert!(
         err.contains("instead of routing through ext2_record_park"),
+        "unexpected message: {err}"
+    );
+}
+
+#[test]
+fn negative_marker_print_deleted_from_record_park_is_rejected() {
+    // F8 Mutation B: the review's real-source mutation that deleted
+    // `crate::serial_println!("EXT2_LOCK_PARK_FIRST ...")` from
+    // ext2_record_park while leaving the fetch_add and the
+    // compare_exchange-gated `if` intact -- property 9 alone stayed green
+    // for this because it only checks that callers reach ext2_record_park,
+    // not what the helper does once reached.
+    let regressed = "{\n    let parks = EXT2_LOCK_PARKS.fetch_add(1, Ordering::Relaxed) + 1;\n    \
+                      if EXT2_LOCK_PARK_FIRST_LOGGED\n        .compare_exchange(false, true, \
+                      Ordering::Relaxed, Ordering::Relaxed)\n        .is_ok()\n    {\n        \
+                      let _ = parks;\n    }\n}";
+    let err = validate_record_park_prints_marker(regressed).unwrap_err();
+    assert!(err.contains("serial_println"), "unexpected message: {err}");
+}
+
+#[test]
+fn negative_marker_text_changed_is_rejected() {
+    // The print call survives but the literal marker text a gate script
+    // greps for does not -- e.g. a well-meaning rename that forgot to
+    // update the probe side.
+    let regressed = "{\n    crate::serial_println!(\"lock parked lock={} parks={}\", \
+                      lock_name, 1);\n}";
+    let err = validate_record_park_prints_marker(regressed).unwrap_err();
+    assert!(
+        err.contains("EXT2_LOCK_PARK_FIRST"),
+        "unexpected message: {err}"
+    );
+}
+
+#[test]
+fn negative_run_one_reset_call_deleted_is_rejected() {
+    // F8 Mutation C: the review's real-source mutation that deleted
+    // `ext2_reset_lock_park_first_marker()` from run_one() -- silently
+    // reverting the #748 leg-scoping half of this round to whole-boot-first
+    // marker semantics, with nothing else in the ratchet pinning it.
+    let regressed = "{\n    let holder = spawn_holder(is_home);\n    \
+                      let contender = spawn_contender(is_home);\n    \
+                      join_and_classify(holder, contender)\n}";
+    let err = validate_run_one_resets_park_marker(regressed).unwrap_err();
+    assert!(
+        err.contains("ext2_reset_lock_park_first_marker"),
         "unexpected message: {err}"
     );
 }

@@ -1744,12 +1744,21 @@ static EXT2_LOCK_PARK_FIRST_LOGGED: AtomicBool = AtomicBool::new(false);
 /// marker to a specific window instead of "the whole boot's first-ever
 /// park" — see `ext2_lock_race.rs`'s `run_one()`, which calls this
 /// immediately before spawning each race attempt's holder/contender
-/// kthreads. Without this, a boot_tests test that incidentally contends the
-/// ext2 lock earlier in the same boot (observed live: `EXT2_LOCK_PARK_FIRST`
-/// fired during an unrelated tombstone-join test, well before the
-/// dedicated leg's own threads ever ran) consumes the one-shot marker,
-/// leaving the leg's own construction — the actual #728 repro shape this
-/// oracle exists to prove — with no independent signal of its own.
+/// kthreads. This exists as defense-in-depth against a *hypothetical*
+/// pre-leg park: `ext2_lock_race`'s `boot_tests` profile runs a battery of
+/// other tests before this leg's own call site, and if any of them ever
+/// contends the ext2 lock incidentally, it would otherwise consume the
+/// one-shot marker before the leg's own holder/contender ever run, leaving
+/// the leg's own construction — the actual #728 repro shape this oracle
+/// exists to prove — with no independent signal of its own. (No such
+/// pre-leg park has actually been observed on x86 to date: reading
+/// `kernel/src/main.rs`, the tombstone-join gate that was once suspected of
+/// producing one is the literal last call in the `boot_tests` battery,
+/// immediately preceding this leg's own entry point — adjacent, not
+/// "earlier in the same boot" as a prior draft of this comment claimed.
+/// Kept for the next test the battery grows, or a reordering, since the
+/// re-arm is unconditionally correct and costs one atomic store per race
+/// attempt.)
 /// Test-only in practice (the only caller is behind the `ext2_lock_race`
 /// feature) but left ordinarily compiled, matching `ext2_lock_parks()`'s
 /// own always-available pattern.
