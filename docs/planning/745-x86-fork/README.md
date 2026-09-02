@@ -22,9 +22,14 @@ does not pin the 14-arm tally itself -- its own comment
 (`run-x86-prod-profile-boot-test.sh:455`-`478`) explains why (the oracle
 double-emits `TTY_ORACLE:COMPLETE:`, so an exact-count pin on it is flaky by
 construction under this file's verdict-discipline rule) -- so it cannot by
-itself distinguish 14 arms from 13. Re-running the 25-boot soak at round-2
-bytes would be stronger evidence than the two single-boot emits above, but is
-not required to land this round.
+itself distinguish 14 arms from 13.
+
+**Update, atlas reproof pass, 2026-09-02: the 25-boot soak was re-run at
+merged main (`0efa94a9`, this PR's merge commit).** 25 of 25 boots, 14/14
+arms PASS every boot, 0 fail --
+`docs/planning/green-program/tty/EVIDENCE-x86-14arm-reproof-2026-09-02.md`
+and its two serials in that directory's `serials/`. The gap this section
+described is closed at merged bytes.
 `spec.md` and `precheck.md` in this directory are the investigation this
 implementation round followed; precheck's sixteen binding conditions
 override the spec wherever the two disagree, per the precheck's own
