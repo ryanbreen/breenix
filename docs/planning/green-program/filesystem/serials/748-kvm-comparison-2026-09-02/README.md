@@ -47,16 +47,21 @@ use, in this session's own transcript. -->
 
 **First launch attempt (15:03:24 UTC) was killed within ~24s** — the
 `timeout`-wrapped `qemu-system-x86_64` process received an external
-SIGKILL (bash's own "Killed" job-control message, no QEMU-side error in
-`qemu.log`). `incus info breenix-x86` showed the container's cgroup memory
-at 7.36GiB against an 8GiB `limits.memory`, coincident with two concurrent
-`cargo build` processes from other lanes finishing near-simultaneously —
-consistent with a cgroup OOM-kill under memory pressure from combined page
-cache across every checkout on this shared, 8GiB-limited container, not an
-x86/KVM-specific failure. No other lane's process was touched to recover;
-the retry (15:06:05 UTC) ran to completion once builds elsewhere on the
-host had quieted (`ps aux` showed zero active `cargo`/`rustc` processes at
-retry time).
+SIGKILL (bash's own "Killed" job-control message; QEMU's own stderr/stdout
+was captured live at the time as `qemu.log` but was not committed
+alongside this document, so its contents are not independently checkable
+here -- **correction (review-707.md finding F7):** the sentence
+previously reasoned from that file's contents directly, which is the same
+dangling-artifact defect the #707 round's own B2 finding blocked on, in a
+different file). `incus info breenix-x86` showed the container's cgroup
+memory at 7.36GiB against an 8GiB `limits.memory`, coincident with two
+concurrent `cargo build` processes from other lanes finishing
+near-simultaneously — consistent with a cgroup OOM-kill under memory
+pressure from combined page cache across the concurrent checkouts on this
+shared, 8GiB-limited container, not an x86/KVM-specific failure. No other
+lane's process was touched to recover; the retry (15:06:05 UTC) ran to
+completion once builds elsewhere on the host had quieted (`ps aux` showed
+no active `cargo`/`rustc` processes at retry time).
 
 ## Sampling methodology
 
@@ -128,8 +133,13 @@ serial_user.txt), re-checkable by running the same grep against them. -->
   capture from boot through the point the gate was stopped.
 - `serial_user.txt` (101 lines) — COM1, includes the
   `EXT2_LOCK_PARK_FIRST` line.
-- `qemu.log` — QEMU's own stderr/stdout (two harmless pflash-format
-  warnings only).
+
+**Correction (review-707.md finding F7):** this manifest previously also
+listed a QEMU stderr/stdout capture as preserved evidence. That capture
+was not committed to this directory -- only the two files above are. The
+sentence elsewhere in this document that reasoned from its contents has
+been restated to not do so; see the correction inline above under "Where
+this ran, and why in an isolated checkout."
 
 ## What these numbers decide
 
