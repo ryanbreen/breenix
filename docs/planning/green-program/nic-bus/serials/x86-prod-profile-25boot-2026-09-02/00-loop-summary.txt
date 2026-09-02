@@ -1,0 +1,176 @@
+=== BOOT 1/25 starting 2026-09-02T13:19:05Z ===
+boot 1 exit_code=0
+[INIT_DESIGNATION:x86_64:designated_pid=1:reserved_collisions=0]
+  console prompt count over 60s: 1 -> 2
+  (informational) total serial bytes at exit: 439430
+=== BOOT 1/25 done 2026-09-02T13:20:52Z rc=0 ===
+
+=== BOOT 2/25 starting 2026-09-02T13:20:52Z ===
+boot 2 exit_code=0
+[INIT_DESIGNATION:x86_64:designated_pid=1:reserved_collisions=0]
+  console prompt count over 60s: 1 -> 2
+  (informational) total serial bytes at exit: 435541
+=== BOOT 2/25 done 2026-09-02T13:22:38Z rc=0 ===
+
+=== BOOT 3/25 starting 2026-09-02T13:22:38Z ===
+boot 3 exit_code=0
+[INIT_DESIGNATION:x86_64:designated_pid=1:reserved_collisions=0]
+  console prompt count over 60s: 1 -> 2
+  (informational) total serial bytes at exit: 439648
+=== BOOT 3/25 done 2026-09-02T13:24:22Z rc=0 ===
+
+=== BOOT 4/25 starting 2026-09-02T13:24:22Z ===
+boot 4 exit_code=0
+[INIT_DESIGNATION:x86_64:designated_pid=1:reserved_collisions=0]
+  console prompt count over 60s: 1 -> 2
+  (informational) total serial bytes at exit: 410152
+=== BOOT 4/25 done 2026-09-02T13:26:07Z rc=0 ===
+
+=== BOOT 5/25 starting 2026-09-02T13:26:07Z ===
+boot 5 exit_code=0
+[INIT_DESIGNATION:x86_64:designated_pid=1:reserved_collisions=0]
+  console prompt count over 60s: 1 -> 2
+  (informational) total serial bytes at exit: 435083
+=== BOOT 5/25 done 2026-09-02T13:27:55Z rc=0 ===
+
+=== BOOT 6/25 starting 2026-09-02T13:27:55Z ===
+boot 6 exit_code=0
+[INIT_DESIGNATION:x86_64:designated_pid=1:reserved_collisions=0]
+  console prompt count over 60s: 1 -> 2
+  (informational) total serial bytes at exit: 409076
+=== BOOT 6/25 done 2026-09-02T13:29:39Z rc=0 ===
+
+=== BOOT 7/25 starting 2026-09-02T13:29:39Z ===
+boot 7 exit_code=0
+[INIT_DESIGNATION:x86_64:designated_pid=1:reserved_collisions=0]
+  console prompt count over 60s: 1 -> 2
+  (informational) total serial bytes at exit: 426363
+=== BOOT 7/25 done 2026-09-02T13:31:27Z rc=0 ===
+
+=== BOOT 8/25 starting 2026-09-02T13:31:27Z ===
+boot 8 exit_code=0
+[INIT_DESIGNATION:x86_64:designated_pid=1:reserved_collisions=0]
+  console prompt count over 60s: 1 -> 2
+  (informational) total serial bytes at exit: 431438
+=== BOOT 8/25 done 2026-09-02T13:33:14Z rc=0 ===
+
+=== BOOT 9/25 starting 2026-09-02T13:33:14Z ===
+boot 9 exit_code=0
+[INIT_DESIGNATION:x86_64:designated_pid=1:reserved_collisions=0]
+  console prompt count over 60s: 1 -> 2
+  (informational) total serial bytes at exit: 434507
+=== BOOT 9/25 done 2026-09-02T13:35:00Z rc=0 ===
+
+=== BOOT 10/25 starting 2026-09-02T13:35:00Z ===
+boot 10 exit_code=0
+[INIT_DESIGNATION:x86_64:designated_pid=1:reserved_collisions=0]
+  console prompt count over 60s: 1 -> 2
+  (informational) total serial bytes at exit: 432272
+=== BOOT 10/25 done 2026-09-02T13:36:48Z rc=0 ===
+
+=== BOOT 11/25 starting 2026-09-02T13:36:48Z ===
+boot 11 exit_code=0
+[INIT_DESIGNATION:x86_64:designated_pid=1:reserved_collisions=0]
+  console prompt count over 60s: 1 -> 2
+  (informational) total serial bytes at exit: 425928
+=== BOOT 11/25 done 2026-09-02T13:38:33Z rc=0 ===
+
+=== BOOT 12/25 starting 2026-09-02T13:38:33Z ===
+boot 12 exit_code=0
+[INIT_DESIGNATION:x86_64:designated_pid=1:reserved_collisions=0]
+  console prompt count over 60s: 1 -> 2
+  (informational) total serial bytes at exit: 424927
+=== BOOT 12/25 done 2026-09-02T13:40:25Z rc=0 ===
+
+=== BOOT 13/25 starting 2026-09-02T13:40:25Z ===
+boot 13 exit_code=0
+[INIT_DESIGNATION:x86_64:designated_pid=1:reserved_collisions=0]
+  console prompt count over 60s: 1 -> 2
+  (informational) total serial bytes at exit: 417850
+=== BOOT 13/25 done 2026-09-02T13:42:13Z rc=0 ===
+
+=== BOOT 14/25 starting 2026-09-02T13:42:13Z ===
+boot 14 exit_code=0
+[INIT_DESIGNATION:x86_64:designated_pid=1:reserved_collisions=0]
+  console prompt count over 60s: 1 -> 2
+  (informational) total serial bytes at exit: 426511
+=== BOOT 14/25 done 2026-09-02T13:44:00Z rc=0 ===
+
+=== BOOT 15/25 starting 2026-09-02T13:44:00Z ===
+boot 15 exit_code=0
+[INIT_DESIGNATION:x86_64:designated_pid=1:reserved_collisions=0]
+  console prompt count over 60s: 1 -> 2
+  (informational) total serial bytes at exit: 437411
+=== BOOT 15/25 done 2026-09-02T13:45:52Z rc=0 ===
+
+=== BOOT 16/25 starting 2026-09-02T13:45:52Z ===
+boot 16 exit_code=0
+[INIT_DESIGNATION:x86_64:designated_pid=1:reserved_collisions=0]
+  console prompt count over 60s: 1 -> 2
+  (informational) total serial bytes at exit: 431699
+=== BOOT 16/25 done 2026-09-02T13:47:37Z rc=0 ===
+
+=== BOOT 17/25 starting 2026-09-02T13:47:37Z ===
+boot 17 exit_code=0
+[INIT_DESIGNATION:x86_64:designated_pid=1:reserved_collisions=0]
+  console prompt count over 60s: 1 -> 2
+  (informational) total serial bytes at exit: 434614
+=== BOOT 17/25 done 2026-09-02T13:49:21Z rc=0 ===
+
+=== BOOT 18/25 starting 2026-09-02T13:49:21Z ===
+boot 18 exit_code=0
+[INIT_DESIGNATION:x86_64:designated_pid=1:reserved_collisions=0]
+  console prompt count over 60s: 1 -> 2
+  (informational) total serial bytes at exit: 428906
+=== BOOT 18/25 done 2026-09-02T13:51:07Z rc=0 ===
+
+=== BOOT 19/25 starting 2026-09-02T13:51:07Z ===
+boot 19 exit_code=0
+[INIT_DESIGNATION:x86_64:designated_pid=1:reserved_collisions=0]
+  console prompt count over 60s: 1 -> 2
+  (informational) total serial bytes at exit: 407299
+=== BOOT 19/25 done 2026-09-02T13:52:54Z rc=0 ===
+
+=== BOOT 20/25 starting 2026-09-02T13:52:54Z ===
+boot 20 exit_code=0
+[INIT_DESIGNATION:x86_64:designated_pid=1:reserved_collisions=0]
+  console prompt count over 60s: 1 -> 2
+  (informational) total serial bytes at exit: 431664
+=== BOOT 20/25 done 2026-09-02T13:54:40Z rc=0 ===
+
+=== BOOT 21/25 starting 2026-09-02T13:54:40Z ===
+boot 21 exit_code=0
+[INIT_DESIGNATION:x86_64:designated_pid=1:reserved_collisions=0]
+  console prompt count over 60s: 1 -> 2
+  (informational) total serial bytes at exit: 433807
+=== BOOT 21/25 done 2026-09-02T13:56:26Z rc=0 ===
+
+=== BOOT 22/25 starting 2026-09-02T13:56:26Z ===
+boot 22 exit_code=0
+[INIT_DESIGNATION:x86_64:designated_pid=1:reserved_collisions=0]
+  console prompt count over 60s: 1 -> 2
+  (informational) total serial bytes at exit: 431497
+=== BOOT 22/25 done 2026-09-02T13:58:12Z rc=0 ===
+
+=== BOOT 23/25 starting 2026-09-02T13:58:12Z ===
+boot 23 exit_code=0
+[INIT_DESIGNATION:x86_64:designated_pid=1:reserved_collisions=0]
+  console prompt count over 60s: 1 -> 2
+  (informational) total serial bytes at exit: 427090
+=== BOOT 23/25 done 2026-09-02T14:00:01Z rc=0 ===
+
+=== BOOT 24/25 starting 2026-09-02T14:00:01Z ===
+boot 24 exit_code=0
+[INIT_DESIGNATION:x86_64:designated_pid=1:reserved_collisions=0]
+  console prompt count over 60s: 1 -> 2
+  (informational) total serial bytes at exit: 431615
+=== BOOT 24/25 done 2026-09-02T14:01:45Z rc=0 ===
+
+=== BOOT 25/25 starting 2026-09-02T14:01:45Z ===
+boot 25 exit_code=0
+[INIT_DESIGNATION:x86_64:designated_pid=1:reserved_collisions=0]
+  console prompt count over 60s: 1 -> 2
+  (informational) total serial bytes at exit: 433155
+=== BOOT 25/25 done 2026-09-02T14:03:34Z rc=0 ===
+
+ALL 25 BOOTS DONE
