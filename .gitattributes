@@ -5,3 +5,8 @@ docs/planning/teardown-unification/p5b-serials/serial-interleave-max-boot33.txt 
 docs/planning/teardown-unification/p5b-serials/576-svcseq-max-boot75-r2.txt -text
 docs/planning/t3g-prb/serials/prb-stage1-oracles-red-20260823T094928Z.txt -text
 docs/planning/t3g-prb/serials/prb-stage3-ss-gate-cortexa72-boot10-timer-not-advancing-20260823T115457Z.txt -text
+
+# #693 RCA serials: raw x86 console captures, kept byte-exact (they carry CR and
+# VT escape sequences from the guest console, and a CRLF normalisation would edit
+# preserved evidence). Same treatment as the p5b/t3g-prb serials above.
+docs/planning/green-program/sockets/serials/693-rca/*.txt -text

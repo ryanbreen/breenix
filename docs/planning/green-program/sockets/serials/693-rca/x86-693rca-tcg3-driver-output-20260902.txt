@@ -1,0 +1,100 @@
+[tcg3 boot 1] marker_seen=1 oracle_loaded=1
+   verdict: [POLL_TCP_ORACLE:PASS:stages=3:idle_ms=3274:late_ms=2019:park_ms=1790:attempts=5]
+   peers:   [POLL_TCP_ORACLE:PEER:branch=sent:n=23 want=23 token_ms=17920 write_ms=19050 delay_ms=80]|[POLL_TCP_ORACLE:PEER:branch=sent:n=23 want=23 token_ms=21809 write_ms=23461 delay_ms=160]|[POLL_TCP_ORACLE:PEER:branch=sent:n=23 want=23 token_ms=25696 write_ms=26301 delay_ms=320]|[POLL_TCP_ORACLE:PEER:branch=sent:n=23 want=23 token_ms=27994 write_ms=28947 delay_ms=640]|[POLL_TCP_ORACLE:PEER:branch=sent:n=23 want=23 token_ms=31140 write_ms=32664 delay_ms=1280]|
+   probe:   <none>
+[tcg3 boot 2] marker_seen=1 oracle_loaded=1
+   verdict: [POLL_TCP_ORACLE:PASS:stages=3:idle_ms=3152:late_ms=1742:park_ms=1640:attempts=5]
+   peers:   [POLL_TCP_ORACLE:PEER:branch=sent:n=23 want=23 token_ms=25447 write_ms=29653 delay_ms=80]|[POLL_TCP_ORACLE:PEER:branch=sent:n=23 want=23 token_ms=31842 write_ms=32353 delay_ms=160]|[POLL_TCP_ORACLE:PEER:branch=sent:n=23 want=23 token_ms=36401 write_ms=37047 delay_ms=320]|[POLL_TCP_ORACLE:PEER:branch=sent:n=23 want=23 token_ms=39973 write_ms=42746 delay_ms=640]|[POLL_TCP_ORACLE:PEER:branch=sent:n=23 want=23 token_ms=45871 write_ms=47340 delay_ms=1280]|
+   probe:   <none>
+[tcg3 boot 3] marker_seen=1 oracle_loaded=1
+   verdict: [POLL_TCP_ORACLE:FAIL:late_window_missed:attempts=5 overshoot_ms=29 delay_ms=1280]
+   peers:   [POLL_TCP_ORACLE:PEER:branch=sent:n=23 want=23 token_ms=16156 write_ms=17162 delay_ms=80]|[POLL_TCP_ORACLE:PEER:branch=sent:n=23 want=23 token_ms=19032 write_ms=19608 delay_ms=160]|[POLL_TCP_ORACLE:PEER:branch=sent:n=23 want=23 token_ms=22199 write_ms=22777 delay_ms=320]|[POLL_TCP_ORACLE:PEER:branch=sent:n=23 want=23 token_ms=24381 write_ms=25240 delay_ms=640]|[POLL_TCP_ORACLE:PEER:branch=sent:n=23 want=23 token_ms=26748 write_ms=28220 delay_ms=1280]|
+   probe:   <none>
+[tcg3 boot 4] marker_seen=1 oracle_loaded=1
+   verdict: [POLL_TCP_ORACLE:PASS:stages=3:idle_ms=3288:late_ms=4651:park_ms=4550:attempts=5]
+   peers:   [POLL_TCP_ORACLE:PEER:branch=sent:n=23 want=23 token_ms=22937 write_ms=24020 delay_ms=80]|[POLL_TCP_ORACLE:PEER:branch=sent:n=23 want=23 token_ms=26756 write_ms=27250 delay_ms=160]|[POLL_TCP_ORACLE:PEER:branch=sent:n=23 want=23 token_ms=29431 write_ms=29962 delay_ms=320]|[POLL_TCP_ORACLE:PEER:branch=sent:n=23 want=23 token_ms=33935 write_ms=34796 delay_ms=640]|[POLL_TCP_ORACLE:PEER:branch=sent:n=23 want=23 token_ms=38158 write_ms=42409 delay_ms=1280]|
+   probe:   <none>
+[tcg3 boot 5] marker_seen=1 oracle_loaded=1
+   verdict: [POLL_TCP_ORACLE:PASS:stages=3:idle_ms=545:late_ms=1858:park_ms=1749:attempts=5]
+   peers:   [POLL_TCP_ORACLE:PEER:branch=sent:n=23 want=23 token_ms=16605 write_ms=17561 delay_ms=80]|[POLL_TCP_ORACLE:PEER:branch=sent:n=23 want=23 token_ms=19557 write_ms=20110 delay_ms=160]|[POLL_TCP_ORACLE:PEER:branch=sent:n=23 want=23 token_ms=22698 write_ms=23295 delay_ms=320]|[POLL_TCP_ORACLE:PEER:branch=sent:n=23 want=23 token_ms=25037 write_ms=25877 delay_ms=640]|[POLL_TCP_ORACLE:PEER:branch=sent:n=23 want=23 token_ms=27535 write_ms=29034 delay_ms=1280]|
+   probe:   <none>
+[tcg3 boot 6] marker_seen=1 oracle_loaded=1
+   verdict: [POLL_TCP_ORACLE:FAIL:late_window_missed:attempts=5 overshoot_ms=27 delay_ms=1280]
+   peers:   [POLL_TCP_ORACLE:PEER:branch=sent:n=23 want=23 token_ms=16768 write_ms=17295 delay_ms=80]|[POLL_TCP_ORACLE:PEER:branch=sent:n=23 want=23 token_ms=19301 write_ms=20346 delay_ms=160]|[POLL_TCP_ORACLE:PEER:branch=sent:n=23 want=23 token_ms=22856 write_ms=23450 delay_ms=320]|[POLL_TCP_ORACLE:PEER:branch=sent:n=23 want=23 token_ms=25405 write_ms=26335 delay_ms=640]|[POLL_TCP_ORACLE:PEER:branch=sent:n=23 want=23 token_ms=28381 write_ms=30113 delay_ms=1280]|
+   probe:   <none>
+[tcg3 boot 7] marker_seen=1 oracle_loaded=1
+   verdict: [POLL_TCP_ORACLE:PASS:stages=3:idle_ms=2952:late_ms=789:park_ms=679:attempts=2]
+   peers:   [POLL_TCP_ORACLE:PEER:branch=sent:n=23 want=23 token_ms=16500 write_ms=17527 delay_ms=80]|[POLL_TCP_ORACLE:PEER:branch=sent:n=23 want=23 token_ms=19963 write_ms=20355 delay_ms=160]|
+   probe:   <none>
+[tcg3 boot 8] marker_seen=1 oracle_loaded=1
+   verdict: [POLL_TCP_ORACLE:FAIL:late_window_missed:attempts=5 overshoot_ms=168 delay_ms=1280]
+   peers:   [POLL_TCP_ORACLE:PEER:branch=sent:n=23 want=23 token_ms=16280 write_ms=17278 delay_ms=80]|[POLL_TCP_ORACLE:PEER:branch=sent:n=23 want=23 token_ms=19299 write_ms=19887 delay_ms=160]|[POLL_TCP_ORACLE:PEER:branch=sent:n=23 want=23 token_ms=22931 write_ms=23594 delay_ms=320]|[POLL_TCP_ORACLE:PEER:branch=sent:n=23 want=23 token_ms=25710 write_ms=26575 delay_ms=640]|[POLL_TCP_ORACLE:PEER:branch=sent:n=23 want=23 token_ms=28077 write_ms=32028 delay_ms=1280]|
+   probe:   <none>
+[tcg3 boot 9] marker_seen=1 oracle_loaded=1
+   verdict: [POLL_TCP_ORACLE:PASS:stages=3:idle_ms=3022:late_ms=891:park_ms=784:attempts=2]
+   peers:   [POLL_TCP_ORACLE:PEER:branch=sent:n=23 want=23 token_ms=15133 write_ms=16175 delay_ms=80]|[POLL_TCP_ORACLE:PEER:branch=sent:n=23 want=23 token_ms=18708 write_ms=19115 delay_ms=160]|
+   probe:   <none>
+[tcg3 boot 10] marker_seen=1 oracle_loaded=1
+   verdict: [POLL_TCP_ORACLE:PASS:stages=3:idle_ms=3005:late_ms=1046:park_ms=936:attempts=2]
+   peers:   [POLL_TCP_ORACLE:PEER:branch=sent:n=23 want=23 token_ms=23595 write_ms=27314 delay_ms=80]|[POLL_TCP_ORACLE:PEER:branch=sent:n=23 want=23 token_ms=29451 write_ms=30080 delay_ms=160]|
+   probe:   <none>
+[tcg3 boot 11] marker_seen=1 oracle_loaded=1
+   verdict: [POLL_TCP_ORACLE:FAIL:late_lost_wake:ready=0 revents=0x0000 entry=18888 returned=24138 elapsed_ms=5250 delay_ms=160 peer_reaped=true peer_status=0x00000000 peer_code=0]
+   peers:   [POLL_TCP_ORACLE:PEER:branch=sent:n=23 want=23 token_ms=15802 write_ms=17357 delay_ms=80]|[POLL_TCP_ORACLE:PEER:branch=sent:n=23 want=23 token_ms=19208 write_ms=29686 delay_ms=160]|
+   probe:   [POLL_TCP_ORACLE:LOSTWAKE_PROBE:probe_ms=24138 rescan_ready=0 rescan_revents=0x0000 nbread_err=EAGAIN]
+[tcg3 boot 12] marker_seen=1 oracle_loaded=1
+   verdict: [POLL_TCP_ORACLE:PASS:stages=3:idle_ms=2395:late_ms=969:park_ms=769:attempts=3]
+   peers:   [POLL_TCP_ORACLE:PEER:branch=sent:n=23 want=23 token_ms=22264 write_ms=23505 delay_ms=80]|[POLL_TCP_ORACLE:PEER:branch=sent:n=23 want=23 token_ms=25826 write_ms=26216 delay_ms=160]|[POLL_TCP_ORACLE:PEER:branch=sent:n=23 want=23 token_ms=28177 write_ms=28724 delay_ms=320]|
+   probe:   <none>
+[tcg3 boot 13] marker_seen=1 oracle_loaded=1
+   verdict: [POLL_TCP_ORACLE:PASS:stages=3:idle_ms=1975:late_ms=1800:park_ms=1700:attempts=5]
+   peers:   [POLL_TCP_ORACLE:PEER:branch=sent:n=23 want=23 token_ms=22497 write_ms=24183 delay_ms=80]|[POLL_TCP_ORACLE:PEER:branch=sent:n=23 want=23 token_ms=26989 write_ms=27454 delay_ms=160]|[POLL_TCP_ORACLE:PEER:branch=sent:n=23 want=23 token_ms=30041 write_ms=31298 delay_ms=320]|[POLL_TCP_ORACLE:PEER:branch=sent:n=23 want=23 token_ms=36163 write_ms=37861 delay_ms=640]|[POLL_TCP_ORACLE:PEER:branch=sent:n=23 want=23 token_ms=40997 write_ms=42438 delay_ms=1280]|
+   probe:   <none>
+[tcg3 boot 14] marker_seen=1 oracle_loaded=1
+   verdict: [POLL_TCP_ORACLE:PASS:stages=3:idle_ms=2977:late_ms=3672:park_ms=3344:attempts=1]
+   peers:   [POLL_TCP_ORACLE:PEER:branch=sent:n=23 want=23 token_ms=15215 write_ms=16743 delay_ms=80]|
+   probe:   <none>
+[tcg3 boot 15] marker_seen=1 oracle_loaded=1
+   verdict: [POLL_TCP_ORACLE:PASS:stages=3:idle_ms=3012:late_ms=1079:park_ms=791:attempts=3]
+   peers:   [POLL_TCP_ORACLE:PEER:branch=sent:n=23 want=23 token_ms=15449 write_ms=16469 delay_ms=80]|[POLL_TCP_ORACLE:PEER:branch=sent:n=23 want=23 token_ms=18588 write_ms=19155 delay_ms=160]|[POLL_TCP_ORACLE:PEER:branch=sent:n=23 want=23 token_ms=22201 write_ms=22789 delay_ms=320]|
+   probe:   <none>
+[tcg3 boot 16] marker_seen=1 oracle_loaded=1
+   verdict: [POLL_TCP_ORACLE:FAIL:late_window_missed:attempts=5 overshoot_ms=196 delay_ms=1280]
+   peers:   [POLL_TCP_ORACLE:PEER:branch=sent:n=23 want=23 token_ms=16452 write_ms=17445 delay_ms=80]|[POLL_TCP_ORACLE:PEER:branch=sent:n=23 want=23 token_ms=19977 write_ms=20446 delay_ms=160]|[POLL_TCP_ORACLE:PEER:branch=sent:n=23 want=23 token_ms=23761 write_ms=25788 delay_ms=320]|[POLL_TCP_ORACLE:PEER:branch=sent:n=23 want=23 token_ms=28016 write_ms=28857 delay_ms=640]|[POLL_TCP_ORACLE:PEER:branch=sent:n=23 want=23 token_ms=30907 write_ms=32387 delay_ms=1280]|
+   probe:   <none>
+[tcg3 boot 17] marker_seen=1 oracle_loaded=1
+   verdict: [POLL_TCP_ORACLE:FAIL:late_window_missed:attempts=5 overshoot_ms=28 delay_ms=1280]
+   peers:   [POLL_TCP_ORACLE:PEER:branch=sent:n=23 want=23 token_ms=15491 write_ms=16013 delay_ms=80]|[POLL_TCP_ORACLE:PEER:branch=sent:n=23 want=23 token_ms=19123 write_ms=19520 delay_ms=160]|[POLL_TCP_ORACLE:PEER:branch=sent:n=23 want=23 token_ms=21553 write_ms=22087 delay_ms=320]|[POLL_TCP_ORACLE:PEER:branch=sent:n=23 want=23 token_ms=23647 write_ms=24550 delay_ms=640]|[POLL_TCP_ORACLE:PEER:branch=sent:n=23 want=23 token_ms=26467 write_ms=27968 delay_ms=1280]|
+   probe:   <none>
+[tcg3 boot 18] marker_seen=1 oracle_loaded=1
+   verdict: [POLL_TCP_ORACLE:FAIL:late_woken_by_clock:entry=21311 returned=27106 write_ms=26697 elapsed_ms=5795 timeout=5000]
+   peers:   [POLL_TCP_ORACLE:PEER:branch=sent:n=23 want=23 token_ms=23194 write_ms=26697 delay_ms=80]|
+   probe:   <none>
+[tcg3 boot 19] marker_seen=1 oracle_loaded=1
+   verdict: [POLL_TCP_ORACLE:FAIL:late_window_missed:attempts=5 overshoot_ms=151 delay_ms=1280]
+   peers:   [POLL_TCP_ORACLE:PEER:branch=sent:n=23 want=23 token_ms=15560 write_ms=16516 delay_ms=80]|[POLL_TCP_ORACLE:PEER:branch=sent:n=23 want=23 token_ms=18321 write_ms=18911 delay_ms=160]|[POLL_TCP_ORACLE:PEER:branch=sent:n=23 want=23 token_ms=22131 write_ms=25301 delay_ms=320]|[POLL_TCP_ORACLE:PEER:branch=sent:n=23 want=23 token_ms=27415 write_ms=28236 delay_ms=640]|[POLL_TCP_ORACLE:PEER:branch=sent:n=23 want=23 token_ms=30300 write_ms=31857 delay_ms=1280]|
+   probe:   <none>
+[tcg3 boot 20] marker_seen=1 oracle_loaded=1
+   verdict: [POLL_TCP_ORACLE:PASS:stages=3:idle_ms=2925:late_ms=1971:park_ms=1746:attempts=3]
+   peers:   [POLL_TCP_ORACLE:PEER:branch=sent:n=23 want=23 token_ms=22880 write_ms=26604 delay_ms=80]|[POLL_TCP_ORACLE:PEER:branch=sent:n=23 want=23 token_ms=28730 write_ms=29618 delay_ms=160]|[POLL_TCP_ORACLE:PEER:branch=sent:n=23 want=23 token_ms=33104 write_ms=34611 delay_ms=320]|
+   probe:   <none>
+[tcg3 boot 21] marker_seen=1 oracle_loaded=1
+   verdict: [POLL_TCP_ORACLE:PASS:stages=3:idle_ms=2829:late_ms=896:park_ms=835:attempts=3]
+   peers:   [POLL_TCP_ORACLE:PEER:branch=sent:n=23 want=23 token_ms=20895 write_ms=22545 delay_ms=80]|[POLL_TCP_ORACLE:PEER:branch=sent:n=23 want=23 token_ms=24865 write_ms=25348 delay_ms=160]|[POLL_TCP_ORACLE:PEER:branch=sent:n=23 want=23 token_ms=27468 write_ms=28097 delay_ms=320]|
+   probe:   <none>
+[tcg3 boot 22] marker_seen=1 oracle_loaded=1
+   verdict: [POLL_TCP_ORACLE:PASS:stages=3:idle_ms=2988:late_ms=1210:park_ms=1066:attempts=4]
+   peers:   [POLL_TCP_ORACLE:PEER:branch=sent:n=23 want=23 token_ms=15604 write_ms=16660 delay_ms=80]|[POLL_TCP_ORACLE:PEER:branch=sent:n=23 want=23 token_ms=19073 write_ms=19585 delay_ms=160]|[POLL_TCP_ORACLE:PEER:branch=sent:n=23 want=23 token_ms=21636 write_ms=22255 delay_ms=320]|[POLL_TCP_ORACLE:PEER:branch=sent:n=23 want=23 token_ms=23848 write_ms=24779 delay_ms=640]|
+   probe:   <none>
+[tcg3 boot 23] marker_seen=1 oracle_loaded=1
+   verdict: [POLL_TCP_ORACLE:PASS:stages=3:idle_ms=2887:late_ms=1028:park_ms=882:attempts=4]
+   peers:   [POLL_TCP_ORACLE:PEER:branch=sent:n=23 want=23 token_ms=15444 write_ms=15885 delay_ms=80]|[POLL_TCP_ORACLE:PEER:branch=sent:n=23 want=23 token_ms=17884 write_ms=18511 delay_ms=160]|[POLL_TCP_ORACLE:PEER:branch=sent:n=23 want=23 token_ms=22067 write_ms=22891 delay_ms=320]|[POLL_TCP_ORACLE:PEER:branch=sent:n=23 want=23 token_ms=25060 write_ms=25910 delay_ms=640]|
+   probe:   <none>
+[tcg3 boot 24] marker_seen=1 oracle_loaded=1
+   verdict: [POLL_TCP_ORACLE:FAIL:late_lost_wake:ready=0 revents=0x0000 entry=29704 returned=37186 elapsed_ms=7482 delay_ms=1280 peer_reaped=true peer_status=0x00000000 peer_code=0]
+   peers:   [POLL_TCP_ORACLE:PEER:branch=sent:n=23 want=23 token_ms=15496 write_ms=15930 delay_ms=80]|[POLL_TCP_ORACLE:PEER:branch=sent:n=23 want=23 token_ms=18835 write_ms=19834 delay_ms=160]|[POLL_TCP_ORACLE:PEER:branch=sent:n=23 want=23 token_ms=22970 write_ms=23588 delay_ms=320]|[POLL_TCP_ORACLE:PEER:branch=sent:n=23 want=23 token_ms=25428 write_ms=26716 delay_ms=640]|[POLL_TCP_ORACLE:PEER:branch=sent:n=23 want=23 token_ms=29677 write_ms=38757 delay_ms=1280]|
+   probe:   [POLL_TCP_ORACLE:LOSTWAKE_PROBE:probe_ms=37188 rescan_ready=0 rescan_revents=0x0000 nbread_err=EAGAIN]
+[tcg3 boot 25] marker_seen=1 oracle_loaded=1
+   verdict: [POLL_TCP_ORACLE:FAIL:late_lost_wake:ready=0 revents=0x0000 entry=18968 returned=24219 elapsed_ms=5251 delay_ms=160 peer_reaped=true peer_status=0x00000000 peer_code=0]
+   peers:   [POLL_TCP_ORACLE:PEER:branch=sent:n=23 want=23 token_ms=15356 write_ms=16917 delay_ms=80]|[POLL_TCP_ORACLE:PEER:branch=sent:n=23 want=23 token_ms=18939 write_ms=27892 delay_ms=160]|
+   probe:   [POLL_TCP_ORACLE:LOSTWAKE_PROBE:probe_ms=24219 rescan_ready=0 rescan_revents=0x0000 nbread_err=EAGAIN]
