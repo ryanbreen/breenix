@@ -50,6 +50,21 @@
 //!                                    genuinely free after the parent's own
 //!                                    close.
 //!   TCP_CLOEXEC_EXEC_TEST_FAILED  -- any step below did not hold.
+//!
+//! Gate coverage: x86 only. This binary is entered into
+//! `kernel::boot::test_list::TEST_BINARIES` and loaded by
+//! `load_test_binaries_from_ext2()`, which is `#[cfg(feature = "testing")]`
+//! (`kernel/src/main_aarch64.rs:1362`). 0 of 5 committed aarch64 gate
+//! scripts build `--features testing` (run-aarch64-service-sequence-gate.sh
+//! and run-aarch64-full-test.sh build `boot_tests`; run-aarch64-boot-test-native.sh,
+//! -strict.sh, and -prod-profile-boot-test.sh build with no `--features`;
+//! run-aarch64-test-suite.sh does build `testing` but is not a gate and
+//! never reads TEST_BINARIES -- see #763), so this test -- and tcp_dup_listener_test,
+//! #724's sibling -- runs in zero aarch64 gates today, independent of the
+//! separate #562/#761 runtime blockers that also currently stop the
+//! `testing` profile from booting far enough to reach either test. See
+//! docs/planning/green-program/sockets/serials/707-2026-09-02/README.md's
+//! aarch64 section and the tracking issue filed for this gap.
 
 use std::process;
 

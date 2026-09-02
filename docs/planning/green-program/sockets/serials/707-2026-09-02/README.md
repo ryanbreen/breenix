@@ -175,14 +175,29 @@ script (byte-identical to HEAD, confirmed via `git diff --stat` locally
 and on beast, both empty), rebuilt, ran one boot: clean `PASS`,
 `TCP_CLOEXEC_EXEC_TEST_PASSED`. See `x86-revert-clean/`.
 
-## aarch64: BLOCKED, no gate evidence obtained
+## aarch64: BLOCKED, no gate evidence obtained -- two independent problems
+
+**Correction (review-707.md finding B3):** the heading above and the
+bullets that follow originally framed this as "blocked by #562/#761"
+only. That understates it. There are two independent problems, and
+fixing the first two does not fix the third:
+
+- Two runtime blockers (#562, then #761) mean the `--features testing`
+  aarch64 profile does not boot far enough to reach a userspace test
+  verdict at all, today.
+- A structural gap, unrelated to either of those bugs, means that even
+  after both are fixed, no committed aarch64 **gate** builds
+  `--features testing` in the first place -- so `test_list.rs:108`'s
+  `tcp_cloexec_exec_test` entry (and `tcp_dup_listener_test`, #724's
+  sibling test) would still run in no aarch64 gate. See item 3 below.
 
 The authoring brief's own gateAssertions caveat anticipated real risk
 here ("no committed aarch64 gate script builds `--features testing`
 alone... not equivalent to the leg's own in-kernel PASS verdict"). What
 was actually hit is worse than "no coverage" -- it's "the profile itself
-does not boot," two layers deep, both pre-existing and unrelated to
-#707:
+does not boot" (items 1-2), stacked on top of "no gate would run it even
+if it did boot" (item 3) -- 3 of 3 items below, each independently
+pre-existing and unrelated to #707:
 
 1. **#562** (filed 2026-08-14): `kernel::task::softirq_tests::test_softirq()`
    panics before any userspace binary is spawned --
@@ -242,6 +257,35 @@ does not boot," two layers deep, both pre-existing and unrelated to
    in both, each held 60-720s. `aarch64-blocked/761-loader-hang-hello_world-serial.txt`
    preserves the `hello_world` repro (the more probative of the two,
    since it isolates the hang from this branch's own code entirely).
+3. **Structural: no committed aarch64 gate builds `--features testing` at
+   all**, independent of #562/#761. `test_list.rs:108`'s
+   `"tcp_cloexec_exec_test"` entry has exactly one consumer,
+   `load_test_binaries_from_ext2()`, gated
+   `#[cfg(feature = "testing")]` at `kernel/src/main_aarch64.rs:1362`
+   (definition at `:1471`). Every committed aarch64 gate script was
+   checked this round (claim-lint:ok: `grep -n -- "--features"
+   docker/qemu/run-aarch64-*.sh`, re-run this round):
+   `run-aarch64-service-sequence-gate.sh:116` and
+   `run-aarch64-full-test.sh:55` build `--features boot_tests`;
+   `run-aarch64-boot-test-native.sh`, `-strict.sh`, and
+   `-prod-profile-boot-test.sh:140` build with no `--features` at all
+   (the last one's own comment says the absence is deliberate). None of
+   the five builds `testing`, so `load_test_binaries_from_ext2()` is
+   compiled out of every one of them, and the `tcp_cloexec_exec_test`
+   line this branch adds is dead weight in every committed aarch64 gate.
+   The one committed script that *does* build `--features testing`,
+   `run-aarch64-test-suite.sh:131`, is not a gate (no PASS/FAIL verdict
+   aggregation, no allowlist) and would not exercise this wiring either
+   -- it rewrites `kernel/src/main_aarch64.rs` per test to substitute a
+   per-test launch hook and never touches `TEST_BINARIES` or
+   `load_test_binaries_from_ext2()` (`docker/qemu/run-aarch64-test-suite.sh:1-40`).
+   The same gap applies to `tcp_dup_listener_test` (#724's sibling test,
+   also `--features testing`-only): a repo-wide search this round
+   (claim-lint:ok: `grep -rn tcp_dup_listener_test` across `docs/` and
+   `docker/`, re-run this round) found zero aarch64 evidence for it
+   anywhere -- every hit is x86. Filed as a standalone structural issue
+   rather than folded into #562/#761, since fixing those two runtime bugs
+   does not fix this: #763.
 
 Both temporary local bypasses were applied and reverted via Codex
 dispatch (same Iron Rule constraint as the exec-target fixes above; run
@@ -256,7 +300,7 @@ for #707 in this round: 0 of the 4 boot attempts made (one against
 #562's own panic, one against #761's hang isolating this branch's own
 binary, one against #761's hang isolating an unrelated control binary,
 one against the softirq self-test alone reproduced on unmodified main)
-reached a userspace test verdict.** The blocker is in unrelated,
+reached a userspace test verdict.** The runtime blocker is in unrelated,
 pre-existing kernel-boot infrastructure (softirq self-test timing, then
 the ext2 test-binary loader) -- see the #562 and #761 evidence above,
 not in `close_cloexec()` or in `tcp_cloexec_exec_test.rs` itself, per
@@ -265,6 +309,17 @@ own correctness independent of arch. Fixing either #562 or #761 is a
 separate, substantial kernel-debugging undertaking (GDB required per
 this repo's own standing rules) well outside a sockets/#707 prove round's
 scope.
+
+**Fixing #562 and #761 is necessary but not sufficient** (claim-lint:ok:
+see #763, which cites the 0-of-5 gate-script breakdown this claim rests
+on). Item 3 above is a separate, structural gap: no committed aarch64
+gate script builds `--features testing`, so even a fully-booting profile
+would run `tcp_cloexec_exec_test` (this round's own wiring) and
+`tcp_dup_listener_test` (#724's) in zero aarch64 gates. Closing #562 and
+#761 gets the profile booting; it does not, by itself, put either test
+in front of any gate. That third gap is filed separately as #763 rather
+than folded into #562/#761, and is also out of this prove round's scope
+(it is a gate-authoring task, not a #707 defect).
 
 ## claim-lint
 
