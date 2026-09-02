@@ -1,0 +1,15 @@
+[mutK2 boot 1] marker_seen=1 poll_tcp_timeout=1 ready_lost=1
+   verdict: [POLL_TCP_ORACLE:FAIL:late_lost_wake:stage=late ready=0 revents=0x0000 anchor=7351 entry=7351 returned=12355 write_ms=7435 published_before_return_ms=4920 elapsed_ms=5004 timeout=5000 delay_ms=80]
+   latepub: [POLL_TCP_ORACLE:LATE_PUBLISH:stage=late decided=published_before_return anchor=7351 entry=7351 returned=12355 write_ms=7435 late_by_ms=0 delay_ms=80 timeout=5000]|[POLL_TCP_ORACLE:LATE_PUBLISH:stage=late decided=published_before_return anchor=7351 entry=7351 returned=12355 write_ms=7435 late_by_ms=0 delay_ms=80 timeout=5000]|
+[mutK2 boot 2] marker_seen=1 poll_tcp_timeout=1 ready_lost=1
+   verdict: [POLL_TCP_ORACLE:FAIL:late_lost_wake:stage=late ready=0 revents=0x0000 anchor=6933 entry=6935 returned=11937 write_ms=7014 published_before_return_ms=4923 elapsed_ms=5002 timeout=5000 delay_ms=80]
+   latepub: [POLL_TCP_ORACLE:LATE_PUBLISH:stage=late decided=published_before_return anchor=6933 entry=6935 returned=11937 write_ms=7014 late_by_ms=0 delay_ms=80 timeout=5000]|[POLL_TCP_ORACLE:LATE_PUBLISH:stage=late decided=published_before_return anchor=6933 entry=6935 returned=11937 write_ms=7014 late_by_ms=0 delay_ms=80 timeout=5000]|
+[mutK2 boot 3] marker_seen=1 poll_tcp_timeout=1 ready_lost=1
+   verdict: [POLL_TCP_ORACLE:FAIL:late_lost_wake:stage=late ready=0 revents=0x0000 anchor=6724 entry=6724 returned=11729 write_ms=6804 published_before_return_ms=4925 elapsed_ms=5005 timeout=5000 delay_ms=80]
+   latepub: [POLL_TCP_ORACLE:LATE_PUBLISH:stage=late decided=published_before_return anchor=6724 entry=6724 returned=11729 write_ms=6804 late_by_ms=0 delay_ms=80 timeout=5000]|[POLL_TCP_ORACLE:LATE_PUBLISH:stage=late decided=published_before_return anchor=6724 entry=6724 returned=11729 write_ms=6804 late_by_ms=0 delay_ms=80 timeout=5000]|
+[mutK2 boot 4] marker_seen=1 poll_tcp_timeout=1 ready_lost=1
+   verdict: [POLL_TCP_ORACLE:FAIL:late_lost_wake:stage=late ready=0 revents=0x0000 anchor=8001 entry=8001 returned=13005 write_ms=8082 published_before_return_ms=4923 elapsed_ms=5004 timeout=5000 delay_ms=80]
+   latepub: [POLL_TCP_ORACLE:LATE_PUBLISH:stage=late decided=published_before_return anchor=8001 entry=8001 returned=13005 write_ms=8082 late_by_ms=0 delay_ms=80 timeout=5000]|[POLL_TCP_ORACLE:LATE_PUBLISH:stage=late decided=published_before_return anchor=8001 entry=8001 returned=13005 write_ms=8082 late_by_ms=0 delay_ms=80 timeout=5000]|
+[mutK2 boot 5] marker_seen=1 poll_tcp_timeout=1 ready_lost=1
+   verdict: [POLL_TCP_ORACLE:FAIL:late_lost_wake:stage=late ready=0 revents=0x0000 anchor=7796 entry=7798 returned=12800 write_ms=7877 published_before_return_ms=4923 elapsed_ms=5002 timeout=5000 delay_ms=80]
+   latepub: [POLL_TCP_ORACLE:LATE_PUBLISH:stage=late decided=published_before_return anchor=7796 entry=7798 returned=12800 write_ms=7877 late_by_ms=0 delay_ms=80 timeout=5000]|[POLL_TCP_ORACLE:LATE_PUBLISH:stage=late decided=published_before_return anchor=7796 entry=7798 returned=12800 write_ms=7877 late_by_ms=0 delay_ms=80 timeout=5000]|
