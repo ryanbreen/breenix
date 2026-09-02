@@ -15,12 +15,28 @@ that it actually exercises the shipped fix.
 
 **This round does not turn the Sockets subsystem green.** #693 and #737
 are real, uncharacterised bugs in that subsystem, tracked separately
-(#693 has its own active lane); this round's diff touches only
+(#693 has its own active lane).
+
+**Correction (review-707.md finding F6):** this paragraph previously said
+the round's diff touched only the four `userspace/programs/` files below,
+citing `git diff origin/main --stat` as the claim-lint evidence for that
+sentence -- but running that exact command also lists two kernel files.
+Outside `serials/`, the diff is six files, not four:
+`kernel/src/boot/test_list.rs` (+1, one string added to `TEST_BINARIES`),
+`kernel/src/main.rs` (+25, one `create_user_process` launch block behind
+the existing `#[cfg(all(feature = "testing", not(feature =
+"interactive")))]`), and
 `userspace/programs/{Cargo.toml,build.sh,src/tcp_cloexec_exec_test.rs,src/simple_exit0.rs}`
-(claim-lint:ok: `git diff origin/main --stat` on this branch, checked this
-round). Closing #707 removes one of four Sockets chips (alongside #724,
-already effectively done per the scout brief, #693, #737); #724's own
-GitHub issue is still open as pure bookkeeping, unrelated to this round.
+(claim-lint:ok: `git diff origin/main --numstat` on this branch, filtered
+to paths outside any `/serials/` directory, re-run this round; the two
+kernel files and their exact `+N` counts above are read directly from that
+output). Both kernel diffs are benign test wiring, read in full by
+review-707.md's opening section ("Nothing in `kernel/` changed except test
+wiring") -- no Tier-1 file and no hot path is touched -- but the sentence
+a merger reads to decide whether the branch is userspace-only was wrong.
+Closing #707 removes one of four Sockets chips (alongside #724, already
+effectively done per the scout brief, #693, #737); #724's own GitHub issue
+is still open as pure bookkeeping, unrelated to this round.
 
 ## Author-slot defect found and fixed this round
 
