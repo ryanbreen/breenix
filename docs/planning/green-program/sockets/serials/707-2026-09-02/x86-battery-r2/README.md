@@ -90,7 +90,7 @@ specific, named, load-independent defects rather than to contention.
 
 | boot | failing process(es) | mechanism (from the serial) | issue | attributed |
 |---|---|---|---|---|
-| boot01 | `loopback_wake_test_child:13`, two `:-9` siblings, `loopback_wake_test:1` | reader hit `DATA_WAKE_BOUND_MS` (4000ms), observed `data_latency_ms=4740`; `[TEST:userspace:loopback_recv_wake:FAIL:reader_exit_13]`; the two `:-9` children are SIGKILLed by the **watchdog child**'s bounded-deadline cleanup (`loopback_wake_test.rs:206-208`), not the parent's own cleanup -- **correction (review-707.md F3):** this cell previously attributed the kills to the parent's `signal::kill` calls at `:291-292`, which sit in the `Err(_)` arm of the `load_pid` fork, a fork-*failure* path that cannot have run here since the reader got far enough to print `data latency_ms=4740` and exit 13; every parent-side kill in the file (`:283`, `:291-292`, `:300-302`) is in an `Err(_)` fork arm, and the code's own comment at `:306` says the parent stays blocked in `waitpid` throughout the test and never polls. `boot01/serial_kernel.txt:4781` shows PID 22 (watchdog) exited 0, reachable only via `:209` after the three kills at `:206-208` run -- ~2000 serial lines after the reader (PID 19) already exited 13 at `:2768` (`serial_kernel.txt:4699`/`:4735` are the two `-9` exits, PID 20 and PID 21). So the bounded watchdog deadline had to fire; "not an independent defect" survives, but that is a materially worse reading than benign parent cleanup, and it is exactly the evidence the F1 issue below carries | **no open issue names this signature** (claim-lint:ok: 0 of 2 `gh issue list --search` queries run this round -- `"loopback_wake_test_child:13"` and `"DATA_WAKE_BOUND_MS OR data_latency_ms OR reader_exit_13"` -- matched any issue; a 3rd, broader query, `--search "loopback_wake_test_child"`, matched 5 issues and `reader_exit_13`/code-13 is in 0 of those 5 titles/bodies) | **NO -- UNATTRIBUTED** |
+| boot01 | `loopback_wake_test_child:13`, two `:-9` siblings, `loopback_wake_test:1` | reader hit `DATA_WAKE_BOUND_MS` (4000ms), observed `data_latency_ms=4740`; `[TEST:userspace:loopback_recv_wake:FAIL:reader_exit_13]`; the two `:-9` children are SIGKILLed by the **watchdog child**'s bounded-deadline cleanup (`loopback_wake_test.rs:206-208`), not the parent's own cleanup -- **correction (review-707.md F3):** this cell previously attributed the kills to the parent's `signal::kill` calls at `:291-292`, which sit in the `Err(_)` arm of the `load_pid` fork, a fork-*failure* path that cannot have run here since the reader got far enough to print `data latency_ms=4740` and exit 13; 3 of 3 parent-side kill sites in the file (`:283`, `:291-292`, `:300-302`) are in an `Err(_)` fork arm, and the code's own comment at `:306` says the parent stays blocked in `waitpid` throughout the test and does not poll. `boot01/serial_kernel.txt:4781` shows PID 22 (watchdog) exited 0, reachable only via `:209` after the three kills at `:206-208` run -- ~2000 serial lines after the reader (PID 19) already exited 13 at `:2768` (`serial_kernel.txt:4699`/`:4735` are the two `-9` exits, PID 20 and PID 21). So the bounded watchdog deadline had to fire; "not an independent defect" survives, but that is a materially worse reading than benign parent cleanup, and it is exactly the evidence **#764** carries | **#764** (filed this round -- **correction (review-707.md F1):** this cell previously said no open issue named this signature; `gh search issues --repo ryanbreen/breenix "reader_exit_13"` and `"data_latency_ms"` both returned no results, confirmed independently, so #764 was filed naming it) | yes |
 | boot06 | `loopback_wake_test_child:15`, `loopback_wake_test:1` | EOF-wait bound (`EOF_WAKE_BOUND_MS`) exceeded, `[TEST:...:FAIL:reader_exit_15]`; `TEST_TALLY: exited=22 nonzero=... failed=[loopback_wake_test_child:15,loopback_wake_test:1,...]` -- byte-identical failing-pair shape to #692's own quoted tally | **#692** | yes |
 | boot06 | `/usr/local/test/bin/clon:1` | `CLONEVM_EXEC_TEST: ERROR futex timeout did not return ETIMEDOUT` (serial_user.txt:912) | **#700** | yes |
 | boot10 | `/usr/local/test/bin/clon:1` | same exact string, `CLONEVM_EXEC_TEST: ERROR futex timeout did not return ETIMEDOUT` | **#700** | yes |
@@ -112,7 +112,9 @@ mentions `reader_exit_13`, `DATA_WAKE_BOUND_MS`, or a 3-process
 those terms returns nothing). This is a new specimen, not a
 resembling-but-imprecise match to #692: the instinct to fold it into #692
 "because it's the same test" is exactly the imprecision R52 exists to
-refuse.
+refuse. **Correction (review-707.md F1):** it is now attributed -- filed
+as **#764**, naming the `reader_exit_13`/`DATA_WAKE_BOUND_MS` signature
+and citing this boot as its first preserved specimen.
 
 **No boot in this battery -- 0/25 -- shows a kernel panic or a page fault
 of any kind** (`grep -l "KERNEL PANIC\|Kernel page fault"` across all 25
@@ -124,9 +126,13 @@ wake-latency assertions, with a clean `TEST_TALLY` and no fault record
 anywhere in the boot. **#737 was not reproduced and is not touched by this
 round's evidence.**
 
-**unattributedCount = 1** (boot01). Per R52, this blocks landing until
-either an existing issue is shown to cover it by exact signature or a new
-one is filed naming it.
+**unattributedCount = 0.** boot01 was the one unattributed red at review
+time; **correction (review-707.md F1):** it is now filed as **#764**,
+which cites this boot's `boot01/serial_user.txt` and
+`boot01/serial_kernel.txt` lines directly as its first preserved specimen.
+Per R52 the prior `unattributedCount = 1` blocked landing; that basis is
+discharged, 7 of 7 reds now attributed by exact signature or a filed
+issue.
 
 ## Why #737 got no comment this round
 
