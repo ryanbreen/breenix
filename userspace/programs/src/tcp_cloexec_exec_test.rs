@@ -17,17 +17,19 @@
 //!      path, `kernel/src/ipc/fd.rs`, read directly for this test) already
 //!      calls `tcp_listener_ref_inc()` on the cloned entry -- ref_count ==
 //!      2 immediately after fork, one owner per process.
-//!   4. Child `exec()`s `/sbin/true` -- a BusyBox hardlink present on the
-//!      ext2 image every boot, matching the exact `fork()` + `execv()` +
-//!      `waitpid()` pattern used by `userspace/programs/src/true_test.rs`
-//!      and the issue's own "suggested fix" wording ("exec a child that
-//!      does nothing but exit"; claim-lint:ok: direct quote of issue #707's
-//!      own suggested-fix text). The FD_CLOEXEC flag survived the fork
-//!      (it's part of the cloned fd table entry), so the child's own copy
-//!      of the listener fd must be retired by `close_cloexec()` during this
-//!      exec.
+//!   4. Child `exec()`s `simple_exit0` by bare name. Bare-name resolution
+//!      first tries `/bin/<name>` on ext2, then falls back to the raw test
+//!      disk's `get_test_binary(<name>)`; `simple_exit0` is packed into that
+//!      disk unconditionally, so the test does not depend on BusyBox/ext2
+//!      coreutils such as `/sbin/true` being present. It exits 0 after doing
+//!      nothing, matching the issue's own "suggested fix" wording ("exec a
+//!      child that does nothing but exit"; claim-lint:ok: direct quote of
+//!      issue #707's own suggested-fix text). The FD_CLOEXEC flag survived
+//!      the fork (it's part of the cloned fd table entry), so the child's
+//!      own copy of the listener fd must be retired by `close_cloexec()`
+//!      during this exec.
 //!   5. Parent `waitpid()`s the child and checks its exit code is exactly
-//!      0, distinguishing a real `/sbin/true` run from a silently failed
+//!      0, distinguishing a real `simple_exit0` run from a silently failed
 //!      `exec()` -- the latter exits 1 and would otherwise look identical
 //!      to "the fd leaked" on the ref-count check below (see 707-mutation.md
 //!      for the single-arm revert that is the actual red/green evidence).
@@ -56,10 +58,11 @@ use libbreenix::process::{execv, fork, waitpid, wexitstatus, wifexited, ForkResu
 use libbreenix::socket::{self, SockAddrIn, AF_INET, SOCK_STREAM};
 
 const PORT: u16 = 9112;
-/// `/sbin/true` exits successfully after doing nothing -- the child the
-/// issue's own suggested-fix wording asks for ("exec a child that does
-/// nothing but exit") -- claim-lint:ok: direct quote of issue #707's own
-/// suggested-fix text.
+/// `simple_exit0` exits successfully after doing nothing and is available
+/// through the bare-name raw-test-disk fallback even when BusyBox/ext2
+/// coreutils are absent -- the child the issue's own suggested-fix wording
+/// asks for ("exec a child that does nothing but exit") -- claim-lint:ok:
+/// direct quote of issue #707's own suggested-fix text.
 const EXEC_TARGET_EXIT_CODE: i32 = 0;
 
 fn fail(msg: &str) -> ! {
@@ -125,25 +128,27 @@ fn main() {
 
     match fork_result {
         ForkResult::Child => {
-            // Child: exec() /sbin/true, which exits successfully without
-            // other I/O. The cloned listener fd is still FD_CLOEXEC (the
-            // flag is part of the cloned fd table entry), so this exec must
-            // retire the child's copy through close_cloexec() -- the exact
-            // path #707 is about.
-            let program = b"/sbin/true\0";
-            let arg0 = b"true\0";
+            // Child: exec() simple_exit0 by bare name, allowing the raw
+            // test-disk fallback to find it even when BusyBox/ext2
+            // coreutils are absent. It exits successfully without other
+            // I/O. The cloned listener fd is still FD_CLOEXEC (the flag is
+            // part of the cloned fd table entry), so this exec must retire
+            // the child's copy through close_cloexec() -- the exact path
+            // #707 is about.
+            let program = b"simple_exit0\0";
+            let arg0 = b"simple_exit0\0";
             let argv: [*const u8; 2] = [arg0.as_ptr(), std::ptr::null()];
             let _ = execv(program, argv.as_ptr());
 
             // Only reached if exec() itself failed to load the program.
             // The parent's waitpid check below (exit code != 0) also
             // catches this, but exit distinctly here for a clearer log.
-            println!("  CHILD: exec(/sbin/true) failed");
+            println!("  CHILD: exec(simple_exit0) failed");
             process::exit(1);
         }
         ForkResult::Parent(child_pid) => {
             // Step 4/5: wait for the child, confirm it actually reached
-            // /sbin/true (exit code 0) rather than exec() silently
+            // simple_exit0 (exit code 0) rather than exec() silently
             // failing, which would otherwise be indistinguishable from
             // "the fd leaked" on the ref-count check below.
             println!(
@@ -163,12 +168,12 @@ fn main() {
                     status
                 );
                 fail(
-                    "the child never reached /sbin/true -- exec() itself failed, so this is \
+                    "the child never reached simple_exit0 -- exec() itself failed, so this is \
                      not a valid exercise of close_cloexec()",
                 );
             }
             println!(
-                "  PASS: child exec'd /sbin/true and exited with code {}",
+                "  PASS: child exec'd simple_exit0 and exited with code {}",
                 EXEC_TARGET_EXIT_CODE
             );
 
