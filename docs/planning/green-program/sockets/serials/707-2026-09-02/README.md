@@ -142,25 +142,51 @@ live in `ls /root/` this round). No serials were preserved from the
 
 ## x86 gate results, 25 boots
 
-Beast, isolated clone directory `/root/breenix-707-prove`,
-`docker/qemu/run-x86-gate.sh N full` (features=testing,external_test_bins),
-`BREENIX_RUST_FORK=/root/breenix/rust-fork-real`. **Green battery, shipped
-fix (`473ec481`): 25/25 boots,
-`TCP_CLOEXEC_EXEC_TEST_PASSED` in every single one.** 16/25 boots were a
-fully clean whole-gate `PASS`; the other 9/25 failed the whole-gate
-verdict on an *unrelated* process under heavy, independently-observed
-concurrent host contention from other lanes sharing beast (`uptime` load
-average up to 8.97 during this run; 3 concurrent QEMU instances from a
-`#693` lane observed mid-battery) -- `clock_gettime_test` (4x),
-`/usr/local/test/bin/clonevm_exec_test` (3x, path-truncated in the
-verdict line), `loopback_wake_test_child` (1x, possibly #737-adjacent,
-itself an already-tracked, out-of-scope Sockets bug). None of the 9
-touched TCP/socket/fd code, and the marker fired correctly in all of
-them regardless of the whole-gate verdict. `x86-green/` preserves the
-4 fully-clean boots from one representative batch (batch 7, 4/4 clean);
-the full 25-boot tally isn't re-preserved boot-by-boot here to keep this
-directory a reasonable size, but every batch's gate-script stdout was
-captured live and is summarized above.
+**Correction (review-707.md finding F4):** this section originally
+reported round 1's own battery (beast, isolated clone directory
+`/root/breenix-707-prove`, `docker/qemu/run-x86-gate.sh N full`,
+features=testing,external_test_bins), which established the marker result
+-- `TCP_CLOEXEC_EXEC_TEST_PASSED` in 25/25 boots -- but committed only 4
+user-side serials from one representative batch and none of the 9 failing
+boots, discarding all whole-gate evidence (`review-707.md` finding B4).
+That battery is **unpreserved and superseded**; the numbers below replace
+it, drawn from the committed round-2 battery rather than from a discarded
+log.
+
+**Round 2's battery lives in [`x86-battery-r2/`](x86-battery-r2/README.md).**
+Same command and feature profile, a fresh isolated clone
+(`/root/breenix-707-r2-b4`), 25 boots, committed in full at
+`x86-battery-r2/summary.tsv` (one row per boot) with every boot's own
+`serial_kernel.txt`, `serial_user.txt`, and `verdict.txt` alongside it --
+see that directory's own README for full methodology, the host-load
+table, and the per-red classification. Headline: **25/25 marker** (`TCP_CLOEXEC_EXEC_TEST_PASSED`
+in every `serial_user.txt`, `TCP_CLOEXEC_EXEC_TEST_FAILED` in none),
+**18/25 whole-gate PASS, 7/25 FAIL**. Host load during this battery ranged
+**0.12-1.35** (`cat /proc/loadavg`, sampled once per batch of up to 4
+boots) -- not the 8.97 round 1 reported; a `#693` lane was confirmed
+running one concurrent `qemu-system-x86_64` process throughout, a
+materially quieter host window than round 1's. The 7 reds, by issue:
+
+| issue | boots | count |
+|---|---|---|
+| #692 (`loopback_wake_test_child:15` / `loopback_wake_test:1`) | boot06, boot24 | 2 |
+| #700 (`/usr/local/test/bin/clonevm_exec_test:1`, path-truncated in the verdict line) | boot06, boot10, boot14, boot23 | 4 |
+| #631 (`clock_gettime_test:1`) | boot20 | 1 |
+| #764 (`loopback_wake_test_child:13` / two `:-9` siblings / `loopback_wake_test:1`; filed this round, `review-707.md` finding F1) | boot01 | 1 |
+
+7 of 25 boots carry a red (boot06 carries two, against two different
+issues), and 7 of 7 are attributed by exact signature or a filed issue --
+0 unattributed. 0 of the 25 committed `serial_kernel.txt` files show a
+kernel panic or a page fault of any kind (`grep -l "KERNEL
+PANIC\|Kernel page fault"` across all 25 -> 0 hits); #737's own signature
+(`Kernel page fault at 0x8 ... interrupts.rs:1493`) does not appear
+anywhere in this battery, so #737 is not reproduced by this round's
+evidence, and no comment was posted there. 0 of the 7 reds touched
+TCP/socket/fd code, and the marker fired in 25 of 25 boots regardless of
+the whole-gate verdict. `x86-green/` still holds round 1's own 4
+fully-clean boots from one representative batch (batch 7); it is
+round-1 residue, superseded by `x86-battery-r2/`'s full 25-boot,
+both-sides commit.
 
 **Mutation-red, one boot:** applied the pre-authored mutation
 (`crate::net::tcp::tcp_listener_ref_dec(*port)` ->
