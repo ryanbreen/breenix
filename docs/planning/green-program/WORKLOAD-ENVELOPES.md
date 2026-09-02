@@ -118,9 +118,11 @@ Declared 2026-08-31 (PR #732), fix round in `tty/EVIDENCE-x86-fix-round-2026-08-
 
 **Concurrent userspace processes.** x86's launch sequence in the same `main()` is
 `run_spawn_smoke()` (spawn+`waitpid`, sequential) then `run_tty_oracle()` (spawn+
-`waitpid`) then `run_exec_smoke()` — `start_bsshd()` and `run_boot_script()` (which
-spawns `/bin/bsh` and, through it, seven further processes per #722) come **after**
-all three, per `userspace/programs/src/init.rs` lines 123-130. There is no x86
+`waitpid`) then `run_exec_smoke()` then, since #745, `run_fork_smoke()` —
+`start_bsshd()` and `run_boot_script()` (which spawns `/bin/bsh` and, through it,
+seven further processes per #722) come **after** all four, at
+`userspace/programs/src/init.rs:131`-`132`; the four `#[cfg(target_arch = "x86_64")]`
+launchers themselves are `init.rs:123`-`130`. There is no x86
 equivalent of aarch64's `heartbeat` background daemon. So at the moment the TTY
 oracle runs on x86, the concurrent userspace process set is **exactly 2**: init
 (blocked in `waitpid`) and `/bin/tty_oracle` — no background daemon is alive yet.
@@ -129,7 +131,7 @@ doc-comment on `run_tty_oracle()`'s x86 body says the launcher is "Placed after
 `run_spawn_smoke()` and strictly before `start_bsshd()`, so the oracle stays fully
 independent of init's boot-script chain (#722) and the production processes that
 already run sequentially before it never overlap with bsshd's own ext2 reads
-(#728)" (`userspace/programs/src/init.rs:547-550`, current tree) — the exact axis
+(#728)" (`userspace/programs/src/init.rs:560`-`563`, current tree) — the exact axis
 this document exists to make explicit is, for this one launcher, already named in
 the source by issue number.
 

@@ -38,6 +38,14 @@
 //! the two processes interleave. The parent's own-sentinel read is kept as
 //! well, as the check that the parent's copy is private *and* writable.
 //!
+//! The child takes the mirror-image reading first, before it writes anything:
+//! a kernel that left the PARENT's page writable (so the parent's post-fork
+//! write never faulted and landed in the frame the child still shares) is
+//! invisible to every parent-side check, because the parent would read back
+//! exactly the value it wrote. On a correct kernel the child's pre-write read
+//! is the pre-fork 0 regardless of scheduling, since the parent's write can
+//! only reach the parent's private copy.
+//!
 //! This is what makes the isolation proof functional rather than "some CoW
 //! fault log line appeared": the x86 CoW *fault* path
 //! (`handle_cow_fault`/`handle_cow_with_manager`/`frame_is_shared`) had
@@ -88,6 +96,21 @@ fn main() {
             }
             unsafe {
                 CHILD_ENTERED = true;
+            }
+
+            // The other direction of the same leak (#745 review round 2, M2):
+            // read the probe BEFORE writing it. On a correct kernel this is
+            // always the pre-fork 0 -- the parent's own post-fork write faults
+            // into the parent's PRIVATE copy and can never be visible here.
+            // Observing PARENT_PROBE_VALUE means the parent's page stayed
+            // writable-shared, which the parent-side check below cannot see
+            // (the parent would still read its own value back).
+            let pre = unsafe { SHARED_WRITE_PROBE };
+            if pre == PARENT_PROBE_VALUE {
+                println!(
+                    "[FORK_SMOKE:COW_ISOLATION_CORRUPTED probe={:#x} side=child]",
+                    pre
+                );
             }
 
             // Force a CoW write fault on the child's own private copy of

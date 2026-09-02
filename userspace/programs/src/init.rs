@@ -548,7 +548,9 @@ fn run_spawn_smoke() {
 ///
 /// fork() is now ALSO production-safe on x86 (#745) -- this comment
 /// previously claimed that already, which was compile-time presence, not a
-/// runtime-proven fact (#745 precheck C10): `/etc/init.js` never exercised
+/// runtime-proven fact (#745 precheck C13, correcting spec section 3.10 --
+/// NOT C10, which is the TLS-registration item; mislabeled in round 1, fixed
+/// per review round 2 M5): `/etc/init.js` never exercised
 /// any of `bsh`'s three `fork()` call sites, and `sys_fork_with_parent_context`
 /// unconditionally refused with `Cannot implement fork without testing
 /// feature` in every zero-feature x86 build before #745 landed. It is now

@@ -561,6 +561,13 @@ FORK_SMOKE_REAP_FAILED_PREFIX='[FORK_SMOKE:REAP_FAILED'
 #       the same #0 also appears in the direct-path line
 #       (`[COW FAULT #0] lock held, using direct path`), which would make a
 #       bare `[COW FAULT #0]` pin count 2 on the signal-delivery path.
+#       What this pins is "this boot took at least one CoW fault", NOT "this
+#       fault was fork_smoke's": the re-measurement below timed fault #0 at
+#       t=19.67s and [FORK_SMOKE:LAUNCH] at t=32.67s, so on the shipped x86
+#       profile the first CoW fault is TTY arm 14's own fork, several seconds
+#       earlier. Both are production forks that could not run on x86 before
+#       #745, which is the property C3 is about; the fork_smoke-specific half
+#       is the isolation receipt in (ii).
 #  (ii) the isolation actually HELD -- FORK_SMOKE_COW_ISOLATION_OK/CORRUPTED
 #       above, a functional receipt (a broken refcount check corrupts memory
 #       silently rather than crashing). This is a STRENGTHENING of C3, not
@@ -608,17 +615,31 @@ POLL_BOUND_SECONDS=240
 # strengthened from a bare presence pin into a before/after delta.
 #
 # #721: this window doubles as the wall-clock budget for every marker assertion
-# below it (spawn-smoke, tty-oracle, exec-smoke, bsshd-started) -- the script
-# kills QEMU and reads final counts the moment this sleep returns. Adding
-# exec_smoke's own work (a full exec -- new page table, ELF load, frame
-# allocation, argv stack setup -- immediately followed by a target that sleeps
-# 100ms and yields 8 times) between run_tty_oracle() and start_bsshd() pushed
-# the measured beast-under-TCG time from steady state to `bsshd started`
-# past the previous 15s: steady state at t=11s, bsshd started at t=39s
-# (docs/planning/721-x86-exec/serials/, manual per-second probe against this
-# exact commit). 60s keeps ~2x margin over that 28s span without the "order of
-# magnitude" POLL_BOUND_SECONDS margin above, which would make every gate run
-# needlessly slow for a bound this tight to the measured figure.
+# below it (spawn-smoke, tty-oracle, exec-smoke, fork-smoke, bsshd-started) --
+# the script kills QEMU and reads final counts the moment this sleep returns.
+# The window opens once steady state is reached, so what has to fit inside it is
+# the span from `Serial command task started` to the LAST pinned marker.
+#
+# RE-MEASURED post-#745 (precheck C13(b) made this mandatory, not conditional:
+# the previous figure was taken before run_fork_smoke() and before TTY arm 14 --
+# a fork+exec -- were added inside this same window; #745 review round 2, M3).
+# Method: a read-only poller sampling this gate's own serial files every 0.25s
+# and recording each marker's first appearance relative to QEMU launch, run
+# beside an ordinary passing gate on beast under TCG at #745's round-2 bytes.
+# Observed, one boot:
+#   11.18s  Serial command task started   (steady state -- the window opens)
+#   14.13s  [init] spawn smoke: exited (code 0)
+#   19.67s  [COW FAULT #0] addr=
+#   23.11s  [TTY_ORACLE:COMPLETE
+#   27.37s  [EXEC_SMOKE:LAUNCH]      29.07s  [EXEC_SMOKE:TARGET_OK]
+#   32.67s  [FORK_SMOKE:LAUNCH]      33.50s  [FORK_SMOKE:PARENT_REAPED child=
+#   38.49s  bsshd: listening         (the last pinned marker)
+# Span from steady state to the last pinned marker: 27.3s, i.e. the added fork
+# work did not measurably widen the 28s span #721 recorded. 60s keeps ~2.2x
+# margin over it, without the "order of magnitude" POLL_BOUND_SECONDS margin
+# above, which would make every gate run needlessly slow for a bound this tight
+# to the measured figure. Raw timing artifact:
+# docs/planning/745-x86-fork/serials/liveness-window-remeasure-2026-09-02.txt.
 LIVENESS_STIMULUS_BYTE=$'\n'
 LIVENESS_WINDOW_SECONDS=60
 
