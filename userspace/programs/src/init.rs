@@ -126,6 +126,8 @@ fn main() {
     run_tty_oracle();
     #[cfg(target_arch = "x86_64")]
     run_exec_smoke();
+    #[cfg(target_arch = "x86_64")]
+    run_fork_smoke();
     start_bsshd();
     run_boot_script();
     #[cfg(target_arch = "aarch64")]
@@ -541,9 +543,18 @@ fn run_spawn_smoke() {
 
 /// Run the green-program TTY oracle (x86 port). Identical body to the
 /// aarch64 `run_tty_oracle()` above (aarch64-gated) -- setsid/ioctl/PTY/
-/// termios/fork are all production-safe on x86 already, so the launcher
-/// itself needs no divergent behavior, only the arch gate. See
-/// `tty_oracle.rs`'s own #721 comment for the one arm excluded on x86.
+/// termios are production-safe on x86, so the launcher itself needs no
+/// divergent behavior, only the arch gate.
+///
+/// fork() is now ALSO production-safe on x86 (#745) -- this comment
+/// previously claimed that already, which was compile-time presence, not a
+/// runtime-proven fact (#745 precheck C10): `/etc/init.js` never exercised
+/// any of `bsh`'s three `fork()` call sites, and `sys_fork_with_parent_context`
+/// unconditionally refused with `Cannot implement fork without testing
+/// feature` in every zero-feature x86 build before #745 landed. It is now
+/// proven by `run_fork_smoke()` below (arch-neutral, `fork_smoke.rs`) and by
+/// `tty_oracle.rs`'s own arm 14 (`cloexec_exec`), re-admitted on x86 in the
+/// same round -- see that file's #721/#745 comment.
 /// Placed after `run_spawn_smoke()` and strictly before `start_bsshd()`, so
 /// the oracle stays fully independent of init's boot-script chain (#722)
 /// and the production processes that already run sequentially before it
@@ -575,6 +586,30 @@ fn run_tty_oracle() {
         }
         Err(error) => {
             print!("[init] Warning: failed to start tty_oracle: {}\n", error);
+        }
+    }
+}
+
+/// Run the fork smoke test (#745) -- proves a real fork()+CoW+forced-
+/// reschedule+exit+reap round trip works end to end in production. Placed
+/// after `run_exec_smoke()` (this file's own launch order, not this
+/// function's cfg block) and strictly before `start_bsshd()`, the same slot
+/// convention `run_spawn_smoke()`/`run_tty_oracle()`/`run_exec_smoke()`
+/// already occupy (#713/#721). Waited on directly rather than left to the
+/// end-of-main() reap loop, mirroring `run_exec_smoke()`'s own rationale
+/// (that loop does not run until after `run_boot_script()`'s much slower
+/// chain completes, #722).
+#[cfg(target_arch = "x86_64")]
+fn run_fork_smoke() {
+    match spawn(b"/bin/fork_smoke\0") {
+        Ok(child_pid) => {
+            let mut status = 0i32;
+            let _ = waitpid(child_pid.raw() as i32, &mut status as *mut i32, 0);
+            let exit_code = (status >> 8) & 0xFF;
+            print!("[FORK_SMOKE:LAUNCHER_EXIT code={}]\n", exit_code);
+        }
+        Err(error) => {
+            print!("[FORK_SMOKE:SPAWN_FAILED {}]\n", error);
         }
     }
 }

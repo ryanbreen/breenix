@@ -504,11 +504,41 @@ EXEC_LOCK_ORDER_FIRST_COMMIT_LITERAL='[EXEC_LOCK_ORDER:FIRST_COMMIT]'
 EXEC_LOCK_ORDER_PM_HELD_LITERAL='[EXEC_LOCK_ORDER:VIOLATION:PM_HELD]'
 EXEC_LOCK_ORDER_UNPINNED_LITERAL='[EXEC_LOCK_ORDER:VIOLATION:UNPINNED]'
 EXEC_LOCK_ORDER_NO_SCHED_THREAD_LITERAL='[EXEC_LOCK_ORDER:VIOLATION:NO_SCHED_THREAD]'
+# #745, fixed: x86 fork() production wiring. fork_smoke (userspace/programs/src/init.rs's
+# run_fork_smoke(), positioned after run_exec_smoke() and before start_bsshd(), matching
+# #713/#721's own call-site convention) is the boot path's only fork() caller on x86 too now
+# -- it fork()s, the child forces at least one voluntary yield before exiting (the exact
+# "descheduled and redispatched at least once" scenario a masked-interrupt regression in the
+# fork syscall path would need to survive), and both parent and child force a real CoW write
+# fault on their own copy of a shared page. Positive markers proving a completed fork, a real
+# reschedule, a genuine reap, and CoW isolation actually held; negative markers (#745 spec
+# section 4, anti-vacuity) proving fork didn't fail, corrupt shared memory, or resume twice
+# into the same branch (a real historical fork-bug shape).
+FORK_SMOKE_LAUNCH_LITERAL='[FORK_SMOKE:LAUNCH]'
+FORK_SMOKE_CHILD_PREFIX='[FORK_SMOKE:CHILD pid='
+FORK_SMOKE_COW_ISOLATION_OK_PREFIX='[FORK_SMOKE:COW_ISOLATION_OK'
+FORK_SMOKE_COW_ISOLATION_CORRUPTED_PREFIX='[FORK_SMOKE:COW_ISOLATION_CORRUPTED'
+FORK_SMOKE_PARENT_REAPED_PREFIX='[FORK_SMOKE:PARENT_REAPED child='
+FORK_SMOKE_LAUNCHER_EXIT_LITERAL='[FORK_SMOKE:LAUNCHER_EXIT code=37]'
+FORK_SMOKE_SPAWN_FAILED_PREFIX='[FORK_SMOKE:SPAWN_FAILED'
+FORK_SMOKE_FORK_FAILED_PREFIX='[FORK_SMOKE:FORK_FAILED'
+FORK_SMOKE_CHILD_UNEXPECTED_RETURN_LITERAL='[FORK_SMOKE:CHILD_UNEXPECTED_RETURN]'
+FORK_SMOKE_REAP_FAILED_PREFIX='[FORK_SMOKE:REAP_FAILED'
+# #745 precheck C3: the x86 CoW *fault* path (handle_cow_fault et al.) had never
+# executed in a zero-feature x86 build before fork_smoke existed -- this is the
+# ONLY x86 production caller of setup_cow_pages_with_vmas as of #745 (spawn/exec
+# never create a CoW mapping), so every [COW FAULT #N] line on this gate is
+# fork_smoke's own doing. A loose lower bound (not an exact count): the child's
+# own stack usage after fork touches more than just the one explicit probe write.
+COW_FAULT_PREFIX='[COW FAULT #'
 # #720 — x86 user-stack VA bump allocator never reclaims (spawn-heavy
 # exhaustion after ~240 creations).
 # #722 — x86 prod-profile gate does not yet exercise init's full
 # boot-script chain (`bsh --init-shell` -> `/etc/init.js`'s further spawns);
-# deferred out of #713's scope.
+# deferred out of #713's scope. #745 precheck C13: that chain includes
+# bsshd/bcheck/bterm, each of which now also has newly-reachable fork()
+# call sites once fork_smoke proves the syscall itself works -- still not
+# pinned here, same deferral.
 
 # Measured on beast under TCG: steady state at 14s from QEMU launch. The bound is
 # an order of magnitude above that so host contention cannot score a slow-but-
@@ -672,6 +702,17 @@ print_observed_values() {
     echo "  exec lock order PM-held violation (must be absent, #721 K7): $(marker_count "$EXEC_LOCK_ORDER_PM_HELD_LITERAL")"
     echo "  exec lock order unpinned violation (must be absent, #721 K7): $(marker_count "$EXEC_LOCK_ORDER_UNPINNED_LITERAL")"
     echo "  exec lock order no-sched-thread violation (must be absent, #721 K7): $(marker_count "$EXEC_LOCK_ORDER_NO_SCHED_THREAD_LITERAL")"
+    echo "  fork smoke launch (#745):      $(marker_count "$FORK_SMOKE_LAUNCH_LITERAL")"
+    echo "  fork smoke child (#745):       $(marker_count "$FORK_SMOKE_CHILD_PREFIX")"
+    echo "  fork smoke CoW isolation OK (#745): $(marker_count "$FORK_SMOKE_COW_ISOLATION_OK_PREFIX")"
+    echo "  fork smoke CoW isolation corrupted (must be absent, #745): $(marker_count "$FORK_SMOKE_COW_ISOLATION_CORRUPTED_PREFIX")"
+    echo "  fork smoke parent reaped (#745): $(marker_count "$FORK_SMOKE_PARENT_REAPED_PREFIX")"
+    echo "  fork smoke launcher exit code=37 (#745): $(marker_count "$FORK_SMOKE_LAUNCHER_EXIT_LITERAL")"
+    echo "  fork smoke spawn failed (must be absent, #745): $(marker_count "$FORK_SMOKE_SPAWN_FAILED_PREFIX")"
+    echo "  fork smoke fork failed (must be absent, #745): $(marker_count "$FORK_SMOKE_FORK_FAILED_PREFIX")"
+    echo "  fork smoke child unexpected return (must be absent, #745): $(marker_count "$FORK_SMOKE_CHILD_UNEXPECTED_RETURN_LITERAL")"
+    echo "  fork smoke reap failed (must be absent, #745): $(marker_count "$FORK_SMOKE_REAP_FAILED_PREFIX")"
+    echo "  CoW fault occurrences (#745 precheck C3): $(marker_count "$COW_FAULT_PREFIX")"
     # init's full boot-script chain (bsh --init-shell -> /etc/init.js's
     # further spawns) is still not pinned here -- see INIT SURVIVAL
     # EVIDENCE above and #722.
@@ -923,6 +964,28 @@ test "$(marker_count "$EXEC_LOCK_ORDER_FIRST_COMMIT_LITERAL")" -eq 1
 test "$(marker_count "$EXEC_LOCK_ORDER_PM_HELD_LITERAL")" -eq 0
 test "$(marker_count "$EXEC_LOCK_ORDER_UNPINNED_LITERAL")" -eq 0
 test "$(marker_count "$EXEC_LOCK_ORDER_NO_SCHED_THREAD_LITERAL")" -eq 0
+
+# #745, fixed: production fork. Positive markers proving a completed fork, the
+# child's forced reschedule round trip, and a genuine reap; the CoW isolation
+# receipt proving the parent's own private page copy survived the child's
+# independent write (precheck C3 -- a broken refcount/isolation check would
+# silently corrupt shared memory rather than crash, so this is a functional
+# proof, not just "some fault line appeared"); negative markers (anti-vacuity)
+# proving fork did not fail, corrupt memory, or resume twice into the same
+# branch; and the CoW fault path itself was actually exercised (precheck C3 --
+# the only x86 production caller of the CoW *fault* handler is fork_smoke, so
+# this also proves the fault path is no longer runtime-unproven on x86).
+test "$(marker_count "$FORK_SMOKE_LAUNCH_LITERAL")" -eq 1
+test "$(marker_count "$FORK_SMOKE_CHILD_PREFIX")" -eq 1
+test "$(marker_count "$FORK_SMOKE_COW_ISOLATION_OK_PREFIX")" -eq 1
+test "$(marker_count "$FORK_SMOKE_COW_ISOLATION_CORRUPTED_PREFIX")" -eq 0
+test "$(marker_count "$FORK_SMOKE_PARENT_REAPED_PREFIX")" -eq 1
+test "$(marker_count "$FORK_SMOKE_LAUNCHER_EXIT_LITERAL")" -eq 1
+test "$(marker_count "$FORK_SMOKE_SPAWN_FAILED_PREFIX")" -eq 0
+test "$(marker_count "$FORK_SMOKE_FORK_FAILED_PREFIX")" -eq 0
+test "$(marker_count "$FORK_SMOKE_CHILD_UNEXPECTED_RETURN_LITERAL")" -eq 0
+test "$(marker_count "$FORK_SMOKE_REAP_FAILED_PREFIX")" -eq 0
+test "$(marker_count "$COW_FAULT_PREFIX")" -ge 2
 
 trap - ERR
 # #673 review, B5: an anti-vacuity leg must never print a bare production PASS

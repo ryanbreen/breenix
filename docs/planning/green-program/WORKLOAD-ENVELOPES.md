@@ -133,11 +133,29 @@ already run sequentially before it never overlap with bsshd's own ext2 reads
 this document exists to make explicit is, for this one launcher, already named in
 the source by issue number.
 
-**Syscall families exercised.** Same 13 of the 14 arms as aarch64 (§1) — arm 14,
-`cloexec_exec`, is excluded because `exec()` is `ENOSYS` in the shipped x86
-zero-feature profile (`tty/EVIDENCE-x86-fix-round-2026-08-31.md` §4). The 13-arm
-shared-surface argument is a census, not an absent-diff inference: of the 11 files
-the 13 arms' syscalls dispatch through (`session.rs`, `ioctl.rs`, `tty/ioctl.rs`,
+**#745 addendum.** `run_fork_smoke()` was added to this same sequence, placed
+strictly AFTER `run_tty_oracle()` and before `start_bsshd()` (mechanically pinned
+by `tests/green_program_envelope_structure.rs`'s `persistent_count_before`, which
+only counts launchers before the `run_tty_oracle()` stop marker) — so it does not
+change the "exactly 2" concurrent-process claim above, which is about the moment
+the TTY oracle itself runs. It DOES widen the workload the *rest* of the boot (from
+`run_fork_smoke()` onward) exercises: x86 gains its first production `fork()` +
+copy-on-write page-table surface, and `bsh`'s own three `fork()` call sites
+(reached later, through `run_boot_script()`'s chain) become newly reachable rather
+than dead code that always took an error branch (#745 precheck C13) — disclosed,
+not re-derived per-row here since none of the six currently-standing green cells'
+own measured workload includes that later portion of boot.
+
+**Syscall families exercised.** **All 14 arms as of #745** (previously 13 of 14 —
+arm 14, `cloexec_exec`, was excluded because x86 `fork()` unconditionally refused
+in the shipped zero-feature profile, not because `exec()` was `ENOSYS`: that
+original exclusion reason (`tty/EVIDENCE-x86-fix-round-2026-08-31.md` §4) had
+already gone stale once #721 landed production exec, and this document repeated
+the stale reason until #745's own precheck (C14) caught it — #745 is the PR that
+actually closed the gap by making x86 `fork()` production-safe, at which point arm
+14 was re-admitted on x86 the same round, per `docs/planning/745-x86-fork/`). The
+14-arm shared-surface argument for the 13 arms that predate #745 is a census, not
+an absent-diff inference: of the 11 files those 13 arms' syscalls dispatch through (`session.rs`, `ioctl.rs`, `tty/ioctl.rs`,
 `tty/termios.rs`, `tty/line_discipline.rs`, `tty/mod.rs`, `tty/pty/mod.rs`,
 `tty/pty/pair.rs`, `syscall/pty.rs`, `ipc/fd.rs`'s `close_cloexec()`, and
 `tty/driver.rs`), **10 of 11 carry zero** `target_arch` occurrences; the 11th,
@@ -182,28 +200,33 @@ itself; every spawned ELF is read from ext2 by the loader on the way in.
 
 **Uncheckable / not measured by this leg.** Same two gaps as aarch64 (`ptsname`
 `ERANGE`, blocking master reads), per #705's scope (not re-stated per-arch in the x86
-doc, but the oracle body driving both arches is the same 13-arm surface).
+doc, but the oracle body driving both arches is the same, now-14-arm, surface).
 
 ---
 
 ## 3. TTY — blended
 
 Declared in the same fix round, `tty/EVIDENCE-x86-fix-round-2026-08-31.md` §4
-(coordinator ruling). **Defined, explicitly, at the 13-arm shared surface** — not a
-14-arm claim with a footnote. The blended cell's workload envelope is therefore the
-**intersection** of §1 and §2 above: whichever axis is narrower on either arch view
-governs the blended claim. Concretely: 1–4 CPUs depending on which arch view is being
-exercised (never simultaneously — no test in this program boots both arches at once
-and compares them live), zero-feature production profile on both, 13 syscall-family
-arms common to both, ext2 mounted on both (writable on aarch64, read-only on x86 —
-the blended cell inherits the **weaker persistence bound** (a write that lands on
-aarch64 sticks; one that landed on x86 would not), since a blended claim is only as
-strong as its weakest view; per §2's correction above, `readonly=on` bounds whether
-a write persists, not whether the #728 lock path is reachable, so the blended cell
-does *not* inherit any reduced exposure to #728 itself from x86's flag). Arm 14
-(`fork`+`exec` inside a
-PTY session) is aarch64-only supplementary evidence, tracked for re-admission on
-`#721`, per the same ruling — explicitly **not** part of the blended cell's own claim.
+(coordinator ruling), **updated #745**: arm 14 (`cloexec_exec`, `fork`+`exec` inside
+a PTY session) was aarch64-only supplementary evidence at the time of that ruling,
+tracked for x86 re-admission on `#721`'s successor issue (`#745`, since #721 alone
+turned out not to be the actual blocker -- fork was). #745 closed that gap and
+re-admitted the arm on x86 the same round it fixed production fork, with its own
+dedicated multi-boot soak (see `docs/planning/745-x86-fork/`) given the novel
+fork-then-immediate-exec interaction the arm exercises. **The blended cell is
+therefore now defined at the full 14-arm shared surface**, not 13 with arm 14 held
+out. The blended cell's workload envelope is the **intersection** of §1 and §2
+above: whichever axis is narrower on either arch view governs the blended claim.
+Concretely: 1–4 CPUs depending on which arch view is being exercised (never
+simultaneously — no test in this program boots both arches at once and compares
+them live), zero-feature production profile on both, all 14 syscall-family arms
+common to both as of #745, ext2 mounted on both (writable on aarch64, read-only on
+x86 — the blended cell inherits the **weaker persistence bound** (a write that
+lands on aarch64 sticks; one that landed on x86 would not), since a blended claim
+is only as strong as its weakest view; per §2's correction above, `readonly=on`
+bounds whether a write persists, not whether the #728 lock path is reachable, so
+the blended cell does *not* inherit any reduced exposure to #728 itself from x86's
+flag).
 
 ---
 

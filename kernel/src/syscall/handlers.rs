@@ -1840,149 +1840,160 @@ pub fn sys_fork_with_frame(frame: &super::handler::SyscallFrame) -> SyscallResul
     // values at the time of the syscall, not the stale values from the last context switch
     let parent_context = crate::task::thread::CpuContext::from_syscall_frame(frame);
 
-    log::info!(
-        "sys_fork_with_frame: userspace RSP = {:#x}, return RIP = {:#x}",
-        parent_context.rsp,
-        parent_context.rip
-    );
-
-    // Debug: log some callee-saved registers that might hold local variables
-    log::debug!(
-        "sys_fork_with_frame: rbx={:#x}, rbp={:#x}, r12={:#x}, r13={:#x}, r14={:#x}, r15={:#x}",
-        parent_context.rbx,
-        parent_context.rbp,
-        parent_context.r12,
-        parent_context.r13,
-        parent_context.r14,
-        parent_context.r15
-    );
-
     // Call fork with the complete parent context
     sys_fork_with_parent_context(parent_context)
 }
 
 /// sys_fork with full parent context - captures all registers from syscall frame
+///
+/// NOTE: No `arch_without_interrupts`/`without_interrupts` wrapper around
+/// this function's body (#745 precheck C1). x86's PROCESS_MANAGER lock is a
+/// bare spinlock with no interrupt masking of its own
+/// (`process/mod.rs`'s `#[cfg(not(target_arch = "aarch64"))] manager()` arm)
+/// -- every x86 INTERRUPT-context PM access is already non-blocking
+/// (`try_manager()` in `context_switch.rs`/`interrupts.rs`), so a thread
+/// holding PM here never blocks a timer ISR: `check_need_resched_and_switch`
+/// simply refuses the dispatch and re-arms `need_resched` if it can't get
+/// the lock, exactly like `sys_spawn`'s own Window 2 already does in
+/// production today (#713). Wrapping this whole operation in a hardware
+/// interrupt mask would be a STRICTLY LARGER change than anything aarch64's
+/// fork ever needed (aarch64 keeps every PM window IRQ-off already; masking
+/// x86 here would make it fully non-preemptible for the first time) and
+/// would reproduce the interrupt-masking anti-pattern aarch64's own fork
+/// history already proved causes a single-CPU deadlock (see
+/// `arch_impl/aarch64/syscall_entry.rs::sys_fork_aarch64`'s postmortem
+/// comment) -- just with a different lock inventory. See
+/// `docs/planning/745-x86-fork/` for the full analysis.
 #[cfg(target_arch = "x86_64")]
 fn sys_fork_with_parent_context(parent_context: crate::task::thread::CpuContext) -> SyscallResult {
-    // Disable interrupts for the entire fork operation to ensure atomicity
-    crate::arch_without_interrupts(|| {
-        log::info!(
-            "sys_fork_with_parent_context called with RSP {:#x}, RIP {:#x}",
-            parent_context.rsp,
-            parent_context.rip
-        );
+    use super::errno::{EINVAL, ENOMEM, ESRCH};
 
-        // Get current thread ID from scheduler
-        let scheduler_thread_id = crate::task::scheduler::current_thread_id();
-        let current_thread_id = match scheduler_thread_id {
-            Some(id) => id,
-            None => {
-                log::error!("sys_fork: No current thread in scheduler");
-                return SyscallResult::Err(22); // EINVAL
-            }
-        };
-
-        if current_thread_id == 0 {
-            log::error!("sys_fork: Cannot fork from idle thread");
-            return SyscallResult::Err(22); // EINVAL
+    let current_thread_id = match crate::task::scheduler::current_thread_id() {
+        Some(id) if id != 0 => id,
+        _ => {
+            log::error!("sys_fork: No current thread in scheduler (or idle thread)");
+            return SyscallResult::Err(EINVAL as u64);
         }
+    };
 
-        // Find the current process by thread ID
+    // Window 1: look up the caller's PID under the PM lock, then drop it --
+    // no I/O and no scheduler call inside this lock (mirrors sys_spawn's
+    // own Window 1, #713 precheck C6).
+    let parent_pid = {
         let manager_guard = crate::process::manager();
-        let process_info = if let Some(ref manager) = *manager_guard {
-            manager.find_process_by_thread(current_thread_id)
-        } else {
-            log::error!("sys_fork: Process manager not available");
-            return SyscallResult::Err(12); // ENOMEM
-        };
-
-        let (parent_pid, parent_process) = match process_info {
-            Some((pid, process)) => (pid, process),
+        match *manager_guard {
+            Some(ref manager) => match manager.find_process_by_thread(current_thread_id) {
+                Some((pid, _)) => pid,
+                None => {
+                    log::error!(
+                        "sys_fork: Current thread {} not found in any process",
+                        current_thread_id
+                    );
+                    return SyscallResult::Err(ESRCH as u64);
+                }
+            },
             None => {
-                log::error!(
-                    "sys_fork: Current thread {} not found in any process",
-                    current_thread_id
-                );
-                return SyscallResult::Err(3); // ESRCH
+                log::error!("sys_fork: Process manager not available");
+                return SyscallResult::Err(ENOMEM as u64);
             }
-        };
-
-        log::info!(
-            "sys_fork: Found parent process {} (PID {})",
-            parent_process.name,
-            parent_pid.as_u64()
-        );
-
-        // Drop the lock before creating page table to avoid deadlock
-        drop(manager_guard);
-
-        // Reclaim scheduler-owned kernel stacks before consuming another finite
-        // kernel-stack pool slot.
-        crate::task::scheduler::reclaim_terminated_threads();
-
-        // Create the child page table BEFORE re-acquiring the lock
-        // This avoids deadlock during memory allocation
-        log::info!("sys_fork: Creating page table for child process");
-        let child_page_table = match crate::memory::process_memory::ProcessPageTable::new() {
-            Ok(pt) => Box::new(pt),
-            Err(e) => {
-                log::error!("sys_fork: Failed to create child page table: {}", e);
-                return SyscallResult::Err(12); // ENOMEM
-            }
-        };
-        log::info!("sys_fork: Child page table created successfully");
-
-        // Now re-acquire the lock and complete the fork
-        let mut manager_guard = crate::process::manager();
-        if let Some(ref mut manager) = *manager_guard {
-            match manager.fork_process_with_parent_context(
-                parent_pid,
-                parent_context,
-                child_page_table,
-            ) {
-                Ok(child_pid) => {
-                    // Get the child's thread ID to add to scheduler
-                    if let Some(child_process) = manager.get_process_mut(child_pid) {
-                        if let Some(child_thread) = &mut child_process.main_thread {
-                            let child_thread_id = child_thread.id;
-                            let child_thread =
-                                Box::new(child_thread.publish_to_scheduler());
-
-                            // Drop the lock before spawning to avoid issues
-                            drop(manager_guard);
-
-                            // Add the child thread to the scheduler
-                            log::info!(
-                                "sys_fork: Spawning child thread {} to scheduler",
-                                child_thread_id
-                            );
-                            crate::task::scheduler::spawn_front(child_thread);
-                            log::info!("sys_fork: Child thread spawned successfully");
-
-                            log::info!("sys_fork: Fork successful - parent {} gets child PID {}, thread {}", 
-                                parent_pid.as_u64(), child_pid.as_u64(), child_thread_id);
-
-                            // Return the child PID to the parent
-                            SyscallResult::Ok(child_pid.as_u64())
-                        } else {
-                            log::error!("sys_fork: Child process has no main thread");
-                            SyscallResult::Err(12) // ENOMEM
-                        }
-                    } else {
-                        log::error!("sys_fork: Failed to find newly created child process");
-                        SyscallResult::Err(12) // ENOMEM
-                    }
-                }
-                Err(e) => {
-                    log::error!("sys_fork: Failed to fork process: {}", e);
-                    SyscallResult::Err(12) // ENOMEM
-                }
-            }
-        } else {
-            log::error!("sys_fork: Process manager not available");
-            SyscallResult::Err(12) // ENOMEM
         }
-    })
+    };
+
+    // Reclaim quiesced process resources AND scheduler-owned kernel stacks
+    // before consuming another finite kernel-stack-pool slot -- mirrors
+    // aarch64 fork's ordering and sys_spawn's own (#713 C8; #745 precheck
+    // section 3.2 -- the process-resource reclaim call was missing here
+    // entirely). No PM guard is live across either call (#745 precheck C4).
+    crate::task::process_task::reclaim_deferred_process_resources();
+    crate::task::scheduler::reclaim_terminated_threads();
+
+    // Create the child page table OUTSIDE the PM lock -- heap/frame
+    // allocation must not run with PM held (creation.rs's documented
+    // MEMORY_INFO lock-order rationale, same as sys_spawn).
+    let child_page_table = match crate::memory::process_memory::ProcessPageTable::new() {
+        Ok(pt) => Box::new(pt),
+        Err(e) => {
+            log::error!("sys_fork: Failed to create child page table: {}", e);
+            return SyscallResult::Err(ENOMEM as u64);
+        }
+    };
+
+    // Window 2: fork under the PM lock. `fork_process_with_parent_context`
+    // and `complete_fork` do not log internally -- they run entirely inside
+    // this lock, and x86's PM lock is a bare spinlock that blocks all
+    // dispatch while held (#745 precheck C9); see their own doc comments in
+    // manager.rs.
+    let mut manager_guard = crate::process::manager();
+    let fork_result = match *manager_guard {
+        Some(ref mut manager) => {
+            manager.fork_process_with_parent_context(parent_pid, parent_context, child_page_table)
+        }
+        None => Err("Process manager not available"),
+    };
+
+    match fork_result {
+        Ok(child_pid) => {
+            // Extract the child's thread info while STILL under the PM
+            // lock (no logging here either -- see above).
+            let child_info = match *manager_guard {
+                Some(ref mut manager) => manager.get_process_mut(child_pid).and_then(|process| {
+                    process.main_thread.as_mut().map(|thread| {
+                        let thread_id = thread.id;
+                        (thread_id, Box::new(thread.publish_to_scheduler()))
+                    })
+                }),
+                None => None,
+            };
+
+            let Some((child_thread_id, child_thread)) = child_info else {
+                // Defensive teardown, believed unreachable in practice:
+                // `complete_fork`'s own invariant guarantees `main_thread`
+                // is `Some` whenever `fork_process_with_parent_context`
+                // returns `Ok` (it is set immediately before the row
+                // insert this same call performed). Mirrors sys_spawn's
+                // own Window-3 undo (#713 precheck C2) for defense in
+                // depth rather than leaving a half-published row behind.
+                if let Some(ref mut manager) = *manager_guard {
+                    if let Some(parent) = manager.get_process_mut(parent_pid) {
+                        parent.children.retain(|&pid| pid != child_pid);
+                    }
+                    manager.remove_from_ready_queue(child_pid);
+                    manager.remove_process(child_pid);
+                }
+                drop(manager_guard);
+                log::error!(
+                    "sys_fork: Child process {} has no main thread after a successful fork",
+                    child_pid.as_u64()
+                );
+                return SyscallResult::Err(ENOMEM as u64);
+            };
+
+            // Drop the PM lock BEFORE any logging or scheduler operations
+            // (mirrors aarch64 fork's own ordering, and is required by the
+            // creation-publication lock-order census, #745 precheck C5).
+            drop(manager_guard);
+
+            crate::tracing::providers::process::trace_spawn_front(
+                current_thread_id as u16,
+                child_thread_id as u16,
+            );
+            crate::task::scheduler::spawn_front(child_thread);
+
+            log::info!(
+                "sys_fork: Fork successful - parent {} gets child PID {}, thread {}",
+                parent_pid.as_u64(),
+                child_pid.as_u64(),
+                child_thread_id
+            );
+
+            SyscallResult::Ok(child_pid.as_u64())
+        }
+        Err(e) => {
+            drop(manager_guard);
+            log::error!("sys_fork: Failed to fork process: {}", e);
+            SyscallResult::Err(ENOMEM as u64)
+        }
+    }
 }
 
 #[cfg(target_arch = "x86_64")]

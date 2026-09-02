@@ -160,7 +160,11 @@ pub fn setup_cow_pages(
 ///
 /// Pages in MAP_SHARED VMAs are shared directly (same physical frame,
 /// writable in both processes). All other pages use CoW.
-#[allow(dead_code)]
+///
+/// Called unconditionally from both architectures' production fork paths
+/// (`ProcessManager::fork_process_with_parent_context` on x86_64,
+/// `ProcessManager::fork_process_aarch64` on aarch64) as of #745 -- no
+/// longer dead on any build configuration.
 pub fn setup_cow_pages_with_vmas(
     parent_page_table: &mut ProcessPageTable,
     child_page_table: &mut ProcessPageTable,

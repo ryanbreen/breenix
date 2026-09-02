@@ -2789,7 +2789,7 @@ const PROCESS_ROW_MAP_MUTATIONS: &[(&str, &str, usize)] = &[
     // sibling for real argv), a distinct row-map insert.
     ("kernel/src/process/manager.rs", "impl ProcessManager::#[cfg(target_arch=x86_64)] fn build_process_with_argv_at => insert", 1),
     // `complete_fork` is testing-only, so replacing its stale dead-code suppression with honest feature gating moved only this item path.
-    ("kernel/src/process/manager.rs", "impl ProcessManager::#[cfg(all(target_arch=x86_64,feature=testing))] fn complete_fork => insert", 1),
+    ("kernel/src/process/manager.rs", "impl ProcessManager::#[cfg(target_arch=x86_64)] fn complete_fork => insert", 1),
     ("kernel/src/process/manager.rs", "impl ProcessManager::#[cfg(target_arch=x86_64)] fn fork_process_with_context => insert", 1),
     ("kernel/src/process/manager.rs", "impl ProcessManager::fn debug_processes => raw-binding", 1),
     ("kernel/src/process/manager.rs", "impl ProcessManager::fn insert_process => insert", 1),
@@ -2843,7 +2843,7 @@ const QUARANTINE_CALLS: &[(&str, &str, usize)] = &[
 const KERNEL_STACK_MUTATIONS: &[(&str, &str, usize)] = &[
     // Hand-written fork/clone transfers collapsed into `publish_to_scheduler`; this census keeps it the only ownership-moving API.
     ("kernel/src/process/manager.rs", "impl ProcessManager::#[cfg(target_arch=aarch64)] fn complete_fork_aarch64", 1),
-    ("kernel/src/process/manager.rs", "impl ProcessManager::#[cfg(all(target_arch=x86_64,feature=testing))] fn complete_fork", 1),
+    ("kernel/src/process/manager.rs", "impl ProcessManager::#[cfg(target_arch=x86_64)] fn complete_fork", 1),
     ("kernel/src/task/thread.rs", "impl Thread::fn publish_to_scheduler", 1),
 ];
 /// The four legitimate leaks convert owned vectors into static test-binary
@@ -3157,6 +3157,10 @@ const DEFERRED_RECLAIM_DRAIN_SITES: &[(&str, &str, usize)] = &[
     // #713: sys_spawn drains before consuming another finite kernel-stack pool
     // slot, mirroring sys_fork_with_parent_context's own ordering.
     ("kernel/src/syscall/handlers.rs", "#[cfg(target_arch=x86_64)] fn sys_spawn", 1),
+    // #745: sys_fork_with_parent_context itself gained the drain call it was
+    // missing (the comment above already assumed it did) -- narrow-window
+    // reclaim call, no PM guard live.
+    ("kernel/src/syscall/handlers.rs", "#[cfg(target_arch=x86_64)] fn sys_fork_with_parent_context", 1),
     // #721 K12: sys_execv_with_frame's production arm drains before exec consumes
     // another finite kernel-stack-pool slot (the GuardedStack allocation
     // exec_process_with_argv makes for its manually-mapped user stack), mirroring
@@ -6593,9 +6597,11 @@ fn validate_root_proof_architecture_legs(sources: &[(String, String)]) -> Result
     Ok(())
 }
 
-/// Exact drain membership. Both x86 production calls are normal-context sites;
-/// the interrupt-return function is explicitly excluded. The one boot-test
-/// caller is the #653 refusal injection, which must stay a single call.
+/// Exact drain membership. All three x86 production calls (sys_spawn,
+/// sys_execv_with_frame, and sys_fork_with_parent_context as of #745) are
+/// normal-context sites; the interrupt-return function is explicitly
+/// excluded. The one boot-test caller is the #653 refusal injection, which
+/// must stay a single call.
 fn validate_deferred_reclaim_drain_sites(
     sources: &[(String, String)],
 ) -> Result<(), Vec<String>> {
