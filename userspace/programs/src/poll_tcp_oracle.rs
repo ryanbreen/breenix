@@ -49,33 +49,51 @@
 //! second kind — the peer's `nanosleep` overran by up to 10.3 s under round
 //! robin and its write landed after the poll's whole 5 s budget had expired.
 //!
-//! A timeout arm now recovers the peer's stamps before deciding: the peer's
-//! exit code says whether it published, and its `write_ms` says when.
-//! `late_lost_wake` now needs TWO facts, and it is a FAIL only with both: the
-//! peer began its send before the poll's own deadline (`entry + timeout_ms`, a
-//! lower bound on the kernel's), and the bytes were on the socket the instant
-//! the poll gave up — which the probe reads directly. Anything else is a window
-//! the publication did not enter, decides neither way, and is retried against a
-//! higher poll ceiling; if the peer keeps overrunning, the FAIL that ends it is
+//! A timeout arm now recovers the peer stamps before deciding: the peer exit
+//! code says whether it published, and its `write_ms` says when. Three shapes
+//! come out of that, and 0 of the 3 is a userspace wake-loss FAIL:
+//!
+//!   * `published_after_deadline` -- the peer had not begun its send when the
+//!     budget expired, so 0 was the right answer;
+//!   * `not_readable_at_return` -- the peer had begun its send, but the socket
+//!     was still empty when the poll gave up;
+//!   * `lost_suspected` -- the peer began its send before the budget expired
+//!     AND the probe found bytes on the socket. That is the SHAPE of a lost
+//!     wake. It does not establish one: `write_ms` is stamped BEFORE the send and
+//!     the probe reads AFTER the parent is rescheduled, so a send landing
+//!     between the kernel last in-loop scan and the probe produces it on a
+//!     correct kernel. It is REPORTED and retried against a wider delay, and
+//!     the gate-failing verdict for a lost wake is the kernel one below
+//!     (#693 round-2 review B2, ruling R93).
+//!
+//! A window the publication did not enter is retried against a higher poll
+//! ceiling; if the peer keeps overrunning, the FAIL that ends it is
 //! `late_peer_overrun` carrying the measured overrun, not a wake-loss claim.
 //!
-//! Both facts are needed because each alone is a stamp that can lie in a
-//! direction that manufactures #693's error again:
+//! Both facts are collected because each alone is a stamp that can lie in a
+//! direction that manufactures #693 error again:
 //!
-//!   * `returned`, the parent's post-syscall stamp, is not the poll's deadline.
+//!   * `returned`, the parent post-syscall stamp, is not the poll deadline.
 //!     They differ by however long it took the parent to get the CPU back,
 //!     measured at 543 ms for a 150 ms poll on beast KVM. A publication landing
 //!     in that gap is one the poll had already correctly declined to report.
-//!   * `write_ms` is stamped BEFORE the peer's `send()`, so it is a lower bound
+//!   * `write_ms` is stamped BEFORE the peer `send()`, so it is a lower bound
 //!     on the publication and not the publication itself. A peer descheduled
 //!     between the stamp and the syscall publishes later than it says, measured
-//!     at 762 ms on beast KVM. The probe closes that: an empty socket at the
-//!     instant the poll gave up is the kernel's state, not a stamp.
+//!     at 762 ms on beast KVM.
 //!
-//! The authoritative detector is on the kernel side —
-//! `[POLL_TCP_READY_LOST]` from `sys_poll`, which compares the connection's own
-//! publication instant against the kernel's own deadline. This verdict is the
-//! corroborating one, and the two agree on 5 of 5 boots under mutation 693-K.
+//! The probe narrows the second one and does not close it: it reads the socket
+//! after the parent is rescheduled, so an EMPTY socket there is decisive (the
+//! bytes had not arrived even by then) while BYTES there are not (they may have
+//! arrived after the poll decided). That asymmetry is why
+//! `not_readable_at_return` is a conclusion and `lost_suspected` is a report.
+//!
+//! The authoritative detector is on the kernel side and it is the only
+//! gate-failing one for a lost wake: `[POLL_TCP_READY_LOST]` from `sys_poll`,
+//! which compares the connection publication instant against the kernel own
+//! deadline, both read at the instant the poll decides. Under mutation 693-K it
+//! fired on 5 of 5 boots (fix slot) and 3 of 3 (round-1 reviewer), with the
+//! userspace probe reading `rescan_ready=1 nbread_n=23` on the same boots.
 //!
 //! ## The anchor, and the three facts each trial establishes
 //!
@@ -186,6 +204,18 @@ const LATE_MAX_ATTEMPTS: u32 = 5;
 /// reported as `late_peer_overrun` with the measured overrun rather than as a
 /// lost wake, which is what the pre-#693 code called it.
 const LATE_MAX_PEER_LATE_ATTEMPTS: u32 = 3;
+/// The third inconclusive shape, and the one #693 was mis-attributed as: the
+/// peer began its send before the poll deadline AND the probe found bytes on
+/// the socket. Both inputs are read off the deciding instant (the stamp is
+/// taken before the send, the probe after the parent is rescheduled), so the
+/// shape can be produced by ordinary latency on a correct kernel. Retrying with
+/// a WIDER delay separates the two: a stamp that merely landed near the
+/// deadline is pushed past it by one doubling, while a kernel that drops
+/// publications reproduces the shape at 80, 160 and 320 ms alike. On exhaustion
+/// the trial completes and the shape stays a report, because the kernel-side
+/// `[POLL_TCP_READY_LOST]` is the gate-failing authority for a lost wake and
+/// this arm cannot see what that check sees (round-2 review B2, ruling R93).
+const LATE_MAX_LOST_SUSPECTED_ATTEMPTS: u32 = 2;
 
 /// Stage 4's poll timeout and peer delay. The peer is told to wait more than
 /// three times the poll's whole budget, so its publication lands after the
@@ -651,9 +681,23 @@ struct LateTrial {
 /// How the timeout arm of a trial was decided, once the peer's publication
 /// instant is in hand.
 enum TimeoutVerdict {
-    /// The peer began its send before the poll's budget expired AND the bytes
-    /// were on the socket the instant the poll gave up. This is a lost wake.
-    Lost,
+    /// The peer began its send before the poll budget expired AND the bytes
+    /// were on the socket the instant the poll gave up. That is the SHAPE of a
+    /// lost wake, and it does not establish one, which is why the name says
+    /// "suspected" and why this arm reports and retries instead of failing
+    /// (#693 round-2 review B2, ruling R93).
+    ///
+    /// Neither input is read at the deciding instant. `write_ms` is stamped
+    /// BEFORE the peer send -- 762 ms before it on beast KVM -- and
+    /// `readable_at_return` is the probe read, taken after the syscall returned
+    /// and after the parent was scheduled again, 543 ms after the budget
+    /// expired on beast KVM. A send landing between the kernel last in-loop
+    /// scan and that probe satisfies both halves on a poll that answered
+    /// correctly for the state it read.
+    ///
+    /// The kernel is the only place both facts exist at the instant the poll
+    /// decides, so `[POLL_TCP_READY_LOST]` from `sys_poll` carries the FAIL.
+    LostSuspected,
     /// The peer had not begun its send when the poll's budget expired. The
     /// poll's 0 is the right answer for a socket that had not been written to.
     PublishedAfterDeadline,
@@ -679,22 +723,29 @@ struct LateResult {
     late_by_ms: u64,
 }
 
-/// Run one stage-3-shaped trial to a verdict, retrying the two INCONCLUSIVE
+/// Run one stage-3-shaped trial to a verdict, retrying the three INCONCLUSIVE
 /// shapes and reserving a FAIL for the shapes that decide something.
 ///
-/// The two inconclusive shapes are opposites and their retries pull in opposite
-/// directions, which is why they have separate budgets:
+/// The inconclusive shapes pull in different directions, which is why they have
+/// separate budgets:
 ///
-///   * the parent did not reach `poll()` before the peer's clock started
-///     (`entry > token_ms`) -- widen the peer's delay so the parent gets in;
-///   * the peer did not publish before the poll's deadline -- widening the
-///     delay makes this strictly worse, so raise the poll's own ceiling
+///   * the parent did not reach `poll()` before the peer wrote
+///     (`entry > write_ms`) -- widen the peer delay so the parent gets in;
+///   * the peer did not publish before the poll deadline -- widening the
+///     delay makes this strictly worse, so raise the poll own ceiling
 ///     instead. Raising it is free when the trial then succeeds: the poll
 ///     returns when the peer publishes, not when the timeout expires, so a
-///     larger ceiling buys only permission to wait.
+///     larger ceiling buys only permission to wait;
+///   * the peer published before the deadline and the probe found bytes
+///     (`lost_suspected`) -- widen the delay, which pushes a stamp that merely
+///     landed near the deadline past it while leaving a real dropped
+///     publication exactly where it was. Exhausting that budget completes the
+///     trial rather than failing it: the gate-failing verdict for a lost wake
+///     is the kernel `[POLL_TCP_READY_LOST]`, not this one (ruling R93).
 fn run_late_trial(client: Fd, server: Fd, trial: LateTrial) -> Result<LateResult, Failure> {
     let mut window_attempt: u32 = 1;
     let mut peer_late_attempt: u32 = 1;
+    let mut lost_suspected_seen: u32 = 0;
     let mut delay_ms = trial.delay_ms;
     let mut timeout_ms = trial.timeout_ms;
     let mut worst_late_by_ms: u64 = 0;
@@ -853,7 +904,7 @@ fn run_late_trial(client: Fd, server: Fd, trial: LateTrial) -> Result<LateResult
             let verdict = if write_ms >= deadline {
                 TimeoutVerdict::PublishedAfterDeadline
             } else if readable_at_return {
-                TimeoutVerdict::Lost
+                TimeoutVerdict::LostSuspected
             } else {
                 TimeoutVerdict::NotReadableAtReturn
             };
@@ -866,7 +917,7 @@ fn run_late_trial(client: Fd, server: Fd, trial: LateTrial) -> Result<LateResult
                 "[POLL_TCP_ORACLE:LATE_PUBLISH:stage={} decided={} anchor={} entry={} deadline={} returned={} write_ms={} late_by_ms={} delay_ms={} timeout={}]",
                 trial.stage,
                 match verdict {
-                    TimeoutVerdict::Lost => "lost",
+                    TimeoutVerdict::LostSuspected => "lost_suspected",
                     TimeoutVerdict::PublishedAfterDeadline => "published_after_deadline",
                     TimeoutVerdict::NotReadableAtReturn => "not_readable_at_return",
                 },
@@ -881,28 +932,81 @@ fn run_late_trial(client: Fd, server: Fd, trial: LateTrial) -> Result<LateResult
             ));
 
             match verdict {
-                TimeoutVerdict::Lost => {
-                    // Readiness was on the socket while this poll's budget was
-                    // still running, and the poll handed back 0 ready fds. THIS
-                    // is a lost wake, and it is what this verdict now names.
-                    return Err(fail(
-                        "late_lost_wake",
-                        format!(
-                            "stage={} ready={} revents={:#06x} anchor={} entry={} deadline={} returned={} write_ms={} began_before_deadline_ms={} elapsed_ms={} timeout={} delay_ms={} readable_at_return=1",
+                TimeoutVerdict::LostSuspected => {
+                    // Readiness was on the socket while this poll budget was
+                    // still running, and the poll handed back 0 ready fds. That
+                    // SHAPE is what a lost wake looks like from userspace -- and
+                    // it is also what two measured latencies produce on a
+                    // CORRECT kernel, which is why this arm reports instead of
+                    // failing (#693 round-2 review B2, ruling R93):
+                    //
+                    //   * `write_ms` is stamped BEFORE the peer send, so a peer
+                    //     descheduled in between publishes later than it says
+                    //     -- 762 ms later, measured on beast KVM;
+                    //   * `readable_at_return` is read by the probe AFTER the
+                    //     syscall returned and after the parent was scheduled
+                    //     again -- 543 ms after the budget expired, measured on
+                    //     beast KVM.
+                    //
+                    // A send landing between the kernel last in-loop scan
+                    // (which runs at or after `deadline_ns`) and that probe
+                    // satisfies both halves of this predicate on a poll that
+                    // answered correctly for the state it read. The kernel is
+                    // the only place both facts exist at the deciding instant,
+                    // so `[POLL_TCP_READY_LOST]` from `sys_poll` is the
+                    // gate-failing authority and this line is corroboration.
+                    //
+                    // Widening the delay is the retry that discriminates: a
+                    // peer whose stamp merely landed NEAR the deadline is
+                    // pushed past it by one doubling and the next trial decides
+                    // `published_after_deadline`, while a kernel that really
+                    // drops publications reproduces this shape at 80, 160 and 320 ms
+                    // (mutation 693-K publishes 80 ms into a 5 s poll).
+                    lost_suspected_seen += 1;
+                    emit(&format!(
+                        "[POLL_TCP_ORACLE:LOST_SUSPECTED:stage={} attempt={} ready={} revents={:#06x} anchor={} entry={} deadline={} returned={} write_ms={} began_before_deadline_ms={} elapsed_ms={} timeout={} delay_ms={} readable_at_return=1]",
+                        trial.stage,
+                        lost_suspected_seen,
+                        ready,
+                        fds[0].revents,
+                        anchor,
+                        entry,
+                        deadline,
+                        returned,
+                        write_ms,
+                        deadline.saturating_sub(write_ms),
+                        elapsed,
+                        timeout_ms,
+                        delay_ms
+                    ));
+                    if lost_suspected_seen > LATE_MAX_LOST_SUSPECTED_ATTEMPTS {
+                        // Out of retries. This arm does not fail the gate on
+                        // its own (R93): the shape is on the console with 14 of
+                        // the 14 fields it was decided from, the trial completes, and
+                        // the boot is red if and only if the kernel reported
+                        // losing something. The gates anti-vacuity check --
+                        // `[POLL_TCP_TIMEOUT]` REQUIRED to be present -- is
+                        // what stops that authority from going quiet unnoticed.
+                        emit(&format!(
+                            "[POLL_TCP_ORACLE:LOST_SUSPECTED_UNRESOLVED:stage={} attempts={} anchor={} entry={} deadline={} returned={} write_ms={} delay_ms={} timeout={}]",
                             trial.stage,
-                            ready,
-                            fds[0].revents,
+                            lost_suspected_seen,
                             anchor,
                             entry,
                             deadline,
                             returned,
                             write_ms,
-                            deadline.saturating_sub(write_ms),
-                            elapsed,
-                            timeout_ms,
-                            delay_ms
-                        ),
-                    ));
+                            delay_ms,
+                            timeout_ms
+                        ));
+                        return Ok(LateResult {
+                            elapsed_ms: elapsed,
+                            park_ms: write_ms.saturating_sub(entry),
+                            late_by_ms: 0,
+                        });
+                    }
+                    delay_ms *= 2;
+                    continue;
                 }
                 TimeoutVerdict::PublishedAfterDeadline | TimeoutVerdict::NotReadableAtReturn => {
                     if trial.mode == LateMode::Forced {
