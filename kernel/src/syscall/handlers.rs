@@ -1849,18 +1849,38 @@ pub fn sys_fork_with_frame(frame: &super::handler::SyscallFrame) -> SyscallResul
 /// NOTE: No `arch_without_interrupts`/`without_interrupts` wrapper around
 /// this function's body (#745 precheck C1). x86's PROCESS_MANAGER lock is a
 /// bare spinlock with no interrupt masking of its own
-/// (`process/mod.rs`'s `#[cfg(not(target_arch = "aarch64"))] manager()` arm)
-/// -- every x86 INTERRUPT-context PM access is already non-blocking
-/// (`try_manager()` in `context_switch.rs`/`interrupts.rs`), so a thread
-/// holding PM here never blocks a timer ISR: `check_need_resched_and_switch`
-/// simply refuses the dispatch and re-arms `need_resched` if it can't get
-/// the lock, exactly like `sys_spawn`'s own Window 2 already does in
-/// production today (#713). Wrapping this whole operation in a hardware
+/// (`process/mod.rs`'s `#[cfg(not(target_arch = "aarch64"))] manager()` arm).
+///
+/// Why holding it unmasked is safe here, re-derived at these bytes rather
+/// than copied from the precheck (which is what C1(b) asked for, and what
+/// #745 review round 2 M1 caught round 1 not doing). The census is
+/// `grep -n 'crate::process::manager()\|crate::process::try_manager()\|with_process_manager'`
+/// over `kernel/src/interrupts.rs`, `kernel/src/interrupts/context_switch.rs`
+/// and `kernel/src/interrupts/timer.rs`: nine x86 interrupt-context PM
+/// accesses. SEVEN are non-blocking `try_manager()` (`interrupts.rs:726`,
+/// `:965`; `context_switch.rs:277`, `:601`, `:728`, `:1199`, `:1543`), so a
+/// thread holding PM here never blocks a timer ISR --
+/// `check_need_resched_and_switch` refuses the dispatch and re-arms
+/// `need_resched` instead. The remaining TWO are blocking
+/// `crate::process::with_process_manager` calls (`interrupts.rs:1421` in the
+/// page-fault handler, `:1708` in the GPF handler), so the flat claim "every
+/// x86 interrupt-context PM access is non-blocking" is FALSE. Both sit
+/// inside `if from_userspace` process-kill arms, and a CPU executing this
+/// kernel-mode fork is not taking a userspace fault, so neither is reachable
+/// while this window is held on that CPU; on `-smp 1` (what every x86 gate
+/// boots) that closes it outright, and on SMP the fork holder is runnable
+/// and releases.
+///
+/// This is the same unmasked shape `sys_spawn`'s Window 2 has run in
+/// production since #713. Wrapping the whole operation in a hardware
 /// interrupt mask would be a STRICTLY LARGER change than anything aarch64's
-/// fork ever needed (aarch64 keeps every PM window IRQ-off already; masking
-/// x86 here would make it fully non-preemptible for the first time) and
-/// would reproduce the interrupt-masking anti-pattern aarch64's own fork
-/// history already proved causes a single-CPU deadlock (see
+/// fork ever needed (aarch64 keeps every PM window IRQ-off already) and
+/// would make the ENTIRE fork non-preemptible; what masks inside this window
+/// today is only what masks everywhere in the kernel -- the heap allocator's
+/// own `arch_without_interrupts` bracket around each allocation
+/// (`memory/heap.rs:34`-`57`). It would also reproduce the interrupt-masking
+/// anti-pattern aarch64's own fork history already proved causes a
+/// single-CPU deadlock (see
 /// `arch_impl/aarch64/syscall_entry.rs::sys_fork_aarch64`'s postmortem
 /// comment) -- just with a different lock inventory. See
 /// `docs/planning/745-x86-fork/` for the full analysis.
@@ -1919,10 +1939,11 @@ fn sys_fork_with_parent_context(parent_context: crate::task::thread::CpuContext)
     };
 
     // Window 2: fork under the PM lock. `fork_process_with_parent_context`
-    // and `complete_fork` do not log internally -- they run entirely inside
-    // this lock, and x86's PM lock is a bare spinlock that blocks all
-    // dispatch while held (#745 precheck C9); see their own doc comments in
-    // manager.rs.
+    // and `complete_fork` contain no logging of their own -- they run
+    // entirely inside this lock, and x86's PM lock is a bare spinlock that
+    // blocks all dispatch while held (#745 precheck C9); see their own doc
+    // comments in manager.rs, which also name the one callee inside this
+    // window that still does log.
     let mut manager_guard = crate::process::manager();
     let fork_result = match *manager_guard {
         Some(ref mut manager) => {
@@ -1939,13 +1960,14 @@ fn sys_fork_with_parent_context(parent_context: crate::task::thread::CpuContext)
                 Some(ref mut manager) => manager.get_process_mut(child_pid).and_then(|process| {
                     process.main_thread.as_mut().map(|thread| {
                         let thread_id = thread.id;
-                        (thread_id, Box::new(thread.publish_to_scheduler()))
+                        let tls_block = thread.tls_block;
+                        (thread_id, tls_block, Box::new(thread.publish_to_scheduler()))
                     })
                 }),
                 None => None,
             };
 
-            let Some((child_thread_id, child_thread)) = child_info else {
+            let Some((child_thread_id, child_tls_block, child_thread)) = child_info else {
                 // Defensive teardown, believed unreachable in practice:
                 // `complete_fork`'s own invariant guarantees `main_thread`
                 // is `Some` whenever `fork_process_with_parent_context`
@@ -1972,6 +1994,24 @@ fn sys_fork_with_parent_context(parent_context: crate::task::thread::CpuContext)
             // (mirrors aarch64 fork's own ordering, and is required by the
             // creation-publication lock-order census, #745 precheck C5).
             drop(manager_guard);
+
+            // TLS registration for the child, hoisted OUT of `complete_fork`
+            // (#745 precheck C9/C10, review round 2 B2). `register_thread_tls`
+            // masks interrupts, takes the global TLS_MANAGER lock and logs at
+            // debug level; running it under the PM lock was an x86-only
+            // divergence -- `complete_fork_aarch64` registers no TLS at all.
+            // Here is both correct and the latest safe point: the child cannot
+            // be dispatched until `spawn_front` below puts it on the ready
+            // queue, and `context_switch`'s `switch_tls(thread_id)` (the only
+            // consumer of this registration) runs on that dispatch, aborting
+            // it if the thread is unregistered.
+            if let Err(e) = crate::tls::register_thread_tls(child_thread_id, child_tls_block) {
+                log::warn!(
+                    "sys_fork: Failed to register TLS for child thread {}: {}",
+                    child_thread_id,
+                    e
+                );
+            }
 
             crate::tracing::providers::process::trace_spawn_front(
                 current_thread_id as u16,

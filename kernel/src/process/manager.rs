@@ -2269,14 +2269,23 @@ impl ProcessManager {
     /// not the stale values from the last context switch.
     /// Note: Fork requires architecture-specific register manipulation
     ///
-    /// NOTE: No logging in this function — it runs under the PM lock (#745
-    /// precheck C9). x86's PM lock is a bare spinlock, and
+    /// NOTE: No logging in this function's own body — it runs under the PM
+    /// lock (#745 precheck C9). x86's PM lock is a bare spinlock, and
     /// `check_need_resched_and_switch` refuses to dispatch ANY thread while
     /// it is held (`context_switch.rs`'s `try_manager()` fallback), so a
     /// thread that blocks on the logger lock while holding PM here can
     /// deadlock permanently if the logger's actual holder was preempted and
     /// can never be rescheduled to release it. Use tracing events instead
     /// (mirrors `fork_process_aarch64`'s own identical invariant below).
+    ///
+    /// This is a property of the FUNCTION, not of the whole PM-held region:
+    /// `complete_fork` below reaches
+    /// `memory::kernel_stack::allocate_kernel_stack`, which still emits two
+    /// `log::debug!` lines (#756). That call is shared with
+    /// `complete_fork_aarch64` and with every `create_user_process` on both
+    /// arches, so it is neither new here nor an x86-only divergence; it is
+    /// filed, not silently tolerated. #745 review round 2 (B2) is why this
+    /// says "in this function's own body" and not "in this region".
     #[cfg(target_arch = "x86_64")]
     pub fn fork_process_with_parent_context(
         &mut self,
@@ -2684,14 +2693,28 @@ impl ProcessManager {
     /// instead of the stale values from `parent_thread.context`.
     /// Note: Uses architecture-specific register names
     ///
-    /// NOTE: No logging in this function — it runs under the PM lock (#745
-    /// precheck C9, mirrors `complete_fork_aarch64`'s own identical
-    /// invariant above). x86's PM lock is a bare spinlock and
+    /// NOTE: No logging in this function's own body — it runs under the PM
+    /// lock (#745 precheck C9, mirrors `complete_fork_aarch64`'s own
+    /// identical invariant above). x86's PM lock is a bare spinlock and
     /// `check_need_resched_and_switch` refuses to dispatch ANY thread while
     /// it is held, so a thread that blocks on the logger lock while holding
     /// PM here can deadlock permanently if the logger's actual holder was
     /// preempted and can never be rescheduled to release it. Use tracing
     /// events instead.
+    ///
+    /// Two disclosures about the REGION, which the body's own cleanliness
+    /// does not cover (#745 review round 2, B2):
+    /// - `allocate_kernel_stack()` below still emits two `log::debug!` lines
+    ///   (#756). `complete_fork_aarch64` makes the same call under its own
+    ///   (interrupt-masked) PM lock, and so does every
+    ///   `create_user_process`/`create_process_with_argv` on both arches, so
+    ///   this is pre-existing and arch-symmetric, not a fork-specific or
+    ///   x86-specific hazard.
+    /// - TLS registration, which DID mask interrupts and log here, is no
+    ///   longer done in this function at all: `crate::tls::register_thread_tls`
+    ///   is now called by `sys_fork_with_parent_context` after it drops the PM
+    ///   guard (precheck C10 was the only x86-only divergence in this window,
+    ///   and it is closed by construction rather than by documentation).
     #[cfg(target_arch = "x86_64")]
     fn complete_fork(
         &mut self,
@@ -2718,13 +2741,18 @@ impl ProcessManager {
         // uniqueness across all threads (kernel + user).
         let child_thread_id = crate::task::thread::allocate_thread_id();
 
-        // Allocate a TLS block for this thread ID
+        // Allocate a TLS block for this thread ID. Registering it with the
+        // TLS manager is deliberately NOT done here: `register_thread_tls`
+        // masks interrupts, takes a second global lock and logs, and doing
+        // that under the PM lock was the one property of this window that
+        // `complete_fork_aarch64` genuinely did not share (#745 precheck
+        // C9/C10, review round 2 B2). The caller
+        // (`syscall::handlers::sys_fork_with_parent_context`) performs the
+        // registration after it drops the PM guard and before it hands the
+        // child to `scheduler::spawn_front`, which is the first moment the
+        // child can be dispatched and therefore the first moment
+        // `context_switch`'s `switch_tls` can need it.
         let child_tls_block = VirtAddr::new(0x10000 + child_thread_id * 0x1000);
-
-        // Register this thread with the TLS system. A failure here is not
-        // fatal to the fork (mirrors the pre-existing tolerance) but must
-        // not log under the PM lock -- see the no-logging note above.
-        let _ = crate::tls::register_thread_tls(child_thread_id, child_tls_block);
 
         // Allocate a kernel stack for the child thread (userspace threads need kernel stacks)
         let (child_kernel_stack_top, child_kernel_stack_allocation) =

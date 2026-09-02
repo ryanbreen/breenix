@@ -519,28 +519,55 @@ FORK_SMOKE_CHILD_PREFIX='[FORK_SMOKE:CHILD pid='
 FORK_SMOKE_COW_ISOLATION_OK_PREFIX='[FORK_SMOKE:COW_ISOLATION_OK'
 FORK_SMOKE_COW_ISOLATION_CORRUPTED_PREFIX='[FORK_SMOKE:COW_ISOLATION_CORRUPTED'
 FORK_SMOKE_PARENT_REAPED_PREFIX='[FORK_SMOKE:PARENT_REAPED child='
+# The child's EXIT CODE, spent separately (#745 review round 2, B1). The
+# PARENT_REAPED prefix above pins only that a reap happened -- it matches
+# `code=-1` (the `!wifexited` arm, i.e. the child was KILLED) just as
+# happily as a clean `code=37`. A child that prints its CHILD marker and
+# then dies during or after its voluntary yield is still reaped, and the
+# userspace-fault kill path emits nothing in CRASH_MARKERS_PATTERN or
+# FAULT_MARKERS, so without this pin the whole property fork_smoke exists
+# to prove -- the freshly-published child survived a real reschedule round
+# trip and exited cleanly -- was unasserted. The child pid varies boot to
+# boot, so the exit-code half is pinned on its own: ` code=37]` cannot
+# collide with `[FORK_SMOKE:LAUNCHER_EXIT code=0]` (the DIFFERENT process
+# below) under grep -F, and 37 is fork_smoke.rs's CHILD_EXIT_CODE.
+FORK_SMOKE_PARENT_REAPED_CODE_LITERAL=' code=37]'
 # fork_smoke's own top-level process (the one init directly spawns and
 # reaps here) exits 0 via its normal `main()` return once the PARENT branch
 # finishes printing -- code=37 is a DIFFERENT process, fork_smoke's own
 # internal child C, which its own internal parent reaps and reports via
-# FORK_SMOKE_PARENT_REAPED_PREFIX above (checked as `child=...code=37`
-# below, not here).
+# FORK_SMOKE_PARENT_REAPED_PREFIX / FORK_SMOKE_PARENT_REAPED_CODE_LITERAL
+# above.
 FORK_SMOKE_LAUNCHER_EXIT_LITERAL='[FORK_SMOKE:LAUNCHER_EXIT code=0]'
 FORK_SMOKE_SPAWN_FAILED_PREFIX='[FORK_SMOKE:SPAWN_FAILED'
 FORK_SMOKE_FORK_FAILED_PREFIX='[FORK_SMOKE:FORK_FAILED'
 FORK_SMOKE_CHILD_UNEXPECTED_RETURN_LITERAL='[FORK_SMOKE:CHILD_UNEXPECTED_RETURN]'
 FORK_SMOKE_REAP_FAILED_PREFIX='[FORK_SMOKE:REAP_FAILED'
 # #745 precheck C3: the x86 CoW *fault* path (handle_cow_fault et al.) had never
-# executed in a zero-feature x86 build before fork_smoke existed. Proven by
-# FORK_SMOKE_COW_ISOLATION_OK/CORRUPTED above -- a FUNCTIONAL isolation
-# receipt, not a raw [COW FAULT #N] literal count: the actual fault count
-# (8, observed) depends on how many distinct 4KB pages the child's own
-# stack usage touches after fork, which is not the kind of fact this
-# harness's own verdict-discipline rule (every marker assertion must be an
-# exact `-eq 0`/`-eq 1`, see teardown_structure.rs's
-# x86_production_profile_gate_verdict_discipline_holds) can pin honestly --
-# the isolation receipt is the intended "or, better" alternative precheck
-# C3 itself names.
+# executed in a zero-feature x86 build before fork_smoke existed. C3(2) asks
+# for TWO distinct things and this gate now spends both:
+#   (i) the faults ACTUALLY OCCURRED -- the literal below. A first attempt
+#       pinned the bare `[COW FAULT #` prefix, whose count (8, observed)
+#       depends on how many distinct 4KB pages each side touches after fork
+#       and so cannot be an exact `-eq 0`/`-eq 1` under this harness's own
+#       verdict-discipline rule (teardown_structure.rs's
+#       x86_production_profile_gate_verdict_discipline_holds); it was
+#       deleted in `411975c9` and, in round 1, nothing replaced it. The
+#       fault NUMBER is what makes it pinnable: handle_cow_fault
+#       (kernel/src/interrupts.rs) prints `[COW FAULT #N] addr=...` with N
+#       from a boot-global fetch_add, so `[COW FAULT #0] addr=` is emitted
+#       exactly once on any boot that takes at least one CoW fault and not
+#       at all on a boot that takes none. The `addr=` suffix is load-bearing:
+#       the same #0 also appears in the direct-path line
+#       (`[COW FAULT #0] lock held, using direct path`), which would make a
+#       bare `[COW FAULT #0]` pin count 2 on the signal-delivery path.
+#  (ii) the isolation actually HELD -- FORK_SMOKE_COW_ISOLATION_OK/CORRUPTED
+#       above, a functional receipt (a broken refcount check corrupts memory
+#       silently rather than crashing). This is a STRENGTHENING of C3, not
+#       the "or, better" alternative it names: C3's "or, better" is C11's
+#       count_cow_fault() counter, which this round still leaves unwired
+#       (see docs/planning/745-x86-fork/README.md).
+FORK_SMOKE_COW_FAULT_FIRST_LITERAL='[COW FAULT #0] addr='
 # #720 — x86 user-stack VA bump allocator never reclaims (spawn-heavy
 # exhaustion after ~240 creations).
 # #722 — x86 prod-profile gate does not yet exercise init's full
@@ -717,7 +744,9 @@ print_observed_values() {
     echo "  fork smoke CoW isolation OK (#745): $(marker_count "$FORK_SMOKE_COW_ISOLATION_OK_PREFIX")"
     echo "  fork smoke CoW isolation corrupted (must be absent, #745): $(marker_count "$FORK_SMOKE_COW_ISOLATION_CORRUPTED_PREFIX")"
     echo "  fork smoke parent reaped (#745): $(marker_count "$FORK_SMOKE_PARENT_REAPED_PREFIX")"
-    echo "  fork smoke launcher exit code=37 (#745): $(marker_count "$FORK_SMOKE_LAUNCHER_EXIT_LITERAL")"
+    echo "  fork smoke launcher exit code=0 (#745): $(marker_count "$FORK_SMOKE_LAUNCHER_EXIT_LITERAL")"
+    echo "  fork smoke child exit code=37 (#745 review r2 B1): $(marker_count "$FORK_SMOKE_PARENT_REAPED_CODE_LITERAL")"
+    echo "  first CoW fault taken (#745 precheck C3(2)): $(marker_count "$FORK_SMOKE_COW_FAULT_FIRST_LITERAL")"
     echo "  fork smoke spawn failed (must be absent, #745): $(marker_count "$FORK_SMOKE_SPAWN_FAILED_PREFIX")"
     echo "  fork smoke fork failed (must be absent, #745): $(marker_count "$FORK_SMOKE_FORK_FAILED_PREFIX")"
     echo "  fork smoke child unexpected return (must be absent, #745): $(marker_count "$FORK_SMOKE_CHILD_UNEXPECTED_RETURN_LITERAL")"
@@ -975,20 +1004,24 @@ test "$(marker_count "$EXEC_LOCK_ORDER_UNPINNED_LITERAL")" -eq 0
 test "$(marker_count "$EXEC_LOCK_ORDER_NO_SCHED_THREAD_LITERAL")" -eq 0
 
 # #745, fixed: production fork. Positive markers proving a completed fork, the
-# child's forced reschedule round trip, and a genuine reap; the CoW isolation
-# receipt proving the parent's own private page copy survived the child's
-# independent write (precheck C3 -- a broken refcount/isolation check would
-# silently corrupt shared memory rather than crash, so this is a functional
-# proof, not just "some fault line appeared"); negative markers (anti-vacuity)
-# proving fork did not fail, corrupt memory, or resume twice into the same
-# branch; and the CoW fault path itself was actually exercised (precheck C3 --
-# the only x86 production caller of the CoW *fault* handler is fork_smoke, so
-# this also proves the fault path is no longer runtime-unproven on x86).
+# child's forced reschedule round trip, a genuine reap, and -- separately from
+# the reap -- that the child exited CLEANLY with its own distinguishing code
+# (review round 2, B1: a killed child is still reaped, and the userspace-fault
+# kill path is silent in CRASH_MARKERS_PATTERN and FAULT_MARKERS). Then the two
+# halves of precheck C3: `[COW FAULT #0] addr=` proving at least one CoW fault
+# actually OCCURRED, and the isolation receipt proving the parent's own private
+# copy survived the child's independent write (a broken refcount/isolation
+# check corrupts shared memory silently rather than crashing, so that half has
+# to be functional, not just "some fault line appeared"). Negative markers
+# (anti-vacuity) prove fork did not fail, corrupt memory, or resume twice into
+# the same branch.
 test "$(marker_count "$FORK_SMOKE_LAUNCH_LITERAL")" -eq 1
 test "$(marker_count "$FORK_SMOKE_CHILD_PREFIX")" -eq 1
 test "$(marker_count "$FORK_SMOKE_COW_ISOLATION_OK_PREFIX")" -eq 1
 test "$(marker_count "$FORK_SMOKE_COW_ISOLATION_CORRUPTED_PREFIX")" -eq 0
 test "$(marker_count "$FORK_SMOKE_PARENT_REAPED_PREFIX")" -eq 1
+test "$(marker_count "$FORK_SMOKE_PARENT_REAPED_CODE_LITERAL")" -eq 1
+test "$(marker_count "$FORK_SMOKE_COW_FAULT_FIRST_LITERAL")" -eq 1
 test "$(marker_count "$FORK_SMOKE_LAUNCHER_EXIT_LITERAL")" -eq 1
 test "$(marker_count "$FORK_SMOKE_SPAWN_FAILED_PREFIX")" -eq 0
 test "$(marker_count "$FORK_SMOKE_FORK_FAILED_PREFIX")" -eq 0

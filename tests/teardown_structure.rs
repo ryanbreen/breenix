@@ -2788,7 +2788,13 @@ const PROCESS_ROW_MAP_MUTATIONS: &[(&str, &str, usize)] = &[
     // #713: x86 spawn() got its own construction path (build_process_at's
     // sibling for real argv), a distinct row-map insert.
     ("kernel/src/process/manager.rs", "impl ProcessManager::#[cfg(target_arch=x86_64)] fn build_process_with_argv_at => insert", 1),
-    // `complete_fork` is testing-only, so replacing its stale dead-code suppression with honest feature gating moved only this item path.
+    // #745: `complete_fork` lost its `feature = "testing"` gate and became a
+    // production x86 row writer. The item PATH is what changed here — the cfg
+    // string this census keys on went from
+    // `#[cfg(all(target_arch=x86_64,feature=testing))]` to
+    // `#[cfg(target_arch=x86_64)]`. The insert itself is the same single one it
+    // always had (review round 2, m8: the entry was corrected in the fix commit
+    // but this sentence still described it as testing-only).
     ("kernel/src/process/manager.rs", "impl ProcessManager::#[cfg(target_arch=x86_64)] fn complete_fork => insert", 1),
     ("kernel/src/process/manager.rs", "impl ProcessManager::#[cfg(target_arch=x86_64)] fn fork_process_with_context => insert", 1),
     ("kernel/src/process/manager.rs", "impl ProcessManager::fn debug_processes => raw-binding", 1),

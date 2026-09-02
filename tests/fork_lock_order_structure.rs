@@ -5,6 +5,11 @@
 //! guard live across either drain call, and must never install the child
 //! into the scheduler while holding the process-manager lock.
 //!
+//! It also pins #745's OTHER fix, the one no boot leg can reach: both
+//! production fork bodies in `manager.rs` must put the parent's page table
+//! back into its row before propagating a CoW setup failure (precheck C2).
+//! See `validate_cow_restore_precedes_try` at the bottom of this file.
+//!
 //! This is #745's version of `exec_lock_order_structure.rs`'s
 //! `validate_sys_exec_releases_process_manager` -- proving the fix BY
 //! CONSTRUCTION (a text-shape assertion that cannot pass without the fix
@@ -22,6 +27,13 @@ use std::path::PathBuf;
 
 const HANDLERS_RS: &str = "kernel/src/syscall/handlers.rs";
 const FORK_FN: &str = "sys_fork_with_parent_context";
+const MANAGER_RS: &str = "kernel/src/process/manager.rs";
+/// The two production fork bodies that take the parent's page table out of its
+/// row, hand it to `setup_cow_pages_with_vmas`, and must put it back before the
+/// fallible `?` -- x86 first, then the aarch64 twin.
+const COW_RESTORE_FNS: &[&str] = &["fork_process_with_parent_context", "fork_process_aarch64"];
+const COW_RESTORE_STMT: &str = "parent.page_table = Some(parent_page_table);";
+const COW_RESULT_TRY: &str = "cow_result?;";
 
 fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -396,4 +408,92 @@ fn negative_missing_drop_before_spawn_front_is_rejected() {
     let mutated = body.replacen("drop(manager_guard);\n", "", 2);
     assert_ne!(mutated, body, "mutation did not apply");
     assert!(validate_fork_lock_order(&mutated).is_err());
+}
+
+// ---------------------------------------------------------------------------
+// The C2 ordering ratchet (#745 precheck C2; review round 2, m9)
+// ---------------------------------------------------------------------------
+
+/// The parent's page table must be put back into its row BEFORE the fallible
+/// `cow_result?`, on both production fork paths.
+///
+/// This is the one fix in #745 that no boot-level leg can prove: `prove.md`
+/// Leg 2C constructed the reverse mutation by hand and it reddened nothing,
+/// because `setup_cow_pages_with_vmas` never fails on a healthy boot and the
+/// tree has no CoW-allocation fault injection. So the protection against a
+/// silent reversal is structural instead. Getting this order wrong is not a
+/// leak: it leaves the LIVE PARENT row with `page_table == None`, and both x86
+/// dispatch consumers answer a `None` CR3 by terminating the thread -- a
+/// transient allocator failure inside fork would kill the calling process.
+fn validate_cow_restore_precedes_try(body: &str, function: &str) -> Result<(), String> {
+    let mask = code_mask(body);
+    let restores = code_offsets(body, &mask, COW_RESTORE_STMT);
+    let tries = code_offsets(body, &mask, COW_RESULT_TRY);
+    if restores.len() != 1 {
+        return Err(format!(
+            "{function} must restore the parent's page table exactly once \
+             (`{COW_RESTORE_STMT}`), found {}",
+            restores.len()
+        ));
+    }
+    if tries.len() != 1 {
+        return Err(format!(
+            "{function} must have exactly one `{COW_RESULT_TRY}`, found {}",
+            tries.len()
+        ));
+    }
+    if restores[0] > tries[0] {
+        return Err(format!(
+            "{function} propagates the CoW error before restoring the parent's page \
+             table -- an allocator failure inside fork would leave the live parent row \
+             with no page table and get the CALLING process terminated (#745 precheck C2)"
+        ));
+    }
+    Ok(())
+}
+
+#[test]
+fn both_production_forks_restore_the_parent_page_table_before_propagating() {
+    let source = repo_text(MANAGER_RS);
+    for function in COW_RESTORE_FNS {
+        let body = function_body(&source, function);
+        assert_eq!(
+            validate_cow_restore_precedes_try(body, function),
+            Ok(()),
+            "{function}"
+        );
+    }
+}
+
+#[test]
+fn negative_cow_restore_moved_after_the_try_is_rejected() {
+    let source = repo_text(MANAGER_RS);
+    for function in COW_RESTORE_FNS {
+        let body = function_body(&source, function);
+        // The exact pre-#745 shape: propagate first, restore second.
+        let mutated = body.replacen(
+            &format!("{COW_RESTORE_STMT}\n\n            {COW_RESULT_TRY}"),
+            &format!("{COW_RESULT_TRY}\n\n            {COW_RESTORE_STMT}"),
+            1,
+        );
+        assert_ne!(mutated, body, "mutation did not apply for {function}");
+        assert!(
+            validate_cow_restore_precedes_try(&mutated, function).is_err(),
+            "{function}"
+        );
+    }
+}
+
+#[test]
+fn negative_deleted_cow_restore_is_rejected() {
+    let source = repo_text(MANAGER_RS);
+    for function in COW_RESTORE_FNS {
+        let body = function_body(&source, function);
+        let mutated = body.replacen(COW_RESTORE_STMT, "", 1);
+        assert_ne!(mutated, body, "mutation did not apply for {function}");
+        assert!(
+            validate_cow_restore_precedes_try(&mutated, function).is_err(),
+            "{function}"
+        );
+    }
 }

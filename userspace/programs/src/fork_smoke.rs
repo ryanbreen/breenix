@@ -20,16 +20,33 @@
 //! thread is preempted mid-lock-hold during a concurrent fork call.
 //!
 //! Both parent and child write to `SHARED_WRITE_PROBE` after fork() returns,
-//! forcing a real CoW write fault on EACH side independently, then the
-//! parent -- only after successfully reaping the child, so there is no
-//! read/write race -- reads the probe back and requires it to still hold
-//! ITS OWN value. This is a functional isolation proof, not just "some CoW
+//! forcing a real CoW write fault on EACH side independently while the frame
+//! is still genuinely shared. The isolation receipt itself is then taken on a
+//! SECOND probe, `CHILD_ONLY_PROBE`, which only the child ever writes: after
+//! reaping the child the parent reads it and requires the PRE-FORK zero.
+//!
+//! The two-probe split is what makes the receipt order-independent (#745
+//! review round 2, M2). Reading back the parent's own sentinel from a probe
+//! BOTH sides wrote cannot fail on interleaving alone: the child is queued
+//! with `spawn_front`, so on a broken kernel that left one writable frame
+//! shared, the child's write plausibly lands FIRST and the parent's later
+//! write overwrites it -- the parent then reads its own value back and the
+//! receipt reports OK on a genuinely broken kernel. `CHILD_ONLY_PROBE` has no
+//! such hole in either direction: the parent never writes it, the child's
+//! write is sequenced before its exit and therefore before the reap, so a
+//! shared frame makes the child's value visible to the parent no matter how
+//! the two processes interleave. The parent's own-sentinel read is kept as
+//! well, as the check that the parent's copy is private *and* writable.
+//!
+//! This is what makes the isolation proof functional rather than "some CoW
 //! fault log line appeared": the x86 CoW *fault* path
 //! (`handle_cow_fault`/`handle_cow_with_manager`/`frame_is_shared`) had
 //! never executed in a zero-feature x86 build before this program existed
 //! (#745 precheck C3), and a broken refcount/isolation check would silently
 //! corrupt parent/child memory rather than crash -- a child that only
-//! yields and exits proves nothing about that.
+//! yields and exits proves nothing about that. The gate pins the fault's
+//! OCCURRENCE separately, on the kernel's own `[COW FAULT #0] addr=` line
+//! (C3(2)); this program answers the other half, what the fault handler DID.
 
 use libbreenix::process::{fork, getpid, waitpid, wexitstatus, wifexited, yield_now, ForkResult};
 
@@ -42,8 +59,14 @@ const PARENT_PROBE_VALUE: u64 = 0xFEED_FEED;
 const CHILD_PROBE_VALUE: u64 = 0xC0FF_EEEE;
 
 /// Writable global the parent and child both mutate post-fork, forcing a
-/// real CoW fault on each side (see module doc).
+/// real CoW fault on each side while the frame is still shared (see module
+/// doc).
 static mut SHARED_WRITE_PROBE: u64 = 0;
+
+/// Writable global ONLY the child ever writes. The parent reads it after the
+/// reap and requires the pre-fork zero, which is the order-independent half
+/// of the isolation receipt (see module doc).
+static mut CHILD_ONLY_PROBE: u64 = 0;
 
 /// Set once the child branch has begun its own work. If fork() were to
 /// (incorrectly) resume a second execution context into this same branch --
@@ -68,9 +91,12 @@ fn main() {
             }
 
             // Force a CoW write fault on the child's own private copy of
-            // this page.
+            // this page. CHILD_ONLY_PROBE carries the same value: if the
+            // kernel left one writable frame shared, this write is what the
+            // parent sees after the reap.
             unsafe {
                 SHARED_WRITE_PROBE = CHILD_PROBE_VALUE;
+                CHILD_ONLY_PROBE = CHILD_PROBE_VALUE;
             }
 
             let pid = getpid().map(|p| p.raw()).unwrap_or(0);
@@ -99,16 +125,26 @@ fn main() {
                         -1
                     };
 
-                    // The child has now fully run and been reaped, so this
-                    // read is race-free: if CoW isolation is correct, the
-                    // child's earlier write can only have affected the
-                    // child's own private copy, and the parent must still
-                    // observe its OWN value here.
-                    let observed = unsafe { SHARED_WRITE_PROBE };
-                    if observed == PARENT_PROBE_VALUE {
-                        println!("[FORK_SMOKE:COW_ISOLATION_OK probe={:#x}]", observed);
+                    // The child has now fully run and been reaped, so both
+                    // reads are race-free and, on CHILD_ONLY_PROBE,
+                    // order-independent (see module doc): the child's write
+                    // is sequenced before its exit, so a shared frame would
+                    // make CHILD_PROBE_VALUE visible here no matter how the
+                    // two processes interleaved. `shared` additionally
+                    // requires the parent's own copy to be private AND
+                    // writable.
+                    let shared = unsafe { SHARED_WRITE_PROBE };
+                    let child_only = unsafe { CHILD_ONLY_PROBE };
+                    if shared == PARENT_PROBE_VALUE && child_only == 0 {
+                        println!(
+                            "[FORK_SMOKE:COW_ISOLATION_OK probe={:#x} child_only={:#x}]",
+                            shared, child_only
+                        );
                     } else {
-                        println!("[FORK_SMOKE:COW_ISOLATION_CORRUPTED probe={:#x}]", observed);
+                        println!(
+                            "[FORK_SMOKE:COW_ISOLATION_CORRUPTED probe={:#x} child_only={:#x}]",
+                            shared, child_only
+                        );
                     }
 
                     println!(
