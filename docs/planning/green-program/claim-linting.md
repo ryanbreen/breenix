@@ -288,7 +288,11 @@ A **second** held-out set of 11 specimens, from six further review arcs
 run independently by the R2 review slot against the R2 tool: **6 of 11 (55%)**,
 identically in the shipping default and whole-file modes. It sits where the
 first held-out figure predicts and it is the least flattering of the three
-numbers on this page. It is likewise not reproducible from this repo. Folding
+numbers on this page. R3 re-ran the two specimens its own changes could
+plausibly move — K1 (`nic-bus/CONFIRM-2026-08-31.md:211` @`cbc6873b`, the
+`archived` verb) and K3 (`nic-bus/serials/fix2-prove.md:23` @`cbc6873b`, a
+file R3 stops skipping) — and both still miss, so 6 of 11 stands. It is
+likewise not reproducible from this repo. Folding
 both held-out sets into `historical_false_claims.json` behind a `heldout: true`
 flag would make all three figures re-derivable by
 `python3 scripts/test_claim_lint.py`; R3 did not do it, because the specimen
