@@ -235,9 +235,9 @@ A test that passes without testing what it claims to test is worse than a failin
 
 ### Claim Discipline - REQUIRED
 
-A round that touches markdown or shell prose runs `scripts/claim-lint.py` before
-requesting review and records the invocation and its exit status in the round's
-notes:
+A round that touches markdown, Rust, Python, shell, or text-file prose runs
+`scripts/claim-lint.py` before requesting review and records the invocation and
+its exit status in the round's notes:
 
 ```
 claim-lint: scripts/claim-lint.py                         -> exit 0

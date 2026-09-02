@@ -72,17 +72,25 @@ does not touch code, and it does not fire outside a comment or a doc.
 ### What is skipped under `serials/` and `confirm/`, and what is not (R3)
 
 A **machine-emitted capture** is skipped: nobody can discharge a claim written
-inside a serial a gate script printed. That is scoped by **file extension**, not
-by directory. Under a `serials/` or `confirm/` path component the tool skips
-`.txt` and `.log` — **419 tracked files here (403 `.txt`, 16 `.log`)** — and
-lints everything else in those trees: **30 tracked files (22 `.md`, 7 `.sh`,
-1 `.rs`), carrying 124 findings**. Those are PROVE narratives, RCA write-ups,
-per-arc READMEs and mutation apply/revert scripts — prose a human wrote and can
-discharge. Commands:
+inside a serial a gate script printed. The skip is scoped by **file extension
+AND path component together**, not by extension alone: a `.txt`/`.log` file is
+skipped only when it also sits under a `serials/` or `confirm/` path component.
+Outside those two component names a `.txt`/`.log` file is linted like any other
+prose file — **258 of the 661 tracked `.txt` files in the repo sit outside both
+trees and are not skipped**. That is not hypothetical noise: of round
+`2a2328aa`'s 29 findings (per-round table below), **15 land on 8 such
+captures** under `docs/planning/coreproof/rung2/evidence/` — a gate-log
+directory that is not a capture tree only because its own name is not
+`serials` or `confirm`. Under a `serials/` or `confirm/` path component the
+tool skips `.txt` and `.log` — **419 tracked files here (403 `.txt`, 16
+`.log`)** — and lints everything else in those trees: **29 tracked files (22
+`.md`, 7 `.sh`), carrying 124 findings**. Those are PROVE narratives, RCA
+write-ups, per-arc READMEs and mutation apply/revert scripts — prose a human
+wrote and can discharge. Commands:
 
 ```bash
-git ls-files | grep -E '(^|/)(serials?|confirm)/' | grep -Ev '\.txt$|\.log$'   # the 30
-python3 scripts/test_claim_lint.py -v                                          # per-round table
+git ls-files | grep -E '(^|/)(serials|confirm)/' | grep -Ev '\.txt$|\.log$'   # the 29
+python3 scripts/test_claim_lint.py -v                                        # per-round table
 ```
 
 <!-- claim-lint:ok: both numbers come from replaying that round under each
@@ -97,7 +105,13 @@ PROVE narrative lived under `serials/`. A round could record `claim-lint … ->
 exit 0` while the document making its claims was not read at all. The directory
 pattern is also plural-only and matched as a whole path component, so
 `kernel/src/serial/` — a source directory whose only relationship to the rule
-was its name — is not a capture tree.
+was its name — is not a capture tree. (R3-m1: an earlier draft of this
+section's reproduction command used `serials?`, matching the singular too,
+and printed **30** — wrongly folding in `kernel/src/serial/command.rs`, the
+very file this paragraph says is not a capture tree. The command and the
+count above now both use the plural-only pattern that matches the code's own
+`CAPTURE_DIR_RE`; the true count is **29**, and `command.rs` carries 0
+findings either way, so this did not move the 124.)
 
 ## The round checklist — the run is an artifact
 
