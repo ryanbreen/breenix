@@ -290,13 +290,23 @@ pre-existing and unrelated to #707:
    uncommitted comment-out of the two self-test calls in
    `kernel/src/main_aarch64.rs`) removes the panic but exposes a second
    hang: `load_test_binaries_from_ext2()` prints
-   `[test] Loading test binaries from ext2...` then produces zero further
-   output for 2/2 single-binary boots tried (`tcp_cloexec_exec_test`
-   alone, then -- ruling out anything #707-specific --
-   `hello_world` alone, an unrelated, long-established binary, as the
-   sole entry in a temporary, uncommitted override of the loader's
-   search list). Same stall point, same silence, same 95-130% CPU burn,
-   in both, each held 60-720s. `aarch64-blocked/761-loader-hang-hello_world-serial.txt`
+   `[test] Loading test binaries from ext2...` then produces no further
+   *loader* progress for 2/2 single-binary boots tried
+   (`tcp_cloexec_exec_test` alone, then -- ruling out anything
+   #707-specific -- `hello_world` alone, an unrelated, long-established
+   binary, as the sole entry in a temporary, uncommitted override of the
+   loader's search list). **Correction (review-707.md finding F8,
+   round-1 M7 carryover):** this item previously said the boot "produces
+   zero further output" after that line. The committed
+   `hello_world` serial shows otherwise: the marker sits at line 182 of
+   294, and all 112 post-marker lines are `[RESUME_PC_CENSUS:...]`
+   heartbeats on all four CPUs (`sed -n '183,294p' ... | grep -avc
+   RESUME_PC_CENSUS` -> 0, re-run this round). A live census heartbeat on
+   every CPU is evidence the scheduler is still running -- the stall is
+   loader-local, not a whole-system freeze, which strengthens #761 rather
+   than weakening it. Same stall point, same silence in the loader, same
+   95-130% CPU burn, in both, each held 60-720s.
+   `aarch64-blocked/761-loader-hang-hello_world-serial.txt`
    preserves the `hello_world` repro (the more probative of the two,
    since it isolates the hang from this branch's own code entirely).
 3. **Structural: no committed aarch64 gate builds `--features testing` at
