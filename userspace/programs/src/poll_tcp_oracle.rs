@@ -360,6 +360,14 @@ fn late_peer(server: Fd, delay_ms: u64) -> ! {
 /// Re-read the fd the blocking poll just gave up on, two ways, and render both
 /// results as one marker line. See the call site for what each probe decides.
 fn late_lost_wake_probe(client: Fd) -> String {
+    // Stamp the probe on the same clock the peer stamps its write with. Marker
+    // ORDER on the shared console decided three of the first four specimens and
+    // left the fourth open, because the peer prints after its `send` returns and
+    // the parent prints after its probe runs -- two prints whose interleaving a
+    // preemption can invert. Two comparable instants close that gap: `probe_ms`
+    // against the peer's `write_ms` says which came first without depending on
+    // when either side got to print.
+    let probe_ms = monotonic_ms("late_probe").unwrap_or(0);
     let mut fds = [PollFd::new(client, POLLIN)];
     let rescan = match io::poll(&mut fds, 0) {
         Ok(n) => format!("rescan_ready={} rescan_revents={:#06x}", n, fds[0].revents),
@@ -384,7 +392,10 @@ fn late_lost_wake_probe(client: Fd) -> String {
         Err(e) => format!("nbread_getfl_err={}", e),
     };
 
-    format!("[POLL_TCP_ORACLE:LOSTWAKE_PROBE:{} {}]", rescan, nbread)
+    format!(
+        "[POLL_TCP_ORACLE:LOSTWAKE_PROBE:probe_ms={} {} {}]",
+        probe_ms, rescan, nbread
+    )
 }
 
 /// The lost-wake stage: readiness is published while the poller is already
@@ -445,9 +456,11 @@ fn stage_late(client: Fd, server: Fd) -> Result<(u64, u64, u64), Failure> {
             return Err(fail(
                 "late_lost_wake",
                 format!(
-                    "ready={} revents={:#06x} elapsed_ms={} delay_ms={} peer_reaped={} peer_status={:#010x} peer_code={}",
+                    "ready={} revents={:#06x} entry={} returned={} elapsed_ms={} delay_ms={} peer_reaped={} peer_status={:#010x} peer_code={}",
                     ready,
                     fds[0].revents,
+                    entry,
+                    returned,
                     elapsed,
                     delay_ms,
                     reaped.is_ok(),
@@ -534,7 +547,10 @@ fn stage_late(client: Fd, server: Fd) -> Result<(u64, u64, u64), Failure> {
         if elapsed >= LATE_TIMEOUT_MS as u64 {
             return Err(fail(
                 "late_woken_by_clock",
-                format!("elapsed_ms={} timeout={}", elapsed, LATE_TIMEOUT_MS),
+                format!(
+                    "entry={} returned={} write_ms={} elapsed_ms={} timeout={}",
+                    entry, returned, write_ms, elapsed, LATE_TIMEOUT_MS
+                ),
             ));
         }
 
