@@ -1,0 +1,33 @@
+Architecture:  x86_64
+Kernel binary: /root/breenix-prove-tracing/target/x86_64-unknown-none/release/deps/artifact/kernel-10a65b692264a663/bin/kernel-10a65b692264a663
+
+Derived layout (from kernel sources, not hardcoded):
+  MAX_CPUS:            16
+  TRACE_BUFFER_SIZE:   1024 events/CPU
+  Per-CPU buffer:      16448 bytes
+  TRACE_BUFFERS total: 263168 bytes
+
+Starting qemu-system-x86_64 with gdbstub on port 1234...
+QEMU started (PID: 37005); letting the kernel run 15s to record events...
+Kernel load base: 0x10000000000
+
+Symbol addresses:
+  TRACE_BUFFERS:        0x100003f5900
+  TRACE_ENABLED:        0x100003f58e8
+  TRACE_CPU0_WRITE_IDX: 0x10000435d00
+
+Attaching GDB and dumping the trace region...
+The target architecture is set to "auto" (currently "i386:x86-64").
+0x00000100000cdffe in ?? ()
+TRACE_ENABLED = 0x0
+TRACE_CPU0_WRITE_IDX = 0
+
+=== Trace Memory Dump Complete ===
+[Inferior 1 (process 1) detached]
+
+=== Results ===
+
+Trace buffer dump: 263168 bytes (expected 263168)
+TRACE_ENABLED = 0x0
+TRACE_CPU0_WRITE_IDX = 0
+FAIL: TRACE_ENABLED is not set — the kernel never enabled tracing

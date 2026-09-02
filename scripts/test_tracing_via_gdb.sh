@@ -8,7 +8,7 @@
 # scripts/trace_memory_dump.py --validate. The parser's verdict is this script's
 # exit status: a dump that parses to zero events is a FAILURE, not a pass.
 #
-# Two properties this harness deliberately does NOT have:
+# Three properties this harness deliberately does NOT have:
 #   * no hardcoded breakpoint address. The previous version broke at a literal
 #     `KERNEL_BASE + 0x18b090`, which silently stopped meaning anything the
 #     moment the kernel was rebuilt. Instead the guest free-runs for a settle
@@ -16,6 +16,18 @@
 #   * no hardcoded CPU count. MAX_CPUS and TRACE_BUFFER_SIZE are read out of the
 #     kernel sources they are defined in, so a change there cannot leave this
 #     harness dumping (and validating) half the buffers.
+#   * no hardcoded x86_64 kernel load base. The bootloader crate places the
+#     kernel PIE at a runtime-chosen free virtual address slot and prints the
+#     choice exactly once, as "virtual_address_offset: 0x..." on serial, early
+#     in boot. The same binary has been observed to land at 0x8000000000 on
+#     some boots and 0x10000000000 on others -- a base baked into this script
+#     would silently make the symbol addresses derived below wrong on
+#     whichever boots picked the other slot. The base is
+#     instead read off each boot's own serial capture after the settle
+#     window, and the script fails loudly -- not silently -- if that line
+#     is missing. breenix-gdb-chat/scripts/gdb_chat.py's
+#     resync_symbols() (landed for #739) and the #702 RCA loop harness both
+#     derive the same value the same way; this port does not reinvent it.
 #
 # Usage:
 #   scripts/test_tracing_via_gdb.sh [--arch aarch64|x86_64] [--settle SECONDS]
@@ -46,7 +58,7 @@ while [ $# -gt 0 ]; do
         --settle) SETTLE_SECONDS="$2"; shift 2 ;;
         --port) GDB_PORT="$2"; shift 2 ;;
         --out) OUTPUT_DIR="$2"; shift 2 ;;
-        -h | --help) sed -n '2,30p' "$0"; exit 0 ;;
+        -h | --help) sed -n '2,39p' "$0"; exit 0 ;;
         *) echo "Unknown argument: $1" >&2; exit 2 ;;
     esac
 done
@@ -123,8 +135,11 @@ else
         echo "  cargo build --release --features testing,external_test_bins --bin qemu-uefi" >&2
         exit 1
     fi
-    # The x86_64 kernel is a PIE loaded by the bootloader at 1 TiB.
-    KERNEL_BASE=0x10000000000
+    # The x86_64 kernel is a PIE; the bootloader crate chooses its runtime
+    # load base per boot (see the header comment above) and only reveals it
+    # on serial once the guest has actually booted. KERNEL_BASE is derived
+    # from that serial line further down, after QEMU has started and settled
+    # -- any value assigned here would just be a guess.
     QEMU_BIN=qemu-system-x86_64
 fi
 
@@ -145,10 +160,6 @@ symbol_addr() {
     printf '0x%x' $((KERNEL_BASE + 0x$off))
 }
 
-TRACE_BUFFERS_ADDR=$(symbol_addr TRACE_BUFFERS)
-TRACE_ENABLED_ADDR=$(symbol_addr TRACE_ENABLED)
-TRACE_CPU0_IDX_ADDR=$(symbol_addr TRACE_CPU0_WRITE_IDX)
-
 echo ""
 echo "Derived layout (from kernel sources, not hardcoded):"
 echo "  MAX_CPUS:            $MAX_CPUS"
@@ -156,11 +167,9 @@ echo "  TRACE_BUFFER_SIZE:   $TRACE_BUFFER_SIZE events/CPU"
 echo "  Per-CPU buffer:      $BUFFER_SIZE bytes"
 echo "  TRACE_BUFFERS total: $TOTAL_SIZE bytes"
 echo ""
-echo "Symbol addresses:"
-echo "  TRACE_BUFFERS:        $TRACE_BUFFERS_ADDR"
-echo "  TRACE_ENABLED:        $TRACE_ENABLED_ADDR"
-echo "  TRACE_CPU0_WRITE_IDX: $TRACE_CPU0_IDX_ADDR"
-echo ""
+# Symbol addresses depend on KERNEL_BASE, which for x86_64 is not known until
+# the guest has booted and printed its load offset on serial -- see the
+# derivation after the settle window below.
 
 rm -rf "$OUTPUT_DIR"
 mkdir -p "$OUTPUT_DIR"
@@ -204,6 +213,22 @@ else
         echo "Error: UEFI image not found (run the qemu-uefi build first)" >&2
         exit 1
     fi
+    # Pre-existing defect found by round 1 of the KERNEL_BASE-fix review, present
+    # on main and unchanged by that fix: a kernel built with the feature set this
+    # script itself instructs (testing,external_test_bins) gates get_test_binary()
+    # on `feature = "testing"` alone (kernel/src/userspace_test.rs) and requires a
+    # second VirtIO block device (index 1) unconditionally -- without it a boot
+    # panics with FATAL: DISK LOADING FAILED before the settle window completes
+    # (0 of 2 unmodified-script attempts, one per branch, reached
+    # TRACE_VALIDATION:PASS -- see the KERNEL_BASE-fix round's evidence README).
+    # This device is that second device, wired identically to
+    # docker/qemu/run-boot-parallel.sh's testdisk pair.
+    TEST_DISK_IMG="$BREENIX_ROOT/target/test_binaries.img"
+    if [ ! -f "$TEST_DISK_IMG" ]; then
+        echo "Error: test disk image not found at $TEST_DISK_IMG. Repack with:" >&2
+        echo "  cargo run -p xtask -- create-test-disk" >&2
+        exit 1
+    fi
     cp "$BREENIX_ROOT/target/ovmf/x64/code.fd" "$OUTPUT_DIR/OVMF_CODE.fd"
     cp "$BREENIX_ROOT/target/ovmf/x64/vars.fd" "$OUTPUT_DIR/OVMF_VARS.fd"
     "$QEMU_BIN" \
@@ -211,6 +236,8 @@ else
         -pflash "$OUTPUT_DIR/OVMF_VARS.fd" \
         -drive "if=none,id=hd,format=raw,readonly=on,file=$UEFI_IMG" \
         -device virtio-blk-pci,drive=hd,bootindex=0,disable-modern=on,disable-legacy=off \
+        -drive "if=none,id=testdisk,format=raw,readonly=on,file=$TEST_DISK_IMG" \
+        -device virtio-blk-pci,drive=testdisk,disable-modern=on,disable-legacy=off \
         -machine pc,accel=tcg -cpu qemu64 -smp 1 -m 512 \
         -display none -no-reboot -no-shutdown \
         -device isa-debug-exit,iobase=0xf4,iosize=0x04 \
@@ -228,6 +255,40 @@ if ! kill -0 "$QEMU_PID" 2>/dev/null; then
     tail -40 "$OUTPUT_DIR/qemu.log" 2>/dev/null || true
     exit 1
 fi
+
+# ---------------------------------------------------------------------------
+# Derive the kernel's runtime load base now that the guest has booted, then
+# the symbol addresses that depend on it (see the header comment's third
+# bullet for why this cannot be done before boot on x86_64).
+# ---------------------------------------------------------------------------
+if [ "$ARCH" = "x86_64" ]; then
+    KERNEL_BASE=$(grep -oE 'virtual_address_offset:[[:space:]]*0x[0-9a-fA-F]+' \
+        "$OUTPUT_DIR/serial.txt" 2>/dev/null | head -1 | grep -oE '0x[0-9a-fA-F]+' || true)
+    if [ -z "$KERNEL_BASE" ]; then
+        echo "Error: no 'virtual_address_offset: 0x...' line found on serial -- cannot" >&2
+        echo "  derive the kernel's runtime load base, so no symbol address below can be" >&2
+        echo "  trusted (see the header comment's third bullet). The bootloader prints" >&2
+        echo "  this once, early in boot; either the settle window (${SETTLE_SECONDS}s)" >&2
+        echo "  ended before boot reached that point, or serial capture is broken." >&2
+        echo "  Refusing to fall back to a guessed base. Serial tail:" >&2
+        tail -40 "$OUTPUT_DIR/serial.txt" 2>/dev/null >&2 || true
+        cleanup
+        QEMU_PID=""
+        exit 1
+    fi
+fi
+echo "Kernel load base: $KERNEL_BASE" | tee "$OUTPUT_DIR/kernel_base.txt"
+
+TRACE_BUFFERS_ADDR=$(symbol_addr TRACE_BUFFERS)
+TRACE_ENABLED_ADDR=$(symbol_addr TRACE_ENABLED)
+TRACE_CPU0_IDX_ADDR=$(symbol_addr TRACE_CPU0_WRITE_IDX)
+
+echo ""
+echo "Symbol addresses:"
+echo "  TRACE_BUFFERS:        $TRACE_BUFFERS_ADDR"
+echo "  TRACE_ENABLED:        $TRACE_ENABLED_ADDR"
+echo "  TRACE_CPU0_WRITE_IDX: $TRACE_CPU0_IDX_ADDR"
+echo ""
 
 cat > "$OUTPUT_DIR/gdb_commands.txt" <<EOF
 set pagination off
