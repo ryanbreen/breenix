@@ -133,20 +133,49 @@
 # reverted-defect code (see #748's own issue body and the header above).
 #
 # `--park-only` does not wait for the full leg. It watches for exactly one
-# fact -- kernel/src/fs/ext2/mod.rs's `EXT2_LOCK_PARK_FIRST` marker, printed
-# by `ext2_record_park()` the instant (not after any timeout elapses) the
-# FIRST contended ext2 acquisition anywhere in this boot is enqueued via
+# leg-scoped fact -- kernel/src/fs/ext2/mod.rs's `EXT2_LOCK_PARK_FIRST`
+# marker, printed by `ext2_record_park()` the instant (not after any
+# timeout elapses) a contended ext2 acquisition is enqueued via
 # `prepare_to_wait_checked`'s `Queued` outcome -- and exits the moment it
 # (or a competing, mutually-exclusive-in-practice signal) appears, without
 # waiting for either race to resolve, both filesystems to be attempted, or
-# the leg's own `kthread_join()`-gated COMPLETE line. This is possible
-# because the marker fires synchronously when the contender is confirmed
-# blocked and successfully enqueued -- not after any of the pathologically
-# stretched per-round deadlines this issue measured -- so on the
-# aarch64 comparison run its own `EXT2_LOCK_PARK_FIRST` line printed within
-# 2 lines of the ROOT race's own PASS verdict, well before the HOME race
-# even started (see #748's fix-notes.md for the full comparison). The
-# marker is a companion to (not a replacement for) `EXT2_LOCK_PARKS`
+# the leg's own `kthread_join()`-gated COMPLETE line.
+#
+# "Leg-scoped" is load-bearing, found the hard way on the first x86 probe
+# run: `EXT2_LOCK_PARK_FIRST` is a one-shot, whole-boot marker, and
+# `ext2_lock_race`'s own `boot_tests` profile runs a long battery of other
+# tests before this leg's own call site -- one of them (a tombstone-join
+# test, nothing to do with ext2 locking) incidentally contended the ext2
+# lock and consumed the boot's one-and-only marker minutes before the
+# leg's holder/contender threads ever ran, so a naive "did
+# EXT2_LOCK_PARK_FIRST appear anywhere" check would have reported PARK
+# OBSERVED for a park that had nothing to do with this leg's own #728
+# repro shape. `ext2_reset_lock_park_first_marker()`
+# (`kernel/src/fs/ext2/mod.rs`) fixes the *source*: `run_one()`
+# (`ext2_lock_race.rs`) re-arms the marker immediately before spawning each
+# race attempt's own holder/contender, so a park during THAT race prints
+# again regardless of what consumed the boot's first-ever one. This script
+# fixes the *observer* side to match: LEG_ENTRY_SEEN/PARK_BASELINE/
+# LEG_PARK_SEEN below track the EXT2_LOCK_PARK_FIRST occurrence *count*
+# from the poll immediately before the leg's own "Added thread ...
+# 'lockrace_holder'" spawn line first appears, and only declare PARK
+# OBSERVED once that count rises above the pre-leg baseline (see the
+# PREV_PARK_COUNT comment at the poll loop for why it's the *prior* tick's
+# count, not the detecting tick's own). This also caught and fixed a latent,
+# pre-existing bug in `check_live_after_complete()` above: `[LOCKRACE:...]`
+# lines print via `crate::serial_println!` (COM1, `serial_user.txt` on
+# x86) while the x86 `LIVENESS_PATTERN` (`log::info!`) and `PRIMARY_LOG`
+# (`serial_kernel.txt`) are COM2 -- two files with independently-numbered,
+# un-timestamped lines that a single-file "position-aware" check can never
+# correctly order on x86. That bug is disclosed, not fixed, here: it has
+# never yet been exercised (x86 has never reached COMPLETE at all), fixing
+# it needs either cross-port timestamps or a same-port liveness marker this
+# round could not validate without the very multi-hour capture #748 exists
+# to route around, and `--park-only` does not depend on it (see
+# `count_marker()`'s comment for why its own delta tracking sidesteps the
+# same hazard entirely). See #748's fix-notes.md for the full account.
+#
+# The marker is a companion to (not a replacement for) `EXT2_LOCK_PARKS`
 # (`ext2_lock_parks()`); ratcheted by `tests/ext2_lock_structure.rs`
 # properties 6 and 9 (per-function routing so neither `ext2_acquire` nor
 # `ext2_acquire_write` can silently lose it).
@@ -348,6 +377,32 @@ check_live_after_complete() {
     tail -n "+$((complete_line + 1))" "$PRIMARY_LOG" | grep -qaE "$LIVENESS_PATTERN"
 }
 
+# #748 --park-only: total occurrences of $1 across every serial file so far.
+# Deliberately NOT position-aware the way check_live_after_complete() is --
+# EXT2_LOCK_PARK_FIRST (ext2_record_park(), crate::serial_println!, COM1 on
+# x86) and "Added thread ... 'lockrace_holder'" (scheduler.rs,
+# log_serial_println!, COM2 on x86) land in DIFFERENT files with
+# independently-numbered lines that QEMU's plain `-serial file:` capture
+# never timestamps, so no line-position comparison between them can ever be
+# correct on x86 (confirmed live: the first probe run's marker printed in
+# serial_user.txt while the leg's own spawn lines were in serial_kernel.txt,
+# a real ordering gap this discovered in check_live_after_complete() too --
+# see fix-notes.md). A monotonic occurrence COUNT within the ever-growing
+# glob sidesteps this entirely: it only relies on each individual file
+# being append-only, never on comparing positions across files.
+count_marker() {
+    # `grep -c` exits 1 when a file has zero matches (even though it still
+    # prints "0"), and with `set -o pipefail` that makes the whole pipeline
+    # exit 1 whenever every file's count is 0 -- which is the ordinary case
+    # for most of this probe's run. Under this script's `set -e` + ERR trap,
+    # a plain assignment from an unparenthesized failing command
+    # substitution aborts the gate outright (caught live: the very first
+    # local rerun after adding this function did exactly that). `|| true`
+    # neutralizes the pipeline's own exit status; the awk-computed sum on
+    # stdout is what callers actually consume, and it is correct either way.
+    grep -coa "$1" "$OUTPUT_DIR"/serial*.txt 2>/dev/null | awk -F: '{s+=$NF} END{print s+0}' || true
+}
+
 # Poll for the leg's terminal marker (or a red signal that fires without it —
 # see the header comment on why COMPLETE alone is not the red/green split)
 # and, on a green run, the boot's own liveness marker genuinely after it.
@@ -357,8 +412,32 @@ COMPLETE_SEEN=0
 COMPLETE_AT=0
 LIVE=0
 # #748 --park-only: set the moment ext2_record_park()'s EXT2_LOCK_PARK_FIRST
-# marker appears anywhere in the capture -- see the header comment above.
+# marker appears anywhere in the capture (informational only below -- the
+# verdict uses the leg-scoped LEG_PARK_SEEN/LEG_STALL_SEEN pair instead,
+# since an unscoped hit can come from incidental boot_tests contention
+# before the leg ever runs -- confirmed live, see fix-notes.md).
 PARK_FIRST_SEEN=0
+# #748 --park-only leg-scoping: LEG_ENTRY_SEEN latches the poll where the
+# leg's own "Added thread ... 'lockrace_holder'" spawn line first appears.
+# PARK_BASELINE/STALL_BASELINE are set, on that same poll, to the occurrence
+# counts from the PRIOR poll (PREV_PARK_COUNT/PREV_STALL_COUNT below) --
+# deliberately one tick stale, not "as of right now" -- because the leg's
+# reset-then-spawn-then-park sequence can complete inside a single 2s poll
+# gap: a same-tick snapshot could already include that one-and-only park,
+# permanently hiding it (LEG_PARK_SEEN would then need a SECOND park to
+# ever latch, which this construction does not produce). Using the prior
+# tick's count is airtight: if entry wasn't visible on that prior poll, no
+# leg-caused park can exist yet either -- ext2_reset_lock_park_first_marker()
+# runs strictly before the spawn that produces the very line we're
+# detecting (run_one(), ext2_lock_race.rs), so "entry not yet visible"
+# proves "reset already happened, nothing has parked because of it yet."
+LEG_ENTRY_SEEN=0
+PARK_BASELINE=0
+STALL_BASELINE=0
+LEG_PARK_SEEN=0
+LEG_STALL_SEEN=0
+PREV_PARK_COUNT=0
+PREV_STALL_COUNT=0
 POLL_BOUND=150
 # The poll loop sleeps 2s/iteration, so its own worst-case duration is
 # POLL_BOUND*2s. review finding m3: this defaulted to a flat 1800
@@ -388,11 +467,34 @@ for i in $(seq 1 "$POLL_BOUND"); do
         break
     fi
     if [ "$PARK_ONLY" -eq 1 ]; then
+        cur_park_count="$(count_marker "EXT2_LOCK_PARK_FIRST")"
+        cur_stall_count="$(count_marker "EXT2_LOCK_SPIN_STALL")"
+        # #748 leg-scoping: see the PREV_PARK_COUNT/PREV_STALL_COUNT comment
+        # above for why the baseline is the PRIOR tick's count, not this
+        # one's -- latch leg entry once, snapshot both baselines from
+        # PREV_*_COUNT at that instant, then only ever compare against
+        # those baselines (never re-snapshot for this race attempt).
+        if [ "$LEG_ENTRY_SEEN" -eq 0 ] \
+            && grep -qa "'lockrace_holder' to scheduler" "$OUTPUT_DIR"/serial*.txt 2>/dev/null; then
+            LEG_ENTRY_SEEN=1
+            PARK_BASELINE="$PREV_PARK_COUNT"
+            STALL_BASELINE="$PREV_STALL_COUNT"
+        fi
+        if [ "$LEG_ENTRY_SEEN" -eq 1 ]; then
+            [ "$LEG_PARK_SEEN" -eq 0 ] && [ "$cur_park_count" -gt "$PARK_BASELINE" ] && LEG_PARK_SEEN=1
+            [ "$LEG_STALL_SEEN" -eq 0 ] && [ "$cur_stall_count" -gt "$STALL_BASELINE" ] && LEG_STALL_SEEN=1
+        fi
+        PREV_PARK_COUNT="$cur_park_count"
+        PREV_STALL_COUNT="$cur_stall_count"
         # #748: don't wait for the full leg at all -- exit the instant any
         # one of the three mutually-informative facts is captured (see the
         # header comment's three-outcome list). No liveness grace needed:
         # this mode's verdict is the marker itself, not a leg completion.
-        if [ "$PARK_FIRST_SEEN" -eq 1 ] || [ "$STALL_SEEN" -eq 1 ] \
+        # LOCKUP_SEEN/COMPLETE_SEEN are deliberately left unscoped, matching
+        # the full gate's own precedent (STALL_SEEN there is unscoped too):
+        # a soft lockup or a COMPLETE line is abort/verdict-worthy whenever
+        # it happens, not only after this leg specifically starts.
+        if [ "$LEG_PARK_SEEN" -eq 1 ] || [ "$LEG_STALL_SEEN" -eq 1 ] \
             || [ "$LOCKUP_SEEN" -eq 1 ] || [ "$COMPLETE_SEEN" -eq 1 ]; then
             break
         fi
@@ -426,6 +528,13 @@ cat "$OUTPUT_DIR"/serial*.txt >"$SERIAL_ALL" 2>/dev/null || true
 if check_live_after_complete; then
     LIVE=1
 fi
+# (No separate final recompute for park-only's leg-scoping: unlike
+# check_live_after_complete()'s single grep, the delta tracking below is
+# fundamentally a running computation across successive polls -- see the
+# PREV_PARK_COUNT/PREV_STALL_COUNT comment in the loop above. A panic/abort
+# that cuts the loop short before park-only's own block runs that iteration
+# is already caught separately by the KERNEL PANIC/CPU exception checks
+# just below, before park-only's verdict block is ever reached.)
 
 # ---------------------------------------------------------------------------
 # Verdict
@@ -449,26 +558,53 @@ if [ "$PARK_ONLY" -eq 1 ]; then
     # names, distinctly -- "no observation yet" must never read as either
     # of the other two, and a spin/lockup without a park is a real,
     # different fact from park-only's own success case, not a gate FAIL.
-    echo "--- LOCKRACE / park / stall lines ---"
+    # The verdict below is leg-scoped (LEG_PARK_SEEN/LEG_STALL_SEEN, gated
+    # on LEG_ENTRY_SEEN) rather than "did EXT2_LOCK_PARK_FIRST/
+    # EXT2_LOCK_SPIN_STALL appear anywhere" -- an unscoped hit can come from
+    # incidental boot_tests contention entirely unrelated to this leg's own
+    # construction (confirmed live on x86: the first probe run's marker
+    # fired during an unrelated tombstone-join test well before the leg's
+    # own threads ever ran; see fix-notes.md and count_marker()'s comment
+    # above). PARK_FIRST_SEEN (unscoped) is echoed only as extra context.
+    echo "--- LOCKRACE / park / stall lines (leg entry seen: $LEG_ENTRY_SEEN) ---"
     grep -a "LOCKRACE\|EXT2_LOCK_PARK_FIRST\|EXT2_LOCK_SPIN_STALL\|soft lockup\|SOFT LOCKUP" "$SERIAL_ALL" || echo "(none)"
-    if [ "$PARK_FIRST_SEEN" -eq 1 ]; then
-        PARK_LINE="$(grep -a "EXT2_LOCK_PARK_FIRST" "$SERIAL_ALL" | head -1)"
-        echo "ext2 lock-race park-probe ($ARCH): PARK OBSERVED - $PARK_LINE"
+    if [ "$LEG_PARK_SEEN" -eq 1 ]; then
+        echo "ext2 lock-race park-probe ($ARCH): PARK OBSERVED - a park recorded strictly after this leg's own holder/contender spawn (EXT2_LOCK_PARK_FIRST count rose from $PARK_BASELINE)"
         exit 0
     fi
-    if [ "$STALL_SEEN" -eq 1 ] || [ "$LOCKUP_SEEN" -eq 1 ]; then
-        echo "ext2 lock-race park-probe ($ARCH): SPIN, NO PARK - a contended acquisition spun (or soft-locked-up) before any EXT2_LOCK_PARK_FIRST was observed"
+    if [ "$LEG_STALL_SEEN" -eq 1 ] || [ "$LOCKUP_SEEN" -eq 1 ]; then
+        echo "ext2 lock-race park-probe ($ARCH): SPIN, NO PARK - this leg's own construction spun (or a soft-lockup fired) before recording a park of its own"
         exit 1
     fi
-    if [ "$COMPLETE_SEEN" -eq 1 ]; then
-        # The leg reached COMPLETE without ever recording a park; the
-        # in-kernel no-park-observed=FAIL classification (ext2_lock_race.rs)
-        # already covers this shape from the leg's own side -- report it in
-        # the same SPIN, NO PARK bucket rather than inventing a fourth one.
-        echo "ext2 lock-race park-probe ($ARCH): SPIN, NO PARK - the leg reached COMPLETE without ever recording EXT2_LOCK_PARK_FIRST"
+    if [ "$COMPLETE_SEEN" -eq 1 ] && [ "$LEG_ENTRY_SEEN" -eq 1 ]; then
+        # The leg reached COMPLETE without this leg-scoped window ever
+        # recording a park; the in-kernel no-park-observed=FAIL
+        # classification (ext2_lock_race.rs) already covers this shape from
+        # the leg's own side -- report it in the same bucket rather than
+        # inventing a fourth one.
+        echo "ext2 lock-race park-probe ($ARCH): SPIN, NO PARK - the leg reached COMPLETE without this leg-scoped window ever recording a park"
         exit 1
     fi
-    echo "ext2 lock-race park-probe ($ARCH): INCONCLUSIVE - no EXT2_LOCK_PARK_FIRST/EXT2_LOCK_SPIN_STALL/soft-lockup/COMPLETE observed within the probe's ${POLL_BOUND}x2s budget -- this proves nothing either way, only that the budget wasn't enough"
+    if [ "$LEG_ENTRY_SEEN" -eq 0 ] && [ "$COMPLETE_SEEN" -eq 1 ]; then
+        # Reached the ARCH0 case caught live in local testing: the leg-entry
+        # signal ("Added thread ... 'lockrace_holder' to scheduler") is
+        # itself x86_64-only by construction (scheduler.rs gates it out on
+        # ARM64 to avoid a documented log_serial_println!/SERIAL1 deadlock
+        # risk there), so on aarch64 LEG_ENTRY_SEEN can never latch even
+        # though the leg genuinely runs and reaches COMPLETE. Reporting
+        # this as SPIN, NO PARK would be a real false negative (confirmed
+        # live: an aarch64 run with 2 real parks, both PASS, per the full
+        # gate's own verdict on the identical boot) -- INCONCLUSIVE with the
+        # reason named is the honest call. --park-only's leg-scoping is
+        # validated for --x86 only; use the full gate on other arches.
+        echo "ext2 lock-race park-probe ($ARCH): INCONCLUSIVE - the leg's own entry signal never appeared on this arch (it is x86_64-only by construction; see the header comment), so leg-scoped tracking could not engage even though the leg reached COMPLETE -- this arch's --park-only result proves nothing either way; use the full gate (no --park-only) here instead"
+        exit 2
+    fi
+    if [ "$LEG_ENTRY_SEEN" -eq 0 ]; then
+        echo "ext2 lock-race park-probe ($ARCH): INCONCLUSIVE - the leg's own 'Added thread ... lockrace_holder' spawn line never appeared within the probe's ${POLL_BOUND}x2s budget (unscoped EXT2_LOCK_PARK_FIRST seen so far: $PARK_FIRST_SEEN) -- this proves nothing either way, only that the budget wasn't enough to reach the leg"
+    else
+        echo "ext2 lock-race park-probe ($ARCH): INCONCLUSIVE - the leg was reached but neither a leg-scoped park nor a leg-scoped stall was observed within the probe's ${POLL_BOUND}x2s budget -- this proves nothing either way, only that the budget wasn't enough"
+    fi
     exit 2
 fi
 
