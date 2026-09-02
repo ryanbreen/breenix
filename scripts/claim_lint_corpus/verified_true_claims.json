@@ -1,0 +1,38 @@
+[
+  {
+    "id": "T1",
+    "arc": "p673",
+    "source": "kernel/src/init.rs:478 comment (round 3 landed bytes)",
+    "review": "scratchpad/p673/r3-review.md MA4 -- CLOSED",
+    "filetype": ".rs",
+    "quote": "observed the warning fire at `= 1` in every landed-bytes gate run including the failing one, per `review-baseline.log`",
+    "note": "Reviewer-verified true after the round-3 fix. It carries a same-paragraph evidence-log citation (`review-baseline.log`), but that log was never committed to the tree, so since R2 -- where a cited path has to RESOLVE before it can exempt anything (review M1) -- this specimen is FLAGGED. That is the M1 tradeoff in one sentence: a true claim citing an uncommitted artifact now needs a claim-lint:ok annotation. Before R2 it passed clean."
+  },
+  {
+    "id": "T2",
+    "arc": "coreproof/rung2",
+    "source": "kernel/src/proof/mod.rs, fire() doc comment reasoning (round-2 review, reviewer's own verified finding)",
+    "review": "scratchpad/coreproof/rung2/fix2-review.md, 'M2 finding is closed on the merits'",
+    "filetype": ".rs",
+    "quote": "Applied-vector coherence is guaranteed: what fire() applies is always one whole draw, never a splice of two.",
+    "note": "True and reviewer-verified, but carries no artifact citation in the same sentence -- expected to need a claim-lint:ok annotation to pass. Included to measure the tool's real bar honestly, not to pretend zero-friction."
+  },
+  {
+    "id": "T3",
+    "arc": "gtty",
+    "source": "gtty fix2-review.md, reviewer's own verified check",
+    "review": "scratchpad/gtty/fix2-review.md 'Also verified myself'",
+    "filetype": ".md",
+    "quote": "Zero-warning build at landed bytes: aarch64 production kernel builds with only the pre-existing toolchain future-incompat notice for `core`.",
+    "note": "True, reviewer-verified. 'Zero-warning' is the program's own fixed term for a build category; expected to pass via the hyphenated-compound exemption, not needing annotation."
+  },
+  {
+    "id": "T4",
+    "arc": "gtty",
+    "source": "gtty fix2-review.md B1, reviewer's own re-derivation",
+    "review": "scratchpad/gtty/fix2-review.md B1",
+    "filetype": ".md",
+    "quote": "Two independently-produced serials one day apart both classify bucket=690 under the same classifier -- confirmed by direct extraction, `docs/planning/green-program/tty/serials/aarch64-clonevm-second-stage-stall-boot19-20260830.txt`.",
+    "note": "True, reviewer-verified, carries an in-sentence serials/ citation. No universal-claim trigger words present; a clean pass is expected without any annotation."
+  }
+]
