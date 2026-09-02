@@ -13,20 +13,15 @@
 # below match run-x86-prod-profile-boot-test.sh's own invocation (three
 # virtio-blk devices: UEFI image, placeholder, ext2 at index 2).
 #
-# ONE ARM FEWER THAN AARCH64, VISIBLY: cloexec_exec (arm 14 on aarch64) is
-# excluded here, not silently dropped. #721 (x86 exec() ENOSYS in the
-# zero-feature production build) is CLOSED -- exec works -- but re-admitting
-# this arm surfaced a second, distinct gap: #745, x86 fork() is
-# unconditionally refused in that same production build. The arm's child
-# forks before it ever execs, so running it today would misattribute #745 to
-# the TTY/PTY layer instead of the process layer. tty_oracle.rs's run() gates
-# the arm_cloexec_exec() call behind #[cfg(target_arch = "aarch64")] and
-# ARM_COUNT is arch-conditional (14 aarch64, 13 x86) for exactly this
-# reason -- see that file's own #745 comment. EXPECTED_ARMS below is
-# therefore the 13-entry x86 list, and this gate ALSO asserts the arm
-# never reports a verdict at all, so a regression that re-enables it
-# unconditionally (bypassing the cfg) is caught here even though nothing
-# in EXPECTED_ARMS would otherwise notice a bonus PASS.
+# FULL PARITY WITH AARCH64: cloexec_exec (arm 14) is re-admitted. It was
+# excluded first pending #721 (sys_execv_with_frame returned ENOSYS in the
+# x86 zero-feature production build -- the arm's child could never actually
+# exec()), then -- once #721 closed and re-admission surfaced a second,
+# distinct blocker -- pending #745 (x86 fork() unconditionally refused in
+# that same profile; the arm's child forks before it ever execs). Both are
+# now closed: tty_oracle.rs's run() calls arm_cloexec_exec() unconditionally
+# and ARM_COUNT is 14 on both arches. EXPECTED_ARMS below is therefore the
+# full 14-entry list, the same one run-aarch64-tty-oracle-gate.sh scores.
 # tests/tty_oracle_structure.rs carries the census that keeps this file's
 # EXPECTED_ARMS in sync with the oracle's actual x86-reachable arm set.
 #
@@ -48,8 +43,8 @@ REBUILD_USERSPACE=false
 QEMU_PID=""
 CURRENT_RUN_DIR=""
 
-# Every arm the oracle is required to report PASS for on x86 -- the 14
-# aarch64 arms minus cloexec_exec (see the header, #745).
+# Every arm the oracle is required to report PASS for on x86 -- all 14,
+# matching aarch64 (see the header, #721/#745).
 # tests/tty_oracle_structure.rs holds this list to the arms the oracle
 # actually drives on x86 (its own arch-aware census reads run()'s cfg
 # gates, not this array), so an arm can neither be dropped from the
@@ -76,7 +71,6 @@ EXPECTED_ARM_COUNT=${#EXPECTED_ARMS[@]}
 COMPLETE_LITERAL="[TTY_ORACLE:COMPLETE:pass=${EXPECTED_ARM_COUNT}:fail=0]"
 ANY_COMPLETE_LITERAL='[TTY_ORACLE:COMPLETE:'
 ARM_FAIL_LITERAL='[TTY_ORACLE:FAIL:'
-CLOEXEC_EXEC_VERDICT_LITERAL='[TTY_ORACLE:cloexec_exec:'
 # init's post-wait record. This line only prints on a genuine `Ok` reap from
 # `waitpid` (review finding B3: run_tty_oracle() used to discard the
 # `Result` with `let _ =`, so a failed reap could still fabricate
@@ -261,16 +255,6 @@ while [ "$boot" -le "$BOOTS" ]; do
         fi
     done
 
-    # --- cloexec_exec must report NO verdict at all on x86 (#745). A verdict
-    #     here -- pass or fail -- means the aarch64-only cfg in tty_oracle.rs's
-    #     run() was bypassed, so the arm ran against #745's fork() refusal
-    #     unnoticed. ---
-    if [ "$(marker_count "$CLOEXEC_EXEC_VERDICT_LITERAL")" -ne 0 ]; then
-        echo "FAIL: boot $boot - cloexec_exec reported a verdict on x86 (excluded pending #745)"
-        grep -aF "$CLOEXEC_EXEC_VERDICT_LITERAL" "$RUN_DIR"/serial_*.txt | sort -u
-        exit 1
-    fi
-
     # --- The oracle's own tally must agree with the arm census. ---
     if [ "$(marker_count "$COMPLETE_LITERAL")" -eq 0 ]; then
         echo "FAIL: boot $boot - missing '$COMPLETE_LITERAL'"
@@ -313,5 +297,5 @@ done
 
 CURRENT_RUN_DIR=""
 trap - ERR
-echo "PASS: x86 TTY oracle gate - $BOOTS/$BOOTS boots, $EXPECTED_ARM_COUNT arms green on the shipped production profile (cloexec_exec excluded pending #745)"
+echo "PASS: x86 TTY oracle gate - $BOOTS/$BOOTS boots, $EXPECTED_ARM_COUNT arms green on the shipped production profile"
 echo "Serials: $OUTPUT_ROOT/boot_*/serial_*.txt"
