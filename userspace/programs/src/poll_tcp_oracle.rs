@@ -277,9 +277,9 @@ fn sleep_until(due_ms: u64) {
 }
 
 /// Exit codes the stage-3 peer uses to name the branch it took. `0` is the
-/// only one that means the payload reached the socket; every other value names
-/// a distinct place the peer stopped short, and the parent prints whichever it
-/// read out of `waitpid`.
+/// one that means the payload reached the socket; the other four each name a
+/// place the peer stopped short, and the parent prints whichever it read out of
+/// `waitpid`.
 const PEER_EXIT_SENT: i32 = 0;
 const PEER_EXIT_TOKEN_RECV_FAILED: i32 = 11;
 const PEER_EXIT_TOKEN_CLOCK_FAILED: i32 = 12;
@@ -289,13 +289,13 @@ const PEER_EXIT_SEND_FAILED: i32 = 14;
 /// Report the branch the stage-3 peer took, then leave with the matching code.
 ///
 /// #693 recorded a `late_lost_wake` whose two candidate explanations -- the
-/// kernel lost a readiness publication, or the peer never published one --
+/// kernel lost a readiness publication, or the peer had not published one --
 /// could not be told apart from anything the boot emitted: `late_peer` swallowed
-/// its `send` result and exited `0` either way, so neither the verdict line nor
-/// the exit status discriminated. This marker is that missing fact. It is
-/// emitted on every path out of the peer, including the successful one, so a
-/// PASS boot carries the same evidence shape as a FAIL and the absence of a
-/// branch line is itself legible (the peer died before reaching any of them).
+/// its `send` result and exited `0` on both, so neither the verdict line nor the
+/// exit status discriminated. This marker is that missing fact. Each of the five
+/// paths out of the peer emits it, the successful one included, so a PASS boot
+/// carries the same evidence shape as a FAIL, and a missing branch line means
+/// the peer stopped before reaching any of the five.
 fn peer_exit(branch: &str, detail: &str, code: i32) -> ! {
     emit(&format!(
         "[POLL_TCP_ORACLE:PEER:branch={}:{}]",
@@ -421,10 +421,11 @@ fn stage_late(client: Fd, server: Fd) -> Result<(u64, u64, u64), Failure> {
 
         if ready != 1 || fds[0].revents & POLLIN == 0 {
             // #693: emit the discriminating facts BEFORE the reap, because the
-            // reap is the one step in this arm that can itself block forever (a
-            // peer wedged in its own token receive never exits). Two probes and
-            // the peer's own branch line together separate "the kernel lost a
-            // readiness publication" from "the peer never published one":
+            // reap is the one step in this arm that can itself block without a
+            // bound -- a peer still parked in its own token receive has not
+            // reached its exit. Two probes and the peer's own branch line
+            // together separate "the kernel lost a readiness publication" from
+            // "the peer had not published one yet":
             //
             //   rescan  -- a timeout=0 poll on the same fd, immediately after
             //              the blocking poll gave up. Ready here means the
