@@ -1739,6 +1739,24 @@ static EXT2_LOCK_PARK_FIRST_LOGGED: AtomicBool = AtomicBool::new(false);
 /// `EXT2_LOCK_PARKS.fetch_add` (`tests/ext2_lock_structure.rs` pins that
 /// routing) so the marker can never be silently reintroduced-missing on one
 /// path while present on the other.
+/// #748 (`ext2_lock_race` test leg only): re-arm `EXT2_LOCK_PARK_FIRST_LOGGED`
+/// so the *next* park anywhere in the kernel prints again, scoping the
+/// marker to a specific window instead of "the whole boot's first-ever
+/// park" — see `ext2_lock_race.rs`'s `run_one()`, which calls this
+/// immediately before spawning each race attempt's holder/contender
+/// kthreads. Without this, a boot_tests test that incidentally contends the
+/// ext2 lock earlier in the same boot (observed live: `EXT2_LOCK_PARK_FIRST`
+/// fired during an unrelated tombstone-join test, well before the
+/// dedicated leg's own threads ever ran) consumes the one-shot marker,
+/// leaving the leg's own construction — the actual #728 repro shape this
+/// oracle exists to prove — with no independent signal of its own.
+/// Test-only in practice (the only caller is behind the `ext2_lock_race`
+/// feature) but left ordinarily compiled, matching `ext2_lock_parks()`'s
+/// own always-available pattern.
+pub fn ext2_reset_lock_park_first_marker() {
+    EXT2_LOCK_PARK_FIRST_LOGGED.store(false, Ordering::Relaxed);
+}
+
 #[inline]
 fn ext2_record_park(lock_name: &str) {
     let parks = EXT2_LOCK_PARKS.fetch_add(1, Ordering::Relaxed) + 1;
